@@ -1,0 +1,35 @@
+# 白名单（用户 11-02 定）：只有代码和让代码跑起来的配置进 git；
+# docs、.claude、diagrams、bak、ztools、runtime、各种笔记和产物一律不进。要加新的顶层目录，在下面加一行 !/名字/。
+/*
+!/.gitignore
+!/package.json
+!/tsconfig.json
+!/tsconfig.check.json
+!/eslint.config.mjs
+!/.editorconfig
+!/.prettierrc.json
+!/.prettierignore
+!/config.example.yaml
+!/src/
+!/web/
+!/scripts/
+!/tests/
+
+# zbots 只要代码（jmbots 还借用它的飞书 SDK 封装），不要它的文档和配置。
+!/zbots/
+/zbots/*
+!/zbots/src/
+!/zbots/tests/
+!/zbots/package.json
+!/zbots/tsconfig.json
+
+# 白名单目录里也不要的。
+node_modules/
+dist/
+.env
+.env.*
+*.log
+*.tmp
+config.yaml
+*.local.yaml
+secrets.yaml

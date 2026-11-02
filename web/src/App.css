@@ -1,0 +1,395 @@
+/* 网页布局：PC 三栏的宽度和分隔线、各栏目内部的排版。颜色和字体都用 Theme.ts 写入的 --jm-* 变量。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--jm-background);
+  color: var(--jm-text);
+  font-family: var(--jm-font-sans);
+}
+
+/* PC 布局：第一行顶栏，第二行三栏；左 240px、中 360px、右栏占剩下的宽度。 */
+.pc-layout {
+  display: grid;
+  grid-template-columns: 240px 360px minmax(0, 1fr);
+  grid-template-rows: 48px minmax(0, 1fr);
+  height: 100%;
+}
+
+.pc-header {
+  grid-column: 1 / -1;
+  border-bottom: 1px solid var(--jm-border);
+  background: var(--jm-surface);
+}
+
+.pc-pane {
+  min-height: 0;
+  overflow: auto;
+}
+
+.pc-left,
+.pc-middle {
+  border-right: 1px solid var(--jm-border);
+}
+
+.pc-left {
+  background: var(--jm-surface);
+}
+
+/* 顶栏 */
+.top-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 100%;
+  padding: 0 16px;
+}
+
+.top-bar-brand {
+  color: var(--jm-accent);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.top-bar-modules {
+  display: flex;
+  gap: 4px;
+}
+
+.top-bar-modules .is-active {
+  color: var(--jm-accent);
+}
+
+.top-bar-search {
+  width: 280px;
+  margin-left: auto;
+}
+
+/* 动效开关外面那层 span，让开关和搜索框上下对齐。 */
+.motion-toggle {
+  display: inline-flex;
+}
+
+/* 开关变灰后是 disabled 的按钮，浏览器不把鼠标事件交给它；让鼠标直接落到外面的 span 上，说明原因的提示才弹得出来。 */
+.motion-toggle .ant-switch-disabled {
+  pointer-events: none;
+}
+
+.motion-toggle:has(.ant-switch-disabled) {
+  cursor: not-allowed;
+}
+
+/* 栏目标题行：标题、篇数，按钮靠右。 */
+.pane-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--jm-border);
+  font-weight: 600;
+}
+
+.pane-title-count {
+  margin-right: auto;
+  color: var(--jm-muted);
+  font-weight: 400;
+}
+
+/* 左栏：树占满中间，“新建目录”贴底。 */
+.base-tree {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.base-tree .base-tree-body {
+  flex: 1;
+  padding: 8px;
+  overflow: auto;
+  background: transparent;
+}
+
+.base-tree-add {
+  margin: 8px 12px 12px;
+}
+
+/* 中栏 */
+.document-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.document-list-body {
+  flex: 1;
+  overflow: auto;
+}
+
+.document-list .ant-list-item.document-item {
+  padding: 12px 16px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+
+.document-list .ant-list-item.document-item:hover {
+  background: color-mix(in srgb, var(--jm-accent) 6%, transparent);
+}
+
+.document-list .ant-list-item.document-item.is-selected {
+  border-left-color: var(--jm-accent);
+  background: color-mix(in srgb, var(--jm-accent) 12%, transparent);
+}
+
+.document-item-body {
+  width: 100%;
+}
+
+.document-item-title {
+  font-weight: 600;
+}
+
+/* 摘要最多两行，多出的用省略号。 */
+.document-item-summary {
+  display: -webkit-box;
+  margin: 4px 0 6px;
+  overflow: hidden;
+  color: var(--jm-muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.document-item-meta,
+.document-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.document-item-time,
+.document-time {
+  margin-left: auto;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+/* 右栏：正文限宽居中，按纯文本保留换行。 */
+.document-view {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+}
+
+.document-content {
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+
+.document-placeholder {
+  display: flex;
+  justify-content: center;
+  margin-top: 24vh;
+  padding: 0 24px;
+}
+
+/* 没选文档时的欢迎卡片；卡片本身的底色、边框和光斑见 Effects/SpotlightCard.css。 */
+.welcome-card {
+  width: min(420px, 100%);
+}
+
+.welcome-card .welcome-title.ant-typography {
+  margin-bottom: 8px;
+}
+
+/* 手机布局：顶部一行，下面是当前这一层；高度跟着手机浏览器的可视区域。 */
+.mobile-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+.mobile-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--jm-border);
+  background: var(--jm-surface);
+}
+
+.mobile-pane {
+  flex: 1;
+  min-height: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+  overflow: auto;
+}
+
+.mobile-title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-back {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: 4px;
+}
+
+.mobile-header .top-bar-search {
+  flex: 1;
+  width: auto;
+  margin-left: 0;
+}
+
+/* 手机上目录占满一屏，节点加高，手指好点。 */
+.mobile-layout .base-tree {
+  background: var(--jm-surface);
+}
+
+.mobile-layout .base-tree-body .ant-tree-treenode {
+  padding-block: 6px;
+}
+
+.mobile-layout .base-tree-body .ant-tree-title {
+  font-size: 15px;
+}
+
+.mobile-layout .document-view {
+  padding: 16px 16px 32px;
+}
+
+/* 事件页（jmbots 白盒子）：PC 上第一行顶栏，下面左 360px 会话列表、右边会话记录。 */
+.events-layout {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-rows: 48px minmax(0, 1fr);
+  height: 100%;
+}
+
+.events-layout .pc-left {
+  border-right: 1px solid var(--jm-border);
+}
+
+.events-run {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.events-run-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.events-run-target {
+  flex: 1;
+  min-width: 0;
+}
+
+.events-list .ant-list-item.events-item {
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.events-list .ant-list-item.events-item:hover {
+  background: var(--jm-background);
+}
+
+.events-list .ant-list-item.events-item.is-selected {
+  background: var(--jm-background);
+  box-shadow: inset 3px 0 0 var(--jm-accent);
+}
+
+.events-item-body {
+  min-width: 0;
+}
+
+.events-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.events-item-meta,
+.events-muted {
+  margin-left: 8px;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.events-item-meta {
+  margin-left: 0;
+}
+
+.events-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.events-empty {
+  display: block;
+  margin-top: 80px;
+}
+
+.events-card .ant-timeline {
+  margin-top: 16px;
+}
+
+.events-input {
+  white-space: pre-wrap;
+}
+
+.events-label {
+  margin-right: 8px;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.events-reply {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+
+.events-tool {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+}
+
+.events-pre {
+  max-height: 320px;
+  margin: 4px 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--jm-background);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.events-error,
+.events-approval {
+  margin: 8px 0;
+}

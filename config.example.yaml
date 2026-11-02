@@ -1,0 +1,82 @@
+# jmbots 主配置模板。实际配置在运行时目录 F:\aidata\AIJMBots\config.yaml（密钥直接写在里面，不进 git）。
+# 运行时目录里没有 config.yaml 时，程序第一次启动会自己写一份最简的；想要完整的就复制本文件过去再填。
+# 相对路径都以 config.yaml 所在的文件夹为准。
+
+# 模型供应商：地址和密钥写在一起。magpie 是本机的模型网关（桌面程序要开着），启动时向 base_url 的 /models 拉模型清单。
+providers:
+  magpie:
+    base_url: http://127.0.0.1:3425/v1
+    api_key: magpie-jmbots          # 本机 magpie 收任何密钥；写成 magpie-<应用名>，用量页按它统计
+    # 发请求时的兼容设置，原样交给 Pi（OpenAICompletionsCompat）
+    compat:
+      supportsDeveloperRole: false
+      supportsStore: false
+      maxTokensField: max_tokens
+    # 个别模型再加的兼容设置：DeepSeek 思考模式下调工具，要把上一步的思考原样带回去
+    model_compat:
+      workbuddy/deepseek-v4.1-flash: { requiresReasoningContentOnAssistantMessages: true }
+
+# 全局默认模型：机器人、智能体没写模型，或分派给“只用模型”时用它。写成“供应商/模型 ID”。
+# 不写时用 models.work.model。
+default_model: magpie/workbuddy/deepseek-v4.1-flash
+
+# 各用途的模型。thinking：off、minimal、low、medium、high、xhigh、max，模型不支持的档位自动换成最近的。
+models:
+  work: { model: magpie/workbuddy/deepseek-v4.1-flash, thinking: high }      # 执行（默认模型）
+  dispatch: { model: magpie/workbuddy/deepseek-v4.1-flash, thinking: low }   # 分派智能体、判断智能体没写模型时用
+  decision: { model: magpie/openrouter/typesafe/jev-1.14 }                   # 决策模型 Jev：审核 exec、判断下一步
+
+# 工作区：只是登记，名字 → 说明和目录。dir 是工具干活的目录，可以在运行时目录外面；空着就用 workspaces/<名字>/files。
+# AI 也可以自己登记新的工作区（写在 workspaces/<名字>/工作区.yaml）。
+workspaces:
+  日常:
+    description: 日常问答、查资料、整理文件等杂事
+    dir: ''
+
+# 执行设置。
+engine:
+  max_steps: 30          # 一次执行最多调几次模型
+  dispatcher: 分派        # 全局分派智能体的名字（agents/<名字>/config.yaml）
+  exec_review: decision  # exec 怎么审核：decision 先问决策模型，安全概率够就直接执行，不够才问用户（飞书发卡片）；human 都问用户；off 不审核
+  route_model: magpie/workbuddy/deepseek-v4.1-flash  # 分派对话用的模型（要快）；清单里没有就用机器人自己的
+  route_thinking: 'off'  # 分派对话的思考强度
+  watchdog_minutes: 15   # 执行多少分钟没有新步骤就提醒用户，0 不看
+
+# 并发配额：同一时间最多几个调用，超了排队（不报错）。
+concurrency:
+  default: 3     # 每个模型默认最多几个
+  models: {}     # 单独设的模型，如 'magpie/workbuddy/deepseek-v4.1-flash': 6
+  providers: {}  # 供应商合计上限（它所有模型加起来），如 magpie: 10；不写不限
+
+# 决策模型怎么问（models.decision）。
+decision:
+  pass_probability: 0.2  # exec “安全”的概率不低于这个数就直接执行，低于才问用户（用户 11-02：绝大多数命令应该直接放行）
+  questions:
+    tool_safe:
+      type: bool
+      instructions: 即将执行的命令是否安全：不会造成难以挽回的损失（比如删除或覆盖重要文件、对外发送、付费）？查看、搜索、跑脚本整理数据、在执行目录里写新文件都算安全。
+      criteria: { 'true': 安全，可以执行, 'false': 有风险，先别执行 }
+    # 机器人、智能体的 judge 写 decision 时，每走完一步问一次；代码会再加上“转交给某某”（routes）的选项。
+    next_step:
+      type: choice
+      instructions: 执行者刚走完一步。根据任务和这一步的结果，下一步该怎么走？
+      criteria:
+        continue: 还没做完，比如刚调了工具还要看结果，或者还差几步，让它接着做
+        done: 已经做完，这一步的回复可以直接发给用户
+        ask_user: 缺少只有用户才能提供的信息，要先问用户
+        block: 再做下去会造成难以挽回的损失，或者明显违反规矩，要停下
+
+# HTTP 服务（serve 命令）。命令行 --host、--port 优先。默认 0.0.0.0（用户 11-02 定，开发阶段全开）；本机和局域网来的请求不查 token，别的地址配了 token 才查（也可以用环境变量 JMBOTS_TOKEN）。
+http:
+  host: 0.0.0.0
+  port: 30086
+  token: ''
+
+# 聊天渠道：飞书只是 HTTP 服务外接的一个渠道，serve 时开着才接。
+channels:
+  feishu:
+    enabled: false
+    app_id: ''
+    app_secret: ''
+    bot: 周小灵             # 飞书来的新会话交给哪个机器人（bots/<名字>/config.yaml）
+    session_idle_hours: 6  # 同一个聊天这么多小时内的消息接着上一个会话，超过就新开
