@@ -1,0 +1,7562 @@
+{
+  "start": [
+    "sym:src/core/Engine.ts#createEngine.handleMessage"
+  ],
+  "nodes": [
+    {
+      "id": "file:scripts/Guard.ts",
+      "kind": "file",
+      "label": "scripts/Guard.ts",
+      "file": "scripts/Guard.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:scripts/Swap_Serve.ts",
+      "kind": "file",
+      "label": "scripts/Swap_Serve.ts",
+      "file": "scripts/Swap_Serve.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:shell/internal/autostart/autostart_windows_test.go",
+      "kind": "file",
+      "label": "shell/internal/autostart/autostart_windows_test.go",
+      "file": "shell/internal/autostart/autostart_windows_test.go",
+      "detail": "go"
+    },
+    {
+      "id": "file:shell/internal/autostart/registry_windows.go",
+      "kind": "file",
+      "label": "shell/internal/autostart/registry_windows.go",
+      "file": "shell/internal/autostart/registry_windows.go",
+      "detail": "go"
+    },
+    {
+      "id": "file:shell/internal/shell/manager.go",
+      "kind": "file",
+      "label": "shell/internal/shell/manager.go",
+      "file": "shell/internal/shell/manager.go",
+      "detail": "go"
+    },
+    {
+      "id": "file:src/Main.ts",
+      "kind": "file",
+      "label": "src/Main.ts",
+      "file": "src/Main.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/channels/Feishu.ts",
+      "kind": "file",
+      "label": "src/channels/Feishu.ts",
+      "file": "src/channels/Feishu.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/channels/Http.ts",
+      "kind": "file",
+      "label": "src/channels/Http.ts",
+      "file": "src/channels/Http.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/Dispatcher.ts",
+      "kind": "file",
+      "label": "src/core/Dispatcher.ts",
+      "file": "src/core/Dispatcher.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/Engine.ts",
+      "kind": "file",
+      "label": "src/core/Engine.ts",
+      "file": "src/core/Engine.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/ExecRules.ts",
+      "kind": "file",
+      "label": "src/core/ExecRules.ts",
+      "file": "src/core/ExecRules.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/Judge.ts",
+      "kind": "file",
+      "label": "src/core/Judge.ts",
+      "file": "src/core/Judge.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/Model.ts",
+      "kind": "file",
+      "label": "src/core/Model.ts",
+      "file": "src/core/Model.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/Router.ts",
+      "kind": "file",
+      "label": "src/core/Router.ts",
+      "file": "src/core/Router.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/core/Runtime.ts",
+      "kind": "file",
+      "label": "src/core/Runtime.ts",
+      "file": "src/core/Runtime.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/store/Events.ts",
+      "kind": "file",
+      "label": "src/store/Events.ts",
+      "file": "src/store/Events.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/store/Log.ts",
+      "kind": "file",
+      "label": "src/store/Log.ts",
+      "file": "src/store/Log.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/tools/CodeGraph.ts",
+      "kind": "file",
+      "label": "src/tools/CodeGraph.ts",
+      "file": "src/tools/CodeGraph.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/tools/Tools.ts",
+      "kind": "file",
+      "label": "src/tools/Tools.ts",
+      "file": "src/tools/Tools.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/tools/WebSearch.ts",
+      "kind": "file",
+      "label": "src/tools/WebSearch.ts",
+      "file": "src/tools/WebSearch.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:src/utils/Utils.ts",
+      "kind": "file",
+      "label": "src/utils/Utils.ts",
+      "file": "src/utils/Utils.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:tests/CodeGraph.test.ts",
+      "kind": "file",
+      "label": "tests/CodeGraph.test.ts",
+      "file": "tests/CodeGraph.test.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:tests/Guard_Snapshot.test.ts",
+      "kind": "file",
+      "label": "tests/Guard_Snapshot.test.ts",
+      "file": "tests/Guard_Snapshot.test.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:tests/Inbox.test.ts",
+      "kind": "file",
+      "label": "tests/Inbox.test.ts",
+      "file": "tests/Inbox.test.ts",
+      "detail": "typescript"
+    },
+    {
+      "id": "file:web/src/Effects/Magnet.tsx",
+      "kind": "file",
+      "label": "web/src/Effects/Magnet.tsx",
+      "file": "web/src/Effects/Magnet.tsx",
+      "detail": "tsx"
+    },
+    {
+      "id": "file:web/src/Effects/SpotlightCard.tsx",
+      "kind": "file",
+      "label": "web/src/Effects/SpotlightCard.tsx",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "detail": "tsx"
+    },
+    {
+      "id": "pkg:@earendil-works/pi-ai",
+      "kind": "pkg",
+      "label": "@earendil-works/pi-ai"
+    },
+    {
+      "id": "sym:scripts/Eval_Models.ts#write",
+      "kind": "sym",
+      "label": "write",
+      "file": "scripts/Eval_Models.ts",
+      "line": 454,
+      "detail": "function"
+    },
+    {
+      "id": "sym:scripts/Guard.ts#main.log",
+      "kind": "sym",
+      "label": "main.log",
+      "file": "scripts/Guard.ts",
+      "line": 245,
+      "detail": "function"
+    },
+    {
+      "id": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "sym",
+      "label": "main.log",
+      "file": "scripts/Swap_Serve.ts",
+      "line": 147,
+      "detail": "function"
+    },
+    {
+      "id": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "sym",
+      "label": "Manager.log",
+      "file": "shell/internal/shell/manager.go",
+      "line": 141,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/Main.ts#createDeps",
+      "kind": "sym",
+      "label": "createDeps",
+      "file": "src/Main.ts",
+      "line": 99,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/Main.ts#serve",
+      "kind": "sym",
+      "label": "serve",
+      "file": "src/Main.ts",
+      "line": 270,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "sym",
+      "label": "CardAction",
+      "file": "src/channels/Feishu.ts",
+      "line": 80,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#Feishu",
+      "kind": "sym",
+      "label": "Feishu",
+      "file": "src/channels/Feishu.ts",
+      "line": 124,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#Feishu.listen",
+      "kind": "sym",
+      "label": "Feishu.listen",
+      "file": "src/channels/Feishu.ts",
+      "line": 126,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "sym",
+      "label": "Feishu.sendText",
+      "file": "src/channels/Feishu.ts",
+      "line": 128,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "kind": "sym",
+      "label": "FeishuTransport.listen",
+      "file": "src/channels/Feishu.ts",
+      "line": 98,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "sym",
+      "label": "FeishuTransport.sendText",
+      "file": "src/channels/Feishu.ts",
+      "line": 108,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#StartFeishuOptions",
+      "kind": "sym",
+      "label": "StartFeishuOptions",
+      "file": "src/channels/Feishu.ts",
+      "line": 607,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#approvalCard",
+      "kind": "sym",
+      "label": "approvalCard",
+      "file": "src/channels/Feishu.ts",
+      "line": 580,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#buildCard",
+      "kind": "sym",
+      "label": "buildCard",
+      "file": "src/channels/Feishu.ts",
+      "line": 469,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#chatOf",
+      "kind": "sym",
+      "label": "chatOf",
+      "file": "src/channels/Feishu.ts",
+      "line": 559,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createFeishu",
+      "kind": "sym",
+      "label": "createFeishu",
+      "file": "src/channels/Feishu.ts",
+      "line": 274,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "kind": "sym",
+      "label": "createFeishu.listen",
+      "file": "src/channels/Feishu.ts",
+      "line": 285,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "kind": "sym",
+      "label": "createFeishu.sendText",
+      "file": "src/channels/Feishu.ts",
+      "line": 342,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "kind": "sym",
+      "label": "createSdkTransport.listen",
+      "file": "src/channels/Feishu.ts",
+      "line": 215,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createSdkTransport.recallMessage",
+      "kind": "sym",
+      "label": "createSdkTransport.recallMessage",
+      "file": "src/channels/Feishu.ts",
+      "line": 198,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createSdkTransport.sendCard",
+      "kind": "sym",
+      "label": "createSdkTransport.sendCard",
+      "file": "src/channels/Feishu.ts",
+      "line": 201,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "kind": "sym",
+      "label": "createSdkTransport.sendText",
+      "file": "src/channels/Feishu.ts",
+      "line": 256,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createSdkTransport.updateCard",
+      "kind": "sym",
+      "label": "createSdkTransport.updateCard",
+      "file": "src/channels/Feishu.ts",
+      "line": 212,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#createSender",
+      "kind": "sym",
+      "label": "createSender",
+      "file": "src/channels/Feishu.ts",
+      "line": 410,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#logConnection",
+      "kind": "sym",
+      "label": "logConnection",
+      "file": "src/channels/Feishu.ts",
+      "line": 628,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#startFeishu",
+      "kind": "sym",
+      "label": "startFeishu",
+      "file": "src/channels/Feishu.ts",
+      "line": 647,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "kind": "sym",
+      "label": "startFeishu.onApprovalButton",
+      "file": "src/channels/Feishu.ts",
+      "line": 738,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "kind": "sym",
+      "label": "startFeishu.onCardAction",
+      "file": "src/channels/Feishu.ts",
+      "line": 816,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "kind": "sym",
+      "label": "startFeishu.onChoice",
+      "file": "src/channels/Feishu.ts",
+      "line": 773,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Feishu.ts#topicOf",
+      "kind": "sym",
+      "label": "topicOf",
+      "file": "src/channels/Feishu.ts",
+      "line": 545,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/FeishuDoc.ts#createDocPublisher.insert",
+      "kind": "sym",
+      "label": "createDocPublisher.insert",
+      "file": "src/channels/FeishuDoc.ts",
+      "line": 277,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/FeishuMedia.ts#createMediaTransport.downloadResource",
+      "kind": "sym",
+      "label": "createMediaTransport.downloadResource",
+      "file": "src/channels/FeishuMedia.ts",
+      "line": 165,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/channels/FeishuMedia.ts#createOpenApi.request",
+      "kind": "sym",
+      "label": "createOpenApi.request",
+      "file": "src/channels/FeishuMedia.ts",
+      "line": 55,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Http.ts#HttpOptions",
+      "kind": "sym",
+      "label": "HttpOptions",
+      "file": "src/channels/Http.ts",
+      "line": 36,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/channels/Http.ts#createHttp",
+      "kind": "sym",
+      "label": "createHttp",
+      "file": "src/channels/Http.ts",
+      "line": 95,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Http.ts#isLocalAddress",
+      "kind": "sym",
+      "label": "isLocalAddress",
+      "file": "src/channels/Http.ts",
+      "line": 61,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/Http.ts#sameText",
+      "kind": "sym",
+      "label": "sameText",
+      "file": "src/channels/Http.ts",
+      "line": 83,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/channels/WebPage.ts#registerWebPage",
+      "kind": "sym",
+      "label": "registerWebPage",
+      "file": "src/channels/WebPage.ts",
+      "line": 42,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#Actor",
+      "kind": "sym",
+      "label": "Actor",
+      "file": "src/core/Engine.ts",
+      "line": 35,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#ApprovalRequest",
+      "kind": "sym",
+      "label": "ApprovalRequest",
+      "file": "src/core/Engine.ts",
+      "line": 67,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#ENDING_STATUS",
+      "kind": "sym",
+      "label": "ENDING_STATUS",
+      "file": "src/core/Engine.ts",
+      "line": 258,
+      "detail": "const"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#Engine",
+      "kind": "sym",
+      "label": "Engine",
+      "file": "src/core/Engine.ts",
+      "line": 1295,
+      "detail": "type"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#EngineOptions",
+      "kind": "sym",
+      "label": "EngineOptions",
+      "file": "src/core/Engine.ts",
+      "line": 178,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#Finished",
+      "kind": "sym",
+      "label": "Finished",
+      "file": "src/core/Engine.ts",
+      "line": 45,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#Handled",
+      "kind": "sym",
+      "label": "Handled",
+      "file": "src/core/Engine.ts",
+      "line": 111,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#MAX_PARALLEL",
+      "kind": "sym",
+      "label": "MAX_PARALLEL",
+      "file": "src/core/Engine.ts",
+      "line": 153,
+      "detail": "const"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#MessageInput",
+      "kind": "sym",
+      "label": "MessageInput",
+      "file": "src/core/Engine.ts",
+      "line": 92,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#Routed",
+      "kind": "sym",
+      "label": "Routed",
+      "file": "src/core/Engine.ts",
+      "line": 124,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#StepOutcome",
+      "kind": "sym",
+      "label": "StepOutcome",
+      "file": "src/core/Engine.ts",
+      "line": 172,
+      "detail": "type"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#StoredResponse",
+      "kind": "sym",
+      "label": "StoredResponse",
+      "file": "src/core/Engine.ts",
+      "line": 157,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#StuckExecution",
+      "kind": "sym",
+      "label": "StuckExecution",
+      "file": "src/core/Engine.ts",
+      "line": 137,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#actorKey",
+      "kind": "sym",
+      "label": "actorKey",
+      "file": "src/core/Engine.ts",
+      "line": 206,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#commandOf",
+      "kind": "sym",
+      "label": "commandOf",
+      "file": "src/core/Engine.ts",
+      "line": 250,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine",
+      "kind": "sym",
+      "label": "createEngine",
+      "file": "src/core/Engine.ts",
+      "line": 272,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "kind": "sym",
+      "label": "createEngine.buildContext",
+      "file": "src/core/Engine.ts",
+      "line": 301,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.buildSystem",
+      "kind": "sym",
+      "label": "createEngine.buildSystem",
+      "file": "src/core/Engine.ts",
+      "line": 350,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.chooseActor",
+      "kind": "sym",
+      "label": "createEngine.chooseActor",
+      "file": "src/core/Engine.ts",
+      "line": 699,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "sym",
+      "label": "createEngine.decide",
+      "file": "src/core/Engine.ts",
+      "line": 1035,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "kind": "sym",
+      "label": "createEngine.handleMessage",
+      "file": "src/core/Engine.ts",
+      "line": 1069,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "kind": "sym",
+      "label": "createEngine.notifyApproval",
+      "file": "src/core/Engine.ts",
+      "line": 997,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.onApproval",
+      "kind": "sym",
+      "label": "createEngine.onApproval",
+      "file": "src/core/Engine.ts",
+      "line": 1251,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.onDecided",
+      "kind": "sym",
+      "label": "createEngine.onDecided",
+      "file": "src/core/Engine.ts",
+      "line": 1247,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.onFinished",
+      "kind": "sym",
+      "label": "createEngine.onFinished",
+      "file": "src/core/Engine.ts",
+      "line": 1280,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.onRouted",
+      "kind": "sym",
+      "label": "createEngine.onRouted",
+      "file": "src/core/Engine.ts",
+      "line": 1272,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.onStuck",
+      "kind": "sym",
+      "label": "createEngine.onStuck",
+      "file": "src/core/Engine.ts",
+      "line": 1265,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "kind": "sym",
+      "label": "createEngine.reviewExec",
+      "file": "src/core/Engine.ts",
+      "line": 444,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "kind": "sym",
+      "label": "createEngine.routeInbox",
+      "file": "src/core/Engine.ts",
+      "line": 1091,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "kind": "sym",
+      "label": "createEngine.routeMessage",
+      "file": "src/core/Engine.ts",
+      "line": 1126,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "kind": "sym",
+      "label": "createEngine.runExecution",
+      "file": "src/core/Engine.ts",
+      "line": 754,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.runPending",
+      "kind": "sym",
+      "label": "createEngine.runPending",
+      "file": "src/core/Engine.ts",
+      "line": 880,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.runStep",
+      "kind": "sym",
+      "label": "createEngine.runStep",
+      "file": "src/core/Engine.ts",
+      "line": 537,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.runToolCall",
+      "kind": "sym",
+      "label": "createEngine.runToolCall",
+      "file": "src/core/Engine.ts",
+      "line": 389,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "kind": "sym",
+      "label": "createEngine.startLoop",
+      "file": "src/core/Engine.ts",
+      "line": 931,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "kind": "sym",
+      "label": "createEngine.startWatchdog",
+      "file": "src/core/Engine.ts",
+      "line": 892,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.stopLoop",
+      "kind": "sym",
+      "label": "createEngine.stopLoop",
+      "file": "src/core/Engine.ts",
+      "line": 987,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "sym",
+      "label": "createEngine.submit",
+      "file": "src/core/Engine.ts",
+      "line": 847,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "kind": "sym",
+      "label": "createEngine.waitIdle",
+      "file": "src/core/Engine.ts",
+      "line": 1222,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#parseActor",
+      "kind": "sym",
+      "label": "parseActor",
+      "file": "src/core/Engine.ts",
+      "line": 215,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#toolResultMessage",
+      "kind": "sym",
+      "label": "toolResultMessage",
+      "file": "src/core/Engine.ts",
+      "line": 237,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Engine.ts#userMessage",
+      "kind": "sym",
+      "label": "userMessage",
+      "file": "src/core/Engine.ts",
+      "line": 226,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Model.ts#Ai.decide",
+      "kind": "sym",
+      "label": "Ai.decide",
+      "file": "src/core/Model.ts",
+      "line": 146,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Model.ts#Ai.listModels",
+      "kind": "sym",
+      "label": "Ai.listModels",
+      "file": "src/core/Model.ts",
+      "line": 152,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Model.ts#decide",
+      "kind": "sym",
+      "label": "decide",
+      "file": "src/core/Model.ts",
+      "line": 380,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "kind": "sym",
+      "label": "Runtime.listWorkspaces",
+      "file": "src/core/Runtime.ts",
+      "line": 454,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Runtime.ts#Runtime.problems",
+      "kind": "sym",
+      "label": "Runtime.problems",
+      "file": "src/core/Runtime.ts",
+      "line": 593,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/core/Runtime.ts#Runtime.sessionDir",
+      "kind": "sym",
+      "label": "Runtime.sessionDir",
+      "file": "src/core/Runtime.ts",
+      "line": 552,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#InboxResult",
+      "kind": "sym",
+      "label": "InboxResult",
+      "file": "src/store/Events.ts",
+      "line": 168,
+      "detail": "interface"
+    },
+    {
+      "id": "sym:src/store/Events.ts#InboxRow",
+      "kind": "sym",
+      "label": "InboxRow",
+      "file": "src/store/Events.ts",
+      "line": 248,
+      "detail": "type"
+    },
+    {
+      "id": "sym:src/store/Events.ts#events",
+      "kind": "sym",
+      "label": "events",
+      "file": "src/store/Events.ts",
+      "line": 57,
+      "detail": "const"
+    },
+    {
+      "id": "sym:src/store/Events.ts#inbox",
+      "kind": "sym",
+      "label": "inbox",
+      "file": "src/store/Events.ts",
+      "line": 139,
+      "detail": "const"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "kind": "sym",
+      "label": "openEventStore.addInbox",
+      "file": "src/store/Events.ts",
+      "line": 598,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.getApproval",
+      "kind": "sym",
+      "label": "openEventStore.getApproval",
+      "file": "src/store/Events.ts",
+      "line": 791,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.getInbox",
+      "kind": "sym",
+      "label": "openEventStore.getInbox",
+      "file": "src/store/Events.ts",
+      "line": 673,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "sym",
+      "label": "openEventStore.getSession",
+      "file": "src/store/Events.ts",
+      "line": 375,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listApprovals",
+      "kind": "sym",
+      "label": "openEventStore.listApprovals",
+      "file": "src/store/Events.ts",
+      "line": 820,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "sym",
+      "label": "openEventStore.listEvents",
+      "file": "src/store/Events.ts",
+      "line": 515,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listInbox",
+      "kind": "sym",
+      "label": "openEventStore.listInbox",
+      "file": "src/store/Events.ts",
+      "line": 681,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listModelRequests",
+      "kind": "sym",
+      "label": "openEventStore.listModelRequests",
+      "file": "src/store/Events.ts",
+      "line": 731,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listPendingApprovals",
+      "kind": "sym",
+      "label": "openEventStore.listPendingApprovals",
+      "file": "src/store/Events.ts",
+      "line": 807,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listSessions",
+      "kind": "sym",
+      "label": "openEventStore.listSessions",
+      "file": "src/store/Events.ts",
+      "line": 392,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/store/Events.ts#openEventStore.listToolResults",
+      "kind": "sym",
+      "label": "openEventStore.listToolResults",
+      "file": "src/store/Events.ts",
+      "line": 767,
+      "detail": "method"
+    },
+    {
+      "id": "sym:src/tools/EditMatch.ts#replaceAll",
+      "kind": "sym",
+      "label": "replaceAll",
+      "file": "src/tools/EditMatch.ts",
+      "line": 193,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/utils/Checks.ts#asRecord",
+      "kind": "sym",
+      "label": "asRecord",
+      "file": "src/utils/Checks.ts",
+      "line": 60,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/utils/Checks.ts#optionalString",
+      "kind": "sym",
+      "label": "optionalString",
+      "file": "src/utils/Checks.ts",
+      "line": 77,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/utils/Checks.ts#requireString",
+      "kind": "sym",
+      "label": "requireString",
+      "file": "src/utils/Checks.ts",
+      "line": 111,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/utils/Utils.ts#errorText",
+      "kind": "sym",
+      "label": "errorText",
+      "file": "src/utils/Utils.ts",
+      "line": 64,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "sym",
+      "label": "formatTime",
+      "file": "src/utils/Utils.ts",
+      "line": 37,
+      "detail": "function"
+    },
+    {
+      "id": "sym:src/utils/Utils.ts#truncate",
+      "kind": "sym",
+      "label": "truncate",
+      "file": "src/utils/Utils.ts",
+      "line": 52,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/Magnet.tsx#startMagnet",
+      "kind": "sym",
+      "label": "startMagnet",
+      "file": "web/src/Effects/Magnet.tsx",
+      "line": 101,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/Magnet.tsx#startMagnet.frame",
+      "kind": "sym",
+      "label": "startMagnet.frame",
+      "file": "web/src/Effects/Magnet.tsx",
+      "line": 159,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/Magnet.tsx#startMagnet.onLeave",
+      "kind": "sym",
+      "label": "startMagnet.onLeave",
+      "file": "web/src/Effects/Magnet.tsx",
+      "line": 200,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/Magnet.tsx#startMagnet.onPointerMove",
+      "kind": "sym",
+      "label": "startMagnet.onPointerMove",
+      "file": "web/src/Effects/Magnet.tsx",
+      "line": 192,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "sym",
+      "label": "startMagnet.wake",
+      "file": "web/src/Effects/Magnet.tsx",
+      "line": 186,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "kind": "sym",
+      "label": "startSpotlight",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 112,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onDown",
+      "kind": "sym",
+      "label": "startSpotlight.onDown",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 227,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusIn",
+      "kind": "sym",
+      "label": "startSpotlight.onFocusIn",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 246,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusOut",
+      "kind": "sym",
+      "label": "startSpotlight.onFocusOut",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 254,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onMove",
+      "kind": "sym",
+      "label": "startSpotlight.onMove",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 210,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onOut",
+      "kind": "sym",
+      "label": "startSpotlight.onOut",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 219,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onScroll",
+      "kind": "sym",
+      "label": "startSpotlight.onScroll",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 262,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onUp",
+      "kind": "sym",
+      "label": "startSpotlight.onUp",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 235,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.tick",
+      "kind": "sym",
+      "label": "startSpotlight.tick",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 150,
+      "detail": "function"
+    },
+    {
+      "id": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "sym",
+      "label": "startSpotlight.wake",
+      "file": "web/src/Effects/SpotlightCard.tsx",
+      "line": 202,
+      "detail": "function"
+    },
+    {
+      "id": "sym:zbots/src/Feishu.ts#Feishu.listen",
+      "kind": "sym",
+      "label": "Feishu.listen",
+      "file": "zbots/src/Feishu.ts",
+      "line": 96,
+      "detail": "method"
+    },
+    {
+      "id": "sym:zbots/src/Feishu.ts#Feishu.sendText",
+      "kind": "sym",
+      "label": "Feishu.sendText",
+      "file": "zbots/src/Feishu.ts",
+      "line": 79,
+      "detail": "method"
+    },
+    {
+      "id": "sym:zbots/src/Feishu.ts#createFeishu.listen",
+      "kind": "sym",
+      "label": "createFeishu.listen",
+      "file": "zbots/src/Feishu.ts",
+      "line": 226,
+      "detail": "method"
+    },
+    {
+      "id": "sym:zbots/src/Feishu.ts#createFeishu.sendText",
+      "kind": "sym",
+      "label": "createFeishu.sendText",
+      "file": "zbots/src/Feishu.ts",
+      "line": 199,
+      "detail": "method"
+    }
+  ],
+  "edges": [
+    {
+      "src": "file:scripts/Guard.ts",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:scripts/Swap_Serve.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        27
+      ]
+    },
+    {
+      "src": "file:scripts/Swap_Serve.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        88
+      ]
+    },
+    {
+      "src": "file:scripts/Swap_Serve.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        28
+      ]
+    },
+    {
+      "src": "file:scripts/Swap_Serve.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        142,
+        147,
+        153,
+        169
+      ]
+    },
+    {
+      "src": "file:scripts/Swap_Serve.ts",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:shell/internal/shell/manager.go",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:scripts/Guard.ts",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 15,
+      "lines": [
+        139,
+        140,
+        142,
+        205,
+        211,
+        218,
+        220,
+        229,
+        233,
+        257,
+        281,
+        302,
+        315,
+        317,
+        352
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:scripts/Swap_Serve.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        13,
+        266
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:scripts/Swap_Serve.ts",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 15,
+      "lines": [
+        139,
+        140,
+        142,
+        205,
+        211,
+        218,
+        220,
+        229,
+        233,
+        257,
+        281,
+        302,
+        315,
+        317,
+        352
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:shell/internal/shell/manager.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 15,
+      "lines": [
+        139,
+        140,
+        142,
+        205,
+        211,
+        218,
+        220,
+        229,
+        233,
+        257,
+        281,
+        302,
+        315,
+        317,
+        352
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/channels/Feishu.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        18
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/channels/Feishu.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        18
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/channels/Feishu.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 30,
+      "lines": [
+        90,
+        115,
+        118,
+        124,
+        125,
+        126,
+        169,
+        189,
+        237,
+        259,
+        301,
+        311,
+        313,
+        314
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/channels/Http.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        21
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/channels/Http.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        21
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/channels/Http.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        293
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        22
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        22
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 9,
+      "lines": [
+        88,
+        121,
+        157,
+        166,
+        167,
+        185,
+        186,
+        187,
+        321
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        23
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        23
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 6,
+      "lines": [
+        86,
+        111,
+        185,
+        217,
+        219
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        24
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        24
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 13,
+      "lines": [
+        82,
+        102,
+        104,
+        110,
+        129,
+        140,
+        202,
+        210,
+        225,
+        252,
+        253,
+        296,
+        313
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        25
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        25
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 13,
+      "lines": [
+        84,
+        110,
+        138,
+        141,
+        169,
+        189,
+        225,
+        228,
+        232,
+        237,
+        253,
+        259,
+        279
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/store/Log.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        26
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/store/Log.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        26
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/store/Log.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        256
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        28
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        28
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 5,
+      "lines": [
+        281,
+        302,
+        315,
+        317,
+        358
+      ]
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "sym:src/Main.ts#createDeps",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "sym:src/Main.ts#serve",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/Main.ts",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        358
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:scripts/Guard.ts",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 6,
+      "lines": [
+        666,
+        728,
+        793,
+        837,
+        868,
+        911
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:scripts/Swap_Serve.ts",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 6,
+      "lines": [
+        666,
+        728,
+        793,
+        837,
+        868,
+        911
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:shell/internal/autostart/autostart_windows_test.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        281
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:shell/internal/autostart/registry_windows.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        281
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:shell/internal/shell/manager.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 6,
+      "lines": [
+        666,
+        728,
+        793,
+        837,
+        868,
+        911
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        22
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 11,
+      "lines": [
+        580,
+        615,
+        653,
+        671,
+        683,
+        694,
+        720,
+        758,
+        792,
+        854,
+        855
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        23
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        388,
+        617,
+        628,
+        885
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        24
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 22,
+      "lines": [
+        260,
+        348,
+        410,
+        416,
+        418,
+        426,
+        430,
+        432,
+        523,
+        531,
+        533,
+        545,
+        547,
+        559,
+        561,
+        564,
+        613,
+        655,
+        662,
+        713,
+        749,
+        783
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        21
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 38,
+      "lines": [
+        498,
+        509,
+        583,
+        632,
+        666,
+        667,
+        678,
+        685,
+        702,
+        711,
+        714,
+        716,
+        728,
+        730,
+        761,
+        779,
+        781,
+        793,
+        796,
+        799,
+        800,
+        837,
+        848,
+        858,
+        864,
+        868,
+        911,
+        914
+      ]
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#Feishu",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.listen",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#StartFeishuOptions",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#approvalCard",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#buildCard",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#chatOf",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.recallMessage",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendCard",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.updateCard",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#createSender",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#logConnection",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Feishu.ts",
+      "dst": "sym:src/channels/Feishu.ts#topicOf",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        29
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 6,
+      "lines": [
+        44,
+        183,
+        202,
+        222,
+        235,
+        264
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        30
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        47,
+        116,
+        264
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        38,
+        115,
+        119,
+        171
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        32
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 15,
+      "lines": [
+        41,
+        124,
+        136,
+        143,
+        147,
+        161,
+        166,
+        170,
+        171,
+        176,
+        212,
+        246,
+        251
+      ]
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "sym:src/channels/Http.ts#HttpOptions",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "sym:src/channels/Http.ts#createHttp",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "sym:src/channels/Http.ts#isLocalAddress",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/channels/Http.ts",
+      "dst": "sym:src/channels/Http.ts#sameText",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Dispatcher.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        12
+      ]
+    },
+    {
+      "src": "file:src/core/Dispatcher.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        12
+      ]
+    },
+    {
+      "src": "file:src/core/Dispatcher.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 16,
+      "lines": [
+        38,
+        54,
+        92,
+        100,
+        107,
+        122,
+        125,
+        128,
+        130
+      ]
+    },
+    {
+      "src": "file:src/core/Dispatcher.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        13
+      ]
+    },
+    {
+      "src": "file:src/core/Dispatcher.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        13
+      ]
+    },
+    {
+      "src": "file:src/core/Dispatcher.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 5,
+      "lines": [
+        41,
+        66,
+        68,
+        77,
+        91
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:scripts/Guard.ts",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 3,
+      "lines": [
+        914,
+        1047,
+        1163
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:scripts/Swap_Serve.ts",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 3,
+      "lines": [
+        914,
+        1047,
+        1163
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:shell/internal/autostart/autostart_windows_test.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 3,
+      "lines": [
+        938,
+        940,
+        1167
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:shell/internal/autostart/registry_windows.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 3,
+      "lines": [
+        938,
+        940,
+        1167
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:shell/internal/shell/manager.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 3,
+      "lines": [
+        914,
+        1047,
+        1163
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Dispatcher.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        25
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Dispatcher.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        8,
+        25
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Dispatcher.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        727
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/ExecRules.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        26
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/ExecRules.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        26,
+        464
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/ExecRules.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        466,
+        471,
+        490
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Judge.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        27
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Judge.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        13,
+        27
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Judge.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        622,
+        647
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        30
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        30
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 14,
+      "lines": [
+        186,
+        487,
+        491,
+        570,
+        603,
+        816,
+        1141,
+        1150,
+        1158
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Router.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        28
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Router.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        28
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Router.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 8,
+      "lines": [
+        816,
+        1129,
+        1133,
+        1150,
+        1158,
+        1159,
+        1163
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 14,
+      "lines": [
+        180,
+        352,
+        354,
+        364,
+        422,
+        427,
+        550,
+        554,
+        720,
+        722,
+        731,
+        736,
+        1139,
+        1150
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        29
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "mentions",
+      "weight": 0.6,
+      "count": 1,
+      "lines": [
+        2
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 71,
+      "lines": [
+        183,
+        258,
+        304,
+        306,
+        311,
+        312,
+        353,
+        390,
+        394,
+        397,
+        401,
+        413,
+        423,
+        428,
+        445,
+        448,
+        456,
+        468,
+        472,
+        480,
+        504,
+        517,
+        521,
+        538,
+        539,
+        543,
+        595,
+        611,
+        615,
+        620,
+        650,
+        699,
+        728,
+        738,
+        754,
+        755,
+        760,
+        763,
+        767,
+        773,
+        811,
+        812,
+        814,
+        818,
+        855,
+        859,
+        870,
+        881,
+        907,
+        909
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/store/Log.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        21
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/store/Log.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        821,
+        1208
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/tools/Tools.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        22
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/tools/Tools.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 13,
+      "lines": [
+        192,
+        195,
+        239,
+        309,
+        393,
+        422,
+        493,
+        546,
+        558,
+        608,
+        701,
+        816,
+        847
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/tools/WebSearch.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        23
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/tools/WebSearch.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        567
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        24
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 34,
+      "lines": [
+        238,
+        370,
+        422,
+        427,
+        627,
+        642,
+        804,
+        822,
+        828,
+        914,
+        919,
+        964,
+        974,
+        1019,
+        1047,
+        1054,
+        1112,
+        1113,
+        1159,
+        1163,
+        1177,
+        1209
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:web/src/Effects/Magnet.tsx",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 6,
+      "lines": [
+        871,
+        949,
+        969,
+        989,
+        1049,
+        1072
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "file:web/src/Effects/SpotlightCard.tsx",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 6,
+      "lines": [
+        871,
+        949,
+        969,
+        989,
+        1049,
+        1072
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "pkg:@earendil-works/pi-ai",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        20
+      ]
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#ApprovalRequest",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#ENDING_STATUS",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#Engine",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#EngineOptions",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#Finished",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#Handled",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#MAX_PARALLEL",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#MessageInput",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#Routed",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#StepOutcome",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#StoredResponse",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#StuckExecution",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#actorKey",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#commandOf",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.buildSystem",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.chooseActor",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.onApproval",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.onDecided",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.onFinished",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.onRouted",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.onStuck",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.runPending",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.runStep",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.runToolCall",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.stopLoop",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#parseActor",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#toolResultMessage",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Engine.ts",
+      "dst": "sym:src/core/Engine.ts#userMessage",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/ExecRules.ts",
+      "dst": "file:scripts/Swap_Serve.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        54
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        17
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        17
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 16,
+      "lines": [
+        67,
+        98,
+        101,
+        191,
+        202,
+        246,
+        254,
+        263,
+        273,
+        275
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        18
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        18
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        70,
+        73,
+        149,
+        151
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        16
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 5,
+      "lines": [
+        169,
+        171,
+        172,
+        175,
+        176
+      ]
+    },
+    {
+      "src": "file:src/core/Judge.ts",
+      "dst": "pkg:@earendil-works/pi-ai",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        14
+      ]
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        20
+      ]
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        20
+      ]
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 9,
+      "lines": [
+        222,
+        293,
+        307,
+        317,
+        408,
+        464,
+        470,
+        480,
+        496
+      ]
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "pkg:@earendil-works/pi-ai",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 3,
+      "lines": [
+        16,
+        17,
+        18
+      ]
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "sym:src/core/Model.ts#Ai.decide",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "sym:src/core/Model.ts#Ai.listModels",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Model.ts",
+      "dst": "sym:src/core/Model.ts#decide",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/core/Dispatcher.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        3
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        32
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        32
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        99,
+        249,
+        299
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 18,
+      "lines": [
+        84,
+        87,
+        99,
+        103,
+        109,
+        136,
+        139,
+        143,
+        147,
+        174,
+        176,
+        197,
+        201,
+        229,
+        249,
+        255,
+        264
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        30
+      ]
+    },
+    {
+      "src": "file:src/core/Router.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 8,
+      "lines": [
+        111,
+        112,
+        113,
+        119,
+        149,
+        323
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "file:shell/internal/autostart/autostart_windows_test.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        414
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "file:shell/internal/autostart/registry_windows.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        414
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        2
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        138
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        26
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        554
+      ]
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "sym:src/core/Runtime.ts#Runtime.problems",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/core/Runtime.ts",
+      "dst": "sym:src/core/Runtime.ts#Runtime.sessionDir",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        22
+      ]
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        360
+      ]
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#InboxResult",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#InboxRow",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#events",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#inbox",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.getApproval",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.getInbox",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listApprovals",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listInbox",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listModelRequests",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listPendingApprovals",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listSessions",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Events.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listToolResults",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        16
+      ]
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        26,
+        326
+      ]
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        17
+      ]
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        17
+      ]
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 17,
+      "lines": [
+        23,
+        87,
+        135,
+        184,
+        185,
+        191,
+        218,
+        238,
+        265,
+        279,
+        285,
+        317,
+        333,
+        336,
+        337
+      ]
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        15
+      ]
+    },
+    {
+      "src": "file:src/store/Log.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 25,
+      "lines": [
+        60,
+        100,
+        158,
+        159,
+        202,
+        227,
+        230,
+        233,
+        235,
+        238,
+        239,
+        243,
+        245,
+        248,
+        251,
+        254,
+        256,
+        275,
+        284
+      ]
+    },
+    {
+      "src": "file:src/tools/CodeGraph.ts",
+      "dst": "file:shell/internal/autostart/autostart_windows_test.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        320,
+        324,
+        385,
+        387
+      ]
+    },
+    {
+      "src": "file:src/tools/CodeGraph.ts",
+      "dst": "file:shell/internal/autostart/registry_windows.go",
+      "kind": "uses",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        320,
+        324,
+        385,
+        387
+      ]
+    },
+    {
+      "src": "file:src/tools/CodeGraph.ts",
+      "dst": "file:src/channels/Feishu.ts",
+      "kind": "mentions",
+      "weight": 0.3,
+      "count": 1,
+      "lines": [
+        5
+      ]
+    },
+    {
+      "src": "file:src/tools/CodeGraph.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "mentions",
+      "weight": 0.6,
+      "count": 1,
+      "lines": [
+        5
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:scripts/Swap_Serve.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        427
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/Main.ts",
+      "kind": "mentions",
+      "weight": 0.3,
+      "count": 1,
+      "lines": [
+        470
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        35
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/core/Model.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        131,
+        780
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        36
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 7,
+      "lines": [
+        113,
+        624,
+        639,
+        662,
+        671,
+        674,
+        675
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/tools/CodeGraph.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        32
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/tools/CodeGraph.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        8,
+        32
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/tools/CodeGraph.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        597,
+        598
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/tools/WebSearch.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        15
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/tools/WebSearch.ts",
+      "kind": "uses",
+      "weight": 0.4,
+      "count": 1,
+      "lines": [
+        825
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        31
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 5,
+      "lines": [
+        771,
+        804,
+        806,
+        808,
+        843
+      ]
+    },
+    {
+      "src": "file:src/tools/Tools.ts",
+      "dst": "pkg:@earendil-works/pi-ai",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        26
+      ]
+    },
+    {
+      "src": "file:src/tools/WebSearch.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        14
+      ]
+    },
+    {
+      "src": "file:src/tools/WebSearch.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        55,
+        86,
+        119,
+        137
+      ]
+    },
+    {
+      "src": "file:src/tools/WebSearch.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        16
+      ]
+    },
+    {
+      "src": "file:src/tools/WebSearch.ts",
+      "dst": "file:src/utils/Utils.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 8,
+      "lines": [
+        101,
+        103,
+        152,
+        164,
+        167,
+        169,
+        208,
+        244
+      ]
+    },
+    {
+      "src": "file:src/utils/Utils.ts",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/utils/Utils.ts",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:src/utils/Utils.ts",
+      "dst": "sym:src/utils/Utils.ts#truncate",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:tests/CodeGraph.test.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "mentions",
+      "weight": 0.6,
+      "count": 7,
+      "lines": [
+        25,
+        57,
+        65,
+        73,
+        90,
+        91,
+        92
+      ]
+    },
+    {
+      "src": "file:tests/CodeGraph.test.ts",
+      "dst": "file:src/tools/CodeGraph.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        9
+      ]
+    },
+    {
+      "src": "file:tests/CodeGraph.test.ts",
+      "dst": "file:src/tools/CodeGraph.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 9,
+      "lines": [
+        56,
+        63,
+        71,
+        79,
+        90,
+        91,
+        92,
+        93,
+        98
+      ]
+    },
+    {
+      "src": "file:tests/Guard_Snapshot.test.ts",
+      "dst": "file:scripts/Guard.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        9
+      ]
+    },
+    {
+      "src": "file:tests/Guard_Snapshot.test.ts",
+      "dst": "file:scripts/Guard.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 5,
+      "lines": [
+        158,
+        159,
+        160,
+        164,
+        165
+      ]
+    },
+    {
+      "src": "file:tests/Guard_Snapshot.test.ts",
+      "dst": "file:src/Main.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        31,
+        52,
+        74
+      ]
+    },
+    {
+      "src": "file:tests/Guard_Snapshot.test.ts",
+      "dst": "file:src/channels/Feishu.ts",
+      "kind": "mentions",
+      "weight": 0.3,
+      "count": 1,
+      "lines": [
+        33
+      ]
+    },
+    {
+      "src": "file:tests/Guard_Snapshot.test.ts",
+      "dst": "file:src/core/Engine.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        32,
+        52
+      ]
+    },
+    {
+      "src": "file:tests/Guard_Snapshot.test.ts",
+      "dst": "file:src/core/Runtime.ts",
+      "kind": "mentions",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        183
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "imports",
+      "weight": 1.0,
+      "count": 1,
+      "lines": [
+        6
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "file:src/store/Events.ts",
+      "kind": "uses",
+      "weight": 0.8,
+      "count": 35,
+      "lines": [
+        14,
+        16,
+        18,
+        19,
+        26,
+        27,
+        28,
+        29,
+        31,
+        35,
+        36,
+        37,
+        39,
+        40,
+        41,
+        42,
+        43,
+        49,
+        50,
+        51,
+        52,
+        53,
+        59,
+        60,
+        61,
+        66,
+        67,
+        68,
+        69,
+        71,
+        72,
+        73,
+        74,
+        75,
+        76
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 6,
+      "lines": [
+        27,
+        28,
+        29,
+        35,
+        50,
+        60
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.getInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        40,
+        41
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        75
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        68,
+        69
+      ]
+    },
+    {
+      "src": "file:tests/Inbox.test.ts",
+      "dst": "sym:src/store/Events.ts#openEventStore.listInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        52
+      ]
+    },
+    {
+      "src": "file:web/src/Effects/Magnet.tsx",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/Magnet.tsx",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.frame",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/Magnet.tsx",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.onLeave",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/Magnet.tsx",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.onPointerMove",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/Magnet.tsx",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onDown",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusIn",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusOut",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onMove",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onOut",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onScroll",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onUp",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.tick",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "file:web/src/Effects/SpotlightCard.tsx",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "contains",
+      "weight": 1.0,
+      "count": 1
+    },
+    {
+      "src": "sym:scripts/Eval_Models.ts#write",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        497
+      ]
+    },
+    {
+      "src": "sym:scripts/Eval_Models.ts#write",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        497
+      ]
+    },
+    {
+      "src": "sym:scripts/Eval_Models.ts#write",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        497
+      ]
+    },
+    {
+      "src": "sym:scripts/Eval_Models.ts#write",
+      "dst": "sym:src/core/Model.ts#Ai.listModels",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        469
+      ]
+    },
+    {
+      "src": "sym:scripts/Eval_Models.ts#write",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        496
+      ]
+    },
+    {
+      "src": "sym:scripts/Swap_Serve.ts#main.log",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        147
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#createDeps",
+      "dst": "sym:src/channels/Feishu.ts#createSender",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        124
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#createDeps",
+      "dst": "sym:src/core/Engine.ts#createEngine",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        121
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#createDeps",
+      "dst": "sym:src/core/Runtime.ts#Runtime.problems",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        104
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        281,
+        302,
+        315,
+        317
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        281,
+        302,
+        315,
+        317
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        281,
+        302,
+        315,
+        317
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/Main.ts#createDeps",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        271
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        301
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        301
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        301
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        301
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Feishu.ts#createSender",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        314
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        313
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/channels/Http.ts#createHttp",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        293
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        321
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/utils/Checks.ts#asRecord",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        287
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/utils/Checks.ts#optionalString",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        290,
+        298
+      ]
+    },
+    {
+      "src": "sym:src/Main.ts#serve",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        281,
+        302,
+        315,
+        317
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        100
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#StartFeishuOptions",
+      "dst": "sym:src/core/Engine.ts#Engine",
+      "kind": "types",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        615
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#approvalCard",
+      "dst": "sym:src/channels/Feishu.ts#buildCard",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        591,
+        593
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#approvalCard",
+      "dst": "sym:src/core/Engine.ts#ApprovalRequest",
+      "kind": "types",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        580
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#approvalCard",
+      "dst": "sym:src/utils/Utils.ts#truncate",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        583
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#chatOf",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        561
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#chatOf",
+      "dst": "sym:src/store/Events.ts#openEventStore.listSessions",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        564
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        278
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu",
+      "dst": "sym:src/channels/Feishu.ts#Feishu",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        280
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        291
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        304,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        291
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        304,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        304,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        291
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        304,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        336
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        291
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        304,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        291
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        304,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        343
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        343
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        343
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        343
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        343
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        241
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        241
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        241
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        233
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        241
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        241
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        257
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        257
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        257
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        257
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        257
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:src/channels/Feishu.ts#chatOf",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        416
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#createSender",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        413
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#logConnection",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        632
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        666,
+        728,
+        837,
+        868
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        666,
+        728,
+        837,
+        868
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 4,
+      "lines": [
+        666,
+        728,
+        837,
+        868
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        806
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#Feishu",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        647
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        867
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        678
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        867
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#FeishuTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        678
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#StartFeishuOptions",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        647
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#approvalCard",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        727
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#buildCard",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        714
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#chatOf",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        727
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        832
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        867
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        678
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        867
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.recallMessage",
+      "kind": "calls",
+      "weight": 0.7,
+      "count": 1,
+      "lines": [
+        708
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendCard",
+      "kind": "calls",
+      "weight": 0.7,
+      "count": 1,
+      "lines": [
+        727
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        678
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.updateCard",
+      "kind": "calls",
+      "weight": 0.7,
+      "count": 1,
+      "lines": [
+        714
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#createSender",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        650
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#logConnection",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        864
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        807
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        862
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        808
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/Feishu.ts#topicOf",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        664
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/FeishuMedia.ts#createMediaTransport.downloadResource",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        845
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/channels/FeishuMedia.ts#createOpenApi.request",
+      "kind": "refs",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        727
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        854
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.onApproval",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        720
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.onDecided",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        694
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.onFinished",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        653
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.onRouted",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        671
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.onStuck",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        683
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        855
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/store/Events.ts#openEventStore.getApproval",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        713
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        655
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/store/Events.ts#openEventStore.listSessions",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        662
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/tools/EditMatch.ts#replaceAll",
+      "kind": "calls",
+      "weight": 0.4,
+      "count": 1,
+      "lines": [
+        841
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 9,
+      "lines": [
+        667,
+        678,
+        685,
+        711,
+        716,
+        730,
+        848,
+        858,
+        864
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 12,
+      "lines": [
+        666,
+        667,
+        678,
+        685,
+        702,
+        711,
+        716,
+        728,
+        730,
+        837,
+        864,
+        868
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:src/utils/Utils.ts#truncate",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        714
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        867
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:zbots/src/Feishu.ts#Feishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        678
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.listen",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        867
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu",
+      "dst": "sym:zbots/src/Feishu.ts#createFeishu.sendText",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        678
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        738
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        758
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "dst": "sym:src/store/Events.ts#openEventStore.getApproval",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        749
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onApprovalButton",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        761
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        816
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        793
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        793
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        793
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:src/channels/Feishu.ts#CardAction",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        773
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:src/channels/Feishu.ts#createSdkTransport.updateCard",
+      "kind": "calls",
+      "weight": 0.7,
+      "count": 1,
+      "lines": [
+        799
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        792
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        783
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        800
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#startFeishu.onChoice",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        793,
+        799,
+        800
+      ]
+    },
+    {
+      "src": "sym:src/channels/Feishu.ts#topicOf",
+      "dst": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        547
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#HttpOptions",
+      "dst": "sym:src/core/Engine.ts#Engine",
+      "kind": "types",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        44
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:scripts/Eval_Models.ts#write",
+      "kind": "calls",
+      "weight": 0.4,
+      "count": 3,
+      "lines": [
+        181,
+        185,
+        189
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/channels/Http.ts#HttpOptions",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        95
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/channels/Http.ts#isLocalAddress",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        102
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/channels/Http.ts#sameText",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        109
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/channels/WebPage.ts#registerWebPage",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        272
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        264
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        235
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Engine.ts#createEngine.onFinished",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        183
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        202
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        222
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Model.ts#Ai.decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        264
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Model.ts#Ai.listModels",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        116
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Model.ts#decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        264
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        119
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Runtime.ts#Runtime.problems",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        115
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/core/Runtime.ts#Runtime.sessionDir",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        171
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#events",
+      "kind": "refs",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        171
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        212
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        136,
+        161,
+        176
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listApprovals",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        171
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        143,
+        166
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        251
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listModelRequests",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        147,
+        170
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listPendingApprovals",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        246
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listSessions",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        124
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/store/Events.ts#openEventStore.listToolResults",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        170
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/utils/Checks.ts#asRecord",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        199,
+        233,
+        259
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/utils/Checks.ts#optionalString",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 9,
+      "lines": [
+        204,
+        205,
+        206,
+        207,
+        208,
+        209,
+        213,
+        238,
+        264
+      ]
+    },
+    {
+      "src": "sym:src/channels/Http.ts#createHttp",
+      "dst": "sym:src/utils/Checks.ts#requireString",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        203,
+        214,
+        236,
+        237
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#ENDING_STATUS",
+      "dst": "sym:src/core/Engine.ts#Finished",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        258
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#Routed",
+      "dst": "sym:src/core/Engine.ts#Handled",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        132
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#StepOutcome",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        173
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#StepOutcome",
+      "dst": "sym:src/core/Engine.ts#Finished",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        174
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#actorKey",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        206
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#ApprovalRequest",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        277
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#EngineOptions",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        272
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#Finished",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        275
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#Routed",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        287
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#StuckExecution",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        283
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1235
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1237
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.runPending",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1232
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1233
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.stopLoop",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1234
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1231
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine",
+      "dst": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1236
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "dst": "sym:src/core/Engine.ts#StoredResponse",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        323
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "dst": "sym:src/core/Engine.ts#toolResultMessage",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 3,
+      "lines": [
+        330,
+        332,
+        334
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "dst": "sym:src/core/Engine.ts#userMessage",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        309,
+        320
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "dst": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        304
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "dst": "sym:src/store/Events.ts#openEventStore.listModelRequests",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        306,
+        312
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "dst": "sym:src/store/Events.ts#openEventStore.listToolResults",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        311
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildSystem",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        351
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.buildSystem",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        370
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.chooseActor",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        699,
+        716
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.chooseActor",
+      "dst": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        736
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1047
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1047
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1047
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1054
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        1047,
+        1054
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1049
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.decide",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1049
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "dst": "sym:src/core/Engine.ts#Handled",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1069
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "dst": "sym:src/core/Engine.ts#MessageInput",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1069
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "dst": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1071
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "dst": "sym:src/store/Events.ts#openEventStore.getInbox",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1075
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1072
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.handleMessage",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1072
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "dst": "sym:src/core/Engine.ts#ApprovalRequest",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1006
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "dst": "sym:src/store/Events.ts#openEventStore.getApproval",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        999
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1001
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1019
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1019
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.onApproval",
+      "dst": "sym:src/core/Engine.ts#ApprovalRequest",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1251
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.onFinished",
+      "dst": "sym:src/core/Engine.ts#Finished",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1280
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.onRouted",
+      "dst": "sym:src/core/Engine.ts#Routed",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1272
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.onStuck",
+      "dst": "sym:src/core/Engine.ts#StuckExecution",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1265
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "dst": "sym:src/core/Engine.ts#commandOf",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        452
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        491
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "dst": "sym:src/core/Model.ts#Ai.decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        491
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "dst": "sym:src/core/Model.ts#decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        491
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "dst": "sym:src/core/Engine.ts#MessageInput",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1095
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "dst": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1106
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "dst": "sym:src/store/Events.ts#InboxRow",
+      "kind": "types",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1091
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        1112,
+        1113
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1112
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1163
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1163
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        1163
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Engine.ts#Handled",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1126
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Engine.ts#MessageInput",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1126
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1174
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        1142,
+        1185
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        1155
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Model.ts#Ai.listModels",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        1141,
+        1150,
+        1158
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1139
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        1177,
+        1209
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        1163,
+        1177,
+        1209
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.routeMessage",
+      "dst": "sym:src/utils/Utils.ts#truncate",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1159
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Engine.ts#Finished",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        754,
+        757
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Engine.ts#StepOutcome",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        788
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Engine.ts#createEngine.chooseActor",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        762
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Engine.ts#createEngine.notifyApproval",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        833
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Engine.ts#createEngine.runStep",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        791
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Engine.ts#parseActor",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        776,
+        781
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/core/Model.ts#Ai.listModels",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        816
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        760,
+        763,
+        814
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/store/Events.ts#openEventStore.listModelRequests",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        767
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        804,
+        822,
+        828
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        822,
+        828
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runPending",
+      "dst": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        882
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        541
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#StepOutcome",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        544
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#StoredResponse",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        575,
+        577
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#actorKey",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        599
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#commandOf",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        634
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#createEngine.buildContext",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        589
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#createEngine.buildSystem",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        606
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#createEngine.decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        570
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#createEngine.runToolCall",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        631
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#createEngine.submit",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        562
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Engine.ts#userMessage",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        591
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Model.ts#Ai.decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        570
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/core/Model.ts#decide",
+      "kind": "calls",
+      "weight": 0.26666666666666666,
+      "count": 1,
+      "lines": [
+        570
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/store/Events.ts#openEventStore.listToolResults",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        620
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runStep",
+      "dst": "sym:src/utils/Utils.ts#truncate",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        642
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runToolCall",
+      "dst": "sym:src/core/Engine.ts#createEngine.reviewExec",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        408
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runToolCall",
+      "dst": "sym:src/core/Engine.ts#toolResultMessage",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 4,
+      "lines": [
+        402,
+        414,
+        424,
+        429
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.runToolCall",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        427
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:src/core/Engine.ts#createEngine.routeInbox",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        947
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:src/core/Engine.ts#createEngine.runExecution",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        960
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        936
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        964,
+        974
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        964,
+        974
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        949,
+        969
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startLoop",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 2,
+      "lines": [
+        949,
+        969
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "dst": "sym:scripts/Guard.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        914
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "dst": "sym:scripts/Swap_Serve.ts#main.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        914
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "dst": "sym:shell/internal/shell/manager.go#Manager.log",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        914
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        909
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "dst": "sym:src/utils/Utils.ts#errorText",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        919
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.startWatchdog",
+      "dst": "sym:src/utils/Utils.ts#formatTime",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 2,
+      "lines": [
+        914,
+        919
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.stopLoop",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        989
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.stopLoop",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        989
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.submit",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        855
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.submit",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        871
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.submit",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.2,
+      "count": 1,
+      "lines": [
+        871
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#createEngine.waitIdle",
+      "dst": "sym:src/store/Events.ts#openEventStore.getSession",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 1,
+      "lines": [
+        1226
+      ]
+    },
+    {
+      "src": "sym:src/core/Engine.ts#parseActor",
+      "dst": "sym:src/core/Engine.ts#Actor",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        215,
+        218
+      ]
+    },
+    {
+      "src": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "dst": "sym:src/utils/Checks.ts#asRecord",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 3,
+      "lines": [
+        459,
+        461,
+        480
+      ]
+    },
+    {
+      "src": "sym:src/core/Runtime.ts#Runtime.listWorkspaces",
+      "dst": "sym:src/utils/Checks.ts#optionalString",
+      "kind": "calls",
+      "weight": 0.8,
+      "count": 4,
+      "lines": [
+        463,
+        466,
+        482,
+        485
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#inbox",
+      "dst": "sym:src/store/Events.ts#InboxResult",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        157
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "dst": "sym:src/channels/FeishuDoc.ts#createDocPublisher.insert",
+      "kind": "calls",
+      "weight": 0.4,
+      "count": 1,
+      "lines": [
+        602
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "dst": "sym:src/store/Events.ts#InboxResult",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        598
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "dst": "sym:src/store/Events.ts#InboxRow",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        598
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.addInbox",
+      "dst": "sym:src/store/Events.ts#inbox",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        602
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.getInbox",
+      "dst": "sym:src/store/Events.ts#InboxRow",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        673
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.getInbox",
+      "dst": "sym:src/store/Events.ts#inbox",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        674
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.listEvents",
+      "dst": "sym:src/store/Events.ts#events",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        521
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.listInbox",
+      "dst": "sym:src/store/Events.ts#InboxRow",
+      "kind": "types",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        681
+      ]
+    },
+    {
+      "src": "sym:src/store/Events.ts#openEventStore.listInbox",
+      "dst": "sym:src/store/Events.ts#inbox",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        684
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/Magnet.tsx#startMagnet",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.onLeave",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 4,
+      "lines": [
+        208,
+        209,
+        215,
+        216
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/Magnet.tsx#startMagnet",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.onPointerMove",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        206,
+        213
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/Magnet.tsx#startMagnet",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        207,
+        214
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/Magnet.tsx#startMagnet.onLeave",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        202
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/Magnet.tsx#startMagnet.onPointerMove",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        197
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/Magnet.tsx#startMagnet.wake",
+      "dst": "sym:web/src/Effects/Magnet.tsx#startMagnet.frame",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        188
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onDown",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        274,
+        286
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusIn",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        275,
+        287
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusOut",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        276,
+        288
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onMove",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        269,
+        281
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onOut",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        273,
+        285
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onScroll",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 2,
+      "lines": [
+        272,
+        284
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onUp",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 4,
+      "lines": [
+        270,
+        271,
+        282,
+        283
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        277
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onDown",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        232
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusIn",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        251
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onFocusOut",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        259
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onMove",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        215
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onOut",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        224
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onScroll",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        264
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.onUp",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "kind": "calls",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        243
+      ]
+    },
+    {
+      "src": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.wake",
+      "dst": "sym:web/src/Effects/SpotlightCard.tsx#startSpotlight.tick",
+      "kind": "refs",
+      "weight": 0.9,
+      "count": 1,
+      "lines": [
+        207
+      ]
+    },
+    {
+      "src": "sym:zbots/src/Feishu.ts#createFeishu.listen",
+      "dst": "sym:src/channels/Feishu.ts#startFeishu.onCardAction",
+      "kind": "calls",
+      "weight": 0.4,
+      "count": 1,
+      "lines": [
+        235
+      ]
+    }
+  ],
+  "truncated": false
+}

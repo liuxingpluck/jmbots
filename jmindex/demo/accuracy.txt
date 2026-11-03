@@ -1,0 +1,35 @@
+声明 299 个；标准答案里的引用处 1043 个
+召回 94.0%（漏 63）
+准确 80.9%（多 231，多数是同一个文件里同名的接口和实现分不清）
+漏的（前 15）：
+  FeishuTransport.listen ← tests/Feishu_Media.test.ts:167
+  FeishuTransport.sendText ← tests/Feishu_Media.test.ts:167
+  FeishuTransport.close ← tests/Feishu_Media.test.ts:167
+  toMessage.collect ← src/channels/Feishu.ts:151
+  createSdkTransport.recallMessage ← src/channels/Feishu.ts:705
+  createSdkTransport.sendCard ← src/channels/Feishu.ts:525
+  createSdkTransport.sendCard ← src/channels/Feishu.ts:723
+  createSdkTransport.updateCard ← src/channels/Feishu.ts:794
+  createSdkTransport.listen ← tests/Feishu_Media.test.ts:167
+  createSdkTransport.sendText ← tests/Feishu_Media.test.ts:167
+  createSdkTransport.close ← tests/Feishu_Media.test.ts:167
+  OpenApi.json ← tests/Feishu_Media.test.ts:103
+  OpenApi.json ← tests/Feishu_Media.test.ts:153
+  OpenApi.download ← tests/Feishu_Media.test.ts:103
+  OpenApi.download ← tests/Feishu_Media.test.ts:153
+多的（前 15）：
+  list ← zbots/src/Feishu.ts:217
+  serve ← zbots/tests/Model.test.ts:173
+  serve ← zbots/tests/Model.test.ts:51
+  FeishuTransport.listen ← src/Main.ts:301
+  FeishuTransport.listen ← src/channels/Feishu.ts:241
+  FeishuTransport.listen ← src/channels/Feishu.ts:867
+  FeishuTransport.listen ← tests/Feishu_Media.test.ts:142
+  FeishuTransport.sendText ← src/channels/Feishu.ts:257
+  FeishuTransport.close ← src/Main.ts:259
+  FeishuTransport.close ← src/Main.ts:237
+  FeishuTransport.close ← src/channels/Feishu.ts:260
+  FeishuTransport.close ← src/Main.ts:169
+  FeishuTransport.close ← tests/Feishu_Media.test.ts:113
+  FeishuTransport.close ← tests/Feishu_Media.test.ts:148
+  FeishuTransport.close ← tests/Feishu_Media.test.ts:171

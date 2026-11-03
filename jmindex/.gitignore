@@ -1,0 +1,5 @@
+# jmindex 自己的忽略规则（根目录 .gitignore 是白名单，jmindex/ 不在里面，提交时用 git add -f jmindex 再按这里排除）。
+target/
+.jmindex/
+*.db-wal
+*.db-shm

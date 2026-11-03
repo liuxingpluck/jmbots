@@ -1,0 +1,29 @@
+[package]
+name = "jmindex"
+version = "0.1.0"
+edition = "2024"
+description = "jmbots 的记忆搜索：把代码和文档摄取成一个 SQLite 索引（全文检索 + 关系图谱 + AI 标签），命令行和 HTTP 都能查"
+publish = false
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
+regex = "1"
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tiny_http = "0.12"
+tree-sitter = "0.27"
+tree-sitter-go = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+ureq = { version = "3", features = ["json"] }
+
+[profile.release]
+lto = "thin"
+strip = true

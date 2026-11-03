@@ -1,0 +1,314 @@
+{
+  "query": "handleMessage",
+  "hits": [
+    {
+      "path": "zbots/src/Dispatch.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0323,
+      "matched": [
+        "text",
+        "symbol"
+      ],
+      "tags": [],
+      "symbols": [
+        {
+          "qname": "handleMessage",
+          "kind": "function",
+          "line": 97
+        }
+      ],
+      "snippets": [
+        {
+          "start_line": 80,
+          "end_line": 87,
+          "title": "newConversationWord、createDispatcher、handleMessage",
+          "text": "  let queue: Promise<unknown> = Promise.resolve();\n  return (message) => {\n    /** 这一条的结果。 */\n    const handled = queue.then(() => handleMessage(deps, message));\n    queue = handled.catch(() => undefined);\n    return handled;\n  };\n}\n"
+        },
+        {
+          "start_line": 97,
+          "end_line": 102,
+          "title": "handleMessage",
+          "text": "async function handleMessage(deps: DispatchDeps, message: IncomingMessage): Promise<Handled> {\n  /** 工作区名字。 */\n  const workspaceName = message.workspace ?? Object.keys(deps.zbots.config.workspaces)[0] ?? '';\n  /** 要不要新建对话。 */\n  const wantsNew = message.text.trim().startsWith(newConversationWord);\n  /** 去掉口令后的正文。 */"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:zbots/src/Model.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Memory.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Agent.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Bot.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Main.ts",
+          "relation": "in_imports+in_uses+in_mentions",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "src/core/Engine.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.032,
+      "matched": [
+        "text",
+        "symbol"
+      ],
+      "tags": [],
+      "symbols": [
+        {
+          "qname": "createEngine.handleMessage",
+          "kind": "function",
+          "line": 1069
+        }
+      ],
+      "snippets": [
+        {
+          "start_line": 1066,
+          "end_line": 1074,
+          "title": "createEngine.handleMessage、createEngine.routeInbox",
+          "text": "   * @returns 这句话引出的执行对话 ID；合进别的批时，要问用户的话只记在那批第一句上。\n   * @throws 分派出错时抛错。\n   */\n  async function handleMessage(input: MessageInput): Promise<Handled> {\n    /** 收件。 */\n    const row = store.addInbox({ source: input.source, bot: input.bot, text: input.text, replyTo: input.replyTo, idleHours: input.idleHours });\n    wake?.();\n    for (;;) {\n      /** 现在的样子。 */"
+        },
+        {
+          "start_line": 1234,
+          "end_line": 1242,
+          "title": "createEngine.waitIdle、createEngine.onDecided、createEngine.onApproval",
+          "text": "    stopLoop,\n    decide,\n    waitIdle,\n    handleMessage,\n    /**\n     * 登记“有命令要确认”的通知（渠道用它把确认请求送到用户面前）。\n     * @param listener 收到确认请求的函数。\n     * @returns 撤销登记的函数。\n     */"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/core/Router.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/ExecRules.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Dispatcher.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Judge.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/tools/Tools.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Http.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Feishu.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "tests/CodeGraph.test.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0164,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 33,
+          "end_line": 39,
+          "title": "",
+          "text": "    '  }',\n    '  return { handleMessage };',\n    '}',\n    '',\n  ].join('\\n'));\n  fs.writeFileSync(path.join(root, 'channels', 'Chat.ts'), [\n    \"import * as engineModule from '../core/Engine.ts';\","
+        },
+        {
+          "start_line": 28,
+          "end_line": 36,
+          "title": "root",
+          "text": "    '  function submit(text: string): string {',\n    '    return util.shout(text);',\n    '  }',\n    '  async function handleMessage(text: string): Promise<string> {',\n    '    return Promise.resolve(submit(text));',\n    '  }',\n    '  return { handleMessage };',\n    '}',\n    '',"
+        },
+        {
+          "start_line": 68,
+          "end_line": 75,
+          "title": "",
+          "text": "\nbunTest.test('callees 认得出带 async 的嵌套函数', () => {\n  /** 结果。 */\n  const output = codeGraph.queryGraph({ action: 'callees', start: root, name: 'createEngine.handleMessage' });\n  bunTest.expect(output).toContain('submit');\n  bunTest.expect(output).toContain('core/Engine.ts:3');\n});\n\n"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/tools/CodeGraph.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "mentions",
+          "weight": 0.6
+        }
+      ]
+    },
+    {
+      "path": "src/tools/CodeGraph.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0159,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 307,
+          "end_line": 315,
+          "title": "notFound、describeDeclaration、callersOf",
+          "text": "\n\n/**\n * 谁用到了这个声明。从声明出发查引用；引用落在对象的简写属性上（如 return { handleMessage }）时，\n * 再从那个属性查一层，这样 engine.handleMessage(...) 这种经返回对象转出去的调用也能查到。\n * @param project 项目。\n * @param item 声明。\n * @returns 每处引用一行：位置、在哪个函数里、那一行代码。\n */"
+        },
+        {
+          "start_line": 2,
+          "end_line": 10,
+          "title": "GraphQuery、Project",
+          "text": " * codegraph 工具的实现：用 TypeScript 自带的语言服务查代码关系（和编辑器里“查找所有引用”“调用层级”是同一套），\n * 不另外建图文件，也不用装别的东西。\n * 来由（用户 11-02）：要一个类似 graphify 的工具加快检索。Go、Rust、Python 三个 graphify 实测都会漏边\n * （比如 Python 版查不到 Feishu.ts 对 Engine.ts 里嵌套函数 handleMessage 的调用），所以自己做。\n * 能查：\n *   find     按名字找声明在哪\n *   callers  谁用到它（直接调用、当回调传、经对象属性转出去再被调用的都算）\n *   callees  它调用了谁\n *   deps     一个文件导入了哪些文件和包"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "mentions",
+          "weight": 0.6
+        },
+        {
+          "id": "file:src/channels/Feishu.ts",
+          "relation": "mentions",
+          "weight": 0.3
+        },
+        {
+          "id": "file:zbots/src/Feishu.ts",
+          "relation": "mentions",
+          "weight": 0.3
+        },
+        {
+          "id": "file:shell/internal/autostart/autostart_windows_test.go",
+          "relation": "uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:shell/internal/autostart/registry_windows.go",
+          "relation": "uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:tests/CodeGraph.test.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/tools/Tools.ts",
+          "relation": "in_imports+in_mentions+in_uses",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "src/channels/Http.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0154,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 232,
+          "end_line": 240,
+          "title": "",
+          "text": "    /** 请求体。 */\n    const body = checks.asRecord(request.body, '请求体');\n    try {\n      return await engine.handleMessage({\n        text: checks.requireString(body.text, 'text'),\n        source: checks.requireString(body.source, 'source'),\n        bot: checks.optionalString(body.bot, 'bot'),\n        idleHours: Number(body.idleHours ?? 6),\n      });"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/utils/Checks.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/WebPage.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Model.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/store/Events.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_uses+in_mentions",
+          "weight": 1.0
+        },
+        {
+          "id": "file:web/src/Events/EventsApi.ts",
+          "relation": "in_mentions",
+          "weight": 0.8
+        }
+      ]
+    }
+  ]
+}
