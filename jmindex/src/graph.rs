@@ -391,9 +391,9 @@ pub fn rebuild(store: &mut Store, root: &std::path::Path) -> Result<usize> {
         }
     }
 
-    //M 6. 写回数据库。
+    //M 6. 写回数据库。几十万条边时，先删索引、写完再建，比边写边维护索引快好几倍。
     let tx = store.conn.transaction()?;
-    tx.execute("DELETE FROM edges", [])?;
+    tx.execute_batch("DROP INDEX IF EXISTS edges_src; DROP INDEX IF EXISTS edges_dst; DELETE FROM edges;")?;
     {
         let mut insert = tx.prepare("INSERT INTO edges (src, dst, kind, weight, count, lines) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
         for ((src, dst, kind), (weight, count, lines)) in &edges {
@@ -403,6 +403,7 @@ pub fn rebuild(store: &mut Store, root: &std::path::Path) -> Result<usize> {
             insert.execute(params![src, dst, kind, weight, count, lines])?;
         }
     }
+    tx.execute_batch("CREATE INDEX edges_src ON edges(src); CREATE INDEX edges_dst ON edges(dst);")?;
     tx.commit()?;
     Ok(edges.len())
 }

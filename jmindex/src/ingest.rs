@@ -141,9 +141,11 @@ pub fn ingest(store: &mut Store, root: &Path, config: &Config, options: Options,
     let started = Instant::now();
     let mut stats = Stats::default();
 
-    //M 1. 扫目录，按哈希比对。
+    //M 1. 扫目录，按哈希比对；变了的文件多线程解析，解析结果在主线程写数据库（SQLite 连接只能一个线程用）。
     let existing: HashMap<String, (i64, String)> = store.files()?.into_iter().map(|file| (file.path, (file.id, file.hash))).collect();
     let mut seen: HashSet<String> = HashSet::new();
+    // 要重新解析的：(相对路径, 语言, 种类, 内容, 哈希)。
+    let mut todo: Vec<(String, String, &'static str, String, String)> = Vec::new();
     for (relative, absolute) in walk(root, config) {
         let Some((lang, kind)) = classify(&relative) else { continue };
         stats.scanned += 1;
@@ -161,15 +163,45 @@ pub fn ingest(store: &mut Store, root: &Path, config: &Config, options: Options,
             Some(_) => stats.updated += 1,
             None => stats.added += 1,
         }
-        store.replace_file(&build_file(&relative, &lang, kind, &content, hash))?;
+        todo.push((relative, lang, kind, content, hash));
     }
+    let workers = std::thread::available_parallelism().map(|count| count.get()).unwrap_or(4).min(16);
+    let queue = Mutex::new(todo.into_iter());
+    let (sender, receiver) = mpsc::sync_channel::<FileData>(64);
+    std::thread::scope(|scope| -> Result<()> {
+        for _ in 0..workers {
+            let sender = sender.clone();
+            let queue = &queue;
+            scope.spawn(move || {
+                loop {
+                    let job = queue.lock().ok().and_then(|mut iter| iter.next());
+                    let Some((relative, lang, kind, content, hash)) = job else { break };
+                    if sender.send(build_file(&relative, &lang, kind, &content, hash)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for data in receiver {
+            store.replace_file(&data)?;
+        }
+        Ok(())
+    })?;
     for (path, (id, _)) in &existing {
         if !seen.contains(path) {
             store.remove_file(*id)?;
             stats.removed += 1;
         }
     }
-    log(&format!("扫描完：新增 {}，更新 {}，删除 {}，没变 {}", stats.added, stats.updated, stats.removed, stats.unchanged));
+    log(&format!(
+        "扫描完：新增 {}，更新 {}，删除 {}，没变 {}（{} ms）",
+        stats.added,
+        stats.updated,
+        stats.removed,
+        stats.unchanged,
+        started.elapsed().as_millis()
+    ));
 
     //M 2. AI 标签。
     if let Some(model) = config.model.as_ref().filter(|_| options.ai) {
@@ -243,8 +275,10 @@ pub fn ingest(store: &mut Store, root: &Path, config: &Config, options: Options,
         }
     }
 
-    //M 4. 重算图谱。
-    stats.edges = graph::rebuild(store, root)?;
+    //M 4. 重算图谱：文件、标签都没变（而且图已经算过）就不用重算，大项目里这一步要十几秒。
+    let changed = stats.added + stats.updated + stats.removed + stats.tagged + stats.aliases_added > 0;
+    let edge_count: i64 = store.conn.query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
+    stats.edges = if changed || edge_count == 0 { graph::rebuild(store, root)? } else { edge_count as usize };
     stats.totals = store.counts()?;
     stats.ms = started.elapsed().as_millis();
     log(&format!("图谱：{} 条边，用时 {} ms", stats.edges, stats.ms));

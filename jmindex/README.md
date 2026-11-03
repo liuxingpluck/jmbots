@@ -108,6 +108,26 @@ http: { host: 127.0.0.1, port: 30090 }
 多的主要是同一个文件里接口和实现同名的方法（`FeishuTransport.listen` 和 `createFeishu.listen`），没有类型信息分不清，所以权重平分。
 graphify 漏掉的 `Feishu.ts` 里 `engine.handleMessage(...)` → `Engine.ts` 里嵌套的 `handleMessage` 这条边能查到（置信度 0.8）。
 
+## 速度
+
+测试机器：云端 Linux 容器，4 核 Intel Xeon 2.1 GHz，release 编译，不打 AI 标签（`--no-ai`）；每项跑 3 次。
+复现：`bash jmindex/bench/speed.sh [目录] [搜索词]`。
+
+| | jmbots 本身（162 个文件，1257 个声明，6590 条边，索引 8 MB） | 大代码库：Rust 依赖源码（3972 个文件，29 万个声明，78 万条边，索引 550 MB） |
+|---|---|---|
+| 全量摄取 | 0.3 秒 | 18～25 秒 |
+| 没变再摄取 | 11 毫秒 | 0.15 秒 |
+| 改一个文件再摄取 | 70～85 毫秒 | 9～11 秒 |
+| `search`（命令行，含启动进程） | 8 毫秒 | 80～220 毫秒 |
+| `graph`（命令行，含启动进程） | 6～11 毫秒 | 30 毫秒 |
+| HTTP `/search` | 3 毫秒 | 没测 |
+| HTTP `/graph`（走两步） | 6 毫秒 | 没测 |
+
+- 改了文件就要重算整张图：小项目无所谓，几十万条边时要 9～11 秒（读声明、对上调用、写回数据库各占一部分）。TODO：只重算受影响的那部分。
+- 什么都没变时不重算图，只扫一遍文件比哈希，所以很快。
+- 打 AI 标签的速度取决于模型：每个文件一次请求，按 `model.concurrency`（默认 4）并发；打过的文件内容不变就不再打。
+- 没在 Windows 真机上测过速度。
+
 ## 演示数据（`demo/`）
 
 用 jmbots 自己的代码和文档（162 个文件：TypeScript、TSX、Go 壳子 shell/、Markdown 等）生成，没配模型（所以没有 AI 标签）：
