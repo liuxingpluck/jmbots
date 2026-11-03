@@ -35,7 +35,7 @@ workspaces:
 
 # 执行设置。
 engine:
-  max_steps: 30          # 一次执行最多调几次模型
+  max_steps: 100         # 一次执行最多调几次模型（11-03 用户要放大；到了会停下，回“继续”接着做）
   dispatcher: 分派        # 全局分派智能体的名字（agents/<名字>/config.yaml）
   exec_review: decision  # exec 怎么审核：decision 先问决策模型，安全概率够就直接执行，不够才问用户（飞书发卡片）；human 都问用户；off 不审核
   route_model: magpie/workbuddy/deepseek-v4.1-flash  # 分派对话用的模型（要快）；清单里没有就用机器人自己的
@@ -48,13 +48,22 @@ concurrency:
   models: {}     # 单独设的模型，如 'magpie/workbuddy/deepseek-v4.1-flash': 6
   providers: {}  # 供应商合计上限（它所有模型加起来），如 magpie: 10；不写不限
 
+# 网页搜索（web_search 工具）：按顺序试，前一个出错或搜不到就用下一个。不写这一节时只用第一项（Codex 订阅的搜索）。
+#   magpie     经 magpie 网关搜（地址、密钥默认取 providers.magpie）：model 是 ChatGPT 账号的模型就用 Codex 订阅的搜索，
+#              别的模型由 magpie 自己搜（能搜的模型、账号，或 magpie 设置里的搜索 API）
+#   zhipu_mcp  智谱 MCP 搜索（GLM Coding 套餐），api_key 填智谱的密钥；url 不写用 https://open.bigmodel.cn/api/mcp/web_search_prime/mcp
+search:
+  - { kind: magpie, model: codex/gpt-6-luna }
+  - { kind: zhipu_mcp, api_key: '' }
+  - { kind: magpie, model: zcode/GLM-5.3 }
+
 # 决策模型怎么问（models.decision）。
 decision:
   pass_probability: 0.2  # exec “安全”的概率不低于这个数就直接执行，低于才问用户（用户 11-02：绝大多数命令应该直接放行）
   questions:
     tool_safe:
       type: bool
-      instructions: 即将执行的命令是否安全：不会造成难以挽回的损失（比如删除或覆盖重要文件、对外发送、付费）？查看、搜索、跑脚本整理数据、在执行目录里写新文件都算安全。
+      instructions: 即将执行的命令是否安全：不会造成难以挽回的损失，也不会泄露密钥。算安全：查看、搜索、构建、测试、跑脚本整理数据、在工作区写新文件、删除这次任务自己生成的临时文件，以及用户在任务里已经要求的交付（比如发布用户要的文档、把结果发给这个用户）。算有风险：删除或覆盖用户原有的文件、改系统设置（关机、注册表、服务、计划任务）、付费、把东西发给任务没提到的人、读取或打印配置文件里的密钥。给了脚本内容时，按脚本实际做的事判断，不只看命令和文件名。
       criteria: { 'true': 安全，可以执行, 'false': 有风险，先别执行 }
     # 机器人、智能体的 judge 写 decision 时，每走完一步问一次；代码会再加上“转交给某某”（routes）的选项。
     next_step:

@@ -208,6 +208,13 @@ export function createHttp(options: HttpOptions) {
         model: checks.optionalString(body.model, 'model'),
         workspace: checks.optionalString(body.workspace, 'workspace'),
       });
+      // 写明了交给谁的，不经分派；也记进收件表（直接标成已分派），所有投递都在一处看得到。
+      store.addInbox({
+        source: checks.optionalString(body.source, 'source') ?? 'HTTP',
+        text: checks.requireString(body.text, 'text'),
+        idleHours: 0,
+        done: { sessionIds: [submitted.sessionId], replies: [], reason: '调用方写明了交给谁，直接提交（不经分派）' },
+      });
       if (body.wait !== true) {
         return reply.code(202).send(submitted);
       }
@@ -219,7 +226,33 @@ export function createHttp(options: HttpOptions) {
     }
   });
 
+  // 像渠道一样投递一句话：进收件表、等事件循环分派（和飞书收到消息走同一条路），返回分派结果；不等执行做完。
+  // 用法：{text, source, bot?, idleHours?}；source 决定接着哪个聊天的会话，如“网页 本机”。
+  app.post('/api/message', async (request, reply) => {
+    /** 请求体。 */
+    const body = checks.asRecord(request.body, '请求体');
+    try {
+      return await engine.handleMessage({
+        text: checks.requireString(body.text, 'text'),
+        source: checks.requireString(body.source, 'source'),
+        bot: checks.optionalString(body.bot, 'bot'),
+        idleHours: Number(body.idleHours ?? 6),
+      });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get('/api/approvals', () => store.listPendingApprovals());
+  // 收件表：最近收到的话，new 未分派、routing 分派中、done 已分派（带引出的会话）、failed 出错。
+  app.get<{ Querystring: Record<string, string | undefined> }>('/api/inbox', (request) => {
+    /** 只看某个状态。 */
+    const status = request.query.status;
+    return store.listInbox({
+      status: status === 'new' || status === 'routing' || status === 'done' || status === 'failed' ? status : undefined,
+      limit: Number(request.query.limit ?? 50),
+    });
+  });
 
   app.post<{ Params: { id: string } }>('/api/approvals/:id', (request, reply) => {
     /** 请求体。 */

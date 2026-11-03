@@ -394,7 +394,7 @@ export class Runtime {
       throw new Error(`config.yaml 的 engine.exec_review 只能是 decision、human、off，现在是 ${JSON.stringify(review)}`);
     }
     return {
-      maxSteps: Number(engine.max_steps ?? legacy.max_steps ?? 30),
+      maxSteps: Number(engine.max_steps ?? legacy.max_steps ?? 100),
       dispatcher: checks.optionalString(engine.dispatcher, 'engine.dispatcher') ?? DEFAULT_DISPATCHER,
       execReview: review,
       passProbability: Number(decision.pass_probability ?? 0.2),
@@ -403,6 +403,35 @@ export class Runtime {
       routeThinking: checks.optionalString(engine.route_thinking, 'engine.route_thinking') ?? 'off',
       watchdogMinutes: Number(engine.watchdog_minutes ?? 15),
     };
+  }
+
+
+  /**
+   * config.yaml 里所有像密钥的值（键名带 secret、key、token、password，8 个字以上）：工具结果里出现就换成 ***。
+   */
+  get secretValues(): string[] {
+    /** 找到的。 */
+    const found = new Set<string>();
+    /**
+     * 递归找。
+     * @param value 某一层的值。
+     * @param key 它的键名。
+     */
+    const walk = (value: unknown, key: string): void => {
+      if (typeof value === 'string') {
+        if (/secret|key|token|password/i.test(key) && value.length >= 8) {
+          found.add(value);
+        }
+        return;
+      }
+      if (value && typeof value === 'object') {
+        for (const [childKey, child] of Object.entries(value)) {
+          walk(child, Array.isArray(value) ? key : childKey);
+        }
+      }
+    };
+    walk(this.config, '');
+    return [...found];
   }
 
 
