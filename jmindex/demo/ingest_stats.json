@@ -1,0 +1,22 @@
+{
+  "scanned": 162,
+  "added": 162,
+  "updated": 0,
+  "removed": 0,
+  "unchanged": 0,
+  "skipped": 0,
+  "tagged": 0,
+  "tag_failed": 0,
+  "tag_errors": [],
+  "aliases_added": 0,
+  "edges": 6590,
+  "ms": "（每次不同）",
+  "totals": {
+    "chunks": 900,
+    "edges": 6590,
+    "files": 162,
+    "symbols": 1257,
+    "tagged_files": 0,
+    "tags": 0
+  }
+}

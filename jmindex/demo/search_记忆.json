@@ -1,0 +1,345 @@
+{
+  "query": "记忆",
+  "hits": [
+    {
+      "path": "CLAUDE.md",
+      "lang": "markdown",
+      "kind": "doc",
+      "score": 0.0164,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 17,
+          "end_line": 22,
+          "title": "CLAUDE.md > 开工先读",
+          "text": "## 开工先读\n\n- **记忆库** `F:\\aidata\\AI_Memory`（虚拟机里 `~/project/faidata/AI_Memory`）：只读 `Index.md` 和 `00_常驻摘要.md`，不通读。其余按摘要里的“遇到什么读哪里”只读相关小节；想查用户定过的规则、纠正、决定，用 `node 06_Cards/卡片工具.mjs search \"问题\"`；`01_User/Background_And_Goals.md` 只在涉及用户背景或目标时读；`05_History/` 只在追溯时读。纯解释或诊断类问题直接回答，不先检索记忆。\n- 只在三种情况写记忆：用户说“记住”或给出明确纠正和新规则；重要决定或验收结果；可复用的做法或踩坑。写之前先搜有没有同类条目，有就更新；不做每轮留存判断。长期记忆只写记忆库，不写本机的 `~/.claude`。\n- **记忆库是 Claude、Codex、DSH 以及将来更多 AI 共用的**（用户 2026-11-03 强调）：优化或写入时不要写死某一个 AI 的机制或名字，内容和工具都要对任何 AI 通用。\n- **项目**：先读 `docs/03_进度与待办.md`（文件表、写死的默认值、待办）；需求理解 `docs/02_需求理解.md`；设计和现状对照 `docs/04_项目梳理与目标设计.md`。"
+        },
+        {
+          "start_line": 7,
+          "end_line": 14,
+          "title": "CLAUDE.md > 云端网页版须知（在 claude.ai/code 的沙箱里跑时先看这一节）",
+          "text": "## 云端网页版须知（在 claude.ai/code 的沙箱里跑时先看这一节）\n\n2026-11-03 起，仓库 `liuxingpluck/jmbots` 关联了网页版 Claude Code。沙箱里没有 `F:\\` 盘，也没有记忆库和 `docs/`（它们不进 git），下面“开工先读”“和 jmbots 一起干活”“在哪里跑”里涉及 Windows、DSH、记忆库、`192.168.200.1` 的内容都跟你无关，跳过。\n\n- 能做：`bun install --no-save --ignore-scripts` 后跑 `bun run typecheck`、`bun run lint`、`bun run test`（离线测试），修不依赖本机环境的 bug、补测试。\n- 不做：真实模型调用（`tests/Live_*.ts`、`eval:models`）、打开或编造 `config.yaml`、启停或换版本服务（`swap`、`serve`、`guard`、`autostart`）、碰 `shell/` 的 Windows 自启逻辑的真实效果（只能看代码和跑它自带的离线测试）。\n- 工作方式：从最新 `main` 切 `claude/<主题>` 分支，小步提交，推分支并开 PR；**不直接推 `main`**，不强推。PR 描述写清改了什么、跑了哪些命令、结果如何（通过和没验证分开写）。本机在 Windows 上审阅后合并。\n- 说“通过”时只说真跑过的：沙箱里 typecheck、lint、离线测试通过，不等于 Windows 真实运行验收。"
+        },
+        {
+          "start_line": 35,
+          "end_line": 38,
+          "title": "CLAUDE.md > 和 jmbots 一起干活",
+          "text": "\n- Claude 在虚拟机里用 HTTP 把活交给周小灵：`http://192.168.200.1:30086`，`POST /api/run {text, bot, wait}`，`GET /api/sessions/:id/full` 看每步和思考。她给 Claude 的留言在运行时 `integrations/claude/给Claude/`；给用户发飞书放 `integrations/feishu/发件箱/`。\n- jmbots 改自己的代码后用 `bun scripts/Swap_Serve.ts`（`bun run swap`）换版本。\n- DSH 只跑已确认的命令（启动、重启 jmbots）。选 DSH 模型前先查记忆里的“订阅额度使用边界”：不得用按量付费的 `deepseek-official/*`，试验对比用 `magpie/workbuddy/*`。控制工具见 `ztools/dsh-control/README.md`。"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:scripts/Swap_Serve.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:src/channels/WebPage.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:config.example.yaml",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:src/utils/Checks.ts",
+          "relation": "mentions",
+          "weight": 0.6
+        },
+        {
+          "id": "file:zbots/src/Tools.ts",
+          "relation": "in_mentions",
+          "weight": 0.8
+        }
+      ]
+    },
+    {
+      "path": "src/core/Runtime.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0161,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 560,
+          "end_line": 568,
+          "title": "Runtime.sessionDir、Runtime.readMemory、Runtime.modelReviewFile、Runtime.readModelReview",
+          "text": "\n\n  /**\n   * 读机器人的长期记忆（bots/<名字>/记忆.md）；没有时是空字符串。\n   * @param bot 机器人。\n   */\n  async readMemory(bot: RoleInfo): Promise<string> {\n    return (await readOptional(path.join(bot.dir, '记忆.md'))) ?? '';\n  }"
+        },
+        {
+          "start_line": 6,
+          "end_line": 14,
+          "title": "DEFAULT_RUNTIME_DIR、DEFAULT_DISPATCHER、ProviderConfig",
+          "text": " *   config.yaml                      主配置：模型供应商、默认模型、各用途的模型、工作区、执行设置、渠道（不存在就自动建一份模板）\n *   bots/<名字>/config.yaml          机器人（有状态）：模型、思考强度、工具、判断方式、系统提示词积木\n *   bots/<名字>/system.md            可选：系统提示词写成单独的文件时用它，优先于 config.yaml 里的 system\n *   bots/<名字>/记忆.md               可选：机器人的长期记忆，每次执行拼进系统提示词\n *   agents/<名字>/config.yaml        智能体（无状态）：同样的字段，只是没有记忆\n *   workspaces/<名字>/工作区.yaml     AI 自己登记的工作区（config.yaml 里写的工作区不用再登记）\n *   workspaces/<名字>/files/         工作区默认的干活目录\n *   知识库/                           最终结果；知识库/模型评价.md 是模型能力评价，分派时用\n *   logs/bots/<机器人>/<会话ID>_<标题>/  机器人的会话日志：分派对话的标题以“分派_”开头，执行对话是 AI 起的标题"
+        },
+        {
+          "start_line": 73,
+          "end_line": 81,
+          "title": "RoleInfo",
+          "text": "}\n\n\n/** 一个机器人或智能体（两者字段一样，区别是机器人有记忆和自己的会话目录）。 */\nexport interface RoleInfo {\n  /** bot 是机器人，agent 是智能体。 */\n  kind: 'bot' | 'agent';\n\n  /** 名字，就是文件夹名。 */"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/utils/Checks.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/utils/Utils.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "mentions+in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Model.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:src/tools/WebSearch.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Http.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/store/Log.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Judge.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "src/core/Engine.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0159,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 360,
+          "end_line": 368,
+          "title": "createEngine.runToolCall",
+          "text": "    /** 积木。 */\n    const blocks: Record<string, string> = { ...role.system };\n    if (actor.kind === 'bot') {\n      /** 机器人的长期记忆。 */\n      const memory = await runtime.readMemory(role);\n      if (memory.trim()) {\n        blocks.记忆 = memory;\n      }\n    }"
+        },
+        {
+          "start_line": 341,
+          "end_line": 349,
+          "title": "createEngine.buildSystem",
+          "text": "\n\n  /**\n   * 拼执行者的系统提示词：自己的积木 + 机器人的记忆 + 环境（会话、工作区、时间）。只给模型时什么都不拼。\n   * @param actor 执行者。\n   * @param role 机器人或智能体；只给模型时是 undefined。\n   * @param session 会话。\n   * @param workspace 工作区。\n   */"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/core/Router.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/ExecRules.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Dispatcher.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Judge.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/tools/Tools.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Http.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Feishu.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "zbots/src/Runtime.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0156,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 105,
+          "end_line": 112,
+          "title": "Runtime、WorkspaceInfo",
+          "text": "  /** 运行时目录。 */\n  dir: string;\n\n  /** 公共共享区：所有 bot 都能读写的记忆。 */\n  sharedDir: string;\n\n  /** 角色区的上级目录：每个 bot 一个子文件夹，放它的经历、对话列表和自己的记忆。 */\n  rolesDir: string;\n"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:zbots/src/Utils.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Feishu.ts",
+          "relation": "imports+mentions+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Agent.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:zbots/tests/Live_DshSession.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/Log.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/Memory.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Model.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Bot.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/DshSession.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "zbots/src/Memory.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0154,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 3,
+          "end_line": 11,
+          "title": "ConversationInfo",
+          "text": " *\n * - 工作区：一个汇总，装 N 个对话；每个对话一个文件夹（名字是对话 ID），里面的 对话.yaml 写着它在做什么。\n *   工作区的 索引.md 由代码扫描各对话后整篇重写，给人和 AI 看“这个工作区都有哪些对话、各在做什么”。\n * - 角色工作区（roles/<bot>/）：对话.md 一行一个对话，写对话文件夹的完整路径；经历.md、记忆/ 以后由执行流程写。\n * - 上下文：每个对话的 context.jsonl，Pi 的消息一行一条，下一条消息接着用。\n * 公共共享区（shared/）由 loadRuntime 建好，这里还没用到。每一步的记录文件由 Log.ts 写。\n */\nimport * as fs from 'node:fs/promises';\nimport * as path from 'node:path';"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:zbots/src/Runtime.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Utils.ts",
+          "relation": "imports+uses+mentions",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Log.ts",
+          "relation": "mentions+in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/Log.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/Agent.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Dispatch.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/Memory.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Agent.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        }
+      ]
+    }
+  ]
+}
