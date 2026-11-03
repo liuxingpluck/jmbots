@@ -49,6 +49,9 @@ export interface FeishuMessage {
   /** 文字内容，去掉了群里 @ 机器人的占位符；不是文字消息时是空字符串。 */
   text: string;
 
+  /** 原始 JSON 内容，主渠道据此提取图片、文件等资源 key。 */
+  rawContent?: string;
+
   /** 用户引用回复的那条消息的 ID（parent_id）；不是引用回复时没有。jmbots 11-02 加的。 */
   parentId?: string;
 }
@@ -174,6 +177,7 @@ export function toMessage(event: ReceiveEvent): FeishuMessage {
     openId: event.sender.sender_id?.open_id ?? '',
     messageType: event.message.message_type,
     text: text.trim(),
+    ...(event.message.message_type !== 'text' ? { rawContent: event.message.content } : {}),
     ...(event.message.parent_id ? { parentId: event.message.parent_id } : {}),
   };
 }

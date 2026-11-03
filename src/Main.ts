@@ -16,6 +16,8 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as feishu from './channels/Feishu.ts';
+import * as feishuDoc from './channels/FeishuDoc.ts';
+import * as feishuMedia from './channels/FeishuMedia.ts';
 import * as http from './channels/Http.ts';
 import * as engineModule from './core/Engine.ts';
 import * as model from './core/Model.ts';
@@ -116,11 +118,13 @@ async function createDeps(args: Args): Promise<Deps> {
     ? feishu.createSdkTransport({ enabled: true, app_id: settings.app_id, app_secret: settings.app_secret, bot: settings.bot })
     : undefined;
   /** 引擎。 */
-  const engine = engineModule.createEngine({
-    runtime,
+  const engine = engineModule.createEngine({    runtime,
     store,
     ai,
     sendFeishu: feishuTransport ? feishu.createSender(feishuTransport, store) : undefined,
+    sendChoice: feishuTransport ? feishu.createChoiceSender(feishuTransport, store) : undefined,
+    sendFeishuMedia: feishuTransport ? feishu.createMediaSender(feishuTransport, store) : undefined,
+    createFeishuDoc: settings ? feishuDoc.createDocSender(feishuDoc.createDocPublisher(feishuMedia.createOpenApi(settings.app_id, settings.app_secret)), store) : undefined,
   });
   return { runtime, store, ai, engine, feishuTransport };
 }
@@ -269,11 +273,13 @@ async function serve(args: Args): Promise<void> {
   /** 是不是试运行的新版本。 */
   const candidate = args.options.mode === 'candidate';
 
-  //M 1. 上次没跑完的执行标成“程序中断”（工具结果留成未知，模型下次会看到）。
-  /** 标了几个。 */
-  const interrupted = candidate ? 0 : store.markInterrupted();
-  if (interrupted > 0) {
-    console.log(`${utils.formatTime()} 上次有 ${interrupted} 个执行没跑完，已标成“程序中断”。`);
+  //M 1. 收拾上次没做完的：被打断的执行重新排队接着做，分派到一半的话重新分派（试运行的新版本不碰，它不干活）。
+  if (!candidate) {
+    /** 收拾的结果。 */
+    const recovered = store.recoverInterrupted();
+    if (recovered.resumed + recovered.failed + recovered.inbox > 0) {
+      console.log(`${utils.formatTime()} 上次没做完的：${recovered.resumed} 个执行接着做，${recovered.failed} 个标成“程序中断”，${recovered.inbox} 句话重新分派。`);
+    }
   }
 
   //M 2. HTTP：地址和端口命令行优先，其次 config.yaml 的 http，再其次 0.0.0.0:30086（用户 11-02 在 VSCode 里定：开发阶段默认全开，局域网和虚拟机都能连）。

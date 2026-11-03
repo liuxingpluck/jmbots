@@ -2,6 +2,7 @@
 # docs、.claude、diagrams、bak、ztools、runtime、各种笔记和产物一律不进。要加新的顶层目录，在下面加一行 !/名字/。
 /*
 !/.gitignore
+!/CLAUDE.md
 !/package.json
 !/tsconfig.json
 !/tsconfig.check.json
@@ -14,6 +15,15 @@
 !/web/
 !/scripts/
 !/tests/
+!/shell/
+/shell/*
+/shell/**/*
+!/shell/**/
+!/shell/**/*.go
+!/shell/go.mod
+!/shell/go.sum
+!/shell/README.md
+/shell/**/*.exe
 
 # zbots 只要代码（jmbots 还借用它的飞书 SDK 封装），不要它的文档和配置。
 !/zbots/

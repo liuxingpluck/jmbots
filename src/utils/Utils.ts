@@ -67,6 +67,29 @@ export function errorText(error: unknown): string {
 
 
 /**
+ * 把值里出现的密钥换成 ***（工具结果进数据库、进模型之前用）。按 JSON 文本替换，对象、数组里的字符串都能换到。
+ * @param value 工具结果等。
+ * @param secrets 要藏的密钥原文（太短的不算，免得误伤）。
+ * @returns 换过的值；没有密钥出现时原样返回。
+ */
+export function redactSecrets<T>(value: T, secrets: string[]): T {
+  if (value === undefined || value === null || secrets.length === 0) {
+    return value;
+  }
+  /** JSON 文本。 */
+  let text = JSON.stringify(value);
+  /** 换前。 */
+  const before = text;
+  for (const secret of secrets) {
+    /** 密钥在 JSON 里的写法（引号、反斜杠会被转义）。 */
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    text = text.split(escaped).join('***');
+  }
+  return text === before ? value : (JSON.parse(text) as T);
+}
+
+
+/**
  * 任意值转成给模型看的文字：字符串原样，别的转成缩进的 JSON。
  * @param value 工具结果等。
  */

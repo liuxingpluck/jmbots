@@ -1,13 +1,15 @@
 /**
  * 数据库（SQLite + Drizzle）：jmbots 的正式记录都在这里，日志文件从这里生成（用户 11-02 选的方案 A）。
  *
- * 五张表：
+ * 六张表：
  *   jmbot_sessions       会话：归哪个机器人、智能体或模型，放在哪个工作区，从哪来（命令行、HTTP、飞书），现在什么状态
  *   jmbot_events         事件：一条输入就是一个 execution 事件，事件循环取 pending 的来执行；
  *                        分派、每步判断、exec 审核的结论也记成事件（直接是 completed，不进队列）
  *   jmbot_model_requests 每一步模型调用：实际发给模型的请求、模型的回复（每步一行，step 从 1 数）
  *   jmbot_tool_results   工具调用：执行前先记 in_progress，执行完写结果；程序中途死掉时留下 in_progress，表示“结果未知”
  *   jmbot_exec_approvals 等人确认的 exec 命令
+ *   jmbot_inbox          收件表：渠道收到的每句话先记在这里（new 未分派），事件循环领去分派（routing），分派完记下结果（done）。
+ *                        用户 11-03：“投递过来没有被消费……被消费了”；重启不丢话，界面能看到哪些话还在排队。
  *
  * 用户 11-02 的要求：工具执行不当成事件（防止重复执行），执行完写进对应的列；结果缺失时让 AI 自己决定要不要重做。
  *
@@ -133,6 +135,46 @@ const toolResults = core.sqliteTable('jmbot_tool_results', {
 });
 
 
+/** 收件表：渠道收到的每句话。 */
+const inbox = core.sqliteTable('jmbot_inbox', {
+  /** 自增 ID。 */
+  id: core.integer('id').primaryKey({ autoIncrement: true }),
+  /** 来源，如“飞书私聊 oc_xxx”。同一来源一次只分派一批。 */
+  source: core.text('source').notNull(),
+  /** 新会话交给哪个机器人（渠道配置的）；没有写 null。 */
+  bot: core.text('bot'),
+  /** 用户的话。 */
+  text: core.text('text').notNull(),
+  /** 用户引用回复的那条消息在渠道里的 ID；没引用写 null。 */
+  replyTo: core.text('reply_to'),
+  /** 多久没说话的会话不再接着，小时。 */
+  idleHours: core.real('idle_hours').notNull(),
+  /** new 未分派、routing 分派中、done 已分派、failed 分派出错。 */
+  status: core.text('status', { enum: ['new', 'routing', 'done', 'failed'] }).notNull(),
+  /** 和哪几句合成一批分派的：这批第一句的 ID；还没分派时 null。 */
+  batchId: core.integer('batch_id'),
+  /** 分派结果：引出的执行对话、要直接问用户的话、理由。 */
+  result: core.text('result', { mode: 'json' }).$type<InboxResult>(),
+  /** 出错原因。 */
+  error: core.text('error'),
+  /** 收到的时间，毫秒。 */
+  createdAt: core.integer('created_at').notNull(),
+  /** 更新时间，毫秒。 */
+  updatedAt: core.integer('updated_at').notNull(),
+});
+
+
+/** 一句话的分派结果（收件表的 result 列）。 */
+export interface InboxResult {
+  /** 引出的执行对话 ID。 */
+  sessionIds: string[];
+  /** 要直接发给用户的话（只记在一批的第一句上，免得重复发）。 */
+  replies: string[];
+  /** 分派的理由。 */
+  reason: string;
+}
+
+
 /** 等人确认的 exec 命令表。 */
 const approvals = core.sqliteTable('jmbot_exec_approvals', {
   /** 自增 ID；告诉用户的“待确认 ID”就是它。 */
@@ -193,7 +235,17 @@ CREATE TABLE IF NOT EXISTS jmbot_exec_approvals (
   command TEXT NOT NULL, work_dir TEXT NOT NULL, status TEXT NOT NULL, note TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS jmbot_inbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, bot TEXT, text TEXT NOT NULL, reply_to TEXT,
+  idle_hours REAL NOT NULL, status TEXT NOT NULL, batch_id INTEGER, result TEXT, error TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS jmbot_inbox_claim ON jmbot_inbox(status, source, id);
 `;
+
+
+/** 一行收件。 */
+export type InboxRow = typeof inbox.$inferSelect;
 
 
 /** 一行会话。 */
@@ -484,29 +536,158 @@ export function openEventStore(dbFile: string) {
     },
 
     /**
-     * 程序启动时调：上次没跑完的（running）标成失败，原因写“程序中断”；没回来的模型调用也标失败。
-     * 工具调用故意不动：留着 in_progress，下次拼上下文时告诉模型“结果未知”，由它决定要不要重做。
-     * @returns 标了几个事件。
+     * 服务启动时收拾上次没做完的（用户 11-03：“停下来了也该继续”；换版本老把正在干的活打断）：
+     *   执行对话里 running 的执行改回 pending，记一条 interrupted 事件，事件循环会从数据库拼上下文接着做
+     *   （没写完的工具结果留成“未知”，模型自己决定要不要重做）；同一个执行被打断第 3 次就不再接着，标成“程序中断”；
+     *   分派对话里 running 的标成失败（它的收件会改回 new 重新分派）；
+     *   收件表里 routing 的改回 new。
+     * @returns 接着做的、标成失败的执行各几个，重新排队的收件几句。
      */
-    markInterrupted(): number {
+    recoverInterrupted(): { resumed: number; failed: number; inbox: number } {
       /** 现在的时间。 */
       const now = Date.now();
-      /** 被标的事件。 */
-      const marked = db
-        .update(events)
-        .set({ status: 'failed', error: '程序中断', updatedAt: now })
-        .where(orm.eq(events.status, 'running'))
-        .returning()
-        .all();
       db.update(modelRequests)
         .set({ status: 'failed', error: '程序中断', updatedAt: now })
         .where(orm.eq(modelRequests.status, 'in_progress'))
         .run();
-      for (const event of marked) {
-        db.update(sessions).set({ status: '出错', lastReply: '程序中断，这次执行没做完。', updatedAt: now }).where(orm.eq(sessions.id, event.sessionId)).run();
+      /** 被打断的执行。 */
+      const running = db
+        .select()
+        .from(events)
+        .where(orm.and(orm.eq(events.status, 'running'), orm.eq(events.type, 'execution')))
+        .all();
+      /** 结果计数。 */
+      const counts = { resumed: 0, failed: 0, inbox: 0 };
+      for (const event of running) {
+        /** 所属会话。 */
+        const session = db.select().from(sessions).where(orm.eq(sessions.id, event.sessionId)).get();
+        /** 以前被打断过几次。 */
+        const before = db
+          .select()
+          .from(events)
+          .where(orm.and(orm.eq(events.parentId, event.id), orm.eq(events.type, 'interrupted')))
+          .all().length;
+        if (session?.kind === 'route' || before >= 2) {
+          db.update(events).set({ status: 'failed', error: '程序中断', updatedAt: now }).where(orm.eq(events.id, event.id)).run();
+          db.update(sessions).set({ status: '出错', lastReply: '程序中断，这次执行没做完。', updatedAt: now }).where(orm.eq(sessions.id, event.sessionId)).run();
+          counts.failed += 1;
+          continue;
+        }
+        db.update(events).set({ status: 'pending', updatedAt: now }).where(orm.eq(events.id, event.id)).run();
+        db.insert(events)
+          .values({ sessionId: event.sessionId, parentId: event.id, type: 'interrupted', payload: { times: before + 1 }, status: 'completed', error: null, createdAt: now, updatedAt: now })
+          .run();
+        db.update(sessions).set({ status: '排队', updatedAt: now }).where(orm.eq(sessions.id, event.sessionId)).run();
+        counts.resumed += 1;
       }
-      return marked.length;
+      counts.inbox = db
+        .update(inbox)
+        .set({ status: 'new', batchId: null, updatedAt: now })
+        .where(orm.eq(inbox.status, 'routing'))
+        .returning()
+        .all().length;
+      return counts;
     },
+
+    // ───────────── 收件 ─────────────
+
+    /**
+     * 记下渠道收到的一句话（new 未分派）；写明了交给谁、不用分派的，带 done 直接记成已分派。
+     * @param input 来源、机器人、话、引用了哪条、多久算隔太久、已经定好的结果。
+     */
+    addInbox(input: { source: string; bot?: string; text: string; replyTo?: string; idleHours: number; done?: InboxResult }): InboxRow {
+      /** 现在的时间。 */
+      const now = Date.now();
+      return db
+        .insert(inbox)
+        .values({
+          source: input.source,
+          bot: input.bot ?? null,
+          text: input.text,
+          replyTo: input.replyTo ?? null,
+          idleHours: input.idleHours,
+          status: input.done ? 'done' : 'new',
+          batchId: null,
+          result: input.done ?? null,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+        .get();
+    },
+
+    /**
+     * 领一批要分派的话：最早一句未分派的话所在来源（这个来源没有正在分派的），把它所有未分派的话一起改成 routing。
+     * 同一来源连着发的几句因此自然合成一批（用户 11-02：“我可能同时发 n 个消息”）。
+     * @returns 这一批（按先后）；没有可领的时是空数组。
+     */
+    claimInboxBatch(): InboxRow[] {
+      return db.transaction((tx) => {
+        /** 正在分派的来源。 */
+        const busy = orm.sql`SELECT source FROM jmbot_inbox WHERE status = 'routing'`;
+        /** 最早一句可领的。 */
+        const first = tx
+          .select()
+          .from(inbox)
+          .where(orm.and(orm.eq(inbox.status, 'new'), orm.sql`${inbox.source} NOT IN (${busy})`))
+          .orderBy(inbox.id)
+          .limit(1)
+          .get();
+        if (!first) {
+          return [];
+        }
+        return tx
+          .update(inbox)
+          .set({ status: 'routing', batchId: first.id, updatedAt: Date.now() })
+          .where(orm.and(orm.eq(inbox.status, 'new'), orm.eq(inbox.source, first.source)))
+          .returning()
+          .all()
+          .sort((a, b) => a.id - b.id);
+      });
+    },
+
+    /**
+     * 一批话分派完了：记结果或出错原因。
+     * @param ids 这一批的 ID（第一句拿全部结果，其余的不带要问用户的话）。
+     * @param outcome 结果，或出错原因。
+     */
+    finishInbox(ids: number[], outcome: { result: InboxResult } | { error: string }): void {
+      /** 现在的时间。 */
+      const now = Date.now();
+      ids.forEach((id, index) => {
+        if ('error' in outcome) {
+          db.update(inbox).set({ status: 'failed', error: outcome.error, updatedAt: now }).where(orm.eq(inbox.id, id)).run();
+          return;
+        }
+        /** 这句的结果。 */
+        const result = index === 0 ? outcome.result : { ...outcome.result, replies: [] };
+        db.update(inbox).set({ status: 'done', result, updatedAt: now }).where(orm.eq(inbox.id, id)).run();
+      });
+    },
+
+    /**
+     * 读一句收件。
+     * @param id 收件 ID。
+     */
+    getInbox(id: number): InboxRow | undefined {
+      return db.select().from(inbox).where(orm.eq(inbox.id, id)).get();
+    },
+
+    /**
+     * 最近的收件（新的在前）。
+     * @param options 只看某个状态、最多几条（默认 50）。
+     */
+    listInbox(options: { status?: InboxRow['status']; limit?: number } = {}): InboxRow[] {
+      return db
+        .select()
+        .from(inbox)
+        .where(options.status ? orm.eq(inbox.status, options.status) : undefined)
+        .orderBy(orm.desc(inbox.id))
+        .limit(options.limit ?? 50)
+        .all();
+    },
+
 
     // ───────────── 每步模型调用 ─────────────
 
