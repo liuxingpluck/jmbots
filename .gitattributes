@@ -1,0 +1,16 @@
+# 换行符统一（2026-11-04）：仓库里一律存 LF，取出时按本机习惯转换。
+# 起因：Windows 上的工具把一批文件改成了 CRLF，git 把整篇都当成改动，真正的改动被淹没。
+* text=auto
+
+# cmd.exe 读 LF 的批处理会出怪问题（标签、goto 错位），取出时固定 CRLF。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+
+# 二进制。
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.db binary

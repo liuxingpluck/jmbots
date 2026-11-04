@@ -2,6 +2,7 @@
 # docs、.claude、diagrams、bak、ztools、runtime、各种笔记和产物一律不进。要加新的顶层目录，在下面加一行 !/名字/。
 /*
 !/.gitignore
+!/.gitattributes
 !/CLAUDE.md
 !/package.json
 !/tsconfig.json
