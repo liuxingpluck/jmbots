@@ -25,15 +25,15 @@
 
 多机器人后端，Web HTTP 服务为主，飞书是外接渠道。2026-10-29 从零重写，11-02 改名 jmbots；项目真身是 `F:\aidata\source\jmbots`（旧名目录 `F:\aidata\source\jmai` 是空目录）。旧代码在 git 标签 `backup-20261029-before-rewrite`（提交 `53fe39a`）和 `bak/` 里，只作参考。
 
-- 入口 `src/Main.ts`：`run`、`approve`、`reject`、`list`、`logs`、`serve`。
-- 分层：`core/`（Runtime、Model、Dispatcher、Judge、Engine）、`store/`（Events 数据库、Log）、`tools/`（默认 12 个工具；read、edit、exec 的做法从 Pi 精简抄来；`codegraph` 用 TypeScript 语言服务查代码关系，代替 graphify）、`channels/`（Http、Feishu、WebPage）、`utils/`。
-- 运行时目录 `F:\aidata\AIJMBots`：`bots/`、`agents/`、`workspaces/`、`知识库/` 只放配置和最终结果；会话日志在 `logs/bots/<机器人>/<会话ID>_<标题>/` 和 `logs/常规/`；数据库和服务输出日志在 `data/`。**`config.yaml` 有密钥，不要打开、打印或复制**（模板是根目录 `config.example.yaml`）。编译、下载用的缓存放 `F:\aidata\cache\`，不放 C 盘。
+- 入口 `src/entries/Main.ts`：`run`、`approve`、`reject`、`list`、`logs`、`serve`。
+- 分层（2026-11-04 框架改造后，以 `docs/05_框架设计.md` 为准）：`resources/`（Resources：有哪些配置、模型、机器人，只读）、`events/`（Events 事件表、Loop 事件循环）、`dispatch/`（Router 分派、Dispatcher 全局分派）、`executors/`（Executor 登记表、Steps 一次 run 一步、Judge、ExecRules）、`capabilities/`（Model、Log、Secrets 密钥替身、Context 接 jmindex；`tools/` 默认工具，read、edit、exec 的做法从 Pi 精简抄来，`codegraph` 用 TypeScript 语言服务查代码关系）、`channels/`（`index.ts` 按 config.yaml 统一装配；Channel 接口、Http、Feishu、WebPage）、`utils/`。基础系统提示词在仓库 `prompts/`，启动时复制进运行时目录。
+- 运行时目录 `F:\aidata\AIJMBots`（11-04 起程序建的目录改成 ASCII 名，启动时自动迁移老目录）：`bots/`、`agents/`、`workspaces/`、`knowledge/` 只放配置和最终结果；会话日志在 `logs/bots/<机器人>/<会话ID>_<标题>/` 和 `logs/general/`；数据库和服务输出日志在 `data/`。**`config.yaml` 有密钥，不要打开、打印或复制**（模板是根目录 `config.example.yaml`）。编译、下载用的缓存放 `F:\aidata\cache\`，不放 C 盘。
 - 网页：`web/`（React + antd，界面库只用 antd），`src/channels/WebPage.ts` 托管 `dist/web`，构建用 `bun run build:web`。
-- zbots（`zbots/`）11-02 晚起停用，飞书改由 jmbots 接；说明在 `zbots/docs/`。飞书 SDK 暂时借用 `zbots/node_modules`。
+- zbots 11-02 晚起停用，2026-11-04 用户发话**整个目录已删**（30 个文件和 5 篇 `zbots/docs/` 说明都在 git 历史里，最后一次提交 `3d34bc2`）。唯一还要用的飞书 SDK 封装已原样搬到 `src/channels/FeishuSdk.ts`，SDK 本身装在根目录。
 
 ## 和 jmbots 一起干活
 
-- Claude 在虚拟机里用 HTTP 把活交给周小灵：`http://192.168.200.1:30086`，`POST /api/run {text, bot, wait}`，`GET /api/sessions/:id/full` 看每步和思考。她给 Claude 的留言在运行时 `integrations/claude/给Claude/`；给用户发飞书放 `integrations/feishu/发件箱/`。
+- Claude 在虚拟机里用 HTTP 把活交给周小灵：`http://192.168.200.1:30086`，`POST /api/run {text, bot, wait}`，`GET /api/sessions/:id/full` 看每步和思考。她给 Claude 的留言在运行时 `integrations/claude/inbox/`；给用户发飞书放 `integrations/feishu/outbox/`（11-04 前叫 `给Claude/`、`发件箱/`）。
 - jmbots 改自己的代码后用 `bun scripts/Swap_Serve.ts`（`bun run swap`）换版本。
 - DSH 只跑已确认的命令（启动、重启 jmbots）。选 DSH 模型前先查记忆里的“订阅额度使用边界”：不得用按量付费的 `deepseek-official/*`，试验对比用 `magpie/workbuddy/*`。控制工具见 `ztools/dsh-control/README.md`。
 
@@ -50,7 +50,7 @@
 ```bash
 bun run typecheck   # 类型检查
 bun run lint        # eslint，--max-warnings 0
-bun run test        # 即 bun test ./tests ./zbots/tests，离线测试
+bun run test        # 即 bun test ./tests，离线测试
 bun run build:web   # 打包网页到 dist/web
 bun run start       # 构建网页后启动服务
 bun run swap        # 换版本：先检查，再试运行，再替换正式服务
