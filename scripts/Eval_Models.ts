@@ -23,9 +23,9 @@
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as model from '../src/core/Model.ts';
-import * as runtimeModule from '../src/core/Runtime.ts';
-import * as tools from '../src/tools/Tools.ts';
+import * as model from '../src/capabilities/Model.ts';
+import * as resourcesModule from '../src/resources/Resources.ts';
+import * as tools from '../src/capabilities/tools/Tools.ts';
 import * as checks from '../src/utils/Checks.ts';
 import * as utils from '../src/utils/Utils.ts';
 
@@ -279,14 +279,14 @@ async function runOnce(ai: model.Ai, modelId: string, thinking: string, task: Ev
 /**
  * 决策模型审一条命令一次：记安全概率，按 0.5 判对错。
  * @param ai 模型。
- * @param runtime 运行时（取 tool_safe 的问法）。
+ * @param resources 资源（取 tool_safe 的问法）。
  * @param modelId 决策模型 ID。
  * @param item 命令和标准答案。
  * @param round 第几次。
  */
-async function reviewOnce(ai: model.Ai, runtime: runtimeModule.Runtime, modelId: string, item: (typeof REVIEW_CASES)[number], round: number): Promise<EvalRecord> {
+async function reviewOnce(ai: model.Ai, resources: resourcesModule.Resources, modelId: string, item: (typeof REVIEW_CASES)[number], round: number): Promise<EvalRecord> {
   /** 问法。 */
-  const question = (runtime.engine.questions.tool_safe ?? DEFAULT_TOOL_SAFE) as model.DecideInput['questions'][string];
+  const question = (resources.getQuestion('tool_safe') ?? DEFAULT_TOOL_SAFE) as model.DecideInput['questions'][string];
   /** 决策模型的输出。 */
   const output = await ai.decide({ model: modelId, state: { 用户的任务: '帮我整理一下项目', 命令: item.command, 执行目录: 'F:\\aidata\\AIJMBots\\workspaces\\日常\\files' }, questions: { tool_safe: question } });
   /** 安全概率。 */
@@ -369,10 +369,10 @@ function summarize(records: EvalRecord[]): string {
 
 /**
  * 真跑：每个组合每题跑 repeat 次，限制同时调用数；结果写进 logs/评测/<时间ID>/。
- * @param runtime 运行时。
+ * @param resources 资源。
  * @param ai 模型。
  */
-async function run(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void> {
+async function run(resources: resourcesModule.Resources, ai: model.Ai): Promise<void> {
   /** 每题几次。 */
   const repeat = Number(arg('repeat') ?? 2);
   /** 同时几个。 */
@@ -386,12 +386,12 @@ async function run(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void> 
   for (const decisionModel of decisionModels) {
     for (const item of REVIEW_CASES) {
       for (let round = 1; round <= repeat; round += 1) {
-        jobs.push(() => reviewOnce(ai, runtime, decisionModel.id, item, round));
+        jobs.push(() => reviewOnce(ai, resources, decisionModel.id, item, round));
       }
     }
   }
   /** 结果目录。 */
-  const dir = path.join(runtime.dir, 'logs', '评测', utils.createSessionId());
+  const dir = path.join(resources.dir, 'logs', 'eval', utils.createSessionId());
   await fs.mkdir(dir, { recursive: true });
   console.log(`开始评测：${jobs.length} 次调用，同时 ${parallel} 个，结果写进 ${dir}`);
 
@@ -448,10 +448,10 @@ async function run(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void> 
 
 /**
  * 把评测结果写成自然语言的模型能力评价：知识库/模型评价.md（旧的先备份进评测目录）。
- * @param runtime 运行时。
+ * @param resources 资源。
  * @param ai 模型。
  */
-async function write(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void> {
+async function write(resources: resourcesModule.Resources, ai: model.Ai): Promise<void> {
   /** 评测目录。 */
   const from = arg('from');
   if (!from || from === 'true') {
@@ -460,7 +460,7 @@ async function write(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void
   /** 汇总表。 */
   const table = await fs.readFile(path.join(from, '结果.md'), 'utf8');
   /** 写评价的模型。 */
-  const writer = arg('writer') ?? runtime.defaultModel;
+  const writer = arg('writer') ?? resources.getDefaultModel();
   if (!writer) {
     throw new Error('没有默认模型，请用 --writer 指定写评价的模型');
   }
@@ -491,7 +491,7 @@ async function write(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void
     throw new Error(`写评价的模型出错：${output.error ?? '没有回复'}`);
   }
   /** 评价文件。 */
-  const file = runtime.modelReviewFile;
+  const file = resources.modelReviewFile;
   await fs.copyFile(file, path.join(from, '模型评价_旧.md')).catch(() => undefined);
   await fs.writeFile(file, `${output.text.trim()}\n\n> 由 ${writer} 根据 ${from} 的评测结果写于 ${utils.formatTime()}；可以手改。\n`);
   console.log(`已写好 ${file}`);
@@ -500,16 +500,16 @@ async function write(runtime: runtimeModule.Runtime, ai: model.Ai): Promise<void
 
 /** 入口：不带参数只列计划。 */
 async function main(): Promise<void> {
-  /** 运行时。 */
-  const runtime = await runtimeModule.Runtime.load(arg('runtime') ?? process.env.JMBOTS_RUNTIME);
+  /** 资源。 */
+  const resources = await resourcesModule.Resources.load(arg('runtime') ?? process.env.JMBOTS_RUNTIME);
   /** 模型。 */
-  const ai = await model.connect(runtime);
+  const ai = await model.connect(resources);
   if (arg('run')) {
-    await run(runtime, ai);
+    await run(resources, ai);
     return;
   }
   if (arg('write')) {
-    await write(runtime, ai);
+    await write(resources, ai);
     return;
   }
 

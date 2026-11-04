@@ -2,7 +2,7 @@
  * 并发配额的离线测试：每个模型、每个供应商同时最多几个调用，超了排队，不丢、不卡死。
  */
 import * as bunTest from 'bun:test';
-import * as model from '../src/core/Model.ts';
+import * as model from '../src/capabilities/Model.ts';
 
 
 /**

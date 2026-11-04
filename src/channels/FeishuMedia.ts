@@ -2,18 +2,12 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type * as feishu from './Feishu.ts';
+import type * as channel from './Channel.ts';
 
 /** 飞书消息类型。 */
 export type MessageType = 'image' | 'file' | 'audio' | 'media' | 'post' | 'interactive';
 /** 工具和渠道之间的发送参数；路径由工具按工作区解析。 */
-export interface SendRequest {
-  type: MessageType;
-  path?: string;
-  name?: string;
-  duration?: number;
-  coverPath?: string;
-  content?: Record<string, unknown>;
-}
+export type SendRequest = channel.MediaRequest;
 /** 飞书 JSON 接口与资源接口共用的客户端。 */
 export interface OpenApi {
   json(method: string, apiPath: string, body?: unknown): Promise<Record<string, unknown>>;
@@ -148,6 +142,10 @@ export function createMediaTransport(api: OpenApi): Pick<feishu.FeishuTransport,
       let content = request.content;
       if (request.type !== 'post' && request.type !== 'interactive') {
         if (!request.path) { throw new Error('缺少本地素材 path'); }
+        //G 请求形状是渠道通用的（type 是 string），飞书只认下面这几种，别的在这里就挡住。
+        if (request.type !== 'image' && request.type !== 'file' && request.type !== 'audio' && request.type !== 'media') {
+          throw new Error(`飞书不支持的素材种类 ${request.type}；只能是 image、file、audio、media、post、interactive`);
+        }
         const key = await upload(api, request.path, request.type, request.name, request.duration);
         content = request.type === 'image' ? { image_key: key } : { file_key: key };
         if (request.type === 'media' && request.coverPath) {

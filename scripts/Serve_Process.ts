@@ -27,8 +27,11 @@ export const HEALTH_TIMEOUT_MS = 90_000;
 /** 换版本的锁多久内算有效，毫秒（检查加换版本一般 1 分多钟）。 */
 export const SWAP_LOCK_MS = 180_000;
 
+/** 开发模式默认按住多久（分钟）：到点自动失效，免得忘了关，服务就一直没人守。 */
+export const DEV_HOLD_DEFAULT_MINUTES = 120;
+
 /**
- * 运行时目录的默认值，和 src/core/Runtime.ts 的 DEFAULT_RUNTIME_DIR 一样。
+ * 运行时目录的默认值，和 src/resources/Resources.ts 的 DEFAULT_RUNTIME_DIR 一样。
  * 这里故意再写一遍而不是从那边导入：看门狗是最后一道防线，不能因为 src 下某个文件被改坏就起不来。
  * 两边的值要一起改。
  */
@@ -38,7 +41,7 @@ export const DEFAULT_RUNTIME_DIR = 'F:/aidata/AIJMBots';
  * 飞书发件箱在运行时目录下的位置，和 src/channels/Feishu.ts 的 OUTBOX_DIR 一样
  * （同样是为了不让看门狗依赖 src；两边要一起改）。往这里放一个 .md，服务在跑时就会发给用户。
  */
-export const OUTBOX_DIR = path.join('integrations', 'feishu', '发件箱');
+export const OUTBOX_DIR = path.join('integrations', 'feishu', 'outbox');
 
 
 /**
@@ -164,7 +167,7 @@ export function startServe(options: StartServeOptions, logName: string): number 
   const logFile = path.join(options.runtimeDir, 'data', `serve_${options.port}_${logName}.log`);
   /** 给 bun 的参数。 */
   const args = [
-    path.join(root, 'src', 'Main.ts'),
+    path.join(root, 'src', 'entries', 'Main.ts'),
     'serve',
     '--port', String(options.port),
     ...(options.candidate ? ['--host', '127.0.0.1', '--mode', 'candidate'] : ['--host', options.host ?? '0.0.0.0']),
@@ -259,6 +262,68 @@ export async function stopServe(runtimeDir: string, port: number): Promise<numbe
     await Bun.sleep(1000);
   }
   return pid;
+}
+
+
+/**
+ * 开发模式的锁文件。
+ * @param runtimeDir 运行时目录。
+ * @returns 文件路径。
+ */
+export function devHoldFile(runtimeDir: string): string {
+  return path.join(runtimeDir, 'data', 'dev.lock');
+}
+
+
+/**
+ * 现在是不是开发模式（看门狗据此只看不动手：不起服务、不回退、不存快照）。
+ * @param runtimeDir 运行时目录。
+ * @returns 还按着就返回到期时间（毫秒）；没按着或已过期返回 undefined。
+ */
+export function devHoldUntil(runtimeDir: string): number | undefined {
+  /** 锁文件：按到什么时候。 */
+  const file = devHoldFile(runtimeDir);
+  if (!fs.existsSync(file)) {
+    return undefined;
+  }
+  /** 到期时间，毫秒。 */
+  const until = Number(fs.readFileSync(file, 'utf8').trim());
+  //G 文件内容坏了（不是数字）当没按住，别把看门狗永久停掉。
+  if (!Number.isFinite(until) || Date.now() >= until) {
+    return undefined;
+  }
+  return until;
+}
+
+
+/**
+ * 按住看门狗。
+ * @param runtimeDir 运行时目录。
+ * @param minutes 按多少分钟。
+ * @returns 到期时间（毫秒）。
+ */
+export function holdDev(runtimeDir: string, minutes: number): number {
+  /** 到期时间。 */
+  const until = Date.now() + minutes * 60_000;
+  fs.mkdirSync(path.join(runtimeDir, 'data'), { recursive: true });
+  fs.writeFileSync(devHoldFile(runtimeDir), String(until));
+  return until;
+}
+
+
+/**
+ * 放开看门狗。
+ * @param runtimeDir 运行时目录。
+ * @returns 本来按着就是 true。
+ */
+export function releaseDev(runtimeDir: string): boolean {
+  /** 锁文件。 */
+  const file = devHoldFile(runtimeDir);
+  if (!fs.existsSync(file)) {
+    return false;
+  }
+  fs.rmSync(file, { force: true });
+  return true;
 }
 
 

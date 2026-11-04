@@ -24,7 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as child from 'node:child_process';
 import * as serveProcess from './Serve_Process.ts';
-import * as runtimeModule from '../src/core/Runtime.ts';
+import * as resourcesModule from '../src/resources/Resources.ts';
 import * as utils from '../src/utils/Utils.ts';
 
 
@@ -84,21 +84,21 @@ async function swap(runtimeDir: string, port: number, candidatePort: number, log
  * 入口：前台检查后把后台那段交给独立进程；后台进程（带 --background）做换版本。
  */
 async function main(): Promise<void> {
-  /** 运行时。 */
-  const runtime = await runtimeModule.Runtime.load(process.env.JMBOTS_RUNTIME);
+  /** 资源。 */
+  const resources = await resourcesModule.Resources.load(process.env.JMBOTS_RUNTIME);
   /** 正式端口。 */
   const port = Number(serveProcess.option('port', '30086'));
   /** 试运行端口。 */
   const candidatePort = Number(serveProcess.option('candidate_port', '30087'));
   /** 锁文件：最近一次开始换版本的时间。看门狗也读它，在换版本期间让开。 */
-  const lockFile = path.join(runtime.dir, 'data', 'swap.lock');
+  const lockFile = path.join(resources.dir, 'data', 'swap.lock');
 
   if (!process.argv.includes('--background')) {
     //G 3 分钟内已经有人开始换版本（周小灵和 Claude 经 DSH 撞过两次，后一次把前一次刚接着做的活又打断了），就不再换。
-    if (serveProcess.isSwapping(runtime.dir) && serveProcess.option('force', 'no') !== 'yes') {
+    if (serveProcess.isSwapping(resources.dir) && serveProcess.option('force', 'no') !== 'yes') {
       /** 上次开始换的时间，毫秒。 */
       const lockedAt = Number(fs.readFileSync(lockFile, 'utf8').trim());
-      console.log(`${Math.round((Date.now() - lockedAt) / 1000)} 秒前已经有人开始换版本了，这次不换（要强行换加 --force yes）。看 ${path.join(runtime.dir, 'data')} 里最新的 swap_*.log。`);
+      console.log(`${Math.round((Date.now() - lockedAt) / 1000)} 秒前已经有人开始换版本了，这次不换（要强行换加 --force yes）。看 ${path.join(resources.dir, 'data')} 里最新的 swap_*.log。`);
       return;
     }
     fs.writeFileSync(lockFile, String(Date.now()));
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
         ...(process.env.JMBOTS_SESSION_ID ? ['--session_id', process.env.JMBOTS_SESSION_ID] : []),
       ],
     });
-    console.log(`已在后台开始换版本（进程 ${backgroundPid ?? '?'}），过程记在 ${path.join(runtime.dir, 'data')} 里最新的 swap_*.log；换完会往发起的会话插一条话报告结果。`);
+    console.log(`已在后台开始换版本（进程 ${backgroundPid ?? '?'}），过程记在 ${path.join(resources.dir, 'data')} 里最新的 swap_*.log；换完会往发起的会话插一条话报告结果。`);
     return;
   }
 
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   //G 前台段写锁到这里可能已经过了一分多钟（检查要时间），重写一次，免得换到一半锁过期、看门狗插进来抢着起服务。
   fs.writeFileSync(lockFile, String(Date.now()));
   /** 日志文件。 */
-  const logFile = path.join(runtime.dir, 'data', `swap_${utils.createSessionId()}.log`);
+  const logFile = path.join(resources.dir, 'data', `swap_${utils.createSessionId()}.log`);
   /**
    * 写一行日志。
    * @param text 内容。
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
   /** 结论。 */
   let summary: string;
   try {
-    summary = await swap(runtime.dir, port, candidatePort, log);
+    summary = await swap(resources.dir, port, candidatePort, log);
   } catch (error) {
     summary = `换版本出错：${utils.errorText(error)}`;
   }

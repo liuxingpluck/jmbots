@@ -5,8 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as doc from '../src/channels/FeishuDoc.ts';
 import type * as media from '../src/channels/FeishuMedia.ts';
-import * as events from '../src/store/Events.ts';
-import * as tools from '../src/tools/Tools.ts';
+import * as events from '../src/events/Events.ts';
+import * as tools from '../src/capabilities/tools/Tools.ts';
 
 test.test('Markdown 拆成标题、段落、列表、引用、代码块和表格', () => {
   const nodes = doc.parseMarkdown([
@@ -222,14 +222,83 @@ test.test('工具层：读 Markdown 文件、按工作区解析图片，飞书�
     const store = events.openEventStore(':memory:');
     const context = {
       workDir: dir, sessionId: 's1', store, execTimeoutMs: 1000, runtimeDir: dir,
-      createFeishuDoc: (_sessionId: string, request: doc.DocRequest) => { seen.push(request); return Promise.resolve('ok'); },
+      chatPublishDoc: (_sessionId: string, request: doc.DocRequest) => { seen.push(request); return Promise.resolve('ok'); },
     } as unknown as tools.ToolContext;
-    const entry = tools.toolDefinitions(tools.FEISHU_DOC_TOOLS)[0]!;
+    const entry = tools.toolDefinitions(tools.CHAT_DOC_TOOLS)[0]!;
     await tools.runTool('feishu_doc', { title: '标题', markdown: 'a.md', images: ['a.png'] }, context);
     test.expect(seen[0]?.markdown).toContain('# 标题');
     test.expect(seen[0]?.images[0]).toBe(path.join(dir, 'a.png'));
     test.expect(entry.name).toBe('feishu_doc');
-    test.expect(tools.FEISHU_DOC_TOOLS).toEqual(['feishu_doc']);
+    test.expect(tools.CHAT_DOC_TOOLS).toEqual(['feishu_doc', 'feishu_doc_delete']);
     store.close();
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+
+test.test('链接只有 http(s) 才发成链接，仓库相对路径退化成纯文字', () => {
+  test.expect(doc.textRuns('见 [说明](https://feishu.cn/docx/abc) 和 [源码](../src/resources/Resources.ts)')).toEqual([
+    { content: '见 ', style: {} },
+    { content: '说明', style: { link: { url: 'https://feishu.cn/docx/abc' } } },
+    { content: ' 和 ', style: {} },
+    { content: '源码', style: {} },
+  ]);
+});
+
+test.test('多行引用和多行段落拆成一行一个块（飞书不收带换行的 text_run）', async () => {
+  const sent: unknown[] = [];
+  const api: media.OpenApi = {
+    json: (_method, route, body) => {
+      if (route === '/docx/v1/documents') { return Promise.resolve({ document: { document_id: 'doccn_wrap' } }); }
+      if (route.endsWith('/children')) { sent.push(body); return Promise.resolve({ children: [] }); }
+      if (route.startsWith('/im/v1/chats/')) { return Promise.resolve({ items: [{ member_id: 'ou_user' }] }); }
+      return Promise.resolve({});
+    },
+    download: () => Promise.reject(new Error('unexpected')),
+  };
+  const markdown = ['> 引用一行', '>', '> 引用三行', '', '段落一行', '段落两行'].join('\n');
+  await doc.createDocPublisher(api).publish({ title: '换行', markdown, images: [] }, 'oc_x');
+  const children = (sent[0] as { children: Record<string, { elements: { text_run: { content: string } }[] }>[] }).children;
+  //G 两个引用块 + 两个段落块，每块一行，没有任何一块的文字里带换行。
+  test.expect(children).toHaveLength(4);
+  const texts = children.map((block) => Object.values(block).find((value) => typeof value === 'object')?.elements[0]?.text_run.content);
+  test.expect(texts).toEqual(['引用一行', '引用三行', '段落一行', '段落两行']);
+  test.expect(texts.some((text) => (text ?? '').includes('\n'))).toBe(false);
+});
+
+test.test('删文档：一篇一篇放进回收站，删不掉的单独报出来', async () => {
+  const deleted: string[] = [];
+  const api: media.OpenApi = {
+    json: (method, route) => {
+      if (method === 'DELETE' && route.startsWith('/drive/v1/files/')) {
+        const id = route.slice('/drive/v1/files/'.length).split('?')[0] ?? '';
+        if (id === 'doc_bad') { return Promise.reject(new Error('没有权限')); }
+        deleted.push(id);
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    },
+    download: () => Promise.reject(new Error('unexpected')),
+  };
+  const remove = doc.createDocRemover(doc.createDocPublisher(api));
+  const report = await remove(['doc_a', 'doc_bad', 'doc_b']);
+  test.expect(deleted).toEqual(['doc_a', 'doc_b']);
+  test.expect(report).toContain('已放进回收站 2 篇');
+  test.expect(report).toContain('删不掉 1 篇');
+  test.expect(report).toContain('doc_bad');
+});
+
+test.test('工具层：feishu_doc_delete 把文档 ID 原样交下去，空列表报错', async () => {
+  const seen: string[][] = [];
+  const store = events.openEventStore(':memory:');
+  const context = {
+    workDir: '.', sessionId: 's1', store, execTimeoutMs: 1000, runtimeDir: '.',
+    chatDeleteDoc: (ids: string[]) => { seen.push(ids); return Promise.resolve('ok'); },
+  } as unknown as tools.ToolContext;
+  await tools.runTool('feishu_doc_delete', { documents: [' doc_a ', 'doc_b'] }, context);
+  test.expect(seen[0]).toEqual(['doc_a', 'doc_b']);
+  //G 空列表要挡住：不能一调就去删一堆东西。
+  let refused = '';
+  try { await tools.runTool('feishu_doc_delete', { documents: [] }, context); } catch (error) { refused = error instanceof Error ? error.message : String(error); }
+  test.expect(refused).toContain('documents');
+  store.close();
 });

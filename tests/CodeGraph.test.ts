@@ -6,7 +6,7 @@ import * as bunTest from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as codeGraph from '../src/tools/CodeGraph.ts';
+import * as codeGraph from '../src/capabilities/tools/CodeGraph.ts';
 
 
 /** 临时项目目录。 */

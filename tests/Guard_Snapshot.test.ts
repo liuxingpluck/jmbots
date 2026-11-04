@@ -25,12 +25,11 @@ function tempDir(name: string): string {
  * @param root 放哪儿。
  */
 function fakeProject(root: string): void {
-  fs.mkdirSync(path.join(root, 'src', 'core'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'zbots', 'src'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'src', 'entries'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'src', 'events'), { recursive: true });
   fs.mkdirSync(path.join(root, 'dist', 'web'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'src', 'Main.ts'), '// 假的入口\n');
-  fs.writeFileSync(path.join(root, 'src', 'core', 'Engine.ts'), '// 假的事件循环\n');
-  fs.writeFileSync(path.join(root, 'zbots', 'src', 'Feishu.ts'), '// 假的飞书封装\n');
+  fs.writeFileSync(path.join(root, 'src', 'entries', 'Main.ts'), '// 假的入口\n');
+  fs.writeFileSync(path.join(root, 'src', 'events', 'Loop.ts'), '// 假的事件循环\n');
   fs.writeFileSync(path.join(root, 'dist', 'web', 'index.html'), '<!doctype html>\n');
   fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fake"}\n');
   fs.writeFileSync(path.join(root, 'tsconfig.json'), '{}\n');
@@ -49,7 +48,7 @@ bunTest.test('存一份快照：该拷的都在，说明文件能读回来', () 
   bunTest.expect(version.id).toBe('20261103120000000111');
   bunTest.expect(version.healthySeconds).toBe(312);
   //M 服务从快照目录起得来，靠的就是这几样都在。
-  for (const item of ['src/Main.ts', 'src/core/Engine.ts', 'zbots/src/Feishu.ts', 'dist/web/index.html', 'package.json', 'tsconfig.json']) {
+  for (const item of ['src/entries/Main.ts', 'src/events/Loop.ts', 'dist/web/index.html', 'package.json', 'tsconfig.json']) {
     bunTest.expect(fs.existsSync(path.join(version.dir, item))).toBe(true);
   }
   //M 列出来时读的是说明文件，内容要和刚存的一致。
@@ -71,7 +70,7 @@ bunTest.test('dist/web 还没打包过也能存，只是快照里没有网页', 
 
   /** 存好的快照。 */
   const version = snapshot.save('20261103120100000222', 300, { root, versionsDir });
-  bunTest.expect(fs.existsSync(path.join(version.dir, 'src', 'Main.ts'))).toBe(true);
+  bunTest.expect(fs.existsSync(path.join(version.dir, 'src', 'entries', 'Main.ts'))).toBe(true);
   bunTest.expect(fs.existsSync(path.join(version.dir, 'dist'))).toBe(false);
 
   fs.rmSync(root, { recursive: true, force: true });
@@ -180,7 +179,35 @@ bunTest.test('时间 ID 是 20 位数字，按时间往后排', () => {
 
 
 bunTest.test('运行时目录：命令行 --runtime 优先于环境变量', () => {
-  //M 看门狗和双击启动都靠这个找运行时，默认值要和 src/core/Runtime.ts 的一致。
+  //M 看门狗和双击启动都靠这个找运行时，默认值要和 src/resources/Resources.ts 的一致。
   bunTest.expect(serveProcess.DEFAULT_RUNTIME_DIR).toBe('F:/aidata/AIJMBots');
   bunTest.expect(serveProcess.option('一个不存在的参数', '兜底')).toBe('兜底');
+});
+
+
+bunTest.test('开发模式：按住后看门狗只看不动手，到点自动放开，文件坏了当没按住', () => {
+  const root = tempDir('devhold');
+  try {
+    //G 没按住时就是 undefined，看门狗照常干活。
+    bunTest.expect(serveProcess.devHoldUntil(root)).toBeUndefined();
+    bunTest.expect(serveProcess.releaseDev(root)).toBe(false);
+
+    const until = serveProcess.holdDev(root, 30);
+    bunTest.expect(serveProcess.devHoldUntil(root)).toBe(until);
+    bunTest.expect(until - Date.now()).toBeGreaterThan(29 * 60_000);
+
+    //G 已经过期的锁等于没按住：免得忘了关，服务就一直没人守。
+    fs.writeFileSync(serveProcess.devHoldFile(root), String(Date.now() - 1000));
+    bunTest.expect(serveProcess.devHoldUntil(root)).toBeUndefined();
+
+    //G 文件内容坏了也当没按住，不能把看门狗永久停掉。
+    fs.writeFileSync(serveProcess.devHoldFile(root), '不是数字');
+    bunTest.expect(serveProcess.devHoldUntil(root)).toBeUndefined();
+
+    serveProcess.holdDev(root, 5);
+    bunTest.expect(serveProcess.releaseDev(root)).toBe(true);
+    bunTest.expect(serveProcess.devHoldUntil(root)).toBeUndefined();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

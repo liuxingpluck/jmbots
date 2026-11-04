@@ -4,7 +4,7 @@
  */
 import * as bunTest from 'bun:test';
 import * as feishu from '../src/channels/Feishu.ts';
-import * as events from '../src/store/Events.ts';
+import * as events from '../src/events/Events.ts';
 
 
 /**

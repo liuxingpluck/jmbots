@@ -6,17 +6,11 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as media from './FeishuMedia.ts';
 import * as feishu from './Feishu.ts';
-import type * as eventsModule from '../store/Events.ts';
+import type * as eventsModule from '../events/Events.ts';
+import type * as channel from './Channel.ts';
 
 /** 发布一篇文档要的东西；路径已经由工具按工作区解析成绝对路径。 */
-export interface DocRequest {
-  /** 文档标题。 */
-  title: string;
-  /** Markdown 正文（已读出的文本）。 */
-  markdown: string;
-  /** 放在最前面的图片，按给的顺序；没有就是空数组。 */
-  images: string[];
-}
+export type DocRequest = channel.DocRequest;
 
 /** 发布结果。 */
 export interface DocResult {
@@ -56,6 +50,16 @@ interface Block {
 }
 
 /**
+ * 这个链接地址飞书收不收：只有 http、https 能当真链接发。
+ * @param url Markdown 里写的地址。
+ * @returns 能当链接发就是 true。
+ */
+function isHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+
+/**
  * 把一行里的行内标记拆成飞书文本片段：`代码`、**粗体**、*斜体*、[文字](链接)。
  * @param text 一行或一段文字。
  * @returns 文本片段。
@@ -74,7 +78,10 @@ export function textRuns(text: string): TextRun[] {
       runs.push({ content: token.slice(2, -2), style: { bold: true } });
     } else if (token.startsWith('[')) {
       const cut = token.indexOf('](');
-      runs.push({ content: token.slice(1, cut), style: { link: { url: token.slice(cut + 2, -1) } } });
+      /** 链接地址。 */
+      const url = token.slice(cut + 2, -1);
+      //G 飞书只认 http(s)；仓库相对路径这种（[说明](../src/a.ts)）照发会报 1770006 schema mismatch，退化成纯文字。
+      runs.push({ content: token.slice(1, cut), style: isHttpUrl(url) ? { link: { url } } : {} });
     } else {
       runs.push({ content: token.slice(1, -1), style: { italic: true } });
     }
@@ -186,14 +193,30 @@ export function parseMarkdown(markdown: string): DocNode[] {
 }
 
 /**
- * 一个块节点转成飞书块。
+ * 一个块节点转成飞书块；正文里的换行拆成多个块。
  * @param node 节点。
+ * @returns 飞书块，至少一个。
+ */
+function toBlocks(node: Exclude<DocNode, { kind: 'table' }>): Block[] {
+  //G 代码块里的换行要留着（整段就是一个块，实测飞书收）；别的块带换行会报 1770006，一行一个块。
+  if (node.kind === 'code') { return [buildBlock(node, node.text)]; }
+  /** 去掉空行后的每一行。 */
+  const lines = node.text.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length === 0) { return []; }
+  return lines.map((line) => buildBlock(node, line));
+}
+
+
+/**
+ * 一段不带换行的文字转成一个飞书块。
+ * @param node 节点（只用它的类型）。
+ * @param text 这个块的文字。
  * @returns 飞书块。
  */
-function toBlock(node: Exclude<DocNode, { kind: 'table' }>): Block {
+function buildBlock(node: Exclude<DocNode, { kind: 'table' }>, text: string): Block {
   if (node.kind === 'heading') {
     const level = Math.min(9, Math.max(1, node.level));
-    return { block_type: BLOCK.heading + level - 1, [`heading${level}`]: { elements: elements(node.text), style: {} } };
+    return { block_type: BLOCK.heading + level - 1, [`heading${level}`]: { elements: elements(text), style: {} } };
   }
   const kinds = {
     paragraph: { type: BLOCK.text, field: 'text', style: {} },
@@ -204,7 +227,7 @@ function toBlock(node: Exclude<DocNode, { kind: 'table' }>): Block {
   } as const;
   const kind = kinds[node.kind];
   //G 代码块的内容原样放进一个文本片段：不解析行内标记，否则代码里的反引号、星号会被吃掉。
-  const content = node.kind === 'code' ? [{ text_run: { content: node.text } }] : elements(node.text);
+  const content = node.kind === 'code' ? [{ text_run: { content: text } }] : elements(text);
   return { block_type: kind.type, [kind.field]: { elements: content, style: kind.style } };
 }
 
@@ -212,6 +235,8 @@ function toBlock(node: Exclude<DocNode, { kind: 'table' }>): Block {
 export interface DocPublisher {
   /** 建文档 → 插图片 → 写正文 → 给权限。 */
   publish(request: DocRequest, chatId: string): Promise<DocResult>;
+  /** 把一篇云文档放进回收站；只删得掉应用自己建的那些。 */
+  remove(documentId: string): Promise<void>;
 }
 
 /** 每次插块的最大个数（飞书限制 50）。 */
@@ -355,7 +380,7 @@ export function createDocPublisher(api: media.OpenApi): DocPublisher {
         /** 单元格块。 */
         const cellId = cellIds[row * columns + column];
         if (!cellId) { continue; }
-        await insert(documentId, cellId, [toBlock({ kind: 'paragraph', text })], 0);
+        await insert(documentId, cellId, toBlocks({ kind: 'paragraph', text }), 0);
         await pause(PACE_MS);
       }
     }
@@ -421,7 +446,7 @@ export function createDocPublisher(api: media.OpenApi): DocPublisher {
           index++;
           continue;
         }
-        pending.push(toBlock(node));
+        pending.push(...toBlocks(node));
         if (pending.length >= BATCH) { await flush(); }
       }
       await flush();
@@ -441,8 +466,40 @@ export function createDocPublisher(api: media.OpenApi): DocPublisher {
         note: '没查到聊天里的用户 open_id（可能要 im:chat:readonly 权限），改成把链接设成组织内可编辑',
       };
     },
+
+    async remove(documentId) {
+      //M 云空间的删除是放进回收站，30 天内用户自己还能在飞书里还原。
+      await call('DELETE', `/drive/v1/files/${encodeURIComponent(documentId)}?type=docx`);
+    },
   };
 }
+
+/**
+ * 给工具用的删除函数：一篇一篇放进回收站，挨个报结果（有的删不掉不影响别的）。
+ * @param publisher 发布器。
+ * @returns (文档 ID 列表) → 结果说明。
+ */
+export function createDocRemover(publisher: DocPublisher): (documentIds: string[]) => Promise<string> {
+  return async (documentIds) => {
+    /** 删掉的。 */
+    const done: string[] = [];
+    /** 没删掉的，带原因。 */
+    const failed: string[] = [];
+    for (const documentId of documentIds) {
+      try {
+        await publisher.remove(documentId);
+        done.push(documentId);
+      } catch (error) {
+        failed.push(`${documentId}（${error instanceof Error ? error.message : String(error)}）`);
+      }
+    }
+    /** 结果各写一句。 */
+    const parts = [`已放进回收站 ${done.length} 篇${done.length ? `：${done.join('、')}` : ''}`];
+    if (failed.length) { parts.push(`删不掉 ${failed.length} 篇：${failed.join('；')}`); }
+    return parts.join('；');
+  };
+}
+
 
 /**
  * 给工具用的发布函数：按会话找到飞书聊天，再把结果写成一句话。

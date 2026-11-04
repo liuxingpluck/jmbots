@@ -26,16 +26,16 @@ import * as fastify from 'fastify';
 import * as crypto from 'node:crypto';
 import * as checks from '../utils/Checks.ts';
 import * as webPage from './WebPage.ts';
-import type * as engineModule from '../core/Engine.ts';
-import type * as modelModule from '../core/Model.ts';
-import type * as runtimeModule from '../core/Runtime.ts';
-import type * as eventsModule from '../store/Events.ts';
+import type * as engineModule from '../events/Loop.ts';
+import type * as modelModule from '../capabilities/Model.ts';
+import type * as resourcesModule from '../resources/Resources.ts';
+import type * as eventsModule from '../events/Events.ts';
 
 
 /** 建 HTTP 服务要给的东西。 */
 export interface HttpOptions {
-  /** 运行时。 */
-  runtime: runtimeModule.Runtime;
+  /** 资源。 */
+  resources: resourcesModule.Resources;
 
   /** 数据库（查会话、步骤）。 */
   store: eventsModule.EventStore;
@@ -90,10 +90,10 @@ function sameText(actual: string, expected: string): boolean {
 
 /**
  * 建 HTTP 服务（不监听端口，调用方 listen）。
- * @param options 运行时、数据库、引擎、模型、地址、token。
+ * @param options 资源、数据库、引擎、模型、地址、token。
  */
 export function createHttp(options: HttpOptions) {
-  const { runtime, store, engine, ai } = options;
+  const { resources, store, engine, ai } = options;
   /** Fastify 实例。 */
   const app = fastify.default({ logger: false });
 
@@ -112,11 +112,11 @@ export function createHttp(options: HttpOptions) {
   });
 
   // ───────── 资源（无状态） ─────────
-  app.get('/api/health', () => ({ ok: true, problems: runtime.problems() }));
-  app.get('/api/models', () => ({ defaultModel: runtime.defaultModel, models: ai.listModels() }));
-  app.get('/api/agents', () => runtime.agents.map((role) => ({ name: role.name, description: role.description, model: role.model ?? runtime.defaultModel })));
-  app.get('/api/bots', () => runtime.bots.map((role) => ({ name: role.name, description: role.description, model: role.model ?? runtime.defaultModel })));
-  app.get('/api/workspaces', () => runtime.listWorkspaces());
+  app.get('/api/health', () => ({ ok: true, problems: resources.problems() }));
+  app.get('/api/models', () => ({ defaultModel: resources.getDefaultModel(), models: ai.listModels() }));
+  app.get('/api/agents', () => resources.listRoles('agent').map((role) => ({ name: role.name, description: role.description, model: role.model ?? resources.getDefaultModel() })));
+  app.get('/api/bots', () => resources.listRoles('bot').map((role) => ({ name: role.name, description: role.description, model: role.model ?? resources.getDefaultModel() })));
+  app.get('/api/workspaces', () => resources.listWorkspaces());
 
   // ───────── 会话 ─────────
   app.get<{ Querystring: Record<string, string | undefined> }>('/api/sessions', (request) => {
@@ -168,7 +168,7 @@ export function createHttp(options: HttpOptions) {
     const executions = events
       .filter((event) => event.type === 'execution')
       .map((event) => ({ eventId: event.id, steps: store.listModelRequests(event.id), tools: store.listToolResults(event.id) }));
-    return { session, events, executions, approvals: store.listApprovals(session.id), sessionDir: runtime.sessionDir(session) };
+    return { session, events, executions, approvals: store.listApprovals(session.id), sessionDir: resources.sessionDir(session) };
   });
 
   //M 长连接（SSE）：这个会话每次执行结束推一条 finished；每 15 秒发一次心跳，免得被中间的代理断开。
@@ -208,8 +208,8 @@ export function createHttp(options: HttpOptions) {
         model: checks.optionalString(body.model, 'model'),
         workspace: checks.optionalString(body.workspace, 'workspace'),
       });
-      // 写明了交给谁的，不经分派；也记进收件表（直接标成已分派），所有投递都在一处看得到。
-      store.addInbox({
+      // 写明了交给谁的，不经分派；也记成一条 message 事件（直接标成已分派），所有投递都在一处看得到。
+      store.addMessage({
         source: checks.optionalString(body.source, 'source') ?? 'HTTP',
         text: checks.requireString(body.text, 'text'),
         idleHours: 0,
@@ -244,12 +244,12 @@ export function createHttp(options: HttpOptions) {
   });
 
   app.get('/api/approvals', () => store.listPendingApprovals());
-  // 收件表：最近收到的话，new 未分派、routing 分派中、done 已分派（带引出的会话）、failed 出错。
+  // 收到的话（事件表里的 message 事件）：pending 未分派、running 分派中、completed 已分派（payload.result 带引出的会话）、failed 出错。
   app.get<{ Querystring: Record<string, string | undefined> }>('/api/inbox', (request) => {
     /** 只看某个状态。 */
     const status = request.query.status;
-    return store.listInbox({
-      status: status === 'new' || status === 'routing' || status === 'done' || status === 'failed' ? status : undefined,
+    return store.listMessages({
+      status: status === 'pending' || status === 'running' || status === 'completed' || status === 'failed' ? status : undefined,
       limit: Number(request.query.limit ?? 50),
     });
   });

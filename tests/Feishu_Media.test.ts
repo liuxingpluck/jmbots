@@ -5,9 +5,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as media from '../src/channels/FeishuMedia.ts';
 import * as feishu from '../src/channels/Feishu.ts';
-import * as zbots from '../zbots/src/Feishu.ts';
-import * as events from '../src/store/Events.ts';
-import * as tools from '../src/tools/Tools.ts';
+import * as feishuSdk from '../src/channels/FeishuSdk.ts';
+import * as events from '../src/events/Events.ts';
+import * as tools from '../src/capabilities/tools/Tools.ts';
 
 /** Bun 的 rejects 类型声明为 void；显式等待失败以保证检查完成。 */
 async function expectFailure(promise: Promise<unknown>, text = ''): Promise<void> {
@@ -120,7 +120,7 @@ test.test('原始 SDK 事件保留素材，图文同时保留文字、图片和�
     sender: { sender_id: { open_id: 'ou_user' } },
     message: { message_id: 'om_in', chat_id: 'oc_test', chat_type: 'p2p', message_type: 'post', content: JSON.stringify({ zh_cn: { title: '标题', content: [[{ tag: 'text', text: '说明' }, { tag: 'img', image_key: 'img_1' }, { tag: 'media', file_key: 'file_1', image_key: 'img_1' }]] } }) },
   };
-  test.expect(zbots.toMessage(event).rawContent).toBe(event.message.content);
+  test.expect(feishuSdk.toMessage(event).rawContent).toBe(event.message.content);
   const message = feishu.toMessage(event);
   test.expect(message.text).toContain('说明');
   test.expect(message.resources?.map((item) => item.key)).toEqual(['img_1', 'file_1']);
@@ -167,6 +167,6 @@ test.test('媒体发送继承聊天路由，sent 事件保存消息类型和 ID'
     await feishu.createMediaSender({ listen: () => Promise.resolve(), close: () => undefined, sendText: () => Promise.resolve(''), sendMedia: (to) => { target = to; return Promise.resolve('om_media'); } }, store)(session.id, { type: 'image', path: 'test.png' });
     test.expect(target).toEqual({ chatId: 'oc_test' });
     test.expect(store.listEvents(session.id, 'sent')[0]?.payload).toEqual({ channel: '飞书', messageId: 'om_media', messageType: 'image' });
-    test.expect(tools.toolDefinitions(tools.FEISHU_MEDIA_TOOLS).length).toBe(6);
+    test.expect(tools.toolDefinitions(tools.CHAT_MEDIA_TOOLS).length).toBe(6);
   } finally { store.close(); }
 });

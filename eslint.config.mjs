@@ -24,7 +24,7 @@ export default eslintConfig.defineConfig([
     ],
   },
   {
-    files: ['src/**/*.ts', 'scripts/**/*.ts', 'tests/**/*.ts', 'zbots/src/**/*.ts', 'zbots/tests/**/*.ts'],
+    files: ['src/**/*.ts', 'scripts/**/*.ts', 'tests/**/*.ts'],
     extends: [
       eslintJs.configs.recommended,
       ...tseslint.configs.recommendedTypeChecked,
@@ -65,7 +65,6 @@ export default eslintConfig.defineConfig([
       'web/src/**/*.{ts,tsx}',
       'scripts/**/*.{ts,mjs}',
       'tests/**/*.{ts,mjs}',
-      'zbots/src/**/*.ts', 'zbots/tests/**/*.ts',
       'eslint.config.mjs',
     ],
     rules: {

@@ -12,16 +12,16 @@
  *           用户 11-02：卡片接口要通用，审核卡片只是调用它的一个专门的创建函数。加新种类：写一个 xxxCard 和一个处理函数，登记进 cardHandlers。
  *   发出去的每条消息记成会话里的 sent 事件（带消息 ID）：用户引用回复某条消息时，引擎按它直接找回那个会话（Router.threadRoute）
  *
- * 官方 SDK 暂时借用 zbots/src/Feishu.ts（装在 zbots/node_modules）。TODO：把 SDK 装进根目录，去掉对 zbots 的依赖。
+ * 官方 SDK 的封装在同目录的 FeishuSdk.ts（长连接收消息、发消息）。
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as zbotsFeishu from '../../zbots/src/Feishu.ts';
+import * as feishuSdk from './FeishuSdk.ts';
 import * as media from './FeishuMedia.ts';
 import * as utils from '../utils/Utils.ts';
-import type * as engineModule from '../core/Engine.ts';
-import type * as runtimeModule from '../core/Runtime.ts';
-import type * as eventsModule from '../store/Events.ts';
+import type * as engineModule from '../events/Loop.ts';
+import type * as resourcesModule from '../resources/Resources.ts';
+import type * as eventsModule from '../events/Events.ts';
 
 /** 飞书文本消息接收事件的必要字段。 */
 export interface ReceiveEvent {
@@ -132,7 +132,7 @@ export interface Feishu {
 
 /**
  * 将飞书事件转换为本地消息；无效的文本 JSON 会抛错。
- * 图文消息（post）在 zbots 的 SDK 那层已经取出文字、包成 { text }，这里和文字消息一样读。
+ * 图文消息（post）在 SDK 那层已经取出文字、包成 { text }，这里和文字消息一样读。
  */
 export function toMessage(event: ReceiveEvent): FeishuMessage {
   let text = '';
@@ -162,7 +162,7 @@ export function toMessage(event: ReceiveEvent): FeishuMessage {
     }
   }
   if (event.message.message_type === 'post' && !text) {
-    text = zbotsFeishu.toMessage(event).text;
+    text = feishuSdk.toMessage(event).text;
   }
   return {
     messageId: event.message.message_id,
@@ -177,13 +177,13 @@ export function toMessage(event: ReceiveEvent): FeishuMessage {
 }
 
 /**
- * 复用 zbots 官方 SDK 连接；只在调用 listen 或 sendText 时实际联网。
+ * 复用官方 SDK 连接；只在调用 listen 或 sendText 时实际联网。
  * @param config 调用方提供的飞书配置；不读取任何配置文件。
  * @returns 可交给 createFeishu 的真实传输层。
  */
-export function createSdkTransport(config: zbotsFeishu.FeishuConfig): FeishuTransport {
-  const client = zbotsFeishu.createFeishu(config);
-  /** 调开放接口（表情回应）的小客户端：SDK 在 zbots 里，这里直接发 HTTP 请求。 */
+export function createSdkTransport(config: feishuSdk.FeishuConfig): FeishuTransport {
+  const client = feishuSdk.createFeishu(config);
+  /** 调开放接口（表情回应）的小客户端：绕开 SDK，直接发 HTTP 请求。 */
   const api = media.createOpenApi(config.app_id, config.app_secret);
   return {
     ...media.createMediaTransport(api),
@@ -383,21 +383,21 @@ export interface ReadySettings {
 /**
  * 读飞书设置：没开、没填 app_id 和 app_secret 时返回 undefined（不启用飞书）。
  * 没写 bot 时交给第一个机器人；一个机器人都没有也不启用。
- * @param runtime 运行时。
+ * @param resources 资源。
  */
-export function readSettings(runtime: runtimeModule.Runtime): ReadySettings | undefined {
-  /** channels.feishu。 */
-  const settings = ((runtime.config.channels ?? {}) as { feishu?: FeishuSettings }).feishu;
+export function readChannelSettings(raw: Record<string, unknown>): ReadySettings | undefined {
+  /** 当成飞书那一段看。 */
+  const settings = raw as FeishuSettings;
   //G 没开或没填应用的 ID 和密钥。
-  if (!settings?.enabled || !settings.app_id || !settings.app_secret) {
+  if (!settings.enabled || !settings.app_id || !settings.app_secret) {
     return undefined;
   }
-  /** 飞书来的消息交给哪个机器人。 */
-  const bot = settings.bot || runtime.bots[0]?.name;
-  if (!bot) {
+  //G 没写交给哪个机器人就接不了：收到消息不知道派给谁。（原来会落到"第一个机器人"，
+  //  那是在只有一个飞书号时才说得通；现在同一种渠道可以接好几个号，必须写明。）
+  if (!settings.bot) {
     return undefined;
   }
-  return { app_id: settings.app_id, app_secret: settings.app_secret, bot, session_idle_hours: settings.session_idle_hours };
+  return { app_id: settings.app_id, app_secret: settings.app_secret, bot: settings.bot, session_idle_hours: settings.session_idle_hours };
 }
 
 
@@ -613,21 +613,21 @@ export interface StartFeishuOptions {
   store: eventsModule.EventStore;
   /** 引擎。 */
   engine: engineModule.Engine;
-  /** 运行时（写 integrations\feishu\<机器人>\连接记录.md）。 */
-  runtime: runtimeModule.Runtime;
+  /** 资源（写 integrations\feishu\<机器人>\连接记录.md）。 */
+  resources: resourcesModule.Resources;
 }
 
 
 /**
  * 往 integrations\feishu\<机器人>\连接记录.md 记一行：长连接什么时候连上、断线、重连、出错。
- * @param runtime 运行时。
+ * @param resources 资源。
  * @param bot 机器人名字。
  * @param state 状态。
  * @param detail 补充说明（出错原因）。
  */
-async function logConnection(runtime: runtimeModule.Runtime, bot: string, state: string, detail?: string): Promise<void> {
+async function logConnection(resources: resourcesModule.Resources, bot: string, state: string, detail?: string): Promise<void> {
   /** 这个机器人的文件夹。 */
-  const dir = path.join(runtime.dir, 'integrations', 'feishu', bot);
+  const dir = path.join(resources.dir, 'integrations', 'feishu', bot);
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(path.join(dir, '连接记录.md'), `- ${utils.formatTime()} ${state}${detail ? `：${detail}` : ''}（进程 ${process.pid}）\n`);
 }
@@ -645,7 +645,7 @@ async function logConnection(runtime: runtimeModule.Runtime, bot: string, state:
  * @throws 第一次连接失败时抛错。
  */
 export async function startFeishu(options: StartFeishuOptions): Promise<Feishu> {
-  const { transport, settings, store, engine, runtime } = options;
+  const { transport, settings, store, engine, resources } = options;
   /** 发回某个会话所在聊天。 */
   const send = createSender(transport, store);
 
@@ -839,7 +839,7 @@ export async function startFeishu(options: StartFeishuOptions): Promise<Feishu> 
         const parts = message.text ? [message.text] : [];
         for (const resource of message.resources ?? []) {
           const safeName = Array.from(path.basename(resource.name.replaceAll('\\', '/'))).map((char) => char.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(char) ? '_' : char).join('').slice(0, 150);
-          const destination = path.join(runtime.dir, 'integrations', 'feishu', '收件箱', crypto.randomUUID(), safeName || 'attachment');
+          const destination = path.join(resources.dir, 'integrations', 'feishu', 'inbox', crypto.randomUUID(), safeName || 'attachment');
           try {
             if (!transport.downloadResource) { throw new Error('传输层没有资源下载能力'); }
             await transport.downloadResource(message.messageId, resource, destination);
@@ -861,7 +861,7 @@ export async function startFeishu(options: StartFeishuOptions): Promise<Feishu> 
     undefined,
     onCardAction,
     (state, detail) => {
-      void logConnection(runtime, settings.bot, state, detail).catch((error: unknown) => console.error(`${utils.formatTime()} 飞书连接记录没写成：${utils.errorText(error)}`));
+      void logConnection(resources, settings.bot, state, detail).catch((error: unknown) => console.error(`${utils.formatTime()} 飞书连接记录没写成：${utils.errorText(error)}`));
     },
   );
   await adapter.listen();
@@ -871,22 +871,22 @@ export async function startFeishu(options: StartFeishuOptions): Promise<Feishu> 
 
 
 /** 飞书发件箱的文件夹（在运行时目录下；用户 11-02 定：外接的东西都放 integrations）。 */
-export const OUTBOX_DIR = path.join('integrations', 'feishu', '发件箱');
+export const OUTBOX_DIR = path.join('integrations', 'feishu', 'outbox');
 
 
 /**
  * 飞书发件箱：别的程序（比如在虚拟机里、不能直接调接口的 Claude）往运行时目录的 飞书发件箱\ 放一个 .md 文件，
  * 这里每 5 秒看一次，把文件内容通过飞书发给最近私聊过机器人的人，发完挪进 飞书发件箱\已发\。
  * 写文件的一方要先写成别的扩展名（如 .tmp）再改名成 .md，免得发出半截。发送失败的文件留在原处，下一轮再试。
- * @param runtime 运行时（找发件箱目录）。
+ * @param resources 资源（找发件箱目录）。
  * @param send 发消息的函数（createSender 建的）；会话 ID 传空字符串，表示发给最近私聊的人。
  * @returns 停止的函数。
  */
-export function startOutbox(runtime: runtimeModule.Runtime, send: (sessionId: string, text: string) => Promise<string>): () => void {
+export function startOutbox(resources: resourcesModule.Resources, send: (sessionId: string, text: string) => Promise<string>): () => void {
   /** 发件箱目录。 */
-  const dir = path.join(runtime.dir, OUTBOX_DIR);
+  const dir = path.join(resources.dir, OUTBOX_DIR);
   /** 已发的放这里。 */
-  const sentDir = path.join(dir, '已发');
+  const sentDir = path.join(path.dirname(dir), 'sent');
   /** 上一轮还没做完时跳过这一轮，免得同一个文件发两次。 */
   let busy = false;
 

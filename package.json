@@ -9,8 +9,8 @@
     "bun": ">=1.3.14"
   },
   "scripts": {
-    "dev": "bun --watch src/Main.ts serve",
-    "start": "bun run build:web && bun src/Main.ts serve",
+    "dev": "bun --watch src/entries/Main.ts serve",
+    "start": "bun run build:web && bun src/entries/Main.ts serve",
     "build:web": "bun scripts/Build_Web.ts",
     "eval:models": "bun scripts/Eval_Models.ts",
     "swap": "bun scripts/Swap_Serve.ts",
@@ -18,10 +18,12 @@
     "guard": "bun scripts/Guard.ts",
     "autostart": "bun scripts/Install_Autostart.ts",
     "typecheck": "tsc -p tsconfig.check.json && tsc -p web/tsconfig.json",
-    "test": "bun test ./tests ./zbots/tests",
+    "test": "bun test ./tests",
+    "dev:hold": "bun scripts/Dev_Hold.ts",
+    "guard:restart": "bun scripts/Guard_Restart.ts",
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,mjs}\" package.json tsconfig.json tsconfig.check.json eslint.config.mjs .prettierrc.json .vscode/launch.json .vscode/tasks.json .vscode/settings.json .vscode/extensions.json",
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,mjs}\" package.json tsconfig.json tsconfig.check.json eslint.config.mjs .prettierrc.json .vscode/launch.json .vscode/tasks.json .vscode/settings.json .vscode/extensions.json",
-    "lint": "eslint \"src/**/*.ts\" \"web/src/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,mjs}\" \"zbots/src/**/*.ts\" \"zbots/tests/**/*.ts\" eslint.config.mjs --max-warnings 0"
+    "lint": "eslint \"src/**/*.ts\" \"web/src/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,mjs}\" eslint.config.mjs --max-warnings 0"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.4",
