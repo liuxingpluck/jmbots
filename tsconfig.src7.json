@@ -1,0 +1,11 @@
+{
+  // 只检查 src7。不要把 src7 并进根目录 tsconfig.json / tsconfig.check.json：
+  // src7 和 src6 都在扩充 cordis 的 Context、Events，合在一起类型会打架。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src7/**/*.ts"],
+  "exclude": []
+}

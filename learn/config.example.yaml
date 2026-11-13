@@ -1,0 +1,16 @@
+# 样例：复制成本目录的 config.yaml，填上能连上的地址和密钥。
+# 填好的 config.yaml 不要提交进仓库。本文件不含密钥。
+default_model: learn/gpt-4o-mini
+providers:
+  learn:
+    base_url: https://api.openai.com/v1
+    api_key: 在这里填密钥
+    api: openai-completions
+    list_models: false
+    models:
+      gpt-4o-mini:
+        name: GPT-4o mini
+        context_window: 128000
+        max_output_tokens: 16384
+        thinking:
+          - off

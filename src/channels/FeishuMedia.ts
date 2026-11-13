@@ -6,14 +6,7 @@ import type * as feishu from './Feishu.ts';
 /** 飞书消息类型。 */
 export type MessageType = 'image' | 'file' | 'audio' | 'media' | 'post' | 'interactive';
 /** 工具和渠道之间的发送参数；路径由工具按工作区解析。 */
-export interface SendRequest {
-  type: MessageType;
-  path?: string;
-  name?: string;
-  duration?: number;
-  coverPath?: string;
-  content?: Record<string, unknown>;
-}
+export type SendRequest = feishu.MediaRequest;
 /** 飞书 JSON 接口与资源接口共用的客户端。 */
 export interface OpenApi {
   json(method: string, apiPath: string, body?: unknown): Promise<Record<string, unknown>>;
@@ -26,80 +19,134 @@ function apiError(apiPath: string, result: { code?: number; msg?: string }): Err
 }
 /** 可注入 HTTP，用于离线验证权限报错及令牌缓存。 */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
-/** 自建应用 tenant_access_token 自动缓存、刷新；上传时由 fetch 设置 multipart boundary。 */
-export function createOpenApi(appId: string, appSecret: string, http: FetchLike = fetch): OpenApi {
-  let cached: { token: string; expiresAt: number } | undefined;
-  let refreshing: Promise<string> | undefined;
-  async function token(): Promise<string> {
-    if (cached && Date.now() < cached.expiresAt) {
-      return cached.token;
+/**
+ * 飞书开放接口的客户端：自建应用的 tenant_access_token 自动缓存、刷新（并发时只刷新一次）；
+ * JSON 接口遇到 429 等一等再试；下载资源。上传时由 fetch 设置 multipart boundary。
+ * 建它的地方：src/channels/Feishu.ts 的 SdkTransport（发卡片、图片、附件）和 FeishuChannel（云文档）。
+ */
+export class FeishuOpenApi implements OpenApi {
+  /** 缓存的令牌和过期时间（毫秒）。 */
+  private cached: { token: string; expiresAt: number } | undefined;
+  /** 正在刷新令牌的那一次（几个请求同时要令牌时只刷新一次）。 */
+  private refreshing: Promise<string> | undefined;
+
+  /**
+   * @param appId 应用 ID。
+   * @param appSecret 应用密钥。
+   * @param http 发请求的函数；默认 fetch，测试可以换。
+   */
+  constructor(
+    private readonly appId: string,
+    private readonly appSecret: string,
+    private readonly http: FetchLike = fetch,
+  ) {}
+
+  /**
+   * 调一个 JSON 接口。飞书写入接口有 QPS 限制，429 时等一等再试（没被接受，重试不会重复插块）；其他错误直接抛。
+   * @param method HTTP 方法。
+   * @param apiPath /open-apis 后面的路径。
+   * @param body 请求体（JSON，或上传用的 FormData）。
+   * @returns 返回里的 data。
+   */
+  async json(method: string, apiPath: string, body?: unknown): Promise<Record<string, unknown>> {
+    for (let attempt = 0; ; attempt++) {
+      /** 回应。 */
+      const response = await this.request(method, apiPath, body);
+      /** 先当文本读：出错时可能没有 body，也可能不是 JSON。 */
+      const text = await response.text();
+      /** 解析后的结果；不是 JSON 时没有。 */
+      let result: { code?: number; msg?: string; data?: Record<string, unknown> } | undefined;
+      try {
+        result = text ? (JSON.parse(text) as typeof result) : undefined;
+      } catch {
+        result = undefined;
+      }
+      if (response.status === 429 && attempt < 5) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+        continue;
+      }
+      if (!response.ok || result?.code !== 0) {
+        throw result
+          ? apiError(apiPath, result)
+          : new Error(`飞书接口 ${apiPath}：HTTP ${response.status}，返回的不是 JSON：${text.slice(0, 300) || '（空）'}`);
+      }
+      return result.data ?? {};
     }
-    refreshing ??= (async () => {
-      const response = await http('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: appId, app_secret: appSecret }), signal: AbortSignal.timeout(30_000),
+  }
+
+  /**
+   * 下载一个资源（图片、附件）。
+   * @param apiPath /open-apis 后面的路径。
+   * @returns 回应（正文就是文件）。
+   */
+  async download(apiPath: string): Promise<Response> {
+    /** 回应。 */
+    const response = await this.request('GET', apiPath);
+    if (!response.ok) {
+      throw apiError(apiPath, (await response.json()) as { code?: number; msg?: string });
+    }
+    if (response.headers.get('content-type')?.includes('application/json') && !response.headers.has('content-disposition')) {
+      /** 回了 JSON 而不是文件：多半是错误。 */
+      const result = (await response.clone().json()) as { code?: number; msg?: string };
+      if (typeof result.code === 'number' && result.code !== 0) {
+        throw apiError(apiPath, result);
+      }
+    }
+    return response;
+  }
+
+  /** 拿令牌：缓存没过期就用缓存，过期了刷新一次。 */
+  private async token(): Promise<string> {
+    if (this.cached && Date.now() < this.cached.expiresAt) {
+      return this.cached.token;
+    }
+    this.refreshing ??= (async () => {
+      /** 回应。 */
+      const response = await this.http('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
+        signal: AbortSignal.timeout(30_000),
       });
-      const result = await response.json() as { code?: number; msg?: string; tenant_access_token?: string; expire?: number };
+      /** 结果。 */
+      const result = (await response.json()) as { code?: number; msg?: string; tenant_access_token?: string; expire?: number };
       if (!response.ok || result.code !== 0 || !result.tenant_access_token) {
         throw apiError('/auth/v3/tenant_access_token/internal', result);
       }
-      cached = { token: result.tenant_access_token, expiresAt: Date.now() + Math.max(1, (result.expire ?? 7200) - 300) * 1000 };
-      return cached.token;
+      this.cached = { token: result.tenant_access_token, expiresAt: Date.now() + Math.max(1, (result.expire ?? 7200) - 300) * 1000 };
+      return this.cached.token;
     })();
     try {
-      return await refreshing;
+      return await this.refreshing;
     } finally {
-      refreshing = undefined;
+      this.refreshing = undefined;
     }
   }
-  async function request(method: string, apiPath: string, body?: unknown): Promise<Response> {
+
+  /**
+   * 带上令牌发一个请求。
+   * @param method HTTP 方法。
+   * @param apiPath /open-apis 后面的路径。
+   * @param body 请求体：FormData 原样发，别的转成 JSON。
+   * @returns 回应。
+   */
+  private async request(method: string, apiPath: string, body?: unknown): Promise<Response> {
+    /** 是不是上传。 */
     const multipart = body instanceof FormData;
+    /** 请求体。 */
     let requestBody: BodyInit | undefined;
-    if (multipart) { requestBody = body; }
-    else if (body !== undefined) { requestBody = JSON.stringify(body); }
-    const response = await http(`https://open.feishu.cn/open-apis${apiPath}`, {
+    if (multipart) {
+      requestBody = body;
+    } else if (body !== undefined) {
+      requestBody = JSON.stringify(body);
+    }
+    return this.http(`https://open.feishu.cn/open-apis${apiPath}`, {
       method,
-      headers: { Authorization: `Bearer ${await token()}`, ...(!multipart ? { 'Content-Type': 'application/json; charset=utf-8' } : {}) },
+      headers: { Authorization: `Bearer ${await this.token()}`, ...(!multipart ? { 'Content-Type': 'application/json; charset=utf-8' } : {}) },
       body: requestBody,
       signal: AbortSignal.timeout(120_000),
     });
-    return response;
   }
-  return {
-    async json(method, apiPath, body) {
-      //M 飞书写入接口有 QPS 限制，429 时等一等等再试（没被接受，重试不会重复插块）；其他错误直接抛。
-      for (let attempt = 0; ; attempt++) {
-        const response = await request(method, apiPath, body);
-        /** 先当文本读：出错时可能没有 body，也可能不是 JSON。 */
-        const text = await response.text();
-        /** 解析后的结果；不是 JSON 时没有。 */
-        let result: { code?: number; msg?: string; data?: Record<string, unknown> } | undefined;
-        try { result = text ? JSON.parse(text) as typeof result : undefined; } catch { result = undefined; }
-        if (response.status === 429 && attempt < 5) {
-          await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
-          continue;
-        }
-        if (!response.ok || result?.code !== 0) {
-          const detail = result
-            ? apiError(apiPath, result)
-            : new Error(`飞书接口 ${apiPath}：HTTP ${response.status}，返回的不是 JSON：${text.slice(0, 300) || '（空）'}`);
-          throw detail;
-        }
-        return result.data ?? {};
-      }
-    },
-    async download(apiPath) {
-      const response = await request('GET', apiPath);
-      if (!response.ok) {
-        throw apiError(apiPath, await response.json() as { code?: number; msg?: string });
-      }
-      if (response.headers.get('content-type')?.includes('application/json') && !response.headers.has('content-disposition')) {
-        const result = await response.clone().json() as { code?: number; msg?: string };
-        if (typeof result.code === 'number' && result.code !== 0) { throw apiError(apiPath, result); }
-      }
-      return response;
-    },
-  };
 }
 /** 上传本地素材；空文件、目录、超限及不支持的语音/视频格式在上传前报错。 */
 async function upload(api: OpenApi, file: string, type: 'image' | 'file' | 'audio' | 'media', name?: string, duration?: number): Promise<string> {
@@ -141,50 +188,97 @@ async function upload(api: OpenApi, file: string, type: 'image' | 'file' | 'audi
   if (typeof key !== 'string' || !key) { throw new Error('飞书上传成功但没有返回素材 key'); }
   return key;
 }
-/** 真实传输层的媒体能力，与文字/卡片共用消息 API。 */
-export function createMediaTransport(api: OpenApi): Pick<feishu.FeishuTransport, 'sendMedia' | 'downloadResource'> {
-  return {
-    async sendMedia(to, request) {
-      let content = request.content;
-      if (request.type !== 'post' && request.type !== 'interactive') {
-        if (!request.path) { throw new Error('缺少本地素材 path'); }
-        const key = await upload(api, request.path, request.type, request.name, request.duration);
-        content = request.type === 'image' ? { image_key: key } : { file_key: key };
-        if (request.type === 'media' && request.coverPath) {
-          content.image_key = await upload(api, request.coverPath, 'image');
-        }
+/**
+ * 飞书传输层的媒体那一半：上传素材再发图片、文件、语音、视频，下载收到的附件（和文字、卡片共用消息接口）。
+ * src/channels/Feishu.ts 的 SdkTransport 继承它，再加上文字、卡片、表情、收消息。
+ */
+export class MediaTransport implements Pick<feishu.FeishuTransport, 'sendMedia' | 'downloadResource'> {
+  /**
+   * @param api 飞书开放接口（FeishuOpenApi，SdkTransport 建的）。
+   */
+  constructor(protected readonly api: OpenApi) {}
+
+  /**
+   * 上传素材并发消息（post、interactive 直接发 content）。
+   * @param to 发给谁。
+   * @param request 素材种类、本地路径、名字、时长、封面，或者现成的 content。
+   * @returns 消息 ID。
+   */
+  async sendMedia(to: feishu.FeishuTarget, request: feishu.MediaRequest): Promise<string> {
+    /** 消息内容。 */
+    let content = request.content;
+    if (request.type !== 'post' && request.type !== 'interactive') {
+      if (!request.path) {
+        throw new Error('缺少本地素材 path');
       }
-      if (!content || !Object.keys(content).length) { throw new Error('消息 content 不能为空'); }
-      const target = 'chatId' in to ? { id: to.chatId, type: 'chat_id' } : { id: to.openId, type: 'open_id' };
-      const data = await api.json('POST', `/im/v1/messages?receive_id_type=${target.type}`, {
-        receive_id: target.id, msg_type: request.type, content: JSON.stringify(content),
-      });
-      if (typeof data.message_id !== 'string' || !data.message_id) { throw new Error('飞书发送成功但没有返回消息 ID'); }
-      return data.message_id;
-    },
-    async downloadResource(messageId, resource, destination) {
-      const response = await api.download(`/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(resource.key)}?type=${resource.type}`);
-      // 限制响应体大小，服务端未给 content-length 时也逐块检查。
-      const max = 100 * 1024 * 1024;
-      if (Number(response.headers.get('content-length')) > max) {
-        await response.body?.cancel();
-        throw new Error('飞书附件超过 100MB 下载限制');
+      //G 请求形状是渠道通用的（type 是 string），飞书只认下面这几种，别的在这里就挡住。
+      if (request.type !== 'image' && request.type !== 'file' && request.type !== 'audio' && request.type !== 'media') {
+        throw new Error(`飞书不支持的素材种类 ${request.type}；只能是 image、file、audio、media、post、interactive`);
       }
-      const reader = response.body?.getReader();
-      if (!reader) { throw new Error('飞书资源响应没有内容'); }
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) { break; }
-          size += value.length;
-          if (size > max) { throw new Error('飞书附件超过 100MB 下载限制'); }
-          chunks.push(value);
+      /** 素材 key。 */
+      const key = await upload(this.api, request.path, request.type, request.name, request.duration);
+      content = request.type === 'image' ? { image_key: key } : { file_key: key };
+      if (request.type === 'media' && request.coverPath) {
+        content.image_key = await upload(this.api, request.coverPath, 'image');
+      }
+    }
+    if (!content || !Object.keys(content).length) {
+      throw new Error('消息 content 不能为空');
+    }
+    /** 按聊天发还是按 open_id 发。 */
+    const target = 'chatId' in to ? { id: to.chatId, type: 'chat_id' } : { id: to.openId, type: 'open_id' };
+    /** 返回的数据。 */
+    const data = await this.api.json('POST', `/im/v1/messages?receive_id_type=${target.type}`, {
+      receive_id: target.id,
+      msg_type: request.type,
+      content: JSON.stringify(content),
+    });
+    if (typeof data.message_id !== 'string' || !data.message_id) {
+      throw new Error('飞书发送成功但没有返回消息 ID');
+    }
+    return data.message_id;
+  }
+
+  /**
+   * 把消息里的资源下载到指定文件（最多 100MB，服务端没给长度时逐块检查）。
+   * @param messageId 消息 ID。
+   * @param resource 资源（key、种类）。
+   * @param destination 存到哪（已有同名文件时报错）。
+   */
+  async downloadResource(messageId: string, resource: feishu.Resource, destination: string): Promise<void> {
+    /** 回应。 */
+    const response = await this.api.download(`/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(resource.key)}?type=${resource.type}`);
+    /** 上限。 */
+    const max = 100 * 1024 * 1024;
+    if (Number(response.headers.get('content-length')) > max) {
+      await response.body?.cancel();
+      throw new Error('飞书附件超过 100MB 下载限制');
+    }
+    /** 读正文的。 */
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('飞书资源响应没有内容');
+    }
+    /** 读到的块。 */
+    const chunks: Uint8Array[] = [];
+    /** 读了多少字节。 */
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
         }
-      } finally { await reader.cancel(); }
-      await fs.mkdir(path.dirname(destination), { recursive: true });
-      await fs.writeFile(destination, Buffer.concat(chunks), { flag: 'wx' });
-    },
-  };
+        size += value.length;
+        if (size > max) {
+          throw new Error('飞书附件超过 100MB 下载限制');
+        }
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel();
+    }
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.writeFile(destination, Buffer.concat(chunks), { flag: 'wx' });
+  }
 }

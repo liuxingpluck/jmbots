@@ -4,6 +4,6 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "zbots/src/**/*.ts", "zbots/tests/**/*.ts"],
-  "exclude": []
+  "include": ["src/**/*.ts", "src6/**/*.ts", "scripts/**/*.ts", "scripts6/**/*.ts", "tests/**/*.ts", "tests6/**/*.ts", "web/Build.ts", "testpage/Build.ts", "learn/**/*.ts"],
+  "exclude": ["src6/cordis", "src6/参考_src5"]
 }

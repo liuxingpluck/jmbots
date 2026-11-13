@@ -1,0 +1,83 @@
+<!doctype html>
+<!--
+  壳子自带的一页（docs/界面/01_界面设计.md 第 4.1 节）：窗口先打开它，它去连后端，连上就切到后端托管的网页；
+  连不上就显示“休假中”，每 3 秒再试。后端地址由壳子在页面加载前写进 window.__JMBOTS_SERVER__（来自 config.yaml）。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>jmbots</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #0b0c0f;
+        color: #e7e9ee;
+        font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        height: 100%;
+        text-align: center;
+      }
+      .face {
+        font-size: 40px;
+        color: #8b919c;
+      }
+      .title {
+        font-size: 20px;
+        font-weight: 700;
+      }
+      .detail {
+        color: #8b919c;
+        font-size: 13px;
+        max-width: 520px;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="face" id="face">(・ω・)</div>
+      <div class="title" id="title">正在连后端…</div>
+      <div class="detail" id="detail"></div>
+    </main>
+    <script>
+      /** 后端地址：壳子写进来的；没有就只能显示说明。 */
+      const server = (window.__JMBOTS_SERVER__ || '').replace(/\/+$/, '');
+      /** 多久再试一次，毫秒。 */
+      const RETRY_MS = 3000;
+
+      /** 连不上时显示“休假中”。 */
+      function showOff(reason) {
+        document.getElementById('face').textContent = '(－_－) zzZ';
+        document.getElementById('title').textContent = '休假中';
+        document.getElementById('detail').textContent = reason;
+      }
+
+      /** 试一次：后端答了就切过去（跨域只看连不连得上，所以用 no-cors）。 */
+      async function tryConnect() {
+        if (!server) {
+          showOff('壳子没拿到后端地址：在 config.yaml 写 local.server，或用 --server 启动');
+          return;
+        }
+        document.getElementById('detail').textContent = server;
+        try {
+          await fetch(`${server}/api/health`, { mode: 'no-cors', cache: 'no-store' });
+          location.replace(`${server}/`);
+        } catch (error) {
+          showOff(`连不上后端：${server}，${RETRY_MS / 1000} 秒后再试`);
+          setTimeout(tryConnect, RETRY_MS);
+        }
+      }
+
+      tryConnect();
+    </script>
+  </body>
+</html>

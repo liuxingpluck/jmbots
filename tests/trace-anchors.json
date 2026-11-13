@@ -1,0 +1,15 @@
+{
+  "http": { "file": "src/channels/Http.ts", "find": "app.post('/api/message'" },
+  "receive": { "file": "src/bots/BotLoop.ts", "find": "async receive(input: IncomingInput)" },
+  "dispatch": { "file": "src/dispatch/Dispatch.ts", "find": "  async dispatch(" },
+  "decisionModel": { "file": "src/dispatch/Dispatch.ts", "find": "  private async askDecisionModel(" },
+  "miniLoop": { "file": "src/capabilities/MiniLoop.ts", "find": "  async askJson(request: MiniLoopRequest)" },
+  "check": { "file": "src/dispatch/Dispatch.ts", "find": "  private check(" },
+  "place": { "file": "src/bots/BotLoop.ts", "find": "private async place(" },
+  "runSession": { "file": "src/executors/AgentLoop.ts", "find": "async runSession(" },
+  "callModel": { "file": "src/executors/AgentLoop.ts", "find": "private async callModel(" },
+  "tool": { "file": "src/capabilities/tools/Tools.ts", "find": "async run(name: string" },
+  "review": { "file": "src/executors/ExecReview.ts", "find": "  async review(" },
+  "reply": { "file": "src/capabilities/tools/Tools.ts", "find": "private async reply(" },
+  "addReply": { "file": "src/capabilities/Store.ts", "find": "  addReply(id: number, reply: Reply): void {" }
+}

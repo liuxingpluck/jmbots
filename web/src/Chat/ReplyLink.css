@@ -1,0 +1,63 @@
+/* 同一句回答和其明确来源使用同一强调色与标识；其他消息不受影响。 */
+.jm-msg-linked .jm-bubble,
+.jm-event-note.jm-msg-linked {
+  outline: 1px solid var(--jm-accent);
+  outline-offset: 3px;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--jm-accent) 45%, transparent);
+}
+
+.jm-reply-link-tag {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--jm-accent) 55%, transparent);
+  border-radius: 4px;
+  color: var(--jm-accent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.jm-reply-generation {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--jm-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.jm-msg-bot .jm-msg-meta {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+
+.jm-reply-link-notice {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--jm-border);
+  color: var(--jm-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.jm-reply-link-notice p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.jm-reply-link-notice button {
+  margin-left: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--jm-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.jm-msg-linked:focus-visible {
+  outline: 1px dashed var(--jm-accent);
+  outline-offset: 6px;
+}

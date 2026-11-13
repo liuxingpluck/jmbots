@@ -17,14 +17,17 @@ export default eslintConfig.defineConfig([
       '**/*.local.*',
       '**/secrets*',
       'bun.lock',
-      '.codegraph/**',
       // 2026-10-29 重写前的旧代码，只作参考，不检查。
       '*_bak/**',
       'bak/**',
+      // Cordis 源码克隆、搬 0.5 时的参考文件、NamiDSH：只读，不检查。
+      'src6/cordis/**',
+      'src6/参考_src5/**',
+      'namidsh/**',
     ],
   },
   {
-    files: ['src/**/*.ts', 'scripts/**/*.ts', 'tests/**/*.ts', 'zbots/src/**/*.ts', 'zbots/tests/**/*.ts'],
+    files: ['src/**/*.ts', 'scripts/**/*.ts', 'scripts6/**/*.ts', 'tests/**/*.ts', 'src6/**/*.ts', 'tests6/**/*.ts', 'web/Build.ts', 'testpage/Build.ts', 'learn/**/*.ts'],
     extends: [
       eslintJs.configs.recommended,
       ...tseslint.configs.recommendedTypeChecked,
@@ -37,7 +40,7 @@ export default eslintConfig.defineConfig([
       },
     },
   },
-  // 网页代码运行在浏览器，用 web/tsconfig.json 的 DOM/JSX 设置做类型检查。
+  // 网页代码运行在浏览器，用 web/tsconfig.json 的 DOM/JSX 设置做类型检查（docs/界面/01_界面设计.md）。
   {
     files: ['web/src/**/*.{ts,tsx}'],
     extends: [
@@ -52,6 +55,21 @@ export default eslintConfig.defineConfig([
       },
     },
   },
+  // 接口测试页：和网页同一套规则，用 testpage/tsconfig.json。
+  {
+    files: ['testpage/src/**/*.{ts,tsx}'],
+    extends: [
+      eslintJs.configs.recommended,
+      ...tseslint.configs.recommendedTypeChecked,
+    ],
+    languageOptions: {
+      globals: globals.browser,
+      parserOptions: {
+        project: ['./testpage/tsconfig.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
   {
     files: ['scripts/**/*.mjs', 'tests/**/*.mjs', 'eslint.config.mjs'],
     extends: [eslintJs.configs.recommended],
@@ -62,10 +80,14 @@ export default eslintConfig.defineConfig([
   {
     files: [
       'src/**/*.ts',
-      'web/src/**/*.{ts,tsx}',
+      'src6/**/*.ts',
+      'tests6/**/*.ts',
+      'web/**/*.{ts,tsx}',
+      'testpage/**/*.{ts,tsx}',
       'scripts/**/*.{ts,mjs}',
+      'scripts6/**/*.ts',
       'tests/**/*.{ts,mjs}',
-      'zbots/src/**/*.ts', 'zbots/tests/**/*.ts',
+      'learn/**/*.ts',
       'eslint.config.mjs',
     ],
     rules: {

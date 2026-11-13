@@ -24,7 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as child from 'node:child_process';
 import * as serveProcess from './Serve_Process.ts';
-import * as runtimeModule from '../src/core/Runtime.ts';
+import * as resourcesModule from '../src/resources/Resources.ts';
 import * as utils from '../src/utils/Utils.ts';
 
 
@@ -76,29 +76,54 @@ async function swap(runtimeDir: string, port: number, candidatePort: number, log
   if (!healthy) {
     return `试运行正常，但新版本在 ${port} 没起来${holder !== undefined ? `（端口一直被进程 ${holder} 占着）` : ''}（${serveProcess.HEALTH_TIMEOUT_MS / 1000} 秒内 /api/health 不通）；看门狗会接着试，再不行它会退回上一个能跑的快照。日志在 ${runtimeDir}\\data 里最新的 serve_${port}_*.log 和 guard_*.log。`;
   }
-  return `换好了：检查都过了，新版本在 ${candidatePort} 试运行正常，已换到 ${port}（旧进程 ${oldPid ?? '未知'} 已停，试运行已关）。`;
+  return `换好了：${serveProcess.option('skip_checks', 'no') === 'yes' ? '这次跳过了检查' : '检查都过了'}，新版本在 ${candidatePort} 试运行正常，已换到 ${port}（旧进程 ${oldPid ?? '未知'} 已停，试运行已关）。`;
 }
 
 
 /**
  * 入口：前台检查后把后台那段交给独立进程；后台进程（带 --background）做换版本。
  */
+/**
+ * 后端是不是基地守护的二进制。
+ * @param port 正式端口。
+ * @returns /api/update 回 managed 且有当前版本就是；连不上、没配基地都算不是。
+ */
+async function isSupervised(port: number): Promise<boolean> {
+  try {
+    /** 基地的更新状态。 */
+    const response = await fetch(`http://127.0.0.1:${port}/api/update`, { signal: AbortSignal.timeout(5000) });
+    /** 回答。 */
+    const body = (await response.json()) as { managed?: boolean; current?: unknown };
+    return response.ok && body.managed === true && Boolean(body.current);
+  } catch {
+    return false;
+  }
+}
+
+
 async function main(): Promise<void> {
-  /** 运行时。 */
-  const runtime = await runtimeModule.Runtime.load(process.env.JMBOTS_RUNTIME);
+  /** 资源。 */
+  const runtime = serveProcess.runtimeDir();
+  const resources = await resourcesModule.Resources.load(runtime);
   /** 正式端口。 */
-  const port = Number(serveProcess.option('port', '30086'));
+  const port = serveProcess.portOption('port', 30086);
   /** 试运行端口。 */
-  const candidatePort = Number(serveProcess.option('candidate_port', '30087'));
+  const candidatePort = serveProcess.portOption('candidate_port', 30087);
   /** 锁文件：最近一次开始换版本的时间。看门狗也读它，在换版本期间让开。 */
-  const lockFile = path.join(runtime.dir, 'data', 'swap.lock');
+  const lockFile = path.join(resources.dir, 'data', 'swap.lock');
 
   if (!process.argv.includes('--background')) {
+    //G 现在跑的是基地守护的二进制：这里会停掉它、退回源码跑，“运行用二进制，源码放心改”就没了（用户 11-05）。--force 留给源码模式下设置页的“立即重启”。
+    if (serveProcess.option('force', 'no') !== 'yes' && (await isSupervised(port))) {
+      console.log('现在的后端是基地守护的二进制，不能用 Swap_Serve 换，否则会退回源码跑。发新版本：在 src/Versions.ts 加一项，跑 bun run release，用户在基地点更新。');
+      process.exit(1);
+    }
+
     //G 3 分钟内已经有人开始换版本（周小灵和 Claude 经 DSH 撞过两次，后一次把前一次刚接着做的活又打断了），就不再换。
-    if (serveProcess.isSwapping(runtime.dir) && serveProcess.option('force', 'no') !== 'yes') {
+    if (serveProcess.isSwapping(resources.dir) && serveProcess.option('force', 'no') !== 'yes') {
       /** 上次开始换的时间，毫秒。 */
       const lockedAt = Number(fs.readFileSync(lockFile, 'utf8').trim());
-      console.log(`${Math.round((Date.now() - lockedAt) / 1000)} 秒前已经有人开始换版本了，这次不换（要强行换加 --force yes）。看 ${path.join(runtime.dir, 'data')} 里最新的 swap_*.log。`);
+      console.log(`${Math.round((Date.now() - lockedAt) / 1000)} 秒前已经有人开始换版本了，这次不换（要强行换加 --force yes）。看 ${path.join(resources.dir, 'data')} 里最新的 swap_*.log。`);
       return;
     }
     fs.writeFileSync(lockFile, String(Date.now()));
@@ -128,10 +153,11 @@ async function main(): Promise<void> {
         '--port', String(port),
         '--host', serveProcess.option('host', '0.0.0.0'),
         '--candidate_port', String(candidatePort),
+        ...(serveProcess.option('skip_checks', 'no') === 'yes' ? ['--skip_checks', 'yes'] : []),
         ...(process.env.JMBOTS_SESSION_ID ? ['--session_id', process.env.JMBOTS_SESSION_ID] : []),
       ],
     });
-    console.log(`已在后台开始换版本（进程 ${backgroundPid ?? '?'}），过程记在 ${path.join(runtime.dir, 'data')} 里最新的 swap_*.log；换完会往发起的会话插一条话报告结果。`);
+    console.log(`已在后台开始换版本（进程 ${backgroundPid ?? '?'}），过程记在 ${path.join(resources.dir, 'data')} 里最新的 swap_*.log；换完会往发起的会话插一条话报告结果。`);
     return;
   }
 
@@ -139,7 +165,7 @@ async function main(): Promise<void> {
   //G 前台段写锁到这里可能已经过了一分多钟（检查要时间），重写一次，免得换到一半锁过期、看门狗插进来抢着起服务。
   fs.writeFileSync(lockFile, String(Date.now()));
   /** 日志文件。 */
-  const logFile = path.join(runtime.dir, 'data', `swap_${utils.createSessionId()}.log`);
+  const logFile = path.join(resources.dir, 'data', `swap_${utils.createSessionId()}.log`);
   /**
    * 写一行日志。
    * @param text 内容。
@@ -148,7 +174,7 @@ async function main(): Promise<void> {
   /** 结论。 */
   let summary: string;
   try {
-    summary = await swap(runtime.dir, port, candidatePort, log);
+    summary = await swap(resources.dir, port, candidatePort, log);
   } catch (error) {
     summary = `换版本出错：${utils.errorText(error)}`;
   }
@@ -159,11 +185,16 @@ async function main(): Promise<void> {
     return;
   }
   try {
-    await fetch(`http://127.0.0.1:${port}/api/run`, {
+    //M 指定会话的消息不分派，直接排给发起换版本的那个会话（docs/10 6.14 的 POST /api/message）。
+    /** 回应。 */
+    const response = await fetch(`http://127.0.0.1:${port}/api/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, text: `（系统）换版本的结果：${summary}日志：${logFile}`, wait: false }),
+      body: JSON.stringify({ session: sessionId, from: '换版本', text: `（系统）换版本的结果：${summary}日志：${logFile}` }),
     });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}：${await response.text()}`);
+    }
     log(`已报告给会话 ${sessionId}`);
   } catch (error) {
     log(`报告给会话 ${sessionId} 没成：${utils.errorText(error)}`);

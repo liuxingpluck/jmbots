@@ -27,18 +27,21 @@ export const HEALTH_TIMEOUT_MS = 90_000;
 /** 换版本的锁多久内算有效，毫秒（检查加换版本一般 1 分多钟）。 */
 export const SWAP_LOCK_MS = 180_000;
 
+/** 开发模式默认按住多久（分钟）：到点自动失效，免得忘了关，服务就一直没人守。 */
+export const DEV_HOLD_DEFAULT_MINUTES = 120;
+
 /**
- * 运行时目录的默认值，和 src/core/Runtime.ts 的 DEFAULT_RUNTIME_DIR 一样。
+ * 运行时目录的默认值，和 src/utils/Checks.ts 的源码运行默认值一样；这台机器上的真实目录写在仓库的 .env（JMBOTS_RUNTIME，不进 git，Bun 自己读）。
  * 这里故意再写一遍而不是从那边导入：看门狗是最后一道防线，不能因为 src 下某个文件被改坏就起不来。
  * 两边的值要一起改。
  */
-export const DEFAULT_RUNTIME_DIR = 'F:/aidata/AIJMBots';
+export const DEFAULT_RUNTIME_DIR = path.join(ROOT, 'jmbotsData');
 
 /**
  * 飞书发件箱在运行时目录下的位置，和 src/channels/Feishu.ts 的 OUTBOX_DIR 一样
  * （同样是为了不让看门狗依赖 src；两边要一起改）。往这里放一个 .md，服务在跑时就会发给用户。
  */
-export const OUTBOX_DIR = path.join('integrations', 'feishu', '发件箱');
+export const OUTBOX_DIR = path.join('integrations', 'feishu', 'outbox');
 
 
 /**
@@ -46,10 +49,44 @@ export const OUTBOX_DIR = path.join('integrations', 'feishu', '发件箱');
  * @param name 参数名。
  * @param fallback 没给时的值。
  */
-export function option(name: string, fallback: string): string {
-  /** 参数位置。 */
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? (process.argv[index + 1] ?? fallback) : fallback;
+export function option(
+  name: string,
+  fallback: string,
+  args: string[] = process.argv.slice(2),
+): string {
+  /** 看门狗保持独立，不导入后端；参数合同与 Checks.readArgument 相同。 */
+  const flag = '--' + name;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === flag) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(flag + ' 后面需要参数值');
+      }
+      return value;
+    }
+    if (argument?.startsWith(flag + '=')) {
+      return argument.slice(flag.length + 1);
+    }
+  }
+  return fallback;
+}
+
+
+/**
+ * 脚本入口校验监听端口；内部起进程只接收确定的数字。
+ * @param name 命令行参数名。
+ * @param fallback 缺省端口。
+ * @returns 1–65535 的整数端口。
+ * @throws 显式端口不合法或缺值时抛错。
+ */
+export function portOption(name: string, fallback: number): number {
+  const rawPort = option(name, String(fallback));
+  const port = Number(rawPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('--' + name + ' 需要 1–65535 的整数，收到：' + rawPort);
+  }
+  return port;
 }
 
 
@@ -58,7 +95,9 @@ export function option(name: string, fallback: string): string {
  * 只给路径，不读 config.yaml、不建目录。
  */
 export function runtimeDir(): string {
-  return option('runtime', process.env.JMBOTS_RUNTIME ?? DEFAULT_RUNTIME_DIR);
+  const configured = option('runtime', process.env.JMBOTS_RUNTIME ?? '');
+  const selected = configured.trim() || DEFAULT_RUNTIME_DIR;
+  return path.resolve(selected);
 }
 
 
@@ -71,7 +110,10 @@ export function timeId(): string {
   const now = new Date();
   /** 北京时间的 `yyyy-MM-dd HH:mm:ss`，只取数字。 */
   const digits = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/\D/g, '');
-  return `${digits}${String(now.getMilliseconds()).padStart(3, '0')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  /** 毫秒和随机后缀分别补足三位。 */
+  const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
+  const randomSuffix = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  return `${digits}${milliseconds}${randomSuffix}`;
 }
 
 
@@ -118,19 +160,35 @@ export function spawnDetached(options: DetachedOptions): number | undefined {
      */
     const quote = (text: string): string => `'${text.replace(/'/g, "''")}'`;
     /** 有输出文件时给 cmd /c 的整行（外面再包一层引号，cmd 会剥掉它）。 */
-    const cmdLine = `""${process.execPath}" ${options.args.map((arg) => `"${arg}"`).join(' ')} >> "${options.logFile ?? ''}" 2>&1"`;
+    const quotedArgs = options.args.map((arg) => `"${arg}"`).join(' ');
+    const outputFile = options.logFile ?? '';
+    const cmdLine = `""${process.execPath}" ${quotedArgs} >> "${outputFile}" 2>&1"`;
     /** 要跑的命令。 */
     const target = options.logFile
       ? `-FilePath cmd.exe -ArgumentList ${['/d', '/c', cmdLine].map(quote).join(',')}`
       : `-FilePath ${quote(process.execPath)} -ArgumentList ${options.args.map(quote).join(',')}`;
     /** PowerShell 的输出：新进程号。 */
-    const output = child.spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Start-Process ${target} -WorkingDirectory ${quote(cwd)} -WindowStyle Hidden -PassThru).Id`], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
+    const quotedCwd = quote(cwd);
+    const command = `(Start-Process ${target} -WorkingDirectory ${quotedCwd} -WindowStyle Hidden -PassThru).Id`;
+    const shellArgs = ['-NoProfile', '-Command', command];
+    const spawnOptions: child.SpawnSyncOptionsWithStringEncoding = {
+      encoding: 'utf8',
+      windowsHide: true,
+    };
+    const result = child.spawnSync('powershell.exe', shellArgs, spawnOptions);
+    const output = result.stdout ?? '';
     return Number(output.trim()) || undefined;
   }
   /** 输出文件句柄。 */
   const out = options.logFile ? fs.openSync(options.logFile, 'a') : 'ignore';
   /** 新进程。 */
-  const started = child.spawn(process.execPath, options.args, { cwd, detached: true, stdio: ['ignore', out, out], windowsHide: true });
+  const spawnOptions: child.SpawnOptions = {
+    cwd,
+    detached: true,
+    stdio: ['ignore', out, out],
+    windowsHide: true,
+  };
+  const started = child.spawn(process.execPath, options.args, spawnOptions);
   started.unref();
   return started.pid;
 }
@@ -146,7 +204,7 @@ export interface StartServeOptions {
   root?: string;
   /** 是不是试运行（--mode candidate：只起 HTTP，不接飞书、不跑事件循环、不改执行状态）。 */
   candidate?: boolean;
-  /** 正式服务监听哪个地址；默认 0.0.0.0（用户 11-02 定：开发阶段全开）。试运行一律只听 127.0.0.1。 */
+  /** 监听哪个地址：一律 0.0.0.0（docs/10 规矩 3，换版本时的试运行也一样）；留着这个参数只是为了老调用方不报错。 */
   host?: string;
 }
 
@@ -164,12 +222,19 @@ export function startServe(options: StartServeOptions, logName: string): number 
   const logFile = path.join(options.runtimeDir, 'data', `serve_${options.port}_${logName}.log`);
   /** 给 bun 的参数。 */
   const args = [
-    path.join(root, 'src', 'Main.ts'),
+    path.join(root, 'src', 'entries', 'Main.ts'),
     'serve',
+    '--runtime', options.runtimeDir,
     '--port', String(options.port),
-    ...(options.candidate ? ['--host', '127.0.0.1', '--mode', 'candidate'] : ['--host', options.host ?? '0.0.0.0']),
+    '--host', '0.0.0.0',
+    ...(options.candidate ? ['--mode', 'candidate'] : []),
   ];
-  return spawnDetached({ args, cwd: root, logFile });
+  const processOptions = {
+    args,
+    cwd: root,
+    logFile,
+  };
+  return spawnDetached(processOptions);
 }
 
 
@@ -185,7 +250,11 @@ export const HEALTH_CHECK_TIMEOUT_MS = 10_000;
 export async function isHealthy(port: number): Promise<boolean> {
   try {
     /** 回应。 */
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS) });
+    const url = `http://127.0.0.1:${port}/api/health`;
+    const options = {
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+    };
+    const response = await fetch(url, options);
     /** 内容。 */
     const body = (await response.json()) as { ok?: boolean };
     return response.ok && body.ok === true;
@@ -222,7 +291,13 @@ export async function waitHealthy(port: number, timeoutMs = HEALTH_TIMEOUT_MS): 
  */
 export function pidOnPort(port: number): number | undefined {
   /** netstat 的输出。 */
-  const output = child.spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
+  const args = ['-ano', '-p', 'tcp'];
+  const options: child.SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf8',
+    windowsHide: true,
+  };
+  const result = child.spawnSync('netstat', args, options);
+  const output = result.stdout ?? '';
   for (const line of output.split(/\r?\n/)) {
     /** 各列：协议、本地地址、远程地址、状态、进程号。 */
     const columns = line.trim().split(/\s+/);
@@ -259,6 +334,68 @@ export async function stopServe(runtimeDir: string, port: number): Promise<numbe
     await Bun.sleep(1000);
   }
   return pid;
+}
+
+
+/**
+ * 开发模式的锁文件。
+ * @param runtimeDir 运行时目录。
+ * @returns 文件路径。
+ */
+export function devHoldFile(runtimeDir: string): string {
+  return path.join(runtimeDir, 'data', 'dev.lock');
+}
+
+
+/**
+ * 现在是不是开发模式（看门狗据此只看不动手：不起服务、不回退、不存快照）。
+ * @param runtimeDir 运行时目录。
+ * @returns 还按着就返回到期时间（毫秒）；没按着或已过期返回 undefined。
+ */
+export function devHoldUntil(runtimeDir: string): number | undefined {
+  /** 锁文件：按到什么时候。 */
+  const file = devHoldFile(runtimeDir);
+  if (!fs.existsSync(file)) {
+    return undefined;
+  }
+  /** 到期时间，毫秒。 */
+  const until = Number(fs.readFileSync(file, 'utf8').trim());
+  //G 文件内容坏了（不是数字）当没按住，别把看门狗永久停掉。
+  if (!Number.isFinite(until) || Date.now() >= until) {
+    return undefined;
+  }
+  return until;
+}
+
+
+/**
+ * 按住看门狗。
+ * @param runtimeDir 运行时目录。
+ * @param minutes 按多少分钟。
+ * @returns 到期时间（毫秒）。
+ */
+export function holdDev(runtimeDir: string, minutes: number): number {
+  /** 到期时间。 */
+  const until = Date.now() + minutes * 60_000;
+  fs.mkdirSync(path.join(runtimeDir, 'data'), { recursive: true });
+  fs.writeFileSync(devHoldFile(runtimeDir), String(until));
+  return until;
+}
+
+
+/**
+ * 放开看门狗。
+ * @param runtimeDir 运行时目录。
+ * @returns 本来按着就是 true。
+ */
+export function releaseDev(runtimeDir: string): boolean {
+  /** 锁文件。 */
+  const file = devHoldFile(runtimeDir);
+  if (!fs.existsSync(file)) {
+    return false;
+  }
+  fs.rmSync(file, { force: true });
+  return true;
 }
 
 

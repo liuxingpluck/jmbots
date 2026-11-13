@@ -3,11 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>JMAI 知识库</title>
+    <meta name="color-scheme" content="dark light" />
+    <title>jmbots</title>
   </head>
   <body>
     <div id="root"></div>
-    <!-- 打包入口（scripts/Build_Web.ts）：Bun 会把下面的脚本和它引用的 CSS 换成 dist/web 里带哈希的文件。 -->
+    <!-- 打包入口（web/Build.ts）：Bun 把下面的脚本和它引用的 CSS 换成 dist/web/assets 里带哈希的文件。 -->
     <script type="module" src="./src/Main.tsx"></script>
   </body>
 </html>

@@ -11,5 +11,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src6/**/*.ts", "scripts/**/*.ts", "scripts6/**/*.ts", "tests/**/*.ts", "tests6/**/*.ts", "learn/**/*.ts"],
+  "exclude": ["src6/cordis", "src6/参考_src5"]
 }

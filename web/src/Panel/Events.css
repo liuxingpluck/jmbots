@@ -1,0 +1,350 @@
+/* 事件阅读独立滚动，查看历史只保存这个容器的位置。主题颜色沿用已有变量。 */
+.jm-trace.jm-trace-reader {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+  font-size: 13px;
+  line-height: 1.75;
+  scrollbar-gutter: stable;
+}
+
+.jm-trace-reader .jm-trace-top {
+  margin-bottom: 18px;
+  font-size: 11px;
+}
+
+.jm-trace-reader .jm-trace-reply-header h2 {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.jm-trace-identity,
+.jm-trace-source-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  margin-top: 7px !important;
+  color: var(--jm-muted);
+  font-size: 11px;
+}
+
+.jm-trace-answer {
+  padding: 12px 14px;
+  margin: 16px 0 12px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  background: var(--jm-panel);
+}
+
+.jm-trace-reader .jm-trace-answer h3,
+.jm-trace-reader .jm-trace-source-section > h3,
+.jm-trace-reader .jm-trace-dispatches > h3,
+.jm-trace-reader .jm-trace-records h3 {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.jm-trace-reader .jm-trace-visible-text {
+  margin: 8px 0;
+  color: var(--jm-text);
+  line-height: 1.9;
+}
+
+.jm-trace-reader .jm-trace-full-text {
+  margin: 8px 0;
+  white-space: pre-wrap;
+  line-height: 1.85;
+}
+
+.jm-trace-fragment > button {
+  margin-top: 7px;
+  font-size: 11px !important;
+}
+
+.jm-trace-time-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-trace-duration {
+  color: var(--jm-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.jm-trace-time-summary > details {
+  flex-basis: 100%;
+}
+
+.jm-trace-gaps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 5px 8px;
+  margin: 8px 0 12px;
+  border-left: 2px solid var(--jm-border);
+  background: var(--jm-hover);
+  color: var(--jm-muted);
+  font-size: 11px;
+}
+
+.jm-trace-gaps ul {
+  padding-left: 18px;
+  margin: 6px 0;
+}
+
+.jm-trace-source-section,
+.jm-trace-dispatches {
+  margin-top: 20px;
+}
+
+.jm-trace-source-card {
+  padding: 7px 12px 10px;
+  margin: 10px 0;
+  border-left: 2px solid var(--jm-border);
+}
+
+.jm-trace-source-identity strong {
+  color: var(--jm-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jm-trace-reader .jm-trace-disclosure {
+  margin-top: 7px;
+}
+
+.jm-trace-reader .jm-trace-disclosure > summary {
+  color: var(--jm-accent);
+  font-size: 11px;
+}
+
+.jm-trace-disclosure-body {
+  margin-top: 8px;
+}
+
+.jm-trace-dispatch-card {
+  padding: 14px;
+  margin-top: 10px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  background: var(--jm-panel);
+}
+
+.jm-trace-dispatch-head,
+.jm-trace-stage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px 12px;
+}
+
+.jm-trace-dispatch-head {
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-trace-dispatch-head .jm-trace-duration {
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.jm-trace-reader .jm-trace-dispatch-reason {
+  margin: 10px 0 12px;
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.jm-trace-dispatch-target > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.jm-trace-stages {
+  margin-top: 14px;
+}
+
+.jm-trace-stage {
+  padding: 12px 0;
+  border-top: 1px solid var(--jm-border);
+}
+
+.jm-trace-stage-head h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.jm-trace-stage-head > span {
+  font-size: 11px;
+}
+
+.jm-trace-stage-used {
+  color: var(--jm-accent);
+}
+
+.jm-trace-stage-model,
+.jm-trace-stage-time {
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-trace-stage-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.jm-trace-reader .jm-trace-stage-summary {
+  margin-top: 6px;
+  line-height: 1.8;
+}
+
+.jm-trace-reader .jm-trace-error {
+  margin-top: 6px;
+  color: var(--jm-danger);
+}
+
+.jm-trace-options {
+  padding: 0;
+  margin: 10px 0;
+  list-style: none;
+}
+
+.jm-trace-options li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.jm-trace-options small {
+  grid-column: 1 / -1;
+  color: var(--jm-muted);
+}
+
+.jm-trace-options strong {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.jm-trace-calls {
+  padding-left: 20px;
+  margin: 10px 0;
+}
+
+.jm-trace-call {
+  padding: 7px 0;
+}
+
+.jm-trace-call > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.jm-trace-call strong {
+  font-weight: 500;
+}
+
+.jm-trace-records {
+  padding-top: 0;
+  margin-top: 8px;
+}
+
+.jm-trace-reader .jm-trace-event {
+  grid-template-columns: 70px minmax(0, 1fr);
+  padding-bottom: 7px;
+}
+
+.jm-trace-reader .jm-trace-stamp {
+  font-size: 10px;
+}
+
+.jm-trace-reader .jm-trace-facts {
+  margin-top: 0;
+}
+
+.jm-trace-reader .jm-trace-facts pre {
+  margin: 0;
+}
+
+.jm-trace-reader .jm-trace-disclosure-body > pre {
+  padding: 10px;
+  border-radius: 5px;
+  background: var(--jm-hover);
+}
+
+.jm-trace-reader .jm-trace-generation {
+  margin-top: 4px;
+  color: var(--jm-muted);
+  font-size: 11px;
+}
+
+.jm-trace-association {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 7px;
+  margin-top: 6px;
+  color: var(--jm-muted);
+  font-size: 11px;
+}
+
+.jm-trace-reader .jm-trace-association button {
+  border: 0;
+  padding: 0 3px;
+  font-size: 11px;
+}
+
+.jm-trace-gaps > details {
+  margin-top: 0 !important;
+}
+
+.jm-trace-gaps > details[open] {
+  flex-basis: 100%;
+}
+
+.jm-trace-historical-dispatch {
+  margin-top: 12px;
+}
+
+.jm-trace-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 12px;
+}
+
+.jm-trace-heading time {
+  color: var(--jm-muted);
+  font-size: 11px;
+}
+
+.jm-trace-reader .jm-trace-reply-header .jm-trace-identity {
+  margin-top: 3px !important;
+  line-height: 1.5;
+}
+
+.jm-trace-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 14px;
+}
+
+.jm-trace-header-actions > details[open] {
+  flex-basis: 100%;
+}

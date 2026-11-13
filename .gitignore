@@ -2,6 +2,7 @@
 # docs、.claude、diagrams、bak、ztools、runtime、各种笔记和产物一律不进。要加新的顶层目录，在下面加一行 !/名字/。
 /*
 !/.gitignore
+!/.gitattributes
 !/CLAUDE.md
 !/package.json
 !/tsconfig.json
@@ -11,10 +12,13 @@
 !/.prettierrc.json
 !/.prettierignore
 !/config.example.yaml
+!/prompts/
+!/memorycli/
 !/src/
-!/web/
 !/scripts/
 !/tests/
+!/local/
+!/web/
 !/shell/
 /shell/*
 /shell/**/*
@@ -33,6 +37,18 @@
 !/zbots/package.json
 !/zbots/tsconfig.json
 
+# 入门 Agent Loop：代码进仓库；config.yaml（可能含密钥）和运行时数据不进。
+# 全局规则已经忽略所有 config.yaml；这里把目录放进白名单，并挡掉运行时子目录。
+!/learn/
+/learn/*
+!/learn/Agent.ts
+!/learn/Cli.ts
+!/learn/config.example.yaml
+
+# 第 7 版骨架。单独的 tsconfig.src7.json 只检查 src7，不和 src6 的 cordis 类型声明混在一起。
+!/src7/
+!/tsconfig.src7.json
+
 # 白名单目录里也不要的。
 node_modules/
 dist/
@@ -43,3 +59,10 @@ dist/
 config.yaml
 *.local.yaml
 secrets.yaml
+
+# 调试用的运行时（.vscode/launch.json 的“调试 HTTP 一条线”，docs/12_调试HTTP一条线.md）
+.debug/
+
+# 数据库文件不进 git（白名单目录里出现了也挡住）
+*.db
+*.sqlite

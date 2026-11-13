@@ -1,139 +1,94 @@
 /**
- * 网页根组件：主题、中文语言包，以及按屏幕宽度选布局。
- * 宽屏用 PcLayout（顶栏 + 三栏），窄屏（小于 768px）用 MobileLayout（一次显示一层）；两种布局用同样的三个栏目。
- * 打开页面时加载一次知识库数据。PC 顶栏最右边是动效开关（Effects/MotionToggle.tsx）。
- * 网址是 `#/events` 开头时显示 jmbots 的“事件”页面（Events/EventsPage.tsx），不显示知识库。
+ * 整个网页：主题、三栏（左机器人、中聊天、右预览）、设置覆盖层。Esc 收起右栏。网址 # 后面的深链接见 Hash.ts。
  */
-import * as icons from '@ant-design/icons';
 import * as antd from 'antd';
+import enUS from 'antd/locale/en_US';
+import frFR from 'antd/locale/fr_FR';
 import zhCN from 'antd/locale/zh_CN';
+import zhTW from 'antd/locale/zh_TW';
 import * as react from 'react';
-import type { ReactNode } from 'react';
-import Magnet from './Effects/Magnet.tsx';
-import EventsPage from './Events/EventsPage.tsx';
-import * as eventsStore from './Events/EventsStore.ts';
-import MotionToggle from './Effects/MotionToggle.tsx';
-import BaseTree from './Knowledge/BaseTree.tsx';
-import DocumentList from './Knowledge/DocumentList.tsx';
-import DocumentView from './Knowledge/DocumentView.tsx';
-import * as knowledgeStore from './KnowledgeStore.ts';
-import MobileLayout from './Layout/MobileLayout.tsx';
-import PcLayout from './Layout/PcLayout.tsx';
-import * as prefsStore from './PrefsStore.ts';
+import * as botList from './Bots/BotList.tsx';
+import * as newBot from './Bots/NewBotModal.tsx';
+import * as chat from './Chat/ChatArea.tsx';
+import * as context from './Context.ts';
+import * as hash from './Hash.ts';
+import * as columns from './Layout/Columns.tsx';
+import * as panel from './Panel/RightPanel.tsx';
+import * as search from './Search/SearchModal.tsx';
+import * as settings from './Settings/Settings.tsx';
+import * as tokenPrompt from './Settings/TokenPrompt.tsx';
 import * as theme from './Theme.ts';
-import * as viewStore from './ViewStore.ts';
 
 
-/** 根组件。 */
-export default function App() {
-  /** 加载知识库数据的动作。 */
-  const load = knowledgeStore.useKnowledgeStore((state) => state.load);
-  /** 是不是窄屏；窄屏用手机布局。 */
-  const compact = prefsStore.usePrefsStore((state) => state.compact);
-  /** 是不是在“事件”页。 */
-  const eventsActive = eventsStore.useEventsStore((state) => state.active);
+/** antd 自己的文字用哪个语言包。 */
+const ANTD_LOCALES = { 'zh-CN': zhCN, 'zh-TW': zhTW, en: enUS, fr: frFR };
 
-  // m: 打开页面时取一次目录和文档。
+
+/** 整个网页。 */
+export function App(): react.JSX.Element {
+  /** 界面语言。 */
+  const language = context.useUi((state) => state.language);
+  /** 主题、右栏、设置。 */
+  const themeName = context.useUi((state) => state.themeName);
+  const panelOpen = context.useUi((state) => state.panelOpen);
+  const settingsOpen = context.useUi((state) => state.settingsOpen);
+  const closePanel = context.useUi((state) => state.closePanel);
+  /** 搜聊天、新建机器人的弹窗（开着时 Esc 只关弹窗，不收右栏）。 */
+  const searchOpen = context.useUi((state) => state.searchOpen);
+  const newBotOpen = context.useUi((state) => state.newBotOpen);
+  const setSearchOpen = context.useUi((state) => state.setSearchOpen);
+  const openPanel = context.useUi((state) => state.openPanel);
+  const setSettingsOpen = context.useUi((state) => state.setSettingsOpen);
+  const setSettingsCategory = context.useUi((state) => state.setSettingsCategory);
+  /** 主题。 */
+  const spec = theme.THEMES[themeName];
+
   react.useEffect(() => {
-    void load();
-  }, [load]);
+    theme.applyTheme(document.documentElement, spec);
+  }, [spec]);
 
-  // r: 搜索框在 PC 上放进顶栏，在手机上放在文档列表那一层的顶部。
-  /** 两种布局共用的搜索框。 */
-  const searchBox = <SearchBox />;
-  // m: 事件页单独一套布局。
-  if (eventsActive) {
-    return (
-      <antd.ConfigProvider theme={theme.ANTD_THEME} locale={zhCN}>
-        <EventsPage compact={compact} header={<TopBar search={null} eventsActive />} />
-      </antd.ConfigProvider>
-    );
-  }
+  react.useEffect(() => {
+    /** 照 # 后面说的做（深链接：#preview=路径、#tab=workspace、#settings=engine）。 */
+    const follow = (): void => {
+      /** 要做什么。 */
+      const action = hash.parseHash(window.location.hash);
+      if (action.kind === 'preview') {
+        openPanel('preview', action.target);
+      } else if (action.kind === 'tab') {
+        openPanel(action.tab);
+      } else if (action.kind === 'settings') {
+        setSettingsCategory(action.category);
+        setSettingsOpen(true);
+      }
+    };
+    follow();
+    window.addEventListener('hashchange', follow);
+    return () => window.removeEventListener('hashchange', follow);
+  }, [openPanel, setSettingsOpen, setSettingsCategory]);
+
+  react.useEffect(() => {
+    /** Esc 收起右栏（设置开着时由设置页自己处理，弹窗开着时只关弹窗）；Ctrl+K（macOS ⌘K）开搜聊天（docs/界面/01_界面设计.md 6.1），在输入框里也管用。 */
+    const onKey = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+        return;
+      }
+      if (event.key === 'Escape' && !event.defaultPrevented && !searchOpen && !newBotOpen) {
+        closePanel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [closePanel, setSearchOpen, searchOpen, newBotOpen]);
+
   return (
-    <antd.ConfigProvider theme={theme.ANTD_THEME} locale={zhCN}>
-      {compact ? (
-        <MobileLayout
-          search={searchBox}
-          left={<BaseTree />}
-          middle={<DocumentList />}
-          right={<DocumentView />}
-        />
-      ) : (
-        <PcLayout
-          header={<TopBar search={searchBox} eventsActive={false} />}
-          left={<BaseTree />}
-          middle={<DocumentList />}
-          right={<DocumentView />}
-        />
-      )}
+    <antd.ConfigProvider theme={theme.antdTheme(spec)} locale={ANTD_LOCALES[language]}>
+      <columns.Columns left={<botList.BotList />} center={<chat.ChatArea />} right={panelOpen ? <panel.RightPanel /> : null} />
+      {settingsOpen && <settings.Settings />}
+      <search.SearchModal />
+      <newBot.NewBotModal />
+      <tokenPrompt.TokenPrompt />
     </antd.ConfigProvider>
-  );
-}
-
-
-/** TopBar 的参数。 */
-interface TopBarProps {
-  /** 放在顶栏右边的搜索框；事件页没有。 */
-  search: ReactNode;
-  /** 现在是不是在“事件”页（决定哪个模块按钮亮着）。 */
-  eventsActive: boolean;
-}
-
-
-/** PC 顶栏：名称（鼠标靠近时轻轻磁吸）、模块入口（知识库、事件；“对话”“设置”先灰着，给以后留位置）、搜索框、动效开关。 */
-function TopBar(props: TopBarProps) {
-  return (
-    <div className="top-bar">
-      <Magnet padding={24} maxOffset={4}>
-        <span className="top-bar-brand">JMBOTS</span>
-      </Magnet>
-      <nav className="top-bar-modules">
-        <antd.Button
-          type="text"
-          className={props.eventsActive ? undefined : 'is-active'}
-          onClick={() => {
-            window.location.hash = '#/kb';
-          }}
-        >
-          知识库
-        </antd.Button>
-        <antd.Button
-          type="text"
-          className={props.eventsActive ? 'is-active' : undefined}
-          onClick={() => {
-            window.location.hash = '#/events';
-          }}
-        >
-          事件
-        </antd.Button>
-        <antd.Button type="text" disabled>
-          对话
-        </antd.Button>
-        <antd.Button type="text" disabled>
-          设置
-        </antd.Button>
-      </nav>
-      {props.search}
-      <MotionToggle />
-    </div>
-  );
-}
-
-
-/** 按标题过滤文档的搜索框；搜索词记在 ViewStore，文档列表从那里读。 */
-function SearchBox() {
-  /** 搜索框里的文字。 */
-  const query = viewStore.useViewStore((state) => state.query);
-  /** 改搜索词的动作。 */
-  const setQuery = viewStore.useViewStore((state) => state.setQuery);
-  return (
-    <antd.Input
-      className="top-bar-search"
-      allowClear
-      prefix={<icons.SearchOutlined />}
-      placeholder="按标题过滤文档"
-      value={query}
-      onChange={(event) => setQuery(event.target.value)}
-    />
   );
 }

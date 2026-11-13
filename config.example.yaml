@@ -1,91 +1,130 @@
-# jmbots 主配置模板。实际配置在运行时目录 F:\aidata\AIJMBots\config.yaml（密钥直接写在里面，不进 git）。
+# jmbots 主配置模板（docs/10 3.4）。实际配置是运行时目录（默认程序旁边的 jmbotsData\）里的 config.yaml（密钥直接写在里面，不进 git）。
 # 运行时目录里没有 config.yaml 时，程序第一次启动会自己写一份最简的；想要完整的就复制本文件过去再填。
-# 相对路径都以 config.yaml 所在的文件夹为准。
 
-# 模型供应商：地址和密钥写在一起。magpie 是本机的模型网关（桌面程序要开着），启动时向 base_url 的 /models 拉模型清单。
+# 模型供应商：地址和密钥写在一起，想接几家接几家，名字自己起（模型 ID 写成“供应商名/模型 ID”）。
+# 启动时向 base_url 的 /models 拉模型清单；一家连不上不挡别家，也不挡服务起来，每分钟再试。
 providers:
-  magpie:
-    base_url: http://127.0.0.1:3425/v1
-    api_key: magpie-jmbots          # 本机 magpie 收任何密钥；写成 magpie-<应用名>，用量页按它统计
-    # 发请求时的兼容设置，原样交给 Pi（OpenAICompletionsCompat）
-    compat:
-      supportsDeveloperRole: false
-      supportsStore: false
-      maxTokensField: max_tokens
-    # 个别模型再加的兼容设置：DeepSeek 思考模式下调工具，要把上一步的思考原样带回去
-    model_compat:
-      workbuddy/deepseek-v4.1-flash: { requiresReasoningContentOnAssistantMessages: true }
+  my_provider:                        # 供应商名，自己起；下面用到的模型 ID 都以它开头
+    base_url: https://api.example.com/v1
+    api_key: ''                       # 本地不要密钥的服务可以不写
+    # api: openai-completions         # 协议：openai-completions（默认）、openai-responses、anthropic-messages
+    # list_models: true               # 启动时向 <base_url>/models 拉清单（默认）；没有清单接口就写 false，只用下面手写的
+    # compat:                         # 发请求时的兼容设置，原样交给 Pi（OpenAICompletionsCompat）
+    #   supportsDeveloperRole: false
+    #   supportsStore: false
+    #   maxTokensField: max_tokens
+    # model_compat:                   # 个别模型再加的兼容设置，如 DeepSeek 思考模式下调工具，要把上一步的思考原样带回去
+    #   some-model: { requiresReasoningContentOnAssistantMessages: true }
+    # models:                         # 手写的优先。清单只给 ID 时，没写的用保守值（上下文 128000、最大输出 8192、看不了图）
+    #   some-model: { context_window: 128000, max_output_tokens: 8192, vision: true, thinking: [off, high], price: { input: 0.27, output: 1.1 } }
+  # deepseek:                         # 再接一家照样写
+  #   base_url: https://api.deepseek.com/v1
+  #   api_key: ''
 
-# 全局默认模型：机器人、智能体没写模型，或分派给“只用模型”时用它。写成“供应商/模型 ID”。
-# 不写时用 models.work.model。
-default_model: magpie/workbuddy/deepseek-v4.1-flash
+# 程序默认的模型：新开会话和 exec 审核的小循环用它。写成“供应商/模型 ID”。
+# 会话要换模型由用户在网页上换；分派不再挑模型。
+default_model: my_provider/some-model
 
-# 各用途的模型。thinking：off、minimal、low、medium、high、xhigh、max，模型不支持的档位自动换成最近的。
+# 程序级的决策模型。thinking：off、minimal、low、medium、high、xhigh、max，模型不支持的档位自动换成最近的。
 models:
-  work: { model: magpie/workbuddy/deepseek-v4.1-flash, thinking: high }      # 执行（默认模型）
-  dispatch: { model: magpie/workbuddy/deepseek-v4.1-flash, thinking: low }   # 分派智能体、判断智能体没写模型时用
-  decision: { model: magpie/openrouter/typesafe/jev-1.14 }                   # 决策模型 Jev：审核 exec、判断下一步
+  # decision: { model: 供应商名/决策模型 ID }                  # 决策模型：分派、压缩、exec 审核先问它（供应商要有决策模型）；可以不配
 
-# 工作区：只是登记，名字 → 说明和目录。dir 是工具干活的目录，可以在运行时目录外面；空着就用 workspaces/<名字>/files。
-# AI 也可以自己登记新的工作区（写在 workspaces/<名字>/工作区.yaml）。
-workspaces:
-  日常:
-    description: 日常问答、查资料、整理文件等杂事
-    dir: ''
+# 唯一启用名单：一项一条机器人循环；[] 表示不启用。历史 bots/ 文件夹不会自动启用。
+# 名字可以是中文，就是运行时 bots/ 下的文件夹名；language 选提示词：zh / en。
+# 不写 bots 时，用运行时 bots/ 下已有的文件夹；都没有就起一个原始机器人“助手”。
+bots:
+  - name: 助手
+    language: zh
 
-# 执行设置。
 engine:
-  max_steps: 100         # 一次执行最多调几次模型（11-03 用户要放大；到了会停下，回“继续”接着做）
-  dispatcher: 分派        # 全局分派智能体的名字（agents/<名字>/config.yaml）
-  exec_review: decision  # exec 怎么审核：decision 先问决策模型，安全概率够就直接执行，不够才问用户（飞书发卡片）；human 都问用户；off 不审核
-  route_model: magpie/workbuddy/deepseek-v4.1-flash  # 分派对话用的模型（要快）；清单里没有就用机器人自己的
-  route_thinking: 'off'  # 分派对话的思考强度
-  watchdog_minutes: 15   # 执行多少分钟没有新步骤就提醒用户，0 不看
+  poll_ms: 300           # 机器人循环多久看一次新消息
+  max_rounds: 300        # 一次运行最多多少步（调多少次模型）
+  compress_at: 200000    # 上下文到多少 token 就考虑压缩（模型上限不到 250K 时用上限的 80%）
+  exec_pass: 0.2         # exec 审核：决策模型给的“安全”概率不低于它就直接执行
+  # vision_model: 供应商名/模型 ID            # 看不了图的模型读到图片时，先交给它转成文字；不写就不转
+  # index_url: http://127.0.0.1:30090           # 基地的接口（记忆搜索、RAG）；不写就只搜自己的记忆、公共记忆和技能
+  # memory_libs: memory,aiskills                # memory 工具还用 RAG 搜基地里的哪些库，逗号连着写；每半小时让基地增量更新这些库的索引；不写就不搜
+  # wrapup_model: 供应商名/模型 ID            # 限时到点时写收尾总结的模型（不带工具、最低思考档）；不写用会话自己的模型
+  # limit_default_minutes: 20          # 限时（docs/界面/03 第 2.1 节）：不选的时候最长做多少分钟（用户 11-06：最长 20 分钟）
+  # limit_remind_before_minutes: 10    # 不选的时候，到点前多少分钟开始介入、报时（第 10 分钟）；选了 15、20 的提前 5 分钟
+  # limit_extend_minutes: 5            # 到点判断快做完了，一次延长几分钟
+  # limit_extend_times: 2              # 最多延长几次
+  # limit_judge_model: 供应商名/决策模型 ID   # 到点判断用的决策模型；不写用 models.decision
+  # limit_review_model: 供应商名/模型 ID      # 延了两次还没做完时的审核模型：看有没有离谱、要不要转新会话；不写用会话自己的模型，思考最强档
+  # image_model: 供应商名/生图模型 ID          # 生图模型（image_generate 工具用）；不写就没有生图
+  # fallback_chain: [供应商名/模型 ID, 供应商名/模型 ID]   # 模型被限流时依次换着试（模型库用）
+  # fallback_max_tries: 5
+  # retry_delays_ms: [2000, 5000]
+  # rate_limit_cooldown_minutes: 5   # 模型被限流时先冷却、不再找它：报错里写了几点恢复就到那时，没写就冷却这么多分钟
 
 # 并发配额：同一时间最多几个调用，超了排队（不报错）。
 concurrency:
   default: 3     # 每个模型默认最多几个
-  models: {}     # 单独设的模型，如 'magpie/workbuddy/deepseek-v4.1-flash': 6
-  providers: {}  # 供应商合计上限（它所有模型加起来），如 magpie: 10；不写不限
+  models: {}     # 单独设的模型，如 'my_provider/some-model': 6
+  providers: {}  # 供应商合计上限（它所有模型加起来），如 my_provider: 10；不写不限
 
-# 网页搜索（web_search 工具）：按顺序试，前一个出错或搜不到就用下一个。不写这一节时只用第一项（Codex 订阅的搜索）。
-#   magpie     经 magpie 网关搜（地址、密钥默认取 providers.magpie）：model 是 ChatGPT 账号的模型就用 Codex 订阅的搜索，
-#              别的模型由 magpie 自己搜（能搜的模型、账号，或 magpie 设置里的搜索 API）
+# 网页搜索（web_search 工具）：按顺序试，前一个出错或搜不到就用下一个。不写这一节就不能搜网页（机器人搜的时候会说去设置的“搜索”里加）。
+#   magpie     Magpie 网关的搜索接口（POST <base_url>/alpha/search）：provider 写用 providers 里哪一家的地址和密钥（也可以直接写 url、api_key），
+#              model 写网关里用哪个模型的身份搜（网关里的模型 ID，不带供应商名）
 #   zhipu_mcp  智谱 MCP 搜索（GLM Coding 套餐），api_key 填智谱的密钥；url 不写用 https://open.bigmodel.cn/api/mcp/web_search_prime/mcp
-search:
-  - { kind: magpie, model: codex/gpt-6-luna }
-  - { kind: zhipu_mcp, api_key: '' }
-  - { kind: magpie, model: zcode/GLM-5.3 }
+# search:
+#   - { kind: magpie, provider: my_provider, model: 网关里的模型 ID }
+#   - { kind: zhipu_mcp, api_key: '' }
 
-# 决策模型怎么问（models.decision）。
-decision:
-  pass_probability: 0.2  # exec “安全”的概率不低于这个数就直接执行，低于才问用户（用户 11-02：绝大多数命令应该直接放行）
-  questions:
-    tool_safe:
-      type: bool
-      instructions: 即将执行的命令是否安全：不会造成难以挽回的损失，也不会泄露密钥。算安全：查看、搜索、构建、测试、跑脚本整理数据、在工作区写新文件、删除这次任务自己生成的临时文件，以及用户在任务里已经要求的交付（比如发布用户要的文档、把结果发给这个用户）。算有风险：删除或覆盖用户原有的文件、改系统设置（关机、注册表、服务、计划任务）、付费、把东西发给任务没提到的人、读取或打印配置文件里的密钥。给了脚本内容时，按脚本实际做的事判断，不只看命令和文件名。
-      criteria: { 'true': 安全，可以执行, 'false': 有风险，先别执行 }
-    # 机器人、智能体的 judge 写 decision 时，每走完一步问一次；代码会再加上“转交给某某”（routes）的选项。
-    next_step:
-      type: choice
-      instructions: 执行者刚走完一步。根据任务和这一步的结果，下一步该怎么走？
-      criteria:
-        continue: 还没做完，比如刚调了工具还要看结果，或者还差几步，让它接着做
-        done: 已经做完，这一步的回复可以直接发给用户
-        ask_user: 缺少只有用户才能提供的信息，要先问用户
-        block: 再做下去会造成难以挽回的损失，或者明显违反规矩，要停下
+# 工具放哪（相对运行时目录，也可以写绝对路径）：一个工具一个文件夹，exec 把它们的 bin/（或文件夹本身）放到 PATH 最前面。
+# paths:
+#   runtimes: runtimes   # Python、Node、Bun、uv 这些语言运行环境
+#   program: program     # ffmpeg 这类开源程序；清单在 program/工具清单.md
 
-# HTTP 服务（serve 命令）。命令行 --host、--port 优先。默认 0.0.0.0（用户 11-02 定，开发阶段全开）；本机和局域网来的请求不查 token，别的地址配了 token 才查（也可以用环境变量 JMBOTS_TOKEN）。
-http:
+# HTTP 服务：一律监听 0.0.0.0（换版本时的试运行也一样）。
+# 本机（127.0.0.1、::1）来的请求不查令牌；别的机器来的 /api/*、/files/* 要带 server.token。
+# server.token 是给别的机器访问用的固定令牌，写死在这里，不要每次生成新的；可以是空（＝没有主令牌，别的机器要用 /api/tokens 建的令牌）；网页和 /test 页面本身不用令牌。
+# 0.4 的 http: 段优先：有 http 用 http，没有才用 server；0.6 不改写 config.yaml。
+server:
   host: 0.0.0.0
   port: 30086
   token: ''
 
-# 聊天渠道：飞书只是 HTTP 服务外接的一个渠道，serve 时开着才接。
+# 本地壳子（local/ 编出来的 jmbots.exe：窗口、托盘、命令行；记忆搜索和 RAG 接口，取代独立的 memorycli 服务）。不写全用默认值。
+# local:
+#   port: 30090        # 壳子的 HTTP 接口，一律监听 0.0.0.0；engine.index_url 指到这里
+#   server: ''         # 窗口打开哪个后端的网页；不写就是本机的 server.port
+#   libs: data/index/libs   # 记忆库目录，相对运行时目录；下面每个子目录一个 index.db，子目录名是库名
+#   rag: data/index/rag     # RAG 索引目录，相对运行时目录
+
+# 聊天渠道。飞书写成列表：几个飞书应用就写几项，每项对应一个机器人；回复从收到消息的那个应用发回去。
 channels:
   feishu:
-    enabled: false
-    app_id: ''
-    app_secret: ''
-    bot: 周小灵             # 飞书来的新会话交给哪个机器人（bots/<名字>/config.yaml）
-    session_idle_hours: 6  # 同一个聊天这么多小时内的消息接着上一个会话，超过就新开
+    - app_id: ''
+      app_secret: ''
+      bot: 助手
+    # - app_id: ''           # 第二个飞书应用，对应另一个机器人
+    #   app_secret: ''
+    #   bot: 小助手
+
+# 事件（docs/11）：会话循环在断点上报事件，只是记录，不挡流程；/api/events 能查。
+# events:
+#   keep_days: 30                 # 事件留多少天
+#   max_depth: 5                  # 事件链最多几层
+#   gate_timeout_ms: 10000        # 拦处理器最多等多久，超时按放行
+#   watch_think_slow_seconds: 120 # 一步想多久算太慢
+#   watch_think_max_steps: 40     # 一次运行走多少步算太多
+#   watch_tool_fail_run: 3        # 同一个工具连着错几次要记
+#   watch_rag_slow_ms: 3000       # 一次搜索多久算太慢
+#   watch_rag_repeat: 3           # 同一句搜几次算反复
+
+# —— 以下是 src7 骨架用的 plugins 段样例（0.6 的程序暂时不读这一段）——
+# 不写 plugins 段时，src7 挂 cli、base-tools、default-dialog 三个。
+# 离线假模型：providers 里加一家 name 为 fake、base_url 为 fake://，default_model 写成 fake/fake；
+# 或设环境变量 JMBOTS_FAKE=1。真模型把 default_model 写成“供应商名/模型 ID”。
+# plugins:
+#   - name: cli
+#   - name: base-tools
+#   - name: default-dialog
+#     config: { recent: 50 }
+#   - name: compress
+#     config: { at: 200000, keep: 6 }
+#   - name: trace
+#     disabled: true               # 想看一条消息走过的路时改成 false，或删掉这一行
+#   - name: ./plugins/weather      # 别人写的：以 . 开头的是文件夹路径，从 config.yaml 所在的目录算
+#     config: { city: 上海 }

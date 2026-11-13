@@ -5,7 +5,7 @@ import * as bunTest from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as execRules from '../src/core/ExecRules.ts';
+import * as execRules from '../src/executors/ExecRules.ts';
 
 
 bunTest.test('碰密钥文件的认得出，config.example.yaml 和 .env.example 不算', () => {

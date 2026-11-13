@@ -2,8 +2,8 @@
  * 测 edit 的匹配替换（EditMatch.ts）和输出截断（Truncate.ts）：都是纯函数，不碰文件和模型。
  */
 import * as bunTest from 'bun:test';
-import * as editMatch from '../src/tools/EditMatch.ts';
-import * as truncate from '../src/tools/Truncate.ts';
+import * as editMatch from '../src/capabilities/tools/EditMatch.ts';
+import * as truncate from '../src/capabilities/tools/Truncate.ts';
 
 
 bunTest.describe('applyEdits', () => {

@@ -13,7 +13,7 @@
  *   - **不导入 src 下的任何东西**。看门狗是最后一道防线，不能因为被它看守的代码被改坏就跟着起不来。
  *
  * 用法：
- *   bun scripts/Guard.ts [--port 30086] [--host 0.0.0.0] [--runtime F:\aidata\AIJMBots]
+ *   bun scripts/Guard.ts [--port 30086] [--host 0.0.0.0] [--runtime <运行时目录>]
  * 日志在运行时 `data\guard_<日期>.log`；心跳在 `data\guard.heartbeat`（Start_Serve 据此判断它还在不在）。
  * 一般不用手敲：双击 `scripts\Start_Serve.cmd`，或者开机自动起（见 scripts/Install_Autostart.ts）。
  */
@@ -82,7 +82,7 @@ interface State {
 
 /**
  * 通知用户和 Claude：往运行时的飞书发件箱放一份（服务在跑时会发给用户），
- * 同时往 给Claude 目录留一份（Claude 下次接手时能看到）。
+ * 同时往 integrations/claude/inbox留一份（Claude 下次接手时能看到）。
  * 发件箱要有服务在跑才发得出去；彻底起不来的那种情况，就只有留言和日志了。
  * @param runtimeDir 运行时目录。
  * @param title 标题。
@@ -95,7 +95,7 @@ function notify(runtimeDir: string, title: string, body: string): void {
   const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
   /** 两处要写的内容。 */
   const text = `# ${title}\n\n- 来自：看门狗（scripts/Guard.ts）\n- 时间：${serveProcess.timeText()}\n\n${body}\n`;
-  for (const dir of [path.join(runtimeDir, 'integrations', 'claude', '给Claude'), path.join(runtimeDir, serveProcess.OUTBOX_DIR)]) {
+  for (const dir of [path.join(runtimeDir, 'integrations', 'claude', 'inbox'), path.join(runtimeDir, serveProcess.OUTBOX_DIR)]) {
     try {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, `${id}_${safeTitle}.md`), text);
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   /** 运行时目录。 */
   const runtimeDir = serveProcess.runtimeDir();
   /** 正式端口。 */
-  const port = Number(serveProcess.option('port', '30086'));
+  const port = serveProcess.portOption('port', 30086);
   fs.mkdirSync(path.join(runtimeDir, 'data'), { recursive: true });
 
   //G 已经有一只在跑就不再起第二只（两只会互相抢着起服务）。
@@ -254,12 +254,34 @@ async function main(): Promise<void> {
   };
   /** 这一轮记着的事。 */
   const state: State = { fails: 0, healthySince: undefined, saved: false, rolledBackTo: undefined, skipIds: [], quietUntil: undefined };
+  /** 开发模式的提示只在刚按住、刚放开时各写一次，别每 30 秒刷一行。 */
+  let devNoted = false;
   log(`看门狗开工：守着 ${port}，运行时 ${runtimeDir}，每 ${CHECK_INTERVAL_MS / 1000} 秒查一次`);
 
   while (true) {
     try {
       //M 心跳：让 Start_Serve 和下一只看门狗知道这里有人了。
       fs.writeFileSync(heartbeatFile(runtimeDir), serveProcess.timeText());
+
+      /** 开发模式按到什么时候；没按住就是 undefined。 */
+      const devUntil = serveProcess.devHoldUntil(runtimeDir);
+      //G 开发模式：只看不动手。不起服务、不回退、不存快照——开发时服务本来就会被反复停掉和改坏。
+      if (devUntil !== undefined) {
+        if (!devNoted) {
+          log(`开发模式按住了，只看不动手（到 ${new Date(devUntil).toLocaleTimeString('zh-CN', { hour12: false })} 自动放开）`);
+          devNoted = true;
+        }
+        state.fails = 0;
+        state.saved = false;
+        state.healthySince = undefined;
+        await Bun.sleep(CHECK_INTERVAL_MS);
+        continue;
+      }
+      //G 刚从开发模式出来：说一声，下次再按住时还要提示。
+      if (devNoted) {
+        log('开发模式放开了，看门狗恢复正常');
+        devNoted = false;
+      }
 
       if (serveProcess.isSwapping(runtimeDir)) {
         //G 正在换版本：服务本来就会断一下，让开。换版本一定是用工作区代码起的，所以把回退状态清掉，给新代码机会。
