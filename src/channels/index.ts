@@ -1,231 +1,272 @@
 /**
- * 渠道装配：按 config.yaml 的 `channels:` 把该起的渠道起起来，并给引擎配好"能用哪些本事"。
- *
- * 为什么要有这个文件（用户 2026-11-04 指出）：核心说好了不认识任何一家渠道，但入口 Main.ts
- * 原来直接 import 了 Feishu、FeishuDoc、FeishuMedia 自己接线——抽象只做了一半。现在
- * **"飞书"两个字只出现在 channels/ 里面**，入口只调这里的两个函数。
- *
- * 再加一种渠道（微信、钉钉……）只改这一个文件：在 STARTERS 和 HOOKS 里各加一行。
- * 同一种渠道接好几个号就在 config.yaml 里写成数组，这里会挨个起。
- *
- * HTTP 也是一种渠道，只是它特殊两点：永远要起（网页和接口都靠它，换版本的健康检查也靠它），
- * 而且监听地址要回传给入口（领取人是 `serve@端口`）。所以它单独走 startHttp，不进 STARTERS。
+ * 按配置开渠道（docs/10 6.14）：HTTP 总是开（监听 0.0.0.0），再加 config.yaml 里开着的（飞书一个应用一个）。
+ * 收到话交给 机器人循环.receive；ChannelHub 自己实现“往渠道发东西”的 Outlet：入口 src/entries/App.ts 最先建它，
+ * 要发东西的对象（会话、审核、进度卡片……）构造时就拿着它；开渠道（start）时才交进收话要用的对象。
+ * 消息是 HTTP 来的、却要发审核卡片或云文档时，找这个机器人的飞书应用代发（发给最近私聊的人）。
  */
-import * as path from 'node:path';
-import * as feishu from './Feishu.ts';
-import * as feishuDoc from './FeishuDoc.ts';
-import * as feishuMedia from './FeishuMedia.ts';
-import * as http from './Http.ts';
-import * as checks from '../utils/Checks.ts';
 import * as utils from '../utils/Utils.ts';
-import type * as engineModule from '../events/Loop.ts';
-import type * as eventsModule from '../events/Events.ts';
-import type * as modelModule from '../capabilities/Model.ts';
-import type * as resourcesModule from '../resources/Resources.ts';
+import * as channelModule from './Channel.ts';
+import * as http from './Http.ts';
+import './Feishu.ts';
+import type * as approvalsModule from '../capabilities/Approvals.ts';
+import type * as progressModule from '../capabilities/Progress.ts';
+import type * as depsModule from '../capabilities/Deps.ts';
 
 
-/** 装配渠道要的东西。 */
-export interface LoadInput {
-  /** 资源：从这里读开了哪些渠道。 */
-  resources: resourcesModule.Resources;
-
-  /** 数据库。 */
-  store: eventsModule.EventStore;
-
-  /** 引擎：渠道收到的话交给它分派。 */
-  engine: engineModule.Engine;
-
-  /** 模型：HTTP 的 /api/models 要用。 */
-  ai: modelModule.Ai;
-
-  /** 试运行的新版本：只起 HTTP，不接聊天渠道（换版本时和正在跑的旧服务抢活会出乱子）。 */
-  candidate: boolean;
-
-  /** 命令行参数：--host、--port 比 config.yaml 优先。 */
-  argv: string[];
-}
-
-
-/** 装配好之后告诉入口的东西。 */
-export interface Loaded {
-  /** HTTP 实际监听在哪：入口拿它拼领取人 `serve@端口`，也打印给人看。 */
-  listen: { host: string; port: number };
-
-  /** 接上了哪些聊天渠道，一个名字一行，打印给人看。 */
-  started: string[];
+/** 开渠道时交给渠道中心的（入口 src/entries/App.ts 建好）。 */
+export interface HubParts {
+  /** HTTP 渠道要用的对象（src/channels/Http.ts 的 HttpParts），收话也走它的 botLoop.receive。 */
+  http: http.HttpParts;
+  /** 建登记表上的渠道（飞书）时交给它们的对象（src/channels/Channel.ts 的 ChannelParts）。 */
+  channels: channelModule.ChannelParts;
 }
 
 
 /**
- * 一种渠道怎么"接上来收消息"。
- * @param settings 这一份渠道设置（config.yaml 里那一段）。
- * @param input 装配要的东西。
- * @returns 一句说明，打印给人看；没真接上就返回 undefined。
+ * 渠道中心：开所有渠道，同时是往渠道发东西的出口（实现 Outlet）。
+ * 入口最先建它（只要端口和是否试运行），要发东西的对象构造时就拿着它；渠道开起来以前发东西会报“渠道没开”。
+ * 渠道表和各渠道的停下函数是私有字段；出口的方法都是按渠道名找到渠道再转给它。
+ * 方法都是拿着对象调（out.send(...)），没有单独拿出来传的，this 不会丢。
  */
-type Starter = (settings: Record<string, unknown>, input: LoadInput) => Promise<string | undefined>;
+export class ChannelHub implements depsModule.Outlet {
+  /** 开着的渠道（启动时放 HTTP 和配置里的，运行时 addChannel 还会加）。 */
+  private readonly channels: channelModule.Channel[] = [];
 
+  /** 各渠道的停下函数。 */
+  private readonly stops: (() => Promise<void>)[] = [];
 
-/**
- * 接上飞书：长连接收消息，外加发件箱轮询。
- * @param settings config.yaml 的 channels.feishu（可能是数组里的一份）。
- * @param input 装配要的东西。
- * @returns 一句说明；没填 app_id/app_secret 就返回 undefined。
- * 副作用：建飞书长连接，起发件箱轮询。
- */
-const startFeishu: Starter = async (settings, input) => {
-  /** 读好的飞书设置。 */
-  const ready = feishu.readChannelSettings(settings);
-  if (!ready) {
-    return undefined;
-  }
-  /** 传输层。 */
-  const transport = feishu.createSdkTransport({ enabled: true, app_id: ready.app_id, app_secret: ready.app_secret, bot: ready.bot });
-  await feishu.startFeishu({ transport, settings: ready, store: input.store, engine: input.engine, resources: input.resources });
-  feishu.startOutbox(input.resources, feishu.createSender(transport, input.store));
-  return `飞书：已接上，消息交给机器人 ${ready.bot}；${feishu.OUTBOX_DIR} 里的文件会发给最近私聊的人`;
-};
+  /** 开渠道时交进来的（start 以前是 undefined）。 */
+  private parts?: HubParts;
 
+  /**
+   * 建渠道中心（还没开渠道，开用 start）。
+   * @param options port 端口；candidate 试运行只开 HTTP。
+   */
+  constructor(private readonly options: { port: number; candidate: boolean }) {}
 
-/** 渠道名 → 怎么接上来收消息。加一种渠道就在这里加一行。 */
-const STARTERS: Record<string, Starter> = {
-  feishu: startFeishu,
-};
-
-
-/**
- * 一种渠道能给引擎提供哪些本事（发消息、问选项、发文档……）。
- * @param settings 这一份渠道设置。
- * @param store 数据库。
- * @returns 本事；这份设置不完整就返回 undefined。
- */
-type HookBuilder = (settings: Record<string, unknown>, store: eventsModule.EventStore) => engineModule.ChannelHooks | undefined;
-
-
-/**
- * 飞书能给引擎提供的本事。
- * @param settings config.yaml 的 channels.feishu。
- * @param store 数据库。
- * @returns 本事；没填 app_id/app_secret 就返回 undefined。
- */
-const feishuHooks: HookBuilder = (settings, store) => {
-  /** 读好的飞书设置。 */
-  const ready = feishu.readChannelSettings(settings);
-  if (!ready) {
-    return undefined;
-  }
-  /** 传输层（发消息用；和收消息那条长连接是两回事，这里不联网直到真发）。 */
-  const transport = feishu.createSdkTransport({ enabled: true, app_id: ready.app_id, app_secret: ready.app_secret, bot: ready.bot });
-  /** 云文档发布器：发布和删除共用一个。 */
-  const publisher = feishuDoc.createDocPublisher(feishuMedia.createOpenApi(ready.app_id, ready.app_secret));
-  return {
-    send: feishu.createSender(transport, store),
-    ask: feishu.createChoiceSender(transport, store),
-    sendMedia: feishu.createMediaSender(transport, store),
-    publishDoc: feishuDoc.createDocSender(publisher, store),
-    deleteDoc: feishuDoc.createDocRemover(publisher),
-  };
-};
-
-
-/** 渠道名 → 它能给引擎提供哪些本事。加一种渠道就在这里加一行。 */
-const HOOKS: Record<string, HookBuilder> = {
-  feishu: feishuHooks,
-};
-
-
-/**
- * 按 config.yaml 配好引擎能用的渠道本事。
- * 开了好几个渠道时，同一项本事谁先登记谁生效（先到先得，顺序就是 config.yaml 里的顺序）。
- * @param resources 资源。
- * @param store 数据库。
- * @returns 本事；一个渠道都没开时是 undefined（引擎就只有默认工具）。
- */
-export function buildChannelHooks(resources: resourcesModule.Resources, store: eventsModule.EventStore): engineModule.ChannelHooks | undefined {
-  /** 合起来的本事。 */
-  const merged: engineModule.ChannelHooks = {};
-  /** 有没有哪家真的提供了本事。 */
-  let any = false;
-  for (const { name, settings } of resources.listChannels()) {
-    /** 这一家的本事。 */
-    const hooks = HOOKS[name]?.(settings, store);
-    if (!hooks) {
-      continue;
-    }
-    any = true;
-    //G 先到先得：已经有人提供这项本事就不覆盖，免得后面开的渠道把前面的顶掉。
-    for (const key of Object.keys(hooks) as (keyof engineModule.ChannelHooks)[]) {
-      if (hooks[key] !== undefined && merged[key] === undefined) {
-        Object.assign(merged, { [key]: hooks[key] });
+  /**
+   * 开所有渠道：HTTP 总是开，试运行以外再开配置里的。
+   * @param parts HTTP 要用的对象、建飞书要的依赖（入口 src/entries/App.ts 建好）。
+   * @returns 无。HTTP 起不来时抛错；别的渠道起不来只打一行日志。
+   * 副作用：监听端口、连飞书。
+   */
+  async start(parts: HubParts): Promise<void> {
+    this.parts = parts;
+    //M 建渠道：HTTP 在前，配置里开着的在后。
+    this.channels.push(
+      new http.HttpChannel(parts.http, this.options.port),
+      ...(this.options.candidate ? [] : channelModule.buildChannels(parts.channels)),
+    );
+    //M 一个个开，停下函数收起来；收到话交给机器人循环。
+    for (const channel of this.channels) {
+      try {
+        this.stops.push(await channel.start((input) => parts.http.botLoop.receive(input)));
+      } catch (error) {
+        //G HTTP 起不来就整个起不来；飞书连不上只打一行，不挡别的渠道。
+        if (channel.name === 'http') {
+          throw error;
+        }
+        console.error(
+          `${utils.formatTime()} 渠道 ${channel.name} 没开起来：${utils.errorText(error)}`,
+        );
       }
     }
   }
-  return any ? merged : undefined;
-}
 
-
-/**
- * 算出 HTTP 监听在哪：命令行 --host/--port 优先，其次 config.yaml 的 http，再其次 0.0.0.0:30086。
- * 入口要先知道端口才能拼领取人（`serve@端口`），所以单独露出来；loadChannels 里用的是同一个函数，结果一致。
- * @param resources 资源。
- * @param argv 命令行参数。
- * @returns 地址和端口。无副作用。
- */
-export function resolveListen(resources: resourcesModule.Resources, argv: string[]): { host: string; port: number } {
-  /** config.yaml 的 http。 */
-  const httpConfig = resources.getHttp();
-  return checks.readListenOptions(
-    { host: checks.optionalString(httpConfig.host, 'http.host') ?? '0.0.0.0', port: Number(httpConfig.port ?? 30086) },
-    argv,
-  );
-}
-
-
-/**
- * 起 HTTP，再按 config.yaml 把聊天渠道挨个接上。
- * @param input 装配要的东西。
- * @returns HTTP 监听在哪、接上了哪些渠道。
- * @throws HTTP 起不来时抛错（网页和换版本的健康检查都靠它，起不来不能继续）。
- * 副作用：监听端口，建各渠道的连接，写 data\serve_<端口>.pid。
- */
-export async function loadChannels(input: LoadInput): Promise<Loaded> {
-  /** 地址和端口。 */
-  const listen = resolveListen(input.resources, input.argv);
-  /** config.yaml 的 http（取 token）。 */
-  const httpConfig = input.resources.getHttp();
-  /** HTTP 服务。 */
-  const app = http.createHttp({
-    resources: input.resources,
-    store: input.store,
-    engine: input.engine,
-    ai: input.ai,
-    token: checks.optionalString(httpConfig.token, 'http.token') ?? process.env.JMBOTS_TOKEN,
-    webDir: path.resolve(import.meta.dir, '..', '..', 'dist', 'web'),
-  });
-  await app.listen({ host: listen.host, port: listen.port });
-
-  /** 接上了哪些聊天渠道。 */
-  const started: string[] = [];
-  //G 试运行的新版本不接聊天渠道：它和正在跑的旧服务同时在，抢同一批消息会出乱子。
-  if (input.candidate) {
-    return { listen, started };
-  }
-  for (const { name, settings } of input.resources.listChannels()) {
-    /** 这一家怎么接。 */
-    const starter = STARTERS[name];
-    if (!starter) {
-      console.log(`${utils.formatTime()} config.yaml 里开了渠道 ${name}，但代码里还没有它的接入方式，先跳过`);
-      continue;
-    }
-    try {
-      /** 接上之后的说明。 */
-      const note = await starter(settings, input);
-      if (note) {
-        started.push(note);
-      }
-    } catch (error) {
-      //G 一家接不上不能连累别家（飞书挂了，HTTP 和网页还得能用）。
-      console.error(`${utils.formatTime()} 渠道 ${name} 没接上（别的渠道照常）：${utils.errorText(error)}`);
+  /**
+   * 停下所有渠道（一个停不下来不挡别的）。
+   * 副作用：关端口、断飞书。
+   */
+  async stop(): Promise<void> {
+    for (const stop of this.stops) {
+      await stop().catch(() => undefined);
     }
   }
-  return { listen, started };
+
+  /** 各渠道连着没有（界面左下角的小圆点用）。只列有 status 的渠道。 */
+  channelStatus(): { name: string; bot?: string; connected: boolean; detail: string }[] {
+    return this.channels.flatMap((channel) =>
+      channel.status ? [{ name: channel.name, bot: channel.bot, ...channel.status() }] : [],
+    );
+  }
+
+  /**
+   * 运行时加一个渠道（网页新建机器人时绑飞书应用）：照登记表建、连上、加进路由。
+   * @param kind 渠道种类。
+   * @param settings 这一份设置（带 bot）。
+   * @throws 连不上时抛错（渠道照样加进去，状态里看得到）。
+   */
+  async addChannel(kind: string, settings: Record<string, unknown>): Promise<void> {
+    /** 开渠道时交进来的。 */
+    const parts = this.parts;
+    if (!parts) {
+      throw new Error('渠道中心还没开（start），不能加渠道');
+    }
+    //M 先加进路由，连不上状态里也看得到（和启动时一样）。
+    /** 新渠道。 */
+    const channel = channelModule.buildChannel(kind, settings, parts.channels);
+    this.channels.push(channel);
+    this.stops.push(await channel.start((input) => parts.http.botLoop.receive(input)));
+  }
+
+  /**
+   * 发文字到指定渠道。
+   * @param name 渠道名。
+   * @param address 回复地址。
+   * @param text 文字。
+   * @throws 渠道没开时抛错。
+   */
+  async send(name: string, address: Record<string, unknown>, text: string): Promise<void> {
+    /** 渠道。 */
+    const channel = this.route(name);
+    if (!channel) {
+      throw new Error(`渠道 ${name} 没开`);
+    }
+    await channel.send(address, text);
+  }
+
+  /**
+   * 撤掉这条消息上的“正在输入”；渠道没有这回事就什么也不做。
+   * @param name 渠道名。
+   * @param address 回复地址。
+   */
+  async stopTyping(name: string, address: Record<string, unknown>): Promise<void> {
+    await this.route(name)?.stopTyping?.(address);
+  }
+
+  /**
+   * 发审核卡片：消息来的渠道加上这个机器人别的渠道（onlyHere 时只发消息来的那个）。
+   * @param name 消息来的渠道。
+   * @param address 回复地址。
+   * @param pending 待确认。
+   * @param onlyHere 只发这个渠道。
+   * @returns 发出去的渠道名；一个发不出去不挡别的。
+   */
+  async sendApproval(
+    name: string,
+    address: Record<string, unknown>,
+    pending: approvalsModule.PendingApproval,
+    onlyHere?: boolean,
+  ): Promise<string[]> {
+    /** 消息来的渠道。 */
+    const own = this.route(name);
+    /** 要发的渠道：消息来的那个，加上这个机器人别的渠道。 */
+    const targets = onlyHere
+      ? [own]
+      : [...new Set([own, ...this.channels.filter((channel) => channel.bot === pending.bot)])];
+    /** 每个渠道发出去没有；一个发不出去不挡别的。 */
+    const sent = await Promise.all(
+      targets.map(async (channel) => {
+        try {
+          /** 发卡片的地址：消息来的渠道用回复地址，别的发给最近私聊的人。 */
+          const target = channel === own ? address : {};
+          return (await channel?.sendApproval?.(target, pending)) ? channel?.name : undefined;
+        } catch (error) {
+          console.error(
+            `${utils.formatTime()} 渠道 ${channel?.name ?? name} 的审核卡片没发出去：${utils.errorText(error)}`,
+          );
+          return undefined;
+        }
+      }),
+    );
+    return sent.filter((item): item is string => item !== undefined);
+  }
+
+  /**
+   * 发进度卡片。
+   * @param name 渠道名。
+   * @param address 回复地址。
+   * @param view 进度。
+   * @returns 渠道里那张卡片的号；渠道画不了卡片时 undefined。
+   */
+  async sendProgress(
+    name: string,
+    address: Record<string, unknown>,
+    view: progressModule.ProgressView,
+  ): Promise<string | undefined> {
+    /** 渠道。 */
+    const channel = this.route(name);
+    return channel?.sendProgress ? channel.sendProgress(address, view) : undefined;
+  }
+
+  /**
+   * 原地改进度卡片。
+   * @param name 渠道名。
+   * @param handle 卡片号。
+   * @param view 进度。
+   */
+  async updateProgress(
+    name: string,
+    handle: string,
+    view: progressModule.ProgressView,
+  ): Promise<void> {
+    await this.route(name)?.updateProgress?.(handle, view);
+  }
+
+  /**
+   * 发飞书云文档（消息来的渠道不支持就找这个机器人的第一个飞书应用）。
+   * @param name 消息来的渠道。
+   * @param address 回复地址。
+   * @param request 文档请求。
+   * @returns 链接说明。
+   * @throws 没开飞书时抛错。
+   */
+  async publishDoc(
+    name: string,
+    address: Record<string, unknown>,
+    request: depsModule.DocRequest,
+  ): Promise<string> {
+    /** 渠道。 */
+    const channel = this.capable(name, request.bot, 'publishDoc');
+    if (!channel?.publishDoc) {
+      throw new Error('没开飞书，发不了云文档');
+    }
+    return channel.publishDoc(channel.name === name ? address : {}, request);
+  }
+
+  /**
+   * 把机器人自己发的云文档放进回收站。
+   * @param name 消息来的渠道。
+   * @param bot 机器人。
+   * @param ids 文档号。
+   * @returns 结果说明。
+   * @throws 没开飞书时抛错。
+   */
+  async deleteDoc(name: string, bot: string, ids: string[]): Promise<string> {
+    /** 渠道。 */
+    const channel = this.capable(name, bot, 'deleteDoc');
+    if (!channel?.deleteDoc) {
+      throw new Error('没开飞书，删不了云文档');
+    }
+    return channel.deleteDoc(ids);
+  }
+
+  /**
+   * 按渠道名找渠道。
+   * @param name 渠道名。
+   * @returns 渠道；没有时 undefined。
+   */
+  private route(name: string): channelModule.Channel | undefined {
+    return this.channels.find((channel) => channel.name === name);
+  }
+
+  /**
+   * 能发卡片、云文档的渠道：消息来的那个渠道支持就用它；不支持（HTTP）就用这个机器人的第一个飞书应用。
+   * @param name 消息来的渠道。
+   * @param bot 机器人。
+   * @param can 要的能力。
+   * @returns 渠道（换了渠道时回复地址要用空的：发给最近私聊的人）。
+   */
+  private capable(
+    name: string,
+    bot: string,
+    can: 'sendApproval' | 'publishDoc' | 'deleteDoc',
+  ): channelModule.Channel | undefined {
+    /** 消息来的渠道。 */
+    const own = this.route(name);
+    if (own?.[can] !== undefined) {
+      return own;
+    }
+    return this.channels.find((channel) => channel.bot === bot && channel[can] !== undefined);
+  }
 }

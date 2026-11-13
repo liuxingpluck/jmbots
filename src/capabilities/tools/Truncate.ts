@@ -3,7 +3,7 @@
  *   truncateHead  留开头（read 用：从前往后读，告诉模型从哪行接着读）
  *   truncateTail  留结尾（exec 用：报错和最终结果通常在最后）
  *
- * 来源：Pi（F:\aidata\source\Pi\packages\coding-agent\src\core\tools\truncate.ts，2026-10-22 的 8c03fef），
+ * 来源：Pi（packages\coding-agent\src\core\tools\truncate.ts，2026-10-22 的 8c03fef），
  * 只留了这两个函数和 formatSize，返回值去掉了用不上的字段。
  */
 
@@ -86,7 +86,14 @@ function splitLines(content: string): string[] {
  * @param totalLines 行数。
  */
 function untouched(content: string, totalLines: number): Truncated {
-  return { content, truncated: false, totalLines, outputLines: totalLines, firstLineTooLong: false, lastLinePartial: false };
+  return {
+    content,
+    truncated: false,
+    totalLines,
+    outputLines: totalLines,
+    firstLineTooLong: false,
+    lastLinePartial: false,
+  };
 }
 
 
@@ -108,7 +115,15 @@ export function truncateHead(content: string, limits: TruncateLimits = {}): Trun
   }
   //G 第一行就超字节上限：一行都不留，由调用方另外提示。
   if (Buffer.byteLength(lines[0] ?? '', 'utf8') > maxBytes) {
-    return { content: '', truncated: true, truncatedBy: 'bytes', totalLines: lines.length, outputLines: 0, firstLineTooLong: true, lastLinePartial: false };
+    return {
+      content: '',
+      truncated: true,
+      truncatedBy: 'bytes',
+      totalLines: lines.length,
+      outputLines: 0,
+      firstLineTooLong: true,
+      lastLinePartial: false,
+    };
   }
 
   //M 一行一行收，加上换行符的 1 字节。
@@ -131,7 +146,15 @@ export function truncateHead(content: string, limits: TruncateLimits = {}): Trun
     kept.push(line);
     bytes += lineBytes;
   }
-  return { content: kept.join('\n'), truncated: true, truncatedBy, totalLines: lines.length, outputLines: kept.length, firstLineTooLong: false, lastLinePartial: false };
+  return {
+    content: kept.join('\n'),
+    truncated: true,
+    truncatedBy,
+    totalLines: lines.length,
+    outputLines: kept.length,
+    firstLineTooLong: false,
+    lastLinePartial: false,
+  };
 }
 
 
@@ -178,7 +201,15 @@ export function truncateTail(content: string, limits: TruncateLimits = {}): Trun
     kept.unshift(line);
     bytes += lineBytes;
   }
-  return { content: kept.join('\n'), truncated: true, truncatedBy, totalLines: lines.length, outputLines: kept.length, firstLineTooLong: false, lastLinePartial };
+  return {
+    content: kept.join('\n'),
+    truncated: true,
+    truncatedBy,
+    totalLines: lines.length,
+    outputLines: kept.length,
+    firstLineTooLong: false,
+    lastLinePartial,
+  };
 }
 
 

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>memorycli 关系图谱</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #d6d3d1; --panel: #ffffff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c; --panel: #292524; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; gap: 12px; align-items: center; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); z-index: 2; flex-wrap: wrap; }
+  #bar input { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  #legend span { margin-right: 10px; white-space: nowrap; color: var(--muted); }
+  #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #info { position: fixed; right: 16px; bottom: 16px; max-width: min(420px, calc(100vw - 32px)); max-height: 50vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: none; }
+  #info h3 { margin: 0 0 6px; font-size: 14px; word-break: break-all; }
+  #info p { margin: 4px 0; color: var(--muted); word-break: break-all; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <strong>memorycli 关系图谱</strong>
+  <input id="filter" placeholder="筛选：输入文件名、声明名或标签" />
+  <span id="legend"></span>
+</div>
+<canvas id="view"></canvas>
+<div id="info"></div>
+<script>
+// 图谱数据由 memorycli graph --html 嵌进来。
+const GRAPH = /*GRAPH_JSON*/;
+const COLORS = { file: '#2563eb', sym: '#16a34a', tag: '#db2777', pkg: '#d97706' };
+const NAMES = { file: '文件', sym: '声明', tag: '标签', pkg: '外部包' };
+document.getElementById('legend').innerHTML = Object.keys(COLORS).map((k) => `<span><i style="background:${COLORS[k]}"></i>${NAMES[k]}</span>`).join('');
+
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+// 起点排成螺旋，免得两个点重在一起时斥力无穷大。
+const nodes = GRAPH.nodes.map((n, i) => ({ ...n, x: Math.cos(i * 2.4) * 12 * Math.sqrt(i + 1), y: Math.sin(i * 2.4) * 12 * Math.sqrt(i + 1), vx: 0, vy: 0, deg: 0 }));
+const index = new Map(nodes.map((n, i) => [n.id, i]));
+const links = GRAPH.edges.filter((e) => index.has(e.src) && index.has(e.dst)).map((e) => ({ ...e, a: index.get(e.src), b: index.get(e.dst) }));
+for (const l of links) { nodes[l.a].deg++; nodes[l.b].deg++; }
+const start = new Set(GRAPH.start || []);
+let view = { x: 0, y: 0, k: 1 }, selected = null, filter = '', dragging = null, panning = null;
+
+function short(n) { const t = n.kind === 'file' ? n.label.split('/').pop() : n.label; return t.length > 28 ? t.slice(0, 27) + '…' : t; }
+function radius(n) { return 4 + Math.min(10, Math.sqrt(n.deg) * 1.6) + (start.has(n.id) ? 3 : 0); }
+
+// 简单的力导向布局：节点互斥、边拉近、向中心收。
+function step() {
+  const n = nodes.length;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const a = nodes[i], b = nodes[j]; const dx = a.x - b.x, dy = a.y - b.y; const d2 = Math.max(dx * dx + dy * dy, 25);
+    if (d2 > 250000) continue; const f = 600 / d2; a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+  }
+  for (const l of links) {
+    const a = nodes[l.a], b = nodes[l.b]; const dx = b.x - a.x, dy = b.y - a.y; const d = Math.sqrt(dx * dx + dy * dy) + 0.01;
+    const f = (d - 60) * 0.02 * (0.3 + l.weight) / d; a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+  }
+  for (const p of nodes) {
+    p.vx -= p.x * 0.003; p.vy -= p.y * 0.003; p.vx *= 0.8; p.vy *= 0.8;
+    const v = Math.hypot(p.vx, p.vy); if (v > 20) { p.vx *= 20 / v; p.vy *= 20 / v; }
+    if (p !== dragging) { p.x += p.vx; p.y += p.vy; }
+  }
+}
+
+// 布局稳定后缩放到能看见全部节点。
+function fit() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of nodes) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+  if (!isFinite(x0)) return;
+  const k = Math.min(canvas.clientWidth / (x1 - x0 + 120), (canvas.clientHeight - 50) / (y1 - y0 + 120), 2);
+  view.k = k; view.x = -(x0 + x1) / 2 * k; view.y = -(y0 + y1) / 2 * k + 20;
+}
+
+function visible(n) { return !filter || n.id.toLowerCase().includes(filter); }
+function neighbors(i) { const s = new Set([i]); for (const l of links) { if (l.a === i) s.add(l.b); if (l.b === i) s.add(l.a); } return s; }
+
+function draw() {
+  const w = canvas.width = canvas.clientWidth * devicePixelRatio, h = canvas.height = canvas.clientHeight * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio * view.k, 0, 0, devicePixelRatio * view.k, w / 2 + view.x * devicePixelRatio, h / 2 + view.y * devicePixelRatio);
+  const css = getComputedStyle(document.documentElement);
+  const focus = selected === null ? null : neighbors(selected);
+  ctx.lineWidth = 1 / view.k;
+  for (const l of links) {
+    const a = nodes[l.a], b = nodes[l.b]; if (!visible(a) && !visible(b)) continue;
+    const on = focus && focus.has(l.a) && focus.has(l.b) && (l.a === selected || l.b === selected);
+    ctx.strokeStyle = on ? css.getPropertyValue('--fg') : css.getPropertyValue('--line'); ctx.globalAlpha = focus && !on ? 0.15 : 0.7;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.font = `${11 / view.k}px system-ui`;
+  nodes.forEach((n, i) => {
+    const dim = (focus && !focus.has(i)) || !visible(n); ctx.globalAlpha = dim ? 0.15 : 1;
+    ctx.fillStyle = COLORS[n.kind] || '#888'; ctx.beginPath(); ctx.arc(n.x, n.y, radius(n), 0, 7); ctx.fill();
+    if (!dim && (view.k > 0.9 || n.deg > 8 || start.has(n.id) || i === selected)) { ctx.fillStyle = css.getPropertyValue('--fg'); ctx.fillText(short(n), n.x + radius(n) + 2, n.y + 4); }
+  });
+  ctx.globalAlpha = 1;
+}
+
+let ticks = 0;
+function loop() { if (ticks < 600 || dragging) { step(); ticks++; if (ticks === 300 || ticks === 600) fit(); } draw(); requestAnimationFrame(loop); }
+// 先在后台算一阵再开始画，打开就是摆好的样子。
+for (let i = 0; i < 250; i++) step();
+ticks = 250; fit();
+loop();
+
+function toWorld(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left - r.width / 2 - view.x) / view.k, y: (e.clientY - r.top - r.height / 2 - view.y) / view.k }; }
+function hit(p) { let best = null, bd = Infinity; nodes.forEach((n, i) => { const d = Math.hypot(n.x - p.x, n.y - p.y); if (d < radius(n) + 4 / view.k && d < bd) { bd = d; best = i; } }); return best; }
+canvas.addEventListener('pointerdown', (e) => { const i = hit(toWorld(e)); if (i !== null) { dragging = nodes[i]; select(i); } else { panning = { x: e.clientX - view.x, y: e.clientY - view.y }; } canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => { if (dragging) { const p = toWorld(e); dragging.x = p.x; dragging.y = p.y; ticks = 400; } else if (panning) { view.x = e.clientX - panning.x; view.y = e.clientY - panning.y; } });
+canvas.addEventListener('pointerup', () => { dragging = null; panning = null; });
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); view.k = Math.max(0.1, Math.min(5, view.k * (e.deltaY < 0 ? 1.1 : 0.9))); }, { passive: false });
+document.getElementById('filter').addEventListener('input', (e) => { filter = e.target.value.trim().toLowerCase(); });
+
+function select(i) {
+  selected = i; const n = nodes[i]; const info = document.getElementById('info');
+  const rel = links.filter((l) => l.a === i || l.b === i).slice(0, 30).map((l) => l.a === i ? `→ ${l.kind} ${nodes[l.b].label}` : `← ${l.kind} ${nodes[l.a].label}`);
+  const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+  info.innerHTML = `<h3>${esc(n.label)}</h3><p>${NAMES[n.kind] || n.kind}${n.detail ? ' · ' + esc(n.detail) : ''}${n.line ? ' · 第 ' + n.line + ' 行' : ''}</p>` +
+    (n.summary ? `<p>${esc(n.summary)}</p>` : '') + rel.map((r) => `<p>${esc(r)}</p>`).join('');
+  info.style.display = 'block';
+}
+</script>
+</body>
+</html>

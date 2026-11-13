@@ -6,7 +6,7 @@
  * 里拷副本，一个字节都不碰工作区；每份快照记下它对应的 git 提交号，用户要用 git 回退时有准确依据。
  *
  * 快照只装服务跑起来要的东西（约 1.8 MB 一份）：src、
- * 打包好的 dist/web、package.json、tsconfig.json。依赖不拷：快照在 `bak/versions/` 下，
+ * package.json、tsconfig.json。依赖不拷：快照在 `bak/versions/` 下，
  * 往上找 node_modules 正好找到项目根的那份（bak 下面没有 node_modules，已核实）。
  * `bak/` 不进 git、不进 typecheck 和 lint，所以快照不会污染检查。
  */
@@ -23,7 +23,7 @@ export const VERSIONS_DIR = path.join(serveProcess.ROOT, 'bak', 'versions');
 const KEEP = 5;
 
 /** 每份快照里要拷的东西（相对项目根；不存在的跳过）。 */
-const CONTENTS = ['src', 'dist/web', 'package.json', 'tsconfig.json'];
+const CONTENTS = ['src', 'package.json', 'tsconfig.json'];
 
 /** 快照自己的说明文件名。 */
 const INFO_FILE = '版本.json';
@@ -137,7 +137,7 @@ export function save(id: string, healthySeconds: number, places: Places = {}): V
     /** 源路径。 */
     const from = path.join(root, item);
     if (!fs.existsSync(from)) {
-      //G dist/web 可能还没打包过，跳过它，不让整份快照失败。
+      //G 不存在的跳过，不让整份快照失败。
       continue;
     }
     /** 目标路径。 */

@@ -7,7 +7,7 @@
  *
  * 飞书要求 3 秒内确认收到事件，否则会重推。所以收到消息后先确认、再在后台处理，并按消息 ID 去重。
  *
- * 2026-11-04 从 zbots/src/Feishu.ts 原样搬过来（内容没改）：zbots 已停用并删除，SDK 现在装在根目录。
+ * 2026-11-04 从 jmbots 早期版本的 src/Feishu.ts 原样搬过来（内容没改，旧文件在 git 提交 3d34bc2）；SDK 装在根目录。
  */
 import * as lark from '@larksuiteoapi/node-sdk';
 
@@ -31,7 +31,7 @@ export interface FeishuConfig {
 }
 
 
-/** 收到的一条飞书消息，换成 zbots 自己的格式。 */
+/** 收到的一条飞书消息，换成 jmbots 自己的格式。 */
 export interface FeishuMessage {
   /** 消息 ID，回复和去重用。 */
   messageId: string;
@@ -79,6 +79,8 @@ export interface Feishu {
    * @throws 飞书返回错误码时抛错，带上错误码和说明。
    */
   sendText(to: { openId: string } | { chatId: string }, text: string): Promise<string>;
+  /** 回复（引用）一条消息，返回新消息的 ID。 */
+  replyText(messageId: string, text: string): Promise<string>;
 
   /**
    * 列出应用“可用范围”里的人（open_id）。还没人给机器人发过消息时，用它找到要通知的人。
@@ -126,7 +128,7 @@ function feishuError(action: string, error: unknown): Error {
  * 收到的 post 内容有两种写法：{ title, content } 或按语言包一层 { zh_cn: { title, content } }。
  * @param raw 消息的 content（JSON 字符串）。
  */
-function postText(raw: string): string {
+export function postText(raw: string): string {
   /** 解析后的内容。 */
   let post = JSON.parse(raw) as { title?: string; content?: unknown[][] } & Record<string, unknown>;
   if (!Array.isArray(post.content)) {
@@ -158,7 +160,7 @@ function postText(raw: string): string {
 
 
 /**
- * 把收到的事件换成 zbots 的消息格式：取出文字，去掉群里 @ 的占位符（如 @_user_1）。
+ * 把收到的事件换成 jmbots 的消息格式：取出文字，去掉群里 @ 的占位符（如 @_user_1）。
  * @param event 飞书推来的 im.message.receive_v1 事件数据。
  */
 export function toMessage(event: ReceiveEvent): FeishuMessage {
@@ -186,100 +188,152 @@ export function toMessage(event: ReceiveEvent): FeishuMessage {
 
 
 /**
- * 用 App ID 和 App Secret 连上飞书：建发消息用的客户端，和收消息用的长连接（调 listen 才真正连）。
- * @param config 飞书渠道的设置。
+ * 官方 SDK 的飞书客户端：发消息用 lark.Client（访问令牌由 SDK 自己取、自己续），收消息用长连接（调 listen 才真正连）。
+ * 建它的地方：src/channels/Feishu.ts 的 SdkTransport。
  */
-export function createFeishu(config: FeishuConfig): Feishu {
-  /** 调开放接口的客户端；访问令牌由 SDK 自己取、自己续。 */
-  const client = new lark.Client({ appId: config.app_id, appSecret: config.app_secret });
+export class FeishuSdk implements Feishu {
+  /** 调开放接口的客户端。 */
+  private readonly client: lark.Client;
   /** 收消息的长连接客户端；调 listen 时才建。 */
-  let wsClient: lark.WSClient | undefined;
+  private wsClient: lark.WSClient | undefined;
   /** 最近处理过的消息 ID：飞书没及时收到确认会重推同一条，用它去重；只留最近 500 条。 */
-  const seen = new Set<string>();
+  private readonly seen = new Set<string>();
 
-  return {
-    async sendText(to, text) {
-      /** 按 open_id 发还是按会话 ID 发。 */
-      const target = 'openId' in to ? { id: to.openId, type: 'open_id' as const } : { id: to.chatId, type: 'chat_id' as const };
-      const result = await client.im.message
-        .create({
-          params: { receive_id_type: target.type },
-          data: { receive_id: target.id, msg_type: 'text', content: JSON.stringify({ text }) },
-        })
-        .catch((error: unknown) => {
-          throw feishuError('发消息', error);
+  /**
+   * @param config 飞书渠道的设置（app_id、app_secret、bot）。
+   */
+  constructor(private readonly config: FeishuConfig) {
+    this.client = new lark.Client({ appId: config.app_id, appSecret: config.app_secret });
+  }
+
+  /**
+   * 发一条文字消息。
+   * @param to 发给谁：{ openId } 是私聊某人，{ chatId } 是某个会话（私聊或群）。
+   * @param text 文字。
+   * @returns 飞书给这条消息的 ID。
+   * @throws 飞书返回错误码时抛错，带上错误码和说明。
+   */
+  async sendText(to: { openId: string } | { chatId: string }, text: string): Promise<string> {
+    /** 按 open_id 发还是按会话 ID 发。 */
+    const target = 'openId' in to ? { id: to.openId, type: 'open_id' as const } : { id: to.chatId, type: 'chat_id' as const };
+    /** 飞书的回应。 */
+    const result = await this.client.im.message
+      .create({
+        params: { receive_id_type: target.type },
+        data: { receive_id: target.id, msg_type: 'text', content: JSON.stringify({ text }) },
+      })
+      .catch((error: unknown) => {
+        throw feishuError('发消息', error);
+      });
+    if (result.code !== 0) {
+      throw new Error(`飞书发消息失败：错误码 ${result.code ?? '未知'}，${result.msg ?? ''}`);
+    }
+    return result.data?.message_id ?? '';
+  }
+
+  /**
+   * 回复（引用）一条消息。
+   * @param messageId 被回复的那条。
+   * @param text 文字。
+   * @returns 新消息的 ID。
+   */
+  async replyText(messageId: string, text: string): Promise<string> {
+    /** 飞书的回应。 */
+    const result = await this.client.im.message
+      .reply({ path: { message_id: messageId }, data: { msg_type: 'text', content: JSON.stringify({ text }) } })
+      .catch((error: unknown) => {
+        throw feishuError('回复消息', error);
+      });
+    if (result.code !== 0) {
+      throw new Error(`飞书回复消息失败：错误码 ${result.code ?? '未知'}，${result.msg ?? ''}`);
+    }
+    return result.data?.message_id ?? '';
+  }
+
+  /**
+   * 列出应用“可用范围”里的人（open_id）。
+   * @returns open_id 们。
+   * @throws 应用没有通讯录权限时抛错。
+   */
+  async listScopeUsers(): Promise<string[]> {
+    /** 飞书的回应。 */
+    const result = await this.client.contact.scope.list({ params: { user_id_type: 'open_id' } }).catch((error: unknown) => {
+      throw feishuError('查可用范围', error);
+    });
+    if (result.code !== 0) {
+      throw new Error(`飞书查可用范围失败：错误码 ${result.code ?? '未知'}，${result.msg ?? ''}`);
+    }
+    return result.data?.user_ids ?? [];
+  }
+
+  /**
+   * 开始用长连接收消息（见接口 Feishu.listen 的说明）。
+   * @param onMessage 处理一条消息。
+   * @param onCardAction 卡片按钮被点了。
+   * @param onConnection 长连接状态变了。
+   * @returns 长连接第一次连上后返回。
+   * @throws 第一次就连不上时抛错。
+   */
+  async listen(
+    onMessage: (message: FeishuMessage) => Promise<void>,
+    onCardAction?: (data: unknown) => Promise<unknown>,
+    onConnection?: (state: '已连上' | '断线重连中' | '已重连' | '出错', detail?: string) => void,
+  ): Promise<void> {
+    /** 事件分发：只接收消息这一种事件。 */
+    const dispatcher = new lark.EventDispatcher({}).register({
+      // 已读、表情回应、用户点开私聊的事件用不上，登记空处理，免得日志里一直报“no handle”。
+      'im.chat.access_event.bot_p2p_chat_entered_v1': () => undefined,
+      'im.message.message_read_v1': () => undefined,
+      'im.message.reaction.created_v1': () => undefined,
+      'im.message.reaction.deleted_v1': () => undefined,
+      'card.action.trigger': async (data: unknown) => {
+        try {
+          return await onCardAction?.(data);
+        } catch (error) {
+          console.error('处理飞书卡片按钮出错：', error);
+          return undefined;
+        }
+      },
+      'im.message.receive_v1': (event) => {
+        /** 换成 jmbots 格式的消息。 */
+        const message = toMessage(event);
+        if (this.seen.has(message.messageId)) {
+          return;
+        }
+        this.seen.add(message.messageId);
+        if (this.seen.size > 500) {
+          this.seen.delete(this.seen.values().next().value ?? '');
+        }
+        // 先确认收到（这个函数马上返回），处理放到后台。
+        void onMessage(message).catch((error: unknown) => {
+          console.error(`处理飞书消息 ${message.messageId} 出错：`, error);
         });
-      if (result.code !== 0) {
-        throw new Error(`飞书发消息失败：错误码 ${result.code ?? '未知'}，${result.msg ?? ''}`);
-      }
-      return result.data?.message_id ?? '';
-    },
-
-    async listScopeUsers() {
-      const result = await client.contact.scope.list({ params: { user_id_type: 'open_id' } }).catch((error: unknown) => {
-        throw feishuError('查可用范围', error);
-      });
-      if (result.code !== 0) {
-        throw new Error(`飞书查可用范围失败：错误码 ${result.code ?? '未知'}，${result.msg ?? ''}`);
-      }
-      return result.data?.user_ids ?? [];
-    },
-
-    async listen(onMessage, onCardAction, onConnection) {
-      /** 事件分发：只接收消息这一种事件。 */
-      const dispatcher = new lark.EventDispatcher({}).register({
-        // 已读、表情回应的事件用不上，登记空处理，免得日志里一直报“no handle”。
-        'im.message.message_read_v1': () => undefined,
-        'im.message.reaction.created_v1': () => undefined,
-        'im.message.reaction.deleted_v1': () => undefined,
-        'card.action.trigger': async (data: unknown) => {
-          try {
-            return await onCardAction?.(data);
-          } catch (error) {
-            console.error('处理飞书卡片按钮出错：', error);
-            return undefined;
-          }
+      },
+    });
+    // 等第一次连上（onReady）再返回；第一次就连不上（onError）时报错。握手最多等 20 秒，免得卡在代理上。
+    await new Promise<void>((resolve, reject) => {
+      this.wsClient = new lark.WSClient({
+        appId: this.config.app_id,
+        appSecret: this.config.app_secret,
+        loggerLevel: lark.LoggerLevel.warn,
+        handshakeTimeoutMs: 20_000,
+        onReady: () => {
+          onConnection?.('已连上');
+          resolve();
         },
-        'im.message.receive_v1': (event) => {
-          /** 换成 zbots 格式的消息。 */
-          const message = toMessage(event);
-          if (seen.has(message.messageId)) {
-            return;
-          }
-          seen.add(message.messageId);
-          if (seen.size > 500) {
-            seen.delete(seen.values().next().value ?? '');
-          }
-          // 先确认收到（这个函数马上返回），处理放到后台。
-          void onMessage(message).catch((error: unknown) => {
-            console.error(`处理飞书消息 ${message.messageId} 出错：`, error);
-          });
+        onReconnecting: () => onConnection?.('断线重连中'),
+        onReconnected: () => onConnection?.('已重连'),
+        onError: (error) => {
+          onConnection?.('出错', error.message);
+          reject(new Error(`飞书长连接连不上：${error.message}`));
         },
       });
-      // 等第一次连上（onReady）再返回；第一次就连不上（onError）时报错。握手最多等 20 秒，免得卡在代理上。
-      await new Promise<void>((resolve, reject) => {
-        wsClient = new lark.WSClient({
-          appId: config.app_id,
-          appSecret: config.app_secret,
-          loggerLevel: lark.LoggerLevel.warn,
-          handshakeTimeoutMs: 20_000,
-          onReady: () => {
-            onConnection?.('已连上');
-            resolve();
-          },
-          onReconnecting: () => onConnection?.('断线重连中'),
-          onReconnected: () => onConnection?.('已重连'),
-          onError: (error) => {
-            onConnection?.('出错', error.message);
-            reject(new Error(`飞书长连接连不上：${error.message}`));
-          },
-        });
-        wsClient.start({ eventDispatcher: dispatcher }).catch(reject);
-      });
-    },
+      this.wsClient.start({ eventDispatcher: dispatcher }).catch(reject);
+    });
+  }
 
-    close() {
-      wsClient?.close();
-    },
-  };
+  /** 断开长连接。 */
+  close(): void {
+    this.wsClient?.close();
+  }
 }

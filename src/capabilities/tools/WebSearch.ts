@@ -2,13 +2,14 @@
  * 网页搜索（web_search 工具的实现）：按 config.yaml 的 search 列表一个个试，前一个出错或搜不到就换下一个。
  * 用户 11-02：“搜索要成为通用能力……通过环境配置提供不同种类的搜索配置参数并设好优先级；先用第一个，搜不到再用第二个、第三个”。
  *
- * 现有两种（kind）：
- *   magpie     本机 magpie 网关的 POST <base_url>/alpha/search（Codex 的 web.run 用的那个接口）：
- *              model 是 ChatGPT 账号的模型（如 codex/gpt-6-luna）就走 Codex 订阅自带的搜索；
- *              别的模型由 magpie 自己搜（能搜的模型或账号，再不行用 magpie 里配的搜索 API）。地址和密钥默认取 providers.magpie。
+ * 没写 search 就不能搜网页：不替用户挑哪一家（供应商是配置，每个用户不一样），搜的时候说清去设置的“搜索”里加。
+ *
+ * 现有两种（kind），都是一种搜索接口，用哪种、接到哪一家由 config.yaml 定：
+ *   magpie     Magpie 网关的搜索接口 POST <base_url>/alpha/search（Codex 的 web.run 用的那个接口）。
+ *              地址和密钥取 provider 写的那一家供应商（config.yaml 的 providers 下的名字），也可以直接写 url、api_key；
+ *              model 是网关里用哪个模型的身份搜（网关里的模型 ID，不带供应商名）。
  *   zhipu_mcp  智谱的 MCP 搜索（web_search_prime，Streamable HTTP）：先 initialize，再 tools/list 找名字带 search 的工具，再 tools/call。
  *              api_key 写在 config.yaml（GLM Coding 套餐的密钥）。
- * DSH 的搜索（订阅插件里的 Codex web_search）走的也是 Codex 订阅，这里经 magpie 同样能用到，不再经 DSH 转。
  * 加新种类：在 searchOnce 里加一个分支，再在 config.example.yaml 写上例子。
  */
 import type * as resourcesModule from '../../resources/Resources.ts';
@@ -22,17 +23,15 @@ export interface SearchProvider {
   kind: string;
   /** 显示的名字（报告“用谁搜的”）；不写用种类加模型。 */
   name?: string;
-  /** magpie：用哪个模型的身份搜（不带 magpie/ 前缀，如 codex/gpt-6-luna）。 */
+  /** magpie：地址和密钥取哪一家供应商（config.yaml 的 providers 下的名字）；写了 url、api_key 的以它们为准。 */
+  provider?: string;
+  /** magpie：用网关里哪个模型的身份搜（网关里的模型 ID，不带供应商名）。 */
   model?: string;
-  /** 地址：magpie 是网关的 /v1 地址（默认取 providers.magpie.base_url）；zhipu_mcp 是 MCP 地址（有默认）。 */
+  /** 地址：magpie 是网关的 /v1 地址（不写取 provider 那一家的 base_url）；zhipu_mcp 是 MCP 地址（有默认）。 */
   url?: string;
-  /** 密钥：magpie 默认取 providers.magpie.api_key；zhipu_mcp 必须写。 */
+  /** 密钥：magpie 不写取 provider 那一家的 api_key；zhipu_mcp 必须写。 */
   api_key?: string;
 }
-
-
-/** 没配 search 时用的：Codex 订阅的搜索（经 magpie）。 */
-export const DEFAULT_SEARCH: SearchProvider[] = [{ kind: 'magpie', model: 'codex/gpt-6-luna' }];
 
 /** 智谱 MCP 搜索的默认地址。 */
 const ZHIPU_MCP_URL = 'https://open.bigmodel.cn/api/mcp/web_search_prime/mcp';
@@ -48,7 +47,7 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
 
 /**
- * 读 config.yaml 的 search 列表；没写用 DEFAULT_SEARCH。
+ * 读 config.yaml 的 search 列表；没写是空列表（不能搜网页）。
  * @param resources 资源。
  * @throws 写了但格式不对时抛错。
  */
@@ -56,10 +55,10 @@ export function readSearchProviders(resources: resourcesModule.Resources): Searc
   /** 原样。 */
   const raw = resources.getSearch();
   if (raw === undefined || raw === null) {
-    return DEFAULT_SEARCH;
+    return [];
   }
   if (!Array.isArray(raw)) {
-    throw new Error('config.yaml 的 search 要是列表，每项 {kind, model?, url?, api_key?}');
+    throw new Error('config.yaml 的 search 要是列表，每项 {kind, provider?, model?, url?, api_key?}');
   }
   return (raw as unknown[]).map((item, index) => {
     /** 这一项。 */
@@ -67,6 +66,7 @@ export function readSearchProviders(resources: resourcesModule.Resources): Searc
     return {
       kind: checks.requireString(record.kind, `search[${index}].kind`),
       name: checks.optionalString(record.name, `search[${index}].name`),
+      provider: checks.optionalString(record.provider, `search[${index}].provider`),
       model: checks.optionalString(record.model, `search[${index}].model`),
       url: checks.optionalString(record.url, `search[${index}].url`),
       api_key: checks.optionalString(record.api_key, `search[${index}].api_key`),
@@ -79,11 +79,16 @@ export function readSearchProviders(resources: resourcesModule.Resources): Searc
  * 按顺序搜，第一个搜到的就返回；都不行时抛错并列出每个的原因。
  * @param query 搜什么。
  * @param providers 搜索列表（有优先级）。
- * @param resources 资源（magpie 的默认地址和密钥）。
+ * @param resources 资源（magpie 种类从 providers 里借地址和密钥）。
  * @param fetchImpl 发请求的函数。
  * @returns 给模型看的结果：第一行说用谁搜的、前面谁没搜到，后面是结果。
+ * @throws 一个都没配、都没搜到时抛错（说清原因，模型转告用户）。
  */
 export async function webSearch(query: string, providers: SearchProvider[], resources: resourcesModule.Resources, fetchImpl: FetchLike = fetch): Promise<string> {
+  //G 一个搜索都没配：说清去哪里加。
+  if (providers.length === 0) {
+    throw new Error('没配网页搜索：到设置的“搜索”里加一个（config.yaml 的 search），再搜');
+  }
   /** 前面没搜到的：名字和原因。 */
   const failed: string[] = [];
   for (const provider of providers) {
@@ -103,7 +108,7 @@ export async function webSearch(query: string, providers: SearchProvider[], reso
       failed.push(`${name}：${utils.errorText(error)}`);
     }
   }
-  throw new Error(`都没搜到。${failed.join('；') || 'config.yaml 的 search 是空的'}`);
+  throw new Error(`都没搜到。${failed.join('；')}`);
 }
 
 
@@ -128,25 +133,35 @@ async function searchOnce(query: string, provider: SearchProvider, resources: re
 
 
 /**
- * magpie 的 /alpha/search：一次一个查询，结果在 output 里；magpie 搜不了时也回 200，output 以 “magpie couldn't search” 开头。
+ * Magpie 网关的 /alpha/search：一次一个查询，结果在 output 里；网关搜不了时也回 200，output 以 “magpie couldn't search” 开头。
  * @param query 搜什么。
  * @param provider 配置。
- * @param resources 资源（默认地址和密钥取 providers.magpie）。
+ * @param resources 资源（地址和密钥取 provider 写的那一家供应商）。
  * @param fetchImpl 发请求的函数。
  */
 async function searchMagpie(query: string, provider: SearchProvider, resources: resourcesModule.Resources, fetchImpl: FetchLike): Promise<string> {
-  /** providers.magpie。 */
-  const magpie = resources.getProviders().magpie;
+  /** provider 写的那一家供应商；没写是 undefined。 */
+  const borrowed = provider.provider ? resources.getProviders()[provider.provider] : undefined;
+  //G 写了供应商名，但 providers 里没有这一家。
+  if (provider.provider && !borrowed) {
+    throw new Error(`search 的 provider 写的 ${provider.provider} 不在 config.yaml 的 providers 里`);
+  }
   /** 网关的 /v1 地址。 */
-  const base = (provider.url ?? magpie?.base_url ?? 'http://127.0.0.1:3425/v1').replace(/\/+$/, '');
+  const base = (provider.url ?? borrowed?.base_url ?? '').replace(/\/+$/, '');
+  //G 没写地址，也没写借哪一家的：不知道找谁搜。
+  if (!base) {
+    throw new Error('magpie 搜索要写 provider（用“模型供应商”里哪一家的地址和密钥，到设置的“搜索”里选），或者直接写 url');
+  }
   //G 没有模型就不知道用谁的身份搜。
   if (!provider.model) {
-    throw new Error('magpie 搜索要写 model（如 codex/gpt-6-luna）');
+    throw new Error('magpie 搜索要写 model（网关里用哪个模型的身份搜）');
   }
+  /** 密钥。 */
+  const apiKey = provider.api_key ?? borrowed?.api_key ?? '';
   /** 回应。 */
   const response = await fetchImpl(`${base}/alpha/search`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.api_key ?? magpie?.api_key ?? 'magpie-jmbots'}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     // 照 Codex 自己发的 SearchRequest 写全（ChatGPT 账号的模型会原样转给 ChatGPT 后端，少了 id 会报 400，11-02 实测）。
     body: JSON.stringify({
       id: `jmbots-${utils.createSessionId()}`,
@@ -193,14 +208,38 @@ async function searchZhipuMcp(query: string, provider: SearchProvider, fetchImpl
    * @param method 方法。
    * @param params 参数。
    */
-  const rpc = async (id: number | undefined, method: string, params: unknown): Promise<Record<string, unknown>> => {
+  const rpc = async (
+    id: number | undefined,
+    method: string,
+    params: unknown,
+  ): Promise<Record<string, unknown>> => {
     /** 请求头。 */
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${provider.api_key ?? ''}` };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${provider.api_key ?? ''}`,
+    };
     if (mcpSession) {
       headers['Mcp-Session-Id'] = mcpSession;
     }
     /** 回应。 */
-    const response = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, params }), signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const payload = {
+      jsonrpc: '2.0',
+      ...(id === undefined ? {} : { id }),
+      method,
+      params,
+    };
+    /** 通知不带请求号；其余请求等待对应响应。 */
+    const body = JSON.stringify(payload);
+    const signal = AbortSignal.timeout(TIMEOUT_MS);
+    const requestOptions = {
+      method: 'POST',
+      headers,
+      body,
+      signal,
+    };
+
+    const response = await fetchImpl(url, requestOptions);
     mcpSession = response.headers.get('mcp-session-id') ?? mcpSession;
     /** 内容。 */
     const text = await response.text();

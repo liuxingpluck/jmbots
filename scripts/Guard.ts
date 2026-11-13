@@ -13,7 +13,7 @@
  *   - **不导入 src 下的任何东西**。看门狗是最后一道防线，不能因为被它看守的代码被改坏就跟着起不来。
  *
  * 用法：
- *   bun scripts/Guard.ts [--port 30086] [--host 0.0.0.0] [--runtime F:\aidata\AIJMBots]
+ *   bun scripts/Guard.ts [--port 30086] [--host 0.0.0.0] [--runtime <运行时目录>]
  * 日志在运行时 `data\guard_<日期>.log`；心跳在 `data\guard.heartbeat`（Start_Serve 据此判断它还在不在）。
  * 一般不用手敲：双击 `scripts\Start_Serve.cmd`，或者开机自动起（见 scripts/Install_Autostart.ts）。
  */
@@ -82,7 +82,7 @@ interface State {
 
 /**
  * 通知用户和 Claude：往运行时的飞书发件箱放一份（服务在跑时会发给用户），
- * 同时往 给Claude 目录留一份（Claude 下次接手时能看到）。
+ * 同时往 integrations/claude/inbox留一份（Claude 下次接手时能看到）。
  * 发件箱要有服务在跑才发得出去；彻底起不来的那种情况，就只有留言和日志了。
  * @param runtimeDir 运行时目录。
  * @param title 标题。
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   /** 运行时目录。 */
   const runtimeDir = serveProcess.runtimeDir();
   /** 正式端口。 */
-  const port = Number(serveProcess.option('port', '30086'));
+  const port = serveProcess.portOption('port', 30086);
   fs.mkdirSync(path.join(runtimeDir, 'data'), { recursive: true });
 
   //G 已经有一只在跑就不再起第二只（两只会互相抢着起服务）。

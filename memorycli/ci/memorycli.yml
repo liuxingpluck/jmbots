@@ -1,0 +1,79 @@
+# memorycli 多平台编译：Linux、macOS、Windows 上跑测试并编出可执行文件；推 memorycli-v* 标签发 Release。
+# 用户 11-03 定：memorycli 只提交自己这个文件夹，所以工作流放在这里；要启用就复制到 .github/workflows/memorycli.yml。
+name: memorycli
+
+on:
+  push:
+    paths: ['memorycli/**', '.github/workflows/memorycli.yml']
+    tags: ['memorycli-v*']
+  pull_request:
+    paths: ['memorycli/**', '.github/workflows/memorycli.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: memorycli
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, test: true }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, test: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, test: true }
+          - { os: macos-latest, target: x86_64-apple-darwin, test: false }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, test: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: memorycli
+      - name: 格式和 clippy
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+      - name: 测试
+        if: matrix.test
+        run: cargo test --target ${{ matrix.target }}
+      - name: 编译
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: 冒烟：索引 jmbots 自己，搜一下
+        if: matrix.test
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/memorycli
+          $bin ingest --root .. --db ../smoke.db --no-ai
+          $bin search handleMessage --root .. --db ../smoke.db --limit 1 | grep -q 'src/core/Engine.ts'
+      - name: 打包
+        shell: bash
+        run: |
+          name=memorycli-${{ matrix.target }}
+          mkdir -p ../dist/$name
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/memorycli.exe ../dist/$name/
+            (cd ../dist && 7z a $name.zip $name >/dev/null)
+          else
+            cp target/${{ matrix.target }}/release/memorycli ../dist/$name/
+            tar -czf ../dist/$name.tar.gz -C ../dist $name
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memorycli-${{ matrix.target }}
+          path: dist/memorycli-${{ matrix.target }}.*
+      - name: 发到 Release
+        if: startsWith(github.ref, 'refs/tags/memorycli-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/memorycli-${{ matrix.target }}.*

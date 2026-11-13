@@ -2,7 +2,7 @@
  * exec 审核前程序先判的规则（不问模型）。用户 11-03：发个文档也要他放行，嫌提示词没写好；
  * 同一天周小灵用 findstr 读 config.yaml，决策模型给了 0.94 直接放行，飞书 app_secret 泄露。所以：
  *   碰密钥文件的命令   直接拒绝（要能力就用现成工具，没有就找 Claude 加）
- *   jmai 自己的检查    typecheck、lint、测试、构建网页、换版本：直接执行
+ *   jmai 自己的检查    typecheck、lint、测试、换版本：直接执行
  *   跑本地脚本         把脚本内容读出来交给决策模型（按脚本实际做的事判断，不只看文件名）
  * 都是纯函数，测试见 tests/ExecRules.test.ts。
  */
@@ -51,7 +51,7 @@ export function touchesSecret(command: string): string | undefined {
 
 
 /**
- * 是不是 jmai 自己的检查或换版本（bun run typecheck / lint / test / build:web、bun test …、bun scripts/Swap_Serve.ts …），
+ * 是不是 jmai 自己的检查、发布或换版本（bun run typecheck / lint / test / release、bun test …、bun scripts/Swap_Serve.ts …、bun scripts/Build_Release.ts …），
  * 而且没有用 &、|、; 接别的命令（末尾的 2>&1 可以有）。
  * @param command 原命令。
  */
@@ -61,7 +61,7 @@ export function isProjectCheck(command: string): boolean {
   if (/[&|;<>`]/.test(rest)) {
     return false;
   }
-  return /^bun(?:\.cmd)?\s+(?:run\s+(?:typecheck|lint|test|build:web)|test(?:\s+[\w./\\-]+)*|scripts[\\/]Swap_Serve\.ts(?:\s+--[\w_]+\s+[\w.:-]+)*)$/i.test(rest);
+  return /^bun(?:\.cmd)?\s+(?:run\s+(?:typecheck|lint|test|release)|test(?:\s+[\w./\\-]+)*|scripts[\\/](?:Swap_Serve|Build_Release)\.ts(?:\s+--[\w_]+\s+[\w.:-]+)*)$/i.test(rest);
 }
 
 

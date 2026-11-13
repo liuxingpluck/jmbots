@@ -5,7 +5,7 @@
  *   3. 用了宽松匹配时，只有被改到的那几行用规整后的文字，其余行原样保留。
  *   4. 文件开头的 BOM 和换行符（\r\n 还是 \n）改完照原样还回去。
  *
- * 来源：Pi（F:\aidata\source\Pi\packages\coding-agent\src\core\tools\edit-diff.ts 和 edit.ts，2026-10-22 的 8c03fef），
+ * 来源：Pi（packages\coding-agent\src\core\tools\edit-diff.ts 和 edit.ts，2026-10-22 的 8c03fef），
  * 只留了匹配和替换，没要差异预览。
  */
 

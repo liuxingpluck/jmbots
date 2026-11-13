@@ -1,110 +1,80 @@
 /**
- * 渠道的统一接口和登记表：核心只认 Channel 这一套函数，不认识任何一家渠道。
- *
- * 以前入口直接建具体渠道的客户端，引擎选项上挂着这家渠道专用的好几个口子；再来一家
- * 就得再加一组口子。所以要有登记表：每个渠道在自己文件里实现 Channel 并登记，入口只照
- * config.yaml 里开了的渠道名，从登记表里把渠道建出来。这样核心里不出现任何具体渠道的名字。
- *
- * 这一版只有接口和登记表，先不接线：入口怎么用、事件循环怎么按渠道拆，之后再做。
+ * 渠道接口和登记表（docs/10 6.14）：每种渠道在自己文件里实现 Channel 并登记，入口照 config.yaml 把开着的建出来；
+ * 核心里不出现任何一家渠道的名字。飞书一个应用建一个渠道，每个渠道知道自己对应哪个机器人。
  */
+import * as utils from '../utils/Utils.ts';
+import * as checks from '../utils/Checks.ts';
+import type * as approvalsModule from '../capabilities/Approvals.ts';
+import type * as progressModule from '../capabilities/Progress.ts';
+import type * as depsModule from '../capabilities/Deps.ts';
+import type * as botLoop from '../bots/BotLoop.ts';
 import type * as resourcesModule from '../resources/Resources.ts';
 
 
-/** 渠道能接的一句话。 */
-export interface Incoming {
-  /** 渠道名，和 Channel.name() 的返回值一致。 */
-  channel: string;
-
-  /** 来源 ID：渠道里那个说话对象的标识，比如某个聊天里的用户 open_id。 */
-  sourceId: string;
-
-  /** 正文。 */
-  text: string;
-
-  /** 引用回复的消息 ID；不是引用回复时没有。 */
-  replyTo?: string;
+/** 一个渠道。 */
+export interface Channel {
+  /** 渠道名：http，或 feishu:<应用 ID>。 */
+  name: string;
+  /** 对应哪个机器人（飞书应用才有）。 */
+  bot?: string;
+  /** 开始收消息，收到就调 receive；返回停下的函数。副作用：真的开始监听（端口、长连接）。 */
+  start(receive: (input: botLoop.IncomingInput) => Promise<unknown>): Promise<() => Promise<void>>;
+  /** 发文字，文字里的 @路径 一起发（飞书：图片发图片、别的发附件；HTTP 只记录）。副作用：真的发到外面。 */
+  send(address: Record<string, unknown>, text: string): Promise<void>;
+  /** 撤掉这条消息上的“正在输入”。副作用：真的发到外面。 */
+  stopTyping?(address: Record<string, unknown>): Promise<void>;
+  /** 发审核卡片；地址是空的时发给最近私聊的人。返回发出去没有。 */
+  sendApproval?(address: Record<string, unknown>, pending: approvalsModule.PendingApproval): Promise<boolean>;
+  /** 发飞书云文档，编辑权限给这个地址的发送人（空地址给最近私聊的人）；返回链接说明。 */
+  publishDoc?(address: Record<string, unknown>, request: depsModule.DocRequest): Promise<string>;
+  /** 把机器人自己发的云文档放进回收站；返回结果说明。 */
+  deleteDoc?(ids: string[]): Promise<string>;
+  /** 现在连着没有（飞书长连接）；HTTP 这种一直在的不用写。 */
+  status?(): { connected: boolean; detail: string };
+  /** 发进度卡片，返回卡片的号（飞书 message_id）。 */
+  sendProgress?(address: Record<string, unknown>, view: progressModule.ProgressView): Promise<string>;
+  /** 原地改进度卡片。 */
+  updateProgress?(handle: string, view: progressModule.ProgressView): Promise<void>;
 }
-
-
-/** 可选能力名：'选项' 是会发选项让用户挑；'文档' 是会发文档、删文档。 */
-/** 发一条媒体/富文本消息要的东西；形状对任何渠道都通用，具体怎么发由各渠道自己实现。 */
-export interface MediaRequest {
-  /** 发什么：图片、文件、语音、视频，或结构化内容。 */
-  type: string;
-
-  /** 本地文件路径（发文件类时用）。 */
-  path?: string;
-
-  /** 文件名；不写就用路径里的名字。 */
-  name?: string;
-
-  /** 时长，毫秒（语音、视频用）。 */
-  duration?: number;
-
-  /** 封面图路径（视频用）。 */
-  coverPath?: string;
-
-  /** 结构化内容（富文本、卡片这类，各渠道自己的 JSON 结构）。 */
-  content?: Record<string, unknown>;
-}
-
-
-/** 发布一篇文档要的东西。 */
-export interface DocRequest {
-  /** 文档标题。 */
-  title: string;
-
-  /** Markdown 正文（已读出的文本）。 */
-  markdown: string;
-
-  /** 放在最前面的图片，按给的顺序；没有就是空数组。 */
-  images: string[];
-}
-
-
-export type ChannelAbility = '选项' | '文档';
 
 
 /**
- * 一个渠道：核心只认这一套，不认识外面是哪一家。
- * 必有的是名字、收消息、发消息、声明能力；选项、发文档、删文档按需实现。
+ * 建渠道时交给登记表上建渠道函数的（入口 src/entries/App.ts 建的，经 ChannelHub.start 交下来）。
+ * 只放渠道真用到的；HTTP 渠道不走登记表，它要的在 src/channels/Http.ts 的 HttpParts。
  */
-export interface Channel {
-  /** 渠道名，登记用，如 '飞书'、'http'。 */
-  name(): string;
-
-  /** 开始收消息，返回停止函数；副作用：真的开始监听（长连接、端口等），可能要联网。 */
-  start(onMessage: (incoming: Incoming) => void): Promise<() => void>;
-
-  /** 把一句话发出去，返回消息 ID；副作用：真的发到外面。 */
-  send(sourceId: string, text: string): Promise<string>;
-
-  /** 支不支持某项可选能力；can('文档') 为 true 时才有 publishDoc 和 deleteDoc。 */
-  can(ability: ChannelAbility): boolean;
-
-  /** 可选：把问题和选项发给用户，返回消息 ID；用户点选项或回一句话都行，副作用：真的发到外面。 */
-  ask?(sourceId: string, question: string, choices: string[]): Promise<string>;
-
-  /** 可选：把一篇结果发成文档，返回文档 ID 或链接；副作用：真的发到外面。 */
-  publishDoc?(title: string, markdown: string): Promise<string>;
-
-  /** 可选：删文档，返回结果说明；副作用：真的删外面的文档。 */
-  deleteDoc?(documentIds: string[]): Promise<string>;
+export interface ChannelParts {
+  /** 资源：运行时目录（飞书记最近私聊的人、发件箱）、配置里开了哪些渠道。 */
+  resources: resourcesModule.Resources;
+  /** 待确认：审核卡片上点了同意、拒绝；别处决定了就更新卡片。 */
+  approvals: approvalsModule.Approvals;
+  /** 进度卡片：卡片上“最多几分钟”“终止”按钮；测试里可以不给。 */
+  progress?: progressModule.Progress;
 }
 
 
-/** 登记表：渠道名 → 建渠道的函数。入口按 config.yaml 里开了的名字来查。 */
-const builders = new Map<string, (settings: Record<string, unknown>) => Channel>();
+/** 统一渠道入口已经检查过机器人字段的设置。 */
+export type ChannelSettings = Record<string, unknown> & {
+  /** 非空且属于启用名单的机器人名。 */
+  bot: string;
+};
+
+
+/** 登记表：渠道种类（config.yaml 的 channels 下的键，如 feishu）→ 建渠道的函数。 */
+const builders = new Map<string, (settings: ChannelSettings, parts: ChannelParts) => Channel>();
 
 
 /**
  * 登记一种渠道怎么建。
- * @param name 渠道名，要和 config.yaml 的 channels 下的键一致。
- * @param build 建渠道的函数；参数是这个渠道的设置（config.yaml 里 channels.<名字> 那一项）。
- * 副作用：写进登记表。同名重复登记报错，免得两处代码抢一个名字。
+ * @param name 渠道种类，要和 config.yaml 的 channels 下的键一致。
+ * @param build 建渠道的函数：参数是这一份设置（带 bot）和渠道要用的对象（ChannelParts）。
+ * @returns 无。
+ * @throws 同名登记两次时抛错。
+ * 副作用：写进登记表。
  */
-export function registerChannel(name: string, build: (settings: Record<string, unknown>) => Channel): void {
-  //G 同一个名字登记两次，多半是代码写错了，早点报出来。
+export function registerChannel(
+  name: string,
+  build: (settings: ChannelSettings, parts: ChannelParts) => Channel,
+): void {
   if (builders.has(name)) {
     throw new Error(`渠道 ${name} 已经登记过了`);
   }
@@ -113,41 +83,74 @@ export function registerChannel(name: string, build: (settings: Record<string, u
 
 
 /**
- * 照 config.yaml 里开了的渠道，把对应的渠道建出来。
- * @param resources 资源。
- * @param names 要建的渠道名，目前由入口从 config.yaml 传进来。
- * @returns 建好的渠道，顺序和 names 一致；没开、没配的跳过。
- * @throws config.yaml 里开了某个渠道，但代码里没登记它时抛错，错误里带渠道名。
- * 副作用：调用每个渠道的建渠道函数（可能联网、建客户端）。
+ * 按登记表建一个渠道（运行时新建机器人时加飞书应用，docs/界面/01_界面设计.md 6.2）。
+ * @param kind 渠道种类，如 feishu。
+ * @param settings 这一份设置（带 bot）。
+ * @param parts 渠道要用的对象。
+ * @returns 建好的渠道（还没开）。
+ * @throws 没登记过这种渠道、设置不对时抛错。
  */
-export function buildChannels(resources: resourcesModule.Resources, names: string[]): Channel[] {
-  /** 建好的渠道。 */
-  const channels: Channel[] = [];
-  //M Resources 还没有 listChannels()，先让入口把开了的渠道名传进来；等 Resources 加了 listChannels 再去掉这个参数。
-  for (const name of names) {
-    /** 这个渠道的设置。 */
-    const settings = resources.getChannel(name);
-    //G 配置里没有这个渠道，或者没写 enabled: true，就不建。
-    if (settings === undefined || settings.enabled !== true) {
-      continue;
-    }
-    /** 登记过的建渠道函数。 */
-    const build = builders.get(name);
-    //G 配置里开了、代码里却没登记：报清楚，不许悄悄跳过。
-    if (build === undefined) {
-      throw new Error(`config.yaml 里开了渠道 ${name}，但代码里没有登记它`);
-    }
-    channels.push(build(settings));
+export function buildChannel(
+  kind: string,
+  settings: Record<string, unknown>,
+  parts: ChannelParts,
+): Channel {
+  /** 建渠道的函数。 */
+  const build = builders.get(kind);
+  if (!build) {
+    throw new Error(`代码里没有渠道 ${kind}`);
   }
-  return channels;
+  /** 外部配置在统一入口检查一次，构造器只接收明确字段。 */
+  const checkedSettings = readChannelSettings(kind, settings, parts);
+  return build(checkedSettings, parts);
 }
 
 
 /**
- * 清空登记表。
- * 只给测试用：每个用例开始前清一下，互不影响。正式代码里不要调。
- * 副作用：登记过的渠道全没了。
+ * 外部配置进入渠道的统一入口：检查机器人字段和启用状态。
+ * @param kind 渠道类型，只用于错误定位。
+ * @param settings 原始渠道配置，可能来自配置文件或新增渠道请求。
+ * @param parts 资源及渠道依赖。
+ * @returns 已确定机器人字段的新对象，不修改输入。
+ * @throws 机器人字段缺失、为空或未启用时抛错。
  */
-export function clearChannels(): void {
-  builders.clear();
+export function readChannelSettings(
+  kind: string,
+  settings: Record<string, unknown>,
+  parts: ChannelParts,
+): ChannelSettings {
+  /** 非空机器人名，只在渠道入口检查。 */
+  const bot = checks.requireString(settings.bot, `channels.${kind}.bot`);
+  parts.resources.getBot(bot);
+  return {
+    ...settings,
+    bot,
+  };
+}
+
+
+/**
+ * 照配置把开着的渠道建出来（不含 HTTP，HTTP 由 index.ts 自己建）；飞书一个应用建一个。
+ * @param parts 渠道要用的对象。
+ * @returns 建好的渠道。
+ * 副作用：调用各渠道的建渠道函数（可能建客户端）。
+ */
+export function buildChannels(parts: ChannelParts): Channel[] {
+  /** 建好的渠道。 */
+  const channels: Channel[] = [];
+  for (const { name, settings } of parts.resources.listChannels()) {
+    /** 建渠道的函数。 */
+    const build = builders.get(name);
+    //G 配置里写了代码不认识的渠道（旧配置里的、写错的）：打一行日志跳过，不挡别的渠道。
+    if (!build) {
+      console.error(`config.yaml 里开了渠道 ${name}，但代码里没有这种渠道，跳过`);
+      continue;
+    }
+    try {
+      channels.push(buildChannel(name, settings, parts));
+    } catch (error) {
+      console.error(`渠道 ${name} 没开起来：${utils.errorText(error)}`);
+    }
+  }
+  return channels;
 }

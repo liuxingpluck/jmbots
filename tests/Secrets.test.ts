@@ -15,7 +15,7 @@ const FAKE_TOKEN = 'another-fake-token-1234';
 
 bunTest.test('同一个真值出现多次都换成替身，换回来跟原文一模一样', () => {
   /** 替身表。 */
-  const table = secrets.createSecrets([FAKE_APP_SECRET]);
+  const table = new secrets.Secrets([FAKE_APP_SECRET]);
   /** 原文：这个真值出现两次。 */
   const text = `app_secret=${FAKE_APP_SECRET}\nagain=${FAKE_APP_SECRET}`;
   /** 换过之后的文字。 */
@@ -32,7 +32,7 @@ bunTest.test('长密钥先换，不会被短密钥切坏', () => {
   /** 长的真值，前缀和短的一模一样。 */
   const longValue = 'abcd12345678';
   /** 替身表：短的是第 1 条，长的是第 2 条。 */
-  const table = secrets.createSecrets([shortValue, longValue]);
+  const table = new secrets.Secrets([shortValue, longValue]);
   bunTest.expect(table.mask(`a=${longValue}`)).toBe('a={{secret:2}}');
   bunTest.expect(table.mask(`a=${shortValue}`)).toBe('a={{secret:1}}');
   /** 两个一起出现：长的不许被切成 {{secret:1}}5678。 */
@@ -44,7 +44,7 @@ bunTest.test('长密钥先换，不会被短密钥切坏', () => {
 
 bunTest.test('不到 8 个字的真值不参与替换', () => {
   /** 7 个字的真值、空串、刚好 8 个字的真值。 */
-  const table = secrets.createSecrets(['abc1234', '', 'abcd1234']);
+  const table = new secrets.Secrets(['abc1234', '', 'abcd1234']);
   bunTest.expect(table.names()).toEqual(['{{secret:1}}']);
   bunTest.expect(table.mask('abc1234 abcd1234')).toBe('abc1234 {{secret:1}}');
   bunTest.expect(table.unmask('abc1234 {{secret:1}}')).toBe('abc1234 abcd1234');
@@ -53,7 +53,7 @@ bunTest.test('不到 8 个字的真值不参与替换', () => {
 
 bunTest.test('文字里本来就有的 {{secret:1}} 字样 round-trip 后原样还在', () => {
   /** 替身表。 */
-  const table = secrets.createSecrets([FAKE_APP_SECRET]);
+  const table = new secrets.Secrets([FAKE_APP_SECRET]);
   /** 原文：既有像替身的字样，也有真值。 */
   const text = `注意 {{secret:1}} 是示例，真值是 ${FAKE_APP_SECRET}`;
   /** mask 先把示例字样转义，再把真值换成替身。 */
@@ -65,16 +65,16 @@ bunTest.test('文字里本来就有的 {{secret:1}} 字样 round-trip 后原样�
 
 bunTest.test('编号超范围的替身原样留着，不抛错', () => {
   /** 只有一条真值，所以编号 2 和 99 都认不出来。 */
-  const table = secrets.createSecrets([FAKE_APP_SECRET]);
+  const table = new secrets.Secrets([FAKE_APP_SECRET]);
   bunTest.expect(table.unmask('a {{secret:2}} b {{secret:99}} c')).toBe('a {{secret:2}} b {{secret:99}} c');
-  bunTest.expect(secrets.createSecrets([]).unmask('{{secret:1}}')).toBe('{{secret:1}}');
-  bunTest.expect(secrets.createSecrets([]).mask('{{secret:1}}')).toBe('{{secret:1}}');
+  bunTest.expect(new secrets.Secrets([]).unmask('{{secret:1}}')).toBe('{{secret:1}}');
+  bunTest.expect(new secrets.Secrets([]).mask('{{secret:1}}')).toBe('{{secret:1}}');
 });
 
 
 bunTest.test('names() 只有代号，不含任何真值', () => {
   /** 替身表。 */
-  const table = secrets.createSecrets([FAKE_APP_SECRET, FAKE_TOKEN]);
+  const table = new secrets.Secrets([FAKE_APP_SECRET, FAKE_TOKEN]);
   /** 代号列表。 */
   const names = table.names();
   bunTest.expect(names).toEqual(['{{secret:1}}', '{{secret:2}}']);
@@ -91,7 +91,7 @@ bunTest.test('names() 只有代号，不含任何真值', () => {
 
 bunTest.test('重复的真值只占一个编号', () => {
   /** 替身表：第一个真值传了两遍。 */
-  const table = secrets.createSecrets([FAKE_APP_SECRET, FAKE_APP_SECRET, FAKE_TOKEN]);
+  const table = new secrets.Secrets([FAKE_APP_SECRET, FAKE_APP_SECRET, FAKE_TOKEN]);
   bunTest.expect(table.names()).toEqual(['{{secret:1}}', '{{secret:2}}']);
   bunTest.expect(table.mask(`${FAKE_APP_SECRET} ${FAKE_APP_SECRET}`)).toBe('{{secret:1}} {{secret:1}}');
 });

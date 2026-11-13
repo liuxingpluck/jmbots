@@ -1,0 +1,6 @@
+# memorycli 自己的忽略规则（根目录 .gitignore 白名单放行了 memorycli/，这里排除产物）。
+target/
+.memorycli/
+*.db-wal
+*.db-shm
+demo/
