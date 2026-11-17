@@ -7,6 +7,7 @@
 import * as antd from 'antd';
 import * as react from 'react';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import type * as types from '../Types.ts';
 import * as stepsModule from './Steps.ts';
 
@@ -28,6 +29,7 @@ interface StepsViewProps {
  */
 export function StepsView(props: StepsViewProps): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 展示规则：一次渲染共用一个。 */
   const presenter = react.useMemo(() => new stepsModule.StepsPresenter(t), [t]);
   /** 界面条目，和 props.steps 同序。 */
@@ -41,7 +43,7 @@ export function StepsView(props: StepsViewProps): react.JSX.Element {
    */
   const rawJson = (value: unknown): string => {
     /** 序列化。 */
-    const text = JSON.stringify(value, null, 2);
+    const text = privacy.text(JSON.stringify(value, null, 2), masked);
     if (text.length <= MAX_RAW_CHARS) {
       return text;
     }
@@ -78,12 +80,12 @@ export function StepsView(props: StepsViewProps): react.JSX.Element {
               size="small"
               column={2}
               items={[
-                { key: 'from', label: t('谁分的'), children: card.from },
-                { key: 'by', label: t('谁定的'), children: card.by },
-                { key: 'situation', label: t('什么情况'), children: card.situation, span: 2 },
+                { key: 'from', label: t('谁分的'), children: privacy.text(card.from, masked) },
+                { key: 'by', label: t('谁定的'), children: privacy.text(card.by, masked) },
+                { key: 'situation', label: t('什么情况'), children: privacy.text(card.situation, masked), span: 2 },
                 { key: 'model', label: t('模型和思考档'), children: card.model, span: 2 },
-                { key: 'reason', label: t('为什么'), children: card.reason, span: 2 },
-                { key: 'target', label: t('去向'), children: card.target, span: 2 },
+                { key: 'reason', label: t('为什么'), children: privacy.text(card.reason, masked), span: 2 },
+                { key: 'target', label: t('去向'), children: privacy.text(card.target, masked), span: 2 },
               ]}
             />
           ))}
@@ -113,13 +115,13 @@ export function StepsView(props: StepsViewProps): react.JSX.Element {
               ),
               children: (
                 <div className="jm-step-body">
-                  <div className="jm-step-summary">{item.summary}</div>
+                  <div className="jm-step-summary">{privacy.text(item.summary, masked)}</div>
                   {callFacts.length > 0 && (
                     <div className="jm-step-calls">
                       {callFacts.map((fact) => (
                         <div key={fact.key} className="jm-step-call">
-                          <div className="jm-step-call-name">{fact.label}</div>
-                          <pre>{fact.value}</pre>
+                          <div className="jm-step-call-name">{privacy.text(fact.label, masked)}</div>
+                          <pre>{privacy.text(fact.value, masked)}</pre>
                         </div>
                       ))}
                     </div>
@@ -131,8 +133,8 @@ export function StepsView(props: StepsViewProps): react.JSX.Element {
                       column={1}
                       items={otherFacts.map((fact) => ({
                         key: fact.key,
-                        label: fact.label,
-                        children: <span className="jm-step-fact-value">{fact.value}</span>,
+                        label: privacy.text(fact.label, masked),
+                        children: <span className="jm-step-fact-value">{privacy.text(fact.value, masked)}</span>,
                       }))}
                     />
                   )}

@@ -9,6 +9,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import * as images from '../Mascot/Images.ts';
 import * as readingModule from './Reading.ts';
 import * as workspaceFiles from './WorkspaceFiles.tsx';
@@ -21,6 +22,7 @@ const REFRESH_MS = 3000;
 /** 工作区。 */
 export function Workspace(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 正在聊的机器人。 */
   const bot = context.useUi((state) => state.currentBot);
   const openSession = context.useUi((state) => state.openSession);
@@ -76,7 +78,7 @@ export function Workspace(): react.JSX.Element {
   }, [bot]);
 
   if (error && workspaces.length === 0) {
-    return <div className="jm-empty">{error}</div>;
+    return <div className="jm-empty">{privacy.text(error, masked)}</div>;
   }
   return (
     <div className="jm-workspace jm-reader-workspace" ref={scroll}>
@@ -97,9 +99,9 @@ export function Workspace(): react.JSX.Element {
             label: running > 0 ? (
               <span className="jm-ws-label">
                 <img className="jm-ws-figure" src={images.IMAGES.work_mini_typing_1} alt="" />
-                {workspace.name}
+                {privacy.name(workspace.name, masked)}
               </span>
-            ) : workspace.name,
+            ) : privacy.name(workspace.name, masked),
             extra: (
               <span className="jm-muted">
                 {t('{count} 个会话', { count: mine.length })}
@@ -113,16 +115,16 @@ export function Workspace(): react.JSX.Element {
             ),
             children: (
               <div className="jm-workspace-sessions">
-                {workspace.description && <div className="jm-muted jm-workspace-desc">{workspace.description}</div>}
+                {workspace.description && <div className="jm-muted jm-workspace-desc">{privacy.text(workspace.description, masked)}</div>}
                 {bot !== null && <workspaceFiles.WorkspaceFiles bot={bot} workspace={workspace} />}
                 {mine.length === 0 && <div className="jm-muted">{t('还没有会话')}</div>}
                 {mine.map((session) => (
                   <button key={session.id} type="button" className="jm-pick-item jm-workspace-session jm-reader-session"
-                    title={session.title} onClick={() => openSession(session.id)}>
+                    title={privacy.name(session.title, masked)} onClick={() => openSession(session.id)}>
                     {session.status === 'running' && <img className="jm-ws-figure" src={images.IMAGES.work_mini_1} alt="" />}
                     <span className="jm-reader-session-main">
-                      <span className="jm-workspace-title">{session.title}</span>
-                      <span className="jm-reader-session-summary">{session.summary || t('摘要未记录')}</span>
+                      <span className="jm-workspace-title">{privacy.name(session.title, masked)}</span>
+                      <span className="jm-reader-session-summary">{privacy.text(session.summary, masked) || t('摘要未记录')}</span>
                       <span className="jm-muted jm-reader-session-meta">
                         {t('更新于 {time}', { time: new Date(session.updatedAt).toLocaleString() })}
                         <span>{session.model}</span>

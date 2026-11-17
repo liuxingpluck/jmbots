@@ -1,0 +1,38 @@
+/* 演示引导按钮和 driver.js 气泡（中文话术、上一步/下一步/跳过）。 */
+.jm-guide-btn,
+.mg-guide-btn {
+  flex: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mg-guide-btn {
+  margin-left: 4px;
+  background: linear-gradient(180deg, #3a5f16, #2a470f) !important;
+  border-color: #5a8a28 !important;
+  color: #f3ffe8 !important;
+}
+.jm-guide-pop {
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  max-width: 420px;
+}
+.jm-guide-pop .driver-popover-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.jm-guide-pop .driver-popover-description {
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.jm-guide-pop .jm-guide-skip {
+  margin-right: auto;
+  background: transparent;
+  border: 0;
+  color: #667;
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 10px;
+}
+.jm-guide-pop .jm-guide-skip:hover {
+  color: #222;
+}

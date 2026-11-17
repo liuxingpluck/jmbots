@@ -39,11 +39,15 @@ function BotCard(props: { bot: types.BotView | undefined; name: string; online: 
 /** 左栏。 */
 export function BotList(): react.JSX.Element {
   const t = i18n.useT();
-  /** 后端的版本号（设置那一行右边的小字，用户 11-06 要的）。 */
-  const [version, setVersion] = react.useState('');
+  /** 壳子和后端的版本（设置那一行右边的小字；编译时间放在悬停提示里）。 */
+  const [info, setInfo] = react.useState<api.UiInfo | undefined>(undefined);
   react.useEffect(() => {
-    void api.uiInfo().then((info) => setVersion(info.version ?? ''), () => undefined);
+    void api.uiInfo().then(setInfo, () => undefined);
   }, []);
+  const serverVersion = info?.server?.version ?? info?.version ?? '';
+  const serverBuiltAt = info?.server?.builtAt ?? info?.builtAt ?? 0;
+  const shellVersion = info?.shell?.version ?? '';
+  const shellBuiltAt = info?.shell?.builtAt ?? 0;
   /** 机器人。 */
   const bots = context.useUi((state) => state.bots);
   /** 连得上吗（还没问过算连得上，免得一打开就闪“休假中”）。 */
@@ -90,12 +94,77 @@ export function BotList(): react.JSX.Element {
         <runningList.RunningList />
       </div>
       <updateEntry.UpdateEntry />
-      <button type="button" className="jm-settings-entry" onClick={() => setSettingsOpen(true)}>
-        <icons.SettingOutlined />
-        <span>{t('设置')}</span>
-        <connections.Connections />
-        {version && <span className="jm-version">v{version}</span>}
-      </button>
+      <div className="jm-footer-row">
+        <button type="button" className="jm-settings-entry" onClick={() => setSettingsOpen(true)}>
+          <icons.SettingOutlined />
+          <span>{t('设置')}</span>
+          <connections.Connections />
+          {(shellVersion || serverVersion) && (
+            <span className="jm-version" title={versionTitle(t, shellVersion, shellBuiltAt, serverVersion, serverBuiltAt)}>
+              {versionLabel(t, shellVersion, serverVersion)}
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          className="jm-refresh-entry"
+          title={t('刷新网页：换了版本后输入框里有字时不会自动刷新')}
+          onClick={() => {
+            if (document.querySelector('.jm-editor')?.textContent?.trim() && !window.confirm(t('输入框里还有没发的字，刷新会丢掉，确定刷新吗？'))) {
+              return;
+            }
+            window.location.reload();
+          }}
+        >
+          <icons.ReloadOutlined />
+          <span>{t('刷新')}</span>
+        </button>
+      </div>
     </div>
   );
+}
+
+/**
+ * 把编译时刻格式化成美国东部时间（用户时区），例如 2026-11-14 13:02 EST。
+ * @param at 毫秒时间戳；0 或无效则空字符串。
+ */
+function formatBuiltAt(at: number): string {
+  if (!Number.isFinite(at) || at <= 0) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(at));
+  const pick = (type: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === type)?.value ?? '';
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')} EST`;
+}
+
+/**
+ * 左下角看得见的短标签：壳 0.1.0 · 服 0.7.0。
+ */
+function versionLabel(t: i18n.Translate, shellVersion: string, serverVersion: string): string {
+  const parts: string[] = [];
+  if (shellVersion) parts.push(t('壳 {version}', { version: shellVersion }));
+  if (serverVersion) parts.push(t('服 {version}', { version: serverVersion }));
+  return parts.join(' · ');
+}
+
+/**
+ * 鼠标放上去的完整说明，带编译时间。
+ */
+function versionTitle(t: i18n.Translate, shellVersion: string, shellBuiltAt: number, serverVersion: string, serverBuiltAt: number): string {
+  const lines: string[] = [];
+  if (shellVersion) {
+    const time = formatBuiltAt(shellBuiltAt);
+    lines.push(time ? t('壳子 jmbots.exe {version}（编译于 {time}）', { version: shellVersion, time }) : t('壳子 jmbots.exe {version}（编译时间未知）', { version: shellVersion }));
+  }
+  if (serverVersion) {
+    const time = formatBuiltAt(serverBuiltAt);
+    lines.push(time ? t('服务 jmbots-server.exe {version}（编译于 {time}）', { version: serverVersion, time }) : t('服务 jmbots-server.exe {version}（编译时间未知）', { version: serverVersion }));
+  }
+  return lines.join('\n');
 }

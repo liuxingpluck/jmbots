@@ -40,7 +40,15 @@ export interface MessagesState {
  * @param bot 正在聊的机器人；还没有时是 null。
  * @param origin 取哪些：web 只要网页发的（中栏时间线），other 只要别的渠道的（右栏“消息”）。
  */
-export function useMessages(bot: string | null, origin: types.MessageOrigin): MessagesState {
+export function useMessages(
+  bot: string | null,
+  origin: types.MessageOrigin,
+  filter?: { channel: string; unified: boolean },
+): MessagesState {
+  /** 中栏统一查询不发送旧 origin；右栏保留原查询语义。 */
+  const unified = filter?.unified === true;
+  const channel = filter?.channel || undefined;
+  const queryOrigin = unified ? undefined : origin;
   /** 号 → 消息。 */
   const [messages, setMessages] = react.useState<ReadonlyMap<number, types.MessageView>>(new Map());
   /** 显式补取和定位只读最新消息缓存，不让回调随每次轮询重新注册。 */
@@ -68,6 +76,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
     setMessages(new Map());
     setHasMore(false);
     setLoaded(false);
+    setLoadingOlder(false);
     cursor.current = 0;
     oldestPageId.current = null;
     if (!bot) {
@@ -82,7 +91,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
       try {
         if (cursor.current === 0) {
           /** 最新一页。 */
-          const page = await api.messages(bot, { limit: PAGE_SIZE, origin });
+          const page = await api.messages(bot, { limit: PAGE_SIZE, origin: queryOrigin, channel });
           if (generation.current !== mine) {
             return;
           }
@@ -93,7 +102,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
           cursor.current = Math.max(page.cursor, 1);
         } else {
           /** 变化。 */
-          const page = await api.messages(bot, { after: cursor.current, origin });
+          const page = await api.messages(bot, { after: cursor.current, origin: queryOrigin, channel });
           if (generation.current !== mine) {
             return;
           }
@@ -119,7 +128,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
       clearTimeout(timer);
       kick.current = () => undefined;
     };
-  }, [bot, origin]);
+  }, [bot, origin, queryOrigin, channel, unified]);
 
   /** 取更早的一页。 */
   const loadOlder = react.useCallback(async (): Promise<void> => {
@@ -132,7 +141,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
     try {
       /** 更早的一页。 */
       const before = oldestPageId.current;
-      const query = { before, limit: PAGE_SIZE, origin };
+      const query = { before, limit: PAGE_SIZE, origin: queryOrigin, channel };
       const page = await api.messages(bot, query);
       if (generation.current === mine) {
         setMessages((old) => timeline.mergeMessages(old, page.messages));
@@ -146,7 +155,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
         setLoadingOlder(false);
       }
     }
-  }, [bot, origin, loadingOlder, hasMore]);
+  }, [bot, queryOrigin, channel, loadingOlder, hasMore]);
 
   /** 只按明确号查来源；不把跨渠道的消息作为缺失，也不推进 before/after 游标。 */
   const ensureMessages = react.useCallback(async (ids: number[]): Promise<replyLinkModule.ResolvedSources> => {
@@ -167,7 +176,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
     if (needed.length === 0) {
       return { visible: known, foreignIds: [], missingIds: [] };
     }
-    const resolved = await replyLinkModule.ReplyLink.resolve(bot, needed, origin);
+    const resolved = await replyLinkModule.ReplyLink.resolve(bot, needed, queryOrigin, channel);
     if (generation.current !== mine) {
       throw new Error('查看目标已切换，本次补取结果未应用');
     }
@@ -175,7 +184,7 @@ export function useMessages(bot: string | null, origin: types.MessageOrigin): Me
       setMessages((old) => timeline.mergeMessages(old, resolved.visible));
     }
     return { ...resolved, visible: [...known, ...resolved.visible] };
-  }, [bot, origin]);
+  }, [bot, origin, queryOrigin, channel, unified]);
 
   /** 马上取一次变化。 */
   const refresh = react.useCallback(() => kick.current(), []);

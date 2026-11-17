@@ -1,5 +1,6 @@
 //! 基地守护后端、自动更新（docs/界面/02_一个程序跑起来的规划.md 第 5、6 步）。
 //!
+//! 本文件管“主后端”（有更新流程）；另外托管的服务（记忆服务等）在 services.rs，只守护不更新。
 //! 后端是编译好的单文件 <运行时>/jmbots-server.exe，正在跑的是它，源码随便改都影响不到（用户 11-05：jmbots 要能自己改自己）。
 //!   守护：基地起来就拉起它（后台、不弹窗），每隔几秒看一眼，退出了或者一直没响应就重启；从托盘退出时连它一起停。
 //!         已经有后端在跑（看门狗起的、上次留下的）就不抢，只看着。后端配在别的机器上时不管。
@@ -215,9 +216,9 @@ impl Supervisor {
         self.settings.server == format!("http://{}:{}", crate::config::LOCAL_HOST, self.settings.backend_port)
     }
 
-    /// 后端答话吗。
+    /// 后端答话吗（健康路径来自 local.backend.health，默认 /api/health）。
     fn healthy(&self, base: &str) -> bool {
-        backend::health(&backend::agent(backend::TIMEOUT), base).is_ok()
+        backend::health_at(&backend::agent(backend::TIMEOUT), base, &self.settings.backend.health).is_ok()
     }
 
     /// 拉起后端（普通模式），输出记到运行时 data/logs/backend.log。
@@ -227,8 +228,8 @@ impl Supervisor {
         let log_file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("backend.log"))?;
         let mut command = Command::new(file);
         command
-            .args(["serve", "--runtime"])
-            .arg(&self.settings.runtime)
+            //M 参数来自 local.backend.args（默认 serve --runtime {runtime}），占位符在这里换掉。
+            .args(backend::fill_args(&self.settings.backend.args, &self.settings.runtime, self.settings.backend_port))
             .env("JMBOTS_SUPERVISED", "1")
             .stdin(Stdio::null())
             .stdout(log_file.try_clone()?)
@@ -244,6 +245,7 @@ impl Supervisor {
         }
         let mut unhealthy = 0u32;
         let mut backoff = WATCH_EVERY;
+        let mut started_once = false;
         while !self.stopping.load(Ordering::SeqCst) {
             std::thread::sleep(WATCH_EVERY);
             if self.paused.load(Ordering::SeqCst) || self.stopping.load(Ordering::SeqCst) {
@@ -283,10 +285,17 @@ impl Supervisor {
             match self.spawn_server(&file) {
                 Ok(started) => {
                     log::line(&self.settings, "后端不在了，已经重新拉起");
+                    if started_once {
+                        crate::notify::info("后端已重启", "托管的后端刚才不在了，已经重新拉起");
+                    }
+                    started_once = true;
                     *child = Some(started);
                     unhealthy = 0;
                 }
-                Err(error) => log::line(&self.settings, &format!("{error:#}")),
+                Err(error) => {
+                    log::line(&self.settings, &format!("{error:#}"));
+                    crate::notify::error("后端拉不起来", &format!("{error:#}"));
+                }
             }
             drop(child);
             std::thread::sleep(backoff);
@@ -430,8 +439,14 @@ impl Supervisor {
                 state.available_file = None;
             }
             state.message = match result {
-                Ok(()) => "换好了".to_string(),
-                Err(error) => format!("没换成，还在用旧版本：{error:#}"),
+                Ok(()) => {
+                    crate::notify::info("更新完成", "新版本已经换好了");
+                    "换好了".to_string()
+                }
+                Err(error) => {
+                    crate::notify::error("更新失败", &format!("还在用旧版本：{error:#}"));
+                    format!("没换成，还在用旧版本：{error:#}")
+                }
             };
             log::line(&worker.settings, &format!("换版本：{}", state.message));
             drop(state);
@@ -459,6 +474,7 @@ impl Supervisor {
             //M 后端还在等这次请求的回答，先让它答完再停。
             std::thread::sleep(RESTART_DELAY);
             log::line(&worker.settings, "网页上点了重启服务：停掉后端，守护马上重新拉起");
+            crate::notify::info("正在重启", "后端即将重启，守护会把它重新拉起");
             if let Err(error) = worker.stop_server() {
                 log::line(&worker.settings, &format!("重启服务：{error:#}"));
             }
@@ -508,7 +524,8 @@ impl Supervisor {
         //M 1. 复制成固定名字，试运行：端口是正式的加一，只开 HTTP。
         let next = self.settings.runtime.join(new_server_name());
         std::fs::copy(file, &next).with_context(|| format!("复制不了新版本到 {}", next.display()))?;
-        let port = self.settings.backend_port + 1;
+        //M 试运行端口：从主端口加一往后找第一个没人用的（30087、30088 是 memory 插件的内部服务，2026-11-14）。
+        let port = self.settings.trial_port.unwrap_or_else(|| trial_port(self.settings.backend_port, self.settings.listen_port));
         let mut trial = {
             let mut command = Command::new(&next);
             command.args(["serve", "--mode", "candidate", "--port"]).arg(port.to_string()).arg("--runtime").arg(&self.settings.runtime).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -566,6 +583,15 @@ impl Supervisor {
             let _ = running.wait();
         }
     }
+}
+
+/// 试运行用的端口：主端口之后第一个既连不上、也能占的端口（跳过壳子自己的端口）。
+fn trial_port(backend_port: u16, shell_port: u16) -> u16 {
+    let used = |port: u16| {
+        std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(300)).is_ok()
+            || std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+    };
+    (1..=50u16).filter_map(|step| backend_port.checked_add(step)).find(|port| *port != shell_port && !used(*port)).unwrap_or(backend_port.saturating_add(1))
 }
 
 /// 按进程号停一个进程。
@@ -710,6 +736,8 @@ mod tests {
         /** 配置。 */
         let mut settings = resolve(&overrides, &|_: &str| -> Option<String> { None }, Path::new("测试用不到"));
         settings.backend_port = backend_port;
+        //M 测试里的假试运行服务就开在 backend_port + 1。
+        settings.trial_port = Some(backend_port + 1);
         Arc::new(Supervisor { settings, child: Mutex::new(None), state: Mutex::new(UpdateState::default()), stopping: AtomicBool::new(false), paused: AtomicBool::new(false) })
     }
 

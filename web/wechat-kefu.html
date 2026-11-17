@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 页面挂在 /wechat-kefu/ 下：base 让 ./assets/… 指到根目录的 /assets/。 -->
+    <base href="/" />
+    <title>积木客服 · jmbots</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 第四个打包入口（web/Build.ts）：微信监听客服页，web 插件把 dist/web/wechat-kefu.html 挂在 /wechat-kefu/。2026-11-14 jm开发。 -->
+    <script type="module" src="./src/WechatKefu/WechatMain.tsx"></script>
+  </body>
+</html>

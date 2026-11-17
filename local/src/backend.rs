@@ -1,4 +1,4 @@
-//! 连 Bun 后端（docs/界面/01_界面设计.md 第 12 节）：只读，健康检查和机器人。
+//! 连 Bun 后端和各托管服务（docs/界面/01_界面设计.md 第 12 节）：只读，健康检查和机器人；启动参数的占位符替换。
 //! 不走代理：后端在本机或局域网，环境里的 http_proxy 不该管它。
 
 use anyhow::{Context, Result, bail};
@@ -28,7 +28,19 @@ pub fn get_json(agent: &ureq::Agent, url: &str) -> Result<serde_json::Value> {
 
 /// 后端的健康检查（GET /api/health）。
 pub fn health(agent: &ureq::Agent, server: &str) -> Result<serde_json::Value> {
-    get_json(agent, &format!("{server}/api/health"))
+    health_at(agent, server, crate::config::DEFAULT_BACKEND_HEALTH)
+}
+
+/// 任一托管服务的健康检查：GET 地址 + 健康路径（local.backend.health、local.services[].health 可配）。
+pub fn health_at(agent: &ureq::Agent, server: &str, path: &str) -> Result<serde_json::Value> {
+    get_json(agent, &format!("{server}{path}"))
+}
+
+/// 把参数里的占位符换掉：{runtime} 运行时目录、{data} 运行时 data 目录、{port} 端口。
+pub fn fill_args(args: &[String], runtime: &std::path::Path, port: u16) -> Vec<String> {
+    let runtime_text = runtime.to_string_lossy();
+    let data_text = runtime.join("data").to_string_lossy().to_string();
+    args.iter().map(|arg| arg.replace("{runtime}", &runtime_text).replace("{data}", &data_text).replace("{port}", &port.to_string())).collect()
 }
 
 /// 后端的机器人和状态（GET /api/bots）。

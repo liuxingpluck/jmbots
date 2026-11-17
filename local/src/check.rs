@@ -1,4 +1,4 @@
-//! 不开窗口的自检（docs/界面/01_界面设计.md 第 4.1、14 节）：读配置、连后端、开记忆库，打印一份 JSON 后退出。
+//! 不开窗口的自检（docs/界面/01_界面设计.md 第 4.1、14 节）：读配置、连后端、看各托管服务健康，打印一份 JSON 后退出。
 //! DSH 在 Windows 上靠它看真数据（机器人和状态）；只读，不改任何东西，不打印 config.yaml 的内容（只打壳子用的几项）。
 
 use crate::backend;
@@ -29,26 +29,15 @@ fn backend_report(settings: &Settings) -> Value {
     }
 }
 
-/// 开记忆库：库名、根目录、RAG 建过索引没有；开不了写原因。
-fn memory_report(settings: &Settings) -> Value {
-    match crate::memory::open_libs(settings) {
-        Ok(libs) => json!({
-            "ok": true,
-            "dir": settings.libs_dir,
-            "ai_tags": settings.memory_model.as_ref().map(|model| model.id.clone()),
-            "libs": libs
-                .iter()
-                .map(|lib| json!({ "name": lib.name, "root": lib.root, "rag_indexed": settings.rag_dir.join(&lib.name).join("meta.json").is_file() }))
-                .collect::<Vec<_>>(),
-        }),
-        Err(error) => json!({ "ok": false, "dir": settings.libs_dir, "error": format!("{error:#}") }),
-    }
+/// 各托管服务（记忆服务等）的健康：名字、地址、程序在不在、答不答话（2026-11-14 起基地不再自己开记忆库）。
+fn services_report(settings: &Settings) -> Value {
+    crate::services::Services::new(settings).status()["services"].clone()
 }
 
 /// 自检。
 ///
 /// 输入：算好的配置。输出：一份 JSON 报告和“后端连上没有”。
-/// 副作用：发两个 HTTP 请求；只读地打开记忆库。
+/// 副作用：发几个 HTTP 请求（后端、各托管服务的健康）。
 pub fn report(settings: &Settings) -> (Value, bool) {
     let backend = backend_report(settings);
     let ok = backend["ok"].as_bool().unwrap_or(false);
@@ -57,9 +46,9 @@ pub fn report(settings: &Settings) -> (Value, bool) {
         "config": { "file": settings.config_file, "found": settings.config_found, "problems": settings.problems },
         "server": settings.server,
         "listen": format!("{}:{}", settings.listen_host, settings.listen_port),
-        "rag_dir": settings.rag_dir,
+        "memory_url": settings.memory_url,
         "backend": backend,
-        "memory": memory_report(settings),
+        "services": services_report(settings),
     });
     (value, ok)
 }
@@ -96,9 +85,8 @@ mod tests {
         assert!(ok, "{value}");
         assert_eq!(value["backend"]["bots"][0]["name"], "小测");
         assert_eq!(value["backend"]["bots"][0]["status"], "working");
-        // 记忆库目录还没有：建一个空的，没有库也不算错。
-        assert_eq!(value["memory"]["ok"], true);
-        assert_eq!(value["memory"]["libs"].as_array().map(Vec::len), Some(0));
+        //M 2026-11-14：壳子不再托管业务服务（记忆服务归 memory 插件），服务表是空的。
+        assert_eq!(value["services"].as_array().map(Vec::len), Some(0));
         assert_eq!(value["config"]["found"], false);
     }
 

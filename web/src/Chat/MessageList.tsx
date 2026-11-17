@@ -7,13 +7,16 @@ import * as antd from 'antd';
 import * as react from 'react';
 import * as approvalCard from '../Approval/ApprovalCard.tsx';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import * as attachmentView from './AttachmentView.tsx';
 import * as markdown from './Markdown.tsx';
 import * as timeline from './Timeline.ts';
+import * as assist from './Assist.tsx';
 import * as replyLinkModule from './ReplyLink.ts';
 import * as context from '../Context.ts';
 import './ReplyLink.css';
 import type * as types from '../Types.ts';
+import type * as composer from './Composer.tsx';
 import type * as messagesModule from './useMessages.ts';
 import type * as storeModule from '../Store.ts';
 
@@ -34,6 +37,12 @@ interface MessageListProps {
   emptyText?: string;
   /** 还在等决定的命令：卡片排在时间线里（右栏的“消息”不放）。 */
   approvals?: types.ApprovalView[];
+  /** 从右键菜单选定回复目标，交给中栏输入框。 */
+  onReply?: (reply: composer.ReplyDraft) => void;
+  /** 将当前气泡原文引用进输入框。 */
+  onQuote?: (text: string) => void;
+  /** 关联来源被渠道筛掉时回到全部。 */
+  onClearFilter?: () => void;
 }
 
 
@@ -41,28 +50,28 @@ interface MessageListProps {
 const BOTTOM_SLACK = 48;
 
 
-/**
- * 复制按钮。
- * @param props text 要复制的文字。
- */
-function CopyButton(props: { text: string }): react.JSX.Element {
-  const t = i18n.useT();
-  /** 刚复制过。 */
-  const [copied, setCopied] = react.useState(false);
+/** 消息动作只在右键菜单显示；Shift+F10 也可打开，不占用常驻消息空间。 */
+function MessageMenu(props: {
+  /** 消息动作。 */
+  items: antd.MenuProps['items'];
+  /** 气泡内容。 */
+  children: react.ReactElement;
+}): react.JSX.Element {
+  const [open, setOpen] = react.useState(false);
   return (
-    <antd.Button
-      type="text"
-      size="small"
-      className="jm-msg-action"
-      aria-label={t('复制这条')}
-      icon={copied ? <icons.CheckOutlined /> : <icons.CopyOutlined />}
-      onClick={() => {
-        void navigator.clipboard.writeText(props.text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        });
-      }}
-    />
+    <antd.Dropdown menu={{ items: props.items }} trigger={['contextMenu']} open={open} onOpenChange={setOpen}>
+      <div tabIndex={0} onKeyDown={(event) => {
+        if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+          event.preventDefault();
+          setOpen(true);
+        }
+        if (event.key === 'Escape') {
+          setOpen(false);
+        }
+      }}>
+        {props.children}
+      </div>
+    </antd.Dropdown>
   );
 }
 
@@ -84,55 +93,113 @@ function Item(props: {
   traceTarget: storeModule.TraceTarget | null;
   /** 只高亮这句回复实际关联的来源集合，历史范围已由后端明确标注。 */
   selection: storeModule.ReplySelection | null;
+  /** 右键回复动作。 */
+  onReply: MessageListProps['onReply'];
+  /** 插入引用动作。 */
+  onQuote: MessageListProps['onQuote'];
 }): react.JSX.Element {
   const t = i18n.useT();
   const item = props.item;
+  const enabled = privacy.useMask();
+  const masked = enabled && privacy.wechat(item);
   const presentation = new replyLinkModule.ReplyLink(t);
   const linked = item.kind !== 'approval' && props.selection?.target.bot === props.bot
     && props.selection.association.messageIds.includes(item.message.id);
   const linkTag = props.selection ? presentation.tag(props.selection.target) : '';
   if (item.kind === 'approval') {
-    return <approvalCard.ApprovalCard approval={item.approval} />;
+    return masked ? <div className="jm-event">{privacy.text('待审核', true)}</div>
+      : <approvalCard.ApprovalCard approval={item.approval} />;
   }
   if (item.kind === 'note') {
     return (
       <div className={linked ? 'jm-event jm-event-note jm-msg-linked' : 'jm-event jm-event-note'}
         data-timeline-key={item.key} tabIndex={-1}>
         {linked && <span className="jm-reply-link-tag">{linkTag}</span>}
-        {item.text}
+        {privacy.text(item.text, masked)}
       </div>
     );
   }
   if (item.kind === 'event') {
     return (
       <div className="jm-event">
-        <button type="button" disabled={!item.dispatch.file} onClick={() => props.onOpen({ path: item.dispatch.file, name: item.dispatch.title || item.dispatch.sessionId })} title={item.dispatch.reason}>
-          {timeline.eventText(item.dispatch, t)}
+        <button type="button" disabled={masked || !item.dispatch.file} onClick={() => props.onOpen({ path: item.dispatch.file, name: item.dispatch.title || item.dispatch.sessionId })} title={privacy.text(item.dispatch.reason, masked)}>
+          {privacy.text(timeline.eventText(item.dispatch, t), masked)}
         </button>
       </div>
     );
   }
+  const body = item.kind === 'reply' ? item.reply.text : item.message.text;
+  const text = privacy.text(body, masked);
+  const copy = (value: string): void => {
+    void navigator.clipboard.writeText(value).then(
+      () => antd.message.success(t('已复制')),
+      () => antd.message.error(t('复制失败，请选择文字后复制')),
+    );
+  };
+  const menuItems: antd.MenuProps['items'] = [
+    {
+      key: 'reply', label: t('回复'), icon: <icons.RollbackOutlined />,
+      disabled: masked || !props.onReply,
+      onClick: () => !masked && props.onReply?.({
+        id: item.message.id,
+        channel: item.message.channel,
+        peer: item.message.peer,
+        text: item.message.text,
+      }),
+    },
+    {
+      key: 'copy', label: t('复制'), icon: <icons.CopyOutlined />,
+      onClick: () => copy(text),
+    },
+    {
+      key: 'quote', label: t('引用'), icon: <icons.SnippetsOutlined />,
+      disabled: !props.onQuote,
+      onClick: () => props.onQuote?.(text),
+    },
+  ];
+  const source = (
+    <>
+      <span className="jm-msg-channel" title={item.message.channel}>{item.message.channel}</span>
+      <span className="jm-msg-peer" title={privacy.name(item.message.peer, masked)}>{privacy.name(item.message.peer, masked)}</span>
+    </>
+  );
   if (item.kind === 'user') {
     /** 还没进会话时的小字。 */
     const pending = timeline.pendingText(item.message.status, t);
     return (
+      <MessageMenu items={menuItems}>
       <div className={linked ? 'jm-msg jm-msg-user jm-msg-linked' : 'jm-msg jm-msg-user'}
         data-timeline-key={item.key} tabIndex={-1}>
         <div className="jm-msg-meta">
           {linked && <span className="jm-reply-link-tag">{linkTag}</span>}
-          <span className="jm-msg-source">{timeline.channelLabel(item.message.channel, item.message.source, t)}</span>
+          {source}
           <span>{timeline.formatTime(item.at)}</span>
           {pending && <span className="jm-msg-pending">{pending}</span>}
-          <CopyButton text={item.message.text} />
+
         </div>
         <div className="jm-bubble jm-bubble-user">
-          <markdown.Markdown text={item.message.text} onOpen={props.onOpen} />
+          {item.message.replyTo && (
+            <blockquote className="jm-message-quote">
+              <strong>{privacy.name(item.message.replyTo.peer, masked)} · #{item.message.replyTo.id}</strong>
+              <span>{privacy.text(item.message.replyTo.text, masked)}</span>
+            </blockquote>
+          )}
+          {item.message.reply_to != null && !item.message.replyTo && (
+            <blockquote className="jm-message-quote">{t('引用消息')} #{item.message.reply_to}</blockquote>
+          )}
+          <markdown.Markdown text={privacy.text(item.message.text, masked)} onOpen={props.onOpen} />
         </div>
+        {!masked && <assist.Reactions messageId={item.message.id} />}
       </div>
+      </MessageMenu>
     );
   }
-  /** 从收到那条消息到这条回复用了多久。 */
-  const elapsed = timeline.formatElapsed(item.reply.at - item.message.createdAt, t);
+  /** 前台、后台各用了多久；旧回话没有分开记录时，整段算前台。 */
+  const elapsed = timeline.formatFrontWorkElapsed(
+    item.reply.frontMs ?? (item.reply.workMs == null ? item.reply.at - item.message.createdAt : item.reply.frontMs),
+    item.reply.workMs,
+    t,
+  );
   /** 所选目标使用真实数组下标；不依赖可能重复的正文和发送时间。 */
   const traceTarget: storeModule.TraceTarget = {
     bot: item.message.bot,
@@ -161,39 +228,40 @@ function Item(props: {
 
     props.onTrace(traceTarget, item.reply);
   };
+  menuItems.push(
+    { type: 'divider' },
+    { key: 'trace', label: t('查看事件'), onClick: () => props.onTrace(traceTarget, item.reply) },
+    {
+      key: 'session', label: privacy.name(item.reply.session.title, masked) || t('查看会话'),
+      disabled: masked || !item.reply.session.file,
+      onClick: () => props.onOpen({ path: item.reply.session.file, name: item.reply.session.title }),
+    },
+  );
   return (
+    <MessageMenu items={menuItems}>
     <div className={selected ? 'jm-msg jm-msg-bot jm-msg-traced jm-msg-linked' : 'jm-msg jm-msg-bot'}
       data-timeline-key={item.key} tabIndex={-1}>
       <div className="jm-msg-meta">
         {selected && <span className="jm-reply-link-tag">{linkTag}</span>}
         <span className="jm-msg-source">{props.bot}</span>
         <span>{timeline.formatTime(item.at)}</span>
-        {elapsed && <span className="jm-msg-elapsed" title={t('从收到你那条消息到这条回复')}>{elapsed}</span>}
-        <button type="button" className="jm-msg-session" disabled={!item.reply.session.file} onClick={() => props.onOpen({ path: item.reply.session.file, name: item.reply.session.title })}>
-          {item.reply.session.title}
-        </button>
-        <CopyButton text={item.reply.text} />
-        <button
-          type="button"
-          className="jm-msg-trace"
-          aria-pressed={selected}
-          onClick={() => props.onTrace(traceTarget, item.reply)}
-        >
-          {t('查看事件')}
-        </button>
+        {elapsed && <span className="jm-msg-elapsed" title={t('前台从收到你那条消息到交出或说完；后台从接手到这条回复')}>{elapsed}</span>}
+        {source}
         <span className="jm-reply-generation" title={presentation.generationTitle(item.reply.generation)}>
           {presentation.generation(item.reply.generation)}
         </span>
       </div>
       <div className="jm-bubble jm-bubble-bot jm-bubble-inspect" onClick={inspectBody}>
-        <markdown.Markdown text={item.reply.text} onOpen={props.onOpen} />
-        {item.reply.attachments
+        <markdown.Markdown text={privacy.text(item.reply.text, masked)} onOpen={props.onOpen} />
+        {!masked && item.reply.attachments
           .filter((attachment) => !item.reply.text.includes(attachment.path))
           .map((attachment) => (
             <attachmentView.AttachmentView key={attachment.path} attachment={attachment} onOpen={props.onOpen} />
           ))}
       </div>
+      {!masked && item.replyIndex === item.message.replies.length - 1 && <assist.Asks bot={item.message.bot} messageId={item.message.id} />}
     </div>
+    </MessageMenu>
   );
 }
 
@@ -204,6 +272,7 @@ function Item(props: {
  */
 export function MessageList(props: MessageListProps): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const selection = context.useUi((state) => state.replySelection);
   const selectionError = context.useUi((state) => state.replySelectionError);
   const resolution = context.useUi((state) => state.sourceResolutions[props.state.origin]);
@@ -384,22 +453,28 @@ export function MessageList(props: MessageListProps): react.JSX.Element {
           {!resolution && <small>{t('正在补取关联消息…')}</small>}
           {resolution?.foreignIds.length ? (
             <p>
-              {t('来源在另一视图：{ids}', { ids: resolution.foreignIds.join('、') })}
-              <button type="button" onClick={() => locateMessage({
-                bot: props.bot,
-                origin: origin === 'web' ? 'other' : 'web',
-                messageId: resolution.foreignIds[0]!,
-                replyIndex: null,
-              })}>{t('到另一视图定位')}</button>
+              {t('来源不在当前筛选：{ids}', { ids: resolution.foreignIds.join('、') })}
+              <button type="button" onClick={() => {
+                if (props.onClearFilter) {
+                  props.onClearFilter();
+                  return;
+                }
+                locateMessage({
+                  bot: props.bot,
+                  origin: origin === 'web' ? 'other' : 'web',
+                  messageId: resolution.foreignIds[0]!,
+                  replyIndex: null,
+                });
+              }}>{props.onClearFilter ? t('查看全部渠道') : t('到另一视图定位')}</button>
             </p>
           ) : null}
           {resolution?.missingIds.length ? <p>{t('来源消息缺失：{ids}', { ids: resolution.missingIds.join('、') })}</p> : null}
-          {resolution?.error && <p role="alert">{t('关联消息补取失败：{reason}', { reason: resolution.error })}</p>}
+          {resolution?.error && <p role="alert">{t('关联消息补取失败：{reason}', { reason: privacy.text(resolution.error, masked) })}</p>}
         </div>
       )}
-      {selectionError && props.traceTarget && <p className="jm-reply-link-notice" role="alert">{selectionError}</p>}
+      {selectionError && props.traceTarget && <p className="jm-reply-link-notice" role="alert">{privacy.text(selectionError, masked)}</p>}
       {location?.bot === props.bot && location.origin === origin && location.error && (
-        <p className="jm-reply-link-notice" role="alert">{location.error}</p>
+        <p className="jm-reply-link-notice" role="alert">{privacy.text(location.error, masked)}</p>
       )}
       <div className="jm-timeline" ref={scroller} onScroll={onScroll}>
         {hasMore && <div className="jm-timeline-more">{loadingOlder ? t('正在取更早的…') : t('往上滚看更早的')}</div>}
@@ -413,6 +488,8 @@ export function MessageList(props: MessageListProps): react.JSX.Element {
             onTrace={props.onTrace}
             traceTarget={props.traceTarget}
             selection={selected}
+            onReply={props.onReply}
+            onQuote={props.onQuote}
           />
         ))}
       </div>

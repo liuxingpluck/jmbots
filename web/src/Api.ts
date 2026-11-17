@@ -6,35 +6,8 @@
 import type * as types from './Types.ts';
 
 
-/** 访问令牌在浏览器里存的键。 */
-const TOKEN_KEY = 'jmbots.token';
-
-
-/**
- * 现在用的访问令牌：地址里带了就记下（并从地址栏去掉，免得截图、复制时带出去），没带就用记着的。
- * @returns 令牌；没有是空字符串。
- */
-function accessToken(): string {
-  try {
-    /** 地址里的。 */
-    const fromUrl = new URLSearchParams(window.location.search).get('token');
-    if (fromUrl) {
-      window.localStorage.setItem(TOKEN_KEY, fromUrl);
-      /** 去掉 token 以后的地址。 */
-      const url = new URL(window.location.href);
-      url.searchParams.delete('token');
-      window.history.replaceState(null, '', url.toString());
-    }
-    return window.localStorage.getItem(TOKEN_KEY) ?? '';
-  } catch {
-    //G 不是浏览器（测试里）或者存不了：当没有。
-    return '';
-  }
-}
-
-
-/** 启动时取一次。 */
-const TOKEN = accessToken();
+//M 2026-11-14 22:50 EST：令牌读取挪到 Token.ts，所有网页共用一份（原来这里的 accessToken 搬过去成了 takeToken）。
+import { TOKEN, withToken } from './Token.ts';
 
 
 /** 接口出的错。 */
@@ -140,7 +113,7 @@ export function approvals(): Promise<types.ApprovalView[]> {
  * @param bot 机器人名。
  * @param query before（往前翻）、after（取变化）、limit、origin（web 只要网页发的，other 只要别的渠道的）。
  */
-export function messages(bot: string, query: { before?: number; after?: number; limit?: number; origin?: types.MessageOrigin } = {}): Promise<types.MessagePage> {
+export function messages(bot: string, query: { before?: number; after?: number; limit?: number; origin?: types.MessageOrigin; channel?: string } = {}): Promise<types.MessagePage> {
   /** 查询参数。 */
   const params = new URLSearchParams({ bot });
   for (const [name, value] of Object.entries(query)) {
@@ -187,7 +160,7 @@ export function resolveMessages(bot: string, ids: number[]): Promise<types.Messa
  */
 export function fileUrl(path: string): string {
   //M img、video 加不了请求头，令牌放进地址。
-  return `/api/files?path=${encodeURIComponent(path)}${TOKEN ? `&token=${encodeURIComponent(TOKEN)}` : ''}`;
+  return withToken(`/api/files?path=${encodeURIComponent(path)}`, TOKEN);
 }
 
 
@@ -312,6 +285,8 @@ export function sendMessage(input: {
   uploads: string[];
   /** 明确选择的会话；省略时由后端分派。 */
   session?: string;
+  /** 被回复的收件消息号，保持数值类型。 */
+  reply_to?: number;
 }): Promise<{
   /** 后端分配的消息号。 */
   id: number;
@@ -325,6 +300,7 @@ export function sendMessage(input: {
     from: 'web',
     uploads: input.uploads,
     session: input.session,
+    reply_to: input.reply_to,
   };
 
   return sendJson('/api/message', 'POST', body);
@@ -335,6 +311,12 @@ export function sendMessage(input: {
 export interface SessionBrief {
   /** 会话 ID。 */
   id: string;
+  /** 种类：front 前台对话、work 后台会话。 */
+  kind?: string;
+  /** 嵌在哪场会话里；只有后台子会话有。 */
+  parent?: string;
+  /** 客户号，渠道:用户。 */
+  customer?: string;
   /** 工作区。 */
   workspace: string;
   /** 标题。 */
@@ -364,6 +346,40 @@ export function sessions(bot: string, status?: string): Promise<SessionBrief[]> 
     params.set('status', status);
   }
   return getJson(`/api/ui/sessions?${params.toString()}`);
+}
+
+
+/** 一个正在跑的前台或后台任务（GET /api/ui/running 的一项）。 */
+export interface RunningTask {
+  /** 会话号。 */
+  id: string;
+  /** 种类：front 前台、work 后台。 */
+  kind: string;
+  /** 嵌在哪场前台会话里；前台没有。 */
+  parent?: string;
+  /** 标题。 */
+  title: string;
+  /** 客户号，渠道:用户。 */
+  customer: string;
+  /** 给人看的渠道标签，比如 网页、飞书、微信。 */
+  customerLabel: string;
+  /** 状态，现在都是 running。 */
+  status: string;
+  /** 本轮开始时间，毫秒。 */
+  startedAt: number;
+  /** 最后改动的时间，毫秒。 */
+  updatedAt: number;
+  /** 最新一条进度。 */
+  action: string;
+}
+
+
+/**
+ * 这个机器人正在跑的前台和后台任务（含后台子会话）。
+ * @param bot 机器人名。
+ */
+export function runningTasks(bot: string): Promise<RunningTask[]> {
+  return getJson(`/api/ui/running?bot=${encodeURIComponent(bot)}`);
 }
 
 
@@ -779,7 +795,26 @@ export function restartService(): Promise<{ ok: boolean; startedAt: number }> {
 
 
 /** 这个后端进程什么时候起的（重启后会变）、界面语言（config.yaml 的 ui.language，没写不带）。 */
-export function uiInfo(): Promise<{ startedAt: number; version?: string; language?: string }> {
+/** 一份程序的版本和编译时刻（毫秒；没有是 0）。 */
+export interface ProgramVersion {
+  version: string;
+  builtAt: number;
+}
+
+/** 网页左下角用的界面信息。 */
+export interface UiInfo {
+  startedAt: number;
+  /** 后端版本（兼容旧字段）。 */
+  version?: string;
+  builtAt?: number;
+  language?: string;
+  /** 后端 jmbots-server。 */
+  server?: ProgramVersion;
+  /** 壳子 jmbots.exe；旧壳子或没连上是 null。 */
+  shell?: ProgramVersion | null;
+}
+
+export function uiInfo(): Promise<UiInfo> {
   return getJson('/api/ui/info');
 }
 

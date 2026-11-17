@@ -1,15 +1,13 @@
 /**
  * 命令行渠道：第一个渠道，也是别的渠道（HTTP、飞书）的样板。
  * 用法：bun src7/Main.ts [--bot 机器人] 你好
- *   带了一句话：发出去，等到回话就退出。
- *   没带：一行一行读输入，每行当一句话发出去；输入 /stop 会话号 喊停。
+ *   把命令行里带的那句话发给机器人，等所有会话都停下来就退出（出过错退出码是 1）。
+ *   没带话就什么也不做。它不从键盘读输入；要一问一答地聊，以后另写专门的插件。
  */
 import * as process from 'node:process';
-import * as readline from 'node:readline';
 import type * as cordis from 'cordis';
-import * as channelModule from '../../Channel.ts';
-import type { ChangeEvent } from '../../Sessions.ts';
-
+import type { Session } from '../../Sessions.ts';
+import * as textModule from '../../utils/Text.ts';
 
 /** 插件名。 */
 export const name = 'cli';
@@ -18,147 +16,100 @@ export const name = 'cli';
 export const inject = ['resources', 'bots', 'sessions'];
 
 
-/** 给命令行渠道的配置：config.yaml 的 plugins.cli，加上 Main 传进来的剩余参数。 */
-export interface CliConfig {
-  /** 命令行里剩下的参数。 */
-  argv?: string[];
-}
-
-
 /** 命令行渠道。 */
-class Cli extends channelModule.Channel {
+class Cli {
   /** 渠道名。 */
   readonly name = 'cli';
 
-  /** 带了一句话、回了就退出。 */
-  private oneShot = false;
+  /** 命令行里带的那句话发出去了没有。发了，等所有会话都停下来就退出。 */
+  private sent = false;
 
-  /** 退出码：出错是 1。 */
+  /** 退出码：有会话出过错是 1。 */
   private exitCode = 0;
-
-  /** 给哪个机器人发。 */
-  private botName = '';
-
-  /** 一句话模式：所有该回的会话都有结果了就结束。 */
-  private readonly finished: Promise<void>;
-
-  /** 解开 finished。 */
-  private resolveFinished: () => void = () => { /* 构造里会被换掉 */ };
 
   /**
    * @param ctx Cordis 给的 ctx。
-   * @param config 剩余的命令行参数。
    */
-  constructor(ctx: cordis.Context, config: CliConfig) {
-    super(ctx);
-    this.finished = new Promise((resolve) => {
-      this.resolveFinished = resolve;
+  constructor(private readonly ctx: cordis.Context) {
+    this.ctx.effect(() => this.ctx.bots.channel(this.name, (reply, session) => this.send(reply, session)));
+
+    //M 等 Main 把插件都挂完（事件 ready，带着命令行里剩下的参数）才发话：这时候工具、提示词都挂上了。
+    this.ctx.on('ready', (argv) => {
+      void this.start(argv);
     });
-    //M 解析 config.argv：--bot 机器人（不写就用名单里第一个）、剩下的拼成一句话。命令行是外部输入，在这里校验一次。
-    void this.start(config).catch((error: unknown) => {
-      const text = error instanceof Error ? error.message : String(error);
-      console.error(`命令行没跑成：${text}`);
-      process.exit(1);
+
+    //M 每次有会话的状态变了，就看一眼是不是可以退出了。
+    this.ctx.on('session/change', () => {
+      this.exitWhenIdle();
     });
   }
 
   /**
-   * 解析参数，发一句话或读标准输入。
-   * @param config 剩余的命令行参数。
+   * 把命令行里带的那句话发给机器人。
+   * @param argv 命令行里剩下的参数：--bot 机器人（不写就用名单里第一个），其余的拼成一句话。
+   * 副作用：没有这个机器人、没有插件管分派时，打出原因，以退出码 1 退出。
    */
-  private async start(config: CliConfig): Promise<void> {
-    const argv = config.argv ?? [];
-    /** --bot 指定的名字。 */
-    let bot: string | undefined;
-    /** 拼成一句话的其余参数。 */
-    const words: string[] = [];
-    for (let i = 0; i < argv.length; i += 1) {
-      const token = argv[i];
-      if (token === '--bot') {
-        const value = argv[i + 1];
-        if (value === undefined || value === '') {
-          throw new Error('--bot 后面要写机器人名');
-        }
-        bot = value;
-        i += 1;
-        continue;
-      }
-      if (token !== undefined) {
-        words.push(token);
-      }
-    }
-    const first = this.ctx.bots.list()[0];
-    this.botName = bot ?? first?.name ?? '';
-    if (this.botName === '' || this.ctx.bots.get(this.botName) === undefined) {
-      throw new Error(this.botName === '' ? '名单里一个机器人也没有' : `没有这个机器人：${this.botName}`);
+  private async start(argv: string[]): Promise<void> {
+    const words = [...argv];
+    let bot = this.ctx.bots.list()[0]?.name ?? '';
+    const at = words.indexOf('--bot');
+    if (at >= 0) {
+      bot = words[at + 1] ?? '';
+      words.splice(at, 2);
     }
     const sentence = words.join(' ').trim();
-    //M 有一句话 → this.receive(bot, 这句话)，记下“回了话就退出”。
-    if (sentence !== '') {
-      this.oneShot = true;
-      this.receive(this.botName, sentence);
-      await this.finished;
-      process.exit(this.exitCode);
-    }
-    //M 没有 → 一行一行读标准输入：
-    //M   “/stop 会话号” → ctx.bots.get(bot).stop(会话号, 'cli')；
-    //M   别的 → this.receive(bot, 这一行)。
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    console.log('输入一句话发给机器人；/stop 会话号 喊停；Ctrl+D 退出。');
-    for await (const line of rl) {
-      const text = line.trim();
-      if (text.startsWith('/stop ')) {
-        const id = text.slice('/stop '.length).trim();
-        const ok = this.ctx.bots.get(this.botName)?.stop(id, 'cli') ?? false;
-        console.log(ok ? `已喊停 ${id}` : `没有这场或它没在跑：${id}`);
-        continue;
-      }
-      if (text !== '') {
-        this.receive(this.botName, text);
-      }
+
+    //G 没带话 → 什么也不做。
+    if (sentence === '') return;
+
+    this.sent = true;
+    try {
+      await this.ctx.bots.receive(this.name, bot, sentence, { customer: 'cli:本机' });
+    } catch (error) {
+      console.error(`命令行没跑成：${textModule.messageOf(error)}`);
+      process.exit(1);
     }
   }
 
   /**
-   * 把机器人的话打出来。
-   * @param text 要说的话。
-   * @param event 是哪场会话的什么结果。
+   * 把机器人的话打出来：[机器人名 会话号] 话。出错的用红色。
+   * @param reply 要说的话。
+   * @param session 是哪场会话的结果。
    */
-  protected send(text: string, event: ChangeEvent): void {
-    //M 打一行：[机器人名 会话号] 话。出错的用红色。
-    const line = `[${event.row.bot} ${event.row.id}] ${text}`;
-    if (event.row.state === 'failed') {
-      console.log(`\x1b[31m${line}\x1b[0m`);
+  protected send(reply: string, session: Session): void {
+    const line = `[${session.row.bot} ${session.id}] ${reply}`;
+    if (session.row.state === 'failed') {
       this.exitCode = 1;
-    } else {
-      console.log(line);
+      console.log(`\x1b[31m${line}\x1b[0m`);
+      return;
     }
-    //M 是“回了话就退出”的那种 → 默认对话和它交办出去的会话都有结果了才退出；出错的退出码 1。
-    if (this.oneShot) {
-      this.maybeExit();
-    }
+    console.log(line);
   }
 
   /**
-   * 一句话模式：这个渠道上没有还在跑的会话，就结束等待。
+   * 话发出去以后：没有还在转的会话了，就退出。
    */
-  private maybeExit(): void {
-    const rows = this.ctx.sessions.listOf(this.botName);
-    const busy = rows.some((row) => {
-      return row.channel === 'cli' && (row.state === 'running' || row.state === 'wait_tools' || row.state === 'wait_compress');
-    });
-    if (!busy) {
-      this.resolveFinished();
-    }
+  private exitWhenIdle(): void {
+    if (!this.sent) return;
+
+    //M 等这一下的通知都发完再看：别的插件可能紧接着又开一场小会话（比如写总结）。
+    setTimeout(() => {
+      const running = this.ctx.sessions.find({ state: 'running' });
+      if (running.length === 0) {
+        process.exit(this.exitCode);
+      }
+    }, 0);
   }
 }
 
 
 /**
  * 挂上命令行渠道。
+ * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里写的服务都就绪，
+ * 再调一次 apply(ctx, 配置)。插件在 apply 里通过 ctx 听事件、登记工具；插件被拔掉时，这些登记自动撤掉。
+ * 详见 plugins/Index.ts 的 PluginModule。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config 见 CliConfig。
  */
-export function apply(ctx: cordis.Context, config: CliConfig): void {
-  new Cli(ctx, config);
+export function apply(ctx: cordis.Context): void {
+  new Cli(ctx);
 }

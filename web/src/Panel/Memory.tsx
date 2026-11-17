@@ -11,6 +11,7 @@ import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as memoryFiles from './MemoryFiles.tsx';
+import * as privacy from '../Privacy/Mask.tsx';
 
 
 /** 搜哪一种。 */
@@ -20,6 +21,7 @@ type Mode = 'memory' | 'rag';
 /** 记忆。 */
 export function Memory(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 打开预览。 */
   const openPanel = context.useUi((state) => state.openPanel);
   /** 库的清单；壳子不在时的原因。 */
@@ -89,10 +91,13 @@ export function Memory(): react.JSX.Element {
     return (
       <>
         <memoryFiles.MemoryFiles />
-        <div className="jm-empty">{t('记忆搜索要开着基地 jmbots.exe（{reason}）', { reason: problem })}</div>
+        <div className="jm-empty">{t('记忆搜索要开着基地 jmbots.exe（{reason}）', { reason: privacy.text(problem, masked) })}</div>
       </>
     );
   }
+  //G 旧基地检索没有渠道字段：开启打码时不挂载结果和文件列表，避免旁路露出微信资料。
+  if (masked) return <div className="jm-empty">记忆内容（已打码），关闭演示打码后可检索和查看。</div>;
+
   return (
     <>
     <memoryFiles.MemoryFiles />

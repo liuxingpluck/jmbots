@@ -10,4 +10,7 @@
 fn main() {
     let windows = tauri_build::WindowsAttributes::new().app_manifest(include_str!("windows/app.manifest"));
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows)).expect("tauri-build 没过（看上面的报错）");
+    // 编译时刻（毫秒），给 GET /version 和网页左下角的版本显示用。
+    let built = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis()).unwrap_or(0);
+    println!("cargo:rustc-env=JMBOTS_BUILT_AT={built}");
 }

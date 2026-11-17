@@ -1,12 +1,12 @@
 //! 窗口和托盘（docs/界面/01_界面设计.md 第 4.1 节）：
-//!   - 起来先在后台线程开 HTTP 接口（记忆搜索、RAG，server.rs）；起不来（比如端口被老的 memorycli 服务占着）记进日志，窗口照开。
+//!   - 起来先在后台线程开 HTTP 接口（更新、重启、托管服务，记忆接口转给记忆服务，server.rs）；起不来（比如端口被老的 memorycli 服务占着）记进日志，窗口照开。
 //!   - 托盘：“打开界面”“退出 jmbots”；左键点托盘图标也是打开界面。关窗口只是缩到托盘，接口照常在跑。
 //!   - 窗口先开壳子自带的一页（ui/index.html），它去连后端，连上就切到后端托管的网页，连不上显示“休假中”并每 3 秒再试。
 //!   - 只开一份：已经开着时再双击，只是把窗口叫出来。--tray 起来时不开窗口（开机自启用）。
-//!   - 基地拉起并守护后端、扫描新版本（supervisor.rs）；从托盘退出时连它拉起的后端一起停。
+//!   - 基地拉起并守护后端、扫描新版本（supervisor.rs），守护另外托管的服务（services.rs，默认记忆服务）；从托盘退出时连它拉起的一起停。
 
 use crate::config::Settings;
-use crate::{log, server, supervisor};
+use crate::{log, server, services, supervisor};
 use anyhow::{Context, Result};
 use tauri::Manager;
 use tauri::menu::{Menu, MenuItem};
@@ -88,10 +88,13 @@ pub fn run(settings: &Settings, tray_only: bool) -> Result<()> {
     let labels = tray_labels(settings.language.as_deref());
     //M 1. 守护后端；HTTP 接口在后台线程跑；起不来不挡窗口。
     let guard = supervisor::Supervisor::start(settings);
+    // 业务服务由插件管理；不再由壳子拉起。
+    let hosted = std::sync::Arc::new(services::Services::new(settings));
     let for_server = std::sync::Arc::clone(&guard);
+    let hosted_for_server = std::sync::Arc::clone(&hosted);
     let serving = settings.clone();
     std::thread::spawn(move || {
-        if let Err(error) = server::serve_with(&serving, Some(for_server)) {
+        if let Err(error) = server::serve_with(&serving, Some(for_server), Some(hosted_for_server)) {
             log::line(&serving, &format!("HTTP 接口起不来：{error:#}"));
         }
     });
@@ -119,7 +122,10 @@ pub fn run(settings: &Settings, tray_only: bool) -> Result<()> {
     app.run(move |_app, event| match event {
         //M 窗口都关了（藏了）也别退；只有从托盘点“退出”（带退出码）才真的退。
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
-        tauri::RunEvent::Exit => guard.stop(),
+        tauri::RunEvent::Exit => {
+            guard.stop();
+            hosted.stop();
+        }
         _ => {}
     });
     Ok(())

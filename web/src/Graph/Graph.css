@@ -1,0 +1,42 @@
+/* 记忆关系图谱页（深色，独立于主网页的样式）。 */
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; background: #070b16; color: #dfe6f5; font: 14px/1.55 system-ui, "Microsoft YaHei", sans-serif; overflow: hidden; }
+.mg-header { position: absolute; top: 0; left: 0; right: 0; height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px; background: linear-gradient(90deg, rgba(18,26,52,.95), rgba(10,16,34,.85)); border-bottom: 1px solid #1d2a4d; z-index: 5; }
+.mg-header h1 { font-size: 17px; margin: 0 8px 0 0; font-weight: 600; letter-spacing: 1px; background: linear-gradient(90deg, #7cc4ff, #c18bff); -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap; }
+.mg-header select, .mg-header input, .mg-header button { font: inherit; color: #dfe6f5; background: #111a33; border: 1px solid #2a3a66; border-radius: 8px; padding: 6px 10px; outline: none; }
+.mg-header input.mg-q { flex: 1; min-width: 200px; }
+.mg-header button { cursor: pointer; background: linear-gradient(180deg, #2c4fa8, #213d85); border-color: #3d63c7; white-space: nowrap; }
+.mg-header button.ghost { background: #111a33; border-color: #2a3a66; }
+.mg-header button:hover { filter: brightness(1.15); }
+.mg-header label { display: flex; align-items: center; gap: 4px; white-space: nowrap; color: #9fb0d6; }
+.mg-stage { position: absolute; top: 56px; left: 0; right: 380px; bottom: 0; background: radial-gradient(circle at 50% 50%, #0d1630, #060912 75%); }
+.mg-stage::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(120,150,230,.10) 1px, transparent 1.2px); background-size: 40px 40px; pointer-events: none; }
+.mg-cy { position: absolute; inset: 0; }
+.mg-side { position: absolute; top: 56px; right: 0; width: 380px; bottom: 0; background: rgba(11,17,35,.96); border-left: 1px solid #1d2a4d; overflow: auto; padding: 14px 16px; }
+.mg-side h2 { font-size: 13px; color: #8ea2d1; margin: 16px 0 8px; font-weight: 600; letter-spacing: 1px; }
+.mg-side h2:first-child { margin-top: 0; }
+.mg-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: linear-gradient(90deg, rgba(255,196,77,.12), rgba(255,120,77,.06)); border: 1px solid rgba(255,196,77,.35); }
+.mg-ent { padding: 1px 8px; border-radius: 12px; background: #1a2547; border: 1px solid #33467d; cursor: pointer; }
+.mg-rel { color: #ffcf66; font-size: 12px; cursor: pointer; }
+.mg-card { padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: #0f1730; border: 1px solid #1f2d55; cursor: pointer; }
+.mg-card:hover { border-color: #3d63c7; }
+.mg-card b { color: #9cc8ff; font-weight: 600; }
+.mg-meta { font-size: 12px; color: #7d8fb9; }
+.mg-badge { display: inline-block; font-size: 11px; padding: 0 6px; margin-left: 4px; border-radius: 8px; background: #22305c; color: #a9c1ff; }
+.mg-badge.graph { background: #4a2f12; color: #ffcf66; }
+.mg-doc { white-space: pre-wrap; word-break: break-all; padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: #0f1730; border-left: 3px solid #5b8cff; }
+.mg-doc .t { font-size: 12px; color: #8ea2d1; margin-bottom: 4px; }
+.mg-muted { color: #7d8fb9; font-size: 12px; }
+.mg-stat { display: flex; gap: 14px; font-size: 12px; color: #8ea2d1; flex-wrap: wrap; margin-top: 8px; }
+.mg-stat b { color: #dfe6f5; font-size: 16px; display: block; }
+.mg-side button { font: inherit; color: #dfe6f5; background: #111a33; border: 1px solid #2a3a66; border-radius: 8px; padding: 4px 10px; cursor: pointer; margin-right: 6px; }
+.mg-legend { position: absolute; left: 14px; bottom: 12px; display: flex; gap: 12px; font-size: 12px; color: #9fb0d6; background: rgba(10,16,34,.75); padding: 6px 10px; border-radius: 10px; border: 1px solid #1d2a4d; }
+.mg-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+.mg-banner { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); padding: 8px 16px; border-radius: 20px; background: rgba(255,196,77,.12); border: 1px solid rgba(255,196,77,.4); color: #ffd98a; font-size: 13px; z-index: 4; max-width: 70%; text-align: center; }
+.mg-help { position: absolute; right: 14px; bottom: 12px; font-size: 12px; color: #5f6f99; }
+/* 2026-11-14 23:20 EST：缩放滑块（右上角，显示百分比；滚轮缩放时跟着动）。 */
+.mg-zoom { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 6px; background: rgba(10,16,34,.85); border: 1px solid #1d2a4d; border-radius: 10px; padding: 4px 8px; color: #9fb0d6; font-size: 12px; z-index: 4; }
+.mg-zoom input[type=range] { width: 140px; accent-color: #4c8dff; }
+.mg-zoom b { min-width: 40px; text-align: right; color: #dbe5ff; font-weight: 600; }
+.mg-zoom button { background: #131d3a; color: #c9d4f0; border: 1px solid #2a3a66; border-radius: 6px; padding: 0 7px; cursor: pointer; line-height: 20px; }
+@media (max-width: 700px) { .mg-zoom input[type=range] { width: 80px; } }

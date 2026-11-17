@@ -1,0 +1,276 @@
+/**
+ * relay 接多个外部助手的离线测试（2026-11-16，按任务书 20261116_relay多助手和runs编译.md 第 2 步补）。
+ * 跑法：bun test src7/plugins/relay/Relay.test.ts（test:src7 跑 ./src7/plugins 时一起跑到）。
+ * 不起整个服务：用一个假的 ctx（内存库、假机器人、假会话），接口用真的 fastify inject 调；
+ * A 的 webhook 是本机临时起的假服务，只记收到几次。
+ * 查的是：前缀转给对的助手、回执和回信的署名、inbox 的 helper 筛选、webhook 只推配了的那个、
+ * 旧库补 helper 栏、helpers 写错 apply 抛错、chat 主动发挂到对的助手上。
+ */
+import { afterAll, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import type * as cordis from 'cordis';
+import fastify from 'fastify';
+import * as relayModule from './index.ts';
+
+/** 临时运行时目录。 */
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-relay-'));
+
+/** A 的假 webhook：记下收到的每一次。 */
+const hooks: Record<string, unknown>[] = [];
+const hookServer = Bun.serve({
+  port: 0,
+  hostname: '127.0.0.1',
+  async fetch(request) {
+    hooks.push(await request.json() as Record<string, unknown>);
+    return Response.json({ ok: true });
+  },
+});
+
+/** 测完要关的东西：假 webhook、relay 的定时器。 */
+const closers: (() => void)[] = [() => { void hookServer.stop(true); }];
+afterAll(() => {
+  for (const close of closers) close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+/** 两个助手：A 配了假 webhook，B 不配。 */
+const HELPERS = [
+  { name: 'A', prefixes: ['a '], webhook_url: `http://127.0.0.1:${String(hookServer.port)}/hook` },
+  { name: 'B', prefixes: ['b '] },
+];
+
+/** 测试机器人名：普通机器人（不是 relay 机器人），靠前缀转话。 */
+const BOT = '测试机器人';
+
+/** 一场假会话。 */
+interface FakeSession {
+  id: string;
+  row: {
+    id: string; bot: string; kind: string; parent?: string; state: string; channel?: string; address?: unknown;
+    customer?: string; messages: { role: string; content: unknown; timestamp: number }[];
+  };
+  run: () => Promise<void>;
+}
+
+/** 一套假的运行环境。 */
+interface World {
+  ctx: cordis.Context;
+  db: Database;
+  app: ReturnType<typeof fastify>;
+  sessions: Map<string, FakeSession>;
+  /** 每一步填进 request.answer 的话，按先后。 */
+  answers: string[];
+  /** 用户发一句话：走 bot/receive，再推那场会话一步；回这一步的回答。 */
+  say: (text: string, address?: unknown) => Promise<string>;
+}
+
+/**
+ * 搭一套假的 ctx。
+ * @param db 用哪个库（旧库测试先在里面建好老表）。
+ * @returns 假环境；还没 apply relay。
+ */
+function world(db = new Database(':memory:')): World {
+  const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
+  const sessions = new Map<string, FakeSession>();
+  const answers: string[] = [];
+  const app = fastify();
+  let serial = 0;
+
+  /** 推一步：照骨架的样子发 session/request，插件填了 answer 就记成 assistant。 */
+  const step = async (session: FakeSession): Promise<void> => {
+    session.row.state = 'running';
+    const request: { session: FakeSession; answer?: { content: { type: string; text: string }[] } } = { session };
+    for (const handler of handlers.get('session/request') ?? []) handler(request);
+    const said = request.answer?.content.map((part) => part.text).join('') ?? '';
+    answers.push(said);
+    session.row.messages.push({ role: 'assistant', content: request.answer?.content ?? [], timestamp: Date.now() });
+    session.row.state = 'done';
+    for (const handler of handlers.get('session/change') ?? []) handler(session);
+    await Promise.resolve();
+  };
+
+  const make = (options: { bot: string; kind: string; customer?: string }): FakeSession => {
+    serial += 1;
+    const id = `s${String(serial)}`;
+    const session: FakeSession = {
+      id,
+      row: { id, bot: options.bot, kind: options.kind, state: 'done', messages: [], ...(options.customer === undefined ? {} : { customer: options.customer }) },
+      run: () => step(session),
+    };
+    sessions.set(id, session);
+    return session;
+  };
+
+  const bot = { name: BOT, config: {} as Record<string, unknown>, hand: () => undefined };
+  const fake = {
+    resources: {
+      db,
+      root,
+      dir: (...parts: string[]): string => {
+        const full = path.join(root, ...parts);
+        fs.mkdirSync(full, { recursive: true });
+        return full;
+      },
+    },
+    tools: { register: () => undefined },
+    sessions: {
+      find: (where: { bot: string; kind: string; customer?: string }) => [...sessions.values()]
+        .filter((one) => one.row.bot === where.bot && one.row.kind === where.kind && one.row.customer === where.customer)
+        .map((one) => one.row),
+      create: make,
+      open: (id: string) => {
+        const found = sessions.get(id);
+        if (found === undefined) throw new Error(`没有这场会话：${id}`);
+        return found;
+      },
+    },
+    bots: {
+      list: () => [bot],
+      get: (name: string) => (name === BOT ? bot : undefined),
+      route: (session: FakeSession, origin: { channel?: string; address?: unknown }) => {
+        if (origin.channel !== undefined) session.row.channel = origin.channel;
+        if (origin.address !== undefined) session.row.address = origin.address;
+      },
+      say: () => undefined,
+    },
+    on: (name: string, handler: (...args: unknown[]) => void) => {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+    },
+    emit: () => undefined,
+    effect: (open: () => () => void) => {
+      closers.push(open());
+    },
+    get: (name: string) => (name === 'http' ? { app } : undefined),
+  };
+
+  const say = async (text: string, address: unknown = { chatId: 'oc_test', openId: 'ou_test' }): Promise<string> => {
+    const event: { bot: typeof bot; message: { text: string; address: unknown }; session?: FakeSession } = {
+      bot, message: { text, address },
+    };
+    for (const handler of handlers.get('bot/receive') ?? []) handler(event);
+    const session = event.session;
+    if (session === undefined) throw new Error('relay 没接这句话');
+    session.row.channel = 'feishu';
+    session.row.address = address;
+    session.row.messages.push({ role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() + serial });
+    await step(session);
+    return answers.at(-1) ?? '';
+  };
+
+  return { ctx: fake as unknown as cordis.Context, db, app, sessions, answers, say };
+}
+
+/** 等一会儿：webhook 是异步推的，回信送达是 setTimeout 0。 */
+const settle = (ms = 150): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 挂好 relay 的一套环境。 */
+async function ready(): Promise<World> {
+  const made = world();
+  made.db.exec('CREATE TABLE web_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT, channel TEXT, address TEXT)');
+  relayModule.apply(made.ctx, { helpers: HELPERS });
+  await made.app.ready();
+  closers.push(() => { void made.app.close(); });
+  return made;
+}
+
+describe('relay 接两个助手', () => {
+  test('发 b 你好：回执写 B，只进 B 的收件箱，不推 A 的 webhook；回“收到”署 B', async () => {
+    const made = await ready();
+    hooks.length = 0;
+
+    const receipt = await made.say('b 你好');
+    expect(receipt).toBe('已转给 B（#1），等回复。');
+
+    const forB = await made.app.inject({ method: 'GET', url: `/api/relay/inbox?helper=${encodeURIComponent('B')}` });
+    expect(forB.statusCode).toBe(200);
+    const listB = forB.json() as { items: { id: number; helper: string; text: string }[] };
+    expect(listB.items.map((item) => [item.id, item.helper])).toEqual([[1, 'B']]);
+    expect(listB.items[0]?.text).toBe('b 你好');
+
+    const forA = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=A' });
+    expect((forA.json() as { items: unknown[] }).items).toEqual([]);
+
+    await settle();
+    expect(hooks).toEqual([]);
+
+    //M 对照：发给 A 的确实会推到 A 的 webhook（证明上面的“没推”不是假 webhook 坏了）。
+    expect(await made.say('a 在吗')).toBe('已转给 A（#2），等回复。');
+    await settle();
+    expect(hooks.length).toBe(1);
+    expect(hooks[0]?.['id']).toBe(2);
+    expect(hooks[0]?.['text']).toBe('a 在吗');
+
+    //M B 回信：回给用户的话署 B。
+    const replied = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '收到' } });
+    expect(replied.statusCode).toBe(200);
+    expect((replied.json() as { item: { helper: string; state: string } }).item).toMatchObject({ helper: 'B', state: 'replied' });
+    await settle();
+    expect(made.answers.at(-1)).toBe('B：收到');
+  });
+
+  test('chat 加 helper: B 主动发：挂在 B 的收件上，不挂到 A 的', async () => {
+    const made = await ready();
+    const address = { chatId: 'oc_both', openId: 'ou_test' };
+
+    //M 这个聊天只有 A 的收件时：B 主动发要新开一条 B 的收件，不能挂到 A 的 #1 上。
+    expect(await made.say('a 第一句', address)).toBe('已转给 A（#1），等回复。');
+    made.db.query('INSERT INTO web_messages (bot, channel, address) VALUES (?, ?, ?)').run(BOT, 'feishu', JSON.stringify(address));
+    const first = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc_both', helper: 'B', text: 'B 主动说一句' } });
+    expect(first.statusCode).toBe(200);
+    const made1 = (first.json() as { item: { id: number; helper: string } }).item;
+    expect(made1.helper).toBe('B');
+    expect(made1.id).not.toBe(1);
+    await settle();
+    expect(made.answers.at(-1)).toBe('B：B 主动说一句');
+
+    //M 再发一条 B 的，再主动发：挂到 B 最近的那条，A 的 #1 还是没回。
+    const receipt = await made.say('b 第二句', address);
+    const bId = Number(/#(\d+)/u.exec(receipt)?.[1]);
+    const second = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc_both', helper: 'B', text: '又来' } });
+    expect((second.json() as { item: { id: number; helper: string } }).item).toMatchObject({ id: bId, helper: 'B' });
+
+    const forA = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=A' });
+    expect((forA.json() as { items: { id: number; state: string }[] }).items).toEqual([expect.objectContaining({ id: 1, state: 'pending' })]);
+
+    //M helper 写了不认识的名字：400。
+    const wrong = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc_both', helper: 'C', text: 'x' } });
+    expect(wrong.statusCode).toBe(400);
+  });
+});
+
+describe('relay 旧库和配置', () => {
+  test('旧库 relay_items 没有 helper 栏：启动补上，旧收件都归第一个助手', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE relay_items (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
+      + ' session_id TEXT NOT NULL, channel TEXT NOT NULL, address TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL,'
+      + " last_msg_at INTEGER, state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0, replied_at INTEGER)");
+    for (const text of ['旧的一句', '旧的两句']) {
+      db.query("INSERT INTO relay_items (bot, session_id, channel, address, text, at) VALUES (?, 's0', 'feishu', 'null', ?, 1)").run(BOT, text);
+    }
+    const made = world(db);
+    relayModule.apply(made.ctx, { helpers: HELPERS });
+
+    const columns = db.query('PRAGMA table_info(relay_items)').all() as { name: string }[];
+    expect(columns.some((column) => column.name === 'helper')).toBe(true);
+    const rows = db.query('SELECT helper FROM relay_items ORDER BY id').all() as { helper: string }[];
+    expect(rows.map((row) => row.helper)).toEqual(['A', 'A']);
+  });
+
+  test('helpers 没写、名字重复、前缀有空串：apply 抛错', () => {
+    const bad: unknown[] = [
+      undefined,
+      [],
+      [{ name: 'A', prefixes: ['a '] }, { name: 'A', prefixes: ['b '] }],
+      [{ name: 'A', prefixes: ['a ', ''] }],
+      [{ name: 'A', prefixes: ['  '] }],
+    ];
+    for (const helpers of bad) {
+      const made = world();
+      expect(() => relayModule.apply(made.ctx, helpers === undefined ? {} : { helpers })).toThrow();
+    }
+    expect(() => relayModule.apply(world().ctx, undefined)).toThrow();
+  });
+});

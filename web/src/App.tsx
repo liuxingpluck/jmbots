@@ -18,6 +18,7 @@ import * as search from './Search/SearchModal.tsx';
 import * as settings from './Settings/Settings.tsx';
 import * as tokenPrompt from './Settings/TokenPrompt.tsx';
 import * as theme from './Theme.ts';
+import * as privacy from './Privacy/Mask.tsx';
 
 
 /** antd 自己的文字用哪个语言包。 */
@@ -26,6 +27,7 @@ const ANTD_LOCALES = { 'zh-CN': zhCN, 'zh-TW': zhTW, en: enUS, fr: frFR };
 
 /** 整个网页。 */
 export function App(): react.JSX.Element {
+  const masked = privacy.useMask();
   /** 界面语言。 */
   const language = context.useUi((state) => state.language);
   /** 主题、右栏、设置。 */
@@ -84,7 +86,11 @@ export function App(): react.JSX.Element {
 
   return (
     <antd.ConfigProvider theme={theme.antdTheme(spec)} locale={ANTD_LOCALES[language]}>
+      <privacy.MaskBanner />
+      {/* //M 提示条只在演示打码开着时出现，开着才让出顶部 42 */}
+      <div style={{ height: '100%', paddingTop: masked ? 42 : 0, boxSizing: 'border-box' }}>
       <columns.Columns left={<botList.BotList />} center={<chat.ChatArea />} right={panelOpen ? <panel.RightPanel /> : null} />
+      </div>
       {settingsOpen && <settings.Settings />}
       <search.SearchModal />
       <newBot.NewBotModal />

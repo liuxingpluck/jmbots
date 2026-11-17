@@ -87,6 +87,23 @@ export interface ApprovalView {
   review: { what: string; risk: string; advice: string };
   /** 记下的时间，毫秒。 */
   createdAt: number;
+  /** 卡片数据（后端 src7/utils/Card.ts，飞书画的是同一份）；有就照它画，没有照上面几项画。 */
+  card?: CardView;
+}
+
+
+/** 一张卡片（审批、长跑提醒），和后端 src7/utils/Card.ts 的 CardData 一样。 */
+export interface CardView {
+  kind: 'approval' | 'long-run';
+  title: string;
+  reason: string;
+  items: { label: string; value: string; code?: boolean }[];
+  risk?: { level: 'low' | 'medium' | 'high'; text: string };
+  details?: { label: string; data: unknown };
+  buttons: { action: 'approve' | 'reject'; label: string; style: 'primary' | 'danger' | 'default' }[];
+  /** waiting 在等；approved、rejected 定了；ended 结束了（变灰，没按钮）。 */
+  state: 'waiting' | 'approved' | 'rejected' | 'ended';
+  result?: string;
 }
 
 
@@ -133,7 +150,7 @@ export interface ReplyView {
   /** 发出的时间，毫秒。 */
   at: number;
   /** 哪个会话回的。 */
-  session: { id: string; title: string; file: string };
+  session: { id: string; title: string; file: string; kind?: string };
   /** 回了什么（Markdown）。 */
   text: string;
   /** 回复里带的附件。 */
@@ -142,6 +159,10 @@ export interface ReplyView {
   generation: ReplyGeneration;
   /** 此句明确关联的来源消息及历史范围。 */
   association: ReplyAssociation;
+  /** 前台从收到消息到交出或自己说完，毫秒；旧回话可能没有。 */
+  frontMs?: number | null;
+  /** 后台从接手到这条回复，毫秒；没有后台或旧回话就没有。 */
+  workMs?: number | null;
 }
 
 
@@ -394,8 +415,14 @@ export interface MessageView {
   id: number;
   /** 哪个机器人的。 */
   bot: string;
-  /** 渠道：http，或 feishu:<应用 ID>。 */
+  /** 收件渠道：http、feishu 或 wechat。 */
   channel: string;
+  /** 发件人或对话标识。 */
+  peer: string;
+  /** 被回复的收件消息号。 */
+  reply_to: number | null;
+  /** 后端解析的引用摘要；原消息不存在时为 null。 */
+  replyTo: { id: number; peer: string; text: string } | null;
   /** 来源。 */
   source: string;
   /** 原话（附件是 @路径）。 */

@@ -1,67 +1,158 @@
 # src7：jmbots 第 7 版骨架
 
-**现在这里只有骨架：类型、函数签名、伪代码注释。函数体都是 `throw new Error('待实现')`。** 没有跑过。
-
-设计的来龙去脉在 `docs/src6开发/骨架_从零版_模块和流程.md`。
+进度、还没验证的地方，见 `docs/src6开发/骨架和插件_进度.md`。本目录的代码和这份说明不一样时，以代码为准。
 
 ## 一条规矩：骨架少之又少
 
-- 骨架是本目录里 `plugins/` 以外的文件，只留让一条消息走通的最少代码，要一眼读得懂。
+- 骨架是本目录里 `plugins/` 以外的文件，**只管一件事：一场会话怎么跑**，要一眼读得懂。
+- 骨架里没有机器人、渠道、前台、分派、工作区这些词，它们全在插件里。
+- **主线全是直接调用**，按 F12 能一路跳到实现；**事件只留给插件接进来**。
 - 各种业务功能都做成插件，以后也是往 `plugins/` 里加。给骨架加函数、加事件之前，先想能不能做成插件。
-- 校验、审核、安全这类非写不可的，放 `utils/`，骨架的模块里只留主线。
+- 外面进来的东西只校验一次：命令行参数、`config.yaml` 在 `utils/Checks.ts`；模型给工具的参数在 `Tools.execute`；插件的配置在插件自己的 `apply`。别处不再查。
 
 ## 文件
 
 ```text
 src7/
-  Main.ts            入口：挂骨架 → 照 config.yaml 的 plugins 挂插件 → 接着跑没跑完的会话
-  Resources.ts       资源：文件夹、数据库、配置、pi 的供应商、系统提示词
-  Bots.ts            机器人：收消息放进默认对话、交办、喊停
-  Sessions.ts        会话：记录 + 循环。最重要的一个文件，六个事件都在这里声明
+  Main.ts            入口：挂骨架 → 照 config.yaml 的 plugins 挂插件 → 发 ready → 接着跑没跑完的会话
+  Resources.ts       资源：config.yaml、数据库、pi 的供应商、运行时目录下的文件夹
+  Sessions.ts        会话：一份记录 + 一个循环。最重要的一个文件
   Tools.ts           工具：登记、报清单、执行
   Chat.ts            一个函数 chat()：用 pi 发一次模型请求
-  Channel.ts         渠道基类
   utils/
-    Checks.ts        校验：命令行参数、config.yaml、别人写的插件
+    Checks.ts        校验：命令行参数、config.yaml
+    Text.ts          小工具：把抛出来的错收成一句话
     Trace.ts         跟踪点长什么样
+    Mime.ts          按扩展名认文件类型（网页、文件接口共用）
+    Cut.ts           长文字截断：从头留、从尾留（最多 2000 行、50KB），按字数截
+    Workspace.ts     工作区里的相对路径换成绝对路径，出了工作区就报错
+    Names.ts         安全文件名、20 位时刻号（生图、留言、命令窗口共用）
+    Card.ts          卡片数据：审批卡片、长跑提醒卡片共用（网页、飞书照同一份画）
   plugins/
-    Index.ts         插件的约定，和自带插件的名单
+    Index.ts         插件的约定，和自带插件的名单（分类和每个插件提供什么、用了谁见 docs/插件地图.md）
+    —— 骨架配套 ——
+    bots/            机器人：名单、收消息、把事交给后台会话；渠道基类 Channel.ts 也在这里
+    prompt/          系统提示词：按会话种类给一段，加上记忆
+    summary/         总结：干活的会话做完一轮，开一场小会话给它写一句总结
+    compress/        压缩：干活的会话太长时，开一场小会话把前面的压成摘要
+    fake-model/      假模型：不发请求，离线跑通链路用
+    —— HTTP 底座和网页 ——
+    http/            HTTP 服务（Fastify）：端口读 server.port，本机免令牌，外部要令牌
+    web/             网页：把 dist/web 的页面发给浏览器
+    —— 渠道 ——
     cli/             命令行渠道
-    base-tools/      自带工具：read、list_dir、write、summary
-    default-dialog/  默认对话的本事：往来记录、最近 50 条当背景、看会话、交办、喊停
-    compress/        压缩：会话里嵌一场小会话
+    web-api/         网页要的接口：机器人、会话、发话、停止、换模型、追溯
+    feishu/          飞书渠道：收发消息、图片文件、卡片（待确认、进度）、飞书文档、发件箱，内部分子文件夹
+    wechat/          微信渠道（积木客服改写）：只读引擎轮询监听会话的新消息，每个客户一场前台会话（wechat:<会话>）；回话自动发或经待确认卡片发；客服页 /wechat/
+    —— 前台和分派 ——
+    bot-front-desk/  机器人的前台：所有消息先到它这儿，简单的自己答，复杂的转给后台会话
+    relay/           转话渠道：bots 里写 relay: direct 的机器人不调模型，把话写进收件箱交给外部助手（jm开发），回信再送回原渠道
+    —— 给模型的工具 ——
+    base-tools/      自带工具：time、read、list_dir、write
+    file-tools/      文件工具：edit（按原文替换，引号空白宽松匹配）、find（按名字、内容找）
+    exec/            exec 工具：跑 shell 命令，先审核；点停止会把整棵进程树结束
+    web-search/      web_search 工具：按顶层 search 段一家一家试，点停止就断开请求
+    image-gen/       image_generate 工具：调生图接口，图存进工作区，点停止就断开
+    reply-tool/      reply 工具：后台会话做到一半先回用户一句
+    note-claude/     note_claude 工具：给 Claude 留言（integrations/claude/inbox/ 下一个 md）
+    agent-tasks/     外部 AI 任务通道：agent_task 工具，外部 AI 来领活、交结果的 7 个接口
+    assist/          助手体验：react、ask、todo 三个工具，加一段回话规范；/api/assist
+    —— 审核和流程 ——
+    approval/        待确认：命令审核（规则 → decision → 审核小会话 → 问用户），GET/POST /api/approvals，认“同意 N / 拒绝 N”
+    decision/        决策模型：一个或几个模型同时打分，合成放行 / 拒绝 / 拿不准（approval、progress 可选地用）
+    progress/        进度和限时：到点问 decision 延不延、收尾、超时记 overtime.jsonl；GET/POST /api/progress
+    review/          复盘：挑一场超时的会话写复盘，经待确认，同意了存进 memory/复盘/
+    runs/            命令窗口：POST /api/run 不经模型直接跑命令（先审），列、查、看输出、停下
+    notify/          通知：待确认、长任务结束转到基地 toast；notify_user 工具
+    —— 模型 ——
+    model-catalog/   模型目录：从供应商拉模型清单、价格，网页换模型用
+    model-fallback/  换模型：限流、超长时换着试，按模型、供应商排队；写在最后
+    context-fit/     发给模型前，超过上下文窗口就只留最近几段
+    —— 记忆和知识 ——
+    memory/          memory 工具（自己的、公共的记忆）；后台会话开头先搜一遍记忆和技能；配了基地就定时让它更新库的索引
+                     客服记忆库（Store.ts、Backend.ts）：聊天记录按客户/会话/机器人、知识库按段，结果带来源引用；检索后端可换（本地 SQLite / 外部服务）
+    memory-graph/    记忆关系图：页面 /graph/（React），接口 /api/memory-graph/*
+    skills/          技能：清单放进后台会话的系统提示词，skill 工具只读技能文件
+    —— 管理接口 ——
+    settings/        设置页：GET/PUT /api/settings（密钥遮住）、POST /api/bots 新建机器人、立即重启
+    files-api/       文件接口：上传、看文件、列目录
+    base-bridge/     基地转发：/api/update、/api/autostart、/api/memory/*、/api/rag/* 转给 engine.index_url
+    update-watch/    盯基地的新版本：登记待确认，同意了叫基地去换，下一次报结果
+    desktop/         窗口操控：/api/desktop/status、/api/desktop/action，调 AOBW 能力程序
+    —— 记录和调试 ——
     trace/           打印：一条消息走过哪些模块、哪些函数、哪些事件
+    journal/         事件日志：各插件的事件记进 journal_events 表，GET /api/events 查；每场会话写一份 对话.md
+    usage/           用量：每次模型请求记进 model_usage 表，GET /api/usage 按天、按模型汇总
+    files-mirror/    会话镜像：bots/<机器人>/sessions/<会话>/对话.md 和 session.json
 ```
 
-每个插件是一个文件夹，入口是它里面的 `index.ts`。
+依赖：骨架是 `resources` ← `tools` ← `sessions`；插件里 `bots` 用骨架，渠道、前台、自带工具、提示词用 `bots`。
 
-## 谁依赖谁
+骨架 5 个文件不算注释和空行约 465 行，`utils/` 约 115 行。
+
+## 一条消息怎么走
+
+缩进表示“在它里面又调了谁”。带 ★ 的是事件，别的都是直接调用。
 
 ```text
-resources ← tools
-resources ← sessions（还直接调 Chat.ts 的 chat()）
-resources、sessions ← bots
-bots ← 渠道（Channel 的子类）
+—— 插件 bots 里 ——
+Channel.receive(机器人, 话)                 渠道收到一句话，自己存一份
+  Bot.receive(消息)                         定好进哪场会话就返回，不等模型
+    问：这条消息进哪场会话                   ★ bot/receive（前台 bot-front-desk 答：进这个机器人的前台对话，没有就开一场）
+    记下回话往哪个渠道送；session.add(话)    话先排着
+—— 下面是骨架 ——
+    session.run()                           已经在转就直接返回
+      状态改成 running                       ★ session/change
+      一步一步走，最多 engine.max_rounds 步：
+        排着的话接进对话                     ★ session/message
+        备好这一步的请求：模型、思考档、tools.list(种类)、对话的副本
+        请求交给插件挨个改                   ★ session/request（提示词、最近往来、压缩、假模型）
+        回答 = chat(请求)                    插件已经给了回答就不发
+        回答接进对话                         ★ session/message
+        模型没要工具 → 状态改成 done，它说的就是回话      ★ session/change → 渠道 send(回话)
+        模型要了工具 → 一个个 tools.execute(调用)：
+            先问把关的人                     ★ session/before-tool
+            照工具的定义校验参数 → 执行
+          结果接进对话                       ★ session/message
 ```
 
 ## 事件
 
-六个干活的事件全是会话发的，外加一个跟踪点。
+骨架发的：
 
 | 事件 | 怎么发 | 什么时候 | 响应的人干什么 |
 |---|---|---|---|
-| `session/prompt` | 挨个问 | 每一步 | 往 `parts` 里加系统提示词的段落 |
-| `session/tools` | 挨个问 | 每一步 | 往 `tools` 里加自己的工具（清单里已经有就不加） |
-| `session/context` | 挨个问 | 每一步，发请求之前 | 改 `messages`：压缩、检索、给默认对话拼最近往来 |
-| `session/before-calls` | 挨个问 | 模型要了工具，执行之前 | 把关：给某一项直接填上“未执行：理由”，或者把会话改成等用户点头 |
-| `session/calls` | 挨个问 | 把关之后 | 执行自己的工具，把结果填进 `calls[i].result` |
-| `session/change` | 通知 | 会话每次变化 | 渠道回话；记往来；将来的界面、流水。工具执行完的结果也从这里看 |
+| `session/request` | 挨个问 | 每一步调模型之前 | 改这一步的请求：往 `system` 里加提示词；换掉 `messages`（压缩、检索、拼最近往来）；改 `tools`、`model`、`thinking`；直接填 `answer`（假模型） |
+| `session/before-tool` | 挨个问 | 每个工具执行之前 | 把关：不让执行的，在 `gate.deny` 里写上理由 |
+| `session/message` | 通知 | 对话里新接了一条 | 记往来；将来的界面、流水 |
+| `session/change` | 通知 | 状态变了 | 渠道回话；记往来；写总结 |
+| `ready` | 通知 | 骨架和插件都挂完了 | 命令行渠道这时候才把命令行里带的那句话发出去 |
 | `trace` | 通知 | 骨架和插件走到关键的地方 | 打印插件打一行 |
 
+插件 `bots` 发的（不是骨架的事件）：
+
+| 事件 | 怎么发 | 什么时候 | 响应的人干什么 |
+|---|---|---|---|
+| `bot/receive` | 挨个问 | 机器人收到一条消息 | 管分派的插件把 `event.session` 填上：这条消息进哪场会话。前面已经有人填了，后面的不要再填。没人填，机器人抛错 |
+
 - **挨个问**：照插件挂上去的先后一个个 `await`，每个插件都会被问到，后面的看得到前面改的。实现用 `ctx.serial`，所以监听的函数不许有返回值；有了返回值，Cordis 就不再问后面的人了。
-- **通知**：只是告诉大家，谁也不许靠它改流程。`session/change` 用 `ctx.parallel`（等大家办完）；`trace` 用 `ctx.emit`（不等）。
-- **执行工具前有事件，执行后没有单独的事件**。执行前要能拦，而且不能靠“审核插件碰巧挂在工具模块前面”来保证，所以单开一个 `session/before-calls`。执行后只是看结果，`session/change` 里已经带着刚接进对话的工具结果。
-- 调模型不走事件，会话直接调 `chat()`。启动、喊停是方法（`Session.run()`、`Session.stop()`），不是事件。
+- **通知**：`ctx.emit`，只是告诉大家，不等，谁也不许靠它改流程。
+
+## 会话
+
+- 一场会话的记录是 `session.row`（`SessionRow`），在内存里；每次接消息、改状态都存进库里的一行。
+- 骨架的记录里只有循环要用的几项：会话号、种类、嵌在哪场里、模型、思考档、状态、回话、对话、存库时间。
+- **插件要往会话上记自己的东西，自己声明**：在插件文件里用 `declare module '../../Sessions.ts'` 给 `SessionRow` 加项，不用改骨架，存库时一起存。现在 `bots` 加了 `bot`（属于哪个机器人）、`channel`（回话往哪个渠道送），`summary` 加了 `summary`（一句总结）。
+- 找会话用 `sessions.find({ … })`：给的几项都相等的那些，插件加的项也能用，比如 `find({ bot: '助手', kind: 'work' })`。它交回的记录不带对话；要对话就 `sessions.open(会话号)`。
+- 开一场小会话问一次用 `sessions.ask({ bot, kind, parent, model, thinking, text, signal })` → `{ ok, reply }`：create → add → run 连起来，`signal` 断了小会话也停。审批、压缩、总结、复盘、进度收尾、判断都用它。
+- 状态四种：`running` 正在转；`done` 做完了；`stopped` 停下了（有人喊停，或者到了最多几步）；`failed` 出错了。
+- 一轮结束时，`row.reply` 就是要回给用户的话：做完了是模型最后那句，出错、停下是原因。渠道只管把它发出去。
+- 种类 `row.kind`：骨架不解释它，只拿它去对工具登记时写的 `kinds`。现在有 `front`（前台对话）、`work`（后台干活的会话）、`compress` 和 `summary`（嵌在别的会话里的小会话）。小会话没有渠道，所以没人给它回话。
+- 正在转的时候又来一句话：先排着，循环下一步开头接进对话（不会插在模型的回答和工具结果中间）。来得太晚、这一轮已经收尾了，就紧接着再转一轮。
+- 喊停 `session.stop(谁)`：状态改成 `stopped`，正在等的模型请求马上掐断；正在跑的那个工具拿到同一个停止信号，慢的马上断开、记成“已停止”（不算出错，做了的不回滚），快的照常做完；后面的记“未执行：停下来了”。
+- 喊停后慢工具还在收尾时又来一句话：先排着，这一轮收尾后紧接着转，不用等下一句话。
+- 模型请求出错：`chat()` 里照 `engine.retry` 重试，试够了还不成，这一轮就是 `failed`。工具出错不算会话出错，原因当成工具结果给模型看。
+- 重启：入口把库里还是 `running` 的会话各调一次 `run()`，从存下来的对话接着走。
 
 ## 插件
 
@@ -78,83 +169,118 @@ export const inject = ['tools'];
 
 /** 挂上时调一次：在这里听事件、登记工具、起渠道。 */
 export function apply(ctx: Context, config: unknown): void {
-  // ctx.on('session/context', (event) => { … });
-  // ctx.tools.register({ … });
+  // ctx.on('session/request', (request) => { request.system.push('……'); });
+  // ctx.tools.register({ definition, kinds: ['work'], run: (args, session, signal) => '……' });
 }
 ```
 
-- 这和 Cordis、DSH 的插件约定是同一套（DSH 的第三方插件也是导出 `name`、`inject`、`apply`）。
-- 拔掉插件时不用自己收拾：通过 `ctx` 登记的监听和工具会自动撤掉。
+- 这和 Cordis、DSH 的插件约定是同一套。拔掉插件时不用自己收拾：通过 `ctx` 登记的监听和工具会自动撤掉。
 - 业务代码照旧写成 class，`apply` 里 `new` 出来就行，看 `plugins/cli/index.ts`。
-- 插件能做的事只有三样：听上面的事件；调 `ctx.tools.register()` 登记工具；做一个新渠道（自带的继承 `Channel`）。
+- 工具的停止信号：`run(args, session, signal)` 的第三个参数是 `AbortSignal`，网页、飞书点停止时触发。要等很久的工具（搜索、生图、`exec`、子任务）把它交给 `fetch(url, { signal })`、`spawn(cmd, { signal })`，或者 `signal.addEventListener('abort', …)` 自己断开并抛错；骨架把这时抛的错记成“已停止”。写文件、替换文字这类快工具不用管它，老工具不写第三个参数也行。
+- 插件能做的事：听上面的事件；调 `ctx.tools.register()` 登记工具；做一个新渠道（自带的继承 `plugins/bots/Channel.ts`）；开一场小会话再问一次模型（看 `plugins/summary/index.ts`）；给会话的记录加自己的项；自己提供一个服务给别的插件用（看 `plugins/bots/index.ts`）。
+- 插件要读 `config.yaml` 里不在 `plugins` 段的东西（`bots`、`channels`、`server`……），从 `ctx.resources.raw` 拿整份配置，自己校验一次。里面有密钥，不许打印。
 
 ### 加一个自带的
 
 1. 在 `plugins/` 下新建一个文件夹，里面写 `index.ts`。
-2. 在 `plugins/Index.ts` 的名单里加一行。发版是编译成单文件，磁盘上没有这些文件夹，所以自带的要静态 import 这一次。
+2. 在 `plugins/Index.ts` 的名单里加一行。
 3. 在 `config.yaml` 的 `plugins` 段写上它的名字。
 
 ### 接一个别人写的
 
-不用改 jmbots 的代码：
-
-1. 别人把插件做成一个文件夹，里面有 `index.ts`，或者编译好的 `index.js`，导出上面那三样。
-2. 把文件夹放到运行时目录的 `plugins/` 下，放别处也行。
-3. 在 `config.yaml` 的 `plugins` 段加一项，`name` 写文件夹路径。
+不用改 jmbots 的代码：把插件文件夹（里面有 `index.ts` 或编译好的 `index.js`）放到运行时目录的 `plugins/` 下，在 `config.yaml` 的 `plugins` 段加一项，`name` 写文件夹路径。
 
 写插件的人要知道：
 
-- 只用传进来的 `ctx`，**不要自己 `import 'cordis'`**。发版以后 jmbots 是一个单文件程序，插件自己装的 cordis 和程序里的不是同一份。要类型就用 `import type`，运行时会被去掉。DSH 的第三方插件也是这么做的。
-- 要用别的 npm 包，自己先用 `bun build` 打成一个 `index.js`，把依赖打进去。
-- 外部的渠道插件不继承 `Channel`（它在程序里面，外面 import 不到），自己调 `ctx.bots.get(机器人).receive(消息)` 送进来、听 `session/change` 回话。
-- **还没验证**：编译成单文件的 jmbots 能不能在运行时 `import()` 磁盘上的 `index.ts`。第一次接外部插件时，先在 Windows 上用编译版试一个最小的插件。
+- 只用传进来的 `ctx`，**不要自己 `import 'cordis'`**，要类型就用 `import type`。发版以后 jmbots 是单文件程序，插件自己装的 cordis 和程序里的不是同一份。
+- 要用别的 npm 包，自己先用 `bun build` 打成一个 `index.js`。
+- 外部的渠道插件不继承渠道基类，自己调 `ctx.bots.get(机器人).receive(消息)` 送进来、听 `session/change` 回话。
+- **还没验证**：编译成单文件的 jmbots 能不能在运行时 `import()` 磁盘上的 `index.ts`。
 
 ### config.yaml 怎么写
 
 ```yaml
 plugins:
+  - name: boot-trail             # 记这次启动走过的路，给 /flow/ 的“看启动”。一定写在第一个
+  - name: bots                   # 机器人。要写在用它的插件前面
+    config: { thinking: medium } # 后台会话的思考档
   - name: cli
+  - name: prompt
   - name: base-tools
-  - name: default-dialog
-    config: { recent: 50 }
+  - name: summary
   - name: compress
     config: { at: 200000, keep: 6 }
-  - name: trace
-    disabled: true               # 想看执行路径时改成 false
-  - name: ./plugins/weather      # 别人写的：以 . 开头的是文件夹路径，从 config.yaml 所在的目录算；也可以写绝对路径
+  - name: trace                  # 想看一条消息走过的路时挂上
+  - name: fake-model             # 假模型：只管模型名以 fake/ 开头的会话，别的会话照常发给真模型
+  - name: http                   # HTTP 服务：端口写在顶层 server.port，不写就报错
+  - name: web                    # 网页，要写在 http 后面
+  - name: web-api                # 网页要的接口
+  - name: files-api              # 文件接口
+  - name: model-catalog          # 模型目录
+  - name: relay                  # 转话给外部助手：写在 http、fake-model 后面，bot-front-desk 前面
+    config: { remind_minutes: 15, expire_minutes: 120 }
+  - name: bot-front-desk         # 机器人的前台：写在 relay 后面
+    config: { recent: 50 }
+  - name: journal                # 事件日志：保留天数读顶层 events.keep_days（默认 30）
+  - name: approval               # 待确认、命令审核；网页轮询 /api/approvals，挂 web-api 的就要挂它
+    config: { model: magpie/某模型, thinking: low, decision_pass: 0.2 }   # model 不写用 default_model
+  - name: exec                   # exec 工具，要写在 approval 后面；读顶层 paths 段（runtimes、program）
+  - name: file-tools             # edit、find 工具
+  - name: web-search             # web_search 工具：搜索供应商写在顶层 search 段
+  - name: usage                  # 用量，GET /api/usage
+  - name: settings               # 设置页接口，要写在 http 后面
+  - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 feishu 段
+  - name: memory                 # memory 工具、开头先搜记忆和技能；读 engine.index_url、engine.memory_libs
+  - name: skills                 # 技能清单、skill 工具
+  - name: context-fit            # 写在 compress 后面
+    config: { keep: 6, ratio: 0.9 }
+  - name: files-mirror           # 会话镜像：对话.md、session.json（挂了它 journal 就不写对话.md）
+  - name: progress               # 进度和限时：写在 bot-front-desk、compress 后面；读 engine.limit_* 几项
+  - name: review                 # 超时复盘：写在 progress、approval 后面
+  - name: decision               # 决策模型：配置在顶层 decision 段（models、combine、allow_at、deny_at、timeout_ms）
+  - name: runs                   # 命令窗口：写在 exec 后面
+  - name: agent-tasks            # 外部 AI 任务通道
+  - name: image-gen              # 生图：读 engine.image_model
+  - name: reply-tool             # reply 工具
+  - name: note-claude            # note_claude 工具
+  - name: base-bridge            # 基地转发：读 engine.index_url
+  - name: update-watch           # 盯基地的新版本：读 engine.index_url
+  - name: desktop                # 窗口操控
+  - name: wechat                 # 微信渠道和客服页 /wechat/：写在 bot-front-desk 后面
+    config: { bot: 助手 }
+  - name: model-fallback         # 换模型、排队：写在所有往系统提示词加东西的插件和 fake-model 后面，一般放最后
+  - name: ./plugins/weather      # 别人写的：文件夹路径，相对路径从运行时目录算
     config: { city: 上海 }
 ```
 
-- 照写的先后挂；先后也就是“挨个问”时的先后。
-- 不写 `plugins` 段时，挂 `cli`、`base-tools`、`default-dialog` 三个。
-- 写法照 DSH 的 `cordis.yml`：一项一个插件，`name` 是名字或路径，`config` 是给它的配置，`disabled: true` 是先不挂。
+- 照写的先后挂；这个先后也是 `session/request` 挨个问的先后。
+- 不写 `plugins` 段时，挂 `bots`、`cli`、`prompt`、`base-tools`、`bot-front-desk`、`summary` 六个。
+- `disabled: true` 是先不挂。找不到、起不来的插件打一行原因，不挡别的插件。
+- 一个插件要用的服务没人提供（比如没挂 `bots`），它会一直等着不开工；入口挂完以后会打一行“插件 X 没开工：它要用的 Y 没人提供”。`bots` 写在用它的插件后面也能跑（试过），但先后会乱，还是写在最前面。
+- 没挂管分派的插件（`bot-front-desk`）时，机器人收到消息会报“没有插件管分派”。
+
+骨架自己读的配置：`providers`、`default_model`、`plugins`，和 `engine` 里的 `max_rounds`（一轮最多几步，默认 30）、`thinking`（新会话的思考档，默认 low）、`retry: { times, wait_ms, timeout_ms }`（默认 5、3000、120000）。顶层的 `bots` 名单是插件 `bots` 读的，不写就是一个叫“助手”的机器人。
 
 ## 打印：看一条消息走过的路
 
-挂上 `trace` 插件，控制台上就能看到一条消息从头到尾走过的路，一步一行：
+挂上 `trace` 插件，控制台上一步一行。两种行，开头的字不一样，颜色也不一样：
+
+- **函数**（青色）：代码一行行往下走到了哪。骨架和插件在关键的地方发一个跟踪点，这里打一行。
+- **事件**（黄色）：发了哪个事件、现在有哪些插件在听。Cordis 每发一个事件都会自己报一声，不用谁去发。
 
 ```text
-13:05:02.101 [      ] Channel.receive │ 渠道收到一句话，存下来，推给机器人 │ bots.get(bot).receive(message) │ 渠道=cli 机器人=周小灵 字数=14
-13:05:02.103 [482913] Bots.receive │ 机器人收到一条消息，放进默认对话 │ defaultOf(name).add('user', text, channel)
-13:05:02.110 ⟶ session/prompt（serial）听的人：resources
-13:05:02.112 ⟶ session/context（serial）听的人：default-dialog、compress
-13:05:02.115 [482913] Sessions.run │ 第 1 步：调模型 │ chat(request) │ step=1 对话=3 工具=6
+16:43:58.553 函数 Channel.receive │ 渠道收到一句话，存下来，推给机器人 │ bot.receive(message) │ 渠道=cli 机器人=助手 字数=5 │ src7/plugins/bots/Channel.ts:48
+16:43:58.555 事件 bot/receive（挨个问）听的人：bot-front-desk │ src7/plugins/bots/index.ts:156
+16:43:58.559 函数 Bot.receive │ 消息交给这场会话，推它往下走 │ session.add(); session.run() │ 会话=2576b7eb 渠道=cli 字数=5 │ src7/plugins/bots/index.ts:164
+16:43:58.562 事件 session/change（通知）听的人：cli、bot-front-desk、summary │ 会话=2576b7eb 状态=running 回话= │ src7/Sessions.ts:350
+16:43:58.569 事件 session/request（挨个问）听的人：prompt、bot-front-desk、fake-model │ 会话=2576b7eb │ src7/Sessions.ts:261
+16:43:58.571 函数 Session.loop │ 调模型 │ chat(resources, request) │ 会话=2576b7eb 第几步=1 模型=… 对话几条=1 │ src7/Sessions.ts:266
 ```
 
-- 每一行：时间、会话号、哪个模块或插件的哪个函数、在响应哪个事件、一句人话、一句代码、关键变量。
-- 骨架和插件在关键的地方各发一个跟踪点：`this.ctx.emit('trace', { module, fn, text, code, vars })`，类型在 `utils/Trace.ts`。伪代码里 `//T` 开头的一行就是这里要发一个。
-- 每发一个事件，打印插件还会打一行：事件名、怎么发的、现在有哪些插件在听。这一行不用谁去发，Cordis 自己会报。
-- 它只看不改。拔掉它，骨架照常跑，只是不打印。
-
-## 类型检查
-
-在仓库根目录跑：
-
-```text
-node node_modules/typescript/bin/tsc -p tsconfig.src7.json --pretty false --noEmit --incremental false
-```
-
-共享目录上大约 3 分钟。**不要把 `src7/**/*.ts` 并进根目录的 `tsconfig.json` 或 `tsconfig.check.json`**：src7 和 src6 都在扩充 cordis 的 `Context`、`Events`（比如两边都有 `ctx.bots`，类型不同），合在一起会打架。`npm run typecheck` 暂时还不覆盖 src7。
+- 函数那种行：模块.函数 │ 一句人话 │ 一句代码 │ 关键变量。一个跟踪点两行代码，`//T` 开头的注释标出来，写法见 `utils/Trace.ts`。
+- 事件那种行：事件名（怎么发的）听的人，照挂上去的先后；会话的三个事件还顺带打出带着什么。“挨个问”“通知”就是上面「事件」一节说的两种发法。
+- **每行最后是“文件:行号”**：哪一行代码发的这个跟踪点、这个事件。它是打印插件从调用栈里自动找的，发的人不用写。在 VS Code 的终端里按住 Ctrl 点它，能跳到那一行。
+- 它只看不改。拔掉它，骨架照常跑。
 
 ## 怎么跑
 
@@ -163,20 +289,23 @@ bun src7/Main.ts [--data 运行时目录] [--bot 机器人] 现在几点了
 ```
 
 - 不写 `--data` 时，运行时目录是 `src7/jmbotsData/`（程序旁边）。里面要有 `config.yaml`。
-- Windows 上用：`D:\dev\nodejsnpm\node_modules\bun\bin\bun.exe src7/Main.ts --data <运行时目录> 现在几点了`
+- 命令行渠道只做一件事：把命令行里带的那句话发出去，所有会话都停下来就退出。它不从键盘读输入；要一问一答地聊，以后另写专门的插件。
+- 用哪个模型只看 `default_model`（已经开了的会话看它自己记的 `model`）。写的是真模型，就发给真模型。
+- 离线跑：`plugins` 段里挂上 `fake-model`，`providers` 里加一家叫 `fake` 的（`base_url` 随便写，不会去连），`default_model` 写成 `fake/fake`。假模型第一步要调用 `time` 工具，第二步回一句“现在是……”。模型名不是 `fake/` 开头的会话，它不管。
+- 离线测交办：话写成“调用 工具名 {JSON 参数}”，假模型就去调那个工具。比如 `bun src7/Main.ts --data 目录 "调用 hand_session {\"text\":\"帮我看看现在几点\"}"`，能看到前台转给后台会话、后台回话、写总结。
+- **表结构改过**：以前跑出来的 `data/jmbots7.db`（连同 `-wal`、`-shm`）要先删掉，不然会报 `no such column: meta`。
+- 类型检查（在仓库根目录，共享目录上大约 3 分钟）：
 
-### 离线假模型（开发机连不到模型 API 时）
+```text
+node node_modules/typescript/bin/tsc -p tsconfig.src7.json --pretty false --noEmit --incremental false
+```
 
-在运行时目录的 `config.yaml` 里写一家名叫 `fake`、地址 `fake://` 的供应商，并把 `default_model` 写成 `fake/fake`。也可以设环境变量 `JMBOTS_FAKE=1`（不改配置，所有请求都走假模型）。
-
-假模型不发 HTTP：第一步返回调用 `time` 工具，第二步根据工具结果回一句“现在是 …”。用来在 130 上离线跑通“渠道 → 机器人 → 会话 → 工具 → 回话”这条最短链路。真模型请在能上网的 Windows 上跑。
-
-想看一条消息走过的路，在 `plugins` 段加上 `trace`（不要写 `disabled: true`）。
+不要把 `src7/**/*.ts` 并进根目录的 `tsconfig.json`：src7 和 src6 都在扩充 cordis 的 `Context`、`Events`，合在一起会打架。
 
 ## 给写代码的 AI
 
-- 照每个函数上面的伪代码写，一行伪代码对应一小段代码。`//M` 是主线，`//G` 是守卫，`//T` 是跟踪点。
-- 名字、参数、返回值不要改；要改先改 `docs/src6开发/骨架_从零版_模块和流程.md`。
-- 不要加文档里没有的函数、事件、校验、兜底。外部输入的校验都在 `utils/Checks.ts`，各自只查一次；插件收到的配置由插件自己在 `apply` 里查一次。
+- `//M` 是主线，`//G` 是守卫，`//T` 是跟踪点。
+- 骨架里不加兜底、不加重复的校验、不加转发层。要加功能就写成插件。**给骨架加事件、加函数，必须先跟用户说清楚、等他明确点头**，不能自己拿主意。
+- `if` 里只有一句 `return` 的写成一行、不加大括号，后面空一行；上下两段不同的事之间用空行隔开。
 - 代码约定见根目录 `CLAUDE.md` 和 `docs/TypeScript书写规范.md`。
 - 不照 `src/`、`src6/` 抄；它们只是参考。

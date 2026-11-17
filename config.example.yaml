@@ -35,6 +35,7 @@ models:
 bots:
   - name: 助手
     language: zh
+    # relay: direct              # 挂了 relay 插件才认：direct 话全部转给外部助手；model 模型自己判断，用 relay_send 转；按群分的写在 feishu 插件的 groups 里
 
 engine:
   poll_ms: 300           # 机器人循环多久看一次新消息
@@ -42,10 +43,11 @@ engine:
   compress_at: 200000    # 上下文到多少 token 就考虑压缩（模型上限不到 250K 时用上限的 80%）
   exec_pass: 0.2         # exec 审核：决策模型给的“安全”概率不低于它就直接执行
   # vision_model: 供应商名/模型 ID            # 看不了图的模型读到图片时，先交给它转成文字；不写就不转
-  # index_url: http://127.0.0.1:30090           # 基地的接口（记忆搜索、RAG）；不写就只搜自己的记忆、公共记忆和技能
+  # index_url: http://127.0.0.1:30085           # 基地的接口（记忆搜索、RAG）；不写就只搜自己的记忆、公共记忆和技能
   # memory_libs: memory,aiskills                # memory 工具还用 RAG 搜基地里的哪些库，逗号连着写；每半小时让基地增量更新这些库的索引；不写就不搜
   # wrapup_model: 供应商名/模型 ID            # 限时到点时写收尾总结的模型（不带工具、最低思考档）；不写用会话自己的模型
-  # limit_default_minutes: 20          # 限时（docs/界面/03 第 2.1 节）：不选的时候最长做多少分钟（用户 11-06：最长 20 分钟）
+  # limit_default_minutes: 0           # src7 progress：不选的时候最长做多少分钟；0 = 不限时（用户 11-14：不点就一直做，不自动停）。0.4 默认 20
+  # long_run_card_minutes: 15          # src7 progress：一轮跑满几分钟发卡片问要不要终止（点“终止”才停，“继续”或不点一直做）；0 不发；测试可写小数
   # limit_remind_before_minutes: 10    # 不选的时候，到点前多少分钟开始介入、报时（第 10 分钟）；选了 15、20 的提前 5 分钟
   # limit_extend_minutes: 5            # 到点判断快做完了，一次延长几分钟
   # limit_extend_times: 2              # 最多延长几次
@@ -85,9 +87,12 @@ server:
   port: 30086
   token: ''
 
-# 本地壳子（local/ 编出来的 jmbots.exe：窗口、托盘、命令行；记忆搜索和 RAG 接口，取代独立的 memorycli 服务）。不写全用默认值。
-# local:
-#   port: 30090        # 壳子的 HTTP 接口，一律监听 0.0.0.0；engine.index_url 指到这里
+# 本地壳子（local/ 编出来的 jmbots.exe：只管启动 jmbots-server、自动更新、退出时带走所有子进程）。不写全用默认值。
+# 以前叫 local:，现在写 shell:（两个都写时 shell 为准）；local.services 已去掉，记忆服务和 vgr 由 memory 插件托管。
+# shell:
+#   port: 30085        # 壳子的 HTTP 接口（它是启动者，排在主服务 30086 前面）；engine.index_url 指到这里
+#   host: 0.0.0.0      # 壳子监听地址；测试时写 127.0.0.1
+#   trial_port: 30089  # 更新试跑新 server 用的端口；不写就从主端口 +1 往后找空的
 #   server: ''         # 窗口打开哪个后端的网页；不写就是本机的 server.port
 #   libs: data/index/libs   # 记忆库目录，相对运行时目录；下面每个子目录一个 index.db，子目录名是库名
 #   rag: data/index/rag     # RAG 索引目录，相对运行时目录
@@ -114,17 +119,121 @@ channels:
 #   watch_rag_repeat: 3           # 同一句搜几次算反复
 
 # —— 以下是 src7 骨架用的 plugins 段样例（0.6 的程序暂时不读这一段）——
-# 不写 plugins 段时，src7 挂 cli、base-tools、default-dialog 三个。
-# 离线假模型：providers 里加一家 name 为 fake、base_url 为 fake://，default_model 写成 fake/fake；
-# 或设环境变量 JMBOTS_FAKE=1。真模型把 default_model 写成“供应商名/模型 ID”。
+# 不写 plugins 段时，src7 挂 bots、cli、prompt、base-tools、bot-front-desk、summary 六个。
+# 机器人名单读的是上面顶层的 bots 段（插件 bots 读），不写就是一个叫“助手”的机器人。
+# src7 另外读 engine 里的三项，都可以不写：max_rounds（默认 30）、thinking（新会话的思考档，默认 low）、
+# retry: { times: 5, wait_ms: 3000, timeout_ms: 120000 }（模型请求出错后最多再试几次、第一次等多久、一次请求最多等多久）。
 # plugins:
+#   - name: boot-trail             # 记这次启动走过的路，给 /flow/ 的“看启动”：一定写在第一个
+#   - name: bots                   # 机器人：要写在用它的插件前面
+#     config: { thinking: medium } # 后台会话（干活的会话）用哪个思考档
 #   - name: cli
+#   - name: prompt                 # 系统提示词；人设读 bots/<机器人>/persona.md（任何一轮都带），私人记忆非本人、不受信的群里不带
 #   - name: base-tools
-#   - name: default-dialog
-#     config: { recent: 50 }
+#   - name: summary
 #   - name: compress
 #     config: { at: 200000, keep: 6 }
 #   - name: trace
 #     disabled: true               # 想看一条消息走过的路时改成 false，或删掉这一行
+#   - name: fake-model             # 假模型，离线跑通链路用：只管模型名以 fake/ 开头的会话，别的照常发给真模型。
+#                                  # 要用它：providers 里加一家叫 fake 的（base_url 随便写），default_model 写成 fake/fake
+#   - name: http                   # HTTP 服务：端口读顶层 server.port（不写就报错），本机免令牌
+#   - name: web                    # 网页，要写在 http 后面
+#   - name: web-api                # 网页要的接口：机器人、会话、发话、停止、换模型、追溯
+#   - name: files-api              # 文件接口：上传、看文件、列目录
+#   - name: model-catalog          # 模型目录：从 providers 拉模型清单，网页换模型用
+#   - name: relay                  # 把话转给外部助手（别的 AI），等它回信再回给用户；写在 http、fake-model 后面，bot-front-desk 前面
+#     config:
+#       helpers:                   # 接哪些外部助手，至少一个；第一个是默认的（relay 机器人的平常话、relay_send 都转给它）
+#         - name: 助手甲           # 话里怎么称呼它，回信前面也署这个名
+#           prefixes: ['甲 ']      # 任何机器人里以这些开头的话转给它
+#           webhook_url: ''        # 转出时 POST 到这里；不写就不推，它自己来 GET /api/relay/inbox?helper=助手甲 看
+#           webhook_header: ''     # POST 带的鉴权头，比如 'Authorization: Bearer xxx'
+#         - name: 助手乙
+#           prefixes: ['乙 ']
+#       bots: []                   # 这些机器人的话全部转给默认助手（也可以在顶层 bots 名单项里写 relay: direct）
+#       owner_open_ids: []         # 旧写法，照旧能用（并进 feishu 插件的 people 当本人）；新写法写在 feishu 插件的 people 里
+#       remind_minutes: 15         # 多久没回提醒一次
+#       expire_minutes: 120        # 多久没回先放下，之后回了照样送到
+#   - name: bot-front-desk         # 机器人的前台：消息先到它这儿，简单的自己答，复杂的转给后台会话；写在 relay 后面
+#     config: { recent: 50 }       # 前台每一步带最近几条往来
+#   - name: journal                # 事件日志：记进 journal_events 表，GET /api/events 查；每场会话写 bots/<机器人>/sessions/<会话>/对话.md
+#                                  # 保留天数读顶层 events: { keep_days: 30 }
+#   - name: flow                   # /flow/ 插件预览和运行时变量（开发调试用）
+#     config: { snapshot_keyword: "#调试", snapshot_max_mb: 200, snapshot_files: 20 }  # 话里带关键词的那条消息才拍运行时快照（拍完从话里去掉），默认 #调试；快照加起来最多占多少 MB，默认 200；data/flow/ 里消息快照文件留几个，默认 20
+#   - name: approval               # 待确认、命令审核（规则 → decision → 审核小会话 → 问用户）；网页轮询 /api/approvals，挂了 web-api 就要挂它
+#     config: { thinking: low, decision_pass: 0.8 }   # model: 审核小会话用的模型，不写用 default_model
+#   - name: exec                   # exec 工具：要写在 approval 后面；读顶层 paths 段的 runtimes、program
+#   - name: file-tools             # edit、find 工具
+#   - name: web-search             # web_search 工具：搜索供应商写在顶层 search 段，一家一家试
+#                                  # search:
+#                                  #   - { kind: magpie, name: 搜索, url: 'http://127.0.0.1:3425/alpha/search', model: 某模型, api_key: 密钥 }
+#                                  #   - { kind: zhipu_mcp, api_key: 智谱密钥 }
+#   - name: usage                  # 用量：GET /api/usage
+#   - name: settings               # 设置页接口：GET/PUT /api/settings、POST /api/bots、立即重启；写在 http 后面
+#   - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 channels.feishu；config.domain 默认 https://open.feishu.cn；写在 http 后面才有 /api/feishu/contacts
+#     config:
+#       people:                    # 认得的人（open_id 每个飞书应用不同，几个应用就各登记一项）；谁是哪一档只在这里认，没登记的都是 guest
+#         - { open_id: ou_xxx, name: 我, role: owner }      # owner：本人，什么都能用、能批“同意 N”（旧写法 owner: true 照认）
+#         - { open_id: ou_zzz, name: 小王, role: builder }  # builder：能让机器人写代码、跑程序，只在他的目录里（读写、exec、发文件）
+#                                                           #   dir 不写是运行时目录下 guests/<名字>/，写了相对运行时目录算；没有就建
+#         - { open_id: ou_yyy, name: 朋友 }                 # guest（不写 role 就是）：只给查、读、搜、答的工具
+#       groups:                    # 专门设过的群；没登记的群只收 @ 机器人的，cc 前缀照常转
+#         - chat_id: oc_xxx
+#           name: 某个群           # 不写用飞书查到的群名
+#           listen: all            # all：不 @ 也收，只记进群的前台会话当上下文、不回（cc 开头的照转）；mention：只收 @（默认）
+#                                  # judge：不 @ 也收，记完问决策模型（要挂 decision 插件）要不要主动接话，allow 才回，否则只记；群里回话开头会 @ 最后说话的人
+#           judge_threshold: 0.8   # listen: judge 时用：决策模型的把握 ≥ 它才接话；不写用 decision 插件的 allow_at
+#           relay: model           # model：@ 机器人时它判断要不要转外部助手；direct：只认 cc 前缀（默认）
+#           trusted: false         # true：本人在这个群里说话照旧带私人记忆；false（默认）：群里谁说话都不带（回复群里人人看得到）
+#   - name: memory                 # memory 工具（自己的、公共的记忆）、后台会话开头先搜一遍记忆和技能；写在 prompt 后面
+#                                  # 读 engine.index_url、engine.memory_libs：都写了才搜基地的库、每半小时让基地增量更新索引
+#                                  # 客服记忆库：聊天记录按客户/会话收、knowledge/ 下的知识库按段收，history、knowledge 带来源引用；GET /api/memory/recall
+#     config: { history: true, recall_history: 3, recall_knowledge: 3 }
+#     # 托管的两个服务（不写 = 默认这两个；写 services: [] = 不托管）。端口不写就跟着主端口顺延：memory 30087、vgr 30088；
+#     # 外面从主端口转发：/memory/* → 记忆服务，/memory/vgr/* → vgr。
+#     # host 默认 127.0.0.1：内部端口只听本机，从 30086 转发。别改成 0.0.0.0——会弹 Windows 防火墙、把客户聊天记录暴露到局域网（Claude 11-14 15:42 定）。
+#     # services:
+#     #   - name: memory          # jmbots-memory：program/jmbots-memory/jmbots-memory，serve --host {host} --port {port} --runtime {runtime}
+#     #     host: 127.0.0.1
+#     #     port: 30087
+#     #   - name: vgr             # vector-graph-rag：program/python/vgr-venv 里的 python 跑 adapter/vgr_adapter.py，数据在 vgr-memory/
+#     #     host: 127.0.0.1
+#     #     port: 30088
+#     # backend_url: vgr          # 记忆检索交给托管的哪个服务（vgr 或 memory）；不写用本地
+#     # 外部检索服务（计划 vector-graph-rag / Rust 版，基地托管）：backend_url: http://127.0.0.1:端口，backend_token、backend_timeout_ms；不写用本地
+#   - name: skills                 # 技能清单放进后台会话的系统提示词，skill 工具只读技能文件；写在 prompt 后面
+#   - name: context-fit            # 发给模型前，超过上下文窗口的 ratio 就只留最近 keep 段；写在 compress 后面
+#     config: { keep: 6, ratio: 0.9 }
+#   - name: files-mirror           # 每场会话写 bots/<机器人>/sessions/<会话>/对话.md 和 session.json（挂了它 journal 就不写对话.md）
+#   - name: progress               # 进度和限时：GET /api/progress、POST /api/progress/:id；写在 bot-front-desk、compress 后面
+#                                  # 读 engine 的 long_run_card_minutes（15）、limit_default_minutes（0 = 不限时）、limit_remind_before_minutes（10）、limit_extend_minutes（5）、
+#                                  # limit_extend_times（2）、overtime_minutes（10）、wrapup_model、limit_review_model
+#   - name: review                 # 超时复盘：挑一场超时的会话写复盘，用户同意后存进 memory/复盘/；写在 progress、approval 后面
+#   - name: decision               # 决策模型打分（approval、progress 可选地用）；配置在顶层 decision 段，见下面
+#   - name: runs                   # 命令窗口：POST /api/run、GET /api/runs、/api/runs/:id、/log、/stop；写在 exec 后面
+#   - name: agent-tasks            # 外部 AI 任务通道：agent_task 工具，GET /api/agents/guide 是给外部 AI 看的接入说明
+#   - name: image-gen              # image_generate 工具：读 engine.image_model（供应商名/生图模型 ID），不写调了会说没配
+#   - name: reply-tool             # reply 工具：后台会话做到一半先回用户一句
+#   - name: note-claude            # note_claude 工具：给 Claude 留言，写进 integrations/claude/inbox/
+#   - name: base-bridge            # 基地转发：/api/update、/api/autostart、/api/memory/*、/api/rag/*；读 engine.index_url
+#   - name: notify                 # 待确认、长任务结束时请基地弹右下角通知；url 不写就用 engine.index_url + /notify
+#   - name: update-watch           # 盯基地的新版本，登记待确认；用户同意了叫基地去换；读 engine.index_url
+#   - name: desktop                # 窗口操控：/api/desktop/status、/api/desktop/action；程序在 <paths.program>/AOBW/aobw-capability.exe
+#   - name: wechat                 # 微信渠道 + 客服页 /wechat/（积木客服改写）；引擎在 <运行时目录>/program/wechat（python/、runtime/）
+#     config: { bot: 助手, interval_ms: 3000 }   # 可选 root、python、ocr_python、aobw_url（默认 http://127.0.0.1:30010）、lock_file、at_names
+#   - name: model-fallback         # 模型限流、超长时换模型、排队：要写在所有往系统提示词里加东西的插件（和 fake-model）后面，一般放最后
+#                                  # 读 engine 的 fallback_chain、fallback_max_tries（5）、fallback_include_siblings（true）、
+#                                  # rate_limit_cooldown_minutes（5），和顶层 concurrency 段
 #   - name: ./plugins/weather      # 别人写的：以 . 开头的是文件夹路径，从 config.yaml 所在的目录算
 #     config: { city: 上海 }
+
+# decision 插件读的顶层段（挂了 decision 才要写）：
+# decision:
+#   models:                              # 用户 11-14 定：只用 jev-1.14 一个（不写就是它；jev-router 地区不可用）
+#     - { model: magpie/openrouter/typesafe/jev-1.14, type: classifier }   # 分类器，直接给概率
+#     # 也能写对话模型字符串 "供应商名/模型 ID"，但不要再几个模型取平均
+#   combine: average                     # 合分：average 平均、min 取最低、max 取最高
+#   allow_at: 0.8                        # 合出来的分 ≥ 它算放行（approval 给 decision_pass，默认也是 0.8，不能更低）
+#   deny_at: 0                           # 合出来的分 < 它算拒绝；0 就是从不拒
+#   timeout_ms: 10000                    # 一个模型最多等多久

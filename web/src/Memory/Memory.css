@@ -1,0 +1,64 @@
+/* 记忆检索页（/memory/）。深色，和图谱页同一套配色；宽度：内容最宽 1320px 居中，卡片和结果区随窗口自动换列。2026-11-14 jm开发。 */
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; min-height: 100%; background: #070b16; color: #dfe6f5; font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
+a { color: #7cc4ff; }
+code { background: #111a33; padding: 1px 6px; border-radius: 4px; }
+.mm-header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px clamp(12px, 3vw, 28px); background: linear-gradient(90deg, rgba(18,26,52,.97), rgba(10,16,34,.92)); border-bottom: 1px solid #1d2a4d; }
+.mm-header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 1px; background: linear-gradient(90deg, #7cc4ff, #c18bff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.mm-sub { color: #7f8fb5; font-size: 12px; }
+.mm-grow { flex: 1; }
+.mm-link { text-decoration: none; padding: 5px 10px; border: 1px solid #2a3a66; border-radius: 8px; background: #111a33; }
+.mm-guide { font: inherit; cursor: pointer; color: #fff; padding: 5px 12px; border-radius: 8px; border: 1px solid #b07a2a; background: linear-gradient(180deg, #d79a3a, #a8701f); }
+.mm-main { width: 100%; max-width: 1320px; margin: 0 auto; padding: 16px clamp(12px, 3vw, 28px) 40px; display: flex; flex-direction: column; gap: 16px; }
+.mm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.mm-card { min-width: 0; padding: 12px 14px; border-radius: 12px; background: linear-gradient(180deg, #101a35, #0b1328); border: 1px solid #1f2d55; }
+.mm-card.ok { border-color: #1f7a54; } .mm-card.bad { border-color: #a33a3a; } .mm-card.warn { border-color: #8a6a22; }
+.mm-card-label { color: #8fa0c8; font-size: 12px; }
+.mm-card-value { font-size: 22px; font-weight: 600; margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-card.ok .mm-card-value { color: #5fe0a0; } .mm-card.bad .mm-card-value { color: #ff7a7a; } .mm-card.warn .mm-card-value { color: #ffc861; }
+.mm-card-sub { color: #7f8fb5; font-size: 12px; overflow-wrap: anywhere; }
+.mm-progress { grid-column: span 2; }
+.mm-bar { position: relative; height: 8px; border-radius: 4px; background: #2a3354; overflow: hidden; display: flex; margin: 6px 0; }
+.mm-bar i { display: block; height: 100%; } .mm-bar .done { background: linear-gradient(90deg, #2fbf7f, #5fe0a0); } .mm-bar .failed { background: #e05555; }
+.mm-search, .mm-import, .mm-hits, .mm-rels { padding: 14px; border-radius: 12px; background: #0b1328; border: 1px solid #1d2a4d; min-width: 0; }
+.mm-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.mm-row select, .mm-row input, .mm-row button, .mm-import textarea { font: inherit; color: #dfe6f5; background: #111a33; border: 1px solid #2a3a66; border-radius: 8px; padding: 8px 10px; outline: none; }
+.mm-row select { flex: 0 1 220px; min-width: 140px; }
+.mm-row input { flex: 1 1 260px; min-width: 0; }
+.mm-row button { cursor: pointer; flex: 0 0 auto; background: linear-gradient(180deg, #2c4fa8, #213d85); border-color: #3d63c7; }
+.mm-row button:disabled { opacity: .6; cursor: wait; }
+.mm-import textarea { width: 100%; margin-top: 8px; resize: vertical; }
+.mm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.mm-chip { font: inherit; font-size: 12px; cursor: pointer; color: #b9c8ec; background: #0f1a36; border: 1px dashed #34477d; border-radius: 14px; padding: 3px 10px; max-width: 100%; text-align: left; }
+.mm-chip:hover { border-style: solid; color: #fff; }
+.mm-banner { margin-top: 10px; padding: 6px 10px; border-radius: 8px; background: #13214a; color: #cfe0ff; font-size: 13px; }
+.mm-results { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+.mm-results h2, .mm-import h2 { font-size: 14px; color: #9fb0d6; margin: 0 0 8px; font-weight: 600; }
+.mm-rels h2 { margin-top: 12px; } .mm-rels h2:first-child { margin-top: 0; }
+.mm-hit { cursor: pointer; padding: 10px 12px; margin-bottom: 10px; border-radius: 10px; background: #0f1830; border: 1px solid #1d2a4d; }
+.mm-hit:hover { border-color: #3d63c7; }
+.mm-hit-head { display: flex; gap: 8px; align-items: baseline; }
+.mm-hit-no { flex: 0 0 auto; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 50%; background: #213d85; font-size: 12px; }
+.mm-hit-title { font-weight: 600; color: #e8eeff; overflow-wrap: anywhere; }
+.mm-hit-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.mm-tag { font-size: 11px; padding: 0 7px; border-radius: 8px; background: #1a2547; color: #9fb0d6; }
+.mm-tag.keyword { background: #1d3b2c; color: #7fe0b0; } .mm-tag.vector { background: #1d2e55; color: #8cc0ff; } .mm-tag.graph { background: #3b2a12; color: #ffc861; }
+.mm-hit-text { color: #c4cfe8; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 4.8em; overflow: hidden; }
+.mm-hit.open .mm-hit-text { max-height: none; }
+.mm-ents { display: flex; flex-wrap: wrap; gap: 4px; }
+.mm-ent { display: inline-block; padding: 1px 8px; border-radius: 10px; background: #1d2e55; color: #cfe0ff; font-size: 12px; margin: 2px 0; }
+.mm-rel { color: #ffc861; font-size: 12px; margin: 0 4px; }
+.mm-chain { padding: 6px 8px; margin-bottom: 6px; border-radius: 8px; background: #0f1830; border-left: 3px solid #ffc861; overflow-wrap: anywhere; }
+.mm-triples { margin: 0; padding-left: 20px; color: #c4cfe8; } .mm-triples li { margin: 2px 0; overflow-wrap: anywhere; }
+.mm-graph-link { display: inline-block; margin-top: 12px; }
+.mm-muted { color: #7f8fb5; font-size: 13px; }
+@media (max-width: 860px) {
+  .mm-results { grid-template-columns: minmax(0, 1fr); }
+  .mm-progress { grid-column: auto; }
+  .mm-sub { display: none; }
+}
+
+/* 2026-11-14 23:15 EST：命中出处（完整路径可能很长，小屏换行、不顶宽页面）。 */
+.mm-hit-source { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; font-size: 12px; color: var(--muted, #8c97a8); }
+.mm-hit-source span { overflow-wrap: anywhere; flex: 1; min-width: 0; }
+.mm-hit-source button { flex-shrink: 0; font-size: 12px; }

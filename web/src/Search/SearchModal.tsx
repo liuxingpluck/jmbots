@@ -10,6 +10,7 @@ import * as timeline from '../Chat/Timeline.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import type * as types from '../Types.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 
 
 /** 打字停多久再搜，毫秒。 */
@@ -51,6 +52,8 @@ function Highlight(props: { text: string; keyword: string }): react.JSX.Element 
 function Row(props: { item: Item; index: number; keyword: string; active: boolean; onPick: () => void; onHover: () => void }): react.JSX.Element {
   const t = i18n.useT();
   const { item } = props;
+  const enabled = privacy.useMask();
+  const masked = enabled && (item.kind === 'session' || privacy.wechat(item.hit));
   return (
     <button type="button" id={`jm-search-${String(props.index)}`} className={`jm-search-item${props.active ? ' jm-search-active' : ''}`} onClick={props.onPick} onMouseEnter={props.onHover}>
       <div className="jm-search-meta">
@@ -63,9 +66,9 @@ function Row(props: { item: Item; index: number; keyword: string; active: boolea
           </>
         ) : (
           <>
-            <span>{item.hit.workspace}</span>
+            <span>{privacy.text(item.hit.workspace, masked)}</span>
             <span className="jm-search-title">
-              <Highlight text={item.hit.title} keyword={props.keyword} />
+              <Highlight text={privacy.name(item.hit.title, masked)} keyword={props.keyword} />
             </span>
             <span>{timeline.formatTime(item.hit.updatedAt)}</span>
           </>
@@ -73,7 +76,7 @@ function Row(props: { item: Item; index: number; keyword: string; active: boolea
       </div>
       {item.hit.snippet && (
         <div className="jm-search-snippet">
-          <Highlight text={item.hit.snippet} keyword={props.keyword} />
+          <Highlight text={privacy.text(item.hit.snippet, masked)} keyword={props.keyword} />
         </div>
       )}
     </button>
@@ -84,6 +87,7 @@ function Row(props: { item: Item; index: number; keyword: string; active: boolea
 /** 搜索框：开没开由状态仓库的 searchOpen 管（Ctrl+K 和左上角的按钮都改它）。 */
 export function SearchModal(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const open = context.useUi((state) => state.searchOpen);
   const setSearchOpen = context.useUi((state) => state.setSearchOpen);
   const selectBot = context.useUi((state) => state.selectBot);
@@ -201,10 +205,10 @@ export function SearchModal(): react.JSX.Element {
         }
       }}
     >
-      <antd.Input ref={input} size="large" allowClear prefix={<icons.SearchOutlined />} placeholder={t('搜消息、回复、会话标题和摘要')} value={keyword} onChange={(event) => setKeyword(event.target.value)} onKeyDown={onKeyDown} />
+      <antd.Input ref={input} size="large" allowClear prefix={<icons.SearchOutlined />} placeholder={t('搜消息、回复、会话标题和摘要')} value={privacy.text(keyword, masked)} readOnly={masked} onChange={(event) => setKeyword(event.target.value)} onKeyDown={onKeyDown} />
       <div className="jm-search-list">
         {loading && <div className="jm-search-note">{t('正在搜…')}</div>}
-        {error && <antd.Alert type="error" showIcon message={error} />}
+        {error && <antd.Alert type="error" showIcon message={privacy.text(error, masked)} />}
         {!loading && !error && query && result && items.length === 0 && <div className="jm-search-note">{t('没搜到')}</div>}
         {messageCount > 0 && <div className="jm-search-group">{t('消息')}</div>}
         {items.map((item, index) => (

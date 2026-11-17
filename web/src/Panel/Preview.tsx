@@ -10,6 +10,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as attachments from '../Chat/Attachments.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import * as kinds from './PreviewKind.ts';
 import * as context from '../Context.ts';
 import * as documentModule from './Document.ts';
@@ -216,11 +217,15 @@ function RecentFiles(): react.JSX.Element {
  */
 export function Preview(props: { target: storeModule.PanelTarget | null }): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 图片看原图大小还是适应宽度。 */
   const { reading, saveReading } = readingModule.useReadingState();
   const scroll = react.useRef<HTMLDivElement>(null);
   const kind = props.target ? kinds.previewKind(props.target.path) : 'other';
   readingModule.useReadingScroll(scroll, props.target !== null && kind !== 'markdown' && kind !== 'text');
+  //G 文件来源未携带渠道；打码时不挂载正文、媒体或下载链接。
+  if (masked) return <div className="jm-empty">{privacy.text('文件预览', true)}</div>;
+
   if (!props.target) {
     return <RecentFiles />;
   }

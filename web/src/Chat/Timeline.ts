@@ -208,3 +208,50 @@ export function formatElapsed(ms: number, t: i18n.Translate = i18n.source): stri
   }
   return t('耗时 {seconds} 秒', { seconds });
 }
+
+
+/**
+ * 一段时间写成给人看的样子，不带“耗时”二字：7 秒、1 分 30 秒、不到 1 秒。
+ * @param ms 毫秒。
+ * @param t 翻译。
+ * @returns 对不上（负数、不是数）是空字符串。
+ */
+export function formatDuration(ms: number, t: i18n.Translate = i18n.source): string {
+  if (!Number.isFinite(ms) || ms < 0) {
+    return '';
+  }
+  const total = Math.round(ms / 1000);
+  if (total < 1) {
+    return t('不到 1 秒');
+  }
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) {
+    return t('{hours} 小时 {minutes} 分 {seconds} 秒', { hours, minutes, seconds });
+  }
+  if (minutes > 0) {
+    return t('{minutes} 分 {seconds} 秒', { minutes, seconds });
+  }
+  return t('{seconds} 秒', { seconds });
+}
+
+
+/**
+ * 前台、后台耗时写成一行：有后台是“前台 7 秒 · 后台 1 分 30 秒”，没有后台只写前台。
+ * @param frontMs 前台毫秒；没有就不写前台。
+ * @param workMs 后台毫秒；没有就不写后台。
+ * @param t 翻译。
+ */
+export function formatFrontWorkElapsed(
+  frontMs: number | null | undefined,
+  workMs: number | null | undefined,
+  t: i18n.Translate = i18n.source,
+): string {
+  const parts: string[] = [];
+  const front = frontMs != null ? formatDuration(frontMs, t) : '';
+  const work = workMs != null ? formatDuration(workMs, t) : '';
+  if (front !== '') parts.push(t('前台 {time}', { time: front }));
+  if (work !== '') parts.push(t('后台 {time}', { time: work }));
+  return parts.join(' · ');
+}

@@ -1,0 +1,416 @@
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #f2f2f2;
+  background: #0d0d0d;
+}
+.fl-page { display: flex; flex-direction: column; height: 100%; background: #0d0d0d; }
+.fl-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #0d0d0d;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.fl-title h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+.fl-title p { margin: 2px 0 0; max-width: 42rem; font-size: 12px; color: #8a8a8a; }
+.fl-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fl-toggle, .fl-replay button, .fl-nav-item {
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1a1a1a;
+  color: #f2f2f2;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.fl-toggle:hover, .fl-replay button:hover, .fl-nav-item:hover { background: #222; border-color: rgba(255, 255, 255, 0.16); }
+.fl-toggle.on, .fl-replay button[type="submit"] { background: #5b8cff; border-color: #5b8cff; color: #fff; }
+.fl-replay button[type="button"] { background: transparent; color: #c9d4ea; }
+.fl-replay { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fl-replay label { font-size: 12px; color: #8a8a8a; }
+.fl-replay input {
+  margin-left: 4px;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  min-width: 10rem;
+  background: #161616;
+  color: #f2f2f2;
+  outline: none;
+}
+.fl-replay input:focus { border-color: #5b8cff; box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.22); }
+.fl-banner { padding: 6px 16px; font-size: 12px; background: #152033; color: #9eb6ff; }
+.fl-banner.warn { background: #2a1515; color: #f0a0a0; }
+.fl-body { flex: 1; min-height: 0; display: flex; }
+.fl-nav {
+  width: 228px;
+  overflow: auto;
+  padding: 10px 8px 16px;
+  background: #121212;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a #121212;
+}
+.fl-nav::-webkit-scrollbar { width: 8px; }
+.fl-nav::-webkit-scrollbar-track { background: #121212; }
+.fl-nav::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 8px; }
+.fl-nav::-webkit-scrollbar-thumb:hover { background: #505050; }
+.fl-nav-label {
+  margin: 12px 8px 6px;
+  font-size: 11px;
+  color: #6e6e6e;
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+.fl-nav-group { margin-top: 4px; }
+.fl-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #d8d8d8;
+  text-align: left;
+  font-size: 12px;
+}
+.fl-nav-item.on { background: #1c1c1c; border-color: rgba(91, 140, 255, 0.45); color: #fff; box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.16); }
+.fl-nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-canvas { flex: 1; min-width: 0; position: relative; background: #0d0d0d; }
+.fl-canvas .react-flow { width: 100%; height: 100%; background: #0d0d0d; }
+.fl-side {
+  width: 300px;
+  overflow: auto;
+  padding: 16px;
+  background: #121212;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  line-height: 1.55;
+  color: #d8d8d8;
+}
+.fl-side h2, .fl-side h3 { margin: 0 0 8px; font-size: 16px; color: #f2f2f2; }
+.fl-side h3 { margin-top: 16px; font-size: 13px; color: #c0c0c0; }
+.fl-side .fl-label { min-width: 5.5em; }
+.fl-kicker { margin: 0 0 4px; font-size: 12px; color: #8a8a8a; }
+.fl-label { display: inline-block; min-width: 2.5em; color: #8a8a8a; }
+.fl-error { color: #f07a7a; }
+.fl-muted { color: #8a8a8a; font-size: 12px; }
+.fl-counts, .fl-steps { margin: 8px 0 0; padding-left: 1.2em; }
+.fl-steps li.error { color: #f07a7a; }
+
+.fl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #8a7cc4;
+  box-shadow: 0 0 0 3px rgba(138, 124, 196, 0.16);
+}
+.fl-state-ok .fl-dot, .fl-node-plugin.fl-state-ok .fl-dot { background: #8a7cc4; box-shadow: 0 0 0 3px rgba(138, 124, 196, 0.16); }
+.fl-node-cli.fl-state-ok .fl-dot { background: #4caf6a; box-shadow: 0 0 0 3px rgba(76, 175, 106, 0.2); }
+.fl-node-skeleton .fl-dot, .fl-nav-item.fl-node-skeleton .fl-dot { background: #5b8cff; box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.2); }
+.fl-state-failed .fl-dot { background: #e85d5d; box-shadow: 0 0 0 3px rgba(232, 93, 93, 0.22); }
+.fl-state-waiting .fl-dot { background: #e0a054; box-shadow: 0 0 0 3px rgba(224, 160, 84, 0.2); }
+.fl-state-idle .fl-dot { background: #6a6a6a; box-shadow: none; }
+
+.fl-node {
+  width: 200px;
+  height: 64px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  color: #f2f2f2;
+}
+.fl-node:hover { border-color: rgba(255, 255, 255, 0.16); background: #1f1f1f; }
+.fl-node-head { display: flex; align-items: center; gap: 8px; }
+.fl-node-title { font-size: 13px; font-weight: 600; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-node-desc { margin-top: 4px; padding-left: 16px; font-size: 11px; color: #8a8a8a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-node.selected, .fl-node.hit {
+  border-color: #5b8cff;
+  box-shadow: 0 0 0 1px #5b8cff, 0 0 16px rgba(91, 140, 255, 0.35);
+}
+.fl-node.hit:not(.selected) { border-color: #e0a054; box-shadow: 0 0 0 1px #e0a054, 0 0 14px rgba(224, 160, 84, 0.28); }
+.fl-node.fail { border-color: #e85d5d; box-shadow: 0 0 0 1px #e85d5d, 0 0 14px rgba(232, 93, 93, 0.3); }
+.fl-node.fail .fl-node-desc { color: #f0a0a0; }
+.fl-node.dim { opacity: 0.32; }
+
+.fl-group {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.fl-group.collapsed { background: #161616; }
+.fl-group-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b0b0b0;
+}
+.fl-group-bar button {
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1a1a1a;
+  color: #c8c8c8;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.fl-canvas .react-flow__handle { width: 6px; height: 6px; background: #3a3a3a; border: none; }
+.fl-canvas .react-flow__node.selected .react-flow__handle, .fl-canvas .fl-node.selected + .react-flow__handle { background: #5b8cff; }
+.fl-canvas .react-flow__edge-path { cursor: default; }
+.fl-canvas .react-flow__edge-text { fill: #8a8a8a; }
+.fl-canvas .react-flow__controls {
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #161616;
+}
+.fl-canvas .react-flow__controls-button {
+  background: #161616;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  fill: #d0d0d0;
+}
+.fl-canvas .react-flow__controls-button:hover { background: #222; }
+.fl-canvas .react-flow__minimap {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #121212;
+}
+.fl-canvas .react-flow__attribution { font-size: 9px; background: transparent; color: #5c5c5c; }
+.fl-canvas .react-flow__background { background: #0d0d0d; }
+
+/* 2026-11-16 请求轨迹（深色） */
+.fl-probe { display: flex; gap: 6px; align-items: center; }
+.fl-probe select { padding: 5px 10px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px; background: #161616; color: #f2f2f2; font: inherit; font-size: 12px; }
+.fl-probe button { padding: 5px 14px; border: 1px solid #e0a054; background: #e0a054; color: #1a1205; border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.fl-probe button:hover { background: #ffb454; }
+.fl-probe button:disabled { opacity: 0.6; cursor: default; }
+.fl-guide { padding: 5px 12px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px; background: #1a1a1a; color: #f2f2f2; cursor: pointer; font: inherit; font-size: 12px; }
+.fl-side { width: 340px; }
+.fl-head-row { display: flex; align-items: baseline; justify-content: space-between; }
+.fl-link { padding: 0; border: none; background: none; color: #7fa4ff; cursor: pointer; font: inherit; font-size: 12px; }
+.fl-gap { margin-top: 20px !important; }
+.fl-requests { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.fl-requests button { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; background: #1a1a1a; color: #f2f2f2; cursor: pointer; font: inherit; font-size: 13px; }
+.fl-requests button:hover { border-color: #e0a054; background: #211c14; }
+.fl-requests button.error { border-color: rgba(232, 93, 93, 0.6); background: #2a1515; }
+.fl-req-top { display: flex; justify-content: space-between; gap: 8px; }
+.fl-trail { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fl-trail > li > button { width: 100%; display: flex; gap: 10px; align-items: flex-start; padding: 6px 8px; border: 1px solid transparent; border-radius: 10px; background: none; color: #e6e6e6; text-align: left; cursor: pointer; font: inherit; font-size: 13px; }
+.fl-trail > li > button:hover { background: #1c1c1c; }
+.fl-trail > li.on > button { border-color: rgba(224, 160, 84, 0.6); background: #211c14; }
+.fl-trail > li.error > button { background: #2a1515; color: #f0a0a0; }
+.fl-no { flex: none; width: 22px; height: 22px; border-radius: 50%; background: #e0a054; color: #1a1205; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.fl-trail > li.error .fl-no { background: #e85d5d; color: #fff; }
+.fl-step-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.fl-step-top { display: flex; justify-content: space-between; gap: 8px; }
+.fl-ms { color: #8a8a8a; font-size: 12px; white-space: nowrap; }
+.fl-step-title { color: #b8b8b8; font-size: 12px; }
+.fl-rows { margin: 4px 0 8px 32px; display: flex; flex-direction: column; gap: 6px; }
+.fl-row { padding: 6px 8px; border-left: 3px solid #333; background: #161616; border-radius: 0 6px 6px 0; font-size: 12px; }
+.fl-row.error { border-left-color: #e85d5d; background: #2a1515; }
+.fl-row-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.fl-row code { font-size: 12px; color: #f2f2f2; }
+.fl-kind { padding: 0 5px; border-radius: 4px; font-size: 11px; color: #111; }
+.fl-kind.ev { background: #e0a054; }
+.fl-kind.fn { background: #5bc0be; }
+.fl-wait { color: #ffb454; font-weight: 600; }
+.fl-site { color: #6e6e6e; font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; }
+.fl-node { overflow: visible; position: relative; }
+.fl-badges { position: absolute; top: -11px; right: -6px; display: flex; gap: 3px; }
+.fl-badges span { min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box; border-radius: 10px; background: #e0a054; color: #1a1205; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5); }
+.fl-node.fail .fl-badges span { background: #e85d5d; color: #fff; }
+.fl-node.heard { border-style: dashed; border-color: rgba(224, 160, 84, 0.55); }
+.fl-node.active { border-color: #ffb454; box-shadow: 0 0 0 2px #ffb454, 0 0 22px rgba(255, 180, 84, 0.45); }
+.fl-canvas .react-flow__edge.trail .react-flow__edge-path { stroke-linecap: round; }
+.fl-canvas .react-flow__edge.trail .react-flow__edge-text { fill: #ffcf8a; }
+.fl-lane { width: 100%; height: 100%; box-sizing: border-box; border-radius: 12px; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.06); display: flex; align-items: center; }
+.fl-lane-label { width: 170px; box-sizing: border-box; padding: 8px 12px; overflow: hidden; }
+.fl-lane-label .fl-node-desc { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; padding-left: 0; }
+.fl-stepcard { width: 100%; height: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 12px; background: #1d1a15; border: 1px solid rgba(224, 160, 84, 0.55); color: #f2f2f2; cursor: pointer; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35); }
+.fl-stepcard:hover { border-color: #ffb454; }
+.fl-stepcard.active { border-color: #ffb454; box-shadow: 0 0 0 2px #ffb454, 0 0 20px rgba(255, 180, 84, 0.4); }
+.fl-stepcard.fail { background: #2a1515; border-color: #e85d5d; }
+.fl-stepcard.fail .fl-no { background: #e85d5d; color: #fff; }
+.fl-stepcard-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.fl-stepcard-title { font-size: 12px; line-height: 1.35; color: #e6e6e6; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.fl-step-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 12px;
+  font-size: 12px;
+  color: #c8c8c8;
+}
+.fl-step-nav button {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1a1a1a;
+  color: #f2f2f2;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.fl-step-nav button:hover:not(:disabled) { background: #222; border-color: rgba(255, 255, 255, 0.16); }
+.fl-step-nav button:disabled { opacity: 0.4; cursor: default; }
+.fl-fns { margin: 0 0 14px; }
+.fl-fns h3 { margin: 0 0 8px; font-size: 13px; color: #c0c0c0; }
+.fl-fns ul { margin: 0; padding-left: 1.1em; }
+.fl-fns li { margin: 0 0 8px; }
+.fl-fn-name { font-size: 12px; color: #e8e8e8; }
+.fl-site { font-size: 11px; color: #8a8a8a; word-break: break-all; display: flex; align-items: center; gap: 6px; }
+.fl-vscode { display: inline-flex; align-items: center; color: #8a8a8a; flex: 0 0 auto; line-height: 0; }
+.fl-vscode:hover { color: #5b8cff; }
+.fl-vscode svg { display: block; }
+
+
+.fl-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.fl-tabs button {
+  padding: 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1a1a1a;
+  color: #c8c8c8;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.fl-tabs button.on, .fl-tabs button:hover { background: #222; color: #f2f2f2; border-color: rgba(91, 140, 255, 0.5); }
+.fl-preview {
+  display: block;
+  margin: 4px 0;
+  color: #e8e8e8;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.fl-listeners { margin: 0 0 14px; }
+.fl-listeners h3, .fl-vars h3, .fl-fns h3 { margin: 0 0 8px; font-size: 13px; color: #c0c0c0; }
+.fl-listeners ul { margin: 0; padding-left: 1.1em; }
+.fl-listeners li.idle { color: #7a7a7a; }
+.fl-listeners li.used { color: #e8e8e8; }
+.fl-vars section { margin: 0 0 16px; }
+.fl-msgs { margin: 0; padding: 0; list-style: none; }
+.fl-msgs li, .fl-doc, .fl-vartable pre, .fl-msgs pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: #e8e8e8;
+}
+.fl-msgs pre, .fl-doc, .fl-vartable pre {
+  margin: 4px 0 10px;
+  padding: 8px 10px;
+  background: #161616;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+.fl-role { font-size: 11px; color: #8ab4ff; }
+.fl-vartable { width: 100%; border-collapse: collapse; }
+.fl-vartable th {
+  text-align: left;
+  vertical-align: top;
+  padding: 4px 8px 4px 0;
+  color: #8a8a8a;
+  font-weight: 500;
+  width: 6.5em;
+  font-size: 12px;
+}
+.fl-vartable td { padding: 0; }
+.fl-usage { margin: 0; padding-left: 1.1em; font-size: 12px; color: #c8c8c8; }
+
+/* 一步的函数原型和关键变量（StepVars）：右栏点中一步后显示。 */
+.fl-stepvars { margin: 0 0 14px; }
+.fl-signature { display: block; margin: 2px 0 8px; padding: 4px 8px; border-radius: 6px; background: #161616; color: #9cdcfe; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.fl-json { margin: 0 0 6px; padding: 8px 10px; border-radius: 8px; background: #121212; border: 1px solid #262626; color: #d7d7d7; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; user-select: text; }
+
+/*
+ * 画布铺满 .fl-body，左右两栏（FlowPage 的 SidePane）浮在上面：宽度由行内 style 给，能拖内侧边框、能收起成一条窄边。
+ * --fl-left、--fl-right 是两栏盖住画布多宽（FlowPage 设在 .fl-body 上），React Flow 的控制按钮、小地图、署名往里让。
+ */
+.fl-body { position: relative; }
+.fl-body > .fl-canvas { position: absolute; inset: 0; }
+.fl-canvas .react-flow__panel.left { left: var(--fl-left, 0px); }
+.fl-canvas .react-flow__panel.right { right: var(--fl-right, 0px); }
+.fl-pane { position: absolute; top: 0; bottom: 0; z-index: 5; display: flex; flex-direction: column; background: #121212; box-shadow: 0 0 18px rgba(0, 0, 0, 0.55); }
+.fl-pane-left { left: 0; }
+.fl-pane-right { right: 0; }
+.fl-pane > .fl-nav, .fl-pane > .fl-side { flex: 1; width: auto; min-height: 0; }
+.fl-splitter { position: absolute; top: 0; bottom: 0; width: 6px; z-index: 6; cursor: col-resize; touch-action: none; }
+.fl-pane-left > .fl-splitter { right: -3px; }
+.fl-pane-right > .fl-splitter { left: -3px; }
+.fl-splitter:hover { background: #3a3a3a; }
+body.fl-dragging { cursor: col-resize; user-select: none; }
+/* 展开时的“收起”小把手：贴在栏的内侧外沿，不压内容。 */
+.fl-pane-fold { position: absolute; top: 10px; z-index: 7; width: 18px; height: 36px; padding: 0; border: 1px solid #2a2a2a; background: #1b1b1b; color: #bdbdbd; font-size: 14px; cursor: pointer; }
+.fl-pane-left > .fl-pane-fold { right: -19px; border-radius: 0 8px 8px 0; }
+.fl-pane-right > .fl-pane-fold { left: -19px; border-radius: 8px 0 0 8px; }
+.fl-pane-fold:hover, .fl-pane-open:hover { color: #fff; background: #262626; }
+/* 收起后的窄边：上面展开按钮，下面竖排的栏名。 */
+.fl-pane.folded { align-items: center; padding-top: 8px; gap: 10px; }
+.fl-pane-open { width: 22px; height: 28px; padding: 0; border: 1px solid #2a2a2a; border-radius: 6px; background: #1b1b1b; color: #bdbdbd; font-size: 14px; cursor: pointer; }
+.fl-pane-title { writing-mode: vertical-rl; letter-spacing: 0.2em; font-size: 12px; color: #8a8a8a; }
+
+/* 0.8.0 右栏的壳子（SideShell）：上面固定不滚，下面内容区单独滚动。盖掉上面 .fl-side 的整栏滚动和内边距。 */
+.fl-side { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.fl-side-head { flex-shrink: 0; padding: 14px 16px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.fl-side-head .fl-tabs { margin: 8px 0 10px; }
+/* 「运行时变量」总是最后一个标签：蓝字蓝边，前面一个绿点，免得看不见。 */
+.fl-side-head .fl-tabs button:last-child { color: #9db9ff; border-color: rgba(91, 140, 255, 0.55); }
+.fl-side-head .fl-tabs button:last-child::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #4ade80; vertical-align: 1px; }
+.fl-side-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 16px; }
+/* 运行时变量：一组一个可折叠块。 */
+.fl-state-group { margin: 10px 0 0; padding: 6px 0 0; border-top: 1px solid #222; }
+.fl-state-group > summary { cursor: pointer; font-weight: 600; color: #f2f2f2; }
+.fl-state-group .fl-head-row { margin: 4px 0; gap: 8px; }
+/* 0.7.12 某一步时的快照：顶上一行写是第几步时的，变了的组名、变了的行标黄。 */
+.fl-shot-head { flex-wrap: wrap; gap: 8px; }
+.fl-shot-title { color: #f5d06f; }
+.fl-shot-diff { flex-basis: 100%; }
+.fl-state-group.changed > summary { color: #f5d06f; }
+.fl-json-view .fl-changed { background: rgba(245, 208, 111, 0.25); color: #ffe7a3; border-radius: 3px; }
+/* 0.7.13 键的中文解释：键名后面灰色小字，只是显示，复制不带。 */
+.fl-json-view .fl-json-note { color: #7a7a7a; font-size: 0.9em; user-select: none; }
+/* 0.7.13 JSON 用 @uiw/react-json-view 显示：外框和原来的 .fl-json 一样，长了能滚。 */
+.fl-json-view { margin: 0 0 6px; padding: 8px 10px; border-radius: 8px; background: #121212; border: 1px solid #262626; overflow-x: auto; line-height: 1.45; }
+/* “看实现”：函数完整源码，等宽、带真实行号（行号不进选中和复制），长了横向滚；点开的被调函数缩进一层接在下面。 */
+.fl-src { margin: 2px 0 0; }
+.fl-callers { margin: 4px 0 0; }
+.fl-callers ul { margin: 2px 0 0; padding-left: 14px; }
+.fl-callers li > span { display: block; font-size: 12px; }
+.fl-code-box { margin: 4px 0 6px; }
+.fl-code { margin: 0; padding: 6px 0; border-radius: 6px; background: #121212; border: 1px solid #262626; color: #d7d7d7; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.45; overflow-x: auto; user-select: text; }
+.fl-code-line { display: flex; white-space: pre; }
+.fl-code-no { flex: none; min-width: 3.5em; padding: 0 10px 0 6px; text-align: right; color: #5a5a5a; user-select: none; }
+.fl-code-call { padding: 0; border: none; background: none; color: #7fa4ff; cursor: pointer; font: inherit; text-decoration: underline dotted; }
+.fl-code-nested { margin: 6px 0 0 12px; padding-left: 8px; border-left: 2px solid #2f3b55; }

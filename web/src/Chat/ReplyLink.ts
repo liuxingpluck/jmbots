@@ -25,7 +25,7 @@ export class ReplyLink {
   /** @param t 当前界面的翻译函数，省略时使用中文。 */
   constructor(private readonly t: i18n.Translate = i18n.source) {}
 
-  /** 实际生成模型与请求/发送设置紧凑显示，不输出质量评分。 */
+  /** 完整模型 ID（带前缀）和思考档，中间用 · 隔开，例如 magpie/workbuddy/deepseek-v4.1-flash · max。 */
   generation(generation: types.ReplyGeneration): string {
     const t = this.t;
     if (generation.kind === 'program') {
@@ -34,19 +34,15 @@ export class ReplyLink {
     if (generation.kind === 'unknown' || !generation.model) {
       return t('生成模型未确认');
     }
-    const parts = [generation.model.split('/').at(-1) || generation.model];
+    const parts = [generation.model];
     const requested = generation.thinkingRequested;
     const sent = generation.thinkingSent;
-    const sameSetting = Boolean(requested) && requested === sent;
-    if (sameSetting && requested) {
-      parts.push(t('请求／发送 {level}', { level: requested }));
-    } else if (requested) {
-      parts.push(t('请求 {level}', { level: requested }));
-    }
-    if (!sameSetting && sent) {
-      parts.push(t('发送 {level}', { level: sent }));
-    }
-    if (!generation.thinkingRequested && !generation.thinkingSent) {
+    if (requested) {
+      parts.push(requested);
+      if (sent && sent !== requested) parts.push(t('实发 {level}', { level: sent }));
+    } else if (sent) {
+      parts.push(sent);
+    } else {
       parts.push(t('档位未记录'));
     }
     if (generation.kind === 'model-wrapped') {
@@ -110,7 +106,8 @@ export class ReplyLink {
   static async resolve(
     bot: string,
     ids: number[],
-    origin: types.MessageOrigin,
+    origin: types.MessageOrigin | undefined,
+    channel?: string,
   ): Promise<ResolvedSources> {
     const unique = [...new Set(ids)];
     const messages: types.MessageView[] = [];
@@ -121,9 +118,12 @@ export class ReplyLink {
       messages.push(...resolved.messages);
       missingIds.push(...resolved.missingIds);
     }
+    const matches = (message: types.MessageView): boolean =>
+      (origin === undefined || ReplyLink.origin(message) === origin)
+      && (channel === undefined || message.channel.split(':')[0] === channel);
     return {
-      visible: messages.filter((message) => ReplyLink.origin(message) === origin),
-      foreignIds: messages.filter((message) => ReplyLink.origin(message) !== origin).map((message) => message.id),
+      visible: messages.filter(matches),
+      foreignIds: messages.filter((message) => !matches(message)).map((message) => message.id),
       missingIds,
     };
   }

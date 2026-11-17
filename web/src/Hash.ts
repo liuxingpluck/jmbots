@@ -25,6 +25,7 @@ const TABS: storeModule.PanelTab[] = [
   'details',
   'usage',
   'events',
+  'todo',
 ];
 
 

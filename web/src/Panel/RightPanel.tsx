@@ -1,6 +1,7 @@
 /**
  * 右栏：动态预览（docs/界面/01_界面设计.md 第 9 节）。默认收起；点附件、事件行、机器人时展开，聊天区不关；Esc 关。
  * 事件（Events.tsx）查看具体回复的只读证据；会话（Session.tsx）看步骤和分派记录、换模型、停下（G批设计 8.1）；
+ * 顶部「正在运行」（RunningTasks.tsx）列出当前机器人同时在跑的前台和后台任务，没有任务时不显示。
  * 原有预览、工作区、消息、待审核、记忆、详情和用量各保留原入口。
  */
 import * as icons from '@ant-design/icons';
@@ -8,12 +9,15 @@ import * as antd from 'antd';
 import * as react from 'react';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import * as approvals from './Approvals.tsx';
+import * as assist from '../Chat/Assist.tsx';
 import * as details from './Details.tsx';
 import * as events from './Events.tsx';
 import * as memory from './Memory.tsx';
 import * as messages from './Messages.tsx';
 import * as preview from './Preview.tsx';
+import * as runningTasks from './RunningTasks.tsx';
 import * as session from './Session.tsx';
 import * as usage from './Usage.tsx';
 import * as workspace from './Workspace.tsx';
@@ -28,6 +32,7 @@ const TABS: { key: storeModule.PanelTab; label: string }[] = [
   { key: 'preview', label: '预览' },
   { key: 'workspace', label: '工作区' },
   { key: 'session', label: '会话' },
+  { key: 'todo', label: '待办' },
   { key: 'messages', label: '消息' },
   { key: 'approvals', label: '待审核' },
   { key: 'memory', label: '记忆' },
@@ -39,6 +44,7 @@ const TABS: { key: storeModule.PanelTab; label: string }[] = [
 /** 预览的标签页：一个文件一个，点名字切换、点 × 关掉，多了用 ‹ › 切到上一个、下一个（用户 11-06）。 */
 function PreviewTabs(): react.JSX.Element | null {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 开着的预览和正在看的那个。 */
   const tabs = context.useUi((state) => state.previewTabs);
   const current = context.useUi((state) => state.panelTarget);
@@ -74,9 +80,9 @@ function PreviewTabs(): react.JSX.Element | null {
         {tabs.map((item) => (
           <span key={item.path}
             className={historyModule.fileIdentity(item.path) === historyModule.fileIdentity(current?.path)
-              ? 'jm-preview-tab jm-preview-tab-active' : 'jm-preview-tab'} title={item.path}>
+              ? 'jm-preview-tab jm-preview-tab-active' : 'jm-preview-tab'} title={privacy.text(item.path, masked)}>
             <button type="button" className="jm-preview-tab-name" onClick={() => showPreview(item.path)}>
-              {item.name}
+              {privacy.name(item.name, masked)}
             </button>
             <button type="button" className="jm-preview-tab-close" aria-label={t('关掉这个预览')} onClick={() => closePreview(item.path)}>
               ×
@@ -93,6 +99,7 @@ function PreviewTabs(): react.JSX.Element | null {
 /** 右栏统一查看导航，独立于“上/下一个已开文件”两枚原按钮。 */
 function ReadingHistory(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const entries = context.useUi((state) => state.panelHistory);
   const index = context.useUi((state) => state.panelHistoryIndex);
   const back = context.useUi((state) => state.panelBack);
@@ -100,7 +107,7 @@ function ReadingHistory(): react.JSX.Element {
   const current = entries[index];
   let identity = t('右侧内容');
   if (current?.tab === 'preview' && current.target) {
-    identity = current.target.name;
+    identity = privacy.name(current.target.name, masked);
   } else if (current?.tab === 'events' && current.traceTarget) {
     identity = t('消息 #{id} 的第 {number} 条回复', {
       id: current.traceTarget.messageId,
@@ -173,6 +180,7 @@ export function RightPanel(): react.JSX.Element {
       </header>
       <ReadingHistory />
       <div className="jm-panel-body">
+        <runningTasks.RunningTasks />
         {tab === 'events' && <events.Events />}
         {tab === 'preview' && (
           <>
@@ -187,6 +195,7 @@ export function RightPanel(): react.JSX.Element {
         {tab === 'memory' && <memory.Memory />}
         {tab === 'details' && <details.Details />}
         {tab === 'usage' && <usage.Usage />}
+        {tab === 'todo' && <assist.TodoPanel />}
       </div>
     </div>
   );

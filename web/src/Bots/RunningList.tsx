@@ -7,6 +7,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import type * as types from '../Types.ts';
 
 
@@ -28,6 +29,7 @@ function elapsed(ms: number): string {
 /** 正在做的事。 */
 export function RunningList(): react.JSX.Element | null {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 所有机器人正在做的。 */
   const [items, setItems] = react.useState<types.ProgressView[]>([]);
   /** 待审核。 */
@@ -65,9 +67,9 @@ export function RunningList(): react.JSX.Element | null {
     <div className="jm-running">
       <div className="jm-running-head">{t('正在做的事')}</div>
       {items.map((item) => (
-        <button key={item.id} type="button" className="jm-running-item" title={item.text} onClick={() => selectBot(item.bot)}>
+        <button key={item.id} type="button" className="jm-running-item" title={privacy.text(item.text, masked)} onClick={() => selectBot(item.bot)}>
           <span className="jm-running-bot">{item.bot}</span>
-          <span className="jm-running-action">{item.action}</span>
+          <span className="jm-running-action">{privacy.text(item.action, masked)}</span>
           <span className="jm-muted">{elapsed(Date.now() - item.startedAt)}</span>
         </button>
       ))}

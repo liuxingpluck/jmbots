@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 页面挂在 /graph/ 下：base 让 ./assets/… 指到根目录的 /assets/。 -->
+    <base href="/" />
+    <title>记忆关系图谱 · jmbots</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 第二个打包入口（web/Build.ts）：记忆关系图谱页，memory-graph 插件在 /graph/ 托管它。 -->
+    <script type="module" src="./src/Graph/GraphMain.tsx"></script>
+  </body>
+</html>

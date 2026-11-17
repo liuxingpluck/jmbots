@@ -1,0 +1,89 @@
+/* 积木客服页（/wechat-kefu/）。深色，配色照积木客服；三栏宽度：会话列表 clamp(260px, 24vw, 340px)、待发 clamp(240px, 22vw, 320px)、消息占剩下；窄屏改成上下排。2026-11-14 jm开发。 */
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; background: #0b1020; color: #e3e8f4; font: 14px/1.55 system-ui, "Microsoft YaHei", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+.wk-page { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.wk-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px clamp(10px, 2vw, 20px); background: linear-gradient(90deg, #101a35, #0d152b); border-bottom: 1px solid #1e2b50; }
+.wk-top h1 { margin: 0; font-size: 18px; font-weight: 600; background: linear-gradient(90deg, #4fd1a5, #6aa8ff); -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap; }
+.wk-top select { background: #131d3a; border: 1px solid #2a3a66; border-radius: 8px; padding: 5px 8px; max-width: 180px; }
+.wk-grow { flex: 1; }
+.wk-btn { cursor: pointer; padding: 6px 12px; border-radius: 8px; border: 1px solid #2f8f6b; background: linear-gradient(180deg, #23a777, #1a8460); color: #fff; white-space: nowrap; }
+.wk-btn:disabled { opacity: .5; cursor: not-allowed; }
+.wk-btn.small { padding: 2px 10px; font-size: 12px; margin-top: 4px; }
+.wk-guide { cursor: pointer; padding: 6px 12px; border-radius: 8px; border: 1px solid #b07a2a; background: linear-gradient(180deg, #d79a3a, #a8701f); color: #fff; }
+.wk-mask { display: flex; align-items: center; gap: 4px; color: #a9b6d6; white-space: nowrap; cursor: pointer; }
+.wk-poll-wrap { position: relative; }
+.wk-poll { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 4px 12px; border-radius: 14px; border: 1px solid #2a3a66; background: #121b36; font-size: 12px; white-space: nowrap; }
+.wk-poll i { width: 8px; height: 8px; border-radius: 50%; background: #6b7896; }
+.wk-poll.on i { background: #3ddc97; box-shadow: 0 0 0 0 rgba(61,220,151,.6); animation: wk-pulse 1.6s infinite; }
+.wk-poll.err i { background: #ff6b6b; } .wk-poll.paused i { background: #f5c04a; }
+@keyframes wk-pulse { 0% { box-shadow: 0 0 0 0 rgba(61,220,151,.6); } 100% { box-shadow: 0 0 0 8px rgba(61,220,151,0); } }
+.wk-poll-panel { position: absolute; top: 34px; left: 0; z-index: 10; min-width: 280px; padding: 10px 12px; border-radius: 10px; background: #121b36; border: 1px solid #2a3a66; font-size: 12px; color: #c4cee6; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.wk-poll-panel button { align-self: flex-end; cursor: pointer; background: #1d2a52; border: 1px solid #2a3a66; border-radius: 6px; padding: 2px 10px; }
+.wk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; padding: 12px clamp(10px, 2vw, 20px) 0; }
+.wk-stat { cursor: pointer; min-width: 0; padding: 10px 12px; border-radius: 12px; background: linear-gradient(180deg, #121c39, #0e162d); border: 1px solid #1f2d55; }
+.wk-stat:hover { border-color: #3a5aa8; } .wk-stat.on { border-color: #3ddc97; }
+.wk-stat.accent { border-color: #8a6a22; } .wk-stat.accent .v { color: #ffc861; }
+.wk-stat .k { color: #8fa0c8; font-size: 12px; } .wk-stat .v { font-size: 22px; font-weight: 600; } .wk-stat .s { color: #7383a8; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wk-note { margin: 10px clamp(10px, 2vw, 20px) 0; padding: 6px 10px; border-radius: 8px; background: #13214a; color: #cfe0ff; font-size: 13px; }
+.wk-main { flex: 1; min-height: 0; display: grid; grid-template-columns: clamp(260px, 24vw, 340px) minmax(0, 1fr) clamp(240px, 22vw, 320px); gap: 12px; padding: 12px clamp(10px, 2vw, 20px); }
+.wk-list, .wk-chat, .wk-out { min-height: 0; min-width: 0; display: flex; flex-direction: column; border-radius: 12px; background: #0e162d; border: 1px solid #1d2a4d; overflow: hidden; }
+.wk-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; font-weight: 600; border-bottom: 1px solid #1d2a4d; background: #111b36; overflow-wrap: anywhere; }
+.wk-head .wk-btn { margin-left: auto; }
+.wk-head span { font-weight: 400; color: #7f8fb5; font-size: 12px; margin-left: 6px; }
+.wk-search { margin: 8px; padding: 6px 10px; border-radius: 8px; border: 1px solid #2a3a66; background: #131d3a; outline: none; }
+.wk-scroll { flex: 1; min-height: 0; overflow: auto; }
+.wk-empty { padding: 24px 12px; color: #7383a8; text-align: center; font-size: 13px; }
+.wk-item { display: flex; gap: 10px; padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #16213f; }
+.wk-item:hover { background: #121d3b; } .wk-item.on { background: #16264d; }
+.wk-avatar { flex: 0 0 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; background: #2a4a8a; font-weight: 600; }
+.wk-avatar[data-kind="group"] { background: #2d7a5c; } .wk-avatar[data-kind="official"] { background: #7a5a2d; } .wk-avatar[data-kind="work"] { background: #2d5f7a; } .wk-avatar[data-kind="system"] { background: #4a4f63; }
+.wk-item-main { min-width: 0; flex: 1; }
+.wk-item-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wk-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.wk-badge { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #1d2e55; color: #8cc0ff; white-space: nowrap; }
+.wk-unread { font-size: 11px; min-width: 18px; text-align: center; padding: 0 5px; border-radius: 9px; background: #e05555; color: #fff; }
+.wk-last { color: #7f8fb5; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wk-switches { display: flex; gap: 12px; margin-top: 2px; font-size: 12px; color: #a9b6d6; }
+.wk-switches label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+.wk-msgs { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.wk-msg { max-width: min(78%, 640px); align-self: flex-start; }
+.wk-msg.me { align-self: flex-end; text-align: right; }
+.wk-sender { font-size: 12px; color: #7f8fb5; }
+.wk-bubble { display: inline-block; text-align: left; padding: 7px 11px; border-radius: 10px; background: #18254a; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wk-msg.me .wk-bubble { background: #1f7a54; }
+.wk-time { font-size: 11px; color: #637399; }
+.wk-compose { display: flex; gap: 8px; padding: 8px; border-top: 1px solid #1d2a4d; }
+.wk-compose textarea { flex: 1; min-width: 0; resize: none; border-radius: 8px; border: 1px solid #2a3a66; background: #131d3a; padding: 6px 8px; outline: none; }
+.wk-outitem { padding: 8px 10px; border-bottom: 1px solid #16213f; }
+.wk-outtext { font-size: 13px; color: #c4cee6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wk-state { font-size: 11px; padding: 0 7px; border-radius: 8px; background: #2a3354; white-space: nowrap; }
+.wk-state.sent { background: #1d3b2c; color: #7fe0b0; } .wk-state.failed, .wk-state.rejected { background: #4a1f25; color: #ff9a9a; } .wk-state.draft, .wk-state.waiting { background: #3b2a12; color: #ffc861; }
+@media (max-width: 900px) {
+  html, body, #root { height: auto; }
+  .wk-page { height: auto; }
+  .wk-main { grid-template-columns: minmax(0, 1fr); }
+  .wk-list, .wk-out { max-height: 360px; } .wk-chat { min-height: 420px; }
+}
+/* 2026-11-14 23:20 EST：会话筛选 chips（全部 / 只看监听 / 有未读），照原版积木客服。 */
+.wk-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 8px; }
+.wk-chip { border: 1px solid #2a3a66; background: #131d3a; color: #c9d4f0; border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
+.wk-chip b { margin-left: 4px; font-weight: 600; color: #7f8fb5; }
+.wk-chip.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.wk-chip.on b { color: #fff; }
+/* 2026-11-14 23:35 EST：排序和批量勾选一行、像真微信的左右气泡、图片/语音/卡片。 */
+.wk-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 10px 8px; font-size: 12px; color: #7f8fb5; }
+.wk-tools select { background: #131d3a; color: #c9d4f0; border: 1px solid #2a3a66; border-radius: 6px; }
+.wk-link { background: none; border: none; color: #6ea8ff; cursor: pointer; font-size: 12px; padding: 0; }
+.wk-link:disabled { color: #4a5578; cursor: default; }
+.wk-msg { display: flex; gap: 8px; align-items: flex-start; }
+.wk-msg.me { flex-direction: row-reverse; }
+.wk-msg-avatar { flex: 0 0 32px; height: 32px; font-size: 13px; }
+.wk-msg-body { min-width: 0; }
+.wk-msg.me .wk-bubble { background: #95ec69; color: #111; }
+.wk-media img { display: block; max-width: 220px; max-height: 220px; border-radius: 6px; }
+.wk-voice { min-width: 80px; }
+.wk-card { display: grid; gap: 4px; max-width: 320px; }
+.wk-card span { font-size: 12px; color: #9fb0d6; }
+.wk-card i { font-style: normal; font-size: 11px; color: #637399; border-top: 1px solid #2a3a66; padding-top: 4px; }
+.wk-msg.me .wk-card span, .wk-msg.me .wk-card i { color: #2b4a1c; }

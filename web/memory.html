@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 页面挂在 /memory/ 下：base 让 ./assets/… 指到根目录的 /assets/（web 插件也认 /memory/assets/…，双保险）。 -->
+    <base href="/" />
+    <title>记忆检索 · jmbots</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 第三个打包入口（web/Build.ts）：记忆检索页，web 插件把 dist/web/memory.html 挂在 /memory/。2026-11-14 jm开发。 -->
+    <script type="module" src="./src/Memory/MemoryMain.tsx"></script>
+  </body>
+</html>

@@ -7,6 +7,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import * as readingModule from './Reading.ts';
 import * as traceModule from './Trace.ts';
 import * as replyLinkModule from '../Chat/ReplyLink.ts';
@@ -107,6 +108,7 @@ function TextFragment(props: {
   body: TraceBodyProps;
 }): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const preview = props.body.presenter.textPreview(props.text, props.textChars, props.max);
   const expanded = props.body.disclosures.expanded.has(props.itemKey);
   return (
@@ -118,7 +120,7 @@ function TextFragment(props: {
           {preview.fragmentNotice && <p className="jm-muted">{preview.fragmentNotice}</p>}
         </Disclosure>
       )}
-      {props.fileTarget.path && (
+      {!masked && props.fileTarget.path && (
         <button type="button" onClick={() => props.body.openPanel('preview', props.fileTarget)}>
           {t('打开完整消息文件')}
         </button>
@@ -131,6 +133,7 @@ function TextFragment(props: {
 /** 顶部身份只使用回复发送时保存的机器人、标题和当时工作区。 */
 function ReplyHeader(props: TraceBodyProps): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const target = props.trace.target;
   const at = props.presenter.timestamp(target.at);
   const exactAt = props.presenter.timestamp(target.at, true, true);
@@ -160,12 +163,22 @@ function ReplyHeader(props: TraceBodyProps): react.JSX.Element {
           onClick={() => props.onLocate?.(target.messageId, target.replyIndex)}>{t('定位回答')}</button>
         <button type="button" disabled={!props.onLocate || firstSource === undefined}
           onClick={() => firstSource !== undefined && props.onLocate?.(firstSource, null)}>{t('定位来源')}</button>
+        <button
+          type="button"
+          disabled={!target.sessionId && !target.messageId}
+          onClick={() => {
+            const query = new URLSearchParams();
+            if (target.sessionId) query.set('session', target.sessionId);
+            if (target.messageId) query.set('message', String(target.messageId));
+            window.open(`/flow/?${query.toString()}`, '_blank', 'noopener,noreferrer');
+          }}
+        >{t('查看流程图')}</button>
       </div>
       <div className="jm-trace-header-actions">
       <Disclosure itemKey="answer" label={t('回答原文')} controls={props.disclosures}>
         <p className="jm-trace-full-text">{target.text}</p>
         {answerPreview.fragmentNotice && <p className="jm-muted">{answerPreview.fragmentNotice}</p>}
-        {target.messageFile && (
+        {!masked && target.messageFile && (
           <button type="button" onClick={() => props.openPanel('preview', fileTarget)}>{t('打开完整消息文件')}</button>
         )}
       </Disclosure>
@@ -202,6 +215,7 @@ function Gaps(props: TraceBodyProps): react.JSX.Element {
 /** 来源身份、收到时间和原话摘要直接可读，编号仅作辅助定位。 */
 function Sources(props: TraceBodyProps): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   return (
     <section className="jm-trace-source-section" aria-label={t('来源消息')}>
       <Disclosure itemKey="sources" label={t('查看关联来源（{count} 条）', {
@@ -212,7 +226,7 @@ function Sources(props: TraceBodyProps): react.JSX.Element {
         const at = props.presenter.timestamp(source.createdAt);
         const exactAt = props.presenter.timestamp(source.createdAt, true, true);
         /** web 是已保存的入口标识，用已知入口名解释，不猜实际发送人的姓名。 */
-        const sourceName = source.source === 'web' ? `${t('网页')}（web）` : source.source;
+        const sourceName = source.source === 'web' ? `${t('网页')}（web）` : privacy.name(source.source, masked);
         const fileTarget = { path: source.file, name: t('消息 #{id}', { id: source.id }) };
         return (
           <article key={source.id} className="jm-trace-source-card">
@@ -372,10 +386,11 @@ function EventItem(props: {
   body: TraceBodyProps;
 }): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const item = props.item;
   const record = item.record;
   const dispatch = props.body.presenter.dispatchFor(record, props.body.trace.dispatches);
-  const original = props.body.presenter.raw(record);
+  const original = privacy.text(props.body.presenter.raw(record), masked);
   const classes = ['jm-trace-event', `jm-trace-${item.category}`];
   if (item.failed) {
     classes.push('jm-trace-failed');
@@ -393,8 +408,8 @@ function EventItem(props: {
           <span>{item.symbol} {item.categoryText}</span>
           <code>{record.type}</code>
         </div>
-        <h3>{item.title}</h3>
-        {item.summary && <p className="jm-trace-event-summary">{item.summary}</p>}
+        <h3>{privacy.text(item.title, masked)}</h3>
+        {item.summary && <p className="jm-trace-event-summary">{privacy.text(item.summary, masked)}</p>}
         {dispatch && (
           <Disclosure itemKey={`event-dispatch:${record.id}`} label={t('分派模型、阶段与依据')}
             controls={props.body.disclosures}>
@@ -404,9 +419,9 @@ function EventItem(props: {
         <Disclosure itemKey={`event:${record.id}`} label={t('规则、数据与依据')} controls={props.body.disclosures}>
           <dl className="jm-trace-facts">
             <div><dt>{t('记录时间')}</dt><dd>{item.fullTime}</dd></div>
-            <div><dt>{t('报告模块')}</dt><dd>{record.source}</dd></div>
+            <div><dt>{t('报告模块')}</dt><dd>{privacy.text(record.source, masked)}</dd></div>
             {item.facts.map((fact) => (
-              <div key={fact.key}><dt title={fact.key}>{fact.label}</dt><dd><pre>{fact.value}</pre></dd></div>
+              <div key={fact.key}><dt title={privacy.text(fact.key, masked)}>{privacy.text(fact.label, masked)}</dt><dd><pre>{privacy.text(fact.value, masked)}</pre></dd></div>
             ))}
           </dl>
           <Disclosure
@@ -426,6 +441,7 @@ function EventItem(props: {
 /** 未精确归属回复的用量留在最后，不混进分派阶段或真实事件。 */
 function Usage(props: TraceBodyProps): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   return (
     <section className="jm-trace-evidence">
       <Disclosure
@@ -438,7 +454,7 @@ function Usage(props: TraceBodyProps): react.JSX.Element {
         </p>
         {props.trace.usage.map((usage, index) => {
           const at = props.presenter.timestamp(usage.at);
-          const original = props.presenter.raw(usage);
+          const original = privacy.text(props.presenter.raw(usage), masked);
           const key = `usage:${usage.at}:${usage.model}:${index}`;
           return (
             <Disclosure key={key} itemKey={key} label={`${at} · ${usage.model}`} controls={props.disclosures}>
@@ -453,9 +469,12 @@ function Usage(props: TraceBodyProps): react.JSX.Element {
 
 
 /** 已加载证据的阅读正文；导出供离线渲染检查，不包含请求或执行副作用。 */
-export function TraceBody(props: TraceBodyProps): react.JSX.Element {
+export function TraceBody(input: TraceBodyProps): react.JSX.Element {
   const t = i18n.useT();
-  const items = react.useMemo(() => props.presenter.items(props.trace.events), [props.presenter, props.trace.events]);
+  const masked = privacy.useMask();
+  //M 展示副本保留技术判别；原始事件仍交展示器判别，正文和 JSON 在出口另行打码。
+  const props = { ...input, trace: privacy.record(input.trace, masked) };
+  const items = react.useMemo(() => input.presenter.items(input.trace.events), [input.presenter, input.trace.events]);
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const eventKeys = items.map((item) => `event:${item.record.id}`);
   const allExpanded = eventKeys.length > 0 && eventKeys.every((key) => props.disclosures.expanded.has(key));
@@ -501,6 +520,7 @@ export function TraceBody(props: TraceBodyProps): react.JSX.Element {
 /** 请求与阅读历史接线；异步返回必须匹配当前回复，加载占位态不覆盖旧阅读位置。 */
 export function Events(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const target = context.useUi((state) => state.traceTarget);
   const currentBot = context.useUi((state) => state.currentBot);
   const openPanel = context.useUi((state) => state.openPanel);
@@ -618,8 +638,8 @@ export function Events(): react.JSX.Element {
         <antd.Button size="small" onClick={() => setRefresh(refresh + 1)}>{t('刷新')}</antd.Button>
       </div>
       {!result && <p role="status">{t('正在读取事件…')}</p>}
-      {result?.error && <p className="jm-trace-notice" role="alert">{result.error}</p>}
-      {locateError && <p className="jm-trace-notice" role="alert">{locateError}</p>}
+      {result?.error && <p className="jm-trace-notice" role="alert">{privacy.text(result.error, masked)}</p>}
+      {locateError && <p className="jm-trace-notice" role="alert">{privacy.text(locateError, masked)}</p>}
       {result?.trace && (
         <TraceBody trace={result.trace} presenter={presenter} openPanel={openPanel}
           disclosures={disclosures} onLocate={requestLocate} />

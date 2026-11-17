@@ -4,3 +4,7 @@ declare module '*.webp' {
   const url: string;
   export default url;
 }
+
+
+/** 样式表：打包时打进产物，import 只为副作用。 */
+declare module '*.css';

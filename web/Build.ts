@@ -15,7 +15,11 @@ const outDir = process.env.JMBOTS_WEB_OUT ?? path.join(root, 'dist', 'web');
 fs.rmSync(outDir, { recursive: true, force: true });
 /** 打包结果；success 为 false 时 logs 里是原因。 */
 const result = await Bun.build({
-  entrypoints: [path.join(root, 'web', 'index.html')],
+  //M 第二个入口 graph.html：记忆关系图谱页（memory-graph 插件在 /graph/ 托管）。
+  //M 第三个入口 memory.html（2026-11-14 jm开发）：记忆检索页，web 插件把 dist/web/<名字>.html 挂在 /<名字>/，即 /memory/。
+  //M 第四个入口 wechat-kefu.html（2026-11-14 jm开发）：积木客服页 /wechat-kefu/（React，替换 wechat 插件里的字符串页面 Page.ts）。
+  //M 第五个入口 flow.html（2026-11-16）：插件预览图 /flow/，flow 插件托管。
+  entrypoints: [path.join(root, 'web', 'index.html'), path.join(root, 'web', 'graph.html'), path.join(root, 'web', 'memory.html'), path.join(root, 'web', 'wechat-kefu.html'), path.join(root, 'web', 'flow.html')],
   outdir: outDir,
   target: 'browser',
   minify: true,

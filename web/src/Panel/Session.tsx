@@ -9,6 +9,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import type * as types from '../Types.ts';
 import * as stepsView from './StepsView.tsx';
 
@@ -27,7 +28,8 @@ const STOP_REASON = '不想让它继续了';
  * @param panelSessionId 从工作区点进来时设的会话号，可能没有。
  */
 function defaultSession(sessions: api.SessionBrief[], panelSessionId: string | null): string | null {
-  if (panelSessionId !== null && sessions.some((item) => item.id === panelSessionId)) {
+  //M 从「正在运行」点进来时，后台子会话不在下拉清单里（列表只给没有 parent 的），也要能选中。
+  if (panelSessionId !== null) {
     return panelSessionId;
   }
   /** 运行中的第一个。 */
@@ -44,10 +46,12 @@ function defaultSession(sessions: api.SessionBrief[], panelSessionId: string | n
 /** 会话页。 */
 export function Session(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 正在聊的机器人。 */
   const bot = context.useUi((state) => state.currentBot);
   /** 从工作区点进来时选的会话。 */
   const panelSessionId = context.useUi((state) => state.panelSessionId);
+  const selectSession = context.useUi((state) => state.selectSession);
   const openPanel = context.useUi((state) => state.openPanel);
   /** 会话列表（顶部选择用）。 */
   const [list, setList] = react.useState<api.SessionBrief[]>([]);
@@ -55,6 +59,9 @@ export function Session(): react.JSX.Element {
   const [models, setModels] = react.useState<api.ModelInfo[]>([]);
   /** 现在选中的会话号。 */
   const [selected, setSelected] = react.useState<string | null>(null);
+  react.useEffect(() => { if (selected) selectSession(selected); }, [selected, selectSession]);
+  /** 用户自己在下拉里挑过（挑过就不再自动换到新跑起来的会话）。 */
+  const picked = react.useRef(false);
   /** 选中会话的详情和步骤。 */
   const [detail, setDetail] = react.useState<types.SessionDetail | null>(null);
   const [steps, setSteps] = react.useState<types.SessionStep[]>([]);
@@ -71,6 +78,7 @@ export function Session(): react.JSX.Element {
   react.useEffect(() => {
     setList([]);
     setSelected(null);
+    picked.current = false;
     setDetail(null);
     setSteps([]);
     setError('');
@@ -97,6 +105,34 @@ export function Session(): react.JSX.Element {
     );
     return () => {
       stopped = true;
+    };
+  }, [bot, panelSessionId]);
+
+  //M 会话列表每 2 秒重取一次：新开的后台会话自己出现，停下的不再显示运行中。
+  //  用户没挑过就跟着默认选中走（有在跑的选在跑的）；挑过的只要还在就不动。
+  react.useEffect(() => {
+    if (!bot) {
+      return undefined;
+    }
+    /** 停了没有。 */
+    let stopped = false;
+    /** 定时器。 */
+    const timer = setInterval(() => {
+      void api.sessions(bot).then((sessions) => {
+        if (stopped) {
+          return;
+        }
+        setList(sessions);
+        setSelected((old) => (
+          picked.current && old !== null && (sessions.some((item) => item.id === old) || old === panelSessionId)
+            ? old
+            : defaultSession(sessions, picked.current ? null : panelSessionId) ?? old
+        ));
+      }, () => undefined);
+    }, POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
     };
   }, [bot, panelSessionId]);
 
@@ -229,7 +265,7 @@ export function Session(): react.JSX.Element {
     if (detail === null) {
       return;
     }
-    openPanel('preview', { path: detail.files.md, name: detail.title });
+    openPanel('preview', { path: detail.files.md, name: privacy.name(detail.title, masked) });
   };
 
   /**
@@ -265,11 +301,26 @@ export function Session(): react.JSX.Element {
           size="small"
           value={selected ?? undefined}
           placeholder={t('选一个会话')}
-          onChange={(value) => setSelected(value)}
-          options={list.map((item) => ({
-            value: item.id,
-            label: `${item.title === '' ? item.id : item.title}（${statusText(item.status)}）`,
-          }))}
+          optionLabelProp="label"
+          onChange={(value) => {
+            picked.current = true;
+            setSelected(value);
+          }}
+          options={[
+            ...list.map((item) => ({
+              value: item.id,
+              title: item.id,
+              label: `${privacy.name(item.title === '' ? item.id : item.title, masked)}（${statusText(item.status)}）`,
+            })),
+            //M 正在跑的后台子会话不在清单里，选中时补一项，免得下拉是空的。
+            ...(selected !== null && !list.some((item) => item.id === selected)
+              ? [{
+                  value: selected,
+                  title: selected,
+                  label: `${privacy.name(detail !== null && detail.id === selected && detail.title !== '' ? detail.title : selected, masked)}（${statusText(detail?.status ?? 'running')}）`,
+                }]
+              : []),
+          ]}
         />
         <antd.Button
           size="small"
@@ -279,14 +330,20 @@ export function Session(): react.JSX.Element {
           title={t('刷新')}
           onClick={refresh}
         />
-        <antd.Button size="small" icon={<icons.FileTextOutlined />} disabled={detail === null} onClick={openMd}>
-          {t('打开会话 md')}
-        </antd.Button>
+        {/* 会话 md 由 journal 插件写；还没写（没挂 journal、会话还没说过话）时路径是空的，按钮不显示。 */}
+        {detail !== null && detail.files.md !== '' && (
+          <antd.Button size="small" icon={<icons.FileTextOutlined />} onClick={openMd}>
+            {t('打开会话 md')}
+          </antd.Button>
+        )}
       </div>
+      {selected !== null && (
+        <div className="jm-session-id" title={selected}>{t('会话号 {id}', { id: selected })}</div>
+      )}
       {detail !== null && (
         <div className="jm-session-controls">
           <antd.Tag color={statusColor(detail.status)}>{statusText(detail.status)}</antd.Tag>
-          <span className="jm-muted jm-session-workspace" title={detail.workspace}>{detail.workspace}</span>
+          <span className="jm-muted jm-session-workspace" title={privacy.text(detail.workspace, masked)}>{privacy.text(detail.workspace, masked)}</span>
           <antd.Select
             className="jm-session-model"
             size="small"
@@ -313,8 +370,8 @@ export function Session(): react.JSX.Element {
           </antd.Button>
         </div>
       )}
-      {notice && <div className="jm-muted jm-session-notice">{notice}</div>}
-      {error && <div className="jm-field-error">{error}</div>}
+      {notice && <div className="jm-muted jm-session-notice">{privacy.text(notice, masked)}</div>}
+      {error && <div className="jm-field-error">{privacy.text(error, masked)}</div>}
       <stepsView.StepsView steps={steps} />
     </div>
   );

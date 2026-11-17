@@ -1,32 +1,218 @@
 /**
- * 跟踪点：骨架和插件在关键的地方各发一个，说清“现在走到哪个模块的哪个函数、在干什么”。
+ * 跟踪点：骨架和插件走到关键的地方各发一个，说清“现在走到哪个模块的哪个函数、在干什么”。
  * 骨架只管发，不管打印；打印是 plugins/trace 的事。没挂打印插件时没人听，发了等于没发。
- * 写法：this.ctx.emit('trace', { module: 'Bots', fn: 'receive', text: '收到一条消息', vars: () => ({ … }) })。
- * 伪代码里 //T 开头的一行，就是这里要发一个跟踪点。
+ * 写法（一个跟踪点两行，//T 开头的注释标出来）：
+ *   const vars = { 会话: session.id, 渠道: message.channel };
+ *   this.ctx.emit('trace', 'Bot.receive', '消息交给这场会话，推它往下走', 'session.add(); session.run()', vars);
+ * 会话发的三个事件（session/request、session/message、session/change）不用另发跟踪点：
+ * Cordis 每发一个事件都会自己报一声，打印插件顺带打出来。
+ *
+ * 下面几个函数是 trace（打到控制台）和 journal（记进库给网页看）共用的：两边记的是同一种行，
+ *   函数行：时间、模块.函数、人话、代码、变量、文件:行号；
+ *   事件行：时间、事件名、发法（挨个问 / 通知）、听的人、会话、文件:行号。
  */
+import * as path from 'node:path';
+import * as process from 'node:process';
+import * as piAi from '@earendil-works/pi-ai';
+import type * as cordis from 'cordis';
 
 declare module 'cordis' {
   interface Events {
-    /** 一个跟踪点。只是通知，谁也不许靠它改流程。 */
-    'trace'(point: TracePoint): void;
+    /**
+     * 一个跟踪点。只是通知，谁也不许靠它改流程。
+     * @param where 哪个模块的哪个函数，比如 Bot.receive。
+     * @param text 一句人话：现在在干什么。
+     * @param code 一句代码：对应的那行调用，比如 chat(resources, request)。
+     * @param vars 关键变量。
+     */
+    'trace'(where: string, text: string, code: string, vars: Record<string, unknown>): void;
   }
 }
 
 
-/** 一个跟踪点。 */
-export interface TracePoint {
-  /** 哪个模块或插件：Bots、Sessions、plugins/cli…… */
-  module: string;
-  /** 哪个函数：receive、run、onCalls…… */
-  fn: string;
-  /** 是在响应哪个事件；不是在响应事件时不写。 */
-  event?: string;
-  /** 哪场会话的；还没有会话时（比如渠道刚收到话）不写。 */
+
+/** Cordis 的发法，换成说明里的叫法：挨个问是照挂上去的先后一个个等；通知是只告诉大家。 */
+export const MODES: Record<string, string> = { serial: '挨个问', emit: '通知', parallel: '通知', bail: '挨个问' };
+
+
+/** 一个事件行：发了哪个事件、怎么发的、谁在听、归哪场会话，和几个认得的关键值。 */
+export interface DispatchLine {
+  /** 事件名，如 session/message。 */
+  name: string;
+  /** 挨个问、通知。 */
+  mode: string;
+  /** 听的人：登记监听的插件名。 */
+  listeners: string[];
+  /** 哪场会话；事件里找不到是 undefined。 */
   session?: string;
-  /** 给人看的一句话：现在在干什么。 */
-  text: string;
-  /** 给写代码的人看的一句：对应的那行调用，比如 chat(request)。 */
-  code?: string;
-  /** 关键变量。写成函数，没人听的时候不会去算。 */
-  vars?: () => Record<string, unknown>;
+  /** 哪个机器人。 */
+  bot?: string;
+  /** web-api 收件表的消息号。 */
+  messageId?: number;
+  /** 认得的关键值（状态、角色、说了什么、要了什么工具）。 */
+  vars: Record<string, unknown>;
+}
+
+
+/**
+ * 一句话截短、压成一行。
+ * @param value 值。
+ * @param max 最多几个字。
+ */
+export function short(value: unknown, max: number): string {
+  const full = typeof value === 'string' ? value : String(JSON.stringify(value));
+  const line = full.replace(/\s+/gu, ' ');
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+
+/**
+ * 像会话的东西：有 id 和 row（Session）。
+ * @param value 事件的一个参数，或参数里的 session。
+ * @returns 是会话就原样交回；不是是 undefined。
+ */
+function sessionLike(value: unknown): { id: string; row: Record<string, unknown> } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+
+  const item = value as Record<string, unknown>;
+  const hasId = typeof item['id'] === 'string';
+  const hasRow = typeof item['row'] === 'object' && item['row'] !== null;
+  if (hasId && hasRow) return item as { id: string; row: Record<string, unknown> };
+
+  return undefined;
+}
+
+
+/**
+ * 拼一个事件行：Cordis 每发一个事件先发 internal/dispatch（发法、事件名、参数），trace、journal 都听它。
+ * 会话从参数里找：参数本身是会话、带 session（ChatRequest、model/failed 的 info）、带 sessionId 或 session 号（待确认、进度）。
+ * @param ctx 听的那个插件的 ctx（用来查这个事件登记着哪些监听）。
+ * @param mode Cordis 的发法。
+ * @param event 事件名。
+ * @param args 事件带的参数。
+ * @param max 一个值最多几个字。
+ */
+export function dispatchLine(ctx: cordis.Context, mode: string, event: string, args: unknown[], max: number): DispatchLine {
+  //M 听的人：这个事件现在登记着的监听，各取登记它的那个插件的名字。
+  const hooks = ctx.events._hooks[event] ?? [];
+  const pluginNames = hooks.map((hook) => hook.ctx.fiber.name);
+  const line: DispatchLine = {
+    name: event,
+    mode: MODES[mode] ?? mode,
+    listeners: [...new Set(pluginNames)],
+    vars: {},
+  };
+
+  //M 会话、机器人、消息号：从参数里挨个找，找到会话就停。
+  for (const arg of args) {
+    /** 这个参数是对象才往里看；不是对象是 undefined。 */
+    let item: Record<string, unknown> | undefined;
+    if (typeof arg === 'object' && arg !== null) {
+      item = arg as Record<string, unknown>;
+    }
+
+    //M 消息号先认：web-api/replied 带着会话对象（{ messageId, session }），下面认出会话就停了，放后面读不到。
+    //M   web-api/received 的参数本身就是收件行，消息号是它的 id。
+    const receivedId = event === 'web-api/received' ? item?.['id'] : undefined;
+    const messageId = item?.['messageId'] ?? receivedId;
+    if (typeof messageId === 'number') line.messageId = messageId;
+
+    //M 参数本身是会话，或带着会话对象（session）：会话号、机器人都从它取，找到就停。
+    const found = sessionLike(arg) ?? sessionLike(item?.['session']);
+    if (found !== undefined) {
+      line.session = found.id;
+      if (typeof found.row['bot'] === 'string') line.bot = found.row['bot'];
+      break;
+    }
+
+    //M 参数只带着会话号（sessionId 或 session）、机器人名：取到哪个算哪个，取到了就停。
+    if (item !== undefined) {
+      const id = item['sessionId'] ?? item['session'];
+      if (typeof id === 'string' && id !== '') line.session = id;
+      if (typeof item['bot'] === 'string') line.bot = item['bot'];
+      if (line.session !== undefined || line.bot !== undefined) break;
+    }
+  }
+
+  //M 会话的三个事件带着什么，这里认得，顺带记下；别的事件只记名字、听的人、会话。
+  //M session/change：记状态和回话。
+  if (event === 'session/change') {
+    const session = sessionLike(args[0]);
+    if (session !== undefined) {
+      line.vars['状态'] = session.row['state'];
+      line.vars['回话'] = short(session.row['reply'], max);
+    }
+  }
+
+  //M session/message：记角色、说了什么；模型的回答再记要了哪些工具、哪个模型；工具结果记工具名、有没有出错。
+  if (event === 'session/message') {
+    const message = args[1] as piAi.Message | undefined;
+    if (message !== undefined) {
+      line.vars['角色'] = message.role;
+      let said: string;
+      if (typeof message.content === 'string') {
+        said = message.content;
+      } else {
+        said = piAi.contentText(message.content);
+      }
+      line.vars['说了'] = short(said, max);
+
+      if (message.role === 'assistant') {
+        const calls = message.content.filter((block): block is piAi.ToolCall => {
+          return block.type === 'toolCall';
+        });
+        const callNames = calls.map((call) => call.name);
+        if (callNames.length > 0) {
+          line.vars['要了工具'] = callNames.join('、');
+        }
+        line.vars['模型'] = `${message.provider}/${message.model}`;
+      }
+
+      if (message.role === 'toolResult') {
+        line.vars['工具'] = message.toolName;
+        line.vars['出错'] = message.isError;
+      }
+    }
+  }
+  return line;
+}
+
+
+/**
+ * 从调用栈的一行里取出文件和行号。一行长这样：“at 函数名 (文件:行:列)”。
+ * @param frame 调用栈里的一行。
+ * @returns 文件和行号；这一行里没有（比如“at unknown”）是 undefined。
+ */
+function parseFrame(frame: string): { file: string; line: string } | undefined {
+  const found = /^\s*at (?:.*\()?(.+?):(\d+):\d+\)?$/u.exec(frame);
+  if (found === null) return undefined;
+  return { file: found[1] ?? '', line: found[2] ?? '' };
+}
+
+
+/**
+ * 是哪一行代码走到这里的：调用栈里第一处不在本文件、不在 node_modules（Cordis 自己）、也不在 skip 里那几个文件夹的。
+ * 跟踪点和 Cordis 报事件都是当场、同步调到监听里的，所以发它们的那一行还在调用栈里。
+ * @param skip 听的那个插件自己的文件夹（如 'plugins/trace/'），跳过。
+ * @returns “文件:行号”，相对当前目录；找不到是“位置不明”。
+ */
+export function callSite(skip: string[]): string {
+  //M 现场拿一份调用栈，一行一行往外找。
+  const stack = new Error().stack ?? '';
+  for (const frame of stack.split('\n')) {
+    const at = parseFrame(frame);
+    if (at === undefined) continue;
+
+    //G Cordis 自己、本文件、听的插件自己的文件夹 → 跳过，接着往外找。
+    const file = at.file.replaceAll('\\', '/');
+    const inCordis = file.includes('node_modules');
+    const inThisFile = file.endsWith('utils/Trace.ts');
+    const inSkipped = skip.some((part) => file.includes(part));
+    if (inCordis || inThisFile || inSkipped) continue;
+
+    //M 找到了：写成相对当前目录的“文件:行号”，斜杠统一成正斜杠。
+    const relative = path.relative(process.cwd(), at.file).replaceAll('\\', '/');
+    return `${relative}:${at.line}`;
+  }
+  return '位置不明';
 }

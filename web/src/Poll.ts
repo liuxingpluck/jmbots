@@ -24,7 +24,8 @@ export const HIDDEN_POLL_MS = 5000;
 export async function pollOnce(store: zustand.StoreApi<storeModule.UiState>): Promise<void> {
   try {
     /** 机器人和待确认。 */
-    const [bots, approvals] = await Promise.all([api.bots(), api.approvals()]);
+    //G 没挂 approval 插件时 /api/approvals 是 404：当没有待审核，不能连机器人列表一起丢（不然首页显示“后端还没有机器人”）。
+    const [bots, approvals] = await Promise.all([api.bots(), api.approvals().catch(() => [])]);
     store.getState().setPolled({ online: true, bots, approvals });
   } catch (error) {
     //M 连不上或后端出错 → 离线；别的错（4xx）说明后端在，只是这次没问对，不算离线。

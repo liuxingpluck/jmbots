@@ -8,6 +8,7 @@ import * as antd from 'antd';
 import * as react from 'react';
 import * as api from '../Api.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import type * as types from '../Types.ts';
 
 
@@ -42,6 +43,7 @@ function seconds(ms: number): string {
  */
 export function ProgressBar(props: { bot: string }): react.JSX.Element | null {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 这个机器人的进度。 */
   const [items, setItems] = react.useState<types.ProgressView[]>([]);
   /** 点按钮后的提示。 */
@@ -86,11 +88,11 @@ export function ProgressBar(props: { bot: string }): react.JSX.Element | null {
     <div className="jm-progress">
       {items.map((item) => (
         <div key={item.id} className={item.endedAt === undefined ? 'jm-progress-item' : 'jm-progress-item jm-progress-ended'}>
-          <span className="jm-progress-action">{item.action}</span>
+          <span className="jm-progress-action">{privacy.text(item.action, masked)}</span>
           <span className="jm-muted">
             {seconds((item.endedAt ?? Date.now()) - item.startedAt)}
             {item.limitMinutes ? ` · ${t('限时 {minutes} 分钟', { minutes: item.limitMinutes })}` : ''}
-            {item.sessionTitle ? ` · ${item.sessionTitle}` : ''}
+            {item.sessionTitle ? ` · ${privacy.name(item.sessionTitle, masked)}` : ''}
           </span>
           {item.endedAt === undefined ? (
             <span className="jm-progress-buttons">
@@ -107,11 +109,11 @@ export function ProgressBar(props: { bot: string }): react.JSX.Element | null {
               </antd.Button>
             </span>
           ) : (
-            item.result && <span className="jm-progress-result">{item.result}</span>
+            item.result && <span className="jm-progress-result">{privacy.text(item.result, masked)}</span>
           )}
         </div>
       ))}
-      {notice && <div className="jm-muted">{notice}</div>}
+      {notice && <div className="jm-muted">{privacy.text(notice, masked)}</div>}
     </div>
   );
 }

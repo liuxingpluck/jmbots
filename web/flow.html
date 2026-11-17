@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 页面挂在 /flow/ 下：base 让 ./assets/… 指到根目录的 /assets/。 -->
+    <base href="/" />
+    <title>插件预览 · jmbots</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 打包入口（web/Build.ts）：插件和事件预览图，flow 插件在 /flow/ 托管它。 -->
+    <script type="module" src="./src/Flow/FlowMain.tsx"></script>
+  </body>
+</html>

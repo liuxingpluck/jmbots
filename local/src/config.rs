@@ -1,8 +1,11 @@
 //! 壳子的配置（docs/界面/01_界面设计.md 第 2、4.2 节）：和 Bun 后端读同一个运行时目录、同一份 config.yaml、同一套键名。
 //!
 //! 运行时目录：命令行 --runtime > 环境变量 JMBOTS_RUNTIME > 可执行文件旁边的 jmbotsData/（发布给别人时运行时目录就在程序旁边）。
-//! 壳子读的几项：server.port（后端端口；0.4 的 http.port 回落，过渡期用）、local.port、local.server、local.libs、local.rag、local.memory_model
-//! （记忆库打 AI 标签用的模型，写成“供应商/模型”，地址和密钥从同一份 config.yaml 的 providers 里取；没写就不打标签）。
+//! 壳子读的几项：server.port（后端端口；0.4 的 http.port 回落，过渡期用）、shell.port、shell.server、
+//! shell.backend（主后端的参数、健康路径）。旧名 local: 过渡期照读（shell 优先）。
+//! 2026-11-14 用户定“插件思想”：local.services、local.memory_url 不再读——记忆服务、vgr 归 memory 插件托管，挂在主端口 /memory/ 下；
+//! 旧记忆接口（壳子端口上的 /health /search ……）转给 http://127.0.0.1:<server.port>/memory。
+//! 2026-11-14 用户定“基地只承载”：记忆库、RAG、AI 标签整个挪进独立的记忆服务 jmbots-memory，壳子不再读 local.libs/rag/memory_model。
 //! 后端地址：命令行 --server > 环境变量 JMBOTS_SERVER > config.yaml 的 local.server > 本机的 server.port。
 //! 能配置的都不写死；默认值都在这个文件开头一处。config.yaml 没有时不报错，全用默认值（Bun 第一次启动会写出模板）。
 //! 只读不写 config.yaml；也不把它的内容打出去（只取上面这几项）。
@@ -13,15 +16,17 @@ use std::path::{Path, PathBuf};
 /// Bun 后端默认的端口（config.yaml 没写 server.port 也没写 http.port 时用）。
 pub const DEFAULT_BACKEND_PORT: u16 = 30086;
 /// 壳子 HTTP 接口默认的端口：和原来 memorycli serve 的默认端口一样，后端的 engine.index_url 不用改。
-pub const DEFAULT_LOCAL_PORT: u16 = 30090;
+pub const DEFAULT_LOCAL_PORT: u16 = 30085;
 /// 壳子的接口听哪个地址：一律 0.0.0.0（CLAUDE.md 的规矩）。
 pub const LISTEN_HOST: &str = "0.0.0.0";
 /// 窗口默认打开本机的后端。
 pub const LOCAL_HOST: &str = "127.0.0.1";
-/// 记忆库目录默认的名字（相对运行时目录）。
-pub const DEFAULT_LIBS_DIR: &str = "data/index/libs";
-/// RAG 索引目录默认的名字（相对运行时目录）。
-pub const DEFAULT_RAG_DIR: &str = "data/index/rag";
+/// 记忆服务的内部端口（主端口顺延：30086 + 1）。2026-11-14 起由 memory 插件托管，壳子只留这个常量给说明和兼容。
+pub const DEFAULT_MEMORY_PORT: u16 = 30087;
+/// 主后端默认的启动参数；{runtime} 换成运行时目录、{port} 换成后端端口。
+pub const DEFAULT_BACKEND_ARGS: [&str; 3] = ["serve", "--runtime", "{runtime}"];
+/// 主后端默认的健康路径。
+pub const DEFAULT_BACKEND_HEALTH: &str = "/api/health";
 /// 运行时目录的文件夹名：程序旁边的这个文件夹，存在就读取，不存在就创建（用户 11-05）。
 pub const RUNTIME_DIR_NAME: &str = "jmbotsData";
 /// 运行时目录的环境变量（和 Bun 后端一样）。
@@ -57,56 +62,74 @@ pub struct Settings {
     pub server: String,
     /// 后端的端口（config.yaml 的 server.port，0.4 的 http.port 回落）：基地拉起后端、试运行新版本（它加一）时用。
     pub backend_port: u16,
+    /// 换版本试运行用的端口（shell.trial_port）；不写是 None：从主端口加一往后找第一个空的。
+    pub trial_port: Option<u16>,
     /// 壳子的接口听哪个地址。
     pub listen_host: String,
     /// 壳子的接口听哪个端口。
     pub listen_port: u16,
-    /// 记忆库目录：下面每个子目录一个 index.db。
-    pub libs_dir: PathBuf,
-    /// RAG 索引目录。
-    pub rag_dir: PathBuf,
-    /// 记忆库打 AI 标签用的模型；没写就不打标签。
-    pub memory_model: Option<MemoryModel>,
+    /// 主后端（jmbots-server，有更新流程）怎么起、怎么看健康。
+    pub backend: BackendSpec,
+    /// 另外要托管的服务（记忆服务等）：只守护、重启、记日志，不走更新流程。
+    pub services: Vec<ServiceSpec>,
+    /// 旧的记忆接口（/health /search /ingest /graph /rag/*）转到这个地址（不带结尾斜杠）。
+    pub memory_url: String,
     /// 界面语言（ui.language）；没写是 None。托盘菜单跟着它，重启基地生效。
     pub language: Option<String>,
     /// config.yaml 里写得不对的地方（读不了、类型不对……），用默认值顶上了；check 时报出来。
     pub problems: Vec<String>,
 }
 
-/// 记忆库打 AI 标签用的模型（local.memory_model 指的那个，地址和密钥来自 providers）。
+/// 主后端怎么起（local.backend）：文件名固定 jmbots-server（换版本、防火墙靠固定名字），参数和健康路径可配。
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct MemoryModel {
-    /// 写在 config.yaml 里的“供应商/模型”。
-    pub id: String,
-    /// 模型 ID（去掉供应商那一段）。
-    pub model: String,
-    /// 供应商的地址。
-    pub base_url: String,
-    /// 供应商的协议（providers.<名>.api，没写是 openai-completions）。
-    pub api: String,
-    /// 密钥：只在内存里，不打出去。
-    #[serde(skip_serializing)]
-    pub api_key: String,
+pub struct BackendSpec {
+    /// 启动参数；{runtime}、{port} 会被换掉。
+    pub args: Vec<String>,
+    /// 健康路径，如 /api/health。
+    pub health: String,
 }
 
-/// 找 local.memory_model 指的模型：拆出供应商，去 providers 里拿地址、密钥、协议。
-fn memory_model_at(root: &serde_yaml::Value, problems: &mut Vec<String>) -> Option<MemoryModel> {
-    let id = text_at(root, &["local", "memory_model"], problems)?;
-    let Some((provider, model)) = id.split_once('/') else {
-        problems.push(format!("local.memory_model 要写成“供应商/模型”，现在是 {id}，这次不打 AI 标签"));
+/// 一个要托管的服务（local.services 的一项）。
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct ServiceSpec {
+    /// 服务名（/restart?service=名、/services 里用）。
+    pub name: String,
+    /// 程序文件（相对运行时目录，惯例放 program/<服务名>/ 下，不带 .exe）；也可以写绝对路径。
+    pub file: String,
+    /// 启动参数；{runtime}、{port}、{data}（运行时 data 目录）会被换掉。
+    pub args: Vec<String>,
+    /// 听哪个端口（本机）。
+    pub port: u16,
+    /// 健康路径，如 /v1/health。
+    pub health: String,
+}
+
+/// 默认托管的服务：记忆服务 jmbots-memory（程序不在时守护只记一句，不报错）。
+/// 运行时（bun、node、python、模型、各服务程序）统一放 <运行时>/program/（用户 11-14 规划），所以程序在 program/jmbots-memory/ 下；
+/// 记忆服务自己按 --runtime 找模型（program/models/bge-m3-onnx-int8）、ONNX Runtime（program/onnxruntime/）和数据（data/memory）。
+fn default_services() -> Vec<ServiceSpec> {
+    // 2026-11-14：记忆服务归 memory 插件；壳子不再默认托管任何业务服务。
+    Vec::new()
+}
+
+/// 取一串文字（参数表）：没写是 None；不是文字数组记一条问题、当没写。
+fn texts_at(root: &serde_yaml::Value, keys: &[&str], problems: &mut Vec<String>) -> Option<Vec<String>> {
+    let value = pick(root, keys)?;
+    if value.is_null() {
         return None;
-    };
-    let Some(base_url) = text_at(root, &["providers", provider, "base_url"], problems) else {
-        problems.push(format!("local.memory_model 的供应商 {provider} 在 providers 里没有 base_url，这次不打 AI 标签"));
-        return None;
-    };
-    Some(MemoryModel {
-        id: id.clone(),
-        model: model.to_string(),
-        base_url,
-        api: text_at(root, &["providers", provider, "api"], problems).unwrap_or_else(|| "openai-completions".to_string()),
-        api_key: text_at(root, &["providers", provider, "api_key"], problems).unwrap_or_default(),
-    })
+    }
+    let items = value.as_sequence().and_then(|items| items.iter().map(|item| item.as_str().map(str::to_string)).collect::<Option<Vec<_>>>());
+    if items.is_none() {
+        problems.push(format!("{} 要是文字列表，现在是 {value:?}，用默认值", keys.join(".")));
+    }
+    items
+}
+
+/// 读 local.services：没写用默认（记忆服务）；写成空列表就是不托管别的服务；某一项写错记问题、跳过这一项。
+fn services_at(root: &serde_yaml::Value, problems: &mut Vec<String>) -> Vec<ServiceSpec> {
+    // 旧 local.services 不再读取，避免壳子和插件重复启动同一业务服务。
+    let _ = (root, problems);
+    default_services()
 }
 
 /// 从 YAML 里按路径取一个值。
@@ -149,8 +172,8 @@ fn text_at(root: &serde_yaml::Value, keys: &[&str], problems: &mut Vec<String>) 
     }
 }
 
-/// 相对运行时目录的路径变成绝对的；本来就是绝对路径的原样用。
-fn under(runtime: &Path, path: &str) -> PathBuf {
+/// 相对运行时目录的路径变成绝对的；本来就是绝对路径的原样用（托管服务的 file 写相对路径时用）。
+pub fn under(runtime: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() { path.to_path_buf() } else { runtime.join(path) }
 }
@@ -182,6 +205,11 @@ pub fn resolve(overrides: &Overrides, env: &dyn Fn(&str) -> Option<String>, exe_
     } else {
         serde_yaml::Value::Null
     };
+    // 迁移期：shell 优先；旧 local 仅兼容壳子自身字段，不兼容 services。
+    let mut root = root;
+    if let Some(shell) = root.get("shell").cloned() {
+        if let Some(map) = root.as_mapping_mut() { map.insert(serde_yaml::Value::from("local"), shell); }
+    }
     //M 后端端口：0.6 用 server.port；还没迁移的 0.4 config 回落 http.port，记一条提示（H 批）。
     let backend_port = match port_at(&root, &["server", "port"], &mut problems) {
         Some(port) => port,
@@ -194,10 +222,16 @@ pub fn resolve(overrides: &Overrides, env: &dyn Fn(&str) -> Option<String>, exe_
         }
     };
     let configured_server = text_at(&root, &["local", "server"], &mut problems);
+    let trial_port = port_at(&root, &["local", "trial_port"], &mut problems);
     let listen_port = overrides.port.or(port_at(&root, &["local", "port"], &mut problems)).unwrap_or(DEFAULT_LOCAL_PORT);
-    let libs = text_at(&root, &["local", "libs"], &mut problems).unwrap_or_else(|| DEFAULT_LIBS_DIR.to_string());
-    let rag = text_at(&root, &["local", "rag"], &mut problems).unwrap_or_else(|| DEFAULT_RAG_DIR.to_string());
-    let memory_model = memory_model_at(&root, &mut problems);
+    let backend = BackendSpec {
+        args: texts_at(&root, &["local", "backend", "args"], &mut problems).unwrap_or_else(|| DEFAULT_BACKEND_ARGS.iter().map(|arg| arg.to_string()).collect()),
+        health: text_at(&root, &["local", "backend", "health"], &mut problems).unwrap_or_else(|| DEFAULT_BACKEND_HEALTH.to_string()),
+    };
+    let services = services_at(&root, &mut problems);
+    //M 旧记忆接口转去哪：写了 local.memory_url 用它，否则用服务表里叫 memory 的那个的端口，都没有就是默认端口。
+    // 壳子遗留代理也只转主服务的 memory 路径，不再读业务进程配置。
+    let memory_url = format!("http://{LOCAL_HOST}:{backend_port}/memory");
     let language = text_at(&root, &["ui", "language"], &mut problems);
     let server = overrides
         .server
@@ -206,16 +240,17 @@ pub fn resolve(overrides: &Overrides, env: &dyn Fn(&str) -> Option<String>, exe_
         .or(configured_server)
         .unwrap_or_else(|| format!("http://{LOCAL_HOST}:{backend_port}"));
     Settings {
-        libs_dir: under(&runtime, &libs),
-        rag_dir: under(&runtime, &rag),
+        backend,
+        services,
+        memory_url: memory_url.trim_end_matches('/').to_string(),
         runtime,
         config_file,
         config_found,
         server: server.trim().trim_end_matches('/').to_string(),
         backend_port,
-        listen_host: overrides.host.clone().filter(|host| !host.trim().is_empty()).unwrap_or_else(|| LISTEN_HOST.to_string()),
+        trial_port,
+        listen_host: overrides.host.clone().filter(|host| !host.trim().is_empty()).or_else(|| text_at(&root, &["local", "host"], &mut problems)).unwrap_or_else(|| LISTEN_HOST.to_string()),
         listen_port,
-        memory_model,
         language,
         problems,
     }
@@ -248,8 +283,11 @@ mod tests {
         assert_eq!(settings.server, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}"));
         assert_eq!(settings.listen_port, DEFAULT_LOCAL_PORT);
         assert_eq!(settings.listen_host, "0.0.0.0");
-        assert_eq!(settings.libs_dir, runtime.join(DEFAULT_LIBS_DIR));
-        assert_eq!(settings.rag_dir, runtime.join(DEFAULT_RAG_DIR));
+        //M 默认托管记忆服务，旧记忆接口转到它的默认端口；主后端参数、健康路径是原来写死的那套。
+        assert!(settings.services.is_empty());
+        assert_eq!(settings.memory_url, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}/memory"));
+        assert_eq!(settings.backend.args, vec!["serve", "--runtime", "{runtime}"]);
+        assert_eq!(settings.backend.health, "/api/health");
         assert!(settings.problems.is_empty());
     }
 
@@ -269,9 +307,7 @@ mod tests {
     #[test]
     fn reads_same_keys_as_bun() {
         let dir = temp_dir("config-keys");
-        // 绝对路径要按这台机器的写法（Windows 带盘符），所以从临时目录拼出来。
-        let absolute = dir.join("abs-rag");
-        std::fs::write(dir.join(CONFIG_FILE), format!("providers:\n  x:\n    api_key: sk-fake\nhttp:\n  port: 31111\n  token: ''\nlocal:\n  port: 31122\n  libs: libs-here\n  rag: '{}'\n", absolute.display())).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE), format!("providers:\n  x:\n    api_key: sk-fake\nhttp:\n  port: 31111\n  token: ''\nlocal:\n  port: 31122\n  memory_url: '{}'\n", "http://127.0.0.1:15790/")).unwrap();
         let settings = resolve(&Overrides::default(), &no_env, Path::new("/没用到"));
         // 运行时目录没给时用 exe 所在目录：这里故意给一个不存在的，确认 config 是从 runtime 读的。
         assert!(!settings.config_found);
@@ -282,8 +318,7 @@ mod tests {
         assert_eq!(settings.problems.len(), 1, "{:?}", settings.problems);
         assert!(settings.problems[0].contains("server.port"));
         assert_eq!(settings.listen_port, 31122);
-        assert_eq!(settings.libs_dir, dir.join("libs-here"));
-        assert_eq!(settings.rag_dir, absolute);
+        assert_eq!(settings.memory_url, "http://127.0.0.1:31111/memory");
     }
 
     #[test]
@@ -326,31 +361,40 @@ mod tests {
     }
 
     #[test]
-    fn memory_model_comes_from_providers() {
-        let dir = temp_dir("config-memory-model");
-        std::fs::write(dir.join(CONFIG_FILE), "providers:\n  magpie:\n    base_url: http://127.0.0.1:1/v1\n    api_key: fake-key-1234\nlocal:\n  memory_model: magpie/workbuddy/x\n").unwrap();
+    fn services_and_backend_are_configurable() {
+        let dir = temp_dir("config-services");
+        std::fs::write(
+            dir.join(CONFIG_FILE),
+            "local:\n  backend:\n    args: [serve, --runtime, '{runtime}', --quiet]\n    health: /api/ping\n  services:\n    - name: memory\n      file: jmbots-memory\n      args: [serve, --port, '{port}']\n      port: 15790\n      health: /v1/health\n    - name: 坏的\n      file: x\n",
+        )
+        .unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));
-        let model = settings.memory_model.clone().expect("有模型");
-        assert_eq!(model.model, "workbuddy/x");
-        assert_eq!(model.base_url, "http://127.0.0.1:1/v1");
-        assert_eq!(model.api, "openai-completions");
-        // 密钥不打出去。
-        assert!(!serde_json::to_string(&settings).unwrap().contains("fake-key-1234"));
-        std::fs::write(dir.join(CONFIG_FILE), "local:\n  memory_model: 没有斜杠\n").unwrap();
+        assert_eq!(settings.backend.args, vec!["serve", "--runtime", "{runtime}", "--quiet"]);
+        assert_eq!(settings.backend.health, "/api/ping");
+        //M 2026-11-14：local.services 不再读（归 memory 插件），写了也是空表。
+        assert!(settings.services.is_empty());
+        assert_eq!(settings.memory_url, format!("http://127.0.0.1:{DEFAULT_BACKEND_PORT}/memory"));
+        assert!(settings.services.is_empty());
+    }
+
+    #[test]
+    fn shell_section_wins_over_local() {
+        let dir = temp_dir("config-shell");
+        std::fs::write(dir.join(CONFIG_FILE), "server:\n  port: 31086\nlocal:\n  port: 30090\nshell:\n  port: 31085\n").unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));
-        assert!(settings.memory_model.is_none());
-        assert_eq!(settings.problems.len(), 1);
+        assert_eq!(settings.listen_port, 31085);
+        assert_eq!(settings.memory_url, "http://127.0.0.1:31086/memory");
     }
 
     #[test]
     fn bad_values_fall_back_with_problems() {
         let dir = temp_dir("config-bad");
-        std::fs::write(dir.join(CONFIG_FILE), "http:\n  port: 七万\nlocal:\n  port: 70000\n  libs: [1]\n").unwrap();
+        std::fs::write(dir.join(CONFIG_FILE), "http:\n  port: 七万\nlocal:\n  port: 70000\n  memory_url: [1]\n").unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));
         assert_eq!(settings.server, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}"));
         assert_eq!(settings.listen_port, DEFAULT_LOCAL_PORT);
-        assert_eq!(settings.libs_dir, dir.join(DEFAULT_LIBS_DIR));
-        assert_eq!(settings.problems.len(), 3, "{:?}", settings.problems);
+        assert_eq!(settings.memory_url, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}/memory"));
+        assert_eq!(settings.problems.len(), 2, "{:?}", settings.problems);
         std::fs::write(dir.join(CONFIG_FILE), "http: [坏的\n").unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));
         assert_eq!(settings.problems.len(), 1);

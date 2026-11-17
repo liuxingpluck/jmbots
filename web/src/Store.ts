@@ -11,7 +11,7 @@ import * as replyLinkModule from './Chat/ReplyLink.ts';
 
 
 /** 右栏的标签；事件目标和文件预览目标分别保存。 */
-export type PanelTab = 'preview' | 'workspace' | 'session' | 'messages' | 'approvals' | 'memory' | 'details' | 'usage' | 'events';
+export type PanelTab = 'preview' | 'workspace' | 'session' | 'messages' | 'approvals' | 'memory' | 'details' | 'usage' | 'events' | 'todo';
 
 
 /** 右栏要看的东西。 */
@@ -141,6 +141,8 @@ export interface UiState {
   openPanel: (tab: PanelTab, target?: PanelTarget) => void;
   /** 打开右栏的“会话”页并选中一个会话。 */
   openSession: (id: string) => void;
+  /** 记下右栏当前看着的会话（不换标签），待办的清除和展示用它。 */
+  selectSession: (id: string | null) => void;
   /** 加一个工作区标签；同一个绝对路径只留一个。 */
   addWorkspaceTag: (tag: types.WorkspaceTag) => void;
   /** 按路径去掉一个工作区标签。 */
@@ -336,6 +338,7 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
           panelTab: 'session',
         };
       }),
+    selectSession: (id) => set({ panelSessionId: id }),
     addWorkspaceTag: (tag) =>
       set((state) => {
         //G 同一个绝对路径只留一个，重复点不加。

@@ -321,6 +321,14 @@ export class TracePresenter {
   /** 只有明确证据才标模型决策；程序选择备用模型仍属程序规则。 */
   private category(record: types.TraceEvent): TraceCategory {
     const type = record.type;
+    //M 新格式（src7 的跟踪行）：函数行是程序走到哪，事件行是记录。
+    const line = traceLine(record);
+    if (line === '函数') {
+      return 'program';
+    }
+    if (line === '事件') {
+      return 'record';
+    }
     if (type === 'dispatch.decided') {
       const by = record.data.by;
       if (by === 'decision' || by === 'quick' || by === 'llm') {
@@ -409,6 +417,15 @@ export class TracePresenter {
   /** 事件名仅做翻译；默认保留新类型，避免界面漏掉后台新增的记录。 */
   private title(record: types.TraceEvent): string {
     const t = this.t;
+    //M 新格式：函数行写“函数 模块.函数”，事件行写“事件 事件名（挨个问 / 通知）”。
+    const line = traceLine(record);
+    if (line === '函数') {
+      return t('函数 {name}', { name: record.type });
+    }
+    if (line === '事件') {
+      const mode = typeof record.data.mode === 'string' ? `（${record.data.mode}）` : '';
+      return t('事件 {name}', { name: `${record.type}${mode}` });
+    }
     switch (record.type) {
       case 'message.received':
         return t('收到来源消息');
@@ -565,6 +582,24 @@ export class TracePresenter {
     const t = this.t;
     const fields = record.data;
     const parts: string[] = [];
+    //M 新格式：函数行是人话；事件行是听的人。后面都带会话和代码位置。
+    const line = traceLine(record);
+    if (line !== undefined) {
+      if (line === '函数' && typeof fields.text === 'string') {
+        parts.push(fields.text);
+      }
+      if (line === '事件') {
+        const listeners = Array.isArray(fields.listeners) ? fields.listeners.join('、') : '';
+        parts.push(t('听的人：{listeners}', { listeners: listeners || t('（没人听）') }));
+      }
+      if (record.sessionId) {
+        parts.push(t('会话 {id}', { id: record.sessionId }));
+      }
+      if (typeof fields.site === 'string') {
+        parts.push(fields.site);
+      }
+      return parts.join(' · ');
+    }
     /** 集合条数来自实际消息号；缺集合就不拿单条 messageId 猜批次大小。 */
     const ids = Array.isArray(fields.messageIds)
       ? fields.messageIds.filter((id): id is number => typeof id === 'number')
@@ -673,6 +708,18 @@ export class TracePresenter {
   private fieldLabel(key: string, eventType: string): string {
     const t = this.t;
     switch (key) {
+      case 'kind':
+        return t('行的种类');
+      case 'mode':
+        return t('发法');
+      case 'listeners':
+        return t('听的人');
+      case 'text':
+        return t('人话');
+      case 'code':
+        return t('代码');
+      case 'site':
+        return t('代码位置');
       case 'messageIds':
         return t('来源消息号');
       case 'run':
@@ -855,4 +902,15 @@ export class TracePresenter {
     }
     return t('未记录');
   }
+}
+
+
+/**
+ * 这条是不是 src7 的跟踪行（journal 记的新格式）：data.kind 是“函数”或“事件”。
+ * @param record 一条事件。
+ * @returns 函数、事件；老格式是 undefined。
+ */
+function traceLine(record: types.TraceEvent): '函数' | '事件' | undefined {
+  const kind = record.data.kind;
+  return kind === '函数' || kind === '事件' ? kind : undefined;
 }

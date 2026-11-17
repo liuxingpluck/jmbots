@@ -1,0 +1,17 @@
+{
+  "runtimeDir": "F:\\aidata\\AIJMBots\\jmbotsData",
+  "systemPromptPath": "F:\\aidata\\AIJMBots\\jmbotsData\\prompts\\00_base_dsh.md",
+  "model": {
+    "provider": "magpie",
+    "modelId": "workbuddy/hy4free",
+    "api": "openai-completions",
+    "reasoning": true,
+    "contextWindow": null,
+    "maxOutputTokens": null,
+    "inputTypes": ["text"]
+  },
+  "changedMaxOutputTokens": 2000,
+  "thinkSeconds": 5,
+  "requestTimeoutSeconds": 180,
+  "timeoutSeconds": 480
+}

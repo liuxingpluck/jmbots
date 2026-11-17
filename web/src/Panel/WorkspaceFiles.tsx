@@ -8,6 +8,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 import type * as types from '../Types.ts';
 
 
@@ -89,6 +90,7 @@ interface WorkspaceFilesProps {
  */
 export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   const addWorkspaceTag = context.useUi((state) => state.addWorkspaceTag);
   const openPanel = context.useUi((state) => state.openPanel);
   /** 树。 */
@@ -167,9 +169,9 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
           onClick={() => setReloadKey((key) => key + 1)}
         />
       </div>
-      {error && <div className="jm-field-error">{error}</div>}
+      {error && <div className="jm-field-error">{privacy.text(error, masked)}</div>}
       {/* //M 普通 Tree 单击标题不展开（expandAction 是 DirectoryTree 才有的），展开只认箭头，正好“单击只插标签”。 */}
-      <antd.Tree<TreeNode>
+      {masked ? <div className="jm-muted">{privacy.text('文件树', true)}</div> : <antd.Tree<TreeNode>
         key={reloadKey}
         className="jm-memory-tree"
         treeData={tree}
@@ -178,14 +180,14 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
         titleRender={(node) => (
           <span
             className="jm-workspace-file-row"
-            title={node.rel === '' ? dir : `${props.workspace.name}/${node.rel}`}
+            title={privacy.text(node.rel === '' ? dir : `${props.workspace.name}/${node.rel}`, masked)}
           >
-            <span className="jm-workspace-file-name">{node.title}</span>
+            <span className="jm-workspace-file-name">{privacy.name(node.title, masked)}</span>
             {!node.dir && (
               <button
                 type="button"
                 className="jm-workspace-file-eye"
-                aria-label={t('预览 {name}', { name: node.title })}
+                aria-label={t('预览 {name}', { name: privacy.name(node.title, masked) })}
                 onClick={(event) => {
                   //G 别让这一次点击又插一个标签：这个按钮只做预览。
                   event.stopPropagation();
@@ -198,9 +200,11 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
           </span>
         )}
         onSelect={(_keys, info) => {
+          if (masked) return;
+
           addWorkspaceTag(tagOf(info.node));
         }}
-      />
+      />}
     </section>
   );
 }

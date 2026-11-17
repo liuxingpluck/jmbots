@@ -7,7 +7,10 @@ import * as antd from 'antd';
 import * as react from 'react';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as assist from './Assist.tsx';
 import * as composer from './Composer.tsx';
+import * as guide from '../Guide/Guide.tsx';
+import { CHAT_STEPS } from '../Guide/steps-chat.ts';
 import * as helpModal from './HelpModal.tsx';
 import * as mascot from '../Mascot/Mascot.tsx';
 import * as messageList from './MessageList.tsx';
@@ -28,6 +31,7 @@ function isTyping(target: EventTarget | null): boolean {
 /** 中栏。 */
 export function ChatArea(): react.JSX.Element {
   const t = i18n.useT();
+  const language = context.useUi((state) => state.language);
   /** 正在聊的机器人。 */
   const current = context.useUi((state) => state.currentBot);
   const botNames = context.useUi((state) => state.bots.map((item) => item.name).join('\n'));
@@ -57,8 +61,14 @@ export function ChatArea(): react.JSX.Element {
   /** 这个机器人还在等决定的命令。 */
   const allApprovals = context.useUi((state) => state.approvals);
   const approvals = react.useMemo(() => allApprovals.filter((item) => item.bot === current), [allApprovals, current]);
-  /** 时间线的数据：只放网页里的对话，别的渠道在右栏“消息”。 */
-  const messages = useMessagesModule.useMessages(current, 'web');
+  /** 统一时间线按渠道筛选，回复目标与当前机器人绑定。 */
+  const [channel, setChannel] = react.useState('');
+  const [reply, setReply] = react.useState<composer.ReplyDraft | null>(null);
+  const [quote, setQuote] = react.useState<{ text: string } | null>(null);
+  const messages = useMessagesModule.useMessages(current, 'web', { channel, unified: true });
+  react.useEffect(() => setReply(null), [current]);
+  /** 表情、选项卡片、待办（assist 插件），每 2 秒取一次。 */
+  assist.usePoll(current);
   /** 帮助开着没有。 */
   const [helpOpen, setHelpOpen] = react.useState(false);
 
@@ -83,6 +93,19 @@ export function ChatArea(): react.JSX.Element {
         {/* 头像、名字、状态和左栏的机器人卡片重复，用户 11-06 要删掉（原话第 54 节）；只在窄窗口一次一栏时看得见这里，留一个名字。 */}
         <span className="jm-chat-title jm-narrow-only">{current ?? t('还没有机器人')}</span>
         <mascot.Mascot bot={current ?? undefined} />
+        <antd.Segmented
+          className="jm-channel-filter"
+          size="small"
+          aria-label={t('按渠道筛选消息')}
+          value={channel}
+          options={[
+            { label: t('全部'), value: '' },
+            { label: t('网页'), value: 'http' },
+            { label: t('飞书'), value: 'feishu' },
+            { label: t('微信'), value: 'wechat' },
+          ]}
+          onChange={(value) => setChannel(String(value))}
+        />
         <antd.Button
           className="jm-chat-refresh"
           size="small"
@@ -109,6 +132,7 @@ export function ChatArea(): react.JSX.Element {
         >
           {panelOpen ? t('收起右栏') : t('右栏')}
         </antd.Button>
+        <guide.Guide steps={CHAT_STEPS} language={language} />
         {approvals.length > 0 && (
           <button type="button" className="jm-chat-approvals" onClick={() => openPanel('approvals')}>
             {t('待审核 {count}', { count: approvals.length })}
@@ -118,7 +142,11 @@ export function ChatArea(): react.JSX.Element {
       {current ? (
         <>
           <messageList.MessageList
+            key={`${current}:${channel}`}
             state={messages}
+            onReply={setReply}
+            onQuote={(text) => setQuote({ text })}
+            onClearFilter={() => setChannel('')}
             bot={current}
             onOpen={onOpen}
             onTrace={openTrace}
@@ -133,6 +161,9 @@ export function ChatArea(): react.JSX.Element {
             selectBot={selectBot}
             openSettings={() => setSettingsOpen(true)}
             openHelp={() => setHelpOpen(true)}
+            reply={reply}
+            quote={quote}
+            onCancelReply={() => setReply(null)}
             onSent={messages.refresh}
           />
         </>

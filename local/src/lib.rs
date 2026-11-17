@@ -5,9 +5,10 @@
 //!   backend  连 Bun 后端（HTTP）：健康检查、机器人
 //!   check    不开窗口的自检：打印一份 JSON，DSH 验证靠它
 //!   console  控制台：按控制台程序编译，双击时不弹黑框（清单 + 老系统上放掉控制台）
-//!   memory   记忆库：memorycli 融合进来（命令行 search、ingest、graph）
-//!   rag      RAG：Tantivy + jieba，索引 memorycli 切好的正文块，BM25 检索
-//!   server   壳子的 HTTP 接口：memorycli 原来那套 + /rag/*，取代独立的 memorycli 服务
+//!   server   壳子的 HTTP 接口：更新、重启、托管服务、自启、本机通知；记忆接口原样转给记忆服务
+//!   notify   Windows 右下角 toast：POST /notify，以及服务挂掉/重启/更新时由壳子自己弹
+//!   services 另外托管的服务（默认记忆服务 jmbots-memory）：守护、重启、日志
+//!   （2026-11-14：memory、rag 两个模块和 memorycli、tantivy 依赖搬进独立的记忆服务 memsvc/，基地只承载）
 //!   window   窗口和托盘：先开自带的一页，连上后端就切到后端托管的网页
 //!   supervisor  守护后端、扫描新版本、换版本（先试运行，失败退回）
 //!   log      窗口模式的日志（运行时 data/local.log）
@@ -18,9 +19,10 @@ pub mod check;
 pub mod config;
 pub mod console;
 pub mod log;
-pub mod memory;
-pub mod rag;
+pub mod notify;
+pub mod process_job;
 pub mod server;
+pub mod services;
 pub mod supervisor;
 pub mod window;
 

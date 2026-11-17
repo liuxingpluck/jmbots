@@ -1,106 +1,29 @@
-//! 壳子的 HTTP 接口（docs/界面/01_界面设计.md 第 4.3 节）：监听 0.0.0.0:local.port，取代独立的 memorycli 服务（路径一样，后端不用改）。
-//!   POST /rag/index {lib?}     建 RAG 索引（增量，后台跑，马上返回）；不写 lib 是全部库
-//!   GET  /rag/index?lib=名     这个库最近一次建索引：在不在跑、用了几秒、统计或出错原因
-//!   GET  /rag/search?q=&limit=&lib=a,b   RAG 检索：片段 + BM25 分数
-//!   POST /restart              重启后端（网页设置“重连”里的“重启服务”）：停掉它，守护马上拉起来；没有守护时回 {managed: false}
-//!   别的（/health、/ingest、/search、/graph）交给 memorycli::http::respond，和原来的 memorycli 服务完全一样。
-//! 请求一个一个处理；建索引放在后台线程、自己开数据库连接，搜索不用等。
+//! 壳子的 HTTP 接口（docs/界面/01_界面设计.md 第 4.3 节）：监听 0.0.0.0:local.port。2026-11-14 起基地只承载：
+//!   GET  /update、POST /update/apply   主后端的版本更新（supervisor.rs）
+//!   POST /restart[?service=名]          重启主后端；带 service 重启那个托管服务（services.rs）
+//!   GET  /services                      每个托管服务的端口、程序在不在、健康
+//!   GET/POST /autostart                 开机自启
+//!   POST /notify                        本机弹 Windows 右下角通知（{title, body, level?, url?}）
+//!   GET  /version                       壳子自己的版本和编译时刻（给网页左下角显示）
+//!   别的路径（/health /search /ingest /graph /rag/* /v1/*……）原样转给记忆服务（local.memory_url，默认托管的 jmbots-memory）：
+//!   记忆库、RAG 已经搬出壳子，后端的 engine.index_url 不用改；记忆服务没开时回 503 和一句原因（不是 404）。
+//! 壳子起接口不依赖任何记忆库：记忆服务挂了，更新、重启照常可用。
+//! 请求一个一个处理（tiny_http）；转发有超时。
 
 use crate::config::Settings;
+use crate::services::Services;
 use crate::supervisor::Supervisor;
-use crate::{memory, rag};
 use anyhow::{Result, anyhow};
-use memorycli::libs::Lib;
-use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
-/// 一个库最近一次建 RAG 索引。
-#[derive(Debug, Clone, Serialize)]
-struct RagJob {
-    /// 还在跑。
-    running: bool,
-    /// 什么时候开始的（Unix 秒）。
-    started_at: u64,
-    /// 用了几秒；还在跑时没有。
-    seconds: Option<u64>,
-    /// 做完的统计。
-    stats: Option<rag::IndexStats>,
-    /// 出错的原因。
-    error: Option<String>,
-}
-
-/// 各库建索引的情况：库名 → 最近一次。
-type RagJobs = Arc<Mutex<HashMap<String, RagJob>>>;
-
-/// 现在是 Unix 第几秒。
-fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_secs()).unwrap_or(0)
-}
+/// 转发给记忆服务最多等多久（入库是后台跑的，搜索是毫秒级，这个够用）。
+const FORWARD_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 回一个 JSON。
-fn json_reply(status: u16, value: &Value) -> (u16, String, &'static str) {
-    (status, serde_json::to_string_pretty(value).unwrap_or_default(), "application/json; charset=utf-8")
-}
-
-/// 挑库：names 为空就是全部；有不认识的名字就报错。
-fn pick<'a>(libs: &'a [Lib], names: &[String]) -> Result<Vec<&'a Lib>, (u16, String)> {
-    memorycli::libs::pick(libs, names).map_err(|error| (400, format!("{error:#}")))
-}
-
-/// 处理一个 /rag/ 开头的请求。
-fn rag_respond(request: &mut tiny_http::Request, settings: &Settings, libs: &[Lib], jobs: &RagJobs) -> Result<Value, (u16, String)> {
-    let url = request.url().to_string();
-    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
-    let params = memorycli::http::parse_query(query);
-    let get = |name: &str| params.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
-    match (request.method(), path) {
-        (tiny_http::Method::Post, "/rag/index") => {
-            let mut body = String::new();
-            let _ = request.as_reader().read_to_string(&mut body);
-            let input: Value = if body.trim().is_empty() { json!({}) } else { serde_json::from_str(&body).map_err(|error| (400, format!("请求体不是 JSON：{error}")))? };
-            let names = memorycli::libs::parse_names(input.get("lib").and_then(Value::as_str));
-            let mut started = Vec::new();
-            let mut running = Vec::new();
-            for lib in pick(libs, &names)? {
-                let mut table = jobs.lock().map_err(|_| (500, "任务表坏了".to_string()))?;
-                if table.get(&lib.name).is_some_and(|job| job.running) {
-                    running.push(lib.name.clone());
-                    continue;
-                }
-                table.insert(lib.name.clone(), RagJob { running: true, started_at: now(), seconds: None, stats: None, error: None });
-                drop(table);
-                let (rag_dir, name, db, jobs) = (settings.rag_dir.clone(), lib.name.clone(), lib.db.clone(), Arc::clone(jobs));
-                std::thread::spawn(move || {
-                    let result = rag::index_lib(&rag_dir, &name, &db, &|_| ());
-                    if let Ok(mut table) = jobs.lock() {
-                        let started_at = table.get(&name).map(|job| job.started_at).unwrap_or_else(now);
-                        let (stats, error) = match result {
-                            Ok(stats) => (Some(stats), None),
-                            Err(error) => (None, Some(format!("{error:#}"))),
-                        };
-                        table.insert(name, RagJob { running: false, started_at, seconds: Some(now().saturating_sub(started_at)), stats, error });
-                    }
-                });
-                started.push(lib.name.clone());
-            }
-            Ok(json!({ "started": started, "already_running": running }))
-        }
-        (tiny_http::Method::Get, "/rag/index") => {
-            let name = get("lib").ok_or((400, "要写 lib".to_string()))?;
-            let table = jobs.lock().map_err(|_| (500, "任务表坏了".to_string()))?;
-            Ok(json!({ "lib": name, "job": table.get(name) }))
-        }
-        (tiny_http::Method::Get, "/rag/search") => {
-            let text = get("q").filter(|text| !text.trim().is_empty()).ok_or((400, "要写 q（搜什么）".to_string()))?;
-            let limit = get("limit").and_then(|value| value.parse::<usize>().ok()).unwrap_or(10).clamp(1, 100);
-            let chosen: Vec<(String, Option<std::path::PathBuf>)> = pick(libs, &memorycli::libs::parse_names(get("lib")))?.iter().map(|lib| (lib.name.clone(), lib.root.clone())).collect();
-            let out = rag::search(&settings.rag_dir, &chosen, text, limit).map_err(|error| (500, format!("{error:#}")))?;
-            serde_json::to_value(out).map_err(|error| (500, error.to_string()))
-        }
-        _ => Err((404, format!("没有这个接口：{} {path}；RAG 有 POST /rag/index、GET /rag/index?lib=、GET /rag/search?q=", request.method()))),
-    }
+fn json_reply(status: u16, value: &Value) -> (u16, Vec<u8>, String) {
+    (status, serde_json::to_string_pretty(value).unwrap_or_default().into_bytes(), "application/json; charset=utf-8".to_string())
 }
 
 /// 处理 /autostart：GET 看开机自启开着没有，POST {"enabled": true|false} 改。
@@ -115,60 +38,127 @@ fn autostart_respond(request: &mut tiny_http::Request) -> Result<Value, (u16, St
     Ok(json!({ "enabled": crate::autostart::enabled() }))
 }
 
-/// 处理守护的接口：/update（版本更新）、/restart（重启后端）。没有守护（serve 命令）时说清楚。
-fn update_respond(request: &tiny_http::Request, supervisor: Option<&Arc<Supervisor>>) -> Result<Value, (u16, String)> {
+/// 从查询串里取一项。
+fn query_value(url: &str, name: &str) -> Option<String> {
+    let (_, query) = url.split_once('?')?;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (key == name).then(|| value.to_string())
+    })
+}
+
+/// 处理守护的接口：/update（版本更新）、/restart（重启主后端或某个托管服务）、/services。没有守护（serve 不带 --supervise）时说清楚。
+fn host_respond(request: &tiny_http::Request, supervisor: Option<&Arc<Supervisor>>, services: Option<&Arc<Services>>) -> Result<Value, (u16, String)> {
+    let url = request.url().to_string();
+    let path = url.split('?').next().unwrap_or("");
+    if path == "/services" {
+        return Ok(services.map_or_else(|| json!({ "managed": false, "services": [] }), |services| services.status()));
+    }
+    if path == "/restart" {
+        if let Some(name) = query_value(&url, "service").filter(|name| !name.is_empty() && name != "backend") {
+            let services = services.ok_or((409, "没有守护，基地管不了托管服务".to_string()))?;
+            return services.restart(&name).map(|()| json!({ "ok": true, "service": name })).map_err(|reason| (409, reason));
+        }
+    }
     let Some(supervisor) = supervisor else {
         return Ok(json!({ "managed": false }));
     };
-    match (request.method(), request.url()) {
+    match (request.method(), path) {
         (tiny_http::Method::Get, "/update") => Ok(supervisor.status()),
         (tiny_http::Method::Post, "/update/apply") => supervisor.apply().map(|()| json!({ "ok": true })).map_err(|reason| (409, reason)),
         (tiny_http::Method::Post, "/restart") => supervisor.restart().map(|()| json!({ "ok": true })).map_err(|reason| (409, reason)),
-        _ => Err((404, format!("没有这个接口：{} {}", request.method(), request.url()))),
+        _ => Err((404, format!("没有这个接口：{} {url}", request.method()))),
     }
+}
+
+/// 把请求原样转给记忆服务，回它的状态码、正文、类型；连不上回 503。
+fn forward(request: &mut tiny_http::Request, memory_url: &str) -> (u16, Vec<u8>, String) {
+    let target = format!("{memory_url}{}", request.url());
+    let mut body = Vec::new();
+    let _ = request.as_reader().read_to_end(&mut body);
+    let content_type = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Content-Type"))
+        .map_or_else(|| "application/json".to_string(), |header| header.value.as_str().to_string());
+    let agent = crate::backend::agent(FORWARD_TIMEOUT);
+    let sent = match request.method() {
+        tiny_http::Method::Get => agent.get(&target).call(),
+        tiny_http::Method::Delete => agent.delete(&target).call(),
+        tiny_http::Method::Post => agent.post(&target).header("Content-Type", &content_type).send(&body[..]),
+        tiny_http::Method::Put => agent.put(&target).header("Content-Type", &content_type).send(&body[..]),
+        other => return json_reply(405, &json!({ "error": format!("记忆服务转发不支持 {other}") })),
+    };
+    match sent {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            let kind = response.headers().get("content-type").and_then(|value| value.to_str().ok()).unwrap_or("application/json; charset=utf-8").to_string();
+            let bytes = response.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().unwrap_or_default();
+            (status, bytes, kind)
+        }
+        Err(error) => json_reply(503, &json!({ "error": format!("记忆服务没开或连不上（{memory_url}）：{error}；记忆、RAG 已搬到 jmbots-memory，基地托管它（GET /services 看状态）") })),
+    }
+}
+
+/// 处理 POST /notify：只许本机，弹一条右下角通知。
+fn notify_respond(request: &mut tiny_http::Request) -> Result<Value, (u16, String)> {
+    if !crate::notify::is_loopback(request.remote_addr().copied()) {
+        return Err((403, "通知接口只许本机调用".to_string()));
+    }
+    if *request.method() != tiny_http::Method::Post {
+        return Err((405, "请用 POST /notify，体是 {title, body, level?, url?}".to_string()));
+    }
+    let mut body = String::new();
+    let _ = request.as_reader().read_to_string(&mut body);
+    let notice = crate::notify::from_json_str(&body).map_err(|error| (400, error.to_string()))?;
+    crate::notify::show(&notice);
+    Ok(json!({ "ok": true }))
 }
 
 /// 起接口，一直跑（serve 命令用它，没有守护）。
 ///
-/// 输入：算好的配置。输出：监听不上时报错（比如老的 memorycli 服务还占着端口）；正常不返回。
-/// 副作用：打开记忆库（库目录不存在时建出来）；监听端口；建 RAG 索引时写 RAG 目录。
+/// 输入：算好的配置。输出：监听不上时报错；正常不返回。副作用：监听端口。
 pub fn serve(settings: &Settings) -> Result<()> {
-    serve_with(settings, None)
+    serve_with(settings, None, None)
 }
 
-/// 起接口，一直跑（窗口模式的后台线程用它，带守护，多几个 /update 接口）。
+/// 起接口，一直跑（窗口模式、serve --supervise 用它，带守护，多几个 /update /services 接口）。
 ///
-/// 输入：算好的配置、守护。输出、副作用同 serve。
-pub fn serve_with(settings: &Settings, supervisor: Option<Arc<Supervisor>>) -> Result<()> {
-    let libs = memory::open_libs(settings)?;
-    let config = memory::memorycli_config(settings)?;
-    let jobs = memorycli::http::new_jobs();
-    let rag_jobs: RagJobs = Arc::new(Mutex::new(HashMap::new()));
+/// 输入：算好的配置、主后端的守护、托管服务表。输出、副作用同 serve。不打开任何记忆库。
+pub fn serve_with(settings: &Settings, supervisor: Option<Arc<Supervisor>>, services: Option<Arc<Services>>) -> Result<()> {
     let server = tiny_http::Server::http((settings.listen_host.as_str(), settings.listen_port))
-        .map_err(|error| anyhow!("监听 {}:{} 失败（是不是老的 memorycli 服务还占着这个端口？）：{error}", settings.listen_host, settings.listen_port))?;
-    eprintln!("jmbots 本地壳子的接口：http://{}:{}（{} 个记忆库）", settings.listen_host, settings.listen_port, libs.len());
+        .map_err(|error| anyhow!("监听 {}:{} 失败（是不是老的 memorycli 服务或老基地还占着这个端口？）：{error}", settings.listen_host, settings.listen_port))?;
+    eprintln!("jmbots 基地的接口：http://{}:{}（记忆接口转给 {}）", settings.listen_host, settings.listen_port, settings.memory_url);
     for mut request in server.incoming_requests() {
-        let (status, body, content_type) = if request.url().starts_with("/autostart") {
+        let url = request.url().to_string();
+        let path = url.split('?').next().unwrap_or("").to_string();
+        let (status, body, content_type) = if path.starts_with("/autostart") {
             match autostart_respond(&mut request) {
                 Ok(value) => json_reply(200, &value),
                 Err((status, message)) => json_reply(status, &json!({ "error": message })),
             }
-        } else if request.url().starts_with("/update") || request.url() == "/restart" {
-            match update_respond(&request, supervisor.as_ref()) {
+        } else if path.starts_with("/update") || path == "/restart" || path == "/services" {
+            match host_respond(&request, supervisor.as_ref(), services.as_ref()) {
                 Ok(value) => json_reply(200, &value),
                 Err((status, message)) => json_reply(status, &json!({ "error": message })),
             }
-        } else if request.url().starts_with("/rag/") {
-            match rag_respond(&mut request, settings, &libs, &rag_jobs) {
+        } else if path == "/notify" {
+            match notify_respond(&mut request) {
                 Ok(value) => json_reply(200, &value),
                 Err((status, message)) => json_reply(status, &json!({ "error": message })),
             }
+        } else if path == "/version" {
+            // 壳子自己的版本和编译时刻，给网页左下角显示。
+            json_reply(200, &json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "builtAt": option_env!("JMBOTS_BUILT_AT").and_then(|text| text.parse::<u64>().ok()).unwrap_or(0),
+            }))
         } else {
-            memorycli::http::respond(&mut request, &libs, &config, &jobs)
+            forward(&mut request, &settings.memory_url)
         };
-        let response = tiny_http::Response::from_string(body)
+        let response = tiny_http::Response::from_data(body)
             .with_status_code(status)
-            .with_header(tiny_http::Header::from_bytes("Content-Type", content_type).expect("固定的头"))
+            .with_header(tiny_http::Header::from_bytes("Content-Type", content_type.as_bytes()).unwrap_or_else(|()| tiny_http::Header::from_bytes("Content-Type", "application/json").expect("固定的头")))
             .with_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").expect("固定的头"));
         let _ = request.respond(response);
     }
@@ -186,50 +176,87 @@ mod tests {
         std::net::TcpListener::bind("127.0.0.1:0").and_then(|listener| listener.local_addr()).map(|address| address.port()).expect("拿端口")
     }
 
+    /// 起一个假记忆服务：/search 回固定 JSON，POST /v1/search 回请求体（看转发带没带正文）。返回端口。
+    fn fake_memory() -> u16 {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("起假记忆服务");
+        let port = server.server_addr().to_ip().expect("地址").port();
+        std::thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let mut body = String::new();
+                let _ = request.as_reader().read_to_string(&mut body);
+                let reply = if request.url().starts_with("/search") { r#"{"hits":[{"path":"飞书发件箱.md","score":1.0}]}"#.to_string() } else { body };
+                let header = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("头");
+                let _ = request.respond(tiny_http::Response::from_string(reply).with_header(header));
+            }
+        });
+        port
+    }
+
+    /// 等接口起来。
+    fn wait_up(agent: &ureq::Agent, base: &str) {
+        for _ in 0..50 {
+            if crate::backend::get_json(agent, &format!("{base}/services")).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("接口没起来");
+    }
+
     #[test]
-    fn serves_memorycli_routes_and_rag() {
+    fn starts_without_memory_and_forwards_when_memory_is_up() {
         let runtime = temp_dir("server");
-        let docs = runtime.join("资料");
-        std::fs::create_dir_all(&docs).unwrap();
-        std::fs::write(docs.join("飞书发件箱.md"), "# 飞书发件箱\n\n往发件箱放一份 Markdown，服务每五秒取一次。\n").unwrap();
-        let port = free_port();
-        // 测试只听本机：听 0.0.0.0 时 Windows 防火墙可能弹窗问。
+        //M 记忆库目录是个坏文件（原来会让整个接口起不来）：现在壳子根本不碰它。
+        std::fs::create_dir_all(runtime.join("data").join("index")).unwrap();
+        std::fs::write(runtime.join("data").join("index").join("libs"), "坏的").unwrap();
+        let (port, dead) = (free_port(), free_port());
         let settings = resolve(&Overrides { runtime: Some(runtime.clone()), port: Some(port), host: Some("127.0.0.1".into()), ..Overrides::default() }, &|_| None, &runtime);
-        memory::ingest(&settings, "资料库", Some(&docs), false, &|_| ()).expect("摄取");
+        let mut settings = settings;
+        settings.memory_url = format!("http://127.0.0.1:{dead}");
         let serving = settings.clone();
         std::thread::spawn(move || serve(&serving).expect("起接口"));
         let agent = crate::backend::agent(std::time::Duration::from_secs(10));
         let base = format!("http://127.0.0.1:{port}");
-        //M 等它起来。
-        let mut health = None;
-        for _ in 0..50 {
-            if let Ok(value) = crate::backend::get_json(&agent, &format!("{base}/health")) {
-                health = Some(value);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let health = health.expect("接口起来了");
-        assert_eq!(health["libs"][0]["name"], "资料库");
-        // memorycli 原来的搜索：每条带 RRF 分数。
-        let found = crate::backend::get_json(&agent, &format!("{base}/search?q=%E5%8F%91%E4%BB%B6%E7%AE%B1")).expect("搜索");
-        assert!(found["hits"][0]["score"].as_f64().unwrap_or(0.0) > 0.0, "{found}");
-        // RAG：先建索引，等它做完，再搜。
-        let index_url = format!("{base}/rag/index");
-        let started = agent.post(index_url.as_str()).send("{}").expect("建索引").body_mut().read_to_string().expect("回答");
-        assert!(started.contains("资料库"), "{started}");
-        for _ in 0..100 {
-            let job = crate::backend::get_json(&agent, &format!("{base}/rag/index?lib=%E8%B5%84%E6%96%99%E5%BA%93")).expect("进度");
-            if job["job"]["running"] == false {
-                assert!(job["job"]["error"].is_null(), "{job}");
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let rag = crate::backend::get_json(&agent, &format!("{base}/rag/search?q=%E5%8F%91%E4%BB%B6%E7%AE%B1")).expect("RAG 检索");
-        assert_eq!(rag["hits"][0]["path"], "飞书发件箱.md", "{rag}");
-        assert!(rag["hits"][0]["score"].as_f64().unwrap_or(0.0) > 0.0);
-        // 写错的接口回 404。
-        assert!(crate::backend::get_json(&agent, &format!("{base}/rag/nope")).is_err());
+        wait_up(&agent, &base);
+        //M 记忆服务没开：更新接口照常（没有守护就说 managed false），记忆接口回 503 不是 404。
+        assert_eq!(crate::backend::get_json(&agent, &format!("{base}/update")).expect("更新")["managed"], false);
+        let mut response = agent.get(format!("{base}/search?q=x").as_str()).call().expect("请求");
+        assert_eq!(response.status().as_u16(), 503);
+        assert!(response.body_mut().read_to_string().unwrap().contains("jmbots-memory"));
+        //M 记忆服务开着：原样转发，GET 带查询串，POST 带正文。
+        let memory = fake_memory();
+        let port2 = free_port();
+        let mut settings2 = settings.clone();
+        settings2.listen_port = port2;
+        settings2.memory_url = format!("http://127.0.0.1:{memory}");
+        std::thread::spawn(move || serve(&settings2).expect("起接口"));
+        let base2 = format!("http://127.0.0.1:{port2}");
+        wait_up(&agent, &base2);
+        let found = crate::backend::get_json(&agent, &format!("{base2}/search?q=%E5%8F%91%E4%BB%B6%E7%AE%B1")).expect("搜索");
+        assert_eq!(found["hits"][0]["path"], "飞书发件箱.md");
+        let echoed = agent.post(format!("{base2}/v1/search").as_str()).header("Content-Type", "application/json").send(r#"{"query":"退货"}"#).expect("转发").body_mut().read_to_string().unwrap();
+        assert!(echoed.contains("退货"), "{echoed}");
+    }
+
+    #[test]
+    fn notify_accepts_local_post_and_rejects_bad_body() {
+        let runtime = temp_dir("server-notify");
+        //M 优先用 15763（>15000、不含数字 4），被占再退回系统分配的空闲端口。
+        let port = std::net::TcpListener::bind("127.0.0.1:15763").ok()
+            .and_then(|listener| { let port = listener.local_addr().ok()?.port(); drop(listener); Some(port) })
+            .unwrap_or_else(free_port);
+        let settings = resolve(&Overrides { runtime: Some(runtime.clone()), port: Some(port), host: Some("127.0.0.1".into()), ..Overrides::default() }, &|_| None, &runtime);
+        let serving = settings.clone();
+        std::thread::spawn(move || serve(&serving).expect("起接口"));
+        let agent = crate::backend::agent(std::time::Duration::from_secs(10));
+        let base = format!("http://127.0.0.1:{port}");
+        wait_up(&agent, &base);
+        let ok = agent.post(format!("{base}/notify").as_str()).header("Content-Type", "application/json").send(r#"{"title":"测试","body":"本机通知"}"#).expect("通知");
+        assert_eq!(ok.status().as_u16(), 200);
+        let mut bad = agent.post(format!("{base}/notify").as_str()).header("Content-Type", "application/json").send(r#"{"title":"测试"}"#).expect("缺字段");
+        assert_eq!(bad.status().as_u16(), 400);
+        assert!(bad.body_mut().read_to_string().unwrap().contains("body"));
+        let mut get = agent.get(format!("{base}/notify").as_str()).call().expect("GET");
+        assert_eq!(get.status().as_u16(), 405);
     }
 }

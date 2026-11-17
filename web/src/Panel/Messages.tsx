@@ -9,6 +9,7 @@ import * as timeline from '../Chat/Timeline.ts';
 import * as useMessagesModule from '../Chat/useMessages.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 
 
 /** 筛选项“全部”。 */
@@ -18,6 +19,7 @@ const ALL = '全部';
 /** 消息。 */
 export function Messages(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 正在聊的机器人。 */
   const bot = context.useUi((state) => state.currentBot);
   const openPanel = context.useUi((state) => state.openPanel);
@@ -51,7 +53,7 @@ export function Messages(): react.JSX.Element {
   return (
     <div className="jm-panel-messages">
       {channels.length > 1 && (
-        <antd.Segmented className="jm-channel-filter" size="small" value={channel} options={[{ value: ALL, label: t('全部') }, ...channels.map((label) => ({ value: label, label }))]} onChange={(value) => setChannel(String(value))} />
+        <antd.Segmented className="jm-channel-filter" size="small" value={channel} options={[{ value: ALL, label: t('全部') }, ...channels.map((label) => ({ value: label, label: privacy.text(label, masked) }))]} onChange={(value) => setChannel(String(value))} />
       )}
       <messageList.MessageList
         state={shown}

@@ -1,0 +1,13 @@
+{
+  // 给 VS Code 用：打开 src7 里的文件时，编辑器会找离它最近的 tsconfig.json，也就是这个。
+  // 没有它时，编辑器用根目录的 tsconfig.json，而那个不包含 src7，
+  // utils/Trace.ts 里声明的 'trace' 事件就看不到，emit('trace', ...) 会被标红（实际能跑，命令行 tsc 也能过）。
+  // 内容和根目录的 tsconfig.src7.json 一样：只检查 src7，不和 src6 混（两边都扩充 cordis 的类型，会打架）。
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": []
+}

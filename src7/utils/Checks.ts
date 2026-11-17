@@ -1,56 +1,106 @@
 /**
  * 校验：外面进来的东西只在这里查，一处一次。查过以后，骨架里面直接用，不再查、不再补默认值。
- * 现在有三样外面进来的东西：命令行参数、config.yaml、别人写的插件。
- * 审核、安全这类非写不可的检查，以后也加在 utils/ 里；骨架的模块里只留主线。
+ * 骨架有两样外面进来的东西：命令行参数、config.yaml 里骨架自己用到的那几项。
+ * 另外两样不在这里：插件要的配置（它自己那一段、顶层的 bots 这些）由插件自己查；
+ * 模型给工具的参数在 Tools.execute 里照工具的定义查。
  */
 import * as path from 'node:path';
 import * as process from 'node:process';
-import type { PluginModule } from '../plugins/Index.ts';
-import type { BotConfig, JmbotsConfig, PluginEntry, ProviderConfig, RetryConfig } from '../Resources.ts';
+import type { JmbotsConfig, PluginEntry, ProviderConfig } from '../Resources.ts';
+import * as embedded from './Embedded.ts';
+import * as textModule from './Text.ts';
 
 
 /** 命令行参数，校验后。 */
 export interface MainArgs {
-  /** 运行时目录的绝对路径；不写 --data 就是程序旁边的 jmbotsData/。 */
+  /** 运行时目录的绝对路径；不写 --data / --runtime 时：编译版是程序旁边的 jmbotsData/，源码版是入口旁边的 jmbotsData/。 */
   dataDir: string;
-  /** 剩下的参数，原样交给命令行渠道。 */
+  /** 是不是基地的试运行（--mode candidate）：只挂 http 做健康检查，不开渠道。 */
+  candidate: boolean;
+  /** 剩下的参数，原样交给要它的插件（命令行渠道、http 的 --port）。 */
   rest: string[];
 }
 
 
+/** 三种请求协议。 */
+const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
+
+/** 思考档，从不思考到最深。 */
+const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** 不写 plugins 段时挂的插件。 */
+const DEFAULT_PLUGINS = ['bots', 'cli', 'prompt', 'base-tools', 'bot-front-desk', 'summary'];
+
+/** config.yaml 里没手写的模型用的保守值。Resources.modelOf 也用它。 */
+export const MODEL_DEFAULTS = { contextWindow: 128000, maxTokens: 8192, reasoning: false, input: ['text' as const] };
+
+
 /**
- * 解析并校验命令行。Main.ts 调。
- * @param argv 去掉 bun 和脚本路径之后的参数。
- * @returns 校验后的参数。
- * @throws --data 后面没有值时抛错。
+ * 解析并校验命令行。Main.ts 调。已经去掉了 version / serve 子命令。
+ * @param argv 去掉 bun、脚本路径、以及 version/serve 之后的参数。
+ * @returns 运行时目录、是不是试运行，和剩下的参数（里面还可以有 --port）。
+ * @throws --data / --runtime 后面没有值，或 --mode 不是 candidate 时抛错。
  */
 export function checkArgs(argv: string[]): MainArgs {
-  /** 剩下交给命令行渠道的参数。 */
-  const rest: string[] = [];
-  /** 运行时目录；不写就用默认。 */
+  /** 剩下的参数。 */
+  const rest = [...argv];
+  /** 运行时目录；先看参数，没有再用默认。 */
   let dataDir: string | undefined;
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
-    if (token === '--data') {
-      const value = argv[i + 1];
-      if (value === undefined || value === '') {
-        throw new Error('--data 后面要写运行时目录');
-      }
-      dataDir = path.resolve(value);
-      i += 1;
-      continue;
+  /** 是不是试运行。 */
+  let candidate = false;
+
+  //M --mode candidate：基地的试运行。认出来就从参数里删掉，别的值不认。
+  const modeAt = rest.indexOf('--mode');
+  if (modeAt >= 0) {
+    const value = rest[modeAt + 1];
+    if (value !== 'candidate') {
+      throw new Error('--mode 只认 candidate');
     }
-    if (token !== undefined) {
-      rest.push(token);
-    }
+    rest.splice(modeAt, 2);
+    candidate = true;
   }
-  // 默认：Main.ts 所在目录旁边的 jmbotsData/（开发时是 src7/jmbotsData）。
+
+  //M 运行时目录：先认 --data，再认 --runtime（基地用这个名字），都没写用默认的。
+  dataDir = takePath(rest, '--data');
   if (dataDir === undefined) {
-    const script = process.argv[1];
-    const here = script === undefined ? process.cwd() : path.dirname(path.resolve(script));
-    dataDir = path.resolve(here, 'jmbotsData');
+    dataDir = takePath(rest, '--runtime');
   }
-  return { dataDir, rest };
+  if (dataDir === undefined) {
+    dataDir = defaultDataDir();
+  }
+
+  return { dataDir: path.resolve(dataDir), candidate, rest };
+}
+
+
+/**
+ * 取出一个带值的旗标，并从参数里删掉。
+ * @param rest 还没认完的参数，会被改。
+ * @param flag 旗标，如 --data。
+ * @returns 旗标后面的值；没有这个旗标是 undefined。
+ * @throws 写了旗标却没有值时抛错。
+ */
+function takePath(rest: string[], flag: string): string | undefined {
+  const at = rest.indexOf(flag);
+  if (at < 0) return undefined;
+  const value = rest[at + 1];
+  if (value === undefined) {
+    throw new Error(`${flag} 后面要写运行时目录`);
+  }
+  rest.splice(at, 2);
+  return value;
+}
+
+
+/**
+ * 没写 --data / --runtime 时的运行时目录。
+ * @returns 绝对或相对路径，调用方再 resolve。
+ */
+function defaultDataDir(): string {
+  if (embedded.isCompiled()) {
+    return path.join(path.dirname(process.execPath), 'jmbotsData');
+  }
+  return path.join(path.dirname(process.argv[1] ?? ''), 'jmbotsData');
 }
 
 
@@ -61,269 +111,161 @@ export function checkArgs(argv: string[]): MainArgs {
  * @throws 哪一项不对就抛错；错误信息只说是哪一项、该写成什么样，不带配置原文（里面有密钥）。
  */
 export function checkConfig(raw: unknown): JmbotsConfig {
-  if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('config.yaml 顶层必须是一个对象');
+  const root = record(raw, 'config.yaml');
+
+  //M providers：每家要有 base_url；api_key 不写是空的（本地服务不要密钥）；api 不写是 openai-completions。
+  //M   models 是手写的模型：上下文多长、最多输出多少、thinking 里有 off 以外的档就是会思考、vision: true 就收图片。
+  //M   compat、model_compat 是发请求时的兼容设置，原样交给 pi（不认的项 pi 不管）。
+  const providers: Record<string, ProviderConfig> = {};
+  const providersWritten = record(root['providers'], 'providers');
+  textModule.eachEntry(providersWritten, (name, value) => {
+    /** 错误信息里说是哪一家，比如 providers.openrouter。 */
+    const label = `providers.${name}`;
+    const item = record(value, label);
+
+    //M 这家手写的模型：一个个查，没写的项用保守值。
+    const models: ProviderConfig['models'] = {};
+    const modelsWritten = record(item['models'] ?? {}, `${label}.models`);
+    textModule.eachEntry(modelsWritten, (id, written) => {
+      const model = record(written ?? {}, `${label}.models.${id}`);
+      const contextWindow = model['context_window'] ?? MODEL_DEFAULTS.contextWindow;
+      const maxTokens = model['max_output_tokens'] ?? MODEL_DEFAULTS.maxTokens;
+      /** 手写的思考档；里面有 off 以外的档，就算会思考。 */
+      const levels = model['thinking'];
+      const reasoning = Array.isArray(levels) && levels.some((level) => level !== 'off');
+      models[id] = {
+        contextWindow: int(contextWindow, `${label} 的 context_window`),
+        maxTokens: int(maxTokens, `${label} 的 max_output_tokens`),
+        reasoning,
+        input: model['vision'] === true ? ['text', 'image'] : ['text'],
+      };
+    });
+
+    //M 地址去掉末尾的斜杠；api_key 不写是空的；api 不写是 openai-completions。
+    const baseUrl = text(item['base_url'], `${label}.base_url`);
+    const apiWritten = item['api'] ?? 'openai-completions';
+    const api = oneOf(apiWritten, APIS, `${label}.api`);
+    const compat = record(item['compat'] ?? {}, `${label}.compat`);
+
+    //M 个别模型的兼容设置：模型 ID → 一组“名字: 值”。
+    const modelCompat: ProviderConfig['modelCompat'] = {};
+    const modelCompatWritten = record(item['model_compat'] ?? {}, `${label}.model_compat`);
+    textModule.eachEntry(modelCompatWritten, (id, written) => {
+      modelCompat[id] = record(written, `${label}.model_compat.${id}`);
+    });
+
+    providers[name] = {
+      baseUrl: baseUrl.replace(/\/+$/u, ''),
+      apiKey: String(item['api_key'] ?? ''),
+      api,
+      models,
+      compat,
+      modelCompat,
+    };
+  });
+
+  //M default_model：写成“供应商名/模型 ID”，供应商要在 providers 里。
+  const defaultModel = text(root['default_model'], 'default_model');
+  const providerName = defaultModel.slice(0, defaultModel.indexOf('/'));
+  if (providers[providerName] === undefined) {
+    throw new Error('default_model 要写成“供应商名/模型 ID”，供应商要在 providers 里');
   }
-  /** 原始对象，按键取；取值时不把原文拼进错误。 */
-  const obj = raw as Record<string, unknown>;
 
-  //M providers：每家要有 http 或 https 的 base_url；api_key 不写是空串；api 不写是 openai-completions。
-  //  供应商名叫 fake，或地址是 fake:// 的，是离线假模型，不要求真的 http 地址。
-  const providers = readProviders(obj['providers']);
-
-  //M default_model：必须是“供应商名/模型 ID”，供应商要在 providers 里。
-  const defaultModel = readDefaultModel(obj['default_model'], providers);
-
-  //M bots：名单；不写就是一个叫“助手”的中文机器人。
-  const bots = readBots(obj['bots']);
-
-  //M engine.max_rounds：正整数，不写用 30。engine.retry：次数不写用 5，间隔不写用 3000 毫秒，超时不写用 120000 毫秒。
-  const engine = isRecord(obj['engine']) ? obj['engine'] : {};
-  const maxSteps = readPositiveInt(engine['max_rounds'], 30, 'engine.max_rounds');
-  const retryRaw = isRecord(engine['retry']) ? engine['retry'] : {};
-  const retry: RetryConfig = {
-    times: readPositiveInt(retryRaw['times'], 5, 'engine.retry.times'),
-    waitMs: readPositiveInt(retryRaw['wait_ms'] ?? retryRaw['waitMs'], 3000, 'engine.retry.wait_ms'),
-    timeoutMs: readPositiveInt(retryRaw['timeout_ms'] ?? retryRaw['timeoutMs'], 120000, 'engine.retry.timeout_ms'),
-  };
-
-  //M plugins：一张清单，每项 { name, config?, disabled? }。name 必须是非空字符串；config 不写是空对象；
-  //M   disabled 是 true 的那几项去掉。整段不写就是 cli、base-tools、default-dialog 三个。
-  const plugins = readPlugins(obj['plugins']);
-
-  return { defaultModel, providers, bots, maxSteps, retry, plugins };
-}
-
-
-/**
- * 校验照路径加载进来的插件：别人写的东西，导出的不一定对。Main.ts 调。
- * @param loaded import 进来的模块。
- * @param from 是从哪加载的，只用来写进错误信息。
- * @returns 能交给 Cordis 挂的插件。
- * @throws 没有字符串的 name、没有函数 apply、inject 不是字符串数组时抛错。
- */
-export function checkPlugin(loaded: unknown, from: string): PluginModule {
-  const mod = unwrapDefault(loaded);
-  if (!isRecord(mod)) {
-    throw new Error(`插件 ${from} 导出的不是一个对象`);
-  }
-  const name = mod['name'];
-  if (typeof name !== 'string' || name === '') {
-    throw new Error(`插件 ${from} 要导出非空字符串 name`);
-  }
-  const apply = mod['apply'];
-  if (typeof apply !== 'function') {
-    throw new Error(`插件 ${from} 要导出函数 apply`);
-  }
-  const inject = mod['inject'];
-  if (inject !== undefined) {
-    if (!Array.isArray(inject) || inject.some((item) => typeof item !== 'string')) {
-      throw new Error(`插件 ${from} 的 inject 必须是字符串数组`);
-    }
-  }
-  return mod as unknown as PluginModule;
-}
-
-
-/** 是不是普通对象（不是数组、不是 null）。 */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-
-/**
- * 模块有 default 导出就用 default（和 DSH 的加载器一样）。
- * @param loaded import 进来的值。
- */
-function unwrapDefault(loaded: unknown): unknown {
-  if (isRecord(loaded) && 'default' in loaded && loaded['default'] !== undefined) {
-    const inner = loaded['default'];
-    if (isRecord(inner) && (typeof inner['apply'] === 'function' || typeof inner['name'] === 'string')) {
-      return inner;
-    }
-  }
-  return loaded;
-}
-
-
-/**
- * 读 providers 段。
- * @param raw 原始值。
- * @throws 不是对象、某家缺地址或地址不像 http(s)（假模型除外）时抛错。
- */
-function readProviders(raw: unknown): Record<string, ProviderConfig> {
-  if (raw === undefined) {
-    throw new Error('config.yaml 要有 providers 段');
-  }
-  if (!isRecord(raw)) {
-    throw new Error('providers 必须是一个对象：名字 → 这一家的配置');
-  }
-  /** 校验后的各家。 */
-  const result: Record<string, ProviderConfig> = {};
-  for (const name of Object.keys(raw)) {
-    if (name === '') {
-      throw new Error('providers 里的供应商名不能是空的');
-    }
-    const item = raw[name];
-    if (!isRecord(item)) {
-      throw new Error(`providers.${name} 必须是一个对象`);
-    }
-    const baseUrl = item['base_url'] ?? item['baseUrl'];
-    if (typeof baseUrl !== 'string' || baseUrl === '') {
-      throw new Error(`providers.${name} 要有 base_url`);
-    }
-    const fake = name === 'fake' || baseUrl.startsWith('fake:');
-    if (!fake && !/^https?:\/\//u.test(baseUrl)) {
-      throw new Error(`providers.${name} 的 base_url 要以 http:// 或 https:// 开头（离线假模型用 fake://）`);
-    }
-    const apiKeyRaw = item['api_key'] ?? item['apiKey'];
-    const apiKey = apiKeyRaw === undefined ? '' : String(apiKeyRaw);
-    const apiRaw = item['api'];
-    const api = readApi(apiRaw, name);
-    const models = readProviderModels(item['models'], name);
-    result[name] = { baseUrl, apiKey, api, models };
-  }
-  if (Object.keys(result).length === 0) {
-    throw new Error('providers 里至少要有一家供应商');
-  }
-  return result;
-}
-
-
-/**
- * 读一家的协议。
- * @param raw 原始值。
- * @param name 供应商名，只用于错误信息。
- */
-function readApi(raw: unknown, name: string): ProviderConfig['api'] {
-  if (raw === undefined) {
-    return 'openai-completions';
-  }
-  if (raw === 'openai-completions' || raw === 'openai-responses' || raw === 'anthropic-messages') {
-    return raw;
-  }
-  throw new Error(`providers.${name} 的 api 只能是 openai-completions、openai-responses 或 anthropic-messages`);
-}
-
-
-/**
- * 读一家手写的模型清单。
- * @param raw 原始值。
- * @param name 供应商名，只用于错误信息。
- */
-function readProviderModels(raw: unknown, name: string): ProviderConfig['models'] {
-  if (raw === undefined) {
-    return {};
-  }
-  if (!isRecord(raw)) {
-    throw new Error(`providers.${name}.models 必须是一个对象`);
-  }
-  /** 模型 ID → 长度。 */
-  const models: ProviderConfig['models'] = {};
-  for (const id of Object.keys(raw)) {
-    const item = raw[id];
-    if (!isRecord(item)) {
-      throw new Error(`providers.${name}.models 里每个模型要是一个对象`);
-    }
-    const contextWindow = readPositiveInt(item['context_window'] ?? item['contextWindow'], 128000, `providers.${name}.models 的 context_window`);
-    const maxTokens = readPositiveInt(item['max_tokens'] ?? item['maxTokens'], 8192, `providers.${name}.models 的 max_tokens`);
-    models[id] = { contextWindow, maxTokens };
-  }
-  return models;
-}
-
-
-/**
- * 读 default_model。
- * @param raw 原始值。
- * @param providers 已经校验过的供应商。
- */
-function readDefaultModel(raw: unknown, providers: Record<string, ProviderConfig>): string {
-  if (typeof raw !== 'string' || raw === '') {
-    throw new Error('default_model 必须是“供应商名/模型 ID”');
-  }
-  const slash = raw.indexOf('/');
-  if (slash <= 0 || slash === raw.length - 1) {
-    throw new Error('default_model 必须是“供应商名/模型 ID”');
-  }
-  const provider = raw.slice(0, slash);
-  if (providers[provider] === undefined) {
-    throw new Error('default_model 里的供应商不在 providers 里');
-  }
-  return raw;
-}
-
-
-/**
- * 读 bots 名单。
- * @param raw 原始值。
- */
-function readBots(raw: unknown): BotConfig[] {
-  if (raw === undefined) {
-    return [{ name: '助手', language: 'zh' }];
-  }
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new Error('bots 必须是非空的名单；不写这一段时会默认一个叫“助手”的机器人');
-  }
-  /** 校验后的名单。 */
-  const bots: BotConfig[] = [];
-  for (const item of raw) {
-    if (!isRecord(item) || typeof item['name'] !== 'string' || item['name'] === '') {
-      throw new Error('bots 里每一项要有非空的 name');
-    }
-    const language = item['language'] === undefined ? 'zh' : item['language'];
-    if (language !== 'zh' && language !== 'en') {
-      throw new Error('bots 里的 language 只能是 zh 或 en');
-    }
-    bots.push({ name: item['name'], language });
-  }
-  return bots;
-}
-
-
-/**
- * 读正整数，没写用默认。
- * @param raw 原始值。
- * @param fallback 默认值。
- * @param label 错误信息里说的字段名。
- */
-function readPositiveInt(raw: unknown, fallback: number, label: string): number {
-  if (raw === undefined) {
-    return fallback;
-  }
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
-    throw new Error(`${label} 必须是正整数`);
-  }
-  return raw;
-}
-
-
-/**
- * 读 plugins 段。
- * @param raw 原始值。
- */
-function readPlugins(raw: unknown): PluginEntry[] {
-  if (raw === undefined) {
-    return [
-      { name: 'cli', config: {} },
-      { name: 'base-tools', config: {} },
-      { name: 'default-dialog', config: {} },
-    ];
-  }
-  if (!Array.isArray(raw)) {
-    throw new Error('plugins 必须是一个清单，一项一个插件');
-  }
-  /** 校验后、去掉 disabled 的。 */
+  //M plugins：一张清单，每项 { name, config?, disabled? }；disabled 是 true 的去掉。整段不写就挂默认的那几个。
   const plugins: PluginEntry[] = [];
-  for (const item of raw) {
-    if (!isRecord(item) || typeof item['name'] !== 'string' || item['name'] === '') {
-      throw new Error('plugins 里每一项要有非空的 name');
-    }
-    if (item['disabled'] === true) {
-      continue;
-    }
-    const config = item['config'] === undefined ? {} : item['config'];
-    plugins.push({ name: item['name'], config });
+  const pluginsWritten = root['plugins'] ?? DEFAULT_PLUGINS.map((name) => ({ name }));
+  for (const value of list(pluginsWritten, 'plugins')) {
+    const item = record(value, 'plugins 里的每一项');
+    if (item['disabled'] === true) continue;
+
+    const name = text(item['name'], 'plugins 里每一项的 name');
+    const config = item['config'] ?? {};
+    plugins.push({ name, config });
   }
-  return plugins;
+
+  //M engine：一轮最多几步、新会话的思考档、模型请求出错怎么重试。都可以不写。
+  //M   不写的默认：30 步、思考档 low、重试 5 次、第一次等 3 秒、一次请求最多等 120 秒。
+  const engine = record(root['engine'] ?? {}, 'engine');
+  const retry = record(engine['retry'] ?? {}, 'engine.retry');
+  const maxSteps = int(engine['max_rounds'] ?? 30, 'engine.max_rounds');
+  const thinking = oneOf(engine['thinking'] ?? 'low', THINKING, 'engine.thinking');
+  return {
+    defaultModel,
+    providers,
+    plugins,
+    maxSteps,
+    thinking,
+    retry: {
+      times: int(retry['times'] ?? 5, 'engine.retry.times'),
+      waitMs: int(retry['wait_ms'] ?? 3000, 'engine.retry.wait_ms'),
+      timeoutMs: int(retry['timeout_ms'] ?? 120000, 'engine.retry.timeout_ms'),
+    },
+  };
+}
+
+
+/**
+ * 要一组“名字: 值”。
+ * @param value 原始值。
+ * @param label 是配置里的哪一项，写进错误信息。
+ */
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} 没写，或者写得不对：要写成一组“名字: 值”`);
+  }
+  return value as Record<string, unknown>;
+}
+
+
+/**
+ * 要一张清单。
+ * @param value 原始值。
+ * @param label 是配置里的哪一项，写进错误信息。
+ */
+function list(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} 要写成一张清单`);
+  }
+  return value as unknown[];
+}
+
+
+/**
+ * 要非空的文字。
+ * @param value 原始值。
+ * @param label 是配置里的哪一项，写进错误信息。
+ */
+function text(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value === '') {
+    throw new Error(`${label} 要写成非空的文字`);
+  }
+  return value;
+}
+
+
+/**
+ * 要正整数。
+ * @param value 原始值。
+ * @param label 是配置里的哪一项，写进错误信息。
+ */
+function int(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} 要写成正整数`);
+  }
+  return value;
+}
+
+
+/**
+ * 要几个固定写法里的一个。
+ * @param value 原始值。
+ * @param allowed 允许的写法。
+ * @param label 是配置里的哪一项，写进错误信息。
+ */
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
+  const found = allowed.find((item) => item === value);
+  if (found === undefined) {
+    throw new Error(`${label} 只能是 ${allowed.join('、')}`);
+  }
+  return found;
 }

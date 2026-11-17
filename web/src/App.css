@@ -424,11 +424,19 @@ button {
   padding-left: 20px;
 }
 
+.jm-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
 .jm-settings-entry {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
   padding: 10px 12px;
   border: 0;
   border-radius: var(--jm-radius);
@@ -510,11 +518,26 @@ button {
   margin-left: 6px;
   font-size: 10px;
   color: var(--jm-muted);
+  white-space: nowrap;
 }
 
-.jm-settings-entry:hover {
+.jm-settings-entry:hover,
+.jm-refresh-entry:hover {
   background: var(--jm-hover);
   color: var(--jm-text);
+}
+.jm-refresh-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--jm-radius);
+  background: transparent;
+  color: var(--jm-muted);
+  cursor: pointer;
+  font-size: 13px;
 }
 
 /* —— 中栏：聊天 —— */
@@ -537,6 +560,25 @@ button {
   margin-left: auto;
   color: var(--jm-muted);
 }
+
+.jm-guide-btn {
+  flex: none;
+  margin-left: 4px;
+  border: 1px solid var(--jm-border);
+  background: transparent;
+  color: var(--jm-text);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.jm-guide-btn:hover {
+  background: var(--jm-hover, rgba(127, 127, 127, 0.12));
+}
+
 
 .jm-mascot-area {
   display: flex;
@@ -1409,16 +1451,19 @@ button {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: min(760px, 86%);
+  /* 消息行撑满中间区；限制宽度放在气泡上。否则 max-width 在行上时，用户短消息会停在 760px 列的右缘，右边空一大块。 */
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .jm-msg-user {
-  align-self: flex-end;
+  align-self: stretch;
   align-items: flex-end;
 }
 
 .jm-msg-bot {
-  align-self: flex-start;
+  align-self: stretch;
   align-items: flex-start;
 }
 
@@ -1467,7 +1512,9 @@ button {
   padding: 10px 14px;
   border-radius: var(--jm-radius);
   overflow-wrap: anywhere;
-  max-width: 100%;
+  /* 宽度上限仍用原来的 760px / 86%，但加在气泡上，不再加在整行上。 */
+  max-width: min(760px, 86%);
+  box-sizing: border-box;
 }
 
 .jm-bubble-user {
@@ -1827,7 +1874,11 @@ button {
 
 .jm-composer {
   padding: 10px 20px 16px;
-  border-top: 1px solid var(--jm-border);
+}
+
+.jm-composer-model {
+  width: 190px;
+  flex: none;
 }
 
 .jm-chips {
@@ -2394,6 +2445,79 @@ button {
   color: var(--jm-accent);
 }
 
+/* 右栏顶部：当前机器人正在跑的前台和后台任务（没有任务时不显示）。 */
+.jm-running-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 8px 14px 6px;
+  border-bottom: 1px solid var(--jm-border);
+  background: var(--jm-panel);
+}
+
+.jm-running-tasks-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 4px;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-running-tasks-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--jm-radius);
+  background: transparent;
+  color: var(--jm-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jm-running-tasks-item:hover,
+.jm-running-tasks-item.is-current {
+  background: var(--jm-hover);
+}
+
+.jm-running-tasks-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.jm-running-tasks-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.jm-running-tasks-time {
+  flex: 0 0 auto;
+  color: var(--jm-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.jm-running-tasks-action {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--jm-muted);
+}
+
 /* 右栏“会话”页（G批设计 8.2）：选择条、控制条、提示。 */
 .jm-session {
   display: flex;
@@ -2412,6 +2536,16 @@ button {
 .jm-session-pick {
   flex: 1;
   min-width: 0;
+}
+
+/* 会话号用等宽显示全长（20 位时刻号，旧的 8 位十六进制也能完整显示）。 */
+.jm-session-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--jm-muted);
+  white-space: nowrap;
+  overflow: visible;
+  user-select: all;
 }
 
 .jm-session-controls {
@@ -3024,3 +3158,51 @@ button {
   display: flex;
   justify-content: space-between;
 }
+
+/* 照卡片数据画的审批、长跑提醒卡片：为什么一行；风险高左边红条；定了、结束了变灰。 */
+.jm-approval-reason {
+  margin: 4px 0 8px;
+  color: var(--jm-text-secondary, #555);
+}
+.jm-approval.jm-risk-high {
+  border-left: 4px solid #ff4d4f;
+}
+.jm-approval.jm-approval-done {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+/* 审核卡片默认一行：序号+标题（太长省略号）+风险+按钮+展开箭头；展开才看细节。 */
+.jm-approval.jm-approval-compact {
+  padding: 6px 10px;
+  box-shadow: none;
+}
+.jm-approval-compact .jm-approval-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  font-size: 13px;
+}
+.jm-approval-compact .jm-approval-more {
+  margin-top: 6px;
+  max-height: 50vh;
+  overflow: auto;
+}
+.jm-approval-hint {
+  font-size: 12px;
+}
+
+/* —— 助手体验：表情丸、选项卡片、待办（Chat/Assist.tsx） —— */
+.jm-reactions { display: flex; gap: 4px; justify-content: flex-end; margin-top: 2px; }
+.jm-reaction { font-size: 13px; line-height: 20px; padding: 0 6px; border-radius: 10px; background: var(--jm-border); }
+.jm-ask { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--jm-border); border-radius: 8px; max-width: 520px; }
+.jm-ask-question { margin-bottom: 6px; }
+.jm-ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.jm-todo-panel { display: flex; flex-direction: column; gap: 12px; padding: 8px 12px; }
+.jm-todo-toolbar { display: flex; justify-content: flex-end; }
+.jm-ask-done { opacity: 0.7; }
+.jm-todo-item { padding: 2px 0; }
+.jm-todo-done { opacity: 0.6; text-decoration: line-through; }
+.jm-todo-doing { font-weight: 600; }

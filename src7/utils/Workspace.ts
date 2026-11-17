@@ -1,0 +1,106 @@
+/**
+ * 工作区里的路径：模型给的相对路径落成绝对路径，不许跑出工作区（符号链接解开再比）。base-tools、file-tools 用。
+ * 这一轮说话人是哪一档（roleOf）、用哪个工作区（of）：approval、base-tools、file-tools、exec、feishu、memory、prompt、前台共用。
+ * 这一轮能不能带用户的私人记忆（privateAllowed）：prompt、memory、前台共用。是不是群（isGroup）：再加 approval、飞书卡片。
+ */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as textModule from './Text.ts';
+
+
+/**
+ * 这一轮说话人是哪一档：渠道写在地址里的 role（飞书照插件配置的 people 写：owner、builder、guest）。
+ * 只写了 owner: false、没写 role 的地址当 guest；都没写的渠道（网页、命令行、微信）和小会话是 ''，照旧不限。
+ * @param address 会话现在记的回话地址：最后一句带渠道的话从哪来。
+ * @returns owner、builder、guest 或 ''。
+ */
+export function roleOf(address: unknown): string {
+  const role = textModule.textOf(address, 'role');
+  if (role !== '') return role;
+  return textModule.fieldOf(address, 'owner') === false ? 'guest' : '';
+}
+
+
+/**
+ * 这一轮是不是别人（builder、guest）在说：用户的私人记忆、别的客户的记录不给他。
+ * @param address 会话现在记的回话地址。
+ */
+export function isOther(address: unknown): boolean {
+  const role = roleOf(address);
+  return role === 'builder' || role === 'guest';
+}
+
+
+/**
+ * 这一轮能不能带用户的私人记忆（记忆目录、开场先搜、提示去查 memory）：本人、且不在不受信的群里才 true。
+ * 群里机器人的回复所有人都看得到，所以群聊默认不带，飞书 groups 里登记了 trusted: true 的群（地址带 trusted）本人说话才带。
+ * 没写 role 的渠道（网页、命令行、微信）和小会话不是群，照旧带。
+ * @param address 会话现在记的回话地址。
+ */
+export function privateAllowed(address: unknown): boolean {
+  //G 非本人（builder、guest）不带。
+  if (isOther(address)) return false;
+
+  //G 群里只有登记了 trusted: true 的才带。
+  return !isGroup(address) || textModule.fieldOf(address, 'trusted') === true;
+}
+
+
+/**
+ * 是不是群：地址的 chatType 是 group，或客户号是 feishu:group:…（飞书插件 feishuCustomer 的写法）。
+ * privateAllowed、approval（群里“同意 N”只认本人）、飞书卡片（群里不发卡片）共用。
+ * @param address 回话地址；带 customer 的别的对象（approval 的说话人、待确认）也行。
+ */
+export function isGroup(address: unknown): boolean {
+  //M chatType 是 group，或客户号是 feishu:group: 开头。
+  const byType = textModule.textOf(address, 'chatType') === 'group';
+  return byType || textModule.textOf(address, 'customer').startsWith('feishu:group:');
+}
+
+
+/**
+ * 这场会话这一轮的工作区：回话地址里写了 workspace（飞书给 builder、guest 写的他自己的目录）就用它，没写用机器人的。
+ * 地址跟着最后一句带渠道的话换，群里换了人，工作区跟着换。
+ * @param botWorkspace 机器人的工作区（ctx.bots.get(bot).workspace）。
+ * @param address 会话现在记的回话地址（session.row.address）。
+ * @returns 绝对路径。
+ */
+export function of(botWorkspace: string, address: unknown): string {
+  return textModule.textOf(address, 'workspace') || botWorkspace;
+}
+
+
+/**
+ * 把相对工作区的路径落成绝对路径。工作区和目标都先解开符号链接再比，链接指到外面的算出了工作区。
+ * @param workspace 这一轮的工作区，绝对路径。
+ * @param relative 模型给的路径，相对工作区；写成绝对路径也行，但要在工作区里面。
+ * @returns 解开链接后的绝对路径。
+ * @throws 出了工作区、断了的链接解不开时抛错。
+ */
+export function inside(workspace: string, relative: string): string {
+  const full = realOf(path.resolve(workspace, relative));
+  const back = path.relative(realOf(workspace), full);
+
+  //G 落到工作区外面（../ 出去了、换了盘符、链接指出去）→ 不许。
+  if (back.startsWith('..') || path.isAbsolute(back)) {
+    throw new Error(`路径出了工作区：${relative}（只能用工作区里的路径）`);
+  }
+  return full;
+}
+
+
+/**
+ * 解开符号链接后的路径；还不存在的（要新写的文件），解开最近存在的上一级，后面几段原样接上。
+ * 用 lstat 认“存在”：断了的链接也算存在，交给 realpath 抛错，不当成新文件往链接外面写。
+ * @param file 绝对路径。
+ */
+function realOf(file: string): string {
+  let existing = file;
+  while (fs.lstatSync(existing, { throwIfNoEntry: false }) === undefined) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return file;
+
+    existing = parent;
+  }
+  return path.join(fs.realpathSync.native(existing), path.relative(existing, file));
+}

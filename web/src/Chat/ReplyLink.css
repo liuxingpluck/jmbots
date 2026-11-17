@@ -61,3 +61,81 @@
   outline: 1px dashed var(--jm-accent);
   outline-offset: 6px;
 }
+
+/* 统一时间线沿用克制的工作台样式：渠道短标与身份长标分层。 */
+.jm-channel-filter {
+  flex-shrink: 0;
+}
+
+.jm-msg-channel {
+  border: 1px solid var(--jm-border);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--jm-accent);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.jm-msg-peer {
+  max-width: min(260px, 45vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jm-msg-user .jm-msg-meta {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+
+.jm-message-quote,
+.jm-composer-reply {
+  border-left: 3px solid var(--jm-accent);
+  background: color-mix(in srgb, var(--jm-accent) 6%, transparent);
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-message-quote {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+}
+
+.jm-message-quote strong,
+.jm-message-quote span,
+.jm-composer-reply strong,
+.jm-composer-reply span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jm-composer-reply {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+}
+
+.jm-composer-reply > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.jm-composer-reply strong {
+  margin-bottom: 3px;
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .jm-chat-head {
+    flex-wrap: wrap;
+  }
+
+  .jm-channel-filter {
+    order: 10;
+    width: 100%;
+  }
+}

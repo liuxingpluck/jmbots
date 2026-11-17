@@ -7,8 +7,8 @@ import * as react from 'react';
 import * as i18n from '../I18n.ts';
 
 
-/** 令牌在浏览器里存的键（和 Api.ts 的 TOKEN_KEY 同一个）。 */
-const TOKEN_KEY = 'jmbots.token';
+//M 2026-11-14 22:50 EST：键用 Token.ts 那一个，不再另写一份。
+import { TOKEN_KEY } from '../Token.ts';
 
 
 /**

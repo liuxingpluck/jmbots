@@ -7,6 +7,7 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as privacy from '../Privacy/Mask.tsx';
 
 
 /** 树上的一个节点。 */
@@ -50,6 +51,7 @@ function toNodes(entries: api.DirEntry[]): TreeNode[] {
 /** 记忆文件。 */
 export function MemoryFiles(): react.JSX.Element {
   const t = i18n.useT();
+  const masked = privacy.useMask();
   /** 正在聊的机器人。 */
   const bot = context.useUi((state) => state.currentBot);
   const openPanel = context.useUi((state) => state.openPanel);
@@ -82,6 +84,9 @@ export function MemoryFiles(): react.JSX.Element {
     const entries = await api.listDir(String(node.key));
     setTree((old) => attach(old, String(node.key), toNodes(entries)));
   };
+
+  //G 文件名和路径也可能带客户名，不向 DOM 输出树节点或路径键。
+  if (masked) return <div className="jm-muted">记忆文件（已打码）</div>;
 
   return (
     <section className="jm-memory-files">

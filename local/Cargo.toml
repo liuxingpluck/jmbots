@@ -1,10 +1,10 @@
 [package]
 name = "jmbots-local"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
-# tauri 2.12 和 memorycli（tree-sitter 0.27）都要 1.90 以上；Windows 上用 cargo +1.99.1。
+# tauri 2.12 要较新的 Rust；Windows 上用 cargo +1.99.1。（2026-11-14 memorycli 搬进记忆服务 memsvc/）
 rust-version = "1.90"
-description = "jmbots 的本地壳子：双击开窗口装载后端网页、托盘、命令行；memorycli 融合进来，HTTP 接口提供记忆搜索和 RAG"
+description = "jmbots 的本地壳子（基地，只承载）：双击开窗口装载后端网页、托盘、命令行；守护后端和托管服务（记忆服务 jmbots-memory 等）、更新、重启"
 publish = false
 default-run = "jmbots"
 
@@ -20,13 +20,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
-memorycli = { path = "../memorycli" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_yaml = "0.9.34"
-# RAG：Tantivy（BM25 全文检索）+ jieba 中文分词，不用嵌入模型（用户 11-05 定）。
-tantivy = "0.27.0"
-tantivy-jieba = "0.21.0"
 tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.5.5"
 tiny_http = "0.12.0"
@@ -38,7 +34,8 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_UI_Shell", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Win32_Security"] }
+winrt-notification = "0.5.1"
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }
