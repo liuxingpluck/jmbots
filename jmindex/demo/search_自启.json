@@ -1,0 +1,288 @@
+{
+  "query": "自启",
+  "hits": [
+    {
+      "path": "shell/internal/autostart/registry_windows.go",
+      "lang": "go",
+      "kind": "code",
+      "score": 0.0164,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 65,
+          "end_line": 72,
+          "title": "windowsRegistry.Set",
+          "text": "\tstatus, _, _ := api.query.Call(uintptr(key), uintptr(unsafe.Pointer(encoded)), 0, uintptr(unsafe.Pointer(&kind)), 0, uintptr(unsafe.Pointer(&size)))\n\tif status != 0 && status != moreData {\n\t\treturn \"\", registryError(\"查询自启值长度\", status)\n\t}\n\tfor attempt := 0; attempt < 4; attempt++ {\n\t\tif kind != registrySZ || size < 2 || size%2 != 0 || size > maxValueLen {\n\t\t\treturn \"\", fmt.Errorf(\"自启值不是有效的有界 REG_SZ 字符串\")\n\t\t}"
+        },
+        {
+          "start_line": 105,
+          "end_line": 113,
+          "title": "windowsRegistry.Set、windowsRegistry.Delete",
+          "text": "\t}\n\tdata, err := syscall.UTF16FromString(value)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"自启命令编码失败: %w\", err)\n\t}\n\tapi := lazyRegistryAPI()\n\tkey, err := api.openRun(setValue, true)\n\tif err != nil {\n\t\treturn err"
+        },
+        {
+          "start_line": 64,
+          "end_line": 72,
+          "title": "lazyRegistryAPI、windowsRegistry.Get",
+          "text": "\tvar kind, size uint32\n\tstatus, _, _ := api.query.Call(uintptr(key), uintptr(unsafe.Pointer(encoded)), 0, uintptr(unsafe.Pointer(&kind)), 0, uintptr(unsafe.Pointer(&size)))\n\tif status != 0 && status != moreData {\n\t\treturn \"\", registryError(\"查询自启值长度\", status)\n\t}\n\tfor attempt := 0; attempt < 4; attempt++ {\n\t\tif kind != registrySZ || size < 2 || size%2 != 0 || size > maxValueLen {\n\t\t\treturn \"\", fmt.Errorf(\"自启值不是有效的有界 REG_SZ 字符串\")\n\t\t}"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:shell/internal/autostart/autostart.go",
+          "relation": "uses+in_uses",
+          "weight": 0.8
+        },
+        {
+          "id": "file:shell/cmd/jmshell/main.go",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/internal/shell/control.go",
+          "relation": "in_uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:shell/internal/shell/integration_test.go",
+          "relation": "in_uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:src/tools/CodeGraph.ts",
+          "relation": "in_uses",
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "path": "shell/internal/autostart/autostart.go",
+      "lang": "go",
+      "kind": "code",
+      "score": 0.0161,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 1,
+          "end_line": 6,
+          "title": "Registry、Options",
+          "text": "// autostart 将每个壳子目录的登录自启配置与可替换注册表接口分离；不操作任务管理器禁用标记。\npackage autostart\n\nimport (\n\t\"crypto/sha256\"\n\t\"errors\""
+        },
+        {
+          "start_line": 97,
+          "end_line": 104,
+          "title": "normalizePath",
+          "text": "\t}\n\tif warning != \"\" {\n\t\treturn Result{Warning: warning}, fmt.Errorf(\"拒绝安装自启：检测到旧 jmbots_Guard.vbs，请先由用户确认停用旧守护脚本\")\n\t}\n\texe, err := normalizePath(opts.Exe, \"可执行文件\")\n\tif err != nil {\n\t\treturn Result{}, err\n\t}"
+        },
+        {
+          "start_line": 73,
+          "end_line": 81,
+          "title": "",
+          "text": "\tif opts.Remove {\n\t\t//M 卸载不探测 Startup、不读取 VBS、不清除 StartupApproved，只删除本 Home 值。\n\t\tif err := reg.Delete(name); err != nil && !errors.Is(err, ErrNotExist) {\n\t\t\treturn Result{}, fmt.Errorf(\"删除当前壳子的自启值失败: %w\", err)\n\t\t}\n\t\treturn Result{}, nil\n\t}\n\tstartup, err := normalizePath(opts.StartupDir, \"启动目录\")\n\tif err != nil {"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:shell/internal/autostart/autostart_windows_test.go",
+          "relation": "uses+in_uses",
+          "weight": 0.8
+        },
+        {
+          "id": "file:shell/internal/autostart/registry_windows.go",
+          "relation": "uses+in_uses",
+          "weight": 0.8
+        },
+        {
+          "id": "file:shell/internal/logging/writer.go",
+          "relation": "uses",
+          "weight": 0.4
+        },
+        {
+          "id": "file:shell/cmd/jmshell/main.go",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:web/src/Knowledge/DocumentList.tsx",
+          "relation": "in_uses",
+          "weight": 0.4
+        },
+        {
+          "id": "file:web/src/Knowledge/DocumentView.tsx",
+          "relation": "in_uses",
+          "weight": 0.4
+        }
+      ]
+    },
+    {
+      "path": "shell/README.md",
+      "lang": "markdown",
+      "kind": "doc",
+      "score": 0.0159,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 1,
+          "end_line": 5,
+          "title": "jmshell：Windows 独立守护壳子",
+          "text": "# jmshell：Windows 独立守护壳子\n\nM1 已具备独立配置、冻结发布物、候选验证、失败回退、Job监督、认证控制口和控制台客户端；M2已实现托盘和自启适配，零CGO构建及纯逻辑测试通过。没有实际安装自启或进行托盘视觉验收。不导入jmbots源码，不读取其配置。目标Windows/amd64，模块 `jmbots-shell`，Go语言版本1.24。\n\n完整配置、状态机、接口、风险与逐项证据见[壳子实现说明](<../docs/Go壳子/04_壳子实现说明.md>)。"
+        },
+        {
+          "start_line": 11,
+          "end_line": 14,
+          "title": "jmshell：Windows 独立守护壳子 > 开发验证边界",
+          "text": "- 编译前将本目录源码复制到实验副本，设置进程级Go缓存/TEMP，使用 `D:/dev/go1.27.0.windows-amd64/bin/go.exe`。\n- 不读取、打印或复制业务配置、环境密钥或令牌文件。客户端只在内部消费控制凭据，不提供显示令牌命令。\n- 界面查看、测试和截图只能通过AOBB；不得自行启动浏览器或触发托盘的浏览器打开动作。\n- 不安装自启、不改注册表和系统设置，不提交Git。"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:zbots/src/Tools.ts",
+          "relation": "in_mentions",
+          "weight": 0.6
+        }
+      ]
+    },
+    {
+      "path": "shell/internal/autostart/autostart_windows_test.go",
+      "lang": "go",
+      "kind": "code",
+      "score": 0.0156,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 245,
+          "end_line": 253,
+          "title": "TestHome名称大小写规范化且实例隔离、Test路径引用兼容Windows参数规则",
+          "text": "\tfor _, alias := range []string{strings.ToUpper(opts.Home), opts.Home + `\\.`, filepath.ToSlash(opts.Home)} {\n\t\tvalue, err := nameForHome(alias)\n\t\tif err != nil || value != first {\n\t\t\tt.Error(\"同目录不同写法应使用同一自启值\", err)\n\t\t}\n\t}\n\tother, err := nameForHome(opts.Home + \"-other\")\n\tif err != nil || other == first {\n\t\tt.Error(\"不同 home 必须隔离自启值\", err)"
+        },
+        {
+          "start_line": 66,
+          "end_line": 72,
+          "title": "fakeRegistry.Set、fakeRegistry.Delete、fakeOptions",
+          "text": "\t}\n\trelative, err := filepath.Rel(`F:\\aidata\\cache\\jmshell_exp`, temporary)\n\tif err != nil || relative == \"..\" || strings.HasPrefix(relative, `..\\`) || filepath.IsAbs(relative) {\n\t\tt.Fatal(\"自启测试仅可在 F 盘实验 TEMP 中执行\")\n\t}\n\tbase := t.TempDir()\n\thome := filepath.Join(base, \"带 空格 home\")"
+        },
+        {
+          "start_line": 118,
+          "end_line": 126,
+          "title": "TestRun旧VBS存在时拒绝安装查看警告卸载不碰",
+          "text": "\t\tt.Error(\"卸载必须只删除当前 home 的 Run 值\", err)\n\t}\n\tif reg.values[\"unrelated-application\"] != \"keep\" {\n\t\tt.Error(\"不得改动其他应用自启值\")\n\t}\n\tif _, err := Run(reg, opts); err != nil {\n\t\tt.Error(\"缺失值的卸载必须幂等\", err)\n\t}\n}"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:shell/internal/autostart/autostart.go",
+          "relation": "uses+in_uses",
+          "weight": 0.8
+        },
+        {
+          "id": "file:shell/internal/logging/writer.go",
+          "relation": "uses",
+          "weight": 0.4
+        },
+        {
+          "id": "file:shell/internal/shell/control.go",
+          "relation": "in_uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:shell/internal/shell/integration_test.go",
+          "relation": "in_uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:src/tools/CodeGraph.ts",
+          "relation": "in_uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:shell/cmd/fakeserve/health.go",
+          "relation": "in_uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "in_uses",
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "path": "shell/cmd/jmshell/main.go",
+      "lang": "go",
+      "kind": "code",
+      "score": 0.0154,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 65,
+          "end_line": 72,
+          "title": "",
+          "text": " show:=flags.Bool(\"show\",false,\"仅显示本home的Run项与旧看门狗提示\")\n if err:=flags.Parse(args);err!=nil{return err}\n if flags.NArg()!=0{return fmt.Errorf(\"自启子命令不接受位置参数\")}\n resolved,err:=core.ResolveHome(*home,\"\");if err!=nil{return err}\n exe,err:=os.Executable();if err!=nil{return err}\n appData:=os.Getenv(\"APPDATA\");if appData==\"\"{return fmt.Errorf(\"APPDATA不可用，拒绝猜测启动目录\")}\n result,err:=autostart.Run(autostart.NewWindowsRegistry(),autostart.Options{Exe:exe,Home:resolved,StartupDir:filepath.Join(appData,\"Microsoft\",\"Windows\",\"Start Menu\",\"Programs\",\"Startup\"),Remove:*remove,Show:*show})\n message:=fmt.Sprintf(\"Run项存在=%t；命令=%s；提示=%s\",result.Installed,result.Command,result.Warning)"
+        },
+        {
+          "start_line": 64,
+          "end_line": 72,
+          "title": "runAutostart",
+          "text": " remove:=flags.Bool(\"remove\",false,\"卸载本home的Run项\")\n show:=flags.Bool(\"show\",false,\"仅显示本home的Run项与旧看门狗提示\")\n if err:=flags.Parse(args);err!=nil{return err}\n if flags.NArg()!=0{return fmt.Errorf(\"自启子命令不接受位置参数\")}\n resolved,err:=core.ResolveHome(*home,\"\");if err!=nil{return err}\n exe,err:=os.Executable();if err!=nil{return err}\n appData:=os.Getenv(\"APPDATA\");if appData==\"\"{return fmt.Errorf(\"APPDATA不可用，拒绝猜测启动目录\")}\n result,err:=autostart.Run(autostart.NewWindowsRegistry(),autostart.Options{Exe:exe,Home:resolved,StartupDir:filepath.Join(appData,\"Microsoft\",\"Windows\",\"Start Menu\",\"Programs\",\"Startup\"),Remove:*remove,Show:*show})\n message:=fmt.Sprintf(\"Run项存在=%t；命令=%s；提示=%s\",result.Installed,result.Command,result.Warning)"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:shell/internal/shell/control.go",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/internal/logging/child_windows.go",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/internal/logging/rename.go",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/internal/tray/model.go",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/internal/logging/redact.go",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/internal/logging/writer.go",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:shell/cmd/jmshell/main_test.go",
+          "relation": "in_uses",
+          "weight": 0.8
+        }
+      ]
+    }
+  ]
+}

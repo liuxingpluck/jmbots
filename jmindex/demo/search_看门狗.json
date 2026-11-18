@@ -1,0 +1,300 @@
+{
+  "query": "看门狗",
+  "hits": [
+    {
+      "path": "scripts/Start_Serve.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0164,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 1,
+          "end_line": 7,
+          "title": "WAIT_MS、startGuard",
+          "text": "/**\n * 双击启动：确保 jmbots 服务在跑，而且有看门狗守着。\n *\n * 做三件事：\n *   1. 服务已经在跑就什么都不动，只补上看门狗（如果它不在）；\n *   2. 网页还没打包过（没有 dist/web）就先打包一次；\n *   3. 起看门狗。服务由看门狗去起——这样\"谁负责起服务\"只有一个答案，不会两边抢。"
+        },
+        {
+          "start_line": 45,
+          "end_line": 53,
+          "title": "main",
+          "text": "      return true;\n    }\n  }\n  console.log(`看门狗没起来，看 ${logFile}`);\n  return false;\n}\n\n\n/**"
+        },
+        {
+          "start_line": 65,
+          "end_line": 73,
+          "title": "",
+          "text": "  if (await serveProcess.isHealthy(port)) {\n    console.log(`服务已经在跑：http://127.0.0.1:${port}`);\n    if (guard.isGuardRunning(runtimeDir)) {\n      console.log('看门狗也在，什么都不用做。');\n      return;\n    }\n    console.log('看门狗不在，补起来。');\n    await startGuard(runtimeDir);\n    return;"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:scripts/Guard.ts",
+          "relation": "imports+uses+mentions",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Serve_Process.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Install_Autostart.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:package.json",
+          "relation": "in_mentions",
+          "weight": 0.8
+        }
+      ]
+    },
+    {
+      "path": "scripts/Guard.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0161,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 35,
+          "end_line": 43,
+          "title": "SNAPSHOT_AFTER_HEALTHY_MS、QUIET_RETRY_MS、HEARTBEAT_STALE_MS、heartbeatFile",
+          "text": "/** 停手之后隔多久再试一次，毫秒。 */\nconst QUIET_RETRY_MS = 10 * 60_000;\n\n/** 心跳多久没更新就算这只看门狗已经没了，毫秒。 */\nexport const HEARTBEAT_STALE_MS = 2 * 60_000;\n\n\n/**\n * 心跳文件的位置。"
+        },
+        {
+          "start_line": 232,
+          "end_line": 240,
+          "title": "main、main.log",
+          "text": "\n  //G 已经有一只在跑就不再起第二只（两只会互相抢着起服务）。\n  if (isGuardRunning(runtimeDir)) {\n    console.log(`已经有一只看门狗在跑了（心跳 ${heartbeatFile(runtimeDir)}），这次不起。`);\n    return;\n  }\n\n  /** 日志文件，按天一个。 */\n  const logFile = path.join(runtimeDir, 'data', `guard_${serveProcess.timeId().slice(0, 8)}.log`);"
+        },
+        {
+          "start_line": 257,
+          "end_line": 262,
+          "title": "",
+          "text": "  log(`看门狗开工：守着 ${port}，运行时 ${runtimeDir}，每 ${CHECK_INTERVAL_MS / 1000} 秒查一次`);\n\n  while (true) {\n    try {\n      //M 心跳：让 Start_Serve 和下一只看门狗知道这里有人了。\n      fs.writeFileSync(heartbeatFile(runtimeDir), serveProcess.timeText());"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:scripts/Serve_Process.ts",
+          "relation": "imports+uses+mentions",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Snapshot.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Install_Autostart.ts",
+          "relation": "mentions+in_mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:tests/Guard_Snapshot.test.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Start_Serve.ts",
+          "relation": "in_imports+in_uses+in_mentions",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "scripts/Install_Autostart.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0159,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 1,
+          "end_line": 7,
+          "title": "VBS_NAME、startupDir",
+          "text": "/**\n * 装/卸开机自动启动：在 Windows 的\"启动\"文件夹里放一个 .vbs，登录时无窗口地把看门狗起起来。\n *\n * 为什么用启动文件夹而不是计划任务：用户 10-31 明确不想用 Windows 计划任务管这类生命周期，\n * 10-28 也反馈过定时任务反复闪命令窗口\"很烦\"。启动文件夹里的 .vbs 用 `Run(..., 0, False)`\n * 起进程，窗口是真的没有（不是最小化）。\n *"
+        },
+        {
+          "start_line": 83,
+          "end_line": 91,
+          "title": "main",
+          "text": "      return;\n    }\n    fs.rmSync(target);\n    console.log(`已卸掉：${target}\\n（已经在跑的看门狗不受影响，要停它就在任务管理器里结束那个 bun 进程。）`);\n    return;\n  }\n\n  /** 运行时目录。 */\n  const runtimeDir = serveProcess.runtimeDir().replace(/\\//g, '\\\\');"
+        },
+        {
+          "start_line": 45,
+          "end_line": 53,
+          "title": "buildVbs、buildVbs.quote、main",
+          "text": " * @returns .vbs 全文（只用 ASCII，避免脚本宿主按别的编码读）。\n */\nfunction buildVbs(runtimeDir: string, port: string, host: string): string {\n  /** 看门狗起不来时的输出去哪（正常情况下看门狗自己写 guard_<日期>.log）。 */\n  const logFile = path.join(runtimeDir, 'data', 'guard_autostart.log');\n  /**\n   * 包一层引号给 cmd 用。VBScript 字符串里的一个双引号要写成两个，所以这里是四个。\n   * @param text 要包起来的路径。\n   */"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:scripts/Serve_Process.ts",
+          "relation": "imports+uses+mentions",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Guard.ts",
+          "relation": "mentions+uses+in_mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:shell/internal/shell/manager.go",
+          "relation": "uses",
+          "weight": 0.2
+        },
+        {
+          "id": "file:scripts/Start_Serve.ts",
+          "relation": "in_mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:package.json",
+          "relation": "in_mentions",
+          "weight": 0.8
+        }
+      ]
+    },
+    {
+      "path": "src/core/Engine.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0156,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 911,
+          "end_line": 919,
+          "title": "createEngine.startLoop",
+          "text": "          continue;\n        }\n        store.recordEvent({ sessionId: session.id, parentId: eventId, type: 'watchdog', payload: { minutes: idle } });\n        console.log(`${utils.formatTime()} 看门狗：会话 ${session.id}「${session.title}」已经 ${idle} 分钟没有新步骤`);\n        for (const listener of stuckListeners) {\n          try {\n            listener({ sessionId: session.id, sessionTitle: session.title, eventId, minutes: idle });\n          } catch (error) {\n            console.error(`${utils.formatTime()} 看门狗通知出错：${utils.errorText(error)}`);"
+        },
+        {
+          "start_line": 133,
+          "end_line": 141,
+          "title": "StuckExecution、MAX_PARALLEL、StoredResponse",
+          "text": "}\n\n\n/** 看门狗发现的卡住的执行。 */\nexport interface StuckExecution {\n  /** 会话 ID。 */\n  sessionId: string;\n\n  /** 会话标题。 */"
+        },
+        {
+          "start_line": 133,
+          "end_line": 136,
+          "title": "Handled、Routed",
+          "text": "}\n\n\n/** 看门狗发现的卡住的执行。 */"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/core/Router.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/ExecRules.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Dispatcher.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Judge.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/tools/Tools.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Http.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Feishu.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "tests/Guard_Snapshot.test.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0154,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 1,
+          "end_line": 7,
+          "title": "tempDir、fakeProject",
+          "text": "/**\n * 看门狗和版本快照的离线测试：快照存/列/只留最近几份、坏目录跳过、换版本的锁、看门狗心跳、时间 ID。\n * 都在临时目录里做，不碰项目的 bak/versions，也不起任何进程。\n */\nimport * as bunTest from 'bun:test';\nimport * as fs from 'node:fs';\nimport * as os from 'node:os';"
+        },
+        {
+          "start_line": 142,
+          "end_line": 150,
+          "title": "",
+          "text": "  bunTest.expect(serveProcess.isSwapping(runtimeDir)).toBe(false);\n  fs.writeFileSync(lockFile, String(Date.now()));\n  bunTest.expect(serveProcess.isSwapping(runtimeDir)).toBe(true);\n  //M 锁过期之后看门狗就该正常接管了，不然换版本挂了就没人管。\n  fs.writeFileSync(lockFile, String(Date.now() - serveProcess.SWAP_LOCK_MS - 1000));\n  bunTest.expect(serveProcess.isSwapping(runtimeDir)).toBe(false);\n\n  fs.rmSync(runtimeDir, { recursive: true, force: true });\n});"
+        },
+        {
+          "start_line": 180,
+          "end_line": 186,
+          "title": "",
+          "text": "\n\nbunTest.test('运行时目录：命令行 --runtime 优先于环境变量', () => {\n  //M 看门狗和双击启动都靠这个找运行时，默认值要和 src/core/Runtime.ts 的一致。\n  bunTest.expect(serveProcess.DEFAULT_RUNTIME_DIR).toBe('F:/aidata/AIJMBots');\n  bunTest.expect(serveProcess.option('一个不存在的参数', '兜底')).toBe('兜底');\n});"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:scripts/Guard.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Serve_Process.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:scripts/Snapshot.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        }
+      ]
+    }
+  ]
+}

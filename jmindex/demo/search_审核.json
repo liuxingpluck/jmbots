@@ -1,0 +1,365 @@
+{
+  "query": "审核",
+  "hits": [
+    {
+      "path": "web/src/Events/SessionView.tsx",
+      "lang": "tsx",
+      "kind": "code",
+      "score": 0.0164,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 356,
+          "end_line": 362,
+          "title": "",
+          "text": "    if (payload.approvalId !== undefined) {\n      parts.push(`待确认 ID ${toText(payload.approvalId)}`);\n    }\n    return `命令审核：${toText(payload.command)}（${parts.join('，')}）`;\n  }\n  return `${event.type}（${event.status}）`;\n}"
+        },
+        {
+          "start_line": 341,
+          "end_line": 349,
+          "title": "",
+          "text": "    return `待确认 ${toText(payload.approvalId)} ${payload.decision === 'approved' ? '已放行' : '已拒绝'}（${toText(payload.by)}）${payload.note ? `：${toText(payload.note)}` : ''}`;\n  }\n  if (event.type === 'exec_review') {\n    // m: 审核结论：直接执行，或者谁审的、决策模型给的安全概率、等用户确认的 ID。\n    /** 结论的各段。 */\n    const parts: string[] = [];\n    if (typeof payload.verdict === 'string') {\n      parts.push(payload.verdict);\n    }"
+        },
+        {
+          "start_line": 270,
+          "end_line": 278,
+          "title": "ChildEvent、describeEvent",
+          "text": "\n\n/**\n * 挂在执行下面的事件：分派、判断、命令审核。常见的几项写成一句话，原样 JSON 折叠着。\n * @param props.event 事件。\n */\nfunction ChildEvent(props: { event: api.EventRow }) {\n  const { event } = props;\n  return ("
+        }
+      ],
+      "related": [
+        {
+          "id": "file:web/src/Events/EventsStore.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:web/src/Format.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:web/src/Events/EventsApi.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:web/src/Events/SessionList.tsx",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:web/src/Events/EventsPage.tsx",
+          "relation": "in_imports+in_uses+in_mentions",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "src/store/Log.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0161,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 175,
+          "end_line": 183,
+          "title": "decisionsOf",
+          "text": "\n\n/**\n * 一次执行里的决策模型对话：命令审核（exec_review，by decision）和下一步判断（judge 带 decision）。\n * @param store 数据库。\n * @param execution execution 事件。\n * @returns 文件名（不含扩展名）、标题、内容。\n */\nfunction decisionsOf("
+        },
+        {
+          "start_line": 198,
+          "end_line": 206,
+          "title": "describeChild",
+          "text": "      const count = (reviewCount.get(step) ?? 0) + 1;\n      reviewCount.set(step, count);\n      found.push({\n        name: `${execution.id}_${step}_决策_审核${count > 1 ? `_${count}` : ''}`,\n        title: `第 ${step} 步 · 命令审核：${utils.toText(payload.command)}`,\n        data: payload,\n      });\n    }\n    if (child.type === 'judge' && payload.decision && typeof payload.decision === 'object') {"
+        },
+        {
+          "start_line": 4,
+          "end_line": 12,
+          "title": "ExportInput",
+          "text": " * 位置：会话目录（Runtime.sessionDir：logs/bots/<机器人>/<会话ID>_<标题>/，不走机器人的放 logs/常规/<会话ID>_<标题>/）。\n *   <事件ID>_<第几步>.json   给 AI 和程序看：这一步实际发给模型的请求、模型的回复、工具调用和结果\n *   <事件ID>_<第几步>.md     给人看：模型、用时、用量、回复、思考、每个工具的参数和结果\n *   <事件ID>_<第几步>_决策_审核[_N].json/.md   这一步问决策模型“命令安不安全”的那次对话（一步里审了几条命令就有几份）\n *   <事件ID>_<第几步>_决策_判断.json/.md       这一步之后问决策模型“下一步怎么走”的那次对话\n *   会话.md                  会话总览：每次执行的输入、结局，每一步一行，分派、判断、审核的结论\n * 用户 11-02：“决策模型肯定也是要有对应的对话的，它应该也是个单独的……它可能放在某一个轮次里面。”\n */\nimport * as crypto from 'node:crypto';"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/utils/Utils.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/store/Events.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_mentions+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/tests/Log.test.ts",
+          "relation": "in_mentions",
+          "weight": 0.3
+        }
+      ]
+    },
+    {
+      "path": "src/channels/Feishu.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0159,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 583,
+          "end_line": 591,
+          "title": "approvalCard、StartFeishuOptions",
+          "text": "    `**命令**\\n\\`\\`\\`\\n${utils.truncate(request.command, 1500)}\\n\\`\\`\\``,\n    `**目录** ${request.workDir}`,\n    `**会话** ${request.sessionTitle}（${request.sessionId}，来自 ${request.source}）`,\n    request.probability === undefined ? '**审核** 没问决策模型' : `**审核** 决策模型给的安全概率 ${request.probability.toFixed(2)}，低于放行线`,\n  ].join('\\n');\n  /** 标题。 */\n  const title = `待确认 ${request.approvalId}：要执行一条命令`;\n  if (result) {\n    return buildCard({ title, color: 'grey', body: [body, `**结果** ${result}`] });"
+        },
+        {
+          "start_line": 573,
+          "end_line": 581,
+          "title": "topicOf、chatOf、approvalCard",
+          "text": "\n\n/**\n * 待确认命令的飞书卡片：命令、目录、会话、审核概率，加“放行”“拒绝”两个按钮；决定过以后换成不带按钮的结果。\n * @param request 确认请求。\n * @param result 已经决定了时的结果说明，如“已放行（飞书卡片按钮）”；没决定时不写。\n */\nfunction approvalCard(request: engineModule.ApprovalRequest, result?: string): Record<string, unknown> {\n  /** 正文。 */"
+        },
+        {
+          "start_line": 639,
+          "end_line": 647,
+          "title": "logConnection、startFeishu",
+          "text": " *   2. 来自飞书的会话每次执行结束，把回复发回那个聊天（engine.onFinished）；\n *   3. 有命令要确认时发一张带“放行”“拒绝”按钮的卡片（engine.onApproval），点了就调 engine.decide。\n *      卡片发到会话所在的聊天；会话不是飞书来的（网页、命令行），发给最近私聊过机器人的人。\n * 用户 11-02：“触发审核的事情应该飞书也生成卡片之类我去点击通过……核心框架应当是不知道飞书相关的”。\n * @param options 传输层、设置、数据库、引擎。\n * @returns 适配器（可以 close）。\n * @throws 第一次连接失败时抛错。\n */\nexport async function startFeishu(options: StartFeishuOptions): Promise<Feishu> {"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/channels/FeishuMedia.ts",
+          "relation": "imports+in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/utils/Utils.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:zbots/src/Feishu.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/store/Events.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:tests/Feishu_Choice.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/FeishuDoc.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:tests/Feishu_Media.test.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "src/core/Runtime.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0156,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 115,
+          "end_line": 122,
+          "title": "EngineSettings",
+          "text": "  /** 全局分派智能体的名字（agents 下的文件夹）。 */\n  dispatcher: string;\n\n  /** exec 命令怎么审核：decision（先问决策模型，不放心再问人）、human（每次都问人）、off（不审核，直接执行）。 */\n  execReview: 'decision' | 'human' | 'off';\n\n  /** 决策模型认为“安全”的概率不低于它，就直接执行。 */\n  passProbability: number;\n"
+        },
+        {
+          "start_line": 388,
+          "end_line": 396,
+          "title": "Runtime.secretValues、Runtime.secretValues.walk",
+          "text": "    const legacy = checks.asRecord(this.config.agent ?? {}, 'agent');\n    /** config.yaml 的 decision：通过概率和问题。 */\n    const decision = checks.asRecord(this.config.decision ?? {}, 'decision');\n    /** 审核方式原文。 */\n    const review = engine.exec_review ?? 'decision';\n    if (review !== 'decision' && review !== 'human' && review !== 'off') {\n      throw new Error(`config.yaml 的 engine.exec_review 只能是 decision、human、off，现在是 ${JSON.stringify(review)}`);\n    }\n    return {"
+        },
+        {
+          "start_line": 388,
+          "end_line": 392,
+          "title": "Runtime.providers、Runtime.models、Runtime.defaultModel、Runtime.engine",
+          "text": "    const legacy = checks.asRecord(this.config.agent ?? {}, 'agent');\n    /** config.yaml 的 decision：通过概率和问题。 */\n    const decision = checks.asRecord(this.config.decision ?? {}, 'decision');\n    /** 审核方式原文。 */\n    const review = engine.exec_review ?? 'decision';"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/utils/Checks.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/utils/Utils.ts",
+          "relation": "imports+uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Engine.ts",
+          "relation": "mentions+in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Model.ts",
+          "relation": "mentions",
+          "weight": 0.8
+        },
+        {
+          "id": "file:src/tools/WebSearch.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Http.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/store/Log.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Judge.ts",
+          "relation": "in_imports",
+          "weight": 1.0
+        }
+      ]
+    },
+    {
+      "path": "src/core/Engine.ts",
+      "lang": "typescript",
+      "kind": "code",
+      "score": 0.0154,
+      "matched": [
+        "text"
+      ],
+      "tags": [],
+      "symbols": [],
+      "snippets": [
+        {
+          "start_line": 402,
+          "end_line": 410,
+          "title": "createEngine.runToolCall",
+          "text": "      return { message: toolResultMessage(call, `参数读不出来：${call.argumentsError}`, true) };\n    }\n\n    //M exec 先审核。\n    if (call.name === 'exec') {\n      /** 审核结论：run 执行、reject 拒绝、ask 问用户。 */\n      const verdict = await reviewExec(event, step, call, row, context.workDir);\n      if (verdict.kind === 'ask') {\n        return { approvalId: verdict.approvalId };"
+        },
+        {
+          "start_line": 473,
+          "end_line": 481,
+          "title": "",
+          "text": "      return { kind: 'run' };\n    }\n\n    //M 2. 按设置审核。\n    /** 设置。 */\n    const settings = runtime.engine;\n    if (settings.execReview === 'off') {\n      store.recordEvent({ sessionId: event.sessionId, parentId: event.id, type: 'exec_review', payload: { command, verdict: '不审核，直接执行' } });\n      return { kind: 'run' };"
+        },
+        {
+          "start_line": 432,
+          "end_line": 440,
+          "title": "createEngine.reviewExec",
+          "text": "\n\n  /**\n   * 审核 exec：已经有用户的决定就照办；没有就按 engine.exec_review：off 直接执行、decision 先问决策模型、human 问用户。\n   * decision 时安全概率不低于 decision.pass_probability（默认 0.2，用户 11-02 要绝大多数命令直接放行）就执行，\n   * 低于它或决策模型出错才记一条待确认、问用户。审核结论记成 exec_review 事件。\n   * @param event execution 事件。\n   * @param step 第几步（决策模型的对话日志按它命名）。\n   * @param call exec 调用。"
+        }
+      ],
+      "related": [
+        {
+          "id": "file:src/core/Router.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/ExecRules.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Dispatcher.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Runtime.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/core/Judge.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/tools/Tools.ts",
+          "relation": "imports",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/Main.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Http.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        },
+        {
+          "id": "file:src/channels/Feishu.ts",
+          "relation": "in_imports+in_uses",
+          "weight": 1.0
+        }
+      ]
+    }
+  ]
+}
