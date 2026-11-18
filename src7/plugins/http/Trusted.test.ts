@@ -46,7 +46,7 @@ describe('免令牌的来源地址', () => {
 
 /** 带主令牌的测试配置，核对要令牌的前缀。 */
 class TokenResources extends FakeResources {
-  override readonly raw = { server: { port: 1, token: 'secret' } };
+  override readonly raw = { server: { port: 1, token: 'secret', trusted_ips: ['192.0.2.12'] } };
 }
 
 test('别的机器访问 /programs/ 要令牌，和 /api/ 一样；本机免', async () => {
@@ -54,7 +54,7 @@ test('别的机器访问 /programs/ 要令牌，和 /api/ 一样；本机免', a
   try {
     await ctx.plugin(TokenResources);
     await ctx.plugin(httpPlugin);
-    ctx.http.app.get('/programs/demo/', () => '界面');
+    ctx.http.app.get('/programs/demo/', (request) => ({ verified: ctx.http.isVerified(request) }));
 
     const remote = { method: 'GET', url: '/programs/demo/', remoteAddress: '192.168.1.5' } as const;
     const denied = await ctx.http.app.inject(remote);
@@ -63,9 +63,40 @@ test('别的机器访问 /programs/ 要令牌，和 /api/ 一样；本机免', a
     const withToken = { ...remote, url: '/programs/demo/?token=secret' };
     const allowed = await ctx.http.app.inject(withToken);
     expect(allowed.statusCode).toBe(200);
+    expect(allowed.json<{ verified: boolean }>().verified).toBe(true);
 
     const local = await ctx.http.app.inject('/programs/demo/');
     expect(local.statusCode).toBe(200);
+    expect(local.json<{ verified: boolean }>().verified).toBe(true);
+
+    //G 受信地址仍可浏览，只有带有效令牌才标记为已核验的远程请求。
+    const trusted = { ...remote, remoteAddress: '192.0.2.12' };
+    const trustedBrowsing = await ctx.http.app.inject(trusted);
+    expect(trustedBrowsing.statusCode).toBe(200);
+    expect(trustedBrowsing.json<{ verified: boolean }>().verified).toBe(false);
+    const trustedWithToken = { ...withToken, remoteAddress: trusted.remoteAddress };
+    const trustedVerified = await ctx.http.app.inject(trustedWithToken);
+    expect(trustedVerified.json<{ verified: boolean }>().verified).toBe(true);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
+test('没有配置令牌的远程界面访问照旧放行，客户端头无法伪造核验标记', async () => {
+  const ctx = new cordis.Context();
+  try {
+    await ctx.plugin(FakeResources);
+    await ctx.plugin(httpPlugin);
+    ctx.http.app.get('/programs/demo/', (request) => ({ verified: ctx.http.isVerified(request) }));
+    const request = {
+      method: 'GET' as const,
+      url: '/programs/demo/',
+      remoteAddress: '192.0.2.11',
+      headers: { authorization: 'Bearer forged', 'x-jmbots-key': 'forged', 'x-forwarded-for': '127.0.0.1' },
+    };
+    const response = await ctx.http.app.inject(request);
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ verified: boolean }>().verified).toBe(false);
   } finally {
     await ctx.fiber.dispose();
   }
@@ -175,3 +206,63 @@ test('关闭超过等待上限时回执失败，Fastify 继续关闭', async () 
     await ctx.fiber.dispose();
   }
 });
+
+test('停服拒绝远程、网页请求和与当前进程不匹配的请求', async () => {
+  const ctx = new cordis.Context();
+  try {
+    await ctx.plugin(FakeResources);
+    await ctx.plugin(httpPlugin);
+    const route = { method: 'POST', url: '/api/service/stop' } as const;
+    const headers = { 'x-jmbots-window': '1', 'x-jmbots-expected-pid': '0' };
+    const remote = await ctx.http.app.inject({ ...route, headers, remoteAddress: '192.0.2.12' });
+    const browser = await ctx.http.app.inject({ ...route, headers: { ...headers, origin: 'http://localhost' } });
+    const wrongPid = await ctx.http.app.inject({ ...route, headers });
+    expect(remote.statusCode).toBe(403);
+    expect(browser.statusCode).toBe(403);
+    expect(wrongPid.statusCode).toBe(409);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
+test('合成主站先确认受理，等待 programs 和主库关闭后正常退出', async () => {
+  //M 单开子进程和随机回环端口，退出只影响该子进程。
+  const code = `
+    import * as cordis from 'cordis';
+    import * as http from './src7/plugins/http/index.ts';
+    const ctx = new cordis.Context();
+    const received = Promise.withResolvers();
+    ctx.set('resources', {
+      raw: { server: { port: 1 } },
+      dir: () => 'src7/plugins/http/fixtures-no-tokens',
+      db: { close: () => console.log('db-closed') },
+    });
+    ctx.set('programs', { shutdown: async () => {
+      await received.promise;
+      console.log('programs-closed');
+    } });
+    await ctx.plugin(http);
+    const base = await ctx.http.app.listen({ host: '127.0.0.1', port: 0 });
+    const response = await fetch(base + '/api/service/stop', {
+      method: 'POST',
+      headers: { 'x-jmbots-window': '1', 'x-jmbots-expected-pid': String(process.pid) },
+    });
+    const body = await response.json();
+    if (response.status !== 202 || body.pid !== process.pid) process.exit(2);
+    console.log('accepted');
+    received.resolve();
+  `;
+  const cmd = [process.execPath, '--eval', code];
+  const child = Bun.spawn({
+    cmd,
+    env: { ...process.env, JMBOTS_SUPERVISED: '1' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+    signal: AbortSignal.timeout(8000),
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  const [status, output, error] = await Promise.all([child.exited, stdout, stderr]);
+  expect(status, error).toBe(0);
+  expect(output.trim().split(/\r?\n/u)).toEqual(['accepted', 'programs-closed', 'db-closed']);
+}, 10000);

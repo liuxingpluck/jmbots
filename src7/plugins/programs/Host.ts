@@ -95,6 +95,8 @@ export class Host {
   private lastState = '';
   /** 当前子进程的一次性密钥：拉起前生成，只放进它的环境变量；进程退出就清掉。 */
   private key?: string;
+  /** 每次实际拉起一个实例时分配，跨崩溃自动重试和主站重启都不会复用。 */
+  private instance?: string;
   /** 同插件的渠道回调，算回调地址用；不接时子进程只拿密钥。 */
   private bridge?: ChannelBridge;
 
@@ -257,6 +259,17 @@ export class Host {
     return this.key;
   }
 
+  /** 发送运输一次读取同一已就绪进程的地址、密钥与独立代次。 */
+  getSendTarget() {
+    //G 只捕获仍在运行的目标，密钥只传给本插件运输层。
+    const base = this.getUrl();
+    const key = this.getKey();
+    const generation = this.instance;
+    if (base === undefined || key === undefined || generation === undefined) return undefined;
+
+    return { base, key, generation };
+  }
+
   /** 只请求当前自有、已确认能力的进程，返回实际确认是否成功。 */
   async pause(paused: boolean): Promise<boolean> {
     //M 只从本Host已核实身份的就绪地址发暂停请求。
@@ -388,6 +401,8 @@ export class Host {
       //M 不套命令行外壳，读子进程的 stdout 并隐藏 Windows 控制台。
       const child: Child = Bun.spawn(command, options);
       this.child = child;
+      //M 业务批准跟随实际进程，退避重启也必须换代。
+      this.instance = crypto.randomUUID();
       const death = new AbortController();
       void child.exited.then(() => death.abort(), () => death.abort());
       const lifetime = AbortSignal.any([signal, death.signal]);
@@ -456,6 +471,7 @@ export class Host {
     } finally {
       //M 子进程要退了，它的密钥立刻作废，之后带这把钥匙的回调一律拒。
       this.key = undefined;
+      this.instance = undefined;
       this.url = undefined;
       this.ready = undefined;
       this.paused = false;

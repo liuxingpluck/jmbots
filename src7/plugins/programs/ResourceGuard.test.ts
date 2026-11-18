@@ -234,7 +234,7 @@ test('CPU忙不满1分钟就降下来，不通知；再忙从头算', async () =
 test('插件一个程序都不配也挂守卫：ready后采样，发resource/pressure和内存通知', async () => {
   const ctx = new cordis.Context();
   contexts.push(ctx);
-  ctx.provide('resources', { root: 'never-written' });
+  ctx.provide('resources', { root: 'never-written', config: { plugins: [] } });
   const events: guardModule.ResourcePressure[] = [];
   ctx.on('resource/pressure', (event) => { events.push(event); });
   const keys: string[] = [];

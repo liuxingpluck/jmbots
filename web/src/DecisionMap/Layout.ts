@@ -2,11 +2,12 @@
 import * as d3 from 'd3-hierarchy';
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import * as mind from '../Shared/MindMap.ts';
 
 export type ViewMode = 'all' | 'main' | 'pending';
 
 /** 思维导图往哪边长：左右两边，或根在上往下。 */
-export type MindDirection = 'sides' | 'down';
+export type MindDirection = mind.MindDirection;
 
 /** 思维导图连线只从这条轴上的两边出线。 */
 type Axis = 'x' | 'y';
@@ -141,32 +142,12 @@ export function getMindLayout(
     depth = depth * 0.72;
   }
 
-  //M 左右展开时一级分支轮流放到右边和左边，两边各排一棵树；上下展开只排一棵。
-  let sides = [{ sign: 1, children: rootBranch.children }];
-  if (direction === 'sides') {
-    const right = rootBranch.children.filter((_branch, index) => index % 2 === 0);
-    const left = rootBranch.children.filter((_branch, index) => index % 2 === 1);
-    sides = [{ sign: 1, children: right }, { sign: -1, children: left }];
-  }
-  const positions = new Map<string, xyflow.XYPosition>();
-  const visible: Branch[] = [rootBranch];
-  positions.set(rootBranch.entry.id, { x: 0, y: 0 });
-  for (const side of sides) {
-    //M 每一边的树都以根为原点，d3 的 x 是同层排开的方向，y 是往外长的方向。
-    const sideRoot = { ...rootBranch, children: side.children };
-    const hierarchy = d3.hierarchy(sideRoot);
-    const tree = d3.tree<Branch>().nodeSize([breadth, depth]);
-    const laid = tree(hierarchy);
-    for (const point of laid.descendants()) {
-      if (point.depth === 0) continue;
-
-      //M 左右展开把层深放到横轴，上下展开放到竖轴。
-      let position = { x: side.sign * point.y, y: point.x };
-      if (direction === 'down') position = { x: point.x, y: point.y };
-      positions.set(point.data.entry.id, position);
-      visible.push(point.data);
-    }
-  }
+  //M 共享同一套坐标算法，维持原先的分侧顺序、间距与卡片位置。
+  const children = (branch: Branch): Branch[] => branch.children;
+  const spacing = { breadth, depth };
+  const points = mind.getMindPoints(rootBranch, children, direction, spacing);
+  const positions = new Map(points.map((point) => [point.item.entry.id, point.position]));
+  const visible = points.map((point) => point.item);
 
   //M 卡片尺寸和放射看法一致；树的间距已经避开重叠，不再挪位。
   const boxes = visible.map((branch) => getBox(branch, positions, view));

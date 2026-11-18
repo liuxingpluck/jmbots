@@ -1,0 +1,73 @@
+/* 只在思维导图看法中覆盖原画布，保留泳道的缩放和选中状态。 */
+.tu-view-choice, .tu-mind-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tu-view-choice button[aria-pressed="true"], .tu-mind-toolbar button[aria-pressed="true"] {
+  color: var(--jm-accent);
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+.tu-mind-active > .tu-stage { visibility: hidden; pointer-events: none; }
+.tu-mind {
+  position: absolute;
+  inset-block: 12px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--jm-border);
+  border-radius: 12px;
+  background: var(--jm-bg);
+}
+.tu-mind-toolbar { flex: none; padding: 8px; background: var(--jm-panel); border-bottom: 1px solid var(--jm-border); }
+.tu-view-choice button,
+.tu-mind button {
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--jm-surface);
+  color: var(--jm-text);
+  font: inherit;
+  cursor: pointer;
+}
+.tu-mind button:hover, .tu-mind button:focus-visible { border-color: var(--jm-accent); }
+.tu-mind > .react-flow { flex: 1; min-height: 0; --xy-edge-stroke-default: var(--jm-muted); }
+.tu-mind .react-flow__handle { opacity: 0; pointer-events: none; }
+.tu-mind .tu-mind-card {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 166px;
+  min-height: 38px;
+  padding: 6px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  background: var(--jm-panel);
+  color: var(--jm-text);
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.25;
+}
+.tu-mind-card[aria-expanded="true"] { border-color: var(--jm-accent); }
+.tu-mind .react-flow__controls-button { background: var(--jm-surface); color: var(--jm-text); }
+.tu-mind-empty { margin: 14px; color: var(--jm-muted); }
+.tu-mind-event {
+  position: absolute;
+  z-index: 2;
+  inset: auto 10px 10px auto;
+  width: min(23rem, calc(100% - 22px));
+  max-height: 66%;
+  overflow: auto;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--jm-panel);
+}
+.tu-mind-event-head { display: flex; justify-content: space-between; align-items: start; gap: 6px; }
+.tu-mind-event h3, .tu-mind-event dt, .tu-mind-event dd { margin: 0; overflow-wrap: anywhere; }
+.tu-mind-event dt { color: var(--jm-muted); margin-top: 8px; }
+@media (max-width: 799px) {
+  .tu-mind-active > .tu-stage { display: none; }
+  .tu-mind { position: relative; inset: auto !important; min-height: 60vh; order: 2; }
+  .tu-top:has(.tu-view-choice) { height: auto; min-height: 50px; flex-wrap: wrap; gap: 4px; padding-block: 6px; }
+  .tu-top:has(.tu-view-choice) .tu-top-right { flex-wrap: wrap; }
+}

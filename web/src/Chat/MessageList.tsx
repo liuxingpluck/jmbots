@@ -325,9 +325,15 @@ export function Item(props: {
 
     props.onTrace(traceTarget, item.reply);
   };
+  //M 把查看事件和查看会话接到当前回复的菜单。
   menuItems.push(
     { type: 'divider' },
-    { key: 'trace', label: t('查看事件'), onClick: () => props.onTrace(traceTarget, item.reply) },
+    {
+      key: 'trace',
+      'data-action': 'trace',
+      label: t('查看事件'),
+      onClick: () => props.onTrace(traceTarget, item.reply),
+    },
     {
       //M 会话标题按隐私开关脱敏后作为“查看会话”菜单项标签，缺标题时使用默认文案。
       key: 'session', label: privacy.name(item.reply.session.title, masked) || t('查看会话'),
@@ -351,7 +357,13 @@ export function Item(props: {
   //M 渲染机器人回复气泡：展示时间戳、耗时、代际标识及脱敏后的 Markdown 回复正文。
   return (
     <MessageMenu items={menuItems}>
-    <div className={botClass} data-timeline-key={item.key} tabIndex={-1}>
+    <div
+      className={botClass}
+      data-timeline-key={item.key}
+      data-msg-id={item.message.id}
+      data-reply-index={item.replyIndex}
+      tabIndex={-1}
+    >
       <div className="jm-msg-meta">
         {selected && <span className="jm-reply-link-tag">{linkTag}</span>}
         <span className="jm-msg-source">{props.bot}</span>
@@ -363,7 +375,12 @@ export function Item(props: {
           {presentation.generation(item.reply.generation)}
         </span>
       </div>
-      <div className="jm-bubble jm-bubble-bot jm-bubble-inspect" onClick={inspectBody}>
+      <div
+        className="jm-bubble jm-bubble-bot jm-bubble-inspect"
+        //M 同一消息可有多条回复，沿用时间线键定位可直接点击的正文。
+        data-trace-reply={item.key}
+        onClick={inspectBody}
+      >
         <markdown.Markdown text={privacy.text(item.reply.text, masked)} onOpen={props.onOpen} />
         {!masked && item.reply.attachments
           .filter((attachment) => !item.reply.text.includes(attachment.path))

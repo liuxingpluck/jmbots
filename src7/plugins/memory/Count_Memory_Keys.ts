@@ -8,19 +8,144 @@ import * as storeModule from './Store.ts';
 
 /** 旧渠道索引里用于判断归属的字段，查询不取正文。 */
 interface AttributionRow {
+  /** 消息所在渠道。 */
   channel: string;
+  /** 原渠道账号，用于区分同号的私聊。 */
   account: string;
+  /** 原渠道聊天号。 */
   chat: string;
+  /** 已记录的私聊、群聊或本机类型。 */
   chatType: string;
+  /** 用户发言或机器人回复。 */
   direction: string;
+  /** 原始发言人，旧回复可能只记了 bot 或 self。 */
   senderId: string;
 }
 
+/** 写入时主库作为附件，预览时直接打开。 */
+export type IndexSchema = 'main' | 'app_index';
+
+
+/** 两处扫描共用缺失渠道归属的原因类别。 */
+function getChannelReasons() {
+  return { ambiguousPerson: 0, missingPerson: 0, missingChat: 0, missingChannel: 0, unknownChatType: 0 };
+}
+
+
+/** 渠道归属只使用来源元数据。 */
+const attributionFields = 'channel, account, chat, chat_type AS chatType, direction, sender_id AS senderId';
+
+
+/** 原渠道、账号、私聊中有两位不同发话人就足以判歧义。 */
+function getPeerLookup(index: sqlite.Database, table: string) {
+  const sql = `SELECT DISTINCT sender_id AS senderId FROM ${table}`
+    + " WHERE channel = ? AND account = ? AND chat = ? AND chat_type = 'p2p' AND direction = 'user'"
+    + " AND sender_id NOT IN ('', 'self') LIMIT 2";
+  //M 复用查询查找每条老回复的对话人。
+  return index.query<{ senderId: string }, [string, string, string]>(sql);
+}
+
+
+/** 用历史渠道字段还原线上归属输入，无法确定时记录原因。 */
+function getChannelKey(
+  row: AttributionRow,
+  findPeers: ReturnType<typeof getPeerLookup>,
+  reasons: ReturnType<typeof getChannelReasons>,
+): string {
+  let person = row.senderId;
+  const wechatPrivate = row.channel === 'wechat' && row.chatType === 'p2p';
+  if (wechatPrivate) {
+    //M 微信私聊的聊天号就是对方 ID，包括早期记为 self 的发送端。
+    person = row.chat;
+  }
+  if (!wechatPrivate && row.chatType === 'p2p' && row.direction === 'bot') {
+    //M 旧回复未记收件人，只采用同账号、同私聊中唯一的对话人。
+    person = '';
+    if (row.channel !== '' && row.account !== '' && row.chat !== '') {
+      const candidates = findPeers.all(row.channel, row.account, row.chat);
+      if (candidates.length > 1) {
+        reasons.ambiguousPerson += 1;
+        return '';
+      }
+      person = candidates[0]?.senderId ?? '';
+    }
+  }
+  if (!wechatPrivate && row.chatType === 'p2p' && row.direction !== 'bot') {
+    //G 仅用户发言能提供对方 ID，self 是旧记录占位。
+    if (row.direction !== 'user' || person === 'self') {
+      person = '';
+    }
+  }
+
+  //M 归属键沿用线上写入的函数，旧记录只补来源字段。
+  const source = { channel: row.channel, chatType: row.chatType, chat: row.chat, person };
+  const key = keyModule.getMemoryKey(source);
+  if (key !== '') return key;
+
+  if (row.channel === '') {
+    reasons.missingChannel += 1;
+    return '';
+  }
+  if (row.chatType === 'p2p') {
+    reasons.missingPerson += 1;
+    return '';
+  }
+  if (row.chatType === 'group') {
+    reasons.missingChat += 1;
+    return '';
+  }
+  reasons.unknownChatType += 1;
+  return '';
+}
+
+
+/**
+ * 只扫描空键渠道行，返回可补和缺失归属原因的计数，不写库。
+ * @param index 主库连接，或附上主库的 Rust 连接。
+ * @param collect Backfill_Memory_Keys 的渠道计划收集器。
+ * @param schema 主库在连接中的名字。
+ */
+export function countChannelKeys(
+  index: sqlite.Database,
+  collect: (messageKey: string, key: string) => void,
+  schema: IndexSchema,
+) {
+  //G 新列先由已发布的插件安装，迁移只负责其中的数据。
+  const columnsSql = `PRAGMA ${schema}.table_info(memory_channel_messages)`;
+  const columns = index.query<{ name: string }, []>(columnsSql).all();
+  const installed = columns.some((column) => column.name === 'memory_key');
+  if (!installed) {
+    throw new Error('主库还没有 memory_key，先让 memory 1.7 或更新版启动一次');
+  }
+
+  //M 已标的行仍可供同一私聊查找对话人，只有空键行进入计划。
+  const counts = { empty: 0, recoverable: 0, reasons: getChannelReasons() };
+  const table = `${schema}.memory_channel_messages`;
+  const findPeers = getPeerLookup(index, table);
+  const sql = `SELECT msg_key AS messageKey, ${attributionFields} FROM ${table} WHERE memory_key = ''`;
+  const rows = index.query<AttributionRow & { messageKey: string }, []>(sql);
+  for (const row of rows.iterate()) {
+    counts.empty += 1;
+    const key = getChannelKey(row, findPeers, counts.reasons);
+    if (key === '') continue;
+
+    //M 计划只保存原消息键和待补归属。
+    counts.recoverable += 1;
+    collect(row.messageKey, key);
+  }
+  return counts;
+}
+
+
 /** 可确定归属的段落及需要同步的渠道消息。 */
 export interface KeyCandidate {
+  /** Rust 段落行号。 */
   id: number;
+  /** 段落原客户号。 */
   previous: string;
+  /** 已从来源元数据算出的归属键。 */
   key: string;
+  /** 渠道段落对应的原消息键。 */
   messageKey?: string;
 }
 
@@ -61,12 +186,14 @@ function getSessionKey(raw: string, previous: string): string {
  * @param store Rust 记忆库。
  * @param index jmbots 主库。
  * @param candidate 迁移入口的候选收集器；给出时才尝试会话来源。
+ * @param schema 主库在连接中的名字。
  * @returns 可补、已标和不能补的计数。不写两边的库。
  */
 export function countMemoryKeys(
   store: sqlite.Database,
   index: sqlite.Database,
   candidate?: (item: KeyCandidate) => void,
+  schema: IndexSchema = 'main',
 ) {
   const counts = {
     total: 0,
@@ -76,37 +203,31 @@ export function countMemoryKeys(
       unowned: 0,
       outsideChannelIndex: 0,
       missingIndexRow: 0,
-      ambiguousPerson: 0,
-      missingPerson: 0,
-      missingChat: 0,
-      missingChannel: 0,
-      unknownChatType: 0,
+      ...getChannelReasons(),
     },
   };
 
   //M 查历史字段，不依赖新版本才有的 memory_key 列。
-  const indexQuery = 'SELECT channel, account, chat, chat_type AS chatType, direction, sender_id AS senderId'
-    + ' FROM memory_channel_messages WHERE msg_key = ?';
-  const peersQuery = 'SELECT DISTINCT sender_id AS senderId FROM memory_channel_messages'
-    + " WHERE channel = ? AND account = ? AND chat = ? AND chat_type = 'p2p' AND direction = 'user'"
-    + " AND sender_id NOT IN ('', 'self') LIMIT 2";
-  const table = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_channel_messages'";
-  const present = index.query(table).get() !== null;
+  const messages = `${schema}.memory_channel_messages`;
+  const indexQuery = `SELECT ${attributionFields} FROM ${messages} WHERE msg_key = ?`;
+  const tableSql = `SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`;
+  const hasTable = index.query(tableSql);
+  const present = hasTable.get('memory_channel_messages') !== null;
   let findRow: sqlite.Statement<AttributionRow, [string]> | undefined;
-  let findPeers: sqlite.Statement<{ senderId: string }, [string, string, string]> | undefined;
+  let findPeers: ReturnType<typeof getPeerLookup> | undefined;
   if (present) {
     //M 复用按消息键和私聊查找的查询；旧运行时可能还没有渠道索引。
     findRow = index.query(indexQuery);
-    findPeers = index.query(peersQuery);
+    findPeers = getPeerLookup(index, messages);
   }
 
   //M 流式读段落元数据，常驻内存只保留计数和当前行。
   //M 旧统计不读取会话。迁移需要时才尝试打开会话元数据查询。
   let findSession: sqlite.Statement<{ meta: string }, [string]> | undefined;
   if (candidate !== undefined) {
-    const sessionTable = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'";
-    if (index.query(sessionTable).get() !== null) {
-      findSession = index.query('SELECT meta FROM sessions WHERE id = ?');
+    if (hasTable.get('sessions') !== null) {
+      const sessionSql = `SELECT meta FROM ${schema}.sessions WHERE id = ?`;
+      findSession = index.query(sessionSql);
     }
   }
 
@@ -150,51 +271,17 @@ export function countMemoryKeys(
     //M 用稳定的渠道消息键回查元数据，避免凭旧客户号猜人。
     const messageKey = doc.source.slice(prefix.length);
     const row = findRow?.get(messageKey);
-    if (row == null) {
+    if (row == null || findPeers === undefined) {
       counts.reasons.missingIndexRow += 1;
       continue;
     }
 
-    let person = row.senderId;
-    const wechatPrivate = row.channel === 'wechat' && row.chatType === 'p2p';
-    if (wechatPrivate) {
-      //M 微信私聊的聊天号就是对方 ID，含早先只记为 self 的发送端记录。
-      person = row.chat;
-    }
-    if (!wechatPrivate && row.chatType === 'p2p' && row.direction === 'bot') {
-      //M 旧的机器人回复没记收件人，仅在同账号同私聊能找到唯一对话对象时采用。
-      let candidates: { senderId: string }[] = [];
-      if (row.channel !== '' && row.account !== '' && row.chat !== '') {
-        candidates = findPeers?.all(row.channel, row.account, row.chat) ?? [];
-      }
-      if (candidates.length > 1) {
-        counts.reasons.ambiguousPerson += 1;
-        continue;
-      }
-      person = candidates[0]?.senderId ?? '';
-    }
+    //M 段落与空键索引走同一套推断。
+    const key = getChannelKey(row, findPeers, counts.reasons);
+    if (key === '') continue;
 
-    //M 复用写入端的归属算法，按缺失字段分别计数。
-    const source = { channel: row.channel, chatType: row.chatType, chat: row.chat, person };
-    const key = keyModule.getMemoryKey(source);
-    if (key !== '') {
-      counts.recoverable += 1;
-      candidate?.({ id: doc.id, previous: doc.customer, key, messageKey });
-      continue;
-    }
-    if (row.channel === '') {
-      counts.reasons.missingChannel += 1;
-      continue;
-    }
-    if (row.chatType === 'p2p') {
-      counts.reasons.missingPerson += 1;
-      continue;
-    }
-    if (row.chatType === 'group') {
-      counts.reasons.missingChat += 1;
-      continue;
-    }
-    counts.reasons.unknownChatType += 1;
+    counts.recoverable += 1;
+    candidate?.({ id: doc.id, previous: doc.customer, key, messageKey });
   }
   return counts;
 }

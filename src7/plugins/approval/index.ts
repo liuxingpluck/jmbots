@@ -23,6 +23,7 @@ import type { AskInput as SessionAskInput, Session, Thinking } from '../../Sessi
 import type { ReceiveEvent } from '../bots/index.ts';
 import * as protocol from '../../Channels.ts';
 import * as rules from './Rules.ts';
+import * as outboundModule from './Outbound.ts';
 import * as cardUtils from '../../utils/Card.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -33,7 +34,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.6';
+export const version = '1.2.0';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -1418,6 +1419,8 @@ export function apply(ctx: cordis.Context, config: unknown): void {
 
   //M 校验过的配置交给服务，建好后它自己登记成 ctx.approval、挂上各个监听。
   const approval = new Approval(ctx, approvalConfig);
+  //M 渠道发件使用独立的本人批准账，和通用文字审批分开。
+  new outboundModule.Outbound(ctx);
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口。
   void ctx.inject(['http'], (sub) => {

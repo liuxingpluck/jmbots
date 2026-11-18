@@ -67,61 +67,168 @@ bunTest.test('私聊、群聊和本机写入不同客户分区；群聊保留发
 });
 
 
-bunTest.test('补标先识别渠道和旧会话，写入同步索引、解绑旧图，反复运行无新改动', () => {
-  const index = new sqlite.Database(':memory:');
+/** 建立可随 Rust 库一同提交或回滚的合成主库。 */
+function attachIndex(store: sqlite.Database): void {
+  //M 只保留归属和队列需要的字段，不连接正式库。
+  store.exec("ATTACH DATABASE ':memory:' AS app_index");
+  const sql = 'CREATE TABLE app_index.memory_channel_messages (msg_key TEXT PRIMARY KEY, channel TEXT,'
+    + ' account TEXT, chat TEXT, chat_type TEXT, direction TEXT, sender_id TEXT, memory_key TEXT, rust_state INTEGER)';
+  store.exec(sql);
+}
+
+
+/** 建立测试迁移事务所需的段落和关系表。 */
+function createDocuments(store: sqlite.Database): void {
+  //M 测试只写合成段落的来源、归属和关系编号。
+  store.exec('CREATE TABLE docs (id INTEGER PRIMARY KEY, source TEXT, scope TEXT, customer TEXT, graph INTEGER)');
+  store.exec('CREATE TABLE rel_docs (doc INTEGER, relation INTEGER)');
+  store.exec('CREATE TABLE relations (id INTEGER, subj INTEGER, obj INTEGER)');
+  store.exec('CREATE TABLE entities (id INTEGER)');
+}
+
+
+bunTest.test('补空键渠道索引与旧段落，Rust 已有副本只协调一次，重跑没有新改动', () => {
   const store = new sqlite.Database(':memory:');
   try {
-    const indexColumns = '(msg_key TEXT, channel TEXT, account TEXT, chat TEXT, chat_type TEXT,'
-      + ' direction TEXT, sender_id TEXT, memory_key TEXT NOT NULL DEFAULT \'\')';
-    index.exec(`CREATE TABLE memory_channel_messages ${indexColumns}`);
-    index.exec("INSERT INTO memory_channel_messages VALUES ('msg-a', 'feishu', 'app-a', 'dm-a', 'p2p', 'user', 'a', '')");
-    index.exec('CREATE TABLE sessions (id TEXT, meta TEXT)');
-    const put = index.query('INSERT INTO sessions VALUES (?, ?)');
-    put.run('known', JSON.stringify({ channel: 'feishu', address: { chatType: 'group', chatId: 'g' } }));
-    put.run('unknown', JSON.stringify({ channel: 'feishu', address: { openId: 'last-speaker' } }));
+    attachIndex(store);
+    createDocuments(store);
 
-    store.exec('CREATE TABLE docs (id INTEGER PRIMARY KEY, source TEXT, scope TEXT, customer TEXT, graph INTEGER)');
-    store.exec('CREATE TABLE rel_docs (doc INTEGER, relation INTEGER)');
-    store.exec('CREATE TABLE relations (id INTEGER, subj INTEGER, obj INTEGER)');
-    store.exec('CREATE TABLE entities (id INTEGER)');
+    //M 带 Rust 副本的空键、仅在主库的空键和已补键各用独立的消息键。
+    const rowSql = 'INSERT INTO app_index.memory_channel_messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const row = store.query(rowSql);
+    row.run('dm', 'feishu', 'app-a', 'dm-a', 'p2p', 'user', 'a', '', 1);
+    row.run('reply', 'feishu', 'app-a', 'dm-a', 'p2p', 'bot', 'bot-a', '', 0);
+    row.run('other-app', 'feishu', 'app-b', 'dm-a', 'p2p', 'user', 'b', 'person:feishu:b', 2);
+    row.run('group', 'feishu', 'app-a', 'g', 'group', 'user', 'b', '', 2);
+    row.run('wechat', 'wechat', 'wx-a', 'wx-peer', 'p2p', 'bot', 'self', '', 0);
+    row.run('local', 'http', 'local', 'http:local', 'local', 'bot', '', '', 1);
+    row.run('unknown', 'feishu', 'app-a', 'unknown', '', 'user', 'a', '', 0);
+    row.run('missing', 'feishu', 'app-c', 'dm-a', 'p2p', 'bot', 'bot-a', '', 0);
+    row.run('ambiguous', 'feishu', 'app-a', 'dm-b', 'p2p', 'bot', 'bot-a', '', 0);
+    row.run('peer-a', 'feishu', 'app-a', 'dm-b', 'p2p', 'user', 'a', 'person:feishu:a', 2);
+    row.run('peer-b', 'feishu', 'app-a', 'dm-b', 'p2p', 'user', 'b', 'person:feishu:b', 2);
+    row.run('tagged-copy', 'feishu', 'app-a', 'g', 'group', 'user', 'a', '', 0);
+    row.run('duplicate', 'feishu', 'app-a', 'g', 'group', 'user', 'a', '', 0);
+    row.run('conflict', 'feishu', 'app-a', 'g', 'group', 'user', 'a', '', 0);
+    row.run('prior-index', 'feishu', 'app-a', 'g', 'group', 'bot', 'bot-a', 'group:feishu:g', 0);
+
+    //M 会话来源继续走原有归属补写和关系解绑。
+    store.exec('CREATE TABLE app_index.sessions (id TEXT, meta TEXT)');
+    const put = store.query('INSERT INTO app_index.sessions VALUES (?, ?)');
+    const known = JSON.stringify({ channel: 'feishu', address: { chatType: 'group', chatId: 'g' } });
+    const unknown = JSON.stringify({ channel: 'feishu', address: { openId: 'last-speaker' } });
+    put.run('known', known);
+    put.run('unknown', unknown);
     const doc = store.query('INSERT INTO docs VALUES (?, ?, ?, ?, ?)');
-    doc.run(1, `${channel.CHANNEL_PARTITION}msg-a`, 'history', 'legacy-a', 3);
+    const prefix = channel.CHANNEL_PARTITION;
+    doc.run(1, `${prefix}dm`, 'history', 'legacy-a', 3);
     doc.run(2, 'bot-log:known', 'history', 'feishu:group:g', 1);
     doc.run(3, 'session:unknown', 'history', 'legacy-unknown', 1);
+    doc.run(4, `${prefix}tagged-copy`, 'history', 'group:feishu:g', 3);
+    doc.run(5, `${prefix}duplicate`, 'history', 'legacy-g', 3);
+    doc.run(6, `${prefix}duplicate`, 'history', 'group:feishu:g', 3);
+    doc.run(7, `${prefix}conflict`, 'history', 'group:feishu:other', 3);
+    doc.run(8, `${prefix}prior-index`, 'history', 'legacy-g', 3);
     store.exec('INSERT INTO rel_docs VALUES (2, 8), (3, 9)');
     store.exec('INSERT INTO relations VALUES (8, 1, 2), (9, 2, 3)');
     store.exec('INSERT INTO entities VALUES (1), (2), (3)');
 
-    const plans: stats.KeyCandidate[] = [];
-    const report = stats.countMemoryKeys(store, index, (item) => plans.push(item));
-    bunTest.expect(report.recoverable).toBe(2);
-    bunTest.expect(report.reasons.outsideChannelIndex).toBe(1);
-    bunTest.expect(plans.map((item) => item.key)).toEqual(['person:feishu:a', 'group:feishu:g']);
-    const sql = 'SELECT customer, graph FROM docs ORDER BY id';
-    bunTest.expect(store.query(sql).all()).toContainEqual({ customer: 'feishu:group:g', graph: 1 });
+    //M 预览只收候选和原因，原有空键和状态仍可读到。
+    const candidates = new Map<string, string>();
+    const collect = (messageKey: string, key: string): void => {
+      candidates.set(messageKey, key);
+    };
+    const preview = stats.countChannelKeys(store, collect, 'app_index');
+    bunTest.expect(preview).toEqual({
+      empty: 11,
+      recoverable: 8,
+      reasons: { ambiguousPerson: 1, missingPerson: 1, missingChat: 0, missingChannel: 0, unknownChatType: 1 },
+    });
+    bunTest.expect(candidates.get('reply')).toBe('person:feishu:a');
+    const indexSql = 'SELECT memory_key, rust_state FROM app_index.memory_channel_messages WHERE msg_key = ?';
+    const index = store.query(indexSql);
+    bunTest.expect(index.get('dm')).toEqual({ memory_key: '', rust_state: 1 });
 
-    //M 给写入连接附一个合成主库；没有正式文件参与读写。
-    store.exec("ATTACH DATABASE ':memory:' AS app_index");
-    store.exec('CREATE TABLE app_index.memory_channel_messages (msg_key TEXT, memory_key TEXT)');
-    store.exec("INSERT INTO app_index.memory_channel_messages VALUES ('msg-a', '')");
-    const applied = migrate.applyMemoryKeys(store, plans);
-    bunTest.expect(applied).toEqual({ moved: 2, conflicts: 0 });
-    bunTest.expect(store.query(sql).all()).toEqual([
-      { customer: 'person:feishu:a', graph: 3 },
-      { customer: 'group:feishu:g', graph: 0 },
-      { customer: 'legacy-unknown', graph: 1 },
-    ]);
-    bunTest.expect(store.query('SELECT memory_key FROM app_index.memory_channel_messages').get())
-      .toEqual({ memory_key: 'person:feishu:a' });
+    //M 核对实际补键、原有队列状态，以及无需重送的 Rust 副本。
+    const applied = migrate.applyMemoryKeys(store);
+    bunTest.expect(applied).toEqual({
+      moved: 3, indexed: 6, confirmedCopies: 3, conflicts: 0,
+      channelConflicts: { duplicateCopies: 1, differentScope: 0, differentOwner: 1, changedIndex: 0 },
+    });
+    bunTest.expect(index.get('dm')).toEqual({ memory_key: 'person:feishu:a', rust_state: 2 });
+    bunTest.expect(index.get('reply')).toEqual({ memory_key: 'person:feishu:a', rust_state: 0 });
+    bunTest.expect(index.get('group')).toEqual({ memory_key: 'group:feishu:g', rust_state: 2 });
+    bunTest.expect(index.get('wechat')).toEqual({ memory_key: 'person:wechat:wx-peer', rust_state: 0 });
+    bunTest.expect(index.get('local')).toEqual({ memory_key: 'owner', rust_state: 1 });
+    bunTest.expect(index.get('tagged-copy')).toEqual({ memory_key: 'group:feishu:g', rust_state: 2 });
+    bunTest.expect(index.get('prior-index')).toEqual({ memory_key: 'group:feishu:g', rust_state: 2 });
+    bunTest.expect(index.get('other-app')).toEqual({ memory_key: 'person:feishu:b', rust_state: 2 });
+    for (const messageKey of ['unknown', 'missing', 'ambiguous', 'duplicate', 'conflict']) {
+      bunTest.expect(index.get(messageKey)).toEqual({ memory_key: '', rust_state: 0 });
+    }
+    const docSql = 'SELECT customer, graph FROM docs WHERE id = ?';
+    const saved = store.query(docSql);
+    bunTest.expect(saved.get(1)).toEqual({ customer: 'person:feishu:a', graph: 3 });
+    bunTest.expect(saved.get(2)).toEqual({ customer: 'group:feishu:g', graph: 0 });
+    bunTest.expect(saved.get(3)).toEqual({ customer: 'legacy-unknown', graph: 1 });
+    bunTest.expect(saved.get(5)).toEqual({ customer: 'legacy-g', graph: 3 });
+    bunTest.expect(saved.get(7)).toEqual({ customer: 'group:feishu:other', graph: 3 });
+    bunTest.expect(store.query('SELECT COUNT(*) AS n FROM docs').get()).toEqual({ n: 8 });
+    const queuedSql = 'SELECT COUNT(*) AS n FROM app_index.memory_channel_messages WHERE msg_key = ? AND rust_state < 2';
+    bunTest.expect(store.query(queuedSql).get('dm')).toEqual({ n: 0 });
     bunTest.expect(store.query('SELECT * FROM rel_docs').all()).toEqual([{ doc: 3, relation: 9 }]);
     bunTest.expect(store.query('SELECT id FROM entities ORDER BY id').all()).toEqual([{ id: 2 }, { id: 3 }]);
 
-    const next: stats.KeyCandidate[] = [];
-    stats.countMemoryKeys(store, index, (item) => next.push(item));
-    bunTest.expect(next).toEqual([]);
+    //M 重跑仅报告原来保留的冲突，新旧库均无再次改动。
+    const next = migrate.applyMemoryKeys(store);
+    bunTest.expect(next).toEqual({ ...applied, moved: 0, indexed: 0, confirmedCopies: 0 });
   } finally {
     store.close();
-    index.close();
+  }
+});
+
+
+bunTest.test('渠道索引写入途中出错时，两库和关系挂接一起回滚', () => {
+  const store = new sqlite.Database(':memory:');
+  try {
+    attachIndex(store);
+    createDocuments(store);
+
+    //M 两条渠道索引各有一个待补归属的 Rust 段落。
+    const rowSql = 'INSERT INTO app_index.memory_channel_messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const row = store.query(rowSql);
+    row.run('first', 'feishu', 'app-a', 'g', 'group', 'user', 'a', '', 0);
+    row.run('second', 'feishu', 'app-a', 'g', 'group', 'user', 'a', '', 1);
+    const doc = store.query('INSERT INTO docs VALUES (?, ?, ?, ?, ?)');
+    const prefix = channel.CHANNEL_PARTITION;
+    doc.run(1, `${prefix}first`, 'history', 'legacy', 1);
+    doc.run(2, `${prefix}second`, 'history', 'legacy', 1);
+    store.exec('INSERT INTO rel_docs VALUES (1, 8), (2, 8)');
+    store.exec('INSERT INTO relations VALUES (8, 1, 2)');
+    store.exec('INSERT INTO entities VALUES (1), (2)');
+    const fail = 'CREATE TRIGGER app_index.fail_second BEFORE UPDATE ON memory_channel_messages'
+      + ' WHEN EXISTS'
+      + ' (SELECT 1 FROM memory_channel_messages WHERE msg_key <> OLD.msg_key AND rust_state = 2)'
+      + " BEGIN SELECT RAISE(ABORT, '合成约束错误'); END";
+    store.exec(fail);
+
+    //M 触发器仅在第一条索引确已写入时抛错，验证此前的所有改动都撤销。
+    bunTest.expect(() => migrate.applyMemoryKeys(store)).toThrow('合成约束错误');
+    const indexSql = 'SELECT memory_key, rust_state FROM app_index.memory_channel_messages ORDER BY msg_key';
+    bunTest.expect(store.query(indexSql).all()).toEqual([
+      { memory_key: '', rust_state: 0 },
+      { memory_key: '', rust_state: 1 },
+    ]);
+    const docSql = 'SELECT customer, graph FROM docs ORDER BY id';
+    bunTest.expect(store.query(docSql).all()).toEqual([
+      { customer: 'legacy', graph: 1 },
+      { customer: 'legacy', graph: 1 },
+    ]);
+    bunTest.expect(store.query('SELECT * FROM rel_docs ORDER BY doc').all())
+      .toEqual([{ doc: 1, relation: 8 }, { doc: 2, relation: 8 }]);
+    bunTest.expect(store.query('SELECT * FROM relations').all()).toEqual([{ id: 8, subj: 1, obj: 2 }]);
+  } finally {
+    store.close();
   }
 });
 

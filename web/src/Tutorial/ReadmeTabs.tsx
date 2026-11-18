@@ -375,6 +375,51 @@ function extractEventName(cell: string): string | undefined {
 }
 
 
+/** 从说明中提取思维导图所需的事件和函数，沿用说明页的表格、事件名解析。 */
+export function getMindReadme(text: string) {
+  //M 与右栏共用说明章节规则。
+  const sections = parseReadme(text);
+
+  /** 只读表格里标明名称的列，忽略普通说明和其它表格。 */
+  const getNames = (
+    body: string,
+    headings: readonly string[],
+    parse: (cell: string) => string | undefined,
+  ): string[] => {
+    //M 一张表可能重复提到同一个事件，导图中只保留一次。
+    const names = new Set<string>();
+    const blocks = splitMarkdownBlocks(body);
+    for (const block of blocks) {
+      if (block.kind !== 'table') continue;
+
+      const column = block.headers.findIndex((header) => headings.includes(header));
+      if (column < 0) continue;
+
+      for (const row of block.rows) {
+        const cell = row[column] ?? '';
+        //M 只从当前列提取有效的函数或事件名。
+        const name = parse(cell);
+        if (name) names.add(name);
+      }
+    }
+    return Array.from(names);
+  };
+
+  const eventHeadings = ['事件', '事件名'];
+  const functionHeadings = ['名字', '名称', '函数', '方法', '对外函数'];
+  const getFunctionName = (cell: string): string | undefined => {
+    const matched = /^`([^`]+)`/u.exec(cell);
+    return matched?.[1] ?? cell;
+  };
+  //M 仅提取导图需要的三张表。
+  return {
+    listened: getNames(sections.listenedEvents, eventHeadings, extractEventName),
+    emitted: getNames(sections.emittedEvents, eventHeadings, extractEventName),
+    functions: getNames(sections.publicFunctions, functionHeadings, getFunctionName),
+  };
+}
+
+
 /**
  * 从说明表格的位置/源码列文字中提取第一处可用的 `文件:行号`（简写文件会自动补上所属插件目录）。
  * @param cell 单元格原文。

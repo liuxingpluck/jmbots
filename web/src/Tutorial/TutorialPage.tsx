@@ -18,6 +18,8 @@ import { JsonBlock, TutorialScrollContext, TutorialWorkspaceContext, VIRTUAL_THR
 import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
 import { CodeTab, TryTab } from './PluginTabs.tsx';
 import { buildReadmeTabItems } from './ReadmeTabs.tsx';
+import * as mind from './MindMap.tsx';
+import type * as mindData from './MindData.ts';
 import { TutorialApi, type Canvas, type CanvasList, type MessageCanvasItem, type PluginItem, type PluginList, type StateGroup, type Trail } from './TutorialApi.ts';
 
 
@@ -105,7 +107,6 @@ const MAX_SIDE_RATIO = 0.45;
 const NARROW_BREAKPOINT = 800;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 2.5;
-const FIT_MAX_SCALE = 1.0;
 const SENTINEL_AUTO = '__AUTO__';
 const SENTINEL_FIRST = '__FIRST__';
 
@@ -247,8 +248,9 @@ function getFitTransform(layout: CanvasLayout, safe: SafeViewport): CanvasTransf
   const availH = Math.max(100, safe.height - pad * 2);
   const scaleX = availW / Math.max(1, layout.width);
   const scaleY = availH / Math.max(1, layout.total);
-  //M 将按宽高独立算出的贴合倍率夹在最小与 100% 原比例之间，保证画布既全貌可见又不致于过小或失真。
-  const scale = clamp(Math.min(scaleX, scaleY, FIT_MAX_SCALE), 0.25, FIT_MAX_SCALE);
+  //M 用宽高里能容纳全图的一项，并允许小图在正常缩放范围内放大。
+  const fitted = Math.min(scaleX, scaleY);
+  const scale = clamp(fitted, MIN_SCALE, MAX_SCALE);
   const drawnW = layout.width * scale;
   const drawnH = layout.total * scale;
   const tx = Math.round(safe.left + Math.max(pad, (safe.width - drawnW) / 2));
@@ -1026,6 +1028,13 @@ export function TutorialPage(): JSX.Element {
   const [activeTrail, setActiveTrail] = useState<Trail | null>(null);
   const [loadedCanvasName, setLoadedCanvasName] = useState('');
   const [messageApi, contextHolder] = antd.message.useMessage();
+  //M 读回教程上次选的视图，并将新控件按当前语言显示。
+  const tutorialView = mind.useTutorialView();
+  const t = mind.useMindWords();
+  const viewLabel = t('教程视图');
+  const canvasLabel = t('画布');
+  const mindLabel = t('思维导图');
+  const showMind = tutorialView.view === 'mind';
 
   const attachRightScroll = useCallback((el: HTMLDivElement | null): void => {
     setRightScrollParent(el);
@@ -1338,8 +1347,27 @@ export function TutorialPage(): JSX.Element {
   const clampedRightWidth = clamp(paneWidth, MIN_PANE_WIDTH, getMaxSideWidth(MIN_PANE_WIDTH));
 
   let bodyClass = 'tu-body';
-  if (resizing) {
-    bodyClass = 'tu-body resizing';
+  if (resizing) bodyClass += ' resizing';
+  if (showMind) bodyClass += ' tu-mind-active';
+
+  let mindLeft = 12;
+  let mindRight = 12;
+  if (!isNarrow && !leftCollapsed) mindLeft += clampedLeftWidth + 12;
+  if (!isNarrow && !rightCollapsed) mindRight += clampedRightWidth + 12;
+  let mindTrail: Trail | null = null;
+  if (loadedCanvasName === route.canvas) mindTrail = activeTrail;
+
+  /** 导图点击与画布、左栏点击走同一套详情和路由。 */
+  function onMindPick(target: mindData.Pick): void {
+    if (target.kind === 'step') {
+      //M 轨迹节点通过原画布入口读取步骤和变量。
+      onPickStep(target.no);
+      return;
+    }
+    if (target.kind !== 'plugin') return;
+
+    //M 插件节点打开已有的说明或对外函数页签。
+    onSelectPlugin(target.name, target.tab);
   }
   let showBootGroupCount = 1;
   if (hasSearch && !showBoot) {
@@ -1582,6 +1610,12 @@ export function TutorialPage(): JSX.Element {
               {topSummary !== '' && <span className="tu-top-summary">{topSummary}</span>}
             </div>
             <div className="tu-top-right">
+              <div className="tu-view-choice" role="group" aria-label={viewLabel}>
+                <button type="button" data-look="lane" aria-pressed={!showMind}
+                  onClick={() => tutorialView.select('canvas')}>{canvasLabel}</button>
+                <button type="button" data-look="mind" aria-pressed={showMind}
+                  onClick={() => tutorialView.select('mind')}>{mindLabel}</button>
+              </div>
               {route.event !== '' && (
                 <button
                   type="button"
@@ -1639,6 +1673,18 @@ export function TutorialPage(): JSX.Element {
                   <p className="tu-muted">请在左栏选择「启动流程」或任意一条「最近消息」查看实时流程画布</p>
                 </div>
               </div>
+            )}
+
+            {showMind && (
+              <mind.TutorialMindMap
+                plugins={pluginList}
+                trail={mindTrail}
+                canvas={route.canvas}
+                left={mindLeft}
+                right={mindRight}
+                t={t}
+                onPick={onMindPick}
+              />
             )}
 
             {/* 悬浮左栏：展开时是带阴影的卡片，收起时退成边缘一条按钮。 */}

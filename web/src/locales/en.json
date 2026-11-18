@@ -923,5 +923,22 @@
   "不选也行，直接写你的答案；写了再点选项，会连同选项一起发": "You can skip the options and write your own answer; if you write first and then pick an option, both are sent together",
   "写一句给中控": "Write to the coordinator",
   "正在发送": "Sending",
-  "发给中控": "Send to coordinator"
+  "发给中控": "Send to coordinator",
+  "关闭": "Close",
+  "外置客服页（试用）": "External support page (trial)",
+  "教程视图": "Tutorial view",
+  "画布": "Canvas",
+  "骨架": "Core modules",
+  "插件": "Plugins",
+  "听的事件": "Listened events",
+  "发的事件": "Emitted events",
+  "对外函数": "Public functions",
+  "这条消息走过的路": "Message trace",
+  "项目结构": "Project structure",
+  "左右展开": "Left and right",
+  "上下展开": "Top to bottom",
+  "请在左栏选择一条消息": "Select a message on the left",
+  "说明未记载": "Not documented",
+  "谁发": "Emitters",
+  "谁听": "Listeners"
 }

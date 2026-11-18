@@ -1,10 +1,13 @@
 /** Windows 及其他系统均运行真实的假子程序，验证宿主和 HTTP 接线。 */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as sqlite from 'bun:sqlite';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
+import * as httpModule from '../http/index.ts';
 import * as hostModule from './Host.ts';
+import * as protocolModule from './Protocol.ts';
 import * as specModule from './Spec.ts';
 import * as programs from './index.ts';
 
@@ -63,25 +66,94 @@ async function waitFor(state: () => ReturnType<hostModule.Host['status']>, wante
 }
 
 /** 挂上整个 programs 插件和独立 Fastify；读数与通知都是假的，不调用真实GPU探针或外发。 */
-async function getPlugin() {
+async function getPlugin(config: unknown = getConfig(), pluginNames: string[] = [], mainToken?: string) {
   const root = getRoot();
-  const app = fastify.default();
   const ctx = new cordis.Context();
-  cleanups.push(async () => { await app.close(); }, async () => { await ctx.fiber.dispose(); });
-  ctx.provide('resources', { root });
-  ctx.provide('http', { app });
+  const db = new sqlite.Database(':memory:');
+  cleanups.push(() => db.close());
+  const plugins = pluginNames.map((name) => ({ name, config: {} }));
+  const raw = { server: { host: '127.0.0.1', port: 1, token: mainToken } };
+  const dir = (name: string): string => path.join(root, name);
+  ctx.provide('resources', { root, config: { plugins }, db, raw, dir, pluginStatus: [] });
+  if (mainToken === undefined) {
+    //M 与身份无关的回归继续用独立 Fastify；身份测试走真正的 HTTP 插件。
+    const isolated = fastify.default();
+    cleanups.push(async () => { await isolated.close(); });
+    const isVerified = (request: fastify.FastifyRequest): boolean => request.ip === '127.0.0.1';
+    ctx.provide('http', { app: isolated, isVerified });
+  }
+  cleanups.push(async () => { await ctx.fiber.dispose(); });
+  if (mainToken !== undefined) {
+    await ctx.plugin(httpModule);
+  }
+  const app = ctx.http.app;
+  const notices: string[] = [];
   const dependencies = {
     read: async () => ({ at: Date.now(), cpu: 10, memory: 1024, totalMemory: 2048, gpus: null }),
-    notify: () => true,
+    notify: (_key: string, text: string) => {
+      notices.push(text);
+      return true;
+    },
   };
   const plugin = {
     inject: programs.inject,
-    apply: (sub: cordis.Context) => programs.apply(sub, getConfig(), dependencies),
+    apply: (sub: cordis.Context) => programs.apply(sub, config, dependencies),
   };
   await ctx.plugin(plugin);
   await app.ready();
-  return { app, ctx, root };
+  return { app, ctx, root, db, notices };
 }
+
+test.each([
+  { plugin: 'wechat', channel: 'wechat', aliases: [], autostart: true },
+  { plugin: 'wechat-kefu', channel: 'wechat-external', aliases: [['wechat', 'wechat-external']], autostart: false },
+])('启用 $plugin 时拦下 $channel，拒绝手动启动和重启并只提醒一次', async (fixture) => {
+  const defaults = getConfig([], fixture.autostart);
+  const channels = [{ name: fixture.channel, bot: '助手' }];
+  const program = { ...defaults.programs[0], channels };
+  const config = { programs: [program], channel_aliases: fixture.aliases };
+  const { app, ctx, db, notices } = await getPlugin(config, [fixture.plugin]);
+
+  //G 就绪前不会把被拦的程序登记为回复、历史或入站处理者。
+  const table = "SELECT name FROM sqlite_master WHERE name = 'program_channel_receipts'";
+  expect(db.query(table).get()).toBeNull();
+  ctx.emit('ready', []);
+  expect(ctx.programs.status()[0]).toMatchObject({ state: 'blocked', pid: null });
+  expect(ctx.programs.status()[0]?.note).toContain(fixture.plugin);
+
+  //G 无论手动启动还是重启，HTTP 都返回同一个配置冲突，告警仍只有一条。
+  for (const action of ['start', 'restart']) {
+    const request = { method: 'POST' as const, url: `/api/programs/fake/${action}` };
+    const rejected = await app.inject(request);
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().error).toContain(fixture.channel);
+  }
+  const listing = await app.inject('/api/programs');
+  expect(listing.json()).toMatchObject({
+    programs: [{ name: 'fake', state: 'blocked', pid: null, channels: [fixture.channel] }],
+  });
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toContain(fixture.plugin);
+});
+
+test('停用内置微信后，带渠道的外部程序正常登记并启动', async () => {
+  const defaults = getConfig();
+  const channels = [{ name: 'wechat', bot: '助手' }];
+  const program = { ...defaults.programs[0], channels };
+  const config = { programs: [program], channel_aliases: [['wechat', 'wechat-external']] };
+  //M resources 的插件清单已过滤禁用微信，保留另一个启用的内置渠道。
+  const { app, ctx, db, notices } = await getPlugin(config, ['feishu']);
+
+  //M 假程序用本地随机端口接收主站回调前缀，测试不连接运行中的服务。
+  const address = { host: '127.0.0.1', port: 0 };
+  await app.listen(address);
+  ctx.emit('ready', []);
+  const ready = await waitFor(() => ctx.programs.status()[0]!, 'ready');
+  expect(ready.pid).toBeGreaterThan(0);
+  const table = "SELECT name FROM sqlite_master WHERE name = 'program_channel_receipts'";
+  expect(db.query(table).get()).toEqual({ name: 'program_channel_receipts' });
+  expect(notices).toEqual([]);
+}, 12_000);
 
 test('主程序 ready 后启动，状态接口、代理及协议退出入口可用', async () => {
   const { app, ctx, root } = await getPlugin();
@@ -105,7 +177,10 @@ test('主程序 ready 后启动，状态接口、代理及协议退出入口可�
   expect(running).toMatchObject({ state: 'ready', pid: ready.pid, license: 'free', licenseLabel: '不需要' });
 
   //M 主站令牌、Cookie、Referer 和地址里的 token 都不交给程序，别的头和查询参数原样带过去。
-  const headers = { authorization: 'Bearer secret', cookie: 'a=1', referer: 'http://host/?token=secret', 'x-demo': 'yes' };
+  const headers = {
+    authorization: 'Bearer secret', cookie: 'a=1', referer: 'http://host/?token=secret',
+    [protocolModule.KEY_HEADER]: 'forged-client-key', 'x-demo': 'yes',
+  };
   const echoRequest = { method: 'POST' as const, url: '/api/ext/fake/echo?token=secret&x=1', payload: { text: '一项测试' }, headers };
   const echo = await app.inject(echoRequest);
   const echoed = echo.json<{ received: unknown; url: string; headers: Record<string, string> }>();
@@ -115,6 +190,7 @@ test('主程序 ready 后启动，状态接口、代理及协议退出入口可�
   expect(echoed.headers).not.toHaveProperty('authorization');
   expect(echoed.headers).not.toHaveProperty('cookie');
   expect(echoed.headers).not.toHaveProperty('referer');
+  expect(echoed.headers).not.toHaveProperty(protocolModule.KEY_HEADER);
 
   const stopped = await app.inject({ method: 'POST', url: '/api/programs/fake/stop' });
   expect(stopped.statusCode).toBe(200);
@@ -176,16 +252,160 @@ test('界面入口 /programs/<名字>/ 只转已就绪且报了界面的自有�
   expect(gone.statusCode).toBe(404);
 }, 12_000);
 
+test('界面代理剥掉主站令牌与伪造密钥，实际转发的密钥遮住回显，管理接口不开放', async () => {
+  const { app, ctx } = await getPlugin();
+  ctx.emit('ready', []);
+  const ready = await waitFor(() => ctx.programs.status()[0]!, 'ready');
+
+  //G 客户端只传伪造头，假程序回显时会显示为当前真实密钥的等长掩码。
+  const headers = {
+    authorization: 'Bearer secret', cookie: 'a=1', referer: 'http://host/programs/fake/?token=secret',
+    [protocolModule.KEY_HEADER]: 'secret-key', 'x-demo': 'yes',
+  };
+  const echoRequest = { method: 'POST' as const, url: '/programs/fake/echo?token=secret&x=1', payload: { text: '界面' }, headers };
+  const echo = await app.inject(echoRequest);
+  const echoed = echo.json<{ url: string; headers: Record<string, string> }>();
+  expect(echoed.url).toBe('/echo?x=1');
+  expect(echoed.headers['x-demo']).toBe('yes');
+  for (const name of ['authorization', 'cookie', 'referer']) {
+    expect(echoed.headers).not.toHaveProperty(name);
+  }
+  const masked = echoed.headers[protocolModule.KEY_HEADER] ?? '';
+  expect(/^\*+$/u.test(masked)).toBe(true);
+
+  //G 大小写、多斜线、编码、../ 合并后落到管理接口的写法也一律 404，程序照常在跑。
+  const paths = [
+    '/programs/fake/jmbots/v1/health', '/programs/fake/JMBOTS/V1/exit', '/programs/fake//jmbots/v1/%65xit',
+    '/programs/fake/%6Dmbots/v1/exit', '/programs/fake/jmbots%2Fv1/exit', '/programs/fake/a/../jmbots/v1/exit',
+  ];
+  for (const url of paths) {
+    const response = await app.inject({ method: 'POST', url, payload: { graceMs: 1 } });
+    expect(response.statusCode).toBe(404);
+  }
+  //G 老客服确认路径不再转发，普通模型草稿链不经过新的批准入口。
+  const old = { method: 'POST' as const, url: '/programs/fake/api/wechat-kefu/outbox/send', payload: { id: 1 } };
+  expect((await app.inject(old)).statusCode).toBe(409);
+  expect(ctx.programs.status()[0]).toMatchObject({ state: 'ready', pid: ready.pid });
+}, 12_000);
+
+test('界面代理重启后用新密钥，过滤分块正文、响应头和错误里的密钥', async () => {
+  const { app, ctx, root } = await getPlugin(getConfig(), [], '');
+  const request = { url: '/programs/fake/key-probe', headers: { [protocolModule.KEY_HEADER]: 'forged' } };
+  const forwarded: string[] = [];
+  const realFetch = globalThis.fetch;
+  const probeFetch = async (...[input, init]: Parameters<typeof fetch>): Promise<Response> => {
+    const target = new URL(String(input));
+    if (target.pathname !== '/key-probe' && target.pathname !== '/key-error') return realFetch(input, init);
+
+    //M 只捕获合成探针的上游头，测试断言使用布尔值，不把密钥打印出来。
+    const headers = new Headers(init?.headers);
+    const key = headers.get(protocolModule.KEY_HEADER);
+    if (key === null) return new Response('未收到主站密钥', { status: 401 });
+
+    forwarded.push(key);
+    if (target.pathname === '/key-error') throw new Error(key);
+
+    const encoder = new TextEncoder();
+    const split = Math.floor(key.length / 2);
+    const first = encoder.encode(`前段${key.slice(0, split)}`);
+    const last = encoder.encode(`${key.slice(split)}后段`);
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(first);
+        await Bun.sleep(5);
+        controller.enqueue(last);
+        controller.close();
+      },
+    });
+    const responseHeaders = { [protocolModule.KEY_HEADER]: key, 'x-echo': key, location: `/echo?q=${key}` };
+    return new Response(body, { headers: responseHeaders });
+  };
+  const spy = spyOn(globalThis, 'fetch').mockImplementation(probeFetch as typeof fetch);
+  cleanups.push(() => { spy.mockRestore(); });
+
+  //G 还没启动或已经停止时没有上游密钥，也不发出探针。
+  const before = await app.inject(request);
+  expect(before.statusCode).toBe(404);
+  expect(forwarded).toHaveLength(0);
+  ctx.programs.startConfigured();
+  const first = await waitFor(() => ctx.programs.status()[0]!, 'ready');
+  //G 主站放行未核验身份的远程浏览时，仍不能把进程密钥加进去。
+  const anonymousRequest = { ...request, remoteAddress: '192.0.2.10' };
+  const anonymous = await app.inject(anonymousRequest);
+  expect(anonymous.statusCode).toBe(401);
+  expect(forwarded).toHaveLength(0);
+
+  const one = await app.inject(request);
+  const initialKey = forwarded[0] ?? '';
+  expect(initialKey !== '' && initialKey !== 'forged').toBe(true);
+  expect(one.statusCode).toBe(200);
+  expect(one.body === `前段${'*'.repeat(initialKey.length)}后段`).toBe(true);
+  for (const name of [protocolModule.KEY_HEADER, 'x-echo', 'location']) {
+    expect(Object.hasOwn(one.headers, name)).toBe(false);
+  }
+  const failure = await app.inject('/programs/fake/key-error');
+  expect(failure.statusCode).toBe(503);
+  expect(failure.json().error === '转发给 fake 失败').toBe(true);
+
+  const restart = { method: 'POST' as const, url: '/api/programs/fake/restart' };
+  const restarted = await app.inject(restart);
+  expect(restarted.statusCode).toBe(200);
+  await waitFor(() => ctx.programs.status()[0]!, 'ready', first.pid!);
+  const two = await app.inject(request);
+  const nextKey = forwarded[2] ?? '';
+  expect(forwarded[1] === initialKey && nextKey !== '' && nextKey !== initialKey).toBe(true);
+  expect(two.statusCode).toBe(200);
+  expect(two.body === `前段${'*'.repeat(nextKey.length)}后段`).toBe(true);
+  const log = path.join(root, 'data', 'logs', 'fake.log');
+  const captured = fs.readFileSync(log, 'utf8');
+  expect(captured.includes(initialKey) || captured.includes(nextKey)).toBe(false);
+
+  const stop = { method: 'POST' as const, url: '/api/programs/fake/stop' };
+  await app.inject(stop);
+  const after = await app.inject(request);
+  expect(after.statusCode).toBe(404);
+  expect(forwarded).toHaveLength(3);
+}, 12_000);
+
+test('远程带有效主令牌才由界面代理注入密钥，伪造的头无法让远程通过', async () => {
+  const token = 'fixture-main-token';
+  const { app, ctx } = await getPlugin(getConfig(), [], token);
+  ctx.programs.startConfigured();
+  await waitFor(() => ctx.programs.status()[0]!, 'ready');
+
+  const headers = { [protocolModule.KEY_HEADER]: 'forged' };
+  const request = {
+    method: 'POST' as const, url: '/programs/fake/echo', remoteAddress: '192.0.2.11',
+    headers, payload: { text: '合成请求' },
+  };
+  //G 仅携带伪造程序头不能通过主站核验。
+  const rejected = await app.inject(request);
+  expect(rejected.statusCode).toBe(401);
+
+  const authorizedHeaders = { ...headers, authorization: `Bearer ${token}` };
+  const authorized = { ...request, headers: authorizedHeaders };
+  const response = await app.inject(authorized);
+  expect(response.statusCode).toBe(200);
+  const echoed = response.json<{ headers: Record<string, string> }>();
+  expect(Object.hasOwn(echoed.headers, 'authorization')).toBe(false);
+  const publicKey = echoed.headers[protocolModule.KEY_HEADER] ?? '';
+  //M 真正转到假程序的钥匙由代理过滤成星号，既验证发生注入也不输出实际值。
+  expect(/^\*+$/u.test(publicKey)).toBe(true);
+}, 12_000);
+
 test('自己拉起的子进程被结束后，按默认三秒退避拉起一个新进程', async () => {
   const { host } = getHost([]);
   host.start();
   const first = await waitFor(() => host.status(), 'ready');
+  const generation = host.getSendTarget()?.generation;
   const pid = first.pid!;
 
   //M 只结束这个用例的宿主刚刚创建并在状态里报告的子进程。
   const killedAt = performance.now();
   process.kill(pid, 'SIGKILL');
   const second = await waitFor(() => host.status(), 'ready', pid);
+  expect(generation).toBeDefined();
+  expect(host.getSendTarget()?.generation).not.toBe(generation);
   expect(second.pid).not.toBe(pid);
   expect(second.restarts).toBe(1);
   expect(performance.now() - killedAt).toBeGreaterThanOrEqual(2900);

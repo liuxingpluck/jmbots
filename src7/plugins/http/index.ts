@@ -20,7 +20,7 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'http';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.5';
+export const version = '1.2.0';
 
 /** 用到的服务。 */
 export const inject = ['resources'];
@@ -132,8 +132,14 @@ export class Http extends cordis.Service {
   /** 令牌表。 */
   private readonly tokens: tokensModule.Tokens;
 
+  /** 仅保存钩子认过身份的请求对象，不保存令牌或客户端可提供的标记。 */
+  private readonly verified = new WeakSet<fastify.FastifyRequest>();
+
   /** pid 文件；监听上以后才有。 */
   private pidFile = '';
+
+  /** 已接受基地的停服请求。 */
+  private windowStopping = false;
 
   /**
    * 登记 http 插件：把 Http 作为服务挂到 Cordis 上（以后用 ctx.http 取）；再建 Fastify，挂查令牌的钩子、健康检查、管令牌的接口；等 ready 才监听。
@@ -154,6 +160,32 @@ export class Http extends cordis.Service {
     this.app.addHook('onRequest', (request, reply) => this.check(request, reply));
     //M 2026-11-16：problems 报插件没挂上/没开工；ok 仍表示 HTTP 服务本身活着（换版、看门狗只认 ok，插件问题不能把服务判死）。
     this.app.get('/api/health', () => ({ ok: true, problems: getPluginProblems(this.ctx.resources.pluginStatus) }));
+
+    //M 让基地在 Windows 上请求正常退出，先把回执发完，再关闭 HTTP。
+    this.app.post('/api/service/stop', {
+      onResponse: async (_request, reply) => {
+        if (reply.statusCode !== 202) return;
+
+        //M 等程序宿主和数据库收尾。失败交给基地的超时兜底。
+        void this.shutdownForWindow().catch((error: unknown) => {
+          console.error('停写窗口关停失败', error);
+        });
+      },
+    }, async (request, reply) => {
+      //G 拒绝远端和网页请求，只有基地启动的实例接受本机运维指令。
+      const local = this.isLocal(request);
+      if (!local || request.headers.origin !== undefined || request.headers['x-jmbots-window'] !== '1') {
+        return reply.code(403).send({ error: '停服只接受基地的本机请求' });
+      }
+      if (process.env['JMBOTS_SUPERVISED'] !== '1' || this.windowStopping) {
+        return reply.code(409).send({ error: '主站不受基地守护或正在关停' });
+      }
+      if (request.headers['x-jmbots-expected-pid'] !== String(process.pid)) {
+        return reply.code(409).send({ error: '主站进程号与基地记录不同' });
+      }
+      this.windowStopping = true;
+      return reply.code(202).send({ ok: true, pid: process.pid });
+    });
 
     //M 初始化令牌管理器，读取 data/tokens.json 并挂载本机专属的令牌管理接口。
     const file = path.join(this.ctx.resources.dir('data'), 'tokens.json');
@@ -193,6 +225,20 @@ export class Http extends cordis.Service {
         this.removePid();
       };
     });
+  }
+
+  /** 停止接收请求，等托管程序退出后关闭主库，再结束进程。 */
+  private async shutdownForWindow(): Promise<void> {
+    //M 先挡掉新的 HTTP 写入，防止窗口打开时又接到任务。
+    await this.app.close();
+
+    //M 可选的 programs 插件复用宿主管理器的异步退出路径。
+    const programs = this.ctx.get('programs');
+    await programs?.shutdown();
+
+    //M 托管服务和主库都收尾后，才用退出码 0 通知基地。
+    this.ctx.resources.db.close();
+    process.exit(0);
   }
 
   /**
@@ -242,6 +288,16 @@ export class Http extends cordis.Service {
   }
 
   /**
+   * 读取本次请求的身份核验结果，供 programs 界面代理使用。
+   * @param request 经过本服务 onRequest 钩子的请求。
+   * @returns 本机请求或已通过令牌校验的远程请求为 true。
+   */
+  isVerified(request: fastify.FastifyRequest): boolean {
+    //M 只查询 HTTP 自己记下的结果，不再读取客户端头或重复校验令牌。
+    return this.verified.has(request);
+  }
+
+  /**
    * 登记一条不用令牌的路径，比如 /api/agents/guide。
    * @param route 整条路径，不带查询参数。
    * 副作用：将该路径加入免令牌集合 `open`。
@@ -263,13 +319,18 @@ export class Http extends cordis.Service {
     request: fastify.FastifyRequest,
     reply: fastify.FastifyReply,
   ): Promise<fastify.FastifyReply | undefined> {
+    //M 本机来源直接标为已核验，保持免令牌放行。
+    const local = this.isLocal(request);
+    if (local) {
+      this.verified.add(request);
+      return undefined;
+    }
+
     const route = request.url.split('?')[0] ?? '';
     //M 路由模式或解码后的路径在要令牌的前缀下，就要令牌（isGuarded 说了为什么两样都查）。
     const guarded = this.isGuarded(request, route);
-    //M 2026-11-14 23:50 EST：本机之外，server.trusted_ips 里的地址（如网关 192.168.200.1）也免令牌；别的局域网、外网地址照旧要令牌。
-    if (trustedIp(request.ip, this.config.trustedIps) || !guarded || this.open.has(route) || this.tokens.none()) {
-      return undefined;
-    }
+    //G 免查路径或未配置任何令牌时照常放行，远程请求没有身份标记。
+    if (!guarded || this.open.has(route) || this.tokens.none()) return undefined;
 
     const query = (request.query as { token?: unknown }).token;
     const header = (request.headers.authorization ?? '').replace(/^Bearer\s+/iu, '');
@@ -278,7 +339,14 @@ export class Http extends cordis.Service {
       value = query;
     }
     //G 优先拿查询参数 token、其次拿 Bearer 请求头交由令牌表核验，有效即放行。
-    if (this.tokens.check(value)) return undefined;
+    if (this.tokens.check(value)) {
+      this.verified.add(request);
+      return undefined;
+    }
+
+    //M 受信网关仍可免令牌浏览；远程请求须自行提供有效令牌才算已核验。
+    const trusted = trustedIp(request.ip, this.config.trustedIps);
+    if (trusted) return undefined;
 
     //G 先 await 掉 send 再 return reply，Fastify 才停下（0.4 在 Windows 的 Bun 1.3.14 上实测，只 return 拦不住）。
     await reply.code(401).send({ error: '要带 token：网址后面加 ?token=…，或请求头 Authorization: Bearer …' });

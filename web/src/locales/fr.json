@@ -923,5 +923,22 @@
   "不选也行，直接写你的答案；写了再点选项，会连同选项一起发": "Vous pouvez écrire votre propre réponse sans choisir ; si vous écrivez puis choisissez une option, les deux sont envoyées ensemble",
   "写一句给中控": "Écrire au coordinateur",
   "正在发送": "Envoi en cours",
-  "发给中控": "Envoyer au coordinateur"
+  "发给中控": "Envoyer au coordinateur",
+  "关闭": "Fermer",
+  "外置客服页（试用）": "Page d’assistance externe (essai)",
+  "教程视图": "Vue du tutoriel",
+  "画布": "Canevas",
+  "骨架": "Modules centraux",
+  "插件": "Extensions",
+  "听的事件": "Événements écoutés",
+  "发的事件": "Événements émis",
+  "对外函数": "Fonctions publiques",
+  "这条消息走过的路": "Parcours du message",
+  "项目结构": "Structure du projet",
+  "左右展开": "Gauche et droite",
+  "上下展开": "De haut en bas",
+  "请在左栏选择一条消息": "Sélectionnez un message à gauche",
+  "说明未记载": "Non documenté",
+  "谁发": "Émetteurs",
+  "谁听": "Écouteurs"
 }

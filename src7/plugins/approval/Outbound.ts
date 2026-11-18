@@ -1,0 +1,422 @@
+/** 本人的渠道发送确认，持久绑定原草稿、批准及发送结果。 */
+import * as crypto from 'node:crypto';
+import type * as sqlite from 'bun:sqlite';
+import type * as cordis from 'cordis';
+import type { ChannelRepliedEvent, ReplyStatus } from '../../Channels.ts';
+import * as events from '../../utils/RequestEvent.ts';
+import type { FeishuAddress } from '../feishu/index.ts';
+import type { ApprovedCall, ChannelSendResult, ProgramDraft, ProviderReceipt } from '../programs/ChannelSend.ts';
+
+/** 待确认意图及批准各有十分钟期限。 */
+const APPROVAL_MS = 600_000;
+/** 进程退出或传输中断后的在途请求只供本人核对。 */
+const UNKNOWN: ProviderReceipt = { status: 'uncertain', reason: '发送结果待核对，不自动重发' };
+
+/** 程序界面经主站鉴权后可以执行的明确操作。 */
+export type OutboundAction =
+  | { action: 'prepare'; draftId: number }
+  | { action: 'confirm'; intentId: string; observedIntentDigest: string; interactionId: string; decision: 'approve' }
+  | { action: 'status'; intentId: string }
+  | { action: 'status'; draftId: number }
+  | { action: 'reconcile'; intentId: string; outcome: 'sent' | 'not-sent' };
+
+/** actor 由可信入口填写，永不从请求正文读取。 */
+type OutboundRequest = events.RequestEnvelope & OutboundAction & { program: string; actor: string };
+/** 只给本人返回的意图或明确错误。 */
+type OutboundResult = events.ResultEnvelope & (
+  | { intent: ReturnType<typeof getView> }
+  | { code: number; error: string }
+);
+
+declare module 'cordis' {
+  interface Events {
+    /** 程序界面请 approval 读取或明确确认发件意图。 */
+    'approval/outbound-request'(request: OutboundRequest): void | Promise<void>;
+    /** 本次确认的单独回执，和普通审批、模型回复隔离。 */
+    'approval/outbound-result'(result: OutboundResult): void;
+  }
+}
+
+/** 持久行包含精确正文，但不保存程序密钥或主站令牌。 */
+interface IntentRow {
+  /** 客服页的意图编号。 */
+  id: string;
+  /** 外置识别的固定业务请求号。 */
+  send_id: string;
+  /** 外置识别的固定批准号。 */
+  approval_id: string;
+  /** 程序名。 */
+  program: string;
+  /** 准备时核对的实例代次。 */
+  generation: string;
+  /** 当前登记的实际渠道名。 */
+  channel: string;
+  /** 草稿库内的数字编号。 */
+  draft_id: number;
+  /** 确切发件账号。 */
+  account: string;
+  /** 确切目标会话。 */
+  chat: string;
+  /** 提交和预览共用的原文。 */
+  text: string;
+  /** 包含精确草稿及来源身份的摘要。 */
+  digest: string;
+  /** 等待、在途或外置终态。 */
+  state: 'waiting' | 'sending' | 'invalidated' | ProviderReceipt['status'];
+  /** 待确认或已批准的截止毫秒数。 */
+  expires_at: number;
+  /** 外置原始业务回执，失败时没有外置回执则由主站说明。 */
+  receipt: string | null;
+  /** 本人核对的结果，独立于原始回执。 */
+  checked: 'sent' | 'not-sent' | null;
+}
+
+/** 交给客服页展示确认详情和已保存结果。 */
+function getView(row: IntentRow) {
+  let receipt: ProviderReceipt | undefined;
+  if (row.receipt !== null) {
+    receipt = JSON.parse(row.receipt) as ProviderReceipt;
+  }
+  let status = row.state;
+  if (status === 'invalidated') {
+    status = 'failed';
+  }
+  return {
+    intentId: row.id, requestId: row.send_id, draftId: row.draft_id, channel: row.channel,
+    account: row.account, chat: row.chat, text: row.text, digest: row.digest, expiresAt: row.expires_at,
+    status, receipt, checked: row.checked, canPrepareAgain: row.state === 'invalidated',
+  };
+}
+
+/** 用固定字段按原字节计算展示摘要，换账号、聊天、正文或代次都会失效。 */
+function digestDraft(program: string, draft: ProgramDraft): string {
+  const binding = [program, draft.generation, draft.channel, draft.draftId, draft.account, draft.chat, draft.text];
+  const bytes = JSON.stringify(binding);
+  const hash = crypto.createHash('sha256');
+  //M 摘要包含固定字段与原始正文。
+  hash.update(bytes);
+  return hash.digest('hex');
+}
+
+/** 不使用通用同发起人审批规则，只有本人确认才能声明这笔外发。 */
+export class Outbound {
+  /** 主站同一数据库的发件账。 */
+  private readonly db: sqlite.Database;
+
+  /** 建立发件账并登记可信入口；不连接微信，也不自动补发。 */
+  constructor(private readonly ctx: cordis.Context, private readonly now: () => number = Date.now) {
+    this.db = ctx.resources.db;
+    //M 独立账本不进入通用文字审批和客户会话通知。
+    const sql = 'CREATE TABLE IF NOT EXISTS approval_outbound (id TEXT PRIMARY KEY,'
+      + ' send_id TEXT NOT NULL UNIQUE,'
+      + ' approval_id TEXT NOT NULL UNIQUE, program TEXT NOT NULL, generation TEXT NOT NULL, channel TEXT NOT NULL,'
+      + ' draft_id INTEGER NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL,'
+      + ' text TEXT NOT NULL, digest TEXT NOT NULL,'
+      + ' state TEXT NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, interaction_id TEXT,'
+      + ' receipt TEXT, checked TEXT, notified_at INTEGER)';
+    this.db.exec(sql);
+    const index = 'CREATE INDEX IF NOT EXISTS approval_outbound_draft ON approval_outbound (program, draft_id)';
+    this.db.exec(index);
+    //M 只由约定的事件入口取结果，不接受通用 approval/decide。
+    const handle = (request: OutboundRequest) => this.handle(request);
+    const failures = {
+      onError: () => ({ code: 500, error: '发送确认处理失败，请按原意图核对' }),
+    };
+    //M 请求回执工具负责等待和关联，不把确认交给普通审批的监听者。
+    events.onRequestEvent(ctx, 'approval/outbound-request', 'approval/outbound-result', handle, failures);
+    //M 重启后在途账只转待核；通知等待主程序所有插件已经挂载。
+    ctx.on('ready', () => this.recover());
+  }
+
+  /** 拒绝外人和同发起人代批，按已校验的操作选择读写。 */
+  private async handle(request: OutboundRequest): Promise<events.StripResultId<OutboundResult>> {
+    if (request.actor !== 'owner') return { code: 403, error: '发送确认只允许本人操作' };
+
+    //M 准备只读取并展示原草稿。
+    if (request.action === 'prepare') return this.prepare(request.program, request.draftId);
+
+    if (request.action === 'status' && 'draftId' in request) {
+      //M 页面刷新后只读查询该草稿原来的已保存意图。
+      const last = this.latest(request.program, request.draftId);
+      if (last === null) return { code: 404, error: '找不到这条草稿的发送意图' };
+
+      //M 状态查询从主站保存的原记录返回。
+      return { intent: getView(last) };
+    }
+
+    //G 意图与程序固定绑定，别的界面不能拿它确认或查询。
+    const row = this.get(request.program, request.intentId);
+    if (row === null) return { code: 404, error: '找不到该程序的发送意图' };
+
+    //M 轮询读取持久状态，不接触外置发送能力。
+    if (request.action === 'status') return { intent: getView(row) };
+
+    //M 人工核对仅写核对字段。
+    if (request.action === 'reconcile') return this.reconcile(row, request.outcome);
+
+    //M 只有明确确认才进入发送判断。
+    return this.confirm(row, request);
+  }
+
+  /** 读取按程序绑定的已保存意图。 */
+  private get(program: string, id: string): IntentRow | null {
+    const sql = 'SELECT * FROM approval_outbound WHERE program = ? AND id = ?';
+    //G 取意图必须同时吻合程序名。
+    return this.db.query<IntentRow, [string, string]>(sql).get(program, id);
+  }
+
+  /** 在同笔草稿已有在途或终态时复用原意图，不能换号补发。 */
+  private latest(program: string, draftId: number): IntentRow | null {
+    const sql = 'SELECT * FROM approval_outbound WHERE program = ? AND draft_id = ? ORDER BY rowid DESC LIMIT 1';
+    //M 返回最新草稿意图供确认事务核对。
+    return this.db.query<IntentRow, [string, number]>(sql).get(program, draftId);
+  }
+
+  /** 向 programs 查询精确草稿，超时在确认之前即失败。 */
+  private readDraft(program: string, draftId: number): Promise<ChannelSendResult> {
+    const payload = { action: 'draft' as const, program, draftId };
+    const options = {
+      timeoutMs: 6000,
+      onFallback: () => ({ requestId: '', code: 503, error: '外部程序未就绪或草稿读取失败' }),
+    };
+    //M 批准不解析程序地址，也不持有启动密钥。
+    return events.requestEvent(
+      this.ctx, 'programs/channel-send-request', 'programs/channel-send-result', payload, options,
+    );
+  }
+
+  /** 读取源草稿只供展示，在事务中复用或建立同一草稿的有效意图。 */
+  private async prepare(program: string, draftId: number) {
+    //M 页面重开按草稿编号找回同一发送记录。
+    const previous = this.latest(program, draftId);
+    //G 已进入运输或终态的草稿保持原编号。
+    if (previous !== null && previous.state !== 'waiting' && previous.state !== 'invalidated') {
+      return { intent: getView(previous) };
+    }
+
+    //M 尚未出站时读取程序当前可确认的草稿。
+    const response = await this.readDraft(program, draftId);
+    if ('error' in response) return { code: response.code, error: response.error };
+    if (!('draft' in response)) return { code: 502, error: '外部草稿回执不完整' };
+
+    const draft = response.draft;
+    //M 预览摘要固定在外置库的原文和目标。
+    const digest = digestDraft(program, draft);
+    const now = this.now();
+    const create = this.db.transaction(() => {
+      //G 等待读取草稿时另一请求可能已确认，写前必须重查。
+      const existing = this.latest(program, draftId);
+      if (existing !== null && existing.state !== 'waiting' && existing.state !== 'invalidated') return existing;
+      if (existing?.state === 'waiting' && existing.digest === digest && existing.expires_at > now) return existing;
+
+      //M 分开意图号、业务永久号和已批准时使用的外置批准号。
+      const id = crypto.randomUUID();
+      const suffix = crypto.randomUUID();
+      const sendId = 'kefu-draft:' + String(draftId) + ':' + suffix;
+      const approvalId = crypto.randomUUID();
+      const expiresAt = now + APPROVAL_MS;
+      const sql = 'INSERT INTO approval_outbound (id,send_id,approval_id,program,generation,channel,draft_id,'
+        + " account,chat,text,digest,state,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'waiting',?) RETURNING *";
+      const insert = this.db.query<IntentRow, sqlite.SQLQueryBindings[]>(sql);
+      return insert.get(id, sendId, approvalId, program, draft.generation, draft.channel, draftId,
+        draft.account, draft.chat, draft.text, digest, expiresAt);
+    });
+    //M 并发准备只得到一个仍有效的预览；发送在明确确认之后。
+    const inserted = create.immediate();
+    if (inserted === null) return { code: 500, error: '无法保存发件意图' };
+
+    //M 交给本人展示原文和确认摘要。
+    return { intent: getView(inserted) };
+  }
+
+  /** 核对刚展示的摘要和新读到的草稿，再持久占住唯一发送位置。 */
+  private async confirm(row: IntentRow, request: Extract<OutboundAction, { action: 'confirm' }>) {
+    if (request.decision !== 'approve' || request.observedIntentDigest !== row.digest) {
+      return { code: 409, error: '展示的发件意图不匹配，请重新读取' };
+    }
+    //G 已占位或有终态的重复确认只查原记录。
+    if (row.state !== 'waiting') return { intent: getView(row) };
+    if (row.expires_at <= this.now()) return { code: 409, error: '待确认意图已过期' };
+
+    //M 发送前再向外置核对原草稿。
+    const result = await this.readDraft(row.program, row.draft_id);
+    if ('error' in result) return { code: result.code, error: result.error };
+    if (!('draft' in result)) return { code: 502, error: '外部草稿回执不完整' };
+    if (row.generation !== result.draft.generation) return { code: 409, error: '外部程序已换代，请重新准备确认' };
+
+    //G 正文和目标必须与展示时一致，校验精确字节。
+    const draft = result.draft;
+    const activeDigest = digestDraft(row.program, draft);
+    if (activeDigest !== row.digest) return { code: 409, error: '草稿目标或正文已变化，请重新确认' };
+
+    const now = this.now();
+    const expiresAt = now + APPROVAL_MS;
+    const claim = this.db.transaction(() => {
+      //G 另一页可能已准备新意图或已经占位，旧页面不能发。
+      const latest = this.latest(row.program, row.draft_id);
+      if (latest?.id !== row.id || latest.state !== 'waiting' || latest.expires_at <= now) {
+        return { row: latest, claimed: false };
+      }
+
+      const sql = "UPDATE approval_outbound SET state = 'sending', approved_at = ?, expires_at = ?, interaction_id = ?"
+        + " WHERE id = ? AND state = 'waiting' RETURNING *";
+      //M 同时记下占位、批准时刻、有效期及交互证据。
+      const update = this.db.query<IntentRow, [number, number, string, string]>(sql);
+      const id = row.id;
+      const interaction = request.interactionId;
+      //G 是否取得运输资格只看本次有无实际写入。
+      const changed = update.get(now, expiresAt, interaction, id);
+      return { row: changed, claimed: changed !== null };
+    });
+    const outcome = claim.immediate();
+    const approved = outcome.row;
+    if (approved?.id !== row.id) return { code: 409, error: '待确认意图已更新，请重新读取' };
+    if (!outcome.claimed) {
+      if (approved.state === 'waiting') return { code: 409, error: '待确认意图已过期' };
+
+      //M 并发请求读取已占位的记录。
+      return { intent: getView(approved) };
+    }
+
+    //M 只有本次事务确实占到了唯一发送位置才调用外置。
+    const delivery = await this.submit(approved);
+    const done = this.saveReceipt(approved, delivery.receipt, delivery.invalidated);
+    return { intent: getView(done) };
+  }
+
+  /** 使用原业务号提交一次；未知结果从此只查或核对。 */
+  private async submit(row: IntentRow): Promise<{ receipt: ProviderReceipt; invalidated: boolean }> {
+    const call: ApprovedCall = {
+      requestId: row.send_id, channel: row.channel, account: row.account, chat: row.chat, text: row.text,
+      approval: { id: row.approval_id, state: 'approved', expiresAt: row.expires_at },
+    };
+    const payload = { action: 'send' as const, program: row.program, generation: row.generation, call };
+    const options = {
+      timeoutMs: 95_000,
+      onFallback: (reason: events.FallbackReason): ChannelSendResult => {
+        if (reason === 'unhandled') return { requestId: '', code: 503, error: '外部程序运输未挂载' };
+
+        return { requestId: '', receipt: UNKNOWN };
+      },
+    };
+    //M 运输回执和局部事件等待号无关，外置只认保存的 P2 业务号。
+    const result = await events.requestEvent(
+      this.ctx, 'programs/channel-send-request', 'programs/channel-send-result', payload, options,
+    );
+    if ('receipt' in result) return { receipt: result.receipt, invalidated: false };
+    if ('error' in result) {
+      //G 运输已证明未发出时，保存本次失败，允许本人重新准备另一项确认。
+      return { receipt: { status: 'failed', reason: result.error }, invalidated: true };
+    }
+
+    return { receipt: UNKNOWN, invalidated: false };
+  }
+
+  /** 先归档再发通用事件；重启恢复或重复回执无法覆盖已有结果。 */
+  private saveReceipt(row: IntentRow, receipt: ProviderReceipt, invalidated = false): IntentRow {
+    const sql = "UPDATE approval_outbound SET state = ?, receipt = ? WHERE id = ? AND state = 'sending' RETURNING *";
+    const serialized = JSON.stringify(receipt);
+    let status: IntentRow['state'] = receipt.status;
+    if (invalidated) {
+      status = 'invalidated';
+    }
+    const id = row.id;
+    //M 确认仍在运输后才可写终态，迟到回执不会覆盖恢复状态。
+    const update = this.db.query<IntentRow, [string, string, string]>(sql);
+    const changed = update.get(status, serialized, id);
+    //G 已被恢复流程结算的行交回已存状态。
+    if (changed === null) return this.get(row.program, id) ?? row;
+
+    //M 已持久化的事件不会启动第二次发送；不确定同时提示本人核对。
+    this.publish(changed, receipt);
+    if (receipt.status === 'uncertain') void this.notify(changed);
+    return changed;
+  }
+
+  /** 仅本人可填人工核对结果，保留原始 uncertain，永不再提交。 */
+  private reconcile(row: IntentRow, outcome: 'sent' | 'not-sent') {
+    if (row.state !== 'uncertain') return { code: 409, error: '只有不确定的发件可以核对' };
+    if (row.checked !== null && row.checked !== outcome) return { code: 409, error: '已保存另一核对结果' };
+
+    const sql = 'UPDATE approval_outbound SET checked = ? WHERE id = ? AND checked IS NULL RETURNING *';
+    const id = row.id;
+    //M 核对状态与供应方回执分开记，重复操作保留第一次。
+    const update = this.db.query<IntentRow, [string, string]>(sql);
+    const changed = update.get(outcome, id);
+    const saved = changed ?? row;
+    //M 页面用同样的意图形状展示人工核对结果。
+    return { intent: getView(saved) };
+  }
+
+  /** 沿用通用 channel/replied；P2 failed 在标准事件中是 rejected。 */
+  private publish(row: IntentRow, receipt: ProviderReceipt): void {
+    let status: ReplyStatus = 'rejected';
+    if (receipt.status !== 'failed') {
+      status = receipt.status;
+    }
+    const round = 'approved-send:' + row.send_id;
+    const key = JSON.stringify([round, row.send_id]);
+    const notice: ChannelRepliedEvent = {
+      requestId: row.send_id,
+      replyRoundKey: round,
+      receipt: {
+        v: 2, ok: receipt.status === 'sent', status, replyRequestKey: key, replyRoundKey: round,
+        replyIndex: 0, kind: 'final', parts: [{ partId: 'text', kind: 'text', status, reason: receipt.reason }],
+        reason: receipt.reason, at: this.now(),
+      },
+    };
+    try {
+      //M 回执已经落库，订阅者出错也不影响后续核对。
+      this.ctx.emit('channel/replied', notice);
+    } catch {
+      console.error('外部渠道发送回执通知失败');
+    }
+  }
+
+  /** 离线恢复仅标记可能已提交的发送，不发 P2 请求。 */
+  private recover(): void {
+    const sql = "SELECT * FROM approval_outbound WHERE state = 'sending'";
+    //M 查上次没有保存终态的记录。
+    const pending = this.db.query<IntentRow, []>(sql).all();
+    for (const row of pending) {
+      //G 在途仅归档为待核，永不重新发出。
+      this.saveReceipt(row, UNKNOWN);
+    }
+  }
+
+  /** 当前飞书配置明确为本人的私聊才收提示，不落客户私聊或群。 */
+  private async notify(row: IntentRow): Promise<void> {
+    try {
+      //G 未挂飞书时由客服页展示待核。
+      const feishu = this.ctx.get('feishu');
+      if (feishu === undefined) return;
+
+      const criteria = { channel: 'feishu' };
+      //M 从已有私聊地址定位登记为本人的人。
+      const sessions = this.ctx.sessions.find(criteria);
+      for (const session of sessions) {
+        const address = session.address as FeishuAddress | undefined;
+        if (address?.chatType !== 'p2p' || typeof address.chatId !== 'string' || address.chatId === '') continue;
+
+        //G 用当前人员配置再核一遍本人，不沿用旧会话的角色或回退到最近私聊。
+        const person = feishu.config.people.get(address.openId);
+        if (person?.role !== 'owner') continue;
+
+        const sql = 'UPDATE approval_outbound SET notified_at = ? WHERE id = ? AND notified_at IS NULL';
+        const now = this.now();
+        const id = row.id;
+        //G 先占住唯一提醒位置，重复核对不得再提醒。
+        const mark = this.db.query(sql);
+        const sent = mark.run(now, id);
+        if (sent.changes !== 1) return;
+
+        const message = '外部微信有一条发件结果不确定，请在客服页核对。发件编号 ' + row.send_id;
+        //M 提示只送已验证的本人地址，正文和目标都不放入通知。
+        await feishu.sendText(address, message);
+        return;
+      }
+    } catch {
+      console.error('外部渠道发送结果提醒未送达');
+    }
+  }
+}

@@ -1,7 +1,17 @@
 /** 外部程序配置入口，校验后交给托管逻辑使用。 */
 import * as net from 'node:net';
 import * as path from 'node:path';
+import type { PluginEntry } from '../../Resources.ts';
 import * as textModule from '../../utils/Text.ts';
+
+/** 内置配置名对应实际登记的渠道。微信的两个插件名接同一个微信渠道。 */
+const BUILT_IN_CHANNELS = new Map([
+  ['wechat', 'wechat'], ['wechat-kefu', 'wechat'], ['feishu', 'feishu'],
+  ['web-api', 'http'], ['cli', 'cli'], ['voice', 'voice'],
+]);
+
+/** 渠道名与别名使用相同的协议标识格式。 */
+const CHANNEL_NAME = /^[a-z0-9-]+$/u;
 
 /** 程序登记的一个渠道：程序只能用这些渠道名入站，主程序也只把这些渠道的回复和历史转给它。 */
 export interface ProgramChannel {
@@ -46,12 +56,82 @@ export interface ProgramSpec {
 }
 
 /**
+ * 校验 config.channel_aliases。每组至少两个渠道名，组间不交叉。
+ * @param written 原始字段，省略时无额外别名。
+ * @returns 渠道名到同组首个名字的映射。
+ */
+export function readChannelAliases(written: unknown): ReadonlyMap<string, string> {
+  const aliases = new Map<string, string>();
+  if (written === undefined) return aliases;
+
+  //G 别名仅用于判断接管冲突，格式错误时拒绝整个外部配置。
+  if (!Array.isArray(written)) throw new Error('programs.config.channel_aliases 要是列表');
+
+  for (const group of written) {
+    if (!Array.isArray(group) || group.length < 2) {
+      throw new Error('channel_aliases 的每组至少写两个渠道名');
+    }
+    let first: string | undefined;
+    for (const name of group) {
+      if (typeof name !== 'string' || !CHANNEL_NAME.test(name)) {
+        throw new Error('channel_aliases 的渠道名要由小写字母、数字和横线组成');
+      }
+      if (aliases.has(name)) throw new Error(`channel_aliases 的渠道 ${name} 重复`);
+
+      //M 组内所有名字占用同一个接管位置，登记与回调仍保留原名。
+      first ??= name;
+      aliases.set(name, first);
+    }
+  }
+  return aliases;
+}
+
+/**
+ * 按启动配置找出与内置渠道冲突的外部程序。
+ * @param specs 已校验的程序清单。
+ * @param plugins 启用的插件清单，骨架已去掉 disabled 项。
+ * @param aliases 已校验的同渠道别名映射。
+ * @returns 每个被拒程序对应的中文原因，不控制任何内置插件。
+ */
+export function getChannelConflicts(
+  specs: readonly ProgramSpec[],
+  plugins: readonly PluginEntry[],
+  aliases: ReadonlyMap<string, string>,
+): ReadonlyMap<string, string> {
+  const occupied = new Map<string, { plugin: string; channel: string }>();
+  for (const plugin of plugins) {
+    //M 按内置实际渠道占位，不依赖哪个插件先挂载。
+    const channel = BUILT_IN_CHANNELS.get(plugin.name);
+    if (channel === undefined) continue;
+
+    const identity = aliases.get(channel) ?? channel;
+    occupied.set(identity, { plugin: plugin.name, channel });
+  }
+
+  const conflicts = new Map<string, string>();
+  for (const spec of specs) {
+    for (const channel of spec.channels) {
+      const identity = aliases.get(channel.name) ?? channel.name;
+      const owner = occupied.get(identity);
+      if (owner === undefined) continue;
+
+      //G 任一登记有冲突就阻止整个程序，它启动后可能立即开始监听。
+      const reason = `渠道 ${channel.name} 与内置插件 ${owner.plugin} 的渠道 ${owner.channel} 冲突`;
+      conflicts.set(spec.name, reason);
+      break;
+    }
+  }
+  return conflicts;
+}
+
+/**
  * 读取 plugins.programs.config 的程序列表，填入默认值。
  * @param config 插件的原始配置。
+ * @param aliases 可选的已校验渠道别名映射。
  * @returns 可以直接用于启动的配置。
  * @throws 配置格式、字段值或唯一性不符合约定时抛错。
  */
-export function readPrograms(config: unknown): ProgramSpec[] {
+export function readPrograms(config: unknown, aliases: ReadonlyMap<string, string> = new Map()): ProgramSpec[] {
   if (config === undefined) return [];
 
   //G 插件入口只接受对象及可选的 programs 列表。
@@ -132,7 +212,7 @@ export function readPrograms(config: unknown): ProgramSpec[] {
     const exitWaitMs = getInteger(item, 'exit_wait_ms', key, 5000, 1, 2_147_483_647);
 
     //M 程序登记的渠道：入站只认这些名字，回复和历史也只把这些渠道转给它。
-    const channels = getChannels(item, key, channelNames);
+    const channels = getChannels(item, key, channelNames, aliases);
 
     //M 记下已校验的标识，阻止后续项占用同名或同一挂载路径。
     names.add(name);
@@ -149,10 +229,16 @@ export function readPrograms(config: unknown): ProgramSpec[] {
  * @param item 这个程序的原始配置。
  * @param key 报错用的前缀，如 programs.wechat。
  * @param taken 前面的程序已登记的渠道名；读到的新名字加进去。
+ * @param aliases 已校验的同渠道别名。
  * @returns 已校验的渠道列表，没写是空列表。
  * @throws 不是列表、缺字段、名字不合法或已被别的程序登记。
  */
-function getChannels(item: Record<string, unknown>, key: string, taken: Set<string>): ProgramChannel[] {
+function getChannels(
+  item: Record<string, unknown>,
+  key: string,
+  taken: Set<string>,
+  aliases: ReadonlyMap<string, string>,
+): ProgramChannel[] {
   const written = item['channels'] ?? [];
   if (!Array.isArray(written)) throw new Error(`${key}.channels 要是列表`);
 
@@ -164,14 +250,15 @@ function getChannels(item: Record<string, unknown>, key: string, taken: Set<stri
 
     //G 渠道名进入协议路由，只接受约定的标识字符。
     const name = getText(entry, 'name', at);
-    if (!/^[a-z0-9-]+$/u.test(name)) throw new Error(`${at} 的 name 要由小写字母、数字和横线组成`);
+    if (!CHANNEL_NAME.test(name)) throw new Error(`${at} 的 name 要由小写字母、数字和横线组成`);
 
     //G 同一个渠道交给两个程序，回复和历史就不知道该转给谁。
-    if (taken.has(name)) throw new Error(`${at} 的渠道 ${name} 已经登记给别的程序`);
+    const identity = aliases.get(name) ?? name;
+    if (taken.has(identity)) throw new Error(`${at} 的渠道 ${name} 已经登记给别的程序`);
 
     //G 每个渠道必须明确指定接单机器人。
     const bot = getText(entry, 'bot', at);
-    taken.add(name);
+    taken.add(identity);
     return { name, bot };
   });
 }

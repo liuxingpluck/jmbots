@@ -37,8 +37,8 @@ export const name = 'memory';
 //M   只按 service_url 调 HTTP，连不上时检索、事件回执、工具都写明“记忆服务没在线”。
 //M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
-//M 1.9.0：网页可列出当前已打标的个人和群归属。
-export const version = '1.9.0';
+//M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
+export const version = '1.10.0';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools', 'bots'];

@@ -11,6 +11,8 @@ import { WECHAT_STEPS } from '../Guide/steps-wechat-kefu.ts';
 import * as privacy from '../Privacy/Mask.tsx';
 import { TOKEN, withToken } from '../Token.ts';
 import * as voice from './WechatVoice.tsx';
+import * as entries from '../Programs/Entries.ts';
+import * as i18n from '../I18n.ts';
 
 type Kind = 'group' | 'private' | 'official' | 'work' | 'system';
 const KINDS: Record<Kind, string> = { group: '群聊', private: '私聊', official: '公众号', work: '企业微信', system: '系统会话' };
@@ -63,6 +65,89 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const body = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? String(response.status));
   return body;
+}
+
+/** 微信正式渠道或已用于隔离运行的微信渠道。 */
+function isWechatTrialChannel(name: unknown): boolean {
+  return name === 'wechat' || name === 'wechat-external';
+}
+
+/** 旧页只给正在运行且登记微信渠道的程序显示试用入口。 */
+function ExternalKefuLink() {
+  const [href, setHref] = useState('');
+  const [language] = useState(() => {
+    //M 沿用客服演示引导的语言选择，地址覆盖本机偏好。
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get('lang');
+    const explicit = i18n.matchLanguage(requested);
+    if (explicit !== undefined) return explicit;
+
+    //G 读不到语言偏好时继续渲染旧页。
+    try {
+      return i18n.loadLanguage(window.localStorage);
+    } catch {
+      return 'zh-CN';
+    }
+  });
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: number | undefined;
+    async function poll(): Promise<void> {
+      const path = '/api/programs';
+      const deadline = AbortSignal.timeout(5_000);
+      const signals = [controller.signal, deadline];
+      const signal = AbortSignal.any(signals);
+      const options = { signal, cache: 'no-store' as const };
+      try {
+        //M 复用客服访问令牌与主站 programs 的同源链接校验。
+        type Programs = { programs?: { name: string; paused?: boolean; channels?: unknown }[] };
+        const data = await call<Programs>(path, options);
+        if (controller.signal.aborted) return;
+
+        const rows = data.programs ?? [];
+        const programs = rows.filter((row) => row.paused !== true);
+        const available = entries.getEntries({ programs });
+        const matches = await Promise.all(available.map(async (entry) => {
+          const row = programs.find((program) => program.name === entry.name);
+          if (Array.isArray(row?.channels)) return row.channels.some(isWechatTrialChannel);
+
+          //M 旧版 programs 状态不带渠道名，通过同源外置客服接口核对本程序实际登记的渠道。
+          const name = encodeURIComponent(entry.name);
+          const capability = `/programs/${name}/api/wechat-kefu/capabilities`;
+          try {
+            const details = await call<{ channel?: string }>(capability, options);
+            return isWechatTrialChannel(details.channel);
+          } catch {
+            return false;
+          }
+        }));
+        if (controller.signal.aborted) return;
+
+        const entry = available.find((_entry, index) => matches[index]);
+        setHref(entry?.ui ?? '');
+      } catch {
+        //G 状态接口不可用时清掉旧入口，保留原客服页。
+        if (!controller.signal.aborted) setHref('');
+      } finally {
+        //M 状态变更后自动更新；每轮只保留一个请求。
+        if (!controller.signal.aborted) timer = window.setTimeout(() => { void poll(); }, 5_000);
+      }
+    }
+    void poll();
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, []);
+  if (href === '') return null;
+
+  //M 用当前界面语言显示入口，原文字面量交给语言包提取。
+  const t = (text: string): string => i18n.translate(language, text);
+  const label = t('外置客服页（试用）');
+
+  //M 使用和旧页面相同的访问令牌，直接进入当前就绪程序的客服页。
+  const address = withToken(href, TOKEN);
+  return <a className="wk-top-link" href={address}>{label}</a>;
 }
 
 /** 消息列表看得见的上下各多画多少像素：图片、卡片高度不定，多画一点，快速滚动时不露白。 */
@@ -379,6 +464,7 @@ export function WechatPage() {
           )}
         </div>
         <span className="wk-grow" />
+        <ExternalKefuLink />
         <label className="wk-mask" data-guide="mask"><input type="checkbox" checked={mask} onChange={(e) => privacy.setMask(e.target.checked)} />演示打码</label>
         <a className="wk-top-link" href={withToken('/', TOKEN)}>聊天</a>
         <button type="button" data-guide="scan" className="wk-btn" disabled={scanning} onClick={() => void scan()}>{scanLabel}</button>

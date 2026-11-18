@@ -35,6 +35,19 @@ test('拒绝重复名字和等同的挂载路径，以及端口和参数类型�
 });
 
 
+test('同组别名共享渠道占用，格式错误和重复分组在入口拒绝', () => {
+  const invalid = [null, { a: 'b' }, [['one']], [['a', 'B']], [['a', 'b'], ['b', 'c']]];
+  for (const written of invalid) {
+    expect(() => specModule.readChannelAliases(written)).toThrow('channel_aliases');
+  }
+  const first = { name: 'first', file: 'first', channels: [{ name: 'primary', bot: '助手' }] };
+  const second = { name: 'second', file: 'second', channels: [{ name: 'alias', bot: '助手' }] };
+  const config = { programs: [first, second] };
+  const aliases = specModule.readChannelAliases([['alias', 'primary']]);
+  expect(() => specModule.readPrograms(config, aliases)).toThrow('渠道 alias 已经登记');
+});
+
+
 test('守卫默认阈值按GiB转换、closable默认false，并在入口拒绝非法配置', () => {
   const settings = specModule.readGuard(undefined);
   expect(settings).toMatchObject({

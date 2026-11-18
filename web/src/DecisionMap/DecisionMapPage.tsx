@@ -343,6 +343,7 @@ export function DecisionMapPage() {
               <button
                 key={item.key}
                 type="button"
+                data-look={item.key}
                 aria-pressed={look === item.key}
                 onClick={() => changeLook(item.key)}
               >
@@ -352,10 +353,20 @@ export function DecisionMapPage() {
           </div>
           {look === 'mind' && (
             <div className="decision-filters" role="group" aria-label={t('思维导图方向')}>
-              <button type="button" aria-pressed={direction === 'sides'} onClick={() => changeDirection('sides')}>
+              <button
+                type="button"
+                data-dir="lr"
+                aria-pressed={direction === 'sides'}
+                onClick={() => changeDirection('sides')}
+              >
                 {t('左右')}
               </button>
-              <button type="button" aria-pressed={direction === 'down'} onClick={() => changeDirection('down')}>
+              <button
+                type="button"
+                data-dir="tb"
+                aria-pressed={direction === 'down'}
+                onClick={() => changeDirection('down')}
+              >
                 {t('上下')}
               </button>
             </div>
