@@ -22,11 +22,14 @@ const CHART_HEIGHT = 120;
 const BAR_MAX_WIDTH = 24;
 /** 柱子之间留的空。 */
 const BAR_GAP = 2;
+/** 选择器允许的最大时间桶数。 */
+const MAX_CHART_BARS = 400;
+const HOURS_PER_DAY = 24;
 
 /** 柱子顶上的圆角半径。 */
 const BAR_RADIUS = 4;
 
-/** 点开一行后时间段表最高多少像素：“每小时 × 一年”有八千多行，用 antd Table 自带的 virtual 虚拟滚动（用户 11-17）。 */
+/** 点开一行后时间段表最高多少像素：用 antd Table 自带的 virtual 虚拟滚动（用户 11-17）。 */
 const PERIOD_TABLE_HEIGHT = 320;
 /** 时间段表的总宽：antd 虚拟表的 scroll.x 必须是数，比右栏宽时左右滚。 */
 const PERIOD_TABLE_WIDTH = 760;
@@ -65,8 +68,9 @@ function Bars(props: {
   const max = Math.max(1, ...props.periods.map((row) => data.getTokens(row)));
   /** 每个时间段占多宽。 */
   const slot = CHART_WIDTH / Math.max(1, props.periods.length);
-  /** 柱子宽。 */
-  const barWidth = Math.max(1, Math.min(BAR_MAX_WIDTH, slot - BAR_GAP));
+  //M 桶密集时缩小间距，让柱子宽度始终小于自己的槽位。
+  const gap = Math.min(BAR_GAP, slot / 4);
+  const barWidth = Math.min(BAR_MAX_WIDTH, slot - gap);
   /**
    * 一根柱子指上去显示的字。
    * @param row 这个时间段。
@@ -125,6 +129,12 @@ function Bars(props: {
       </div>
     </figure>
   );
+}
+
+
+/** 查询首尾可能各占一个不满一小时的桶，预算多留一个。 */
+function getHourlyDisabled(days: number): boolean {
+  return days * HOURS_PER_DAY + 1 > MAX_CHART_BARS;
 }
 
 
@@ -213,12 +223,20 @@ export function Usage(): react.JSX.Element {
     { value: 365, label: t('一年') },
   ];
   /** 按什么切时间段的选项。 */
-  const byOptions: { value: types.UsageBy; label: string }[] = [
-    { value: 'hour', label: t('每小时') },
+  const byOptions: { value: types.UsageBy; label: string; disabled?: boolean }[] = [
+    { value: 'hour', label: t('每小时'), disabled: getHourlyDisabled(days) },
     { value: 'day', label: t('每天') },
     { value: 'week', label: t('每周') },
     { value: 'month', label: t('每月') },
   ];
+  /** 切换范围时把已选的超限小时粒度切到每天，再按新条件查询。 */
+  const changeRange = (nextDays: number): void => {
+    setDays(nextDays);
+    if (by !== 'hour' || !getHourlyDisabled(nextDays)) return;
+
+    //M 选中实际提交的粒度，筛选栏、图和明细展示同一个时间单位。
+    setBy('day');
+  };
   /** 按什么分组的选项。 */
   const groupOptions: { value: types.UsageGroup; label: string }[] = [
     { value: 'provider', label: t('供应商') },
@@ -300,7 +318,7 @@ export function Usage(): react.JSX.Element {
           size="small"
           value={days}
           options={rangeOptions}
-          onChange={(value) => setDays(value)}
+          onChange={changeRange}
         />
         <antd.Segmented
           size="small"

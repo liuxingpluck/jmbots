@@ -6,9 +6,9 @@
  *     新消息全部存表，页面上都能看。第一次同步拉的是存量，只存不交。勾了“监听”的会话会再把更早的消息全部补进库（不交机器人）。
  *     客户号是 wechat:<会话 username>，每个客户一场前台会话（memory 按客户号检索）。
  * 起草：只有勾了“监听”的会话（wechat_watch 里有）才交给机器人：对方私聊说的、群里 @我 的；没勾的会话只存不交，不调模型。公众号、系统会话不交。
- *     页面上的“让 AI 回复”可对当前已监听会话立即起草一条（只存草稿，不发送）。
+ *     客服页可对当前已监听会话立即起草建议，在右栏复制草稿。
  * 发：只听不发。send 开关（config 里 wechat-kefu.send）默认 false：机器人的回复一律进发件表当草稿（state=draft），不问 approval，
- *     deliver 和页面上的“发送”按钮也只落成草稿。send: true 时才发：会话开了“自动发”就发，没开就登记待确认、没挂 approval 就留草稿；
+ *     deliver 调用也只落成草稿。send: true 时才发：会话开了“自动发”就发，没开就登记待确认、没挂 approval 就留草稿；
  *     只发到监听名单里的会话，发送失败不重发。
  * 上下文：最近 50 条拼进 system，更早的消息交给 memory_get 按当前微信会话翻页。
  * 事件：不加新事件。跟踪点照 utils/Trace.ts（ctx.emit('trace', …)）；
@@ -27,7 +27,7 @@ import * as historyTools from '../memory/HistoryTools.ts';
 import * as protocol from '../../Channels.ts';
 import * as page from './page/Routes.ts';
 import { Reader } from './read/Reader.ts';
-import type { RawMessage } from './read/Reader.ts';
+import type { ChatItem, RawMessage } from './read/Reader.ts';
 import * as voiceModule from './read/Voice.ts';
 import * as storeModule from './read/Store.ts';
 export { describe } from './read/Store.ts';
@@ -44,17 +44,23 @@ export const name = 'wechat-kefu';
 //M   不再在 bot/receive 里按客户认领前台（bots 按来源范围找，同客户的旧前台沿用）。
 //M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
 //M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
-export const version = '1.2.1';
+export const version = '1.2.3';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http', 'tools'];
 
 /** 一轮最多同步几个会话（第一次全量时 500 个会话分几轮做完，免得一个引擎进程跑太久）。 */
 const SYNC_BATCH = 60;
+/** 会话页的轮询间隔也是可复用后台读取结果的最长时间。 */
+const PAGE_CHATS_MAX_AGE_MS = 8_000;
 /** 拼进上下文的最近几条（用户 11-14：最少 50 条进上下文，更早的模型自己用工具读）。 */
 const CONTEXT_MESSAGES = 50;
 /** 微信自带的系统会话和公众号：只存不交给机器人。 */
-const SKIP_REPLY = /^(gh_|filehelper$|weixin$|notifymessage$|fmessage$|floatbottle$|medianote$|newsapp$|qqmail$|brandsessionholder$|brandservicesessionholder$|qmessage$|tmessage$|qqsync$|@)/u;
+const SKIP_REPLY = new RegExp(
+  '^(gh_|filehelper$|weixin$|notifymessage$|fmessage$|floatbottle$|medianote$|newsapp$|qqmail$'
+  + '|brandsessionholder$|brandservicesessionholder$|qmessage$|tmessage$|qqsync$|@)',
+  'u',
+);
 
 
 /**
@@ -155,6 +161,12 @@ export class Wechat {
   /** 正在补全历史的监听会话，避免同一会话并发补两遍。 */
   private readonly filling = new Set<string>();
 
+  /** 各微信账号最近一次成功读取的会话，键由后台账号或客服页请求提供。 */
+  private readonly pageChats = new Map<string, { at: number; rows: ChatItem[] }>();
+
+  /** 避免后台同步与客服页为同一账号同时启动两次微信读取。 */
+  private readonly chatsInFlight = new Map<string, Promise<ChatItem[]>>();
+
   /**
    * 建表；ready 时开始轮询；被拔掉时停轮询、关 worker。
    * @param ctx Cordis 给这个插件的 ctx。
@@ -201,6 +213,7 @@ export class Wechat {
       if (this.status.lastError === '') {
         detail = `已查 ${String(this.status.rounds)} 轮`;
       }
+      //M 将微信轮询结果加入当前的渠道状态清单。
       list.push({ name: 'wechat', bot: config.bot, connected: this.status.lastError === '', detail });
     });
 
@@ -253,6 +266,35 @@ export class Wechat {
     this.ctx.effect(() => () => this.sender.close());
   }
 
+  /**
+   * 读账号的最近会话。页面定时刷新可复用缓存，后台同步与手动扫描要求重新读取。
+   * @param account 微信账号 ID。
+   * @param fresh 是否跳过缓存读取。
+   * @returns 微信引擎返回的会话，成功时更新本账号的缓存。
+   */
+  async getPageChats(account: string, fresh: boolean): Promise<ChatItem[]> {
+    //G 页面只复用一个刷新周期内成功读取的会话。
+    const cached = this.pageChats.get(account);
+    if (!fresh && cached && Date.now() - cached.at < PAGE_CHATS_MAX_AGE_MS) return cached.rows;
+
+    //G 同账号正在扫描时共享该次读取，失败由每个调用者按原路径处理。
+    const pending = this.chatsInFlight.get(account);
+    if (pending !== undefined) return pending;
+
+    //M 取得最新结果，供后台同步和页面轮询共用。
+    const limit = this.config.chatLimit;
+    const read = this.reader.sessions(account, limit);
+    this.chatsInFlight.set(account, read);
+    try {
+      const rows = await read;
+      const entry = { at: Date.now(), rows };
+      this.pageChats.set(account, entry);
+      return rows;
+    } finally {
+      this.chatsInFlight.delete(account);
+    }
+  }
+
   /** 查一轮：每个已连接账号先读最近会话列表，时间变了的（最多 SYNC_BATCH 个）跑一次 sync-batch。上一轮没跑完就跳过。 */
   //M 原来只同步“重点监听”的会话（2026-11-14 23:15 EST 前）；现在照原版积木客服，后台把全部会话都听上。
   async poll(): Promise<void> {
@@ -264,7 +306,8 @@ export class Wechat {
       let total = 0, pending = 0;
       //M 枚举微信账号，对每个账号读取当前的最近会话。
       for (const account of this.reader.accounts().map((item) => item.id)) {
-        const chats = await this.reader.sessions(account, this.config.chatLimit);
+        const fresh = true;
+        const chats = await this.getPageChats(account, fresh);
         total += chats.length;
 
         //M 用已同步时间找出尚未同步或收到新消息的会话。
@@ -377,6 +420,7 @@ export class Wechat {
       }
       const mentions: protocol.ChannelMention[] = [];
       if (group && msg.at_me === true) {
+        //M 群聊消息点名本账号时，把对应机器人加入提及记录。
         mentions.push({ id: account, botNames: [this.config.bot] });
       }
       const nativeId = `${msg.source}:${String(msg.local_id)}`;

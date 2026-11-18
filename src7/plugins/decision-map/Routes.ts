@@ -13,6 +13,8 @@ export interface DecisionRelayRequest extends events.RequestEnvelope {
   helper: string;
   /** 收件的稳定键：选择用节点号，留言用「节点号#留言号」。 */
   node: string;
+  /** 投递时记录实际节点和留言，方便回信时定位。 */
+  target?: storeModule.ReplyTarget;
   /** 只在投递时提供的收件文字。 */
   text?: string;
 }
@@ -24,6 +26,26 @@ interface DecisionRelayResult extends events.ResultEnvelope {
   /** 投递成功的收件号。 */
   id?: number;
   /** 没能处理的原因。 */
+  error?: string;
+}
+
+/** relay 请求把已收下的回信写进节点。 */
+interface RelayReplyRequest extends events.RequestEnvelope {
+  /** relay 回信的持久编号，重复投递按它对账。 */
+  id: number;
+  /** 旧收件键：节点或节点#留言号。 */
+  key: string;
+  /** 新收件记录的节点及留言，可省略留言号。 */
+  target?: storeModule.ReplyTarget;
+  /** 中控已交给 relay 的回信原文。 */
+  text: string;
+}
+
+/** 回信写图后交回 relay 的回执。 */
+interface RelayReplyResult extends events.ResultEnvelope {
+  /** 节点上已有这条回信。 */
+  ok: boolean;
+  /** 节点暂未接收时的原因。 */
   error?: string;
 }
 
@@ -45,6 +67,10 @@ declare module 'cordis' {
     'decision-map/relay'(request: DecisionRelayRequest): void | Promise<void>;
     /** relay 回送中控收件号或失败原因。 */
     'decision-map/relay-result'(result: DecisionRelayResult): void;
+    /** relay 交回决策图来源的收件回复。 */
+    'decision-map/relay-reply'(request: RelayReplyRequest): void | Promise<void>;
+    /** 决策图确认回话已经落盘。 */
+    'decision-map/relay-replied'(result: RelayReplyResult): void;
   }
 }
 
@@ -72,6 +98,18 @@ function readNoteText(value: unknown): string {
  */
 export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: string): void {
   const app = ctx.http.app;
+  const replyEvent = 'decision-map/relay-reply';
+  const receiptEvent = 'decision-map/relay-replied';
+  const onError = (error: unknown) => ({ ok: false, error: textModule.getMessage(error) });
+  const replyOptions = { onError };
+
+  //M relay 确认写图完成后才结清自己的回信，失败时留待重试。
+  events.onRequestEvent(ctx, replyEvent, receiptEvent, (request) => {
+    const { key, text, id, target } = request;
+    //M 和直达 HTTP 回话共用存储，保留和用户留言的关联。
+    store.replyFromRelay(key, text, id, target);
+    return { ok: true };
+  }, replyOptions);
 
   //M 用独立作用域统一处理节点校验和持久化错误，沿用 HTTP 插件鉴权。
   void app.register(async (scope) => {
@@ -119,7 +157,8 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       const text = `决策图「${notice.title}」已选「${picked.option.text}」\n节点 ${id}，选项 ${optionId}。`
         + `\n确认收到请运行 Decision_Map.mjs done ${JSON.stringify(id)}`;
-      const relay = { action: 'deliver', node: id, helper, text } as const;
+      const target = { node: id };
+      const relay = { action: 'deliver', node: id, helper, text, target } as const;
 
       //M 同一选择重试也可以补投，relay 按节点号去重。
       const result = await requestRelay(ctx, relay);
@@ -156,7 +195,8 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
       lines.push(`回话请运行 ${command}`);
       const key = `${id}#${added.note.id}`;
       const relayText = lines.join('\n');
-      const relay = { action: 'deliver', node: key, helper, text: relayText } as const;
+      const target = { node: id, note: added.note.id };
+      const relay = { action: 'deliver', node: key, helper, text: relayText, target } as const;
 
       //M 每条留言单独进中控收件，relay 按「节点号#留言号」去重。
       const result = await requestRelay(ctx, relay);

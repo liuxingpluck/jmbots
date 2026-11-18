@@ -26,6 +26,8 @@ pub const DEFAULT_MEMORY_PORT: u16 = 30087;
 pub const DEFAULT_BACKEND_ARGS: [&str; 3] = ["serve", "--runtime", "{runtime}"];
 /// 主后端默认的健康路径。
 pub const DEFAULT_BACKEND_HEALTH: &str = "/api/health";
+/// 停写窗口等待主站退出的默认秒数。
+const DEFAULT_STOP_TIMEOUT_SECS: u64 = 30;
 /// 运行时目录的文件夹名：程序旁边的这个文件夹，存在就读取，不存在就创建（用户 11-05）。
 pub const RUNTIME_DIR_NAME: &str = "jmbotsData";
 /// 运行时目录的环境变量（和 Bun 后端一样）。
@@ -84,6 +86,8 @@ pub struct BackendSpec {
     pub args: Vec<String>,
     /// 健康路径，如 /api/health。
     pub health: String,
+    /// 停写窗口等待主站正常退出的秒数。
+    pub stop_timeout_secs: u64,
 }
 
 /// 一个要托管的服务（local.services 的一项）。
@@ -221,9 +225,20 @@ pub fn resolve(overrides: &Overrides, env: &dyn Fn(&str) -> Option<String>, exe_
     let configured_server = text_at(&root, &["local", "server"], &mut problems);
     let trial_port = port_at(&root, &["local", "trial_port"], &mut problems);
     let listen_port = overrides.port.or(port_at(&root, &["local", "port"], &mut problems)).unwrap_or(DEFAULT_LOCAL_PORT);
+    let stop_timeout_secs = match pick(&root, &["local", "backend", "stop_timeout_secs"]) {
+        None => DEFAULT_STOP_TIMEOUT_SECS,
+        Some(value) => match value.as_u64() {
+            Some(seconds @ 1..=300) => seconds,
+            _ => {
+                problems.push("shell.backend.stop_timeout_secs 要填 1 到 300 的整数".to_string());
+                DEFAULT_STOP_TIMEOUT_SECS
+            }
+        },
+    };
     let backend = BackendSpec {
         args: texts_at(&root, &["local", "backend", "args"], &mut problems).unwrap_or_else(|| DEFAULT_BACKEND_ARGS.iter().map(|arg| arg.to_string()).collect()),
         health: text_at(&root, &["local", "backend", "health"], &mut problems).unwrap_or_else(|| DEFAULT_BACKEND_HEALTH.to_string()),
+        stop_timeout_secs,
     };
     let services = services_at(&root, &mut problems);
     let language = text_at(&root, &["ui", "language"], &mut problems);
@@ -280,7 +295,24 @@ mod tests {
         assert!(settings.services.is_empty());
         assert_eq!(settings.backend.args, vec!["serve", "--runtime", "{runtime}"]);
         assert_eq!(settings.backend.health, "/api/health");
+        assert_eq!(settings.backend.stop_timeout_secs, 30);
         assert!(settings.problems.is_empty());
+    }
+
+    #[test]
+    fn window_timeout_reads_shell_backend_setting() {
+        let runtime = temp_dir("config-window");
+        let config = runtime.join(CONFIG_FILE);
+        let overrides = Overrides { runtime: Some(runtime.clone()), ..Overrides::default() };
+        std::fs::write(&config, "shell:\n  backend:\n    stop_timeout_secs: 45\n").unwrap();
+        let custom = resolve(&overrides, &no_env, &runtime);
+        assert_eq!(custom.backend.stop_timeout_secs, 45);
+        assert!(custom.problems.is_empty());
+
+        std::fs::write(&config, "shell:\n  backend:\n    stop_timeout_secs: 0\n").unwrap();
+        let invalid = resolve(&overrides, &no_env, &runtime);
+        assert_eq!(invalid.backend.stop_timeout_secs, 30);
+        assert!(invalid.problems.iter().any(|problem| problem.contains("stop_timeout_secs")));
     }
 
     #[test]

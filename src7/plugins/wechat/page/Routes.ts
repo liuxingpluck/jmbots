@@ -3,7 +3,7 @@
  * 在 web/wechat-kefu.html，由 web 插件挂在 /wechat-kefu/。）令牌由 http 统一查（本机免令牌）。
  *   GET  /wechat-kefu/                    客服页面：React 版由 web 插件托管（web/wechat-kefu.html）；旧路径 /wechat/ 在这里跳过去
  *   GET  /api/wechat-kefu/status               轮询状态、账号
- *   GET  /api/wechat-kefu/chats?account=       最近会话，带“监听”“自动发”两个开关
+ *   GET  /api/wechat-kefu/chats?account=       最近会话与监听配置，fresh=1 强制扫描
  *   PUT  /api/wechat-kefu/watch                { account, chat, name, watch, auto }
  *   GET  /api/wechat-kefu/messages?account=&chat=&limit=
  *   GET  /api/wechat-kefu/voice?account=&chat=&source=&local_id=  原语音 WAV
@@ -29,6 +29,14 @@ function getErrorText(error: unknown): string {
   if (error instanceof Error) return error.message;
 
   return String(error);
+}
+
+/** 客服页收到固定原因和错误码，文件系统或引擎的原始错误只在内部使用。 */
+function getMediaError(error: unknown, fallback: string): { error: string; code: string } {
+  if (error instanceof readerModule.MediaUnavailable) {
+    return { error: error.message, code: error.code };
+  }
+  return { error: fallback, code: 'unavailable' };
 }
 
 function field(from: unknown, key: string): string {
@@ -57,6 +65,8 @@ function getVoiceSeconds(view: string | null): number | undefined {
 type ReadSource = Pick<Wechat, 'reader' | 'status' | 'syncChats'> & {
   /** 给客服页的刷新周期和会话数量上限。 */
   config: Pick<Wechat['config'], 'intervalMs' | 'chatLimit'>;
+  /** 内置渠道复用后台最新的会话列表。 */
+  getPageChats?: Wechat['getPageChats'];
   /** 独立进程打开会话时按读取进度刷新增量。 */
   syncOnRead?: boolean;
   /** 内置渠道为监听中的会话继续补录历史。 */
@@ -78,23 +88,28 @@ export function readRoutes(
     ...wechat.status, accounts: wechat.reader.accounts(), interval: wechat.config.intervalMs,
   }));
 
-  //M 提供账号的最近会话，供客服页展示监听和自动发送开关。
+  //M 提供账号的最近会话及监听配置。
   app.get('/api/wechat-kefu/chats', async (request, reply) => {
-    //M 定位所选账号并读取该账号的开关状态，稍后与会话列表合并。
     const account = field(request.query, 'account');
-    const flags = db
-      .query('SELECT chat, auto FROM wechat_watch WHERE account = ?')
-      .all(account) as { chat: string; auto: number }[];
-    //M 2026-11-14 20:10：引擎失败时回 500 加一句脱敏的简短原因（Reader 已去掉人名、消息），不再是光秃秃的 Internal Server Error。
+    const fresh = field(request.query, 'fresh') === '1';
     let chats: Awaited<ReturnType<typeof wechat.reader.sessions>>;
     try {
-      //M 2026-11-15 00:17 EST：chat_limit 默认 5000（用户实际约 1459 个，原先默认 1000 会截断）。
-      chats = await wechat.reader.sessions(account, wechat.config.chatLimit);
+      //M 内置页能复用后台扫描，其他调用方仍直接读引擎。
+      const read = wechat.getPageChats?.(account, fresh);
+      const limit = wechat.config.chatLimit;
+      chats = await (read ?? wechat.reader.sessions(account, limit));
     } catch (error) {
-      return reply.code(500).send({ error: getErrorText(error) });
+      //G 保留引擎提供的简短错误。
+      const reason = getErrorText(error);
+      return reply.code(500).send({ error: reason });
     }
+
+    //M 会话缓存不包含开关，仍以数据库当前的监听配置为准。
+    const query = db.query('SELECT chat, auto FROM wechat_watch WHERE account = ?');
+    const flags = query.all(account) as { chat: string; auto: number }[];
+    const flagsByChat = new Map(flags.map((flag) => [flag.chat, flag]));
     return chats.map((chat) => {
-      const flag = flags.find((item) => item.chat === chat.username);
+      const flag = flagsByChat.get(chat.username);
       return { ...chat, watch: flag !== undefined, auto: flag?.auto === 1 };
     });
   });
@@ -148,7 +163,9 @@ export function readRoutes(
       const found = await wechat.reader.image(account, chat, source, localId);
       return reply.header('Cache-Control', 'private, max-age=86400').type(found.mime).send(fs.readFileSync(found.file));
     } catch (error) {
-      return reply.code(404).send({ error: getErrorText(error) });
+      //M 报具体缺件原因，短时失败缓存过去后仍能重试。
+      const result = getMediaError(error, '取不到图片：读取失败');
+      return reply.code(404).header('Cache-Control', 'private, no-store').send(result);
     }
   });
 
@@ -176,13 +193,9 @@ export function readRoutes(
       const wav = await voice.get(message, expected);
       return reply.header('Cache-Control', 'private, no-store').type('audio/wav').send(wav);
     } catch (error) {
-      let reason = '读取微信语音失败';
-      if (error instanceof readerModule.VoiceUnavailable) {
-        reason = error.message;
-      }
-
       //M 留下可读的缺件原因，内部错误或路径保持在服务端。
-      return reply.code(404).send({ error: reason });
+      const result = getMediaError(error, '读取微信语音失败');
+      return reply.code(404).header('Cache-Control', 'private, no-store').send(result);
     }
   });
 
@@ -209,6 +222,7 @@ export function routes(http: Http, db: Database, wechat: Wechat, voice: voiceMod
   //M 读会话、图片与语音用和独立进程同一组入口。
   readRoutes(app, db, wechat, voice);
 
+  //M 保存客服页为单个会话选择的监听状态。
   app.put('/api/wechat-kefu/watch', (request) => {
     const body = request.body as Record<string, unknown>;
     //M 从请求确定开关归属的微信账号和会话。

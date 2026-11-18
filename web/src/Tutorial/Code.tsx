@@ -37,6 +37,9 @@ export const TutorialScrollContext = createContext<HTMLElement | null>(null);
 /** 超过或达到这个条数时，长列表改用虚拟滚动；短列表保持普通渲染。 */
 export const VIRTUAL_THRESHOLD = 30;
 
+/** 一个函数的源码达到这个行数时，逐行改用虚拟滚动；少于它保持普通渲染。 */
+export const CODE_VIRTUAL_LINES = 200;
+
 /**
  * 按当前主题挑 JSON 树的配色，底色透明（用外面 .tu-json 的底）。
  */
@@ -291,6 +294,7 @@ export function SourceView(props: { file: string; line: number }): JSX.Element {
   const [copied, setCopied] = useState('复制');
   /** 点开的被调函数：名字和“文件:行号”，照点开的先后。 */
   const [opened, setOpened] = useState<{ name: string; site: string }[]>([]);
+  const scrollParent = useContext(TutorialScrollContext);
 
   useEffect(() => {
     const query = `file=${encodeURIComponent(file)}&line=${String(line)}`;
@@ -345,6 +349,24 @@ export function SourceView(props: { file: string; line: number }): JSX.Element {
     });
   };
 
+  //M 一行源码：行号加正文；虚拟滚动和普通渲染共用这一份。
+  const getCodeLine = (text: string, index: number): JSX.Element => (
+    <div key={index} className="tu-code-line">
+      <span className="tu-code-no">{source.start + index}</span>
+      <span>{
+        //M 渲染单行源码并将匹配到的内部函数调用切为可点击按钮。
+        getLineView(text)
+      }</span>
+    </div>
+  );
+
+  //M 长函数借右栏的滚动容器虚拟滚动；没有右栏容器时给固定高度自己滚。
+  const useVirtual = source.lines.length >= CODE_VIRTUAL_LINES;
+  let frame: { customScrollParent?: HTMLElement; style?: CSSProperties } = { style: { height: 480 } };
+  if (scrollParent !== null) {
+    frame = { customScrollParent: scrollParent };
+  }
+
   return (
     <div className="tu-code-box">
       <div className="tu-head-row">
@@ -364,15 +386,15 @@ export function SourceView(props: { file: string; line: number }): JSX.Element {
         </button>
       </div>
       <pre className="tu-code">
-        {source.lines.map((text, index) => (
-          <div key={index} className="tu-code-line">
-            <span className="tu-code-no">{source.start + index}</span>
-            <span>{
-              //M 渲染单行源码并将匹配到的内部函数调用切为可点击按钮。
-              getLineView(text)
-            }</span>
-          </div>
-        ))}
+        {useVirtual && (
+          <virtuoso.Virtuoso
+            {...frame}
+            data={source.lines}
+            computeItemKey={(index) => index}
+            itemContent={(index, text) => getCodeLine(text, index)}
+          />
+        )}
+        {!useVirtual && source.lines.map(getCodeLine)}
       </pre>
       {opened.map((item) => {
         //M 解析已点开被调函数的定位，并在嵌套卡片里递归渲染其源码实现。

@@ -232,12 +232,12 @@ test('合成主站先确认受理，等待 programs 和主库关闭后正常退�
     import * as http from './src7/plugins/http/index.ts';
     const ctx = new cordis.Context();
     const received = Promise.withResolvers();
-    ctx.set('resources', {
+    ctx.provide('resources', {
       raw: { server: { port: 1 } },
       dir: () => 'src7/plugins/http/fixtures-no-tokens',
       db: { close: () => console.log('db-closed') },
     });
-    ctx.set('programs', { shutdown: async () => {
+    ctx.provide('programs', { shutdown: async () => {
       await received.promise;
       console.log('programs-closed');
     } });

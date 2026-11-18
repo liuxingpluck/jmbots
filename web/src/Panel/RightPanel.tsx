@@ -189,8 +189,8 @@ export function RightPanel(): react.JSX.Element {
       //G 仅在 approval 插件挂载时展示“待审核”标签。
       if (item.key === 'approvals') return api.isPluginMounted(mountedPlugins, 'approval', true);
 
-      //G 仅在 usage 插件挂载时展示“用量”标签。
-      if (item.key === 'usage') return api.isPluginMounted(mountedPlugins, 'usage', true);
+      //G 用量并进 model-catalog 插件后，按它是否挂载展示“用量”标签。
+      if (item.key === 'usage') return api.isPluginMounted(mountedPlugins, 'model-catalog', true);
 
       //G 仅在 memory 或 base-bridge 插件挂载时展示“记忆”标签。
       if (item.key === 'memory') {

@@ -1,10 +1,10 @@
 /**
  * 积木客服页（/wechat-kefu/，web 插件托管 dist/web/wechat-kefu.html）。照积木客服（source/jimukefu/src/web）的样子：
- * 顶栏（账号、轮询状态、演示打码、一键扫描、演示引导）、统计卡片、左边会话列表带「监听 / 自动发」开关、中间消息、右边待发回复。
- * 数据都走 wechat-kefu 插件的接口（src7/plugins/wechat/page/Routes.ts）：/api/wechat-kefu/status、chats、watch、messages、outbox、send、outbox/send。
- * 隐私：「演示打码」默认开，会话名和消息全换成＊（只留字数）；账号只显示“账号 1、2”，不显示微信号。2026-11-14 jm开发。
+ * 左栏筛选会话并管理监听，中间查看消息，右栏复制 AI 建议。
+ * 通过 wechat-kefu 接口读取会话、消息和草稿，支持手动起草和更改监听。
+ * 演示打码开启时隐藏账号、会话内容和建议原文。
  */
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import * as virtuoso from 'react-virtuoso';
 import { Guide } from '../Guide/Guide.tsx';
 import { WECHAT_STEPS } from '../Guide/steps-wechat-kefu.ts';
@@ -18,11 +18,27 @@ type Kind = 'group' | 'private' | 'official' | 'work' | 'system';
 const KINDS: Record<Kind, string> = { group: '群聊', private: '私聊', official: '公众号', work: '企业微信', system: '系统会话' };
 const KIND_ORDER: Kind[] = ['group', 'private', 'official', 'work', 'system'];
 /** 微信自带的系统会话（文件传输助手、微信团队等）。 */
-const SYSTEM = new Set(['filehelper', 'weixin', 'notifymessage', 'fmessage', 'floatbottle', 'medianote', 'newsapp', 'qqmail', 'brandsessionholder', 'brandservicesessionholder', 'qmessage', 'tmessage', 'qqsync']);
-const STATES: Record<string, string> = { draft: '草稿', waiting: '等确认', sending: '发送中', sent: '已发出', unconfirmed: '未确认', failed: '失败', rejected: '被拒' };
-
-interface Status { rounds: number; lastRunAt: number; lastError: string; busy: boolean; interval: number; chats?: number; synced?: number; pending?: number; accounts: { id: string; nickname: string; wxid: string }[] }
-interface Chat { username: string; chat: string; is_group: boolean; unread: number; last_message: string; timestamp: number; watch: boolean; auto: boolean }
+const SYSTEM = new Set([
+  'filehelper', 'weixin', 'notifymessage', 'fmessage', 'floatbottle', 'medianote', 'newsapp',
+  'qqmail', 'brandsessionholder', 'brandservicesessionholder', 'qmessage', 'tmessage', 'qqsync',
+]);
+interface Status {
+  lastRunAt: number;
+  lastError: string;
+  interval: number;
+  chats?: number;
+  synced?: number;
+  accounts: { id: string; nickname: string }[];
+}
+interface Chat {
+  username: string;
+  chat: string;
+  is_group: boolean;
+  unread: number;
+  last_message: string;
+  timestamp: number;
+  watch: boolean;
+}
 interface Message {
   /** 记录所属的账号及聊天，用于定位原语音。 */
   account: string;
@@ -40,8 +56,12 @@ interface Message {
 interface View { kind?: string; text?: string; title?: string; desc?: string; seconds?: number; amount?: string }
 /** 原版积木客服的筛选一排（jimukefu src/web/src/format.ts FILTERS）。 */
 type Filter = Kind | 'all' | 'watch' | 'unread' | 'fresh';
+const FILTERS: [Filter, string][] = [
+  ['all', '全部'], ['group', '群聊'], ['private', '私聊'], ['official', '公众号'],
+  ['work', '企业微信'], ['system', '系统'], ['unread', '有未读'], ['fresh', '有新消息'], ['watch', '已监听'],
+];
 const LOADED_AT = Date.now();
-interface Out { id: number; chat: string; name: string; text: string; state: string; note: string; at: number }
+interface Out { id: number; name: string; text: string; state: string; at: number }
 
 function getKind(chat: Chat): Kind {
   const id = chat.username;
@@ -52,19 +72,84 @@ function getKind(chat: Chat): Kind {
   return 'private';
 }
 
-/** 带令牌（Token.ts，和主网页同一份）调接口，出错抛接口给的 error。 */
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  //M 2026-11-14 22:50 EST：原来只读浏览器里记着的，直接打开 /wechat-kefu/?token=… 认不到；改用 Token.ts（会记下并从地址栏去掉）。
+/** 判断会话是否符合分类或状态筛选。 */
+function matches(chat: Chat, filter: Filter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'watch') return chat.watch;
+  if (filter === 'unread') return chat.unread > 0;
+  if (filter === 'fresh') return chat.timestamp * 1000 > LOADED_AT;
+
+  //M 其余筛选项是会话分类。
+  const kind = getKind(chat);
+  return kind === filter;
+}
+
+/** 请求客服接口，保留原始响应供轮询比较，失败时抛接口给的原因。 */
+async function getResponse(path: string, init?: RequestInit): Promise<Response> {
   let requestInit: RequestInit | undefined;
   if (init) {
     requestInit = { ...init, headers: { 'Content-Type': 'application/json' } };
   }
 
-  //M 给客服接口地址附带统一访问令牌并携带请求配置发起请求，统一解析后端 JSON 与错因。
-  const response = await fetch(withToken(path, TOKEN), requestInit);
-  const body = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error ?? String(response.status));
-  return body;
+  //M 沿用主网页的访问令牌。
+  const address = withToken(path, TOKEN);
+  const response = await fetch(address, requestInit);
+  if (response.ok) return response;
+
+  //G 失败时沿用后端的可读错误。
+  const body = await response.json().catch(() => ({})) as { error?: string };
+  throw new Error(body.error ?? String(response.status));
+}
+
+/** 读取一次客服接口的 JSON，供主动操作使用。 */
+async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  //M 手动操作完成后立即读取结果。
+  const response = await getResponse(path, init);
+  return await response.json().catch(() => ({})) as T;
+}
+
+/** 按间隔获取 JSON，内容变化时才解码；结束时取消当前请求和下次刷新。 */
+function pollJson<T>(
+  path: string,
+  interval: number,
+  update: (value: T) => void,
+  onError?: (error: Error) => void,
+  firstPath = path,
+): () => void {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const options = { signal };
+  let previous: string | undefined;
+  let timer: number | undefined;
+
+  async function refresh(address: string): Promise<void> {
+    try {
+      //M 对比响应原文，避免重复解析并提交同样的列表。
+      const response = await getResponse(address, options);
+      const body = await response.text();
+      if (signal.aborted || previous === body) return;
+
+      const value = JSON.parse(body) as T;
+      previous = body;
+      //M 把有变化的数据交给本轮轮询的页面状态。
+      update(value);
+    } catch (error) {
+      //G 成功恢复时重新交付数据，便于清掉上次轮询错误。
+      previous = undefined;
+      if (!signal.aborted) onError?.(error as Error);
+    } finally {
+      //M 等本轮结束才排下一次，避免慢请求重叠或倒序覆盖。
+      if (!signal.aborted) timer = window.setTimeout(() => { void refresh(path); }, interval);
+    }
+  }
+
+  //M 首轮允许显式刷新，后续走普通轮询地址。
+  void refresh(firstPath);
+  return () => {
+    //M 离开当前账号或会话时，不再接收旧请求的内容。
+    controller.abort();
+    window.clearTimeout(timer);
+  };
 }
 
 /** 微信正式渠道或已用于隔离运行的微信渠道。 */
@@ -106,6 +191,7 @@ function ExternalKefuLink() {
 
         const rows = data.programs ?? [];
         const programs = rows.filter((row) => row.paused !== true);
+        //M 用公共程序入口筛掉无法打开的试用页。
         const available = entries.getEntries({ programs });
         const matches = await Promise.all(available.map(async (entry) => {
           const row = programs.find((program) => program.name === entry.name);
@@ -133,6 +219,7 @@ function ExternalKefuLink() {
         if (!controller.signal.aborted) timer = window.setTimeout(() => { void poll(); }, 5_000);
       }
     }
+    //M 挂载后立即查一次外置试用入口。
     void poll();
     return () => {
       controller.abort();
@@ -161,6 +248,23 @@ function MsgHead() {
 /** 消息列表交给 react-virtuoso 的部件；放在组件外面，每次渲染是同一个对象，列表不重建。 */
 const MSG_PARTS: virtuoso.Components<Message> = { Header: MsgHead };
 
+/** 缩略图加载失败时由 React 切换占位内容，滚动或切换打码仍能正常卸载气泡。 */
+function MessageImage({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <>［图片］</>;
+
+  return <img src={src} alt="图片" loading="lazy" onError={() => setFailed(true)} />;
+}
+
+//M 共用消息时钟的格式化器，快速滚动时无需为每个气泡重建。
+const CLOCK = new Intl.DateTimeFormat('zh-CN', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+/** 把旧库的秒或毫秒时间转换为页面显示的本地时刻。 */
 function getClock(ms: number): string {
   if (!ms) return '—';
 
@@ -169,7 +273,26 @@ function getClock(ms: number): string {
     epochMs = ms;
   }
   const d = new Date(epochMs);
-  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  //G 保留旧 UI 对无效时间戳的显示。
+  if (Number.isNaN(d.getTime())) return 'Invalid Date';
+
+  //M 格式化可见行的时间。
+  return CLOCK.format(d);
+}
+
+/** 判断轮询状态是否会改变当前页面显示的内容。 */
+function sameVisibleStatus(previous: Status | null, next: Status): boolean {
+  if (previous === null) return false;
+  if (previous.interval !== next.interval || previous.lastError !== next.lastError) return false;
+  if (previous.synced !== next.synced || previous.chats !== next.chats) return false;
+  if (Math.floor(previous.lastRunAt / 60_000) !== Math.floor(next.lastRunAt / 60_000)) return false;
+  if (previous.accounts.length !== next.accounts.length) return false;
+
+  //M 下拉只展示账号顺序和昵称，轮询忙闲、累计轮数等字段无需触发重绘。
+  return previous.accounts.every((entry, index) => {
+    const account = next.accounts[index];
+    return account?.id === entry.id && account.nickname === entry.nickname;
+  });
 }
 
 
@@ -187,11 +310,8 @@ function getPollSummary(offline: string, status: Status | null): { level: string
 }
 
 /**
- * 积木客服页面主组件：轮询微信客服轮询状态与待发队列、切换账号与拉取最近会话、
- * 按分类/状态筛选与排序、开关会话监听、用虚拟列表查看消息并支持人工发送或让 AI 起草不自动发送的回复。
- * @returns 客服页顶栏、分类统计卡及左会话/中消息/右待发三栏工作区 JSX 元素。
- * 副作用：启动 3 秒（状态/草稿箱/当前会话消息）与 8 秒（会话列表）定时轮询，调用 `/api/wechat-kefu/*` 各读写接口，
- * 并按演示打码开关订阅与更新全局隐藏状态。
+ * 积木客服主页面，按账号查看会话、管理监听、查看消息和复制 AI 建议。
+ * 副作用：轮询状态、会话、消息与草稿，用户操作时保存监听或请求起草。
  */
 export function WechatPage() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -203,10 +323,11 @@ export function WechatPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [sort, setSort] = useState('recent');
   const [search, setSearch] = useState('');
-  const [current, setCurrent] = useState<Chat | null>(null);
+  const [selection, setSelection] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [outbox, setOutbox] = useState<Out[]>([]);
-  const [draft, setDraft] = useState('');
+  const [outboxRevision, setOutboxRevision] = useState(0);
+  const [manualScan, setManualScan] = useState<{ account: string } | null>(null);
   const [drafting, setDrafting] = useState(false);
   //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位
   const mask = privacy.useMask();
@@ -214,123 +335,202 @@ export function WechatPage() {
 
   //G 演示打码：整段换成＊，只留字数，联系人名和内容一个字都不露（投屏、截图用）。
   //G 上述旧规则现统一为共用模块：正文整段隐藏；姓名只留首字。所有页面读同一个持久化开关。
-  const hide = (value: string) => privacy.text(value, mask);
-  const hideName = (value: string) => privacy.name(value, mask);
+  const hide = useCallback((value: string) => privacy.text(value, mask), [mask]);
+  const hideName = useCallback((value: string) => privacy.name(value, mask), [mask]);
+  const current = useMemo(() => {
+    if (selection === null) return null;
 
-  //M 状态和发件：每 3 秒一次。
+    //M 保留被打开的会话，同时使用最新的会话名称与监听状态。
+    const latest = chats.find((chat) => chat.username === selection.username);
+    return latest ?? selection;
+  }, [chats, selection]);
+  const currentId = current?.username;
+  const currentName = current?.chat ?? '';
+
+  //M 轮询通用状态，只在界面字段有变时更新，首次自动选中已连接的账号。
   useEffect(() => {
-    const load = () => {
-      //M 拉取后端轮询状态与已连微信账号，首个账号未选定时默认选中第一项。
-      void call<Status>('/api/wechat-kefu/status').then((s) => {
-        setStatus(s); setOffline('');
-        setAccount((old) => old || s.accounts[0]?.id || '');
-      }).catch((error: Error) => setOffline(error.message));
+    const path = '/api/wechat-kefu/status';
+    const update = (next: Status): void => {
+      setStatus((previous) => {
+        if (sameVisibleStatus(previous, next)) return previous;
 
-      //M 同步拉取 AI 已起草与待发送队列，刷新右侧回复栏。
-      void call<Out[]>('/api/wechat-kefu/outbox').then(setOutbox).catch(() => undefined);
+        return next;
+      });
+      setOffline('');
+      const firstAccount = next.accounts[0]?.id ?? '';
+      setAccount((old) => old || firstAccount);
     };
+    const onError = (error: Error): void => setOffline(error.message);
 
-    //M 开页立即拉取一次状态与待发队列，随后每 3 秒定时轮询刷新。
-    load();
-    const timer = window.setInterval(load, 3000);
-    return () => window.clearInterval(timer);
+    //M 状态请求失败时在顶栏提示。
+    return pollJson(path, 3_000, update, onError);
   }, []);
 
-  const scan = useCallback(async () => {
-    if (!account) { setScanNote('还没有连上的微信账号（program/wechat/runtime/data/accounts.yaml）'); return; }
-    setScanning(true); setScanNote('正在读本机微信的最近会话…');
-    try {
-      //M 请求当前选中微信账号的最近会话列表，用于刷新左侧列表与顶部统计卡。
-      const list = await call<Chat[]>(`/api/wechat-kefu/chats?account=${encodeURIComponent(account)}`);
-      setChats(list); setScanNote(`读到 ${String(list.length)} 个会话`);
-    } catch (error) {
-      setScanNote(`扫描失败：${(error as Error).message}`);
-    } finally {
-      setScanning(false);
-    }
-  }, [account]);
-  useEffect(() => { if (account) void scan(); }, [account, scan]);
-
-  //M 选中的会话：每 3 秒取一次消息。
   useEffect(() => {
-    if (!current) { setMessages([]); return undefined; }
-    const load = () => void call<Message[]>(`/api/wechat-kefu/messages?account=${encodeURIComponent(account)}&chat=${encodeURIComponent(current.username)}&name=${encodeURIComponent(current.chat)}&limit=1000`).then(setMessages).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 3000);
-    return () => window.clearInterval(timer);
-  }, [current, account]);
+    const path = '/api/wechat-kefu/outbox';
+    const update = (rows: Out[]): void => {
+      //M 发件记录也可能来自人工发送，右栏只展示尚待处理的建议。
+      const suggestions = rows.filter((row) => row.state === 'draft' || row.state === 'waiting');
+      setOutbox(suggestions);
+    };
 
-  const toggle = async (chat: Chat, watch: boolean, auto: boolean) => {
-    //M 把单个会话的监听/自动发送开关写入后端持久化，再同步更新本地会话列表。
-    await call('/api/wechat-kefu/watch', { method: 'PUT', body: JSON.stringify({ account, chat: chat.username, name: chat.chat, watch, auto }) });
-    setChats((list) =>
-      list.map((c) => {
-        if (c.username !== chat.username) return c;
+    //M 起草完成后重新启动草稿轮询，立即取到刚生成的建议。
+    return pollJson(path, 3_000, update);
+  }, [outboxRevision]);
 
-        return { ...c, watch, auto: watch && auto };
-      }),
-    );
+  useEffect(() => {
+    if (!account) return;
+
+    const accountQuery = encodeURIComponent(account);
+    const path = `/api/wechat-kefu/chats?account=${accountQuery}`;
+    let firstPath = path;
+    if (manualScan?.account === account) {
+      firstPath = `${path}&fresh=1`;
+    }
+    let initial = true;
+    setScanning(true);
+    setScanNote('正在读本机微信的最近会话…');
+
+    //M 首次加载与手动扫描显示结果，自动刷新只更新列表。
+    const finishScan = (note: string): void => {
+      if (!initial) return;
+
+      initial = false;
+      setScanNote(note);
+      setScanning(false);
+    };
+    const update = (rows: Chat[]): void => {
+      setChats(rows);
+      const note = `读到 ${String(rows.length)} 个会话`;
+      //M 初次加载完成时结束扫描提示。
+      finishScan(note);
+    };
+    const onError = (error: Error): void => {
+      const note = `扫描失败：${error.message}`;
+      //G 第一次加载失败也需要恢复扫描按钮。
+      finishScan(note);
+    };
+
+    //M 每个账号只开一条会话轮询，手动扫描让首个请求跳过缓存。
+    return pollJson(path, 8_000, update, onError, firstPath);
+  }, [account, manualScan]);
+
+  useEffect(() => {
+    if (currentId === undefined) return;
+
+    //M 每次切换会话取消上一会话的请求，保留原来的千条历史窗口。
+    const query = new URLSearchParams({ account, chat: currentId, name: currentName, limit: '1000' });
+    const path = `/api/wechat-kefu/messages?${query.toString()}`;
+    return pollJson<Message[]>(path, 3_000, setMessages);
+  }, [account, currentId, currentName]);
+
+  const selectChat = (chat: Chat): void => {
+    if (chat.username === currentId) return;
+
+    //M 切换时立即清掉旧列表，避免上一会话的内容贴在新标题下。
+    setMessages([]);
+    setSelection(chat);
   };
-  const send = async () => {
-    if (!current || draft.trim() === '') return;
-    try {
-      //M 人工向当前选中且已监听的会话发送输入框草稿文本，成功后清空输入框。
-      await call('/api/wechat-kefu/send', { method: 'POST', body: JSON.stringify({ account, chat: current.username, text: draft }) });
-      setDraft('');
-    } catch (error) { setScanNote(`发送失败：${(error as Error).message}`); }
+
+  const toggle = async (chat: Chat, watch: boolean): Promise<void> => {
+    const path = '/api/wechat-kefu/watch';
+    const watchRequest = { account, chat: chat.username, name: chat.chat, watch };
+    const body = JSON.stringify(watchRequest);
+    const request = { method: 'PUT', body };
+
+    //M 保存监听标记，成功后更新左栏与当前会话的起草权限。
+    await call(path, request);
+    setChats((list) => list.map((item) => {
+      if (item.username !== chat.username) return item;
+
+      return { ...item, watch };
+    }));
   };
-  const resend = async (id: number) => {
-    //M 对右侧草稿或失败列表里的指定待发回复发起正式发送请求，失败时提示错误信息。
-    try { await call('/api/wechat-kefu/outbox/send', { method: 'POST', body: JSON.stringify({ id }) }); } catch (error) { setScanNote(`发送失败：${(error as Error).message}`); }
-  };
-  //M 2026-11-15 00:17 EST：人手点“让 AI 回复”——只对已监听会话起草，结果进右侧草稿栏，绝不发送。
-  const askAi = async () => {
-    if (!current?.watch) { setScanNote('请先勾选监听，才能让 AI 起草回复'); return; }
+  const askAi = async (): Promise<void> => {
+    if (!current?.watch) return;
+
     setDrafting(true);
-    setScanNote('正在让 AI 根据这个会话起草回复（只生成，不发送）…');
+    setScanNote('正在让 AI 起草建议…');
     try {
-      await call('/api/wechat-kefu/draft', { method: 'POST', body: JSON.stringify({ account, chat: current.username }) });
-      setOutbox(await call<Out[]>('/api/wechat-kefu/outbox'));
-      setScanNote('已起草一条回复，在右侧草稿栏，不会发送');
-    } catch (error) { setScanNote(`起草失败：${(error as Error).message}`); } finally { setDrafting(false); }
+      const path = '/api/wechat-kefu/draft';
+      const draftRequest = { account, chat: current.username };
+      const body = JSON.stringify(draftRequest);
+      const request = { method: 'POST', body };
+
+      //M 调原有起草入口，完成后立即刷新建议。
+      await call(path, request);
+      setOutboxRevision((revision) => revision + 1);
+      setScanNote('已在右侧添加一条 AI 建议');
+    } catch (error) {
+      setScanNote(`起草失败：${(error as Error).message}`);
+    } finally {
+      setDrafting(false);
+    }
   };
 
-  //M 2026-11-14 23:35 EST：筛选、排序照原版（SessionList.tsx matches / sort）；「有新消息」= 打开页面之后来过消息的会话。
-  const matches = (c: Chat, key: Filter): boolean => {
-    if (key === 'all') return true;
+  const copySuggestion = async (suggestion: Out): Promise<void> => {
+    //G 演示打码时防止从按钮或旧事件处理器复制原文。
+    if (privacy.getMask()) return;
 
-    if (key === 'watch') return c.watch;
-
-    if (key === 'unread') return c.unread > 0;
-
-    if (key === 'fresh') return c.timestamp * 1000 > LOADED_AT;
-
-    //M 其余筛选键按会话分类（群聊/私聊/公众号/企业微信/系统）归类匹配。
-    return getKind(c) === key;
+    try {
+      //M 剪贴板只包含使用者选中的建议原文。
+      await navigator.clipboard.writeText(suggestion.text);
+      setScanNote('已复制 AI 建议');
+    } catch {
+      setScanNote('复制失败，请手动选择建议文字');
+    }
   };
-  const shown = useMemo(() => {
-    //M 先按当前筛选条件（调用 matches）和搜索关键词过滤会话，再按选定排序规则排列。
-    const list = chats.filter((c) => matches(c, filter) && (search === '' || c.chat.includes(search) || c.username.includes(search) || c.last_message.includes(search)));
+
+  const sorted = useMemo(() => {
+    //M 按类型和排序条件准备列表，搜索输入变化时直接复用排序结果。
+    const list = chats.filter((chat) => matches(chat, filter));
     const comparators: Record<string, (a: Chat, b: Chat) => number> = {
       unread: (a, b) => b.unread - a.unread,
       watched: (a, b) => Number(b.watch) - Number(a.watch),
       name: (a, b) => (a.chat || '').localeCompare(b.chat || '', 'zh-CN'),
     };
     const compare = comparators[sort] ?? ((a: Chat, b: Chat) => b.timestamp - a.timestamp);
-    list.sort(compare);
-    return list;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chats, filter, search, sort]);
-  const pickAll = async (watch: boolean) => {
-    //M 仅对当前展示列表中监听状态与目标不一致的会话逐个调用 toggle 更新，减少重复接口请求。
-    for (const chat of shown) if (chat.watch !== watch) await toggle(chat, watch, false);
+    return list.sort(compare);
+  }, [chats, filter, sort]);
+  const deferredSearch = useDeferredValue(search);
+  const shown = useMemo(() => {
+    if (deferredSearch === '') return sorted;
+
+    //M 让输入框先响应按键，稍后对排好序的会话过滤一次。
+    return sorted.filter((chat) => chat.chat.includes(deferredSearch)
+      || chat.username.includes(deferredSearch)
+      || chat.last_message.includes(deferredSearch));
+  }, [sorted, deferredSearch]);
+  const pickAll = async (watch: boolean): Promise<void> => {
+    if (search !== deferredSearch) return;
+
+    //M 搜索结果稳定后才批量修改，避免把上一次搜索的会话也改掉。
+    for (const chat of shown) {
+      if (chat.watch !== watch) await toggle(chat, watch);
+    }
   };
-  //M 后台在全量听：会话列表跟着轮询刷新（默认按最近消息排序，有新消息的排在最前）。
-  useEffect(() => {
-    if (!account) return undefined;
-    const timer = window.setInterval(() => { void call<Chat[]>(`/api/wechat-kefu/chats?account=${encodeURIComponent(account)}`).then(setChats).catch(() => undefined); }, 8_000);
-    return () => window.clearInterval(timer);
-  }, [account]);
+
+  const stats = useMemo(() => {
+    //M 顶部卡片和筛选按钮共用一份计数，只在会话数据变化时遍历列表。
+    const counts = {
+      all: chats.length,
+      group: 0, private: 0, official: 0, work: 0, system: 0,
+      watch: 0, unread: 0, fresh: 0,
+    };
+    const watchedByKind = { group: 0, private: 0, official: 0, work: 0, system: 0 };
+    for (const chat of chats) {
+      const kind = getKind(chat);
+      counts[kind] += 1;
+      if (chat.watch) {
+        counts.watch += 1;
+        watchedByKind[kind] += 1;
+      }
+      if (chat.unread > 0) counts.unread += 1;
+      if (chat.timestamp * 1000 > LOADED_AT) counts.fresh += 1;
+    }
+    return { counts, watchedByKind };
+  }, [chats]);
+
   //M 一条消息怎么画：图片缩略图（打码时不显示图）、语音条、链接/文章卡片，其余用后端写好的文字。
   const bubble = (m: Message) => {
     let view: View = {};
@@ -342,8 +542,18 @@ export function WechatPage() {
     if (m.kind === 'image') {
       //G 打码开启时不请求原图；否则给图片拉取接口拼上访问令牌作为 img 地址。
       if (mask) return <div className="wk-bubble wk-media">［图片］</div>;
-      const src = withToken(`/api/wechat-kefu/image?account=${encodeURIComponent(account)}&chat=${encodeURIComponent(current?.username ?? '')}&source=${encodeURIComponent(m.source)}&local_id=${String(m.local_id)}`, TOKEN);
-      return <div className="wk-bubble wk-media"><img src={src} alt="图片" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).replaceWith(document.createTextNode('［图片］')); }} /></div>;
+
+      //M 加载失败由气泡组件显示占位，保留 React 对真实节点的管理。
+      const query = new URLSearchParams({
+        account,
+        chat: currentId ?? '',
+        source: m.source,
+        local_id: String(m.local_id),
+      });
+      const path = `/api/wechat-kefu/image?${query.toString()}`;
+      //M 缩略图与其他客服资源共用访问令牌。
+      const src = withToken(path, TOKEN);
+      return <div className="wk-bubble wk-media"><MessageImage key={src} src={src} /></div>;
     }
     if (m.kind === 'voice') {
       const chat = current?.username ?? '';
@@ -369,16 +579,20 @@ export function WechatPage() {
       }
 
       //M 渲染链接/公众号文章或文件卡片气泡，标题与摘要按演示打码状态脱敏。
-      return <div className="wk-bubble wk-card"><b>{hide(view.title)}</b>{Boolean(view.desc) && <span>{hide(view.desc!)}</span>}<i>{typeLabel}</i></div>;
+      return (
+        <div className="wk-bubble wk-card">
+          <b>{hide(view.title)}</b>
+          {view.desc && <span>{hide(view.desc)}</span>}
+          <i>{typeLabel}</i>
+        </div>
+      );
     }
 
     //M 普通文本或兜底消息类型：对正文应用打码，空文本时回退展示消息类型标记。
     return <div className="wk-bubble">{hide(m.text) || `[${m.kind}]`}</div>;
   };
 
-  //M 汇总监听/未读数及轮询状态灯颜色与文案，供顶栏按钮与统计卡展示。
-  const watched = chats.filter((c) => c.watch).length;
-  const unread = chats.filter((c) => c.unread > 0);
+  //M 计算顶栏轮询状态灯颜色与文字。
   const { level, text: pollText } = getPollSummary(offline, status);
   const toggleFilter = (key: Filter): void => {
     if (filter === key) {
@@ -429,28 +643,45 @@ export function WechatPage() {
     currentTitle = hideName(current.chat || current.username);
   }
   let aiTitle = '请先勾选监听';
-  let composePlaceholder = '只能发给监听中的会话';
   if (current?.watch) {
-    aiTitle = '根据这个会话起草一条回复，只生成不发送';
-    composePlaceholder = '人手发一句';
+    aiTitle = '根据这个会话起草一条建议';
   }
-  let aiButtonText = '让 AI 回复';
+  let aiButtonText = '让 AI 起草建议';
   if (drafting) {
     aiButtonText = '正在起草…';
   }
 
-  //M 渲染积木客服主界面：顶栏账号与轮询状态、分类统计卡，以及左会话/中消息/右待发三栏工作区。
+  const changeAccount = (index: number): void => {
+    //M 整体换账号时清掉旧账号的会话与消息，等待新账号轮询。
+    const next = status?.accounts[index]?.id ?? '';
+    setAccount(next);
+    setManualScan(null);
+    setChats([]);
+    setSelection(null);
+    setMessages([]);
+  };
+  const scan = (): void => {
+    if (!account) return;
+
+    //M 手动扫描重启本账号的轮询并指示服务端强制读取。
+    setManualScan({ account });
+  };
+  const batchDisabled = shown.length === 0 || search !== deferredSearch;
+
+  //M 显示账号与轮询状态、分类统计卡，以及会话、消息和建议三栏。
   return (
     <div className="wk-page" style={{ paddingTop: pageTop }}>
       <privacy.MaskBanner />
       <header className="wk-top">
         <h1>积木客服</h1>
         <select value={status?.accounts.findIndex((a) => a.id === account) ?? -1}
-          onChange={(e) => { setAccount(status?.accounts[Number(e.target.value)]?.id ?? ''); setCurrent(null); }} title="微信账号">
+          onChange={(e) => changeAccount(Number(e.target.value))} title="微信账号">
           {accountOptions}
         </select>
         <div className="wk-poll-wrap" data-guide="poll">
-          <button type="button" className={`wk-poll ${level}`} onClick={() => setPollOpen(!pollOpen)}><i />{pollText}</button>
+          <button type="button" className={`wk-poll ${level}`} onClick={() => setPollOpen(!pollOpen)}>
+            <i />{pollText}
+          </button>
           {pollOpen && (
             <div className="wk-poll-panel">
               {
@@ -465,9 +696,13 @@ export function WechatPage() {
         </div>
         <span className="wk-grow" />
         <ExternalKefuLink />
-        <label className="wk-mask" data-guide="mask"><input type="checkbox" checked={mask} onChange={(e) => privacy.setMask(e.target.checked)} />演示打码</label>
+        <label className="wk-mask" data-guide="mask">
+          <input type="checkbox" checked={mask} onChange={(e) => privacy.setMask(e.target.checked)} />演示打码
+        </label>
         <a className="wk-top-link" href={withToken('/', TOKEN)}>聊天</a>
-        <button type="button" data-guide="scan" className="wk-btn" disabled={scanning} onClick={() => void scan()}>{scanLabel}</button>
+        <button type="button" data-guide="scan" className="wk-btn" disabled={scanning || !account} onClick={scan}>
+          {scanLabel}
+        </button>
         <Guide steps={WECHAT_STEPS} className="wk-guide" />
       </header>
 
@@ -476,12 +711,13 @@ export function WechatPage() {
           //M 渲染顶部统计与快捷筛选卡片：总会话、各会话分类计数（调用 getKind 与 toggleFilter）。
         /**/}
         <div className={`wk-stat ${getFilterClass('all')}`} onClick={() => setFilter('all')}>
-          <div className="k">会话总数</div><div className="v">{chats.length}</div><div className="s">{unread.length} 个有未读</div>
+          <div className="k">会话总数</div>
+          <div className="v">{chats.length}</div>
+          <div className="s">{stats.counts.unread} 个有未读</div>
         </div>
         {KIND_ORDER.map((kind) => {
           //M 统计当前分类下的会话数量与监听数，生成分类筛选卡片。
-          const list = chats.filter((c) => getKind(c) === kind);
-          const watchedCount = list.filter((c) => c.watch).length;
+          const watchedCount = stats.watchedByKind[kind];
           let watchText = ' ';
           if (watchedCount > 0) {
             watchText = `监听 ${String(watchedCount)}`;
@@ -489,8 +725,9 @@ export function WechatPage() {
 
           //M 渲染该会话分类统计卡片，点击切换筛选高亮样式。
           return (
-            <div key={kind} className={`wk-stat ${getFilterClass(kind)}`} data-kind={kind} onClick={() => toggleFilter(kind)}>
-              <div className="k">{KINDS[kind]}</div><div className="v">{list.length}</div>
+            <div key={kind} className={`wk-stat ${getFilterClass(kind)}`} data-kind={kind}
+              onClick={() => toggleFilter(kind)}>
+              <div className="k">{KINDS[kind]}</div><div className="v">{stats.counts[kind]}</div>
               <div className="s">{watchText}</div>
             </div>
           );
@@ -499,7 +736,9 @@ export function WechatPage() {
           //M 渲染重点监听汇总卡片，点击可快捷筛选 AI 起草覆盖的会话。
         /**/}
         <div className={`wk-stat accent ${getFilterClass('watch')}`} onClick={() => toggleFilter('watch')}>
-          <div className="k">重点监听</div><div className="v">{watched}</div><div className="s">只有这些会话 AI 起草回复</div>
+          <div className="k">重点监听</div>
+          <div className="v">{stats.counts.watch}</div>
+          <div className="s">只有这些会话可起草 AI 建议</div>
         </div>
       </section>
       {scanNote && <div className="wk-note">{hide(scanNote)}</div>}
@@ -509,22 +748,33 @@ export function WechatPage() {
           {
             //M 左侧会话栏头部、脱敏搜索框、状态/类型筛选胶囊与批量勾选当前列表工具条。
           /**/}
-          <div className="wk-head">最近会话 <span>后台全部会话都在抓取；只有勾了「监听」的才让 AI 起草回复，不发送</span></div>
-          <input className="wk-search" placeholder="搜索名称或最后消息" value={hide(search)} readOnly={mask} onChange={(e) => setSearch(e.target.value)} />
+          <div className="wk-head">最近会话 <span>勾选「监听」后可让 AI 起草建议</span></div>
+          <input className="wk-search" placeholder="搜索名称或最后消息" value={hide(search)} readOnly={mask}
+            onChange={(e) => setSearch(e.target.value)} />
           {/* 2026-11-14 23:20 EST：照原版积木客服的筛选（SessionList.tsx 的 chips），恢复「只看监听」快速定位。 */}
           <div className="wk-chips">
-            {([['all', '全部'], ['group', '群聊'], ['private', '私聊'], ['official', '公众号'], ['work', '企业微信'], ['system', '系统'], ['unread', '有未读'], ['fresh', '有新消息'], ['watch', '已监听']] as [Filter, string][]).map(([key, label]) => (
-              <button key={key} type="button" className={`wk-chip ${getFilterClass(key)}`} onClick={() => toggleFilter(key)}>{label}<b>{chats.filter((c) => matches(c, key)).length}</b></button>
+            {FILTERS.map(([key, label]) => (
+              <button key={key} type="button" className={`wk-chip ${getFilterClass(key)}`}
+                onClick={() => toggleFilter(key)}>
+                {label}<b>{stats.counts[key]}</b>
+              </button>
             ))}
           </div>
           <div className="wk-tools">
             排序
             <select value={sort} onChange={(e) => setSort(e.target.value)}>
-              <option value="recent">最近消息</option><option value="unread">未读多的在前</option><option value="watched">已监听在前</option><option value="name">按名称</option>
+              <option value="recent">最近消息</option>
+              <option value="unread">未读多的在前</option>
+              <option value="watched">已监听在前</option>
+              <option value="name">按名称</option>
             </select>
             <span className="wk-grow" />
-            <button type="button" className="wk-link" disabled={shown.length === 0} onClick={() => void pickAll(true)}>全部勾选当前列表</button>
-            <button type="button" className="wk-link" disabled={shown.length === 0} onClick={() => void pickAll(false)}>取消当前列表</button>
+            <button type="button" className="wk-link" disabled={batchDisabled} onClick={() => void pickAll(true)}>
+              全部勾选当前列表
+            </button>
+            <button type="button" className="wk-link" disabled={batchDisabled} onClick={() => void pickAll(false)}>
+              取消当前列表
+            </button>
             <span>显示 {shown.length} / {chats.length}</span>
           </div>
           {shown.length === 0 && (
@@ -546,19 +796,26 @@ export function WechatPage() {
                 }
 
                 //M 渲染单条会话行：脱敏头像首字与名称、分类徽章、未读数及阻止冒泡的监听复选框。
+                const kind = getKind(chat);
+                const name = chat.chat || chat.username;
+                const displayName = hideName(name);
+                const avatar = Array.from(displayName)[0];
                 return (
-                  <div className={itemClass} onClick={() => setCurrent(chat)}>
-                    <div className="wk-avatar" data-kind={getKind(chat)}>{[...hideName(chat.chat || chat.username)][0]}</div>
+                  <div className={itemClass} onClick={() => selectChat(chat)}>
+                    <div className="wk-avatar" data-kind={kind}>{avatar}</div>
                     <div className="wk-item-main">
                       <div className="wk-item-top">
-                        <span className="wk-name">{hideName(chat.chat || chat.username)}</span>
-                        {getKind(chat) !== 'private' && <span className="wk-badge">{KINDS[getKind(chat)]}</span>}
+                        <span className="wk-name">{displayName}</span>
+                        {kind !== 'private' && <span className="wk-badge">{KINDS[kind]}</span>}
                         {chat.unread > 0 && <span className="wk-unread">{chat.unread}</span>}
                       </div>
                       <div className="wk-last">{hide(chat.last_message)}</div>
                       <div className="wk-switches" onClick={(e) => e.stopPropagation()}>
-                        <label><input type="checkbox" checked={chat.watch} onChange={(e) => void toggle(chat, e.target.checked, chat.auto)} />监听</label>
-                        {/* 2026-11-14 23:35 EST：只听不发，「自动发」开关不再显示（后端 send 没开，开了也不会发）。 */}
+                        <label>
+                          <input type="checkbox" checked={chat.watch}
+                            onChange={(e) => void toggle(chat, e.target.checked)} />
+                          监听
+                        </label>
                       </div>
                     </div>
                   </div>
@@ -570,7 +827,7 @@ export function WechatPage() {
 
         <section className="wk-chat" data-guide="messages">
           {
-            //M 中间消息窗口头部：显示脱敏会话标题与仅在已监听时允许触发的「让 AI 回复」按钮。
+            //M 显示当前会话标题及监听会话的起草入口。
           /**/}
           <div className="wk-head">
             <span>{currentTitle}</span>
@@ -599,15 +856,20 @@ export function WechatPage() {
                 if (m.from_self === 1) {
                   rowClass = 'wk-msg me';
                 }
+                const sender = m.sender || current?.chat || '?';
+                const displaySender = hideName(sender);
+                const avatar = Array.from(displaySender)[0];
 
                 //M 渲染单条消息行：对方消息附首字头像与昵称，调用 bubble 绘制内容并格式化发送时间。
                 return (
                   <div className="wk-msg-row">
                   <div className={rowClass}>
                     {/* 2026-11-14 23:35 EST：像真微信——对方在左（头像 + 昵称），自己在右（绿色气泡）。 */}
-                    {m.from_self !== 1 && <div className="wk-avatar wk-msg-avatar">{[...hideName(m.sender || current?.chat || '?')][0]}</div>}
+                    {m.from_self !== 1 && (
+                      <div className="wk-avatar wk-msg-avatar">{avatar}</div>
+                    )}
                     <div className="wk-msg-body">
-                      {m.sender && m.from_self !== 1 && <div className="wk-sender">{hideName(m.sender)}</div>}
+                      {m.sender && m.from_self !== 1 && <div className="wk-sender">{displaySender}</div>}
                       {bubble(m)}
                       <div className="wk-time">{getClock(m.at)}</div>
                     </div>
@@ -617,24 +879,13 @@ export function WechatPage() {
               }}
             />
           )}
-          {
-            //M 底部人工输入发送区：打码状态脱敏并锁定只读，仅已监听会话可用 Ctrl+Enter 或点击发送。
-          /**/}
-          <div className="wk-compose">
-            <textarea value={hide(draft)} readOnly={mask} rows={2} placeholder={composePlaceholder} disabled={!current?.watch}
-              onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && e.ctrlKey) void send(); }} />
-            <button type="button" className="wk-btn" disabled={!current?.watch || draft.trim() === ''} onClick={() => void send()}>发送</button>
-          </div>
         </section>
 
         <aside className="wk-out" data-guide="outbox">
-          {
-            //M 右侧 AI 回复队列栏：统计待处理条数并渲染各草稿/已发/失败卡片。
-          /**/}
-          <div className="wk-head">AI 回复（只生成，不发送） <span>{outbox.filter((o) => o.state === 'draft' || o.state === 'waiting').length} 条待处理</span></div>
+          <div className="wk-head">AI 建议 <span>{outbox.length} 条</span></div>
           {outbox.length === 0 && (
             <div className="wk-scroll">
-              <div className="wk-empty">监听的会话还没有新消息需要回复</div>
+              <div className="wk-empty">暂无 AI 建议</div>
             </div>
           )}
           {outbox.length > 0 && (
@@ -643,19 +894,14 @@ export function WechatPage() {
               data={outbox}
               computeItemKey={(_index, o) => o.id}
               itemContent={(_index, o) => {
-                //M 拼接该条待发回复的可选说明备注，并按演示打码状态脱敏。
-                let outNote = '';
-                if (o.note) {
-                  outNote = ` · ${hide(o.note)}`;
-                }
-
-                //M 渲染待发卡片：脱敏会话名与正文、格式化时间，并为草稿/失败/被拒状态提供发送按钮。
+                //M 建议卡片提供复制入口，演示打码时禁用。
                 return (
-                  <div className={`wk-outitem ${o.state}`}>
-                    <div className="wk-item-top"><span className="wk-name">{hideName(o.name)}</span><span className={`wk-state ${o.state}`}>{STATES[o.state] ?? o.state}</span></div>
+                  <div className="wk-outitem">
+                    <div className="wk-item-top"><span className="wk-name">{hideName(o.name)}</span></div>
                     <div className="wk-outtext">{hide(o.text)}</div>
-                    <div className="wk-time">{getClock(o.at)}{outNote}</div>
-                    {['draft', 'failed', 'rejected'].includes(o.state) && <button type="button" className="wk-btn small" onClick={() => void resend(o.id)}>发送</button>}
+                    <div className="wk-time">{getClock(o.at)}</div>
+                    <button type="button" className="wk-btn small" disabled={mask}
+                      onClick={() => void copySuggestion(o)}>复制</button>
                   </div>
                 );
               }}

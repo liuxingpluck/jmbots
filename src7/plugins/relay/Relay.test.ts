@@ -18,6 +18,8 @@ import type * as cordis from 'cordis';
 import fastify from 'fastify';
 import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
+import * as decisionModule from '../decision-map/index.ts';
+import type * as decisionTypes from '../decision-map/Types.ts';
 import * as relayModule from './index.ts';
 
 /** 临时运行时目录。 */
@@ -81,6 +83,8 @@ interface World {
   db: Database;
   app: ReturnType<typeof fastify>;
   sessions: Map<string, FakeSession>;
+  /** 打开过的会话号，包括找不到的。 */
+  openedSessions: string[];
   /** 每一步填进 request.answer 的话，按先后。 */
   answers: string[];
   /** 用户发一句话：走 bot/receive，再推那场会话一步；回这一步的回答。 */
@@ -113,6 +117,7 @@ interface World {
 function world(db = new Database(':memory:')): World {
   const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
   const sessions = new Map<string, FakeSession>();
+  const openedSessions: string[] = [];
   const answers: string[] = [];
   const emitted: { name: string; args: unknown[] }[] = [];
   const app = fastify();
@@ -165,6 +170,7 @@ function world(db = new Database(':memory:')): World {
   const bot = { name: BOT, config: {} as Record<string, unknown>, hand: () => undefined };
   const tools: World['tools'] = [];
   const fake = {
+    http: { app },
     resources: {
       db,
       root,
@@ -181,6 +187,7 @@ function world(db = new Database(':memory:')): World {
         .map((one) => one.row),
       create: make,
       open: (id: string) => {
+        openedSessions.push(id);
         const found = sessions.get(id);
         if (found === undefined) throw new Error(`没有这场会话：${id}`);
         return found;
@@ -273,7 +280,10 @@ function world(db = new Database(':memory:')): World {
     for (const handler of handlers.get('ready') ?? []) handler();
   };
 
-  return { ctx, emitted, handlers, db, app, sessions, answers, say, bot, tools, open: make, ask, resultQueue, crash, restart };
+  return {
+    ctx, emitted, handlers, db, app, sessions, openedSessions, answers, say, bot, tools,
+    open: make, ask, resultQueue, crash, restart,
+  };
 }
 
 /** 头一次 fastify ready / inject 在 130 的共享盘上要加载很久（几十秒），两条走接口的测试放宽超时。 */
@@ -709,6 +719,73 @@ describe('relay 旧库和配置', () => {
     expect(names).toEqual(['relay_send']);
   });
 });
+
+
+test('决策图留话经 relay 回到原留言，重启补送旧回信且不打开会话', async () => {
+  const made = world();
+  const helper = { name: 'A', prefixes: ['a '] };
+  const prefix = '/api/decision-map';
+  //M 用实际的两个插件和 Fastify 接口穿过整条链。
+  relayModule.apply(made.ctx, { helpers: [helper] });
+  decisionModule.apply(made.ctx, { relay_helper: helper.name });
+  closers.push(() => { void made.app.close(); });
+  const node = 'release#part';
+  const nodes = [
+    { id: 'goal', kind: 'goal', title: '目标', status: 'working' },
+    {
+      id: node, kind: 'pending', title: '发版', parent: 'goal', status: 'open',
+      options: [{ id: 'yes', text: '发' }, { id: 'later', text: '等' }],
+    },
+  ];
+  const draft = { method: 'PUT', url: prefix + '/nodes', payload: { nodes } } as const;
+  const published = await made.app.inject(draft);
+  expect(published.statusCode).toBe(200);
+
+  const noteDraft = { node, text: '先看看验证结果' };
+  const noteInput = { method: 'POST', url: prefix + '/note', payload: noteDraft } as const;
+  const posted = await made.app.inject(noteInput);
+  expect(posted.statusCode).toBe(200);
+  const added = posted.json() as { delivery: { relayId: number }; note: { id: string } };
+  const inbox = await made.app.inject('/api/relay/inbox?helper=A&state=pending');
+  expect(inbox.json().items).toMatchObject([{ id: added.delivery.relayId, channel: 'decision-map' }]);
+
+  const replyDraft = { id: added.delivery.relayId, text: '验证通过' };
+  const replyInput = { method: 'POST', url: '/api/relay/reply', payload: replyDraft } as const;
+  const replied = await made.app.inject(replyInput);
+  expect(replied.statusCode).toBe(200);
+  await settle();
+
+  const graphUrl = prefix + '/graph';
+  const first = (await made.app.inject(graphUrl)).json() as decisionTypes.DecisionGraph;
+  const stored = first.nodes.find((item) => item.id === node);
+  expect(stored?.notes).toMatchObject([
+    { id: added.note.id, repliedAt: expect.any(Number) },
+    { author: 'central', text: '验证通过', replyTo: added.note.id },
+  ]);
+  const deliverySql = 'SELECT delivered FROM relay_replies ORDER BY id';
+  expect(made.db.query(deliverySql).all()).toEqual([{ delivered: 1 }]);
+
+  //M 模拟图已存盘而 relay 尚未写回执，并留一条旧版的点选回信等待启动补送。
+  made.db.exec('UPDATE relay_replies SET delivered = 0');
+  const choose = { method: 'POST', url: prefix + '/choose', payload: { node, option: 'yes' } } as const;
+  const picked = (await made.app.inject(choose)).json() as { delivery: { relayId: number } };
+  const legacyAddress = '{"owner":true}';
+  const clearTarget = made.db.query('UPDATE relay_items SET address = ? WHERE id IN (?, ?)');
+  clearTarget.run(legacyAddress, added.delivery.relayId, picked.delivery.relayId);
+  const insert = 'INSERT INTO relay_replies (item_id, session_id, text, done, at, via) VALUES (?, ?, ?, 1, ?, ?)';
+  const oldKey = `decision-map:${node}`;
+  made.db.query(insert).run(picked.delivery.relayId, oldKey, '收到你的选择', Date.now(), 'http');
+  made.restart();
+  await settle();
+
+  const recovered = (await made.app.inject(graphUrl)).json() as decisionTypes.DecisionGraph;
+  const after = recovered.nodes.find((item) => item.id === node);
+  expect(after?.notes).toHaveLength(3);
+  expect(after?.notes?.[2]).toMatchObject({ author: 'central', text: '收到你的选择' });
+  expect(after?.notes?.[2]?.replyTo).toBeUndefined();
+  expect(made.db.query(deliverySql).all()).toEqual([{ delivered: 1 }, { delivered: 1 }]);
+  expect(made.openedSessions).toEqual([]);
+}, SLOW);
 
 
 describe('回信送进会话：先写进对话再标已送，走模型的会话排进结果队列', () => {

@@ -16,6 +16,7 @@ use crate::{backend, log};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,6 +160,16 @@ pub(crate) fn hide_window(command: &mut Command) {
     }
 }
 
+/// 停写窗口只存于当前基地进程，和换版的临时暂停分开。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum WindowState {
+    #[default]
+    Running,
+    Stopping,
+    Paused,
+}
+
 /// 现在的更新状态（GET /update 回这些）。
 #[derive(Default)]
 struct UpdateState {
@@ -170,8 +181,24 @@ struct UpdateState {
     available: Option<VersionInfo>,
     /// 正在换吗。
     applying: bool,
+    /// 保留常规重启从受理到执行完的时段，防止进入窗口后旧请求才来结束进程。
+    restart_pending: bool,
+    /// 手动停写窗口的状态。
+    window: WindowState,
+    /// 结束窗口后，守护按一次新启动重新累计健康失败。
+    reset_watch_health: bool,
     /// 上一次换的结果（给用户看的一句话）。
     message: String,
+}
+
+impl UpdateState {
+    fn begin_window_stop(&mut self) -> Result<(), String> {
+        if self.applying || self.restart_pending || self.window == WindowState::Stopping {
+            return Err("换版、重启或停服正在进行".to_string());
+        }
+        self.window = WindowState::Stopping;
+        Ok(())
+    }
 }
 
 /// 守护和更新。
@@ -256,6 +283,15 @@ impl Supervisor {
                 backoff = WATCH_EVERY;
                 continue;
             }
+            //G 暂停和拉起使用同一把锁；保护最后一次检查到执行 spawn 的时段。
+            let mut state = self.state.lock().expect("更新状态的锁");
+            if state.window != WindowState::Running {
+                continue;
+            }
+            if std::mem::take(&mut state.reset_watch_health) {
+                unhealthy = 0;
+                backoff = WATCH_EVERY;
+            }
             unhealthy += 1;
             let mut child = self.child.lock().expect("守护的锁");
             let exited = match child.as_mut() {
@@ -298,6 +334,7 @@ impl Supervisor {
                 }
             }
             drop(child);
+            drop(state);
             std::thread::sleep(backoff);
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
@@ -407,6 +444,8 @@ impl Supervisor {
             "current": current,
             "available": available,
             "applying": state.applying,
+            "windowState": state.window,
+            "backendPort": self.settings.backend_port,
             "message": state.message,
         })
     }
@@ -417,6 +456,9 @@ impl Supervisor {
     pub fn apply(self: &Arc<Self>) -> Result<(), String> {
         let file = {
             let mut state = self.state.lock().expect("更新状态的锁");
+            if state.window != WindowState::Running {
+                return Err("停写窗口仍有效，请先结束窗口".to_string());
+            }
             if state.applying {
                 return Err("已经在换了".to_string());
             }
@@ -466,8 +508,15 @@ impl Supervisor {
         if !self.server_file().is_file() {
             return Err(format!("运行时里没有 {}，停了就拉不起来", server_name()));
         }
-        if self.state.lock().expect("更新状态的锁").applying {
-            return Err("正在换版本，换完会自己起来".to_string());
+        {
+            let mut state = self.state.lock().expect("更新状态的锁");
+            if state.window != WindowState::Running || state.restart_pending {
+                return Err("正在停写或已有重启请求".to_string());
+            }
+            if state.applying {
+                return Err("正在换版本，换完会自己起来".to_string());
+            }
+            state.restart_pending = true;
         }
         let worker = Arc::clone(self);
         std::thread::spawn(move || {
@@ -478,7 +527,102 @@ impl Supervisor {
             if let Err(error) = worker.stop_server() {
                 log::line(&worker.settings, &format!("重启服务：{error:#}"));
             }
+            worker.state.lock().expect("更新状态的锁").restart_pending = false;
         });
+        Ok(())
+    }
+
+    /// 暂停守护，等待主站退出。失败也保持守护暂停，供中控处理现场。
+    pub fn stop_for_window(&self) -> Result<&'static str, String> {
+        if !self.is_local() || self.stopping.load(Ordering::SeqCst) {
+            return Err("基地无法暂停这台主站".to_string());
+        }
+        if self.paused.load(Ordering::SeqCst) {
+            return Err("换版仍在收尾".to_string());
+        }
+        self.state.lock().expect("更新状态的锁").begin_window_stop()?;
+        let result = self.stop_owned_backend();
+        self.state.lock().expect("更新状态的锁").window = WindowState::Paused;
+        result.map_err(|error| format!("{error:#}"))
+    }
+
+    /// 窗口只结束自己持有句柄的主站，避免用不再有效的 pid 文件回收别的进程。
+    fn stop_owned_backend(&self) -> Result<&'static str> {
+        let pid = {
+            let mut child = self.child.lock().expect("守护的锁");
+            if let Some(running) = child.as_mut() && running.try_wait()?.is_none() {
+                Some(running.id())
+            } else {
+                None
+            }
+        };
+        let Some(pid) = pid else {
+            self.require_backend_port_closed()?;
+            return Ok("already_stopped");
+        };
+
+        let timeout = Duration::from_secs(self.settings.backend.stop_timeout_secs);
+        let deadline = Instant::now() + timeout;
+        let agent = backend::agent(timeout.min(backend::TIMEOUT));
+        let url = format!("{}/api/service/stop", self.settings.server);
+        //M 先发正常退出请求。旧版、请求超时和回执异常都要等满期限才能兜底。
+        let accepted = agent.post(&url).header("X-JMBots-Window", "1")
+            .header("X-JMBots-Expected-Pid", pid.to_string()).send_empty().ok()
+            .filter(|response| response.status().as_u16() == 202)
+            .and_then(|mut response| response.body_mut().read_json::<Value>().ok())
+            .is_some_and(|response| response["pid"].as_u64() == Some(u64::from(pid)));
+        loop {
+            let mut child = self.child.lock().expect("守护的锁");
+            let running = child.as_mut().context("主站句柄已被基地退出流程取走")?;
+            if let Some(exit) = running.try_wait()? {
+                *child = None;
+                if accepted && exit.success() {
+                    return Ok("graceful");
+                }
+                return Ok("exited");
+            }
+            if Instant::now() >= deadline {
+                running.kill().context("强制结束主站失败")?;
+                running.wait().context("等待主站强制退出失败")?;
+                *child = None;
+                return Ok("forced");
+            }
+            drop(child);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn require_backend_port_closed(&self) -> Result<()> {
+        let socket = SocketAddr::from(([127, 0, 0, 1], self.settings.backend_port));
+        //G Windows 的 TCP 连接超时无法证明无人监听。先确认目标回环端口可绑定。
+        std::net::TcpListener::bind(socket).map(drop).context("主站端口不可用，基地没有可操作的主站句柄")
+    }
+
+    /// 结束手动暂停，直接拉正常版主站，后续仍由原守护线程照看。
+    pub fn start_for_window(&self) -> Result<(), String> {
+        if !self.is_local() || self.stopping.load(Ordering::SeqCst) {
+            return Err("基地无法拉起这台主站".to_string());
+        }
+        let mut state = self.state.lock().expect("更新状态的锁");
+        if state.applying || state.restart_pending || state.window == WindowState::Stopping {
+            return Err("换版、重启或停服正在进行".to_string());
+        }
+        if state.window == WindowState::Running {
+            return Ok(());
+        }
+        let mut child = self.child.lock().expect("守护的锁");
+        if let Some(running) = child.as_mut() {
+            if running.try_wait().map_err(|error| error.to_string())?.is_none() {
+                state.window = WindowState::Running;
+                state.reset_watch_health = true;
+                return Ok(());
+            }
+        }
+        self.require_backend_port_closed().map_err(|error| format!("{error:#}"))?;
+        let file = self.server_file();
+        *child = Some(self.spawn_server(&file).map_err(|error| format!("{error:#}"))?);
+        state.window = WindowState::Running;
+        state.reset_watch_health = true;
         Ok(())
     }
 
@@ -739,6 +883,80 @@ mod tests {
         //M 测试里的假试运行服务就开在 backend_port + 1。
         settings.trial_port = Some(backend_port + 1);
         Arc::new(Supervisor { settings, child: Mutex::new(None), state: Mutex::new(UpdateState::default()), stopping: AtomicBool::new(false), paused: AtomicBool::new(false) })
+    }
+
+    #[test]
+    fn window_stop_keeps_guard_paused_and_failed_start_preserves_pause() {
+        let runtime = temp_dir("window-stop");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let sup = make_supervisor(&runtime, port, port);
+        assert_eq!(sup.status()["windowState"], "running");
+
+        //M 想停时碰到别的进程占用主站端口，状态仍暂停且明确报错。
+        assert!(sup.stop_for_window().unwrap_err().contains("主站端口不可用"));
+        assert_eq!(sup.status()["windowState"], "paused");
+        assert!(sup.apply().unwrap_err().contains("停写窗口"));
+        drop(listener);
+        assert_eq!(sup.stop_for_window().unwrap(), "already_stopped");
+        assert!(sup.start_for_window().is_err());
+        assert_eq!(sup.status()["windowState"], "paused");
+
+        //M 模拟后端文件可用后，恢复守护并保留新主站句柄。
+        std::fs::copy(fake_exe(), sup.server_file()).unwrap();
+        sup.start_for_window().unwrap();
+        assert_eq!(sup.status()["windowState"], "running");
+        assert!(sup.child.lock().unwrap().is_some());
+        sup.stop();
+
+        //M 新基地实例不读取旧进程的暂停状态。
+        let fresh = make_supervisor(&runtime, port, port);
+        assert_eq!(fresh.status()["windowState"], "running");
+    }
+
+    #[test]
+    fn window_stop_conflicts_with_update_and_pending_restart() {
+        let mut state = UpdateState { applying: true, ..UpdateState::default() };
+        assert!(state.begin_window_stop().is_err());
+        assert_eq!(state.window, WindowState::Running);
+        state.applying = false;
+        state.restart_pending = true;
+        assert!(state.begin_window_stop().is_err());
+        state.restart_pending = false;
+        state.begin_window_stop().unwrap();
+        assert_eq!(state.window, WindowState::Stopping);
+        assert!(state.begin_window_stop().is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "用 JMBOTS_TEST_BUN 指定本机 Bun，验证 Windows 强制兜底"]
+    fn window_force_stop_skips_bun_signal_handler() {
+        use std::io::{BufRead, BufReader};
+
+        let runtime = temp_dir("window-force");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut sup = make_supervisor(&runtime, port, port);
+        Arc::get_mut(&mut sup).unwrap().settings.backend.stop_timeout_secs = 1;
+        let bun = std::env::var_os("JMBOTS_TEST_BUN").expect("本机 Bun 路径");
+        let script = "process.on('SIGTERM', () => console.log('signal')); console.log('ready'); setTimeout(() => {}, 8000)";
+        let mut command = Command::new(bun);
+        command.args(["--eval", script]).stdout(Stdio::piped());
+        hide_window(&mut command);
+        let mut child = command.spawn().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        output.read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "ready");
+        *sup.child.lock().unwrap() = Some(child);
+
+        assert_eq!(sup.stop_for_window().unwrap(), "forced");
+        let mut remainder = String::new();
+        output.read_to_string(&mut remainder).unwrap();
+        assert!(!remainder.contains("signal"));
+        assert_eq!(sup.status()["windowState"], "paused");
     }
 
     /// 一个能被 CreateProcess 启动、但拿到 serve 参数会立刻退出的假后端（不连真实服务）。

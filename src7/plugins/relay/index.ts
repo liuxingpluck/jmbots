@@ -42,7 +42,10 @@ export const name = 'relay';
 //  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
 //  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
-export const version = '1.4.1';
+export const version = '1.4.2';
+
+/** 决策图收件的来源，不代表机器人渠道或会话。 */
+const DECISION_CHANNEL = 'decision-map';
 
 /**
  * 用到的服务。http 是可选的：用到时 ctx.get 现取。发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。
@@ -323,7 +326,7 @@ export class Relay {
       const helper = this.config.helpers.find((item) => item.name === request.helper);
       if (helper === undefined) return { ok: false, error: 'relay 没有该中控助手' };
 
-      const channel = 'decision-map';
+      const channel = DECISION_CHANNEL;
       const key = `${channel}:${request.node}`;
       const params = [helper.name, channel, key];
       const condition = 'helper = ? AND channel = ? AND session_id = ?';
@@ -346,7 +349,7 @@ export class Relay {
       if (bot === undefined || request.text === undefined) return { ok: false, error: '缺少收件内容或机器人' };
 
       const sender = '决策图';
-      const address = { owner: true, role: 'owner', senderName: sender };
+      const address = { owner: true, role: 'owner', senderName: sender, decisionTarget: request.target };
       const insert = 'INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat,'
         + ' chat_name, text, at, reminded) VALUES (?, ?, ?, ?, ?, 1, ?, \'p2p\', \'\', ?, ?, 1)';
       const values = [bot, helper.name, key, channel, JSON.stringify(address), sender, request.text, Date.now()];
@@ -372,9 +375,12 @@ export class Relay {
 
     //M 都挂完了（ready）：上次没送出的回信送一遍，文件里积着的回信读一遍。
     this.ctx.on('ready', () => {
-      for (const row of this.query<{ session_id: string }>(
-        'SELECT DISTINCT session_id FROM relay_replies WHERE delivered = 0', [])) {
-        void this.deliverSoon(row.session_id);
+      const sql = 'SELECT DISTINCT r.session_id, i.channel FROM relay_replies r'
+        + ' JOIN relay_items i ON i.id = r.item_id WHERE r.delivered = 0';
+      const rows = this.query<{ session_id: string; channel: string }>(sql, []);
+      for (const row of rows) {
+        //M 启动补送也按收件的来源区分，不尝试打开决策图的伪会话。
+        void this.deliverSoon(row.session_id, row.channel);
       }
 
       //M 启动时先读一遍文件回信，避免等待首个定时间隔。
@@ -569,7 +575,7 @@ export class Relay {
    * @returns 收下以后的那条收件。
    * @throws failureModule.Failure：id 不是正整数、text 空、done 不是布尔、helper 不是接着的助手、写了 helper 却和收件的助手对不上、
    *   file 不在或出了范围（getReplyFile）400；没有这个号、按 chat 精确找不到 404。
-   * 副作用：写库；done 时收件改成 replied；推那场会话把回信送出去；按 chat 主动发时新登记一条收件。
+   * 副作用：写库；done 时收件改成 replied；按来源投递回信；按 chat 主动发时新登记一条收件。
    */
   accept(input: unknown, via: 'file' | 'http', bot?: string): InboxItem {
     let body: Record<string, unknown> = {};
@@ -670,8 +676,8 @@ export class Relay {
     const vars = { 收件号: itemId, 会话: item.session_id, 从哪来: via, 回完了: done, 字数: text.length };
     this.ctx.emit('trace', 'Relay.accept', `收到 ${item.helper} 的回信`, 'INSERT INTO relay_replies', vars);
 
-    //M 让原会话尽快处理刚入库的回信。
-    void this.deliverSoon(item.session_id);
+    //M 按收件来源回到真实会话或决策图节点。
+    void this.deliverSoon(item.session_id, item.channel);
 
     //M 回信带的文件（上面查过范围）：照收件记的地址发。
     const latest = this.getItem(itemId) ?? item;
@@ -849,10 +855,18 @@ export class Relay {
    *   （setTimeout 隔开：这时候会话可能正在收尾，马上调 run 会直接返回；在转的，转完 session/change 会再来）。
    *   direct 机器人的前台也走这条：进结果队列的话，前台会把结果当一句 user 话接进对话，onRequest 又会把它当新话转回给助手。
    * model（走模型的前台、后台）：按回信号发 bot/request，结果键为 relay:<回信号>；回执成功才标已送。
-   * @param sessionId 会话号。
-   * 副作用：改 relay_replies.delivered；推会话或排进结果队列。
+   * @param sessionId 会话号或决策图收件键。
+   * @param channel 收件来源。决策图回信经事件写入图，真实会话沿用原有处理。
+   * 副作用：改 relay_replies.delivered；写节点、推会话或排进结果队列。
    */
-  private async deliverSoon(sessionId: string): Promise<void> {
+  private async deliverSoon(sessionId: string, channel?: string): Promise<void> {
+    if (channel === DECISION_CHANNEL) {
+      //M 决策图由它自己的插件接收回复，不经过会话层。
+      const deliver = (reply: ReplyRow) => this.queueDecisionReply(reply);
+      await this.deliverPending(sessionId, deliver);
+      return;
+    }
+
     let session: Session;
     try {
       //M 恢复接收回信的原会话，后面按会话模式选择回传方式。
@@ -882,6 +896,13 @@ export class Relay {
     //G 机器人在这种聊天里已经不是 model 了 → 回信留在库里，不推（推了会去调真模型）。
     if (mode !== 'model') return;
 
+    //M 模型会话走原来的结果队列。
+    const deliver = (reply: ReplyRow) => this.queueReply(sessionId, reply);
+    await this.deliverPending(sessionId, deliver);
+  }
+
+  /** 按回信号串行投递同一收件键下的待送回信，每轮只尝试一次。 */
+  private async deliverPending(sessionId: string, deliver: (reply: ReplyRow) => Promise<void>): Promise<void> {
     //G 正在投递时让当前循环继续，新入库的回信会按编号排在后面。
     if (this.delivering.has(sessionId)) return;
 
@@ -898,7 +919,7 @@ export class Relay {
         if (reply === undefined) return;
 
         //M 依次投递，每轮只尝试每条回信一次。
-        await this.queueReply(sessionId, reply);
+        await deliver(reply);
         lastId = reply.id;
       }
     } catch (error) {
@@ -906,6 +927,41 @@ export class Relay {
     } finally {
       this.delivering.delete(sessionId);
     }
+  }
+
+  /** 决策图确认回信已写入节点后，才把待送记录标成已送。 */
+  private async queueDecisionReply(reply: ReplyRow): Promise<void> {
+    //G 找不到原收件就保留待送记录，避免错投到同名节点。
+    const item = this.getItem(reply.item_id);
+    if (item === undefined) return;
+
+    //M 新收件带精确地址；旧收件把原收件键交给决策图解释。
+    const prefixLength = DECISION_CHANNEL.length + 1;
+    const key = reply.session_id.slice(prefixLength);
+    const origin = this.getOrigin(item);
+    const stored = textModule.getField(origin.address, 'decisionTarget');
+    const node = textModule.getText(stored, 'node');
+    const note = textModule.getText(stored, 'note') || undefined;
+    let target: { node: string; note?: string } | undefined;
+    if (node !== '') target = { node, note };
+
+    const requestName = 'decision-map/relay-reply';
+    const resultName = 'decision-map/relay-replied';
+    const payload = { id: reply.id, key, target, text: reply.text };
+    const onFallback = () => ({ requestId: '', ok: false });
+    const options = { timeoutMs: 3000, onFallback };
+
+    //M 给写图端持久回信号，同一条失败重送也只会出现一次。
+    const result = await requestEventModule.requestEvent(this.ctx, requestName, resultName, payload, options);
+    if (!result.ok) {
+      if (result.error !== undefined) console.error(`relay：决策图回信写入失败：${result.error}`);
+      return;
+    }
+
+    const sql = 'UPDATE relay_replies SET delivered = 1 WHERE id = ?';
+    const params = [reply.id];
+    //M 节点存盘后才结清，崩溃或缺少接收插件时保留补送机会。
+    this.run(sql, params);
   }
 
   /**

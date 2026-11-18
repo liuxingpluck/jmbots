@@ -34,6 +34,8 @@ export interface DecisionNote {
   replyTo?: string;
   /** 中控回过这条用户留言的毫秒时间戳。 */
   repliedAt?: number;
+  /** 来自 relay 的持久回信号，重试时用它对账。 */
+  relayReplyId?: number;
 }
 
 /** 当前图中的一个节点。 */

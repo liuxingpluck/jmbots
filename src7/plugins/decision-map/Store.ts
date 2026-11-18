@@ -200,6 +200,14 @@ function checkGraph(nodes: Map<string, types.DecisionNode>): void {
   }
 }
 
+/** 回信要写入的准确节点及可选用户留言。 */
+export interface ReplyTarget {
+  /** 节点号。 */
+  node: string;
+  /** 用户留言号；回复选择时省略。 */
+  note?: string;
+}
+
 /** 单个运行时目录对应一张图。写入同步完成，选择和提交之间不会被另一请求抢占。 */
 export class Store {
   private readonly current: string;
@@ -351,26 +359,61 @@ export class Store {
     return { node: updated, note };
   }
 
+  /** 新收件带原始节点和留言号，重启时也能处理旧格式的待送回信。 */
+  replyFromRelay(key: string, text: string, relayReplyId: number, target?: ReplyTarget): void {
+    if (target !== undefined) {
+      //M 新收件无需拆字符串，节点号可以包含井号。
+      this.reply(target.node, target.note, text, relayReplyId);
+      return;
+    }
+
+    //M 旧收件的键是完整节点号，或在末尾附加 #留言号。
+    const isNode = this.saved.nodes.some((node) => node.id === key);
+    const separator = key.lastIndexOf('#');
+    if (isNode || separator < 0) {
+      this.reply(key, undefined, text, relayReplyId);
+      return;
+    }
+
+    const nodeId = key.slice(0, separator);
+    const noteId = key.slice(separator + 1);
+    //M 交给同一个入口核对节点和用户留言，并以回信号去重。
+    this.reply(nodeId, noteId, text, relayReplyId);
+  }
+
   /**
-   * 记下中控对某条用户留言的回话。
+   * 记下中控对节点或某条用户留言的回话。
    * @param id 节点号。
-   * @param replyTo 要回的用户留言号。
+   * @param replyTo 要回的用户留言号，回复节点选择时省略。
    * @param text 中控的回话。
+   * @param relayReplyId relay 持久回信号，直达回话省略。
    * @returns 更新后的节点和中控这条留言。
    * 副作用：被回的留言补上 repliedAt，快照和历史各记一条 reply。
    */
-  reply(id: string, replyTo: string, text: string) {
-    //G 只能回这个节点上用户写过的那条。
+  reply(id: string, replyTo: string | undefined, text: string, relayReplyId?: number) {
+    //G 带留言号的回话只能指向这个节点上用户写过的那条。
     const node = this.getNode(id);
     const notes = node.notes ?? [];
     const target = notes.find((item) => item.id === replyTo && item.author === 'user');
-    if (target === undefined) throw new failureModule.Failure(404, `节点 ${id} 没有用户留言 ${replyTo}`);
+    if (replyTo !== undefined && target === undefined) {
+      throw new failureModule.Failure(404, `节点 ${id} 没有用户留言 ${replyTo}`);
+    }
+
+    //G 已写图但 relay 还没标已送时，仅补齐历史并确认，避免重复追加。
+    if (relayReplyId !== undefined) {
+      const existing = notes.find((note) => note.relayReplyId === relayReplyId);
+      if (existing !== undefined) {
+        this.recoverHistory();
+        return { node, note: existing };
+      }
+    }
 
     //M 回话也排进同一列表，网页按时间一起列出。
     const count = notes.length + 1;
     const noteId = `n${String(count)}`;
     const at = Date.now();
     const answer: types.DecisionNote = { id: noteId, author: 'central', at, text, replyTo };
+    if (relayReplyId !== undefined) answer.relayReplyId = relayReplyId;
     const marked = notes.map((item) => {
       if (item.id !== replyTo) return item;
 
@@ -379,7 +422,8 @@ export class Store {
 
     //M 回话落盘后由路由归档对应的 relay 收件。
     const updated = { ...node, notes: [...marked, answer] };
-    const change = { action: 'reply', actor: 'central', nodes: [id], noteId: replyTo } as const;
+    const relatedNote = replyTo ?? noteId;
+    const change = { action: 'reply', actor: 'central', nodes: [id], noteId: relatedNote } as const;
     this.replace(updated, change);
     return { node: updated, note: answer };
   }

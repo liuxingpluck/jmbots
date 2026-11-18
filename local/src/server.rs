@@ -1,6 +1,7 @@
 //! 壳子的 HTTP 接口（docs/界面/01_界面设计.md 第 4.3 节）：监听 0.0.0.0:local.port。2026-11-14 起基地只承载：
 //!   GET  /update、POST /update/apply   主后端的版本更新（supervisor.rs）
 //!   POST /restart[?service=名]          重启主后端；带 service 重启那个托管服务（services.rs）
+//!   POST /server/stop、/server/start    本机停写窗口，暂停或恢复主站守护
 //!   GET  /services                      每个托管服务的端口、程序在不在、健康
 //!   GET/POST /autostart                 开机自启
 //!   POST /notify                        本机弹 Windows 右下角通知（{title, body, level?, url?}）
@@ -74,6 +75,29 @@ fn notify_respond(request: &mut tiny_http::Request) -> Result<Value, (u16, Strin
     Ok(json!({ "ok": true }))
 }
 
+/// 只接受本机命令，阻止网页跨站触发停服或启动。
+fn window_request_allowed(request: &tiny_http::Request) -> bool {
+    crate::notify::is_loopback(request.remote_addr().copied())
+        && request.headers().iter().any(|header| header.field.equiv("X-JMBots-Window") && header.value.as_str() == "1")
+        && !request.headers().iter().any(|header| header.field.equiv("Origin"))
+}
+
+fn window_respond(request: &tiny_http::Request, path: &str, supervisor: Option<&Arc<Supervisor>>) -> Result<Value, (u16, String)> {
+    if *request.method() != tiny_http::Method::Post {
+        return Err((405, "停写窗口接口只接收 POST".to_string()));
+    }
+    if !window_request_allowed(request) {
+        return Err((403, "停写窗口只接受本机运维命令".to_string()));
+    }
+    let supervisor = supervisor.ok_or((409, "基地没有启用主站守护".to_string()))?;
+    if path == "/server/stop" {
+        let outcome = supervisor.stop_for_window().map_err(|reason| (409, reason))?;
+        return Ok(json!({ "ok": true, "windowState": "paused", "outcome": outcome }));
+    }
+    supervisor.start_for_window().map_err(|reason| (409, reason))?;
+    Ok(json!({ "ok": true, "windowState": "running" }))
+}
+
 /// 根据请求路径交给本地管理接口，未知路径返回 JSON 404，不向后端发请求。
 fn respond(
     request: &mut tiny_http::Request,
@@ -82,6 +106,9 @@ fn respond(
 ) -> Result<Value, (u16, String)> {
     let url = request.url();
     let path = url.split('?').next().unwrap_or("");
+    if path == "/server/stop" || path == "/server/start" {
+        return window_respond(request, path, supervisor);
+    }
     if path.starts_with("/autostart") { return autostart_respond(request); }
 
     if path.starts_with("/update") || path == "/restart" || path == "/services" {
@@ -102,6 +129,22 @@ fn respond(
     Err((404, format!("没有这个接口：{method} {url}")))
 }
 
+/// 统一写回管理接口 JSON。
+fn respond_json(mut request: tiny_http::Request, supervisor: Option<&Arc<Supervisor>>, services: Option<&Arc<Services>>) {
+    let result = respond(&mut request, supervisor, services);
+    let (status, value) = match result {
+        Ok(value) => (200, value),
+        Err((status, message)) => (status, json!({ "error": message })),
+    };
+    let body = serde_json::to_vec_pretty(&value).unwrap_or_default();
+    let content_type = tiny_http::Header::from_bytes("Content-Type", "application/json; charset=utf-8").expect("固定的头");
+    let response = tiny_http::Response::from_data(body)
+        .with_status_code(status)
+        .with_header(content_type)
+        .with_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").expect("固定的头"));
+    let _ = request.respond(response);
+}
+
 /// 起接口，一直跑（serve 命令用它，没有守护）。
 ///
 /// 输入：算好的配置。输出：监听不上时报错；正常不返回。副作用：监听端口。
@@ -116,22 +159,15 @@ pub fn serve_with(settings: &Settings, supervisor: Option<Arc<Supervisor>>, serv
     let server = tiny_http::Server::http((settings.listen_host.as_str(), settings.listen_port))
         .map_err(|error| anyhow!("监听 {}:{} 失败（是不是老的 memorycli 服务或老基地还占着这个端口？）：{error}", settings.listen_host, settings.listen_port))?;
     eprintln!("jmbots 基地的接口：http://{}:{}", settings.listen_host, settings.listen_port);
-    for mut request in server.incoming_requests() {
-        //M 所有本地接口使用相同的 JSON 响应头和错误格式。
-        let guard = supervisor.as_ref();
-        let hosted = services.as_ref();
-        let result = respond(&mut request, guard, hosted);
-        let (status, value) = match result {
-            Ok(value) => (200, value),
-            Err((status, message)) => (status, json!({ "error": message })),
-        };
-        let body = serde_json::to_vec_pretty(&value).unwrap_or_default();
-        let content_type = tiny_http::Header::from_bytes("Content-Type", "application/json; charset=utf-8").expect("固定的头");
-        let response = tiny_http::Response::from_data(body)
-            .with_status_code(status)
-            .with_header(content_type)
-            .with_header(tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").expect("固定的头"));
-        let _ = request.respond(response);
+    for request in server.incoming_requests() {
+        //M 停服需要等待主站退出；背景处理使 /update 仍能看到守护状态。
+        let path = request.url().split('?').next();
+        if path == Some("/server/stop") && *request.method() == tiny_http::Method::Post && window_request_allowed(&request) {
+            let guard = supervisor.clone();
+            std::thread::spawn(move || respond_json(request, guard.as_ref(), None));
+            continue;
+        }
+        respond_json(request, supervisor.as_ref(), services.as_ref());
     }
     Ok(())
 }
@@ -180,6 +216,26 @@ mod tests {
         let url = format!("{base}/rag/index");
         let response = agent.post(&url).send("{}").expect("旧 RAG POST");
         assert_eq!(response.status().as_u16(), 404);
+    }
+
+    #[test]
+    fn window_routes_require_local_post_header_and_supervisor() {
+        let runtime = temp_dir("server-window");
+        let port = free_port();
+        let settings = resolve(&Overrides { runtime: Some(runtime.clone()), port: Some(port), host: Some("127.0.0.1".into()), ..Overrides::default() }, &|_| None, &runtime);
+        std::thread::spawn(move || serve(&settings).expect("起接口"));
+        let agent = crate::backend::agent(std::time::Duration::from_secs(10));
+        let base = format!("http://127.0.0.1:{port}");
+        wait_up(&agent, &base);
+
+        let stop = format!("{base}/server/stop");
+        let start = format!("{base}/server/start");
+        assert_eq!(agent.get(&stop).call().unwrap().status().as_u16(), 405);
+        assert_eq!(agent.post(&stop).send_empty().unwrap().status().as_u16(), 403);
+        let cross_site = agent.post(&start).header("X-JMBots-Window", "1").header("Origin", "http://localhost");
+        assert_eq!(cross_site.send_empty().unwrap().status().as_u16(), 403);
+        let local = agent.post(&stop).header("X-JMBots-Window", "1");
+        assert_eq!(local.send_empty().unwrap().status().as_u16(), 409);
     }
 
     #[test]

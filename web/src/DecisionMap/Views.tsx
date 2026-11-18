@@ -1,5 +1,7 @@
 /** 决策图的表格和清单两种看法，和画布用同一份节点、同一个侧栏。 */
+import * as antd from 'antd';
 import * as react from 'react';
+import * as virtuoso from 'react-virtuoso';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
 import * as drawer from './Drawer.tsx';
 import * as words from './Words.ts';
@@ -96,17 +98,57 @@ function OptionCell({ entry }: { entry: types.DecisionNode }) {
   );
 }
 
+/** 虚拟表需要数值宽度；列宽总和作为横向滚动宽度。 */
+const TABLE_WIDTH = 960;
+/** 小号表头的预留高度，表身按容器剩余空间滚动。 */
+const TABLE_HEADER_HEIGHT = 48;
+/** 独立的决策图入口没有主站的主题容器。 */
+const TABLE_THEME: antd.ThemeConfig = {
+  algorithm: antd.theme.darkAlgorithm,
+  token: { colorBgContainer: '#11161f' },
+  components: {
+    Table: { headerBg: '#18202c', rowHoverBg: '#1f2938', borderColor: '#252e3d' },
+  },
+};
+/** 虚拟表的行由 div 渲染，状态颜色仍沿用决策图主题。 */
+const STATE_COLORS: Record<StateKey, string> = {
+  pending: 'var(--decision-red)',
+  working: 'var(--decision-blue)',
+  decided: 'var(--decision-green)',
+  done: 'var(--decision-muted)',
+  open: 'var(--decision-muted)',
+};
+
 /** 表格看法：一行一个节点，能按状态筛，点一行打开侧栏。 */
 export function TableView({ nodes, selected, open }: ViewProps) {
   const [filter, setFilter] = react.useState<StateKey | 'all'>('all');
-  const byId = new Map(nodes.map((entry) => [entry.id, entry]));
-  const rows = nodes.filter((entry) => {
+  const [height, setHeight] = react.useState(1);
+  const viewport = react.useRef<HTMLDivElement>(null);
+  const byId = react.useMemo(() => new Map(nodes.map((entry) => [entry.id, entry])), [nodes]);
+
+  //M 未开始的功能只在“全部”里出现，筛选后只渲染可见行。
+  const rows = react.useMemo(() => nodes.filter((entry) => {
     if (filter === 'all') return true;
 
-    //M 未开始的功能只在“全部”里出现。
     const state = getState(entry);
     return state.key === filter;
-  });
+  }), [nodes, filter]);
+
+  react.useLayoutEffect(() => {
+    //G 表格装好后再读取可用高度。
+    const element = viewport.current;
+    if (element === null) return;
+
+    //M 跟随画布高度，窗口变化后仍可滚到最后一行。
+    const measure = () => {
+      const available = element.clientHeight - TABLE_HEADER_HEIGHT;
+      setHeight(Math.max(1, available));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    return () => observer.disconnect();
+  }, []);
 
   /** 键盘回车或空格也能打开一行。 */
   const press = (event: react.KeyboardEvent, id: string): void => {
@@ -117,7 +159,66 @@ export function TableView({ nodes, selected, open }: ViewProps) {
     open(id);
   };
 
-  //M 顶上一排筛选，下面是可横向滚动的表。
+  const columns: antd.TableColumnsType<types.DecisionNode> = [
+    {
+      key: 'state',
+      title: t('状态'),
+      width: 88,
+      render: (_value, entry) => {
+        const state = getState(entry);
+        const style = { color: STATE_COLORS[state.key] };
+        return <span className="decision-table__state" style={style}>{state.label}</span>;
+      },
+    },
+    { dataIndex: 'title', title: t('标题'), width: 176, className: 'decision-table__title' },
+    { key: 'summary', title: t('一句话'), width: 228, render: (_value, entry) => getLine(entry) },
+    { key: 'branch', title: t('所属分支'), width: 132, render: (_value, entry) => getBranchTitle(entry, byId) },
+    {
+      key: 'options',
+      title: t('要你定的选项'),
+      width: 192,
+      render: (_value, entry) => <OptionCell entry={entry} />,
+    },
+    {
+      key: 'time',
+      title: t('更新时间'),
+      width: 144,
+      className: 'decision-table__time',
+      render: (_value, entry) => {
+        const updated = getUpdated(entry);
+        return drawer.getTime(updated);
+      },
+    },
+  ];
+  const locale = {
+    emptyText: <p className="decision-view__empty">{t('这个状态下没有节点')}</p>,
+  };
+  const scroll = { x: TABLE_WIDTH, y: height, scrollToFirstRowOnChange: true };
+
+  /** 虚拟行保留原定位、选中状态和点行交互。 */
+  const getRowProps = (entry: types.DecisionNode) => {
+    const state = getState(entry);
+    const isSelected = entry.id === selected;
+    const style: react.CSSProperties = { cursor: 'pointer' };
+    if (state.key === 'pending') {
+      style.background = '#2a1f29';
+    }
+    if (isSelected) {
+      style.background = '#1f2938';
+    }
+
+    return {
+      'data-state': state.key,
+      'data-node-id': entry.id,
+      'aria-selected': isSelected,
+      tabIndex: 0,
+      style,
+      onClick: () => open(entry.id),
+      onKeyDown: (event: react.KeyboardEvent) => press(event, entry.id),
+    };
+  };
+
+  //M 顶上一排筛选，下面是可横向滚动的虚拟表。
   return (
     <div className="decision-view decision-table">
       <div className="decision-filters" role="group" aria-label={t('按状态筛')}>
@@ -127,46 +228,20 @@ export function TableView({ nodes, selected, open }: ViewProps) {
           </button>
         ))}
       </div>
-      <div className="decision-table__scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>{t('状态')}</th>
-              <th>{t('标题')}</th>
-              <th>{t('一句话')}</th>
-              <th>{t('所属分支')}</th>
-              <th>{t('要你定的选项')}</th>
-              <th>{t('更新时间')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((entry) => {
-              const state = getState(entry);
-              const updated = getUpdated(entry);
-
-              //M 一行写齐状态、标题、一句话、分支、选项和更新时间，点了打开侧栏。
-              return (
-                <tr
-                  key={entry.id}
-                  tabIndex={0}
-                  data-state={state.key}
-                  data-node-id={entry.id}
-                  aria-selected={entry.id === selected}
-                  onClick={() => open(entry.id)}
-                  onKeyDown={(event) => press(event, entry.id)}
-                >
-                  <td className="decision-table__state">{state.label}</td>
-                  <td className="decision-table__title">{entry.title}</td>
-                  <td>{getLine(entry)}</td>
-                  <td>{getBranchTitle(entry, byId)}</td>
-                  <td><OptionCell entry={entry} /></td>
-                  <td className="decision-table__time">{drawer.getTime(updated)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {rows.length === 0 && <p className="decision-view__empty">{t('这个状态下没有节点')}</p>}
+      <div className="decision-table__scroll" ref={viewport}>
+        <antd.ConfigProvider theme={TABLE_THEME}>
+          <antd.Table
+            size="small"
+            virtual
+            pagination={false}
+            rowKey="id"
+            columns={columns}
+            dataSource={rows}
+            scroll={scroll}
+            locale={locale}
+            onRow={getRowProps}
+          />
+        </antd.ConfigProvider>
       </div>
     </div>
   );
@@ -193,63 +268,86 @@ function getRows(
   }
 }
 
-/** 清单看法：按一级分支分组的缩进列表，手机上最好读。 */
-export function ListView({ nodes, selected, open }: ViewProps) {
-  //M 从中心目标开始分组，图里还没有目标时给一句提示。
+/** 为虚拟清单保留列表语义；部件引用固定，更新选中节点时不用重建清单。 */
+const LIST_PARTS: virtuoso.Components<ListRow> = {
+  List: react.forwardRef<HTMLDivElement, virtuoso.ListProps>(function DecisionList(props, ref) {
+    return <div {...props} ref={ref} role="list" />;
+  }),
+};
+
+/** 按一级分支排列节点；分支标题本身仍是一条可点的节点。 */
+function getListRows(nodes: types.DecisionNode[]): ListRow[] {
   const root = nodes.find((entry) => entry.parent === null);
-  if (root === undefined) return <p className="decision-view__empty">{t('还没有决策节点')}</p>;
+  if (root === undefined) return [];
 
   //M 同级保持快照里的顺序。
   const byParent = new Map<string, types.DecisionNode[]>();
   for (const entry of nodes) {
     if (entry.parent === null) continue;
 
-    //M 把节点挂到父节点名下。
     const siblings = byParent.get(entry.parent) ?? [];
     siblings.push(entry);
     byParent.set(entry.parent, siblings);
   }
+
+  //M 中心目标先显示，各分支及子节点紧随其后。
+  const rows = [{ entry: root, depth: 0 }];
   const branches = byParent.get(root.id) ?? [];
+  for (const branch of branches) {
+    getRows(branch, 0, byParent, rows);
+  }
+  return rows;
+}
+
+/** 清单看法：按一级分支分组的缩进列表，手机上最好读。 */
+export function ListView({ nodes, selected, open }: ViewProps) {
+  //M 快照更新时才重新摊平分支，滚动时只生成视口附近的行。
+  const rows = react.useMemo(() => getListRows(nodes), [nodes]);
+  if (rows.length === 0) return <p className="decision-view__empty">{t('还没有决策节点')}</p>;
 
   /** 一行就是一个按钮，点了打开侧栏。 */
-  const getItem = (row: ListRow) => {
-    //M 状态决定颜色，层深决定缩进。
-    const state = getState(row.entry);
+  const getItem = (index: number, row: ListRow) => {
+    const entry = row.entry;
+    const state = getState(entry);
     const indent = { paddingLeft: `${String(12 + row.depth * 18)}px` };
-
-    //M 整行是一个按钮，手机上好按。
-    return (
-      <li key={row.entry.id}>
-        <button
-          type="button"
-          className="decision-list__item"
-          style={indent}
-          data-state={state.key}
-          data-node-id={row.entry.id}
-          aria-pressed={row.entry.id === selected}
-          onClick={() => open(row.entry.id)}
-        >
-          <span className="decision-list__state">{state.label}</span>
-          <span className="decision-list__title">{row.entry.title}</span>
-        </button>
-      </li>
+    const button = (
+      <button
+        type="button"
+        className="decision-list__item"
+        style={indent}
+        data-state={state.key}
+        data-node-id={entry.id}
+        aria-pressed={entry.id === selected}
+        onClick={() => open(entry.id)}
+      >
+        <span className="decision-list__state">{state.label}</span>
+        <span className="decision-list__title">{entry.title}</span>
+      </button>
     );
+
+    //M 分支标题保留原来的分隔线和名称，同时作为可点击的节点行。
+    if (index > 0 && row.depth === 0) {
+      return (
+        <div role="listitem">
+          <section className="decision-list__section" aria-label={entry.title}>
+            {button}
+          </section>
+        </div>
+      );
+    }
+
+    return <div role="listitem">{button}</div>;
   };
 
-  //M 中心目标在最上面，每个一级分支一组。
+  //M 清单占满原视图，由 Virtuoso 按每行实际高度滚动。
   return (
-    <div className="decision-view decision-list">
-      <ul className="decision-list__group">{getItem({ entry: root, depth: 0 })}</ul>
-      {branches.map((branch) => {
-        const rows: ListRow[] = [];
-        getRows(branch, 0, byParent, rows);
-
-        return (
-          <section key={branch.id} className="decision-list__section" aria-label={branch.title}>
-            <ul className="decision-list__group">{rows.map(getItem)}</ul>
-          </section>
-        );
-      })}
+    <div className="decision-view decision-list" style={{ display: 'block', overflow: 'hidden' }}>
+      <virtuoso.Virtuoso
+        data={rows}
+        components={LIST_PARTS}
+        computeItemKey={(_index, row) => row.entry.id}
+        itemContent={getItem}
+      />
     </div>
   );
 }
