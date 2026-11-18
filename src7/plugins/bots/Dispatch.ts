@@ -20,10 +20,10 @@ import * as cordis from 'cordis';
 import type { ChatRequest, Session, SessionMeta, SessionState, Thinking } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as namesModule from '../../utils/Names.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as modelCatalogPlugin from '../model-catalog/index.ts';
-import type * as modelNotesPlugin from '../model-notes/index.ts';
 import type * as workspacesPlugin from '../workspaces/index.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import type { Bot, Origin, ReceiveEvent } from './index.ts';
@@ -263,10 +263,14 @@ export class Dispatch extends cordis.Service {
       }
       this.repairTimers.clear();
     });
+
+    //M 前台对延迟的只听话判断 allow 之后，要把它补进 channel_tool 队列：队列归本类管，前台不知道队列，所以挂这个回调给它调。
     this.desk.onChannelJudgeAllow = (botName, message, botOrigin, claimKey) => {
+      //M 按名字找机器人对象，名单里没有（配置改过）就算了。
       const bot = this.home.bots.get(botName);
       if (bot === undefined) return;
 
+      //M 把这条话当用户的话排进前台的单队列，等前台空闲了处理。
       this.enqueueJudgeFollowUp(bot, message, botOrigin, claimKey);
     };
 
@@ -278,6 +282,8 @@ export class Dispatch extends cordis.Service {
         parameters: piAi.Type.Object({}),
       },
       kinds: ['front'],
+
+      //M 模型调 list_sessions：交 list 列出本客户干活的会话，排成文字回给模型。
       run: (_args, session) => this.list(session),
     });
 
@@ -306,6 +312,8 @@ export class Dispatch extends cordis.Service {
         }),
       },
       kinds: ['front'],
+
+      //M 模型调 hand_session：交 hand 校验参数，新开或接着一场后台，回执给模型。
       run: (args, session) => this.hand(args, session),
     });
 
@@ -319,15 +327,20 @@ export class Dispatch extends cordis.Service {
         }),
       },
       kinds: ['front'],
+
+      //M 模型调 stop_session：交 pause 暂停那一场（受管后台记暂停，别的喊停）。
       run: (args, session) => this.pause(String(args['sessionId']), session),
     });
 
-    this.home.on('session/request', (request) => {
-      this.onRequest(request);
-    });
+    //M onRequest 要等 model-catalog 回模型介绍，交回它的 Promise：骨架 serial 等它跑完再问下一个（Promise 落定的值是 undefined，不挡后面的人）。
+    this.home.on('session/request', (request) => this.onRequest(request));
+
+    //M 会话状态变了：onChange 处理受管后台这一轮跑完交回前台、队列项到哪一步、补救轮等。
     this.home.on('session/change', (session) => {
       this.onChange(session);
     });
+
+    //M 服务全就绪后（重启时）：recover 把上次停在半路的队列项接着处理或记成不知道。
     this.home.on('ready', () => {
       this.recover();
     });
@@ -359,6 +372,8 @@ export class Dispatch extends cordis.Service {
         reason: 'recalled：原消息已撤回，不再发送回复',
         at: Date.now(),
       };
+
+      //M 发一个 channel/replied 回执（rejected）：让发的一方知道这条没发出去，别一直等。
       this.home.emit('channel/replied', {
         requestId: request.requestId,
         replyRoundKey: request.replyRoundKey,
@@ -377,6 +392,7 @@ export class Dispatch extends cordis.Service {
    * 副作用：写库；下一拍目标空闲就开一轮处理（调模型、发渠道）。
    */
   acceptResult(input: ResultInput, commitSource: () => void): AcceptReceipt {
+    //M 打开目标会话（不存在会抛错）；结果排进它的队列。
     const target = this.home.sessions.open(input.sessionId);
 
     //G 只收前台和后台。
@@ -407,6 +423,8 @@ export class Dispatch extends cordis.Service {
       commitSource();
       return { status: 'duplicate', key: input.key };
     }
+
+    //M 本项的回复模式：有来源快照的走 channel_tool，活动项、调用方指定了的以它们为准，后指定的盖前面的。
     let deliveryMode: 'channel_tool' | 'legacy_auto' = 'legacy_auto';
     if (inheritedSnapshot !== undefined) {
       deliveryMode = 'channel_tool';
@@ -420,6 +438,8 @@ export class Dispatch extends cordis.Service {
     const origin = input.origin ?? target.row.frontTask?.origin ?? current;
     const payload: ResultPayload = { ...input.payload };
     let replyControl: ReplyControl | undefined;
+
+    //M channel_tool 项：按原消息号、机器人、结果键算出稳定的回复轮键，记进来源快照和回复控制（修复轮、回执都认它）。
     if (deliveryMode === 'channel_tool' && inheritedSnapshot !== undefined) {
       const roundKey = protocol.getReplyRoundKey(inheritedSnapshot.messageId, target.row.bot, input.key);
       payload.sourceSnapshot = { ...structuredClone(inheritedSnapshot), replyRoundKey: roundKey };
@@ -452,11 +472,15 @@ export class Dispatch extends cordis.Service {
     //M 一个事务：排进队列存库，再让调用方改它自己的表。出错整个回滚，内存里的队列还原，错误抛给调用方。
     /** 排进这一项以后的队列：事务里存它，跟踪行数它。 */
     const next = [...queue, item];
+
+    //M 把“排进队列、存库、调调用方的收尾”包成一个数据库事务；任何一步抛错整个回滚。
     const commit = this.home.resources.db.transaction(() => {
       target.row.resultQueue = next;
       target.save();
       commitSource();
     });
+
+    //M 执行事务；失败就把内存里的队列还原成原来的，再把错误抛给调用方。
     try {
       commit();
     } catch (error) {
@@ -467,6 +491,8 @@ export class Dispatch extends cordis.Service {
     //T 跟踪：一份结果排进队列。
     const vars = { 结果键: input.key, 交给: target.id, 种类: target.row.kind, 排着几项: getWaiting(next).length };
     this.home.emit('trace', 'Dispatch.acceptResult', '一份结果排进会话的结果队列，空闲了再处理', 'resultQueue.push(item)', vars);
+
+    //M 下一拍再看目标会话：它空闲就开一轮处理这一项，在转就等它这一轮结束。
     this.later(target);
     return { status: 'queued', key: input.key };
   }
@@ -550,6 +576,8 @@ export class Dispatch extends cordis.Service {
         deliveryMode,
         sourceSnapshot: activeSnapshot,
       };
+
+      //M action 是 new：新开一场受管后台，回执给前台模型。
       return this.create(front, bot, plan);
     }
 
@@ -557,6 +585,8 @@ export class Dispatch extends cordis.Service {
     if (sessionId === '') {
       throw new Error('append 要写 sessionId：接着哪一场');
     }
+
+    //M action 是 append：接着那一场，回执给前台模型。
     return this.append(front, bot, sessionId, { text, model, thinking, images, origin, deliveryMode, sourceSnapshot: activeSnapshot });
   }
 
@@ -592,6 +622,8 @@ export class Dispatch extends cordis.Service {
     if (plan.sourceSnapshot !== undefined) {
       frontTask.sourceSnapshot = structuredClone(plan.sourceSnapshot);
     }
+
+    //M 开后台会话：kind 是 work，挂在前台下面（parent），记上客户号、模型、思考档、frontTask 和工作区 ID。
     const work = this.home.sessions.create({
       kind: 'work',
       bot: bot.name,
@@ -609,7 +641,11 @@ export class Dispatch extends cordis.Service {
       channel: plan.origin.channel,
       address: getWorkAddress(plan.origin.address, resolved.directory),
     };
+
+    //M 机器人把话交进这场后台并推它往下跑（不等）。
     bot.hand(plan.text, workOrigin, work.id);
+
+    //M 回执（会话号、状态、说明）给前台模型，模型据此告诉用户已经派出去了。
     return getReceipt('new', work, front);
   }
 
@@ -622,6 +658,7 @@ export class Dispatch extends cordis.Service {
    * @returns 回执 JSON。
    */
   private append(front: Session, bot: Bot, sessionId: string, plan: HandPlan): string {
+    //M 按会话号打开要接着的那一场（没有这场会抛错，模型看得到）。
     const work = this.home.sessions.open(sessionId);
 
     //G 不是本机器人、本客户、本人派的 → 不能接。
@@ -637,6 +674,8 @@ export class Dispatch extends cordis.Service {
       if (changeModel || changeThinking) {
         throw new Error(`running_model_change：会话 ${work.id} 正在跑，换模型、思考档要先 stop_session 暂停，再 append`);
       }
+
+      //M 补的话进会话，推它往下走（它在转，下一步会带上这句）；回执给前台模型。
       work.add(plan.text);
       void work.run();
       return getReceipt('append', work, front);
@@ -682,6 +721,8 @@ export class Dispatch extends cordis.Service {
     if (plan.sourceSnapshot !== undefined) {
       task.sourceSnapshot = structuredClone(plan.sourceSnapshot);
     }
+
+    //M 模型、思考档、工作区 ID、frontTask 都改好了，存库，再交给机器人推它跑。
     work.save();
 
     //M 交给机器人推它跑：回话地址换成这一次的，工作区目录照绑定的写进去。
@@ -689,7 +730,11 @@ export class Dispatch extends cordis.Service {
       channel: plan.origin.channel,
       address: getWorkAddress(plan.origin.address, resolved.directory),
     };
+
+    //M 机器人把补的话交进这场后台并推它往下跑（不等）。
     bot.hand(plan.text, workOrigin, work.id);
+
+    //M 回执（会话号、状态、说明）给前台模型。
     return getReceipt('append', work, front);
   }
 
@@ -701,6 +746,7 @@ export class Dispatch extends cordis.Service {
    * @throws 不是本客户的会话时抛错。
    */
   private pause(sessionId: string, front: Session): string {
+    //M 按会话号打开要暂停的那一场（没有这场会抛错，模型看得到）。
     const target = this.home.sessions.open(sessionId);
 
     //G 不是本机器人、本客户、本人派的 → 不能停。
@@ -714,6 +760,7 @@ export class Dispatch extends cordis.Service {
     //M 不受管的老会话：照旧喊停。
     if (task === undefined && !running) return `会话 ${target.id} 没在跑`;
 
+    //M 不受管、还在跑的老会话：直接喊停，没有暂停可记。
     if (task === undefined) {
       target.stop('前台');
       return `已喊停 ${target.id}`;
@@ -758,6 +805,7 @@ export class Dispatch extends cordis.Service {
     const pairs = visible.map((item): [string, string] => [item.id, item.name]);
     const names = new Map(pairs);
 
+    //M 每场会话排成一行（会话号、状态、工作区、回报到哪了、模型、总结），回给前台模型。
     const lines = rows.map((row) => this.getLine(row, front, names));
     return lines.join('\n');
   }
@@ -787,6 +835,7 @@ export class Dispatch extends cordis.Service {
       if (last !== undefined) {
         returned = STAGE_WORDS[last.stage];
       }
+      //M 工作区写成“名字（ID）”这样一段，名字查不到（外人看不到别人的）就只写 ID。
       parts.push(getWorkspaceText(row, task, names));
       parts.push(`回报：${returned}`);
     }
@@ -830,6 +879,7 @@ export class Dispatch extends cordis.Service {
    * @throws workspace_outside_scope（出了范围、非本人用登记的名字）、workspace_not_found、workspace_forbidden、workspace_archived。
    */
   private getWorkspace(bot: Bot, address: unknown, pick: WorkspacePick): workspacesPlugin.ResolvedWorkspace {
+    //M 先按说话人的地址算他是本人还是外人、能用哪个目录范围，下面的选法都在这个范围里。
     const workspaces = this.home.workspaces;
     const access = workspaces.getAccess(bot.name, address);
 
@@ -865,6 +915,8 @@ export class Dispatch extends cordis.Service {
       legacyName: pick.workspace,
       allowArchived: pick.allowArchived,
     };
+
+    //M 目录已经在范围里建好了：原地登记成这个范围的工作区（登记过的认出来），交回工作区和绝对目录。
     return workspaces.resolve(access, byDirectory);
   }
 
@@ -908,6 +960,7 @@ export class Dispatch extends cordis.Service {
     const catalog = this.home.get('modelCatalog') as modelCatalogPlugin.ModelCatalog | undefined;
     if (catalog === undefined) return { model: picked, thinking: level };
 
+    //M 取这个模型的介绍（有没有、支持哪些思考档），下面按它校验。
     const info = catalog.find(picked);
     if (plan.model !== '' && info === undefined) {
       throw new Error(`model_unavailable：模型清单里没有 ${picked}`);
@@ -938,6 +991,7 @@ export class Dispatch extends cordis.Service {
     control?: protocol.ChannelMessageControl,
     target?: Session,
   ): Promise<void> {
+    //M 来源域（渠道、账号、聊天）决定进哪场前台；客户号读地址里的 customer，没有旧前台可兼容时用它新开。
     const scope = { channel: message.channel, accountId: message.accountId, chatId: message.chatId };
     const customer = textModule.getText(botOrigin.address, 'customer');
 
@@ -1044,6 +1098,7 @@ export class Dispatch extends cordis.Service {
       replyControl,
     };
 
+    //M 认领键和队列项在一个数据库事务里一起写：排队、记已认领、存库，任何一步抛错整个回滚，内存里的值还原。
     const db = this.home.resources.db;
     const beforeClaims = front.row.sourceClaims;
     const beforeQueue = front.row.resultQueue;
@@ -1055,8 +1110,12 @@ export class Dispatch extends cordis.Service {
       if (!explicit) {
         front.row.sourceScope = scope;
       }
+
+      //M 认领键、队列项、来源范围都改好了，存库（和上面同属一个事务）。
       front.save();
     });
+
+    //M 执行事务；失败就把内存里的认领键和队列还原，再把错误抛给渠道。
     try {
       commitClaim();
     } catch (error) {
@@ -1072,6 +1131,7 @@ export class Dispatch extends cordis.Service {
       sessionKind: 'front',
       sessionId: front.id,
     };
+    //M 地址里带决策模型的结论（judged）就记进认领回执，飞书把它写进来往流水。
     const judgedText = textModule.getText(botOrigin.address, 'judged');
     if (judgedText !== '') {
       claimRecord.judged = judgedText;
@@ -1097,12 +1157,16 @@ export class Dispatch extends cordis.Service {
     botOrigin: { channel: string; address: Record<string, unknown> },
     claimKey: string,
   ): void {
+    //M 按来源域和客户号找到这场前台（延迟判断时会话已存在，没有才新开）。
     const scope = { channel: message.channel, accountId: message.accountId, chatId: message.chatId };
     const customer = textModule.getText(botOrigin.address, 'customer');
     const front = this.desk.findOrCreateFrontByScope(bot.name, scope, customer);
     const followKey = `${claimKey}:followup`;
+
+    //G 同一条已经补过队了（followKey 在队列里）→ 不再补。
     if ((front.row.resultQueue ?? []).some((item) => item.key === followKey)) return;
 
+    //M 给这次延迟接话编一个回复轮键，写进来源快照，修复轮、回执都认它。
     const replyRoundKey = protocol.getReplyRoundKey(message.messageId, bot.name, 'judge_followup');
     const snapshot: protocol.SourceSnapshot = {
       messageId: message.messageId,
@@ -1149,8 +1213,12 @@ export class Dispatch extends cordis.Service {
       alreadyRecorded: true,
       replyControl,
     };
+
+    //M 补进前台的队列（原话已经记在对话里了，处理时不再加一遍），存库。
     front.row.resultQueue = [...(front.row.resultQueue ?? []), item];
     front.save();
+
+    //M 前台空闲（没在转、没有正在处理的项）就开始处理队列。
     if (front.row.state !== 'running' && front.row.activeKey === undefined) {
       this.drain(front);
     }
@@ -1194,6 +1262,8 @@ export class Dispatch extends cordis.Service {
       at: Date.now(),
     };
     session.row.resultQueue = [...(session.row.resultQueue ?? []), item];
+
+    //M 队列存库，重启后这句话还在；这条消息就算处理掉了，不进会话。
     session.save();
     event.handled = true;
 
@@ -1205,8 +1275,9 @@ export class Dispatch extends cordis.Service {
   /**
    * 响应 session/request：暂停的受管后台不调模型；前台整理结果那一轮拿掉派活工具；普通前台轮加上派活和选模型的说明。
    * @param request 这一步的请求。
+   * 副作用：本人的前台轮发请求事件 model-catalog/request（action: prompt），最多等 3 秒；没挂 model-catalog 立刻退回、不加模型介绍。
    */
-  private onRequest(request: ChatRequest): void {
+  private async onRequest(request: ChatRequest): Promise<void> {
     const session = request.session;
     const row = session.row;
 
@@ -1231,38 +1302,38 @@ export class Dispatch extends cordis.Service {
 
     request.system.push(HAND_HINT);
 
-    //M 本人才能挑模型：带上模型介绍和评价（model-notes），再带上这些模型能用的思考档（model-catalog）。
+    //G 非本人（builder、guest）不挑模型：不带模型介绍。
     if (workspaceModule.isOther(row.address)) return;
 
-    const notes = this.home.get('modelNotes') as modelNotesPlugin.ModelNotes | undefined;
-    const prompt = notes?.getPrompt() ?? '';
+    //M 本人才能挑模型：发请求事件 model-catalog/request（action: prompt，契约 3.2 第 7 条），一次拿齐模型介绍评价和能用的思考档。
+    //M   没挂 model-catalog、超时、出错都退回两段空串，这一轮只带派活说明。
+    const payload = { action: 'prompt' } as const;
+    const options = {
+      prefix: 'cat',
+      timeoutMs: 3000,
+      onFallback: () => ({ requestId: '', prompt: '', levelsText: '' }),
+    };
+
+    //M 发 model-catalog/request 事件、等配对的 model-catalog/result；等不到（没挂、超时）由 onFallback 退回两段空串。
+    const result = await requestEventModule.requestEvent(
+      this.home,
+      'model-catalog/request',
+      'model-catalog/result',
+      payload,
+      options,
+    );
+
+    //G 没有模型介绍：不加，思考档那段也不加。
+    const prompt = result.prompt ?? '';
     if (prompt === '') return;
 
     request.system.push(prompt);
-    const levels = this.getLevelsText(notes);
+
+    //M 有介绍的模型各自能用的思考档：有才加。
+    const levels = result.levelsText ?? '';
     if (levels !== '') {
       request.system.push(levels);
     }
-  }
-
-  /**
-   * 有介绍的模型各自能用的思考档，一段话；没挂模型清单是空串。
-   * @param notes 模型介绍服务。
-   */
-  private getLevelsText(notes: modelNotesPlugin.ModelNotes | undefined): string {
-    const catalog = this.home.get('modelCatalog') as modelCatalogPlugin.ModelCatalog | undefined;
-    if (catalog === undefined || notes === undefined) return '';
-
-    const lines: string[] = [];
-    for (const note of notes.getList()) {
-      const info = catalog.find(note.model);
-      if (info === undefined) continue;
-
-      lines.push(`- ${note.model}：${info.thinking.join('、')}`);
-    }
-    if (lines.length === 0) return '';
-
-    return ['能用的思考档（写 thinking 只能从里面挑）：', ...lines].join('\n');
   }
 
   /**
@@ -1291,6 +1362,7 @@ export class Dispatch extends cordis.Service {
       setTimeout(() => {
         if (this.disposed) return;
 
+        //M 下一拍把这一轮的结果（用刚才记下的状态、回话、轮数）交回原前台，排进它的队列。
         this.returnWork(session, state, reply, round);
       }, 0);
       return;
@@ -1300,6 +1372,7 @@ export class Dispatch extends cordis.Service {
     const waiting = getWaiting(row.resultQueue ?? []);
     if (waiting.length === 0) return;
 
+    //M 还有排着的：下一拍再看这场会话，空闲了就处理下一项。
     this.later(session);
   }
 
@@ -1334,6 +1407,8 @@ export class Dispatch extends cordis.Service {
     if (task.deliveryMode !== undefined) {
       input.deliveryMode = task.deliveryMode;
     }
+
+    //M 排进原前台的队列；同一个事务里把这场的轮数加一并存库（下一轮的结果键就不重了）。排不进去只记日志，不往外抛。
     try {
       this.acceptResult(input, () => {
         task.round = round + 1;
@@ -1342,6 +1417,8 @@ export class Dispatch extends cordis.Service {
     } catch (error) {
       console.error(`后台 ${work.id} 的结果没交回前台 ${task.front}：${textModule.getMessage(error)}`);
     }
+
+    //M 交回后下一拍再看这场后台自己的队列（外部结果排着的话接着处理）。
     this.later(work);
   }
 
@@ -1352,6 +1429,7 @@ export class Dispatch extends cordis.Service {
    * @param front 前台对话；这一轮刚结束。
    */
   private async finishFront(front: Session): Promise<void> {
+    //M 取正在处理的那一项；没有（标记残留）就把标记清掉、存库，收工。
     const row = front.row;
     const item = getActive(row);
     if (item === undefined) {
@@ -1414,6 +1492,8 @@ export class Dispatch extends cordis.Service {
       replyIndex: 0,
       kind: 'final',
     });
+
+    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项（处理完的留键去重），存库。
     delete row.activeKey;
     delete row.quiet;
     delete row.activeSourceSnapshot;
@@ -1424,6 +1504,8 @@ export class Dispatch extends cordis.Service {
     //T 跟踪：后台结果整理好发出去了。
     const vars = { 会话: front.id, 结果键: item.key, 回执: receipt.status, 原因: receipt.reason };
     this.home.emit('trace', 'Dispatch.finishFront', '前台整理好后台结果，发回原渠道，记回执', 'ctx.bots.send(front, text, item.origin)', vars);
+
+    //M 这一项收完了：下一拍再看队列里还有没有排着的，有就接着处理。
     this.later(front);
   }
 
@@ -1438,6 +1520,8 @@ export class Dispatch extends cordis.Service {
   private finishChannelFront(front: Session, item: QueueItem): void {
     const row = front.row;
     const control = item.replyControl;
+
+    //M 外部助手直连的前台会话不做零次回复兜底（它的话由 relay 管），先查出来下面排除。
     const isRelayDirect = this.isRelayDirectSession(front);
     const eligibleZeroFallback = row.state === 'done'
       && control !== undefined
@@ -1515,6 +1599,7 @@ export class Dispatch extends cordis.Service {
       }
     }
 
+    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库。
     delete row.activeKey;
     delete row.quiet;
     delete row.activeSourceSnapshot;
@@ -1524,6 +1609,8 @@ export class Dispatch extends cordis.Service {
 
     //M 通知渠道这一轮收尾了（网页把那条标成回完，命令行出错时记退出码）。
     this.emitSettled(item);
+
+    //M 这一项收完了：下一拍再看队列里还有没有排着的，有就接着处理。
     this.later(front);
   }
 
@@ -1553,6 +1640,7 @@ export class Dispatch extends cordis.Service {
     control.receiptKeys.push(replyRequestKey);
     front.save();
 
+    //M 把这句话包成一条 final 回复请求：带来源快照的深拷贝和内容摘要（payloadHash），渠道据此认出发给谁、防重复。
     const replyRequest = {
       channel: snapshot.channel,
       bot: snapshot.botName,
@@ -1570,6 +1658,7 @@ export class Dispatch extends cordis.Service {
     const vars = { 会话: front.id, 渠道: snapshot.channel, 字数: text.length };
     this.home.emit('trace', 'Dispatch.sendLastWords', '这一轮没调回复工具，把最后的话发出去', "ctx.serial('channel/reply')", vars);
 
+    //M 发 channel/reply 请求，等渠道交回回执（发到了、发了一部分、没收）。
     const receipt = await protocol.requestChannelReply(this.home, replyRequest);
 
     //M 记回执和结果，再走一遍收尾（reminder 是 used，不会再进兜底）。
@@ -1597,6 +1686,8 @@ export class Dispatch extends cordis.Service {
       stage: settled,
       note: item.note,
     };
+
+    //M 发通知 channel/settled：渠道（网页、命令行）据此把那条消息标成回完。发了不等。
     this.home.emit('channel/settled', event);
   }
 
@@ -1605,6 +1696,7 @@ export class Dispatch extends cordis.Service {
    * @param session 目标会话。
    */
   private isRelayDirectSession(session: Session): boolean {
+    //M 机器人配置里写了 relay: direct，就是整个机器人都转给外部助手。
     const bot = this.home.bots.get(session.row.bot);
     if (bot !== undefined && bot.config['relay'] === 'direct') return true;
 
@@ -1621,6 +1713,7 @@ export class Dispatch extends cordis.Service {
   private scheduleRepairRun(front: Session, expectedKey: string, expectedRoundKey: string): void {
     if (this.repairTimers.has(front.id)) return;
 
+    //M 到下一个宏任务才真正起修复轮：到点先核对活动项和回复轮键没变，对得上才落盘 running 并唤醒原会话。
     const timer = setTimeout(() => {
       this.repairTimers.delete(front.id);
       const row = front.row;
@@ -1658,12 +1751,15 @@ export class Dispatch extends cordis.Service {
    * @param work 后台会话；这一轮刚结束。
    */
   private finishWork(work: Session): void {
+    //M 取正在看的那一项，记成看完（备注写这一轮怎么结束的）。
     const row = work.row;
     const item = getActive(row);
     if (item !== undefined) {
       item.stage = 'done';
       item.note = STATE_WORDS[row.state];
     }
+
+    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库。
     delete row.activeKey;
     row.resultQueue = getKept(row.resultQueue ?? []);
     work.save();
@@ -1696,15 +1792,20 @@ export class Dispatch extends cordis.Service {
         if (said.replyControl !== undefined && said.alreadyRecorded !== true) {
           said.replyControl.startMessageIndex = row.messages.length;
         }
+
+        //M 回话地址换成这一条话的来源，存库；原话没记进对话的才加进去（延迟接话的已经记过）。
         this.home.bots.route(session, said.origin);
         session.save();
         if (said.alreadyRecorded !== true) {
           session.add(said.payload.text);
         }
+
+        //M 推会话跑一轮，不等；回话由 channel_tool 的回复工具发。
         void session.run();
         return;
       }
 
+      //M 旧路径：这一句从队列取出来，回话地址换成它的来源，话进对话，推会话跑一轮。
       row.resultQueue = queue.filter((item) => item !== said);
       this.home.bots.route(session, said.origin);
       session.add(said.payload.text);
@@ -1747,6 +1848,8 @@ export class Dispatch extends cordis.Service {
     //T 跟踪：开始处理队列里的一项。
     const vars = { 会话: session.id, 种类: row.kind, 结果键: item.key, 还排着: getWaiting(queue).length - 1 };
     this.home.emit('trace', 'Dispatch.drain', '会话空闲了，处理结果队列里的下一项', 'session.run()', vars);
+
+    //M 推会话跑一轮，不等；这一轮结束时 session/change 进 onChange 收尾。
     void session.run();
   }
 
@@ -1758,6 +1861,7 @@ export class Dispatch extends cordis.Service {
     setTimeout(() => {
       if (this.disposed) return;
 
+      //M 下一拍这场会话的上一轮已经收尾了：drain 看它空闲就处理队列里的下一项。
       this.drain(session);
     }, 0);
   }
@@ -1767,6 +1871,7 @@ export class Dispatch extends cordis.Service {
    * 库里还是 running 的会话 Main 会接着跑，跑完照常收尾，这里不管。
    */
   private recover(): void {
+    //M 前台和受管后台的会话都过一遍：只有队列里还有没处理完的才接着处理。
     const rows = [
       ...this.home.sessions.find({ kind: 'front' }),
       ...this.home.sessions.find({ kind: 'work' }),
@@ -1777,6 +1882,7 @@ export class Dispatch extends cordis.Service {
 
       if (meta.state === 'running') continue;
 
+      //M 打开这场会话，按它的队列停在哪一步接着收尾。
       const session = this.home.sessions.open(meta.id);
       this.resume(session);
     }
@@ -1787,6 +1893,7 @@ export class Dispatch extends cordis.Service {
    * @param session 有没处理完的项的会话（没在转）。
    */
   private resume(session: Session): void {
+    //M 取重启前正在处理的那一项，下面按它停在哪一步分别接着收尾。
     const row = session.row;
     const item = getActive(row);
 
@@ -1817,6 +1924,8 @@ export class Dispatch extends cordis.Service {
         item.stage = 'uncertain';
         item.note = '重启前正在发，不知道发到没有，没有重发';
       }
+
+      //M 不管发没发到，都释放“正在处理”的标记，存库，下一拍接着处理队列里别的项。
       delete row.activeKey;
       delete row.quiet;
       delete row.activeSourceSnapshot;
@@ -1835,6 +1944,8 @@ export class Dispatch extends cordis.Service {
     if (item !== undefined) {
       this.finishWork(session);
     }
+
+    //M 收尾后下一拍再看队列里还有没有排着的，有就接着处理。
     this.later(session);
   }
 
@@ -2186,6 +2297,7 @@ function getWaiting(queue: QueueItem[]): QueueItem[] {
  * @param queue 结果队列。
  */
 function getKept(queue: QueueItem[]): QueueItem[] {
+  //M 没处理完的（排着、在处理、正在发）一项不丢，处理完的只留最近 KEEP 项给去重和 list_sessions 用。
   const waiting = getWaiting(queue);
   const finished = queue.filter((item) => !waiting.includes(item)).slice(-KEEP);
   return queue.filter((item) => waiting.includes(item) || finished.includes(item));

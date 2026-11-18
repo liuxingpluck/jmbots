@@ -328,7 +328,8 @@ export class WechatHistory {
     //M 取目标会话的显示名与消息，供下面逐条转换成统一格式。
     const chatName = this.readChatName(db, account, chat);
     const rows = db.query(
-      'SELECT source, local_id, at, from_self, kind, sender, text, view FROM wechat_messages WHERE account = ? AND chat = ?',
+      'SELECT source, local_id, at, from_self, kind, sender, text, view'
+      + ' FROM wechat_messages WHERE account = ? AND chat = ?',
     ).all(account, chat) as WechatMessageRow[];
 
     const entries: protocol.ChannelHistoryItem[] = [];

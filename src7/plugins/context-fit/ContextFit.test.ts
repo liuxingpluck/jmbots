@@ -146,9 +146,14 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
       messages,
       signal: new AbortController().signal,
     };
-    const stop = events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ({ model }) => ({
-      info: { id: model, name: model, kind: 'chat' as const, contextWindow: 100, thinking: [], price: { input: 0, output: 0 } },
-    }));
+    const stop = events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
+      if (request.action !== 'find') return {};
+
+      const { model } = request;
+      return {
+        info: { id: model, name: model, kind: 'chat' as const, contextWindow: 100, thinking: [], price: { input: 0, output: 0 } },
+      };
+    });
 
     await ctx.serial('session/request', request);
     expect(request.messages).not.toContain(oldMessage);

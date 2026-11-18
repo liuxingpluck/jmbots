@@ -9,7 +9,8 @@
  */
 import type * as cordis from 'cordis';
 import * as mime from '../../utils/Mime.ts';
-//M 2026-11-14 jm开发：网页文件直接从骨架 utils/Embedded.ts 取（Claude 16:02 意见），原 web/Assets.ts 只是转发，已删（备份 cache/src7备份/20261114-1625EST-删Page和Assets/）。
+//M 2026-11-14 jm开发：网页文件直接从骨架 utils/Embedded.ts 取（Claude 16:02 意见），
+//M 原 web/Assets.ts 只是转发，已删（备份 cache/src7备份/20261114-1625EST-删Page和Assets/）。
 import * as assets from '../../utils/Embedded.ts';
 
 
@@ -43,7 +44,8 @@ export async function apply(ctx: cordis.Context): Promise<void> {
   //M   插件自己登记了 /<名字>/ 的（wechat-kefu），dist/web 里没有同名 html，不会重复登记。
   for (const entry of ctx.resources.config.plugins) {
     const name = entry.name;
-    if (!/^[a-z][a-z0-9-]*$/u.test(name) || name === 'index' || (await assets.readAsset(`${name}.html`)) === undefined) continue;
+    if (!/^[a-z][a-z0-9-]*$/u.test(name) || name === 'index'
+      || (await assets.readAsset(`${name}.html`)) === undefined) continue;
     ctx.http.app.get(`/${name}`, (_request, reply) => reply.redirect(`/${name}/`, 301));
     ctx.http.app.get(`/${name}/`, async (_request, reply) => {
       const html = await assets.readAsset(`${name}.html`);

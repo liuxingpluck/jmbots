@@ -44,7 +44,10 @@ const TIMEOUT_MS = 5 * 60_000;
  * @param engine ctx.resources.raw.engine。
  * @param providers 骨架校验过的供应商。
  */
-function readModel(engine: unknown, providers: Record<string, { baseUrl: string; apiKey: string }>): ImageModel | undefined {
+function readModel(
+  engine: unknown,
+  providers: Record<string, { baseUrl: string; apiKey: string }>,
+): ImageModel | undefined {
   const value = (engine as Record<string, unknown> | undefined)?.['image_model'];
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string' || !value.includes('/')) throw new Error('engine.image_model 要写成“供应商/模型 ID”');
@@ -75,7 +78,11 @@ class ImageGen {
         parameters: piAi.Type.Object({
           prompt: piAi.Type.String({ description: '要画什么' }),
           size: piAi.Type.Optional(piAi.Type.String({ description: '尺寸：1024x1024（默认）、1024x1536（竖）、1536x1024（横）' })),
-          background: piAi.Type.Optional(piAi.Type.Union([piAi.Type.Literal('auto'), piAi.Type.Literal('transparent'), piAi.Type.Literal('opaque')], { description: '背景，默认 auto' })),
+          background: piAi.Type.Optional(piAi.Type.Union([
+            piAi.Type.Literal('auto'),
+            piAi.Type.Literal('transparent'),
+            piAi.Type.Literal('opaque'),
+          ], { description: '背景，默认 auto' })),
           name: piAi.Type.Optional(piAi.Type.String({ description: '文件名，不带扩展名；不写用提示词前 20 字' })),
         }),
       },
@@ -99,13 +106,16 @@ class ImageGen {
       background: (args['background'] as string | undefined) ?? 'auto', output_format: 'png',
     };
     //T 跟踪：发请求前。
-    this.ctx.emit('trace', 'ImageGen.generate', '发生图请求', 'fetch(images/generations)', { 模型: model.name, 尺寸: body.size, 背景: body.background, 提示词: prompt.slice(0, 40) });
+    this.ctx.emit('trace', 'ImageGen.generate', '发生图请求', 'fetch(images/generations)',
+      { 模型: model.name, 尺寸: body.size, 背景: body.background, 提示词: prompt.slice(0, 40) });
 
     //G 停止信号和 5 分钟超时合成一个：哪个先到都断开 fetch（被停下时 fetch 抛 AbortError，骨架把它记成工具出错）。
     const limit = (): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]);
     const response = await fetch(model.url, {
       method: 'POST',
-      headers: { authorization: `Bearer ${model.apiKey}`, 'x-api-key': model.apiKey, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${model.apiKey}`, 'x-api-key': model.apiKey, 'content-type': 'application/json',
+      },
       body: JSON.stringify(body),
       signal: limit(),
     });

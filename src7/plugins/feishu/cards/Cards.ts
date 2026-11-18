@@ -1,6 +1,6 @@
 /**
  * 飞书卡片：待确认卡片（approval 挂着时）、进度卡片（progress 挂着时）。听事件、定发给谁、发卡改卡、认按钮、回小提示。
- * 待确认卡片在 approval 服务就绪时开工；进度卡片订阅更新通知，按钮通过请求事件提交操作。
+ * 待确认和进度卡片都订阅更新通知，按钮通过请求事件提交操作。
  * 卡片号存表 feishu_cards，按钮值只放动作，号从表里查：重启后点旧卡片也认得。
  * 飞书群里不发卡片（群里谁都能点，绕过用户拍板）：待确认卡片改发本人私聊，群里只说一句“要本人确认”；进度卡片群里不发。
  * 点卡片只认本人（people 里 role 是 owner 的），别人点回一句“只有本人能处理”（2026-11-17，0.7.18）。
@@ -15,26 +15,10 @@ import type { FeishuAddress, Feishu, FeishuPerson, Toast } from '../index.ts';
 import * as render from './Render.ts';
 
 
-/** approval 服务里卡片用到的方法（approval.md 第 2 节）。 */
-export interface ApprovalLike {
-  /** 定一件事：交回定好的那件，或者一句原因（找不到、已经定过）。 */
-  decide(id: number, approve: boolean, by: string): render.PendingLike | string;
-}
-
-
+/** 审批卡片按钮最多等五秒。 */
+const APPROVAL_TIMEOUT_MS = 5000;
 /** 进度卡片按钮最多等五秒。 */
 const PROGRESS_TIMEOUT_MS = 5000;
-
-declare module 'cordis' {
-  interface Events {
-    /** approval 存完一件待确认的事（approval.md 第 2 节）。 */
-    'approval/asked'(pending: render.PendingLike): void;
-    /** approval 定完一件事。 */
-    'approval/decided'(pending: render.PendingLike): void;
-    /** progress 的一项有变化（progress.md 第 2 节）。 */
-    'progress/update'(item: render.ProgressItemLike): void;
-  }
-}
 
 
 /** 表 feishu_cards 的一行。 */
@@ -47,18 +31,12 @@ interface CardRow {
 
 
 /**
- * approval 在时开工：听 asked、decided，记下 approval 服务给 onAction 用。
+ * 监听审核插件的通知，发待确认卡片并更新决定结果。
  * @param feishu 飞书渠道。
- * @param ctx 小插件的 ctx（approval 已经在了）；approval 被拔掉时这个小插件跟着拔，监听自动撤。
+ * @param ctx 飞书插件的上下文，卸载时自动取消监听。
  */
 export function setupApproval(feishu: Feishu, ctx: cordis.Context): void {
-  //M ctx.get 现取服务：approval 的类型由它自己的插件声明，这里只认用到的 decide。
-  feishu.approval = ctx.get('approval') as ApprovalLike;
-  ctx.effect(() => {
-    return () => {
-      feishu.approval = undefined;
-    };
-  });
+  //M 待确认通知会触发私聊卡片，审批插件以后挂载也能收到。
   ctx.on('approval/asked', (pending) => {
     //M 收到待确认请求时异步群发通知与交互卡片。
     void onAsked(feishu, ctx, pending);
@@ -121,18 +99,33 @@ export function ownerName(feishu: Feishu): string {
  * @param appId 哪个应用。
  * @returns name 本人的名字；address 私聊地址，谁都没私聊过是 undefined。
  */
-export function ownerChat(feishu: Feishu, ctx: cordis.Context, appId: string): { name: string; address: FeishuAddress | undefined } {
+export function ownerChat(
+  feishu: Feishu,
+  ctx: cordis.Context,
+  appId: string,
+): { name: string; address: FeishuAddress | undefined } {
   //M 登记成本人的人。
   const owners = [...feishu.config.people.values()].filter((person) => person.role === 'owner');
 
   //M 本人在这个应用下的私聊会话：回话地址是私聊、open_id 是本人。Sessions.find 按 json 路径比，嵌套的也能找。
   for (const person of owners) {
-    const where = { channel: 'feishu', 'address.appId': appId, 'address.openId': person.openId, 'address.chatType': 'p2p' };
+    const where = {
+      channel: 'feishu',
+      'address.appId': appId,
+      'address.openId': person.openId,
+      'address.chatType': 'p2p',
+    };
     const row = ctx.sessions.find(where as unknown as Partial<SessionMeta>)[0];
     if (row === undefined) continue;
 
     const found = row.address as FeishuAddress;
-    const address: FeishuAddress = { appId, chatId: found.chatId, messageId: found.messageId, openId: person.openId, chatType: 'p2p' };
+    const address: FeishuAddress = {
+      appId,
+      chatId: found.chatId,
+      messageId: found.messageId,
+      openId: person.openId,
+      chatType: 'p2p',
+    };
     //M 按统一规则补齐客户唯一标识，方便后续会话复用与记忆索引。
     address.customer = feishuCustomer('p2p', found.chatId, person.openId);
     return { name: person.name || OWNER_FALLBACK, address };
@@ -326,7 +319,7 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
  * @param address 点的人、卡片所在的聊天。
  * @param cardId 卡片号。
  * @param value 按钮值：{ action, minutes? }。
- * @returns 给用户的小提示。找不到卡片或缺少审批服务时由调用方提示。
+ * @returns 给用户的小提示，找不到卡片时交给调用方处理。
  */
 export async function onAction(
   feishu: Feishu,
@@ -339,15 +332,29 @@ export async function onAction(
   if (workspaceModule.getRole(address) !== 'owner') return { type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` };
 
   //M 反查该卡片对应的业务类型与审批/会话编号，库里找不到则忽略。
-  const row = feishu.db.query('SELECT card_id, kind, ref, ended FROM feishu_cards WHERE card_id = ?').get(cardId) as CardRow | null;
+  const cardQuery = feishu.db.query('SELECT card_id, kind, ref, ended FROM feishu_cards WHERE card_id = ?');
+  const row = cardQuery.get(cardId) as CardRow | null;
   if (row === null) return undefined;
 
-  if (row.kind === 'approval' && feishu.approval !== undefined) {
+  if (row.kind === 'approval') {
     const approve = value['action'] === 'approve';
-    //M 调用 approval 服务提交审批结果，已处理过的则交回原有结论给用户提示。
-    const result = feishu.approval.decide(Number(row.ref), approve, `飞书卡片 ${address.openId}`);
-    if (typeof result === 'string') {
-      return { type: 'info', content: `待确认 #${row.ref} 已经处理过了：${result}` };
+    const id = Number(row.ref);
+    const by = `飞书卡片 ${address.openId}`;
+    const input = { action: 'decide', id, approve, by } as const;
+    const options = {
+      timeoutMs: APPROVAL_TIMEOUT_MS,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', error: detail ?? `审批未获回执（${reason}）`,
+      }),
+    };
+
+    //M 交给审核插件处理，只有明确完成才回成功提示。
+    const result = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', input, options);
+
+    //G 缺回执或审核拒绝受理时，把失败原因如实提示给点击者。
+    if (result.settled === undefined || result.error !== undefined) {
+      const reason = result.error ?? '未返回审批结果';
+      return { type: 'warning', content: `待确认 #${row.ref} 没办成：${reason}` };
     }
     //M 卡片由随后的 approval/decided 改成灰色。
     let toastText = '已拒绝';

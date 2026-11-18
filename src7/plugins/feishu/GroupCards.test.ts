@@ -80,13 +80,13 @@ interface CardWorld {
   texts: { chatId: string; text: string }[];
   /** ctx.on 登记的监听。 */
   handlers: Map<string, ((value: unknown) => void)[]>;
-  /** 审批方法及进度请求收到的操作。 */
+  /** 审批及进度请求收到的操作。 */
   calls: string[];
 }
 
 
 /**
- * 搭一套：假 Feishu（config.people、db、发卡片发文字只记下）和假 ctx（sessions.find、get、on、effect）。
+ * 搭一套假 Feishu、通知监听和卡片按键用的 Cordis 总线。
  * @param rows 有哪些会话。
  * @param last 这个应用最近私聊的人；没有就是 undefined。
  */
@@ -102,7 +102,6 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
   const fake = {
     config: { domain: '', apps: [{ appId: APP_ID, appSecret: 'fake', bot: BOT }], people: PEOPLE, groups: new Map() },
     db,
-    approval: undefined,
     getApps: () => [APP_ID],
     lastPrivate: () => last,
     sendCard: (address: FeishuAddress) => {
@@ -118,12 +117,7 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
   };
   const feishu = fake as unknown as Feishu;
 
-  const services: Record<string, unknown> = {
-    approval: { decide: () => { calls.push('decide'); return '不该被调'; } },
-  };
   const ctx = {
-    get: (name: string) => services[name],
-    effect: () => undefined,
     on: (name: string, handler: (value: unknown) => void) => {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
@@ -204,6 +198,13 @@ describe('群里不发卡片', () => {
 describe('点卡片只认本人', () => {
   test('别人点待确认、进度卡片：回“只有 leon 能处理”，不定、不终止，表里不变', async () => {
     const world = cardWorld([GROUP_ROW], undefined);
+    requestEvents.onRequestEvent(world.actionCtx, 'approval/request', 'approval/result', (request) => {
+      expect(request).toMatchObject({ action: 'decide', id: 1, approve: true, by: `飞书卡片 ${OWNER}` });
+      world.calls.push('decide');
+      const original = getPending('g1');
+      const settled = { ...original, state: 'approved' } as approvalModule.Pending;
+      return { settled };
+    });
     requestEvents.onRequestEvent(world.actionCtx, 'progress/request', 'progress/result', () => {
       world.calls.push('act');
       return { ok: true, text: '收到，马上停' };
@@ -220,12 +221,34 @@ describe('点卡片只认本人', () => {
     expect(world.db.query('SELECT card_id, ended FROM feishu_cards ORDER BY card_id').all()).toEqual([{ card_id: 'om_a', ended: 0 }, { card_id: 'om_p', ended: 0 }]);
 
     //M 本人点：照常交给 approval、progress。
-    await cards.onAction(world.feishu, world.actionCtx, OWNER_IN_GROUP, 'om_a', { action: 'approve' });
+    const approved = await cards.onAction(world.feishu, world.actionCtx, OWNER_IN_GROUP, 'om_a', { action: 'approve' });
+    expect(approved).toEqual({ type: 'success', content: '已同意执行' });
     const stopped = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_p', { action: 'stop' });
     expect(stopped).toEqual({ type: 'info', content: '收到，马上停' });
     expect(world.calls).toEqual(['decide', 'act']);
     await world.actionCtx.fiber.dispose();
   });
+});
+
+test('审批卡片无人应答或明确失败时提示没办成', async () => {
+  const world = cardWorld([OWNER_ROW], undefined);
+  const sql = "INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES ('om_a', 'approval', '1', 0, 0)";
+  world.db.query(sql).run();
+  const value = { action: 'reject' };
+
+  //M 没有审批插件时，卡片动作不能显示成功。
+  const unavailable = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_a', value);
+  expect(unavailable).toMatchObject({ type: 'warning', content: expect.stringContaining('待确认 #1 没办成') });
+
+  //M 审核插件明确说处理失败时，透传原因。
+  requestEvents.onRequestEvent(world.actionCtx, 'approval/request', 'approval/result', (request) => {
+    expect(request).toMatchObject({ action: 'decide', approve: false });
+    return { error: '这件待确认已经结束' };
+  });
+  const failed = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_a', value);
+  expect(failed).toEqual({ type: 'warning', content: '待确认 #1 没办成：这件待确认已经结束' });
+  expect(world.db.query('SELECT ended FROM feishu_cards').get()).toEqual({ ended: 0 });
+  await world.actionCtx.fiber.dispose();
 });
 
 test('进度卡片通过请求改限时，进度失败或无人应答给出提示', async () => {
@@ -266,20 +289,21 @@ class FakeResources extends cordis.Service {
 }
 
 
-/** approval 跟会话说的话（bots.say）。 */
+/** approval 跟会话说的话（它发通知 bot/say，假 bots 听着记下）。 */
 const said: string[] = [];
 
 
-/** 假的 bots：一个机器人；say 只记下。 */
+/** 假的 bots：一个机器人；像真的 bots 一样听 bot/say，只记下说的话。 */
 class FakeBots extends cordis.Service {
   constructor(ctx: cordis.Context) {
     super(ctx, 'bots');
+    //M approval 不再直接调 bots.say，改发 bot/say：听这个通知，群里那条断言才测得到东西。
+    ctx.on('bot/say', (_session, text) => {
+      said.push(text);
+    });
   }
   list(): unknown[] {
     return [{ name: BOT }];
-  }
-  say(_session: unknown, text: string): void {
-    said.push(text);
   }
 }
 
@@ -335,6 +359,8 @@ describe('群里“同意 N”只认本人', () => {
 
     expect(await receive(app, `同意 ${String(pending.id)}`, OWNER_IN_GROUP)).toBe(true);
     expect(app.approval.list()).toEqual([]);
+    //M 本人批了：approval 经 bot/say 回一句结果（证明假 bots 真的接得到这个通知）。
+    expect(said).toEqual([`已同意待确认 #${String(pending.id)}。`]);
     fs.rmSync(root, { recursive: true, force: true });
   });
 });

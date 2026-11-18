@@ -1,8 +1,8 @@
 /**
  * 跑命令与命令窗口（由 exec 与原 runs 合并）：
  *   服务 exec.run：不经过模型、不审核，起一个 shell 跑一条命令，交回退出码和输出。
- *   工具 exec：先 approval.review，放行就跑；拒绝、去问用户了，都把一句话交给模型。
- *     在这一轮的工作区里跑（飞书上 builder 说话时是他的目录，审核也照这个目录把关）。
+ *   工具 exec：先发 approval/request（action: review）请审核插件审，放行就跑；拒绝、去问用户了，都把一句话交给模型。
+ *     没挂 approval、审核超时一律拒绝（Runs.ts 的 requestReview）。在这一轮的工作区里跑（飞书上 builder 说话时是他的目录，审核也照这个目录把关）。
  *   用户后来同意了（approval/decided，kind 是 exec）：跑命令，结果当一句新的话交回那场会话，推它往下走。
  *   命令窗口 Runs（Runs.ts，可选 config.runs 默认开启）：http 在时挂 /api/run、/api/runs* 五条 HTTP 接口。
  * 停止：工具拿到的停止信号（Tools.ts 给的 signal）一触发，连子进程整棵杀掉（Windows 用 taskkill /T /F），两秒内交回。
@@ -16,7 +16,6 @@ import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as cut from '../../utils/Cut.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
-import type { Pending, ReviewInput } from '../approval/index.ts';
 import * as runsModule from './Runs.ts';
 
 
@@ -26,10 +25,13 @@ export { mountRunsRoutes, readRunsEnabled, Runs, type RunRecord } from './Runs.t
 /** 插件名。 */
 export const name = 'exec';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.0';
+export const version = '1.1.1';
 
-/** 用到的服务：approval 是必须的（没有审核就不让跑命令）；http 为可选（存在时才挂载 /api/run* 命令窗口）。 */
-export const inject = ['resources', 'tools', 'bots', 'sessions', 'approval'];
+/**
+ * 用到的服务：resources、tools、bots、sessions。审核不写在这里，走 approval/request 事件：没挂 approval 时一律拒绝（没有审核就不让跑命令）；
+ * http 为可选（存在时才挂载 /api/run* 命令窗口）。
+ */
+export const inject = ['resources', 'tools', 'bots', 'sessions'];
 
 
 declare module 'cordis' {
@@ -93,12 +95,15 @@ const WINDOWS = process.platform === 'win32';
 /** 跑命令服务。 */
 export class Exec extends cordis.Service {
   /**
-   * 登记 exec 插件：把 Exec 作为服务挂到 Cordis 上（以后用 ctx.exec 取）；再登记工具 exec，听 approval/decided。
+   * 登记 exec 插件：把 Exec 作为服务挂到 Cordis 上（以后用 ctx.exec 取）；再登记工具 exec，听 approval/decided（通知，approval 声明的）。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param dirs 语言运行环境、程序两个目录（绝对路径），和放到 PATH 最前面的工具目录，apply 里算好的。
    */
   constructor(ctx: cordis.Context, private readonly dirs: { runtimes: string; program: string; tools: string[] }) {
+    //M 先让 Cordis 把 Exec 登记成 ctx.exec 服务，别的插件以后用 ctx.exec.run 跑命令。
     super(ctx, 'exec');
+
+    //M 登记工具 exec 给模型用。
     ctx.tools.register({
       definition: {
         name: 'exec',
@@ -110,9 +115,12 @@ export class Exec extends cordis.Service {
         }),
       },
       kinds: ['work'],
+      //M 模型调用 exec 时走 onTool：先审核，放行才跑。
       run: (args, session, signal) => this.onTool(args, session, signal),
     });
-    ctx.on('approval/decided', (pending: Pending) => {
+
+    //M 用户在审核那边定了待确认：onDecided 只管 kind 是 exec 的，同意就跑，结果交回会话。
+    ctx.on('approval/decided', (pending) => {
       void this.onDecided(pending);
     });
   }
@@ -163,6 +171,7 @@ export class Exec extends cordis.Service {
       const finish = (code: number | null, error?: string): void => {
         if (finished) return;
 
+        //M 标记已收尾，清掉两个定时器和停止监听，免得收尾以后还被触发。
         finished = true;
         clearTimeout(timer);
         clearTimeout(closeTimer);
@@ -171,6 +180,8 @@ export class Exec extends cordis.Service {
         if (error !== undefined) {
           result.error = error;
         }
+
+        //M 把结果交回给 run 的调用方（Promise 到这里才完成）。
         resolve(result);
       };
 
@@ -179,6 +190,8 @@ export class Exec extends cordis.Service {
         stopped = true;
         killTree();
       };
+
+      //M 现在就挂上停止监听（只响应一次），喊停时 onAbort 先把整棵杀掉。
       input.signal?.addEventListener('abort', onAbort, { once: true });
 
       //M Windows 的 cmd 默认 GBK，先切成 UTF-8；工具目录放到 PATH 最前面，几个变量只给这个子进程。
@@ -200,10 +213,13 @@ export class Exec extends cordis.Service {
       });
 
       const take = (chunk: Buffer): void => {
+        //M 每来一段输出：转成文字攒进总输出，再交给边跑边看的回调。
         const text = chunk.toString('utf8');
         output += text;
         input.onOutput?.(text);
       };
+
+      //M stdout、stderr 都交给 take 攒起来，输出合在一起。
       child.stdout.on('data', take);
       child.stderr.on('data', take);
 
@@ -219,13 +235,17 @@ export class Exec extends cordis.Service {
           finish(code);
         }, CLOSE_GRACE_MS);
       });
+      //M 管道关了：正常收尾，用这次的退出码。
       child.on('close', (code) => {
         finish(code);
       });
+
+      //M 子进程起不来之类的错：下面带上错误信息收尾。
       child.on('error', (error) => {
         //G spawn 的 signal 触发时也会报一个 AbortError：那是停下，不算出错，等 exit/close 收尾。
         if (stopped) return;
 
+        //M 真出错了（没有退出码）：把错误信息交给 finish。
         finish(null, error.message);
       });
     });
@@ -239,6 +259,7 @@ export class Exec extends cordis.Service {
    * @returns 给模型看的话。
    */
   private async onTool(args: Record<string, unknown>, session: Session, signal: AbortSignal): Promise<string> {
+    //M 取出命令，找到这场会话的机器人（工作区挂在它名下）。
     const command = args['command'] as string;
     const bot = this.ctx.bots.get(session.row.bot);
     if (bot === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
@@ -251,7 +272,7 @@ export class Exec extends cordis.Service {
     }
     const timeoutMs = ((args['timeout'] as number | undefined) ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
     const payload: ExecPayload = { command, cwd, timeoutMs };
-    const reviewInput: ReviewInput = {
+    const reviewInput: runsModule.ReviewInput = {
       command,
       cwd,
       confined,
@@ -262,17 +283,19 @@ export class Exec extends cordis.Service {
       signal,
     };
 
-    const verdict = await this.ctx.approval.review(reviewInput);
+    //M 发 approval/request 请审核插件审，最多等 65 秒；会话喊停（signal）就不等了。没挂、超时、停了都是拒绝。
+    const verdict = await runsModule.requestReview(this.ctx, reviewInput);
 
     //T 跟踪：审核结论。
     const vars = { 会话: session.id, 结论: verdict.result, 原因: verdict.reason };
-    this.ctx.emit('trace', 'Exec.onTool', '审核完了', 'approval.review(input)', vars);
+    this.ctx.emit('trace', 'Exec.onTool', '审核完了', "requestEvent('approval/request', review)", vars);
     if (verdict.result === 'reject') return `未执行：${verdict.reason}`;
 
     if (verdict.result === 'asked') {
       return `已提交给用户确认，还没执行（待确认 #${String(verdict.id)}）。用户决定后会有一条消息告诉你结果，不要重新调用这条命令。`
         + '依赖这条命令结果的事先别做，别的事照常做；没别的事就结束这一轮，不用再提醒用户确认。';
     }
+    //M 放行了：真去跑（带上停止信号），结果写成给模型看的话交回。
     return report(await this.run({ command, cwd, timeoutMs, signal, session: session.id }));
   }
 
@@ -281,15 +304,18 @@ export class Exec extends cordis.Service {
    * @param pending 定好的待确认。
    * 副作用：可能起子进程；往会话里说一句话，推它往下走。
    */
-  private async onDecided(pending: Pending): Promise<void> {
+  private async onDecided(pending: runsModule.Pending): Promise<void> {
     if (pending.kind !== 'exec' || pending.session === undefined) return;
 
     //M payload 是 onTool 自己放的，直接用。
     const { command, cwd, timeoutMs } = pending.payload as ExecPayload;
+
+    //M 打开登记这件待确认的那场会话，后面要把结果交回给它。
     const session = this.ctx.sessions.open(pending.session);
     const id = String(pending.id);
     let text = `（系统）待确认 #${id}：用户拒绝了（${pending.by ?? ''}），命令没有执行。\n命令：${command}`;
     if (pending.state === 'approved') {
+      //M 用户同意了：起子进程把命令真跑起来（这时没有停止信号），结果写进要交回的话。
       const result = await this.run({ command, cwd, timeoutMs, session: session.id });
       text = `（系统）待确认 #${id}：用户同意了（${pending.by ?? ''}），命令已经执行。\n命令：${command}\n结果：\n${report(result)}`;
     }
@@ -308,6 +334,7 @@ export class Exec extends cordis.Service {
 /**
  * 结果写成给模型看的话：头一行退出码、用时（照 src/capabilities/tools/Tools.ts:1163-1166），再接输出，太长只留结尾。
  * @param result exec.run 的结果。
+ * @returns 给模型看的文字：头一行是退出码、用时，后面是输出（太长只留结尾）；没有输出就写“（没有输出）”。
  */
 export function report(result: ExecResult): string {
   let codeText = '无';
@@ -326,9 +353,11 @@ export function report(result: ExecResult): string {
     head += `，出错：${result.error}`;
   }
 
+  //M 换行统一成 \n，去掉末尾那个换行；没有输出就只回头一行。
   const output = result.output.replace(/\r\n/g, '\n').replace(/\n$/u, '');
   if (output === '') return `${head}\n（没有输出）`;
 
+  //M 输出太长就只留最后一段，截了的话在前面写明留了几行、共几行。
   const kept = cut.tail(output);
   let note = '';
   if (kept.cut) {
@@ -347,13 +376,16 @@ function getToolDirs(dirs: string[]): string[] {
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) continue;
 
+    //M 这个目录下的子文件夹，按名字排好，PATH 里的顺序就固定。
     const names = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
     for (const item of names) {
+      //M 有 bin、Scripts 就只用它们（语言环境的可执行文件在那里）。
       const subs = ['bin', 'Scripts'].map((sub) => path.join(dir, item, sub)).filter((sub) => fs.existsSync(sub));
       if (subs.length > 0) {
         found.push(...subs);
         continue;
       }
+      //M 没有 bin、Scripts：文件夹本身放进 PATH。
       found.push(path.join(dir, item));
     }
   }
@@ -363,7 +395,7 @@ function getToolDirs(dirs: string[]): string[] {
 
 /**
  * 挂上跑命令与可选的 HTTP 命令窗口。
- * apply 是 Cordis 插件的入口：inject 里的服务（含 approval）都就绪后 Cordis 调一次；approval 没挂，这个插件就一直不开工。
+ * apply 是 Cordis 插件的入口：inject 里的服务都就绪后 Cordis 调一次。approval 没挂也照常开工，只是审核请求没人答，命令一律拒绝。
  * 工具目录读顶层 paths 段；`config.runs` 默认开启，传 `false` 可关闭 `/api/run*` 路由。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param raw 插件配置（可不写）。
@@ -376,11 +408,17 @@ export function apply(ctx: cordis.Context, raw?: Record<string, unknown>): void 
   if (typeof runtimes !== 'string' || typeof program !== 'string') {
     throw new Error('paths.runtimes、paths.program 要写成目录（相对运行时目录或绝对路径）');
   }
+  //M 读配置里 runs 开没开（默认开），不合法的值在这里就抛错。
   const runsEnabled = runsModule.readRunsEnabled(raw?.['runs']);
+
+  //M 两个目录算成绝对路径，建 Exec 服务，同时把各语言环境的 bin 目录算好，当 PATH 前缀。
   const dirs = { runtimes: path.resolve(ctx.resources.root, runtimes), program: path.resolve(ctx.resources.root, program) };
   const exec = new Exec(ctx, { ...dirs, tools: getToolDirs([dirs.runtimes, dirs.program]) });
   if (runsEnabled) {
+    //M 建命令窗口（建表、收拾上次没跑完的），它跑命令还是交给 exec.run。
     const runs = new runsModule.Runs(ctx, exec);
+
+    //M http 就绪后，把五条 /api/run* 路由挂上去。
     void ctx.inject(['http'], (sub) => {
       runsModule.mountRunsRoutes(sub.http.app, runs);
     });

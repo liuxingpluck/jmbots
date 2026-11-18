@@ -1,7 +1,8 @@
 /**
  * 决策模型：一道是非题加一份现状，交给配置里的一个或几个模型同时打分（“答案是‘是’”的把握，0～1），合成一个分，照阈值交回
  * allow / deny / unsure。两种模型都认：对话模型（开一场 kind: 'decision' 的小会话，让它回一段带 probability 的 JSON）；
- * 0.4 用的分类器（typesafe-system-one，直接给概率）。不拦事件、不出题、不记表，谁要判断谁调（approval、progress 可选地用）。
+ * 0.4 用的分类器（typesafe-system-one，直接给概率）。不拦事件、不出题、不记表。
+ * 谁要判断谁发请求事件 decision/judge（approval、bots 前台、progress 可选地用），本插件回 decision/judge-result；没挂本插件时发的一方当场退回拿不准。
  * 照 0.4 src/capabilities/Model.ts:382-390、446-453、727-744。设计：docs/src7插件设计/decision.md。
  */
 import * as piAi from '@earendil-works/pi-ai';
@@ -14,7 +15,7 @@ import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../..
 /** 插件名。 */
 export const name = 'decision';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.2';
+export const version = '1.0.3';
 
 /** 默认的决策模型：Magpie 里的 jev-1.14 分类器（jev-router 在这个地区用不了）。 */
 const DEFAULT_MODELS = [{ model: 'magpie/openrouter/typesafe/jev-1.14', type: 'classifier' }];
@@ -69,8 +70,11 @@ export type DecisionJudgeRequest = RequestEnvelope & JudgeInput;
 
 /** decision/judge-result 回执载荷。 */
 export interface DecisionJudgeResult extends ResultEnvelope {
+  /** 结论：分数 ≥ allowAt 是 allow，< denyAt 是 deny，别的（含都没答上来）是 unsure。 */
   verdict: 'allow' | 'deny' | 'unsure';
+  /** 合出来的分，0～1；都没答上来时没有。 */
   score?: number;
+  /** 一句人话：怎么合的分、比的哪个阈值。 */
   reason: string;
 }
 

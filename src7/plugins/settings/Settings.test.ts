@@ -1,4 +1,4 @@
-/** 离线验证设置路由通过事件核对模型、读取启动时间及关闭 HTTP。 */
+/** 离线验证设置路由的模型、机器人登记、探活、HTTP 关闭和基地重启事件。 */
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
@@ -19,7 +19,7 @@ afterEach(async () => {
 
 
 /** 挂真实设置路由和内存事件总线，配置与记忆全部写测试的临时目录。 */
-async function setup() {
+async function setup(withBotReply = true) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-settings-test-'));
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'config.yaml'), [
@@ -48,21 +48,31 @@ async function setup() {
   ctx.provide('http', { app });
   ctx.provide('bots', {
     get: (bot: string) => bots.get(bot),
-    add: ({ name }: { name: string }) => {
-      const bot = { memory: fs.mkdtempSync(path.join(root, 'bot-memory-')) };
-      bots.set(name, bot);
-      return bot;
-    },
   });
+  if (withBotReply) {
+    //M 模拟机器人登记并返回新建的记忆目录，测试不调用机器人服务的方法。
+    events.onRequestEvent(ctx, 'bot/request', 'bot/result', (request) => {
+      if (request.action !== 'add') return { ok: false };
+
+      const { name } = request.config;
+      const memory = fs.mkdtempSync(path.join(root, 'bot-memory-'));
+      const bot = { name, memory, workspace: root };
+      bots.set(name, bot);
+      return { ok: true, bot };
+    });
+  }
   await ctx.plugin(settings);
-  return { ctx, app };
+  return { ctx, app, bots };
 }
 
 
 /** 记录重启路径的进程操作，测试不拉起或退出实际进程。 */
-function mockRestart(order: string[]) {
+function mockRestart(order: string[], supervised = false) {
   const original = process.env['JMBOTS_SUPERVISED'];
   delete process.env['JMBOTS_SUPERVISED'];
+  if (supervised) {
+    process.env['JMBOTS_SUPERVISED'] = '1';
+  }
   const finished = Promise.withResolvers<void>();
   const exit = spyOn(process, 'exit').mockImplementation((() => {
     order.push('exit');
@@ -75,6 +85,7 @@ function mockRestart(order: string[]) {
   cleanups.push(() => {
     exit.mockRestore();
     spawn.mockRestore();
+    delete process.env['JMBOTS_SUPERVISED'];
     if (original !== undefined) {
       process.env['JMBOTS_SUPERVISED'] = original;
     }
@@ -87,6 +98,8 @@ test('模型目录应答时校验模型，明确查不到则拒绝新建', async
   const { ctx, app } = await setup();
   const models: string[] = [];
   events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
+    if (request.action !== 'find') return {};
+
     models.push(request.model);
     if (request.model !== 'mock/listed') return {};
 
@@ -128,6 +141,65 @@ test('没有模型目录应答时只校验供应商，两个并发新建保留�
   const bad = await app.inject({ method: 'POST', url: '/api/bots', payload: { name: '坏供应商', model: 'unknown/model' } });
   expect(bad.statusCode).toBe(400);
   expect(bad.json<{ error: string }>()).toEqual({ error: '模型 unknown/model 的供应商不在 providers 里' });
+});
+
+test('登记回执的记忆目录用于初始化索引', async () => {
+  const { app, bots } = await setup();
+  const payload = { name: '工作机器人', language: 'en', identity: '帮忙整理笔记' };
+  const response = await app.inject({ method: 'POST', url: '/api/bots', payload });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toMatchObject({ ok: true, bot: { name: payload.name, language: payload.language } });
+
+  const memory = bots.get(payload.name)?.memory;
+  expect(memory).toBeDefined();
+  const index = fs.readFileSync(path.join(memory!, 'index.md'), 'utf8');
+  expect(index).toContain(payload.identity);
+});
+
+test('新建机器人无人应答时返回 503，并保留已保存的配置', async () => {
+  const { app, bots } = await setup(false);
+  const payload = { name: '待登记', language: 'zh' };
+  const response = await app.inject({ method: 'POST', url: '/api/bots', payload });
+  expect(response.statusCode).toBe(503);
+  expect(response.json<{ error: string }>().error).toContain('配置已保存');
+  expect(response.json<{ error: string }>().error).toContain('请重启后生效');
+  expect(bots.has(payload.name)).toBe(false);
+
+  const saved = await app.inject('/api/settings');
+  expect(saved.json().config.bots).toEqual([payload]);
+});
+
+test('基地重启无人应答或拒绝时返回错误，收到成功回执才报告重启', async () => {
+  const { ctx, app } = await setup();
+  const order: string[] = [];
+  const restart = mockRestart(order, true);
+  const input = { method: 'POST', url: '/api/service/restart' } as const;
+  events.onRequestEvent(ctx, 'http/request', 'http/result', () => ({
+    ok: true, statusCode: 200, body: '{"startedAt":42}',
+  }));
+
+  //M 基地没有监听时明示失败，释放入口让下一次请求可以重试。
+  const unavailable = await app.inject(input);
+  expect(unavailable.statusCode).toBe(503);
+  expect(unavailable.json<{ error: string }>().error).toContain('基地重启未获回执');
+
+  let allow = false;
+  events.onRequestEvent(ctx, 'base/request', 'base/result', (request) => {
+    expect(request).toMatchObject({ method: 'POST', route: '/restart', body: {}, timeoutMs: 15_000 });
+    if (!allow) return { ok: true, status: 404, body: { error: '基地未提供重启接口' } };
+
+    return { ok: true, status: 200, body: { ok: true } };
+  });
+  const refused = await app.inject(input);
+  expect(refused.statusCode).toBe(409);
+  expect(refused.json<{ error: string }>()).toEqual({ error: '基地未提供重启接口' });
+
+  allow = true;
+  const accepted = await app.inject(input);
+  expect(accepted.statusCode).toBe(200);
+  expect(accepted.json()).toMatchObject({ ok: true, startedAt: 42 });
+  expect(restart.spawn).not.toHaveBeenCalled();
+  expect(restart.exit).not.toHaveBeenCalled();
 });
 
 test('探活事件无人应答时返回错误，释放重启入口', async () => {

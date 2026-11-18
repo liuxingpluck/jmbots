@@ -178,7 +178,11 @@ export class FilesMirror extends cordis.Service {
       if (reply.length > REPLY_MAX) {
         reply = `${reply.slice(0, REPLY_MAX)}…`;
       }
-      fs.appendFileSync(file, `${SEPARATOR}【这一轮】${word} · ${textModule.getClock(Date.now())}：${hardBreaks(reply)}\n`, 'utf8');
+      fs.appendFileSync(
+        file,
+        `${SEPARATOR}【这一轮】${word} · ${textModule.getClock(Date.now())}：${hardBreaks(reply)}\n`,
+        'utf8',
+      );
     }
 
     //M 安排同步当前状态到 session.json，短时间内的更新由定时器合并。
@@ -217,12 +221,16 @@ export class FilesMirror extends cordis.Service {
    */
   private block(message: piAi.Message, index: number, step: number): string {
     if (message.role === 'user') {
-      return `${SEPARATOR}【用户 · ${textModule.getClock(message.timestamp)}】\n${hardBreaks(piAi.contentText(message.content))}`;
+      return `${SEPARATOR}【用户 · ${textModule.getClock(message.timestamp)}】\n`
+        + hardBreaks(piAi.contentText(message.content));
     }
     if (message.role === 'assistant') {
       const usage = message.usage;
       const context = usage.input + usage.cacheRead + usage.cacheWrite;
-      const lines = [`### 第 ${String(step)} 步 · ${textModule.getClock(message.timestamp)} · ${message.provider}/${message.model} · 上下文 ${String(context)}`];
+      const lines = [
+        `### 第 ${String(step)} 步 · ${textModule.getClock(message.timestamp)} · `
+        + `${message.provider}/${message.model} · 上下文 ${String(context)}`,
+      ];
       for (const block of message.content) {
         if (block.type === 'thinking' && block.thinking.trim() !== '') {
           lines.push(`【思考】${hardBreaks(block.thinking.trim())}`);
@@ -245,7 +253,8 @@ export class FilesMirror extends cordis.Service {
     const text = piAi.contentText(message.content);
     let shown = text;
     if (text.length > RESULT_MAX) {
-      shown = `${text.slice(0, RESULT_HEAD)}\n……（共 ${String(text.length)} 字，全文在库里这场会话的第 ${String(index + 1)} 条）……\n${text.slice(-RESULT_TAIL)}`;
+      shown = `${text.slice(0, RESULT_HEAD)}\n……（共 ${String(text.length)} 字，全文在库里这场会话的第 ${String(index + 1)} 条）……\n`
+        + text.slice(-RESULT_TAIL);
     }
     let errorMark = '';
     if (message.isError) {

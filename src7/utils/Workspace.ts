@@ -2,6 +2,7 @@
  * 工作区里的路径：模型给的相对路径落成绝对路径，不许跑出工作区（符号链接解开再比）。base-tools、file-tools 用。
  * 这一轮说话人是哪一档（getRole）、用哪个工作区（getWorkspace）：approval、base-tools、file-tools、exec、feishu、memory、prompt、前台共用。
  * 这一轮能不能带用户的私人记忆（privateAllowed）：prompt、memory、前台共用。是不是群（isGroup）：再加 approval、飞书卡片。
+ * 比路径（getPathKey、isUnder）：approval 的可信目录、Checks.ts 的 checkDirs 用。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -95,6 +96,40 @@ export function inside(workspace: string, relative: string): string {
     throw new Error(`路径出了工作区：${relative}（只能用工作区里的路径）`);
   }
   return full;
+}
+
+
+/**
+ * 比路径用的样子：path.resolve 解开 .、..、多余和末尾的分隔符；Windows 上再转小写（盘符、目录名不分大小写）。
+ * approval 比可信目录时，配置和消息里的目录（入口 Checks.ts 的 checkDirs）、命令里的路径（Rules.ts 的 getUntrusted）都照它算。
+ * @param file 路径；相对的照进程当前目录解开，调用方要先自己拼成绝对路径。
+ * @returns 规范化后的绝对路径。
+ */
+export function getPathKey(file: string): string {
+  //M 先解开 ..，跳出去的就落在目录外面，后面比较时自然不算在里面。
+  const full = path.resolve(file);
+  if (process.platform !== 'win32') return full;
+
+  //M Windows 不分大小写：统一转小写再比。
+  return full.toLowerCase();
+}
+
+
+/**
+ * 一个路径在不在这几个目录里（目录本身也算）。两边都要是 getPathKey 算过的。
+ * @param dirs 目录。
+ * @param key 要查的路径。
+ * @returns 在其中一个里面是 true。
+ */
+export function isUnder(dirs: string[], key: string): boolean {
+  return dirs.some((dir) => {
+    //G 换了盘符：path.relative 交回绝对路径，不在里面。
+    const back = path.relative(dir, key);
+    if (path.isAbsolute(back)) return false;
+
+    //M 要往上走（.. 开头）的在外面，别的都在里面。
+    return back !== '..' && !back.startsWith(`..${path.sep}`);
+  });
 }
 
 

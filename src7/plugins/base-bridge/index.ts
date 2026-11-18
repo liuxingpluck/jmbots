@@ -20,33 +20,42 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.1';
+export const version = '1.1.2';
 export const inject = ['resources'];
 
-/** base/request 请求载荷。 */
+/** base/request 请求载荷（契约 3.2 第 10 条）：别的插件（memory、settings、web-api）不拿 ctx.base，发这个事件请基地办事。 */
 export interface BaseRequest extends RequestEnvelope {
+  /** GET 还是 POST。 */
   method: 'GET' | 'POST';
+  /** 相对基地根地址的路径（如 /version、/restart）；也可以是完整的 HTTP(S) 地址。 */
   route: string;
+  /** 基地这次请求最多等多久，毫秒；发的一方 requestEvent 的等待要比它多 1 秒，让这边先把结构化的错误交回。 */
   timeoutMs: number;
+  /** POST 的 JSON 正文；GET 不用。 */
   body?: unknown;
 }
 
 /** base/result 回执载荷。 */
 export interface BaseResult extends ResultEnvelope {
+  /** 基地回了话（不管状态码）是 true；没配地址、连不上、超时是 false。 */
   ok: boolean;
+  /** 基地回的 HTTP 状态码；404、409 这类由发的一方自己判断。 */
   status?: number;
+  /** 基地回的正文：能解析成 JSON 的是对象，旧接口的纯文本原样，空正文没有。 */
   body?: unknown;
+  /** ok 是 false 时的原因：“没配 engine.index_url”“基地没响应”。 */
   error?: string;
 }
 
 declare module 'cordis' {
   interface Context {
+    /** 基地服务，实现在 src7/plugins/base-bridge/index.ts；别的插件改发 base/request，本插件内部（通知、更新监听）照旧用它。 */
     base: Base;
   }
   interface Events {
-    /** 请求（serial）：向基地转发 GET / POST JSON 请求。 */
+    /** 请求（serial）：向基地转发 GET / POST JSON 请求。本插件听，回 base/result。 */
     'base/request'(request: BaseRequest): void | Promise<void>;
-    /** 回执（emit）：基地响应或断连错误回执。 */
+    /** 回执（emit）：基地响应或断连错误回执，按 requestId 配对。 */
     'base/result'(result: BaseResult): void;
   }
 }
@@ -88,25 +97,45 @@ export class Base extends cordis.Service {
    */
   constructor(ctx: cordis.Context, readonly url: string) {
     super(ctx, 'base');
-    //M 挂载通用基地请求事件入口，供记忆与配置页不直接依赖 base 服务而发起 HTTP 请求。
+
+    //M 没配地址、连不上、超时（getJson、postJson 抛的错）由 onError 转成 { ok: false, error }，发的一方不干等。
+    const requestOptions = {
+      onError: (error: unknown) => {
+        const message = textModule.getMessage(error);
+        return { ok: false, error: message };
+      },
+    };
+
+    //M 听请求事件 base/request（契约 3.2 第 10 条）：记忆、设置页、网页接口不直接拿 ctx.base，发这个事件请基地办事，办完回 base/result。
     onRequestEvent(
       ctx,
       'base/request',
       'base/result',
-      async (request) => {
-        const send = (): Promise<BaseReply> => {
-          if (request.method === 'GET') return this.getJson(request.route, request.timeoutMs);
-
-          return this.postJson(request.route, request.body, request.timeoutMs);
-        };
-        //M 发起实际基地调用并原样透传状态码与 JSON 正文。
-        const reply = await send();
-        return { ok: true, status: reply.status, body: reply.body };
-      },
-      {
-        onError: (error) => ({ ok: false, error: textModule.getMessage(error) }),
-      },
+      (request) => this.onRequest(request),
+      requestOptions,
     );
+  }
+
+  /**
+   * 响应 base/request：GET 调 getJson，POST 调 postJson，原样交回状态码和正文。
+   * @param request 别的插件用 requestEvent 发来的请求。
+   * @returns 回执正文：ok 是 true，带基地的状态码和正文。
+   * @throws 没配地址、基地没响应时 getJson、postJson 抛的错原样抛，由 onRequestEvent 的 onError 转成 { ok: false, error }。
+   */
+  private async onRequest(request: BaseRequest): Promise<Omit<BaseResult, 'requestId'>> {
+    //T 跟踪：别的插件经事件请基地办事。
+    const vars = { 方法: request.method, 路径: request.route, 请求号: request.requestId ?? '（不等回执）' };
+    this.ctx.emit('trace', 'Base.onRequest', '别的插件经事件 base/request 请基地办事', `base/request（${request.method}）`, vars);
+
+    //M GET：问基地要 JSON。
+    if (request.method === 'GET') {
+      const reply = await this.getJson(request.route, request.timeoutMs);
+      return { ok: true, status: reply.status, body: reply.body };
+    }
+
+    //M POST：带正文发给基地。
+    const reply = await this.postJson(request.route, request.body, request.timeoutMs);
+    return { ok: true, status: reply.status, body: reply.body };
   }
 
   /**
@@ -260,14 +289,15 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
       });
     }
   });
-  //M notify 与 update_watch 默认关闭；开启后才按各自依赖 inject，不影响无 tools/approval 的轻量挂法。
+  //M notify 与 update_watch 默认关闭；开启后才按各自依赖 inject，不影响无 tools 的轻量挂法。
   if (notifySettings.enabled) {
     void ctx.inject(['tools'], (sub) => {
       notifyModule.mountNotify(sub, notifySettings);
     });
   }
+  //M 更新监听只要 bots（挑机器人）、sessions（找前台会话）；待确认走 approval/request 事件，不再硬等 approval 挂上。
   if (watchSettings.enabled) {
-    void ctx.inject(['bots', 'approval', 'sessions'], (sub) => {
+    void ctx.inject(['bots', 'sessions'], (sub) => {
       updateWatchModule.mountUpdateWatch(sub, watchSettings);
     });
   }

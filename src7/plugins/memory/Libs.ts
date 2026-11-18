@@ -96,6 +96,8 @@ export class Libs {
   /** 开始：1 分钟后第一次整轮刷新。 */
   start(firstMs = FIRST_REFRESH_MS): void {
     this.stopped = false;
+
+    //M 隔 firstMs 后进第一轮（loop）：先整轮刷一遍，之后 loop 自己按用时排下一轮。
     this.timer = setTimeout(() => this.loop(), firstMs);
   }
 
@@ -107,11 +109,13 @@ export class Libs {
 
   /** 一轮：做完按用时排下一轮。 */
   private loop(): void {
+    //M 跑一轮（tick）；出错不抛，记成一条问题交给 report 打日志，用时按 0 算。
     void this.tick()
       .catch((error: unknown) => {
         this.report([`刷新出错：${textModule.getMessage(error)}`]);
         return 0;
       })
+      //M 做完按这一轮用时排下一轮（用时越长间隔越长，最短 5 秒）；已经停了就不排。
       .then((cost) => {
         if (!this.stopped) this.timer = setTimeout(() => this.loop(), Math.max(SCAN_MS, cost * SCAN_SLOWDOWN));
       });
@@ -119,7 +123,10 @@ export class Libs {
 
   /** @returns 这一轮扫指纹用了多久。 */
   private async tick(): Promise<number> {
+    //M 先拿到配置里要看的库名（engine.memory_libs 拆开）。
     const names = this.names();
+
+    //M 第一次，或离上次整轮已满 30 分钟：整轮刷一遍（问基地、记指纹、刷全部库），这一轮不再扫指纹。
     if (this.roundAt === 0 || Date.now() - this.roundAt >= REFRESH_MS) {
       await this.round(names);
       return 0;
@@ -130,6 +137,7 @@ export class Libs {
       const watch = this.watches.get(name);
       if (watch?.root === undefined) continue;
 
+      //M 扫一遍这个库目录的指纹，并累计用时：用时越长，下一轮间隔越长。
       const began = Date.now();
       const now = await stamp(watch.root);
       cost += Date.now() - began;
@@ -153,6 +161,8 @@ export class Libs {
     const health = await recall.getJson(this.base, '/health');
     if (health === undefined) return;
     const libs = Array.isArray(health?.['libs']) ? health['libs'] as Record<string, unknown>[] : [];
+
+    //M 逐个库：从基地回的清单里取根目录和文件数（文件太多的不扫指纹），记下指纹，平时只比指纹就知道变没变。
     for (const name of names) {
       const info = libs.find((lib) => lib['name'] === name);
       const totals = info?.['totals'] as Record<string, unknown> | undefined;
@@ -164,6 +174,8 @@ export class Libs {
       if (now !== undefined) { watch.refreshed = now; watch.last = now; }
       this.watches.set(name, watch);
     }
+
+    //M 全部库刷一遍：让基地摄取、重建 RAG 索引；有问题的汇总报出来（没问题就不吭声）。
     this.report(await this.refresh(names));
   }
 
@@ -182,6 +194,8 @@ export class Libs {
       } else if (ingest !== 400) {
         problems.push(`${name}：摄取没开始（${String(ingest)}）`);
       }
+
+      //M 摄取完（或老库跳过）再让基地建 RAG 索引；断连静默跳出，别的状态码记成问题。
       const rag = await recall.postJson(this.base, '/rag/index', { lib: name });
       if (rag === undefined) break;
       if (rag !== 200) problems.push(`${name}：RAG 索引没开始建（${String(rag)}）`);
@@ -194,6 +208,8 @@ export class Libs {
     const deadline = Date.now() + INGEST_WAIT_MS;
     while (Date.now() < deadline && !this.stopped) {
       await Bun.sleep(this.pollMs);
+
+      //M 问基地这个库的摄取还在不在跑；问不到（undefined）也当没在跑，直接返回，不挡后面。
       const body = await recall.getJson(this.base, `/ingest?lib=${encodeURIComponent(name)}`);
       const job = body?.['job'] as Record<string, unknown> | null | undefined;
       if (job?.['running'] !== true) return;

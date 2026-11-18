@@ -1,16 +1,24 @@
 /**
  * 盯基地的新版本（由原 update-watch 并入 base-bridge）：
  * 全部挂完 first_ms（默认 10 秒）后问一次基地 GET /update，以后每 every_ms（默认 60 秒）一次。
- * 有新版本、没被拒过、也没在等，就 approval.ask 登记一条（kind: 'update'）。
+ * 有新版本、没被拒过、也没在等，就发 approval/request（action: ask）登记一条（kind: 'update'）。
  * 用户同意 → 叫基地 POST /update/apply；拒绝 → 记下这个版本不再问；卸载时清理定时器。
+ * 和 approval、bots 说话都走事件（契约第五节第一份 #10–#12、#27）：没挂 approval 时当没有待确认、登记不上就记一行跳过。
  * 默认关闭：需在 plugins[base-bridge].config.update_watch 显式传 true 或对象才开启。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as filesModule from '../../utils/Files.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
-import type { Pending } from '../approval/index.ts';
+
+
+/** 一件待确认：照 approval 声明的 approval/decided 事件取，不 import approval 目录。 */
+type Pending = requestEventModule.EventArg<'approval/decided'>;
+
+/** approval/result 回执：照 approval 声明的事件取。 */
+type ApprovalReply = requestEventModule.EventArg<'approval/result'>;
 
 
 /** `plugins[base-bridge].config.update_watch` 校验后配置。 */
@@ -44,6 +52,10 @@ const FIRST_MS = 10_000;
 const EVERY_MS = 60_000;
 const TIMEOUT_MS = 5_000;
 const CHANGES_MAX = 600;
+/** 问 approval 还有哪些在等最多等多久（契约 3.1：list 3 秒）。 */
+const LIST_WAIT_MS = 3_000;
+/** 请 approval 登记一条最多等多久（契约 3.1：ask 5 秒）。 */
+const ASK_WAIT_MS = 5_000;
 /** 自己拒掉旧条目时写的两句：听到这两句的拒绝不记成用户拒的。 */
 const NEWER = '有更新的版本了';
 const GONE = '新版本已经换上或撤掉了';
@@ -185,9 +197,14 @@ export class UpdateWatch {
       return;
     }
 
-    //M 取出当前所有仍在等待审批的更新条目，用于清理过期版本或防止重复弹出。
+    //M 问 approval 还在等的更新条目（approval/request，action: list），用于清理过期版本或防止重复弹出。
+    //M   没挂 approval、超时都当没有在等的（契约 3.1：查询类退回空清单）。
     const available = status.available ?? undefined;
-    const waiting = this.ctx.approval.list().filter((item) => item.kind === 'update');
+    const listRequest = { action: 'list', kind: 'update' } as const;
+    const listOptions = { prefix: 'apr', timeoutMs: LIST_WAIT_MS, onFallback: getEmptyReply };
+    const listed = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', listRequest, listOptions);
+    const waiting = listed.items ?? [];
+
     let expireReason = NEWER;
     if (available === undefined) {
       expireReason = GONE;
@@ -195,29 +212,45 @@ export class UpdateWatch {
     for (const item of waiting) {
       const ver = (item.payload as { version?: string } | null)?.version;
       if (ver !== available?.version) {
-        //M 新版本已替换或撤回时，把过期的旧更新待确认自动驳回。
-        this.ctx.approval.decide(item.id, false, expireReason);
+        //M 新版本已替换或撤回时，把过期的旧更新待确认自动驳回：不带 requestId，发完就走（契约 3.1：清理类不等回执）。
+        const decideRequest = { action: 'decide', id: item.id, approve: false, by: expireReason } as const;
+        void this.ctx.serial('approval/request', decideRequest).catch(() => undefined);
       }
     }
+
+    //G 没有新版本、用户拒过这个版本：不再登记。
     if (available === undefined || state.declined === available.version) return;
 
+    //G 这个版本已经在等用户了：不重复登记。
     if (waiting.some((item) => (item.payload as { version?: string } | null)?.version === available.version)) return;
 
     //M 选第一个在线配置的机器人作为审批条目与结果播报的归属。
     const bot = this.ctx.bots.list()[0]?.name;
     if (bot === undefined) return;
 
-    const changes = (available.changes ?? []).map((item) => `${item.version}：${item.changes.join('、')}`).join('；').slice(0, CHANGES_MAX);
-    //M approval.ask：登记一条没有会话的待确认，approval 发 approval/asked，网页和飞书卡片去推。
-    const pending = this.ctx.approval.ask({
+    //M 把各版本的更新内容拼成一段（最多 600 字），连同风险建议写进待确认的细节。
+    const changes =(available.changes ?? []).map((item) => `${item.version}：${item.changes.join('、')}`).join('；').slice(0, CHANGES_MAX);
+    const input = {
       kind: 'update',
       bot,
       title: `有新版本 ${available.version}`,
       detail: `${changes}\n${ADVICE}`,
       payload: { version: available.version, command: `更新到 ${available.version}（现在是 ${status.current?.version ?? '未知'}）` },
-    });
+    };
+    const askRequest = { action: 'ask', input } as const;
+    const askOptions = { prefix: 'apr', timeoutMs: ASK_WAIT_MS, onFallback: getEmptyReply };
+
+    //M 发 approval/request（action: ask）：登记一条没有会话的待确认，approval 发 approval/asked，网页和飞书卡片去推。
+    const asked = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', askRequest, askOptions);
+
+    //G 没登记上（没挂 approval、超时、出错）：记一行，下一轮再试（契约 3.1：base-bridge 打错跳过）。
+    if (asked.pending === undefined) {
+      console.error(`盯更新：新版本 ${available.version} 没登记上待确认（${asked.error ?? '审核插件没回'}），下一轮再试`);
+      return;
+    }
+
     //T 跟踪：登记新版本。
-    this.ctx.emit('trace', 'UpdateWatch.check', '登记新版本', 'approval.ask', { 版本: available.version, 待确认: pending.id });
+    this.ctx.emit('trace', 'UpdateWatch.check', '登记新版本', "requestEvent('approval/request', ask)", { 版本: available.version, 待确认: asked.pending.id });
   }
 
   /**
@@ -266,8 +299,9 @@ export class UpdateWatch {
       this.ctx.emit('trace', 'UpdateWatch.tell', '没有前台会话，说不了', 'sessions.find', { 机器人: bot, 话: text });
       return;
     }
-    //M 打开该机器人的最新前台会话，把更新结果或提示直接发给用户。
-    this.ctx.bots.say(this.ctx.sessions.open(front.id), text);
+    //M 打开该机器人的最新前台会话，发通知 bot/say 把更新结果或提示告诉用户（bots 听它，按会话的渠道发出去）。
+    const session = this.ctx.sessions.open(front.id);
+    this.ctx.emit('bot/say', session, text);
   }
 
   /** 读状态；读不出当空的。 */
@@ -289,8 +323,23 @@ export class UpdateWatch {
 
 
 /**
+ * 问 approval 没回（没挂、超时、出错）时的退回：没有在等的、也没登记上。requestId 留空。
+ * 写明返回类型，交给 requestEvent 的 onFallback。
+ * @param reason requestEvent 给的退回原因。
+ * @param detail 出错时的原话。
+ */
+function getEmptyReply(reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply {
+  let error = `审核插件没回（${reason}）`;
+  if (detail !== undefined) {
+    error = `审核插件出错：${detail}`;
+  }
+  return { requestId: '', items: [], error };
+}
+
+
+/**
  * 挂上更新监听模块：监听 `ready` 排首次检查、`approval/decided` 响应审批，卸载时清理定时器。
- * @param ctx 含 `resources`、`bots`、`approval`、`sessions` 的 Cordis 上下文。
+ * @param ctx 含 `resources`、`bots`、`sessions` 的 Cordis 上下文（approval 经事件找，不用挂着）。
  * @param settings `readUpdateWatchSettings` 返回的已校验配置。
  * 副作用：注册 `ready`、`approval/decided` 监听以及卸载时停用定时器的清理效果。
  */

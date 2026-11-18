@@ -12,7 +12,8 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 
 
 /** 看不到图的模型收到图时的提醒。 */
-const NO_SCRIPT_HINT = '用户发了图片，但你这个模型看不到图片。不要自己写 OCR、裁图、识图之类的脚本，也不要装这类工具；图片会以 base64 直接交给看图模型。前台就调 hand_session 转给后台；后台就直接告诉用户需要换成能看图的模型。';
+const NO_SCRIPT_HINT = '用户发了图片，但你这个模型看不到图片。不要自己写 OCR、裁图、识图之类的脚本，也不要装这类工具；'
+  + '图片会以 base64 直接交给看图模型。前台就调 hand_session 转给后台；后台就直接告诉用户需要换成能看图的模型。';
 
 
 /** 基础工作区工具（原 base-tools）。 */
@@ -140,7 +141,8 @@ export class BaseTools {
     if (!this.sees(request.model)) {
       //G 看不到图却收到图：提醒别自己写 OCR、识图脚本（图片只走 base64 交给看图模型）。
       const has = request.messages.some(
-        (message) => message.role === 'user' && typeof message.content === 'string' && imageModule.getImagePaths(message.content).length > 0,
+        (message) => message.role === 'user' && typeof message.content === 'string'
+          && imageModule.getImagePaths(message.content).length > 0,
       );
       if (has) {
         request.messages = [...request.messages, { role: 'system', content: NO_SCRIPT_HINT, timestamp: Date.now() }];

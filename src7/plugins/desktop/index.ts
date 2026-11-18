@@ -67,8 +67,11 @@ export function parse(input: unknown): DesktopAction {
   const steps = body['steps'] ?? 1;
   const x = body['x'] ?? 0.5;
   const y = body['y'] ?? 0.5;
-  if (typeof steps !== 'number' || !Number.isInteger(steps) || steps < 1 || steps > 10) throw new Error('滚动刻度必须是 1～10 的整数');
-  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+  if (typeof steps !== 'number' || !Number.isInteger(steps) || steps < 1 || steps > 10) {
+    throw new Error('滚动刻度必须是 1～10 的整数');
+  }
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)
+    || x < 0 || x > 1 || y < 0 || y > 1) {
     throw new Error('滚动位置必须在预览范围内');
   }
   return { op, target: t, direction, steps, x, y };

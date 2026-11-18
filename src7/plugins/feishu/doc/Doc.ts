@@ -30,7 +30,9 @@ const DOC_URL = 'https://feishu.cn/docx/';
 
 
 /** SDK 插块接口要的 children 类型。 */
-type Children = NonNullable<NonNullable<Parameters<lark.Client['docx']['v1']['documentBlockChildren']['create']>[0]>['data']>['children'];
+type Children = NonNullable<
+  NonNullable<Parameters<lark.Client['docx']['v1']['documentBlockChildren']['create']>[0]>['data']
+>['children'];
 
 
 /** 发文档用哪个应用、权限给谁。 */
@@ -120,7 +122,8 @@ export function getTarget(feishu: Feishu, session: Session): Target {
 export function getFile(ctx: cordis.Context, session: Session, value: string): string {
   const cleaned = value.trim().replace(/^@/u, '').replace(/^["']|["']$/gu, '');
   //M 读取所属机器人配置工作区（缺失则回落默认 bots 工作区），再按角色地址收窄目录。
-  const botWorkspace = ctx.bots.get(session.row.bot)?.workspace ?? ctx.resources.dir('bots', session.row.bot, 'workspace');
+  const botWorkspace = ctx.bots.get(session.row.bot)?.workspace
+    ?? ctx.resources.dir('bots', session.row.bot, 'workspace');
   const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
   const full = path.resolve(workspace, cleaned);
   if (full === path.join(ctx.resources.root, 'config.yaml')) {
@@ -255,7 +258,13 @@ async function grantAccess(client: lark.Client, docId: string, openId: string | 
  * @param index 插在第几个位置。
  * @returns 新块的块号，照先后。
  */
-async function insert(client: lark.Client, docId: string, parentId: string, list: blocks.Block[], index: number): Promise<string[]> {
+async function insert(
+  client: lark.Client,
+  docId: string,
+  parentId: string,
+  list: blocks.Block[],
+  index: number,
+): Promise<string[]> {
   //M 带限流重试往文档根或表格单元格下的指定索引插入一批块，并提取新生成块 ID。
   const inserted = await api.call('云文档插块', () => client.docx.v1.documentBlockChildren.create({
     path: { document_id: docId, block_id: parentId },
@@ -281,7 +290,13 @@ async function insertImage(client: lark.Client, docId: string, image: string, in
   const data = fs.readFileSync(image);
   //M 将本地图片流绑定该图片块 ID 上传至云文档媒体库，换回 file_token。
   const uploaded = await api.call('云文档传图', () => client.drive.v1.media.uploadAll({
-    data: { file_name: path.basename(image), parent_type: 'docx_image', parent_node: blockId, size: data.length, file: data },
+    data: {
+      file_name: path.basename(image),
+      parent_type: 'docx_image',
+      parent_node: blockId,
+      size: data.length,
+      file: data,
+    },
   }));
   const token = uploaded?.file_token;
   if (token === undefined || token === '') {
@@ -328,18 +343,21 @@ async function insertTable(client: lark.Client, docId: string, rows: string[][],
   //M 多的行列一次追加一个到末尾（-1 是末尾）。
   const where = { path: { document_id: docId, block_id: tableId }, params: { document_revision_id: -1 } };
   for (let added = createRows; added < grid.length; added++) {
-    await api.call('云文档加行', () => client.docx.v1.documentBlock.patch({ ...where, data: { insert_table_row: { row_index: -1 } } }));
+    const rowPatch = { ...where, data: { insert_table_row: { row_index: -1 } } };
+    await api.call('云文档加行', () => client.docx.v1.documentBlock.patch(rowPatch));
     await Bun.sleep(PACE_MS);
   }
   for (let added = createColumns; added < columns; added++) {
-    await api.call('云文档加列', () => client.docx.v1.documentBlock.patch({ ...where, data: { insert_table_column: { column_index: -1 } } }));
+    const columnPatch = { ...where, data: { insert_table_column: { column_index: -1 } } };
+    await api.call('云文档加列', () => client.docx.v1.documentBlock.patch(columnPatch));
     await Bun.sleep(PACE_MS);
   }
 
   //M 单元格飞书自己建好；只取这个表格块，按 children 的先后（逐行逐列）填字。
   const fetched = await api.call('云文档取表格', () => client.docx.v1.documentBlock.get(where));
   const block = fetched.data?.block;
-  const cells = (block?.children ?? block?.table?.cells ?? []).filter((value): value is string => typeof value === 'string');
+  const cellValues = block?.children ?? block?.table?.cells ?? [];
+  const cells = cellValues.filter((value): value is string => typeof value === 'string');
   if (cells.length < grid.length * columns) {
     throw new Error(`飞书表格只交回了 ${String(cells.length)} 个单元格，少于 ${String(grid.length)}×${String(columns)}`);
   }
@@ -374,7 +392,8 @@ export async function remove(feishu: Feishu, session: Session, documents: string
   for (const id of ids) {
     try {
       //M 通过 drive 删除接口软删云文档（进回收站），分流收集成功与失败清单。
-      await api.call('云文档删除', () => client.drive.v1.file.delete({ path: { file_token: id }, params: { type: 'docx' } }));
+      const deleteArgs = { path: { file_token: id }, params: { type: 'docx' } } as const;
+      await api.call('云文档删除', () => client.drive.v1.file.delete(deleteArgs));
       done.push(id);
     } catch (error) {
       failed.push(`${id}（${textModule.getMessage(error)}）`);

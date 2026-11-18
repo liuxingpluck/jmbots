@@ -145,7 +145,11 @@ export function fit(messages: piAi.Message[], budget: number, keep: number): Fit
   }
   if (cutAt > 0) {
     const from = parts[cutAt]?.[0] ?? current.length;
-    const notice: piAi.Message = { role: 'user', content: `（更早的 ${String(dropped)} 条对话已省略，以装进模型上下文；需要的话问用户或重新查。）`, timestamp: Date.now() };
+    const notice: piAi.Message = {
+      role: 'user',
+      content: `（更早的 ${String(dropped)} 条对话已省略，以装进模型上下文；需要的话问用户或重新查。）`,
+      timestamp: Date.now(),
+    };
     current = [notice, ...current.slice(from)];
     tokens = estimate(current);
   }
@@ -160,7 +164,9 @@ export function fit(messages: piAi.Message[], budget: number, keep: number): Fit
 function readConfig(config: Record<string, unknown> | undefined): Config {
   const keep = config?.['keep'] ?? 6;
   const ratio = config?.['ratio'] ?? 0.9;
-  if (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 0) throw new Error('context-fit 的 keep 要是不小于 0 的整数');
+  if (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 0) {
+    throw new Error('context-fit 的 keep 要是不小于 0 的整数');
+  }
   if (typeof ratio !== 'number' || ratio <= 0 || ratio > 1) throw new Error('context-fit 的 ratio 要大于 0、不大于 1');
   return { keep, ratio };
 }
@@ -227,7 +233,10 @@ export function apply(ctx: cordis.Context, raw: Record<string, unknown> | undefi
     request.messages = fitted.messages;
 
     //T 跟踪：裁了。
-    const vars = { 会话: request.session.id, 模型: request.model, 上限: window, 预算: budget, 裁前: before, 裁后: fitted.tokens, 换掉: fitted.trimmed, 丢了: fitted.dropped };
+    const vars = {
+      会话: request.session.id, 模型: request.model, 上限: window, 预算: budget,
+      裁前: before, 裁后: fitted.tokens, 换掉: fitted.trimmed, 丢了: fitted.dropped,
+    };
     ctx.emit('trace', 'ContextFit.fit', '装不下，裁了旧的工具结果', 'fit(request.messages, budget, keep)', vars);
   });
 }

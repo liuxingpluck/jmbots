@@ -141,8 +141,10 @@ export class Journal extends cordis.Service {
   constructor(ctx: cordis.Context, private readonly keepDays: number) {
     super(ctx, 'journal');
     const db = ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL,'
-      + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL, site TEXT NOT NULL,'
+    db.exec('CREATE TABLE IF NOT EXISTS journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,'
+      + ' kind TEXT NOT NULL,'
+      + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL,'
+      + ' site TEXT NOT NULL,'
       + ' bot TEXT, session_id TEXT, message_id INTEGER, vars TEXT NOT NULL)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_name ON journal_lines (name, at)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_session ON journal_lines (session_id, at)');
@@ -176,7 +178,8 @@ export class Journal extends cordis.Service {
 
       //M 把跟踪点和消息号一同写入流水，供轨迹页按消息定位。
       this.record({
-        kind: '函数', name: where, mode: '', listeners: [], text, code, site: traceUtils.getCallSite(['plugins/journal/']),
+        kind: '函数', name: where, mode: '', listeners: [], text, code,
+        site: traceUtils.getCallSite(['plugins/journal/']),
         bot: botValue, sessionId: sessionValue, messageId: messageIdValue, vars,
       });
     });
@@ -186,7 +189,8 @@ export class Journal extends cordis.Service {
       if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/')) return;
       const line = traceUtils.dispatchLine(ctx, mode, event, args, VAR_MAX);
       this.record({
-        kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '', site: traceUtils.getCallSite(['plugins/journal/']),
+        kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '',
+        site: traceUtils.getCallSite(['plugins/journal/']),
         bot: line.bot ?? null, sessionId: line.session ?? null, messageId: line.messageId ?? null, vars: line.vars,
       });
     });
@@ -219,10 +223,12 @@ export class Journal extends cordis.Service {
    */
   private record(line: Omit<JournalEvent, 'id' | 'at'>): void {
     const now = Date.now();
-    const sql = 'INSERT INTO journal_lines (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, vars)'
+    const sql = 'INSERT INTO journal_lines'
+      + ' (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, vars)'
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     //M 把跟踪行连同截短后的内容和变量写入数据库，供轨迹查询。
-    this.ctx.resources.db.query(sql).run(now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.chars(line.text, TEXT_MAX_CHARS),
+    this.ctx.resources.db.query(sql).run(
+      now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.chars(line.text, TEXT_MAX_CHARS),
       cut.chars(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId, shrink(line.vars));
 
     //G 一天之内删过了 → 不再删。
@@ -230,7 +236,9 @@ export class Journal extends cordis.Service {
 
     this.prunedAt = now;
     //M 按配置天数清理过期流水，变更行数用来记录本次清理。
-    const gone = this.ctx.resources.db.query('DELETE FROM journal_lines WHERE at < ?').run(now - this.keepDays * DAY_MS);
+    const gone = this.ctx.resources.db
+      .query('DELETE FROM journal_lines WHERE at < ?')
+      .run(now - this.keepDays * DAY_MS);
     //T 跟踪：删过期的行。
     const vars = { 删了几条: gone.changes, 留几天: this.keepDays };
     this.ctx.emit('trace', 'Journal.record', '一天一次：删掉过期的跟踪行', 'DELETE FROM journal_lines WHERE at < ?', vars);
@@ -248,12 +256,15 @@ export class Journal extends cordis.Service {
     const db = this.ctx.resources.db;
 
     //M 收件表记下这条消息的那一行：从它起算。
-    const startSql = "SELECT id FROM journal_lines WHERE name = 'web-api/received' AND message_id = ? ORDER BY id LIMIT 1";
+    const startSql = "SELECT id FROM journal_lines WHERE name = 'web-api/received' AND message_id = ?"
+      + ' ORDER BY id LIMIT 1';
     const start = db.query(startSql).get(message) as { id: number } | null;
     if (start === null) return undefined;
 
     //M 从该消息的起点顺序取限量流水，交给调用方筛选。
-    const rows = db.query('SELECT * FROM journal_lines WHERE id >= ? ORDER BY id LIMIT ?').all(start.id, limit) as Row[];
+    const rows = db
+      .query('SELECT * FROM journal_lines WHERE id >= ? ORDER BY id LIMIT ?')
+      .all(start.id, limit) as Row[];
     return rows.map(getEvent);
   }
 
@@ -339,7 +350,10 @@ interface Row {
  */
 function getEvent(row: Row): JournalEvent {
   const { session_id: sessionId, message_id: messageId, listeners, vars, ...rest } = row;
-  return { ...rest, sessionId, messageId, listeners: JSON.parse(listeners) as string[], vars: JSON.parse(vars) as Record<string, unknown> };
+  return {
+    ...rest, sessionId, messageId,
+    listeners: JSON.parse(listeners) as string[], vars: JSON.parse(vars) as Record<string, unknown>,
+  };
 }
 
 
@@ -442,7 +456,9 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口；没挂 http 就不开。
   void ctx.inject(['http'], (sub) => {
-    sub.http.app.get<{ Querystring: Record<string, string | undefined> }>('/api/events', async (request, reply: fastify.FastifyReply) => {
+    sub.http.app.get<{
+      Querystring: Record<string, string | undefined>;
+    }>('/api/events', async (request, reply: fastify.FastifyReply) => {
       try {
         return journal.query(request.query);
       } catch (error) {

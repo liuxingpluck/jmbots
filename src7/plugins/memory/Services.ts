@@ -94,6 +94,8 @@ export function readServices(raw: unknown): ServiceSpec[] {
     const env = own['env'] ?? base?.env ?? {};
     if (typeof env !== 'object' || env === null) throw new Error(`memory.services.${name}.env 要是对象`);
     const startup = own['startup_ms'] ?? base?.startupMs ?? 120_000;
+
+    //M 逐项合成一个服务配置：字符串项用 text 读（没写取同名默认服务的值，没有就抛错），上面已经查过的 port、args、env 直接用。
     return {
       name, file: text('file', base?.file), host: text('host', base?.host ?? '127.0.0.1'), port, health: text('health', base?.health ?? '/health'),
       path: text('path', base?.path ?? `/memory/${name}`).replace(/\/+$/u, ''), args: args as string[],
@@ -133,6 +135,7 @@ async function waitExit(child: ReturnType<typeof Bun.spawn>, ms: number): Promis
 async function waitPortFree(host: string, port: number, ms: number): Promise<boolean> {
   const until = Date.now() + ms;
   for (;;) {
+    //M 每 200 毫秒试着听一下这个端口：能听就是旧进程的端口放出来了；到点还不行就放弃。
     if (await portFree(host, port)) return true;
     if (Date.now() >= until) return false;
     await Bun.sleep(200);
@@ -177,12 +180,15 @@ export class Services {
    * @param specs 服务表。
    */
   constructor(private readonly root: string, mainPort: number, specs: ServiceSpec[]) {
+    //M 每个服务建一条运行情况记录：没写端口的，按主端口顺延（第 1 个 +1、第 2 个 +2……）。
     this.items = specs.map((spec, index) => new Hosted(spec, mainPort + index + 1));
   }
 
   /** 开始守护（马上看一次）。 */
   start(): void {
     if (this.items.length === 0) return;
+
+    //M 马上看一轮（该拉起的拉起），之后每 3 秒再看一轮。
     void this.tick();
     this.timer = setInterval(() => void this.tick(), WATCH_MS);
   }
@@ -241,6 +247,7 @@ export class Services {
       if (typeof body.service === 'string' && body.service !== item.spec.service) return 'other';
       const dir = typeof body.runtime === 'string' ? body.runtime : typeof body.data === 'string' ? body.data : undefined;
       if (dir === undefined) return 'mine';
+      //M 比目录前先统一成绝对路径、正斜杠、小写（Windows 上大小写和斜杠可能不同）；对得上才是自己的服务。
       const norm = (value: string) => path.resolve(value).replace(/\\/gu, '/').toLowerCase();
       return norm(dir) === norm(path.join(this.root, item.spec.dataDir)) ? 'mine' : 'other';
     } catch {
@@ -261,10 +268,12 @@ export class Services {
     item.port += 1;
   }
 
+  /** 守护的一轮：上一轮没做完或已停就跳过；逐个服务看一遍（watch）。 */
   private async tick(): Promise<void> {
     if (this.busy || this.stopped) return;
     this.busy = true;
     try {
+      //M 逐个看服务：健康的不动，不在的（退避后）拉起，卡死的重启。
       for (const item of this.items) await this.watch(item);
     } finally {
       this.busy = false;
@@ -273,6 +282,7 @@ export class Services {
 
   /** 看一个服务：健康就算了；自己的进程还在启动期就等；不在了就（退避后）拉起。 */
   private async watch(item: Hosted): Promise<void> {
+    //M 先问端口上的 /health：是自己的服务就算健康；是别的服务、没应答分别往下走。
     const who = await this.getHealth(item);
     item.healthy = who === 'mine';
     if (who === 'other') {
@@ -296,6 +306,8 @@ export class Services {
       item.note = `一时不答 /health（第 ${String(item.misses)} 次），先等等`;
       return;
     }
+
+    //M 连续多次不答，真当卡死了：先停掉旧进程（killAndWait 等它退、等端口放出来），再往下重新拉起。
     if (alive) {
       item.misses = 0;
       item.note = '一直不答，重启';
@@ -304,6 +316,8 @@ export class Services {
     }
     item.child = undefined;
     if (Date.now() < item.nextTryAt || this.stopped) return;
+
+    //M 没有进程在跑了（没起过、退了或刚被停掉），退避时间也过了：拉起一个。
     await this.launch(item);
   }
 
@@ -327,12 +341,18 @@ export class Services {
       } catch {
         // 已经退了
       }
+      //M 强杀后再等一会儿，还不退就只在状态里写一句，不再硬等。
       if (!(await waitExit(child, FORCE_WAIT_MS))) item.note = `旧进程强杀后还没退（pid ${String(child.pid)}）`;
     }
     //M 进程退了端口也可能晚一点才放出来；等不到就交给 launch 照旧判断（真是别人占着才顺延）。
     await waitPortFree(item.spec.host, item.port, PORT_RELEASE_MS);
   }
 
+  /**
+   * 拉起一个服务：程序不在、端口被占着都只写状态，等下一轮；起来了就记时间、算下次最早什么时候再试。
+   * @param item 要拉起的服务。
+   * 副作用：开子进程，日志写 data/logs/<服务名>.log。
+   */
   private async launch(item: Hosted): Promise<void> {
     const suffix = process.platform === 'win32' && !item.spec.file.toLowerCase().endsWith('.exe') ? '.exe' : '';
     const file = path.resolve(this.root, item.spec.file + suffix);
@@ -347,6 +367,8 @@ export class Services {
       this.shift(item, '被占着、不答 /health');
       return;
     }
+
+    //M 参数和环境变量里的占位（{runtime}、{data}、{host}、{port}）用 fill 换成真值。
     const fill = (value: string): string => value
       .replaceAll('{runtime}', this.root).replaceAll('{data}', path.join(this.root, 'data'))
       .replaceAll('{host}', item.spec.host).replaceAll('{port}', String(port));

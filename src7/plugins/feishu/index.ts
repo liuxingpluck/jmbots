@@ -6,12 +6,15 @@
  * 渠道只有一个，名字 feishu；回话地址（FeishuAddress）里的 appId 分清是哪个应用，回话从收消息的那个应用发回去。
  * 收：什么类型都接住，图片文件下载后用基类 saveFile 存进机器人工作区，话里写 @绝对路径；按消息号去重（存表，重启也认得）。
  * 群里只回 @ 了机器人的消息；插件配置 groups 里登记了 listen: all 的群，不 @ 的也交下去，标成只听（listenOnly）：
- * 以外部助手前缀开头的 relay 照转，别的前台只记进群的前台会话当背景、不回。listen: judge 的群同样不 @ 也听，前台记完问决策模型要不要主动接话（0.7.19）。
+ * 以外部助手前缀开头的 relay 照转，别的前台只记进群的前台会话当背景、不回。
+ * listen: judge 的群同样不 @ 也听，前台记完问决策模型要不要主动接话（0.7.19）。
  * 发到群里的话：开头 @ 这一轮最后说话的人，文字里的 @名字 换成 <at user_id="…">名字</at>（名字→open_id 先查 people，再查群成员、流水里见过的）。
- * 认人认群看插件配置的 people、groups（谁是哪一档只在这里判断，写进回话地址的 owner、role、workspace）；收到的每条都记进来往流水 data/logs/feishu-contacts.jsonl。发：文字整条发，文字里的 @路径 换成「文件名」再一个个发文件。
+ * 认人认群看插件配置的 people、groups（谁是哪一档只在这里判断，写进回话地址的 owner、role、workspace）；
+ * 收到的每条都记进来往流水 data/logs/feishu-contacts.jsonl。
+ * 发：文字整条发，文字里的 @路径 换成「文件名」再一个个发文件。
  *
  * Cordis 大白话：apply 是插件的 main()，ctx 是它拿到的遥控器；通过 ctx 听的事件、登记的工具、ctx.effect 登记的收尾，
- * 插件被拔掉时 Cordis 自动撤掉。审批卡片等 approval 服务再开工，进度卡片用事件接收更新和发起操作。
+ * 插件被拔掉时 Cordis 自动撤掉。审批和进度卡片通过事件接收更新与发起操作。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -51,9 +54,9 @@ export const name = 'feishu';
 //M 1.1.2：channel/history 支持本人（owner）跨渠道、跨聊天查询飞书本地历史；外人仍仅限当前聊天。
 //M 1.1.3：监听 im.message.recalled_v1 撤回消息事件，校验本人或原发信人后发出 channel/recall。
 //M 1.1.4：onChannelReply 支持带 target 的跨渠道发话，在飞书自有群/私聊/流水数据里自认聊天。
-export const version = '1.1.5';
+export const version = '1.1.8';
 
-/** 用到的必需服务。approval 在 apply 中按可选服务挂接。 */
+/** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
 
 
@@ -106,7 +109,10 @@ export interface FeishuAddress {
   owner?: boolean;
   /** 说话人是哪一档（people 的 role，没登记是 guest）：approval 照它收工具。和 owner 一样收消息、点卡片时写。 */
   role?: FeishuRole;
-  /** builder、guest 的目录（people 的 dir；没登记的 guest 是 guests/_guest/）：这一轮的工作区，读写、exec、发文件都只在这里（utils/Workspace.ts 的 of 读）。owner 不写。 */
+  /**
+   * builder、guest 的目录（people 的 dir；没登记的 guest 是 guests/_guest/）：
+   * 这一轮的工作区，读写、exec、发文件都只在这里（utils/Workspace.ts 的 of 读）。owner 不写。
+   */
   workspace?: string;
   /** 说话人的名字：people 里登记的，没登记用群成员里查到的；都没有不写。relay 记收件、前台记群聊用。 */
   senderName?: string;
@@ -461,9 +467,6 @@ export class Feishu {
   /** 群号 → 群名和成员名字（chatNames 查的）。 */
   private readonly chats = new Map<string, ChatNames>();
 
-  /** approval 服务；approval 挂着时 cards/ 填上，拔掉时清掉。 */
-  approval: cards.ApprovalLike | undefined;
-
   /**
    * 建表、给每个应用建 SDK 客户端；ready 时连长连接；被拔掉时关长连接。
    * 向 bots 登记本渠道的发送函数；一轮结束回话和中途先说一句由 bots 按渠道名调用。
@@ -472,7 +475,10 @@ export class Feishu {
    */
   constructor(private readonly ctx: cordis.Context, readonly config: FeishuConfig) {
     //M 向 bots 服务注册飞书回话投递函数，随本插件卸载由 Cordis 自动撤销。
-    this.ctx.effect(() => this.ctx.bots.channel(this.name, (reply, session, origin) => this.send(reply, session, origin)));
+    this.ctx.effect(() => this.ctx.bots.channel(
+      this.name,
+      (reply, session, origin) => this.send(reply, session, origin),
+    ));
     const db = this.ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS feishu_seen (message_id TEXT PRIMARY KEY, app_id TEXT, kind TEXT, at INTEGER)');
     db.exec('CREATE TABLE IF NOT EXISTS feishu_p2p'
@@ -592,7 +598,14 @@ export class Feishu {
       { app_id: string; chat_id: string; open_id: string; message_id: string } | null;
     if (row === null) return undefined;
     //M 按统一客户键规则拼出完整的私聊回话地址结构。
-    return { appId: row.app_id, chatId: row.chat_id, messageId: row.message_id, openId: row.open_id, chatType: 'p2p', customer: feishuCustomer('p2p', row.chat_id, row.open_id) };
+    return {
+      appId: row.app_id,
+      chatId: row.chat_id,
+      messageId: row.message_id,
+      openId: row.open_id,
+      chatType: 'p2p',
+      customer: feishuCustomer('p2p', row.chat_id, row.open_id),
+    };
   }
 
   /**
@@ -776,18 +789,22 @@ export class Feishu {
       found.name = chat.data?.name ?? '';
 
       //M 拉取首屏最多 100 位群成员的 open_id 与显示名对照表。
-      const members = await api.call('查群成员', () => app.client.request<{ data?: { items?: { member_id?: string; name?: string }[] } }>({
+      type GroupMembers = { data?: { items?: { member_id?: string; name?: string }[] } };
+      const members = await api.call('查群成员', () => app.client.request<GroupMembers>({
         method: 'GET',
         url: `/open-apis/im/v1/chats/${chatId}/members`,
         params: { member_id_type: 'open_id', page_size: 100 },
       }));
       for (const member of members.data?.items ?? []) {
-        if (member.member_id !== undefined && member.name !== undefined) found.members.set(member.member_id, member.name);
+        if (member.member_id !== undefined && member.name !== undefined) {
+          found.members.set(member.member_id, member.name);
+        }
       }
     } catch (error) {
       //M 查询失败时记录日期日志并缓存空名结构，避免同一群后续消息反复触发出错调用。
       const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书 ${app.config.appId} 没查到群 ${chatId} 的名字（用群号、open_id 后 6 位代替）：${textModule.getMessage(error)}`);
+      const reason = textModule.getMessage(error);
+      console.error(`${logTime} 飞书 ${app.config.appId} 没查到群 ${chatId} 的名字（用群号、open_id 后 6 位代替）：${reason}`);
     }
     this.chats.set(chatId, found);
     return found;
@@ -997,12 +1014,21 @@ export class Feishu {
     if (senderName !== '') address.senderName = senderName;
     if (listenOnly) address.listenOnly = true;
     if (listenOnly && registered?.listen === 'judge') address.judge = true;
-    if (listenOnly && registered?.listen === 'judge' && registered.judgeThreshold !== undefined) address.judgeThreshold = registered.judgeThreshold;
+    if (listenOnly && registered?.listen === 'judge' && registered.judgeThreshold !== undefined) {
+      address.judgeThreshold = registered.judgeThreshold;
+    }
     if (registered !== undefined) address.relay = registered.relay;
     if (registered !== undefined) address.trusted = registered.trusted;
 
-    const vars = { 应用: appId, 机器人: targetBots.join('、'), 类型: message.message_type, 聊天: message.chat_type, 只听: listenOnly };
-    this.ctx.emit('trace', 'Feishu.onMessage', '飞书收到一条消息，存原始件并广播 channel/message', 'ctx.serial("channel/message", msg)', vars);
+    const vars = {
+      应用: appId,
+      机器人: targetBots.join('、'),
+      类型: message.message_type,
+      聊天: message.chat_type,
+      只听: listenOnly,
+    };
+    const summary = '飞书收到一条消息，存原始件并广播 channel/message';
+    this.ctx.emit('trace', 'Feishu.onMessage', summary, 'ctx.serial("channel/message", msg)', vars);
 
     try {
       //M 挂“敲键盘”表情，告诉用户收到了；仅在需要回复且非只听时挂。
@@ -1043,7 +1069,8 @@ export class Feishu {
         try {
           const content = await media.download(this, appId, resource.messageId ?? message.message_id, resource);
           const safe = namesModule.getSafeName(path.win32.basename(resource.name), Infinity);
-          const filePath = path.join(attachDir, `${namesModule.getSafeName(message.message_id, 60)}_${String(idx)}_${safe}`);
+          const prefix = namesModule.getSafeName(message.message_id, 60);
+          const filePath = path.join(attachDir, `${prefix}_${String(idx)}_${safe}`);
           fs.writeFileSync(filePath, content);
           attachments.push({
             id: attachId,
@@ -1166,7 +1193,9 @@ export class Feishu {
 
       //M 若无机器人认领会话（或被审批插件直接截断），立即撤掉之前挂上的“敲键盘”表情。
       const hasSessionClaim = control.claims.some((c) => c.status === 'claimed' || c.status === 'relay');
-      if (address.typingReaction !== undefined && (control.approvalHandled === true || (!hasSessionClaim && this.takenBy(message.message_id) === undefined))) {
+      if (address.typingReaction !== undefined
+        && (control.approvalHandled === true
+          || (!hasSessionClaim && this.takenBy(message.message_id) === undefined))) {
         //M 调用撤回接口移除“正在输入”表情反馈。
         await this.untype(address);
       }
@@ -1485,7 +1514,9 @@ export class Feishu {
 
     //M 3) 再查飞书私聊表 feishu_p2p（按 chatId、openId 或配置人名 matching）。
     if (chatId === '') {
-      const p2pRows = this.ctx.resources.db.query('SELECT app_id, chat_id, open_id FROM feishu_p2p ORDER BY at DESC LIMIT 200')
+      const p2pSql = 'SELECT app_id, chat_id, open_id FROM feishu_p2p ORDER BY at DESC LIMIT 200';
+      const p2pQuery = this.ctx.resources.db.query(p2pSql);
+      const p2pRows = p2pQuery
         .all() as Array<{ app_id: string; chat_id: string; open_id: string }>;
       for (const row of p2pRows) {
         if (!candidateApps.includes(row.app_id)) {
@@ -1493,7 +1524,8 @@ export class Feishu {
         }
         //M 从人员表读取配置人名并核对 chatId、openId 或展示名。
         const personName = this.config.people.get(row.open_id)?.name ?? '';
-        if (row.chat_id === lookupChat || row.open_id === lookupChat || (personName !== '' && personName === labelTarget)) {
+        const sameChat = row.chat_id === lookupChat || row.open_id === lookupChat;
+        if (sameChat || (personName !== '' && personName === labelTarget)) {
           appId = row.app_id;
           chatId = row.chat_id;
           chatType = 'p2p';
@@ -1731,7 +1763,9 @@ export class Feishu {
     const rawEntries = this.readChatLog(appId, targetChatId);
     const filtered = rawEntries.filter((entry) => {
       if (request.mode === 'mentions') {
-        return entry.mentions.some((m) => m.botNames.includes(snapshot.botName) || (app.botOpenId !== undefined && m.id === app.botOpenId));
+        return entry.mentions.some((m) => {
+          return m.botNames.includes(snapshot.botName) || (app.botOpenId !== undefined && m.id === app.botOpenId);
+        });
       }
       if (request.mode === 'visible') {
         return entry.sender.id === expectedSenderId;
@@ -1947,7 +1981,8 @@ export class Feishu {
       }
     }
     //M 结合 feishu_p2p 表反查点击来源是否为私聊并构建标准回话地址结构。
-    const p2p = chatId !== '' && this.ctx.resources.db.query('SELECT 1 FROM feishu_p2p WHERE app_id = ? AND chat_id = ?').get(appId, chatId) !== null;
+    const p2pSql = 'SELECT 1 FROM feishu_p2p WHERE app_id = ? AND chat_id = ?';
+    const p2p = chatId !== '' && this.ctx.resources.db.query(p2pSql).get(appId, chatId) !== null;
     let chatType = '';
     if (chatId !== '') {
       chatType = 'group';
@@ -2086,7 +2121,9 @@ export class Feishu {
 
     //M 流水里这个群见过的说话人。
     for (const line of this.contacts(1000)) {
-      if (line.chatId === address.chatId && line.sender !== '' && line.openId !== '') found.set(line.sender, line.openId);
+      if (line.chatId === address.chatId && line.sender !== '' && line.openId !== '') {
+        found.set(line.sender, line.openId);
+      }
     }
 
     //M 飞书查到的群成员（chatNames 缓存的）。
@@ -2129,7 +2166,8 @@ export class Feishu {
    */
   private withAt(address: FeishuAddress | undefined, reply: string): string {
     //G 私聊、无目标发言人 openId 或空回复不额外前置 @ 标签。
-    if (address === undefined || !workspaceModule.isGroup(address) || address.openId === '' || reply.trim() === '') return reply;
+    if (address === undefined || !workspaceModule.isGroup(address)) return reply;
+    if (address.openId === '' || reply.trim() === '') return reply;
 
     //M 话里已经 @ 了他（周小灵自己写的 @名字 也算）：不再加。
     const converted = this.mentioned(address, reply);
@@ -2227,7 +2265,12 @@ export class Feishu {
   private status(list: ChannelStatus[]): void {
     for (const app of this.apps.values()) {
       const at = new Date(app.at).toLocaleString('zh-CN', { hour12: false });
-      list.push({ name: `feishu:${app.config.appId}`, bot: app.config.bot, connected: app.connected, detail: `${app.state}（${at}）` });
+      list.push({
+        name: `feishu:${app.config.appId}`,
+        bot: app.config.bot,
+        connected: app.connected,
+        detail: `${app.state}（${at}）`,
+      });
     }
   }
 
@@ -2385,7 +2428,9 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
     let botsList: string[] | undefined;
     if (extraBotsRaw !== undefined) {
       //M 校验多机器人共享账号配置的每一个追加机器人名均合法存在。
-      if (!Array.isArray(extraBotsRaw) || extraBotsRaw.some((one) => typeof one !== 'string' || ctx.bots.get(one) === undefined)) {
+      const botsInvalid = !Array.isArray(extraBotsRaw)
+        || extraBotsRaw.some((one) => typeof one !== 'string' || ctx.bots.get(one) === undefined);
+      if (botsInvalid) {
         throw new Error(`${where} 的 bots 要写成机器人名单里已有名字的清单`);
       }
       botsList = [...new Set([bot, ...(extraBotsRaw as string[])])];
@@ -2409,7 +2454,8 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
  */
 function getEntries(value: unknown, key: string): Record<string, unknown>[] {
   if (value === undefined) return [];
-  const valid = Array.isArray(value) && value.every((item) => typeof item === 'object' && item !== null && !Array.isArray(item));
+  const valid = Array.isArray(value)
+    && value.every((item) => typeof item === 'object' && item !== null && !Array.isArray(item));
   if (!valid) throw new Error(`feishu 插件的 ${key} 要写成清单，每项一个对象`);
   return value as Record<string, unknown>[];
 }
@@ -2421,7 +2467,10 @@ function getEntries(value: unknown, key: string): Record<string, unknown>[] {
  * @param guestDir 没登记的 guest 用的目录（运行时目录 guests/_guest/）。
  * @returns 要并进地址的几项。
  */
-function roleFields(person: FeishuPerson | undefined, guestDir: string): Pick<FeishuAddress, 'owner' | 'role' | 'workspace'> {
+function roleFields(
+  person: FeishuPerson | undefined,
+  guestDir: string,
+): Pick<FeishuAddress, 'owner' | 'role' | 'workspace'> {
   const role = person?.role ?? 'guest';
   const fields: Pick<FeishuAddress, 'owner' | 'role' | 'workspace'> = { owner: role === 'owner', role };
   if (person?.role === 'builder') fields.workspace = person.dir;
@@ -2511,7 +2560,8 @@ function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<strin
 
 
 /**
- * 专门设过的群：groups 每项 chat_id（必写）、name、listen（mention / all / judge，默认 mention）、judge_threshold（0 到 1，可不写）、relay（direct / model，默认 direct）、
+ * 专门设过的群：groups 每项 chat_id（必写）、name、listen（mention / all / judge，默认 mention）、
+ * judge_threshold（0 到 1，可不写）、relay（direct / model，默认 direct）、
  * trusted（true / false，默认 false：本人在 trusted 群里说话才带私人记忆）。
  * @param own feishu 插件的配置。
  * @returns chat_id → 群。
@@ -2530,9 +2580,15 @@ function getGroups(own: Record<string, unknown>): Map<string, FeishuGroup> {
     if (typeof chatId !== 'string' || chatId === '') throw new Error('feishu 插件的 groups 每项要写 chat_id');
     if (groups.has(chatId)) throw new Error(`feishu 插件的 groups 里 ${chatId} 写了两次`);
     if (typeof name !== 'string') throw new Error(`feishu 插件 groups 里 ${chatId} 的 name 要写成字符串`);
-    if (listen !== 'mention' && listen !== 'all' && listen !== 'judge') throw new Error(`feishu 插件 groups 里 ${chatId} 的 listen 只能写 mention、all 或 judge`);
-    if (threshold !== undefined && (typeof threshold !== 'number' || threshold < 0 || threshold > 1)) throw new Error(`feishu 插件 groups 里 ${chatId} 的 judge_threshold 要写 0 到 1 的数`);
-    if (relay !== 'direct' && relay !== 'model') throw new Error(`feishu 插件 groups 里 ${chatId} 的 relay 只能写 direct 或 model`);
+    if (listen !== 'mention' && listen !== 'all' && listen !== 'judge') {
+      throw new Error(`feishu 插件 groups 里 ${chatId} 的 listen 只能写 mention、all 或 judge`);
+    }
+    if (threshold !== undefined && (typeof threshold !== 'number' || threshold < 0 || threshold > 1)) {
+      throw new Error(`feishu 插件 groups 里 ${chatId} 的 judge_threshold 要写 0 到 1 的数`);
+    }
+    if (relay !== 'direct' && relay !== 'model') {
+      throw new Error(`feishu 插件 groups 里 ${chatId} 的 relay 只能写 direct 或 model`);
+    }
     if (typeof trusted !== 'boolean') throw new Error(`feishu 插件 groups 里 ${chatId} 的 trusted 只能写 true 或 false`);
     const groupEntry: FeishuGroup = { chatId, name, listen, relay, trusted };
     if (threshold !== undefined) {
@@ -2572,11 +2628,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   doc.setup(feishu, ctx);
   outbox.setup(feishu, ctx);
 
-  //M ctx.inject(服务, 回调) 就是 ctx.plugin({ inject: 服务, apply: 回调 })：服务在了才调回调，服务走了这个小插件自动拔掉。
-  void ctx.inject(['approval'], (sub) => {
-    cards.setupApproval(feishu, sub);
-  });
-
-  //M 直接订阅进度通知，进度插件迟挂时也能收到更新。
+  //M 直接订阅审批和进度通知，相关插件迟挂时也能收到更新。
+  cards.setupApproval(feishu, ctx);
   cards.setupProgress(feishu, ctx);
 }

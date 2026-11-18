@@ -82,11 +82,15 @@ export class Prompt {
     //M 第一段 DSH 原文（每次现读，除去首尾空白一字不改）、第二段 jmbots 功能声明：用 unshift 放最前，不管监听排第几都是开头。
     //M   功能声明的文件没有才用内置的；文件在但是空的，就是不要这一段。
     const baseText = getFileText(path.join(prompts, BASE_FILE)) ?? '';
-    let declare = getFileText(path.join(prompts, `10_jmbots.${language}.md`));
-    if (declare === undefined) {
-      declare = DECLARE[language] ?? DECLARE['zh'] ?? '';
+    let builtInDeclaration = DECLARE['zh'] ?? '';
+    if (Object.hasOwn(DECLARE, language)) {
+      builtInDeclaration = DECLARE[language] ?? builtInDeclaration;
     }
-    const opening = [baseText, declare].filter((text) => text !== '');
+
+    //M 只在文件缺失时补内置声明，空文件保留关闭该段的含义。
+    const declarationPath = path.join(prompts, `10_jmbots.${language}.md`);
+    const declarationText = getFileText(declarationPath) ?? builtInDeclaration;
+    const opening = [baseText, declarationText].filter((text) => text !== '');
     request.system.unshift(...opening);
 
     //M 第三段：这种会话的提示词；文件没有用内置的，文件在但是空的就不加。

@@ -51,13 +51,18 @@ export class Window {
     try {
       //M 定位微信窗口并建立后台绑定，接下来的尺寸和截图调用都针对它。
       const hwnd = await this.findWindow();
-      if ((await this.call('BindWindow', [hwnd, 'gdi2', 'windows', 'windows', 0]))['result'] !== 1) throw new Error('后台绑定微信窗口失败');
+      if ((await this.call('BindWindow', [hwnd, 'gdi2', 'windows', 'windows', 0]))['result'] !== 1) {
+        throw new Error('后台绑定微信窗口失败');
+      }
 
       bound = true;
       //M 用客户区尺寸决定截图范围，取回整块窗口的预览内容。
       const size = ((await this.call('GetClientSize', [hwnd]))['out'] ?? {}) as Record<string, unknown>;
       const width = Number(size['width']), height = Number(size['height']);
-      const shot = ((await this.call('Capture', [0, 0, width - 1, height - 1, `jmbots_${String(Date.now())}.bmp`]))['capture'] ?? {}) as Record<string, unknown>;
+      const shot = ((await this.call(
+        'Capture',
+        [0, 0, width - 1, height - 1, `jmbots_${String(Date.now())}.bmp`],
+      ))['capture'] ?? {}) as Record<string, unknown>;
       const response = await fetch(new URL(String(shot['preview_url']), `${this.url}/`).href);
 
       //G 把截图解成像素并拒绝全黑帧，避免发送端根据无效画面定位。
@@ -129,7 +134,10 @@ export class Window {
     if (body !== undefined) {
       init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
     }
-    const response = await fetch(new URL(pathname, `${this.url}/`).href, { ...init, signal: AbortSignal.timeout(15_000) });
+    const response = await fetch(
+      new URL(pathname, `${this.url}/`).href,
+      { ...init, signal: AbortSignal.timeout(15_000) },
+    );
     if (!response.ok) throw new Error(`AOBW 返回 HTTP ${String(response.status)}`);
 
     return await response.json() as Record<string, unknown>;
@@ -145,7 +153,8 @@ export function parseBmp(bytes: Uint8Array): Image {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes[0] !== 0x42 || bytes[1] !== 0x4d) throw new Error('截图不是 BMP');
 
-  const offset = v.getUint32(10, true), width = v.getInt32(18, true), raw = v.getInt32(22, true), step = v.getUint16(28, true) / 8;
+  const offset = v.getUint32(10, true), width = v.getInt32(18, true), raw = v.getInt32(22, true),
+    step = v.getUint16(28, true) / 8;
   const height = Math.abs(raw), stride = Math.ceil((width * step) / 4) * 4;
   return {
     width, height,
@@ -172,7 +181,11 @@ function isBlack(image: Image): boolean {
 
 /** 两个颜色差多少（各通道最大差）。 */
 function distance(a: number[], b: number[]): number {
-  return Math.max(Math.abs((a[0] ?? 0) - (b[0] ?? 0)), Math.abs((a[1] ?? 0) - (b[1] ?? 0)), Math.abs((a[2] ?? 0) - (b[2] ?? 0)));
+  return Math.max(
+    Math.abs((a[0] ?? 0) - (b[0] ?? 0)),
+    Math.abs((a[1] ?? 0) - (b[1] ?? 0)),
+    Math.abs((a[2] ?? 0) - (b[2] ?? 0)),
+  );
 }
 
 /**
@@ -211,7 +224,10 @@ export function detectLayout(image: Image, scale: number): Frame['layout'] {
 
   return {
     list: { x1: navRight, y1: Math.round(70 * scale), x2: listRight, y2: height - Math.round(45 * scale) },
-    title: { x1: listRight + Math.round(10 * scale), y1: Math.round(30 * scale), x2: Math.max(listRight + 50, width - Math.round(150 * scale)), y2: Math.round(72 * scale) },
+    title: {
+      x1: listRight + Math.round(10 * scale), y1: Math.round(30 * scale),
+      x2: Math.max(listRight + 50, width - Math.round(150 * scale)), y2: Math.round(72 * scale),
+    },
     scale,
   };
 }

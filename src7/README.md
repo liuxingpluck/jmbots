@@ -2,6 +2,8 @@
 
 进度、还没验证的地方，见 `docs/src6开发/骨架和插件_进度.md`。本目录的代码和这份说明不一样时，以代码为准。
 
+词汇表（会话字段、“基地”的叫法、新人易卡的词）见 `docs/词汇表.md`。
+
 ## 一条规矩：骨架少之又少
 
 - 骨架是本目录里 `plugins/` 以外的文件，**只管一件事：一场会话怎么跑**，要一眼读得懂。
@@ -64,8 +66,8 @@ src7/
     —— 模型与上下文 ——
     model-catalog/   模型目录：从供应商拉模型清单、价格，网页换模型用
                      换模型（Fallback.ts）：在 session/request 最后自己调模型，限流、超长时换着试，按模型、供应商排队。所以写在 plugins 段最后
+                     模型介绍和评价（Notes.ts，原 model-notes）：页面 /model-notes/，前台派活时经事件 model-catalog/request（prompt）参考
     context-fit/     上下文：干活的会话做完一轮写一句总结（Summary.ts）；太长时开小会话把前面的压成摘要（Compress.ts）；发给模型前超过上下文窗口就只留最近几段
-    model-notes/     模型介绍和评价：页面 /model-notes/，前台派活时参考
     —— 记忆和知识 ——
     memory/          memory 工具（自己的、公共的记忆）；后台会话开头先搜一遍记忆和技能；配了基地就定时让它更新库的索引
                      客服记忆库（Store.ts、Backend.ts）：聊天记录按客户/会话/机器人、知识库按段，结果带来源引用；检索后端可换（本地 SQLite / 外部服务）
@@ -88,7 +90,7 @@ src7/
 
 依赖：骨架是 `resources` ← `tools` ← `sessions`；插件里 `workspaces` 用骨架，`bots`（含前台、系统提示词）用骨架和 `workspaces`，渠道、自带工具用 `bots`。自带插件共 30 个文件夹，名单以 `plugins/Index.ts` 的 `BUILT_IN` 为准。
 
-骨架 5 个文件不算注释和空行约 465 行，`utils/` 约 115 行。
+骨架和 utils 的行数会随提交变，不在这里写死；要看就数 wc -l src7/*.ts src7/utils/*.ts。插件清单看 docs/插件地图.md，那里的表由 bun ztools/plugin-map/Gen_Plugin_Map.ts 生成。
 
 ## 一条消息怎么走
 
@@ -245,7 +247,6 @@ plugins:
   - name: skills                 # 技能清单、skill 工具
   - name: context-fit            # 总结、压缩、按上下文窗口裁剪
     config: { keep: 6, ratio: 0.9, summary: true, compress: { at: 200000, keep: 6 } }
-  - name: model-notes            # 模型介绍和评价，/model-notes/
   - name: progress               # 进度和限时、超时复盘：写在 bots 后面；读 engine.limit_* 几项；review: false 不写复盘
   - name: decision               # 决策模型：配置在顶层 decision 段（models、combine、allow_at、deny_at、timeout_ms）
   - name: image-gen              # 生图：读 engine.image_model
@@ -256,6 +257,7 @@ plugins:
   - name: wechat-kefu            # 微信渠道和客服页 /wechat-kefu/
     config: { bot: 助手 }
   - name: model-catalog          # 模型目录和换模型、排队：在 session/request 最后自己调模型，写在所有改请求的插件和 fake-model 后面，放最后
+    config: { notes: { dir: models } }   # 模型介绍和评价（原 model-notes），/model-notes/；notes 可不写
   - name: ./plugins/weather      # 别人写的：文件夹路径，相对路径从运行时目录算
     config: { city: 上海 }
 ```

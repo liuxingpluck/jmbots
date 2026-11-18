@@ -3245,6 +3245,7 @@ button {
 .jm-approval-reason {
   margin: 4px 0 8px;
   color: var(--jm-text-secondary, #555);
+  white-space: pre-line;
 }
 .jm-approval.jm-risk-high {
   border-left: 4px solid #ff4d4f;

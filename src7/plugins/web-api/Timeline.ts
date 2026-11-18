@@ -385,6 +385,7 @@ export class Timeline {
     if (session.row.state !== 'running') {
       status = 'replied';
     }
+    //M 写入整份回话清单与新状态，供轮询和追溯共同读取。
     const sql = 'UPDATE web_messages SET replies = ?, session_id = COALESCE(session_id, ?), status = ?, updated_at = ? WHERE id = ?';
     this.ctx.resources.db.query(sql).run(JSON.stringify(record.replies), session.id, status, now, id);
 
@@ -607,6 +608,7 @@ export class Timeline {
     if (hasMore) {
       rows.shift();
     }
+    //M 按网页视图展开当前页的消息与回话。
     const shown = rows.map((raw) => this.parse(raw));
     const messages = await Promise.all(shown.map((record) => this.view(record)));
     const cursor = Math.max(after ?? 0, ...shown.map((record) => record.updatedAt));
@@ -673,6 +675,7 @@ export class Timeline {
     }
     const querySql = sql + filter + ' ORDER BY id DESC LIMIT 1000';
     const messages: Record<string, unknown>[] = [];
+    //M 对库里粗筛到的候选逐条核对，避免把回话元数据当成命中。
     for (const raw of this.ctx.resources.db.query(querySql).all(...values) as RawRow[]) {
       if (messages.length >= limit) break;
       const record = this.parse(raw);

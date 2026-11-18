@@ -54,7 +54,8 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         ctx.emit('trace', 'Outbox.tick', '飞书发件箱发出一份，挪进 sent', 'feishu.sendText(lastPrivate(), text)', vars);
       }
     } catch (error) {
-      console.error(`${new Date().toLocaleString('zh-CN', { hour12: false })} 飞书发件箱：发送失败，下一轮再试：${textModule.getMessage(error)}`);
+      const failedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+      console.error(`${failedAt} 飞书发件箱：发送失败，下一轮再试：${textModule.getMessage(error)}`);
     } finally {
       busy = false;
     }

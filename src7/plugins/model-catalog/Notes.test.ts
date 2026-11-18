@@ -1,7 +1,7 @@
 /**
- * 模型介绍和评价：解析 MD、按会话打分、同人同会话改分、按会话算平均分、入口校验拒绝、拼提示词。
+ * 模型介绍和评价（Notes.ts，11-18 由 model-notes 并进 model-catalog）：解析 MD、按会话打分、同人同会话改分、按会话算平均分、入口校验拒绝、拼提示词。
  * 真实 Cordis + Fastify inject，数据放临时目录，不碰运行时目录。
- * 跑法：bun test ./src7/plugins/model-notes
+ * 跑法：bun test ./src7/plugins/model-catalog
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
@@ -11,32 +11,16 @@ import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
 import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
-import * as modelNotes from './index.ts';
+import * as notesModule from './Notes.ts';
 
 
-//M 每个用例收拾自己的插件、HTTP 实例和临时目录。
+//M 每个用例收拾自己的 ctx、HTTP 实例和临时目录。
 const closers: (() => Promise<unknown> | void)[] = [];
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) {
     await close();
   }
 });
-
-
-//M 假资源：只给运行时目录 root。
-class FakeResources extends cordis.Service {
-  constructor(ctx: cordis.Context, readonly root: string) {
-    super(ctx, 'resources');
-  }
-}
-
-
-//M 假 http：只给 Fastify 实例，用 inject 发请求，不监听端口。
-class FakeHttp extends cordis.Service {
-  constructor(ctx: cordis.Context, readonly app: FastifyInstance) {
-    super(ctx, 'http');
-  }
-}
 
 
 //M 假会话表：只提供 open(id) 返回 { row: { id, model, thinking } }。
@@ -63,15 +47,15 @@ const NEW_LINE = /^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z][A-Za-z0-9+-]* · /u;
 
 
 /**
- * 挂上真插件。
+ * 建好 ModelNotes 和两个接口。
  * @param files 先放进 models/ 的文件：文件名 → 内容。
  * @param sessions 假会话表：会话号 → { model, thinking? }。
- * @returns models 目录、Fastify 实例、服务和假会话记录（可在测试里改模型测换模型）。
+ * @returns models 目录、Fastify 实例、ModelNotes 和假会话记录（可在测试里改模型测换模型）。
  */
 async function world(
   files: Record<string, string>,
   sessions: Record<string, { model: string; thinking?: string }> = {},
-): Promise<{ dir: string; app: FastifyInstance; notes: modelNotes.ModelNotes; sessions: Record<string, { model: string; thinking?: string }> }> {
+): Promise<{ dir: string; app: FastifyInstance; notes: notesModule.ModelNotes; sessions: Record<string, { model: string; thinking?: string }> }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-notes-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const dir = path.join(root, 'models');
@@ -84,18 +68,17 @@ async function world(
   const app = fastify();
   closers.push(() => app.close());
   closers.push(() => ctx.fiber.dispose());
-  await ctx.plugin(FakeResources, root);
-  await ctx.plugin(FakeHttp, app);
   await ctx.plugin(FakeSessions, sessions);
-  await ctx.plugin(modelNotes, {});
-  const notes = ctx.get('modelNotes') as modelNotes.ModelNotes | undefined;
-  if (notes === undefined) throw new Error('modelNotes 服务没有挂上');
 
+  //M 入口查配置（相对运行时目录），再建 ModelNotes、登记两个接口：和 model-catalog 的 apply 一样。
+  const settings = notesModule.readNotesSettings(root, {});
+  const notes = new notesModule.ModelNotes(ctx, settings);
+  notes.routes(app);
   return { dir, app, notes, sessions };
 }
 
 
-describe('model-notes 模型介绍和评价', () => {
+describe('model-catalog 的模型介绍和评价', () => {
   //M 介绍原样读；新旧评价都能解析，同场会话多人打分只算一场，平均分按场算；坏行和下一个标题之后的不算。
   test('解析：新旧格式、同场多人去重算场数与平均分', async () => {
     const text = [
@@ -212,8 +195,8 @@ describe('model-notes 模型介绍和评价', () => {
     expect(oldAfter?.average).toBe(3);
   });
 
-  //M 入口校验：session 合法字符；分数 1..5 整数；不能换行；by 非空且不含 ·；modelId 校验。
-  test('校验：checkRating 与 checkModelId 拒绝不对的输入', () => {
+  //M 入口校验：session 合法字符；分数 1..5 整数；不能换行；by 非空且不含 ·；modelId 校验；notes 配置写错抛错。
+  test('校验：checkRating、checkModelId 与 notes 配置拒绝不对的输入', () => {
     const good = { session: '202611171350001', by: 'Claude', score: 4, note: '细' };
     expect(checks.checkRating({ ...good, by: ' Claude ', note: undefined })).toEqual({
       session: '202611171350001', by: 'Claude', score: 4, note: '',
@@ -241,6 +224,11 @@ describe('model-notes 模型介绍和评价', () => {
 
     expect(() => checks.checkModelId('../config')).toThrow('model');
     expect(() => checks.checkModelId('a__b')).toThrow('model');
+
+    //M notes 配置：不是一节、dir 空串、时区认不得都在入口抛错。
+    expect(() => notesModule.readNotesSettings(os.tmpdir(), [])).toThrow('notes');
+    expect(() => notesModule.readNotesSettings(os.tmpdir(), { dir: '' })).toThrow('notes.dir');
+    expect(() => notesModule.readNotesSettings(os.tmpdir(), { time_zone: 'Mars/Base' })).toThrow('notes.time_zone');
   });
 
   //M HTTP：GET 交回列表；POST 坏正文回 400、无会话回 404；对了回 200 并支持改分。
@@ -261,7 +249,7 @@ describe('model-notes 模型介绍和评价', () => {
 
     const rated = await app.inject({ method: 'POST', url: '/api/model-notes/rate', payload: { session: 's1', by: 'Claude', score: 3, note: '一般' } });
     expect(rated.statusCode).toBe(200);
-    const body = rated.json<{ ok: boolean; note: modelNotes.ModelNote }>();
+    const body = rated.json<{ ok: boolean; note: notesModule.ModelNote }>();
     expect(body.ok).toBe(true);
     expect(body.note).toMatchObject({
       model: 'grok',
@@ -271,7 +259,7 @@ describe('model-notes 模型介绍和评价', () => {
     });
 
     const listed = await app.inject({ method: 'GET', url: '/api/model-notes' });
-    expect(listed.json<{ list: modelNotes.ModelNote[] }>().list).toEqual([body.note]);
+    expect(listed.json<{ list: notesModule.ModelNote[] }>().list).toEqual([body.note]);
   });
 
   //M 提示词：每个模型写介绍第一段、平均分和会话数、最近 3 条（新的在前）；没评价写一句；没有模型是空串。
@@ -280,7 +268,7 @@ describe('model-notes 模型介绍和评价', () => {
     const text = ['# gpt-6.1-sol', '', '第一段', '接着第一段', '', '第二段不要', '', '## 评价', ...ratings, ''].join('\n');
     const { notes } = await world({ 'gpt-6.1-sol.md': text, 'grok.md': '# grok\n' });
 
-    const prompt = notes.getPrompt();
+    const prompt = notes.getPrompt(notes.getList());
     expect(prompt).toContain('- gpt-6.1-sol：第一段 接着第一段\n');
     expect(prompt).not.toContain('第二段不要');
     expect(prompt).toContain('平均 2.5 分，4 场会话。最近：2026-11-14 10:00 EST · Claude · 4/5 · 会话 s4（high） · 好；2026-11-13');
@@ -288,6 +276,6 @@ describe('model-notes 模型介绍和评价', () => {
     expect(prompt).toContain('- grok：（没写介绍）\n  还没有评价。');
 
     const empty = await world({});
-    expect(empty.notes.getPrompt()).toBe('');
+    expect(empty.notes.getPrompt(empty.notes.getList())).toBe('');
   });
 });

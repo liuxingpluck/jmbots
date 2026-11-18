@@ -22,6 +22,7 @@ import * as fastify from 'fastify';
 import * as channels from '../../Channels.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as approvalModule from '../approval/index.ts';
 import * as botsPlugin from '../bots/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
@@ -198,9 +199,11 @@ test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 chann
 /**
  * 搭一套挂好 web-api 的环境：两个机器人（助手、备选），假模型由 answer 决定每一步回什么。
  * @param answer 每次 session/request 调一次：第几次（从 1 数）、这场会话；交回这一步的模型回答。
+ * @param options 可省略审核插件或替换为没有事件应答的机器人清单。
  */
 async function makeWeb(
   answer: (step: number, session: { id: string }) => ReturnType<typeof piAi.fauxAssistantMessage>,
+  options: { withApproval?: boolean; withBotEvents?: boolean } = {},
 ): Promise<{ ctx: cordis.Context; emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }>; steps: () => number }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'webapi-step34-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -212,8 +215,21 @@ async function makeWeb(
   await ctx.plugin(toolsModule.Tools);
   await ctx.plugin(sessionsModule.Sessions);
   await ctx.plugin(workspacesPlugin);
-  await ctx.plugin(botsPlugin, {});
-  await ctx.plugin(approvalModule, { thinking: 'low', decision_pass: 0.8 });
+  if (options.withBotEvents !== false) {
+    await ctx.plugin(botsPlugin, {});
+  }
+  if (options.withBotEvents === false) {
+    //M 只提供网页需要的机器人清单，模拟保存附件的机器人响应器缺席。
+    const bot = { name: '助手', config: {} };
+    ctx.provide('bots', {
+      list: () => [bot],
+      get: (name: string) => [bot].find((entry) => entry.name === name),
+      channel: () => () => undefined,
+    });
+  }
+  if (options.withApproval !== false) {
+    await ctx.plugin(approvalModule, { thinking: 'low', decision_pass: 0.8 });
+  }
   await ctx.plugin(webApiModule);
   await ctx.http.app.ready();
 
@@ -270,6 +286,282 @@ async function settled(ctx: cordis.Context, id: number): Promise<{ status: strin
   expect(last?.replies.length).toBe(view?.replies.length);
   return last!;
 }
+
+
+test('切换模型使用目录回执，无应答时按未知模型返回', async () => {
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  const session = ctx.sessions.create({ bot: '助手', kind: 'work' });
+  const model = 'fake/alternate';
+  const request = {
+    method: 'POST',
+    url: `/api/sessions/${session.id}/model`,
+    payload: { model },
+  } as const;
+  const originalModel = session.row.model;
+
+  //G 无监听时按未知模型报错，不保存任何会话变更。
+  const unavailable = await ctx.http.app.inject(request);
+  expect(unavailable.statusCode).toBe(400);
+  expect(unavailable.json<{ error: string }>()).toEqual({ error: `模型不可用：${model}` });
+  expect(session.row.model).toBe(originalModel);
+
+  //M 模拟目录接受事件并返回模型信息，网页应保存模型与默认思考档。
+  const stop = requestEventModule.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (query) => {
+    expect(query).toMatchObject({ action: 'find', model });
+    return {
+      info: {
+        id: model,
+        name: '测试模型',
+        kind: 'chat' as const,
+        contextWindow: 1000,
+        thinking: ['off', 'high'],
+        price: { input: 0, output: 0 },
+      },
+    };
+  });
+  closers.push(() => { stop(); });
+  const updated = await ctx.http.app.inject(request);
+  expect(updated.statusCode).toBe(200);
+  expect(updated.json()).toMatchObject({ id: session.id, model, thinking: 'high' });
+  expect(session.row).toMatchObject({ model, thinking: 'high' });
+});
+
+test('页面版本查询无人应答只保留后端版本，收到基地回执后显示壳子版本', async () => {
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  const route = '/api/ui/info';
+  const withoutBase = await ctx.http.app.inject(route);
+  expect(withoutBase.statusCode).toBe(200);
+  expect(withoutBase.json()).toMatchObject({ server: { version: expect.any(String) }, shell: null });
+
+  requestEventModule.onRequestEvent(ctx, 'base/request', 'base/result', (request) => {
+    expect(request).toMatchObject({ method: 'GET', route: '/version', timeoutMs: 800 });
+    return { ok: true, status: 200, body: { version: ' 1.2.3 ', builtAt: 123 } };
+  });
+  const withBase = await ctx.http.app.inject(route);
+  expect(withBase.statusCode).toBe(200);
+  expect(withBase.json()).toMatchObject({ shell: { version: '1.2.3', builtAt: 123 } });
+});
+
+test.each([{ withApproval: true, approvals: 1 }, { withApproval: false, approvals: 0 }])(
+  '机器人列表按审核回执显示待确认数，审批监听为 $withApproval', async ({ withApproval, approvals }) => {
+    const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'), { withApproval });
+    let status = 'idle';
+    if (withApproval) {
+      //M 有会话的待确认影响机器人状态，无会话的待确认不计入。
+      const session = ctx.sessions.create({ bot: '助手', kind: 'work' });
+      const input = { kind: 'exec', title: '待确认', detail: 'dir', payload: null, bot: '助手' };
+      const withSession = { ...input, session: session.id };
+      ctx.approval.ask(withSession);
+      ctx.approval.ask(input);
+      status = 'waiting';
+    }
+
+    const response = await ctx.http.app.inject('/api/bots');
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '助手', approvals, status }),
+      expect.objectContaining({ name: '备选', approvals: 0, status: 'idle' }),
+    ]));
+  },
+);
+
+test('机器人确认保存附件后，网页消息引用实际路径并消费暂存上传', async () => {
+  const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  const upload = '20261118065001001001';
+  const dir = ctx.resources.dir('data', 'tmp', 'uploads');
+  const file = path.join(dir, `${upload}_笔记.txt`);
+  fs.writeFileSync(file, '原始附件');
+  const requests: requestEventModule.EventArg<'bot/request'>[] = [];
+  ctx.on('bot/request', (request) => { requests.push(request); });
+
+  const payload = { bot: '助手', text: '查这份附件', uploads: [upload] };
+  const id = await post(ctx, payload);
+  await settled(ctx, id);
+
+  expect(requests).toContainEqual(expect.objectContaining({ action: 'save-file', bot: '助手', name: '笔记.txt' }));
+  expect(fs.existsSync(file)).toBe(false);
+  const bot = ctx.bots.get('助手');
+  const inbox = path.join(bot!.workspace, 'inbox');
+  const day = fs.readdirSync(inbox)[0]!;
+  const savedDir = path.join(inbox, day);
+  const name = fs.readdirSync(savedDir)[0]!;
+  const saved = path.join(savedDir, name);
+  expect(fs.readFileSync(saved, 'utf8')).toBe('原始附件');
+  expect(emitted[0]?.message.text).toContain(saved);
+});
+
+test('保存附件无人应答时回 503 并保留上传，不提交消息', async () => {
+  const options = { withApproval: false, withBotEvents: false };
+  const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'), options);
+  const upload = '20261118065001001001';
+  const dir = ctx.resources.dir('data', 'tmp', 'uploads');
+  const file = path.join(dir, `${upload}_笔记.txt`);
+  fs.writeFileSync(file, '原始附件');
+
+  const payload = { bot: '助手', text: '查这份附件', uploads: [upload] };
+  const input = { method: 'POST', url: '/api/message', payload } as const;
+  const response = await ctx.http.app.inject(input);
+  expect(response.statusCode).toBe(503);
+  expect(response.json<{ error: string }>().error).toContain('附件存不下');
+  expect(fs.readFileSync(file, 'utf8')).toBe('原始附件');
+  expect(emitted).toEqual([]);
+});
+
+test('暂存上传在等落盘回执期间只能由一条消息占用，失败后可以重试', async () => {
+  const options = { withApproval: false, withBotEvents: false };
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'), options);
+  const upload = '20261118065001001001';
+  const dir = ctx.resources.dir('data', 'tmp', 'uploads');
+  const file = path.join(dir, `${upload}_笔记.txt`);
+  fs.writeFileSync(file, '原始附件');
+  const received = Promise.withResolvers<void>();
+  const next = Promise.withResolvers<void>();
+  const stop = requestEventModule.onRequestEvent(ctx, 'bot/request', 'bot/result', async () => {
+    received.resolve();
+    await next.promise;
+    return { ok: false, error: '模拟保存失败' };
+  });
+
+  //M 首次请求留在等待回执状态，再提交同一个暂存上传。
+  const payload = { bot: '助手', text: '查这份附件', uploads: [upload] };
+  const input = { method: 'POST', url: '/api/message', payload } as const;
+  const first = ctx.http.app.inject(input).then((response) => response);
+  await received.promise;
+  const duplicate = await ctx.http.app.inject(input);
+  next.resolve();
+  const failed = await first;
+  expect(duplicate.statusCode).toBe(409);
+  expect(failed.statusCode).toBe(500);
+  expect(failed.json<{ error: string }>().error).toBe('附件存不下：模拟保存失败');
+
+  //M 首次保存失败后占用释放，下一条能重新发起保存请求。
+  stop();
+  const retry = await ctx.http.app.inject(input);
+  expect(retry.statusCode).toBe(503);
+  expect(fs.readFileSync(file, 'utf8')).toBe('原始附件');
+});
+
+
+test('运行中列表优先用进度事件，无应答时显示会话自己的进度', async () => {
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  const session = ctx.sessions.create({ bot: '助手', kind: 'work' });
+  session.row.state = 'running';
+  session.save();
+  const url = '/api/ui/running';
+
+  //M 没有进度插件时仍列出运行会话，用会话信息给出动作和开始时刻。
+  const fallback = await ctx.http.app.inject(url);
+  expect(fallback.statusCode).toBe(200);
+  expect(fallback.json()).toMatchObject([
+    { id: session.id, action: '后台运行中', startedAt: session.row.updatedAt },
+  ]);
+
+  const startedAt = session.row.updatedAt - 1000;
+  const action = '测试进度卡片的动作';
+  const card = {
+    id: 1,
+    sessionId: session.id,
+    bot: '助手',
+    text: '',
+    model: session.row.model,
+    stage: 'running' as const,
+    action,
+    startedAt,
+    steps: 0,
+    limitChosen: false,
+    extended: 0,
+    timings: { modelMs: 0, tools: [] },
+    messageIds: [],
+  };
+
+  //M 进度监听回应后，网页改用卡片中的动作和开始时刻。
+  const stop = requestEventModule.onRequestEvent(ctx, 'progress/request', 'progress/result', (query) => {
+    expect(query).toMatchObject({ action: 'list', bot: '助手' });
+    return { items: [card] };
+  });
+  closers.push(() => { stop(); });
+  const current = await ctx.http.app.inject(url);
+  expect(current.statusCode).toBe(200);
+  expect(current.json()).toMatchObject([{ id: session.id, action, startedAt }]);
+});
+
+
+test('回话追溯查询流水和用量，无应答时保留消息与缺项说明', async () => {
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('已回答'));
+  const id = await post(ctx, { text: '测试追溯', bot: '助手' });
+  const message = await settled(ctx, id);
+  const sessionId = message.replies[0]!.session.id;
+  const url = `/api/messages/${id}/trace?reply=0`;
+
+  //M 两个监听都没挂时，消息仍可追溯到目标回话与原文。
+  const fallback = await ctx.http.app.inject(url);
+  expect(fallback.statusCode).toBe(200);
+  expect(fallback.json()).toMatchObject({
+    target: { messageId: id, text: '已回答' },
+    scope: 'message-only',
+    sources: [{ id, text: '测试追溯' }],
+    events: [],
+    usage: [],
+    truncated: false,
+    notes: expect.arrayContaining(['没有流水明细或查询超时', '没有用量或查询超时']),
+  });
+
+  //M 流水以收件编号为键，用量以相关会话和起止时刻为键。
+  const stopJournal = requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (query) => {
+    expect(query).toMatchObject({ action: 'message-lines', message: id, limit: 500 });
+    return {
+      lines: [{
+        id: 1,
+        at: 0,
+        kind: '事件' as const,
+        name: '测试事件',
+        mode: '通知',
+        listeners: ['测试插件'],
+        text: '',
+        code: '',
+        site: 'WebApi.test.ts',
+        bot: '助手',
+        sessionId,
+        messageId: id,
+        vars: {},
+      }],
+    };
+  });
+  const stopUsage = requestEventModule.onRequestEvent(ctx, 'usage/list', 'usage/list-result', (query) => {
+    expect(query).toMatchObject({ sessions: [sessionId], limit: 200 });
+    expect(query.from).toBeGreaterThan(0);
+    expect(query.to).toBeGreaterThanOrEqual(query.from);
+    return {
+      rows: [{
+        at: query.to,
+        sessionId,
+        provider: 'fake',
+        model: 'fake',
+        kind: 'chat',
+        purpose: 'front',
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        ms: 1,
+        ok: true,
+      }],
+      truncated: true,
+    };
+  });
+  closers.push(() => { stopJournal(); });
+  closers.push(() => { stopUsage(); });
+
+  const current = await ctx.http.app.inject(url);
+  expect(current.statusCode).toBe(200);
+  expect(current.json()).toMatchObject({
+    scope: 'exact',
+    events: [{ type: '测试事件', source: '测试插件', data: { mode: '通知' } }],
+    usage: [{ sessionId, input: 1, output: 2 }],
+    truncated: true,
+  });
+});
 
 
 test('第 4 步：网页一轮里调两次 channel_reply，replies 两条、顺序对；一次不调走兜底只出一条', async () => {
@@ -436,6 +728,22 @@ test('A 块：GET /api/channels 列挂着的渠道和聊天；时间线按 chann
   expect(page.messages.map((item) => [item.text, item.chat, item.chatLabel])).toEqual([['甲群的话', 'oc_a', '飞书·群·甲群']]);
   const chatOnly = await ctx.http.app.inject({ method: 'GET', url: '/api/messages?bot=助手&chat=oc_a' });
   expect(chatOnly.statusCode).toBe(400);
+
+  //M 倒序只取最新一条并报告还有更早的，增量按更新时间筛选后以编号排序。
+  const latest = await ctx.http.app.inject('/api/messages?channel=feishu&limit=1');
+  expect(latest.json()).toMatchObject({ messages: [{ text: '乙群的话' }], hasMore: true, cursor: 2000 });
+  const changed = await ctx.http.app.inject('/api/messages?channel=feishu&after=1000');
+  expect(changed.json()).toMatchObject({
+    messages: [{ text: '甲群的话' }, { text: '乙群的话' }],
+    hasMore: false,
+    cursor: 2000,
+  });
+
+  //M 搜索保留原话命中类型与倒序排列。
+  const search = await ctx.http.app.inject({ url: '/api/search', query: { q: '群的话', bot: '助手' } });
+  expect(search.json()).toMatchObject({
+    messages: [{ snippet: '乙群的话', hit: 'text' }, { snippet: '甲群的话', hit: 'text' }],
+  });
 
   //M 带 view：校验过的 view（带名字）放进消息，前台这一轮的提示里有“用户正在网页上看”。
   const viewed = await post(ctx, { text: '这个群在聊什么', bot: '助手', view: { channel: 'feishu', chat: 'oc_a' } });

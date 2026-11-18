@@ -10,6 +10,17 @@
 fn main() {
     let windows = tauri_build::WindowsAttributes::new().app_manifest(include_str!("windows/app.manifest"));
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows)).expect("tauri-build 没过（看上面的报错）");
+    //M 探针和测试也链接现成的应用清单，加载 Tauri 所需的 Common Controls v6。
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        let out = std::env::var_os("OUT_DIR").expect("Cargo 输出目录");
+        let out = std::path::PathBuf::from(out);
+        let resource = out.join("resource.lib");
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-arg-examples={}", resource.display());
+        println!("cargo:rustc-link-arg-tests={}", resource.display());
+    }
     // 编译时刻（毫秒），给 GET /version 和网页左下角的版本显示用。
     let built = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis()).unwrap_or(0);
     println!("cargo:rustc-env=JMBOTS_BUILT_AT={built}");

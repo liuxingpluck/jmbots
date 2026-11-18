@@ -8,6 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import fastify from 'fastify';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as settings from '../settings/index.ts';
 import * as webApi from '../web-api/index.ts';
 import * as bridge from './index.ts';
@@ -24,7 +25,8 @@ afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close();
 });
 
-//M 最小上下文仅记录工具、事件和可选服务；配置路径只拼出来，不创建或读取文件。
+//M 最小上下文仅记录工具、跟踪点和可选服务；配置路径只拼出来，不创建或读取文件。
+//M 事件总线照 cordis 的三样做：on 交回退订函数，emit 照名字分发，serial 挨个 await（utils/RequestEvent.ts 只用这三样）。
 function world(allowRestart = false) {
   const app = fastify();
   const db = new Database(':memory:');
@@ -36,6 +38,42 @@ function world(allowRestart = false) {
     await app.close();
     db.close();
   });
+
+  //M 登记监听，交回退订函数（requestEvent 收到回执后退订）。
+  const on = (name: string, listener: (...args: unknown[]) => unknown): (() => boolean) => {
+    const handlers = listeners.get(name) ?? [];
+    handlers.push(listener);
+    listeners.set(name, handlers);
+    return () => {
+      const index = handlers.indexOf(listener);
+      if (index < 0) return false;
+
+      handlers.splice(index, 1);
+      return true;
+    };
+  };
+
+  //M 分发给这个名字的监听者；跟踪点另记进 traces。
+  const emit = (...args: unknown[]): void => {
+    const name = String(args[0]);
+    for (const listener of [...(listeners.get(name) ?? [])]) {
+      listener(...args.slice(1));
+    }
+    if (name !== 'trace') return;
+
+    //M 重启路径先发这条 trace 再安排退出；即便回归误入成功分支，也在安排退出之前中止。
+    if (!allowRestart && args[1] === 'Settings.restart') throw new Error('测试禁止实际重启');
+    traces.push(args);
+  };
+
+  //M 挨个 await 这个名字的监听者（http/request 这类请求事件用）。
+  const serial = async (...args: unknown[]): Promise<void> => {
+    const name = String(args[0]);
+    for (const listener of [...(listeners.get(name) ?? [])]) {
+      await listener(...args.slice(1));
+    }
+  };
+
   const ctx = {
     resources: { db, root: path.join(os.tmpdir(), 'jm-base-consumers-unused'), raw: { server: { port: 32086 } } },
     http: { app },
@@ -44,17 +82,18 @@ function world(allowRestart = false) {
     sessions: { find: () => [] },
     get: (name: string) => services.get(name),
     effect: (start: () => unknown) => start(),
-    on: (name: string, listener: (...args: unknown[]) => unknown) => {
-      const handlers = listeners.get(name) ?? [];
-      handlers.push(listener);
-      listeners.set(name, handlers);
-    },
-    emit: (...args: unknown[]) => {
-      //M 重启路径先发这条 trace 再安排退出；即便回归误入成功分支，也在安排退出之前中止。
-      if (!allowRestart && args[0] === 'trace' && args[1] === 'Settings.restart') throw new Error('测试禁止实际重启');
-      traces.push(args);
-    },
+    on,
+    emit,
+    serial,
   } as unknown as cordis.Context;
+
+  //M 假 http 插件：settings 重启前经 http/request 读 /api/ui/info、关监听；inject 交给 Fastify，close 直接答好。
+  requestEvents.onRequestEvent(ctx, 'http/request', 'http/result', async (request) => {
+    if (request.action === 'close') return { ok: true };
+
+    const response = await app.inject({ method: request.method, url: request.url });
+    return { ok: true, statusCode: response.statusCode, body: response.body };
+  });
   return { ctx, app, services, tools, listeners, traces };
 }
 

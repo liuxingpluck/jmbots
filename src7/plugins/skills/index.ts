@@ -80,7 +80,9 @@ export function list(roots: string[]): Skill[] {
         description = head['description'];
       }
       description = description.replace(/\s+/gu, ' ').trim();
-      if ([...description].length > DESCRIPTION_MAX) description = `${[...description].slice(0, DESCRIPTION_MAX).join('')}…`;
+      if ([...description].length > DESCRIPTION_MAX) {
+        description = `${[...description].slice(0, DESCRIPTION_MAX).join('')}…`;
+      }
       found.set(skillName, { name: skillName, description, file });
     }
   }
@@ -96,7 +98,9 @@ export function list(roots: string[]): Skill[] {
  */
 export function apply(ctx: cordis.Context): void {
   /** 这个机器人能用的技能：先全局后个人。每次现扫，不缓存（改了马上生效）。 */
-  const getSkills = (bot: string): Skill[] => list([ctx.resources.dir('skills'), ctx.resources.dir('bots', bot, 'skills')]);
+  const getSkills = (bot: string): Skill[] => list([
+    ctx.resources.dir('skills'), ctx.resources.dir('bots', bot, 'skills'),
+  ]);
 
   //M 听 session/request：只给干活的会话加技能清单（前台、小会话不带，同 0.4）。
   ctx.on('session/request', (request) => {
@@ -107,7 +111,9 @@ export function apply(ctx: cordis.Context): void {
     //M 现扫当前机器人可用的全局和个人技能，有技能时把清单拼进系统提示词。
     const skills = getSkills(row.bot);
     if (skills.length === 0) return;
-    request.system.push(`${HEAD}\n${skills.map((skill) => `- ${skill.name}：${skill.description}（@${skill.file}）`).join('\n')}`);
+    request.system.push(
+      `${HEAD}\n${skills.map((skill) => `- ${skill.name}：${skill.description}（@${skill.file}）`).join('\n')}`,
+    );
   });
 
   //M 只读工具 skill：按名字（清单里的名字）交回 SKILL.md 全文；同一个技能文件夹里的别的文件用 file 参数读。

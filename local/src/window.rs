@@ -12,6 +12,13 @@ use tauri::Manager;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+#[cfg(windows)]
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+#[cfg(windows)]
+use std::time::Duration;
+#[cfg(windows)]
+use crate::screen::{Overlay, ScreenConfig, ScreenController, ScreenStart};
+
 /// 主窗口的标签。
 const MAIN_WINDOW: &str = "main";
 /// 窗口一开始多大（逻辑像素）。
@@ -59,6 +66,8 @@ fn build_tray(app: &tauri::App, script: String, labels: (&str, &str)) -> Result<
     let open = MenuItem::with_id(app, "open", labels.0, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", labels.1, true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
+    #[cfg(windows)]
+    install_screen_toggle(app, &menu)?;
     let icon = app.default_window_icon().cloned().context("程序里没有图标")?;
     let for_menu = script.clone();
     TrayIconBuilder::with_id("jmbots")
@@ -68,6 +77,12 @@ fn build_tray(app: &tauri::App, script: String, labels: (&str, &str)) -> Result<
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main(app, &for_menu),
+            #[cfg(windows)]
+            "screen" => {
+                if let Some(screen) = app.try_state::<TrayScreen>() {
+                    screen.toggle(app);
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -78,6 +93,92 @@ fn build_tray(app: &tauri::App, script: String, labels: (&str, &str)) -> Result<
         })
         .build(app)?;
     Ok(())
+}
+
+/// Windows 托盘只持有开启意图。租约查询、采集和收尾由后台运行。
+#[cfg(windows)]
+struct TrayScreen {
+    config: ScreenConfig,
+    overlay: Overlay,
+    menu: MenuItem<tauri::Wry>,
+    running: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+#[cfg(windows)]
+fn install_screen_toggle(app: &tauri::App, menu: &Menu<tauri::Wry>) -> Result<()> {
+    let settings = app.state::<Settings>();
+    let config = match ScreenConfig::load(&settings.config_file) {
+        Ok(config) => config,
+        Err(_) => {
+            log::line(&settings, "录屏配置无效");
+            return Ok(());
+        }
+    };
+    if !config.enabled() { return Ok(()); }
+
+    let toggle = MenuItem::with_id(app, "screen", "开启录屏讲解", true, None::<&str>)?;
+    menu.insert(&toggle, 1)?;
+    let overlay = Overlay::new(app.handle().clone());
+    let screen = TrayScreen { config, overlay, menu: toggle, running: Arc::new(Mutex::new(None)) };
+    app.manage(screen);
+    Ok(())
+}
+
+#[cfg(windows)]
+impl TrayScreen {
+    fn toggle(&self, app: &tauri::AppHandle) {
+        let Ok(mut running) = self.running.lock() else { return; };
+        if let Some(stop) = running.as_ref() {
+            stop.store(true, Ordering::Release);
+            self.overlay.hide();
+            return;
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        *running = Some(stop.clone());
+        drop(running);
+        let _ = self.menu.set_text("停止录屏讲解");
+
+        let settings = app.state::<Settings>().inner().clone();
+        let config = self.config.clone();
+        let overlay = self.overlay.clone();
+        let running = self.running.clone();
+        let menu = self.menu.clone();
+        let work = move || {
+            let started = ScreenController::start_explaining(&config, &settings, overlay.clone());
+            match started {
+                Ok(ScreenStart::Active(session)) => {
+                    while !stop.load(Ordering::Acquire) {
+                        let _ = session.next_report(Duration::from_millis(100));
+                    }
+                    session.stop();
+                }
+                Ok(ScreenStart::BackendUnavailable) => log::line(&settings, "后端没开录屏"),
+                Err(_) => log::line(&settings, "录屏讲解启动失败"),
+                Ok(ScreenStart::Disabled) => (),
+            }
+            overlay.hide();
+            let _ = menu.set_text("开启录屏讲解");
+            if let Ok(mut running) = running.lock() {
+                *running = None;
+            }
+        };
+        if std::thread::Builder::new().name("screen-tray".into()).spawn(work).is_err() {
+            let _ = self.menu.set_text("开启录屏讲解");
+            if let Ok(mut running) = self.running.lock() {
+                *running = None;
+            }
+        }
+    }
+
+    fn stop(&self) {
+        if let Ok(running) = self.running.lock() {
+            if let Some(stop) = running.as_ref() {
+                stop.store(true, Ordering::Release);
+            }
+        }
+        self.overlay.hide();
+    }
 }
 
 /// 开窗口（或只开托盘），一直跑到用户从托盘退出。
@@ -119,10 +220,14 @@ pub fn run(settings: &Settings, tray_only: bool) -> Result<()> {
             Ok(())
         })
         .build(tauri::generate_context!())?;
-    app.run(move |_app, event| match event {
+    app.run(move |app, event| match event {
         //M 窗口都关了（藏了）也别退；只有从托盘点“退出”（带退出码）才真的退。
         tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
         tauri::RunEvent::Exit => {
+            #[cfg(windows)]
+            if let Some(screen) = app.try_state::<TrayScreen>() {
+                screen.stop();
+            }
             guard.stop();
             hosted.stop();
         }

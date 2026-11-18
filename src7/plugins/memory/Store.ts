@@ -54,6 +54,7 @@ export class Store {
    */
   constructor(readonly backend: backendModule.MemoryBackend, private readonly root: string, private readonly db: Database,
     private readonly policy: graphPolicy.GraphPolicy = graphPolicy.GRAPH_ALL) {
+    //M 建表记知识库文件的修改时间和大小：同步时靠它判断哪些文件新了、改了。
     db.exec('CREATE TABLE IF NOT EXISTS memory_files (path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL)');
   }
 
@@ -73,6 +74,8 @@ export class Store {
         : message.content.filter((block) => block.type === 'text').map((block) => (block.type === 'text' ? block.text : '')).join('\n');
       if (text.trim() === '') return;
       const index = from + offset;
+
+      //M 长的话切成 800 字一段，一段一条记录，都记同一个消息编号（start、end）。
       for (const piece of chunks(text)) {
         //M 按 history_graph / no_graph_customers 打标记：不进图的带 graph: false（外部服务照样收、能搜，只是不抽关系）。
         docs.push(graphPolicy.markGraph(this.policy, {
@@ -82,6 +85,8 @@ export class Store {
       }
     });
     row.memoryIndexed = row.messages.length;
+
+    //M 这次新接的几段一起收进检索后端；收的位置已经记在 row 上，调用的人负责存会话。
     if (docs.length > 0) await this.backend.ingest(docs);
     return docs.length;
   }
@@ -94,7 +99,11 @@ export class Store {
     //G 隔离：碰聊天记录（history、all）的检索必须带客户号，没有就拒绝；不能不带客户去搜，否则会搜到所有客户的。
     //G   只搜公共知识库（knowledge）不用客户号。
     if (query.scope !== 'knowledge' && (query.customer ?? '').trim() === '') throw new Error(NO_CUSTOMER);
+
+    //M 要搜知识库就先同步一下（最多 30 秒一次），新增、改过的文件才搜得到。
     if (query.scope !== 'history') await this.syncKnowledge();
+
+    //M 交给检索后端搜（本地 SQLite 或外部服务），拿回带编号的引用。
     return this.backend.search(query);
   }
 
@@ -114,12 +123,15 @@ export class Store {
     if (!/\.(md|txt)$/iu.test(file)) throw new Error('知识库文件要是 .md 或 .txt');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, content, 'utf8');
+
+    //M 文件写好后马上重建它的片段（先删旧的再收新的），不等下次同步，写完就搜得到。
     await this.indexFile(file, bot);
     return file;
   }
 
   /** 状态：后端的，加知识库文件数。 */
   async health(): Promise<Record<string, unknown>> {
+    //M 先数一下已收的知识库文件，再把后端自己的状态摊开，一起交回给网页看。
     const files = (this.db.query('SELECT COUNT(*) AS n FROM memory_files').get() as { n: number }).n;
     return { ...(await this.backend.health()), knowledgeFiles: files };
   }
@@ -129,18 +141,22 @@ export class Store {
     if (!force && Date.now() - this.syncedAt < SYNC_EVERY_MS) return;
     if (this.syncing !== undefined) return this.syncing;
     this.syncing = (async () => {
+      //M 扫公共的 knowledge/ 和每个机器人自己的 knowledge/，记下 文件→机器人（公共的是 ''）。
       const found = new Map<string, string>();
       for (const name of scan(path.join(this.root, 'knowledge'))) found.set(name, '');
       const botsDir = path.join(this.root, 'bots');
       const bots = fs.existsSync(botsDir) ? fs.readdirSync(botsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : [];
       for (const bot of bots) for (const name of scan(path.join(botsDir, bot, 'knowledge'))) found.set(name, bot);
 
+      //M 和库里记的修改时间、大小比：新的、改过的文件重建它的片段。
       const known = new Map((this.db.query('SELECT * FROM memory_files').all() as { path: string; mtime: number; size: number }[]).map((row) => [row.path, row]));
       for (const [file, bot] of found) {
         const stat = fs.statSync(file);
         const old = known.get(file);
         if (old === undefined || old.mtime !== Math.floor(stat.mtimeMs) || old.size !== stat.size) await this.indexFile(file, bot);
       }
+
+      //M 库里记着、磁盘上已经没有的文件：删掉它的片段和记录。
       for (const file of known.keys()) {
         if (found.has(file)) continue;
         await this.backend.remove(file);
@@ -154,6 +170,8 @@ export class Store {
   /** 重建一个知识库文件的片段：按空行分段，攒到 800 字一段，记起止行号。 */
   private async indexFile(file: string, bot: string): Promise<void> {
     const stat = fs.statSync(file);
+
+    //M 先删这个文件旧的片段，再重建，免得文件改短了还留着旧段。
     await this.backend.remove(file);
     const docs: backendModule.MemoryDoc[] = [];
     if (stat.size <= MAX_FILE_BYTES) {
@@ -167,14 +185,21 @@ export class Store {
         }
         buffer = [];
       };
+      //M 逐行攒：遇到空行且已攒够半段，或攒满一段，就用 flush 收成一个片段，记下起止行号。
       lines.forEach((line, index) => {
         if (buffer.length === 0) start = index + 1;
         buffer.push(line);
         if ((line.trim() === '' && buffer.join('\n').length >= CHUNK_CHARS / 2) || buffer.join('\n').length >= CHUNK_CHARS) flush(index + 1);
       });
+
+      //M 最后剩下的不够一段，也收成一个片段。
       flush(lines.length);
     }
+
+    //M 这个文件的所有片段一起收进检索后端。
     if (docs.length > 0) await this.backend.ingest(docs);
+
+    //M 记下文件的修改时间和大小，下次同步才知道它没变（超过 2MB 跳过的也记，免得每次重试）。
     this.db.query('INSERT INTO memory_files (path, mtime, size) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size')
       .run(file, Math.floor(stat.mtimeMs), stat.size);
   }
@@ -214,6 +239,8 @@ export function customerFrom(channel: string | undefined, address: unknown): str
 export function getCustomer(row: SessionRow): string {
   if (typeof row.customer === 'string' && row.customer !== '') return row.customer;
   const meta = row as SessionRow & { channel?: string; address?: unknown };
+
+  //M 记录上没写客户号，就照渠道和回话地址推（飞书私聊、飞书群、微信、网页各有各的算法）。
   return customerFrom(meta.channel, meta.address);
 }
 

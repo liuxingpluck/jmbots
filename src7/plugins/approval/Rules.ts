@@ -3,9 +3,11 @@
  * 正则照 0.4 原样搬（src/executors/ExecRules.ts、src/capabilities/Approvals.ts:60-104），这套正则踩过坑，不重写。
  * 规则的来历（用户 11-03）：发个文档也要他放行，嫌烦；同一天有机器人用 findstr 读 config.yaml，决策模型给了 0.94 直接放行，
  * 飞书密钥泄露。所以：碰密钥文件的命令直接拒绝；项目自己的检查直接放行；跑本地脚本的，把脚本内容读出来一起给审核看。
+ * 用户 11-18 #169：任务写明了、目录可信的也直接放行（getUntrusted），删系统、删注册表、删数据、格式化（mustAsk）照旧人审。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as workspaceModule from '../../utils/Workspace.ts';
 
 
 /**
@@ -86,6 +88,7 @@ const MAX_REPLY_CHARS = 60;
  * @param command 原命令。
  */
 export function parseCommand(command: string): ParsedCommand {
+  //M 先去掉开头的 chcp，再认开头的 cd：认到了就记下目录、把这一段从命令里切掉。
   let rest = command.trim().replace(/^chcp\s+\d+\s*>\s*nul\s*&&?\s*/i, '');
   let cdDir: string | undefined;
   const cd = /^cd\s+(?:\/d\s+)?("[^"]+"|\S+)\s*&&\s*/i.exec(rest);
@@ -93,6 +96,8 @@ export function parseCommand(command: string): ParsedCommand {
     cdDir = (cd[1] ?? '').replace(/^"|"$/g, '');
     rest = rest.slice(cd[0].length);
   }
+
+  //M 交回 cd 的目录和剩下的命令，调用方只看剩下的。
   return { cdDir, rest: rest.trim() };
 }
 
@@ -103,6 +108,7 @@ export function parseCommand(command: string): ParsedCommand {
  * @returns 碰到的文件名；没碰是 undefined。
  */
 export function touchesSecret(command: string): string | undefined {
+  //M 在命令里找密钥文件名（前后要是分隔符，免得把 config.example.yaml 当成 config.yaml）。
   const found = /(?:^|[\\/\s"'=])(config\.ya?ml|\.env(?!\.example)(?:\.[\w-]+)?|secrets\.ya?ml|\.credentials\.\w+|credentials\.json)(?=$|[\s"'&|;>)])/i.exec(command);
   return found?.[1];
 }
@@ -116,10 +122,12 @@ export function touchesSecret(command: string): string | undefined {
  * @param command 原命令。
  */
 export function isProjectCheck(command: string): boolean {
+  //G 先去掉开头的 cd 和末尾的 2>&1；还带 &、|、; 这类接别的命令的符号，就不算项目自己的检查。
   const rest = parseCommand(command).rest.replace(/\s*2>&1\s*$/, '');
   if (/[&|;<>`]/.test(rest)) return false;
 
-  const run = String.raw`run\s+(?:typecheck(?::src7)?|lint|test(?::src7)?|release)`;
+  //M 拼出允许的几种命令的样子，整条对得上才算。
+  const run =String.raw`run\s+(?:typecheck(?::src7)?|lint|test(?::src7)?|release)`;
   const test = String.raw`test(?:\s+[\w./\\-]+)*`;
   const script = String.raw`scripts[\\/](?:Swap_Serve|Build_Release|Build_Src7)\.ts(?:\s+--\w+\s+[\p{L}\p{N}_.:\\/-]+)*`;
   const pattern = new RegExp(String.raw`^bun(?:\.cmd)?\s+(?:${run}|${test}|${script})$`, 'iu');
@@ -134,6 +142,7 @@ export function isProjectCheck(command: string): boolean {
  * @returns 脚本路径和内容；找不到、读不了是 undefined。
  */
 export function readScript(command: string, cwd: string): { file: string; content: string } | undefined {
+  //M 去掉开头的 cd，再按 bun/node/pwsh/.cmd 几种写法认出要跑的脚本名。
   const { cdDir, rest } = parseCommand(command);
   const target =
     /^(?:bun(?:\.cmd)?|node|python3?|py|tsx)\s+(?:run\s+)?("[^"]+\.(?:ts|js|mjs|cjs|py)"|\S+\.(?:ts|js|mjs|cjs|py))(?:\s|$)/i.exec(rest)?.[1] ??
@@ -141,10 +150,13 @@ export function readScript(command: string, cwd: string): { file: string; conten
     /^("[^"]+\.(?:cmd|bat)"|\S+\.(?:cmd|bat))(?:\s|$)/i.exec(rest)?.[1];
   if (target === undefined) return undefined;
 
+  //M 命令里 cd 过的，脚本的相对路径照 cd 后的目录算。
   let baseDir = cwd;
   if (cdDir !== undefined) {
     baseDir = path.resolve(cwd, cdDir);
   }
+
+  //M 脚本解成绝对路径，读前 4000 字交回；读不了当没有。
   const file = path.resolve(baseDir, target.replace(/^"|"$/g, ''));
   try {
     return { file, content: fs.readFileSync(file, 'utf8').slice(0, 4000) };
@@ -164,6 +176,7 @@ export function parseReply(text: string): Reply | undefined {
   const plain = text.trim().toLowerCase().replace(/[\s。．.!！~～,，、;；?？]+$/u, '');
   if (plain === '' || plain.length > MAX_REPLY_CHARS || plain.includes('@')) return undefined;
 
+  //M 说的是“待确认有哪些”：直接交回 list，不用再认同意、拒绝。
   if (CARD_WORDS.test(plain) && (LIST_WORDS.test(plain) || plain.length <= 6)) return { list: true };
 
   //M 号在后面（同意 3、同意#3）或前面（3 同意）。
@@ -176,6 +189,7 @@ export function parseReply(text: string): Reply | undefined {
   const core = words.replace(/^(全部|全都|都|所有)/u, '').replace(/^all\s+|\s+all$/u, '').trim();
   if (!APPROVE_WORDS.has(core) && !REJECT_WORDS.has(core)) return undefined;
 
+  //M 拼回复：同意还是拒绝，有号带号，说了“全部”带 all。
   const reply: { approve: boolean; id?: number; all?: boolean } = { approve: APPROVE_WORDS.has(core) };
   if (idText !== undefined) {
     reply.id = Number(idText);
@@ -203,6 +217,82 @@ const SYSTEM_DIR = /^(?:[a-z]:[\\/]*(?:\*[^\\/]*)?$|[a-z]:[\\/]+(?:windows|progr
 /** 命令里的绝对路径（Windows 盘符、带引号的带空格路径、POSIX 根）。 */
 const ABS_PATH = /"[a-z]:[\\/][^"]*"|[a-z]:[\\/][^\s"'|&<>;]*|(?<=^|[\s"'=])\/[^\s"'|&<>;]*/gi;
 
+/** Windows 命令的开关（/s、/q、/f:x）：长得像 POSIX 绝对路径，不算路径。 */
+const SWITCH = /^\/[a-z?]{1,3}(?::\S*)?$/i;
+
+/** 写了环境变量、~ 的路径（%TEMP%、$HOME、$env:TEMP、${X}、~/x）：算不出落在哪。 */
+const ENV_REF = /%[^%\s]+%|\$(?:env:)?\w|\$\{|(?:^|[\s"'=])~(?=$|[\\/\s])/i;
+
+/** 往上走（有 .. 这一段）、从当前盘根算（\ 开头，含 \\共享）、只写盘符不带斜杠（D:x）的相对路径。 */
+const UP_OR_ROOTED = /^\\|^[a-z]:(?![\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)/i;
+
+/** 把命令拆成一段段：按空白、引号、管道、重定向、分号、等号切开。 */
+const TOKEN_SPLIT = /[\s"'|&<>;=]+/;
+
+
+/**
+ * 命令里写的绝对路径（去掉引号）。mustAsk、getUntrusted、审批卡片的“动哪些”共用。
+ * Windows 的开关不算；/etc 这种系统目录照算。网址（https://）里的“s:/”前面紧挨着字母，不是盘符，不算。
+ * @param command 原命令。
+ * @returns 绝对路径，照命令里出现的先后。
+ */
+export function getAbsPaths(command: string): string[] {
+  //M 在命令里逐个找绝对路径，滤掉网址、Windows 开关，剩下的收进 found。
+  const found: string[] = [];
+  for (const match of command.matchAll(ABS_PATH)) {
+    //G 前面紧挨着字母、数字：是网址的协议名（https://），不是盘符。
+    const index = match.index ?? 0;
+    const before = command.charAt(index - 1);
+    if (/\w/.test(before)) continue;
+
+    //G Windows 的开关不算路径（系统目录照算）。
+    const item = match[0].replace(/^"|"$/g, '');
+    const isSwitch = !SYSTEM_DIR.test(item) && SWITCH.test(item);
+    if (isSwitch) continue;
+
+    //M 剩下的是真路径，记下来。
+    found.push(item);
+  }
+  return found;
+}
+
+
+/**
+ * 命令是不是只动可信目录里的东西（用户 11-18 #169）：执行目录、命令开头 cd 到的目录、命令里写的每个绝对路径、
+ * 带 .. 往上走的和从盘根算的相对路径，解开后都要落在 dirs 里。写了环境变量、~ 的算不出落在哪，不算。
+ * 只看路径，不看命令做什么：删系统、删注册表、删数据、格式化由调用方先用 mustAsk 拦下。
+ * @param command 原命令。
+ * @param cwd 执行目录，绝对路径。
+ * @param dirs 可信目录（Workspace.ts 的 getPathKey 算过的）；空的就一个都不信。
+ * @returns 都在里面是 undefined；不算可信时交回一句具体原因（写进审批卡片的“为什么问你”，用户 #172）。
+ */
+export function getUntrusted(command: string, cwd: string, dirs: string[]): string | undefined {
+  if (dirs.length === 0) return '没配可信目录';
+
+  //G 环境变量、~ 开头的路径算不出落在哪：不算可信，照原来的流程审。
+  if (ENV_REF.test(command)) return '命令里写了环境变量或 ~，算不出动到哪里';
+
+  //M 命令开头 cd 过去的目录算这条命令的执行目录（相对的照 cwd 解开）。
+  const { cdDir } = parseCommand(command);
+  let base = cwd;
+  if (cdDir !== undefined) {
+    base = path.resolve(cwd, cdDir);
+  }
+
+  //M 要查的：执行目录、cd 到的目录、绝对路径，和往上走、从盘根算的相对路径（照 cd 后的目录解开）。
+  const relatives = command.split(TOKEN_SPLIT).filter((token) => UP_OR_ROOTED.test(token));
+  const absolutes = getAbsPaths(command);
+  const targets = [cwd, base, ...absolutes, ...relatives];
+
+  //M 每一个都要落在某个可信目录里；.. 跳出去的、换了盘的都不算，交回第一个不在里面的。
+  for (const target of targets) {
+    const full = path.resolve(base, target);
+    const key = workspaceModule.getPathKey(full);
+    if (!workspaceModule.isUnder(dirs, key)) return `${full} 不在可信目录里`;
+  }
+  return undefined;
+}
+
 
 /**
  * 必须人审的很小一块（用户 11-14：不做通用的命令行防御，只管这三样）：删系统级文件或目录、删注册表、删数据（数据目录里的，机器人工作区除外）。
@@ -213,19 +303,26 @@ const ABS_PATH = /"[a-z]:[\\/][^"]*"|[a-z]:[\\/][^\s"'|&<>;]*|(?<=^|[\s"'=])\/[^
  * @returns 要人审的原因；不归这里管的是 undefined。
  */
 export function mustAsk(command: string, dataRoot: string, cwd: string): string | undefined {
+  //G 删注册表、格式化直接要人审；根本不是删东西的命令，不归这里管。
   if (REGISTRY_DELETE.test(command)) return '删注册表，要你亲自确认';
   if (FORMAT.test(command)) return '格式化磁盘，要你亲自确认';
   if (!DELETE.test(command)) return undefined;
+
+  //M 路径统一成小写、反斜杠、不带结尾斜杠，好和数据目录比。
   const norm = (value: string): string => value.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   const root = norm(dataRoot);
-  //G Windows 的开关（/s、/q、/f）长得像 POSIX 绝对路径，不算路径；/etc 这种系统目录照算。
-  const found = (command.match(ABS_PATH) ?? []).map((item) => item.replace(/^"|"$/g, '')).filter((item) => SYSTEM_DIR.test(item) || !/^\/[a-z?]{1,3}(?::\S*)?$/i.test(item));
+
+  //M 命令里写的绝对路径（getAbsPaths：Windows 的开关、网址不算，/etc 这种系统目录照算）。
+  const found = getAbsPaths(command);
   let targets = [cwd];
   if (found.length > 0) {
     targets = found;
   }
   for (const target of targets) {
+    //G 删的是系统目录里的东西：直接要人审。
     if (SYSTEM_DIR.test(target)) return `删系统目录里的东西（${target}），要你亲自确认`;
+
+    //G 删的是数据目录里的东西（机器人工作区除外）：要人审。
     const t = norm(target);
     const inData = t === root || t.startsWith(root + '\\');
     const inWorkspace = /^bots\\[^\\]+\\workspace(?:\\|$)/.test(t.slice(root.length + 1));

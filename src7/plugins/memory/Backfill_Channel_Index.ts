@@ -96,6 +96,8 @@ function getFeishu(root: string): Candidate[] {
       if (!fileName.endsWith('.jsonl')) continue;
 
       const chatId = fileName.slice(0, -'.jsonl'.length);
+
+      //M 读这个聊天文件的每一行（坏行跳过），挑出正文和消息号（messageId，和 channel/message 一样）；没有正文、没有消息号的行不补。
       for (const { value } of readJsonl(path.join(appDir, fileName))) {
         const text = getString(value['text']);
         const key = getString(value['messageId']);
@@ -106,6 +108,8 @@ function getFeishu(root: string): Candidate[] {
         if (value['direction'] === 'bot') {
           direction = 'bot';
         }
+
+        //M 发言人在 sender 里（id、name）；机器人的回复键拼不出来，标成要按正文查重（fuzzy）。
         const sender = (value['sender'] ?? {}) as Record<string, unknown>;
         const row: channelIndexModule.ChannelRow = {
           key,
@@ -138,6 +142,7 @@ function getWechat(db: bunSqlite.Database, channel: string): Candidate[] {
   if (table === null) return [];
 
   const rows = db.query('SELECT account, chat, source, local_id, at, from_self, sender, text FROM wechat_messages').all() as Record<string, unknown>[];
+  //M 逐行转成候选：键照微信插件发 channel/message 的拼法，才和插件新记的对得上，所以都不用查重（fuzzy 为 false）。
   const candidates: Candidate[] = [];
   for (const item of rows) {
     const text = getString(item['text']);
@@ -149,10 +154,14 @@ function getWechat(db: bunSqlite.Database, channel: string): Candidate[] {
     if (chat.endsWith('@chatroom')) {
       chatType = 'group';
     }
+
+    //M 发言人 ID：消息里写了的用它，没写就是聊天对方（私聊）；自己发的记 self。
     let senderId = getString(item['sender']) || chat;
     if (item['from_self'] === 1) {
       senderId = 'self';
     }
+
+    //M 键是 JSON [渠道名, 账号, 分库:库内号]，和微信插件发 channel/message 拼的一样。
     const account = getString(item['account']);
     const nativeId = `${getString(item['source'])}:${String(item['local_id'])}`;
     const row: channelIndexModule.ChannelRow = {
@@ -214,6 +223,7 @@ function getWeb(db: bunSqlite.Database): Candidate[] {
     }
     if (!Array.isArray(replies)) continue;
 
+    //M 每条回话一行：正文取 text，没写时间就借用户那条的时间；键另起（web-reply:行号:第几条），按正文查重。
     for (const [index, reply] of replies.entries()) {
       const said = getString((reply as Record<string, unknown>)['text']);
       if (said.trim() === '') continue;
@@ -247,10 +257,12 @@ function getCli(root: string): Candidate[] {
   for (const fileName of fs.readdirSync(base)) {
     if (!fileName.endsWith('.jsonl')) continue;
 
+    //M 读这个日期文件的每一行（坏行跳过），取用户的话；没有正文的行不补。
     for (const { value, line } of readJsonl(path.join(base, fileName))) {
       const text = getString(value['text']);
       if (text.trim() === '') continue;
 
+      //M 键另起（cli-file:文件名:行号），按正文查重；目标机器人取 bot 字段。
       const row: channelIndexModule.ChannelRow = {
         key: `cli-file:${fileName}:${String(line)}`,
         channel: 'cli',
@@ -321,6 +333,7 @@ if (running) {
 const db = new bunSqlite.Database(path.join(root, 'data', 'jmbots7.db'), openOptions);
 let index: channelIndexModule.ChannelIndex | undefined;
 if (running) {
+  //M 真补才建索引对象（表不在就建）；只看时 index 是 undefined，fill 只数条数、不写。
   db.exec('PRAGMA busy_timeout = 5000');
   index = new channelIndexModule.ChannelIndex(db);
 }

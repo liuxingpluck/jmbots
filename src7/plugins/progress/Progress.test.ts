@@ -1,7 +1,7 @@
 /**
  * progress（含并入的 Review 超时复盘）单元测试：
  *   1. Progress 主流程：running 启动、session/message 记步数与工具耗时、act(stop) 终止、写入 data/overtime.jsonl；
- *   2. Review 完整链路：有在转进度时跳过、空闲后读取 overtime.jsonl 与 对话.md、落盘 reviewedAt、sessions.ask 写建议、approval.ask → approval/decided(approved) 写 memory/复盘/*.md；
+ *   2. Review 完整链路：空闲时读超时记录，生成建议，经 approval/request 登记后等待用户决定。
  *   3. 配置入口校验与开关：review: false / enabled: false 关闭复盘；非法 first_ms / every_ms 抛错。
  */
 import * as fs from 'node:fs';
@@ -14,6 +14,7 @@ import type { AskInput, Session } from '../../Sessions.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type { Pending } from '../approval/index.ts';
 import * as progressPlugin from './index.ts';
+import * as words from './Words.ts';
 
 
 const closers: (() => Promise<unknown> | void)[] = [];
@@ -32,6 +33,9 @@ afterEach(async () => {
 /** 构建临时运行时目录并挂上假 resources / bots / sessions（可选 approval / filesMirror）。 */
 async function setupWorld(options: {
   withApproval?: boolean;
+  withoutClose?: boolean;
+  withHand?: boolean;
+  withDecision?: boolean;
   withMirror?: boolean;
   withCatalog?: boolean;
   engine?: Record<string, number>;
@@ -45,6 +49,7 @@ async function setupWorld(options: {
   askedReviews: string[];
   askInputs: AskInput[];
   approvalAskList: Pending[];
+  decisionRequests: events.EventArg<'decision/judge'>[];
   sayLogs: string[];
   traces: { where: string; what: string; vars?: Record<string, unknown> }[];
 }> {
@@ -61,6 +66,7 @@ async function setupWorld(options: {
   const askedReviews: string[] = [];
   const askInputs: AskInput[] = [];
   const approvalAskList: Pending[] = [];
+  const decisionRequests: events.EventArg<'decision/judge'>[] = [];
   const traces: { where: string; what: string; vars?: Record<string, unknown> }[] = [];
 
   class MockResources extends cordis.Service {
@@ -80,11 +86,9 @@ async function setupWorld(options: {
     constructor(parent: cordis.Context) {
       super(parent, 'bots');
     }
-    get(name: string): { config: Record<string, unknown>; hand: () => Session } | undefined {
-      if (name === '周小灵') {
-        const fresh = { id: 'session-next', row: {}, save: () => undefined } as unknown as Session;
-        return { config: { language: 'zh' }, hand: () => fresh };
-      }
+    get(name: string): { config: Record<string, unknown> } | undefined {
+      if (name === '周小灵') return { config: { language: 'zh' } };
+
       return undefined;
     }
   }
@@ -139,6 +143,12 @@ async function setupWorld(options: {
       }
       return hit;
     }
+    create(input: Pick<Session['row'], 'bot' | 'kind' | 'frontTask' | 'workspaceId'>): Session {
+      const id = 'session-next';
+      const fresh = { id, row: { ...input, id }, save: () => undefined } as unknown as Session;
+      sessionMap.set(id, fresh);
+      return fresh;
+    }
     async ask(input: AskInput): Promise<{ ok: boolean; reply: string }> {
       askInputs.push(input);
       askedReviews.push(input.text);
@@ -157,12 +167,17 @@ async function setupWorld(options: {
   }
 
   if (options.withCatalog === true) {
-    events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ({ model }) => ({
-      info: {
-        id: model, name: model, kind: 'chat' as const, contextWindow: 128000,
-        thinking: ['off', 'xhigh', 'medium'], price: { input: 0, output: 0 },
-      },
-    }));
+    events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
+      if (request.action !== 'find') return {};
+
+      const { model } = request;
+      return {
+        info: {
+          id: model, name: model, kind: 'chat' as const, contextWindow: 128000,
+          thinking: ['off', 'xhigh', 'medium'], price: { input: 0, output: 0 },
+        },
+      };
+    });
   }
 
   if (options.withMirror === true) {
@@ -179,34 +194,58 @@ async function setupWorld(options: {
   }
 
   if (options.withApproval === true) {
-    let nextPendingId = 1;
-    class MockApproval extends cordis.Service {
-      constructor(parent: cordis.Context) {
-        super(parent, 'approval');
+    const approvalOptions: events.OnRequestEventOptions<events.EventArg<'approval/request'>, events.EventArg<'approval/result'>> = {
+      filter: (request) => request.action !== 'close' || options.withoutClose !== true,
+    };
+    //M 用事件模拟审批插件，按请求登记、按种类查询、关闭仍在等待的卡片。
+    events.onRequestEvent(ctx, 'approval/request', 'approval/result', (request) => {
+      if (request.action === 'list') {
+        const items = approvalAskList.filter((item) => item.state === 'waiting' && item.kind === request.kind);
+        return { items };
       }
-      list(): Pending[] {
-        return approvalAskList.filter((item) => item.state === 'waiting');
+      if (request.action === 'close') {
+        const pending = approvalAskList.find((item) => item.id === request.id);
+        if (pending === undefined) return { error: '找不到卡片' };
+
+        pending.state = 'rejected';
+        pending.card.state = 'ended';
+        pending.card.result = request.note;
+        return { settled: pending };
       }
-      ask(input: { kind: string; title: string; detail: string; payload?: unknown; bot: string; session?: string }): Pending {
-        const entry = {
-          id: nextPendingId++,
-          kind: input.kind,
-          bot: input.bot,
-          session: input.session,
-          title: input.title,
-          detail: input.detail,
-          payload: input.payload,
-          state: 'waiting',
-          askedAt: Date.now(),
-        } as unknown as Pending;
-        approvalAskList.push(entry);
-        return entry;
+      if (request.action !== 'ask') return {};
+
+      const id = approvalAskList.length + 1;
+      const card = { ...request.input.card, state: 'waiting' } as Pending['card'];
+      const pending = { ...request.input, id, state: 'waiting', askedAt: Date.now(), card } as Pending;
+      approvalAskList.push(pending);
+      return { pending };
+    }, approvalOptions);
+  }
+
+  if (options.withHand === true) {
+    //M 模拟机器人接手，回执只带实际接手的会话号。
+    events.onRequestEvent(ctx, 'bot/request', 'bot/result', (request) => {
+      if (request.action !== 'hand') return { ok: false };
+
+      const input = { bot: request.bot, kind: 'work' as const, thinking: 'low' as const };
+      let freshId = request.sessionId;
+      if (freshId === undefined) {
+        const fresh = ctx.sessions.create(input);
+        freshId = fresh.id;
       }
-      close(): void {
-        return;
-      }
-    }
-    await ctx.plugin(MockApproval);
+      return { ok: true, sessionId: freshId };
+    });
+  }
+
+  if (options.withDecision === true) {
+    //M 模拟三题都有分数，推进和完成过线，打转低于门槛。
+    events.onRequestEvent(ctx, 'decision/judge', 'decision/judge-result', (request) => {
+      decisionRequests.push(request);
+      const looping = request.question.instructions === words.QUESTIONS.looping.instructions;
+      if (looping) return { verdict: 'deny', score: 0.1, reason: '没有打转' } as const;
+
+      return { verdict: 'allow', score: 0.9, reason: '达到门槛' } as const;
+    });
   }
 
   ctx.on('trace', (where: string, what: string, _code: string, vars?: Record<string, unknown>) => {
@@ -215,7 +254,7 @@ async function setupWorld(options: {
 
   await ctx.plugin(progressPlugin, options.pluginConfig);
 
-  return { ctx, root, session: fakeSession, askedReviews, askInputs, approvalAskList, sayLogs, traces };
+  return { ctx, root, session: fakeSession, askedReviews, askInputs, approvalAskList, decisionRequests, sayLogs, traces };
 }
 
 
@@ -356,6 +395,7 @@ test('3. Review 完整闭环：空闲挑选超时条目、记 reviewedAt、送�
   expect(world.session.row.reviewedAt).toBeDefined();
   expect(world.approvalAskList.length).toBe(1);
   expect(world.approvalAskList[0]?.kind).toBe('review');
+  expect(world.session.row.reviewApprovalId).toBe(world.approvalAskList[0]?.id);
 
   //M 模拟用户同意待确认项，Review 监听 approval/decided 后写进 memory/复盘/*.md。
   const pending = world.approvalAskList[0]!;
@@ -385,6 +425,89 @@ test('复盘缺少镜像和模型应答时仍能生成询问', async () => {
   expect(world.askInputs[0]?.thinking).toBe('minimal');
 });
 
+test('查到一张待确认的复盘卡片时不再生成复盘', async () => {
+  const world = await setupWorld({ withApproval: true, pluginConfig: { review: { first_ms: 40 } } });
+  const input = { kind: 'review', title: '待确认', detail: '', payload: null, bot: world.session.row.bot };
+  const ask = { action: 'ask', input } as const;
+
+  //M 先经审批事件登记一张复盘卡片，再产生可复盘的超时记录。
+  await events.requestEvent(world.ctx, 'approval/request', 'approval/result', ask, eventOptions);
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+  world.ctx.progress.act(world.session.id, 'stop');
+
+  const deadline = Date.now() + 1000;
+  while (!world.traces.some((item) => item.vars?.['原因'] === '有复盘在等用户') && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(world.traces).toContainEqual(expect.objectContaining({ where: 'Review.check', vars: { 原因: '有复盘在等用户' } }));
+  expect(world.askInputs).toEqual([]);
+});
+
+test('复盘列表无人应答仍生成建议，送审无人应答按拒绝处理', async () => {
+  const world = await setupWorld({ pluginConfig: { review: { first_ms: 40 } } });
+  const requests: Pending['payload'][] = [];
+
+  //M 记录发送的载荷，不接单。之后模拟卡片迟到并被点击同意。
+  world.ctx.on('approval/request', (request) => {
+    if (request.action === 'ask') {
+      requests.push(request.input.payload);
+    }
+  });
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+  world.ctx.progress.act(world.session.id, 'stop');
+
+  const reason = '审核未确认登记，复盘按拒绝处理：审核未获回执（unhandled）';
+  const deadline = Date.now() + 1000;
+  while (!world.traces.some((item) => item.vars?.['原因'] === reason) && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(world.traces).toContainEqual(expect.objectContaining({ where: 'Review.check', vars: { 原因: reason } }));
+  expect(world.askInputs[0]?.kind).toBe('review');
+  expect(world.session.row.reviewedAt).toBeDefined();
+  expect(world.approvalAskList).toEqual([]);
+  expect(requests).toHaveLength(1);
+  const decided = { id: 1, kind: 'review', state: 'approved', payload: requests[0] } as Pending;
+  world.ctx.emit('approval/decided', decided);
+
+  const reviewDir = path.join(world.root, 'memory', '复盘');
+  expect(fs.existsSync(reviewDir)).toBe(false);
+});
+
+test.each([{ withoutClose: true }, { withoutClose: false }])(
+  '长跑确认卡片登记成功，会话结束照常定格，关闭无应答为 $withoutClose', async ({ withoutClose }) => {
+  const world = await setupWorld({
+    withApproval: true,
+    withoutClose,
+    engine: { long_run_card_minutes: 0.00005 },
+    pluginConfig: { review: false },
+  });
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+
+  //M 等待长跑请求的回执写入进度，再结束会话触发关闭卡片。
+  const deadline = Date.now() + 1000;
+  while (world.session.row.progress?.cardId === undefined && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  const pending = world.approvalAskList[0];
+  expect(world.session.row.progress?.cardId).toBe(pending?.id);
+  expect(pending?.card.kind).toBe('long-run');
+  expect(world.sayLogs).toEqual([]);
+  world.session.row.state = 'done';
+  world.ctx.emit('session/change', world.session);
+  await Bun.sleep(10);
+
+  expect(world.ctx.progress.list()[0]?.stage).toBe('done');
+  if (withoutClose) {
+    expect(pending?.state).toBe('waiting');
+    return;
+  }
+  expect(pending?.card.state).toBe('ended');
+  expect(pending?.card.result).toBe('会话已结束（完成）');
+});
+
 test('长跑提醒、报时和收尾用通知发送，模型无人应答用最低默认档', async () => {
   const world = await setupWorld({
     engine: { long_run_card_minutes: 0.00005 },
@@ -393,6 +516,12 @@ test('长跑提醒、报时和收尾用通知发送，模型无人应答用最�
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
   await Bun.sleep(15);
+
+  //G 没有确认登记的长跑卡片，后到的决定不能停止会话。
+  const decided = { id: 1, kind: 'long-run', state: 'approved', payload: { sessionId: world.session.id } } as Pending;
+  world.ctx.emit('approval/decided', decided);
+  expect(world.session.row.state).toBe('running');
+
   world.ctx.progress.act(world.session.id, 'limit', 0.005);
 
   const deadline = Date.now() + 1000;
@@ -407,6 +536,31 @@ test('长跑提醒、报时和收尾用通知发送，模型无人应答用最�
   expect(world.askInputs[0]?.thinking).toBe('minimal');
 });
 
+test.each([{ withDecision: true }, { withDecision: false }])(
+  '到点判断三题有回执时延长，决策应答为 $withDecision', async ({ withDecision }) => {
+  const world = await setupWorld({
+    withDecision,
+    engine: { limit_default_minutes: 0.0005 },
+    pluginConfig: { review: false },
+  });
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+
+  const deadline = Date.now() + 1000;
+  while (!world.traces.some((item) => item.where === 'Progress.onDeadline') && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(world.traces).toContainEqual(expect.objectContaining({
+    where: 'Progress.onDeadline', vars: expect.objectContaining({ 延: withDecision }),
+  }));
+  if (withDecision) {
+    expect(world.decisionRequests).toHaveLength(3);
+    expect(world.session.row.progress?.extended).toBe(1);
+    return;
+  }
+  expect(world.ctx.progress.list()[0]?.stage).toBe('timeout');
+});
+
 test.each([
   { withCatalog: true, listenSay: true, expectedThinking: 'xhigh' as const },
   { withCatalog: false, listenSay: false, expectedThinking: 'high' as const },
@@ -414,6 +568,7 @@ test.each([
   const world = await setupWorld({
     withCatalog,
     listenSay,
+    withHand: true,
     engine: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
     reviewReply: '{"absurd":false,"handoff":true,"handoffNote":"继续核对已有结果"}',
   });
@@ -425,10 +580,30 @@ test.each([
     await Bun.sleep(10);
   }
   expect(world.ctx.progress.list()[0]?.stage).toBe('handed');
+  expect(world.ctx.sessions.open('session-next').row.progress?.handedOver).toBe(true);
   expect(world.askInputs[0]?.thinking).toBe(expectedThinking);
   if (!listenSay) return;
 
   expect(world.sayLogs).toContain('↪ 这件事转到新会话 session-next 接着做。交接说明：\n继续核对已有结果');
+});
+
+test('转交无人应答时撤销老会话的转交标记，进度和通知都写失败', async () => {
+  const world = await setupWorld({
+    engine: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
+    reviewReply: '{"absurd":false,"handoff":true,"handoffNote":"核对已有结果"}',
+  });
+  world.session.row.frontTask = { front: 'front-1', round: 2, workspace: '工作区', origin: {}, paused: false };
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+
+  const deadline = Date.now() + 1000;
+  while (world.ctx.progress.list()[0]?.endedAt === undefined && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  const failure = '想转新会话，但没有接手成功：转交未获回执（unhandled）';
+  expect(world.ctx.progress.list()[0]).toMatchObject({ stage: 'stopped', action: failure });
+  expect(world.session.row.frontTask.handedTo).toBeUndefined();
+  expect(world.sayLogs).toContain(failure);
 });
 
 

@@ -6,7 +6,16 @@
 
 
 /** 块类型号（0.4 FeishuDoc.ts:26）：字 2、标题 3 起（1 到 9 级）、无序 12、有序 13、代码 14、引用 15、图片 27、表格 31。 */
-export const BLOCK = { text: 2, heading: 3, bullet: 12, ordered: 13, code: 14, quote: 15, image: 27, table: 31 } as const;
+export const BLOCK = {
+  text: 2,
+  heading: 3,
+  bullet: 12,
+  ordered: 13,
+  code: 14,
+  quote: 15,
+  image: 27,
+  table: 31,
+} as const;
 
 
 /** Markdown 拆出来的一个节点。 */
@@ -235,14 +244,23 @@ export function parse(markdown: string): DocNode[] {
  */
 export function toBlocks(node: Exclude<DocNode, { kind: 'table' }>): Block[] {
   if (node.kind === 'code') {
-    return [{ block_type: BLOCK.code, code: { elements: [{ text_run: { content: node.text } }], style: { language: 1, wrap: true } } }];
+    return [{
+      block_type: BLOCK.code,
+      code: {
+        elements: [{ text_run: { content: node.text } }],
+        style: { language: 1, wrap: true },
+      },
+    }];
   }
   const lines = node.text.split('\n').map((line) => line.trim()).filter((line) => line !== '');
   return lines.map((line): Block => {
     if (node.kind === 'heading') {
       const level = Math.min(9, Math.max(1, node.level));
       //M 将标题级别映射到飞书 block_type 与对应 headingN 字段并渲染行内文本元素。
-      return { block_type: BLOCK.heading + level - 1, [`heading${String(level)}`]: { elements: elements(line), style: {} } };
+      return {
+        block_type: BLOCK.heading + level - 1,
+        [`heading${String(level)}`]: { elements: elements(line), style: {} },
+      };
     }
     const kinds = {
       paragraph: { type: BLOCK.text, field: 'text' },

@@ -180,7 +180,11 @@ export function approval(pending: PendingLike): Record<string, unknown> {
 export function progress(item: ProgressItemLike, at = Date.now()): Record<string, unknown> {
   const stage = STAGES[item.stage];
   const end = item.endedAt ?? at;
-  const head = [`**${stage.icon} ${item.action || stage.text}**`, `用了 ${textModule.getDuration(end - item.startedAt)}`, `第 ${String(item.steps)} 步`];
+  const head = [
+    `**${stage.icon} ${item.action || stage.text}**`,
+    `用了 ${textModule.getDuration(end - item.startedAt)}`,
+    `第 ${String(item.steps)} 步`,
+  ];
   if (item.limitMinutes !== undefined && item.limitMinutes > 0) {
     let left = '';
     if (item.deadline !== undefined && item.endedAt === undefined) {
@@ -193,7 +197,9 @@ export function progress(item: ProgressItemLike, at = Date.now()): Record<string
   const sections = [head.join(' · ')];
 
   //M 各段耗时：模型多久，每个工具几次、多久。
-  const tools = item.timings.tools.map((tool) => `${tool.name} ×${String(tool.count)} ${textModule.getDuration(tool.ms)}`);
+  const tools = item.timings.tools.map((tool) => {
+    return `${tool.name} ×${String(tool.count)} ${textModule.getDuration(tool.ms)}`;
+  });
   let toolSuffix = '';
   if (tools.length > 0) {
     toolSuffix = `；${tools.join('；')}`;
@@ -207,7 +213,11 @@ export function progress(item: ProgressItemLike, at = Date.now()): Record<string
   let buttons: Button[] = [];
   if (item.endedAt === undefined) {
     buttons = [
-      ...LIMIT_CHOICES.map((minutes): Button => ({ text: `最多 ${String(minutes)} 分钟`, type: 'default', value: { action: 'limit', minutes } })),
+      ...LIMIT_CHOICES.map((minutes): Button => ({
+        text: `最多 ${String(minutes)} 分钟`,
+        type: 'default',
+        value: { action: 'limit', minutes },
+      })),
       { text: '不限时', type: 'default', value: { action: 'limit', minutes: 0 } },
       { text: '终止', type: 'danger', value: { action: 'stop' } },
     ];
@@ -238,8 +248,8 @@ export function fromCard(id: number, data: cardUtils.CardData): Record<string, u
   const head = [data.reason, riskPart].filter((part) => part !== '').join('　');
   const sections: string[] = [];
   if (head !== '') {
-    //M 裁剪顶部摘要行长度后放进卡片首段正文。
-    const clippedHead = textModule.clip(head, 200);
+    //M 裁剪顶部摘要行长度后放进卡片首段正文：审批卡片是三行（要做什么、动哪些、为什么问你），每行最多 160 字，600 字放得下。
+    const clippedHead = textModule.clip(head, 600);
     sections.push(clippedHead);
   }
   const more: string[] = data.items.map((item) => {
@@ -253,7 +263,8 @@ export function fromCard(id: number, data: cardUtils.CardData): Record<string, u
     more.push(`**风险** ${data.risk.text}`);
   }
   if (data.details !== undefined) {
-    more.push(`**${data.details.label}**\n\`\`\`json\n${textModule.clip(JSON.stringify(data.details.data, null, 2), DETAIL_MAX)}\n\`\`\``);
+    const detailJson = textModule.clip(JSON.stringify(data.details.data, null, 2), DETAIL_MAX);
+    more.push(`**${data.details.label}**\n\`\`\`json\n${detailJson}\n\`\`\``);
   }
   let fold: CardSpec['fold'];
   if (more.length > 0) {
@@ -269,7 +280,11 @@ export function fromCard(id: number, data: cardUtils.CardData): Record<string, u
       color: waitColor,
       title,
       sections,
-      buttons: data.buttons.map((button) => ({ text: button.label, type: button.style, value: { action: button.action } })),
+      buttons: data.buttons.map((button) => ({
+        text: button.label,
+        type: button.style,
+        value: { action: button.action },
+      })),
     };
     if (data.kind === 'long-run') {
       spec.note = '不点就一直做下去';

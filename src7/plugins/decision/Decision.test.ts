@@ -1,13 +1,28 @@
 /**
- * decision v1.0.2 事件接口单元测试（只用假会话问答，不调真实模型或分类器）：
+ * decision 事件接口单元测试（只用假会话问答，不调真实模型或分类器）：
  *   1. 验证仅配置 chat 模型（无 classifier）时构造阶段仍正确挂载 `decision/judge` 监听；
- *   2. 验证 `allow`（>= allowAt）、`deny`（< denyAt）与 `unsure`（中间分/答不上来）回执结构完整配对。
+ *   2. 验证 `allow`（>= allowAt）、`deny`（< denyAt）与 `unsure`（中间分/答不上来）回执结构完整配对；
+ *   3. 没挂 decision 时 requestEvent 当场退回拿不准，不等超时。
  * 跑法：bun test ./src7/plugins/decision
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
-import { requestEvent } from '../../utils/RequestEvent.ts';
+import { requestEvent, type FallbackReason } from '../../utils/RequestEvent.ts';
 import * as decisionPlugin from './index.ts';
+
+
+/**
+ * 三次问共用的退回：没人答、超时都当拿不准。
+ * 写明返回类型，verdict 才是字面量 'unsure'，不被推成 string。
+ * @param reason requestEvent 给的退回原因。
+ * @param detail 出错时的原话。
+ */
+function getUnsure(reason: FallbackReason, detail?: string): decisionPlugin.DecisionJudgeResult {
+  return { requestId: '', verdict: 'unsure', reason: detail ?? reason };
+}
+
+/** 三次问共用的等待设置。 */
+const judgeOptions = { prefix: 'dec', timeoutMs: 1000, onFallback: getUnsure };
 
 
 const closers: (() => Promise<unknown> | void)[] = [];
@@ -71,11 +86,7 @@ describe('decision/judge 事件裁定', () => {
         question: { instructions: '安全吗', yes: '安全', no: '有风险' },
         state: { 命令: 'ls' },
       },
-      {
-        prefix: 'dec',
-        timeoutMs: 1000,
-        onFallback: (_reason, detail) => ({ requestId: '', verdict: 'unsure', reason: detail ?? '未响应' }),
-      },
+      judgeOptions,
     );
     expect(allow.verdict).toBe('allow');
     expect(allow.score).toBe(0.92);
@@ -91,11 +102,7 @@ describe('decision/judge 事件裁定', () => {
         question: { instructions: '安全吗', yes: '安全', no: '有风险' },
         state: { 命令: 'rm' },
       },
-      {
-        prefix: 'dec',
-        timeoutMs: 1000,
-        onFallback: (_reason, detail) => ({ requestId: '', verdict: 'unsure', reason: detail ?? '未响应' }),
-      },
+      judgeOptions,
     );
     expect(deny.verdict).toBe('deny');
     expect(deny.score).toBe(0.1);
@@ -110,13 +117,23 @@ describe('decision/judge 事件裁定', () => {
         question: { instructions: '继续吗', yes: '继续', no: '停下' },
         state: { 进度: '50%' },
       },
-      {
-        prefix: 'dec',
-        timeoutMs: 1000,
-        onFallback: (_reason, detail) => ({ requestId: '', verdict: 'unsure', reason: detail ?? '未响应' }),
-      },
+      judgeOptions,
     );
     expect(unsure.verdict).toBe('unsure');
     expect(unsure.score).toBeUndefined();
+  });
+
+  test('没挂 decision：当场退回拿不准，不等超时', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    const question = { instructions: '安全吗', yes: '安全', no: '有风险' };
+    const input = { kind: 'exec', question, state: { 命令: 'ls' } };
+    const options = { ...judgeOptions, timeoutMs: 60_000 };
+
+    //M 超时设成一分钟：秒回说明是“没人接单”退回的，不是等到点。
+    const began = Date.now();
+    const result = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', input, options);
+    expect(result).toEqual({ requestId: '', verdict: 'unsure', reason: 'unhandled' });
+    expect(Date.now() - began).toBeLessThan(1000);
   });
 });

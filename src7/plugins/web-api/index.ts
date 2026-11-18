@@ -21,6 +21,7 @@ import * as timelineModule from './Timeline.ts';
 import * as traceModule from './Trace.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as checksModule from '../../utils/Checks.ts';
 import * as protocol from '../../Channels.ts';
 import { WebHistory } from './History.ts';
 
@@ -34,15 +35,15 @@ export const name = 'web-api';
 //M   别的渠道的回话按“标准消息号 + 机器人”精确挂回（source_id 列），不再按地址找最新一行。
 //M 1.1.4：网页入站地址带 owner: true（“同意 N”可批所有待确认）；replyDirect 支持跨渠道发往网页的回复落入时间线。
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
-export const version = '1.1.5';
+//M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
+export const version = '1.1.8';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
 
 /**
  * 用到的服务。渠道收发向 bots 登记（bots.channel / bots.receive）；还要 resources；会话接口要 sessions；登记接口要 http。
- * approval 与 base 在需要时从上下文取；模型目录、进度、流水与用量在需要时发事件。
- * 这些插件都是可选的，消息收发不依赖它们。
+ * 审批列表、基地版本、保存附件、模型目录、进度、流水和用量都通过请求事件处理。
  */
 export const inject = ['resources', 'bots', 'sessions', 'http'];
 
@@ -74,12 +75,6 @@ declare module 'cordis' {
 }
 
 
-/** 审核服务 approval 的样子（approval.md 第 2 节）。还没写好、也可能没挂，这里只按约定写结构，不 import 它。 */
-interface ApprovalLike {
-  list(): { bot: string; session?: string }[];
-}
-
-
 /** POST /api/message 的请求体：外面进来的，accept 里校验一次。 */
 interface MessageBody {
   text?: unknown;
@@ -91,6 +86,8 @@ interface MessageBody {
   reply_to?: unknown;
   /** 网页正在看哪个渠道、哪个聊天：{ channel, chat? }，chat 不写或空是整个渠道。 */
   view?: unknown;
+  /** 授权范围（用户 11-18 #169）：{ dirs: [绝对路径…] }，这场会话里 exec 在这些目录里的命令不用再问（approval 读回话地址的 grants）。 */
+  grants?: unknown;
 }
 
 
@@ -118,6 +115,8 @@ class WebApi {
 
   /** 别的渠道发出去、还没等到回执的回话（replyRequestKey → 正文和请求）：回执说发到了才挂进时间线。 */
   private readonly otherReplies = new Map<string, { text: string; request: protocol.ChannelReplyRequest }>();
+  /** 正在等待保存回执的上传暂存文件，避免并发消息消费同一上传号。 */
+  private readonly savingUploads = new Set<string>();
 
   /**
    * 建收件表；听别的渠道的消息和回话；在一个 Fastify 作用域里登记全部接口。
@@ -216,7 +215,9 @@ class WebApi {
         if (error instanceof failureModule.Failure) {
           status = error.status;
         }
-        await reply.code(status).send({ error: textModule.getMessage(error) });
+        //M 用同一结构把错误文字与选定的 HTTP 状态码交回网页。
+        const message = textModule.getMessage(error);
+        await reply.code(status).send({ error: message });
         return reply;
       });
 
@@ -292,33 +293,39 @@ class WebApi {
   }
 
   /**
-   * 通过可选的基地服务问壳子版本，不再另猜本机端口。
-   * 连不上或旧壳子没有 /version 就当没有，不挡界面信息。
+   * 通过基地事件查询壳子版本。
+   * @returns 壳子版本与编译时刻，查询不可用时返回 null。
    */
   private async shellVersion(): Promise<{ version: string; builtAt: number } | null> {
-    //M 后端版本与 startedAt 不依赖基地；基地不可用只让 shell 为 null，接口仍回 200。
-    const base = this.ctx.get('base');
-    if (base === undefined) return null;
-    try {
-      const response = await base.getJson('/version', 800);
-      if (response.status < 200 || response.status >= 300) return null;
-      const body = (response.body ?? {}) as { version?: unknown; builtAt?: unknown };
-      if (typeof body.version !== 'string' || body.version.trim() === '') return null;
-      let builtAt = 0;
-      if (typeof body.builtAt === 'number' && Number.isFinite(body.builtAt)) {
-        builtAt = body.builtAt;
-      }
-      return { version: body.version.trim(), builtAt };
-    } catch {
-      return null;
+    const request = { method: 'GET', route: '/version', timeoutMs: 800 } as const;
+    const options = { timeoutMs: 1800, onFallback: () => ({ requestId: '', ok: false }) };
+
+    //M 基地版本单独查询，后端版本和启动时刻照常返回。
+    const response = await requestEventModule.requestEvent(this.ctx, 'base/request', 'base/result', request, options);
+
+    //G 无回执、失败或旧壳子不提供版本时，由页面显示未知。
+    const status = response.status;
+    if (!response.ok || status === undefined || status < 200 || status >= 300) return null;
+
+    const body = (response.body ?? {}) as { version?: unknown; builtAt?: unknown };
+    if (typeof body.version !== 'string') return null;
+
+    //M 只展示有效版本号，旧壳子未报编译时刻时沿用 0。
+    const version = body.version.trim();
+    if (version === '') return null;
+
+    let builtAt = 0;
+    if (typeof body.builtAt === 'number' && Number.isFinite(body.builtAt)) {
+      builtAt = body.builtAt;
     }
+    return { version, builtAt };
   }
 
   /**
    * POST /api/message：校验、存附件、记一行、推给机器人。
    * @param raw 请求体。
    * @returns { id: 消息号, file: '' }（src7 不给每条消息写文件）。
-   * @throws Failure(400)：字段不对、没有这个机器人、没有这场会话、上传号不在了、推给机器人失败。
+   * @throws Failure(400)：字段不对、没有机器人或会话、上传号失效、分派失败。Failure(503/500)：附件存不下。
    */
   private async accept(raw: unknown): Promise<{ id: number; file: string }> {
     //M 外面进来的，这里校验一次。
@@ -332,6 +339,9 @@ class WebApi {
     //G 来源省略时按 HTTP 处理，传入时必须是非空字符串。
     const from = body.from ?? 'http';
     if (typeof from !== 'string' || from === '') throw new failureModule.Failure(400, 'from 要是非空字符串');
+
+    //G 授权范围（可选）：本人、中控（from: claude）交代任务时写明哪些目录可信；这里查一次、规范化一次，写错回 400（Checks.ts 的 checkGrants）。
+    const grants = checksModule.checkGrants(body.grants);
 
     //M 指定了会话就直接交给它（不分派）；机器人不写就用会话的，会话也没有就用名单第一个。
     const sessionId = body.session ?? '';
@@ -378,6 +388,7 @@ class WebApi {
         const targetId = external.sessionId;
         target = this.ctx.sessions.find({ id: targetId })[0];
       }
+      //G 原渠道消息没有有效会话时，拒绝把引用回复误投到其他会话。
       if (target === undefined) throw new failureModule.Failure(400, '被回复的消息尚未关联会话');
       if (session !== undefined && session.id !== target.id) {
         throw new failureModule.Failure(400, '指定会话与被回复消息的会话不同');
@@ -392,19 +403,8 @@ class WebApi {
     const files = [...this.images(body.images), ...this.uploads(body.uploads)];
     if (text.trim() === '' && files.length === 0) throw new failureModule.Failure(400, 'text 和附件至少要有一样');
 
-    const paths: string[] = [];
-    try {
-      //M 把已读到手的附件存进目标机器人的工作区，供对话引用。
-      for (const file of files) {
-        paths.push(this.ctx.bots.saveFile(wanted, file.name, file.data));
-      }
-    } catch (error) {
-      //G 附件落盘失败时中止提交，交回调用方能看的错误。
-      throw new failureModule.Failure(400, `附件存不下：${textModule.getMessage(error)}`);
-    }
-    for (const file of files) {
-      if (file.upload !== undefined) fs.rmSync(file.upload, { force: true });
-    }
+    //M 由机器人保存附件，所有回执都成功后才提交消息。
+    const paths = await this.saveAttachments(wanted, files);
 
     //M 附件写成 @绝对路径 接在话后面（路径里有空白就加引号），模型用 read 工具就能读到。
     const mentions = paths.map((item) => {
@@ -457,7 +457,7 @@ class WebApi {
 
     //M 推给机器人；回话地址就是消息号。推不进去（比如没有插件管分派）就删掉这一行，告诉调用方。
     try {
-      await this.emitChannelMessage(id, wanted, said, input, routing, view);
+      await this.emitChannelMessage(id, wanted, said, input, routing, view, grants);
     } catch (error) {
       this.timeline.remove(id);
       throw new failureModule.Failure(400, textModule.getMessage(error));
@@ -475,6 +475,7 @@ class WebApi {
    * @param text 带引用描述前缀的输入文本。
    * @param routing accept 里算好的路由（指定会话、引用来源、autoFinal）。
    * @param view 网页正在看哪儿（getView 校验过）；没带是 undefined，消息上就不写这一项。
+   * @param grants 授权范围（checkGrants 查过、规范化过）；没带是 undefined，地址上就不写这一项。
    * @throws 没人认领、也不是“同意 N”时抛错。
    * 副作用：认领到会话的，把会话号记到这一行上。
    */
@@ -485,11 +486,17 @@ class WebApi {
     text: string,
     routing: protocol.ChannelRouting,
     view: protocol.ChannelView | undefined,
+    grants: checksModule.Grants | undefined,
   ): Promise<void> {
     const now = Math.max(Date.now(), this.lastAt + 1);
     this.lastAt = now;
     //M 网页来源已经由 http 插件按本机/令牌核验过身份，带上 owner: true 让 approval 认出可批所有待确认。
-    const address = { messageId: id, customer: 'http:本机', owner: true };
+    const address: Record<string, unknown> = { messageId: id, customer: 'http:本机', owner: true };
+
+    //M 带了授权范围就写进回话地址：bots.route 把地址记到会话上，交办的后台会话也带着，approval 审 exec 时读 grants.dirs。
+    if (grants !== undefined) {
+      address['grants'] = grants;
+    }
     const nativeId = String(id);
     const messageId = protocol.makeChannelMessageId(this.name, 'local', nativeId);
     const channelMessage: protocol.ChannelMessage = {
@@ -690,6 +697,7 @@ class WebApi {
       if (typeof item === 'object' && item !== null) {
         image = item;
       }
+      //G 内联文件必须含可解码的正文。
       if (typeof image.data !== 'string' || image.data === '') throw new failureModule.Failure(400, `images[${String(index)}].data 要是 base64 字符串`);
 
       let name = `图片${String(index + 1)}.png`;
@@ -725,6 +733,71 @@ class WebApi {
       const upload = path.join(dir, found);
       return { name: found.slice(id.length + 1), data: fs.readFileSync(upload), upload };
     });
+  }
+
+  /**
+   * 经机器人事件保存消息附件，成功后消费一次性上传号。
+   * @param bot 接收附件的机器人。
+   * @param files 已校验的附件与可选暂存路径。
+   * @returns 机器人确认保存的路径，顺序与附件一致。
+   * 副作用：附件写进工作区。等待期间占住上传号，全部保存后清理暂存文件。
+   */
+  private async saveAttachments(
+    bot: string,
+    files: { name: string; data: Uint8Array; upload?: string }[],
+  ): Promise<string[]> {
+    const uploads = files.map((file) => file.upload).filter((file) => file !== undefined);
+
+    //G 上传号只能由一条消息消费，先检查全部暂存文件是否空闲。
+    const busy = uploads.some((file) => this.savingUploads.has(file));
+    if (busy) throw new failureModule.Failure(409, '有附件正在用于另一条消息');
+
+    for (const upload of uploads) {
+      //M 占用暂存文件，等待保存回执时不让并发消息重复消费。
+      this.savingUploads.add(upload);
+    }
+
+    const paths: string[] = [];
+    const options = {
+      timeoutMs: 5000,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', ok: false, error: detail ?? `保存附件未获回执（${reason}）`,
+      }),
+    };
+    try {
+      for (const file of files) {
+        const request = { action: 'save-file', bot, name: file.name, data: file.data } as const;
+
+        //M 让机器人保存附件，收到实际路径后才能写进对话。
+        const saved = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
+
+        //G 任一附件没确认保存就中止发消息，保留暂存上传供重试。
+        if (!saved.ok || saved.path === undefined) {
+          let status = 500;
+          if (saved.requestId === '') {
+            status = 503;
+          }
+          const error = `附件存不下：${saved.error ?? '机器人未返回文件路径'}`;
+
+          //G 区分无服务与执行失败，让页面拿到真实原因。
+          throw new failureModule.Failure(status, error);
+        }
+
+        //M 收下确认保存的路径，稍后生成消息里的文件引用。
+        paths.push(saved.path);
+      }
+
+      for (const upload of uploads) {
+        //M 所有附件都拿到路径后才清理一次性上传。
+        fs.rmSync(upload, { force: true });
+      }
+      return paths;
+    } finally {
+      for (const upload of uploads) {
+        //M 释放占用，失败的上传号可以重新提交。
+        this.savingUploads.delete(upload);
+      }
+    }
   }
 
   /**
@@ -1033,16 +1106,24 @@ class WebApi {
   }
 
   /** GET /api/bots：机器人列表，状态按“等确认 → 干活 → 闲着”（同 0.4：HttpUi.ts:400-418；src7 不排队，queued 是 0）。 */
-  private botList(): Record<string, unknown>[] {
-    //M 读取可选的审核服务，供机器人列表显示待确认状态。
-    const approval = this.ctx.get('approval') as ApprovalLike | undefined;
-    const pending = approval?.list() ?? [];
+  private async botList(): Promise<Record<string, unknown>[]> {
+    const request = { action: 'list' } as const;
+    const options = { timeoutMs: 3000, onFallback: () => ({ requestId: '', items: [] }) };
+
+    //M 查待确认列表算机器人状态，查询不可用时仍返回机器人和运行数。
+    const listed = await requestEventModule.requestEvent(
+      this.ctx, 'approval/request', 'approval/result', request, options,
+    );
+    const pending = listed.items ?? [];
 
     //M 为每个机器人汇总审核项与运行会话，计算网页显示的状态。
     return this.ctx.bots.list().map((bot) => {
       //M 干活中的后台子会话也算（有 parent，不出现在会话下拉里，但机器人应显示在干活）。
       const running = this.ctx.sessions.find({ bot: bot.name, state: 'running' }).length;
-      const approvals = pending.filter((item) => item.bot === bot.name && item.session !== undefined && item.session !== '').length;
+      const waiting = pending.filter((item) => (
+        item.bot === bot.name && item.session !== undefined && item.session !== ''
+      ));
+      const approvals = waiting.length;
       let status = 'idle';
       if (running > 0) {
         status = 'working';

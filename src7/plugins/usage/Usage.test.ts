@@ -38,16 +38,21 @@ test('用量事件返回按模型价格入账的调用，目录缺席时按零�
   await ctx.plugin(FakeResources);
   await ctx.plugin(usagePlugin);
 
-  const stop = events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ({ model }) => ({
-    info: {
-      id: model,
-      name: model,
-      kind: 'chat' as const,
-      contextWindow: 1000,
-      thinking: [],
-      price: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.4 },
-    },
-  }));
+  const stop = events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
+    if (request.action !== 'find') return {};
+
+    const { model } = request;
+    return {
+      info: {
+        id: model,
+        name: model,
+        kind: 'chat' as const,
+        contextWindow: 1000,
+        thinking: [],
+        price: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.4 },
+      },
+    };
+  });
   const session = { id: 'session-1', row: { bot: '助手', kind: 'work' } } as Session;
   const reply = piAi.fauxAssistantMessage('完成');
   const usage = { ...reply.usage, input: 1000000, output: 500000, cacheRead: 1000000, cacheWrite: 500000 };

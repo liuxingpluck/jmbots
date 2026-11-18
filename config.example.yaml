@@ -149,10 +149,7 @@ channels:
 #   - name: web                    # 网页，要写在 http 后面
 #   - name: web-api                # 网页要的接口：机器人、会话、发话、停止、换模型、追溯
 #   - name: files-api              # 文件接口：上传、看文件、列目录
-#   - name: model-notes            # 模型介绍和评价：页面 /model-notes/ 看介绍、打分；GET /api/model-notes、POST /api/model-notes/rate；要写在 http 后面
-#     config: { dir: models, time_zone: America/New_York }   # dir：一个模型一份 MD（文件名是模型 ID 把 / 换成 __），相对运行时目录，默认 models；
-#                                  # time_zone：评价时间按哪个时区写（写出来带缩写，如 EST），默认 America/New_York
-#   - name: relay                  # 外部助手（别的 AI）的交办、收件、回信都在这里；写在 http、fake-model 后面。三样：
+#   - name: relay                 # 外部助手（别的 AI）的交办、收件、回信都在这里；写在 http、fake-model 后面。三样：
 #                                  #   转话：把话转给外部助手，等它回信再回给用户（写了 helpers 才开）；
 #                                  #   任务通道：agent_task 工具，GET /api/agents/guide 是给外部 AI 看的接入说明（挂了 http 就开；原 agent-tasks）；
 #                                  #   留言：note_claude 工具，给 Claude 留言，写进 integrations/claude/inbox/（一直开；原 note-claude）
@@ -172,8 +169,14 @@ channels:
 #   - name: journal                # 事件日志与完整会话镜像：记进 journal_lines 表（GET /api/events），并默认生成 bots/<机器人>/sessions/<会话>/对话.md 和 session.json（原 files-mirror）
 #                                  # 保留天数读顶层 events: { keep_days: 30 }；可选 config: { mirror: true }（设 false 退回简版 对话.md）
 #   - name: approval               # 待确认、命令审核（规则 → decision → 审核小会话 → 问用户）；网页轮询 /api/approvals，挂了 web-api 就要挂它
-#     config: { thinking: low, decision_pass: 0.8 }   # model: 审核小会话用的模型，不写用 default_model
-#   - name: exec                   # exec 工具与 HTTP 命令窗口 /api/run、/api/runs*（已并入原 runs）；要写在 approval 后面；读 paths 段的 runtimes、program；可用 config.runs: false 关命令窗口
+#     config:                      # model: 审核小会话用的模型，不写用 default_model
+#       thinking: low
+#       decision_pass: 0.8
+#       trusted_dirs: []           # 可信目录，绝对路径的数组（不写是不信任何目录）：命令的执行目录和命令里写的路径都在这些目录里，
+#                                  # 又不是删系统、删注册表、删数据、格式化的，程序规则直接放行，不再问模型、不弹卡片。
+#                                  # 例（Windows）：trusted_dirs: ['D:\work\outwork', 'D:\work\myproject']
+#                                  # 本人、中控发 POST /api/message 时也能带 grants: { dirs: [...] }，只对那场会话（和它交办的后台）有效
+#   - name: exec                   # exec 工具与 HTTP 命令窗口 /api/run、/api/runs*（已并入原 runs）；审核走 approval/request 事件，没挂 approval 一律拒绝；读 paths 段的 runtimes、program；可用 config.runs: false 关命令窗口
 #   - name: web-search             # web_search 工具：搜索供应商写在顶层 search 段，一家一家试
 #                                  # search:
 #                                  #   - { kind: magpie, name: 搜索, url: 'http://127.0.0.1:3425/alpha/search', model: 某模型, api_key: 密钥 }
@@ -224,13 +227,18 @@ channels:
 #   - name: base-bridge            # 基地转发（/api/update、/api/autostart、/api/memory/*、/api/rag/*，已并入原 notify 与 update-watch，默认均关闭）；读 engine.index_url
 #                                  # 需要时可加 config: { notify: true, update_watch: true }（notify 可写 { url }，update_watch 可写 { first_ms, every_ms }）
 #   - name: desktop                # 窗口操控：/api/desktop/status、/api/desktop/action；程序在 <paths.program>/AOBW/aobw-capability.exe
+#   - name: screen                 # 录屏点击讲解，默认关闭，见顶层 screen 段
+#   - name: voice                  # 麦克风听写字幕，默认关闭，见顶层 voice 段
 #   - name: wechat                 # 微信渠道 + 客服页 /wechat/（积木客服改写）；引擎在 <运行时目录>/program/wechat（python/、runtime/）
 #     config: { bot: 助手, interval_ms: 3000 }   # 可选 root、python、ocr_python、aobw_url（默认 http://127.0.0.1:30010）、lock_file、at_names
 #   - name: model-catalog          # 模型清单与运行兜底（已并入原 model-fallback）：从 providers 拉清单，并在模型限流/超长时换模型、排队
 #                                  # 要写在所有往系统提示词/messages 里加东西的插件（和 fake-model）后面，一般放最后
 #                                  # 读 engine 的 fallback_chain、fallback_max_tries（5）、fallback_include_siblings（true）、
 #                                  # rate_limit_cooldown_minutes（5）与顶层 concurrency 段；可选 config.fallback（写 false 关闭回退或覆盖子项）
-#   - name: ./plugins/weather      # 别人写的：以 . 开头的是文件夹路径，从 config.yaml 所在的目录算
+#                                  # 已并入原 model-notes（模型介绍和评价）：页面 /model-notes/ 看介绍、打分；GET /api/model-notes、POST /api/model-notes/rate
+#     config: { notes: { dir: models, time_zone: America/New_York } }   # notes 可不写。dir：一个模型一份 MD（文件名是模型 ID 把 / 换成 __），
+#                                  # 相对运行时目录，默认 models；time_zone：评价时间按哪个时区写（写出来带缩写，如 EST），默认 America/New_York
+#   - name: ./plugins/weather     # 别人写的：以 . 开头的是文件夹路径，从 config.yaml 所在的目录算
 #     config: { city: 上海 }
 
 # decision 插件读的顶层段（挂了 decision 才要写）：
@@ -242,3 +250,52 @@ channels:
 #   allow_at: 0.8                        # 合出来的分 ≥ 它算放行（approval 给 decision_pass，默认也是 0.8，不能更低）
 #   deny_at: 0                           # 合出来的分 < 它算拒绝；0 就是从不拒
 #   timeout_ms: 10000                    # 一个模型最多等多久
+
+# 录屏点击讲解。先在 plugins 里显式挂载 screen，再打开 enabled 并配置可读图的模型。
+screen:
+  enabled: false
+  fps: 2
+  buffer_seconds: 3
+  frame_max_width: 1280
+  frame_max_height: 720
+  ring_max_bytes: 67108864
+  crop_width: 480
+  crop_height: 320
+  jpeg_quality: 75
+  image_max_bytes: 262144
+  max_frame_age_ms: 1000
+  click_debounce_ms: 250
+  model: ''
+  thinking: 'off'
+  model_timeout_ms: 8000
+  max_output_tokens: 160
+  speak: false
+  overlay_seconds: 6
+  pause_on_lock: true
+  pause_on_fullscreen: true
+  blacklist:
+    # 已有默认黑名单，按需追加进程 basename 或窗口标题片段。
+    processes: []
+    title_contains: []
+    password_controls: true
+
+# 网页听写。需要启用插件及转写后端；fake 只供模拟验证，不识别真实语音。
+voice:
+  enabled: false
+  bot: ''
+  ws_path: /api/voice/ws
+  sample_rate: 16000
+  asr:
+    provider: sherpa
+  turn:
+    silence_ms: 1200
+    max_utterance_ms: 60000
+    merge_window_ms: 30000
+  judge:
+    min_chars: 6
+    step_chars: 12
+    step_ms: 1000
+    allow_at: 0.8
+    deny_at: 0.3
+    timeout_ms: 12000
+    max_per_minute: 30

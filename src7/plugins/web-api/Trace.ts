@@ -80,6 +80,10 @@ export function getGeneration(row: SessionRow, text: string): Generation {
   const finished = row.state === 'done' && piAi.contentText(last.content) === text;
   if (call === undefined && !finished) return program;
 
+  let callId: string | null = null;
+  if (call?.type === 'toolCall') {
+    callId = call.id;
+  }
   return {
     kind: 'model',
     model: `${last.provider}/${last.model}`,
@@ -91,7 +95,7 @@ export function getGeneration(row: SessionRow, text: string): Generation {
     run: null,
     step: assistants.length,
     assistantAt: last.timestamp,
-    callId: call?.id ?? null,
+    callId,
   };
 }
 
@@ -116,12 +120,9 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
     const startedAt = previousAt;
     previousAt = message.timestamp;
     if (message.role === 'user') {
-      let text = '';
-      if (typeof message.content === 'string') {
-        text = message.content;
-      }
-      if (Array.isArray(message.content)) {
-        text = piAi.contentText(message.content);
+      let text = message.content;
+      if (typeof text !== 'string') {
+        text = piAi.contentText(text);
       }
       //M 保留输入字数，将正文缩成网页步骤可展示的预览。
       all.push({

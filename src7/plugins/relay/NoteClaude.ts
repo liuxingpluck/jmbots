@@ -37,7 +37,9 @@ export function applyNoteClaude(ctx: cordis.Context): void {
       const fileName = `${stampId()}_${getSafeName(title)}.md`;
       const file = path.join(inbox, fileName);
       const time = new Date().toLocaleString('sv-SE');
-      fs.writeFileSync(file, `# ${title}\n\n- 机器人：${session.row.bot}\n- 会话：${session.row.id}\n- 时间：${time}\n\n${String(args['text'])}\n`, 'utf8');
+      const content = `# ${title}\n\n- 机器人：${session.row.bot}\n- 会话：${session.row.id}\n- 时间：${time}\n\n`
+        + `${String(args['text'])}\n`;
+      fs.writeFileSync(file, content, 'utf8');
       //T 跟踪：给 Claude 留言。
       ctx.emit('trace', 'NoteClaude.run', '给 Claude 留言', 'fs.writeFileSync', { 会话: session.row.id, 文件: file });
       return `已留给 Claude：${file}`;

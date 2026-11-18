@@ -99,7 +99,11 @@ function graphCustomer(row: { customer?: string; address?: unknown }): string {
 }
 
 
-/** 回答用到记忆时让模型附的链接。 */
+/**
+ * 回答用到记忆时让模型附的链接提示：开场先搜带了引用，或这一轮 memory 工具查到了东西，才有。
+ * @param request 这一步的请求（从 session.row 取机器人、客户号和消息）。
+ * @returns 提示文字（链接带客户号、机器人、用户最后一句话）；没用到记忆或不是前台、干活的会话是 undefined。
+ */
 export function buildLinkHint(request: ChatRequest): string | undefined {
   const row = request.session.row;
   if (row.kind !== 'work' && row.kind !== 'front') return undefined;
@@ -119,6 +123,8 @@ export function buildLinkHint(request: ChatRequest): string | undefined {
   if (!recalled && !searched) return undefined;
 
   const asked = [...piAi.contentText(messages[lastUser]!.content).replace(/^【[^】]*】/u, '').trim()].slice(0, 120).join('');
+
+  //M 链接里带上客户号（只读会话记录，不自己推）、机器人和用户最后一句话，关系图页面打开就能照这个查。
   const params = new URLSearchParams({ customer: graphCustomer(row), bot: row.bot, q: asked });
   return `# 关系图链接\n回答如果用到了上面的聊天记录、知识库引用，在回答最后另起一行原样写这个链接（不要改动、不要解释）：\n[🔗 查看本次记忆的关系图](/graph/?${params.toString()})`;
 }
@@ -149,12 +155,14 @@ export class GraphRoutes {
     private readonly memoryService: MemoryGateway,
     private readonly settings: GraphSettings,
   ) {
+    //M 只读打开 jmbots-memory 的 SQLite 库（GraphStore），关系图的数据都从它读。
     this.store = new GraphStore(settings.db);
     //M 命中带上出处（原文件完整路径 + Sheet 行 / 转换后行号），/memory/ 页面显示、可复制。
     this.sources = new Sources(root, (id) => String(((this.store.passage(id) as { passage?: { text?: unknown } }).passage?.text) ?? ''));
     //M 必须在 Memory 之后注册：先等 Memory.onRequest 把开场检索结果写进 row.recall，再用到了才附链接。
     if (settings.enabled && settings.link) {
       ctx.on('session/request', (request) => {
+        //M 这一步用没用到记忆：用到了才有提示，加进系统提示词，让模型回答末尾附关系图链接。
         const hint = buildLinkHint(request);
         if (hint !== undefined) {
           request.system.push(hint);
@@ -171,6 +179,7 @@ export class GraphRoutes {
     if (!this.settings.enabled) return;
 
     const getSpaces = (q: Record<string, string | undefined>) => {
+      //M 查询串里的客户、机器人、要不要知识库，换成库里的“空间”列表：图和检索只在这些空间里取。
       return this.store.spaces(q['customer'] ?? '', q['bot'] || undefined, q['knowledge'] === '1');
     };
 
@@ -189,12 +198,14 @@ export class GraphRoutes {
       return { memory: memoryHealth, vgr: vgrHealth, mode: this.settings.mode };
     });
 
+    //M 客户列表：库名、记忆服务地址、有图的客户和知识库（this.store.customers），给页面的下拉用。
     app.get('/api/memory-graph/customers', () => ({
       db: path.basename(this.settings.db),
       backend: this.memoryService.url(),
       list: this.store.customers(),
     }));
 
+    //M 整张关系图：限制节点数（最多 1000）和展开深度（最多 3），可从 focus 那个实体展开。
     app.get<Query>('/api/memory-graph/graph', (request) => {
       const q = request.query;
       return this.store.graph(getSpaces(q), clampNumber(q['limit'], 150, 1000), q['focus'] || undefined, clampNumber(q['depth'], 1, 3));
@@ -214,6 +225,8 @@ export class GraphRoutes {
       if (q['bot']) {
         body['bot'] = q['bot'];
       }
+
+      //M 把检索转给记忆服务（混合检索，可能慢）；它挂了或不通就回 502 并带原因。
       const started = Date.now();
       const response = await this.memoryService.search(body);
       if (!response.ok) return reply.code(502).send({ error: `记忆服务 ${String(response.status)}：${JSON.stringify(response.json ?? '')}` });
@@ -230,15 +243,21 @@ export class GraphRoutes {
       if (texts.length === 0) {
         texts = (found.hits ?? []).flatMap((hit) => hit.relations ?? []);
       }
+
+      //M 命中子图要在这个客户、机器人加知识库的空间里取。
       const spaces = this.store.spaces(q['customer'] ?? '', q['bot'] || undefined, true);
       if ((found.warnings ?? []).some((line) => /connect|refused|Connection|连接|dns|timed out/iu.test(line))) {
         found.warnings = ['模型网关（Magpie）连不上，这次没用大模型抽实体/重排，只按向量和字面实体检索；开好 Magpie 再搜一次', ...(found.warnings ?? [])];
       }
+
+      //M 每条命中补上原文出处（Sources.describe），再取命中的子图（hitGraph，可多带 extra 个相邻节点），一起交回给页面。
       const hits = (found.hits ?? []).map((hit) => ({ ...hit, ...this.sources.describe(hit as CitedHit) }));
       return { ...found, hits, total_ms: Date.now() - started, graph: this.store.hitGraph(spaces, texts, clampNumber(q['extra'], 24, 200)) };
     });
 
-    app.get<Id>('/api/memory-graph/passage/:id', (request) => this.store.passage(Number(request.params.id)));
+
+    //M 点图上的段落、实体、关系边时，按编号取详情（原文、相邻关系）。
+    app.get<Id>('/api/memory-graph/passage/:id',(request) => this.store.passage(Number(request.params.id)));
     app.get<Id>('/api/memory-graph/entity/:id', (request) => this.store.entity(Number(request.params.id)));
     app.get<Id>('/api/memory-graph/edge/:id', (request) => this.store.edge(Number(request.params.id)));
   }

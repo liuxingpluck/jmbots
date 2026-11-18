@@ -21,10 +21,17 @@ pub mod console;
 pub mod log;
 pub mod notify;
 pub mod process_job;
+#[cfg(windows)]
+pub mod screen;
 pub mod server;
 pub mod services;
 pub mod supervisor;
 pub mod window;
+
+//M Cargo 的 link-arg-tests 只给独立测试目标，库内单测显式链接同一 Windows 资源。
+#[cfg(all(test, windows, target_env = "msvc"))]
+#[link(name = "resource", kind = "static", modifiers = "-bundle")]
+unsafe extern "system" {}
 
 /// 测试用的小工具。
 #[cfg(test)]

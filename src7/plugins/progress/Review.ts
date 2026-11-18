@@ -12,7 +12,6 @@ import type * as cordis from 'cordis';
 import type { AskInput } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
-import type { Pending } from '../approval/index.ts';
 import type { Progress, ProgressItem } from './index.ts';
 
 
@@ -20,6 +19,8 @@ declare module '../../Sessions.ts' {
   interface SessionRow {
     /** 复盘挑过的最后一行登记的 at（一场会话可能有好几行，一行一行往后挑）。 */
     reviewedAt?: number;
+    /** 复盘送审获得登记回执后，记录待确认编号供重启后核对。 */
+    reviewApprovalId?: number;
   }
 }
 
@@ -67,7 +68,10 @@ const EVERY_MS = 10 * 60_000;
 const LOG_CHARS = 8000;
 
 /** 复盘提示词（照 0.4 Review.ts:30）。 */
-const PROMPT = '你在给一件做得太久的事写复盘。下面是这件事的原话、各段耗时和工作过程。找出慢在哪里（比如同一个东西搜了好几遍、读了一堆没用上的文件、一步想了很久、本可以先看记忆却没看），给出以后遇到同类事的做法，最多 3 条，每条一句话，后面写预计能快多少。只写工作过程里看得出来的，看不出来就写“看不出明显的问题”。用中文，写成 Markdown 列表。';
+const PROMPT = '你在给一件做得太久的事写复盘。下面是这件事的原话、各段耗时和工作过程。'
+  + '找出慢在哪里（比如同一个东西搜了好几遍、读了一堆没用上的文件、一步想了很久、本可以先看记忆却没看），'
+  + '给出以后遇到同类事的做法，最多 3 条，每条一句话，后面写预计能快多少。'
+  + '只写工作过程里看得出来的，看不出来就写“看不出明显的问题”。用中文，写成 Markdown 列表。';
 
 /**
  * 取复盘显示标题：优先用会话总结标题，否则取用户原话前 20 字。
@@ -131,7 +135,7 @@ export function readReviewSettings(rawConfig: unknown): ReviewSettings {
 export class Review {
   /**
    * 挂 approval/decided 监听并排第一次定时检查。
-   * @param ctx Cordis 子上下文（需 approval 已就绪）。
+   * @param ctx 复盘所在的 Cordis 上下文。
    * @param progress 同插件内的进度服务实例。
    * @param timing 首次与后续检查间隔（毫秒）。
    * 副作用：注册 approval/decided 事件监听并启动定时复盘检查任务。
@@ -142,11 +146,20 @@ export class Review {
     timing: { first: number; every: number },
   ) {
     //M approval/decided（通知）：复盘那件同意了就写文件；拒绝就算了，这件不再问（reviewedAt 已经记了）。
-    ctx.on('approval/decided', (pending: Pending) => {
+    ctx.on('approval/decided', (pending) => {
       if (pending.kind !== 'review' || pending.state !== 'approved') return;
 
-      const payload = pending.payload as { entry?: Entry; advice?: string } | undefined;
+      const payload = pending.payload as { entry?: Entry; advice?: string; requiresReceipt?: boolean } | undefined;
       if (payload?.entry === undefined || typeof payload.advice !== 'string') return;
+
+      //G 新送的复盘必须有登记回执，旧卡片仍按原流程处理。
+      if (payload.requiresReceipt === true) {
+        const query = { id: payload.entry.sessionId };
+
+        //M 从原会话读取已确认的待审编号，重启后也能核对。
+        const session = ctx.sessions.find(query)[0];
+        if (session?.reviewApprovalId !== pending.id) return;
+      }
 
       //M 用户批准写入公共记忆，将复盘建议落盘到 memory/复盘/ 供后续复用。
       const file = this.write(payload.entry, payload.advice);
@@ -154,7 +167,7 @@ export class Review {
       ctx.emit('trace', 'Review.write', '复盘写进公共记忆', 'fs.writeFileSync(memory/复盘/…)', { 文件: file });
     });
 
-    //M 定时器用普通 setTimeout，在 ctx.effect 里登记清理：插件或 approval 被拔掉时清掉定时器且不再重排。
+    //M 定时器用普通 setTimeout，在 ctx.effect 里登记清理：插件被拔掉时清掉定时器且不再重排。
     let timer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
     const tick = (): void => {
@@ -189,8 +202,16 @@ export class Review {
     const progress = this.progress.list() as ProgressItem[];
     if (progress.some((item) => item.endedAt === undefined)) return this.skip('有进度在转');
 
-    //G 已有待用户确认的复盘卡片时不重复打扰，跳过本次检查。
-    if (this.ctx.approval.list().some((item) => item.kind === 'review')) return this.skip('有复盘在等用户');
+    const list = { action: 'list', kind: 'review' } as const;
+    const listOptions = { timeoutMs: 3000, onFallback: () => ({ requestId: '', items: [] }) };
+
+    //M 查询仍待确认的复盘，审核插件无人应答时按空列表继续。
+    const listed = await requestEventModule.requestEvent(
+      this.ctx, 'approval/request', 'approval/result', list, listOptions,
+    );
+
+    //G 已有待用户确认的复盘卡片时不重复打扰。
+    if (listed.items !== undefined && listed.items.length > 0) return this.skip('有复盘在等用户');
 
     //G 尚未产生 overtime.jsonl 超时登记文件时说明无可复盘记录，直接跳过。
     const file = path.join(this.ctx.resources.dir('data'), 'overtime.jsonl');
@@ -240,7 +261,13 @@ export class Review {
     };
 
     //M 向流水插件询问镜像路径，没有回应就按没有记录继续复盘。
-    const mirror = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
+    const mirror = await requestEventModule.requestEvent(
+      this.ctx,
+      'journal/request',
+      'journal/result',
+      request,
+      options,
+    );
     let log = '（没有记录：未获取到镜像）';
     if (mirror.dir !== undefined) {
       const md = path.join(mirror.dir, '对话.md');
@@ -300,10 +327,31 @@ export class Review {
       bot: entry.bot,
       title: `复盘建议：写进公共记忆？（${title}）`,
       detail,
-      payload: { entry, advice },
+      payload: { entry, advice, requiresReceipt: true },
     };
-    //M 向 approval 发出待确认请求，后续根据用户在卡片上的决定决定是否落盘。
-    this.ctx.approval.ask(askParams);
+    const ask = { action: 'ask', input: askParams } as const;
+    const askOptions = {
+      timeoutMs: 5000,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', error: detail ?? `审核未获回执（${reason}）`,
+      }),
+    };
+
+    //M 送审成功仍需等待用户批准，才由 approval/decided 写入公共记忆。
+    const asked = await requestEventModule.requestEvent(
+      this.ctx, 'approval/request', 'approval/result', ask, askOptions,
+    );
+
+    //G 无人应答或登记失败按拒绝处理，记录原因供排查。
+    if (asked.pending === undefined || asked.error !== undefined) {
+      const rejected = `审核未确认登记，复盘按拒绝处理：${asked.error ?? '未返回待确认项'}`;
+      this.skip(rejected);
+      return;
+    }
+
+    //M 记住确认登记的卡片号，只有这一项获批时可以把建议写入公共记忆。
+    session.row.reviewApprovalId = asked.pending.id;
+    session.save();
   }
 
   /**
@@ -317,7 +365,11 @@ export class Review {
     const date = new Date(entry.at);
     const pad = (value: number): string => String(value).padStart(2, '0');
     const year = String(date.getFullYear());
-    const stamp = `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}`;
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const stamp = `${year}${month}${day}${hours}${minutes}`;
     const rawTitle = getEntryTitle(entry);
     let title = rawTitle.replace(/[\\/:*?"<>|\s\p{Cc}]+/gu, '_').replace(/^[._]+|[._]+$/gu, '');
     if (title === '') {

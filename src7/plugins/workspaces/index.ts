@@ -115,7 +115,8 @@ export interface WorkspaceChange {
 /** 带错误码的错：工具照它交回 { ok: false, error: { code, message } }；前台派活时原样抛给模型看。 */
 export class WorkspaceError extends Error {
   /**
-   * @param code 错误码：workspace_not_found、workspace_forbidden、workspace_archived、workspace_invalid_name、workspace_default_protected。
+   * @param code 错误码：workspace_not_found、workspace_forbidden、workspace_archived、
+   *   workspace_invalid_name、workspace_default_protected。
    * @param reason 一句话原因；不带别的工作区的名字、目录。
    */
   constructor(readonly code: string, readonly reason: string) {
@@ -176,9 +177,11 @@ export class Workspaces extends cordis.Service {
 
     //M 一行一个工作区；列的意思见 Workspace。
     const db = ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY NOT NULL, bot TEXT NOT NULL, name TEXT NOT NULL,'
+    db.exec('CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY NOT NULL, bot TEXT NOT NULL,'
+      + ' name TEXT NOT NULL,'
       + ' directory TEXT NOT NULL, scope_key TEXT NOT NULL, is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),'
-      + " status TEXT NOT NULL CHECK (status IN ('active', 'archived')), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
+      + " status TEXT NOT NULL CHECK (status IN ('active', 'archived')),"
+      + ' created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
 
     //M 每个机器人每个范围只有一个默认；同一个范围同一个目录只登记一条；列清单按机器人、状态、登记先后。
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS workspaces_default ON workspaces (bot, scope_key) WHERE is_default = 1');
@@ -355,7 +358,8 @@ export class Workspaces extends cordis.Service {
     //M 持久化归档状态，给后续派活检查使用。
     const now = Date.now();
     const values = [now, workspace.id];
-    const update = this.home.resources.db.query("UPDATE workspaces SET status = 'archived', updated_at = ? WHERE id = ?");
+    const update = this.home.resources.db
+      .query("UPDATE workspaces SET status = 'archived', updated_at = ? WHERE id = ?");
     update.run(...values);
 
     //M 写库成功后通知监听者工作区已归档。
@@ -560,7 +564,8 @@ export class Workspaces extends cordis.Service {
     const now = Date.now();
     const workspace: Workspace = { ...draft, status: 'active', createdAt: now, updatedAt: now };
 
-    const sql = 'INSERT INTO workspaces (id, bot, name, directory, scope_key, is_default, status, created_at, updated_at)'
+    const sql = 'INSERT INTO workspaces'
+      + ' (id, bot, name, directory, scope_key, is_default, status, created_at, updated_at)'
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
     const values = [
       workspace.id,

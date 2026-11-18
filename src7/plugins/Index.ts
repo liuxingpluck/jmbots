@@ -24,7 +24,6 @@ import * as imageGen from './image-gen/index.ts';
 import * as journal from './journal/index.ts';
 import * as memory from './memory/index.ts';
 import * as modelCatalog from './model-catalog/index.ts';
-import * as modelNotes from './model-notes/index.ts';
 import * as progress from './progress/index.ts';
 import * as relay from './relay/index.ts';
 import * as assist from './assist/index.ts';
@@ -32,6 +31,8 @@ import * as settings from './settings/index.ts';
 import * as skills from './skills/index.ts';
 import * as tutorial from './tutorial/index.ts';
 import * as usage from './usage/index.ts';
+import * as screen from './screen/index.ts';
+import * as voice from './voice/index.ts';
 import * as webApi from './web-api/index.ts';
 import * as webSearch from './web-search/index.ts';
 import * as wechat from './wechat/index.ts';
@@ -68,7 +69,7 @@ export interface PluginModule {
 //   分派：relay（转外部助手、外部 AI 任务通道、给 Claude 留言；11-17 并进原 agent-tasks、note-claude；前台在 bots 里）
 //   给模型的工具：file-tools（已并入原 base-tools）、exec（已并入原 runs）、web-search、image-gen、assist（reply 工具在 bots 里）
 //   审核和流程：approval、decision、progress（已并入原 review）
-//   模型与上下文：model-catalog（已并入原 model-fallback）、context-fit（已并入原 compress、summary）、model-notes（模型介绍和评价，/model-notes/）
+//   模型与上下文：model-catalog（已并入原 model-fallback、model-notes：模型介绍和评价，/model-notes/）、context-fit（已并入原 compress、summary）
 //   记忆和知识：memory（已并入原 memory-graph）、skills
 //   管理接口：settings、files-api、base-bridge（已并入原 notify、update-watch）、desktop
 //   记录和调试：tutorial（写在 plugins 段第一个；11-17 由 flow、boot-trail、trace 合成）、journal（已并入原 files-mirror）、usage
@@ -84,6 +85,8 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'http': http,
   'web': web,
   'web-api': webApi,
+  'screen': screen,
+  'voice': voice,
   'files-api': filesApi,
   'model-catalog': modelCatalog,
   'relay': relay,
@@ -97,7 +100,6 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'memory': memory,
   'skills': skills,
   'context-fit': contextFit,
-  'model-notes': modelNotes,
   'progress': progress,
   'decision': decision,
   'image-gen': imageGen,

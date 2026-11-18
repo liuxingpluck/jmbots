@@ -1,7 +1,7 @@
 /**
  * 外部任务通道（AgentTasks）的新协议 v1：派活取次高档、写任务单；领取键同键重领回原样、别人领了 409；
  * 交回查领取键和产物，同内容重交回原样、不同内容 result_conflict；定时扫 result.json 时坏文件不算完成；旧任务照旧格式收。
- * ctx 是假的：内存库、临时目录、记下 acceptResult 的假前台；不起 Cordis、不起 HTTP。
+ * 使用内存库、临时目录和 Cordis 事件，应答时记录入队结果，无需启动 HTTP。
  * 11-17 随 agent-tasks 并进 relay 挪到这里。
  * 跑法：bun test ./src7/plugins/relay
  */
@@ -11,11 +11,12 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type * as cordis from 'cordis';
+import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
+import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import { AgentTasks, type SendInput } from './AgentTasks.ts';
 
@@ -24,8 +25,10 @@ import { AgentTasks, type SendInput } from './AgentTasks.ts';
 interface Bench {
   /** 被测的任务通道。 */
   tasks: AgentTasks;
-  /** 假前台收到的结果（acceptResult 的 input），按收到的先后。 */
+  /** 机器人从 bot/request 收到并入队的结果。 */
   accepted: dispatchModule.ResultInput[];
+  /** 开始监听结果投递请求。 */
+  listen: () => void;
   /** 派活的前台会话。 */
   session: Session;
   /** 内存库。 */
@@ -62,8 +65,8 @@ afterEach(() => {
 });
 
 
-/** 摆一个用例：内存库、临时数据根、假前台（acceptResult 先调 commitSource 再记下，和真的一样在“事务”里改任务状态）。 */
-function makeBench(): Bench {
+/** 摆一个用例：内存库、临时数据根和监听投递事件的假机器人。 */
+function makeBench(withBot = true): Bench {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tasks-'));
   roots.push(root);
   const db = new Database(':memory:');
@@ -77,13 +80,23 @@ function makeBench(): Bench {
       return full;
     },
   };
-  const frontDesk = {
-    acceptResult: (input: dispatchModule.ResultInput, commitSource: () => void): dispatchModule.AcceptReceipt => {
-      commitSource();
+  const bus = new cordis.Context();
+  const listen = (): void => {
+    //M 模拟重复投递的回执，检验调用端只在确认入队后记结果。
+    events.onRequestEvent(bus, 'bot/request', 'bot/result', (request) => {
+      if (request.action !== 'accept-result') return { ok: false };
+
+      const { input } = request;
+      const known = accepted.some((one) => one.key === input.key);
+      if (known) return { ok: true, receipt: { status: 'duplicate', key: input.key } } as const;
+
       accepted.push(input);
-      return { status: 'queued', key: input.key };
-    },
+      return { ok: true, receipt: { status: 'queued', key: input.key } } as const;
+    });
   };
+  if (withBot) {
+    listen();
+  }
   //M 假工具服务：记下登记的工具，用例自己调它。
   const registered: toolsModule.ToolSpec[] = [];
   const tools = {
@@ -93,15 +106,16 @@ function makeBench(): Bench {
   };
   const ctx = {
     resources,
-    frontDesk,
     tools,
-    emit: () => undefined,
+    emit: bus.emit.bind(bus),
+    on: bus.on.bind(bus),
+    serial: bus.serial.bind(bus),
   } as unknown as cordis.Context;
 
   const tasks = new AgentTasks(ctx);
   const row = { id: 'front-1', bot: '助手', kind: 'front', channel: 'web', address: { user: 'me' } };
   const session = { row } as unknown as Session;
-  return { tasks, accepted, session, db, tool: registered[0]! };
+  return { tasks, accepted, listen, session, db, tool: registered[0]! };
 }
 
 
@@ -211,7 +225,7 @@ test('领取键：同一个键重领回原样，别的键 409', () => {
 });
 
 
-test('交回：领取键对不上 409；对上了排进前台；同内容重交回原样，不同内容 result_conflict', () => {
+test('交回：领取键对不上 409；对上了排进前台；同内容重交回原样，不同内容 result_conflict', async () => {
   const bench = makeBench();
   bench.tasks.hello('claude', CLAUDE_HELLO);
   const task = bench.tasks.send(bench.session, CLAUDE_TASK);
@@ -226,12 +240,16 @@ test('交回：领取键对不上 409；对上了排进前台；同内容重交�
 
   //M 领取键不对：不收。
   const wrongKey = checksModule.checkTaskResult(getRawResult(task.id, 'k2', { artifacts: listed }));
-  expect(getStatus(() => bench.tasks.finish('claude', id, { uploads: [], result: wrongKey }))).toBe(409);
+  const invalid = bench.tasks.finish('claude', id, { uploads: [], result: wrongKey });
+  await expect(invalid).rejects.toMatchObject({ status: 409 });
   expect(bench.accepted.length).toBe(0);
 
   //M 对上了：做完，结果带着产物排进派活的前台，回话地址是派活时的。
   const result = checksModule.checkTaskResult(getRawResult(task.id, 'k1', { artifacts: listed }));
-  const done = bench.tasks.finish('claude', id, { uploads: [], result });
+  const input = { uploads: [], result };
+  const first = bench.tasks.finish('claude', id, input);
+  const retry = bench.tasks.finish('claude', id, input);
+  const done = await first;
   expect(done.status).toBe('done');
   expect(bench.accepted.length).toBe(1);
   expect(bench.accepted[0]?.key).toBe(`agent:${task.id}:result`);
@@ -240,20 +258,21 @@ test('交回：领取键对不上 409；对上了排进前台；同内容重交�
   expect(bench.accepted[0]?.payload.files).toEqual([path.join(artifacts, 'patch.diff')]);
   expect(bench.accepted[0]?.payload.text).toContain('sub-1');
 
-  //M 同一份重交：回原样，不再排一次。
-  const repeated = bench.tasks.finish('claude', id, { uploads: [], result });
+  //M 等回执期间同一份重交：回原样，不再排一次。
+  const repeated = await retry;
   expect(repeated.status).toBe('done');
   expect(bench.accepted.length).toBe(1);
 
   //M 内容不一样：冲突，不覆盖。
   const changed = checksModule.checkTaskResult(getRawResult(task.id, 'k1', { artifacts: listed, summary: '换了说法' }));
-  expect(getStatus(() => bench.tasks.finish('claude', id, { uploads: [], result: changed }))).toBe(409);
+  const conflict = bench.tasks.finish('claude', id, { uploads: [], result: changed });
+  await expect(conflict).rejects.toMatchObject({ status: 409 });
   expect(bench.tasks.get('claude', id)?.result?.text).toBe('修好了');
 });
 
 
-test('file 交回：坏的 result.json 不算完成，改好了再扫就收', () => {
-  const bench = makeBench();
+test('file 交回：坏文件不算完成，投递无人应答时保持待收，接通后再扫就收', async () => {
+  const bench = makeBench(false);
   const hello: checksModule.AgentHello = {
     description: '会生图',
     abilities: { models: [{ id: 'grok-5', efforts: ['low', 'high'] }], subagents: false, returnMode: 'file' },
@@ -271,20 +290,26 @@ test('file 交回：坏的 result.json 不算完成，改好了再扫就收', ()
   //M 写到一半的 result.json：不收，还是 taken。
   const file = path.join(bench.tasks.dir('grok', id, 'result'), 'result.json');
   fs.writeFileSync(file, '{"version": 1, ');
-  bench.tasks.scan();
+  await bench.tasks.scan();
   expect(bench.tasks.get('grok', id)?.status).toBe('taken');
   expect(bench.accepted.length).toBe(0);
 
-  //M 写好了：再扫就收。
+  //M 无人接单时保留状态，原文件可以重试。
   const raw = getRawResult(task.id, claimKey, { summary: '猫画好了' });
   fs.writeFileSync(file, JSON.stringify(raw));
-  bench.tasks.scan();
+  await bench.tasks.scan();
+  expect(bench.tasks.get('grok', id)?.status).toBe('taken');
+  expect(bench.accepted).toEqual([]);
+
+  //M 机器人开始接单后，扫描同一份文件即可完成。
+  bench.listen();
+  await bench.tasks.scan();
   expect(bench.tasks.get('grok', id)?.status).toBe('done');
   expect(bench.accepted.length).toBe(1);
 });
 
 
-test('旧任务（protocol 是 NULL）：照旧格式收，交新协议的结果 400', () => {
+test('旧任务（protocol 是 NULL）：照旧格式收，交新协议的结果 400', async () => {
   const bench = makeBench();
   const insert = "INSERT INTO agent_tasks (agent, bot, session, title, text, files, status, created_at) VALUES ('old', '助手', 'front-1', '旧活', '做旧活', '[]', 'new', 0)";
   const id = Number(bench.db.query(insert).run().lastInsertRowid);
@@ -295,10 +320,34 @@ test('旧任务（protocol 是 NULL）：照旧格式收，交新协议的结果
 
   //M 交新协议的结果：不收。
   const result = checksModule.checkTaskResult(getRawResult(String(id), 'k1'));
-  expect(getStatus(() => bench.tasks.finish('old', id, { uploads: [], result }))).toBe(400);
+  const invalid = bench.tasks.finish('old', id, { uploads: [], result });
+  await expect(invalid).rejects.toMatchObject({ status: 400 });
 
   //M 旧格式：收，话送回会话。
-  const done = bench.tasks.finish('old', id, { ok: true, text: '旧活做完了', uploads: [] });
+  const done = await bench.tasks.finish('old', id, { ok: true, text: '旧活做完了', uploads: [] });
   expect(done.status).toBe('done');
   expect(bench.accepted[0]?.payload.text).toContain('旧活做完了');
+});
+
+test('外部任务交回无人应答回 503，收到入队回执后才记交回完成', async () => {
+  const bench = makeBench(false);
+  bench.tasks.hello('claude', CLAUDE_HELLO);
+  const task = bench.tasks.send(bench.session, CLAUDE_TASK);
+  const id = Number(task.id);
+  bench.tasks.take('claude', id, 'k1');
+  const result = checksModule.checkTaskResult(getRawResult(task.id, 'k1'));
+  const input = { uploads: [], result };
+
+  //M 无监听方时保留领取状态，明确返回投递失败。
+  const delivery = bench.tasks.finish('claude', id, input);
+  await expect(delivery).rejects.toMatchObject({ status: 503, message: expect.stringContaining('unhandled') });
+  expect(bench.tasks.get('claude', id)?.status).toBe('taken');
+  expect(bench.accepted).toEqual([]);
+
+  //M 同内容重试，拿到回执后才把任务改为完成。
+  bench.listen();
+  const done = await bench.tasks.finish('claude', id, input);
+  expect(done.status).toBe('done');
+  expect(done.protocol?.delivery).toBe('已排进会话的结果队列');
+  expect(bench.accepted).toHaveLength(1);
 });

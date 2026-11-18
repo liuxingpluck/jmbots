@@ -62,6 +62,7 @@ export const GUIDE = `# jmbots 接入说明（给别的 AI 看）
    - http：产物一个一个 PUT /api/uploads/<文件名>，再 POST .../result，JSON {"protocolResult": 上面的结果, "uploads": [上传号]}；
    - file：产物放进任务文件夹的 result/artifacts/，结论写 result/result.md，最后先写临时文件再改名成 result/result.json（jmbots 每 10 秒左右扫一次，只认 result.json）。
    同一份结果重交回原样；内容不一样回 409 result_conflict，不覆盖。结果会排进派活的会话：前台整理后回给用户，后台看了接着做。
+   如果 HTTP 返回 503，结果还在等待投递。保留原上传号，稍后重交同一份结果。文件交回由 jmbots 在下一轮扫描重试。
 `;
 
 
@@ -165,7 +166,10 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
   const check = (params: Named['Params'], reply: Reply): { agent: string; id: number } | undefined => {
     //G 把执行端名称和任务号限定在接口支持的格式内。
     if (!NAME.test(params.name)) { reply.code(400).send({ error: '名字只能是字母、数字、- 和 _，1 到 40 字' }); return undefined; }
-    if (params.id !== undefined && !/^\d+$/u.test(params.id)) { reply.code(400).send({ error: '任务号要是数字' }); return undefined; }
+    if (params.id !== undefined && !/^\d+$/u.test(params.id)) {
+      reply.code(400).send({ error: '任务号要是数字' });
+      return undefined;
+    }
     return { agent: params.name, id: Number(params.id ?? 0) };
   };
 
@@ -197,7 +201,9 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     if (checked === undefined) return reply;
     const status = request.query.status;
     //G 只接受已有任务状态，给请求方返回可选值。
-    if (status !== undefined && !(STATUSES as readonly string[]).includes(status)) return reply.code(400).send({ error: `status 只能是 ${STATUSES.join('、')}` });
+    if (status !== undefined && !(STATUSES as readonly string[]).includes(status)) {
+      return reply.code(400).send({ error: `status 只能是 ${STATUSES.join('、')}` });
+    }
 
     //M 记录这次轮询并按接口格式返回该执行端的任务。
     return tasks.list(checked.agent, status as TaskStatus | undefined, true).map(shown);
@@ -229,7 +235,9 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     //G 先校验任务标识，并确认它归属于请求中指定的执行端。
     const checked = check(request.params, reply);
     if (checked === undefined) return reply;
-    if (tasks.get(checked.agent, checked.id) === undefined) return reply.code(404).send({ error: `没有任务 ${String(checked.id)}` });
+    if (tasks.get(checked.agent, checked.id) === undefined) {
+      return reply.code(404).send({ error: `没有任务 ${String(checked.id)}` });
+    }
 
     //M 用任务目录作为相对路径解析及判界的基准。
     const folder = tasks.dir(checked.agent, checked.id);
@@ -237,7 +245,8 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     const file = path.resolve(folder, wanted);
     const back = path.relative(folder, file);
     //G 越出任务文件夹、不在、是文件夹的，一律 404。
-    if (wanted === '' || back.startsWith('..') || path.isAbsolute(back) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    const outside = wanted === '' || back.startsWith('..') || path.isAbsolute(back);
+    if (outside || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
       return reply.code(404).send({ error: `没有这个文件：${wanted}` });
     }
 
@@ -255,7 +264,7 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     try {
       //M 把新旧格式转成任务服务的输入，落库后按接口格式返回结果。
       const input = getFinishInput(body);
-      const task = tasks.finish(checked.agent, checked.id, input);
+      const task = await tasks.finish(checked.agent, checked.id, input);
       return { ok: true, task: shown(task) };
     } catch (error) {
       //G 把校验失败或交回冲突转换为执行端可处理的错误响应。

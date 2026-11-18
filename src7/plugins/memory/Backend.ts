@@ -104,6 +104,7 @@ export class LocalBackend implements MemoryBackend {
     db.exec('CREATE INDEX IF NOT EXISTS memory_chunks_who ON memory_chunks (scope, bot, customer, session)');
   }
 
+  /** 入库：一批一个事务，每段一行。 */
   async ingest(docs: MemoryDoc[]): Promise<void> {
     const insert = this.db.query('INSERT INTO memory_chunks (source, scope, bot, customer, session, title, text, at, start_at, end_at)'
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
@@ -112,6 +113,7 @@ export class LocalBackend implements MemoryBackend {
     })();
   }
 
+  /** 删掉一个来源的全部片段。 */
   async remove(source: string): Promise<void> {
     this.db.query('DELETE FROM memory_chunks WHERE source = ?').run(source);
   }
@@ -121,6 +123,7 @@ export class LocalBackend implements MemoryBackend {
    * 原话整段出现再加 0.2，封顶 1。对上不到三成的丢；同样的片段只留一条。
    */
   async search(query: MemoryQuery): Promise<Citation[]> {
+    //M 问的话拆成字组；total 是“全对上”的满分，下面每行的得分除以它得到几成。
     const wanted = recall.grams(query.query);
     const total = recall.matchScore(wanted, query.query);
     const where: string[] = [];
@@ -138,6 +141,7 @@ export class LocalBackend implements MemoryBackend {
     const sql = `SELECT * FROM memory_chunks WHERE ${where.join(' AND ')} ORDER BY at DESC LIMIT ${String(CANDIDATES)}`;
     const rows = this.db.query(sql).all(...values) as ChunkRow[];
 
+    //M 粗筛出来的行逐行打分：字组对上几成就是分数，原话整段出现再加 0.2；不到 0.3 的丢，按分数、时间排，同样的片段只留一条。
     const needle = query.query.trim().toLowerCase();
     const seen = new Set<string>();
     return rows
@@ -155,12 +159,14 @@ export class LocalBackend implements MemoryBackend {
         return true;
       })
       .slice(0, query.limit)
+      //M 取前 limit 条，每条用 getSnippet 截命中处前后 240 字当片段，分数留两位小数。
       .map(({ row, score }) => ({
         scope: row.scope, source: row.source, bot: row.bot, customer: row.customer, session: row.session, title: row.title,
         snippet: getSnippet(row.text, wanted, needle), score: Math.round(score * 100) / 100, at: row.at, start: row.start_at, end: row.end_at,
       }));
   }
 
+  /** 状态：每个范围（history、knowledge）各存了几段。 */
   async health(): Promise<Record<string, unknown>> {
     const rows = this.db.query('SELECT scope, COUNT(*) AS n FROM memory_chunks GROUP BY scope').all() as { scope: string; n: number }[];
     return { backend: 'local', ok: true, chunks: Object.fromEntries(rows.map((row) => [row.scope, row.n])) };
@@ -186,18 +192,24 @@ export class HttpBackend implements MemoryBackend {
    */
   constructor(private readonly url: string, private readonly local: LocalBackend, private readonly timeoutMs = HTTP_TIMEOUT_MS, private readonly token = '') {}
 
+  /** 入库：本地先写一份（出错兜底用），再发给外部服务；外部出错只记原因不抛。 */
   async ingest(docs: MemoryDoc[]): Promise<void> {
+    //M 本地一直同步写一份；外部服务出错（this.fail）只记在 lastError，不挡会话。
     await this.local.ingest(docs);
     await this.call('POST', '/ingest', { docs }).catch((error: unknown) => this.fail(error));
   }
 
+  /** 删一个来源：本地先删，再通知外部服务；外部出错只记原因不抛。 */
   async remove(source: string): Promise<void> {
+    //M 本地同步删；外部服务出错（this.fail）只记在 lastError，不挡会话。
     await this.local.remove(source);
     await this.call('POST', '/remove', { source }).catch((error: unknown) => this.fail(error));
   }
 
+  /** 搜：问外部服务，回的形状不对或出错就退回本地搜，lastError 里看得到原因。 */
   async search(query: MemoryQuery): Promise<Citation[]> {
     try {
+      //M 问外部服务的 /search，回 {hits}；超时、非 2xx 都抛错，落到下面的 catch 退回本地。
       const body = await this.call('POST', '/search', query);
       const hits = (body as { hits?: unknown } | undefined)?.hits;
       if (!Array.isArray(hits)) throw new Error('外部检索服务回的不是 {hits: [...]}');
@@ -207,19 +219,25 @@ export class HttpBackend implements MemoryBackend {
         title: hit.title ?? '', snippet: hit.snippet, score: typeof hit.score === 'number' ? hit.score : 0, at: hit.at ?? 0, start: hit.start ?? 0, end: hit.end ?? 0,
       }));
     } catch (error) {
+      //G 外部服务出错不能挡会话：记下原因，退回本地搜（本地一直同步写着一份）。
       this.fail(error);
       return this.local.search(query);
     }
   }
 
+  /** 状态：外部服务的 /health、本地的状态、上一次出错的原因，一起交回；外部连不上也不抛。 */
   async health(): Promise<Record<string, unknown>> {
+    //M 本地后端的状态：几条、通不通。
     const local = await this.local.health();
+
+    //M 问外部服务的 /health；连不上不抛，把原因写进 remote 交回。
     const remote = await this.call('GET', '/health').then((body) => body, (error: unknown) => ({ ok: false, error: textModule.getMessage(error) }));
     return { backend: 'http', url: this.url, remote, local, lastError: this.lastError };
   }
 
   /** 记下错（不抛：外部服务挂了不能挡会话）。 */
   private fail(error: unknown): void {
+    //M 只把原因文字存进 lastError，health 里看得到；调用的人决定要不要退回本地。
     this.lastError = textModule.getMessage(error);
   }
 

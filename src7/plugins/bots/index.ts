@@ -21,11 +21,12 @@ import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type { Session, Thinking } from '../../Sessions.ts';
 import * as namesModule from '../../utils/Names.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as protocol from '../../Channels.ts';
 import { ChannelTools } from './ChannelTools.ts';
-import { Dispatch } from './Dispatch.ts';
+import { Dispatch, type AcceptReceipt, type ResultInput } from './Dispatch.ts';
 import { FrontDesk, type FrontDeskConfig } from './FrontDesk.ts';
 import { Prompt } from './Prompt.ts';
 import { registerReplyTool } from './ReplyTool.ts';
@@ -45,7 +46,9 @@ export const name = 'bots';
 //M 1.4.3：监听 channel/recall，消息被撤回时移除排队项、喊停正在跑的会话及派出的后台会话，且不再回发“已停止”。
 //M 1.4.4：channel_reply 支持非群聊本人（isHistoryOwner）指定 channel、chat 往别的渠道或聊天发话。
 //M 1.4.5：跨渠道 channel_reply 改为发 target 交目标渠道自己认聊天，bots 不再查各渠道数据。
-export const version = '1.4.5';
+//M 1.4.6：插件互调改事件第一阶段——听 bot/request（hand、save-file、add、accept-result）回 bot/result，听通知 bot/route；
+//M   前台的“先查记忆”提示交给 memory 自己加，记往来、搜聊天记录、算向量改发 memory/request；模型介绍改发 model-catalog/request（prompt）。
+export const version = '1.4.6';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 Dispatch.ts），开了 reply_tool 再加 reply。
@@ -71,6 +74,12 @@ declare module 'cordis' {
     'bot/say'(session: Session, text: string): void;
     /** 前台（FrontDesk.ts）对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。 */
     'bot/judged'(address: unknown, text: string, outcome: string): void;
+    /** 别的插件请机器人办事（serial 发、等 bot/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。 */
+    'bot/request'(request: BotRequest): void | Promise<void>;
+    /** bot/request 的回执（emit），按 requestId 配对。 */
+    'bot/result'(result: BotResult): void;
+    /** 通知：改一场会话的回话往哪送（同 Bots.route），发了不等。本插件听。 */
+    'bot/route'(notice: BotRouteNotice): void;
   }
 }
 
@@ -178,6 +187,66 @@ export interface ReceiveEvent {
 }
 
 
+/** 事件 bot/request 的数据：action 分四种（契约 3.2 第 4 条）。 */
+export type BotRequest = requestEventModule.RequestEnvelope & ({
+  /** 把一件事交给这个机器人的一场后台（同 Bot.hand）。progress 转新会话时发。 */
+  action: 'hand';
+  /** 交给哪个机器人。 */
+  bot: string;
+  /** 要办的事。 */
+  text: string;
+  /** 办完回话往哪送；不给渠道就不改那场会话原来记的。 */
+  origin: Origin;
+  /** 接着哪一场；不给新开一场。 */
+  sessionId?: string;
+} | {
+  /** 渠道收到的图片、文件存进机器人的工作区（同 Bots.saveFile）。web-api 上传时发。 */
+  action: 'save-file';
+  /** 给哪个机器人。 */
+  bot: string;
+  /** 原来的文件名。 */
+  name: string;
+  /** 文件内容。 */
+  data: Uint8Array;
+} | {
+  /** 运行中新建一个机器人（同 Bots.add）。settings 新建机器人时发。 */
+  action: 'add';
+  /** 名单里的一项：要有非空的 name，别的项（language 等）原样留着。 */
+  config: BotConfig;
+} | {
+  /** 一份结果排进会话的结果队列（同 Dispatch.acceptResult，不带收尾回调）。relay 交回结果时发，收到回执后自己改它的表。 */
+  action: 'accept-result';
+  /** 结果键、交给哪场、从哪来、回到哪、正文和文件。 */
+  input: ResultInput;
+});
+
+
+/** 事件 bot/result 的数据：bot/request 的回执，每种 action 只带自己那一项。 */
+export interface BotResult extends requestEventModule.ResultEnvelope {
+  /** 办成没有。 */
+  ok: boolean;
+  /** hand：交给了哪一场。 */
+  sessionId?: string;
+  /** save-file：存下的绝对路径。 */
+  path?: string;
+  /** add：建好的机器人名、工作区、记忆目录。 */
+  bot?: { name: string; workspace: string; memory: string };
+  /** accept-result：queued 新排进去，duplicate 同键同内容收过；带结果键。 */
+  receipt?: AcceptReceipt;
+  /** 没办成的原因。 */
+  error?: string;
+}
+
+
+/** 事件 bot/route 的数据：哪场会话、回话改往哪送。 */
+export interface BotRouteNotice {
+  /** 会话号。 */
+  sessionId: string;
+  /** 渠道和回话地址；不给渠道就什么也不改。 */
+  origin: Origin;
+}
+
+
 /** 校验以后给机器人服务的东西。 */
 export interface BotsConfig {
   /** 机器人名单，照 config.yaml 里 bots 写的先后。 */
@@ -215,10 +284,13 @@ export class Bots extends cordis.Service {
     super(ctx, 'bots');
     this.home = ctx;
     this.thinking = config.thinking;
+
+    //M 照名单一个个建机器人：启动时和运行中新建（设置页）走同一个 add，校验、建目录都在里面。
     for (const item of config.bots) {
       this.add(item);
     }
 
+    //M 会话状态变了（跑完、出错、被停）就看要不要把这一轮的回话发回渠道；还在转、没渠道、别人自己送的一律不管。
     this.ctx.on('session/change', (session) => {
       const row = session.row;
       //G 还在转、或没有渠道（小会话）→ 不管。
@@ -241,6 +313,7 @@ export class Bots extends cordis.Service {
     this.ctx.on('bot/say', (session, text) => {
       if (session.row.channel === undefined) return;
 
+      //M 当前轮带来源快照的（channel_tool 会话）：把这句话包成 progress 回复，交渠道协议的 channel/reply 发出去。
       const snapshot = session.row.activeSourceSnapshot;
       if (snapshot !== undefined) {
         const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
@@ -260,11 +333,81 @@ export class Bots extends cordis.Service {
         return;
       }
 
+      //M 没有来源快照的旧会话：按会话记的渠道名找登记的 send，发了不等回执。
       void this.send(session, text);
     });
 
     //M 标准渠道事件入口：每个 targetBot 独立物化附件、过 bot/receive 兼容关口、各自认领进自己的会话。
     this.ctx.on('channel/message', (message, control) => this.onChannelMessage(message, control));
+
+    //M 别的插件请机器人办事走请求事件 bot/request（契约 3.2 第 4 条）：onRequest 按 action 调现有方法，办完回 bot/result。
+    //M   现有方法抛的错（没有这个机器人、重名、会话不在、结果冲突）转成 { ok: false, error }，调用方不干等超时。
+    const requestOptions = {
+      onError: (error: unknown) => {
+        const message = textModule.getMessage(error);
+        return { ok: false, error: message };
+      },
+    };
+
+    //M 挂上 bot/request 的监听，收到请求就办，办完回一个 bot/result（带请求号，请求方按号配对）。
+    requestEventModule.onRequestEvent(
+      this.ctx,
+      'bot/request',
+      'bot/result',
+      //M 办事的函数：按 request.action 分发到 hand、saveFile、add、acceptResult，返回值就是回执正文。
+      (request) => this.onRequest(request),
+      requestOptions,
+    );
+
+    //M 通知 bot/route：别的插件（relay 送回信前）改一场会话的回话往哪送，照 route 改；发了不等。
+    this.ctx.on('bot/route', (notice) => {
+      //M sessions.open 拿到的是内存里那场会话的同一个对象，改了发通知的一方马上看得到。
+      const session = this.home.sessions.open(notice.sessionId);
+
+      //M 把会话的渠道和回话地址换成通知里的（换了渠道旧地址作废），并存库。
+      this.route(session, notice.origin);
+    });
+  }
+
+  /**
+   * 响应 bot/request：按 action 调本服务现有的方法（hand、saveFile、add）或前台的 acceptResult。
+   * @param request 别的插件用 requestEvent 发来的请求。
+   * @returns 回执正文：ok 和这件事的结果。hand 时没有这个机器人是 ok: false。
+   * @throws 现有方法抛的错原样抛，由 onRequestEvent 的 onError 转成 { ok: false, error }。
+   * 副作用：同各方法（开会话、写文件、建机器人目录、写库排结果队列）；发一个跟踪点。
+   */
+  private onRequest(request: BotRequest): requestEventModule.StripResultId<BotResult> {
+    //T 跟踪：别的插件经事件请机器人办事。
+    const vars = { 要做: request.action, 请求号: request.requestId ?? '（不等回执）' };
+    this.ctx.emit('trace', 'Bots.onRequest', '别的插件经事件 bot/request 请机器人办事', `bot/request（${request.action}）`, vars);
+
+    //M hand：交给这个机器人的一场后台（新开或接着），回执带会话号。
+    if (request.action === 'hand') {
+      const bot = this.get(request.bot);
+      if (bot === undefined) return { ok: false, error: `没有这个机器人：${request.bot}` };
+
+      //M 把事交给这个机器人：不给会话号就新开一场后台，给了就接着那场；回执带会话号，请求方（progress）转新会话时要用。
+      const session = bot.hand(request.text, request.origin, request.sessionId);
+      return { ok: true, sessionId: session.id };
+    }
+
+    //M save-file：存进这个机器人的工作区，回执带绝对路径。
+    if (request.action === 'save-file') {
+      const full = this.saveFile(request.bot, request.name, request.data);
+      return { ok: true, path: full };
+    }
+
+    //M add：运行中新建一个机器人（只加进内存，config.yaml 由调用方写），回执带名字、工作区、记忆目录。
+    if (request.action === 'add') {
+      const bot = this.add(request.config);
+      const created = { name: bot.name, workspace: bot.workspace, memory: bot.memory };
+      return { ok: true, bot: created };
+    }
+
+    //M accept-result：结果排进会话的结果队列。不带收尾回调：调用方收到回执后自己改它的表（relay 的 record、markDelivered）。
+    const commitSource = (): void => undefined;
+    const receipt = this.home.frontDesk.acceptResult(request.input, commitSource);
+    return { ok: true, receipt };
   }
 
   /**
@@ -279,6 +422,7 @@ export class Bots extends cordis.Service {
   ): Promise<void> {
     if (control?.approvalHandled === true) return;
 
+    //M 每个目标机器人各认领一次：按名字取机器人对象，名单里没有的（配置改过）跳过，不挡别的机器人。
     for (const botName of message.targetBots) {
       const bot = this.get(botName);
       if (bot === undefined) continue;
@@ -290,9 +434,11 @@ export class Bots extends cordis.Service {
         const meta = this.home.sessions.find({ id: sessionId })[0];
         if (meta?.bot !== botName) continue;
 
+        //M 会话属于这个机器人：打开它（内存里的同一个对象），后面认领、排队都进这场。
         explicit = this.home.sessions.open(sessionId);
       }
 
+      //M 这条消息对这个机器人的去重键（消息号加机器人名），渠道重发时靠它认出已经收过。
       const claimKey = protocol.getClaimKey(message.messageId, botName);
       const botOrigin: { channel: string; address: Record<string, unknown> } = {
         channel: message.origin.channel,
@@ -366,6 +512,7 @@ export class Bots extends cordis.Service {
           continue;
         }
 
+        //M 把这条的去重键记到会话上（只留最近 200 个），存库，下次重发才认得出来。
         claimedSession.row.sourceClaims = [...claims, claimKey].slice(-200);
         claimedSession.save();
         let status: protocol.ChannelClaimRecord['status'] = 'claimed';
@@ -379,6 +526,8 @@ export class Bots extends cordis.Service {
           sessionKind: claimedSession.row.kind,
           sessionId: claimedSession.id,
         });
+
+        //M 话交给认领的那场会话（比如 relay 的外部助手会话），记下回话往哪送，推它往下走；一轮结束自动回原渠道。
         bot.deliver(claimedSession, incoming.text, { channel: message.channel, address: botOrigin.address });
         continue;
       }
@@ -413,6 +562,7 @@ export class Bots extends cordis.Service {
         failed.push(`[${attachment.name} 没下载下来：${attachment.reason ?? '渠道未取得附件'}]`);
         continue;
       }
+      //M 渠道取到的附件拷进 inbox：文件名洗成安全的（getSafeName），同一毫秒撞名再加四位序号；拷不动的记进 failed，不挡别的附件。
       try {
         fs.mkdirSync(inboxDir, { recursive: true });
         const stamp = now.toLocaleTimeString('sv-SE').replaceAll(':', '') + String(now.getMilliseconds()).padStart(3, '0');
@@ -429,6 +579,7 @@ export class Bots extends cordis.Service {
         }
         paths.push(token);
       } catch (error) {
+        //G 存工作区失败：用 getMessage 取出原因写进提示，让用户和模型都看得到哪个附件没存成。
         failed.push(`[${attachment.name} 存工作区失败：${textModule.getMessage(error)}]`);
       }
     }
@@ -465,6 +616,7 @@ export class Bots extends cordis.Service {
     if (send === undefined) return { status: 'rejected', reason: `渠道 ${name} 没有登记发送` };
 
     try {
+      //M 交给渠道登记的发送函数，等它发完拿回执（飞书交 SendReceipt，老渠道不交）。
       const receipt = await send(text, session, origin);
 
       //M 老渠道不交回执：不能当成发到了。
@@ -472,6 +624,7 @@ export class Bots extends cordis.Service {
 
       return receipt;
     } catch (error) {
+      //G 渠道抛错：不知道发到一半没有，取出原因记成 uncertain，不往外抛。
       const reason = textModule.getMessage(error);
       return { status: 'uncertain', reason };
     }
@@ -509,6 +662,7 @@ export class Bots extends cordis.Service {
    * 副作用：存到本地；推给机器人。
    */
   async receive(name: string, bot: string, text: string, address?: unknown): Promise<void> {
+    //G 渠道是外部入口，机器人名在这里查一次：没有就抛错，由渠道告诉用户。
     const target = this.get(bot);
     if (target === undefined) {
       throw new Error(`没有这个机器人：${bot}`);
@@ -522,6 +676,8 @@ export class Bots extends cordis.Service {
     //M 渠道自己存一份：运行时目录 channels/<渠道名>/ 下，一天一个文件，一条一行 JSON。
     /** 本地日期，2026-11-13 的样子（sv-SE 这个地区的写法正好是它）。 */
     const day = new Date(message.time).toLocaleDateString('sv-SE');
+
+    //M 取（没有就建）运行时目录里这个渠道自己的文件夹，当天的文件追加一行。
     const file = path.join(this.ctx.resources.dir('channels', name), `${day}.jsonl`);
     fs.appendFileSync(file, `${JSON.stringify(message)}\n`, 'utf8');
 
@@ -540,6 +696,7 @@ export class Bots extends cordis.Service {
    * 副作用：建文件夹、写文件。
    */
   saveFile(bot: string, name: string, data: Uint8Array): string {
+    //G 渠道是外部入口，机器人名在这里查一次：没有就抛错，不往不存在的工作区写文件。
     const target = this.get(bot);
     if (target === undefined) {
       throw new Error(`没有这个机器人：${bot}`);
@@ -583,12 +740,15 @@ export class Bots extends cordis.Service {
     if (typeof registered !== 'object' || registered === null || Array.isArray(registered)) {
       throw new Error(`机器人 ${config.name} 的 workspaces 要写成“名字: 目录”`);
     }
+
+    //G 逐项检查登记的目录：不是非空字符串就抛错，别等 Bot 构造时才发现。
     textModule.eachEntry(registered as Record<string, unknown>, (label, directory) => {
       if (typeof directory === 'string' && directory !== '') return;
 
       throw new Error(`机器人 ${config.name} 的 workspaces 里 ${label} 要写目录`);
     });
 
+    //M 校验过了，建机器人：Bot 构造时建工作区、记忆目录，并登记配置里的工作区；用 home（本插件的 ctx）才取得到 frontDesk、sessions。
     const bot = new Bot(config, this.thinking, this.home);
     this.bots.set(bot.name, bot);
     return bot;
@@ -624,6 +784,8 @@ export class Bots extends cordis.Service {
     if (typeof where['customer'] === 'string' && where['customer'] !== '') {
       session.row.customer = where['customer'];
     }
+
+    //M 渠道、地址、客户号都改在内存里了，存库，重启后还认得往哪送。
     session.save();
   }
 
@@ -638,6 +800,8 @@ export class Bots extends cordis.Service {
     //T 跟踪：会话中途先跟用户说一句。
     const vars = { 会话: session.id, 渠道: session.row.channel ?? '（没有）', 字数: text.length };
     this.ctx.emit('trace', 'Bots.say', '会话中途先跟用户说一句', "ctx.emit('bot/say', session, text)", vars);
+
+    //M 发通知 bot/say：构造函数里的监听按会话的渠道发出去，前台再记一条往来；发了不等。
     this.ctx.emit('bot/say', session, text);
   }
 }
@@ -669,6 +833,8 @@ export class Bot {
     private readonly ctx: cordis.Context,
   ) {
     this.name = config.name;
+
+    //M 工作区和记忆目录放在运行时目录 bots/<机器人>/ 下，resources.dir 没有就建，返回绝对路径。
     this.workspace = this.ctx.resources.dir('bots', this.name, 'workspace');
     this.memory = this.ctx.resources.dir('bots', this.name, 'memory');
 
@@ -683,6 +849,8 @@ export class Bot {
     textModule.eachEntry(written, (label, directory) => {
       const legacyDirectory = path.resolve(this.ctx.resources.root, directory);
       const selection = { legacyDirectory, legacyName: label, allowArchived: true };
+
+      //M 按目录认（没登记过就登记），拿到工作区 ID，记下“配置里的名字 → 工作区 ID”，hand_session 旧写法写名字时照它找。
       const resolved = workspaces.resolve(owner, selection);
       this.registered.set(label, resolved.workspace.id);
     });
@@ -732,12 +900,15 @@ export class Bot {
    * 副作用：可能新开会话；这件事进那场会话；推它往下走，不等。
    */
   hand(text: string, origin: Origin, sessionId?: string): Session {
+    //M 没给会话号就新开一场后台（kind: work，用本机器人的思考档）；给了就打开那场接着干，没有这场会抛错。
     let session: Session;
     if (sessionId === undefined || sessionId === '') {
       session = this.ctx.sessions.create({ kind: 'work', bot: this.name, thinking: this.thinking });
     } else {
       session = this.ctx.sessions.open(sessionId);
     }
+
+    //M 把事交进那场会话：记回话往哪送，话进会话，推它往下走。
     this.deliver(session, text, origin);
     return session;
   }
@@ -751,6 +922,8 @@ export class Bot {
   deliver(session: Session, text: string, origin: Origin): void {
     //M 给了渠道，渠道和地址一起换：换了渠道，旧地址就作废（没给地址就清掉）。
     this.ctx.bots.route(session, origin);
+
+    //M 话进会话（它已经在转的话，下一步会带上这句），再推它往下跑，不等模型。
     session.add(text);
     void session.run();
   }
@@ -835,9 +1008,6 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
     registerReplyTool(ctx);
   }
 
-  //M memory 有就用：挂上时拿到 ctx.memory，拔掉时放手。没挂 memory 前台照常答话（2026-11-14 17:05 改成有就用）。
-  void ctx.inject(['memory'], (sub) => {
-    desk.memory = sub.memory;
-    sub.effect(() => () => { desk.memory = undefined; });
-  });
+  //M 2026-11-18：不再 inject memory。前台记往来、搜聊天记录、算向量改发请求事件 memory/request（FrontDesk.ts 的 askMemory），
+  //M   “先查记忆”的提示由 memory 自己在 session/request 里加；没挂 memory 前台照常答话。
 }

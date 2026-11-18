@@ -313,6 +313,31 @@ describe('运行时变量', () => {
     expect(again.groups.some((item) => item.name === 'relay')).toBe(false);
   });
 
+  test('flow/state 通知：带 read 登记一组（同 ctx.flow.state），不带 read 注销；注销没登记过的组不出错', async () => {
+    const { app, handlers } = await serve();
+    const notify = handlers['flow/state'];
+    expect(notify).toBeDefined();
+
+    //M 登记：「状态」标签按组名归到 relay 下面，值和解释原样。
+    const read = () => ({ pending: 1, token: 'REG-TOKEN' });
+    notify?.({ name: 'relay', read, notes: { pending: '待回几条' } });
+    const url = '/api/tutorial/state?name=relay';
+    const shown = (await app.inject({ method: 'GET', url })).json() as { groups: snapshotModule.StateGroup[] };
+    expect(shown.groups.map((item) => item.name)).toEqual(['relay']);
+    expect(shown.groups[0]?.value).toEqual(read());
+    expect(shown.groups[0]?.notes).toEqual({ pending: '待回几条' });
+
+    //M 注销没登记过的组：什么也不发生，relay 那组还在。
+    notify?.({ name: 'no-such' });
+    const kept = (await app.inject({ method: 'GET', url })).json() as { groups: snapshotModule.StateGroup[] };
+    expect(kept.groups.map((item) => item.name)).toEqual(['relay']);
+
+    //M 注销 relay：这组没了。
+    notify?.({ name: 'relay' });
+    const gone = (await app.inject({ method: 'GET', url })).json() as { groups: snapshotModule.StateGroup[] };
+    expect(gone.groups).toEqual([]);
+  });
+
   test('快照：带 #调试 的消息拍了、关键词被去掉；不带的没拍；点中一步交回那一刻的、标出比上一步变了的；启动的也有', async () => {
     const lines: TrailLine[] = [];
     const { app, handlers } = await serve(getJournal(lines));

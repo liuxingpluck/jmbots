@@ -315,7 +315,8 @@ export function getTaskMarkdown(spec: TaskSpec): string {
     lines.push(`- 交回：文件先 PUT /api/uploads/<文件名>，再 POST ${base}/result，正文 {"protocolResult": 结果, "uploads": [上传号]}。`);
   }
   if (spec.result.returnMode === 'file') {
-    lines.push(`- 交回：文件放进 ${spec.result.root}/artifacts/，结论写 ${spec.result.root}/result.md，最后先写临时文件再改名成 ${spec.result.root}/result.json。`);
+    const root = spec.result.root;
+    lines.push(`- 交回：文件放进 ${root}/artifacts/，结论写 ${root}/result.md，最后先写临时文件再改名成 ${root}/result.json。`);
   }
   lines.push('- 结果的字段见 GET /api/agents/guide 的“新协议”一节。');
   return lines.join('\n');

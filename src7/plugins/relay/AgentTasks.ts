@@ -7,11 +7,11 @@
  *   - 任务单存进表的 protocol 列，也写成任务文件夹里的 task.json（机器读）和 task.md（人读），附件放 input/；
  *   - 领取带 claimKey：同一个键重领交回原样，别人领了回 409；
  *   - 交回 result.json 的内容：HTTP 正文的 protocolResult，或执行者写进 result/result.json 由定时扫描收；两条路都走 finish。
- * 交回的结果经 ctx.frontDesk.acceptResult（bots/Dispatch.ts）排进派活会话的结果队列，和改任务状态在同一个事务里：
+ * 交回的结果经 bot/request 排进派活会话的结果队列，收到成功回执后再改任务状态：
  *   前台整理后回原渠道，后台看一轮接着做。protocol 是 NULL 的旧任务照旧格式 { ok, text, uploads } 收。
  * 照 0.4 src/capabilities/AgentTasks.ts。设计：docs/开发进度/前台派后台和技能_细节_Codex_20261117.md 第四节。
  * 11-17 由原 agent-tasks 插件挪进 relay（外部助手的交办、收件、回信归一处）：relay 的 apply 调 getScanMs 查配置、
- *   http 和 frontDesk 都在时调 applyAgentTasks 挂上；表、接口、工具名都没改。
+ *   http 就绪后调 applyAgentTasks 挂上；表、接口、工具名都没改。
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -22,14 +22,34 @@ import type { Session } from '../../Sessions.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import * as protocolModule from './TaskProtocol.ts';
 import { registerRoutes } from './TaskRoutes.ts';
 
 
-/** 任务通道要的服务：resources 存表和文件夹；tools 登记工具；http 开接口；frontDesk 把结果排进派活会话的结果队列（bots 插件挂）。relay 照它 inject。 */
-export const TASKS_INJECT = ['resources', 'tools', 'http', 'frontDesk'];
+/** 任务通道要的服务：resources 存表和文件夹；tools 登记工具；http 开接口。 */
+export const TASKS_INJECT = ['resources', 'tools', 'http'];
+
+/**
+ * 把外部任务结果或转话回信交给派活会话的结果队列。
+ * @param ctx 调用方的 Cordis 上下文。
+ * @param input 含稳定结果键的投递内容。
+ * @returns 机器人给出的投递回执，或带原因的失败回执。
+ */
+export function requestResultDelivery(ctx: cordis.Context, input: dispatchModule.ResultInput) {
+  const request = { action: 'accept-result', input } as const;
+  const options = {
+    timeoutMs: 5000,
+    onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+      requestId: '', ok: false, error: detail ?? `结果投递未获回执（${reason}）`,
+    }),
+  };
+
+  //M 让机器人入队，交回和转话共用回执与失败规则。
+  return requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
+}
 
 
 /** 任务的四种状态。 */
@@ -141,6 +161,8 @@ const STATUS_WORDS: Record<TaskStatus, string> = { new: '等它来领', taken: '
 export class AgentTasks {
   /** 定时扫描收不了的 result.json：任务号 → 那一版文件的“大小:修改时间”。文件没变就不再试，免得反复报同一个错。 */
   private readonly broken = new Map<string, string>();
+  /** 同一任务的 HTTP 交回和文件交回串行处理，避免等待回执时覆盖产物。 */
+  private readonly finishing = new Map<number, Promise<Task>>();
 
   /**
    * 建两张表（老库补新协议的两列）、登记工具 agent_task。
@@ -148,9 +170,12 @@ export class AgentTasks {
    */
   constructor(private readonly ctx: cordis.Context) {
     const db = ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS agent_tasks_agents (name TEXT PRIMARY KEY, description TEXT NOT NULL, hello INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0)');
-    db.exec('CREATE TABLE IF NOT EXISTS agent_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL, bot TEXT NOT NULL, session TEXT NOT NULL,'
-      + ' title TEXT NOT NULL, text TEXT NOT NULL, files TEXT NOT NULL, status TEXT NOT NULL, result_text TEXT, result_files TEXT,'
+    db.exec('CREATE TABLE IF NOT EXISTS agent_tasks_agents (name TEXT PRIMARY KEY, description TEXT NOT NULL,'
+      + ' hello INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0)');
+    db.exec('CREATE TABLE IF NOT EXISTS agent_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL,'
+      + ' bot TEXT NOT NULL, session TEXT NOT NULL,'
+      + ' title TEXT NOT NULL, text TEXT NOT NULL, files TEXT NOT NULL, status TEXT NOT NULL,'
+      + ' result_text TEXT, result_files TEXT,'
       + ' created_at INTEGER NOT NULL, taken_at INTEGER, done_at INTEGER)');
 
     //M 新协议加的两列：登记表的 abilities（报的能力 JSON）、任务表的 protocol（Protocol JSON，旧任务是 NULL）。老库没有就补上。
@@ -158,7 +183,8 @@ export class AgentTasks {
     this.addColumn('agent_tasks', 'protocol');
 
     //M 派活调用键唯一：同一次工具调用（会话号/callId）只能派出一件。旧任务 protocol 是 NULL，唯一索引不管 NULL。
-    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_request_key ON agent_tasks (json_extract(protocol, '$.requestKey'))");
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_request_key ON agent_tasks'
+      + " (json_extract(protocol, '$.requestKey'))");
 
     //M tools.register：登记给前台和后台；模型调它时骨架调 run(参数, 会话, 停止信号, callId)，交回的文字就是工具结果。
     ctx.tools.register({
@@ -174,7 +200,10 @@ export class AgentTasks {
           agent: piAi.Type.Optional(piAi.Type.String({ description: '交给谁（send、status）' })),
           title: piAi.Type.Optional(piAi.Type.String({ description: '一句话标题（send）' })),
           text: piAi.Type.Optional(piAi.Type.String({ description: '要做什么：目标、约束、怎么算做完（send）' })),
-          deliverables: piAi.Type.Optional(piAi.Type.Array(piAi.Type.String(), { description: '交回物：要交回哪些东西，每项一句（send 必写）' })),
+          deliverables: piAi.Type.Optional(piAi.Type.Array(
+            piAi.Type.String(),
+            { description: '交回物：要交回哪些东西，每项一句（send 必写）' },
+          )),
           model: piAi.Type.Optional(piAi.Type.String({ description: '主执行用的模型 ID，照它登记的写法；不写用它登记的第一个（send）' })),
           thinking: piAi.Type.Optional(piAi.Type.String({ description: '主执行的思考档；不写取它登记的次高档（send）' })),
           subagents: piAi.Type.Optional(piAi.Type.Array(piAi.Type.Object({
@@ -256,7 +285,8 @@ export class AgentTasks {
   /** 一件；没有是 undefined。 */
   get(agent: string, id: number): Task | undefined {
     //M 同时按执行端和任务号查找，限定在该执行端的任务内。
-    const row = this.ctx.resources.db.query('SELECT * FROM agent_tasks WHERE id = ? AND agent = ?').get(id, agent) as Record<string, unknown> | null;
+    const query = this.ctx.resources.db.query('SELECT * FROM agent_tasks WHERE id = ? AND agent = ?');
+    const row = query.get(id, agent) as Record<string, unknown> | null;
     if (row === null) return undefined;
 
     //M 把命中的记录还原成包含协议与结果的任务对象。
@@ -286,7 +316,8 @@ export class AgentTasks {
 
       //T 跟踪：查重命中，没派第二件。
       const sameVars = { 任务: task.id, 调用键: input.requestKey };
-      this.ctx.emit('trace', 'AgentTasks.send', `同一次调用又来：回 #${task.id}，不再派`, 'SELECT agent_tasks by requestKey', sameVars);
+      const sameSummary = `同一次调用又来：回 #${task.id}，不再派`;
+      this.ctx.emit('trace', 'AgentTasks.send', sameSummary, 'SELECT agent_tasks by requestKey', sameVars);
       return task;
     }
 
@@ -303,8 +334,16 @@ export class AgentTasks {
     //M 一个事务：插一行拿号 → 附件复制进 input/ → 写任务单。中间出错整件不算，执行者看不到半截任务。
     const db = this.ctx.resources.db;
     const create = db.transaction((): number => {
-      const insert = "INSERT INTO agent_tasks (agent, bot, session, title, text, files, status, created_at) VALUES (?, ?, ?, ?, ?, '[]', 'new', ?)";
-      const inserted = db.query(insert).run(agent.name, session.row.bot, session.row.id, input.title, input.text, Date.now());
+      const insert = 'INSERT INTO agent_tasks (agent, bot, session, title, text, files, status, created_at)'
+        + " VALUES (?, ?, ?, ?, ?, '[]', 'new', ?)";
+      const inserted = db.query(insert).run(
+        agent.name,
+        session.row.bot,
+        session.row.id,
+        input.title,
+        input.text,
+        Date.now(),
+      );
       const id = Number(inserted.lastInsertRowid);
       const names = this.copyInputs(agent.name, id, sources);
       const protocol = this.getProtocol(session, agent, id, input, execution, names);
@@ -320,8 +359,17 @@ export class AgentTasks {
     const id = create();
 
     //T 跟踪：派出一件。
-    const vars = { 任务: id, 外部AI: agent.name, 会话: session.row.id, 附件: sources.length, 模型: execution.model, 思考档: execution.thinking, 子代理: execution.subagents.length };
-    this.ctx.emit('trace', 'AgentTasks.send', `交给 ${agent.name}：#${String(id)}`, 'INSERT agent_tasks + task.json', vars);
+    const vars = {
+      任务: id,
+      外部AI: agent.name,
+      会话: session.row.id,
+      附件: sources.length,
+      模型: execution.model,
+      思考档: execution.thinking,
+      子代理: execution.subagents.length,
+    };
+    const sendSummary = `交给 ${agent.name}：#${String(id)}`;
+    this.ctx.emit('trace', 'AgentTasks.send', sendSummary, 'INSERT agent_tasks + task.json', vars);
     return this.get(agent.name, id)!;
   }
 
@@ -357,7 +405,9 @@ export class AgentTasks {
     if (changes !== 1) throw new failureModule.Failure(409, `任务 ${String(id)} 已经是 ${task.status} 了`);
 
     //T 跟踪：被领走。
-    this.ctx.emit('trace', 'AgentTasks.take', `${agent} 领走 #${String(id)}`, 'UPDATE agent_tasks', { 任务: id, 外部AI: agent, 领取键: key ?? '（旧任务没有）' });
+    const takeSummary = `${agent} 领走 #${String(id)}`;
+    const takeVars = { 任务: id, 外部AI: agent, 领取键: key ?? '（旧任务没有）' };
+    this.ctx.emit('trace', 'AgentTasks.take', takeSummary, 'UPDATE agent_tasks', takeVars);
     return task;
   }
 
@@ -368,10 +418,43 @@ export class AgentTasks {
    * @param input 交回的内容：HTTP 正文（TaskRoutes.ts 的 getFinishInput）或扫到的 result.json（scan）。
    * @returns 交回后的任务；同一份内容重交，交回原样。
    * @throws 没有这件 404；新旧格式不对、上传号不对、产物不在或 SHA-256 对不上 400；
-   *   没领取、领取键对不上、交过了内容不一样（result_conflict）、交回时状态变了 409。
-   * 副作用：写任务文件夹、写库、结果排进派活会话的结果队列（frontDesk 下一拍处理）；记上了删上传的原件。
+   *   没领取、领取键对不上、交过了内容不一样（result_conflict）、交回时状态变了 409；投递失败 503。
+   * 副作用：写任务文件夹；结果得到入队回执后落库并清理上传原件。
    */
-  finish(agent: string, id: number, input: FinishInput): Task {
+  async finish(agent: string, id: number, input: FinishInput): Promise<Task> {
+    //M 查正在交回的同一件，保持校验和落盘的顺序。
+    const pending = this.finishing.get(id);
+    const finish = async (): Promise<Task> => {
+      if (pending !== undefined) {
+        //M 先让上一份交回结束，再按当前任务状态校验重试或冲突。
+        await pending.catch(() => undefined);
+      }
+
+      //M 校验并投递这一份结果。
+      return this.finishTask(agent, id, input);
+    };
+
+    //M 在同一任务上串接本次交回，成功和失败都释放本次记录。
+    const running = finish();
+    this.finishing.set(id, running);
+    try {
+      return await running;
+    } finally {
+      if (this.finishing.get(id) === running) {
+        this.finishing.delete(id);
+      }
+    }
+  }
+
+  /**
+   * 校验产物、请求入队，收到回执后登记任务结果。
+   * @param agent 执行端名字。
+   * @param id 任务编号。
+   * @param input 交回内容与上传引用。
+   * @returns 已登记的任务。
+   * 副作用：写任务文件、排结果队列，成功后更新任务表。
+   */
+  private async finishTask(agent: string, id: number, input: FinishInput): Promise<Task> {
     //G 先按归属读任务，未找到时拒绝处理这次交回。
     const task = this.get(agent, id);
     if (task === undefined) throw new failureModule.Failure(404, `没有任务 ${String(id)}`);
@@ -380,7 +463,9 @@ export class AgentTasks {
     const protocol = task.protocol;
     const result = input.result;
     if (protocol !== undefined && result === undefined) {
-      throw new failureModule.Failure(400, `任务 ${task.id} 是新协议的，要交 protocolResult（或写 result/result.json），见 GET /api/agents/guide`);
+      const message = `任务 ${task.id} 是新协议的，要交 protocolResult（或写 result/result.json），`
+        + '见 GET /api/agents/guide';
+      throw new failureModule.Failure(400, message);
     }
     if (protocol === undefined && result !== undefined) {
       throw new failureModule.Failure(400, `任务 ${task.id} 是旧任务，交 { ok, text, uploads }`);
@@ -439,7 +524,7 @@ export class AgentTasks {
 
     /**
      * 改任务状态：带条件（还是交回前那个状态）的 UPDATE；没改成说明别人抢先交了或改了，抛 409。
-     * acceptResult 在它的事务里调（commitSource），抛错整个回滚。
+     * 机器人确认入队后调用；稳定结果键允许在本地登记失败后重试。
      * @param delivery 送回会话的情况，记进 protocol（旧任务没有 protocol，不记）。
      */
     const record = (delivery: string): void => {
@@ -455,7 +540,7 @@ export class AgentTasks {
       if (changes !== 1) throw new failureModule.Failure(409, `任务 ${task.id} 交回时状态变了（别人交过或改过），没记上`);
     };
 
-    //M 送回会话：frontDesk.acceptResult 在一个事务里把结果排进派活会话的结果队列，再调 record 改任务状态。
+    //M 用稳定结果键投递；已经入队的同一份结果允许补记任务状态。
     const resultInput: dispatchModule.ResultInput = {
       key: `agent:${task.id}:result`,
       sessionId: task.sessionId,
@@ -463,22 +548,24 @@ export class AgentTasks {
       origin: protocol?.origin,
       payload: { text: this.getResultText(task, ok, text, result), files },
     };
-    try {
-      const receipt = this.ctx.frontDesk.acceptResult(resultInput, () => record('已排进会话的结果队列'));
 
-      //M 队列里早有这份（同键同内容）：acceptResult 没调 record，这里补记任务状态。
-      if (receipt.status === 'duplicate') {
-        record('会话的结果队列里早有这份');
-      }
-    } catch (error) {
-      //G record 抛的（任务状态变了）：原样给执行者。
-      if (error instanceof failureModule.Failure) throw error;
+    //M 等机器人确认稳定结果键已入队，才能登记本地任务结果。
+    const delivered = await requestResultDelivery(this.ctx, resultInput);
 
-      //M 送不回会话（会话没了、不是前台也不是后台）：任务照样记完，写明原因，执行者不用重交。
-      const reason = `送不回会话 ${task.sessionId}：${textModule.getMessage(error)}`;
-      record(reason);
-      console.error(`任务 #${task.id} 的结果${reason}`);
+    //G 送不回时保留任务状态和原件，告知执行端可以重试。
+    const receipt = delivered.receipt;
+    if (!delivered.ok || receipt === undefined) {
+      const reason = `任务 #${task.id} 的结果送不回会话 ${task.sessionId}：${delivered.error ?? '未返回投递凭据'}`;
+      throw new failureModule.Failure(503, reason);
     }
+
+    let delivery = '已排进会话的结果队列';
+    if (receipt.status === 'duplicate') {
+      delivery = '会话的结果队列里早有这份';
+    }
+
+    //M 入队和已在队列中的回执都能确认结果已经送达。
+    record(delivery);
 
     //M 记上了：删掉上传的原件。
     for (const item of uploads) {
@@ -487,8 +574,16 @@ export class AgentTasks {
 
     //T 跟踪：交回并排进会话的结果队列。
     const done = this.get(agent, id)!;
-    const vars = { 任务: id, 外部AI: agent, 会话: done.sessionId, 状态: done.status, 文件: files.length, 新协议: protocol !== undefined };
-    this.ctx.emit('trace', 'AgentTasks.finish', `${agent} 交回 #${String(id)}`, 'frontDesk.acceptResult + UPDATE agent_tasks', vars);
+    const vars = {
+      任务: id,
+      外部AI: agent,
+      会话: done.sessionId,
+      状态: done.status,
+      文件: files.length,
+      新协议: protocol !== undefined,
+    };
+    const finishSummary = `${agent} 交回 #${String(id)}`;
+    this.ctx.emit('trace', 'AgentTasks.finish', finishSummary, 'bot/request accept-result + UPDATE agent_tasks', vars);
     return done;
   }
 
@@ -497,14 +592,22 @@ export class AgentTasks {
    * 执行者先写临时文件再改名，所以只认 result.json；坏的、对不上的记下这一版，文件改了再试。apply 里的定时器调。
    * 副作用：见 finish；收不了的写一行错误日志。
    */
-  scan(): void {
-    const sql = "SELECT * FROM agent_tasks WHERE status = 'taken' AND json_extract(protocol, '$.spec.result.returnMode') = 'file'";
+  async scan(): Promise<void> {
+    const sql = "SELECT * FROM agent_tasks WHERE status = 'taken'"
+      + " AND json_extract(protocol, '$.spec.result.returnMode') = 'file'";
     //M 仅扫描已领取且约定从文件交回的任务。
     const rows = this.ctx.resources.db.query(sql).all() as Record<string, unknown>[];
     for (const row of rows) {
       //M 从任务行取归属与编号，定位执行端的结果文件。
       const task = getTask(row);
-      const file = path.join(this.dir(task.agent, task.id, 'result'), 'result.json');
+      const id = Number(task.id);
+
+      //G HTTP 或上次扫描已在交回这件任务，留给这次交回收尾。
+      if (this.finishing.has(id)) continue;
+
+      //M 在任务结果目录里找执行端原子写好的交回文件。
+      const resultDir = this.dir(task.agent, task.id, 'result');
+      const file = path.join(resultDir, 'result.json');
 
       //M 还没交（没有 result.json）：下次再看。
       if (!fs.existsSync(file)) continue;
@@ -518,9 +621,16 @@ export class AgentTasks {
       try {
         const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
         const result = checksModule.checkTaskResult(raw);
-        this.finish(task.agent, Number(task.id), { uploads: [], result });
+        const input = { uploads: [], result };
+        await this.finish(task.agent, id, input);
         this.broken.delete(task.id);
       } catch (error) {
+        //G 投递失败可以重试；文件保持待收，下次扫描继续尝试。
+        if (error instanceof failureModule.Failure && error.status === 503) {
+          console.error(error.message);
+          continue;
+        }
+
         this.broken.set(task.id, mark);
         console.error(`任务 #${task.id} 的 result/result.json 收不了：${textModule.getMessage(error)}（文件改了会再试）`);
       }
@@ -646,7 +756,10 @@ export class AgentTasks {
     const copied: CopiedUpload[] = [];
     for (const upload of uploads) {
       //G 只接受上传接口签发的格式，避免把任意路径当成上传号。
-      if (!UPLOAD_ID.test(upload)) throw new failureModule.Failure(400, `上传号不对：${upload}（是 PUT /api/uploads/<文件名> 回的 20 位 id）`);
+      if (!UPLOAD_ID.test(upload)) {
+        const message = `上传号不对：${upload}（是 PUT /api/uploads/<文件名> 回的 20 位 id）`;
+        throw new failureModule.Failure(400, message);
+      }
 
       //G 用上传号匹配暂存文件，找不到时提示执行端重新上传。
       const file = present.find((item) => item.startsWith(`${upload}_`));
@@ -678,7 +791,10 @@ export class AgentTasks {
 
       const digest = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
       //G 内容摘要不一致时中止交回，避免登记错误的产物。
-      if (digest !== artifact.sha256) throw new failureModule.Failure(400, `产物 ${artifact.path} 的 SHA-256 对不上（算出来是 ${digest}）`);
+      if (digest !== artifact.sha256) {
+        const message = `产物 ${artifact.path} 的 SHA-256 对不上（算出来是 ${digest}）`;
+        throw new failureModule.Failure(400, message);
+      }
 
       files.push(file);
     }
@@ -707,7 +823,9 @@ export class AgentTasks {
     //M 新协议：实际执行、子代理、检查、没做完的、缺的能力，有才写。
     if (result !== undefined) {
       const actual = result.actualExecution;
-      lines.push(`实际执行：${actual.host}，主会话 ${actual.sessionId}；要求 ${actual.requestedModel} / ${actual.requestedThinking}，实际 ${actual.actualModel} / ${actual.actualThinking}`);
+      const requested = `${actual.requestedModel} / ${actual.requestedThinking}`;
+      const actually = `${actual.actualModel} / ${actual.actualThinking}`;
+      lines.push(`实际执行：${actual.host}，主会话 ${actual.sessionId}；要求 ${requested}，实际 ${actually}`);
       for (const item of actual.subagents) {
         lines.push(`子代理 ${item.id}：${item.responsibility}（${item.model} / ${item.thinking}）`);
       }
@@ -847,7 +965,9 @@ export class AgentTasks {
     const spec = task.protocol?.spec;
     if (spec !== undefined) {
       const execution = spec.execution;
-      lines.push(`要求：${execution.model} / ${execution.thinking}，子代理 ${String(execution.subagents.length)} 个；交回物：${spec.task.deliverables.join('；')}`);
+      const subagentCount = String(execution.subagents.length);
+      const deliverables = spec.task.deliverables.join('；');
+      lines.push(`要求：${execution.model} / ${execution.thinking}，子代理 ${subagentCount} 个；交回物：${deliverables}`);
     }
 
     //M 交回了：话、文件、送回会话的情况。
@@ -920,13 +1040,22 @@ function getAgent(row: Record<string, unknown>): AgentInfo {
 /** 任务表里一行转成任务。 */
 function getTask(row: Record<string, unknown>): Task {
   const task: Task = {
-    id: String(row['id']), agent: row['agent'] as string, bot: row['bot'] as string, sessionId: row['session'] as string,
-    title: row['title'] as string, text: row['text'] as string, files: JSON.parse(row['files'] as string) as string[],
-    status: row['status'] as TaskStatus, createdAt: row['created_at'] as number,
+    id: String(row['id']),
+    agent: row['agent'] as string,
+    bot: row['bot'] as string,
+    sessionId: row['session'] as string,
+    title: row['title'] as string,
+    text: row['text'] as string,
+    files: JSON.parse(row['files'] as string) as string[],
+    status: row['status'] as TaskStatus,
+    createdAt: row['created_at'] as number,
   };
   if (row['taken_at'] !== null) task.takenAt = row['taken_at'] as number;
   if (row['done_at'] !== null) task.doneAt = row['done_at'] as number;
-  if (row['result_text'] !== null) task.result = { text: row['result_text'] as string, files: JSON.parse((row['result_files'] as string | null) ?? '[]') as string[] };
+  if (row['result_text'] !== null) {
+    const resultFiles = JSON.parse((row['result_files'] as string | null) ?? '[]') as string[];
+    task.result = { text: row['result_text'] as string, files: resultFiles };
+  }
   if (row['protocol'] !== null) task.protocol = JSON.parse(row['protocol'] as string) as protocolModule.Protocol;
   return task;
 }
@@ -955,7 +1084,7 @@ export function getScanMs(raw: unknown): number {
 
 /**
  * 挂上任务通道：建表、登记工具 agent_task、7 个接口，起定时扫描。
- * relay 的 apply 用 ctx.inject(TASKS_INJECT, …) 调：http 和 frontDesk 都在才挂，拔掉时一起撤。接口在这里登记，http 等 ready 才监听，来得及。
+ * relay 的 apply 用 ctx.inject(TASKS_INJECT, …) 调：http 就绪后挂，拔掉时一起撤。
  * @param ctx inject 给的子 ctx。
  * @param every 定时扫 file 交回的间隔，毫秒（getScanMs 查过）。
  * 副作用：建表、登记工具和接口、起定时器（ctx.effect 在拔掉时清）。
@@ -967,7 +1096,10 @@ export function applyAgentTasks(ctx: cordis.Context, every: number): void {
 
   //M 定时扫 file 交回的任务；ctx.effect 在插件被拔掉时清定时器。
   ctx.effect(() => {
-    const timer = setInterval(() => tasks.scan(), every);
+    const timer = setInterval(() => {
+      //M 从文件收结果时等待投递回执，扫描异常写日志供下次排查。
+      void tasks.scan().catch((error: unknown) => console.error(`扫描任务结果失败：${textModule.getMessage(error)}`));
+    }, every);
     return () => clearInterval(timer);
   });
 }

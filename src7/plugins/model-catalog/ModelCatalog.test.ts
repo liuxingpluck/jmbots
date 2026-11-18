@@ -8,11 +8,15 @@
  */
 import { Database } from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
+import * as textModule from '../../utils/Text.ts';
 import type { FallbackInfo } from './Fallback.ts';
 import { Queue } from './Queue.ts';
 import * as catalogPlugin from './index.ts';
@@ -36,6 +40,8 @@ async function setupWorld(options: {
   raw?: Record<string, unknown>;
   pluginConfig?: catalogPlugin.ModelCatalogConfig;
   beforeMount?: (ctx: cordis.Context) => void;
+  /** 先放进运行时目录 models/ 的模型介绍：文件名 → 内容。 */
+  notes?: Record<string, string>;
 } = {}): Promise<{
   ctx: cordis.Context;
   fallbackEvents: FallbackInfo[];
@@ -43,6 +49,14 @@ async function setupWorld(options: {
 }> {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
+
+  //M 临时运行时目录：模型介绍和评价（Notes.ts）在它下面建 models/。
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-'));
+  closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'models'));
+  textModule.eachEntry(options.notes ?? {}, (file, text) => {
+    fs.writeFileSync(path.join(root, 'models', file), text, 'utf8');
+  });
 
   const providerConfig = {
     mock: { baseUrl: 'http://127.0.0.1:0', apiKey: '', api: 'openai-completions' as const },
@@ -75,6 +89,7 @@ async function setupWorld(options: {
 
   class MockResources extends cordis.Service {
     readonly db = new Database(':memory:');
+    readonly root = root;
     readonly raw = raw;
     readonly config = {
       defaultModel: 'mock/primary',
@@ -143,6 +158,37 @@ test('模型清单未挂载时查询立即走无人接单退路', async () => {
   const lookup = { action: 'find', model: 'mock/primary' } as const;
   const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', lookup, catalogOptions);
   expect(result).toEqual({ requestId: 'unhandled' });
+});
+
+test('prompt 事件：交回模型介绍评价和清单里有的模型的思考档；没有介绍时两段都是空串', async () => {
+  const notes = {
+    'mock__primary.md': '# mock/primary\n\n主力模型。\n',
+    'other__model.md': '# other/model\n\n清单里没有。\n',
+  };
+  const { ctx } = await setupWorld({ notes });
+  const ask = { action: 'prompt' } as const;
+  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ask, catalogOptions);
+  expect(result.prompt).toContain('- mock/primary：主力模型。');
+  expect(result.prompt).toContain('- other/model：清单里没有。');
+
+  //M 思考档只写清单里查得到的模型。
+  const levels = ctx.modelCatalog.find('mock/primary')?.thinking.join('、') ?? '';
+  expect(result.levelsText).toBe(`能用的思考档（写 thinking 只能从里面挑）：\n- mock/primary：${levels}`);
+
+  const empty = await setupWorld();
+  const none = await events.requestEvent(empty.ctx, 'model-catalog/request', 'model-catalog/result', ask, catalogOptions);
+  expect(none).toMatchObject({ prompt: '', levelsText: '' });
+});
+
+test('prompt 事件：读介绍出错时回空回执，调用方当没有介绍', async () => {
+  const { ctx } = await setupWorld();
+  //M 删掉 models/：getList 读目录抛错，onError 打日志、回不带 prompt 的回执，不等超时。
+  fs.rmSync(path.join(ctx.resources.root, 'models'), { recursive: true, force: true });
+  const ask = { action: 'prompt' } as const;
+  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ask, catalogOptions);
+  expect(result.requestId).toStartWith('req_');
+  expect(result.prompt).toBeUndefined();
+  expect(result.levelsText).toBeUndefined();
 });
 
 

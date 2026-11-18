@@ -56,7 +56,9 @@ export class Sender {
     const task = this.tail.then(async () => {
       //M 排到此次发送时再截窗口，将新画面与目标一起交给 worker 核对。
       const frame = await this.window.frame();
-      return this.exchange({ operation: 'send', text, requestId, target, frame, aobwUrl: this.window.url, lockFile: this.window.lockFile });
+      return this.exchange({
+        operation: 'send', text, requestId, target, frame, aobwUrl: this.window.url, lockFile: this.window.lockFile,
+      });
     });
     this.tail = task.catch(() => undefined);
     return task;
@@ -104,7 +106,8 @@ export class Sender {
     this.child = Bun.spawn([this.python, '-B', '-m', 'wxcontrol.worker'], {
       cwd: this.root,
       env: {
-        ...process.env, JIMUKEFU_RUNTIME_DIR: path.join(this.root, 'runtime'), PYTHONPATH: path.join(this.root, 'python'),
+        ...process.env,
+        JIMUKEFU_RUNTIME_DIR: path.join(this.root, 'runtime'), PYTHONPATH: path.join(this.root, 'python'),
         PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1', TEMP: tmp, TMP: tmp,
       },
       stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', windowsHide: true,

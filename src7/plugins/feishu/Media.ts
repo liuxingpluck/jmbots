@@ -364,7 +364,12 @@ export async function related(
  * @returns 文件内容。
  * @throws 接口出错、超过 100MB 时抛错。
  */
-export async function download(feishu: Feishu, appId: string, messageId: string, resource: Resource): Promise<Uint8Array> {
+export async function download(
+  feishu: Feishu,
+  appId: string,
+  messageId: string,
+  resource: Resource,
+): Promise<Uint8Array> {
   //M 按收信应用客户端调资源下载接口（带 429 重试）获取可读流。
   const client = feishu.client(appId);
   const got = await api.call('下载资源', () => client.im.v1.messageResource.get({
@@ -430,7 +435,8 @@ export async function sendFile(
   //M 图片：格式和大小都对才按图片发，不然当附件。
   if (kind === 'image' && IMAGE_EXTENSIONS.has(extension) && data.length <= IMAGE_MAX) {
     const client = feishu.client(appId);
-    const uploaded = await api.call('上传图片', () => client.im.v1.image.create({ data: { image_type: 'message', image: data } }));
+    const imageData = { image_type: 'message', image: data } as const;
+    const uploaded = await api.call('上传图片', () => client.im.v1.image.create({ data: imageData }));
     const imageKey = uploaded?.image_key;
     if (imageKey === undefined || imageKey === '') {
       throw new Error('飞书上传图片成功但没有交回 image_key');
@@ -455,7 +461,9 @@ export async function sendFile(
       if (mediaKind === 'media') {
         said = '视频';
       }
-      console.error(`${new Date().toLocaleString('zh-CN', { hour12: false })} 飞书：${path.basename(file)} 按${said}消息没发成，改按附件发：${textModule.getMessage(error)}`);
+      const failedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+      const reason = textModule.getMessage(error);
+      console.error(`${failedAt} 飞书：${path.basename(file)} 按${said}消息没发成，改按附件发：${reason}`);
     }
   }
   //M 非音视频文件或媒体方式失败后统一退回按普通文件附件上传发送。

@@ -44,6 +44,24 @@ declare module 'cordis' {
     /** tutorial 插件给别的插件露运行时变量的口子（名字沿用原来的 flow 插件），实现在本文件的 Tutorial。可选依赖，用 ctx.inject(['flow'], …) 接。 */
     flow: FlowState;
   }
+  interface Events {
+    /**
+     * 通知：插件露自己的运行时变量（和 ctx.flow.state 一样，只是不用 inject flow；契约 3.2 第 12 条）。本插件听，没挂 tutorial 就没人听、什么也不发生。
+     * 带 read 是登记（同名再登记换掉旧的）；不带 read 是注销那一组（插件被拔掉时在 ctx.effect 里发）。
+     */
+    'flow/state'(notice: FlowStateNotice): void;
+  }
+}
+
+
+/** 事件 flow/state 的数据。 */
+export interface FlowStateNotice {
+  /** 组名，写插件名：「状态」标签按它归到那个插件下面。 */
+  name: string;
+  /** 交回这一刻的状态；不给就是注销这一组。 */
+  read?: () => Record<string, unknown>;
+  /** 键的中文解释：英文键 → 解释。 */
+  notes?: Record<string, string>;
 }
 
 
@@ -78,7 +96,7 @@ export const name = 'tutorial';
 
 //M 版本号：改了对外的接口、页面、配置就往上加。
 /** 版本号。 */
-export const version = '1.1.6';
+export const version = '1.1.7';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -322,6 +340,9 @@ class Tutorial {
     };
     ctx.provide('flow', flow);
 
+    //M 通知 flow/state（契约 3.2 第 12 条）：和 ctx.flow.state 并存，插件不用 inject flow 也能露变量；不带 read 是注销那一组。
+    ctx.on('flow/state', (notice) => this.onFlowState(notice));
+
     //M 接口：http 插件挂上（排在 tutorial 后面）以后再登记。
     void ctx.inject(['http'], (sub) => {
       this.addRoutes(sub);
@@ -345,6 +366,22 @@ class Tutorial {
         this.registered.delete(groupName);
       }
     };
+  }
+
+  /**
+   * 响应通知 flow/state：带 read 登记一组（同 addState，同名换掉旧的），不带 read 注销那一组。
+   * @param notice 组名、取值函数、键的解释。
+   */
+  private onFlowState(notice: FlowStateNotice): void {
+    //M 不带 read：发通知的插件被拔掉了，按组名撤掉。
+    if (notice.read === undefined) {
+      this.registered.delete(notice.name);
+      return;
+    }
+
+    //M 带 read：登记成一组，「状态」标签现调。撤销靠注销通知，不用 addState 交回的函数。
+    const notes = notice.notes ?? {};
+    this.addState(notice.name, notice.read, notes);
   }
 
   /**

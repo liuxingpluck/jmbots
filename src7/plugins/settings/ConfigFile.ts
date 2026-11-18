@@ -58,7 +58,10 @@ export class ConfigFile {
     const broken = document.errors[0];
     //G 原配置 YAML 语法已损坏时直接拦截回 409，只提示行号以免错误里带出密钥原文。
     if (broken !== undefined) {
-      throw new failureModule.Failure(409, `config.yaml 不是合法的 YAML（第 ${String(broken.linePos?.[0].line ?? '?')} 行附近）：先在文件里改好`);
+      throw new failureModule.Failure(
+        409,
+        `config.yaml 不是合法的 YAML（第 ${String(broken.linePos?.[0].line ?? '?')} 行附近）：先在文件里改好`,
+      );
     }
     return document;
   }
@@ -92,7 +95,9 @@ export class ConfigFile {
    */
   edit(edits: unknown): string[] {
     //G 入口校验请求必须是非空改动数组，格式不对直接回 400。
-    if (!Array.isArray(edits) || edits.length === 0) throw new failureModule.Failure(400, '要发一串改动：[{ path, value } 或 { path, delete: true }]');
+    if (!Array.isArray(edits) || edits.length === 0) {
+      throw new failureModule.Failure(400, '要发一串改动：[{ path, value } 或 { path, delete: true }]');
+    }
 
     //M 读出保留注释与顺序的 YAML 文档，准备逐条验证并套用改动。
     const document = this.read();
@@ -100,7 +105,8 @@ export class ConfigFile {
     for (const [index, raw] of edits.entries()) {
       const step = (raw ?? {}) as Edit;
       const okPath = Array.isArray(step.path) && step.path.length > 0
-        && step.path.every((part) => typeof part === 'string' || (typeof part === 'number' && Number.isInteger(part) && part >= 0));
+        && step.path.every((part) => typeof part === 'string'
+          || (typeof part === 'number' && Number.isInteger(part) && part >= 0));
       //G 校验本步 path 必须是非空的字符串键或非负整数下标列表。
       if (!okPath) throw new failureModule.Failure(400, `第 ${String(index + 1)} 步的 path 要是非空的键、序号列表`);
 
@@ -109,7 +115,9 @@ export class ConfigFile {
       if (!SECTIONS.has(top)) throw new failureModule.Failure(400, `第 ${String(index + 1)} 步改的 ${top} 不在设置页能改的范围里`);
 
       //G 非删除步骤必须带有 value 字段，否则拒绝执行该步改动。
-      if (step.delete !== true && !('value' in step)) throw new failureModule.Failure(400, `第 ${String(index + 1)} 步要有 value 或 delete: true`);
+      if (step.delete !== true && !('value' in step)) {
+        throw new failureModule.Failure(400, `第 ${String(index + 1)} 步要有 value 或 delete: true`);
+      }
 
       //M 校验通过后在内存文档上应用这一步改动，并记下被改动的顶层段名。
       touched.add(this.apply(document, step));

@@ -74,7 +74,10 @@ export interface HttpConfig {
   token: string;
   /** 监听的地址（server.host），默认 0.0.0.0。2026-11-14：测试用的临时 exe 写 127.0.0.1，免得 Windows 防火墙弹窗。 */
   host: string;
-  /** 免令牌的来源地址（server.trusted_ips），默认 127.0.0.1、::1；127.x 和 ::ffff: 包着的写法也算。2026-11-14 23:50 EST 用户要求网关 192.168.200.1 也免，写在 config 里。 */
+  /**
+   * 免令牌的来源地址（server.trusted_ips），默认 127.0.0.1、::1；127.x 和 ::ffff: 包着的写法也算。
+   * 2026-11-14 23:50 EST 用户要求网关 192.168.200.1 也免，写在 config 里。
+   */
   trustedIps: string[];
 }
 
@@ -248,7 +251,9 @@ export class Http extends cordis.Service {
     const route = request.url.split('?')[0] ?? '';
     const guarded = route.startsWith('/api/') || route.startsWith('/files/');
     //M 2026-11-14 23:50 EST：本机之外，server.trusted_ips 里的地址（如网关 192.168.200.1）也免令牌；别的局域网、外网地址照旧要令牌。
-    if (trustedIp(request.ip, this.config.trustedIps) || !guarded || this.open.has(route) || this.tokens.none()) return undefined;
+    if (trustedIp(request.ip, this.config.trustedIps) || !guarded || this.open.has(route) || this.tokens.none()) {
+      return undefined;
+    }
 
     const query = (request.query as { token?: unknown }).token;
     const header = (request.headers.authorization ?? '').replace(/^Bearer\s+/iu, '');
@@ -359,7 +364,9 @@ export class Http extends cordis.Service {
  */
 export function apply(ctx: cordis.Context): void {
   //M server 段是外面进来的（config.yaml 顶层，和基地共用），在这里校验一次；没有主令牌就当空串。
-  const server = (ctx.resources.raw['server'] ?? {}) as { port?: unknown; token?: unknown; host?: unknown; trusted_ips?: unknown };
+  const server = (ctx.resources.raw['server'] ?? {}) as {
+    port?: unknown; token?: unknown; host?: unknown; trusted_ips?: unknown;
+  };
   //M 不写 server.port 就报错，不再默认 30086（那是正式运行的端口，免得测试或新目录误占）。
   if (server.port === undefined) {
     throw new Error('配置里没有 server.port');

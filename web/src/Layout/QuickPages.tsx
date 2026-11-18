@@ -31,7 +31,7 @@ function getQuickPageItems(t: i18n.Translate): QuickPageItem[] {
     { href: '/tutorial/', label: t('教程'), plugin: 'tutorial' },
     { href: '/memory/', label: t('记忆'), plugin: 'memory' },
     { href: '/graph/', label: t('图谱'), plugin: 'memory' },
-    { href: '/model-notes/', label: t('模型'), plugin: 'model-notes' },
+    { href: '/model-notes/', label: t('模型'), plugin: 'model-catalog' },
     { href: '/wechat-kefu/', label: t('客服'), plugin: 'wechat-kefu' },
   ];
 }

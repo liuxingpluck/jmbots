@@ -45,7 +45,8 @@ export function readCompressSettings(raw: unknown): CompressSettings {
   const own = (raw ?? {}) as Record<string, unknown>;
   const at = own['at'] ?? 200000;
   const keep = own['keep'] ?? 6;
-  if (typeof at !== 'number' || !Number.isInteger(at) || at <= 0 || typeof keep !== 'number' || !Number.isInteger(keep) || keep <= 0) {
+  if (typeof at !== 'number' || !Number.isInteger(at) || at <= 0
+    || typeof keep !== 'number' || !Number.isInteger(keep) || keep <= 0) {
     throw new Error('context-fit.compress 的 at、keep 必须是正整数');
   }
   return { enabled: true, at, keep };

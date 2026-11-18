@@ -206,7 +206,9 @@ class WebSearch {
       const sse = (response.headers.get('content-type') ?? '').includes('text/event-stream');
       const parseReply = (): Record<string, unknown>[] => {
         if (sse) {
-          return text.split(/\r?\n/u).filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)) as Record<string, unknown>);
+          return text.split(/\r?\n/u)
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => JSON.parse(line.slice(5)) as Record<string, unknown>);
         }
         return [JSON.parse(text) as Record<string, unknown>];
       };
@@ -215,17 +217,23 @@ class WebSearch {
       const reply = messages.find((message) => message['id'] === id);
       if (reply === undefined) throw new Error(`${method} 没有回应`);
 
-      if (reply['error'] !== undefined) throw new Error(`${method} 出错：${JSON.stringify(reply['error']).slice(0, ERROR_CHARS)}`);
+      if (reply['error'] !== undefined) {
+        throw new Error(`${method} 出错：${JSON.stringify(reply['error']).slice(0, ERROR_CHARS)}`);
+      }
 
       return (reply['result'] ?? {}) as Record<string, unknown>;
     };
 
     //M 按 MCP 协议完成初始化握手并发送 initialized 通知，拿到可用的会话状态。
-    await rpc(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'jmbots', version: '1' } });
+    await rpc(1, 'initialize', {
+      protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'jmbots', version: '1' },
+    });
     await rpc(undefined, 'notifications/initialized', {});
 
     //M 拉取 MCP 工具清单，从中找到名称含 search 的搜索工具以读取其参数要求。
-    const listed = ((await rpc(2, 'tools/list', {}))['tools'] ?? []) as { name?: string; inputSchema?: { required?: string[] } }[];
+    const listed = ((await rpc(2, 'tools/list', {}))['tools'] ?? []) as {
+      name?: string; inputSchema?: { required?: string[] };
+    }[];
     const tool = listed.find((item) => /search/i.test(item.name ?? ''));
     if (tool?.name === undefined) {
       let names = listed.map((item) => item.name).join('、');
@@ -256,7 +264,13 @@ class WebSearch {
  * @returns 2xx 的回应。
  * @throws 不是 2xx 抛“HTTP 状态：回应前 300 字”。
  */
-async function post(url: string, apiKey: string, body: unknown, signal: AbortSignal, mcpSession = ''): Promise<Response> {
+async function post(
+  url: string,
+  apiKey: string,
+  body: unknown,
+  signal: AbortSignal,
+  mcpSession = '',
+): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/event-stream',
@@ -264,7 +278,8 @@ async function post(url: string, apiKey: string, body: unknown, signal: AbortSig
   };
   if (mcpSession !== '') headers['Mcp-Session-Id'] = mcpSession;
   const response = await fetch(url, {
-    method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
+    method: 'POST', headers, body: JSON.stringify(body),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
   });
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}：${(await response.text()).slice(0, ERROR_CHARS)}`);
 
@@ -300,7 +315,9 @@ function readProviders(raw: unknown, providers: Record<string, ProviderConfig>):
       //M 读取并校验智谱 MCP 搜索的密钥、显示名与端点地址，缺少密钥时立即报错。
       const apiKey = text('api_key') ?? '';
       if (apiKey === '') throw new Error(`${at}.api_key 要填智谱的密钥`);
-      return { kind, name: text('name') ?? 'zhipu_mcp', url: (text('url') ?? ZHIPU_MCP_URL).replace(/\/+$/u, ''), apiKey };
+      return {
+        kind, name: text('name') ?? 'zhipu_mcp', url: (text('url') ?? ZHIPU_MCP_URL).replace(/\/+$/u, ''), apiKey,
+      };
     }
     if (kind !== 'magpie') throw new Error(`${at}.kind 只能是 magpie 或 zhipu_mcp`);
 

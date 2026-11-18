@@ -1,6 +1,7 @@
 /**
  * 定时更新监听单元测试（原 update-watch/UpdateWatch.test.ts 迁入）：
  * 通过可选基地服务工作，不调用真实模型、基地或更新接口；并验证默认关闭与卸载清定时器。
+ * 待确认走事件 approval/request（list、ask）：这里挂一个假的听方，不挂真的 approval。
  * 跑法：bun test ./src7/plugins/base-bridge/UpdateWatch.test.ts
  */
 import { expect, spyOn, test } from 'bun:test';
@@ -8,53 +9,69 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as bridge from './index.ts';
-import type { Base } from './index.ts';
 import { mountUpdateWatch, readUpdateWatchSettings } from './UpdateWatch.ts';
+
+
+/** 一件待确认：照 approval/decided 事件的参数取。 */
+type Pending = requestEvents.EventArg<'approval/decided'>;
+
+/** 假审核的回执正文。 */
+type ApprovalAnswer = requestEvents.StripResultId<requestEvents.EventArg<'approval/result'>>;
 
 
 test('没挂基地照常启动，后来挂上但断连时静默，恢复后才询问更新', async () => {
   //M 临时目录只用于隔离更新状态；本测试不会批准或安装更新。
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-update-watch-'));
-  const handlers = new Map<string, () => void>();
-  const cleanups: (() => void)[] = [];
-  const pending: Record<string, unknown>[] = [];
-  let service: Pick<Base, 'getJson' | 'postJson'> | undefined;
+  const pending: Pending[] = [];
   let calls = 0;
   let online = false;
   const errors = spyOn(console, 'error').mockImplementation(() => {});
-  const ctx = {
-    resources: { dir: () => root },
-    get: () => service,
-    on: (event: string, handler: () => void) => handlers.set(event, handler),
-    effect: (start: () => () => void) => cleanups.push(start()),
-    emit: () => {},
-    bots: { list: () => [{ name: '测试机器人' }] },
-    approval: {
-      list: () => pending,
-      ask: (item: Record<string, unknown>) => {
-        const result = { ...item, id: '待确认' };
-        pending.push(result);
-        return result;
-      },
-    },
-  } as unknown as cordis.Context;
+  const ctx = new cordis.Context();
+
+  class FakeResources extends cordis.Service {
+    dir(): string { return root; }
+    constructor(c: cordis.Context) { super(c, 'resources'); }
+  }
+  class FakeBots extends cordis.Service {
+    list(): { name: string }[] { return [{ name: '测试机器人' }]; }
+    constructor(c: cordis.Context) { super(c, 'bots'); }
+  }
+  //M 假基地：后挂上；online 之前一律断连。
+  class FakeBase extends cordis.Service {
+    async getJson(): Promise<{ status: number; body: unknown }> {
+      calls += 1;
+      if (!online) throw new Error('基地没响应');
+
+      return { status: 200, body: { managed: true, current: { version: '1' }, available: { version: '2' } } };
+    }
+    async postJson(): Promise<never> { throw new Error('本测试不能请求安装更新'); }
+    constructor(c: cordis.Context) { super(c, 'base'); }
+  }
+
+  //M 假审核：list 交回登记过的，ask 登记一条。写明返回类型。
+  const answer = (request: requestEvents.EventArg<'approval/request'>): ApprovalAnswer => {
+    if (request.action === 'list') return { items: pending };
+
+    if (request.action !== 'ask') return {};
+
+    const item = { ...request.input, id: pending.length + 1, state: 'waiting', askedAt: 0 } as unknown as Pending;
+    pending.push(item);
+    return { pending: item };
+  };
 
   try {
+    await ctx.plugin(FakeResources);
+    await ctx.plugin(FakeBots);
+    requestEvents.onRequestEvent(ctx, 'approval/request', 'approval/result', answer);
+
     //M 先挂 watch，再出现 base，证明没有把缺失的服务固定在启动时。
     mountUpdateWatch(ctx, readUpdateWatchSettings({ first_ms: 0, every_ms: 5 }));
-    handlers.get('ready')?.();
+    ctx.emit('ready', []);
     await Bun.sleep(20);
     expect(pending).toEqual([]);
-    service = {
-      getJson: async () => {
-        calls += 1;
-        if (!online) throw new Error('基地没响应');
-
-        return { status: 200, body: { managed: true, current: { version: '1' }, available: { version: '2' } } };
-      },
-      postJson: async () => { throw new Error('本测试不能请求安装更新'); },
-    };
+    await ctx.plugin(FakeBase);
     for (let count = 0; calls === 0 && count < 100; count += 1) {
       await Bun.sleep(5);
     }
@@ -68,12 +85,50 @@ test('没挂基地照常启动，后来挂上但断连时静默，恢复后才�
       await Bun.sleep(5);
     }
     expect(pending).toHaveLength(1);
-    expect(pending[0]?.['kind']).toBe('update');
+    expect(pending[0]?.kind).toBe('update');
     expect(errors).not.toHaveBeenCalled();
   } finally {
-    for (const cleanup of cleanups) {
-      cleanup();
+    await ctx.fiber.dispose();
+    errors.mockRestore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('没挂 approval：当没有在等的，新版本登记不上就记一行，下一轮再试', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-update-watch-noapr-'));
+  const errors = spyOn(console, 'error').mockImplementation(() => {});
+  const ctx = new cordis.Context();
+
+  class FakeResources extends cordis.Service {
+    dir(): string { return root; }
+    constructor(c: cordis.Context) { super(c, 'resources'); }
+  }
+  class FakeBots extends cordis.Service {
+    list(): { name: string }[] { return [{ name: '测试机器人' }]; }
+    constructor(c: cordis.Context) { super(c, 'bots'); }
+  }
+  class FakeBase extends cordis.Service {
+    async getJson(): Promise<{ status: number; body: unknown }> {
+      return { status: 200, body: { managed: true, current: { version: '1' }, available: { version: '2' } } };
     }
+    constructor(c: cordis.Context) { super(c, 'base'); }
+  }
+
+  try {
+    await ctx.plugin(FakeResources);
+    await ctx.plugin(FakeBots);
+    await ctx.plugin(FakeBase);
+    const watch = new bridge.UpdateWatch(ctx, 60_000);
+
+    //M 直接问一轮：list、ask 都没人答，当场退回，不卡 3 秒、5 秒。
+    const began = Date.now();
+    await watch.check();
+    expect(Date.now() - began).toBeLessThan(1000);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(String(errors.mock.calls[0]?.[0])).toContain('没登记上待确认');
+  } finally {
+    await ctx.fiber.dispose();
     errors.mockRestore();
     fs.rmSync(root, { recursive: true, force: true });
   }

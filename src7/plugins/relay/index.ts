@@ -14,7 +14,7 @@
  * 设计：docs/src7插件设计/relay.md；给外部助手看的用法：docs/src7插件设计/进度/relay_用法.md。
  *
  * 11-17 并进来两样（外部助手的交办、收件、回信归一处，工具名、接口、表都没改）：
- *   - AgentTasks.ts（原 agent-tasks 插件）：外部 AI 任务通道，工具 agent_task、/api/agents* 七个接口；要 http 和 frontDesk，都在才挂；
+ *   - AgentTasks.ts（原 agent-tasks 插件）：外部 AI 任务通道，工具 agent_task、/api/agents* 七个接口；http 就绪后挂；
  *   - NoteClaude.ts（原 note-claude 插件）：工具 note_claude，给 Claude 留言。
  * 转话这一块要配置 helpers 才挂；只用任务通道、留言的可以不写 helpers。
  */
@@ -24,6 +24,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
@@ -39,11 +40,13 @@ export const name = 'relay';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //  1.1.0：11-17 并进 agent-tasks、note-claude。1.2.0：按 chat 回信只认一字不差的聊天号、不再找 web_messages；回信文件限范围；agent_task 派活防重复。
 //  1.3.0：回信先写进对话再标已送（relayReplyId 对账）；走模型的会话回信排进结果队列（acceptResult，键 relay:<回信号>）。
-export const version = '1.3.0';
+//  1.3.1：发飞书文件改发 feishu/send-file 请求（等回执，不伪造成功）；提醒改发 bot/say 通知。
+//  1.3.2：转话回信和外部任务结果经 bot/request 入队，收到成功回执后更新各自的记录。
+export const version = '1.3.2';
 
 /**
- * 用到的服务。http、feishu 是可选的：用到时 ctx.get 现取，没挂就只走文件回信、发不了飞书文件。
- * 任务通道另要 http、frontDesk，apply 里用 ctx.inject 等它们，没挂就不开任务通道，转话和留言照旧。
+ * 用到的服务。http 是可选的：用到时 ctx.get 现取。发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。
+ * 任务通道等 http 就绪；投递结果经 bot/request，须收到成功回执。
  */
 export const inject = ['resources', 'tools', 'sessions', 'bots'];
 
@@ -241,6 +244,8 @@ export class Relay {
    * 只在内存里，断电就没了，那时靠 markWritten 按 relayReplyId 对账。
    */
   private readonly answering = new Map<string, number>();
+  /** 正在向结果队列投递的会话，按每场会话的回信顺序排队。 */
+  private readonly delivering = new Set<string>();
 
   /**
    * 建表；给每个 relay 机器人建好 integrations/relay/<机器人>/；挂三个监听；http 在就登记两条接口；
@@ -252,15 +257,18 @@ export class Relay {
   constructor(private readonly ctx: cordis.Context, readonly config: RelayConfig) {
     const db = this.ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS relay_items (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
-      + ' session_id TEXT NOT NULL, channel TEXT NOT NULL, address TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL,'
-      + " last_msg_at INTEGER, state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0, replied_at INTEGER)");
+      + ' session_id TEXT NOT NULL, channel TEXT NOT NULL, address TEXT NOT NULL, text TEXT NOT NULL,'
+      + ' at INTEGER NOT NULL,'
+      + " last_msg_at INTEGER, state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0,"
+      + ' replied_at INTEGER)');
     db.exec('CREATE TABLE IF NOT EXISTS relay_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL,'
       + ' session_id TEXT NOT NULL, text TEXT NOT NULL, done INTEGER NOT NULL, at INTEGER NOT NULL,'
       + ' delivered INTEGER NOT NULL DEFAULT 0, via TEXT NOT NULL)');
 
     //M 缺的栏补上（ADDED_COLUMNS）。旧收件：helper 都算默认助手的；谁、在哪说的照它记的回话地址补。
     //  加栏和填值放进一个事务：中途断了就一起作废，下次启动还会再补，不会留下没填的收件。
-    const columns = new Set((db.query('PRAGMA table_info(relay_items)').all() as { name: string }[]).map((column) => column.name));
+    const tableInfo = db.query('PRAGMA table_info(relay_items)').all() as { name: string }[];
+    const columns = new Set(tableInfo.map((column) => column.name));
     const missing = ADDED_COLUMNS.filter((column) => !columns.has(column.name));
     if (missing.length > 0) {
       const addColumns = db.transaction(() => {
@@ -328,7 +336,7 @@ export class Relay {
     this.ctx.on('ready', () => {
       for (const row of this.query<{ session_id: string }>(
         'SELECT DISTINCT session_id FROM relay_replies WHERE delivered = 0', [])) {
-        this.deliverSoon(row.session_id);
+        void this.deliverSoon(row.session_id);
       }
 
       //M 启动时先读一遍文件回信，避免等待首个定时间隔。
@@ -388,7 +396,8 @@ export class Relay {
    */
   private stateForFlow(): Record<string, unknown> {
     //M 统计待回条数和最新转发号，用于流程页快照。
-    const pending = this.query<{ count: number }>("SELECT COUNT(*) AS count FROM relay_items WHERE state = 'pending'", []);
+    const countSql = "SELECT COUNT(*) AS count FROM relay_items WHERE state = 'pending'";
+    const pending = this.query<{ count: number }>(countSql, []);
     const last = this.query<{ last: number | null }>('SELECT MAX(id) AS last FROM relay_items', []);
     //M 键是英文，中文解释在 FLOW_NOTES。
     return {
@@ -600,7 +609,9 @@ export class Relay {
     //M reply_to（飞书消息号）：回话挂在那条下面——改收件记的地址里的 messageId，飞书插件按它用回复接口发。
     const replyTo = body['reply_to'];
     if (typeof replyTo === 'string' && replyTo !== '') {
-      this.run("UPDATE relay_items SET address = json_set(address, '$.messageId', ?) WHERE id = ? AND address LIKE '{%'", [replyTo, itemId]);
+      const updateSql = "UPDATE relay_items SET address = json_set(address, '$.messageId', ?)"
+        + " WHERE id = ? AND address LIKE '{%'";
+      this.run(updateSql, [replyTo, itemId]);
     }
 
     //M 记一条回信；done 就把收件改成 replied（放下了的也改，回了就算回完）。
@@ -622,12 +633,12 @@ export class Relay {
     this.ctx.emit('trace', 'Relay.accept', `收到 ${item.helper} 的回信`, 'INSERT INTO relay_replies', vars);
 
     //M 让原会话尽快处理刚入库的回信。
-    this.deliverSoon(item.session_id);
+    void this.deliverSoon(item.session_id);
 
     //M 回信带的文件（上面查过范围）：照收件记的地址发。
     const latest = this.getItem(itemId) ?? item;
     if (fileFull !== undefined) {
-      this.sendFile(latest, fileFull);
+      void this.sendFile(latest, fileFull);
     }
 
     //M 以接口使用的格式返回更新后的转发条目。
@@ -791,7 +802,7 @@ export class Relay {
     }
 
     //M 退出繁忙状态后再尝试送出排队期间收到的回信。
-    this.deliverSoon(session.id);
+    void this.deliverSoon(session.id);
   }
 
   /**
@@ -799,12 +810,11 @@ export class Relay {
    * direct（relay 会话、direct 机器人的前台）：先对账（markWritten），还有没送的就推那场会话，由 onRequest 程序回答
    *   （setTimeout 隔开：这时候会话可能正在收尾，马上调 run 会直接返回；在转的，转完 session/change 会再来）。
    *   direct 机器人的前台也走这条：进结果队列的话，前台会把结果当一句 user 话接进对话，onRequest 又会把它当新话转回给助手。
-   * model（走模型的前台、后台）：每条回信经 ctx.frontDesk.acceptResult 排进它的结果队列，键 relay:<回信号>；
-   *   标已送放在 acceptResult 的 commitSource 里，和排队同一个事务：排上了才算已送，排不上留着下次再送。
+   * model（走模型的前台、后台）：按回信号发 bot/request，结果键为 relay:<回信号>；回执成功才标已送。
    * @param sessionId 会话号。
    * 副作用：改 relay_replies.delivered；推会话或排进结果队列。
    */
-  private deliverSoon(sessionId: string): void {
+  private async deliverSoon(sessionId: string): Promise<void> {
     let session: Session;
     try {
       //M 恢复接收回信的原会话，后面按会话模式选择回传方式。
@@ -834,18 +844,29 @@ export class Relay {
     //G 机器人在这种聊天里已经不是 model 了 → 回信留在库里，不推（推了会去调真模型）。
     if (mode !== 'model') return;
 
-    //G 前台（bots 插件的 frontDesk）没挂：排不进结果队列，留着，下次启动再送。
-    const frontDesk = this.ctx.get('frontDesk');
-    if (frontDesk === undefined) {
-      console.error(`relay：会话 ${sessionId} 的回信排不进结果队列（bots 的 frontDesk 没挂），留着下次再送`);
-      return;
-    }
+    //G 正在投递时让当前循环继续，新入库的回信会按编号排在后面。
+    if (this.delivering.has(sessionId)) return;
 
-    //M 按收到顺序把未送的回信交给前台队列。
-    const replies = this.query<ReplyRow>(
-      'SELECT * FROM relay_replies WHERE session_id = ? AND delivered = 0 ORDER BY id', [sessionId]);
-    for (const reply of replies) {
-      this.queueReply(frontDesk, sessionId, reply);
+    //M 同一场会话只开一个投递循环，保证待送回信按编号发送。
+    this.delivering.add(sessionId);
+    try {
+      let lastId = 0;
+      const sql = 'SELECT * FROM relay_replies WHERE session_id = ? AND delivered = 0 AND id > ? ORDER BY id LIMIT 1';
+      while (true) {
+        const params = [sessionId, lastId];
+
+        //M 每次查下一条，包含前一条等待回执时新收到的回信。
+        const [reply] = this.query<ReplyRow>(sql, params);
+        if (reply === undefined) return;
+
+        //M 依次投递，每轮只尝试每条回信一次。
+        await this.queueReply(sessionId, reply);
+        lastId = reply.id;
+      }
+    } catch (error) {
+      console.error(`relay：会话 ${sessionId} 的回信投递出错：${textModule.getMessage(error)}`);
+    } finally {
+      this.delivering.delete(sessionId);
     }
   }
 
@@ -866,13 +887,12 @@ export class Relay {
   }
 
   /**
-   * 一条回信排进走模型的那场会话的结果队列（bots/Dispatch.ts 的 acceptResult），排上了同一个事务里标已送。
-   * @param frontDesk 前台服务。
+   * 一条回信经事件排进走模型的会话，收到成功回执后标已送。
    * @param sessionId 会话号（front 或 work）。
    * @param reply 没送的回信。
    * 副作用：排进结果队列（前台下一拍整理后回原渠道，后台看一轮接着做）；改 relay_replies.delivered。出错只打日志，留着下次送。
    */
-  private queueReply(frontDesk: dispatchModule.Dispatch, sessionId: string, reply: ReplyRow): void {
+  private async queueReply(sessionId: string, reply: ReplyRow): Promise<void> {
     //M 找到回信对应的转发条目，用其中的助手名标注回传来源。
     const item = this.getItem(reply.item_id);
     const helper = item?.helper ?? this.config.helpers[0].name;
@@ -889,28 +909,31 @@ export class Relay {
       input.origin = this.getOrigin(item);
     }
 
-    /** 标已送：acceptResult 在它的事务里调，排上了才标。 */
-    const markDelivered = (): void => {
-      //M 前台队列接受回信时同步更新源记录，避免下次再排同一条。
-      this.run('UPDATE relay_replies SET delivered = 1 WHERE id = ?', [reply.id]);
-    };
     try {
-      //M 把回信交给前台队列，回执用于处理已排过队的情况。
-      const receipt = frontDesk.acceptResult(input, markDelivered);
+      //M 等机器人确认入队，重复回执也表示同一条已在队列里。
+      const delivered = await agentTasksModule.requestResultDelivery(this.ctx, input);
 
-      //M 队列里早有这一条（上次排上了、没来得及标）：acceptResult 没调 commitSource，这里补标。
-      if (receipt.status === 'duplicate') {
-        markDelivered();
+      //G 投递失败保留待送状态，让下次重试看到这条回信。
+      if (!delivered.ok || delivered.receipt === undefined) {
+        const reason = delivered.error ?? '未返回投递凭据';
+        console.error(`relay：回信 #${String(reply.id)} 排不进会话 ${sessionId} 的结果队列：${reason}`);
+        return;
       }
+
+      const sql = 'UPDATE relay_replies SET delivered = 1 WHERE id = ?';
+      const params = [reply.id];
+
+      //M 确认入队后更新源记录。
+      this.run(sql, params);
     } catch (error) {
-      //M 排不上（会话没了、不是前台也不是后台、同键内容不一样）：不标已送，留着下次启动再送。
-      console.error(`relay：回信 #${String(reply.id)} 排不进会话 ${sessionId} 的结果队列：${textModule.getMessage(error)}`);
+      //M 本地标记失败时保留回信，重试用相同结果键补记。
+      console.error(`relay：回信 #${String(reply.id)} 投递或标记失败：${textModule.getMessage(error)}`);
       return;
     }
 
     //T 跟踪：回信排进结果队列。
     const vars = { 回信号: reply.id, 收件号: reply.item_id, 会话: sessionId, 键: key };
-    this.ctx.emit('trace', 'Relay.queueReply', '回信排进会话的结果队列', 'ctx.frontDesk.acceptResult', vars);
+    this.ctx.emit('trace', 'Relay.queueReply', '回信排进会话的结果队列', 'bot/request accept-result', vars);
   }
 
   /**
@@ -963,7 +986,8 @@ export class Relay {
     ];
     //M 把转发与原会话绑定存库，并取得后续对账使用的编号。
     const result = this.run(
-      'INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at, last_msg_at)'
+      'INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name,'
+        + ' text, at, last_msg_at)'
         + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       values);
 
@@ -1072,13 +1096,13 @@ export class Relay {
         this.run('UPDATE relay_items SET reminded = 1 WHERE id = ?', [item.id]);
       }
 
-      //M 按转发时保存的地址把提醒发回给用户。
+      //M 按转发时保存的地址把提醒发回给用户；说话是通知，发出即走（bot/say）。
       this.ctx.bots.route(session, this.getOrigin(item));
-      this.ctx.bots.say(session, text);
+      this.ctx.emit('bot/say', session, text);
 
       //T 跟踪：提醒或放下。
       const vars = { 收件号: item.id, 会话: item.session_id, 分钟: shown };
-      this.ctx.emit('trace', 'Relay.checkLate', traceSummary, 'bots.say(session, text)', vars);
+      this.ctx.emit('trace', 'Relay.checkLate', traceSummary, "ctx.emit('bot/say', session, text)", vars);
     }
   }
 
@@ -1105,7 +1129,10 @@ export class Relay {
       id: item.id, bot: item.bot, channel: item.channel,
       chat: chatId, chat_type: item.chat, chat_name: item.chatName,
       sender_open_id: textModule.getText(address, 'openId'), sender: item.sender,
-      message_id: textModule.getText(address, 'messageId'), owner: item.owner, role: item.role, workspace: item.workspace,
+      message_id: textModule.getText(address, 'messageId'),
+      owner: item.owner,
+      role: item.role,
+      workspace: item.workspace,
       text: bodyText, files: item.files,
       reply_to: quoted?.[1] ?? null, time: item.at,
     };
@@ -1139,7 +1166,8 @@ export class Relay {
    */
   private findForChat(chat: string, bot: string | undefined, helper: string): ItemRow {
     //M 聊天号全等：飞书地址写 chatId，微信写 chat（同 push）；这个助手的排前面，再按新旧。
-    const sql = "SELECT * FROM relay_items WHERE (json_extract(address, '$.chatId') = ? OR json_extract(address, '$.chat') = ?)"
+    const sql = "SELECT * FROM relay_items WHERE (json_extract(address, '$.chatId') = ?"
+      + " OR json_extract(address, '$.chat') = ?)"
       + ' AND (? IS NULL OR bot = ?) ORDER BY (helper = ?) DESC, id DESC LIMIT 1';
     const values = [chat, chat, bot ?? null, bot ?? null, helper];
     const found = this.query<ItemRow>(sql, values)[0];
@@ -1225,28 +1253,54 @@ export class Relay {
    * @param item 收件。
    * @param full 文件的绝对路径（getReplyFile 查过范围）。
    */
-  private sendFile(item: ItemRow, full: string): void {
+  private async sendFile(item: ItemRow, full: string): Promise<void> {
     const where = JSON.parse(item.address) as { appId?: string; chatId?: string; messageId?: string } | null;
-    //M 获取当前飞书服务，结合原条目的渠道与地址确定是否能发送。
-    const feishu = this.ctx.get('feishu');
-    const startSend = (): Promise<string> => {
-      if (item.channel === 'feishu' && where?.chatId !== undefined && feishu !== undefined) {
-        //M 用原消息的应用与会话信息把附件发回原处。
-        return feishu.sendFile(item.bot, where.chatId, full, { appId: where.appId, messageId: where.messageId });
-      }
-      if (feishu === undefined && item.channel === 'feishu') {
-        return Promise.reject(new Error('飞书插件没挂，发不了文件'));
-      }
-      return Promise.reject(new Error(`渠道 ${item.channel || '（没有）'} 还不支持发文件`));
-    };
+    const channelName = item.channel || '（没有）';
+    let result = `没发出去：渠道 ${channelName} 还不支持发文件`;
 
-    //M 启动投递并记录最终回执或失败原因。
-    const sending = startSend();
-    void sending.then((messageId) => `已发 ${messageId}`, (error: unknown) => `没发出去：${textModule.getMessage(error)}`).then((result) => {
-      //T 跟踪：回信带的文件。
-      const vars = { 收件号: item.id, 文件: full, 结果: result };
-      this.ctx.emit('trace', 'Relay.sendFile', `${item.helper} 回信带的文件`, 'ctx.get("feishu").sendFile(bot, chatId, file)', vars);
-    });
+    if (item.channel === 'feishu' && where?.chatId !== undefined) {
+      const request = {
+        bot: item.bot,
+        chatId: where.chatId,
+        filePath: full,
+        appId: where.appId,
+        messageId: where.messageId,
+      };
+      const reasons: Record<requestEventModule.FallbackReason, string> = {
+        unhandled: '飞书插件没挂，没人接发文件的请求',
+        timeout: '等了 30 秒飞书没回',
+        aborted: '请求被中止',
+        error: '飞书处理时出错',
+      };
+      const onFallback = (reason: requestEventModule.FallbackReason, detail?: string) => {
+        const error = `${reasons[reason]} ${detail ?? ''}`.trim();
+        return { requestId: '', ok: false, error };
+      };
+      const options = {
+        prefix: 'sf',
+        timeoutMs: 30_000,
+        onFallback,
+      };
+
+      //M 发请求让飞书插件上传并发送，回执 ok: false、没人答、超时都照实记“没发出去”，不伪造成功。
+      const received = await requestEventModule.requestEvent(
+        this.ctx,
+        'feishu/send-file',
+        'feishu/send-file-result',
+        request,
+        options,
+      );
+      result = `没发出去：${received.error ?? '原因不明'}`;
+      if (received.ok) {
+        result = `已发 ${received.messageId ?? ''}`;
+      }
+    }
+
+    //T 跟踪：回信带的文件。
+    const vars = { 收件号: item.id, 文件: full, 结果: result };
+    const people = `${item.helper} 回信带的文件`;
+    const code = "requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', request, options)";
+    this.ctx.emit('trace', 'Relay.sendFile', people, code, vars);
   }
 
   /** 登记工具 relay_send：开了 model 的那种聊天里，模型用它把话转给默认助手（helpers 的第一个）。 */
@@ -1316,7 +1370,8 @@ export class Relay {
     if (written.size === 0) return;
 
     //M 没标已送的里面，写进去了的补标。
-    const pending = this.query<{ id: number }>('SELECT id FROM relay_replies WHERE session_id = ? AND delivered = 0', [session.id]);
+    const pendingSql = 'SELECT id FROM relay_replies WHERE session_id = ? AND delivered = 0';
+    const pending = this.query<{ id: number }>(pendingSql, [session.id]);
     for (const reply of pending) {
       if (!written.has(reply.id)) continue;
 
@@ -1447,7 +1502,7 @@ export class Relay {
  * 插件被拔掉时这些登记自动撤掉。详见 plugins/Index.ts 的 PluginModule。
  * 先后：写在 http、fake-model 后面，model-fallback 前面（session/request、bot/receive 照挂的先后挨个问）。
  *   前台在 bots 里：bot/receive 问完了没人认领才轮到前台，所以 relay 的认领总在前台前面。
- * 挂三样：转话（写了 helpers 才挂）、note_claude、任务通道（http、frontDesk 都在才挂）。
+ * 挂三样：转话（写了 helpers 才挂）、note_claude、任务通道（http 就绪后挂）。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param config config.yaml 的 plugins 段里写给它的：helpers（要转话才写，每项 name、prefixes，可写 webhook_url、
  *   webhook_header，第一个是默认助手）、bots、remind_minutes、expire_minutes、poll_seconds；tasks（任务通道，{ scan_ms }）。
@@ -1467,7 +1522,7 @@ export function apply(ctx: cordis.Context, config: RelayWritten | undefined): vo
   //M 给 Claude 留言：工具 note_claude，只要 resources、tools。
   noteClaudeModule.applyNoteClaude(ctx);
 
-  //M 外部 AI 任务通道：http、frontDesk 都在才挂（ctx.inject 等它们；拔掉时一起撤）。
+  //M 外部 AI 任务通道等 http 就绪，交回的投递依赖机器人事件应答。
   void ctx.inject(agentTasksModule.TASKS_INJECT, (sub) => {
     agentTasksModule.applyAgentTasks(sub, scanMs);
   });
@@ -1508,7 +1563,9 @@ function applyRelay(ctx: cordis.Context, written: RelayWritten): void {
 
   const list = (value: unknown, fallback: string[], key: string): string[] => {
     if (value === undefined) return fallback;
-    if (!Array.isArray(value) || !value.every((one) => typeof one === 'string')) throw new Error(`relay 的 ${key} 要写成字符串列表`);
+    if (!Array.isArray(value) || !value.every((one) => typeof one === 'string')) {
+      throw new Error(`relay 的 ${key} 要写成字符串列表`);
+    }
     return value as string[];
   };
   const str = (value: unknown, key: string): string => {

@@ -2,7 +2,8 @@
  * 校验：外面进来的东西只在这里查，一处一次。查过以后，骨架里面直接用，不再查、不再补默认值。
  * 骨架有两样外面进来的东西：命令行参数、config.yaml 里骨架自己用到的那几项。
  * 插件的 HTTP 接口收到的正文、网址参数也放这里查（checkRating：POST /api/model-notes/rate 的会话打分；checkCount：网址里的非负整数；
- * checkAgentHello、checkTaskResult：外部 AI 打招呼报的能力、交回的结果，见 plugins/relay/AgentTasks.ts）。
+ * checkAgentHello、checkTaskResult：外部 AI 打招呼报的能力、交回的结果，见 plugins/relay/AgentTasks.ts；
+ * checkDirs、checkGrants：approval 的可信目录配置、POST /api/message 的授权目录）。
  * 另外两样不在这里：插件要的配置（它自己那一段、顶层的 bots 这些）由插件自己查；
  * 模型给工具的参数在 Tools.execute 里照工具的定义查。
  */
@@ -11,6 +12,7 @@ import * as process from 'node:process';
 import type { JmbotsConfig, PluginEntry, ProviderConfig } from '../Resources.ts';
 import * as embedded from './Embedded.ts';
 import * as textModule from './Text.ts';
+import * as workspaceModule from './Workspace.ts';
 
 
 /** 命令行参数，校验后。 */
@@ -40,7 +42,7 @@ const DEFAULT_PLUGINS = ['workspaces', 'bots', 'cli', 'file-tools', 'context-fit
 export const MODEL_DEFAULTS = { contextWindow: 128000, maxTokens: 8192, reasoning: false, input: ['text' as const] };
 
 
-/** 一条会话打分请求，校验后。checkRating 交回，model-notes 插件的 ModelNotes.rate 收。 */
+/** 一条会话打分请求，校验后。checkRating 交回，model-catalog 插件 Notes.ts 的 ModelNotes.rate 收。 */
 export interface RatingInput {
   /** 被打分的会话号（如 20 位数字时刻号或旧的短会话号）。 */
   session: string;
@@ -337,7 +339,7 @@ export function checkModelId(model: string): string {
 
 
 /**
- * 校验一条会话打分（POST /api/model-notes/rate 的正文）。model-notes 插件的接口调，查过以后 ModelNotes.rate 直接用。
+ * 校验一条会话打分（POST /api/model-notes/rate 的正文）。model-catalog 插件（Notes.ts）的接口调，查过以后 ModelNotes.rate 直接用。
  * 一条评价写成 MD 里的一行，字段之间用“ · ”隔开，所以哪一项都不能换行，评价者里不能有“·”。
  * @param body 请求正文，原样。
  * @returns 去掉两头空白的 session、by、score、note；note 没写是空串。
@@ -666,6 +668,70 @@ export function checkCount(value: string | undefined, key: string): number | und
   }
 
   return Number(value);
+}
+
+
+/**
+ * 查一组可信目录：approval 的 trusted_dirs 配置、POST /api/message 的 grants.dirs 调（用户 11-18 #169）。
+ * 这里规范化一次（Workspace.ts 的 getPathKey：解开 ..、去掉末尾分隔符、Windows 上转小写），以后 approval 直接拿来比。
+ * @param raw 外面给的：绝对路径的数组；不给是没有。
+ * @param key 报错用的名字，如 approval.trusted_dirs。
+ * @returns 规范化后的绝对路径；不给是空数组。
+ * @throws 带 statusCode 400 的错：不是数组、有一项不是非空字符串、不是绝对路径。插件配置写错时插件挂不上，HTTP 正文写错时回 400。
+ */
+export function checkDirs(raw: unknown, key: string): string[] {
+  //M 没给：没有可信目录。
+  if (raw === undefined) return [];
+
+  //G 不是数组 → 抛带 400 的错。
+  if (!Array.isArray(raw)) {
+    const failure = new Error(`${key} 要是绝对路径的数组`);
+    throw Object.assign(failure, { statusCode: 400 });
+  }
+
+  const dirs: string[] = [];
+  for (const item of raw) {
+    //G 每一项都要是绝对路径：相对路径不知道相对谁，不认。
+    if (typeof item !== 'string' || item.trim() === '' || !path.isAbsolute(item.trim())) {
+      const failure = new Error(`${key} 的每一项都要是绝对路径：${String(item)}`);
+      throw Object.assign(failure, { statusCode: 400 });
+    }
+
+    //M 规范化后收下。
+    const dir = workspaceModule.getPathKey(item.trim());
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+
+/** POST /api/message 的授权范围，校验后（用户 11-18 #169）。 */
+export interface Grants {
+  /** 这场会话里 exec 不用再问的目录：checkDirs 规范化过的绝对路径。 */
+  dirs: string[];
+}
+
+
+/**
+ * 查 POST /api/message 的 grants：本人、中控交代任务时写明哪些目录可信，这场会话里 exec 在这些目录里的命令直接放行（approval 读）。
+ * @param raw 请求体里的 grants；不给是没有。
+ * @returns 校验、规范化后的授权范围；不给是 undefined。
+ * @throws 带 statusCode 400 的错：不是对象，或 dirs 不对（见 checkDirs）。
+ */
+export function checkGrants(raw: unknown): Grants | undefined {
+  //M 没给：这场会话不带授权。
+  if (raw === undefined) return undefined;
+
+  //G 不是对象 → 抛带 400 的错。
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    const failure = new Error('grants 要写成 { dirs: [绝对路径…] }');
+    throw Object.assign(failure, { statusCode: 400 });
+  }
+
+  //M 目录照 checkDirs 查一次、规范化一次。
+  const written = raw as Record<string, unknown>;
+  const dirs = checkDirs(written['dirs'], 'grants.dirs');
+  return { dirs };
 }
 
 

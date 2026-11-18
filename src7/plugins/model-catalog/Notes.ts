@@ -1,42 +1,25 @@
 /**
- * 模型介绍和评价：派活的 AI 要知道“什么模型干什么事曾经干得好、被认可”。
+ * 模型介绍和评价（11-18 由插件 model-notes 并进 model-catalog）：派活的 AI 要知道“什么模型干什么事曾经干得好、被认可”。
  * 数据是运行时目录 models/ 下的 MD，一个模型一份，文件名是模型 ID 把 / 换成 __（magpie__workbuddy__deepseek-v4.1-flash.md）：
  *   # <模型 ID>
  *   （人写的介绍：擅长什么、价钱、速度、建议思考档。原样读，不解析）
  *   ## 评价
  *   - 2026-11-17 13:50 EST · 用户 · 4/5 · 会话 20261117123456789012（high） · 一句话
- * 服务 ctx.modelNotes：getList 列每个模型的介绍和评价，getPrompt 拼一段给派活提示词用的中文，rate 按会话查出模型后写入或修改评价。
- * 接口：
+ * ModelNotes：getList 列每个模型的介绍和评价，getPrompt 拼一段给派活提示词用的中文，rate 按会话查出模型后写入或修改评价，routes 登记两个接口。
+ * 接口（路径照旧，网页不用改）：
  *   GET  /api/model-notes        列表 { list }
  *   POST /api/model-notes/rate   会话打分 { session, by, score, note }，正文由 utils/Checks.ts 的 checkRating 查一次
- * 页面 /model-notes/ 是 web 打包的 model-notes.html（web/src/ModelNotes/），web 插件按插件名自动挂，这里不登记。
- * 配置（都可不写）：dir（默认 models，相对运行时目录）、time_zone（评价时间按哪个时区写，默认 America/New_York，写出来是 EST/EDT）。
+ * 页面 /model-notes/ 是 web 打包的 model-notes.html（web/src/ModelNotes/），web 插件的兜底路由按文件名托管，这里不登记。
+ * 配置（plugins[model-catalog].config.notes，都可不写）：dir（默认 models，相对运行时目录）、time_zone（评价时间按哪个时区写，默认 America/New_York，写出来是 EST/EDT）。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as cordis from 'cordis';
+import type * as cordis from 'cordis';
+import type * as fastify from 'fastify';
 import type { } from '../../Sessions.ts';
 import * as checks from '../../utils/Checks.ts';
 import { Failure } from '../../utils/Failure.ts';
 import * as textModule from '../../utils/Text.ts';
-
-
-/** 插件名。 */
-export const name = 'model-notes';
-
-/** 插件版本号：改了行为就加。说明在同目录的 说明.md。 */
-export const version = '1.1.0';
-
-/** 用到的服务：resources 找运行时目录；http 登记接口；sessions 按会话号查模型和思考档。 */
-export const inject = ['resources', 'http', 'sessions'];
-
-
-declare module 'cordis' {
-  interface Context {
-    /** 模型介绍和评价，实现在 src7/plugins/model-notes/index.ts。 */
-    modelNotes: ModelNotes;
-  }
-}
 
 
 /** 一条评价：从 MD 的“## 评价”下面一行解析出来。 */
@@ -73,8 +56,8 @@ export interface ModelNote {
 }
 
 
-/** 插件配置，校验后。 */
-interface Settings {
+/** 模型介绍和评价的配置，校验后。 */
+export interface NotesSettings {
   /** 放 MD 的目录，绝对路径。 */
   dir: string;
   /** 评价时间按哪个时区写（IANA 名）。 */
@@ -103,34 +86,34 @@ const RECENT = 3;
 
 
 /**
- * 读插件配置，入口查一次。
+ * 读模型介绍和评价的配置，入口（model-catalog 的 apply）查一次。
  * @param root 运行时目录（ctx.resources.root）。
- * @param config config.yaml 的 plugins 段写给本插件的 config；没写是 {}。
+ * @param config plugins[model-catalog].config.notes；没写是 {}。
  * @returns 绝对路径的目录和时区。
  * @throws 哪一项写得不对就抛错。
  */
-function getSettings(root: string, config: unknown): Settings {
-  //G config 要是一组“名字: 值”。
+export function readNotesSettings(root: string, config: unknown): NotesSettings {
+  //G config.notes 要是一组“名字: 值”。
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-    throw new Error('model-notes 的 config 要写成一组“名字: 值”');
+    throw new Error('model-catalog 的 notes 要写成一组“名字: 值”（dir、time_zone）');
   }
   const own = config as Record<string, unknown>;
 
   //M dir：放 MD 的目录，相对运行时目录算，默认 models。
   const dir = own['dir'] ?? 'models';
   if (typeof dir !== 'string' || dir === '') {
-    throw new Error('model-notes 的 dir 要写成非空的文字');
+    throw new Error('model-catalog 的 notes.dir 要写成非空的文字');
   }
 
   //M time_zone：评价时间按哪个时区写，默认美东（用户在 EST）；Intl 认不得的时区会抛 RangeError。
   const timeZone = own['time_zone'] ?? 'America/New_York';
   if (typeof timeZone !== 'string') {
-    throw new Error('model-notes 的 time_zone 要写成时区名，比如 America/New_York');
+    throw new Error('model-catalog 的 notes.time_zone 要写成时区名，比如 America/New_York');
   }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone });
   } catch {
-    throw new Error(`model-notes 的 time_zone 认不得：${timeZone}，要写成 IANA 时区名，比如 America/New_York`);
+    throw new Error(`model-catalog 的 notes.time_zone 认不得：${timeZone}，要写成 IANA 时区名，比如 America/New_York`);
   }
 
   return { dir: path.resolve(root, dir), timeZone };
@@ -356,23 +339,24 @@ function upsertRatingLine(text: string, session: string, by: string, line: strin
 }
 
 
-/** 模型介绍和评价服务：ctx.modelNotes。 */
-export class ModelNotes extends cordis.Service {
+/** 模型介绍和评价：model-catalog 的 apply 建一个，交给 ModelCatalog（拼 prompt）和 http（两个接口）。 */
+export class ModelNotes {
   /** 写评价时间用的格式器：按配置的时区，带时区缩写（EST/EDT）。 */
   private readonly clock: Intl.DateTimeFormat;
 
   /**
-   * 登记服务 modelNotes，没有目录就建。
-   * @param ctx Cordis 给的 ctx。
-   * @param dir 放 MD 的目录，绝对路径（getSettings 算好的）。
-   * @param timeZone 评价时间按哪个时区写（getSettings 查过的）。
-   * 副作用：若评价目录不存在则递归创建。
+   * 建好放 MD 的目录和时间格式器。
+   * @param ctx model-catalog 插件的 ctx：rate 用它的 sessions 查会话、发跟踪点。
+   * @param settings readNotesSettings 查过的目录和时区。
+   * 副作用：评价目录不存在就递归创建。
    */
-  constructor(ctx: cordis.Context, private readonly dir: string, timeZone: string) {
-    super(ctx, 'modelNotes');
-    fs.mkdirSync(dir, { recursive: true });
+  constructor(
+    private readonly ctx: cordis.Context,
+    readonly settings: NotesSettings,
+  ) {
+    fs.mkdirSync(settings.dir, { recursive: true });
     this.clock = new Intl.DateTimeFormat('en-US', {
-      timeZone,
+      timeZone: settings.timeZone,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -388,7 +372,7 @@ export class ModelNotes extends cordis.Service {
    * @returns 目录里每个 .md 一项。
    */
   getList(): ModelNote[] {
-    const files = fs.readdirSync(this.dir, { withFileTypes: true });
+    const files = fs.readdirSync(this.settings.dir, { withFileTypes: true });
     //M 只要 .md 文件，按文件名排。
     const mdFiles = files.filter((file) => file.isFile() && file.name.endsWith('.md'));
     const names = mdFiles.map((file) => file.name).sort();
@@ -396,7 +380,7 @@ export class ModelNotes extends cordis.Service {
     for (const fileName of names) {
       //M 文件名去掉 .md，__ 换回 /，就是模型 ID。
       const model = fileName.slice(0, -'.md'.length).replaceAll('__', '/');
-      const text = fs.readFileSync(path.join(this.dir, fileName), 'utf8');
+      const text = fs.readFileSync(path.join(this.settings.dir, fileName), 'utf8');
       list.push(getNote(model, text));
     }
     return list;
@@ -404,11 +388,11 @@ export class ModelNotes extends cordis.Service {
 
   /**
    * 拼一段给派活提示词用的中文：每个模型写介绍的第一段、平均分和会话数、最近 3 条评价。
+   * @param list getList 读出来的（ModelCatalog.getPrompt 读一次，拼思考档时接着用）。
    * @returns 一段文字；一个模型都没有是空串。
    */
-  getPrompt(): string {
-    //M 读取全部模型的介绍与评价列表，空列表时直接返回空串不污染派活提示词。
-    const list = this.getList();
+  getPrompt(list: ModelNote[]): string {
+    //G 一个模型都没有：交回空串，不污染派活提示词。
     if (list.length === 0) return '';
 
     const lines = ['# 模型介绍和评价', '派活时参考：每个模型擅长什么、以前干得怎么样（1 到 5 分，每条评价写了谁打的和哪场会话）。'];
@@ -455,7 +439,7 @@ export class ModelNotes extends cordis.Service {
     //M 校验会话记录里的模型 ID 合法性，再把斜杠替换为双下划线作为安全文件名。
     const model = checks.checkModelId(sessionRow.model);
     const thinking = String(sessionRow.thinking ?? '').trim();
-    const file = path.join(this.dir, `${model.replaceAll('/', '__')}.md`);
+    const file = path.join(this.settings.dir, `${model.replaceAll('/', '__')}.md`);
 
     //M 如果这场会话中途换过模型，把其它模型文件里同人同会话的旧行清掉。
     this.removeSessionByFromOtherFiles(file, input.session, input.by);
@@ -489,17 +473,53 @@ export class ModelNotes extends cordis.Service {
   }
 
   /**
+   * 登记两个接口（http 就绪时 model-catalog 的 apply 调）。外面来的要带令牌由 http 的钩子管。
+   * @param app Fastify 服务实例。
+   * 副作用：登记 GET /api/model-notes、POST /api/model-notes/rate。
+   */
+  routes(app: fastify.FastifyInstance): void {
+    //M GET /api/model-notes：每个模型的介绍、评价、会话数、平均分。
+    app.get('/api/model-notes', () => {
+      const list = this.getList();
+      return { list };
+    });
+
+    //M POST /api/model-notes/rate：正文查一次，不对回 400；按会话号查模型写入评价，查不到会话回 404，对了交回这个模型的最新内容。
+    app.post<{ Body: unknown }>('/api/model-notes/rate', (request, reply) => {
+      let input: checks.RatingInput;
+      try {
+        input = checks.checkRating(request.body);
+      } catch (error) {
+        const message = textModule.getMessage(error);
+        return reply.code(400).send({ error: message });
+      }
+
+      try {
+        //M 写入或覆盖该会话对应模型的评价记录，并将最新模型详情回给前端。
+        const note = this.rate(input);
+        return { ok: true, note };
+      } catch (error) {
+        //G 可预期的业务错误（如会话不存在或模型非法）按对应 HTTP 状态码返回，其余继续抛出。
+        if (error instanceof Failure) {
+          return reply.code(error.status).send({ error: error.message });
+        }
+        throw error;
+      }
+    });
+  }
+
+  /**
    * 清理其它模型 MD 文件里同一个人对同一场会话的旧评价（防会话换模型后重复计分）。
    * @param keepFile 当前要写入的模型文件绝对路径。
    * @param session 会话号。
    * @param by 评价者。
    */
   private removeSessionByFromOtherFiles(keepFile: string, session: string, by: string): void {
-    const entries = fs.readdirSync(this.dir, { withFileTypes: true });
+    const entries = fs.readdirSync(this.settings.dir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
 
-      const candidate = path.join(this.dir, entry.name);
+      const candidate = path.join(this.settings.dir, entry.name);
       if (candidate === keepFile) continue;
 
       //M 读出其它模型的 MD 文件，剔除同人同会话旧评价并仅在内容变化时写回。
@@ -548,53 +568,4 @@ function getRatingText(rating: Rating): string {
     return `${rating.at} · ${rating.by} · ${String(rating.score)}/5 · ${sessionPart}`;
   }
   return `${rating.at} · ${rating.by} · ${String(rating.score)}/5 · ${sessionPart} · ${rating.note}`;
-}
-
-
-/**
- * 挂上模型介绍和评价：查配置、登记服务、登记两个接口。
- * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。
- * @param ctx Cordis 给这个插件的 ctx。
- * @param config config.yaml 的 plugins 段写给本插件的 config。
- * 副作用：可能建 models/ 目录；在 ctx.http.app 上登记两条路由。
- */
-export function apply(ctx: cordis.Context, config: unknown): void {
-  //M 入口查一次配置，登记服务。
-  const settings = getSettings(ctx.resources.root, config);
-  const notes = new ModelNotes(ctx, settings.dir, settings.timeZone);
-  const app = ctx.http.app;
-
-  //M GET /api/model-notes：每个模型的介绍、评价、会话数、平均分。
-  app.get('/api/model-notes', () => {
-    const list = notes.getList();
-    return { list };
-  });
-
-  //M POST /api/model-notes/rate：正文查一次，不对回 400；按会话号查模型写入评价，查不到会话回 404，对了交回这个模型的最新内容。
-  app.post<{ Body: unknown }>('/api/model-notes/rate', (request, reply) => {
-    let input: checks.RatingInput;
-    try {
-      input = checks.checkRating(request.body);
-    } catch (error) {
-      const message = textModule.getMessage(error);
-      return reply.code(400).send({ error: message });
-    }
-
-    try {
-      //M 写入或覆盖该会话对应模型的评价记录，并将最新模型详情回给前端。
-      const note = notes.rate(input);
-      return { ok: true, note };
-    } catch (error) {
-      //G 可预期的业务错误（如会话不存在或模型非法）按对应 HTTP 状态码返回，其余继续抛出。
-      if (error instanceof Failure) {
-        return reply.code(error.status).send({ error: error.message });
-      }
-      throw error;
-    }
-  });
-
-  //T 跟踪：模型评价挂好了。
-  const vars = { 目录: settings.dir, 时区: settings.timeZone };
-  const code = "app.get('/api/model-notes'); app.post('/api/model-notes/rate')";
-  ctx.emit('trace', 'model-notes.apply', '模型介绍和评价挂好了', code, vars);
 }

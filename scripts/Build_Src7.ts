@@ -171,7 +171,8 @@ async function main(): Promise<void> {
   const built = path.join(workDir, `jmbots-server${EXE}`);
   const entryFile = writeEntry(workDir, webDir);
   // 2026-11-14 19:30（Claude 4.5）：--sourcemap 把源码映射编进 exe，trace 打的“文件:行”才对得上 plugins/xxx/index.ts。
-  step('编译', ['build', '--compile', '--sourcemap', entryFile, '--outfile', built]);
+  //M 语音原生包从运行时目录加载，保留 .node 和配套 DLL 的磁盘布局。
+  step('编译', ['build', '--compile', '--sourcemap', '--external', 'sherpa-onnx-node', entryFile, '--outfile', built]);
   const check = Bun.spawnSync([built, 'version'], { stdout: 'pipe', stderr: 'pipe' });
   if (check.exitCode !== 0) {
     console.error(`编译出来的程序跑不起来：${check.stderr.toString().slice(-2000)}`);

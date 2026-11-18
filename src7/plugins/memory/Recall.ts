@@ -99,6 +99,7 @@ function weight(gram: string): number {
  * @param text 一段字。
  */
 export function matchScore(wanted: Set<string>, text: string): number {
+  //M 把这段字拆成字组，对上问的话里的字组就按 weight 加分（整词 2 分、两个字 1 分）。
   return [...grams(text)].filter((gram) => wanted.has(gram)).reduce((sum, gram) => sum + weight(gram), 0);
 }
 
@@ -123,10 +124,14 @@ async function markdownFiles(root: string): Promise<string[]> {
  * @returns 最像的几个，分数从高到低。
  */
 export async function local(roots: string[], query: string, options: { maxFiles?: number; loose?: boolean } = {}): Promise<RecallHit[]> {
+  //G 问的话切不出字组（比如只有两个字母）就没法搜，直接交回空。
   const wanted = grams(query);
   if (wanted.size === 0) return [];
 
+  //M 够格的最低分：loose 时短话字组全对上也算（最多只要到 MIN_HITS），否则固定 MIN_HITS 分。
   const need = options.loose === true ? Math.min(MIN_HITS, [...wanted].reduce((sum, gram) => sum + weight(gram), 0)) : MIN_HITS;
+
+  //M 逐个文件夹、逐个 Markdown 文件打分，分数不到 need 的丢掉。
   const hits: RecallHit[] = [];
   for (const root of roots) {
     for (const file of await markdownFiles(root)) {
@@ -185,6 +190,9 @@ export async function getJson(base: Base, route: string): Promise<Record<string,
 
 /**
  * 给基地发一个 POST JSON。
+ * @param base 用于获取基地服务的上下文和库名。
+ * @param route 路径，如 /rag/index。
+ * @param body 请求体，原样转成 JSON。
  * @returns 状态码；连不上是 undefined。
  */
 export async function postJson(base: Base, route: string, body: unknown): Promise<number | undefined> {
@@ -211,6 +219,7 @@ function str(value: unknown): string | undefined {
  * @param snippet 片段。
  */
 function toFound(row: Record<string, unknown>, summary: string, snippet: string): Found[] {
+  //M 路径、库名、绝对路径都用 str 取（不是字符串当没有）；没有路径的行没法引用，丢掉。
   const relative = str(row['path']);
   if (relative === undefined) return [];
   const lib = str(row['lib']);
@@ -222,8 +231,11 @@ function toFound(row: Record<string, unknown>, summary: string, snippet: string)
  * @returns 连不上是 []。
  */
 async function oldSearch(base: Base, query: string, limit: number, lib: string): Promise<Found[]> {
+  //M 问基地的老搜索；连不上、不是 200 时 body 是 undefined，下面就交回 []。
   const body = await getJson(base, `/search?q=${encodeURIComponent(query)}&limit=${String(limit)}&lib=${encodeURIComponent(lib)}`);
   const rows = Array.isArray(body?.['results']) ? body['results'] : Array.isArray(body?.['hits']) ? body['hits'] : [];
+
+  //M 每条命中取摘要和片段（没有 snippet 退 text，再退各段 snippets 拼起来），转成 Found。
   return (rows as Record<string, unknown>[]).flatMap((row) => {
     const parts = Array.isArray(row['snippets']) ? (row['snippets'] as Record<string, unknown>[]).map((part) => str(part['text']) ?? '').filter((part) => part !== '') : [];
     return toFound(row, str(row['summary']) ?? '', str(row['snippet']) ?? str(row['text']) ?? parts.join('\n'));
@@ -235,10 +247,13 @@ async function oldSearch(base: Base, query: string, limit: number, lib: string):
  * @returns 片段和还没建索引的库；基地没有 RAG、连不上是 undefined。
  */
 async function ragSearch(base: Base, query: string, limit: number, lib: string): Promise<{ found: Found[]; notIndexed: string[] } | undefined> {
+  //M 问基地的 RAG 搜索；连不上、不是 200 时 body 是 undefined。
   const body = await getJson(base, `/rag/search?q=${encodeURIComponent(query)}&limit=${String(limit)}&lib=${encodeURIComponent(lib)}`);
+  //G 回的东西里没有 hits 数组，说明基地没有 RAG（版本太老），交回 undefined 让调用方退回老搜索。
   if (!Array.isArray(body?.['hits'])) return undefined;
 
-  const found = (body['hits'] as Record<string, unknown>[]).flatMap((row) => {
+  //M 每条命中把行号和标题拼成摘要、正文当片段，转成 Found。
+  const found =(body['hits'] as Record<string, unknown>[]).flatMap((row) => {
     const start = row['start_line'];
     const end = row['end_line'];
     const lines = typeof start === 'number' && typeof end === 'number' && start > 0 ? `第 ${String(start)}–${String(end)} 行` : '';
@@ -256,6 +271,7 @@ async function ragSearch(base: Base, query: string, limit: number, lib: string):
  * @param limit 最多几条。
  */
 export async function searchLibs(base: Base, query: string, limit: number): Promise<Found[]> {
+  //M 先走 RAG 搜；基地没有 RAG（交回 undefined）就整个退回老搜索。
   let rag = await ragSearch(base, query, limit, base.libs);
   if (rag === undefined) return oldSearch(base, query, limit, base.libs);
 
@@ -286,9 +302,12 @@ export async function searchLibs(base: Base, query: string, limit: number): Prom
 export async function libs(base: Base | undefined, query: string): Promise<RecallHit[]> {
   if (base === undefined) return [];
 
+  //M 原话取前 300 字，拆成字组，多要一倍条数去搜记忆库（searchLibs），下面再按字组筛。
   const asked = [...query].slice(0, RECALL_QUERY_CHARS).join('');
   const wanted = grams(asked);
   const found = await searchLibs(base, asked, RECALL_LIB_HITS * 2);
+
+  //M 每条按字组和原话对分，不到 3 分的丢，最多 5 条，写成和本地命中一样的形状（file、score、lines）。
   return found
     .map((item) => ({ item, score: matchScore(wanted, `${item.summary}\n${item.snippet}`) }))
     .filter((entry) => entry.score >= MIN_HITS)

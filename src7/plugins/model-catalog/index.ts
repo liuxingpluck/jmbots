@@ -3,6 +3,8 @@
  * 1. 清单：起来就向 providers 里每一家拉 <base_url>/models，和手写的合成一张模型表，给网页看、给别的插件查；
  *    一家拉不到不挡别家、不挡起服务：先用它手写的模型，每 60 秒再试，连上就换。
  * 2. 回退（Fallback.ts / Queue.ts）：在 session/request 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
+ * 3. 模型介绍和评价（Notes.ts，11-18 并进原 model-notes）：运行时目录 models/ 下一个模型一份 MD；接口 /api/model-notes* 路径照旧；
+ *    事件 model-catalog/request 的 action: 'prompt' 一次交回模型介绍评价和能用的思考档，前台派活时带上。
  * 只是一张表加回退层：正常调模型仍走骨架的 ctx.resources.getModel。
  * 设计：docs/src7插件设计/model-catalog.md、docs/src7插件设计/model-fallback.md。
  */
@@ -11,9 +13,11 @@ import type * as fastify from 'fastify';
 import * as text from '../../utils/Text.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as fallback from './Fallback.ts';
+import * as notesModule from './Notes.ts';
 import * as pull from './Pull.ts';
 
 export type { ModelInfo } from './Pull.ts';
+export type { ModelNote, Rating } from './Notes.ts';
 export type { FallbackInfo, FallbackConfig } from './Fallback.ts';
 export { isRateLimited, isOverflow, getResetTime } from './Fallback.ts';
 
@@ -21,9 +25,10 @@ export { isRateLimited, isOverflow, getResetTime } from './Fallback.ts';
 /** 插件名。 */
 export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.1';
+//M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
+export const version = '1.2.0';
 
-/** 用到的服务：resources 读 providers/engine/concurrency；sessions 调模型兜底。http 是可选的（就绪才挂三个接口）。 */
+/** 用到的服务：resources 读 providers/engine/concurrency、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂五个接口）。 */
 export const inject = ['resources', 'sessions'];
 
 
@@ -31,6 +36,8 @@ export const inject = ['resources', 'sessions'];
 export interface ModelCatalogConfig {
   /** 换模型与并发回退配置（原 model-fallback）；写 false 或 enabled: false 可关闭；缺省沿用顶层 engine / concurrency。 */
   fallback?: fallback.FallbackConfig | false;
+  /** 模型介绍和评价（原插件 model-notes 的 config）：dir 放 MD 的目录（默认 models，相对运行时目录），time_zone 评价时间的时区（默认 America/New_York）。 */
+  notes?: { dir?: string; time_zone?: string };
 }
 
 
@@ -71,25 +78,32 @@ declare module 'cordis' {
   interface Events {
     /** 一个模型新记进冷却（model-fallback 发）。这里听它，给列表里那一项带上 limitedUntil。 */
     'model/cooldown'(info: CooldownInfo): void;
-    /** 按供应商/模型 ID 查模型清单。 */
+    /** 问模型清单（serial 发、等 model-catalog/result）：find 查一个模型，prompt 取派活用的模型介绍评价和思考档。本插件听。 */
     'model-catalog/request'(request: CatalogRequest): void | Promise<void>;
-    /** 返回模型清单的查找结果。 */
+    /** model-catalog/request 的回执（emit），按 requestId 配对。 */
     'model-catalog/result'(result: CatalogResult): void;
   }
 }
 
-/** 模型清单查询。 */
-interface CatalogRequest extends requestEventModule.RequestEnvelope {
+/** 模型清单查询：action 分两种。 */
+type CatalogRequest = requestEventModule.RequestEnvelope & ({
   /** 查询一个模型。 */
   action: 'find';
   /** 供应商名/模型 ID。 */
   model: string;
-}
+} | {
+  /** 取派活提示词用的两段：模型介绍和评价、有介绍的模型能用的思考档。 */
+  action: 'prompt';
+});
 
 /** 模型清单的回执。 */
 interface CatalogResult extends requestEventModule.ResultEnvelope {
-  /** 没找到时为空。 */
+  /** find：没找到时为空。 */
   info?: pull.ModelInfo;
+  /** prompt：模型介绍和评价那一段；一个模型都没写介绍是空串。 */
+  prompt?: string;
+  /** prompt：有介绍的模型各自能用的思考档那一段；没有是空串。 */
+  levelsText?: string;
 }
 
 /** 一家供应商在这个插件里要用的：apply 从 raw.providers 校验后交过来。 */
@@ -126,9 +140,14 @@ export class ModelCatalog extends cordis.Service {
    * 以后用 ctx.modelCatalog 或 ctx.get('modelCatalog') 取）。然后先放手写的、登记接口、听冷却、开始拉、开重试定时器。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param plans 每家要不要拉、手写了什么，apply 校验过。
-   * 副作用：联网拉清单；在 ctx.http.app 上登记三条路径；被拔掉时停定时器。
+   * @param notes 模型介绍和评价（Notes.ts），apply 建的；prompt 请求拼提示词用。
+   * 副作用：联网拉清单；被拔掉时停定时器。
    */
-  constructor(ctx: cordis.Context, private readonly plans: Record<string, ProviderPlan>) {
+  constructor(
+    ctx: cordis.Context,
+    private readonly plans: Record<string, ProviderPlan>,
+    private readonly notes: notesModule.ModelNotes,
+  ) {
     super(ctx, 'modelCatalog');
 
     //M 按各供应商的手写配置先填好初始模型表，并将需要在线拉清单的加入待重试集合。
@@ -145,12 +164,22 @@ export class ModelCatalog extends cordis.Service {
       this.cooling.set(info.model, info.until);
     });
 
-    //M 让其他插件通过事件查询模型清单，沿用 find 的冷却状态处理。
+    //M 让其他插件通过事件查询模型清单（契约 3.2 第 7 条）：find 沿用 find 的冷却状态处理，prompt 一次交回两段提示词。
+    //M   出错（比如 models/ 读不了）打一行日志、回空回执，调用方当没查到，不干等超时。
+    const options = {
+      onError: (error: unknown) => {
+        console.error(`model-catalog 回答查询出错：${text.getMessage(error)}`);
+        return {};
+      },
+    };
     requestEventModule.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
-      //M 按模型 ID 查清单并回执，查不到时 info 为空。
+      //M prompt：模型介绍评价和能用的思考档，前台派活时带上（bots/Dispatch.ts 的 onRequest 发）。
+      if (request.action === 'prompt') return this.getPrompt();
+
+      //M find：按模型 ID 查清单并回执，查不到时 info 为空。
       const info = this.find(request.model);
       return { info };
-    });
+    }, options);
 
     //M 起来就拉（不等 ready）；没拉到的每 60 秒再试，都拉到了这一轮就什么都不做。
     void this.retryPending();
@@ -173,6 +202,31 @@ export class ModelCatalog extends cordis.Service {
   find(id: string): pull.ModelInfo | undefined {
     //M 从附带最新冷却截止状态的模型全集里按 ID 查找对应项。
     return this.list().find((model) => model.id === id);
+  }
+
+  /**
+   * 派活提示词用的两段（原来在 bots/Dispatch.ts 拼，11-18 挪到这里）：模型介绍和评价；有介绍、又在清单里的模型各自能用的思考档。
+   * @returns prompt 没有介绍是空串，这时 levelsText 也是空串；有介绍但都不在清单里，levelsText 是空串。
+   * 副作用：读 models/ 下的 MD。
+   */
+  getPrompt(): { prompt: string; levelsText: string } {
+    //M 读一次全部介绍：拼介绍那段，再拿同一份对着清单拼思考档。
+    const list = this.notes.getList();
+    const prompt = this.notes.getPrompt(list);
+    if (prompt === '') return { prompt, levelsText: '' };
+
+    //M 有介绍的模型逐个查清单，查得到的写一行它能用的思考档。
+    const lines: string[] = [];
+    for (const note of list) {
+      const info = this.find(note.model);
+      if (info === undefined) continue;
+
+      lines.push(`- ${note.model}：${info.thinking.join('、')}`);
+    }
+    if (lines.length === 0) return { prompt, levelsText: '' };
+
+    const levelsText = ['能用的思考档（写 thinking 只能从里面挑）：', ...lines].join('\n');
+    return { prompt, levelsText };
   }
 
   /**
@@ -301,7 +355,7 @@ export class ModelCatalog extends cordis.Service {
   }
 
   /**
-   * 登记三条路径。外面来的要带令牌由 http 的钩子管，本机免令牌；路由里只做入参校验。
+   * 登记模型清单的三条路径（模型介绍和评价的两条由 Notes.ts 的 routes 登记）。外面来的要带令牌由 http 的钩子管，本机免令牌；路由里只做入参校验。
    * @param app Fastify 服务实例。
    * 副作用：向 app 注册模型列表、重连刷新和探测三条 HTTP 路由。
    */
@@ -409,11 +463,11 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
 /**
  * 挂上模型清单与运行兜底（model-fallback 已并入）。
  * apply 是 Cordis 插件的入口：Cordis 等 inject 里的 resources、sessions 都就绪后调一次。
- * 先校验 providers 与 config.fallback，再建 ModelCatalog（服务 + 冷却监听）→ 可选 http 路由 → 再建 ModelFallback（听 session/request 兜底调模型）。
+ * 先校验 providers、config.fallback 与 config.notes，再建模型介绍（Notes.ts）、ModelCatalog（服务 + 冷却监听）→ 可选 http 路由 → 再建 ModelFallback（听 session/request 兜底调模型）。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config plugins[model-catalog].config（可选：{ fallback?: FallbackConfig | false }）。
- * @throws providers 或 fallback 配置写得不对时抛错。
- * 副作用：注册 modelCatalog 服务并拉取模型清单，可选挂载 HTTP 接口、定时重试任务及 session/request 回退处理器。
+ * @param config plugins[model-catalog].config（可选：{ fallback?: FallbackConfig | false; notes?: { dir?, time_zone? } }）。
+ * @throws providers、fallback 或 notes 配置写得不对时抛错。
+ * 副作用：注册 modelCatalog 服务并拉取模型清单；没有 models/ 目录就建；可选挂载 HTTP 接口、定时重试任务及 session/request 回退处理器。
  */
 export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
   const raw = (ctx.resources.raw['providers'] ?? {}) as Record<string, Record<string, unknown> | null>;
@@ -433,13 +487,23 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
     plans[provider] = { listModels, written };
   }
 
-  //M 读取并校验回退配置后启动 ModelCatalog 服务实例，初始化模型表与定时器。
+  //M 读取并校验回退配置；模型介绍和评价的配置（原 model-notes 的 config）也在入口查一次，建好放 MD 的目录。
   const fallbackSettings = fallback.readFallbackSettings(ctx, config);
-  const catalog = new ModelCatalog(ctx, plans);
+  const notesSettings = notesModule.readNotesSettings(ctx.resources.root, config?.notes ?? {});
+  const notes = new notesModule.ModelNotes(ctx, notesSettings);
 
-  //M http 是可选的：http 就绪后再挂三个模型管理接口，不挡纯会话回退或命令行启动。
+  //M 启动 ModelCatalog 服务实例，初始化模型表与定时器；prompt 请求从 notes 读介绍。
+  const catalog = new ModelCatalog(ctx, plans, notes);
+
+  //M http 是可选的：http 就绪后再挂模型管理三个接口、模型介绍和评价两个接口，不挡纯会话回退或命令行启动。
   void ctx.inject(['http'], (sub) => {
     catalog.routes(sub.http.app);
+    notes.routes(sub.http.app);
+
+    //T 跟踪：模型介绍和评价的接口挂好了。
+    const vars = { 目录: notesSettings.dir, 时区: notesSettings.timeZone };
+    const code = "app.get('/api/model-notes'); app.post('/api/model-notes/rate')";
+    sub.emit('trace', 'model-catalog.notes', '模型介绍和评价挂好了', code, vars);
   });
 
   if (fallbackSettings.enabled) {

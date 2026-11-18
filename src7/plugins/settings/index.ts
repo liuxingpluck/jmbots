@@ -21,9 +21,9 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.2';
+export const version = '1.0.3';
 
-/** 用到的服务：resources 读配置，http 登记路由，bots 查重和新建机器人。 */
+/** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http', 'bots'];
 
 
@@ -35,6 +35,8 @@ const HTTP_CLOSE_TIMEOUT_MS = 10_000;
 const HTTP_INJECT_TIMEOUT_MS = 5000;
 /** 校验模型目录的最长等待。 */
 const CATALOG_TIMEOUT_MS = 3000;
+/** 等待机器人登记回执。 */
+const BOT_ADD_TIMEOUT_MS = 5000;
 
 /** 请基地重启最多等多久。 */
 const BASE_TIMEOUT_MS = 15_000;
@@ -69,11 +71,13 @@ class Settings {
       }
 
       //T 跟踪：存了配置（只带改了哪些段，不带值）。
-      this.ctx.emit('trace', 'Settings.save', '改了 config.yaml', 'configFile.edit(edits)', { 段: changed.join('、'), 步数: count });
+      this.ctx.emit('trace', 'Settings.save', '改了 config.yaml', 'configFile.edit(edits)',
+        { 段: changed.join('、'), 步数: count });
       return { ok: true, changed: count, note: `改了 ${changed.join('、')}：config.yaml 是启动时读的，重启后生效` };
     }));
     //M 登记新建机器人及两种方式的重启接口，统一走 answer 捕获错误并返回状态码。
-    app.post<{ Body: unknown }>('/api/bots', (request, reply) => this.answer(reply, () => this.createBot(request.body)));
+    app.post<{ Body: unknown }>('/api/bots',
+      (request, reply) => this.answer(reply, () => this.createBot(request.body)));
     app.post('/api/settings/apply', (_request, reply) => this.answer(reply, () => this.restart(false)));
     app.post('/api/service/restart', (_request, reply) => this.answer(reply, () => this.restart(true)));
   }
@@ -100,7 +104,7 @@ class Settings {
    * POST /api/bots：新建机器人。
    * @param raw 请求体 { name, identity, language, model?, feishu?: { app_id, app_secret } }（外面进来的，这里校验一次）。
    * @returns { ok, bot: { name, language }, feishu?: 一句话 }。
-   * @throws Failure(400)：名字不对、重名、模型不对、飞书只填一半或已被绑。
+   * @throws Failure(400)：名字不对、重名、模型不对、飞书只填一半或已被绑。Failure(503)：配置已保存，运行时未确认登记。
    */
   private async createBot(raw: unknown): Promise<Record<string, unknown>> {
     //G 解析请求体并校验机器人名非空且不含文件夹禁用字符，避免后续建目录报错。
@@ -146,17 +150,45 @@ class Settings {
       apps = channels.feishu;
     }
     //G 校验要绑定的飞书 app_id 尚未被其他机器人占用，防止配置冲突。
-    if (appId !== '' && apps.some((app) => app.app_id === appId)) throw new failureModule.Failure(400, `飞书应用 ${appId} 已经绑给别的机器人了`);
+    if (appId !== '' && apps.some((app) => app.app_id === appId)) {
+      throw new failureModule.Failure(400, `飞书应用 ${appId} 已经绑给别的机器人了`);
+    }
 
     //M 写配置：bots 末尾加一项；填了飞书再往 channels.feishu 末尾加一项。
     const entry: Record<string, unknown> = { name: botName, language };
     if (model !== '') entry['model'] = model;
     const edits: configFile.Edit[] = [{ path: ['bots', list.length], value: entry }];
-    if (appId !== '') edits.push({ path: ['channels', 'feishu', apps.length], value: { app_id: appId, app_secret: appSecret, bot: botName } });
+    if (appId !== '') {
+      edits.push({
+        path: ['channels', 'feishu', apps.length],
+        value: { app_id: appId, app_secret: appSecret, bot: botName },
+      });
+    }
+
+    //M 先持久化新配置，登记事件失联时仍可在下次启动读取。
     this.file.edit(edits);
 
-    //M 记忆概要（照 0.4 的 src/capabilities/Files.ts:166-169）；已有就不动（flag 'wx' 是“没有才建”）。工作区、记忆目录由 bots.add 建。
-    const bot = this.ctx.bots.add({ name: botName, language });
+    const config = { name: botName, language };
+    const request = { action: 'add', config } as const;
+    const options = {
+      timeoutMs: BOT_ADD_TIMEOUT_MS,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', ok: false, error: detail ?? `机器人登记未获回执（${reason}）`,
+      }),
+    };
+
+    //M 让机器人插件按已保存的配置实时登记，并返回它分配的记忆目录。
+    const added = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
+    const bot = added.bot;
+
+    //G 实时登记未确认时告诉调用者配置已保存，可重启生效。
+    if (!added.ok || bot === undefined) {
+      const reason = added.error ?? '未返回机器人信息';
+      const error = `机器人「${botName}」的配置已保存，实时登记没办成：${reason}。请重启后生效。`;
+      throw new failureModule.Failure(503, error);
+    }
+
+    //M 记忆概要只在还没有索引时写入，保留现有内容。
     let indexName = '索引.md';
     if (language === 'en') {
       indexName = 'index.md';
@@ -169,7 +201,8 @@ class Settings {
     }
 
     //T 跟踪：建了机器人。
-    this.ctx.emit('trace', 'Settings.createBot', '新建了机器人', 'bots.add({ name, language })', { 机器人: botName, 飞书: appId !== '' });
+    this.ctx.emit('trace', 'Settings.createBot', '新建了机器人', 'bot/request add',
+      { 机器人: botName, 飞书: appId !== '' });
     const result: Record<string, unknown> = { ok: true, bot: { name: botName, language } };
     if (appId !== '') result['feishu'] = '飞书要重启后才连上：设置页点“立即重启”';
     return result;
@@ -223,9 +256,13 @@ class Settings {
       const startedAt = await this.startedAt();
       const note = '正在重启：等 /api/ui/info 的 startedAt 变了就是新进程';
 
-      //M 基地拉起的进程由基地接管，没接管时本地退出等基地再拉起。
+      //M 基地拉起的进程由基地接管，显式请求基地重启时等它答复。
       if (process.env['JMBOTS_SUPERVISED'] !== undefined) {
-        if (viaBase && await this.askBase()) return { ok: true, startedAt, note };
+        if (viaBase) {
+          //M 只有基地确认后才提示重启已经开始。
+          await this.askBase();
+          return { ok: true, startedAt, note };
+        }
 
         //M 回应发出后退出，交给基地拉起新进程。
         this.exitSoon('基地拉起的：退出后基地拉起新的');
@@ -299,32 +336,36 @@ class Settings {
   }
 
   /**
-   * 请基地重启（POST <基地>/restart）。
-   * @returns 基地答应了是 true；没挂基地服务或老基地返回 404 时是 false，退回本地退出。
+   * 通过 base/request 请基地重启，等待其明确答复。
+   * @returns 基地确认重启后结束等待。
    * @throws Failure(503)：基地没响应；Failure(409)：基地不肯。
    */
-  private async askBase(): Promise<boolean> {
-    //M 可选服务用时现取，不让基地依赖挡住读写设置、新建机器人等独立功能。
-    const base = this.ctx.get('base');
-    if (base === undefined) {
-      return false;
+  private async askBase(): Promise<void> {
+    const request = { method: 'POST', route: '/restart', body: {}, timeoutMs: BASE_TIMEOUT_MS } as const;
+    const options = {
+      timeoutMs: BASE_TIMEOUT_MS + 1000,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', ok: false, error: detail ?? `基地重启未获回执（${reason}）`,
+      }),
+    };
+
+    //M 等待基地完成请求，预留一秒用于返回连接错误。
+    const response = await requestEventModule.requestEvent(this.ctx, 'base/request', 'base/result', request, options);
+
+    //G 基地没有明确回应时失败，允许调用方重试。
+    if (!response.ok || response.status === undefined) {
+      throw new failureModule.Failure(503, response.error ?? '基地未返回重启结果');
     }
-    let response: Awaited<ReturnType<typeof base.postJson>>;
-    try {
-      response = await base.postJson('/restart', {}, BASE_TIMEOUT_MS);
-    } catch (error) {
-      throw new failureModule.Failure(503, (error as Error).message);
-    }
-    if (response.status === 404) return false;
 
     const answer = (response.body ?? {}) as { ok?: unknown; error?: unknown };
-    let reason = '基地没答应重启';
+    let reason = `基地没答应重启（HTTP ${String(response.status)}）`;
     if (typeof answer.error === 'string') {
       reason = answer.error;
     }
     //G 基地明确拒绝重启时抛出 409 并透传基地返回的拒绝原因给前端。
-    if (answer.ok !== true) throw new failureModule.Failure(409, reason);
-    return true;
+    if (response.status < 200 || response.status >= 300 || answer.ok !== true) {
+      throw new failureModule.Failure(409, reason);
+    }
   }
 
   /**

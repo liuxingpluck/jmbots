@@ -34,7 +34,7 @@ export interface CardData {
   kind: 'approval' | 'long-run';
   /** 标题：要做什么，大白话。 */
   title: string;
-  /** 为什么要做 / 为什么来问。 */
+  /** 为什么要做 / 为什么来问。命令审批卡片是三行：要做什么、动哪些、为什么问你（每行自带说明，用户 11-18 #172）。 */
   reason: string;
   /** 具体的命令、文件路径、时长、在做什么。 */
   items: CardItem[];
@@ -76,7 +76,12 @@ export function getRiskLevel(value: unknown): RiskLevel {
 export function getCardText(card: CardData): string {
   //M 标题一行，后面有什么写什么：为什么、每一条具体信息、风险、结果。
   const lines = [card.title];
-  if (card.reason !== '') {
+
+  //M 多行的 reason 每行自带说明（审批卡片的“要做什么、动哪些、为什么问你”），原样照抄；一行的前面加“为什么：”。
+  if (card.reason.includes('\n')) {
+    lines.push(card.reason);
+  }
+  if (card.reason !== '' && !card.reason.includes('\n')) {
     lines.push(`为什么：${card.reason}`);
   }
   for (const item of card.items) {

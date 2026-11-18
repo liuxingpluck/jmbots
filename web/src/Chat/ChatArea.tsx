@@ -18,6 +18,7 @@ import * as mascot from '../Mascot/Mascot.tsx';
 import * as messageList from './MessageList.tsx';
 import * as privacy from '../Privacy/Mask.tsx';
 import * as progressBar from './ProgressBar.tsx';
+import * as voiceBar from './VoiceBar.tsx';
 import * as quickPages from '../Layout/QuickPages.tsx';
 import * as replyLinkModule from './ReplyLink.ts';
 import * as useMessagesModule from './useMessages.ts';
@@ -194,6 +195,7 @@ export function ChatArea(): react.JSX.Element {
           approvals={approvals}
         />
         {progressEnabled && <progressBar.ProgressBar bot={current} />}
+        <voiceBar.VoiceBar bot={current} online={online} />
         <composer.Composer
           bot={current}
           online={online}

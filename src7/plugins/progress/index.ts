@@ -29,9 +29,11 @@ export type { ReviewConfig } from './Review.ts';
 export const name = 'progress';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.1：转新会话时照抄后台绑定的工作区 ID（row.workspaceId）。
-export const version = '1.1.3';
+//M 1.1.4：说话改发 bot/say，取思考档发 model-catalog/request，读对话记录发 journal/request，不再直接调别的插件。
+//M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
+export const version = '1.1.5';
 
-/** 用到的服务：resources 拿配置和目录，bots 取机器人和转新会话，sessions 开小会话。approval、http、decision 可选。 */
+/** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'bots', 'sessions'];
 
 
@@ -89,8 +91,15 @@ interface Item extends ProgressItem {
   stopAsked?: 'stop' | 'timeout' | 'handoff';
   flagged?: string;
   handoffNote?: string;
+  /** 已发起转交，等待新会话接单。 */
+  handoffPending?: boolean;
   handedOver?: boolean;
-  timers: { push?: ReturnType<typeof setTimeout>; remind?: ReturnType<typeof setTimeout>; limit?: ReturnType<typeof setTimeout>; card?: ReturnType<typeof setTimeout> };
+  timers: {
+    push?: ReturnType<typeof setTimeout>;
+    remind?: ReturnType<typeof setTimeout>;
+    limit?: ReturnType<typeof setTimeout>;
+    card?: ReturnType<typeof setTimeout>;
+  };
   /** 发过的长跑提醒卡片（待确认号）；发过就不再发。 */
   cardId?: number;
   lastPush: number;
@@ -142,7 +151,14 @@ interface ProgressResult extends requestEventModule.ResultEnvelope {
 declare module '../../Sessions.ts' {
   interface SessionRow {
     /** 这一轮的限时：一轮开始写、结束删。重启后接着跑的会话照原来的开始时间和限时接着计。 */
-    progress?: { startedAt: number; limitMinutes?: number; limitChosen: boolean; extended: number; handedOver?: boolean; cardId?: number };
+    progress?: {
+      startedAt: number;
+      limitMinutes?: number;
+      limitChosen: boolean;
+      extended: number;
+      handedOver?: boolean;
+      cardId?: number;
+    };
   }
 }
 
@@ -160,12 +176,6 @@ interface Settings {
   longRunMinutes: number;
 }
 
-/** approval 服务里用到的（没挂 approval 时退回一句话提醒）。 */
-interface ApprovalLike {
-  ask(input: { kind: string; title: string; detail: string; payload?: unknown; bot: string; session?: string; card?: Omit<cardUtils.CardData, 'state' | 'result'> }): { id: number };
-  close(id: number, note: string): unknown;
-}
-
 /** approval/decided 里用到的。 */
 interface DecidedLike {
   id: number;
@@ -175,11 +185,9 @@ interface DecidedLike {
   card?: { state: string };
 }
 
-/** decision 服务里用到的（decision.md 第 2 节）。 */
-interface DecisionLike {
-  judge(input: { kind: string; question: { instructions: string; yes: string; no: string }; state: Record<string, unknown>; bot?: string; allowAt?: number }):
-    Promise<{ verdict: string; score?: number; reason: string }>;
-}
+/** 决策回执和问题的类型，取自事件契约。 */
+type JudgeReply = requestEventModule.EventArg<'decision/judge-result'>;
+type JudgeQuestion = requestEventModule.EventArg<'decision/judge'>['question'];
 
 /** 一项一秒最多推一次。 */
 const PUSH_EVERY_MS = 1000;
@@ -245,7 +253,8 @@ export class Progress extends cordis.Service {
     //M   要在 plugins 里写在 bots（前台）、compress 后面：它们会整个换掉 request.messages。
     ctx.on('session/request', (request) => {
       const item = this.items.get(request.session.id);
-      if (item === undefined || item.endedAt !== undefined || item.remindAt === undefined || Date.now() < item.remindAt) return;
+      if (item === undefined || item.endedAt !== undefined || item.remindAt === undefined) return;
+      if (Date.now() < item.remindAt) return;
       const content = `（系统）这件事已经干了 ${textModule.getDuration(Date.now() - item.startedAt)}，${this.limitText(item)}。`
         + '回复用户时说清干了多久、做到哪了；快到点了就抓紧收尾，做不完就写清做到哪了、还剩什么。';
       request.messages.push({ role: 'user', content, timestamp: Date.now() });
@@ -256,16 +265,23 @@ export class Progress extends cordis.Service {
       if (pending.kind !== LONG_RUN_KIND || pending.card?.state === 'ended') return;
       const sessionId = (pending.payload as { sessionId?: unknown } | null)?.sessionId;
       if (typeof sessionId !== 'string') return;
+
+      //G 只有本轮确认登记的卡片可以控制会话，忽略超时后才出现的卡片。
       const item = this.items.get(sessionId);
+      if (item === undefined || item.endedAt !== undefined || item.cardId !== pending.id) return;
+
       if (pending.state === 'approved') {
+        //M 用户从本轮长跑卡片点了终止。
         this.act(sessionId, 'stop');
         return;
       }
-      if (item !== undefined) {
-        this.note(item, '长跑提醒：用户点了继续');
-        //T 跟踪：用户点了继续。
-        this.ctx.emit('trace', 'Progress.continue', '长跑提醒点了继续，一直做下去', "ctx.on('approval/decided')", { 会话: sessionId, 卡片: pending.id });
-      }
+
+      //M 用户选择继续，工作过程只记一条日志。
+      this.note(item, '长跑提醒：用户点了继续');
+
+      //T 跟踪：用户点了继续。
+      const continueVars = { 会话: sessionId, 卡片: pending.id };
+      this.ctx.emit('trace', 'Progress.continue', '长跑提醒点了继续，一直做下去', "ctx.on('approval/decided')", continueVars);
     });
 
     const requestOptions = {
@@ -416,7 +432,12 @@ export class Progress extends cordis.Service {
     const item: Item = {
       id: this.nextId++, sessionId: session.id, bot: row.bot, text,
       model: row.model, stage, action,
-      startedAt: saved?.startedAt ?? Date.now(), steps: 0, limitChosen: false, extended: 0, timings: { modelMs: 0, tools: [] }, messageIds: [],
+      startedAt: saved?.startedAt ?? Date.now(),
+      steps: 0,
+      limitChosen: false,
+      extended: 0,
+      timings: { modelMs: 0, tools: [] },
+      messageIds: [],
       session, log: [], said: [], lastAt: Date.now(), timers: {}, lastPush: 0,
     };
     if (saved?.handedOver === true) item.handedOver = true;
@@ -445,32 +466,26 @@ export class Progress extends cordis.Service {
   private armCard(item: Item): void {
     clearTimeout(item.timers.card);
     if (this.settings.longRunMinutes === 0 || item.cardId !== undefined || item.session.row.kind === 'front') return;
+
     //M 计算距离跑满长跑提醒阈值的剩余毫秒，到点后发长跑提醒卡片。
-    item.timers.card = setTimeout(() => this.sendCard(item), Math.max(0, item.startedAt + this.settings.longRunMinutes * MINUTE - Date.now()));
+    const cardDelay = Math.max(0, item.startedAt + this.settings.longRunMinutes * MINUTE - Date.now());
+    item.timers.card = setTimeout(() => {
+      //M 卡片登记需要等回执，定时器只发起请求并记录意外错误。
+      void this.sendCard(item).catch((error: unknown) => console.error(`长跑提醒出错：${textModule.getMessage(error)}`));
+    }, cardDelay);
   }
 
   /**
    * 发长跑提醒卡片：已运行多久、现在在做什么、第几步、用户的话；“终止”（危险色）和“继续”。
-   * 有 approval 就登记成待确认（网页审批面板、飞书卡片都照卡片数据画，回“同意 N”也行）；没有就跟用户说一句，网页进度上还能点终止。
+   * @param item 正在长跑的进度项。
+   * 副作用：登记待确认卡片并记下编号；登记失败时发文字提醒。
    */
-  private sendCard(item: Item): void {
+  private async sendCard(item: Item): Promise<void> {
+    //G 已结束、正在停下或已提醒的会话无需再发卡片。
     if (item.endedAt !== undefined || item.stopAsked !== undefined || item.cardId !== undefined) return;
-    //M 计算当前已运行时长并检查可选的 approval 服务是否就绪，用于决定发交互卡片还是纯文本提醒。
+
+    //M 取当前耗时，填入待确认卡片和文字退路。
     const elapsed = textModule.getDuration(Date.now() - item.startedAt);
-    const approval = this.ctx.get('approval') as ApprovalLike | undefined;
-    //T 跟踪：发长跑提醒。
-    this.ctx.emit('trace', 'Progress.sendCard', '跑满时长，发卡片问要不要终止', 'approval.ask(长跑提醒卡片)', { 会话: item.sessionId, 干了: elapsed, 有审批: approval !== undefined });
-    if (approval === undefined) {
-      item.cardId = 0;
-      const text = `⏳ 这件事已经干了 ${elapsed}，现在${item.action}。要停就在网页进度上点“终止”；不管它就一直做下去。`;
-
-      //M 没有审批卡片时，通过机器人发一条文字提醒。
-      this.ctx.emit('bot/say', item.session, text);
-
-      //M 记住这一轮已提醒，重启后也不重复发。
-      this.saveRow(item);
-      return;
-    }
     const card: Omit<cardUtils.CardData, 'state' | 'result'> = {
       kind: 'long-run',
       title: `这件事已经干了 ${elapsed}，要不要终止？`,
@@ -482,12 +497,60 @@ export class Progress extends cordis.Service {
         { label: '用户的话', value: item.text || '（没有）' },
         { label: '会话', value: item.sessionId, code: true },
       ],
-      buttons: [{ action: 'approve', label: '终止', style: 'danger' }, { action: 'reject', label: '继续', style: 'default' }],
+      buttons: [
+        { action: 'approve', label: '终止', style: 'danger' },
+        { action: 'reject', label: '继续', style: 'default' },
+      ],
     };
-    //M 向审批服务登记长跑确认卡片并记住卡片 ID，写日志存库防止重启重复弹窗。
-    const pending = approval.ask({
-      kind: LONG_RUN_KIND, title: card.title, detail: `已运行 ${elapsed}，现在${item.action}`, payload: { sessionId: item.sessionId }, bot: item.bot, session: item.sessionId, card,
-    });
+    //M 登记长跑确认卡片，只有成功回执里的编号能供后续关闭使用。
+    const input = {
+      kind: LONG_RUN_KIND,
+      title: card.title,
+      detail: `已运行 ${elapsed}，现在${item.action}`,
+      payload: { sessionId: item.sessionId },
+      bot: item.bot,
+      session: item.sessionId,
+      card,
+    };
+    const request = { action: 'ask', input } as const;
+    const options = {
+      timeoutMs: 5000,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', error: detail ?? reason,
+      }),
+    };
+
+    //M 等待审核插件确认登记，缺席、超时和出错都走文字退路。
+    const reply = await requestEventModule.requestEvent(
+      this.ctx, 'approval/request', 'approval/result', request, options,
+    );
+
+    //T 跟踪：记录卡片是否登记成功。
+    const pending = reply.pending;
+    const cardVars = { 会话: item.sessionId, 干了: elapsed, 卡片: pending?.id, 错误: reply.error };
+    this.ctx.emit('trace', 'Progress.sendCard', '请审核插件登记长跑提醒', 'approval/request ask', cardVars);
+
+    //G 回执回来时会话已经结束，立即关闭刚登记的卡片。
+    if (item.endedAt !== undefined) {
+      if (pending !== undefined) {
+        this.closeCard(pending.id, item.action);
+      }
+      return;
+    }
+
+    //G 审核请求未获确认时只提醒用户，停止操作仍由用户决定。
+    if (pending === undefined || reply.error !== undefined) {
+      if (item.stopAsked !== undefined) return;
+
+      item.cardId = 0;
+      const text = `⏳ 这件事已经干了 ${elapsed}，现在${item.action}。要停就在网页进度上点“终止”；不管它就一直做下去。`;
+
+      //M 卡片未登记时发文字，并记住这一轮已经提醒过。
+      this.ctx.emit('bot/say', item.session, text);
+      this.saveRow(item);
+      return;
+    }
+
     //M 记下待确认卡片编号并写进工作过程日志与会话表，避免进程重启后重复发送。
     item.cardId = pending.id;
     this.note(item, `跑满 ${String(this.settings.longRunMinutes)} 分钟，发了长跑提醒 #${String(pending.id)}`);
@@ -528,9 +591,17 @@ export class Progress extends cordis.Service {
       item.model = `${message.provider}/${message.model}`;
       for (const block of message.content) {
         //M 将模型该步的思考首行、文本输出与工具入参逐条摘录进工作过程日志。
-        if (block.type === 'thinking' && block.thinking.trim() !== '') this.note(item, `思考：${textModule.clip(block.thinking.trim().split('\n')[0] ?? '', LOG_CHARS)}`);
-        if (block.type === 'text' && block.text.trim() !== '') this.note(item, `说：${textModule.clip(block.text.trim(), LOG_CHARS)}`);
-        if (block.type === 'toolCall') this.note(item, `调用 ${block.name} ${textModule.clip(JSON.stringify(block.arguments), LOG_CHARS)}`);
+        if (block.type === 'thinking' && block.thinking.trim() !== '') {
+          const firstLine = block.thinking.trim().split('\n')[0] ?? '';
+          this.note(item, `思考：${textModule.clip(firstLine, LOG_CHARS)}`);
+        }
+        if (block.type === 'text' && block.text.trim() !== '') {
+          this.note(item, `说：${textModule.clip(block.text.trim(), LOG_CHARS)}`);
+        }
+        if (block.type === 'toolCall') {
+          const argsText = textModule.clip(JSON.stringify(block.arguments), LOG_CHARS);
+          this.note(item, `调用 ${block.name} ${argsText}`);
+        }
       }
       //M 提取本步首个工具调用的参数摘要，将当前进度展示文本更新为正在调该工具。
       const call = message.content.find((block) => block.type === 'toolCall');
@@ -560,7 +631,8 @@ export class Progress extends cordis.Service {
         errSuffix = '（出错）';
       }
       //M 把工具返回摘要（标明是否出错）写入日志，并将当前行动状态切换为思考下一步。
-      this.note(item, `结果 ${message.toolName}${errSuffix}：${textModule.clip(piAi.contentText(message.content), LOG_CHARS)}`);
+      const resultText = textModule.clip(piAi.contentText(message.content), LOG_CHARS);
+      this.note(item, `结果 ${message.toolName}${errSuffix}：${resultText}`);
       item.action = '在想下一步';
     }
   }
@@ -599,7 +671,8 @@ export class Progress extends cordis.Service {
       const elapsed = textModule.getDuration(Date.now() - item.startedAt);
       this.note(item, `过了报时点（干了 ${elapsed}），开始报时`);
       //T 跟踪：开始报时。
-      this.ctx.emit('trace', 'Progress.remind', '开始报时', "ctx.emit('bot/say', session, text)", { 会话: item.sessionId, 干了: elapsed });
+      const remindVars = { 会话: item.sessionId, 干了: elapsed };
+      this.ctx.emit('trace', 'Progress.remind', '开始报时', "ctx.emit('bot/say', session, text)", remindVars);
       const limit = this.limitText(item);
       const text = `⏳ 这件事已经干了 ${elapsed}，${limit}；到点会先停下，把做到哪写给你。`;
 
@@ -642,7 +715,8 @@ export class Progress extends cordis.Service {
     const verdict = await this.judge(item);
 
     //T 跟踪：到点判断。
-    this.ctx.emit('trace', 'Progress.onDeadline', '到点了，判断要不要延', 'judge(item)', { 会话: item.sessionId, 延: verdict.extend, 为什么: verdict.why });
+    const deadlineVars = { 会话: item.sessionId, 延: verdict.extend, 为什么: verdict.why };
+    this.ctx.emit('trace', 'Progress.onDeadline', '到点了，判断要不要延', 'judge(item)', deadlineVars);
     if (item.endedAt !== undefined || item.stopAsked !== undefined) return;
     if (!verdict.extend) {
       this.stop(item, verdict.why);
@@ -658,37 +732,51 @@ export class Progress extends cordis.Service {
   }
 
   /**
-   * 问 decision 三道题（在推进、5 分钟能做完、在打转）。没挂 decision 就到点停。
+   * 问 decision 三道题（在推进、5 分钟能做完、在打转）。缺任一分数就到点停。
+   * @param item 到期的进度项。
    * @returns 延不延、为什么。
    */
   private async judge(item: Item): Promise<{ extend: boolean; why: string }> {
-    //M decision 是可选的服务：ctx.get 现取，没挂（或没开工）是 undefined。
-    const decision = this.ctx.get('decision') as DecisionLike | undefined;
-    if (decision === undefined) return { extend: false, why: '没挂 decision，到点就停' };
-
     //M 组装任务摘要、已耗时和最近工作日志作为判断上下文，并发询问三道评估题。
     const state = {
       用户的话: item.text, 已经干了: textModule.getDuration(Date.now() - item.startedAt), 限时: this.limitText(item),
       最近的工作过程: item.log.slice(-JUDGE_LOG_LINES).join('\n'),
     };
-    try {
-      //M 并发向 decision 询问推进、有望完成和打转三道评估题，依据打分门槛决定是否自动延期。
-      const ask = (question: { instructions: string; yes: string; no: string }) =>
-        decision.judge({ kind: 'progress-limit', question, state, bot: item.bot, allowAt: JUDGE_PASS });
-      const [progressing, nearlyDone, looping] = await Promise.all([ask(words.QUESTIONS.progressing), ask(words.QUESTIONS.nearlyDone), ask(words.QUESTIONS.looping)]);
-      if (progressing.score === undefined || nearlyDone.score === undefined || looping.score === undefined) {
-        return { extend: false, why: `判断模型没答上来，到点就停：${progressing.reason}` };
-      }
-      const detail = `推进 ${progressing.score.toFixed(2)}、快做完 ${nearlyDone.score.toFixed(2)}、打转 ${looping.score.toFixed(2)}`;
-      const extend = progressing.score >= JUDGE_PASS && nearlyDone.score >= JUDGE_PASS && looping.score < JUDGE_PASS;
-      let why = `判断模型认为不该再延长（${detail}）`;
-      if (extend) {
-        why = `判断模型：${detail}`;
-      }
-      return { extend, why };
-    } catch (error) {
-      return { extend: false, why: `判断模型出错，到点就停：${textModule.getMessage(error)}` };
+    const options = {
+      timeoutMs: 20_000,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string): JudgeReply => ({
+        requestId: '', verdict: 'unsure', reason: detail ?? `决策请求未获回复（${reason}）`,
+      }),
+    };
+    const ask = (question: JudgeQuestion): Promise<JudgeReply> => {
+      const request = { kind: 'progress-limit', question, state, bot: item.bot, allowAt: JUDGE_PASS };
+
+      //M 三道判断题使用相同的会话快照和评分门槛。
+      return requestEventModule.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', request, options);
+    };
+
+    //M 并发收集三个分数，齐全时才考虑延长。
+    const progressingReply = ask(words.QUESTIONS.progressing);
+    const nearlyDoneReply = ask(words.QUESTIONS.nearlyDone);
+    const loopingReply = ask(words.QUESTIONS.looping);
+    const requests = [progressingReply, nearlyDoneReply, loopingReply] as const;
+    const [progressing, nearlyDone, looping] = await Promise.all(requests);
+
+    //G 任一题没有分数就保留原时限，并如实报告那道题的原因。
+    if (progressing.score === undefined) return { extend: false, why: progressing.reason };
+    if (nearlyDone.score === undefined) return { extend: false, why: nearlyDone.reason };
+    if (looping.score === undefined) return { extend: false, why: looping.reason };
+
+    const progressingText = progressing.score.toFixed(2);
+    const nearlyDoneText = nearlyDone.score.toFixed(2);
+    const loopingText = looping.score.toFixed(2);
+    const detail = `推进 ${progressingText}、快做完 ${nearlyDoneText}、打转 ${loopingText}`;
+    const extend = progressing.score >= JUDGE_PASS && nearlyDone.score >= JUDGE_PASS && looping.score < JUDGE_PASS;
+    let why = `判断模型认为不该再延长（${detail}）`;
+    if (extend) {
+      why = `判断模型：${detail}`;
     }
+    return { extend, why };
   }
 
   /** 延够了：转过的直接停；开审核小会话，离谱 → 停并说清；建议转 → 停下后转新会话；不然停。 */
@@ -756,13 +844,14 @@ export class Progress extends cordis.Service {
   private async end(session: Session): Promise<void> {
     //G 取对应进度项，若不存在或已经定格则跳过；否则先清净定时器准备收尾。
     const item = this.items.get(session.id);
-    if (item === undefined || item.endedAt !== undefined) return;
+    if (item === undefined || item.endedAt !== undefined || item.handoffPending === true) return;
     this.clearTimers(item, false);
     const row = session.row;
 
     if (item.stopAsked === 'handoff' && row.state !== 'done') {
       //M 因审核建议转交而停且未自发完成时，执行会话交接接力继续做。
-      this.handOff(item);
+      item.handoffPending = true;
+      await this.handOff(item);
       return;
     }
     if (item.stopAsked === 'timeout') {
@@ -810,8 +899,12 @@ export class Progress extends cordis.Service {
     this.close(item, 'stopped', '已停止', row.reply);
   }
 
-  /** 转新会话：交接说明、用户原话、老会话的 对话.md 路径交给 bot.hand，新会话的项标上转过。 */
-  private handOff(item: Item): void {
+  /**
+   * 通过 bot/request 转新会话，只有收到接单回执才记为已转交。
+   * @param item 已停下等待接手的进度项。
+   * 副作用：保存接手会话与进度标记，定格老会话，通知用户结果。
+   */
+  private async handOff(item: Item): Promise<void> {
     //M 取所属机器人实例和老会话记录文件路径，为创建新会话接手准备上下文。
     const row = item.session.row;
     const bot = this.ctx.bots.get(row.bot);
@@ -822,7 +915,9 @@ export class Progress extends cordis.Service {
       this.close(item, 'stopped', '想转新会话，但机器人不在了');
       return;
     }
-    const text = `（交接）这件事从会话 ${row.id} 转过来接着做。\n\n用户的原话：\n${item.said.join('\n') || item.text}\n\n交接说明：\n${note}\n\n老会话的记录：${md}`;
+    const said = item.said.join('\n') || item.text;
+    const text = `（交接）这件事从会话 ${row.id} 转过来接着做。\n\n用户的原话：\n${said}\n\n`
+      + `交接说明：\n${note}\n\n老会话的记录：${md}`;
 
     //M 前台派的后台（bots/Dispatch.ts 记了 frontTask）：新会话接着记原前台、工作区、模型，结果照旧交回原前台；
     //M   老会话记上转去哪，它这次停下不交回。绑定的工作区 ID（row.workspaceId）照抄；地址里带着工作区目录，bot.hand 照它换。
@@ -840,16 +935,43 @@ export class Progress extends cordis.Service {
         quiet: true,
         workspaceId: row.workspaceId,
       });
-      task.handedTo = created.id;
-      //M 把转交去向的新会话 ID 及时保存进老会话记录，防止老会话误把半截结果交回前台。
-      item.session.save();
+      //M 先在内存中屏蔽老会话下一拍的交回，收到回执后再随定格存盘。
       freshId = created.id;
+      task.handedTo = freshId;
     }
     //M 把交接摘要投递给新会话并打上 handedOver 防止再转，随后定格老会话并告知用户去向。
-    const fresh = bot.hand(text, { channel: row.channel, address: row.address }, freshId);
+    const origin = { channel: row.channel, address: row.address };
+    const request = { action: 'hand', bot: row.bot, text, origin, sessionId: freshId } as const;
+    const options = {
+      timeoutMs: 10_000,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '', ok: false, error: detail ?? `转交未获回执（${reason}）`,
+      }),
+    };
+
+    //M 把交接内容发给机器人，凭回执定位实际接手的会话。
+    const reply = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
+
+    //G 转交失败，撤掉老会话的转交标记，留下真实失败原因。
+    if (!reply.ok || reply.sessionId === undefined) {
+      if (task !== undefined && task.handedTo === freshId) {
+        delete task.handedTo;
+      }
+      const failure = `想转新会话，但没有接手成功：${reply.error ?? '回执没有会话号'}`;
+
+      //M 将失败原因写入进度和日志，告知原会话的用户。
+      this.note(item, failure);
+      this.close(item, 'stopped', failure);
+      this.ctx.emit('bot/say', item.session, failure);
+      return;
+    }
+
+    //M 接手后给新会话打上 handedOver，防止同一件事再次自动转交。
+    const fresh = this.ctx.sessions.open(reply.sessionId);
     const next = this.items.get(fresh.id);
     if (next !== undefined) next.handedOver = true;
-    fresh.row.progress = { ...(fresh.row.progress ?? { startedAt: Date.now(), limitChosen: false, extended: 0 }), handedOver: true };
+    const freshProgress = fresh.row.progress ?? { startedAt: Date.now(), limitChosen: false, extended: 0 };
+    fresh.row.progress = { ...freshProgress, handedOver: true };
     fresh.save();
     this.close(item, 'handed', `转到新会话 ${fresh.id}`);
     const notice = `↪ 这件事转到新会话 ${fresh.id} 接着做。交接说明：\n${note}`;
@@ -862,7 +984,14 @@ export class Progress extends cordis.Service {
    * 开一场小会话问一次：收尾、审核共用。
    * @returns 做完时的回答；没做完交回“（没写成：原因）”。
    */
-  private async small(item: Item, kind: string, prompt: string, content: string, model: string, thinking: Thinking): Promise<string> {
+  private async small(
+    item: Item,
+    kind: string,
+    prompt: string,
+    content: string,
+    model: string,
+    thinking: Thinking,
+  ): Promise<string> {
     //M 骨架的 sessions.ask 问一次。
     const askInput: AskInput = {
       bot: item.bot,
@@ -882,15 +1011,37 @@ export class Progress extends cordis.Service {
   }
 
   /**
+   * 请求把长跑卡片标为会话已结束。
+   * @param id 待确认项编号。
+   * @param action 会话结束时的进度说明。
+   * 副作用：通知审核插件关闭尚未点过的卡片；进度结算照常完成。
+   */
+  private closeCard(id: number, action: string): void {
+    const note = `会话已结束（${action}）`;
+    const request = { action: 'close', id, note } as const;
+
+    //M 卡片清理是单向指令，不等待回执。
+    void this.ctx.serial('approval/request', request).catch((error: unknown) => {
+      console.error(`关闭长跑提醒 #${String(id)} 失败：${textModule.getMessage(error)}`);
+    });
+  }
+
+  /**
    * 定格：记结局、清定时器、删 row.progress、马上推、10 分钟后删项；做太久或被限时、终止的记进 overtime.jsonl。
    */
   private close(item: Item, stage: ProgressStage, action: string, result?: string): void {
     item.endedAt = Date.now();
-    //M 长跑提醒卡片还在等：作废成“会话已结束”，网页、飞书的卡片变灰。已经点过的 close 会交回一句“已经定过了”，不管。
-    if (item.cardId !== undefined && item.cardId > 0) (this.ctx.get('approval') as ApprovalLike | undefined)?.close(item.cardId, `会话已结束（${action}）`);
+    if (item.cardId !== undefined && item.cardId > 0) {
+      //M 作废仍待确认的长跑提醒，进度结算继续进行。
+      this.closeCard(item.cardId, action);
+    }
     item.stage = stage;
     item.action = action;
+
+    //M 收尾只保留简短结果，供进度页显示。
     if (result !== undefined && result !== '') item.result = textModule.clip(result, 240);
+
+    //M 结束后清除定时器和会话进度记录，随后通知进度页。
     this.clearTimers(item, false);
     delete item.session.row.progress;
     item.session.save();
@@ -900,14 +1051,29 @@ export class Progress extends cordis.Service {
     }, KEEP_ENDED_MS).unref?.();
 
     //T 跟踪：一轮定格。
-    this.ctx.emit('trace', 'Progress.close', '一轮定格', 'close(item, stage)', { 会话: item.sessionId, 结局: stage, 用时: textModule.getDuration(item.endedAt - item.startedAt) });
+    const closeVars = {
+      会话: item.sessionId,
+      结局: stage,
+      用时: textModule.getDuration(item.endedAt - item.startedAt),
+    };
+    this.ctx.emit('trace', 'Progress.close', '一轮定格', 'close(item, stage)', closeVars);
 
     const usedMs = item.endedAt - item.startedAt;
-    if (usedMs < this.settings.overtimeMinutes * MINUTE && !['timeout', 'stopped', 'flagged', 'handed'].includes(stage)) return;
+    const forced = ['timeout', 'stopped', 'flagged', 'handed'].includes(stage);
+    if (usedMs < this.settings.overtimeMinutes * MINUTE && !forced) return;
     //M 运行过久或被强制终止的会话，先把各段耗时及元信息组装成一条超时记录。
     const line = {
-      at: item.endedAt, bot: item.bot, sessionId: item.sessionId, sessionTitle: item.sessionTitle ?? '', text: item.text, stage, usedMs,
-      limitMinutes: item.limitMinutes, timings: item.timings, timingsText: words.timingsText(item.steps, item.timings, usedMs), model: item.model,
+      at: item.endedAt,
+      bot: item.bot,
+      sessionId: item.sessionId,
+      sessionTitle: item.sessionTitle ?? '',
+      text: item.text,
+      stage,
+      usedMs,
+      limitMinutes: item.limitMinutes,
+      timings: item.timings,
+      timingsText: words.timingsText(item.steps, item.timings, usedMs),
+      model: item.model,
     };
     //M 将超时记录追加写入 overtime.jsonl，供空闲时 Review 挑选复盘。
     fs.appendFileSync(path.join(this.ctx.resources.dir('data'), 'overtime.jsonl'), `${JSON.stringify(line)}\n`, 'utf8');
@@ -939,10 +1105,30 @@ export class Progress extends cordis.Service {
 
   /** 拷贝出给外面看的那部分。 */
   private view(item: Item): ProgressItem {
-    const { session, log, said, lastAt, remindAt, stopAsked, flagged, handoffNote, handedOver, timers, lastPush, cardId, ...shown } = item;
-    void [log, said, lastAt, remindAt, stopAsked, flagged, handoffNote, handedOver, timers, lastPush, cardId];
+    const {
+      session,
+      log,
+      said,
+      lastAt,
+      remindAt,
+      stopAsked,
+      flagged,
+      handoffNote,
+      handoffPending,
+      handedOver,
+      timers,
+      lastPush,
+      cardId,
+      ...shown
+    } = item;
+    void [log, said, lastAt, remindAt, stopAsked, flagged, handoffNote, handoffPending];
+    void [handedOver, timers, lastPush, cardId];
     const title = (session.row as { summary?: string }).summary;
-    const copy: ProgressItem = { ...shown, timings: { modelMs: shown.timings.modelMs, tools: shown.timings.tools.map((tool) => ({ ...tool })) }, messageIds: [] };
+    const copiedTimings = {
+      modelMs: shown.timings.modelMs,
+      tools: shown.timings.tools.map((tool) => ({ ...tool })),
+    };
+    const copy: ProgressItem = { ...shown, timings: copiedTimings, messageIds: [] };
     if (title !== undefined && title !== '') copy.sessionTitle = title;
     return copy;
   }
@@ -963,7 +1149,11 @@ export class Progress extends cordis.Service {
   /** row.progress 跟着内存那项改，存库。 */
   private saveRow(item: Item): void {
     const row = item.session.row;
-    const saved: NonNullable<typeof row.progress> = { startedAt: item.startedAt, limitChosen: item.limitChosen, extended: item.extended };
+    const saved: NonNullable<typeof row.progress> = {
+      startedAt: item.startedAt,
+      limitChosen: item.limitChosen,
+      extended: item.extended,
+    };
     if (item.limitMinutes !== undefined) saved.limitMinutes = item.limitMinutes;
     if (item.handedOver === true) saved.handedOver = true;
     if (item.cardId !== undefined) saved.cardId = item.cardId;
@@ -1007,7 +1197,8 @@ export class Progress extends cordis.Service {
       request,
       options,
     );
-    const levels = (result.info?.thinking ?? []).filter((level): level is Thinking => LEVELS.includes(level as Thinking));
+    const infoLevels = result.info?.thinking ?? [];
+    const levels = infoLevels.filter((level): level is Thinking => LEVELS.includes(level as Thinking));
     if (levels.length === 0) {
       if (want === 'low') return 'minimal';
 
@@ -1077,16 +1268,17 @@ export function apply(ctx: cordis.Context, config?: ProgressConfig): void {
   const reviewSettings = reviewModule.readReviewSettings(config);
   const progress = new Progress(ctx, readSettings(ctx));
 
-  //M 复盘需要 approval 问用户确认；通过 ctx.inject(['approval'], ...) 挂载，兼容没挂 approval 的最小配置或单测。
+  //M 复盘经事件查待确认和送审，按自己的配置挂载。
   if (reviewSettings.enabled) {
-    void ctx.inject(['approval'], (sub) => {
-      new reviewModule.Review(sub, progress, reviewSettings);
-    });
+    new reviewModule.Review(ctx, progress, reviewSettings);
   }
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口。
   void ctx.inject(['http'], (sub) => {
-    sub.http.app.get<{ Querystring: { bot?: string } }>('/api/progress', async (request) => progress.list(request.query.bot));
+    sub.http.app.get<{ Querystring: { bot?: string } }>(
+      '/api/progress',
+      async (request) => progress.list(request.query.bot),
+    );
     sub.http.app.post<{ Params: { id: string }; Body: unknown }>('/api/progress/:id', async (request) => {
       let body: Record<string, unknown> = {};
       if (typeof request.body === 'object' && request.body !== null) {

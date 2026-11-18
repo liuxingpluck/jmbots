@@ -11,7 +11,8 @@
  *     deliver 和页面上的“发送”按钮也只落成草稿。send: true 时才发：会话开了“自动发”就发，没开就登记待确认、没挂 approval 就留草稿；
  *     只发到监听名单里的会话，发送失败不重发。
  * 上下文：最近 50 条（自己说的、对方说的都算）拼进 system；更早的模型用工具 wechat_history 自己决定读多少。
- * 事件：不加新事件。跟踪点照 utils/Trace.ts（ctx.emit('trace', …)）；听 approval/decided、web-api/status、channel/reply（registerTextReply）。
+ * 事件：不加新事件。跟踪点照 utils/Trace.ts（ctx.emit('trace', …)）；
+ * 听 approval/decided、web-api/status、channel/reply（registerTextReply）。
  * 回话：前台一轮里 channel_reply 几次进几条发件，一次没调就把最后的话进发件（routing.autoFinal）。
  * Cordis 大白话：apply 是插件的 main()，ctx 是它拿到的遥控器；ctx.on 听的事件、ctx.effect 登记的收尾，插件拔掉时自动撤。
  */
@@ -90,7 +91,9 @@ export function describe(view: RawMessage['view']): string {
   if (v.desc) {
     desc = ` — ${v.desc}`;
   }
-  if (v.kind === 'text' || v.kind === 'system' || v.kind === 'call' || v.kind === 'other' || v.kind === undefined) return v.text ?? '';
+  if (v.kind === 'text' || v.kind === 'system' || v.kind === 'call' || v.kind === 'other' || v.kind === undefined) {
+    return v.text ?? '';
+  }
 
   if (v.kind === 'image') return '[图片]';
 
@@ -191,16 +194,22 @@ export class Wechat {
     //M 发端使用独立的 OCR 运行时与窗口定位实例。
     this.sender = new Sender(config.root, config.ocrPython, new Window(config.aobwUrl, config.lockFile));
     const db = this.ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_watch (account TEXT, chat TEXT, name TEXT, auto INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_messages (account TEXT, chat TEXT, source TEXT, local_id INTEGER, at INTEGER,'
+    db.exec('CREATE TABLE IF NOT EXISTS wechat_watch'
+      + ' (account TEXT, chat TEXT, name TEXT, auto INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
+    db.exec('CREATE TABLE IF NOT EXISTS wechat_messages'
+      + ' (account TEXT, chat TEXT, source TEXT, local_id INTEGER, at INTEGER,'
       + ' from_self INTEGER, kind TEXT, sender TEXT, text TEXT, PRIMARY KEY (account, chat, source, local_id))');
     //M 2026-11-14 23:30 EST：存整条气泡视图（JSON），页面按种类画图片、语音条、卡片。老库补一列。
-    if (!(db.query('PRAGMA table_info(wechat_messages)').all() as { name: string }[]).some((col) => col.name === 'view')) db.exec('ALTER TABLE wechat_messages ADD COLUMN view TEXT');
+    if (!(db.query('PRAGMA table_info(wechat_messages)').all() as { name: string }[])
+      .some((col) => col.name === 'view')) db.exec('ALTER TABLE wechat_messages ADD COLUMN view TEXT');
     //M 2026-11-14 23:15 EST：全部会话的同步进度（原来记在 wechat_watch.last_time，只有重点监听的有）。
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_sync (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
+    db.exec('CREATE TABLE IF NOT EXISTS wechat_sync'
+      + ' (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
     //M 2026-11-15 00:17 EST：full=1 表示这个监听会话的历史已经全部补进库了（不只是最近一段）。
-    if (!(db.query('PRAGMA table_info(wechat_sync)').all() as { name: string }[]).some((col) => col.name === 'full')) db.exec('ALTER TABLE wechat_sync ADD COLUMN full INTEGER');
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, chat TEXT, name TEXT,'
+    if (!(db.query('PRAGMA table_info(wechat_sync)').all() as { name: string }[])
+      .some((col) => col.name === 'full')) db.exec('ALTER TABLE wechat_sync ADD COLUMN full INTEGER');
+    db.exec('CREATE TABLE IF NOT EXISTS wechat_outbox'
+      + ' (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, chat TEXT, name TEXT,'
       + ' text TEXT, state TEXT, note TEXT, at INTEGER)');
 
     //M 微信来的话：每个客户一场前台会话。不再在 bot/receive 里自己认领：bots 按来源范围（微信、账号、会话）找前台，
@@ -296,15 +305,26 @@ export class Wechat {
         total += chats.length;
 
         //M 用已同步时间找出尚未同步或收到新消息的会话。
-        const known = new Map((db.query('SELECT chat, last_time FROM wechat_sync WHERE account = ?').all(account) as { chat: string; last_time: number | null }[])
+        const known = new Map((db
+          .query('SELECT chat, last_time FROM wechat_sync WHERE account = ?')
+          .all(account) as { chat: string; last_time: number | null }[])
           .map((row) => [row.chat, row.last_time]));
-        const todo = chats.filter((chat) => !known.has(chat.username) || chat.timestamp > (known.get(chat.username) ?? 0));
+        const todo = chats.filter(
+          (chat) => !known.has(chat.username) || chat.timestamp > (known.get(chat.username) ?? 0),
+        );
         pending += Math.max(0, todo.length - SYNC_BATCH);
         //G since 是 0（以前没读到过消息）也按第一次算：只存不交，不会把存量当新消息交给机器人。
         const batch = todo.slice(0, SYNC_BATCH);
-        if (batch.length > 0) await this.syncChats(account, batch.map((chat) => ({ chat: chat.username, name: chat.chat, since: known.get(chat.username) || null, at: chat.timestamp })));
+        if (batch.length > 0) {
+          await this.syncChats(account, batch.map((chat) => ({
+            chat: chat.username, name: chat.chat, since: known.get(chat.username) || null, at: chat.timestamp,
+          })));
+        }
         //M 勾了监听的会话：后台把更早的消息也全部补进库（不阻塞这一轮太久，每轮每个账号最多开 3 个补历史）。
-        const watched = db.query('SELECT w.chat FROM wechat_watch w JOIN wechat_sync s ON s.account = w.account AND s.chat = w.chat WHERE w.account = ? AND IFNULL(s.full, 0) != 1').all(account) as { chat: string }[];
+        const watched = db
+          .query('SELECT w.chat FROM wechat_watch w JOIN wechat_sync s ON s.account = w.account AND s.chat = w.chat'
+            + ' WHERE w.account = ? AND IFNULL(s.full, 0) != 1')
+          .all(account) as { chat: string }[];
         for (const row of watched.slice(0, 3)) void this.backfillAll(account, row.chat);
       }
       this.status.chats = total;
@@ -324,7 +344,10 @@ export class Wechat {
 
   /** 同步几个会话并存表。since 是 null 的是第一次（取最近 50 条存量，只存不交）。页面点开还没同步过的会话时也调它。 */
   //M at 是会话列表里的最后消息时间：这批没读到消息（读不了的会话、空会话）也记到它，免得每轮重读、更免得下次 since=0 把存量当新消息交出去。
-  async syncChats(account: string, chats: { chat: string; name: string; since: number | null; at: number }[]): Promise<void> {
+  async syncChats(
+    account: string,
+    chats: { chat: string; name: string; since: number | null; at: number }[],
+  ): Promise<void> {
     const results = await this.reader.syncBatch(account, chats.map((item) => ({ chat: item.chat, since: item.since })));
     for (const item of chats) {
       const result = results.find((one) => one.chat === item.chat);
@@ -335,12 +358,22 @@ export class Wechat {
       }
 
       //M 把本批读到的消息交给统一存储流程，同时更新会话同步位置。
-      await this.store(account, { chat: item.chat, name: item.name, last_time: item.since, at: item.at }, result?.is_group === true, messages);
+      await this.store(
+        account,
+        { chat: item.chat, name: item.name, last_time: item.since, at: item.at },
+        result?.is_group === true,
+        messages,
+      );
     }
   }
 
   /** 一个会话这批消息存表；以前同步过的，新进来的、要关注的交给机器人；记下同步到哪一秒。 */
-  private async store(account: string, row: { chat: string; name: string; last_time: number | null; at?: number }, group: boolean, messages: RawMessage[]): Promise<void> {
+  private async store(
+    account: string,
+    row: { chat: string; name: string; last_time: number | null; at?: number },
+    group: boolean,
+    messages: RawMessage[],
+  ): Promise<void> {
     const db = this.ctx.resources.db;
     let last = row.last_time ?? 0;
     //M 缓存本会话的监听状态，用它判断哪些新消息要交给机器人。
@@ -354,7 +387,8 @@ export class Wechat {
 
       //G 第一次同步（存量）、重复的、自己发的、群里没 @我 的、公众号和系统会话：只存不交。
       //M 没勾“监听”（wechat_watch 里没有）的会话只存不交，不调模型、不起草；勾了的，对方私聊、群里 @我 才交给机器人起草。
-      if (!added || row.last_time === null || msg.from_self === true || (group && !msg.at_me) || text === '' || SKIP_REPLY.test(row.chat)) continue;
+      if (!added || row.last_time === null || msg.from_self === true || (group && !msg.at_me) || text === ''
+        || SKIP_REPLY.test(row.chat)) continue;
       if (watched === null) continue;
 
       const address: WechatAddress = { account, chat: row.chat, name: row.name, customer: `wechat:${row.chat}` };
@@ -440,7 +474,8 @@ export class Wechat {
 
     //M 保存同步位置和会话信息，下次从该位置继续拉取增量。
     db.query('INSERT INTO wechat_sync (account, chat, name, is_group, last_time) VALUES (?, ?, ?, ?, ?)'
-      + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, is_group = excluded.is_group, last_time = excluded.last_time')
+      + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, is_group = excluded.is_group,'
+      + ' last_time = excluded.last_time')
       .run(account, row.chat, row.name, isGroupFlag, last);
   }
 
@@ -535,7 +570,9 @@ export class Wechat {
     }
 
     //M 按监听名单、同步表、消息表顺序检索匹配的微信账号和聊天编号。
-    const tables: Array<'wechat_watch' | 'wechat_sync' | 'wechat_messages'> = ['wechat_watch', 'wechat_sync', 'wechat_messages'];
+    const tables: Array<'wechat_watch' | 'wechat_sync' | 'wechat_messages'> = [
+      'wechat_watch', 'wechat_sync', 'wechat_messages',
+    ];
     for (const table of tables) {
       if (!this.hasTable(table)) {
         continue;
@@ -566,7 +603,9 @@ export class Wechat {
    */
   private hasTable(tableName: string): boolean {
     //M 查 sqlite_master 确认微信自有表是否已创建。
-    const row = this.ctx.resources.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+    const row = this.ctx.resources.db
+      .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(tableName);
     return row !== null && row !== undefined;
   }
 
@@ -589,7 +628,9 @@ export class Wechat {
     if (table === 'wechat_messages') {
       if (preferredAccount !== '') {
         //M 按明确指定的账号和 chat 查消息表确认会话归属。
-        const pair = db.query('SELECT account, chat FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC LIMIT 1')
+        const pair = db
+          .query('SELECT account, chat FROM wechat_messages WHERE account = ? AND chat = ?'
+            + ' ORDER BY at DESC LIMIT 1')
           .get(preferredAccount, targetChat) as { account: string; chat: string } | null;
         if (pair !== null) return pair;
       }
@@ -633,11 +674,16 @@ export class Wechat {
   /** 微信会话调模型前：最近 50 条拼进 system。 */
   private onRequest(request: ChatRequest): void {
     const address = request.session.row.address as Partial<WechatAddress> | undefined;
-    if (typeof address?.customer !== 'string' || !address.customer.startsWith('wechat:') || address.account === undefined || address.chat === undefined) return;
+    if (typeof address?.customer !== 'string' || !address.customer.startsWith('wechat:')
+      || address.account === undefined || address.chat === undefined) return;
 
     //M 取当前微信会话的最近消息，为模型补充回复所需的上下文。
-    const rows = this.ctx.resources.db.query('SELECT at, from_self, sender, kind, text FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC, local_id DESC LIMIT ?')
-      .all(address.account, address.chat, CONTEXT_MESSAGES) as { at: number; from_self: number; sender: string; kind: string; text: string }[];
+    const rows = this.ctx.resources.db
+      .query('SELECT at, from_self, sender, kind, text FROM wechat_messages WHERE account = ? AND chat = ?'
+        + ' ORDER BY at DESC, local_id DESC LIMIT ?')
+      .all(address.account, address.chat, CONTEXT_MESSAGES) as {
+        at: number; from_self: number; sender: string; kind: string; text: string;
+      }[];
     if (rows.length === 0) return;
 
     //M 将消息翻回时间正序并逐行渲染，作为这次请求的系统上下文。
@@ -655,13 +701,21 @@ export class Wechat {
     const limit = Math.min(500, Math.max(1, Math.floor(Number(args['limit'] ?? 50)) || 50));
     const db = this.ctx.resources.db;
     //M 按固定倒序和偏移读当前历史页，补录后可以原样再查一次。
-    const read = () => db.query('SELECT at, from_self, sender, kind, text FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC, local_id DESC LIMIT ? OFFSET ?')
-      .all(address.account!, address.chat!, limit, skip) as { at: number; from_self: number; sender: string; kind: string; text: string }[];
+    const read = () => db
+      .query('SELECT at, from_self, sender, kind, text FROM wechat_messages WHERE account = ? AND chat = ?'
+        + ' ORDER BY at DESC, local_id DESC LIMIT ? OFFSET ?')
+      .all(address.account!, address.chat!, limit, skip) as {
+        at: number; from_self: number; sender: string; kind: string; text: string;
+      }[];
     let rows = read();
     if (rows.length < limit) {
       //M 当前页不足时以最早一条的时间为界继续向前读取。
-      const oldest = db.query('SELECT MIN(at) AS at FROM wechat_messages WHERE account = ? AND chat = ?').get(address.account, address.chat) as { at: number | null };
-      const more = await this.reader.backfill(address.account, address.chat, oldest.at ?? Math.floor(Date.now() / 1000) + 1, limit - rows.length + 10);
+      const oldest = db
+        .query('SELECT MIN(at) AS at FROM wechat_messages WHERE account = ? AND chat = ?')
+        .get(address.account, address.chat) as { at: number | null };
+      const more = await this.reader.backfill(
+        address.account, address.chat, oldest.at ?? Math.floor(Date.now() / 1000) + 1, limit - rows.length + 10,
+      );
       for (const msg of more.messages ?? []) {
         //M 把补来的历史消息放入库里，使下面的同页查询能读到它们。
         this.save(address.account, address.chat, msg);
@@ -672,7 +726,8 @@ export class Wechat {
     }
     if (rows.length === 0) return '没有更早的聊天记录了';
     //M 将历史页按时间正序渲染，告诉模型这一页从第几条开始。
-    return `从最近第 ${String(skip + 1)} 条往前读了 ${String(rows.length)} 条（旧的在前）：\n${rows.reverse().map((row) => this.line(row)).join('\n')}`;
+    const lines = rows.reverse().map((row) => this.line(row)).join('\n');
+    return `从最近第 ${String(skip + 1)} 条往前读了 ${String(rows.length)} 条（旧的在前）：\n${lines}`;
   }
 
   /**
@@ -702,7 +757,9 @@ export class Wechat {
     }
 
     //M 查目标会话的自动发送设置，用来决定初始发件状态。
-    const watch = this.ctx.resources.db.query('SELECT auto FROM wechat_watch WHERE account = ? AND chat = ?').get(address.account, address.chat) as
+    const watch = this.ctx.resources.db
+      .query('SELECT auto FROM wechat_watch WHERE account = ? AND chat = ?')
+      .get(address.account, address.chat) as
       { auto: number } | null;
     let state = 'draft';
     if (askApproval && this.approval !== undefined) {
@@ -724,7 +781,10 @@ export class Wechat {
         kind: 'approval', title: `发微信给「${address.name}」`, reason: '这个会话没开自动发，机器人的回复要你点头才发出去',
         items: [{ label: '会话', value: `${address.name}（${address.chat}）` }, { label: '内容', value: reply }],
         risk: { level: 'medium', text: '会真的发到微信，发出去撤不回' },
-        buttons: [{ action: 'approve', label: '发送', style: 'primary' }, { action: 'reject', label: '不发', style: 'default' }],
+        buttons: [
+          { action: 'approve', label: '发送', style: 'primary' },
+          { action: 'reject', label: '不发', style: 'default' },
+        ],
       },
     });
   }
@@ -742,13 +802,17 @@ export class Wechat {
     const db = this.ctx.resources.db;
     try {
       //G 已标记补全的会话无需重新运行历史引擎。
-      const row = db.query('SELECT full FROM wechat_sync WHERE account = ? AND chat = ?').get(account, chat) as { full: number | null } | null;
+      const row = db
+        .query('SELECT full FROM wechat_sync WHERE account = ? AND chat = ?')
+        .get(account, chat) as { full: number | null } | null;
       if (row?.full === 1) return;
 
       const batch = 500;
       for (let i = 0; i < 40; i++) {
         //M 以本地最早消息的时间向前分页，每批从当前进度接着读。
-        const oldest = db.query('SELECT MIN(at) AS at FROM wechat_messages WHERE account = ? AND chat = ?').get(account, chat) as { at: number | null };
+        const oldest = db
+          .query('SELECT MIN(at) AS at FROM wechat_messages WHERE account = ? AND chat = ?')
+          .get(account, chat) as { at: number | null };
         const until = oldest.at ?? Math.floor(Date.now() / 1000) + 1;
         const more = await this.reader.backfill(account, chat, until, batch);
         const messages = more.messages ?? [];
@@ -758,7 +822,8 @@ export class Wechat {
         for (const msg of messages) {
           if (this.save(account, chat, msg)) added += 1;
         }
-        if (messages.length < batch || (added === 0 && messages.length > 0 && Math.min(...messages.map((msg) => msg.create_time)) >= until)) {
+        if (messages.length < batch
+          || (added === 0 && messages.length > 0 && Math.min(...messages.map((msg) => msg.create_time)) >= until)) {
           //M 批次不足或无法前进时标记该会话历史已补全。
           db.query('UPDATE wechat_sync SET full = 1 WHERE account = ? AND chat = ?').run(account, chat);
           return;
@@ -779,7 +844,9 @@ export class Wechat {
    */
   async fillWatched(account: string, chat: string, name: string): Promise<void> {
     //M 检查是否已经同步过，用来决定补录前是否先拉最近消息。
-    const row = this.ctx.resources.db.query('SELECT full FROM wechat_sync WHERE account = ? AND chat = ?').get(account, chat) as { full: number | null } | null;
+    const row = this.ctx.resources.db
+      .query('SELECT full FROM wechat_sync WHERE account = ? AND chat = ?')
+      .get(account, chat) as { full: number | null } | null;
     if (row === null) {
       //M 首次监听先入库最近一批历史，为向前补录建立起点。
       await this.syncChats(account, [{ chat, name, since: null, at: 0 }]);
@@ -795,17 +862,22 @@ export class Wechat {
    */
   async draftReply(account: string, chat: string): Promise<OutItem | null> {
     //G 起草仅面向已监听会话，并使用其中记录的会话名。
-    const watch = this.ctx.resources.db.query('SELECT name FROM wechat_watch WHERE account = ? AND chat = ?').get(account, chat) as { name: string } | null;
+    const watch = this.ctx.resources.db
+      .query('SELECT name FROM wechat_watch WHERE account = ? AND chat = ?')
+      .get(account, chat) as { name: string } | null;
     if (watch === null) throw new Error('请先勾选监听，才能让 AI 起草回复');
 
     //M 记住发件表原有的末尾编号，以便随后找出这次调用之后的新记录。
-    const before = Number((this.ctx.resources.db.query('SELECT IFNULL(MAX(id), 0) AS id FROM wechat_outbox WHERE account = ? AND chat = ?').get(account, chat) as { id: number }).id);
+    const before = Number((this.ctx.resources.db
+      .query('SELECT IFNULL(MAX(id), 0) AS id FROM wechat_outbox WHERE account = ? AND chat = ?')
+      .get(account, chat) as { id: number }).id);
     const address: WechatAddress = { account, chat, name: watch.name || chat, customer: `wechat:${chat}` };
     //M 借当前微信会话地址通知机器人生成回复草稿。
     await this.ctx.bots.receive(this.name, this.config.bot, '请根据这个会话的最近聊天记录，起草一条合适的回复。只起草，不要向对方发送。', address);
 
     //M 返回该会话在请求之后新增的最近发件，供客服页展示。
-    return this.ctx.resources.db.query('SELECT * FROM wechat_outbox WHERE account = ? AND chat = ? AND id > ? ORDER BY id DESC LIMIT 1')
+    return this.ctx.resources.db
+      .query('SELECT * FROM wechat_outbox WHERE account = ? AND chat = ? AND id > ? ORDER BY id DESC LIMIT 1')
       .get(account, chat, before) as OutItem | null;
   }
 
@@ -813,7 +885,8 @@ export class Wechat {
   outbox(address: Pick<WechatAddress, 'account' | 'chat' | 'name'>, text: string, state: string): number {
     const sql = 'INSERT INTO wechat_outbox (account, chat, name, text, state, note, at) VALUES (?, ?, ?, ?, ?, ?, ?)';
     //M 写入发件内容和初始状态，用返回的行号跟踪这次发件。
-    return Number(this.ctx.resources.db.query(sql).run(address.account, address.chat, address.name, text, state, '', Date.now()).lastInsertRowid);
+    return Number(this.ctx.resources.db
+      .query(sql).run(address.account, address.chat, address.name, text, state, '', Date.now()).lastInsertRowid);
   }
 
   /** 改发件的状态。 */
@@ -831,7 +904,9 @@ export class Wechat {
     if (!this.config.send) return this.mark(id, 'draft', '只听不发：没有发出去');
 
     //G 发送前核对目标仍在监听名单，取消监听后禁止送出。
-    const watched = this.ctx.resources.db.query('SELECT 1 FROM wechat_watch WHERE account = ? AND chat = ?').get(item.account, item.chat);
+    const watched = this.ctx.resources.db
+      .query('SELECT 1 FROM wechat_watch WHERE account = ? AND chat = ?')
+      .get(item.account, item.chat);
     if (watched === null) return this.mark(id, 'failed', '会话不在监听名单，不发');
 
     //M 标记发送开始，并取账号昵称供发送端识别当前微信窗口。
@@ -839,7 +914,11 @@ export class Wechat {
     const nickname = this.reader.accounts().find((acc) => acc.id === item.account)?.nickname ?? item.account;
     try {
       //M 用发件号标识发送请求，随后用回执判断是否确认发送。
-      const result = await this.sender.send({ account: item.account, chat: item.chat, name: item.name, nickname }, item.text, `jmbots-wechat-${String(id)}`);
+      const result = await this.sender.send(
+        { account: item.account, chat: item.chat, name: item.name, nickname },
+        item.text,
+        `jmbots-wechat-${String(id)}`,
+      );
       let outboxState: 'sent' | 'unconfirmed' = 'unconfirmed';
       if (result['confirmed'] === true) {
         outboxState = 'sent';
@@ -853,7 +932,9 @@ export class Wechat {
     }
 
     //T 跟踪：发了一条微信。
-    const after = this.ctx.resources.db.query('SELECT state, note FROM wechat_outbox WHERE id = ?').get(id) as { state: string; note: string };
+    const after = this.ctx.resources.db
+      .query('SELECT state, note FROM wechat_outbox WHERE id = ?')
+      .get(id) as { state: string; note: string };
     const vars = { 发件号: id, 会话: item.name, 结果: after.state, 说明: after.note.slice(0, 80) };
     this.ctx.emit('trace', 'Wechat.deliver', '后台发一条微信，回读确认', 'sender.send(target, text, requestId)', vars);
   }
@@ -946,7 +1027,8 @@ export function checkConfig(ctx: cordis.Context, written: unknown): WechatConfig
 /**
  * 挂上微信：建渠道、登记页面和接口；approval 来了才接卡片。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config plugins 段里写给它的：{ bot, root?, python?, ocr_python?, aobw_url?, lock_file?, interval_ms?, at_names?, chat_limit?, send? }。
+ * @param config plugins 段里写给它的：
+ *   { bot, root?, python?, ocr_python?, aobw_url?, lock_file?, interval_ms?, at_names?, chat_limit?, send? }。
  * 副作用：启动微信渠道，登记客服接口并接入审批结果。
  */
 export function apply(ctx: cordis.Context, config: unknown): void {

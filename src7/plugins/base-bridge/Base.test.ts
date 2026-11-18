@@ -5,8 +5,20 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
-import { requestEvent } from '../../utils/RequestEvent.ts';
+import { requestEvent, type FallbackReason } from '../../utils/RequestEvent.ts';
 import * as bridge from './index.ts';
+
+
+/**
+ * base/request 没回时的退回：ok 是 false，原因写退回的理由。写明返回类型，交给 requestEvent。
+ * @param reason requestEvent 给的退回原因。
+ */
+function getOffline(reason: FallbackReason): bridge.BaseResult {
+  return { requestId: '', ok: false, error: reason };
+}
+
+/** base/request 的等待设置：比基地自己的超时多 1 秒（契约 3.2 第 10 条）。 */
+const baseOptions = { prefix: 'base', timeoutMs: 2000, onFallback: getOffline };
 
 //M 每个用例关闭自己的插件和临时 HTTP 服务，不改全局 fetch。
 const closers: (() => Promise<unknown>)[] = [];
@@ -166,6 +178,45 @@ describe('base-bridge 基地服务', () => {
     const { base } = await world(address, false);
     await expect(base.getJson('/slow', 75)).rejects.toThrow('基地没响应');
     await expect(base.getJson('/slow-body', 75)).rejects.toThrow('基地没响应');
+  });
+
+  //M 别的插件经事件请基地办事：GET、POST 都原样交回状态码和正文，409 不当断连。
+  test('base/request 有人答：GET、POST 交回基地的状态码和正文', async () => {
+    const remote = upstream();
+    remote.get('/version', async () => ({ version: 'test-shell' }));
+    remote.post('/ingest', async (request, reply) => reply.code(409).send({ received: request.body }));
+    const address = await remote.listen({ host: '127.0.0.1', port: 0 });
+    const { ctx } = await world(address, false);
+
+    const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
+    const got = await requestEvent(ctx, 'base/request', 'base/result', get, baseOptions);
+    expect(got).toMatchObject({ ok: true, status: 200, body: { version: 'test-shell' } });
+
+    const post = { method: 'POST', route: '/ingest', timeoutMs: 1000, body: { lib: 'x' } } as const;
+    const posted = await requestEvent(ctx, 'base/request', 'base/result', post, baseOptions);
+    expect(posted).toMatchObject({ ok: true, status: 409, body: { received: { lib: 'x' } } });
+  });
+
+  //M 没配地址、连不上：接了单但办不成，回 { ok: false, error }，不让发的一方干等。
+  test('base/request 没配地址：回 ok: false 和原因', async () => {
+    const { ctx } = await world();
+    const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
+    const result = await requestEvent(ctx, 'base/request', 'base/result', get, baseOptions);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('没配 engine.index_url');
+    expect(result.requestId).not.toBe('');
+  });
+
+  //M 没挂 base-bridge：当场退回，不等超时。
+  test('base/request 没人答：当场退回 ok: false', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
+    const options = { ...baseOptions, timeoutMs: 60_000 };
+    const began = Date.now();
+    const result = await requestEvent(ctx, 'base/request', 'base/result', get, options);
+    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled' });
+    expect(Date.now() - began).toBeLessThan(1000);
   });
 
   //M 单独指定 notify.url 的用户即使没有 engine.index_url，也能发送通知。

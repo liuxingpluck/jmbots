@@ -162,6 +162,7 @@ export class ChannelIndex {
     sql += ' ORDER BY at DESC, id DESC LIMIT ?';
     values.push(query.limit);
 
+    //M 查出来的行是表里的列名，用 getRow 逐行转成 ChannelRow 交回。
     const rows = this.db.query(sql).all(...values) as Record<string, unknown>[];
     return rows.map(getRow);
   }
@@ -246,6 +247,7 @@ function getAccess(session: Session): ChannelAccess {
   const snapshot = session.row.frontTask?.sourceSnapshot ?? session.row.activeSourceSnapshot;
   if (snapshot === undefined) return { full: false };
 
+  //M 是不是本人（飞书本人、本机网页或命令行，且不在群里）交给渠道协议判断：本人哪个聊天都能查，别人只能查快照里这个聊天。
   const full = protocolModule.isHistoryOwner(snapshot);
   return { full, channel: snapshot.channel, chat: snapshot.chatId };
 }
@@ -278,6 +280,7 @@ function getTime(value: unknown, label: string): number | undefined {
  * @param scope 渠道、聊天（调用方查过范围）。
  */
 function getQuery(args: Record<string, unknown>, scope: { channel?: string; chat?: string }): ChannelQuery {
+  //M 关键词参数按空白拆成几个词，每个词都要在正文里出现。
   const words = textModule.getText(args, 'query').split(/\s+/u).filter((word) => word !== '');
 
   //M 条数：默认 50，1 到 200。
@@ -287,6 +290,7 @@ function getQuery(args: Record<string, unknown>, scope: { channel?: string; chat
     limit = Math.min(written, LIMIT_MAX);
   }
 
+  //M 时间参数换成毫秒（认不出来抛错），连同调用方定好的渠道、聊天一起拼成查询。
   return {
     ...scope,
     since: getTime(args['since'], 'since'),
@@ -349,6 +353,7 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
         index.add(row);
       }
     } catch (error) {
+      //G 记不进索引只打日志，不往外抛，别挡别人认领这条消息。
       console.error(`memory：渠道消息记不进索引：${textModule.getMessage(error)}`);
     }
   });
@@ -361,6 +366,7 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
         index.add(row);
       }
     } catch (error) {
+      //G 记不进索引只打日志，不往外抛，别挡回复发出去。
       console.error(`memory：机器人的回复记不进索引：${textModule.getMessage(error)}`);
     }
   });
@@ -384,7 +390,10 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
     },
     kinds: ['front', 'work'],
     run: (args, session) => {
+      //M 先算这一轮能查多大范围：本人全部，别人只能查来源快照里这个聊天。
       const access = getAccess(session);
+
+      //M 渠道、聊天参数读成字符串；没写是 undefined（不限）。
       let channel = textModule.getText(args, 'channel') || undefined;
       let chat = textModule.getText(args, 'chat') || undefined;
 
@@ -400,6 +409,7 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
         chat = access.chat;
       }
 
+      //M 范围定好了，把时间、关键词、条数拼成查询，到表里查。
       const query = getQuery(args, { channel, chat });
       const rows = index.search(query);
 
@@ -412,7 +422,10 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
         关键词: query.words.join(' '),
         条数: rows.length,
       };
+      //T 把这一次查的范围、关键词和命中条数发进跟踪。
       ctx.emit('trace', 'ChannelIndex.search', '查渠道消息', 'SELECT memory_channel_messages', vars);
+
+      //M 命中的消息拼成一条一行的文字交回给模型。
       return getResultText(rows, query);
     },
   });
@@ -426,9 +439,11 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
           channel: textModule.getText(params, 'channel') || undefined,
           chat: textModule.getText(params, 'chat') || undefined,
         };
+        //M 接口的关键词参数叫 q，换成工具用的 query 再拼查询；范围不限制（本人全量）。
         const query = getQuery({ ...params, query: params['q'] }, scope);
         return { hits: index.search(query) };
       } catch (error) {
+        //G 参数写错（比如时间认不出来）回 400 并带原因。
         return reply.code(400).send({ error: textModule.getMessage(error) });
       }
     });

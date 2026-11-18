@@ -15,7 +15,10 @@ export const QUESTIONS = {
 /** 收尾总结怎么写（照 0.4 :74-77）。 */
 export const WRAPUP_PROMPT: Record<string, string> = {
   zh: '用户给这件事设了时间上限，现在到点了，工作已经停下。照下面的工作过程写一段收尾总结，三小段，每段一两句：做到哪了；卡在哪、为什么慢；还剩什么、接着做先干什么。只写工作过程里有的，不要编。',
-  en: 'The user set a time limit for this task and it has been reached; the work has stopped. Using the work log below, write a short wrap-up in three parts, one or two sentences each: what got done; where it got stuck and why it was slow; what is left and what to do first next time. Only state what is in the log.',
+  en: 'The user set a time limit for this task and it has been reached; the work has stopped. '
+    + 'Using the work log below, write a short wrap-up in three parts, one or two sentences each: '
+    + 'what got done; where it got stuck and why it was slow; what is left and what to do first next time. '
+    + 'Only state what is in the log.',
 };
 
 /** 延够了以后审核怎么看（照 0.4 :80-95）：离谱不离谱、要不要转新会话，只回一个 JSON。 */
@@ -24,15 +27,29 @@ export const REVIEW_PROMPT: Record<string, string> = {
     '用户给这件事设了时间上限，已经延长过两次，还没做完。你是审核：读下面的用户原话和工作过程，判断两件事，只回一个 JSON，不要别的字：',
     '{"absurd": true 或 false, "absurdWhy": "…", "handoff": true 或 false, "handoffNote": "…"}',
     '- absurd：有没有离谱的行为：同一条命令反复失败、绕圈子、偏离了用户要的、乱删乱改。有就 true，absurdWhy 用一两句说清哪里离谱，引用工作过程里的事；没有就 false，absurdWhy 写空字符串。',
-    '- handoff：要不要转到一个新会话接着做。方向是对的，只是上下文被旧的尝试塞满、越做越乱，换个干净的会话更容易做完，就 true；做不下去的原因换会话也解决不了（缺权限、缺东西、要用户定），就 false。absurd 是 true 时 handoff 写 false。',
-    '- handoffNote：handoff 是 true 时写给新会话的交接说明，分四段，每段开头写小标题：目标（用户要什么）；做到哪了；卡在哪；别再怎么做（试过不行的路）。只写工作过程里有的，不要编。handoff 是 false 时写空字符串。',
+    '- handoff：要不要转到一个新会话接着做。方向是对的，只是上下文被旧的尝试塞满、越做越乱，换个干净的会话更容易做完，就 true；'
+      + '做不下去的原因换会话也解决不了（缺权限、缺东西、要用户定），就 false。absurd 是 true 时 handoff 写 false。',
+    '- handoffNote：handoff 是 true 时写给新会话的交接说明，分四段，每段开头写小标题：目标（用户要什么）；做到哪了；'
+      + '卡在哪；别再怎么做（试过不行的路）。只写工作过程里有的，不要编。handoff 是 false 时写空字符串。',
   ].join('\n'),
   en: [
-    'The user set a time limit for this task; it has been extended twice and is still not done. You are the reviewer: read the user request and the work log below and decide two things. Reply with one JSON object only, nothing else:',
+    'The user set a time limit for this task; it has been extended twice and is still not done. '
+      + 'You are the reviewer: read the user request and the work log below and decide two things. '
+      + 'Reply with one JSON object only, nothing else:',
     '{"absurd": true or false, "absurdWhy": "...", "handoff": true or false, "handoffNote": "..."}',
-    '- absurd: is there unreasonable behaviour — the same command failing again and again, going in circles, drifting from what the user asked, careless deletes or edits? If so true, and absurdWhy says where in one or two sentences, citing the log; otherwise false and an empty absurdWhy.',
-    '- handoff: should the work continue in a fresh session? true when the direction is right but the context is clogged with old attempts and a clean session would finish more easily; false when a fresh session would not help (missing permission, missing material, needs the user to decide). If absurd is true, handoff is false.',
-    '- handoffNote: when handoff is true, a handover note for the new session in four parts, each with a short heading: goal (what the user wants); what is done; where it is stuck; what not to do again (paths that failed). Only state what is in the log. Empty string when handoff is false.',
+    '- absurd: is there unreasonable behaviour — the same command failing again and again, going in circles, '
+      + 'drifting from what the user asked, careless deletes or edits? '
+      + 'If so true, and absurdWhy says where in one or two sentences, citing the log; '
+      + 'otherwise false and an empty absurdWhy.',
+    '- handoff: should the work continue in a fresh session? '
+      + 'true when the direction is right but the context is clogged with old attempts '
+      + 'and a clean session would finish more easily; '
+      + 'false when a fresh session would not help (missing permission, missing material, needs the user to decide). '
+      + 'If absurd is true, handoff is false.',
+    '- handoffNote: when handoff is true, a handover note for the new session in four parts, '
+      + 'each with a short heading: goal (what the user wants); what is done; where it is stuck; '
+      + 'what not to do again (paths that failed). '
+      + 'Only state what is in the log. Empty string when handoff is false.',
   ].join('\n'),
 };
 
@@ -64,7 +81,9 @@ export function timingsText(steps: number, timings: Timings, usedMs: number): st
   const parts: string[] = [];
   if (steps > 0) parts.push(`思考 ${String(steps)} 步 ${textModule.getDuration(timings.modelMs)}`);
   if (timings.tools.length > 0) {
-    parts.push([...timings.tools].sort((left, right) => right.ms - left.ms).map((item) => `${item.name} ×${String(item.count)} ${textModule.getDuration(item.ms)}`).join('、'));
+    const byTime = [...timings.tools].sort((left, right) => right.ms - left.ms);
+    const toolTexts = byTime.map((item) => `${item.name} ×${String(item.count)} ${textModule.getDuration(item.ms)}`);
+    parts.push(toolTexts.join('、'));
   }
   parts.push(`总共 ${textModule.getDuration(usedMs)}`);
   return parts.join('；');
@@ -77,7 +96,13 @@ export function timingsText(steps: number, timings: Timings, usedMs: number): st
  */
 export function argsBrief(args: Record<string, unknown>): string {
   //M 按优先级从常见关键参数中挑选一项，压缩空白并截短供进度界面展示。
-  const main = args['command'] ?? args['query'] ?? args['path'] ?? args['pattern'] ?? args['text'] ?? args['action'] ?? args['prompt'];
+  const main = args['command']
+    ?? args['query']
+    ?? args['path']
+    ?? args['pattern']
+    ?? args['text']
+    ?? args['action']
+    ?? args['prompt'];
   if (typeof main === 'string') return textModule.clip(main.replace(/\s+/gu, ' '), 60);
 
   return '';
@@ -93,7 +118,8 @@ export function argsBrief(args: Record<string, unknown>): string {
 export function limitText(limitMinutes: number | undefined, extended: number, extendMinutes: number): string {
   if (limitMinutes === undefined) return '不限时';
   if (extended === 0) return `最多 ${String(limitMinutes)} 分钟`;
-  return `最多 ${String(limitMinutes)} 分钟（延长过 ${String(extended)} 次，共 ${String(limitMinutes + extended * extendMinutes)} 分钟）`;
+  const total = limitMinutes + extended * extendMinutes;
+  return `最多 ${String(limitMinutes)} 分钟（延长过 ${String(extended)} 次，共 ${String(total)} 分钟）`;
 }
 
 /**

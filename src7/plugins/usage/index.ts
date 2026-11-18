@@ -93,7 +93,9 @@ const CATALOG_WAIT_MS = 3000;
 const FORMATS: Record<string, string> = { hour: '%Y-%m-%d %H:00', day: '%Y-%m-%d', week: '%Y-W%W', month: '%Y-%m' };
 
 /** 分组 → 列（只许这几个，免得拼 SQL 出事）。 */
-const GROUPS: Record<string, string> = { provider: 'provider', model: 'model', purpose: 'purpose', bot: "COALESCE(bot, '')" };
+const GROUPS: Record<string, string> = {
+  provider: 'provider', model: 'model', purpose: 'purpose', bot: "COALESCE(bot, '')",
+};
 
 /** 会话种类 → 用途（网页用量页认的名字，web/src/Panel/Usage.tsx:165-177）；别的原样。 */
 const PURPOSES: Record<string, string> = { work: 'session', front: 'dispatch', compress: 'compact' };
@@ -105,8 +107,10 @@ const DEFAULT_DAYS = 7;
 const ERROR_MAX_CHARS = 300;
 
 /** 合计的那几列。 */
-const SUMS = 'COUNT(*) AS calls, COALESCE(SUM(1 - ok), 0) AS failures, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(output), 0) AS output, '
-  + 'COALESCE(SUM(cache_read), 0) AS cacheRead, COALESCE(SUM(cache_write), 0) AS cacheWrite, COALESCE(SUM(cost), 0) AS cost, COALESCE(SUM(ms), 0) AS ms';
+const SUMS = 'COUNT(*) AS calls, COALESCE(SUM(1 - ok), 0) AS failures, '
+  + 'COALESCE(SUM(input), 0) AS input, COALESCE(SUM(output), 0) AS output, '
+  + 'COALESCE(SUM(cache_read), 0) AS cacheRead, COALESCE(SUM(cache_write), 0) AS cacheWrite, '
+  + 'COALESCE(SUM(cost), 0) AS cost, COALESCE(SUM(ms), 0) AS ms';
 
 
 /** 一格合计。 */
@@ -133,7 +137,8 @@ export class Usage extends cordis.Service {
     super(ctx, 'usage');
     const db = ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS model_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,'
-      + ' provider TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL, purpose TEXT NOT NULL, bot TEXT, session_id TEXT,'
+      + ' provider TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL, purpose TEXT NOT NULL,'
+      + ' bot TEXT, session_id TEXT,'
       + ' input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,'
       + ' cost REAL NOT NULL, ms INTEGER NOT NULL, ok INTEGER NOT NULL, error TEXT)');
     db.exec('CREATE INDEX IF NOT EXISTS model_usage_at ON model_usage (at)');
@@ -242,13 +247,18 @@ export class Usage extends cordis.Service {
 
     //M 按会话列表与时间窗多查一条（limit + 1），用来判断是否截断并整理成 UsageRecord 返回。
     const marks = query.sessions.map(() => '?').join(', ');
-    const sql = `SELECT * FROM model_usage WHERE session_id IN (${marks}) AND at BETWEEN ? AND ? ORDER BY at, id LIMIT ?`;
-    const found = this.ctx.resources.db.query(sql).all(...query.sessions, query.from, query.to, query.limit + 1) as Record<string, unknown>[];
+    const sql = `SELECT * FROM model_usage WHERE session_id IN (${marks}) AND at BETWEEN ? AND ?`
+      + ' ORDER BY at, id LIMIT ?';
+    const found = this.ctx.resources.db
+      .query(sql)
+      .all(...query.sessions, query.from, query.to, query.limit + 1) as Record<string, unknown>[];
     const rows = found.slice(0, query.limit).map((item): UsageRecord => {
       const record: UsageRecord = {
-        at: item['at'] as number, provider: item['provider'] as string, model: item['model'] as string, kind: item['kind'] as string,
+        at: item['at'] as number, provider: item['provider'] as string, model: item['model'] as string,
+        kind: item['kind'] as string,
         purpose: item['purpose'] as string, input: item['input'] as number, output: item['output'] as number,
-        cacheRead: item['cache_read'] as number, cacheWrite: item['cache_write'] as number, cost: item['cost'] as number,
+        cacheRead: item['cache_read'] as number, cacheWrite: item['cache_write'] as number,
+        cost: item['cost'] as number,
         ms: item['ms'] as number, ok: item['ok'] === 1,
       };
       if (item['bot'] !== null) record.bot = item['bot'] as string;
@@ -278,7 +288,9 @@ export class Usage extends cordis.Service {
     const sql = `SELECT strftime('${format}', at / 1000, 'unixepoch', 'localtime') AS period, ${column} AS key, ${SUMS}`
       + ' FROM model_usage WHERE at >= ? AND at < ? GROUP BY period, key ORDER BY period, key';
     const rows = (db.query(sql).all(from, to) as (Bucket & { period: string; key: string })[]).map(withHitRate);
-    const totals = withHitRate(db.query(`SELECT ${SUMS} FROM model_usage WHERE at >= ? AND at < ?`).get(from, to) as Bucket);
+    const totals = withHitRate(
+      db.query(`SELECT ${SUMS} FROM model_usage WHERE at >= ? AND at < ?`).get(from, to) as Bucket,
+    );
     return { by, group, from, to, rows, totals };
   }
 }
