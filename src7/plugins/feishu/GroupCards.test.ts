@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
 import * as approvalModule from '../approval/index.ts';
 import * as cards from './cards/Cards.ts';
@@ -71,6 +72,7 @@ function finder(rows: Row[]): (where: Record<string, unknown>) => Row[] {
 /** 卡片那块的一套假环境。 */
 interface CardWorld {
   feishu: Feishu;
+  actionCtx: cordis.Context;
   db: Database;
   /** 发出去的卡片：发到哪个聊天。 */
   cardsTo: string[];
@@ -78,7 +80,7 @@ interface CardWorld {
   texts: { chatId: string; text: string }[];
   /** ctx.on 登记的监听。 */
   handlers: Map<string, ((value: unknown) => void)[]>;
-  /** approval.decide、progress.act 被调了几次。 */
+  /** 审批方法及进度请求收到的操作。 */
   calls: string[];
 }
 
@@ -101,7 +103,6 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
     config: { domain: '', apps: [{ appId: APP_ID, appSecret: 'fake', bot: BOT }], people: PEOPLE, groups: new Map() },
     db,
     approval: undefined,
-    progress: undefined,
     getApps: () => [APP_ID],
     lastPrivate: () => last,
     sendCard: (address: FeishuAddress) => {
@@ -119,7 +120,6 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
 
   const services: Record<string, unknown> = {
     approval: { decide: () => { calls.push('decide'); return '不该被调'; } },
-    progress: { act: () => { calls.push('act'); return '不该被调'; } },
   };
   const ctx = {
     get: (name: string) => services[name],
@@ -131,7 +131,8 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
   } as unknown as cordis.Context;
   cards.setupApproval(feishu, ctx);
   cards.setupProgress(feishu, ctx);
-  return { feishu, db, cardsTo, texts, handlers, calls };
+  const actionCtx = new cordis.Context();
+  return { feishu, actionCtx, db, cardsTo, texts, handlers, calls };
 }
 
 
@@ -203,22 +204,44 @@ describe('群里不发卡片', () => {
 describe('点卡片只认本人', () => {
   test('别人点待确认、进度卡片：回“只有 leon 能处理”，不定、不终止，表里不变', async () => {
     const world = cardWorld([GROUP_ROW], undefined);
+    requestEvents.onRequestEvent(world.actionCtx, 'progress/request', 'progress/result', () => {
+      world.calls.push('act');
+      return { ok: true, text: '收到，马上停' };
+    });
     world.db.query("INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES ('om_a', 'approval', '1', 0, 0), ('om_p', 'progress', 'g1', 0, 0)").run();
 
     for (const address of [FRIEND_IN_GROUP, BUILDER_IN_GROUP]) {
-      const approve = await cards.onAction(world.feishu, address, 'om_a', { action: 'approve' });
+      const approve = await cards.onAction(world.feishu, world.actionCtx, address, 'om_a', { action: 'approve' });
       expect(approve).toEqual({ type: 'warning', content: '只有 leon 能处理' });
-      const stop = await cards.onAction(world.feishu, address, 'om_p', { action: 'stop' });
+      const stop = await cards.onAction(world.feishu, world.actionCtx, address, 'om_p', { action: 'stop' });
       expect(stop).toEqual({ type: 'warning', content: '只有 leon 能处理' });
     }
     expect(world.calls).toEqual([]);
     expect(world.db.query('SELECT card_id, ended FROM feishu_cards ORDER BY card_id').all()).toEqual([{ card_id: 'om_a', ended: 0 }, { card_id: 'om_p', ended: 0 }]);
 
     //M 本人点：照常交给 approval、progress。
-    await cards.onAction(world.feishu, OWNER_IN_GROUP, 'om_a', { action: 'approve' });
-    await cards.onAction(world.feishu, OWNER_P2P, 'om_p', { action: 'stop' });
+    await cards.onAction(world.feishu, world.actionCtx, OWNER_IN_GROUP, 'om_a', { action: 'approve' });
+    const stopped = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_p', { action: 'stop' });
+    expect(stopped).toEqual({ type: 'info', content: '收到，马上停' });
     expect(world.calls).toEqual(['decide', 'act']);
+    await world.actionCtx.fiber.dispose();
   });
+});
+
+test('进度卡片通过请求改限时，进度失败或无人应答给出提示', async () => {
+  const world = cardWorld([OWNER_ROW], undefined);
+  world.db.query("INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES ('om_p', 'progress', 'p1', 0, 0)").run();
+  const value = { action: 'limit', minutes: '15' };
+  const unavailable = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_p', value);
+  expect(unavailable).toMatchObject({ type: 'warning', content: expect.stringContaining('进度控制暂不可用') });
+
+  requestEvents.onRequestEvent(world.actionCtx, 'progress/request', 'progress/result', (request) => {
+    expect(request).toMatchObject({ action: 'act', sessionId: 'p1', op: 'limit', minutes: 15 });
+    return { ok: false, text: '这件事已经结束了' };
+  });
+  const rejected = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_p', value);
+  expect(rejected).toEqual({ type: 'warning', content: '这件事已经结束了' });
+  await world.actionCtx.fiber.dispose();
 });
 
 

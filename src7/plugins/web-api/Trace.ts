@@ -9,6 +9,7 @@ import type { SessionRow } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { MessageRecord } from './Timeline.ts';
 import * as failureModule from '../../utils/Failure.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 
 
 /** 一句回话的生成依据，形状照网页的 ReplyGeneration（web/src/Types.ts:149-172）。 */
@@ -41,18 +42,8 @@ export interface SessionStep {
 }
 
 
-/** 流水服务 journal 的样子（journal.md 第 12 节）：一条请求的跟踪行，和 flow 用的是同一个 request。只按约定写结构，不 import 它。 */
-interface JournalLike {
-  request(message: number, limit: number): {
-    id: number; at: number; kind: string; name: string; mode: string; listeners: string[]; text: string; code: string; site: string;
-    bot: string | null; sessionId: string | null; messageId: number | null; vars: Record<string, unknown>;
-  }[] | undefined;
-}
-
-/** 用量服务 usage 的样子（usage.md 第 2 节），同上只按约定写结构。行的形状就是网页的 TraceUsage。 */
-interface UsageLike {
-  list(query: { sessions: string[]; from: number; to: number; limit: number }): { rows: Record<string, unknown>[]; truncated: boolean };
-}
+/** 流水和用量查询共用事件契约里的 5 秒等待上限。 */
+const TRACE_QUERY_TIMEOUT_MS = 5_000;
 
 
 /** 追溯里事件最多几条、用量最多几行。 */
@@ -100,7 +91,7 @@ export function getGeneration(row: SessionRow, text: string): Generation {
     run: null,
     step: assistants.length,
     assistantAt: last.timestamp,
-    callId: call?.type === 'toolCall' ? call.id : null,
+    callId: call?.id ?? null,
   };
 }
 
@@ -119,16 +110,44 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
   let previousAt = 0;
   row.messages.forEach((message, index) => {
     const seq = index + 1;
+    //G 系统消息不生成步骤，也不占用相邻步骤的时间。
+    if (message.role === 'system') return;
+
+    const startedAt = previousAt;
+    previousAt = message.timestamp;
     if (message.role === 'user') {
-      const text = typeof message.content === 'string' ? message.content : piAi.contentText(message.content);
+      let text = '';
+      if (typeof message.content === 'string') {
+        text = message.content;
+      }
+      if (Array.isArray(message.content)) {
+        text = piAi.contentText(message.content);
+      }
       //M 保留输入字数，将正文缩成网页步骤可展示的预览。
       all.push({
         seq, at: message.timestamp, row: '用户', eventType: 'session/message（user）',
         event: { text: textModule.clip(text, STEP_TEXT_MAX), chars: text.length },
         stateBefore: 'idle', stateAfter: 'wait_response', ...empty,
       });
-    } else if (message.role === 'assistant') {
-      const calls = message.content.flatMap((block) => (block.type === 'toolCall' ? [{ id: block.id, name: block.name, args: block.arguments }] : []));
+      return;
+    }
+
+    if (message.role === 'assistant') {
+      //M 提取模型的工具调用，按有无调用标记下一状态。
+      const calls = message.content
+        .filter((block) => block.type === 'toolCall')
+        .map((block) => ({ id: block.id, name: block.name, args: block.arguments }));
+      let stateAfter = 'idle';
+      if (calls.length > 0) {
+        stateAfter = 'run_tools';
+      }
+
+      //M 骨架没有请求耗时，使用与上一条消息的时间差。
+      let ms: number | null = null;
+      if (startedAt > 0) {
+        ms = Math.max(0, message.timestamp - startedAt);
+      }
+
       //M 为模型步骤记录模型名、正文预览、工具调用和用量。
       const event = {
         model: `${message.provider}/${message.model}`,
@@ -137,30 +156,39 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
         stopReason: message.stopReason,
         input: message.usage.input,
         output: message.usage.output,
-        //M 骨架不记每次请求用了多久，拿上一条消息到这条回答的时间差当耗时。
-        ms: previousAt > 0 ? Math.max(0, message.timestamp - previousAt) : null,
+        ms,
       };
       all.push({
         seq, at: message.timestamp, row: 'E2', eventType: 'session/message（assistant）', event,
-        stateBefore: 'wait_response', stateAfter: calls.length > 0 ? 'run_tools' : 'idle', ...empty,
+        stateBefore: 'wait_response', stateAfter, ...empty,
       });
-    } else if (message.role === 'toolResult') {
+      return;
+    }
+
+    if (message.role === 'toolResult') {
+      //M 工具结果按成功或失败分配步骤行，供网页显示状态。
       const result = piAi.contentText(message.content);
+      let stepRow = 'E3';
+      if (message.isError) {
+        stepRow = 'E4';
+      }
       all.push({
-        seq, at: message.timestamp, row: message.isError ? 'E4' : 'E3', eventType: 'session/message（toolResult）',
+        seq, at: message.timestamp, row: stepRow, eventType: 'session/message（toolResult）',
         event: { name: message.toolName, ok: !message.isError, resultChars: result.length, result: textModule.clip(result, STEP_TEXT_MAX) },
         stateBefore: 'run_tools', stateAfter: 'wait_response', ...empty,
       });
     }
-    //M 系统消息（role 是 system）不算一步，也不带时间。
-    if (message.role !== 'system') previousAt = message.timestamp;
   });
 
   //M 不在转的会话多一步“运行结束”：结局是现在的状态，出错时带原因。
   if (row.state !== 'running' && row.messages.length > 0) {
+    let error: string | null = null;
+    if (row.state === 'failed') {
+      error = row.reply;
+    }
     all.push({
       seq: row.messages.length + 1, at: row.updatedAt, row: 'E7', eventType: 'session/change',
-      event: { ending: row.state, error: row.state === 'failed' ? row.reply : null },
+      event: { ending: row.state, error },
       stateBefore: 'wait_response', stateAfter: 'idle', ...empty,
     });
   }
@@ -179,13 +207,13 @@ export interface TraceInput {
 
 /**
  * 回话追溯：这句回话从收到原话起，到追加进收件表为止，流水里记了哪些事、调了几次模型。
- * journal、usage 是可选的服务：用到的这一刻 ctx.get 现取（Cordis 的 get：没挂就是 undefined），没挂就如实写进 notes。
+ * 流水和用量分别通过事件查询，未取得结果时保留消息本身并在 notes 写明缺项。
  * @param ctx web-api 的 ctx。
  * @param input 消息、回话下标、会话标题、来源。
  * @returns 形状照网页的 ReplyTraceView（web/src/Types.ts:317-388）。
  * @throws Failure(404)：回话下标越界。
  */
-export function trace(ctx: cordis.Context, input: TraceInput): Record<string, unknown> {
+export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Record<string, unknown>> {
   const { message, replyIndex } = input;
   const reply = message.replies[replyIndex];
   //G 指定回复下标找不到时交回 404，结束追溯查询。
@@ -197,22 +225,62 @@ export function trace(ctx: cordis.Context, input: TraceInput): Record<string, un
   const to = reply.at;
   const notes = ['只读：按收件表、流水、用量表现有的记录拼成，不重新执行'];
 
-  const journal = ctx.get('journal') as JournalLike | undefined;
-  const usage = ctx.get('usage') as UsageLike | undefined;
+  const journalQuery = { action: 'message-lines', message: message.id, limit: EVENT_LIMIT } as const;
+  const journalOptions = {
+    timeoutMs: TRACE_QUERY_TIMEOUT_MS,
+    onFallback: () => ({ requestId: '', lines: undefined }),
+  };
+  const usageQuery = { sessions, from, to, limit: USAGE_LIMIT };
+  const usageOptions = {
+    timeoutMs: TRACE_QUERY_TIMEOUT_MS,
+    onFallback: () => ({ requestId: '', rows: [], truncated: false }),
+  };
 
-  //M 一条请求的行（journal.request，和 /flow/ 同一个取法），这里只挑涉及的会话、这条消息自己的，到这句回话为止。
-  const lines = journal?.request(message.id, EVENT_LIMIT) ?? [];
+  //M 按消息取流水、按会话和时段取用量，两份明细可同时查询。
+  const pendingJournal = requestEventModule.requestEvent(
+    ctx,
+    'journal/request',
+    'journal/result',
+    journalQuery,
+    journalOptions,
+  );
+  const pendingUsage = requestEventModule.requestEvent(
+    ctx,
+    'usage/list',
+    'usage/list-result',
+    usageQuery,
+    usageOptions,
+  );
+  const [journal, used] = await Promise.all([pendingJournal, pendingUsage]);
+
+  //M 流水只保留目标消息和涉及会话中截至本句回话的记录。
+  const lines = journal.lines ?? [];
   const mine = (line: (typeof lines)[number]): boolean => line.messageId === message.id || sessions.includes(line.sessionId ?? '');
   const events = lines.filter((line) => line.at <= to && mine(line));
   //M 取满了、最后一行还没到这句回话：后面的没取到。
   const lastAt = lines.at(-1)?.at ?? to;
   const cut = lines.length >= EVENT_LIMIT && lastAt < to;
 
-  const used = usage?.list({ sessions, from, to, limit: USAGE_LIMIT });
-  if (journal === undefined) notes.push('没挂 journal，没有事件');
-  if (usage === undefined) notes.push('没挂 usage，没有用量');
-  if (cut) notes.push(`事件超过 ${String(EVENT_LIMIT)} 条，只给前 ${String(EVENT_LIMIT)} 条`);
-  if (used?.truncated === true) notes.push(`用量超过 ${String(USAGE_LIMIT)} 行，只给前 ${String(USAGE_LIMIT)} 行`);
+  //M 缺流水时仅展示消息本身，缺用量时保留已有事件。
+  let scope = 'exact';
+  if (journal.lines === undefined) {
+    scope = 'message-only';
+    notes.push('没有流水明细或查询超时');
+  }
+  if (used.requestId === '') {
+    notes.push('没有用量或查询超时');
+  }
+  if (cut) {
+    notes.push(`事件超过 ${String(EVENT_LIMIT)} 条，只给前 ${String(EVENT_LIMIT)} 条`);
+  }
+  if (used.truncated) {
+    notes.push(`用量超过 ${String(USAGE_LIMIT)} 行，只给前 ${String(USAGE_LIMIT)} 行`);
+  }
+
+  let elapsedMs: number | null = null;
+  if (to >= from) {
+    elapsedMs = to - from;
+  }
 
   return {
     target: {
@@ -232,7 +300,7 @@ export function trace(ctx: cordis.Context, input: TraceInput): Record<string, un
       run: null,
       step: reply.generation.step,
     },
-    scope: journal === undefined ? 'message-only' : 'exact',
+    scope,
     notes,
     sources: [{
       id: message.id,
@@ -246,22 +314,36 @@ export function trace(ctx: cordis.Context, input: TraceInput): Record<string, un
     }],
     //M 跟踪行换成网页 TraceEvent 的外壳：type 是事件名或“模块.函数”，source 是听的人（函数行是发它的文件:行号），
     //M   data 里放跟踪行本身（kind、发法、听的人、人话、代码、位置、变量），网页按 data.kind 认出这是新格式。
-    events: events.map((event) => ({
-      id: event.id, type: event.name, at: event.at, source: event.kind === '事件' ? event.listeners.join('、') : event.site,
-      bot: event.bot, sessionId: event.sessionId, messageId: event.messageId, key: null, parent: null, depth: 0,
-      data: {
-        kind: event.kind, ...(event.mode === '' ? {} : { mode: event.mode }), ...(event.kind === '事件' ? { listeners: event.listeners } : {}),
-        ...(event.text === '' ? {} : { text: event.text }), ...(event.code === '' ? {} : { code: event.code }), site: event.site, ...event.vars,
-      },
-    })),
+    events: events.map((event) => {
+      let source = event.site;
+      const data: Record<string, unknown> = { kind: event.kind };
+      if (event.mode !== '') {
+        data['mode'] = event.mode;
+      }
+      if (event.kind === '事件') {
+        source = event.listeners.join('、');
+        data['listeners'] = event.listeners;
+      }
+      if (event.text !== '') {
+        data['text'] = event.text;
+      }
+      if (event.code !== '') {
+        data['code'] = event.code;
+      }
+      return {
+        id: event.id, type: event.name, at: event.at, source,
+        bot: event.bot, sessionId: event.sessionId, messageId: event.messageId, key: null, parent: null, depth: 0,
+        data: { ...data, site: event.site, ...event.vars },
+      };
+    }),
     dispatches: [],
-    usage: used?.rows ?? [],
+    usage: used.rows,
     usageScope: 'session-window',
-    truncated: cut || used?.truncated === true,
+    truncated: cut || used.truncated,
     startedAt: from,
     endedAt: to,
     endSource: 'reply-record',
-    elapsedMs: to >= from ? to - from : null,
+    elapsedMs,
   };
 }
 

@@ -78,7 +78,7 @@ export const name = 'tutorial';
 
 //M 版本号：改了对外的接口、页面、配置就往上加。
 /** 版本号。 */
-export const version = '1.1.7';
+export const version = '1.1.6';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -607,6 +607,7 @@ class Tutorial {
       const key = String(row.messageId);
       if (entries.has(key)) continue;
 
+      //M 先认出磁盘或内存已抓拍的消息，保留快照标记。
       const fileItem = byFile.get(key);
       const hasSnapshot = fileItem !== undefined || this.shots.hasMessage(row.messageId);
 

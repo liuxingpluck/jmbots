@@ -1,13 +1,13 @@
 /**
  * 飞书卡片：待确认卡片（approval 挂着时）、进度卡片（progress 挂着时）。听事件、定发给谁、发卡改卡、认按钮、回小提示。
- * 都是函数，不建 class。approval、progress 两个插件还没写：它们不在时 setupApproval、setupProgress 根本不会被调，
- * 卡片这块不开工，飞书别的功能照常（index.ts 用 ctx.inject 开小插件，服务来了 Cordis 才调回调）。
+ * 待确认卡片在 approval 服务就绪时开工；进度卡片订阅更新通知，按钮通过请求事件提交操作。
  * 卡片号存表 feishu_cards，按钮值只放动作，号从表里查：重启后点旧卡片也认得。
  * 飞书群里不发卡片（群里谁都能点，绕过用户拍板）：待确认卡片改发本人私聊，群里只说一句“要本人确认”；进度卡片群里不发。
  * 点卡片只认本人（people 里 role 是 owner 的），别人点回一句“只有本人能处理”（2026-11-17，0.7.18）。
  */
 import type * as cordis from 'cordis';
 import type { SessionMeta } from '../../../Sessions.ts';
+import * as requestEventModule from '../../../utils/RequestEvent.ts';
 import * as textModule from '../../../utils/Text.ts';
 import * as workspaceModule from '../../../utils/Workspace.ts';
 import { feishuCustomer } from '../index.ts';
@@ -22,12 +22,8 @@ export interface ApprovalLike {
 }
 
 
-/** progress 服务里卡片用到的方法（progress.md 第 2 节）。 */
-export interface ProgressLike {
-  /** 终止或限时；交回给用户看的一句话。 */
-  act(sessionId: string, action: 'stop' | 'limit', minutes?: number): string;
-}
-
+/** 进度卡片按钮最多等五秒。 */
+const PROGRESS_TIMEOUT_MS = 5000;
 
 declare module 'cordis' {
   interface Events {
@@ -75,17 +71,12 @@ export function setupApproval(feishu: Feishu, ctx: cordis.Context): void {
 
 
 /**
- * progress 在时开工：听 update，记下 progress 服务给 onAction 用。
+ * 监听更新通知并发出或刷新进度卡片。
  * @param feishu 飞书渠道。
- * @param ctx 小插件的 ctx（progress 已经在了）。
+ * @param ctx 飞书插件的 ctx。
  */
 export function setupProgress(feishu: Feishu, ctx: cordis.Context): void {
-  feishu.progress = ctx.get('progress') as ProgressLike;
-  ctx.effect(() => {
-    return () => {
-      feishu.progress = undefined;
-    };
-  });
+  //M 进度更新通过事件发送，随飞书插件一起撤销监听。
   ctx.on('progress/update', (item) => {
     //M 长任务进度更新时异步发送或原地刷新对应私聊进度卡片。
     void onProgress(feishu, ctx, item);
@@ -331,39 +322,41 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
  * 点了卡片按钮。先认人：只有本人（回话地址的 role 是 owner，飞书照 people 写）点的才算，
  * 别人点（还留在群里的旧卡片）回一句“只有 某某 能处理”，不定、不终止、不限时。
  * @param feishu 飞书渠道。
+ * @param ctx 飞书插件的事件上下文。
  * @param address 点的人、卡片所在的聊天。
  * @param cardId 卡片号。
  * @param value 按钮值：{ action, minutes? }。
- * @returns 给用户的小提示；表里没有这张卡片、或那块没开工（approval、progress 没挂）交回 undefined。
+ * @returns 给用户的小提示。找不到卡片或缺少审批服务时由调用方提示。
  */
-export function onAction(
+export async function onAction(
   feishu: Feishu,
+  ctx: cordis.Context,
   address: FeishuAddress,
   cardId: string,
   value: Record<string, unknown>,
 ): Promise<Toast | undefined> {
   //G 不是本人点的：只回提示，什么都不动。
-  if (workspaceModule.getRole(address) !== 'owner') return Promise.resolve({ type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` });
+  if (workspaceModule.getRole(address) !== 'owner') return { type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` };
 
   //M 反查该卡片对应的业务类型与审批/会话编号，库里找不到则忽略。
   const row = feishu.db.query('SELECT card_id, kind, ref, ended FROM feishu_cards WHERE card_id = ?').get(cardId) as CardRow | null;
-  if (row === null) return Promise.resolve(undefined);
+  if (row === null) return undefined;
 
   if (row.kind === 'approval' && feishu.approval !== undefined) {
     const approve = value['action'] === 'approve';
     //M 调用 approval 服务提交审批结果，已处理过的则交回原有结论给用户提示。
     const result = feishu.approval.decide(Number(row.ref), approve, `飞书卡片 ${address.openId}`);
     if (typeof result === 'string') {
-      return Promise.resolve({ type: 'info', content: `待确认 #${row.ref} 已经处理过了：${result}` });
+      return { type: 'info', content: `待确认 #${row.ref} 已经处理过了：${result}` };
     }
     //M 卡片由随后的 approval/decided 改成灰色。
     let toastText = '已拒绝';
     if (approve) {
       toastText = '已同意执行';
     }
-    return Promise.resolve({ type: 'success', content: toastText });
+    return { type: 'success', content: toastText };
   }
-  if (row.kind === 'progress' && feishu.progress !== undefined) {
+  if (row.kind === 'progress') {
     let action: 'stop' | 'limit' = 'limit';
     if (value['action'] === 'stop') {
       action = 'stop';
@@ -372,9 +365,21 @@ export function onAction(
     if (action === 'limit') {
       minutes = Number(value['minutes'] ?? 0);
     }
-    //M 调用进度服务执行终止或限时操作并交回给用户的小提示文本。
-    const feedback = feishu.progress.act(row.ref, action, minutes);
-    return Promise.resolve({ type: 'info', content: feedback });
+    const input = { action: 'act', sessionId: row.ref, op: action, minutes } as const;
+    const options = {
+      timeoutMs: PROGRESS_TIMEOUT_MS,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '',
+        ok: false,
+        text: detail ?? `进度控制暂不可用或超时（${reason}）`,
+      }),
+    };
+
+    //M 把终止或限时交给进度插件，用回执生成卡片提示。
+    const result = await requestEventModule.requestEvent(ctx, 'progress/request', 'progress/result', input, options);
+    if (result.ok !== true) return { type: 'warning', content: result.text ?? '进度控制失败' };
+
+    return { type: 'info', content: result.text ?? '已处理' };
   }
-  return Promise.resolve(undefined);
+  return undefined;
 }

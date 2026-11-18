@@ -59,6 +59,7 @@ function getReason(err: string, timedOut: boolean): string {
   if (/FileNotFoundError|No such file|找不到/u.test(err)) return '找不到文件（引擎、密钥或微信数据目录）';
   if (/ModuleNotFoundError|ImportError/u.test(err)) return '引擎缺 Python 模块';
   if (/database is locked|sqlite3\.OperationalError/u.test(err)) return '微信数据库读不了（被占用或解密失败）';
+  //G 其余情况只摘取异常类别，供界面解释引擎失败。
   const kind = /(?:^|\n)\s*([A-Za-z_][\w.]*(?:Error|Exception))\b/u.exec(err)?.[1];
   if (kind !== undefined) return `引擎报错 ${kind}`;
 
@@ -94,6 +95,7 @@ export class Reader {
 
   /** 最近会话，最近的在前。 */
   async sessions(account: string, limit: number): Promise<ChatItem[]> {
+    //M 读取指定账号的最近会话，作为轮询比对同步进度的输入。
     return JSON.parse(await this.run(account, ['sessions', '--limit', String(limit)])) as ChatItem[];
   }
 
@@ -119,6 +121,7 @@ export class Reader {
    * 2026-11-14 23:15 EST：给工具 wechat_history 用——库里存的不够时，模型要读更早的就从微信里补。
    */
   async backfill(account: string, chat: string, until: number, limit: number): Promise<SyncResult> {
+    //M 用最早已知时间继续向前读取，把这批旧消息交给调用方入库。
     return JSON.parse(await this.run(account, ['backfill', chat, '--until-time', String(until), '--limit', String(limit)])) as SyncResult;
   }
 
@@ -136,6 +139,7 @@ export class Reader {
     fs.writeFileSync(path.join(this.root, request), JSON.stringify({ op: 'image', chat, source, local_id: localId, out: relative, thumb: true }));
     let result: { ok?: boolean; mime?: string };
     try {
+      //M 用临时请求指明要读取的图片，返回是否成功及其媒体类型。
       result = JSON.parse(await this.run(account, ['media', '--request', request])) as { ok?: boolean; mime?: string };
     } finally {
       fs.rmSync(path.join(this.root, request), { force: true });
@@ -154,8 +158,11 @@ export class Reader {
   //M 2026-11-15 00:46 EST：poll 的 sync-batch、backfillAll、页面当场同步原来各自起 python 并发；引擎原地改写 runtime/cache 的解密缓存、不加锁（jimukefu db_cache.py:196），并发会读坏。
   /** 同一账号的引擎调用排队挨个跑，不同账号并行；某次失败不卡后面的。 */
   private run(account: string, args: string[]): Promise<string> {
+    //M 让当前请求接在同账号的上一个请求之后，即使上一条失败也继续。
     const next = (this.queues.get(account) ?? Promise.resolve()).catch(() => undefined).then(() => this.exec(account, args));
     this.queues.set(account, next);
+
+    //M 完成后只清理仍指向自己的队尾，避免丢掉随后排进来的请求。
     void next.catch(() => undefined).then(() => { if (this.queues.get(account) === next) this.queues.delete(account); });
     return next;
   }

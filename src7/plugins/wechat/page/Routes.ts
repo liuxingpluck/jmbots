@@ -38,6 +38,7 @@ function field(from: unknown, key: string): string {
  * @param http HTTP 服务。
  * @param db 运行时数据库（wechat_* 表）。
  * @param wechat 微信渠道。
+ * 副作用：登记客服页的读取、草稿和发送路由。
  */
 export function routes(http: Http, db: Database, wechat: Wechat): void {
   const app = http.app;
@@ -46,9 +47,12 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
   app.get('/wechat', (_request, reply) => reply.redirect('/wechat-kefu/'));
   app.get('/wechat/', (_request, reply) => reply.redirect('/wechat-kefu/'));
 
+  //M 把轮询状态、微信账号和刷新周期一并交给客服页面。
   app.get('/api/wechat-kefu/status', () => ({ ...wechat.status, accounts: wechat.reader.accounts(), interval: wechat.config.intervalMs }));
 
+  //M 提供账号的最近会话，供客服页展示监听和自动发送开关。
   app.get('/api/wechat-kefu/chats', async (request, reply) => {
+    //M 定位所选账号并读取该账号的开关状态，稍后与会话列表合并。
     const account = field(request.query, 'account');
     const flags = db.query('SELECT chat, auto FROM wechat_watch WHERE account = ?').all(account) as { chat: string; auto: number }[];
     //M 2026-11-14 20:10：引擎失败时回 500 加一句脱敏的简短原因（Reader 已去掉人名、消息），不再是光秃秃的 Internal Server Error。
@@ -67,8 +71,10 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
 
   app.put('/api/wechat-kefu/watch', (request) => {
     const body = request.body as Record<string, unknown>;
+    //M 从请求确定开关归属的微信账号和会话。
     const account = field(body, 'account'), chat = field(body, 'chat');
     if (body['watch'] !== true) {
+      //M 取消监听时移除名单记录，该会话后续不再按监听规则处理。
       db.query('DELETE FROM wechat_watch WHERE account = ? AND chat = ?').run(account, chat);
       return { ok: true };
     }
@@ -76,6 +82,8 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     if (body['auto'] === true) {
       autoFlag = 1;
     }
+
+    //M 新增或更新监听项，保存展示名称和自动发送设置。
     db.query('INSERT INTO wechat_watch (account, chat, name, auto, last_time) VALUES (?, ?, ?, ?, NULL)'
       + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, auto = excluded.auto')
       .run(account, chat, field(body, 'name') || chat, autoFlag);
@@ -84,7 +92,9 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     return { ok: true };
   });
 
+  //M 客服页打开会话时取本地已保存的聊天记录。
   app.get('/api/wechat-kefu/messages', async (request, reply) => {
+    //M 解析账号、会话及读取上限，限制该次查询的返回量。
     const limit = Math.min(Number(field(request.query, 'limit')) || 100, 5000);
     const account = field(request.query, 'account'), chat = field(request.query, 'chat');
     //M 2026-11-14 23:15 EST：点开一个后台还没轮到的会话，当场只读同步一次（最近 50 条存量），不用等后台。
@@ -97,10 +107,14 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
         return reply.code(500).send({ error: getErrorText(error) });
       }
     }
+
+    //M 查监听状态，只为仍在监听且未补全的会话安排历史补录。
     const watched = db.query('SELECT 1 FROM wechat_watch WHERE account = ? AND chat = ?').get(account, chat);
     if (watched !== null && (synced === null || synced.full !== 1) && account !== '' && chat !== '') {
       void wechat.backfillAll(account, chat);
     }
+
+    //M 从库里取最新的限量消息，再按对话时间正序返回页面。
     const rows = db.query('SELECT * FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC, local_id DESC LIMIT ?')
       .all(account, chat, limit);
     return rows.reverse();
@@ -120,6 +134,7 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     }
   });
 
+  //M 把最新发件和草稿提供给客服页的发件列表。
   app.get('/api/wechat-kefu/outbox', () => db.query('SELECT * FROM wechat_outbox ORDER BY id DESC LIMIT 100').all());
 
   //M 2026-11-15 00:17 EST：人手点“让 AI 回复”。只对已监听会话起草，结果进草稿栏，绝不发送。
@@ -136,16 +151,22 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
       if (text.includes('请先勾选监听')) {
         code = 400;
       }
+      //G 返回起草失败的原因，未开监听和服务错误使用不同状态码。
       return reply.code(code).send({ error: text });
     }
   });
 
+  //M 接收客服手工输入的回复，送入统一的发件流程。
   app.post('/api/wechat-kefu/send', async (request, reply) => {
     const body = request.body;
+    //M 提取回复目标和正文，供下方判断可否发送。
     const account = field(body, 'account'), chat = field(body, 'chat'), text = field(body, 'text').trim();
+
+    //G 只允许向当前监听名单内的会话提交非空文本。
     const watch = db.query('SELECT name FROM wechat_watch WHERE account = ? AND chat = ?').get(account, chat) as { name: string } | null;
     if (watch === null || text === '') return reply.code(400).send({ error: '只能发给监听名单里的会话，内容不能空' });
 
+    //M 建发件记录后按该记录发送，最终返回实际状态给客服页。
     const id = wechat.outbox({ account, chat, name: watch.name }, text, 'sending');
     await wechat.deliver(id);
     return db.query('SELECT * FROM wechat_outbox WHERE id = ?').get(id);
@@ -153,9 +174,11 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
 
   app.post('/api/wechat-kefu/outbox/send', async (request, reply) => {
     const id = Number((request.body as Record<string, unknown>)['id']);
+    //G 只允许在客服页触发草稿、失败或已拒绝的发件。
     const item = db.query('SELECT state FROM wechat_outbox WHERE id = ?').get(id) as { state: string } | null;
     if (item === null || !['draft', 'failed', 'rejected'].includes(item.state)) return reply.code(400).send({ error: '只能发草稿、发失败、被拒的' });
 
+    //M 交给共用的发送流程，并回查该条发件的最终状态。
     await wechat.deliver(id);
     return db.query('SELECT * FROM wechat_outbox WHERE id = ?').get(id);
   });

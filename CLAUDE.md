@@ -200,3 +200,4 @@ bun run swap        # 只用于源码模式：先检查，再试运行，再替�
 - 能做：`bun install --no-save --ignore-scripts` 后跑 typecheck、lint、离线测试，修不依赖本机环境的 bug、补测试。
 - 不做：真实模型调用、打开或编造 `config.yaml`、启停或换版本服务（`swap`、`serve`、`guard`、`autostart`）。`shell/` 的 Windows 自启逻辑只能看代码和跑它自带的离线测试。
 - 工作方式：从最新 `main` 切 `claude/<主题>` 分支，小步提交，推分支并开 PR，不直接推 `main`，不强推。PR 描述写清改了什么、跑了哪些命令、结果如何（通过和没验证分开写）。
+- **例外：后备优化顾问**（用户 11-18 #157）：照 `src7/docs/云端任务.md` 做顾问的那个云端会话，只往 `src7/docs/云端/` 里新建文档，可以直接推 `main`、不开 PR；推之前 `git pull --rebase origin main`，再用 `git status` 确认改动全在这个目录里，有别的文件就不推。本地的 AI 不碰 `src7/docs/云端/`，云端不碰别的任何文件。

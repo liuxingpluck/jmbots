@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { afterEach, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
-import type { Session } from '../../Sessions.ts';
+import type { AskInput, Session } from '../../Sessions.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type { Pending } from '../approval/index.ts';
 import * as progressPlugin from './index.ts';
@@ -33,12 +33,17 @@ afterEach(async () => {
 async function setupWorld(options: {
   withApproval?: boolean;
   withMirror?: boolean;
+  withCatalog?: boolean;
+  engine?: Record<string, number>;
+  reviewReply?: string;
+  listenSay?: boolean;
   pluginConfig?: progressPlugin.ProgressConfig;
 } = {}): Promise<{
   ctx: cordis.Context;
   root: string;
   session: Session;
   askedReviews: string[];
+  askInputs: AskInput[];
   approvalAskList: Pending[];
   sayLogs: string[];
   traces: { where: string; what: string; vars?: Record<string, unknown> }[];
@@ -54,12 +59,13 @@ async function setupWorld(options: {
   const sessionMap = new Map<string, Session>();
   const sayLogs: string[] = [];
   const askedReviews: string[] = [];
+  const askInputs: AskInput[] = [];
   const approvalAskList: Pending[] = [];
   const traces: { where: string; what: string; vars?: Record<string, unknown> }[] = [];
 
   class MockResources extends cordis.Service {
     readonly root = root;
-    readonly raw = { engine: { overtime_minutes: 0, long_run_card_minutes: 0 } };
+    readonly raw = { engine: { overtime_minutes: 0, long_run_card_minutes: 0, ...options.engine } };
     constructor(parent: cordis.Context) {
       super(parent, 'resources');
     }
@@ -74,14 +80,12 @@ async function setupWorld(options: {
     constructor(parent: cordis.Context) {
       super(parent, 'bots');
     }
-    get(name: string): { config: Record<string, unknown> } | undefined {
+    get(name: string): { config: Record<string, unknown>; hand: () => Session } | undefined {
       if (name === '周小灵') {
-        return { config: { language: 'zh' } };
+        const fresh = { id: 'session-next', row: {}, save: () => undefined } as unknown as Session;
+        return { config: { language: 'zh' }, hand: () => fresh };
       }
       return undefined;
-    }
-    say(_session: Session, text: string): void {
-      sayLogs.push(text);
     }
   }
 
@@ -135,8 +139,12 @@ async function setupWorld(options: {
       }
       return hit;
     }
-    async ask(input: { text: string }): Promise<{ ok: boolean; reply: string }> {
+    async ask(input: AskInput): Promise<{ ok: boolean; reply: string }> {
+      askInputs.push(input);
       askedReviews.push(input.text);
+      if (input.kind === 'progress-review' && options.reviewReply !== undefined) {
+        return { ok: true, reply: options.reviewReply };
+      }
       return { ok: true, reply: '- 先查记忆库再全局搜索（预计快 40%）\n- 只读相关函数行段（预计快 25%）' };
     }
   }
@@ -144,21 +152,30 @@ async function setupWorld(options: {
   await ctx.plugin(MockResources);
   await ctx.plugin(MockBots);
   await ctx.plugin(MockSessions);
+  if (options.listenSay !== false) {
+    ctx.on('bot/say', (_session, text) => { sayLogs.push(text); });
+  }
+
+  if (options.withCatalog === true) {
+    events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ({ model }) => ({
+      info: {
+        id: model, name: model, kind: 'chat' as const, contextWindow: 128000,
+        thinking: ['off', 'xhigh', 'medium'], price: { input: 0, output: 0 },
+      },
+    }));
+  }
 
   if (options.withMirror === true) {
     const mirrorDir = path.join(root, 'bots', '周小灵', 'sessions', fakeSession.id);
     fs.mkdirSync(mirrorDir, { recursive: true });
     fs.writeFileSync(path.join(mirrorDir, '对话.md'), '## 用户\n帮我查慢在哪里\n## 助手\n读了不少文件才找到。', 'utf8');
 
-    class MockMirror extends cordis.Service {
-      constructor(parent: cordis.Context) {
-        super(parent, 'filesMirror');
-      }
-      getDir(row: { bot: string; id: string }): string {
-        return path.join(root, 'bots', row.bot, 'sessions', row.id);
-      }
-    }
-    await ctx.plugin(MockMirror);
+    events.onRequestEvent(ctx, 'journal/request', 'journal/result', (request) => {
+      if (request.action !== 'mirror-dir') return {};
+
+      const target = path.join(root, 'bots', request.bot, 'sessions', request.sessionId);
+      return { dir: target };
+    });
   }
 
   if (options.withApproval === true) {
@@ -198,7 +215,7 @@ async function setupWorld(options: {
 
   await ctx.plugin(progressPlugin, options.pluginConfig);
 
-  return { ctx, root, session: fakeSession, askedReviews, approvalAskList, sayLogs, traces };
+  return { ctx, root, session: fakeSession, askedReviews, askInputs, approvalAskList, sayLogs, traces };
 }
 
 
@@ -317,6 +334,7 @@ test('3. Review 完整闭环：空闲挑选超时条目、记 reviewedAt、送�
   const world = await setupWorld({
     withApproval: true,
     withMirror: true,
+    withCatalog: true,
     pluginConfig: { review: { first_ms: 70, every_ms: 5000 } },
   });
 
@@ -334,6 +352,7 @@ test('3. Review 完整闭环：空闲挑选超时条目、记 reviewedAt、送�
 
   expect(world.askedReviews.length).toBe(1);
   expect(world.askedReviews[0]).toContain('读了不少文件才找到');
+  expect(world.askInputs[0]?.thinking).toBe('medium');
   expect(world.session.row.reviewedAt).toBeDefined();
   expect(world.approvalAskList.length).toBe(1);
   expect(world.approvalAskList[0]?.kind).toBe('review');
@@ -350,6 +369,66 @@ test('3. Review 完整闭环：空闲挑选超时条目、记 reviewedAt、送�
   const md = fs.readFileSync(path.join(reviewDir, files[0]!), 'utf8');
   expect(md).toContain('# 复盘：分析插件合并缓慢原因');
   expect(md).toContain('先查记忆库再全局搜索');
+});
+
+test('复盘缺少镜像和模型应答时仍能生成询问', async () => {
+  const world = await setupWorld({ withApproval: true, pluginConfig: { review: { first_ms: 40 } } });
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+  world.ctx.progress.act(world.session.id, 'stop');
+
+  const deadline = Date.now() + 1000;
+  while (world.approvalAskList.length === 0 && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(world.askInputs[0]?.text).toContain('没有记录：未获取到镜像');
+  expect(world.askInputs[0]?.thinking).toBe('minimal');
+});
+
+test('长跑提醒、报时和收尾用通知发送，模型无人应答用最低默认档', async () => {
+  const world = await setupWorld({
+    engine: { long_run_card_minutes: 0.00005 },
+    pluginConfig: { review: false },
+  });
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+  await Bun.sleep(15);
+  world.ctx.progress.act(world.session.id, 'limit', 0.005);
+
+  const deadline = Date.now() + 1000;
+  while (world.sayLogs.length < 3 && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(world.sayLogs).toEqual([
+    expect.stringContaining('不管它就一直做下去'),
+    expect.stringContaining('到点会先停下'),
+    expect.stringContaining('先停在这里'),
+  ]);
+  expect(world.askInputs[0]?.thinking).toBe('minimal');
+});
+
+test.each([
+  { withCatalog: true, listenSay: true, expectedThinking: 'xhigh' as const },
+  { withCatalog: false, listenSay: false, expectedThinking: 'high' as const },
+])('进度审核选择 $expectedThinking 思考档并完成转交', async ({ withCatalog, listenSay, expectedThinking }) => {
+  const world = await setupWorld({
+    withCatalog,
+    listenSay,
+    engine: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
+    reviewReply: '{"absurd":false,"handoff":true,"handoffNote":"继续核对已有结果"}',
+  });
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+
+  const deadline = Date.now() + 1000;
+  while (world.ctx.progress.list()[0]?.stage !== 'handed' && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(world.ctx.progress.list()[0]?.stage).toBe('handed');
+  expect(world.askInputs[0]?.thinking).toBe(expectedThinking);
+  if (!listenSay) return;
+
+  expect(world.sayLogs).toContain('↪ 这件事转到新会话 session-next 接着做。交接说明：\n继续核对已有结果');
 });
 
 

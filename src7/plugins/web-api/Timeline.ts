@@ -149,7 +149,9 @@ function getElapsed(session: Session, createdAt: number, now: number): { frontMs
  */
 export function title(meta: SessionMeta): string {
   const summary = (meta.summary ?? '').trim();
-  return summary === '' ? `会话 ${meta.id}` : summary.slice(0, TITLE_MAX);
+  if (summary === '') return `会话 ${meta.id}`;
+
+  return summary.slice(0, TITLE_MAX);
 }
 
 
@@ -160,7 +162,9 @@ export function title(meta: SessionMeta): string {
 export function getStatus(state: SessionState): 'running' | 'idle' | 'error' {
   if (state === 'running') return 'running';
 
-  return state === 'failed' ? 'error' : 'idle';
+  if (state === 'failed') return 'error';
+
+  return 'idle';
 }
 
 
@@ -174,7 +178,16 @@ export function sessionFiles(root: string, meta: SessionMeta): { md: string; jso
   const dir = path.join(root, 'bots', meta.bot, 'sessions', meta.id);
   const md = path.join(dir, '对话.md');
   const json = path.join(dir, 'session.json');
-  return { md: fs.existsSync(md) ? md : '', json: fs.existsSync(json) ? json : '' };
+  //M 文件已生成时才提供网页可以打开的路径。
+  let mdFile = '';
+  if (fs.existsSync(md)) {
+    mdFile = md;
+  }
+  let jsonFile = '';
+  if (fs.existsSync(json)) {
+    jsonFile = json;
+  }
+  return { md: mdFile, json: jsonFile };
 }
 
 
@@ -205,9 +218,23 @@ export async function attachments(text: string): Promise<{ path: string; name: s
 export function snippet(text: string, keyword: string): string {
   const flat = text.replace(/\s+/gu, ' ').trim();
   const at = flat.toLowerCase().indexOf(keyword.toLowerCase());
-  const start = at < 0 ? 0 : Math.max(0, at - SNIPPET_AROUND);
-  const end = at < 0 ? Math.min(flat.length, SNIPPET_AROUND * 2) : Math.min(flat.length, at + keyword.length + SNIPPET_AROUND);
-  return `${start > 0 ? '…' : ''}${flat.slice(start, end)}${end < flat.length ? '…' : ''}`;
+  //M 默认预览开头，命中时截取命中位置前后的文字。
+  let start = 0;
+  let end = Math.min(flat.length, SNIPPET_AROUND * 2);
+  if (at >= 0) {
+    start = Math.max(0, at - SNIPPET_AROUND);
+    end = Math.min(flat.length, at + keyword.length + SNIPPET_AROUND);
+  }
+
+  //M 只在内容被截去的那一端补省略号。
+  let preview = flat.slice(start, end);
+  if (start > 0) {
+    preview = '…' + preview;
+  }
+  if (end < flat.length) {
+    preview += '…';
+  }
+  return preview;
 }
 
 
@@ -288,7 +315,10 @@ export class Timeline {
   get(id: number): MessageRecord | undefined {
     //M 按编号取一条消息，并把库中的行转为时间线内部记录。
     const raw = this.ctx.resources.db.query(`${ROW_SQL} WHERE id = ?`).get(id) as RawRow | null;
-    return raw === null ? undefined : this.parse(raw);
+    if (raw === null) return undefined;
+
+    //M 只把已查到的库行转换为内部记录。
+    return this.parse(raw);
   }
 
   /**
@@ -351,7 +381,10 @@ export class Timeline {
 
     //M 把生成依据和耗时随本句回话一起保存，并更新网页要显示的消息状态。
     record.replies.push({ at: now, sessionId: session.id, text, generation: traceModule.getGeneration(session.row, text), ...getElapsed(session, record.createdAt, now) });
-    const status = session.row.state === 'running' ? record.status : 'replied';
+    let status = record.status;
+    if (session.row.state !== 'running') {
+      status = 'replied';
+    }
     const sql = 'UPDATE web_messages SET replies = ?, session_id = COALESCE(session_id, ?), status = ?, updated_at = ? WHERE id = ?';
     this.ctx.resources.db.query(sql).run(JSON.stringify(record.replies), session.id, status, now, id);
 
@@ -367,9 +400,14 @@ export class Timeline {
 
     const address = JSON.parse(record.address ?? '{}') ?? {};
     if (record.channel === 'feishu') {
-      const kind = address.chatType === 'group' ? '群' : '私聊';
+      let kind = '私聊';
+      if (address.chatType === 'group') {
+        kind = '群';
+      }
       const who = address.name || address.chatName || address.userName || address.openId?.slice(-4);
-      return `飞书·${kind}${who ? `·${who}` : ''}`;
+      if (who) return `飞书·${kind}·${who}`;
+
+      return `飞书·${kind}`;
     }
     if (record.channel === 'wechat') return `微信·${address.name || address.chat || ''}`;
 
@@ -379,17 +417,33 @@ export class Timeline {
   /** 一条收件消息给网页的样子，引用内容独立于正文返回。 */
   async view(record: MessageRecord): Promise<Record<string, unknown>> {
     //M 按引用编号加载原消息，供网页单独显示引用内容。
-    const quoted = record.reply_to === null ? undefined : this.get(record.reply_to);
+    let quoted: MessageRecord | undefined;
+    if (record.reply_to !== null) {
+      quoted = this.get(record.reply_to);
+    }
 
     //M 为每句回话查询会话摘要，给网页提供标题和对话文件入口。
     const replies = await Promise.all(record.replies.map(async (item) => {
       const meta = this.ctx.sessions.find({ id: item.sessionId })[0];
+      let sessionTitle = `会话 ${item.sessionId}`;
+      let file = '';
+      if (meta !== undefined) {
+        sessionTitle = title(meta);
+        const files = sessionFiles(this.ctx.resources.root, meta);
+        file = files.md;
+      }
+
+      //M 旧回话没有单独的后台耗时，显示从收件到回复的总时长。
+      let frontMs = item.frontMs;
+      if ((frontMs === undefined || frontMs === null) && item.workMs === undefined) {
+        frontMs = Math.max(0, item.at - record.createdAt);
+      }
       return {
         at: item.at,
         session: {
           id: item.sessionId,
-          title: meta === undefined ? `会话 ${item.sessionId}` : title(meta),
-          file: meta === undefined ? '' : sessionFiles(this.ctx.resources.root, meta).md,
+          title: sessionTitle,
+          file,
           kind: meta?.kind,
         },
         text: item.text,
@@ -400,10 +454,17 @@ export class Timeline {
 
         //M 用原收件编号标记这句回话的来源，供追溯定位。
         association: this.association(record.id),
-        frontMs: item.frontMs ?? (item.workMs === undefined ? Math.max(0, item.at - record.createdAt) : item.frontMs),
+        frontMs,
         workMs: item.workMs,
       };
     }));
+
+    //M 引用原件存在时给网页单独的展示摘要。
+    let replyTo: { id: number; peer: string; text: string } | null = null;
+    if (quoted !== undefined) {
+      const peer = this.peer(quoted);
+      replyTo = { id: quoted.id, peer, text: quoted.text };
+    }
 
     //M 组装网页时间线要显示的消息资料，包括各渠道的聊天名称和引用摘要。
     return {
@@ -414,7 +475,7 @@ export class Timeline {
       chat: record.chat,
       chatLabel: this.peer(record),
       reply_to: record.reply_to,
-      replyTo: quoted === undefined ? null : { id: quoted.id, peer: this.peer(quoted), text: quoted.text },
+      replyTo,
       source: record.source,
       text: record.text,
       status: record.status,
@@ -491,8 +552,12 @@ export class Timeline {
     //M 拼条件：机器人；origin=web 只要网页发的，other 只要别的（右栏“消息”）。
     let where = 'bot = ?';
     const values: (string | number)[] = [bot];
-    if (origin === 'web' || origin === 'other') {
-      where += origin === 'web' ? ' AND source = ?' : ' AND source != ?';
+    if (origin === 'web') {
+      where += ' AND source = ?';
+      values.push(WEB_SOURCE);
+    }
+    if (origin === 'other') {
+      where += ' AND source != ?';
       values.push(WEB_SOURCE);
     }
     //M channel 只认认得的渠道（有显示名的、现在挂着的）；chat 是 /api/channels 给的聊天号，要和 channel 一起写。
@@ -513,24 +578,36 @@ export class Timeline {
       where += ` AND ${CHAT_SQL} = ?`;
       values.push(chat);
     }
-    let rows: RawRow[];
+    //M 增量查询按更新时间筛选，结果按收件编号排序。
+    let order = ' ORDER BY id';
+    if (after !== undefined) {
+      where += ' AND updated_at >= ?';
+      values.push(after);
+    }
+
+    //M 往前翻页时倒序多取一条，检查是否还有更早消息。
     if (after === undefined) {
       if (before !== undefined) {
         where += ' AND id < ?';
         values.push(before);
       }
-      //M 倒序多取一条判断是否还有更早消息，再恢复时间线顺序。
-      const sql = `${ROW_SQL} WHERE ${where} ORDER BY id DESC LIMIT ?`;
-      rows = (this.ctx.resources.db.query(sql).all(...values, limit + 1) as RawRow[]).reverse();
-    } else {
-      //M 按更新时间筛出增量，再按收件编号交给网页。
-      const sql = `${ROW_SQL} WHERE ${where} AND updated_at >= ? ORDER BY id`;
-      rows = this.ctx.resources.db.query(sql).all(...values, after) as RawRow[];
+      order = ' ORDER BY id DESC LIMIT ?';
+      values.push(limit + 1);
+    }
+
+    //M 执行选定的查询，倒序分页结果恢复成时间线顺序。
+    const sql = `${ROW_SQL} WHERE ${where}${order}`;
+    const rows = this.ctx.resources.db.query(sql).all(...values) as RawRow[];
+    if (after === undefined) {
+      rows.reverse();
     }
 
     //M 去掉探测下一页时多取的记录，把当前页展开成网页消息。
     const hasMore = after === undefined && rows.length > limit;
-    const shown = (hasMore ? rows.slice(1) : rows).map((raw) => this.parse(raw));
+    if (hasMore) {
+      rows.shift();
+    }
+    const shown = rows.map((raw) => this.parse(raw));
     const messages = await Promise.all(shown.map((record) => this.view(record)));
     const cursor = Math.max(after ?? 0, ...shown.map((record) => record.updatedAt));
     return { messages, hasMore, cursor };
@@ -558,9 +635,9 @@ export class Timeline {
       const record = this.get(id);
       if (record === undefined || record.bot !== bot) {
         missingIds.push(id);
-      } else {
-        records.push(record);
+        continue;
       }
+      records.push(record);
     }
 
     //M 将查到的记录展开为完整消息，与缺失编号一起返回。
@@ -577,7 +654,7 @@ export class Timeline {
     if (keyword === '') throw new failureModule.Failure(400, '要写搜什么：?q=关键字');
 
     //G 搜索指定机器人时先检查它存在，空参数则查全部。
-    const bot = query['bot'] === undefined || query['bot'] === '' ? undefined : query['bot'];
+    const bot = query['bot'] || undefined;
     if (bot !== undefined && this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
     //M limit 在入口查一次（utils/Checks.ts 的 checkCount），没写按默认，超了按上限。
@@ -587,24 +664,45 @@ export class Timeline {
     //M 消息：库里先用 LIKE 粗筛（replies 列是 JSON，可能误中生成依据里的字），再逐条看原话、回话原文，新的在前。
     const escaped = keyword.replace(/[\\%_]/gu, (char) => `\\${char}`);
     const like = `%${escaped}%`;
-    const sql = `${ROW_SQL} WHERE (text LIKE ? ESCAPE '\\' OR replies LIKE ? ESCAPE '\\')`
-      + (bot === undefined ? '' : ' AND bot = ?') + ' ORDER BY id DESC LIMIT 1000';
-    const values = bot === undefined ? [like, like] : [like, like, bot];
+    const sql = `${ROW_SQL} WHERE (text LIKE ? ESCAPE '\\' OR replies LIKE ? ESCAPE '\\')`;
+    const values = [like, like];
+    let filter = '';
+    if (bot !== undefined) {
+      filter = ' AND bot = ?';
+      values.push(bot);
+    }
+    const querySql = sql + filter + ' ORDER BY id DESC LIMIT 1000';
     const messages: Record<string, unknown>[] = [];
-    for (const raw of this.ctx.resources.db.query(sql).all(...values) as RawRow[]) {
+    for (const raw of this.ctx.resources.db.query(querySql).all(...values) as RawRow[]) {
       if (messages.length >= limit) break;
       const record = this.parse(raw);
-      const hitReply = includes(record.text, keyword) ? undefined : record.replies.find((item) => includes(item.text, keyword));
-      if (!includes(record.text, keyword) && hitReply === undefined) continue;
+      let hit = 'text';
+      let matched = record.text;
+      if (!includes(record.text, keyword)) {
+        const hitReply = record.replies.find((item) => includes(item.text, keyword));
+        if (hitReply === undefined) continue;
+
+        hit = 'reply';
+        matched = hitReply.text;
+      }
+
+      //M 用实际命中的文字生成结果预览。
+      const preview = snippet(matched, keyword);
       messages.push({
         id: record.id, bot: record.bot, channel: record.channel, source: record.source, createdAt: record.createdAt,
-        file: '', sessionId: record.sessionId, hit: hitReply === undefined ? 'text' : 'reply',
-        snippet: snippet(hitReply === undefined ? record.text : hitReply.text, keyword),
+        file: '', sessionId: record.sessionId, hit,
+        snippet: preview,
       });
     }
 
     //M 会话：没有 parent 的（小会话不给网页看），标题或总结命中的，最近动过的在前。
-    const sessions = this.ctx.sessions.find(bot === undefined ? {} : { bot })
+    const filterSessions: { bot?: string } = {};
+    if (bot !== undefined) {
+      filterSessions.bot = bot;
+    }
+
+    //M 只交回标题或总结命中的主会话。
+    const sessions = this.ctx.sessions.find(filterSessions)
       .filter((meta) => meta.parent === undefined && (includes(title(meta), keyword) || includes(meta.summary ?? '', keyword)))
       .slice(0, limit)
       .map((meta) => ({

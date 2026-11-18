@@ -9,7 +9,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
-import type { AskInput, Thinking } from '../../Sessions.ts';
+import type { AskInput } from '../../Sessions.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { Pending } from '../approval/index.ts';
 import type { Progress, ProgressItem } from './index.ts';
@@ -56,17 +57,6 @@ interface Entry {
   timingsText?: string;
 }
 
-/** filesMirror 服务这里用到的样子（journal 提供，可选服务，用 ctx.get 现取）。 */
-interface FilesMirrorLike {
-  getDir(row: { bot: string; id: string }): string;
-}
-
-/** model-catalog 里用到的：模型的思考档。 */
-interface CatalogLike {
-  find(id: string): { thinking: string[] } | undefined;
-}
-
-
 /** 启动后多久第一次看（5 分钟）。 */
 const FIRST_MS = 5 * 60_000;
 
@@ -78,10 +68,6 @@ const LOG_CHARS = 8000;
 
 /** 复盘提示词（照 0.4 Review.ts:30）。 */
 const PROMPT = '你在给一件做得太久的事写复盘。下面是这件事的原话、各段耗时和工作过程。找出慢在哪里（比如同一个东西搜了好几遍、读了一堆没用上的文件、一步想了很久、本可以先看记忆却没看），给出以后遇到同类事的做法，最多 3 条，每条一句话，后面写预计能快多少。只写工作过程里看得出来的，看不出来就写“看不出明显的问题”。用中文，写成 Markdown 列表。';
-
-/** 思考档从低到高。 */
-const LEVELS: Thinking[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-
 
 /**
  * 取复盘显示标题：优先用会话总结标题，否则取用户原话前 20 字。
@@ -247,15 +233,21 @@ export class Review {
     const checkVars = { 会话: entry.sessionId, 结局: entry.stage, 用时: textModule.getDuration(entry.usedMs) };
     this.ctx.emit('trace', 'Review.check', '挑中一件做太久的事', 'sessions.open(entry.sessionId)', checkVars);
 
-    //M 对话.md：journal（原 files-mirror）写的那份，目录问 ctx.filesMirror.getDir；没挂它就当没有记录。
-    const mirror = this.ctx.get('filesMirror') as FilesMirrorLike | undefined;
-    let md = '';
-    if (mirror !== undefined) {
-      md = path.join(mirror.getDir(session.row), '对话.md');
-    }
-    let log = '（没有记录：没挂 journal）';
-    if (md !== '' && fs.existsSync(md)) {
-      log = fs.readFileSync(md, 'utf8').slice(-LOG_CHARS);
+    const request = { action: 'mirror-dir', bot: session.row.bot, sessionId: session.id } as const;
+    const options = {
+      timeoutMs: 3000,
+      onFallback: () => ({ requestId: '' }),
+    };
+
+    //M 向流水插件询问镜像路径，没有回应就按没有记录继续复盘。
+    const mirror = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
+    let log = '（没有记录：未获取到镜像）';
+    if (mirror.dir !== undefined) {
+      const md = path.join(mirror.dir, '对话.md');
+      if (fs.existsSync(md)) {
+        const content = fs.readFileSync(md, 'utf8');
+        log = content.slice(-LOG_CHARS);
+      }
     }
 
     const engine = (this.ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
@@ -274,12 +266,14 @@ export class Review {
       '',
       `工作过程（会话记录末尾）：\n${log}`,
     ].join('\n');
+    //M 复盘沿用同插件的最低思考档查询和退路。
+    const thinking = await this.progress.getThinking(model, 'low');
     const askInput: AskInput = {
       bot: entry.bot,
       kind: 'review',
       parent: entry.sessionId,
       model,
-      thinking: this.lowest(model),
+      thinking,
       text,
     };
     //M 发起复盘小会话并等待模型给出慢原因与改进建议，后续供组装送审卡片使用。
@@ -355,14 +349,5 @@ export class Review {
   private skip(why: string): void {
     //T 跟踪：这次不复盘。
     this.ctx.emit('trace', 'Review.check', '这次不复盘', 'check()', { 原因: why });
-  }
-
-  /** 取该模型最低的非 off 思考档；没有 modelCatalog 用 minimal。 */
-  private lowest(model: string): Thinking {
-    //M 查可选的 modelCatalog 服务以获取模型支持的思考档列表，从中挑最低一档给复盘使用。
-    const catalog = this.ctx.get('modelCatalog') as CatalogLike | undefined;
-    const levels = (catalog?.find(model)?.thinking ?? []).filter((level): level is Thinking => LEVELS.includes(level as Thinking));
-    const sorted = [...levels].sort((left, right) => LEVELS.indexOf(left) - LEVELS.indexOf(right));
-    return sorted[0] ?? 'minimal';
   }
 }

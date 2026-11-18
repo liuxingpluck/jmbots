@@ -13,6 +13,7 @@ import fastify from 'fastify';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as snapshotModule from '../../utils/Snapshot.ts';
 import * as tutorialModule from './index.ts';
 import type { TrailLine } from './Trail.ts';
@@ -44,9 +45,11 @@ const RAW = [
 
 /** 测完要关的。 */
 const apps: ReturnType<typeof fastify>[] = [];
+const buses: cordis.Context[] = [];
 const db = new Database(':memory:');
 afterAll(async () => {
   for (const app of apps) await app.close();
+  for (const bus of buses) await bus.fiber.dispose();
   db.close();
 });
 
@@ -135,13 +138,23 @@ function impl(name: string, plugin: string, value: unknown): unknown {
  * @param journal 假的 journal；不给当没挂。
  * @param config tutorial 的配置。
  */
-async function serve(journal?: unknown, config: tutorialModule.TutorialConfig = {}): Promise<{
+async function serve(journal?: ReturnType<typeof getJournal>, config: tutorialModule.TutorialConfig = {}): Promise<{
   app: ReturnType<typeof fastify>;
   flow: tutorialModule.FlowState;
   handlers: Record<string, (...args: unknown[]) => void>;
 }> {
   const app = fastify();
   apps.push(app);
+  const bus = new cordis.Context();
+  buses.push(bus);
+  if (journal !== undefined) {
+    requestEvents.onRequestEvent(bus, 'journal/request', 'journal/result', (request) => {
+      if (request.action === 'query') return { ok: true, lines: journal.query(request.params) };
+      if (request.action === 'message-lines') return { lines: journal.request(request.message, request.limit) };
+
+      return {};
+    });
+  }
   const provided: { flow?: tutorialModule.FlowState } = {};
   const handlers: Record<string, (...args: unknown[]) => void> = {};
   const bots = {
@@ -167,13 +180,16 @@ async function serve(journal?: unknown, config: tutorialModule.TutorialConfig = 
     reflect: { store },
     events: { _hooks: {} },
     fiber: { uid: 1, name: 'tutorial', parent: { fiber: root } },
-    get: (name: string) => ({ journal } as Record<string, unknown>)[name],
+    get: () => undefined,
+    serial: bus.serial.bind(bus),
     provide: (_name: string, value: tutorialModule.FlowState) => {
       provided.flow = value;
       return () => undefined;
     },
     //M 同一个事件可以有几个监听（trace 有录启动和拍快照两个），照登记先后都调。
     on: (name: string, handler: (...args: unknown[]) => void) => {
+      if (name === 'journal/result') return bus.on(name, handler);
+
       const before = handlers[name];
       handlers[name] = handler;
       if (before !== undefined) {
@@ -213,7 +229,14 @@ const REGISTERED_ONLY = ['REG-TOKEN', '登记来的私密话'];
  * 假的 journal：按消息号找“收件表收下”那行，再从那一号往后取。
  * @param lines 记下的行，测试里往里推。
  */
-function getJournal(lines: TrailLine[]): unknown {
+function getJournal(lines: TrailLine[]) {
+  const toJournalLine = (line: TrailLine) => ({
+    ...line,
+    kind: line.kind as '事件' | '函数',
+    bot: null,
+    code: '',
+    mode: '',
+  });
   return {
     query: (params: Record<string, string | undefined>) => {
       const name = params['name'];
@@ -222,13 +245,13 @@ function getJournal(lines: TrailLine[]): unknown {
       if (name !== undefined && name !== '') {
         matched = lines.filter((line) => line.name === name);
       }
-      return matched.slice(-limit);
+      return matched.slice(-limit).map(toJournalLine);
     },
-    request: (message: number) => {
+    request: (message: number, limit: number) => {
       const start = lines.find((line) => line.name === 'web-api/received' && line.messageId === message);
       if (start === undefined) return undefined;
 
-      return lines.filter((line) => line.id >= start.id);
+      return lines.filter((line) => line.id >= start.id).slice(0, limit).map(toJournalLine);
     },
   };
 }
@@ -431,6 +454,23 @@ describe('运行时变量', () => {
     };
     expect(bootCanvas.lanes.columns).toEqual(['加载（apply）', '服务就绪（inject）', '开始监听']);
     expect(bootCanvas.lanes.lanes).toEqual(['main', 'resources', 'tools', 'sessions', 'tutorial', 'http']);
+
+    //M 流水没监听时仍能读到已有文件，新画布和步骤都按缺失处理。
+    const { app: offline, handlers: offlineHandlers } = await serve();
+    const fallback = (await offline.inject({ method: 'GET', url: '/api/tutorial/canvases' })).json() as {
+      messages: { name: string }[];
+    };
+    expect(fallback.messages.map((item) => item.name)).toEqual(['23', '22']);
+    expect((await offline.inject({ method: 'GET', url: '/api/tutorial/canvas?name=23' })).statusCode).toBe(200);
+    expect((await offline.inject({ method: 'GET', url: '/api/tutorial/snapshot?name=23&step=1' })).statusCode).toBe(200);
+    expect((await offline.inject({ method: 'GET', url: '/api/tutorial/canvas?name=99' })).statusCode).toBe(404);
+    expect((await offline.inject({ method: 'GET', url: '/api/tutorial/snapshot?name=99&step=1' })).statusCode).toBe(404);
+
+    //M 无流水回执时无法写新快照，已有快照文件仍保留。
+    offlineHandlers['internal/dispatch']?.('emit', 'web-api/received', [{ id: 99, text: '离线消息 #调试' }]);
+    offlineHandlers['internal/dispatch']?.('emit', 'web-api/replied', [{ messageId: 99, session, text: '好' }]);
+    await Bun.sleep(60);
+    expect(fs.readdirSync(dir).sort()).toEqual(['22.json', '23.json', 'boot.json']);
 
     fs.rmSync(resources.root, { recursive: true, force: true });
     resources.root = realRoot;

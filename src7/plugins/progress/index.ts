@@ -31,7 +31,7 @@ export const name = 'progress';
 //M 1.1.1：转新会话时照抄后台绑定的工作区 ID（row.workspaceId）。
 export const version = '1.1.3';
 
-/** 用到的服务：resources 拿配置和目录；bots 跟用户说话、转新会话；sessions 开收尾、审核小会话。approval（复盘用）、http、decision、modelCatalog、filesMirror 是可选的。 */
+/** 用到的服务：resources 拿配置和目录，bots 取机器人和转新会话，sessions 开小会话。approval、http、decision 可选。 */
 export const inject = ['resources', 'bots', 'sessions'];
 
 
@@ -181,12 +181,6 @@ interface DecisionLike {
     Promise<{ verdict: string; score?: number; reason: string }>;
 }
 
-/** model-catalog 里用到的：模型的思考档。 */
-interface CatalogLike {
-  find(id: string): { thinking: string[] } | undefined;
-}
-
-
 /** 一项一秒最多推一次。 */
 const PUSH_EVERY_MS = 1000;
 /** 选了限时的提前几分钟报时。 */
@@ -207,6 +201,8 @@ const LONG_RUN_KIND = 'long-run';
 const MINUTE = 60_000;
 /** 思考档从低到高。 */
 const LEVELS: Thinking[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+/** 模型目录查询最多等三秒。 */
+const CATALOG_TIMEOUT_MS = 3000;
 
 /** 原进度项已经结束或查不到时，操作沿用这句反馈。 */
 const ENDED_TEXT = '这件事已经结束了';
@@ -466,7 +462,12 @@ export class Progress extends cordis.Service {
     this.ctx.emit('trace', 'Progress.sendCard', '跑满时长，发卡片问要不要终止', 'approval.ask(长跑提醒卡片)', { 会话: item.sessionId, 干了: elapsed, 有审批: approval !== undefined });
     if (approval === undefined) {
       item.cardId = 0;
-      this.ctx.bots.say(item.session, `⏳ 这件事已经干了 ${elapsed}，现在${item.action}。要停就在网页进度上点“终止”；不管它就一直做下去。`);
+      const text = `⏳ 这件事已经干了 ${elapsed}，现在${item.action}。要停就在网页进度上点“终止”；不管它就一直做下去。`;
+
+      //M 没有审批卡片时，通过机器人发一条文字提醒。
+      this.ctx.emit('bot/say', item.session, text);
+
+      //M 记住这一轮已提醒，重启后也不重复发。
       this.saveRow(item);
       return;
     }
@@ -598,8 +599,12 @@ export class Progress extends cordis.Service {
       const elapsed = textModule.getDuration(Date.now() - item.startedAt);
       this.note(item, `过了报时点（干了 ${elapsed}），开始报时`);
       //T 跟踪：开始报时。
-      this.ctx.emit('trace', 'Progress.remind', '开始报时', 'bots.say(session, 报时)', { 会话: item.sessionId, 干了: elapsed });
-      this.ctx.bots.say(item.session, `⏳ 这件事已经干了 ${elapsed}，${this.limitText(item)}；到点会先停下，把做到哪写给你。`);
+      this.ctx.emit('trace', 'Progress.remind', '开始报时', "ctx.emit('bot/say', session, text)", { 会话: item.sessionId, 干了: elapsed });
+      const limit = this.limitText(item);
+      const text = `⏳ 这件事已经干了 ${elapsed}，${limit}；到点会先停下，把做到哪写给你。`;
+
+      //M 通知机器人发报时消息，再推送进度更新。
+      this.ctx.emit('bot/say', item.session, text);
       this.push(item);
     }, Math.max(0, remindAt - Date.now()));
     //M 排好到点定时器并立即保存限时设置到会话行中。
@@ -698,7 +703,15 @@ export class Progress extends cordis.Service {
     this.push(item, true);
     const content = `用户的话：\n${item.said.join('\n') || item.text}\n\n工作过程：\n${item.log.join('\n')}`;
     const model = this.settings.reviewModel ?? item.session.row.model;
-    const answer = await this.small(item, 'progress-review', words.REVIEW_PROMPT[this.language(item)] ?? words.REVIEW_PROMPT['zh'] ?? '', content, model, this.thinking(model, 'high'));
+    const language = this.language(item);
+    const prompt = words.REVIEW_PROMPT[language] ?? words.REVIEW_PROMPT['zh'] ?? '';
+
+    //M 审核小会话优先用模型支持的最高档。
+    const thinking = await this.getThinking(model, 'high');
+    if (item.endedAt !== undefined || item.stopAsked !== undefined) return;
+
+    //M 会话仍在运行才继续审核。
+    const answer = await this.small(item, 'progress-review', prompt, content, model, thinking);
     if (item.endedAt !== undefined || item.stopAsked !== undefined) return;
 
     //M 解析审核结论并记入日志，再依据离谱/转交/停下分支推进。
@@ -758,7 +771,14 @@ export class Progress extends cordis.Service {
       this.push(item, true);
       const content = `用户的话：\n${item.said.join('\n') || item.text}\n\n工作过程：\n${item.log.join('\n')}`;
       const model = this.settings.wrapupModel ?? row.model;
-      const summary = await this.small(item, 'wrapup', words.WRAPUP_PROMPT[this.language(item)] ?? words.WRAPUP_PROMPT['zh'] ?? '', content, model, this.thinking(model, 'low'));
+      const language = this.language(item);
+      const prompt = words.WRAPUP_PROMPT[language] ?? words.WRAPUP_PROMPT['zh'] ?? '';
+
+      //M 收尾小会话优先用模型支持的最低档。
+      const thinking = await this.getThinking(model, 'low');
+
+      //M 取得思考档后生成收尾摘要。
+      const summary = await this.small(item, 'wrapup', prompt, content, model, thinking);
       const flagged = item.flagged;
       let stage: ProgressStage = 'timeout';
       let action = '到点停下了';
@@ -770,7 +790,10 @@ export class Progress extends cordis.Service {
       }
       //M 按是否标为离谱定格结局，再把生成的收尾总结发给用户。
       this.close(item, stage, action, summary);
-      this.ctx.bots.say(session, `${head}\n${summary}`);
+      const text = `${head}\n${summary}`;
+
+      //M 通知机器人把收尾内容发给用户。
+      this.ctx.emit('bot/say', session, text);
       return;
     }
     if (row.state === 'done') {
@@ -829,7 +852,10 @@ export class Progress extends cordis.Service {
     fresh.row.progress = { ...(fresh.row.progress ?? { startedAt: Date.now(), limitChosen: false, extended: 0 }), handedOver: true };
     fresh.save();
     this.close(item, 'handed', `转到新会话 ${fresh.id}`);
-    this.ctx.bots.say(item.session, `↪ 这件事转到新会话 ${fresh.id} 接着做。交接说明：\n${note}`);
+    const notice = `↪ 这件事转到新会话 ${fresh.id} 接着做。交接说明：\n${note}`;
+
+    //M 通知机器人向用户说明新会话去向和交接内容。
+    this.ctx.emit('bot/say', item.session, notice);
   }
 
   /**
@@ -961,13 +987,27 @@ export class Progress extends cordis.Service {
   }
 
   /**
-   * 小会话的思考档：有 modelCatalog 就取这个模型最低（收尾）或最高（审核）的非 off 档；没有用 minimal、high。
+   * 查收尾、审核和复盘小会话的思考档。
+   * @param model 供应商名/模型 ID。
    * @param want low 取最低、high 取最高。
+   * @returns 支持的非 off 档，目录无应答或无合适档位时用 minimal 或 high。
    */
-  private thinking(model: string, want: 'low' | 'high'): Thinking {
-    //M 查询可选的 modelCatalog 服务以拿到该模型实际支持的思考档位列表。
-    const catalog = this.ctx.get('modelCatalog') as CatalogLike | undefined;
-    const levels = (catalog?.find(model)?.thinking ?? []).filter((level): level is Thinking => LEVELS.includes(level as Thinking));
+  async getThinking(model: string, want: 'low' | 'high'): Promise<Thinking> {
+    const request = { action: 'find', model } as const;
+    const options = {
+      timeoutMs: CATALOG_TIMEOUT_MS,
+      onFallback: () => ({ requestId: '' }),
+    };
+
+    //M 通过事件取模型支持的思考档，供同插件的三种小会话选择。
+    const result = await requestEventModule.requestEvent(
+      this.ctx,
+      'model-catalog/request',
+      'model-catalog/result',
+      request,
+      options,
+    );
+    const levels = (result.info?.thinking ?? []).filter((level): level is Thinking => LEVELS.includes(level as Thinking));
     if (levels.length === 0) {
       if (want === 'low') return 'minimal';
 

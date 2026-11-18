@@ -20,6 +20,7 @@ import * as textModule from '../../utils/Text.ts';
 import * as timelineModule from './Timeline.ts';
 import * as traceModule from './Trace.ts';
 import * as failureModule from '../../utils/Failure.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as protocol from '../../Channels.ts';
 import { WebHistory } from './History.ts';
 
@@ -40,8 +41,8 @@ const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local'
 
 /**
  * 用到的服务。渠道收发向 bots 登记（bots.channel / bots.receive）；还要 resources；会话接口要 sessions；登记接口要 http。
- * 可选的 approval、journal、usage、modelCatalog 不写在这里：写进 inject 就成了“必须有”，没挂它们的人连消息都收不了。
- * 它们在用到的那一刻 ctx.get('名字') 现取，没挂就是 undefined。
+ * approval 与 base 在需要时从上下文取；模型目录、进度、流水与用量在需要时发事件。
+ * 这些插件都是可选的，消息收发不依赖它们。
  */
 export const inject = ['resources', 'bots', 'sessions', 'http'];
 
@@ -96,6 +97,9 @@ interface MessageBody {
 /** 步骤默认几步、最多几步（同 src6/channels/HttpSessions.ts:432-444）。 */
 const STEPS_DEFAULT = 100;
 const STEPS_MAX = 500;
+
+/** 进度和模型目录查询共用事件契约里的 3 秒等待上限。 */
+const LOOKUP_TIMEOUT_MS = 3_000;
 
 
 /** HTTP 渠道和网页接口。 */
@@ -208,7 +212,10 @@ class WebApi {
     ctx.http.app.register(async (scope) => {
       scope.setErrorHandler(async (error, _request, reply) => {
         //M 自己抛的 Failure 照它的状态码；Fastify 自己的错（比如请求体不是 JSON）带 statusCode；别的算 500。
-        const status = error instanceof failureModule.Failure ? error.status : ((error as { statusCode?: number }).statusCode ?? 500);
+        let status = (error as { statusCode?: number }).statusCode ?? 500;
+        if (error instanceof failureModule.Failure) {
+          status = error.status;
+        }
         await reply.code(status).send({ error: textModule.getMessage(error) });
         return reply;
       });
@@ -297,7 +304,10 @@ class WebApi {
       if (response.status < 200 || response.status >= 300) return null;
       const body = (response.body ?? {}) as { version?: unknown; builtAt?: unknown };
       if (typeof body.version !== 'string' || body.version.trim() === '') return null;
-      const builtAt = typeof body.builtAt === 'number' && Number.isFinite(body.builtAt) ? body.builtAt : 0;
+      let builtAt = 0;
+      if (typeof body.builtAt === 'number' && Number.isFinite(body.builtAt)) {
+        builtAt = body.builtAt;
+      }
       return { version: body.version.trim(), builtAt };
     } catch {
       return null;
@@ -328,8 +338,11 @@ class WebApi {
     if (typeof sessionId !== 'string') throw new failureModule.Failure(400, 'session 要是字符串');
 
     //G 找到显式指定的会话，防止错误编号被当成普通分派。
-    let session = sessionId === '' ? undefined : this.ctx.sessions.find({ id: sessionId })[0];
-    if (sessionId !== '' && session === undefined) throw new failureModule.Failure(400, `没有这场会话：${sessionId}`);
+    let session: SessionMeta | undefined;
+    if (sessionId !== '') {
+      session = this.ctx.sessions.find({ id: sessionId })[0];
+      if (session === undefined) throw new failureModule.Failure(400, `没有这场会话：${sessionId}`);
+    }
 
     let quoted: timelineModule.MessageRecord | undefined;
     //G 校验引用编号并查到原件，供后续确认机器人与会话归属。
@@ -357,9 +370,14 @@ class WebApi {
       throw new failureModule.Failure(400, '不能回复其他机器人的消息');
     }
     //M 外部渠道回复必须回到原会话；不重新分派，避免混入网页上下文。
-    const external = quoted?.channel !== undefined && quoted.channel !== this.name ? quoted : undefined;
-    if (external) {
-      const target = external.sessionId === null ? undefined : this.ctx.sessions.find({ id: external.sessionId })[0];
+    let external: timelineModule.MessageRecord | undefined;
+    if (quoted?.channel !== undefined && quoted.channel !== this.name) {
+      external = quoted;
+      let target: SessionMeta | undefined;
+      if (external.sessionId !== null) {
+        const targetId = external.sessionId;
+        target = this.ctx.sessions.find({ id: targetId })[0];
+      }
       if (target === undefined) throw new failureModule.Failure(400, '被回复的消息尚未关联会话');
       if (session !== undefined && session.id !== target.id) {
         throw new failureModule.Failure(400, '指定会话与被回复消息的会话不同');
@@ -389,7 +407,12 @@ class WebApi {
     }
 
     //M 附件写成 @绝对路径 接在话后面（路径里有空白就加引号），模型用 read 工具就能读到。
-    const said = [text, ...paths.map((item) => (/\s/u.test(item) ? `@"${item}"` : `@${item}`))].filter((item) => item !== '').join('\n');
+    const mentions = paths.map((item) => {
+      if (/\s/u.test(item)) return `@"${item}"`;
+
+      return `@${item}`;
+    });
+    const said = [text, ...mentions].filter((item) => item !== '').join('\n');
 
     //M 网页发的话都记成网页自己的一条（引用别的渠道的消息也是），引用的那条记在 reply_to。
     const newMessage: timelineModule.NewMessage = {
@@ -663,10 +686,16 @@ class WebApi {
 
     return value.map((item: unknown, index) => {
       //G 内联图片必须提供非空的 base64 字段，才能提取文件内容。
-      const image = (typeof item === 'object' && item !== null ? item : {}) as { name?: unknown; data?: unknown };
+      let image: { name?: unknown; data?: unknown } = {};
+      if (typeof item === 'object' && item !== null) {
+        image = item;
+      }
       if (typeof image.data !== 'string' || image.data === '') throw new failureModule.Failure(400, `images[${String(index)}].data 要是 base64 字符串`);
 
-      const name = typeof image.name === 'string' && image.name !== '' ? image.name : `图片${String(index + 1)}.png`;
+      let name = `图片${String(index + 1)}.png`;
+      if (typeof image.name === 'string' && image.name !== '') {
+        name = image.name;
+      }
       return { name, data: Buffer.from(image.data.replace(/^data:[^,]*,/u, ''), 'base64') };
     });
   }
@@ -781,13 +810,16 @@ class WebApi {
    * @param meta 会话记录。
    */
   private brief(meta: SessionMeta): Record<string, unknown> {
+    //M 从会话记录取显示用的客户名称，缺少时留空。
+    const customer = textModule.getText(meta, 'customer');
+
     //M 将会话标题、状态和文件地址组装成网页列表与详情共用的摘要。
     return {
       id: meta.id,
       bot: meta.bot,
       kind: meta.kind,
       parent: meta.parent,
-      customer: typeof (meta as { customer?: unknown }).customer === 'string' ? (meta as { customer?: string }).customer : '',
+      customer,
       workspace: 'workspace',
       title: timelineModule.title(meta),
       summary: meta.summary ?? '',
@@ -825,21 +857,32 @@ class WebApi {
    * 每条带标题、客户/渠道标签、本轮开始时间和最新进度（progress、assist 待办、对话里最近的工具调用）。
    * @param query bot（不写是第一个）。
    */
-  private runningList(query: Record<string, string | undefined>): Record<string, unknown>[] {
+  private async runningList(query: Record<string, string | undefined>): Promise<Record<string, unknown>[]> {
     //G 只查已确定机器人的运行会话，没有可用机器人时返回空列表。
     const bot = this.timeline.getBot(query['bot']);
     if (bot === undefined) return [];
 
-    //M 读取可选进度服务的卡片，供运行列表匹配会话。
-    const progress = this.ctx.get('progress') as ProgressLike | undefined;
-    const cards = progress?.list(bot) ?? [];
+    const request = { action: 'list', bot } as const;
+    const options = {
+      timeoutMs: LOOKUP_TIMEOUT_MS,
+      onFallback: () => ({ requestId: '', items: [] }),
+    };
+
+    //M 向进度插件取生效的卡片，无应答时从会话本身恢复展示。
+    const progress = await requestEventModule.requestEvent(
+      this.ctx,
+      'progress/request',
+      'progress/result',
+      request,
+      options,
+    );
+    const cards = progress.items ?? [];
 
     //M 给每个运行会话匹配仍生效的进度卡并读出会话详情。
     return this.ctx.sessions.find({ bot, state: 'running' }).map((meta) => {
       const card = cards.find((item) => item.sessionId === meta.id && item.endedAt === undefined);
       const session = this.ctx.sessions.open(meta.id);
-      const customer = typeof (meta as { customer?: unknown }).customer === 'string'
-        ? (meta as { customer: string }).customer : '';
+      const customer = textModule.getText(meta, 'customer');
 
       //M 优先采用进度卡，缺失时从待办和对话补出开始时刻及当前动作。
       const startedAt = card?.startedAt ?? runStartedAt(session, meta.updatedAt);
@@ -885,16 +928,26 @@ class WebApi {
     const row = this.open(id).row;
     const brief = this.brief(row);
     const files = timelineModule.sessionFiles(this.ctx.resources.root, row);
+    //M 上一次调模型时的上下文：最后一条模型回答的输入加缓存读。
     const last = row.messages.findLast((item) => item.role === 'assistant');
+    let tokens = 0;
+    if (last?.role === 'assistant') {
+      tokens = last.usage.input + last.usage.cacheRead;
+    }
+
+    //M 已生成的镜像正文直接提供给网页详情。
+    let md = '';
+    if (files.md !== '') {
+      md = fs.readFileSync(files.md, 'utf8');
+    }
     return {
       ...brief,
       thinking: row.thinking,
-      //M 上一次调模型时的上下文：最后一条模型回答的输入加缓存读。
-      tokens: last?.role === 'assistant' ? last.usage.input + last.usage.cacheRead : 0,
+      tokens,
       runs: [],
       createdAt: row.messages[0]?.timestamp ?? row.updatedAt,
       files,
-      md: files.md === '' ? '' : fs.readFileSync(files.md, 'utf8'),
+      md,
     };
   }
 
@@ -902,36 +955,47 @@ class WebApi {
    * POST /api/sessions/:id/model：换会话的模型和思考档，在转的会话下一步就用新的（骨架每一步现读 row.model、row.thinking）。
    * @param id 会话号。
    * @param raw { model, thinking }：thinking 是 null 取这个模型支持的最高一档。
-   * @throws Failure：没挂 model-catalog 503；没有这场 404；模型不在清单、不是 chat、思考档不支持 400。
+   * @returns 会话当前的模型、思考档和状态。
+   * @throws Failure：没有这场会话时返回 404，模型不可用或思考档不支持时返回 400。
+   * 副作用：保存会话模型和思考档，并发出变更通知。
    */
-  private setModel(id: string, raw: unknown): Record<string, unknown> {
-    //M model-catalog 是可选的：用到这一刻才 ctx.get 取，没挂就是 undefined。
-    const catalog = this.ctx.get('modelCatalog');
-    if (catalog === undefined) throw new failureModule.Failure(503, '没挂 model-catalog，换不了模型');
-
+  private async setModel(id: string, raw: unknown): Promise<Record<string, unknown>> {
     //G 先确认会话存在，并校验请求带了可查询的模型名。
     const session = this.open(id);
-    const body = (typeof raw === 'object' && raw !== null ? raw : {}) as { model?: unknown; thinking?: unknown };
-    if (typeof body.model !== 'string' || body.model === '') throw new failureModule.Failure(400, 'model 要是非空字符串');
+    const model = textModule.getField(raw, 'model');
+    if (typeof model !== 'string' || model === '') throw new failureModule.Failure(400, 'model 要是非空字符串');
 
-    //G 只允许把现有会话切到目录中可用的聊天模型。
-    const info = catalog.find(body.model);
-    if (info === undefined || info.kind !== 'chat') throw new failureModule.Failure(400, `模型不可用：${body.model}`);
+    const request = { action: 'find', model } as const;
+    const options = {
+      timeoutMs: LOOKUP_TIMEOUT_MS,
+      onFallback: () => ({ requestId: '', info: undefined }),
+    };
 
-    let thinking: string;
-    if (body.thinking === null || body.thinking === undefined) {
-      thinking = info.thinking.at(-1) ?? 'off';
-    } else if (typeof body.thinking === 'string' && info.thinking.includes(body.thinking)) {
-      thinking = body.thinking;
-    } else {
-      //G 拒绝模型不支持的思考档，并告诉调用方可用选项。
-      throw new failureModule.Failure(400, `思考档 ${String(body.thinking)} 这个模型不支持，支持：${info.thinking.join('、')}`);
+    //G 允许模型目录确认过的聊天模型，无应答时按未知模型处理。
+    const result = await requestEventModule.requestEvent(
+      this.ctx,
+      'model-catalog/request',
+      'model-catalog/result',
+      request,
+      options,
+    );
+    const info = result.info;
+    if (info === undefined || info.kind !== 'chat') throw new failureModule.Failure(400, `模型不可用：${model}`);
+
+    //G 显式思考档必须受该模型支持，省略时使用最高档。
+    const requested = textModule.getField(raw, 'thinking');
+    let thinking = info.thinking.at(-1) ?? 'off';
+    if (requested !== null && requested !== undefined) {
+      if (typeof requested !== 'string' || !info.thinking.includes(requested)) {
+        throw new failureModule.Failure(400, `思考档 ${String(requested)} 这个模型不支持，支持：${info.thinking.join('、')}`);
+      }
+      thinking = requested;
     }
 
     //M 持久化模型和思考档，供会话后续步骤读取并保留变更前后值。
     const row = session.row;
-    const change = { session, from: row.model, to: body.model, thinkingFrom: row.thinking, thinkingTo: thinking, by: 'HTTP' as const };
-    row.model = body.model;
+    const change = { session, from: row.model, to: model, thinkingFrom: row.thinking, thinkingTo: thinking, by: 'HTTP' as const };
+    row.model = model;
     row.thinking = thinking as Thinking;
     session.save();
 
@@ -950,8 +1014,7 @@ class WebApi {
   private stop(id: string, raw: unknown): Record<string, unknown> {
     //M 读取目标会话与请求原因，为停止动作准备参数。
     const session = this.open(id);
-    const body = (typeof raw === 'object' && raw !== null ? raw : {}) as { reason?: unknown };
-    const reason = typeof body.reason === 'string' && body.reason !== '' ? body.reason : 'HTTP';
+    const reason = textModule.getText(raw, 'reason') || 'HTTP';
     if (session.row.state !== 'running') {
       //G 已经不在运行的会话只交回当前状态，无需触发停止。
       return { id, stopped: false, status: timelineModule.getStatus(session.row.state), reason: '会话没在跑' };
@@ -964,7 +1027,9 @@ class WebApi {
     const result = { id, stopped, status: timelineModule.getStatus(session.row.state) };
 
     //G 记录上是在转，这个进程里却没有在转的循环（上次没跑完、重启后还没接着跑）→ 没停下，说清楚。
-    return stopped ? result : { ...result, reason: '会话记录是在转，但这个进程里没有在跑的循环' };
+    if (stopped) return result;
+
+    return { ...result, reason: '会话记录是在转，但这个进程里没有在跑的循环' };
   }
 
   /** GET /api/bots：机器人列表，状态按“等确认 → 干活 → 闲着”（同 0.4：HttpUi.ts:400-418；src7 不排队，queued 是 0）。 */
@@ -978,8 +1043,16 @@ class WebApi {
       //M 干活中的后台子会话也算（有 parent，不出现在会话下拉里，但机器人应显示在干活）。
       const running = this.ctx.sessions.find({ bot: bot.name, state: 'running' }).length;
       const approvals = pending.filter((item) => item.bot === bot.name && item.session !== undefined && item.session !== '').length;
-      const status = approvals > 0 ? 'waiting' : running > 0 ? 'working' : 'idle';
-      const language = typeof bot.config['language'] === 'string' ? bot.config['language'] : 'zh';
+      let status = 'idle';
+      if (running > 0) {
+        status = 'working';
+      }
+      if (approvals > 0) {
+        status = 'waiting';
+      }
+
+      //M 在机器人没有设置语言时给网页默认语言。
+      const language = getBotLanguage(bot.config);
       return { name: bot.name, language, status, running, queued: 0, approvals };
     });
   }
@@ -995,9 +1068,16 @@ class WebApi {
     if (bot === undefined) throw new failureModule.Failure(404, `没有这个机器人：${botName}`);
 
     const index = ['索引.md', 'index.md'].map((file) => path.join(bot.memory, file)).find((file) => fs.existsSync(file));
+    let memoryIndex = '';
+    if (index !== undefined) {
+      memoryIndex = fs.readFileSync(index, 'utf8');
+    }
+
+    //M 为详情页提供机器人的语言、目录和记忆入口。
+    const language = getBotLanguage(bot.config);
     return {
       name: bot.name,
-      language: typeof bot.config['language'] === 'string' ? bot.config['language'] : 'zh',
+      language,
       paths: {
         botDir: path.join(this.ctx.resources.root, 'bots', bot.name),
         messageDir: path.join(bot.workspace, 'inbox'),
@@ -1005,7 +1085,7 @@ class WebApi {
         memoryDir: bot.memory,
       },
       workspaces: [{ name: 'workspace', description: '机器人的工作区：工具在这里读写文件，收到的附件在 inbox/ 下', dir: bot.workspace }],
-      memoryIndex: index === undefined ? '' : fs.readFileSync(index, 'utf8'),
+      memoryIndex,
     };
   }
 
@@ -1015,7 +1095,7 @@ class WebApi {
    * @param reply 回话下标，从 0 起。
    * @throws Failure：reply 不是非负整数 400；消息不在、下标越界 404。
    */
-  private trace(id: string, reply: string | undefined): Record<string, unknown> {
+  private async trace(id: string, reply: string | undefined): Promise<Record<string, unknown>> {
     //G 回话下标必须是非负整数，才能定位要追溯的回话。
     if (reply === undefined || !/^\d+$/u.test(reply)) throw new failureModule.Failure(400, 'reply 要是非负整数（回话下标，从 0 起）');
 
@@ -1026,16 +1106,32 @@ class WebApi {
     //M 取目标回复所关联会话的标题，合并收件关联信息生成追溯结果。
     const replyIndex = Number(reply);
     const sessionId = message.replies[replyIndex]?.sessionId;
-    const meta = sessionId === undefined ? undefined : this.ctx.sessions.find({ id: sessionId })[0];
-    const sessionTitle = meta === undefined ? null : timelineModule.title(meta);
-    return traceModule.trace(this.ctx, { message, replyIndex, sessionTitle, association: this.timeline.association(message.id) });
+    let sessionTitle: string | null = null;
+    if (sessionId !== undefined) {
+      const meta = this.ctx.sessions.find({ id: sessionId })[0];
+      if (meta !== undefined) {
+        sessionTitle = timelineModule.title(meta);
+      }
+    }
+
+    //M 保留回复与原消息的关联，等流水和用量补齐追溯结果。
+    const association = this.timeline.association(message.id);
+    const input = { message, replyIndex, sessionTitle, association };
+    return traceModule.trace(this.ctx, input);
   }
 }
 
 
-/** 进度插件的只读外形：没挂 progress 时 runningList 不用它。 */
-interface ProgressLike {
-  list(bot?: string): { sessionId: string; action: string; startedAt: number; endedAt?: number }[];
+/**
+ * 读取机器人的页面语言，无字符串配置时使用中文。
+ * @param config 机器人配置。
+ * @returns 页面语言标识。
+ */
+function getBotLanguage(config: Record<string, unknown>): string {
+  const language = config['language'];
+  if (typeof language === 'string') return language;
+
+  return 'zh';
 }
 
 
@@ -1047,7 +1143,9 @@ function runningTitle(meta: SessionMeta): string {
   //M 先取得常规会话标题，只给无总结时的回退标题加前台或后台标识。
   const raw = timelineModule.title(meta);
   if (!raw.startsWith('会话 ')) return raw;
-  return `${meta.kind === 'front' ? '前台' : '后台'} ${raw}`;
+  if (meta.kind === 'front') return `前台 ${raw}`;
+
+  return `后台 ${raw}`;
 }
 
 
@@ -1057,12 +1155,14 @@ function runningTitle(meta: SessionMeta): string {
  */
 function customerLabel(customer: string): string {
   if (customer === '') return '';
-  if (customer === 'http:本机' || customer.startsWith('http:')) return customer === 'http:本机' ? '网页' : `网页`;
+  if (customer.startsWith('http:')) return '网页';
   if (customer.startsWith('feishu:group:')) return '飞书群';
   if (customer.startsWith('feishu:')) return '飞书';
   if (customer.startsWith('wechat:')) return '微信';
   const cut = customer.indexOf(':');
-  return cut <= 0 ? customer : customer.slice(0, cut);
+  if (cut <= 0) return customer;
+
+  return customer.slice(0, cut);
 }
 
 
@@ -1076,7 +1176,9 @@ function runStartedAt(session: Session, fallback: number): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const item = messages[index];
     if (item !== undefined && item.role === 'user') {
-      return typeof item.timestamp === 'number' ? item.timestamp : fallback;
+      if (typeof item.timestamp === 'number') return item.timestamp;
+
+      return fallback;
     }
   }
   return fallback;
@@ -1102,7 +1204,9 @@ function assistDoing(db: unknown, sessionId: string): string {
     //M 优先显示正在做的待办，没有时预览第一条待做事项。
     const doing = items.find((item) => item.status === 'doing' && typeof item.text === 'string' && item.text.trim() !== '');
     const text = doing?.text ?? items.find((item) => item.status === 'todo' && typeof item.text === 'string' && item.text.trim() !== '')?.text;
-    return typeof text === 'string' ? text.trim().slice(0, 80) : '';
+    if (typeof text !== 'string') return '';
+
+    return text.trim().slice(0, 80);
   } catch {
     return '';
   }
@@ -1127,7 +1231,9 @@ function latestAction(session: Session, kind: string): string {
       return '在写回答';
     }
   }
-  return kind === 'front' ? '前台处理中' : '后台运行中';
+  if (kind === 'front') return '前台处理中';
+
+  return '后台运行中';
 }
 
 

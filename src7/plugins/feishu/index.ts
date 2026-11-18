@@ -11,8 +11,7 @@
  * 认人认群看插件配置的 people、groups（谁是哪一档只在这里判断，写进回话地址的 owner、role、workspace）；收到的每条都记进来往流水 data/logs/feishu-contacts.jsonl。发：文字整条发，文字里的 @路径 换成「文件名」再一个个发文件。
  *
  * Cordis 大白话：apply 是插件的 main()，ctx 是它拿到的遥控器；通过 ctx 听的事件、登记的工具、ctx.effect 登记的收尾，
- * 插件被拔掉时 Cordis 自动撤掉。approval、progress 这两个服务“有就用”：ctx.inject([服务], 回调) 等于再挂一个小插件，
- * 服务来了 Cordis 才调回调（卡片开工），服务走了小插件自动拔掉（卡片停工），飞书别的功能不受影响。
+ * 插件被拔掉时 Cordis 自动撤掉。审批卡片等 approval 服务再开工，进度卡片用事件接收更新和发起操作。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -54,7 +53,7 @@ export const name = 'feishu';
 //M 1.1.4：onChannelReply 支持带 target 的跨渠道发话，在飞书自有群/私聊/流水数据里自认聊天。
 export const version = '1.1.5';
 
-/** 用到的服务。approval、progress 不写在这里（缺一个整个插件不开工），在 apply 里用 ctx.inject 有就用。 */
+/** 用到的必需服务。approval 在 apply 中按可选服务挂接。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
 
 
@@ -464,9 +463,6 @@ export class Feishu {
 
   /** approval 服务；approval 挂着时 cards/ 填上，拔掉时清掉。 */
   approval: cards.ApprovalLike | undefined;
-
-  /** progress 服务；progress 挂着时 cards/ 填上，拔掉时清掉。 */
-  progress: cards.ProgressLike | undefined;
 
   /**
    * 建表、给每个应用建 SDK 客户端；ready 时连长连接；被拔掉时关长连接。
@@ -1984,7 +1980,10 @@ export class Feishu {
     const vars = { 应用: appId, 卡片: cardId, 按钮: JSON.stringify(value ?? {}) };
     this.ctx.emit('trace', 'Feishu.onCard', '飞书卡片上点了按钮，交给卡片那块', 'cards.onAction(...)', vars);
     try {
-      const toast = await cards.onAction(this, address, cardId, (value ?? {}) as Record<string, unknown>);
+      const action = (value ?? {}) as Record<string, unknown>;
+
+      //M 转交卡片操作，等待进度事件或审批结果生成提示。
+      const toast = await cards.onAction(this, this.ctx, address, cardId, action);
       return { toast: toast ?? { type: 'info', content: '这个按钮没有用了' } };
     } catch (error) {
       return { toast: { type: 'error', content: `没处理成：${textModule.getMessage(error)}` } };
@@ -2548,7 +2547,7 @@ function getGroups(own: Record<string, unknown>): Map<string, FeishuGroup> {
 /**
  * 挂上飞书。
  * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里的服务都就绪，再调一次 apply。
- * 这里建渠道、登记云文档工具、开发件箱；卡片那块各开一个小插件，approval、progress 来了才开工。
+ * 建渠道、登记云文档工具和发件箱，并挂卡片监听。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param config plugins 段里写给它的：{ domain?: 飞书开放平台地址, people?: 认得的人, groups?: 专门设过的群 }。
  * @throws 配置不对时抛错。
@@ -2577,7 +2576,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   void ctx.inject(['approval'], (sub) => {
     cards.setupApproval(feishu, sub);
   });
-  void ctx.inject(['progress'], (sub) => {
-    cards.setupProgress(feishu, sub);
-  });
+
+  //M 直接订阅进度通知，进度插件迟挂时也能收到更新。
+  cards.setupProgress(feishu, ctx);
 }

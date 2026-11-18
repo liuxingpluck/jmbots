@@ -54,6 +54,7 @@ export class Sender {
    */
   send(target: Target, text: string, requestId: string): Promise<Record<string, unknown>> {
     const task = this.tail.then(async () => {
+      //M 排到此次发送时再截窗口，将新画面与目标一起交给 worker 核对。
       const frame = await this.window.frame();
       return this.exchange({ operation: 'send', text, requestId, target, frame, aobwUrl: this.window.url, lockFile: this.window.lockFile });
     });
@@ -69,18 +70,22 @@ export class Sender {
 
   /** 写一行请求，等一行回答；超时、worker 退出就丢掉这个 worker（下次重起），本次不重放。 */
   private async exchange(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+    //M 首次发送或上个 worker 被回收后，按需启动新的 worker。
     if (this.child === undefined) this.start();
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let line: string;
     try {
+      //M 按行协议提交这次发送，等到应答或超时为止。
       void this.child!.stdin.write(`${JSON.stringify(request)}\n`);
       await this.child!.stdin.flush();
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('微信后台操作超时；不自动重发')), TIMEOUT_MS);
       });
+      //M 取 worker 的第一行回执，超时的话交给下方关闭当前进程。
       line = await Promise.race([this.readLine(), timeout]);
     } catch (error) {
+      //G 交换失败时关掉当前 worker，避免迟到的回执被下次读到。
       this.close();
       this.buffer = '';
       throw error;
