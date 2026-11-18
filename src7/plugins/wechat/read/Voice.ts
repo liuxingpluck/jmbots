@@ -36,7 +36,7 @@ function checkDuration(bytes: number, expectedSeconds?: number): void {
   const actualSeconds = bytes / BYTE_RATE;
   if (Math.abs(actualSeconds - expectedSeconds) > 1) {
     //G 超过取整余量的音频不作为当前消息播放。
-    throw new readerModule.VoiceUnavailable('音频时长与聊天记录不符');
+    throw new readerModule.VoiceUnavailable('音频时长与聊天记录不符', 'duration_mismatch');
   }
 }
 
@@ -44,10 +44,12 @@ function checkDuration(bytes: number, expectedSeconds?: number): void {
 export async function decodeVoice(input: Uint8Array, expectedSeconds?: number): Promise<Buffer> {
   //G 先验证语音格式和长度，避免把坏文件送给解码器。
   const isSilk = silk.isSilk(input);
-  if (!isSilk) throw new readerModule.VoiceUnavailable('原音频格式无法解码');
+  if (!isSilk) {
+    throw new readerModule.VoiceUnavailable('原音频格式无法解码', 'not_silk');
+  }
   const duration = silk.getDuration(input);
   if (duration <= 0 || duration > MAX_DURATION_MS) {
-    throw new readerModule.VoiceUnavailable('原音频时长异常');
+    throw new readerModule.VoiceUnavailable('原音频时长异常', 'invalid_duration');
   }
 
   //M 用标准单声道 PCM WAV 封装解码结果，网页直接交给浏览器播放。
@@ -57,10 +59,10 @@ export async function decodeVoice(input: Uint8Array, expectedSeconds?: number): 
     const decoded = await silk.decode(encoded, SAMPLE_RATE);
     pcm = decoded.data;
   } catch {
-    throw new readerModule.VoiceUnavailable('SILK 解码失败');
+    throw new readerModule.VoiceUnavailable('SILK 解码失败', 'silk_decode_failed');
   }
   if (pcm.length === 0 || pcm.length > MAX_PCM || pcm.length % 2 !== 0) {
-    throw new readerModule.VoiceUnavailable('原音频解码后数据不完整');
+    throw new readerModule.VoiceUnavailable('原音频解码后数据不完整', 'invalid_pcm');
   }
 
   //G 声音长度与聊天记录差得太多时，不生成可播放缓存。
@@ -90,8 +92,8 @@ export async function decodeVoice(input: Uint8Array, expectedSeconds?: number): 
 
 /** 分账号、会话和消息缓存 WAV，重复播放不会重新取音。 */
 export class VoiceAudio {
-  /** 同一条语音的播放请求共用一次取音和落盘。 */
-  private readonly loading = new Map<string, Promise<Buffer>>();
+  /** 合并播放请求，提取或解码失败后暂不重复读取。 */
+  private readonly attempts = new readerModule.MediaAttempts<Buffer>('voice');
 
   /**
    * @param reader 微信插件现成的按账号排队读取器。
@@ -104,22 +106,17 @@ export class VoiceAudio {
    * @param message 已确认在本地消息库中的语音。
    * @param expectedSeconds 微信气泡记录的时长，旧记录未提供时省略。
    */
-  async get(message: readerModule.VoiceMessage, expectedSeconds?: number): Promise<Buffer> {
+  get(message: readerModule.VoiceMessage, expectedSeconds?: number): Promise<Buffer> {
     //M 用四段消息键做同一性校验，目录名不暴露微信账号或聊天编号。
     const key = JSON.stringify([message.account, message.chat, message.source, message.localId]);
     const hash = crypto.createHash('sha256');
     const id = hash.update(key).digest('hex');
-    const pending = this.loading.get(id);
-    if (pending !== undefined) return pending;
+    const known = this.attempts.getCached(id);
+    if (known !== undefined) return known;
 
     //M 同一条音频只取一次，成功写完后其他请求读同一份缓存。
-    const op = this.load(message, id, expectedSeconds);
-    this.loading.set(id, op);
-    try {
-      return await op;
-    } finally {
-      this.loading.delete(id);
-    }
+    const attempt = this.load(message, id, expectedSeconds);
+    return this.attempts.track(id, attempt);
   }
 
   /** 读取缓存或先写临时文件再改名，免得播放器拿到半份语音。 */

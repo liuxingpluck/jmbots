@@ -1,7 +1,7 @@
 /**
  * 积木客服页（/wechat-kefu/，web 插件托管 dist/web/wechat-kefu.html）。照积木客服（source/jimukefu/src/web）的样子：
- * 左栏筛选会话并管理监听，中间查看消息，右栏复制 AI 建议。
- * 通过 wechat-kefu 接口读取会话、消息和草稿，支持手动起草和更改监听。
+ * 左栏筛选会话并管理监听和自动发，中间查看消息和手动发送，右栏处理 AI 回复。
+ * 通过 wechat-kefu 接口读取会话、消息和发件记录，已监听会话可起草建议。
  * 演示打码开启时隐藏账号、会话内容和建议原文。
  */
 import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
@@ -22,6 +22,18 @@ const SYSTEM = new Set([
   'filehelper', 'weixin', 'notifymessage', 'fmessage', 'floatbottle', 'medianote', 'newsapp',
   'qqmail', 'brandsessionholder', 'brandservicesessionholder', 'qmessage', 'tmessage', 'qqsync',
 ]);
+/** 发件区沿用后端各阶段的显示文案和可用操作。 */
+const STATES: Record<string, string> = {
+  draft: '草稿',
+  waiting: '等确认',
+  sending: '发送中',
+  sent: '已发出',
+  unconfirmed: '未确认',
+  failed: '失败',
+  rejected: '被拒',
+};
+const PENDING_OUTBOX_STATES = new Set(['draft', 'waiting']);
+const SENDABLE_OUTBOX_STATES = new Set(['draft', 'failed', 'rejected']);
 interface Status {
   lastRunAt: number;
   lastError: string;
@@ -38,6 +50,7 @@ interface Chat {
   last_message: string;
   timestamp: number;
   watch: boolean;
+  auto: boolean;
 }
 interface Message {
   /** 记录所属的账号及聊天，用于定位原语音。 */
@@ -61,7 +74,7 @@ const FILTERS: [Filter, string][] = [
   ['work', '企业微信'], ['system', '系统'], ['unread', '有未读'], ['fresh', '有新消息'], ['watch', '已监听'],
 ];
 const LOADED_AT = Date.now();
-interface Out { id: number; name: string; text: string; state: string; at: number }
+interface Out { id: number; name: string; text: string; state: string; note: string; at: number }
 
 function getKind(chat: Chat): Kind {
   const id = chat.username;
@@ -310,8 +323,8 @@ function getPollSummary(offline: string, status: Status | null): { level: string
 }
 
 /**
- * 积木客服主页面，按账号查看会话、管理监听、查看消息和复制 AI 建议。
- * 副作用：轮询状态、会话、消息与草稿，用户操作时保存监听或请求起草。
+ * 积木客服主页面，查看会话和发件，管理监听，处理人工发送与 AI 建议。
+ * 副作用：轮询状态、会话、消息与发件，用户操作时保存监听、起草或发送。
  */
 export function WechatPage() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -328,6 +341,7 @@ export function WechatPage() {
   const [outbox, setOutbox] = useState<Out[]>([]);
   const [outboxRevision, setOutboxRevision] = useState(0);
   const [manualScan, setManualScan] = useState<{ account: string } | null>(null);
+  const [draft, setDraft] = useState('');
   const [drafting, setDrafting] = useState(false);
   //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位
   const mask = privacy.useMask();
@@ -368,15 +382,14 @@ export function WechatPage() {
 
   useEffect(() => {
     const path = '/api/wechat-kefu/outbox';
-    const update = (rows: Out[]): void => {
-      //M 发件记录也可能来自人工发送，右栏只展示尚待处理的建议。
-      const suggestions = rows.filter((row) => row.state === 'draft' || row.state === 'waiting');
-      setOutbox(suggestions);
-    };
 
-    //M 起草完成后重新启动草稿轮询，立即取到刚生成的建议。
-    return pollJson(path, 3_000, update);
+    //M 轮询全部发件状态，手动起草完成后立即取到刚生成的建议。
+    return pollJson<Out[]>(path, 3_000, setOutbox);
   }, [outboxRevision]);
+  const pendingOutbox = useMemo(
+    () => outbox.filter((row) => PENDING_OUTBOX_STATES.has(row.state)).length,
+    [outbox],
+  );
 
   useEffect(() => {
     if (!account) return;
@@ -432,19 +445,46 @@ export function WechatPage() {
     setSelection(chat);
   };
 
-  const toggle = async (chat: Chat, watch: boolean): Promise<void> => {
+  const toggle = async (chat: Chat, watch: boolean, auto: boolean): Promise<void> => {
     const path = '/api/wechat-kefu/watch';
-    const watchRequest = { account, chat: chat.username, name: chat.chat, watch };
+    const watchRequest = { account, chat: chat.username, name: chat.chat, watch, auto };
     const body = JSON.stringify(watchRequest);
     const request = { method: 'PUT', body };
 
-    //M 保存监听标记，成功后更新左栏与当前会话的起草权限。
+    //M 保存监听和自动发送配置，成功后同步更新左栏。
     await call(path, request);
     setChats((list) => list.map((item) => {
       if (item.username !== chat.username) return item;
 
-      return { ...item, watch };
+      return { ...item, watch, auto: watch && auto };
     }));
+  };
+  const send = async (): Promise<void> => {
+    if (!current?.watch || draft.trim() === '') return;
+
+    const path = '/api/wechat-kefu/send';
+    const sendRequest = { account, chat: current.username, text: draft };
+    const body = JSON.stringify(sendRequest);
+    const request = { method: 'POST', body };
+    try {
+      //M 走原有人工发送入口，提交成功后清除输入。
+      await call(path, request);
+      setDraft('');
+    } catch (error) {
+      setScanNote(`发送失败：${(error as Error).message}`);
+    }
+  };
+  const resend = async (id: number): Promise<void> => {
+    const path = '/api/wechat-kefu/outbox/send';
+    const resendRequest = { id };
+    const body = JSON.stringify(resendRequest);
+    const request = { method: 'POST', body };
+    try {
+      //M 沿用指定发件记录的发送入口，结果由轮询读回。
+      await call(path, request);
+    } catch (error) {
+      setScanNote(`发送失败：${(error as Error).message}`);
+    }
   };
   const askAi = async (): Promise<void> => {
     if (!current?.watch) return;
@@ -506,7 +546,10 @@ export function WechatPage() {
 
     //M 搜索结果稳定后才批量修改，避免把上一次搜索的会话也改掉。
     for (const chat of shown) {
-      if (chat.watch !== watch) await toggle(chat, watch);
+      if (chat.watch !== watch) {
+        //M 批量操作只改变监听，被勾选的新会话仍从手动发送开始。
+        await toggle(chat, watch, false);
+      }
     }
   };
 
@@ -643,9 +686,12 @@ export function WechatPage() {
     currentTitle = hideName(current.chat || current.username);
   }
   let aiTitle = '请先勾选监听';
+  let composePlaceholder = '只能发给监听中的会话';
   if (current?.watch) {
     aiTitle = '根据这个会话起草一条建议';
+    composePlaceholder = '人手发一句';
   }
+  const composeDisabled = !current?.watch || draft.trim() === '';
   let aiButtonText = '让 AI 起草建议';
   if (drafting) {
     aiButtonText = '正在起草…';
@@ -668,7 +714,7 @@ export function WechatPage() {
   };
   const batchDisabled = shown.length === 0 || search !== deferredSearch;
 
-  //M 显示账号与轮询状态、分类统计卡，以及会话、消息和建议三栏。
+  //M 显示账号与轮询状态、分类统计卡，以及会话、消息和发件三栏。
   return (
     <div className="wk-page" style={{ paddingTop: pageTop }}>
       <privacy.MaskBanner />
@@ -749,7 +795,8 @@ export function WechatPage() {
             //M 左侧会话栏头部、脱敏搜索框、状态/类型筛选胶囊与批量勾选当前列表工具条。
           /**/}
           <div className="wk-head">最近会话 <span>勾选「监听」后可让 AI 起草建议</span></div>
-          <input className="wk-search" placeholder="搜索名称或最后消息" value={hide(search)} readOnly={mask}
+          <input className="wk-search" data-testid="wechat-kefu-search"
+            placeholder="搜索名称或最后消息" value={hide(search)} readOnly={mask}
             onChange={(e) => setSearch(e.target.value)} />
           {/* 2026-11-14 23:20 EST：照原版积木客服的筛选（SessionList.tsx 的 chips），恢复「只看监听」快速定位。 */}
           <div className="wk-chips">
@@ -786,22 +833,24 @@ export function WechatPage() {
           {shown.length > 0 && (
             <virtuoso.Virtuoso
               className="wk-scroll"
+              data-testid="wechat-kefu-sessions"
               data={shown}
               computeItemKey={(_index, chat) => chat.username}
-              itemContent={(_index, chat) => {
+              itemContent={(index, chat) => {
                 //M 判断当前会话是否处于选中高亮状态，准备列表行样式。
                 let itemClass = 'wk-item ';
                 if (current?.username === chat.username) {
                   itemClass = 'wk-item on';
                 }
 
-                //M 渲染单条会话行：脱敏头像首字与名称、分类徽章、未读数及阻止冒泡的监听复选框。
+                //M 渲染会话行，开关点击与会话选择各走自己的处理。
                 const kind = getKind(chat);
                 const name = chat.chat || chat.username;
                 const displayName = hideName(name);
                 const avatar = Array.from(displayName)[0];
                 return (
-                  <div className={itemClass} onClick={() => selectChat(chat)}>
+                  <div className={itemClass} data-testid="wechat-kefu-session-row" data-session-index={index}
+                    onClick={() => selectChat(chat)}>
                     <div className="wk-avatar" data-kind={kind}>{avatar}</div>
                     <div className="wk-item-main">
                       <div className="wk-item-top">
@@ -813,8 +862,13 @@ export function WechatPage() {
                       <div className="wk-switches" onClick={(e) => e.stopPropagation()}>
                         <label>
                           <input type="checkbox" checked={chat.watch}
-                            onChange={(e) => void toggle(chat, e.target.checked)} />
+                            onChange={(e) => void toggle(chat, e.target.checked, chat.auto)} />
                           监听
+                        </label>
+                        <label>
+                          <input type="checkbox" checked={chat.watch && chat.auto} disabled={!chat.watch}
+                            onChange={(e) => void toggle(chat, chat.watch, e.target.checked)} />
+                          自动发
                         </label>
                       </div>
                     </div>
@@ -879,13 +933,27 @@ export function WechatPage() {
               }}
             />
           )}
+          <div className="wk-compose">
+            <textarea rows={2} placeholder={composePlaceholder} value={hide(draft)} readOnly={mask}
+              disabled={!current?.watch}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || !event.ctrlKey) return;
+
+                //M 沿用 Ctrl+Enter 提交当前会话的人工回复。
+                void send();
+              }} />
+            <button type="button" className="wk-btn" disabled={composeDisabled} onClick={() => void send()}>
+              发送
+            </button>
+          </div>
         </section>
 
         <aside className="wk-out" data-guide="outbox">
-          <div className="wk-head">AI 建议 <span>{outbox.length} 条</span></div>
+          <div className="wk-head">AI 回复 <span>{pendingOutbox} 条待处理</span></div>
           {outbox.length === 0 && (
             <div className="wk-scroll">
-              <div className="wk-empty">暂无 AI 建议</div>
+              <div className="wk-empty">监听的会话还没有新消息需要回复</div>
             </div>
           )}
           {outbox.length > 0 && (
@@ -894,14 +962,29 @@ export function WechatPage() {
               data={outbox}
               computeItemKey={(_index, o) => o.id}
               itemContent={(_index, o) => {
-                //M 建议卡片提供复制入口，演示打码时禁用。
+                //M 展示原有发件状态和备注，草稿、失败、被拒记录可发送。
+                const state = STATES[o.state] ?? o.state;
+                const canSend = SENDABLE_OUTBOX_STATES.has(o.state);
+                const canCopy = PENDING_OUTBOX_STATES.has(o.state);
+                let note = '';
+                if (o.note) {
+                  note = ` · ${hide(o.note)}`;
+                }
                 return (
-                  <div className="wk-outitem">
-                    <div className="wk-item-top"><span className="wk-name">{hideName(o.name)}</span></div>
+                  <div className={`wk-outitem ${o.state}`}>
+                    <div className="wk-item-top">
+                      <span className="wk-name">{hideName(o.name)}</span>
+                      <span className={`wk-state ${o.state}`}>{state}</span>
+                    </div>
                     <div className="wk-outtext">{hide(o.text)}</div>
-                    <div className="wk-time">{getClock(o.at)}</div>
-                    <button type="button" className="wk-btn small" disabled={mask}
-                      onClick={() => void copySuggestion(o)}>复制</button>
+                    <div className="wk-time">{getClock(o.at)}{note}</div>
+                    {canCopy && (
+                      <button type="button" className="wk-btn small" disabled={mask}
+                        onClick={() => void copySuggestion(o)}>复制</button>
+                    )}
+                    {canSend && (
+                      <button type="button" className="wk-btn small" onClick={() => void resend(o.id)}>发送</button>
+                    )}
                   </div>
                 );
               }}

@@ -316,12 +316,14 @@ export function Usage(): react.JSX.Element {
       <div className="jm-usage-filters">
         <antd.Segmented
           size="small"
+          data-testid="usage-range"
           value={days}
           options={rangeOptions}
           onChange={changeRange}
         />
         <antd.Segmented
           size="small"
+          data-testid="usage-grain"
           value={by}
           options={byOptions}
           onChange={(value) => setBy(value)}

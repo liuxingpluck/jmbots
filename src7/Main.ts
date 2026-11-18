@@ -12,6 +12,7 @@ import * as pluginIndex from './plugins/Index.ts';
 import * as resourcesModule from './Resources.ts';
 import * as sessionsModule from './Sessions.ts';
 import * as toolsModule from './Tools.ts';
+import * as backendLog from './utils/BackendLog.ts';
 import * as checks from './utils/Checks.ts';
 import * as textModule from './utils/Text.ts';
 import * as versions from './utils/Versions.ts';
@@ -41,6 +42,9 @@ async function main(argv: string[]): Promise<void> {
     versions.print();
     return;
   }
+
+  //M 在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。
+  backendLog.install();
 
   //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。
   let flags = argv;

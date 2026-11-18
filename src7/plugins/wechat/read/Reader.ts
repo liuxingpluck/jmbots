@@ -63,17 +63,91 @@ export interface VoiceMessage {
   localId: number;
 }
 
-/** 可直接显示在聊天区的脱敏语音错误。 */
-export class VoiceUnavailable extends Error {}
+type MediaKind = 'image' | 'voice';
 
-/** 对外只给出明确的缺件原因，保留引擎日志的既有脱敏。 */
-function getVoiceReason(code: string | undefined): string {
-  if (code === 'unknown_op') return '当前微信引擎没有语音读取入口';
-  if (code === 'not_found') return '微信未保存原音频';
-  if (code === 'not_silk') return '原音频格式无法解码';
-  if (code === 'ambiguous') return '无法确认原音频属于本会话';
+/** 已确认成功的媒体回执。 */
+interface MediaResult {
+  /** 引擎给出的媒体类型。 */
+  mime?: string;
+}
 
-  return '未能从微信读取原音频';
+/** 已落盘并可供客服页读取的缩略图。 */
+interface ImageFile {
+  /** 缩略图文件。 */
+  file: string;
+  /** 图片媒体类型。 */
+  mime: string;
+}
+
+/** 可直接回给客服页的脱敏原因，附供日志定位的错误码和退出码。 */
+export class MediaUnavailable extends Error {
+  /** 页面文案、固定原因码和已知的引擎退出码。 */
+  constructor(message: string, readonly code = 'unavailable', readonly exitCode?: number) {
+    super(message);
+  }
+}
+
+/** 保留语音解码器对格式、时长等错误的归类。 */
+export class VoiceUnavailable extends MediaUnavailable {}
+
+const MEDIA_REASONS = new Map([
+  ['bad_request', '微信引擎无法识别这条媒体请求'],
+  ['internal', '微信引擎处理媒体时出错'],
+  ['need_image_key', '取不到图片：缺少微信图片解密密钥'],
+  ['decrypt_failed', '取不到图片：图片解密失败'],
+  ['not_silk', '原音频格式无法解码'],
+  ['ambiguous', '无法确认原音频属于本会话'],
+]);
+
+/** 只接受约定的错误码。引擎的原始输出可含聊天内容和本机路径。 */
+function getMediaFailure(kind: MediaKind, code: unknown, exitCode: number): MediaUnavailable {
+  if (code === 'not_found') {
+    if (kind === 'image') return new MediaUnavailable('取不到图片：微信未保存这张图片', code, exitCode);
+
+    return new MediaUnavailable('微信未保存原音频', code, exitCode);
+  }
+  if (code === 'unknown_op') {
+    if (kind === 'image') return new MediaUnavailable('当前微信引擎没有图片读取入口', code, exitCode);
+
+    return new MediaUnavailable('当前微信引擎没有语音读取入口', code, exitCode);
+  }
+  if (typeof code === 'string') {
+    const message = MEDIA_REASONS.get(code);
+    if (message !== undefined) return new MediaUnavailable(message, code, exitCode);
+  }
+
+  return new MediaUnavailable('微信引擎未提供可识别的媒体原因', 'unknown_media_error', exitCode);
+}
+
+/** 校验退出状态及 stdout 的回执。非法或未知内容不回显。 */
+function readMediaResult(kind: MediaKind, out: string, exitCode: number, timedOut: boolean): MediaResult {
+  if (timedOut) {
+    throw new MediaUnavailable('微信引擎读取媒体超时', 'timeout', exitCode);
+  }
+  if (exitCode !== 0 && exitCode !== 1) {
+    throw new MediaUnavailable('微信引擎异常退出', 'engine_exit', exitCode);
+  }
+
+  let result: unknown;
+  try {
+    result = JSON.parse(out);
+  } catch {
+    throw new MediaUnavailable('微信引擎未返回可识别的媒体回执', 'invalid_response', exitCode);
+  }
+  if (result !== null && typeof result === 'object' && 'ok' in result) {
+    //M media 在 stdout 写失败回执，再以退出码 1 结束。
+    if (result.ok === false && 'error' in result) {
+      throw getMediaFailure(kind, result.error, exitCode);
+    }
+
+    if (exitCode === 0 && result.ok === true) {
+      if ('mime' in result && typeof result.mime === 'string') return { mime: result.mime };
+
+      return {};
+    }
+  }
+
+  throw new MediaUnavailable('微信引擎未返回可识别的媒体回执', 'invalid_response', exitCode);
 }
 
 
@@ -98,10 +172,68 @@ function getReason(err: string, timedOut: boolean): string {
 
 /** 子进程最长跑多久，毫秒。解密首次要久一点。 */
 const TIMEOUT_MS = 120_000;
+const MEDIA_RETRY_MS = 30_000;
+const MEDIA_FAILURE_LIMIT = 512;
+
+/** 同一媒体共用进行中的读取。短暂复用失败，成功仍由既有文件缓存负责。 */
+export class MediaAttempts<T> {
+  private readonly pending = new Map<string, Promise<T>>();
+  private readonly failures = new Map<string, {
+    /** 本次读取的失败结果。 */
+    readonly error: unknown;
+    /** 可重新读取的时间戳，毫秒。 */
+    readonly retryAt: number;
+  }>();
+
+  constructor(private readonly kind: MediaKind) {}
+
+  /** 返回进行中的读取或仍有效的失败。到期后让调用方再发起读取。 */
+  getCached(key: string): Promise<T> | undefined {
+    const active = this.pending.get(key);
+    if (active !== undefined) return active;
+
+    const failure = this.failures.get(key);
+    if (failure === undefined) return undefined;
+    if (failure.retryAt > Date.now()) return Promise.reject(failure.error);
+
+    //M 窗口过去后允许重新取，微信刚同步下来的媒体仍可恢复。
+    this.failures.delete(key);
+  }
+
+  /** 登记新读取，失败时记录一次诊断并在短时间内复用原来的结果。 */
+  async track(key: string, attempt: Promise<T>): Promise<T> {
+    this.pending.set(key, attempt);
+    try {
+      return await attempt;
+    } catch (error) {
+      //G 只记固定错误类别，省去可能含聊天内容、账号和路径的引擎输出或 I/O 错误。
+      let detail = 'unavailable';
+      if (error instanceof MediaUnavailable) {
+        detail = error.code;
+        if (error.exitCode !== undefined) {
+          detail += `，退出码 ${String(error.exitCode)}`;
+        }
+      }
+      console.error(`微信媒体读取失败（${this.kind}）：${detail}`);
+
+      //M 仅保留有限数量的失败记录，批量浏览旧聊天不会无限增长。
+      if (this.failures.size >= MEDIA_FAILURE_LIMIT) {
+        const oldest = this.failures.keys().next().value;
+        if (oldest !== undefined) this.failures.delete(oldest);
+      }
+      const retryAt = Date.now() + MEDIA_RETRY_MS;
+      this.failures.set(key, { error, retryAt });
+      throw error;
+    } finally {
+      this.pending.delete(key);
+    }
+  }
+}
 
 
 /** 只读引擎的调用方。 */
 export class Reader {
+  private readonly images = new MediaAttempts<ImageFile>('image');
   /**
    * @param root 引擎目录：里面有 python/ 和 runtime/。
    * @param python 跑 wechat_cli 的 python.exe。
@@ -167,7 +299,18 @@ export class Reader {
    * 解密后写到 runtime/data/<账号>/media/jmbots/，交回文件路径和类型。
    * 已经取过的直接用缓存。
    */
-  async image(account: string, chat: string, source: string, localId: number): Promise<{ file: string; mime: string }> {
+  image(account: string, chat: string, source: string, localId: number): Promise<ImageFile> {
+    //M 合并相同账号、会话、分片和消息号的请求，避免同账号排队时又排进重复项。
+    const key = JSON.stringify([account, chat, source, localId]);
+    const known = this.images.getCached(key);
+    if (known !== undefined) return known;
+
+    //M 只有首次请求需要检查文件缓存或调用引擎。
+    const attempt = this.loadImage(account, chat, source, localId);
+    return this.images.track(key, attempt);
+  }
+
+  private async loadImage(account: string, chat: string, source: string, localId: number): Promise<ImageFile> {
     const relative = path.join(
       'runtime', 'data', account, 'media', 'jmbots', `${source.replace(/[^\w-]/gu, '_')}_${String(localId)}.img`,
     );
@@ -182,13 +325,19 @@ export class Reader {
       path.join(this.root, request),
       JSON.stringify({ op: 'image', chat, source, local_id: localId, out: relative, thumb: true }),
     );
-    let result: { ok?: boolean; mime?: string };
+    let result: MediaResult;
     try {
-      //M 用临时请求指明要读取的图片，返回是否成功及其媒体类型。
-      result = JSON.parse(await this.run(account, ['media', '--request', request])) as { ok?: boolean; mime?: string };
+      //M 接收媒体状态和类型。失败回执直接交给客服页。
+      const args = ['media', '--request', request];
+      result = await this.run(account, args, 'image');
     } finally {
       fs.rmSync(path.join(this.root, request), { force: true });
     }
+    const stat = fs.statSync(file, { throwIfNoEntry: false });
+    if (!stat?.isFile() || stat.size === 0) {
+      throw new MediaUnavailable('取不到图片：未生成图片文件', 'missing_output');
+    }
+
     let mime = 'image/jpeg';
     if (typeof result.mime === 'string' && result.mime.startsWith('image/')) {
       mime = result.mime;
@@ -224,20 +373,17 @@ export class Reader {
     try {
       //M 引擎只在同一账号内排队执行，取音失败的结构化结果给页面说明。
       const args = ['media', '--request', relative];
-      const stdout = await this.run(message.account, args, true);
-      const result = JSON.parse(stdout) as { ok?: boolean; error?: string; mime?: string };
-      if (result.ok !== true) {
-        const reason = getVoiceReason(result.error);
-        throw new VoiceUnavailable(reason);
-      }
+      const result = await this.run(message.account, args, 'voice');
 
       if (result.mime !== undefined && result.mime !== 'audio/silk') {
         //G 引擎返回的其他格式不交给 SILK 解码器。
-        throw new VoiceUnavailable('原音频格式无法解码');
+        throw new VoiceUnavailable('原音频格式无法解码', 'invalid_mime');
       }
       //G 没有输出或输出过大时，只保留消息说明。
       const size = fs.statSync(extracted, { throwIfNoEntry: false })?.size ?? 0;
-      if (size < 10 || size > 2 * 1024 * 1024) throw new VoiceUnavailable('微信原音频丢失或大小异常');
+      if (size < 10 || size > 2 * 1024 * 1024) {
+        throw new VoiceUnavailable('微信原音频丢失或大小异常', 'invalid_output');
+      }
 
       return fs.readFileSync(extracted);
     } finally {
@@ -252,11 +398,13 @@ export class Reader {
   //M 2026-11-15 00:46 EST：poll 的 sync-batch、backfillAll、页面当场同步原来各自起 python 并发；
   //M 引擎原地改写 runtime/cache 的解密缓存、不加锁（jimukefu db_cache.py:196），并发会读坏。
   /** 同一账号的引擎调用排队挨个跑，不同账号并行；某次失败不卡后面的。 */
-  private run(account: string, args: string[], mediaStatus = false): Promise<string> {
+  private run(account: string, args: string[]): Promise<string>;
+  private run(account: string, args: string[], media: MediaKind): Promise<MediaResult>;
+  private run(account: string, args: string[], media?: MediaKind): Promise<string | MediaResult> {
     //M 让当前请求接在同账号的上一个请求之后，即使上一条失败也继续。
     const next = (this.queues.get(account) ?? Promise.resolve())
       .catch(() => undefined)
-      .then(() => this.exec(account, args, mediaStatus));
+      .then(() => this.exec(account, args, media));
     this.queues.set(account, next);
 
     //M 完成后只清理仍指向自己的队尾，避免丢掉随后排进来的请求。
@@ -271,7 +419,7 @@ export class Reader {
    * 环境变量照 jimukefu src/services/Python.ts:71-87：运行目录、临时目录、编码都锁在引擎目录里。
    * @throws 超时、退出码不是 0 时抛错（原来带 stderr 最后一段；2026-11-14 20:10 起只带退出码和脱敏的简短原因，stderr 记进服务日志）。
    */
-  private async exec(account: string, args: string[], mediaStatus: boolean): Promise<string> {
+  private async exec(account: string, args: string[], media?: MediaKind): Promise<string | MediaResult> {
     const tmp = path.join(this.root, 'runtime', 'tmp');
     fs.mkdirSync(tmp, { recursive: true });
     const env: Record<string, string | undefined> = {
@@ -290,6 +438,9 @@ export class Reader {
     try {
       child = spawn();
     } catch (error) {
+      if (media !== undefined) {
+        throw new MediaUnavailable('找不到微信引擎或没有启动权限', 'engine_start_failed');
+      }
       let detail = String(error);
       if (error instanceof Error) {
         detail = error.message;
@@ -303,8 +454,8 @@ export class Reader {
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
     clearTimeout(timer);
-    //M media 失败时用退出码 1 和一行 JSON 回原因；异常退出仍走原引擎错误处理。
-    if (mediaStatus && !timedOut && code === 1 && out.trim().startsWith('{')) return out;
+    //M 图片和语音共用 CLI 的 stdout 回执，错误由媒体请求记录一次。
+    if (media !== undefined) return readMediaResult(media, out, code, timedOut);
 
     if (code !== 0 || timedOut) {
       const tail = err.trim().split(/\r?\n/u).slice(-8).join('\n');
