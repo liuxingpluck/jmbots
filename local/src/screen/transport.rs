@@ -1,5 +1,6 @@
 //! 录屏后端 v1 客户端与线上字段。连接只使用基地的本机后端配置。
 
+use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +17,8 @@ const VERSION: u32 = 1;
 const STATE: &str = "/api/screen/state";
 const STATUS: &str = "/api/screen/status";
 const CLICK: &str = "/api/screen/click";
+const CLICK_STREAM: &str = "/api/screen/click/stream";
+const PRESENTED: &str = "/api/screen/presented";
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) const CLICK_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -223,6 +226,33 @@ pub(super) struct Explanation {
     ok: bool,
     pub text: String,
     pub display_for_ms: u64,
+    #[serde(default)]
+    pub speak_eligible: bool,
+    pub segment: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct StreamFrame {
+    phase: String,
+    #[serde(flatten)]
+    explanation: Explanation,
+}
+
+/// 只有未安装流式入口的后端才允许回退为完整请求。
+pub(super) enum StreamResult {
+    Complete,
+    Legacy,
+    Failed,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresentedBody<'a> {
+    #[serde(flatten)]
+    identity: &'a Identity,
+    click_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segment: Option<u8>,
 }
 
 impl Explanation {
@@ -285,6 +315,53 @@ impl Transport {
         let response = self.models.post(&url).send_json(request).ok()?;
         let explanation: Explanation = decode(response)?;
         explanation.validate(request)
+    }
+
+    /// 从专用响应逐行交付片段。错误或断开时终止此点击，只有旧路由缺席才回退。
+    pub fn explain_stream(
+        &self, request: &ClickBody, mut on_frame: impl FnMut(Explanation) -> bool,
+    ) -> StreamResult {
+        let url = format!("{}{CLICK_STREAM}", self.server);
+        let sent = self.models.post(&url).send_json(request);
+        let Ok(mut response) = sent else { return StreamResult::Failed; };
+        if response.status().as_u16() == 404 { return StreamResult::Legacy; }
+        if !response.status().is_success() { return StreamResult::Failed; }
+
+        let content_type = response.headers().get("content-type");
+        let is_stream = content_type.and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/x-ndjson"));
+        if !is_stream { return StreamResult::Failed; }
+
+        //G 限制整个响应大小，并验证每条实际呈现的帧都属于本次点击。
+        let body = response.body_mut().with_config().limit(REPLY_LIMIT).reader();
+        let lines = BufReader::new(body).lines();
+        let mut partial = false;
+        for line in lines {
+            let Ok(line) = line else { return StreamResult::Failed; };
+            let decoded = serde_json::from_str::<StreamFrame>(&line);
+            let Ok(frame) = decoded else { return StreamResult::Failed; };
+            let Some(explanation) = frame.explanation.validate(request) else { return StreamResult::Failed; };
+            let segment = explanation.segment.unwrap_or(1);
+
+            if frame.phase == "partial" && !partial && segment == 1 {
+                partial = true;
+                if !on_frame(explanation) { return StreamResult::Failed; }
+                continue;
+            }
+            if frame.phase != "done" || segment == 0 || segment > 2 || (!partial && segment > 1) {
+                return StreamResult::Failed;
+            }
+            if !on_frame(explanation) { return StreamResult::Failed; }
+            return StreamResult::Complete;
+        }
+        StreamResult::Failed
+    }
+
+    /// 只确认已显示的点击标识，讲解正文仍由后端回执缓存提供。
+    pub fn presented(&self, id: &ClickId, segment: Option<u8>) {
+        let url = format!("{}{PRESENTED}", self.server);
+        let body = PresentedBody { identity: &id.identity, click_id: &id.click_id, segment };
+        let _ = self.controls.post(&url).send_json(&body);
     }
 }
 
@@ -404,7 +481,7 @@ mod tests {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let address = format!("http://{}", server.server_addr());
         let work = std::thread::spawn(move || {
-            for path in [STATUS, STATE, STATE, CLICK] {
+            for path in [STATUS, STATE, STATE, CLICK, CLICK_STREAM, PRESENTED] {
                 let timeout = Duration::from_secs(4);
                 let mut request = server.recv_timeout(timeout).unwrap().unwrap();
                 let actual = request.url().split('?').next().unwrap();
@@ -422,6 +499,12 @@ mod tests {
                         assert_eq!(*request.method(), tiny_http::Method::Post);
                         let json: serde_json::Value = serde_json::from_reader(request.as_reader()).unwrap();
                         assert_eq!(json["protocolVersion"], 1);
+                        if path == PRESENTED {
+                            assert_eq!(json["segment"], 2);
+                            let reply = tiny_http::Response::from_string(r#"{"ok":true}"#);
+                            request.respond(reply).unwrap();
+                            continue;
+                        }
                         if path == STATE {
                             assert!(json["reasonCode"] == "user_start" || json["reasonCode"] == "heartbeat");
                             assert_eq!(json["active"], true);
@@ -442,6 +525,21 @@ mod tests {
                         })
                     }
                 };
+                if path == CLICK_STREAM {
+                    //M 同一点击的两条有效记录逐行到达，结束帧携带累计文字。
+                    let mut preview = value.clone();
+                    preview["phase"] = json!("partial");
+                    preview["segment"] = json!(1);
+                    let mut done = value;
+                    done["phase"] = json!("done");
+                    done["segment"] = json!(2);
+                    done["text"] = json!("模拟讲解。保存当前文档。");
+                    let body = format!("{preview}\n{done}\n");
+                    let header = tiny_http::Header::from_bytes("content-type", "application/x-ndjson").unwrap();
+                    let reply = tiny_http::Response::from_string(body).with_header(header);
+                    request.respond(reply).unwrap();
+                    continue;
+                }
                 let reply = tiny_http::Response::from_string(value.to_string());
                 request.respond(reply).unwrap();
             }
@@ -456,6 +554,14 @@ mod tests {
         let request = fixture(identity);
         let received = client.explain(&request).unwrap();
         assert_eq!(received.text, "模拟讲解。");
+        let mut frames = Vec::new();
+        let stream = client.explain_stream(&request, |frame| {
+            frames.push((frame.segment, frame.text));
+            true
+        });
+        assert!(matches!(stream, StreamResult::Complete));
+        assert_eq!(frames, [(Some(1), "模拟讲解。".to_string()), (Some(2), "模拟讲解。保存当前文档。".to_string())]);
+        client.presented(&request.id, Some(2));
         work.join().unwrap();
     }
 }

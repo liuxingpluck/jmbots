@@ -1,6 +1,10 @@
 //! 本机六十秒录屏探针，只打印点击摘要与帧环统计。
 
 #[cfg(windows)]
+#[path = "screen_probe/fixture.rs"]
+mod fixture;
+
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use std::io::{self, Read};
     use std::time::{Duration, Instant};
@@ -26,6 +30,9 @@ fn main() -> anyhow::Result<()> {
         /// 后端地址覆盖，仍需是本机地址。
         #[arg(long, requires = "explain")]
         server: Option<String>,
+        /// 用副屏的空白测试窗验证真实采集、讲解和隐私门。
+        #[arg(long, requires = "explain", conflicts_with = "check_backend")]
+        fixture: bool,
     }
 
     let args = Args::parse();
@@ -42,7 +49,7 @@ fn main() -> anyhow::Result<()> {
             println!("录屏后端可用");
             return Ok(());
         }
-        return explain(screen, settings);
+        return explain(screen, settings, args.fixture);
     }
     let Some(probe) = ScreenController::start(&screen)? else {
         println!("录屏关闭，帧数 0，内存 0 字节");
@@ -107,6 +114,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn explain(
     config: jmbots_local::screen::ScreenConfig, settings: jmbots_local::config::Settings,
+    use_fixture: bool,
 ) -> anyhow::Result<()> {
     use jmbots_local::screen::{Overlay, ScreenController, ScreenStart};
     use std::time::{Duration, Instant};
@@ -114,8 +122,30 @@ fn explain(
     let app = tauri::Builder::default()
         .setup(move |app| {
             let app = app.handle().clone();
+            let mut fixture = None;
+            if use_fixture {
+                //M 在 Tauri 消息线程创建原生控件，UIA 调用由探针线程发起。
+                fixture = Some(fixture::Fixture::open(&app)?);
+            }
             let work = move || {
                 let overlay = Overlay::new(app.clone());
+                if let Some(fixture) = fixture {
+                    let result = fixture.run(&config, &settings, &overlay, &app);
+                    let code = match result {
+                        Ok(()) => 0,
+                        Err(error) => {
+                            eprintln!("副屏探针失败：{error}");
+                            1
+                        }
+                    };
+                    let exit = app.clone();
+                    //M 在窗口所属线程销毁控件，然后退出探针。
+                    let _ = app.run_on_main_thread(move || {
+                        fixture.close();
+                        exit.exit(code);
+                    });
+                    return;
+                }
                 let started = ScreenController::start_explaining(&config, &settings, overlay.clone());
                 match started {
                     Ok(ScreenStart::Disabled) => println!("录屏关闭，帧数 0，内存 0 字节"),

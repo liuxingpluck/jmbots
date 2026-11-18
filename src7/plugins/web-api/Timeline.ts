@@ -1,7 +1,7 @@
 /**
  * 收件表 web_messages 和网页的时间线：一条消息给网页的样子、时间线（分页、取变化）、按号补取、搜索。
  * HTTP 来的、别的渠道（飞书、命令行）来的消息都记在这张表里，一条消息一行，回话追加在它的 replies 里。
- * 设计：docs/src7插件设计/web-api.md 第 2 节“消息”、第 6 节“存什么”。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as fsp from 'node:fs/promises';
 import * as fs from 'node:fs';

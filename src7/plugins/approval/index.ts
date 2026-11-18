@@ -14,7 +14,7 @@
  * “待确认有哪些”只列当事人自己的项；其他人的同样文字当普通消息交给前台。正确性不依赖监听顺序。
  * 接口：GET /api/approvals、POST /api/approvals/:id（有 http 才开）。
  * 不挡别的消息：review 只在提问的那场会话的工具里 await，别的会话、别的消息照常走；问用户时不等，马上交回“已经去问了”。
- * 设计：docs/src7插件设计/approval.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
@@ -33,7 +33,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.2';
+export const version = '1.1.4';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -403,7 +403,8 @@ export class Approval extends cordis.Service {
       return this.traced(input, { result: 'reject', by: 'rule', reason });
     }
     //G builder 的目录里 package.json 是他自己写的，“项目自己的检查”可能是任意命令，不直接放行。
-    if (input.confined === undefined && rules.isProjectCheck(command)) {
+    const runtimeRoot = this.ctx.resources.root;
+    if (input.confined === undefined && rules.isProjectCheck(command, cwd, runtimeRoot)) {
       return this.traced(input, { result: 'pass', by: 'rule', reason: '项目自己的检查，直接执行' });
     }
 

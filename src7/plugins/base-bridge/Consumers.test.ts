@@ -172,7 +172,7 @@ describe('基地调用方', () => {
 
   //M 后端信息与基地无关；同一后端在基地缺失、失败、恢复时 startedAt 保持一致。
   test('界面信息始终可读，基地恢复后带上壳子版本', async () => {
-    const { ctx, app, services } = world();
+    const { ctx, app } = world();
     webApi.apply(ctx);
     const missing = await app.inject({ method: 'GET', url: '/api/ui/info' });
     const first = missing.json();
@@ -180,45 +180,45 @@ describe('基地调用方', () => {
     expect(first.startedAt).toBeGreaterThan(0);
     expect(first.shell).toBeNull();
     expect(first.server).toEqual({ version: first.version, builtAt: first.builtAt });
-    services.set('base', {
-      getJson: async () => {
-        throw new Error('基地没响应');
-      },
+    let connected = false;
+    const calls: unknown[][] = [];
+    requestEvents.onRequestEvent(ctx, 'base/request', 'base/result', (request) => {
+      calls.push([request.route, request.timeoutMs]);
+      if (!connected) return { ok: false, error: '基地没响应' };
+
+      return { ok: true, status: 200, body: { version: '  test-shell  ', builtAt: 123 } };
     });
     const offline = await app.inject({ method: 'GET', url: '/api/ui/info' });
     expect(offline.statusCode).toBe(200);
     expect(offline.json()).toEqual(first);
-    const calls: unknown[][] = [];
-    services.set('base', {
-      getJson: async (...args: unknown[]) => {
-        calls.push(args);
-        return { status: 200, body: { version: '  test-shell  ', builtAt: 123 } };
-      },
-    });
+    connected = true;
     const online = await app.inject({ method: 'GET', url: '/api/ui/info' });
     expect(online.statusCode).toBe(200);
     expect(online.json()).toEqual({ ...first, shell: { version: 'test-shell', builtAt: 123 } });
-    expect(calls).toEqual([['/version', 800]]);
+    expect(calls).toEqual([['/version', 800], ['/version', 800]]);
   });
 
-  //M 用退出替身验证守护模式的两个入口，避免结束测试进程。
-  test('没有基地服务时守护重启退回本地退出', async () => {
+  //M 显式基地重启需要回执，应用设置则由守护器在后端自行退出后接管。
+  test('守护模式下仅应用设置会安排本地退出', async () => {
     const previous = process.env['JMBOTS_SUPERVISED'];
     const exit = spyOn(process, 'exit').mockImplementation((() => undefined) as typeof process.exit);
     process.env['JMBOTS_SUPERVISED'] = '1';
     try {
-      for (const url of ['/api/service/restart', '/api/settings/apply']) {
-        const { ctx, app, traces } = world(true);
-        app.get('/api/ui/info', async () => ({ startedAt: 42 }));
-        settings.apply(ctx);
-        const response = await app.inject({ method: 'POST', url });
-        expect(response.statusCode).toBe(200);
-        expect(response.json<{ ok: boolean }>().ok).toBe(true);
-        expect(traces.some((args) => args[1] === 'Settings.restart')).toBe(true);
-      }
+      const { ctx, app, traces } = world(true);
+      app.get('/api/ui/info', async () => ({ startedAt: 42 }));
+      settings.apply(ctx);
+      const service = await app.inject({ method: 'POST', url: '/api/service/restart' });
+      expect(service.statusCode).toBe(503);
+      expect(service.json<{ error: string }>().error).toContain('未获回执');
+      expect(traces.some((args) => args[1] === 'Settings.restart')).toBe(false);
+
+      const apply = await app.inject({ method: 'POST', url: '/api/settings/apply' });
+      expect(apply.statusCode).toBe(200);
+      expect(apply.json<{ ok: boolean }>().ok).toBe(true);
+      expect(traces.some((args) => args[1] === 'Settings.restart')).toBe(true);
     } finally {
       await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(exit).toHaveBeenCalledTimes(2);
+      const calls = exit.mock.calls.length;
       exit.mockRestore();
       if (previous === undefined) {
         delete process.env['JMBOTS_SUPERVISED'];
@@ -226,23 +226,22 @@ describe('基地调用方', () => {
       if (previous !== undefined) {
         process.env['JMBOTS_SUPERVISED'] = previous;
       }
+      expect(calls).toBe(1);
     }
   });
 
   //M 只请求受守护模式的失败分支；环境变量恢复，且 ctx.emit 会阻止任何真实退出安排。
   test('请基地重启时基地没响应返回 503', async () => {
-    const { ctx, app, services, traces } = world();
+    const { ctx, app, traces } = world();
     app.get('/api/ui/info', async () => ({ startedAt: 42 }));
     settings.apply(ctx);
     const previous = process.env['JMBOTS_SUPERVISED'];
     process.env['JMBOTS_SUPERVISED'] = '1';
     try {
       const calls: unknown[][] = [];
-      services.set('base', {
-        postJson: async (...args: unknown[]) => {
-          calls.push(args);
-          throw new Error('基地没响应');
-        },
+      requestEvents.onRequestEvent(ctx, 'base/request', 'base/result', (request) => {
+        calls.push([request.route, request.body, request.timeoutMs]);
+        return { ok: false, error: '基地没响应' };
       });
       const offline = await app.inject({ method: 'POST', url: '/api/service/restart' });
       expect(offline.statusCode).toBe(503);

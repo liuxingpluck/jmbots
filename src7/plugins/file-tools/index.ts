@@ -1,7 +1,7 @@
 /**
  * 文件工具：统一管理工作区的基础文件读写（time、read、list_dir、write + 接图片监听，原 base-tools 并入 BaseTools.ts）
  * 以及精确/宽松修改与搜索（edit、find，FileTools + EditMatch.ts）。路径均按当前轮工作区解符号链接判界，出不去。
- * 设计：docs/src7插件设计/file-tools.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -20,7 +20,8 @@ export { BaseTools } from './BaseTools.ts';
 export const name = 'file-tools';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/request 监听）。
-export const version = '1.1.0';
+//M 1.1.1：读图片文件的 getImageBlock 从骨架 utils/Image.ts 挪进 BaseTools.ts，只有这里用。
+export const version = '1.1.1';
 
 /** 用到的服务：resources 查模型是否收图；tools 登记六个工具；bots 找机器人的工作区。 */
 export const inject = ['resources', 'tools', 'bots'];

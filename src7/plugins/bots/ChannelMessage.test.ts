@@ -21,6 +21,7 @@ import * as toolsModule from '../../Tools.ts';
 import * as approvalModule from '../approval/index.ts';
 import * as feishuModule from '../feishu/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
+import * as historyRequest from './HistoryRequest.ts';
 import * as botsPlugin from './index.ts';
 
 
@@ -593,7 +594,7 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
   const frontMeta = ctx.sessions.find({ kind: 'front' })[0]!;
   const snap = frontMeta.resultQueue?.[0]?.payload.sourceSnapshot;
   if (snap !== undefined && savedCursor !== undefined) {
-    const tampered = await channels.requestChannelHistory(ctx, {
+    const tampered = await historyRequest.requestChannelHistory(ctx, {
       channel: 'feishu',
       sourceSnapshot: snap,
       mode: 'current',

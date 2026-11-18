@@ -11,11 +11,11 @@
  * 不调模型靠的是骨架现成的口子：插件在 session/request 里填了 request.answer，会话就不调 chat()。不用改骨架。
  * 配了 webhook_url 的助手，转出时推一次；没配的自己来看：读收件箱文件，或 GET /api/relay/inbox?helper=名字&since=号。
  * 收件带 files：话里 @路径 写的附件（渠道用 bots.saveFile 存进工作区的），换成相对运行时目录的路径，见 getFiles。
- * 设计：docs/src7插件设计/relay.md；给外部助手看的用法：docs/src7插件设计/进度/relay_用法.md。
+ * 设计和给外部助手看的用法见同目录 说明.md 的「设计要点」「给外部助手的用法」两节。
  *
- * 11-17 并进来两样（外部助手的交办、收件、回信归一处，工具名、接口、表都没改）：
- *   - AgentTasks.ts（原 agent-tasks 插件）：外部 AI 任务通道，工具 agent_task、/api/agents* 七个接口；http 就绪后挂；
- *   - NoteClaude.ts（原 note-claude 插件）：工具 note_claude，给 Claude 留言。
+ * 同目录还有两样（外部助手的交办、收件、回信归一处）：
+ *   - AgentTasks.ts：外部 AI 任务通道，工具 agent_task、/api/agents* 七个接口；http 就绪后挂；
+ *   - NoteClaude.ts：工具 note_claude，给 Claude 留言。
  * 转话这一块要配置 helpers 才挂；只用任务通道、留言的可以不写 helpers。
  */
 import * as fs from 'node:fs';
@@ -42,7 +42,8 @@ export const name = 'relay';
 //  1.3.0：回信先写进对话再标已送（relayReplyId 对账）；走模型的会话回信排进结果队列（acceptResult，键 relay:<回信号>）。
 //  1.3.1：发飞书文件改发 feishu/send-file 请求（等回执，不伪造成功）；提醒改发 bot/say 通知。
 //  1.3.2：转话回信和外部任务结果经 bot/request 入队，收到成功回执后更新各自的记录。
-export const version = '1.3.2';
+//  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
+export const version = '1.3.3';
 
 /**
  * 用到的服务。http 是可选的：用到时 ctx.get 现取。发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。
@@ -317,6 +318,44 @@ export class Relay {
     //M relay_send 一直登记：哪场会话能用要到每一步才知道（机器人写了 relay: model，或者飞书群登记了 relay: model），
     //M   不能用的由 offerTool 每一步从工具里拿掉，run 里再查一次。
     this.registerTool();
+
+    //M 决策图也用中控已有的收件轮询。此入口只记通知，不创建或推进机器人会话。
+    requestEventModule.onRequestEvent(this.ctx, 'decision-map/relay', 'decision-map/relay-result', (request) => {
+      const helper = this.config.helpers.find((item) => item.name === request.helper);
+      if (helper === undefined) return { ok: false, error: 'relay 没有该中控助手' };
+
+      const channel = 'decision-map';
+      const key = `${channel}:${request.node}`;
+      const params = [helper.name, channel, key];
+      const condition = 'helper = ? AND channel = ? AND session_id = ?';
+      if (request.action === 'ack') {
+        const sql = `UPDATE relay_items SET state = 'replied', replied_at = ? WHERE ${condition} AND state = 'pending'`;
+        const values = [Date.now(), ...params];
+
+        //M 确认图上决定后清除待收状态，中控的下次轮询能等到新决定。
+        this.run(sql, values);
+        return { ok: true };
+      }
+
+      //G 以节点号识别补投，同一决定只进收件箱一次。
+      const sql = `SELECT id FROM relay_items WHERE ${condition} LIMIT 1`;
+      const [previous] = this.query<{ id: number }>(sql, params);
+      if (previous !== undefined) return { ok: true, id: previous.id };
+
+      //M 收件列表需要机器人标识，取运行时名单中第一个。
+      const bot = this.ctx.bots.list()[0]?.name;
+      if (bot === undefined || request.text === undefined) return { ok: false, error: '缺少收件内容或机器人' };
+
+      const sender = '决策图';
+      const address = { owner: true, role: 'owner', senderName: sender };
+      const insert = 'INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat,'
+        + ' chat_name, text, at, reminded) VALUES (?, ?, ?, ?, ?, 1, ?, \'p2p\', \'\', ?, ?, 1)';
+      const values = [bot, helper.name, key, channel, JSON.stringify(address), sender, request.text, Date.now()];
+
+      //M 仅写供 Wait_Relay 读取的中控收件，回执给决定页用于反馈投递结果。
+      const created = this.run(insert, values);
+      return { ok: true, id: Number(created.lastInsertRowid) };
+    });
 
     //M 两个定时器。ctx.effect 登记“开了什么、拔掉时怎么关”：Cordis 拔这个插件时调返回的函数。
     this.ctx.effect(() => {

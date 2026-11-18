@@ -111,6 +111,38 @@ function writeEntry(workDir: string, webDir: string): string {
   return entry;
 }
 
+/**
+ * 编译单个可执行文件，给 SILK 加载器传 Bun 实际嵌入的资产路径。
+ * @param entry 生成的编译入口。
+ * @param output exe 的临时构建路径。
+ */
+async function compile(entry: string, output: string): Promise<void> {
+  const startedAt = Date.now();
+
+  //M silk-wasm 3.7.1 的 Module 支持 locateFile，公开 decode 未暴露这个参数。
+  const library = path.join(serveProcess.ROOT, 'node_modules', 'silk-wasm', 'lib', 'index.mjs');
+  const original = fs.readFileSync(library, 'utf8');
+  const marker = 'silk_default=Module;';
+  if (original.split(marker).length !== 2) throw new Error('SILK 加载入口已变，请核对 WASM 嵌入方式');
+
+  //M 只在这次打包时注入该包的定位函数，所有资产继续使用 Bun 的默认哈希命名。
+  const assetImport = 'import silkAsset from "./silk.wasm" with { type: "file" };';
+  const locator = 'silk_default=()=>Module({locateFile:()=>silkAsset});';
+  const adapted = original.replace(marker, locator);
+  const contents = `${assetImport}\n${adapted}`;
+  const result = await Bun.build({
+    entrypoints: [entry],
+    target: 'bun',
+    compile: { outfile: output },
+    sourcemap: 'linked',
+    external: ['sherpa-onnx-node'],
+    files: { [library]: contents },
+  });
+  if (!result.success) throw new AggregateError(result.logs, '编译没过');
+
+  console.log(`编译 通过（${seconds(startedAt)} 秒）`);
+}
+
 
 /**
  * 输出目录是不是正式产物目录（不许写）。运行时的 updates/ 本身放行，那是基地换版的入口。
@@ -172,7 +204,7 @@ async function main(): Promise<void> {
   const entryFile = writeEntry(workDir, webDir);
   // 2026-11-14 19:30（Claude 4.5）：--sourcemap 把源码映射编进 exe，trace 打的“文件:行”才对得上 plugins/xxx/index.ts。
   //M 语音原生包从运行时目录加载，保留 .node 和配套 DLL 的磁盘布局。
-  step('编译', ['build', '--compile', '--sourcemap', '--external', 'sherpa-onnx-node', entryFile, '--outfile', built]);
+  await compile(entryFile, built);
   const check = Bun.spawnSync([built, 'version'], { stdout: 'pipe', stderr: 'pipe' });
   if (check.exitCode !== 0) {
     console.error(`编译出来的程序跑不起来：${check.stderr.toString().slice(-2000)}`);

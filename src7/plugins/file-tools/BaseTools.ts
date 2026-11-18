@@ -8,7 +8,32 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
+import * as mimeModule from '../../utils/Mime.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
+
+
+/** 一张图最大多少字节；再大就不发给模型（请求太大，供应商会拒）。 */
+const MAX_BYTES = 8 * 1024 * 1024;
+
+/** 看图模型认得的图片类型；svg、ico 这类不发（和 utils/Image.ts 的 getImagePaths 认的一致）。 */
+const SENDABLE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+
+/**
+ * 把一个图片文件读成图片块。
+ * @param file 绝对路径。
+ * @returns 图片块；不是能发的图片、文件不在或太大时是 undefined。
+ */
+function getImageBlock(file: string): piAi.ImageContent | undefined {
+  //G 不是能发的图片类型、文件不在、太大 → 不发。
+  const mimeType = mimeModule.getType(file);
+  if (!SENDABLE.has(mimeType) || !fs.existsSync(file)) return undefined;
+  if (fs.statSync(file).size > MAX_BYTES) return undefined;
+
+  //M 读成 base64，装进 pi 的图片块。
+  const data = fs.readFileSync(file).toString('base64');
+  return { type: 'image', data, mimeType };
+}
 
 
 /** 看不到图的模型收到图时的提醒。 */
@@ -57,7 +82,7 @@ export class BaseTools {
         if (imageModule.getImagePaths(`@${file}`).length > 0) {
           let block: piAi.ImageContent | undefined;
           if (this.sees(session.row.model)) {
-            block = imageModule.getImageBlock(file);
+            block = getImageBlock(file);
           }
           if (block === undefined) return `${relative} 是图片，当前模型 ${session.row.model} 不收图片（或图片太大）；要看图得换看图模型。`;
 
@@ -164,7 +189,7 @@ export class BaseTools {
           continue;
         }
         //M 读取工作区内图片文件为图片块；无法发送或超限时跳过。
-        const block = imageModule.getImageBlock(full);
+        const block = getImageBlock(full);
         if (block !== undefined) {
           blocks.push(block);
         }

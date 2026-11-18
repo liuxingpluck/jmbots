@@ -105,8 +105,8 @@ async function setup(): Promise<{ ctx: cordis.Context; workspace: string; root: 
 
 
 describe('file-tools（含 BaseTools 并入）', () => {
-  test('版本为 1.1.0，front 与 work 的工具集合与预期一致', async () => {
-    expect(fileToolsModule.version).toBe('1.1.0');
+  test('版本为 1.1.1，front 与 work 的工具集合与预期一致', async () => {
+    expect(fileToolsModule.version).toBe('1.1.1');
     const { ctx } = await setup();
     const frontNames = ctx.tools.list('front').map((tool) => tool.name);
     const workNames = ctx.tools.list('work').map((tool) => tool.name);

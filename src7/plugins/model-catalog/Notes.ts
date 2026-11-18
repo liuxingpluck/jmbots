@@ -8,7 +8,7 @@
  * ModelNotes：getList 列每个模型的介绍和评价，getPrompt 拼一段给派活提示词用的中文，rate 按会话查出模型后写入或修改评价，routes 登记两个接口。
  * 接口（路径照旧，网页不用改）：
  *   GET  /api/model-notes        列表 { list }
- *   POST /api/model-notes/rate   会话打分 { session, by, score, note }，正文由 utils/Checks.ts 的 checkRating 查一次
+ *   POST /api/model-notes/rate   会话打分 { session, by, score, note }，正文由 Checks.ts 的 checkRating 查一次
  * 页面 /model-notes/ 是 web 打包的 model-notes.html（web/src/ModelNotes/），web 插件的兜底路由按文件名托管，这里不登记。
  * 配置（plugins[model-catalog].config.notes，都可不写）：dir（默认 models，相对运行时目录）、time_zone（评价时间按哪个时区写，默认 America/New_York，写出来是 EST/EDT）。
  */
@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import type { } from '../../Sessions.ts';
-import * as checks from '../../utils/Checks.ts';
+import * as checks from './Checks.ts';
 import { Failure } from '../../utils/Failure.ts';
 import * as textModule from '../../utils/Text.ts';
 
@@ -422,7 +422,7 @@ export class ModelNotes {
   /**
    * 按会话号写入或修改一条评价：服务端从会话读出实际模型与思考档，MD 不在就新建（标题加一行“（待补介绍）”）。
    * 同一个人对同一场会话再次打分算改分（覆盖旧记录）；会话换过模型时也会清理其它模型文件里的同人同会话旧行。
-   * @param input 查过的评价（utils/Checks.ts 的 checkRating 交回的）。
+   * @param input 查过的评价（Checks.ts 的 checkRating 交回的）。
    * @returns 这个模型更新后的介绍和评价。
    * @throws 找不到会话或模型 ID 非法时抛 Failure。
    * 副作用：写 models/<模型 ID 的 / 换成 __>.md（若换过模型也会更新旧模型 MD）；发一个跟踪点。

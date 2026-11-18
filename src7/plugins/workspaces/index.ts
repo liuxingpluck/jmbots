@@ -9,8 +9,7 @@
  * 谁能看、能用：本人（不是 builder、guest）能看、能用这个机器人全部的工作区；外人只看、只用自己范围（scope_key）里的。
  * 模型工具 workspace（只给前台）：create、get、list、rename、archive；create、rename、archive 只给本人。
  * 发的事件：workspaces/changed（created、renamed、archived），存库以后发。
- * 设计：docs/开发进度/插件优化_事件流向_细节_Codex_20261117.md「二、workspaces 插件设计」（照中控的精简范围做）；
- * 做法和为什么：docs/开发进度/131_workspaces插件_20261117.md。
+ * 设计和做法的为什么见同目录 说明.md 的「设计要点」一节。
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';

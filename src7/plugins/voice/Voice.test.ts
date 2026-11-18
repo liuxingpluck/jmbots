@@ -6,7 +6,14 @@ import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import * as requests from '../../utils/RequestEvent.ts';
 import * as asrModule from './Asr.ts';
+import * as cloud from './CloudAsr.ts';
+import * as models from './Models.ts';
+import * as routedAsr from './RoutedAsr.ts';
+import * as routes from './Routes.ts';
 import type * as taskModule from './Tasks.ts';
+import * as ttsModule from './Tts.ts';
+import * as turnModule from './Turn.ts';
+import * as turnModel from './TurnModel.ts';
 import type * as channel from '../../Channels.ts';
 import * as plugin from './index.ts';
 
@@ -18,7 +25,11 @@ class Socket extends events.EventEmitter<{ message: [Wire, boolean]; close: []; 
   code?: number;
   readonly frames: Frames = [];
 
-  send(data: string): void {
+  send(data: string | Buffer): void {
+    if (Buffer.isBuffer(data)) {
+      this.frames.push({ type: 'binary', data: [...data] });
+      return;
+    }
     this.frames.push(JSON.parse(data) as Record<string, unknown>);
   }
 
@@ -41,6 +52,7 @@ class FakeAsr implements asrModule.Asr {
   onPartial = (_text: string): void => {};
   onFinal = (_text: string): void => {};
   onSpeechStart = (): void => {};
+  onError?: (reason: string) => void;
   readonly input: number[][] = [];
   closed = false;
 
@@ -54,6 +66,192 @@ class FakeAsr implements asrModule.Asr {
   }
 }
 
+test('转写线路切换只重放未确认音频，并等待备选线路最后的字幕', async () => {
+  const cloud = new FakeAsr();
+  const local = new FakeAsr();
+  const ready = Promise.withResolvers<asrModule.Asr>();
+  const routes: routedAsr.AsrRoute[] = [
+    { place: 'cloud', open: () => cloud },
+    { place: 'local', open: () => ready.promise },
+  ];
+  const asr = new routedAsr.RoutedAsr(routes, 12);
+  cleanups.push(() => asr.close());
+  const providers: string[] = [];
+  const finals: string[] = [];
+  asr.onProvider = (place, reason) => { providers.push(place + (reason ?? '')); };
+  asr.onFinal = (text) => { finals.push(text); };
+  const first = new Int16Array([11, 12, 21, 22]);
+  asr.accept(first);
+  await Bun.sleep(0);
+  const final = cloud.onFinal as asrModule.Asr['onFinal'];
+  final('已确认', 2);
+  cloud.onError?.('云端额度不足');
+  final('过期回执', 4);
+  asr.accept(new Int16Array([23, 24]));
+  const finished = asr.finish();
+  ready.resolve(local);
+  await finished;
+  expect(cloud.closed).toBe(true);
+  expect(providers).toEqual(['cloud', 'local云端额度不足']);
+  expect(local.input).toEqual([[21, 22], [23, 24]]);
+  expect(finals).toEqual(['已确认']);
+});
+
+test('百炼转写使用配对的握手、PCM 与收尾事件', async () => {
+  let authorized = false;
+  let run: Record<string, unknown> | undefined;
+  let fed = Buffer.alloc(0);
+  class ProviderSocket extends EventTarget {
+    readonly bufferedAmount = 0;
+    private taskId = '';
+
+    constructor(_url: URL, options: { headers: Record<string, string> }) {
+      super();
+      authorized = options.headers['Authorization'] === 'Bearer offline-test';
+      queueMicrotask(() => this.dispatchEvent(new Event('open')));
+    }
+
+    send(raw: string | Buffer): void {
+      if (Buffer.isBuffer(raw)) {
+        fed = Buffer.from(raw);
+        this.respond('result-generated', { output: { sentence: { text: '测试转写' } } });
+        return;
+      }
+      const data = JSON.parse(raw) as {
+        header: { action: string; task_id: string }; payload: Record<string, unknown>;
+      };
+      if (data.header.action === 'run-task') {
+        this.taskId = data.header.task_id;
+        run = data.payload;
+        this.respond('task-started');
+        return;
+      }
+      expect(data.header).toMatchObject({ action: 'finish-task', task_id: this.taskId });
+      const sentence = { text: '测试转写成功', sentence_end: true, end_time: 100 };
+      this.respond('result-generated', { output: { sentence } });
+      this.respond('task-finished');
+    }
+
+    close(): void {
+      this.dispatchEvent(new Event('close'));
+    }
+
+    private respond(event: string, payload: Record<string, unknown> = {}): void {
+      const header = { event, task_id: this.taskId };
+      const data = JSON.stringify({ header, payload });
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data })));
+    }
+  }
+  const original = globalThis.WebSocket;
+  cleanups.push(() => { globalThis.WebSocket = original; });
+  globalThis.WebSocket = ProviderSocket as unknown as typeof WebSocket;
+  const url = new URL('wss://example.test/asr');
+  const asr = new cloud.BailianAsr({
+    url, apiKey: 'offline-test', model: 'fun-asr-realtime', silenceMs: 1200, maxSamples: 16_000,
+  });
+  cleanups.push(() => asr.close());
+  const received: unknown[] = [];
+  asr.onPartial = (text) => { received.push(text); };
+  asr.onFinal = (...args) => { received.push(args); };
+  asr.accept(new Int16Array(1600).fill(123));
+  await within(asr.finish(), '百炼测试收尾');
+  expect(authorized).toBe(true);
+  expect(run).toMatchObject({ model: 'fun-asr-realtime', parameters: { sample_rate: 16000, format: 'pcm' } });
+  expect(fed.length).toBe(3200);
+  expect(fed.readInt16LE(0)).toBe(123);
+  expect(received).toEqual(['测试转写', ['测试转写成功', 1600]]);
+});
+
+test('同采样率主备合成也会停止旧段，trace 保留切换原因', async () => {
+  const chunk = { pcm: Buffer.from([1, 0]), sampleRate: 24_000 };
+  const lines: ttsModule.SynthesisRoute[] = [
+    { place: 'cloud', produce: async (_text, _signal, emit) => {
+      emit(chunk);
+      throw new routes.RouteFailure('云端断开');
+    } },
+    { place: 'local', produce: async (_text, _signal, emit) => { emit(chunk); } },
+  ];
+  const speak = ttsModule.createSpeaker(lines);
+  const { ctx, voice } = getVoice(undefined, speak);
+  const traces: Record<string, unknown>[] = [];
+  ctx.on('trace', (_where, _text, _code, vars) => { traces.push(vars); });
+  const socket = new Socket();
+  voice.attach(socket);
+  socket.write({ type: 'start' });
+  expect(voice.speak('同采样率的合成')).toBe(true);
+  await Bun.sleep(0);
+  const relevant = socket.frames.map((frame) => frame['type']).slice(2);
+  expect(relevant).toEqual([
+    'voice-route', 'audio-start', 'binary', 'stop-audio', 'voice-route', 'audio-start', 'binary', 'audio-end',
+  ]);
+  expect(traces).toEqual([{ stage: 'tts', place: 'local', reason: '云端断开' }]);
+});
+
+test('继续说话和字幕改写会使正在判断的断句回执作废', async () => {
+  const replies: { resolve(value: boolean): void }[] = [];
+  const predict: models.Predict = () => {
+    const reply = Promise.withResolvers<boolean>();
+    replies.push(reply);
+    return reply.promise;
+  };
+  const detector = new turnModule.Turn(predict, 100, 10, () => {});
+  const silence = new Int16Array(1600);
+  const speech = new Int16Array(1600).fill(400);
+  let cuts = 0;
+  const cut = (): void => { cuts += 1; };
+  detector.update('能帮忙查一下我的排班');
+  detector.accept(silence, cut);
+  detector.accept(speech, cut);
+  replies[0]!.resolve(true);
+  await Bun.sleep(0);
+  expect(cuts).toBe(0);
+
+  detector.update('能帮忙查一下我的排班和');
+  detector.accept(silence, cut);
+  detector.update('能帮忙查一下我的排班和报表');
+  detector.accept(silence, cut);
+  replies[1]!.resolve(true);
+  replies[2]!.resolve(true);
+  await Bun.sleep(0);
+  expect(cuts).toBe(1);
+});
+
+test('内置断句模型在中英混读的文件名后等待下一段', () => {
+  const model = new turnModel.TurnModel();
+  expect(model.isComplete('READ ME 文件')).toBe(false);
+  expect(model.isComplete('PDF 文件')).toBe(false);
+  expect(model.isComplete('READ ME 文件发给我')).toBe(true);
+  expect(model.isComplete('帮我查一下明天的天气')).toBe(true);
+});
+
+test('没有资源回执时断句模型拒绝本地加载并改走配置的云端', async () => {
+  const ctx = new cordis.Context();
+  cleanups.push(() => ctx.fiber.dispose());
+  const calls: string[] = [];
+  ctx.provide('resources', {
+    getModel: (name: string) => name,
+    models: {
+      completeSimple: async (name: string) => {
+        calls.push(name);
+        return { stopReason: 'stop', content: [{ type: 'text', text: 'YES' }] };
+      },
+    },
+  } as unknown as cordis.Context['resources']);
+  const config: models.ModelSettings = {
+    local: 'builtin:zh-tail-v1',
+    cloud: 'fake/small',
+    prefer: 'local',
+    timeoutMs: 250,
+  };
+  const signal = new AbortController().signal;
+  const judge = new models.Models(ctx, config, signal);
+  const reported: unknown[][] = [];
+  const report = (...args: unknown[]): void => { reported.push(args); };
+  expect(await judge.predict('已说完？', '请重新打开列表', signal, report)).toBe(true);
+  expect(calls).toEqual(['fake/small']);
+  expect(reported).toEqual([['cloud', '资源守卫未放行']]);
+});
+
 const cleanups: (() => void | Promise<unknown>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
@@ -61,14 +259,14 @@ afterEach(async () => {
   }
 });
 
-function getVoice(settings?: taskModule.TaskSettings) {
+function getVoice(settings?: taskModule.TaskSettings, speak?: ttsModule.Speak) {
   const ctx = new cordis.Context();
   const streams: FakeAsr[] = [];
   const voice = new plugin.Voice(ctx, '默认机器人', () => {
     const asr = new FakeAsr();
     streams.push(asr);
     return asr;
-  }, 'fake', settings);
+  }, 'fake', settings, speak);
   cleanups.push(() => ctx.fiber.dispose());
   cleanups.push(() => voice.dispose());
   return { ctx, voice, streams };
@@ -183,9 +381,10 @@ const DESKTOP = '请把我桌面所有截图按日期整理';
 function getTaskWorld(
   decide?: (req: JudgeRequest) => Verdict | Promise<Verdict>,
   options: Partial<taskModule.TaskSettings> = {},
+  speak?: ttsModule.Speak,
 ) {
   const settings = { ...DEFAULT_TASKS, ...options };
-  const { ctx, voice, streams } = getVoice(settings);
+  const { ctx, voice, streams } = getVoice(settings, speak);
   const judged: JudgeRequest[] = [];
   const messages: channel.ChannelMessage[] = [];
   const tasks: taskModule.VoiceTask[] = [];
@@ -210,6 +409,55 @@ function getTaskWorld(
   socket.write({ type: 'start' });
   return { ctx, voice, socket, asr: streams[0]!, judged, messages, tasks };
 }
+
+test('本连接的最终答复以音频元数据、二进制 PCM 和结束帧送出', async () => {
+  const speak: ttsModule.Speak = async (_text, _signal, emit) => {
+    const pcm = Buffer.from([1, 0, 2, 0]);
+    emit({ pcm, sampleRate: 24_000 });
+  };
+  const world = getTaskWorld(undefined, {}, speak);
+  world.asr.onFinal(WEATHER);
+  await waitForCount(world.tasks, 1);
+  const messageId = world.messages[0]!.messageId;
+  const request = { sourceSnapshot: { messageId, channel: 'voice' }, kind: 'final' } as channel.ChannelReplyRequest;
+
+  //M 经由同一来源消息的标准渠道回话入口送入已确认的答复。
+  world.voice.reply('好的，我来查。', request);
+  const end = await waitForFrame(world.socket.frames, 'audio-end');
+  const parts = world.socket.frames.slice(-4);
+  expect(parts).toEqual([
+    { type: 'reply', kind: 'final', text: '好的，我来查。' },
+    { type: 'audio-start', utterId: end['utterId'], format: 'pcm_s16le', sampleRate: 24_000 },
+    { type: 'binary', data: [1, 0, 2, 0] },
+    { type: 'audio-end', utterId: expect.any(String) },
+  ]);
+});
+
+test('停止屏幕播报组会清掉该组，但保留随后到来的普通回复', async () => {
+  const spoken: string[] = [];
+  const speak: ttsModule.Speak = async (text, _signal, emit) => {
+    spoken.push(text);
+    const pcm = Buffer.alloc(24_000);
+    emit({ pcm, sampleRate: 24_000 });
+  };
+  const world = getTaskWorld(undefined, {}, speak);
+  world.asr.onFinal(WEATHER);
+  await waitForCount(world.tasks, 1);
+  const messageId = world.messages[0]!.messageId;
+  const request = { sourceSnapshot: { messageId, channel: 'voice' }, kind: 'final' } as channel.ChannelReplyRequest;
+
+  expect(world.voice.speak('屏幕讲解', 'screen-1', true)).toBe(true);
+  await waitForFrame(world.socket.frames, 'audio-end');
+  expect(world.voice.speak('待取消的讲解', 'screen-1', false)).toBe(true);
+  world.voice.reply('普通回复', request);
+  world.voice.stopSpeech('screen-2');
+  expect(world.socket.frames.some((frame) => frame['type'] === 'stop-audio')).toBe(false);
+  world.voice.stopSpeech('screen-1');
+  await waitForCount(spoken, 2);
+  expect(spoken).toEqual(['屏幕讲解', '普通回复']);
+  world.voice.stopSpeech('screen-1');
+  expect(world.socket.frames.filter((frame) => frame['type'] === 'stop-audio')).toHaveLength(1);
+});
 
 async function waitForCount(data: readonly unknown[], count: number) {
   for (let index = 0; index < 100; index += 1) {
@@ -350,7 +598,7 @@ test('派发保留标准渠道所有字段，并以认领会话构造任务回�
     receivedAt: expect.any(Number),
     timeSource: 'received',
     replyTo: null,
-    origin: { channel: 'voice', address: { customer: 'voice:本机', owner: true } },
+    origin: { channel: 'voice', address: { customer: 'voice:本机', owner: true, voiceMessageId: message.messageId } },
     visibility: { scope: 'voice:本机', trusted: true, publicSourceIds: [] },
     routing: { listenOnly: false, autoFinal: true },
   });
@@ -382,6 +630,7 @@ async function setupHttp(config?: Record<string, unknown>) {
   class Resources extends cordis.Service {
     readonly raw = { voice: config };
     readonly root = process.cwd();
+    readonly config = { providers: {} };
     constructor(local: cordis.Context) {
       super(local, 'resources');
     }
@@ -409,7 +658,7 @@ async function setupHttp(config?: Record<string, unknown>) {
 
 const wsAvailable = (await plugin.loadWebSocket()) !== undefined;
 
-test('状态报告默认关闭，sherpa 尚未接入时保持 HTTP 正常并报原因', async () => {
+test('状态报告默认关闭，sherpa 模型缺失时保持 HTTP 正常并报原因', async () => {
   const disabled = await setupHttp();
   const off = await disabled.app.inject('/api/voice/status');
   expect(off.json()).toMatchObject({

@@ -26,7 +26,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
-import * as snapshotModule from '../../utils/Snapshot.ts';
+import * as sourceDirModule from '../../utils/SourceDir.ts';
+import * as snapshotModule from './Snapshot.ts';
 import type * as pluginIndex from '../Index.ts';
 import * as bootModule from './Boot.ts';
 import * as codeModule from './Code.ts';
@@ -74,7 +75,7 @@ export interface FlowState {
   /**
    * 登记一组。
    * @param name 组名，写插件名：「状态」标签按它归到那个插件下面。
-   * @param read 交回这一刻的状态；键用英文（代码里的名字），交给网页前过 utils/Snapshot.ts 的 walkState 全量读出（不打码）。
+   * @param read 交回这一刻的状态；键用英文（代码里的名字），交给网页前过 plugins/tutorial/Snapshot.ts 的 walkState 全量读出（不打码）。
    * @param notes 键的中文解释：英文键 → 解释；网页在那一行后面灰字显示。
    * @returns 撤掉登记的函数：放进 ctx.effect，插件被拔掉时自动撤。
    */
@@ -96,7 +97,8 @@ export const name = 'tutorial';
 
 //M 版本号：改了对外的接口、页面、配置就往上加。
 /** 版本号。 */
-export const version = '1.1.7';
+//M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
+export const version = '1.1.9';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -112,7 +114,7 @@ export interface TutorialConfig {
   snapshot_files?: unknown;
   /** 「会话」左栏从 journal 按消息号去重最多列最近几条消息。不写是 50，要是正整数。 */
   recent_messages?: unknown;
-  /** 源码根目录，给「在 VS Code 里打开」拼路径用。不写就从运行时目录往上找带 src7 的那一层，要是字符串。 */
+  /** 源码根目录，给「在 VS Code 里打开」拼路径用。不写就从运行时目录往上找放着源码根目录（src7/Main.ts）的那一层，要是字符串。 */
   workspace?: unknown;
   /** 控制台打印执行路径（原 trace 插件）。不写是 false。 */
   trace_console?: unknown;
@@ -211,7 +213,7 @@ const PLUGIN_NAME = /^[a-z][a-z0-9-]*$/u;
 function getReadmeFile(plugin: string): string {
   //M 解析别名插件对应的实际源码目录名，再拼接出该插件的说明文档相对路径。
   const folder = bootModule.getFolder(plugin);
-  return `src7/plugins/${folder}/说明.md`;
+  return `${sourceDirModule.SOURCE_PREFIX}plugins/${folder}/说明.md`;
 }
 
 
@@ -282,11 +284,11 @@ export function getWorkspace(configured: string, start: string): string {
 
 
 /**
- * 这个目录是不是源码根目录：里面有 src7/Main.ts。
+ * 这个目录是不是仓库根目录：里面有 <源码根目录名>/Main.ts（源码根目录名见 src7/utils/SourceDir.ts）。
  * @param dir 目录。
  */
 function isWorkspace(dir: string): boolean {
-  const main = path.join(dir, 'src7', 'Main.ts');
+  const main = path.join(dir, sourceDirModule.SOURCE_DIR, 'Main.ts');
   return fs.existsSync(main);
 }
 
@@ -482,14 +484,18 @@ class Tutorial {
 
     //M 登记源码查看接口，支持按文件路径和行号返回完整函数体及上下游调用。
     app.get<Query>('/api/tutorial/source', async (request, reply) => {
-      //G 外面进来的文件名：位置可能带着前面的目录，从最后一个 src7/ 截起；只认 src7/ 下的 .ts，不许 ..。
+      //G 外面进来的文件名：位置可能带着前面的目录，从最后一处源码根前缀截起（不认 web/ 下面那个）；只认源码根下的 .ts，不许 ..。
       const raw = (request.query['file'] ?? '').replaceAll('\\', '/');
-      const from = Math.max(raw.lastIndexOf('src7/'), 0);
+      const prefix = sourceDirModule.SOURCE_PREFIX;
+      const found = sourceDirModule.getSourceStart(raw);
+      const from = Math.max(found, 0);
       const file = raw.slice(from);
+      const rest = file.slice(prefix.length);
       const line = Number.parseInt(request.query['line'] ?? '', 10);
-      const fileOk = /^src7\/[\w\-./]+\.ts$/u.test(file) && !file.includes('..');
+      const fileOk = file.startsWith(prefix) && /^[\w\-./]+\.ts$/u.test(rest) && !file.includes('..');
       const lineOk = Number.isSafeInteger(line) && line >= 1;
-      if (!fileOk || !lineOk) return reply.code(400).send({ error: '要给 file（src7/ 下的 .ts）和 line（第几行，从 1 起）' });
+      const usage = `要给 file（${prefix} 下的 .ts）和 line（第几行，从 1 起）`;
+      if (!fileOk || !lineOk) return reply.code(400).send({ error: usage });
 
       //M 按文件与行号截取完整函数源码、内部调用及调用方信息。
       const source = await this.boot.source.getSource(file, line);
@@ -570,7 +576,7 @@ class Tutorial {
     const fiberName = pluginModule?.name ?? plugin;
     const owned = new Set<string>();
     if (skeletonModule.isSkeleton(plugin)) {
-      //M 骨架快照在 utils/Snapshot.ts 里固定按小写名字（main/resources/tools/sessions）分组，直接纳入筛选集合。
+      //M 骨架快照在 plugins/tutorial/Snapshot.ts 里固定按小写名字（main/resources/tools/sessions）分组，直接纳入筛选集合。
       owned.add(plugin);
     }
     const store = this.ctx.reflect.store;

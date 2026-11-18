@@ -13,24 +13,24 @@ import * as bots from './bots/index.ts';
 import * as cli from './cli/index.ts';
 import * as contextFit from './context-fit/index.ts';
 import * as decision from './decision/index.ts';
+import * as decisionMap from './decision-map/index.ts';
 import * as desktop from './desktop/index.ts';
 import * as exec from './exec/index.ts';
 import * as fakeModel from './fake-model/index.ts';
 import * as feishu from './feishu/index.ts';
 import * as fileTools from './file-tools/index.ts';
-import * as filesApi from './files-api/index.ts';
 import * as http from './http/index.ts';
 import * as imageGen from './image-gen/index.ts';
 import * as journal from './journal/index.ts';
 import * as memory from './memory/index.ts';
 import * as modelCatalog from './model-catalog/index.ts';
+import * as programs from './programs/index.ts';
 import * as progress from './progress/index.ts';
 import * as relay from './relay/index.ts';
 import * as assist from './assist/index.ts';
 import * as settings from './settings/index.ts';
 import * as skills from './skills/index.ts';
 import * as tutorial from './tutorial/index.ts';
-import * as usage from './usage/index.ts';
 import * as screen from './screen/index.ts';
 import * as voice from './voice/index.ts';
 import * as webApi from './web-api/index.ts';
@@ -64,15 +64,16 @@ export interface PluginModule {
 
 // 自带插件分类（每个插件提供什么、用了谁，见 src7/docs/插件地图.md）。下面名单的先后不动，挂载先后照 config.yaml 的 plugins 段。
 //   骨架配套：workspaces（机器人的工作区，bots 依赖它）、bots（含前台和派后台，11-17 并进原 bot-front-desk、prompt、reply-tool）、fake-model
-//   HTTP 底座和网页：http、web
+//   HTTP 底座和网页：http、web（已并入原 files-api）
 //   渠道：cli、web-api、feishu、wechat（wechat-kefu）
 //   分派：relay（转外部助手、外部 AI 任务通道、给 Claude 留言；11-17 并进原 agent-tasks、note-claude；前台在 bots 里）
 //   给模型的工具：file-tools（已并入原 base-tools）、exec（已并入原 runs）、web-search、image-gen、assist（reply 工具在 bots 里）
 //   审核和流程：approval、decision、progress（已并入原 review）
-//   模型与上下文：model-catalog（已并入原 model-fallback、model-notes：模型介绍和评价，/model-notes/）、context-fit（已并入原 compress、summary）
+//   模型与上下文：model-catalog（已并入原 model-fallback、usage、model-notes，模型评价在 /model-notes/）
+//     context-fit（已并入原 compress、summary）
 //   记忆和知识：memory（已并入原 memory-graph）、skills
-//   管理接口：settings、files-api、base-bridge（已并入原 notify、update-watch）、desktop
-//   记录和调试：tutorial（写在 plugins 段第一个；11-17 由 flow、boot-trail、trace 合成）、journal（已并入原 files-mirror）、usage
+//   管理接口：settings、base-bridge（已并入原 notify、update-watch）、desktop
+//   记录和调试：tutorial（写在 plugins 段第一个；11-17 由 flow、boot-trail、trace 合成）、journal（已并入原 files-mirror）
 /** 自带插件：名字 → 模块。名字就是 config.yaml 里写的那个，也是文件夹名。 */
 export const BUILT_IN: Record<string, PluginModule> = {
   //M tutorial 排第一个：它要录启动，config.yaml 里也写在第一个。
@@ -87,7 +88,6 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'web-api': webApi,
   'screen': screen,
   'voice': voice,
-  'files-api': filesApi,
   'model-catalog': modelCatalog,
   'relay': relay,
   'feishu': feishu,
@@ -95,13 +95,14 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'approval': approval,
   'exec': exec,
   'web-search': webSearch,
-  'usage': usage,
   'settings': settings,
   'memory': memory,
+  'programs': programs,
   'skills': skills,
   'context-fit': contextFit,
   'progress': progress,
   'decision': decision,
+  'decision-map': decisionMap,
   'image-gen': imageGen,
   'assist': assist,
   'base-bridge': baseBridge,

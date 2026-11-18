@@ -4,7 +4,7 @@
  *   2. Compress（Compress.ts，先听 session/request）：上一步用量达到阈值时把旧对话压成摘要（写 compress_log）；
  *   3. ContextFit（本文件，后听 session/request）：压缩后仍超预算时，先省略旧工具结果、再按段丢掉最早对话。
  * 顺序保证：Compress 必须排在 ContextFit 之前注册到 session/request，才能先把超长历史压缩后再做窗口裁剪。
- * 设计：docs/src7插件设计/context-fit.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';

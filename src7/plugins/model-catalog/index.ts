@@ -5,6 +5,7 @@
  * 2. 回退（Fallback.ts / Queue.ts）：在 session/request 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
  * 3. 模型介绍和评价（Notes.ts，11-18 并进原 model-notes）：运行时目录 models/ 下一个模型一份 MD；接口 /api/model-notes* 路径照旧；
  *    事件 model-catalog/request 的 action: 'prompt' 一次交回模型介绍评价和能用的思考档，前台派活时带上。
+ * 4. 用量（Usage.ts，11-18 并进原 usage）：保留 usage 服务、usage/list 事件和 GET /api/usage。
  * 只是一张表加回退层：正常调模型仍走骨架的 ctx.resources.getModel。
  * 设计：docs/src7插件设计/model-catalog.md、docs/src7插件设计/model-fallback.md。
  */
@@ -15,6 +16,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as fallback from './Fallback.ts';
 import * as notesModule from './Notes.ts';
 import * as pull from './Pull.ts';
+import * as usageModule from './Usage.ts';
 
 export type { ModelInfo } from './Pull.ts';
 export type { ModelNote, Rating } from './Notes.ts';
@@ -26,9 +28,10 @@ export { isRateLimited, isOverflow, getResetTime } from './Fallback.ts';
 export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
-export const version = '1.2.0';
+//M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
+export const version = '1.3.1';
 
-/** 用到的服务：resources 读 providers/engine/concurrency、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂五个接口）。 */
+/** 用到的服务：resources 读 providers/engine/concurrency、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
 
 
@@ -38,6 +41,8 @@ export interface ModelCatalogConfig {
   fallback?: fallback.FallbackConfig | false;
   /** 模型介绍和评价（原插件 model-notes 的 config）：dir 放 MD 的目录（默认 models，相对运行时目录），time_zone 评价时间的时区（默认 America/New_York）。 */
   notes?: { dir?: string; time_zone?: string };
+  /** 原 usage 插件的配置；当前无子配置项，仅支持缺省或空对象。 */
+  usage?: Record<string, never>;
 }
 
 
@@ -463,13 +468,26 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
 /**
  * 挂上模型清单与运行兜底（model-fallback 已并入）。
  * apply 是 Cordis 插件的入口：Cordis 等 inject 里的 resources、sessions 都就绪后调一次。
- * 先校验 providers、config.fallback 与 config.notes，再建模型介绍（Notes.ts）、ModelCatalog（服务 + 冷却监听）→ 可选 http 路由 → 再建 ModelFallback（听 session/request 兜底调模型）。
+ * 先校验 providers 与 fallback、notes、usage 配置，再建模型介绍、ModelCatalog 与 Usage 服务。
+ * 可选 HTTP 统一登记模型与用量接口；最后建 ModelFallback，听 session/request 兜底调模型。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config plugins[model-catalog].config（可选：{ fallback?: FallbackConfig | false; notes?: { dir?, time_zone? } }）。
- * @throws providers、fallback 或 notes 配置写得不对时抛错。
+ * @param config 插件配置：fallback、notes 与原 usage 的空配置 usage。
+ * @throws providers、fallback、notes 或 usage 配置写得不对时抛错。
  * 副作用：注册 modelCatalog 服务并拉取模型清单；没有 models/ 目录就建；可选挂载 HTTP 接口、定时重试任务及 session/request 回退处理器。
  */
 export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
+  //G 原用量插件没有配置项，入口只接收空配置对象，避免错写配置而静默忽略。
+  const usageConfig = config?.usage;
+  if (usageConfig !== undefined) {
+    if (typeof usageConfig !== 'object' || usageConfig === null || Array.isArray(usageConfig)) {
+      throw new Error('model-catalog.config.usage 要写空对象 {}');
+    }
+    const usageKeys = Object.keys(usageConfig);
+    if (usageKeys.length !== 0) {
+      throw new Error('model-catalog.config.usage 当前没有配置项，要写空对象 {}');
+    }
+  }
+
   const raw = (ctx.resources.raw['providers'] ?? {}) as Record<string, Record<string, unknown> | null>;
   const plans: Record<string, ProviderPlan> = {};
   //M 照骨架校验过的 providers 的先后走（骨架已查过 raw.providers 和 models 都是“名字: 值”）。
@@ -495,10 +513,19 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
   //M 启动 ModelCatalog 服务实例，初始化模型表与定时器；prompt 请求从 notes 读介绍。
   const catalog = new ModelCatalog(ctx, plans, notes);
 
-  //M http 是可选的：http 就绪后再挂模型管理三个接口、模型介绍和评价两个接口，不挡纯会话回退或命令行启动。
+  //M 模型查询处理器已就绪，再登记用量服务，沿用 usage 服务名与原表结构。
+  const usage = new usageModule.Usage(ctx);
+
+  //M http 是可选的：统一挂模型管理、模型介绍评价和用量统计接口。
+  //M 没有 HTTP 时，纯会话回退、命令行与用量记账仍可启动。
   void ctx.inject(['http'], (sub) => {
-    catalog.routes(sub.http.app);
-    notes.routes(sub.http.app);
+    const app = sub.http.app;
+    //M 模型目录与介绍仍使用同一个 HTTP 实例，接口路径不变。
+    catalog.routes(app);
+    //M 模型评价沿用原路由和会话依赖。
+    notes.routes(app);
+    //M 原用量 HTTP 接口在相同的可选 HTTP 生命周期挂载，命令行没有 HTTP 仍可记账。
+    usage.routes(app);
 
     //T 跟踪：模型介绍和评价的接口挂好了。
     const vars = { 目录: notesSettings.dir, 时区: notesSettings.timeZone };

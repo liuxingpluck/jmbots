@@ -51,9 +51,15 @@ export class Store {
    * @param root 运行时根目录（找 knowledge/、bots/*\/knowledge/）。
    * @param db 记知识库文件的修改时间（memory_files 表）。
    * @param policy 聊天记录进不进关系图（memory.history_graph / no_graph_customers）；不给 = 都进。
+   * @param knowledgeBackend 统一检索所用的知识库写入端点，默认沿用原后端。
    */
-  constructor(readonly backend: backendModule.MemoryBackend, private readonly root: string, private readonly db: Database,
-    private readonly policy: graphPolicy.GraphPolicy = graphPolicy.GRAPH_ALL) {
+  constructor(
+    readonly backend: backendModule.MemoryBackend,
+    private readonly root: string,
+    private readonly db: Database,
+    private readonly policy: graphPolicy.GraphPolicy = graphPolicy.GRAPH_ALL,
+    private readonly knowledgeBackend = backend,
+  ) {
     //M 建表记知识库文件的修改时间和大小：同步时靠它判断哪些文件新了、改了。
     db.exec('CREATE TABLE IF NOT EXISTS memory_files (path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL)');
   }
@@ -159,7 +165,7 @@ export class Store {
       //M 库里记着、磁盘上已经没有的文件：删掉它的片段和记录。
       for (const file of known.keys()) {
         if (found.has(file)) continue;
-        await this.backend.remove(file);
+        await this.knowledgeBackend.remove(file);
         this.db.query('DELETE FROM memory_files WHERE path = ?').run(file);
       }
       this.syncedAt = Date.now();
@@ -172,7 +178,7 @@ export class Store {
     const stat = fs.statSync(file);
 
     //M 先删这个文件旧的片段，再重建，免得文件改短了还留着旧段。
-    await this.backend.remove(file);
+    await this.knowledgeBackend.remove(file);
     const docs: backendModule.MemoryDoc[] = [];
     if (stat.size <= MAX_FILE_BYTES) {
       const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/u);
@@ -197,7 +203,7 @@ export class Store {
     }
 
     //M 这个文件的所有片段一起收进检索后端。
-    if (docs.length > 0) await this.backend.ingest(docs);
+    if (docs.length > 0) await this.knowledgeBackend.ingest(docs);
 
     //M 记下文件的修改时间和大小，下次同步才知道它没变（超过 2MB 跳过的也记，免得每次重试）。
     this.db.query('INSERT INTO memory_files (path, mtime, size) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size')

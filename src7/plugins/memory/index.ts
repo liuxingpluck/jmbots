@@ -1,17 +1,16 @@
 /**
  * 记忆：工具 memory（列、搜、读、写、删机器人自己的记忆和公共记忆），干活的会话第一次调模型前先替模型搜一次。
- * 开场先搜只搜技能目录和基地的记忆库：两个记忆目录 prompt 插件每一步已经整篇拼进系统提示词了，不重复。
- * 配了基地（engine.index_url + engine.memory_libs）就后台跟着文件改动刷新记忆库索引（Libs.ts）。
+ * 开场搜技能目录和 Rust 记忆服务。两个记忆目录由提示词插件提供。
  * 客服用的记忆库（Store.ts、Backend.ts）：聊天记录按客户、会话、机器人收，知识库文件按段收；工具 memory 的 history、knowledge，
  *   开场先搜也带上“这个客户以前说过的”和知识库；结果带编号、来源、片段，回答时能引用。检索后端可换（本地 SQLite，或外部服务 backend_url）。
  *   HTTP：GET /api/memory/recall、POST /api/memory/knowledge、GET /api/memory/backend。
- * 托管服务（Services.ts）：插件挂上时隐藏拉起 jmbots-memory、vgr，挂在主端口 /memory/、/memory/vgr/ 下；配置 services，见 Services.ts。
+ * Rust 记忆服务 jmbots-memory 由 programs 插件按 config 拉起（界面在 /programs/jmbots-memory/），本插件不托管进程，
+ *   只按 service_url（默认 http://127.0.0.1:30087）调 HTTP；服务没起来时接口和工具如实报“记忆服务没在线”。
  * 关系图（GraphRoutes.ts、GraphStore.ts、GraphSources.ts，原 memory-graph 并入）：GET /graph/、/api/memory-graph/* 与对话附带关系图链接提示。
  * 设计：docs/src7插件设计/memory.md。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as process from 'node:process';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
@@ -19,12 +18,13 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as backendModule from './Backend.ts';
+import * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
 import * as graphPolicy from './GraphPolicy.ts';
 import * as graphRoutesModule from './GraphRoutes.ts';
-import * as libsModule from './Libs.ts';
+import * as graphStoreModule from './GraphStore.ts';
 import * as recall from './Recall.ts';
-import * as servicesModule from './Services.ts';
+import * as searchModule from './Search.ts';
 import * as storeModule from './Store.ts';
 
 
@@ -32,7 +32,9 @@ import * as storeModule from './Store.ts';
 export const name = 'memory';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。1.2.0：渠道消息索引（ChannelIndex.ts、工具 channel_search）。
 //M 1.2.1：听请求事件 memory/request（record-history、search-history、embed）回 memory/result；前台“先查记忆”的提示（MEMORY_HINT）从 bots 挪来自己加。
-export const version = '1.2.1';
+//M 1.6.0：不再托管 jmbots-memory（删 Services.ts、services 配置、/memory/* 转发、/api/memory/services），改由 programs 拉起；
+//M   只按 service_url 调 HTTP，连不上时检索、事件回执、工具都写明“记忆服务没在线”。
+export const version = '1.6.0';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -49,22 +51,35 @@ declare module '../../Sessions.ts' {
 /** memory search 时本地最多给几个文件、记忆库最多几条。 */
 const SEARCH_HITS = 8;
 
-/** 切不出字组时按词找，最多几行。 */
-const WORD_LINES = 40;
-
-/** 记忆库片段最多几个字。 */
-const SNIPPET_CHARS = 300;
+/** 记忆服务默认地址：config.example.yaml 里 programs 的 jmbots-memory 条目固定听 127.0.0.1:30087。 */
+const DEFAULT_SERVICE_URL = 'http://127.0.0.1:30087';
 
 /** history、knowledge 默认给几条。 */
 const CITE_HITS = 8;
+
+/** 兼容名在执行表中保留，只从发给模型的定义清单移除。 */
+const HISTORY_ALIASES = new Set([
+  'history', 'history_search', 'history_get', 'channel_history', 'channel_visible_history',
+  'channel_mentions', 'channel_search', 'wechat_history',
+]);
+
+const FILE_ACTIONS = ['list', 'read', 'write', 'delete'] as const;
+const FILE_DESCRIPTION = '管理自己的记忆（scope=own）或公共记忆（scope=shared）。用 list、read、write、delete。'
+  + 'path 为相对路径。增删改记忆时同步更新索引.md。';
+
+const FILE_PARAMETERS = piAi.Type.Object({
+  action: piAi.Type.Union(FILE_ACTIONS.map((action) => piAi.Type.Literal(action))),
+  scope: piAi.Type.Optional(piAi.Type.Union([piAi.Type.Literal('own'), piAi.Type.Literal('shared')])),
+  path: piAi.Type.Optional(piAi.Type.String({ description: 'read、write、delete 的相对路径' })),
+  content: piAi.Type.Optional(piAi.Type.String({ description: 'write 的文件内容' })),
+});
 
 /**
  * 前台“先查记忆”的提示（2026-11-18 从 bots/FrontDesk.ts 挪来，契约 #35）：前台这一轮有 memory 工具、又能带私人记忆时加。
  * 没挂 memory 就没有这个工具，也就没有这句，别让模型去调（Claude 11-14 17:34 第 6 节）。
  */
-const MEMORY_HINT = '分清两类问题：客户问事实、业务知识（合同、产品、售后负责人、联系方式、组织关系、价格和规则等），'
-  + '先调 memory 工具查记忆（action: history 查这个客户的资料和以前的记录，action: knowledge 查知识库），查到就直接带 [编号] 和出处回答，查不到或要多步核实再 hand_session；'
-  + '只有问“我们之前（在这场对话里）聊过什么、说过什么”才用 history_search / history_get。';
+const MEMORY_HINT = '客户问事实、业务知识或以前的聊天，先用 memory_search 找出处，按 ref 用 memory_get 核对原文。'
+  + '如果只问这场对话，设 range 为 session。回答用到命中时标明来源，需要通读大量历史时用 hand_session。';
 
 
 /** 插件配置（plugins 里 memory 的 config），都可以不写。 */
@@ -82,31 +97,28 @@ export class Memory {
   /**
    * 登记工具，挂开场先搜。
    * @param ctx Cordis 给这个插件的 ctx。
-   * @param base 基地和库；没配是 undefined。
+   * @param store 会话记录与知识库文件的存储。
+   * @param settings 本插件配置。
    */
-  constructor(private readonly ctx: cordis.Context, private readonly base: recall.Base | undefined, readonly store: storeModule.Store, private readonly settings: Settings) {
+  constructor(
+    private readonly ctx: cordis.Context,
+    readonly store: storeModule.Store,
+    private readonly settings: Settings,
+  ) {
     //M 工具说明照 0.4 原文（src/capabilities/tools/Tools.ts:539-562）。前台也给，但只许 list、search、read（run 里查）。
     ctx.tools.register({
       definition: {
         name: 'memory',
-        description: '记忆：你自己的 memory/，加所有机器人共用的公共记忆。scope 默认 own 是你自己的，'
-          + 'shared 是公共的；写公共记忆必须明确写 shared。action：list 列出文件；'
-          + 'search 找相关的（整句或几个词都行；你的记忆、公共记忆、技能一起搜，配了记忆库也用 RAG 一起搜，'
-          + '不用给 scope，每条给文件和命中片段）；read 读一个文件；write 写（覆盖）；delete 删。'
-          + 'path 是相对记忆文件夹的路径。索引.md 是记忆概要：增删改记忆时同步改它。'
-          + 'history 找这个客户的资料和以前的聊天记录（range：customer 这个客户跟你的所有会话，默认；session 只这一场；只能查当前这个客户的，查不到别的客户）；'
-          + 'knowledge 找知识库。这两个每条带编号、来源、片段：回答用到了就写上 [编号] 和来源，没找到就说没找到，不要编。'
-          + '客户问事实、业务知识（合同、产品、负责人、联系方式、组织关系、规则等）先用 history 和 knowledge 查。',
+        description: FILE_DESCRIPTION,
         parameters: piAi.Type.Object({
-          action: piAi.Type.Union(['list', 'search', 'read', 'write', 'delete', 'history', 'knowledge'].map((value) => piAi.Type.Literal(value)), { description: '做什么' }),
+          ...FILE_PARAMETERS.properties,
+          action: piAi.Type.Union(
+            [...FILE_ACTIONS, 'search', 'history', 'knowledge'].map((value) => piAi.Type.Literal(value)),
+          ),
           range: piAi.Type.Optional(piAi.Type.Union(['customer', 'session'].map((value) => piAi.Type.Literal(value)),
             { description: 'history 时：customer 这个客户（默认）、session 这一场' })),
           limit: piAi.Type.Optional(piAi.Type.Number({ description: 'history、knowledge 时最多几条，默认 8' })),
-          scope: piAi.Type.Optional(piAi.Type.Union(['own', 'shared'].map((value) => piAi.Type.Literal(value)),
-            { description: 'list、read、write、delete 时：own 自己的（默认），shared 公共的' })),
           query: piAi.Type.Optional(piAi.Type.String({ description: 'search、history、knowledge 时：要找什么，整句或几个词' })),
-          path: piAi.Type.Optional(piAi.Type.String({ description: 'read、write、delete 时：相对记忆文件夹的路径' })),
-          content: piAi.Type.Optional(piAi.Type.String({ description: 'write 时：文件内容' })),
         }),
       },
       kinds: ['front', 'work'],
@@ -139,9 +151,17 @@ export class Memory {
     const session = request.session;
     const row = session.row;
 
+    //M 每步只向模型公开两个检索工具，旧名和 memory 的旧动作留给 Tools.execute 兼容调用。
+    const active = request.tools.filter((tool) => !HISTORY_ALIASES.has(tool.name));
+    request.tools = active.map((tool) => {
+      if (tool.name !== 'memory') return tool;
+
+      return { ...tool, description: FILE_DESCRIPTION, parameters: FILE_PARAMETERS };
+    });
+
     //M 前台：前面的插件收掉了 memory 工具（非本人那一轮 approval 收）就不提；不受信的群里也不提（群里大家都看得到回复）。
     if (row.kind === 'front') {
-      const hasTool = request.tools.some((tool) => tool.name === 'memory');
+      const hasTool = request.tools.some((tool) => tool.name === 'memory_search');
       if (hasTool && workspaceModule.privateAllowed(row.address)) {
         request.system.push(MEMORY_HINT);
       }
@@ -155,26 +175,26 @@ export class Memory {
     if (row.recall === undefined) {
       const said = row.messages.filter((message) => message.role === 'user').map((message) => piAi.contentText(message.content)).join('\n');
       const started = Date.now();
-      //G 搜不成（基地挂了之类）不挡会话：当没搜到。
-      const hits = await Promise.all([recall.local(this.skillRoots(row.bot), said), recall.libs(this.base, said)])
-        .then(([own, libs]) => [...own, ...libs]).catch(() => []);
-
-      //M 再搜这个客户以前说过的话和知识库（走 store.search）；搜不成同样当没搜到。
-      const cited = await this.openingCitations(row, said).catch(() => []);
+      //M 本地技能和 Rust 的客户往来、知识库并行查询。任一路失败都继续会话。
+      const roots = this.skillRoots(row.bot);
+      const skills = recall.local(roots, said).catch(() => []);
+      const citations = this.openingCitations(session, said).catch(() => []);
+      const [hits, cited] = await Promise.all([skills, citations]);
 
       //M 搜到的引用拼成带编号、来源的一段，回答时模型能照着引用。
       let citedText = '';
       if (cited.length > 0) {
-        citedText = `# 可能相关的聊天记录和知识库（程序先搜的；回答用到了写上 [编号] 和来源）\n${storeModule.citeText(cited)}`;
+        const lines = cited.map((hit, index) => `[${String(index + 1)}] ${hit.title} ${hit.ref}\n${hit.snippet}`);
+        citedText = `# 可能相关的聊天记录和知识库（用到了请写明编号和出处）\n${lines.join('\n')}`;
       }
 
-      //M 技能目录、记忆库命中的描述加上引用，存在 row.recall 并存会话：以后每一步原样带同一段，不再重搜。
+      //M 技能命中和 Rust 引用存进 row.recall，同一会话后续步骤继续用这段。
       row.recall = [recall.describe(hits, this.language(row.bot)), citedText].filter((part) => part !== '').join('\n\n');
       session.save();
 
       //T 跟踪：开场先搜完了。
-      const vars = { 会话: session.id, 几条: hits.length, 引用: cited.length, 后端: this.store.backend.name, 用时毫秒: Date.now() - started };
-      this.ctx.emit('trace', 'Memory.recall', '开场先搜完了', 'recall.local(技能目录) + recall.libs(记忆库) + store.search(聊天记录、知识库)', vars);
+      const vars = { 会话: session.id, 技能: hits.length, 引用: cited.length, 用时毫秒: Date.now() - started };
+      this.ctx.emit('trace', 'Memory.recall', '开场先搜完了', 'recall.local + Search.find', vars);
     }
     if (row.recall !== '') {
       request.system.push(row.recall);
@@ -183,29 +203,35 @@ export class Memory {
 
   /**
    * 开场先搜的引用：这个客户以前的（不含这一场）几条，知识库几条。
-   * @param row 干活的会话。
+   * @param session 干活的会话。
    * @param said 用户说过的话。
    */
-  private async openingCitations(row: Session['row'], said: string): Promise<backendModule.Citation[]> {
-    const query = [...said].slice(0, 300).join('');
+  private async openingCitations(session: Session, said: string): Promise<searchModule.SearchHit[]> {
+    const q = [...said].slice(0, 300).join('').trim();
+    if (q === '') return [];
 
-    //M 取这个会话的客户号：没有客户号（不是客服场景）就不搜聊天记录。
+    //M 取这个会话的客户号；没有客户号时只搜知识库。
+    const row = session.row;
     const customer = storeModule.getCustomer(row);
+    const service = this.ctx.memory.unified;
+    const groups = [
+      { sources: 'history', count: this.settings.recallHistory, extra: 2 },
+      { sources: 'knowledge', count: this.settings.recallKnowledge, extra: 0 },
+    ];
+    const jobs = groups.map(async ({ sources, count, extra }) => {
+      if (count === 0 || (sources === 'history' && customer === '')) return [];
 
-    //M 搜这个客户以前的话（不含这一场）：多要 2 条，下面要滤掉前台这一轮的原话。
-    let history: backendModule.Citation[] = [];
-    if (this.settings.recallHistory > 0 && customer !== '') {
-      history = await this.store.search({ query, scope: 'history', bot: row.bot, customer, notSession: row.id, limit: this.settings.recallHistory + 2 });
-    }
-    //M 前台那场也记了这一轮的原话：片段就是这次说的话的，不算“以前说过的”。
-    const older = history.filter((hit) => !said.includes(hit.snippet.replace(/^…|…$/gu, ''))).slice(0, this.settings.recallHistory);
+      //M 服务先排除当前场，再滤掉前台可能已经收录的本轮原话。
+      const args = { q, sources, limit: count + extra };
+      const options = { notSession: row.id };
+      const result = await service.find(args, session, options).catch(() => undefined);
+      const hits = result?.hits ?? [];
+      if (sources === 'knowledge') return hits;
 
-    //M 再搜知识库：不分客户，按机器人搜，几条由 recall_knowledge 定。
-    let knowledge: backendModule.Citation[] = [];
-    if (this.settings.recallKnowledge > 0) {
-      knowledge = await this.store.search({ query, scope: 'knowledge', bot: row.bot, limit: this.settings.recallKnowledge });
-    }
-    return [...older, ...knowledge];
+      return hits.filter((hit) => !said.includes(hit.snippet.replace(/^…|…$/gu, ''))).slice(0, count);
+    });
+    const hits = await Promise.all(jobs);
+    return hits.flat();
   }
 
   /**
@@ -217,42 +243,9 @@ export class Memory {
    * @throws 没给 query、range 不对、没有客户号时抛错，原因给模型看。
    */
   private async cite(action: 'history' | 'knowledge', args: Record<string, unknown>, session: Session): Promise<string> {
-    //G 搜什么必须给，没给直接抛错让模型补。
-    const query = required(args, 'query');
-    let limit = CITE_HITS;
-    if (typeof args['limit'] === 'number' && args['limit'] > 0) {
-      limit = Math.min(30, Math.floor(args['limit']));
-    }
-    const row = session.row;
-    const wanted: backendModule.MemoryQuery = { query, scope: action, bot: row.bot, limit };
-    if (action === 'history') {
-      const range = args['range'] ?? 'customer';
-      //G 隔离：聊天记录每次都只搜这个客户的（session 也再加上客户号）；不再有“跟所有人的”（原来的 range: bot 会搜到别的客户，演示隔离题就是这么串的）。
-      if (range !== 'customer' && range !== 'session') throw new Error(`range 只能是 customer 或 session，不能是 ${String(range)}：只能查当前这个客户的记录`);
-
-      //M 取这个会话的客户号；没有客户号（不是客服场景）就不能查聊天记录，抛错。
-      const customer = storeModule.getCustomer(row);
-      if (customer === '') throw new Error(storeModule.NO_CUSTOMER);
-      wanted.customer = customer;
-      if (range === 'session') {
-        wanted.session = row.id;
-      }
-    }
-
-    //M 照上面定好的范围搜（后端是本地 SQLite 还是外部服务由 store 管），拿到带编号的命中。
-    const hits = await this.store.search(wanted);
-    //T 跟踪：history、knowledge 搜完了。
-    this.ctx.emit('trace', 'Memory.cite', `memory ${action} 搜完了`, 'store.search(query)', { 会话: session.id, 条数: hits.length, 后端: this.store.backend.name, 范围: args['range'] ?? '' });
-    if (hits.length === 0) {
-      let label = '知识库内容';
-      if (action === 'history') {
-        label = '聊天记录';
-      }
-      return `没找到「${query}」相关的${label}`;
-    }
-
-    //M 查到了：带编号、来源、片段交回，让模型回答时引用。
-    return `找到 ${String(hits.length)} 条（回答用到了写上 [编号] 和来源）：\n${storeModule.citeText(hits)}`;
+    //M 旧 action 只换参数名，检索和权限复用统一入口。
+    const query = { q: args['query'], sources: action, limit: args['limit'] ?? CITE_HITS, range: args['range'] };
+    return this.searchText(query, session);
   }
 
   /**
@@ -283,8 +276,12 @@ export class Memory {
 
       return names.map((item) => item.replace(/\\/gu, '/')).sort().join('\n');
     }
-    //M search：自己的记忆、公共记忆、两个技能目录一起搜，配了记忆库也用 RAG 搜。
-    if (action === 'search') return this.search(required(args, 'query'), [bot.memory, shared, ...this.skillRoots(bot.name)], session);
+    //M 兼容手动搜卡片、技能和知识库的旧 action。
+    if (action === 'search') {
+      const query = { q: args['query'], sources: 'card,knowledge', limit: SEARCH_HITS };
+      const skills = this.skillRoots(bot.name);
+      return this.searchText(query, session, skills);
+    }
 
     //M history、knowledge：搜这个客户以前的聊天记录、知识库，交回带编号的引用。
     if (action === 'history' || action === 'knowledge') return this.cite(action, args, session);
@@ -310,61 +307,22 @@ export class Memory {
   }
 
   /**
-   * memory search：四处按字组打分（短话也算），配了记忆库再用 RAG 搜，两段合起来。
-   * @param query 搜什么。
-   * @param roots 自己的记忆、公共记忆、两个技能目录。
-   * @param session 哪场会话（跟踪用）。
+   * 旧 memory 检索入口保留带编号的文本格式，并补上可交给 memory_get 的 ref。
    */
-  private async search(query: string, roots: string[], session: Session): Promise<string> {
-    //M 先在本地几个目录里按字组打分搜（loose：短话也算），拿命中的文件和行。
-    const hits = await recall.local(roots, query, { maxFiles: SEARCH_HITS, loose: true });
-    let local = hits.map((hit) => [`@${hit.file}`, ...hit.lines.map((line) => `  …${line}`)].join('\n')).join('\n');
+  private async searchText(args: Record<string, unknown>, session: Session, skills: string[] = []): Promise<string> {
+    //M 旧工具保留文本回执，并把统一检索的原文引用和未响应来源展示出来。
+    const options = { cardRoots: skills };
+    const result = await this.ctx.memory.unified.find(args, session, options);
+    const lines = result.hits.map((hit, index) => `[${String(index + 1)}] ${hit.title} ${hit.ref}\n${hit.snippet}`);
+    if (result.unavailable.length > 0) lines.push(`未响应：${result.unavailable.join('、')}`);
 
-    //G 切不出字组（比如只有两个字母）：退回按词逐行找，最多 40 行。
-    if (hits.length === 0 && recall.grams(query).size === 0) {
-      local = wordLines(roots, query).join('\n');
-    }
+    //M 没响应的原因（Search.find 收进 warnings，如“记忆服务没在线”）也给模型，免得把连不上当成没找到。
+    const warnings = result.warnings ?? [];
+    if (warnings.length > 0) lines.push(`提示：${warnings.join('；')}`);
+    if (lines.length === 0) return '没找到相关的记忆';
 
-    //M 配了基地才再用 RAG 搜记忆库；没配就跳过，只有本地那一段。
-    let found: Awaited<ReturnType<typeof recall.searchLibs>> = [];
-    if (this.base !== undefined) {
-      found = await recall.searchLibs(this.base, query, SEARCH_HITS);
-    }
-
-    //M 记忆库命中拼成“路径、摘要、片段”三行，片段按 300 字截短，免得一条占太多。
-    const libText = found.map((item) => {
-      let summary = '';
-      if (item.summary !== '') {
-        summary = `\n  ${item.summary}`;
-      }
-      let snippet = '';
-      if (item.snippet !== '') {
-        snippet = `\n  …${recall.short(item.snippet, SNIPPET_CHARS)}`;
-      }
-      return `${item.path}${summary}${snippet}`;
-    }).join('\n\n');
-
-    //G 再搜一份知识库带上；搜不成（后端挂了）当没有，不挡前面已经搜到的。
-    const knowledge = await this.store.search({ query, scope: 'knowledge', bot: session.row.bot, limit: SEARCH_HITS }).catch(() => []);
-
-    //T 跟踪：工具搜完了。
-    const vars = { 会话: session.id, 本地: hits.length, 记忆库: found.length, 知识库: knowledge.length };
-    this.ctx.emit('trace', 'Memory.search', 'memory 工具搜完了', 'recall.local + recall.searchLibs', vars);
-
-    //M 本地、记忆库、知识库三段有哪段拼哪段交回；知识库那段用 citeText 带编号和来源。
-    const parts: string[] = [];
-    if (local !== '') {
-      parts.push(`# 你的记忆、公共记忆、技能\n${local}`);
-    }
-    if (found.length > 0) {
-      parts.push(`# 记忆库 ${this.base?.libs ?? ''}\n${libText}`);
-    }
-    if (knowledge.length > 0) {
-      parts.push(`# 知识库（回答用到了写上 [编号] 和来源）\n${storeModule.citeText(knowledge)}`);
-    }
-    if (parts.length > 0) return parts.join('\n\n');
-
-    return `没找到「${query}」相关的记忆`;
+    const body = lines.join('\n');
+    return `找到 ${String(result.hits.length)} 条（回答用到了写上编号和来源）：\n${body}`;
   }
 
   /** 两个技能目录：全局的、机器人自己的。 */
@@ -403,33 +361,6 @@ function memoryFile(dir: string, relative: string): string {
   return file;
 }
 
-/**
- * 按词逐行找（切不出字组时用）：几个目录下的 .md、.txt，每个词出现的行，不分大小写。
- * @returns “绝对路径:行号: 那一行”，去重，最多 40 行。
- */
-function wordLines(roots: string[], query: string): string[] {
-  const words = query.toLowerCase().split(/\s+/u).filter((word) => word !== '');
-  const lines = new Set<string>();
-  for (const root of roots) {
-    for (const name of new Bun.Glob('**/*.{md,txt}').scanSync({ cwd: root, onlyFiles: true })) {
-      const file = path.join(root, name);
-      if (fs.statSync(file).size > 256 * 1024) {
-        continue;
-      }
-      const text = fs.readFileSync(file, 'utf8');
-      text.split(/\r?\n/u).forEach((line, index) => {
-        if (words.some((word) => line.toLowerCase().includes(word))) {
-          //M 命中的行记成“绝对路径:行号: 内容”，内容截 160 字（recall.short）。
-          lines.add(`${file}:${String(index + 1)}: ${recall.short(line.trim(), 160)}`);
-        }
-      });
-      if (lines.size >= WORD_LINES) return [...lines].slice(0, WORD_LINES);
-    }
-  }
-  return [...lines];
-}
-
-
 
 /** 前台等别的插件往记忆库写、搜聊天记录时给的一段（客户号必带；进不进关系图由 memory 按 history_graph / no_graph_customers 定）。 */
 export interface HistoryDoc {
@@ -449,7 +380,7 @@ declare module 'cordis' {
 }
 
 
-/** 事件 memory/request 的数据：action 分三种（契约 3.2 第 6 条）。bots 的前台（FrontDesk.ts 的 askMemory）发。 */
+/** 事件 memory/request 的数据。bots 的前台（FrontDesk.ts 的 askMemory）等插件发。 */
 export type MemoryRequest = requestEventModule.RequestEnvelope & ({
   /** 记一段往来（同 recordHistory）：同一 source 先删后收。 */
   action: 'record-history';
@@ -469,6 +400,11 @@ export type MemoryRequest = requestEventModule.RequestEnvelope & ({
   /** 最多几条。 */
   limit: number;
 } | {
+  /** 按统一接口搜所有来源。 */
+  action: 'search';
+  /** 与 GET /api/memory/search 相同的参数；调用插件负责确认用户权限。 */
+  query: Record<string, unknown>;
+} | {
   /** 用记忆服务的本地嵌入模型算向量（同 embed）。 */
   action: 'embed';
   /** 要嵌入的文字。 */
@@ -478,34 +414,55 @@ export type MemoryRequest = requestEventModule.RequestEnvelope & ({
 
 /** 事件 memory/result 的数据：memory/request 的回执，每种 action 只带自己那一项。 */
 export interface MemoryResult extends requestEventModule.ResultEnvelope {
-  /** 办成没有：record-history 记不成是 false；search-history、embed 搜不成照样 true，交回空的。 */
+  /** 办成没有：记忆服务没在线、记不成、搜不成都是 false，原因在 error。 */
   ok: boolean;
-  /** search-history：命中原样（start 是来源里的编号）；搜不成是 []。 */
+  /** search-history：命中原样（start 是来源里的编号）；没有客户号是 []。 */
   hits?: Array<{ start?: unknown; score?: unknown; text?: unknown }>;
-  /** embed：每段一个向量；服务没开、模型没就绪是空。 */
+  /** search：统一检索回执；某一路没响应写在它的 unavailable、warnings 里。 */
+  search?: searchModule.SearchResult;
+  /** embed：每段一个向量；服务在线但模型没就绪是空。 */
   vectors?: number[][];
-  /** 没办成的原因。 */
+  /** 没办成的原因，如“记忆服务没在线（http://127.0.0.1:30087）：…”。 */
   error?: string;
 }
 
 
 /**
  * ctx.memory：记忆库只由本插件读写（2026-11-14 claude_指导意见 4.1）。别的插件发请求事件 memory/request（2026-11-18 起），
- * 或在 inject 里写 memory 再调这几个方法，不用知道记忆服务的地址、不读本插件的配置。服务没开时：embed 交回 undefined、searchHistory 交回 []、recordHistory 抛错。
+ * 或在 inject 里写 memory 再调这几个方法，不用知道记忆服务的地址、不读本插件的配置。
+ * 记忆服务由 programs 插件拉起；它没在线时 embed、searchHistory、recordHistory 都抛“记忆服务没在线”，事件回执是 ok: false 带 error。
  */
 export class MemoryService extends cordis.Service {
+  /** 网页、模型和内部请求共用的检索。 */
+  readonly unified: searchModule.Search;
+
   /**
    * 登记服务 memory，听请求事件 memory/request。
    * @param ctx 本插件的 ctx。
-   * @param getAddress 托管服务的内部地址：'memory' 是 jmbots-memory，'vgr' 是 vgr；'' 是没有。
+   * @param address 记忆服务地址（memory.service_url，入口 readSettings 校验过，默认 http://127.0.0.1:30087）。
    * @param graph 聊天记录进不进关系图。
+   * @param channelIndex 渠道索引，关闭时缺省。
+   * @param graphStore 与 Rust 同机部署时取相邻段的只读库。
+   * @param disk 管理待同步的知识库文件。
+   * @param token 调外部记忆服务的令牌，留空时不加认证头。
    */
-  constructor(ctx: cordis.Context, private readonly getAddress: (service: string) => string, private readonly graph: graphPolicy.GraphPolicy) {
+  constructor(
+    ctx: cordis.Context,
+    private readonly address: string,
+    private readonly graph: graphPolicy.GraphPolicy,
+    channelIndex?: channelIndexModule.ChannelIndex,
+    graphStore?: graphStoreModule.GraphStore,
+    disk?: storeModule.Store,
+    private readonly token = '',
+  ) {
     //M 登记成 ctx.memory 服务：别的插件 inject 里写 memory 就能用下面这几个方法。
     super(ctx, 'memory');
 
+    //M 检索共用 Rust 网关和可选的渠道索引。
+    this.unified = new searchModule.Search(ctx, this, channelIndex, graphStore, disk);
+
     //M 别的插件请记忆库办事走请求事件 memory/request：onRequest 按 action 调下面的方法，办完回 memory/result。
-    //M   recordHistory 记不成抛的错转成 { ok: false, error }，调用方不干等超时。
+    //M   方法抛的错（记忆服务没在线、记不成、搜不成）转成 { ok: false, error }，调用方不干等超时。
     const options = {
       onError: (error: unknown) => {
         const message = textModule.getMessage(error);
@@ -524,10 +481,10 @@ export class MemoryService extends cordis.Service {
   }
 
   /**
-   * 响应 memory/request：按 action 调 recordHistory、searchHistory、embed。
+   * 响应 memory/request：按 action 调 recordHistory、searchHistory、统一检索或 embed。
    * @param request 别的插件用 requestEvent 发来的请求。
    * @returns 回执正文。
-   * @throws recordHistory 记不成时抛，由 onRequestEvent 的 onError 转成 { ok: false, error }。
+   * @throws 记忆服务没在线、记不成、搜不成时抛，由 onRequestEvent 的 onError 转成 { ok: false, error }。
    * 副作用：同各方法（调记忆服务 /remove、/ingest、/search、/embed）。
    */
   private async onRequest(request: MemoryRequest): Promise<requestEventModule.StripResultId<MemoryResult>> {
@@ -537,7 +494,7 @@ export class MemoryService extends cordis.Service {
       return { ok: true };
     }
 
-    //M search-history：搜这个客户的聊天记录，搜不成交回空。
+    //M search-history：搜这个客户的聊天记录；服务没在线、搜不成由 searchHistory 抛，回执写明原因。
     if (request.action === 'search-history') {
       const query = {
         query: request.query,
@@ -546,43 +503,60 @@ export class MemoryService extends cordis.Service {
         limit: request.limit,
       };
 
-      //M 搜这个客户的聊天记录交回命中；没有客户号或搜不成，searchHistory 自己交回空。
+      //M 搜这个客户的聊天记录交回命中；没有客户号时 searchHistory 交回空。
       const hits = await this.searchHistory(query);
       return { ok: true, hits };
     }
 
-    //M embed：算向量，服务没开或模型没就绪 vectors 为空。
+    if (request.action === 'search') {
+      //M 内部插件用与 HTTP 入口一致的检索参数拿回命中和未响应的来源。
+      const search = await this.unified.find(request.query);
+      return { ok: true, search };
+    }
+
+    //M embed：算向量；服务在线但模型没就绪 vectors 为空，没在线由 embed 抛。
     const vectors = await this.embed(request.texts);
     return { ok: true, vectors };
   }
 
-  /** 2026-11-17 jm开发：托管服务的地址（默认 jmbots-memory，可问 'vgr'），memory-graph 用，不再自己拼。'' 是没有。 */
-  url(service = 'memory'): string {
-    //M 地址由 apply 里传进来的函数现取（端口可能启动时才定），这里不缓存。
-    return this.getAddress(service);
+  /** 记忆服务地址（memory.service_url）。 */
+  url(): string {
+    return this.address;
   }
 
-  /** 2026-11-17 jm开发：问托管服务的 /health（默认 jmbots-memory，可问 'vgr'）。不通也不抛，交回 ok:false 和原因。 */
-  async health(service = 'memory'): Promise<Record<string, unknown>> {
-    //M 现取这个服务的内部地址，拼上 /health 去问。
-    const url = this.getAddress(service);
+  /** 问 Rust 的 /health，不通时交回 ok:false 和原因（“记忆服务没在线…”）。 */
+  async health(): Promise<Record<string, unknown>> {
+    const url = this.address;
     const started = Date.now();
-    //G 没有地址：服务没托管、也没配 service_url。
-    if (url === '') return { url, ok: false, ms: 0, error: `没有 ${service} 服务的地址` };
     try {
-      const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4000) });
+      //M 拼上 /health 去问，最多等 4 秒；连不上由 fetchMemory 写成“记忆服务没在线”。
+      const headers = this.getHeaders();
+      const init = { headers, signal: AbortSignal.timeout(4000) };
+      const response = await backendModule.fetchMemory(url, '/health', init);
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
       return { url, ok: response.ok, ms: Date.now() - started, ...body };
     } catch (error) {
-      //M 连不上、超时也不抛：把原因写进交回的 error，让调用方（网页）显示。
+      //M 连不上、超时也不抛：把原因写进交回的 error，让调用方（记忆页、关系图页）显示。
       return { url, ok: false, ms: Date.now() - started, error: textModule.getMessage(error) };
     }
   }
 
-  /** 2026-11-17 jm开发：原样转给记忆服务 POST /search（memory-graph 的检索页用，最多等 2 分钟）。连不上抛错，服务没开交回 503。 */
-  search(body: Record<string, unknown>): Promise<{ ok: boolean; status: number; json: unknown }> {
+  /** 2026-11-17 jm开发：原样转给记忆服务 POST /search（memory-graph 的检索页用，最多等 2 分钟）。服务没在线、超时抛错。 */
+  search(body: Record<string, unknown>, timeout = 120_000): Promise<{ ok: boolean; status: number; json: unknown }> {
     //M 请求体原样转给记忆服务的 /search，等最长 2 分钟（检索页的慢查询）。
-    return this.post('/search', body, 120_000);
+    return this.post('/search', body, timeout);
+  }
+
+  /** 从记忆服务读段落原文或客户归并号，调用方已固定地址及路径格式。 */
+  async readSearchData(route: string): Promise<unknown> {
+    //M 原文、客户归并查询无需等检索和大模型调用，最多等 8 秒；服务没在线由 fetchMemory 抛。
+    const signal = AbortSignal.timeout(8000);
+    const headers = this.getHeaders();
+    const init = { headers, signal };
+    const response = await backendModule.fetchMemory(this.address, route, init);
+    if (!response.ok) throw new Error('记忆服务未返回原文或客户信息');
+
+    return response.json();
   }
 
   /**
@@ -590,14 +564,17 @@ export class MemoryService extends cordis.Service {
    * @param route 服务上的路径，如 /search、/embed、/ingest、/remove。
    * @param body 请求体，原样转成 JSON。
    * @param ms 最多等多久（毫秒）。
-   * @returns ok、HTTP 状态、解析出的 JSON（解析不了是 undefined）；没有地址（服务没开）交回 503。
-   * @throws 连不上、超时时 fetch 抛错，由调用方决定怎么办。
+   * @returns ok、HTTP 状态、解析出的 JSON（解析不了是 undefined）。
+   * @throws 记忆服务没在线、超时（fetchMemory 写好原因），由调用方决定怎么办。
    */
   private async post(route: string, body: unknown, ms: number): Promise<{ ok: boolean; status: number; json: unknown }> {
-    //M 现取记忆服务（jmbots-memory）的地址；没有地址就是服务没开，直接回 503。
-    const base = this.getAddress('memory');
-    if (base === '') return { ok: false, status: 503, json: undefined };
-    const response = await fetch(`${base}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    //M 带上令牌（配了 backend_token 才有）和 JSON 头，限时 ms 毫秒。
+    const headers = this.getHeaders();
+    headers['content-type'] = 'application/json';
+    const init = { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) };
+
+    //M 发给记忆服务（service_url）；连不上不在这里兜，抛给调用方如实报。
+    const response = await backendModule.fetchMemory(this.address, route, init);
     let json: unknown;
     try {
       json = await response.json();
@@ -607,18 +584,27 @@ export class MemoryService extends cordis.Service {
     return { ok: response.ok, status: response.status, json };
   }
 
-  /** 用记忆服务的本地嵌入模型算向量；没有 /embed、模型没就绪、连不上交回 undefined。 */
+  /** 外部 Rust 服务配置了令牌时，检索、探活和原文均用同一份认证。 */
+  private getHeaders(): Record<string, string> {
+    if (this.token === '') return {};
+
+    return { authorization: `Bearer ${this.token}` };
+  }
+
+  /**
+   * 用记忆服务的本地嵌入模型算向量。
+   * @returns 每段一个向量；服务在线但没有 /embed、模型没就绪交回 undefined。
+   * @throws 记忆服务没在线、超时（post 抛）。
+   */
   async embed(texts: string[]): Promise<number[][] | undefined> {
     if (texts.length === 0) return [];
-    try {
-      //M 请记忆服务的本地嵌入模型算向量，最多等 30 秒；按返回的形状判断能不能用。
-      const res = await this.post('/embed', { texts }, 30000);
-      const body = res.json as { ok?: unknown; vectors?: unknown } | undefined;
-      if (!res.ok || body === undefined || body === null || body.ok === false || !Array.isArray(body.vectors)) return undefined;
-      return body.vectors as number[][];
-    } catch {
-      return undefined;
-    }
+
+    //M 请记忆服务的本地嵌入模型算向量，最多等 30 秒；按返回的形状判断能不能用。
+    const res = await this.post('/embed', { texts }, 30000);
+    const body = res.json as { ok?: unknown; vectors?: unknown } | undefined;
+    if (!res.ok || body === undefined || body === null || body.ok === false || !Array.isArray(body.vectors)) return undefined;
+
+    return body.vectors as number[][];
   }
 
   /** 记一段往来：同一 source 先删后收；按关系图规则打 graph:false。没有客户号的不收。 */
@@ -632,123 +618,109 @@ export class MemoryService extends cordis.Service {
     if (!(await this.post('/ingest', { docs: kept }, 15000)).ok) throw new Error('ingest failed');
   }
 
-  /** 搜这个客户的聊天记录（hybrid，不调大模型）；没有客户号不搜。交回命中原样（start 是来源里的编号）。 */
+  /** 幂等写入一批渠道消息，不删除已有记录。只有 Rust 确认整批才返回。 */
+  async ingestChannel(docs: ReturnType<typeof channelBackfillModule.getChannelDoc>[]): Promise<void> {
+    const body = { docs };
+    //M 数据源使用稳定来源键，重复提交由 Rust 的唯一约束合并。
+    const response = await this.post('/ingest', body, 15_000);
+    const result = response.json as { ok?: unknown; count?: unknown } | undefined;
+    if (!response.ok || result?.ok !== true || result.count !== docs.length) {
+      throw new Error('Rust 未确认整批渠道消息');
+    }
+  }
+
+  /**
+   * 搜这个客户的聊天记录（hybrid，不调大模型）。
+   * @returns 命中原样（start 是来源里的编号）；没有客户号不搜，交回 []。
+   * @throws 记忆服务没在线、超时（post 抛），或在线却没回命中列表。
+   */
   async searchHistory(query: { query: string; bot: string; customer: string; limit: number }): Promise<Array<{ start?: unknown; score?: unknown; text?: unknown }>> {
     if (query.customer === '') return [];
-    try {
-      //M 请记忆服务按 hybrid 搜这个客户的聊天记录（不调大模型），最多等 8 秒。
-      const res = await this.post('/search', { ...query, scope: 'history', mode: 'hybrid', rerank: false }, 8000);
-      const hits = (res.json as { hits?: unknown } | undefined)?.hits;
-      if (res.ok && Array.isArray(hits)) return hits as Array<{ start?: unknown }>;
 
-      return [];
-    } catch {
-      return [];
-    }
+    //M 请记忆服务按 hybrid 搜这个客户的聊天记录（不调大模型），最多等 8 秒。
+    const body = { ...query, scope: 'history', mode: 'hybrid', rerank: false };
+    const res = await this.post('/search', body, 8000);
+    const hits = (res.json as { hits?: unknown } | undefined)?.hits;
+
+    //G 服务在线却没回命中列表：如实抛，不当成没搜到。
+    if (!res.ok || !Array.isArray(hits)) throw new Error(`记忆服务搜聊天记录出错（HTTP ${String(res.status)}）`);
+
+    return hits as Array<{ start?: unknown }>;
   }
 }
 
 /**
  * 挂上记忆。
- * apply 是 Cordis 插件的入口：inject 里的服务都就绪后 Cordis 调一次。记忆库名读 engine.memory_libs，基地由 ctx.base 提供。
+ * 依赖就绪后登记检索、知识库和 HTTP 接口；记忆服务进程由 programs 插件拉起，这里只按 service_url 调它。
  * @param ctx Cordis 给这个插件的 ctx。
- * @throws memory_libs 不是字符串时抛错（插件不挂，打一行原因）。
  */
 export function apply(ctx: cordis.Context, config?: Record<string, unknown>): void {
-  //M 2026-11-14：记忆服务、vgr 归本插件托管（Services.ts）；backend_url 可写服务名（memory / vgr），走主端口下它的路径。
-  const own = { ...(config ?? {}) };
-  const mainPort = Number(((ctx.resources.raw['server'] ?? {}) as { port?: unknown }).port) || 30086;
-  const hosted = new servicesModule.Services(ctx.resources.root, mainPort, servicesModule.readServices(own['services']));
-  let named: ReturnType<typeof hosted.route> | undefined;
-  if (typeof own['backend_url'] === 'string') {
-    named = hosted.route(`/memory/${own['backend_url']}`);
-    if (named === undefined && own['backend_url'] === 'memory') {
-      named = hosted.route('/memory');
-    }
-  }
-  if (named !== undefined) {
-    own['backend_url'] = `http://127.0.0.1:${String(mainPort)}${named.item.spec.path}`;
-  }
-
   //G 读本插件配置和关系图配置：写错了这里抛错，插件不挂，打一行原因。
+  const own = { ...(config ?? {}) };
   const settings = readSettings(own);
+  const backfillSettings = channelBackfillModule.getBackfillSettings(own['backfill']);
   const graphSettings = graphRoutesModule.readGraphSettings(ctx.resources.root, own['graph']);
 
-  //M 检索后端默认是本地 SQLite（LocalBackend）；配了 backend_url 就换成外部服务（HttpBackend），连不上时它退回本地。
+  //M 所有 Rust 请求都发到同一个地址：service_url（readSettings 已补默认、认旧 backend_url）。
+  const address = settings.serviceUrl;
+
+  //M 会话旧备份默认只进 SQLite，写了 backend_url 才同时发给 Rust；知识库导入要 Rust 确认写入，供统一接口立即检索。
   const local = new backendModule.LocalBackend(ctx.resources.db);
   let backend: backendModule.MemoryBackend = local;
-  if (settings.backendUrl !== '') {
-    backend = new backendModule.HttpBackend(settings.backendUrl, local, settings.timeoutMs, settings.token);
+  if (settings.sessionsToRust) {
+    backend = new backendModule.HttpBackend(address, local, settings.timeoutMs, settings.token);
   }
 
-  //M 记忆库本体：管聊天记录、知识库文件的收录和搜索，后端用上面选好的。
-  const store = new storeModule.Store(backend, ctx.resources.root, ctx.resources.db, settings.graph);
-  const engine = (ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
-  const libs = engine['memory_libs'];
-  if (libs !== undefined && typeof libs !== 'string') throw new Error('engine.memory_libs 要是字符串，几个库用逗号连着写');
+  //M 知识库一律进 Rust，最后一个参数 true：Rust 没确认写入就抛，Store 不前推同步进度，下次再试。
+  const knowledgeBackend = new backendModule.HttpBackend(address, local, settings.timeoutMs, settings.token, true);
 
-  //M 不缓存启动时可能还没挂上的基地；Recall 每次请求再从 ctx 取服务，本地记忆照常工作。
-  let base: recall.Base | undefined;
-  if (typeof libs === 'string' && libs.trim() !== '') {
-    base = { ctx, libs: libs.split(',').map((part) => part.trim()).filter((part) => part !== '').join(',') };
-  }
+  //M Store 统一管理旧会话备份和直接进入 Rust 的知识库。
+  const store = new storeModule.Store(backend, ctx.resources.root, ctx.resources.db, settings.graph, knowledgeBackend);
 
-  //M 工具 memory、开场先搜、聊天记录收录都挂在 Memory 的构造函数里，建一个就挂上。
-  new Memory(ctx, base, store, settings);
-
-  //M 渠道消息索引（ChannelIndex.ts，11-18）：各渠道消息按聊天记进 memory_channel_messages，工具 channel_search 查；配置 channel_index 不写是开。
+  //M 给统一检索和渠道监听共用的索引；channel_index 不写是开。
   const channelIndexOn = channelIndexModule.readEnabled(own['channel_index']);
+  let channelIndex: channelIndexModule.ChannelIndex | undefined;
   if (channelIndexOn) {
-    const channelIndex = new channelIndexModule.ChannelIndex(ctx.resources.db);
-    channelIndexModule.applyChannelIndex(ctx, channelIndex);
+    channelIndex = new channelIndexModule.ChannelIndex(ctx.resources.db);
   }
 
-  //M 记忆服务地址：配置 service_url 优先，否则本插件托管的 memory（内部地址，端口可能启动时才定，所以每次现取）；vgr 等别的服务只看托管的。
-  let serviceUrl = '';
-  if (typeof own['service_url'] === 'string') {
-    serviceUrl = own['service_url'].replace(/\/+$/u, '');
+  //M 登记查询和知识库同步共用的 Rust 地址，图谱库用于读取同一来源的邻段。
+  const graphStore = new graphStoreModule.GraphStore(graphSettings.db);
+  const memoryService = new MemoryService(
+    ctx, address, settings.graph, channelIndex, graphStore, store, settings.token,
+  );
+
+  //M 先登记工具和开场检索钩子，随后让关系图钩子检查这一轮有没有用到记忆。
+  new Memory(ctx, store, settings);
+  const unified = memoryService.unified;
+  unified.registerTools();
+  if (channelIndex !== undefined) {
+    //M 实时队列始终接新事件，历史回填由资源守卫和手动开关控制。
+    const backfill = new channelBackfillModule.ChannelBackfill(ctx, channelIndex, memoryService, backfillSettings);
+    channelIndexModule.applyChannelIndex(ctx, channelIndex, unified, backfill);
   }
-
-  //M 登记 ctx.memory 服务：传进去的函数每次现取地址，配置 service_url 优先，其余看托管的。
-  const memoryService = new MemoryService(ctx, (service) => {
-    if (service === 'memory' && serviceUrl !== '') return serviceUrl;
-
-    //M 没配 service_url（或问的是 vgr）就取本插件托管的服务地址；没托管交回 ''。
-    return hosted.getUrl(service) ?? '';
-  }, settings.graph);
 
   //M 关系图路由（GraphRoutes）和记忆库的 HTTP 接口（routes）：http 插件在才真正登记。
-  const graphRoutes = new graphRoutesModule.GraphRoutes(ctx, ctx.resources.root, memoryService, graphSettings);
-  routes(ctx, store, hosted, graphRoutes);
+  const graphRoutes = new graphRoutesModule.GraphRoutes(
+    ctx, ctx.resources.root, memoryService, graphSettings, graphStore,
+  );
+  routes(ctx, store, graphRoutes, memoryService);
 
-  //M 全部挂完（ready）才拉起托管的 jmbots-memory、vgr，插件被拔掉时停掉。
-  ctx.on('ready', () => hosted.start());
-  ctx.effect(() => () => hosted.stop());
-  //M 进程直接退出（不走拔插件）时也把自己拉起的停掉；壳子被强杀时靠壳子的 Job Object。
-  process.once('exit', () => hosted.stop());
-  //M Ctrl+C / SIGTERM（源码模式）：先停自己拉起的；http 插件收到信号后会把信号再发一次让进程退出。
-  process.once('SIGINT', () => hosted.stop());
-  process.once('SIGTERM', () => hosted.stop());
   //M 全部挂完先同步一次知识库（后台跑，不挡启动）。
   ctx.on('ready', () => void store.syncKnowledge(true).catch((error: unknown) => console.error(`知识库同步出错：${textModule.getMessage(error)}`)));
-  if (base === undefined) return;
-
-  //M 配了记忆库：等全部插件挂完（ready）再开始刷新；基地缺失或离线时 Libs 静默跳过。
-  //M   ctx.effect：先执行一次，交回的函数在插件被拔掉时 Cordis 来调，这里停掉定时器。
-  const libsWatch = new libsModule.Libs(ctx, base);
-  ctx.on('ready', () => libsWatch.start());
-  ctx.effect(() => () => libsWatch.stop());
 }
 
 
 /**
  * 读插件配置。都可以不写：
  * history（默认 true）收聊天记录；recall_history、recall_knowledge（默认 3、3）开场先搜给几条；
- * backend_url 外部检索服务（vector-graph-rag 之类，协议见 memory.md 第 11 节），不写就用本地；backend_token、backend_timeout_ms。
+ * service_url 指定 Rust 地址（默认 DEFAULT_SERVICE_URL）；backend_url 写了（memory 或地址）会话备份也发给 Rust，是地址时当 service_url 的旧别名。
  * history_graph（默认 true）聊天记录抽不抽关系图；no_graph_customers 这些客户的聊天记录不抽（`demo:*` 按前缀），见 GraphPolicy.ts。
- * @throws 写错了抛错。
+ * @throws 写错了抛错；还写着已删的 services（托管改归 programs）也抛。
  */
-function readSettings(raw: Record<string, unknown>): Settings & { backendUrl: string; token: string; timeoutMs: number; graph: graphPolicy.GraphPolicy } {
+function readSettings(raw: Record<string, unknown>): Settings & {
+  serviceUrl: string; sessionsToRust: boolean; token: string; timeoutMs: number; graph: graphPolicy.GraphPolicy;
+} {
   const count = (key: string, fallback: number): number => {
     const value = raw[key] ?? fallback;
     if (typeof value !== 'number' || value < 0 || !Number.isInteger(value)) throw new Error(`memory.${key} 要是不小于 0 的整数`);
@@ -760,13 +732,37 @@ function readSettings(raw: Record<string, unknown>): Settings & { backendUrl: st
     return value.trim();
   };
   if (raw['history'] !== undefined && typeof raw['history'] !== 'boolean') throw new Error('memory.history 要是 true 或 false');
-  //M 外部检索服务地址：用 text 读成字符串、去掉末尾斜杠。
-  const url = text('backend_url').replace(/\/+$/u, '');
-  if (url !== '' && !/^https?:\/\//u.test(url)) throw new Error('memory.backend_url 要是 http:// 或 https:// 开头');
+
+  //G 托管已交给 programs 插件（1.6.0）：还写着 services 说明配置没跟着换，直接拒，免得以为改它还管用。
+  if (raw['services'] !== undefined) {
+    const how = '删掉这一段，在 programs 里加 jmbots-memory（见 config.example.yaml）';
+    throw new Error(`memory.services 已不用：记忆服务改由 programs 插件拉起，${how}`);
+  }
+
+  //G 旧 backend_url 只认 memory 或 Rust 地址；vgr 适配器已不用，写着就拒。
+  const backendUrl = text('backend_url').replace(/\/+$/u, '');
+  const backendIsUrl = /^https?:\/\//u.test(backendUrl);
+  if (backendUrl !== '' && backendUrl !== 'memory' && !backendIsUrl) {
+    throw new Error('memory.backend_url 要写 memory 或 HTTP(S) 地址（vgr 已不用）');
+  }
+
+  //G service_url 必须是 Rust 的 HTTP(S) 入口。
+  let serviceUrl = text('service_url').replace(/\/+$/u, '');
+  if (serviceUrl !== '' && !/^https?:\/\//u.test(serviceUrl)) throw new Error('memory.service_url 要写 HTTP(S) 地址');
+
+  //M 没写 service_url：旧 backend_url 是地址就用它（旧配置照常），再没有用默认的 30087。
+  if (serviceUrl === '' && backendIsUrl) {
+    serviceUrl = backendUrl;
+  }
+  if (serviceUrl === '') {
+    serviceUrl = DEFAULT_SERVICE_URL;
+  }
+
   //M 数字项用 count 读（不写用默认值，写错抛错）、字符串项用 text 读；聊天记录进不进关系图的规则交给 GraphPolicy 的 readGraphPolicy 读。
   return {
     history: raw['history'] !== false, recallHistory: count('recall_history', 3), recallKnowledge: count('recall_knowledge', 3),
-    backendUrl: url, token: text('backend_token'), timeoutMs: count('backend_timeout_ms', 8000) || 8000,
+    serviceUrl, token: text('backend_token'), timeoutMs: count('backend_timeout_ms', 8000) || 8000,
+    sessionsToRust: backendUrl !== '',
     graph: graphPolicy.readGraphPolicy(raw),
   };
 }
@@ -776,9 +772,15 @@ function readSettings(raw: Record<string, unknown>): Settings & { backendUrl: st
  * 记忆库与关系图的 HTTP 接口（http 插件在才登记）：
  * GET /api/memory/recall?q=&scope=history|knowledge|all&bot=&customer=&session=&limit= → {backend, hits}（给网页、别的服务查）；
  * POST /api/memory/knowledge {bot?, name, content} 写一篇知识库文件并马上收进去；GET /api/memory/backend 后端状态；
- * 以及由原 memory-graph 并入的 /graph/、/api/memory-graph/* 路由。
+ * GET /api/memory/health 直探 Rust；以及由原 memory-graph 并入的 /graph/、/api/memory-graph/* 路由。
+ * Rust 自己的界面和其它接口由 programs 插件挂在 /programs/jmbots-memory/ 下，本插件不再转发。
  */
-function routes(ctx: cordis.Context, store: storeModule.Store, hosted: servicesModule.Services, graphRoutes: graphRoutesModule.GraphRoutes): void {
+function routes(
+  ctx: cordis.Context,
+  store: storeModule.Store,
+  graphRoutes: graphRoutesModule.GraphRoutes,
+  service: MemoryService,
+): void {
   //M 等 http 插件挂上才登记这些接口；没有 http 就一个也不登记，记忆功能本身不受影响。
   void ctx.inject(['http'], (sub) => {
     const app = sub.http.app;
@@ -824,56 +826,14 @@ function routes(ctx: cordis.Context, store: storeModule.Store, hosted: servicesM
       }
     });
 
-    //M 两个只读状态接口：检索后端的健康、托管服务（jmbots-memory、vgr）的状态，给网页显示。
+    //M Rust 运行状态由 memory 直接探测，旧 URL 归本插件提供。
+    app.get('/api/memory/health', async () => service.health());
+    //M 管理页可查看 SQLite 备份和 Rust 后端状态（进程状态看 programs 的 /api/programs）。
     app.get('/api/memory/backend', async () => store.health());
-    app.get('/api/memory/services', () => ({ services: hosted.status() }));
-    //M 托管服务的转发：/memory/vgr/* → vgr，/memory/* → jmbots-memory（最长前缀优先）。/memory/ 本身留给页面。
-    const forward = async (request: { url: string; method: string; headers: Record<string, unknown>; body: unknown }, reply: { code(n: number): { send(v: unknown): unknown }; header(k: string, v: string): unknown; send(v: unknown): unknown }) => {
-      const found = hosted.route(request.url);
-      if (found === undefined) return reply.code(404).send({ error: '没有这个服务' });
-
-      //M 逐个挑要转发的请求头：host、content-length、connection 不带，让 fetch 自己重算。
-      const headers: Record<string, string> = {};
-      textModule.eachEntry(request.headers, (key, value) => {
-        if (typeof value === 'string' && !['host', 'content-length', 'connection'].includes(key.toLowerCase())) {
-          headers[key] = value;
-        }
-      });
-      let body: BodyInit | undefined;
-      if (request.method !== 'GET' && request.method !== 'HEAD' && request.body !== undefined) {
-        if (typeof request.body === 'string' || request.body instanceof Uint8Array) {
-          body = request.body as BodyInit;
-        }
-        if (body === undefined) {
-          body = JSON.stringify(request.body);
-        }
-      }
-      try {
-        const response = await fetch(`${found.item.url}${found.rest}`, { method: request.method, headers, body, signal: AbortSignal.timeout(300_000) });
-        const type = response.headers.get('content-type');
-        if (type !== null) {
-          reply.header('content-type', type);
-        }
-        return reply.code(response.status).send(Buffer.from(await response.arrayBuffer()));
-      } catch (error) {
-        //M 2026-11-14 23:10 EST：报错写清是哪种：服务被重启/掐断，还是根本没开。
-        const why = textModule.getMessage(error);
-        let hint = '没开或连不上';
-        if (/closed|reset|ECONNRESET/iu.test(why)) {
-          hint = '连接中途断了（服务可能正被重启，稍后再试）';
-        }
-        return reply.code(503).send({ error: `${found.item.spec.name} ${hint}：${why}` });
-      }
-    };
-    //M 转发要原样带请求体：单独一层作用域收任意类型的体（不影响别的插件的解析）。
-    void app.register(async (scope) => {
-      scope.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
-      for (const prefix of hosted.paths()) {
-        scope.all(`${prefix}/*`, forward as never);
-      }
-    });
 
     //M 关系图的页面和 /api/memory-graph/* 接口也挂到同一个 http 上。
     graphRoutes.mountRoutes(app);
+    //M 统一检索与模型走同一份数据源和排名。
+    service.unified.mount(app, graphRoutes);
   });
 }

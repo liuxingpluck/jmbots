@@ -1,10 +1,9 @@
 /**
  * 记忆检索页（/memory/，web 插件托管 dist/web/memory.html）。明天演示的主角。2026-11-14 jm开发。
- * 上：服务状态（记忆服务、vgr、段数、嵌入、关系抽取进度）；中：选客户 + 提问 → 命中原文卡片、关系三元组和多跳链；下：粘贴文字导入公共知识库。
- * 接口都是同源相对地址，不认端口：状态和检索走 memory-graph（/api/memory-graph/status、customers、search），导入走 memory（POST /api/memory/knowledge）。
+ * 上：记忆服务状态、段数、向量和抽图进度；中：按客户检索原文和多跳关系；下：导入公共知识库。
  *   记忆服务地址在 config.yaml 里 memory-graph 的 backend_url，以后改成 30087 页面不用动。
  * 隐私：客户下拉只列 demo: 开头的演示客户；不选客户只查公共知识库（记忆服务本身也拒绝不带客户号查聊天记录）。
- * 网址参数：customer、q（有就先检索）、mode（hybrid | graph）、guide=1（自动开演示引导）、token。
+ * 网址参数：customer、q、mode（keyword | semantic | hybrid | graph）、guide、token。
  */
 import { useEffect, useMemo, useState } from 'react';
 import * as virtuoso from 'react-virtuoso';
@@ -13,21 +12,15 @@ import * as vscodeLink from '../VscodeLink.tsx';
 import { Guide } from '../Guide/Guide.tsx';
 import type { GuidePrefillDetail } from '../Guide/Guide.tsx';
 import { MEMORY_STEPS } from '../Guide/steps-memory.ts';
-import { get, type Customer, type Found, type GraphEdge, type Hit } from '../Graph/GraphApi.ts';
+import { get, type Customer, type GraphEdge } from '../Graph/GraphApi.ts';
+import * as api from '../Api.ts';
+import { ChannelBackfillCard } from './ChannelBackfillCard.tsx';
 import { DEMO_PREFIX, ERP_CUSTOMER, ERP_QUESTIONS } from './questions.ts';
 import { TOKEN, withToken } from '../Token.ts';
 
 const PARAMS = new URLSearchParams(window.location.search);
 const VIA: Record<string, string> = { keyword: '关键词', vector: '向量', graph: '关系图' };
 const KNOWLEDGE = '';
-
-/** 2026-11-14 23:15 EST：服务端补的出处；旧服务没这些字段时页面仍能看。 */
-type LocatedHit = Hit & { source?: string; file?: string; where?: string; origin?: string };
-
-/** 记忆服务 /health 里用到的字段（memsvc/src/http.rs 的 health）。 */
-interface Counts { customers?: number; docs?: number; embedded?: number; entities?: number; relations?: number; graphDone?: number; graphPending?: number; graphFailed?: number; graphSkipped?: number; history?: number; knowledge?: number }
-interface Probe { url: string; ok: boolean; ms: number; error?: string; version?: string; counts?: Counts; extractModel?: string; embedding?: { model?: string; ready?: boolean }; status?: string }
-interface Status { memory: Probe; vgr: Probe; mode: string }
 
 /** POST 一个接口（带上和 get 一样的令牌）。 */
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -79,14 +72,14 @@ function Card(props: { label: string; value: string; sub?: string; tone?: 'ok' |
 }
 
 /** 一张命中卡片：点开看全文。 */
-function HitCard({ hit, index }: { hit: LocatedHit; index: number }) {
+function HitCard({ hit, index }: { hit: api.MemoryHit; index: number }) {
   //M 订阅全局演示打码开关，并整理来源路径、VS Code 跳转定位与去前缀后的正文。
   const mask = privacy.useMask();
   const [open, setOpen] = useState(index === 0);
   const [copied, setCopied] = useState('');
-  const source = hit.file || hit.origin || hit.source || '';
+  const source = hit.file || hit.origin || '';
   const location = [source, hit.where].filter(Boolean).join(' · ');
-  const hitSite = vscodeLink.withLineHint(source, hit.where);
+  const hitSite = vscodeLink.withLineHint(hit.file ?? '', hit.where);
   const text = hit.snippet.replace(/^【来源：[^】]*】\s*/u, '');
   let cardClass = 'mm-hit ';
   if (open) {
@@ -95,8 +88,13 @@ function HitCard({ hit, index }: { hit: LocatedHit; index: number }) {
 
   //M 区分客户来源（按打码开关脱敏）与公共知识库标签。
   let scopeText = privacy.text(hit.customer, mask);
-  if (hit.scope === 'knowledge') {
+  if (hit.source === 'knowledge') {
     scopeText = '公共知识库';
+  }
+  let reference = '';
+  if (!mask && (hit.source === 'history' || hit.source === 'knowledge')) {
+    //M 保留同一网页令牌，打开当前命中的原文接口。
+    reference = withToken(hit.ref, TOKEN);
   }
 
   //M 渲染单张命中卡片：序号、脱敏标题、命中通路徽章、可选来源行及脱敏正文。
@@ -131,6 +129,11 @@ function HitCard({ hit, index }: { hit: LocatedHit; index: number }) {
           void navigator.clipboard.writeText(location).then(() => setCopied('已复制'), () => setCopied('复制失败，请手动选择'));
         }}>{copied || '复制来源'}</button>
       </div>}
+      {reference !== '' && (
+        <a href={reference} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+          查看原文
+        </a>
+      )}
       {
         //M 展示按当前打码开关处理后的命中片段正文。
       /**/}
@@ -140,26 +143,27 @@ function HitCard({ hit, index }: { hit: LocatedHit; index: number }) {
 }
 
 /**
- * 记忆检索页面主组件：轮询记忆服务与 vgr 状态、切换演示客户或公共知识库发起检索、
+ * 记忆检索页面主组件：轮询记忆服务状态，按演示客户或知识库范围发起检索，
  * 展示命中原文卡片与多跳关系链，并支持粘贴文本导入公共知识库。
  * @returns 记忆检索页顶栏、状态卡片区、搜索栏、命中结果与导入区的 JSX 元素。
- * 副作用：定时轮询 `/api/memory-graph/status`，拉取 `/api/memory-graph/customers`，
- * 发起 `/api/memory-graph/search` 与 `POST /api/memory/knowledge`，并监听/派发演示引导事件。
+ * 副作用：定时轮询 `/api/memory/health`，拉取 `/api/memory-graph/customers`，
+ * 发起 `/api/memory/search` 与 `POST /api/memory/knowledge`，并监听/派发演示引导事件。
  */
 export function MemoryPage() {
   //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位
   const mask = privacy.useMask();
-  const [status, setStatus] = useState<Status | null>(null);
+  const [status, setStatus] = useState<api.MemoryHealth | null>(null);
   const [statusError, setStatusError] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customer, setCustomer] = useState(PARAMS.get('customer') ?? ERP_CUSTOMER);
   const [query, setQuery] = useState(PARAMS.get('q') ?? '');
+  const urlMode = PARAMS.get('mode');
   let initialMode = 'hybrid';
-  if (PARAMS.get('mode') === 'graph') {
-    initialMode = 'graph';
+  if (urlMode === 'keyword' || urlMode === 'semantic' || urlMode === 'graph') {
+    initialMode = urlMode;
   }
   const [mode, setMode] = useState(initialMode);
-  const [found, setFound] = useState<Found | null>(null);
+  const [found, setFound] = useState<api.MemorySearchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState('');
   const [importName, setImportName] = useState('');
@@ -168,9 +172,14 @@ export function MemoryPage() {
 
   //M 状态：开页取一次，之后每 10 秒一次。
   useEffect(() => {
-    const load = () => get<Status>('/api/memory-graph/status')
-      .then((s) => { setStatus(s); setStatusError(''); })
-      .catch((error: Error) => setStatusError(`读不到状态：${error.message}（主服务的 plugins 里要挂 memory-graph）`));
+    const load = () => {
+      //M 状态从记忆插件直接读取，即使关了关系图也能知道服务是否在线。
+      return api.memoryHealth().then((s) => {
+        setStatus(s);
+        setStatusError(s.error ?? '');
+      }).catch((error: Error) => setStatusError(`读不到记忆服务状态：${error.message}`));
+    };
+    //M 首屏立即读取，随后刷新同一 Rust 探活接口。
     void load();
     const timer = window.setInterval(() => void load(), 10_000);
     return () => window.clearInterval(timer);
@@ -195,11 +204,18 @@ export function MemoryPage() {
     setBanner(`正在检索：${q}${modeHint}`);
     try {
       //M 拼装客户与检索模式参数调用记忆检索接口，保存命中结果与耗时反馈。
-      const params = new URLSearchParams({ q, mode: how });
-      if (who !== KNOWLEDGE) params.set('customer', who);
-      const result = await get<Found>(`/api/memory-graph/search?${params.toString()}`);
+      const params = new URLSearchParams({ q, mode: how, sources: 'knowledge' });
+      if (who !== KNOWLEDGE) {
+        params.set('customer', who);
+        params.set('sources', 'history,knowledge');
+      }
+      //M 把选中的来源和范围交给统一检索，保持原有实体与关系展示。
+      const result = await api.memorySearch(params);
       setFound(result);
-      setBanner(`找到 ${String(result.hits.length)} 段原文、${String(result.relations.length)} 条关系，用时 ${String(result.total_ms)} ms`);
+      const counts = `找到 ${String(result.hits.length)} 段原文、${String(result.relations.length)} 条关系`;
+      let summary = `${counts}，用时 ${String(result.total_ms)} ms`;
+      if (result.unavailable.length > 0) summary += `。未响应：${result.unavailable.join('、')}`;
+      setBanner(summary);
     } catch (error) {
       setFound(null);
       setBanner(`检索失败：${(error as Error).message}`);
@@ -240,16 +256,17 @@ export function MemoryPage() {
     }
   };
 
-  const counts = status?.memory.counts ?? {};
+  const counts = status?.counts ?? {};
   const done = counts.graphDone ?? 0, pending = counts.graphPending ?? 0, failed = counts.graphFailed ?? 0;
   const total = Math.max(1, done + pending + failed);
   const paths = useMemo(() => {
-    if (!found) return [];
+    const graph = found?.graph;
+    if (!graph) return [];
 
     //M 把本次检索命中的关系边首尾串联为多跳路径，供右侧边栏按最长链优先展示。
-    return getChains(found.graph.edges, found.graph.hitEdges);
+    return getChains(graph.edges, graph.hitEdges);
   }, [found]);
-  const names = useMemo(() => new Map((found?.graph.nodes ?? []).map((n) => [n.id, n.name])), [found]);
+  const names = useMemo(() => new Map((found?.graph?.nodes ?? []).map((n) => [n.id, n.name])), [found]);
   const graphParams = new URLSearchParams({ q: query, mode });
   if (customer) {
     graphParams.set('customer', customer);
@@ -270,7 +287,7 @@ export function MemoryPage() {
     maskLabel = '关闭打码';
   }
 
-  //M 整理记忆服务与 vgr 适配器卡片的状态文案和色阶（错误信息按打码开关脱敏）。
+  //M 整理 Rust 服务状态和色阶，错误信息按打码开关脱敏。
   let memValue = '…';
   let memTone: 'ok' | 'bad' | undefined;
   let memSub = privacy.text(statusError, mask);
@@ -278,23 +295,10 @@ export function MemoryPage() {
     memValue = '离线';
     memTone = 'bad';
     memSub = '没连上';
-    if (status.memory.ok) {
+    if (status.ok) {
       memValue = '在线';
       memTone = 'ok';
-      memSub = `v${privacy.text(status.memory.version ?? '?', mask)} · ${String(status.memory.ms)} ms`;
-    }
-  }
-  let vgrValue = '…';
-  let vgrTone: 'ok' | 'warn' | undefined;
-  let vgrSub = '';
-  if (status) {
-    vgrValue = '离线';
-    vgrTone = 'warn';
-    vgrSub = '没起来，不影响混合检索';
-    if (status.vgr.ok) {
-      vgrValue = '在线';
-      vgrTone = 'ok';
-      vgrSub = `${String(status.vgr.ms)} ms`;
+      memSub = `v${privacy.text(status.version ?? '?', mask)} · ${String(status.ms ?? 0)} ms`;
     }
   }
   let embeddedTone: 'ok' | undefined;
@@ -330,9 +334,10 @@ export function MemoryPage() {
             //M 渲染服务状态、文档/向量/实体/三元组计数卡及关系抽取进度条，数字格式化并按需脱敏模型名。
           /**/}
           <Card label="记忆服务" value={memValue} tone={memTone} sub={memSub} />
-          <Card label="vgr 适配器" value={vgrValue} tone={vgrTone} sub={vgrSub} />
           <Card label="文档段数" value={formatCount(counts.docs)} sub={`客户聊天 ${formatCount(counts.history)} · 知识库 ${formatCount(counts.knowledge)}`} />
-          <Card label="已嵌入向量" value={`${formatCount(counts.embedded)} / ${formatCount(counts.docs)}`} sub={privacy.text(status?.memory.embedding?.model ?? '', mask)} tone={embeddedTone} />
+          <Card label="已嵌入向量"
+            value={`${formatCount(counts.embedded)} / ${formatCount(counts.docs)}`}
+            sub={privacy.text(status?.embedding?.model ?? '', mask)} tone={embeddedTone} />
           {/* 2026-11-14：实体、关系分两张卡，数字大了不被省略号截断。 */}
           <Card label="实体" value={formatCount(counts.entities)} sub={`客户 ${formatCount(counts.customers)} 个`} />
           <Card label="关系三元组" value={formatCount(counts.relations)} sub="后台抽取，持续增加" />
@@ -345,6 +350,7 @@ export function MemoryPage() {
             </div>
             <div className="mm-card-sub">完成 {formatCount(done)} · 排队 {formatCount(pending)} · 失败 {formatCount(failed)}</div>
           </div>
+          <ChannelBackfillCard />
         </section>
 
         <section className="mm-search">
@@ -375,6 +381,8 @@ export function MemoryPage() {
             <input data-guide="query" className="mm-q" value={privacy.text(query, mask)} readOnly={mask} placeholder="问一个问题，比如：厂送通知是用来管什么的？"
               onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void search(); }} />
             <select data-guide="mode" value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="keyword">关键词</option>
+              <option value="semantic">语义</option>
               <option value="hybrid">混合检索</option>
               <option value="graph">图谱+重排</option>
             </select>
@@ -395,7 +403,7 @@ export function MemoryPage() {
                 <virtuoso.Virtuoso
                   useWindowScroll
                   data={found.hits}
-                  computeItemKey={(_index, hit) => hit.id}
+                  computeItemKey={(_index, hit) => `${hit.source}:${hit.id}`}
                   itemContent={(index, hit) => <HitCard hit={hit} index={index} />}
                 />
               )}

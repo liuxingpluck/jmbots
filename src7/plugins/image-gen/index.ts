@@ -2,7 +2,7 @@
  * 工具 image_generate：用 engine.image_model 配的“供应商/模型 ID”调 OpenAI 那种 POST <base_url>/images/generations，
  * 拿到第一张图（b64_json 或 url 都认），存成 bots/<机器人>/workspace/<名字>_<20 位时间戳>.png，交回 @绝对路径和大小。
  * 慢工具：骨架给的停止信号和 5 分钟超时合在一起交给 fetch，点了停止马上断开。把图发给用户归渠道（认回话里的 @路径）。
- * 照 0.4 src/capabilities/tools/Tools.ts:636-654、1664-1728。设计：docs/src7插件设计/image-gen.md。
+ * 照 0.4 src/capabilities/tools/Tools.ts:636-654、1664-1728。设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

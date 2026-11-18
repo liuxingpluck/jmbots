@@ -3,7 +3,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use super::privacy::{self, WindowInfo, WindowKey};
 use super::process::{CropSettings, Latest, make_image};
 use super::transport::{
     self, Action, CLICK_TIMEOUT, ClickBody, ClickId, ControlBody, HEARTBEAT, Identity,
-    MAX_SEND_AGE, MonitorBody, Point, Transport, WindowBody, WireRect,
+    MAX_SEND_AGE, MonitorBody, Point, StreamResult, Transport, WindowBody, WireRect,
 };
 use super::{ProbeJob, ProbeTarget, ScreenConfig, probe_request};
 
@@ -358,33 +358,91 @@ fn click_loop(shared: Arc<Shared>, transport: Transport) {
         if !can_use(&shared, &request) { continue; }
         let Some(age) = age_ms(&request.stamp) else { continue; };
         if age > MAX_SEND_AGE { continue; }
+        if shared.input.is_probe() {
+            let clicked = request.body.clicked_at_ms;
+            if let Some(jpeg) = &request.body.image {
+                let width = jpeg.width;
+                let height = jpeg.height;
+                let frame_age = jpeg.age_before_click_ms;
+                println!("探针发出点击 unix_ms={clicked} age_ms={age} jpeg={width}x{height} frame_age_ms={frame_age}");
+            }
+        }
         request.body.age_at_send_ms = age;
-        let Some(reply) = transport.explain(&request.body) else { continue; };
+        let mut displayed = 0;
+        let mut show = |reply: transport::Explanation| {
+            let segment = reply.segment.unwrap_or(1);
+            if segment <= displayed { return true; }
 
-        //G 结果回来时再次核对时间、点击、租约和窗口。迟到结果没有 UI 副作用。
-        if !can_use(&shared, &request) { continue; }
-        let Some(age) = age_ms(&request.stamp) else { continue; };
-        if age > CLICK_TIMEOUT.as_millis() as u64 { continue; }
-        let configured = shared.config.overlay_duration();
-        let duration = Duration::from_millis(reply.display_for_ms).min(configured);
-        let guard = shared.clone();
-        let stamp = request.stamp;
-        let still_current = move || guard.current(&stamp)
-            && age_ms(&stamp).is_some_and(|age| age <= CLICK_TIMEOUT.as_millis() as u64);
-        shared.overlay.show(reply.text, request.display, Some(request.body.position), duration, still_current);
+            //M 每个新增片段独立核对展示资格，首段成功后才可继续追加入场。
+            let first = displayed == 0;
+            if !show_reply(&shared, &transport, &request, reply, first) { return false; }
+            displayed = segment;
+            true
+        };
+        let streamed = transport.explain_stream(&request.body, &mut show);
+        if matches!(streamed, StreamResult::Legacy) {
+            //M 旧后端只能提供完整 JSON，一次回退保持旧客户端部署兼容。
+            if let Some(reply) = transport.explain(&request.body) { show(reply); }
+            continue;
+        }
+        if matches!(streamed, StreamResult::Failed) && displayed > 0 && shared.current(&request.stamp) {
+            //G 失败或断流时撤掉仍属于本点击的半成品。
+            shared.overlay.hide();
+        }
     }
+}
+
+/// 将当前点击的累计正文送给浮窗，实际显示后确认此次新增片段。
+fn show_reply(
+    shared: &Arc<Shared>, transport: &Transport, request: &Prepared,
+    reply: transport::Explanation, first: bool,
+) -> bool {
+    //G 每次展示前再次核对时间、点击、租约和窗口。
+    if !can_use(shared, request) { return false; }
+    let Some(age) = age_ms(&request.stamp) else { return false; };
+    if age > CLICK_TIMEOUT.as_millis() as u64 { return false; }
+    if shared.input.is_probe() {
+        let segment = reply.segment.unwrap_or(1);
+        println!("探针收到讲解 age_ms={age} segment={segment} text={}", reply.text);
+    }
+    let configured = shared.config.overlay_duration();
+    let duration = Duration::from_millis(reply.display_for_ms).min(configured);
+    let guard = Arc::downgrade(shared);
+    let stamp = request.stamp.clone();
+    let still_current = move || {
+        let Some(guard) = guard.upgrade() else { return false; };
+        guard.current(&stamp)
+            && age_ms(&stamp).is_some_and(|age| age <= CLICK_TIMEOUT.as_millis() as u64)
+    };
+    let (rendered, visible) = sync_channel(1);
+    let shown = move || { let _ = rendered.try_send(()); };
+    let display = request.display.clone();
+    let clicked = Some(request.body.position);
+    shared.overlay.show(reply.text, display, clicked, duration, still_current, shown);
+    if !reply.speak_eligible && !shared.input.is_probe() { return true; }
+
+    //M 首段与后续段均须收到本地展示回执才申请对应的音频。
+    if visible.recv_timeout(Duration::from_millis(2200)).is_err() { return false; }
+    if shared.input.is_probe() && first {
+        let elapsed = age_ms(&request.stamp).unwrap_or_default();
+        println!("探针浮窗已显示 age_ms={elapsed}");
+    }
+    if reply.speak_eligible && can_use(shared, request) {
+        transport.presented(&request.body.id, reply.segment);
+    }
+    true
 }
 
 fn can_use(shared: &Shared, request: &Prepared) -> bool {
     if !shared.current(&request.stamp) { return false; }
     let point = request.body.position;
-    let Ok(window) = privacy::foreground() else { return false; };
+    let Ok(window) = shared.input.window() else { return false; };
     if window.key != request.window.key || window.title != request.window.title
         || shared.config.blocks(&window) || Display::at(point).as_ref() != Some(&request.display)
     {
         return false;
     }
-    let target = ProbeTarget::Click(window.key, point.x, point.y);
+    let target = ProbeTarget::Click(window.key, point.x, point.y, !shared.input.is_probe());
     let Ok(Some(control)) = probe_request(&request.probe, target) else { return false; };
     request.control.same_element(&control) && shared.current(&request.stamp)
 }

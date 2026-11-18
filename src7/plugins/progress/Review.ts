@@ -4,7 +4,7 @@
  * 开一场小会话写“慢在哪、以后同类事怎么做”，用 approval 问用户要不要记进公共记忆；同意了写进运行时目录 memory/复盘/。
  * 启动 5 分钟后看第一次，以后每 10 分钟一次；有进度在转、或有复盘在等用户时不打扰。
  * 挑中就先在那场会话记录上记 reviewedAt，模型出错、重启都不会反复问同一件。
- * 照 0.4 src/capabilities/Review.ts。设计：docs/src7插件设计/review.md。
+ * 照 0.4 src/capabilities/Review.ts。设计见同目录 说明.md 的「设计要点」一节（复盘）。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

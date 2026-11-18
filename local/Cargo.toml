@@ -1,6 +1,6 @@
 [package]
 name = "jmbots-local"
-version = "0.1.2"
+version = "0.1.4"
 edition = "2024"
 # tauri 2.12 要较新的 Rust；Windows 上用 cargo +1.99.1。（2026-11-14 memorycli 搬进记忆服务 memsvc/）
 rust-version = "1.90"

@@ -152,6 +152,7 @@ pub struct ScreenStatus {
     pub bytes: usize,
     pub dropped_clicks: u64,
     pub paused: Option<Denial>,
+    pub capture_thread_id: u32,
 }
 
 /// 管理采集工作线程、鼠标钩子与有限大小的点击输出队列。
@@ -161,6 +162,7 @@ pub struct ScreenController {
     thread: Option<JoinHandle<()>>,
     reports: Receiver<ClickReport>,
     status: Arc<Mutex<ScreenStatus>>,
+    fixture_input: Option<(Arc<InputState>, SyncSender<ClickPoint>)>,
 }
 
 /// 后端可用并成功取得租约才进入联网讲解。
@@ -174,7 +176,7 @@ impl ScreenController {
     /// 执行显式开启。如果配置关闭，直接返回而不安装钩子或启动线程。
     pub fn start(config: &ScreenConfig) -> anyhow::Result<Option<Self>> {
         if !config.enabled { return Ok(None); }
-        Self::start_with(config.clone(), None).map(Some)
+        Self::start_with(config.clone(), None, 0).map(Some)
     }
 
     /// 只读查询，供探针检查后端部署状态，不申请租约。
@@ -185,6 +187,22 @@ impl ScreenController {
     /// 查询设置里的后端并申请 v1 租约。调用方在后台执行以保持界面响应。
     pub fn start_explaining(
         config: &ScreenConfig, settings: &crate::config::Settings, overlay: Overlay,
+    ) -> anyhow::Result<ScreenStart> {
+        Self::start_explaining_for(config, settings, overlay, 0)
+    }
+
+    /// 独立探针夹具只允许本进程创建的副屏窗口，不安装全局鼠标钩子。
+    pub fn start_fixture(
+        config: &ScreenConfig, settings: &crate::config::Settings, overlay: Overlay, window: usize,
+    ) -> anyhow::Result<ScreenStart> {
+        if window == 0 || privacy::probe_window(window).is_err() {
+            anyhow::bail!("找不到本进程的副屏录屏测试窗口");
+        }
+        Self::start_explaining_for(config, settings, overlay, window)
+    }
+
+    fn start_explaining_for(
+        config: &ScreenConfig, settings: &crate::config::Settings, overlay: Overlay, fixture: usize,
     ) -> anyhow::Result<ScreenStart> {
         if !config.enabled { return Ok(ScreenStart::Disabled); }
         let Some((transport, effective)) = Transport::connect(&settings.server) else {
@@ -204,24 +222,39 @@ impl ScreenController {
             max_age: config.max_frame_age_ms,
         };
         let connection = Connection { transport, identity, expires, crop, config: config.clone(), overlay };
-        Self::start_with(config.clone(), Some(connection)).map(ScreenStart::Active)
+        Self::start_with(config.clone(), Some(connection), fixture).map(ScreenStart::Active)
     }
 
-    fn start_with(config: ScreenConfig, connection: Option<Connection>) -> anyhow::Result<Self> {
+    fn start_with(config: ScreenConfig, connection: Option<Connection>, fixture: usize) -> anyhow::Result<Self> {
         let stopped = Arc::new(AtomicBool::new(false));
-        let input = Arc::new(InputState::default());
+        let input = Arc::new(InputState { probe_window: fixture, ..InputState::default() });
         let pipeline = connection.map(|connection| Pipeline::start(connection, input.clone(), stopped.clone())).transpose()?;
         let (click_tx, clicks) = sync_channel(8);
         let (report_tx, reports) = sync_channel(8);
-        let hook = MouseHook::start(click_tx, input.clone())?;
+        let (hook, fixture_input) = match input.is_probe() {
+            true => (None, Some((input.clone(), click_tx))),
+            false => (Some(MouseHook::start(click_tx, input.clone())?), None),
+        };
 
         let task_stopped = stopped.clone();
         let status = Arc::new(Mutex::new(ScreenStatus::default()));
         let task_status = status.clone();
         let work = move || run(task_stopped, input, clicks, report_tx, task_status, config, pipeline);
         let thread = thread::Builder::new().name("screen-control".into()).spawn(work)?;
-        let controller = Self { stopped, hook: Some(hook), thread: Some(thread), reports, status };
+        let controller = Self { stopped, hook, thread: Some(thread), reports, status, fixture_input };
         Ok(controller)
+    }
+
+    /// 把测试夹具已调用的控件事件交给与实际鼠标共用的有限队列。
+    pub fn fixture_click(&self, x: i32, y: i32) -> bool {
+        let Some((input, sender)) = &self.fixture_input else { return false; };
+        if privacy::window_at(x, y) != input.probe_window { return false; }
+
+        let observed_tick = unsafe { GetTickCount64() };
+        let seq = input.seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let epoch = input.epoch.load(Ordering::Acquire);
+        let click = ClickPoint { x, y, observed_tick, tick: observed_tick as u32, seq, epoch, button: Button::Left };
+        sender.try_send(click).is_ok()
     }
 
     /// 等待一条仅含元数据的点击摘要，超时或停止时返回 None。
@@ -252,7 +285,7 @@ impl Drop for ScreenController {
 
 enum ProbeTarget {
     Window(WindowKey),
-    Click(WindowKey, i32, i32),
+    Click(WindowKey, i32, i32, bool),
 }
 
 struct ProbeJob {
@@ -278,7 +311,7 @@ impl ProbeWorker {
                 if Instant::now() >= job.expires { continue; }
                 let result = match job.target {
                     ProbeTarget::Window(key) => probe.check_window(key).map(|()| None),
-                    ProbeTarget::Click(key, x, y) => probe.inspect(key, x, y).map(Some),
+                    ProbeTarget::Click(key, x, y, focus) => probe.inspect(key, x, y, focus).map(Some),
                 };
                 let _ = job.response.try_send(result);
             }
@@ -388,7 +421,7 @@ impl FrameState {
 
 fn require_current(key: WindowKey, epoch: u64, input: &InputState) -> Result<(), Denial> {
     if input.epoch.load(Ordering::Acquire) != epoch { return Err(Denial::WindowChanged); }
-    let current = privacy::foreground().map_err(|rejected| rejected.reason)?;
+    let current = input.window().map_err(|rejected| rejected.reason)?;
     if current.key != key { return Err(Denial::WindowChanged); }
     Ok(())
 }
@@ -409,7 +442,7 @@ fn run(
         }
         if stopped.load(Ordering::Acquire) { break; }
 
-        let active = privacy::foreground().and_then(|window| {
+        let active = input.window().and_then(|window| {
             if let Some(reason) = config.block_reason(&window) {
                 return Err(privacy::Rejected { reason, process: Some(window.process) });
             }
@@ -450,7 +483,8 @@ fn run(
         let (count, bytes) = frames.ring.stats();
         if let Ok(mut status) = status.lock() {
             let dropped_clicks = input.dropped.load(Ordering::Relaxed);
-            *status = ScreenStatus { frames: count, bytes, dropped_clicks, paused: frames.paused };
+            let capture_thread_id = input.capture_thread_id.load(Ordering::Relaxed);
+            *status = ScreenStatus { frames: count, bytes, dropped_clicks, paused: frames.paused, capture_thread_id };
         }
 
         if let (Some(click), Some(mut report)) = (click, report) {
@@ -524,7 +558,7 @@ fn inspect_click<'a>(
     if owner != Some((window.key, click.epoch)) { return Err(denied(Denial::WindowChanged)); }
     let when = click_qpc(click).ok_or_else(|| denied(Denial::WindowChanged))?;
     let probe = probe.ok_or_else(|| denied(Denial::AccessibilityUnavailable))?;
-    let target = ProbeTarget::Click(window.key, click.x, click.y);
+    let target = ProbeTarget::Click(window.key, click.x, click.y, !input.is_probe());
     let control = probe.check(target).map_err(denied)?
         .ok_or_else(|| denied(Denial::AccessibilityUnavailable))?;
     require_current(window.key, click.epoch, input).map_err(denied)?;

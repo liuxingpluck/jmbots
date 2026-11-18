@@ -11,7 +11,7 @@ import { Buffer } from 'node:buffer';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
-import * as snapshotModule from '../../utils/Snapshot.ts';
+import * as snapshotModule from './Snapshot.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as bootModule from './Boot.ts';
 import type * as stateModule from './State.ts';

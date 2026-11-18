@@ -7,11 +7,12 @@ import { useEffect, useMemo, useState } from 'react';
 import * as virtuoso from 'react-virtuoso';
 import * as privacy from '../Privacy/Mask.tsx';
 import * as vscodeLink from '../VscodeLink.tsx';
+import * as api from '../Api.ts';
 import { TOKEN, withToken } from '../Token.ts';
 import { Guide } from '../Guide/Guide.tsx';
 import { GRAPH_STEPS } from '../Guide/steps-graph.ts';
 import { COLORS, GraphCanvas } from './GraphCanvas.tsx';
-import { get, type Customer, type Doc, type Found, type Graph, type GraphEdge, type Hit } from './GraphApi.ts';
+import { get, type Customer, type Doc, type Graph, type GraphEdge } from './GraphApi.ts';
 
 const PARAMS = new URLSearchParams(window.location.search);
 //M 从网址查询参数读取可选机器人名，供后续图谱与检索请求透传限定范围。
@@ -108,7 +109,7 @@ export function GraphPage() {
   const [hitNodes, setHitNodes] = useState<number[]>([]);
   const [merge, setMerge] = useState(false);
   const [version, setVersion] = useState(0);
-  const [found, setFound] = useState<Found | null>(null);
+  const [found, setFound] = useState<api.MemorySearchResult | null>(null);
   const [side, setSide] = useState<Side>({ type: 'summary' });
   const [sideEl, setSideEl] = useState<HTMLElement | null>(null);
   const [banner, setBanner] = useState('');
@@ -153,14 +154,26 @@ export function GraphPage() {
     setBanner(`正在从记忆里检索：${text}${modeHint}`);
     setSide({ type: 'summary' });
     try {
-      //M 组装检索参数调用记忆检索接口，保存命中原文与路径并重绘高亮子图。
-      const result = await get<Found>(`/api/memory-graph/search?q=${encodeURIComponent(text)}&mode=${mode}&${getCommonQuery()}`);
-      setFound(result);
-      show(result.graph, result.graph.hitEdges, result.graph.hitNodes);
-      let hitBanner = '没有命中关系，右侧是命中的原文';
-      if (result.graph.hitEdges.length > 0) {
-        hitBanner = `找到 ${result.graph.hitEdges.length} 条关系，金色流动的是这次回答用到的路径`;
+      //M 记忆页与图谱页使用同一检索，图谱的整体查询和点边原文仍走图谱接口。
+      const params = new URLSearchParams({ q: text, mode, sources: 'knowledge', limit: '8' });
+      if (customer !== '') {
+        params.set('customer', customer);
+        params.set('sources', 'history,knowledge');
       }
+      if (BOT !== '') params.set('bot', BOT);
+
+      //M 统一结果有命中子图时高亮，没走关系时仍展示原文摘要。
+      const result = await api.memorySearch(params);
+      setFound(result);
+      const resultGraph = result.graph ?? EMPTY;
+      const edges = resultGraph.hitEdges ?? [];
+      const nodes = resultGraph.hitNodes ?? [];
+      show(resultGraph, edges, nodes);
+      let hitBanner = '没有命中关系，右侧是命中的原文';
+      if (edges.length > 0) {
+        hitBanner = `找到 ${String(edges.length)} 条关系，金色流动的是这次回答用到的路径`;
+      }
+      if (result.unavailable.length > 0) hitBanner += `。未响应：${result.unavailable.join('、')}`;
       setBanner(hitBanner);
       window.setTimeout(() => setBanner(''), 6000);
       window.dispatchEvent(new Event('jmbots-guide-searched'));
@@ -252,6 +265,8 @@ export function GraphPage() {
   if (found?.mode === 'graph') {
     foundModeLabel = '图谱+重排';
   }
+  const locatedGraph = found?.graph ?? EMPTY;
+  const locatedEdges = locatedGraph.hitEdges ?? [];
 
   //M 渲染关系图谱页三段主体：顶部控制栏（客户/问句/检索模式/打码开关/跨页导航）、中间画布舞台与右侧详情栏。
   return (
@@ -321,9 +336,9 @@ export function GraphPage() {
             {
               //M 渲染检索命中路径：把命中边首尾连成多跳链并绑定节点/边详情点击，名称和关系词按需脱敏。
             /**/}
-            <h2>命中路径（{found.graph.hitEdges.length} 条关系）</h2>
-            {found.graph.hitEdges.length === 0 && <div className="mg-muted">这次没有走到关系（只靠关键词/向量命中）</div>}
-            {getChains(found.graph, found.graph.hitEdges).map((path) => (
+            <h2>命中路径（{locatedEdges.length} 条关系）</h2>
+            {locatedEdges.length === 0 && <div className="mg-muted">这次没有走到关系（只靠关键词/向量命中）</div>}
+            {getChains(locatedGraph, locatedEdges).map((path) => (
               <div className="mg-chain" key={path[0]!.id}>
                 <span className="mg-ent" onClick={() => void openNode(path[0]!.source)}>{privacy.text(names.get(path[0]!.source) ?? '', mask)}</span>
                 {path.map((e) => (
@@ -356,15 +371,12 @@ export function GraphPage() {
                   if (h.relations) {
                     relSuffix = ` · ${privacy.text(h.relations.join('；'), mask)}`;
                   }
-                  const extraFile = (h as Hit & { file?: unknown }).file;
-                  let hitFile = '';
-                  if (typeof extraFile === 'string') {
-                    hitFile = extraFile;
-                  }
+                  const hitFile = h.file ?? '';
+                  const passageId = Number(h.id);
 
                   //M 渲染命中原文卡片 DOM：点击加载原文详情、展示通路徽章与脱敏标题。
                   return (
-                    <div className="mg-card" onClick={() => void openDoc(h.id)}>
+                    <div className="mg-card" onClick={() => void openDoc(passageId)}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <b>[{h.id}] {privacy.text(h.title, mask)}</b>
                         {!mask && hitFile !== '' && <vscodeLink.VsCodeOpen site={hitFile} />}

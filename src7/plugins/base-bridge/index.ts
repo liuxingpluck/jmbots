@@ -1,9 +1,9 @@
 /**
  * 基地服务、基地通知与更新监听（由 base-bridge 与原 notify、update-watch 合并）：
- *   1. Base 服务（ctx.base）与 8 条网页基地转发接口；
+ *   1. Base 服务（ctx.base）与更新、自启动的网页接口；
  *   2. 通知模块（Notify.ts，默认关闭）：config.notify 开启时登记 notify_user 工具并转发待确认/长任务结束 toast；
  *   3. 更新监听（UpdateWatch.ts，默认关闭）：config.update_watch 开启时定时检查 GET /update，卸载时清理定时器。
- * 设计：docs/src7插件设计/base-bridge.md、notify.md、update-watch.md。
+ * 设计见同目录 说明.md 的「设计要点」一节（含 update-watch）。
  */
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
@@ -20,10 +20,10 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.2';
+export const version = '1.2.0';
 export const inject = ['resources'];
 
-/** base/request 请求载荷（契约 3.2 第 10 条）：别的插件（memory、settings、web-api）不拿 ctx.base，发这个事件请基地办事。 */
+/** base/request 请求载荷，settings 和 web-api 用它向基地请求重启等操作。 */
 export interface BaseRequest extends RequestEnvelope {
   /** GET 还是 POST。 */
   method: 'GET' | 'POST';
@@ -66,24 +66,19 @@ export interface BaseReply {
   body: unknown;
 }
 
-/** 网页路径对应的基地路径，以及是否原样带查询串。 */
+/** 网页路径对应的基地路径。 */
 interface Route {
   method: 'GET' | 'POST';
   from: string;
   to: string;
-  query: boolean;
 }
 
-//M 八条转发都采用同一套故障口径，不再用空列表伪装基地在线。
+//M 基地的网页接口只保留更新和自启动。记忆检索由 memory 插件直连。
 const ROUTES: Route[] = [
-  { method: 'GET', from: '/api/update', to: '/update', query: false },
-  { method: 'POST', from: '/api/update/apply', to: '/update/apply', query: false },
-  { method: 'GET', from: '/api/autostart', to: '/autostart', query: false },
-  { method: 'POST', from: '/api/autostart', to: '/autostart', query: false },
-  { method: 'GET', from: '/api/memory/health', to: '/health', query: true },
-  { method: 'GET', from: '/api/memory/search', to: '/search', query: true },
-  { method: 'GET', from: '/api/rag/search', to: '/rag/search', query: true },
-  { method: 'POST', from: '/api/rag/index', to: '/rag/index', query: false },
+  { method: 'GET', from: '/api/update', to: '/update' },
+  { method: 'POST', from: '/api/update/apply', to: '/update/apply' },
+  { method: 'GET', from: '/api/autostart', to: '/autostart' },
+  { method: 'POST', from: '/api/autostart', to: '/autostart' },
 ];
 const TIMEOUT_MS = 15_000;
 
@@ -106,7 +101,7 @@ export class Base extends cordis.Service {
       },
     };
 
-    //M 听请求事件 base/request（契约 3.2 第 10 条）：记忆、设置页、网页接口不直接拿 ctx.base，发这个事件请基地办事，办完回 base/result。
+    //M 设置和网页插件发请求请基地办事，办完回 base/result。
     onRequestEvent(
       ctx,
       'base/request',
@@ -201,7 +196,7 @@ export class Base extends cordis.Service {
     }
     if (text === '') return { status: response.status, body: undefined };
 
-    //M HTTP 错误不等于断连：记忆摄取的 409、旧基地的 404 要由调用方判断。
+    //M 保留上游状态，调用方据业务处理错误。
     let result: unknown = text;
     try {
       result = JSON.parse(text) as unknown;
@@ -213,25 +208,23 @@ export class Base extends cordis.Service {
 
   /**
    * 网页转发保留基地的原始状态、类型和正文；未配置基地地址或基地断连时回 503。
-   * @param route 转发路由配置（方法、目标路径、是否带查询串）。
+   * @param route 转发路由配置（方法和目标路径）。
    * @param request Fastify 传入的前端请求。
    * @param reply Fastify 响应对象。
    * @returns 已写入状态码、内容类型与正文的 reply。
    */
-  async forward(route: Route, request: fastify.FastifyRequest, reply: fastify.FastifyReply): Promise<fastify.FastifyReply> {
-    //M 查询串不拆开重组，避免改变检索参数的编码。
-    const mark = request.url.indexOf('?');
-    let querySuffix = '';
-    if (route.query && mark >= 0) {
-      querySuffix = request.url.slice(mark);
-    }
-    const target = route.to + querySuffix;
+  async forward(
+    route: Route,
+    request: fastify.FastifyRequest,
+    reply: fastify.FastifyReply,
+  ): Promise<fastify.FastifyReply> {
     let bodyPayload: unknown;
     if (route.method === 'POST') {
       bodyPayload = request.body ?? {};
     }
     try {
-      const response = await this.request(route.method, target, TIMEOUT_MS, bodyPayload);
+      //M 当前转发的接口只需路径和 POST 正文。
+      const response = await this.request(route.method, route.to, TIMEOUT_MS, bodyPayload);
       const text = await response.text();
       const type = response.headers.get('content-type') ?? 'application/json; charset=utf-8';
       return reply.code(response.status).type(type).send(text);

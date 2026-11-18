@@ -2,7 +2,7 @@
  * 技能：干活的会话每一步调模型前，扫全局 skills/ 和机器人自己的 bots/<机器人>/skills/，
  * 每个技能一行“名字：一句说明（@SKILL.md 的路径）”拼进系统提示词；再登记一个只读工具 skill，按名字交回那份 SKILL.md 全文。
  * 为什么另加 skill 工具：技能文件在工作区外面，base-tools 的 read 只许读工作区，模型读不到（skills.md 第 10 节第 1 条，总管 11-14 定了甲案）。
- * 照 0.4 src/capabilities/Files.ts:1132-1183。设计：docs/src7插件设计/skills.md。
+ * 照 0.4 src/capabilities/Files.ts:1132-1183。设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

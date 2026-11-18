@@ -1,7 +1,7 @@
 //! jmbots.exe：本地壳子的入口（docs/界面/01_界面设计.md 第 4.1 节）。
 //!   不带命令（双击）     开 HTTP 接口、托盘、窗口（窗口装载后端托管的网页）；--tray 只开接口和托盘
 //!   check               不开窗口的自检，打印 JSON；后端连上退出码 0，连不上 2
-//!   serve               只开 HTTP 接口（更新、重启、托管服务；记忆接口转给记忆服务），没有窗口和托盘；--supervise 还守护后端和托管服务、管更新
+//!   serve               只开 HTTP 管理接口，没有窗口和托盘；--supervise 还守护后端和托管服务、管更新
 //!   （2026-11-14：search / ingest / graph / rag-index / rag-search 搬进记忆服务 jmbots-memory 自己的命令行，基地只承载）
 //! 按控制台程序编译：终端里跑命令时 shell 会等它结束、输出正常；双击时不弹黑框靠清单（windows/app.manifest，console.rs 有说明）。
 
@@ -39,7 +39,7 @@ struct Cli {
 enum Command {
     /// 不开窗口的自检：读配置、连后端、看各托管服务健康，打印一份 JSON
     Check,
-    /// 只开 HTTP 接口（更新、重启、托管服务；记忆接口转给记忆服务），没有窗口和托盘
+    /// 只开 HTTP 管理接口，没有窗口和托盘
     Serve {
         /// 同时守护后端和托管服务、管更新（和窗口模式一样，只是没有窗口）
         #[arg(long)]

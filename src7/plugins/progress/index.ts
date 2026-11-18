@@ -9,7 +9,7 @@
  *   延够了开一场审核小会话：离谱就停下说清哪里离谱，建议转就开一场新的后台会话带交接说明接着做（一件事只转一次），不然停下。
  * 停下以后开一场收尾小会话写“做到哪了、卡在哪、还剩什么”发给用户；做太久或被限时、终止的，记一行 data/overtime.jsonl，空闲时由 Review.ts 挑一件写复盘。
  * 每次变化发 progress/update（一场一秒最多一次，结束马上发）：feishu 画卡片、journal 记流水、网页 GET /api/progress 轮询。
- * 照 0.4 src/capabilities/Progress.ts、Review.ts。设计：docs/src7插件设计/progress.md。
+ * 照 0.4 src/capabilities/Progress.ts、Review.ts。设计见同目录 说明.md 的「设计要点」一节（含复盘）。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

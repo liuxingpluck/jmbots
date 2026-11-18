@@ -8,6 +8,7 @@ import * as reactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { SiteLink, SourceToggle, VIRTUAL_THRESHOLD, getSiteParts } from './Code.tsx';
 import type { PluginItem } from './TutorialApi.ts';
+import * as sourceDirModule from '../../../src7/utils/SourceDir.ts';
 
 
 /** 服务名和插件名不同名时的对照表（同名插件直接按插件名单认）。 */
@@ -389,7 +390,9 @@ function extractCodeSite(cell: string, pluginFolder?: string): string | undefine
     const parts = getSiteParts(trimmed);
     if (parts === undefined || !/\.(?:ts|tsx)$/u.test(parts.file)) continue;
 
-    if (parts.file.startsWith('src7/') || parts.file.startsWith('web/')) return `${parts.file}:${String(parts.line)}`;
+    //M 已经从后端源码根或 web/ 写起的，原样用。
+    const rooted = parts.file.startsWith(sourceDirModule.SOURCE_PREFIX) || parts.file.startsWith('web/');
+    if (rooted) return `${parts.file}:${String(parts.line)}`;
 
     if (pluginFolder !== undefined && pluginFolder !== '') {
       //M 简写文件名缺少目录前缀时，自动拼接当前插件源码根目录。
@@ -416,7 +419,7 @@ function getTableVscodeSite(cell: string, pluginFolder?: string): string | undef
     const trimmed = token.trim();
     if (trimmed === '' || !/\.(?:ts|tsx)$/u.test(trimmed)) continue;
 
-    if (trimmed.startsWith('src7/') || trimmed.startsWith('web/')) return `${trimmed}:1`;
+    if (trimmed.startsWith(sourceDirModule.SOURCE_PREFIX) || trimmed.startsWith('web/')) return `${trimmed}:1`;
 
     if (pluginFolder !== undefined && pluginFolder !== '') {
       //M 无行号的简写 .ts/.tsx 文件名补全所属插件目录与第 1 行，供 VS Code 跳转打开。
@@ -876,11 +879,11 @@ function ExtrasTab(props: { extras: { title: string; body: string }[]; pluginFol
 /** 插件或骨架名 → 源码所在目录，兼容 wechat-kefu 别名与系统骨架模块。 */
 function getPluginFolder(pluginName: string): string {
   if (pluginName === 'main' || pluginName === 'resources' || pluginName === 'tools' || pluginName === 'sessions') {
-    return 'src7';
+    return sourceDirModule.SOURCE_DIR;
   }
-  if (pluginName === 'wechat-kefu') return 'src7/plugins/wechat';
+  if (pluginName === 'wechat-kefu') return `${sourceDirModule.SOURCE_PREFIX}plugins/wechat`;
 
-  return `src7/plugins/${pluginName}`;
+  return `${sourceDirModule.SOURCE_PREFIX}plugins/${pluginName}`;
 }
 
 

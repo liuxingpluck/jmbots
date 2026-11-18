@@ -98,17 +98,40 @@ pub struct Overlay {
 struct OverlayState {
     generation: AtomicU64,
     until: Mutex<Option<Instant>>,
+    page: Mutex<PageState>,
+}
+
+type PresentWhenLoaded = Box<dyn FnOnce(&WebviewWindow) + Send>;
+
+#[derive(Default)]
+struct PageState {
+    loaded: bool,
+    pending: Option<PresentWhenLoaded>,
 }
 
 impl Overlay {
+    /// 为已配置录屏的基地预热空白浮窗，创建时保持隐藏。
     pub fn new(app: AppHandle) -> Self {
-        let state = OverlayState { generation: AtomicU64::new(0), until: Mutex::new(None) };
-        Self { app, state: Arc::new(state) }
+        let state = OverlayState {
+            generation: AtomicU64::new(0),
+            until: Mutex::new(None),
+            page: Mutex::new(PageState::default()),
+        };
+        let overlay = Self { app, state: Arc::new(state) };
+        let app = overlay.app.clone();
+        let state = overlay.state.clone();
+        //M 启动时就加载内置页面。没有文字、输入钩子或采集。
+        let _ = overlay.app.run_on_main_thread(move || {
+            if ensure_window(&app, state).is_err() {
+                eprintln!("讲解浮窗预热失败，显示时重试");
+            }
+        });
+        overlay
     }
 
-    pub(super) fn show<F>(
-        &self, text: String, display: Display, clicked: Option<Point>, duration: Duration, current: F,
-    ) where F: Fn() -> bool + Send + Sync + 'static {
+    pub(super) fn show<F, G>(
+        &self, text: String, display: Display, clicked: Option<Point>, duration: Duration, current: F, shown: G,
+    ) where F: Fn() -> bool + Send + Sync + 'static, G: Fn() + Send + Sync + 'static {
         let Ok(mut until) = self.state.until.lock() else { return; };
         let generation = self.state.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let deadline = Instant::now() + duration;
@@ -117,19 +140,37 @@ impl Overlay {
 
         let app = self.app.clone();
         let state = self.state.clone();
-        let still_valid = Arc::new(move || {
-            state.generation.load(Ordering::Acquire) == generation && Instant::now() < deadline && current()
-        });
+        let validity = Arc::downgrade(&state);
+        let still_valid = move || {
+            let Some(validity) = validity.upgrade() else { return false; };
+            validity.generation.load(Ordering::Acquire) == generation && Instant::now() < deadline && current()
+        };
         let _ = self.app.run_on_main_thread(move || {
             if !still_valid() { return; }
-            let result = present(&app, &text, &display, clicked, still_valid);
-            if result.is_err() {
-                //G 排除录屏或窗口创建失败时保持隐藏，不回显解释内容。
-                if let Some(window) = app.get_webview_window(LABEL) {
+            let window = ensure_window(&app, state.clone());
+            let Ok(window) = window else {
+                eprintln!("讲解浮窗不可用（overlay_create_failed）");
+                return;
+            };
+
+            let render = move |window: &WebviewWindow| {
+                if !still_valid() { return; }
+                let result = present(window, &text, &display, clicked, &still_valid);
+                if result.is_err() {
+                    //G 原生保护或显示失败时保持隐藏。
                     let _ = window.hide();
+                    eprintln!("讲解浮窗不可用（overlay_capture_unsupported）");
                 }
-                eprintln!("讲解浮窗不可用（overlay_capture_unsupported）");
+                if result.is_ok_and(|visible| visible) { shown(); }
+            };
+            let Ok(mut page) = state.page.lock() else { return; };
+            if !page.loaded {
+                //M 启动后立即点击时只存最新一条，页面就绪再复核和显示。
+                page.pending = Some(Box::new(render));
+                return;
             }
+            drop(page);
+            render(&window);
         });
     }
 
@@ -146,6 +187,9 @@ impl Overlay {
         let state = self.state.clone();
         let _ = self.app.run_on_main_thread(move || {
             if state.generation.load(Ordering::Acquire) != generation { return; }
+            if let Ok(mut page) = state.page.lock() {
+                page.pending = None;
+            }
             if let Some(window) = app.get_webview_window(LABEL) {
                 let _ = window.hide();
                 let _ = window.eval("document.getElementById('explanation')?.replaceChildren()");
@@ -166,27 +210,20 @@ impl Overlay {
     pub fn demo_secondary(&self, duration: Duration) -> bool {
         let Some(display) = secondary_display() else { return false; };
         let text = "模拟讲解：点到的控件会在这里显示一两句说明。".to_owned();
-        self.show(text, display, None, duration, || true);
+        self.show(text, display, None, duration, || true, || {});
         true
     }
 }
 
-fn present(
-    app: &AppHandle, text: &str, display: &Display, clicked: Option<Point>,
-    current: Arc<dyn Fn() -> bool + Send + Sync>,
-) -> Result<()> {
-    let value = serde_json::to_string(text)?;
-    let script = format!(
-        "(()=>{{const update=()=>{{const label=document.getElementById('explanation');if(label)label.textContent={value};}};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',update,{{once:true}});else update();}})();"
-    );
-    let area = panel_area(display, clicked).ok_or_else(|| anyhow!("显示器工作区不可用"))?;
+/// 在 Tauri 主线程取得现有浮窗，或创建一扇隐藏窗并监听内置页面就绪。
+fn ensure_window(app: &AppHandle, state: Arc<OverlayState>) -> Result<WebviewWindow> {
     if let Some(window) = app.get_webview_window(LABEL) {
-        window.eval(&script)?;
-        if !current() { return Ok(()); }
-        return native_show(&window, area);
+        return Ok(window);
     }
 
-    //M 首次等本地页面就绪再显示，避免空 WebView 闪到桌面。
+    if let Ok(mut page) = state.page.lock() {
+        *page = PageState::default();
+    }
     let page = WebviewUrl::App(PAGE.into());
     let window = WebviewWindowBuilder::new(app, LABEL, page)
         .title("录屏讲解")
@@ -198,17 +235,39 @@ fn present(
         .resizable(false)
         .transparent(true)
         .always_on_top(true)
-        .initialization_script(script)
         .on_page_load(move |window, payload| {
-            if payload.event() != tauri::webview::PageLoadEvent::Finished || !current() { return; }
-            if native_show(&window, area).is_err() {
-                let _ = window.hide();
-                eprintln!("讲解浮窗不可用（overlay_capture_unsupported）");
-            }
+            if payload.event() != tauri::webview::PageLoadEvent::Finished { return; }
+
+            let Ok(mut page) = state.page.lock() else { return; };
+            page.loaded = true;
+            let pending = page.pending.take();
+            drop(page);
+            if let Some(render) = pending { render(&window); }
         })
         .build()?;
-    window.set_ignore_cursor_events(true)?;
-    Ok(())
+    if let Err(error) = window.set_ignore_cursor_events(true) {
+        //G 销毁未配置鼠标穿透的空窗，避开托盘全局的关闭即隐藏处理。
+        let _ = window.destroy();
+        return Err(error.into());
+    }
+    Ok(window)
+}
+
+/// 已预热的页面只需写文字、校验此次资格并在目标屏幕显示。
+fn present(
+    window: &WebviewWindow, text: &str, display: &Display, clicked: Option<Point>,
+    current: &dyn Fn() -> bool,
+) -> Result<bool> {
+    let area = panel_area(display, clicked).ok_or_else(|| anyhow!("显示器工作区不可用"))?;
+    let value = serde_json::to_string(text)?;
+    let script = format!("document.getElementById('explanation').textContent={value}");
+    window.eval(&script)?;
+    if !current() {
+        let _ = window.hide();
+        return Ok(false);
+    }
+    native_show(window, area)?;
+    Ok(true)
 }
 
 fn native_show(window: &WebviewWindow, area: Rect) -> Result<()> {
@@ -239,8 +298,9 @@ fn native_show(window: &WebviewWindow, area: Rect) -> Result<()> {
 fn panel_area(display: &Display, clicked: Option<Point>) -> Option<Rect> {
     let work = display.work;
     let margin = 12;
-    let width = (420 * display.dpi_x as i32 / 96).min(work.right - work.left - margin * 2);
-    let height = (140 * display.dpi_y as i32 / 96).min(work.bottom - work.top - margin * 2);
+    //M 给最多 160 字的讲解留出换行空间，短讲解的透明部分由页面折叠到上方。
+    let width = (568 * display.dpi_x as i32 / 96).min(work.right - work.left - margin * 2);
+    let height = (328 * display.dpi_y as i32 / 96).min(work.bottom - work.top - margin * 2);
     if width <= 0 || height <= 0 { return None; }
 
     let right = work.right - margin;

@@ -48,7 +48,9 @@ export const name = 'bots';
 //M 1.4.5：跨渠道 channel_reply 改为发 target 交目标渠道自己认聊天，bots 不再查各渠道数据。
 //M 1.4.6：插件互调改事件第一阶段——听 bot/request（hand、save-file、add、accept-result）回 bot/result，听通知 bot/route；
 //M   前台的“先查记忆”提示交给 memory 自己加，记往来、搜聊天记录、算向量改发 memory/request；模型介绍改发 model-catalog/request（prompt）。
-export const version = '1.4.6';
+//M 1.4.8：requestChannelHistory 从骨架 Channels.ts 挪进 bots/HistoryRequest.ts，只有 bots 的历史工具用。
+//M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
+export const version = '1.4.9';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 Dispatch.ts），开了 reply_tool 再加 reply。

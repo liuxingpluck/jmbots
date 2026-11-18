@@ -7,6 +7,7 @@
  * 点一项看实现、谁调它：页面用 /api/tutorial/source（Source.ts）按“文件:行号”取，不在这里另写一份。
  */
 import type * as cordis from 'cordis';
+import * as sourceDirModule from '../../utils/SourceDir.ts';
 import * as skeletonModule from './Skeleton.ts';
 import * as sourceModule from './Source.ts';
 import { getFolder } from './Boot.ts';
@@ -130,7 +131,7 @@ export class PluginCode {
    */
   private async getFunctions(folder: string): Promise<FunctionItem[]> {
     const items: FunctionItem[] = [];
-    const prefix = `src7/plugins/${folder}/`;
+    const prefix = `${sourceDirModule.SOURCE_PREFIX}plugins/${folder}/`;
     //M 从源码缓存索引列出全库源码，只挑属于当前插件文件夹的文件提取顶层导出声明。
     const files = await this.source.getSourceFiles();
     for (const file of files) {
@@ -252,7 +253,7 @@ export class PluginCode {
    * @returns 找不到是空串。
    */
   private async getToolSite(folder: string, toolName: string): Promise<string> {
-    const prefix = `src7/plugins/${folder}/`;
+    const prefix = `${sourceDirModule.SOURCE_PREFIX}plugins/${folder}/`;
     const named = new RegExp(`name\\s*:\\s*['"\`]${toolName}['"\`]`, 'u');
     //M 列出全库源码并只扫描当前插件文件夹下的文件，定位工具声明和 run 入口行。
     const files = await this.source.getSourceFiles();

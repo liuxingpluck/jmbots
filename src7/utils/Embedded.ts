@@ -65,27 +65,6 @@ export function getNames(): string[] {
 }
 
 
-/**
- * 把一个内嵌文件写到磁盘（已有的不覆盖）。出厂提示词第一次落到运行时目录时用。
- * @param name 登记时的相对路径。
- * @param dest 要写到哪。
- * @returns 写成功了，或本来就有；没有这个内嵌文件是 false。
- * 副作用：可能建目录、写文件。
- */
-export async function exportFile(name: string, dest: string): Promise<boolean> {
-  if (fs.existsSync(dest)) return true;
-  //M 查找内嵌文件真实句柄；源码模式或未收录时退出不建空文件。
-  const file = find(name);
-  if (file === undefined) return false;
-  //M 建好上层目录，读出内嵌文件的字节，写下去。
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const content = await Bun.file(file).arrayBuffer();
-  const bytes = Buffer.from(content);
-  fs.writeFileSync(dest, bytes);
-  return true;
-}
-
-
 /** 源码跑时网页在哪：本文件在 src7/utils/，往上两层是代码目录，下面的 dist/web。 */
 const WEB_DIR = path.resolve(import.meta.dir, '../../dist/web');
 

@@ -7,7 +7,7 @@
  * 另外接网页的会话列表和详情、步骤、换模型、喊停、正在跑的任务、回话追溯、机器人、界面信息、渠道状态。
  * 不查令牌（http 统一查：本机不查，别的机器要带）；不托管网页（web）；不分派（前台在 bots 里）。
  * 文件：本文件（渠道和会话、机器人的接口）、Timeline.ts（收件表、时间线、补取、搜索）、Trace.ts（步骤、追溯、生成依据）。
- * 设计：docs/src7插件设计/web-api.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

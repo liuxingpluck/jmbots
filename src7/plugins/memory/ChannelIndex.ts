@@ -13,7 +13,12 @@ import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as protocolModule from '../../Channels.ts';
+import type { Search } from './Search.ts';
+import type { ChannelBackfill } from './ChannelBackfill.ts';
 
+
+/** Rust 中渠道文档的保留命名空间，与客服往来分离。 */
+export const CHANNEL_PARTITION = 'jmbots-channel:';
 
 /** 表里的一行（一条渠道消息）。 */
 export interface ChannelRow {
@@ -37,17 +42,30 @@ export interface ChannelRow {
   bot: string;
   /** 正文。 */
   text: string;
+  /** 原始提及解析到的机器人；旧索引行可缺。 */
+  mentionedBots?: string[];
   /** 时间，毫秒。 */
   at: number;
 }
 
 
 /** 一次查询。 */
-export interface ChannelQuery {
+/** 渠道查询的授权范围。 */
+export interface ChannelScope {
   /** 只查这个渠道；不给不限。 */
   channel?: string;
   /** 只查这个聊天；不给不限。 */
   chat?: string;
+  /** 只查当前渠道账号；同名聊天可能属于不同账号。 */
+  account?: string;
+}
+
+/** 一次渠道查询。 */
+export interface ChannelQuery extends ChannelScope {
+  /** 只查涉及这个机器人的消息。 */
+  bot?: string;
+  /** 只查明确 @ 过该机器人的消息。 */
+  mentionedBot?: string;
   /** 从这个时刻起（毫秒，含）；不给不限。 */
   since?: number;
   /** 到这个时刻止（毫秒，含）；不给不限。 */
@@ -60,13 +78,9 @@ export interface ChannelQuery {
 
 
 /** 这一轮能查多大范围。 */
-interface ChannelAccess {
+export interface ChannelAccess extends ChannelScope {
   /** 本人（isHistoryOwner）：哪个渠道、哪个聊天都能查。 */
   full: boolean;
-  /** 这一轮来源快照的渠道；没有快照是 undefined。 */
-  channel?: string;
-  /** 这一轮来源快照的聊天；没有快照是 undefined。 */
-  chat?: string;
 }
 
 
@@ -93,21 +107,73 @@ export class ChannelIndex {
     //M 按聊天看一段时间（最常用）、不分聊天按时间看。
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_chat ON memory_channel_messages (channel, chat, at)');
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_at ON memory_channel_messages (at)');
+    //M 旧行照常可查。新消息进入实时队列，旧行等手动回填。
+    const columns = db.query('PRAGMA table_info(memory_channel_messages)').all() as { name: string }[];
+    if (!columns.some((column) => column.name === 'mentioned_bots')) {
+      db.exec("ALTER TABLE memory_channel_messages ADD COLUMN mentioned_bots TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!columns.some((column) => column.name === 'rust_state')) {
+      db.exec('ALTER TABLE memory_channel_messages ADD COLUMN rust_state INTEGER NOT NULL DEFAULT 0');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS memory_channel_rust ON memory_channel_messages (rust_state, id)');
   }
 
   /**
    * 记一条；同一个键已经有了就不动。
    * @param row 一条消息。
+   * @param live 是否来自实时渠道事件。
    * @returns 新记了是 true，早有了是 false。
    * 副作用：写库。
    */
-  add(row: ChannelRow): boolean {
+  add(row: ChannelRow, live = false): boolean {
     const sql = 'INSERT OR IGNORE INTO memory_channel_messages'
-      + ' (msg_key, channel, account, chat, chat_type, direction, sender_id, sender_name, bot, text, at)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    const values = [row.key, row.channel, row.account, row.chat, row.chatType, row.direction, row.senderId, row.senderName, row.bot, row.text, row.at];
+      + ' (msg_key, channel, account, chat, chat_type, direction, sender_id, sender_name, bot, text, at,'
+      + ' mentioned_bots, rust_state)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const mentions = JSON.stringify(row.mentionedBots ?? []);
+    const state = Number(live);
+    const values = [row.key, row.channel, row.account, row.chat, row.chatType, row.direction,
+      row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state];
+    //M 幂等写入，按 SQLite 的影响行数区分新消息和重复消息。
     const changes = this.db.query(sql).run(...values).changes;
+    if (changes === 0 && live) {
+      //M 旧档先到时，实时事件仍可唤醒尚未同步的同一行。
+      const promote = 'UPDATE memory_channel_messages SET rust_state = 1 WHERE msg_key = ? AND rust_state = 0';
+      this.db.query(promote).run(row.key);
+    }
     return changes === 1;
+  }
+
+  /** 按持久化队列取一批未确认记录。实时和历史各有一条队列。 */
+  getRustBatch(live: boolean, limit: number): ChannelRow[] {
+    const state = Number(live);
+    const sql = 'SELECT * FROM memory_channel_messages WHERE rust_state = ? ORDER BY id LIMIT ?';
+
+    //M 使用状态索引取最早一批，Rust 确认的行不会再取到。
+    const rows = this.db.query(sql).all(state, limit) as Record<string, unknown>[];
+    return rows.map(getRow);
+  }
+
+  /** Rust 确认整批写入后，在同一事务内推进进度。 */
+  confirmRustBatch(rows: ChannelRow[]): void {
+    const sql = 'UPDATE memory_channel_messages SET rust_state = 2 WHERE msg_key = ?';
+    //M 整批复用一个更新语句，事务中按消息键逐行确认。
+    const statement = this.db.query(sql);
+    const commit = this.db.transaction(() => {
+      //M 整批确认以保留重启前的断点。
+      for (const row of rows) {
+        statement.run(row.key);
+      }
+    });
+    commit();
+  }
+
+  /** 按已索引消息和 Rust 确认的消息统计进度。 */
+  getRustProgress(): { total: number; done: number } {
+    const sql = 'SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE rust_state = 2) AS done FROM memory_channel_messages';
+
+    //M 计数和写入确认取自同一张表，页面轮询可以读到一致的进度。
+    return this.db.query(sql).get() as { total: number; done: number };
   }
 
   /**
@@ -116,8 +182,13 @@ export class ChannelIndex {
    * @param windowMs 时间差。
    */
   hasSimilar(row: ChannelRow, windowMs: number): boolean {
-    const sql = 'SELECT 1 FROM memory_channel_messages WHERE channel = ? AND chat = ? AND direction = ? AND text = ? AND at BETWEEN ? AND ? LIMIT 1';
-    const found = this.db.query(sql).get(row.channel, row.chat, row.direction, row.text, row.at - windowMs, row.at + windowMs);
+    const sql = 'SELECT 1 FROM memory_channel_messages WHERE channel = ? AND account = ? AND chat = ?'
+      + ' AND direction = ? AND text = ? AND at BETWEEN ? AND ? LIMIT 1';
+    const from = row.at - windowMs;
+    const to = row.at + windowMs;
+
+    //G 同名会话可能属于不同账号，近似去重也要限制在来源账号内。
+    const found = this.db.query(sql).get(row.channel, row.account, row.chat, row.direction, row.text, from, to);
     return found !== null;
   }
 
@@ -131,13 +202,11 @@ export class ChannelIndex {
     const values: (string | number)[] = [];
 
     //M 渠道、聊天、时间：有才加。
-    if (query.channel !== undefined) {
-      conditions.push('channel = ?');
-      values.push(query.channel);
-    }
-    if (query.chat !== undefined) {
-      conditions.push('chat = ?');
-      values.push(query.chat);
+    for (const key of ['channel', 'chat', 'account'] as const) {
+      const value = query[key];
+      if (value === undefined) continue;
+      conditions.push(`${key} = ?`);
+      values.push(value);
     }
     if (query.since !== undefined) {
       conditions.push('at >= ?');
@@ -146,6 +215,14 @@ export class ChannelIndex {
     if (query.until !== undefined) {
       conditions.push('at <= ?');
       values.push(query.until);
+    }
+    if (query.bot !== undefined) {
+      conditions.push("instr(',' || bot || ',', ',' || ? || ',') > 0");
+      values.push(query.bot);
+    }
+    if (query.mentionedBot !== undefined) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(mentioned_bots) WHERE value = ?)');
+      values.push(query.mentionedBot);
     }
 
     //M 关键词：每个都要有；% _ \ 转义，照字面找。
@@ -165,6 +242,32 @@ export class ChannelIndex {
     //M 查出来的行是表里的列名，用 getRow 逐行转成 ChannelRow 交回。
     const rows = this.db.query(sql).all(...values) as Record<string, unknown>[];
     return rows.map(getRow);
+  }
+
+  /** 按消息键定位，按时间和入库顺序取同一聊天前后的消息。 */
+  context(key: string, query: ChannelQuery): { anchor: ChannelRow; before: ChannelRow[]; after: ChannelRow[] } {
+    //M 用索引中的唯一消息键定位原文，再确认它位于可读的账号和聊天。
+    const sql = 'SELECT * FROM memory_channel_messages WHERE msg_key = ?';
+    const found = this.db.query(sql).get(key) as Record<string, unknown> | null;
+    if (found === null) throw new Error('找不到这条渠道消息');
+
+    //G 在读前后文前核对锚点的真实来源，防止只改引用中的聊天号来绕过权限。
+    const anchor = getRow(found);
+    for (const field of ['channel', 'chat', 'account'] as const) {
+      if (query[field] === undefined || query[field] === anchor[field]) continue;
+      throw new Error('找不到这条渠道消息');
+    }
+
+    //M 用 (at,id) 决定同毫秒消息的前后，账号和聊天均跟着锚点。
+    const source = 'SELECT * FROM memory_channel_messages WHERE channel = ? AND account = ? AND chat = ?';
+    const time = ' AND at BETWEEN ? AND ?';
+    const beforeSql = `${source}${time} AND (at,id) < (?,?) ORDER BY at DESC, id DESC LIMIT ?`;
+    const afterSql = `${source}${time} AND (at,id) > (?,?) ORDER BY at, id LIMIT ?`;
+    const values = [anchor.channel, anchor.account, anchor.chat, query.since ?? 0,
+      query.until ?? Number.MAX_SAFE_INTEGER, anchor.at, found['id'] as number, query.limit];
+    const before = this.db.query(beforeSql).all(...values) as Record<string, unknown>[];
+    const after = this.db.query(afterSql).all(...values) as Record<string, unknown>[];
+    return { anchor, before: before.reverse().map(getRow), after: after.map(getRow) };
   }
 }
 
@@ -205,6 +308,7 @@ export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRo
     senderId: message.sender.id,
     senderName: message.sender.name ?? '',
     bot: message.targetBots.join(','),
+    mentionedBots: [...new Set(message.mentions.flatMap((mention) => mention.botNames))],
     text: message.text,
     at: message.createdAt,
   };
@@ -243,13 +347,29 @@ export function getReplyRow(request: protocolModule.ChannelReplyRequest): Channe
  * 本人（isHistoryOwner：不是外人、不在群里，飞书本人或本机网页、命令行）全都能查；别的只查快照里这个聊天。
  * @param session 调工具的会话。
  */
-function getAccess(session: Session): ChannelAccess {
+export function getAccess(session: Session): ChannelAccess {
   const snapshot = session.row.frontTask?.sourceSnapshot ?? session.row.activeSourceSnapshot;
   if (snapshot === undefined) return { full: false };
 
   //M 是不是本人（飞书本人、本机网页或命令行，且不在群里）交给渠道协议判断：本人哪个聊天都能查，别人只能查快照里这个聊天。
   const full = protocolModule.isHistoryOwner(snapshot);
-  return { full, channel: snapshot.channel, chat: snapshot.chatId };
+  return { full, channel: snapshot.channel, chat: snapshot.chatId, account: snapshot.accountId };
+}
+
+/** 按来源快照决定本轮能查的渠道、聊天和账号。 */
+export function getScope(args: Record<string, unknown>, access: ChannelAccess): ChannelScope {
+  //G 本人可以指定聊天，外人和群聊只能用这一轮快照里的范围。
+  const channel = textModule.getText(args, 'channel') || undefined;
+  const chat = textModule.getText(args, 'chat') || undefined;
+  if (access.full) return { channel, chat };
+
+  if (!access.channel || !access.chat || !access.account) throw new Error('这一轮没有来源聊天，查不了渠道消息');
+
+  const otherChannel = channel !== undefined && channel !== access.channel;
+  const otherChat = chat !== undefined && chat !== access.chat;
+  if (otherChannel || otherChat) throw new Error('这一轮说话的不是用户本人（或在群里），只能查这个聊天的消息');
+
+  return { channel: access.channel, chat: access.chat, account: access.account };
 }
 
 
@@ -261,11 +381,22 @@ function getAccess(session: Session): ChannelAccess {
  * @throws 认不出来时抛错。
  */
 function getTime(value: unknown, label: string): number | undefined {
-  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  if (value === undefined || value === '') return undefined;
+
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+
+  if (typeof value !== 'string') throw new Error(`${label} 要写日期或毫秒数`);
 
   //M 全是数字：当毫秒。
   const text = value.trim();
-  if (/^\d+$/u.test(text)) return Number(text);
+  if (text === '') return undefined;
+
+  if (/^\d+$/u.test(text)) {
+    const millis = Number(text);
+    if (Number.isSafeInteger(millis)) return millis;
+
+    throw new Error(`${label} 超出毫秒数范围`);
+  }
 
   const parsed = Date.parse(text.replace(' ', 'T'));
   if (Number.isNaN(parsed)) throw new Error(`${label} 要写成 2026-11-17 或 2026-11-17 08:30 这样的时间（或毫秒数）：${text}`);
@@ -279,7 +410,7 @@ function getTime(value: unknown, label: string): number | undefined {
  * @param args 参数：since、until、query、limit。
  * @param scope 渠道、聊天（调用方查过范围）。
  */
-function getQuery(args: Record<string, unknown>, scope: { channel?: string; chat?: string }): ChannelQuery {
+export function getQuery(args: Record<string, unknown>, scope: ChannelScope): ChannelQuery {
   //M 关键词参数按空白拆成几个词，每个词都要在正文里出现。
   const words = textModule.getText(args, 'query').split(/\s+/u).filter((word) => word !== '');
 
@@ -291,13 +422,11 @@ function getQuery(args: Record<string, unknown>, scope: { channel?: string; chat
   }
 
   //M 时间参数换成毫秒（认不出来抛错），连同调用方定好的渠道、聊天一起拼成查询。
-  return {
-    ...scope,
-    since: getTime(args['since'], 'since'),
-    until: getTime(args['until'], 'until'),
-    words,
-    limit,
-  };
+  const since = getTime(args['since'], 'since');
+  const until = getTime(args['until'], 'until');
+  if (since !== undefined && until !== undefined && since > until) throw new Error('since 不能晚于 until');
+
+  return { ...scope, since, until, words, limit };
 }
 
 
@@ -342,16 +471,21 @@ export function readEnabled(raw: unknown): boolean {
  * 挂上渠道消息索引：听两个渠道事件写索引，登记工具 channel_search，http 在就开 GET /api/memory/channel。memory 的 apply 调。
  * @param ctx memory 插件的 ctx。
  * @param index 索引。
+ * @param rust 渠道同步任务，缺省时只写本地索引。
  * 副作用：登记监听、工具、接口。
  */
-export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): void {
+export function applyChannelIndex(
+  ctx: cordis.Context, index: ChannelIndex, unified: Search, rust?: ChannelBackfill,
+): void {
   //M 用户的话：渠道先落盘再发 channel/message；记不上只打日志，不挡别人认领。
   ctx.on('channel/message', (message) => {
     try {
       const row = getMessageRow(message);
-      if (row !== undefined) {
-        index.add(row);
-      }
+      if (row === undefined) return;
+
+      //M 先持久化消息，再通知后台同步。Rust 慢或离线时不阻塞渠道。
+      index.add(row, true);
+      rust?.wake();
     } catch (error) {
       //G 记不进索引只打日志，不往外抛，别挡别人认领这条消息。
       console.error(`memory：渠道消息记不进索引：${textModule.getMessage(error)}`);
@@ -362,9 +496,11 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
   ctx.on('channel/reply', (request) => {
     try {
       const row = getReplyRow(request);
-      if (row !== undefined) {
-        index.add(row);
-      }
+      if (row === undefined) return;
+
+      //M 与入站共用持久化队列，重复回复沿用首次记下的正文和时间。
+      index.add(row, true);
+      rust?.wake();
     } catch (error) {
       //G 记不进索引只打日志，不往外抛，别挡回复发出去。
       console.error(`memory：机器人的回复记不进索引：${textModule.getMessage(error)}`);
@@ -390,42 +526,8 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
     },
     kinds: ['front', 'work'],
     run: (args, session) => {
-      //M 先算这一轮能查多大范围：本人全部，别人只能查来源快照里这个聊天。
-      const access = getAccess(session);
-
-      //M 渠道、聊天参数读成字符串；没写是 undefined（不限）。
-      let channel = textModule.getText(args, 'channel') || undefined;
-      let chat = textModule.getText(args, 'chat') || undefined;
-
-      //G 不是本人（或在群里）：只许这一轮这个聊天；写了别的直接拒。
-      if (!access.full) {
-        if (access.chat === undefined) throw new Error('这一轮没有来源聊天，查不了渠道消息');
-
-        const otherChannel = channel !== undefined && channel !== access.channel;
-        const otherChat = chat !== undefined && chat !== access.chat;
-        if (otherChannel || otherChat) throw new Error('这一轮说话的不是用户本人（或在群里），只能查这个聊天的消息');
-
-        channel = access.channel;
-        chat = access.chat;
-      }
-
-      //M 范围定好了，把时间、关键词、条数拼成查询，到表里查。
-      const query = getQuery(args, { channel, chat });
-      const rows = index.search(query);
-
-      //T 跟踪：查了一次渠道消息。
-      const vars = {
-        会话: session.id,
-        本人: access.full,
-        渠道: query.channel ?? '全部',
-        聊天: query.chat ?? '全部',
-        关键词: query.words.join(' '),
-        条数: rows.length,
-      };
-      //T 把这一次查的范围、关键词和命中条数发进跟踪。
-      ctx.emit('trace', 'ChannelIndex.search', '查渠道消息', 'SELECT memory_channel_messages', vars);
-
-      //M 命中的消息拼成一条一行的文字交回给模型。
+      //M 兼容原参数和文本格式，查询和权限交给统一检索。
+      const { rows, query } = unified.findChannel(args, session);
       return getResultText(rows, query);
     },
   });
@@ -441,6 +543,10 @@ export function applyChannelIndex(ctx: cordis.Context, index: ChannelIndex): voi
         };
         //M 接口的关键词参数叫 q，换成工具用的 query 再拼查询；范围不限制（本人全量）。
         const query = getQuery({ ...params, query: params['q'] }, scope);
+        const id = textModule.getText(params, 'id');
+        if (id !== '') return index.context(id, query);
+
+        //M 常规接口保留按关键词和时间查消息的回执。
         return { hits: index.search(query) };
       } catch (error) {
         //G 参数写错（比如时间认不出来）回 400 并带原因。

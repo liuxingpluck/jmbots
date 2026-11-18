@@ -16,7 +16,7 @@
  * 记录：工作区的 .dispatch/<任务号>/dsh.json（DSH 会话号、发过的 requestId、模型和档）。同一个任务号接着用同一场 DSH 会话；
  *   换模型、换档就换个任务号开新的一场。交没交上说不清时，原样重发同一份任务书会沿用原来的 requestId，DSH 不会派两次。
  * 只认 settings.json 登记过的工作区（和当前目录精确相同）：别的目录跑回 workspace_mismatch，不回退到默认工作区。
- * 设计：docs/开发进度/前台派后台和技能_细节_Codex_20261117.md 第五节。
+ * 设计见 src7/plugins/skills/说明.md 的「设计要点」一节（DSH 技能）。
  */
 import * as childProcess from 'node:child_process';
 import * as crypto from 'node:crypto';

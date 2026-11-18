@@ -28,6 +28,8 @@ interface ViewProps {
   tasks: captureModule.TaskCaption[];
   /** 使用模拟转写时提醒这不是麦克风识别结果。 */
   simulated?: boolean;
+  /** 当前连接中各语音阶段实际使用的线路。 */
+  routes?: Partial<Record<captureModule.VoiceStage, captureModule.VoicePlace>>;
   /** 不能开始或连接失败的提示码。 */
   error?: string;
   /** 用户点击了开始或停止。 */
@@ -35,6 +37,13 @@ interface ViewProps {
   /** 使用网页当前语言。 */
   t: i18n.Translate;
 }
+
+const ROUTE_LABELS = [
+  ['asr', '转写'],
+  ['tts', '合成'],
+  ['judge', '理解'],
+  ['turn', '断句'],
+] as const;
 
 /** 按 antd 当前主题渲染控制、状态和字幕；不操作浏览器设备。 */
 export function VoiceBarView(props: ViewProps): react.JSX.Element {
@@ -70,6 +79,7 @@ export function VoiceBarView(props: ViewProps): react.JSX.Element {
     const messages: Record<string, string> = {
       'voice-disabled': t('语音听写未启用'),
       'asr-model-missing': t('本地转写还没装好'),
+      'asr-cloud-unconfigured': t('云端转写需要配置地址和密钥'),
       'websocket-missing': t('语音服务缺少 WebSocket 依赖'),
       'asr-failed': t('语音转写失败'),
       'voice-no-bot': t('没有选定接收语音任务的机器人'),
@@ -117,6 +127,16 @@ export function VoiceBarView(props: ViewProps): react.JSX.Element {
         {props.simulated && (
           <antd.Typography.Text type="secondary">{t('模拟听写')}</antd.Typography.Text>
         )}
+        {ROUTE_LABELS.map(([stage, title]) => {
+          const place = props.routes?.[stage];
+          if (place === undefined) return null;
+
+          let route = t('本地');
+          if (place === 'cloud') {
+            route = t('云端');
+          }
+          return <antd.Tag key={stage}>{t(title)} · {route}</antd.Tag>;
+        })}
       </antd.Flex>
       {showCaptions && (
         <div
@@ -164,6 +184,7 @@ export function VoiceBar(props: VoiceBarProps): react.JSX.Element | null {
   const [tasks, setTasks] = react.useState<captureModule.TaskCaption[]>([]);
   const [error, setError] = react.useState<string>();
   const [simulated, setSimulated] = react.useState(false);
+  const [routes, setRoutes] = react.useState<ViewProps['routes']>();
   const running = react.useRef<captureModule.VoiceCapture | undefined>(undefined);
 
   //M 页面就绪时读取实际后端路径；离开、断线时取消查询并关闭麦克风。
@@ -210,6 +231,7 @@ export function VoiceBar(props: VoiceBarProps): react.JSX.Element | null {
     setTasks([]);
     setError(undefined);
     setSimulated(false);
+    setRoutes(undefined);
     setPhase('connecting');
     const capture = new captureModule.VoiceCapture(status.wsPath, props.bot, (update) => {
       if (running.current !== capture) return;
@@ -227,6 +249,16 @@ export function VoiceBar(props: VoiceBarProps): react.JSX.Element | null {
         setTasks((list) => [...list, update.task].slice(-5));
         return;
       }
+      if (update.kind === 'route') {
+        if (update.stage === 'asr' && update.place === undefined) {
+          //G 已退出的转写线路不再留下临时字幕。
+          setPartial('');
+        }
+
+        //M 各阶段独立更新，云端理解不覆盖本地转写标记。
+        setRoutes((current) => ({ ...current, [update.stage]: update.place }));
+        return;
+      }
       setPartial('');
       const caption = { seq: update.seq, text: update.text };
       setFinals((list) => [...list, caption].slice(-3));
@@ -236,6 +268,7 @@ export function VoiceBar(props: VoiceBarProps): react.JSX.Element | null {
       running.current = undefined;
       setPartial('');
       setError(message);
+      setRoutes(undefined);
       let next: Phase = 'idle';
       if (message !== undefined) {
         next = 'error';
@@ -254,6 +287,7 @@ export function VoiceBar(props: VoiceBarProps): react.JSX.Element | null {
       tasks={tasks}
       available={status.available && props.online}
       simulated={simulated}
+      routes={routes}
       error={error ?? status.error?.code}
       toggle={toggle}
       t={t}

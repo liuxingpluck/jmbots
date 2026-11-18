@@ -3,6 +3,7 @@
  * 直接从骨架源码的注释、事件声明与导出的类/函数提取说明与「代码」索引（不额外新建 说明.md）。
  */
 import * as path from 'node:path';
+import * as sourceDirModule from '../../utils/SourceDir.ts';
 import * as versionsModule from '../../utils/Versions.ts';
 import type { FunctionItem } from './Code.ts';
 import * as sourceModule from './Source.ts';
@@ -79,13 +80,22 @@ interface ConfigFieldInfo {
 }
 
 
+/** 源码根目录前缀（src7/utils/SourceDir.ts），骨架文件路径都从它拼。 */
+const ROOT = sourceDirModule.SOURCE_PREFIX;
+
+/** 骨架工具层目录前缀，如 src7/utils/。 */
+const UTILS = `${ROOT}utils/`;
+
+/** 源码根目录下的目录说明（每个文件干什么）。 */
+const README = `${ROOT}README.md`;
+
 /** 四个系统骨架模块（顺序对齐启动流程泳道与依赖层级）。 */
 export const SKELETON_SPECS: readonly SkeletonSpec[] = [
-  { name: 'main', file: 'src7/Main.ts', inject: ['resources', 'tools', 'sessions'], includeUtils: true },
-  { name: 'resources', file: 'src7/Resources.ts', inject: [], includeUtils: false },
-  { name: 'tools', file: 'src7/Tools.ts', inject: [], includeUtils: false },
-  { name: 'sessions', file: 'src7/Sessions.ts', inject: ['resources', 'tools'], includeUtils: false },
-  { name: 'channels', file: 'src7/Channels.ts', inject: [], includeUtils: false },
+  { name: 'main', file: `${ROOT}Main.ts`, inject: ['resources', 'tools', 'sessions'], includeUtils: true },
+  { name: 'resources', file: `${ROOT}Resources.ts`, inject: [], includeUtils: false },
+  { name: 'tools', file: `${ROOT}Tools.ts`, inject: [], includeUtils: false },
+  { name: 'sessions', file: `${ROOT}Sessions.ts`, inject: ['resources', 'tools'], includeUtils: false },
+  { name: 'channels', file: `${ROOT}Channels.ts`, inject: [], includeUtils: false },
 ];
 
 /** 快速查询表：模块名 → 骨架规格。 */
@@ -301,7 +311,7 @@ export async function getSkeletonFunctions(name: string, source: sourceModule.So
   //M main 一并汇总骨架 utils/ 下各工具模块顶层导出的函数与类。
   const allFiles = await source.getSourceFiles();
   for (const file of allFiles) {
-    if (!file.startsWith('src7/utils/')) continue;
+    if (!file.startsWith(UTILS)) continue;
 
     //M 逐个读取 utils 模块，抽出顶层 export function / class 附入清单。
     const utilLines = await source.read(file);
@@ -528,7 +538,7 @@ async function readArchNote(
   basename: string,
 ): Promise<{ fileNote: string; utilNotes: string[] }> {
   //M 按缓存读取 src7/README.md 并切出目录说明段落。
-  const readmeLines = await source.read('src7/README.md');
+  const readmeLines = await source.read(README);
   if (readmeLines === undefined) return { fileNote: '', utilNotes: [] };
 
   let fileNote = '';
@@ -592,11 +602,11 @@ export async function getSkeletonReadme(
     introParts.push(introBody);
   }
   if (arch.fileNote !== '') {
-    introParts.push(`架构角色（\`src7/README.md\`）：\`${arch.fileNote}\``);
+    introParts.push(`架构角色（\`${README}\`）：\`${arch.fileNote}\``);
   }
   introParts.push(`源码位置：\`${spec.file}:1\`（系统自带骨架模块，本说明从源码注释实时提取）。`);
   if (spec.includeUtils && arch.utilNotes.length > 0) {
-    introParts.push(`包含基础设施工具层（\`src7/utils/\`）：\n${arch.utilNotes.map((row) => `- \`${row}\``).join('\n')}`);
+    introParts.push(`包含基础设施工具层（\`${UTILS}\`）：\n${arch.utilNotes.map((row) => `- \`${row}\``).join('\n')}`);
   }
 
   //M 组装「依赖」段落正文（标签胶囊由前端 OverviewTab 按 plugin.inject 自动渲染）。
@@ -636,7 +646,7 @@ export async function getSkeletonReadme(
     //M 对 main 额外扫描 src7/utils/*.ts，把共用导出工具收进「对外函数」分栏。
     const allFiles = await source.getSourceFiles();
     for (const file of allFiles) {
-      if (!file.startsWith('src7/utils/')) continue;
+      if (!file.startsWith(UTILS)) continue;
 
       //M 读取单个工具文件并追加其顶层 export 符号。
       const utilLines = await source.read(file);
@@ -681,11 +691,14 @@ export async function getSkeletonReadme(
     configBody = ['| 字段 | 位置 | 说明 |', '|---|---|---|', ...rows].join('\n');
   }
   if (name === 'main') {
+    //M 入口参数和 config.yaml 的校验都在骨架工具层的 Checks.ts。
+    const checks = `${UTILS}Checks.ts`;
+    const argsCell = '`--data` / `--runtime` / `--mode candidate` / `--port`';
     configBody = [
       '| 入口参数 / 配置校验 | 位置 | 说明 |',
       '|---|---|---|',
-      '| CLI `--data` / `--runtime` / `--mode candidate` / `--port` | src7/utils/Checks.ts:68 | 启动参数由 `checkArgs` 一次校验并交由 `Main.ts` 分发 |',
-      '| `config.yaml` 顶层字段 | src7/utils/Checks.ts:1 | 命令行与 `config.yaml` 全局骨架配置统一由 `utils/Checks.ts` 校验 |',
+      `| CLI ${argsCell} | ${checks}:51 | 启动参数由 \`checkArgs\` 一次校验并交由 \`Main.ts\` 分发 |`,
+      `| \`config.yaml\` 顶层字段 | ${checks}:121 | \`config.yaml\` 骨架用到的那几项由 \`checkConfig\` 一次校验，插件自己的配置段由插件校验 |`,
     ].join('\n');
   }
 

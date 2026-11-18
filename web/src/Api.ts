@@ -1005,58 +1005,56 @@ export async function waitNewProcess(startedAt: number): Promise<boolean> {
 }
 
 
-/** 记忆搜索的一条命中（壳子 /search，memorycli 那一套）。 */
+/** 统一记忆搜索的一条命中。 */
 export interface MemoryHit {
-  /** 哪个库。 */
-  lib?: string;
-  /** 相对库根目录的路径。 */
-  path: string;
-  /** 绝对路径（库里记着根目录时才有）。 */
-  abs_path?: string;
-  /** RRF 融合后的分数。 */
-  score: number;
-  /** 哪几路命中：text、symbol、tag、path（配了嵌入模型还有 vector）。 */
-  matched: string[];
-  /** AI 摘要。 */
-  summary?: string;
-  /** 标签。 */
-  tags: string[];
-  /** 命中的片段。 */
-  snippets: { start_line: number; end_line: number; title: string; text: string }[];
-}
-
-
-/** RAG 检索的一条：一个片段（壳子 /rag/search）。 */
-export interface RagHit {
-  /** 哪个库。 */
-  lib: string;
-  /** 相对库根目录的路径。 */
-  path: string;
-  /** 绝对路径。 */
-  abs_path?: string;
-  /** 块的标题。 */
+  /** 命中来源。 */
+  source: 'history' | 'channel' | 'knowledge' | 'card';
+  /** 来源内的编号。 */
+  id: string;
+  /** 标题或发言人。 */
   title: string;
-  /** 行号。 */
-  start_line: number;
-  end_line: number;
-  /** 正文片段。 */
-  text: string;
-  /** BM25 分数。 */
+  /** 正文摘要。 */
+  snippet: string;
+  /** RRF 归一化分数。 */
   score: number;
+  /** 毫秒时间戳。 */
+  at: number;
+  /** 原文引用。 */
+  ref: string;
+  /** 命中通路，如 keyword、vector、graph。 */
+  via: string[];
+  /** 客户号。 */
+  customer: string;
+  /** 关联机器人。 */
+  bot: string;
+  /** 可以在编辑器中打开的原文件。 */
+  file?: string;
+  /** 原文件内的位置。 */
+  where?: string;
+  /** 原文件不可直接打开时的可读出处。 */
+  origin?: string;
+  /** 命中段落的关系。 */
+  relations?: string[];
 }
 
 
-/** 记忆健康/库清单（兼容新版 jmbots-memory 与旧版 memorycli）。 */
+/** Rust 记忆服务状态与统计。 */
 export interface MemoryHealth {
-  /** 旧版 memorycli 的库清单。 */
-  libs?: { name: string; root?: string | null }[];
-  /** 新版服务名（jmbots-memory）。 */
+  /** 服务名（jmbots-memory）。 */
   service?: string;
   /** 服务版本号。 */
   version?: string;
   /** 服务是否健康。 */
   ok?: boolean;
-  /** 新版统计计数。 */
+  /** 探活失败原因。 */
+  error?: string;
+  /** 探测经过的毫秒数。 */
+  ms?: number;
+  /** 服务使用的抽图模型。 */
+  extractModel?: string;
+  /** 嵌入模型就绪状态。 */
+  embedding?: { model?: string; ready?: boolean };
+  /** 服务统计。 */
   counts?: {
     customers?: number;
     docs?: number;
@@ -1065,107 +1063,80 @@ export interface MemoryHealth {
     relations?: number;
     history?: number;
     knowledge?: number;
+    graphDone?: number;
+    graphPending?: number;
+    graphFailed?: number;
+    graphSkipped?: number;
   };
 }
 
 
-/** 记忆库的状态与清单（/api/memory/health）。 */
-export function memoryLibs(): Promise<MemoryHealth> {
-  //M 查询记忆服务的健康状态与库列表，供右栏记忆页判断当前后端形态并展示库概览。
+/** 记忆插件直接探测 Rust 记忆服务，供右栏显示统计。 */
+export function memoryHealth(): Promise<MemoryHealth> {
+  //M 从 memory 插件读取 Rust 探活和计数。
   return getJson('/api/memory/health');
 }
 
+/** 渠道归档回填状态，已入库以 Rust 回执为准。 */
+export interface MemoryBackfill {
+  /** 已完成 Rust 写入的消息数。 */
+  done: number;
+  /** 当前已发现的手机、网页及命令行消息数。 */
+  total: number;
+  /** 用户是否要求回填继续运行。 */
+  running: boolean;
+  /** 是否仍在发现归档，发现期间总数会增加。 */
+  scanning: boolean;
+  /** 暂停、等待或完成的具体原因。 */
+  reason: string;
+}
 
-/** 图谱/公共知识库检索命中条（/api/memory-graph/search）。 */
-export interface MemoryGraphSearchHit {
-  /** 文档段落号。 */
-  id: number;
-  /** 标题或出处。 */
-  title: string;
-  /** 片段正文。 */
-  snippet: string;
-  /** 相关度分数。 */
-  score: number;
-  /** 命中路数（keyword / vector / graph）。 */
-  via: string[];
-  /** 范围（knowledge / history）。 */
-  scope: string;
-  /** 原文件路径（知识库文件时可有）。 */
-  file?: string;
-  /** 段落定位。 */
-  where?: string;
-  /** 原始来源标识。 */
-  source?: string;
-  /** 命中的关系摘要。 */
-  relations?: string[];
+/** 读渠道回填状态。 */
+export function memoryBackfill(signal: AbortSignal): Promise<MemoryBackfill> {
+  const options = { signal };
+  //M 使用与同页记忆接口一致的鉴权和错误包装。
+  return getJson('/api/memory/backfill', options);
+}
+
+/** 按用户选择开始或暂停渠道历史回填。 */
+export function setMemoryBackfill(running: boolean): Promise<MemoryBackfill> {
+  const body = { running };
+  //M 服务端写入断点后返回新状态。
+  return sendJson('/api/memory/backfill', 'POST', body);
+}
+
+
+/** 统一记忆搜索结果，图谱开启且查到关系时可带命中子图。 */
+export interface MemorySearchResult {
+  /** 相关片段。 */
+  hits: MemoryHit[];
+  /** 未能响应的来源。 */
+  unavailable: MemoryHit['source'][];
+  /** 根据权限或范围跳过的来源。 */
+  skipped: MemoryHit['source'][];
+  /** 检索中的提示。 */
+  warnings: string[];
+  /** 本次使用的检索方式。 */
+  mode: string;
+  /** 关系三元组。 */
+  relations: string[];
+  /** 问题里匹配的实体。 */
+  queryEntities: string[];
+  /** 毫秒耗时。 */
+  total_ms: number;
+  /** 用于显示命中多跳路径的子图。 */
+  graph?: import('./Graph/GraphApi.ts').Found['graph'];
 }
 
 
 /**
- * 从记忆关系图接口检索公共知识库（不传客户只查公共知识库，遵守客户隔离）。
- * @param query 查询词。
- * @param limit 最多返回条数。
+ * 统一记忆搜索，参数由发起查询的页面按所选来源和范围提供。
+ * @param params 查询串，q 必填，sources、mode、customer、bot 等可选。
  */
-export function memoryGraphKnowledgeSearch(query: string, limit = 10): Promise<{ hits: MemoryGraphSearchHit[] }> {
-  const params = new URLSearchParams({
-    q: query,
-    mode: 'hybrid',
-    knowledge: '1',
-    limit: String(limit),
-  });
-  //M 以混合检索方式只查公共知识库（不传客户参数以保隔离），取回匹配片段与关系摘要。
-  return getJson(`/api/memory-graph/search?${params.toString()}`);
-}
-
-
-/**
- * 记忆搜索。
- * @param query 搜什么。
- * @param libs 只搜这几个库（空是全部）。
- * @param limit 最多几个文件。
- */
-export function memorySearch(query: string, libs: string[], limit = 10): Promise<{ hits: MemoryHit[] }> {
-  /** 查询参数。 */
-  const params = new URLSearchParams({ q: query, limit: String(limit) });
-  if (libs.length > 0) {
-    params.set('lib', libs.join(','));
-  }
-
-  //M 向记忆搜索接口提交关键词与限定库名，拿回命中的记忆文档及上下文片段。
-  return getJson(`/api/memory/search?${params.toString()}`);
-}
-
-
-/**
- * RAG 检索。
- * @param query 搜什么。
- * @param libs 只搜这几个库（空是全部）。
- * @param limit 最多几条。
- */
-export function ragSearch(query: string, libs: string[], limit = 10): Promise<{ hits: RagHit[]; not_indexed: string[] }> {
-  /** 查询参数。 */
-  const params = new URLSearchParams({ q: query, limit: String(limit) });
-  if (libs.length > 0) {
-    params.set('lib', libs.join(','));
-  }
-
-  //M 发起 RAG 段落检索，取回匹配文本块及尚未建索引的库列表提示用户建索引。
-  return getJson(`/api/rag/search?${params.toString()}`);
-}
-
-
-/**
- * 给几个库建 RAG 索引（后台跑，马上返回）。
- * @param libs 库名（空是全部）。
- */
-export function ragIndex(libs: string[]): Promise<{ started: string[]; already_running: string[] }> {
-  const body: { lib?: string } = {};
-  if (libs.length > 0) {
-    body.lib = libs.join(',');
-  }
-
-  //M 触发后台为指定或全部记忆库重建 RAG 索引，马上拿回已启动和正在运行中的库名。
-  return sendJson('/api/rag/index', 'POST', body);
+export function memorySearch(params: URLSearchParams): Promise<MemorySearchResult> {
+  //M 记忆和图谱页面都从同一入口拿各路结果。
+  const query = params.toString();
+  return getJson<MemorySearchResult>(`/api/memory/search?${query}`);
 }
 
 

@@ -22,8 +22,8 @@ export const MEMORY_STEPS: GuideStep[] = [
     side: 'bottom',
     title: { 'zh-CN': '服务状态', en: 'Service status' },
     description: {
-      'zh-CN': '上面一排是实时状态：记忆服务和 vgr 是否在线、一共多少段、多少段已经做了向量。每 10 秒自动刷新。',
-      en: 'Live status: whether the memory service and vgr are online, how many passages exist and how many are embedded. Refreshes every 10 seconds.',
+      'zh-CN': '上面一排显示记忆服务是否在线、片段总数和已嵌入向量的数量，每 10 秒刷新。',
+      en: 'Memory service status, total passages, and embedded passages. Refreshes every 10 seconds.',
     },
   },
   {

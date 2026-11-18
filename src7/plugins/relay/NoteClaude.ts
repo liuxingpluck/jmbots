@@ -1,8 +1,8 @@
 /**
  * 工具 note_claude：给 Claude（帮用户写 jmbots 代码的 AI）留言，在 integrations/claude/inbox/ 写一个 md 文件。
  * Claude 那边用 ztools/claude-link/Claude_Link.mjs 自己来取（文件名要以 20 位时刻开头，它才排得对先后）。不读、不等回复、不通知谁。
- * 照 0.4 src/capabilities/tools/Tools.ts:601-611、1543-1564。设计：docs/src7插件设计/note-claude.md。
- * 11-17 由原 note-claude 插件挪进 relay（外部助手的交办、收件、回信归一处）：relay 的 apply 调 applyNoteClaude；工具名、文件夹都没改。
+ * 照 0.4 src/capabilities/tools/Tools.ts:601-611、1543-1564。设计见同目录 说明.md 的「设计要点」一节。
+ * relay 的 apply 调 applyNoteClaude。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

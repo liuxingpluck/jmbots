@@ -17,7 +17,7 @@ use windows_sys::Win32::System::StationsAndDesktops::{
     CloseDesktop, DESKTOP_READOBJECTS, GetUserObjectInformationW, OpenInputDesktop, UOI_NAME,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetThreadDpiAwarenessContext,
@@ -26,7 +26,7 @@ use windows_sys::Win32::UI::Shell::{
     QUNS_NOT_PRESENT, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GA_ROOT, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+    GA_ROOT, GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, MONITORINFOF_PRIMARY,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, WindowFromPhysicalPoint,
 };
 
@@ -262,6 +262,17 @@ fn read_process(pid: u32) -> Result<(String, u64), Denial> {
 pub(super) fn foreground() -> Result<WindowInfo, Rejected> {
     check_desktop()?;
     let hwnd = unsafe { GetForegroundWindow() };
+    read_window(hwnd, false)
+}
+
+/// 仅允许独立探针选择本进程在副屏创建的专用窗口。
+pub(super) fn probe_window(handle: usize) -> Result<WindowInfo, Rejected> {
+    check_desktop()?;
+    let hwnd = handle as HWND;
+    read_window(hwnd, true)
+}
+
+fn read_window(hwnd: HWND, probe: bool) -> Result<WindowInfo, Rejected> {
     if hwnd.is_null() { return Err(Denial::UnknownWindow.into()); }
     let visible = unsafe { IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 };
     if !visible { return Err(Denial::UnknownWindow.into()); }
@@ -269,6 +280,9 @@ pub(super) fn foreground() -> Result<WindowInfo, Rejected> {
     let mut pid = 0;
     if unsafe { GetWindowThreadProcessId(hwnd, &mut pid) } == 0 || pid == 0 {
         return Err(Denial::UnknownProcess.into());
+    }
+    if probe && pid != unsafe { GetCurrentProcessId() } {
+        return Err(Denial::UnknownWindow.into());
     }
     let (process, started) = read_process(pid)?;
     let with_process = |reason| Rejected { reason, process: Some(process.clone()) };
@@ -292,15 +306,29 @@ pub(super) fn foreground() -> Result<WindowInfo, Rejected> {
     if got < count || got == cap - 1 { return Err(with_process(Denial::UnknownWindow)); }
     let title = String::from_utf16_lossy(&title[..got as usize]);
     check_window(&process, &title, fullscreen).map_err(with_process)?;
+    if probe && (!title.starts_with("积木AI 录屏探针") || !in_secondary(hwnd, rect)) {
+        return Err(with_process(Denial::UnknownWindow));
+    }
 
     let dpi = unsafe { GetDpiForWindow(hwnd) };
-    if dpi == 0 || unsafe { GetForegroundWindow() } != hwnd {
+    if dpi == 0 || (!probe && unsafe { GetForegroundWindow() } != hwnd) {
         return Err(with_process(Denial::WindowChanged));
     }
 
     let key = WindowKey { hwnd: hwnd as usize, pid, started, rect, dpi };
     let observed_at_ms = super::unix_ms();
     Ok(WindowInfo { key, process, title, observed_at_ms })
+}
+
+fn in_secondary(hwnd: HWND, rect: Rect) -> bool {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if monitor.is_null() || unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return false;
+    }
+    let bounds = info.rcMonitor;
+    info.dwFlags & MONITORINFOF_PRIMARY == 0 && rect.left >= bounds.left && rect.top >= bounds.top
+        && rect.right <= bounds.right && rect.bottom <= bounds.bottom
 }
 
 /// DWM 边界为物理像素，比较所在显示器的完整矩形和系统全屏状态。

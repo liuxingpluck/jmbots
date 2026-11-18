@@ -3,7 +3,7 @@
  * 先发 approval/request（action: review）请审核插件审（规则 → decision → 审核小会话 → 问用户），放行才交给 exec.run 跑；
  * 没挂 approval、超时一律拒绝（requestReview）。写了 ask_user: true 的，放不了行就去问用户，同意了再跑；没写的直接拒绝（照 0.4）。
  * 跑的时候输出攒在内存，查一条能看结尾；跑完整段输出存进表 runs。程序重启时没跑完的记成失败。
- * 照 0.4 src/executors/Runs.ts、src/channels/Http.ts:646-716。设计：docs/src7插件设计/runs.md。
+ * 照 0.4 src/executors/Runs.ts、src/channels/Http.ts:646-716。设计见同目录 说明.md 的「设计要点」一节（runs）。
  */
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';

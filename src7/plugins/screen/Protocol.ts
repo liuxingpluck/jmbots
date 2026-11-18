@@ -1,5 +1,7 @@
 /** screen v1 的配置和 HTTP 输入边界：校验原始数据，并准备私有模型请求。 */
 
+import * as analysis from './Analysis.ts';
+
 export const VERSION = 1;
 export const LEASE_MS = 10_000;
 export const STATE_LIMIT = 16 * 1024;
@@ -9,6 +11,7 @@ const IMAGE_LIMIT = 256 * 1024;
 const IMAGE_WIDTH = 1280;
 const IMAGE_HEIGHT = 720;
 const MIB = 1024 * 1024;
+const DEFAULT_MODEL = 'magpie/xiaomi/mimo-v2.6-flash';
 const PROCESSES = [
   'WeChat.exe', 'Weixin.exe', 'WeChatAppEx.exe', 'KeePass.exe', 'KeePassXC.exe',
   '1Password.exe', 'Bitwarden.exe',
@@ -117,7 +120,10 @@ export interface ClickIdentity extends Identity {
   seq: number;
 }
 
-export type PresentedInput = Omit<ClickIdentity, 'seq'>;
+export interface PresentedInput extends Omit<ClickIdentity, 'seq'> {
+  /** 流式讲解已显示的连续片段号，旧客户端省略时确认全文。 */
+  segment?: number;
+}
 
 /** 已验证的点击和仅用于本次模型调用的输入。 */
 export interface ClickInput extends ClickIdentity {
@@ -127,6 +133,8 @@ export interface ClickInput extends ClickIdentity {
   contextText: string;
   /** 经验证的临时 JPEG base64。 */
   image: string | null;
+  /** 只含安全的固定用途标签，触发后台观察时使用。 */
+  cues: analysis.Cues;
 }
 
 interface Point {
@@ -374,13 +382,14 @@ export function getClickInput(
   body: Record<string, unknown>,
   identity: ClickIdentity,
   config: ScreenConfig,
+  observation = false,
 ): ClickInput {
   //G 校验版本和点击坐标。有些观测字段只验证，不向下传。
   checkVersion(body['protocolVersion']);
   const clickedAtMs = getNumber(body['clickedAtMs'], 0, Number.MAX_SAFE_INTEGER);
   getNumber(body['ageAtSendMs'], 0, 1500);
   const button = body['button'];
-  if (button !== 'left' && button !== 'right') {
+  if ((!observation || button !== undefined) && button !== 'left' && button !== 'right') {
     throw new ScreenError('invalid_request');
   }
 
@@ -439,19 +448,43 @@ export function getClickInput(
   //M 只提取模型所需的界面文字及图片内相对位置。
   const controlName = clean(name);
   const controlType = clean(type);
+  const safeTitle = clean(title);
   if (image === undefined && controlName === '' && controlType === '') {
     throw new ScreenError('no_evidence');
   }
   const windowKey = JSON.stringify([pid, startedAt, windowId, windowRect, monitorId, monitorRect, dpiX, dpiY]);
+  let clickButton: unknown;
+  if (!observation) {
+    clickButton = button;
+  }
+  const controlLabel = controlName + ' ' + controlType;
+  //M 决策只拿固定标签，独立于多模态的私有上下文。
+  const cues = analysis.getCues(processName, safeTitle, controlLabel);
   const contextText = JSON.stringify({
     processName,
-    title: clean(title),
+    title: safeTitle,
     controlName,
     controlType,
-    button,
+    button: clickButton,
     clickInImage: image?.point,
   });
-  return { ...identity, windowKey, contextText, image: image?.data ?? null };
+  return { ...identity, windowKey, contextText, image: image?.data ?? null, cues };
+}
+
+/** 从呈现确认读出当前回执的身份，正文由服务端内存提供。 */
+export function getPresentedInput(value: unknown): PresentedInput {
+  //G 先验证信封，再取当前命中的点击回执标识。
+  const body = getRecord(value);
+  //G 禁止通过呈现请求注入正文或绕过协议版本。
+  checkVersion(body['protocolVersion']);
+  const identity = getIdentity(body);
+  const clickId = getId(body['clickId']);
+  const rawSegment = body['segment'];
+  if (rawSegment === undefined) return { ...identity, clickId };
+
+  //G 流式讲解最多分为先显示的分句及剩余文字。
+  const segment = getNumber(rawSegment, 1, 2);
+  return { ...identity, clickId, segment };
 }
 
 /** 读取 screen 段，默认关闭。配置错误仅报告字段，返回后端需要的字段。 */
@@ -487,7 +520,7 @@ export function getConfig(value: unknown): ScreenConfig {
   };
 
   const configuredModel = body['model'];
-  let model = '';
+  let model = DEFAULT_MODEL;
   if (configuredModel !== undefined) {
     if (typeof configuredModel !== 'string') {
       throw new Error('screen.model 要是字符串');

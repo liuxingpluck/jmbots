@@ -4,7 +4,7 @@
  * 文件名是 config.yaml、secrets.yaml、.env* 的永远不给，列目录时也不列。
  * 上传先放 data/tmp/uploads/<上传号>_<文件名>；web-api 发话时按上传号找到它、搬进机器人工作区。
  * 两个插件不互相调用，只共用这个目录。
- * 设计：docs/src7插件设计/files-api.md。
+ * web 内的文件接口子模块，由 web.apply 在 HTTP 就绪后创建，不另登记插件或服务。
  */
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -15,15 +15,6 @@ import type * as fastify from 'fastify';
 import * as mime from '../../utils/Mime.ts';
 import * as text from '../../utils/Text.ts';
 import * as failureModule from '../../utils/Failure.ts';
-
-
-/** 插件名。 */
-export const name = 'files-api';
-//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.1';
-
-/** 用到的服务：http 的 app 登记接口；resources 拿运行时目录。 */
-export const inject = ['http', 'resources'];
 
 
 /** 任何情况下都不给看的文件名。 */
@@ -43,7 +34,7 @@ interface ByteRange {
 
 
 /** 文件接口。 */
-class FilesApi {
+export class FilesApi {
   /** 运行时目录。 */
   private readonly root: string;
 
@@ -68,6 +59,7 @@ class FilesApi {
       scope.addContentTypeParser('*', (_request, payload, done) => {
         done(null, payload);
       });
+      //M 上传接口只使用这个子作用域的原始流解析器，不影响外面的 JSON 接口。
       scope.put<{ Params: { name: string } }>('/api/uploads/:name', (request, reply) => {
         const body = request.body as NodeJS.ReadableStream | undefined;
         return this.answer(reply, () => this.upload(request.params.name, body));
@@ -191,7 +183,9 @@ class FilesApi {
     //G 先校验并规范化路径，再确认目标存在且是普通文件，不是则抛 404。
     const file = this.resolve(value);
     const stat = await fsp.stat(file).catch(() => undefined);
-    if (stat?.isFile() !== true) throw new failureModule.Failure(404, `没有这个文件：${file}`);
+    if (stat?.isFile() !== true) {
+      throw new failureModule.Failure(404, `没有这个文件：${file}`);
+    }
 
     //M 解析 Range 请求头并设置响应头与 MIME 类型，范围非法时直接回 416。
     const range = this.range(request.headers.range, stat.size);
@@ -221,7 +215,9 @@ class FilesApi {
     //G 校验目录路径在允许范围内并读出目录项，打不开时抛 404。
     const dir = this.resolve(value);
     const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => undefined);
-    if (entries === undefined) throw new failureModule.Failure(404, `没有这个目录：${dir}`);
+    if (entries === undefined) {
+      throw new failureModule.Failure(404, `没有这个目录：${dir}`);
+    }
 
     //M 每项 stat 一次；stat 不出来（比如坏掉的链接）大小、修改时间记 0。
     const shown = entries.filter((entry) => !SECRET_FILES.test(entry.name));
@@ -249,11 +245,15 @@ class FilesApi {
    */
   private resolve(value: unknown): string {
     //G 入口路径必须是非空绝对路径，否则直接按 400 拒绝。
-    if (typeof value !== 'string' || !path.isAbsolute(value)) throw new failureModule.Failure(400, 'path 要是绝对路径');
+    if (typeof value !== 'string' || !path.isAbsolute(value)) {
+      throw new failureModule.Failure(400, 'path 要是绝对路径');
+    }
 
     //G 密钥文件任何情况下都不给。
     const target = path.resolve(value);
-    if (SECRET_FILES.test(path.basename(target))) throw new failureModule.Failure(403, '这个文件不给看');
+    if (SECRET_FILES.test(path.basename(target))) {
+      throw new failureModule.Failure(403, '这个文件不给看');
+    }
 
     //G 要在四个目录之一里面（含目录本身）：path.relative 不往上走、也不是另一个盘。
     const inside = this.roots.some((root) => {
@@ -261,7 +261,9 @@ class FilesApi {
       return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
     });
     //G 路径落到允许的四个根目录之外时拒绝访问（403），防止越权读盘。
-    if (!inside) throw new failureModule.Failure(403, `不在能看的范围里（运行时目录的 bots、skills、memory、knowledge）：${target}`);
+    if (!inside) {
+      throw new failureModule.Failure(403, `不在能看的范围里（运行时目录的 bots、skills、memory、knowledge）：${target}`);
+    }
 
     return target;
   }
@@ -293,14 +295,3 @@ class FilesApi {
   }
 }
 
-
-/**
- * 挂上文件接口。
- * apply 是 Cordis 插件的入口：inject 里的 http、resources 都就绪后 Cordis 调一次。没有配置。
- * @param ctx Cordis 给这个插件的 ctx。
- * 副作用：创建 FilesApi 并在 ctx.http.app 上登记 PUT /api/uploads/:name、GET /api/files、GET /files/*、GET /api/files/list。
- */
-export function apply(ctx: cordis.Context): void {
-  //M 实例化 FilesApi，向 Fastify 注册文件上传、读取与列目录接口。
-  new FilesApi(ctx);
-}

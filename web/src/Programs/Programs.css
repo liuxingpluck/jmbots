@@ -1,0 +1,12 @@
+/* 复用主站顶栏深色按钮，仅给程序商业授权加一枚低对比小标签。 */
+.jm-program-link {
+  gap: 0.35rem;
+}
+
+.jm-program-license {
+  padding: 0.05rem 0.3rem;
+  border: 1px solid currentColor;
+  border-radius: 0.3rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
+}

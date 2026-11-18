@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::ptr::null_mut;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
 
@@ -42,6 +42,18 @@ pub(super) struct InputState {
     pub seq: AtomicU64,
     pub epoch: AtomicU64,
     pub dropped: AtomicU64,
+    pub capture_thread_id: AtomicU32,
+    pub probe_window: usize,
+}
+
+impl InputState {
+    pub fn is_probe(&self) -> bool { self.probe_window != 0 }
+
+    pub fn window(&self) -> Result<super::privacy::WindowInfo, super::privacy::Rejected> {
+        if self.is_probe() { return super::privacy::probe_window(self.probe_window); }
+
+        super::privacy::foreground()
+    }
 }
 
 struct MouseContext {

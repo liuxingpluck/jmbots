@@ -10,6 +10,7 @@ import { Guide } from '../Guide/Guide.tsx';
 import { WECHAT_STEPS } from '../Guide/steps-wechat-kefu.ts';
 import * as privacy from '../Privacy/Mask.tsx';
 import { TOKEN, withToken } from '../Token.ts';
+import * as voice from './WechatVoice.tsx';
 
 type Kind = 'group' | 'private' | 'official' | 'work' | 'system';
 const KINDS: Record<Kind, string> = { group: '群聊', private: '私聊', official: '公众号', work: '企业微信', system: '系统会话' };
@@ -20,7 +21,19 @@ const STATES: Record<string, string> = { draft: '草稿', waiting: '等确认', 
 
 interface Status { rounds: number; lastRunAt: number; lastError: string; busy: boolean; interval: number; chats?: number; synced?: number; pending?: number; accounts: { id: string; nickname: string; wxid: string }[] }
 interface Chat { username: string; chat: string; is_group: boolean; unread: number; last_message: string; timestamp: number; watch: boolean; auto: boolean }
-interface Message { local_id: number; source: string; at: number; from_self: number | null; kind: string; sender: string; text: string; view?: string | null }
+interface Message {
+  /** 记录所属的账号及聊天，用于定位原语音。 */
+  account: string;
+  chat: string;
+  local_id: number;
+  source: string;
+  at: number;
+  from_self: number | null;
+  kind: string;
+  sender: string;
+  text: string;
+  view?: string | null;
+}
 /** 气泡视图（后端存的 JSON，jimukefu msgview）：图片、语音、卡片用。 */
 interface View { kind?: string; text?: string; title?: string; desc?: string; seconds?: number; amount?: string }
 /** 原版积木客服的筛选一排（jimukefu src/web/src/format.ts FILTERS）。 */
@@ -247,7 +260,23 @@ export function WechatPage() {
       const src = withToken(`/api/wechat-kefu/image?account=${encodeURIComponent(account)}&chat=${encodeURIComponent(current?.username ?? '')}&source=${encodeURIComponent(m.source)}&local_id=${String(m.local_id)}`, TOKEN);
       return <div className="wk-bubble wk-media"><img src={src} alt="图片" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).replaceWith(document.createTextNode('［图片］')); }} /></div>;
     }
-    if (m.kind === 'voice') return <div className="wk-bubble wk-voice">🔊 {String(view.seconds ?? 0)}″</div>;
+    if (m.kind === 'voice') {
+      const chat = current?.username ?? '';
+      //G 切换会话时旧列表可能尚未刷新，暂不显示可播放的上一会话语音。
+      if (m.account !== account || m.chat !== chat) return <div className="wk-bubble">语音（正在切换会话）</div>;
+      const key = JSON.stringify([m.account, m.chat, m.source, m.local_id, mask]);
+      return (
+        <voice.WechatVoice
+          key={key}
+          account={m.account}
+          chat={m.chat}
+          source={m.source}
+          localId={m.local_id}
+          seconds={view.seconds}
+          mask={mask}
+        />
+      );
+    }
     if (view.title !== undefined && !['location', 'card', 'transfer'].includes(m.kind)) {
       let typeLabel = '链接 / 公众号文章';
       if (m.kind === 'file') {

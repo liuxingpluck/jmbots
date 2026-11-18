@@ -11,6 +11,8 @@ import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
 import type * as protocolModule from '../../Channels.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
+import * as searchModule from './Search.ts';
+import type { MemoryService } from './index.ts';
 
 
 /** 一个用例的摆设。 */
@@ -42,7 +44,8 @@ function makeBench(): Bench {
   } as unknown as cordis.Context;
 
   const index = new channelIndexModule.ChannelIndex(new Database(':memory:'));
-  channelIndexModule.applyChannelIndex(ctx, index);
+  const unified = new searchModule.Search(ctx, {} as MemoryService, index);
+  channelIndexModule.applyChannelIndex(ctx, index, unified);
   const emit = (name: string, payload: unknown): void => {
     for (const handler of handlers.get(name) ?? []) {
       handler(payload);
@@ -68,6 +71,7 @@ function getMessage(nativeId: string, chatId: string, text: string, at: string):
     chatType: 'p2p',
     sender: { id: 'ou_1', name: '小王' },
     targetBots: ['助手'],
+    mentions: [],
     text,
     createdAt: Date.parse(at),
   };

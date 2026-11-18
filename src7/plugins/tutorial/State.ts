@@ -1,6 +1,6 @@
 /**
  * 运行时的快照：只给带关键词（tutorial 配置 snapshot_keyword，默认 #调试）的那条消息拍。
- * 属于它的每个事件、每个跟踪点（和 journal 记的跟踪行一一对应）拍一份运行时变量（utils/Snapshot.ts 的 snapshotOf），
+ * 属于它的每个事件、每个跟踪点（和 journal 记的跟踪行一一对应）拍一份运行时变量（plugins/tutorial/Snapshot.ts 的 snapshotOf），
  * 只放内存，留最近 SHOTS_MAX 份，重启就没（停拍时已写成文件）。还没写成文件的消息点中一步时，按 journal 的行对回这里的快照。
  * 怎么认“属于它”：
  *   web-api 收下的那条（web-api/received 的原文带关键词）→ 记下消息号，带这个消息号的行都拍，回话写回收件表（web-api/replied）就撤；
@@ -13,7 +13,7 @@
  * 拍在 internal/dispatch 那一刻：Cordis 先发它、再挨个调听的人，所以一份快照是“这个事件发出时”的样子。
  */
 import type * as cordis from 'cordis';
-import * as snapshotModule from '../../utils/Snapshot.ts';
+import * as snapshotModule from './Snapshot.ts';
 import * as traceUtils from '../../utils/Trace.ts';
 import type { FlowFiles } from './Files.ts';
 import { NOISE, type TrailLine } from './Trail.ts';

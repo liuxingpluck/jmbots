@@ -2,7 +2,7 @@
  * 窗口操控接口：GET /api/desktop/status 看能不能用（只看系统和程序在不在，不起进程）；POST /api/desktop/action 做四种操作之一
  * （pick 拖定位点选窗口、inspect 看窗口和子窗口、capture 拍客户区、scroll 滚几格）。一次请求起一个隐藏的 aobw-capability.exe，
  * 请求 JSON 写进它的输入，读它输出的一个 JSON 原样回。校验一次，不许把任意命令、路径传给系统；同时只许一个 pick；网页断开只结束这一次的子进程。
- * 照 0.4 src/channels/HttpDesktop.ts（行为一样）。设计：docs/src7插件设计/desktop.md。
+ * 照 0.4 src/channels/HttpDesktop.ts（行为一样）。设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';

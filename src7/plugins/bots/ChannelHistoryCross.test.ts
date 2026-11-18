@@ -22,6 +22,7 @@ import * as feishuModule from '../feishu/index.ts';
 import * as webApiModule from '../web-api/index.ts';
 import * as wechatModule from '../wechat/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
+import * as historyRequest from './HistoryRequest.ts';
 import * as botsPlugin from './index.ts';
 
 
@@ -754,7 +755,7 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     { channel: 'http', chatId: 'http:本机' },
     { channel: 'feishu', chatId: 'oc_other_chat' },
   ]) {
-    const directRes = await channels.requestChannelHistory(ctx, {
+    const directRes = await historyRequest.requestChannelHistory(ctx, {
       channel: probe.channel,
       sourceSnapshot: guestSnapshot,
       mode: 'current',
@@ -773,7 +774,7 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     origin: { channel: 'feishu', address: { role: 'owner', chatId: 'oc_chat_1' } },
   };
   expect(channels.isHistoryOwner(ownerInGroup)).toBe(false);
-  const ownerGroupRes = await channels.requestChannelHistory(ctx, {
+  const ownerGroupRes = await historyRequest.requestChannelHistory(ctx, {
     channel: 'wechat',
     sourceSnapshot: ownerInGroup,
     mode: 'current',

@@ -68,7 +68,7 @@ function upstream(): FastifyInstance {
 }
 
 describe('base-bridge 基地服务', () => {
-  //M 八条基地专属接口都说明未配置，GET 不再用空结果当作成功。
+  //M 四条基地专属接口均明确报告没配地址。
   test('没配地址时，全部转发回 503，服务请求也说明原因', async () => {
     const { app, base } = await world();
     const routes = [
@@ -76,10 +76,6 @@ describe('base-bridge 基地服务', () => {
       ['POST', '/api/update/apply'],
       ['GET', '/api/autostart'],
       ['POST', '/api/autostart'],
-      ['GET', '/api/memory/health'],
-      ['GET', '/api/memory/search?q=test'],
-      ['GET', '/api/rag/search?q=test'],
-      ['POST', '/api/rag/index'],
     ] as const;
     for (const [method, url] of routes) {
       const response = await app.inject({ method, url });
@@ -113,39 +109,41 @@ describe('base-bridge 基地服务', () => {
   //M 共享请求保留 GET 参数、POST JSON 和上游业务状态，409 不当作断连。
   test('getJson 和 postJson 交回真实状态和解析后的正文', async () => {
     const remote = upstream();
-    remote.get('/search', async (request) => ({ url: request.url }));
-    remote.post('/ingest', async (request, reply) => reply.code(409).send({ received: request.body }));
+    remote.get('/version', async (request) => ({ url: request.url }));
+    remote.post('/notify', async (request, reply) => reply.code(409).send({ received: request.body }));
     const address = await remote.listen({ host: '127.0.0.1', port: 0 });
     const { base } = await world(address, false);
-    const query = '/search?q=a%2Fb+two&lib=x&lib=y';
+    const query = '/version?q=a%2Fb+two&part=x&part=y';
     expect(await base.getJson(query, 1000)).toEqual({ status: 200, body: { url: query } });
-    expect(await base.postJson('/ingest', { lib: '测试库', ai: false }, 1000)).toEqual({
+    expect(await base.postJson('/notify', { title: '测试', body: '内容' }, 1000)).toEqual({
       status: 409,
-      body: { received: { lib: '测试库', ai: false } },
+      body: { received: { title: '测试', body: '内容' } },
     });
   });
 
-  //M HTTP 转发不能重新编码查询串，也不能把上游错误和纯文本包装成另一个响应。
-  test('网页转发保留查询串、POST 体、状态码和正文类型', async () => {
+  test('更新转发保留 POST 体、状态码和正文类型，记忆路由已移除', async () => {
     const remote = upstream();
-    remote.get('/search', async (request, reply) => reply.code(418).type('text/plain').send(request.url));
+    remote.get('/update', async (_request, reply) => reply.code(418).type('text/plain').send('更新服务暂不可用'));
     remote.post('/update/apply', async (request, reply) => reply.code(202).send({ received: request.body }));
-    remote.post('/rag/index', async (_request, reply) => reply.code(409).send({ error: '正在建索引' }));
     const address = await remote.listen({ host: '127.0.0.1', port: 0 });
     const { app } = await world(address);
     //M 显式 text/plain 的假上游不会自动加 charset；转发应与它实际发出的头一致。
-    const direct = await remote.inject({ method: 'GET', url: '/search?q=a%2Fb+two&lib=x&lib=y' });
+    const direct = await remote.inject({ method: 'GET', url: '/update' });
     expect(direct.headers['content-type']).toBe('text/plain');
-    const search = await app.inject({ method: 'GET', url: '/api/memory/search?q=a%2Fb+two&lib=x&lib=y' });
-    expect(search.statusCode).toBe(418);
-    expect(search.headers['content-type']).toBe(direct.headers['content-type']);
-    expect(search.body).toBe('/search?q=a%2Fb+two&lib=x&lib=y');
+    const state = await app.inject({ method: 'GET', url: '/api/update' });
+    expect(state.statusCode).toBe(418);
+    expect(state.headers['content-type']).toBe(direct.headers['content-type']);
+    expect(state.body).toBe('更新服务暂不可用');
     const update = await app.inject({ method: 'POST', url: '/api/update/apply', payload: { version: 'test' } });
     expect(update.statusCode).toBe(202);
     expect(update.json<{ received: { version: string } }>()).toEqual({ received: { version: 'test' } });
-    const rag = await app.inject({ method: 'POST', url: '/api/rag/index', payload: { lib: 'x' } });
-    expect(rag.statusCode).toBe(409);
-    expect(rag.json<{ error: string }>()).toEqual({ error: '正在建索引' });
+    const removed = [
+      ['GET', '/api/memory/health'], ['GET', '/api/memory/search'], ['GET', '/api/rag/search'], ['POST', '/api/rag/index'],
+    ] as const;
+    for (const [method, url] of removed) {
+      const response = await app.inject({ method, url });
+      expect(response.statusCode).toBe(404);
+    }
   });
 
   //M 关闭刚申请的临时端口，验证配置存在但基地没开的情况。

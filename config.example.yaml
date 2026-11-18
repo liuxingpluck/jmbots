@@ -146,9 +146,10 @@ channels:
 #   - name: fake-model             # 假模型，离线跑通链路用：只管模型名以 fake/ 开头的会话，别的照常发给真模型。
 #                                  # 要用它：providers 里加一家叫 fake 的（base_url 随便写），default_model 写成 fake/fake
 #   - name: http                   # HTTP 服务：端口读顶层 server.port（不写就报错），本机免令牌
-#   - name: web                    # 网页，要写在 http 后面
+#   - name: web                    # 网页与文件上传/读取/列目录（已并入原 files-api），写在 http 后面
+#     config:
+#       files: {}                  # 原 files-api 插件的配置；当前无子配置项，可省略
 #   - name: web-api                # 网页要的接口：机器人、会话、发话、停止、换模型、追溯
-#   - name: files-api              # 文件接口：上传、看文件、列目录
 #   - name: relay                 # 外部助手（别的 AI）的交办、收件、回信都在这里；写在 http、fake-model 后面。三样：
 #                                  #   转话：把话转给外部助手，等它回信再回给用户（写了 helpers 才开）；
 #                                  #   任务通道：agent_task 工具，GET /api/agents/guide 是给外部 AI 看的接入说明（挂了 http 就开；原 agent-tasks）；
@@ -181,7 +182,6 @@ channels:
 #                                  # search:
 #                                  #   - { kind: magpie, name: 搜索, url: 'http://127.0.0.1:3425/alpha/search', model: 某模型, api_key: 密钥 }
 #                                  #   - { kind: zhipu_mcp, api_key: 智谱密钥 }
-#   - name: usage                  # 用量：GET /api/usage
 #   - name: settings               # 设置页接口：GET/PUT /api/settings、POST /api/bots、立即重启；写在 http 后面
 #   - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 channels.feishu；config.domain 默认 https://open.feishu.cn；写在 http 后面才有 /api/feishu/contacts
 #     config:
@@ -199,23 +199,23 @@ channels:
 #           relay: model           # model：@ 机器人时它判断要不要转外部助手；direct：只认 cc 前缀（默认）
 #           trusted: false         # true：本人在这个群里说话照旧带私人记忆；false（默认）：群里谁说话都不带（回复群里人人看得到）
 #   - name: memory                 # memory 工具（自己的、公共的记忆）、后台会话开头先搜一遍记忆和技能（已并入原 memory-graph 关系图）；写在 bots 后面
-#                                  # 读 engine.index_url、engine.memory_libs：都写了才搜基地的库、每半小时让基地增量更新索引
 #                                  # 客服记忆库：聊天记录按客户/会话收、knowledge/ 下的知识库按段收，history、knowledge 带来源引用；GET /api/memory/recall、/graph/、/api/memory-graph/*
-#     config: { history: true, recall_history: 3, recall_knowledge: 3 }   # 关系图可用 graph: false 关闭或 graph: { db, mode, link } 细调
-#                                  # channel_index: false 关掉渠道消息索引（默认开：各渠道消息按聊天记进 memory_channel_messages，工具 channel_search 查；
-#                                  #   旧消息用 bun src7/plugins/memory/Backfill_Channel_Index.ts --data <运行时目录> --run yes 补）
-#     # 托管的两个服务（不写 = 默认这两个；写 services: [] = 不托管）。端口不写就跟着主端口顺延：memory 30087、vgr 30088；
-#     # 外面从主端口转发：/memory/* → 记忆服务，/memory/vgr/* → vgr。
-#     # host 默认 127.0.0.1：内部端口只听本机，从 30086 转发。别改成 0.0.0.0——会弹 Windows 防火墙、把客户聊天记录暴露到局域网（Claude 11-14 15:42 定）。
-#     # services:
-#     #   - name: memory          # jmbots-memory：program/jmbots-memory/jmbots-memory，serve --host {host} --port {port} --runtime {runtime}
-#     #     host: 127.0.0.1
-#     #     port: 30087
-#     #   - name: vgr             # vector-graph-rag：program/python/vgr-venv 里的 python 跑 adapter/vgr_adapter.py，数据在 vgr-memory/
-#     #     host: 127.0.0.1
-#     #     port: 30088
-#     # backend_url: vgr          # 记忆检索交给托管的哪个服务（vgr 或 memory）；不写用本地
-#     # 外部检索服务（计划 vector-graph-rag / Rust 版，基地托管）：backend_url: http://127.0.0.1:端口，backend_token、backend_timeout_ms；不写用本地
+#                                  # GET /api/memory/search 与工具 memory_search 共用检索，按 ref 用 memory_get 读原文。
+#     config:
+#       history: true
+#       recall_history: 3
+#       recall_knowledge: 3
+#       # graph: false             # 关闭关系图，或写 graph: { db, mode, link } 细调
+#       # channel_index: false     # 关闭渠道消息索引及 Rust 同步（默认开启）
+#       backfill:
+#         enabled: false           # 首次启动不自动回填历史。可在记忆页开始或暂停
+#         batch_size: 25           # 每批最多 25 条（可设 1 到 100）
+#         interval_ms: 2000        # 两批历史回填的最小间隔，毫秒
+#     # Rust 记忆服务 jmbots-memory 由 programs 插件拉起（见下面 programs 段的 jmbots-memory 条目），本插件只按 service_url 调 HTTP；
+#     # 它没起来时，记忆页、工具和事件回执都写明“记忆服务没在线”。旧的 services 段已删，还写着会让本插件挂不上。
+#     # service_url: http://127.0.0.1:30087  # 不写就是这个；记忆服务换了地址或端口才写
+#     # backend_url: memory      # 写了会话备份也发给 Rust（默认只进本地 SQLite）；旧写法是 Rust 地址时也当 service_url 用
+#     # backend_token、backend_timeout_ms 可配置外部 Rust 的认证和写入超时。
 #   - name: skills                 # 技能清单放进后台会话的系统提示词，skill 工具只读技能文件；写在 bots 后面
 #   - name: context-fit            # 会话上下文总结、压缩与裁剪（已并入原 summary、compress）；先按 compress.at 压缩旧对话，再按上下文窗口 ratio 裁剪并保留最近 keep 段
 #     config: { keep: 6, ratio: 0.9, compress: { at: 200000, keep: 6 }, summary: true }
@@ -224,6 +224,45 @@ channels:
 #                                  # limit_extend_times（2）、overtime_minutes（10）、wrapup_model、limit_review_model；超时复盘需同时挂 approval 才生效（可用 config: { review: false } 或 review: { first_ms: 300000, every_ms: 600000 } 调整）
 #   - name: decision               # 决策模型打分（approval、progress 可选地用）；配置在顶层 decision 段，见下面
 #   - name: image-gen              # image_generate 工具：读 engine.image_model（供应商名/生图模型 ID），不写调了会说没配
+#   - name: decision-map           # 决策图 /decision-map/，中控发布节点，网页点选即保存
+#     config:
+#       relay_helper: Claude        # 填 relay.helpers 中的中控助手名。不填时用 /api/decision-map/changes 读选择
+#       public_url: http://192.168.200.1:30086/decision-map/  # notify 发给飞书的完整页面地址，按手机能访问的地址填写
+#   - name: programs               # 托管独立程序。每项文件由用户提供，程序在 stdout 报实际端口
+#                                  # 程序 info 报了 ui 就在 /programs/<name>/ 打开，网页顶栏自动出入口；一个程序都不写时资源守卫照样工作
+#     config:
+#       guard:                         # 默认启用；G为GiB，所有容量事件值为字节；越线写飞书发件箱，同类10分钟最多一条
+#         cpu_percent: 80
+#         cpu_resume_percent: 70
+#         memory_gb: 60
+#         resume_gb: 55
+#         vram_gb: 15.9                 # 逐卡硬线，还受该卡实际容量限制
+#         vram_resume_gb: 15
+#         interval_ms: 5000
+#         nvidia_smi: nvidia-smi        # PATH命令名或可执行文件路径，不经shell
+#       programs:
+#         - name: example
+#           title: 外部程序示例
+#           file: program/example/example   # 相对数据目录，Windows 自动补 .exe，也可填写绝对路径
+#           args: [--name, example, --host, "{host}", --port, "{port}"]
+#           cwd: "{runtime}"                 # 路径、参数和环境可用 {runtime}、{data}、{host}、{port}
+#           env: {}
+#           autostart: false                 # 需要时 POST /api/programs/example/start
+#           host: 127.0.0.1
+#           port: 0                          # 0 由程序选空闲端口
+#           mount: /api/ext/example          # 不能写在 /programs 下，那里留给界面入口
+#           heavy: false                     # true的启动/自动重试须过CPU准入
+#           closable: false                  # 只有显式true且自报新鲜RSS，内存持续超限才可正常停
+#         - name: jmbots-memory            # Rust 记忆服务：memory 插件按 service_url 调它（memory 不再自己托管）
+#           title: 记忆服务                 # 沿用 {runtime}/memory.yaml 和 data/memory/memory.db，数据不搬
+#           file: program/jmbots-memory/jmbots-memory   # 相对数据目录，Windows 自动补 .exe
+#           args: [serve, --name, jmbots-memory, --runtime, "{runtime}", --host, "{host}", --port, "{port}"]
+#           host: 127.0.0.1                  # 只听本机：不弹防火墙，客户聊天记录不直接暴露到局域网（Claude 11-14 15:42 定）
+#           port: 30087                      # 界面在 /programs/jmbots-memory/，接口在 /api/ext/jmbots-memory/；和 memory 的 service_url 默认值对上
+#           heavy: false                     # 核心检索服务，开机 CPU 忙也要起；它的后台嵌入、抽图在内存高位时由守卫暂停（pause）
+#           closable: false                  # 内存持续超限只暂停后台活，不关掉检索
+#           startup_ms: 120000
+#           exit_wait_ms: 15000              # 退出时等已开始的数据库写入排空
 #   - name: base-bridge            # 基地转发（/api/update、/api/autostart、/api/memory/*、/api/rag/*，已并入原 notify 与 update-watch，默认均关闭）；读 engine.index_url
 #                                  # 需要时可加 config: { notify: true, update_watch: true }（notify 可写 { url }，update_watch 可写 { first_ms, every_ms }）
 #   - name: desktop                # 窗口操控：/api/desktop/status、/api/desktop/action；程序在 <paths.program>/AOBW/aobw-capability.exe
@@ -236,7 +275,9 @@ channels:
 #                                  # 读 engine 的 fallback_chain、fallback_max_tries（5）、fallback_include_siblings（true）、
 #                                  # rate_limit_cooldown_minutes（5）与顶层 concurrency 段；可选 config.fallback（写 false 关闭回退或覆盖子项）
 #                                  # 已并入原 model-notes（模型介绍和评价）：页面 /model-notes/ 看介绍、打分；GET /api/model-notes、POST /api/model-notes/rate
-#     config: { notes: { dir: models, time_zone: America/New_York } }   # notes 可不写。dir：一个模型一份 MD（文件名是模型 ID 把 / 换成 __），
+#     config:
+#       usage: {}                  # 原 usage 插件的配置；当前无子配置项，可省略；GET /api/usage 路径不变
+#       notes: { dir: models, time_zone: America/New_York }   # dir：一个模型一份 MD（文件名是模型 ID 把 / 换成 __），
 #                                  # 相对运行时目录，默认 models；time_zone：评价时间按哪个时区写（写出来带缩写，如 EST），默认 America/New_York
 #   - name: ./plugins/weather     # 别人写的：以 . 开头的是文件夹路径，从 config.yaml 所在的目录算
 #     config: { city: 上海 }
@@ -265,7 +306,8 @@ screen:
   image_max_bytes: 262144
   max_frame_age_ms: 1000
   click_debounce_ms: 250
-  model: ''
+  model: magpie/xiaomi/mimo-v2.6-flash
+  # 备用模型 magpie/codex/gpt-6-luna 需要把下面的 thinking 改成 low。
   thinking: 'off'
   model_timeout_ms: 8000
   max_output_tokens: 160
@@ -286,11 +328,25 @@ voice:
   ws_path: /api/voice/ws
   sample_rate: 16000
   asr:
-    provider: sherpa
+    provider: sherpa  # sherpa / bailian（实时）/ xiaomi（整句）
+    # fallback: xiaomi    # 可选，主备分别选本地与云端。云端取 providers 同名配置
+    # bailian_model: fun-asr-realtime
+    # xiaomi_model: mimo-v2.5-asr
+  tts:
+    provider: xiaomi   # xiaomi / local（MeloTTS）
+    # fallback: local    # xiaomi 默认退 local。local 可显式退 xiaomi，none 关闭回退
+    voice: mimo_default
   turn:
     silence_ms: 1200
     max_utterance_ms: 60000
     merge_window_ms: 30000
+    pause_ms: 300
+    max_per_minute: 30
+    detector:          # false 时只用 ASR 原有静音端点
+      local_model: 'builtin:zh-tail-v1'
+      # cloud_model: 供应商名/小模型ID
+      prefer: local
+      timeout_ms: 400
   judge:
     min_chars: 6
     step_chars: 12
@@ -299,3 +355,8 @@ voice:
     deny_at: 0.3
     timeout_ms: 12000
     max_per_minute: 30
+    # models:          # 可选语音任务理解模型。未配则继续使用 decision/judge
+    #   local_model: 本地供应商名/模型ID
+    #   cloud_model: 云端供应商名/模型ID
+    #   prefer: local
+    #   timeout_ms: 2500

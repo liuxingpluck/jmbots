@@ -2,14 +2,16 @@
  * 渠道回复与渠道历史工具：
  *   - channel_reply：只在当前轮有 channel_tool 绑定时开放；纯文字发送（绝不把 @路径 当成文件上传），经 channel/reply ↔ channel/replied 拿回真实回执；
  *     受管后台会话（work）调 channel_reply 时先转回原前台，不越级直发原渠道；
- *   - channel_history / channel_mentions / channel_visible_history：第 2 步接入，先声明接口由本文件统一登记。
+ *   - 给统一记忆工具提供渠道归档，并保留三个旧名的权限、游标和回执。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as protocol from '../../Channels.ts';
+import * as historyTools from '../memory/HistoryTools.ts';
 import type { QueueItem, ResultInput } from './Dispatch.ts';
+import * as historyRequest from './HistoryRequest.ts';
 
 
 /** 渠道历史默认每次返回条数（一般 50–100 条够用，默认 80）。 */
@@ -86,7 +88,7 @@ export class ChannelTools {
     });
 
     //M channel_history：查询当前或跨渠道聊天的历史消息（本人可跨渠道，外人限当前聊天）。
-    this.ctx.tools.register({
+    historyTools.registerHistoryAlias(this.ctx, 'channel-current', {
       definition: {
         name: 'channel_history',
         description: `翻看渠道历史记录（默认 ${String(this.historyLimit)} 条，一般 50–100 条够用，自己定，最多 ${String(MAX_HISTORY_LIMIT)} 条）。`
@@ -113,7 +115,7 @@ export class ChannelTools {
     });
 
     //M channel_mentions：只看当前绑定聊天里 @ 当前机器人的消息。
-    this.ctx.tools.register({
+    historyTools.registerHistoryAlias(this.ctx, 'channel-mentions', {
       definition: {
         name: 'channel_mentions',
         description: `查看当前绑定聊天中 @ 当前机器人的渠道历史消息（默认 ${String(this.historyLimit)} 条）。`,
@@ -127,7 +129,7 @@ export class ChannelTools {
     });
 
     //M channel_visible_history：查询授权范围内指定发送者的历史发言。
-    this.ctx.tools.register({
+    historyTools.registerHistoryAlias(this.ctx, 'channel-visible', {
       definition: {
         name: 'channel_visible_history',
         description: `查询授权范围内某个发送者（senderId）在聊天的渠道发言记录（默认 ${String(this.historyLimit)} 条）。guest/builder 仅限当前聊天。`,
@@ -755,7 +757,7 @@ export class ChannelTools {
       return JSON.stringify(forbidden);
     }
 
-    const result = await protocol.requestChannelHistory(this.ctx, {
+    const result = await historyRequest.requestChannelHistory(this.ctx, {
       channel: requestedChannel,
       sourceSnapshot: structuredClone(snapshot),
       mode,

@@ -98,7 +98,7 @@ function UrlCallerItem(caller: CodeRoute['callers'][number]): JSX.Element {
  */
 function UrlCallers(props: { callers: CodeRoute['callers'] }): JSX.Element {
   const scrollParent = useContext(TutorialScrollContext);
-  if (props.callers.length === 0) return <p className="tu-muted">谁调它：src7 里没有写这条路径的地方（网页或外部程序调的，这里查不到）。</p>;
+  if (props.callers.length === 0) return <p className="tu-muted">谁调它：后端源码里没有写这条路径的地方（网页或外部程序调的，这里查不到）。</p>;
 
   const useVirtual = props.callers.length >= VIRTUAL_THRESHOLD && scrollParent !== null;
   return (

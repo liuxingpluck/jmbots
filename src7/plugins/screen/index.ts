@@ -2,12 +2,13 @@
 
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
+import * as streams from 'node:stream';
 import * as requests from '../../utils/RequestEvent.ts';
 import * as protocol from './Protocol.ts';
 import * as runtime from './Screen.ts';
 
 export const name = 'screen';
-export const version = '0.1.0';
+export const version = '0.3.0';
 export const inject = ['resources', 'http'];
 
 interface StatusRequest extends requests.RequestEnvelope {
@@ -50,7 +51,7 @@ function getFault(error: unknown): protocol.ScreenError {
   return new protocol.ScreenError('model_failed');
 }
 
-/** 注册三个入口，截图和模型回答只经过 HTTP 请求路径。 */
+/** 注册 HTTP 入口，截图和模型回答只经过本插件的私有请求路径。 */
 function registerRoutes(scope: fastify.FastifyInstance, screen: runtime.Screen, config: protocol.ScreenConfig): void {
   //G 请求体超过 Fastify 上限或 JSON 无法解析时，不会进入路由处理器。
   scope.setErrorHandler((error, _request, reply) => {
@@ -94,7 +95,14 @@ function registerRoutes(scope: fastify.FastifyInstance, screen: runtime.Screen, 
 
   //M 有效点击走一次私有请求，并把讲解只交回当前 HTTP 响应。
   const clickOptions = { bodyLimit: protocol.CLICK_LIMIT };
-  scope.post('/api/screen/click', clickOptions, async (request, reply) => {
+  const receive = (
+    run: (
+      input: protocol.ClickInput,
+      signal: AbortSignal,
+      reply: fastify.FastifyReply,
+    ) => Promise<unknown>,
+    observe: boolean,
+  ) => async (request: fastify.FastifyRequest, reply: fastify.FastifyReply) => {
     let identity: protocol.ClickIdentity | undefined;
     const controller = new AbortController();
     const disconnect = (): void => controller.abort();
@@ -108,10 +116,11 @@ function registerRoutes(scope: fastify.FastifyInstance, screen: runtime.Screen, 
       }
 
       //G 功能开启后校验全部点击字段，私有请求只接验证后的输入。
-      const click = protocol.getClickInput(body, identity, config);
+      const click = protocol.getClickInput(body, identity, config, observe);
 
       //M 连接断开时中止等待并把控制权留给原始连接。
-      const result = await screen.explain(click, controller.signal);
+      const result = await run(click, controller.signal, reply);
+      if (reply.sent) return reply;
       if (reply.raw.destroyed) return reply.hijack();
 
       return result;
@@ -131,11 +140,58 @@ function registerRoutes(scope: fastify.FastifyInstance, screen: runtime.Screen, 
     } finally {
       reply.raw.off('close', disconnect);
     }
+  };
+  //M 点击优先直接讲解，后台观察受文字裁定保护。
+  const explain = (input: protocol.ClickInput, signal: AbortSignal) => screen.explain(input, signal);
+  const click = receive(explain, false);
+  const observation = receive(screen.observe.bind(screen), true);
+  scope.post('/api/screen/click', clickOptions, click);
+  scope.post('/api/screen/observe', clickOptions, observation);
+
+  //M 流式入口共享点击校验，只把片段写回这一条响应。
+  const streamClick = receive(async (input, signal, reply) => {
+    const stream = new streams.PassThrough();
+    reply.type('application/x-ndjson').header('cache-control', 'no-store');
+    reply.send(stream);
+    const send = (frame: Record<string, unknown>): void => {
+      if (signal.aborted || stream.destroyed) return;
+
+      //M 每一行都是可独立验签的片段或结束标记。
+      const line = JSON.stringify(frame) + '\n';
+      stream.write(line);
+    };
+    try {
+      const preview = (result: runtime.ClickResult): void => {
+        const frame = { phase: 'partial', ...result };
+        send(frame);
+      };
+      //M 流里先写预览，随后用完整校验结果结束响应。
+      const result = await screen.explain(input, signal, preview);
+      const frame = { phase: 'done', ...result };
+      //M 完成帧同时承载剩余讲解和终止状态。
+      send(frame);
+    } catch (error) {
+      //G 流已经开始时用固定错误标记终止，避免输出供应商原文。
+      const issue = getFault(error);
+      const frame = { phase: 'error', errorCode: issue.code };
+      //M 基地收到失败时撤回本点击的预览。
+      send(frame);
+    } finally {
+      stream.end();
+    }
+    return reply;
+  }, false);
+  scope.post('/api/screen/click/stream', clickOptions, streamClick);
+
+  //M 基地确认已经呈现后，按当前会话申请一次可选播报。
+  scope.post('/api/screen/presented', stateOptions, async (request) => {
+    const input = protocol.getPresentedInput(request.body);
+    return await screen.presented(input);
   });
 }
 
 /**
- * 加载已授权配置，安装三个 HTTP 入口及内部事件。注销会释放临时内存并取消模型。
+ * 加载已授权配置，安装 HTTP 入口及内部事件。注销会释放临时内存并取消模型。
  * @param ctx 当前插件的 Cordis 上下文。
  */
 export function apply(ctx: cordis.Context): void {

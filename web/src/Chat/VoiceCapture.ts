@@ -2,6 +2,7 @@
 
 import * as tokenModule from '../Token.ts';
 import * as pcm from './VoicePcm.ts';
+import * as playbackModule from './VoicePlayback.ts';
 
 /** 网页使用的就绪信息。 */
 export interface VoiceStatus {
@@ -25,11 +26,16 @@ export interface TaskCaption {
   merged: boolean;
 }
 
+/** 后端最近一次实际使用的本地或云端线路。 */
+export type VoiceStage = 'asr' | 'tts' | 'judge' | 'turn';
+export type VoicePlace = 'local' | 'cloud';
+
 /** 单次听写连接的界面更新。 */
 export type VoiceUpdate =
   | { kind: 'ready'; simulated: boolean }
   | { kind: 'partial' | 'final'; seq: number; text: string }
-  | { kind: 'task'; task: TaskCaption };
+  | { kind: 'task'; task: TaskCaption }
+  | { kind: 'route'; stage: VoiceStage; place?: VoicePlace };
 
 /** 发现后端实际挂载的 WS 路径；尚未安装的部署返回 undefined。 */
 export async function getVoiceStatus(signal: AbortSignal): Promise<VoiceStatus | undefined> {
@@ -60,6 +66,7 @@ function stopTracks(stream: MediaStream): void {
 /** 单次点「开始听」的设备、音频节点和 WebSocket。 */
 export class VoiceCapture {
   private audio?: AudioContext;
+  private playback?: playbackModule.VoicePlayback;
   private media?: MediaStream;
   private source?: MediaStreamAudioSourceNode;
   private worklet?: AudioWorkletNode;
@@ -90,6 +97,7 @@ export class VoiceCapture {
       //M 受用户操作创建音频上下文，权限成功后把单声道连接到流式采样节点。
       const audio = new AudioContext();
       this.audio = audio;
+      this.playback = new playbackModule.VoicePlayback(audio);
       const media = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
       });
@@ -116,6 +124,9 @@ export class VoiceCapture {
       this.worklet.port.onmessage = (event: MessageEvent<unknown>) => {
         const socket = this.socket;
         if (!this.ready || this.stopping || socket?.readyState !== WebSocket.OPEN) return;
+
+        //G 回复播完及尾音消散前暂停上传，避免机器人把自己的话转写一遍。
+        if (this.playback?.blocksMicrophone) return;
 
         if (!(event.data instanceof ArrayBuffer)) return;
 
@@ -179,6 +190,7 @@ export class VoiceCapture {
 
     //M 首帧总是 start。等待超时或连接断开会关麦。
     const socket = new WebSocket(url);
+    socket.binaryType = 'arraybuffer';
     this.socket = socket;
     this.timer = window.setTimeout(() => this.finish('connection-timeout'), 5000);
     socket.onopen = () => {
@@ -187,6 +199,11 @@ export class VoiceCapture {
     socket.onmessage = (event: MessageEvent<unknown>) => {
       if (typeof event.data === 'string') {
         this.receive(event.data);
+        return;
+      }
+      if (event.data instanceof ArrayBuffer) {
+        //M 二进制只在音频元数据已到达时交给播放器。
+        this.playback?.accept(event.data);
       }
     };
     socket.onclose = (event) => {
@@ -202,7 +219,7 @@ export class VoiceCapture {
     };
   }
 
-  /** 只接受服务端的就绪、字幕、错误和停止回执。 */
+  /** 按服务端协议处理控制帧和音频元数据。 */
   private receive(written: string): void {
     let frame: Record<string, unknown>;
     try {
@@ -250,6 +267,16 @@ export class VoiceCapture {
       }
       return;
     }
+    if (type === 'voice-route') {
+      const stage = frame['stage'];
+      const place = frame['place'];
+      const knownStage = stage === 'asr' || stage === 'tts' || stage === 'judge' || stage === 'turn';
+      if (knownStage && (place === 'local' || place === 'cloud' || place === undefined)) {
+        //M 后端只送实际使用过的线路，失败时清掉相应标记。
+        this.update({ kind: 'route', stage, place });
+      }
+      return;
+    }
     if (type === 'task') {
       //M 只显示后端确认的任务；任务展示不替换当前字幕。
       const taskId = frame['taskId'];
@@ -258,6 +285,27 @@ export class VoiceCapture {
       if (typeof taskId === 'string' && typeof text === 'string' && typeof merged === 'boolean') {
         this.update({ kind: 'task', task: { taskId, text, merged } });
       }
+      return;
+    }
+    if (type === 'audio-start') {
+      const id = frame['utterId'];
+      const rate = frame['sampleRate'];
+      if (this.ready && !this.stopping && frame['format'] === 'pcm_s16le'
+        && typeof id === 'string' && typeof rate === 'number' && Number.isInteger(rate)
+        && rate >= 8000 && rate <= 96_000) {
+        this.playback?.begin(id, rate);
+      }
+      return;
+    }
+    if (type === 'audio-end') {
+      const id = frame['utterId'];
+      if (typeof id === 'string') {
+        this.playback?.end(id);
+      }
+      return;
+    }
+    if (type === 'stop-audio') {
+      this.playback?.stop();
       return;
     }
     if (type === 'error') {
@@ -289,6 +337,8 @@ export class VoiceCapture {
     }
     this.source?.disconnect();
     this.source = undefined;
+    this.playback?.stop();
+    this.playback = undefined;
     if (this.audio !== undefined) {
       void this.audio.close().catch(() => {});
       this.audio = undefined;

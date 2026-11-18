@@ -6,6 +6,7 @@
  *   GET  /api/wechat-kefu/chats?account=       最近会话，带“监听”“自动发”两个开关
  *   PUT  /api/wechat-kefu/watch                { account, chat, name, watch, auto }
  *   GET  /api/wechat-kefu/messages?account=&chat=&limit=
+ *   GET  /api/wechat-kefu/voice?account=&chat=&source=&local_id=  原语音 WAV
  *   GET  /api/wechat-kefu/outbox               最近的发件
  *   POST /api/wechat-kefu/draft                { account, chat }：对已监听会话让 AI 起草一条回复，只存草稿不发送
  *   POST /api/wechat-kefu/send                 { account, chat, text }：页面上人手发，直接发
@@ -14,9 +15,12 @@
  * （jimukefu src/services/Api.ts、Drafts.ts:182-185）。
  */
 import * as fs from 'node:fs';
+import type * as fastify from 'fastify';
 import type { Database } from 'bun:sqlite';
 import type { Http } from '../../http/index.ts';
 import type { Wechat } from '../index.ts';
+import * as readerModule from '../read/Reader.ts';
+import type * as voiceModule from '../read/Voice.ts';
 
 
 /** 请求体、查询里的一个字符串；没有是 ''。 */
@@ -34,22 +38,41 @@ function field(from: unknown, key: string): string {
   return '';
 }
 
+/** 读取历史气泡中的语音秒数，旧库空值表示未知。 */
+function getVoiceSeconds(view: string | null): number | undefined {
+  if (!view) return undefined;
+
+  try {
+    const parsed = JSON.parse(view) as { seconds?: unknown } | null;
+    const seconds = parsed?.seconds;
+    if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0) return seconds;
+  } catch {
+    //M 旧消息偶尔缺气泡数据，播放时以浏览器测到的时长显示。
+    return undefined;
+  }
+  return undefined;
+}
+
+/** 内置渠道和独立进程共用的客服读取能力。 */
+type ReadSource = Pick<Wechat, 'reader' | 'status' | 'syncChats'> & {
+  /** 给客服页的刷新周期和会话数量上限。 */
+  config: Pick<Wechat['config'], 'intervalMs' | 'chatLimit'>;
+  /** 独立进程打开会话时按读取进度刷新增量。 */
+  syncOnRead?: boolean;
+  /** 内置渠道为监听中的会话继续补录历史。 */
+  backfillAll?: Wechat['backfillAll'];
+};
 
 /**
- * 在 http.app 上登记页面和接口。要在 ready（开始监听）之前调。
- * @param http HTTP 服务。
- * @param db 运行时数据库（wechat_* 表）。
- * @param wechat 微信渠道。
- * 副作用：登记客服页的读取、草稿和发送路由。
+ * 挂载客服聊天、图片、语音和本地发件箱的读取接口。
+ * @param app 当前进程的 Fastify 路由。
+ * @param db 微信消息库。
+ * @param wechat 提供会话读取和同步。
+ * @param voice 音频提取及缓存。
  */
-export function routes(http: Http, db: Database, wechat: Wechat): void {
-  const app = http.app;
-  //M 2026-11-14 jm开发：页面改成 React（web/wechat-kefu.html，源码 web/src/WechatKefu/），由 web 插件按插件名挂在 /wechat-kefu/；
-  //M   这里不再登记 /wechat-kefu、/wechat-kefu/（再登记会和 web 插件撞路由）。旧的字符串页面 Page.ts 已删
-  //M   （16:25 EST，备份在 cache/src7备份/20261114-1625EST-删Page和Assets/）。
-  app.get('/wechat', (_request, reply) => reply.redirect('/wechat-kefu/'));
-  app.get('/wechat/', (_request, reply) => reply.redirect('/wechat-kefu/'));
-
+export function readRoutes(
+  app: fastify.FastifyInstance, db: Database, wechat: ReadSource, voice: voiceModule.VoiceAudio,
+): void {
   //M 把轮询状态、微信账号和刷新周期一并交给客服页面。
   app.get('/api/wechat-kefu/status', () => ({
     ...wechat.status, accounts: wechat.reader.accounts(), interval: wechat.config.intervalMs,
@@ -76,29 +99,6 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     });
   });
 
-  app.put('/api/wechat-kefu/watch', (request) => {
-    const body = request.body as Record<string, unknown>;
-    //M 从请求确定开关归属的微信账号和会话。
-    const account = field(body, 'account'), chat = field(body, 'chat');
-    if (body['watch'] !== true) {
-      //M 取消监听时移除名单记录，该会话后续不再按监听规则处理。
-      db.query('DELETE FROM wechat_watch WHERE account = ? AND chat = ?').run(account, chat);
-      return { ok: true };
-    }
-    let autoFlag = 0;
-    if (body['auto'] === true) {
-      autoFlag = 1;
-    }
-
-    //M 新增或更新监听项，保存展示名称和自动发送设置。
-    db.query('INSERT INTO wechat_watch (account, chat, name, auto, last_time) VALUES (?, ?, ?, ?, NULL)'
-      + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, auto = excluded.auto')
-      .run(account, chat, field(body, 'name') || chat, autoFlag);
-    //M 勾上监听后，后台把这个会话的全部历史补进库（只存不交）；不阻塞这次保存开关。
-    void wechat.fillWatched(account, chat, field(body, 'name') || chat);
-    return { ok: true };
-  });
-
   //M 客服页打开会话时取本地已保存的聊天记录。
   app.get('/api/wechat-kefu/messages', async (request, reply) => {
     //M 解析账号、会话及读取上限，限制该次查询的返回量。
@@ -107,11 +107,15 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     //M 2026-11-14 23:15 EST：点开一个后台还没轮到的会话，当场只读同步一次（最近 50 条存量），不用等后台。
     //M 2026-11-15 00:17 EST：已监听的会话再补全部历史（不阻塞这次读，下一轮刷新就能看到更早的）。
     const synced = db
-      .query('SELECT full FROM wechat_sync WHERE account = ? AND chat = ?')
-      .get(account, chat) as { full: number | null } | null;
-    if (synced === null && account !== '' && chat !== '') {
+      .query('SELECT full, last_time FROM wechat_sync WHERE account = ? AND chat = ?')
+      .get(account, chat) as { full: number | null; last_time: number | null } | null;
+    if ((synced === null || wechat.syncOnRead === true) && account !== '' && chat !== '') {
       try {
-        await wechat.syncChats(account, [{ chat, name: field(request.query, 'name') || chat, since: null, at: 0 }]);
+        //M 独立进程按上次同步位置继续读，内置渠道首次打开才走这里。
+        const name = field(request.query, 'name') || chat;
+        const since = synced?.last_time ?? null;
+        const conversations = [{ chat, name, since, at: 0 }];
+        await wechat.syncChats(account, conversations);
       } catch (error) {
         return reply.code(500).send({ error: getErrorText(error) });
       }
@@ -120,7 +124,7 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     //M 查监听状态，只为仍在监听且未补全的会话安排历史补录。
     const watched = db.query('SELECT 1 FROM wechat_watch WHERE account = ? AND chat = ?').get(account, chat);
     if (watched !== null && (synced === null || synced.full !== 1) && account !== '' && chat !== '') {
-      void wechat.backfillAll(account, chat);
+      void wechat.backfillAll?.(account, chat);
     }
 
     //M 从库里取最新的限量消息，再按对话时间正序返回页面。
@@ -148,8 +152,85 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
     }
   });
 
+  //M 只为消息库中完整匹配的语音取文件，挂在与客服页相同的令牌保护下。
+  app.get('/api/wechat-kefu/voice', async (request, reply) => {
+    const account = field(request.query, 'account');
+    const chat = field(request.query, 'chat');
+    const source = field(request.query, 'source');
+    const rawId = field(request.query, 'local_id');
+    const localId = Number(rawId);
+    if (!account || !chat || !source || !/^\d+$/u.test(rawId) || !Number.isSafeInteger(localId)) {
+      return reply.code(400).send({ error: '语音消息编号不完整' });
+    }
+
+    //G 账号、会话和来源须同时匹配，禁止使用只在另一会话出现的消息号。
+    const sql = 'SELECT view FROM wechat_messages'
+      + " WHERE account = ? AND chat = ? AND source = ? AND local_id = ? AND kind = 'voice'";
+    const row = db.query(sql).get(account, chat, source, localId) as { view: string | null } | null;
+    if (row === null) return reply.code(404).send({ error: '没有这条语音消息' });
+
+    const message = { account, chat, source, localId };
+    try {
+      //M 用完整消息键提取或复用解码后的 WAV，给浏览器流式播放器使用。
+      const expected = getVoiceSeconds(row.view);
+      const wav = await voice.get(message, expected);
+      return reply.header('Cache-Control', 'private, no-store').type('audio/wav').send(wav);
+    } catch (error) {
+      let reason = '读取微信语音失败';
+      if (error instanceof readerModule.VoiceUnavailable) {
+        reason = error.message;
+      }
+
+      //M 留下可读的缺件原因，内部错误或路径保持在服务端。
+      return reply.code(404).send({ error: reason });
+    }
+  });
+
   //M 把最新发件和草稿提供给客服页的发件列表。
   app.get('/api/wechat-kefu/outbox', () => db.query('SELECT * FROM wechat_outbox ORDER BY id DESC LIMIT 100').all());
+}
+
+/**
+ * 在 http.app 上登记页面和接口。要在 ready（开始监听）之前调。
+ * @param http HTTP 服务。
+ * @param db 运行时数据库（wechat_* 表）。
+ * @param wechat 微信渠道。
+ * @param voice 提取及缓存语音的实例。
+ * 副作用：登记客服页的读取、草稿和发送路由。
+ */
+export function routes(http: Http, db: Database, wechat: Wechat, voice: voiceModule.VoiceAudio): void {
+  const app = http.app;
+  //M 2026-11-14 jm开发：页面改成 React（web/wechat-kefu.html，源码 web/src/WechatKefu/），由 web 插件按插件名挂在 /wechat-kefu/；
+  //M   这里不再登记 /wechat-kefu、/wechat-kefu/（再登记会和 web 插件撞路由）。旧的字符串页面 Page.ts 已删
+  //M   （16:25 EST，备份在 cache/src7备份/20261114-1625EST-删Page和Assets/）。
+  app.get('/wechat', (_request, reply) => reply.redirect('/wechat-kefu/'));
+  app.get('/wechat/', (_request, reply) => reply.redirect('/wechat-kefu/'));
+
+  //M 读会话、图片与语音用和独立进程同一组入口。
+  readRoutes(app, db, wechat, voice);
+
+  app.put('/api/wechat-kefu/watch', (request) => {
+    const body = request.body as Record<string, unknown>;
+    //M 从请求确定开关归属的微信账号和会话。
+    const account = field(body, 'account'), chat = field(body, 'chat');
+    if (body['watch'] !== true) {
+      //M 取消监听时移除名单记录，该会话后续不再按监听规则处理。
+      db.query('DELETE FROM wechat_watch WHERE account = ? AND chat = ?').run(account, chat);
+      return { ok: true };
+    }
+    let autoFlag = 0;
+    if (body['auto'] === true) {
+      autoFlag = 1;
+    }
+
+    //M 新增或更新监听项，保存展示名称和自动发送设置。
+    db.query('INSERT INTO wechat_watch (account, chat, name, auto, last_time) VALUES (?, ?, ?, ?, NULL)'
+      + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, auto = excluded.auto')
+      .run(account, chat, field(body, 'name') || chat, autoFlag);
+    //M 勾上监听后，后台把这个会话的全部历史补进库（只存不交）；不阻塞这次保存开关。
+    void wechat.fillWatched(account, chat, field(body, 'name') || chat);
+    return { ok: true };
+  });
 
   //M 2026-11-15 00:17 EST：人手点“让 AI 回复”。只对已监听会话起草，结果进草稿栏，绝不发送。
   app.post('/api/wechat-kefu/draft', async (request, reply) => {

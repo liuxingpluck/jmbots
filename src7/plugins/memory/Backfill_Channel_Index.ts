@@ -1,7 +1,7 @@
 /**
  * 把各渠道的旧消息补进 memory 插件的渠道消息索引（memory_channel_messages，同目录的 ChannelIndex.ts）。
  * 新消息由 memory 插件听 channel/message、channel/reply 自己记；这个脚本只补插件挂上以前的，可以反复跑（记过的不再记）。
- * 放在 src7 里（不在 scripts/）：它用 src7 的 ChannelIndex，跟着 typecheck:src7 查；Main 不 import 它，编不进程序。
+ * CLI 和后台回填共用归档读取和去重。导入时不运行 CLI，不直接开库。
  *
  * 用法（在 jmbots 目录）：
  *   bun src7/plugins/memory/Backfill_Channel_Index.ts --data <运行时目录>            先看：数各渠道有多少条，什么也不写
@@ -21,6 +21,7 @@ import * as bunSqlite from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
+import * as readline from 'node:readline';
 import * as util from 'node:util';
 import * as channelIndexModule from './ChannelIndex.ts';
 
@@ -41,7 +42,7 @@ interface Count {
 
 
 /** 补一条要知道的：这一行，和要不要按“差不多的同一条”查重（键拼不出来时）。 */
-interface Candidate {
+export interface Candidate {
   /** 一行。 */
   row: channelIndexModule.ChannelRow;
   /** 键是另起的，和插件记的不一样：要按正文和时间查重。 */
@@ -54,20 +55,33 @@ interface Candidate {
  * @param file 文件。
  * @returns 每一行解析出来的对象和行号（从 1 起）。
  */
-function readJsonl(file: string): { value: Record<string, unknown>; line: number }[] {
-  const lines = fs.readFileSync(file, 'utf8').split('\n');
-  const values: { value: Record<string, unknown>; line: number }[] = [];
-  for (const [index, text] of lines.entries()) {
-    if (text.trim() === '') continue;
+async function* readJsonl(file: string): AsyncGenerator<{ value: Record<string, unknown>; line: number }> {
+  //M 按行流式读取长聊天，回填任务可在任一批结束时让出事件循环。
+  const input = fs.createReadStream(file, { encoding: 'utf8' });
+  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  let line = 0;
+  try {
+    for await (const text of lines) {
+      line += 1;
+      if (text.trim() === '') continue;
 
-    try {
-      values.push({ value: JSON.parse(text) as Record<string, unknown>, line: index + 1 });
-    } catch {
-      //M 坏行（写到一半断了的）：跳过。
-      continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        //G 文件最后一行有可能还未写完，继续读其他完整消息。
+        continue;
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+
+      const value = parsed as Record<string, unknown>;
+      yield { value, line };
     }
+  } finally {
+    //M 迭代结束时关闭归档读取句柄。
+    lines.close();
+    input.destroy();
   }
-  return values;
 }
 
 
@@ -83,11 +97,10 @@ function getString(value: unknown): string {
  * 飞书：channels/feishu/chats/<应用号>/<聊天号>.jsonl。用户的话键是 messageId（和 channel/message 一样）；机器人的回复按正文查重。
  * @param root 运行时目录。
  */
-function getFeishu(root: string): Candidate[] {
+async function* getFeishu(root: string): AsyncGenerator<Candidate> {
   const base = path.join(root, 'channels', 'feishu', 'chats');
-  if (!fs.existsSync(base)) return [];
+  if (!fs.existsSync(base)) return;
 
-  const candidates: Candidate[] = [];
   for (const appId of fs.readdirSync(base)) {
     const appDir = path.join(base, appId);
     if (!fs.statSync(appDir).isDirectory()) continue;
@@ -98,7 +111,8 @@ function getFeishu(root: string): Candidate[] {
       const chatId = fileName.slice(0, -'.jsonl'.length);
 
       //M 读这个聊天文件的每一行（坏行跳过），挑出正文和消息号（messageId，和 channel/message 一样）；没有正文、没有消息号的行不补。
-      for (const { value } of readJsonl(path.join(appDir, fileName))) {
+      const file = path.join(appDir, fileName);
+      for await (const { value } of readJsonl(file)) {
         const text = getString(value['text']);
         const key = getString(value['messageId']);
         if (text.trim() === '' || key === '') continue;
@@ -116,7 +130,7 @@ function getFeishu(root: string): Candidate[] {
           channel: 'feishu',
           account: appId,
           chat: chatId,
-          chatType: '',
+          chatType: getString(value['chatType']),
           direction,
           senderId: getString(sender['id']),
           senderName: getString(sender['name']),
@@ -124,11 +138,27 @@ function getFeishu(root: string): Candidate[] {
           text,
           at: Number(value['createdAt']) || 0,
         };
-        candidates.push({ row, fuzzy: direction === 'bot' });
+        yield { row, fuzzy: direction === 'bot' };
       }
     }
   }
-  return candidates;
+}
+
+/** 按 rowid 分页读 SQLite 归档，批间不保留读游标或事务。 */
+function* getArchiveRows(db: bunSqlite.Database, sql: string): Generator<Record<string, unknown>> {
+  //M 每页复用同一条预编译 SQL，只改变行号断点。
+  const statement = db.query(sql);
+  let cursor = 0;
+  for (;;) {
+    //M 每页限制 100 行，大库不会一次读进进程内存。
+    const rows = statement.all(cursor) as Record<string, unknown>[];
+    if (rows.length === 0) return;
+
+    for (const row of rows) {
+      cursor = Number(row['archive_id']);
+      yield row;
+    }
+  }
 }
 
 
@@ -137,13 +167,16 @@ function getFeishu(root: string): Candidate[] {
  * @param db 运行时的库。
  * @param channel 微信插件的渠道名。
  */
-function getWechat(db: bunSqlite.Database, channel: string): Candidate[] {
+function* getWechat(db: bunSqlite.Database, channel: string): Generator<Candidate> {
+  //G 插件未挂载的运行时可能没有微信归档表。
   const table = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wechat_messages'").get();
-  if (table === null) return [];
+  if (table === null) return;
 
-  const rows = db.query('SELECT account, chat, source, local_id, at, from_self, sender, text FROM wechat_messages').all() as Record<string, unknown>[];
+  const sql = 'SELECT rowid AS archive_id, account, chat, source, local_id, at, from_self, sender, text'
+    + ' FROM wechat_messages WHERE rowid > ? ORDER BY rowid LIMIT 100';
+  //M 微信归档可能很大，用行号分页并逐条转成渠道索引格式。
+  const rows = getArchiveRows(db, sql);
   //M 逐行转成候选：键照微信插件发 channel/message 的拼法，才和插件新记的对得上，所以都不用查重（fuzzy 为 false）。
-  const candidates: Candidate[] = [];
   for (const item of rows) {
     const text = getString(item['text']);
     if (text.trim() === '') continue;
@@ -177,9 +210,8 @@ function getWechat(db: bunSqlite.Database, channel: string): Candidate[] {
       text,
       at: Number(item['at']) * 1000,
     };
-    candidates.push({ row, fuzzy: false });
+    yield { row, fuzzy: false };
   }
-  return candidates;
 }
 
 
@@ -188,13 +220,17 @@ function getWechat(db: bunSqlite.Database, channel: string): Candidate[] {
  * replies 里机器人的回话键另起（web-reply:<行号>:<第几条>），按正文查重。
  * @param db 运行时的库。
  */
-function getWeb(db: bunSqlite.Database): Candidate[] {
+function* getWeb(db: bunSqlite.Database): Generator<Candidate> {
+  //G 插件未挂载的运行时可能没有网页归档表。
   const table = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'web_messages'").get();
-  if (table === null) return [];
+  if (table === null) return;
 
-  const rows = db.query("SELECT id, bot, text, replies, created_at FROM web_messages WHERE channel = 'http'").all() as Record<string, unknown>[];
-  const candidates: Candidate[] = [];
+  const sql = 'SELECT id AS archive_id, id, bot, text, replies, created_at FROM web_messages'
+    + " WHERE id > ? AND channel = 'http' ORDER BY id LIMIT 100";
+  //M 只读网页自己的消息，其他渠道的镜像已由原渠道归档覆盖。
+  const rows = getArchiveRows(db, sql);
   for (const item of rows) {
+    //M 用户与机器人回复共享原消息行号和目标机器人。
     const id = String(item['id']);
     const bot = getString(item['bot']);
     const shared = { channel: 'http', account: 'local', chat: 'http:本机', chatType: 'local', bot };
@@ -211,7 +247,7 @@ function getWeb(db: bunSqlite.Database): Candidate[] {
         text,
         at: Number(item['created_at']),
       };
-      candidates.push({ row, fuzzy: false });
+      yield { row, fuzzy: false };
     }
 
     //M 机器人的回话：replies 是 JSON 数组 [{ at, text, … }]。
@@ -225,6 +261,9 @@ function getWeb(db: bunSqlite.Database): Candidate[] {
 
     //M 每条回话一行：正文取 text，没写时间就借用户那条的时间；键另起（web-reply:行号:第几条），按正文查重。
     for (const [index, reply] of replies.entries()) {
+      if (reply === null || typeof reply !== 'object') continue;
+
+      //M 历史回复数组可能混有附件，只有文字能送入 Rust。
       const said = getString((reply as Record<string, unknown>)['text']);
       if (said.trim() === '') continue;
 
@@ -238,10 +277,9 @@ function getWeb(db: bunSqlite.Database): Candidate[] {
         text: said,
         at,
       };
-      candidates.push({ row, fuzzy: true });
+      yield { row, fuzzy: true };
     }
   }
-  return candidates;
 }
 
 
@@ -249,16 +287,16 @@ function getWeb(db: bunSqlite.Database): Candidate[] {
  * 命令行：channels/cli/<日期>.jsonl，只有用户的话。键另起（cli-file:<文件名>:<行号>，文件里没存 channel/message 用的原始号），按正文查重。
  * @param root 运行时目录。
  */
-function getCli(root: string): Candidate[] {
+async function* getCli(root: string): AsyncGenerator<Candidate> {
   const base = path.join(root, 'channels', 'cli');
-  if (!fs.existsSync(base)) return [];
+  if (!fs.existsSync(base)) return;
 
-  const candidates: Candidate[] = [];
   for (const fileName of fs.readdirSync(base)) {
     if (!fileName.endsWith('.jsonl')) continue;
 
     //M 读这个日期文件的每一行（坏行跳过），取用户的话；没有正文的行不补。
-    for (const { value, line } of readJsonl(path.join(base, fileName))) {
+    const file = path.join(base, fileName);
+    for await (const { value, line } of readJsonl(file)) {
       const text = getString(value['text']);
       if (text.trim() === '') continue;
 
@@ -276,32 +314,43 @@ function getCli(root: string): Candidate[] {
         text,
         at: Number(value['time']) || 0,
       };
-      candidates.push({ row, fuzzy: true });
+      yield { row, fuzzy: true };
     }
   }
-  return candidates;
 }
 
 
-/**
- * 把一个渠道的候选写进索引（或者只数）。
- * @param index 索引；只看时是 undefined。
- * @param candidates 候选。
- * @returns 条数。
- */
-function fill(index: channelIndexModule.ChannelIndex | undefined, candidates: Candidate[]): Count {
-  const count: Count = { read: candidates.length, added: 0, skipped: 0 };
-  if (index === undefined) return count;
+/** 后台与 CLI 沿用同一套历史来源，逐条返回供调用方限批。 */
+export async function* getArchives(root: string, db: bunSqlite.Database): AsyncGenerator<Candidate> {
+  //M 顺次扫描各渠道，避免同一时间挂多个文件读取句柄。
+  yield* getFeishu(root);
+  yield* getWechat(db, 'wechat');
+  yield* getWeb(db);
+  yield* getCli(root);
+}
 
-  for (const { row, fuzzy } of candidates) {
-    //G 键拼不出来的：差不多的同一条已经有了就跳过。
-    if (fuzzy && index.hasSimilar(row, SIMILAR_MS)) {
-      count.skipped += 1;
-      continue;
-    }
+/** 按原渠道键或同一聊天内的近似内容去重，再补进本地索引。 */
+export function addCandidate(index: channelIndexModule.ChannelIndex, candidate: Candidate): boolean {
+  const { row, fuzzy } = candidate;
+  //G 归档里拼不出事件键的消息，沿用既有的近似去重规则。
+  if (fuzzy && index.hasSimilar(row, SIMILAR_MS)) return false;
 
-    //M 记一条；键一样的早有了不动。
-    if (index.add(row)) {
+  //M 有事件键的归档直接使用索引的唯一约束去重。
+  return index.add(row);
+}
+
+/** 依 CLI 选项把一个渠道的候选写进索引或只计数，不打印正文。 */
+async function fill(
+  index: channelIndexModule.ChannelIndex | undefined,
+  candidates: Iterable<Candidate> | AsyncIterable<Candidate>,
+): Promise<Count> {
+  const count: Count = { read: 0, added: 0, skipped: 0 };
+  for await (const candidate of candidates) {
+    count.read += 1;
+    if (index === undefined) continue;
+
+    //M 脚本和后台任务从同一个入口去重。
+    if (addCandidate(index, candidate)) {
       count.added += 1;
       continue;
     }
@@ -311,46 +360,61 @@ function fill(index: channelIndexModule.ChannelIndex | undefined, candidates: Ca
 }
 
 
-//M 参数：--data 运行时目录（必写），--run yes 才写，--wechat_channel 微信渠道名。
-const parsed = util.parseArgs({
-  options: { data: { type: 'string' }, run: { type: 'string' }, wechat_channel: { type: 'string' } },
-  strict: true,
-});
-const root = parsed.values.data;
-if (root === undefined || !fs.existsSync(path.join(root, 'data', 'jmbots7.db'))) {
-  console.error('要写 --data <运行时目录>（里面要有 data/jmbots7.db）');
-  process.exit(1);
-}
-const running = parsed.values.run === 'yes';
-const wechatChannel = parsed.values.wechat_channel ?? 'wechat';
+/** 仅 CLI 入口打开指定的运行时库并逐渠道打印计数。 */
+async function runCli(): Promise<void> {
+  //M 参数：--data 为运行时目录，--run yes 才写，--wechat_channel 可指定微信渠道名。
+  const parsed = util.parseArgs({
+    options: { data: { type: 'string' }, run: { type: 'string' }, wechat_channel: { type: 'string' } },
+    strict: true,
+  });
+  const root = parsed.values.data;
+  if (root === undefined) throw new Error('要写 --data <运行时目录>（里面要有 data/jmbots7.db）');
 
-//M 开库：只看时只读；真补时读写（库已存在，不新建）。只传 readonly: false 时 bun 没有打开标志，会报 SQLITE_MISUSE，所以写成两种。
-//M 真补时等别人的写锁最多 5 秒（服务开着也能跑）。
-let openOptions: { readonly: true } | { readwrite: true } = { readonly: true };
-if (running) {
-  openOptions = { readwrite: true };
-}
-const db = new bunSqlite.Database(path.join(root, 'data', 'jmbots7.db'), openOptions);
-let index: channelIndexModule.ChannelIndex | undefined;
-if (running) {
-  //M 真补才建索引对象（表不在就建）；只看时 index 是 undefined，fill 只数条数、不写。
-  db.exec('PRAGMA busy_timeout = 5000');
-  index = new channelIndexModule.ChannelIndex(db);
-}
+  const dbFile = path.join(root, 'data', 'jmbots7.db');
+  if (!fs.existsSync(dbFile)) throw new Error('要写 --data <运行时目录>（里面要有 data/jmbots7.db）');
 
-//M 四个渠道挨个补，打印条数（不打印内容）。
-const sources: [string, () => Candidate[]][] = [
-  ['飞书', () => getFeishu(root)],
-  ['微信', () => getWechat(db, wechatChannel)],
-  ['网页', () => getWeb(db)],
-  ['命令行', () => getCli(root)],
-];
-for (const [label, read] of sources) {
-  const count = fill(index, read());
-  if (!running) {
-    console.log(`${label}：读到 ${String(count.read)} 条（只看，没写；加 --run yes 真补）`);
-    continue;
+  //M 只看时只读，真正补录时才允许写已存在的库。
+  const running = parsed.values.run === 'yes';
+  let openOptions: { readonly: true } | { readwrite: true } = { readonly: true };
+  if (running) {
+    openOptions = { readwrite: true };
   }
-  console.log(`${label}：读到 ${String(count.read)} 条，新记 ${String(count.added)} 条，早有了 ${String(count.skipped)} 条`);
+  const db = new bunSqlite.Database(dbFile, openOptions);
+  try {
+    let index: channelIndexModule.ChannelIndex | undefined;
+    if (running) {
+      //M 真补才建索引，等别人的写锁最多五秒。
+      db.exec('PRAGMA busy_timeout = 5000');
+      index = new channelIndexModule.ChannelIndex(db);
+    }
+    const wechatChannel = parsed.values.wechat_channel ?? 'wechat';
+    const sources: [string, () => Iterable<Candidate> | AsyncIterable<Candidate>][] = [
+      ['飞书', () => getFeishu(root)],
+      ['微信', () => getWechat(db, wechatChannel)],
+      ['网页', () => getWeb(db)],
+      ['命令行', () => getCli(root)],
+    ];
+
+    //M 四个渠道挨个补，只打印条数。
+    for (const [label, read] of sources) {
+      const candidates = read();
+      const count = await fill(index, candidates);
+      if (!running) {
+        console.log(`${label}：读到 ${String(count.read)} 条（只看，没写；加 --run yes 真补）`);
+        continue;
+      }
+      console.log(`${label}：读到 ${String(count.read)} 条，新记 ${String(count.added)} 条，早有了 ${String(count.skipped)} 条`);
+    }
+  } finally {
+    //M 读写失败时也释放 SQLite 连接。
+    db.close();
+  }
 }
-db.close();
+
+//M 把命令行逻辑限定在直接运行脚本时，插件导入只复用归档读取。
+if (import.meta.main) {
+  await runCli().catch((error: Error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}

@@ -20,7 +20,15 @@ const result = await Bun.build({
   //M 第四个入口 wechat-kefu.html（2026-11-14 jm开发）：积木客服页 /wechat-kefu/（React，替换 wechat 插件里的字符串页面 Page.ts）。
   //M 第五个入口 tutorial.html（2026-11-17，替换原来的 flow.html）：教程页 /tutorial/，tutorial 插件的页面；/flow/ 跳到这里。
   //M 第六个入口 model-notes.html（2026-11-17）：模型介绍和评价页 /model-notes/，model-notes 插件提供接口。
-  entrypoints: [path.join(root, 'web', 'index.html'), path.join(root, 'web', 'graph.html'), path.join(root, 'web', 'memory.html'), path.join(root, 'web', 'wechat-kefu.html'), path.join(root, 'web', 'tutorial.html'), path.join(root, 'web', 'model-notes.html')],
+  entrypoints: [
+    path.join(root, 'web', 'index.html'),
+    path.join(root, 'web', 'graph.html'),
+    path.join(root, 'web', 'memory.html'),
+    path.join(root, 'web', 'wechat-kefu.html'),
+    path.join(root, 'web', 'tutorial.html'),
+    path.join(root, 'web', 'model-notes.html'),
+    path.join(root, 'web', 'decision-map.html'),
+  ],
   outdir: outDir,
   target: 'browser',
   minify: true,

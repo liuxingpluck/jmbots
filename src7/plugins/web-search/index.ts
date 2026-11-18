@@ -3,7 +3,7 @@
  * 两种搜索：magpie（Magpie 网关的 POST <base_url>/alpha/search）、zhipu_mcp（智谱 MCP 搜索，Streamable HTTP）。
  * 慢工具：停止信号（Tools.ts 给的 signal）交给每个 fetch，点了停止马上断开，后面几家也不再试。
  * 密钥只放在请求头里：不进跟踪、不进给模型的话、不进报错。
- * 设计：docs/src7插件设计/web-search.md；照 0.4 的 src/capabilities/tools/WebSearch.ts。
+ * 设计见同目录 说明.md 的「设计要点」一节；照 0.4 的 src/capabilities/tools/WebSearch.ts。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';

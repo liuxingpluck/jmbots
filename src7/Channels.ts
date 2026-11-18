@@ -509,27 +509,6 @@ export function getReplyRoundKey(messageId: string, botName: string, roundId: st
 
 
 /**
- * 从回复轮键取出轮名（getReplyRoundKey 的第三项）：receive 用户这一轮、approval 审批直回、judge_followup 判断后接话。
- * 微信用它分开“模型的回话”（要本人点头才发）和“审批直回”（不再套娃问）。
- * @param replyRoundKey 回复轮键。
- * @returns 轮名；不是这种写法的键是 ''。
- */
-export function getRoundId(replyRoundKey: string): string {
-  try {
-    const parts = JSON.parse(replyRoundKey) as unknown;
-    if (!Array.isArray(parts)) return '';
-
-    const roundId: unknown = parts[2];
-    if (typeof roundId !== 'string') return '';
-
-    return roundId;
-  } catch {
-    return '';
-  }
-}
-
-
-/**
  * 计算单次回复工具调用的幂等键。
  * @param replyRoundKey 回复轮键。
  * @param callId 工具调用 ID 或持久业务键。
@@ -831,95 +810,6 @@ export async function requestChannelReply(
         parts: req.parts.map((part) => ({ partId: part.partId, kind: part.kind, status: 'uncertain', reason })),
         reason,
         at: Date.now(),
-      });
-    });
-  });
-}
-
-
-/**
- * 发出 channel/history 请求并按局部 requestId 等待 channel/history-result。
- * @param ctx Cordis 上下文。
- * @param req 历史查询请求。
- * @param timeoutMs 超时毫秒数。
- * @returns 历史查询结果。
- */
-export async function requestChannelHistory(
-  ctx: cordis.Context,
-  req: Omit<ChannelHistoryRequest, 'requestId'>,
-  timeoutMs = 15_000,
-): Promise<ChannelHistoryResult> {
-  const requestId = `his_${crypto.randomUUID()}`;
-  const fullRequest: ChannelHistoryRequest = { ...req, requestId };
-
-  return await new Promise<ChannelHistoryResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let dispose: () => void = () => undefined;
-
-    const finish = (result: ChannelHistoryResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      dispose();
-      resolve(result);
-    };
-
-    //M 监听匹配本请求 requestId 的渠道历史回传事件并组装标准查询结果。
-    dispose = ctx.on('channel/history-result', (event) => {
-      if (event.requestId !== requestId) return;
-      const result: ChannelHistoryResult = {
-        ok: event.ok,
-        items: event.items,
-        nextCursor: event.nextCursor,
-        scope: event.scope,
-        completeness: event.completeness,
-      };
-      if (event.error !== undefined) {
-        result.error = event.error;
-      }
-      //M 补齐可选 error 字段后结束等待并交回历史查询结果。
-      finish(result);
-    });
-
-    //G 等待超时时以 history_timeout 收口，不悬空调用方工具轮。
-    timer = setTimeout(() => {
-      finish({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: req.sourceSnapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'history_timeout', message: '等待渠道历史结果超时' },
-      });
-    }, timeoutMs);
-
-    //M 串行发出历史查询请求；若无渠道插件接单或抛出异常则返回明确错误码。
-    void ctx.serial('channel/history', fullRequest).then(() => {
-      if (settled) return;
-      if (fullRequest.handled === true) return;
-      //G 没有渠道接单时回报 channel_unavailable，方便上层提示用户或模型。
-      finish({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: req.sourceSnapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'channel_unavailable', message: `渠道 ${req.channel} 不支持或未接入历史查询` },
-      });
-    }).catch((error: unknown) => {
-      let message = String(error);
-      if (error instanceof Error) {
-        message = error.message;
-      }
-      //M 查询异常以 history_error 收口交回原因。
-      finish({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: req.sourceSnapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'history_error', message },
       });
     });
   });

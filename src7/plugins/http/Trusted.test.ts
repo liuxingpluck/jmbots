@@ -44,6 +44,75 @@ describe('免令牌的来源地址', () => {
   });
 });
 
+/** 带主令牌的测试配置，核对要令牌的前缀。 */
+class TokenResources extends FakeResources {
+  override readonly raw = { server: { port: 1, token: 'secret' } };
+}
+
+test('别的机器访问 /programs/ 要令牌，和 /api/ 一样；本机免', async () => {
+  const ctx = new cordis.Context();
+  try {
+    await ctx.plugin(TokenResources);
+    await ctx.plugin(httpPlugin);
+    ctx.http.app.get('/programs/demo/', () => '界面');
+
+    const remote = { method: 'GET', url: '/programs/demo/', remoteAddress: '192.168.1.5' } as const;
+    const denied = await ctx.http.app.inject(remote);
+    expect(denied.statusCode).toBe(401);
+
+    const withToken = { ...remote, url: '/programs/demo/?token=secret' };
+    const allowed = await ctx.http.app.inject(withToken);
+    expect(allowed.statusCode).toBe(200);
+
+    const local = await ctx.http.app.inject('/programs/demo/');
+    expect(local.statusCode).toBe(200);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
+test('别的机器用编码地址（/%61pi/…）也要令牌：路由解码后命中的接口不能免令牌', async () => {
+  const ctx = new cordis.Context();
+  try {
+    await ctx.plugin(TokenResources);
+    await ctx.plugin(httpPlugin);
+    ctx.http.app.get('/api/secret', () => '接口');
+    ctx.http.app.get('/files/secret', () => '文件');
+    ctx.http.app.get('/programs/demo/', () => '界面');
+    //M 照网页插件的兜底路由，没对上的地址都落到这里，模式是 /*。
+    ctx.http.app.get('/*', () => '网页');
+
+    //G 修之前这几个都是 200：http 按原始地址查前缀，路由却解码后命中 /api/、/files/、/programs/。
+    for (const url of ['/%61pi/secret', '/%66iles/secret', '/%70rograms/demo/']) {
+      const remote = { method: 'GET', url, remoteAddress: '192.168.1.5' } as const;
+      const denied = await ctx.http.app.inject(remote);
+      expect(denied.statusCode).toBe(401);
+    }
+
+    //G 落到兜底 /* 的地址只要解码后在前缀下，也要令牌，不按兜底路由的模式放行。
+    const fallback = { method: 'GET', url: '/%61pi/nothing', remoteAddress: '192.168.1.5' } as const;
+    const fallbackDenied = await ctx.http.app.inject(fallback);
+    expect(fallbackDenied.statusCode).toBe(401);
+
+    //G 解不开的 %xx 按要令牌处理；路由自己也可能先回 400，总之不能是 200。
+    const broken = { method: 'GET', url: '/%E0%A4%A/secret', remoteAddress: '192.168.1.5' } as const;
+    const brokenResult = await ctx.http.app.inject(broken);
+    expect([400, 401]).toContain(brokenResult.statusCode);
+
+    //M 带令牌、本机来的照常能用；不在前缀下的网页照常免令牌。
+    const withToken = { method: 'GET', url: '/%61pi/secret?token=secret', remoteAddress: '192.168.1.5' } as const;
+    const allowed = await ctx.http.app.inject(withToken);
+    expect(allowed.body).toBe('接口');
+    const local = await ctx.http.app.inject('/%61pi/secret');
+    expect(local.body).toBe('接口');
+    const page = { method: 'GET', url: '/sessions/abc', remoteAddress: '192.168.1.5' } as const;
+    const pageResult = await ctx.http.app.inject(page);
+    expect(pageResult.body).toBe('网页');
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
 test('HTTP 插件应答注入请求及关闭请求', async () => {
   const ctx = new cordis.Context();
   try {

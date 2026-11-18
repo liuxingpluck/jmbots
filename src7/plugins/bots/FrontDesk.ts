@@ -8,8 +8,7 @@
  *     只听的话地址里还带 judge（飞书 listen: judge 的群）：先问决策模型“该不该接话”，allow 才交给前台会话跑，deny、unsure 只记不回；
  *   - 往来记录：用户每说一句、机器人每回一句（含会话中途先说的 bot/say）各记一条；查历史只查本客户这场和它交办的后台；
  *   - 前台对话每一步的上下文 = 最近 N 条往来（一条 system 消息，动态拼上去，不进系统提示词）+ 这一轮的消息；
- *   - 三个只给前台对话用的查历史工具：history、history_search、history_get。
- *     查历史用 history_search / history_get（只查这场前台对话和它交办的后台会话；每轮一共最多 3 次）。
+ *   - 给 memory_search 和 memory_get 提供前台归档，范围是这场前台及它交办的后台会话。
  * 前台只回答简单的问题和分派，绝对不自己干活。
  * 用户发了图片而前台模型不收图片：提醒前台把图转给后台；hand_session 这时新开的后台会话用看图模型（vision_model）。
  * 2026-11-17 由插件 bot-front-desk 并进 bots（用户 #114、#115）：只挪了位置，逻辑没改。
@@ -25,6 +24,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as decisionPlugin from '../decision/index.ts';
+import * as historyTools from '../memory/HistoryTools.ts';
 import type { ReceiveEvent } from './index.ts';
 import * as protocol from '../../Channels.ts';
 
@@ -38,14 +38,10 @@ const HISTORY_PAGE = 20;
 /** 这两个工具每轮一共最多调用几次。 */
 const HISTORY_MAX_CALLS = 3;
 
-/** 告诉前台怎么查历史、什么时候该交后台。 */
-// 2026-11-18：“先调 memory 工具”那句（MEMORY_HINT）挪到 memory 插件，它在 session/request 里看这一轮有 memory 工具才加（契约 #35）。
-const HISTORY_HINT = ''
-  + '你有只读工具 history_search、history_get，用来查找这场对话更早的往来（上面背景里已带最近若干条）。'
-  + 'history_search 可按关键词、时间范围、发送人搜，也可从最早一条往后或从某个编号前后翻页；每次最多 20 条，每条截短并带编号和时间。'
-  + '关键词按字匹配，同时做语义检索，说法不同也能对上（比如用「晚饭选项」能找到「今晚候选」）。'
-  + 'history_get 按编号取一条全文。这两个工具每轮一共最多调用 3 次。'
-  + '若需要通读或总结大量历史，不要自己反复翻，请用 hand_session 交给后台会话去办，你只负责把结论回给用户。';
+/** 提醒前台如何翻这场往来和取全文。 */
+const HISTORY_HINT = '用 memory_search 的 front=true 翻看本场及已交办会话的往来，可按 who、时间或编号筛选。'
+  + '带 #编号的往来可把该编号作为 ref 交给 memory_get 取全文。'
+  + '需要通读或总结大量历史时用 hand_session 交给后台会话。';
 
 
 /** 前台的配置：config.yaml 的 plugins 段里 bots 的 config.front，bots 的 apply 校验过。 */
@@ -134,8 +130,8 @@ export class FrontDesk {
       )
     `);
 
-    //M history：往前翻这个机器人的往来记录。
-    this.ctx.tools.register({
+    //M history：把往前翻页的旧名交给统一归档入口，保留原时间戳和条数。
+    historyTools.registerHistoryAlias(this.ctx, 'front-recent', {
       definition: {
         name: 'history',
         description: '往前翻这个客户的往来记录（本场前台和它交办的后台），跨渠道。',
@@ -149,13 +145,18 @@ export class FrontDesk {
         const count = (args['count'] as number | undefined) ?? 20;
 
         //M 取这个客户（本场前台和它交办的后台，跨渠道）往前 count 条往来，每条用 formatEntry 排成一行给模型看。
-        const entries = this.recent(session.row.bot, count, args['before'] as number | undefined, this.scopeIds(session));
-        return entries.length === 0 ? '没有更早的往来。' : entries.map((entry) => formatEntry(entry)).join('\n');
+        const ids = this.scopeIds(session);
+        const before = args['before'] as number | undefined;
+        const entries = this.recent(session.row.bot, count, before, ids);
+        if (entries.length === 0) return '没有更早的往来。';
+
+        //M 旧名仍返回原有的一行一条格式。
+        return entries.map((entry) => formatEntry(entry)).join('\n');
       },
     });
 
-    //M history_search：按关键词、时间、发送人搜这场对话的全部历史，或从最早一条/某个编号前后翻页。
-    this.ctx.tools.register({
+    //M 旧关键词、发送人和编号翻页参数走与 memory_search 相同的归档入口。
+    historyTools.registerHistoryAlias(this.ctx, 'front-search', {
       definition: {
         name: 'history_search',
         description: '查找这场对话的全部历史往来（不限最近 N 条），只查当前这场前台对话和它交办出去的后台会话。'
@@ -180,8 +181,8 @@ export class FrontDesk {
       run: (args, session) => this.searchHistory(session, args),
     });
 
-    //M history_get：按编号取一条全文。
-    this.ctx.tools.register({
+    //M 旧数字编号与 memory_get 的带前缀编号共用同一份往来记录。
+    historyTools.registerHistoryAlias(this.ctx, 'front-get', {
       definition: {
         name: 'history_get',
         description: '按编号取一条往来的全文。编号来自 history_search 或最近往来背景里的 #号。',
@@ -627,8 +628,11 @@ export class FrontDesk {
 
     //M 最近往来：这一轮开始之前的最近 N 条，可能来自不同的渠道、不同的会话。
     const entries = this.recent(row.bot, this.config.recent, thisRound[0]?.timestamp, this.scopeIds(request.session));
-    //M 查历史的说明；“先查记忆”那句由 memory 插件自己加（它的 session/request 监听）。
-    request.system.push(HISTORY_HINT);
+    //M 前台有两个统一工具时才提醒用它们查归档。
+    const hasMemory = request.tools.some((tool) => tool.name === 'memory_search');
+    if (hasMemory && workspaceModule.privateAllowed(row.address)) {
+      request.system.push(HISTORY_HINT);
+    }
 
     //T 跟踪：拼最近往来。
     const vars = { 会话: row.id, 带了几条往来: entries.length, 这一轮几条: thisRound.length };
@@ -644,7 +648,7 @@ export class FrontDesk {
     //M 拼成一条背景消息放在最前面，角色是 system：它是动态的上下文，不放进系统提示词。
     const lines = [
       '下面是你最近和用户的往来，按时间从早到晚，只是背景，不是用户这次说的话。',
-      ...entries.map(formatEntry),
+      ...entries.map((entry) => formatEntry(entry)),
     ];
     const background: piAi.Message = { role: 'system', content: lines.join('\n'), timestamp: Date.now() };
     request.messages = [background, ...thisRound];
@@ -852,7 +856,9 @@ export class FrontDesk {
     const orderNote = ranked ? '按相关程度' : '按时间从早到晚';
     const head = `共 ${String(total)} 条，这页 ${String(shown.length)} 条（编号 ${String(shown[0]?.id)}–${String(shown[shown.length - 1]?.id)}，${orderNote}）。`
       + (total > shown.length ? '还有更多时，用 after 往后翻或 before 往前翻。' : '');
-    return [head, ...shown.map((entry) => formatEntry(entry, HISTORY_CLIP))].join('\n');
+    const useMemoryRef = args['use_memory_ref'] === true;
+    const lines = shown.map((entry) => formatEntry(entry, HISTORY_CLIP, useMemoryRef));
+    return [head, ...lines].join('\n');
   }
 
   /**
@@ -1234,9 +1240,10 @@ function getLine(message: piAi.Message, bot: string): string {
 /**
  * 把一条往来写成一行：[时间 渠道 谁] 话。
  * @param entry 往来。
- * @param clip 话最多留几个字；不给就不截短，给了而超过的，截断后加“全文用 history_get 取”。
+ * @param clip 正文最多留几个字，不给就保留全文。
+ * @param useMemoryRef 新工具回执用 memory_get 说明全文入口。
  */
-function formatEntry(entry: BotLogEntry, clip?: number): string {
+function formatEntry(entry: BotLogEntry, clip?: number, useMemoryRef = false): string {
   const when = new Date(entry.time).toLocaleString('zh-CN', { hour12: false });
   const who = entry.who === 'user' ? '用户' : '机器人';
   let body = entry.text;
@@ -1244,6 +1251,7 @@ function formatEntry(entry: BotLogEntry, clip?: number): string {
   if (clip !== undefined && body.length > clip) {
     body = body.slice(0, clip);
     suffix = '…（全文用 history_get 取）';
+    if (useMemoryRef) suffix = '…（把 #编号交给 memory_get 取全文）';
   }
   return `#${String(entry.id)} [${when} ${entry.channel} ${who}] ${body}${suffix}`;
 }

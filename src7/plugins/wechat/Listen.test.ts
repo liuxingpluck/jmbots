@@ -24,6 +24,7 @@ function fake() {
   const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
   const tools = new Map<string, { run: (args: Record<string, unknown>, session: unknown) => unknown }>();
   const ctx = {
+    get: () => undefined,
     resources: { db: new Database(':memory:') },
     effect: () => undefined,
     emit: () => undefined,
@@ -187,7 +188,7 @@ describe('微信后台全量监听、只听不发', () => {
     const insert = ctx.resources.db.query('INSERT INTO wechat_messages (account, chat, source, local_id, at, from_self, kind, sender, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (let i = 1; i <= 60; i++) insert.run('acc1', 'wxid_a', 'm0', 1000 + i, 1000 + i, i % 2, 'text', '', `第${String(i)}条`);
     const address = { account: 'acc1', chat: 'wxid_a', name: '甲', customer: 'wechat:wxid_a' };
-    const request = { session: { row: { address } }, system: [] as string[] };
+    const request = { session: { row: { address } }, system: [] as string[], tools: [{ name: 'memory_get' }] };
     for (const fn of handlers.get('session/request') ?? []) {
       fn(request);
     }

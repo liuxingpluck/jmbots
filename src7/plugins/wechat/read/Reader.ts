@@ -3,6 +3,7 @@
  * 引擎和它的运行时放在 program/wechat/（照 jimukefu 的目录：python/、runtime/env/python/、runtime/data/），本插件只当子进程调，不改它。
  * 原理（jimukefu python/wechat_cli/commands/sync.py:187-325）：用账号目录里的密钥解密本机微信 4.x 的数据库副本，按会话读消息表，输出 JSON。
  */
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
@@ -48,6 +49,31 @@ export interface SyncResult {
   is_group?: boolean;
   chat_display?: string;
   messages?: RawMessage[];
+}
+
+/** 定位语音必须同时核对微信会话、来源分片和消息编号。 */
+export interface VoiceMessage {
+  /** 微信账号。 */
+  account: string;
+  /** 这条消息所在的会话。 */
+  chat: string;
+  /** 消息所在的分片。 */
+  source: string;
+  /** 该分片里的消息编号。 */
+  localId: number;
+}
+
+/** 可直接显示在聊天区的脱敏语音错误。 */
+export class VoiceUnavailable extends Error {}
+
+/** 对外只给出明确的缺件原因，保留引擎日志的既有脱敏。 */
+function getVoiceReason(code: string | undefined): string {
+  if (code === 'unknown_op') return '当前微信引擎没有语音读取入口';
+  if (code === 'not_found') return '微信未保存原音频';
+  if (code === 'not_silk') return '原音频格式无法解码';
+  if (code === 'ambiguous') return '无法确认原音频属于本会话';
+
+  return '未能从微信读取原音频';
 }
 
 
@@ -171,17 +197,66 @@ export class Reader {
     return { file, mime };
   }
 
+  /**
+   * 请微信引擎按消息键提取 SILK。
+   * @param message 按微信账号、会话、来源分片和编号查出的语音消息。
+   * @returns 完整的 SILK 字节。取不到时抛出一句可用于语音气泡的原因。
+   * 副作用：在引擎目录开临时请求及输出文件，读完即清理。
+   */
+  async voice(message: VoiceMessage): Promise<Buffer> {
+    //M 沿用微信引擎的 media/voice，临时输出和正式音频缓存分开。
+    const id = crypto.randomUUID();
+    const base = path.join('runtime', 'tmp', `jmbots_voice_${id}`);
+    const relative = `${base}.json`;
+    const output = `${base}.silk`;
+    const request = path.join(this.root, relative);
+    const extracted = path.join(this.root, output);
+    const payload = {
+      op: 'voice',
+      chat: message.chat,
+      source: message.source,
+      local_id: message.localId,
+      out: output,
+    };
+    fs.mkdirSync(path.dirname(request), { recursive: true });
+    const encoded = JSON.stringify(payload);
+    fs.writeFileSync(request, encoded, { mode: 0o600, flag: 'wx' });
+    try {
+      //M 引擎只在同一账号内排队执行，取音失败的结构化结果给页面说明。
+      const args = ['media', '--request', relative];
+      const stdout = await this.run(message.account, args, true);
+      const result = JSON.parse(stdout) as { ok?: boolean; error?: string; mime?: string };
+      if (result.ok !== true) {
+        const reason = getVoiceReason(result.error);
+        throw new VoiceUnavailable(reason);
+      }
+
+      if (result.mime !== undefined && result.mime !== 'audio/silk') {
+        //G 引擎返回的其他格式不交给 SILK 解码器。
+        throw new VoiceUnavailable('原音频格式无法解码');
+      }
+      //G 没有输出或输出过大时，只保留消息说明。
+      const size = fs.statSync(extracted, { throwIfNoEntry: false })?.size ?? 0;
+      if (size < 10 || size > 2 * 1024 * 1024) throw new VoiceUnavailable('微信原音频丢失或大小异常');
+
+      return fs.readFileSync(extracted);
+    } finally {
+      fs.rmSync(request, { force: true });
+      fs.rmSync(extracted, { force: true });
+    }
+  }
+
   /** 每个账号一条 Promise 链（链尾）。 */
   private readonly queues = new Map<string, Promise<unknown>>();
 
   //M 2026-11-15 00:46 EST：poll 的 sync-batch、backfillAll、页面当场同步原来各自起 python 并发；
   //M 引擎原地改写 runtime/cache 的解密缓存、不加锁（jimukefu db_cache.py:196），并发会读坏。
   /** 同一账号的引擎调用排队挨个跑，不同账号并行；某次失败不卡后面的。 */
-  private run(account: string, args: string[]): Promise<string> {
+  private run(account: string, args: string[], mediaStatus = false): Promise<string> {
     //M 让当前请求接在同账号的上一个请求之后，即使上一条失败也继续。
     const next = (this.queues.get(account) ?? Promise.resolve())
       .catch(() => undefined)
-      .then(() => this.exec(account, args));
+      .then(() => this.exec(account, args, mediaStatus));
     this.queues.set(account, next);
 
     //M 完成后只清理仍指向自己的队尾，避免丢掉随后排进来的请求。
@@ -196,7 +271,7 @@ export class Reader {
    * 环境变量照 jimukefu src/services/Python.ts:71-87：运行目录、临时目录、编码都锁在引擎目录里。
    * @throws 超时、退出码不是 0 时抛错（原来带 stderr 最后一段；2026-11-14 20:10 起只带退出码和脱敏的简短原因，stderr 记进服务日志）。
    */
-  private async exec(account: string, args: string[]): Promise<string> {
+  private async exec(account: string, args: string[], mediaStatus: boolean): Promise<string> {
     const tmp = path.join(this.root, 'runtime', 'tmp');
     fs.mkdirSync(tmp, { recursive: true });
     const env: Record<string, string | undefined> = {
@@ -228,6 +303,9 @@ export class Reader {
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
     clearTimeout(timer);
+    //M media 失败时用退出码 1 和一行 JSON 回原因；异常退出仍走原引擎错误处理。
+    if (mediaStatus && !timedOut && code === 1 && out.trim().startsWith('{')) return out;
+
     if (code !== 0 || timedOut) {
       const tail = err.trim().split(/\r?\n/u).slice(-8).join('\n');
       //G 日志里也不留账号号码、wxid、昵称：这几样都换成 ***。

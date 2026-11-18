@@ -3,7 +3,7 @@
  * allow / deny / unsure。两种模型都认：对话模型（开一场 kind: 'decision' 的小会话，让它回一段带 probability 的 JSON）；
  * 0.4 用的分类器（typesafe-system-one，直接给概率）。不拦事件、不出题、不记表。
  * 谁要判断谁发请求事件 decision/judge（approval、bots 前台、progress 可选地用），本插件回 decision/judge-result；没挂本插件时发的一方当场退回拿不准。
- * 照 0.4 src/capabilities/Model.ts:382-390、446-453、727-744。设计：docs/src7插件设计/decision.md。
+ * 照 0.4 src/capabilities/Model.ts:382-390、446-453、727-744。设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import * as piSystemOne from '@earendil-works/pi-ai/api/typesafe-system-one.lazy';

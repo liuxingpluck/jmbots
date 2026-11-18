@@ -2,9 +2,10 @@
  * 检索后端：客服要用的“按客户、会话、机器人找历史”“知识库检索”“结果带来源和片段能引用”都走这一层。
  * 一个接口 MemoryBackend，两种实现：
  * - LocalBackend：本机 SQLite（ctx.resources.db 的 memory_chunks 表），按字组打分（Recall.ts 同一套），不要模型、不要外部服务，完全能用。
- * - HttpBackend：外部检索服务（计划是 vector-graph-rag 或它的 Rust 重写版，由基地壳子托管成独立 HTTP 服务）。
+ * - HttpBackend：Rust 记忆服务 jmbots-memory（由 programs 插件按 config 拉起，本插件只按 service_url 调它）。
  *   协议写在 docs/src7插件设计/memory.md 第 11 节；向量、图检索都在那边做，这里只是照协议发请求。
  *   外部连不上就退回本地搜（本地一直同步写一份），结果上写明用的是哪个。
+ * fetchMemory：本插件所有发给记忆服务的请求都走它，连不上时报“记忆服务没在线”，超时报“超时没回”。
  * 设计：docs/src7插件设计/memory.md 第 11 节。
  */
 import type { Database } from 'bun:sqlite';
@@ -175,7 +176,7 @@ export class LocalBackend implements MemoryBackend {
 
 
 /**
- * 外部检索服务（vector-graph-rag 之类）。协议（memory.md 第 11 节）：
+ * Rust 记忆服务的 HTTP 后端。协议：
  * POST {url}/ingest {docs}；POST {url}/remove {source}；POST {url}/search {MemoryQuery} → {hits: Citation[]}；GET {url}/health。
  * 本地一直同步写一份；外部出错就用本地的结果，并在 lastError 记下原因（health 里看得到）。
  */
@@ -185,25 +186,49 @@ export class HttpBackend implements MemoryBackend {
   lastError = '';
 
   /**
-   * @param url 外部服务地址（memory.backend_url）。
+   * @param url 记忆服务地址（memory.service_url，入口 readSettings 校验过）。
    * @param local 本地后端：同步写、出错时兜底。
    * @param timeoutMs 每个请求最多等多久。
    * @param token 有就带 Authorization: Bearer（memory.backend_token）。
+   * @param requireWrite 要求 Rust 确认写入，确保失败的同步不会被当作已完成。
    */
-  constructor(private readonly url: string, private readonly local: LocalBackend, private readonly timeoutMs = HTTP_TIMEOUT_MS, private readonly token = '') {}
+  constructor(
+    readonly url: string,
+    private readonly local: LocalBackend,
+    private readonly timeoutMs = HTTP_TIMEOUT_MS,
+    private readonly token = '',
+    private readonly requireWrite = false,
+  ) {}
 
-  /** 入库：本地先写一份（出错兜底用），再发给外部服务；外部出错只记原因不抛。 */
+  /** 入库：保留 SQLite 备份。统一知识库写入以 Rust 的回执为准。 */
   async ingest(docs: MemoryDoc[]): Promise<void> {
-    //M 本地一直同步写一份；外部服务出错（this.fail）只记在 lastError，不挡会话。
+    const body = { docs };
+    //M 严格写入使用同一 Rust 回执更新本地备份，避免离线时改写备份。
+    if (this.requireWrite) await this.write('/ingest', body);
     await this.local.ingest(docs);
-    await this.call('POST', '/ingest', { docs }).catch((error: unknown) => this.fail(error));
+    if (!this.requireWrite) await this.write('/ingest', body);
   }
 
-  /** 删一个来源：本地先删，再通知外部服务；外部出错只记原因不抛。 */
+  /** 删一个来源：Rust 和 SQLite 移除同一份旧片段。 */
   async remove(source: string): Promise<void> {
-    //M 本地同步删；外部服务出错（this.fail）只记在 lastError，不挡会话。
+    const body = { source };
+    //M 新知识库只在 Rust 确认移除后再更新本地备份。
+    if (this.requireWrite) await this.write('/remove', body);
     await this.local.remove(source);
-    await this.call('POST', '/remove', { source }).catch((error: unknown) => this.fail(error));
+    if (!this.requireWrite) await this.write('/remove', body);
+  }
+
+  /** 记录写入的实际结果。统一服务写失败时，Store 不前推索引记录。 */
+  private async write(route: string, body: unknown): Promise<void> {
+    try {
+      //M 确认 Rust 已经接受写入，再让 Store 更新同步进度。
+      await this.call('POST', route, body);
+      this.lastError = '';
+    } catch (error) {
+      //G 兼容手动构建的后端仍可本地兜底，统一服务的同步则等待下次重试。
+      this.fail(error);
+      if (this.requireWrite) throw error;
+    }
   }
 
   /** 搜：问外部服务，回的形状不对或出错就退回本地搜，lastError 里看得到原因。 */
@@ -247,9 +272,38 @@ export class HttpBackend implements MemoryBackend {
     if (this.token !== '') headers['authorization'] = `Bearer ${this.token}`;
     const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
     if (body !== undefined) init.body = JSON.stringify(body);
-    const response = await fetch(`${this.url}${route}`, init);
+
+    //M 连不上、超时由 fetchMemory 写成“记忆服务没在线”“超时没回”，非 2xx 在这里抛。
+    const response = await fetchMemory(this.url, route, init);
     if (!response.ok) throw new Error(`外部检索服务 ${route} 回了 ${String(response.status)}`);
     return response.json();
+  }
+}
+
+
+/**
+ * 向记忆服务发一个请求：MemoryService 和 HttpBackend 共用，让连不上的原因对谁都是同一句话。
+ * @param base 记忆服务地址（memory.service_url）。
+ * @param route 服务上的路径，如 /search、/health。
+ * @param init fetch 的参数，超时信号由调用方给。
+ * @returns 服务的应答，不看状态码。
+ * @throws 超时抛“记忆服务超时没回”；其余连不上（服务没起来、端口没人听）抛“记忆服务没在线”。
+ */
+export async function fetchMemory(base: string, route: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${base}${route}`, init);
+  } catch (error) {
+    //M 原因原样带上（如 ECONNREFUSED），排查时知道是哪一种连不上。
+    const reason = textModule.getMessage(error);
+
+    //G 超时说明服务在、只是忙（大查询、抽图），和没起来分开说。AbortSignal.timeout 抛的是 DOMException，按 name 认。
+    const name = (error as { name?: unknown } | null)?.name;
+    if (name === 'TimeoutError') {
+      throw new Error(`记忆服务超时没回（${base}${route}）：${reason}`);
+    }
+
+    //M 剩下的都是连不上：记忆服务由 programs 插件拉起，没起来或已退出时就是这句。
+    throw new Error(`记忆服务没在线（${base}）：${reason}`);
   }
 }
 

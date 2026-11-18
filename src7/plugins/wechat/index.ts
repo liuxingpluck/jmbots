@@ -10,7 +10,7 @@
  * 发：只听不发。send 开关（config 里 wechat-kefu.send）默认 false：机器人的回复一律进发件表当草稿（state=draft），不问 approval，
  *     deliver 和页面上的“发送”按钮也只落成草稿。send: true 时才发：会话开了“自动发”就发，没开就登记待确认、没挂 approval 就留草稿；
  *     只发到监听名单里的会话，发送失败不重发。
- * 上下文：最近 50 条（自己说的、对方说的都算）拼进 system；更早的模型用工具 wechat_history 自己决定读多少。
+ * 上下文：最近 50 条拼进 system，更早的消息交给 memory_get 按当前微信会话翻页。
  * 事件：不加新事件。跟踪点照 utils/Trace.ts（ctx.emit('trace', …)）；
  * 听 approval/decided、web-api/status、channel/reply（registerTextReply）。
  * 回话：前台一轮里 channel_reply 几次进几条发件，一次没调就把最后的话进发件（routing.autoFinal）。
@@ -23,10 +23,14 @@ import * as piAi from '@earendil-works/pi-ai';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { Approval, Pending } from '../approval/index.ts';
+import * as historyTools from '../memory/HistoryTools.ts';
 import * as protocol from '../../Channels.ts';
 import * as page from './page/Routes.ts';
 import { Reader } from './read/Reader.ts';
 import type { RawMessage } from './read/Reader.ts';
+import * as voiceModule from './read/Voice.ts';
+import * as storeModule from './read/Store.ts';
+export { describe } from './read/Store.ts';
 import { Sender } from './send/Sender.ts';
 import { Window } from './send/Window.ts';
 import { WechatHistory } from './History.ts';
@@ -39,7 +43,8 @@ export const name = 'wechat-kefu';
 //M 1.1.3：改成 channel_tool：一轮里 channel_reply 几次进几条发件（模型的话照旧要点头才发），零次回复把最后的话进发件；
 //M   不再在 bot/receive 里按客户认领前台（bots 按来源范围找，同客户的旧前台沿用）。
 //M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
-export const version = '1.1.4';
+//M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
+export const version = '1.2.1';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http', 'tools'];
@@ -50,6 +55,27 @@ const SYNC_BATCH = 60;
 const CONTEXT_MESSAGES = 50;
 /** 微信自带的系统会话和公众号：只存不交给机器人。 */
 const SKIP_REPLY = /^(gh_|filehelper$|weixin$|notifymessage$|fmessage$|floatbottle$|medianote$|newsapp$|qqmail$|brandsessionholder$|brandservicesessionholder$|qmessage$|tmessage$|qqsync$|@)/u;
+
+
+/**
+ * 从回复轮键取出轮名（getReplyRoundKey 的第三项）：receive 用户这一轮、approval 审批直回、judge_followup 判断后接话。
+ * 微信用它分开“模型的回话”（要本人点头才发）和“审批直回”（不再套娃问）。
+ * @param replyRoundKey 回复轮键。
+ * @returns 轮名；不是这种写法的键是 ''。
+ */
+export function getRoundId(replyRoundKey: string): string {
+  try {
+    const parts = JSON.parse(replyRoundKey) as unknown;
+    if (!Array.isArray(parts)) return '';
+
+    const roundId: unknown = parts[2];
+    if (typeof roundId !== 'string') return '';
+
+    return roundId;
+  } catch {
+    return '';
+  }
+}
 
 
 declare module '../../Sessions.ts' {
@@ -66,59 +92,6 @@ export interface WechatAddress {
   chat: string;
   name: string;
   customer: string;
-}
-
-/**
- * 一条消息给人、给模型看的文字（2026-11-14 23:30 EST：原来非文字消息只剩空串，页面显示 [image]、模型也看不到）。
- * 照 jimukefu msgview 的种类：图片、语音、视频、链接/公众号文章、文件、引用、位置、名片、转账……
- */
-//M 格式化引用回复里的摘录内容
-function formatQuote(quote: NonNullable<RawMessage['view']>['quote']): string {
-  if (!quote) return '';
-
-  return `（引用 ${quote.name ?? ''}：${quote.text ?? ''}）`;
-}
-
-/**
- * 把微信引擎的消息视图转成页面与模型共用的可读正文。
- * @param view 微信引擎的消息视图，可以缺省。
- * @returns 文字正文或带消息类型的摘要。
- */
-export function describe(view: RawMessage['view']): string {
-  const v = view ?? {};
-  const title = v.title ?? '';
-  let desc = '';
-  if (v.desc) {
-    desc = ` — ${v.desc}`;
-  }
-  if (v.kind === 'text' || v.kind === 'system' || v.kind === 'call' || v.kind === 'other' || v.kind === undefined) {
-    return v.text ?? '';
-  }
-
-  if (v.kind === 'image') return '[图片]';
-
-  if (v.kind === 'emoji') return '[表情]';
-
-  if (v.kind === 'voice') return `[语音 ${String(v.seconds ?? 0)} 秒]`;
-
-  if (v.kind === 'video') return `[视频 ${String(v.seconds ?? 0)} 秒]`;
-
-  //M 保留回复正文与引用摘录，让读者知道它回应了什么。
-  if (v.kind === 'quote') return `${v.text ?? ''}${formatQuote(v.quote)}`;
-
-  if (v.kind === 'location') return `[位置] ${title}${desc}`;
-
-  if (v.kind === 'card') return `[名片] ${title}`;
-
-  if (v.kind === 'transfer') return `[${v.desc ?? '转账'}] ${v.amount ?? ''}`;
-
-  if (v.kind === 'file') return `[文件] ${title}`;
-
-  let kindLabel = '文章/卡片';
-  if (v.kind === 'link') {
-    kindLabel = '链接';
-  }
-  return `[${kindLabel}] ${title}${desc}`;
 }
 
 /** 校验后的配置。 */
@@ -167,6 +140,9 @@ export class Wechat {
   /** 读消息。 */
   readonly reader: Reader;
 
+  /** 本地微信消息。 */
+  private readonly messageStore: storeModule.Store;
+
   /** 发消息。 */
   readonly sender: Sender;
 
@@ -194,23 +170,9 @@ export class Wechat {
     //M 发端使用独立的 OCR 运行时与窗口定位实例。
     this.sender = new Sender(config.root, config.ocrPython, new Window(config.aobwUrl, config.lockFile));
     const db = this.ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_watch'
-      + ' (account TEXT, chat TEXT, name TEXT, auto INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_messages'
-      + ' (account TEXT, chat TEXT, source TEXT, local_id INTEGER, at INTEGER,'
-      + ' from_self INTEGER, kind TEXT, sender TEXT, text TEXT, PRIMARY KEY (account, chat, source, local_id))');
-    //M 2026-11-14 23:30 EST：存整条气泡视图（JSON），页面按种类画图片、语音条、卡片。老库补一列。
-    if (!(db.query('PRAGMA table_info(wechat_messages)').all() as { name: string }[])
-      .some((col) => col.name === 'view')) db.exec('ALTER TABLE wechat_messages ADD COLUMN view TEXT');
-    //M 2026-11-14 23:15 EST：全部会话的同步进度（原来记在 wechat_watch.last_time，只有重点监听的有）。
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_sync'
-      + ' (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
-    //M 2026-11-15 00:17 EST：full=1 表示这个监听会话的历史已经全部补进库了（不只是最近一段）。
-    if (!(db.query('PRAGMA table_info(wechat_sync)').all() as { name: string }[])
-      .some((col) => col.name === 'full')) db.exec('ALTER TABLE wechat_sync ADD COLUMN full INTEGER');
-    db.exec('CREATE TABLE IF NOT EXISTS wechat_outbox'
-      + ' (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, chat TEXT, name TEXT,'
-      + ' text TEXT, state TEXT, note TEXT, at INTEGER)');
+
+    //M 与独立程序共用相同的微信表和消息写入格式。
+    this.messageStore = new storeModule.Store(db);
 
     //M 微信来的话：每个客户一场前台会话。不再在 bot/receive 里自己认领：bots 按来源范围（微信、账号、会话）找前台，
     //M   同客户的旧前台会补写范围沿用（FrontDesk.findOrCreateFrontByScope）；起草（draftReply 走 bots.receive）由前台按客户找，是同一场。
@@ -218,7 +180,8 @@ export class Wechat {
 
     //M 微信来的会话：最近 50 条（自己的、对方的都算）拼进 system，和现在会话把最近对话给模型看是一个意思。
     this.ctx.on('session/request', (request) => this.onRequest(request));
-    this.ctx.tools.register({
+    //M 保留旧调用的偏移量和文本回执，新工具也可读同一微信归档。
+    historyTools.registerHistoryAlias(this.ctx, 'wechat-archive', {
       definition: {
         name: 'wechat_history',
         description: `读当前微信会话更早的聊天记录（只读）。最近 ${String(CONTEXT_MESSAGES)} 条已经在上下文里了；要更早的就用它，`
@@ -269,7 +232,7 @@ export class Wechat {
           customer: customerKey,
         };
         //M 从回复轮次判定是否需要再次审批，再按发送设置处理这条回复。
-        const askApproval = protocol.getRoundId(request.replyRoundKey) !== 'approval';
+        const askApproval = getRoundId(request.replyRoundKey) !== 'approval';
         this.deliverOrDraft(target, request.bot, text, askApproval);
       },
     });
@@ -380,10 +343,10 @@ export class Wechat {
     const watched = db.query('SELECT 1 FROM wechat_watch WHERE account = ? AND chat = ?').get(account, row.chat);
     for (const msg of messages) {
       last = Math.max(last, msg.create_time);
-      const view = msg.view ?? {};
       //M 生成可读正文供渠道事件使用，同时入库并记录是否为新增。
-      const text = describe(view);
-      const added = this.save(account, row.chat, msg);
+      const view = storeModule.getMessageView(msg);
+      const text = storeModule.describe(view);
+      const added = this.messageStore.save(account, row.chat, msg);
 
       //G 第一次同步（存量）、重复的、自己发的、群里没 @我 的、公众号和系统会话：只存不交。
       //M 没勾“监听”（wechat_watch 里没有）的会话只存不交，不调模型、不起草；勾了的，对方私聊、群里 @我 才交给机器人起草。
@@ -477,46 +440,6 @@ export class Wechat {
       + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, is_group = excluded.is_group,'
       + ' last_time = excluded.last_time')
       .run(account, row.chat, row.name, isGroupFlag, last);
-  }
-
-  /**
-   * 存一条微信消息进 wechat_messages；以前存过的（撞上表的唯一键）不重复存。同步、翻历史、补全量共用。
-   * @param account 微信账号。
-   * @param chat 哪个会话。
-   * @param msg 读出来的一条消息。
-   * @returns 这次新存进去是 true，以前存过是 false。
-   * 副作用：写库。
-   */
-  private save(account: string, chat: string, msg: RawMessage): boolean {
-    //M 消息里给人看的那块（类型、谁说的、内容）拆成表里的几列。
-    const view = msg.view ?? {};
-    let fromSelf = 0;
-    if (msg.from_self === true) {
-      fromSelf = 1;
-    }
-    const kind = view.kind ?? 'other';
-    const sender = view.sender ?? '';
-    //M 与入站事件共用正文格式，让落库的非文字消息也可读。
-    const text = describe(view);
-
-    //M INSERT OR IGNORE：撞上就不写，changes 是 0。
-    const sql = 'INSERT OR IGNORE INTO wechat_messages'
-      + ' (account, chat, source, local_id, at, from_self, kind, sender, text, view)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    const insert = this.ctx.resources.db.query(sql);
-    const result = insert.run(
-      account,
-      chat,
-      msg.source,
-      msg.local_id,
-      msg.create_time,
-      fromSelf,
-      kind,
-      sender,
-      text,
-      JSON.stringify(view),
-    );
-    return result.changes > 0;
   }
 
   /** 一行消息给模型看的样子：时间 谁：内容。 */
@@ -673,9 +596,9 @@ export class Wechat {
 
   /** 微信会话调模型前：最近 50 条拼进 system。 */
   private onRequest(request: ChatRequest): void {
-    const address = request.session.row.address as Partial<WechatAddress> | undefined;
-    if (typeof address?.customer !== 'string' || !address.customer.startsWith('wechat:')
-      || address.account === undefined || address.chat === undefined) return;
+    //M 背景和翻页使用同一个来源，绑定后按快照读当前账号和聊天。
+    const address = this.getHistoryAddress(request.session);
+    if (address === undefined) return;
 
     //M 取当前微信会话的最近消息，为模型补充回复所需的上下文。
     const rows = this.ctx.resources.db
@@ -687,15 +610,40 @@ export class Wechat {
     if (rows.length === 0) return;
 
     //M 将消息翻回时间正序并逐行渲染，作为这次请求的系统上下文。
-    request.system.push(`# 这个微信会话最近 ${String(rows.length)} 条聊天记录（旧的在前；“我”是这个微信号自己）\n`
+    let archiveHint = '';
+    const hasGet = request.tools.some((tool) => tool.name === 'memory_get');
+    if (hasGet) archiveHint = '\n更早的用 memory_get 翻当前微信聊天，下一页传回执里的 nextCursor 给 before。';
+    const context = `# 这个微信会话最近 ${String(rows.length)} 条聊天记录（旧的在前；“我”是这个微信号自己）\n`
       + rows.reverse().map((row) => this.line(row)).join('\n')
-      + `\n更早的用工具 wechat_history 读。你的回复只会存成草稿给人看，不会自动发出去。`);
+      + archiveHint
+      + '\n你的回复只会存成草稿给人看，不会自动发出去。';
+    request.system.push(context);
   }
 
-  /** 工具 wechat_history：库里不够就用 backfill 从微信里补再读。 */
+  /** 绑定的来源优先，无快照时用旧微信会话的地址。 */
+  private getHistoryAddress(session: Session): Pick<WechatAddress, 'account' | 'chat'> | undefined {
+    const row = session.row;
+    const snapshot = row.frontTask?.sourceSnapshot ?? row.activeSourceSnapshot;
+    if (snapshot?.channel === 'wechat' && snapshot.accountId !== '' && snapshot.chatId !== '') {
+      return { account: snapshot.accountId, chat: snapshot.chatId };
+    }
+    if (snapshot !== undefined) return undefined;
+
+    const address = row.address as Partial<WechatAddress> | undefined;
+    if (!address?.account || !address.chat) return undefined;
+
+    //G 老会话没有快照时也要确认为微信来源，才允许读取它的记录。
+    if (row.channel !== 'wechat' && row.channel !== 'wechat-kefu' && !address.customer?.startsWith('wechat:')) {
+      return undefined;
+    }
+    return { account: address.account, chat: address.chat };
+  }
+
+  /** 读取微信历史页，归档不足时按原逻辑从当前会话补录。 */
   private async history(session: Session, args: Record<string, unknown>): Promise<string> {
-    const address = session.row.address as Partial<WechatAddress> | undefined;
-    if (address?.account === undefined || address.chat === undefined) return '这场会话不是微信来的，没有微信聊天记录';
+    //G 未取得当前微信聊天，不触碰原始归档。
+    const address = this.getHistoryAddress(session);
+    if (address === undefined) return '这场会话不是微信来的，没有微信聊天记录';
 
     const skip = Math.max(0, Math.floor(Number(args['skip'] ?? CONTEXT_MESSAGES)) || 0);
     const limit = Math.min(500, Math.max(1, Math.floor(Number(args['limit'] ?? 50)) || 50));
@@ -704,7 +652,7 @@ export class Wechat {
     const read = () => db
       .query('SELECT at, from_self, sender, kind, text FROM wechat_messages WHERE account = ? AND chat = ?'
         + ' ORDER BY at DESC, local_id DESC LIMIT ? OFFSET ?')
-      .all(address.account!, address.chat!, limit, skip) as {
+      .all(address.account, address.chat, limit, skip) as {
         at: number; from_self: number; sender: string; kind: string; text: string;
       }[];
     let rows = read();
@@ -718,7 +666,7 @@ export class Wechat {
       );
       for (const msg of more.messages ?? []) {
         //M 把补来的历史消息放入库里，使下面的同页查询能读到它们。
-        this.save(address.account, address.chat, msg);
+        this.messageStore.save(address.account, address.chat, msg);
       }
 
       //M 补录后再查同一页，让本次请求能取到刚补的历史。
@@ -820,7 +768,7 @@ export class Wechat {
 
         //M 逐条入库并统计新增，用于判断这批是否还能继续往前推进。
         for (const msg of messages) {
-          if (this.save(account, chat, msg)) added += 1;
+          if (this.messageStore.save(account, chat, msg)) added += 1;
         }
         if (messages.length < batch
           || (added === 0 && messages.length > 0 && Math.min(...messages.map((msg) => msg.create_time)) >= until)) {
@@ -1034,7 +982,11 @@ export function checkConfig(ctx: cordis.Context, written: unknown): WechatConfig
 export function apply(ctx: cordis.Context, config: unknown): void {
   //M 先校验外部配置，再用同一个微信实例挂渠道和客服路由。
   const wechat = new Wechat(ctx, checkConfig(ctx, config));
-  page.routes(ctx.http, ctx.resources.db, wechat);
+
+  //M 播放时把核实过的语音留在这个机器人的消息目录。
+  const messages = ctx.resources.dir('bots', wechat.config.bot, 'message');
+  const voice = new voiceModule.VoiceAudio(wechat.reader, messages);
+  page.routes(ctx.http, ctx.resources.db, wechat, voice);
   void ctx.inject(['approval'], (sub) => {
     wechat.approval = sub.approval;
     //M 监听审批结果，按发件编号更新状态或触发发送。

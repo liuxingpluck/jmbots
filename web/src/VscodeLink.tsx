@@ -6,6 +6,7 @@
  *   - TextWithVscodeLinks 自动把工具参数 JSON、报错栈、文件路径字符串里的可用路径转为可点击链接。
  */
 import { createContext, useContext, useEffect, useState, type JSX, type MouseEvent, type ReactNode } from 'react';
+import * as sourceDirModule from '../../src7/utils/SourceDir.ts';
 import { TOKEN, withToken } from './Token.ts';
 import './VscodeLink.css';
 
@@ -21,8 +22,35 @@ let workspacePromise: Promise<string> | null = null;
 let cachedRuntimeRoot: string | null = null;
 let runtimeRootPromise: Promise<string> | null = null;
 
+/** 源码根目录下认得的顶层目录：后端源码根（src7/utils/SourceDir.ts 的 SOURCE_DIR）和网页、基地、脚本、测试。 */
+const SOURCE_ROOTS = [sourceDirModule.SOURCE_DIR, 'web', 'local', 'scripts', 'tests'];
+
+/** 上面几个目录名拼成的正则分支，如 src7|web|local|scripts|tests。 */
+const SOURCE_ROOTS_GROUP = SOURCE_ROOTS.join('|');
+
+/** 以上面几个目录之一开头的源码相对路径。 */
+const SOURCE_RELATIVE_RE = new RegExp(`^(?:${SOURCE_ROOTS_GROUP})/`, 'u');
+
+/** 文本里出现上面几个目录之一加斜杠（要源码根目录才能解析的相对路径标记）。 */
+const SOURCE_MARK_RE = new RegExp(`(?:${SOURCE_ROOTS_GROUP})/`, 'u');
+
+/** 路径的文件名部分：到空白、引号、括号、逗号、分号为止，可选附带 :行[:列]。 */
+const PATH_BODY = /[^\s"'`<>()[\]{},;]+(?::\d+(?::\d+)?)?/u.source;
+
+/** Windows 绝对路径开头（含 JSON 双反斜杠）。 */
+const WINDOWS_HEAD = /[A-Za-z]:(?:\\\\|\\|\/)/u.source;
+
+/** POSIX 绝对路径开头。 */
+const POSIX_HEAD = /\/(?:home|opt|usr|var|mnt|root|app|Users|tmp)\//u.source;
+
+/** 源码或 bots 相对路径开头。 */
+const RELATIVE_HEAD = `(?:${SOURCE_ROOTS_GROUP}|bots)/`;
+
+/** 文本内嵌路径匹配的正则原文：三种开头各自接文件名部分。 */
+const INLINE_PATH_SOURCE = `(${WINDOWS_HEAD}${PATH_BODY}|${POSIX_HEAD}${PATH_BODY}|${RELATIVE_HEAD}${PATH_BODY})`;
+
 /** 文本内嵌路径匹配：Windows 绝对路径（含 JSON 双反斜杠）、POSIX 绝对路径、源码或 bots 相对路径，可选附带 :行[:列]。 */
-const INLINE_PATH_RE = /([A-Za-z]:(?:\\\\|\\|\/)[^\s"'`<>()[\]{},;]+(?::\d+(?::\d+)?)?|\/(?:home|opt|usr|var|mnt|root|app|Users|tmp)\/[^\s"'`<>()[\]{},;]+(?::\d+(?::\d+)?)?|(?:src7|web|local|scripts|tests|bots)\/[^\s"'`<>()[\]{},;]+(?::\d+(?::\d+)?)?)/gu;
+const INLINE_PATH_RE = new RegExp(INLINE_PATH_SOURCE, 'gu');
 
 
 /**
@@ -194,7 +222,7 @@ export function getSiteParts(site: string): { file: string; line: number } | und
 
 /** 判断标准路径是否像源码根目录下的相对路径。 */
 function isSourceRelative(norm: string): boolean {
-  return /^(?:src7|web|local|scripts|tests)\//u.test(norm);
+  return SOURCE_RELATIVE_RE.test(norm);
 }
 
 
@@ -285,9 +313,14 @@ export function getVscodeHref(workspace: string, site: string, runtimeRoot = '')
   const root = workspace.trim().replaceAll('\\', '/').replace(/\/+$/u, '');
   if (root === '') return null;
 
-  let relative = file;
+  //M 带着前面目录的，先从后端源码根截起：getSourceStart 不认 web/ 下面那个，源码目录改名成 src 后 web/src/ 不会被误截。
   const prefixed = `/${file}`;
-  for (const mark of ['/src7/', '/web/', '/local/', '/scripts/', '/tests/']) {
+  const sourceAt = sourceDirModule.getSourceStart(prefixed);
+  if (sourceAt >= 0) return `vscode://file/${root}/${prefixed.slice(sourceAt)}${lineSuffix}`;
+
+  //M 再认网页、基地、脚本、测试这几层，从最后一处截起。
+  let relative = file;
+  for (const mark of ['/web/', '/local/', '/scripts/', '/tests/']) {
     const at = prefixed.lastIndexOf(mark);
     if (at < 0) continue;
 
@@ -327,7 +360,7 @@ function isAbsolutePathText(site: string): boolean {
 
 /** 判断文本里是否出现需要源码根目录解析的相对路径标记。 */
 function hasSourcePrefix(text: string): boolean {
-  return /(?:src7|web|local|scripts|tests)\//u.test(text);
+  return SOURCE_MARK_RE.test(text);
 }
 
 

@@ -3,7 +3,7 @@
  * memory 插件配置：
  *   history_graph: false        所有聊天记录只收进记忆（照样能搜），不抽关系图；默认 true。
  *   no_graph_customers: [...]   这些客户的聊天记录不抽关系图；写 `demo:*` 这种以 * 结尾的按前缀算。
- * 写入外部记忆服务时给 MemoryDoc 带 graph: false，jmbots-memory（Rust）和 vgr adapter 见到就跳过关系抽取。
+ * 写入 Rust 记忆服务时给 MemoryDoc 带 graph: false，服务据此跳过关系抽取。
  * 知识库、文档导入不受影响（它们不是聊天记录）。
  */
 

@@ -4,6 +4,7 @@
  * 只读打开；服务那边是 WAL，同时读不挡它写。
  */
 import { Database } from 'bun:sqlite';
+import * as channel from './ChannelIndex.ts';
 
 
 /** 图上的一个点。 */
@@ -155,10 +156,12 @@ export class GraphStore {
    * @returns 每个空间（scope）下每个客户一项：机器人、片段数；按空间、片段数从多到少排。
    */
   customers(): { customer: string; bot: string; docs: number; scope: string }[] {
-    //M 按空间和客户分组数片段，片段多的排前面，页面下拉框直接用。
-    return this.open()
-      .query('SELECT customer, MAX(bot) AS bot, COUNT(*) AS docs, scope FROM docs GROUP BY scope, customer ORDER BY scope, docs DESC')
-      .all() as never;
+    //M 只列客服和知识库的空间，渠道聊天有独立的检索入口。
+    const sql = 'SELECT customer, MAX(bot) AS bot, COUNT(*) AS docs, scope FROM docs'
+      + ' WHERE customer NOT GLOB ? GROUP BY scope, customer ORDER BY scope, docs DESC';
+    const hidden = `${channel.CHANNEL_PARTITION}*`;
+    const db = this.open();
+    return db.query(sql).all(hidden) as never;
   }
 
   /** 关系行（带两头名字和出处）。 */
@@ -293,6 +296,31 @@ export class GraphStore {
     const doc = db.query('SELECT id, source, scope, bot, customer, session, title, text, at, start_at AS start, end_at AS end FROM docs WHERE id = ?').get(id);
     const relations = db.query('SELECT r.id, r.text FROM relations r JOIN rel_docs d ON d.relation = r.id WHERE d.doc = ?').all(id);
     return { passage: doc, relations };
+  }
+
+  /** 从本地只读库取同一出处的相邻段，先确认锚点与 Rust 服务的原文一致。 */
+  passageContext(anchor: {
+    id: number; source: string; scope: string; bot: string; customer: string;
+    session: string; start: number; end: number; text: string;
+  }, limit: number): { before: unknown[]; after: unknown[] } | undefined {
+    //M 同一篇文档或会话的邻段必须共享作用域、客户、机器人和来源。
+    const db = this.open();
+    const filter = ' FROM docs WHERE source = ? AND scope = ? AND bot = ? AND customer = ? AND session = ?';
+    const fields = [anchor.source, anchor.scope, anchor.bot, anchor.customer, anchor.session];
+    const check = `SELECT 1${filter} AND id = ? AND start_at = ? AND end_at = ? AND text = ?`;
+    const found = db.query(check).get(...fields, anchor.id, anchor.start, anchor.end, anchor.text);
+    if (found === null) return undefined;
+
+    //M 同一来源按段落起止和编号排序，分别取指定条数的前文、后文。
+    const columns = 'SELECT id, title, text, at, start_at AS start, end_at AS end';
+    const beforeSql = `${columns}${filter} AND (start_at,end_at,id) < (?,?,?)`
+      + ' ORDER BY start_at DESC, end_at DESC, id DESC LIMIT ?';
+    const afterSql = `${columns}${filter} AND (start_at,end_at,id) > (?,?,?)`
+      + ' ORDER BY start_at, end_at, id LIMIT ?';
+    const position = [anchor.start, anchor.end, anchor.id, limit];
+    const before = db.query(beforeSql).all(...fields, ...position);
+    const after = db.query(afterSql).all(...fields, ...position);
+    return { before: before.reverse(), after };
   }
 
   /**

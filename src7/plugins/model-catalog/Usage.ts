@@ -2,28 +2,20 @@
  * 用量：模型每调用一次记一行（表 model_usage，列照 0.4），给网页的用量页按时间段、分组合计（GET /api/usage），
  * 也给回话追溯按会话、时间窗取（事件 usage/list，兼容服务 usage.list）。
  * 成功的听 session/message（接进对话的模型回答）；失败的听骨架的 model/failed（重试的每一次都算）。
- * 钱：挂了 model-catalog 就按它给的价格算（美元每百万 token），没挂就是 0。
- * 设计：docs/src7插件设计/usage.md。
+ * 钱：按模型清单事件给的价格算（美元每百万 token），查询未响应或没价格时记 0。
+ * model-catalog 内的用量子模块，保留 usage 服务名与原事件、统计接口。
  */
 import * as cordis from 'cordis';
+import type * as fastify from 'fastify';
 import type * as piAi from '@earendil-works/pi-ai';
 import type { Session } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 
 
-/** 插件名。 */
-export const name = 'usage';
-//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.1';
-
-/** 用到的服务：resources 拿数据库。http 是可选的（见 apply）。 */
-export const inject = ['resources'];
-
-
 declare module 'cordis' {
   interface Context {
-    /** 用量服务，实现在 src7/plugins/usage/index.ts。别的插件当可选依赖，用 ctx.get('usage') 现取。 */
+    /** 用量服务，实现在 src7/plugins/model-catalog/Usage.ts。别的插件当可选依赖，用 ctx.get('usage') 现取。 */
     usage: Usage;
   }
   interface Events {
@@ -56,33 +48,48 @@ interface UsageList {
 
 /** 一次调用，形状照网页的 TraceUsage（web/src/Types.ts:223-254）。 */
 export interface UsageRecord {
+  /** 调用时刻，毫秒。 */
   at: number;
+  /** 供应商名。 */
   provider: string;
+  /** 供应商与模型 ID。 */
   model: string;
+  /** 调用类别。 */
   kind: string;
+  /** 会话用途。 */
   purpose: string;
+  /** 所属机器人名。 */
   bot?: string;
+  /** 所属会话 ID。 */
   sessionId?: string;
+  /** 输入 token 数。 */
   input: number;
+  /** 输出 token 数。 */
   output: number;
+  /** 缓存读取 token 数。 */
   cacheRead: number;
+  /** 缓存写入 token 数。 */
   cacheWrite: number;
+  /** 费用，美元。 */
   cost: number;
+  /** 调用耗时，毫秒。 */
   ms: number;
+  /** 调用是否成功。 */
   ok: boolean;
+  /** 失败原因。 */
   error?: string;
 }
 
 
 /** 模型清单回执中计价用到的单价，美元每百万 token。 */
 interface CatalogPrice {
-  /** 输入。 */
+  /** 输入单价，美元每百万 token。 */
   input: number;
-  /** 输出。 */
+  /** 输出单价，美元每百万 token。 */
   output: number;
-  /** 缓存读。 */
+  /** 缓存读取单价，美元每百万 token。 */
   cacheRead?: number;
-  /** 缓存写。 */
+  /** 缓存写入单价，美元每百万 token。 */
   cacheWrite?: number;
 }
 
@@ -94,6 +101,7 @@ const FORMATS: Record<string, string> = { hour: '%Y-%m-%d %H:00', day: '%Y-%m-%d
 
 /** 分组 → 列（只许这几个，免得拼 SQL 出事）。 */
 const GROUPS: Record<string, string> = {
+  /** 供应商名。 */
   provider: 'provider', model: 'model', purpose: 'purpose', bot: "COALESCE(bot, '')",
 };
 
@@ -115,13 +123,21 @@ const SUMS = 'COUNT(*) AS calls, COALESCE(SUM(1 - ok), 0) AS failures, '
 
 /** 一格合计。 */
 interface Bucket {
+  /** 调用次数。 */
   calls: number;
+  /** 失败次数。 */
   failures: number;
+  /** 输入 token 数。 */
   input: number;
+  /** 输出 token 数。 */
   output: number;
+  /** 缓存读取 token 数。 */
   cacheRead: number;
+  /** 缓存写入 token 数。 */
   cacheWrite: number;
+  /** 费用，美元。 */
   cost: number;
+  /** 调用耗时，毫秒。 */
   ms: number;
 }
 
@@ -129,7 +145,7 @@ interface Bucket {
 /** 用量服务。 */
 export class Usage extends cordis.Service {
   /**
-   * 登记 usage 插件：把 Usage 作为服务挂到 Cordis 上（以后用 ctx.usage 取）；再建表，听回答和失败。
+   * 登记用量子模块：把 Usage 作为服务挂到 Cordis 上（以后用 ctx.usage 取）；再建表，听回答和失败。
    * @param ctx Cordis 给这个插件的 ctx。
    * 副作用：建 model_usage 表和索引，把 Usage 挂到 ctx.usage，并监听用量查询、成功与失败事件。
    */
@@ -168,6 +184,25 @@ export class Usage extends cordis.Service {
     requestEventModule.onRequestEvent(ctx, 'usage/list', 'usage/list-result', (request) => {
       //M 沿用 list 的排序和截断规则。
       return this.list(request);
+    });
+  }
+
+
+  /**
+   * 在父插件的可选 HTTP 作用域登记统计接口，路径与查询结果保持不变。
+   * @param app HTTP 服务的 Fastify 实例。
+   * 副作用：登记 GET /api/usage；不启动监听。
+   */
+  routes(app: fastify.FastifyInstance): void {
+    //M 用量和模型管理共用父插件的 HTTP 注入，不额外创建一个插件入口。
+    app.get<{ Querystring: Record<string, string | undefined> }>('/api/usage', async (request, reply) => {
+      //M 沿用 by、group、from、to 的统计语义和非法分组的 400 回应。
+      const report = this.report(request.query);
+      if (report === undefined) {
+        const error = 'by 要是 hour、day、week、month；group 要是 provider、model、purpose、bot';
+        return reply.code(400).send({ error });
+      }
+      return report;
     });
   }
 
@@ -254,16 +289,28 @@ export class Usage extends cordis.Service {
       .all(...query.sessions, query.from, query.to, query.limit + 1) as Record<string, unknown>[];
     const rows = found.slice(0, query.limit).map((item): UsageRecord => {
       const record: UsageRecord = {
-        at: item['at'] as number, provider: item['provider'] as string, model: item['model'] as string,
+        at: item['at'] as number,
+        provider: item['provider'] as string,
+        model: item['model'] as string,
         kind: item['kind'] as string,
-        purpose: item['purpose'] as string, input: item['input'] as number, output: item['output'] as number,
-        cacheRead: item['cache_read'] as number, cacheWrite: item['cache_write'] as number,
+        purpose: item['purpose'] as string,
+        input: item['input'] as number,
+        output: item['output'] as number,
+        cacheRead: item['cache_read'] as number,
+        cacheWrite: item['cache_write'] as number,
         cost: item['cost'] as number,
-        ms: item['ms'] as number, ok: item['ok'] === 1,
+        ms: item['ms'] as number,
+        ok: item['ok'] === 1,
       };
-      if (item['bot'] !== null) record.bot = item['bot'] as string;
-      if (item['session_id'] !== null) record.sessionId = item['session_id'] as string;
-      if (item['error'] !== null) record.error = item['error'] as string;
+      if (item['bot'] !== null) {
+        record.bot = item['bot'] as string;
+      }
+      if (item['session_id'] !== null) {
+        record.sessionId = item['session_id'] as string;
+      }
+      if (item['error'] !== null) {
+        record.error = item['error'] as string;
+      }
       return record;
     });
     return { rows, truncated: found.length > query.limit };
@@ -309,25 +356,3 @@ function withHitRate<T extends Bucket>(bucket: T): T & { hitRate: number } {
   return { ...bucket, hitRate };
 }
 
-
-/**
- * 挂上用量。
- * apply 是 Cordis 插件的入口：inject 里的 resources 就绪后 Cordis 调一次。没有配置。
- * @param ctx Cordis 给这个插件的 ctx。
- * 副作用：创建并挂载 Usage 服务；若存在 http 服务则登记 GET /api/usage 接口。
- */
-export function apply(ctx: cordis.Context): void {
-  //M 实例化 Usage 服务并挂到 ctx.usage，完成建表和事件订阅，供接口与其他插件取用。
-  const usage = new Usage(ctx);
-
-  //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口。
-  void ctx.inject(['http'], (sub) => {
-    sub.http.app.get<{ Querystring: Record<string, string | undefined> }>('/api/usage', async (request, reply) => {
-      const report = usage.report(request.query);
-      if (report === undefined) {
-        return reply.code(400).send({ error: 'by 要是 hour、day、week、month；group 要是 provider、model、purpose、bot' });
-      }
-      return report;
-    });
-  });
-}

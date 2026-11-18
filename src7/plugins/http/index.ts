@@ -2,8 +2,8 @@
  * HTTP 服务：整个程序只起这一个 Fastify，监听 0.0.0.0。自己不带页面，只有健康检查和管令牌的接口。
  * 别的插件（网页、接口）在自己挂上的时候往 ctx.http.app 上登记路径；等事件 ready（全部插件挂完）才开始监听，
  * 因为 Fastify 开始监听以后就不能再加路径了。
- * 令牌只在这里查一次：本机来的不查；别的机器来的 /api/、/files/ 要带令牌。令牌表在同一个文件夹的 Tokens.ts。
- * 设计：docs/src7插件设计/http.md。
+ * 令牌只在这里查一次：本机来的不查；别的机器来的 /api/、/files/、/programs/ 要带令牌。令牌表在同一个文件夹的 Tokens.ts。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -20,7 +20,7 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'http';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.2';
+export const version = '1.1.4';
 
 /** 用到的服务。 */
 export const inject = ['resources'];
@@ -91,6 +91,20 @@ export interface HttpConfig {
 export function trustedIp(ip: string, trusted: string[]): boolean {
   const address = ip.replace(/^::ffff:/iu, '');
   return address === '::1' || address.startsWith('127.') || trusted.includes(address);
+}
+
+
+/** 别的机器访问要带令牌的路径前缀；/programs/ 是 programs 插件转发外部程序界面的（2026-11-18）。 */
+const GUARDED_PREFIXES = ['/api/', '/files/', '/programs/'];
+
+
+/**
+ * 路径或路由模式是否落在要令牌的前缀下。
+ * @param route 不带查询参数的路径，或 Fastify 的路由模式。
+ * @returns 在前缀下是 true。
+ */
+function hasGuardedPrefix(route: string): boolean {
+  return GUARDED_PREFIXES.some((prefix) => route.startsWith(prefix));
 }
 
 
@@ -238,7 +252,8 @@ export class Http extends cordis.Service {
   }
 
   /**
-   * 查令牌的钩子（onRequest）：本机、不是 /api/ 和 /files/、登记过不用令牌的、一个令牌都没有，都放行；
+   * 查令牌的钩子（onRequest）：本机、不在 /api/、/files/、/programs/ 下（路由模式和解码后的路径都看，见 isGuarded）、
+   * 登记过不用令牌的、一个令牌都没有，都放行；
    * 别的要带一个有效的令牌（?token= 或 Authorization: Bearer），没带对回 401。
    * @param request 请求。
    * @param reply 回应。
@@ -249,7 +264,8 @@ export class Http extends cordis.Service {
     reply: fastify.FastifyReply,
   ): Promise<fastify.FastifyReply | undefined> {
     const route = request.url.split('?')[0] ?? '';
-    const guarded = route.startsWith('/api/') || route.startsWith('/files/');
+    //M 路由模式或解码后的路径在要令牌的前缀下，就要令牌（isGuarded 说了为什么两样都查）。
+    const guarded = this.isGuarded(request, route);
     //M 2026-11-14 23:50 EST：本机之外，server.trusted_ips 里的地址（如网关 192.168.200.1）也免令牌；别的局域网、外网地址照旧要令牌。
     if (trustedIp(request.ip, this.config.trustedIps) || !guarded || this.open.has(route) || this.tokens.none()) {
       return undefined;
@@ -267,6 +283,29 @@ export class Http extends cordis.Service {
     //G 先 await 掉 send 再 return reply，Fastify 才停下（0.4 在 Windows 的 Bun 1.3.14 上实测，只 return 拦不住）。
     await reply.code(401).send({ error: '要带 token：网址后面加 ?token=…，或请求头 Authorization: Bearer …' });
     return reply;
+  }
+
+  /**
+   * 这个请求要不要令牌：匹配上的路由模式、或解码后的路径，任一落在 /api/、/files/、/programs/ 下就要。
+   * 2026-11-18 131：路由先把 %61 这类编码解开再匹配，原来只看原始地址，/%61pi/message 看着不在前缀下，
+   * 却命中 /api/message，别的机器不带令牌就能调接口。
+   * @param request 请求；onRequest 时路由已经匹配完，routeOptions.url 是匹配上的模式。
+   * @param route 原始地址去掉查询参数。
+   * @returns 要令牌是 true。
+   */
+  private isGuarded(request: fastify.FastifyRequest, route: string): boolean {
+    //G 路由模式就是路由的真实决定，不受编码、大小写、重复斜线这些写法影响。
+    const pattern = request.routeOptions.url ?? '';
+    if (hasGuardedPrefix(pattern)) return true;
+
+    //G 没对上的会落到网页的兜底 /*（或 404，模式是 undefined），模式不在前缀下；再按解码后的路径查，不让兜底放行。
+    try {
+      const decoded = decodeURI(route);
+      return hasGuardedPrefix(decoded);
+    } catch {
+      //G 解不开的地址（坏的 %xx）按要令牌处理，不因为看不懂就放行。
+      return true;
+    }
   }
 
   /**

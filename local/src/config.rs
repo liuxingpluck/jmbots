@@ -3,8 +3,7 @@
 //! 运行时目录：命令行 --runtime > 环境变量 JMBOTS_RUNTIME > 可执行文件旁边的 jmbotsData/（发布给别人时运行时目录就在程序旁边）。
 //! 壳子读的几项：server.port（后端端口；0.4 的 http.port 回落，过渡期用）、shell.port、shell.server、
 //! shell.backend（主后端的参数、健康路径）。旧名 local: 过渡期照读（shell 优先）。
-//! 2026-11-14 用户定“插件思想”：local.services、local.memory_url 不再读——记忆服务、vgr 归 memory 插件托管，挂在主端口 /memory/ 下；
-//! 旧记忆接口（壳子端口上的 /health /search ……）转给 http://127.0.0.1:<server.port>/memory。
+//! 记忆服务与 vgr 归主后端的 memory 插件托管。
 //! 2026-11-14 用户定“基地只承载”：记忆库、RAG、AI 标签整个挪进独立的记忆服务 jmbots-memory，壳子不再读 local.libs/rag/memory_model。
 //! 后端地址：命令行 --server > 环境变量 JMBOTS_SERVER > config.yaml 的 local.server > 本机的 server.port。
 //! 能配置的都不写死；默认值都在这个文件开头一处。config.yaml 没有时不报错，全用默认值（Bun 第一次启动会写出模板）。
@@ -15,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bun 后端默认的端口（config.yaml 没写 server.port 也没写 http.port 时用）。
 pub const DEFAULT_BACKEND_PORT: u16 = 30086;
-/// 壳子 HTTP 接口默认的端口：和原来 memorycli serve 的默认端口一样，后端的 engine.index_url 不用改。
+/// 壳子管理接口默认端口，与后端的 engine.index_url 对应。
 pub const DEFAULT_LOCAL_PORT: u16 = 30085;
 /// 壳子的接口听哪个地址：一律 0.0.0.0（CLAUDE.md 的规矩）。
 pub const LISTEN_HOST: &str = "0.0.0.0";
@@ -72,8 +71,6 @@ pub struct Settings {
     pub backend: BackendSpec,
     /// 另外要托管的服务（记忆服务等）：只守护、重启、记日志，不走更新流程。
     pub services: Vec<ServiceSpec>,
-    /// 旧的记忆接口（/health /search /ingest /graph /rag/*）转到这个地址（不带结尾斜杠）。
-    pub memory_url: String,
     /// 界面语言（ui.language）；没写是 None。托盘菜单跟着它，重启基地生效。
     pub language: Option<String>,
     /// config.yaml 里写得不对的地方（读不了、类型不对……），用默认值顶上了；check 时报出来。
@@ -229,9 +226,6 @@ pub fn resolve(overrides: &Overrides, env: &dyn Fn(&str) -> Option<String>, exe_
         health: text_at(&root, &["local", "backend", "health"], &mut problems).unwrap_or_else(|| DEFAULT_BACKEND_HEALTH.to_string()),
     };
     let services = services_at(&root, &mut problems);
-    //M 旧记忆接口转去哪：写了 local.memory_url 用它，否则用服务表里叫 memory 的那个的端口，都没有就是默认端口。
-    // 壳子遗留代理也只转主服务的 memory 路径，不再读业务进程配置。
-    let memory_url = format!("http://{LOCAL_HOST}:{backend_port}/memory");
     let language = text_at(&root, &["ui", "language"], &mut problems);
     let server = overrides
         .server
@@ -242,7 +236,6 @@ pub fn resolve(overrides: &Overrides, env: &dyn Fn(&str) -> Option<String>, exe_
     Settings {
         backend,
         services,
-        memory_url: memory_url.trim_end_matches('/').to_string(),
         runtime,
         config_file,
         config_found,
@@ -283,9 +276,8 @@ mod tests {
         assert_eq!(settings.server, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}"));
         assert_eq!(settings.listen_port, DEFAULT_LOCAL_PORT);
         assert_eq!(settings.listen_host, "0.0.0.0");
-        //M 默认托管记忆服务，旧记忆接口转到它的默认端口；主后端参数、健康路径是原来写死的那套。
+        //M 基地用默认的后端命令和健康检查路径。
         assert!(settings.services.is_empty());
-        assert_eq!(settings.memory_url, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}/memory"));
         assert_eq!(settings.backend.args, vec!["serve", "--runtime", "{runtime}"]);
         assert_eq!(settings.backend.health, "/api/health");
         assert!(settings.problems.is_empty());
@@ -307,7 +299,7 @@ mod tests {
     #[test]
     fn reads_same_keys_as_bun() {
         let dir = temp_dir("config-keys");
-        std::fs::write(dir.join(CONFIG_FILE), format!("providers:\n  x:\n    api_key: sk-fake\nhttp:\n  port: 31111\n  token: ''\nlocal:\n  port: 31122\n  memory_url: '{}'\n", "http://127.0.0.1:15790/")).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE), "providers:\n  x:\n    api_key: sk-fake\nhttp:\n  port: 31111\n  token: ''\nlocal:\n  port: 31122\n").unwrap();
         let settings = resolve(&Overrides::default(), &no_env, Path::new("/没用到"));
         // 运行时目录没给时用 exe 所在目录：这里故意给一个不存在的，确认 config 是从 runtime 读的。
         assert!(!settings.config_found);
@@ -318,7 +310,6 @@ mod tests {
         assert_eq!(settings.problems.len(), 1, "{:?}", settings.problems);
         assert!(settings.problems[0].contains("server.port"));
         assert_eq!(settings.listen_port, 31122);
-        assert_eq!(settings.memory_url, "http://127.0.0.1:31111/memory");
     }
 
     #[test]
@@ -373,8 +364,6 @@ mod tests {
         assert_eq!(settings.backend.health, "/api/ping");
         //M 2026-11-14：local.services 不再读（归 memory 插件），写了也是空表。
         assert!(settings.services.is_empty());
-        assert_eq!(settings.memory_url, format!("http://127.0.0.1:{DEFAULT_BACKEND_PORT}/memory"));
-        assert!(settings.services.is_empty());
     }
 
     #[test]
@@ -383,17 +372,16 @@ mod tests {
         std::fs::write(dir.join(CONFIG_FILE), "server:\n  port: 31086\nlocal:\n  port: 30090\nshell:\n  port: 31085\n").unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));
         assert_eq!(settings.listen_port, 31085);
-        assert_eq!(settings.memory_url, "http://127.0.0.1:31086/memory");
+        assert_eq!(settings.backend_port, 31086);
     }
 
     #[test]
     fn bad_values_fall_back_with_problems() {
         let dir = temp_dir("config-bad");
-        std::fs::write(dir.join(CONFIG_FILE), "http:\n  port: 七万\nlocal:\n  port: 70000\n  memory_url: [1]\n").unwrap();
+        std::fs::write(dir.join(CONFIG_FILE), "http:\n  port: 七万\nlocal:\n  port: 70000\n").unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));
         assert_eq!(settings.server, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}"));
         assert_eq!(settings.listen_port, DEFAULT_LOCAL_PORT);
-        assert_eq!(settings.memory_url, format!("http://{LOCAL_HOST}:{DEFAULT_BACKEND_PORT}/memory"));
         assert_eq!(settings.problems.len(), 2, "{:?}", settings.problems);
         std::fs::write(dir.join(CONFIG_FILE), "http: [坏的\n").unwrap();
         let settings = resolve(&Overrides { runtime: Some(dir.clone()), ..Overrides::default() }, &no_env, Path::new("/没用到"));

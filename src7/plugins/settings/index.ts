@@ -6,7 +6,7 @@
  *   POST /api/settings/apply    立即重启
  *   POST /api/service/restart   请基地重启（不是基地拉起的，同“立即重启”）
  * 骨架的 resources.raw 是启动时读的、只读，这里改的文件要重启才生效。
- * 设计：docs/src7插件设计/settings.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';

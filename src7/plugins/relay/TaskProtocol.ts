@@ -1,12 +1,12 @@
 /**
- * 外部 AI 任务协议 v1（relay 插件的任务通道用，11-17 由原 agent-tasks/Protocol.ts 挪来）：
+ * 外部 AI 任务协议 v1（relay 插件的任务通道用）：
  * 任务单 TaskSpec（写成任务文件夹里的 task.json）、存在 agent_tasks.protocol 列里的 Protocol，
  * 和派活时定执行配置（模型、次高思考档、子代理）、拼可读任务书、算内容摘要这几样没状态的小函数。
- * 交回结果的形状 TaskResult、打招呼报的能力 AgentAbilities 在 utils/Checks.ts（外面进来的东西在那里查）。
- * 设计：docs/开发进度/前台派后台和技能_细节_Codex_20261117.md 第四节。
+ * 交回结果的形状 TaskResult、打招呼报的能力 AgentAbilities 在 Checks.ts（外面进来的东西在那里查）。
+ * 设计见同目录 说明.md 的「设计要点」一节（外部任务协议 v1）。
  */
 import * as crypto from 'node:crypto';
-import type { ReturnMode, TaskResult } from '../../utils/Checks.ts';
+import type { ReturnMode, TaskResult } from './Checks.ts';
 import type { Origin } from '../bots/index.ts';
 import type { AgentInfo } from './AgentTasks.ts';
 

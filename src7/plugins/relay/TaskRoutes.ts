@@ -6,9 +6,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
-import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as checksModule from './Checks.ts';
 import { type AgentTasks, type FinishInput, NAME, STATUSES, type Task, type TaskStatus } from './AgentTasks.ts';
 import type * as protocolModule from './TaskProtocol.ts';
 

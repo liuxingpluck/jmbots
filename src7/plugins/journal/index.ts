@@ -6,7 +6,7 @@
  * 0.4 的“run.started / step.after / tool.after……”那套事件名不再用：插件模式下事件就是 Cordis 的事件本身，谁发、谁听一目了然。
  * 另外会同步挂上完整会话文件镜像 FilesMirror（原 files-mirror 已并入 ./FilesMirror.ts，保留 ctx.filesMirror）；
  * 若关闭 mirror: false，才回退由 Markdown.ts 写简版 对话.md。另提供流水与镜像路径的查询事件。
- * 设计：docs/src7插件设计/journal.md（第 12 节是 11-14 改成跟踪行的说明）。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';

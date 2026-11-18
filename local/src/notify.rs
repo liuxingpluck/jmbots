@@ -111,6 +111,9 @@ pub fn show(notice: &Notice) {
         }
     }
     eprintln!("通知：{} — {body}", notice.title);
+    //G 单元测试验证业务和 HTTP 回执，通知内容只写测试日志。
+    if cfg!(test) { return; }
+
     if let Err(error) = show_toast(notice, &body) {
         eprintln!("通知没弹出：{error:#}");
     }

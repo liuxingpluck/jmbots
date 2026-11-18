@@ -46,7 +46,6 @@ pub fn report(settings: &Settings) -> (Value, bool) {
         "config": { "file": settings.config_file, "found": settings.config_found, "problems": settings.problems },
         "server": settings.server,
         "listen": format!("{}:{}", settings.listen_host, settings.listen_port),
-        "memory_url": settings.memory_url,
         "backend": backend,
         "services": services_report(settings),
     });

@@ -14,10 +14,10 @@ import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
-import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
+import * as checksModule from './Checks.ts';
 import { AgentTasks, type SendInput } from './AgentTasks.ts';
 
 

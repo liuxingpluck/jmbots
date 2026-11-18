@@ -15,6 +15,7 @@ use windows_capture::settings::{
 };
 use windows_capture::window::Window;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 use super::mouse::InputState;
 use super::privacy::{self, Denial, Rect, WindowKey};
@@ -213,6 +214,9 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             control.stop();
             return Ok(());
         }
+        if self.input.is_probe() {
+            self.input.capture_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+        }
 
         let Some(now) = qpc_ms() else { return Ok(()); };
         let timestamp = frame.timestamp().map_err(|_| Denial::CaptureUnavailable)?;
@@ -225,7 +229,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         *permit = None;
         drop(permit);
 
-        let current = privacy::foreground();
+        let current = self.input.window();
         if !current.is_ok_and(|info| info.key == self.key) {
             control.stop();
             return Ok(());

@@ -244,7 +244,7 @@ export function CallerList(props: { site: string }): JSX.Element | null {
   if (error !== '') return <p className="tu-error">取不到谁调它：{error}</p>;
   if (source === null) return <p className="tu-muted">正在找谁调它…</p>;
   if (source.name === '') return null;
-  if (source.callers.length === 0) return <p className="tu-muted">谁调它：src7 里没找到调用处（可能是事件回调、Cordis 调的）。</p>;
+  if (source.callers.length === 0) return <p className="tu-muted">谁调它：后端源码里没找到调用处（可能是事件回调、Cordis 调的）。</p>;
 
   const useVirtual = source.callers.length >= VIRTUAL_THRESHOLD && scrollParent !== null;
   return (

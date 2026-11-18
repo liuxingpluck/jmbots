@@ -6,7 +6,7 @@
  *   用户后来同意了（approval/decided，kind 是 exec）：跑命令，结果当一句新的话交回那场会话，推它往下走。
  *   命令窗口 Runs（Runs.ts，可选 config.runs 默认开启）：http 在时挂 /api/run、/api/runs* 五条 HTTP 接口。
  * 停止：工具拿到的停止信号（Tools.ts 给的 signal）一触发，连子进程整棵杀掉（Windows 用 taskkill /T /F），两秒内交回。
- * 设计：docs/src7插件设计/exec.md、runs.md。
+ * 设计见同目录 说明.md 的「设计要点」一节（含 runs）。
  */
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';

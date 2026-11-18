@@ -1,7 +1,7 @@
 /**
  * 会话步骤、回话追溯、回话的生成依据（generation）。都是只读的：从会话记录、收件表、流水、用量现拼，不另存。
  * 本文件不 import 同目录的 Timeline.ts（只 import type），免得两个文件互相 import 绕成一圈。
- * 设计：docs/src7插件设计/web-api.md 第 2 节“步骤”“追溯”、第 4 节 getGeneration。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';

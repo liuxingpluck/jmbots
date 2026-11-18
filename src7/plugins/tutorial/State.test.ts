@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as requestEvents from '../../utils/RequestEvent.ts';
-import * as snapshotModule from '../../utils/Snapshot.ts';
+import * as snapshotModule from './Snapshot.ts';
 import * as tutorialModule from './index.ts';
 import type { TrailLine } from './Trail.ts';
 

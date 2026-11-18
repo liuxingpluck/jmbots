@@ -6,12 +6,13 @@
  *   每个插件：听 Cordis 的 internal/plugin（开始挂）、internal/status（挂好或出错）、internal/service（多了哪个服务）；
  *   ready、接着跑上次没跑完的会话、HTTP 开始监听（跟踪点 Http.listen）。
  * 每一步带“文件:行号”、关键变量（原值，调试用不打码）、那段代码自己的 JSDoc（Source.ts 取）。只存内存，只看这一次启动。
- * 每一步做完还拍一份运行时变量的快照（utils/Snapshot.ts）：骨架四步共用挂上时那份，插件那步是挂好（或出错）那一刻，ready、HTTP 监听各一份。
+ * 每一步做完还拍一份运行时变量的快照（plugins/tutorial/Snapshot.ts）：骨架四步共用挂上时那份，插件那步是挂好（或出错）那一刻，ready、HTTP 监听各一份。
  * 交出去的行和 journal 的跟踪行同形状（Trail.ts 的 TrailLine），按请求轨迹的办法收成步骤。
  * HTTP 监听那步记完，叫 Files.ts 把整段启动写成 data/flow/boot.json。
  */
 import type * as cordis from 'cordis';
-import * as snapshotModule from '../../utils/Snapshot.ts';
+import * as sourceDirModule from '../../utils/SourceDir.ts';
+import * as snapshotModule from './Snapshot.ts';
 import type * as filesModule from './Files.ts';
 import * as sourceModule from './Source.ts';
 
@@ -83,11 +84,29 @@ interface Step {
 }
 
 
+/** 源码根目录前缀（src7/utils/SourceDir.ts），下面骨架文件的路径都从它拼。 */
+const ROOT = sourceDirModule.SOURCE_PREFIX;
+
 /** 入口文件。 */
-const MAIN = 'src7/Main.ts';
+const MAIN = `${ROOT}Main.ts`;
 
 /** 检查函数的文件。 */
-const CHECKS = 'src7/utils/Checks.ts';
+const CHECKS = `${ROOT}utils/Checks.ts`;
+
+/** 内嵌文件表（认编译版）。 */
+const EMBEDDED = `${ROOT}utils/Embedded.ts`;
+
+/** 骨架的资源模块。 */
+const RESOURCES = `${ROOT}Resources.ts`;
+
+/** 骨架的工具模块。 */
+const TOOLS = `${ROOT}Tools.ts`;
+
+/** 骨架的会话模块。 */
+const SESSIONS = `${ROOT}Sessions.ts`;
+
+/** http 插件（记“开始监听”那一步）。 */
+const HTTP = `${ROOT}plugins/http/index.ts`;
 
 /** 自带插件里名字和文件夹不一样的（plugins/Index.ts 的别名）：名字 → 文件夹。 */
 export const FOLDERS: Record<string, string> = { 'wechat-kefu': 'wechat' };
@@ -321,7 +340,7 @@ export class BootTrail {
         fn(MAIN, 'async function main(', 'main', true),
         fn(CHECKS, 'export function checkArgs(', 'checkArgs', true),
         fn(CHECKS, 'function defaultDataDir(', 'defaultDataDir', true),
-        fn('src7/utils/Embedded.ts', 'export function isCompiled(', 'isCompiled', false),
+        fn(EMBEDDED, 'export function isCompiled(', 'isCompiled', false),
       ],
       facts: { root: resources.root, backfilled: true },
     });
@@ -338,9 +357,9 @@ export class BootTrail {
       at,
       site: { file: MAIN, find: 'await app.plugin(resourcesModule.Resources' },
       docs: [
-        fn('src7/Resources.ts', 'constructor(ctx: cordis.Context, config: ResourcesConfig)', 'Resources 构造', true),
+        fn(RESOURCES, 'constructor(ctx: cordis.Context, config: ResourcesConfig)', 'Resources 构造', true),
         fn(CHECKS, 'export function checkConfig(', 'checkConfig', true),
-        fn('src7/Resources.ts', '  dir(...parts: string[])', 'Resources.dir', true),
+        fn(RESOURCES, '  dir(...parts: string[])', 'Resources.dir', true),
         fn(CHECKS, 'function record(', 'record', false),
         fn(CHECKS, 'function list(', 'list', false),
         fn(CHECKS, 'function text(', 'text', false),
@@ -365,7 +384,7 @@ export class BootTrail {
       fallback: '登记 tools 插件（以后用 ctx.tools 取）',
       at,
       site: { file: MAIN, find: 'await app.plugin(toolsModule.Tools)' },
-      docs: [fn('src7/Tools.ts', 'constructor(ctx: cordis.Context) {', 'Tools 构造', true)],
+      docs: [fn(TOOLS, 'constructor(ctx: cordis.Context) {', 'Tools 构造', true)],
       facts: { tools: '还没有，插件挂上时登记', backfilled: true },
     });
 
@@ -376,7 +395,7 @@ export class BootTrail {
       fallback: '登记 sessions 插件（以后用 ctx.sessions 取），没有表就建',
       at,
       site: { file: MAIN, find: 'await app.plugin(sessionsModule.Sessions)' },
-      docs: [fn('src7/Sessions.ts', 'constructor(ctx: cordis.Context) {', 'Sessions 构造', true)],
+      docs: [fn(SESSIONS, 'constructor(ctx: cordis.Context) {', 'Sessions 构造', true)],
       facts: { table: 'sessions', services: this.services.join('、'), backfilled: true },
     });
   }
@@ -422,7 +441,7 @@ export class BootTrail {
     }
 
     //M 自带插件：取它 index.ts 的 apply 和文件开头的注释。
-    const file = `src7/plugins/${getFolder(plugin)}/index.ts`;
+    const file = `${ROOT}plugins/${getFolder(plugin)}/index.ts`;
     const docs = [fn(file, 'function apply(', `${plugin}.apply`, true)];
     if (this.plugins.length === 0) {
       docs.unshift(fn(MAIN, 'async function loadPlugin(', 'loadPlugin', true));
@@ -583,8 +602,8 @@ export class BootTrail {
       at,
       site: { file: MAIN, find: "app.sessions.find({ state: 'running' })" },
       docs: [
-        fn('src7/Sessions.ts', '  find(where: Partial<SessionMeta>)', 'Sessions.find', false),
-        fn('src7/Sessions.ts', '  async run(): Promise<void>', 'Session.run', true),
+        fn(SESSIONS, '  find(where: Partial<SessionMeta>)', 'Sessions.find', false),
+        fn(SESSIONS, '  async run(): Promise<void>', 'Session.run', true),
       ],
       facts: { running },
       snapshot: shot,
@@ -612,8 +631,8 @@ export class BootTrail {
       name: 'Http.listen',
       fallback: 'HTTP 服务开始监听，开始收消息',
       at: Date.now(),
-      site: { file: 'src7/plugins/http/index.ts', find: 'private async listen(' },
-      docs: [fn('src7/plugins/http/index.ts', 'private async listen(', 'Http.listen', true)],
+      site: { file: HTTP, find: 'private async listen(' },
+      docs: [fn(HTTP, 'private async listen(', 'Http.listen', true)],
       facts,
       snapshot: shot,
     });

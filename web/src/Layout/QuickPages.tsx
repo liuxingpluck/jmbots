@@ -7,6 +7,7 @@ import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as tokenModule from '../Token.ts';
+import * as programsModule from '../Programs/Programs.tsx';
 import './QuickPages.css';
 
 
@@ -53,22 +54,28 @@ export function QuickPages(): react.JSX.Element | null {
   //M 构造快捷页面清单并按已挂载插件过滤，只保留当前可用入口。
   const visiblePages = getQuickPageItems(t).filter((page) => api.isPluginMounted(mountedPlugins, page.plugin, false));
 
-  //G 没有已挂载的独立功能页面时不占用顶栏空间。
-  if (visiblePages.length === 0) return null;
+  /** 挂了 programs 插件才显示进程插件入口。 */
+  //M 没挂 programs 时不渲染进程插件入口，免得它每 1.5 秒请求一次不存在的状态接口。
+  const showPrograms = api.isPluginMounted(mountedPlugins, 'programs', false);
 
   //M 在聊天顶栏右侧渲染各已挂载独立页面的快捷跳转导航栏。
   return (
-    <nav className="jm-top-pages" aria-label={t('功能页面')}>
-      {visiblePages.map((page) => {
-        /** 拼好访问令牌后的跳转地址，保证外部地址打开新页不断鉴权。 */
-        //M 为快捷页面路由拼接当前访问令牌，避免从局域网打开独立页时鉴权丢失。
-        const targetHref = tokenModule.withToken(page.href, tokenModule.TOKEN);
-        return (
-          <a key={page.href} className="jm-top-page-link" href={targetHref}>
-            {page.label}
-          </a>
-        );
-      })}
-    </nav>
+    <>
+      {visiblePages.length > 0 && (
+        <nav className="jm-top-pages" aria-label={t('功能页面')}>
+          {visiblePages.map((page) => {
+            /** 拼好访问令牌后的跳转地址，保证外部地址打开新页不断鉴权。 */
+            //M 为快捷页面路由拼接当前访问令牌，避免从局域网打开独立页时鉴权丢失。
+            const targetHref = tokenModule.withToken(page.href, tokenModule.TOKEN);
+            return (
+              <a key={page.href} className="jm-top-page-link" href={targetHref}>
+                {page.label}
+              </a>
+            );
+          })}
+        </nav>
+      )}
+      {showPrograms && <programsModule.Programs />}
+    </>
   );
 }

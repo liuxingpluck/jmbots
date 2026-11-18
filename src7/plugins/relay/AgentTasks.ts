@@ -9,9 +9,8 @@
  *   - 交回 result.json 的内容：HTTP 正文的 protocolResult，或执行者写进 result/result.json 由定时扫描收；两条路都走 finish。
  * 交回的结果经 bot/request 排进派活会话的结果队列，收到成功回执后再改任务状态：
  *   前台整理后回原渠道，后台看一轮接着做。protocol 是 NULL 的旧任务照旧格式 { ok, text, uploads } 收。
- * 照 0.4 src/capabilities/AgentTasks.ts。设计：docs/开发进度/前台派后台和技能_细节_Codex_20261117.md 第四节。
- * 11-17 由原 agent-tasks 插件挪进 relay（外部助手的交办、收件、回信归一处）：relay 的 apply 调 getScanMs 查配置、
- *   http 就绪后调 applyAgentTasks 挂上；表、接口、工具名都没改。
+ * 照 0.4 src/capabilities/AgentTasks.ts。设计见同目录 说明.md 的「设计要点」一节（外部任务协议 v1）。
+ * relay 的 apply 调 getScanMs 查配置，http 就绪后调 applyAgentTasks 挂上。
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -19,12 +18,12 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
-import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
+import * as checksModule from './Checks.ts';
 import * as protocolModule from './TaskProtocol.ts';
 import { registerRoutes } from './TaskRoutes.ts';
 

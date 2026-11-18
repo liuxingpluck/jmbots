@@ -80,7 +80,7 @@ impl ControlProbe {
     }
 
     /// 检查点击与焦点的归属和密码属性，并验证附近没有密码框。只在末尾读标签。
-    pub fn inspect(&self, window: WindowKey, x: i32, y: i32) -> Result<ControlInfo, Denial> {
+    pub fn inspect(&self, window: WindowKey, x: i32, y: i32, check_focus: bool) -> Result<ControlInfo, Denial> {
         if !window.rect.contains(x, y) || privacy::window_at(x, y) != window.hwnd {
             return Err(Denial::WindowChanged);
         }
@@ -89,9 +89,11 @@ impl ControlProbe {
         let root = self.root(window)?;
         let point = Point::new(x, y);
         let clicked = uia(self.automation.element_from_point(point))?;
-        let focused = uia(self.automation.get_focused_element())?;
         self.check_ancestors(&clicked, &root, window, &mut budget)?;
-        self.check_ancestors(&focused, &root, window, &mut budget)?;
+        if check_focus {
+            let focused = uia(self.automation.get_focused_element())?;
+            self.check_ancestors(&focused, &root, window, &mut budget)?;
+        }
 
         //G 密码框可能是所点控件的兄弟节点。检查整棵子树才允许获取标签。
         self.check_tree(root, window, &mut budget)?;

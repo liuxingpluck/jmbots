@@ -7,6 +7,7 @@ import * as domServer from 'react-dom/server';
 import * as i18n from '../web/src/I18n.ts';
 import * as view from '../web/src/Chat/VoiceBar.tsx';
 import * as pcm from '../web/src/Chat/VoicePcm.ts';
+import * as playbackModule from '../web/src/Chat/VoicePlayback.ts';
 
 function render(active: boolean): string {
   const child = react.createElement(view.VoiceBarView, {
@@ -69,4 +70,40 @@ test('AudioWorklet 将 44.1 和 48 kHz 的多个输入块拼成 100 ms PCM', () 
     expect(frame.getInt16(0, true)).toBe(-16384);
     expect(frame.getInt16(3198, true)).toBe(-16384);
   }
+});
+
+test('语音回复按原采样率排队，播放和回声尾音结束后才恢复上传', () => {
+  const scheduled: number[] = [];
+  const samples = new Float32Array(2);
+  const source = {
+    buffer: undefined as unknown,
+    onended: undefined as (() => void) | undefined,
+    connect() {},
+    disconnect() {},
+    start(at: number) { scheduled.push(at); },
+  };
+  const audio = {
+    currentTime: 1,
+    destination: {},
+    createBuffer(channels: number, length: number, rate: number) {
+      expect([channels, length, rate]).toEqual([1, 2, 24_000]);
+      return { getChannelData: () => samples, duration: 2 / 24_000 };
+    },
+    createBufferSource: () => source,
+  };
+  const output = new playbackModule.VoicePlayback(audio as unknown as AudioContext);
+  expect(output.blocksMicrophone).toBe(false);
+  output.begin('spoken', 24_000);
+  expect(output.blocksMicrophone).toBe(true);
+
+  const buffer = Uint8Array.from([0, 192, 0, 64]).buffer;
+  output.accept(buffer);
+  expect([...samples]).toEqual([-0.5, 0.5]);
+  expect(scheduled).toEqual([1.02]);
+  output.end('spoken');
+  expect(output.blocksMicrophone).toBe(true);
+  source.onended?.();
+  expect(output.blocksMicrophone).toBe(true);
+  audio.currentTime = 1.3;
+  expect(output.blocksMicrophone).toBe(false);
 });

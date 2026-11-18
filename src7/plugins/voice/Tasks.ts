@@ -4,6 +4,8 @@ import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as channel from '../../Channels.ts';
 import * as requests from '../../utils/RequestEvent.ts';
+import type * as models from './Models.ts';
+import type * as routes from './Routes.ts';
 
 const CHANNEL = 'voice';
 const LOCAL = 'local';
@@ -127,6 +129,8 @@ export class VoiceTasks {
    * @param settings 判断触发、限速和合并参数。
    * @param onTask 将认领回执交给当前连接。
    * @param onFailure 通知当前连接本轮派发失败。
+   * @param understand 用户可单独配置的语音理解模型。
+   * @param report 回报实际使用的本地或云端理解线路。
    */
   constructor(
     private readonly ctx: cordis.Context,
@@ -134,6 +138,8 @@ export class VoiceTasks {
     private readonly settings: TaskSettings,
     private readonly onTask: (task: VoiceTask, messageId: string) => void,
     private readonly onFailure: () => void,
+    private readonly understand?: models.Predict,
+    private readonly report: (place?: routes.Place, reason?: string) => void = () => {},
   ) {}
 
   /** 更新句子全文；pending 时先积累，等已有判断返回再读。 */
@@ -154,6 +160,17 @@ export class VoiceTasks {
     }
 
     //M 根据累计字数、间隔或强制收尾判断。
+    this.schedule();
+  }
+
+  /** 换转写线路时撤掉尚未确认的旧字幕，保留已成功派发的前缀。 */
+  invalidate(seq: number): void {
+    const last = this.sentences.at(-1);
+    if (last === undefined || last.final || last.seq !== seq) return;
+
+    last.text = '';
+    this.lastJudgeLength = 0;
+    //G 正在判断的旧快照会在尝试派发前重新核对前缀。
     this.schedule();
   }
 
@@ -308,8 +325,23 @@ export class VoiceTasks {
       onFallback: () => ({ requestId: '', verdict: 'unsure' as const, reason: '没有决策插件或超时' }),
     };
 
-    //M 利用已有请求信封配对决策，不阻塞字幕；连接离开就不再采用回执。
-    const result = await requests.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', payload, options);
+    //M 配置专用理解模型时只判断这次字幕；原有部署继续使用决策事件。
+    let verdict: 'allow' | 'deny' | 'unsure' = 'unsure';
+    if (this.understand !== undefined) {
+      const input = JSON.stringify(payload.state);
+      const answer = await this.understand(question.instructions, input, options.signal, this.report);
+      if (answer === true) {
+        verdict = 'allow';
+      }
+      if (answer === false) {
+        verdict = 'deny';
+      }
+    }
+    if (this.understand === undefined) {
+      //M 保持原有 decision 插件的置信度阈值和回执协议。
+      const result = await requests.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', payload, options);
+      verdict = result.verdict;
+    }
     if (this.controller.signal.aborted) return;
 
     //G ASR 可能推翻还在判断的前缀；只用仍与当前转写一致的内容。
@@ -317,7 +349,7 @@ export class VoiceTasks {
       this.lastJudgeLength = 0;
       return;
     }
-    const allowed = result.verdict === 'allow' || (snapshot.final && result.verdict === 'unsure');
+    const allowed = verdict === 'allow' || (snapshot.final && verdict === 'unsure');
     if (allowed) {
       //M 一次只消费已获判断的前缀，新收到的剩余文字下一轮再判。
       this.consume(snapshot);
@@ -360,7 +392,7 @@ export class VoiceTasks {
     //M 每次派发按渠道协议给出稳定 ID，且用原文字和模型提示分别填入字段。
     const taskId = 'voice_' + crypto.randomUUID();
     const messageId = channel.makeChannelMessageId(CHANNEL, LOCAL, taskId);
-    const address = { customer: CUSTOMER, owner: true };
+    const address = { customer: CUSTOMER, owner: true, voiceMessageId: messageId };
     const message: channel.ChannelMessage = {
       v: 1,
       messageId,
@@ -415,6 +447,7 @@ export class VoiceTasks {
       this.previousTasks.shift();
     }
     const task: VoiceTask = { taskId, text: snapshot.text, bot: this.bot, merged, sessionId };
+    //M 网页只展示机器人已认领的任务。
     this.onTask(task, messageId);
     this.ctx.emit('voice/task', task);
   }

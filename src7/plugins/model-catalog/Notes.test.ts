@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
-import * as checks from '../../utils/Checks.ts';
+import * as checks from './Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as notesModule from './Notes.ts';
 

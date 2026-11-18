@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 import * as process from 'node:process';
 import { Database } from 'bun:sqlite';
 import * as cordis from 'cordis';
-import * as textModule from './Text.ts';
+import * as textModule from '../../utils/Text.ts';
 
 
 /** 一份快照里的一组：一个服务，或 main、插件登记的。 */

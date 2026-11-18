@@ -59,13 +59,36 @@ export class Prompt {
     }
     //M 编译版旁边没有仓库的 prompts/，从打进程序里的那份导出（异步，不等它）。
     if (!fs.existsSync(base) && embedded.isCompiled()) {
-      void embedded.exportFile(`prompts/${BASE_FILE}`, base);
+      void this.exportEmbedded(`prompts/${BASE_FILE}`, base);
     }
 
     //M 每一步调模型前骨架发 session/request：在这里往请求里加系统提示词。
     this.ctx.on('session/request', (request) => {
       this.onRequest(request);
     });
+  }
+
+
+  /**
+   * 把一个内嵌文件写到磁盘（已有的不覆盖）。出厂提示词第一次落到运行时目录时用。
+   * @param name 登记时的相对路径。
+   * @param dest 要写到哪。
+   * @returns 写成功了，或本来就有；没有这个内嵌文件是 false。
+   * 副作用：可能建目录、写文件。
+   */
+  private async exportEmbedded(name: string, dest: string): Promise<boolean> {
+    if (fs.existsSync(dest)) return true;
+
+    //M 查找内嵌文件真实句柄；源码模式或未收录时退出不建空文件。
+    const file = embedded.find(name);
+    if (file === undefined) return false;
+
+    //M 建好上层目录，读出内嵌文件的字节，写下去。
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const content = await Bun.file(file).arrayBuffer();
+    const bytes = Buffer.from(content);
+    fs.writeFileSync(dest, bytes);
+    return true;
   }
 
   /**

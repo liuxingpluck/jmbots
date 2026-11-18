@@ -10,6 +10,7 @@ import * as plugin from './index.ts';
 const STATUS = '/api/screen/status?clientId=base-one';
 const STATE = '/api/screen/state';
 const CLICK = '/api/screen/click';
+const OBSERVE = '/api/screen/observe';
 const TEXT = '你点的是保存按钮，它通常用于保存当前文档。';
 const rect = { x: -100, y: 0, width: 100, height: 100 };
 const identity = { protocolVersion: 1, clientId: 'base-one', sessionId: 'screen-one', epoch: 1 };
@@ -32,6 +33,7 @@ const image = {
 
 type Complete = (context: piAi.Context, options: piAi.SimpleStreamOptions) =>
   piAi.AssistantMessage | Promise<piAi.AssistantMessage>;
+type Stream = () => piAi.AssistantMessageEventStream;
 const answer = (): piAi.AssistantMessage => {
   const json = JSON.stringify({ text: TEXT, uncertain: false });
   return piAi.fauxAssistantMessage(json);
@@ -45,7 +47,12 @@ afterEach(async () => {
 });
 
 /** 使用可注入的假资源，记录传给模型的上下文和模型参数。 */
-async function setup(config: Record<string, unknown> = {}, complete: Complete = answer) {
+async function setup(
+  config: Record<string, unknown> = {},
+  complete: Complete = answer,
+  input = ['text', 'image'],
+  stream?: Stream,
+) {
   const ctx = new cordis.Context();
   const app = fastify.default({ logger: false });
   const calls: { context: piAi.Context; options: piAi.SimpleStreamOptions }[] = [];
@@ -57,13 +64,17 @@ async function setup(config: Record<string, unknown> = {}, complete: Complete = 
         calls.push({ context, options });
         return complete(context, options);
       },
+      streamSimple: (_model: unknown, context: piAi.Context, options: piAi.SimpleStreamOptions) => {
+        calls.push({ context, options });
+        return stream?.();
+      },
     };
     constructor(local: cordis.Context) {
       super(local, 'resources');
     }
     getModel(name: string) {
       modelNames.push(name);
-      return { input: ['text', 'image'] };
+      return { input };
     }
   }
   class FakeHttp extends cordis.Service {
@@ -131,6 +142,68 @@ test('功能关闭及空模型的状态可查询，点击不会调用模型', as
     available: false, enabled: true, active: false, reasonCode: 'model_not_configured', effective: { model: '' },
   });
   expect(missing.modelNames).toEqual([]);
+});
+
+test('后台观察先送安全文字线索，拒绝时跳过看图，点击仍可直接解释', async () => {
+  const { ctx, app, calls } = await setup();
+  const seen: unknown[] = [];
+  requests.onRequestEvent(ctx, 'decision/judge', 'decision/judge-result', (request) => {
+    seen.push(request.state);
+    return { verdict: 'deny' as const, reason: '无需细看' };
+  });
+  await app.inject({ method: 'POST', url: STATE, payload: start });
+  const payload = getClick(1);
+  const observation = await app.inject({ method: 'POST', url: OBSERVE, payload });
+  expect(observation.statusCode).toBe(200);
+  expect(observation.json()).toMatchObject({ verdict: 'deny', inspected: false });
+  expect(JSON.stringify(seen)).not.toContain(jpeg);
+  expect(JSON.stringify(seen)).not.toContain('测试文档');
+  expect(calls).toHaveLength(0);
+
+  const click = await app.inject({ method: 'POST', url: CLICK, payload });
+  expect(click.statusCode).toBe(200);
+  expect(calls).toHaveLength(1);
+});
+
+test('后台观察放行才看图，同一回执短期重放且不请求播报', async () => {
+  const { ctx, app, calls } = await setup({ speak: true });
+  requests.onRequestEvent(ctx, 'decision/judge', 'decision/judge-result', () => {
+    return { verdict: 'allow' as const, reason: '值得细看' };
+  });
+  await app.inject({ method: 'POST', url: STATE, payload: start });
+  const payload = getClick(1);
+  const first = await app.inject({ method: 'POST', url: OBSERVE, payload });
+  expect(first.json()).toMatchObject({
+    activity: '读文档', verdict: 'allow', inspected: true, explanation: { text: TEXT },
+  });
+  expect(calls[0]?.context.messages[0]).toMatchObject({
+    content: [{ type: 'text' }, { type: 'image', data: jpeg, mimeType: 'image/jpeg' }],
+  });
+  const duplicate = await app.inject({ method: 'POST', url: OBSERVE, payload });
+  expect(duplicate.json()).toEqual(first.json());
+  expect(calls).toHaveLength(1);
+  const presented = await app.inject({
+    method: 'POST', url: '/api/screen/presented', payload: { ...identity, clickId: payload.clickId },
+  });
+  expect(presented.json()).toMatchObject({ ok: false, errorCode: 'stale_click' });
+});
+
+test('默认模型随可选目录发现图片能力，无须在运行时手写一次', async () => {
+  const { ctx, app, modelNames } = await setup({ model: undefined }, answer, ['text']);
+  const first = await app.inject(STATUS);
+  expect(first.json()).toMatchObject({ available: false, reasonCode: 'model_not_multimodal' });
+  class Catalog extends cordis.Service {
+    constructor(local: cordis.Context) {
+      super(local, 'modelCatalog');
+    }
+    find() {
+      return { vision: true, thinking: ['off'], contextWindow: 8000, maxOutputTokens: 400 };
+    }
+  }
+  await ctx.plugin(Catalog);
+  const discovered = await app.inject(STATUS);
+  expect(discovered.json()).toMatchObject({ available: true, effective: { model: 'magpie/xiaomi/mimo-v2.6-flash' } });
+  expect(modelNames).toContain('magpie/xiaomi/mimo-v2.6-flash');
 });
 
 test('入口拒绝缺字段、长文本、负 DPI、未知版本和错误 JPEG 尺寸', async () => {
@@ -390,4 +463,83 @@ test('语音只在呈现确认后按组请求一次，隐私暂停取消旧组',
   ]);
   const stale = await requests.requestEvent(ctx, 'screen/presented', 'screen/presented-result', request, options);
   expect(stale).toMatchObject({ ok: false, errorCode: 'stale_epoch' });
+});
+
+test('首句在模型结束前可以显示和确认，尾句排在当前组后面', async () => {
+  const source = piAi.createAssistantMessageEventStream();
+  const first = '这是保存按钮。';
+  const rest = '可以保存当前文档。';
+  const message = piAi.fauxAssistantMessage(JSON.stringify({ text: first + rest, uncertain: false }));
+  const stream = () => {
+    const partial = piAi.fauxAssistantMessage('{"text":"' + first);
+    source.push({ type: 'text_delta', contentIndex: 0, delta: '{"text":"' + first, partial });
+    return source;
+  };
+  const { ctx, app } = await setup({ speak: true }, answer, ['text', 'image'], stream);
+  const voices: unknown[] = [];
+  const off = ctx.events.on('voice/request', (request) => {
+    if (request.action !== 'speak') return;
+    voices.push({ text: request.text, interrupt: request.interrupt });
+    ctx.events.emit('voice/result', { requestId: request.requestId, ok: true });
+  });
+  closers.push(off);
+  await app.inject({ method: 'POST', url: STATE, payload: start });
+  const base = await app.listen({ host: '127.0.0.1', port: 0 });
+  const response = await fetch(base + CLICK + '/stream', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(getClick()),
+    signal: AbortSignal.timeout(3000),
+  });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const readFrame = async () => {
+    let buffered = '';
+    while (!buffered.endsWith('\n')) {
+      const found = await reader.read();
+      if (found.done) throw new Error('流提前结束');
+      buffered += decoder.decode(found.value, { stream: true });
+    }
+    return JSON.parse(buffered.trim());
+  };
+  try {
+    expect(await readFrame()).toMatchObject({ phase: 'partial', text: first, segment: 1 });
+    expect(voices).toEqual([]);
+
+    const acknowledge = async (segment: number) => {
+      const payload = { ...identity, clickId: 'click-1', segment };
+      const result = await app.inject({ method: 'POST', url: '/api/screen/presented', payload });
+      return result.json();
+    };
+    expect(await acknowledge(2)).toMatchObject({ ok: false, errorCode: 'stale_click' });
+    expect(await acknowledge(1)).toMatchObject({ ok: true, speech: 'accepted' });
+    expect(await acknowledge(1)).toMatchObject({ ok: true, speech: 'already_requested' });
+    expect(voices).toEqual([{ text: first, interrupt: true }]);
+
+    source.push({ type: 'done', message, reason: 'stop' });
+    source.end(message);
+    expect(await readFrame()).toMatchObject({
+      phase: 'done', text: first + rest, segment: 2,
+    });
+    expect(await acknowledge(2)).toMatchObject({ ok: true, speech: 'accepted' });
+    expect(voices).toEqual([{ text: first, interrupt: true }, { text: rest, interrupt: false }]);
+  } finally {
+    source.end(message);
+    await reader.cancel();
+  }
+});
+
+test('流式预览也要通过呈现关口，拒绝时不泄露片段', async () => {
+  const first = '{"text":"这是保存按钮。';
+  const stream = () => {
+    const source = piAi.createAssistantMessageEventStream();
+    const partial = piAi.fauxAssistantMessage(first);
+    source.push({ type: 'text_delta', contentIndex: 0, delta: first, partial });
+    source.end(answer());
+    return source;
+  };
+  const { ctx, app } = await setup({}, answer, ['text', 'image'], stream);
+  ctx.on('screen/after-model', (gate) => { gate.stop = true; });
+  await app.inject({ method: 'POST', url: STATE, payload: start });
+  const response = await app.inject({ method: 'POST', url: CLICK + '/stream', payload: getClick() });
+  expect(JSON.parse(response.body)).toMatchObject({ phase: 'error', errorCode: 'privacy_blocked' });
+  expect(response.body).not.toContain('保存按钮');
 });

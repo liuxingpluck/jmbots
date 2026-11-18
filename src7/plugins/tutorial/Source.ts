@@ -6,6 +6,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as embedded from '../../utils/Embedded.ts';
+import * as sourceDirModule from '../../utils/SourceDir.ts';
 
 
 /** 源码跑时的代码目录：本文件在 src7/plugins/tutorial/，往上三层。 */
@@ -612,11 +613,12 @@ export class SourceDocs {
     //M 非单文件编译模式时再改走文件系统递归枚举。
     if (!embedded.isCompiled()) {
       //M 源码运行模式下递归扫 src7 目录列出全量源码路径，并按代码目录规范统一转成正斜杠。
-      const listed = await fs.promises.readdir(path.join(CODE_ROOT, 'src7'), { recursive: true });
-      all = listed.map((item) => `src7/${item.replaceAll('\\', '/')}`);
+      const sourceDir = path.join(CODE_ROOT, sourceDirModule.SOURCE_DIR);
+      const listed = await fs.promises.readdir(sourceDir, { recursive: true });
+      all = listed.map((item) => `${sourceDirModule.SOURCE_PREFIX}${item.replaceAll('\\', '/')}`);
     }
     this.files = all
-      .filter((item) => item.startsWith('src7/') && item.endsWith('.ts'))
+      .filter((item) => item.startsWith(sourceDirModule.SOURCE_PREFIX) && item.endsWith('.ts'))
       .filter((item) => !item.endsWith('.test.ts') && !item.includes('/tests/'))
       .sort();
     return this.files;

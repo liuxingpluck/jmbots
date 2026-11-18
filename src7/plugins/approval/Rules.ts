@@ -7,6 +7,9 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as aobbShot from '../../../ztools/aobb-shot/Options.ts';
+import * as embedded from '../../utils/Embedded.ts';
+import * as sourceDirModule from '../../utils/SourceDir.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 
 
@@ -27,6 +30,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 export const READ_ONLY_TOOLS = new Set([
   'time', 'read', 'list_dir', 'find', 'web_search', 'skill',
   'history', 'history_search', 'history_get', 'hand_session',
+  'memory_search', 'memory_get',
   'channel_reply', 'channel_history', 'channel_mentions', 'channel_visible_history',
   'react', 'ask', 'todo', 'relay_send', 'workspace', 'channel_search',
 ]);
@@ -120,18 +124,47 @@ export function touchesSecret(command: string): string | undefined {
  *   bun scripts/Swap_Serve.ts、Build_Release.ts、Build_Src7.ts，参数只许“--键 值”，值可以是带中文的路径。
  * 外面的程序（比如在别的机器上写代码的 AI）经 POST /api/run 让 jmbots 编译 src7，靠这条不问人直接跑（用户 11-16 定）。
  * @param command 原命令。
+ * @param cwd 真实执行目录，AOBB 相对脚本必须在源码根运行。
+ * @param runtimeRoot 运行时根，用于编译版定位宿主上的源码。
  */
-export function isProjectCheck(command: string): boolean {
+export function isProjectCheck(command: string, cwd?: string, runtimeRoot?: string): boolean {
+  //M AOBB 只匹配原始单条命令，避免原规则的 cd 前缀解析扩大它的边界。
+  if (cwd !== undefined && isProjectShot(command, cwd, runtimeRoot)) return true;
+
   //G 先去掉开头的 cd 和末尾的 2>&1；还带 &、|、; 这类接别的命令的符号，就不算项目自己的检查。
   const rest = parseCommand(command).rest.replace(/\s*2>&1\s*$/, '');
   if (/[&|;<>`]/.test(rest)) return false;
 
-  //M 拼出允许的几种命令的样子，整条对得上才算。
-  const run =String.raw`run\s+(?:typecheck(?::src7)?|lint|test(?::src7)?|release)`;
+  //M 拼出允许的几种命令的样子，整条对得上才算。typecheck:src7、test:src7 的后缀是源码根目录名（src7/utils/SourceDir.ts）。
+  const suffix = sourceDirModule.SOURCE_DIR;
+  const run = String.raw`run\s+(?:typecheck(?::${suffix})?|lint|test(?::${suffix})?|release)`;
   const test = String.raw`test(?:\s+[\w./\\-]+)*`;
   const script = String.raw`scripts[\\/](?:Swap_Serve|Build_Release|Build_Src7)\.ts(?:\s+--\w+\s+[\p{L}\p{N}_.:\\/-]+)*`;
   const pattern = new RegExp(String.raw`^bun(?:\.cmd)?\s+(?:${run}|${test}|${script})$`, 'iu');
   return pattern.test(rest);
+}
+
+/** 校验 AOBB 审核的精确执行目录及真实脚本位置。 */
+function isProjectShot(command: string, cwd: string, runtimeRoot: string | undefined): boolean {
+  let root = path.resolve(import.meta.dir, '..', '..', '..');
+  //M 源码用当前仓库。编译版则从实际运行时的配置目录还原源码布局。
+  if (embedded.isCompiled()) {
+    if (runtimeRoot === undefined) return false;
+
+    //M 打包版不从 bunfs 取源码，按运行时配置根找到 aidata 里的 source/jmbots。
+    root = path.resolve(runtimeRoot, '..', '..', 'source', 'jmbots');
+  }
+  //G 保留旧项目检查行为，AOBB 只在真实源码根放行。
+  if (path.relative(root, cwd) !== '' || !aobbShot.isAobbShotCommand(command, root)) return false;
+
+  const file = path.join(root, 'ztools', 'aobb-shot', 'Aobb_Shot.ts');
+  try {
+    //G 同名脚本或目录链接不能指向项目树外的同名入口。
+    const actual = fs.realpathSync(file);
+    return path.relative(file, actual) === '';
+  } catch {
+    return false;
+  }
 }
 
 

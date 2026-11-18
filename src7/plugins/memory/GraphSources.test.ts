@@ -129,7 +129,6 @@ describe('关系图配置与路由合并回归', () => {
     const fakeGateway: MemoryGateway = {
       url: () => 'http://127.0.0.1:30087',
       health: async () => ({ ok: true }),
-      search: async () => ({ ok: true, status: 200, json: { hits: [] } }),
     };
     const graphRoutes = new GraphRoutes(fakeCtx, root, fakeGateway, readGraphSettings(root, undefined));
     const fakeApp = {
@@ -139,13 +138,12 @@ describe('关系图配置与路由合并回归', () => {
     } as unknown as cordis.Context['http']['app'];
     graphRoutes.mountRoutes(fakeApp);
     expect(routes).toEqual([
+      '/api/memory-graph/passage/:id',
       '/graph',
       '/graph/',
       '/api/memory-graph/status',
       '/api/memory-graph/customers',
       '/api/memory-graph/graph',
-      '/api/memory-graph/search',
-      '/api/memory-graph/passage/:id',
       '/api/memory-graph/entity/:id',
       '/api/memory-graph/edge/:id',
     ]);
