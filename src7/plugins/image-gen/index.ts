@@ -1,5 +1,5 @@
 /**
- * 工具 image_generate：用 engine.image_model 配的“供应商/模型 ID”调 OpenAI 那种 POST <base_url>/images/generations，
+ * 工具 image_generate：用插件 config.image_model 配的“供应商/模型 ID”调 OpenAI 那种 POST <base_url>/images/generations，
  * 拿到第一张图（b64_json 或 url 都认），存成 bots/<机器人>/workspace/<名字>_<20 位时间戳>.png，交回 @绝对路径和大小。
  * 慢工具：骨架给的停止信号和 5 分钟超时合在一起交给 fetch，点了停止马上断开。把图发给用户归渠道（认回话里的 @路径）。
  * 照 0.4 src/capabilities/tools/Tools.ts:636-654、1664-1728。设计见同目录 说明.md 的「设计要点」一节。
@@ -10,13 +10,14 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import { getSafeName, stampId } from '../../utils/Names.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 
 
 /** 插件名。 */
 export const name = 'image-gen';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.1';
+export const version = '1.0.2';
 
 /** 用到的服务：resources 拿配置；tools 登记工具；bots 找工作区。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -38,27 +39,37 @@ interface ImageModel {
 /** 一次最多等多久（照 0.4）。 */
 const TIMEOUT_MS = 5 * 60_000;
 
+/** 生图模型的现行配置路径，用于提示用户。 */
+const IMAGE_MODEL_PATH = 'plugins[image-gen].config.image_model';
+
 
 /**
- * 读 engine.image_model：没写交回 undefined（调的时候说没配）；写错了抛错，插件不开工。
- * @param engine ctx.resources.raw.engine。
+ * 校验生图模型配置，允许没填，确保供应商已配置。
+ * @param value 新配置或迁移后的原值。
  * @param providers 骨架校验过的供应商。
  */
 function readModel(
-  engine: unknown,
+  value: unknown,
   providers: Record<string, { baseUrl: string; apiKey: string }>,
 ): ImageModel | undefined {
-  const value = (engine as Record<string, unknown> | undefined)?.['image_model'];
   if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value !== 'string' || !value.includes('/')) throw new Error('engine.image_model 要写成“供应商/模型 ID”');
-  const provider = value.slice(0, value.indexOf('/'));
+
+  //G 供应商和模型编号都必须有值，编号内部可以继续含斜杠。
+  const invalid = `${IMAGE_MODEL_PATH} 要写成“供应商/模型 ID”`;
+  if (typeof value !== 'string') throw new Error(invalid);
+
+  const separator = value.indexOf('/');
+  if (separator <= 0 || separator === value.length - 1) throw new Error(invalid);
+
+  const provider = value.slice(0, separator);
   const written = providers[provider];
-  if (written === undefined) throw new Error(`engine.image_model 里的供应商 ${provider} 在 providers 里找不到`);
+  if (written === undefined) throw new Error(`${IMAGE_MODEL_PATH} 里的供应商 ${provider} 在 providers 里找不到`);
   let apiKey = written.apiKey;
   if (apiKey === '') {
     apiKey = 'no-key';
   }
-  return { name: value, url: `${written.baseUrl}/images/generations`, apiKey, model: value.slice(provider.length + 1) };
+  const model = value.slice(separator + 1);
+  return { name: value, url: `${written.baseUrl}/images/generations`, apiKey, model };
 }
 
 /** 生图工具。 */
@@ -74,7 +85,7 @@ class ImageGen {
       definition: {
         name: 'image_generate',
         description: '生图：照提示词生一张图，存进工作区，返回 @路径（要发给用户就在 reply 里写上这个 @路径）。人物要前后一致就在提示词里把外貌写死。'
-          + '生一张要半分钟上下。没配 engine.image_model 时用不了。',
+          + '生一张要半分钟上下。没配插件的 image_model 时用不了。',
         parameters: piAi.Type.Object({
           prompt: piAi.Type.String({ description: '要画什么' }),
           size: piAi.Type.Optional(piAi.Type.String({ description: '尺寸：1024x1024（默认）、1024x1536（竖）、1536x1024（横）' })),
@@ -93,9 +104,9 @@ class ImageGen {
 
   /** 调接口、取第一张、存文件。 */
   private async generate(args: Record<string, unknown>, session: Session, signal: AbortSignal): Promise<string> {
-    //G 确认生图模型已配置，否则直接提示用户前往设置补齐 engine.image_model。
+    //G 确认生图模型已配置，否则直接提示用户填写生图插件配置。
     const model = this.model;
-    if (model === undefined) throw new Error('没配生图模型 engine.image_model（写成“供应商/模型 ID”，到设置的“引擎”里填），生不了图');
+    if (model === undefined) throw new Error(`没配生图模型 ${IMAGE_MODEL_PATH}，请填“供应商/模型 ID”`);
 
     //G 查出当前会话对应机器人的工作区目录以备保存图片，机器人不存在时立刻报错。
     const workspace = this.ctx.bots.get(session.row.bot)?.workspace;
@@ -155,12 +166,20 @@ class ImageGen {
 
 /**
  * 挂上生图工具。
- * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。engine.image_model 在这里读一次、校验一次（改了要重启）。
+ * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。生图模型在这里读一次、校验一次（改了要重启）。
  * @param ctx Cordis 给这个插件的 ctx。
- * @throws engine.image_model 写法不对或供应商不在 providers 里时抛错。
+ * @param config 生图插件配置，含可选的 image_model。
+ * @throws 配置不是对象、模型写法不对或供应商未登记。
  * 副作用：读取生图模型配置，并在 ctx.tools 上登记 image_generate 工具。
  */
-export function apply(ctx: cordis.Context): void {
-  //M 校验 engine.image_model 配置并实例化 ImageGen，向模型工具表登记 image_generate。
-  new ImageGen(ctx, readModel(ctx.resources.raw['engine'], ctx.resources.config.providers));
+export function apply(ctx: cordis.Context, config?: unknown): void {
+  //M 在挂插件时读取新、旧位置，内部工具只使用校验好的模型。
+  const own = checks.record(config ?? {}, 'image-gen.config');
+  const engine = ctx.resources.raw['engine'] as Record<string, unknown> | undefined;
+  const legacy = engine?.['image_model'];
+  const value = checks.getMigratedConfig(own['image_model'], legacy, 'engine.image_model', IMAGE_MODEL_PATH);
+  const model = readModel(value, ctx.resources.config.providers);
+
+  //M 向模型工具表登记 image_generate。
+  new ImageGen(ctx, model);
 }

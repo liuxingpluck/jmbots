@@ -9,6 +9,7 @@ import * as requests from '../../utils/RequestEvent.ts';
 import * as asrModule from './Asr.ts';
 import * as cloudAsr from './CloudAsr.ts';
 import * as models from './Models.ts';
+import * as replyModule from './Replies.ts';
 import * as routedAsr from './RoutedAsr.ts';
 import * as routes from './Routes.ts';
 import * as taskModule from './Tasks.ts';
@@ -17,7 +18,7 @@ import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
 
 export const name = 'voice';
-export const version = '0.4.0';
+export const version = '0.5.0';
 export const inject = ['resources', 'http', 'sessions'];
 
 type Provider = 'fake' | 'sherpa' | 'bailian' | 'xiaomi';
@@ -142,6 +143,10 @@ const ASR_STOP_WAIT_MS = 22_000;
 
 /** 排队或正在发送的播报，图片类调用用 group 限定自己的取消范围。 */
 interface Speech {
+  /** 当前语音帧组，浏览器只可确认在播的组。 */
+  utterId?: string;
+  /** 告知标准文字回复，音频有无实际播放。 */
+  onPlayed?: (played: boolean) => void;
   /** 这一句要合成的可见文本。 */
   text: string;
   /** 调用方可选的取消分组。 */
@@ -395,7 +400,13 @@ class VoiceConnection {
   }
 
   /** 把结果只给提交该消息的连接；已换页面或没有来源时交由协议回报失败。 */
-  reply(text: string, messageId: string, kind: channel.ReplyKind): boolean {
+  reply(
+    text: string,
+    messageId: string,
+    kind: channel.ReplyKind,
+    group?: string,
+    onPlayed?: (played: boolean) => void,
+  ): boolean {
     const owns = this.messageIds.has(messageId) || this.tasks?.isSending(messageId) === true;
     if (this.closed || !owns || this.socket.readyState !== OPEN) return false;
 
@@ -404,14 +415,17 @@ class VoiceConnection {
     this.send(frame);
 
     if (kind === 'final') {
-      //M 让文字和渠道回执先送达，语音按同一连接的回复顺序播放。
-      this.enqueueSpeech(text);
+      //M 文字立即送达；声音按同一连接的回复顺序排队。
+      const accepted = this.enqueueSpeech(text, group, false, onPlayed);
+      if (!accepted) {
+        onPlayed?.(false);
+      }
     }
     return true;
   }
 
   /** 将可选分组文本排入当前连接，interrupt 只替换匹配的组。 */
-  enqueueSpeech(raw: string, group?: string, interrupt = false): boolean {
+  enqueueSpeech(raw: string, group?: string, interrupt = false, onPlayed?: (played: boolean) => void): boolean {
     const speak = this.speak;
     const text = raw.trim();
     if (this.closed || !this.began || this.socket.readyState !== OPEN || !speak || text === '') return false;
@@ -420,7 +434,7 @@ class VoiceConnection {
       //M 同组已播或排队的内容过时后，才开始新讲解。
       this.stopSpeech(group);
     }
-    const job = { text, group, controller: new AbortController(), audibleUntil: 0 };
+    const job = { text, group, onPlayed, controller: new AbortController(), audibleUntil: 0 };
     //M 保留申请顺序，组内替换后的任务仍需排在普通回复之后。
     this.queue.push(job);
     //M 只让一个任务占用客户端播放队列，避免同组取消误伤普通答复。
@@ -430,15 +444,19 @@ class VoiceConnection {
 
   /** 停止匹配组。普通对话的音频不会和屏幕组共用在途播放。 */
   stopSpeech(group?: string): void {
-    if (group === undefined) {
-      this.queue = [];
-    }
-    if (group !== undefined) {
-      this.queue = this.queue.filter((job) => job.group !== group);
-    }
+    this.queue = this.queue.filter((job) => {
+      if (group !== undefined && job.group !== group) return true;
+
+      //G 已取消的排队语音立即交回未播结果。
+      job.onPlayed?.(false);
+      return false;
+    });
     const active = this.playing;
     if (active === undefined || (group !== undefined && active.group !== group)) return;
 
+    //G 打断前结束还在等待浏览器确认的播报。
+    active.onPlayed?.(false);
+    active.onPlayed = undefined;
     active.controller.abort();
     if (active.audibleUntil > performance.now()) {
       //M 已送到浏览器的同组音频需要同步清掉。
@@ -465,6 +483,8 @@ class VoiceConnection {
       } catch {
         //G 连接已结束时无需让失败影响队列中的随后回复。
       } finally {
+        //M 合成结束而未等到浏览器确认时，文字照常保留。
+        job.onPlayed?.(false);
         this.playing = undefined;
       }
       job = this.queue.shift();
@@ -504,6 +524,7 @@ class VoiceConnection {
         }
         this.nextUtterance += 1;
         utterId = 'voice-' + this.nextUtterance;
+        job.utterId = utterId;
         activeRate = audio.sampleRate;
         const start = { type: 'audio-start', utterId, format: 'pcm_s16le', sampleRate: activeRate };
         //M 让浏览器按本次实际采样率建立播放段。
@@ -627,20 +648,34 @@ class VoiceConnection {
       return;
     }
     if (type === 'start') {
-      //G bot 与 lang 是可选的上下文标签，拒绝非字符串。
+      //G 旧网页可以省略 device，提供时只接受浏览器生成的 UUID。
       const bot = message['bot'];
       const lang = message['lang'];
-      if ((bot !== undefined && typeof bot !== 'string') || (lang !== undefined && typeof lang !== 'string')) {
+      const device = message['device'];
+      const idPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
+      const invalidDevice = device !== undefined && (typeof device !== 'string' || !idPattern.test(device));
+      if ((bot !== undefined && typeof bot !== 'string') || (lang !== undefined && typeof lang !== 'string')
+        || invalidDevice) {
         this.fail(BAD_FRAME, 4400);
         return;
       }
 
       //M 重复 start 复用当前转写流，已停止的连接才创建新的流。
-      this.start(bot || this.defaultBot);
+      this.start(bot || this.defaultBot, device);
       return;
     }
     if (type === 'ping') {
       this.send({ type: 'pong' });
+      return;
+    }
+    if (type === 'audio-played') {
+      const job = this.playing;
+      const playedId = message['utterId'];
+      if (job?.utterId !== undefined && playedId === job.utterId) {
+        //G 只承认这个连接当前仍在播放的回复。
+        job.onPlayed?.(true);
+        job.onPlayed = undefined;
+      }
       return;
     }
     if (type === 'stop') {
@@ -653,7 +688,7 @@ class VoiceConnection {
   }
 
   /** 创建转写流，随后向客户端确认可发送音频。 */
-  private start(bot: string): void {
+  private start(bot: string, device?: string): void {
     if (this.stream !== undefined || this.stopping) return;
 
     //G 未部署真实转写时提供明确状态，不切到假后端。
@@ -688,7 +723,10 @@ class VoiceConnection {
         //M 把真实字幕交给这轮的任务处理器，并绑定本连接回执。
         const decide = this.models?.understand;
         const report = (place?: routes.Place, reason?: string): void => this.reportRoute('judge', place, reason);
-        this.tasks = new taskModule.VoiceTasks(this.ctx, bot, this.taskSettings, onTask, onFailure, decide, report);
+        //M 把浏览器设备号带到各句的标准渠道地址里。
+        this.tasks = new taskModule.VoiceTasks(
+          this.ctx, bot, this.taskSettings, onTask, onFailure, decide, report, device,
+        );
       }
       const boundary = this.models?.turn;
       if (boundary !== undefined) {
@@ -956,12 +994,29 @@ export class Voice {
     this.current?.currentTasks?.settle(messageId, sessionId);
   }
 
-  /** 向唯一的活动连接转发来源匹配的标准渠道回话。 */
-  reply(text: string, request: channel.ChannelReplyRequest): void {
-    const source = request.sourceSnapshot;
-    //G 标准渠道回复必须带当前语音连接的来源号。
-    if (source.channel !== name || !this.sendReply(text, source.messageId, request.kind)) {
-      throw new Error('原语音连接已结束');
+  /** 将文字送给原连接，至多等 20 秒确认已经播放过一段声音。 */
+  async playReply(text: string, request: channel.ChannelReplyRequest): Promise<boolean> {
+    const connection = this.current;
+    if (connection === undefined) return false;
+
+    const messageId = request.sourceSnapshot.messageId;
+    if (request.kind !== 'final') {
+      //M 进度回复只送文字。
+      connection.reply(text, messageId, request.kind);
+      return false;
+    }
+    const group = request.replyRequestKey;
+    const confirmation = Promise.withResolvers<boolean>();
+    //M 浏览器确认此音频组实际播放过后，才把回执标成已播。
+    const started = connection.reply(text, messageId, request.kind, group, confirmation.resolve);
+    if (!started) return false;
+
+    //G 请求即将超时时取消本组，防止未播回执之后意外播放。
+    const timeout = setTimeout(() => connection.stopSpeech(group), 20_000);
+    try {
+      return await confirmation.promise;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -1284,32 +1339,16 @@ export async function apply(ctx: cordis.Context): Promise<void> {
     scope.get(STATUS_PATH, async () => status);
   });
 
-  //M 用骨架的标准文字渠道适配器应答，不直接登记 bots 服务。
   if (settings.enabled) {
-    channel.registerTextReply(ctx, {
-      channel: name,
-      sendDirectText: (text, request) => voice.reply(text, request),
-    });
-
-    //M 直接认领的后台会话通过旧渠道发送器完成，仍按同一条来源消息投递。
+    //M 标准回执和后台完成都进同一个语音回复出口。
+    const play = (text: string, request: channel.ChannelReplyRequest) => voice.playReply(text, request);
+    const replies = new replyModule.VoiceReplies(ctx, play);
     void ctx.inject(['bots'], (sub) => {
       const send: Parameters<typeof sub.bots.channel>[1] = (text, session, origin) => {
-        const address = origin?.address ?? session.row.address;
-        if (typeof address !== 'object' || address === null || !('voiceMessageId' in address)
-          || typeof address.voiceMessageId !== 'string') {
-          return { status: 'rejected', reason: '语音来源地址无效' };
-        }
-        let kind: channel.ReplyKind = 'final';
-        if (session.row.state === 'running') {
-          kind = 'progress';
-        }
-        //M 来源地址由语音派发写入，连接接管后旧消息回执会被拒绝。
-        const sent = voice.sendReply(text, address.voiceMessageId, kind);
-        if (!sent) return { status: 'rejected', reason: '原语音连接已结束' };
-
-        return { status: 'accepted', reason: '' };
+        //M 后台到这里后只发标准回复，网页根据回执记一次文字。
+        return replies.fromWork(text, session, origin);
       };
-      //M 语音卸载时同时撤掉本插件的旧渠道发送登记。
+      //M 卸载时撤掉语音发送入口及渠道登记。
       sub.effect(() => sub.bots.channel(name, send));
     });
 
@@ -1325,7 +1364,7 @@ export async function apply(ctx: cordis.Context): Promise<void> {
       if (tasks === undefined) return;
 
       //M 通过骨架创建实际后台会话，机器人继续照既有流程接收这条消息。
-      const input = { kind: 'work', bot: incoming.bot, customer: 'voice:本机' } as const;
+      const input = { kind: 'work', bot: incoming.bot, customer: tasks.customer } as const;
       const session = ctx.sessions.create(input);
       tasks.bind(messageId, session.id);
       event.session = session;

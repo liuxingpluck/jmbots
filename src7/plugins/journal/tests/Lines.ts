@@ -1,5 +1,5 @@
 /**
- * 测试用的一条请求的跟踪行：Trail.test.ts、Lanes.test.ts 共用。放在 tests/ 下，编译版不嵌、找“谁调它”也不扫。
+ * 测试用的一条请求的跟踪行：journal 的 Trail.test.ts、tutorial 的 Lanes.test.ts 共用。放在 tests/ 下，编译版不嵌、找“谁调它”也不扫。
  * 消息 7，会话 s1：web-api 收下 → bots 分给会话 → 调模型要了工具 time → 执行（出错）→ 再调一次模型 → 做完 → 回话写回。
  * 中间夹着别的会话的一行、定时的 web-api/status、回话写回之后的一行，都不该算进来。
  */

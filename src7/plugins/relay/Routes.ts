@@ -36,7 +36,7 @@ export function routes(http: Http, relay: Relay): void {
       if (only.state !== undefined && !STATES.has(only.state)) {
         throw new failureModule.Failure(400, 'state 只能写 pending、replied、expired');
       }
-      //M 查过的条件交给 relay 列收件，回 { items, last }。
+      //M 使用公开的 InboxItem 视图回 { items, last }，owner 是布尔值，回话地址留在库里。
       return relay.list(since, limit, only);
     });
   });

@@ -50,7 +50,7 @@ src7/
     relay/           外部助手的交办都在这里，三样：
                      转话：bots 里写 relay: direct 的机器人不调模型，把话写进收件箱交给外部助手（jm开发），回信再送回原渠道
                      外部 AI 任务通道：agent_task 工具，外部 AI 来领活、交结果的 7 个接口（/api/agents*）
-                     给 Claude 留言：note_claude 工具（integrations/claude/inbox/ 下一个 md）
+                     给外部助手留言：用 agent_task 的 send 指定执行端并写 reply: false，领取即送达
     —— 给模型的工具 ——
     file-tools/      文件工具：time、read、list_dir、write、edit（按原文替换，引号空白宽松匹配）、find（按名字、内容找）；用户话里 @ 的图片接给看图模型
     exec/            exec 工具：跑 shell 命令，先审核；点停止会把整棵进程树结束
@@ -233,7 +233,7 @@ plugins:
   - name: web                    # 网页，要写在 http 后面
   - name: web-api                # 网页要的接口
   - name: files-api              # 文件接口
-  - name: relay                  # 转话给外部助手、外部 AI 任务通道、note_claude：写在 http、fake-model 后面
+  - name: relay                  # 转话给外部助手、外部 AI 任务与留言：写在 http、fake-model 后面
     config: { remind_minutes: 15, expire_minutes: 120 }
   - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 feishu 段
   - name: journal                # 流水和会话镜像：保留天数读顶层 events.keep_days（默认 30）；mirror: false 只写简版 对话.md

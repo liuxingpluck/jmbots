@@ -134,7 +134,8 @@ export class WebHistory {
    * @param request 渠道历史查询请求。
    */
   private onChannelHistory(request: protocol.ChannelHistoryRequest): void {
-    if (request.channel !== this.name) return;
+    const channel = request.channel;
+    if (channel !== this.name && channel !== 'voice') return;
 
     request.handled = true;
     const emitResult = (result: protocol.ChannelHistoryResult): void => {
@@ -143,11 +144,11 @@ export class WebHistory {
 
     //M 解析请求指向的聊天与机器人，供权限判断和历史查询使用。
     const snapshot = request.sourceSnapshot;
-    const target = this.resolveTarget(snapshot, request.chatId);
+    const target = this.resolveTarget(snapshot, request.chatId, channel);
 
     //G 二次核对访问权限：外人只能看当前网页聊天，本人可跨渠道、跨聊天查询网页历史。
     const isOwner = protocol.isHistoryOwner(snapshot);
-    const isSameChat = snapshot.channel === this.name && target.chatId === snapshot.chatId;
+    const isSameChat = snapshot.channel === channel && target.chatId === snapshot.chatId;
     if (!isOwner && !isSameChat) {
       emitResult({
         ok: false,
@@ -166,7 +167,7 @@ export class WebHistory {
         ok: false,
         items: [],
         nextCursor: null,
-        scope: `${this.name}:local:${target.chatId}`,
+        scope: `${channel}:local:${target.chatId}`,
         completeness: 'local_only',
         error: { code: 'identity_unresolved', message: '网页渠道没有平台 @ 提及标识' },
       });
@@ -174,10 +175,10 @@ export class WebHistory {
     }
 
     //M 从目标聊天读取历史，按统一游标分页后回传查询结果。
-    const entries = this.readEntries(this.ctx.resources.db, target.bot, target.chatId);
+    const entries = this.readEntries(this.ctx.resources.db, target.bot, target.chatId, channel);
     const result = protocol.paginateChannelHistory({
       request,
-      channel: this.name,
+      channel,
       accountId: 'local',
       chatId: target.chatId,
       entries,
@@ -195,8 +196,21 @@ export class WebHistory {
    */
   private resolveTarget(
     snapshot: protocol.SourceSnapshot,
-    requestedChatId?: string,
+    requestedChatId: string | undefined,
+    channel: string,
   ): { chatId: string; bot: string } {
+    if (channel === 'voice') {
+      //M 缺省语音聊天使用同一浏览器；从其他渠道查询可指定浏览器聊天号。
+      let chatId = requestedChatId?.trim() || 'local';
+      if (requestedChatId === undefined && snapshot.channel === channel) {
+        chatId = snapshot.chatId;
+      }
+      if (chatId === 'voice:本机') {
+        chatId = 'local';
+      }
+      return { chatId, bot: snapshot.botName };
+    }
+
     let targetChatId = 'http:本机';
     let targetBot = snapshot.botName;
 
@@ -224,23 +238,31 @@ export class WebHistory {
    * @param chatId 目标聊天标识。
    * @returns 标准历史摘要项数组。
    */
-  private readEntries(db: Database, bot: string, chatId: string): protocol.ChannelHistoryItem[] {
-    if (chatId !== 'http:本机' && chatId !== `http:${bot}`) return [];
+  private readEntries(db: Database, bot: string, chatId: string, channel: string): protocol.ChannelHistoryItem[] {
+    if (channel === this.name && chatId !== 'http:本机' && chatId !== `http:${bot}`) return [];
 
     //G 历史表尚未初始化时直接交回空历史。
     const hasTable = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'web_messages'").get();
     if (hasTable === null || hasTable === undefined) return [];
 
     //M 取出目标机器人的网页消息及其回复，为展开历史项准备原件。
-    const rows = db.query(
-      "SELECT id, bot, source, text, replies, created_at, updated_at FROM web_messages WHERE channel = 'http' AND bot = ? ORDER BY id ASC",
-    ).all(bot) as WebMessageRow[];
+    let sql = 'SELECT id, bot, source, text, replies, created_at, updated_at FROM web_messages'
+      + ' WHERE channel = ? AND bot = ?';
+    const values = [channel, bot];
+    if (channel === 'voice') {
+      //M 未带设备号的旧语音地址算本机，设备查询只读匹配的整句。
+      sql += " AND COALESCE(json_extract(address, '$.chatId'), 'local') = ?";
+      values.push(chatId);
+    }
+    sql += ' ORDER BY id ASC';
+    //M 读出已限定渠道、机器人和聊天的原话与回复。
+    const rows = db.query(sql).all(...values) as WebMessageRow[];
 
     const entries: protocol.ChannelHistoryItem[] = [];
     for (const row of rows) {
       //M 以收件编号生成入站历史标识，并将附件路径从展示正文中移除。
       const userNativeId = String(row.id);
-      const userMessageId = protocol.makeChannelMessageId(this.name, 'local', userNativeId);
+      const userMessageId = protocol.makeChannelMessageId(channel, 'local', userNativeId);
       const userContent = sanitizeWebText(row.text, userNativeId);
 
       //M 网页入站 sender：默认网页本地入口标为 http:本机 / 网页，其余来源保留 source 名称。
@@ -251,6 +273,11 @@ export class WebHistory {
         senderName = row.source;
       }
 
+      if (channel === 'voice') {
+        senderId = 'owner';
+        senderName = '语音';
+      }
+      //M 入站条目用渠道发送者和原始消息时刻。
       entries.push({
         messageId: userMessageId,
         nativeId: userNativeId,
@@ -279,13 +306,14 @@ export class WebHistory {
 
         //M 将回复下标编入历史标识，并整理回话正文与附件元数据。
         const replyNativeId = `${userNativeId}:reply:${String(replyIndex)}`;
-        const replyMessageId = protocol.makeChannelMessageId(this.name, 'local', replyNativeId);
+        const replyMessageId = protocol.makeChannelMessageId(channel, 'local', replyNativeId);
         const replyContent = sanitizeWebText(replyItem.text, replyNativeId);
         let replyAt = row.updated_at;
         if (typeof replyItem.at === 'number' && Number.isFinite(replyItem.at)) {
           replyAt = Math.max(row.created_at, replyItem.at);
         }
 
+        //M 回复沿用标准历史的出站方向与机器人身份。
         entries.push({
           messageId: replyMessageId,
           nativeId: replyNativeId,

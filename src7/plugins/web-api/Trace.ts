@@ -66,11 +66,13 @@ const STEP_TEXT_MAX = 4000;
  * @param text 这句回话。
  * @returns 生成依据。
  */
-export function getGeneration(row: SessionRow, text: string): Generation {
+export function getGeneration(row: SessionRow | undefined, text: string): Generation {
   const program: Generation = {
     kind: 'program', model: null, thinkingRequested: null, thinkingSent: null, thinkingReported: null,
     source: 'stored-assistant', purpose: null, run: null, step: null, assistantAt: null, callId: null,
   };
+  if (row === undefined) return program;
+
   const assistants = row.messages.filter((item): item is piAi.AssistantMessage => item.role === 'assistant');
   const last = assistants.at(-1);
   if (last === undefined) return program;
@@ -226,7 +228,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   const to = reply.at;
   const notes = ['只读：按收件表、流水、用量表现有的记录拼成，不重新执行'];
 
-  const journalQuery = { action: 'message-lines', message: message.id, limit: EVENT_LIMIT } as const;
+  const journalQuery = { action: 'reply-lines', message: message.id, limit: EVENT_LIMIT, sessions, to } as const;
   const journalOptions = {
     timeoutMs: TRACE_QUERY_TIMEOUT_MS,
     onFallback: () => ({ requestId: '', lines: undefined }),
@@ -237,7 +239,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
     onFallback: () => ({ requestId: '', rows: [], truncated: false }),
   };
 
-  //M 按消息取流水、按会话和时段取用量，两份明细可同时查询。
+  //M 按消息取流水（journal 按 Trail.ts 的 pickReply 挑好）、按会话和时段取用量，两份明细可同时查询。
   const pendingJournal = requestEventModule.requestEvent(
     ctx,
     'journal/request',
@@ -254,13 +256,9 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   );
   const [journal, used] = await Promise.all([pendingJournal, pendingUsage]);
 
-  //M 流水只保留目标消息和涉及会话中截至本句回话的记录。
-  const lines = journal.lines ?? [];
-  const mine = (line: (typeof lines)[number]): boolean => line.messageId === message.id || sessions.includes(line.sessionId ?? '');
-  const events = lines.filter((line) => line.at <= to && mine(line));
-  //M 取满了、最后一行还没到这句回话：后面的没取到。
-  const lastAt = lines.at(-1)?.at ?? to;
-  const cut = lines.length >= EVENT_LIMIT && lastAt < to;
+  //M journal 已挑出目标消息和涉及会话中截至本句回话的行；cut 是取满了、最后一行还没到这句回话。
+  const events = journal.lines ?? [];
+  const cut = journal.cut ?? false;
 
   //M 缺流水时仅展示消息本身，缺用量时保留已有事件。
   let scope = 'exact';

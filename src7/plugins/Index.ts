@@ -66,7 +66,7 @@ export interface PluginModule {
 //   骨架配套：workspaces（机器人的工作区，bots 依赖它）、bots（含前台和派后台，11-17 并进原 bot-front-desk、prompt、reply-tool）、fake-model
 //   HTTP 底座和网页：http、web（已并入原 files-api）
 //   渠道：cli、web-api、feishu、wechat（wechat-kefu）
-//   分派：relay（转外部助手、外部 AI 任务通道、给 Claude 留言；11-17 并进原 agent-tasks、note-claude；前台在 bots 里）
+//   分派：relay（转话、外部 AI 任务与免回信留言；用 agent_task 派活或留言，前台在 bots 里）
 //   给模型的工具：file-tools（已并入原 base-tools）、exec（已并入原 runs）、web-search、image-gen、assist（reply 工具在 bots 里）
 //   审核和流程：approval、decision、progress（已并入原 review）
 //   模型与上下文：model-catalog（已并入原 model-fallback、usage、model-notes，模型评价在 /model-notes/）

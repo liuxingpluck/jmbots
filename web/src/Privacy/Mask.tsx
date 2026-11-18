@@ -3,6 +3,7 @@
  * 只有 localStorage 里明确写了 on 才打码；原始 API 数据不改，在渲染边界生成打码副本，同页与同源标签同步。
  */
 import * as react from 'react';
+import * as i18n from '../I18n.ts';
 
 
 /** 客服、聊天、记忆和关系图共用的持久化键。 */
@@ -95,9 +96,25 @@ export function name(value: string, enabled: boolean): string {
  * @returns 遮罩占位文本或原字符串。
  */
 export function text(value: string, enabled: boolean): string {
-  if (enabled && value !== '') return '（已打码）';
+  //G 原文可见或为空时直接返回，避免每次渲染都读取语言设置。
+  if (!enabled || value === '') return value;
 
-  return value;
+  //M 独立网页和聊天共用打码函数，优先读地址语言，其次读浏览器设置。
+  let language: i18n.Language = 'zh-CN';
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get('lang');
+    const explicit = i18n.matchLanguage(requested);
+    try {
+      language = explicit ?? i18n.loadLanguage(window.localStorage);
+    } catch {
+      //G 浏览器禁止访问本地存储时保留默认语言。
+    }
+  }
+
+  //M 只翻译遮罩文本，保留打码对原文的遮蔽。
+  const t: i18n.Translate = (label) => i18n.translate(language, label);
+  return t('（已打码）');
 }
 
 

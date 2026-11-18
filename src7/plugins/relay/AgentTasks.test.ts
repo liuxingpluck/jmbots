@@ -1,7 +1,7 @@
 /**
  * 外部任务通道（AgentTasks）的新协议 v1：派活取次高档、写任务单；领取键同键重领回原样、别人领了 409；
  * 交回查领取键和产物，同内容重交回原样、不同内容 result_conflict；定时扫 result.json 时坏文件不算完成；旧任务照旧格式收。
- * 使用内存库、临时目录和 Cordis 事件，应答时记录入队结果，无需启动 HTTP。
+ * 使用内存库、临时目录和 Cordis 事件；HTTP 断言通过 Fastify 注入，无需监听端口。
  * 11-17 随 agent-tasks 并进 relay 挪到这里。
  * 跑法：bun test ./src7/plugins/relay
  */
@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
+import * as fastifyModule from 'fastify';
 import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
 import * as failureModule from '../../utils/Failure.ts';
@@ -19,6 +20,7 @@ import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import * as checksModule from './Checks.ts';
 import { AgentTasks, type SendInput } from './AgentTasks.ts';
+import * as routesModule from './TaskRoutes.ts';
 
 
 /** 一个用例的摆设。 */
@@ -163,6 +165,9 @@ test('派活：照登记的能力取次高档，写 task.json、task.md；没登
 
   //M 执行配置：opus、次高档 xhigh，子代理同样。
   const spec = task.protocol!.spec;
+  if (spec.reply === false) {
+    throw new Error('此任务应要求交回结果');
+  }
   expect(spec.execution.model).toBe('opus');
   expect(spec.execution.thinking).toBe('xhigh');
   expect(spec.execution.effortPolicy).toBe('second-highest');
@@ -222,6 +227,100 @@ test('领取键：同一个键重领回原样，别的键 409', () => {
   expect(first.protocol?.claimKey).toBe('k1');
   expect(again.takenAt).toBe(first.takenAt!);
   expect(getStatus(() => bench.tasks.take('claude', id, 'k2'))).toBe(409);
+});
+
+
+test('单向任务无需登记模型，领取即送达，且不投递结果', async () => {
+  //M 执行端只登记名字和说明；工具不需要模型、思考档和交回物。
+  const bench = makeBench();
+  const agent = 'receiver';
+  bench.tasks.hello(agent, { description: '接收留言' });
+  const bot = bench.session.row.bot;
+  const workspace = path.join(roots.at(-1)!, 'bots', bot, 'workspace');
+  const inputName = '上下文.txt';
+  const inputPath = path.join(workspace, inputName);
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(inputPath, '附加说明');
+  const signal = new AbortController().signal;
+  const args = {
+    action: 'send',
+    agent,
+    title: '排期通知',
+    text: '周五更新',
+    files: [inputName],
+    reply: false,
+  };
+  const callId = 'notice-1';
+  const first = await bench.tool.run(args, bench.session, signal, callId);
+  const repeated = await bench.tool.run(args, bench.session, signal, callId);
+  expect(repeated).toBe(first);
+  expect(first).toContain('对方领取即送达');
+
+  //M 领取前仅一件待办。任务单保留正文和附件，无执行配置和交回格式。
+  const pending = bench.tasks.list(agent, 'new');
+  expect(pending).toHaveLength(1);
+  const task = pending[0]!;
+  const spec = task.protocol!.spec;
+  expect(spec).toMatchObject({ reply: false, task: { goal: '周五更新', inputs: ['input/上下文.txt'] } });
+  expect(spec).not.toHaveProperty('execution');
+  expect(spec).not.toHaveProperty('result');
+  const folder = bench.tasks.dir(agent, task.id);
+  const copied = path.join(folder, 'input', inputName);
+  const body = fs.readFileSync(copied, 'utf8');
+  expect(body).toBe('附加说明');
+  const markdown = path.join(folder, 'task.md');
+  const sheet = fs.readFileSync(markdown, 'utf8');
+  expect(sheet).toContain('领取即送达，不用交回');
+
+  //M 用 claude-link 同样的接口领取，核对状态、正文、附件和领取键。
+  const app = fastifyModule.fastify();
+  const ctx = { http: { app, allow: () => undefined } } as unknown as cordis.Context;
+  routesModule.registerRoutes(ctx, bench.tasks);
+  const base = `/api/agents/${agent}/tasks/${task.id}`;
+  const takeUrl = `${base}/take`;
+  const claimKey = 'receiver/notice-1';
+  const claim = { method: 'POST' as const, url: takeUrl, payload: { claimKey } };
+  const fileUrl = `${base}/files/input/${encodeURIComponent(inputName)}`;
+  try {
+    const firstTake = await app.inject(claim);
+    expect(firstTake.statusCode).toBe(200);
+    const received = firstTake.json();
+    expect(received).toMatchObject({
+      status: 'done',
+      reply: false,
+      text: '周五更新',
+      claimKey,
+      files: [{ name: 'input/上下文.txt', url: fileUrl }],
+    });
+    expect(received.doneAt).toBeNumber();
+    expect(received.doneAt).toBe(received.takenAt);
+
+    //M 同键重领返回原回执，异键冲突；原附件仍可下载。
+    const secondTake = await app.inject(claim);
+    expect(secondTake.json()).toEqual(received);
+    const different = { ...claim, payload: { claimKey: 'another-worker' } };
+    const conflict = await app.inject(different);
+    expect(conflict.statusCode).toBe(409);
+    const downloaded = await app.inject(fileUrl);
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.body).toBe('附加说明');
+
+    //M 误交结果时拒绝，不写交回文件。
+    const resultUrl = `${base}/result`;
+    const payload = { ok: true, text: '收到', uploads: [] };
+    const returned = await app.inject({ method: 'POST', url: resultUrl, payload });
+    expect(returned.statusCode).toBe(409);
+  } finally {
+    await app.close();
+  }
+
+  //M 任务领取后退出待领和待交队列，扫描不派生入队消息。
+  expect(bench.tasks.list(agent, 'new')).toEqual([]);
+  expect(bench.tasks.list(agent, 'taken')).toEqual([]);
+  await bench.tasks.scan();
+  const result = path.join(folder, 'result', 'result.json');
+  expect(fs.existsSync(result)).toBe(false);
+  expect(bench.accepted).toEqual([]);
 });
 
 

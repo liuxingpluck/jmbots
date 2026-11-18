@@ -36,7 +36,8 @@ export const name = 'web-api';
 //M 1.1.4：网页入站地址带 owner: true（“同意 N”可批所有待确认）；replyDirect 支持跨渠道发往网页的回复落入时间线。
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
 //M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
-export const version = '1.1.8';
+//M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
+export const version = '1.1.10';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -142,6 +143,39 @@ class WebApi {
     //M 登记网页历史监听，为渠道历史工具提供分页结果。
     new WebHistory(ctx);
 
+    //M 语音只在 ASR 确认整句后写入时间线，使用与半句任务相同的标准来源号。
+    ctx.on('voice/record', (message, sessionId) => {
+      for (const bot of message.targetBots) {
+        let id = this.timeline.findBySource(bot, message.messageId);
+        if (id === undefined) {
+          const sourceAddress = { ...message.origin.address };
+          if ('taskId' in message.routing && typeof message.routing.taskId === 'string') {
+            sourceAddress['voiceTaskId'] = message.routing.taskId;
+          }
+          const address = JSON.stringify(sourceAddress);
+          const row: timelineModule.NewMessage = {
+            bot,
+            channel: message.channel,
+            source: message.channel,
+            text: message.rawText,
+            address,
+            source_id: message.messageId,
+            createdAt: message.createdAt,
+          };
+          //M 先存最终文本，审批回复和认领回执才有可关联的原话。
+          id = this.timeline.insert(row);
+          if ('recordOnly' in message.routing && message.routing.recordOnly === true && sessionId === undefined) {
+            //M 只入档且没有后台任务的语音句无需等待回复。
+            this.timeline.markReplied(id);
+          }
+        }
+        if (sessionId !== undefined) {
+          //M 半句已开工，整句接回原任务会话。
+          this.timeline.bindSession(id, sessionId);
+        }
+      }
+    });
+
     //M 一轮收尾（bots 发 channel/settled）：网页的那条标成回完；没回成又一句没回过的，补一句原因。
     ctx.on('channel/settled', (event) => {
       this.onSettled(event);
@@ -151,7 +185,7 @@ class WebApi {
     //M   记下标准消息号（sourceId），回话按“消息号 + 机器人”精确挂回。
     ctx.on('bot/receive', (event) => {
       const message = event.message;
-      if (message.channel === this.name) return;
+      if (message.channel === this.name || message.channel === 'voice') return;
 
       const address = JSON.stringify(message.address ?? null);
       const newMessage: timelineModule.NewMessage = {
@@ -192,7 +226,7 @@ class WebApi {
       if (text === '') return;
 
       this.otherReplies.set(request.replyRequestKey, { text, request });
-    });
+    }, { prepend: true });
     ctx.on('channel/replied', (event) => {
       //M 收到实际交付回执后尝试把对应回话挂回原消息。
       this.recordOtherReply(event);
@@ -822,7 +856,8 @@ class WebApi {
    */
   private recordOther(session: Session, text: string): void {
     const row = session.row;
-    if (row.channel === undefined || row.channel === this.name || text === '') return;
+    //G 语音后台统一回 channel/replied，此处补写会重复一条。
+    if (row.channel === undefined || row.channel === this.name || row.channel === 'voice' || text === '') return;
 
     //G 正在跑 channel_tool 的轮（bots 不自动发它的话）→ 不记。
     if (row.quiet === true || row.activeSourceSnapshot !== undefined) return;
@@ -871,6 +906,22 @@ class WebApi {
     const record = this.timeline.get(id);
     if (record === undefined) return;
 
+    if (snapshot.channel === 'voice') {
+      //M 语音后台有来源会话，审批直回等程序回复也可没有会话。
+      const sourceSession = snapshot.origin.address['voiceSessionId'];
+      let session: Session | undefined;
+      if (typeof sourceSession === 'string') {
+        session = this.ctx.sessions.open(sourceSession);
+      }
+      if (session === undefined && record.sessionId !== null) {
+        session = this.ctx.sessions.open(record.sessionId);
+      }
+      const spoken = 'spoken' in event.receipt && event.receipt.spoken === true;
+      const delivery = { key, spoken };
+      //M 回复幂等键和实际播放状态与文字一起落盘。
+      this.timeline.reply(id, session, pending.text, delivery);
+      return;
+    }
     if (record.sessionId === null) return;
 
     //M 用原会话恢复回话的生成依据，随正文一起挂回对应收件记录。

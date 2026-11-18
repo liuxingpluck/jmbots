@@ -19,7 +19,7 @@ afterEach(async () => {
 
 
 /** 挂真实设置路由和内存事件总线，配置与记忆全部写测试的临时目录。 */
-async function setup(withBotReply = true) {
+async function setup(withBotReply = true, extraConfig: string[] = []) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-settings-test-'));
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'config.yaml'), [
@@ -28,6 +28,7 @@ async function setup(withBotReply = true) {
     '    base_url: http://127.0.0.1:9',
     'default_model: mock/listed',
     'bots: []',
+    ...extraConfig,
     '',
   ].join('\n'));
 
@@ -62,8 +63,74 @@ async function setup(withBotReply = true) {
     });
   }
   await ctx.plugin(settings);
-  return { ctx, app, bots };
+  return { ctx, app, bots, root };
 }
+
+test('设置页按插件名只读写五个已开放的插件字段', async () => {
+  const { app, root } = await setup(true, [
+    'plugins:',
+    '  - name: programs',
+    '    config: { private_note: do-not-show }',
+    '  - name: image-gen',
+    '    config:',
+    '  - name: model-catalog',
+    '    config:',
+    '      fallback:',
+    '        chain: [mock/listed] # 保留这行注释',
+    '        cooldown_minutes: 41',
+    '  - name: base-bridge',
+    '    config: { index_url: "http://127.0.0.1:9", notify: true }',
+  ]);
+
+  const initial = await app.inject('/api/settings');
+  expect(initial.json().config.plugins).toEqual({
+    'base-bridge': { config: { index_url: 'http://127.0.0.1:9' } },
+    'model-catalog': { config: { fallback: { chain: ['mock/listed'] } } },
+  });
+  const fallback = ['plugins', 'model-catalog', 'config', 'fallback'];
+  const changes = [
+    { path: ['plugins', 'base-bridge', 'config', 'index_url'], value: 'http://127.0.0.1:7' },
+    { path: ['plugins', 'image-gen', 'config', 'image_model'], value: 'mock/image' },
+    { path: [...fallback, 'chain'], value: ['mock/backup', 'mock/listed'] },
+    { path: [...fallback, 'max_tries'], value: 0 },
+    { path: [...fallback, 'include_siblings'], value: false },
+  ];
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings', payload: changes });
+  expect(saved.json()).toMatchObject({ ok: true });
+  expect(saved.statusCode).toBe(200);
+  const readBack = await app.inject('/api/settings');
+  expect(readBack.json().config.plugins).toEqual({
+    'base-bridge': { config: { index_url: 'http://127.0.0.1:7' } },
+    'image-gen': { config: { image_model: 'mock/image' } },
+    'model-catalog': { config: { fallback: {
+      chain: ['mock/backup', 'mock/listed'],
+      max_tries: 0,
+      include_siblings: false,
+    } } },
+  });
+  expect(readBack.json().config.engine).toBeUndefined();
+
+  const file = path.join(root, 'config.yaml');
+  const written = fs.readFileSync(file, 'utf8');
+  expect(written).toContain('保留这行注释');
+  expect(written).toContain('cooldown_minutes: 41');
+  expect(written).toContain('private_note: do-not-show');
+  for (const path of [
+    ['plugins', 'programs', 'config', 'private_note'],
+    [...fallback, 'cooldown_minutes'],
+    ['plugins', 1, 'config', 'image_model'],
+    [...fallback, 'chain', 0],
+  ]) {
+    const payload = [
+      { path: [...fallback, 'max_tries'], value: 7 },
+      { path, value: '未开放' },
+    ];
+    const denied = await app.inject({ method: 'PUT', url: '/api/settings', payload });
+    expect(denied.statusCode).toBe(400);
+    expect(denied.json<{ error: string }>().error).toContain('该插件字段不能从设置页修改');
+  }
+  expect(fs.readFileSync(file, 'utf8')).toBe(written);
+});
 
 
 /** 记录重启路径的进程操作，测试不拉起或退出实际进程。 */

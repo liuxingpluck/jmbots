@@ -120,6 +120,19 @@ export const TABLE_TEXTS: readonly string[] = [
   '低',
   '中',
   '高',
+  // Chat/VoiceBar.tsx 的 ROUTE_LABELS：显示各语音阶段及其本地或云端线路。
+  '转写',
+  '合成',
+  '理解',
+  '断句',
+  // Memory/MemoryPage.tsx 的 getOwnerLabel：动态传给 t() 的发话人标签。
+  '个人：{name}',
+  '群聊：{name}',
+  // src7/plugins/memory/ChannelBackfill.ts 的回填状态：Memory/ChannelBackfillCard.tsx 按 reason 翻译。
+  '手动暂停',
+  '回填完成',
+  '资源占用过高',
+  '记忆服务或历史归档暂不可用，稍后重试',
 ];
 
 

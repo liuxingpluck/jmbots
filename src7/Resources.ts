@@ -110,9 +110,9 @@ export interface JmbotsConfig {
   providers: Record<string, ProviderConfig>;
   /** 要挂哪些插件，照写的先后挂。 */
   plugins: PluginEntry[];
-  /** 新会话默认的思考档（engine.thinking）。 */
+  /** 新会话默认的思考档（models.thinking）。 */
   thinking: Thinking;
-  /** 模型请求出错怎么重试（engine.retry）。 */
+  /** 模型请求出错怎么重试（models.retry）。 */
   retry: {
     /** 出错以后最多再试几次。 */
     times: number;

@@ -7,6 +7,7 @@
  *   2. 骨架（src7/ 下 plugins/ 以外的文件）直接登记的，它不属于任何插件。
  */
 import type * as fastify from 'fastify';
+import { SOURCE_DIR, SOURCE_PREFIX } from '../../utils/SourceDir.ts';
 
 
 /** 一条登记下来的路径。 */
@@ -22,10 +23,10 @@ export interface RouteInfo {
 }
 
 /** 调用栈里的一帧：src7/plugins/<文件夹>/<文件>.ts:<行号>。 */
-const FRAME = /src7\/plugins\/([^/:()\s]+)\/([^:()\s]+\.ts):(\d+)/u;
+const FRAME = new RegExp(`${SOURCE_DIR}/plugins/([^/:()\\s]+)/([^:()\\s]+\\.ts):(\\d+)`, 'u');
 
 /** 本文件的名字：钩子自己那一帧要跳过。 */
-const SELF = 'src7/plugins/http/Routes.ts';
+const SELF = `${SOURCE_PREFIX}plugins/http/Routes.ts`;
 
 /** 记调用栈时多留几帧：Fastify 内部要占好几帧。 */
 const STACK_LIMIT = 40;
@@ -45,7 +46,7 @@ export function getOwner(stack: string): { owner: string; site: string } | undef
     if (found === null) continue;
 
     const owner = found[1] ?? '';
-    const site = `src7/plugins/${owner}/${found[2] ?? ''}:${found[3] ?? ''}`;
+    const site = `${SOURCE_PREFIX}plugins/${owner}/${found[2] ?? ''}:${found[3] ?? ''}`;
     return { owner, site };
   }
   return undefined;

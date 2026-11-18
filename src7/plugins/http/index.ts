@@ -20,7 +20,7 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'http';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.4';
+export const version = '1.1.5';
 
 /** 用到的服务。 */
 export const inject = ['resources'];

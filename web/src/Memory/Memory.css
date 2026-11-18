@@ -27,6 +27,9 @@ code { background: #111a33; padding: 1px 6px; border-radius: 4px; }
 .mm-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .mm-row select, .mm-row input, .mm-row button, .mm-import textarea { font: inherit; color: #dfe6f5; background: #111a33; border: 1px solid #2a3a66; border-radius: 8px; padding: 8px 10px; outline: none; }
 .mm-row select { flex: 0 1 220px; min-width: 140px; }
+.mm-ownership { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted, #b9c8ec); }
+.mm-ownership > span { flex-shrink: 0; }
+.mm-ownership select { max-width: 260px; background: var(--panel, #111a33); color: var(--text, #dfe6f5); }
 .mm-row input { flex: 1 1 260px; min-width: 0; }
 .mm-row button { cursor: pointer; flex: 0 0 auto; background: linear-gradient(180deg, #2c4fa8, #213d85); border-color: #3d63c7; }
 .mm-row button:disabled { opacity: .6; cursor: wait; }

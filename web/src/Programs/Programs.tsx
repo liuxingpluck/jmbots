@@ -67,12 +67,17 @@ export function Programs(): react.JSX.Element | null {
     <nav className="jm-top-pages" aria-label="进程插件">
       {entries.map((entry) => {
         const href = tokenModule.withToken(entry.ui, tokenModule.TOKEN);
-        const title = `${entry.title}（${entry.licenseLabel}；程序自报商业授权）`;
+        //M 只有已授权、过期才显示授权标签；不需要、未授权、未知都不显示，免得免费程序看着像出错。
+        const showLicense = entry.licenseLabel === '已授权' || entry.licenseLabel === '过期';
+        let title = entry.title;
+        if (showLicense) {
+          title = `${entry.title}（${entry.licenseLabel}；程序自报商业授权）`;
+        }
         return (
           <a key={entry.name} className="jm-top-page-link jm-program-link"
             href={href} title={title} target="_blank" rel="noopener noreferrer">
             <span>{entry.title}</span>
-            <small className="jm-program-license">{entry.licenseLabel}</small>
+            {showLicense && <small className="jm-program-license">{entry.licenseLabel}</small>}
           </a>
         );
       })}

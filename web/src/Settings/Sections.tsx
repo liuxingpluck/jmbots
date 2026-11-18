@@ -647,8 +647,22 @@ export function Models(props: SectionProps): react.JSX.Element {
     <div className="jm-section">
       <fields.ModelField label={t('默认模型 default_model')} hint={t('新开会话和 exec 审核的小循环用它。写成“供应商/模型 ID”。会话要换模型在会话页换')} models={props.models} kind="chat" draft={props.draft} path={['default_model']} onEdit={props.onEdit} />
       <fields.ModelField label={t('决策模型 models.decision')} hint={t('分派、压缩、exec 审核先问它（只回每个选项的概率）；可以不配')} models={props.models} kind="decision" draft={props.draft} path={['models', 'decision', 'model']} onEdit={props.onEdit} />
-      <fields.ModelListField label={t('备用链 engine.fallback_chain')} hint={t('模型被限流时依次换着试（能调顺序）')} models={props.models} draft={props.draft} path={['engine', 'fallback_chain']} onEdit={props.onEdit} />
-      <fields.NumberField label={t('最多再试几个 engine.fallback_max_tries')} hint={t('被限流后最多再试几个模型（默认 5）')} min={0} draft={props.draft} path={['engine', 'fallback_max_tries']} onEdit={props.onEdit} />
+      <fields.ModelListField
+        label={t('备用链 engine.fallback_chain')}
+        hint={t('模型被限流时依次换着试（能调顺序）')}
+        models={props.models}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.fallbackChain}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('最多再试几个 engine.fallback_max_tries')}
+        hint={t('被限流后最多再试几个模型（默认 5）')}
+        min={0}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.fallbackMaxTries}
+        onEdit={props.onEdit}
+      />
       <fields.ModelField label={t('看图的模型 engine.vision_model')} hint={t('看不了图的模型读到图片时，先交给它转成文字；不写就不转')} models={props.models} needVision kind="chat" draft={props.draft} path={['engine', 'vision_model']} onEdit={props.onEdit} />
     </div>
   );
@@ -880,12 +894,33 @@ export function Engine(props: SectionProps): react.JSX.Element {
       <fields.NumberField label={t('轮询 poll_ms')} hint={t('机器人循环多久看一次新消息（毫秒，默认 300）')} min={10} draft={props.draft} path={['engine', 'poll_ms']} onEdit={props.onEdit} />
       <fields.NumberField label={t('压缩 compress_at')} hint={t('上下文到多少 token 就考虑压缩（模型上限不到 250K 时用上限的 80%，默认 200000）')} min={1000} step={1000} draft={props.draft} path={['engine', 'compress_at']} onEdit={props.onEdit} />
       <fields.NumberField label={t('审核门槛 exec_pass')} hint={t('exec 审核：决策模型给的“安全”概率不低于它就直接执行（默认 0.2）')} min={0} max={1} step={0.05} draft={props.draft} path={['engine', 'exec_pass']} onEdit={props.onEdit} />
-      <fields.TextField label={t('记忆搜索 index_url')} hint={t('基地（取代 memorycli 服务）的地址，记忆搜索用；不写就只按关键字找')} placeholder={t('如 http://127.0.0.1:30090')} draft={props.draft} path={['engine', 'index_url']} onEdit={props.onEdit} />
-      <fields.TextField label={t('生图模型 image_model')} hint={t('写成“供应商/模型 ID”（供应商是“模型供应商”里配的名字）；机器人的 image_generate 工具用它，不写就没有生图')} placeholder={t('供应商/模型 ID')} draft={props.draft} path={['engine', 'image_model']} onEdit={props.onEdit} />
+      <fields.TextField
+        label={t('记忆搜索 index_url')}
+        hint={t('基地（取代 memorycli 服务）的地址，记忆搜索用；不写就只按关键字找')}
+        placeholder={t('如 http://127.0.0.1:30090')}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.indexUrl}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('生图模型 image_model')}
+        hint={t('写成“供应商/模型 ID”（供应商是“模型供应商”里配的名字）；机器人的 image_generate 工具用它，不写就没有生图')}
+        placeholder={t('供应商/模型 ID')}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.imageModel}
+        onEdit={props.onEdit}
+      />
       <fields.TextField label={t('收尾模型 wrapup_model')} hint={t('限时到点时写收尾总结的模型，不带工具、最低思考档；不写就用会话自己的模型')} placeholder={t('供应商/模型 ID')} draft={props.draft} path={['engine', 'wrapup_model']} onEdit={props.onEdit} />
       <fields.TextField label={t('记忆库 memory_libs')} hint={t('memory 工具还搜基地里的哪些库，逗号连着写；不写就不搜')} placeholder={t('如 memory,aiskills')} draft={props.draft} path={['engine', 'memory_libs']} onEdit={props.onEdit} />
       <fields.NumberListField label={t('重试间隔 retry_delays_ms')} hint={t('连接出错时同一个模型隔多久重试（毫秒，默认 2000, 5000）')} draft={props.draft} path={['engine', 'retry_delays_ms']} onEdit={props.onEdit} />
-      <fields.BoolField label={t('试同家别的模型 fallback_include_siblings')} hint={t('备用链用完后，要不要接着试同一个供应商里不收费的其他模型（默认要）')} fallback draft={props.draft} path={['engine', 'fallback_include_siblings']} onEdit={props.onEdit} />
+      <fields.BoolField
+        label={t('试同家别的模型 fallback_include_siblings')}
+        hint={t('备用链用完后，要不要接着试同一个供应商里不收费的其他模型（默认要）')}
+        fallback
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.fallbackSiblings}
+        onEdit={props.onEdit}
+      />
     </div>
   );
 }

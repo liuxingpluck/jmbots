@@ -134,7 +134,7 @@
   - `GET /api/relay/inbox?helper=Claude&state=pending` 取；
   - `POST /api/relay/reply {id, text}` 回，回信前面自动署“Claude：”。
 - 给 jm开发 派活：`POST /api/message {bot: '周小灵', text: 'jm开发 …', from: 'claude'}`，它的回信落在这条消息的 replies 里，以“jm开发：”开头。
-- 周小灵给 Claude 的留言在运行时 `integrations/claude/inbox/`。要用户操作、在等回复、做完要告知时，往 `integrations/feishu/outbox/` 放 `.md` 发飞书。
+- 周小灵给 Claude 的留言是执行端为 Claude、`reply: false` 的 agent_task，用 `node ztools/claude-link/Claude_Link.mjs inbox` 列、`take <任务号>` 取（老目录 `integrations/claude/inbox/` 只读留底）。要用户操作、在等回复、做完要告知时，往 `integrations/feishu/outbox/` 放 `.md` 发飞书。
 - 运行的是基地守护的二进制（`jmbots-server.exe`），源码放心改。基地守护时 `Swap_Serve` 会拒绝，它只留给源码模式。
 - **0.4 冻结，不再发新版**（用户 11-10：“0.4以后肯定不发布版本啊，它就这样了，以后用新版本接手，调到 0.6.x 开始”）：以后由 Cordis 版 `src6/` 接手，版本号从 0.6.x 开始，它的发版和守护在 H 批做。0.4 原来的发版流程不再使用：`src/Versions.ts` 加一项，跑 `bun run release`。
 
@@ -198,7 +198,7 @@ bun run swap        # 只用于源码模式：先检查，再试运行，再替�
     - 遍历对象（`Record`、配置里的 `providers` 这类）不直接写 `Object.entries(...)` 解构，用 `src7/utils/` 里的遍历工具函数，读的人一眼看出是在逐个处理哪一样。
 - 可读性优先于排版统一：不批量格式化、不加转发层、保留用户起的名字；小步（约 100 行）改，中间验证。
 - 新文档用中文文件名（可夹英文词）；写文档按最终状态写，不留改版痕迹。
-- **要用户定的事挂到决策图上**（用户 11-18 #179：“跟我沟通的时候实在是太多的这个文字了……我去做决策，我就是去那个上面去点击”）：用 `ztools/central/Decision_Map.mjs add <json>` 加节点（主线、分支、待定选项各带推荐），飞书只发一句“图上有 N 件等你定”加链接 `http://127.0.0.1:30086/decision-map/`；用户点选经 relay 进中控收件，处理完 `Decision_Map.mjs done <id>`。验收、换版后顺手把图上对应节点的状态和一句话更新掉（用户照图做决定，图不能是旧的）。
+- **要用户定的事挂到决策图上**（用户 11-18 #179：“跟我沟通的时候实在是太多的这个文字了……我去做决策，我就是去那个上面去点击”）：用 `ztools/central/Decision_Map.mjs add <json>` 加节点（主线、分支、待定选项各带推荐），飞书只发一句“图上有 N 件等你定”加链接 `http://127.0.0.1:30086/decision-map/`；**每条发给用户的飞书消息末尾都带这个网址**（用户 11-18 #183），不管有没有待定的事；用户点选经 relay 进中控收件，处理完 `Decision_Map.mjs done <id>`。验收、换版后顺手把图上对应节点的状态和一句话更新掉（用户照图做决定，图不能是旧的）。
 - **给用户看的文档尽量控制在一页，证据另放**（用户 11-12：“你调研的文档我其实看不下去了，因为内容太多了”；“给我的文档尽量控制在一页，证据另放”）：
   - 给用户的那份只写结论、要用户定的事、下一步，读完这一页就能拍板；
   - 带文件行号的证据、逐条对照、给写代码的 AI 看的细节放另一份文件，在第一份里写一句“细节在哪、不用读”。

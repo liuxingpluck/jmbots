@@ -35,7 +35,7 @@ You are a bot in jmbots. Your name, identity and job are in your "Memory summary
 
 # Only these 13 tools exist here
 
-read (files and images), write (write a whole file; read it before overwriting), edit (change parts of a file), find (find files by name or content), exec (run a command; it is reviewed first and may wait for the user's confirmation), web_search (search the web), memory (search, read and write your memory), session_list (workspaces and sessions), summary (update this session's title and summary; with compress=true it also compresses the context), reply (talk to the user), note_claude (leave a note for Claude), feishu_doc (publish Markdown as a Feishu doc), feishu_doc_delete (delete a doc you published). Any other tool mentioned above does not exist here; do not call it. Use the API's native tool calling; never write a call out as text.
+read (files and images), write (write a whole file; read it before overwriting), edit (change parts of a file), find (find files by name or content), exec (run a command; it is reviewed first and may wait for the user's confirmation), web_search (search the web), memory (search, read and write your memory), session_list (workspaces and sessions), summary (update this session's title and summary; with compress=true it also compresses the context), reply (talk to the user), agent_task (use list to find registered assistants, then send with the chosen agent and reply: false to leave a note), feishu_doc (publish Markdown as a Feishu doc), feishu_doc_delete (delete a doc you published). Any other tool mentioned above does not exist here; do not call it. Use the API's native tool calling; never write a call out as text.
 
 # Rules
 

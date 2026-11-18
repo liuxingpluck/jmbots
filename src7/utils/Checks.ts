@@ -38,6 +38,9 @@ const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as 
  */
 const DEFAULT_PLUGINS = ['workspaces', 'bots', 'cli', 'file-tools', 'context-fit'];
 
+/** 同一进程里每个旧键只提示一次，重复校验设置也不会刷日志。 */
+const warnedConfigKeys = new Set<string>();
+
 /** config.yaml 里没手写的模型用的保守值。Resources.getModel 也用它。 */
 export const MODEL_DEFAULTS = { contextWindow: 128000, maxTokens: 8192, reasoning: false, input: ['text' as const] };
 
@@ -119,7 +122,7 @@ function defaultDataDir(): string {
  * @throws 哪一项不对就抛错；错误信息只说是哪一项、该写成什么样，不带配置原文（里面有密钥）。
  */
 export function checkConfig(raw: unknown): JmbotsConfig {
-  //M 先校验顶层是否为配置对象，再分别解析供应商、默认模型、插件与引擎段。
+  //M 先校验顶层配置对象，再解析供应商、默认模型、插件与模型运行设置。
   const root = record(raw, 'config.yaml');
 
   //M providers：每家要有 base_url；api_key 不写是空的（本地服务不要密钥）；api 不写是 openai-completions。
@@ -200,22 +203,54 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     plugins.push({ name, config });
   }
 
-  //M engine：新会话的思考档、模型请求出错怎么重试。都可以不写。一轮不限步数，没有这一项。
-  //M   不写的默认：思考档 low、重试 5 次、第一次等 3 秒、一次请求最多等 120 秒。
+  //M 骨架在插件启动前就可开会话，共用的思考档和重试放在现有 models 段。
+  const modelSettings = record(root['models'] ?? {}, 'models');
   const engine = record(root['engine'] ?? {}, 'engine');
-  const retry = record(engine['retry'] ?? {}, 'engine.retry');
-  const thinking = oneOf(engine['thinking'] ?? 'low', THINKING, 'engine.thinking');
+  const retry = record(modelSettings['retry'] ?? {}, 'models.retry');
+  const legacyRetry = record(engine['retry'] ?? {}, 'engine.retry');
+
+  //M 逐键兼容旧配置，新位置只改一个字段也能保留其他旧值。
+  const level = getMigratedConfig(modelSettings['thinking'], engine['thinking'], 'engine.thinking', 'models.thinking');
+  const thinking = oneOf(level ?? 'low', THINKING, 'models.thinking');
+  const times = getMigratedConfig(retry['times'], legacyRetry['times'], 'engine.retry.times', 'models.retry.times');
+  const waitMs = getMigratedConfig(
+    retry['wait_ms'], legacyRetry['wait_ms'], 'engine.retry.wait_ms', 'models.retry.wait_ms',
+  );
+  const timeoutMs = getMigratedConfig(
+    retry['timeout_ms'], legacyRetry['timeout_ms'], 'engine.retry.timeout_ms', 'models.retry.timeout_ms',
+  );
   return {
     defaultModel,
     providers,
     plugins,
     thinking,
     retry: {
-      times: int(retry['times'] ?? 5, 'engine.retry.times'),
-      waitMs: int(retry['wait_ms'] ?? 3000, 'engine.retry.wait_ms'),
-      timeoutMs: int(retry['timeout_ms'] ?? 120000, 'engine.retry.timeout_ms'),
+      times: int(times ?? 5, 'models.retry.times'),
+      waitMs: int(waitMs ?? 3000, 'models.retry.wait_ms'),
+      timeoutMs: int(timeoutMs ?? 120000, 'models.retry.timeout_ms'),
     },
   };
+}
+
+
+/**
+ * 配置入口取一个已迁移的值并按旧路径提示一次；缺少新键时接续旧值。
+ * @param current 新配置的原值，undefined 表示没写。
+ * @param legacy 旧配置的原值，undefined 表示没写。
+ * @param oldPath 旧键路径，用于迁移提示。
+ * @param newPath 新键路径，用于迁移提示。
+ * @returns 要交给入口校验的值，不在这里校验或补默认。
+ */
+export function getMigratedConfig(current: unknown, legacy: unknown, oldPath: string, newPath: string): unknown {
+  //M 老配置出现时提示搬家，不打印原值。
+  if (legacy !== undefined && !warnedConfigKeys.has(oldPath)) {
+    warnedConfigKeys.add(oldPath);
+    console.warn(`配置 ${oldPath} 已迁移，请改成 ${newPath}。两处都写时使用新位置。`);
+  }
+
+  if (current !== undefined) return current;
+
+  return legacy;
 }
 
 

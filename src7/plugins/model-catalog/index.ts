@@ -29,15 +29,15 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.1';
+export const version = '1.3.2';
 
-/** 用到的服务：resources 读 providers/engine/concurrency、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
+/** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
 
 
 /** model-catalog 插件配置（plugins[model-catalog].config）。 */
 export interface ModelCatalogConfig {
-  /** 换模型与并发回退配置（原 model-fallback）；写 false 或 enabled: false 可关闭；缺省沿用顶层 engine / concurrency。 */
+  /** 换模型与并发回退配置（原 model-fallback）；写 false 或 enabled: false 可关闭；并发缺省沿用顶层 concurrency。 */
   fallback?: fallback.FallbackConfig | false;
   /** 模型介绍和评价（原插件 model-notes 的 config）：dir 放 MD 的目录（默认 models，相对运行时目录），time_zone 评价时间的时区（默认 America/New_York）。 */
   notes?: { dir?: string; time_zone?: string };

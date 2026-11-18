@@ -3,7 +3,7 @@
  *   启动：Boot.ts 记完最后一步（HTTP 开始监听）后写 boot.json，每次启动覆盖；
  *   带快照关键词的消息：State.ts 的 Shots 停拍时交来，写 <消息号>.json，同一条再写就覆盖；
  *   消息文件只留最近 keep 个（tutorial 配置 snapshot_files），多了删最旧的；boot.json 不算在内。
- * 内容是轨迹（Trail.ts），加每步的快照（和上一步的 diff），notes 在轨迹里。
+ * 内容是轨迹（journal/Trail.ts 收好的），加每步的快照（和上一步的 diff），notes 在轨迹里。
  * 写放后台：setTimeout 推到这一轮事件之后（journal 先把这一行记完），异步写，出错只打一行日志，不挡回复。
  */
 import type * as cordis from 'cordis';
@@ -15,7 +15,7 @@ import * as snapshotModule from './Snapshot.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as bootModule from './Boot.ts';
 import type * as stateModule from './State.ts';
-import * as trailModule from './Trail.ts';
+import * as trailModule from '../journal/Trail.ts';
 
 
 /** 流水查询最多等五秒。 */
@@ -236,21 +236,27 @@ export class FlowFiles {
   }
 
   /**
-   * 请求一条消息的流水，供画布、预览和文件快照共用。
+   * 问 journal 要一条消息的轨迹（journal/Trail.ts 收好的），供画布、预览和文件快照共用。
    * @param message 收件表的消息号。
-   * @param limit 流水行数上限。
-   * @returns 从收件行开始的流水，未找到或未应答时为空。
+   * @param limit 从收件行起最多取几行。
+   * @returns 轨迹和挑出的行（对快照用）；跟踪行里没有、journal 没挂或没应答是 undefined。
    */
-  async getMessageLines(message: number, limit: number): Promise<trailModule.TrailLine[] | undefined> {
-    const request = { action: 'message-lines', message, limit } as const;
+  async getMessageTrail(
+    message: number,
+    limit: number,
+  ): Promise<{ trail: trailModule.Trail; picked: trailModule.TrailLine[] } | undefined> {
+    const request = { action: 'trail', message, limit } as const;
     const options = {
       timeoutMs: JOURNAL_TIMEOUT_MS,
       onFallback: () => ({ requestId: '' }),
     };
 
-    //M 通过事件请求流水，插件未挂或超时就让调用方继续用磁盘或空摘要。
+    //M 通过事件请求轨迹，插件未挂或超时就让调用方继续用磁盘或空摘要。
     const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
-    return result.lines;
+    //G journal 没挂、超时，或跟踪行里没有这条消息：交 undefined。
+    if (result.trail === undefined || result.picked === undefined) return undefined;
+
+    return { trail: result.trail, picked: result.picked };
   }
 
   /**
@@ -336,15 +342,13 @@ export class FlowFiles {
    * @param shots 拍下这条的 Shots。
    */
   private async getMessageFile(message: number, shots: stateModule.Shots): Promise<FlowFile> {
-    //M 只有取得流水才生成新快照，查不到就保留已有文件。
-    const raw = await this.getMessageLines(message, trailModule.TRAIL_MAX_LINES);
-    if (raw === undefined) throw new Error(`跟踪行里没有消息 ${String(message)}`);
+    //M 只有取得轨迹才生成新快照，查不到就保留已有文件。
+    const got = await this.getMessageTrail(message, trailModule.TRAIL_MAX_LINES);
+    if (got === undefined) throw new Error(`跟踪行里没有消息 ${String(message)}`);
 
-    //M 挑出该消息跟踪行，逐行对回内存快照再裁成完整步序并与快照配对打包。
-    const picked = trailModule.pick(message, raw).picked;
-    const taken = shots.getMatched(picked);
-    const trail = trailModule.getTrail(message, raw);
-    return addShots(trail, taken);
+    //M journal 挑出的行逐行对回内存快照，再与轨迹的步配对打包。
+    const taken = shots.getMatched(got.picked);
+    return addShots(got.trail, taken);
   }
 
   /** 消息文件多于 keep 个：按改动时刻删最旧的（同一时刻按消息号小的先删）。 */

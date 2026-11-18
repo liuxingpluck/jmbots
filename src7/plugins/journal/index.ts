@@ -6,6 +6,7 @@
  * 0.4 的“run.started / step.after / tool.after……”那套事件名不再用：插件模式下事件就是 Cordis 的事件本身，谁发、谁听一目了然。
  * 另外会同步挂上完整会话文件镜像 FilesMirror（原 files-mirror 已并入 ./FilesMirror.ts，保留 ctx.filesMirror）；
  * 若关闭 mirror: false，才回退由 Markdown.ts 写简版 对话.md。另提供流水与镜像路径的查询事件。
+ * 一条消息的行整理成步骤（教程页轨迹）、挑出一句回话的行（聊天页追溯）都在同目录 Trail.ts，经 journal/request 的 trail、reply-lines 交出去。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as cordis from 'cordis';
@@ -17,6 +18,7 @@ import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
 import { FilesMirror } from './FilesMirror.ts';
 import * as markdown from './Markdown.ts';
+import * as trailModule from './Trail.ts';
 
 export { FilesMirror } from './FilesMirror.ts';
 
@@ -25,7 +27,9 @@ export { FilesMirror } from './FilesMirror.ts';
 export const name = 'journal';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.0：并入原 files-mirror（统一提供 ctx.journal 与 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json）。
-export const version = '1.1.1';
+//M 1.2.0：“跟踪行 → 步骤”只留一份，从 tutorial/Trail.ts 挪进 Trail.ts；
+//M   journal/request 的 message-lines 换成 trail（教程页）、reply-lines（聊天页追溯）。
+export const version = '1.2.0';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
@@ -47,12 +51,23 @@ declare module 'cordis' {
 
 /** 流水服务支持的查询。 */
 type JournalRequest = requestEventModule.RequestEnvelope & ({
-  /** 按消息号查轨迹。 */
-  action: 'message-lines';
+  /** 教程页：按消息号收成一步一步的轨迹。 */
+  action: 'trail';
   /** 收件表的消息号。 */
   message: number;
-  /** 最多取几行。 */
+  /** 从起点往后最多取几行。 */
   limit: number;
+} | {
+  /** 聊天页回话追溯：按消息号挑出到这句回话为止的行。 */
+  action: 'reply-lines';
+  /** 收件表的消息号。 */
+  message: number;
+  /** 从起点往后最多取几行。 */
+  limit: number;
+  /** 这条消息从第一句到这一句回话出现过的会话号。 */
+  sessions: string[];
+  /** 这句回话的时刻，毫秒。 */
+  to: number;
 } | {
   /** 按筛选条件查流水。 */
   action: 'query';
@@ -71,8 +86,14 @@ type JournalRequest = requestEventModule.RequestEnvelope & ({
 interface JournalResult extends requestEventModule.ResultEnvelope {
   /** query 是否成功。 */
   ok?: boolean;
-  /** message-lines 或 query 的流水。 */
+  /** reply-lines 或 query 的流水。 */
   lines?: JournalEvent[];
+  /** trail：收好的轨迹；跟踪行里没有这条消息时不给。 */
+  trail?: trailModule.Trail;
+  /** trail：挑出属于这条请求的行（tutorial 拿去对内存里的快照）。 */
+  picked?: trailModule.TrailLine[];
+  /** reply-lines：取满了还没到这句回话，后面的没取到。 */
+  cut?: boolean;
   /** query 校验失败的原因。 */
   error?: string;
   /** mirror-dir 的镜像目录，关闭文件镜像时为空。 */
@@ -245,9 +266,9 @@ export class Journal extends cordis.Service {
   }
 
   /**
-   * 服务方法：一条请求的行。flow 的轨迹、详情和 web-api 的回话追溯都调它，调用方是插件，可信，不再校验。
+   * 服务方法：一条请求的行。journal/request 的 trail、reply-lines 都先调它，调用方是插件，可信，不再校验。
    * 先找“收件表记下这条消息”（web-api/received）那一行，再从那一号起往后按先后取。
-   * 还没挑过：同一时间别的消息的行也在里面，调用方按自己要的挑（flow 用 Trail.ts 的 pick，web-api 按会话和时间窗）。
+   * 还没挑过：同一时间别的消息的行也在里面，再按 Trail.ts 的 pick（教程页）或 pickReply（聊天页追溯）挑。
    * @param message 收件表的消息号。
    * @param limit 最多几条（含 web-api/received 那行）。
    * @returns 按号从小到大；跟踪行里没有这条消息（过期删了、不是 web-api 收的）是 undefined。
@@ -427,12 +448,26 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 建流水表并开始记录跟踪行。
   const journal = new Journal(ctx, keepDays);
 
-  //M 用同一监听按 action 分派三种查询，复用原服务方法。
+  //M 用同一监听按 action 分派四种查询，复用原服务方法。
   requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (request) => {
-    if (request.action === 'message-lines') {
-      //M 按消息起点取轨迹，找不到起点时 lines 为空。
-      const lines = journal.request(request.message, request.limit);
-      return { lines };
+    if (request.action === 'trail') {
+      //M 教程页：从消息起点取行，找不到起点时什么都不给。
+      const raw = journal.request(request.message, request.limit);
+      if (raw === undefined) return {};
+
+      //M 挑出这条请求的行（tutorial 对快照用），再收成一步一步。
+      const picked = trailModule.pick(request.message, raw).picked;
+      const trail = trailModule.getTrail(request.message, raw);
+      return { trail, picked };
+    }
+    if (request.action === 'reply-lines') {
+      //M 聊天页回话追溯：从消息起点取行，找不到起点时 lines 为空。
+      const raw = journal.request(request.message, request.limit);
+      if (raw === undefined) return {};
+
+      //M 挑到这句回话为止，顺带说后面有没有没取到的。
+      const chosen = trailModule.pickReply(request.message, request.sessions, request.to, raw, request.limit);
+      return { lines: chosen.lines, cut: chosen.cut };
     }
     if (request.action === 'query') {
       try {

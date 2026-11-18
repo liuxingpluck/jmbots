@@ -3,13 +3,15 @@ import * as stream from 'node:stream';
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as textModule from '../../utils/Text.ts';
+import * as bridgeModule from './ChannelBridge.ts';
 import * as hostModule from './Host.ts';
+import * as protocolModule from './Protocol.ts';
 import * as specModule from './Spec.ts';
 import * as guardModule from './ResourceGuard.ts';
 
 /** 插件名和版本。 */
 export const name = 'programs';
-export const version = '1.3.0';
+export const version = '1.4.0';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 
@@ -54,6 +56,8 @@ class Programs extends cordis.Service {
   private closing = false;
   /** 同插件资源守卫，HTTP启停和自动重试共用准入。 */
   private readonly guard: guardModule.ResourceGuard;
+  /** 外部渠道登记、入站与回调。 */
+  private readonly bridge: bridgeModule.ChannelBridge;
 
   /** 建立宿主管理表，等主程序 ready 才启动。 */
   constructor(
@@ -69,11 +73,16 @@ class Programs extends cordis.Service {
       const host = new hostModule.Host(spec, root, {}, ctx);
       this.hosts.set(spec.name, host);
     }
+    //M 一份登记表管三个方向，宿主启动时从同一座桥取回调地址。
+    const db = ctx.resources.db;
+    this.bridge = new bridgeModule.ChannelBridge(ctx, this.hosts, db);
+
     const hosts = Array.from(this.hosts.values());
     //M 守卫只拿本插件刚创建的Host表，不发现或控制系统其他程序。
     this.guard = new guardModule.ResourceGuard(ctx, settings, hosts, dependencies);
     for (const host of hosts) {
       host.setGuard(this.guard);
+      host.setBridge(this.bridge);
     }
   }
 
@@ -130,6 +139,9 @@ class Programs extends cordis.Service {
 
   /** 登记状态、启停与代理，沿用 HTTP 插件的鉴权钩子。 */
   mount(app: fastify.FastifyInstance): void {
+    //M 外部进程的入站走主站接口，密钥由桥接入口核对。
+    this.bridge.mount(app);
+
     //M 主界面通过同一个只读接口列出已配置的程序。
     app.get('/api/programs', () => ({ programs: this.status() }));
     app.post<{ Params: { name: string; action: string } }>('/api/programs/:name/:action', async (request, reply) => {
@@ -223,7 +235,7 @@ interface UiRoute {
 type UiRequest = fastify.FastifyRequest<UiRoute>;
 
 /** 只属于主站的请求头：令牌、Cookie，以及带着主站地址和令牌的 Referer。 */
-const PRIVATE_HEADERS = new Set(['authorization', 'cookie', 'referer']);
+const PRIVATE_HEADERS = new Set(['authorization', 'cookie', 'referer', protocolModule.KEY_HEADER]);
 
 /**
  * 把程序前缀下的请求转给已就绪的固定端口；配置的 mount 和界面入口 /programs/<名字> 共用。
@@ -292,6 +304,7 @@ async function forward(
     response.headers.forEach((value, key) => {
       //G 整个主站同源，程序设的 Cookie 会落到所有页面上，不回给浏览器；转发时也不带 Cookie 过去。
       if (HOP_HEADERS.has(key) || key === 'content-encoding' || key === 'set-cookie') return;
+      if (key === protocolModule.KEY_HEADER) return;
 
       //M 程序跳回自己地址或根路径时，换成主站上的同一前缀，浏览器不会跳出转发。
       if (key === 'location') {

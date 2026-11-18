@@ -3,6 +3,14 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import * as textModule from '../../utils/Text.ts';
 
+/** 程序登记的一个渠道：程序只能用这些渠道名入站，主程序也只把这些渠道的回复和历史转给它。 */
+export interface ProgramChannel {
+  /** 渠道名，就是 channel/message 的 channel。 */
+  name: string;
+  /** 这个渠道来的消息交给哪个机器人。 */
+  bot: string;
+}
+
 /** 已校验的单个程序配置。 */
 export interface ProgramSpec {
   /** 唯一的程序名，也是就绪行和健康回执的身份。 */
@@ -33,6 +41,8 @@ export interface ProgramSpec {
   startupMs: number;
   /** 收到退出请求后给程序的收尾时间。 */
   exitWaitMs: number;
+  /** 程序负责的外部渠道，默认没有；有才给它回调地址。 */
+  channels: ProgramChannel[];
 }
 
 /**
@@ -53,6 +63,8 @@ export function readPrograms(config: unknown): ProgramSpec[] {
 
   const names = new Set<string>();
   const mounts = new Set<string>();
+  /** 所有程序已登记的渠道名：一个渠道只能交给一个程序。 */
+  const channelNames = new Set<string>();
   return written.map((item: unknown, index) => {
     const at = `programs 第 ${String(index + 1)} 项`;
 
@@ -119,13 +131,48 @@ export function readPrograms(config: unknown): ProgramSpec[] {
     const startupMs = getInteger(item, 'startup_ms', key, 120_000, 1, 2_147_483_647);
     const exitWaitMs = getInteger(item, 'exit_wait_ms', key, 5000, 1, 2_147_483_647);
 
+    //M 程序登记的渠道：入站只认这些名字，回复和历史也只把这些渠道转给它。
+    const channels = getChannels(item, key, channelNames);
+
     //M 记下已校验的标识，阻止后续项占用同名或同一挂载路径。
     names.add(name);
     mounts.add(mount);
     return {
       name, title, file, args, cwd, env: env as Record<string, string>,
-      autostart, host, port, mount, heavy, closable, startupMs, exitWaitMs,
+      autostart, host, port, mount, heavy, closable, startupMs, exitWaitMs, channels,
     };
+  });
+}
+
+/**
+ * 读一个程序的 channels 列表，每项写渠道名和机器人名。
+ * @param item 这个程序的原始配置。
+ * @param key 报错用的前缀，如 programs.wechat。
+ * @param taken 前面的程序已登记的渠道名；读到的新名字加进去。
+ * @returns 已校验的渠道列表，没写是空列表。
+ * @throws 不是列表、缺字段、名字不合法或已被别的程序登记。
+ */
+function getChannels(item: Record<string, unknown>, key: string, taken: Set<string>): ProgramChannel[] {
+  const written = item['channels'] ?? [];
+  if (!Array.isArray(written)) throw new Error(`${key}.channels 要是列表`);
+
+  return written.map((entry: unknown, index) => {
+    const at = `${key}.channels 第 ${String(index + 1)} 项`;
+
+    //G 每一项都要是对象，写清渠道名和交给哪个机器人。
+    if (!isObject(entry)) throw new Error(`${at} 要是对象`);
+
+    //G 渠道名进入协议路由，只接受约定的标识字符。
+    const name = getText(entry, 'name', at);
+    if (!/^[a-z0-9-]+$/u.test(name)) throw new Error(`${at} 的 name 要由小写字母、数字和横线组成`);
+
+    //G 同一个渠道交给两个程序，回复和历史就不知道该转给谁。
+    if (taken.has(name)) throw new Error(`${at} 的渠道 ${name} 已经登记给别的程序`);
+
+    //G 每个渠道必须明确指定接单机器人。
+    const bot = getText(entry, 'bot', at);
+    taken.add(name);
+    return { name, bot };
   });
 }
 

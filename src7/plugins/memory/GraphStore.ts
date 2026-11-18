@@ -164,6 +164,29 @@ export class GraphStore {
     return db.query(sql).all(hidden) as never;
   }
 
+  /** 给本人召回列出该机器人的历史分区。渠道原文由渠道索引独立查询。 */
+  historyCustomers(bot: string): string[] {
+    const sql = "SELECT DISTINCT customer FROM docs WHERE scope = 'history' AND bot = ?"
+      + " AND customer <> '' AND source NOT GLOB ? ORDER BY customer";
+    const hidden = `${channel.CHANNEL_PARTITION}*`;
+    //M 用只读分区目录驱动本人的 Rust 查询，不读取任何人的正文。
+    const db = this.open();
+    const rows = db.query<{ customer: string }, [string, string]>(sql).all(bot, hidden);
+    return rows.map((row) => row.customer);
+  }
+
+  /** 历史段落按归属汇总。渠道段落单独计数，供页面去重。 */
+  ownershipRows(): { key: string; count: number; channels: number }[] {
+    const sql = 'SELECT customer AS key, COUNT(*) AS count, COUNT(*) FILTER (WHERE source GLOB ?) AS channels'
+      + " FROM docs WHERE scope = 'history' AND (customer = 'owner' OR customer GLOB ? OR customer GLOB ?)"
+      + ' GROUP BY customer';
+    const channelSource = `${channel.CHANNEL_PARTITION}*`;
+    //M 与图谱共用只读连接，查询仅汇总段落数。
+    const db = this.open();
+    const statement = db.query<{ key: string; count: number; channels: number }, [string, string, string]>(sql);
+    return statement.all(channelSource, 'person:*', 'group:*');
+  }
+
   /** 关系行（带两头名字和出处）。 */
   private relations(where: string, args: (string | number)[]): RelRow[] {
     //M 关系连上两头实体取名字，出处片段号用子查询拼成逗号串；条件和参数由调用方给。

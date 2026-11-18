@@ -1,4 +1,5 @@
-/** 托管单个外部程序的进程、就绪状态、健康与关停。 */
+/** 托管单个外部程序的进程、就绪状态、健康与关停；每次拉起发一把一次性密钥，渠道回调靠它认身份。 */
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import type * as cordis from 'cordis';
 import * as path from 'node:path';
@@ -8,6 +9,7 @@ import * as timers from 'node:timers/promises';
 import * as textModule from '../../utils/Text.ts';
 import * as protocolModule from './Protocol.ts';
 import * as specModule from './Spec.ts';
+import type { ChannelBridge } from './ChannelBridge.ts';
 import type { ResourceGuard } from './ResourceGuard.ts';
 
 /** 第一阶段使用的进程状态。 */
@@ -91,6 +93,10 @@ export class Host {
   private uiPath: string | null = null;
   /** 只按业务状态签名发事件，不因健康读数或计时刷新。 */
   private lastState = '';
+  /** 当前子进程的一次性密钥：拉起前生成，只放进它的环境变量；进程退出就清掉。 */
+  private key?: string;
+  /** 同插件的渠道回调，算回调地址用；不接时子进程只拿密钥。 */
+  private bridge?: ChannelBridge;
 
 
   /**
@@ -237,6 +243,20 @@ export class Host {
     this.guard = guard;
   }
 
+  /** 宿主表建立后接入同插件的渠道回调，拉起子进程时向它要回调地址。 */
+  setBridge(bridge: ChannelBridge): void {
+    this.bridge = bridge;
+  }
+
+  /** 当前子进程的密钥；渠道回调核对身份、主程序调程序的渠道接口时用。没有子进程是 undefined。 */
+  getKey(): string | undefined {
+    //G 子进程退出到监督任务收尾之间也不认旧密钥。
+    const child = this.child;
+    if (child === undefined || child.exitCode !== null || child.signalCode !== null) return undefined;
+
+    return this.key;
+  }
+
   /** 只请求当前自有、已确认能力的进程，返回实际确认是否成功。 */
   async pause(paused: boolean): Promise<boolean> {
     //M 只从本Host已核实身份的就绪地址发暂停请求。
@@ -344,12 +364,24 @@ export class Host {
     let output: stream.Readable | undefined;
     let endpoint: string | undefined;
     try {
+      //M 每次拉起换一把新密钥，只放进这个子进程的环境变量，不写日志、不进配置。
+      const key = crypto.randomBytes(32).toString('base64url');
+      const env: Record<string, string | undefined> = { ...this.launch.env, [protocolModule.KEY_ENV]: key };
+      delete env[protocolModule.CALLBACK_ENV];
+
+      //M 登记了渠道的程序还要知道往哪回调；主服务没开始监听前在这里等着，停止时随 signal 取消。
+      const callback = await this.bridge?.getCallbackUrl(this.spec, signal);
+      if (callback !== undefined) {
+        env[protocolModule.CALLBACK_ENV] = callback;
+      }
+      this.key = key;
+
       const logDir = path.dirname(this.logPath);
       fs.mkdirSync(logDir, { recursive: true });
       fd = fs.openSync(this.logPath, 'a');
       const command = [this.launch.command, ...this.launch.args];
       const options = {
-        cwd: this.launch.cwd, env: this.launch.env,
+        cwd: this.launch.cwd, env,
         stdin: 'ignore', stdout: 'pipe', stderr: fd, windowsHide: true,
       } as const;
 
@@ -422,6 +454,8 @@ export class Host {
       //M 留下启动超时、进程管道或健康接口的错误说明。
       this.note = textModule.getMessage(error);
     } finally {
+      //M 子进程要退了，它的密钥立刻作废，之后带这把钥匙的回调一律拒。
+      this.key = undefined;
       this.url = undefined;
       this.ready = undefined;
       this.paused = false;

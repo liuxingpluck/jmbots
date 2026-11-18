@@ -87,7 +87,10 @@ function getMessage(nativeId: string, chatId: string, text: string, at: string):
  */
 function getSession(chatId: string, role: string, chatType: string): Session {
   const address = { chatId, role };
-  const snapshot = { channel: 'feishu', accountId: 'cli_a', chatId, chatType, role, origin: { channel: 'feishu', address } };
+  const snapshot = {
+    channel: 'feishu', accountId: 'cli_a', chatId, chatType, role, senderId: 'ou_1',
+    origin: { channel: 'feishu', address },
+  };
   return { id: 's1', row: { id: 's1', address, activeSourceSnapshot: snapshot } } as unknown as Session;
 }
 
@@ -152,7 +155,9 @@ test('听 channel/message、channel/reply 记进表，同一条不重复；按�
 test('channel_search：本人能查别的聊天；外人、群里的本人只查这个聊天，写了别的被拒', async () => {
   const bench = makeBench();
   bench.emit('channel/message', getMessage('m1', 'oc_1', '我的私事', '2026-11-16T09:00:00'));
-  bench.emit('channel/message', getMessage('m2', 'oc_2', '群里的事', '2026-11-17T09:00:00'));
+  const shared = getMessage('m2', 'oc_2', '群里的事', '2026-11-17T09:00:00');
+  bench.emit('channel/message', { ...shared, chatType: 'group' });
+  bench.emit('channel/message', getMessage('m3', 'oc_2', '他的私聊', '2026-11-17T09:00:00'));
 
   //M 本人在私聊：不写聊天查全部，也能指定别的聊天。
   const owner = getSession('oc_1', 'owner', 'p2p');
@@ -164,7 +169,8 @@ test('channel_search：本人能查别的聊天；外人、群里的本人只查
   //M 外人在 oc_2：不写聊天只查到 oc_2；写 oc_1 被拒，看不到“我的私事”。
   const guest = getSession('oc_2', 'guest', 'p2p');
   const guestOwn = await search(bench, {}, guest);
-  expect(guestOwn).toContain('群里的事');
+  expect(guestOwn).toContain('他的私聊');
+  expect(guestOwn).not.toContain('群里的事');
   expect(guestOwn).not.toContain('我的私事');
   const guestOther = await search(bench, { chat: 'oc_1' }, guest);
   expect(guestOther).toContain('只能查这个聊天');
@@ -173,7 +179,10 @@ test('channel_search：本人能查别的聊天；外人、群里的本人只查
   //M 本人在群里：同样只查这个群（查到的会回到群里，群里的人看得到）。
   const ownerInGroup = getSession('oc_2', 'owner', 'group');
   expect(await search(bench, { chat: 'oc_1' }, ownerInGroup)).toContain('只能查这个聊天');
-  expect(await search(bench, {}, ownerInGroup)).not.toContain('我的私事');
+  const groupResult = await search(bench, { person: 'person:feishu:ou_1' }, ownerInGroup);
+  expect(groupResult).toContain('群里的事');
+  expect(groupResult).not.toContain('他的私聊');
+  expect(groupResult).not.toContain('我的私事');
 
   //M 时间写错：说清怎么写。
   expect(await search(bench, { since: '昨天' }, owner)).toContain('2026-11-17');

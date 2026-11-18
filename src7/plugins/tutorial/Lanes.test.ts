@@ -1,5 +1,5 @@
 /**
- * 启动轨迹（Trail.ts 的 getBootTrail，原 flow 的 Boot.test.ts）和泳道图（Lanes.ts）的离线测试。
+ * 启动轨迹（journal/Trail.ts 的 getBootTrail，原 flow 的 Boot.test.ts）和泳道图（Lanes.ts）的离线测试。
  * 跑法：bun test ./src7/plugins/tutorial
  * 查的是：
  *   启动：每个道一步、关键变量原样给、注释挂在步上、出错标红、耗时到下一步开始；
@@ -9,8 +9,8 @@
 import { describe, expect, test } from 'bun:test';
 import * as lanesModule from './Lanes.ts';
 import * as sourceModule from './Source.ts';
-import { LINES as MESSAGE_LINES } from './tests/Lines.ts';
-import { getBootTrail, getTrail, type TrailLine } from './Trail.ts';
+import { LINES as MESSAGE_LINES } from '../journal/tests/Lines.ts';
+import { getBootTrail, getTrail, type TrailLine } from '../journal/Trail.ts';
 
 
 /** 一段注释。 */

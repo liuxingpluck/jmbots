@@ -18,9 +18,9 @@ import * as fields from './Fields.tsx';
 const USED_MODELS: { label: string; path: editsModule.Path }[] = [
   { label: '默认模型 default_model', path: ['default_model'] },
   { label: '决策模型 models.decision', path: ['models', 'decision', 'model'] },
-  { label: '备用链 engine.fallback_chain', path: ['engine', 'fallback_chain'] },
+  { label: '备用链 engine.fallback_chain', path: editsModule.PLUGIN_PATHS.fallbackChain },
   { label: '看图的模型 engine.vision_model', path: ['engine', 'vision_model'] },
-  { label: '生图模型 image_model', path: ['engine', 'image_model'] },
+  { label: '生图模型 image_model', path: editsModule.PLUGIN_PATHS.imageModel },
   { label: '收尾模型 wrapup_model', path: ['engine', 'wrapup_model'] },
 ];
 

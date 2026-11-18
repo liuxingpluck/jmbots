@@ -157,7 +157,7 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
   return {
     id, kind, title, summary, parent, status, options, chosen, detailPath, sources, links, main, needs,
     createdAt: before?.createdAt ?? createdAt, decidedAt, decidedBy,
-    acknowledgedAt: before?.acknowledgedAt, note: before?.note,
+    acknowledgedAt: before?.acknowledgedAt, note: before?.note, notes: before?.notes,
   } satisfies types.DecisionNode;
 }
 
@@ -325,6 +325,63 @@ export class Store {
     //M 只补确认记录，用户选择保留原样。
     this.replace(updated, change);
     return updated;
+  }
+
+  /**
+   * 记下用户在节点上写的一句话，不改节点状态。
+   * @param id 节点号，入口已校验为非空文本。
+   * @param text 用户写的话，入口已校验非空和长度。
+   * @param option 同时选的选项号，入口已先用 choose 落盘。
+   * @returns 更新后的节点和新留言。
+   * 副作用：快照和历史各记一条 note。
+   */
+  addNote(id: string, text: string, option?: string) {
+    //M 留言号按节点内条数递增，relay 用它区分同一节点的多条收件。
+    const node = this.getNode(id);
+    const notes = node.notes ?? [];
+    const count = notes.length + 1;
+    const noteId = `n${String(count)}`;
+    const at = Date.now();
+    const note: types.DecisionNote = { id: noteId, author: 'user', at, text, option };
+
+    //M 只追加留言，待定节点照旧待定，等中控处理。
+    const updated = { ...node, notes: [...notes, note] };
+    const change = { action: 'note', actor: 'user', nodes: [id], noteId, title: node.title, option } as const;
+    this.replace(updated, change);
+    return { node: updated, note };
+  }
+
+  /**
+   * 记下中控对某条用户留言的回话。
+   * @param id 节点号。
+   * @param replyTo 要回的用户留言号。
+   * @param text 中控的回话。
+   * @returns 更新后的节点和中控这条留言。
+   * 副作用：被回的留言补上 repliedAt，快照和历史各记一条 reply。
+   */
+  reply(id: string, replyTo: string, text: string) {
+    //G 只能回这个节点上用户写过的那条。
+    const node = this.getNode(id);
+    const notes = node.notes ?? [];
+    const target = notes.find((item) => item.id === replyTo && item.author === 'user');
+    if (target === undefined) throw new failureModule.Failure(404, `节点 ${id} 没有用户留言 ${replyTo}`);
+
+    //M 回话也排进同一列表，网页按时间一起列出。
+    const count = notes.length + 1;
+    const noteId = `n${String(count)}`;
+    const at = Date.now();
+    const answer: types.DecisionNote = { id: noteId, author: 'central', at, text, replyTo };
+    const marked = notes.map((item) => {
+      if (item.id !== replyTo) return item;
+
+      return { ...item, repliedAt: item.repliedAt ?? at };
+    });
+
+    //M 回话落盘后由路由归档对应的 relay 收件。
+    const updated = { ...node, notes: [...marked, answer] };
+    const change = { action: 'reply', actor: 'central', nodes: [id], noteId: replyTo } as const;
+    this.replace(updated, change);
+    return { node: updated, note: answer };
   }
 
   /** 按完整编号读单个节点，找不到给 404。 */

@@ -8,6 +8,15 @@
 /** 路径。 */
 export type Path = (string | number)[];
 
+/** 设置接口按插件名定位 YAML 中的对应配置。 */
+export const PLUGIN_PATHS = {
+  indexUrl: ['plugins', 'base-bridge', 'config', 'index_url'],
+  imageModel: ['plugins', 'image-gen', 'config', 'image_model'],
+  fallbackChain: ['plugins', 'model-catalog', 'config', 'fallback', 'chain'],
+  fallbackMaxTries: ['plugins', 'model-catalog', 'config', 'fallback', 'max_tries'],
+  fallbackSiblings: ['plugins', 'model-catalog', 'config', 'fallback', 'include_siblings'],
+} satisfies Record<string, Path>;
+
 
 /** 一步改动：设一个值，或删掉一项。 */
 export type Edit = { path: Path; value: unknown } | { path: Path; delete: true };

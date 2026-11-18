@@ -1,16 +1,25 @@
 /**
+ * 跟踪行 → 一步一步：“journal 行整理成步骤”只在这里写一份（11-18 从 tutorial/Trail.ts 挪来，web-api/Trace.ts 挑行那段也并进来）。
  * 一条真实请求的轨迹：从收件表记下这条消息起，到回话写回去为止，按先后列出经过的插件。
  * 数据是 journal 的跟踪行（utils/Trace.ts 那一种：事件名、听的人、会话、文件:行号）。
  * 每一行算到「发它的那一段代码」头上（看 site：plugins/<名字>/ 是插件，Sessions.ts、Tools.ts 这些是骨架服务）；
- * 连着落在同一处的行收成一步，泳道图（Lanes.ts）再把步摆进格子。
+ * 连着落在同一处的行收成一步，tutorial 的泳道图（tutorial/Lanes.ts）再把步摆进格子。
  * 每步只留事件名、听的人、代码位置、工具名、模型、状态这些（见 FACT_KEYS）；整条带一句用户原话（preview，左栏和标题用）。
- * 启动轨迹（Boot.ts 记的）也收成同一个格式，消息号写 0。
+ * 启动轨迹（tutorial/Boot.ts 记的）也收成同一个格式，消息号写 0。
+ * 两种挑法：教程页按 pick（消息号、会话、收尾后再收一会儿）；聊天页回话追溯按 pickReply（消息号或涉及的会话、到这句回话为止）。
+ * 对外：index.ts 的 journal/request 用 trail、reply-lines 两个 action 交出去；tutorial 收启动轨迹时直接 import 本文件（纯函数，不用 journal 挂着）。
+ * 本文件不 import 别的插件，也不 import 同目录的 index.ts。
  */
-import type * as sourceModule from './Source.ts';
-import * as bootModule from './Boot.ts';
 
 
-/** journal 跟踪行里这里用到的字段（不 import journal 插件）。 */
+/** 一段函数注释：启动轨迹由 tutorial/Source.ts 从源码取（CodeDoc，字段更多），这里只认名字，别的原样带给页面。 */
+export interface TrailDoc {
+  /** 函数名或文件名。 */
+  name: string;
+}
+
+
+/** 跟踪行里这里用到的字段（journal 的 JournalEvent 带的更多，也能直接给）。 */
 export interface TrailLine {
   id: number;
   at: number;
@@ -26,8 +35,8 @@ export interface TrailLine {
   node?: string;
   /** 已经挑过、可以露的关键值；不给就从 vars 里按 FACT_KEYS 挑。 */
   facts?: Record<string, string | number | boolean>;
-  /** 这一行对应的函数注释（启动轨迹从源码取的）。 */
-  docs?: sourceModule.CodeDoc[];
+  /** 这一行对应的函数注释（启动轨迹才有）。 */
+  docs?: TrailDoc[];
 }
 
 
@@ -73,7 +82,7 @@ export interface TrailStep {
   /** 这一步的几行。 */
   rows: TrailRow[];
   /** 这一步的函数注释，照行的先后；请求轨迹没有，是空的。 */
-  docs: sourceModule.CodeDoc[];
+  docs: TrailDoc[];
 }
 
 
@@ -107,7 +116,7 @@ export interface Trail {
 /** 只记账、什么都不改的插件：不算“经过”。tutorial 自己（录、拍、打印）也只是看。 */
 const PASSIVE = new Set(['journal', 'tutorial', 'usage']);
 
-/** 和这条请求无关、隔一会儿就来一次的事件。State.ts 拍快照时也跳过这些。 */
+/** 和这条请求无关、隔一会儿就来一次的事件。tutorial/State.ts 拍快照时也跳过这些。 */
 export const NOISE = new Set(['web-api/status', 'trace', 'ready']);
 
 /**
@@ -166,8 +175,11 @@ export const TRAIL_MAX_LINES = 800;
 /** 会话收尾后，再收几毫秒内的同会话行（回话写回收件表那几行）。 */
 const TAIL_MS = 3000;
 
-/** 文件夹名 → 插件名（Boot.ts 的 FOLDERS 反过来）：wechat → wechat-kefu。 */
-const PLUGIN_OF_FOLDER = Object.fromEntries(Object.entries(bootModule.FOLDERS).map(([plugin, folder]) => [folder, plugin]));
+/** 自带插件里名字和文件夹不一样的（plugins/Index.ts 的别名）：名字 → 文件夹。tutorial/Boot.ts 找插件文件也用它。 */
+export const FOLDERS: Record<string, string> = { 'wechat-kefu': 'wechat' };
+
+/** 文件夹名 → 插件名（FOLDERS 反过来）：wechat → wechat-kefu。 */
+const PLUGIN_OF_FOLDER = Object.fromEntries(Object.entries(FOLDERS).map(([plugin, folder]) => [folder, plugin]));
 
 
 /**
@@ -271,9 +283,13 @@ function getFacts(vars: Record<string, unknown>): Record<string, string | number
  * @param message 消息号。
  * @param lines 从 web-api/received 那行起、按号从小到大。
  */
-export function pick(message: number, lines: TrailLine[]): { picked: TrailLine[]; session: string | null; state: string } {
+export function pick(
+  message: number,
+  lines: TrailLine[],
+): { picked: TrailLine[]; session: string | null; state: string } {
   //M 会话：先找带着这个消息号又带会话的行（Timeline.reply）；没有就用开始后第一个出现的会话（Bot.receive）。
-  const byMessage = lines.find((line) => line.sessionId !== null && (line.messageId === message || line.vars['消息号'] === message));
+  const carries = (line: TrailLine): boolean => line.messageId === message || line.vars['消息号'] === message;
+  const byMessage = lines.find((line) => line.sessionId !== null && carries(line));
   const firstSession = lines.find((line) => line.sessionId !== null);
   const session = byMessage?.sessionId ?? firstSession?.sessionId ?? null;
 
@@ -290,15 +306,18 @@ export function pick(message: number, lines: TrailLine[]): { picked: TrailLine[]
     if (NOISE.has(line.name)) continue;
 
     //M 这一行是不是这条请求的：消息号对得上、会话对得上、或会话出现前不带会话和消息号的。
-    const mine = line.messageId === message || line.vars['消息号'] === message;
+    const mine = carries(line);
     const sameSession = session !== null && line.sessionId === session;
     const loose = !seenSession && line.sessionId === null && line.messageId === null && line.vars['消息号'] === undefined;
     if (endAt !== null && !sameSession && !mine) continue;
     if (!mine && !sameSession && !loose) continue;
 
+    //G 会话出现过以后，不带会话的散行不再算。
     if (sameSession) {
       seenSession = true;
     }
+
+    //M 是这条请求的：收下。
     picked.push(line);
 
     //M 会话这一轮结束了：记下时刻和状态，再收一小会儿。
@@ -312,6 +331,34 @@ export function pick(message: number, lines: TrailLine[]): { picked: TrailLine[]
     if (endAt !== null && line.name === 'web-api/replied') break;
   }
   return { picked, session, state };
+}
+
+
+/**
+ * 聊天页回话追溯要的行：消息号对得上、或会话在这句回话之前出现过的，而且不晚于这句回话。
+ * 原来写在 web-api/Trace.ts 的 trace() 里，11-18 并到这里；挑法照旧，不跳杂事件、不看收尾。
+ * @param message 消息号。
+ * @param sessions 这条消息从第一句到这一句回话出现过的会话号。
+ * @param to 这句回话的时刻，毫秒。
+ * @param lines 从 web-api/received 那行起、按号从小到大（最多 limit 行）。
+ * @param limit 取行时的上限：取满了、最后一行还没到 to，就算后面的没取到。
+ * @returns 挑出的行；cut 是后面还有没取到的。
+ */
+export function pickReply<T extends TrailLine>(
+  message: number,
+  sessions: string[],
+  to: number,
+  lines: T[],
+  limit: number,
+): { lines: T[]; cut: boolean } {
+  //M 只留这条消息的、或涉及会话的，再限到这句回话为止。
+  const mine = (line: T): boolean => line.messageId === message || sessions.includes(line.sessionId ?? '');
+  const picked = lines.filter((line) => line.at <= to && mine(line));
+
+  //M 取满了、最后一行还没到这句回话：后面的没取到。
+  const lastAt = lines.at(-1)?.at ?? to;
+  const cut = lines.length >= limit && lastAt < to;
+  return { lines: picked, cut };
 }
 
 
@@ -360,7 +407,9 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
     }
 
     //M 换了道：新起一步。
-    steps.push({ no: steps.length + 1, node, title: '', t: row.t, ms: 0, error, notified: [], rows: [row], docs: [...docs] });
+    steps.push({
+      no: steps.length + 1, node, title: '', t: row.t, ms: 0, error, notified: [], rows: [row], docs: [...docs],
+    });
   });
 
   //M 每步用了多久（到下一步开始，最后一步到最后一行）、标题、只听不说的插件。
@@ -419,10 +468,10 @@ export function getTrail(message: number, lines: TrailLine[]): Trail {
 
 
 /**
- * 这次启动的轨迹：Boot.ts 交来的行收成一步一步，和请求轨迹同一个格式。
+ * 这次启动的轨迹：tutorial/Boot.ts 交来的行收成一步一步，和请求轨迹同一个格式。
  * 消息号写 0（页面按它认出是启动），渠道写“启动”。
- * @param lines Boot.ts 的 getLines()。
- * @param notes Boot.ts 的关键变量说明表（BootTrail.notes）。
+ * @param lines tutorial/Boot.ts 的 getLines()。
+ * @param notes tutorial/Boot.ts 的关键变量说明表（BootTrail.notes）。
  */
 export function getBootTrail(lines: TrailLine[], notes: Record<string, string> = {}): Trail {
   //M 沿用统一归并算法把启动各阶段行按道收成步骤。

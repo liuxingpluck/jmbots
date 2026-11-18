@@ -1,5 +1,5 @@
 /**
- * 泳道图：把一条轨迹（Trail.ts 收好的一步一步）摆进格子，教程页右栏照这里画。
+ * 泳道图：把一条轨迹（journal/Trail.ts 收好的一步一步）摆进格子，教程页右栏照这里画。
  *   一道一行：第一列是道名（插件名，或骨架的 main、resources、tools、sessions），照第一次出现的先后往下排；
  *   一个阶段一列：同一阶段的放在同一列，图往下长，不往右拉长。
  *     启动：加载（apply）→ 服务就绪（inject）→ 发事件 → 开始监听；
@@ -8,7 +8,7 @@
  *   一步的几行跨了阶段（比如 web-api 那一步先收到、再存），这一步在两格里各出现一次，点哪格都是看这一步。
  *   箭头：照行的先后，从上一行所在的格连到下一行所在的格（同一对只连一次）；启动的「服务就绪」格从它那道的加载格连过来。
  */
-import type * as trailModule from './Trail.ts';
+import type * as trailModule from '../journal/Trail.ts';
 
 
 /** 格子里的一项：哪一步、这一格里它在干什么。 */
@@ -213,7 +213,7 @@ class LaneMaker {
 
 /**
  * 一条轨迹的泳道图。消息号是 0 的是启动。
- * @param trail Trail.ts 收好的轨迹（现算的，或从快照文件读回来的）。
+ * @param trail journal/Trail.ts 收好的轨迹（现算的，或从快照文件读回来的）。
  */
 export function getLanes(trail: trailModule.Trail): Lanes {
   //M 初始化泳道排布器，按消息号是否为空区分启动轨迹与消息轨迹。

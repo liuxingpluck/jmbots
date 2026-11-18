@@ -50,7 +50,8 @@ export const name = 'bots';
 //M   前台的“先查记忆”提示交给 memory 自己加，记往来、搜聊天记录、算向量改发 memory/request；模型介绍改发 model-catalog/request（prompt）。
 //M 1.4.8：requestChannelHistory 从骨架 Channels.ts 挪进 bots/HistoryRequest.ts，只有 bots 的历史工具用。
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
-export const version = '1.4.9';
+//M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
+export const version = '1.5.0';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 Dispatch.ts），开了 reply_tool 再加 reply。
@@ -341,6 +342,8 @@ export class Bots extends cordis.Service {
 
     //M 标准渠道事件入口：每个 targetBot 独立物化附件、过 bot/receive 兼容关口、各自认领进自己的会话。
     this.ctx.on('channel/message', (message, control) => this.onChannelMessage(message, control));
+    //M 语音半句可以提前开工，完整句才成为标准渠道历史。
+    this.ctx.on('voice/dispatch', (message, control) => this.onChannelMessage(message, control));
 
     //M 别的插件请机器人办事走请求事件 bot/request（契约 3.2 第 4 条）：onRequest 按 action 调现有方法，办完回 bot/result。
     //M   现有方法抛的错（没有这个机器人、重名、会话不在、结果冲突）转成 { ok: false, error }，调用方不干等超时。
@@ -422,6 +425,10 @@ export class Bots extends cordis.Service {
     message: protocol.ChannelMessage,
     control?: protocol.ChannelMessageControl,
   ): Promise<void> {
+    const routing = message.routing;
+    //G 语音句尾的只入档事件对应已有任务或未通过的候选，不再认领。
+    if (message.channel === 'voice' && 'recordOnly' in routing && routing.recordOnly === true) return;
+
     if (control?.approvalHandled === true) return;
 
     //M 每个目标机器人各认领一次：按名字取机器人对象，名单里没有的（配置改过）跳过，不挡别的机器人。

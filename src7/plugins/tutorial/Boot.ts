@@ -7,7 +7,7 @@
  *   ready、接着跑上次没跑完的会话、HTTP 开始监听（跟踪点 Http.listen）。
  * 每一步带“文件:行号”、关键变量（原值，调试用不打码）、那段代码自己的 JSDoc（Source.ts 取）。只存内存，只看这一次启动。
  * 每一步做完还拍一份运行时变量的快照（plugins/tutorial/Snapshot.ts）：骨架四步共用挂上时那份，插件那步是挂好（或出错）那一刻，ready、HTTP 监听各一份。
- * 交出去的行和 journal 的跟踪行同形状（Trail.ts 的 TrailLine），按请求轨迹的办法收成步骤。
+ * 交出去的行和 journal 的跟踪行同形状（journal/Trail.ts 的 TrailLine），按请求轨迹的办法收成步骤。
  * HTTP 监听那步记完，叫 Files.ts 把整段启动写成 data/flow/boot.json。
  */
 import type * as cordis from 'cordis';
@@ -15,13 +15,14 @@ import * as sourceDirModule from '../../utils/SourceDir.ts';
 import * as snapshotModule from './Snapshot.ts';
 import type * as filesModule from './Files.ts';
 import * as sourceModule from './Source.ts';
+import { FOLDERS } from '../journal/Trail.ts';
 
 
 /** 一步的关键变量：只放短的字、数、真假。 */
 export type Facts = Record<string, string | number | boolean>;
 
 
-/** 交出去的一行，和 Trail.ts 的 TrailLine 同形状。 */
+/** 交出去的一行，和 journal/Trail.ts 的 TrailLine 同形状。 */
 export interface BootLine {
   /** 第几行，从 1 起。 */
   id: number;
@@ -41,7 +42,7 @@ export interface BootLine {
   sessionId: null;
   /** 启动时没有消息。 */
   messageId: null;
-  /** 和 facts 同一份；Trail.ts 认“出错”看这里。 */
+  /** 和 facts 同一份；journal/Trail.ts 认“出错”看这里。 */
   vars: Facts;
   /** 泳道图上的道：main、resources、tools、sessions，或插件名。 */
   node: string;
@@ -107,9 +108,6 @@ const SESSIONS = `${ROOT}Sessions.ts`;
 
 /** http 插件（记“开始监听”那一步）。 */
 const HTTP = `${ROOT}plugins/http/index.ts`;
-
-/** 自带插件里名字和文件夹不一样的（plugins/Index.ts 的别名）：名字 → 文件夹。 */
-export const FOLDERS: Record<string, string> = { 'wechat-kefu': 'wechat' };
 
 /** 每步关键变量（facts）的英文键 → 中文解释：所有步共用这一张，跟启动轨迹一起交给网页。 */
 const FACT_NOTES: Record<string, string> = {

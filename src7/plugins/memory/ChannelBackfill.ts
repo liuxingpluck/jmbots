@@ -10,24 +10,31 @@ import * as archives from './Backfill_Channel_Index.ts';
 import * as channel from './ChannelIndex.ts';
 import type { ChannelIndex, ChannelRow } from './ChannelIndex.ts';
 import type { MemoryService } from './index.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 
-/** 单条渠道消息的 Rust 文档。群聊、私聊和缺少类型的旧记录各占一个分区。 */
+/**
+ * 单条渠道消息的 Rust 文档。
+ * 有归属键的（MemoryKey.ts）：customer 是归属键，私聊归这个人、群归这个群、本机归本人；session 是说话人键。
+ *   Rust 的实体和关系按 h:<customer> 分空间，所以以后打开抽取时也跟着段落走同一个键。
+ * 打标以前的旧行：照旧按渠道、账号、聊天的摘要分区，session 同客户号，等下一步补写。
+ */
 export function getChannelDoc(row: ChannelRow) {
-  const chatType = row.chatType || 'unknown';
-  const scopeKey = JSON.stringify([row.channel, row.account, row.chat]);
+  //M 归属键进 customer，说话人键进 session：群里的段落归群，也留住是谁说的。
+  let customer = row.memoryKey ?? '';
+  let session = memoryKeyModule.getSpeakerKey(row);
 
-  //G 隔离同名聊天和不同账号，发布的客户号不含聊天原始标识。
-  const hash = crypto.createHash('sha256');
-  hash.update(scopeKey);
-  const digest = hash.digest('hex');
-  const customer = `${channel.CHANNEL_PARTITION}${chatType}:${digest}`;
+  //G 旧行没有归属键：保持原来的分区和 session，重发时和 Rust 里已有的唯一键对得上，不出两份。
+  if (customer === '') {
+    customer = getPartition(row);
+    session = customer;
+  }
 
   //M 同一渠道键重试时保持 Rust 唯一键一致。渠道不触发客服关系图抽取。
   return {
     source: `${channel.CHANNEL_PARTITION}${row.key}`,
     scope: 'history',
     customer,
-    session: customer,
+    session,
     bot: row.bot,
     title: row.senderName || row.senderId,
     text: row.text,
@@ -36,6 +43,18 @@ export function getChannelDoc(row: ChannelRow) {
     end: 0,
     graph: false,
   };
+}
+
+/** 旧分区：群聊、私聊和缺少类型的旧记录各占一个，客户号是渠道、账号、聊天三元组的摘要。 */
+function getPartition(row: ChannelRow): string {
+  const chatType = row.chatType || 'unknown';
+  const scopeKey = JSON.stringify([row.channel, row.account, row.chat]);
+
+  //G 隔离同名聊天和不同账号，发布的客户号不含聊天原始标识。
+  const hash = crypto.createHash('sha256');
+  hash.update(scopeKey);
+  const digest = hash.digest('hex');
+  return `${channel.CHANNEL_PARTITION}${chatType}:${digest}`;
 }
 
 /** 历史回填配置，实时消息始终排队。 */

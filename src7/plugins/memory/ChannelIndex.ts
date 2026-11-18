@@ -4,6 +4,7 @@
  *   键分别是 messageId、replyRequestKey，INSERT OR IGNORE 幂等。
  * 查：工具 channel_search、GET /api/memory/channel。外人（src7/Channels.ts 的 isHistoryOwner 不过，群里本人也算）只查这一轮来源快照里的这个聊天。
  * 补旧：scripts/Backfill_Channel_Index.ts 用这里的 ChannelIndex 写。
+ * 归属键：每行带 memory_key（MemoryKey.ts 算，私聊归人、群归群、本机归本人），统一检索的 person、group 按它查。
  * 不用 FTS5：中文没有分词，unicode61 整句当一个词、trigram 查不了两个字的词；先按渠道、聊天、时间走索引缩小范围，再 LIKE。
  * 设计：docs/开发进度/132_渠道消息进记忆_20261118.md。
  */
@@ -15,6 +16,7 @@ import * as textModule from '../../utils/Text.ts';
 import * as protocolModule from '../../Channels.ts';
 import type { Search } from './Search.ts';
 import type { ChannelBackfill } from './ChannelBackfill.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 
 
 /** Rust 中渠道文档的保留命名空间，与客服往来分离。 */
@@ -44,6 +46,8 @@ export interface ChannelRow {
   text: string;
   /** 原始提及解析到的机器人；旧索引行可缺。 */
   mentionedBots?: string[];
+  /** 记忆归属键（MemoryKey.ts 算）：私聊 person:…、群 group:…、本机 owner；打标以前的旧行、算不出的是空串，不写也当空串。 */
+  memoryKey?: string;
   /** 时间，毫秒。 */
   at: number;
 }
@@ -58,6 +62,8 @@ export interface ChannelScope {
   chat?: string;
   /** 只查当前渠道账号；同名聊天可能属于不同账号。 */
   account?: string;
+  /** 此次查询允许的记忆归属；不给不限。 */
+  memoryKey?: string;
 }
 
 /** 一次渠道查询。 */
@@ -78,9 +84,15 @@ export interface ChannelQuery extends ChannelScope {
 
 
 /** 这一轮能查多大范围。 */
-export interface ChannelAccess extends ChannelScope {
-  /** 本人（isHistoryOwner）：哪个渠道、哪个聊天都能查。 */
-  full: boolean;
+export type ChannelAccess = memoryKeyModule.MemoryAccess;
+
+
+/** 只有本轮来源的渠道、账号、聊天全部已锁定，才允许读尚未补标的老行。 */
+function getMemoryKeyFilter(query: ChannelQuery): { sql: string; legacy: boolean } {
+  if (query.channel && query.account && query.chat) {
+    return { sql: "(memory_key = ? OR memory_key = '')", legacy: true };
+  }
+  return { sql: 'memory_key = ?', legacy: false };
 }
 
 
@@ -116,6 +128,31 @@ export class ChannelIndex {
       db.exec('ALTER TABLE memory_channel_messages ADD COLUMN rust_state INTEGER NOT NULL DEFAULT 0');
     }
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_rust ON memory_channel_messages (rust_state, id)');
+    //M 记忆归属键（按人分记忆）：新消息写进来时算好；旧行是空串，等下一步补写。按人、按群查走索引。
+    if (!columns.some((column) => column.name === 'memory_key')) {
+      db.exec("ALTER TABLE memory_channel_messages ADD COLUMN memory_key TEXT NOT NULL DEFAULT ''");
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS memory_channel_key ON memory_channel_messages (memory_key, at)');
+  }
+
+  /** 列出已标归属、渠道消息量与最近的本人发言名。只读元数据。 */
+  ownershipRows(): { key: string; count: number; name: string }[] {
+    //M 显示名取该人的最新非空渠道名。群名不在索引里，列表可退回聊天号。
+    const sql = "WITH owners AS (SELECT memory_key, COUNT(*) AS count FROM memory_channel_messages"
+      + " WHERE memory_key <> '' GROUP BY memory_key)"
+      + " SELECT owners.memory_key AS key, owners.count, COALESCE((SELECT sender_name FROM memory_channel_messages"
+      + " WHERE memory_key = owners.memory_key AND direction = 'user' AND sender_name <> ''"
+      + " ORDER BY at DESC, id DESC LIMIT 1), '') AS name FROM owners";
+    return this.db.query<{ key: string; count: number; name: string }, []>(sql).all();
+  }
+
+  /** Rust 会话已补归属但渠道旧行没打标时，仍可用渠道发话人 ID 找显示名。 */
+  ownershipName(channel: string, id: string): string {
+    const sql = "SELECT sender_name AS name FROM memory_channel_messages WHERE channel = ? AND sender_id = ?"
+      + " AND direction = 'user' AND sender_name <> '' ORDER BY at DESC, id DESC LIMIT 1";
+    //M 以同一渠道的稳定身份取最近名字，避免把机器人的回复名算成对方。
+    const statement = this.db.query<{ name: string }, [string, string]>(sql);
+    return statement.get(channel, id)?.name ?? '';
   }
 
   /**
@@ -128,12 +165,13 @@ export class ChannelIndex {
   add(row: ChannelRow, live = false): boolean {
     const sql = 'INSERT OR IGNORE INTO memory_channel_messages'
       + ' (msg_key, channel, account, chat, chat_type, direction, sender_id, sender_name, bot, text, at,'
-      + ' mentioned_bots, rust_state)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      + ' mentioned_bots, rust_state, memory_key)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     const mentions = JSON.stringify(row.mentionedBots ?? []);
     const state = Number(live);
+    const memoryKey = row.memoryKey ?? '';
     const values = [row.key, row.channel, row.account, row.chat, row.chatType, row.direction,
-      row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state];
+      row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state, memoryKey];
     //M 幂等写入，按 SQLite 的影响行数区分新消息和重复消息。
     const changes = this.db.query(sql).run(...values).changes;
     if (changes === 0 && live) {
@@ -224,6 +262,12 @@ export class ChannelIndex {
       conditions.push('EXISTS (SELECT 1 FROM json_each(mentioned_bots) WHERE value = ?)');
       values.push(query.mentionedBot);
     }
+    //M 归属过滤保留已锁定聊天的老行；不限账号的本人筛选仍要求已打标。
+    if (query.memoryKey !== undefined) {
+      const filter = getMemoryKeyFilter(query);
+      conditions.push(filter.sql);
+      values.push(query.memoryKey);
+    }
 
     //M 关键词：每个都要有；% _ \ 转义，照字面找。
     for (const word of query.words) {
@@ -257,14 +301,28 @@ export class ChannelIndex {
       if (query[field] === undefined || query[field] === anchor[field]) continue;
       throw new Error('找不到这条渠道消息');
     }
+    //G 锚点、邻段共用与搜索相同的归属条件。
+    const filter = getMemoryKeyFilter(query);
+    if (query.memoryKey !== undefined && query.memoryKey !== anchor.memoryKey) {
+      const oldInCurrentChat = filter.legacy && anchor.memoryKey === '';
+      if (!oldInCurrentChat) {
+        throw new Error('找不到这条渠道消息');
+      }
+    }
 
     //M 用 (at,id) 决定同毫秒消息的前后，账号和聊天均跟着锚点。
-    const source = 'SELECT * FROM memory_channel_messages WHERE channel = ? AND account = ? AND chat = ?';
+    let source = 'SELECT * FROM memory_channel_messages WHERE channel = ? AND account = ? AND chat = ?';
+    const scope = [anchor.channel, anchor.account, anchor.chat];
+    if (query.memoryKey !== undefined) {
+      source += ` AND ${filter.sql}`;
+      scope.push(query.memoryKey);
+    }
     const time = ' AND at BETWEEN ? AND ?';
     const beforeSql = `${source}${time} AND (at,id) < (?,?) ORDER BY at DESC, id DESC LIMIT ?`;
     const afterSql = `${source}${time} AND (at,id) > (?,?) ORDER BY at, id LIMIT ?`;
-    const values = [anchor.channel, anchor.account, anchor.chat, query.since ?? 0,
+    const values = [...scope, query.since ?? 0,
       query.until ?? Number.MAX_SAFE_INTEGER, anchor.at, found['id'] as number, query.limit];
+    //M 前后邻段共同使用锚点聊天和已授权归属。
     const before = this.db.query(beforeSql).all(...values) as Record<string, unknown>[];
     const after = this.db.query(afterSql).all(...values) as Record<string, unknown>[];
     return { anchor, before: before.reverse().map(getRow), after: after.map(getRow) };
@@ -285,6 +343,7 @@ function getRow(row: Record<string, unknown>): ChannelRow {
     senderName: row['sender_name'] as string,
     bot: row['bot'] as string,
     text: row['text'] as string,
+    memoryKey: row['memory_key'] as string,
     at: row['at'] as number,
   };
 }
@@ -298,6 +357,18 @@ function getRow(row: Record<string, unknown>): ChannelRow {
 export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRow | undefined {
   if (message.text.trim() === '') return undefined;
 
+  //M 归属键：私聊对面的人就是发话人。
+  const keySource = {
+    channel: message.channel,
+    chatType: message.chatType,
+    chat: message.chatId,
+    person: message.sender.id,
+  };
+
+  //M 用标准渠道字段确定这条用户消息的归属。
+  const memoryKey = memoryKeyModule.getMemoryKey(keySource);
+
+  //M 拼成一行，归属键跟着落库。
   return {
     key: message.messageId,
     channel: message.channel,
@@ -310,6 +381,7 @@ export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRo
     bot: message.targetBots.join(','),
     mentionedBots: [...new Set(message.mentions.flatMap((mention) => mention.botNames))],
     text: message.text,
+    memoryKey,
     at: message.createdAt,
   };
 }
@@ -325,7 +397,19 @@ export function getReplyRow(request: protocolModule.ChannelReplyRequest): Channe
   const text = texts.join('\n').trim();
   if (text === '') return undefined;
 
+  //M 归属键：私聊对面的人是这条回复回给的那个人（来源快照里的发话人）。
   const snapshot = request.sourceSnapshot;
+  const keySource = {
+    channel: snapshot.channel,
+    chatType: snapshot.chatType,
+    chat: snapshot.chatId,
+    person: snapshot.senderId,
+  };
+
+  //M 回复沿用收件人的身份，避免把机器人的名字当作私聊归属。
+  const memoryKey = memoryKeyModule.getMemoryKey(keySource);
+
+  //M 拼成一行，归属键跟着落库。
   return {
     key: request.replyRequestKey,
     channel: snapshot.channel,
@@ -337,6 +421,7 @@ export function getReplyRow(request: protocolModule.ChannelReplyRequest): Channe
     senderName: request.bot,
     bot: request.bot,
     text,
+    memoryKey,
     at: Date.now(),
   };
 }
@@ -348,12 +433,8 @@ export function getReplyRow(request: protocolModule.ChannelReplyRequest): Channe
  * @param session 调工具的会话。
  */
 export function getAccess(session: Session): ChannelAccess {
-  const snapshot = session.row.frontTask?.sourceSnapshot ?? session.row.activeSourceSnapshot;
-  if (snapshot === undefined) return { full: false };
-
-  //M 是不是本人（飞书本人、本机网页或命令行，且不在群里）交给渠道协议判断：本人哪个聊天都能查，别人只能查快照里这个聊天。
-  const full = protocolModule.isHistoryOwner(snapshot);
-  return { full, channel: snapshot.channel, chat: snapshot.chatId, account: snapshot.accountId };
+  //M 记忆工具和开场召回共享可信来源和归属。
+  return memoryKeyModule.getMemoryAccess(session.row);
 }
 
 /** 按来源快照决定本轮能查的渠道、聊天和账号。 */
@@ -363,13 +444,15 @@ export function getScope(args: Record<string, unknown>, access: ChannelAccess): 
   const chat = textModule.getText(args, 'chat') || undefined;
   if (access.full) return { channel, chat };
 
-  if (!access.channel || !access.chat || !access.account) throw new Error('这一轮没有来源聊天，查不了渠道消息');
+  if (!access.channel || !access.chat || !access.account || access.key === undefined) {
+    throw new Error('这一轮没有确定的来源聊天和归属，查不了渠道消息');
+  }
 
   const otherChannel = channel !== undefined && channel !== access.channel;
   const otherChat = chat !== undefined && chat !== access.chat;
   if (otherChannel || otherChat) throw new Error('这一轮说话的不是用户本人（或在群里），只能查这个聊天的消息');
 
-  return { channel: access.channel, chat: access.chat, account: access.account };
+  return { channel: access.channel, chat: access.chat, account: access.account, memoryKey: access.key };
 }
 
 
@@ -435,7 +518,7 @@ export function getQuery(args: Record<string, unknown>, scope: ChannelScope): Ch
  * @param rows 命中的消息。
  * @param query 查询（写在开头）。
  */
-function getResultText(rows: ChannelRow[], query: ChannelQuery): string {
+export function getResultText(rows: ChannelRow[], query: ChannelQuery): string {
   const where = `${query.channel ?? '所有渠道'}·${query.chat ?? '所有聊天'}`;
   if (rows.length === 0) return `${where} 没找到消息`;
 

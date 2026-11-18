@@ -12,6 +12,7 @@ import type { GraphRoutes } from './GraphRoutes.ts';
 import type { GraphStore } from './GraphStore.ts';
 import type { HistoryToolRequest } from './HistoryTools.ts';
 import type { MemoryService } from './index.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 import * as recall from './Recall.ts';
 import * as store from './Store.ts';
 
@@ -19,7 +20,9 @@ const SOURCES = ['history', 'channel', 'knowledge', 'card'] as const;
 const MODES = ['keyword', 'semantic', 'hybrid', 'graph'] as const;
 const SEARCH_LIMIT = 50;
 const HISTORY_CALLS = 3;
+const HISTORY_PARALLEL = 4;
 const SEARCH_ROUTE = '/api/memory/search';
+const OWNERS_ROUTE = '/api/memory/owners';
 const PASSAGE_ROUTE = '/api/memory-graph/passage/';
 const CHANNEL_ROUTE = '/api/memory/channel';
 
@@ -101,6 +104,10 @@ interface SearchQuery {
   mode: Mode;
   bot: string;
   customer: string;
+  /** 本人未指定客户或会话时，查询该机器人所有历史分区。 */
+  allHistory: boolean;
+  /** 受限会话的原始渠道消息必须走账号隔离的渠道索引。 */
+  restricted: boolean;
   session: string;
   notSession: string;
   channel: channel.ChannelQuery;
@@ -183,6 +190,61 @@ export class Search {
         return reply.code(400).send({ error: text.getMessage(error) });
       }
     });
+
+    //M 与检索接口使用同一 HTTP 令牌校验。
+    app.get(OWNERS_ROUTE, () => ({ owners: this.listOwners() }));
+  }
+
+  /** 给记忆页汇总可用的归属键、渠道显示名和段落数。 */
+  private listOwners(): Array<{ key: string; kind: 'owner' | 'person' | 'group'; name: string; count: number }> {
+    //M 两个来源里同一个归属合并为一项，已经同步的渠道消息只算一次。
+    const indexed = this.index?.ownershipRows() ?? [];
+    const fromChannel = new Map(indexed.map((item) => [item.key, item]));
+    const stored = new Map<string, { count: number; channels: number }>();
+    try {
+      const rows = this.graphStore?.ownershipRows() ?? [];
+      for (const row of rows) {
+        stored.set(row.key, row);
+      }
+    } catch {
+      //G Rust 库未挂载或暂时不可读，渠道索引仍能提供选择。
+    }
+
+    const keys = new Set([...fromChannel.keys(), ...stored.keys()]);
+    const owners: Array<{ key: string; kind: 'owner' | 'person' | 'group'; name: string; count: number }> = [];
+    for (const key of keys) {
+      const messages = fromChannel.get(key);
+      const passages = stored.get(key);
+      let count = messages?.count ?? passages?.count ?? 0;
+      if (messages !== undefined && passages !== undefined) {
+        count += passages.count - passages.channels;
+      }
+      if (key === memoryKeyModule.OWNER_KEY) {
+        //M 本机归属用固定显示名，和渠道身份分开。
+        owners.push({ key, kind: 'owner', name: '本人', count });
+        continue;
+      }
+
+      //M 聊天号和发话人 ID 可能有冒号，保留分隔符后的完整原值。
+      const colon = key.indexOf(':');
+      const delimiter = key.indexOf(':', colon + 1);
+      const id = key.slice(delimiter + 1);
+      if (memoryKeyModule.isMemoryKey('person', key)) {
+        const source = key.slice(colon + 1, delimiter);
+        //M 先用已打标消息的人名。只有 Rust 有归属时可从渠道的旧行补显示名。
+        const name = messages?.name || this.index?.ownershipName(source, id) || id;
+        owners.push({ key, kind: 'person', name, count });
+        continue;
+      }
+      //G 老客户或不完整的键保留在原检索体系内。
+      const group = memoryKeyModule.isMemoryKey('group', key);
+      if (group) {
+        owners.push({ key, kind: 'group', name: id, count });
+      }
+    }
+
+    //M 固定名称和归属键排序，页面刷新时列表不会因写入计数而换位。
+    return owners.sort((left, right) => left.name.localeCompare(right.name) || left.key.localeCompare(right.key));
   }
 
   /** 登记两件模型工具。 */
@@ -254,12 +316,10 @@ export class Search {
   /** 新工具和旧名均经这里读取原插件的归档，不改变提供方的安全范围或游标。 */
   async readHistory(request: HistoryToolRequest, compatibility = false): Promise<ToolResult | undefined> {
     const { route, session } = request;
-    if (!compatibility && (route.startsWith('front-') || route === 'wechat-archive')) {
-      //G 新工具放进只读名单后，只允许本人使用私人前台及微信归档。受限说话人查的是当前渠道记录。
-      const access = channel.getAccess(session);
-      if (!canReadPrivate(session, access) || (route.startsWith('front-') && session.row.kind !== 'front')) {
-        throw new Error('这一轮只能查当前渠道聊天');
-      }
+    //G 原始归档可能还没有归属。受限会话统一走带归属的检索和原文索引。
+    const access = channel.getAccess(session);
+    if (!access.full || (!compatibility && route.startsWith('front-') && session.row.kind !== 'front')) {
+      throw new Error('这一轮只能查当前渠道聊天，请用 memory_search 或 channel_search 查询已归属的记录');
     }
     if (compatibility && (route === 'front-search' || route === 'front-get')) {
       //G 旧前台分页和取全文也使用新工具的同一份额度，兼容名保留原提示和文本返回。
@@ -295,6 +355,14 @@ export class Search {
 
     if (args['channel'] !== undefined || args['chat'] !== undefined) throw new Error('只可翻看当前聊天的 @ 记录');
 
+    //M 受限来源按归属读索引里的提及，不打开可能尚未打标的原始归档。
+    const access = channel.getAccess(request.session);
+    if (!access.full) {
+      const filters = { ...args, mentions: true };
+      const { rows, query } = this.findChannel(filters, request.session);
+      return channel.getResultText(rows, query);
+    }
+
     //M 原渠道使用结构化提及和它签发的游标翻页。
     const routed = { ...request, route: 'channel-mentions' as const };
     return this.readHistory(routed);
@@ -312,6 +380,10 @@ export class Search {
       return this.readHistory(routed);
     }
     if (ref !== '') return undefined;
+
+    //M 受限会话的普通翻页由 get 走带归属的渠道索引。
+    const access = channel.getAccess(request.session);
+    if (!access.full) return undefined;
 
     if (args['wechat_skip'] !== undefined) {
       //M 微信按当前来源的会话和归档偏移读取，原有补录和排序由微信插件处理。
@@ -342,6 +414,10 @@ export class Search {
     const access = channel.getAccess(session);
     const scope = channel.getScope(args, access);
     const query = channel.getQuery(args, scope);
+    if (args['mentions'] === true) {
+      query.mentionedBot = session.row.bot;
+    }
+    //M 仅查询本轮授权范围内的渠道索引行。
     const rows = this.searchChannel(query);
     return { rows, query };
   }
@@ -380,15 +456,15 @@ export class Search {
       return index.context(id, query);
     }
 
-    //G 渠道外人和群聊只允许通过上面的聊天范围取渠道原文。
-    if (!canReadPrivate(session, access)) throw new Error('这一轮只能查当前聊天的消息');
-
     //M Rust 的段落号与网页出处一致。从服务读原文后重验段落的客户号和机器人。
     const passageRef = /^\/api\/memory-graph\/passage\/([1-9]\d*)$/u.exec(ref);
     if (passageRef !== null) {
       const limit = getLimit(args['limit'], 3, 20);
-      return this.getPassage(passageRef[1]!, session, limit);
+      return this.getPassage(passageRef[1]!, session, limit, access);
     }
+
+    //G 本人的卡片和私人文件始终只对本人开放。
+    if (!access.full) throw new Error('这一轮只能看当前归属的聊天原文');
 
     //G 卡片只允许读当前机器人和公共记忆目录里的 Markdown，按真实路径验证联接。
     const card = /^(.*\.(?:md|txt)):([1-9]\d*)$/iu.exec(ref);
@@ -417,30 +493,34 @@ export class Search {
   }
 
   /** 核对 Rust 段落权限，并在本地库与服务一致时补前文和后文。 */
-  private async getPassage(id: string, session: Session, limit: number): Promise<unknown> {
+  private async getPassage(
+    id: string,
+    session: Session,
+    limit: number,
+    access: channel.ChannelAccess,
+  ): Promise<unknown> {
+    if (!access.full && access.key === undefined) throw new Error('这一轮没有确定的记忆归属');
+
     const route = `/passages/${id}`;
     //M 拿到服务端记录上的范围和内容，再核对它是不是本轮可以看到的原文。
     const result = await this.service.readSearchData(route) as {
       passage?: Passage & { text: string }; relations?: string[];
     };
     const passage = result.passage;
-    if (passage === undefined || passage.source?.startsWith(channel.CHANNEL_PARTITION)
-      || (passage.scope !== 'history' && passage.scope !== 'knowledge')) {
+    if (passage === undefined || (passage.scope !== 'history' && passage.scope !== 'knowledge')) {
       throw new Error('找不到原文');
     }
 
     const row = session.row;
-    if (passage.scope === 'history') {
-      //G 历史引用始终绑定本轮客户和机器人，包含 Rust 管理的同一客户旧账号。
-      const customer = store.getCustomer(row).trim();
-      if (customer === '' || passage.customer === '' || passage.bot !== row.bot) {
-        throw new Error('找不到当前客户的原文');
+    if (!access.full) {
+      //G 授权范围来自消息本身。相似客户或别名也不能通过取原文扩大到其他归属。
+      const channelCopy = passage.source?.startsWith(channel.CHANNEL_PARTITION) === true;
+      if (channelCopy || passage.scope !== 'history' || passage.customer !== access.key || passage.bot !== row.bot) {
+        throw new Error('找不到当前归属的原文');
       }
-      if (passage.customer !== customer) {
-        const customerRoute = `/customers/${encodeURIComponent(customer)}`;
-        const same = await this.service.readSearchData(customerRoute) as { ids?: string[] };
-        if (same.ids?.includes(passage.customer) !== true) throw new Error('找不到当前客户的原文');
-      }
+    }
+    if (access.full && passage.scope === 'history' && passage.bot !== row.bot) {
+      throw new Error('找不到当前机器人的原文');
     }
     if (passage.scope === 'knowledge' && passage.bot !== '' && passage.bot !== row.bot) {
       throw new Error('找不到当前机器人的知识库原文');
@@ -482,36 +562,52 @@ export class Search {
     let bot = getText(args, 'bot');
     let customer = getText(args, 'customer');
     let id = getText(args, 'session');
-    let privateAllowed = true;
+    //M 按人、按群查：归属键当 Rust 聊天往来的客户号，渠道索引按 memory_key 筛。
+    let memoryKey = getKeyFilter(args, customer, session);
+    if (memoryKey !== '') customer = memoryKey;
+
     let access: channel.ChannelAccess = { full: true };
+    let allHistory = false;
     if (session !== undefined) {
       //G 模型提供的客户号和机器人只用于确认范围，不能切换身份。
       const row = session.row;
       access = channel.getAccess(session);
-      privateAllowed = canReadPrivate(session, access);
-      const current = store.getCustomer(row).trim();
+      let current = access.key ?? '';
+      if (access.full) {
+        current = store.getCustomer(row).trim();
+      }
       if (bot !== '' && bot !== row.bot) throw new Error('只能查当前机器人');
 
       if (customer !== '' && customer !== current) throw new Error('只能查当前客户');
 
       if (range === 'session' && id !== '' && id !== row.id) throw new Error('只能查当前会话');
 
+      //M 本人不按说话人过滤。显式会话或客户查询沿用旧范围。
+      allHistory = access.full && customer === '' && id === '' && range === '';
       bot = row.bot;
       customer = current;
+      memoryKey = access.key ?? '';
       if (range === 'session') id = row.id;
     }
     const explicit = requested !== '' && requested !== 'all';
     const allowed = new Set(sources as Source[]);
     const skipped: Source[] = [];
     for (const source of allowed) {
-      if (source === 'channel' && !access.full && access.chat === undefined && !explicit) {
+      if (source === 'channel' && !access.full && (!access.chat || !access.account || !access.key) && !explicit) {
         //G 老会话缺来源快照时没有渠道授权，继续查询它能查的其他来源。
         allowed.delete(source);
         skipped.push(source);
         continue;
       }
-      if (source === 'channel' || (privateAllowed && (source !== 'history' || customer !== ''))) continue;
-      if (explicit && !privateAllowed) throw new Error('这一轮只能查当前聊天的消息');
+      //G 归属过滤只返回能确认属于该人或该群的内容。
+      if (memoryKey !== '' && (source === 'knowledge' || source === 'card')) {
+        allowed.delete(source);
+        skipped.push(source);
+        continue;
+      }
+      if (source === 'channel' || (source === 'history' && (customer !== '' || allHistory))) continue;
+      if (source !== 'history' && access.full) continue;
+      if (explicit && !access.full) throw new Error('这一轮只能查当前归属的消息');
 
       if (explicit) throw new Error(store.NO_CUSTOMER);
 
@@ -539,22 +635,29 @@ export class Search {
     const channelQuery = channel.getQuery(filters, scope);
     if (args['mentions'] === true) channelQuery.mentionedBot = bot;
     if (session === undefined && bot !== '') channelQuery.bot = bot;
+    if (memoryKey !== '') channelQuery.memoryKey = memoryKey;
     return {
-      q, sources: [...allowed], mode: mode as Mode, bot, customer, session: id, notSession: '',
+      q, sources: [...allowed], mode: mode as Mode, bot, customer, allHistory, restricted: !access.full,
+      session: id, notSession: '',
       channel: channelQuery, limit, skipped,
     };
   }
 
   /** 各来源独立查，交回统一格式。 */
   private async findSource(source: Source, query: SearchQuery, extraCardRoots: string[]): Promise<Lane> {
+    if (source === 'history' && query.allHistory) {
+      //M 只有本人可以逐个查询历史分区。
+      return this.findAllHistory(query);
+    }
     if (source === 'channel') {
       //M 查授权聊天中的渠道消息，按消息键生成原文引用。
       const rows = this.searchChannel(query.channel);
       const hits = rows.map((row): SearchHit => {
         const params = new URLSearchParams({ channel: row.channel, chat: row.chat, id: row.key });
+        const customer = row.memoryKey ?? '';
         return {
           source, id: row.key, title: row.senderName || row.senderId, snippet: row.text.slice(0, 300), score: 0,
-          at: row.at, ref: `${CHANNEL_ROUTE}?${params.toString()}`, via: ['keyword'], customer: '', bot: row.bot,
+          at: row.at, ref: `${CHANNEL_ROUTE}?${params.toString()}`, via: ['keyword'], customer, bot: row.bot,
         };
       });
       return { hits };
@@ -610,11 +713,18 @@ export class Search {
 
     const hits: SearchHit[] = [];
     const semantic = query.mode === 'semantic';
+    const memoryKey = query.channel.memoryKey;
+    //G Rust 的渠道副本没有单独的账号字段，受限会话始终从能校验账号的渠道索引读它们。
+    const dedupeChannels = query.restricted || memoryKey === undefined || query.sources.includes('channel');
     for (const hit of lane.hits) {
       //G 只收请求来源的候选并按指定时间裁剪，语义模式只收向量命中。
-      if (hit.scope !== source || hit.source?.startsWith(channel.CHANNEL_PARTITION) || !inTime(hit.at, query.channel)) {
-        continue;
-      }
+      if (hit.scope !== source || !inTime(hit.at, query.channel)) continue;
+
+      //G 归属检索只认原键；渠道索引已一起查时，跳过 Rust 中的相同渠道消息。
+      if (memoryKey !== undefined && hit.customer !== memoryKey) continue;
+
+      if (dedupeChannels && hit.source?.startsWith(channel.CHANNEL_PARTITION)) continue;
+
       if (semantic && !hit.via.includes('vector')) continue;
       const id = String(hit.id);
       //M 普通 Rust 段落按服务端编号生成出处，渠道原文走自己的引用。
@@ -626,7 +736,65 @@ export class Search {
     }
     if (semantic) return { hits, warnings: lane.warnings };
 
+    //M 按归属查时只公开本分区的命中所带关系，避免把相邻分区的匹配关系混进来。
+    if (memoryKey !== undefined) {
+      const relations = hits.flatMap((hit) => hit.relations ?? []);
+      return { hits, relations, warnings: lane.warnings };
+    }
+
     return { hits, relations: lane.relations, queryEntities: lane.queryEntities, warnings: lane.warnings };
+  }
+
+  /** Rust 每次只接一个客户，本人可从同机库列出分区后逐批查询。 */
+  private async findAllHistory(query: SearchQuery): Promise<Lane> {
+    const customers = new Set<string>();
+    if (query.customer !== '') {
+      customers.add(query.customer);
+    }
+    const warnings = new Set<string>();
+    try {
+      const catalog = this.graphStore?.historyCustomers(query.bot) ?? [];
+      for (const customer of catalog) {
+        customers.add(customer);
+      }
+    } catch {
+      //G 非同机或库暂时不可读时仍搜当前客户，渠道索引仍按本人范围查询。
+      warnings.add('历史分区目录暂不可读，Rust 只检索当前客户');
+    }
+
+    const ids = [...customers];
+    const hits = new Map<string, SearchHit>();
+    const relations = new Set<string>();
+    const queryEntities = new Set<string>();
+    let succeeded = 0;
+    for (let offset = 0; offset < ids.length; offset += HISTORY_PARALLEL) {
+      //M 控制同一时间发给记忆服务的子查询数量；各分区独立失败。
+      const batch = ids.slice(offset, offset + HISTORY_PARALLEL);
+      const requests = batch.map((customer) => {
+        const scoped = { ...query, customer, allHistory: false };
+        return this.findSource('history', scoped, []);
+      });
+      const outcomes = await Promise.allSettled(requests);
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected') {
+          warnings.add(text.getMessage(outcome.reason));
+          continue;
+        }
+        const one = outcome.value;
+        succeeded += 1;
+        for (const hit of one.hits) hits.set(hit.id, hit);
+        for (const relation of one.relations ?? []) relations.add(relation);
+        for (const item of one.queryEntities ?? []) queryEntities.add(item);
+        for (const warning of one.warnings ?? []) warnings.add(warning);
+      }
+    }
+    if (ids.length > 0 && succeeded === 0) {
+      const cause = [...warnings].join('；');
+      throw new Error(cause);
+    }
+
+    const ranked = [...hits.values()].sort((a, b) => b.at - a.at);
+    return { hits: ranked, relations: [...relations], queryEntities: [...queryEntities], warnings: [...warnings] };
   }
 
   /** 查询渠道索引，统一入口和兼容工具都查同一份数据。 */
@@ -683,6 +851,52 @@ function getText(args: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
+/**
+ * 入口读 person、group（按人分记忆）：只给一个，写成 MemoryKey.ts 算出来的那种键。
+ * @param args 查询参数。
+ * @param customer 调用方写的旧客户号，和归属键只能二选一。
+ * @param session 模型调用时的会话；网页和内部请求没有。
+ * @returns 归属键；两个都没给是空串，查询照旧。
+ * @throws 写法不对、两个都给、和 customer 同给、模型调用时给。
+ */
+function getKeyFilter(args: Record<string, unknown>, customer: string, session?: Session): string {
+  //M 在统一入口读取并去掉两头空白，后面只处理校验过的值。
+  const person = getText(args, 'person');
+  const group = getText(args, 'group');
+  if (person === '' && group === '') return '';
+
+  //G 模型的范围由会话定，不能换成别人的记忆。
+  if (session !== undefined) {
+    throw new Error('person、group 只给网页和内部请求用');
+  }
+
+  //G 一个键代表一个分区，避免同时传入互相冲突的归属条件。
+  if (person !== '' && group !== '') {
+    throw new Error('person 和 group 只能给一个');
+  }
+
+  if (customer !== '') {
+    throw new Error('customer 和 person、group 只能给一个');
+  }
+
+  //G 群的键只认 group:<渠道>:<聊天号>。
+  if (group !== '') {
+    const valid = memoryKeyModule.isMemoryKey('group', group);
+    if (!valid) {
+      throw new Error('group 要写 group:<渠道>:<聊天号>');
+    }
+    return group;
+  }
+
+  //G 人的键只认 owner 或 person:<渠道>:<发话人ID>。
+  const valid = memoryKeyModule.isMemoryKey('person', person);
+  if (!valid) {
+    throw new Error('person 要写 owner 或 person:<渠道>:<发话人ID>');
+  }
+
+  return person;
+}
+
 /** 条数默认值和夹范围只在入口处理。 */
 function getLimit(value: unknown, fallback: number, max: number): number {
   if (value === undefined || value === '') return fallback;
@@ -700,10 +914,3 @@ function inTime(at: number, query: channel.ChannelQuery): boolean {
   return at >= (query.since ?? 0) && at <= (query.until ?? Infinity);
 }
 
-/** 有来源快照就用其授权，无快照时沿用内部会话的地址规则。 */
-function canReadPrivate(session: Session, access: channel.ChannelAccess): boolean {
-  //G 显式群聊和外人不能看私人记忆，老会话没有快照时按地址角色判断。
-  const address = session.row.address;
-  const trusted = access.full || access.channel === undefined;
-  return trusted && workspace.privateAllowed(address) && !workspace.isGroup(address);
-}

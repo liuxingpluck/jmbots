@@ -8,6 +8,7 @@
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../../utils/RequestEvent.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as notifyModule from './Notify.ts';
 import * as updateWatchModule from './UpdateWatch.ts';
@@ -20,8 +21,11 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.0';
+export const version = '1.2.1';
 export const inject = ['resources'];
+
+/** 基地子模块共享的地址配置路径，供错误提示使用。 */
+const INDEX_URL_PATH = 'plugins[base-bridge].config.index_url';
 
 /** base/request 请求载荷，settings 和 web-api 用它向基地请求重启等操作。 */
 export interface BaseRequest extends RequestEnvelope {
@@ -43,7 +47,7 @@ export interface BaseResult extends ResultEnvelope {
   status?: number;
   /** 基地回的正文：能解析成 JSON 的是对象，旧接口的纯文本原样，空正文没有。 */
   body?: unknown;
-  /** ok 是 false 时的原因：“没配 engine.index_url”“基地没响应”。 */
+  /** ok 是 false 时的原因：“没配基地地址”“基地没响应”。 */
   error?: string;
 }
 
@@ -162,7 +166,7 @@ export class Base extends cordis.Service {
   private async request(method: 'GET' | 'POST', route: string, timeoutMs: number, body?: unknown): Promise<Response> {
     //M 完整地址用于 notify.url；其余调用都使用入口处理好的基地地址。
     const absolute = /^https?:\/\//iu.test(route);
-    if (!absolute && this.url === '') throw new Error('没配 engine.index_url');
+    if (!absolute && this.url === '') throw new Error(`没配 ${INDEX_URL_PATH}`);
 
     let url = this.url + route;
     if (absolute) {
@@ -231,7 +235,7 @@ export class Base extends cordis.Service {
     } catch {
       let error = '基地没响应';
       if (this.url === '') {
-        error = '没配 engine.index_url';
+        error = `没配 ${INDEX_URL_PATH}`;
       }
       //M 区分未配基地地址与基地无响应两种原因，统一以 503 JSON 告知前端。
       return reply.code(503).send({ error });
@@ -242,8 +246,8 @@ export class Base extends cordis.Service {
 /**
  * 入口校验地址及 notify / update_watch 子配置一次，再登记 ctx.base 与可选子模块。
  * @param ctx Cordis 给本插件的上下文（依赖 resources）。
- * @param config `plugins[base-bridge].config`（可选，可含 `notify` 与 `update_watch` 子配置）。
- * @throws `config` 类型非法或 `engine.index_url` 格式不合法时抛错。
+ * @param config `plugins[base-bridge].config`（可选，可含 `index_url`、`notify`、`update_watch`）。
+ * @throws `config` 类型非法或 `index_url` 格式不合法时抛错。
  * 副作用：注册 `ctx.base` 服务；通过 `ctx.inject` 按需挂载 8 条转发路由、通知工具与更新监听。
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
@@ -255,8 +259,11 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const notifySettings = notifyModule.readNotifySettings(own['notify']);
   const watchSettings = updateWatchModule.readUpdateWatchSettings(own['update_watch']);
 
-  const raw = (ctx.resources.raw['engine'] as Record<string, unknown> | undefined)?.['index_url'];
-  if (raw !== undefined && typeof raw !== 'string') throw new Error('engine.index_url 要是字符串');
+  //M 基地服务、默认通知和更新监听共用一个校验后的地址。
+  const engine = ctx.resources.raw['engine'] as Record<string, unknown> | undefined;
+  const raw = checks.getMigratedConfig(own['index_url'], engine?.['index_url'], 'engine.index_url', INDEX_URL_PATH);
+  if (raw !== undefined && typeof raw !== 'string') throw new Error(`${INDEX_URL_PATH} 要是字符串`);
+
   const url = (raw ?? '').trim().replace(/\/+$/u, '');
   //M 空串允许独立运行；非空地址必须是 HTTP(S)，写错就停本插件，其他可选调用方仍能启动。
   if (url !== '') {
@@ -264,10 +271,10 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
     try {
       parsed = new URL(url);
     } catch {
-      throw new Error('engine.index_url 要是完整的 HTTP(S) 地址');
+      throw new Error(`${INDEX_URL_PATH} 要是完整的 HTTP(S) 地址`);
     }
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.search !== '' || parsed.hash !== '') {
-      throw new Error('engine.index_url 要是 HTTP(S) 地址，不能带查询串或片段');
+      throw new Error(`${INDEX_URL_PATH} 要是 HTTP(S) 地址，不能带查询串或片段`);
     }
   }
   //M 校验通过后先向 ctx 登记 base 服务，供转发路由及后续插件使用。

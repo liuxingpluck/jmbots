@@ -312,7 +312,126 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-links { padding-left: 16px; }
 .decision-links a { color: var(--decision-blue); }
 
+/* 顶栏的看法切换，和画布范围按钮同一种样子 */
+.decision-bar { flex-wrap: wrap; gap: 10px 16px; padding-top: 10px; padding-bottom: 10px; }
+.decision-looks { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.decision-looks__label { align-self: center; color: var(--decision-muted); font-size: 13px; }
+
+/* 侧栏里写过的话和输入框 */
+.decision-notes h3, .decision-write label { display: block; margin: 16px 0 8px; font-size: 14px; font-weight: 660; }
+.decision-notes ol { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.decision-note { padding: 9px 11px; border: 1px solid #3c4960; border-radius: 9px; background: #232e3f; }
+.decision-note[data-author="central"] { border-color: #4f9276; background: #20372f; }
+.decision-note p { margin: 0; }
+.decision-note__meta { color: var(--decision-muted); font-size: 12px; }
+.decision-note__meta strong { color: #e5ebf6; }
+.decision-note__state { margin-left: 8px; color: var(--decision-gold); }
+.decision-note__option { margin-top: 4px !important; color: #f7d798; font-size: 13px; }
+.decision-note__text { margin-top: 5px !important; font-size: 15px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.decision-write { display: grid; gap: 8px; }
+.decision-write label { margin-bottom: 0; }
+.decision-write textarea {
+  width: 100%;
+  min-height: 78px;
+  padding: 10px 11px;
+  border: 1px solid #455573;
+  border-radius: 9px;
+  color: #f2f5fc;
+  background: #172030;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.decision-write textarea:focus { outline: 2px solid var(--decision-blue); outline-offset: 1px; }
+.decision-write textarea::placeholder { color: #7f8aa0; }
+.decision-write button {
+  justify-self: end;
+  min-height: 40px;
+  padding: 8px 18px;
+  border: 1px solid #956e38;
+  border-radius: 8px;
+  color: #f7d798;
+  background: #3a3026;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.decision-write button:disabled { opacity: 0.5; cursor: default; }
+
+/* 表格和清单看法：铺满画布区域，自己滚动 */
+.decision-view {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 18px 22px 28px;
+  background: #11161f;
+}
+.decision-view__empty { color: var(--decision-muted); font-size: 15px; }
+.decision-table { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 14px; overflow: hidden; }
+.decision-table__scroll { overflow: auto; border: 1px solid #2d3748; border-radius: 10px; }
+.decision-table table { width: 100%; min-width: 860px; border-collapse: collapse; font-size: 15px; }
+.decision-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px;
+  border-bottom: 1px solid #364156;
+  background: #18202c;
+  color: var(--decision-muted);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+  white-space: nowrap;
+}
+.decision-table td { padding: 11px 12px; border-bottom: 1px solid #252e3d; vertical-align: top; line-height: 1.45; }
+.decision-table tbody tr { cursor: pointer; }
+.decision-table tbody tr:hover, .decision-table tbody tr[aria-selected="true"] { background: #1f2938; }
+.decision-table tbody tr:focus-visible { outline: 2px solid var(--decision-blue); outline-offset: -2px; }
+.decision-table__state { white-space: nowrap; font-weight: 650; }
+.decision-table tr[data-state="pending"] .decision-table__state { color: var(--decision-red); }
+.decision-table tr[data-state="working"] .decision-table__state { color: var(--decision-blue); }
+.decision-table tr[data-state="decided"] .decision-table__state { color: var(--decision-green); }
+.decision-table tr[data-state="done"] .decision-table__state { color: var(--decision-muted); }
+.decision-table tr[data-state="pending"] { background: #2a1f29; }
+.decision-table__title { font-weight: 650; }
+.decision-table__time { color: var(--decision-muted); font-size: 13px; white-space: nowrap; }
+.decision-table__none { color: #5c6780; }
+.decision-table__options { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.decision-table__options li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.decision-table__options li[data-chosen="true"] { color: #f7d798; }
+.decision-table__chosen { color: var(--decision-green); font-weight: 700; }
+.decision-list { display: grid; align-content: start; gap: 14px; }
+.decision-list__group { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.decision-list__section { border-top: 1px solid #263042; padding-top: 10px; }
+.decision-list__item {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  align-items: baseline;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: #e5ebf6;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.decision-list__item:hover, .decision-list__item[aria-pressed="true"] { border-color: #3c4960; background: #1f2938; }
+.decision-list__state { flex: none; min-width: 64px; color: var(--decision-muted); font-size: 13px; font-weight: 650; }
+.decision-list__title { font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+.decision-list__item[data-state="pending"] { border-color: #744445; background: #2e2129; }
+.decision-list__item[data-state="pending"] .decision-list__state { color: var(--decision-red); }
+.decision-list__item[data-state="working"] .decision-list__state { color: var(--decision-blue); }
+.decision-list__item[data-state="decided"] .decision-list__state { color: var(--decision-green); }
+
 @media (max-width: 670px) {
+  .decision-looks { grid-column: 1 / -1; }
+  .decision-looks button { min-height: 40px; }
+  .decision-view { padding: 12px 10px 24px; }
+  .decision-write textarea { font-size: 16px; }
+  .decision-write button { width: 100%; min-height: 46px; }
   .decision-bar { display: grid; grid-template-columns: 1fr auto; gap: 9px; padding: 9px 14px; }
   .decision-bar h1 { font-size: 18px; }
   .decision-filters { grid-column: 1 / -1; grid-row: 2; }

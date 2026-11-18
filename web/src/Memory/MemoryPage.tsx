@@ -2,7 +2,7 @@
  * 记忆检索页（/memory/，web 插件托管 dist/web/memory.html）。明天演示的主角。2026-11-14 jm开发。
  * 上：记忆服务状态、段数、向量和抽图进度；中：按客户检索原文和多跳关系；下：导入公共知识库。
  *   记忆服务地址在 config.yaml 里 memory-graph 的 backend_url，以后改成 30087 页面不用动。
- * 隐私：客户下拉只列 demo: 开头的演示客户；不选客户只查公共知识库（记忆服务本身也拒绝不带客户号查聊天记录）。
+ * 演示客户和记忆归属分开选。归属查询使用同一检索接口，显示时遵循现有演示打码设置。
  * 网址参数：customer、q、mode（keyword | semantic | hybrid | graph）、guide、token。
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -17,10 +17,46 @@ import * as api from '../Api.ts';
 import { ChannelBackfillCard } from './ChannelBackfillCard.tsx';
 import { DEMO_PREFIX, ERP_CUSTOMER, ERP_QUESTIONS } from './questions.ts';
 import { TOKEN, withToken } from '../Token.ts';
+import * as i18n from '../I18n.ts';
 
 const PARAMS = new URLSearchParams(window.location.search);
 const VIA: Record<string, string> = { keyword: '关键词', vector: '向量', graph: '关系图' };
 const KNOWLEDGE = '';
+const ALL_OWNERS = '';
+const OWNER = 'owner';
+
+/** 记忆插件给网页的归属、显示名和段落计数。 */
+interface MemoryOwner {
+  key: string;
+  kind: 'owner' | 'person' | 'group';
+  name: string;
+  count: number;
+}
+
+/** 卡片与选择项共用归属名称，打码时沿用现有显示规则。 */
+function getOwnerLabel(key: string, owner: MemoryOwner | undefined, mask: boolean, t: i18n.Translate): string {
+  //M 本人的标签沿用界面语言，不显示内部键名。
+  if (key === OWNER) return t('本人');
+
+  //M 分组和发话人姓名分别交给语言包，列表没载好时仍可显示渠道 ID。
+  let format = '';
+  if (key.startsWith('person:')) {
+    format = '个人：{name}';
+  }
+  if (key.startsWith('group:')) {
+    format = '群聊：{name}';
+  }
+  //M 旧演示客户仍按原客户名和打码规则显示。
+  if (format === '') return privacy.text(key, mask);
+
+  const prefix = key.indexOf(':');
+  const id = key.slice(key.indexOf(':', prefix + 1) + 1);
+  const original = owner?.name || id;
+  //M 只将脱敏后的名字传入呈现层。
+  const name = privacy.text(original, mask);
+  const values = { name };
+  return t(format, values);
+}
 
 /** POST 一个接口（带上和 get 一样的令牌）。 */
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -72,7 +108,7 @@ function Card(props: { label: string; value: string; sub?: string; tone?: 'ok' |
 }
 
 /** 一张命中卡片：点开看全文。 */
-function HitCard({ hit, index }: { hit: api.MemoryHit; index: number }) {
+function HitCard({ hit, index, ownerLabel }: { hit: api.MemoryHit; index: number; ownerLabel: string }) {
   //M 订阅全局演示打码开关，并整理来源路径、VS Code 跳转定位与去前缀后的正文。
   const mask = privacy.useMask();
   const [open, setOpen] = useState(index === 0);
@@ -87,7 +123,7 @@ function HitCard({ hit, index }: { hit: api.MemoryHit; index: number }) {
   }
 
   //M 区分客户来源（按打码开关脱敏）与公共知识库标签。
-  let scopeText = privacy.text(hit.customer, mask);
+  let scopeText = ownerLabel;
   if (hit.source === 'knowledge') {
     scopeText = '公共知识库';
   }
@@ -116,7 +152,7 @@ function HitCard({ hit, index }: { hit: api.MemoryHit; index: number }) {
           return <span key={v} className={badgeClass}>{badgeText}</span>;
         })}
         <span className="mm-tag score">相关度 {hit.score.toFixed(3)}</span>
-        <span className="mm-tag">{scopeText}</span>
+        {scopeText !== '' && <span className="mm-tag">{scopeText}</span>}
       </div>
       {/* 2026-11-14 23:15 EST：原文件路径 + 行号/Sheet 行范围，一键复制并支持在 VS Code 打开；打码开着不露路径，也不让复制和链接带出私有信息。 */}
       {
@@ -152,10 +188,24 @@ function HitCard({ hit, index }: { hit: api.MemoryHit; index: number }) {
 export function MemoryPage() {
   //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位
   const mask = privacy.useMask();
+  //M 记忆页独立装载，语言按 URL 或浏览器偏好读取，和同页回填卡片一致。
+  const [language] = useState(() => {
+    const requested = PARAMS.get('lang');
+    const explicit = i18n.matchLanguage(requested);
+    if (explicit !== undefined) return explicit;
+
+    //M 地址没有指定语言时，读此浏览器保存的界面偏好。
+    return i18n.loadLanguage(window.localStorage);
+  });
+  const t: i18n.Translate = (text, values) => i18n.translate(language, text, values);
   const [status, setStatus] = useState<api.MemoryHealth | null>(null);
   const [statusError, setStatusError] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
+  //M 保留旧链接指定的演示客户。
   const [customer, setCustomer] = useState(PARAMS.get('customer') ?? ERP_CUSTOMER);
+  const [owners, setOwners] = useState<MemoryOwner[]>([]);
+  const [ownerKey, setOwnerKey] = useState(ALL_OWNERS);
+  //M 旧链接仍可预填问题和检索方式，归属默认全部。
   const [query, setQuery] = useState(PARAMS.get('q') ?? '');
   const urlMode = PARAMS.get('mode');
   let initialMode = 'hybrid';
@@ -193,6 +243,12 @@ export function MemoryPage() {
     }).catch(() => undefined);
   }, []);
 
+  //M 单独加载正式归属，原有演示客户入口继续独立工作。
+  useEffect(() => {
+    const route = '/api/memory/owners';
+    void get<{ owners: MemoryOwner[] }>(route).then((result) => setOwners(result.owners)).catch(() => undefined);
+  }, []);
+
   const search = async (text = query, who = customer, how = mode) => {
     const q = text.trim();
     if (q === '') { setBanner('先输入一个问题'); return; }
@@ -205,7 +261,16 @@ export function MemoryPage() {
     try {
       //M 拼装客户与检索模式参数调用记忆检索接口，保存命中结果与耗时反馈。
       const params = new URLSearchParams({ q, mode: how, sources: 'knowledge' });
-      if (who !== KNOWLEDGE) {
+      if (ownerKey !== ALL_OWNERS) {
+        //M 归属和旧客户参数互斥。Rust 往来和渠道索引都使用当前归属。
+        let field = 'person';
+        if (ownerKey.startsWith('group:')) {
+          field = 'group';
+        }
+        params.set(field, ownerKey);
+        params.set('sources', 'history,channel');
+      }
+      if (ownerKey === ALL_OWNERS && who !== KNOWLEDGE) {
         params.set('customer', who);
         params.set('sources', 'history,knowledge');
       }
@@ -230,7 +295,11 @@ export function MemoryPage() {
     const onPrefill = (event: Event) => {
       const detail = (event as CustomEvent<GuidePrefillDetail>).detail;
       if (detail.text) setQuery(detail.text);
-      if (detail.customer !== undefined) setCustomer(detail.customer);
+      if (detail.customer !== undefined) {
+        //M 演示引导继续用演示客户范围，不沿用正在查看的正式个人或群聊。
+        setOwnerKey(ALL_OWNERS);
+        setCustomer(detail.customer);
+      }
       if (detail.mode) setMode(detail.mode);
     };
     window.addEventListener('jmbots-guide-prefill', onPrefill);
@@ -267,6 +336,40 @@ export function MemoryPage() {
     return getChains(graph.edges, graph.hitEdges);
   }, [found]);
   const names = useMemo(() => new Map((found?.graph?.nodes ?? []).map((n) => [n.id, n.name])), [found]);
+  const ownerByKey = useMemo(() => new Map(owners.map((item) => [item.key, item])), [owners]);
+  const ownerChoices = owners.filter((item) => item.kind !== 'owner');
+  //M 本人的选项始终可选，列表加载后补段落数量。
+  const self = ownerByKey.get(OWNER);
+  let selfLabel = t('本人');
+  if (self !== undefined) {
+    selfLabel = t('{label}（{count} 段）', { label: selfLabel, count: self.count });
+  }
+  const allOwners = ownerKey === ALL_OWNERS;
+  let selectedOwner = ownerKey;
+  if (!allOwners && ownerKey !== OWNER) {
+    selectedOwner = String(ownerChoices.findIndex((item) => item.key === ownerKey));
+  }
+
+  const selectOwner = (value: string): void => {
+    //M 清掉旧范围的结果，避免选择了新归属仍把之前的命中显示在下面。
+    setFound(null);
+    setBanner('');
+    if (value === ALL_OWNERS || value === OWNER) {
+      setOwnerKey(value);
+      return;
+    }
+    const selected = ownerChoices[Number(value)];
+    setOwnerKey(selected?.key ?? ALL_OWNERS);
+  };
+
+  const ownerOptions = (kind: 'person' | 'group') => ownerChoices.map((item, index) => {
+    if (item.kind !== kind) return null;
+
+    //M 用位置作为选择值，避免在打码态的选项中放入原始客户标识。
+    const label = getOwnerLabel(item.key, item, mask, t);
+    const text = t('{label}（{count} 段）', { label, count: item.count });
+    return <option key={item.key} value={String(index)}>{text}</option>;
+  });
   const graphParams = new URLSearchParams({ q: query, mode });
   if (customer) {
     graphParams.set('customer', customer);
@@ -358,9 +461,23 @@ export function MemoryPage() {
             //M 渲染客户范围选择下拉框（客户名按打码状态脱敏）以及下方推荐演示问题快捷栏。
           /**/}
           <div className="mm-row">
+            <label className="mm-ownership">
+              <span>{t('归属')}</span>
+              <select value={selectedOwner} disabled={busy} onChange={(event) => selectOwner(event.target.value)}>
+                <option value={ALL_OWNERS}>{t('全部')}</option>
+                <option value={OWNER}>{selfLabel}</option>
+                {ownerChoices.some((item) => item.kind === 'person') && (
+                  <optgroup label={t('个人')}>{ownerOptions('person')}</optgroup>
+                )}
+                {ownerChoices.some((item) => item.kind === 'group') && (
+                  <optgroup label={t('群聊')}>{ownerOptions('group')}</optgroup>
+                )}
+              </select>
+            </label>
             <select
               data-guide="customer"
               value={selectedCustomer}
+              disabled={!allOwners}
               onChange={(e) => {
                 if (e.target.value === KNOWLEDGE) {
                   setCustomer(KNOWLEDGE);
@@ -388,9 +505,9 @@ export function MemoryPage() {
             </select>
             <button data-guide="search" disabled={busy} onClick={() => void search()}>{searchLabel}</button>
           </div>
-          <div className="mm-chips">
+          {allOwners && <div className="mm-chips">
             {ERP_QUESTIONS.map((q) => <button key={q} className="mm-chip" onClick={() => { setQuery(q); void search(q); }}>{q}</button>)}
-          </div>
+          </div>}
           {banner && <div className="mm-banner">{privacy.text(banner, mask)}</div>}
         </section>
 
@@ -404,7 +521,12 @@ export function MemoryPage() {
                   useWindowScroll
                   data={found.hits}
                   computeItemKey={(_index, hit) => `${hit.source}:${hit.id}`}
-                  itemContent={(index, hit) => <HitCard hit={hit} index={index} />}
+                  itemContent={(index, hit) => {
+                    //M 命中和选择项用相同显示名，演示模式只交给卡片脱敏后的文字。
+                    const owner = ownerByKey.get(hit.customer);
+                    const ownerLabel = getOwnerLabel(hit.customer, owner, mask, t);
+                    return <HitCard hit={hit} index={index} ownerLabel={ownerLabel} />;
+                  }}
                 />
               )}
             </div>
@@ -433,7 +555,11 @@ export function MemoryPage() {
               <h2>用到的关系三元组（{found.relations.length}）</h2>
               {found.relations.length === 0 && <p className="mm-muted">这次没有用到关系（关系抽取可能还没跑到这些段）。</p>}
               <ol className="mm-triples">{found.relations.slice(0, 20).map((r) => <li key={r}>{privacy.text(r, mask)}</li>)}</ol>
-              <a data-guide="graph" className="mm-graph-link" href={graphLink} target="_blank" rel="noreferrer">在关系图谱里看这次检索 →</a>
+              {allOwners && (
+                <a data-guide="graph" className="mm-graph-link" href={graphLink} target="_blank" rel="noreferrer">
+                  在关系图谱里看这次检索 →
+                </a>
+              )}
               {found.warnings && found.warnings.length > 0 && <p className="mm-muted">提示：{privacy.text(found.warnings.join('；'), mask)}</p>}
             </aside>
           </section>

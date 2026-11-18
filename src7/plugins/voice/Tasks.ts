@@ -68,21 +68,29 @@ export interface VoiceTask {
 }
 
 interface Sentence extends Transcript {
-  /** 这句已经成功处理的稳定前缀。 */
-  read: string;
+  /** 同一句的半句派发、最终入档和回话共享此编号。 */
+  id: string;
+  /** 半句得到认领后留下的后台会话。 */
+  started?: Recent;
 }
 
 interface Snapshot {
-  /** 当时看到的每句和全句前缀。 */
-  parts: { sentence: Sentence; written: string }[];
-  /** 本次判断的待派发文字。 */
+  /** 当前一句。 */
+  sentence: Sentence;
+  /** 模型收到的文本快照，回执后核对是否仍是同一版。 */
   text: string;
-  /** 候选文字的第一句时刻。 */
-  createdAt: number;
-  /** 判断覆盖的字数。 */
+  /** 判断时的字数。 */
   length: number;
-  /** 候选是否截止在一个已收尾的句子。 */
+  /** 取快照时，识别器是否已经确认这句。 */
   final: boolean;
+}
+
+/** 只在语音入档中使用的路由说明。 */
+interface VoiceRouting extends channel.ChannelRouting {
+  /** 已经开工或只收录的整句，机器人不再分派。 */
+  recordOnly?: true;
+  /** 提前开工对应的任务号。 */
+  taskId?: string;
 }
 
 interface Flight {
@@ -105,6 +113,12 @@ declare module 'cordis' {
   interface Events {
     /** 仅在机器人认领语音任务后通知。 */
     'voice/task'(task: VoiceTask): void;
+    /** 半句获准先开工，由 bots 复用认领入口，不进入标准历史流。 */
+    'voice/dispatch'(message: channel.ChannelMessage, control: channel.ChannelMessageControl): Promise<void>;
+    /** 语音最终句先进入网页的持久时间线，随后才发标准渠道事件。 */
+    'voice/record'(message: channel.ChannelMessage, sessionId?: string): void;
+    /** 没有最终字幕就失效的半句，取消关联回复等待。 */
+    'voice/abandon'(messageId: string): void;
   }
 }
 
@@ -121,6 +135,8 @@ export class VoiceTasks {
   private calls = 0;
   private sending?: Flight;
   private previous?: Recent;
+  /** 网页浏览器对应的语音客户号；旧版客户端保留本机值。 */
+  readonly customer: string;
 
   /**
    * 绑定当前机器人和已校验的判断配置，收取字幕并回传它创建的任务。
@@ -131,6 +147,7 @@ export class VoiceTasks {
    * @param onFailure 通知当前连接本轮派发失败。
    * @param understand 用户可单独配置的语音理解模型。
    * @param report 回报实际使用的本地或云端理解线路。
+   * @param device 网页保留的浏览器标识，缺省兼容旧网页。
    */
   constructor(
     private readonly ctx: cordis.Context,
@@ -140,7 +157,13 @@ export class VoiceTasks {
     private readonly onFailure: () => void,
     private readonly understand?: models.Predict,
     private readonly report: (place?: routes.Place, reason?: string) => void = () => {},
-  ) {}
+    private readonly device?: string,
+  ) {
+    this.customer = CUSTOMER;
+    if (device !== undefined) {
+      this.customer = CHANNEL + ':' + device;
+    }
+  }
 
   /** 更新句子全文；pending 时先积累，等已有判断返回再读。 */
   push(event: Transcript): void {
@@ -153,7 +176,9 @@ export class VoiceTasks {
       last.final = event.final;
     }
     if (last?.seq !== event.seq) {
-      this.sentences.push({ ...event, read: '' });
+      //M 在首个字幕到达时分配整句的消息号，最终版本沿用它。
+      const id = 'voice_' + crypto.randomUUID();
+      this.sentences.push({ ...event, id });
       if (this.sentences.length === 1 && this.pending === undefined) {
         this.lastJudgeAt = performance.now();
       }
@@ -213,42 +238,25 @@ export class VoiceTasks {
   dispose(): void {
     this.controller.abort();
     clearTimeout(this.timer);
+    for (const sentence of this.sentences) {
+      //G 不让丢失最终字幕的提前任务留下无主回复等待。
+      const id = channel.makeChannelMessageId(CHANNEL, LOCAL, sentence.id);
+      this.ctx.emit('voice/abandon', id);
+    }
     this.sentences.length = 0;
     this.previousTasks.length = 0;
   }
 
-  /** 按满足最少字数的第一个句尾切快照，较短句子可连成一个候选。 */
+  /** 按转写顺序处理各句，最终短句也会独立入档。 */
   private getSnapshot(): Snapshot | undefined {
-    const parts: Snapshot['parts'] = [];
-    const chunks: string[] = [];
-    let final = false;
-    let createdAt = 0;
-    let length = 0;
+    const sentence = this.sentences[0];
+    if (sentence === undefined || (sentence.started !== undefined && !sentence.final)) return undefined;
 
-    //M 忽略已派发的稳定前缀。整句被识别器改写时，避免把旧任务再发一遍。
-    for (const sentence of this.sentences) {
-      const written = sentence.text;
-      let tail = '';
-      if (written.startsWith(sentence.read)) {
-        tail = written.slice(sentence.read.length).trim();
-      }
-      if (tail !== '') {
-        if (parts.length === 0) {
-          createdAt = sentence.at;
-        }
-        //M 记录此次候选看到的整句前缀，供回执时确认仍然匹配。
-        parts.push({ sentence, written });
-        chunks.push(tail);
-        length += [...tail].length;
-      }
-      if (sentence.final && length >= this.settings.minChars) {
-        final = true;
-        break;
-      }
-    }
-    if (length < this.settings.minChars) return undefined;
+    const text = sentence.text.trim();
+    const length = [...text].length;
+    if (length < this.settings.minChars && !sentence.final) return undefined;
 
-    return { parts, text: chunks.join('\n'), createdAt, length, final };
+    return { sentence, text, length, final: sentence.final };
   }
 
   /** 决定立刻判断还是安排单个定时回看；滚动语音不会积攒等待队列。 */
@@ -282,9 +290,9 @@ export class VoiceTasks {
     this.calls += 1;
     this.lastJudgeAt = now;
     this.lastJudgeLength = snapshot.length;
-    this.pending = Promise.resolve().then(() => this.judge(snapshot)).catch(() => {
+    this.pending = Promise.resolve().then(() => this.handle(snapshot)).catch(() => {
       if (!this.controller.signal.aborted) {
-        this.consume(snapshot);
+        this.consume(snapshot.sentence);
         this.onFailure();
       }
     }).finally(() => {
@@ -293,6 +301,19 @@ export class VoiceTasks {
       //M 一次请求完成后立即看等待期间新收到的文字。
       this.schedule();
     });
+  }
+
+  /** 已开工和字数不足的最终字幕直接入档，其余保持原有判断。 */
+  private async handle(snapshot: Snapshot): Promise<void> {
+    const sentence = snapshot.sentence;
+    if (snapshot.final && (sentence.started !== undefined || snapshot.length < this.settings.minChars)) {
+      //M 历史记录保留整句，即使它短到没有达到开任务的条件。
+      await this.record(sentence);
+      return;
+    }
+
+    //M 只有一条判断在途，事件顺序与转写顺序一致。
+    await this.judge(snapshot);
   }
 
   /** 依据当前快照请求决策，允许时派发；不确定只在句末放行。 */
@@ -344,85 +365,124 @@ export class VoiceTasks {
     }
     if (this.controller.signal.aborted) return;
 
-    //G ASR 可能推翻还在判断的前缀；只用仍与当前转写一致的内容。
-    if (snapshot.parts.some(({ sentence, written }) => !sentence.text.startsWith(written))) {
+    const sentence = snapshot.sentence;
+    //G 识别器改写过半句时抛开旧判断，改用当前字幕。
+    if (!sentence.text.startsWith(snapshot.text)) {
       this.lastJudgeLength = 0;
       return;
     }
     const allowed = verdict === 'allow' || (snapshot.final && verdict === 'unsure');
     if (allowed) {
-      //M 一次只消费已获判断的前缀，新收到的剩余文字下一轮再判。
-      this.consume(snapshot);
-      await this.dispatch(snapshot);
+      //M 等待判断期间可能已经说完，按当前状态选择提前派发或直接入档派发。
+      await this.dispatch(sentence, snapshot.text);
       return;
     }
     if (snapshot.final) {
-      //M 句尾被明确拒绝，丢弃对应文字并让后续句子独立判断。
-      this.consume(snapshot);
+      //M 明确拒绝开工仍保留最终的用户发言。
+      await this.record(sentence);
     }
   }
 
-  /** 清掉已判断前缀并保留识别器后来追加的内容。 */
-  private consume(snapshot: Snapshot): void {
-    for (const { sentence, written } of snapshot.parts) {
-      sentence.read = written;
-    }
-    while (this.sentences.length > 0) {
-      const first = this.sentences[0];
-      if (first === undefined || !first.final) break;
-
-      if (first.read.length < first.text.length && first.text.startsWith(first.read)) break;
-
+  /** 处理完一句才移除它，新到字幕还在有序队列里。 */
+  private consume(sentence: Sentence): void {
+    if (this.sentences[0] === sentence) {
       this.sentences.shift();
     }
     this.lastJudgeLength = 0;
   }
 
-  /** 通过渠道协议分派。只在机器人认领后同步网页任务和合并上下文。 */
-  private async dispatch(snapshot: Snapshot): Promise<void> {
+  /** 构造完整的标准消息，设备号和整句引用在提前派发时已确定。 */
+  private getMessage(sentence: Sentence, text: string, routing: VoiceRouting): channel.ChannelMessage {
+    const taskId = sentence.id;
+    //M 半句派发和句尾入档共用同一个标准来源号。
+    const messageId = channel.makeChannelMessageId(CHANNEL, LOCAL, taskId);
+    const chatId = this.device ?? LOCAL;
+    const address: channel.ChannelOrigin['address'] = {
+      customer: this.customer,
+      owner: true,
+      voiceMessageId: messageId,
+    };
+    if (this.device !== undefined) {
+      address['chatId'] = chatId;
+    }
+    return {
+      v: 1,
+      messageId,
+      nativeId: taskId,
+      channel: CHANNEL,
+      accountId: LOCAL,
+      chatId,
+      chatType: 'local',
+      sender: { id: 'owner', name: '语音' },
+      role: 'owner',
+      targetBots: [this.bot],
+      mentions: [],
+      rawText: sentence.text,
+      text,
+      attachments: [],
+      createdAt: sentence.at,
+      receivedAt: Date.now(),
+      timeSource: 'received',
+      replyTo: null,
+      origin: { channel: CHANNEL, address },
+      visibility: { scope: this.customer, trusted: true, publicSourceIds: [] },
+      routing,
+    };
+  }
+
+  /** 保留最终记录并告知历史索引，既有任务接收者无需再次处理。 */
+  private async record(sentence: Sentence): Promise<void> {
+    const started = sentence.started;
+    const routing: VoiceRouting = { listenOnly: true, autoFinal: false, recordOnly: true };
+    if (started !== undefined) {
+      routing.taskId = sentence.id;
+    }
+    //M 将 ASR 修订后的整句作为入档和索引正文。
+    const message = this.getMessage(sentence, sentence.text, routing);
+    //M 审批监听排在 bots 之前，整句入档通知从入口标成无需审批。
+    const control: channel.ChannelMessageControl = { claims: [], approvalHandled: true };
+    this.ctx.emit('voice/record', message, started?.sessionId);
+    await this.ctx.serial('channel/message', message, control);
+    this.consume(sentence);
+  }
+
+  /** 已确定的整句走标准渠道，半句提早走相同的机器人认领入口。 */
+  private async dispatch(sentence: Sentence, candidate: string): Promise<void> {
     const last = this.previous;
     const now = performance.now();
-    const routing: channel.ChannelRouting = { listenOnly: false, autoFinal: true };
+    const routing: VoiceRouting = { listenOnly: false, autoFinal: true };
     let prefix = TRANSCRIBED;
     if (last !== undefined && !last.settled && now - last.at <= this.settings.mergeWindowMs) {
       routing.sessionId = last.sessionId;
       prefix = SUPPLEMENT;
     }
 
-    //M 每次派发按渠道协议给出稳定 ID，且用原文字和模型提示分别填入字段。
-    const taskId = 'voice_' + crypto.randomUUID();
-    const messageId = channel.makeChannelMessageId(CHANNEL, LOCAL, taskId);
-    const address = { customer: CUSTOMER, owner: true, voiceMessageId: messageId };
-    const message: channel.ChannelMessage = {
-      v: 1,
-      messageId,
-      nativeId: taskId,
-      channel: CHANNEL,
-      accountId: LOCAL,
-      chatId: LOCAL,
-      chatType: 'local',
-      sender: { id: 'owner', name: '语音' },
-      role: 'owner',
-      targetBots: [this.bot],
-      mentions: [],
-      rawText: snapshot.text,
-      text: prefix + snapshot.text,
-      attachments: [],
-      createdAt: snapshot.createdAt,
-      receivedAt: Date.now(),
-      timeSource: 'received',
-      replyTo: null,
-      origin: { channel: CHANNEL, address },
-      visibility: { scope: CUSTOMER, trusted: true, publicSourceIds: [] },
-      routing,
-    };
+    const final = sentence.final;
+    let text = prefix + candidate;
+    if (final) {
+      text = sentence.text;
+    }
+    //M 保留句号与聊天号，供后台回话关联最终档案。
+    const message = this.getMessage(sentence, text, routing);
+    const { messageId } = message;
+    const taskId = sentence.id;
+
     const control: channel.ChannelMessageControl = { claims: [] };
 
     //M 通知渠道认领，并允许接收关口把首次语音任务直接交给后台会话。
     const flight: Flight = { messageId, sessionId: routing.sessionId, settled: false };
     this.sending = flight;
     try {
-      await this.ctx.serial('channel/message', message, control);
+      if (final) {
+        //M 先写时间线，再允许渠道审批和机器人读取最终原话。
+        this.ctx.emit('voice/record', message, routing.sessionId);
+        await this.ctx.serial('channel/message', message, control);
+        this.consume(sentence);
+      }
+      if (!final) {
+        //M 半句只经内部派发，网页和记忆索引只收到最终消息。
+        await this.ctx.serial('voice/dispatch', message, control);
+      }
     } finally {
       this.sending = undefined;
     }
@@ -441,12 +501,14 @@ export class VoiceTasks {
 
     //M 只有真正进入同一会话才标为合并。
     const merged = routing.sessionId === sessionId;
-    this.previous = { messageId, sessionId, at: now, settled: flight.settled };
-    this.previousTasks.push(snapshot.text);
+    const started = { messageId, sessionId, at: now, settled: flight.settled };
+    this.previous = started;
+    sentence.started = started;
+    this.previousTasks.push(candidate);
     if (this.previousTasks.length > RECENT_MAX) {
       this.previousTasks.shift();
     }
-    const task: VoiceTask = { taskId, text: snapshot.text, bot: this.bot, merged, sessionId };
+    const task: VoiceTask = { taskId, text: candidate, bot: this.bot, merged, sessionId };
     //M 网页只展示机器人已认领的任务。
     this.onTask(task, messageId);
     this.ctx.emit('voice/task', task);

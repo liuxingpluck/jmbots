@@ -163,7 +163,7 @@ export type SessionMeta = Omit<SessionRow, 'messages'>;
 
 
 /**
- * 新开会话要给的东西：种类必须给；模型、思考档不给就用配置里的（default_model、engine.thinking）；
+ * 新开会话要给的东西：种类必须给；模型、思考档不给就用配置里的（default_model、models.thinking）；
  * 插件给记录加的必填项（比如 bot）也要给。
  */
 export type NewSession =

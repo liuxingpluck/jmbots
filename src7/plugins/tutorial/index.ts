@@ -6,7 +6,7 @@
  *   Boot.ts   录这次启动：每个插件挂了多久、多出哪些服务和工具、每步的快照；
  *   State.ts  带快照关键词（默认 #调试）的消息，每个事件拍一份运行时变量；
  *   Files.ts  快照写成 data/flow/boot.json、<消息号>.json，左栏「画布」读的就是这些文件；
- *   Trail.ts  journal 的跟踪行、录下的启动 → 一步一步；Lanes.ts 再摆成泳道图；
+ *   Lanes.ts  把轨迹摆成泳道图；跟踪行、录下的启动 → 一步一步在 journal/Trail.ts（消息的问 journal 要，启动的直接调）；
  *   Source.ts 读源码：注释、函数源码、谁调它，和插件的 说明.md；
  *   Print.ts  控制台打印执行路径（原 trace 插件），配置 trace_console 打开。
  * 页面 /tutorial/ 由 web 插件按约定托管（dist/web/tutorial.html，源码 web/src/Tutorial/）；/flow/ 跳到 /tutorial/。接口：
@@ -37,7 +37,7 @@ import * as printModule from './Print.ts';
 import * as skeletonModule from './Skeleton.ts';
 import * as sourceModule from './Source.ts';
 import * as stateModule from './State.ts';
-import * as trailModule from './Trail.ts';
+import * as trailModule from '../journal/Trail.ts';
 
 
 declare module 'cordis' {
@@ -98,7 +98,8 @@ export const name = 'tutorial';
 //M 版本号：改了对外的接口、页面、配置就往上加。
 /** 版本号。 */
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
-export const version = '1.1.9';
+//M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
+export const version = '1.1.10';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -716,31 +717,19 @@ class Tutorial {
       return { preview, channel, bot };
     }
 
-    //M 磁盘快照文件缺失全部或部分摘要时，按消息号从 journal 跟踪行补抽一次。
-    const raw = await this.files.getMessageLines(messageId, PREVIEW_SCAN_LINES);
-    if (raw === undefined) return { preview, channel, bot };
+    //M 磁盘快照文件缺失全部或部分摘要时，按消息号问 journal 要一次轨迹。
+    const got = await this.files.getMessageTrail(messageId, PREVIEW_SCAN_LINES);
+    if (got === undefined) return { preview, channel, bot };
 
-    //M 挑出只属于这条消息的轨迹行，再从中补齐原话、渠道和机器人。
-    const picked = trailModule.pick(messageId, raw).picked;
+    //M 轨迹里的原话、渠道、机器人就是这条消息的行里各自第一条带着的，缺哪样补哪样。
     if (preview === '') {
-      const userLine = picked.find((line) => line.vars['角色'] === 'user' && typeof line.vars['说了'] === 'string');
-      if (userLine !== undefined) {
-        preview = String(userLine.vars['说了']).trim();
-      }
+      preview = got.trail.preview;
     }
     if (channel === '') {
-      //M 磁盘摘要缺少渠道名时从消息轨迹行里补找第一条带「渠道」字段的记录。
-      const chLine = picked.find((line) => typeof line.vars['渠道'] === 'string');
-      if (chLine !== undefined) {
-        channel = String(chLine.vars['渠道']);
-      }
+      channel = got.trail.channel;
     }
     if (bot === '') {
-      //M 磁盘摘要缺少机器人名时从消息轨迹行里补找第一条带「机器人」字段的记录。
-      const botLine = picked.find((line) => typeof line.vars['机器人'] === 'string');
-      if (botLine !== undefined) {
-        bot = String(botLine.vars['机器人']);
-      }
+      bot = got.trail.bot;
     }
     return { preview, channel, bot };
   }
@@ -766,11 +755,8 @@ class Tutorial {
 
     //M 没有文件：问 journal 现算。
     const message = Number.parseInt(canvas, 10);
-    const raw = await this.files.getMessageLines(message, trailModule.TRAIL_MAX_LINES);
-    if (raw === undefined) return undefined;
-
-    //M 归并跟踪行生成整条消息轨迹返回。
-    return trailModule.getTrail(message, raw);
+    const got = await this.files.getMessageTrail(message, trailModule.TRAIL_MAX_LINES);
+    return got?.trail;
   }
 
   /**
@@ -792,16 +778,14 @@ class Tutorial {
     const file = await this.files.getFile(canvas);
     if (file !== undefined) return file.snapshots[no - 1] ?? undefined;
 
-    //M 还没写成文件（还在跑）：从 journal 取行，和内存里的快照对。
+    //M 还没写成文件（还在跑）：问 journal 要轨迹，和内存里的快照对。
     const message = Number.parseInt(canvas, 10);
-    const raw = await this.files.getMessageLines(message, trailModule.TRAIL_MAX_LINES);
-    if (raw === undefined) return undefined;
+    const got = await this.files.getMessageTrail(message, trailModule.TRAIL_MAX_LINES);
+    if (got === undefined) return undefined;
 
-    //M 挑出该消息跟踪行，逐行对回内存快照并定位第 no 步对应的运行时状态。
-    const picked = trailModule.pick(message, raw).picked;
-    const taken = this.shots.getMatched(picked);
-    const steps = trailModule.getSteps(picked).steps;
-    return filesModule.getStepShot(steps, taken, no);
+    //M journal 挑出的行逐行对回内存快照，按轨迹的步定位第 no 步对应的运行时状态。
+    const taken = this.shots.getMatched(got.picked);
+    return filesModule.getStepShot(got.trail.steps, taken, no);
   }
 }
 

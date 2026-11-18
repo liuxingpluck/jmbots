@@ -53,7 +53,9 @@ class EmptyBackend implements backendModule.MemoryBackend {
  * 起一个假记忆服务：/remove、/ingest 记下收到的正文；/search 交回一条命中；/embed 每段交回 [1, 0]。
  * @returns 地址和收到的请求（路径 → 正文）。
  */
-async function fakeService(): Promise<{ url: string; got: { route: string; body: unknown }[] }> {
+async function fakeService(recall: Record<string, string> = {}): Promise<{
+  url: string; got: { route: string; body: unknown }[];
+}> {
   const app = fastify();
   closers.push(() => app.close());
   const got: { route: string; body: unknown }[] = [];
@@ -67,9 +69,19 @@ async function fakeService(): Promise<{ url: string; got: { route: string; body:
   });
   app.post('/search', (request) => {
     got.push({ route: '/search', body: request.body });
-    const body = request.body as { scope?: string };
+    const body = request.body as { scope?: string; customer?: string };
     if (body.scope === 'knowledge') {
       return { hits: [{ id: 9, scope: 'knowledge', title: '退款手册', at: 1, via: ['keyword'], snippet: '看申请单' }] };
+    }
+    const snippet = recall[body.customer ?? ''];
+    if (snippet !== undefined) {
+      const hit = { id: 11, scope: 'history', title: '旧往来', at: 2, via: ['keyword'], snippet, customer: body.customer };
+      return { hits: [hit] };
+    }
+    if (body.customer === 'person:test:u1') {
+      const customer = body.customer;
+      const hit = { id: 10, scope: 'history', title: '测试往来', at: 2, via: ['keyword'], snippet: '申请单', customer };
+      return { hits: [hit] };
     }
     return { hits: [{ start: 7, score: 0.9, text: '以前说过' }] };
   });
@@ -150,10 +162,63 @@ test('memory/request 有人答：记往来、搜聊天记录、算向量都回 m
   const result = await events.requestEvent(ctx, 'memory/request', 'memory/result', unified, memoryOptions);
   expect(result).toMatchObject({ ok: true, search: { hits: [{ source: 'knowledge', id: '9' }], unavailable: [] } });
 
+  //M 事件走同一套归属参数校验和 Rust customer 过滤。
+  const person = 'person:test:u1';
+  const scoped = { action: 'search' as const, query: { q: '申请单', sources: 'history', person } };
+  const scopedResult = await events.requestEvent(ctx, 'memory/request', 'memory/result', scoped, memoryOptions);
+  expect(scopedResult).toMatchObject({ ok: true, search: { hits: [{ id: '10', customer: person }] } });
+
   //M embed：每段一个向量。
   const embed = { action: 'embed' as const, texts: ['甲', '乙'] };
   const embedded = await events.requestEvent(ctx, 'memory/request', 'memory/result', embed, memoryOptions);
   expect(embedded).toMatchObject({ ok: true, vectors: [[1, 0], [1, 0]] });
+});
+
+
+test('前台和后台开场召回只提供当前人或群的往来，旧私人缓存不会进入群聊', async () => {
+  const records = {
+    'person:feishu:a': '甲的私人内容',
+    'person:feishu:b': '乙的私人内容',
+    'group:feishu:g': '群共享内容',
+  };
+  const { url } = await fakeService(records);
+  const { ctx } = await serviceWorld(url);
+  await ctx.plugin(toolsModule.Tools);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-opening-'));
+  const db = new Database(':memory:');
+  closers.push(() => db.close(), () => fs.rmSync(root, { recursive: true, force: true }));
+  const store = new storeModule.Store(new EmptyBackend(), root, db);
+  new memoryPlugin.Memory(ctx, store, { history: false, recallHistory: 3, recallKnowledge: 3 });
+
+  const ask = async (kind: 'front' | 'work', senderId: string, chatType: 'p2p' | 'group'): Promise<string> => {
+    const chatId = 'g';
+    const address = { role: 'guest', chatType };
+    const snapshot = { channel: 'feishu', accountId: 'test-app', senderId, chatType, chatId, role: 'guest', origin: { address } };
+    const messages = [{ role: 'user', content: '以前说过什么', timestamp: 42 }];
+    const row = {
+      id: 'test-session', kind, bot: '助手', address, activeSourceSnapshot: snapshot,
+      messages, recall: '以前的本人缓存', recallScope: 'owner',
+    };
+    const request = {
+      session: { id: row.id, row, save: () => undefined },
+      system: [] as string[], tools: [{ name: 'memory_search' }], messages,
+    } as unknown as ChatRequest;
+    await ctx.serial('session/request', request);
+    return request.system.join('\n');
+  };
+
+  const privateA = await ask('front', 'a', 'p2p');
+  expect(privateA).toContain('甲的私人内容');
+  expect(privateA).toContain('先用 memory_search');
+  expect(privateA).not.toContain('乙的私人内容');
+  const privateB = await ask('front', 'b', 'p2p');
+  expect(privateB).toContain('乙的私人内容');
+  expect(privateB).not.toContain('甲的私人内容');
+  const group = await ask('work', 'a', 'group');
+  expect(group).toContain('群共享内容');
+  expect(group).not.toContain('甲的私人内容');
+  expect(group).not.toContain('以前的本人缓存');
+  expect(group).not.toContain('看申请单');
 });
 
 
@@ -233,7 +298,11 @@ test('前台“先查记忆”的提示：有 memory_search 工具、本人才�
    */
   const ask = async (kind: string, address: unknown, toolNames: string[]): Promise<string[]> => {
     const request = {
-      session: { id: 's1', row: { id: 's1', kind, bot: '助手', address, recall: '' }, save: () => undefined },
+      session: {
+        id: 's1',
+        row: { id: 's1', kind, bot: '助手', address, recall: '', recallScope: 'owner', messages: [] },
+        save: () => undefined,
+      },
       system: [] as string[],
       tools: toolNames.map((name) => ({ name })),
       messages: [],

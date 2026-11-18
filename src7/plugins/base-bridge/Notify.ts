@@ -87,7 +87,7 @@ function pageUrl(ctx: cordis.Context): string | undefined {
 async function sendNotice(ctx: cordis.Context, settings: NotifySettings, notice: Notice): Promise<string> {
   if (!settings.enabled) return '通知已关掉';
 
-  //M 显式 notify.url 优先；默认只给相对路径，不再读取和拼接 engine.index_url。
+  //M 显式 notify.url 优先；默认只给相对路径，由基地服务补全。
   const base = ctx.get('base');
   if (base === undefined && settings.url === '') return '没挂 base-bridge，无法发送基地通知';
 
@@ -96,7 +96,7 @@ async function sendNotice(ctx: cordis.Context, settings: NotifySettings, notice:
       //M 若已挂载基地服务就优先通过它发通知，拿状态码判断基地是否收下。
       if (base !== undefined) return base.postJson(settings.url || '/notify', notice, TIMEOUT_MS);
 
-      //M 显式通知地址可以独立使用；没装基地插件时直接发，不读取或推测 engine.index_url。
+      //M 显式通知地址可以独立使用；独立于基地服务，直接发到该地址。
       const sent = await fetch(settings.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

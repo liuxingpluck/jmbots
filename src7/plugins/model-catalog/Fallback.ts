@@ -3,13 +3,14 @@
  * 在 session/request 里排最后，自己调骨架的 ctx.sessions.chat(request)，把回答填进 request.answer（骨架看到有回答就不再发）。
  * 出错时：限流 → 记冷却、换备选链里下一个；上下文超长 → 换窗口更大的；别的（鉴权、参数错）→ 不换，原样抛。
  * 被限流的模型记冷却（报错里读几点恢复，读不出按分钟数，最长一天），冷却里先不撞它；每个模型、每家供应商有并发名额（Queue.ts）。
- * 同一个模型的重试在 Sessions.chat() 里（pi 按 engine.retry）；限流时这里只让它再试 1 次就掐断、换下一个。
+ * 同一个模型的重试在 Sessions.chat() 里（pi 按 models.retry）；限流时这里只让它再试 1 次就掐断、换下一个。
  * 前面已经有人填了回答（假模型）就不管。plugins 里要排在所有改写请求和 fake-model 后面（一般放最后）。
  * 设计：docs/src7插件设计/model-fallback.md。
  */
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { ModelCatalog } from './index.ts';
 import * as queueModule from './Queue.ts';
@@ -27,17 +28,17 @@ export interface FallbackInfo {
   reason: string;
 }
 
-/** 回退子配置：写在 plugins[model-catalog].config.fallback 下，写 false 或 enabled: false 可关闭；缺省项沿用顶层 engine / concurrency。 */
+/** 回退子配置：写在 plugins[model-catalog].config.fallback 下，写 false 或 enabled: false 可关闭；并发仍可沿用顶层 concurrency。 */
 export interface FallbackConfig {
   /** 是否开启换模型与排队，默认 true。 */
   enabled?: boolean;
-  /** 备选模型链（供应商名/模型 ID 列表），默认读 engine.fallback_chain 或 [default_model]。 */
+  /** 备选模型链（供应商名/模型 ID 列表），默认 [default_model]。 */
   chain?: string[];
-  /** 最多尝试备选个数（不含原模型），默认读 engine.fallback_max_tries（5）。 */
+  /** 最多尝试备选个数（不含原模型），默认 5。 */
   max_tries?: number;
-  /** 是否自动补充同供应商标价为 0 的对话模型，默认读 engine.fallback_include_siblings（true）。 */
+  /** 是否自动补充同供应商标价为 0 的对话模型，默认 true。 */
   include_siblings?: boolean;
-  /** 未从报错读出恢复时刻时的冷却分钟数，默认读 engine.rate_limit_cooldown_minutes（5）。 */
+  /** 未从报错读出恢复时刻时的冷却分钟数，默认 5。 */
   cooldown_minutes?: number;
   /** 并发上限覆盖；缺省读顶层 concurrency 段。 */
   concurrency?: {
@@ -239,7 +240,7 @@ export class ModelFallback {
    */
   private async attempt(request: ChatRequest, model: string): Promise<piAi.AssistantMessage> {
     //M 限流时 pi 的重试只留 RATE_LIMIT_RETRIES 次（用户 11-14：429 最多再试 1 次就换下一个）：听 model/failed 数这一次的限流，
-    //M   数够了就掐断自己这次（另起的取消信号，跟着会话的一起断），按限流的错往外抛，onRequest 就去试下一个。别的错照 engine.retry 重试。
+    //M   数够了就掐断自己这次（另起的取消信号，跟着会话的一起断），按限流的错往外抛，onRequest 就去试下一个。别的错照 models.retry 重试。
     const controller = new AbortController();
     const follow = (): void => controller.abort();
     request.signal.addEventListener('abort', follow, { once: true });
@@ -378,7 +379,7 @@ export class ModelFallback {
     //G 检查已尝试的模型是否全因限流失败，若是则返回明确的额度不足提示。
     if (tried.every((item) => isRateLimited(item.error))) {
       return `模型额度不够：依次试了 ${String(tried.length)} 个模型（${names}），都被限流或额度用完了${coolingNote}。`
-        + '等额度恢复，或在 config.yaml 的 engine.fallback_chain 里加能用的模型。';
+        + '等额度恢复，或在模型库插件的 fallback.chain 里加能用的模型。';
     }
     const reasons = tried.map((item) => `${item.model}：${item.error.slice(0, 80)}`).join('；');
     return `换了 ${String(tried.length)} 个模型都没成功（${reasons}）${coolingNote}`;
@@ -418,7 +419,7 @@ function readLimitTable(value: unknown, label: string): Record<string, number> {
 
 
 /**
- * 读取并校验回退配置：优先读 plugins[model-catalog].config.fallback，未写的项回退到顶层 engine / concurrency。
+ * 读取并校验回退配置：优先读 plugins[model-catalog].config.fallback，入口兼容旧 engine 回退项，并发仍沿用顶层 concurrency。
  * @param ctx Cordis 上下文（含 resources）。
  * @param rawConfig plugins[model-catalog].config 原值。
  * @returns 校验并合并默认值后的回退与并发上限配置。
@@ -457,42 +458,51 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
   const engine = (ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
   const concurrency = (ctx.resources.raw['concurrency'] ?? {}) as Record<string, unknown>;
 
-  let rawChain: unknown = sub['chain'];
-  let chainLabel = 'model-catalog.fallback.chain';
-  if (rawChain === undefined) {
-    rawChain = engine['fallback_chain'] ?? [ctx.resources.config.defaultModel];
-    chainLabel = 'engine.fallback_chain';
+  //M 回退设置以插件自己的位置为准，兼容上一版同用途的四个键。
+  const chainLabel = 'plugins[model-catalog].config.fallback.chain';
+  const rawChain = checks.getMigratedConfig(
+    sub['chain'], engine['fallback_chain'] ?? undefined, 'engine.fallback_chain', chainLabel,
+  );
+  let chain = rawChain;
+  if (chain === undefined) {
+    chain = [ctx.resources.config.defaultModel];
   }
-  if (!Array.isArray(rawChain) || rawChain.some((item) => typeof item !== 'string')) {
+  if (!Array.isArray(chain) || chain.some((item) => typeof item !== 'string')) {
     throw new Error(`${chainLabel} 要是模型名的列表`);
   }
 
-  let siblings: unknown = sub['include_siblings'];
-  let siblingsLabel = 'model-catalog.fallback.include_siblings';
-  if (siblings === undefined) {
-    siblings = engine['fallback_include_siblings'] ?? true;
-    siblingsLabel = 'engine.fallback_include_siblings';
-  }
-  if (typeof siblings !== 'boolean') {
-    throw new Error(`${siblingsLabel} 要是 true 或 false`);
+  //M 同供应商的免费候选默认启用，必须能保留显式 false。
+  const siblingsLabel = 'plugins[model-catalog].config.fallback.include_siblings';
+  const siblingValue = checks.getMigratedConfig(
+    sub['include_siblings'], engine['fallback_include_siblings'] ?? undefined,
+    'engine.fallback_include_siblings', siblingsLabel,
+  );
+  let siblings = true;
+  if (siblingValue !== undefined) {
+    if (typeof siblingValue !== 'boolean') throw new Error(`${siblingsLabel} 要是 true 或 false`);
+
+    siblings = siblingValue;
   }
 
-  let minutes: unknown = sub['cooldown_minutes'];
-  let minutesLabel = 'model-catalog.fallback.cooldown_minutes';
-  if (minutes === undefined) {
-    minutes = engine['rate_limit_cooldown_minutes'] ?? 5;
-    minutesLabel = 'engine.rate_limit_cooldown_minutes';
-  }
-  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < 0) {
-    throw new Error(`${minutesLabel} 要是不小于 0 的数`);
+  //M 默认只把限流模型冷却五分钟，显式 0 则不用默认冷却。
+  const minutesLabel = 'plugins[model-catalog].config.fallback.cooldown_minutes';
+  const cooldown = checks.getMigratedConfig(
+    sub['cooldown_minutes'], engine['rate_limit_cooldown_minutes'] ?? undefined,
+    'engine.rate_limit_cooldown_minutes', minutesLabel,
+  );
+  let minutes = 5;
+  if (cooldown !== undefined) {
+    if (typeof cooldown !== 'number' || !Number.isFinite(cooldown) || cooldown < 0) {
+      throw new Error(`${minutesLabel} 要是不小于 0 的数`);
+    }
+    minutes = cooldown;
   }
 
-  let rawMaxTries: unknown = sub['max_tries'];
-  let maxTriesLabel = 'model-catalog.fallback.max_tries';
-  if (rawMaxTries === undefined) {
-    rawMaxTries = engine['fallback_max_tries'];
-    maxTriesLabel = 'engine.fallback_max_tries';
-  }
+  //M 回退尝试上限只算备选，和同一模型的重试次数分开。
+  const maxTriesLabel = 'plugins[model-catalog].config.fallback.max_tries';
+  const rawMaxTries = checks.getMigratedConfig(
+    sub['max_tries'], engine['fallback_max_tries'], 'engine.fallback_max_tries', maxTriesLabel,
+  );
 
   const rawSubConcurrency = sub['concurrency'];
   if (rawSubConcurrency !== undefined && rawSubConcurrency !== null && (typeof rawSubConcurrency !== 'object' || Array.isArray(rawSubConcurrency))) {
@@ -521,7 +531,7 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
   //M 过滤无效备选名并校验尝试次数与各项并发上限，组装最终回退配置对象。
   return {
     enabled,
-    chain: (rawChain as string[]).filter((item) => item !== 'off' && item !== ''),
+    chain: (chain as string[]).filter((item) => item !== 'off' && item !== ''),
     maxTries: readPositiveInt(rawMaxTries, maxTriesLabel, 5, true),
     siblings,
     cooldownMs: minutes * 60_000,

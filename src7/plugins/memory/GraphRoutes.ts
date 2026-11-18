@@ -16,6 +16,7 @@ import * as embedded from '../../utils/Embedded.ts';
 import { GraphStore } from './GraphStore.ts';
 import { Sources } from './GraphSources.ts';
 import type { SearchResult } from './Search.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 
 
 /** memory 插件 config.graph 配置项（可不写，也可设为 false 关闭关系图）。 */
@@ -108,6 +109,10 @@ export function buildLinkHint(request: ChatRequest): string | undefined {
   const row = request.session.row;
   if (row.kind !== 'work' && row.kind !== 'front') return undefined;
 
+  //G 旧图谱链接按客户和知识库组图，只给本人使用。
+  const access = memoryKeyModule.getMemoryAccess(row);
+  if (!access.full) return undefined;
+
   const messages = row.messages;
   let lastUser = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -194,10 +199,18 @@ export class GraphRoutes {
     if (relations.length === 0) return { ...result, hits };
 
     try {
-      //M 子图及原始关系沿用客户、机器人范围。
+      //M 归属检索只从指定人或群的关系空间读子图。其他查询沿用已有客户与机器人范围。
+      const person = String(query['person'] ?? '').trim();
+      const group = String(query['group'] ?? '').trim();
+      const key = person || group;
       const customer = String(query['customer'] ?? '');
       const bot = String(query['bot'] ?? '') || undefined;
-      const spaces = this.store.spaces(customer, bot, true);
+      let spaces = [`h:${key}`];
+      if (key === '') {
+        spaces = this.store.spaces(customer, bot, true);
+      }
+
+      //M 在确定的关系空间中查找命中子图。
       const graph = this.store.hitGraph(spaces, relations, 24);
       return { ...result, hits, graph };
     } catch {

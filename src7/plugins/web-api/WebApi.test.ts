@@ -508,7 +508,7 @@ test('回话追溯查询流水和用量，无应答时保留消息与缺项说�
 
   //M 流水以收件编号为键，用量以相关会话和起止时刻为键。
   const stopJournal = requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (query) => {
-    expect(query).toMatchObject({ action: 'message-lines', message: id, limit: 500 });
+    expect(query).toMatchObject({ action: 'reply-lines', message: id, limit: 500, sessions: [sessionId] });
     return {
       lines: [{
         id: 1,

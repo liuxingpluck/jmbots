@@ -27,6 +27,8 @@ default_model: my_provider/some-model
 
 # 程序级的决策模型。thinking：off、minimal、low、medium、high、xhigh、max，模型不支持的档位自动换成最近的。
 models:
+  # thinking: low                # 骨架新会话默认思考档
+  # retry: { times: 5, wait_ms: 3000, timeout_ms: 120000 }   # 同一模型的重试次数、首次等待、单次超时
   # decision: { model: 供应商名/决策模型 ID }                  # 决策模型：分派、压缩、exec 审核先问它（供应商要有决策模型）；可以不配
 
 # 唯一启用名单：一项一条机器人循环；[] 表示不启用。历史 bots/ 文件夹不会自动启用。
@@ -38,26 +40,6 @@ bots:
     # relay: direct              # 挂了 relay 插件才认：direct 话全部转给外部助手；model 模型自己判断，用 relay_send 转；按群分的写在 feishu 插件的 groups 里
     # workspaces: { 源码: 'D:\work\某个仓库' }   # 登记目录：名字 → 绝对路径；启动时登记成工作区（workspaces 插件），hand_session 的 workspace 写名字也行；只给本人用，builder、guest 用不了
 
-engine:
-  poll_ms: 300           # 机器人循环多久看一次新消息
-  compress_at: 200000    # 上下文到多少 token 就考虑压缩（模型上限不到 250K 时用上限的 80%）
-  exec_pass: 0.2         # exec 审核：决策模型给的“安全”概率不低于它就直接执行
-  # vision_model: 供应商名/模型 ID            # 看不了图的模型读到图片时，先交给它转成文字；不写就不转
-  # index_url: http://127.0.0.1:30085           # 基地的接口（记忆搜索、RAG）；不写就只搜自己的记忆、公共记忆和技能
-  # memory_libs: memory,aiskills                # memory 工具还用 RAG 搜基地里的哪些库，逗号连着写；每半小时让基地增量更新这些库的索引；不写就不搜
-  # wrapup_model: 供应商名/模型 ID            # 限时到点时写收尾总结的模型（不带工具、最低思考档）；不写用会话自己的模型
-  # limit_default_minutes: 0           # src7 progress：不选的时候最长做多少分钟；0 = 不限时（用户 11-14：不点就一直做，不自动停）。0.4 默认 20
-  # long_run_card_minutes: 15          # src7 progress：一轮跑满几分钟发卡片问要不要终止（点“终止”才停，“继续”或不点一直做）；0 不发；测试可写小数
-  # limit_remind_before_minutes: 10    # 不选的时候，到点前多少分钟开始介入、报时（第 10 分钟）；选了 15、20 的提前 5 分钟
-  # limit_extend_minutes: 5            # 到点判断快做完了，一次延长几分钟
-  # limit_extend_times: 2              # 最多延长几次
-  # limit_judge_model: 供应商名/决策模型 ID   # 到点判断用的决策模型；不写用 models.decision
-  # limit_review_model: 供应商名/模型 ID      # 延了两次还没做完时的审核模型：看有没有离谱、要不要转新会话；不写用会话自己的模型，思考最强档
-  # image_model: 供应商名/生图模型 ID          # 生图模型（image_generate 工具用）；不写就没有生图
-  # fallback_chain: [供应商名/模型 ID, 供应商名/模型 ID]   # 模型被限流时依次换着试（模型库用）
-  # fallback_max_tries: 5
-  # retry_delays_ms: [2000, 5000]
-  # rate_limit_cooldown_minutes: 5   # 模型被限流时先冷却、不再找它：报错里写了几点恢复就到那时，没写就冷却这么多分钟
 
 # 并发配额：同一时间最多几个调用，超了排队（不报错）。
 concurrency:
@@ -90,7 +72,7 @@ server:
 # 本地壳子（local/ 编出来的 jmbots.exe：只管启动 jmbots-server、自动更新、退出时带走所有子进程）。不写全用默认值。
 # 以前叫 local:，现在写 shell:（两个都写时 shell 为准）；local.services 已去掉，记忆服务和 vgr 由 memory 插件托管。
 # shell:
-#   port: 30085        # 壳子的 HTTP 接口（它是启动者，排在主服务 30086 前面）；engine.index_url 指到这里
+#   port: 30085        # 壳子的 HTTP 接口（它是启动者，排在主服务 30086 前面）；base-bridge 的 config.index_url 指到这里
 #   host: 0.0.0.0      # 壳子监听地址；测试时写 127.0.0.1
 #   trial_port: 30089  # 更新试跑新 server 用的端口；不写就从主端口 +1 往后找空的
 #   server: ''         # 窗口打开哪个后端的网页；不写就是本机的 server.port
@@ -121,8 +103,7 @@ channels:
 # —— 以下是 src7 骨架用的 plugins 段样例（0.6 的程序暂时不读这一段）——
 # 不写 plugins 段时，src7 挂 workspaces、bots、cli、file-tools、context-fit 五个（前台、系统提示词在 bots 里）。
 # 机器人名单读的是上面顶层的 bots 段（插件 bots 读），不写就是一个叫“助手”的机器人。
-# src7 另外读 engine 里的两项，都可以不写（一轮不限步数，没有 max_rounds）：thinking（新会话的思考档，默认 low）、
-# retry: { times: 5, wait_ms: 3000, timeout_ms: 120000 }（模型请求出错后最多再试几次、第一次等多久、一次请求最多等多久）。
+# 骨架的默认思考档与同模型重试配置见上面的 models 段。
 # plugins:
 #   - name: tutorial               # 教程页 /tutorial/（/flow/ 跳过来）：插件说明、运行时变量、启动和 #调试 消息的泳道图；一定写在第一个（要录启动）
 #     config:
@@ -153,7 +134,7 @@ channels:
 #   - name: relay                 # 外部助手（别的 AI）的交办、收件、回信都在这里；写在 http、fake-model 后面。三样：
 #                                  #   转话：把话转给外部助手，等它回信再回给用户（写了 helpers 才开）；
 #                                  #   任务通道：agent_task 工具，GET /api/agents/guide 是给外部 AI 看的接入说明（挂了 http 就开；原 agent-tasks）；
-#                                  #   留言：note_claude 工具，给 Claude 留言，写进 integrations/claude/inbox/（一直开；原 note-claude）
+#                                  #   留言：agent_task 的 send 指定执行端并写 reply: false，领取即送达
 #     config:
 #       tasks: { scan_ms: 10000 }  # 任务通道：多久扫一次 file 交回的 result/result.json，毫秒，不少于 1000；不写 10 秒
 #       helpers:                   # 接哪些外部助手；不写就不转话（任务通道、留言照常）；写了至少一个，第一个是默认的（relay 机器人的平常话、relay_send 都转给它）
@@ -198,6 +179,11 @@ channels:
 #           judge_threshold: 0.8   # listen: judge 时用：决策模型的把握 ≥ 它才接话；不写用 decision 插件的 allow_at
 #           relay: model           # model：@ 机器人时它判断要不要转外部助手；direct：只认 cc 前缀（默认）
 #           trusted: false         # true：本人在这个群里说话照旧带私人记忆；false（默认）：群里谁说话都不带（回复群里人人看得到）
+#           daily:                 # 可省略。启用 progress 和 memory 后按服务器本地时间发群日报，重启错过的当天不补
+#             at: "17:30"
+#             bot: 周小灵          # 使用 channels.feishu 中归这个机器人的应用
+#             # app_id: cli_xxx   # 路由到该机器人有多个应用时指定
+#             prompt: "应汇报成员：小林、小周。按交付、阻塞、明日安排汇总。"
 #   - name: memory                 # memory 工具（自己的、公共的记忆）、后台会话开头先搜一遍记忆和技能（已并入原 memory-graph 关系图）；写在 bots 后面
 #                                  # 客服记忆库：聊天记录按客户/会话收、knowledge/ 下的知识库按段收，history、knowledge 带来源引用；GET /api/memory/recall、/graph/、/api/memory-graph/*
 #                                  # GET /api/memory/search 与工具 memory_search 共用检索，按 ref 用 memory_get 读原文。
@@ -220,10 +206,19 @@ channels:
 #   - name: context-fit            # 会话上下文总结、压缩与裁剪（已并入原 summary、compress）；先按 compress.at 压缩旧对话，再按上下文窗口 ratio 裁剪并保留最近 keep 段
 #     config: { keep: 6, ratio: 0.9, compress: { at: 200000, keep: 6 }, summary: true }
 #   - name: progress               # 进度、限时与超时复盘（已并入原 review）：GET /api/progress、POST /api/progress/:id；写在 bots、compress 后面
-#                                  # 读 engine 的 long_run_card_minutes（15）、limit_default_minutes（0 = 不限时）、limit_remind_before_minutes（10）、limit_extend_minutes（5）、
-#                                  # limit_extend_times（2）、overtime_minutes（10）、wrapup_model、limit_review_model；超时复盘需同时挂 approval 才生效（可用 config: { review: false } 或 review: { first_ms: 300000, every_ms: 600000 } 调整）
+#     config:                     # 原 engine 的限时和模型键迁到此处；保留已设的值。
+#       long_run_card_minutes: 15
+#       limit_default_minutes: 0  # 0 表示不限时
+#       limit_remind_before_minutes: 10
+#       limit_extend_minutes: 5
+#       limit_extend_times: 2
+#       overtime_minutes: 10
+#       # wrapup_model: 供应商名/模型 ID    # 收尾和复盘模型
+#       # limit_review_model: 供应商名/模型 ID
+#       # review: { first_ms: 300000, every_ms: 600000 }  # 超时复盘需同时挂 approval；写 false 可关闭
 #   - name: decision               # 决策模型打分（approval、progress 可选地用）；配置在顶层 decision 段，见下面
-#   - name: image-gen              # image_generate 工具：读 engine.image_model（供应商名/生图模型 ID），不写调了会说没配
+#   - name: image-gen              # image_generate 工具
+#     config: { image_model: 供应商名/生图模型 ID }
 #   - name: decision-map           # 决策图 /decision-map/，中控发布节点，网页点选即保存
 #     config:
 #       relay_helper: Claude        # 填 relay.helpers 中的中控助手名。不填时用 /api/decision-map/changes 读选择
@@ -253,6 +248,10 @@ channels:
 #           mount: /api/ext/example          # 不能写在 /programs 下，那里留给界面入口
 #           heavy: false                     # true的启动/自动重试须过CPU准入
 #           closable: false                  # 只有显式true且自报新鲜RSS，内存持续超限才可正常停
+#           # 需要给机器人接消息的程序才登记 channels；机器人名须在顶层 bots 中启用。
+#           # 同一个渠道只交给一个程序，也避开正在运行的内置渠道名。普通服务不写 channels。
+#           # channels: [{ name: example-channel, bot: 助手 }]
+#           # 外置微信验证用独立数据与引擎，并给进程传 --channel wechat-external，与 channels 中 name 相同。
 #         - name: jmbots-memory            # Rust 记忆服务：memory 插件按 service_url 调它（memory 不再自己托管）
 #           title: 记忆服务                 # 沿用 {runtime}/memory.yaml 和 data/memory/memory.db，数据不搬
 #           file: program/jmbots-memory/jmbots-memory   # 相对数据目录，Windows 自动补 .exe
@@ -263,8 +262,11 @@ channels:
 #           closable: false                  # 内存持续超限只暂停后台活，不关掉检索
 #           startup_ms: 120000
 #           exit_wait_ms: 15000              # 退出时等已开始的数据库写入排空
-#   - name: base-bridge            # 基地转发（/api/update、/api/autostart、/api/memory/*、/api/rag/*，已并入原 notify 与 update-watch，默认均关闭）；读 engine.index_url
-#                                  # 需要时可加 config: { notify: true, update_watch: true }（notify 可写 { url }，update_watch 可写 { first_ms, every_ms }）
+#   - name: base-bridge            # 基地转发（/api/update、/api/autostart、/api/memory/*、/api/rag/*）
+#     config:
+#       index_url: http://127.0.0.1:30085
+#       # notify: true            # 默认关闭；可写 { url } 覆盖通知地址
+#       # update_watch: true      # 默认关闭；可写 { first_ms, every_ms } 改轮询节拍
 #   - name: desktop                # 窗口操控：/api/desktop/status、/api/desktop/action；程序在 <paths.program>/AOBW/aobw-capability.exe
 #   - name: screen                 # 录屏点击讲解，默认关闭，见顶层 screen 段
 #   - name: voice                  # 麦克风听写字幕，默认关闭，见顶层 voice 段
@@ -272,10 +274,13 @@ channels:
 #     config: { bot: 助手, interval_ms: 3000 }   # 可选 root、python、ocr_python、aobw_url（默认 http://127.0.0.1:30010）、lock_file、at_names
 #   - name: model-catalog          # 模型清单与运行兜底（已并入原 model-fallback）：从 providers 拉清单，并在模型限流/超长时换模型、排队
 #                                  # 要写在所有往系统提示词/messages 里加东西的插件（和 fake-model）后面，一般放最后
-#                                  # 读 engine 的 fallback_chain、fallback_max_tries（5）、fallback_include_siblings（true）、
-#                                  # rate_limit_cooldown_minutes（5）与顶层 concurrency 段；可选 config.fallback（写 false 关闭回退或覆盖子项）
 #                                  # 已并入原 model-notes（模型介绍和评价）：页面 /model-notes/ 看介绍、打分；GET /api/model-notes、POST /api/model-notes/rate
 #     config:
+#       fallback:                 # 写 false 可关闭；并发默认沿用顶层 concurrency
+#         chain: [供应商名/备用模型 ID]
+#         max_tries: 5
+#         include_siblings: true
+#         cooldown_minutes: 5
 #       usage: {}                  # 原 usage 插件的配置；当前无子配置项，可省略；GET /api/usage 路径不变
 #       notes: { dir: models, time_zone: America/New_York }   # dir：一个模型一份 MD（文件名是模型 ID 把 / 换成 __），
 #                                  # 相对运行时目录，默认 models；time_zone：评价时间按哪个时区写（写出来带缩写，如 EST），默认 America/New_York

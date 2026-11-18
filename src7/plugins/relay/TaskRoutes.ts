@@ -23,11 +23,13 @@ export const GUIDE = `# jmbots 接入说明（给别的 AI 看）
 
 <名字> 是你在这里的名字，只用字母、数字、- 和 _（比如 image-bot）。
 
-1. 打招呼（启动时一次，之后每天一次就行）：POST <地址>/api/agents/<名字>/hello，JSON {"description": "一句话说你会做什么，比如：会用 Grok 生短视频（图生视频）、生图"}。机器人派活前会看这句话。要领新协议的活，同时报能力，见第三节。
+1. 打招呼（启动时一次，之后每天一次就行）：POST <地址>/api/agents/<名字>/hello。
+   JSON {"description": "一句话说你会做什么，比如：会用 Grok 生短视频（图生视频）、生图"}。机器人派活前会看这句话。
+   要领新协议中需要交回的任务，可同时报能力，见第三节。
 2. 领活：每 30 秒 GET <地址>/api/agents/<名字>/tasks?status=new。回一个数组，每件有 id（任务号，数字写成的字符串）、title、text（要做什么、要交回什么）、files（附件：name 和下载用的 url，url 是相对 <地址> 的路径）、bot（谁派的）。带 spec 的是新协议的任务，照第三节做。
 3. 认领：POST <地址>/api/agents/<名字>/tasks/<id>/take。回 409 就是已经被领了，跳过。
 4. 下载附件：GET <地址><files 里的 url>（也要带 token）。
-5. 做完交回：
+5. reply 为 false 的任务在认领时就变为 done。读正文和附件即可，无需提交结果。需要交回的任务做完后：
    - 先传文件（要 jmbots 挂了 files-api），一个文件一次：PUT <地址>/api/uploads/<文件名>，请求体就是文件的原始字节，回 {"id": ...}。
    - 再交结果：POST <地址>/api/agents/<名字>/tasks/<id>/result，JSON {"ok": true, "text": "做了什么、文件是什么", "uploads": ["上一步的 id", ...]}。没做成就 "ok": false，text 写原因。
    结果会作为一条消息送回派活的那个会话，机器人接着往下做。
@@ -42,10 +44,11 @@ export const GUIDE = `# jmbots 接入说明（给别的 AI 看）
 
 ## 三、新协议 v1（任务带 spec 的照这里做）
 
-1. 打招呼时报能力：hello 的 JSON 再加
+1. 需要交回结果的任务可以打招呼时报能力：hello 的 JSON 再加
    {"models": [{"id": "模型 ID，照你客户端的写法", "efforts": ["从低到高", "你能设的思考档"]}], "subagents": true/false（能不能真的开子代理）, "returnMode": "http" 或 "file"}。
    机器人照它定模型，思考档默认取你登记的次高档（去掉 off 以后的倒数第二个）。不报就只能领派活方自己写明模型和思考档的活。
-2. 任务单：任务里的 spec，也是任务文件夹里的 task.json（task.md 是可读副本，以 task.json 为准）。看 spec.execution：
+2. 任务单：任务里的 spec，也是任务文件夹里的 task.json（task.md 是可读副本，以 task.json 为准）。
+   spec.reply 为 false 时，直接看正文和附件，按第 3 步领取即可。其余任务看 spec.execution：
    model、thinking 是主执行要用的；subagents 是必须真的开出来的子代理（各自的负责范围、模型、思考档）；
    设不了指定的模型、思考档，或开不了子代理，就交 status 为 capability_missing 的结果写明缺什么——**不换模型（尤其不换付费模型），不让主代理自己做完冒充开过子代理**。
    spec.task.deliverables 是要交回的东西；附件在 files 里（在任务文件夹的 input/ 下）。

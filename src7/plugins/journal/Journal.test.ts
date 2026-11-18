@@ -97,7 +97,7 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认同时提供 ctx.journal 和 ctx.filesMirror，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.1.1');
+    expect(journalModule.version).toBe('1.2.0');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeDefined();
@@ -158,9 +158,20 @@ describe('journal（含 FilesMirror 并入）', () => {
     expect(trail?.[0]?.name).toBe('web-api/received');
     expect(trail?.some((e) => e.name === 'After.step')).toBe(true);
 
-    const payload = { action: 'message-lines', message: 77, limit: 2 } as const;
+    //M trail：从起点取行收成轨迹，挑出的行一起给；reply-lines：挑到这句回话为止。
+    const payload = { action: 'trail', message: 77, limit: 10 } as const;
     const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
-    expect(result.lines).toEqual(trail?.slice(0, 2));
+    expect(result.trail?.message).toBe(77);
+    expect(result.trail?.session).toBe('s_req_1');
+    expect(result.picked?.map((line) => line.name)).toContain('After.step');
+    const to = trail?.[1]?.at ?? 0;
+    const replyQuery = { action: 'reply-lines' as const, message: 77, limit: 2, sessions: ['s_req_1'], to };
+    const replied = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', replyQuery, eventOptions);
+    expect(replied.lines).toEqual(trail?.slice(0, 2));
+    expect(replied.cut).toBe(false);
+    const missing = { action: 'trail', message: 9999, limit: 10 } as const;
+    const none = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', missing, eventOptions);
+    expect(none.trail).toBeUndefined();
 
     expect(() => ctx.journal.query({ limit: 'abc' })).toThrow('非负整数');
     expect(() => ctx.journal.query({ kind: '无效' })).toThrow('kind');

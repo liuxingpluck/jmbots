@@ -29,6 +29,10 @@ export interface StoredReply {
   frontMs?: number;
   /** 后台从接手到这条回复，毫秒；没有后台或旧回话就没有。 */
   workMs?: number;
+  /** 标准语音回复的幂等键，旧记录和其他渠道可省略。 */
+  replyKey?: string;
+  /** 语音回复是否得到浏览器实际播放的回执。 */
+  spoken?: boolean;
 }
 
 
@@ -64,6 +68,8 @@ export interface NewMessage {
   reply_to?: number;
   /** 别的渠道的标准消息号（channel/message 的 messageId）；网页自己的、旧路进来的不写。 */
   source_id?: string;
+  /** 语音首个字幕的时间，其他入口默认取写入时间。 */
+  createdAt?: number;
 }
 
 
@@ -284,17 +290,24 @@ export class Timeline {
   insert(input: NewMessage): number {
     //M 把入站原文和来源写入收件表，保留新编号供会话绑定与通知使用。
     const now = Date.now();
-    const sql = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies, created_at, updated_at, reply_to, source_id)'
+    const createdAt = input.createdAt ?? now;
+    const sql = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies,'
+      + ' created_at, updated_at, reply_to, source_id)'
       + " VALUES (?, ?, ?, ?, ?, NULL, 'taken', '[]', ?, ?, ?, ?)";
-    const result = this.ctx.resources.db.query(sql).run(
-      input.bot, input.channel, input.source, input.address, input.text, now, now, input.reply_to ?? null, input.source_id ?? null,
-    );
+    const row = [
+      input.bot, input.channel, input.source, input.address, input.text,
+      createdAt, now, input.reply_to ?? null, input.source_id ?? null,
+    ];
+    //M 保存可排序的原话时刻和用于增量轮询的写入时刻。
+    const result = this.ctx.resources.db.query(sql).run(...row);
     const id = Number(result.lastInsertRowid);
 
     //T 跟踪：收件表记下一条。
     const vars = { 消息号: id, 机器人: input.bot, 渠道: input.channel, 字数: input.text.length };
     this.ctx.emit('trace', 'Timeline.insert', '收件表记下一条消息', 'INSERT INTO web_messages', vars);
-    this.ctx.emit('web-api/received', { id, bot: input.bot, channel: input.channel, source: input.source, text: input.text, at: now });
+    const { bot, channel, source, text } = input;
+    const received = { id, bot, channel, source, text, at: createdAt };
+    this.ctx.emit('web-api/received', received);
     return id;
   }
 
@@ -358,46 +371,74 @@ export class Timeline {
   }
 
   /**
-   * 追加一句回话：算好生成依据一起存；第一句回话定下 sessionId；会话不在转了就算 replied。发通知 web-api/replied。
+   * 追加一句回话与生成依据。标准语音回复同时保存去重键和播放结果。
    * @param id 消息号。
-   * @param session 哪场会话说的。
+   * @param session 回复会话，审批等程序直回不一定有会话。
    * @param text 说了什么。
-   * 副作用：写库。消息不在了（被删、地址是插件挂上前的）就什么也不做。
+   * @param delivery 标准语音回复幂等键与实际播放状态。
    */
-  reply(id: number, session: Session, text: string): void {
+  reply(id: number, session: Session | undefined, text: string, delivery?: { key: string; spoken: boolean }): void {
     //G 原收件记录已不存在时直接结束，避免把回话加到其他消息。
     const record = this.get(id);
     if (record === undefined) return;
 
+    //G 重放回执保留原来的文字、时刻和播放状态。
+    if (delivery !== undefined && record.replies.some((reply) => reply.replyKey === delivery.key)) return;
+
     const now = Date.now();
-    //G 空话不追加气泡（比如点完表情后的空回答）；会话已结束仍把状态改成 replied。
+    const sessionId = session?.id ?? record.sessionId;
+    const ended = session?.row.state !== 'running';
+    //G 空话不追加气泡，会话已结束仍把状态改成 replied。
     if (text === '') {
-      if (session.row.state === 'running') return;
-      const sql = 'UPDATE web_messages SET session_id = COALESCE(session_id, ?), status = ?, updated_at = ? WHERE id = ?';
-      this.ctx.resources.db.query(sql).run(session.id, 'replied', now, id);
+      if (!ended) return;
+
+      const sql = 'UPDATE web_messages SET session_id = COALESCE(session_id, ?), status = ?, updated_at = ?'
+        + ' WHERE id = ?';
+      const status = 'replied';
+      //M 结束时没有新正文，只标记该条收件已经回完。
+      this.ctx.resources.db.query(sql).run(sessionId, status, now, id);
       record.status = 'replied';
       return;
     }
 
-    //M 把生成依据和耗时随本句回话一起保存，并更新网页要显示的消息状态。
-    record.replies.push({ at: now, sessionId: session.id, text, generation: traceModule.getGeneration(session.row, text), ...getElapsed(session, record.createdAt, now) });
+    //M 保存原会话的生成依据，程序直回的生成依据保留为程序。
+    const generation = traceModule.getGeneration(session?.row, text);
+    const reply: StoredReply = { at: now, sessionId: sessionId ?? '', text, generation };
+    if (session !== undefined) {
+      const elapsed = getElapsed(session, record.createdAt, now);
+      Object.assign(reply, elapsed);
+    }
+    if (delivery !== undefined) {
+      reply.replyKey = delivery.key;
+      reply.spoken = delivery.spoken;
+    }
+    //M 追加通过幂等检查的回复，供下一次网页查询读取。
+    record.replies.push(reply);
     let status = record.status;
-    if (session.row.state !== 'running') {
+    if (ended) {
       status = 'replied';
     }
     //M 写入整份回话清单与新状态，供轮询和追溯共同读取。
-    const sql = 'UPDATE web_messages SET replies = ?, session_id = COALESCE(session_id, ?), status = ?, updated_at = ? WHERE id = ?';
-    this.ctx.resources.db.query(sql).run(JSON.stringify(record.replies), session.id, status, now, id);
+    const sql = 'UPDATE web_messages SET replies = ?, session_id = COALESCE(session_id, ?), status = ?, updated_at = ?'
+      + ' WHERE id = ?';
+    const replies = JSON.stringify(record.replies);
+    this.ctx.resources.db.query(sql).run(replies, sessionId, status, now, id);
 
     //T 跟踪：追加一句回话。
-    const vars = { 消息号: id, 会话: session.id, 字数: text.length, 状态: status };
+    const vars = { 消息号: id, 会话: sessionId, 字数: text.length, 状态: status };
     this.ctx.emit('trace', 'Timeline.reply', '收件表追加一句回话', 'UPDATE web_messages SET replies', vars);
-    this.ctx.emit('web-api/replied', { messageId: id, replyIndex: record.replies.length - 1, session, text, at: now });
+    if (session !== undefined) {
+      //M 依赖会话的订阅者只接收可以打开会话的回话通知。
+      const event = { messageId: id, replyIndex: record.replies.length - 1, session, text, at: now };
+      this.ctx.emit('web-api/replied', event);
+    }
   }
 
   /** 渠道和对方的展示标签，地址仍由各渠道维护。 */
   peer(record: MessageRecord): string {
     if (record.channel === 'http') return '网页';
+
+    if (record.channel === 'voice') return '语音';
 
     const address = JSON.parse(record.address ?? '{}') ?? {};
     if (record.channel === 'feishu') {
@@ -457,6 +498,7 @@ export class Timeline {
         association: this.association(record.id),
         frontMs,
         workMs: item.workMs,
+        spoken: item.spoken,
       };
     }));
 

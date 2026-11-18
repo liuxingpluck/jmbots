@@ -1,4 +1,4 @@
-/** 决策图整页，保持快照最新并直接提交用户的点选。 */
+/** 决策图整页，保持快照最新，提交用户的点选和写的话，可在放射、思维导图、表格、清单四种看法间切换。 */
 import * as react from 'react';
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
@@ -6,6 +6,14 @@ import * as api from './DecisionMapApi.ts';
 import * as drawer from './Drawer.tsx';
 import * as layout from './Layout.ts';
 import * as nodes from './Nodes.tsx';
+import * as views from './Views.tsx';
+import * as words from './Words.ts';
+
+/** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
+const t = words.t;
+
+/** 四种看法：放射图、思维导图、表格、清单。 */
+type Look = 'radial' | 'mind' | 'table' | 'list';
 
 const NODE_TYPES = { decision: nodes.DecisionNode };
 const ORIGIN: xyflow.NodeOrigin = [0.5, 0.5];
@@ -19,6 +27,57 @@ const FIT_MOBILE: xyflow.FitViewOptions = {
 };
 const REFRESH_MS = 2400;
 const MOBILE_WIDTH = 670;
+/** 浏览器里记看法和思维导图方向的键。 */
+const LOOK_KEY = 'jmbots.decision-map.look';
+const DIRECTION_KEY = 'jmbots.decision-map.direction';
+/** 看法切换按钮，顺序即显示顺序。 */
+const LOOKS: { key: Look; label: string }[] = [
+  //M 按钮文字在打开页面时按当前语言译好。
+  { key: 'mind', label: t('思维导图') },
+  { key: 'radial', label: t('放射') },
+  { key: 'table', label: t('表格') },
+  { key: 'list', label: t('清单') },
+];
+
+/** 读浏览器里记着的一项；隐私模式等读不了时是 null。 */
+function readStored(key: string): string | null {
+  //G 本地存储可能被浏览器禁用，读不到就当没记过。
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** 记下一项；写不了就算了，下次打开用默认看法。 */
+function writeStored(key: string, value: string): void {
+  //G 本地存储写满或被禁用时不影响切换本身。
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    return;
+  }
+}
+
+/** 打开时用哪种看法：记着的优先；没记过时手机用清单，宽屏用思维导图。 */
+function getStartLook(): Look {
+  //M 先看浏览器记着的看法，认得出才用。
+  const stored = readStored(LOOK_KEY);
+  const known = LOOKS.find((item) => item.key === stored);
+  if (known !== undefined) return known.key;
+  if (window.innerWidth <= MOBILE_WIDTH) return 'list';
+
+  return 'mind';
+}
+
+/** 思维导图方向：记着“上下”就上下，默认左右。 */
+function getStartDirection(): layout.MindDirection {
+  //M 只有记着“上下”时才竖排。
+  const stored = readStored(DIRECTION_KEY);
+  if (stored === 'down') return 'down';
+
+  return 'sides';
+}
 
 /** 画布入口。主线、分叉与选项共用服务端当前快照。 */
 export function DecisionMapPage() {
@@ -28,6 +87,10 @@ export function DecisionMapPage() {
   const [saving, setSaving] = react.useState<string>();
   const [chooseError, setChooseError] = react.useState<string>();
   const [mode, setMode] = react.useState<layout.ViewMode>('main');
+  const [look, setLook] = react.useState<Look>(getStartLook);
+  const [direction, setDirection] = react.useState<layout.MindDirection>(getStartDirection);
+  const [sending, setSending] = react.useState(false);
+  const [noteError, setNoteError] = react.useState<string>();
   const [expanded, setExpanded] = react.useState<ReadonlySet<string>>(() => new Set());
   const canvas = react.useRef<HTMLElement>(null);
   const flow = react.useRef<xyflow.ReactFlowInstance<layout.FlowNode> | undefined>(undefined);
@@ -99,10 +162,12 @@ export function DecisionMapPage() {
       return;
     }
     setChooseError(undefined);
+    setNoteError(undefined);
     setNodeId(id);
   }, []);
   const close = react.useCallback(() => {
     setChooseError(undefined);
+    setNoteError(undefined);
     setNodeId(undefined);
   }, []);
   react.useEffect(() => {
@@ -119,9 +184,13 @@ export function DecisionMapPage() {
     if (size.width === 0 || size.height === 0) return { nodes: [], edges: [] };
 
     const view = { mode, expanded, portrait, ...size };
-    //M 卡片和连线按此时的画布比例一起计算。
-    return layout.getLayout(entries, view, open);
-  }, [graph, mode, expanded, portrait, size, open]);
+    //M 卡片和连线按此时的画布比例和看法一起计算；表格和清单不用画布。
+    if (look === 'mind') return layout.getMindLayout(entries, view, open, direction);
+    if (look === 'radial') return layout.getLayout(entries, view, open);
+
+    return { nodes: [], edges: [] };
+  }, [graph, mode, expanded, portrait, size, open, look, direction]);
+  const isCanvas = look === 'mind' || look === 'radial';
   const pending = graph?.nodes.filter((node) => node.kind === 'pending' && node.status === 'open') ?? [];
   const selected = graph?.nodes.find((node) => node.id === nodeId);
   let fit = FIT;
@@ -136,6 +205,24 @@ export function DecisionMapPage() {
     //M 切换视图时关闭旧的说明，让新卡片使用自己的缩放范围。
     close();
     setMode(next);
+  }
+
+  /** 切换看法并记在浏览器里，下次打开还是这个。 */
+  function changeLook(next: Look): void {
+    if (look === next) return;
+
+    //M 侧栏保持打开，换个看法接着看同一个节点。
+    writeStored(LOOK_KEY, next);
+    setLook(next);
+  }
+
+  /** 思维导图在左右和上下之间切换，同样记在浏览器里。 */
+  function changeDirection(next: layout.MindDirection): void {
+    if (direction === next) return;
+
+    //M 方向变了要重新布局，记下来下次打开照旧。
+    writeStored(DIRECTION_KEY, next);
+    setDirection(next);
   }
 
   /** 从顶栏依次飞到下一件待定事项，不因关闭抽屉而重置顺序。 */
@@ -196,6 +283,33 @@ export function DecisionMapPage() {
     }
   }
 
+  /**
+   * 把用户写的话发给中控，可一并带上选项。
+   * @param text 写的话。
+   * @param option 同时选的选项号。
+   * @returns 发成功是 true，侧栏据此清空输入框。
+   */
+  async function sendNote(text: string, option?: string): Promise<boolean> {
+    if (selected === undefined || sending) return false;
+
+    setSending(true);
+    setNoteError(undefined);
+    try {
+      //M 服务端记下后版本号变大，刷新一次面板就能看到这条话。
+      await api.addNote(selected.id, text, option);
+      await refresh();
+      return true;
+    } catch (error) {
+      let message = String(error);
+      if (error instanceof Error) message = error.message;
+      setNoteError(message);
+      await refresh();
+      return false;
+    } finally {
+      setSending(false);
+    }
+  }
+
   const submit = (id: string): void => {
     //M 侧栏点击直接提交，错误和禁用状态由页面维护。
     void chooseOption(id);
@@ -203,6 +317,9 @@ export function DecisionMapPage() {
   let empty = '还没有决策节点';
   if (graph === undefined) empty = '正在读取决策图';
   if (loadingError !== undefined) empty = loadingError;
+
+  //M 画布区域的读屏名称跟着语言包走。
+  const canvasLabel = t('决策图');
 
   //M 画布保留缩放和拖动，选项栏仅在用户选中节点时打开。
   return (
@@ -212,10 +329,37 @@ export function DecisionMapPage() {
           <a href="/" className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
           <h1>决策图</h1>
         </div>
-        <div className="decision-filters" role="group" aria-label="画布显示范围">
-          <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
-          <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
-          <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>全部分支</button>
+        {isCanvas && (
+          <div className="decision-filters" role="group" aria-label="画布显示范围">
+            <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
+            <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
+            <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>全部分支</button>
+          </div>
+        )}
+        <div className="decision-looks">
+          <div className="decision-filters" role="group" aria-label={t('看法')}>
+            <span className="decision-looks__label">{t('看法')}</span>
+            {LOOKS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                aria-pressed={look === item.key}
+                onClick={() => changeLook(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          {look === 'mind' && (
+            <div className="decision-filters" role="group" aria-label={t('思维导图方向')}>
+              <button type="button" aria-pressed={direction === 'sides'} onClick={() => changeDirection('sides')}>
+                {t('左右')}
+              </button>
+              <button type="button" aria-pressed={direction === 'down'} onClick={() => changeDirection('down')}>
+                {t('上下')}
+              </button>
+            </div>
+          )}
         </div>
         {pending.length > 0 && (
           <button type="button" className="decision-pending" onClick={openPending}>
@@ -225,10 +369,10 @@ export function DecisionMapPage() {
         {pending.length === 0 && graph !== undefined && <span className="decision-all-clear">当前无待定项</span>}
       </header>
 
-      <section className="decision-canvas" aria-label="放射决策图" ref={canvas}>
-        {diagram.nodes.length > 0 && (
+      <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
+        {isCanvas && diagram.nodes.length > 0 && (
           <xyflow.ReactFlow<layout.FlowNode>
-            key={`${mode}-${size.width}x${size.height}-${expanded.size}`}
+            key={`${look}-${direction}-${mode}-${size.width}x${size.height}-${expanded.size}`}
             nodes={diagram.nodes}
             edges={diagram.edges}
             nodeTypes={NODE_TYPES}
@@ -248,8 +392,15 @@ export function DecisionMapPage() {
             <xyflow.Controls position="bottom-right" showInteractive={false} fitViewOptions={fit} />
           </xyflow.ReactFlow>
         )}
-        {diagram.nodes.length === 0 && <div className="decision-empty" role="status">{empty}</div>}
-        {diagram.nodes.length > 0 && (
+        {isCanvas && diagram.nodes.length === 0 && <div className="decision-empty" role="status">{empty}</div>}
+        {!isCanvas && graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
+        {look === 'table' && graph !== undefined && (
+          <views.TableView nodes={graph.nodes} selected={nodeId} open={open} />
+        )}
+        {look === 'list' && graph !== undefined && (
+          <views.ListView nodes={graph.nodes} selected={nodeId} open={open} />
+        )}
+        {isCanvas && diagram.nodes.length > 0 && (
           <ul className="decision-legend" aria-label="图例">
             <li><i data-tone="main" />主线</li>
             <li><i data-tone="pending" />待定</li>
@@ -259,11 +410,15 @@ export function DecisionMapPage() {
         )}
         {selected !== undefined && (
           <drawer.Drawer
+            key={selected.id}
             node={selected}
             saving={saving}
             error={chooseError}
             close={close}
             choose={submit}
+            sending={sending}
+            noteError={noteError}
+            send={sendNote}
           />
         )}
       </section>

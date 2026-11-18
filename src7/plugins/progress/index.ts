@@ -1,8 +1,8 @@
 /**
  * 进度和限时：有用户的会话（记录上有 channel、没有 parent；前台交出去的后台会话 kind work 有 parent 也算）每转一轮就有一项进度：开始时间、第几步、在调哪个工具、各工具用时、限时、阶段、结果。
- * 长跑提醒（用户 11-14 定的）：一轮跑满 15 分钟（engine.long_run_card_minutes）发一张卡片问要不要终止（approval 的待确认，网页、飞书同一份卡片数据）。
+ * 长跑提醒（用户 11-14 定的）：一轮跑满 15 分钟（progress.long_run_card_minutes）发一张卡片问要不要终止（approval 的待确认，网页、飞书同一份卡片数据）。
  *   点“终止”才停；点“继续”或一直不点都一直做下去。一轮只发一张；会话结束时还没点的卡片变灰写“会话已结束”。
- * 限时：默认不限时（engine.limit_default_minutes 默认 0，不能“不点就自动停”）；配了正数才照 0.4：到点前报时、到点判断。
+ * 限时：默认不限时（progress.limit_default_minutes 默认 0，不能“不点就自动停”）；配了正数才照 0.4：到点前报时、到点判断。
  *   网页、卡片上能选 15/20 分钟（提前 5 分钟报时）或不限时，都从开始算；随时能终止。
  * 报时：每一步发给模型的对话末尾加一句“已经干了多久”（不存进对话），同时跟用户说一次。
  * 到点：用户选的直接停；默认的问 decision 三道题（在推进、5 分钟能做完、没在打转），都过就延 5 分钟，最多两次；
@@ -16,9 +16,11 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { AskInput, Session, Thinking } from '../../Sessions.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as cardUtils from '../../utils/Card.ts';
+import * as dailyModule from './GroupDaily.ts';
 import * as reviewModule from './Review.ts';
 import * as words from './Words.ts';
 
@@ -31,14 +33,32 @@ export const name = 'progress';
 //M 1.1.1：转新会话时照抄后台绑定的工作区 ID（row.workspaceId）。
 //M 1.1.4：说话改发 bot/say，取思考档发 model-catalog/request，读对话记录发 journal/request，不再直接调别的插件。
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
-export const version = '1.1.5';
+//M 1.1.6：接入已登记飞书群的每日进度调度。
+//M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
+export const version = '1.1.7';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'bots', 'sessions'];
 
 
-/** progress 插件配置（plugins[progress].config）。主配置仍读顶层 engine 段；review 子键可调复盘检查间隔或设 false 关闭。 */
+/** progress 插件配置（plugins[progress].config）。 */
 export interface ProgressConfig {
+  /** 默认限时分钟；0 表示不限时。 */
+  limit_default_minutes?: number;
+  /** 默认限时提前几分钟报时。 */
+  limit_remind_before_minutes?: number;
+  /** 每次延长的分钟数。 */
+  limit_extend_minutes?: number;
+  /** 最多可延长的次数。 */
+  limit_extend_times?: number;
+  /** 将慢任务记入超时日志的分钟数阈值。 */
+  overtime_minutes?: number;
+  /** 长跑提醒分钟数；0 表示关闭。 */
+  long_run_card_minutes?: number;
+  /** 收尾与复盘模型；留空使用原会话模型。 */
+  wrapup_model?: string | null;
+  /** 延够后的限时审核模型；留空使用原会话模型。 */
+  limit_review_model?: string | null;
   /** 超时复盘设置（原 review 插件配置）；写 false 或 enabled: false 关闭自动复盘。 */
   review?: reviewModule.ReviewConfig | false;
 }
@@ -163,7 +183,7 @@ declare module '../../Sessions.ts' {
 }
 
 
-/** 校验后的配置（顶层 engine 段）。 */
+/** 入口迁移并校验后的限时与模型配置。 */
 interface Settings {
   defaultMinutes: number;
   remindBefore: number;
@@ -1215,29 +1235,46 @@ export class Progress extends cordis.Service {
 
 
 /**
- * 读顶层 engine 段的限时配置（正数，可以是小数，测试用）。
- * @throws 写错了抛错。
+ * 在插件入口逐项合并新配置和 0.4 的旧键，再校验限时与模型。
+ * @param config 插件清单项里的 progress 配置。
+ * @param legacy 旧 engine 段。
+ * @returns 服务和复盘共用的配置。
+ * @throws 数值或模型格式不合法时抛错。
  */
-function readSettings(ctx: cordis.Context): Settings {
-  const engine = (ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
-  const number = (key: string, fallback: number, allowZero = false): number => {
-    const value = engine[key] ?? fallback;
+function readSettings(config: ProgressConfig, legacy: Record<string, unknown> | undefined): Settings {
+  const getValue = (key: keyof ProgressConfig): unknown => {
+    const oldPath = `engine.${key}`;
+    const newPath = `plugins[progress].config.${key}`;
+    const current = config[key];
+    const previous = legacy?.[key];
+
+    //M 用项目共用迁移规则保留旧值，并在本进程提示一次。
+    return checks.getMigratedConfig(current, previous, oldPath, newPath);
+  };
+  const number = (key: keyof ProgressConfig, fallback: number, allowZero = false): number => {
+    //M 旧值合并后按现有数值规则校验，未填时沿用默认。
+    const configured = getValue(key);
+    const value = configured ?? fallback;
     if (typeof value !== 'number' || value < 0 || (!allowZero && value === 0)) {
       let kind = '正';
       if (allowZero) {
         kind = '不小于 0 的';
       }
-      throw new Error(`engine.${key} 要是${kind}数`);
+      throw new Error(`progress.${key} 要是${kind}数`);
     }
     return value;
   };
-  const model = (key: string): string | undefined => {
-    const value = engine[key];
+  const model = (key: keyof ProgressConfig): string | undefined => {
+    //M 保留模型留空时回退到原会话模型的行为。
+    const value = getValue(key);
     if (value === undefined || value === null || value === '') return undefined;
-    if (typeof value !== 'string' || !value.includes('/')) throw new Error(`engine.${key} 要写成 供应商名/模型 ID`);
+    const invalid = `progress.${key} 要写成 供应商名/模型 ID`;
+    //G 非空模型配置必须带供应商。
+    if (typeof value !== 'string' || !value.includes('/')) throw new Error(invalid);
+
     return value;
   };
-  //M 校验并汇总顶层 engine 中的各类数值限时与超时阈值设置。
+  //M 校验限时、延长与长跑的分钟数，汇总为内部配置。
   const settings: Settings = {
     defaultMinutes: number('limit_default_minutes', 0, true),
     remindBefore: number('limit_remind_before_minutes', 10, true),
@@ -1257,21 +1294,35 @@ function readSettings(ctx: cordis.Context): Settings {
 
 /**
  * 挂上进度与超时复盘（review 已并入本插件）。
- * apply 是 Cordis 插件的入口：inject 里的服务都就绪后 Cordis 调一次。主限时配置读顶层 engine，复盘定时读 config.review。
+ * Cordis 在依赖服务就绪后调用。限时与复盘从 progress 清单项读取。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config plugins[progress].config（可选：{ review?: { enabled?, first_ms?, every_ms? } | false }）。
- * @throws config.review 或顶层 engine 中的限时配置不合法时抛错。
+ * @param config plugins[progress].config，可省略。
+ * @throws 限时、模型或复盘配置不合法时抛错。
  * 副作用：注册 progress 服务，可选挂载 Review 复盘定时器与 HTTP 进度查询/操作路由。
  */
 export function apply(ctx: cordis.Context, config?: ProgressConfig): void {
-  //M 先校验复盘子配置再读取限时配置，构造 Progress 服务挂载进 Cordis。
+  //M 校验插件配置形状和复盘设置，再在入口迁移 0.4 的旧进度键。
   const reviewSettings = reviewModule.readReviewSettings(config);
-  const progress = new Progress(ctx, readSettings(ctx));
+  const legacy = ctx.resources.raw['engine'] as Record<string, unknown> | undefined;
+  const current = config ?? {};
+  const settings = readSettings(current, legacy);
+
+  //M 进度服务和复盘都使用入口解析好的配置。
+  const progress = new Progress(ctx, settings);
 
   //M 复盘经事件查待确认和送审，按自己的配置挂载。
   if (reviewSettings.enabled) {
-    new reviewModule.Review(ctx, progress, reviewSettings);
+    //M 复用收尾模型设置，未配时由复盘沿用该会话模型。
+    new reviewModule.Review(ctx, progress, reviewSettings, settings.wrapupModel);
   }
+
+  //M 飞书是可选的：按该渠道已校验的群配置挂本地定时。
+  void ctx.inject(['feishu'], (sub) => {
+    const groups = sub.feishu.config.groups.values();
+    //M 给日报轮限工具，再为已登记的群挂定时。
+    dailyModule.bindReportTools(sub);
+    dailyModule.setupGroupReports(sub, groups);
+  });
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口。
   void ctx.inject(['http'], (sub) => {

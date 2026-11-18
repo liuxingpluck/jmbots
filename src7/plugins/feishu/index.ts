@@ -54,7 +54,8 @@ export const name = 'feishu';
 //M 1.1.2：channel/history 支持本人（owner）跨渠道、跨聊天查询飞书本地历史；外人仍仅限当前聊天。
 //M 1.1.3：监听 im.message.recalled_v1 撤回消息事件，校验本人或原发信人后发出 channel/recall。
 //M 1.1.4：onChannelReply 支持带 target 的跨渠道发话，在飞书自有群/私聊/流水数据里自认聊天。
-export const version = '1.1.8';
+//M 1.1.9：登记群内每日进度的时间、机器人和提示，progress 读取已校验的配置。
+export const version = '1.1.9';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -196,6 +197,8 @@ export interface FeishuGroup {
   relay: 'direct' | 'model';
   /** 受不受信：true 时本人在这个群里说话照旧带私人记忆；不写是 false（群里的回复大家都看得到）。 */
   trusted: boolean;
+  /** 每日群进度设置。省略时不挂定时。 */
+  daily?: { hour: number; minute: number; bot: string; appId: string; prompt: string };
 }
 
 
@@ -2442,7 +2445,7 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
     apps.push(appEntry);
   }
   //M 校验并解析人员权限清单与群配置清单后拼出完整飞书配置对象。
-  return { domain: domain.replace(/\/+$/u, ''), apps, people: getPeople(ctx, own), groups: getGroups(own) };
+  return { domain: domain.replace(/\/+$/u, ''), apps, people: getPeople(ctx, own), groups: getGroups(own, apps) };
 }
 
 
@@ -2567,19 +2570,26 @@ function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<strin
  * @returns chat_id → 群。
  * @throws 哪项没写 chat_id、chat_id 重了、listen 或 relay 写了别的值、judge_threshold 不是 0 到 1 的数、trusted 不是布尔时抛错。
  */
-function getGroups(own: Record<string, unknown>): Map<string, FeishuGroup> {
+function getGroups(own: Record<string, unknown>, apps: FeishuApp[]): Map<string, FeishuGroup> {
   const groups = new Map<string, FeishuGroup>();
   //M 逐条解析并校验专项群规则（监听策略、决策阈值、中转方式及隐私信任标记）。
   for (const item of getEntries(own['groups'], 'groups')) {
     const chatId = item['chat_id'];
     const name = item['name'] ?? '';
-    const listen = item['listen'] ?? 'mention';
+    let listen = item['listen'] ?? 'mention';
     const relay = item['relay'] ?? 'direct';
     const trusted = item['trusted'] ?? false;
     const threshold = item['judge_threshold'];
     if (typeof chatId !== 'string' || chatId === '') throw new Error('feishu 插件的 groups 每项要写 chat_id');
     if (groups.has(chatId)) throw new Error(`feishu 插件的 groups 里 ${chatId} 写了两次`);
     if (typeof name !== 'string') throw new Error(`feishu 插件 groups 里 ${chatId} 的 name 要写成字符串`);
+
+    //M 校验每日任务并从指定机器人的应用中确定唯一的发信账号。
+    const daily = getGroupDaily(item['daily'], chatId, apps);
+    if (daily !== undefined && item['listen'] === undefined) {
+      //M 已启用日报的群默认也收没有 @ 的成员汇报。
+      listen = 'all';
+    }
     if (listen !== 'mention' && listen !== 'all' && listen !== 'judge') {
       throw new Error(`feishu 插件 groups 里 ${chatId} 的 listen 只能写 mention、all 或 judge`);
     }
@@ -2594,9 +2604,41 @@ function getGroups(own: Record<string, unknown>): Map<string, FeishuGroup> {
     if (threshold !== undefined) {
       groupEntry.judgeThreshold = threshold;
     }
+    if (daily !== undefined) {
+      groupEntry.daily = daily;
+    }
     groups.set(chatId, groupEntry);
   }
   return groups;
+}
+
+
+/** 群日报入站配置的校验，匹配一个飞书发信账号并拆好本地时间。 */
+function getGroupDaily(raw: unknown, chatId: string, apps: FeishuApp[]): FeishuGroup['daily'] {
+  if (raw === undefined) return undefined;
+
+  const where = 'feishu 群 ' + chatId + ' 的 daily';
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error(where + ' 要写 at、bot 和 prompt');
+  }
+  const daily = raw as Record<string, unknown>;
+  const { at, bot, prompt } = daily;
+  const requestedApp = daily['app_id'];
+  if (typeof at !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/u.test(at)) {
+    throw new Error(where + ' 的 at 要写成本地时刻 HH:mm');
+  }
+  if (typeof bot !== 'string' || bot.trim() === '') throw new Error(where + ' 的 bot 要写机器人名');
+  if (typeof prompt !== 'string' || prompt.trim() === '') throw new Error(where + ' 的 prompt 要写非空文字');
+
+  //M 共享应用同样接单，多个可用发信账号时由配置显式消除歧义。
+  const candidates = apps.filter((app) => app.bot === bot || app.bots?.includes(bot));
+  const selected = candidates.filter((app) => requestedApp === undefined || app.appId === requestedApp);
+  if (selected.length !== 1) throw new Error(where + ' 要能确定一个属于该机器人的 app_id');
+
+  //M 时间在配置入口拆开，定时器直接使用数值。
+  const hour = Number(at.slice(0, 2));
+  const minute = Number(at.slice(3));
+  return { hour, minute, bot, appId: selected[0]!.appId, prompt: prompt.trim() };
 }
 
 

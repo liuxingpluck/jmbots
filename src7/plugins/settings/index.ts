@@ -21,7 +21,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.3';
+export const version = '1.0.4';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http', 'bots'];

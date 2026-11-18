@@ -7,6 +7,7 @@
  *   - 任务单存进表的 protocol 列，也写成任务文件夹里的 task.json（机器读）和 task.md（人读），附件放 input/；
  *   - 领取带 claimKey：同一个键重领交回原样，别人领了回 409；
  *   - 交回 result.json 的内容：HTTP 正文的 protocolResult，或执行者写进 result/result.json 由定时扫描收；两条路都走 finish。
+ *   - reply:false 的交办无需模型配置。领取时归档，只记送达，不走结果投递。
  * 交回的结果经 bot/request 排进派活会话的结果队列，收到成功回执后再改任务状态：
  *   前台整理后回原渠道，后台看一轮接着做。protocol 是 NULL 的旧任务照旧格式 { ok, text, uploads } 收。
  * 照 0.4 src/capabilities/AgentTasks.ts。设计见同目录 说明.md 的「设计要点」一节（外部任务协议 v1）。
@@ -90,13 +91,15 @@ export interface Task {
   text: string;
   /** 附件：任务文件夹里的相对路径（新协议在 input/ 下）。 */
   files: string[];
+  /** 缺省要交回结果；false 的任务在领取时即送达。 */
+  reply?: false;
   /** 状态。 */
   status: TaskStatus;
   /** 派的时间，毫秒。 */
   createdAt: number;
   /** 领走的时间，毫秒。 */
   takenAt?: number;
-  /** 交回的时间，毫秒。 */
+  /** 交回结果或免回信任务送达的时间，毫秒。 */
   doneAt?: number;
   /** 交回的话和文件（文件是任务文件夹 result/ 里的相对路径）。 */
   result?: { text: string; files: string[] };
@@ -115,6 +118,8 @@ export interface SendInput extends protocolModule.ExecutionInput {
   text: string;
   /** 附件，@路径，相对机器人工作区。 */
   files: string[];
+  /** 缺省等待结果；false 只把内容送到执行端。 */
+  reply?: boolean;
   /** 交回物：要交回哪些东西，每项一句。 */
   deliverables: string[];
   /** 派活调用键 <派活会话号>/<callId>（sendText 拼）：同一个键再调回原来那件，不派第二件。 */
@@ -189,9 +194,10 @@ export class AgentTasks {
     ctx.tools.register({
       definition: {
         name: 'agent_task',
-        description: '把一件活交给别的 AI（Claude、Codex、Grok、DSH 这类外部 AI）去做，它做完会把结果送回这个会话。'
+        description: '把一件活交给其他已登记的执行端。'
           + 'list：看接上了哪些 AI、各自会做什么、会用哪些模型（带次高思考档）、最近的任务；'
-          + 'send：交一件活，agent、title、text、deliverables 必写；model 不写用它登记的第一个，thinking 不写取它登记的次高档'
+          + 'send：交一件活，agent、title、text 必写。只是转告时写 reply:false，无需回信。'
+          + '要收结果时写 deliverables；model 不写用它登记的第一个，thinking 不写取它登记的次高档'
           + '（它没登记就两样都要写）；要开子代理写 subagents，不开就不写；files 是附件 @路径；'
           + 'status：看一件任务到哪了（agent、id）。交出去以后不用等，先做别的或者先结束，结果到了会接着做。',
         parameters: piAi.Type.Object({
@@ -199,9 +205,10 @@ export class AgentTasks {
           agent: piAi.Type.Optional(piAi.Type.String({ description: '交给谁（send、status）' })),
           title: piAi.Type.Optional(piAi.Type.String({ description: '一句话标题（send）' })),
           text: piAi.Type.Optional(piAi.Type.String({ description: '要做什么：目标、约束、怎么算做完（send）' })),
+          reply: piAi.Type.Optional(piAi.Type.Boolean({ description: '默认 true 需交回，false 领取即送达、无需回信' })),
           deliverables: piAi.Type.Optional(piAi.Type.Array(
             piAi.Type.String(),
-            { description: '交回物：要交回哪些东西，每项一句（send 必写）' },
+            { description: '交回物：需要回信的 send 必写，每项一句' },
           )),
           model: piAi.Type.Optional(piAi.Type.String({ description: '主执行用的模型 ID，照它登记的写法；不写用它登记的第一个（send）' })),
           thinking: piAi.Type.Optional(piAi.Type.String({ description: '主执行的思考档；不写取它登记的次高档（send）' })),
@@ -324,8 +331,11 @@ export class AgentTasks {
     const agent = this.agents().find((item) => item.name === input.agent);
     if (agent === undefined) throw new Error(`${input.agent} 还没来打过招呼（没接上通道），交不了；用 list 看有哪些`);
 
-    //M 执行配置：照它登记的能力定模型、次高思考档、子代理；定不了 getExecution 抛错。
-    const execution = protocolModule.getExecution(agent, input);
+    //M 要求交回时才依据登记核对模型和子代理。留言发给已登记的执行端即可。
+    let execution: protocolModule.ExecutionSpec | undefined;
+    if (input.reply !== false) {
+      execution = protocolModule.getExecution(agent, input);
+    }
 
     //G 附件先都找到，再落库（找不到的不留半截任务）。
     const sources = this.getSources(session, input.files);
@@ -363,12 +373,14 @@ export class AgentTasks {
       外部AI: agent.name,
       会话: session.row.id,
       附件: sources.length,
-      模型: execution.model,
-      思考档: execution.thinking,
-      子代理: execution.subagents.length,
+      模型: execution?.model,
+      思考档: execution?.thinking,
+      子代理: execution?.subagents.length ?? 0,
     };
     const sendSummary = `交给 ${agent.name}：#${String(id)}`;
     this.ctx.emit('trace', 'AgentTasks.send', sendSummary, 'INSERT agent_tasks + task.json', vars);
+
+    //M 返回已落库的任务及任务单，用于生成工具回执。
     return this.get(agent.name, id)!;
   }
 
@@ -387,7 +399,9 @@ export class AgentTasks {
     if (before === undefined) throw new failureModule.Failure(404, `没有任务 ${String(id)}`);
 
     //M 同一个领取键重领（上次受理不明又来一次）：交回原样，不算冲突。
-    const again = claimKey !== undefined && before.status === 'taken' && before.protocol?.claimKey === claimKey;
+    const received = before.reply === false && before.status === 'done';
+    const taken = before.status === 'taken' || received;
+    const again = claimKey !== undefined && taken && before.protocol?.claimKey === claimKey;
     if (again) return before;
 
     //M 新协议的任务都要有领取键：执行者没带就替它生成一个，领到的任务里带着，交回时照填。
@@ -396,12 +410,31 @@ export class AgentTasks {
       key = crypto.randomUUID();
     }
 
-    //M 带条件的 UPDATE；新协议的把领取键记进 protocol（旧任务 protocol 是 NULL，json_set 还是 NULL）。
-    const sql = "UPDATE agent_tasks SET status = 'taken', taken_at = ?, protocol = json_set(protocol, '$.claimKey', ?)"
+    //M 单向任务在确认领取时就落送达时间，状态不会进入等结果的 taken。
+    const now = Date.now();
+    let status = 'taken';
+    let doneAt: number | null = null;
+    if (before.reply === false) {
+      status = 'done';
+      doneAt = now;
+    }
+    const sql = 'UPDATE agent_tasks SET status = ?, taken_at = ?, done_at = ?,'
+      + " protocol = json_set(protocol, '$.claimKey', ?)"
       + " WHERE id = ? AND agent = ? AND status = 'new'";
-    const changes = this.ctx.resources.db.query(sql).run(Date.now(), key ?? null, id, agent).changes;
+    const values = [status, now, doneAt, key ?? null, id, agent];
+
+    //M 领取时一并写状态、时间和领取键。
+    const query = this.ctx.resources.db.query(sql);
+
+    //M 写入领取后的状态和时间；条件确保每件任务只能领取一次。
+    const updated = query.run(...values);
     const task = this.get(agent, id)!;
-    if (changes !== 1) throw new failureModule.Failure(409, `任务 ${String(id)} 已经是 ${task.status} 了`);
+
+    //G 没更新到是另一位执行者先领走了，用最新状态构造冲突回执。
+    if (updated.changes !== 1) {
+      const message = `任务 ${String(id)} 已经是 ${task.status} 了`;
+      throw new failureModule.Failure(409, message);
+    }
 
     //T 跟踪：被领走。
     const takeSummary = `${agent} 领走 #${String(id)}`;
@@ -457,6 +490,9 @@ export class AgentTasks {
     //G 先按归属读任务，未找到时拒绝处理这次交回。
     const task = this.get(agent, id);
     if (task === undefined) throw new failureModule.Failure(404, `没有任务 ${String(id)}`);
+
+    //G 单向任务只认领，任何结果均不写文件、不入会话队列。
+    if (task.reply === false) throw new failureModule.Failure(409, '这件任务领取即送达，无需交回');
 
     //G 新旧对上：新协议的任务要交结果（protocolResult 或 result.json），旧任务只收 { ok, text, uploads }。
     const protocol = task.protocol;
@@ -711,7 +747,7 @@ export class AgentTasks {
     agent: AgentInfo,
     id: number,
     input: SendInput,
-    execution: protocolModule.ExecutionSpec,
+    execution: protocolModule.ExecutionSpec | undefined,
     names: string[],
   ): protocolModule.Protocol {
     const row = session.row;
@@ -722,15 +758,26 @@ export class AgentTasks {
     //M 回话地址：受管后台用派活时的，别的用会话现在记的；深拷贝，之后会话换地址也不影响。
     const origin = row.frontTask?.origin ?? { channel: row.channel, address: row.address };
 
-    const spec: protocolModule.TaskSpec = {
-      version: 1,
-      kind: 'task',
+    const base = {
+      version: 1 as const,
+      kind: 'task' as const,
       taskId: String(id),
       assignedTo: agent.name,
       source: { bot: row.bot, frontSessionId: front, sessionId: row.id },
       workspace: { bot: row.bot, path: row.frontTask?.workspace ?? '.' },
-      operation: 'new',
+      operation: 'new' as const,
       task: { title: input.title, goal: input.text, inputs: names, deliverables: input.deliverables },
+    };
+    const context = { origin: structuredClone(origin), requestKey: input.requestKey };
+    if (execution === undefined) {
+      //M 单向任务的协议仍有任务单、附件和领取键，交回物和模型配置留空。
+      const task = { ...base.task, deliverables: [] };
+      const spec = { ...base, task, reply: false as const };
+      return { spec, ...context };
+    }
+
+    const spec: protocolModule.TaskSpec = {
+      ...base,
       execution,
       result: {
         format: 'result.json + result.md + artifacts/',
@@ -738,7 +785,7 @@ export class AgentTasks {
         returnMode: agent.abilities?.returnMode ?? 'http',
       },
     };
-    return { spec, origin: structuredClone(origin), requestKey: input.requestKey };
+    return { spec, ...context };
   }
 
   /**
@@ -846,10 +893,15 @@ export class AgentTasks {
   /** 一行：#N → 外部 AI「标题」状态（派于、交回于）。 */
   private describe(task: Task): string {
     let done = '';
+    let status = STATUS_WORDS[task.status];
     if (task.doneAt !== undefined) {
       done = `，交回于 ${time(task.doneAt)}`;
     }
-    return `#${task.id} → ${task.agent}「${task.title}」${STATUS_WORDS[task.status]}（派于 ${time(task.createdAt)}${done}）`;
+    if (task.doneAt !== undefined && task.reply === false) {
+      status = '已送达';
+      done = `，领取于 ${time(task.doneAt)}`;
+    }
+    return `#${task.id} → ${task.agent}「${task.title}」${status}（派于 ${time(task.createdAt)}${done}）`;
   }
 
   /**
@@ -904,13 +956,17 @@ export class AgentTasks {
    * @throws 必写的没写，或 send 抛的错，模型看得到。
    */
   private sendText(args: Record<string, unknown>, session: Session, callId: string): string {
-    //G 必写的四样：交给谁、标题、要做什么、交回物。
+    //G 交付地址、标题和内容必写。仅会交回结果的任务需要交回物。
     const agent = getArg(args, 'agent');
     const title = getArg(args, 'title');
     const text = getArg(args, 'text');
     const deliverables = getList(args['deliverables']);
-    if (agent === undefined || title === undefined || text === undefined || deliverables.length === 0) {
-      throw new Error('send 要写 agent、title、text、deliverables（交回物，至少一项）');
+    const reply = args['reply'] !== false;
+    if (agent === undefined || title === undefined || text === undefined) {
+      throw new Error('send 要写 agent、title、text');
+    }
+    if (reply && deliverables.length === 0) {
+      throw new Error('send 需要交回结果时要写 deliverables（交回物，至少一项）');
     }
 
     //M 派活调用键：会话号加调用号，同一场会话里每次调用都不一样，同一次调用重来还是这个。
@@ -921,6 +977,7 @@ export class AgentTasks {
       agent,
       title,
       text,
+      reply,
       deliverables,
       files: getList(args['files']),
       model: getArg(args, 'model'),
@@ -931,13 +988,18 @@ export class AgentTasks {
     //M 按已整理的参数派活，用保存后的任务生成回执。
     const task = this.send(session, input);
 
-    //M 回执：任务号、附件数、定下来的模型和思考档、子代理。
-    const execution = task.protocol!.spec.execution;
+    const spec = task.protocol!.spec;
+    if (spec.reply === false) {
+      return `已交给 ${task.agent}：任务 #${task.id}「${task.title}」，对方领取即送达，无需回信。`;
+    }
+
+    //M 普通任务回执包含模型和思考档，且由执行端交回结果。
+    const execution = spec.execution;
     let subagents = '不开子代理';
     if (execution.subagents.length > 0) {
       subagents = `开 ${String(execution.subagents.length)} 个子代理`;
     }
-    return `已交给 ${agent}：任务 #${task.id}「${title}」，附件 ${String(task.files.length)} 个；`
+    return `已交给 ${task.agent}：任务 #${task.id}「${task.title}」，附件 ${String(task.files.length)} 个；`
       + `${execution.model}，思考档 ${execution.thinking}（${execution.effortPolicy}），${subagents}。`
       + '它来领、做完会把结果送回这个会话；不用等，先做别的或先结束。';
   }
@@ -962,7 +1024,10 @@ export class AgentTasks {
 
     //M 新协议：执行要求和交回物。
     const spec = task.protocol?.spec;
-    if (spec !== undefined) {
+    if (spec?.reply === false) {
+      lines.push('领取即送达，无需回信。');
+    }
+    if (spec !== undefined && spec.reply !== false) {
       const execution = spec.execution;
       const subagentCount = String(execution.subagents.length);
       const deliverables = spec.task.deliverables.join('；');
@@ -1056,6 +1121,7 @@ function getTask(row: Record<string, unknown>): Task {
     task.result = { text: row['result_text'] as string, files: resultFiles };
   }
   if (row['protocol'] !== null) task.protocol = JSON.parse(row['protocol'] as string) as protocolModule.Protocol;
+  if (task.protocol?.spec.reply === false) task.reply = false;
   return task;
 }
 

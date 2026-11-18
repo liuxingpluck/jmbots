@@ -138,12 +138,14 @@ export class Review {
    * @param ctx 复盘所在的 Cordis 上下文。
    * @param progress 同插件内的进度服务实例。
    * @param timing 首次与后续检查间隔（毫秒）。
+   * @param wrapupModel 入口已校验的复盘模型；未配置时沿用该会话模型。
    * 副作用：注册 approval/decided 事件监听并启动定时复盘检查任务。
    */
   constructor(
     private readonly ctx: cordis.Context,
     private readonly progress: Progress,
     timing: { first: number; every: number },
+    private readonly wrapupModel?: string,
   ) {
     //M approval/decided（通知）：复盘那件同意了就写文件；拒绝就算了，这件不再问（reviewedAt 已经记了）。
     ctx.on('approval/decided', (pending) => {
@@ -277,11 +279,8 @@ export class Review {
       }
     }
 
-    const engine = (this.ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
-    let model = session.row.model;
-    if (typeof engine['wrapup_model'] === 'string' && engine['wrapup_model'] !== '') {
-      model = engine['wrapup_model'];
-    }
+    //M 复盘沿用入口解析的收尾模型，未配置时使用原会话模型。
+    const model = this.wrapupModel ?? session.row.model;
 
     //M 开复盘小会话问一次。
     const text = [

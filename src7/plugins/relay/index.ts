@@ -13,10 +13,8 @@
  * 收件带 files：话里 @路径 写的附件（渠道用 bots.saveFile 存进工作区的），换成相对运行时目录的路径，见 getFiles。
  * 设计和给外部助手看的用法见同目录 说明.md 的「设计要点」「给外部助手的用法」两节。
  *
- * 同目录还有两样（外部助手的交办、收件、回信归一处）：
- *   - AgentTasks.ts：外部 AI 任务通道，工具 agent_task、/api/agents* 七个接口；http 就绪后挂；
- *   - NoteClaude.ts：工具 note_claude，给 Claude 留言。
- * 转话这一块要配置 helpers 才挂；只用任务通道、留言的可以不写 helpers。
+ * AgentTasks.ts 管外部 AI 的任务和单向留言，工具 agent_task 与 /api/agents* 在 http 就绪后挂。
+ * 转话这一块要配置 helpers 才挂；只用任务通道的可以不写 helpers。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -30,7 +28,6 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import type { Origin, ReceiveEvent } from '../bots/index.ts';
 import * as agentTasksModule from './AgentTasks.ts';
-import * as noteClaudeModule from './NoteClaude.ts';
 import * as routesModule from './Routes.ts';
 import * as failureModule from '../../utils/Failure.ts';
 
@@ -38,12 +35,14 @@ import * as failureModule from '../../utils/Failure.ts';
 /** 插件名。 */
 export const name = 'relay';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-//  1.1.0：11-17 并进 agent-tasks、note-claude。1.2.0：按 chat 回信只认一字不差的聊天号、不再找 web_messages；回信文件限范围；agent_task 派活防重复。
+//  1.1.0：11-17 并进原外部任务与留言插件。1.2.0：按 chat 回信只认一字不差的聊天号、不再找 web_messages；回信文件限范围；agent_task 派活防重复。
 //  1.3.0：回信先写进对话再标已送（relayReplyId 对账）；走模型的会话回信排进结果队列（acceptResult，键 relay:<回信号>）。
 //  1.3.1：发飞书文件改发 feishu/send-file 请求（等回执，不伪造成功）；提醒改发 bot/say 通知。
 //  1.3.2：转话回信和外部任务结果经 bot/request 入队，收到成功回执后更新各自的记录。
 //  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
-export const version = '1.3.3';
+//  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
+//  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
+export const version = '1.4.1';
 
 /**
  * 用到的服务。http 是可选的：用到时 ctx.get 现取。发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。
@@ -1485,6 +1484,8 @@ export class Relay {
   private view(row: ItemRow): InboxItem {
     //M 哪一档、builder 的目录：收件存了原样的回话地址，照它现读，不另加栏。
     const { role, workspace } = this.getSpeaker(JSON.parse(row.address) as unknown);
+    //M 轮询只回本人布尔值，不序列化渠道回话地址或说话人的原始标识。
+    const owner = row.owner === 1;
     let repliedAt: string | null = null;
     if (row.replied_at !== null) {
       repliedAt = local(row.replied_at);
@@ -1495,7 +1496,7 @@ export class Relay {
       helper: row.helper,
       session: row.session_id,
       channel: row.channel,
-      owner: row.owner === 1,
+      owner,
       role,
       workspace,
       sender: row.sender,
@@ -1541,7 +1542,7 @@ export class Relay {
  * 插件被拔掉时这些登记自动撤掉。详见 plugins/Index.ts 的 PluginModule。
  * 先后：写在 http、fake-model 后面，model-fallback 前面（session/request、bot/receive 照挂的先后挨个问）。
  *   前台在 bots 里：bot/receive 问完了没人认领才轮到前台，所以 relay 的认领总在前台前面。
- * 挂三样：转话（写了 helpers 才挂）、note_claude、任务通道（http 就绪后挂）。
+ * 挂两样：转话（写了 helpers 才挂）和任务通道（http 就绪后挂）。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param config config.yaml 的 plugins 段里写给它的：helpers（要转话才写，每项 name、prefixes，可写 webhook_url、
  *   webhook_header，第一个是默认助手）、bots、remind_minutes、expire_minutes、poll_seconds；tasks（任务通道，{ scan_ms }）。
@@ -1553,13 +1554,10 @@ export function apply(ctx: cordis.Context, config: RelayWritten | undefined): vo
   const written = config ?? {};
   const scanMs = agentTasksModule.getScanMs(written.tasks);
 
-  //M 转话：写了 helpers 才挂（只用任务通道、留言的不用写）；写了就照原来的规矩查，写错了抛错。先登记 relay_send，再登记别的工具。
+  //M 写了 helpers 才挂转话，配置写错就抛错；只用任务通道时可以省略 helpers。
   if (written.helpers !== undefined) {
     applyRelay(ctx, written);
   }
-
-  //M 给 Claude 留言：工具 note_claude，只要 resources、tools。
-  noteClaudeModule.applyNoteClaude(ctx);
 
   //M 外部 AI 任务通道等 http 就绪，交回的投递依赖机器人事件应答。
   void ctx.inject(agentTasksModule.TASKS_INJECT, (sub) => {

@@ -4,6 +4,33 @@ import * as tokenModule from '../Token.ts';
 import * as pcm from './VoicePcm.ts';
 import * as playbackModule from './VoicePlayback.ts';
 
+const DEVICE_KEY = 'jmbots.voice.device';
+let currentDevice: string | undefined;
+
+/** 同一浏览器刷新后沿用此前的聊天号；禁止存储时在本页保留它。 */
+function getVoiceDevice(): string {
+  if (currentDevice !== undefined) return currentDevice;
+
+  //M 只存应用内的随机标识，不读取硬件或浏览器指纹。
+  const id = crypto.randomUUID();
+  try {
+    const storage = window.localStorage;
+    const stored = storage.getItem(DEVICE_KEY);
+    const idPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
+    if (stored !== null && idPattern.test(stored)) {
+      currentDevice = stored;
+      return stored;
+    }
+
+    //M 之后的网页加载继续用同一个语音聊天号。
+    storage.setItem(DEVICE_KEY, id);
+  } catch {
+    //G 浏览器禁用本地存储时，本页仍可使用麦克风。
+  }
+  currentDevice = id;
+  return id;
+}
+
 /** 网页使用的就绪信息。 */
 export interface VoiceStatus {
   /** 配置是否启用。 */
@@ -97,7 +124,17 @@ export class VoiceCapture {
       //M 受用户操作创建音频上下文，权限成功后把单声道连接到流式采样节点。
       const audio = new AudioContext();
       this.audio = audio;
-      this.playback = new playbackModule.VoicePlayback(audio);
+      const played = (utterId: string): void => {
+        const socket = this.socket;
+        if (socket?.readyState !== WebSocket.OPEN) return;
+
+        //M 把浏览器的实际播放结果通知原连接，供语音回复记录。
+        const event = { type: 'audio-played', utterId };
+        const frame = JSON.stringify(event);
+        socket.send(frame);
+      };
+      //M 同一个播放器负责排队音频和报告浏览器完成过的音频块。
+      this.playback = new playbackModule.VoicePlayback(audio, played);
       const media = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
       });
@@ -194,7 +231,11 @@ export class VoiceCapture {
     this.socket = socket;
     this.timer = window.setTimeout(() => this.finish('connection-timeout'), 5000);
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: 'start', bot: this.bot, lang: 'zh' }));
+      //M 开麦时把本浏览器的聊天标识连同选定的机器人送给服务端。
+      const device = getVoiceDevice();
+      const start = { type: 'start', bot: this.bot, lang: 'zh', device };
+      const frame = JSON.stringify(start);
+      socket.send(frame);
     };
     socket.onmessage = (event: MessageEvent<unknown>) => {
       if (typeof event.data === 'string') {

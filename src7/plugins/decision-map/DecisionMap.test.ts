@@ -6,6 +6,7 @@ import * as fastify from 'fastify';
 import { afterEach, expect, test } from 'bun:test';
 import * as events from '../../utils/RequestEvent.ts';
 import * as plugin from './index.ts';
+import type * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
 
@@ -145,4 +146,61 @@ test('导入已定节点保留作者、时间和出处，重发数据不会替�
   const payload = { node: 'release', option: 'a' };
   const repeated = await app.inject({ method: 'POST', url: `${PREFIX}/choose`, payload });
   expect(repeated.statusCode).toBe(409);
+});
+
+test('写话入口校验一次，只写话不改待定，带选项照点选落盘，中控回话归档收件', async () => {
+  const { app, ctx } = await setup('中控');
+  const calls: events.StripEnvelope<routesModule.DecisionRelayRequest>[] = [];
+  const notices: string[] = [];
+  ctx.on('decision-map/chosen', (notice) => { notices.push(notice.option); });
+  events.onRequestEvent(ctx, 'decision-map/relay', 'decision-map/relay-result', (request) => {
+    calls.push({ action: request.action, helper: request.helper, node: request.node, text: request.text });
+    return { ok: true, id: 30 + calls.length };
+  });
+  const third = { id: 'scope', kind: 'feature', title: '先做哪块', parent: 'goal', status: 'working' };
+  await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: [...entries, third] });
+  const url = `${PREFIX}/note`;
+
+  const empty = await app.inject({ method: 'POST', url, payload: { node: 'release', text: '  ' } });
+  expect(empty.statusCode).toBe(400);
+  const long = await app.inject({ method: 'POST', url, payload: { node: 'release', text: '长'.repeat(2001) } });
+  expect(long.statusCode).toBe(400);
+  const missing = await app.inject({ method: 'POST', url, payload: { node: '没有', text: '你好' } });
+  expect(missing.statusCode).toBe(404);
+
+  const plain = await app.inject({ method: 'POST', url, payload: { node: 'release', text: '等我看完日志再说' } });
+  expect(plain.statusCode).toBe(200);
+  expect(plain.json()).toMatchObject({
+    node: { id: 'release', kind: 'pending', status: 'open', notes: [{ id: 'n1', author: 'user', text: '等我看完日志再说' }] },
+    delivery: { relayId: 31 },
+  });
+  expect(calls[0]).toMatchObject({ action: 'deliver', helper: '中控', node: 'release#n1' });
+  expect(calls[0]?.text).toContain('决策图「今天发吗」节点 release：用户写了：等我看完日志再说');
+
+  const working = await app.inject({ method: 'POST', url, payload: { node: 'scope', text: '先做手机上的' } });
+  expect(working.json()).toMatchObject({ node: { status: 'working', notes: [{ id: 'n1' }] } });
+
+  const withOption = await app.inject({ method: 'POST', url, payload: { node: 'release', option: 'b', text: '周五别发' } });
+  expect(withOption.json()).toMatchObject({
+    node: { kind: 'decided', chosen: 'b', decidedBy: 'user', notes: [{ id: 'n1' }, { id: 'n2', option: 'b' }] },
+  });
+  expect(notices).toEqual(['b']);
+  expect(calls[2]?.node).toBe('release#n2');
+  expect(calls[2]?.text).toContain('同时选了「明天发」（选项 b）');
+
+  const wrong = await app.inject({ method: 'POST', url: `${PREFIX}/reply`, payload: { node: 'release', note: 'n9', text: '收到' } });
+  expect(wrong.statusCode).toBe(404);
+  const reply = await app.inject({ method: 'POST', url: `${PREFIX}/reply`, payload: { node: 'release', note: 'n1', text: '好，等你' } });
+  expect(reply.json()).toMatchObject({
+    node: { notes: [{ id: 'n1', repliedAt: expect.any(Number) }, { id: 'n2' }, { id: 'n3', author: 'central', replyTo: 'n1' }] },
+    notified: true,
+  });
+  expect(calls[3]).toMatchObject({ action: 'ack', node: 'release#n1' });
+
+  const kept = await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: [{ id: 'scope', summary: '改一句', notes: [] }] });
+  const scope = kept.json<types.DecisionGraph>().nodes.find((node) => node.id === 'scope');
+  expect(scope?.notes).toHaveLength(1);
+  const changes = await app.inject(`${PREFIX}/changes?since=1`);
+  const actions = changes.json<{ changes: types.DecisionChange[] }>().changes.map((change) => change.action);
+  expect(actions).toEqual(['note', 'note', 'choose', 'note', 'reply', 'put']);
 });

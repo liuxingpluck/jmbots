@@ -80,10 +80,10 @@ describe('base-bridge 基地服务', () => {
     for (const [method, url] of routes) {
       const response = await app.inject({ method, url });
       expect(response.statusCode).toBe(503);
-      expect(response.json<{ error: string }>()).toEqual({ error: '没配 engine.index_url' });
+      expect(response.json<{ error: string }>()).toEqual({ error: '没配 plugins[base-bridge].config.index_url' });
     }
-    await expect(base.getJson('/health', 100)).rejects.toThrow('没配 engine.index_url');
-    await expect(base.postJson('/notify', {}, 100)).rejects.toThrow('没配 engine.index_url');
+    await expect(base.getJson('/health', 100)).rejects.toThrow('没配 plugins[base-bridge].config.index_url');
+    await expect(base.postJson('/notify', {}, 100)).rejects.toThrow('没配 plugins[base-bridge].config.index_url');
   });
 
   //M 服务不依赖 HTTP；入口去掉两端空白和末尾斜杠，之后不重读配置。
@@ -95,13 +95,23 @@ describe('base-bridge 基地服务', () => {
     expect(base.url).toBe('http://127.0.0.1:32123/root');
   });
 
+  test('插件地址优先，显式空串关闭默认基地地址', async () => {
+    for (const indexUrl of ['http://127.0.0.1:32125', '']) {
+      const ctx = new cordis.Context();
+      closers.push(() => ctx.fiber.dispose());
+      await ctx.plugin(FakeResources, { engine: { index_url: 'http://127.0.0.1:32124' } });
+      await ctx.plugin(bridge, { index_url: indexUrl });
+      expect(ctx.base.url).toBe(indexUrl);
+    }
+  });
+
   //M 非法外部配置在入口拒绝，不等到每次发请求时才报错。
   test('拒绝错误类型、相对地址、非 HTTP 协议和带查询串的地址', async () => {
     for (const value of [123, {}, '/relative', 'file:///tmp/base', 'http://localhost/?q=1', 'http://localhost/#part']) {
       const ctx = new cordis.Context();
       closers.push(() => ctx.fiber.dispose());
       await ctx.plugin(FakeResources, { engine: { index_url: value } });
-      expect(() => bridge.apply(ctx)).toThrow('engine.index_url');
+      expect(() => bridge.apply(ctx)).toThrow('plugins[base-bridge].config.index_url');
       expect(ctx.get('base')).toBeUndefined();
     }
   });
@@ -201,7 +211,7 @@ describe('base-bridge 基地服务', () => {
     const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
     const result = await requestEvent(ctx, 'base/request', 'base/result', get, baseOptions);
     expect(result.ok).toBe(false);
-    expect(result.error).toBe('没配 engine.index_url');
+    expect(result.error).toBe('没配 plugins[base-bridge].config.index_url');
     expect(result.requestId).not.toBe('');
   });
 
@@ -217,7 +227,7 @@ describe('base-bridge 基地服务', () => {
     expect(Date.now() - began).toBeLessThan(1000);
   });
 
-  //M 单独指定 notify.url 的用户即使没有 engine.index_url，也能发送通知。
+  //M 单独指定 notify.url 的用户即使没有默认基地地址，也能发送通知。
   test('未配基地时仍可 POST 到完整通知地址', async () => {
     const remote = upstream();
     remote.post('/notify', async (request) => ({ received: request.body }));

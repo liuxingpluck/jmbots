@@ -339,6 +339,15 @@ export function Item(props: {
   if (selected) {
     botClass = 'jm-msg jm-msg-bot jm-msg-traced jm-msg-linked';
   }
+  let speech = '';
+  if (item.message.channel === 'voice' && 'spoken' in item.reply) {
+    if (item.reply.spoken === true) {
+      speech = t('已播报');
+    }
+    if (item.reply.spoken === false) {
+      speech = t('未播报');
+    }
+  }
   //M 渲染机器人回复气泡：展示时间戳、耗时、代际标识及脱敏后的 Markdown 回复正文。
   return (
     <MessageMenu items={menuItems}>
@@ -349,6 +358,7 @@ export function Item(props: {
         <span>{timeline.formatTime(item.at)}</span>
         {elapsed && <span className="jm-msg-elapsed" title={t('前台从收到你那条消息到交出或说完；后台从接手到这条回复')}>{elapsed}</span>}
         {source}
+        {speech !== '' && <span className="jm-msg-source">{speech}</span>}
         <span className="jm-reply-generation" title={presentation.generationTitle(item.reply.generation)}>
           {presentation.generation(item.reply.generation)}
         </span>

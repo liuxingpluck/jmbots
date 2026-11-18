@@ -18,6 +18,24 @@ export interface DecisionOption {
   cost?: string;
 }
 
+/** 用户或中控在节点上写的一句话。 */
+export interface DecisionNote {
+  /** 节点内递增的留言号，如 n1。 */
+  id: string;
+  /** 谁写的。 */
+  author: 'user' | 'central';
+  /** 写下的毫秒时间戳。 */
+  at: number;
+  /** 写的内容。 */
+  text: string;
+  /** 用户写话时一并选的选项号。 */
+  option?: string;
+  /** 中控这句回的是哪条留言。 */
+  replyTo?: string;
+  /** 中控回过这条用户留言的毫秒时间戳。 */
+  repliedAt?: number;
+}
+
 /** 当前图中的一个节点。 */
 export interface DecisionNode {
   /** 图中唯一的节点号。 */
@@ -56,6 +74,8 @@ export interface DecisionNode {
   main?: boolean;
   /** 跨枝依赖的节点号。 */
   needs?: string[];
+  /** 用户和中控在这个节点上写的话，按时间先后。 */
+  notes?: DecisionNote[];
 }
 
 /** 整张图的公开快照。 */
@@ -75,7 +95,7 @@ export interface DecisionChange {
   /** 改动发起者。 */
   actor: 'central' | 'user';
   /** 操作名称。 */
-  action: 'put' | 'choose' | 'ack';
+  action: 'put' | 'choose' | 'ack' | 'note' | 'reply';
   /** 受影响的节点号。 */
   nodes: readonly string[];
   /** 用户选择时的选项号。 */
@@ -84,4 +104,6 @@ export interface DecisionChange {
   title?: string;
   /** 确认附言。 */
   note?: string;
+  /** 写话或回话时的留言号。 */
+  noteId?: string;
 }

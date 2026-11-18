@@ -11,7 +11,7 @@ export interface DecisionRelayRequest extends events.RequestEnvelope {
   action: 'deliver' | 'ack';
   /** relay 配置中的中控助手名。 */
   helper: string;
-  /** 决策图节点号，作为同一条收件的稳定键。 */
+  /** 收件的稳定键：选择用节点号，留言用「节点号#留言号」。 */
   node: string;
   /** 只在投递时提供的收件文字。 */
   text?: string;
@@ -50,9 +50,22 @@ declare module 'cordis' {
 
 const PREFIX = '/api/decision-map';
 const RETRY = { method: 'GET', path: `${PREFIX}/changes` };
+/** 一条留言或回话最多多少字，防止误贴整份文件进收件箱。 */
+const NOTE_MAX = 2000;
+
+/** 入口读留言文字：非空、不超过 NOTE_MAX 字。 */
+function readNoteText(value: unknown): string {
+  //G 先按普通文本校验非空并去掉首尾空白。
+  const text = storeModule.readText(value, 'text');
+
+  //G 超长的话不存也不投，提示用户分几次写。
+  if (text.length > NOTE_MAX) throw new failureModule.Failure(400, `text 最多 ${String(NOTE_MAX)} 字`);
+
+  return text;
+}
 
 /**
- * 注册读图、批量写入、点选、轮询和确认入口。
+ * 注册读图、批量写入、点选、写话、回话、轮询和确认入口。
  * @param ctx 插件的 Cordis 上下文。
  * @param store 运行时决策图。
  * @param helper 配置的中控 relay 助手，省略时通过变化接口收结果。
@@ -113,6 +126,61 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
       if (!result.ok || result.id === undefined) return { node: picked.node, delivery: RETRY };
 
       return { node: picked.node, delivery: { relayId: result.id } };
+    });
+    scope.post<{ Body: unknown }>(`${PREFIX}/note`, async (request) => {
+      //G 入口校验一次：节点号、文字非空且不超长，选项可省略。
+      const body = storeModule.readObject(request.body);
+      const id = storeModule.readText(body['node'], 'node');
+      const text = readNoteText(body['text']);
+      let optionId: string | undefined;
+      if (body['option'] !== undefined) optionId = storeModule.readText(body['option'], 'option');
+
+      //M 带了选项先照点选落盘，和直接点选项走同一条路。
+      let optionText: string | undefined;
+      if (optionId !== undefined) {
+        const picked = store.choose(id, optionId);
+        const notice = { node: id, option: optionId, title: picked.node.title };
+        if (picked.changed) ctx.emit('decision-map/chosen', notice);
+        optionText = picked.option.text;
+      }
+
+      //M 再记下这句话；节点不存在时这里报 404。
+      const added = store.addNote(id, text, optionId);
+      if (helper === undefined) return { node: added.node, note: added.note, delivery: RETRY };
+
+      //M 收件正文写清哪张图、哪个节点、用户写了什么，选了选项的一并写上。
+      const lines = [`决策图「${added.node.title}」节点 ${id}：用户写了：${text}`];
+      if (optionText !== undefined) lines.push(`同时选了「${optionText}」（选项 ${String(optionId)}）。`);
+      if (optionText === undefined) lines.push('节点状态没改，处理完用 Decision_Map.mjs add 更新节点。');
+      const command = `Decision_Map.mjs reply ${JSON.stringify(id)} ${added.note.id} "<回话>"`;
+      lines.push(`回话请运行 ${command}`);
+      const key = `${id}#${added.note.id}`;
+      const relayText = lines.join('\n');
+      const relay = { action: 'deliver', node: key, helper, text: relayText } as const;
+
+      //M 每条留言单独进中控收件，relay 按「节点号#留言号」去重。
+      const result = await requestRelay(ctx, relay);
+      if (!result.ok || result.id === undefined) return { node: added.node, note: added.note, delivery: RETRY };
+
+      return { node: added.node, note: added.note, delivery: { relayId: result.id } };
+    });
+    scope.post<{ Body: unknown }>(`${PREFIX}/reply`, async (request) => {
+      //G 中控回话入口同样只校验一次：节点号、留言号、文字。
+      const body = storeModule.readObject(request.body);
+      const id = storeModule.readText(body['node'], 'node');
+      const replyTo = storeModule.readText(body['note'], 'note');
+      const text = readNoteText(body['text']);
+
+      //M 回话落盘，网页下次轮询就能看到。
+      const replied = store.reply(id, replyTo, text);
+      if (helper === undefined) return { node: replied.node, note: replied.note };
+
+      const key = `${id}#${replyTo}`;
+      const relay = { action: 'ack', node: key, helper } as const;
+
+      //M 归档这条留言的收件，Wait_Relay 下次只唤醒新的话。
+      const result = await requestRelay(ctx, relay);
+      return { node: replied.node, note: replied.note, notified: result.ok };
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/ack`, async (request) => {
       //G 确认入口只取节点号与可选附言。

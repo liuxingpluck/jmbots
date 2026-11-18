@@ -3,6 +3,7 @@
  * allow / deny / unsure。两种模型都认：对话模型（开一场 kind: 'decision' 的小会话，让它回一段带 probability 的 JSON）；
  * 0.4 用的分类器（typesafe-system-one，直接给概率）。不拦事件、不出题、不记表。
  * 谁要判断谁发请求事件 decision/judge（approval、bots 前台、progress 可选地用），本插件回 decision/judge-result；没挂本插件时发的一方当场退回拿不准。
+ * 请求带 want: ['what'] 时，对话模型在同一次回答里顺带写一句“执行完会做成什么”，回执带回 what（只用来显示，不进合分）；分类器给不出文字，不带 what。
  * 照 0.4 src/capabilities/Model.ts:382-390、446-453、727-744。设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as piAi from '@earendil-works/pi-ai';
@@ -15,7 +16,7 @@ import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../..
 /** 插件名。 */
 export const name = 'decision';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.3';
+export const version = '1.1.0';
 
 /** 默认的决策模型：Magpie 里的 jev-1.14 分类器（jev-router 在这个地区用不了）。 */
 const DEFAULT_MODELS = [{ model: 'magpie/openrouter/typesafe/jev-1.14', type: 'classifier' }];
@@ -38,6 +39,9 @@ declare module 'cordis' {
 }
 
 
+/** 调用方能顺带要的字段：what 是命令执行完会做成什么（一句话）。 */
+export type JudgeWant = 'what';
+
 /** 调用方给的。 */
 export interface JudgeInput {
   /** 为什么问：exec、run、progress……只进跟踪。 */
@@ -52,16 +56,33 @@ export interface JudgeInput {
   allowAt?: number;
   /** 分数 < 它就 deny；不给用配置的 deny_at。 */
   denyAt?: number;
+  /** 顺带要的字段：带 'what' 就在同一次提问里多要一句执行结果；不给就和原来一样，提示词、回执都不变。 */
+  want?: readonly JudgeWant[];
 }
 
 /** 一个模型的结果。 */
-export interface ModelResult { model: string; score?: number; reason?: string; error?: string; ms: number }
+export interface ModelResult {
+  /** 配置里的模型名。 */
+  model: string;
+  /** 答案是“是”的把握，0～1；没答出分时没有。 */
+  score?: number;
+  /** 对话模型写的一句理由。 */
+  reason?: string;
+  /** 带了 want: ['what'] 时对话模型写的执行结果；没写、写空串时没有。 */
+  what?: string;
+  /** 没答上来的原因（出错、超时、没答出分）。 */
+  error?: string;
+  /** 花了多少毫秒。 */
+  ms: number;
+}
 
 /** 合出来的结论。 */
 export interface Judgement {
   verdict: 'allow' | 'deny' | 'unsure';
   score?: number;
   reason: string;
+  /** 带了 want: ['what'] 时，按配置 models 的顺序第一个写了的执行结果；都没写时没有。 */
+  what?: string;
   results: ModelResult[];
 }
 
@@ -76,6 +97,8 @@ export interface DecisionJudgeResult extends ResultEnvelope {
   score?: number;
   /** 一句人话：怎么合的分、比的哪个阈值。 */
   reason: string;
+  /** 带了 want: ['what'] 才可能有：命令执行完会做成什么，一句话；模型都没写就没有。 */
+  what?: string;
 }
 
 /** 配置里的一个模型。 */
@@ -95,6 +118,13 @@ interface DecisionConfig {
 const PROBABILITY = /probability"?\s*[:：]\s*([0-9.]+)/u;
 /** 一句理由。 */
 const REASON = /reason"?\s*[:：]\s*"([^"]*)"/u;
+/** 带了 want: ['what'] 时的执行结果。 */
+const WHAT = /"what"\s*[:：]\s*"([^"]*)"/u;
+/** 不带 want 时要的回答格式（和原来一字不差）。 */
+const PLAIN_FORMAT = '只回一段 JSON：{"probability": 0 到 1 的数，答案是‘是’的把握, "reason": "一句话"}';
+/** 带了 want: ['what'] 时要的回答格式：多要一句执行结果，看不出就留空，别编。 */
+const WHAT_FORMAT = '只回一段 JSON：{"probability": 0 到 1 的数，答案是‘是’的把握, "reason": "一句话", '
+  + '"what": "命令执行完的结果，一句话：对哪些文件做了什么、最后变成什么样；看不出就写空串，别编"}';
 /** 合分方式的中文。 */
 const COMBINE_WORDS = { average: '取平均', min: '取最低', max: '取最高' } as const;
 
@@ -146,6 +176,10 @@ export class Decision extends cordis.Service {
       const judgement = await this.judge(request);
       const out: Omit<DecisionJudgeResult, 'requestId'> = { verdict: judgement.verdict, reason: judgement.reason };
       if (judgement.score !== undefined) out.score = judgement.score;
+      //M 带了 want: ['what'] 且有模型写了，才把执行结果带回；不带 want 的回执和原来一样。
+      if (judgement.what !== undefined) {
+        out.what = judgement.what;
+      }
       return out;
     });
     const wanted = config.members.filter((member) => member.type === 'classifier');
@@ -199,6 +233,11 @@ export class Decision extends cordis.Service {
     const allowAt = input.allowAt ?? this.config.allowAt;
     const denyAt = input.denyAt ?? this.config.denyAt;
     const judgement = buildJudgement(scores, results, this.config.combine, allowAt, denyAt);
+    //M 执行结果按配置 models 的顺序取第一个写了的（Promise.all 保持顺序，不看谁先回）；只用来显示，不进合分。
+    const written = results.find((result) => result.what !== undefined);
+    if (written?.what !== undefined) {
+      judgement.what = written.what;
+    }
     const summaryList = results.map((result) => {
       if (result.score === undefined) return `${result.model}=（${result.error ?? ''}） ${String(result.ms)}ms`;
 
@@ -206,7 +245,7 @@ export class Decision extends cordis.Service {
     });
     //T 跟踪：每个模型的分和结论。
     this.ctx.emit('trace', 'Decision.judge', `${input.kind}：${judgement.verdict}`, 'Promise.all(members.map(ask))', {
-      kind: input.kind, 结论: judgement.verdict, 分: judgement.score, 原因: judgement.reason,
+      kind: input.kind, 结论: judgement.verdict, 分: judgement.score, 原因: judgement.reason, 执行结果: judgement.what,
       各模型: summaryList,
     });
     return judgement;
@@ -257,13 +296,19 @@ export class Decision extends cordis.Service {
 
     //M sessions.ask 开一场 kind: 'decision' 的小会话问一次（走骨架循环，循环里调 chat()，假模型也接得住），思考档 off；超时（signal）就停。
     const bot = input.bot ?? this.ctx.bots.list()[0]?.name ?? '';
+    //M 带了 want: ['what']：同一次提问里多要一句执行结果，不另调模型；不带就照原样只要分和理由。
+    const wantWhat = input.want?.includes('what') === true;
+    let answerFormat = PLAIN_FORMAT;
+    if (wantWhat) {
+      answerFormat = WHAT_FORMAT;
+    }
     //G 第一行放现状：假模型回话的前 40 字，离线测时能把分带回来。
     const text = [
       JSON.stringify(input.state),
       input.question.instructions,
       `是：${input.question.yes}`,
       `否：${input.question.no}`,
-      '只回一段 JSON：{"probability": 0 到 1 的数，答案是‘是’的把握, "reason": "一句话"}',
+      answerFormat,
     ].join('\n');
     const askInput: AskInput = {
       kind: 'decision',
@@ -286,10 +331,20 @@ export class Decision extends cordis.Service {
     const score = Number(found[1]);
     if (!(score >= 0 && score <= 1)) return { error: '没答出分' };
 
+    const part: Omit<ModelResult, 'model' | 'ms'> = { score };
     const reason = REASON.exec(reply)?.[1];
-    if (reason === undefined) return { score };
+    if (reason !== undefined) {
+      part.reason = reason;
+    }
+    if (!wantWhat) return part;
 
-    return { score, reason };
+    //M 带了 want：再找执行结果；空串、只有空白的当没写（模型看不出就留空，不编）。
+    const whatFound = WHAT.exec(reply);
+    const what = whatFound?.[1]?.trim() ?? '';
+    if (what !== '') {
+      part.what = what;
+    }
+    return part;
   }
 }
 

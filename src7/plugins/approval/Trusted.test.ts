@@ -224,7 +224,7 @@ describe('审批卡片三行说清（用户 #172）', () => {
     const card = await askCard(`copy a.txt "${path.join(OUTSIDE, 'y.txt')}"`);
 
     expect(card.lines).toHaveLength(3);
-    expect(card.lines[0]).toContain('要做什么：执行命令 copy a.txt');
+    expect(card.lines[0]).toContain('要做什么：说不清会做成什么（命令：copy a.txt');
     expect(card.lines[2]).toContain('审核小会话：审核没给出理由');
     expect(card.risk).toBe('审核没给出理由');
   });

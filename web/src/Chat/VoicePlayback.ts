@@ -5,13 +5,16 @@ const ECHO_TAIL_SECONDS = 0.15;
 
 /** 将服务器 PCM 帧排到浏览器音频时钟上。 */
 export class VoicePlayback {
-  private receiving?: { id: string; rate: number };
+  private receiving?: { id: string; rate: number; played: boolean };
   private readonly sources = new Set<AudioBufferSourceNode>();
   private nextTime = 0;
   private muteUntil = 0;
 
   /** 复用由用户点击开麦时激活的音频上下文。 */
-  constructor(private readonly audio: AudioContext) {}
+  constructor(
+    private readonly audio: AudioContext,
+    private readonly onPlayed: (utterId: string) => void,
+  ) {}
 
   /** 收音上传从音频开始帧暂停，等实际播放完和尾音消散。 */
   get blocksMicrophone(): boolean {
@@ -20,7 +23,7 @@ export class VoicePlayback {
 
   /** 记住这一段的采样率，后面的二进制帧都按这项解释。 */
   begin(id: string, rate: number): void {
-    this.receiving = { id, rate };
+    this.receiving = { id, rate, played: false };
   }
 
   /** 把小端 PCM 归一化为 Float32，然后按积累时长顺接播放。 */
@@ -44,6 +47,11 @@ export class VoicePlayback {
       source.disconnect();
       this.sources.delete(source);
       this.muteUntil = this.audio.currentTime + ECHO_TAIL_SECONDS;
+      if (!stream.played) {
+        stream.played = true;
+        //M 播完第一个 PCM 块才确认真实播放，停播清理不会走到这里。
+        this.onPlayed(stream.id);
+      }
     };
     //M 播毕前保留节点，给麦克风上传守卫判断。
     this.sources.add(source);

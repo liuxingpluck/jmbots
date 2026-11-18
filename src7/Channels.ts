@@ -816,6 +816,15 @@ export async function requestChannelReply(
 }
 
 
+/** 渠道直发后交回的结果；不交回的（命令行、网页、内置微信）算已发。外部程序（programs 转过去的）会回草稿、失败或不确定。 */
+export interface TextReplyOutcome {
+  /** sent 已发、draft 已存草稿、rejected 明确没发、uncertain 不知道发没发到。 */
+  status: 'sent' | 'draft' | 'rejected' | 'uncertain';
+  /** 原因或说明；已发时可以没有。 */
+  reason?: string;
+}
+
+
 /** 只发纯文字的渠道（命令行、网页、微信）接 channel/reply 用的适配器：模型的 channel_reply、零次兜底、approval 的直回都从这里出去。 */
 export interface TextReplyAdapter {
   /** 渠道名（cli / wechat / http）。 */
@@ -825,8 +834,15 @@ export interface TextReplyAdapter {
    * 认出聊天时交回解析后的渠道地址对象；认不出时交回 undefined，由 registerTextReply 统一回 rejected（“没有叫 X 的聊天”）。
    */
   getTargetAddress?: (chat: string, request: ChannelReplyRequest) => Record<string, unknown> | undefined;
-  /** 把纯文字直接送回原渠道（跨渠道时 targetAddress 为 getTargetAddress 返回的目标地址），不能再通过 bots.route 自动触发模型或重复回环。 */
-  sendDirectText: (text: string, request: ChannelReplyRequest, targetAddress?: Record<string, unknown>) => void | Promise<void>;
+  /**
+   * 把纯文字直接送回原渠道（跨渠道时 targetAddress 为 getTargetAddress 返回的目标地址），不能再通过 bots.route 自动触发模型或重复回环。
+   * 交回 TextReplyOutcome 时照它写回执；不交回算已发。
+   */
+  sendDirectText: (
+    text: string,
+    request: ChannelReplyRequest,
+    targetAddress?: Record<string, unknown>,
+  ) => void | TextReplyOutcome | Promise<void | TextReplyOutcome>;
 }
 
 
@@ -944,21 +960,33 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
 
     const body = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\n');
     try {
-      //M 将正文与可选跨渠道解析地址交由渠道适配器的直发逻辑写出。
-      await adapter.sendDirectText(body, request, targetAddress);
+      //M 将正文与可选跨渠道解析地址交由渠道适配器的直发逻辑写出；不交回结果的渠道照旧算已发。
+      const returned = await adapter.sendDirectText(body, request, targetAddress);
+      let outcome: TextReplyOutcome = { status: 'sent' };
+      if (returned !== undefined) {
+        outcome = returned;
+      }
+      const ok = outcome.status === 'sent' || outcome.status === 'draft';
       const receipt: ReplyReceipt = {
         v: 2,
-        ok: true,
-        status: 'sent',
+        ok,
+        status: outcome.status,
         replyRequestKey: request.replyRequestKey,
         replyRoundKey: request.replyRoundKey,
         replyIndex: request.replyIndex,
         kind: request.kind,
-        parts: [{ partId: request.parts[0]?.partId ?? 'text:0', kind: 'text', status: 'sent' }],
+        parts: [{ partId: request.parts[0]?.partId ?? 'text:0', kind: 'text', status: outcome.status }],
         at: Date.now(),
       };
-      sent.set(request.replyRequestKey, { payloadHash: request.payloadHash, receipt });
-      //M 直发成功并缓存回执后，发出 sent 状态确认。
+      if (outcome.reason !== undefined) {
+        receipt.reason = outcome.reason;
+      }
+
+      //G 只记已发、已存草稿的回执给同键重放；失败、不确定的，同键再来照样交给渠道再试。
+      if (ok) {
+        sent.set(request.replyRequestKey, { payloadHash: request.payloadHash, receipt });
+      }
+      //M 发出渠道交回的回执（不交回的就是 sent）。
       emitReplied(request, receipt);
     } catch (error) {
       //G 直发过程抛出异常时，读取简洁错误说明并以 uncertain 状态回报。

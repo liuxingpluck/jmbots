@@ -1,6 +1,7 @@
 /** voice v0.1 的离线协议测试，以及有 WebSocket 插件时的真实升级测试。 */
 
 import * as events from 'node:events';
+import { Database } from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
@@ -8,13 +9,17 @@ import * as requests from '../../utils/RequestEvent.ts';
 import * as asrModule from './Asr.ts';
 import * as cloud from './CloudAsr.ts';
 import * as models from './Models.ts';
+import * as replyModule from './Replies.ts';
 import * as routedAsr from './RoutedAsr.ts';
 import * as routes from './Routes.ts';
 import type * as taskModule from './Tasks.ts';
 import * as ttsModule from './Tts.ts';
 import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
-import type * as channel from '../../Channels.ts';
+import * as channel from '../../Channels.ts';
+import type { Session } from '../../Sessions.ts';
+import * as memoryIndex from '../memory/ChannelIndex.ts';
+import * as webApi from '../web-api/index.ts';
 import * as plugin from './index.ts';
 
 type Wire = Buffer | ArrayBuffer | Buffer[];
@@ -382,11 +387,13 @@ function getTaskWorld(
   decide?: (req: JudgeRequest) => Verdict | Promise<Verdict>,
   options: Partial<taskModule.TaskSettings> = {},
   speak?: ttsModule.Speak,
+  device?: string,
 ) {
   const settings = { ...DEFAULT_TASKS, ...options };
   const { ctx, voice, streams } = getVoice(settings, speak);
   const judged: JudgeRequest[] = [];
   const messages: channel.ChannelMessage[] = [];
+  const dispatched: channel.ChannelMessage[] = [];
   const tasks: taskModule.VoiceTask[] = [];
   const socket = new Socket();
 
@@ -398,16 +405,23 @@ function getTaskWorld(
       return { verdict, reason: '测试回执' };
     });
   }
+  const claim = (message: channel.ChannelMessage, control?: channel.ChannelMessageControl): void => {
+    dispatched.push(message);
+    const sessionId = message.routing.sessionId ?? 'work-' + dispatched.length;
+    control?.claims.push({ bot: '默认机器人', claimKey: '测试认领', status: 'claimed', sessionId });
+  };
+  ctx.on('voice/dispatch', async (message, control) => claim(message, control));
   ctx.on('channel/message', (message, control) => {
     messages.push(message);
-    const sessionId = message.routing.sessionId ?? 'work-' + messages.length;
-    control?.claims.push({ bot: '默认机器人', claimKey: '测试认领', status: 'claimed', sessionId });
+    if (control?.approvalHandled === true) return;
+
+    claim(message, control);
   });
   ctx.on('voice/task', (task) => { tasks.push(task); });
 
   voice.attach(socket);
-  socket.write({ type: 'start' });
-  return { ctx, voice, socket, asr: streams[0]!, judged, messages, tasks };
+  socket.write({ type: 'start', device });
+  return { ctx, voice, socket, asr: streams[0]!, judged, messages, dispatched, tasks };
 }
 
 test('本连接的最终答复以音频元数据、二进制 PCM 和结束帧送出', async () => {
@@ -419,10 +433,12 @@ test('本连接的最终答复以音频元数据、二进制 PCM 和结束帧送
   world.asr.onFinal(WEATHER);
   await waitForCount(world.tasks, 1);
   const messageId = world.messages[0]!.messageId;
-  const request = { sourceSnapshot: { messageId, channel: 'voice' }, kind: 'final' } as channel.ChannelReplyRequest;
+  const request = {
+    sourceSnapshot: { messageId, channel: 'voice' }, kind: 'final', replyRequestKey: 'test-playback',
+  } as channel.ChannelReplyRequest;
 
-  //M 经由同一来源消息的标准渠道回话入口送入已确认的答复。
-  world.voice.reply('好的，我来查。', request);
+  //M 原连接确认一个音频块播过后，标准回复记录为已播。
+  const played = world.voice.playReply('好的，我来查。', request);
   const end = await waitForFrame(world.socket.frames, 'audio-end');
   const parts = world.socket.frames.slice(-4);
   expect(parts).toEqual([
@@ -431,6 +447,8 @@ test('本连接的最终答复以音频元数据、二进制 PCM 和结束帧送
     { type: 'binary', data: [1, 0, 2, 0] },
     { type: 'audio-end', utterId: expect.any(String) },
   ]);
+  world.socket.write({ type: 'audio-played', utterId: end['utterId'] });
+  expect(await played).toBe(true);
 });
 
 test('停止屏幕播报组会清掉该组，但保留随后到来的普通回复', async () => {
@@ -444,12 +462,10 @@ test('停止屏幕播报组会清掉该组，但保留随后到来的普通回�
   world.asr.onFinal(WEATHER);
   await waitForCount(world.tasks, 1);
   const messageId = world.messages[0]!.messageId;
-  const request = { sourceSnapshot: { messageId, channel: 'voice' }, kind: 'final' } as channel.ChannelReplyRequest;
-
   expect(world.voice.speak('屏幕讲解', 'screen-1', true)).toBe(true);
   await waitForFrame(world.socket.frames, 'audio-end');
   expect(world.voice.speak('待取消的讲解', 'screen-1', false)).toBe(true);
-  world.voice.reply('普通回复', request);
+  expect(world.voice.sendReply('普通回复', messageId, 'final')).toBe(true);
   world.voice.stopSpeech('screen-2');
   expect(world.socket.frames.some((frame) => frame['type'] === 'stop-audio')).toBe(false);
   world.voice.stopSpeech('screen-1');
@@ -520,7 +536,9 @@ test('unsure 仅在句尾放行，句尾 deny 不进入下一次判断', async (
   asr.onFinal(next);
   await waitForCount(tasks, 2);
   expect(judged[3]?.state['这段话']).toBe(next);
-  expect(messages[1]?.rawText).toBe(next);
+  expect(messages[1]?.rawText).toBe(DESKTOP);
+  expect(messages[1]?.routing).toMatchObject({ recordOnly: true });
+  expect(messages[2]?.rawText).toBe(next);
 });
 
 test('缺 decision 时停麦强制完成当前一句，先发任务帧再发 idle', async () => {
@@ -544,7 +562,7 @@ test('运行中 30 秒内补充进上一会话，有收尾后另开', async () =
   asr.onFinal(DESKTOP);
   await waitForCount(tasks, 2);
   expect(messages[1]?.routing).toEqual({ listenOnly: false, autoFinal: true, sessionId: 'work-1' });
-  expect(messages[1]?.text).toBe('【补充】' + DESKTOP);
+  expect(messages[1]?.text).toBe(DESKTOP);
   expect(tasks[1]).toMatchObject({ merged: true, sessionId: 'work-1' });
   voice.settle(messages[1]!.messageId);
 
@@ -592,7 +610,7 @@ test('派发保留标准渠道所有字段，并以认领会话构造任务回�
     targetBots: ['默认机器人'],
     mentions: [],
     rawText: WEATHER,
-    text: '【语音转写，可能有错字】' + WEATHER,
+    text: WEATHER,
     attachments: [],
     createdAt: expect.any(Number),
     receivedAt: expect.any(Number),
@@ -606,6 +624,140 @@ test('派发保留标准渠道所有字段，并以认领会话构造任务回�
   expect(message.receivedAt).toBeGreaterThanOrEqual(message.createdAt);
   const frame = await waitForFrame(socket.frames, 'task');
   expect(frame).toEqual({ type: 'task', ...task });
+});
+
+test('半句先开工，修订后的整句只发一次标准档案并带回任务号', async () => {
+  const device = 'a1b2c3d4-0000-4000-8000-000000000001';
+  const world = getTaskWorld(() => 'allow', {}, undefined, device);
+  world.asr.onPartial(DESKTOP);
+  await waitForCount(world.tasks, 1);
+  expect(world.dispatched).toHaveLength(1);
+  expect(world.messages).toHaveLength(0);
+
+  const task = world.tasks[0]!;
+  const corrected = '请把我桌面的所有截图按日期整理好';
+  world.asr.onPartial(corrected);
+  world.asr.onFinal(corrected);
+  await waitForCount(world.messages, 1);
+  expect(world.messages).toHaveLength(1);
+  expect(world.dispatched).toHaveLength(1);
+  const message = world.messages[0]!;
+  expect(message.messageId).toBe(world.dispatched[0]!.messageId);
+  expect(message.text).toBe(corrected);
+  expect(message.chatId).toBe(device);
+  expect(message.origin.address).toMatchObject({ chatId: device, customer: 'voice:' + device, owner: true });
+  expect(message.routing).toMatchObject({ recordOnly: true, taskId: task.taskId });
+});
+
+test('最终语音与未播报的回复各入档一次，网页和渠道可按设备查回', async () => {
+  const device = 'a1b2c3d4-0000-4000-8000-000000000002';
+  const world = getTaskWorld(() => 'allow', {}, undefined, device);
+  const { ctx } = world;
+  const db = new Database(':memory:');
+  const app = fastify.default();
+  const bot = { name: '默认机器人', config: {} };
+  //M 内存数据库和 Fastify 注入覆盖真实投影，假后台和静音播放器隔离外部服务。
+  cleanups.push(() => db.close());
+  cleanups.push(() => app.close());
+  ctx.provide('resources', { db });
+  ctx.provide('http', { app });
+  ctx.provide('bots', { channel: () => () => undefined, channelNames: () => ['voice', 'http'], list: () => [bot], get: () => bot });
+  ctx.provide('sessions', { open: () => undefined, find: () => [] });
+  webApi.apply(ctx);
+  await app.ready();
+
+  const index = new memoryIndex.ChannelIndex(db);
+  //M 用 memory 的标准消息转换和去重写入，核对入站和回复都归本人。
+  ctx.on('channel/message', (message) => {
+    const row = memoryIndex.getMessageRow(message);
+    if (row !== undefined) index.add(row);
+  });
+  let source: channel.SourceSnapshot | undefined;
+  ctx.on('channel/reply', (request) => {
+    source = request.sourceSnapshot;
+    const row = memoryIndex.getReplyRow(request);
+    if (row !== undefined) index.add(row);
+  });
+  let plays = 0;
+  const unplayed = async (): Promise<boolean> => {
+    plays += 1;
+    return false;
+  };
+  const replies = new replyModule.VoiceReplies(ctx, unplayed);
+
+  //M 半句已开工，后台可以先结束，回话须等最终字幕入档。
+  world.asr.onPartial(DESKTOP);
+  await waitForCount(world.tasks, 1);
+  const task = world.tasks[0]!;
+  const message = world.dispatched[0]!;
+  const address = message.origin.address;
+  const session = { id: task.sessionId, row: { bot: bot.name, address, state: 'done' } } as Session;
+  const text = '已按日期整理。';
+  const first = replies.fromWork(text, session);
+  expect(plays).toBe(0);
+  const pending = await app.inject('/api/messages');
+  expect(pending.json()).toMatchObject({ messages: [] });
+  expect(plays).toBe(0);
+
+  const corrected = '请把我桌面的所有截图按日期整理好';
+  world.asr.onFinal(corrected);
+  expect(await within(first, '整句入档后发送回复')).toMatchObject({ status: 'accepted' });
+  expect(await replies.fromWork(text, session)).toMatchObject({ status: 'accepted' });
+  ctx.emit('voice/record', world.messages[0]!, task.sessionId);
+  expect(plays).toBe(1);
+
+  //M 网页重新查询和按设备筛选时都读到同一条入站及其唯一回复。
+  const all = await app.inject('/api/messages');
+  expect(all.statusCode).toBe(200);
+  expect(all.json()).toMatchObject({
+    messages: [{
+      channel: 'voice', chat: device, text: corrected, sessionId: task.sessionId, createdAt: message.createdAt,
+      replies: [{ text, spoken: false }],
+    }],
+  });
+  const filteredUrl = '/api/messages?channel=voice&chat=' + device;
+  const filtered = await app.inject(filteredUrl);
+  expect(filtered.json()).toEqual(all.json());
+  const other = await app.inject('/api/messages?channel=voice&chat=other-device');
+  expect(other.json()).toMatchObject({ messages: [] });
+
+  //M 历史事件和记忆索引使用同一个设备号，且没有半句或重复回复。
+  let history: channel.ChannelHistoryResultEvent | undefined;
+  ctx.on('channel/history-result', (result) => { history = result; });
+  const request: channel.ChannelHistoryRequest = {
+    requestId: 'voice-history', channel: 'voice', mode: 'current', limit: 10, sourceSnapshot: source!,
+  };
+  ctx.emit('channel/history', request);
+  expect(history).toMatchObject({ ok: true, items: [{ direction: 'user', text: corrected }, { direction: 'bot', text }] });
+  const query = { channel: 'voice', chat: device, words: [], limit: 10 };
+  const indexed = index.search(query);
+  expect(indexed).toHaveLength(2);
+  expect(indexed).toEqual(expect.arrayContaining([
+    expect.objectContaining({ direction: 'user', text: corrected, memoryKey: 'owner' }),
+    expect.objectContaining({ direction: 'bot', text, memoryKey: 'owner' }),
+  ]));
+});
+
+test('重复的标准回复只进入一次语音播放，回执保留实际播放状态', async () => {
+  const ctx = new cordis.Context();
+  cleanups.push(() => ctx.fiber.dispose());
+  let calls = 0;
+  const play = async (): Promise<boolean> => {
+    calls += 1;
+    return true;
+  };
+  new replyModule.VoiceReplies(ctx, play);
+  const parts = [{ partId: 'text:0', kind: 'text' as const, text: '收到' }];
+  const request = {
+    channel: 'voice', bot: '默认机器人', replyRequestKey: 'single-reply', replyRoundKey: 'reply-round',
+    replyIndex: 0, kind: 'final' as const, mode: 'text' as const, parts, payloadHash: 'same-text',
+    sourceSnapshot: { channel: 'voice' } as channel.SourceSnapshot,
+  };
+  const first = await channel.requestChannelReply(ctx, request);
+  const replayed = await channel.requestChannelReply(ctx, request);
+  expect(first).toMatchObject({ ok: true, spoken: true });
+  expect(replayed).toEqual(first);
+  expect(calls).toBe(1);
 });
 
 test('替换连接取消旧判断的等待，迟到的 allow 不派发', async () => {

@@ -34,3 +34,26 @@ export function choose(node: string, option: string): Promise<{ node: types.Deci
   //M 用户点击后只提交一次，收到结果再刷新画布。
   return request('/choose', options);
 }
+
+/** 写话的回执：更新后的节点和刚记下的那条。 */
+interface NoteReply {
+  /** 更新后的节点，含全部留言。 */
+  node: types.DecisionNode;
+  /** 刚记下的留言。 */
+  note: types.DecisionNote;
+}
+
+/**
+ * 把用户在节点上写的话发给中控，可一并带上选项。
+ * @param node 节点号。
+ * @param text 用户写的话。
+ * @param option 同时选的选项号，只写话时省略。
+ * @returns 服务端记下后的节点和留言。
+ */
+export function addNote(node: string, text: string, option?: string): Promise<NoteReply> {
+  const body = JSON.stringify({ node, text, option });
+  const options = { method: 'POST', headers: { 'content-type': 'application/json' }, body };
+
+  //M 服务端校验并落盘后才返回，页面用回执刷新面板。
+  return request('/note', options);
+}

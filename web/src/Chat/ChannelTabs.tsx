@@ -109,6 +109,9 @@ export function getChannelName(channelId: string, t: i18n.Translate = i18n.sourc
 
   if (base === 'cli') return t('命令行');
 
+  //M 用网页标签的本地化名字显示语音渠道。
+  if (base === 'voice') return t('语音');
+
   return channelId;
 }
 
@@ -221,10 +224,15 @@ function getChannelsFromResponse(response: ChannelsResponse, t: i18n.Translate):
     }
     const chats: ChannelChatItem[] = [];
     for (const chatItem of channel.chats) {
-      //M 保留后端排序与统计值，仅裁掉与外层渠道重复的前缀字样。
+      //M 后端用同一个语音渠道名描述各浏览器，在下拉里用聊天号区分。
+      let chatLabel = getChatShortLabel(chatItem.label, baseId);
+      if (baseId === 'voice') {
+        chatLabel = chatItem.id.slice(0, 8);
+      }
+      //M 把可读聊天标签和完整筛选号都保留给下拉菜单。
       chats.push({
         id: chatItem.id,
-        label: getChatShortLabel(chatItem.label, baseId),
+        label: chatLabel,
         count: chatItem.count,
         updatedAt: chatItem.updatedAt,
       });

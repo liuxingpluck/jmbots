@@ -1,9 +1,15 @@
-/** 将决策树按叶子数分扇区，再按可读尺寸布置到 React Flow 画布里。 */
+/** 把决策树布置到 React Flow 画布里：放射看法按叶子数分扇区，思维导图看法按层左右或上下展开。 */
 import * as d3 from 'd3-hierarchy';
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
 
 export type ViewMode = 'all' | 'main' | 'pending';
+
+/** 思维导图往哪边长：左右两边，或根在上往下。 */
+export type MindDirection = 'sides' | 'down';
+
+/** 思维导图连线只从这条轴上的两边出线。 */
+type Axis = 'x' | 'y';
 
 /** 完整分支折叠在父卡片上。 */
 interface Fold {
@@ -78,30 +84,17 @@ const OPPOSITE = {
 };
 
 /**
- * 先布置可见树，再生成卡片和连线。
+ * 放射看法：先布置可见树，再生成卡片和连线。
  * @param entries 图的节点快照。
  * @param view 画布尺寸、模式及手动展开的分支。
  * @param open 卡片动作回调。
  */
 export function getLayout(entries: types.DecisionNode[], view: View, open: VisualData['open']) {
-  const root = entries.find((entry) => entry.parent === null);
-  if (root === undefined) return { nodes: [], edges: [] };
-
-  //M 过滤先保留祖先，之后才判断哪些同级子树可以收进一个 +N。
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-  const included = getIncluded(entries, byId, view.mode);
-  const byParent = new Map<string, types.DecisionNode[]>();
-  for (const entry of entries) {
-    if (entry.parent === null) continue;
-
-    //M 保留同级节点的输入顺序，让同一快照总是得到相同布局。
-    const siblings = byParent.get(entry.parent) ?? [];
-    siblings.push(entry);
-    byParent.set(entry.parent, siblings);
-  }
+  //M 先按聚焦和折叠规则得出这一屏要画的树。
+  const rootBranch = getVisible(entries, view);
+  if (rootBranch === undefined) return { nodes: [], edges: [] };
 
   //M d3 给出同一扇区内的相对角度和深度，展开后才重新计算叶子数。
-  const rootBranch = getBranch(root, byParent, included, view);
   const hierarchy = d3.hierarchy(rootBranch);
   const tree = d3.tree<Branch>().size([ROUND, 1]);
   const radial = tree(hierarchy);
@@ -118,7 +111,103 @@ export function getLayout(entries: types.DecisionNode[], view: View, open: Visua
     placeLandscape(boxes, bounds);
   }
 
-  //M 卡片和连线共用最终坐标。尺寸从布局传给 CSS，避免估算值和实际不同。
+  //M 放射看法用直线连到最近的卡片边缘。
+  return getFlow(boxes, positions, open, undefined);
+}
+
+/**
+ * 思维导图看法：根在中间，一级分支左右交替排开往外长；竖排时根在上往下长，连线用曲线。
+ * @param entries 图的节点快照。
+ * @param view 画布尺寸、模式及手动展开的分支，折叠和聚焦规则与放射看法相同。
+ * @param open 卡片动作回调。
+ * @param direction 左右展开或上下展开。
+ */
+export function getMindLayout(
+  entries: types.DecisionNode[], view: View, open: VisualData['open'], direction: MindDirection,
+) {
+  //M 折叠、聚焦规则和放射看法共用同一棵可见树。
+  const rootBranch = getVisible(entries, view);
+  if (rootBranch === undefined) return { nodes: [], edges: [] };
+
+  //M 同一层之间、相邻两层之间的间距，按卡片尺寸留出连线的空间。
+  let breadth = 100;
+  let depth = 290;
+  if (direction === 'down') {
+    breadth = 240;
+    depth = 150;
+  }
+  if (view.portrait) {
+    breadth = breadth * 0.8;
+    depth = depth * 0.72;
+  }
+
+  //M 左右展开时一级分支轮流放到右边和左边，两边各排一棵树；上下展开只排一棵。
+  let sides = [{ sign: 1, children: rootBranch.children }];
+  if (direction === 'sides') {
+    const right = rootBranch.children.filter((_branch, index) => index % 2 === 0);
+    const left = rootBranch.children.filter((_branch, index) => index % 2 === 1);
+    sides = [{ sign: 1, children: right }, { sign: -1, children: left }];
+  }
+  const positions = new Map<string, xyflow.XYPosition>();
+  const visible: Branch[] = [rootBranch];
+  positions.set(rootBranch.entry.id, { x: 0, y: 0 });
+  for (const side of sides) {
+    //M 每一边的树都以根为原点，d3 的 x 是同层排开的方向，y 是往外长的方向。
+    const sideRoot = { ...rootBranch, children: side.children };
+    const hierarchy = d3.hierarchy(sideRoot);
+    const tree = d3.tree<Branch>().nodeSize([breadth, depth]);
+    const laid = tree(hierarchy);
+    for (const point of laid.descendants()) {
+      if (point.depth === 0) continue;
+
+      //M 左右展开把层深放到横轴，上下展开放到竖轴。
+      let position = { x: side.sign * point.y, y: point.x };
+      if (direction === 'down') position = { x: point.x, y: point.y };
+      positions.set(point.data.entry.id, position);
+      visible.push(point.data);
+    }
+  }
+
+  //M 卡片尺寸和放射看法一致；树的间距已经避开重叠，不再挪位。
+  const boxes = visible.map((branch) => getBox(branch, positions, view));
+  let axis: Axis = 'x';
+  if (direction === 'down') axis = 'y';
+  return getFlow(boxes, positions, open, axis);
+}
+
+/** 按看法模式过滤并折叠后的可见树；图里没有中心目标时是 undefined。 */
+function getVisible(entries: types.DecisionNode[], view: View): Branch | undefined {
+  const root = entries.find((entry) => entry.parent === null);
+  if (root === undefined) return undefined;
+
+  //M 过滤先保留祖先，之后才判断哪些同级子树可以收进一个 +N。
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const included = getIncluded(entries, byId, view.mode);
+  const byParent = new Map<string, types.DecisionNode[]>();
+  for (const entry of entries) {
+    if (entry.parent === null) continue;
+
+    //M 保留同级节点的输入顺序，让同一快照总是得到相同布局。
+    const siblings = byParent.get(entry.parent) ?? [];
+    siblings.push(entry);
+    byParent.set(entry.parent, siblings);
+  }
+
+  //M 从中心目标往下逐支决定留哪些、收起哪些。
+  return getBranch(root, byParent, included, view);
+}
+
+/**
+ * 卡片和连线共用最终坐标，生成 React Flow 的节点和边。
+ * @param boxes 已落位的卡片。
+ * @param positions 节点号到中心坐标。
+ * @param open 卡片动作回调。
+ * @param axis 思维导图连线只从横边或竖边出线并画成曲线；放射看法不给，画直线。
+ */
+function getFlow(
+  boxes: Box[], positions: Map<string, xyflow.XYPosition>, open: VisualData['open'], axis: Axis | undefined,
+) {
+  //M 尺寸从布局传给 CSS，避免估算值和实际不同。
   const nodes = boxes.map((box): FlowNode => {
     const { entry, fold } = box.branch;
     return {
@@ -131,19 +220,18 @@ export function getLayout(entries: types.DecisionNode[], view: View, open: Visua
     };
   });
   const edges: xyflow.Edge[] = [];
-  for (const branch of branches) {
-    const { entry } = branch.data;
-    const parentId = branch.parent?.data.entry.id;
-    if (parentId !== undefined) {
+  for (const box of boxes) {
+    const { entry } = box.branch;
+    if (entry.parent !== null && positions.has(entry.parent)) {
       //M 保留主线和普通分支两种连线强度。
-      const edge = getEdge(parentId, entry.id, positions, entry.main === true, false);
+      const edge = getEdge(entry.parent, entry.id, positions, entry.main === true, false, axis);
       edges.push(edge);
     }
     for (const need of new Set(entry.needs ?? [])) {
       if (!positions.has(need)) continue;
 
       //M 依赖线只连当前能看见的节点，隐藏分支不画到空处。
-      const edge = getEdge(need, entry.id, positions, false, true);
+      const edge = getEdge(need, entry.id, positions, false, true, axis);
       edges.push(edge);
     }
   }
@@ -387,8 +475,12 @@ function getBranch(
   return { entry, children: kept, size, complete, fold };
 }
 
-/** 从卡片向目标方向选择适合的边缘。 */
-function getDirection(dx: number, dy: number): xyflow.Position {
+/** 从卡片向目标方向选择适合的边缘；给了轴时只在这条轴的两边里选。 */
+function getDirection(dx: number, dy: number, axis: Axis | undefined): xyflow.Position {
+  if (axis === 'x' && dx >= 0) return xyflow.Position.Right;
+  if (axis === 'x') return xyflow.Position.Left;
+  if (axis === 'y' && dy >= 0) return xyflow.Position.Bottom;
+  if (axis === 'y') return xyflow.Position.Top;
   if (Math.abs(dx) >= Math.abs(dy) && dx >= 0) return xyflow.Position.Right;
   if (Math.abs(dx) >= Math.abs(dy)) return xyflow.Position.Left;
   if (dy >= 0) return xyflow.Position.Bottom;
@@ -398,7 +490,12 @@ function getDirection(dx: number, dy: number): xyflow.Position {
 
 /** 为 React Flow 建立主线、放射线或跨分支依赖。 */
 function getEdge(
-  source: string, target: string, positions: Map<string, xyflow.XYPosition>, main: boolean, dependency: boolean,
+  source: string,
+  target: string,
+  positions: Map<string, xyflow.XYPosition>,
+  main: boolean,
+  dependency: boolean,
+  axis: Axis | undefined,
 ): xyflow.Edge {
   const from = positions.get(source)!;
   const to = positions.get(target)!;
@@ -406,12 +503,15 @@ function getEdge(
   const dy = to.y - from.y;
 
   //M 向另一张卡片的边缘接线，保留主线和依赖的视觉区别。
-  const out = getDirection(dx, dy);
+  const out = getDirection(dx, dy, axis);
   let className = 'decision-edge';
   if (main) className += ' decision-edge--main';
   if (dependency) className += ' decision-edge--dependency';
 
+  //M 思维导图用曲线，放射看法用直线。
+  let type = 'straight';
+  if (axis !== undefined) type = 'default';
   const id = JSON.stringify([source, target, dependency]);
-  return { id, source, target, sourceHandle: out, targetHandle: OPPOSITE[out], type: 'straight', className };
+  return { id, source, target, sourceHandle: out, targetHandle: OPPOSITE[out], type, className };
 }
 

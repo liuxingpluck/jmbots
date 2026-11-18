@@ -569,6 +569,13 @@ describe('收件记下谁、在哪说的', () => {
     const items = (listed.json() as { items: Record<string, unknown>[] }).items;
     expect(items.map((item) => ({ owner: item['owner'], sender: item['sender'], chat: item['chat'], chatName: item['chatName'] })))
       .toEqual(wanted);
+    //G HTTP 轮询公开本人标志，渠道原始发话人标识留在内部回话地址。
+    expect(listed.body).not.toContain(group.openId);
+    expect(listed.body).not.toContain(p2p.openId);
+    for (const item of items) {
+      expect(item).not.toHaveProperty('address');
+      expect(item).not.toHaveProperty('sender_open_id');
+    }
 
     const lines = fs.readFileSync(path.join(root, 'integrations', 'relay', BOT, 'inbox.jsonl'), 'utf8').trim().split('\n');
     expect(JSON.parse(lines.at(-3) ?? '{}')).toMatchObject(wanted[0] ?? {});
@@ -585,7 +592,7 @@ describe('飞书群登记的 relay、机器人的 relay', () => {
 
   test('群登记了 relay: model：这个群的会话有 relay_send 和提示；没登记的群、私聊没有，调了也拒', async () => {
     const made = await ready([{ name: 'Claude', prefixes: ['cc '] }]);
-    expect(made.tools.map((tool) => tool.definition.name)).toEqual(['relay_send', 'note_claude']);
+    expect(made.tools.map((tool) => tool.definition.name)).toEqual(['relay_send']);
     expect(made.tools[0]?.definition.description).toContain('闲聊、打招呼不转');
 
     const inModel = made.open(front);
@@ -684,22 +691,22 @@ describe('relay 旧库和配置', () => {
     }
   });
 
-  test('helpers 没写：不挂转话，只登记 note_claude；tasks.scan_ms 写错抛错', () => {
-    //M 没写配置、写了空配置：都不抛错，工具只有 note_claude，没人认领 bot/receive。
+  test('helpers 没写且 http 未就绪：不登记工具；tasks.scan_ms 写错抛错', () => {
+    //M 缺省配置和空配置都能启动，未启用转话时不认领 bot/receive。
     for (const config of [undefined, {}]) {
       const made = world();
       relayModule.apply(made.ctx, config);
-      expect(made.tools.map((tool) => tool.definition.name)).toEqual(['note_claude']);
+      expect(made.tools.map((tool) => tool.definition.name)).toEqual([]);
     }
 
     //M 任务通道的扫描间隔小于 1 秒：整个插件不挂。
     expect(() => relayModule.apply(world().ctx, { tasks: { scan_ms: 10 } })).toThrow('scan_ms');
   });
 
-  test('写了 helpers：先登记 relay_send，再登记 note_claude', async () => {
+  test('写了 helpers 且 http 未就绪：只登记 relay_send', async () => {
     const made = await ready();
     const names = made.tools.map((tool) => tool.definition.name);
-    expect(names).toEqual(['relay_send', 'note_claude']);
+    expect(names).toEqual(['relay_send']);
   });
 });
 

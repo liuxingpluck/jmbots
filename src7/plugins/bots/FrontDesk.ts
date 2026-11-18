@@ -22,9 +22,9 @@ import * as imageModule from '../../utils/Image.ts';
 import * as namesModule from '../../utils/Names.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as decisionPlugin from '../decision/index.ts';
 import * as historyTools from '../memory/HistoryTools.ts';
+import * as memoryKeyModule from '../memory/MemoryKey.ts';
 import type { ReceiveEvent } from './index.ts';
 import * as protocol from '../../Channels.ts';
 
@@ -626,11 +626,17 @@ export class FrontDesk {
       request.system.push('你还没调用回复工具');
     }
 
-    //M 最近往来：这一轮开始之前的最近 N 条，可能来自不同的渠道、不同的会话。
-    const entries = this.recent(row.bot, this.config.recent, thisRound[0]?.timestamp, this.scopeIds(request.session));
+    //G 原始往来没有归属字段，只在本人会话里加载；其他会话用已标的召回。
+    const access = memoryKeyModule.getMemoryAccess(row);
+    let entries: BotLogEntry[] = [];
+    if (access.full) {
+      const ids = this.scopeIds(request.session);
+      const time = thisRound[0]?.timestamp;
+      entries = this.recent(row.bot, this.config.recent, time, ids);
+    }
     //M 前台有两个统一工具时才提醒用它们查归档。
     const hasMemory = request.tools.some((tool) => tool.name === 'memory_search');
-    if (hasMemory && workspaceModule.privateAllowed(row.address)) {
+    if (hasMemory && access.full) {
       request.system.push(HISTORY_HINT);
     }
 
@@ -808,7 +814,8 @@ export class FrontDesk {
     const ids = new Set<string>([root, session.row.id, ...kids]);
     //M 还没记下 parent 的旧后台：只有一场前台时也算进来，免得分会话落地前查不到交办记录。
     //M   非本人（builder、guest）说的那一轮不算：旧后台不知道是谁的，可能是用户自己的活。
-    if (workspaceModule.isOther(session.row.address)) return [...ids];
+    const access = memoryKeyModule.getMemoryAccess(session.row);
+    if (!access.full) return [...ids];
     if (session.row.kind === 'front' && this.ctx.sessions.find({ bot: session.row.bot, kind: 'front' }).length <= 1) {
       for (const work of this.ctx.sessions.find({ bot: session.row.bot, kind: 'work' })) {
         if (work.parent === undefined) ids.add(work.id);
@@ -1000,8 +1007,7 @@ export class FrontDesk {
    */
   private async syncLogs(session: Session, entries: BotLogEntry[]): Promise<void> {
     //G 隔离：没有客户号就不往记忆服务写（写进去会成为“没有客户”的聊天记录）。
-    const customer = typeof session.row.customer === 'string' ? session.row.customer : '';
-    if (customer === '') return;
+    const previous = session.row.customer ?? '';
     const groups = new Map<string, BotLogEntry[]>();
     for (const entry of entries) {
       const list = groups.get(entry.sessionId) ?? [];
@@ -1009,6 +1015,19 @@ export class FrontDesk {
       groups.set(entry.sessionId, list);
     }
     for (const [sessionId, list] of groups) {
+      //M 以每个来源会话的地址定归属，避免重建 bot-log 段落时抹掉已有补标。
+      let meta = session.row as Omit<Session['row'], 'messages'> | undefined;
+      if (sessionId !== session.row.id) {
+        const metas = this.ctx.sessions.find({ id: sessionId });
+        meta = metas[0];
+      }
+      let customer = previous;
+      if (meta !== undefined) {
+        const key = memoryKeyModule.getSessionMemoryKey(meta);
+        customer = key || meta.customer || previous;
+      }
+      if (customer === '') continue;
+
       const source = `bot-log:${sessionId}`;
       //M 往来也是聊天记录：进不进关系图由 memory 插件定（history_graph / no_graph_customers），这里不管。
       const docs = list.map((entry) => ({
@@ -1037,11 +1056,14 @@ export class FrontDesk {
    */
   private async searchRemote(session: Session, keyword: string): Promise<Array<{ entry: BotLogEntry; score: number }>> {
     //G 隔离：检索必须带客户号，没有就不搜。
-    const customer = typeof session.row.customer === 'string' ? session.row.customer : '';
+    const key = memoryKeyModule.getSessionMemoryKey(session.row);
+    const customer = key || session.row.customer || '';
     if (customer === '') return [];
 
     //M 发 memory/request（search-history）：没挂 memory、搜不成都是空的。
-    const query = { action: 'search-history' as const, query: keyword, bot: session.row.bot, customer, limit: HISTORY_PAGE };
+    const query = {
+      action: 'search-history' as const, query: keyword, bot: session.row.bot, customer, limit: HISTORY_PAGE,
+    };
     const searched = await this.askMemory(query, 10_000);
     const hits = searched.hits ?? [];
     const out: Array<{ entry: BotLogEntry; score: number }> = [];

@@ -81,7 +81,7 @@ test('info保留核实后的UI；商业授权明确区分未授权与未知，�
   expect(protocolModule.getLicenseLabel('licensed')).toBe('已授权');
   expect(protocolModule.getLicenseLabel('expired')).toBe('过期');
   expect(protocolModule.getLicenseLabel('free')).toBe('不需要');
-  expect(protocolModule.getLicenseLabel('none')).toBe('未授权');
+  expect(protocolModule.getLicenseLabel('none')).toBe('不需要');
   expect(protocolModule.getLicenseLabel(undefined)).toBe('未知');
   expect(protocolModule.getLicenseLabel('arbitrary')).toBe('未知');
 });

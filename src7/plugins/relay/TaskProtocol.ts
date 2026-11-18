@@ -46,7 +46,7 @@ export interface ExecutionSpec {
 
 
 /** v1 任务单：派活端写，存进表的 protocol 列，也原子写成任务文件夹里的 task.json；task.md 是它的可读副本。 */
-export interface TaskSpec {
+interface TaskSpecBase {
   /** 协议版本，固定 1。 */
   version: 1;
   /** 固定 task。 */
@@ -84,6 +84,12 @@ export interface TaskSpec {
     /** 交回物：要交回哪些东西，每项一句。 */
     deliverables: string[];
   };
+}
+
+/** 需回信的任务丢掉 reply 字段仍按 v1 旧配置处理。 */
+interface ReplyTaskSpec extends TaskSpecBase {
+  /** 默认需要交回。 */
+  reply?: true;
   /** 怎么执行。 */
   execution: ExecutionSpec;
   /** 怎么交回。 */
@@ -96,6 +102,15 @@ export interface TaskSpec {
     returnMode: ReturnMode;
   };
 }
+
+/** 单向任务供执行端领取，已经没有要求的模型和交回结构。 */
+interface OneWayTaskSpec extends TaskSpecBase {
+  /** 领取即送达，无需交回。 */
+  reply: false;
+}
+
+/** v1 任务单的两种回信方式，共用同一个领取入口。 */
+export type TaskSpec = ReplyTaskSpec | OneWayTaskSpec;
 
 
 /** 新协议任务存在 agent_tasks.protocol 列里的：任务单、回话地址、领取键、交回的结果。旧任务这一列是 NULL。 */
@@ -273,7 +288,6 @@ export function getExecution(agent: AgentInfo, input: ExecutionInput): Execution
  * @returns Markdown 全文。
  */
 export function getTaskMarkdown(spec: TaskSpec): string {
-  const execution = spec.execution;
   const lines = [
     `# 任务 #${spec.taskId}：${spec.task.title}`,
     '',
@@ -282,6 +296,23 @@ export function getTaskMarkdown(spec: TaskSpec): string {
     '## 要做什么',
     '',
     spec.task.goal,
+  ];
+
+  //M 两种任务的附件都在同一个 input/，可读单先列输入再写动作。
+  if (spec.task.inputs.length > 0) {
+    lines.push('', '## 输入文件', '', ...spec.task.inputs.map((item) => `- ${item}`));
+  }
+  const base = `/api/agents/${spec.assignedTo}/tasks/${spec.taskId}`;
+  const take = `- 先领：POST ${base}/take，正文 {"claimKey": "你定的一个键"}；回 409 是别人领了。`;
+  if (spec.reply === false) {
+    //M 单向任务的同一张单不再显示模型或交回步骤。
+    lines.push('', '## 领取', '', take, '- 领取即送达，不用交回。');
+    return lines.join('\n');
+  }
+
+  //M 要求交回的任务列出交回物和主执行配置。
+  const execution = spec.execution;
+  lines.push(
     '',
     '## 交回物',
     '',
@@ -290,7 +321,7 @@ export function getTaskMarkdown(spec: TaskSpec): string {
     '## 怎么执行',
     '',
     `- 主执行：${execution.model}，思考档 ${execution.thinking}（${execution.effortPolicy}）。`,
-  ];
+  );
 
   //M 子代理：要开的每个一行；不开写明不开。
   if (execution.subagents.length === 0) {
@@ -300,17 +331,13 @@ export function getTaskMarkdown(spec: TaskSpec): string {
     const owned = item.ownership.join('、') || '没分文件';
     lines.push(`- 子代理 ${item.name}：${item.responsibility}；${item.model}，思考档 ${item.thinking}；负责 ${owned}。`);
   }
-  lines.push('- 设不了指定的模型、思考档，或开不了要求的子代理：交 status capability_missing，写明缺什么；不换模型（尤其不换付费的），不让主代理自己做完冒充开过子代理。');
-
-  //M 输入文件：有才列。
-  if (spec.task.inputs.length > 0) {
-    lines.push('', '## 输入文件', '', ...spec.task.inputs.map((item) => `- ${item}`));
-  }
+  //M 要求执行端如实上报缺失的能力，保持任务单选择的模型和子代理约束。
+  const capability = '- 设不了指定的模型、思考档，或开不了要求的子代理：交 status capability_missing，写明缺什么；'
+    + '不换模型（尤其不换付费的），不让主代理自己做完冒充开过子代理。';
+  lines.push(capability);
 
   //M 怎么交回：领取带 claimKey，交回照 returnMode。
-  const base = `/api/agents/${spec.assignedTo}/tasks/${spec.taskId}`;
-  lines.push('', '## 领取和交回', '');
-  lines.push(`- 先领：POST ${base}/take，正文 {"claimKey": "你定的一个键"}；回 409 是别人领了。`);
+  lines.push('', '## 领取和交回', '', take);
   if (spec.result.returnMode === 'http') {
     lines.push(`- 交回：文件先 PUT /api/uploads/<文件名>，再 POST ${base}/result，正文 {"protocolResult": 结果, "uploads": [上传号]}。`);
   }
@@ -318,6 +345,7 @@ export function getTaskMarkdown(spec: TaskSpec): string {
     const root = spec.result.root;
     lines.push(`- 交回：文件放进 ${root}/artifacts/，结论写 ${root}/result.md，最后先写临时文件再改名成 ${root}/result.json。`);
   }
+  //M 给执行端结果字段的查询入口，避免任务单重复写完整协议。
   lines.push('- 结果的字段见 GET /api/agents/guide 的“新协议”一节。');
   return lines.join('\n');
 }

@@ -289,7 +289,7 @@ export function getFunctionAt(lines: string[], index: number): { start: number; 
 }
 
 
-/** 一段函数注释，交给页面（Trail.ts 的 TrailLine.docs 就是它）。 */
+/** 一段函数注释，交给页面（journal/Trail.ts 的 TrailLine.docs 里放的就是它）。 */
 export interface CodeDoc extends ParsedDoc {
   /** 名字。 */
   name: string;

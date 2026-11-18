@@ -1,9 +1,137 @@
-/** 读取外部程序的启动通知和生命周期接口，校验跨进程回执。 */
+/** 读取外部程序的启动通知和生命周期接口，校验跨进程回执；渠道回调的常量和格式两边共用（外置程序直接 import）。 */
+import * as crypto from 'node:crypto';
 import type * as readline from 'node:readline';
 import type { ProgramSpec } from './Spec.ts';
 
 /** 当前支持的程序管理协议版本。 */
 const PROTOCOL = 1;
+
+/** 子进程环境里的一次性密钥：每次拉起都换，进程退出就作废。 */
+export const KEY_ENV = 'JMBOTS_PROGRAM_KEY';
+/** 子进程环境里的回调前缀（如 http://127.0.0.1:30086/api/programs/wechat），只给登记了渠道的程序。 */
+export const CALLBACK_ENV = 'JMBOTS_CALLBACK_URL';
+/** 两个方向的渠道调用都用这个请求头带密钥。 */
+export const KEY_HEADER = 'x-jmbots-key';
+
+/** 附件摘要：原件留在外部程序里，主程序只拿名字和类型。 */
+export interface AttachmentNote {
+  /** 给人看的名字（文件名或“图片”这类）。 */
+  name: string;
+  /** MIME 类型，知道才写。 */
+  mime?: string;
+  /** 字节数，知道才写。 */
+  size?: number;
+}
+
+/** 程序交给主程序的一条渠道消息：POST <回调前缀>/channel/message。 */
+export interface InboundMessage {
+  /** 渠道名，只能是 config 给这个程序登记的。 */
+  channel: string;
+  /** 平台账号。 */
+  account: string;
+  /** 聊天号。 */
+  chat: string;
+  /** 聊天显示名，没有写空串。 */
+  chatName: string;
+  /** 私聊或群聊。 */
+  chatType: 'p2p' | 'group';
+  /** 来源消息号，同一渠道同一账号里唯一，重发要同一个。 */
+  nativeId: string;
+  /** 发信人。 */
+  sender: { id: string; name?: string };
+  /** 正文（非文字消息写成“[图片]”这类）。 */
+  text: string;
+  /** 附件摘要，没有是空列表。 */
+  attachments: AttachmentNote[];
+  /** 平台上的发出时刻，Unix 毫秒；不知道写 0。 */
+  createdAt: number;
+  /** 群里是不是 @ 了自己。 */
+  mentioned: boolean;
+}
+
+/** 入站回执：accepted 已收并发给机器人，duplicate 收过了，rejected 没收（看 reason）。 */
+export interface InboundReceipt {
+  /** accepted、duplicate 为 true。 */
+  ok: boolean;
+  /** 结论。 */
+  status: 'accepted' | 'duplicate' | 'rejected';
+  /** 主程序里的标准消息号（收下时有）。 */
+  messageId?: string;
+  /** 拒收原因，或已收但没有机器人认领的说明。 */
+  reason?: string;
+}
+
+/** 主程序请程序回一条话：POST <程序>/jmbots/v1/channel/reply。 */
+export interface ReplyCall {
+  /** 请求号：同一条回复重试时不变，程序按它去重。 */
+  requestId: string;
+  /** 渠道名。 */
+  channel: string;
+  /** 平台账号；跨聊天发话时为空串，由程序按聊天号或名字自己认。 */
+  account: string;
+  /** 聊天号（跨聊天时可能是名字）。 */
+  chat: string;
+  /** 聊天显示名，不知道是空串。 */
+  chatName: string;
+  /** 正文。 */
+  text: string;
+  /** 哪个机器人说的。 */
+  bot: string;
+  /** progress 中途的话，final 最后的答复。 */
+  kind: 'progress' | 'final';
+}
+
+/** 程序回复接口的回执状态：已发、已存草稿、失败、不确定。 */
+export type ReplyCallStatus = 'sent' | 'draft' | 'failed' | 'uncertain';
+
+/** 主程序向程序要一页历史：POST <程序>/jmbots/v1/channel/history。 */
+export interface HistoryCall {
+  /** 渠道名。 */
+  channel: string;
+  /** 平台账号；从别的渠道查时为空串，由程序自己认。 */
+  account: string;
+  /** 聊天号。 */
+  chat: string;
+  /** 最多几条（1 到 200）。 */
+  limit: number;
+  /** 程序上一页交回的 next，第一页不给。 */
+  before?: string;
+  /** 只看这个人说的（visible 模式），不给就是全部。 */
+  senderId?: string;
+}
+
+/** 程序交回的一条历史。 */
+export interface HistoryNote {
+  /** 来源消息号，和入站时的 nativeId 同一套。 */
+  nativeId: string;
+  /** user 对方说的，bot 我方发的。 */
+  direction: 'user' | 'bot';
+  /** Unix 毫秒。 */
+  createdAt: number;
+  /** 发信人。 */
+  sender: { id: string; name?: string };
+  /** 正文。 */
+  text: string;
+  /** 附件摘要。 */
+  attachments: AttachmentNote[];
+}
+
+/**
+ * 按固定时间比较两把密钥，不因为前几个字相同就早退。
+ * @param expected 这次启动发出去的密钥；程序没在运行是 undefined。
+ * @param given 请求头里带来的值。
+ * @returns 一样才是 true；任何一边没有都是 false。
+ */
+export function isSameKey(expected: string | undefined, given: unknown): boolean {
+  if (expected === undefined || typeof given !== 'string') return false;
+
+  const left = Buffer.from(expected);
+  const right = Buffer.from(given);
+  if (left.length !== right.length) return false;
+
+  //M timingSafeEqual 要两边一样长，上面先比过长度。
+  return crypto.timingSafeEqual(left, right);
+}
 
 /** 程序报上来且无法升级兼容的协议版本。 */
 export class UnsupportedProtocol extends Error {}
@@ -245,6 +373,6 @@ export function getLicenseLabel(state: string | undefined): string {
   if (state === 'licensed') return '已授权';
   if (state === 'expired') return '过期';
   if (state === 'free') return '不需要';
-  if (state === 'none') return '未授权';
+  if (state === 'none') return '不需要';
   return '未知';
 }

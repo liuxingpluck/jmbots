@@ -24,6 +24,7 @@ import * as process from 'node:process';
 import * as readline from 'node:readline';
 import * as util from 'node:util';
 import * as channelIndexModule from './ChannelIndex.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 
 
 /** 拼不出键时，“差不多的同一条”的时间差。 */
@@ -111,7 +112,9 @@ async function* getFeishu(root: string): AsyncGenerator<Candidate> {
       const chatId = fileName.slice(0, -'.jsonl'.length);
 
       //M 读这个聊天文件的每一行（坏行跳过），挑出正文和消息号（messageId，和 channel/message 一样）；没有正文、没有消息号的行不补。
+      //M person 是私聊对面的人：一个文件就是一个聊天，机器人的回复借前面最近一条用户的话的发话人。
       const file = path.join(appDir, fileName);
+      let person = '';
       for await (const { value } of readJsonl(file)) {
         const text = getString(value['text']);
         const key = getString(value['messageId']);
@@ -123,19 +126,31 @@ async function* getFeishu(root: string): AsyncGenerator<Candidate> {
           direction = 'bot';
         }
 
-        //M 发言人在 sender 里（id、name）；机器人的回复键拼不出来，标成要按正文查重（fuzzy）。
+        //M 发言人在 sender 里（id、name）；用户的话的发话人就是私聊对面的人。
         const sender = (value['sender'] ?? {}) as Record<string, unknown>;
+        const senderId = getString(sender['id']);
+        if (direction === 'user') {
+          person = senderId;
+        }
+
+        //M 归属键：机器人的回复在用户开口之前（主动发的）就不知道对面是谁，留空等补写。
+        const chatType = getString(value['chatType']);
+        const keySource = { channel: 'feishu', chatType, chat: chatId, person };
+        const memoryKey = memoryKeyModule.getMemoryKey(keySource);
+
+        //M 机器人的回复键拼不出来，标成要按正文查重（fuzzy）。
         const row: channelIndexModule.ChannelRow = {
           key,
           channel: 'feishu',
           account: appId,
           chat: chatId,
-          chatType: getString(value['chatType']),
+          chatType,
           direction,
-          senderId: getString(sender['id']),
+          senderId,
           senderName: getString(sender['name']),
           bot: '',
           text,
+          memoryKey,
           at: Number(value['createdAt']) || 0,
         };
         yield { row, fuzzy: direction === 'bot' };
@@ -194,6 +209,10 @@ function* getWechat(db: bunSqlite.Database, channel: string): Generator<Candidat
       senderId = 'self';
     }
 
+    //M 归属键：微信私聊的会话名就是对面那个人（自己发的也归他），和微信插件发 channel/message 的发话人一样。
+    const keySource = { channel, chatType, chat, person: chat };
+    const memoryKey = memoryKeyModule.getMemoryKey(keySource);
+
     //M 键是 JSON [渠道名, 账号, 分库:库内号]，和微信插件发 channel/message 拼的一样。
     const account = getString(item['account']);
     const nativeId = `${getString(item['source'])}:${String(item['local_id'])}`;
@@ -208,6 +227,7 @@ function* getWechat(db: bunSqlite.Database, channel: string): Generator<Candidat
       senderName: getString(item['sender']),
       bot: '',
       text,
+      memoryKey,
       at: Number(item['at']) * 1000,
     };
     yield { row, fuzzy: false };
@@ -230,10 +250,12 @@ function* getWeb(db: bunSqlite.Database): Generator<Candidate> {
   //M 只读网页自己的消息，其他渠道的镜像已由原渠道归档覆盖。
   const rows = getArchiveRows(db, sql);
   for (const item of rows) {
-    //M 用户与机器人回复共享原消息行号和目标机器人。
+    //M 用户与机器人回复共享原消息行号和目标机器人；本机网页归本人。
     const id = String(item['id']);
     const bot = getString(item['bot']);
-    const shared = { channel: 'http', account: 'local', chat: 'http:本机', chatType: 'local', bot };
+    const keySource = { channel: 'http', chatType: 'local', chat: 'http:本机', person: '' };
+    const memoryKey = memoryKeyModule.getMemoryKey(keySource);
+    const shared = { channel: 'http', account: 'local', chat: 'http:本机', chatType: 'local', bot, memoryKey };
 
     //M 用户的话。
     const text = getString(item['text']);
@@ -291,6 +313,9 @@ async function* getCli(root: string): AsyncGenerator<Candidate> {
   const base = path.join(root, 'channels', 'cli');
   if (!fs.existsSync(base)) return;
 
+  //M 命令行是本机来源，归本人。
+  const keySource = { channel: 'cli', chatType: 'local', chat: 'cli:本机', person: '' };
+  const memoryKey = memoryKeyModule.getMemoryKey(keySource);
   for (const fileName of fs.readdirSync(base)) {
     if (!fileName.endsWith('.jsonl')) continue;
 
@@ -312,6 +337,7 @@ async function* getCli(root: string): AsyncGenerator<Candidate> {
         senderName: '',
         bot: getString(value['bot']),
         text,
+        memoryKey,
         at: Number(value['time']) || 0,
       };
       yield { row, fuzzy: true };

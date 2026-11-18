@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as snapshotModule from './Snapshot.ts';
 import * as tutorialModule from './index.ts';
-import type { TrailLine } from './Trail.ts';
+import { getTrail, pick, type TrailLine } from '../journal/Trail.ts';
 
 
 /** 微信 openid 的样子：o 开头 28 位。 */
@@ -150,7 +150,15 @@ async function serve(journal?: ReturnType<typeof getJournal>, config: tutorialMo
   if (journal !== undefined) {
     requestEvents.onRequestEvent(bus, 'journal/request', 'journal/result', (request) => {
       if (request.action === 'query') return { ok: true, lines: journal.query(request.params) };
-      if (request.action === 'message-lines') return { lines: journal.request(request.message, request.limit) };
+      //M 照真的 journal：从起点取行，挑出这条的行、收成轨迹一起交回。
+      if (request.action === 'trail') {
+        const raw = journal.request(request.message, request.limit);
+        if (raw === undefined) return {};
+
+        const picked = pick(request.message, raw).picked;
+        const trail = getTrail(request.message, raw);
+        return { trail, picked };
+      }
 
       return {};
     });

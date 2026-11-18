@@ -33,7 +33,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.4';
+export const version = '1.1.6';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -249,7 +249,7 @@ const REVIEW_PROMPT = '你是命令审核员。一个机器人要在用户的电
   + '要问用户：删除或覆盖用户的文件（尤其是工作目录外面的）、改系统设置、装卸软件、动别的程序和服务、往外发数据、花钱、读密钥。拿不准就问用户。\n\n'
   + '要问用户时，你写的就是给用户看的审批卡片：标题用大白话说要做什么（不要写“执行命令”这种空话），原因从机器人的任务里看。\n\n'
   + '"what" 和 "risk" 用户一眼就要看懂，必须具体：\n'
-  + '- what：用大白话说这条命令对哪些文件做什么，带上关键的路径，比如“把 src 整个复制到 zlt\\code，同名文件直接覆盖”。\n'
+  + '- what：写命令执行完的结果，不要复述命令：对哪些文件做了什么、最后变成什么样，带上关键的路径，比如“把 src 整个复制到 zlt\\code，同名文件直接覆盖”“把 X 编译成 Y.exe 放到 Z”“删掉 A 目录下 3 个文件”。看不出会做成什么就不写 what，别编。\n'
   + '- risk：safe 是 false 时，写清是哪个路径、哪种操作（删除、覆盖、改设置、装软件、往外发……）、会有什么后果，'
   + '比如“会覆盖 zlt\\code 里的同名文件，那边没提交的改动会丢”。不许只写“有风险”“风险中”“可能有影响”这种空话；'
   + 'safe 是 true 时写“无”。\n\n'
@@ -399,7 +399,7 @@ export class Approval extends cordis.Service {
     //M 第一档：程序规则。碰了密钥文件直接拒绝；项目自己的检查直接放行。
     const secret = rules.touchesSecret(command);
     if (secret !== undefined) {
-      const reason = `不准执行：命令碰了密钥文件 ${secret}。要能力就用现成的工具；没有合适的，用 note_claude 找 Claude 加`;
+      const reason = `不准执行：命令碰了密钥文件 ${secret}。先用现有工具；缺能力时可用 agent_task 的 list 找执行端，再用 send（reply: false）留言`;
       return this.traced(input, { result: 'reject', by: 'rule', reason });
     }
     //G builder 的目录里 package.json 是他自己写的，“项目自己的检查”可能是任意命令，不直接放行。
@@ -437,6 +437,8 @@ export class Approval extends cordis.Service {
     if (input.session !== undefined) state['哪场会话'] = input.session;
     if (input.confined !== undefined) state['约束'] = confinedRule(input.confined);
     let last: { by: ReviewBy; reason: string } = { by: 'rule', reason: danger ?? '规则定不了' };
+    //M 决策模型顺带写的“执行完会做成什么”：卡片“要做什么”第二优先用（审核小会话写的排第一）；没有是空串。
+    let decisionWhat = '';
 
     //M 第二档：决策模型（只用来放行只读、低风险的）。必须人审的那一小块不问它。
     if (danger === undefined) {
@@ -444,6 +446,10 @@ export class Approval extends cordis.Service {
       if (judged.verdict === 'allow') return this.traced(input, { result: 'pass', by: 'decision', reason: `决策模型认为安全：${judged.reason}` });
       if (judged.verdict === 'deny') return this.traced(input, { result: 'reject', by: 'decision', reason: judged.reason });
 
+      //M 拿不准时记下决策模型顺带写的执行结果，只给卡片显示，不改上面的放行判断。
+      if (judged.what !== undefined) {
+        decisionWhat = judged.what;
+      }
       //M 拿不准：决策模型真答过（不是没挂、超时、出错的退回）才记成这一档的原因，否则保留“规则定不了”。
       if (judged.requestId !== '') {
         last = { by: 'decision', reason: judged.reason };
@@ -483,7 +489,7 @@ export class Approval extends cordis.Service {
     }
 
     //M 第四档：照审核模型写的内容拼一张卡片，登记待确认，问用户。不等用户：马上交回“已经去问了”，用户定了由 approval/decided 通知提的人。
-    const card = reviewCard(input, script, answer, why, asks);
+    const card = reviewCard(input, script, answer, why, asks, decisionWhat);
     const detail = cardUtils.getCardText({ ...card, state: 'waiting' });
     const pending = this.ask({ kind: input.kind, title: card.title, detail, payload: input.payload, bot, session: input.session, card });
     return this.traced(input, { result: 'asked', id: pending.id, reason: `等用户决定（待确认 #${String(pending.id)}）` });
@@ -498,12 +504,15 @@ export class Approval extends cordis.Service {
    * @returns 决策模型的结论；退回的 requestId 是空串。
    */
   private async askDecision(input: ReviewInput, bot: string, state: Record<string, unknown>): Promise<DecisionReply> {
+    //M 顺带要一句“执行完会做成什么”（同一次调用，不多调模型），只给卡片的“要做什么”用。
+    const want = ['what'] as const;
     const judgeInput = {
       kind: input.kind,
       bot,
       allowAt: this.config.decisionPass,
       question: SAFE,
       state,
+      want,
     };
     const options = {
       prefix: 'dec',
@@ -1158,7 +1167,7 @@ function getCardPaths(input: ReviewInput, modelPaths: string[]): string {
 
 /**
  * 命令审批卡片（用户 11-18 #172：说清楚，别说空话）。正文（reason）三行，飞书卡片顶上、网页审批面板一眼看完：
- *   要做什么：审核模型写的人话（what），没写用它的标题，再没有用命令本身；
+ *   要做什么：审核小会话写的执行结果（what），没写用决策模型顺带写的 what，都没有写“说不清会做成什么（命令：…）”；
  *   动哪些：getCardPaths；
  *   为什么问你：review 里每一档没放行的原因（不在可信目录、决策模型拿不准、审核小会话的理由原文、必须人审的那一小块）。
  * 命令、目录、脚本、机器人在干的活、会动到的每个路径、审核建议放进详情；风险说明写具体理由，不单写“风险中”。
@@ -1168,6 +1177,7 @@ function getCardPaths(input: ReviewInput, modelPaths: string[]): string {
  * @param answer 审核模型的 JSON；没答上来是 undefined。
  * @param why 机器人在干的活（会话最后一句用户的话）。
  * @param asks review 里每一档没放行的原因，照先后。
+ * @param decisionWhat 决策模型顺带写的执行结果（decision/judge-result 的 what）；没有是空串。
  * @returns 还没定状态的卡片。
  */
 function reviewCard(
@@ -1176,6 +1186,7 @@ function reviewCard(
   answer: Record<string, unknown> | undefined,
   why: string,
   asks: string[],
+  decisionWhat: string,
 ): Omit<cardUtils.CardData, 'state' | 'result'> {
   //M 取审核回答里某个字段的文字，没写、不是字符串就是空串。
   const text = (key: string): string => {
@@ -1202,8 +1213,14 @@ function reviewCard(
     approveStyle = 'danger';
   }
 
-  //M 正文第一行“要做什么”：审核写的人话，没写退回标题，再没有就写命令本身。
-  const what = text('what') || text('title') || `执行命令 ${input.command}`;
+  //M 正文第一行“要做什么”：先用审核小会话写的执行结果，其次决策模型顺带写的；都没有就照实说“说不清会做成什么”并带上命令，不编。
+  let what = text('what');
+  if (what === '') {
+    what = decisionWhat;
+  }
+  if (what === '') {
+    what = `说不清会做成什么（命令：${input.command}）`;
+  }
   const whatLine = `要做什么：${textModule.clip(what, CARD_LINE_MAX)}`;
 
   //M 第二行“动哪些”：命令里的路径和审核列的路径。

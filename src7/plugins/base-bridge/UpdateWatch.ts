@@ -274,7 +274,7 @@ export class UpdateWatch {
     try {
       //M 用户已经同意才发更新请求；失败要告知，和后台探测的静默跳过区分开。
       const base = this.ctx.get('base');
-      if (base === undefined) throw new Error('没配 engine.index_url');
+      if (base === undefined) throw new Error('没配 plugins[base-bridge].config.index_url');
 
       //M 通知基地执行换版，非 2xx 响应转作异常以便提示用户。
       const response = await base.postJson('/update/apply', {}, TIMEOUT_MS);

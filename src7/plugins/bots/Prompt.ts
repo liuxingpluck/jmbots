@@ -6,7 +6,7 @@
  *   3. 这种会话的提示词：prompts/<种类>.<语言>.md 有就用它，没有用下面内置的。
  *   4. 人设：bots/<机器人>/persona.md（身份和说话风格），有就带，谁说的、在哪说的都带。
  *   5. 记忆：这个机器人的（bots/<机器人>/memory/）加上公共的（memory/），一个文件一段。
- *      用户的私人记忆：非本人、不受信的群里（utils/Workspace.ts 的 privateAllowed）不带。
+ *      私人记忆文件由来源授权确定。群聊和其他人的私聊使用 memory 的归属召回。
  * 小会话（压缩、总结）要它做什么，写在开它的插件发给它的那句话里；这里只在有提示词文件时才给它加。
  * 原插件 prompt，2026-11-17 并进 bots（docs/协作/任务板/合并做法.md）：默认开，bots 的配置写 prompt: false 才不挂。
  * session/request 的监听挂在 bots 自己的几个监听（前台、派后台、渠道工具）后面；1、2 段用 unshift，不管排第几都在最前。
@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type { ChatRequest } from '../../Sessions.ts';
 import * as embedded from '../../utils/Embedded.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
+import * as memoryKeyModule from '../memory/MemoryKey.ts';
 
 
 /** 第一段的文件名（旧版起就是这个名字）。 */
@@ -135,8 +135,9 @@ export class Prompt {
       request.system.push(personaText);
     }
 
-    //G 非本人（builder、guest）、不受信的群里不带记忆：记忆目录里是用户的私人记忆，群里的回复大家都看得到。
-    if (!workspaceModule.privateAllowed(row.address)) return;
+    //G 私人文件只随获准的本人请求加载，包括本人的受信群请求。
+    const access = memoryKeyModule.getMemoryAccess(row);
+    if (!access.full) return;
 
     //M 记忆：两个目录下的 .md、.txt，按文件名的先后，一个文件一段。
     const dirs = [this.ctx.resources.dir('bots', row.bot, 'memory'), this.ctx.resources.dir('memory')];

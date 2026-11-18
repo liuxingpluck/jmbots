@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
+import type { ChannelMessage } from '../../Channels.ts';
 import type { Session } from '../../Sessions.ts';
 import * as channel from '../memory/ChannelIndex.ts';
 import * as searchModule from '../memory/Search.ts';
@@ -88,7 +89,7 @@ describe('isProjectCheck', () => {
   });
 });
 
-for (const role of ['guest', 'builder']) {
+for (const role of ['guest', 'builder'] as const) {
   test(`${role} 能用统一记忆工具，只搜到当前账号和聊天`, async () => {
     const allowed = toolsFor(role);
     expect(allowed?.has('memory_search')).toBe(true);
@@ -98,25 +99,75 @@ for (const role of ['guest', 'builder']) {
     const db = new Database(':memory:');
     try {
       const index = new channel.ChannelIndex(db);
-      const row = {
-        key: 'mine', channel: 'feishu', account: 'app1', chat: 'current', chatType: 'group',
-        direction: 'user' as const, senderId: 'person', senderName: '', bot: 'bot', text: '退款通知', at: 100,
-      };
-      index.add(row);
-      index.add({ ...row, key: 'other-chat', chat: 'other' });
-      index.add({ ...row, key: 'other-account', account: 'app2' });
-
+      //M 用正式渠道消息入口打标，跨聊天和跨账号的样本也使用相同写入路径。
       const address = { role, chatType: 'group' };
+      const message: Omit<ChannelMessage, 'messageId'> = {
+        v: 1, nativeId: null, channel: 'feishu', accountId: 'app1', chatId: 'current', chatType: 'group',
+        sender: { id: 'person' }, role, targetBots: ['bot'], mentions: [],
+        rawText: '退款通知', text: '退款通知', attachments: [], createdAt: 100, receivedAt: 100,
+        timeSource: 'provider', replyTo: null, origin: { channel: 'feishu', address },
+        visibility: { scope: 'feishu:app1:current', trusted: false, publicSourceIds: [] },
+        routing: { listenOnly: false },
+      };
+      for (const sample of [
+        { ...message, messageId: 'mine' },
+        { ...message, messageId: 'other-chat', chatId: 'other' },
+        { ...message, messageId: 'other-account', accountId: 'app2' },
+      ]) {
+        const row = channel.getMessageRow(sample);
+        index.add(row!);
+      }
+
       const source = { role, channel: 'feishu', accountId: 'app1', chatId: 'current', chatType: 'group', origin: { address } };
       const session = { row: { address, bot: 'bot', activeSourceSnapshot: source } } as unknown as Session;
       const ctx = new cordis.Context();
-      const search = new searchModule.Search(ctx, {} as MemoryService, index);
+      const rustQueries: Record<string, unknown>[] = [];
+      const otherCopy = {
+        id: 8, scope: 'history', source: channel.CHANNEL_PARTITION + 'other-account',
+        title: '他人退款', snippet: '退款通知', at: 100, via: ['keyword'], customer: 'group:feishu:current', bot: 'bot',
+      };
+      const backend = {
+        search: async (body: Record<string, unknown>) => {
+          rustQueries.push(body);
+          return { ok: true, json: { hits: [otherCopy] } };
+        },
+        readSearchData: async () => ({ passage: otherCopy }),
+      } as unknown as MemoryService;
+      const search = new searchModule.Search(ctx, backend, index);
       const result = await search.find({ q: '退款' }, session);
       expect(result.hits.map((hit) => hit.id)).toEqual(['mine']);
-      expect(result.skipped).toEqual(['history', 'knowledge', 'card']);
+      expect(result.skipped).toEqual(['knowledge', 'card']);
+      expect(rustQueries).toEqual([expect.objectContaining({ customer: 'group:feishu:current' })]);
       await expect(search.find({ q: '退款', chat: 'other' }, session)).rejects.toThrow('这个聊天');
       const ref = result.hits[0]!.ref.replace('id=mine', 'id=other-account');
       await expect(search.get({ ref }, session)).rejects.toThrow('找不到');
+
+      //G 仅选 Rust 往来或直接猜 Rust 原文编号也不能绕开账号隔离。
+      const history = await search.find({ q: '退款', sources: 'history' }, session);
+      expect(history.hits).toEqual([]);
+      await expect(search.get({ ref: '/api/memory-graph/passage/8' }, session)).rejects.toThrow('当前归属');
+
+      //M 空键模拟升级前的原记录；本轮渠道、账号、聊天三项都匹配时才能搜和取原文。
+      const anchor = index.context('mine', { words: [], limit: 1 }).anchor;
+      const old = { ...anchor, memoryKey: '', at: 80 };
+      index.add({ ...old, key: 'old-mine' });
+      index.add({ ...old, key: 'old-other-chat', chat: 'other' });
+      index.add({ ...old, key: 'old-other-account', account: 'app2' });
+      const fromOld = await search.find({ q: '退款' }, session);
+      expect(fromOld.hits.map((hit) => hit.id)).toEqual(['mine', 'old-mine']);
+      const refOf = (key: string): string => result.hits[0]!.ref.replace('id=mine', 'id=' + key);
+      const oldRead = await search.get({ ref: refOf('old-mine') }, session);
+      expect(oldRead).toMatchObject({ anchor: { key: 'old-mine' }, after: [{ key: 'mine' }] });
+      await expect(search.get({ ref: refOf('old-other-chat') }, session)).rejects.toThrow('找不到');
+      await expect(search.get({ ref: refOf('old-other-account') }, session)).rejects.toThrow('找不到');
+
+      //G 网页按人筛选即使指定了聊天，也没有锁定账号，空键的旧记录不会混进结果。
+      const person = 'person:feishu:person';
+      const dm = { ...anchor, chat: 'dm', chatType: 'p2p' };
+      index.add({ ...dm, key: 'person-tagged', memoryKey: person });
+      index.add({ ...dm, key: 'person-legacy', memoryKey: '' });
+      const filtered = await search.find({ q: '退款', person, source: 'channel', channel: 'feishu', chat: 'dm' });
+      expect(filtered.hits.map((hit) => hit.id)).toEqual(['person-tagged']);
 
       const request = { args: {}, session, signal: new AbortController().signal, callId: 'read' };
       await expect(search.readHistory({ ...request, route: 'front-search' })).rejects.toThrow('当前渠道聊天');

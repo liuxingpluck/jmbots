@@ -20,6 +20,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 import * as backendModule from './Backend.ts';
 import * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 import * as graphPolicy from './GraphPolicy.ts';
 import * as graphRoutesModule from './GraphRoutes.ts';
 import * as graphStoreModule from './GraphStore.ts';
@@ -34,7 +35,10 @@ export const name = 'memory';
 //M 1.2.1：听请求事件 memory/request（record-history、search-history、embed）回 memory/result；前台“先查记忆”的提示（MEMORY_HINT）从 bots 挪来自己加。
 //M 1.6.0：不再托管 jmbots-memory（删 Services.ts、services 配置、/memory/* 转发、/api/memory/services），改由 programs 拉起；
 //M   只按 service_url 调 HTTP，连不上时检索、事件回执、工具都写明“记忆服务没在线”。
-export const version = '1.6.0';
+//M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
+//M 1.8.1：恢复受信群本人发言时的全部记忆访问。
+//M 1.9.0：网页可列出当前已打标的个人和群归属。
+export const version = '1.9.0';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -44,6 +48,8 @@ declare module '../../Sessions.ts' {
   interface SessionRow {
     /** 开场先搜到的那一段；'' 是搜过没搜到；没有这一项是还没搜。 */
     recall?: string;
+    /** 生成 recall 时的授权范围，避免旧缓存串到不同归属的会话。 */
+    recallScope?: string;
   }
 }
 
@@ -80,6 +86,7 @@ const FILE_PARAMETERS = piAi.Type.Object({
  */
 const MEMORY_HINT = '客户问事实、业务知识或以前的聊天，先用 memory_search 找出处，按 ref 用 memory_get 核对原文。'
   + '如果只问这场对话，设 range 为 session。回答用到命中时标明来源，需要通读大量历史时用 hand_session。';
+const SCOPED_HINT = '需要核对以前的聊天时，先用 memory_search 查当前对话的记忆，再用 memory_get 取原文。';
 
 
 /** 插件配置（plugins 里 memory 的 config），都可以不写。 */
@@ -92,8 +99,20 @@ interface Settings {
 }
 
 
+/** 把可信检索回来的片段写成模型可引用的提示。 */
+function formatCitations(cited: searchModule.SearchHit[]): string {
+  if (cited.length === 0) return '';
+
+  const lines = cited.map((hit, index) => `[${String(index + 1)}] ${hit.title} ${hit.ref}\n${hit.snippet}`);
+  return `# 可能相关的聊天记录和知识库（用到了请写明编号和出处）\n${lines.join('\n')}`;
+}
+
+
 /** 记忆插件：工具 memory、开场先搜、前台“先查记忆”的提示。导出给 Events.test.ts 单独建。 */
 export class Memory {
+  /** 前台按本轮和归属复用召回，下一轮重新计算。 */
+  private readonly frontRecall = new WeakMap<Session, { key: string; said: string; at: number; text: string }>();
+
   /**
    * 登记工具，挂开场先搜。
    * @param ctx Cordis 给这个插件的 ctx。
@@ -159,37 +178,78 @@ export class Memory {
       return { ...tool, description: FILE_DESCRIPTION, parameters: FILE_PARAMETERS };
     });
 
-    //M 前台：前面的插件收掉了 memory 工具（非本人那一轮 approval 收）就不提；不受信的群里也不提（群里大家都看得到回复）。
+    //M 前台提示和开场召回都以本轮来源为准。没有确定归属的外来请求不带记忆。
+    const access = memoryKeyModule.getMemoryAccess(row);
+    if (!access.full && access.key === undefined) return;
+
     if (row.kind === 'front') {
       const hasTool = request.tools.some((tool) => tool.name === 'memory_search');
-      if (hasTool && workspaceModule.privateAllowed(row.address)) {
-        request.system.push(MEMORY_HINT);
+      if (access.full) {
+        if (hasTool) {
+          //M 本人沿用可指向知识与私人往来的检索提示。
+          request.system.push(MEMORY_HINT);
+        }
+        return;
+      }
+      if (hasTool) {
+        //M 受限会话只提示查询当前归属下的往来。
+        request.system.push(SCOPED_HINT);
+      }
+
+      //M 非本人前台只搜该人或该群。缓存只在当轮使用，章句不写进会话记录。
+      const latest = row.messages.findLast((message) => message.role === 'user');
+      if (latest === undefined) return;
+
+      const said = piAi.contentText(latest.content);
+      const key = access.key!;
+      const at = latest.timestamp;
+      //M 同一轮保留已经按本次授权生成的段落。
+      let cached = this.frontRecall.get(session);
+      if (cached?.key !== key || cached.said !== said || cached.at !== at) {
+        //M 新轮或新归属重新检索，再把引用整理进系统提示。
+        const cited = await this.openingCitations(session, said, access).catch(() => []);
+        const text = formatCitations(cited);
+        cached = { key, at, said, text };
+        this.frontRecall.set(session, cached);
+      }
+      if (cached.text !== '') {
+        //M 把已限制归属的召回放进本次模型请求。
+        request.system.push(cached.text);
       }
       return;
     }
 
     if (row.kind !== 'work') return;
-    //G 非本人（builder、guest）、不受信的群里不搜、不带开场先搜的：搜的是用户的记忆库、知识库和以前的聊天。
-    if (!workspaceModule.privateAllowed(row.address)) return;
 
-    if (row.recall === undefined) {
-      const said = row.messages.filter((message) => message.role === 'user').map((message) => piAi.contentText(message.content)).join('\n');
+    //G 旧召回可能来自过去的私人上下文；授权范围变化时重新算。
+    const scope = access.key ?? memoryKeyModule.OWNER_KEY;
+    if (row.recall === undefined || row.recallScope !== scope) {
+      const said = row.messages.filter((message) => message.role === 'user')
+        .map((message) => piAi.contentText(message.content))
+        .join('\n');
       const started = Date.now();
-      //M 本地技能和 Rust 的客户往来、知识库并行查询。任一路失败都继续会话。
-      const roots = this.skillRoots(row.bot);
-      const skills = recall.local(roots, said).catch(() => []);
-      const citations = this.openingCitations(session, said).catch(() => []);
-      const [hits, cited] = await Promise.all([skills, citations]);
-
-      //M 搜到的引用拼成带编号、来源的一段，回答时模型能照着引用。
-      let citedText = '';
-      if (cited.length > 0) {
-        const lines = cited.map((hit, index) => `[${String(index + 1)}] ${hit.title} ${hit.ref}\n${hit.snippet}`);
-        citedText = `# 可能相关的聊天记录和知识库（用到了请写明编号和出处）\n${lines.join('\n')}`;
+      //M 只有本人可加载私人技能。其他人仅召回当前聊天归属下的往来。
+      let skills: ReturnType<typeof recall.local> = Promise.resolve([]);
+      if (access.full) {
+        const roots = this.skillRoots(row.bot);
+        skills = recall.local(roots, said).catch(() => []);
       }
 
+      //M 当前来源授权决定召回用到的客户和渠道分区。
+      const citations = this.openingCitations(session, said, access).catch(() => []);
+      const [hits, cited] = await Promise.all([skills, citations]);
+
       //M 技能命中和 Rust 引用存进 row.recall，同一会话后续步骤继续用这段。
-      row.recall = [recall.describe(hits, this.language(row.bot)), citedText].filter((part) => part !== '').join('\n\n');
+      const citedText = formatCitations(cited);
+      let skillText = '';
+      if (hits.length > 0) {
+        const language = this.language(row.bot);
+        skillText = recall.describe(hits, language);
+      }
+      row.recall = [skillText, citedText].filter((part) => part !== '').join('\n\n');
+      row.recallScope = scope;
+
+      //M 记录生成时的授权范围，防止后台会话恢复时复用越权缓存。
       session.save();
 
       //T 跟踪：开场先搜完了。
@@ -206,27 +266,34 @@ export class Memory {
    * @param session 干活的会话。
    * @param said 用户说过的话。
    */
-  private async openingCitations(session: Session, said: string): Promise<searchModule.SearchHit[]> {
+  private async openingCitations(
+    session: Session,
+    said: string,
+    access: memoryKeyModule.MemoryAccess,
+  ): Promise<searchModule.SearchHit[]> {
     const q = [...said].slice(0, 300).join('').trim();
     if (q === '') return [];
 
-    //M 取这个会话的客户号；没有客户号时只搜知识库。
+    //M 召回按检索入口自动加归属；同时用渠道索引接住还未同步到 Rust 的消息。
     const row = session.row;
-    const customer = storeModule.getCustomer(row);
+    let sources = 'history';
+    if (access.full || (access.chat && access.account)) {
+      sources = 'history,channel';
+    }
     const service = this.ctx.memory.unified;
-    const groups = [
-      { sources: 'history', count: this.settings.recallHistory, extra: 2 },
-      { sources: 'knowledge', count: this.settings.recallKnowledge, extra: 0 },
-    ];
-    const jobs = groups.map(async ({ sources, count, extra }) => {
-      if (count === 0 || (sources === 'history' && customer === '')) return [];
+    const groups = [{ sources, count: this.settings.recallHistory }];
+    if (access.full) {
+      groups.push({ sources: 'knowledge', count: this.settings.recallKnowledge });
+    }
+    const jobs = groups.map(async ({ sources, count }) => {
+      if (count === 0) return [];
 
       //M 服务先排除当前场，再滤掉前台可能已经收录的本轮原话。
-      const args = { q, sources, limit: count + extra };
+      const args = { q, sources, limit: count + 2 };
       const options = { notSession: row.id };
       const result = await service.find(args, session, options).catch(() => undefined);
       const hits = result?.hits ?? [];
-      if (sources === 'knowledge') return hits;
+      if (sources === 'knowledge') return hits.slice(0, count);
 
       return hits.filter((hit) => !said.includes(hit.snippet.replace(/^…|…$/gu, ''))).slice(0, count);
     });
@@ -242,9 +309,17 @@ export class Memory {
    * @returns 带编号、来源、片段的引用文字；没找到是一句“没找到”。
    * @throws 没给 query、range 不对、没有客户号时抛错，原因给模型看。
    */
-  private async cite(action: 'history' | 'knowledge', args: Record<string, unknown>, session: Session): Promise<string> {
+  private async cite(
+    action: 'history' | 'knowledge',
+    args: Record<string, unknown>,
+    session: Session,
+  ): Promise<string> {
     //M 旧 action 只换参数名，检索和权限复用统一入口。
-    const query = { q: args['query'], sources: action, limit: args['limit'] ?? CITE_HITS, range: args['range'] };
+    const query = {
+      q: args['query'], sources: action, limit: args['limit'] ?? CITE_HITS, range: args['range'],
+    };
+
+    //M 使用已归一的参数查可用记忆，统一入口继续核对会话权限。
     return this.searchText(query, session);
   }
 
@@ -257,6 +332,20 @@ export class Memory {
    */
   private async run(args: Record<string, unknown>, session: Session): Promise<string> {
     const action = args['action'] as string;
+
+    //G 兼容检索可以查获准的往来；私人文件动作始终要求本人。
+    const access = memoryKeyModule.getMemoryAccess(session.row);
+    if (!access.full) {
+      if (action === 'search' || action === 'history') {
+        let sources = 'history';
+        if (access.account && access.chat && access.channel) {
+          sources = 'history,channel';
+        }
+        const query = { q: args['query'], sources, limit: args['limit'] ?? CITE_HITS };
+        return this.searchText(query, session);
+      }
+      throw new Error('私人记忆文件和知识库仅本人可访问');
+    }
 
     //G 会话的机器人要存在：自己的记忆目录（bot.memory）从它取。
     const bot = this.ctx.bots.get(session.row.bot);
@@ -402,7 +491,7 @@ export type MemoryRequest = requestEventModule.RequestEnvelope & ({
 } | {
   /** 按统一接口搜所有来源。 */
   action: 'search';
-  /** 与 GET /api/memory/search 相同的参数；调用插件负责确认用户权限。 */
+  /** 与 GET /api/memory/search 相同，支持 person 或 group；调用插件负责确认用户权限。 */
   query: Record<string, unknown>;
 } | {
   /** 用记忆服务的本地嵌入模型算向量（同 embed）。 */

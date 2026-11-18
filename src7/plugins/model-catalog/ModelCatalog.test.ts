@@ -17,6 +17,8 @@ import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as fallback from './Fallback.ts';
+import * as checks from '../../utils/Checks.ts';
 import type { FallbackInfo } from './Fallback.ts';
 import { Queue } from './Queue.ts';
 import * as catalogPlugin from './index.ts';
@@ -318,5 +320,34 @@ test('4. Queue 并发上限与取消信号、fallback: false 开关与配置校�
       config: { defaultModel: 'mock/primary', providers: {} },
     },
   } as unknown as cordis.Context;
-  expect(() => catalogPlugin.apply(badCtx, { fallback: { max_tries: -1 } })).toThrow('model-catalog.fallback.max_tries 要是不小于 0 整数');
+  expect(() => catalogPlugin.apply(badCtx, { fallback: { max_tries: -1 } })).toThrow('plugins[model-catalog].config.fallback.max_tries 要是不小于 0 整数');
+});
+
+
+test('回退配置逐键兼容旧 engine，显式的新链、0 和 false 优先', async () => {
+  const { ctx } = await setupWorld();
+  const settings = fallback.readFallbackSettings(ctx, {
+    fallback: { chain: ['mock/small'], max_tries: 0, include_siblings: false },
+  });
+  expect(settings.chain).toEqual(['mock/small']);
+  expect(settings.maxTries).toBe(0);
+  expect(settings.siblings).toBe(false);
+  expect(settings.cooldownMs).toBe(300_000);
+});
+
+test('骨架的思考档和重试可搬进 models，部分迁移保留其他旧值', () => {
+  const shared = { providers: { mock: { base_url: 'http://127.0.0.1:9' } }, default_model: 'mock/primary' };
+  const engine = { thinking: 'medium', retry: { times: 2, wait_ms: 25, timeout_ms: 6000 } };
+  const old = checks.checkConfig({ ...shared, engine });
+  expect(old.thinking).toBe('medium');
+  expect(old.retry).toEqual({ times: 2, waitMs: 25, timeoutMs: 6000 });
+
+  const models = { thinking: 'high', retry: { times: 4 } };
+  const mixed = checks.checkConfig({ ...shared, engine, models });
+  expect(mixed.thinking).toBe('high');
+  expect(mixed.retry).toEqual({ times: 4, waitMs: 25, timeoutMs: 6000 });
+
+  const migrated = checks.checkConfig({ ...shared, models });
+  expect(migrated.thinking).toBe('high');
+  expect(migrated.retry).toEqual({ times: 4, waitMs: 3000, timeoutMs: 120_000 });
 });
