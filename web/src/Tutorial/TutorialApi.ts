@@ -1,0 +1,387 @@
+/**
+ * 教程页和 tutorial 插件说话（同源相对地址）。令牌用 web/src/Token.ts。
+ * 类型照后端 src7/plugins/tutorial/ 交的样子写（Trail.ts、Lanes.ts、Files.ts、Source.ts、index.ts），不 import 后端。
+ */
+import { TOKEN, withToken } from '../Token.ts';
+
+
+/** 左栏插件列表的一项（GET /api/tutorial/plugins）。 */
+export interface PluginItem {
+  /** config.yaml 里的名字。 */
+  name: string;
+  /** 插件导出的 version；还没写是空串。 */
+  version: string;
+  /** ok 挂上开工了，failed 没挂上，waiting 挂了但缺服务没开工，idle 配置里没挂。 */
+  state: string;
+  /** 没挂上的原因；缺服务时写缺谁。 */
+  error: string;
+  /** 它声明要的服务。 */
+  inject: string[];
+  /** 有没有 说明.md。 */
+  hasReadme: boolean;
+  /** skeleton 系统自带骨架模块，plugin 普通插件；旧后端没给时按 plugin 处理。 */
+  kind?: 'skeleton' | 'plugin';
+}
+
+
+/** GET /api/tutorial/plugins 交的。 */
+export interface PluginList {
+  /** 插件，挂过的在前。 */
+  list: PluginItem[];
+  /** 快照关键词，默认 #调试。 */
+  keyword: string;
+  /** 源码根目录，「在 VS Code 里打开」拼路径用；找不到是空串。 */
+  workspace: string;
+}
+
+
+/** 左栏画布的一项（GET /api/tutorial/canvases 的 list）。 */
+export interface CanvasItem {
+  /** boot，或消息号。 */
+  name: string;
+  /** 文件最后写的时刻（启动是第一步的时刻），毫秒时间戳。 */
+  at: number;
+  /** 用户那句话；启动是空串。 */
+  preview: string;
+  /** 渠道名（例如 feishu / http）；启动或未记到时不填。 */
+  channel?: string;
+  /** 机器人名；启动或未记到时不填。 */
+  bot?: string;
+}
+
+
+/** 「会话」左栏消息列表的一项（GET /api/tutorial/canvases 的 messages，不限 #调试）。 */
+export interface MessageCanvasItem {
+  /** 消息号（字符串）。 */
+  name: string;
+  /** 消息收到或文件写的时刻，毫秒时间戳。 */
+  at: number;
+  /** 用户那句话；没记到是空串。 */
+  preview: string;
+  /** 渠道名（例如 feishu / http）；未记到时不填。 */
+  channel?: string;
+  /** 机器人名；未记到时不填。 */
+  bot?: string;
+  /** 有没有运行时变量快照（磁盘文件或内存还在）。 */
+  hasSnapshot: boolean;
+}
+
+
+/** GET /api/tutorial/canvases 交的。 */
+export interface CanvasList {
+  /** 启动流程 + data/flow/ 里的快照文件。 */
+  list: CanvasItem[];
+  /** 不限快照关键词的最近全部消息。 */
+  messages: MessageCanvasItem[];
+  /** 快照关键词，默认 #调试。 */
+  keyword: string;
+}
+
+
+/** 一段函数注释，取自代码自己的 JSDoc。 */
+export interface CodeDoc {
+  /** 名字。 */
+  name: string;
+  /** 文件:行号。 */
+  site: string;
+  /** 重要的展开显示，不重要的只显示 summary 第一行。 */
+  important: boolean;
+  /** 空串是取到了；不然是原因：缺注释、读不到源码、找不到这段代码。 */
+  missing: string;
+  /** 函数原型，一行；文件开头的注释是空串。 */
+  signature: string;
+  /** 它干什么。 */
+  summary: string;
+  /** 参数名和说明。 */
+  params: { name: string; text: string }[];
+  /** 返回什么。 */
+  returns: string;
+  /** 什么时候抛错。 */
+  throws: string;
+  /** 它改了什么。 */
+  effects: string;
+}
+
+
+/** 一步里的一行。 */
+export interface TrailRow {
+  /** 离开始多少毫秒。 */
+  t: number;
+  /** 到下一行隔了多少毫秒。 */
+  gap: number;
+  /** 函数还是事件。 */
+  kind: string;
+  /** 跟踪点是“模块.函数”，事件是事件名。 */
+  name: string;
+  /** 一句人话。 */
+  text: string;
+  /** 事件行：听的人。 */
+  listeners: string[];
+  /** 文件:行号。 */
+  site: string;
+  /** 几个关键值。 */
+  facts: Record<string, string | number | boolean>;
+  /** 出没出错。 */
+  error: boolean;
+}
+
+
+/** 轨迹的一步。 */
+export interface TrailStep {
+  /** 第几步，从 1 起。 */
+  no: number;
+  /** 泳道图上的道。 */
+  node: string;
+  /** 这一步在干什么。 */
+  title: string;
+  /** 离开始多少毫秒。 */
+  t: number;
+  /** 这一步用了多少毫秒。 */
+  ms: number;
+  /** 有没有出错的行。 */
+  error: boolean;
+  /** 收到通知但没留下跟踪点的插件。 */
+  notified: string[];
+  /** 这一步的几行。 */
+  rows: TrailRow[];
+  /** 这一步的函数注释（只有启动有）。 */
+  docs: CodeDoc[];
+}
+
+
+/** 一条轨迹（启动的消息号是 0）。 */
+export interface Trail {
+  /** 消息号；启动是 0。 */
+  message: number;
+  /** 哪场会话。 */
+  session: string | null;
+  /** 哪个机器人。 */
+  bot: string;
+  /** 哪个渠道。 */
+  channel: string;
+  /** 用户那句话。 */
+  preview: string;
+  /** 开始时刻。 */
+  at: number;
+  /** 一共用了多少毫秒。 */
+  ms: number;
+  /** running、done、failed、stopped、unknown。 */
+  state: string;
+  /** 有没有出错的步。 */
+  error: boolean;
+  /** 一步一步。 */
+  steps: TrailStep[];
+  /** 关键变量的英文键 → 中文解释。 */
+  notes: Record<string, string>;
+}
+
+
+/** 泳道图格子里的一项。 */
+export interface LaneItem {
+  /** 第几步。 */
+  step: number;
+  /** 一句话。 */
+  text: string;
+}
+
+
+/** 泳道图的一个格子。 */
+export interface LaneCell {
+  /** 第几道，从 0 起。 */
+  lane: number;
+  /** 第几列，从 0 起。 */
+  column: number;
+  /** 落在这格的步。 */
+  items: LaneItem[];
+  /** 有没有出错的行。 */
+  error: boolean;
+}
+
+
+/** 一张泳道图（Lanes.ts）。 */
+export interface Lanes {
+  /** 列名。 */
+  columns: string[];
+  /** 道名。 */
+  lanes: string[];
+  /** 有东西的格子。 */
+  cells: LaneCell[];
+  /** 箭头：cells 的下标。 */
+  edges: { from: number; to: number }[];
+}
+
+
+/** GET /api/tutorial/canvas 交的。 */
+export interface Canvas {
+  /** 轨迹。 */
+  trail: Trail;
+  /** 泳道图。 */
+  lanes: Lanes;
+}
+
+
+/** 运行时变量的一组（全量原样，调试用不打码）。 */
+export interface StateGroup {
+  /** 组名：服务名，或插件用 ctx.flow.state 登记的名字。 */
+  name: string;
+  /** 一句人话。 */
+  note: string;
+  /** 这一刻的值。 */
+  value: unknown;
+  /** 手写的键的中文解释。 */
+  notes?: Record<string, string>;
+}
+
+
+/** GET /api/tutorial/snapshot：点中一步时那一刻的运行时变量。 */
+export interface StepShot {
+  /** 拍的时刻。 */
+  at: number;
+  /** 第几步。 */
+  no: number;
+  /** 这一步的道。 */
+  node: string;
+  /** 各组。 */
+  groups: StateGroup[];
+  /** 和上一步比变了的地方，每处一串键名（第一个是组名）；第一步是 null。 */
+  changed: string[][] | null;
+}
+
+
+/** 一个函数的完整源码（GET /api/tutorial/source，Source.ts 的 FunctionSource）。 */
+export interface FunctionSource {
+  /** 相对代码目录的文件。 */
+  file: string;
+  /** 起行号。 */
+  start: number;
+  /** 止行号（含）。 */
+  end: number;
+  /** 没找到函数结尾、只给了前几行时是 true。 */
+  cut: boolean;
+  /** start 到 end 那几行原文。 */
+  lines: string[];
+  /** 里面调到的、找得到定义的函数。 */
+  calls: { name: string; site: string }[];
+  /** 这个函数的名字；不在函数里是空串。 */
+  name: string;
+  /** 谁调它。 */
+  callers: { site: string; code: string; why: string }[];
+}
+
+
+/** 「代码」标签里的一个对外函数（GET /api/tutorial/code，后端 Code.ts 的 FunctionItem）。 */
+export interface CodeFunction {
+  /** 名字。 */
+  name: string;
+  /** function 或 class。 */
+  kind: string;
+  /** 文件:行号。 */
+  site: string;
+  /** 上方注释第一句；没写是空串。 */
+  summary: string;
+}
+
+
+/** src7 里写了某条接口路径的一处（调它的代码）。 */
+export interface CodeUrlCaller {
+  /** 文件:行号。 */
+  site: string;
+  /** 那一行代码。 */
+  code: string;
+  /** 上方 //M 注释；没写是空串。 */
+  why: string;
+}
+
+
+/** 一个 HTTP 接口。 */
+export interface CodeRoute {
+  /** 方法，大写。 */
+  method: string;
+  /** 路径，可能带 :参数。 */
+  url: string;
+  /** 登记那一句的位置：文件:行号；认不出是空串。 */
+  site: string;
+  /** 登记它的插件文件夹；认不出是空串。 */
+  owner: string;
+  /** src7 里谁写了这条路径。 */
+  callers: CodeUrlCaller[];
+}
+
+
+/** 一个模型工具。 */
+export interface CodeTool {
+  /** 工具名。 */
+  name: string;
+  /** 说明第一句。 */
+  summary: string;
+  /** 实现位置：文件:行号；找不到是空串。 */
+  site: string;
+  /** 给哪几种会话用。 */
+  kinds: string[];
+}
+
+
+/** GET /api/tutorial/code 交的。 */
+export interface PluginCodeInfo {
+  /** 对外函数。 */
+  functions: CodeFunction[];
+  /** 这个插件登记的接口。 */
+  routes: CodeRoute[];
+  /** 这个插件登记的工具。 */
+  tools: CodeTool[];
+  /** 认不出是哪个插件登记的接口，归在“其他”。 */
+  others: CodeRoute[];
+}
+
+
+/** 「试一试」发出一个请求后的结果：状态码和返回正文原文。 */
+export interface TryResult {
+  /** HTTP 状态码。 */
+  status: number;
+  /** 返回的正文，原样不动。 */
+  text: string;
+}
+
+
+/** 和后端说话：get 出错抛后端给的 error；send 给「试一试」用，什么状态码都原样交回。 */
+export class TutorialApi {
+  /**
+   * GET 一个接口。
+   * @param path 以 /api/ 开头的地址，带查询参数。
+   * @returns 后端交的 JSON。
+   * @throws 后端回 4xx、5xx 时抛它给的 error。
+   */
+  static async get<T>(path: string): Promise<T> {
+    //M 给同源请求地址附带管理员令牌，避免后端鉴权拦截。
+    const url = withToken(path, TOKEN);
+    const response = await fetch(url);
+    const body = await response.json() as T & { error?: string };
+    if (!response.ok) {
+      const reason = body.error ?? String(response.status);
+      throw new Error(reason);
+    }
+    return body;
+  }
+
+  /**
+   * 「试一试」发一个请求：不管状态码是多少，都原样交回（不当错误抛）。
+   * @param method 方法。
+   * @param path 以 /api/ 开头的地址，可带查询串。
+   * @param body 正文原文；没有是空串（GET 不发正文）。
+   * @returns 状态码和返回正文。
+   * @throws 网络不通时抛 fetch 的错。
+   */
+  static async send(method: string, path: string, body: string): Promise<TryResult> {
+    //M 给「试一试」请求路径追加鉴权令牌，以管理员身份转发接口调试。
+    const url = withToken(path, TOKEN);
+    const init: RequestInit = { method };
+    if (body !== '' && method !== 'GET') {
+      init.body = body;
+      init.headers = { 'Content-Type': 'application/json' };
+    }
+    const response = await fetch(url, init);
+    //M 原样读取响应体文本，供调试面板直接展示非 JSON 或出错原文。
+    const text = await response.text();
+    return { status: response.status, text };
+  }
+}

@@ -27,8 +27,9 @@ export const FILE_SCHEME = 'jmfile:';
 /**
  * 文件名是哪一类。
  * @param name 文件名或路径。
+ * @returns 附件类别：image、audio、video 或 file。
  */
-export function attachmentKind(name: string): types.AttachmentKind {
+export function getAttachmentKind(name: string): types.AttachmentKind {
   /** 扩展名。 */
   const extension = /\.([^./\\]+)$/.exec(name)?.[1]?.toLowerCase() ?? '';
   return KINDS[extension] ?? 'file';
@@ -38,8 +39,9 @@ export function attachmentKind(name: string): types.AttachmentKind {
 /**
  * 路径里的文件名。
  * @param path 绝对路径（Windows 的反斜杠也认）。
+ * @returns 路径末尾的文件名；无法拆分时返回原路径。
  */
-export function baseName(path: string): string {
+export function getBaseName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
@@ -50,10 +52,12 @@ export function baseName(path: string): string {
  * @param bare 没引号的。
  * @returns 路径；不是附件是 undefined。
  */
-function pathOf(quoted: string | undefined, bare: string | undefined): string | undefined {
+function getPath(quoted: string | undefined, bare: string | undefined): string | undefined {
   /** 路径。 */
   const raw = quoted ?? (bare ?? '').replace(/[.,;!?)\]>`]+$/, '');
-  return /^([A-Za-z]:[\\/]|\/)/.test(raw) ? raw : undefined;
+  if (/^([A-Za-z]:[\\/]|\/)/.test(raw)) return raw;
+
+  return undefined;
 }
 
 
@@ -69,17 +73,22 @@ export function splitAttachments(text: string): Segment[] {
   let last = 0;
   for (const match of text.matchAll(ATTACHMENT)) {
     /** 路径。 */
-    const path = pathOf(match[1], match[2]);
+    //G 提取绝对路径并过滤 @某人 这类普通提及，非绝对路径不按附件拆分。
+    const path = getPath(match[1], match[2]);
     if (!path) {
       continue;
     }
     /** 这一个从哪开始、到哪（没引号时被去掉的结尾标点还给后面的文字）。 */
     const start = match.index;
-    const end = match[1] === undefined ? start + 1 + path.length : start + match[0].length;
+    let end = start + match[0].length;
+    if (match[1] === undefined) {
+      end = start + 1 + path.length;
+    }
     if (start > last) {
       segments.push({ type: 'text', text: text.slice(last, start) });
     }
-    segments.push({ type: 'attachment', path, name: baseName(path), kind: attachmentKind(path) });
+    //M 按绝对路径抽出文件名与媒体类别，生成附件段供界面渲染成卡片。
+    segments.push({ type: 'attachment', path, name: getBaseName(path), kind: getAttachmentKind(path) });
     last = end;
   }
   if (last < text.length) {
@@ -93,18 +102,29 @@ export function splitAttachments(text: string): Segment[] {
  * 把文字里的附件换成 Markdown 链接 [名字](jmfile:路径)，渲染时再换成附件卡片。
  * 附件和有字的文字之间留空行，附件就排在文字下面；连着的几个附件在同一段，图片、播放器靠样式单独占一行。
  * @param text 原话或回复。
+ * @returns 把 @绝对路径 替换成 jmfile: Markdown 链接后的文本。
  */
 export function withAttachmentLinks(text: string): string {
   /** 拆开的几段。 */
+  //M 先按附件正则切出文本与附件段，后续只对附件段生成 Markdown 链接。
   const segments = splitAttachments(text);
   /** 这一段是有字的文字。 */
   const hasWords = (segment: Segment | undefined): boolean => segment?.type === 'text' && segment.text.trim() !== '';
   return segments
     .map((segment, index) => {
-      if (segment.type === 'text') {
-        return segment.text;
+      if (segment.type === 'text') return segment.text;
+
+      //M 前面紧邻有字文本时先起新段，让附件卡片落到文字下方单独成段。
+      let before = ' ';
+      if (hasWords(segments[index - 1])) {
+        before = '\n\n';
       }
-      return `${hasWords(segments[index - 1]) ? '\n\n' : ' '}[${segment.name.replace(/[[\]]/g, '')}](${FILE_SCHEME}${encodeURIComponent(segment.path)})${hasWords(segments[index + 1]) ? '\n\n' : ' '}`;
+      //M 后面紧邻有字文本时同样补空行隔开，避免正文紧贴在附件后面。
+      let after = ' ';
+      if (hasWords(segments[index + 1])) {
+        after = '\n\n';
+      }
+      return `${before}[${segment.name.replace(/[[\]]/g, '')}](${FILE_SCHEME}${encodeURIComponent(segment.path)})${after}`;
     })
     .join('');
 }
@@ -115,7 +135,7 @@ export function withAttachmentLinks(text: string): string {
  * @param href 链接。
  * @returns 路径；不是 jmfile: 链接是 undefined。
  */
-export function pathFromLink(href: string | undefined): string | undefined {
+export function getPathFromLink(href: string | undefined): string | undefined {
   if (!href?.startsWith(FILE_SCHEME)) {
     return undefined;
   }
@@ -130,6 +150,7 @@ export function pathFromLink(href: string | undefined): string | undefined {
 /**
  * 文件大小写成给人看的样子。
  * @param bytes 字节；不知道是 null。
+ * @returns 可读的大小字符串（如 1.2 MB）；空值时返回空串。
  */
 export function formatSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) {
@@ -148,7 +169,11 @@ export function formatSize(bytes: number | null | undefined): string {
     value /= 1024;
     unit += 1;
   }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+  let formatted = String(Math.round(value));
+  if (value < 10) {
+    formatted = value.toFixed(1);
+  }
+  return `${formatted} ${units[unit]}`;
 }
 
 
@@ -161,12 +186,17 @@ export function formatSize(bytes: number | null | undefined): string {
  */
 export function withWorkspaceTags(text: string, paths: string[]): string {
   //G 没有标签就不动正文。
-  if (paths.length === 0) {
-    return text;
-  }
+  if (paths.length === 0) return text;
+
   /** 每个标签的写法：含空格/制表符的包上引号。 */
-  const tags = paths.map((path) => (/[ \t]/.test(path) ? `@"${path}"` : `@${path}`));
+  const tags = paths.map((path) => {
+    if (/[ \t]/.test(path)) return `@"${path}"`;
+
+    return `@${path}`;
+  });
   /** 拼好的尾巴。 */
   const suffix = tags.join(' ');
-  return text === '' ? suffix : `${text} ${suffix}`;
+  if (text === '') return suffix;
+
+  return `${text} ${suffix}`;
 }

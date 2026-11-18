@@ -50,7 +50,7 @@ import work_mini_typing_2 from './whale/work_mini_typing_2.webp';
  * 取回来的是网页、显示成裂图（0.2.6 就是这样）；不同机器上的 Bun 给的写法也不一样，这里只取文件名再拼，哪种写法都对。
  * @param url 打包给的地址。
  */
-function assetUrl(url: string): string {
+function getAssetUrl(url: string): string {
   return `/assets/${url.split('/').pop() ?? url}`;
 }
 
@@ -101,4 +101,5 @@ const RAW: Record<string, string> = {
 
 
 /** 文件名 → 图片地址。 */
-export const IMAGES: Record<string, string> = Object.fromEntries(Object.entries(RAW).map(([name, url]) => [name, assetUrl(url)]));
+//M 模块初始化时把打包给出的相对地址统一改写成 /assets/文件名，避免子路由页面加载成裂图。
+export const IMAGES: Record<string, string> = Object.fromEntries(Object.entries(RAW).map(([name, url]) => [name, getAssetUrl(url)]));

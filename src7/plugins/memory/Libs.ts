@@ -109,7 +109,7 @@ export class Libs {
   private loop(): void {
     void this.tick()
       .catch((error: unknown) => {
-        this.report([`刷新出错：${textModule.messageOf(error)}`]);
+        this.report([`刷新出错：${textModule.getMessage(error)}`]);
         return 0;
       })
       .then((cost) => {

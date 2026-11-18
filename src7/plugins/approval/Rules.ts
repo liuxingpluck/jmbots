@@ -16,14 +16,21 @@ import * as path from 'node:path';
  * reply（话里 @路径 会把本机文件发出去）、note_claude、notify_user、agent_task、stop_session。
  * 也不给 list_sessions（列这个机器人干活的会话和总结，旧的没记客户的后台会话会一起列出来）、
  * wechat_history（读用户微信里这场会话的原文，是用户的私人聊天）。
- * history、history_search、history_get 给：只查这场前台（飞书群是这个群、私聊是这个人）和它交办的后台；非本人那一轮不带旧后台（bot-front-desk 的 scopeIds）。
+ * history、history_search、history_get 给：只查这场前台（飞书群是这个群、私聊是这个人）和它交办的后台；非本人那一轮不带旧后台（bots/FrontDesk.ts 的 scopeIds）。
  * hand_session 给：交出去的后台会话带着同一个回话地址，在那边一样只有这些工具，工作区也是他的目录。
+ * workspace 给（11-17）：外人看自己范围里的工作区（workspaces 插件按范围挡）；只许 OTHERS_WORKSPACE_ACTIONS 里的动作，
+ *   建、改名、归档在 approval 的 session/before-tool 关口拦下。
+ * channel_search 给（11-18）：memory 插件的渠道消息查询，外人只查得到这一轮这个聊天（ChannelIndex.ts 照来源快照挡）。
  */
 export const READ_ONLY_TOOLS = new Set([
   'time', 'read', 'list_dir', 'find', 'web_search', 'skill',
   'history', 'history_search', 'history_get', 'hand_session',
-  'react', 'ask', 'todo', 'relay_send',
+  'channel_reply', 'channel_history', 'channel_mentions', 'channel_visible_history',
+  'react', 'ask', 'todo', 'relay_send', 'workspace', 'channel_search',
 ]);
+
+/** 外人（guest、builder）用 workspace 工具只许这几个动作：看清单、看一个。 */
+export const OTHERS_WORKSPACE_ACTIONS = new Set(['list', 'get']);
 
 /**
  * builder（登记了能让机器人写代码、跑程序的人）说的那一轮能用的：只读的那些，加上在他自己目录里动手的
@@ -134,7 +141,11 @@ export function readScript(command: string, cwd: string): { file: string; conten
     /^("[^"]+\.(?:cmd|bat)"|\S+\.(?:cmd|bat))(?:\s|$)/i.exec(rest)?.[1];
   if (target === undefined) return undefined;
 
-  const file = path.resolve(cdDir === undefined ? cwd : path.resolve(cwd, cdDir), target.replace(/^"|"$/g, ''));
+  let baseDir = cwd;
+  if (cdDir !== undefined) {
+    baseDir = path.resolve(cwd, cdDir);
+  }
+  const file = path.resolve(baseDir, target.replace(/^"|"$/g, ''));
   try {
     return { file, content: fs.readFileSync(file, 'utf8').slice(0, 4000) };
   } catch {
@@ -165,8 +176,14 @@ export function parseReply(text: string): Reply | undefined {
   const core = words.replace(/^(全部|全都|都|所有)/u, '').replace(/^all\s+|\s+all$/u, '').trim();
   if (!APPROVE_WORDS.has(core) && !REJECT_WORDS.has(core)) return undefined;
 
-  const approve = APPROVE_WORDS.has(core);
-  return { approve, ...(idText === undefined ? {} : { id: Number(idText) }), ...(core === words ? {} : { all: true }) };
+  const reply: { approve: boolean; id?: number; all?: boolean } = { approve: APPROVE_WORDS.has(core) };
+  if (idText !== undefined) {
+    reply.id = Number(idText);
+  }
+  if (core !== words) {
+    reply.all = true;
+  }
+  return reply;
 }
 
 
@@ -203,7 +220,11 @@ export function mustAsk(command: string, dataRoot: string, cwd: string): string 
   const root = norm(dataRoot);
   //G Windows 的开关（/s、/q、/f）长得像 POSIX 绝对路径，不算路径；/etc 这种系统目录照算。
   const found = (command.match(ABS_PATH) ?? []).map((item) => item.replace(/^"|"$/g, '')).filter((item) => SYSTEM_DIR.test(item) || !/^\/[a-z?]{1,3}(?::\S*)?$/i.test(item));
-  for (const target of found.length > 0 ? found : [cwd]) {
+  let targets = [cwd];
+  if (found.length > 0) {
+    targets = found;
+  }
+  for (const target of targets) {
     if (SYSTEM_DIR.test(target)) return `删系统目录里的东西（${target}），要你亲自确认`;
     const t = norm(target);
     const inData = t === root || t.startsWith(root + '\\');

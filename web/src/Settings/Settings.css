@@ -1,0 +1,19 @@
+/*
+ * 模型目录 TableVirtuoso 专属样式：放在 Settings/ 下独立维护，避免改动公用 App.css 造成协作冲突。
+ * 所有背景与边框使用深色主题 CSS 变量，确保滚动与表头吸顶不出白块。
+ */
+
+.jm-models-scroll {
+  max-height: 440px;
+  overflow: auto;
+  border: 1px solid var(--jm-border);
+  border-radius: calc(var(--jm-radius) - 4px);
+  background: var(--jm-panel);
+}
+
+.jm-models-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--jm-panel);
+}

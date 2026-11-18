@@ -53,6 +53,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '引用', aliases: ['yy', 'yinyong', 'quote'], hint: '引用一段', group: '格式', run: ({ editor }) => void editor.chain().focus().toggleBlockquote().run() },
   { name: '代码块', aliases: ['dmk', 'daimakuai', 'code'], hint: '等宽的代码块', group: '格式', run: ({ editor }) => void editor.chain().focus().toggleCodeBlock().run() },
   { name: '分割线', aliases: ['fgx', 'fengexian', 'hr', 'line'], hint: '一条横线', group: '格式', run: ({ editor }) => void editor.chain().focus().setHorizontalRule().run() },
+  //M 附件与功能命令直接委托给界面上下文动作执行，让命令表保持纯声明式注册。
   { name: '图片', aliases: ['tp', 'tupian', 'image', 'img'], hint: '选图片发送', group: '附件', run: ({ pickFiles }) => pickFiles('image/*') },
   { name: '文件', aliases: ['wj', 'wenjian', 'file', 'attach'], hint: '选文件发送：音频、视频、文档都行', group: '附件', run: ({ pickFiles }) => pickFiles() },
   { name: '会话', aliases: ['hh', 'huihua', 'session'], hint: '选一个会话，这条直接发给它，不分派', group: '功能', run: ({ chooseSession }) => chooseSession() },
@@ -67,6 +68,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
  * 按打的字过滤命令：名字或别名以它开头的排前面，包含它的排后面；没打字时全部。
  * @param query / 后面打的字。
  * @param commands 命令表（测试用；默认是 SLASH_COMMANDS）。
+ * @returns 按匹配优先级与原顺序排列的命令数组，不修改传入列表。
  */
 export function filterCommands(query: string, commands: SlashCommand[] = SLASH_COMMANDS): SlashCommand[] {
   /** 小写、去空白。 */
@@ -75,16 +77,18 @@ export function filterCommands(query: string, commands: SlashCommand[] = SLASH_C
     return commands;
   }
   /** 打分：0 开头对上，1 包含，undefined 不要。 */
-  const score = (command: SlashCommand): number | undefined => {
+  const getScore = (command: SlashCommand): number | undefined => {
     /** 名字和别名。 */
     const names = [command.name, ...command.aliases].map((name) => name.toLowerCase());
-    if (names.some((name) => name.startsWith(wanted))) {
-      return 0;
-    }
-    return names.some((name) => name.includes(wanted)) ? 1 : undefined;
+    if (names.some((name) => name.startsWith(wanted))) return 0;
+
+    if (names.some((name) => name.includes(wanted))) return 1;
+
+    return undefined;
   };
+  //M 用局部打分函数按前缀优先、包含其次给每条命令评级，滤掉未命中项并保持相对顺序。
   return commands
-    .map((command, index) => ({ command, index, rank: score(command) }))
+    .map((command, index) => ({ command, index, rank: getScore(command) }))
     .filter((entry): entry is { command: SlashCommand; index: number; rank: number } => entry.rank !== undefined)
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map((entry) => entry.command);

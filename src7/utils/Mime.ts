@@ -65,7 +65,7 @@ const TEXT_EXTENSIONS = new Set([
  * @param name 文件名或路径。
  * @returns image、audio、video；认不出的都是 file。
  */
-export function kindOf(name: string): FileKind {
+export function getKind(name: string): FileKind {
   const extension = path.extname(name).toLowerCase();
   return TYPES[extension]?.[0] ?? 'file';
 }
@@ -76,7 +76,7 @@ export function kindOf(name: string): FileKind {
  * @param name 文件名或路径。
  * @returns 表里有的照表；代码文件当纯文字；别的当二进制 application/octet-stream。
  */
-export function typeOf(name: string): string {
+export function getType(name: string): string {
   const extension = path.extname(name).toLowerCase();
   if (TEXT_EXTENSIONS.has(extension)) return 'text/plain; charset=utf-8';
 

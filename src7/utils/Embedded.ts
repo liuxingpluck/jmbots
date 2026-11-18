@@ -41,7 +41,7 @@ export function isCompiled(): boolean {
 
 
 /** 编译时刻，毫秒；源码跑是 0。 */
-export function builtTime(): number {
+export function getBuiltTime(): number {
   return built;
 }
 
@@ -60,7 +60,7 @@ export function find(name: string): string | undefined {
  * 登记过的全部相对路径。boot-trail 找“谁调它”时从这里挑出 src7/ 下的源码。
  * @returns 如 src7/Main.ts、web/index.html；源码跑时是空的。
  */
-export function names(): string[] {
+export function getNames(): string[] {
   return [...files.keys()];
 }
 
@@ -74,6 +74,7 @@ export function names(): string[] {
  */
 export async function exportFile(name: string, dest: string): Promise<boolean> {
   if (fs.existsSync(dest)) return true;
+  //M 查找内嵌文件真实句柄；源码模式或未收录时退出不建空文件。
   const file = find(name);
   if (file === undefined) return false;
   //M 建好上层目录，读出内嵌文件的字节，写下去。

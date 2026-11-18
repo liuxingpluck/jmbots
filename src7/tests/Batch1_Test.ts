@@ -138,7 +138,7 @@ async function main(): Promise<void> {
   const md = detail.json?.files?.md ?? '';
   check('journal：会话详情 files.md 有路径、文件在', md !== '' && fs.existsSync(md), md);
   const mdText = md !== '' ? fs.readFileSync(md, 'utf8') : '';
-  check('journal：对话.md 有用户、模型、工具结果、结束', ['## 用户', '## 模型', '## 工具结果 `time`', '这一轮做完了'].every((k) => mdText.includes(k)), mdText.slice(0, 300));
+  check('journal：对话.md 有用户、模型、工具结果、结束', ['【用户 · ', '### 第 1 步', '【结果】time：', '【这一轮】做完了'].every((k) => mdText.includes(k)), mdText.slice(0, 600));
   const trace = await api(s, 'GET', `/api/messages/${messageId}/trace?reply=0`);
   check('journal+usage：回话追溯里有事件和用量', trace.status === 200 && (trace.json?.events?.length ?? 0) > 0 && Array.isArray(trace.json?.usage) && trace.json.usage.length > 0, { events: trace.json?.events?.length, usage: trace.json?.usage?.length, notes: trace.json?.notes });
 
@@ -273,9 +273,9 @@ async function main(): Promise<void> {
   const g1 = await api(s, 'GET', '/api/settings');
   check('settings：GET 不含密钥原文、有代号、没有 plugins', g1.status === 200 && !g1.text.includes('test-key-1') && !g1.text.includes('test-secret-1') && !g1.text.includes('test-token-1') && g1.text.includes('‹已设置:') && g1.json.config.plugins === undefined, g1.text.slice(0, 200));
   const cfg = path.join(dir1, 'config.yaml');
-  const p1 = await api(s, 'PUT', '/api/settings', [{ path: ['engine', 'max_rounds'], value: 50 }]);
+  const p1 = await api(s, 'PUT', '/api/settings', [{ path: ['engine', 'retry', 'wait_ms'], value: 50 }]);
   const after1 = fs.readFileSync(cfg, 'utf8');
-  check('settings：PUT max_rounds=50，注释都在', p1.status === 200 && p1.json.changed === 1 && after1.includes('max_rounds: 50') && after1.includes('# 假搜索：测试脚本自己起的服务'), p1.text);
+  check('settings：PUT retry.wait_ms=50，注释都在', p1.status === 200 && p1.json.changed === 1 && after1.includes('wait_ms: 50') && after1.includes('# 假搜索：测试脚本自己起的服务'), p1.text);
   const p2 = await api(s, 'PUT', '/api/settings', [{ path: ['channels', 'feishu'], value: g1.json.config.channels.feishu }]);
   check('settings：带代号写回飞书表，文件里还是原密钥', p2.status === 200 && fs.readFileSync(cfg, 'utf8').includes('test-secret-1'), p2.text);
   const p3 = await api(s, 'PUT', '/api/settings', [{ path: ['providers', 'fake', 'api_key'], value: '‹已设置:00000000›' }]);
@@ -283,8 +283,8 @@ async function main(): Promise<void> {
   const p4 = await api(s, 'PUT', '/api/settings', [{ path: ['plugins'], value: [] }]);
   check('settings：改 plugins 400', p4.status === 400, p4.text);
   const before5 = fs.readFileSync(cfg, 'utf8');
-  const p5 = await api(s, 'PUT', '/api/settings', [{ path: ['engine', 'max_rounds'], value: 'abc' }]);
-  check('settings：max_rounds=abc 400、文件没变', p5.status === 400 && fs.readFileSync(cfg, 'utf8') === before5, p5.text);
+  const p5 = await api(s, 'PUT', '/api/settings', [{ path: ['engine', 'retry', 'wait_ms'], value: 'abc' }]);
+  check('settings：retry.wait_ms=abc 400、文件没变', p5.status === 400 && fs.readFileSync(cfg, 'utf8') === before5, p5.text);
   const p6 = await api(s, 'PUT', '/api/settings', [{ path: ['models', 'decision', 'model'], value: 'fake/fake' }]);
   const g6 = await api(s, 'GET', '/api/settings');
   check('settings：网页的 models.decision.model 写成 decision.models', p6.status === 200 && /decision:\s*\n\s*models:\s*\n\s*- fake\/fake/u.test(fs.readFileSync(cfg, 'utf8')) && g6.json?.config?.models?.decision?.model === 'fake/fake', p6.text);

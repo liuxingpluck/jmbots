@@ -65,7 +65,7 @@ function pick<T>(list: T[]): T {
  * @param items 进度（新的在前）。
  * @param waiting 机器人在等人点审核。
  */
-export function moodOf(items: types.ProgressView[], waiting: boolean): Mood {
+export function getMood(items: types.ProgressView[], waiting: boolean): Mood {
   /** 还在做的。 */
   const live = items.filter((item) => item.endedAt === undefined);
   /** 刚做完的。 */
@@ -85,7 +85,9 @@ export function moodOf(items: types.ProgressView[], waiting: boolean): Mood {
   if (recent?.stage === 'error') {
     return 'error';
   }
-  return recent?.stage === 'done' ? 'done' : 'idle';
+  if (recent?.stage === 'done') return 'done';
+
+  return 'idle';
 }
 
 
@@ -95,16 +97,23 @@ export function moodOf(items: types.ProgressView[], waiting: boolean): Mood {
  * @param index 第几个（同一种样子错开两张图，站在一起不一样）。
  * @returns 图的名字（images.IMAGES 的键）。
  */
-export function workerFigure(item: types.ProgressView, index: number): string {
+export function getWorkerFigure(item: types.ProgressView, index: number): string {
   /** 第几张。 */
-  const n = index % 2 === 0 ? 1 : 2;
+  let n = 2;
+  if (index % 2 === 0) {
+    n = 1;
+  }
   if (item.stage === 'dispatching') {
     return `dispatch_captain_${n}`;
   }
   if (SEARCH_TOOLS.test(item.action)) {
-    return `${index % 2 === 0 ? 'search_magnifier' : 'search_book'}_1`;
+    if (index % 2 === 0) return 'search_magnifier_1';
+
+    return 'search_book_1';
   }
-  return `${Math.floor(index / 2) % 2 === 0 ? 'work_mini_typing' : 'work_mini'}_${n}`;
+  if (Math.floor(index / 2) % 2 === 0) return `work_mini_typing_${n}`;
+
+  return `work_mini_${n}`;
 }
 
 
@@ -112,14 +121,16 @@ export function workerFigure(item: types.ProgressView, index: number): string {
  * 干了多久，写成计时器的样子：“0:35”“12:05”“1:02:05”。
  * @param ms 毫秒。
  */
-export function clockOf(ms: number): string {
+export function getClock(ms: number): string {
   /** 一共几秒。 */
   const total = Math.max(0, Math.floor(ms / 1000));
   /** 时、分、秒。 */
   const [hours, minutes, seconds] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
   /** 两位数。 */
   const two = (value: number): string => String(value).padStart(2, '0');
-  return hours > 0 ? `${String(hours)}:${two(minutes)}:${two(seconds)}` : `${String(minutes)}:${two(seconds)}`;
+  if (hours > 0) return `${String(hours)}:${two(minutes)}:${two(seconds)}`;
+
+  return `${String(minutes)}:${two(seconds)}`;
 }
 
 
@@ -128,6 +139,7 @@ export function clockOf(ms: number): string {
  * @param props live 还在做的事（新的在前）；onOpen 点一下做什么。
  */
 function WorkStrip(props: { live: types.ProgressView[]; onOpen: () => void }): react.JSX.Element | null {
+  //M 订阅界面翻译函数，用于格式化干活条的无障碍总览说明。
   const t = i18n.useT();
   /** 现在，每秒走一下，计时跟着跳。 */
   const [now, setNow] = react.useState(Date.now());
@@ -145,28 +157,41 @@ function WorkStrip(props: { live: types.ProgressView[]; onOpen: () => void }): r
   //M 先开始的站前面，和左栏“正在做的事”一个顺序。
   /** 站出来的几个。 */
   const shown = [...props.live].sort((left, right) => left.startedAt - right.startedAt).slice(0, MAX_WORKERS);
+  //M 渲染标题栏干活条：按开启顺序展示上限内任务的分身，超出部分显示 +N。
   return (
     <div className="jm-workstrip" aria-label={t('正在干活：{count} 件', { count: props.live.length })}>
-      {shown.map((item, index) => (
-        <button
-          key={item.id}
-          type="button"
-          className={`jm-worker jm-worker-${item.stage === 'dispatching' ? 'dispatch' : 'work'}`}
-          style={{ animationDelay: `${String(index * 0.35)}s` }}
-          title={`${item.sessionTitle ?? item.text}\n${item.action}${item.model ? `\n${item.model}` : ''}`}
-          onClick={props.onOpen}
-        >
-          <img className="jm-worker-figure" style={{ animationDelay: `${String(index * 0.25)}s` }} src={images.IMAGES[workerFigure(item, index)] ?? images.IMAGES.work_mini_1} alt="" />
+      {shown.map((item, index) => {
+        let workerKind = 'work';
+        if (item.stage === 'dispatching') {
+          workerKind = 'dispatch';
+        }
+        let modelLine = '';
+        if (item.model) {
+          modelLine = `\n${item.model}`;
+        }
+
+        //M 挑选对应阶段的分身小图并格式化持续计时（跳过无起点时间戳的续跑会话），点击打开工作区面板。
+        return (
+          <button
+            key={item.id}
+            type="button"
+            className={`jm-worker jm-worker-${workerKind}`}
+            style={{ animationDelay: `${String(index * 0.35)}s` }}
+            title={`${item.sessionTitle ?? item.text}\n${item.action}${modelLine}`}
+            onClick={props.onOpen}
+          >
+          <img className="jm-worker-figure" style={{ animationDelay: `${String(index * 0.25)}s` }} src={images.IMAGES[getWorkerFigure(item, index)] ?? images.IMAGES.work_mini_1} alt="" />
           <span className="jm-worker-text">
             <span className="jm-worker-title">{item.sessionTitle ?? item.text}</span>
             <span className="jm-worker-action">
               <span className="jm-worker-doing">{item.action}</span>
               <span className="jm-worker-dots" aria-hidden="true"><i /><i /><i /></span>
-              {item.startedAt > 0 && <span className="jm-worker-clock">{clockOf(now - item.startedAt)}</span>}
+              {item.startedAt > 0 && <span className="jm-worker-clock">{getClock(now - item.startedAt)}</span>}
             </span>
           </span>
         </button>
-      ))}
+        );
+      })}
       {props.live.length > MAX_WORKERS && <span className="jm-worker-more">+{props.live.length - MAX_WORKERS}</span>}
     </div>
   );
@@ -178,13 +203,17 @@ function WorkStrip(props: { live: types.ProgressView[]; onOpen: () => void }): r
  * @param props bot 是现在看的机器人。
  */
 export function Mascot(props: { bot: string | undefined }): react.JSX.Element | null {
+  //M 订阅翻译函数、右栏工作区打开动作及已挂载插件表，按 progress 插件开关决定是否请求进度接口。
   const t = i18n.useT();
   const openPanel = context.useUi((state) => state.openPanel);
+  const mountedPlugins = context.useUi((state) => state.mountedPlugins);
+  const progressEnabled = api.isPluginMounted(mountedPlugins, 'progress', false);
   /** 这个机器人的进度。 */
   const [items, setItems] = react.useState<types.ProgressView[]>([]);
   /** 这个机器人在跑的会话（有的没有进度卡片）。 */
   const [running, setRunning] = react.useState<api.SessionBrief[]>([]);
   /** 机器人在不在等人点审核。 */
+  //M 从全局状态检查当前机器人是否处于等待审核态，用于优先切到举牌等待造型。
   const waiting = context.useUi((state) => state.bots.find((item) => item.name === props.bot)?.status === 'waiting');
   /** 这一种状态里挑中的样子和第几张（换状态、闲着到点时重挑）。 */
   const [variant, setVariant] = react.useState({ kind: 'idle_watch', n: 1 });
@@ -197,19 +226,30 @@ export function Mascot(props: { bot: string | undefined }): react.JSX.Element | 
     .filter((session) => !live.some((item) => item.sessionId === session.id))
     .map((session, index): types.ProgressView => ({ id: -1 - index, bot: props.bot ?? '', messageIds: [], text: session.title, sessionId: session.id, sessionTitle: session.title, model: session.model, stage: 'running', action: t('接着干'), startedAt: 0 }));
   /** 现在的状态。 */
-  const mood = moodOf([...items, ...orphans], waiting);
+  //M 合并进度卡片与无卡片的在跑会话，综合算出鲸鱼娘当前应展示的情绪状态。
+  const mood = getMood([...items, ...orphans], waiting);
 
   react.useEffect(() => {
     if (!props.bot) {
       return undefined;
     }
+    if (!progressEnabled) {
+      setItems([]);
+    }
     /** 停了没有。 */
     let stopped = false;
     /** 问一次。 */
     const load = (): void => {
-      void api.progress(props.bot ?? '').then((next) => !stopped && setItems(next), () => undefined);
+      //M 没挂 progress 插件时只查正在跑的会话，不去打 /api/progress 的 404。
+      if (progressEnabled) {
+        void api.progress(props.bot ?? '').then((next) => !stopped && setItems(next), () => undefined);
+      }
+
+      //M 同时拉取当前机器人运行中的会话，把没有进度卡片的续跑会话补成干活条分身。
       void api.sessions(props.bot ?? '', 'running').then((next) => !stopped && setRunning(next), () => undefined);
     };
+
+    //M 切换机器人或插件状态后立即查询一次进度与在跑会话，并开启定时轮询。
     load();
     /** 定时器。 */
     const timer = setInterval(load, REFRESH_MS);
@@ -217,7 +257,7 @@ export function Mascot(props: { bot: string | undefined }): react.JSX.Element | 
       stopped = true;
       clearInterval(timer);
     };
-  }, [props.bot]);
+  }, [props.bot, progressEnabled]);
 
   //M 换状态时重挑样子；闲着时隔一阵换一种。
   react.useEffect(() => {
@@ -225,8 +265,11 @@ export function Mascot(props: { bot: string | undefined }): react.JSX.Element | 
     const choose = (): void => {
       /** 这种状态的候选。 */
       const kinds = { idle: IDLE_KINDS, dispatch: DISPATCH_KINDS, search: SEARCH_KINDS, work: ['work_lead'], wait: ['wait_approval'], done: ['done_happy'], error: ['error_oops'] }[mood];
+      //M 从当前状态的候选姿势与两帧编号中随机挑出本次展示的图。
       setVariant({ kind: pick(kinds), n: pick([1, 2]) });
     };
+
+    //M 状态切换时立即抽选新形象，并在空闲状态下持续定时换姿势。
     choose();
     if (mood !== 'idle') {
       return undefined;
@@ -261,9 +304,14 @@ export function Mascot(props: { bot: string | undefined }): react.JSX.Element | 
   /** 第二张图的名字（眨眼、敲锤）。 */
   const altKind = { idle_watch: 'idle_watch_blink', dispatch_judge: 'dispatch_judge_hit' }[variant.kind];
   /** 主图。 */
-  const src = images.IMAGES[`${alt && altKind ? altKind : variant.kind}_${variant.n}`] ?? images.IMAGES.idle_watch_1;
+  let frameKind = variant.kind;
+  if (alt && altKind) {
+    frameKind = altKind;
+  }
+  const src = images.IMAGES[`${frameKind}_${variant.n}`] ?? images.IMAGES.idle_watch_1;
   /** 给人看的一句话。 */
   const label = { idle: t('闲着'), dispatch: t('正在分派'), work: t('正在干活'), search: t('正在查资料'), wait: t('等你审核'), done: t('做完了'), error: t('出错了') }[mood];
+  //M 渲染标题栏主鲸鱼娘悬停放大气泡与右侧干活条，点击干活条打开右栏工作区。
   return (
     <div className="jm-mascot-area">
       <antd.Popover placement="bottom" content={<img className="jm-mascot-full" src={src} alt={label} />}>

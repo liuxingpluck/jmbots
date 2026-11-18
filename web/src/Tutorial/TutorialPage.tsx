@@ -1,0 +1,1852 @@
+/**
+ * 教程页（/tutorial/，tutorial 插件；/flow/ 跳过来）：
+ *   1. 最底层是铺满视口的泳道图画布，按住空白拖动平移、滚轮按鼠标位置缩放、附「适应窗口」「100%」和角落操作提示，
+ *      选中某一步时自动把被左右栏遮住的步平移回中间可见区；
+ *   2. 左右两栏均以带阴影的半透明深色卡片悬浮在画布上方：都能拖动改宽（220~45% 视口 / 300~45% 视口）、读写 localStorage 包 try/catch，
+ *      也都能收起成边缘窄条，释放画布面积；< 800px 窄屏自动退化为上下排布；
+ *   3. 右栏顶设「这一步」「插件」两页签（步骤详情全部挪进右栏，右栏独立虚拟滚动，画布始终停在原地不动）；
+ *   4. 所有“文件:行号”与依赖表位置列均通过 TutorialWorkspaceContext 直接复用 Code.tsx 的 getVscodeHref 在 VS Code 打开；
+ *   5. 浏览器前进/后退/刷新通过 history.pushState + popstate 保持原地（canvas / step / plugin / ptab / event / rtab）。
+ */
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import * as antd from 'antd';
+import zhCN from 'antd/locale/zh_CN';
+import * as virtuoso from 'react-virtuoso';
+import * as theme from '../Theme.ts';
+import { TOKEN, withToken } from '../Token.ts';
+import { JsonBlock, TutorialScrollContext, TutorialWorkspaceContext, VIRTUAL_THRESHOLD } from './Code.tsx';
+import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
+import { CodeTab, TryTab } from './PluginTabs.tsx';
+import { buildReadmeTabItems } from './ReadmeTabs.tsx';
+import { TutorialApi, type Canvas, type CanvasList, type MessageCanvasItem, type PluginItem, type PluginList, type StateGroup, type Trail } from './TutorialApi.ts';
+
+
+/** 地址栏里记住的当前位置。 */
+interface RouteState {
+  /** 画布：'' 无画布，'__AUTO__' 首次自动选最新消息或 boot，'boot' 启动，或数字消息号。 */
+  canvas: string;
+  /** 泳道图选中的第几步；0 是没选。 */
+  step: number;
+  /** 右栏「插件」页签选中的插件名；'' 未选，'__FIRST__' 旧 ?tab=plugins 默认取第一个插件。 */
+  plugin: string;
+  /** 插件分栏内部选中的标签 key（overview / events / ... / state / code / try）。 */
+  ptab: string;
+  /** 当前画布高亮的事件名；'' 不高亮。 */
+  event: string;
+  /** 右侧悬浮栏顶上当前选中的页签：step 看这一步详情，plugin 看插件说明与代码。 */
+  rtab: 'step' | 'plugin';
+}
+
+/** 左栏四组折叠状态（骨架、插件、启动流程、最近消息）。 */
+interface GroupOpenState {
+  skeleton: boolean;
+  plugins: boolean;
+  boot: boolean;
+  messages: boolean;
+}
+
+/** 左栏单一虚拟列表的行结构：分组标题、分割细线、骨架/插件条目、启动流程、消息条目或空提示。 */
+type LeftNavRow =
+  | { key: string; kind: 'group-head'; groupKey: keyof GroupOpenState; title: string; count: number; expanded: boolean }
+  | { key: string; kind: 'divider' }
+  | { key: string; kind: 'plugin'; plugin: PluginItem }
+  | { key: string; kind: 'boot' }
+  | { key: string; kind: 'message'; message: MessageCanvasItem }
+  | { key: string; kind: 'empty'; text: string };
+
+
+/** 左栏虚拟列表顶部留白（防止首行紧贴搜索栏边框）。 */
+function LeftListHeader(): JSX.Element {
+  return <div className="tu-side-pad-top" />;
+}
+
+
+/** 左栏虚拟列表底部留白（滚到最底保留呼吸感）。 */
+function LeftListFooter(): JSX.Element {
+  return <div className="tu-side-pad-bottom" />;
+}
+
+
+/** 左栏虚拟列表组件映射（模块级常量，避免每次渲染重建组件引用）。 */
+const LEFT_LIST_COMPONENTS = {
+  Header: LeftListHeader,
+  Footer: LeftListFooter,
+};
+
+/** 底层画布平移缩放状态（桌面模式用 CSS transform）。 */
+interface CanvasTransform {
+  tx: number;
+  ty: number;
+  scale: number;
+}
+
+/** 画布中间未被左右浮栏遮挡的安全可视区域，单位像素。 */
+interface SafeViewport {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+
+/** 默认和极值常量。 */
+const STATE_MS = 3000;
+const PANE_WIDTH_KEY = 'jm.tutorial.paneWidth';
+const LEFT_WIDTH_KEY = 'jm.tutorial.leftWidth';
+const LEFT_COLLAPSED_KEY = 'jm.tutorial.leftCollapsed';
+const RIGHT_COLLAPSED_KEY = 'jm.tutorial.rightCollapsed';
+const DEFAULT_PANE_WIDTH = 440;
+const DEFAULT_LEFT_WIDTH = 264;
+const MIN_LEFT_WIDTH = 220;
+const MIN_PANE_WIDTH = 300;
+const MAX_SIDE_RATIO = 0.45;
+const NARROW_BREAKPOINT = 800;
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 2.5;
+const FIT_MAX_SCALE = 1.0;
+const SENTINEL_AUTO = '__AUTO__';
+const SENTINEL_FIRST = '__FIRST__';
+
+/** 插件状态 → 一句话说明。 */
+const STATE_WORDS: Record<string, string> = {
+  ok: '挂上了',
+  failed: '没挂上',
+  waiting: '挂了但缺服务，没开工',
+  idle: '配置里没挂',
+};
+
+/** 渠道英文代号 → 左栏显示中文短标签。 */
+const CHANNEL_LABELS: Record<string, string> = {
+  feishu: '飞书',
+  http: '网页',
+  wechat: '微信',
+  cli: '命令行',
+};
+
+
+/**
+ * 把数值夹在 [min, max] 之间。
+ */
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+
+/**
+ * 计算左/右悬浮栏允许的最大宽度（视口宽度的 45%，保底不小于最小宽）。
+ * @param minWidth 对应栏位的最小宽度。
+ */
+function getMaxSideWidth(minWidth: number): number {
+  const byRatio = Math.floor(window.innerWidth * MAX_SIDE_RATIO);
+  return Math.max(minWidth, byRatio);
+}
+
+
+/**
+ * 安全读取 localStorage 整数并夹在合法区间内（隐私模式或禁用存储时不抛错）。
+ * @param key 存储键。
+ * @param fallback 默认值。
+ * @param min 允许最小宽。
+ */
+function getStoredWidth(key: string, fallback: number, min: number): number {
+  //M 按当前视口比例计算允许最大宽度，防止本地记忆宽度把中间画布挤没。
+  const max = getMaxSideWidth(min);
+  try {
+    const raw = window.localStorage.getItem(key) ?? '';
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isSafeInteger(parsed) && parsed >= min) {
+      return Math.min(parsed, max);
+    }
+  } catch {
+    return Math.min(fallback, max);
+  }
+  return Math.min(fallback, max);
+}
+
+
+/**
+ * 安全读取 localStorage 布尔开关（包 try/catch）。
+ * @param key 存储键。
+ * @param fallback 默认值。
+ */
+function getStoredCollapsed(key: string, fallback: boolean): boolean {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === '1') return true;
+    if (raw === '0') return false;
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
+
+/**
+ * 安全写入 localStorage（包 try/catch）。
+ * @param key 存储键。
+ * @param value 字符串值。
+ */
+function saveStored(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    //G 无痕或存储满时忽略，不影响页面交互。
+  }
+}
+
+
+/**
+ * 算出当前画布中间未被左右浮栏遮挡的安全区域边界。
+ * @param stageW 画布舞台宽。
+ * @param stageH 画布舞台高。
+ * @param leftOpen 左栏是否展开。
+ * @param leftW 左栏当前宽。
+ * @param rightOpen 右栏是否展开。
+ * @param rightW 右栏当前宽。
+ */
+function getSafeViewport(
+  stageW: number,
+  stageH: number,
+  leftOpen: boolean,
+  leftW: number,
+  rightOpen: boolean,
+  rightW: number,
+): SafeViewport {
+  let left = 92;
+  if (leftOpen) {
+    left = leftW + 24;
+  }
+  let right = stageW - 92;
+  if (rightOpen) {
+    right = stageW - rightW - 24;
+  }
+  const safeRight = Math.max(left + 180, right);
+  const top = 56;
+  const bottom = Math.max(top + 120, stageH - 54);
+  return {
+    left,
+    top,
+    right: safeRight,
+    bottom,
+    width: Math.max(180, safeRight - left),
+    height: Math.max(120, bottom - top),
+  };
+}
+
+
+/**
+ * 算出让整张泳道图自适应放进中间安全可视区的平移与缩放。
+ * @param layout 泳道图总尺寸。
+ * @param safe 中间不被遮挡的矩形区域。
+ */
+function getFitTransform(layout: CanvasLayout, safe: SafeViewport): CanvasTransform {
+  const pad = 16;
+  const availW = Math.max(120, safe.width - pad * 2);
+  const availH = Math.max(100, safe.height - pad * 2);
+  const scaleX = availW / Math.max(1, layout.width);
+  const scaleY = availH / Math.max(1, layout.total);
+  //M 将按宽高独立算出的贴合倍率夹在最小与 100% 原比例之间，保证画布既全貌可见又不致于过小或失真。
+  const scale = clamp(Math.min(scaleX, scaleY, FIT_MAX_SCALE), 0.25, FIT_MAX_SCALE);
+  const drawnW = layout.width * scale;
+  const drawnH = layout.total * scale;
+  const tx = Math.round(safe.left + Math.max(pad, (safe.width - drawnW) / 2));
+  const ty = Math.round(safe.top + Math.max(8, (safe.height - drawnH) / 2));
+  return { tx, ty, scale };
+}
+
+
+/**
+ * 渠道代号转短中文徽标文本（未知代号原样显示）。
+ * @param channel 渠道英文代号。
+ */
+function getChannelLabel(channel?: string): string {
+  if (channel === undefined || channel === '') return '';
+
+  return CHANNEL_LABELS[channel] ?? channel;
+}
+
+
+/**
+ * 从地址栏解析路由状态，同时兼容旧的 ?plugin=、?canvas=、?message=、?boot=1、?tab= 链接。
+ * @param search location.search。
+ */
+function getRouteFromUrl(search: string): RouteState {
+  const params = new URLSearchParams(search);
+  //M 从查询串解析当前选中的步骤编号，非法值回落到 0（未选中）。
+  const rawStep = Number.parseInt(params.get('step') ?? '', 10);
+  let step = 0;
+  if (Number.isSafeInteger(rawStep) && rawStep > 0) {
+    step = rawStep;
+  }
+
+  //M 提取插件子页签、事件高亮、插件名、画布标识与旧版 ?tab=/?rtab= 兼容参数。
+  const ptab = params.get('ptab') ?? 'overview';
+  const event = params.get('event') ?? '';
+  const plugin = params.get('plugin') ?? '';
+  const rawCanvas = params.get('canvas') ?? params.get('message') ?? '';
+  const tab = params.get('tab') ?? '';
+  const rawRtab = params.get('rtab') ?? '';
+
+  //M 右栏页签优先认 URL 里的 rtab；没给时：无画布/只带 plugin 落到「插件」，其余默认看「这一步」。
+  let rtab: 'step' | 'plugin' = 'step';
+  if (rawRtab === 'plugin') {
+    rtab = 'plugin';
+  }
+  if (rawRtab !== 'step' && rawRtab !== 'plugin' && step === 0 && (plugin !== '' || tab === 'plugins')) {
+    rtab = 'plugin';
+  }
+
+  //M 显式给了画布参数：canvas=boot / 数字消息号 / boot=1 / 旧 tab=boot。
+  let canvas = '';
+  if (rawCanvas === 'boot' || params.get('boot') === '1' || tab === 'boot') {
+    canvas = 'boot';
+  }
+  if (/^\d+$/u.test(rawCanvas)) {
+    canvas = rawCanvas;
+  }
+
+  //M 旧只看插件的链接（?plugin=xxx 且没有画布参数，或 ?tab=plugins）：保持无画布直达插件。
+  if (canvas === '' && (plugin !== '' || tab === 'plugins')) {
+    let targetPlugin = plugin;
+    if (targetPlugin === '') {
+      targetPlugin = SENTINEL_FIRST;
+    }
+    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, rtab: 'plugin' };
+  }
+
+  //M 裸 /tutorial/ 或旧 ?tab=session 但未指定消息号：待消息列表到达后自动落最新一条（无消息落 boot）。
+  if (canvas === '') {
+    canvas = SENTINEL_AUTO;
+  }
+  return { canvas, step, plugin, ptab, event, rtab };
+}
+
+
+/**
+ * 把当前 RouteState 序列化成完整 URL（保留与本页无关的 token 等参数）。
+ * @param route 当前状态。
+ */
+function buildRouteUrl(route: RouteState): string {
+  const url = new URL(window.location.href);
+  for (const key of ['tab', 'plugin', 'canvas', 'step', 'message', 'session', 'boot', 'ptab', 'event', 'full', 'rtab']) {
+    url.searchParams.delete(key);
+  }
+  if (route.canvas !== '' && route.canvas !== SENTINEL_AUTO) {
+    url.searchParams.set('canvas', route.canvas);
+    if (route.step > 0) {
+      url.searchParams.set('step', String(route.step));
+    }
+  }
+  if (route.plugin !== '' && route.plugin !== SENTINEL_FIRST) {
+    url.searchParams.set('plugin', route.plugin);
+    if (route.ptab !== '' && route.ptab !== 'overview') {
+      url.searchParams.set('ptab', route.ptab);
+    }
+  }
+  if (route.event !== '') {
+    url.searchParams.set('event', route.event);
+  }
+  if (route.rtab === 'plugin') {
+    url.searchParams.set('rtab', 'plugin');
+  }
+  return url.toString();
+}
+
+
+/**
+ * 算出某个事件在当前轨迹里出现的全部步骤号（去重升序）。
+ * @param trail 当前画布轨迹。
+ * @param eventName 事件名。
+ */
+function getMatchedSteps(trail: Trail | null, eventName: string): number[] {
+  if (trail === null || eventName === '') return [];
+
+  const matched: number[] = [];
+  for (const step of trail.steps) {
+    if (step.rows.some((row) => row.name === eventName)) {
+      matched.push(step.no);
+    }
+  }
+  return matched;
+}
+
+
+/**
+ * 毫秒时间戳 → 月-日 时:分。
+ * @param at 毫秒时间戳。
+ */
+function getClock(at: number): string {
+  if (at <= 0) return '';
+
+  const date = new Date(at);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${month}-${day} ${hour}:${minute}`;
+}
+
+
+/**
+ * 消息在左栏显示的名字：“#消息号 用户那句话”。
+ * @param item 消息项。
+ */
+function getMessageTitle(item: MessageCanvasItem): string {
+  if (item.preview === '') return `#${item.name}`;
+
+  return `#${item.name} ${item.preview}`;
+}
+
+
+/**
+ * 读某个插件的 说明.md 原文。
+ * @param name 插件名。
+ */
+function usePluginReadme(name: string): { text: string | null; error: string } {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setText(null);
+    setError('');
+    //M 按插件名即时抓取 说明.md 原文用于右栏分栏渲染。
+    const loading = TutorialApi.get<{ text: string }>(`/api/tutorial/readme?name=${encodeURIComponent(name)}`);
+    loading.then((result) => setText(result.text), (failed: unknown) => setError((failed as Error).message));
+  }, [name]);
+
+  return { text, error };
+}
+
+
+/**
+ * 一组运行时状态的折叠块，PluginState 在常规和虚拟滚动模式下共用。
+ * @param props.group 状态组。
+ */
+function PluginStateGroup(props: { group: StateGroup }): JSX.Element {
+  const { group } = props;
+  return (
+    <details className="tu-state-group" open>
+      <summary>{group.name}</summary>
+      <JsonBlock head={<span className="tu-muted">{group.note}</span>} value={group.value} empty="（空）" notes={group.notes} />
+    </details>
+  );
+}
+
+
+/**
+ * 插件的「状态」：它提供的服务对象、它用 ctx.flow.state 登记的，全量原样；每 STATE_MS 刷新一次，能暂停；组数 >= 30 时开启虚拟滚动。
+ * @param props.name 插件名。
+ */
+function PluginState(props: { name: string }): JSX.Element {
+  const [groups, setGroups] = useState<StateGroup[] | null>(null);
+  const [at, setAt] = useState(0);
+  const [error, setError] = useState('');
+  const [paused, setPaused] = useState(false);
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
+
+  //M 换了插件：清掉上一个的。
+  useEffect(() => {
+    setGroups(null);
+    setAt(0);
+  }, [props.name]);
+
+  //M 没暂停就定时读。
+  useEffect(() => {
+    if (paused) return undefined;
+
+    let alive = true;
+    const load = (): void => {
+      //M 现拉该插件服务对象及登记状态变量快照，实现状态面板实时刷新。
+      const loading = TutorialApi.get<{ at: number; groups: StateGroup[] }>(`/api/tutorial/state?name=${encodeURIComponent(props.name)}`);
+      loading.then((result) => {
+        if (!alive) return;
+
+        setGroups(result.groups);
+        setAt(result.at);
+        setError('');
+      }, (failed: unknown) => {
+        if (alive) {
+          setError((failed as Error).message);
+        }
+      });
+    };
+    //M 组件挂载后立即首刷一次状态，再由定时器按固定频率周期轮询。
+    load();
+    const timer = window.setInterval(load, STATE_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [paused, props.name]);
+
+  //M 顶上一行：什么时候读的、刷新还是暂停。
+  let said = '正在读…';
+  if (at > 0) {
+    said = `${new Date(at).toLocaleTimeString()} 读的`;
+  }
+  let refresh = `每 ${String(STATE_MS / 1000)} 秒刷新`;
+  if (paused) {
+    refresh = '已暂停';
+  }
+  let button = '暂停';
+  if (paused) {
+    button = '继续刷新';
+  }
+
+  return (
+    <TutorialScrollContext.Consumer>
+      {(ctxScrollParent) => {
+        if (ctxScrollParent !== scrollParent) {
+          queueMicrotask(() => setScrollParent(ctxScrollParent));
+        }
+        const list = groups ?? [];
+        const useVirtual = list.length >= VIRTUAL_THRESHOLD && ctxScrollParent !== null;
+        return (
+          <div className="tu-state">
+            <div className="tu-head-row">
+              <span className="tu-muted">{said} · {refresh}</span>
+              <button type="button" className="tu-link" onClick={() => setPaused(!paused)}>{button}</button>
+            </div>
+            {error !== '' && <p className="tu-error">读不到：{error}</p>}
+            {groups !== null && groups.length === 0 && (
+              <antd.Empty description="这个插件没有提供服务，也没登记运行时变量（用 ctx.flow.state 登记）" />
+            )}
+            {useVirtual && (
+              <virtuoso.Virtuoso
+                customScrollParent={ctxScrollParent}
+                data={list}
+                computeItemKey={(_index, group) => group.name}
+                itemContent={(_index, group) => <PluginStateGroup group={group} />}
+              />
+            )}
+            {!useVirtual && list.map((group) => (
+              <PluginStateGroup key={group.name} group={group} />
+            ))}
+          </div>
+        );
+      }}
+    </TutorialScrollContext.Consumer>
+  );
+}
+
+
+/**
+ * 插件详情面板：拆标签说明 + 状态 + 代码 + 试一试；支持可控当前标签、就地展开源码和点击事件高亮画布。
+ * @param props.plugin 当前插件。
+ * @param props.pluginNames 所有已知插件名。
+ * @param props.activeTab 当前选中的插件内子标签 key。
+ * @param props.onTabChange 切换子标签（同步地址栏）。
+ * @param props.activeEvent 当前画布高亮的事件名。
+ * @param props.onSelectEvent 点击事件名高亮画布对应步骤。
+ * @param props.onSelectPlugin 点击依赖跳转到另一个插件。
+ */
+function PluginView(props: {
+  plugin: PluginItem;
+  pluginNames: Set<string>;
+  activeTab: string;
+  onTabChange: (key: string) => void;
+  activeEvent: string;
+  onSelectEvent: (eventName: string) => void;
+  onSelectPlugin: (name: string) => void;
+}): JSX.Element {
+  const { plugin } = props;
+  //M 读取选中插件的 说明.md Markdown 文本准备拆分多页签展示。
+  const readme = usePluginReadme(plugin.name);
+  let version = '还没写版本号';
+  if (plugin.version !== '') {
+    version = `v${plugin.version}`;
+  }
+  let inject = '不用别的服务';
+  if (plugin.inject.length > 0) {
+    inject = `要用：${plugin.inject.join('、')}`;
+  }
+
+  //M 说明按 ## 拆成多个标签，再接原来的 状态 / 代码 / 试一试。
+  const readmeTabs = buildReadmeTabItems({
+    plugin,
+    text: readme.text,
+    error: readme.error,
+    pluginNames: props.pluginNames,
+    onSelectPlugin: props.onSelectPlugin,
+    activeEvent: props.activeEvent,
+    onSelectEvent: props.onSelectEvent,
+  });
+  const tabs: NonNullable<antd.TabsProps['items']> = [
+    ...readmeTabs,
+    { key: 'state', label: '状态', children: <PluginState name={plugin.name} /> },
+    { key: 'code', label: '代码', children: <CodeTab name={plugin.name} /> },
+    { key: 'try', label: '试一试', children: <TryTab name={plugin.name} /> },
+  ];
+
+  //M 当 URL 里的子标签在这个插件被禁用或不存在时，安全回退到「概要」。
+  let resolvedTab = props.activeTab;
+  const matched = tabs.find((item) => item.key === resolvedTab && item.disabled !== true);
+  if (matched === undefined) {
+    resolvedTab = 'overview';
+  }
+
+  let stateText = STATE_WORDS[plugin.state] ?? plugin.state;
+  if (plugin.kind === 'skeleton') {
+    stateText = '骨架常驻';
+  }
+
+  return (
+    <div className="tu-doc tu-plugin-doc">
+      <div className="tu-plugin-meta">
+        <span className="tu-pane-plugin-name">{plugin.name}</span>
+        {plugin.kind === 'skeleton' && <antd.Tag>骨架</antd.Tag>}
+        <antd.Tag className="tu-version">{version}</antd.Tag>
+        <span className="tu-muted">
+          <span className={`tu-dot ${plugin.state}`} /> {stateText} · {inject}
+        </span>
+      </div>
+      {plugin.error !== '' && <antd.Alert type="error" showIcon title={plugin.error} />}
+      <antd.Tabs key={plugin.name} activeKey={resolvedTab} items={tabs} onChange={props.onTabChange} />
+    </div>
+  );
+}
+
+
+/**
+ * 底层全视口泳道图舞台：桌面模式下铺满底部、支持拖拽平移与滚轮缩放、自带左上角单行 HUD 与左下角「适应窗口 / 100%」，
+ * 窄屏（< 800px）自动退化成自然流排布。
+ * @param props.name 画布名：boot 或消息号。
+ * @param props.step 选中的第几步；0 是没选。
+ * @param props.onPick 点了一步。
+ * @param props.keyword 快照关键词。
+ * @param props.hasSnapshot 会话消息有没有运行时变量快照。
+ * @param props.pluginNames 全部已知插件名。
+ * @param props.activePlugin 右侧正展示的插件名。
+ * @param props.highlightEvent 当前高亮的事件名。
+ * @param props.onSelectPlugin 打开指定插件并切右栏页签。
+ * @param props.onClearEvent 清除事件高亮。
+ * @param props.onTrailLoaded 画布加载完交回轨迹供右栏步骤详情使用。
+ * @param props.leftOpen 左浮栏是否展开。
+ * @param props.leftWidth 左浮栏宽度。
+ * @param props.rightOpen 右浮栏是否展开。
+ * @param props.rightWidth 右浮栏宽度。
+ * @param props.isNarrow 是否窄屏退化模式。
+ */
+function CanvasStage(props: {
+  name: string;
+  step: number;
+  onPick: (step: number) => void;
+  keyword: string;
+  hasSnapshot?: boolean;
+  pluginNames: Set<string>;
+  activePlugin: string;
+  highlightEvent: string;
+  onSelectPlugin: (name: string, ptab?: string) => void;
+  onClearEvent: () => void;
+  onTrailLoaded: (canvasName: string, trail: Trail | null) => void;
+  leftOpen: boolean;
+  leftWidth: number;
+  rightOpen: boolean;
+  rightWidth: number;
+  isNarrow: boolean;
+}): JSX.Element {
+  const [canvas, setCanvas] = useState<Canvas | null>(null);
+  const [error, setError] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const [transform, setTransform] = useState<CanvasTransform>({ tx: 296, ty: 68, scale: 1 });
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const autoFittedForRef = useRef('');
+  const lastCenteredStepRef = useRef('');
+  const transformRef = useRef(transform);
+  transformRef.current = transform;
+  const { onTrailLoaded } = props;
+
+  //M 拉取当前画布的数据。
+  useEffect(() => {
+    setCanvas(null);
+    setError('');
+    onTrailLoaded(props.name, null);
+    let alive = true;
+    const loading = TutorialApi.get<Canvas>(`/api/tutorial/canvas?name=${encodeURIComponent(props.name)}`);
+    loading.then((loaded) => {
+      if (!alive) return;
+
+      setCanvas(loaded);
+      //M 画布轨迹加载成功后通知顶层页面保存当前活动轨迹并联动步骤详情与事件筛选。
+      onTrailLoaded(props.name, loaded.trail);
+    }, (failed: unknown) => {
+      if (alive) {
+        setError((failed as Error).message);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [props.name, onTrailLoaded]);
+
+  const layout = useMemo(() => {
+    if (canvas === null) return null;
+
+    //M 预计算当前泳道图的格子坐标及每步包围盒缓存，供视图居中与 HUD 对齐复用。
+    return getCanvasLayout(canvas.lanes);
+  }, [canvas]);
+
+  //M 计算此刻不被左右两浮栏挡住的中间区域。
+  const getLiveSafe = useCallback((): SafeViewport => {
+    const stageW = stageRef.current?.clientWidth || window.innerWidth;
+    const stageH = stageRef.current?.clientHeight || Math.max(400, window.innerHeight - 52);
+    return getSafeViewport(stageW, stageH, props.leftOpen, props.leftWidth, props.rightOpen, props.rightWidth);
+  }, [props.leftOpen, props.leftWidth, props.rightOpen, props.rightWidth]);
+
+  //M 适应窗口：把整张泳道图缩放并居中摆进中间可见区域。
+  const fitToWindow = useCallback((): void => {
+    if (layout === null) return;
+
+    //M 基于当前安全可视区反算全图自适应变换并应用到画布。
+    const safe = getLiveSafe();
+    setTransform(getFitTransform(layout, safe));
+  }, [getLiveSafe, layout]);
+
+  //M 100% 原比例：停在中间安全区左上角。
+  const resetToHundred = useCallback((): void => {
+    const safe = getLiveSafe();
+    setTransform({ tx: safe.left + 8, ty: safe.top + 8, scale: 1 });
+  }, [getLiveSafe]);
+
+  //M 每次切换到一张新画布加载完毕时，自动适应一次窗口，开页就一眼看得全。
+  useEffect(() => {
+    if (props.isNarrow || layout === null) return;
+
+    const fitKey = `${props.name}:${String(layout.width)}:${String(layout.total)}`;
+    if (autoFittedForRef.current === fitKey) return;
+
+    autoFittedForRef.current = fitKey;
+    lastCenteredStepRef.current = '';
+    //M 初次展现该画布时重置缩放平移矩阵使整张泳道图恰好居中可见。
+    setTransform(getFitTransform(layout, getLiveSafe()));
+  }, [getLiveSafe, layout, props.isNarrow, props.name]);
+
+  //M 选中某一步时：若它落在左右两浮栏下面或屏幕外（尤其被右栏遮住），自动把画布平移到中间安全区看得见的地方。
+  useEffect(() => {
+    if (props.isNarrow || layout === null || props.step <= 0) {
+      lastCenteredStepRef.current = '';
+      return;
+    }
+    const stepKey = `${props.name}#${String(props.step)}:${String(props.rightOpen)}:${String(props.leftOpen)}`;
+    if (lastCenteredStepRef.current === stepKey) return;
+
+    lastCenteredStepRef.current = stepKey;
+    //M 查表获得当前选中步所在的像素包围盒，找不到则保持视口不动。
+    const box = layout.stepBoxes.get(props.step);
+    if (box === undefined) return;
+
+    const safe = getLiveSafe();
+    setTransform((prev) => {
+      const pad = 20;
+      const stepLeft = prev.tx + box.x * prev.scale;
+      const stepRight = stepLeft + box.w * prev.scale;
+      const stepTop = prev.ty + box.y * prev.scale;
+      const stepBottom = stepTop + box.h * prev.scale;
+
+      let nextTx = prev.tx;
+      let nextTy = prev.ty;
+      if (stepRight > safe.right - pad) {
+        nextTx -= stepRight - (safe.right - pad);
+      }
+      const adjustedLeft = nextTx + box.x * prev.scale;
+      if (adjustedLeft < safe.left + pad) {
+        nextTx += safe.left + pad - adjustedLeft;
+      }
+      if (stepBottom > safe.bottom - pad) {
+        nextTy -= stepBottom - (safe.bottom - pad);
+      }
+      const adjustedTop = nextTy + box.y * prev.scale;
+      if (adjustedTop < safe.top + pad) {
+        nextTy += safe.top + pad - adjustedTop;
+      }
+      if (nextTx === prev.tx && nextTy === prev.ty) return prev;
+
+      return { ...prev, tx: Math.round(nextTx), ty: Math.round(nextTy) };
+    });
+  }, [getLiveSafe, layout, props.isNarrow, props.leftOpen, props.name, props.rightOpen, props.step]);
+
+  //M 滚轮以鼠标所在位置为中心缩放（必须用 passive: false 拦住浏览器默认页面滚动）。
+  useEffect(() => {
+    if (props.isNarrow) return undefined;
+
+    const el = stageRef.current;
+    if (el === null) return undefined;
+
+    const onWheel = (event: WheelEvent): void => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.tu-stage-hud, .tu-stage-tools') !== null) return;
+
+      event.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      let factor = 0.9;
+      if (event.deltaY < 0) {
+        factor = 1.12;
+      }
+      const prev = transformRef.current;
+      //M 将滚轮缩放倍率的步进结果夹在合法缩限以内，避免无限放大或缩小失踪。
+      const nextScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
+      if (nextScale === prev.scale) return;
+
+      const worldX = (mouseX - prev.tx) / prev.scale;
+      const worldY = (mouseY - prev.ty) / prev.scale;
+      setTransform({
+        tx: Math.round(mouseX - worldX * nextScale),
+        ty: Math.round(mouseY - worldY * nextScale),
+        scale: nextScale,
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [props.isNarrow]);
+
+  //M 按住空白区域拖动平移画布（按钮、链接、输入控件上的点击照常响应）。
+  const onStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (props.isNarrow || event.button !== 0) return;
+
+    const target = event.target;
+    if (target instanceof Element && target.closest('button, a, input, textarea, select, .tu-stage-hud, .tu-stage-tools') !== null) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startTx = transformRef.current.tx;
+    const startTy = transformRef.current.ty;
+    setDragging(true);
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      setTransform((prev) => ({
+        ...prev,
+        tx: Math.round(startTx + dx),
+        ty: Math.round(startTy + dy),
+      }));
+    };
+    const onUp = (): void => {
+      setDragging(false);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
+  let stageClass = 'tu-stage';
+  if (dragging) {
+    stageClass = 'tu-stage dragging';
+  }
+  if (props.isNarrow) {
+    stageClass = 'tu-stage narrow';
+  }
+
+  const liveSafe = getLiveSafe();
+  let hudLeft = 16;
+  let hudMaxWidth: number | undefined;
+  if (!props.isNarrow) {
+    hudLeft = liveSafe.left;
+    hudMaxWidth = Math.max(240, liveSafe.right - liveSafe.left);
+  }
+
+  let title = '启动流程';
+  if (props.name !== 'boot') {
+    title = `消息 #${props.name}`;
+  }
+
+  const trail = canvas?.trail ?? null;
+  //M 若选中事件高亮，找出当前轨迹里所有触发过该事件的步骤号供画布加亮及 HUD 快速跳转。
+  const matchedList = getMatchedSteps(trail, props.highlightEvent);
+  const matchedSet = new Set(matchedList);
+
+  const metaParts: string[] = [];
+  if (trail !== null) {
+    if (trail.bot !== '') {
+      metaParts.push(trail.bot);
+    }
+    if (trail.channel !== '') {
+      //M 把英文渠道代号映射为中文短标签拼入画布摘要条。
+      metaParts.push(getChannelLabel(trail.channel));
+    }
+    metaParts.push(trail.state);
+    metaParts.push(`${String(trail.steps.length)} 步 · ${String(trail.ms)}ms`);
+  }
+
+  let hudTitleTip = title;
+  if (trail !== null && trail.preview !== '') {
+    hudTitleTip = `${title}：${trail.preview}`;
+  }
+  if (props.name !== 'boot' && props.hasSnapshot === false) {
+    hudTitleTip += `（未带 ${props.keyword}，无运行时变量快照；泳道与源码照常可看）`;
+  }
+
+  const zoomPercent = String(Math.round(transform.scale * 100));
+
+  return (
+    <div ref={stageRef} className={stageClass} onPointerDown={onStagePointerDown}>
+      {/* 右栏之外贴靠在左栏右边的一行摘要 HUD，不吃大片垂直空间。 */}
+      <div
+        className="tu-stage-hud"
+        style={{ left: hudLeft, maxWidth: hudMaxWidth }}
+        title={hudTitleTip}
+      >
+        <span className="tu-hud-title">{title}</span>
+        {trail !== null && trail.preview !== '' && (
+          <span className="tu-hud-preview">{trail.preview}</span>
+        )}
+        {metaParts.length > 0 && (
+          <span className="tu-hud-meta">{metaParts.join(' · ')}</span>
+        )}
+        {trail !== null && trail.error && (
+          <span className="tu-hud-err">有出错步</span>
+        )}
+        {props.name !== 'boot' && props.hasSnapshot === true && (
+          <span className="tu-shot-badge">含快照</span>
+        )}
+        {props.name !== 'boot' && props.hasSnapshot === false && (
+          <span className="tu-hud-tag">无快照</span>
+        )}
+        {props.highlightEvent !== '' && matchedList.length > 0 && (
+          <span className="tu-hud-events">
+            <span className="tu-hud-ev-name">{props.highlightEvent}</span>
+            {matchedList.map((no) => {
+              let hitClass = 'tu-event-hit-btn';
+              if (props.step === no) {
+                hitClass = 'tu-event-hit-btn active';
+              }
+              return (
+                <button
+                  key={no}
+                  type="button"
+                  className={hitClass}
+                  onClick={
+                    //M 点击事件命中步骤徽章直接跳转到画布对应步骤。
+                    () => props.onPick(no)
+                  }
+                >
+                  #{String(no)}
+                </button>
+              );
+            })}
+            <button type="button" className="tu-link" onClick={props.onClearEvent}>清除</button>
+          </span>
+        )}
+      </div>
+
+      {/* 加载态或报错居中提示（躲在浮栏中间可见区）。 */}
+      {error !== '' && (
+        <div className="tu-stage-center" style={{ left: hudLeft, maxWidth: hudMaxWidth }}>
+          <antd.Alert type="error" showIcon title={error} />
+        </div>
+      )}
+      {error === '' && canvas === null && (
+        <div className="tu-stage-center" style={{ left: hudLeft, maxWidth: hudMaxWidth }}>
+          <antd.Spin />
+        </div>
+      )}
+
+      {/* 泳道图本体：桌面模式下包在平移缩放层内铺满整个视口；窄屏自动退化为普通横滚框。 */}
+      {canvas !== null && !props.isNarrow && (
+        <div
+          className="tu-stage-world"
+          style={{
+            transform: `translate(${String(transform.tx)}px, ${String(transform.ty)}px) scale(${String(transform.scale)})`,
+            transformOrigin: '0 0',
+          }}
+        >
+          <LaneChart
+            canvas={canvas}
+            picked={props.step}
+            onPick={props.onPick}
+            pluginNames={props.pluginNames}
+            activePlugin={props.activePlugin}
+            matchedSteps={matchedSet}
+            onSelectPlugin={props.onSelectPlugin}
+            panZoom
+          />
+        </div>
+      )}
+      {canvas !== null && props.isNarrow && (
+        <LaneChart
+          canvas={canvas}
+          picked={props.step}
+          onPick={props.onPick}
+          pluginNames={props.pluginNames}
+          activePlugin={props.activePlugin}
+          matchedSteps={matchedSet}
+          onSelectPlugin={props.onSelectPlugin}
+          panZoom={false}
+        />
+      )}
+
+      {/* 画布左下角控件：适应窗口、100%、当前比例、交互说明。 */}
+      {!props.isNarrow && canvas !== null && (
+        <div className="tu-stage-tools" style={{ left: hudLeft }}>
+          <button type="button" className="tu-tool-btn" onClick={fitToWindow}>适应窗口</button>
+          <button type="button" className="tu-tool-btn" onClick={resetToHundred}>100%</button>
+          <span className="tu-tool-zoom">{zoomPercent}%</span>
+          <span className="tu-tool-hint">滚轮缩放 · 按住空白拖动 · 点步看详情</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/** 教程页。 */
+export function TutorialPage(): JSX.Element {
+  //M 读主网页保存的主题（默认深色），别的标签页切换主题时跟着变。
+  const [themeName, setThemeName] = useState<theme.ThemeName>(() => theme.loadThemeName(window.localStorage));
+  const themeSpec = theme.THEMES[themeName];
+  const [plugins, setPlugins] = useState<PluginList | null>(null);
+  const [messages, setMessages] = useState<MessageCanvasItem[]>([]);
+  const [canvasesLoaded, setCanvasesLoaded] = useState(false);
+  const [error, setError] = useState('');
+  const [route, setRoute] = useState<RouteState>(() => getRouteFromUrl(window.location.search));
+  const [searchText, setSearchText] = useState('');
+  const [openGroups, setOpenGroups] = useState<GroupOpenState>({ skeleton: true, plugins: true, boot: true, messages: true });
+
+  //M 左右悬浮栏宽度与收起状态，读写 localStorage 均包 try/catch。
+  const [leftWidth, setLeftWidth] = useState<number>(() => getStoredWidth(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH, MIN_LEFT_WIDTH));
+  const [paneWidth, setPaneWidth] = useState<number>(() => getStoredWidth(PANE_WIDTH_KEY, DEFAULT_PANE_WIDTH, MIN_PANE_WIDTH));
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => getStoredCollapsed(LEFT_COLLAPSED_KEY, false));
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(() => getStoredCollapsed(RIGHT_COLLAPSED_KEY, false));
+  const [resizing, setResizing] = useState(false);
+  const [isNarrow, setIsNarrow] = useState<boolean>(() => window.innerWidth < NARROW_BREAKPOINT);
+
+  //M 右栏详情/代码/状态列表共用的外层滚动容器 state。
+  const [rightScrollParent, setRightScrollParent] = useState<HTMLDivElement | null>(null);
+
+  const [activeTrail, setActiveTrail] = useState<Trail | null>(null);
+  const [loadedCanvasName, setLoadedCanvasName] = useState('');
+  const [messageApi, contextHolder] = antd.message.useMessage();
+
+  const attachRightScroll = useCallback((el: HTMLDivElement | null): void => {
+    setRightScrollParent(el);
+  }, []);
+
+  useEffect(() => {
+    //M 首次挂载及主题切换后将最新 CSS 变量应用到 html 根节点，保持全页色调同步。
+    theme.applyTheme(document.documentElement, themeSpec);
+  }, [themeSpec]);
+
+  //M 视口大小改变时刷新窄屏开关，并把两栏宽度夹回当前 45% 安全上限。
+  useEffect(() => {
+    const onResize = (): void => {
+      setIsNarrow(window.innerWidth < NARROW_BREAKPOINT);
+      setLeftWidth((prev) => Math.min(prev, getMaxSideWidth(MIN_LEFT_WIDTH)));
+      setPaneWidth((prev) => Math.min(prev, getMaxSideWidth(MIN_PANE_WIDTH)));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  //M 画布加载完成时记下已就绪的画布名与轨迹。
+  const handleTrailLoaded = useCallback((canvasName: string, trail: Trail | null) => {
+    let nextLoaded = canvasName;
+    if (trail === null) {
+      nextLoaded = '';
+    }
+    setLoadedCanvasName(nextLoaded);
+    setActiveTrail(trail);
+  }, []);
+
+  useEffect(() => {
+    const onStorage = (): void => {
+      //M 其他标签页修改 localStorage 主题后，本页实时重新读取并重绘配色。
+      const next = theme.loadThemeName(window.localStorage);
+      setThemeName(next);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  //M 浏览器后退 / 前进时同步恢复路由状态。
+  useEffect(() => {
+    const onPopState = (): void => {
+      setRoute(getRouteFromUrl(window.location.search));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  //M 写入新浏览历史并切换界面状态（保证后退键可用）。
+  const navigate = useCallback((next: RouteState) => {
+    setRoute(next);
+    const nextUrl = buildRouteUrl(next);
+    if (nextUrl !== window.location.href) {
+      window.history.pushState(null, '', nextUrl);
+    }
+  }, []);
+
+  //M 切到新画布后，若上一画布高亮的事件在这里没出现，就清掉事件高亮。
+  useEffect(() => {
+    if (activeTrail === null || route.event === '' || loadedCanvasName !== route.canvas) return;
+
+    //M 当前画布轨迹依然出现过该事件时继续保留高亮状态。
+    if (getMatchedSteps(activeTrail, route.event).length > 0) return;
+
+    const cleared = { ...route, event: '' };
+    setRoute(cleared);
+    //M 无匹配步骤时无痕替换地址栏参数去掉失效的 event，不污染浏览器历史栈。
+    window.history.replaceState(window.history.state, '', buildRouteUrl(cleared));
+  }, [activeTrail, loadedCanvasName, route]);
+
+  //M 拉插件列表和最近消息画布列表。
+  const load = useCallback(() => {
+    const pluginLoading = TutorialApi.get<PluginList>('/api/tutorial/plugins');
+    pluginLoading.then(setPlugins, (failed: unknown) => setError((failed as Error).message));
+    const canvasLoading = TutorialApi.get<CanvasList>('/api/tutorial/canvases');
+    canvasLoading.then((result) => {
+      if (Array.isArray(result.messages)) {
+        setMessages(result.messages);
+        setCanvasesLoaded(true);
+        return;
+      }
+      const fallback = result.list
+        .filter((item) => item.name !== 'boot')
+        .map((item) => ({ name: item.name, at: item.at, preview: item.preview, hasSnapshot: true }));
+      setMessages(fallback);
+      setCanvasesLoaded(true);
+    }, (failed: unknown) => setError((failed as Error).message));
+  }, []);
+
+  useEffect(() => {
+    //M 教程页首次挂载完毕立即并发请求插件列表和近期消息画布清单。
+    load();
+  }, [load]);
+
+  //M 初次加载完成时替换 URL 中的哨兵占位。
+  useEffect(() => {
+    if (route.canvas === SENTINEL_AUTO && canvasesLoaded) {
+      let targetCanvas = 'boot';
+      if (messages.length > 0 && messages[0] !== undefined) {
+        targetCanvas = messages[0].name;
+      }
+      const settled = { ...route, canvas: targetCanvas };
+      setRoute(settled);
+      //M 将初次默认选中的 __AUTO__ 哨兵静态替换为真实画布号写回地址栏（不产生额外历史记录）。
+      window.history.replaceState(window.history.state, '', buildRouteUrl(settled));
+      return;
+    }
+    if (route.plugin === SENTINEL_FIRST && plugins !== null) {
+      const firstPlugin = plugins.list[0]?.name ?? '';
+      const settled = { ...route, plugin: firstPlugin, rtab: 'plugin' as const };
+      setRoute(settled);
+      //M 将旧版 ?tab=plugins 对应的 __FIRST__ 哨兵静态替换为首个插件名并定稿地址栏。
+      window.history.replaceState(window.history.state, '', buildRouteUrl(settled));
+    }
+  }, [canvasesLoaded, messages, plugins, route]);
+
+  //M 拖动调整左侧悬浮栏宽度并持久化。
+  const startLeftResize = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    setResizing(true);
+    const maxWidth = getMaxSideWidth(MIN_LEFT_WIDTH);
+    let latestWidth = clamp(leftWidth, MIN_LEFT_WIDTH, maxWidth);
+
+    const onMove = (moveEvent: MouseEvent): void => {
+      const candidate = Math.round(moveEvent.clientX - 12);
+      //M 拖动中实时把左栏宽限制在最小宽到 45% 视口之间再刷新尺寸。
+      latestWidth = clamp(candidate, MIN_LEFT_WIDTH, maxWidth);
+      setLeftWidth(latestWidth);
+    };
+    const onUp = (): void => {
+      setResizing(false);
+      //M 松手后把最终左栏宽记忆进 localStorage 供下次打开沿用。
+      saveStored(LEFT_WIDTH_KEY, String(latestWidth));
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  //M 拖动调整右侧悬浮栏宽度并持久化。
+  const startRightResize = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    setResizing(true);
+    const maxWidth = getMaxSideWidth(MIN_PANE_WIDTH);
+    let latestWidth = clamp(paneWidth, MIN_PANE_WIDTH, maxWidth);
+
+    const onMove = (moveEvent: MouseEvent): void => {
+      const candidate = Math.round(window.innerWidth - moveEvent.clientX - 12);
+      //M 拖动中实时把右栏宽限制在最小宽到 45% 视口之间再更新状态。
+      latestWidth = clamp(candidate, MIN_PANE_WIDTH, maxWidth);
+      setPaneWidth(latestWidth);
+    };
+    const onUp = (): void => {
+      setResizing(false);
+      //M 松手后把最终右栏宽记忆进 localStorage 持久化。
+      saveStored(PANE_WIDTH_KEY, String(latestWidth));
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  //M 收起 / 展开左右浮栏并记住开关。
+  const toggleLeftCollapsed = (collapsed: boolean): void => {
+    setLeftCollapsed(collapsed);
+    let flag = '0';
+    if (collapsed) {
+      flag = '1';
+    }
+    //M 将左栏折叠布尔状态持久化到本地存储。
+    saveStored(LEFT_COLLAPSED_KEY, flag);
+  };
+
+  const toggleRightCollapsed = (collapsed: boolean): void => {
+    setRightCollapsed(collapsed);
+    let flag = '0';
+    if (collapsed) {
+      flag = '1';
+    }
+    //M 将右栏折叠布尔状态持久化到本地存储。
+    saveStored(RIGHT_COLLAPSED_KEY, flag);
+  };
+
+  const keyword = plugins?.keyword ?? '#调试';
+  const pluginList = plugins?.list ?? [];
+  const pluginNames = useMemo(() => new Set(pluginList.map((item) => item.name)), [pluginList]);
+  const workspace = plugins?.workspace ?? '';
+
+  //M 过滤左栏四组项：骨架在最上面，与插件之间隔开，随后是启动流程与最近消息。
+  const query = searchText.trim().toLowerCase();
+  const hasSearch = query !== '';
+  const showBoot = !hasSearch || '启动流程boot'.includes(query);
+  const filteredMessages = useMemo(() => {
+    return messages.filter((item) => {
+      if (!hasSearch) return true;
+
+      //M 提取中文渠道标签、原始渠道名、机器人名及标题共同参与左栏搜索匹配。
+      const chLabel = getChannelLabel(item.channel).toLowerCase();
+      const chRaw = (item.channel ?? '').toLowerCase();
+      const bot = (item.bot ?? '').toLowerCase();
+      const title = getMessageTitle(item).toLowerCase();
+      return title.includes(query) || chLabel.includes(query) || chRaw.includes(query) || bot.includes(query);
+    });
+  }, [hasSearch, messages, query]);
+
+  const filteredSkeletons = useMemo(() => {
+    return pluginList.filter((item) => {
+      if (item.kind !== 'skeleton') return false;
+      if (!hasSearch) return true;
+
+      const stateWord = (STATE_WORDS[item.state] ?? item.state).toLowerCase();
+      return item.name.toLowerCase().includes(query) || stateWord.includes(query) || '骨架模块'.includes(query) || query === 'skeleton';
+    });
+  }, [hasSearch, pluginList, query]);
+
+  const filteredRegularPlugins = useMemo(() => {
+    return pluginList.filter((item) => {
+      if (item.kind === 'skeleton') return false;
+      if (!hasSearch) return true;
+
+      const stateWord = (STATE_WORDS[item.state] ?? item.state).toLowerCase();
+      return item.name.toLowerCase().includes(query) || stateWord.includes(query);
+    });
+  }, [hasSearch, pluginList, query]);
+
+  const toggleGroup = (key: keyof GroupOpenState): void => {
+    setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  //M 点左栏「启动流程」或「最近消息」：切画布、清无效步号；当前若在「这一步」页签留在原地看新画布。
+  const onSelectCanvas = (canvasName: string): void => {
+    navigate({ ...route, canvas: canvasName, step: 0 });
+  };
+
+  //M 点左栏插件、画布道名、步骤详情“查看 xxx 插件”或监听标签：展开右栏并切到「插件」页签。
+  const onSelectPlugin = (pluginName: string, nextPtab?: string): void => {
+    if (pluginName === '') return;
+
+    let resolvedPtab = nextPtab ?? 'overview';
+    if (nextPtab === undefined && route.plugin === pluginName) {
+      resolvedPtab = route.ptab;
+    }
+    //M 选择插件后自动展开右栏并跳转至「插件」页签。
+    toggleRightCollapsed(false);
+    navigate({ ...route, plugin: pluginName, ptab: resolvedPtab, rtab: 'plugin' });
+  };
+
+  //M 点画布中某一步：自动展开右栏并切到「这一步」；若这一步落在已知插件上，也同步记下方便用户点「插件」标签。
+  const onPickStep = (stepNo: number): void => {
+    toggleRightCollapsed(false);
+    const pickedStep = activeTrail?.steps.find((item) => item.no === stepNo);
+    let nextPlugin = route.plugin;
+    let nextPtab = route.ptab;
+    if (pickedStep !== undefined && pluginNames.has(pickedStep.node)) {
+      if (route.plugin !== pickedStep.node) {
+        nextPtab = 'overview';
+      }
+      nextPlugin = pickedStep.node;
+    }
+    navigate({ ...route, step: stepNo, plugin: nextPlugin, ptab: nextPtab, rtab: 'step' });
+  };
+
+  //M 点事件名：高亮命中步，选中第一处并展开右栏「这一步」。
+  const onSelectEvent = (eventName: string): void => {
+    const hasRealCanvas = route.canvas !== '' && route.canvas !== SENTINEL_AUTO;
+    if (!hasRealCanvas) {
+      void messageApi.info('当前未打开画布：请先在左栏选一条「最近消息」或「启动流程」，即可高亮该事件在流程中的每一步');
+      return;
+    }
+
+    if (route.event === eventName) {
+      navigate({ ...route, event: '' });
+      return;
+    }
+
+    //M 检索当前激活画布内发出过该事件的所有步骤索引。
+    const hits = getMatchedSteps(activeTrail, eventName);
+    if (hits.length === 0) {
+      void messageApi.info(`当前画布未出现事件 ${eventName}，可点击左栏其他消息查看`);
+      return;
+    }
+
+    let nextStep = route.step;
+    if (!hits.includes(nextStep)) {
+      nextStep = hits[0] ?? 0;
+    }
+    //M 自动展开右栏以便查看命中该事件的第一步详情。
+    toggleRightCollapsed(false);
+    navigate({ ...route, event: eventName, step: nextStep, rtab: 'step' });
+  };
+
+  const hasRealCanvas = route.canvas !== '' && route.canvas !== SENTINEL_AUTO;
+  const resolvedPluginName = route.plugin;
+  const hasPluginName = resolvedPluginName !== '' && resolvedPluginName !== SENTINEL_FIRST;
+  const activePlugin = pluginList.find((item) => item.name === resolvedPluginName);
+  const activeMessage = messages.find((item) => item.name === route.canvas);
+  const pickedStep = activeTrail?.steps.find((item) => item.no === route.step);
+
+  const skeletonExpanded = openGroups.skeleton || hasSearch;
+  const pluginsExpanded = openGroups.plugins || hasSearch;
+  const bootExpanded = openGroups.boot || hasSearch;
+  const messagesExpanded = openGroups.messages || hasSearch;
+
+  //M 将记忆下来的左右浮栏宽度实时钳制到最小栏宽与视口 45% 安全上限之间。
+  const clampedLeftWidth = clamp(leftWidth, MIN_LEFT_WIDTH, getMaxSideWidth(MIN_LEFT_WIDTH));
+  const clampedRightWidth = clamp(paneWidth, MIN_PANE_WIDTH, getMaxSideWidth(MIN_PANE_WIDTH));
+
+  let bodyClass = 'tu-body';
+  if (resizing) {
+    bodyClass = 'tu-body resizing';
+  }
+  let showBootGroupCount = 1;
+  if (hasSearch && !showBoot) {
+    showBootGroupCount = 0;
+  }
+  let bootItemClass = 'tu-nav-item';
+  if (route.canvas === 'boot') {
+    bootItemClass = 'tu-nav-item active';
+  }
+
+  //M 拼成左栏单一虚拟列表的行数组：最上是骨架，细线隔开插件，其后是启动流程与最近消息，消除多 customScrollParent 导致的负偏移盖头问题。
+  const leftRows = useMemo<LeftNavRow[]>(() => {
+    const rows: LeftNavRow[] = [
+      { key: 'head:skeleton', kind: 'group-head', groupKey: 'skeleton', title: '骨架', count: filteredSkeletons.length, expanded: skeletonExpanded },
+    ];
+    if (skeletonExpanded) {
+      if (filteredSkeletons.length === 0) {
+        rows.push({ key: 'empty:skeleton', kind: 'empty', text: '没有匹配的骨架模块' });
+      }
+      for (const item of filteredSkeletons) {
+        rows.push({ key: `skeleton:${item.name}`, kind: 'plugin', plugin: item });
+      }
+    }
+    rows.push({ key: 'div:skeleton-plugins', kind: 'divider' });
+
+    rows.push({ key: 'head:plugins', kind: 'group-head', groupKey: 'plugins', title: '插件', count: filteredRegularPlugins.length, expanded: pluginsExpanded });
+    if (pluginsExpanded) {
+      if (filteredRegularPlugins.length === 0) {
+        rows.push({ key: 'empty:plugins', kind: 'empty', text: '没有匹配的插件' });
+      }
+      for (const item of filteredRegularPlugins) {
+        rows.push({ key: `plugin:${item.name}`, kind: 'plugin', plugin: item });
+      }
+    }
+    rows.push({ key: 'div:plugins-boot', kind: 'divider' });
+
+    rows.push({ key: 'head:boot', kind: 'group-head', groupKey: 'boot', title: '启动流程', count: showBootGroupCount, expanded: bootExpanded });
+    if (bootExpanded && showBoot) {
+      rows.push({ key: 'item:boot', kind: 'boot' });
+    }
+
+    rows.push({ key: 'head:messages', kind: 'group-head', groupKey: 'messages', title: '最近消息', count: filteredMessages.length, expanded: messagesExpanded });
+    if (messagesExpanded) {
+      if (filteredMessages.length === 0) {
+        rows.push({ key: 'empty:messages', kind: 'empty', text: '没有匹配的消息' });
+      }
+      for (const item of filteredMessages) {
+        rows.push({ key: `msg:${item.name}`, kind: 'message', message: item });
+      }
+    }
+    return rows;
+  }, [
+    bootExpanded,
+    filteredMessages,
+    filteredRegularPlugins,
+    filteredSkeletons,
+    messagesExpanded,
+    pluginsExpanded,
+    showBoot,
+    showBootGroupCount,
+    skeletonExpanded,
+  ]);
+
+  let stepTabClass = 'tu-rtab';
+  if (route.rtab === 'step') {
+    stepTabClass = 'tu-rtab active';
+  }
+  let pluginTabClass = 'tu-rtab';
+  if (route.rtab === 'plugin') {
+    pluginTabClass = 'tu-rtab active';
+  }
+
+  //M 顶栏简洁摘要。
+  let topSummary = '';
+  if (route.canvas === 'boot') {
+    topSummary = '启动流程';
+  }
+  if (route.canvas !== '' && route.canvas !== SENTINEL_AUTO && route.canvas !== 'boot') {
+    topSummary = `消息 #${route.canvas}`;
+  }
+  if (pickedStep !== undefined) {
+    topSummary += `  ·  第 ${String(pickedStep.no)} 步`;
+  }
+  if (hasPluginName) {
+    let labelPrefix = '插件';
+    if (activePlugin?.kind === 'skeleton') {
+      labelPrefix = '骨架';
+    }
+    topSummary += `  ·  ${labelPrefix} ${resolvedPluginName}`;
+  }
+
+  //M 渲染左栏一条消息或插件。
+  const renderMessageNav = (item: MessageCanvasItem): JSX.Element => {
+    const title = getMessageTitle(item);
+    const chLabel = getChannelLabel(item.channel);
+    let itemClass = 'tu-nav-item';
+    if (route.canvas === item.name) {
+      itemClass = 'tu-nav-item active';
+    }
+    return (
+      <button
+        type="button"
+        className={itemClass}
+        title={title}
+        onClick={
+          //M 点击左栏最近消息条目切换当前展示的泳道图画布。
+          () => onSelectCanvas(item.name)
+        }
+      >
+        <span className="tu-menu-item">
+          {chLabel !== '' && <span className={`tu-ch-badge ${item.channel ?? ''}`}>{chLabel}</span>}
+          <span className="tu-menu-name">{title}</span>
+          {item.hasSnapshot && <span className="tu-shot-badge" title={`带 ${keyword} 的消息，点开步骤可看运行时变量`}>快照</span>}
+          <span className="tu-menu-version">{getClock(item.at)}</span>
+        </span>
+      </button>
+    );
+  };
+
+  const renderPluginNav = (plugin: PluginItem): JSX.Element => {
+    let version = '';
+    if (plugin.version !== '') {
+      version = `v${plugin.version}`;
+    }
+    let itemClass = 'tu-nav-item';
+    if (resolvedPluginName === plugin.name) {
+      itemClass = 'tu-nav-item active';
+    }
+    let tip = STATE_WORDS[plugin.state] ?? plugin.state;
+    if (plugin.kind === 'skeleton') {
+      tip = `系统骨架（${plugin.name}）`;
+    }
+    return (
+      <button
+        type="button"
+        className={itemClass}
+        title={tip}
+        onClick={
+          //M 点击左栏骨架或插件项切到右侧「插件」分栏看说明与代码。
+          () => onSelectPlugin(plugin.name)
+        }
+      >
+        <span className="tu-menu-item">
+          <span className={`tu-dot ${plugin.state}`} />
+          <span className="tu-menu-name">{plugin.name}</span>
+          <span className="tu-menu-version">{version}</span>
+        </span>
+      </button>
+    );
+  };
+
+  const renderLeftRow = (row: LeftNavRow): JSX.Element => {
+    if (row.kind === 'group-head') {
+      let arrow = '▸';
+      if (row.expanded) {
+        arrow = '▾';
+      }
+      return (
+        <div className="tu-side-row tu-side-row-head">
+          <button
+            type="button"
+            className="tu-group-head"
+            onClick={
+              //M 点击左栏分组标题时切换该组的展开或折叠状态。
+              () => toggleGroup(row.groupKey)
+            }
+          >
+            <span className="tu-group-arrow">{arrow}</span>
+            <span className="tu-group-title">{row.title}</span>
+            <span className="tu-group-count">{row.count}</span>
+          </button>
+        </div>
+      );
+    }
+    if (row.kind === 'divider') {
+      return <div className="tu-group-divider" role="separator" />;
+    }
+    if (row.kind === 'plugin') {
+      return (
+        <div className="tu-side-row">
+          {
+            //M 交由插件与骨架统一条目渲染函数输出状态点、名称与版本号。
+            renderPluginNav(row.plugin)
+          }
+        </div>
+      );
+    }
+    if (row.kind === 'boot') {
+      return (
+        <div className="tu-side-row">
+          <button
+            type="button"
+            className={bootItemClass}
+            onClick={
+              //M 选中「启动流程」画布展示当次启动轨迹与泳道图。
+              () => onSelectCanvas('boot')
+            }
+          >
+            <span className="tu-menu-item">
+              <span className="tu-menu-name">启动流程 (boot)</span>
+            </span>
+          </button>
+        </div>
+      );
+    }
+    if (row.kind === 'message') {
+      return (
+        <div className="tu-side-row">
+          {
+            //M 交由最近消息条目渲染函数输出渠道标签、摘要与时钟。
+            renderMessageNav(row.message)
+          }
+        </div>
+      );
+    }
+    return <p className="tu-muted tu-side-empty">{row.text}</p>;
+  };
+
+  let leftStyle: { width?: number } = {};
+  let rightStyle: { width?: number } = {};
+  if (!isNarrow) {
+    leftStyle = { width: clampedLeftWidth };
+    rightStyle = { width: clampedRightWidth };
+  }
+
+  return (
+    <antd.ConfigProvider
+      theme={
+        //M 将页面当前选中的主题色板注入 Ant Design 容器（如空状态、表格、标签）。
+        theme.antdTheme(themeSpec)
+      }
+      locale={zhCN}
+    >
+      <TutorialWorkspaceContext.Provider value={workspace}>
+        {contextHolder}
+        <div className="tu-page">
+          <header className="tu-top">
+            <div className="tu-top-left">
+              <span className="tu-brand">jmbots 教程</span>
+              {topSummary !== '' && <span className="tu-top-summary">{topSummary}</span>}
+            </div>
+            <div className="tu-top-right">
+              {route.event !== '' && (
+                <button
+                  type="button"
+                  className="tu-event-pill active"
+                  title="点击清除画布事件高亮"
+                  onClick={() => navigate({ ...route, event: '' })}
+                >
+                  高亮：{route.event} ×
+                </button>
+              )}
+              <a
+                className="tu-link"
+                href={
+                  //M 为返回聊天主页的链接附带统一鉴权令牌。
+                  withToken('/', TOKEN)
+                }
+                style={{ textDecoration: 'none' }}
+              >
+                返回聊天
+              </a>
+              <button type="button" className="tu-link" onClick={load}>刷新</button>
+            </div>
+          </header>
+
+          <div className={bodyClass}>
+            {/* 最底层：全视口泳道画布舞台，在左右两浮栏后面全幅铺开。 */}
+            {!canvasesLoaded && route.canvas === SENTINEL_AUTO && (
+              <div className="tu-stage">
+                <div className="tu-stage-center"><antd.Spin /></div>
+              </div>
+            )}
+            {hasRealCanvas && (
+              <CanvasStage
+                name={route.canvas}
+                step={route.step}
+                onPick={onPickStep}
+                keyword={keyword}
+                hasSnapshot={activeMessage?.hasSnapshot}
+                pluginNames={pluginNames}
+                activePlugin={resolvedPluginName}
+                highlightEvent={route.event}
+                onSelectPlugin={onSelectPlugin}
+                onClearEvent={() => navigate({ ...route, event: '' })}
+                onTrailLoaded={handleTrailLoaded}
+                leftOpen={!leftCollapsed}
+                leftWidth={clampedLeftWidth}
+                rightOpen={!rightCollapsed}
+                rightWidth={clampedRightWidth}
+                isNarrow={isNarrow}
+              />
+            )}
+            {!hasRealCanvas && canvasesLoaded && route.canvas !== SENTINEL_AUTO && (
+              <div className="tu-stage">
+                <div className="tu-stage-center">
+                  <p className="tu-muted">请在左栏选择「启动流程」或任意一条「最近消息」查看实时流程画布</p>
+                </div>
+              </div>
+            )}
+
+            {/* 悬浮左栏：展开时是带阴影的卡片，收起时退成边缘一条按钮。 */}
+            {!isNarrow && leftCollapsed && (
+              <button
+                type="button"
+                className="tu-edge-toggle tu-edge-left"
+                title="展开左侧导航"
+                onClick={
+                  //M 点击边缘窄条按钮展开左侧导航浮栏。
+                  () => toggleLeftCollapsed(false)
+                }
+              >
+                ▶ 导航
+              </button>
+            )}
+            {(isNarrow || !leftCollapsed) && (
+              <aside className="tu-side tu-float-left" style={leftStyle}>
+                <div className="tu-side-top">
+                  <div className="tu-side-search">
+                    <antd.Input
+                      size="small"
+                      allowClear
+                      placeholder="搜索插件、消息、飞书/网页…"
+                      value={searchText}
+                      onChange={(event) => setSearchText(event.target.value)}
+                    />
+                  </div>
+                  {!isNarrow && (
+                    <button
+                      type="button"
+                      className="tu-collapse-btn"
+                      title="收起左栏，让画布更大"
+                      onClick={
+                        //M 收起左侧浮栏并记住开关，腾出更多画布浏览视野。
+                        () => toggleLeftCollapsed(true)
+                      }
+                    >
+                      ◀
+                    </button>
+                  )}
+                </div>
+
+                {error !== '' && <p className="tu-error tu-side-err">{error}</p>}
+
+                <virtuoso.Virtuoso
+                  className="tu-side-virt"
+                  style={{ flex: 1, minHeight: 0 }}
+                  data={leftRows}
+                  computeItemKey={(_index, row) => row.key}
+                  components={LEFT_LIST_COMPONENTS}
+                  itemContent={
+                    //M 使用左栏唯一自带滚条的虚拟列表逐行渲染分组头、细线、骨架、插件与消息。
+                    (_index, row) => renderLeftRow(row)
+                  }
+                />
+
+                {!isNarrow && (
+                  <div
+                    className="tu-resizer tu-resizer-right"
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="拖动调整左栏宽度（220px ~ 视口 45%）"
+                    onMouseDown={startLeftResize}
+                  />
+                )}
+              </aside>
+            )}
+
+            {/* 悬浮右栏：顶上「这一步」「插件」两页签；展开带左边缘拖宽，收起退成窄条。 */}
+            {!isNarrow && rightCollapsed && (
+              <button
+                type="button"
+                className="tu-edge-toggle tu-edge-right"
+                title="展开右侧详情与插件栏"
+                onClick={
+                  //M 点击右侧边缘按钮重新展开详情与插件浮栏。
+                  () => toggleRightCollapsed(false)
+                }
+              >
+                ◀ 详情
+              </button>
+            )}
+            {(isNarrow || !rightCollapsed) && (
+              <aside className="tu-plugin-pane tu-float-right" style={rightStyle}>
+                {!isNarrow && (
+                  <div
+                    className="tu-resizer tu-resizer-left"
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="拖动调整右栏宽度（300px ~ 视口 45%）"
+                    onMouseDown={startRightResize}
+                  />
+                )}
+                <div className="tu-pane-inner">
+                  <div className="tu-pane-bar">
+                    <div className="tu-rtabs" role="tablist">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={route.rtab === 'step'}
+                        className={stepTabClass}
+                        onClick={() => navigate({ ...route, rtab: 'step' })}
+                      >
+                        这一步
+                        {route.step > 0 && <span className="tu-rtab-badge">#{String(route.step)}</span>}
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={route.rtab === 'plugin'}
+                        className={pluginTabClass}
+                        onClick={() => navigate({ ...route, rtab: 'plugin' })}
+                      >
+                        插件
+                        {hasPluginName && <span className="tu-rtab-badge">{resolvedPluginName}</span>}
+                      </button>
+                    </div>
+                    <div className="tu-pane-bar-actions">
+                      {!isNarrow && (
+                        <button
+                          type="button"
+                          className="tu-collapse-btn"
+                          title="收起右栏，让画布更大"
+                          onClick={
+                            //M 收起右侧浮栏并记住开关，腾出更多画布空间。
+                            () => toggleRightCollapsed(true)
+                          }
+                        >
+                          收起 ▶
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="tu-pane-body" ref={attachRightScroll}>
+                    <TutorialScrollContext.Provider value={rightScrollParent}>
+                      {route.rtab === 'step' && (
+                        <>
+                          {pickedStep !== undefined && activeTrail !== null && hasRealCanvas && (
+                            <StepDetail
+                              canvas={route.canvas}
+                              trail={activeTrail}
+                              step={pickedStep}
+                              workspace={workspace}
+                              keyword={keyword}
+                              pluginNames={pluginNames}
+                              highlightEvent={route.event}
+                              onSelectPlugin={onSelectPlugin}
+                              onSelectEvent={onSelectEvent}
+                            />
+                          )}
+                          {(pickedStep === undefined || activeTrail === null || !hasRealCanvas) && (
+                            <div className="tu-pane-empty">
+                              <p>在左侧选画布，或在画布点任意一步</p>
+                              <p className="tu-muted">
+                                选中某一步后，这里会列出这一步走到的函数（支持直开 VS Code）、发出的事件、谁调它以及运行时变量快照；在这里滚动到底时，画布始终稳稳停在底层原地。
+                              </p>
+                              {hasPluginName && (
+                                <button
+                                  type="button"
+                                  className="tu-step-plugin-btn"
+                                  onClick={() => navigate({ ...route, rtab: 'plugin' })}
+                                >
+                                  去看 {resolvedPluginName} 插件说明与代码 →
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {route.rtab === 'plugin' && (
+                        <>
+                          {plugins === null && error === '' && <antd.Spin />}
+                          {plugins !== null && !hasPluginName && (
+                            <div className="tu-pane-empty">
+                              <p>在左栏「骨架」或「插件」列选一项，或点画布泳道名字</p>
+                              <p className="tu-muted">可以看到每个骨架模块与插件的拆标签说明、状态、源码与 HTTP 接口调试，列表中的源码位置全部可点开 VS Code。</p>
+                            </div>
+                          )}
+                          {plugins !== null && hasPluginName && activePlugin === undefined && (
+                            <antd.Empty description={`没有找到插件 ${resolvedPluginName}`} />
+                          )}
+                          {activePlugin !== undefined && (
+                            <PluginView
+                              plugin={activePlugin}
+                              pluginNames={pluginNames}
+                              activeTab={route.ptab}
+                              onTabChange={(nextKey) => navigate({ ...route, ptab: nextKey })}
+                              activeEvent={route.event}
+                              onSelectEvent={onSelectEvent}
+                              onSelectPlugin={
+                                //M 从插件详情内部的依赖/路由跳转到目标插件说明视图。
+                                (name) => onSelectPlugin(name)
+                              }
+                            />
+                          )}
+                        </>
+                      )}
+                    </TutorialScrollContext.Provider>
+                  </div>
+                </div>
+              </aside>
+            )}
+          </div>
+        </div>
+      </TutorialWorkspaceContext.Provider>
+    </antd.ConfigProvider>
+  );
+}

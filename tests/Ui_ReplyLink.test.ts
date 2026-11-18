@@ -70,13 +70,13 @@ bunTest.describe('每句回复的生成与关联元信息', () => {
     const presentation = new replyLinkModule.ReplyLink();
     const generation = generationOf();
     const label = presentation.generation(generation);
-    bunTest.expect(label).toBe('actual-backup · 请求 xhigh · 发送 high');
+    bunTest.expect(label).toBe('example/actual-backup · xhigh · 实发 high');
     bunTest.expect(presentation.generationTitle(generation)).toContain('example/actual-backup');
     bunTest.expect(presentation.generationTitle(generation)).toContain('供应商实际执行档位：未回报');
     bunTest.expect(presentation.generation({ ...generation, kind: 'program' })).toBe('程序生成');
     bunTest.expect(presentation.generation({ ...generation, kind: 'unknown' })).toBe('生成模型未确认');
     bunTest.expect(presentation.generation({ ...generation, thinkingRequested: 'high' }))
-      .toBe('actual-backup · 请求／发送 high');
+      .toBe('example/actual-backup · high');
   });
 
   bunTest.test('来源去重计数；运行/批次/单目标范围不冒充本轮，也不把新程序通知叫历史', () => {
@@ -122,13 +122,27 @@ bunTest.describe('每句回复的生成与关联元信息', () => {
       onOpen: () => undefined,
       onTrace: store.getState().openTrace,
     };
-    const candidate = listModule.MessageList;
+    //M 时间线是 react-virtuoso 虚拟列表，静态渲染只画初始位置那一项；同色标记是每一项（Item）的事，逐项画出来核对。
+    const candidate = listModule.Item;
     if (typeof candidate !== 'function') {
-      throw new Error('本地时间线模块缺少 MessageList 组件');
+      throw new Error('本地时间线模块缺少 Item 组件');
     }
-    const component = candidate as react.ComponentType<typeof props>;
-    const list = react.createElement(component, props);
-    const wrapped = react.createElement(context.UiContext.Provider, { value: renderedStore }, list);
+    /** 所选回答的关联集合：MessageList 在 traceTarget 和选中目标相同时原样交给每一项。 */
+    const selection = store.getState().replySelection;
+    const itemProps = {
+      bot: props.bot,
+      onOpen: props.onOpen,
+      onTrace: props.onTrace,
+      traceTarget: props.traceTarget,
+      selection,
+      onReply: undefined,
+      onQuote: undefined,
+    };
+    type ItemProps = typeof itemProps & { item: timeline.TimelineItem };
+    const component = candidate as react.ComponentType<ItemProps>;
+    const rows = timeline.buildTimeline(props.state.messages.values());
+    const items = rows.map((item) => react.createElement(component, { ...itemProps, item, key: item.key }));
+    const wrapped = react.createElement(context.UiContext.Provider, { value: renderedStore }, ...items);
     const html = reactDomServer.renderToStaticMarkup(wrapped);
     const classFor = (key: string): string | undefined => {
       const pattern = new RegExp(`<div class="([^"]*)"[^>]*data-timeline-key="${key}"`);
@@ -141,8 +155,8 @@ bunTest.describe('每句回复的生成与关联元信息', () => {
     bunTest.expect(classFor('r2_0')).toContain('jm-msg-linked');
     bunTest.expect(classFor('r2_1')).not.toContain('jm-msg-linked');
     bunTest.expect(html).toContain('↔ 2/1');
-    bunTest.expect(html).toContain('actual-backup · 请求 xhigh · 发送 high');
-    bunTest.expect(timeline.locateKey(second, 1)).toBe('r2_1');
+    bunTest.expect(html).toContain('example/actual-backup · xhigh · 实发 high');
+    bunTest.expect(timeline.getLocateKey(second, 1)).toBe('r2_1');
   });
 });
 

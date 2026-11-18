@@ -14,6 +14,39 @@ import type * as types from '../Types.ts';
 const PAGE_SIZE = 40;
 
 
+/**
+ * 按渠道与聊天过滤条件直接请求后端 /api/messages。
+ * @param bot 机器人名。
+ * @param query 分页与过滤参数。
+ */
+async function fetchMessagesPage(
+  bot: string,
+  query: { before?: number; after?: number; limit?: number; origin?: types.MessageOrigin; channel?: string; chat?: string },
+): Promise<types.MessagePage> {
+  const params = new URLSearchParams({ bot });
+  if (query.before !== undefined) {
+    params.set('before', String(query.before));
+  }
+  if (query.after !== undefined) {
+    params.set('after', String(query.after));
+  }
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit));
+  }
+  if (query.origin !== undefined) {
+    params.set('origin', query.origin);
+  }
+  if (query.channel !== undefined && query.channel !== '') {
+    params.set('channel', query.channel);
+  }
+  if (query.chat !== undefined && query.chat !== '') {
+    params.set('chat', query.chat);
+  }
+  //M 直接按机器人、分页游标与渠道聊天参数请求后端 /api/messages。
+  return api.getJson<types.MessagePage>(`/api/messages?${params.toString()}`);
+}
+
+
 /** 时间线的数据和动作。 */
 export interface MessagesState {
   /** 该列表所属视图，显式补取不能悄悄把另一渠道混进来。 */
@@ -39,16 +72,23 @@ export interface MessagesState {
  * 时间线的数据。
  * @param bot 正在聊的机器人；还没有时是 null。
  * @param origin 取哪些：web 只要网页发的（中栏时间线），other 只要别的渠道的（右栏“消息”）。
+ * @param filter 可选的渠道与聊天过滤条件（unified 为 true 时中栏不向后端传 origin）。
+ * @returns 当前时间线消息表、分页状态以及翻页、刷新与按号补取控制动作。
+ * 副作用：周期性轮询 /api/messages 拉取首屏与增量变化，切换机器人或过滤条件时重置状态并重建定时器。
  */
 export function useMessages(
   bot: string | null,
   origin: types.MessageOrigin,
-  filter?: { channel: string; unified: boolean },
+  filter?: { channel: string; chat?: string; unified: boolean },
 ): MessagesState {
   /** 中栏统一查询不发送旧 origin；右栏保留原查询语义。 */
   const unified = filter?.unified === true;
   const channel = filter?.channel || undefined;
-  const queryOrigin = unified ? undefined : origin;
+  const chat = filter?.chat || undefined;
+  let queryOrigin: types.MessageOrigin | undefined = origin;
+  if (unified) {
+    queryOrigin = undefined;
+  }
   /** 号 → 消息。 */
   const [messages, setMessages] = react.useState<ReadonlyMap<number, types.MessageView>>(new Map());
   /** 显式补取和定位只读最新消息缓存，不让回调随每次轮询重新注册。 */
@@ -79,70 +119,83 @@ export function useMessages(
     setLoadingOlder(false);
     cursor.current = 0;
     oldestPageId.current = null;
-    if (!bot) {
-      return undefined;
-    }
+    if (!bot) return undefined;
+
     /** 停了没有。 */
     let stopped = false;
     /** 下一次的定时器。 */
     let timer: ReturnType<typeof setTimeout> | undefined;
+    /** 拉一轮：首次取最新一页，之后按游标增量拉取。 */
+    const fetchStep = async (): Promise<void> => {
+      if (cursor.current === 0) {
+        /** 最新一页。 */
+        //M 首次拉取最新一页消息；若期间机器人或筛选视图已切换则立刻丢弃。
+        const page = await fetchMessagesPage(bot, { limit: PAGE_SIZE, origin: queryOrigin, channel, chat });
+        if (generation.current !== mine) return;
+
+        //M 后端已按 channel + chat 精确过滤，直接写入首屏消息与分页边界。
+        setMessages((old) => timeline.mergeMessages(old, page.messages));
+        oldestPageId.current = page.messages[0]?.id ?? null;
+        setHasMore(page.hasMore);
+        setLoaded(true);
+        cursor.current = Math.max(page.cursor, 1);
+        return;
+      }
+      /** 变化。 */
+      //M 按上次游标增量拉取新消息或回复变动，若请求期间切换了目标则忽略结果。
+      const page = await fetchMessagesPage(bot, { after: cursor.current, origin: queryOrigin, channel, chat });
+      if (generation.current !== mine) return;
+
+      //M 有新增或更新时直接合并到时间线并推进增量游标。
+      if (page.messages.length > 0) {
+        setMessages((old) => timeline.mergeMessages(old, page.messages));
+      }
+      cursor.current = Math.max(cursor.current, page.cursor);
+    };
     /** 问一次：还没拿到第一页就取最新一页，拿到了就取变化。 */
     const tick = async (): Promise<void> => {
       try {
-        if (cursor.current === 0) {
-          /** 最新一页。 */
-          const page = await api.messages(bot, { limit: PAGE_SIZE, origin: queryOrigin, channel });
-          if (generation.current !== mine) {
-            return;
-          }
-          setMessages((old) => timeline.mergeMessages(old, page.messages));
-          oldestPageId.current = page.messages[0]?.id ?? null;
-          setHasMore(page.hasMore);
-          setLoaded(true);
-          cursor.current = Math.max(page.cursor, 1);
-        } else {
-          /** 变化。 */
-          const page = await api.messages(bot, { after: cursor.current, origin: queryOrigin, channel });
-          if (generation.current !== mine) {
-            return;
-          }
-          if (page.messages.length > 0) {
-            setMessages((old) => timeline.mergeMessages(old, page.messages));
-          }
-          cursor.current = Math.max(cursor.current, page.cursor);
-        }
+        //M 执行一轮首屏或增量拉取，失败时交给下一次轮询重试。
+        await fetchStep();
       } catch {
         //M 连不上：左栏的轮询会显示休假中，这里下一轮再试。
       }
       if (!stopped) {
-        timer = setTimeout(() => void tick(), document.hidden ? poll.HIDDEN_POLL_MS : poll.POLL_MS);
+        let delay = poll.POLL_MS;
+        if (document.hidden) {
+          delay = poll.HIDDEN_POLL_MS;
+        }
+        //M 本轮结束后再调度下一轮，防止慢网下请求堆叠；标签页不可见时放慢轮询。
+        timer = setTimeout(() => void tick(), delay);
       }
     };
     kick.current = () => {
+      //M 发完消息等需要立刻刷新的场景取消待跑定时器并马上拉取一次。
       clearTimeout(timer);
       void tick();
     };
+    //M 挂载或切换机器人与筛选条件后立即发起首轮拉取。
     void tick();
     return () => {
       stopped = true;
       clearTimeout(timer);
       kick.current = () => undefined;
     };
-  }, [bot, origin, queryOrigin, channel, unified]);
+  }, [bot, origin, queryOrigin, channel, chat, unified]);
 
   /** 取更早的一页。 */
   const loadOlder = react.useCallback(async (): Promise<void> => {
-    if (!bot || loadingOlder || !hasMore || oldestPageId.current === null) {
-      return;
-    }
+    if (!bot || loadingOlder || !hasMore || oldestPageId.current === null) return;
+
     /** 这一轮的编号。 */
     const mine = generation.current;
     setLoadingOlder(true);
     try {
       /** 更早的一页。 */
+      //M 沿当前最早锚点拉取更早一页；若期间未切换机器人或视图则直接合入时间线并更新翻页边界。
       const before = oldestPageId.current;
-      const query = { before, limit: PAGE_SIZE, origin: queryOrigin, channel };
-      const page = await api.messages(bot, query);
+      const query = { before, limit: PAGE_SIZE, origin: queryOrigin, channel, chat };
+      const page = await fetchMessagesPage(bot, query);
       if (generation.current === mine) {
         setMessages((old) => timeline.mergeMessages(old, page.messages));
         oldestPageId.current = page.messages[0]?.id ?? before;
@@ -155,7 +208,7 @@ export function useMessages(
         setLoadingOlder(false);
       }
     }
-  }, [bot, queryOrigin, channel, loadingOlder, hasMore]);
+  }, [bot, queryOrigin, channel, chat, loadingOlder, hasMore]);
 
   /** 只按明确号查来源；不把跨渠道的消息作为缺失，也不推进 before/after 游标。 */
   const ensureMessages = react.useCallback(async (ids: number[]): Promise<replyLinkModule.ResolvedSources> => {
@@ -166,25 +219,27 @@ export function useMessages(
     const known: types.MessageView[] = [];
     const needed: number[] = [];
     for (const id of new Set(ids)) {
+      //M 先查本地已缓存的消息表，已经存在的消息直接收集不再发网络补取。
       const message = messagesRef.current.get(id);
       if (message) {
         known.push(message);
-      } else {
-        needed.push(id);
+        continue;
       }
+      needed.push(id);
     }
-    if (needed.length === 0) {
-      return { visible: known, foreignIds: [], missingIds: [] };
-    }
-    const resolved = await replyLinkModule.ReplyLink.resolve(bot, needed, queryOrigin, channel);
+    if (needed.length === 0) return { visible: known, foreignIds: [], missingIds: [] };
+
+    //M 只读补取本地尚缺的来源消息，按当前视图条件拆出可见与跨视图结果。
+    const resolved = await replyLinkModule.ReplyLink.resolve(bot, needed, queryOrigin, channel, chat);
     if (generation.current !== mine) {
       throw new Error('查看目标已切换，本次补取结果未应用');
     }
     if (resolved.visible.length > 0) {
+      //M 仅把属于当前视图的补取消息合入本地缓存，避免污染正常分页边界。
       setMessages((old) => timeline.mergeMessages(old, resolved.visible));
     }
     return { ...resolved, visible: [...known, ...resolved.visible] };
-  }, [bot, origin, queryOrigin, channel, unified]);
+  }, [bot, origin, queryOrigin, channel, chat, unified]);
 
   /** 马上取一次变化。 */
   const refresh = react.useCallback(() => kick.current(), []);

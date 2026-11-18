@@ -14,25 +14,27 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as configFile from './ConfigFile.ts';
+import * as failureModule from '../../utils/Failure.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 
 
 /** 插件名。 */
 export const name = 'settings';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.2';
 
-/** 用到的服务。modelCatalog 是可选的，用 ctx.get 现取（写进 inject 就成了“必须有”）。 */
+/** 用到的服务：resources 读配置，http 登记路由，bots 查重和新建机器人。 */
 export const inject = ['resources', 'http', 'bots'];
-
-
-/** model-catalog 里用到的：按“供应商/模型 ID”找。 */
-interface CatalogLike {
-  find(id: string): unknown;
-}
 
 
 /** 退出前等多久，让回应先发出去。 */
 const EXIT_DELAY_MS = 300;
 /** 源码模式重启时最多等 HTTP 关多久（毫秒）；在途的请求（比如网页长轮询）不等它们。 */
-const CLOSE_WAIT_MS = 3000;
+const HTTP_CLOSE_TIMEOUT_MS = 10_000;
+/** 探活读取当前服务启动时间的最长等待。 */
+const HTTP_INJECT_TIMEOUT_MS = 5000;
+/** 校验模型目录的最长等待。 */
+const CATALOG_TIMEOUT_MS = 3000;
 
 /** 请基地重启最多等多久。 */
 const BASE_TIMEOUT_MS = 15_000;
@@ -54,17 +56,23 @@ class Settings {
    * @param ctx Cordis 给这个插件的 ctx。
    */
   constructor(private readonly ctx: cordis.Context) {
+    //M 构造运行时 config.yaml 处理器并把配置读写、建机器人及重启五条接口挂到 HTTP 服务上。
     this.file = new configFile.ConfigFile(path.join(ctx.resources.root, 'config.yaml'));
     const app = ctx.http.app;
     app.get('/api/settings', (_request, reply) => this.answer(reply, () => ({ config: this.file.masked() })));
     app.put<{ Body: unknown }>('/api/settings', (request, reply) => this.answer(reply, () => {
+      //M 校验并原子改写 config.yaml，拿到被修改的顶层段名用于返回值提示与跟踪记录。
       const changed = this.file.edit(request.body);
-      const count = Array.isArray(request.body) ? request.body.length : 0;
+      let count = 0;
+      if (Array.isArray(request.body)) {
+        count = request.body.length;
+      }
 
       //T 跟踪：存了配置（只带改了哪些段，不带值）。
       this.ctx.emit('trace', 'Settings.save', '改了 config.yaml', 'configFile.edit(edits)', { 段: changed.join('、'), 步数: count });
       return { ok: true, changed: count, note: `改了 ${changed.join('、')}：config.yaml 是启动时读的，重启后生效` };
     }));
+    //M 登记新建机器人及两种方式的重启接口，统一走 answer 捕获错误并返回状态码。
     app.post<{ Body: unknown }>('/api/bots', (request, reply) => this.answer(reply, () => this.createBot(request.body)));
     app.post('/api/settings/apply', (_request, reply) => this.answer(reply, () => this.restart(false)));
     app.post('/api/service/restart', (_request, reply) => this.answer(reply, () => this.restart(true)));
@@ -79,7 +87,11 @@ class Settings {
     try {
       return await work();
     } catch (error) {
-      const status = error instanceof configFile.Failure ? error.status : 400;
+      let status = 400;
+      if (error instanceof failureModule.Failure) {
+        status = error.status;
+      }
+      //M 区分业务 Failure 状态码与未知错误（默认 400），统一按 { error } 返回前端。
       return reply.code(status).send({ error: (error as Error).message });
     }
   }
@@ -90,33 +102,51 @@ class Settings {
    * @returns { ok, bot: { name, language }, feishu?: 一句话 }。
    * @throws Failure(400)：名字不对、重名、模型不对、飞书只填一半或已被绑。
    */
-  private createBot(raw: unknown): Record<string, unknown> {
-    const body = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
-    const botName = typeof body['name'] === 'string' ? body['name'].trim() : '';
+  private async createBot(raw: unknown): Promise<Record<string, unknown>> {
+    //G 解析请求体并校验机器人名非空且不含文件夹禁用字符，避免后续建目录报错。
+    const body = asRecord(raw);
+    const botName = getTrimmed(body['name']);
     if (botName === '' || BAD_NAME.test(botName) || /[. ]$/u.test(botName)) {
-      throw new configFile.Failure(400, '机器人名不能为空，不能有 \\ / < > : " | ? * 和控制字符，不能以点或空格结尾');
+      throw new failureModule.Failure(400, '机器人名不能为空，不能有 \\ / < > : " | ? * 和控制字符，不能以点或空格结尾');
     }
+
+    //G 校验语言配置只允许 zh 或 en，供下面生成对应语言的记忆索引文件名。
+    const language = body['language'] ?? 'zh';
+    if (language !== 'zh' && language !== 'en') throw new failureModule.Failure(400, 'language 只能是 zh 或 en');
+
+    //M 整理可选的身份文字，待创建记忆索引时使用。
+    const identity = getTrimmed(body['identity']);
+
+    //M 整理待校验的模型 ID。
+    const model = getTrimmed(body['model']);
+    if (model !== '') {
+      //M 先等模型校验，再读改写配置，避免并发请求使用旧的追加下标。
+      await this.checkModel(model);
+    }
+
+    //M 读出现有 config.yaml，供下面查重名和检查飞书应用占用情况。
     const document = this.file.read();
     const written = (document.toJSON() ?? {}) as Record<string, unknown>;
-    const list = Array.isArray(written['bots']) ? (written['bots'] as { name?: unknown }[]) : [];
-    if (list.some((item) => item.name === botName) || this.ctx.bots.get(botName) !== undefined) {
-      throw new configFile.Failure(400, `已经有机器人「${botName}」了`);
+    let list: { name?: unknown }[] = [];
+    if (Array.isArray(written['bots'])) {
+      list = written['bots'] as { name?: unknown }[];
     }
-    const language = body['language'] ?? 'zh';
-    if (language !== 'zh' && language !== 'en') throw new configFile.Failure(400, 'language 只能是 zh 或 en');
-
-    const identity = typeof body['identity'] === 'string' ? body['identity'].trim() : '';
-    const model = typeof body['model'] === 'string' ? body['model'].trim() : '';
-    if (model !== '') this.checkModel(model);
-
+    //G 同时比对配置文件与内存机器人表防止重名，命中则返回 400。
+    if (list.some((item) => item.name === botName) || this.ctx.bots.get(botName) !== undefined) {
+      throw new failureModule.Failure(400, `已经有机器人「${botName}」了`);
+    }
     //M 飞书：两个都空当没填；只填一个、或这个应用已经绑给别的机器人 → 400。
-    const feishu = (typeof body['feishu'] === 'object' && body['feishu'] !== null ? body['feishu'] : {}) as Record<string, unknown>;
-    const appId = typeof feishu['app_id'] === 'string' ? feishu['app_id'].trim() : '';
-    const appSecret = typeof feishu['app_secret'] === 'string' ? feishu['app_secret'].trim() : '';
-    if ((appId === '') !== (appSecret === '')) throw new configFile.Failure(400, '飞书的 app_id 和 app_secret 要一起填');
+    const feishu = asRecord(body['feishu']);
+    const appId = getTrimmed(feishu['app_id']);
+    const appSecret = getTrimmed(feishu['app_secret']);
+    if ((appId === '') !== (appSecret === '')) throw new failureModule.Failure(400, '飞书的 app_id 和 app_secret 要一起填');
     const channels = (written['channels'] ?? {}) as { feishu?: { app_id?: unknown }[] };
-    const apps = Array.isArray(channels.feishu) ? channels.feishu : [];
-    if (appId !== '' && apps.some((app) => app.app_id === appId)) throw new configFile.Failure(400, `飞书应用 ${appId} 已经绑给别的机器人了`);
+    let apps: { app_id?: unknown }[] = [];
+    if (Array.isArray(channels.feishu)) {
+      apps = channels.feishu;
+    }
+    //G 校验要绑定的飞书 app_id 尚未被其他机器人占用，防止配置冲突。
+    if (appId !== '' && apps.some((app) => app.app_id === appId)) throw new failureModule.Failure(400, `飞书应用 ${appId} 已经绑给别的机器人了`);
 
     //M 写配置：bots 末尾加一项；填了飞书再往 channels.feishu 末尾加一项。
     const entry: Record<string, unknown> = { name: botName, language };
@@ -127,7 +157,11 @@ class Settings {
 
     //M 记忆概要（照 0.4 的 src/capabilities/Files.ts:166-169）；已有就不动（flag 'wx' 是“没有才建”）。工作区、记忆目录由 bots.add 建。
     const bot = this.ctx.bots.add({ name: botName, language });
-    const indexFile = path.join(bot.memory, language === 'en' ? 'index.md' : '索引.md');
+    let indexName = '索引.md';
+    if (language === 'en') {
+      indexName = 'index.md';
+    }
+    const indexFile = path.join(bot.memory, indexName);
     try {
       fs.writeFileSync(indexFile, memoryIndex(botName, language, identity, model), { encoding: 'utf8', flag: 'wx' });
     } catch {
@@ -142,59 +176,126 @@ class Settings {
   }
 
   /**
-   * 核对模型：供应商要在 providers 里；挂了 model-catalog 的话，清单里要有它。
+   * 核对模型：供应商要在 providers 里；模型清单应答时，清单里要有它。
    * @param model 供应商名/模型 ID。
    * @throws Failure(400)。
    */
-  private checkModel(model: string): void {
+  private async checkModel(model: string): Promise<void> {
     const slash = model.indexOf('/');
+    //G 校验模型前缀对应的供应商已在 providers 中配置，否则回 400。
     if (slash <= 0 || this.ctx.resources.config.providers[model.slice(0, slash)] === undefined) {
-      throw new configFile.Failure(400, `模型 ${model} 的供应商不在 providers 里`);
+      throw new failureModule.Failure(400, `模型 ${model} 的供应商不在 providers 里`);
     }
-    const catalog = this.ctx.get('modelCatalog') as CatalogLike | undefined;
-    if (catalog !== undefined && catalog.find(model) === undefined) throw new configFile.Failure(400, `模型清单里没有 ${model}`);
+    const lookup = { action: 'find', model } as const;
+    const options = {
+      timeoutMs: CATALOG_TIMEOUT_MS,
+      onFallback: () => ({ requestId: '' }),
+    };
+
+    //M 通过事件核对模型。没有应答时沿用只查供应商的行为。
+    const result = await requestEventModule.requestEvent(
+      this.ctx,
+      'model-catalog/request',
+      'model-catalog/result',
+      lookup,
+      options,
+    );
+    if (result.requestId === '') return;
+
+    //G 收到明确回执时，未找到的模型仍回 400。
+    if (result.info === undefined) throw new failureModule.Failure(400, `模型清单里没有 ${model}`);
   }
 
   /**
    * 两个重启接口共用。
    * @param viaBase 是不是“请基地重启”。
    * @returns { ok, startedAt, note }。
-   * @throws Failure(409)：已经在重启、基地不肯；Failure(503)：基地没响应。
+   * @throws Failure(409)：已经在重启、基地不肯；Failure(503)：探活或基地请求失败。
    */
   private async restart(viaBase: boolean): Promise<Record<string, unknown>> {
-    if (this.restarting) throw new configFile.Failure(409, '已经在重启了');
+    //G 防前端重复点击并发触发两次重启，正在重启时直接回 409。
+    if (this.restarting) throw new failureModule.Failure(409, '已经在重启了');
 
-    const startedAt = await this.startedAt();
-    const note = '正在重启：等 /api/ui/info 的 startedAt 变了就是新进程';
+    //M 在等待事件前占住重启入口，失败时允许前端重试。
+    this.restarting = true;
+    try {
+      //M 读取当前进程启动时间，供前端轮询确认新进程接管。
+      const startedAt = await this.startedAt();
+      const note = '正在重启：等 /api/ui/info 的 startedAt 变了就是新进程';
 
-    //M 基地拉起的（有 JMBOTS_SUPERVISED）：请基地重启，或者自己退出由基地拉起新的。
-    if (process.env['JMBOTS_SUPERVISED'] !== undefined) {
-      //M 没挂基地服务或老基地不支持时，回退到本地退出，由守护进程拉起。
-      if (viaBase && await this.askBase()) {
-        this.restarting = true;
+      //M 基地拉起的进程由基地接管，没接管时本地退出等基地再拉起。
+      if (process.env['JMBOTS_SUPERVISED'] !== undefined) {
+        if (viaBase && await this.askBase()) return { ok: true, startedAt, note };
+
+        //M 回应发出后退出，交给基地拉起新进程。
+        this.exitSoon('基地拉起的：退出后基地拉起新的');
         return { ok: true, startedAt, note };
       }
-      this.restarting = true;
-      this.exitSoon('基地拉起的：退出后基地拉起新的');
-      return { ok: true, startedAt, note };
-    }
 
-    //M 源码模式（bun src7/Main.ts）：先回应，再关掉自己的 HTTP 监听，再起一个一样的新进程（输出进 data/logs/restart.log），然后退出。
-    //G 为什么先关监听再起新进程：Windows 上子进程会继承父进程的监听句柄，老进程退了端口还被新进程手里那个旧句柄占着，
-    //G   新进程自己反而监听不上（实测 restart.log 一直“端口被占着”）。关掉以后再 spawn，就没有句柄可继承。
-    this.restarting = true;
-    this.exitSoon('源码模式：关掉监听、起新进程、自己退出', async () => {
-      await Promise.race([this.ctx.http.app.close(), new Promise((resolve) => setTimeout(resolve, CLOSE_WAIT_MS))]);
-      const log = fs.openSync(path.join(this.ctx.resources.dir('data', 'logs'), 'restart.log'), 'a');
-      const child = childProcess.spawn(process.execPath, process.argv.slice(1), {
-        cwd: process.cwd(), detached: true, windowsHide: true, stdio: ['ignore', log, log], env: process.env,
+      //M 源码模式先回应，再关 HTTP 监听，避免 Windows 子进程继承监听句柄。
+      this.exitSoon('源码模式：关掉监听、起新进程、自己退出', async () => {
+        //M 等 HTTP 放手后才能拉起新进程。
+        await this.closeHttp();
+
+        //M 为新进程定位重启日志目录。
+        const logDir = this.ctx.resources.dir('data', 'logs');
+        const logPath = path.join(logDir, 'restart.log');
+        const args = process.argv.slice(1);
+        const cwd = process.cwd();
+        const log = fs.openSync(logPath, 'a');
+        try {
+          const options: childProcess.SpawnOptions = {
+            cwd,
+            detached: true,
+            windowsHide: true,
+            stdio: ['ignore', log, log],
+            env: process.env,
+          };
+
+          //M 沿用当前命令启动新进程，日志写到运行时目录。
+          const child = childProcess.spawn(process.execPath, args, options);
+          child.unref();
+
+          //T 跟踪：新进程起了。
+          const vars = { 新进程: child.pid };
+          this.ctx.emit('trace', 'Settings.restart', '起了新进程', 'childProcess.spawn(process.execPath, argv)', vars);
+        } finally {
+          fs.closeSync(log);
+        }
       });
-      child.unref();
-      fs.closeSync(log);
-      //T 跟踪：新进程起了。
-      this.ctx.emit('trace', 'Settings.restart', '起了新进程', 'childProcess.spawn(process.execPath, argv)', { 新进程: child.pid });
-    });
-    return { ok: true, startedAt, note };
+      return { ok: true, startedAt, note };
+    } catch (error) {
+      this.restarting = false;
+      throw error;
+    }
+  }
+
+  /**
+   * 关闭 HTTP。无人应答或等待超时后继续重启。
+   * @throws HTTP 已应答但明确报告关闭失败。
+   */
+  private async closeHttp(): Promise<void> {
+    const request = { action: 'close' } as const;
+    const options = {
+      timeoutMs: HTTP_CLOSE_TIMEOUT_MS,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '',
+        ok: false,
+        error: detail ?? reason,
+      }),
+    };
+
+    //M 交给 HTTP 插件关监听，事件请求最多等十秒。
+    const result = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
+    if (result.ok) return;
+
+    //G HTTP 明确报告关闭失败时，交给原退出流程记录错误。
+    const error = result.error ?? 'HTTP 关闭失败';
+    if (result.requestId !== '') throw new Error(error);
+
+    //T HTTP 没应答，记录原因后继续重启。
+    const vars = { 原因: error };
+    this.ctx.emit('trace', 'Settings.restart', 'HTTP 关闭未获回执，继续重启', "requestEvent('http/request', close)", vars);
   }
 
   /**
@@ -212,12 +313,17 @@ class Settings {
     try {
       response = await base.postJson('/restart', {}, BASE_TIMEOUT_MS);
     } catch (error) {
-      throw new configFile.Failure(503, (error as Error).message);
+      throw new failureModule.Failure(503, (error as Error).message);
     }
     if (response.status === 404) return false;
 
     const answer = (response.body ?? {}) as { ok?: unknown; error?: unknown };
-    if (answer.ok !== true) throw new configFile.Failure(409, typeof answer.error === 'string' ? answer.error : '基地没答应重启');
+    let reason = '基地没答应重启';
+    if (typeof answer.error === 'string') {
+      reason = answer.error;
+    }
+    //G 基地明确拒绝重启时抛出 409 并透传基地返回的拒绝原因给前端。
+    if (answer.ok !== true) throw new failureModule.Failure(409, reason);
     return true;
   }
 
@@ -236,14 +342,48 @@ class Settings {
     }, EXIT_DELAY_MS);
   }
 
-  /** @returns web-api 的 /api/ui/info 给的 startedAt（和网页拿到的是同一个数）；web-api 没挂是 0。 */
+  /**
+   * @returns /api/ui/info 的 startedAt，接口未登记或没有该字段时返回 0。
+   * @throws Failure(503)：HTTP 插件未应答或注入失败。
+   */
   private async startedAt(): Promise<number> {
-    const response = await this.ctx.http.app.inject({ method: 'GET', url: '/api/ui/info' });
-    if (response.statusCode !== 200) return 0;
+    const request = { action: 'inject', method: 'GET', url: '/api/ui/info' } as const;
+    const options = {
+      timeoutMs: HTTP_INJECT_TIMEOUT_MS,
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
+        requestId: '',
+        ok: false,
+        error: detail ?? `读取服务启动时间失败（${reason}）`,
+      }),
+    };
 
+    //M 通过 HTTP 插件读取用于判断重启是否完成的启动时间。
+    const response = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
+    if (!response.ok) throw new failureModule.Failure(503, response.error ?? '读取服务启动时间失败');
+    if (response.statusCode !== 200 || response.body === undefined) return 0;
+
+    //M 成功探活但旧接口没返回启动时间时，保留原来的 0。
     const info = JSON.parse(response.body) as { startedAt?: unknown };
-    return typeof info.startedAt === 'number' ? info.startedAt : 0;
+    if (typeof info.startedAt === 'number') return info.startedAt;
+
+    return 0;
   }
+}
+
+
+/** 非 null 对象转成键值表，其它给空对象。 */
+function asRecord(raw: unknown): Record<string, unknown> {
+  if (typeof raw === 'object' && raw !== null) return raw as Record<string, unknown>;
+
+  return {};
+}
+
+
+/** 取出去掉两头空白的字符串；不是字符串给空串。 */
+function getTrimmed(raw: unknown): string {
+  if (typeof raw === 'string') return raw.trim();
+
+  return '';
 }
 
 
@@ -256,13 +396,25 @@ class Settings {
  */
 function memoryIndex(botName: string, language: string, identity: string, model: string): string {
   if (language === 'en') {
-    const who = identity === '' ? `I am ${botName}, a bot in jmbots. My identity is not set yet.` : `I am ${botName}, a bot in jmbots: ${identity}.`;
-    return `# Who I am\n\n${who}${model === '' ? '' : ` I usually use ${model}.`}\n\n# What my memory covers\n\n(nothing yet)\n`;
+    let who = `I am ${botName}, a bot in jmbots. My identity is not set yet.`;
+    if (identity !== '') {
+      who = `I am ${botName}, a bot in jmbots: ${identity}.`;
+    }
+    let modelNote = '';
+    if (model !== '') {
+      modelNote = ` I usually use ${model}.`;
+    }
+    return `# Who I am\n\n${who}${modelNote}\n\n# What my memory covers\n\n(nothing yet)\n`;
   }
-  const who = identity === ''
-    ? `我是${botName}，jmbots 里的机器人。具体身份还没定——用户告诉我我是谁、做什么、平时用什么模型之后，我把它写在这一段。`
-    : `我是${botName}，jmbots 里的机器人：${identity}。`;
-  return `# 我是谁\n\n${who}${model === '' ? '' : `平时用 ${model}。`}\n\n# 记忆都涉及什么\n\n（还没有）\n`;
+  let who = `我是${botName}，jmbots 里的机器人。具体身份还没定——用户告诉我我是谁、做什么、平时用什么模型之后，我把它写在这一段。`;
+  if (identity !== '') {
+    who = `我是${botName}，jmbots 里的机器人：${identity}。`;
+  }
+  let modelNote = '';
+  if (model !== '') {
+    modelNote = `平时用 ${model}。`;
+  }
+  return `# 我是谁\n\n${who}${modelNote}\n\n# 记忆都涉及什么\n\n（还没有）\n`;
 }
 
 
@@ -270,7 +422,9 @@ function memoryIndex(botName: string, language: string, identity: string, model:
  * 挂上设置页接口。
  * apply 是 Cordis 插件的入口：inject 里的 resources、http、bots 都就绪后 Cordis 调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
+ * 副作用：实例化 `Settings` 并向 `ctx.http.app` 挂载五条设置、机器人与重启接口。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 实例化设置服务，向 HTTP 路由挂接配置读写、建机器人与重启五条接口。
   new Settings(ctx);
 }

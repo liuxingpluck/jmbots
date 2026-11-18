@@ -7,7 +7,9 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import type * as fastify from 'fastify';
+import * as filesModule from '../../utils/Files.ts';
 import type { Http } from './index.ts';
+import * as failureModule from '../../utils/Failure.ts';
 
 
 /** 一个令牌。 */
@@ -29,18 +31,6 @@ export interface TokenInfo {
 }
 
 
-/** 带状态码的错误：管令牌的接口抛它，route 照状态码回。 */
-class Failure extends Error {
-  /**
-   * @param status 状态码：400 请求不对，404 没有这个令牌。
-   * @param message 一句话。
-   */
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-
 /** 令牌表。只由 Http 的构造函数来建。 */
 export class Tokens {
   /** data/tokens.json 里的令牌，内存里的一份。 */
@@ -51,7 +41,7 @@ export class Tokens {
    * @param http HTTP 服务：登记接口、查是不是本机。
    * @param file 令牌文件 data/tokens.json 的绝对路径。
    * @param fixed 固定的主令牌 server.token；空串表示没有。
-   * 副作用：读文件。
+   * 副作用：读令牌文件，并在 `http.app` 上登记四条本机令牌管理接口。
    */
   constructor(
     private readonly http: Http,
@@ -86,8 +76,12 @@ export class Tokens {
     });
   }
 
-  /** @returns 一个能用的令牌都没有（没有主令牌，文件里的也都过期了）：这时候外面来的请求不查。 */
+  /**
+   * 判断当前是否没有任何可用令牌（无主令牌且动态令牌也都过期）。
+   * @returns 一个能用的令牌都没有时为 true（此时外部请求免校验）。
+   */
   none(): boolean {
+    //M 无主令牌且没有未过期的动态令牌时，对外免除令牌拦截。
     return this.fixed === '' && !this.list.some((item) => this.alive(item));
   }
 
@@ -95,12 +89,14 @@ export class Tokens {
    * 这个值是不是一个有效的令牌；是文件里的就记下用的时间。
    * @param value 请求带来的值；空串一定不对。
    * @returns 有效是 true。
+   * 副作用：命中文件里的动态令牌时，在内存更新其 `usedAt` 时间戳。
    */
   check(value: string): boolean {
     if (value === '') return false;
 
     if (value === this.fixed) return true;
 
+    //M 未命中主令牌时检索未过期的动态令牌，命中则视为有效并记录最近使用时间。
     const token = this.list.find((item) => item.value === value && this.alive(item));
     if (token === undefined) return false;
 
@@ -120,15 +116,18 @@ export class Tokens {
     reply: fastify.FastifyReply,
     act: () => unknown,
   ): Promise<unknown> {
+    //G 令牌管理接口只允许本机调用，防止局域网凭临时令牌给自己签发永久令牌。
     if (!this.http.isLocal(request)) {
       await reply.code(403).send({ error: '令牌只能在本机管' });
       return reply;
     }
     try {
+      //M 本机校验通过后执行具体管理动作，下方再把业务 Failure 转成对应状态码。
       return act();
     } catch (error) {
-      if (!(error instanceof Failure)) throw error;
+      if (!(error instanceof failureModule.Failure)) throw error;
 
+      //G 业务可预期错误按 Failure 自带状态码和原因回给前端，避免被当成 500。
       await reply.code(error.status).send({ error: error.message });
       return reply;
     }
@@ -142,15 +141,21 @@ export class Tokens {
    * 副作用：写令牌文件。
    */
   private create(body: { name?: unknown; minutes?: unknown }): TokenInfo {
-    const label = typeof body.name === 'string' ? body.name.trim() : '';
-    if (label === '') {
-      throw new Failure(400, '要写 name：给谁用的');
+    let label = '';
+    if (typeof body.name === 'string') {
+      label = body.name.trim();
     }
-    const minutes = body.minutes === undefined || body.minutes === null || body.minutes === 0
-      ? undefined
-      : Number(body.minutes);
+    //G 令牌名称为空时回 400 拒绝创建，确保每条令牌都有明确用途说明。
+    if (label === '') {
+      throw new failureModule.Failure(400, '要写 name：给谁用的');
+    }
+    let minutes: number | undefined;
+    if (body.minutes !== undefined && body.minutes !== null && body.minutes !== 0) {
+      minutes = Number(body.minutes);
+    }
+    //G 指定了有效分钟数时校验必须为正数，否则回 400。
     if (minutes !== undefined && !(minutes > 0)) {
-      throw new Failure(400, `临时令牌的分钟数要大于 0，现在是 ${String(body.minutes)}`);
+      throw new failureModule.Failure(400, `临时令牌的分钟数要大于 0，现在是 ${String(body.minutes)}`);
     }
     const now = Date.now();
     const token: TokenInfo = {
@@ -158,8 +163,12 @@ export class Tokens {
       name: label,
       value: `jmb_${crypto.randomBytes(18).toString('base64url')}`,
       createdAt: now,
-      ...(minutes === undefined ? {} : { minutes, expiresAt: now + minutes * 60_000 }),
     };
+    if (minutes !== undefined) {
+      token.minutes = minutes;
+      token.expiresAt = now + minutes * 60_000;
+    }
+    //M 将新令牌记入内存列表并原子写盘保存，立即生效。
     this.list.push(token);
     this.save();
     return token;
@@ -173,11 +182,13 @@ export class Tokens {
    * 副作用：写令牌文件。
    */
   private refresh(id: string): TokenInfo {
+    //M 按 ID 查找要刷新的令牌，不存在时抛出 404。
     const token = this.find(id);
     token.value = `jmb_${crypto.randomBytes(18).toString('base64url')}`;
     if (token.minutes !== undefined) {
       token.expiresAt = Date.now() + token.minutes * 60_000;
     }
+    //M 将更新后的令牌值与过期时间原子写盘保存。
     this.save();
     return token;
   }
@@ -189,9 +200,10 @@ export class Tokens {
    * @throws 没有时抛 Failure(404)。
    */
   private find(id: string): TokenInfo {
+    //G 按 ID 查找令牌，不存在时统一抛出 404 供上层路由返回。
     const token = this.list.find((item) => item.id === id);
     if (token === undefined) {
-      throw new Failure(404, `没有令牌 ${id}`);
+      throw new failureModule.Failure(404, `没有令牌 ${id}`);
     }
     return token;
   }
@@ -204,9 +216,10 @@ export class Tokens {
     return token.expiresAt === undefined || token.expiresAt > Date.now();
   }
 
-  /** 写令牌文件：先写 .tmp 再改名，写到一半断电也不会坏。 */
+  /** 写令牌文件：先写临时文件再改名（utils/Files.ts 的 writeTextAtomic），写到一半断电也不会坏；改名失败就抛错，不退回直接写。 */
   private save(): void {
-    fs.writeFileSync(`${this.file}.tmp`, `${JSON.stringify(this.list, null, 2)}\n`, 'utf8');
-    fs.renameSync(`${this.file}.tmp`, this.file);
+    const text = `${JSON.stringify(this.list, null, 2)}\n`;
+    //M 将完整令牌表原子写盘持久化，防止写一半断电损坏 tokens.json。
+    filesModule.writeTextAtomic(this.file, text);
   }
 }

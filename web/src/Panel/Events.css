@@ -63,6 +63,17 @@
   font-size: 11px !important;
 }
 
+.jm-trace-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.jm-trace-file-actions > button {
+  font-size: 11px !important;
+}
+
 .jm-trace-time-summary {
   display: flex;
   flex-wrap: wrap;

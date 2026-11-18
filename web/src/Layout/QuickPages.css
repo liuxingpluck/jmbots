@@ -1,0 +1,40 @@
+/*
+ * 聊天主页顶栏右侧控件组与快捷页面入口样式。
+ * 保持和「右栏」「演示引导」按钮同高度、深色主题下文字清晰且不换行挤压。
+ */
+
+.jm-chat-head-right {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.jm-top-pages {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.jm-top-page-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--jm-muted);
+  font-size: 13px;
+  line-height: 20px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.jm-top-page-link:hover {
+  border-color: var(--jm-accent);
+  background: var(--jm-hover);
+  color: var(--jm-text);
+}

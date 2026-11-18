@@ -16,11 +16,13 @@ import * as i18n from '../I18n.ts';
  */
 export function Avatar(props: { name: string; size?: number }): react.JSX.Element {
   /** 主题。 */
+  //M 从全局状态读取当前主题名并查出对应主题配色，为头像挑出适配色板。
   const spec = theme.THEMES[context.useUi((state) => state.themeName)];
   /** 边长。 */
   const size = props.size ?? 40;
   /** 第一个字（按字符算，emoji 和汉字都对）。 */
   const first = [...props.name.trim()][0] ?? '?';
+  //M 按机器人名字从主题色板算出固定背景色，渲染首字头像色块。
   return (
     <span className="jm-avatar" aria-hidden="true" style={{ width: size, height: size, fontSize: Math.round(size * 0.46), background: theme.avatarColor(props.name, spec.avatars) }}>
       {first}
@@ -34,6 +36,7 @@ export function Avatar(props: { name: string; size?: number }): react.JSX.Elemen
  * @param props status 显示的状态；detail 跟在状态后面的短说明；title 鼠标放上去看的完整说明。
  */
 export function StatusPill(props: { status: statusModule.ShownStatus; detail?: string; title?: string }): react.JSX.Element {
+  //M 订阅界面翻译函数，把状态固定的简体标签转为当前界面语言。
   const t = i18n.useT();
   /** 这种状态的样子。 */
   const look = statusModule.STATUS_LOOKS[props.status];

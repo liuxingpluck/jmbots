@@ -23,7 +23,7 @@ const TICK_MS = 1000;
  * @param ms 已经跑了多久。
  * @param t 翻译函数。
  */
-function elapsed(ms: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
+function getElapsed(ms: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
   const total = Math.max(0, Math.round(ms / 1000));
   if (total < 60) {
     return t('{seconds} 秒', { seconds: total });
@@ -32,8 +32,13 @@ function elapsed(ms: number, t: (key: string, vars?: Record<string, string | num
 }
 
 
-/** 正在运行的任务列表。没有任务时不渲染。 */
+/**
+ * 正在运行的任务列表。没有任务时不渲染。
+ * @returns 运行中任务区域元素；未选中机器人或无任务时返回 null。
+ * 副作用：按固定周期轮询运行中任务接口并每秒刷新计时器，点击任务行切换当前查看会话。
+ */
 export function RunningTasks(): react.JSX.Element | null {
+  //M 订阅翻译、演示打码开关、当前机器人、当前会话及切会话回调。
   const t = i18n.useT();
   const masked = privacy.useMask();
   const bot = context.useUi((state) => state.currentBot);
@@ -49,6 +54,7 @@ export function RunningTasks(): react.JSX.Element | null {
     }
     let stopped = false;
     const load = (): void => {
+      //M 向后端拉取当前机器人正在运行的前台和后台任务列表。
       void api.runningTasks(bot).then(
         (next) => {
           if (!stopped) {
@@ -58,6 +64,7 @@ export function RunningTasks(): react.JSX.Element | null {
         () => undefined,
       );
     };
+    //M 挂载或切换机器人时先立即拉取一次，再交由定时器持续轮询。
     load();
     const timer = setInterval(load, POLL_MS);
     return () => {
@@ -85,20 +92,36 @@ export function RunningTasks(): react.JSX.Element | null {
         <antd.Tag color="green">{items.length}</antd.Tag>
       </div>
       {items.map((item) => {
-        const kind = item.kind === 'front' ? t('前台') : t('后台');
-        const tag = item.customerLabel === '' ? kind : `${kind} · ${privacy.name(t(item.customerLabel), masked)}`;
+        //M 整理前后台类型、脱敏客户标签和默认标题，再渲染可点击的任务条目。
+        let kind = t('后台');
+        if (item.kind === 'front') {
+          kind = t('前台');
+        }
+        let tag = kind;
+        if (item.customerLabel !== '') {
+          tag = `${kind} · ${privacy.name(t(item.customerLabel), masked)}`;
+        }
+        let itemClass = 'jm-running-tasks-item';
+        if (item.id === current) {
+          itemClass = 'jm-running-tasks-item is-current';
+        }
+        let itemTitle = item.title;
+        if (item.title === '') {
+          itemTitle = item.id;
+        }
+        //M 渲染运行中任务条目，按演示开关脱敏标题与最新进度，并换算已运行时长。
         return (
           <button
             key={item.id}
             type="button"
-            className={item.id === current ? 'jm-running-tasks-item is-current' : 'jm-running-tasks-item'}
+            className={itemClass}
             title={`${privacy.name(item.title, masked)} ${tag} ${privacy.text(item.action, masked)}`}
             onClick={() => openSession(item.id)}
           >
             <div className="jm-running-tasks-row">
-              <span className="jm-running-tasks-title" title={item.id}>{privacy.name(item.title === '' ? item.id : item.title, masked)}</span>
+              <span className="jm-running-tasks-title" title={item.id}>{privacy.name(itemTitle, masked)}</span>
               <antd.Tag>{tag}</antd.Tag>
-              <span className="jm-running-tasks-time">{elapsed(now - item.startedAt, t)}</span>
+              <span className="jm-running-tasks-time">{getElapsed(now - item.startedAt, t)}</span>
             </div>
             {item.action !== '' && <div className="jm-running-tasks-action">{privacy.text(item.action, masked)}</div>}
           </button>

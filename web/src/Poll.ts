@@ -7,6 +7,7 @@ import type * as zustand from 'zustand';
 import * as api from './Api.ts';
 import * as i18n from './I18n.ts';
 import type * as storeModule from './Store.ts';
+import type * as types from './Types.ts';
 
 
 /** 页面在前台时多久问一次，毫秒。 */
@@ -23,9 +24,27 @@ export const HIDDEN_POLL_MS = 5000;
  */
 export async function pollOnce(store: zustand.StoreApi<storeModule.UiState>): Promise<void> {
   try {
-    /** 机器人和待确认。 */
-    //G 没挂 approval 插件时 /api/approvals 是 404：当没有待审核，不能连机器人列表一起丢（不然首页显示“后端还没有机器人”）。
-    const [bots, approvals] = await Promise.all([api.bots(), api.approvals().catch(() => [])]);
+    /** 首次轮询并行查询已挂载插件与机器人列表，避免首轮因插件状态未就绪而误打 404。 */
+    let pluginsPromise: Promise<api.MountedPlugins | undefined> = Promise.resolve(undefined);
+    if (store.getState().mountedPlugins === 'loading') {
+      //M 仅在尚未探测插件名单时并发查询一次已挂载插件，结果存入仓库避免后续反复打 404。
+      pluginsPromise = api.mountedPlugins().catch(() => undefined);
+    }
+
+    //M 并行等待插件探测与机器人列表请求，随后统一更新在线态和左栏机器人数据。
+    const [plugins, bots] = await Promise.all([pluginsPromise, api.bots()]);
+    if (plugins !== undefined) {
+      store.getState().setMountedPlugins(plugins);
+    }
+
+    /** 没挂 approval 插件时不去打 /api/approvals 的 404。 */
+    //G 先检查后端是否挂载了 approval 插件，确认挂载才去拉待确认列表。
+    const askApprovals = api.isPluginMounted(store.getState().mountedPlugins, 'approval', false);
+    let approvals: types.ApprovalView[] = [];
+    if (askApprovals) {
+      //M 拉取当前待人工确认的命令审批卡片，供审批弹窗与右栏待审核页展示。
+      approvals = await api.approvals().catch(() => []);
+    }
     store.getState().setPolled({ online: true, bots, approvals });
   } catch (error) {
     //M 连不上或后端出错 → 离线；别的错（4xx）说明后端在，只是这次没问对，不算离线。
@@ -55,18 +74,23 @@ function canReload(store: zustand.StoreApi<storeModule.UiState>): boolean {
  */
 async function checkBackendChanged(store: zustand.StoreApi<storeModule.UiState>, seen: number | undefined): Promise<number | undefined> {
   /** 后端进程信息（起来的时间、界面语言）。 */
+  //M 拉取后端进程启动时间与界面语言配置，用来识别后端重启换版并同步本地语言。
   const info = await api.uiInfo().catch(() => undefined);
   /** 后端起来的时间。 */
   const startedAt = info?.startedAt;
   /** 网址指定的语言；有它就不跟配置。 */
+  //M 解析地址栏 ?lang= 参数并归一化，存在时优先生效以支持截图等临时切语言场景。
   const urlLanguage = i18n.matchLanguage(new URLSearchParams(window.location.search).get('lang'));
   /** 配置里的语言。 */
+  //M 把后端返回的 ui.language 归一化为受支持语言代码，供下面与仓库当前语言比对同步。
   const configLanguage = i18n.matchLanguage(info?.language);
   //M 配置写了语言就跟配置：浏览器记的旧语言（比如 en）要让位，记一份新的下次打开不闪。
   if (urlLanguage === undefined && configLanguage !== undefined && store.getState().language !== configLanguage) {
     store.getState().setLanguage(configLanguage);
     i18n.saveLanguage(window.localStorage, configLanguage);
   }
+
+  //G 确认后端启动时间变了且当前不在输入消息或设置页里，才整页刷新以装载新前端，以免打断编辑。
   if (seen !== undefined && startedAt !== undefined && startedAt !== seen && canReload(store)) {
     window.location.reload();
   }
@@ -90,12 +114,23 @@ export function startPolling(store: zustand.StoreApi<storeModule.UiState>): () =
   let seenStartedAt: number | undefined;
   /** 问一轮，再排下一轮。 */
   const tick = async (): Promise<void> => {
+    //M 执行本轮轮询以拉取机器人状态和待确认清单并写进仓库。
     await pollOnce(store);
+    //M 轮询完顺带检查后端是否换了新进程或改了界面语言，按需同步语言或触发刷新。
     seenStartedAt = await checkBackendChanged(store, seenStartedAt);
     if (!stopped) {
-      timer = setTimeout(() => void tick(), document.hidden ? HIDDEN_POLL_MS : POLL_MS);
+      //M 页面隐藏时放慢轮询频率，减少后台请求。
+      let delay = POLL_MS;
+      if (document.hidden) {
+        delay = HIDDEN_POLL_MS;
+      }
+
+      //M 等上一轮请求彻底结束后再排下一轮定时器，避免网络卡顿时请求堆积并发。
+      timer = setTimeout(() => void tick(), delay);
     }
   };
+
+  //M 启动轮询时立刻打第一轮，让网页首屏尽快显示最新机器人与连接状态。
   void tick();
   return () => {
     stopped = true;

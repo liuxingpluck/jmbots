@@ -1,6 +1,6 @@
 /**
  * 用量：模型每调用一次记一行（表 model_usage，列照 0.4），给网页的用量页按时间段、分组合计（GET /api/usage），
- * 也给 web-api 的回话追溯按会话、时间窗取（服务 usage.list）。
+ * 也给回话追溯按会话、时间窗取（事件 usage/list，兼容服务 usage.list）。
  * 成功的听 session/message（接进对话的模型回答）；失败的听骨架的 model/failed（重试的每一次都算）。
  * 钱：挂了 model-catalog 就按它给的价格算（美元每百万 token），没挂就是 0。
  * 设计：docs/src7插件设计/usage.md。
@@ -8,12 +8,16 @@
 import * as cordis from 'cordis';
 import type * as piAi from '@earendil-works/pi-ai';
 import type { Session } from '../../Sessions.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as textModule from '../../utils/Text.ts';
 
 
 /** 插件名。 */
 export const name = 'usage';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.1';
 
-/** 用到的服务：resources 拿数据库。http、modelCatalog 是可选的（见 apply、add）。 */
+/** 用到的服务：resources 拿数据库。http 是可选的（见 apply）。 */
 export const inject = ['resources'];
 
 
@@ -22,8 +26,33 @@ declare module 'cordis' {
     /** 用量服务，实现在 src7/plugins/usage/index.ts。别的插件当可选依赖，用 ctx.get('usage') 现取。 */
     usage: Usage;
   }
+  interface Events {
+    /** 按会话和时间窗取用量记录。 */
+    'usage/list'(request: UsageQuery & requestEventModule.RequestEnvelope): void | Promise<void>;
+    /** 返回记录和截断标记。 */
+    'usage/list-result'(result: UsageList & requestEventModule.ResultEnvelope): void;
+  }
 }
 
+/** 用量查询条件。 */
+interface UsageQuery {
+  /** 要查的会话 ID。 */
+  sessions: string[];
+  /** 开始时刻（含），毫秒。 */
+  from: number;
+  /** 结束时刻（含），毫秒。 */
+  to: number;
+  /** 最多返回几条。 */
+  limit: number;
+}
+
+/** 用量查询的结果。 */
+interface UsageList {
+  /** 按时间先后排列的调用记录。 */
+  rows: UsageRecord[];
+  /** 符合条件的记录超过 limit 时为真。 */
+  truncated: boolean;
+}
 
 /** 一次调用，形状照网页的 TraceUsage（web/src/Types.ts:223-254）。 */
 export interface UsageRecord {
@@ -45,11 +74,20 @@ export interface UsageRecord {
 }
 
 
-/** model-catalog 里用到的（总览第 3 节待补约定第 7 条）：按“供应商/模型 ID”找，价格美元每百万 token。 */
-interface CatalogLike {
-  find(id: string): { price?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } | undefined;
+/** 模型清单回执中计价用到的单价，美元每百万 token。 */
+interface CatalogPrice {
+  /** 输入。 */
+  input: number;
+  /** 输出。 */
+  output: number;
+  /** 缓存读。 */
+  cacheRead?: number;
+  /** 缓存写。 */
+  cacheWrite?: number;
 }
 
+/** 模型目录查询最多等三秒。 */
+const CATALOG_WAIT_MS = 3000;
 
 /** 时间段 → SQLite strftime 的格式（同 0.4：src/capabilities/Store.ts:353-367）。 */
 const FORMATS: Record<string, string> = { hour: '%Y-%m-%d %H:00', day: '%Y-%m-%d', week: '%Y-W%W', month: '%Y-%m' };
@@ -89,6 +127,7 @@ export class Usage extends cordis.Service {
   /**
    * 登记 usage 插件：把 Usage 作为服务挂到 Cordis 上（以后用 ctx.usage 取）；再建表，听回答和失败。
    * @param ctx Cordis 给这个插件的 ctx。
+   * 副作用：建 model_usage 表和索引，把 Usage 挂到 ctx.usage，并监听用量查询、成功与失败事件。
    */
   constructor(ctx: cordis.Context) {
     super(ctx, 'usage');
@@ -104,13 +143,26 @@ export class Usage extends cordis.Service {
     ctx.on('session/message', (session, message) => {
       if (message.role !== 'assistant') return;
 
-      this.add(session, `${message.provider}/${message.model}`, message.usage, message.durationMs ?? 0, undefined);
+      const model = `${message.provider}/${message.model}`;
+      const ms = message.durationMs ?? 0;
+
+      //M 只记录模型产出的 assistant 回复，把用量和耗时写入 model_usage。
+      void this.add(session, model, message.usage, ms, undefined);
     });
 
     //M 一次没成的调用 → 记一行失败的；重试的每一次都会来一次。
     ctx.on('model/failed', (info) => {
       const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as piAi.Usage;
-      this.add(info.session, info.model, zero, info.ms, info.error.slice(0, ERROR_MAX_CHARS));
+      const error = info.error.slice(0, ERROR_MAX_CHARS);
+
+      //M 每一次失败也记一行，保留失败原因和耗时。
+      void this.add(info.session, info.model, zero, info.ms, error);
+    });
+
+    //M 供其他插件通过事件查询已入账的模型调用。
+    requestEventModule.onRequestEvent(ctx, 'usage/list', 'usage/list-result', (request) => {
+      //M 沿用 list 的排序和截断规则。
+      return this.list(request);
     });
   }
 
@@ -123,18 +175,61 @@ export class Usage extends cordis.Service {
    * @param error 失败的原因；成功是 undefined。
    * 副作用：写库。
    */
-  private add(session: Session, model: string, usage: piAi.Usage, ms: number, error: string | undefined): void {
-    //M 价格：model-catalog 是可选的服务，ctx.get 现取，没挂就是 undefined，钱记 0。
-    const catalog = this.ctx.get('modelCatalog') as CatalogLike | undefined;
-    const price = catalog?.find(model)?.price;
-    const cost = price === undefined ? 0 : ((usage.input * (price.input ?? 0)) + (usage.output * (price.output ?? 0))
-      + (usage.cacheRead * (price.cacheRead ?? 0)) + (usage.cacheWrite * (price.cacheWrite ?? 0))) / 1e6;
+  private async add(
+    session: Session,
+    model: string,
+    usage: piAi.Usage,
+    ms: number,
+    error: string | undefined,
+  ): Promise<void> {
+    //M 按入口收到通知的时刻和会话归属记账，等待价格不改变这两项。
+    const at = Date.now();
     const row = session.row;
-    const sql = 'INSERT INTO model_usage (at, provider, model, kind, purpose, bot, session_id, input, output, cache_read, cache_write,'
-      + ' cost, ms, ok, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    const values = [Date.now(), model.slice(0, model.indexOf('/')), model, 'chat', PURPOSES[row.kind] ?? row.kind, row.bot, session.id,
-      usage.input, usage.output, usage.cacheRead, usage.cacheWrite, cost, ms, error === undefined ? 1 : 0, error ?? null];
-    this.ctx.resources.db.query(sql).run(...values);
+    const bot = row.bot;
+    const purpose = PURPOSES[row.kind] ?? row.kind;
+    const sessionId = session.id;
+    const slash = model.indexOf('/');
+    const provider = model.slice(0, slash);
+
+    const lookup = { action: 'find', model } as const;
+    const options = {
+      timeoutMs: CATALOG_WAIT_MS,
+      onFallback: () => ({ requestId: '' }),
+    };
+
+    //M 通过事件查价格，清单未响应或查无模型时按零计费。
+    const result = await requestEventModule.requestEvent(
+      this.ctx,
+      'model-catalog/request',
+      'model-catalog/result',
+      lookup,
+      options,
+    );
+    const price: CatalogPrice | undefined = result.info?.price;
+    let cost = 0;
+    if (price !== undefined) {
+      cost = ((usage.input * price.input) + (usage.output * price.output)
+        + (usage.cacheRead * (price.cacheRead ?? 0)) + (usage.cacheWrite * (price.cacheWrite ?? 0))) / 1e6;
+    }
+    let ok = 0;
+    if (error === undefined) {
+      ok = 1;
+    }
+
+    const sql = 'INSERT INTO model_usage (at, provider, model, kind, purpose, bot, session_id, input, output,'
+      + ' cache_read, cache_write, cost, ms, ok, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const values = [at, provider, model, 'chat', purpose, bot, sessionId,
+      usage.input, usage.output, usage.cacheRead, usage.cacheWrite, cost, ms, ok, error ?? null];
+
+    try {
+      //M 价格查询结束后记一行，成功和失败使用同一张表。
+      const insert = this.ctx.resources.db.query(sql);
+      insert.run(...values);
+    } catch (error) {
+      //G 通知入口不等待写库，失败时记录原因供排查。
+      const detail = textModule.getMessage(error);
+      console.error(`模型用量没记成：${detail}`);
+    }
   }
 
   /**
@@ -142,9 +237,10 @@ export class Usage extends cordis.Service {
    * @param query 会话、时间窗（两头都含）、最多几条。
    * @returns 按时间先后；多于 limit 条时 truncated 是 true。
    */
-  list(query: { sessions: string[]; from: number; to: number; limit: number }): { rows: UsageRecord[]; truncated: boolean } {
+  list(query: UsageQuery): UsageList {
     if (query.sessions.length === 0) return { rows: [], truncated: false };
 
+    //M 按会话列表与时间窗多查一条（limit + 1），用来判断是否截断并整理成 UsageRecord 返回。
     const marks = query.sessions.map(() => '?').join(', ');
     const sql = `SELECT * FROM model_usage WHERE session_id IN (${marks}) AND at BETWEEN ? AND ? ORDER BY at, id LIMIT ?`;
     const found = this.ctx.resources.db.query(sql).all(...query.sessions, query.from, query.to, query.limit + 1) as Record<string, unknown>[];
@@ -175,6 +271,7 @@ export class Usage extends cordis.Service {
     const column = GROUPS[group];
     if (format === undefined || column === undefined) return undefined;
 
+    //M 补齐起止时间戳，按时间粒度和分组列统计汇总用量，并分别计算缓存命中率。
     const to = Number(params['to']) || Date.now();
     const from = Number(params['from']) || to - DEFAULT_DAYS * 24 * 60 * 60 * 1000;
     const db = this.ctx.resources.db;
@@ -193,7 +290,11 @@ export class Usage extends cordis.Service {
  */
 function withHitRate<T extends Bucket>(bucket: T): T & { hitRate: number } {
   const base = bucket.input + bucket.cacheRead;
-  return { ...bucket, hitRate: base === 0 ? 0 : bucket.cacheRead / base };
+  let hitRate = 0;
+  if (base !== 0) {
+    hitRate = bucket.cacheRead / base;
+  }
+  return { ...bucket, hitRate };
 }
 
 
@@ -201,8 +302,10 @@ function withHitRate<T extends Bucket>(bucket: T): T & { hitRate: number } {
  * 挂上用量。
  * apply 是 Cordis 插件的入口：inject 里的 resources 就绪后 Cordis 调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
+ * 副作用：创建并挂载 Usage 服务；若存在 http 服务则登记 GET /api/usage 接口。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 实例化 Usage 服务并挂到 ctx.usage，完成建表和事件订阅，供接口与其他插件取用。
   const usage = new Usage(ctx);
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口。

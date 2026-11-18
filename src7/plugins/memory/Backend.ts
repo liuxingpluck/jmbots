@@ -157,7 +157,7 @@ export class LocalBackend implements MemoryBackend {
       .slice(0, query.limit)
       .map(({ row, score }) => ({
         scope: row.scope, source: row.source, bot: row.bot, customer: row.customer, session: row.session, title: row.title,
-        snippet: snippetOf(row.text, wanted, needle), score: Math.round(score * 100) / 100, at: row.at, start: row.start_at, end: row.end_at,
+        snippet: getSnippet(row.text, wanted, needle), score: Math.round(score * 100) / 100, at: row.at, start: row.start_at, end: row.end_at,
       }));
   }
 
@@ -214,13 +214,13 @@ export class HttpBackend implements MemoryBackend {
 
   async health(): Promise<Record<string, unknown>> {
     const local = await this.local.health();
-    const remote = await this.call('GET', '/health').then((body) => body, (error: unknown) => ({ ok: false, error: textModule.messageOf(error) }));
+    const remote = await this.call('GET', '/health').then((body) => body, (error: unknown) => ({ ok: false, error: textModule.getMessage(error) }));
     return { backend: 'http', url: this.url, remote, local, lastError: this.lastError };
   }
 
   /** 记下错（不抛：外部服务挂了不能挡会话）。 */
   private fail(error: unknown): void {
-    this.lastError = textModule.messageOf(error);
+    this.lastError = textModule.getMessage(error);
   }
 
   /** 发一个请求，交回 JSON；不是 2xx 抛错。 */
@@ -256,7 +256,7 @@ interface ChunkRow {
  * @param wanted 问的话的字组。
  * @param needle 原话（小写）。
  */
-function snippetOf(text: string, wanted: Set<string>, needle: string): string {
+function getSnippet(text: string, wanted: Set<string>, needle: string): string {
   const flat = text.replace(/\s+/gu, ' ').trim();
   if ([...flat].length <= SNIPPET_CHARS) return flat;
   let at = needle === '' ? -1 : flat.toLowerCase().indexOf(needle);

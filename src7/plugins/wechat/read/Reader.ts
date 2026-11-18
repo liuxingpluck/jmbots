@@ -53,14 +53,16 @@ export interface SyncResult {
  * @param err 引擎的 stderr。
  * @param timedOut 是不是超时被停的。
  */
-function reasonOf(err: string, timedOut: boolean): string {
+function getReason(err: string, timedOut: boolean): string {
   if (timedOut) return `超时（${String(TIMEOUT_MS / 1000)} 秒）`;
   if (/PermissionError|Access is denied|拒绝访问|EACCES|EPERM/u.test(err)) return '没有权限（读写引擎目录或微信数据被拒）';
   if (/FileNotFoundError|No such file|找不到/u.test(err)) return '找不到文件（引擎、密钥或微信数据目录）';
   if (/ModuleNotFoundError|ImportError/u.test(err)) return '引擎缺 Python 模块';
   if (/database is locked|sqlite3\.OperationalError/u.test(err)) return '微信数据库读不了（被占用或解密失败）';
   const kind = /(?:^|\n)\s*([A-Za-z_][\w.]*(?:Error|Exception))\b/u.exec(err)?.[1];
-  return kind !== undefined ? `引擎报错 ${kind}` : '引擎报错（详见服务日志）';
+  if (kind !== undefined) return `引擎报错 ${kind}`;
+
+  return '引擎报错（详见服务日志）';
 }
 
 
@@ -138,7 +140,10 @@ export class Reader {
     } finally {
       fs.rmSync(path.join(this.root, request), { force: true });
     }
-    const mime = typeof result.mime === 'string' && result.mime.startsWith('image/') ? result.mime : 'image/jpeg';
+    let mime = 'image/jpeg';
+    if (typeof result.mime === 'string' && result.mime.startsWith('image/')) {
+      mime = result.mime;
+    }
     fs.writeFileSync(meta, mime);
     return { file, mime };
   }
@@ -179,7 +184,11 @@ export class Reader {
     try {
       child = spawn();
     } catch (error) {
-      console.error(`微信引擎拉不起来（wechat_cli ${command}）：${error instanceof Error ? error.message : String(error)}`);
+      let detail = String(error);
+      if (error instanceof Error) {
+        detail = error.message;
+      }
+      console.error(`微信引擎拉不起来（wechat_cli ${command}）：${detail}`);
       throw new Error(`微信引擎拉不起来（wechat_cli ${command}）：python 不在或没权限启动`);
     }
     let timedOut = false;
@@ -194,8 +203,12 @@ export class Reader {
       let safeTail = tail;
       const secrets = [account, ...this.accounts().flatMap((item) => [item.id, item.wxid, item.nickname])].filter((value) => value.length >= 2);
       for (const value of secrets) safeTail = safeTail.replaceAll(value, '***');
-      console.error(`微信引擎失败（wechat_cli ${command}）：退出码 ${String(code)}${timedOut ? '，超时被停' : ''}；stderr 最后几行：\n${safeTail}`);
-      throw new Error(`微信引擎失败（wechat_cli ${command}）：退出码 ${String(code)}，${reasonOf(err, timedOut)}`);
+      let timeoutNote = '';
+      if (timedOut) {
+        timeoutNote = '，超时被停';
+      }
+      console.error(`微信引擎失败（wechat_cli ${command}）：退出码 ${String(code)}${timeoutNote}；stderr 最后几行：\n${safeTail}`);
+      throw new Error(`微信引擎失败（wechat_cli ${command}）：退出码 ${String(code)}，${getReason(err, timedOut)}`);
     }
 
     return out;

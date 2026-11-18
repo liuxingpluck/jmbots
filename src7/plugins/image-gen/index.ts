@@ -9,11 +9,14 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
-import { safeName, stampId } from '../../utils/Names.ts';
+import { getSafeName, stampId } from '../../utils/Names.ts';
+import * as textModule from '../../utils/Text.ts';
 
 
 /** 插件名。 */
 export const name = 'image-gen';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.1';
 
 /** 用到的服务：resources 拿配置；tools 登记工具；bots 找工作区。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -48,16 +51,12 @@ function readModel(engine: unknown, providers: Record<string, { baseUrl: string;
   const provider = value.slice(0, value.indexOf('/'));
   const written = providers[provider];
   if (written === undefined) throw new Error(`engine.image_model 里的供应商 ${provider} 在 providers 里找不到`);
-  return { name: value, url: `${written.baseUrl}/images/generations`, apiKey: written.apiKey === '' ? 'no-key' : written.apiKey, model: value.slice(provider.length + 1) };
+  let apiKey = written.apiKey;
+  if (apiKey === '') {
+    apiKey = 'no-key';
+  }
+  return { name: value, url: `${written.baseUrl}/images/generations`, apiKey, model: value.slice(provider.length + 1) };
 }
-
-/** 大小（照 0.4 formatSize）。 */
-function size(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-}
-
 
 /** 生图工具。 */
 class ImageGen {
@@ -87,8 +86,11 @@ class ImageGen {
 
   /** 调接口、取第一张、存文件。 */
   private async generate(args: Record<string, unknown>, session: Session, signal: AbortSignal): Promise<string> {
+    //G 确认生图模型已配置，否则直接提示用户前往设置补齐 engine.image_model。
     const model = this.model;
     if (model === undefined) throw new Error('没配生图模型 engine.image_model（写成“供应商/模型 ID”，到设置的“引擎”里填），生不了图');
+
+    //G 查出当前会话对应机器人的工作区目录以备保存图片，机器人不存在时立刻报错。
     const workspace = this.ctx.bots.get(session.row.bot)?.workspace;
     if (workspace === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
     const prompt = String(args['prompt']);
@@ -112,22 +114,31 @@ class ImageGen {
       throw new Error(`生图失败（HTTP ${String(response.status)}）：${text}`);
     }
     const first = ((await response.json()) as { data?: { b64_json?: string; url?: string }[] }).data?.[0];
-    let bytes: Buffer;
-    if (typeof first?.b64_json === 'string' && first.b64_json !== '') {
-      bytes = Buffer.from(first.b64_json, 'base64');
-    } else if (typeof first?.url === 'string' && first.url !== '') {
-      const image = await fetch(first.url, { signal: limit() });
-      if (!image.ok) throw new Error(`生图接口给了地址，但下载失败（HTTP ${String(image.status)}）`);
-      bytes = Buffer.from(await image.arrayBuffer());
-    } else {
+    const readBytes = async (): Promise<Buffer> => {
+      if (typeof first?.b64_json === 'string' && first.b64_json !== '') {
+        return Buffer.from(first.b64_json, 'base64');
+      }
+      if (typeof first?.url === 'string' && first.url !== '') {
+        const image = await fetch(first.url, { signal: limit() });
+        if (!image.ok) throw new Error(`生图接口给了地址，但下载失败（HTTP ${String(image.status)}）`);
+
+        return Buffer.from(await image.arrayBuffer());
+      }
       throw new Error('生图接口回了，但里面没有图');
+    };
+    //M 从接口返回值读取图片二进制（优先解 base64，否则按 url 下载），供下面写入工作区。
+    const bytes = await readBytes();
+    let named = prompt.slice(0, 20);
+    if (typeof args['name'] === 'string' && args['name'] !== '') {
+      named = args['name'];
     }
-    const named = typeof args['name'] === 'string' && args['name'] !== '' ? args['name'] : prompt.slice(0, 20);
-    const file = path.join(workspace, `${safeName(named)}_${stampId()}.png`);
+    const file = path.join(workspace, `${getSafeName(named)}_${stampId()}.png`);
     fs.writeFileSync(file, bytes);
-    //T 跟踪：存好。
-    this.ctx.emit('trace', 'ImageGen.generate', '存好了', 'fs.writeFileSync', { 文件: file, 大小: size(bytes.length) });
-    return `已生成：@${file}（${size(bytes.length)}）。要发给用户就在 reply 里写上这个 @路径。`;
+
+    //T 跟踪：存好。大小写成字（utils/Text.ts 的 getSizeText），跟踪和交回的话共用。
+    const sizeText = textModule.getSizeText(bytes.length);
+    this.ctx.emit('trace', 'ImageGen.generate', '存好了', 'fs.writeFileSync', { 文件: file, 大小: sizeText });
+    return `已生成：@${file}（${sizeText}）。要发给用户就在 reply 里写上这个 @路径。`;
   }
 }
 
@@ -136,7 +147,10 @@ class ImageGen {
  * 挂上生图工具。
  * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。engine.image_model 在这里读一次、校验一次（改了要重启）。
  * @param ctx Cordis 给这个插件的 ctx。
+ * @throws engine.image_model 写法不对或供应商不在 providers 里时抛错。
+ * 副作用：读取生图模型配置，并在 ctx.tools 上登记 image_generate 工具。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 校验 engine.image_model 配置并实例化 ImageGen，向模型工具表登记 image_generate。
   new ImageGen(ctx, readModel(ctx.resources.raw['engine'], ctx.resources.config.providers));
 }

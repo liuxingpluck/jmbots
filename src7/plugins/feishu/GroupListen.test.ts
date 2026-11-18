@@ -1,8 +1,8 @@
 /**
  * 飞书群：登记的人和群、来往流水、只听的话（2026-11-17，0.7.16）。
  * 跑法：bun test ./src7/plugins/feishu/GroupListen.test.ts
- * 不连飞书：真的 Feishu 类（不 apply、不连长连接）+ 真的 relay、bot-front-desk 插件，接在一个假的 ctx 上；
- * 假 bots.receive 照 plugins/bots/index.ts 的 Bot.receive 走一遍 bot/receive，交给会话时照 bots.route 记下渠道和地址。
+ * 不连飞书：真的 Feishu 类（不 apply、不连长连接）+ 真的 relay 插件、真的前台（bots/FrontDesk.ts、bots/Dispatch.ts），接在一个假的 ctx 上；
+ * 假 bots.receive 照 plugins/bots/index.ts 的 Bot.receive 走一遍 bot/receive，再交给前台（Dispatch.receive），交给会话时照 bots.route 记下渠道和地址。
  * 飞书查到的群名、群成员名字预先填进 Feishu 的缓存，挂表情的接口换成假的，所以不发任何请求。
  * 查的是：登记 listen: all 的群不 @ 的普通话只记不回、cc 开头的进 relay；没登记的群照旧只收 @；
  * 会话正在转时来的先排着；来往流水每种情况都记（交给会话、转外部助手、只记、丢了）；
@@ -10,13 +10,17 @@
  * 群里发的话 @名字 换成 <at user_id>、回信开头 @ 最后说话的人；checkConfig 认 judge、judge_threshold；
  * people 登记的名字优先、owner 只有登记成本人的才是、role 照登记写（没登记是 guest）、builder 带他的目录；checkConfig 收 people、groups，旧的 owner_open_ids 并进来。
  */
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type * as cordis from 'cordis';
-import * as frontDesk from '../bot-front-desk/index.ts';
+import * as cordis from 'cordis';
+import * as events from '../../utils/RequestEvent.ts';
+import { Dispatch } from '../bots/Dispatch.ts';
+import { FrontDesk } from '../bots/FrontDesk.ts';
+import type { ReceiveEvent } from '../bots/index.ts';
+import type * as protocol from '../../Channels.ts';
 import * as relayModule from '../relay/index.ts';
 import * as feishuModule from './index.ts';
 
@@ -57,6 +61,69 @@ const GROUPS = new Map<string, feishuModule.FeishuGroup>([
   [JUDGED, { chatId: JUDGED, name: '判断群', listen: 'judge', relay: 'direct', trusted: false, judgeThreshold: 0.8 }],
 ]);
 
+/** 挂真实文件投递事件，不触发 ready；各测试用模拟 SDK 完成文件操作。 */
+function createFileChannel(ctx: cordis.Context): feishuModule.Feishu {
+  const db = new Database(':memory:');
+  ctx.provide('resources', { db });
+  ctx.provide('bots', { channel: () => () => undefined });
+  ctx.effect(() => () => db.close());
+  const config = {
+    domain: 'http://127.0.0.1:9',
+    apps: [{ appId: APP_ID, appSecret: 'x', bot: BOT }],
+    people: PEOPLE,
+    groups: GROUPS,
+  };
+  return new feishuModule.Feishu(ctx, config);
+}
+
+const fileEventOptions = {
+  timeoutMs: 1000,
+  onFallback: (reason: events.FallbackReason) => ({ requestId: '', ok: false, error: reason }),
+};
+
+test('飞书投递事件上传文件、引用原消息并回传新消息号', async () => {
+  const ctx = new cordis.Context();
+  try {
+    const feishu = createFileChannel(ctx);
+    const sdk = feishu.client(APP_ID);
+    const upload = spyOn(sdk.im.v1.file, 'create').mockResolvedValue({ file_key: 'file_test' });
+    const reply = spyOn(sdk.im.v1.message, 'reply').mockResolvedValue({ data: { message_id: 'om_file' } });
+    const filePath = path.join(root, 'event.png');
+    fs.writeFileSync(filePath, '测试文件');
+    const input = { bot: BOT, chatId: PLAIN, filePath, appId: APP_ID, kind: 'file', messageId: 'om_origin' } as const;
+
+    const result = await events.requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', input, fileEventOptions);
+    expect(result).toMatchObject({ ok: true, messageId: 'om_file' });
+    expect(upload).toHaveBeenCalledWith({ data: { file_type: 'stream', file_name: 'event.png', file: Buffer.from('测试文件') } });
+    expect(reply).toHaveBeenCalledWith({
+      path: { message_id: 'om_origin' },
+      data: { msg_type: 'file', content: '{"file_key":"file_test"}' },
+    });
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
+test('飞书投递发送失败时回执错误', async () => {
+  const ctx = new cordis.Context();
+  try {
+    const feishu = createFileChannel(ctx);
+    const sdk = feishu.client(APP_ID);
+    spyOn(sdk.im.v1.file, 'create').mockResolvedValue({ file_key: 'file_test' });
+    const send = spyOn(sdk.im.v1.message, 'create').mockRejectedValue(new Error('测试发送失败'));
+    const filePath = path.join(root, 'failed-event.txt');
+    fs.writeFileSync(filePath, '测试文件');
+    const input = { bot: BOT, chatId: PLAIN, filePath } as const;
+
+    const result = await events.requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', input, fileEventOptions);
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('测试发送失败') });
+    expect(result.requestId).toStartWith('req_');
+    expect(send).toHaveBeenCalledTimes(1);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
 /** 假决策模型：每次 judge 照顺序给一个结论，记下问的题。 */
 interface FakeDecision {
   verdicts: { verdict: 'allow' | 'deny' | 'unsure'; score?: number }[];
@@ -90,7 +157,7 @@ interface World {
 
 let messageNo = 0;
 
-/** 搭一套：假 ctx 上挂真的 relay、bot-front-desk，再建一个真的 Feishu。 */
+/** 搭一套：假 ctx 上挂真的 relay、前台（FrontDesk、Dispatch），再建一个真的 Feishu。 */
 function world(decision?: FakeDecision): World {
   const dir = fs.mkdtempSync(path.join(root, 'w-'));
   const db = new Database(':memory:');
@@ -102,6 +169,8 @@ function world(decision?: FakeDecision): World {
   let serial = 0;
 
   const bot = { name: BOT, config: {} as Record<string, unknown> };
+  /** 前台派后台（真的 Dispatch）：下面建好前台再填；假 bots.receive 问完 bot/receive 交给它。 */
+  let dispatch: Dispatch | undefined;
   const fake = {
     resources: {
       db,
@@ -141,11 +210,12 @@ function world(decision?: FakeDecision): World {
       channel: () => () => undefined,
       route: () => undefined,
       say: () => undefined,
-      //M 照 Bot.receive：挨个问 bot/receive；处理掉了就算了，定了会话就照 bots.route 记下渠道和地址，交给它。
+      //M 照 Bot.receive：挨个问 bot/receive，没人认领的交给前台（Dispatch.receive）；处理掉了就算了，定了会话就照 bots.route 记下渠道和地址，交给它。
       receive: async (_channel: string, _bot: string, text: string, address: Record<string, unknown>): Promise<void> => {
         const event: { bot: typeof bot; message: { channel: string; text: string; address: unknown };
           session?: FakeSession; handled?: boolean } = { bot, message: { channel: 'feishu', text, address } };
         for (const handler of handlers.get('bot/receive') ?? []) await handler(event);
+        await dispatch?.receive(event as unknown as ReceiveEvent);
         if (event.handled === true) return;
         if (event.session === undefined) throw new Error('没有插件管分派');
         event.session.row.channel = 'feishu';
@@ -155,6 +225,12 @@ function world(decision?: FakeDecision): World {
     },
     on: (name: string, handler: (...args: unknown[]) => unknown) => {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+    },
+    //M 照 Cordis：serial 挨个 await 监听函数。
+    serial: async (name: string, ...args: unknown[]) => {
+      for (const handler of handlers.get(name) ?? []) {
+        await handler(...args);
+      }
     },
     //M 照 Cordis：事件发给听它的；trace 没人听。
     emit: (name: string, ...args: unknown[]) => {
@@ -174,12 +250,45 @@ function world(decision?: FakeDecision): World {
       };
     },
     inject: () => Promise.resolve(),
+    //M 照 Cordis：前台的 Dispatch 是服务（ctx.frontDesk），建服务时调 reflect.provide 登记；这里用不到，空着。
+    reflect: { provide: () => undefined },
   };
   const ctx = fake as unknown as cordis.Context;
 
-  //M 挂的先后照 config.yaml：relay 在 bot-front-desk 前面。
+  //M relay 听 bot/receive；前台不听，由假 bots.receive 问完 bot/receive 再交给它（照 Bot.receive）。
   relayModule.apply(ctx, { helpers: [{ name: 'Claude', prefixes: ['cc'] }] });
-  frontDesk.apply(ctx, {});
+  const desk = new FrontDesk(ctx, { recent: 50 });
+  dispatch = new Dispatch(ctx, desk);
+  //M 桥接新 channel/message 到现有假环境（不启动真 Bots 服务也能保持本文件老测例通过）。
+  handlers.set('channel/message', [async (rawMsg: unknown, rawControl: unknown) => {
+    const message = rawMsg as protocol.ChannelMessage;
+    const control = rawControl as protocol.ChannelMessageControl | undefined;
+    for (const botName of message.targetBots) {
+      const originAddress = structuredClone(message.origin.address);
+      await fake.bots.receive(message.channel, botName, message.text, originAddress);
+      const judged = typeof originAddress['judged'] === 'string' ? originAddress['judged'] : undefined;
+      const deliveredItem = delivered.findLast((d) => d.address === originAddress);
+      if (deliveredItem !== undefined) {
+        control?.claims.push({
+          bot: botName,
+          claimKey: JSON.stringify([message.messageId, botName]),
+          status: deliveredItem.session.row.kind === 'relay' ? 'relay' : 'claimed',
+          sessionKind: deliveredItem.session.row.kind,
+          sessionId: deliveredItem.session.id,
+          ...(judged === undefined ? {} : { judged }),
+        });
+        continue;
+      }
+      if (judged !== undefined || originAddress['listenOnly'] === true) {
+        control?.claims.push({
+          bot: botName,
+          claimKey: JSON.stringify([message.messageId, botName]),
+          status: 'listen',
+          ...(judged === undefined ? {} : { judged }),
+        });
+      }
+    }
+  }]);
   const config = {
     domain: 'http://127.0.0.1:9', apps: [{ appId: APP_ID, appSecret: 'x', bot: BOT }], people: PEOPLE, groups: GROUPS,
   };
@@ -232,7 +341,7 @@ const userTexts = (session: FakeSession | undefined): unknown[] => (session?.row
   .filter((message) => message.role === 'user').map((message) => message.content);
 
 /** 这个群的前台会话。 */
-const frontOf = (made: World, chatId: string): FakeSession | undefined => [...made.sessions.values()]
+const getFront = (made: World, chatId: string): FakeSession | undefined => [...made.sessions.values()]
   .find((one) => one.row.kind === 'front' && one.row.customer === `feishu:group:${chatId}`);
 
 /** 流水里每条的处理结果，按先后。 */
@@ -247,7 +356,7 @@ describe('登记了 listen: all 的群', () => {
 
     expect(made.delivered).toEqual([]);
     //M 周周登记过，用登记的名字；陌生人没登记，用飞书查到的。
-    expect(userTexts(frontOf(made, LISTENED))).toEqual(['周周：今天中午吃啥', '陌生人：随便']);
+    expect(userTexts(getFront(made, LISTENED))).toEqual(['周周：今天中午吃啥', '陌生人：随便']);
     expect(outcomes(made)).toEqual(['只记', '只记']);
   });
 
@@ -273,7 +382,7 @@ describe('登记了 listen: all 的群', () => {
   test('前台会话正在转时来的普通话先排着，这一轮结束再记', async () => {
     const made = world();
     await made.send(LISTENED, '第一句');
-    const front = frontOf(made, LISTENED);
+    const front = getFront(made, LISTENED);
     if (front === undefined) throw new Error('没开前台会话');
 
     front.row.state = 'running';
@@ -294,7 +403,7 @@ describe('没登记的群、私聊', () => {
     await made.send(PLAIN, '今天中午吃啥');
     await made.send(PLAIN, 'cc 帮我看下日志');
     expect(made.delivered).toEqual([]);
-    expect(frontOf(made, PLAIN)).toBeUndefined();
+    expect(getFront(made, PLAIN)).toBeUndefined();
 
     await made.send(PLAIN, '你好', { atMe: true });
     expect(made.delivered[0]?.session.row.kind).toBe('front');
@@ -341,7 +450,7 @@ describe('没登记的群、私聊', () => {
 
 describe('checkConfig 收登记', () => {
   /** 照 config.yaml 拼一个 ctx：一个应用，feishu 插件配置写 own，relay 插件配置写 relay。 */
-  const configOf = (own: Record<string, unknown>, relay: Record<string, unknown> = {}): ReturnType<typeof feishuModule.checkConfig> => {
+  const getConfig = (own: Record<string, unknown>, relay: Record<string, unknown> = {}): ReturnType<typeof feishuModule.checkConfig> => {
     const ctx = {
       resources: {
         root,
@@ -354,7 +463,7 @@ describe('checkConfig 收登记', () => {
   };
 
   test('people、groups 收成表，没写的项用默认；旧的 owner: true、owner_open_ids 并成本人；builder、guest 的目录建好', () => {
-    const config = configOf({
+    const config = getConfig({
       people: [
         { open_id: OWNER, name: 'leon', owner: true },
         { open_id: FRIEND, name: '周周' },
@@ -376,7 +485,7 @@ describe('checkConfig 收登记', () => {
     expect(config.groups.get(PLAIN)).toEqual({ chatId: PLAIN, name: '', listen: 'mention', relay: 'direct', trusted: false });
     expect(config.groups.get(LISTENED)?.listen).toBe('all');
     expect(config.groups.get(LISTENED)?.trusted).toBe(true);
-    expect(configOf({}).people.size).toBe(0);
+    expect(getConfig({}).people.size).toBe(0);
   });
 
   test('写错的抛错', () => {
@@ -392,7 +501,7 @@ describe('checkConfig 收登记', () => {
       [{ groups: { chat_id: PLAIN } }, '清单'],
     ];
     for (const [own, message] of bad) {
-      expect(() => configOf(own)).toThrow(message);
+      expect(() => getConfig(own)).toThrow(message);
     }
   });
 });
@@ -429,14 +538,14 @@ describe('listen: judge 的群', () => {
     await made.send(JUDGED, '中午吃啥');
 
     expect(made.delivered).toEqual([]);
-    expect(userTexts(frontOf(made, JUDGED))).toEqual(['周周：哈哈哈', '周周：中午吃啥']);
+    expect(userTexts(getFront(made, JUDGED))).toEqual(['周周：哈哈哈', '周周：中午吃啥']);
     expect(outcomes(made)).toEqual(['judge:不回(0.32)', 'judge:不回']);
   });
 
   test('会话正在转时来的话先排着（不问）；这一轮跑完记下排着的话，对最后一句再判断一次，allow 就接着跑', async () => {
     const { made, decision } = judgeWorld([{ verdict: 'deny', score: 0.1 }, { verdict: 'allow', score: 0.95 }]);
     await made.send(JUDGED, '第一句');
-    const front = frontOf(made, JUDGED);
+    const front = getFront(made, JUDGED);
     if (front === undefined) throw new Error('没开前台会话');
 
     front.row.state = 'running';
@@ -474,15 +583,15 @@ describe('listen: judge 的群', () => {
 
 describe('群里发的话 @ 人', () => {
   /** 群里最后说话的人的回话地址。 */
-  const addressOf = (chatId: string, openId: string, chatType = 'group'): feishuModule.FeishuAddress => ({
+  const getAddress = (chatId: string, openId: string, chatType = 'group'): feishuModule.FeishuAddress => ({
     appId: APP_ID, chatId, messageId: 'om_x', openId, chatType,
     customer: feishuModule.feishuCustomer(chatType, chatId, openId),
   });
 
   test('文字里的 @名字 换成 <at user_id>：先 people，再群成员；认不出的原样留着；私聊不动', async () => {
     const made = world();
-    await made.feishu.sendText(addressOf(PLAIN, FRIEND), '@leon 你看下，@陌生人 也看下，@不认识 别管');
-    await made.feishu.sendText(addressOf('oc_p2p', OWNER, 'p2p'), '@leon 你看下');
+    await made.feishu.sendText(getAddress(PLAIN, FRIEND), '@leon 你看下，@陌生人 也看下，@不认识 别管');
+    await made.feishu.sendText(getAddress('oc_p2p', OWNER, 'p2p'), '@leon 你看下');
 
     expect(made.said[0]).toBe('<at user_id="ou_owner">leon</at> 你看下，<at user_id="ou_stranger_abcdef">陌生人</at> 也看下，@不认识 别管');
     expect(made.said[1]).toBe('@leon 你看下');
@@ -491,13 +600,13 @@ describe('群里发的话 @ 人', () => {
   test('流水里见过的说话人也认（群成员里没有的）', async () => {
     const made = world();
     await made.send(PLAIN, '我来了', { sender: 'ou_newcomer_1' });
-    await made.feishu.sendText(addressOf(PLAIN, FRIEND), '@周周 看下');
+    await made.feishu.sendText(getAddress(PLAIN, FRIEND), '@周周 看下');
     expect(made.said[0]).toBe('<at user_id="ou_friend">周周</at> 看下');
 
     //M 流水里这个人名字是飞书查不到的 ''，认不出；换个有名字的。
     (made.feishu as unknown as { chats: Map<string, { members: Map<string, string> }> }).chats.get(PLAIN)?.members.set('ou_newcomer_1', '新来的');
     await made.send(PLAIN, '我又来了', { sender: 'ou_newcomer_1' });
-    await made.feishu.sendText(addressOf(PLAIN, FRIEND), '@新来的 欢迎');
+    await made.feishu.sendText(getAddress(PLAIN, FRIEND), '@新来的 欢迎');
     expect(made.said[1]).toBe('<at user_id="ou_newcomer_1">新来的</at> 欢迎');
   });
 
@@ -509,12 +618,12 @@ describe('群里发的话 @ 人', () => {
     const send = (session: FakeSession): Promise<void> => (made.feishu as unknown as { send: (reply: string, session: FakeSession) => Promise<void> })
       .send('好的，已经查了', session);
 
-    await send(front(addressOf(PLAIN, FRIEND)));
-    await send(front(addressOf(PLAIN, OWNER)));
-    await send(front(addressOf('oc_p2p', OWNER, 'p2p')));
-    await made.feishu.sendText(addressOf(PLAIN, FRIEND), '@周周 自己写了');
+    await send(front(getAddress(PLAIN, FRIEND)));
+    await send(front(getAddress(PLAIN, OWNER)));
+    await send(front(getAddress('oc_p2p', OWNER, 'p2p')));
+    await made.feishu.sendText(getAddress(PLAIN, FRIEND), '@周周 自己写了');
     (made.feishu as unknown as { send: (reply: string, session: FakeSession) => Promise<void> })
-      .send('@周周 自己写了', front(addressOf(PLAIN, FRIEND)));
+      .send('@周周 自己写了', front(getAddress(PLAIN, FRIEND)));
     await new Promise((resolve) => setTimeout(resolve, 5));
 
     expect(made.said[0]).toBe('<at user_id="ou_friend">周周</at> 好的，已经查了');
@@ -526,7 +635,7 @@ describe('群里发的话 @ 人', () => {
 });
 
 describe('checkConfig 认 judge', () => {
-  const configOf = (own: Record<string, unknown>): ReturnType<typeof feishuModule.checkConfig> => {
+  const getConfig = (own: Record<string, unknown>): ReturnType<typeof feishuModule.checkConfig> => {
     const ctx = {
       resources: { root, raw: { channels: { feishu: [{ app_id: APP_ID, app_secret: 'x', bot: BOT }] } }, config: { plugins: [] } },
       bots: { get: (name: string) => (name === BOT ? { name } : undefined) },
@@ -535,11 +644,11 @@ describe('checkConfig 认 judge', () => {
   };
 
   test('listen: judge 和 judge_threshold 收下；不写阈值就没有；写错抛错', () => {
-    const config = configOf({ groups: [{ chat_id: JUDGED, listen: 'judge', judge_threshold: 0.7 }, { chat_id: PLAIN, listen: 'judge' }] });
+    const config = getConfig({ groups: [{ chat_id: JUDGED, listen: 'judge', judge_threshold: 0.7 }, { chat_id: PLAIN, listen: 'judge' }] });
     expect(config.groups.get(JUDGED)).toMatchObject({ listen: 'judge', judgeThreshold: 0.7 });
     expect(config.groups.get(PLAIN)?.judgeThreshold).toBeUndefined();
-    expect(() => configOf({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_threshold: 1.5 }] })).toThrow('judge_threshold');
-    expect(() => configOf({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_threshold: '高' }] })).toThrow('judge_threshold');
-    expect(() => configOf({ groups: [{ chat_id: PLAIN, listen: 'judging' }] })).toThrow('listen');
+    expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_threshold: 1.5 }] })).toThrow('judge_threshold');
+    expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_threshold: '高' }] })).toThrow('judge_threshold');
+    expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judging' }] })).toThrow('listen');
   });
 });

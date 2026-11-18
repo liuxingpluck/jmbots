@@ -14,10 +14,13 @@ import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as mime from '../../utils/Mime.ts';
 import * as text from '../../utils/Text.ts';
+import * as failureModule from '../../utils/Failure.ts';
 
 
 /** 插件名。 */
 export const name = 'files-api';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.1';
 
 /** 用到的服务：http 的 app 登记接口；resources 拿运行时目录。 */
 export const inject = ['http', 'resources'];
@@ -28,21 +31,6 @@ const SECRET_FILES = /^(config\.yaml|secrets\.yaml|\.env(\..*)?)$/iu;
 
 /** 能看的目录：运行时目录下的这四个。 */
 const ROOT_NAMES = ['bots', 'skills', 'memory', 'knowledge'];
-
-
-/** 带状态码的错误：处理函数里抛它，answer 照状态码回 { error }。只在这个文件里用。 */
-class Failure extends Error {
-  /**
-   * @param status HTTP 状态码。
-   * @param message 回给网页的一句话。
-   */
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 
 /** Range 请求头要的那一段，两头都含。 */
@@ -86,6 +74,7 @@ class FilesApi {
       });
     });
 
+    //M 登记按绝对路径读取文件的接口，统一包装异常并支持 Range 分段传输。
     app.get<{ Querystring: { path?: unknown } }>('/api/files', (request, reply) => {
       return this.answer(reply, () => this.send(request.query.path, request, reply));
     });
@@ -96,6 +85,7 @@ class FilesApi {
       return this.answer(reply, () => this.send(file, request, reply));
     });
 
+    //M 登记列目录接口，返回受控目录下非敏感文件与子目录列表。
     app.get<{ Querystring: { path?: unknown } }>('/api/files/list', (request, reply) => {
       return this.answer(reply, () => this.list(request.query.path));
     });
@@ -111,8 +101,12 @@ class FilesApi {
     try {
       return await work();
     } catch (error) {
-      const status = error instanceof Failure ? error.status : 400;
-      return reply.code(status).send({ error: text.messageOf(error) });
+      let status = 400;
+      if (error instanceof failureModule.Failure) {
+        status = error.status;
+      }
+      //M 把 Failure 的状态码或兜底的 400 转成 { error } JSON 回给前端。
+      return reply.code(status).send({ error: text.getMessage(error) });
     }
   }
 
@@ -130,9 +124,15 @@ class FilesApi {
     //M 文件名整理成能落盘的样子（同 0.4）：超过 10 个字的不算扩展名，扩展名只留 [.\w-]；
     //M 主体去掉控制字符和 \/:*?"<>|，空白换成 _，截 60 字，去掉结尾的 . 和 _，空了叫“未命名”。
     const extension = path.extname(raw);
-    const kept = extension.length <= 10 ? extension.replace(/[^.\w-]/gu, '') : '';
+    let kept = '';
+    if (extension.length <= 10) {
+      kept = extension.replace(/[^.\w-]/gu, '');
+    }
     const hasExtension = kept.length > 1;
-    const stem = hasExtension ? raw.slice(0, -extension.length) : raw;
+    let stem = raw;
+    if (hasExtension) {
+      stem = raw.slice(0, -extension.length);
+    }
     const cleaned = [...stem]
       .filter((char) => char.charCodeAt(0) >= 32 && !'\\/:*?"<>|'.includes(char))
       .join('')
@@ -140,7 +140,15 @@ class FilesApi {
       .replace(/\s+/gu, '_')
       .slice(0, 60)
       .replace(/[._]+$/u, '');
-    const name = `${cleaned === '' ? '未命名' : cleaned}${hasExtension ? kept : ''}`;
+    let baseName = cleaned;
+    if (baseName === '') {
+      baseName = '未命名';
+    }
+    let suffix = '';
+    if (hasExtension) {
+      suffix = kept;
+    }
+    const name = `${baseName}${suffix}`;
 
     //M 上传号：本地时间 yyyyMMddHHmmssSSS 加 3 位随机数，共 20 位（和 web-api 约定的）。
     const now = new Date();
@@ -150,17 +158,21 @@ class FilesApi {
 
     //M 有请求体就边收边写；没有就写一个空文件。
     const file = path.join(this.ctx.resources.dir('data', 'tmp', 'uploads'), `${id}_${name}`);
-    if (body === undefined) {
-      await fsp.writeFile(file, '');
-    } else {
+    const writeUpload = async (): Promise<void> => {
+      if (body === undefined) {
+        await fsp.writeFile(file, '');
+        return;
+      }
       await streamPromises.pipeline(body, fs.createWriteStream(file));
-    }
+    };
+    //M 执行写盘操作（无请求体写空文件，有流则管道落盘），写完再读实际字节数。
+    await writeUpload();
     const size = (await fsp.stat(file)).size;
 
     //T 跟踪：收下一个上传。
     const vars = { 上传号: id, 文件名: name, 大小: size };
     this.ctx.emit('trace', 'FilesApi.upload', '收下一个上传，写进暂存目录', 'pipeline(body, createWriteStream(file))', vars);
-    return { id, name, size, kind: mime.kindOf(name) };
+    return { id, name, size, kind: mime.getKind(name) };
   }
 
   /**
@@ -176,15 +188,18 @@ class FilesApi {
     request: fastify.FastifyRequest,
     reply: fastify.FastifyReply,
   ): Promise<fastify.FastifyReply> {
+    //G 先校验并规范化路径，再确认目标存在且是普通文件，不是则抛 404。
     const file = this.resolve(value);
     const stat = await fsp.stat(file).catch(() => undefined);
-    if (stat?.isFile() !== true) throw new Failure(404, `没有这个文件：${file}`);
+    if (stat?.isFile() !== true) throw new failureModule.Failure(404, `没有这个文件：${file}`);
 
+    //M 解析 Range 请求头并设置响应头与 MIME 类型，范围非法时直接回 416。
     const range = this.range(request.headers.range, stat.size);
-    reply.header('Accept-Ranges', 'bytes').type(mime.typeOf(file));
+    reply.header('Accept-Ranges', 'bytes').type(mime.getType(file));
     if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${String(stat.size)}`).send();
 
     if (range !== undefined) {
+      //M 命中合法分段请求，按起止字节创建部分读取流并回 206。
       const contentRange = `bytes ${String(range.start)}-${String(range.end)}/${String(stat.size)}`;
       const length = range.end - range.start + 1;
       const part = fs.createReadStream(file, range);
@@ -203,9 +218,10 @@ class FilesApi {
   private async list(
     value: unknown,
   ): Promise<{ name: string; path: string; dir: boolean; size: number; mtime: number }[]> {
+    //G 校验目录路径在允许范围内并读出目录项，打不开时抛 404。
     const dir = this.resolve(value);
     const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => undefined);
-    if (entries === undefined) throw new Failure(404, `没有这个目录：${dir}`);
+    if (entries === undefined) throw new failureModule.Failure(404, `没有这个目录：${dir}`);
 
     //M 每项 stat 一次；stat 不出来（比如坏掉的链接）大小、修改时间记 0。
     const shown = entries.filter((entry) => !SECRET_FILES.test(entry.name));
@@ -232,18 +248,20 @@ class FilesApi {
    * @throws Failure：不是绝对路径 400；是密钥文件、不在能看的四个目录里 403。
    */
   private resolve(value: unknown): string {
-    if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Failure(400, 'path 要是绝对路径');
+    //G 入口路径必须是非空绝对路径，否则直接按 400 拒绝。
+    if (typeof value !== 'string' || !path.isAbsolute(value)) throw new failureModule.Failure(400, 'path 要是绝对路径');
 
     //G 密钥文件任何情况下都不给。
     const target = path.resolve(value);
-    if (SECRET_FILES.test(path.basename(target))) throw new Failure(403, '这个文件不给看');
+    if (SECRET_FILES.test(path.basename(target))) throw new failureModule.Failure(403, '这个文件不给看');
 
     //G 要在四个目录之一里面（含目录本身）：path.relative 不往上走、也不是另一个盘。
     const inside = this.roots.some((root) => {
       const relative = path.relative(root, target);
       return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
     });
-    if (!inside) throw new Failure(403, `不在能看的范围里（运行时目录的 bots、skills、memory、knowledge）：${target}`);
+    //G 路径落到允许的四个根目录之外时拒绝访问（403），防止越权读盘。
+    if (!inside) throw new failureModule.Failure(403, `不在能看的范围里（运行时目录的 bots、skills、memory、knowledge）：${target}`);
 
     return target;
   }
@@ -261,9 +279,17 @@ class FilesApi {
     if (from === '' && to === '') return undefined;
 
     //M bytes=-n 是最后 n 个字节；bytes=a- 到文件末尾；结束超出文件的截到末尾。
-    const start = from === '' ? Math.max(0, size - Number(to)) : Number(from);
-    const end = from === '' || to === '' ? size - 1 : Math.min(Number(to), size - 1);
-    return start >= size || start > end ? 'invalid' : { start, end };
+    let start = Number(from);
+    if (from === '') {
+      start = Math.max(0, size - Number(to));
+    }
+    let end = Math.min(Number(to), size - 1);
+    if (from === '' || to === '') {
+      end = size - 1;
+    }
+    if (start >= size || start > end) return 'invalid';
+
+    return { start, end };
   }
 }
 
@@ -272,7 +298,9 @@ class FilesApi {
  * 挂上文件接口。
  * apply 是 Cordis 插件的入口：inject 里的 http、resources 都就绪后 Cordis 调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
+ * 副作用：创建 FilesApi 并在 ctx.http.app 上登记 PUT /api/uploads/:name、GET /api/files、GET /files/*、GET /api/files/list。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 实例化 FilesApi，向 Fastify 注册文件上传、读取与列目录接口。
   new FilesApi(ctx);
 }

@@ -30,6 +30,7 @@ export interface Cut {
  * @returns 留下的开头一段。
  */
 export function head(text: string): Cut {
+  //M 按行拆开并从开头方向受限截取，保留靠前最核心内容。
   return take(text.split('\n'), false);
 }
 
@@ -40,6 +41,7 @@ export function head(text: string): Cut {
  * @returns 留下的结尾一段。
  */
 export function tail(text: string): Cut {
+  //M 按行拆开并从结尾反向截取，保住命令末端的报错或结论。
   return take(text.split('\n'), true);
 }
 
@@ -50,7 +52,10 @@ export function tail(text: string): Cut {
  * @param fromEnd true 从结尾往前收。
  */
 function take(lines: string[], fromEnd: boolean): Cut {
-  const order = fromEnd ? [...lines].reverse() : lines;
+  let order = lines;
+  if (fromEnd) {
+    order = [...lines].reverse();
+  }
   const kept: string[] = [];
   let bytes = 0;
   for (const line of order) {
@@ -60,7 +65,10 @@ function take(lines: string[], fromEnd: boolean): Cut {
     kept.push(line);
     bytes += size;
   }
-  const text = (fromEnd ? kept.reverse() : kept).join('\n');
+  if (fromEnd) {
+    kept.reverse();
+  }
+  const text = kept.join('\n');
   return { text, kept: kept.length, total: lines.length, cut: kept.length < lines.length };
 }
 

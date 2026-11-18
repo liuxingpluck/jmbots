@@ -33,21 +33,27 @@ interface SectionProps extends DocumentViewProps {
 }
 
 
+/** 各文档节点类型对应的翻译函数；保留字面量 t(...) 以供语言包提取。 */
+const KIND_LABELS: Partial<Record<documentModule.DocumentKind, (t: i18n.Translate) => string>> = {
+  run: (t) => t('运行'),
+  step: (t) => t('步骤'),
+  user: (t) => t('用户'),
+  assistant: (t) => t('助手'),
+  'tool-call': (t) => t('工具调用'),
+  'tool-result': (t) => t('工具结果'),
+  thinking: (t) => t('思考'),
+  program: (t) => t('程序'),
+  review: (t) => t('审核'),
+  fragment: (t) => t('接续片段'),
+};
+
+
 /** 角色名称属于界面翻译，文件里的标题与时间仍按证据原文显示。 */
-function kindLabel(kind: documentModule.DocumentKind, t: i18n.Translate): string {
-  switch (kind) {
-    case 'run': return t('运行');
-    case 'step': return t('步骤');
-    case 'user': return t('用户');
-    case 'assistant': return t('助手');
-    case 'tool-call': return t('工具调用');
-    case 'tool-result': return t('工具结果');
-    case 'thinking': return t('思考');
-    case 'program': return t('程序');
-    case 'review': return t('审核');
-    case 'fragment': return t('接续片段');
-    default: return t('章节');
-  }
+function getKindLabel(kind: documentModule.DocumentKind, t: i18n.Translate): string {
+  const format = KIND_LABELS[kind];
+  if (format) return format(t);
+
+  return t('章节');
 }
 
 
@@ -62,10 +68,11 @@ function isOpen(block: documentModule.DocumentBlock, expanded: string[]): boolea
 
 /** 章节收放包含其全部子步骤与角色，不把运行标题做成空卡片。 */
 function DocumentSection(props: SectionProps): react.JSX.Element {
+  //M 读取翻译函数、当前块展开状态及角色/结构显示标签，准备渲染折叠节点。
   const t = i18n.useT();
   const block = props.node.block;
   const open = isOpen(block, props.reading.expanded);
-  const label = kindLabel(block.kind, t);
+  const label = getKindLabel(block.kind, t);
   const toggle = (nextOpen: boolean): void => {
     if (nextOpen === open) {
       return;
@@ -73,15 +80,25 @@ function DocumentSection(props: SectionProps): react.JSX.Element {
     const expanded = props.reading.expanded.filter((key) => {
       return key !== block.key && key !== `closed:${block.key}`;
     });
-    expanded.push(nextOpen ? block.key : `closed:${block.key}`);
+    let nextKey = `closed:${block.key}`;
+    if (nextOpen) {
+      nextKey = block.key;
+    }
+    //M 写入最新的展开或主动收起标记，持久化到当前历史条目的阅读状态。
+    expanded.push(nextKey);
     props.saveReading({ expanded });
   };
+  let bodyContent: react.ReactNode = <markdown.Markdown text={block.body} onOpen={props.onOpen} onLink={props.onLink} />;
+  if (block.kind === 'fragment') {
+    bodyContent = <pre className="jm-preview-code">{block.body}</pre>;
+  }
 
   return (
     <details
       className={`jm-document-block jm-document-${block.kind}`}
       data-document-key={block.key}
       open={open}
+      //M 用户手动切换折叠状态时同步更新当前历史条目的展开集合。
       onToggle={(event) => toggle(event.currentTarget.open)}
     >
       <summary>
@@ -92,9 +109,7 @@ function DocumentSection(props: SectionProps): react.JSX.Element {
       </summary>
       {open && block.body.trim() && (
         <div className="jm-document-body">
-          {block.kind === 'fragment' ? <pre className="jm-preview-code">{block.body}</pre> : (
-            <markdown.Markdown text={block.body} onOpen={props.onOpen} onLink={props.onLink} />
-          )}
+          {bodyContent}
         </div>
       )}
       {open && props.node.children.length > 0 && (
@@ -107,20 +122,27 @@ function DocumentSection(props: SectionProps): react.JSX.Element {
 }
 
 
-/** 当前段的章节目录与结构化正文；点击目录时展开父层再定位。 */
+/**
+ * 渲染当前文档片段的章节目录与结构化正文；点击目录时先展开父层再定位滚动。
+ * @param props 包含当前文档结构 `page` 以及文件/外链打开回调 `onOpen`、`onLink`。
+ * @returns 分段控制条、章节目录导航与嵌套结构正文视图。
+ * 副作用：订阅当前历史条目的阅读状态；点击目录或展收按钮会更新当前条目的 `expanded` 与 `section`，定位时会触发 DOM `scrollIntoView`。
+ */
 export function DocumentView(props: DocumentViewProps): react.JSX.Element {
+  //M 取当前语言翻译函数与当前历史条目的轻量阅读状态及保存回调。
   const t = i18n.useT();
   const { reading, saveReading } = readingModule.useReadingState();
   const container = react.useRef<HTMLDivElement>(null);
   const sectionKeys = props.page.blocks.map((block) => block.key);
 
   /** 查找要定位的章节的祖先链，保证收起的父运行也能一并展开。 */
-  const parentsOf = (nodes: documentModule.DocumentNode[], wanted: string): string[] | undefined => {
+  const getParents = (nodes: documentModule.DocumentNode[], wanted: string): string[] | undefined => {
     for (const node of nodes) {
       if (node.block.key === wanted) {
         return [wanted];
       }
-      const found = parentsOf(node.children, wanted);
+      //M 当前节点未直接命中时，递归向下查找目标章节的祖先路径。
+      const found = getParents(node.children, wanted);
       if (found) {
         return [node.block.key, ...found];
       }
@@ -128,7 +150,8 @@ export function DocumentView(props: DocumentViewProps): react.JSX.Element {
     return undefined;
   };
   const locate = (key: string): void => {
-    const ancestors = parentsOf(props.page.nodes, key) ?? [key];
+    //M 计算目标章节的完整祖先链，清除主动收起标记并保存当前选中章节与展开集合。
+    const ancestors = getParents(props.page.nodes, key) ?? [key];
     const expanded = reading.expanded.filter((item) => !ancestors.some((ancestor) => item === `closed:${ancestor}`));
     saveReading({ section: key, expanded: [...new Set([...expanded, ...ancestors])] });
 
@@ -157,17 +180,24 @@ export function DocumentView(props: DocumentViewProps): react.JSX.Element {
       </div>
       {props.page.outline.length > 0 && (
         <nav className="jm-document-outline" aria-label={t('当前片段章节')}>
-          {props.page.outline.map((block) => (
-            <button
-              type="button"
-              key={block.key}
-              className={block.key === reading.section ? 'jm-document-current' : ''}
-              style={{ paddingInlineStart: `${Math.max(0, block.level - 1) * 10 + 8}px` }}
-              onClick={() => locate(block.key)}
-            >
-              {block.title}
-            </button>
-          ))}
+          {props.page.outline.map((block) => {
+            let buttonClass = '';
+            if (block.key === reading.section) {
+              buttonClass = 'jm-document-current';
+            }
+            return (
+              <button
+                type="button"
+                key={block.key}
+                className={buttonClass}
+                style={{ paddingInlineStart: `${Math.max(0, block.level - 1) * 10 + 8}px` }}
+                //M 点击目录项时先展开所属祖先节点并滚入可视区域。
+                onClick={() => locate(block.key)}
+              >
+                {block.title}
+              </button>
+            );
+          })}
         </nav>
       )}
       {props.page.nodes.map((node) => (

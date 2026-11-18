@@ -17,6 +17,7 @@ import * as editsModule from './Edits.ts';
 import * as fields from './Fields.tsx';
 import * as reconnect from './Reconnect.tsx';
 import * as sections from './Sections.tsx';
+import './Settings.css';
 
 
 /** 分类：键、名字、一句话说明、表单、管 config.yaml 里哪几段（改过了就在分类上加个点）。 */
@@ -25,7 +26,7 @@ const CATEGORIES: { key: string; label: string; hint: string; form?: (props: sec
   { key: 'models', label: '模型', hint: '每个用途先选供应商，再选模型', form: sections.Models, paths: [['default_model'], ['models'], ['engine', 'fallback_chain'], ['engine', 'fallback_max_tries'], ['engine', 'vision_model']] },
   { key: 'bots', label: '机器人', hint: '有几个列几个，每个的语言和渠道都在它下面', form: sections.Bots, paths: [['bots'], ['channels']] },
   { key: 'search', label: '搜索', hint: '网页搜索按顺序试', form: sections.Search, paths: [['search']] },
-  { key: 'engine', label: '引擎', hint: '轮询、步数、压缩、审核门槛、记忆搜索地址', form: sections.Engine, paths: ['poll_ms', 'max_rounds', 'compress_at', 'exec_pass', 'index_url', 'image_model', 'wrapup_model', 'memory_libs', 'retry_delays_ms', 'fallback_include_siblings'].map((key) => ['engine', key]) },
+  { key: 'engine', label: '引擎', hint: '轮询、压缩、审核门槛、记忆搜索地址', form: sections.Engine, paths: ['poll_ms', 'compress_at', 'exec_pass', 'index_url', 'image_model', 'wrapup_model', 'memory_libs', 'retry_delays_ms', 'fallback_include_siblings'].map((key) => ['engine', key]) },
   { key: 'concurrency', label: '并发', hint: '同一时间最多几个调用，超了排队', form: sections.Concurrency, paths: [['concurrency']] },
   { key: 'http', label: '服务', hint: '后端的端口和 token', form: sections.Http, paths: [['http']] },
   { key: 'local', label: '基地', hint: '基地的端口、窗口打开哪个后端、记忆库和 RAG 目录', form: sections.Local, paths: [['local']] },
@@ -42,8 +43,9 @@ type RestartState = { kind: 'idle' } | { kind: 'saved' } | { kind: 'restarting' 
 const MAXIMIZED_KEY = 'jmbots.settings.maximized';
 
 
-/** 设置页。 */
+/** 设置页：全屏配置与重连界面，管理未保存改动、保存落盘与立即重启流程。 */
 export function Settings(): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于设置页导航、按钮状态和保存重启提示文案。
   const t = i18n.useT();
   /** 尺寸切换只改变 CSS，设置草稿和窗口预览组件继续保留。 */
   const [maximized, setMaximized] = react.useState(() => {
@@ -62,14 +64,27 @@ export function Settings(): react.JSX.Element {
       //M 浏览器不允许存储时，当前面板仍可正常最大化和还原。
     }
   };
-  /** 选中的分类（#settings=分类 也能打开）。 */
+  /** 选中的分类（#settings=分类 也能打开）；没挂 desktop 插件时隐藏“窗口操控”避免打开打 404。 */
+  //M 从界面状态仓库取出后端已挂载插件列表，用于判断“窗口操控”分类是否展示。
+  const mountedPlugins = context.useUi((state) => state.mountedPlugins);
+  //G 检查 desktop 插件是否可用（加载中暂不显示），避免在未挂载时点开报 404。
+  const desktopEnabled = api.isPluginMounted(mountedPlugins, 'desktop', false);
+  const visibleCategories = react.useMemo(() => {
+    if (desktopEnabled) return CATEGORIES;
+
+    return CATEGORIES.filter((item) => item.key !== 'desktop');
+  }, [desktopEnabled]);
+
+  //M 从界面状态仓库获取当前分类、切分类动作和关闭弹窗动作，供导航点击与关闭校验使用。
   const category = context.useUi((state) => state.settingsCategory);
   const setCategory = context.useUi((state) => state.setSettingsCategory);
   const setSettingsOpen = context.useUi((state) => state.setSettingsOpen);
   /** 主题。 */
+  //M 从界面状态仓库读取和更新当前配色主题，供“界面”分类单选按钮实时切换。
   const themeName = context.useUi((state) => state.themeName);
   const setThemeName = context.useUi((state) => state.setThemeName);
   /** 语言。 */
+  //M 从界面状态仓库读取和更新当前界面语言，供“界面”分类下拉实时切换。
   const language = context.useUi((state) => state.language);
   const setLanguage = context.useUi((state) => state.setLanguage);
   /** 拿到的配置、模型；出错的原因。 */
@@ -84,14 +99,22 @@ export function Settings(): react.JSX.Element {
   const [notice, setNotice] = react.useState('');
   /** 表单换一份（保存后、撤销后重画输入框，免得输入框里留着旧字）。 */
   const [formKey, setFormKey] = react.useState(0);
+  const getErrorText = (error: unknown): string => {
+    if (error instanceof Error) return error.message;
+
+    return String(error);
+  };
 
   /** 取配置和模型。 */
   const load = react.useCallback(() => {
     setLoadError('');
+    //M 拉取当前 config.yaml 脱敏配置作为编辑基准，成功更新表单、失败展示报错。
     void api.settings().then(
       (result) => setConfig(result.config),
-      (error: unknown) => setLoadError(error instanceof Error ? error.message : String(error)),
+      //G 取配置失败时将异常整理为可读文字展示在右侧面板。
+      (error: unknown) => setLoadError(getErrorText(error)),
     );
+    //M 同步拉取后端可用模型清单供模型选择器和“重连”核对使用，拉取失败时退回空数组。
     void api.models().then(setModels, () => setModels([]));
   }, []);
 
@@ -122,16 +145,24 @@ export function Settings(): react.JSX.Element {
   }, [closeIfClean]);
 
   /** 草稿。 */
-  const draft = react.useMemo(() => (config ? editsModule.draftOf(config, edits) : null), [config, edits]);
+  const draft = react.useMemo(() => {
+    if (!config) return null;
+
+    //M 按顺序把未保存改动叠到原始配置上生成实时草稿，传给右侧表单渲染。
+    return editsModule.getDraft(config, edits);
+  }, [config, edits]);
   /** 改了一项。 */
+  //M 把单步配置改动合入待保存队列（连续修改同一值时折叠为最后一步）。
   const onEdit = react.useCallback((edit: editsModule.Edit) => setEdits((old) => editsModule.addEdit(old, edit)), []);
   /** 某个路径改过没有。 */
+  //M 对比原始配置与草稿在指定路径的值，用于导航栏改过小圆点与字段名称变红高亮。
   const isChanged = react.useCallback((path: editsModule.Path) => editsModule.changedAt(config, draft, path), [config, draft]);
 
   /** 保存。 */
   const save = (): void => {
     setSaving(true);
     setNotice('');
+    //M 按顺序把改动提交到后端写回 config.yaml，成功后清空改动、重置表单并提示重启生效。
     void api.saveSettings(edits).then(
       () => {
         setSaving(false);
@@ -142,7 +173,8 @@ export function Settings(): react.JSX.Element {
       },
       (error: unknown) => {
         setSaving(false);
-        setNotice(t('没保存成：{reason}', { reason: error instanceof Error ? error.message : String(error) }));
+        //G 保存请求失败时把异常格式化为可读提示显示在底部操作区。
+        setNotice(t('没保存成：{reason}', { reason: getErrorText(error) }));
       },
     );
   };
@@ -152,8 +184,10 @@ export function Settings(): react.JSX.Element {
     setRestart({ kind: 'restarting' });
     try {
       /** 旧进程起来的时间。 */
+      //M 通知后端在后台按新配置启动并切换版本，记下旧进程 startedAt 作为就绪比对基准。
       const { startedAt } = await api.applySettings();
       /** 等到新进程没有。 */
+      //M 轮询 /api/ui/info 直到 startedAt 改变或超时，确认新进程已接管服务。
       const restarted = await api.waitNewProcess(startedAt);
       if (restarted) {
         setRestart({ kind: 'done' });
@@ -162,14 +196,44 @@ export function Settings(): react.JSX.Element {
       }
       setRestart({ kind: 'failed', reason: t('等了 3 分钟还没换好：看运行时 data 里最新的 swap_*.log') });
     } catch (error) {
-      setRestart({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      //G 重启触发或等待新进程期间抛错时格式化原因，更新重启卡片为失败态。
+      setRestart({ kind: 'failed', reason: getErrorText(error) });
     }
   };
 
   /** 选中的那一类。 */
-  const current = CATEGORIES.find((item) => item.key === category) ?? CATEGORIES[0]!;
+  const current = visibleCategories.find((item) => item.key === category) ?? visibleCategories[0]!;
   /** 那一类的表单。 */
   const Form = current.form;
+  let dialogClass = 'jm-settings';
+  if (maximized) {
+    dialogClass = 'jm-settings jm-settings-maximized';
+  }
+  let failedReason = '';
+  if (restart.kind === 'failed') {
+    failedReason = restart.reason;
+  }
+  let restartAction: react.ReactNode = undefined;
+  if (restart.kind === 'saved') {
+    //M 保存成功待重启时提供“立即重启”按钮，点击后触发后台换版本并等待新进程就绪。
+    restartAction = (
+      <antd.Button size="small" type="primary" onClick={() => void restartNow()}>
+        {t('立即重启')}
+      </antd.Button>
+    );
+  }
+  let editsStatus = t('没有没保存的改动');
+  if (edits.length > 0) {
+    editsStatus = t('有 {count} 处改动还没保存', { count: edits.length });
+  }
+  let maxIcon = <icons.FullscreenOutlined />;
+  let maxLabel = t('最大化设置面板');
+  if (maximized) {
+    maxIcon = <icons.FullscreenExitOutlined />;
+    maxLabel = t('还原设置面板');
+  }
+
+  //M 渲染设置全屏弹窗：左侧呈现分类导航与保存/撤销栏，右侧展示当前分类界面与表单。
   return (
     <div
       className="jm-settings-backdrop"
@@ -179,15 +243,21 @@ export function Settings(): react.JSX.Element {
         }
       }}
     >
-      <div className={maximized ? 'jm-settings jm-settings-maximized' : 'jm-settings'} role="dialog" aria-label={t('设置')}>
+      <div className={dialogClass} role="dialog" aria-label={t('设置')}>
         <nav className="jm-settings-nav">
           <header className="jm-settings-title">{t('设置')}</header>
-          {CATEGORIES.map((item) => (
-            <button key={item.key} type="button" className={item.key === current.key ? 'jm-settings-cat jm-active' : 'jm-settings-cat'} onClick={() => setCategory(item.key)}>
-              <span>{t(item.label)}</span>
-              {item.paths.some(isChanged) && <span className="jm-settings-dot" title={t('改过，还没保存')} />}
-            </button>
-          ))}
+          {visibleCategories.map((item) => {
+            let catClass = 'jm-settings-cat';
+            if (item.key === current.key) {
+              catClass = 'jm-settings-cat jm-active';
+            }
+            return (
+              <button key={item.key} type="button" className={catClass} onClick={() => setCategory(item.key)}>
+                <span>{t(item.label)}</span>
+                {item.paths.some(isChanged) && <span className="jm-settings-dot" title={t('改过，还没保存')} />}
+              </button>
+            );
+          })}
           <footer className="jm-settings-save">
             {restart.kind !== 'idle' && (
               <antd.Alert
@@ -198,19 +268,13 @@ export function Settings(): react.JSX.Element {
                     saved: t('已保存，重启后生效'),
                     restarting: t('正在重启：先试运行新进程，没问题再换掉正在跑的……'),
                     done: t('重启好了，新的设置已经生效'),
-                    failed: t('没重启成：{reason}', { reason: restart.kind === 'failed' ? restart.reason : '' }),
+                    failed: t('没重启成：{reason}', { reason: failedReason }),
                   }[restart.kind]
                 }
-                action={
-                  restart.kind === 'saved' ? (
-                    <antd.Button size="small" type="primary" onClick={() => void restartNow()}>
-                      {t('立即重启')}
-                    </antd.Button>
-                  ) : undefined
-                }
+                action={restartAction}
               />
             )}
-            <span className="jm-muted">{edits.length > 0 ? t('有 {count} 处改动还没保存', { count: edits.length }) : t('没有没保存的改动')}</span>
+            <span className="jm-muted">{editsStatus}</span>
             {notice && <span className="jm-field-error">{notice}</span>}
             <div className="jm-settings-buttons">
               <antd.Button
@@ -237,9 +301,9 @@ export function Settings(): react.JSX.Element {
             <div className="jm-settings-head-actions">
               <antd.Button
                 type="text"
-                icon={maximized ? <icons.FullscreenExitOutlined /> : <icons.FullscreenOutlined />}
-                aria-label={maximized ? t('还原设置面板') : t('最大化设置面板')}
-                title={maximized ? t('还原设置面板') : t('最大化设置面板')}
+                icon={maxIcon}
+                aria-label={maxLabel}
+                title={maxLabel}
                 aria-pressed={maximized}
                 onClick={toggleMaximized}
               />
@@ -247,47 +311,55 @@ export function Settings(): react.JSX.Element {
             </div>
           </header>
           <div className="jm-settings-content">
-            {current.key === 'ui' && (
-              <fields.Row label={t('语言')} hint={t('界面的文字；机器人说什么语言在“机器人”里设。切了马上生效，存进 config.yaml 的 ui.language')}>
-                <antd.Select
-                  className="jm-field-select"
-                  value={language}
-                  options={i18n.LANGUAGES.map((item) => ({ value: item.code, label: item.label }))}
-                  onChange={(next: i18n.Language) => {
-                    setLanguage(next);
-                    i18n.saveLanguage(window.localStorage, next);
-                    void api.saveSettings([{ path: ['ui', 'language'], value: next }]);
+              {current.key === 'ui' && (
+                <fields.Row label={t('语言')} hint={t('界面的文字；机器人说什么语言在“机器人”里设。切了马上生效，存进 config.yaml 的 ui.language')}>
+                  <antd.Select
+                    className="jm-field-select"
+                    value={language}
+                    options={i18n.LANGUAGES.map((item) => ({ value: item.code, label: item.label }))}
+                    onChange={(next: i18n.Language) => {
+                      setLanguage(next);
+                      //M 把新选语言写入浏览器本地存储，并同步保存回 config.yaml 的 ui.language 确保刷新一致。
+                      i18n.saveLanguage(window.localStorage, next);
+                      void api.saveSettings([{ path: ['ui', 'language'], value: next }]);
+                    }}
+                  />
+                </fields.Row>
+              )}
+              {current.key === 'ui' && (
+                <antd.Radio.Group
+                  value={themeName}
+                  onChange={(event) => {
+                    /** 选的主题。 */
+                    const name = event.target.value as theme.ThemeName;
+                    setThemeName(name);
+                    //M 把选中的配色主题名存入浏览器本地存储，供下次打开页面直接读取应用。
+                    theme.saveThemeName(window.localStorage, name);
                   }}
-                />
-              </fields.Row>
-            )}
-            {current.key === 'ui' && (
-              <antd.Radio.Group
-                value={themeName}
-                onChange={(event) => {
-                  /** 选的主题。 */
-                  const name = event.target.value as theme.ThemeName;
-                  setThemeName(name);
-                  theme.saveThemeName(window.localStorage, name);
-                }}
-              >
-                {Object.values(theme.THEMES).map((spec) => (
-                  <antd.Radio.Button key={spec.name} value={spec.name}>
-                    {t(spec.label)}
-                    {spec.ready ? '' : t('（预览）')}
-                  </antd.Radio.Button>
-                ))}
-              </antd.Radio.Group>
-            )}
-            {current.key === 'reconnect' && <reconnect.Reconnect draft={draft} onReload={load} />}
-            {current.key === 'desktop' && <desktop.Desktop />}
-            {Form && loadError && <antd.Alert type="error" showIcon message={t('取不到配置：{reason}', { reason: loadError })} />}
-            {Form && !loadError && !draft && <antd.Spin />}
-            {Form && draft !== null && (
-              <fields.ChangedContext.Provider value={isChanged}>
-                <Form key={`${current.key}-${formKey}`} draft={draft} onEdit={onEdit} models={models} />
-              </fields.ChangedContext.Provider>
-            )}
+                >
+                  {Object.values(theme.THEMES).map((spec) => {
+                    let previewSuffix = '';
+                    if (!spec.ready) {
+                      previewSuffix = t('（预览）');
+                    }
+                    return (
+                      <antd.Radio.Button key={spec.name} value={spec.name}>
+                        {t(spec.label)}
+                        {previewSuffix}
+                      </antd.Radio.Button>
+                    );
+                  })}
+                </antd.Radio.Group>
+              )}
+              {current.key === 'reconnect' && <reconnect.Reconnect draft={draft} onReload={load} />}
+              {current.key === 'desktop' && <desktop.Desktop />}
+              {Form && loadError && <antd.Alert type="error" showIcon message={t('取不到配置：{reason}', { reason: loadError })} />}
+              {Form && !loadError && !draft && <antd.Spin />}
+              {Form && draft !== null && (
+                <fields.ChangedContext.Provider value={isChanged}>
+                  <Form key={`${current.key}-${formKey}`} draft={draft} onEdit={onEdit} models={models} />
+                </fields.ChangedContext.Provider>
+              )}
           </div>
         </section>
       </div>

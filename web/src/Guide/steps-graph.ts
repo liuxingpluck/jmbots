@@ -5,6 +5,7 @@
 import { CUSTOMER_DEMO, DEFAULT_QUESTION } from './questions.ts';
 import type { GuideStep } from './types.ts';
 
+/** 记忆关系图谱页（/graph/）右上角「演示引导」使用的步骤列表。 */
 export const GRAPH_STEPS: GuideStep[] = [
   {
     id: 'welcome',

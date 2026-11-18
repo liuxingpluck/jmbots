@@ -25,15 +25,16 @@ interface MarkdownProps {
  * 一段节点里的纯文字（复制代码块用）。
  * @param node React 节点。
  */
-function textOf(node: react.ReactNode): string {
+function getText(node: react.ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') {
     return String(node);
   }
   if (Array.isArray(node)) {
-    return node.map(textOf).join('');
+    return node.map(getText).join('');
   }
   if (react.isValidElement<{ children?: react.ReactNode }>(node)) {
-    return textOf(node.props.children);
+    //M 递归提取 React 元素子节点里的纯文本，用于代码块一键复制。
+    return getText(node.props.children);
   }
   return '';
 }
@@ -46,19 +47,24 @@ function textOf(node: react.ReactNode): string {
 function CodeBlock(props: { children?: react.ReactNode }): react.JSX.Element {
   /** 刚复制过。 */
   const [copied, setCopied] = react.useState(false);
+  let copyIcon = <icons.CopyOutlined />;
+  if (copied) {
+    copyIcon = <icons.CheckOutlined />;
+  }
   return (
     <div className="jm-code">
       <button
         type="button"
         className="jm-code-copy"
         onClick={() => {
-          void navigator.clipboard.writeText(textOf(props.children).replace(/\n$/, '')).then(() => {
+          //M 从代码块子树提取纯文本并去掉末尾换行，写入系统剪贴板。
+          void navigator.clipboard.writeText(getText(props.children).replace(/\n$/, '')).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           });
         }}
       >
-        {copied ? <icons.CheckOutlined /> : <icons.CopyOutlined />}
+        {copyIcon}
       </button>
       <pre>{props.children}</pre>
     </div>
@@ -67,11 +73,14 @@ function CodeBlock(props: { children?: react.ReactNode }): react.JSX.Element {
 
 
 /**
- * 渲染一段 Markdown。
- * @param props 文字和点了附件怎么办。
+ * 渲染一段 Markdown，把正文里的附件路径转换成附件卡片并接管代码块复制与文档内链点击。
+ * @param props 组件属性，包含待渲染文本、附件打开回调及可选的链接拦截回调。
+ * @returns Markdown 渲染容器 JSX 元素。
+ * 副作用：无直接副作用；点击代码块复制按钮会写入剪贴板，点击链接可能触发拦截回调。
  */
 export function Markdown(props: MarkdownProps): react.JSX.Element {
   /** 附件换成链接以后的文字。 */
+  //M 先把正文中的 @附件路径 改写成 jmfile: 链接，交给 react-markdown 统一识别并渲染成附件组件。
   const source = react.useMemo(() => attachmentsModule.withAttachmentLinks(props.text), [props.text]);
   /** 点了附件。 */
   const onOpen = props.onOpen;
@@ -81,9 +90,11 @@ export function Markdown(props: MarkdownProps): react.JSX.Element {
     () => ({
       a: (anchor) => {
         /** 附件的路径。 */
-        const path = attachmentsModule.pathFromLink(anchor.href);
+        //M 从链接地址反解附件路径，判断它是否属于内部附件占位链接。
+        const path = attachmentsModule.getPathFromLink(anchor.href);
         if (path) {
-          return <attachmentView.AttachmentView attachment={{ path, name: attachmentsModule.baseName(path), kind: attachmentsModule.attachmentKind(path) }} onOpen={onOpen} />;
+          //M 确认为内部附件时拆出文件名和类型，改用 AttachmentView 卡片渲染。
+          return <attachmentView.AttachmentView attachment={{ path, name: attachmentsModule.getBaseName(path), kind: attachmentsModule.getAttachmentKind(path) }} onOpen={onOpen} />;
         }
         return (
           <a href={anchor.href} target="_blank" rel="noreferrer" onClick={(event) => {
@@ -106,7 +117,15 @@ export function Markdown(props: MarkdownProps): react.JSX.Element {
   );
   return (
     <div className="jm-markdown">
-      <reactMarkdown.default remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => (url.startsWith(attachmentsModule.FILE_SCHEME) ? url : reactMarkdown.defaultUrlTransform(url))}>
+      <reactMarkdown.default
+        remarkPlugins={[remarkGfm]}
+        components={components}
+        urlTransform={(url) => {
+          if (url.startsWith(attachmentsModule.FILE_SCHEME)) return url;
+
+          return reactMarkdown.defaultUrlTransform(url);
+        }}
+      >
         {source}
       </reactMarkdown.default>
     </div>

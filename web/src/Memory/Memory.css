@@ -1,5 +1,6 @@
 /* 记忆检索页（/memory/）。深色，和图谱页同一套配色；宽度：内容最宽 1320px 居中，卡片和结果区随窗口自动换列。2026-11-14 jm开发。 */
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: #2a3a66 transparent; }
+html { color-scheme: dark; }
 html, body, #root { margin: 0; min-height: 100%; background: #070b16; color: #dfe6f5; font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
 a { color: #7cc4ff; }
 code { background: #111a33; padding: 1px 6px; border-radius: 4px; }
@@ -7,7 +8,8 @@ code { background: #111a33; padding: 1px 6px; border-radius: 4px; }
 .mm-header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 1px; background: linear-gradient(90deg, #7cc4ff, #c18bff); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .mm-sub { color: #7f8fb5; font-size: 12px; }
 .mm-grow { flex: 1; }
-.mm-link { text-decoration: none; padding: 5px 10px; border: 1px solid #2a3a66; border-radius: 8px; background: #111a33; }
+.mm-link, .mm-header button:not(.mm-guide) { font: inherit; color: #dfe6f5; text-decoration: none; padding: 5px 10px; border: 1px solid #2a3a66; border-radius: 8px; background: #111a33; cursor: pointer; }
+.mm-link:hover, .mm-header button:not(.mm-guide):hover { border-color: #4f79d9; background: #172344; }
 .mm-guide { font: inherit; cursor: pointer; color: #fff; padding: 5px 12px; border-radius: 8px; border: 1px solid #b07a2a; background: linear-gradient(180deg, #d79a3a, #a8701f); }
 .mm-main { width: 100%; max-width: 1320px; margin: 0 auto; padding: 16px clamp(12px, 3vw, 28px) 40px; display: flex; flex-direction: column; gap: 16px; }
 .mm-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
@@ -61,4 +63,6 @@ code { background: #111a33; padding: 1px 6px; border-radius: 4px; }
 /* 2026-11-14 23:15 EST：命中出处（完整路径可能很长，小屏换行、不顶宽页面）。 */
 .mm-hit-source { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; font-size: 12px; color: var(--muted, #8c97a8); }
 .mm-hit-source span { overflow-wrap: anywhere; flex: 1; min-width: 0; }
-.mm-hit-source button { flex-shrink: 0; font-size: 12px; }
+.mm-hit-source button { flex-shrink: 0; font: inherit; font-size: 12px; cursor: pointer; color: #b9c8ec; background: #132042; border: 1px solid #2a3a66; border-radius: 6px; padding: 2px 8px; }
+.mm-hit-source button:hover:not(:disabled) { border-color: #4f79d9; color: #fff; }
+.mm-hit-source button:disabled { opacity: .5; cursor: not-allowed; }

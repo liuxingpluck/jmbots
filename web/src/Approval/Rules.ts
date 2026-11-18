@@ -33,7 +33,7 @@ export function isArmed(shownAt: number, now: number): boolean {
  * @param modified 按着 Ctrl、Alt、Meta 没有（按着时不算，免得和快捷键撞）。
  * @returns 决定；不算决定是 null。
  */
-export function decisionForKey(key: string, inCard: boolean, armed: boolean, modified: boolean): Decision | null {
+export function getDecisionForKey(key: string, inCard: boolean, armed: boolean, modified: boolean): Decision | null {
   //G 不在卡片上、还没能按、按着修饰键：都不算。Enter、空格永远不算。
   if (!inCard || !armed || modified) {
     return null;
@@ -54,12 +54,16 @@ export function decisionForKey(key: string, inCard: boolean, armed: boolean, mod
  * @param status 接口的状态码（200 成功、404 已经处理过了）；连不上是 0。
  * @param t 翻译函数；不传是简体中文原文。
  */
-export function decisionNotice(decision: Decision, status: number, t: i18n.Translate = i18n.source): string {
+export function getDecisionNotice(decision: Decision, status: number, t: i18n.Translate = i18n.source): string {
   if (status === 404) {
     return t('已经处理过了（飞书那边先点了，或者会话已经不等了）');
   }
   if (status >= 200 && status < 300) {
-    return decision === 'approve' ? t('已同意执行') : t('已拒绝');
+    if (decision === 'approve') return t('已同意执行');
+
+    return t('已拒绝');
   }
-  return status === 0 ? t('连不上后端，没决定成，等它回来再点') : t('没决定成（{status}），再点一次', { status });
+  if (status === 0) return t('连不上后端，没决定成，等它回来再点');
+
+  return t('没决定成（{status}），再点一次', { status });
 }

@@ -1,22 +1,37 @@
 /**
- * 模型清单：起来就向 providers 里每一家拉 <base_url>/models，和手写的合成一张模型表，给网页看、给别的插件查。
- * 一家拉不到不挡别家、不挡起服务：先用它手写的模型，每 60 秒再试，连上就换。
- * 只是一张表：src7 调模型用骨架的 ctx.resources.modelOf，不看这张表，所以“重连”只刷新表。
- * 设计：docs/src7插件设计/model-catalog.md。
+ * 模型清单与运行兜底（已并入原 model-fallback）：
+ * 1. 清单：起来就向 providers 里每一家拉 <base_url>/models，和手写的合成一张模型表，给网页看、给别的插件查；
+ *    一家拉不到不挡别家、不挡起服务：先用它手写的模型，每 60 秒再试，连上就换。
+ * 2. 回退（Fallback.ts / Queue.ts）：在 session/request 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
+ * 只是一张表加回退层：正常调模型仍走骨架的 ctx.resources.getModel。
+ * 设计：docs/src7插件设计/model-catalog.md、docs/src7插件设计/model-fallback.md。
  */
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as text from '../../utils/Text.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as fallback from './Fallback.ts';
 import * as pull from './Pull.ts';
 
 export type { ModelInfo } from './Pull.ts';
+export type { FallbackInfo, FallbackConfig } from './Fallback.ts';
+export { isRateLimited, isOverflow, getResetTime } from './Fallback.ts';
 
 
 /** 插件名。 */
 export const name = 'model-catalog';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.1.1';
 
-/** 用到的服务：resources 读 providers；http 的 app 登记三个接口。 */
-export const inject = ['resources', 'http'];
+/** 用到的服务：resources 读 providers/engine/concurrency；sessions 调模型兜底。http 是可选的（就绪才挂三个接口）。 */
+export const inject = ['resources', 'sessions'];
+
+
+/** model-catalog 插件配置（plugins[model-catalog].config）。 */
+export interface ModelCatalogConfig {
+  /** 换模型与并发回退配置（原 model-fallback）；写 false 或 enabled: false 可关闭；缺省沿用顶层 engine / concurrency。 */
+  fallback?: fallback.FallbackConfig | false;
+}
 
 
 /** 一家重连的结果。照网页 web/src/Types.ts:61-71。 */
@@ -56,9 +71,26 @@ declare module 'cordis' {
   interface Events {
     /** 一个模型新记进冷却（model-fallback 发）。这里听它，给列表里那一项带上 limitedUntil。 */
     'model/cooldown'(info: CooldownInfo): void;
+    /** 按供应商/模型 ID 查模型清单。 */
+    'model-catalog/request'(request: CatalogRequest): void | Promise<void>;
+    /** 返回模型清单的查找结果。 */
+    'model-catalog/result'(result: CatalogResult): void;
   }
 }
 
+/** 模型清单查询。 */
+interface CatalogRequest extends requestEventModule.RequestEnvelope {
+  /** 查询一个模型。 */
+  action: 'find';
+  /** 供应商名/模型 ID。 */
+  model: string;
+}
+
+/** 模型清单的回执。 */
+interface CatalogResult extends requestEventModule.ResultEnvelope {
+  /** 没找到时为空。 */
+  info?: pull.ModelInfo;
+}
 
 /** 一家供应商在这个插件里要用的：apply 从 raw.providers 校验后交过来。 */
 interface ProviderPlan {
@@ -99,16 +131,25 @@ export class ModelCatalog extends cordis.Service {
   constructor(ctx: cordis.Context, private readonly plans: Record<string, ProviderPlan>) {
     super(ctx, 'modelCatalog');
 
-    for (const [provider, plan] of Object.entries(plans)) {
+    //M 按各供应商的手写配置先填好初始模型表，并将需要在线拉清单的加入待重试集合。
+    text.eachEntry(plans, (provider, plan) => {
       this.tables.set(provider, pull.merge(provider, [], plan.written).models);
-      if (plan.listModels) this.pending.add(provider);
-    }
-    this.routes();
+      if (plan.listModels) {
+        this.pending.add(provider);
+      }
+    });
 
-    //M ctx.on 听一个事件：model-fallback 每新记一次冷却就 ctx.emit('model/cooldown', …)，这里记下来。
+    //M ctx.on 听一个事件：Fallback 每新记一次冷却就 ctx.emit('model/cooldown', …)，这里记下来。
     //M 用 ctx.on 登记的监听，插件被拔掉时 Cordis 自己撤掉。
     this.ctx.on('model/cooldown', (info) => {
       this.cooling.set(info.model, info.until);
+    });
+
+    //M 让其他插件通过事件查询模型清单，沿用 find 的冷却状态处理。
+    requestEventModule.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
+      //M 按模型 ID 查清单并回执，查不到时 info 为空。
+      const info = this.find(request.model);
+      return { info };
     });
 
     //M 起来就拉（不等 ready）；没拉到的每 60 秒再试，都拉到了这一轮就什么都不做。
@@ -130,6 +171,7 @@ export class ModelCatalog extends cordis.Service {
    * @returns 不在表里是 undefined。
    */
   find(id: string): pull.ModelInfo | undefined {
+    //M 从附带最新冷却截止状态的模型全集里按 ID 查找对应项。
     return this.list().find((model) => model.id === id);
   }
 
@@ -140,6 +182,7 @@ export class ModelCatalog extends cordis.Service {
   list(): pull.ModelInfo[] {
     const now = Date.now();
     return [...this.tables.values()].flat().map((model) => {
+      //M 查该模型是否仍在限流冷却期内，未过期时拼上 limitedUntil 给外部展示。
       const until = this.cooling.get(model.id);
       if (until === undefined) return { ...model };
       //M 过了时间的冷却顺手删掉，不带。
@@ -156,19 +199,28 @@ export class ModelCatalog extends cordis.Service {
    * @param provider 只重连这一家；不给就每一家。
    * @returns 每家一条结果。
    * @throws 给的供应商不在配置里。
+   * 副作用：联网重新拉取模型清单并更新内存表。
    */
   async reconnect(provider?: string): Promise<ReconnectResult[]> {
     if (provider !== undefined && this.plans[provider] === undefined) {
       throw new Error(`config.yaml 的 providers 里没有 ${provider}`);
     }
-    const names = provider === undefined ? Object.keys(this.plans) : [provider];
+    const pickNames = (): string[] => {
+      if (provider === undefined) return Object.keys(this.plans);
+
+      return [provider];
+    };
+    //M 按指定或全部已配置供应商汇总本次要强制重连的名单，逐一拉取并记录成败结果。
+    const names = pickNames();
     const results: ReconnectResult[] = [];
     for (const one of names) {
       try {
+        //M 强制重拉该家模型清单替换内存表，成功后记录当前模型数。
         await this.pull(one, true);
         results.push({ provider: one, ok: true, models: this.tables.get(one)?.length ?? 0 });
       } catch (error) {
-        results.push({ provider: one, ok: false, models: this.tables.get(one)?.length ?? 0, error: text.messageOf(error) });
+        //G 单家重拉失败时不中断循环，保留原表数量并记下错误原因返回给调用方。
+        results.push({ provider: one, ok: false, models: this.tables.get(one)?.length ?? 0, error: text.getMessage(error) });
       }
     }
     return results;
@@ -182,20 +234,29 @@ export class ModelCatalog extends cordis.Service {
    * 副作用：发一个请求。
    */
   async probe(input: ProbeInput): Promise<pull.ModelInfo[]> {
-    const api = input.api === '' ? 'openai-completions' : input.api;
+    let api = input.api;
+    if (api === '') {
+      api = 'openai-completions';
+    }
     if (!APIS.includes(api)) throw new Error(`协议 ${api} 不认识，现在支持：${APIS.join('、')}`);
-    const provider = input.provider === '' ? 'provider' : input.provider;
+
+    let provider = input.provider;
+    if (provider === '') {
+      provider = 'provider';
+    }
     const baseUrl = input.baseUrl.replace(/\/+$/u, '');
     try {
+      //M 使用临时填写的地址与密钥拉取原始模型清单，并合并成标准模型结构返回给表单预览（不存表）。
       const entries = await pull.fetchList(baseUrl, input.apiKey);
       return pull.merge(provider, entries, {}).models;
     } catch (error) {
-      throw new Error(`拉供应商 ${provider}（${baseUrl}）的模型清单失败：${text.messageOf(error)}`, { cause: error });
+      throw new Error(`拉供应商 ${provider}（${baseUrl}）的模型清单失败：${text.getMessage(error)}`, { cause: error });
     }
   }
 
   /** 把还没拉到的每家试一遍；失败的留在 pending。 */
   private async retryPending(): Promise<void> {
+    //M 并发重拉全部仍在等待队列中的供应商，单家失败时吞掉异常留到下个周期继续试。
     await Promise.all([...this.pending].map((provider) => this.pull(provider, false).catch(() => undefined)));
   }
 
@@ -209,11 +270,13 @@ export class ModelCatalog extends cordis.Service {
   private async pull(provider: string, required: boolean): Promise<void> {
     const plan = this.plans[provider]!;
     const config = this.ctx.resources.config.providers[provider]!;
+    //G 该供应商关闭了自动拉取（list_models: false），直接重放手写模型入表后返回。
     if (!plan.listModels) {
       this.tables.set(provider, pull.merge(provider, [], plan.written).models);
       return;
     }
     try {
+      //M 请求供应商模型清单并与手写项合并，成功后更新内存表并移出待拉取及告警记录。
       const entries = await pull.fetchList(config.baseUrl, config.apiKey);
       const merged = pull.merge(provider, entries, plan.written);
       this.tables.set(provider, merged.models);
@@ -224,7 +287,7 @@ export class ModelCatalog extends cordis.Service {
       const vars = { 供应商: provider, 模型: merged.models.length, 用了保守值: merged.guessed };
       this.ctx.emit('trace', 'model-catalog.pull', '拉到一家的模型清单，和手写的合并', 'merge(provider, fetchList(baseUrl, apiKey), written)', vars);
     } catch (error) {
-      const reason = text.messageOf(error);
+      const reason = text.getMessage(error);
       //T 跟踪：没拉到。
       const vars = { 供应商: provider, 原因: reason, 现在几个模型: this.tables.get(provider)?.length ?? 0 };
       this.ctx.emit('trace', 'model-catalog.pull', '没拉到这家的模型清单，先用手写的', 'fetchList(baseUrl, apiKey)', vars);
@@ -237,31 +300,47 @@ export class ModelCatalog extends cordis.Service {
     }
   }
 
-  /** 登记三条路径。外面来的要带令牌由 http 的钩子管，本机免令牌；路由里只做入参校验。 */
-  private routes(): void {
-    const app = this.ctx.http.app;
-
+  /**
+   * 登记三条路径。外面来的要带令牌由 http 的钩子管，本机免令牌；路由里只做入参校验。
+   * @param app Fastify 服务实例。
+   * 副作用：向 app 注册模型列表、重连刷新和探测三条 HTTP 路由。
+   */
+  routes(app: fastify.FastifyInstance): void {
+    //M 挂载查询全部模型与实时冷却状态的只读接口。
     app.get('/api/models', () => this.list());
 
+    //M 挂载重连接口：用统一错误包装校验 provider 后触发在线拉取。
     app.post<{ Body: unknown }>('/api/models/reconnect', (request, reply) => {
       return answer(reply, async () => {
         const body = (request.body ?? {}) as { provider?: unknown };
-        if (body.provider !== undefined && typeof body.provider !== 'string') throw new Error('provider 要是字符串');
+        if (body.provider !== undefined && typeof body.provider !== 'string') {
+          throw new Error('provider 要是字符串');
+        }
         //M 空串当没给，重连每一家（同 0.4 HttpUi.ts:1395-1412）。
-        const provider = body.provider === '' ? undefined : body.provider;
+        let provider = body.provider;
+        if (provider === '') {
+          provider = undefined;
+        }
+        //M 执行重连并将各供应商刷新结果返回给调用方。
         return { results: await this.reconnect(provider) };
       });
     });
 
+    //M 挂载表单探测接口：用统一错误包装校验未保存的供应商连接信息并探测模型。
     app.post<{ Body: unknown }>('/api/ui/provider-models', (request, reply) => {
       return answer(reply, async () => {
         const body = (request.body ?? {}) as Record<string, unknown>;
-        if (typeof body['base_url'] !== 'string' || body['base_url'].trim() === '') throw new Error('先填 API 地址');
+        if (typeof body['base_url'] !== 'string' || body['base_url'].trim() === '') {
+          throw new Error('先填 API 地址');
+        }
         const field = (key: string): string => {
           const value = body[key] ?? '';
-          if (typeof value !== 'string') throw new Error(`${key} 要是字符串`);
+          if (typeof value !== 'string') {
+            throw new Error(`${key} 要是字符串`);
+          }
           return value;
         };
+        //M 从表单字段拼出探测参数并直接拉取清单返回，不改动当前内存模型表。
         const input = { provider: field('provider'), baseUrl: body['base_url'].trim(), apiKey: field('api_key'), api: field('api') };
         return { models: await this.probe(input) };
       });
@@ -280,7 +359,8 @@ async function answer(reply: fastify.FastifyReply, work: () => Promise<unknown>)
   try {
     return await work();
   } catch (error) {
-    return reply.code(400).send({ error: text.messageOf(error) });
+    //G 接口校验或执行抛错时提取可读提示文本，统一按 HTTP 400 返回给前端展示。
+    return reply.code(400).send({ error: text.getMessage(error) });
   }
 }
 
@@ -316,6 +396,7 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
   if (model['price'] !== undefined) {
     const price = model['price'] as Record<string, unknown> | null;
     const ok = (item: unknown): boolean => item === undefined || (typeof item === 'number' && item >= 0);
+    //G 校验手写价格对象的输入与输出单价为非负数，否则拒绝配置加载。
     if (typeof price !== 'object' || price === null || !ok(price['input']) || !ok(price['output'])) {
       throw new Error(`${label}.price 要写成 { input, output }，美元每百万 token，不小于 0`);
     }
@@ -326,26 +407,43 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
 
 
 /**
- * 挂上模型清单。
- * apply 是 Cordis 插件的入口：Cordis 等 inject 里的 resources、http 都就绪后调一次（详见 plugins/Index.ts 的 PluginModule）。
- * 这里 new 出来的 ModelCatalog 继承 cordis.Service，构造时作为服务挂到 Cordis 上（以后用 ctx.modelCatalog 取）。
- * 插件自己没有配置段；读 raw.providers 里骨架不收的 list_models 和手写模型的 name、vision、thinking、price，在这里校验一次。
+ * 挂上模型清单与运行兜底（model-fallback 已并入）。
+ * apply 是 Cordis 插件的入口：Cordis 等 inject 里的 resources、sessions 都就绪后调一次。
+ * 先校验 providers 与 config.fallback，再建 ModelCatalog（服务 + 冷却监听）→ 可选 http 路由 → 再建 ModelFallback（听 session/request 兜底调模型）。
  * @param ctx Cordis 给这个插件的 ctx。
- * @throws providers 里这几项写得不对。
+ * @param config plugins[model-catalog].config（可选：{ fallback?: FallbackConfig | false }）。
+ * @throws providers 或 fallback 配置写得不对时抛错。
+ * 副作用：注册 modelCatalog 服务并拉取模型清单，可选挂载 HTTP 接口、定时重试任务及 session/request 回退处理器。
  */
-export function apply(ctx: cordis.Context): void {
+export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
   const raw = (ctx.resources.raw['providers'] ?? {}) as Record<string, Record<string, unknown> | null>;
   const plans: Record<string, ProviderPlan> = {};
   //M 照骨架校验过的 providers 的先后走（骨架已查过 raw.providers 和 models 都是“名字: 值”）。
   for (const provider of Object.keys(ctx.resources.config.providers)) {
     const item = raw[provider] ?? {};
     const listModels = item['list_models'] ?? true;
-    if (typeof listModels !== 'boolean') throw new Error(`providers.${provider}.list_models 要写 true 或 false`);
-    const written: Record<string, pull.WrittenModel> = {};
-    for (const [id, value] of Object.entries((item['models'] ?? {}) as Record<string, unknown>)) {
-      written[id] = checkWritten(value, `providers.${provider}.models.${id}`);
+    if (typeof listModels !== 'boolean') {
+      throw new Error(`providers.${provider}.list_models 要写 true 或 false`);
     }
+    const written: Record<string, pull.WrittenModel> = {};
+    //M 逐条校验该供应商 config.yaml 手写的模型属性，生成供合并使用的手写表。
+    text.eachEntry((item['models'] ?? {}) as Record<string, unknown>, (id, value) => {
+      written[id] = checkWritten(value, `providers.${provider}.models.${id}`);
+    });
     plans[provider] = { listModels, written };
   }
-  new ModelCatalog(ctx, plans);
+
+  //M 读取并校验回退配置后启动 ModelCatalog 服务实例，初始化模型表与定时器。
+  const fallbackSettings = fallback.readFallbackSettings(ctx, config);
+  const catalog = new ModelCatalog(ctx, plans);
+
+  //M http 是可选的：http 就绪后再挂三个模型管理接口，不挡纯会话回退或命令行启动。
+  void ctx.inject(['http'], (sub) => {
+    catalog.routes(sub.http.app);
+  });
+
+  if (fallbackSettings.enabled) {
+    //M 启用回退时挂载换模型处理器，接管 session/request 兜底调用与限流冷却。
+    new fallback.ModelFallback(ctx, fallbackSettings, catalog);
+  }
 }

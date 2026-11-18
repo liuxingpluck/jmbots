@@ -51,6 +51,12 @@ export interface ThemeSpec {
     warning: string;
     /** 成功（干活中、已连上）。 */
     success: string;
+    /** 强调色浅底（选中项底色、聚焦外圈）。 */
+    accentSoft: string;
+    /** 提醒色浅底（快照变更标黄底色）。 */
+    warningSoft: string;
+    /** 危险色浅底（报错格底色）。 */
+    dangerSoft: string;
   };
   /** 头像色块的候选颜色，按名字挑一个。 */
   avatars: string[];
@@ -80,6 +86,9 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
       danger: '#ff6b6b',
       warning: '#f5b74e',
       success: '#4fd18b',
+      accentSoft: 'rgba(122, 162, 255, 0.18)',
+      warningSoft: 'rgba(245, 183, 78, 0.22)',
+      dangerSoft: 'rgba(255, 107, 107, 0.16)',
     },
     avatars: ['#7aa2ff', '#b48cff', '#ff8fb1', '#ffb86b', '#4fd18b', '#4cc9f0', '#f4d35e'],
   },
@@ -104,6 +113,9 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
       danger: '#e5484d',
       warning: '#d68a00',
       success: '#18a058',
+      accentSoft: '#e6f4ff',
+      warningSoft: '#fff1b8',
+      dangerSoft: '#fff2f0',
     },
     avatars: ['#3b6cf6', '#8b5cf6', '#ec4899', '#f97316', '#18a058', '#0ea5e9', '#ca8a04'],
   },
@@ -128,6 +140,9 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
       danger: '#ff4d6d',
       warning: '#ffc857',
       success: '#2ee6a6',
+      accentSoft: 'rgba(0, 212, 255, 0.16)',
+      warningSoft: 'rgba(255, 200, 87, 0.22)',
+      dangerSoft: 'rgba(255, 77, 109, 0.16)',
     },
     avatars: ['#00d4ff', '#7c4dff', '#2ee6a6', '#ff4d6d', '#ffc857', '#4d7cff'],
   },
@@ -152,6 +167,9 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
       danger: '#b4534b',
       warning: '#b07d2b',
       success: '#4f7a4a',
+      accentSoft: '#d5e5c9',
+      warningSoft: '#efe4b8',
+      dangerSoft: '#f2dcd8',
     },
     avatars: ['#4f7a4a', '#7a6a4a', '#4a6a7a', '#7a4a5f', '#8a7a3a'],
   },
@@ -171,7 +189,9 @@ const STORAGE_KEY = 'jmbots.theme';
 export function loadThemeName(storage: Pick<Storage, 'getItem'>): ThemeName {
   /** 存的名字。 */
   const saved = storage.getItem(STORAGE_KEY);
-  return saved && saved in THEMES ? (saved as ThemeName) : DEFAULT_THEME;
+  if (saved && saved in THEMES) return saved as ThemeName;
+
+  return DEFAULT_THEME;
 }
 
 
@@ -190,7 +210,8 @@ export function saveThemeName(storage: Pick<Storage, 'setItem'>, name: ThemeName
  * 驼峰写成连字符：userBubble → user-bubble。
  * @param name 键名。
  */
-function kebab(name: string): string {
+function getKebab(name: string): string {
+  //M 把主题配色键的驼峰写法转为连字符小写，拼出标准的 --jm-* CSS 变量名。
   return name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
 }
 
@@ -204,7 +225,7 @@ export function cssVariables(spec: ThemeSpec): Record<string, string> {
   /** 变量。 */
   const variables: Record<string, string> = { '--jm-radius': `${spec.radius}px` };
   for (const [name, value] of Object.entries(spec.colors)) {
-    variables[`--jm-${kebab(name)}`] = value;
+    variables[`--jm-${getKebab(name)}`] = value;
   }
   return variables;
 }
@@ -217,10 +238,15 @@ export function cssVariables(spec: ThemeSpec): Record<string, string> {
  * 副作用：改 root 的样式和 data-theme。
  */
 export function applyTheme(root: HTMLElement, spec: ThemeSpec): void {
+  //M 把当前主题的圆角与全部配色写入根节点 CSS 变量，让组件样式无需刷新即可即时换肤。
   for (const [name, value] of Object.entries(cssVariables(spec))) {
     root.style.setProperty(name, value);
   }
-  root.style.colorScheme = spec.dark ? 'dark' : 'light';
+  let scheme = 'light';
+  if (spec.dark) {
+    scheme = 'dark';
+  }
+  root.style.colorScheme = scheme;
   root.dataset.theme = spec.name;
 }
 
@@ -230,8 +256,12 @@ export function applyTheme(root: HTMLElement, spec: ThemeSpec): void {
  * @param spec 主题。
  */
 export function antdTheme(spec: ThemeSpec): antd.ThemeConfig {
+  let algorithm = antd.theme.defaultAlgorithm;
+  if (spec.dark) {
+    algorithm = antd.theme.darkAlgorithm;
+  }
   return {
-    algorithm: spec.dark ? antd.theme.darkAlgorithm : antd.theme.defaultAlgorithm,
+    algorithm,
     token: {
       colorPrimary: spec.colors.accent,
       colorBgBase: spec.colors.bg,

@@ -37,16 +37,19 @@ function Splitter(props: { which: 'left' | 'right'; label: string; onPointerDown
  * @param props 三栏的内容。
  */
 export function Columns(props: ColumnsProps): react.JSX.Element {
+  //M 订阅界面翻译函数，供窄窗口页签名称及分隔线无障碍读屏说明使用。
   const t = i18n.useT();
   /** 窗口宽度。 */
   const [total, setTotal] = react.useState(() => window.innerWidth);
   /** 想要的宽度（用户调的）。 */
+  //M 初始化时从 localStorage 读回用户上次拖拽并保存的左右栏宽度。
   const [widths, setWidths] = react.useState(() => widthsModule.loadWidths(window.localStorage));
   /** 窄窗口时显示哪一栏。 */
   const [narrowTab, setNarrowTab] = react.useState<NarrowTab>('center');
   /** 右栏展开没有。 */
   const rightOpen = props.right !== null;
   /** 实际用的宽度。 */
+  //M 按当前窗口总宽和右栏展开状态钳制左右栏宽度，确保三栏都不窄于下限。
   const shown = widthsModule.clampWidths(total, widths, rightOpen);
 
   react.useEffect(() => {
@@ -58,7 +61,11 @@ export function Columns(props: ColumnsProps): react.JSX.Element {
 
   //M 右栏刚展开时，窄窗口直接切过去看。
   react.useEffect(() => {
-    setNarrowTab(rightOpen ? 'right' : 'center');
+    let nextTab: NarrowTab = 'center';
+    if (rightOpen) {
+      nextTab = 'right';
+    }
+    setNarrowTab(nextTab);
   }, [rightOpen]);
 
   /**
@@ -75,6 +82,7 @@ export function Columns(props: ColumnsProps): react.JSX.Element {
     document.body.classList.add('jm-dragging');
     /** 挪动。 */
     const onMove = (move: PointerEvent): void => {
+      //M 根据指针水平位移重算三栏宽度并实时刷新界面，记录最后一次有效宽度供松手保存。
       last = widthsModule.dragWidths(start, which, move.clientX - startX, window.innerWidth, rightOpen);
       setWidths(last);
     };
@@ -83,6 +91,7 @@ export function Columns(props: ColumnsProps): react.JSX.Element {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       document.body.classList.remove('jm-dragging');
+      //M 拖拽结束释放监听后，把最终三栏宽度持久化到 localStorage。
       widthsModule.saveWidths(window.localStorage, last);
     };
     window.addEventListener('pointermove', onMove);
@@ -99,28 +108,46 @@ export function Columns(props: ColumnsProps): react.JSX.Element {
     }
     event.preventDefault();
     /** 调完的宽度。 */
-    const next = widthsModule.dragWidths(shown, which, event.key === 'ArrowRight' ? widthsModule.KEY_STEP : -widthsModule.KEY_STEP, total, rightOpen);
+    let delta = -widthsModule.KEY_STEP;
+    if (event.key === 'ArrowRight') {
+      delta = widthsModule.KEY_STEP;
+    }
+
+    //M 按键盘步长重算左右栏宽度，立即更新布局并持久化到 localStorage。
+    const next = widthsModule.dragWidths(shown, which, delta, total, rightOpen);
     setWidths(next);
     widthsModule.saveWidths(window.localStorage, next);
   };
 
+  //G 窗口宽度放不下当前展开栏时切为单栏页签模式，避免三栏互相挤压变形。
   if (widthsModule.isNarrow(total, rightOpen)) {
     /** 能切的几栏。 */
     const tabs: { key: NarrowTab; label: string }[] = [
       { key: 'left', label: t('机器人') },
       { key: 'center', label: t('聊天') },
-      ...(rightOpen ? [{ key: 'right' as const, label: t('内容') }] : []),
     ];
+    if (rightOpen) {
+      tabs.push({ key: 'right', label: t('内容') });
+    }
     /** 现在显示的那栏（右栏收起时不会停在右栏）。 */
-    const current = narrowTab === 'right' && !rightOpen ? 'center' : narrowTab;
+    let current = narrowTab;
+    if (narrowTab === 'right' && !rightOpen) {
+      current = 'center';
+    }
     return (
       <div className="jm-narrow">
         <nav className="jm-narrow-tabs">
-          {tabs.map((tab) => (
-            <button key={tab.key} type="button" className={tab.key === current ? 'jm-narrow-tab jm-active' : 'jm-narrow-tab'} onClick={() => setNarrowTab(tab.key)}>
-              {tab.label}
-            </button>
-          ))}
+          {tabs.map((tab) => {
+            let tabClass = 'jm-narrow-tab';
+            if (tab.key === current) {
+              tabClass = 'jm-narrow-tab jm-active';
+            }
+            return (
+              <button key={tab.key} type="button" className={tabClass} onClick={() => setNarrowTab(tab.key)}>
+                {tab.label}
+              </button>
+            );
+          })}
         </nav>
         <div className="jm-narrow-body">
           {current === 'left' && <aside className="jm-column jm-left">{props.left}</aside>}
@@ -131,6 +158,7 @@ export function Columns(props: ColumnsProps): react.JSX.Element {
     );
   }
 
+  //M 宽窗口下渲染左中右三栏，并挂载左分隔线以支持鼠标拖拽或键盘微调左栏宽度。
   return (
     <div className="jm-columns">
       <aside className="jm-column jm-left" style={{ width: shown.left }}>
@@ -140,6 +168,9 @@ export function Columns(props: ColumnsProps): react.JSX.Element {
       <main className="jm-column jm-center">{props.center}</main>
       {rightOpen && (
         <>
+          {
+            //M 右栏展开时渲染中右分隔线与右栏内容区，支持鼠标或键盘独立调整右栏宽度。
+          /**/}
           <Splitter which="right" label={t('调右栏宽度')} onPointerDown={startDrag('right')} onKeyDown={onKey('right')} />
           <aside className="jm-column jm-right" style={{ width: shown.right }}>
             {props.right}

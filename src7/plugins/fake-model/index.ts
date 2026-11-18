@@ -12,6 +12,8 @@ import type * as cordis from 'cordis';
 
 /** 插件名。 */
 export const name = 'fake-model';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.1';
 
 
 /**
@@ -20,6 +22,7 @@ export const name = 'fake-model';
  * 再调一次 apply(ctx, 配置)。插件在 apply 里通过 ctx 听事件、登记工具；插件被拔掉时，这些登记自动撤掉。
  * 详见 plugins/Index.ts 的 PluginModule。
  * @param ctx Cordis 给这个插件的 ctx。
+ * 副作用：监听 session/request 事件；模型名以 fake/ 开头时直接填写 request.answer，不向远端发请求。
  */
 export function apply(ctx: cordis.Context): void {
   ctx.on('session/request', (request) => {
@@ -32,12 +35,25 @@ export function apply(ctx: cordis.Context): void {
     //M 对话最后是工具的结果 → 照结果回一句话，这一轮就做完了。
     if (last?.role === 'toolResult') {
       const result = piAi.contentText(last.content);
-      request.answer = piAi.fauxAssistantMessage(last.toolName === 'time' ? `现在是 ${result}` : result);
+      let answerText = result;
+      if (last.toolName === 'time') {
+        answerText = `现在是 ${result}`;
+      }
+      request.answer = piAi.fauxAssistantMessage(answerText);
+      return;
+    }
+
+    //M 最后是后台、外部 AI 交回的结果（bots/Dispatch.ts 存进对话的那句）→ 原样转述，离线也能看到结果回到了前台。
+    let said = '';
+    if (last?.role === 'user') {
+      said = piAi.contentText(last.content);
+    }
+    if (said.startsWith('【') && said.includes('交回的结果')) {
+      request.answer = piAi.fauxAssistantMessage(said);
       return;
     }
 
     //M 要调哪个工具：用户的话写成“调用 工具名 {JSON 参数}”就调那个（离线测交办、喊停用）；别的话调 time。
-    const said = last?.role === 'user' ? piAi.contentText(last.content) : '';
     const asked = /^调用\s+(\S+)\s*(\{.*\})?$/su.exec(said.trim());
     const tool = asked?.[1] ?? 'time';
     const args = JSON.parse(asked?.[2] ?? '{}') as Parameters<typeof piAi.fauxToolCall>[1];

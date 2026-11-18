@@ -1,0 +1,10 @@
+{
+  "client": "<DSH 客户端 Dsh_Control.mjs 的绝对路径，比如源码仓库里的 ztools/dsh-control/Dsh_Control.mjs>",
+  "workspaces": [
+    {
+      "dir": "<机器人工作区的绝对路径：exec 在这里跑脚本，要和它一字不差>",
+      "dsh": "<DSH 里对应的工作区标题>"
+    }
+  ],
+  "waitMs": 600000
+}

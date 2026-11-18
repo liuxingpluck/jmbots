@@ -1,0 +1,29 @@
+/* 模型介绍和评价汇总页（/model-notes/）。配色用 Theme.ts 写进页面的 --jm-… 变量，这里只管排版。2026-11-17。 */
+* { box-sizing: border-box; scrollbar-width: thin; }
+html, body, #root {
+  margin: 0;
+  min-height: 100%;
+  background: var(--jm-bg);
+  color: var(--jm-text);
+  font: 14px/1.6 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', system-ui, sans-serif;
+}
+
+.mn-main { width: 100%; max-width: 1100px; margin: 0 auto; padding: 20px clamp(12px, 3vw, 28px) 40px; }
+.mn-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mn-title h1 { margin: 0; font-size: 20px; font-weight: 600; flex: 1 1 auto; }
+.mn-sub { margin: 6px 0 16px; color: var(--jm-muted); }
+.mn-list { display: flex; flex-direction: column; gap: 16px; }
+
+.mn-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mn-score-text { color: var(--jm-muted); }
+.mn-section { margin-top: 12px; }
+.mn-section-title { margin-bottom: 4px; color: var(--jm-muted); font-size: 12px; }
+.mn-intro { white-space: normal; overflow-wrap: anywhere; }
+.mn-intro p { margin: 0 0 8px; }
+.mn-intro p:last-child { margin-bottom: 0; }
+.mn-intro a { color: var(--jm-accent); text-decoration: none; }
+.mn-intro a:hover { text-decoration: underline; }
+.mn-intro code { background: var(--jm-panel); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+.mn-rating { padding: 2px 0; overflow-wrap: anywhere; }
+.mn-session-link { color: var(--jm-accent); text-decoration: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mn-session-link:hover { text-decoration: underline; }

@@ -5,9 +5,12 @@
 import { DEFAULT_QUESTION, ENTERPRISE_QUESTIONS, XINGHE_QUESTIONS } from './questions.ts';
 import type { GuideStep } from './types.ts';
 
+/** 除默认首题外的企业客服补充推荐问题列表，拼入输入框步骤说明。 */
 const more = ENTERPRISE_QUESTIONS.slice(1, 3).map((q, i) => `${i + 2}. ${q}`).join('\n');
+/** 星河科技知识库推荐问题列表，拼入输入框步骤说明。 */
 const xinghe = XINGHE_QUESTIONS.slice(0, 2).map((q, i) => `${i + 1}. ${q}`).join('\n');
 
+/** 聊天主页右上角「演示引导」按钮使用的步骤列表，包含引导话术与交互等待事件。 */
 export const CHAT_STEPS: GuideStep[] = [
   {
     id: 'welcome',

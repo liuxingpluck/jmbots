@@ -1,25 +1,57 @@
 /**
- * 机器人：名单，加上每个机器人怎么收消息、怎么把事交给后台会话。
+ * 机器人：名单，加上每个机器人怎么收消息、进哪场会话、怎么把事交给后台会话。
  * 骨架只管“一场会话怎么跑”；会话属于哪个机器人、话从哪个渠道来、回话往哪送，都是这个插件记在会话上的。
  *
  * 渠道（命令行、HTTP、飞书）直接调 Bot.receive，不走事件。
- * 机器人收到消息以后问一声“这条消息进哪场会话”（事件 bot/receive），由管分派的插件来答。
- * 现在答的是前台插件 plugins/bot-front-desk：每个机器人一场前台对话，所有消息先到它那儿。
+ * 机器人收到消息以后先问一圈“谁要认领这条消息”（事件 bot/receive）：relay 转外部助手、微信按客户开会话、approval 认出“同意 3”。
+ * 没人认领的，进这个机器人对这个客户的前台对话（FrontDesk.ts）：简单的前台自己答，要干活就派后台（Dispatch.ts），
+ * 后台的结果先回前台整理，再发回原渠道。前台在整理结果时用户又说话，先排着（Dispatch.ts 的 hold）。
+ * 想换一种分派办法：写一个插件听 bot/receive，把 event.session 填上，前台就不接这条了。
  * 渠道（命令行、HTTP、飞书、微信）向本服务登记发送函数：ctx.bots.channel(name, send)；收话调 ctx.bots.receive，附件调 ctx.bots.saveFile。
  * 会话跑到一半要先跟用户说一句，调 ctx.bots.say(session, text)：发通知 bot/say，本服务按会话的渠道名找到登记的 send 发出去。
+ * 要等发完、拿回执的（前台送后台结果），调 ctx.bots.send(session, text)；会话标了 quiet 的，本服务不自动发它的话。
+ * 2026-11-17 插件 bot-front-desk 并进来（用户 #114、#115）：前台的配置写在本插件 config 的 front 一节。
+ * 2026-11-17 插件 prompt（Prompt.ts，系统提示词）、reply-tool（ReplyTool.ts，工具 reply）并进来：开关写在 config 的 prompt、reply_tool。
+ * 标准渠道事件 channel/message（飞书、网页、命令行、微信都走它，onChannelMessage）：问完 bot/receive 没人认领的进前台单队列，
+ *   模型一轮里用 channel_reply 想发几条发几条；一对一的渠道（routing.autoFinal）一次没调就把最后的话发出去，飞书跑一次修复轮。
+ *   消息带 routing.sessionId（网页指定会话、引用别的渠道的消息）：只投给那场会话的机器人；是前台就排进那场前台，别的会话照旧交过去、一轮结束自动回。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
-import type { Thinking } from '../../Chat.ts';
-import type { Session } from '../../Sessions.ts';
+import type { Session, Thinking } from '../../Sessions.ts';
+import * as namesModule from '../../utils/Names.ts';
+import * as textModule from '../../utils/Text.ts';
+import * as workspaceModule from '../../utils/Workspace.ts';
+import * as protocol from '../../Channels.ts';
+import { ChannelTools } from './ChannelTools.ts';
+import { Dispatch } from './Dispatch.ts';
+import { FrontDesk, type FrontDeskConfig } from './FrontDesk.ts';
+import { Prompt } from './Prompt.ts';
+import { registerReplyTool } from './ReplyTool.ts';
+
+export { normalizeLegacyReceipt, type ReplyControl, type ReplyPolicy } from './Dispatch.ts';
 
 
 /** 插件名。 */
 export const name = 'bots';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+//M 1.2.1：渠道和机器人解耦第 1 步——听 channel/message 按机器人独立认领、channel_reply/history 工具与零次回复兜底。
+//M 1.3.0：工作区交给 workspaces 插件——建机器人时原地登记默认工作区和配置里的目录，hand_session 可写 workspaceId，后台绑定工作区 ID。
+//M 1.4.0：并进 prompt（Prompt.ts，默认开）、reply-tool（ReplyTool.ts，默认关）；legacy_auto 渠道的 channel/message 在这里交前台，去掉渠道里的过渡监听。
+//M 1.4.1：渠道统一第 3、4 步——routing.sessionId 指定会话；网页、命令行、微信也走 channel_tool（去掉 deliveryMode）；
+//M   routing.autoFinal 零次回复直接发最后的话；一轮收尾发 channel/settled；front.history_limit 默认 80。
+//M 1.4.2：结果队列的来源加 relay（外部助手的回信），前台看到“外部助手 <名字> 的回信”。
+//M 1.4.3：监听 channel/recall，消息被撤回时移除排队项、喊停正在跑的会话及派出的后台会话，且不再回发“已停止”。
+//M 1.4.4：channel_reply 支持非群聊本人（isHistoryOwner）指定 channel、chat 往别的渠道或聊天发话。
+//M 1.4.5：跨渠道 channel_reply 改为发 target 交目标渠道自己认聊天，bots 不再查各渠道数据。
+export const version = '1.4.5';
 
-/** 用到的服务。 */
-export const inject = ['resources', 'sessions'];
+/**
+ * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 Dispatch.ts），开了 reply_tool 再加 reply。
+ * workspaces：建机器人时登记工作区，前台派后台时选工作区（plugins 段要写在本插件前面）。
+ */
+export const inject = ['resources', 'sessions', 'tools', 'workspaces'];
 
 
 declare module 'cordis' {
@@ -29,14 +61,15 @@ declare module 'cordis' {
   }
   interface Events {
     /**
-     * 机器人收到一条消息，问：这条消息进哪场会话。照插件挂上去的先后一个个 await。
-     * 管分派的插件把 event.session 填上；前面已经有人填了，后面的不要再填。监听的函数不许有返回值。
-     * 排在前面的插件（比如 approval 认出“同意 3”）可以写 event.handled = true：这条已经处理掉，不进任何会话。
+     * 机器人收到一条消息，先问一圈：谁要认领。照插件挂上去的先后一个个 await。
+     * 要认领的插件把 event.session 填上；前面已经有人填了，后面的不要再填。监听的函数不许有返回值。
+     * 插件（比如 approval 认出“同意 3”）可以写 event.handled = true：这条已经处理掉，不进任何会话。
+     * 问完没人认领的，本插件的前台接（FrontDesk.onReceive）。
      */
     'bot/receive'(event: ReceiveEvent): void | Promise<void>;
-    /** 会话跑到一半先跟用户说一句（通知）。渠道基类听它：是自己渠道的会话就发出去；前台听它记一条往来。 */
+    /** 会话跑到一半先跟用户说一句（通知）。本插件听它：按会话的渠道发出去，前台再记一条往来。 */
     'bot/say'(session: Session, text: string): void;
-    /** 前台对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。 */
+    /** 前台（FrontDesk.ts）对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。 */
     'bot/judged'(address: unknown, text: string, outcome: string): void;
   }
 }
@@ -52,12 +85,48 @@ declare module '../../Sessions.ts' {
     address?: unknown;
     /** 客户号：渠道在回话地址里写的 address.customer，收消息时由 bots.route 抄到这里。别的插件只读，不要自己推。 */
     customer?: string;
+    /**
+     * 这一轮结束的回话不由 bots 自动发，由设它的插件自己送（中途先说的一句 bot/say 照发）。
+     * 现在是前台派的后台（结果交回前台整理）和前台整理后台结果的那一轮（前台等回执）设它，见本目录 Dispatch.ts。
+     */
+    quiet?: boolean;
+    /** 本场会话已认领过的消息去重键列表 JSON.stringify([messageId, botName])。 */
+    sourceClaims?: string[];
+    /** 当前前台会话绑定的稳定来源域。 */
+    sourceScope?: { channel: string; accountId: string; chatId: string };
+    /** 当前正在处理的活动轮不可变来源快照（legacy_auto 会话没有）。 */
+    activeSourceSnapshot?: protocol.SourceSnapshot;
+    /** 当前轮是否因原消息被撤回而由 Dispatch 主动喊停（阻止外发“已停止”提示，本轮收尾时清掉）。 */
+    recalledStop?: boolean;
   }
 }
 
 
-/** 渠道把机器人的话交给用户。登记在 ctx.bots.channel(name, send)。 */
-export type ChannelSend = (reply: string, session: Session) => void | Promise<void>;
+/**
+ * 渠道发完交回的回执。
+ *   accepted  渠道明确收下了全部内容（文字和附件）；不代表用户已读
+ *   partial   收下了一部分（比如文字发了、某个附件没发出去）
+ *   uncertain 不知道发没发到：超时、网络断了、渠道没给回执
+ *   rejected  渠道明确没收（地址不对、接口报错）
+ */
+export interface SendReceipt {
+  /** 发到没有，见上。 */
+  status: 'accepted' | 'partial' | 'uncertain' | 'rejected';
+  /** 原因，人看的；accepted 时是空串。 */
+  reason: string;
+}
+
+
+/**
+ * 渠道把机器人的话交给用户。登记在 ctx.bots.channel(name, send)。
+ * 交回回执的渠道（飞书）发完交 SendReceipt；老渠道不交（void），bots.send 记成 uncertain。
+ * origin 给了就发到它的地址，不看会话现在记的（前台送后台结果时，会话的地址可能已经被新来的话换掉）；飞书认它，老渠道不认。
+ */
+export type ChannelSend = (
+  reply: string,
+  session: Session,
+  origin?: Origin,
+) => void | SendReceipt | Promise<void | SendReceipt>;
 
 
 /** bots 名单里的一项。除了 name，别的项原样留着，哪个插件要用哪个插件自己读（比如 language）。 */
@@ -80,6 +149,8 @@ export interface IncomingMessage {
   time: number;
   /** 渠道自己认得的回话地址；这里不解释，原样记到会话上，回话时渠道自己拿。 */
   address?: unknown;
+  /** 标准消息号（channel/message 的 messageId）；从 channel/message 转进来的才有。web-api 记别的渠道的消息时存它，回话按它精确挂回。 */
+  sourceId?: string;
 }
 
 
@@ -98,10 +169,12 @@ export interface ReceiveEvent {
   bot: Bot;
   /** 收到的那条消息。 */
   message: IncomingMessage;
-  /** 这条消息进哪场会话；管分派的插件填。 */
+  /** 这条消息进哪场会话；认领的插件填，没人认领由前台填。 */
   session?: Session;
   /** 前面的插件已经把这条处理掉了：写了 true，这条就不进任何会话。 */
   handled?: boolean;
+  /** 由统一事件 channel/message 转入每机器人分派（approval 已在消息级处理过一次，不再重复消耗）。 */
+  fromChannelEvent?: boolean;
 }
 
 
@@ -126,6 +199,12 @@ export class Bots extends cordis.Service {
   private readonly sends = new Map<string, ChannelSend>();
 
   /**
+   * bots 插件自己的 ctx，交给每个 Bot。别的插件调 ctx.bots.add 时（设置页新建机器人），this.ctx 是调用方的 ctx（Cordis 服务的规矩），
+   * 拿它建的 Bot 收消息时取不到本插件的 frontDesk、调用方没 inject 的 sessions，所以建 Bot 一律用它。
+   */
+  private readonly home: cordis.Context;
+
+  /**
    * 登记 bots 插件：把 Bots 作为服务挂到 Cordis 上（以后用 ctx.bots 取）；再照名单建好每个机器人（一个个调 add，和运行中新建走同一条路）。
    * 同时挂上“这一轮有结果了就回话”“会话中途先说一句”：按会话记的渠道名找登记的 send。
    * @param ctx Cordis 给这个插件的 ctx。
@@ -134,6 +213,7 @@ export class Bots extends cordis.Service {
    */
   constructor(ctx: cordis.Context, config: BotsConfig) {
     super(ctx, 'bots');
+    this.home = ctx;
     this.thinking = config.thinking;
     for (const item of config.bots) {
       this.add(item);
@@ -143,21 +223,258 @@ export class Bots extends cordis.Service {
       const row = session.row;
       //G 还在转、或没有渠道（小会话）→ 不管。
       if (row.state === 'running' || row.channel === undefined) return;
-      const send = this.sends.get(row.channel);
-      if (send === undefined) return;
+
+      //G 回话由别的插件自己送（quiet）或启用 channel_tool 模式 → 绝不自动发 row.reply。
+      if (row.quiet === true || row.activeSourceSnapshot !== undefined) return;
+
+      //G 用户撤回消息触发的停跑（会话标了 recalledStop 或当前活动轮标了 recalled）→ 不往渠道发“已停止”提示。
+      const activeOutcome = (row.resultQueue ?? []).find((item) => item.key === row.activeKey)?.replyControl?.outcome;
+      if (row.recalledStop === true || activeOutcome === 'recalled') return;
+
       //T 跟踪：回话。
       const vars = { 渠道: row.channel, 会话: row.id, 状态: row.state, 话多少字: row.reply.length };
-      this.ctx.emit('trace', 'Bots.onChange', '把机器人的话交给用户', 'send(reply, session)', vars);
-      void send(row.reply, session);
+      this.ctx.emit('trace', 'Bots.onChange', '把机器人的话交给用户', 'this.send(session, reply)', vars);
+      void this.send(session, row.reply);
     });
 
-    //M 会话中途先说一句（bots.say 发的通知 bot/say）：有登记的渠道就发出去，和最后的回话走同一个 send。
+    //M 会话中途先说一句（bots.say 发的通知 bot/say）：channel_tool 会话经 channel/reply 发，旧会话走登记的 send。
     this.ctx.on('bot/say', (session, text) => {
-      const name = session.row.channel;
-      if (name === undefined) return;
-      const send = this.sends.get(name);
-      if (send !== undefined) void send(text, session);
+      if (session.row.channel === undefined) return;
+
+      const snapshot = session.row.activeSourceSnapshot;
+      if (snapshot !== undefined) {
+        const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
+        const replyRequestKey = protocol.getReplyRequestKey(snapshot.replyRoundKey, `say:${namesModule.stampId()}`);
+        void protocol.requestChannelReply(this.home, {
+          channel: snapshot.channel,
+          bot: snapshot.botName,
+          replyRequestKey,
+          replyRoundKey: snapshot.replyRoundKey,
+          replyIndex: 0,
+          kind: 'progress',
+          mode: 'text',
+          sourceSnapshot: structuredClone(snapshot),
+          payloadHash: protocol.getPayloadHash({ kind: 'progress', mode: 'text', parts }),
+          parts,
+        });
+        return;
+      }
+
+      void this.send(session, text);
     });
+
+    //M 标准渠道事件入口：每个 targetBot 独立物化附件、过 bot/receive 兼容关口、各自认领进自己的会话。
+    this.ctx.on('channel/message', (message, control) => this.onChannelMessage(message, control));
+  }
+
+  /**
+   * 响应 channel/message：消息级审批命令已处理时跳过；否则按 targetBots 逐个机器人独立认领。
+   * 带 routing.sessionId 的只投给那场会话的机器人（入口校验过会话在、属于目标机器人），别的机器人不收。
+   * @param message 标准渠道消息。
+   * @param control 认领协调对象。
+   */
+  private async onChannelMessage(
+    message: protocol.ChannelMessage,
+    control?: protocol.ChannelMessageControl,
+  ): Promise<void> {
+    if (control?.approvalHandled === true) return;
+
+    for (const botName of message.targetBots) {
+      const bot = this.get(botName);
+      if (bot === undefined) continue;
+
+      //M 指定了会话：只有那场会话的机器人收这条，进那场会话；不是它的机器人跳过（显式会话不投给别的机器人）。
+      const sessionId = message.routing.sessionId;
+      let explicit: Session | undefined;
+      if (sessionId !== undefined) {
+        const meta = this.home.sessions.find({ id: sessionId })[0];
+        if (meta?.bot !== botName) continue;
+
+        explicit = this.home.sessions.open(sessionId);
+      }
+
+      const claimKey = protocol.getClaimKey(message.messageId, botName);
+      const botOrigin: { channel: string; address: Record<string, unknown> } = {
+        channel: message.origin.channel,
+        address: structuredClone(message.origin.address),
+      };
+      const hint = message.routing.byBot?.[botName];
+      if (hint !== undefined) {
+        botOrigin.address['listenOnly'] = hint.listenOnly;
+        if (hint.listenOnly !== true) {
+          delete botOrigin.address['listenOnly'];
+        }
+        if (hint.judge === true) {
+          botOrigin.address['judge'] = true;
+        }
+        if (hint.judge !== true) {
+          delete botOrigin.address['judge'];
+        }
+      }
+
+      //M 按该机器人此轮授权目录把渠道保存的附件物化到 inbox。
+      const botText = this.materializeAttachments(bot, botOrigin.address, message);
+      const incoming: IncomingMessage = {
+        channel: message.channel,
+        bot: botName,
+        text: botText,
+        time: message.createdAt,
+        address: botOrigin.address,
+        sourceId: message.messageId,
+      };
+      const receiveEvent: ReceiveEvent = {
+        bot,
+        message: incoming,
+        fromChannelEvent: true,
+      };
+
+      //M 指定的会话先填进去：relay、web-api 这些看到已经定了去向就不抢；tutorial 照旧在 bot/receive 里认快照关键词。
+      if (explicit !== undefined) {
+        receiveEvent.session = explicit;
+      }
+
+      //M 保留每机器人内部兼容关口 bot/receive（relay 转外部助手、tutorial 认关键词、web-api 记别的渠道的消息）。
+      await this.home.serial('bot/receive', receiveEvent);
+
+      if (receiveEvent.handled === true) {
+        control?.claims.push({ bot: botName, claimKey, status: 'handled' });
+        continue;
+      }
+
+      //M 指定的是前台：排进这场前台的单队列（channel_tool），和没指定时一样能一轮连发、零次兜底，只是不按来源范围找前台。
+      //M   话用 incoming.text：tutorial 在 bot/receive 里去掉的快照关键词不要再带回去。
+      const pinnedFront = explicit !== undefined && receiveEvent.session === explicit && explicit.row.kind === 'front';
+      if (pinnedFront) {
+        await this.home.frontDesk.claimChannelMessage(bot, message, botOrigin, incoming.text, claimKey, control, explicit);
+        continue;
+      }
+
+      //M 别的插件认领了（relay 转外部助手），或指定的是后台等别的会话：照旧交过去，一轮结束自动回原渠道。
+      if (receiveEvent.session !== undefined) {
+        const claimedSession = receiveEvent.session;
+        const claims = claimedSession.row.sourceClaims ?? [];
+
+        //G 同一条消息（同 claimKey）这场会话已经认领过：渠道重发的，不再投一次。
+        if (claims.includes(claimKey)) {
+          const duplicate: protocol.ChannelClaimRecord = {
+            bot: botName,
+            claimKey,
+            status: 'duplicate',
+            sessionId: claimedSession.id,
+          };
+          control?.claims.push(duplicate);
+          continue;
+        }
+
+        claimedSession.row.sourceClaims = [...claims, claimKey].slice(-200);
+        claimedSession.save();
+        let status: protocol.ChannelClaimRecord['status'] = 'claimed';
+        if (claimedSession.row.kind === 'relay') {
+          status = 'relay';
+        }
+        control?.claims.push({
+          bot: botName,
+          claimKey,
+          status,
+          sessionKind: claimedSession.row.kind,
+          sessionId: claimedSession.id,
+        });
+        bot.deliver(claimedSession, incoming.text, { channel: message.channel, address: botOrigin.address });
+        continue;
+      }
+
+      //M 未被其他插件接管 → 按来源范围进该机器人的前台单队列（channel_tool 模式）。话用 incoming.text（理由同上）。
+      await this.home.frontDesk.claimChannelMessage(bot, message, botOrigin, incoming.text, claimKey, control);
+    }
+  }
+
+  /**
+   * 为认领这条标准消息的机器人把渠道存储的附件物化到这一轮授权工作区的 inbox 里。
+   * @param bot 目标机器人。
+   * @param address 这一轮的回话地址快照（决定工作区范围）。
+   * @param message 标准消息。
+   * @returns 供本机器人会话使用的文本。
+   */
+  private materializeAttachments(
+    bot: Bot,
+    address: Record<string, unknown>,
+    message: protocol.ChannelMessage,
+  ): string {
+    if (message.attachments.length === 0) return message.text;
+
+    //M 按回话地址算出当前说话人的隔离工作区根目录，用来落盘收到的附件。
+    const rootDir = workspaceModule.getWorkspace(bot.workspace, address);
+    const now = new Date();
+    const inboxDir = path.join(rootDir, 'inbox', now.toLocaleDateString('sv-SE'));
+    const paths: string[] = [];
+    const failed: string[] = [];
+    for (const attachment of message.attachments) {
+      if (attachment.state !== 'available' || attachment.sourceRef === '') {
+        failed.push(`[${attachment.name} 没下载下来：${attachment.reason ?? '渠道未取得附件'}]`);
+        continue;
+      }
+      try {
+        fs.mkdirSync(inboxDir, { recursive: true });
+        const stamp = now.toLocaleTimeString('sv-SE').replaceAll(':', '') + String(now.getMilliseconds()).padStart(3, '0');
+        const base = path.win32.basename(attachment.name);
+        const safe = namesModule.getSafeName(base, Infinity);
+        let full = path.join(inboxDir, `${stamp}_${safe}`);
+        if (fs.existsSync(full)) {
+          full = path.join(inboxDir, `${stamp}_${namesModule.stampId().slice(-4)}_${safe}`);
+        }
+        fs.copyFileSync(attachment.sourceRef, full);
+        let token = `@${full}`;
+        if (/\s/u.test(full)) {
+          token = `@"${full}"`;
+        }
+        paths.push(token);
+      } catch (error) {
+        failed.push(`[${attachment.name} 存工作区失败：${textModule.getMessage(error)}]`);
+      }
+    }
+    const baseText = message.text;
+    const pieces: string[] = [];
+    if (baseText !== '' && baseText !== '[空消息]') {
+      pieces.push(baseText);
+    }
+    if (paths.length > 0) {
+      pieces.push(paths.join(' '));
+    }
+    if (failed.length > 0) {
+      pieces.push(failed.join('\n'));
+    }
+    const merged = pieces.filter((part) => part !== '').join('\n');
+    if (merged === '') return message.text || '[空消息]';
+
+    return merged;
+  }
+
+  /**
+   * 把一段话发出去，等渠道发完。自动回话、中途先说一句、前台送后台结果都走它。
+   * @param session 哪场会话：渠道从 row.channel 找登记的 send，send 再从 row.address 认出发到哪。
+   * @param text 要发的话。
+   * @param origin 发到哪：给了就用它的渠道和地址，不看会话现在记的（前台送后台结果用）。
+   * @returns 回执。没有渠道、渠道没登记是 rejected；渠道不交回执是 uncertain；渠道抛错是 uncertain（不知道发到一半没有）。
+   * 副作用：发消息。不抛错。
+   */
+  async send(session: Session, text: string, origin?: Origin): Promise<SendReceipt> {
+    const name = origin?.channel ?? session.row.channel;
+    if (name === undefined) return { status: 'rejected', reason: '这场会话没有渠道' };
+
+    const send = this.sends.get(name);
+    if (send === undefined) return { status: 'rejected', reason: `渠道 ${name} 没有登记发送` };
+
+    try {
+      const receipt = await send(text, session, origin);
+
+      //M 老渠道不交回执：不能当成发到了。
+      if (receipt === undefined) return { status: 'uncertain', reason: `渠道 ${name} 没给回执` };
+
+      return receipt;
+    } catch (error) {
+      const reason = textModule.getMessage(error);
+      return { status: 'uncertain', reason };
+    }
   }
 
   /**
@@ -172,6 +489,14 @@ export class Bots extends cordis.Service {
     return () => {
       if (this.sends.get(name) === send) this.sends.delete(name);
     };
+  }
+
+  /**
+   * 现在挂着的渠道：登记过发送函数的渠道名，照登记的先后。web-api 的 GET /api/channels、POST /api/message 的 view 校验用。
+   * @returns 渠道名，比如 ['http', 'feishu', 'wechat']。
+   */
+  channelNames(): string[] {
+    return [...this.sends.keys()];
   }
 
   /**
@@ -208,7 +533,7 @@ export class Bots extends cordis.Service {
    * 渠道收到的图片、文件存进这个机器人的工作区：工作区/inbox/<本地日期>/<时分秒毫秒>_<安全文件名>。
    * 存在工作区里，模型用工具 read 就能读到（base-tools 只许读工作区）。
    * @param bot 给哪个机器人。
-   * @param name 原来的文件名；只取最后一段（/ 和 \ 都算分隔），去掉 Windows 不许的字符和控制字符，空白换成 _，空了叫“附件”。
+   * @param name 原来的文件名；只取最后一段（/ 和 \ 都算分隔），再照 utils/Names.ts 的 getSafeName 洗干净（不限字数，空了叫“未命名”）。
    * @param data 文件内容。
    * @returns 存下的绝对路径；渠道把 @绝对路径 写进给机器人的话里。
    * @throws 没有这个机器人时抛错；同一毫秒同名撞上时抛错（不加序号重试），渠道接住告诉用户。
@@ -225,7 +550,10 @@ export class Bots extends cordis.Service {
     const dir = path.join(target.workspace, 'inbox', now.toLocaleDateString('sv-SE'));
     fs.mkdirSync(dir, { recursive: true });
     const stamp = now.toLocaleTimeString('sv-SE').replaceAll(':', '') + String(now.getMilliseconds()).padStart(3, '0');
-    const safe = path.win32.basename(name).replace(/[\\/:*?"<>|\x00-\x1f]/g, '').replace(/\s+/g, '_') || '附件';
+
+    //M 文件名只取最后一段（/ 和 \ 都算分隔），再洗成安全的文件名；不限字数，免得把扩展名截掉。
+    const base = path.win32.basename(name);
+    const safe = namesModule.getSafeName(base, Infinity);
     const full = path.join(dir, `${stamp}_${safe}`);
 
     //M wx：文件已经有了就抛错，不覆盖。
@@ -249,7 +577,19 @@ export class Bots extends cordis.Service {
     if (this.bots.has(config.name)) {
       throw new Error(`已经有叫 ${config.name} 的机器人了`);
     }
-    const bot = new Bot(config, this.thinking, this.ctx);
+
+    //M 登记的目录 workspaces 写了就要是“名字: 目录”，目录是非空的字（Bot 构造时登记成工作区）。
+    const registered: unknown = config['workspaces'] ?? {};
+    if (typeof registered !== 'object' || registered === null || Array.isArray(registered)) {
+      throw new Error(`机器人 ${config.name} 的 workspaces 要写成“名字: 目录”`);
+    }
+    textModule.eachEntry(registered as Record<string, unknown>, (label, directory) => {
+      if (typeof directory === 'string' && directory !== '') return;
+
+      throw new Error(`机器人 ${config.name} 的 workspaces 里 ${label} 要写目录`);
+    });
+
+    const bot = new Bot(config, this.thinking, this.home);
     this.bots.set(bot.name, bot);
     return bot;
   }
@@ -314,10 +654,14 @@ export class Bot {
   /** 这个机器人的记忆目录：运行时目录 bots/<机器人>/memory/。 */
   readonly memory: string;
 
+  /** 配置 workspaces 里登记的名字 → 工作区 ID：建机器人时原地登记的（workspaces 插件），hand_session 旧写法写名字时照它找。 */
+  readonly registered = new Map<string, string>();
+
   /**
-   * @param config 名单里那一项。
+   * @param config 名单里那一项（Bots.add 校验过，workspaces 是“名字: 目录”）。
    * @param thinking 后台会话用哪个思考档。
-   * @param ctx 取 sessions、resources，发事件用。
+   * @param ctx 取 sessions、resources、workspaces，发事件用。
+   * 副作用：建工作区、记忆目录；在 workspaces 表里原地登记默认工作区和配置里的目录。
    */
   constructor(
     readonly config: BotConfig,
@@ -327,29 +671,49 @@ export class Bot {
     this.name = config.name;
     this.workspace = this.ctx.resources.dir('bots', this.name, 'workspace');
     this.memory = this.ctx.resources.dir('bots', this.name, 'memory');
+
+    //M 工作区原地登记，不搬不删：默认的 bots/<机器人>/workspace/。登记过的按目录认，重启不重登。
+    const workspaces = this.ctx.workspaces;
+    workspaces.ensureDefault(this.name);
+
+    //M 配置 workspaces 里登记的目录（比如源码仓库）：登记成 private，只给本人；相对路径照运行时目录算。
+    //M   第一次登记用配置里的名字，以后改了名不会被配置盖回去；本人归档了的照样认出来（派新活时才挡）。
+    const owner = workspaces.getAccess(this.name, undefined);
+    const written = (config['workspaces'] ?? {}) as Record<string, string>;
+    textModule.eachEntry(written, (label, directory) => {
+      const legacyDirectory = path.resolve(this.ctx.resources.root, directory);
+      const selection = { legacyDirectory, legacyName: label, allowArchived: true };
+      const resolved = workspaces.resolve(owner, selection);
+      this.registered.set(label, resolved.workspace.id);
+    });
   }
 
   /**
    * 渠道送来一条消息。定好进哪场会话就返回，不等模型。
    * @param message 渠道、机器人、文字、时间、回话地址。
-   * @throws 没有插件处理、也没有插件管分派时抛错。
-   * 副作用：这句话进那场会话；推它往下走。被前面的插件处理掉的，什么也不做。
+   * @throws 前台也没定下会话时抛错（前台总会定下或处理掉，抛了就是代码错了）。
+   * 副作用：这句话进那场会话；推它往下走。被插件处理掉的（handled），什么也不做。
    */
   async receive(message: IncomingMessage): Promise<void> {
-    //M 问：这条消息进哪场会话。管分派的插件（现在是前台 bot-front-desk）把 event.session 填上。
+    //M 先问一圈：谁要认领这条消息（relay、微信填 event.session；approval 认出“同意 3”写 handled）。
     const event: ReceiveEvent = { bot: this, message };
     await this.ctx.serial('bot/receive', event);
 
-    //G 前面的插件已经把这条处理掉了（handled）→ 不进会话。
+    //M 没人认领的进这个客户的前台对话；前台正在整理后台结果，就先排着（Dispatch.ts 的 receive）。
+    await this.ctx.frontDesk.receive(event);
+
+    //G 已经处理掉了（handled：插件处理掉、只听的话只记、排着等前台整理完）→ 不进会话。
     if (event.handled === true) {
-      //T 跟踪：被前面的插件处理掉。
+      //T 跟踪：处理掉了，不进会话。
       const vars = { 渠道: message.channel, 字数: message.text.length };
-      this.ctx.emit('trace', 'Bot.receive', '前面的插件已经处理掉，不进会话', 'event.handled === true', vars);
+      this.ctx.emit('trace', 'Bot.receive', '这条已经处理掉，不进会话', 'event.handled === true', vars);
       return;
     }
+
+    //G 前台总会定下会话或处理掉；没定下是代码错了。
     const session = event.session;
     if (session === undefined) {
-      throw new Error(`机器人 ${this.name} 收到了消息，但没有插件管分派（plugins 里要挂 bot-front-desk 这类插件）`);
+      throw new Error(`机器人 ${this.name} 收到了消息，但前台没有定下进哪场会话`);
     }
 
     //T 跟踪：机器人收到一条消息。
@@ -384,7 +748,7 @@ export class Bot {
    * @param text 这句话。
    * @param origin 这句话从哪来；不给渠道就不改原来记的。
    */
-  private deliver(session: Session, text: string, origin: Origin): void {
+  deliver(session: Session, text: string, origin: Origin): void {
     //M 给了渠道，渠道和地址一起换：换了渠道，旧地址就作废（没给地址就清掉）。
     this.ctx.bots.route(session, origin);
     session.add(text);
@@ -393,20 +757,87 @@ export class Bot {
 }
 
 
+/** config.yaml 的 plugins 段里写给本插件的。 */
+export interface BotsPluginConfig {
+  /** 后台会话的思考档；不写是 medium。 */
+  thinking?: Thinking;
+  /** 前台（原插件 bot-front-desk 的配置）：recent 带最近几条往来，不写是 50；vision_model 有图要转后台时用的看图模型；history_limit 渠道历史默认条数（1..200，不写 80）。 */
+  front?: Partial<FrontDeskConfig> & { history_limit?: number };
+  /** 系统提示词（原插件 prompt，Prompt.ts）：不写是 true；写 false 不加系统提示词。 */
+  prompt?: boolean;
+  /** 工具 reply（原插件 reply-tool，ReplyTool.ts）：写 true 才登记；不写不登记。 */
+  reply_tool?: boolean;
+}
+
+
 /**
- * 挂上机器人服务。
+ * 挂上机器人服务，和前台、前台派后台。
  * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里写的服务都就绪，
  * 再调一次 apply(ctx, 配置)。详见 plugins/Index.ts 的 PluginModule。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config config.yaml 的 plugins 段里写给它的：thinking 是后台会话的思考档，不写是 medium。
- * @throws bots 段写得不对时抛错。
+ * @param config config.yaml 的 plugins 段里写给它的：thinking、front、prompt、reply_tool，见 BotsPluginConfig。
+ * @throws bots 段、front 一节、prompt、reply_tool 写得不对时抛错。
  */
-export function apply(ctx: cordis.Context, config: { thinking?: Thinking }): void {
+export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   //M 名单是外面进来的（config.yaml 顶层的 bots 段），在这里校验一次：
   //M   一张清单；整段不写就是一个叫“助手”的机器人。每项的 name 由 Bots.add 校验（非空、不重名）。
   const written = ctx.resources.raw['bots'] ?? [{ name: '助手' }];
   if (!Array.isArray(written)) {
     throw new Error('bots 要写成一张清单');
   }
+
+  //M 前台的配置也是外面进来的，在这里校验一次：front 不写就全用默认。
+  const front: unknown = config.front ?? {};
+  if (typeof front !== 'object' || front === null || Array.isArray(front)) {
+    throw new Error('bots 的 front 要写成一节（recent、vision_model）');
+  }
+  const frontConfig = front as Partial<FrontDeskConfig>;
+
+  //M recent 不写是 50，必须是正整数；history_limit 默认 80，范围 1..200。
+  const frontWithHistory = front as Partial<FrontDeskConfig> & { history_limit?: unknown };
+  const recent = frontConfig.recent ?? 50;
+  if (!Number.isInteger(recent) || recent <= 0) {
+    throw new Error('bots 的 front.recent 必须是正整数');
+  }
+  const historyLimit = frontWithHistory.history_limit ?? 80;
+  if (typeof historyLimit !== 'number' || !Number.isInteger(historyLimit) || historyLimit < 1 || historyLimit > 200) {
+    throw new Error('bots 的 front.history_limit 必须是 1 到 200 的整数');
+  }
+
+  //M vision_model 写了就要是“供应商名/模型 ID”，供应商在 providers 里。
+  const vision = frontConfig.vision_model;
+  if (vision !== undefined && (typeof vision !== 'string' || ctx.resources.config.providers[vision.slice(0, vision.indexOf('/'))] === undefined)) {
+    throw new Error('bots 的 front.vision_model 要写成“供应商名/模型 ID”，供应商要在 providers 里');
+  }
+
+  //M prompt（原插件 prompt）不写是开；reply_tool（原插件 reply-tool）不写是关。写了都要是 true 或 false。
+  const promptOn = config.prompt ?? true;
+  const replyToolOn = config.reply_tool ?? false;
+  if (typeof promptOn !== 'boolean' || typeof replyToolOn !== 'boolean') {
+    throw new Error('bots 的 prompt、reply_tool 要写成 true 或 false');
+  }
+
+  //M 先后照并进来之前：机器人服务（回话的监听）在前，前台（往来记录、拼上下文）其次，派后台（结果队列）最后，紧接登记渠道工具。
+  //M   都挂在本插件的 ctx 上，所以前台的 session/request 排在 file-tools 这些后挂的插件前面。
   new Bots(ctx, { bots: written as BotConfig[], thinking: config.thinking ?? 'medium' });
+  const desk = new FrontDesk(ctx, { recent, vision_model: vision });
+  new Dispatch(ctx, desk);
+  new ChannelTools(ctx, historyLimit);
+
+  //M 系统提示词（Prompt.ts）：session/request 挂在上面几个之后。并进来之前它排在 relay、memory 后面，现在排到它们前面，
+  //M   只是 work 会话“开场先搜”的那段（memory 加的）从人设、记忆文件前面挪到后面；底座和功能声明用 unshift，照旧在最前。
+  if (promptOn) {
+    new Prompt(ctx);
+  }
+
+  //M 工具 reply（ReplyTool.ts）：写了 reply_tool: true 才登记。
+  if (replyToolOn) {
+    registerReplyTool(ctx);
+  }
+
+  //M memory 有就用：挂上时拿到 ctx.memory，拔掉时放手。没挂 memory 前台照常答话（2026-11-14 17:05 改成有就用）。
+  void ctx.inject(['memory'], (sub) => {
+    desk.memory = sub.memory;
+    sub.effect(() => () => { desk.memory = undefined; });
+  });
 }

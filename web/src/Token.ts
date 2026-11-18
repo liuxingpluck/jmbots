@@ -1,5 +1,5 @@
 /**
- * 访问令牌，所有网页共用这一份（主网页、/graph/、/memory/、/wechat-kefu/、/flow/ 都从这里拿）。
+ * 访问令牌，所有网页共用这一份（主网页、/graph/、/memory/、/wechat-kefu/、/tutorial/ 都从这里拿）。
  * 2026-11-14 22:50 EST（Claude 22:35 第 6 节）：原来 Api.ts、GraphApi.ts、MemoryPage.tsx、WechatPage.tsx 各读一份，
  * 子页直接打开 /wechat-kefu/?token=… 时认不到、地址栏也不去掉；合成这一份。
  * 规则（docs/界面/05_外部AI任务通道.md 第 3 节）：地址里带 ?token= 就记进浏览器、从地址栏去掉（免得截图、复制带出去），没带就用记着的。
@@ -30,6 +30,7 @@ export function takeToken(env: TokenEnv): string {
   /** 现在的地址。 */
   const url = new URL(env.href);
   /** 地址里的。 */
+  //M 提取地址栏里的 ?token= 参数，从外部链接访问时凭它自动完成持久化并清理地址栏。
   const fromUrl = url.searchParams.get('token');
   //M 带了 ?token=（哪怕是空的）都从地址栏去掉；空的不记。
   if (fromUrl !== null) {
@@ -52,10 +53,19 @@ export function withToken(path: string, token: string): string {
   /** 井号后面的留在最后。 */
   const hash = path.indexOf('#');
   /** 井号前面。 */
-  const head = hash < 0 ? path : path.slice(0, hash);
+  let head = path;
   /** 井号和后面。 */
-  const tail = hash < 0 ? '' : path.slice(hash);
-  return `${head}${head.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}${tail}`;
+  let tail = '';
+  if (hash >= 0) {
+    head = path.slice(0, hash);
+    tail = path.slice(hash);
+  }
+  //M 路径里已有查询参数时拼 &，否则拼 ?。
+  let separator = '?';
+  if (head.includes('?')) {
+    separator = '&';
+  }
+  return `${head}${separator}token=${encodeURIComponent(token)}${tail}`;
 }
 
 
@@ -63,8 +73,9 @@ export function withToken(path: string, token: string): string {
  * 在浏览器里取令牌。
  * @returns 令牌；不是浏览器（测试里）或存不了时是空字符串。
  */
-function browserToken(): string {
+function getBrowserToken(): string {
   try {
+    //M 把真实浏览器的地址、localStorage 和 history.replaceState 注入 takeToken，完成一次性取令牌并擦除地址栏。
     return takeToken({
       href: window.location.href,
       storage: window.localStorage,
@@ -78,4 +89,5 @@ function browserToken(): string {
 
 
 /** 现在用的令牌：模块加载时取一次（哪个页面先 import 都一样）。换令牌要刷新页面。 */
-export const TOKEN = browserToken();
+//M 模块加载时锁定当前页面的访问令牌，供所有 HTTP 接口和文件地址复用，避免重复改写地址栏。
+export const TOKEN = getBrowserToken();

@@ -43,7 +43,12 @@ async function main(argv: string[]): Promise<void> {
   }
 
   //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。
-  const flags = argv[0] === 'serve' ? argv.slice(1) : argv;
+  let flags = argv;
+  if (argv[0] === 'serve') {
+    flags = argv.slice(1);
+  }
+
+  //M 校验命令行参数并整理出运行时目录与透传参数。
   const args = checks.checkArgs(flags);
   const app = new cordis.Context();
 
@@ -73,6 +78,7 @@ async function main(argv: string[]): Promise<void> {
 
   for (const entry of entries) {
     try {
+      //M 从内置清单或外部文件夹动态加载插件并挂入 Cordis，拿到插件实例以记入挂载表。
       const plugin = await loadPlugin(entry.name, app.resources.root);
       await app.plugin(plugin, entry.config);
       mounted.push({ name: entry.name, plugin });
@@ -88,7 +94,7 @@ async function main(argv: string[]): Promise<void> {
       });
     } catch (error) {
       //G 找不到、起不来 → 打一行原因，不挡别的插件。
-      const text = textModule.messageOf(error);
+      const text = textModule.getMessage(error);
       console.error(`插件 ${entry.name} 没挂上：${text}`);
 
       //G 写给 health / /flow/ 的原因不带模块系统的绝对路径：找不到模块的，换成一句人话。
@@ -173,6 +179,6 @@ const argv = process.argv.slice(2);
 try {
   await main(argv);
 } catch (error) {
-  console.error(`没跑成：${textModule.messageOf(error)}`);
+  console.error(`没跑成：${textModule.getMessage(error)}`);
   process.exit(1);
 }

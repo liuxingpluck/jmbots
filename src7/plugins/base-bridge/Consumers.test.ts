@@ -8,9 +8,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import fastify from 'fastify';
-import * as notify from '../notify/index.ts';
 import * as settings from '../settings/index.ts';
 import * as webApi from '../web-api/index.ts';
+import * as bridge from './index.ts';
 
 //M 工具只在测试里直接调用，不进入模型或会话执行器。
 interface Tool {
@@ -59,10 +59,14 @@ function world(allowRestart = false) {
 }
 
 describe('基地调用方', () => {
-  //M notify 在 apply 时没有基地服务，稍后挂上仍能用；默认只传相对路径。
-  test('通知工具用时现取基地服务', async () => {
+  //M notify 在 mountNotify 时没有基地服务，稍后挂上仍能用；默认只传相对路径，且不写默认关。
+  test('通知工具用时现取基地服务（默认关闭，开启才挂载）', async () => {
+    expect(bridge.readNotifySettings(undefined).enabled).toBe(false);
+    expect(bridge.readNotifySettings(false).enabled).toBe(false);
+    expect(() => bridge.readNotifySettings('bad')).toThrow();
+
     const { ctx, services, tools } = world();
-    notify.apply(ctx, {});
+    bridge.mountNotify(ctx, bridge.readNotifySettings({}));
     const tool = tools.get('notify_user');
     if (tool === undefined) throw new Error('没有登记 notify_user');
     const notice = { title: '测试', body: '稍后挂基地' };
@@ -89,7 +93,7 @@ describe('基地调用方', () => {
     });
     const address = await remote.listen({ host: '127.0.0.1', port: 0 });
     const { ctx, services, tools } = world();
-    notify.apply(ctx, { url: `${address}/desktop` });
+    bridge.mountNotify(ctx, bridge.readNotifySettings({ url: `${address}/desktop` }));
     expect(services.has('base')).toBe(false);
     const tool = tools.get('notify_user');
     if (tool === undefined) throw new Error('没有登记 notify_user');
@@ -101,7 +105,7 @@ describe('基地调用方', () => {
   //M 独立通知地址优先；工具说明失败原因，后台事件消化失败而不追加通知或跟踪。
   test('通知覆盖地址不丢失，基地断开时事件静默结束', async () => {
     const { ctx, services, tools, listeners, traces } = world();
-    notify.apply(ctx, { url: '  https://notify.example/desktop  ' });
+    bridge.mountNotify(ctx, bridge.readNotifySettings({ url: '  https://notify.example/desktop  ' }));
     const tool = tools.get('notify_user');
     if (tool === undefined) throw new Error('没有登记 notify_user');
     const calls: unknown[][] = [];
@@ -177,8 +181,12 @@ describe('基地调用方', () => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(exit).toHaveBeenCalledTimes(2);
       exit.mockRestore();
-      if (previous === undefined) delete process.env['JMBOTS_SUPERVISED'];
-      else process.env['JMBOTS_SUPERVISED'] = previous;
+      if (previous === undefined) {
+        delete process.env['JMBOTS_SUPERVISED'];
+      }
+      if (previous !== undefined) {
+        process.env['JMBOTS_SUPERVISED'] = previous;
+      }
     }
   });
 
@@ -203,8 +211,12 @@ describe('基地调用方', () => {
       expect(calls).toEqual([['/restart', {}, 15_000]]);
       expect(traces).toHaveLength(0);
     } finally {
-      if (previous === undefined) delete process.env['JMBOTS_SUPERVISED'];
-      else process.env['JMBOTS_SUPERVISED'] = previous;
+      if (previous === undefined) {
+        delete process.env['JMBOTS_SUPERVISED'];
+      }
+      if (previous !== undefined) {
+        process.env['JMBOTS_SUPERVISED'] = previous;
+      }
     }
   });
 });

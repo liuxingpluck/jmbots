@@ -53,8 +53,12 @@ export interface PanelHistorySnapshot {
 }
 
 
-/** 初次查看的默认状态；每次返回独立数组，不跨目标共享展开状态。 */
-export function emptyReading(): PanelReadingState {
+/**
+ * 生成初次查看目标时的默认轻量阅读状态；每次返回独立数组，不跨目标共享展开状态。
+ * @returns 包含默认滚动位置、空展开列表及开关初始值的状态对象。
+ * 副作用：无。
+ */
+export function getEmptyReading(): PanelReadingState {
   return {
     scrollTop: 0,
     expanded: [],
@@ -66,8 +70,13 @@ export function emptyReading(): PanelReadingState {
 }
 
 
-/** Windows 文件名按系统语义比较分隔符与大小写；POSIX 路径保留大小写。 */
-export function fileIdentity(path: string | undefined): string | undefined {
+/**
+ * 归一化文件路径用于比较：Windows 与 UNC 路径按系统语义统一斜杠与小写，POSIX 路径保留大小写。
+ * @param path 待比较的文件路径；没有文件目标时为 undefined。
+ * @returns 归一化后的比较键；输入为 undefined 时返回 undefined。
+ * 副作用：无。
+ */
+export function getFileIdentity(path: string | undefined): string | undefined {
   if (path === undefined) {
     return undefined;
   }
@@ -92,32 +101,54 @@ export class PanelHistory {
   /** 单调增加的条目号，已丢弃条目的异步保存不能命中新条目。 */
   private sequence = 0;
 
-  /** 新查看一个目标；相同目标不叠加，回退后新目标截断前进分支。 */
+  /**
+   * 新查看一个目标；相同目标不叠加，回退后新目标截断前进分支。
+   * @param destination 本次要记录的右栏查看目标（机器人、标签及文件或追踪标识）。
+   * @returns 更新后的只读历史快照。
+   * 副作用：新增条目时递增内部 `sequence`、更新 `entries`（最多保留 40 条）与当前下标 `index`。
+   */
   visit(destination: PanelDestination): PanelHistorySnapshot {
     const current = this.entries[this.index];
+    //G 目标与当前历史条目相同时不重复叠加记录，直接返回当前快照。
     if (current && this.sameTarget(current, destination)) {
       return this.snapshot();
     }
 
     this.sequence += 1;
+    let target: PanelDestination['target'] = null;
+    if (destination.target) {
+      target = { ...destination.target };
+    }
+    let traceTarget: PanelDestination['traceTarget'] = null;
+    if (destination.traceTarget) {
+      traceTarget = { ...destination.traceTarget };
+    }
+    //M 构造带唯一递增编号与初始轻量阅读状态的新历史条目。
     const entry: PanelHistoryEntry = {
       ...destination,
-      target: destination.target ? { ...destination.target } : null,
-      traceTarget: destination.traceTarget ? { ...destination.traceTarget } : null,
+      target,
+      traceTarget,
       id: `reading-${String(this.sequence)}`,
-      reading: emptyReading(),
+      reading: getEmptyReading(),
     };
+    //M 回退后新开目标时截断前进分支，限制历史栈上限并返回最新快照。
     this.entries = [...this.entries.slice(0, this.index + 1), entry].slice(-HISTORY_LIMIT);
     this.index = this.entries.length - 1;
     return this.snapshot();
   }
 
-  /** 在已有查看历史内移动；到头保持当前状态，不创建新条目。 */
+  /**
+   * 在已有查看历史内移动；到头保持当前状态，不创建新条目。
+   * @param delta 移动步长，`-1` 表示后退，`1` 表示前进。
+   * @returns 移动后的只读历史快照。
+   * 副作用：目标位置未越界时更新当前下标 `index`。
+   */
   move(delta: -1 | 1): PanelHistorySnapshot {
     const next = this.index + delta;
     if (next >= 0 && next < this.entries.length) {
       this.index = next;
     }
+    //M 返回移动下标（或越界保持原位）后的最新历史快照。
     return this.snapshot();
   }
 
@@ -126,6 +157,7 @@ export class PanelHistory {
    * @param id 在组件渲染时绑定的历史条目号。
    * @param patch 要更新的少数字段；没有正文或附件字段。
    * @returns 最新快照；已被淘汰或切换机器人清掉的条目直接忽略。
+   * 副作用：命中 `id` 时更新对应条目的 `reading` 状态。
    */
   save(id: string, patch: Partial<PanelReadingState>): PanelHistorySnapshot {
     this.entries = this.entries.map((entry) => {
@@ -139,10 +171,16 @@ export class PanelHistory {
       };
       return { ...entry, reading };
     });
+    //M 返回保存指定条目阅读状态后的最新历史快照。
     return this.snapshot();
   }
 
-  /** 换机器人时清掉跨机器人条目；不改变独立文件多标签。 */
+  /**
+   * 换机器人时清掉跨机器人条目；不改变独立文件多标签。
+   * @param bot 当前选中的机器人名称；没有选中时为 `null`。
+   * @returns 过滤并重新定位下标后的只读历史快照。
+   * 副作用：过滤 `entries` 仅保留归属 `bot` 的记录，并调整当前下标 `index`。
+   */
   isolate(bot: string | null): PanelHistorySnapshot {
     const currentId = this.entries[this.index]?.id;
     this.entries = this.entries.filter((entry) => entry.bot === bot);
@@ -150,10 +188,15 @@ export class PanelHistory {
     if (this.index < 0 && this.entries.length > 0) {
       this.index = this.entries.length - 1;
     }
+    //M 返回按机器人隔离并修正下标后的最新历史快照。
     return this.snapshot();
   }
 
-  /** 返回新的外层数组，阅读状态只通过 save 更新。 */
+  /**
+   * 返回新的外层数组，阅读状态只通过 save 更新。
+   * @returns 包含当前历史条目浅拷贝数组与当前下标的只读快照。
+   * 副作用：无。
+   */
   snapshot(): PanelHistorySnapshot {
     return { entries: this.entries.slice(), index: this.index };
   }
@@ -164,7 +207,8 @@ export class PanelHistory {
       return false;
     }
     if (left.tab === 'preview') {
-      return fileIdentity(left.target?.path) === fileIdentity(right.target?.path);
+      //M 预览模块按所在系统路径语义比较两个目标是否指向同一文件。
+      return getFileIdentity(left.target?.path) === getFileIdentity(right.target?.path);
     }
     if (left.tab === 'events') {
       return left.traceTarget?.bot === right.traceTarget?.bot

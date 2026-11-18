@@ -48,26 +48,36 @@ export function mergeMessages(old: ReadonlyMap<number, types.MessageView>, incom
  * 同一时刻排序用的号：消息按消息号；卡片排在后面。
  * @param item 这一项。
  */
-function idOf(item: TimelineItem): number {
-  return item.kind === 'approval' ? Number.MAX_SAFE_INTEGER : item.message.id;
+function getItemId(item: TimelineItem): number {
+  if (item.kind === 'approval') return Number.MAX_SAFE_INTEGER;
+
+  return item.message.id;
 }
 
 
 /**
  * 程序写进会话的话（待确认的结果）不是用户说的，显示成灰字。
  * @param text 消息的原话。
+ * @returns 是否为程序写进会话的系统提示消息。
  */
 export function isSystemNote(text: string): boolean {
   return text.startsWith('（系统）') || text.startsWith('(system)');
 }
 
 
-/** 按真实消息号与回复下标生成局部 DOM 定位键，不依赖正文、时间或当前分页。 */
-export function locateKey(message: types.MessageView, replyIndex: number | null): string {
-  if (replyIndex !== null) {
-    return `r${message.id}_${replyIndex}`;
-  }
-  return isSystemNote(message.text) ? `n${message.id}` : `m${message.id}`;
+/**
+ * 按真实消息号与回复下标生成局部 DOM 定位键，不依赖正文、时间或当前分页。
+ * @param message 收件消息对象。
+ * @param replyIndex 回复在 replies 数组中的下标；定位原消息或系统提示时传 null。
+ * @returns 唯一对应时间线节点的定位键（r* / n* / m*）。
+ */
+export function getLocateKey(message: types.MessageView, replyIndex: number | null): string {
+  if (replyIndex !== null) return `r${message.id}_${replyIndex}`;
+
+  //G 系统提示消息渲染为 note 项而非普通用户气泡，需要匹配对应的 n* 定位键。
+  if (isSystemNote(message.text)) return `n${message.id}`;
+
+  return `m${message.id}`;
 }
 
 
@@ -75,16 +85,18 @@ export function locateKey(message: types.MessageView, replyIndex: number | null)
  * 排成时间线：用户的话在它收到的时候，事件行紧跟在后面，回复在它发出的时候；待审核的卡片在它提出来的时候，翻上去也能点。
  * @param messages 消息（顺序不要紧）。
  * @param approvals 还在等决定的命令。
+ * @returns 按时间戳、消息号与条目类型排序的时间线条目数组。
  */
 export function buildTimeline(messages: Iterable<types.MessageView>, approvals: types.ApprovalView[] = []): TimelineItem[] {
   /** 每一项，带上排序用的次序（同一时刻：用户的话 → 事件 → 回复）。 */
   const items: { item: TimelineItem; order: number }[] = approvals.map((approval) => ({ item: { kind: 'approval', key: `a${approval.id}`, at: approval.createdAt, approval }, order: 3 }));
   for (const message of messages) {
+    //M 系统写入的提示消息改建成灰字 note 条目，其余收件作为 user 条目。
+    let headItem: TimelineItem = { kind: 'user', key: `m${message.id}`, at: message.createdAt, message };
     if (isSystemNote(message.text)) {
-      items.push({ item: { kind: 'note', key: `n${message.id}`, at: message.createdAt, message, text: message.text }, order: 0 });
-    } else {
-      items.push({ item: { kind: 'user', key: `m${message.id}`, at: message.createdAt, message }, order: 0 });
+      headItem = { kind: 'note', key: `n${message.id}`, at: message.createdAt, message, text: message.text };
     }
+    items.push({ item: headItem, order: 0 });
     if (message.dispatch) {
       items.push({ item: { kind: 'event', key: `e${message.id}`, at: message.createdAt, message, dispatch: message.dispatch }, order: 1 });
     }
@@ -102,8 +114,9 @@ export function buildTimeline(messages: Iterable<types.MessageView>, approvals: 
       items.push({ item: replyItem, order: 2 });
     });
   }
+  //M 先按时间戳、再按消息号（审批卡排在同刻最后）、最后按用户话→事件→回复次序排列。
   return items
-    .sort((a, b) => a.item.at - b.item.at || idOf(a.item) - idOf(b.item) || a.order - b.order)
+    .sort((a, b) => a.item.at - b.item.at || getItemId(a.item) - getItemId(b.item) || a.order - b.order)
     .map((entry) => entry.item);
 }
 
@@ -113,20 +126,27 @@ export function buildTimeline(messages: Iterable<types.MessageView>, approvals: 
  * @param channel 渠道：http，或 feishu:<应用 ID>。
  * @param source 来源：网页发的是 web。
  * @param t 翻译函数；不传是简体中文原文。
+ * @returns 翻译后的来源标签（飞书、微信、命令行、网页或 HTTP）。
  */
-export function channelLabel(channel: string, source: string, t: i18n.Translate = i18n.source): string {
-  if (channel.startsWith('feishu')) {
-    return t('飞书');
-  }
-  return source === 'web' ? t('网页') : 'HTTP';
+export function getChannelLabel(channel: string, source: string, t: i18n.Translate = i18n.source): string {
+  if (channel.startsWith('feishu')) return t('飞书');
+
+  if (channel.startsWith('wechat')) return t('微信');
+
+  if (channel.startsWith('cli')) return t('命令行');
+
+  if (source === 'web') return t('网页');
+
+  return 'HTTP';
 }
 
 
 /**
  * 模型 ID 写短一点：只留最后一段（供应商/分组/模型 → 模型）。
  * @param model 供应商/模型 ID。
+ * @returns 去掉供应商和分组前缀后的短模型名。
  */
-export function shortModel(model: string): string {
+export function getShortModel(model: string): string {
   return model.split('/').pop() ?? model;
 }
 
@@ -135,12 +155,16 @@ export function shortModel(model: string): string {
  * 事件行的文字。
  * @param dispatch 分派简要。
  * @param t 翻译函数；不传是简体中文原文。
+ * @returns 事件行展示文本。
  */
-export function eventText(dispatch: types.DispatchBrief, t: i18n.Translate = i18n.source): string {
+export function getEventText(dispatch: types.DispatchBrief, t: i18n.Translate = i18n.source): string {
   /** 标题。 */
   const title = dispatch.title || dispatch.sessionId;
   if (dispatch.action === 'new') {
-    return dispatch.model ? t('新开了会话「{title}」，用 {model}', { title, model: shortModel(dispatch.model) }) : t('新开了会话「{title}」', { title });
+    //M 新建会话事件附带去掉供应商前缀的简短模型名，方便用户看清本次分配的模型。
+    if (dispatch.model) return t('新开了会话「{title}」，用 {model}', { title, model: getShortModel(dispatch.model) });
+
+    return t('新开了会话「{title}」', { title });
   }
   //M 追加不换模型，只写进了哪个会话。
   return t('进了会话「{title}」', { title });
@@ -153,7 +177,7 @@ export function eventText(dispatch: types.DispatchBrief, t: i18n.Translate = i18
  * @param t 翻译函数；不传是简体中文原文。
  * @returns 已经进了会话是空。
  */
-export function pendingText(status: string, t: i18n.Translate = i18n.source): string {
+export function getPendingText(status: string, t: i18n.Translate = i18n.source): string {
   if (status === 'new') {
     return t('等分派');
   }
@@ -171,6 +195,7 @@ export function pendingText(status: string, t: i18n.Translate = i18n.source): st
  * 时间写成给人看的样子：今天的只写时分，别的写月日。
  * @param at 毫秒。
  * @param now 现在（测试用）。
+ * @returns 今天的时刻写成 HH:mm，非今天带上 MM-DD 前缀。
  */
 export function formatTime(at: number, now = Date.now()): string {
   /** 那个时刻。 */
@@ -179,7 +204,9 @@ export function formatTime(at: number, now = Date.now()): string {
   const two = (value: number): string => String(value).padStart(2, '0');
   /** 时分。 */
   const time = `${two(date.getHours())}:${two(date.getMinutes())}`;
-  return new Date(now).toDateString() === date.toDateString() ? time : `${two(date.getMonth() + 1)}-${two(date.getDate())} ${time}`;
+  if (new Date(now).toDateString() === date.toDateString()) return time;
+
+  return `${two(date.getMonth() + 1)}-${two(date.getDate())} ${time}`;
 }
 
 
@@ -242,6 +269,7 @@ export function formatDuration(ms: number, t: i18n.Translate = i18n.source): str
  * @param frontMs 前台毫秒；没有就不写前台。
  * @param workMs 后台毫秒；没有就不写后台。
  * @param t 翻译。
+ * @returns 拼接好的前后台耗时文本；两项均无有效值时返回空串。
  */
 export function formatFrontWorkElapsed(
   frontMs: number | null | undefined,
@@ -249,8 +277,15 @@ export function formatFrontWorkElapsed(
   t: i18n.Translate = i18n.source,
 ): string {
   const parts: string[] = [];
-  const front = frontMs != null ? formatDuration(frontMs, t) : '';
-  const work = workMs != null ? formatDuration(workMs, t) : '';
+  //M 分别将有效的前台与后台毫秒数格式化成可读时长，避免缺失值拼入空段。
+  let front = '';
+  if (frontMs != null) {
+    front = formatDuration(frontMs, t);
+  }
+  let work = '';
+  if (workMs != null) {
+    work = formatDuration(workMs, t);
+  }
   if (front !== '') parts.push(t('前台 {time}', { time: front }));
   if (work !== '') parts.push(t('后台 {time}', { time: work }));
   return parts.join(' · ');

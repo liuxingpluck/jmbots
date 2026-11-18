@@ -90,15 +90,7 @@ const STAGES: Record<ProgressItemLike['stage'], { color: string; icon: string; t
 };
 
 
-/**
- * 截断。
- * @param text 原文。
- * @param max 最多几个字。
- * @returns 截过的。
- */
-function cut(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}……`;
-}
+// 2026-11-17：自己的 cut 去掉，太长的字改用 utils/Text.ts 的 clip 截（按字截，末尾加“…”）。
 
 
 /**
@@ -145,13 +137,15 @@ export function card(spec: CardSpec): Record<string, unknown> {
  * @returns 飞书卡片 JSON。
  */
 export function approval(pending: PendingLike): Record<string, unknown> {
+  //M 若已提供统一结构化卡片数据，直接转绘为飞书交互卡片结构，与网页审批面板保持一致。
   if (pending.card !== undefined) return fromCard(pending.id, pending.card);
-  const sections = [`\`\`\`\n${cut(pending.detail, DETAIL_MAX)}\n\`\`\``];
+  const sections = [`\`\`\`\n${textModule.clip(pending.detail, DETAIL_MAX)}\n\`\`\``];
   if (pending.session !== undefined && pending.session !== '') {
     sections.push(`**机器人 / 会话** ${pending.bot} / ${pending.session}`);
   }
   const title = `待确认 #${String(pending.id)}：${pending.title}`;
   if (pending.state === 'waiting') {
+    //M 仍待审批时渲染橙色带同意/拒绝按钮的可交互卡片。
     return card({
       color: 'orange',
       title,
@@ -163,9 +157,16 @@ export function approval(pending: PendingLike): Record<string, unknown> {
       note: `点按钮，或者直接回“同意 ${String(pending.id)}”“拒绝 ${String(pending.id)}”`,
     });
   }
-  const result = pending.state === 'approved' ? '已同意执行' : '已拒绝';
-  const when = pending.decidedAt === undefined ? '' : `，${new Date(pending.decidedAt).toLocaleString('zh-CN', { hour12: false })}`;
+  let result = '已拒绝';
+  if (pending.state === 'approved') {
+    result = '已同意执行';
+  }
+  let when = '';
+  if (pending.decidedAt !== undefined) {
+    when = `，${new Date(pending.decidedAt).toLocaleString('zh-CN', { hour12: false })}`;
+  }
   sections.push(`**结果** ${result}（${pending.by ?? '未知'}${when}）`);
+  //M 已审批落定后转为灰底只读卡片并移除所有按钮。
   return card({ color: 'grey', title, sections });
 }
 
@@ -179,26 +180,39 @@ export function approval(pending: PendingLike): Record<string, unknown> {
 export function progress(item: ProgressItemLike, at = Date.now()): Record<string, unknown> {
   const stage = STAGES[item.stage];
   const end = item.endedAt ?? at;
-  const head = [`**${stage.icon} ${item.action || stage.text}**`, `用了 ${textModule.duration(end - item.startedAt)}`, `第 ${String(item.steps)} 步`];
+  const head = [`**${stage.icon} ${item.action || stage.text}**`, `用了 ${textModule.getDuration(end - item.startedAt)}`, `第 ${String(item.steps)} 步`];
   if (item.limitMinutes !== undefined && item.limitMinutes > 0) {
-    const left = item.deadline !== undefined && item.endedAt === undefined ? `（还剩 ${textModule.duration(item.deadline - at)}）` : '';
+    let left = '';
+    if (item.deadline !== undefined && item.endedAt === undefined) {
+      //M 任务未结束且设置截止时间时计算剩余时长文本。
+      const leftText = textModule.getDuration(item.deadline - at);
+      left = `（还剩 ${leftText}）`;
+    }
     head.push(`限时 ${String(item.limitMinutes)} 分钟${left}`);
   }
   const sections = [head.join(' · ')];
 
   //M 各段耗时：模型多久，每个工具几次、多久。
-  const tools = item.timings.tools.map((tool) => `${tool.name} ×${String(tool.count)} ${textModule.duration(tool.ms)}`);
-  sections.push(`**耗时** 模型 ${textModule.duration(item.timings.modelMs)}${tools.length > 0 ? `；${tools.join('；')}` : ''}`);
+  const tools = item.timings.tools.map((tool) => `${tool.name} ×${String(tool.count)} ${textModule.getDuration(tool.ms)}`);
+  let toolSuffix = '';
+  if (tools.length > 0) {
+    toolSuffix = `；${tools.join('；')}`;
+  }
+  //M 格式化模型累计耗时文本并拼接各工具调用统计。
+  const modelCost = textModule.getDuration(item.timings.modelMs);
+  sections.push(`**耗时** 模型 ${modelCost}${toolSuffix}`);
   if (item.result !== undefined && item.result !== '') {
     sections.push(`**结果** ${item.result}`);
   }
-  const buttons: Button[] = item.endedAt === undefined
-    ? [
-        ...LIMIT_CHOICES.map((minutes): Button => ({ text: `最多 ${String(minutes)} 分钟`, type: 'default', value: { action: 'limit', minutes } })),
-        { text: '不限时', type: 'default', value: { action: 'limit', minutes: 0 } },
-        { text: '终止', type: 'danger', value: { action: 'stop' } },
-      ]
-    : [];
+  let buttons: Button[] = [];
+  if (item.endedAt === undefined) {
+    buttons = [
+      ...LIMIT_CHOICES.map((minutes): Button => ({ text: `最多 ${String(minutes)} 分钟`, type: 'default', value: { action: 'limit', minutes } })),
+      { text: '不限时', type: 'default', value: { action: 'limit', minutes: 0 } },
+      { text: '终止', type: 'danger', value: { action: 'stop' } },
+    ];
+  }
+  //M 按阶段配色、当前进展描述与耗时摘要组装进度卡片 JSON。
   return card({ color: stage.color, title: `${item.bot}：${item.text}`, sections, buttons });
 }
 
@@ -217,26 +231,71 @@ const RISK_LOOK: Record<cardUtils.RiskLevel, { color: string; icon: string }> = 
  */
 export function fromCard(id: number, data: cardUtils.CardData): Record<string, unknown> {
   //M 紧凑：上面一行“为什么 + 风险等级”，命令、目录、会动到、风险说明、工具数据都收进“详情”，点开才看。
-  const head = [data.reason, data.risk === undefined ? '' : `${RISK_LOOK[data.risk.level].icon} 风险${RISK_TEXT[data.risk.level]}`].filter((part) => part !== '').join('　');
-  const sections: string[] = head === '' ? [] : [cut(head, 200)];
-  const more: string[] = data.items.map((item) => (item.code === true ? `**${item.label}**\n\`\`\`\n${cut(item.value, DETAIL_MAX)}\n\`\`\`` : `**${item.label}** ${cut(item.value, DETAIL_MAX)}`));
-  if (data.risk !== undefined) more.push(`**风险** ${data.risk.text}`);
-  if (data.details !== undefined) more.push(`**${data.details.label}**\n\`\`\`json\n${cut(JSON.stringify(data.details.data, null, 2), DETAIL_MAX)}\n\`\`\``);
-  const fold = more.length === 0 ? undefined : { title: '详情', content: more.join('\n') };
+  let riskPart = '';
+  if (data.risk !== undefined) {
+    riskPart = `${RISK_LOOK[data.risk.level].icon} 风险${RISK_TEXT[data.risk.level]}`;
+  }
+  const head = [data.reason, riskPart].filter((part) => part !== '').join('　');
+  const sections: string[] = [];
+  if (head !== '') {
+    //M 裁剪顶部摘要行长度后放进卡片首段正文。
+    const clippedHead = textModule.clip(head, 200);
+    sections.push(clippedHead);
+  }
+  const more: string[] = data.items.map((item) => {
+    //M 按详情最大字数截断字段值，代码类条目单独包裹围栏块。
+    const clipped = textModule.clip(item.value, DETAIL_MAX);
+    if (item.code === true) return `**${item.label}**\n\`\`\`\n${clipped}\n\`\`\``;
+
+    return `**${item.label}** ${clipped}`;
+  });
+  if (data.risk !== undefined) {
+    more.push(`**风险** ${data.risk.text}`);
+  }
+  if (data.details !== undefined) {
+    more.push(`**${data.details.label}**\n\`\`\`json\n${textModule.clip(JSON.stringify(data.details.data, null, 2), DETAIL_MAX)}\n\`\`\``);
+  }
+  let fold: CardSpec['fold'];
+  if (more.length > 0) {
+    fold = { title: '详情', content: more.join('\n') };
+  }
   const title = `#${String(id)} ${data.title}`;
   if (data.state === 'waiting') {
+    let waitColor = 'orange';
+    if (data.risk !== undefined) {
+      waitColor = RISK_LOOK[data.risk.level].color;
+    }
     const spec: CardSpec = {
-      color: data.risk === undefined ? 'orange' : RISK_LOOK[data.risk.level].color,
+      color: waitColor,
       title,
       sections,
       buttons: data.buttons.map((button) => ({ text: button.label, type: button.style, value: { action: button.action } })),
     };
-    if (data.kind === 'long-run') spec.note = '不点就一直做下去';
-    if (fold !== undefined) spec.fold = fold;
+    if (data.kind === 'long-run') {
+      spec.note = '不点就一直做下去';
+    }
+    if (fold !== undefined) {
+      spec.fold = fold;
+    }
+    //M 将等待态通用审批卡片规格渲染成飞书交互卡片结构。
     return card(spec);
   }
-  sections.push(`**结果** ${data.result ?? (data.state === 'ended' ? '已结束' : data.state === 'approved' ? '已同意' : '已拒绝')}`);
-  const spec: CardSpec = { color: 'grey', title: data.state === 'ended' ? `${title}（已结束）` : title, sections };
-  if (fold !== undefined) spec.fold = fold;
+  let fallbackResult = '已拒绝';
+  if (data.state === 'approved') {
+    fallbackResult = '已同意';
+  }
+  if (data.state === 'ended') {
+    fallbackResult = '已结束';
+  }
+  sections.push(`**结果** ${data.result ?? fallbackResult}`);
+  let endTitle = title;
+  if (data.state === 'ended') {
+    endTitle = `${title}（已结束）`;
+  }
+  const spec: CardSpec = { color: 'grey', title: endTitle, sections };
+  if (fold !== undefined) {
+    spec.fold = fold;
+  }
+  //M 将已结束或已决定的通用审批卡片渲染为灰底终态卡片。
   return card(spec);
 }

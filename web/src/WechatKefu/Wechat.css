@@ -1,7 +1,10 @@
 /* 积木客服页（/wechat-kefu/）。深色，配色照积木客服；三栏宽度：会话列表 clamp(260px, 24vw, 340px)、待发 clamp(240px, 22vw, 320px)、消息占剩下；窄屏改成上下排。2026-11-14 jm开发。 */
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: #2a3a66 transparent; }
+html { color-scheme: dark; }
 html, body, #root { margin: 0; height: 100%; background: #0b1020; color: #e3e8f4; font: 14px/1.55 system-ui, "Microsoft YaHei", sans-serif; }
 button, input, select, textarea { font: inherit; color: inherit; }
+.wk-top-link { text-decoration: none; color: #b9c8ec; padding: 4px 10px; border: 1px solid #2a3a66; border-radius: 8px; background: #111a33; font-size: 13px; white-space: nowrap; }
+.wk-top-link:hover { border-color: #4f79d9; color: #fff; }
 .wk-page { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .wk-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px clamp(10px, 2vw, 20px); background: linear-gradient(90deg, #101a35, #0d152b); border-bottom: 1px solid #1e2b50; }
 .wk-top h1 { margin: 0; font-size: 18px; font-weight: 600; background: linear-gradient(90deg, #4fd1a5, #6aa8ff); -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap; }
@@ -46,7 +49,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .wk-last { color: #7f8fb5; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wk-switches { display: flex; gap: 12px; margin-top: 2px; font-size: 12px; color: #a9b6d6; }
 .wk-switches label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
-.wk-msgs { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+/* 消息列表是 react-virtuoso（WechatPage.tsx）：上边距放 .wk-msgs-head，左右边距和条间 8px 放每条外面的 .wk-msg-row；.wk-msg-row 竖排，.wk-msg 的 align-self 才能分左右。 */
+.wk-msgs-head { height: 12px; }
+.wk-msg-row { display: flex; flex-direction: column; padding: 0 12px 8px; }
 .wk-msg { max-width: min(78%, 640px); align-self: flex-start; }
 .wk-msg.me { align-self: flex-end; text-align: right; }
 .wk-sender { font-size: 12px; color: #7f8fb5; }
@@ -64,6 +69,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .wk-page { height: auto; }
   .wk-main { grid-template-columns: minmax(0, 1fr); }
   .wk-list, .wk-out { max-height: 360px; } .wk-chat { min-height: 420px; }
+  /* 2026-11-17 EST：会话列表和消息列表改成虚拟滚动后要有确定的高度（react-virtuoso 的内容是绝对定位，撑不开父元素）。 */
+  .wk-list { height: 360px; } .wk-chat { height: max(420px, 70vh); }
 }
 /* 2026-11-14 23:20 EST：会话筛选 chips（全部 / 只看监听 / 有未读），照原版积木客服。 */
 .wk-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 8px; }

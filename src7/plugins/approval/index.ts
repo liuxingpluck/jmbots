@@ -16,9 +16,9 @@
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as fastify from 'fastify';
-import type { AskInput as SessionAskInput, Session } from '../../Sessions.ts';
-import type { Thinking } from '../../Chat.ts';
+import type { AskInput as SessionAskInput, Session, Thinking } from '../../Sessions.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
+import * as protocol from '../../Channels.ts';
 import * as rules from './Rules.ts';
 import * as cardUtils from '../../utils/Card.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -27,6 +27,8 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 
 /** 插件名。 */
 export const name = 'approval';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.1.0';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -233,6 +235,9 @@ export class Approval extends cordis.Service {
     if (!columns.some((column) => column.name === 'customer')) ctx.resources.db.exec('ALTER TABLE approval_pending ADD COLUMN customer TEXT');
     if (!columns.some((column) => column.name === 'actor')) ctx.resources.db.exec('ALTER TABLE approval_pending ADD COLUMN actor TEXT');
 
+    //M channel/message 消息级审批指令只消费一次：N 个机器人共存时不会各自批准一遍。
+    ctx.on('channel/message', (message, control) => this.onChannelMessage(message, control), { prepend: true });
+
     //M 仍排在前面，只是为了先认出“同意 3”这类话；批不批准由下面自己核对说话人，不靠监听顺序，也不看前面有没有分好会话。
     ctx.on('bot/receive', (event) => {
       this.onReceive(event);
@@ -244,12 +249,16 @@ export class Approval extends cordis.Service {
     ctx.on('session/request', (request) => {
       if (request.session.row.kind === REVIEW_KIND) request.system.push(REVIEW_PROMPT);
       const address = request.session.row.address;
-      const role = workspaceModule.roleOf(address);
+      const role = workspaceModule.getRole(address);
       const allowedTools = rules.toolsFor(role);
       if (allowedTools === undefined) return;
 
       request.tools = request.tools.filter((tool) => allowedTools.has(tool.name));
-      const prompt = role === 'builder' ? builderPrompt(textModule.textOf(address, 'workspace')) : GUEST_PROMPT;
+      let prompt = GUEST_PROMPT;
+      if (role === 'builder') {
+        //M builder 提示词写明他被限制在哪个子工作区。
+        prompt = builderPrompt(textModule.getText(address, 'workspace'));
+      }
       request.system.push(prompt);
     });
 
@@ -257,13 +266,28 @@ export class Approval extends cordis.Service {
     ctx.on('session/before-tool', (gate) => {
       if (gate.deny !== undefined) return;
 
-      const role = workspaceModule.roleOf(gate.session.row.address);
+      //M 本人（toolsFor 交回 undefined）：不拦。
+      const role = workspaceModule.getRole(gate.session.row.address);
       const allowedTools = rules.toolsFor(role);
-      if (allowedTools === undefined || allowedTools.has(gate.call.name)) return;
+      if (allowedTools === undefined) return;
 
-      gate.deny = role === 'builder'
-        ? '这一轮说话的人只能在他自己的目录里读写、跑命令、发文件，这个工具不给'
-        : '这一轮说话的不是用户本人，只能用查、读、搜、答这类工具';
+      //G 外人能用 workspace 工具，但只能看（list、get）；建、改名、归档只给本人。
+      const action = textModule.getText(gate.call.arguments, 'action');
+      const changesWorkspace = gate.call.name === 'workspace' && !rules.OTHERS_WORKSPACE_ACTIONS.has(action);
+      if (changesWorkspace) {
+        gate.deny = `这一轮说话的不是用户本人：workspace 只能 list、get 看自己的工作区，${action} 只有本人能用`;
+        return;
+      }
+
+      //M 这一档有的工具：放行。
+      if (allowedTools.has(gate.call.name)) return;
+
+      //G 这一档没有的：builder 和 guest 各说一句为什么。
+      if (role === 'builder') {
+        gate.deny = '这一轮说话的人只能在他自己的目录里读写、跑命令、发文件，这个工具不给';
+        return;
+      }
+      gate.deny = '这一轮说话的不是用户本人，只能用查、读、搜、答这类工具';
     });
   }
 
@@ -299,7 +323,10 @@ export class Approval extends cordis.Service {
     let last: { by: ReviewBy; reason: string } = { by: 'rule', reason: danger ?? '规则定不了' };
 
     //M 第二档：决策模型（只用来放行只读、低风险的）。decision 是可选的服务，ctx.get 现取（没挂、没开工就是 undefined），没有就跳过这一档。
-    const decision = danger === undefined ? this.ctx.get('decision') as DecisionLike | undefined : undefined;
+    let decision: DecisionLike | undefined;
+    if (danger === undefined) {
+      decision = this.ctx.get('decision') as DecisionLike | undefined;
+    }
     if (decision !== undefined) {
       const judged = await decision.judge({ kind: input.kind, bot, allowAt: this.config.decisionPass, question: SAFE, state })
         .catch((error: unknown) => ({ verdict: 'unsure' as const, reason: `决策模型出错：${String(error)}` }));
@@ -309,13 +336,23 @@ export class Approval extends cordis.Service {
     }
 
     //M 第三档：开一场不带工具的审核小会话，让模型看一眼，要它只回一段 JSON。
-    const why = this.whyOf(input.session);
+    const why = this.getWhy(input.session);
     const answer = await this.askModel(input, bot, script, why);
     if (answer?.['safe'] === true && danger === undefined) {
-      const what = typeof answer['what'] === 'string' ? answer['what'] : '（没写）';
+      let what = '（没写）';
+      if (typeof answer['what'] === 'string') {
+        what = answer['what'];
+      }
+      //M 审核小会话确认安全且不属于必问高危项，记跟踪并直接放行。
       return this.traced(input, { result: 'pass', by: 'review', reason: `模型看过，能直接执行：${what}` });
     }
-    if (answer !== undefined && danger === undefined) last = { by: 'review', reason: typeof answer['risk'] === 'string' ? answer['risk'] : '模型认为有风险' };
+    if (answer !== undefined && danger === undefined) {
+      let risk = '模型认为有风险';
+      if (typeof answer['risk'] === 'string') {
+        risk = answer['risk'];
+      }
+      last = { by: 'review', reason: risk };
+    }
 
     //G 调用方说了不问用户 → 直接拒绝（0.4 原话：ExecReview.ts:279）。
     if (input.ask === false) {
@@ -329,7 +366,7 @@ export class Approval extends cordis.Service {
 
     //M 第四档：照审核模型写的内容拼一张卡片，登记待确认，问用户。不等用户：马上交回“已经去问了”，用户定了由 approval/decided 通知提的人。
     const card = reviewCard(input, script, answer, why);
-    const detail = cardUtils.cardText({ ...card, state: 'waiting' });
+    const detail = cardUtils.getCardText({ ...card, state: 'waiting' });
     const pending = this.ask({ kind: input.kind, title: card.title, detail, payload: input.payload, bot, session: input.session, card });
     return this.traced(input, { result: 'asked', id: pending.id, reason: `等用户决定（待确认 #${String(pending.id)}）` });
   }
@@ -367,7 +404,9 @@ export class Approval extends cordis.Service {
     const json = reply.slice(reply.indexOf('{'), reply.lastIndexOf('}') + 1);
     try {
       const parsed: unknown = JSON.parse(json);
-      return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+      if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, unknown>;
+
+      return undefined;
     } catch {
       return undefined;
     }
@@ -380,7 +419,11 @@ export class Approval extends cordis.Service {
    */
   private traced(input: ReviewInput, verdict: Verdict): Verdict {
     //T 跟踪：审核结论。
-    const vars = { 命令: input.command.slice(0, 80), 结论: verdict.result, 谁定的: 'by' in verdict ? verdict.by : 'user', 原因: verdict.reason };
+    let decidedBy: string = 'user';
+    if ('by' in verdict) {
+      decidedBy = verdict.by;
+    }
+    const vars = { 命令: input.command.slice(0, 80), 结论: verdict.result, 谁定的: decidedBy, 原因: verdict.reason };
     this.ctx.emit('trace', 'Approval.review', '审完一条命令', 'approval.review(input)', vars);
     return verdict;
   }
@@ -393,12 +436,12 @@ export class Approval extends cordis.Service {
    */
   ask(input: AskInput): Pending {
     const card: cardUtils.CardData = { ...(input.card ?? plainCard(input.title, input.detail)), state: 'waiting' };
-    const who = this.initiatorOf(input.session);
+    const who = this.getInitiator(input.session);
     const sql = 'INSERT INTO approval_pending (kind, title, detail, payload, bot, session, customer, actor, state, asked_at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     const values = [input.kind, input.title, input.detail, JSON.stringify(input.payload ?? null), input.bot, input.session ?? null,
       who.customer, who.actor, 'waiting', Date.now(), JSON.stringify(card)];
     const done = this.ctx.resources.db.query(sql).run(...values);
-    const pending = this.rowOf(Number(done.lastInsertRowid)) as Pending;
+    const pending = this.getRow(Number(done.lastInsertRowid)) as Pending;
 
     //T 跟踪：登记了一件待确认。
     const vars = { 号: pending.id, 谁提的: pending.kind, 机器人: pending.bot, 会话: pending.session ?? '（没有）' };
@@ -406,15 +449,20 @@ export class Approval extends cordis.Service {
     this.ctx.emit('approval/asked', pending);
 
     //G 飞书群里的会话不说细节和怎么回：群里谁都看得到、都能回，群里只由飞书卡片那块回一句“要本人确认”，卡片发本人私聊。
-    const where = pending.session === undefined ? undefined : this.ctx.sessions.find({ id: pending.session })[0]?.address;
+    let where: unknown;
+    if (pending.session !== undefined) {
+      where = this.ctx.sessions.find({ id: pending.session })[0]?.address;
+    }
+    //G 群聊会话不在群内发确认口令，直接返回登记结果。
     if (workspaceModule.isGroup(where)) return pending;
 
     //M 有会话就跟用户说一句怎么回（照 0.4：src/executors/ExecReview.ts:452-458）。
     if (pending.session !== undefined) {
       const id = String(pending.id);
-      const how = pending.card.kind === 'long-run'
-        ? `点卡片上的“终止”或“继续”；也可以回复“同意 ${id}”（终止）或“拒绝 ${id}”（继续）。不回就一直做下去。`
-        : `回复“同意 ${id}”或“拒绝 ${id}”。`;
+      let how = `回复“同意 ${id}”或“拒绝 ${id}”。`;
+      if (pending.card.kind === 'long-run') {
+        how = `点卡片上的“终止”或“继续”；也可以回复“同意 ${id}”（终止）或“拒绝 ${id}”（继续）。不回就一直做下去。`;
+      }
       const text = `要确认一件事（待确认 #${id}）：${pending.title}\n${pending.detail}\n${how}`;
       this.ctx.bots.say(this.ctx.sessions.open(pending.session), text);
     }
@@ -430,12 +478,19 @@ export class Approval extends cordis.Service {
    * 副作用：改表；发 approval/decided。
    */
   decide(id: number, approve: boolean, by: string): Pending | string {
-    const found = this.rowOf(id);
+    const found = this.getRow(id);
     if (found === undefined) return `没有待确认 #${String(id)}`;
 
     if (found.state !== 'waiting') return `待确认 #${String(id)} 已经定过了（${STATE_TEXT[found.state]}）`;
 
-    return this.settle(found, approve ? 'approved' : 'rejected', by, `${approve ? cardLabel(found.card, 'approve') : cardLabel(found.card, 'reject')}（${by}）`);
+    let nextState: 'approved' | 'rejected' = 'rejected';
+    let action: 'approve' | 'reject' = 'reject';
+    if (approve) {
+      nextState = 'approved';
+      action = 'approve';
+    }
+    //M 取出对应按钮文案落库并广播 approval/decided。
+    return this.settle(found, nextState, by, `${cardLabel(found.card, action)}（${by}）`);
   }
 
   /**
@@ -445,7 +500,7 @@ export class Approval extends cordis.Service {
    * @returns 作废后的那件；找不到、已经定过的交回一句原因。
    */
   close(id: number, note: string): Pending | string {
-    const found = this.rowOf(id);
+    const found = this.getRow(id);
     if (found === undefined) return `没有待确认 #${String(id)}`;
     if (found.state !== 'waiting') return `待确认 #${String(id)} 已经定过了（${STATE_TEXT[found.state]}）`;
     return this.settle(found, 'rejected', note, note, 'ended');
@@ -465,7 +520,7 @@ export class Approval extends cordis.Service {
     const card: cardUtils.CardData = { ...found.card, state: cardState ?? state, result: `${result}，${new Date(at).toLocaleString('zh-CN', { hour12: false })}` };
     const sql = 'UPDATE approval_pending SET state = ?, decided_by = ?, decided_at = ?, card = ? WHERE id = ?';
     this.ctx.resources.db.query(sql).run(state, by, at, JSON.stringify(card), id);
-    const pending = this.rowOf(id) as Pending;
+    const pending = this.getRow(id) as Pending;
 
     //T 跟踪：用户定了一件待确认。
     const vars = { 号: id, 结果: pending.state, 谁定的: by };
@@ -481,40 +536,43 @@ export class Approval extends cordis.Service {
   recent(): Pending[] {
     const since = Date.now() - RECENT_MS;
     const rows = this.ctx.resources.db.query("SELECT * FROM approval_pending WHERE state != 'waiting' AND decided_at >= ? ORDER BY id").all(since) as Row[];
-    return rows.map(pendingOf).filter((item) => item.card.kind === 'long-run');
+    return rows.map(getPending).filter((item) => item.card.kind === 'long-run');
   }
 
   /**
    * 机器人在干什么活：会话最后一句用户的话（前 200 字），审核模型拿它写卡片的“原因”。
    * @param sessionId 提问的会话。
    */
-  private whyOf(sessionId: string | undefined): string {
+  private getWhy(sessionId: string | undefined): string {
     if (sessionId === undefined) return '';
     const meta = this.ctx.sessions.find({ id: sessionId })[0];
     if (meta === undefined) return '';
     const said = this.ctx.sessions.open(sessionId).row.messages.findLast((message) => message.role === 'user');
-    return said === undefined ? '' : piAi.contentText(said.content).slice(0, 200);
+    if (said === undefined) return '';
+
+    return piAi.contentText(said.content).slice(0, 200);
   }
 
   /** @returns 还在等的待确认，号从小到大。 */
   list(): Pending[] {
     const rows = this.ctx.resources.db.query("SELECT * FROM approval_pending WHERE state = 'waiting' ORDER BY id").all() as Row[];
-    return rows.map(pendingOf);
+    return rows.map(getPending);
   }
 
   /**
-   * 认文字回答（bot/receive）。认出来并且说话人有权处理，才 handled，不进前台。
+   * 认文字回答（bot/receive，兼容未迁移渠道与离线测试）。如果该消息已经由 channel/message 入口转来则跳过，免得 N 机器人重复执行。
    * 无权的人（微信客户、飞书群里的其他人）同样的话当普通消息交给前台；不靠前面有没有分好会话。
    * @param event 收到的消息。
    */
   private onReceive(event: ReceiveEvent): void {
+    if (event.fromChannelEvent === true) return;
     if (event.handled === true) return;
 
     const said = rules.parseReply(event.message.text);
     if (said === undefined) return;
 
     const bot = event.bot.name;
-    const speaker = speakerOf(event.message.channel, event.message.address);
+    const speaker = getSpeaker(event.message.channel, event.message.address);
     const owner = isOwner(event.message.address);
     const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner));
     const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
@@ -529,36 +587,181 @@ export class Approval extends cordis.Service {
 
     //M 没点号只算卡着会话的（0.4：BotLoop.ts:686-688）；点的号不在自己能处理的里面、或者没有候选 → 不算回答，照常进前台。
     //G 长跑提醒（同意 = 终止）不认没点号的“同意”：免得随口一句“同意”把会话停了。
-    const candidates = said.id === undefined ? waiting.filter((item) => item.session !== undefined && item.card.kind !== 'long-run') : waiting;
-    const named = said.id === undefined ? undefined : candidates.find((item) => item.id === said.id);
+    let candidates = waiting;
+    if (said.id === undefined) {
+      candidates = waiting.filter((item) => item.session !== undefined && item.card.kind !== 'long-run');
+    }
+    let named: Pending | undefined;
+    if (said.id !== undefined) {
+      named = candidates.find((item) => item.id === said.id);
+    }
     if (candidates.length === 0 || (said.id !== undefined && named === undefined)) return;
 
     event.handled = true;
-    const targets = named !== undefined ? [named] : said.all === true || candidates.length === 1 ? candidates : [];
+    let targets: Pending[] = [];
+    if (named !== undefined) {
+      targets = [named];
+    }
+    if (named === undefined && (said.all === true || candidates.length === 1)) {
+      targets = candidates;
+    }
     if (targets.length === 0) {
       const text = `现在有 ${String(candidates.length)} 条，要说是哪一条：\n${listText(candidates)}\n回复“同意 号”“拒绝 号”或“全部同意”。`;
       this.answer(bot, candidates[0], text);
       return;
     }
     for (const item of targets) {
+      //M 逐条把文字批复写入待确认记录并触发决断通知。
       this.decide(item.id, said.approve, `${event.message.channel} 文字回复`);
     }
     const ids = targets.map((item) => `#${String(item.id)}`).join('、');
-    this.answer(bot, targets[0], `${said.approve ? '已同意' : '已拒绝'}待确认 ${ids}。`);
+    let word = '已拒绝';
+    if (said.approve) {
+      word = '已同意';
+    }
+    //M 向会话回复本次文字批复的处理结果。
+    this.answer(bot, targets[0], `${word}待确认 ${ids}。`);
+  }
+
+  /**
+   * 响应 channel/message 消息级审批文本指令（如“同意 1”“拒绝 2”“全部同意”“待确认有哪些”）。
+   * 一条消息只消费一次，防止 N 个目标机器人重复批准或答复多次。
+   * @param message 标准渠道消息。
+   * @param control 协调对象。
+   */
+  private async onChannelMessage(
+    message: protocol.ChannelMessage,
+    control?: protocol.ChannelMessageControl,
+  ): Promise<void> {
+    if (control?.approvalHandled === true) return;
+
+    const said = rules.parseReply(message.text);
+    if (said === undefined) return;
+
+    const speaker = getSpeaker(message.channel, message.origin.address);
+    const owner = message.role === 'owner' && isOwner(message.origin.address);
+    const targetSet = new Set(message.targetBots);
+    const waiting = this.list().filter((item) => targetSet.has(item.bot) && allowed(item, speaker, owner));
+    const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
+
+    if ('list' in said) {
+      if (waiting.length === 0) return;
+
+      if (control !== undefined) control.approvalHandled = true;
+      await this.answerChannel(message, waiting[0], `${listText(waiting)}\n回复“同意 号”或“拒绝 号”。`);
+      return;
+    }
+
+    let candidates = waiting;
+    if (said.id === undefined) {
+      candidates = waiting.filter((item) => item.session !== undefined && item.card.kind !== 'long-run');
+    }
+    let named: Pending | undefined;
+    if (said.id !== undefined) {
+      named = candidates.find((item) => item.id === said.id);
+    }
+    if (candidates.length === 0 || (said.id !== undefined && named === undefined)) return;
+
+    if (control !== undefined) control.approvalHandled = true;
+    let targets: Pending[] = [];
+    if (named !== undefined) {
+      targets = [named];
+    }
+    if (named === undefined && (said.all === true || candidates.length === 1)) {
+      targets = candidates;
+    }
+    if (targets.length === 0) {
+      const text = `现在有 ${String(candidates.length)} 条，要说是哪一条：\n${listText(candidates)}\n回复“同意 号”“拒绝 号”或“全部同意”。`;
+      await this.answerChannel(message, candidates[0], text);
+      return;
+    }
+
+    for (const item of targets) {
+      this.decide(item.id, said.approve, `${message.channel} 文字回复`);
+    }
+    const ids = targets.map((item) => `#${String(item.id)}`).join('、');
+    let word = '已拒绝';
+    if (said.approve) {
+      word = '已同意';
+    }
+    await this.answerChannel(message, targets[0], `${word}待确认 ${ids}。`);
+  }
+
+  /**
+   * 经统一渠道事件 channel/reply 回复消息级审批确认文本（无会话时仅发跟踪点）。
+   * @param message 原标准消息。
+   * @param about 命中的待确认项。
+   * @param text 回复正文。
+   */
+  private async answerChannel(
+    message: protocol.ChannelMessage,
+    about: Pending | undefined,
+    text: string,
+  ): Promise<void> {
+    const bot = about?.bot ?? message.targetBots[0] ?? '';
+    if (bot === '') return;
+
+    const claimKey = protocol.getClaimKey(message.messageId, bot);
+    const replyRoundKey = protocol.getReplyRoundKey(message.messageId, bot, 'approval');
+    const replyRequestKey = protocol.getReplyRequestKey(replyRoundKey, `approval_${String(Date.now())}`);
+    const snapshot: protocol.SourceSnapshot = {
+      messageId: message.messageId,
+      nativeId: message.nativeId,
+      channel: message.channel,
+      accountId: message.accountId,
+      chatId: message.chatId,
+      chatType: message.chatType,
+      senderId: message.sender.id,
+      role: message.role,
+      targetBots: [...message.targetBots],
+      mentions: structuredClone(message.mentions),
+      origin: { channel: message.origin.channel, address: structuredClone(message.origin.address) },
+      visibility: structuredClone(message.visibility),
+      botName: bot,
+      claimKey,
+      replyRoundKey,
+    };
+    if (message.sender.name !== undefined) {
+      snapshot.senderName = message.sender.name;
+    }
+    const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
+    await protocol.requestChannelReply(this.ctx, {
+      channel: message.channel,
+      bot,
+      replyRequestKey,
+      replyRoundKey,
+      replyIndex: 0,
+      kind: 'final',
+      mode: 'text',
+      sourceSnapshot: snapshot,
+      payloadHash: protocol.getPayloadHash({ kind: 'final', mode: 'text', parts }),
+      parts,
+    });
   }
 
   /**
    * 从发起会话上抄客户号和个人身份，登记时写进待确认。
    * @param sessionId 提问的会话；没有就是空的。
    */
-  private initiatorOf(sessionId: string | undefined): { customer: string | null; actor: string | null } {
+  private getInitiator(sessionId: string | undefined): { customer: string | null; actor: string | null } {
     if (sessionId === undefined) return { customer: null, actor: null };
     const found = this.ctx.sessions.find({ id: sessionId })[0];
     const row = found ?? this.ctx.sessions.open(sessionId).row;
     const meta = row as { customer?: string; channel?: string; address?: unknown };
-    const speaker = speakerOf(meta.channel, meta.address);
-    const customer = typeof meta.customer === 'string' && meta.customer !== '' ? meta.customer : speaker.customer;
-    return { customer: customer === '' ? null : customer, actor: speaker.actor === '' ? null : speaker.actor };
+    const speaker = getSpeaker(meta.channel, meta.address);
+    let customer = speaker.customer;
+    if (typeof meta.customer === 'string' && meta.customer !== '') {
+      customer = meta.customer;
+    }
+    let outCustomer: string | null = null;
+    if (customer !== '') {
+      outCustomer = customer;
+    }
+    let outActor: string | null = null;
+    if (speaker.actor !== '') {
+      outActor = speaker.actor;
+    }
+    return { customer: outCustomer, actor: outActor };
   }
 
   /**
@@ -582,9 +785,12 @@ export class Approval extends cordis.Service {
    * @param id 号。
    * @returns 没有是 undefined。
    */
-  private rowOf(id: number): Pending | undefined {
+  private getRow(id: number): Pending | undefined {
     const row = this.ctx.resources.db.query('SELECT * FROM approval_pending WHERE id = ?').get(id) as Row | null;
-    return row === null ? undefined : pendingOf(row);
+    if (row === null) return undefined;
+
+    //M 把数据库原始行解出 JSON 字段还原为 Pending。
+    return getPending(row);
   }
 }
 
@@ -595,8 +801,12 @@ export class Approval extends cordis.Service {
  * @param detail 细节。
  */
 function plainCard(title: string, detail: string): Omit<cardUtils.CardData, 'state'> {
+  const items: cardUtils.CardItem[] = [];
+  if (detail !== '') {
+    items.push({ label: '细节', value: detail });
+  }
   return {
-    kind: 'approval', title, reason: '', items: detail === '' ? [] : [{ label: '细节', value: detail }],
+    kind: 'approval', title, reason: '', items,
     buttons: [{ action: 'approve', label: '同意', style: 'primary' }, { action: 'reject', label: '拒绝', style: 'default' }],
   };
 }
@@ -604,7 +814,11 @@ function plainCard(title: string, detail: string): Omit<cardUtils.CardData, 'sta
 /** 卡片上某个按钮的字，结果里用（“终止了”“同意执行”）。 */
 function cardLabel(card: cardUtils.CardData, action: 'approve' | 'reject'): string {
   const label = card.buttons.find((button) => button.action === action)?.label;
-  return label === undefined ? (action === 'approve' ? '已同意' : '已拒绝') : `点了“${label}”`;
+  if (label !== undefined) return `点了“${label}”`;
+
+  if (action === 'approve') return '已同意';
+
+  return '已拒绝';
 }
 
 /**
@@ -616,23 +830,40 @@ function cardLabel(card: cardUtils.CardData, action: 'approve' | 'reject'): stri
  * @param why 机器人在干的活。
  */
 function reviewCard(input: ReviewInput, script: ReturnType<typeof rules.readScript>, answer: Record<string, unknown> | undefined, why: string): Omit<cardUtils.CardData, 'state' | 'result'> {
-  const text = (key: string): string => (typeof answer?.[key] === 'string' ? (answer[key] as string).trim() : '');
-  const level = cardUtils.riskLevel(answer?.['risk_level']);
+  const text = (key: string): string => {
+    const value = answer?.[key];
+    if (typeof value === 'string') return value.trim();
+
+    return '';
+  };
+  //M 把审核模型给出的风险等级归一为标准档位（未知值回落 medium）。
+  const level = cardUtils.getRiskLevel(answer?.['risk_level']);
   const items: cardUtils.CardItem[] = [{ label: '命令', value: input.command, code: true }, { label: '目录', value: input.cwd, code: true }];
   if (script !== undefined) items.push({ label: '要跑的脚本', value: script.file, code: true });
-  const paths = Array.isArray(answer?.['paths']) ? (answer['paths'] as unknown[]).filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [];
+  let paths: string[] = [];
+  if (Array.isArray(answer?.['paths'])) {
+    paths = (answer['paths'] as unknown[]).filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  }
   for (const file of paths) items.push({ label: '会动到', value: file, code: true });
   if (text('what') !== '') items.push({ label: '具体做什么', value: text('what') });
   if (text('advice') !== '') items.push({ label: '审核建议', value: text('advice') });
+  let fallbackRisk = '审核没写风险';
+  if (answer === undefined) {
+    fallbackRisk = '审核模型没答上来，拿不准';
+  }
+  let approveStyle: 'danger' | 'primary' = 'primary';
+  if (level === 'high') {
+    approveStyle = 'danger';
+  }
   return {
     kind: 'approval',
     title: text('title') || '要执行一条命令',
     reason: text('reason') || why || '审核没写出原因，请看命令本身',
     items,
-    risk: { level, text: text('risk') || (answer === undefined ? '审核模型没答上来，拿不准' : '审核没写风险') },
+    risk: { level, text: text('risk') || fallbackRisk },
     details: { label: '调用的工具数据', data: { 工具: input.kind, 命令: input.command, 目录: input.cwd, 会话: input.session ?? null, 参数: input.payload, 审核原话: answer ?? null } },
     buttons: [
-      { action: 'approve', label: '同意执行', style: level === 'high' ? 'danger' : 'primary' },
+      { action: 'approve', label: '同意执行', style: approveStyle },
       { action: 'reject', label: '拒绝', style: 'default' },
     ],
   };
@@ -645,12 +876,20 @@ function reviewCard(input: ReviewInput, script: ReturnType<typeof rules.readScri
  * @param channel 渠道名。
  * @param address 渠道的回话地址。
  */
-export function speakerOf(channel: string | undefined, address: unknown): { customer: string; actor: string } {
-  const where = (typeof address === 'object' && address !== null && !Array.isArray(address) ? address : {}) as Record<string, unknown>;
-  const customer = typeof where['customer'] === 'string' ? where['customer'] : '';
+export function getSpeaker(channel: string | undefined, address: unknown): { customer: string; actor: string } {
+  let where: Record<string, unknown> = {};
+  if (typeof address === 'object' && address !== null && !Array.isArray(address)) {
+    where = address as Record<string, unknown>;
+  }
+  let customer = '';
+  if (typeof where['customer'] === 'string') {
+    customer = where['customer'];
+  }
   if (channel === 'feishu') {
     const who = String(where['openId'] ?? where['open_id'] ?? '');
-    return { customer, actor: who === '' ? customer : `feishu:${who}` };
+    if (who === '') return { customer, actor: customer };
+
+    return { customer, actor: `feishu:${who}` };
   }
   return { customer, actor: customer };
 }
@@ -662,7 +901,7 @@ export function speakerOf(channel: string | undefined, address: unknown): { cust
  * @returns 写了 owner: true 才是。
  */
 export function isOwner(address: unknown): boolean {
-  return textModule.fieldOf(address, 'owner') === true;
+  return textModule.getField(address, 'owner') === true;
 }
 
 
@@ -687,11 +926,16 @@ export function allowed(item: Pending, speaker: { customer: string; actor: strin
  * 表里一行转成 Pending（payload 解一次 JSON）。
  * @param row 表里的一行。
  */
-function pendingOf(row: Row): Pending {
+function getPending(row: Row): Pending {
+  //M 有落库的卡片 JSON 直接解析；旧记录为 null 时用标题与细节补默认卡。
+  let card: cardUtils.CardData = { ...plainCard(row.title, row.detail), state: row.state };
+  if (row.card !== null) {
+    card = JSON.parse(row.card) as cardUtils.CardData;
+  }
   const pending: Pending = {
     id: row.id, kind: row.kind, title: row.title, detail: row.detail, payload: JSON.parse(row.payload) as unknown,
     bot: row.bot, state: row.state, askedAt: row.asked_at,
-    card: row.card === null ? { ...plainCard(row.title, row.detail), state: row.state } : JSON.parse(row.card) as cardUtils.CardData,
+    card,
   };
   if (row.session !== null) pending.session = row.session;
   if (row.customer !== null && row.customer !== '') pending.customer = row.customer;
@@ -707,11 +951,21 @@ function pendingOf(row: Row): Pending {
  * @param pending 一件待确认。
  */
 function view(pending: Pending): Record<string, unknown> {
-  const payload = (typeof pending.payload === 'object' && pending.payload !== null ? pending.payload : {}) as Record<string, unknown>;
+  let payload: Record<string, unknown> = {};
+  if (typeof pending.payload === 'object' && pending.payload !== null) {
+    payload = pending.payload as Record<string, unknown>;
+  }
+  let command = pending.title;
+  if (typeof payload['command'] === 'string') {
+    command = payload['command'];
+  }
+  let workDir = '';
+  if (typeof payload['cwd'] === 'string') {
+    workDir = payload['cwd'];
+  }
   return {
     id: pending.id, bot: pending.bot, sessionId: pending.session ?? '', title: pending.title,
-    command: typeof payload['command'] === 'string' ? payload['command'] : pending.title,
-    workDir: typeof payload['cwd'] === 'string' ? payload['cwd'] : '',
+    command, workDir,
     review: { what: pending.detail, risk: '', advice: '' }, createdAt: pending.askedAt, card: pending.card,
   };
 }

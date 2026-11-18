@@ -58,24 +58,29 @@ export interface Timings {
  * @param steps 模型回答了几次。
  * @param timings 各段耗时。
  * @param usedMs 一共用了多久。
+ * @returns 拼接好的各段耗时说明字符串。
  */
 export function timingsText(steps: number, timings: Timings, usedMs: number): string {
   const parts: string[] = [];
-  if (steps > 0) parts.push(`思考 ${String(steps)} 步 ${textModule.duration(timings.modelMs)}`);
+  if (steps > 0) parts.push(`思考 ${String(steps)} 步 ${textModule.getDuration(timings.modelMs)}`);
   if (timings.tools.length > 0) {
-    parts.push([...timings.tools].sort((left, right) => right.ms - left.ms).map((item) => `${item.name} ×${String(item.count)} ${textModule.duration(item.ms)}`).join('、'));
+    parts.push([...timings.tools].sort((left, right) => right.ms - left.ms).map((item) => `${item.name} ×${String(item.count)} ${textModule.getDuration(item.ms)}`).join('、'));
   }
-  parts.push(`总共 ${textModule.duration(usedMs)}`);
+  parts.push(`总共 ${textModule.getDuration(usedMs)}`);
   return parts.join('；');
 }
 
 /**
  * 工具参数说成一句短话：最能说明它在干什么的那个参数，截 60 字。
  * @param args 参数。
+ * @returns 截断至 60 字的核心参数摘要；找不到合适字符串参数时返回空串。
  */
 export function argsBrief(args: Record<string, unknown>): string {
+  //M 按优先级从常见关键参数中挑选一项，压缩空白并截短供进度界面展示。
   const main = args['command'] ?? args['query'] ?? args['path'] ?? args['pattern'] ?? args['text'] ?? args['action'] ?? args['prompt'];
-  return typeof main === 'string' ? textModule.clip(main.replace(/\s+/gu, ' '), 60) : '';
+  if (typeof main === 'string') return textModule.clip(main.replace(/\s+/gu, ' '), 60);
+
+  return '';
 }
 
 /**
@@ -83,6 +88,7 @@ export function argsBrief(args: Record<string, unknown>): string {
  * @param limitMinutes 限时几分钟；不限时是 undefined。
  * @param extended 延长过几次。
  * @param extendMinutes 一次延几分钟。
+ * @returns 格式化后的限时描述文本。
  */
 export function limitText(limitMinutes: number | undefined, extended: number, extendMinutes: number): string {
   if (limitMinutes === undefined) return '不限时';
@@ -97,20 +103,33 @@ export function limitText(limitMinutes: number | undefined, extended: number, ex
  */
 export function readVerdict(text: string): Verdict {
   const none = (why: string): Verdict => ({ absurd: false, absurdWhy: '', handoff: false, handoffNote: '', why });
+  //M 从审核小会话回答里提取 JSON 对象，解析出是否离谱、是否交接及说明。
   const json = extractJson(text);
+  //G 未提取到有效对象或关键布尔字段缺失时，按无法判定处理并带上原回答片段停下收尾。
   if (json === undefined || typeof json['absurd'] !== 'boolean' || typeof json['handoff'] !== 'boolean') {
     return none(`审核的回答读不出结论，停下收尾：${textModule.clip(text.replace(/\s+/gu, ' '), 200)}`);
   }
-  const absurdWhy = typeof json['absurdWhy'] === 'string' ? json['absurdWhy'].trim() : '';
-  const handoffNote = typeof json['handoffNote'] === 'string' ? json['handoffNote'].trim() : '';
+  let absurdWhy = '';
+  if (typeof json['absurdWhy'] === 'string') {
+    absurdWhy = json['absurdWhy'].trim();
+  }
+  let handoffNote = '';
+  if (typeof json['handoffNote'] === 'string') {
+    handoffNote = json['handoffNote'].trim();
+  }
+  //M 优先判定是否离谱，其次校验交接说明是否齐全，决定最终审核动作。
   if (json['absurd'] === true) return { absurd: true, absurdWhy, handoff: false, handoffNote: '', why: '审核发现离谱' };
+  //G 虽建议转新会话但没写交接说明，避免新会话盲跑，按不转停下收尾。
   if (json['handoff'] === true && handoffNote === '') return none('审核建议转新会话，但没写交接说明，停下收尾');
   if (json['handoff'] === true) return { absurd: false, absurdWhy: '', handoff: true, handoffNote, why: '审核建议转新会话' };
+
+  //M 既不离谱也不建议转交，构造正常停下收尾结论返回给进度管理器。
   return none('审核：不离谱，也不建议转新会话，停下收尾');
 }
 
 /**
  * 一段话里找第一个 { 到最后一个 } 当 JSON 读（模型常在 JSON 外面包一层代码块或多说一句）。
+ * @param text 包含 JSON 对象的原始文本。
  * @returns 读不出是 undefined。
  */
 export function extractJson(text: string): Record<string, unknown> | undefined {
@@ -119,7 +138,10 @@ export function extractJson(text: string): Record<string, unknown> | undefined {
   if (start < 0 || end <= start) return undefined;
   try {
     const value: unknown = JSON.parse(text.slice(start, end + 1));
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return undefined;
   } catch {
     return undefined;
   }

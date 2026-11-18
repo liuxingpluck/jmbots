@@ -9,6 +9,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import * as doc from './doc/Doc.ts';
 import type { FeishuAddress } from './index.ts';
+import * as cutModule from '../../utils/Cut.ts';
 import * as mime from '../../utils/Mime.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
@@ -88,6 +89,7 @@ const FILE_TYPES: Record<string, 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt'>
 
 /** 登记当前飞书会话的文件发送工具；上传和发送复用 sendFile。 */
 export function setup(feishu: Feishu, ctx: cordis.Context): void {
+  //M 向骨架注册当前飞书聊天的图片/文件/视频发送工具，限定只能发本轮工作区内部文件。
   ctx.tools.register({
     definition: {
       name: 'feishu_send_file',
@@ -105,14 +107,16 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
       if (session.row.channel !== 'feishu' || !address?.appId || !address.chatId) {
         throw new Error('当前不是飞书会话，无法确定发送的应用和聊天');
       }
-      const file = doc.file(ctx, session, args['path'] as string);
-      //G 只发这一轮工作区里的文件：builder 说话时是他的目录（utils/Workspace.ts 的 of），别的是机器人的工作区。
-      const workspace = workspaceModule.of(ctx.bots.get(session.row.bot)!.workspace, address);
+      //M 将入参路径解析成工作区内规范路径，并对目录越界做 realpath 校验。
+      const file = doc.getFile(ctx, session, args['path'] as string);
+      //G 只发这一轮工作区里的文件：builder 说话时是他的目录（utils/Workspace.ts 的 getWorkspace），别的是机器人的工作区。
+      const workspace = workspaceModule.getWorkspace(ctx.bots.get(session.row.bot)!.workspace, address);
       const relative = path.relative(fs.realpathSync(workspace), fs.realpathSync(file));
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
         throw new Error('只能发送这一轮工作区里的文件');
       }
       const kind = args['kind'] as 'image' | 'file' | 'video' | undefined;
+      //M 校验通过后执行上传并把媒体发往当前飞书会话，回传生成的 message_id。
       const id = await sendFile(feishu, address.appId, address.chatId, file, kind, address.messageId);
       return `已发送，message_id: ${id}`;
     },
@@ -124,15 +128,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
 const RAW_MAX = 4000;
 
 
-/**
- * 截断：太长的留前面，末尾写明截掉了多少。
- * @param text 原文。
- * @param max 最多几个字。
- * @returns 截过的。
- */
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}……（截掉 ${String(text.length - max)} 字）`;
-}
+// 2026-11-17：自己的 truncate 去掉，原文太长改用 utils/Cut.ts 的 chars 截（末尾写明一共多少字）。
 
 
 /**
@@ -148,17 +144,81 @@ export function postText(raw: string): string {
       && Array.isArray((value as { content?: unknown }).content));
     post = (first ?? {}) as typeof post;
   }
-  const lines = post.title !== undefined && post.title !== '' ? [post.title] : [];
+  const lines: string[] = [];
+  if (post.title !== undefined && post.title !== '') {
+    lines.push(post.title);
+  }
   for (const paragraph of post.content ?? []) {
-    const parts = (Array.isArray(paragraph) ? paragraph : []).map((item) => {
+    let paragraphItems: unknown[] = [];
+    if (Array.isArray(paragraph)) {
+      paragraphItems = paragraph;
+    }
+    const parts = paragraphItems.map((item) => {
       const element = (item ?? {}) as { tag?: string; text?: string; href?: string; user_name?: string };
       if (element.tag === 'img' || element.tag === 'media') return '[图片]';
-      if (element.tag === 'at') return element.user_name === undefined ? '' : `@${element.user_name}`;
+
+      if (element.tag === 'at') {
+        if (element.user_name === undefined) return '';
+
+        return `@${element.user_name}`;
+      }
       return element.text ?? element.href ?? '';
     });
     lines.push(parts.join(''));
   }
   return lines.join('\n');
+}
+
+
+/**
+ * 按飞书消息类型把解析后的字段拼成给机器人看的正文（未知类型保留中文类型名与截断后的原始 JSON）。
+ * @param type 飞书消息类型。
+ * @param raw 消息原始内容字符串。
+ * @param content 解析出的 JSON 值。
+ * @param top 顶层对象字典。
+ * @param field 取顶层文字或数字字段的辅助函数（来自 describe 内部）。
+ * @param duration 格式化的语音或视频时长后缀。
+ * @returns 拼好的消息正文（未 trim）。
+ */
+function formatMessageText(
+  type: string,
+  raw: string,
+  content: unknown,
+  top: Record<string, unknown>,
+  field: (key: string) => string,
+  duration: string,
+): string {
+  //M 普通纯文本消息直接提取顶层 text 字段。
+  if (type === 'text') return field('text');
+
+  if (type === 'post') {
+    if (typeof top['text'] === 'string') return top['text'];
+
+    //M 富文本没有扁平 text 字段时，按段落与行内标签抽取纯文字。
+    return postText(raw);
+  }
+  if (type === 'image') return '';
+
+  if (type === 'file') return `[文件] ${field('file_name')}`;
+
+  if (type === 'audio') return `[语音${duration}]`;
+
+  if (type === 'media') return `[视频${duration}] ${field('file_name')}`;
+
+  if (type === 'sticker') return '[表情包]';
+
+  if (type === 'location') return `[位置] ${field('name')}（经度 ${field('longitude')}，纬度 ${field('latitude')}）`;
+
+  if (type === 'share_chat') return `[群名片] ${field('chat_id')}`;
+
+  if (type === 'share_user') return `[个人名片] ${field('user_id')}`;
+
+  if (type === 'merge_forward') return '[合并转发]';
+
+  //M 别的类型：写上类型名，后面跟原文 JSON；太长就截（utils/Cut.ts 的 chars）。
+  const json = JSON.stringify(content, null, 2);
+  const shown = cutModule.chars(json, RAW_MAX);
+  return `[${TYPE_NAMES[type] ?? type}]\n${shown}`;
 }
 
 
@@ -175,7 +235,11 @@ export function describe(type: string, raw: string): { text: string; resources: 
   } catch {
     return { text: raw, resources: [] };
   }
-  const top = (typeof content === 'object' && content !== null ? content : {}) as Record<string, unknown>;
+  let topObject: unknown = {};
+  if (typeof content === 'object' && content !== null) {
+    topObject = content;
+  }
+  const top = topObject as Record<string, unknown>;
 
   //M 资源：只有这几种下载得了（表情包、卡片里的飞书不让下），递归找 image_key、file_key。
   const resources: Resource[] = [];
@@ -188,47 +252,36 @@ export function describe(type: string, raw: string): { text: string; resources: 
     }
     if (typeof item['file_key'] === 'string') {
       const names: Record<string, string> = { audio: 'audio.opus', media: 'video.mp4' };
-      const named = typeof item['file_name'] === 'string' ? item['file_name'] : undefined;
+      let named: string | undefined;
+      if (typeof item['file_name'] === 'string') {
+        named = item['file_name'];
+      }
       resources.push({ key: item['file_key'], type: 'file', name: named ?? names[type] ?? 'attachment' });
     }
+    //M 递归扫描嵌套子节点里的图片与文件资源标识。
     for (const child of Object.values(item)) {
+      //M 下钻处理嵌套字段中的附件资源。
       collect(child);
     }
   };
-  if (['post', 'image', 'file', 'audio', 'media'].includes(type)) collect(content);
+  //M 仅针对飞书开放平台允许下载的消息类型递归搜集附件与图片 key。
+  if (['post', 'image', 'file', 'audio', 'media'].includes(type)) {
+    collect(content);
+  }
 
   //M 文字：第一层的一个字段、时长（毫秒）写成“N 秒”。
   const field = (key: string): string => {
     const value = top[key];
-    return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+    if (typeof value === 'string' || typeof value === 'number') return String(value);
+
+    return '';
   };
-  const duration = typeof top['duration'] === 'number' ? ` ${String(Math.round(top['duration'] / 1000))} 秒` : '';
-  let text: string;
-  if (type === 'text') {
-    text = field('text');
-  } else if (type === 'post') {
-    text = typeof top['text'] === 'string' ? top['text'] : postText(raw);
-  } else if (type === 'image') {
-    text = '';
-  } else if (type === 'file') {
-    text = `[文件] ${field('file_name')}`;
-  } else if (type === 'audio') {
-    text = `[语音${duration}]`;
-  } else if (type === 'media') {
-    text = `[视频${duration}] ${field('file_name')}`;
-  } else if (type === 'sticker') {
-    text = '[表情包]';
-  } else if (type === 'location') {
-    text = `[位置] ${field('name')}（经度 ${field('longitude')}，纬度 ${field('latitude')}）`;
-  } else if (type === 'share_chat') {
-    text = `[群名片] ${field('chat_id')}`;
-  } else if (type === 'share_user') {
-    text = `[个人名片] ${field('user_id')}`;
-  } else if (type === 'merge_forward') {
-    text = '[合并转发]';
-  } else {
-    text = `[${TYPE_NAMES[type] ?? type}]\n${truncate(JSON.stringify(content, null, 2), RAW_MAX)}`;
+  let duration = '';
+  if (typeof top['duration'] === 'number') {
+    duration = ` ${String(Math.round(top['duration'] / 1000))} 秒`;
   }
+  //M 按飞书消息类型把解析出来的字段拼成正文。
+  const text = formatMessageText(type, raw, content, top, field, duration);
   const unique = resources.filter((item, index) => resources.findIndex((other) => other.key === item.key) === index);
   return { text: text.trim(), resources: unique };
 }
@@ -247,27 +300,38 @@ export async function related(
   message: { messageId: string; parentId?: string; type: string },
 ): Promise<Related> {
   const result: Related = { quote: '', forwarded: '', resources: [] };
+  //M 按接收应用 ID 取对应的飞书 SDK 客户端用于拉取引用与合并转发原文。
   const client = feishu.client(appId);
 
   /** 一条换成文字，顺手记下资源；纯图片写 [图片]。 */
   const read = (item: MessageItem): string => {
+    //M 复用标准消息描述逻辑抽取子消息正文与内含资源，并将资源归属到子消息 ID 上。
     const described = describe(item.msg_type ?? '', item.body?.content ?? '{}');
     result.resources.push(...described.resources.map((resource) => ({ ...resource, messageId: item.message_id })));
-    return described.text === '' ? '[图片]' : described.text;
+    if (described.text === '') return '[图片]';
+
+    return described.text;
   };
   const fetch = async (id: string): Promise<MessageItem[]> => {
+    //M 调用飞书 message.get 并携带限流退让重试，拉取指定消息体及其折叠子项。
     const got = await api.call('取消息', () => client.im.v1.message.get({ path: { message_id: id } }));
     return (got.data?.items ?? []) as MessageItem[];
   };
 
   if (message.parentId !== undefined && message.parentId !== '') {
     try {
+      //M 存在父消息时拉取被引用原文，附带 500 字上限拼接成提示语。
       const [item] = await fetch(message.parentId);
-      result.quote = item === undefined
-        ? '【回复的消息未取到】'
-        : `【回复的消息：${read(item).slice(0, 500)}】`;
+      if (item === undefined) {
+        result.quote = '【回复的消息未取到】';
+      }
+      if (item !== undefined) {
+        //M 解析被引用消息内容并截取前 500 字拼成引用提示。
+        const quoted = read(item).slice(0, 500);
+        result.quote = `【回复的消息：${quoted}】`;
+      }
     } catch (error) {
-      result.quote = `[引用的消息没取到：${textModule.messageOf(error)}]`;
+      result.quote = `[引用的消息没取到：${textModule.getMessage(error)}]`;
     }
   }
   if (message.type === 'merge_forward') {
@@ -276,12 +340,15 @@ export async function related(
       const items = (await fetch(message.messageId)).filter((item) => item.upper_message_id !== undefined);
       const lines = items.map((item, index) => {
         const at = Number(item.create_time);
-        const time = Number.isFinite(at) && at > 0 ? `${new Date(at).toLocaleString('zh-CN', { hour12: false })} ` : '';
+        let time = '';
+        if (Number.isFinite(at) && at > 0) {
+          time = `${new Date(at).toLocaleString('zh-CN', { hour12: false })} `;
+        }
         return `${String(index + 1)}. ${time}${read(item)}`;
       });
       result.forwarded = lines.join('\n');
     } catch (error) {
-      result.forwarded = `[合并转发的内容没取到：${textModule.messageOf(error)}]`;
+      result.forwarded = `[合并转发的内容没取到：${textModule.getMessage(error)}]`;
     }
   }
   return result;
@@ -298,6 +365,7 @@ export async function related(
  * @throws 接口出错、超过 100MB 时抛错。
  */
 export async function download(feishu: Feishu, appId: string, messageId: string, resource: Resource): Promise<Uint8Array> {
+  //M 按收信应用客户端调资源下载接口（带 429 重试）获取可读流。
   const client = feishu.client(appId);
   const got = await api.call('下载资源', () => client.im.v1.messageResource.get({
     params: { type: resource.type },
@@ -312,7 +380,13 @@ export async function download(feishu: Feishu, appId: string, messageId: string,
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of got.getReadableStream()) {
-    const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    let piece: Buffer = Buffer.alloc(0);
+    if (Buffer.isBuffer(chunk)) {
+      piece = chunk;
+    }
+    if (!Buffer.isBuffer(chunk)) {
+      piece = Buffer.from(chunk as Uint8Array);
+    }
     size += piece.length;
     if (size > DOWNLOAD_MAX) {
       throw new Error('文件超过 100MB');
@@ -344,7 +418,8 @@ export async function sendFile(
     throw new Error(`${path.basename(file)} 是空文件，飞书不收`);
   }
   const extension = path.extname(file).toLowerCase();
-  const kind = requestedKind ?? mime.kindOf(file);
+  //M 调用方未指定类别时按扩展名自动识别图片或普通文件。
+  const kind = requestedKind ?? mime.getKind(file);
   if (requestedKind === 'image' && (!IMAGE_EXTENSIONS.has(extension) || data.length > IMAGE_MAX)) {
     throw new Error('图片格式不支持或超过 10MB');
   }
@@ -360,19 +435,30 @@ export async function sendFile(
     if (imageKey === undefined || imageKey === '') {
       throw new Error('飞书上传图片成功但没有交回 image_key');
     }
+    //M 上传得到 image_key 后调用统一发送接口推送图片消息。
     return message(feishu, appId, chatId, 'image', { image_key: imageKey }, messageId);
   }
 
   //M 视频 mp4、语音 opus：先按媒体消息发，发不成退回附件（文件总要送到），原因记日志。
-  const media = extension === '.mp4' ? 'media' : extension === '.opus' ? 'audio' : undefined;
-  if (requestedKind !== 'file' && media !== undefined) {
+  let mediaKind: 'media' | 'audio' | undefined;
+  if (extension === '.mp4') {
+    mediaKind = 'media';
+  }
+  if (extension === '.opus') {
+    mediaKind = 'audio';
+  }
+  if (requestedKind !== 'file' && mediaKind !== undefined) {
     try {
-      return await uploadAndSend(feishu, appId, chatId, file, data, media, messageId);
+      return await uploadAndSend(feishu, appId, chatId, file, data, mediaKind, messageId);
     } catch (error) {
-      const said = media === 'media' ? '视频' : '语音';
-      console.error(`${new Date().toLocaleString('zh-CN', { hour12: false })} 飞书：${path.basename(file)} 按${said}消息没发成，改按附件发：${textModule.messageOf(error)}`);
+      let said = '语音';
+      if (mediaKind === 'media') {
+        said = '视频';
+      }
+      console.error(`${new Date().toLocaleString('zh-CN', { hour12: false })} 飞书：${path.basename(file)} 按${said}消息没发成，改按附件发：${textModule.getMessage(error)}`);
     }
   }
+  //M 非音视频文件或媒体方式失败后统一退回按普通文件附件上传发送。
   return uploadAndSend(feishu, appId, chatId, file, data, 'file', messageId);
 }
 
@@ -399,15 +485,27 @@ async function uploadAndSend(
   if (data.length > FILE_MAX) {
     throw new Error(`${path.basename(file)} 超过 30MB，飞书不收`);
   }
-  const fileType = type === 'file' ? (FILE_TYPES[path.extname(file).toLowerCase()] ?? 'stream') : (type === 'media' ? 'mp4' : 'opus');
+  let uploadType: 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream' = 'opus';
+  if (type === 'media') {
+    uploadType = 'mp4';
+  }
+  if (type === 'file') {
+    const mapped = FILE_TYPES[path.extname(file).toLowerCase()] ?? 'stream';
+    uploadType = mapped;
+    if (mapped === 'mp4' || mapped === 'opus') {
+      uploadType = 'stream';
+    }
+  }
+  //M 按应用取得 SDK 客户端后上传文件字节换取 file_key，再推对应类型消息。
   const client = feishu.client(appId);
   const uploaded = await api.call('上传文件', () => client.im.v1.file.create({
-    data: { file_type: type === 'file' && (fileType === 'mp4' || fileType === 'opus') ? 'stream' : fileType, file_name: path.basename(file), file: data },
+    data: { file_type: uploadType, file_name: path.basename(file), file: data },
   }));
   const fileKey = uploaded?.file_key;
   if (fileKey === undefined || fileKey === '') {
     throw new Error('飞书上传文件成功但没有交回 file_key');
   }
+  //M 带 file_key 发出 file/media/audio 消息并回传 message_id。
   return message(feishu, appId, chatId, type, { file_key: fileKey }, messageId);
 }
 
@@ -420,7 +518,7 @@ async function uploadAndSend(
  * @param type 消息类型：text、image、file、media、audio、interactive。
  * @param content 消息内容（会转成 JSON 字符串）。
  * @returns 新消息的 message_id。
- * @throws 发不出去时抛错。
+ * @throws 发不出去时抛错：飞书明确拒了是 api.NotSent，断网、超时这类不知道收没收的是普通 Error。
  */
 export async function message(
   feishu: Feishu,
@@ -430,18 +528,25 @@ export async function message(
   content: unknown,
   messageId?: string,
 ): Promise<string> {
+  //M 获取发送应用对应的飞书客户端实例。
   const client = feishu.client(appId);
   if (messageId) {
     try {
+      //M 若带有原消息号则优先作为引用回复发出（可带限流重试）。
       const replied = await api.call('回复消息', () => client.im.v1.message.reply({
         path: { message_id: messageId },
         data: { msg_type: type, content: JSON.stringify(content) },
       }));
       return replied.data?.message_id ?? '';
     } catch (error) {
-      console.error(`飞书回复失败，改为普通发送：${textModule.messageOf(error)}`);
+      //G 不知道回复发没发到（断网、超时）→ 不再普通发送一遍，免得发两条；原样抛出去。
+      if (!(error instanceof api.NotSent)) throw error;
+
+      //M 飞书明确拒了回复（原消息撤回了这类）→ 改普通发送。
+      console.error(`飞书回复失败，改为普通发送：${textModule.getMessage(error)}`);
     }
   }
+  //M 无原消息号或回复被明确拒收时走群聊直发通道发出消息。
   const sent = await api.call('发消息', () => client.im.v1.message.create({
     params: { receive_id_type: 'chat_id' },
     data: { receive_id: chatId, msg_type: type, content: JSON.stringify(content) },

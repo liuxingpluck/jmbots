@@ -54,21 +54,35 @@ let nextKey = 1;
 /**
  * 从剪贴板或拖放里取出文件。
  * @param data ClipboardEvent.clipboardData 或 DragEvent.dataTransfer。
+ * @returns 提取出的文件数组；没有数据时返回空数组。
  */
-export function filesFrom(data: DataTransfer | null | undefined): File[] {
-  return data ? [...data.files] : [];
+export function getFilesFrom(data: DataTransfer | null | undefined): File[] {
+  if (!data) return [];
+
+  return [...data.files];
 }
 
 
-/** 输入框上方的附件。 */
+/**
+ * 输入框上方的附件管理 Hook。
+ * @returns 待发附件状态及 add、remove、clear 控制动作。
+ * 副作用：add 时生成图片本地 blob 预览地址并立即 PUT 上传文件；remove 与 clear 时释放对应的 blob 对象地址。
+ */
 export function useAttachments(): AttachmentsState {
+  //M 订阅界面翻译函数，用来给无文件名的剪贴板图片补默认名称。
   const t = i18n.useT();
   /** 待发的附件。 */
   const [items, setItems] = react.useState<PendingAttachment[]>([]);
 
   /** 改一个。 */
   const patch = react.useCallback((key: string, change: Partial<PendingAttachment>) => {
-    setItems((old) => old.map((item) => (item.key === key ? { ...item, ...change } : item)));
+    setItems((old) =>
+      old.map((item) => {
+        if (item.key !== key) return item;
+
+        return { ...item, ...change };
+      }),
+    );
   }, []);
 
   /** 加几个文件。 */
@@ -79,11 +93,26 @@ export function useAttachments(): AttachmentsState {
         const key = `a${nextKey}`;
         nextKey += 1;
         /** 类别：先看浏览器给的类型，再看扩展名。 */
-        const kind = file.type.startsWith('image/') ? 'image' : attachments.attachmentKind(file.name);
-        setItems((old) => [...old, { key, name: file.name || t('粘贴的图片.png'), size: file.size, kind, progress: 0, preview: kind === 'image' ? URL.createObjectURL(file) : undefined }]);
+        //M 先按文件名后缀判别附件类型，若是浏览器识别的 image/* 再归为图片以生成本地缩略图。
+        let kind = attachments.getAttachmentKind(file.name);
+        if (file.type.startsWith('image/')) {
+          kind = 'image';
+        }
+        let preview: string | undefined;
+        if (kind === 'image') {
+          preview = URL.createObjectURL(file);
+        }
+        //M 先把待发附件放进列表占位，再立即以原始字节上传并回写进度、上传号或失败原因。
+        setItems((old) => [...old, { key, name: file.name || t('粘贴的图片.png'), size: file.size, kind, progress: 0, preview }]);
         api.uploadFile(file, (ratio) => patch(key, { progress: ratio })).then(
           (result) => patch(key, { progress: 1, uploadId: result.id }),
-          (error: unknown) => patch(key, { error: error instanceof Error ? error.message : String(error) }),
+          (error: unknown) => {
+            let message = String(error);
+            if (error instanceof Error) {
+              message = error.message;
+            }
+            patch(key, { error: message });
+          },
         );
       }
     },
@@ -117,6 +146,10 @@ export function useAttachments(): AttachmentsState {
   /** 还有没传完的（传失败的不算，会被提示删掉）。 */
   const uploading = items.some((item) => !item.uploadId && !item.error);
   /** 传完的上传号。 */
-  const uploadIds = items.flatMap((item) => (item.uploadId ? [item.uploadId] : []));
+  const uploadIds = items.flatMap((item) => {
+    if (!item.uploadId) return [];
+
+    return [item.uploadId];
+  });
   return { items, add, remove, clear, uploading, uploadIds };
 }

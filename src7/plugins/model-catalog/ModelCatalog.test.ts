@@ -1,0 +1,276 @@
+/**
+ * model-catalog（含并入的 Fallback / Queue）单元测试：
+ *   1. 清单合并（手写 + list_models: false）与 model/cooldown 维护 limitedUntil（过期自动清除）；
+ *   2. 真实 Sessions.run() 链路下：挂在前方的 session/request 插件先写 system，排在后面的 ModelFallback 接管调用 chat()；
+ *      429 限流连续触发两次 model/failed 即掐断、发 model/cooldown（同步进 ModelCatalog）与 model/fallback，切备选成功；再次请求直接走 cooldown；
+ *   3. 上下文超长（context-overflow）：按 ModelCatalog 窗口降序挑更大上下文候选；
+ *   4. Queue 并发排队与取消信号，以及 config.fallback 入口校验和 fallback: false 关闭开关。
+ */
+import { Database } from 'bun:sqlite';
+import { afterEach, expect, test } from 'bun:test';
+import * as piAi from '@earendil-works/pi-ai';
+import * as cordis from 'cordis';
+import * as sessionsModule from '../../Sessions.ts';
+import * as toolsModule from '../../Tools.ts';
+import * as events from '../../utils/RequestEvent.ts';
+import type { FallbackInfo } from './Fallback.ts';
+import { Queue } from './Queue.ts';
+import * as catalogPlugin from './index.ts';
+
+
+const closers: (() => Promise<unknown> | void)[] = [];
+const catalogOptions = {
+  timeoutMs: 1000,
+  onFallback: (reason: events.FallbackReason) => ({ requestId: reason }),
+};
+
+afterEach(async () => {
+  for (const close of closers.splice(0).reverse()) {
+    await close();
+  }
+});
+
+
+/** 搭建真实 Tools + Sessions + MockResources，再按先后挂载插件。 */
+async function setupWorld(options: {
+  raw?: Record<string, unknown>;
+  pluginConfig?: catalogPlugin.ModelCatalogConfig;
+  beforeMount?: (ctx: cordis.Context) => void;
+} = {}): Promise<{
+  ctx: cordis.Context;
+  fallbackEvents: FallbackInfo[];
+  cooldownEvents: catalogPlugin.CooldownInfo[];
+}> {
+  const ctx = new cordis.Context();
+  closers.push(() => ctx.fiber.dispose());
+
+  const providerConfig = {
+    mock: { baseUrl: 'http://127.0.0.1:0', apiKey: '', api: 'openai-completions' as const },
+  };
+  const modelWindows: Record<string, number> = {
+    'mock/primary': 128000,
+    'mock/small': 64000,
+    'mock/medium': 200000,
+    'mock/huge': 256000,
+  };
+  const raw = options.raw ?? {
+    providers: {
+      mock: {
+        list_models: false,
+        models: {
+          primary: { context_window: 128000, max_output_tokens: 4096, price: { input: 1, output: 2 } },
+          small: { context_window: 64000, max_output_tokens: 4096, price: { input: 0, output: 0 } },
+          medium: { context_window: 200000, max_output_tokens: 4096, price: { input: 1, output: 2 } },
+          huge: { context_window: 256000, max_output_tokens: 4096, price: { input: 1, output: 2 } },
+        },
+      },
+    },
+    engine: {
+      fallback_chain: ['mock/medium', 'mock/huge'],
+      fallback_max_tries: 5,
+      fallback_include_siblings: true,
+      rate_limit_cooldown_minutes: 5,
+    },
+  };
+
+  class MockResources extends cordis.Service {
+    readonly db = new Database(':memory:');
+    readonly raw = raw;
+    readonly config = {
+      defaultModel: 'mock/primary',
+      thinking: 'low' as const,
+      retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
+      providers: providerConfig,
+    };
+    constructor(parent: cordis.Context) {
+      super(parent, 'resources');
+    }
+    getModel(id: string): { contextWindow: number } {
+      return { contextWindow: modelWindows[id] ?? 128000 };
+    }
+  }
+
+  const fallbackEvents: FallbackInfo[] = [];
+  const cooldownEvents: catalogPlugin.CooldownInfo[] = [];
+  ctx.on('model/fallback', (info) => fallbackEvents.push(info));
+  ctx.on('model/cooldown', (info) => cooldownEvents.push(info));
+
+  await ctx.plugin(MockResources);
+  await ctx.plugin(toolsModule.Tools);
+  await ctx.plugin(sessionsModule.Sessions);
+
+  if (options.beforeMount !== undefined) {
+    options.beforeMount(ctx);
+  }
+
+  await ctx.plugin(catalogPlugin, options.pluginConfig);
+
+  return { ctx, fallbackEvents, cooldownEvents };
+}
+
+
+test('1. ModelCatalog 清单合并与 model/cooldown 维护 limitedUntil', async () => {
+  const world = await setupWorld();
+  const list = world.ctx.modelCatalog.list();
+  expect(list.map((item) => item.id)).toEqual(['mock/primary', 'mock/small', 'mock/medium', 'mock/huge']);
+  expect(world.ctx.modelCatalog.find('mock/primary')?.limitedUntil).toBeUndefined();
+
+  const future = Date.now() + 60_000;
+  world.ctx.emit('model/cooldown', { model: 'mock/primary', until: future, reason: '429 rate limit' });
+  expect(world.ctx.modelCatalog.find('mock/primary')?.limitedUntil).toBe(future);
+
+  const expired = Date.now() - 1000;
+  world.ctx.emit('model/cooldown', { model: 'mock/small', until: expired, reason: '429 expired' });
+  expect(world.ctx.modelCatalog.find('mock/small')?.limitedUntil).toBeUndefined();
+});
+
+test('模型查询事件返回清单项，查不到模型时仍回执', async () => {
+  const { ctx } = await setupWorld();
+  const known = { action: 'find', model: 'mock/primary' } as const;
+  const found = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', known, catalogOptions);
+  expect(found.info).toEqual(ctx.modelCatalog.find(known.model));
+  expect(found.info?.contextWindow).toBe(128000);
+
+  const unknown = { action: 'find', model: 'mock/missing' } as const;
+  const missing = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', unknown, catalogOptions);
+  expect(missing.requestId).toStartWith('req_');
+  expect(missing.info).toBeUndefined();
+});
+
+test('模型清单未挂载时查询立即走无人接单退路', async () => {
+  const ctx = new cordis.Context();
+  closers.push(() => ctx.fiber.dispose());
+  const lookup = { action: 'find', model: 'mock/primary' } as const;
+  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', lookup, catalogOptions);
+  expect(result).toEqual({ requestId: 'unhandled' });
+});
+
+
+test('2. 限流回退：前置插件先改 system，429 重试超 1 次掐断、发 cooldown 与 fallback，下轮直接走冷却', async () => {
+  const seenModels: string[] = [];
+  const seenSystems: string[][] = [];
+
+  const world = await setupWorld({
+    beforeMount: (ctx) => {
+      //M 模拟排在前面的 prompt 等插件先向 request.system 加段话。
+      ctx.on('session/request', (request) => {
+        request.system.push('前置系统提示');
+      });
+    },
+  });
+
+  world.ctx.sessions.chat = async (request) => {
+    seenModels.push(request.model);
+    seenSystems.push([...request.system]);
+    if (request.model === 'mock/primary') {
+      //M 模拟底层 pi 重试 2 次（> RATE_LIMIT_RETRIES = 1）后由 ModelFallback 主动 abort 切换。
+      world.ctx.emit('model/failed', { session: request.session, model: 'mock/primary', error: 'HTTP 429 rate limit retry after 30s', ms: 10 });
+      world.ctx.emit('model/failed', { session: request.session, model: 'mock/primary', error: 'HTTP 429 rate limit retry after 30s', ms: 10 });
+      throw new Error('aborted');
+    }
+    return piAi.fauxAssistantMessage(`由 ${request.model} 回复`);
+  };
+
+  //M 第 1 轮：primary 限流 → 记进冷却 → 切到 mock/medium 回复；且前置系统提示保留。
+  const session1 = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session1.add('你好');
+  await session1.run();
+
+  expect(session1.row.state).toBe('done');
+  expect(session1.row.reply).toBe('由 mock/medium 回复');
+  expect(seenModels).toEqual(['mock/primary', 'mock/medium']);
+  expect(seenSystems[1]).toContain('前置系统提示');
+  expect(world.cooldownEvents.length).toBe(1);
+  expect(world.cooldownEvents[0]?.model).toBe('mock/primary');
+  expect(world.ctx.modelCatalog.find('mock/primary')?.limitedUntil).toBeGreaterThan(Date.now());
+  expect(world.fallbackEvents.map((item) => ({ from: item.from, to: item.to, reason: item.reason }))).toEqual([
+    { from: 'mock/primary', to: 'mock/medium', reason: 'rate-limit' },
+  ]);
+
+  //M 第 2 轮：mock/primary 仍在冷却期 → 不再尝试 primary，直接发 cooldown 并走 mock/medium。
+  seenModels.length = 0;
+  world.fallbackEvents.length = 0;
+  const session2 = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session2.add('再来一次');
+  await session2.run();
+
+  expect(session2.row.state).toBe('done');
+  expect(seenModels).toEqual(['mock/medium']);
+  expect(world.fallbackEvents.map((item) => ({ from: item.from, to: item.to, reason: item.reason }))).toEqual([
+    { from: 'mock/primary', to: 'mock/medium', reason: 'cooldown' },
+  ]);
+});
+
+
+test('3. 上下文超长：过滤掉更小窗口候选并按窗口降序优先尝试最大模型', async () => {
+  const seenModels: string[] = [];
+  const world = await setupWorld({
+    pluginConfig: {
+      fallback: {
+        chain: ['mock/small', 'mock/medium', 'mock/huge'],
+      },
+    },
+  });
+
+  world.ctx.sessions.chat = async (request) => {
+    seenModels.push(request.model);
+    if (request.model === 'mock/primary') {
+      throw new Error('maximum context length exceeded');
+    }
+    return piAi.fauxAssistantMessage(`超大窗口 ${request.model}`);
+  };
+
+  const session = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session.add('长文');
+  await session.run();
+
+  expect(session.row.state).toBe('done');
+  expect(session.row.reply).toBe('超大窗口 mock/huge');
+  expect(seenModels).toEqual(['mock/primary', 'mock/huge']);
+  expect(world.fallbackEvents[0]?.reason).toBe('context-overflow');
+});
+
+
+test('4. Queue 并发上限与取消信号、fallback: false 开关与配置校验', async () => {
+  const queue = new Queue({ perModel: 1, models: {}, providers: { p: 1 } });
+  let releaseFirst = (): void => undefined;
+  const firstHold = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const runningFirst = queue.run('p/m1', async () => {
+    await firstHold;
+    return 'first';
+  });
+
+  const abortedController = new AbortController();
+  const secondQueued = queue.run('p/m2', async () => 'second', abortedController.signal);
+  abortedController.abort();
+  await expect(secondQueued).rejects.toThrow('排队时被喊停了');
+
+  releaseFirst();
+  expect(await runningFirst).toBe('first');
+
+  //M fallback: false 关闭回退，保持 ModelCatalog 目录仍可查。
+  const disabledWorld = await setupWorld({ pluginConfig: { fallback: false } });
+  expect(disabledWorld.ctx.modelCatalog.list().length).toBe(4);
+  let fallbackRan = false;
+  disabledWorld.ctx.sessions.chat = async () => {
+    fallbackRan = true;
+    throw new Error('HTTP 429 rate limit');
+  };
+  const session = disabledWorld.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session.add('不回退');
+  await session.run();
+  expect(fallbackRan).toBe(true);
+  expect(disabledWorld.fallbackEvents.length).toBe(0);
+
+  //M 非法子配置入口抛错。
+  const badCtx = {
+    resources: {
+      raw: {},
+      config: { defaultModel: 'mock/primary', providers: {} },
+    },
+  } as unknown as cordis.Context;
+  expect(() => catalogPlugin.apply(badCtx, { fallback: { max_tries: -1 } })).toThrow('model-catalog.fallback.max_tries 要是不小于 0 整数');
+});

@@ -1,0 +1,597 @@
+/**
+ * web-api 接入 channel/message 后的冒烟与离线测试（渠道统一第 2、3、4 步）：
+ *   1. POST /api/message 返回 { id, file: '' } 与原先一字不差；
+ *      channel/message 只发 1 次，目标机器人只认领 1 次，回复照旧落进 GET /api/messages/:id 的 replies；
+ *   2. 同客户前台会话发起待确认后通过 POST /api/message 发“同意 1” → channel/message 只发 1 次，
+ *      approval 只消费 1 次，确认文字通过 channel/reply 落进 replies，不再触发多余模型轮次；
+ *   3. 第 4 步：一轮里调两次 channel_reply → replies 两条、顺序对；一次不调 → 零次兜底只出一条；
+ *   4. 第 3 步：指定会话只进那场、只回一次，显式会话不投给别的机器人，“同意 N”只消费一次；引用别的渠道的消息进原会话、回到网页这条；
+ *   5. A 块：GET /api/channels 清单，时间线按 channel + chat 筛，POST 带 view 校验后进前台提示，不带 view 时请求、返回、消息都不变；
+ *   6. 网页主人发“同意 N”可批飞书群/单聊或无会话的待确认且只消费一次；飞书群外人与微信客户发“同意 N”不能批主人待确认。
+ *
+ * 跑法：bun test ./src7/plugins/web-api/WebApi.test.ts
+ */
+import { afterEach, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as piAi from '@earendil-works/pi-ai';
+import * as cordis from 'cordis';
+import * as fastify from 'fastify';
+import * as channels from '../../Channels.ts';
+import * as sessionsModule from '../../Sessions.ts';
+import * as toolsModule from '../../Tools.ts';
+import * as approvalModule from '../approval/index.ts';
+import * as botsPlugin from '../bots/index.ts';
+import * as workspacesPlugin from '../workspaces/index.ts';
+import * as webApiModule from './index.ts';
+
+
+//M 每个测例后自动清理插件和临时目录。
+const closers: Array<() => Promise<unknown> | void> = [];
+afterEach(async () => {
+  for (const close of closers.splice(0).reverse()) {
+    await close();
+  }
+});
+
+
+/** 假资源服务。 */
+class FakeResources extends cordis.Service {
+  readonly db = new Database(':memory:');
+  readonly raw: Record<string, unknown>;
+  readonly root: string;
+  readonly version = '0.7.30-test';
+  readonly builtTime = Date.now();
+  readonly config = {
+    defaultModel: 'fake/fake',
+    thinking: 'low',
+    retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
+    providers: {},
+    plugins: [] as Array<{ name: string; config?: unknown }>,
+  };
+
+  constructor(ctx: cordis.Context, options: { root: string; bots: Array<{ name: string }> }) {
+    super(ctx, 'resources');
+    this.root = options.root;
+    this.raw = { bots: options.bots };
+  }
+
+  dir(...parts: string[]): string {
+    const full = path.join(this.root, ...parts);
+    fs.mkdirSync(full, { recursive: true });
+    return full;
+  }
+
+  getModel(): { input: string[] } {
+    return { input: ['text'] };
+  }
+}
+
+
+/** 内存 Fastify Http 服务，用 app.inject 测接口而不占真实端口。 */
+class FakeHttp extends cordis.Service {
+  readonly app: fastify.FastifyInstance;
+
+  constructor(ctx: cordis.Context) {
+    super(ctx, 'http');
+    this.app = fastify.default({ logger: false });
+    ctx.effect(() => () => void this.app.close());
+  }
+}
+
+
+/** 等待条件满足，最多 3 秒。 */
+async function waitFor(check: () => boolean | Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 300; i += 1) {
+    if (await check()) return;
+
+    await Bun.sleep(10);
+  }
+  throw new Error('等待超时：条件未在 3 秒内成立');
+}
+
+
+test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 channel/message 仅发 1 次、approval 仅消费 1 次', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'webapi-channel-'));
+  closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx = new cordis.Context();
+  closers.push(() => ctx.fiber.dispose());
+
+  await ctx.plugin(FakeResources, { root, bots: [{ name: '助手' }] });
+  await ctx.plugin(FakeHttp);
+  await ctx.plugin(toolsModule.Tools);
+  await ctx.plugin(sessionsModule.Sessions);
+  await ctx.plugin(workspacesPlugin);
+  await ctx.plugin(botsPlugin, {});
+  await ctx.plugin(approvalModule, { thinking: 'low', decision_pass: 0.8 });
+  await ctx.plugin(webApiModule);
+  await ctx.http.app.ready();
+
+  //M 跟踪 channel/message 发出与认领结果、模型调用次数。
+  const emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }> = [];
+  ctx.on('channel/message', (message, control) => {
+    emitted.push({ message, control });
+  });
+
+  let modelRuns = 0;
+  ctx.on('session/request', (request) => {
+    modelRuns += 1;
+    const last = request.messages.findLast((item) => (item.role as string) !== 'system');
+    let said = '';
+    if (last?.role === 'user') {
+      said = piAi.contentText(last.content);
+    }
+    request.answer = piAi.fauxAssistantMessage(`网页回：${said}`);
+  });
+
+  //G 1. 冒烟契约：POST /api/message 返回严格等于 { id: 1, file: '' }。
+  const postRes = await ctx.http.app.inject({
+    method: 'POST',
+    url: '/api/message',
+    payload: { text: '你好网页冒烟', bot: '助手', from: 'web' },
+  });
+  expect(postRes.statusCode).toBe(200);
+  expect(postRes.json<{ id: number; file: string }>()).toEqual({ id: 1, file: '' });
+
+  expect(emitted).toHaveLength(1);
+  expect(emitted[0]?.message.channel).toBe('http');
+  expect(emitted[0]?.message.targetBots).toEqual(['助手']);
+  expect(emitted[0]?.control?.claims).toHaveLength(1);
+  expect(emitted[0]?.control?.claims[0]?.status).toBe('claimed');
+
+  let view1: { status: string; replies: Array<{ text: string }> } | undefined;
+  await waitFor(async () => {
+    const getRes = await ctx.http.app.inject({ method: 'GET', url: '/api/messages/1' });
+    if (getRes.statusCode !== 200) return false;
+
+    const body = getRes.json() as { status: string; replies: Array<{ text: string }> };
+    if (body.status === 'replied' && body.replies.length > 0) {
+      view1 = body;
+      return true;
+    }
+    return false;
+  });
+  expect(modelRuns).toBe(1);
+  expect(view1?.replies).toHaveLength(1);
+  expect(view1?.replies[0]?.text).toBe('网页回：你好网页冒烟');
+
+  //G 2. 审批单次消费：从同客户前台会话发起待确认，再 POST /api/message 发“同意 1”，确认回执照样落进 replies。
+  const front = ctx.sessions.find({ bot: '助手', kind: 'front', customer: 'http:本机' })[0];
+  expect(front).toBeDefined();
+  let decidedState = '';
+  ctx.on('approval/decided', (pending) => {
+    decidedState = pending.state;
+  });
+  const pending = ctx.approval.ask({
+    kind: 'exec',
+    title: '执行一条检查',
+    detail: 'dir',
+    payload: {},
+    bot: '助手',
+    session: front?.id,
+  });
+
+  const approvePost = await ctx.http.app.inject({
+    method: 'POST',
+    url: '/api/message',
+    payload: { text: `同意 ${String(pending.id)}`, bot: '助手' },
+  });
+  expect(approvePost.statusCode).toBe(200);
+  expect(approvePost.json<{ id: number; file: string }>()).toEqual({ id: 2, file: '' });
+  expect(emitted).toHaveLength(2);
+  expect(emitted[1]?.control?.approvalHandled).toBe(true);
+  expect(emitted[1]?.control?.claims).toHaveLength(0);
+  expect(decidedState).toBe('approved');
+  expect(modelRuns).toBe(1);
+
+  const getRes2 = await ctx.http.app.inject({ method: 'GET', url: '/api/messages/2' });
+  expect(getRes2.statusCode).toBe(200);
+  const view2 = getRes2.json() as { status: string; replies: Array<{ text: string }> };
+  expect(view2.status).toBe('replied');
+  expect(view2.replies).toHaveLength(1);
+  expect(view2.replies[0]?.text).toContain(`已同意待确认 #${String(pending.id)}`);
+});
+
+
+/**
+ * 搭一套挂好 web-api 的环境：两个机器人（助手、备选），假模型由 answer 决定每一步回什么。
+ * @param answer 每次 session/request 调一次：第几次（从 1 数）、这场会话；交回这一步的模型回答。
+ */
+async function makeWeb(
+  answer: (step: number, session: { id: string }) => ReturnType<typeof piAi.fauxAssistantMessage>,
+): Promise<{ ctx: cordis.Context; emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }>; steps: () => number }> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'webapi-step34-'));
+  closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx = new cordis.Context();
+  closers.push(() => ctx.fiber.dispose());
+
+  await ctx.plugin(FakeResources, { root, bots: [{ name: '助手' }, { name: '备选' }] });
+  await ctx.plugin(FakeHttp);
+  await ctx.plugin(toolsModule.Tools);
+  await ctx.plugin(sessionsModule.Sessions);
+  await ctx.plugin(workspacesPlugin);
+  await ctx.plugin(botsPlugin, {});
+  await ctx.plugin(approvalModule, { thinking: 'low', decision_pass: 0.8 });
+  await ctx.plugin(webApiModule);
+  await ctx.http.app.ready();
+
+  //M 记下每次 channel/message 和认领结果。
+  const emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }> = [];
+  ctx.on('channel/message', (message, control) => {
+    emitted.push({ message, control });
+  });
+
+  //M 假模型：第几步回什么由 answer 定。
+  let step = 0;
+  ctx.on('session/request', (request) => {
+    step += 1;
+    request.answer = answer(step, request.session);
+  });
+  return { ctx, emitted, steps: () => step };
+}
+
+
+/**
+ * POST /api/message 一次，交回消息号。
+ * @param ctx 挂好的环境。
+ * @param payload 请求体。
+ */
+async function post(ctx: cordis.Context, payload: Record<string, unknown>): Promise<number> {
+  const response = await ctx.http.app.inject({ method: 'POST', url: '/api/message', payload });
+  expect(response.statusCode).toBe(200);
+  return (response.json() as { id: number }).id;
+}
+
+
+/**
+ * 等这条消息回完，交回网页看到的样子。
+ * @param ctx 挂好的环境。
+ * @param id 消息号。
+ */
+async function settled(ctx: cordis.Context, id: number): Promise<{ status: string; sessionId: string | null; replies: Array<{ text: string; session: { id: string } }> }> {
+  let view: { status: string; sessionId: string | null; replies: Array<{ text: string; session: { id: string } }> } | undefined;
+  await waitFor(async () => {
+    const response = await ctx.http.app.inject({ method: 'GET', url: `/api/messages/${String(id)}` });
+    if (response.statusCode !== 200) return false;
+
+    const body = response.json() as { status: string; sessionId: string | null; replies: Array<{ text: string; session: { id: string } }> };
+    if (body.status !== 'replied') return false;
+
+    view = body;
+    return true;
+  });
+
+  //M 再等一下：确认标成回完以后不会再多出回话。
+  await Bun.sleep(50);
+  const response = await ctx.http.app.inject({ method: 'GET', url: `/api/messages/${String(id)}` });
+  const last = response.json() as typeof view;
+  expect(last?.replies.length).toBe(view?.replies.length);
+  return last!;
+}
+
+
+test('第 4 步：网页一轮里调两次 channel_reply，replies 两条、顺序对；一次不调走兜底只出一条', async () => {
+  //M 第 1 条消息：第 1 步发“先说一句”，第 2 步发“再说一句”，第 3 步收尾不调工具；第 2 条消息（第 4 步）一次不调。
+  const { ctx, steps } = await makeWeb((step) => {
+    if (step === 1) {
+      const call = piAi.fauxToolCall('channel_reply', { text: '先说一句', kind: 'progress' });
+      return piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
+    }
+    if (step === 2) {
+      const call = piAi.fauxToolCall('channel_reply', { text: '再说一句' });
+      return piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
+    }
+    if (step === 3) return piAi.fauxAssistantMessage('这句是草稿，不该发出去');
+
+    return piAi.fauxAssistantMessage('一次没调，兜底发这句');
+  });
+
+  const first = await post(ctx, { text: '连发两条', bot: '助手', from: 'web' });
+  const firstView = await settled(ctx, first);
+  expect(firstView.replies.map((item) => item.text)).toEqual(['先说一句', '再说一句']);
+  expect(steps()).toBe(3);
+
+  const second = await post(ctx, { text: '一条都不调', bot: '助手', from: 'web' });
+  const secondView = await settled(ctx, second);
+  expect(secondView.replies.map((item) => item.text)).toEqual(['一次没调，兜底发这句']);
+  expect(steps()).toBe(4);
+});
+
+
+test('第 3 步：指定会话只进那场、只回一次；显式会话不投给别的机器人；指定会话发“同意 N”只消费一次', async () => {
+  const { ctx, emitted, steps } = await makeWeb((_step, session) => piAi.fauxAssistantMessage(`会话 ${session.id} 回`));
+
+  //M 先建两场：助手的一场后台、备选的一场前台。
+  const work = ctx.sessions.create({ bot: '助手', kind: 'work', thinking: 'low' });
+  const otherFront = ctx.sessions.create({ bot: '备选', kind: 'front', customer: 'http:本机' });
+
+  //M 指定助手的后台：只进那场，回一次。
+  const id = await post(ctx, { text: '接着这场干', session: work.id });
+  const view = await settled(ctx, id);
+  expect(emitted.at(-1)?.message.routing.sessionId).toBe(work.id);
+  expect(emitted.at(-1)?.control?.claims).toEqual([
+    expect.objectContaining({ bot: '助手', status: 'claimed', sessionId: work.id }),
+  ]);
+  expect(view.replies).toHaveLength(1);
+  expect(view.replies[0]?.text).toBe(`会话 ${work.id} 回`);
+  expect(view.sessionId).toBe(work.id);
+  expect(steps()).toBe(1);
+
+  //M 指定会话和机器人对不上：入口直接 400。
+  const mismatch = await ctx.http.app.inject({
+    method: 'POST',
+    url: '/api/message',
+    payload: { text: '对不上', bot: '助手', session: otherFront.id },
+  });
+  expect(mismatch.statusCode).toBe(400);
+
+  //M 绕过入口直接发：消息给两个机器人、指定的是备选的前台 → 只有备选认领，进那场前台。
+  const control: channels.ChannelMessageControl = { claims: [] };
+  const direct = structuredClone(emitted.at(-1)!.message);
+  direct.messageId = channels.makeChannelMessageId('http', 'local', 'direct-1');
+  direct.targetBots = ['助手', '备选'];
+  direct.routing = { listenOnly: false, autoFinal: true, sessionId: otherFront.id };
+  direct.origin = { channel: 'http', address: { messageId: 9999, customer: 'http:本机' } };
+  await ctx.serial('channel/message', direct, control);
+  expect(control.claims).toEqual([
+    expect.objectContaining({ bot: '备选', status: 'claimed', sessionId: otherFront.id }),
+  ]);
+  await waitFor(() => ctx.sessions.find({ id: otherFront.id })[0]?.state === 'done');
+
+  //M 指定会话发“同意 N”：approval 先消费一次，不进会话、不调模型。待确认挂在网页的前台上（发起人是网页，网页能批）。
+  const before = steps();
+  let decided = 0;
+  ctx.on('approval/decided', () => {
+    decided += 1;
+  });
+  //M   前台要记着网页的渠道和地址：approval 从会话的渠道、地址认发起人（actor），没地址就谁说“同意”都不算。
+  const webFront = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'http:本机' });
+  ctx.bots.route(webFront, { channel: 'http', address: { messageId: 0, customer: 'http:本机' } });
+  const pending = ctx.approval.ask({ kind: 'exec', title: '跑一条', detail: 'dir', payload: {}, bot: '助手', session: webFront.id });
+  const approve = await post(ctx, { text: `同意 ${String(pending.id)}`, session: work.id });
+  expect(emitted.at(-1)?.control?.approvalHandled).toBe(true);
+  expect(emitted.at(-1)?.control?.claims).toHaveLength(0);
+  const approveView = await settled(ctx, approve);
+  expect(approveView.replies).toHaveLength(1);
+  expect(decided).toBe(1);
+  expect(steps()).toBe(before);
+});
+
+
+test('第 3 步：网页引用别的渠道的消息，进原会话，回话回到网页这条', async () => {
+  const { ctx, emitted } = await makeWeb((_step, session) => piAi.fauxAssistantMessage(`原会话 ${session.id} 回`));
+
+  //M 造一条飞书群里的消息：原会话是助手的一场前台，收件表里记了它（照 bot/receive 记的样子）。
+  const original = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'feishu:group:oc_1' });
+  const insert = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies, created_at, updated_at, source_id)'
+    + " VALUES (?, 'feishu', 'feishu', ?, ?, ?, 'replied', '[]', ?, ?, ?)";
+  const now = Date.now();
+  const address = JSON.stringify({ chatId: 'oc_1', chatType: 'group', chatName: '测试群' });
+  const result = ctx.resources.db.query(insert).run('助手', address, '群里有人问进度', original.id, now, now, 'src-1');
+  const quotedId = Number(result.lastInsertRowid);
+
+  const id = await post(ctx, { text: '帮我回他：明天给', reply_to: quotedId });
+  const view = await settled(ctx, id);
+
+  //M 带的路由：指定原会话，记下被引那条的原渠道、原机器人、原会话。
+  const message = emitted.at(-1)!.message;
+  expect(message.channel).toBe('http');
+  expect(message.routing.sessionId).toBe(original.id);
+  expect(message.routing.replyOrigin).toEqual({ source: 'feishu', bot: '助手', sessionId: original.id });
+
+  //M 话进了原会话；回话追加在网页这条上，回一次。
+  const said = ctx.sessions.open(original.id).row.messages.filter((item) => item.role === 'user').map((item) => piAi.contentText(item.content));
+  expect(said.some((text) => text.includes('群里有人问进度') && text.includes('帮我回他：明天给'))).toBe(true);
+  expect(view.replies.map((item) => item.text)).toEqual([`原会话 ${original.id} 回`]);
+  expect(view.sessionId).toBe(original.id);
+
+  //M 网页这条是网页自己的一条（不冒充飞书的消息），被引那条不多回话。
+  const row = ctx.resources.db.query('SELECT channel, reply_to FROM web_messages WHERE id = ?').get(id) as { channel: string; reply_to: number };
+  expect(row).toEqual({ channel: 'http', reply_to: quotedId });
+  const quoted = ctx.resources.db.query('SELECT replies FROM web_messages WHERE id = ?').get(quotedId) as { replies: string };
+  expect(quoted.replies).toBe('[]');
+});
+
+
+test('A 块：GET /api/channels 列挂着的渠道和聊天；时间线按 channel + chat 筛；POST 带 view 校验后进前台提示，不带时消息上没有 view', async () => {
+  //M 假模型记下前台每一步的系统提示。
+  const systems: string[][] = [];
+  const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  ctx.on('session/request', (request) => {
+    systems.push([...request.system]);
+  });
+
+  //M 挂一个假的飞书渠道（只登记发送函数），收件表里放两个群各一条。
+  ctx.bots.channel('feishu', () => ({ status: 'accepted', reason: '' }));
+  const insert = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies, created_at, updated_at)'
+    + " VALUES ('助手', 'feishu', 'feishu', ?, ?, NULL, 'replied', '[]', ?, ?)";
+  const groupA = JSON.stringify({ chatId: 'oc_a', chatType: 'group', chatName: '甲群' });
+  const groupB = JSON.stringify({ chatId: 'oc_b', chatType: 'group', chatName: '乙群' });
+  ctx.resources.db.query(insert).run(groupA, '甲群的话', 1000, 1000);
+  ctx.resources.db.query(insert).run(groupB, '乙群的话', 2000, 2000);
+
+  //M 不带 view 的冒烟：返回 { id, file: '' }，消息上没有 view 这一项。
+  const plainResponse = await ctx.http.app.inject({ method: 'POST', url: '/api/message', payload: { text: '平常一句', bot: '助手' } });
+  expect(plainResponse.json<{ id: number; file: string }>()).toEqual({ id: 3, file: '' });
+  expect('view' in emitted.at(-1)!.message).toBe(false);
+  await settled(ctx, 3);
+
+  //M 清单：网页（http:本机 一项）、飞书（乙群在前）。
+  const listResponse = await ctx.http.app.inject({ method: 'GET', url: '/api/channels?bot=助手' });
+  const list = listResponse.json() as { channels: Array<{ id: string; label: string; count: number; chats: Array<{ id: string; label: string; count: number; updatedAt: number }> }> };
+  const web = list.channels.find((item) => item.id === 'http');
+  const feishu = list.channels.find((item) => item.id === 'feishu');
+  expect(web?.chats.map((item) => item.id)).toEqual(['http:本机']);
+  expect(web?.label).toBe('网页');
+  expect(feishu?.chats.map((item) => [item.id, item.label, item.count])).toEqual([
+    ['oc_b', '飞书·群·乙群', 1],
+    ['oc_a', '飞书·群·甲群', 1],
+  ]);
+
+  //M 时间线按 channel + chat 筛：只出甲群那条，带 chat、chatLabel。
+  const filtered = await ctx.http.app.inject({ method: 'GET', url: '/api/messages?bot=助手&channel=feishu&chat=oc_a' });
+  const page = filtered.json() as { messages: Array<{ text: string; chat: string; chatLabel: string }> };
+  expect(page.messages.map((item) => [item.text, item.chat, item.chatLabel])).toEqual([['甲群的话', 'oc_a', '飞书·群·甲群']]);
+  const chatOnly = await ctx.http.app.inject({ method: 'GET', url: '/api/messages?bot=助手&chat=oc_a' });
+  expect(chatOnly.statusCode).toBe(400);
+
+  //M 带 view：校验过的 view（带名字）放进消息，前台这一轮的提示里有“用户正在网页上看”。
+  const viewed = await post(ctx, { text: '这个群在聊什么', bot: '助手', view: { channel: 'feishu', chat: 'oc_a' } });
+  await settled(ctx, viewed);
+  expect(emitted.at(-1)?.message.view).toEqual({ channel: 'feishu', chat: 'oc_a', label: '飞书·群·甲群' });
+  expect(systems.at(-1)).toContain('用户正在网页上看：飞书·群·甲群');
+
+  //M 看整个渠道：chat 不写。
+  await post(ctx, { text: '飞书最近怎样', bot: '助手', view: { channel: 'feishu' } });
+  expect(emitted.at(-1)?.message.view).toEqual({ channel: 'feishu', chat: '', label: '飞书·全部聊天' });
+
+  //M 写错的 view 都 400，不发 channel/message。
+  const before = emitted.length;
+  for (const bad of [{ channel: 'wechat', chat: 'x' }, { channel: 'feishu', chat: 'oc_none' }, { chat: 'oc_a' }, 'feishu']) {
+    const response = await ctx.http.app.inject({ method: 'POST', url: '/api/message', payload: { text: '错的', bot: '助手', view: bad } });
+    expect(response.statusCode).toBe(400);
+  }
+  expect(emitted).toHaveLength(before);
+});
+
+
+test('第 6 步：网页主人可批飞书群/单聊与无会话待确认且只消费一次，飞书群外人与微信客户不能批', async () => {
+  const { ctx, emitted, steps } = await makeWeb((_step, session) => piAi.fauxAssistantMessage(`会话 ${session.id} 回`));
+
+  //M 记录每一次 approval/decided 的序号与最终状态，验证同号待确认只消费一次。
+  const decidedIds: number[] = [];
+  const decidedStates = new Map<number, string>();
+  ctx.on('approval/decided', (pending) => {
+    decidedIds.push(pending.id);
+    decidedStates.set(pending.id, pending.state);
+  });
+  const getApprovalState = (id: number): string | undefined => {
+    const row = ctx.resources.db.query('SELECT state FROM approval_pending WHERE id = ?').get(id) as { state: string } | null;
+    return row?.state;
+  };
+
+  //M 先从网页发一条普通消息作为基础样例，并验证网页入站消息的 origin.address.owner 严格为 true。
+  const warmId = await post(ctx, { text: '先打个招呼', bot: '助手' });
+  await settled(ctx, warmId);
+  const webSample = emitted[0]!.message;
+  expect(webSample.origin.address['owner']).toBe(true);
+
+  //M 造三种非网页发起的待确认：飞书群会话、飞书单聊会话、无会话（session 留空）。
+  const feishuGroupSession = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'feishu:group:oc_g1' });
+  ctx.bots.route(feishuGroupSession, {
+    channel: 'feishu',
+    address: { appId: 'cli_1', chatId: 'oc_g1', openId: 'ou_guest', chatType: 'group', customer: 'feishu:group:oc_g1', owner: false, role: 'guest' },
+  });
+  const pendingGroup = ctx.approval.ask({
+    kind: 'exec',
+    title: '群会话发起的操作',
+    detail: 'cmd_group',
+    payload: {},
+    bot: '助手',
+    session: feishuGroupSession.id,
+  });
+
+  const feishuP2pSession = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'feishu:ou_other' });
+  ctx.bots.route(feishuP2pSession, {
+    channel: 'feishu',
+    address: { appId: 'cli_1', chatId: 'oc_p2p', openId: 'ou_other', chatType: 'p2p', customer: 'feishu:ou_other', owner: false, role: 'guest' },
+  });
+  const pendingP2p = ctx.approval.ask({
+    kind: 'exec',
+    title: '飞书单聊发起的操作',
+    detail: 'cmd_p2p',
+    payload: {},
+    bot: '助手',
+    session: feishuP2pSession.id,
+  });
+
+  const pendingSessionless = ctx.approval.ask({
+    kind: 'exec',
+    title: '无会话待确认',
+    detail: 'cmd_none',
+    payload: {},
+    bot: '助手',
+  });
+
+  //M 先造一条网页主人发起的待确认，校验飞书群外人与微信客户发“同意 N”都不能批主人待确认。
+  const webFront = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'http:本机' });
+  ctx.bots.route(webFront, { channel: 'http', address: { messageId: 0, customer: 'http:本机', owner: true } });
+  const pendingOwner = ctx.approval.ask({
+    kind: 'exec',
+    title: '主人网页发起的操作',
+    detail: 'cmd_owner',
+    payload: {},
+    bot: '助手',
+    session: webFront.id,
+  });
+
+  const feishuGuestMsg = structuredClone(webSample);
+  feishuGuestMsg.messageId = channels.makeChannelMessageId('feishu', 'cli_1', 'om_guest_1');
+  feishuGuestMsg.nativeId = 'om_guest_1';
+  feishuGuestMsg.channel = 'feishu';
+  feishuGuestMsg.accountId = 'cli_1';
+  feishuGuestMsg.chatId = 'oc_g1';
+  feishuGuestMsg.chatType = 'group';
+  feishuGuestMsg.role = 'guest';
+  feishuGuestMsg.sender = { id: 'ou_guest', name: '群外人' };
+  feishuGuestMsg.rawText = `同意 ${String(pendingOwner.id)}`;
+  feishuGuestMsg.text = `同意 ${String(pendingOwner.id)}`;
+  feishuGuestMsg.visibility = { scope: 'feishu:cli_1:oc_g1', trusted: false, publicSourceIds: [] };
+  feishuGuestMsg.origin = {
+    channel: 'feishu',
+    address: { appId: 'cli_1', chatId: 'oc_g1', openId: 'ou_guest', chatType: 'group', owner: false, role: 'guest' },
+  };
+  const feishuGuestCtrl: channels.ChannelMessageControl = { claims: [] };
+  await ctx.serial('channel/message', feishuGuestMsg, feishuGuestCtrl);
+  expect(feishuGuestCtrl.approvalHandled).toBeUndefined();
+  expect(getApprovalState(pendingOwner.id)).toBe('waiting');
+
+  const wechatCustomerMsg = structuredClone(webSample);
+  wechatCustomerMsg.messageId = channels.makeChannelMessageId('wechat', 'wx_acc', 'wx_msg_1');
+  wechatCustomerMsg.nativeId = 'wx_msg_1';
+  wechatCustomerMsg.channel = 'wechat';
+  wechatCustomerMsg.accountId = 'wx_acc';
+  wechatCustomerMsg.chatId = 'wx_c1';
+  wechatCustomerMsg.chatType = 'p2p';
+  wechatCustomerMsg.role = 'guest';
+  wechatCustomerMsg.sender = { id: 'wx_c1', name: '微信客户' };
+  wechatCustomerMsg.rawText = `同意 ${String(pendingOwner.id)}`;
+  wechatCustomerMsg.text = `同意 ${String(pendingOwner.id)}`;
+  wechatCustomerMsg.visibility = { scope: 'wechat:wx_acc:wx_c1', trusted: true, publicSourceIds: [] };
+  wechatCustomerMsg.origin = {
+    channel: 'wechat',
+    address: { account: 'wx_acc', chat: 'wx_c1', customer: 'wechat:wx_c1', name: '微信客户' },
+  };
+  const wechatCtrl: channels.ChannelMessageControl = { claims: [] };
+  await ctx.serial('channel/message', wechatCustomerMsg, wechatCtrl);
+  expect(wechatCtrl.approvalHandled).toBeUndefined();
+  expect(getApprovalState(pendingOwner.id)).toBe('waiting');
+  expect(decidedIds).toHaveLength(0);
+
+  //M 等待外人入站轮次跑完后再记录模型调用基线，确保后续验证网页主人“同意 N”零模型调用。
+  await waitFor(() => ctx.sessions.find({ bot: '助手' }).every((item) => item.state !== 'running' && item.activeKey === undefined));
+  const stepsBeforeOwnerApprovals = steps();
+
+  //M 网页主人依次对飞书群、飞书单聊、无会话及主人待确认发“同意 N”：每条都能直接批且不走模型轮次。
+  for (const targetPending of [pendingGroup, pendingP2p, pendingSessionless, pendingOwner]) {
+    const msgId = await post(ctx, { text: `同意 ${String(targetPending.id)}`, bot: '助手' });
+    const latest = emitted.at(-1)!;
+    expect(latest.message.origin.address['owner']).toBe(true);
+    expect(latest.control?.approvalHandled).toBe(true);
+    expect(latest.control?.claims).toHaveLength(0);
+    expect(decidedStates.get(targetPending.id)).toBe('approved');
+    expect(getApprovalState(targetPending.id)).toBe('approved');
+    const view = await settled(ctx, msgId);
+    expect(view.replies[0]?.text).toContain(`已同意待确认 #${String(targetPending.id)}`);
+  }
+
+  expect(decidedIds).toEqual([pendingGroup.id, pendingP2p.id, pendingSessionless.id, pendingOwner.id]);
+  expect(steps()).toBe(stepsBeforeOwnerApprovals);
+
+  //M 对已批准的飞书群待确认重复发“同意 N”：不能触发第二次 approval/decided，且等该条收尾避免与清理竞争。
+  const repeatId = await post(ctx, { text: `同意 ${String(pendingGroup.id)}`, bot: '助手' });
+  await settled(ctx, repeatId);
+  expect(decidedIds.filter((item) => item === pendingGroup.id)).toHaveLength(1);
+});

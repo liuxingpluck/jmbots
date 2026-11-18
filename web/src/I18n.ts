@@ -53,12 +53,13 @@ export function matchLanguage(code: string | undefined | null): Language | undef
 
 
 /**
- * 打开时用哪种语言：这个浏览器记着的 → 系统语言 → 英语。
+ * 打开时用哪种语言：这个浏览器记着的（设置里选过的）→ 简体中文。
+ * 不跟系统语言走（用户 11-17：默认是中文，要换在设置里换）。
  * @param storage 浏览器本地存储。
- * @param system 系统语言（navigator.language）。
  */
-export function loadLanguage(storage: Pick<Storage, 'getItem'>, system: string | undefined): Language {
-  return matchLanguage(storage.getItem(STORAGE_KEY)) ?? matchLanguage(system) ?? 'en';
+export function loadLanguage(storage: Pick<Storage, 'getItem'>): Language {
+  //M 读取浏览器里记住的界面语言并归一化到受支持代码，读不到或非法时退回简体中文。
+  return matchLanguage(storage.getItem(STORAGE_KEY)) ?? 'zh-CN';
 }
 
 
@@ -79,9 +80,21 @@ export function saveLanguage(storage: Pick<Storage, 'setItem'>, language: Langua
  * @param params 参数。
  */
 export function translate(language: Language, text: string, params?: Record<string, string | number>): string {
+  //M 简体中文原文不用再查英文包兜底。
+  let fallback: string | undefined;
+  if (language !== 'zh-CN') {
+    fallback = PACKS.en?.[text];
+  }
   /** 译文。 */
-  const found = PACKS[language]?.[text] ?? (language === 'zh-CN' ? undefined : PACKS.en?.[text]) ?? text;
-  return params ? found.replace(/\{(\w+)\}/g, (whole, name: string) => (name in params ? String(params[name]) : whole)) : found;
+  const found = PACKS[language]?.[text] ?? fallback ?? text;
+  if (!params) return found;
+
+  //M 把译文里的 {变量名} 占位符替换为实参值，未提供的占位符保持原样以免破坏文案。
+  return found.replace(/\{(\w+)\}/g, (whole, name: string) => {
+    if (name in params) return String(params[name]);
+
+    return whole;
+  });
 }
 
 
@@ -103,6 +116,8 @@ export const source: Translate = (text, params) => translate('zh-CN', text, para
  */
 export function useT(): Translate {
   /** 现在的语言。 */
+  //M 订阅全局语言状态，语言变化时让调用 useT 的组件自动按新语言重渲染。
   const language = context.useUi((state) => state.language);
+  //M 缓存绑定当前语言的 t 函数，避免每次渲染生成新引用导致下游 effect 重复执行。
   return react.useCallback((text, params) => translate(language, text, params), [language]);
 }

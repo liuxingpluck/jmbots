@@ -14,8 +14,8 @@ describe('memory 托管服务', () => {
     const specs = readServices(undefined);
     expect(specs.map((spec) => spec.name)).toEqual(['memory', 'vgr']);
     const hosted = new Services(os.tmpdir(), 31086, specs);
-    expect(hosted.urlOf('memory')).toBe('http://127.0.0.1:31087');
-    expect(hosted.urlOf('vgr')).toBe('http://127.0.0.1:31088');
+    expect(hosted.getUrl('memory')).toBe('http://127.0.0.1:31087');
+    expect(hosted.getUrl('vgr')).toBe('http://127.0.0.1:31088');
   });
 
   test('写成 [] 就不托管；只写名字就按默认补全', () => {

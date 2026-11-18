@@ -103,22 +103,22 @@ bunTest.describe('三栏宽度', () => {
 
 bunTest.describe('状态框', () => {
   bunTest.test('后端给什么显示什么；连不上一律休假中；小字说清为什么', () => {
-    bunTest.expect(statusModule.shownStatus(true, botOf({ status: 'working', running: 2 }))).toBe('working');
-    bunTest.expect(statusModule.shownStatus(false, botOf({ status: 'working' }))).toBe('off');
-    bunTest.expect(statusModule.shownStatus(true, undefined)).toBe('off');
-    bunTest.expect(statusModule.statusDetail('waiting', botOf({ status: 'waiting', approvals: 1, running: 1 }))).toBe('1 条命令等你确认');
-    bunTest.expect(statusModule.statusDetail('working', botOf({ status: 'working', running: 2 }))).toBe('2 个会话在跑');
-    bunTest.expect(statusModule.statusDetail('waiting', botOf({ status: 'waiting', queued: 3 }))).toBe('3 条消息在排队');
-    bunTest.expect(statusModule.statusDetail('off', undefined)).toBe('连不上后端');
+    bunTest.expect(statusModule.getShownStatus(true, botOf({ status: 'working', running: 2 }))).toBe('working');
+    bunTest.expect(statusModule.getShownStatus(false, botOf({ status: 'working' }))).toBe('off');
+    bunTest.expect(statusModule.getShownStatus(true, undefined)).toBe('off');
+    bunTest.expect(statusModule.getStatusDetail('waiting', botOf({ status: 'waiting', approvals: 1, running: 1 }))).toBe('1 条命令等你确认');
+    bunTest.expect(statusModule.getStatusDetail('working', botOf({ status: 'working', running: 2 }))).toBe('2 个会话在跑');
+    bunTest.expect(statusModule.getStatusDetail('waiting', botOf({ status: 'waiting', queued: 3 }))).toBe('3 条消息在排队');
+    bunTest.expect(statusModule.getStatusDetail('off', undefined)).toBe('连不上后端');
   });
 
   bunTest.test('状态框后面的短说明：要确认、会话、排队、等你吩咐、连不上', () => {
-    bunTest.expect(statusModule.statusShort('waiting', botOf({ status: 'waiting', approvals: 1 }))).toBe('1 条要确认');
-    bunTest.expect(statusModule.statusShort('working', botOf({ status: 'working', running: 2 }))).toBe('2 个会话');
-    bunTest.expect(statusModule.statusShort('waiting', botOf({ status: 'waiting', queued: 3 }))).toBe('3 条排队');
-    bunTest.expect(statusModule.statusShort('idle', botOf())).toBe('等你吩咐');
-    bunTest.expect(statusModule.statusShort('off', undefined)).toBe('连不上');
-    bunTest.expect(statusModule.statusShort('idle', undefined)).toBe('连不上');
+    bunTest.expect(statusModule.getStatusShort('waiting', botOf({ status: 'waiting', approvals: 1 }))).toBe('1 条要确认');
+    bunTest.expect(statusModule.getStatusShort('working', botOf({ status: 'working', running: 2 }))).toBe('2 个会话');
+    bunTest.expect(statusModule.getStatusShort('waiting', botOf({ status: 'waiting', queued: 3 }))).toBe('3 条排队');
+    bunTest.expect(statusModule.getStatusShort('idle', botOf())).toBe('等你吩咐');
+    bunTest.expect(statusModule.getStatusShort('off', undefined)).toBe('连不上');
+    bunTest.expect(statusModule.getStatusShort('idle', undefined)).toBe('连不上');
   });
 
   bunTest.test('四种状态的文字和颜文字；正在干活有两帧', () => {
@@ -231,7 +231,7 @@ bunTest.describe('设置的改动', () => {
     edits = settingsEdits.addEdit(edits, { path: ['bots', 0], delete: true });
     edits = settingsEdits.addEdit(edits, { path: ['local', 'port'], value: 31000 });
     bunTest.expect(edits).toHaveLength(4);
-    const draft = settingsEdits.draftOf(config, edits);
+    const draft = settingsEdits.getDraft(config, edits);
     bunTest.expect(settingsEdits.getAt(draft, ['engine', 'merge_ms'])).toBe(2500);
     bunTest.expect(settingsEdits.getAt(draft, ['bots'])).toEqual([{ name: '乙', language: 'en' }]);
     bunTest.expect(settingsEdits.getAt(draft, ['local', 'port'])).toBe(31000);
@@ -242,12 +242,12 @@ bunTest.describe('设置的改动', () => {
 
   bunTest.test('改过的项：改值 true，改回原值 false，数组/对象按 JSON 比较，不存在的路径 false', () => {
     const config = { engine: { merge_ms: 2000, retry_delays_ms: [2000, 5000] }, providers: { a: { models: { m: { vision: true } } } } };
-    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.draftOf(config, [{ path: ['engine', 'merge_ms'], value: 2500 }]), ['engine', 'merge_ms'])).toBe(true);
-    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.draftOf(config, [{ path: ['engine', 'merge_ms'], value: 2500 }, { path: ['engine', 'merge_ms'], value: 2000 }]), ['engine', 'merge_ms'])).toBe(false);
-    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.draftOf(config, [{ path: ['engine', 'retry_delays_ms'], value: [2000, 5000] }]), ['engine', 'retry_delays_ms'])).toBe(false);
-    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.draftOf(config, [{ path: ['engine', 'retry_delays_ms'], value: [2000, 8000] }]), ['engine', 'retry_delays_ms'])).toBe(true);
-    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.draftOf(config, [{ path: ['providers', 'a', 'models'], value: { m: { vision: true } } }]), ['providers', 'a', 'models'])).toBe(false);
-    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.draftOf(config, [{ path: ['providers', 'a', 'models'], value: { m: { vision: false } } }]), ['providers', 'a', 'models'])).toBe(true);
+    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.getDraft(config, [{ path: ['engine', 'merge_ms'], value: 2500 }]), ['engine', 'merge_ms'])).toBe(true);
+    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.getDraft(config, [{ path: ['engine', 'merge_ms'], value: 2500 }, { path: ['engine', 'merge_ms'], value: 2000 }]), ['engine', 'merge_ms'])).toBe(false);
+    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.getDraft(config, [{ path: ['engine', 'retry_delays_ms'], value: [2000, 5000] }]), ['engine', 'retry_delays_ms'])).toBe(false);
+    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.getDraft(config, [{ path: ['engine', 'retry_delays_ms'], value: [2000, 8000] }]), ['engine', 'retry_delays_ms'])).toBe(true);
+    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.getDraft(config, [{ path: ['providers', 'a', 'models'], value: { m: { vision: true } } }]), ['providers', 'a', 'models'])).toBe(false);
+    bunTest.expect(settingsEdits.changedAt(config, settingsEdits.getDraft(config, [{ path: ['providers', 'a', 'models'], value: { m: { vision: false } } }]), ['providers', 'a', 'models'])).toBe(true);
     bunTest.expect(settingsEdits.changedAt(config, config, ['providers', 'none', 'x'])).toBe(false);
   });
 

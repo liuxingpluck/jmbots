@@ -34,6 +34,7 @@ const STYLE = [
     'text-outline-color': '#060912', 'text-outline-width': 2, 'text-max-width': '140px', 'text-wrap': 'ellipsis',
     width: 'mapData(degree, 1, 10, 18, 46)', height: 'mapData(degree, 1, 10, 18, 46)',
     'border-width': 1.5, 'border-color': '#ffffff', 'border-opacity': 0.35,
+    //M 节点外圈光晕沿用按实体 kind 映射的分类色，在画布上区分人、组织、事与编号。
     'underlay-color': (ele: cytoscape.NodeSingular) => COLORS[ele.data('kind') as string] ?? '#9b8cff', 'underlay-opacity': 0.22, 'underlay-padding': 6, 'underlay-shape': 'ellipse',
   } },
   { selector: 'edge', style: {
@@ -56,7 +57,14 @@ const STYLE = [
   { selector: 'edge:selected', style: { 'line-color': '#ffffff', 'target-arrow-color': '#ffffff', 'line-opacity': 1, label: 'data(label)' } },
 ] as unknown as cytoscape.StylesheetJson;
 
+/**
+ * 关系图画布组件：用 cytoscape 渲染实体节点和关系边，支持 cose 力导向布局、缩放滑块、点选实体/关系、双击展开邻居与演示打码。
+ * @param props graph 图数据，hitEdges/hitNodes 命中高亮编号，merge 是否增量并入画布，version 触发布局刷新的版本号，onNode/onEdge/onExpand 节点与边交互回调。
+ * @returns 画布容器与底部缩放控制条的 JSX 元素。
+ * 副作用：创建并销毁 cytoscape 实例，启动并清理 requestAnimationFrame 命中高亮动画；图数据变化时重跑布局；开启打码时清空 canvas 像素并重刷节点/边展示文本。
+ */
 export function GraphCanvas(props: Props) {
+  //M 订阅全局演示打码开关，决定画布节点名与关系词是否替换成脱敏文本。
   const mask = privacy.useMask();
   const box = useRef<HTMLDivElement>(null);
   //M 仅在内存保留原名；画布元素只保存当前可展示的字符串。
@@ -80,7 +88,15 @@ export function GraphCanvas(props: Props) {
     });
     cy.on('mouseover', 'node', (event) => { (event.target as cytoscape.NodeSingular).connectedEdges().addClass('label'); });
     cy.on('mouseout', 'node', () => { if (cy.zoom() < 1.3) cy.edges().removeClass('label'); });
-    cy.on('zoom', () => { if (cy.zoom() >= 1.3) cy.edges().addClass('label'); else cy.edges().removeClass('label'); setZoom(Math.round(cy.zoom() * 100)); });
+    cy.on('zoom', () => {
+      if (cy.zoom() >= 1.3) {
+        cy.edges().addClass('label');
+      }
+      if (cy.zoom() < 1.3) {
+        cy.edges().removeClass('label');
+      }
+      setZoom(Math.round(cy.zoom() * 100));
+    });
     let offset = 0, frame = 0;
     const loop = (now: number) => {
       offset -= 1.2;
@@ -108,11 +124,28 @@ export function GraphCanvas(props: Props) {
     for (const node of graph.nodes) names.current.set(node.id, node.name);
     for (const edge of graph.edges) labels.current.set(edge.id, edge.label);
     const center = cy.nodes(':selected').first();
-    const at = center.nonempty() ? center.position() : undefined;
-    cy.add(graph.nodes.filter((n) => cy.getElementById(`n${n.id}`).empty()).map((n) => ({
-      group: 'nodes' as const, data: { id: `n${n.id}`, raw: n.id, name: privacy.text(n.name, mask), kind: ['person', 'org', 'thing', 'item'].includes(n.kind) ? n.kind : 'thing', degree: n.degree },
-      ...(at ? { position: { x: at.x + Math.random() * 40 - 20, y: at.y + Math.random() * 40 - 20 } } : {}),
-    })));
+    let at: cytoscape.Position | undefined;
+    if (center.nonempty()) {
+      at = center.position();
+    }
+
+    //M 筛选画布中尚未出现的新节点，归类 kind 并做隐私脱敏后批量加入 cytoscape（增量展开时排在选中节点附近）。
+    cy.add(graph.nodes.filter((n) => cy.getElementById(`n${n.id}`).empty()).map((n) => {
+      let kind = 'thing';
+      if (['person', 'org', 'thing', 'item'].includes(n.kind)) {
+        kind = n.kind;
+      }
+      const element: cytoscape.ElementDefinition = {
+        group: 'nodes',
+        data: { id: `n${n.id}`, raw: n.id, name: privacy.text(n.name, mask), kind, degree: n.degree },
+      };
+      if (at) {
+        element.position = { x: at.x + Math.random() * 40 - 20, y: at.y + Math.random() * 40 - 20 };
+      }
+      return element;
+    }));
+
+    //M 仅把尚未在画布中且两端节点均已存在的新关系边经隐私脱敏后加入 cytoscape。
     cy.add(graph.edges.filter((e) => cy.getElementById(`e${e.id}`).empty() && cy.getElementById(`n${e.source}`).nonempty() && cy.getElementById(`n${e.target}`).nonempty())
       .map((e) => ({ group: 'edges' as const, data: { id: `e${e.id}`, raw: e.id, source: `n${e.source}`, target: `n${e.target}`, label: privacy.text(e.label, mask) } })));
     cy.elements().removeClass('hit faded');
@@ -128,8 +161,24 @@ export function GraphCanvas(props: Props) {
       cy.zoom({ level, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); cy.center();
     });
     //M 2026-11-14 23:20 EST 用户要节点间隔大些：斥力 20000→60000、连线 90/120→160/200、分块间距 80→160、重力 0.3→0.15。
-    cy.layout({ name: 'cose', animate: true, animationDuration: 900, randomize: !merge, fit: true, padding: 60,
-      nodeRepulsion: () => 60000, nodeOverlap: 60, componentSpacing: 160, idealEdgeLength: (edge: cytoscape.EdgeSingular) => (edge.hasClass('hit') ? 200 : 160), gravity: 0.15, numIter: 1500 } as cytoscape.LayoutOptions).run();
+    cy.layout({
+      name: 'cose',
+      animate: true,
+      animationDuration: 900,
+      randomize: !merge,
+      fit: true,
+      padding: 60,
+      nodeRepulsion: () => 60000,
+      nodeOverlap: 60,
+      componentSpacing: 160,
+      idealEdgeLength: (edge: cytoscape.EdgeSingular) => {
+        if (edge.hasClass('hit')) return 200;
+
+        return 160;
+      },
+      gravity: 0.15,
+      numIter: 1500,
+    } as cytoscape.LayoutOptions).run();
   }, [props.graph, props.hitEdges, props.hitNodes, props.version]);
 
   //M 开关改变时也刷新 merge 留下的旧元素；布局前提交，避免下一帧绘制原名。

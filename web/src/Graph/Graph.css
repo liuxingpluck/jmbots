@@ -1,5 +1,6 @@
 /* 记忆关系图谱页（深色，独立于主网页的样式）。 */
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: #2a3a66 transparent; }
+html { color-scheme: dark; }
 html, body, #root { margin: 0; height: 100%; background: #070b16; color: #dfe6f5; font: 14px/1.55 system-ui, "Microsoft YaHei", sans-serif; overflow: hidden; }
 .mg-header { position: absolute; top: 0; left: 0; right: 0; height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px; background: linear-gradient(90deg, rgba(18,26,52,.95), rgba(10,16,34,.85)); border-bottom: 1px solid #1d2a4d; z-index: 5; }
 .mg-header h1 { font-size: 17px; margin: 0 8px 0 0; font-weight: 600; letter-spacing: 1px; background: linear-gradient(90deg, #7cc4ff, #c18bff); -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap; }
@@ -8,6 +9,8 @@ html, body, #root { margin: 0; height: 100%; background: #070b16; color: #dfe6f5
 .mg-header button { cursor: pointer; background: linear-gradient(180deg, #2c4fa8, #213d85); border-color: #3d63c7; white-space: nowrap; }
 .mg-header button.ghost { background: #111a33; border-color: #2a3a66; }
 .mg-header button:hover { filter: brightness(1.15); }
+.mg-link { text-decoration: none; color: #dfe6f5; background: #111a33; border: 1px solid #2a3a66; border-radius: 8px; padding: 6px 10px; white-space: nowrap; }
+.mg-link:hover { border-color: #4f79d9; filter: brightness(1.15); }
 .mg-header label { display: flex; align-items: center; gap: 4px; white-space: nowrap; color: #9fb0d6; }
 .mg-stage { position: absolute; top: 56px; left: 0; right: 380px; bottom: 0; background: radial-gradient(circle at 50% 50%, #0d1630, #060912 75%); }
 .mg-stage::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(120,150,230,.10) 1px, transparent 1.2px); background-size: 40px 40px; pointer-events: none; }

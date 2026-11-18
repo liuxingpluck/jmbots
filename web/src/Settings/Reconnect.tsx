@@ -83,22 +83,31 @@ function checkModel(model: string, test: TestResult, t: i18n.Translate): { ok: b
  * @param draft 设置的草稿（config.yaml 加上还没保存的改动）；还没取到是 null，就没有行。
  * @param test 刚测的结果。
  * @param t 翻译。
+ * @returns 检查结果行列表。
  */
-function usedRows(draft: unknown, test: TestResult, t: i18n.Translate): UsedRow[] {
+function getUsedRows(draft: unknown, test: TestResult, t: i18n.Translate): UsedRow[] {
   /** 表格的行。 */
   const rows: UsedRow[] = [];
   for (const used of USED_MODELS) {
     /** 写的值：一个模型，或者一串（备用链）。 */
+    //M 从当前设置草稿取出该用途配置的模型 ID 或备用链数组，准备逐项核对是否在最新清单内。
     const value = editsModule.getAt(draft, used.path);
     /** 当成一串看。 */
-    const list: unknown[] = Array.isArray(value) ? value : [value];
+    let list: unknown[] = [value];
+    if (Array.isArray(value)) {
+      list = value;
+    }
     list.forEach((item, index) => {
       if (typeof item !== 'string' || !item) {
         return;
       }
       /** 用在哪。 */
-      const where = list.length > 1 ? `${t(used.label)} #${index + 1}` : t(used.label);
+      let where = t(used.label);
+      if (list.length > 1) {
+        where = `${t(used.label)} #${index + 1}`;
+      }
       /** 对的结果。 */
+      //M 把配置里的模型 ID 对照本次拉取的供应商连接结果和模型清单，得出可用状态与失败原因。
       const checked = checkModel(item, test, t);
       rows.push({ key: `${used.path.join('.')}-${index}`, where, model: item, ...checked });
     });
@@ -112,7 +121,19 @@ function usedRows(draft: unknown, test: TestResult, t: i18n.Translate): UsedRow[
  * @param props ok 是连上了（在清单里），text 是标签上的字。
  */
 function OkTag(props: { ok: boolean; text: string }): react.JSX.Element {
-  return <antd.Tag color={props.ok ? 'success' : 'error'}>{props.text}</antd.Tag>;
+  let color = 'error';
+  if (props.ok) {
+    color = 'success';
+  }
+  return <antd.Tag color={color}>{props.text}</antd.Tag>;
+}
+
+
+/** 把异常整理成可读文本。 */
+function getErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+
+  return String(error);
 }
 
 
@@ -122,6 +143,7 @@ function OkTag(props: { ok: boolean; text: string }): react.JSX.Element {
  *   onReload 是 Settings.tsx 的 load（重新取配置和模型清单，别的分类的模型下拉框跟着换成新的）。
  */
 export function Reconnect(props: { draft: unknown; onReload: () => void }): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于表格表头、连接状态标签和重启操作提示。
   const t = i18n.useT();
   /** 正在测、测的结果、出错的原因。 */
   const [testing, setTesting] = react.useState(false);
@@ -136,13 +158,16 @@ export function Reconnect(props: { draft: unknown; onReload: () => void }): reac
     setTestError('');
     try {
       /** 每家重连的结果。 */
+      //M 通知后端向每家已配置供应商重新拉取模型清单（不发模型请求、不花钱），拿回各家连接结果。
       const answer = await api.reconnectModels();
       /** 测完的清单。 */
+      //M 重连完成后紧接着拉取同一时刻的可用模型总表，避免拿旧清单核对当前配置。
       const fresh = await api.models();
       setTest({ results: answer.results, models: fresh });
       props.onReload();
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : String(error));
+      //G 重连或取清单接口出错时把异常整理成可读文本展示在错误条里。
+      setTestError(getErrorText(error));
     } finally {
       setTesting(false);
     }
@@ -153,8 +178,10 @@ export function Reconnect(props: { draft: unknown; onReload: () => void }): reac
     setRestart({ kind: 'restarting' });
     try {
       /** 旧进程起来的时间。 */
+      //M 请基地重启后端服务并记下重启前的 startedAt，作为后续判定新进程是否拉起的基准。
       const { startedAt } = await api.restartService();
       /** 等到新进程没有。 */
+      //M 持续轮询 /api/ui/info 直到 startedAt 改变或超时，确认新后端进程已经就绪。
       const restarted = await api.waitNewProcess(startedAt);
       if (restarted) {
         setRestart({ kind: 'done' });
@@ -165,7 +192,8 @@ export function Reconnect(props: { draft: unknown; onReload: () => void }): reac
       const reason = t('等了 3 分钟还没起来：看运行时 data/logs 里的 backend.log');
       setRestart({ kind: 'failed', reason });
     } catch (error) {
-      setRestart({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) });
+      //G 重启请求或等待新进程过程抛错时提取可读报错，更新为重启失败状态提示用户。
+      setRestart({ kind: 'failed', reason: getErrorText(error) });
     }
   };
 
@@ -174,7 +202,13 @@ export function Reconnect(props: { draft: unknown; onReload: () => void }): reac
     { title: t('供应商'), dataIndex: 'provider' },
     {
       title: t('连上没有'),
-      render: (_, item) => <OkTag ok={item.ok} text={item.ok ? t('连上了') : t('没连上')} />,
+      render: (_, item) => {
+        let statusText = t('没连上');
+        if (item.ok) {
+          statusText = t('连上了');
+        }
+        return <OkTag ok={item.ok} text={statusText} />;
+      },
     },
     { title: t('模型'), dataIndex: 'models', align: 'right' },
     { title: t('原因'), render: (_, item) => item.error ?? '' },
@@ -185,24 +219,42 @@ export function Reconnect(props: { draft: unknown; onReload: () => void }): reac
     { title: t('模型'), dataIndex: 'model' },
     {
       title: t('能用吗'),
-      render: (_, row) => <OkTag ok={row.ok} text={row.ok ? t('在清单里') : row.reason} />,
+      render: (_, row) => {
+        let statusText = row.reason;
+        if (row.ok) {
+          statusText = t('在清单里');
+        }
+        return <OkTag ok={row.ok} text={statusText} />;
+      },
     },
   ];
   /** 用到的模型对清单的结果（测过、取到了配置才有）。 */
-  const rows = test ? usedRows(props.draft, test, t) : [];
+  let rows: UsedRow[] = [];
+  if (test) {
+    //M 测试结果返回后，把当前设置草稿里用到的模型逐项核对成下方排查表格的行数据。
+    rows = getUsedRows(props.draft, test, t);
+  }
+  let failedReason = '';
+  if (restart.kind === 'failed') {
+    failedReason = restart.reason;
+  }
   /** 重启服务的提示。 */
   const restartText = {
     idle: '',
     restarting: t('正在重启服务：基地停掉后端再拉起来……'),
     done: t('服务重启好了'),
-    failed: t('没重启成：{reason}', { reason: restart.kind === 'failed' ? restart.reason : '' }),
+    failed: t('没重启成：{reason}', { reason: failedReason }),
   }[restart.kind];
+  //M 渲染“重连”设置区：上半区重新拉取并核对模型清单，下半区触发服务重启并反馈进度。
   return (
     <div className="jm-section">
       <fields.Row
         label={t('重新测试模型连接')}
         hint={t('每家供应商重新拉一次模型清单（不调用模型、不花钱），拉到了马上换上，不用重启。测完回聊天重新发一次消息')}
       >
+        {
+          //M 用户点击按钮后向各家重连拉清单并核对当前配置的模型是否可用。
+        /**/}
         <antd.Button loading={testing} onClick={() => void testModels()}>
           {t('重新测试')}
         </antd.Button>
@@ -230,6 +282,9 @@ export function Reconnect(props: { draft: unknown; onReload: () => void }): reac
         label={t('重启服务')}
         hint={t('请基地停掉后端再拉起来：重新读 config.yaml、重新连每家供应商。这十几秒网页连不上，机器人正在做的事可能被打断')}
       >
+        {
+          //M 用户在二次确认框点确定后向基地发起服务重启并等待新进程就绪。
+        /**/}
         <antd.Popconfirm
           title={t('现在重启服务？')}
           okText={t('重启')}

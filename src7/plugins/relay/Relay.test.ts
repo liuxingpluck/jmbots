@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import fastify from 'fastify';
+import type * as dispatchModule from '../bots/Dispatch.ts';
 import * as relayModule from './index.ts';
 
 /** 临时运行时目录。 */
@@ -53,10 +54,26 @@ interface FakeSession {
   id: string;
   row: {
     id: string; bot: string; kind: string; parent?: string; state: string; channel?: string; address?: unknown;
-    customer?: string; messages: { role: string; content: unknown; timestamp: number }[];
+    customer?: string; messages: { role: string; content: unknown; timestamp: number; [key: string]: unknown }[];
   };
   run: () => Promise<void>;
 }
+
+/**
+ * 假前台（bots 的 frontDesk）：照 acceptResult 的规矩，同键回 duplicate、不调 commitSource；新的先调 commitSource 再记下。
+ * failNext 为 true 时下一次抛错（模拟排不上）。
+ */
+interface FakeFrontDesk {
+  /** 排进来的结果，按先后。 */
+  accepted: dispatchModule.ResultInput[];
+  /** 下一次抛错。 */
+  failNext: boolean;
+  /** 同 bots/Dispatch.ts 的 acceptResult。 */
+  acceptResult: (input: dispatchModule.ResultInput, commitSource: () => void) => dispatchModule.AcceptReceipt;
+}
+
+/** 模拟断电：beforeWrite 回答还没写进对话就停；afterWrite 写进对话、存了，还没发 session/change 就停。用一次就回 none。 */
+type CrashMode = 'none' | 'beforeWrite' | 'afterWrite';
 
 /** 一套假的运行环境。 */
 interface World {
@@ -76,6 +93,12 @@ interface World {
   open: (options: { bot: string; kind: string; customer?: string }) => FakeSession;
   /** 照骨架给这场会话备一步请求（带 relay_send 和别的工具），挨个问 session/request；回问完的工具名和系统提示词。 */
   ask: (session: FakeSession) => { tools: string[]; system: string[] };
+  /** 假前台：走模型的会话的回信排到这里。 */
+  frontDesk: FakeFrontDesk;
+  /** 下一步怎么断电。 */
+  crash: { mode: CrashMode };
+  /** 模拟重启：发一次 ready（relay 在 ready 时把没送的回信再送一遍）。 */
+  restart: () => void;
 }
 
 /**
@@ -90,17 +113,55 @@ function world(db = new Database(':memory:')): World {
   const app = fastify();
   let serial = 0;
 
-  /** 推一步：照骨架的样子发 session/request，插件填了 answer 就记成 assistant。 */
+  const crash: { mode: CrashMode } = { mode: 'none' };
+
+  /**
+   * 推一步：照骨架的样子发 session/request，插件填了 answer 就原样接进对话（Session.append 接的就是 answer 本身，
+   * 带着插件加的字段，比如 relayReplyId），再改状态、发 session/change。crash 照它停在半路。
+   */
   const step = async (session: FakeSession): Promise<void> => {
     session.row.state = 'running';
-    const request: { session: FakeSession; answer?: { content: { type: string; text: string }[] } } = { session };
+    const request: { session: FakeSession; answer?: { content: { type: string; text: string }[]; [key: string]: unknown } } = { session };
     for (const handler of handlers.get('session/request') ?? []) handler(request);
+
+    //M 断电在写进对话之前：什么都没留下。
+    if (crash.mode === 'beforeWrite') {
+      crash.mode = 'none';
+      return;
+    }
+
     const said = request.answer?.content.map((part) => part.text).join('') ?? '';
     answers.push(said);
-    session.row.messages.push({ role: 'assistant', content: request.answer?.content ?? [], timestamp: Date.now() });
+    session.row.messages.push({ ...request.answer, role: 'assistant', content: request.answer?.content ?? [], timestamp: Date.now() });
+
+    //M 断电在写进对话之后、改状态之前：回答在对话里，session/change 没发。
+    if (crash.mode === 'afterWrite') {
+      crash.mode = 'none';
+      return;
+    }
+
     session.row.state = 'done';
     for (const handler of handlers.get('session/change') ?? []) handler(session);
     await Promise.resolve();
+  };
+
+  //M 假前台：同键回 duplicate；新的先 commitSource 再记下；failNext 时抛一次。
+  const frontDesk: FakeFrontDesk = {
+    accepted: [],
+    failNext: false,
+    acceptResult: (input, commitSource) => {
+      if (frontDesk.failNext) {
+        frontDesk.failNext = false;
+        throw new Error('模拟：排不进结果队列');
+      }
+
+      const known = frontDesk.accepted.some((one) => one.key === input.key);
+      if (known) return { status: 'duplicate', key: input.key };
+
+      commitSource();
+      frontDesk.accepted.push(input);
+      return { status: 'queued', key: input.key };
+    },
   };
 
   const make = (options: { bot: string; kind: string; customer?: string }): FakeSession => {
@@ -155,7 +216,14 @@ function world(db = new Database(':memory:')): World {
     effect: (open: () => () => void) => {
       closers.push(open());
     },
-    get: (name: string) => (name === 'http' ? { app } : undefined),
+    //M 可选服务：http 给 app，frontDesk 给假前台，别的没挂。
+    get: (name: string) => {
+      if (name === 'http') return { app };
+
+      if (name === 'frontDesk') return frontDesk;
+
+      return undefined;
+    },
     //M 没挂 flow：可选依赖不接。
     inject: () => Promise.resolve(),
   };
@@ -180,7 +248,12 @@ function world(db = new Database(':memory:')): World {
     return { tools: request.tools.map((tool) => tool.name), system: request.system };
   };
 
-  return { ctx: fake as unknown as cordis.Context, db, app, sessions, answers, say, bot, tools, open: make, ask };
+  //M 模拟重启：挨个调 ready 的监听（relay 在这里把没送的回信再送一遍）。
+  const restart = (): void => {
+    for (const handler of handlers.get('ready') ?? []) handler();
+  };
+
+  return { ctx: fake as unknown as cordis.Context, db, app, sessions, answers, say, bot, tools, open: make, ask, frontDesk, crash, restart };
 }
 
 /** 头一次 fastify ready / inject 在 130 的共享盘上要加载很久（几十秒），两条走接口的测试放宽超时。 */
@@ -249,9 +322,8 @@ describe('relay 接两个助手', () => {
     const made = await ready();
     const address = { chatId: 'oc_both', openId: 'ou_test' };
 
-    //M 这个聊天只有 A 的收件时：B 主动发要新开一条 B 的收件，不能挂到 A 的 #1 上。
+    //M 这个聊天只有 A 的收件时：B 主动发要新开一条 B 的收件，不能挂到 A 的 #1 上（地址借 A 那条记的，不再去 web_messages 找）。
     expect(await made.say('a 第一句', address)).toBe('已转给 A（#1），等回复。');
-    made.db.query('INSERT INTO web_messages (bot, channel, address) VALUES (?, ?, ?)').run(BOT, 'feishu', JSON.stringify(address));
     const first = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc_both', helper: 'B', text: 'B 主动说一句' } });
     expect(first.statusCode).toBe(200);
     const made1 = (first.json() as { item: { id: number; helper: string } }).item;
@@ -272,6 +344,52 @@ describe('relay 接两个助手', () => {
     //M helper 写了不认识的名字：400。
     const wrong = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc_both', helper: 'C', text: 'x' } });
     expect(wrong.statusCode).toBe(400);
+  }, SLOW);
+
+  test('按 chat 回信只认一字不差的聊天号：相似的、open_id、只在 web_messages 里见过的都 404，不留半截收件', async () => {
+    const made = await ready();
+    const count = (table: string): number => (made.db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+
+    //M 聊天 oc1same 里有 A 的 #1。
+    expect(await made.say('a 你好', { chatId: 'oc1same', openId: 'ou_same' })).toBe('已转给 A（#1），等回复。');
+
+    //G 相似的聊天号 oc_same（旧的 LIKE 里 _ 能顶任意一个字，会认成 oc1same）、说话人的 open_id、web_messages 里有的别的聊天：都 404。
+    made.db.query('INSERT INTO web_messages (bot, channel, address) VALUES (?, ?, ?)').run(BOT, 'feishu', JSON.stringify({ chatId: 'oc_web' }));
+    for (const chat of ['oc_same', 'ou_same', 'oc_web', 'oc1sam']) {
+      const missed = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat, helper: 'A', text: '回错人了' } });
+      expect(missed.statusCode).toBe(404);
+    }
+    expect(count('relay_items')).toBe(1);
+    expect(count('relay_replies')).toBe(0);
+
+    //M 一字不差的聊天号：挂到 #1。
+    const hit = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc1same', helper: 'A', text: '对了' } });
+    expect(hit.statusCode).toBe(200);
+    expect((hit.json() as { item: { id: number } }).item.id).toBe(1);
+  }, SLOW);
+
+  test('回信带的文件：只许 relay 给这个机器人的目录（或它的工作区）里的；../ 出去、别处的绝对路径 400，回信不记', async () => {
+    const made = await ready();
+    const count = (): number => (made.db.query('SELECT COUNT(*) AS n FROM relay_replies').get() as { n: number }).n;
+    expect(await made.say('a 发个文件', { chatId: 'oc_file', openId: 'ou_test' })).toBe('已转给 A（#1），等回复。');
+
+    //M 范围外的两个文件：数据目录上一层（../）、系统临时目录里别处的绝对路径。
+    const outside = path.join(path.dirname(root), `jm-relay-outside-${String(Date.now())}.txt`);
+    fs.writeFileSync(outside, '不该发出去');
+    closers.push(() => { fs.rmSync(outside, { force: true }); });
+    for (const file of [`../${path.basename(outside)}`, outside, 'integrations/relay/../../outside.txt']) {
+      const refused = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '附件', file } });
+      expect(refused.statusCode).toBe(400);
+    }
+    expect(count()).toBe(0);
+
+    //M 范围里的：relay 给这个机器人的目录 integrations/relay/<机器人>/。收下（飞书没挂，发文件只记 trace）。
+    const inside = path.join(root, 'integrations', 'relay', BOT, 'ok.txt');
+    fs.mkdirSync(path.dirname(inside), { recursive: true });
+    fs.writeFileSync(inside, '可以发');
+    const accepted = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '附件', file: `integrations/relay/${BOT}/ok.txt` } });
+    expect(accepted.statusCode).toBe(200);
+    expect(count()).toBe(1);
   }, SLOW);
 
   test('带附件的话转出去：inbox.jsonl、GET /api/relay/inbox、webhook 都带 files（相对运行时目录）', async () => {
@@ -415,7 +533,7 @@ describe('飞书群登记的 relay、机器人的 relay', () => {
 
   test('群登记了 relay: model：这个群的会话有 relay_send 和提示；没登记的群、私聊没有，调了也拒', async () => {
     const made = await ready([{ name: 'Claude', prefixes: ['cc '] }]);
-    expect(made.tools.map((tool) => tool.definition.name)).toEqual(['relay_send']);
+    expect(made.tools.map((tool) => tool.definition.name)).toEqual(['relay_send', 'note_claude']);
     expect(made.tools[0]?.definition.description).toContain('闲聊、打招呼不转');
 
     const inModel = made.open(front);
@@ -501,9 +619,8 @@ describe('relay 旧库和配置', () => {
     expect(db.query('SELECT helper, chat FROM relay_items').all()).toEqual([{ helper: 'B', chat: 'p2p' }]);
   });
 
-  test('helpers 没写、名字重复、前缀有空串：apply 抛错', () => {
+  test('helpers 写了但是空的、名字重复、前缀有空串：apply 抛错', () => {
     const bad: unknown[] = [
-      undefined,
       [],
       [{ name: 'A', prefixes: ['a '] }, { name: 'A', prefixes: ['b '] }],
       [{ name: 'A', prefixes: ['a ', ''] }],
@@ -511,8 +628,134 @@ describe('relay 旧库和配置', () => {
     ];
     for (const helpers of bad) {
       const made = world();
-      expect(() => relayModule.apply(made.ctx, helpers === undefined ? {} : { helpers })).toThrow();
+      expect(() => relayModule.apply(made.ctx, { helpers })).toThrow();
     }
-    expect(() => relayModule.apply(world().ctx, undefined)).toThrow();
   });
+
+  test('helpers 没写：不挂转话，只登记 note_claude（11-17 并进来的；任务通道等 http、frontDesk）；tasks.scan_ms 写错抛错', () => {
+    //M 没写配置、写了空配置：都不抛错，工具只有 note_claude，没人认领 bot/receive。
+    for (const config of [undefined, {}]) {
+      const made = world();
+      relayModule.apply(made.ctx, config);
+      expect(made.tools.map((tool) => tool.definition.name)).toEqual(['note_claude']);
+    }
+
+    //M 任务通道的扫描间隔小于 1 秒：整个插件不挂。
+    expect(() => relayModule.apply(world().ctx, { tasks: { scan_ms: 10 } })).toThrow('scan_ms');
+  });
+
+  test('写了 helpers：先登记 relay_send，再登记 note_claude', async () => {
+    const made = await ready();
+    const names = made.tools.map((tool) => tool.definition.name);
+    expect(names).toEqual(['relay_send', 'note_claude']);
+  });
+});
+
+
+describe('回信送进会话：先写进对话再标已送，走模型的会话排进结果队列', () => {
+  /** 最新一条回信的回信号。 */
+  const lastReplyId = (made: World): number => {
+    const row = made.db.query('SELECT id FROM relay_replies ORDER BY id DESC LIMIT 1').get() as { id: number };
+    return row.id;
+  };
+
+  /** 一条回信标没标已送：1 标了，0 没标。 */
+  const delivered = (made: World, replyId: number): number => {
+    const row = made.db.query('SELECT delivered FROM relay_replies WHERE id = ?').get(replyId) as { delivered: number };
+    return row.delivered;
+  };
+
+  /** 对话里带着这条回信号的回答有几条。 */
+  const written = (session: FakeSession, replyId: number): number => {
+    return session.row.messages.filter((message) => message['relayReplyId'] === replyId).length;
+  };
+
+  /** 这个环境里那场 relay 会话（前缀转话开的）。 */
+  const relaySession = (made: World): FakeSession => {
+    return [...made.sessions.values()].find((one) => one.row.kind === 'relay')!;
+  };
+
+  test('direct：写进对话之前断电，重启后送到；再重启不重复', async () => {
+    const made = await ready();
+    expect(await made.say('b 你好')).toBe('已转给 B（#1），等回复。');
+
+    //M 断电在回答写进对话之前：没留下，也没标已送。
+    made.crash.mode = 'beforeWrite';
+    const posted = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '收到' } });
+    expect(posted.statusCode).toBe(200);
+    await settle();
+    const replyId = lastReplyId(made);
+    const session = relaySession(made);
+    expect(written(session, replyId)).toBe(0);
+    expect(delivered(made, replyId)).toBe(0);
+
+    //M 重启：送到一次，标已送。
+    made.restart();
+    await settle();
+    expect(made.answers.at(-1)).toBe('B：收到');
+    expect(written(session, replyId)).toBe(1);
+    expect(delivered(made, replyId)).toBe(1);
+
+    //M 再重启两次：同一条回信不再进对话，也不多一句“没有新消息”。
+    const answered = made.answers.length;
+    made.restart();
+    made.restart();
+    await settle();
+    expect(made.answers.length).toBe(answered);
+    expect(written(session, replyId)).toBe(1);
+  }, SLOW);
+
+  test('direct：写进对话之后、标已送之前断电，重启只补标，不再送一次', async () => {
+    const made = await ready();
+    expect(await made.say('b 你好')).toBe('已转给 B（#1），等回复。');
+
+    //M 断电在回答写进对话之后：对话里有了，还没标已送。
+    made.crash.mode = 'afterWrite';
+    await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '收到' } });
+    await settle();
+    const replyId = lastReplyId(made);
+    const session = relaySession(made);
+    expect(written(session, replyId)).toBe(1);
+    expect(delivered(made, replyId)).toBe(0);
+
+    //M 重启：对账补标已送，不推会话（不多一句回答）。
+    const answered = made.answers.length;
+    made.restart();
+    await settle();
+    expect(delivered(made, replyId)).toBe(1);
+    expect(made.answers.length).toBe(answered);
+    expect(written(session, replyId)).toBe(1);
+  }, SLOW);
+
+  test('走模型的前台：回信排进结果队列，键 relay:<回信号>、回话地址是收件当时的；排不上不标已送，重启再排，排上一次', async () => {
+    const made = await ready([{ name: 'Claude', prefixes: ['cc '] }], { relay: 'model' });
+    const front = made.open({ bot: BOT, kind: 'front', customer: 'feishu:ou_x' });
+    front.row.channel = 'feishu';
+    front.row.address = { chatId: 'oc_m', openId: 'ou_x' };
+    expect(made.tools[0]?.run({ text: '查一下' }, front)).toMatch(/^已转给 Claude（#1）/u);
+
+    //M 第一次排不上：不标已送，没排进去。
+    made.frontDesk.failNext = true;
+    const posted = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '查到了' } });
+    expect(posted.statusCode).toBe(200);
+    const replyId = lastReplyId(made);
+    expect(made.frontDesk.accepted).toEqual([]);
+    expect(delivered(made, replyId)).toBe(0);
+
+    //M 重启：排进前台的结果队列，同一个事务里标已送；不往对话里塞话。
+    made.restart();
+    expect(made.frontDesk.accepted.length).toBe(1);
+    const queued = made.frontDesk.accepted[0]!;
+    expect(queued.key).toBe(`relay:${String(replyId)}`);
+    expect(queued.source).toEqual({ type: 'relay', id: 'Claude' });
+    expect(queued.sessionId).toBe(front.id);
+    expect(queued.origin).toEqual({ channel: 'feishu', address: { chatId: 'oc_m', openId: 'ou_x' } });
+    expect(queued.payload.text).toBe('Claude 回复（#1）：查到了');
+    expect(delivered(made, replyId)).toBe(1);
+    expect(front.row.messages).toEqual([]);
+
+    //M 再重启：已送了，不再排。
+    made.restart();
+    expect(made.frontDesk.accepted.length).toBe(1);
+  }, SLOW);
 });

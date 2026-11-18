@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
+import { requestEvent } from '../../utils/RequestEvent.ts';
 import * as bridge from './index.ts';
 
 //M 每个用例关闭自己的插件和临时 HTTP 服务，不改全局 fetch。

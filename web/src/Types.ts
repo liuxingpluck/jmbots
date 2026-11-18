@@ -70,6 +70,7 @@ export interface ReconnectResult {
 }
 
 
+/** 待用户确认的命令或版本更新审批卡片（GET /api/approvals 的一项；兼容旧字段与统一 CardView）。 */
 export interface ApprovalView {
   /** 号。 */
   id: number;

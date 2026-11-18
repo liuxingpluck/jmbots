@@ -21,13 +21,33 @@ function msg(id: number, at: number, text: string, fromSelf = false, atMe = fals
 /** 假的 ctx：只给 Wechat 用到的几样。 */
 function fake() {
   const received: { text: string; address: unknown }[] = [];
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
   const tools = new Map<string, { run: (args: Record<string, unknown>, session: unknown) => unknown }>();
   const ctx = {
     resources: { db: new Database(':memory:') },
     effect: () => undefined,
     emit: () => undefined,
-    on: (name: string, fn: (...args: unknown[]) => unknown) => { handlers.set(name, fn); },
+    on: (name: string, fn: (...args: unknown[]) => unknown) => {
+      const list = handlers.get(name) ?? [];
+      list.push(fn);
+      handlers.set(name, list);
+      return () => {
+        const current = handlers.get(name) ?? [];
+        const at = current.indexOf(fn);
+        if (at >= 0) current.splice(at, 1);
+      };
+    },
+    serial: async (name: string, ...args: unknown[]) => {
+      if (name === 'channel/message') {
+        const message = args[0] as { text: string; origin: { address: unknown } };
+        received.push({ text: message.text, address: message.origin.address });
+        return;
+      }
+      const list = handlers.get(name) ?? [];
+      for (const fn of [...list]) {
+        await fn(...args);
+      }
+    },
     bots: { channel: () => () => undefined, receive: async (_c: string, _b: string, text: string, address: unknown) => { received.push({ text, address }); } },
     sessions: {},
     tools: { register: (spec: { definition: { name: string }; run: (args: Record<string, unknown>, session: unknown) => unknown }) => { tools.set(spec.definition.name, spec); } },
@@ -94,11 +114,14 @@ describe('微信后台全量监听、只听不发', () => {
     expect(received.map((item) => item.text)).toEqual(['还在吗']);
   });
 
-  test('同一轮里：没勾监听的私聊、群里 @我 都不调 bots.receive；勾了的私聊、群里 @我 各调一次', async () => {
+  test('同一轮里：没勾监听的私聊、群里 @我 都不发 channel/message；勾了的私聊、群里 @我 各发一次', async () => {
     const { wechat, ctx, received } = fake();
     let calls = 0;
-    const receive = ctx.bots.receive;
-    ctx.bots.receive = async (c: string, b: string, text: string, address: unknown) => { calls += 1; await receive(c, b, text, address); };
+    const origSerial = ctx.serial;
+    ctx.serial = async (name: string, ...args: unknown[]) => {
+      if (name === 'channel/message') calls += 1;
+      await origSerial(name, ...args);
+    };
     for (const chat of ['wxid_on', 'gon@chatroom']) ctx.resources.db.query('INSERT INTO wechat_watch VALUES (?, ?, ?, 0, NULL)').run('acc1', chat, chat);
     let chats: ChatItem[] = ['wxid_off', 'goff@chatroom', 'wxid_on', 'gon@chatroom'].map((username) => ({ username, chat: username, is_group: username.endsWith('@chatroom'), unread: 0, last_message: '', timestamp: 100 }));
     let batch: Record<string, RawMessage[]> = Object.fromEntries(chats.map((c) => [c.username, [msg(1, 100, '存量')]]));
@@ -165,7 +188,9 @@ describe('微信后台全量监听、只听不发', () => {
     for (let i = 1; i <= 60; i++) insert.run('acc1', 'wxid_a', 'm0', 1000 + i, 1000 + i, i % 2, 'text', '', `第${String(i)}条`);
     const address = { account: 'acc1', chat: 'wxid_a', name: '甲', customer: 'wechat:wxid_a' };
     const request = { session: { row: { address } }, system: [] as string[] };
-    handlers.get('session/request')!(request);
+    for (const fn of handlers.get('session/request') ?? []) {
+      fn(request);
+    }
     expect(request.system.length).toBe(1);
     expect(request.system[0]!.split('\n').filter((line) => line.includes('：第')).length).toBe(50);
     expect(request.system[0]).toContain('第60条');
@@ -219,7 +244,15 @@ describe('Reader 按账号排队', () => {
       log.push(`起 ${name}`);
       running += 1; peak = Math.max(peak, running);
       return new Promise<string>((resolve, reject) => {
-        gates.set(name, () => { running -= 1; log.push(`完 ${name}`); if (args[0] === 'bad') reject(new Error('坏了')); else resolve('[]'); });
+        gates.set(name, () => {
+          running -= 1;
+          log.push(`完 ${name}`);
+          if (args[0] === 'bad') {
+            reject(new Error('坏了'));
+            return;
+          }
+          resolve('[]');
+        });
       });
     };
     const tick = () => new Promise((resolve) => setTimeout(resolve, 5));

@@ -5,7 +5,7 @@
  */
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type { Session } from './Sessions.ts';
+import type { Session, SessionGate } from './Sessions.ts';
 import * as textModule from './utils/Text.ts';
 
 
@@ -16,8 +16,10 @@ declare module 'cordis' {
   }
   interface Events {
     /**
-     * 要执行一个工具了，先给把关的人看：照插件挂上去的先后一个个 await。
-     * 不让执行的，在 gate.deny 里写上理由（理由会当成工具结果给模型看）。监听的函数不许有返回值。
+     * 关口三，要执行一个工具了，先给把关的人看：照插件挂上去的先后一个个 await。
+     * 只不让执行这一个的，在 gate.deny 里写上理由（理由会当成工具结果给模型看，会话接着走）；
+     * 要整场这一轮停下的，在 gate.stop 里写理由。监听的函数不许有返回值。
+     * 关口四 session/after-tool 由会话循环发，声明在 Sessions.ts，数据是下面的 ToolDone。
      */
     'session/before-tool'(gate: ToolGate): void | Promise<void>;
   }
@@ -36,9 +38,11 @@ export interface ToolSpec {
    * @param session 是哪场会话要执行。
    * @param signal 停止信号：网页、飞书点了停止就触发。要等很久的工具（搜索、生图、跑命令、子任务）把它传给 fetch、子进程，
    *   或者听它的 abort 事件，收到就断开、抛错；写文件这类快的不用管它，照常做完。老工具不写这个参数也行。
+   * @param callId 模型这次调用的调用号（piAi.ToolCall 的 id）：同一次调用重来还是它。要防重复执行的工具（agent_task 派活）拿它当键；
+   *   别的工具不写这个参数也行。
    * @returns 给模型看的文字。抛错就算出错，原因给模型看。
    */
-  run(args: Record<string, unknown>, session: Session, signal: AbortSignal): Promise<ToolResult> | ToolResult;
+  run(args: Record<string, unknown>, session: Session, signal: AbortSignal, callId: string): Promise<ToolResult> | ToolResult;
 }
 
 
@@ -57,15 +61,20 @@ export interface ToolOutcome {
 }
 
 
-/** 事件 session/before-tool 的数据。 */
-export interface ToolGate {
-  /** 是哪场会话要执行。 */
-  session: Session;
+/** 事件 session/before-tool 的数据：关口共有的 session、stop，加上这次调用。 */
+export interface ToolGate extends SessionGate {
   /** 模型的这次调用：工具名、参数、调用号。 */
   call: piAi.ToolCall;
-  /** 不让执行的理由；谁不让执行谁写。没人写就放行。 */
+  /** 不让执行这一个的理由；谁不让执行谁写。没人写就放行。和 stop 不同：会话接着走。 */
   deny?: string;
 }
+
+
+/** 事件 session/after-tool 的数据：和 before-tool 同一份（已经执行过了，不再有 deny），多了执行的结果。 */
+export type ToolDone = Omit<ToolGate, 'deny'> & {
+  /** 执行的结果（没执行、被拦下、出错的也在这）。插件可以改它、换掉它，接进对话的是最后这一份。 */
+  outcome: ToolOutcome;
+};
 
 
 /** 工具服务。 */
@@ -128,9 +137,17 @@ export class Tools extends cordis.Service {
     //G 会话被喊停了 → 这一批里后面的工具都不执行。
     if (session.row.state !== 'running') return { text: '未执行：停下来了', isError: true };
 
-    //M 把关：挨个问 session/before-tool，谁不让执行就在 gate.deny 写上理由。没人管就放行。
+    //M 关口三，执行之前：挨个问 session/before-tool。不让执行这一个的写 gate.deny，要整场停下的写 gate.stop。没人管就放行。
     const gate: ToolGate = { session, call };
     await this.ctx.serial('session/before-tool', gate);
+
+    //G 有插件喊停 → 这个工具不执行，会话停下；这一批后面的工具碰到开头那条守卫，也不执行。
+    if (gate.stop !== undefined) {
+      session.stop(gate.stop);
+      return { text: `未执行：${gate.stop}`, isError: true };
+    }
+
+    //G 有插件不让执行这一个 → 理由给模型看，会话接着走。
     if (gate.deny !== undefined) return { text: `未执行：${gate.deny}`, isError: true };
 
     //G 没登记这个名字，或者这种会话不能用它。
@@ -145,11 +162,11 @@ export class Tools extends cordis.Service {
       工具: call.name,
       参数: call.arguments,
     };
-    this.ctx.emit('trace', 'Tools.execute', '执行工具', 'spec.run(args, session, signal)', vars);
+    this.ctx.emit('trace', 'Tools.execute', '执行工具', 'spec.run(args, session, signal, call.id)', vars);
     try {
-      //M 模型给的参数是外面进来的，在这里照工具的定义校验一次；工具里面直接用。
+      //M 模型给的参数是外面进来的，在这里照工具的定义校验一次；工具里面直接用。调用号原样交给工具。
       const args = piAi.validateToolArguments(spec.definition, call) as Record<string, unknown>;
-      const result = await spec.run(args, session, signal);
+      const result = await spec.run(args, session, signal, call.id);
 
       //M 工具交回一段文字：原样给模型。
       if (typeof result === 'string') return { text: result, isError: false };
@@ -165,7 +182,7 @@ export class Tools extends cordis.Service {
       if (signal.aborted) return { text: '已停止：点了停止，工具没做完', isError: false };
 
       //M 参数不对、工具抛错，都不往外抛：原因当成结果给模型看，它自己决定怎么办。
-      const reason = textModule.messageOf(error);
+      const reason = textModule.getMessage(error);
       return { text: `出错：${reason}`, isError: true };
     }
   }

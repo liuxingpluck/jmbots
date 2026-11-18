@@ -6,6 +6,7 @@
  *   开场先搜也带上“这个客户以前说过的”和知识库；结果带编号、来源、片段，回答时能引用。检索后端可换（本地 SQLite，或外部服务 backend_url）。
  *   HTTP：GET /api/memory/recall、POST /api/memory/knowledge、GET /api/memory/backend。
  * 托管服务（Services.ts）：插件挂上时隐藏拉起 jmbots-memory、vgr，挂在主端口 /memory/、/memory/vgr/ 下；配置 services，见 Services.ts。
+ * 关系图（GraphRoutes.ts、GraphStore.ts、GraphSources.ts，原 memory-graph 并入）：GET /graph/、/api/memory-graph/* 与对话附带关系图链接提示。
  * 设计：docs/src7插件设计/memory.md。
  */
 import * as fs from 'node:fs';
@@ -13,11 +14,13 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type { ChatRequest } from '../../Chat.ts';
-import type { Session } from '../../Sessions.ts';
+import type { ChatRequest, Session } from '../../Sessions.ts';
+import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as backendModule from './Backend.ts';
+import * as channelIndexModule from './ChannelIndex.ts';
 import * as graphPolicy from './GraphPolicy.ts';
+import * as graphRoutesModule from './GraphRoutes.ts';
 import * as libsModule from './Libs.ts';
 import * as recall from './Recall.ts';
 import * as servicesModule from './Services.ts';
@@ -26,6 +29,8 @@ import * as storeModule from './Store.ts';
 
 /** 插件名。 */
 export const name = 'memory';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。1.2.0：渠道消息索引（ChannelIndex.ts、工具 channel_search）。
+export const version = '1.2.0';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -106,8 +111,10 @@ class Memory {
       ctx.on('session/message', (session, message) => {
         if (message.role !== 'user' && message.role !== 'assistant') return;
         void store.ingestSession(session.row).then((count) => {
-          if (count > 0) session.save();
-        }).catch((error: unknown) => console.error(`记忆库收聊天记录出错：${error instanceof Error ? error.message : String(error)}`));
+          if (count > 0) {
+            session.save();
+          }
+        }).catch((error: unknown) => console.error(`记忆库收聊天记录出错：${textModule.getMessage(error)}`));
       });
     }
   }
@@ -130,7 +137,10 @@ class Memory {
       const hits = await Promise.all([recall.local(this.skillRoots(row.bot), said), recall.libs(this.base, said)])
         .then(([own, libs]) => [...own, ...libs]).catch(() => []);
       const cited = await this.openingCitations(row, said).catch(() => []);
-      const citedText = cited.length === 0 ? '' : `# 可能相关的聊天记录和知识库（程序先搜的；回答用到了写上 [编号] 和来源）\n${storeModule.citeText(cited)}`;
+      let citedText = '';
+      if (cited.length > 0) {
+        citedText = `# 可能相关的聊天记录和知识库（程序先搜的；回答用到了写上 [编号] 和来源）\n${storeModule.citeText(cited)}`;
+      }
       row.recall = [recall.describe(hits, this.language(row.bot)), citedText].filter((part) => part !== '').join('\n\n');
       session.save();
 
@@ -138,7 +148,9 @@ class Memory {
       const vars = { 会话: session.id, 几条: hits.length, 引用: cited.length, 后端: this.store.backend.name, 用时毫秒: Date.now() - started };
       this.ctx.emit('trace', 'Memory.recall', '开场先搜完了', 'recall.local(技能目录) + recall.libs(记忆库) + store.search(聊天记录、知识库)', vars);
     }
-    if (row.recall !== '') request.system.push(row.recall);
+    if (row.recall !== '') {
+      request.system.push(row.recall);
+    }
   }
 
   /**
@@ -148,13 +160,17 @@ class Memory {
    */
   private async openingCitations(row: Session['row'], said: string): Promise<backendModule.Citation[]> {
     const query = [...said].slice(0, 300).join('');
-    const customer = storeModule.customerOf(row);
-    const history = this.settings.recallHistory > 0 && customer !== ''
-      ? await this.store.search({ query, scope: 'history', bot: row.bot, customer, notSession: row.id, limit: this.settings.recallHistory + 2 })
-      : [];
+    const customer = storeModule.getCustomer(row);
+    let history: backendModule.Citation[] = [];
+    if (this.settings.recallHistory > 0 && customer !== '') {
+      history = await this.store.search({ query, scope: 'history', bot: row.bot, customer, notSession: row.id, limit: this.settings.recallHistory + 2 });
+    }
     //M 前台那场也记了这一轮的原话：片段就是这次说的话的，不算“以前说过的”。
     const older = history.filter((hit) => !said.includes(hit.snippet.replace(/^…|…$/gu, ''))).slice(0, this.settings.recallHistory);
-    const knowledge = this.settings.recallKnowledge > 0 ? await this.store.search({ query, scope: 'knowledge', bot: row.bot, limit: this.settings.recallKnowledge }) : [];
+    let knowledge: backendModule.Citation[] = [];
+    if (this.settings.recallKnowledge > 0) {
+      knowledge = await this.store.search({ query, scope: 'knowledge', bot: row.bot, limit: this.settings.recallKnowledge });
+    }
     return [...older, ...knowledge];
   }
 
@@ -164,22 +180,33 @@ class Memory {
    */
   private async cite(action: 'history' | 'knowledge', args: Record<string, unknown>, session: Session): Promise<string> {
     const query = required(args, 'query');
-    const limit = typeof args['limit'] === 'number' && args['limit'] > 0 ? Math.min(30, Math.floor(args['limit'])) : CITE_HITS;
+    let limit = CITE_HITS;
+    if (typeof args['limit'] === 'number' && args['limit'] > 0) {
+      limit = Math.min(30, Math.floor(args['limit']));
+    }
     const row = session.row;
     const wanted: backendModule.MemoryQuery = { query, scope: action, bot: row.bot, limit };
     if (action === 'history') {
       const range = args['range'] ?? 'customer';
       //G 隔离：聊天记录每次都只搜这个客户的（session 也再加上客户号）；不再有“跟所有人的”（原来的 range: bot 会搜到别的客户，演示隔离题就是这么串的）。
       if (range !== 'customer' && range !== 'session') throw new Error(`range 只能是 customer 或 session，不能是 ${String(range)}：只能查当前这个客户的记录`);
-      const customer = storeModule.customerOf(row);
+      const customer = storeModule.getCustomer(row);
       if (customer === '') throw new Error(storeModule.NO_CUSTOMER);
       wanted.customer = customer;
-      if (range === 'session') wanted.session = row.id;
+      if (range === 'session') {
+        wanted.session = row.id;
+      }
     }
     const hits = await this.store.search(wanted);
     //T 跟踪：history、knowledge 搜完了。
     this.ctx.emit('trace', 'Memory.cite', `memory ${action} 搜完了`, 'store.search(query)', { 会话: session.id, 条数: hits.length, 后端: this.store.backend.name, 范围: args['range'] ?? '' });
-    if (hits.length === 0) return `没找到「${query}」相关的${action === 'history' ? '聊天记录' : '知识库内容'}`;
+    if (hits.length === 0) {
+      let label = '知识库内容';
+      if (action === 'history') {
+        label = '聊天记录';
+      }
+      return `没找到「${query}」相关的${label}`;
+    }
     return `找到 ${String(hits.length)} 条（回答用到了写上 [编号] 和来源）：\n${storeModule.citeText(hits)}`;
   }
 
@@ -196,12 +223,17 @@ class Memory {
     if (bot === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
 
     const shared = this.ctx.resources.dir('memory');
-    const dir = args['scope'] === 'shared' ? shared : bot.memory;
+    let dir = bot.memory;
+    if (args['scope'] === 'shared') {
+      dir = shared;
+    }
     if (session.row.kind === 'front' && (action === 'write' || action === 'delete')) throw new Error('前台只能 list、search、read');
 
     if (action === 'list') {
       const names = await Array.fromAsync(new Bun.Glob('**/*').scan({ cwd: dir, onlyFiles: true })).catch(() => [] as string[]);
-      return names.length === 0 ? '（记忆文件夹是空的）' : names.map((item) => item.replace(/\\/gu, '/')).sort().join('\n');
+      if (names.length === 0) return '（记忆文件夹是空的）';
+
+      return names.map((item) => item.replace(/\\/gu, '/')).sort().join('\n');
     }
     if (action === 'search') return this.search(required(args, 'query'), [bot.memory, shared, ...this.skillRoots(bot.name)], session);
     if (action === 'history' || action === 'knowledge') return this.cite(action, args, session);
@@ -215,7 +247,10 @@ class Memory {
       const content = required(args, 'content', true);
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, content, 'utf8');
-      return `已写入记忆 ${file}（${size(Buffer.byteLength(content, 'utf8'))}）`;
+      //M 交回写了多大（utils/Text.ts 的 getSizeText）。
+      const bytes = Buffer.byteLength(content, 'utf8');
+      const sizeText = textModule.getSizeText(bytes);
+      return `已写入记忆 ${file}（${sizeText}）`;
     }
     fs.rmSync(file);
     return `已删除记忆 ${file}`;
@@ -232,12 +267,23 @@ class Memory {
     let local = hits.map((hit) => [`@${hit.file}`, ...hit.lines.map((line) => `  …${line}`)].join('\n')).join('\n');
 
     //G 切不出字组（比如只有两个字母）：退回按词逐行找，最多 40 行。
-    if (hits.length === 0 && recall.grams(query).size === 0) local = wordLines(roots, query).join('\n');
+    if (hits.length === 0 && recall.grams(query).size === 0) {
+      local = wordLines(roots, query).join('\n');
+    }
 
-    const found = this.base === undefined ? [] : await recall.searchLibs(this.base, query, SEARCH_HITS);
+    let found: Awaited<ReturnType<typeof recall.searchLibs>> = [];
+    if (this.base !== undefined) {
+      found = await recall.searchLibs(this.base, query, SEARCH_HITS);
+    }
     const libText = found.map((item) => {
-      const summary = item.summary === '' ? '' : `\n  ${item.summary}`;
-      const snippet = item.snippet === '' ? '' : `\n  …${recall.short(item.snippet, SNIPPET_CHARS)}`;
+      let summary = '';
+      if (item.summary !== '') {
+        summary = `\n  ${item.summary}`;
+      }
+      let snippet = '';
+      if (item.snippet !== '') {
+        snippet = `\n  …${recall.short(item.snippet, SNIPPET_CHARS)}`;
+      }
       return `${item.path}${summary}${snippet}`;
     }).join('\n\n');
 
@@ -247,12 +293,19 @@ class Memory {
     const vars = { 会话: session.id, 本地: hits.length, 记忆库: found.length, 知识库: knowledge.length };
     this.ctx.emit('trace', 'Memory.search', 'memory 工具搜完了', 'recall.local + recall.searchLibs', vars);
 
-    const parts = [
-      local === '' ? '' : `# 你的记忆、公共记忆、技能\n${local}`,
-      found.length === 0 ? '' : `# 记忆库 ${this.base?.libs ?? ''}\n${libText}`,
-      knowledge.length === 0 ? '' : `# 知识库（回答用到了写上 [编号] 和来源）\n${storeModule.citeText(knowledge)}`,
-    ].filter((part) => part !== '');
-    return parts.length > 0 ? parts.join('\n\n') : `没找到「${query}」相关的记忆`;
+    const parts: string[] = [];
+    if (local !== '') {
+      parts.push(`# 你的记忆、公共记忆、技能\n${local}`);
+    }
+    if (found.length > 0) {
+      parts.push(`# 记忆库 ${this.base?.libs ?? ''}\n${libText}`);
+    }
+    if (knowledge.length > 0) {
+      parts.push(`# 知识库（回答用到了写上 [编号] 和来源）\n${storeModule.citeText(knowledge)}`);
+    }
+    if (parts.length > 0) return parts.join('\n\n');
+
+    return `没找到「${query}」相关的记忆`;
   }
 
   /** 两个技能目录：全局的、机器人自己的。 */
@@ -289,12 +342,6 @@ function memoryFile(dir: string, relative: string): string {
   return file;
 }
 
-/** 字节数写成 12 B、3.4 KB、1.2 MB。 */
-function size(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`;
-  return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 /**
  * 按词逐行找（切不出字组时用）：几个目录下的 .md、.txt，每个词出现的行，不分大小写。
  * @returns “绝对路径:行号: 那一行”，去重，最多 40 行。
@@ -305,9 +352,14 @@ function wordLines(roots: string[], query: string): string[] {
   for (const root of roots) {
     for (const name of new Bun.Glob('**/*.{md,txt}').scanSync({ cwd: root, onlyFiles: true })) {
       const file = path.join(root, name);
-      const text = fs.statSync(file).size > 256 * 1024 ? '' : fs.readFileSync(file, 'utf8');
+      if (fs.statSync(file).size > 256 * 1024) {
+        continue;
+      }
+      const text = fs.readFileSync(file, 'utf8');
       text.split(/\r?\n/u).forEach((line, index) => {
-        if (words.some((word) => line.toLowerCase().includes(word))) lines.add(`${file}:${String(index + 1)}: ${recall.short(line.trim(), 160)}`);
+        if (words.some((word) => line.toLowerCase().includes(word))) {
+          lines.add(`${file}:${String(index + 1)}: ${recall.short(line.trim(), 160)}`);
+        }
       });
       if (lines.size >= WORD_LINES) return [...lines].slice(0, WORD_LINES);
     }
@@ -335,21 +387,21 @@ declare module 'cordis' {
 export class MemoryService extends cordis.Service {
   /**
    * @param ctx 本插件的 ctx。
-   * @param addressOf 托管服务的内部地址：'memory' 是 jmbots-memory，'vgr' 是 vgr；'' 是没有。
+   * @param getAddress 托管服务的内部地址：'memory' 是 jmbots-memory，'vgr' 是 vgr；'' 是没有。
    * @param graph 聊天记录进不进关系图。
    */
-  constructor(ctx: cordis.Context, private readonly addressOf: (service: string) => string, private readonly graph: graphPolicy.GraphPolicy) {
+  constructor(ctx: cordis.Context, private readonly getAddress: (service: string) => string, private readonly graph: graphPolicy.GraphPolicy) {
     super(ctx, 'memory');
   }
 
   /** 2026-11-17 jm开发：托管服务的地址（默认 jmbots-memory，可问 'vgr'），memory-graph 用，不再自己拼。'' 是没有。 */
   url(service = 'memory'): string {
-    return this.addressOf(service);
+    return this.getAddress(service);
   }
 
   /** 2026-11-17 jm开发：问托管服务的 /health（默认 jmbots-memory，可问 'vgr'）。不通也不抛，交回 ok:false 和原因。 */
   async health(service = 'memory'): Promise<Record<string, unknown>> {
-    const url = this.addressOf(service);
+    const url = this.getAddress(service);
     const started = Date.now();
     //G 没有地址：服务没托管、也没配 service_url。
     if (url === '') return { url, ok: false, ms: 0, error: `没有 ${service} 服务的地址` };
@@ -358,7 +410,7 @@ export class MemoryService extends cordis.Service {
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
       return { url, ok: response.ok, ms: Date.now() - started, ...body };
     } catch (error) {
-      return { url, ok: false, ms: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+      return { url, ok: false, ms: Date.now() - started, error: textModule.getMessage(error) };
     }
   }
 
@@ -368,7 +420,7 @@ export class MemoryService extends cordis.Service {
   }
 
   private async post(route: string, body: unknown, ms: number): Promise<{ ok: boolean; status: number; json: unknown }> {
-    const base = this.addressOf('memory');
+    const base = this.getAddress('memory');
     if (base === '') return { ok: false, status: 503, json: undefined };
     const response = await fetch(`${base}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
     let json: unknown;
@@ -407,7 +459,9 @@ export class MemoryService extends cordis.Service {
     try {
       const res = await this.post('/search', { ...query, scope: 'history', mode: 'hybrid', rerank: false }, 8000);
       const hits = (res.json as { hits?: unknown } | undefined)?.hits;
-      return res.ok && Array.isArray(hits) ? hits as Array<{ start?: unknown }> : [];
+      if (res.ok && Array.isArray(hits)) return hits as Array<{ start?: unknown }>;
+
+      return [];
     } catch {
       return [];
     }
@@ -425,25 +479,54 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   const own = { ...(config ?? {}) };
   const mainPort = Number(((ctx.resources.raw['server'] ?? {}) as { port?: unknown }).port) || 30086;
   const hosted = new servicesModule.Services(ctx.resources.root, mainPort, servicesModule.readServices(own['services']));
-  const named = typeof own['backend_url'] === 'string' ? hosted.route(`/memory/${own['backend_url']}`) ?? (own['backend_url'] === 'memory' ? hosted.route('/memory') : undefined) : undefined;
-  if (named !== undefined) own['backend_url'] = `http://127.0.0.1:${String(mainPort)}${named.item.spec.path}`;
+  let named: ReturnType<typeof hosted.route> | undefined;
+  if (typeof own['backend_url'] === 'string') {
+    named = hosted.route(`/memory/${own['backend_url']}`);
+    if (named === undefined && own['backend_url'] === 'memory') {
+      named = hosted.route('/memory');
+    }
+  }
+  if (named !== undefined) {
+    own['backend_url'] = `http://127.0.0.1:${String(mainPort)}${named.item.spec.path}`;
+  }
   const settings = readSettings(own);
+  const graphSettings = graphRoutesModule.readGraphSettings(ctx.resources.root, own['graph']);
   const local = new backendModule.LocalBackend(ctx.resources.db);
-  const backend = settings.backendUrl === '' ? local : new backendModule.HttpBackend(settings.backendUrl, local, settings.timeoutMs, settings.token);
+  let backend: backendModule.MemoryBackend = local;
+  if (settings.backendUrl !== '') {
+    backend = new backendModule.HttpBackend(settings.backendUrl, local, settings.timeoutMs, settings.token);
+  }
   const store = new storeModule.Store(backend, ctx.resources.root, ctx.resources.db, settings.graph);
   const engine = (ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
   const libs = engine['memory_libs'];
   if (libs !== undefined && typeof libs !== 'string') throw new Error('engine.memory_libs 要是字符串，几个库用逗号连着写');
 
   //M 不缓存启动时可能还没挂上的基地；Recall 每次请求再从 ctx 取服务，本地记忆照常工作。
-  const base = typeof libs === 'string' && libs.trim() !== ''
-    ? { ctx, libs: libs.split(',').map((part) => part.trim()).filter((part) => part !== '').join(',') }
-    : undefined;
+  let base: recall.Base | undefined;
+  if (typeof libs === 'string' && libs.trim() !== '') {
+    base = { ctx, libs: libs.split(',').map((part) => part.trim()).filter((part) => part !== '').join(',') };
+  }
   new Memory(ctx, base, store, settings);
+
+  //M 渠道消息索引（ChannelIndex.ts，11-18）：各渠道消息按聊天记进 memory_channel_messages，工具 channel_search 查；配置 channel_index 不写是开。
+  const channelIndexOn = channelIndexModule.readEnabled(own['channel_index']);
+  if (channelIndexOn) {
+    const channelIndex = new channelIndexModule.ChannelIndex(ctx.resources.db);
+    channelIndexModule.applyChannelIndex(ctx, channelIndex);
+  }
+
   //M 记忆服务地址：配置 service_url 优先，否则本插件托管的 memory（内部地址，端口可能启动时才定，所以每次现取）；vgr 等别的服务只看托管的。
-  const serviceUrl = typeof own['service_url'] === 'string' ? own['service_url'].replace(/\/+$/u, '') : '';
-  new MemoryService(ctx, (service) => (service === 'memory' && serviceUrl !== '' ? serviceUrl : hosted.urlOf(service) ?? ''), settings.graph);
-  routes(ctx, store, hosted);
+  let serviceUrl = '';
+  if (typeof own['service_url'] === 'string') {
+    serviceUrl = own['service_url'].replace(/\/+$/u, '');
+  }
+  const memoryService = new MemoryService(ctx, (service) => {
+    if (service === 'memory' && serviceUrl !== '') return serviceUrl;
+
+    return hosted.getUrl(service) ?? '';
+  }, settings.graph);
+  const graphRoutes = new graphRoutesModule.GraphRoutes(ctx, ctx.resources.root, memoryService, graphSettings);
+  routes(ctx, store, hosted, graphRoutes);
   ctx.on('ready', () => hosted.start());
   ctx.effect(() => () => hosted.stop());
   //M 进程直接退出（不走拔插件）时也把自己拉起的停掉；壳子被强杀时靠壳子的 Job Object。
@@ -452,7 +535,7 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   process.once('SIGINT', () => hosted.stop());
   process.once('SIGTERM', () => hosted.stop());
   //M 全部挂完先同步一次知识库（后台跑，不挡启动）。
-  ctx.on('ready', () => void store.syncKnowledge(true).catch((error: unknown) => console.error(`知识库同步出错：${error instanceof Error ? error.message : String(error)}`)));
+  ctx.on('ready', () => void store.syncKnowledge(true).catch((error: unknown) => console.error(`知识库同步出错：${textModule.getMessage(error)}`)));
   if (base === undefined) return;
 
   //M 配了记忆库：等全部插件挂完（ready）再开始刷新；基地缺失或离线时 Libs 静默跳过。
@@ -493,36 +576,49 @@ function readSettings(raw: Record<string, unknown>): Settings & { backendUrl: st
 
 
 /**
- * 记忆库的接口（http 插件在才登记）：
+ * 记忆库与关系图的 HTTP 接口（http 插件在才登记）：
  * GET /api/memory/recall?q=&scope=history|knowledge|all&bot=&customer=&session=&limit= → {backend, hits}（给网页、别的服务查）；
- * POST /api/memory/knowledge {bot?, name, content} 写一篇知识库文件并马上收进去；GET /api/memory/backend 后端状态。
+ * POST /api/memory/knowledge {bot?, name, content} 写一篇知识库文件并马上收进去；GET /api/memory/backend 后端状态；
+ * 以及由原 memory-graph 并入的 /graph/、/api/memory-graph/* 路由。
  */
-function routes(ctx: cordis.Context, store: storeModule.Store, hosted: servicesModule.Services): void {
+function routes(ctx: cordis.Context, store: storeModule.Store, hosted: servicesModule.Services, graphRoutes: graphRoutesModule.GraphRoutes): void {
   void ctx.inject(['http'], (sub) => {
     const app = sub.http.app;
     app.get<{ Querystring: Record<string, string | undefined> }>('/api/memory/recall', async (request, reply) => {
       const query = request.query;
       const q = (query['q'] ?? '').trim();
       if (q === '') return reply.code(400).send({ error: '要给 q' });
-      const scope = query['scope'] === 'history' || query['scope'] === 'knowledge' ? query['scope'] : 'all';
+
+      let scope: backendModule.MemoryQuery['scope'] = 'all';
+      if (query['scope'] === 'history' || query['scope'] === 'knowledge') {
+        scope = query['scope'];
+      }
       const wanted: backendModule.MemoryQuery = { query: q, scope, limit: Math.min(50, Math.max(1, Number(query['limit'] ?? 10) || 10)) };
       for (const key of ['bot', 'customer', 'session'] as const) {
         const value = query[key];
-        if (value !== undefined && value !== '') wanted[key] = value;
+        if (value !== undefined && value !== '') {
+          wanted[key] = value;
+        }
       }
       //G 隔离：查聊天记录不带 customer 就 400（Store.search 也会拒）。
       if (scope !== 'knowledge' && wanted.customer === undefined) return reply.code(400).send({ error: storeModule.NO_CUSTOMER });
       return { backend: store.backend.name, hits: await store.search(wanted) };
     });
     app.post<{ Body: unknown }>('/api/memory/knowledge', async (request, reply) => {
-      const body = (typeof request.body === 'object' && request.body !== null ? request.body : {}) as Record<string, unknown>;
-      const bot = typeof body['bot'] === 'string' ? body['bot'] : '';
+      let body: Record<string, unknown> = {};
+      if (typeof request.body === 'object' && request.body !== null) {
+        body = request.body as Record<string, unknown>;
+      }
+      let bot = '';
+      if (typeof body['bot'] === 'string') {
+        bot = body['bot'];
+      }
       if (typeof body['name'] !== 'string' || typeof body['content'] !== 'string') return reply.code(400).send({ error: '要给 name、content' });
       if (bot !== '' && ctx.bots.get(bot) === undefined) return reply.code(400).send({ error: `没有这个机器人：${bot}` });
       try {
         return { file: await store.writeKnowledge(bot, body['name'], body['content']) };
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return reply.code(400).send({ error: textModule.getMessage(error) });
       }
     });
     app.get('/api/memory/backend', async () => store.health());
@@ -531,28 +627,46 @@ function routes(ctx: cordis.Context, store: storeModule.Store, hosted: servicesM
     const forward = async (request: { url: string; method: string; headers: Record<string, unknown>; body: unknown }, reply: { code(n: number): { send(v: unknown): unknown }; header(k: string, v: string): unknown; send(v: unknown): unknown }) => {
       const found = hosted.route(request.url);
       if (found === undefined) return reply.code(404).send({ error: '没有这个服务' });
+
       const headers: Record<string, string> = {};
-      for (const [key, value] of Object.entries(request.headers)) {
-        if (typeof value === 'string' && !['host', 'content-length', 'connection'].includes(key.toLowerCase())) headers[key] = value;
+      textModule.eachEntry(request.headers, (key, value) => {
+        if (typeof value === 'string' && !['host', 'content-length', 'connection'].includes(key.toLowerCase())) {
+          headers[key] = value;
+        }
+      });
+      let body: BodyInit | undefined;
+      if (request.method !== 'GET' && request.method !== 'HEAD' && request.body !== undefined) {
+        if (typeof request.body === 'string' || request.body instanceof Uint8Array) {
+          body = request.body as BodyInit;
+        }
+        if (body === undefined) {
+          body = JSON.stringify(request.body);
+        }
       }
-      const body = request.method === 'GET' || request.method === 'HEAD' || request.body === undefined ? undefined
-        : typeof request.body === 'string' || request.body instanceof Uint8Array ? request.body : JSON.stringify(request.body);
       try {
-        const response = await fetch(`${found.item.url}${found.rest}`, { method: request.method, headers, body: body as BodyInit | undefined, signal: AbortSignal.timeout(300_000) });
+        const response = await fetch(`${found.item.url}${found.rest}`, { method: request.method, headers, body, signal: AbortSignal.timeout(300_000) });
         const type = response.headers.get('content-type');
-        if (type !== null) reply.header('content-type', type);
+        if (type !== null) {
+          reply.header('content-type', type);
+        }
         return reply.code(response.status).send(Buffer.from(await response.arrayBuffer()));
       } catch (error) {
         //M 2026-11-14 23:10 EST：报错写清是哪种：服务被重启/掐断，还是根本没开。
-        const why = error instanceof Error ? error.message : String(error);
-        const hint = /closed|reset|ECONNRESET/iu.test(why) ? '连接中途断了（服务可能正被重启，稍后再试）' : '没开或连不上';
+        const why = textModule.getMessage(error);
+        let hint = '没开或连不上';
+        if (/closed|reset|ECONNRESET/iu.test(why)) {
+          hint = '连接中途断了（服务可能正被重启，稍后再试）';
+        }
         return reply.code(503).send({ error: `${found.item.spec.name} ${hint}：${why}` });
       }
     };
     //M 转发要原样带请求体：单独一层作用域收任意类型的体（不影响别的插件的解析）。
     void app.register(async (scope) => {
       scope.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
-      for (const prefix of hosted.paths()) scope.all(`${prefix}/*`, forward as never);
+      for (const prefix of hosted.paths()) {
+        scope.all(`${prefix}/*`, forward as never);
+      }
     });
+    graphRoutes.mountRoutes(app);
   });
 }

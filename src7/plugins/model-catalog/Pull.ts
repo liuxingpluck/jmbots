@@ -78,7 +78,10 @@ const NON_CHAT_MODEL = /embed|whisper|tts|transcri|dall-e|moderation|rerank|imag
  * 副作用：发一个请求。
  */
 export async function fetchList(baseUrl: string, apiKey: string): Promise<ListEntry[]> {
-  const key = apiKey === '' ? 'no-key' : apiKey;
+  let key = apiKey;
+  if (key === '') {
+    key = 'no-key';
+  }
   //M x-magpie-deciders 是 magpie 列出决策模型用的，别家不认会忽略（同 0.4 Model.ts:345-349）。
   const headers = { authorization: `Bearer ${key}`, 'x-api-key': key, 'x-magpie-deciders': '1' };
   const response = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(LIST_TIMEOUT_MS) });
@@ -96,7 +99,9 @@ export async function fetchList(baseUrl: string, apiKey: string): Promise<ListEn
  */
 function perMillion(price: string | undefined): number {
   const value = Number(price);
-  return price !== undefined && Number.isFinite(value) ? value * 1_000_000 : 0;
+  if (price !== undefined && Number.isFinite(value)) return value * 1_000_000;
+
+  return 0;
 }
 
 
@@ -130,29 +135,43 @@ export function merge(
 
     const listedWindow = entry.context_window ?? entry.context_length;
     const listedOutput = entry.max_output_tokens ?? entry.top_provider?.max_completion_tokens;
-    if (own === undefined && (detailed ? !listedWindow || !listedOutput : NON_CHAT_MODEL.test(entry.id))) continue;
+    let listedMissing = NON_CHAT_MODEL.test(entry.id);
+    if (detailed) {
+      listedMissing = !listedWindow || !listedOutput;
+    }
+    if (own === undefined && listedMissing) continue;
     if (!(own?.context_window ?? listedWindow) || !(own?.max_output_tokens ?? listedOutput)) guessed += 1;
 
     //M 思考档：none、off 都算 off；按 off…max 的顺序留支持的；一个都没有就只列 off（用模型自己的默认）。
     const efforts = (own?.thinking ?? (entry.supported_reasoning_levels ?? []).map((level) => level.effort))
-      .map((level) => (level === 'none' ? 'off' : level));
+      .map((level) => {
+        if (level === 'none') return 'off';
+
+        return level;
+      });
     const thinking = THINKING_LEVELS.filter((level) => efforts.includes(level));
     const inputs = entry.modalities?.input ?? entry.architecture?.input_modalities ?? [];
 
+    //M 整理价格（手写价已是美元每百万 token，清单里的字符串是每 token 需折算）：先取输入输出价。
     const price: ModelInfo['price'] = {
       input: own?.price?.input ?? perMillion(entry.pricing?.prompt),
       output: own?.price?.output ?? perMillion(entry.pricing?.completion),
     };
+    //M 清单附带缓存读写报价时一并折算补进 price，供计费与展示使用。
     if (entry.pricing?.input_cache_read !== undefined) price.cacheRead = perMillion(entry.pricing.input_cache_read);
     if (entry.pricing?.input_cache_write !== undefined) price.cacheWrite = perMillion(entry.pricing.input_cache_write);
 
+    let resolvedThinking = thinking;
+    if (resolvedThinking.length === 0) {
+      resolvedThinking = ['off'];
+    }
     models.push({
       id,
       name,
       kind: 'chat',
       contextWindow: own?.context_window ?? listedWindow ?? UNKNOWN_CONTEXT_WINDOW,
       maxOutputTokens: own?.max_output_tokens ?? listedOutput ?? UNKNOWN_MAX_OUTPUT,
-      thinking: thinking.length > 0 ? thinking : ['off'],
+      thinking: resolvedThinking,
       vision: own?.vision ?? inputs.includes('image'),
       price,
     });

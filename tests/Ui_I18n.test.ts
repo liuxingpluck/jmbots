@@ -102,11 +102,11 @@ bunTest.describe('认语言', () => {
     bunTest.expect(i18n.matchLanguage(undefined)).toBeUndefined();
   });
 
-  bunTest.test('打开时：浏览器记着的 → 系统语言 → 英语；记下的能读回来', () => {
-    bunTest.expect(i18n.loadLanguage(storageOf({}), 'en-US')).toBe('en');
-    bunTest.expect(i18n.loadLanguage(storageOf({ 'jmbots.language': 'zh-HK' }), 'en-US')).toBe('zh-TW');
-    bunTest.expect(i18n.loadLanguage(storageOf({ 'jmbots.language': 'fr' }), 'en-US')).toBe('fr');
-    bunTest.expect(i18n.loadLanguage(storageOf({ 'jmbots.language': '乱写' }), 'de')).toBe('en');
+  bunTest.test('打开时：浏览器记着的 → 简体中文（不跟系统语言）；记下的能读回来', () => {
+    bunTest.expect(i18n.loadLanguage(storageOf({}))).toBe('zh-CN');
+    bunTest.expect(i18n.loadLanguage(storageOf({ 'jmbots.language': 'zh-HK' }))).toBe('zh-TW');
+    bunTest.expect(i18n.loadLanguage(storageOf({ 'jmbots.language': 'fr' }))).toBe('fr');
+    bunTest.expect(i18n.loadLanguage(storageOf({ 'jmbots.language': '乱写' }))).toBe('zh-CN');
     /** 记下来的。 */
     const saved: Record<string, string> = {};
     i18n.saveLanguage({ setItem: (key, value) => void (saved[key] = value) }, 'fr');

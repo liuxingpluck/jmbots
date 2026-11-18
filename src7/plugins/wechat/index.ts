@@ -11,26 +11,34 @@
  *     deliver 和页面上的“发送”按钮也只落成草稿。send: true 时才发：会话开了“自动发”就发，没开就登记待确认、没挂 approval 就留草稿；
  *     只发到监听名单里的会话，发送失败不重发。
  * 上下文：最近 50 条（自己说的、对方说的都算）拼进 system；更早的模型用工具 wechat_history 自己决定读多少。
- * 事件：不加新事件。跟踪点照 utils/Trace.ts（ctx.emit('trace', …)）；听 approval/decided、web-api/status、bot/receive（排最前）。
+ * 事件：不加新事件。跟踪点照 utils/Trace.ts（ctx.emit('trace', …)）；听 approval/decided、web-api/status、channel/reply（registerTextReply）。
+ * 回话：前台一轮里 channel_reply 几次进几条发件，一次没调就把最后的话进发件（routing.autoFinal）。
  * Cordis 大白话：apply 是插件的 main()，ctx 是它拿到的遥控器；ctx.on 听的事件、ctx.effect 登记的收尾，插件拔掉时自动撤。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
-import type { ChatRequest } from '../../Chat.ts';
-import type { Session } from '../../Sessions.ts';
+import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { Approval, Pending } from '../approval/index.ts';
+import * as protocol from '../../Channels.ts';
 import * as page from './page/Routes.ts';
 import { Reader } from './read/Reader.ts';
 import type { RawMessage } from './read/Reader.ts';
 import { Sender } from './send/Sender.ts';
 import { Window } from './send/Window.ts';
+import { WechatHistory } from './History.ts';
 
 
 /** 插件名。 */
 export const name = 'wechat-kefu';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+//M 1.1.2：新增 History.ts（WechatHistory）响应 channel/history，支持本人跨渠道与当前微信会话查历史。
+//M 1.1.3：改成 channel_tool：一轮里 channel_reply 几次进几条发件（模型的话照旧要点头才发），零次回复把最后的话进发件；
+//M   不再在 bot/receive 里按客户认领前台（bots 按来源范围找，同客户的旧前台沿用）。
+//M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
+export const version = '1.1.4';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http', 'tools'];
@@ -63,22 +71,45 @@ export interface WechatAddress {
  * 一条消息给人、给模型看的文字（2026-11-14 23:30 EST：原来非文字消息只剩空串，页面显示 [image]、模型也看不到）。
  * 照 jimukefu msgview 的种类：图片、语音、视频、链接/公众号文章、文件、引用、位置、名片、转账……
  */
+//M 格式化引用回复里的摘录内容
+function formatQuote(quote: NonNullable<RawMessage['view']>['quote']): string {
+  if (!quote) return '';
+
+  return `（引用 ${quote.name ?? ''}：${quote.text ?? ''}）`;
+}
+
 export function describe(view: RawMessage['view']): string {
   const v = view ?? {};
-  const title = v.title ?? '', desc = v.desc ? ` — ${v.desc}` : '';
-  switch (v.kind) {
-    case 'text': case 'system': case 'call': case 'other': case undefined: return v.text ?? '';
-    case 'image': return '[图片]';
-    case 'emoji': return '[表情]';
-    case 'voice': return `[语音 ${String(v.seconds ?? 0)} 秒]`;
-    case 'video': return `[视频 ${String(v.seconds ?? 0)} 秒]`;
-    case 'quote': return `${v.text ?? ''}${v.quote ? `（引用 ${v.quote.name ?? ''}：${v.quote.text ?? ''}）` : ''}`;
-    case 'location': return `[位置] ${title}${desc}`;
-    case 'card': return `[名片] ${title}`;
-    case 'transfer': return `[${v.desc ?? '转账'}] ${v.amount ?? ''}`;
-    case 'file': return `[文件] ${title}`;
-    default: return `[${v.kind === 'link' ? '链接' : '文章/卡片'}] ${title}${desc}`;
+  const title = v.title ?? '';
+  let desc = '';
+  if (v.desc) {
+    desc = ` — ${v.desc}`;
   }
+  if (v.kind === 'text' || v.kind === 'system' || v.kind === 'call' || v.kind === 'other' || v.kind === undefined) return v.text ?? '';
+
+  if (v.kind === 'image') return '[图片]';
+
+  if (v.kind === 'emoji') return '[表情]';
+
+  if (v.kind === 'voice') return `[语音 ${String(v.seconds ?? 0)} 秒]`;
+
+  if (v.kind === 'video') return `[视频 ${String(v.seconds ?? 0)} 秒]`;
+
+  if (v.kind === 'quote') return `${v.text ?? ''}${formatQuote(v.quote)}`;
+
+  if (v.kind === 'location') return `[位置] ${title}${desc}`;
+
+  if (v.kind === 'card') return `[名片] ${title}`;
+
+  if (v.kind === 'transfer') return `[${v.desc ?? '转账'}] ${v.amount ?? ''}`;
+
+  if (v.kind === 'file') return `[文件] ${title}`;
+
+  let kindLabel = '文章/卡片';
+  if (v.kind === 'link') {
+    kindLabel = '链接';
+  }
+  return `[${kindLabel}] ${title}${desc}`;
 }
 
 /** 校验后的配置。 */
@@ -161,17 +192,8 @@ export class Wechat {
     db.exec('CREATE TABLE IF NOT EXISTS wechat_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, chat TEXT, name TEXT,'
       + ' text TEXT, state TEXT, note TEXT, at INTEGER)');
 
-    //M 微信来的话：每个客户一场前台会话。排在前面只为抢在前台“每个机器人一场”之前定下去向。
-    //M 批准与否由 approval 自己核对说话人，不靠这边和 approval 谁先监听；已经 handled 的（如有权的“同意 N”）不再开会话。
-    this.ctx.on('bot/receive', (event) => {
-      if (event.message.channel !== this.name || event.session !== undefined || event.handled === true) return;
-
-      const customer = (event.message.address as WechatAddress).customer;
-      const found = this.ctx.sessions.find({ bot: event.bot.name, kind: 'front', customer })[0];
-      event.session = found === undefined
-        ? this.ctx.sessions.create({ bot: event.bot.name, kind: 'front', customer })
-        : this.ctx.sessions.open(found.id);
-    }, { prepend: true });
+    //M 微信来的话：每个客户一场前台会话。不再在 bot/receive 里自己认领：bots 按来源范围（微信、账号、会话）找前台，
+    //M   同客户的旧前台会补写范围沿用（FrontDesk.findOrCreateFrontByScope）；起草（draftReply 走 bots.receive）由前台按客户找，是同一场。
 
 
     //M 微信来的会话：最近 50 条（自己的、对方的都算）拼进 system，和现在会话把最近对话给模型看是一个意思。
@@ -191,10 +213,47 @@ export class Wechat {
     });
 
     this.ctx.on('web-api/status', (list) => {
-      const detail = this.status.lastError === '' ? `已查 ${String(this.status.rounds)} 轮` : `出错：${this.status.lastError}`;
+      let detail = `出错：${this.status.lastError}`;
+      if (this.status.lastError === '') {
+        detail = `已查 ${String(this.status.rounds)} 轮`;
+      }
       list.push({ name: 'wechat', bot: config.bot, connected: this.status.lastError === '', detail });
     });
 
+    //M 统一渠道回执出口：模型一轮里每调一次 channel_reply、零次兜底、审批直回，都经 channel/reply 到这里，逐条进发件表。
+    //M   模型的话照旧要本人点头才发（没开自动发时）；审批直回（轮名 approval）不再套娃问。
+    protocol.registerTextReply(this.ctx, {
+      channel: this.name,
+      getTargetAddress: (chat) => this.getReplyTargetAddress(chat),
+      sendDirectText: (text, request, targetAddress) => {
+        const raw = targetAddress ?? request.sourceSnapshot.origin.address;
+        const account = textModule.getText(raw, 'account');
+        const chat = textModule.getText(raw, 'chat');
+        const chatName = textModule.getText(raw, 'name');
+        const customer = textModule.getText(raw, 'customer');
+        if (account === '' || chat === '' || text.trim() === '') return;
+
+        let displayName = chat;
+        if (chatName !== '') {
+          displayName = chatName;
+        }
+        let customerKey = `wechat:${chat}`;
+        if (customer !== '') {
+          customerKey = customer;
+        }
+        const target: WechatAddress = {
+          account,
+          chat,
+          name: displayName,
+          customer: customerKey,
+        };
+        const askApproval = protocol.getRoundId(request.replyRoundKey) !== 'approval';
+        this.deliverOrDraft(target, request.bot, text, askApproval);
+      },
+    });
+    new WechatHistory(this.ctx);
+
+    //M 等 Main 把插件都挂完（事件 ready）才开始定时查，拔掉插件时清定时器、关发送 worker。
     this.ctx.on('ready', () => {
       if (config.intervalMs <= 0) return;
 
@@ -232,7 +291,7 @@ export class Wechat {
       this.status.synced = (db.query('SELECT COUNT(*) AS n FROM wechat_sync').get() as { n: number }).n;
       this.status.lastError = '';
     } catch (error) {
-      this.status.lastError = textModule.messageOf(error);
+      this.status.lastError = textModule.getMessage(error);
     } finally {
       this.status.busy = false;
       this.status.rounds += 1;
@@ -247,7 +306,11 @@ export class Wechat {
     for (const item of chats) {
       const result = results.find((one) => one.chat === item.chat);
       const failed = result === undefined || result.missing || result.error !== undefined;
-      await this.store(account, { chat: item.chat, name: item.name, last_time: item.since, at: item.at }, result?.is_group === true, failed ? [] : result.messages ?? []);
+      let messages: RawMessage[] = [];
+      if (!failed && result !== undefined) {
+        messages = result.messages ?? [];
+      }
+      await this.store(account, { chat: item.chat, name: item.name, last_time: item.since, at: item.at }, result?.is_group === true, messages);
     }
   }
 
@@ -268,18 +331,84 @@ export class Wechat {
       if (watched === null) continue;
 
       const address: WechatAddress = { account, chat: row.chat, name: row.name, customer: `wechat:${row.chat}` };
-      const said = group && view.sender !== undefined && view.sender !== '' ? `${view.sender}：${text}` : text;
+      let said = text;
+      if (group && view.sender !== undefined && view.sender !== '') {
+        said = `${view.sender}：${text}`;
+      }
 
-      //T 跟踪：微信来了一条要回的。
+      const receivedAt = Date.now();
+      let createdAt = receivedAt;
+      let timeSource: 'provider' | 'received' = 'received';
+      if (msg.create_time > 0) {
+        createdAt = msg.create_time * 1000;
+        timeSource = 'provider';
+      }
+      let chatType: protocol.ChannelChatType = 'p2p';
+      if (group) {
+        chatType = 'group';
+      }
+      const sender: { id: string; name?: string } = { id: view.sender || row.chat };
+      if (view.sender !== undefined && view.sender !== '') {
+        sender.name = view.sender;
+      }
+      const mentions: protocol.ChannelMention[] = [];
+      if (group && msg.at_me === true) {
+        mentions.push({ id: account, botNames: [this.config.bot] });
+      }
+      const nativeId = `${msg.source}:${String(msg.local_id)}`;
+      const messageId = protocol.makeChannelMessageId(this.name, account, nativeId);
+
+      //T 跟踪：微信来了一条要回的，先存表，再发出标准 channel/message。
       const vars = { 账号: account, 会话: row.name, 客户: address.customer, 字数: said.length };
-      this.ctx.emit('trace', 'Wechat.store', '微信新消息，交给机器人', 'this.ctx.bots.receive(this.name, bot, said, address)', vars);
-      await this.ctx.bots.receive(this.name, this.config.bot, said, address);
+      this.ctx.emit('trace', 'Wechat.store', '微信新消息，发出 channel/message', "ctx.serial('channel/message')", vars);
+
+      const channelMessage: protocol.ChannelMessage = {
+        v: 1,
+        messageId,
+        nativeId,
+        channel: this.name,
+        accountId: account,
+        chatId: row.chat,
+        chatType,
+        sender,
+        role: protocol.resolveLegacyRole(address as unknown as Record<string, unknown>),
+        targetBots: [this.config.bot],
+        mentions,
+        rawText: text,
+        text: said,
+        attachments: [],
+        createdAt,
+        receivedAt,
+        timeSource,
+        replyTo: null,
+        origin: {
+          channel: this.name,
+          address: { ...address },
+        },
+        visibility: {
+          scope: `${this.name}:${account}:${row.chat}`,
+          trusted: !group,
+          publicSourceIds: [],
+        },
+        routing: {
+          listenOnly: false,
+          autoFinal: true,
+        },
+      };
+
+      //M 发出 channel/message：bots 按来源范围排进这个客户的前台；一轮里 channel_reply 几次进几条发件，一次没调就把最后的话进发件。
+      const control: protocol.ChannelMessageControl = { claims: [] };
+      await this.ctx.serial('channel/message', channelMessage, control);
     }
     if (messages.length === 0) last = Math.max(last, row.at ?? 0);
     db.query('UPDATE wechat_watch SET last_time = ? WHERE account = ? AND chat = ?').run(last, account, row.chat);
+    let isGroupFlag = 0;
+    if (group) {
+      isGroupFlag = 1;
+    }
     db.query('INSERT INTO wechat_sync (account, chat, name, is_group, last_time) VALUES (?, ?, ?, ?, ?)'
       + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, is_group = excluded.is_group, last_time = excluded.last_time')
-      .run(account, row.chat, row.name, group ? 1 : 0, last);
+      .run(account, row.chat, row.name, isGroupFlag, last);
   }
 
   /**
@@ -293,7 +422,10 @@ export class Wechat {
   private save(account: string, chat: string, msg: RawMessage): boolean {
     //M 消息里给人看的那块（类型、谁说的、内容）拆成表里的几列。
     const view = msg.view ?? {};
-    const fromSelf = msg.from_self === true ? 1 : 0;
+    let fromSelf = 0;
+    if (msg.from_self === true) {
+      fromSelf = 1;
+    }
     const kind = view.kind ?? 'other';
     const sender = view.sender ?? '';
     const text = describe(view);
@@ -321,8 +453,147 @@ export class Wechat {
   /** 一行消息给模型看的样子：时间 谁：内容。 */
   private line(row: { at: number; from_self: number; sender: string; kind: string; text: string }): string {
     const at = new Date(row.at * 1000).toLocaleString('zh-CN', { hour12: false });
-    const who = row.from_self === 1 ? '我' : row.sender !== '' ? row.sender : '对方';
-    return `${at} ${who}：${row.text !== '' ? row.text : `[${row.kind}]`}`;
+    let who = '对方';
+    if (row.sender !== '') {
+      who = row.sender;
+    }
+    if (row.from_self === 1) {
+      who = '我';
+    }
+    let body = `[${row.kind}]`;
+    if (row.text !== '') {
+      body = row.text;
+    }
+    return `${at} ${who}：${body}`;
+  }
+
+  /**
+   * 识别跨渠道发往微信的目标聊天（仅查询微信自有 wechat_watch / wechat_sync / wechat_messages 表）；认不出返回 undefined。
+   * @param rawChat 调用方传入的聊天标识、备注名或带账号/wechat 前缀的写法。
+   */
+  private getReplyTargetAddress(rawChat: string): Record<string, unknown> | undefined {
+    const exact = rawChat.trim();
+    if (exact === '') return undefined;
+
+    //M 剥离“微信·”前缀以便用展示名反查备注；同时解析可选 account:chat / wechat:chat 前缀。
+    let labelTarget = exact;
+    if (exact.startsWith('微信·')) {
+      labelTarget = exact.slice('微信·'.length);
+    }
+
+    let preferredAccount = '';
+    let plainChat = '';
+    const sep = exact.indexOf(':');
+    if (sep > 0) {
+      const left = exact.slice(0, sep).trim();
+      const right = exact.slice(sep + 1).trim();
+      if (left !== '' && right !== '') {
+        plainChat = right;
+        if (left !== 'wechat') {
+          preferredAccount = left;
+        }
+      }
+    }
+
+    let targetChat = exact;
+    if (plainChat !== '') {
+      targetChat = plainChat;
+    }
+
+    //M 按监听名单、同步表、消息表顺序检索匹配的微信账号和聊天编号。
+    const tables: Array<'wechat_watch' | 'wechat_sync' | 'wechat_messages'> = ['wechat_watch', 'wechat_sync', 'wechat_messages'];
+    for (const table of tables) {
+      if (!this.hasTable(table)) {
+        continue;
+      }
+      //M 按当前表核对微信聊天或备注名称，未命中或字段不完整则顺延下一张表。
+      const found = this.getChatRowFromTable(table, preferredAccount, exact, targetChat, labelTarget);
+      if (found === undefined || found.account === '' || found.chat === '') {
+        continue;
+      }
+
+      let name = found.chat;
+      if (typeof found.name === 'string' && found.name !== '') {
+        name = found.name;
+      }
+      return {
+        account: found.account,
+        chat: found.chat,
+        name,
+        customer: `wechat:${found.chat}`,
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * 检查运行时数据库是否存在指定表。
+   * @param tableName 表名。
+   */
+  private hasTable(tableName: string): boolean {
+    //M 查 sqlite_master 确认微信自有表是否已创建。
+    const row = this.ctx.resources.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
+    return row !== null && row !== undefined;
+  }
+
+  /**
+   * 按表名从微信自有表中取一条匹配的 (account, chat, name) 记录。
+   * @param table 微信数据表名。
+   * @param preferredAccount 可选指定账号。
+   * @param exact 完整输入字符串。
+   * @param targetChat 解析后的纯聊天编号。
+   * @param labelTarget 去前缀展示名。
+   */
+  private getChatRowFromTable(
+    table: 'wechat_watch' | 'wechat_sync' | 'wechat_messages',
+    preferredAccount: string,
+    exact: string,
+    targetChat: string,
+    labelTarget: string,
+  ): { account: string; chat: string; name?: string } | undefined {
+    const db = this.ctx.resources.db;
+    if (table === 'wechat_messages') {
+      if (preferredAccount !== '') {
+        //M 按明确指定的账号和 chat 查消息表确认会话归属。
+        const pair = db.query('SELECT account, chat FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC LIMIT 1')
+          .get(preferredAccount, targetChat) as { account: string; chat: string } | null;
+        if (pair !== null) return pair;
+      }
+      //M 再依次按原始串和去前缀纯 chat 查最近一次记录对应的微信号。
+      const byExact = db.query('SELECT account, chat FROM wechat_messages WHERE chat = ? ORDER BY at DESC LIMIT 1')
+        .get(exact) as { account: string; chat: string } | null;
+      if (byExact !== null) return byExact;
+
+      //M 若入参带前缀，继续按纯聊天编号查询所属账号。
+      const byPlain = db.query('SELECT account, chat FROM wechat_messages WHERE chat = ? ORDER BY at DESC LIMIT 1')
+        .get(targetChat) as { account: string; chat: string } | null;
+      if (byPlain !== null) return byPlain;
+
+      return undefined;
+    }
+
+    if (preferredAccount !== '') {
+      //M 按账号和纯 chat 精确匹配监听表或同步表。
+      const pair = db.query(`SELECT account, chat, name FROM ${table} WHERE account = ? AND chat = ? LIMIT 1`)
+        .get(preferredAccount, targetChat) as { account: string; chat: string; name: string } | null;
+      if (pair !== null) return pair;
+    }
+    //M 按原始 chat、纯 chat 或备注名称查监听表或同步表。
+    const byExact = db.query(`SELECT account, chat, name FROM ${table} WHERE chat = ? LIMIT 1`)
+      .get(exact) as { account: string; chat: string; name: string } | null;
+    if (byExact !== null) return byExact;
+
+    //M 未命中原始串时按拆出的纯聊天号继续查。
+    const byPlain = db.query(`SELECT account, chat, name FROM ${table} WHERE chat = ? LIMIT 1`)
+      .get(targetChat) as { account: string; chat: string; name: string } | null;
+    if (byPlain !== null) return byPlain;
+
+    //M 仍未命中则按备注展示名匹配。
+    const byName = db.query(`SELECT account, chat, name FROM ${table} WHERE name = ? LIMIT 1`)
+      .get(labelTarget) as { account: string; chat: string; name: string } | null;
+    if (byName !== null) return byName;
+
+    return undefined;
   }
 
   /** 微信会话调模型前：最近 50 条拼进 system。 */
@@ -369,6 +640,17 @@ export class Wechat {
     const address = session.row.address as WechatAddress | undefined;
     if (session.row.state !== 'done' || reply.trim() === '' || address === undefined) return;
 
+    this.deliverOrDraft(address, session.row.bot, reply, true);
+  }
+
+  /**
+   * 落盘微信发件表并按开关发送、提交待确认或留为草稿。
+   * @param address 微信地址。
+   * @param bot 机器人名。
+   * @param reply 回复正文。
+   * @param askApproval 未开自动发且开了发送开关时，是否再向 approval 登记一次待确认（直回审批确认话不套娃再问）。
+   */
+  private deliverOrDraft(address: WechatAddress, bot: string, reply: string, askApproval: boolean): void {
     //G 只听不发（用户 11-14）：send 没开就只存草稿，不发、不问 approval。
     if (!this.config.send) {
       this.outbox(address, reply, 'draft');
@@ -377,14 +659,20 @@ export class Wechat {
 
     const watch = this.ctx.resources.db.query('SELECT auto FROM wechat_watch WHERE account = ? AND chat = ?').get(address.account, address.chat) as
       { auto: number } | null;
-    const state = watch?.auto === 1 ? 'sending' : this.approval === undefined ? 'draft' : 'waiting';
+    let state = 'draft';
+    if (askApproval && this.approval !== undefined) {
+      state = 'waiting';
+    }
+    if (watch?.auto === 1) {
+      state = 'sending';
+    }
     const id = this.outbox(address, reply, state);
     if (state === 'sending') void this.deliver(id);
     if (state !== 'waiting' || this.approval === undefined) return;
 
     //M 不带 session：approval 会对会话 say 一句“怎么回”，那句话会被发给微信客户。
     this.approval.ask({
-      kind: 'wechat-send', title: `发微信给「${address.name}」`, detail: reply, payload: { outbox: id }, bot: session.row.bot,
+      kind: 'wechat-send', title: `发微信给「${address.name}」`, detail: reply, payload: { outbox: id }, bot,
       card: {
         kind: 'approval', title: `发微信给「${address.name}」`, reason: '这个会话没开自动发，机器人的回复要你点头才发出去',
         items: [{ label: '会话', value: `${address.name}（${address.chat}）` }, { label: '内容', value: reply }],
@@ -482,9 +770,13 @@ export class Wechat {
     const nickname = this.reader.accounts().find((acc) => acc.id === item.account)?.nickname ?? item.account;
     try {
       const result = await this.sender.send({ account: item.account, chat: item.chat, name: item.name, nickname }, item.text, `jmbots-wechat-${String(id)}`);
-      this.mark(id, result['confirmed'] === true ? 'sent' : 'unconfirmed', String(result['status'] ?? ''));
+      let outboxState: 'sent' | 'unconfirmed' = 'unconfirmed';
+      if (result['confirmed'] === true) {
+        outboxState = 'sent';
+      }
+      this.mark(id, outboxState, String(result['status'] ?? ''));
     } catch (error) {
-      this.mark(id, 'failed', textModule.messageOf(error));
+      this.mark(id, 'failed', textModule.getMessage(error));
     }
 
     //T 跟踪：发了一条微信。
@@ -498,8 +790,11 @@ export class Wechat {
     if (pending.kind !== 'wechat-send') return;
 
     const id = (pending.payload as { outbox: number }).outbox;
-    if (pending.state === 'approved') void this.deliver(id);
-    else this.mark(id, 'rejected', pending.by ?? '');
+    if (pending.state === 'approved') {
+      void this.deliver(id);
+      return;
+    }
+    this.mark(id, 'rejected', pending.by ?? '');
   }
 }
 
@@ -518,23 +813,48 @@ function defaultLock(root: string): string {
  * @throws bot 不在名单、interval_ms 不是非负整数时抛错。
  */
 export function checkConfig(ctx: cordis.Context, written: unknown): WechatConfig {
-  const own = (typeof written === 'object' && written !== null ? written : {}) as Record<string, unknown>;
+  let own: Record<string, unknown> = {};
+  if (typeof written === 'object' && written !== null) {
+    own = written as Record<string, unknown>;
+  }
   const bot = own['bot'] ?? ctx.bots.list()[0]?.name;
   if (typeof bot !== 'string' || ctx.bots.get(bot) === undefined) throw new Error('wechat 插件的 bot 要写机器人名单里有的名字');
 
   const intervalMs = own['interval_ms'] ?? 3000;
   if (!Number.isInteger(intervalMs) || (intervalMs as number) < 0) throw new Error('wechat 插件的 interval_ms 要写成非负整数');
 
-  const root = path.resolve(ctx.resources.root, typeof own['root'] === 'string' ? own['root'] : 'program/wechat');
-  const pick = (key: string, fallback: string): string => typeof own[key] === 'string' ? path.resolve(root, own[key]) : fallback;
+  let rawRoot = 'program/wechat';
+  if (typeof own['root'] === 'string') {
+    rawRoot = own['root'];
+  }
+  const root = path.resolve(ctx.resources.root, rawRoot);
+  const pick = (key: string, fallback: string): string => {
+    const val = own[key];
+    if (typeof val === 'string') return path.resolve(root, val);
+
+    return fallback;
+  };
+  let aobwUrl = 'http://127.0.0.1:30010';
+  if (typeof own['aobw_url'] === 'string') {
+    aobwUrl = own['aobw_url'].replace(/\/+$/u, '');
+  }
+  let atNames = '';
+  if (Array.isArray(own['at_names'])) {
+    atNames = own['at_names'].map(String).join(',');
+  }
+  let chatLimit = 5000;
+  const rawLimit = own['chat_limit'];
+  if (Number.isInteger(rawLimit) && (rawLimit as number) > 0) {
+    chatLimit = rawLimit as number;
+  }
   return {
     bot, root, intervalMs: intervalMs as number,
     python: pick('python', path.join(root, 'runtime', 'env', 'python', 'python.exe')),
     ocrPython: pick('ocr_python', path.join(root, 'runtime', 'env', 'ocr', 'python', 'python.exe')),
-    aobwUrl: typeof own['aobw_url'] === 'string' ? own['aobw_url'].replace(/\/+$/u, '') : 'http://127.0.0.1:30010',
+    aobwUrl,
     lockFile: pick('lock_file', defaultLock(root)),
-    atNames: Array.isArray(own['at_names']) ? own['at_names'].map(String).join(',') : '',
-    chatLimit: Number.isInteger(own['chat_limit']) && (own['chat_limit'] as number) > 0 ? own['chat_limit'] as number : 5000,
+    atNames,
+    chatLimit,
     send: own['send'] === true,
   };
 }

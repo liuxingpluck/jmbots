@@ -1,28 +1,14 @@
 /**
  * 会话步骤、回话追溯、回话的生成依据（generation）。都是只读的：从会话记录、收件表、流水、用量现拼，不另存。
  * 本文件不 import 同目录的 Timeline.ts（只 import type），免得两个文件互相 import 绕成一圈。
- * 设计：docs/src7插件设计/web-api.md 第 2 节“步骤”“追溯”、第 4 节 generationOf。
+ * 设计：docs/src7插件设计/web-api.md 第 2 节“步骤”“追溯”、第 4 节 getGeneration。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { SessionRow } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { MessageRecord } from './Timeline.ts';
-
-
-/** 带状态码的错误：处理函数里抛它，index.ts 作用域的错误处理照状态码回 { error }。 */
-export class Failure extends Error {
-  /**
-   * @param status HTTP 状态码。
-   * @param message 回给网页的一句话。
-   */
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+import * as failureModule from '../../utils/Failure.ts';
 
 
 /** 一句回话的生成依据，形状照网页的 ReplyGeneration（web/src/Types.ts:149-172）。 */
@@ -89,7 +75,7 @@ const STEP_TEXT_MAX = 4000;
  * @param text 这句回话。
  * @returns 生成依据。
  */
-export function generationOf(row: SessionRow, text: string): Generation {
+export function getGeneration(row: SessionRow, text: string): Generation {
   const program: Generation = {
     kind: 'program', model: null, thinkingRequested: null, thinkingSent: null, thinkingReported: null,
     source: 'stored-assistant', purpose: null, run: null, step: null, assistantAt: null, callId: null,
@@ -98,6 +84,7 @@ export function generationOf(row: SessionRow, text: string): Generation {
   const last = assistants.at(-1);
   if (last === undefined) return program;
 
+  //M 对照末条模型消息的回复工具参数和最终正文，识别这句回话的生成方式。
   const call = last.content.find((block) => block.type === 'toolCall' && block.name === 'reply' && block.arguments['text'] === text);
   const finished = row.state === 'done' && piAi.contentText(last.content) === text;
   if (call === undefined && !finished) return program;
@@ -134,6 +121,7 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
     const seq = index + 1;
     if (message.role === 'user') {
       const text = typeof message.content === 'string' ? message.content : piAi.contentText(message.content);
+      //M 保留输入字数，将正文缩成网页步骤可展示的预览。
       all.push({
         seq, at: message.timestamp, row: '用户', eventType: 'session/message（user）',
         event: { text: textModule.clip(text, STEP_TEXT_MAX), chars: text.length },
@@ -141,6 +129,7 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
       });
     } else if (message.role === 'assistant') {
       const calls = message.content.flatMap((block) => (block.type === 'toolCall' ? [{ id: block.id, name: block.name, args: block.arguments }] : []));
+      //M 为模型步骤记录模型名、正文预览、工具调用和用量。
       const event = {
         model: `${message.provider}/${message.model}`,
         text: textModule.clip(piAi.contentText(message.content), STEP_TEXT_MAX),
@@ -199,7 +188,8 @@ export interface TraceInput {
 export function trace(ctx: cordis.Context, input: TraceInput): Record<string, unknown> {
   const { message, replyIndex } = input;
   const reply = message.replies[replyIndex];
-  if (reply === undefined) throw new Failure(404, `消息 ${String(message.id)} 没有第 ${String(replyIndex)} 句回话`);
+  //G 指定回复下标找不到时交回 404，结束追溯查询。
+  if (reply === undefined) throw new failureModule.Failure(404, `消息 ${String(message.id)} 没有第 ${String(replyIndex)} 句回话`);
 
   //M 涉及的会话：这条消息从第一句到这一句回话出现过的会话号（去重）；时间窗：收到 → 这句回话。
   const sessions = [...new Set(message.replies.slice(0, replyIndex + 1).map((item) => item.sessionId))];
@@ -231,6 +221,7 @@ export function trace(ctx: cordis.Context, input: TraceInput): Record<string, un
       bot: message.bot,
       sessionId: reply.sessionId,
       at: reply.at,
+      //M 限制目标回话预览长度，保留完整字数供网页显示。
       text: textModule.clip(reply.text, TRACE_TEXT_MAX),
       textChars: reply.text.length,
       sessionTitle: input.sessionTitle,
@@ -247,6 +238,7 @@ export function trace(ctx: cordis.Context, input: TraceInput): Record<string, un
       id: message.id,
       channel: message.channel,
       source: message.source,
+      //M 限制原消息预览长度，保留完整字数供网页显示。
       text: textModule.clip(message.text, TRACE_TEXT_MAX),
       textChars: message.text.length,
       createdAt: message.createdAt,

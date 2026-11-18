@@ -44,7 +44,9 @@ function cloneLevel(value: unknown, nextKey: string | number): Record<string | n
   if (value && typeof value === 'object') {
     return { ...(value as Record<string, unknown>) };
   }
-  return typeof nextKey === 'number' ? [] : {};
+  if (typeof nextKey === 'number') return [];
+
+  return {};
 }
 
 
@@ -52,12 +54,17 @@ function cloneLevel(value: unknown, nextKey: string | number): Record<string | n
  * 做一步改动（不改原来的，返回新的）。
  * @param root 配置。
  * @param edit 改动。
+ * @returns 改动后的新配置（不修改原输入）。
  */
 export function applyEdit(root: unknown, edit: Edit): unknown {
   if (edit.path.length === 0) {
-    return 'delete' in edit ? undefined : edit.value;
+    if ('delete' in edit) return undefined;
+
+    return edit.value;
   }
+
   /** 新的根。 */
+  //M 保持原配置只读：按路径首段类型浅拷贝根容器，供后续逐层下钻修改。
   const top = cloneLevel(root, edit.path[0]!);
   /** 一层一层往下复制。 */
   let parent: Record<string | number, unknown> | unknown[] = top;
@@ -65,6 +72,7 @@ export function applyEdit(root: unknown, edit: Edit): unknown {
     /** 这一层的键。 */
     const key = edit.path[index]!;
     /** 下一层（复制一份）。 */
+    //M 沿路径逐层浅拷贝并挂回父节点，防止写草稿时污染原配置或共享引用。
     const child = cloneLevel((parent as Record<string | number, unknown>)[key], edit.path[index + 1]!);
     (parent as Record<string | number, unknown>)[key] = child;
     parent = child;
@@ -74,12 +82,12 @@ export function applyEdit(root: unknown, edit: Edit): unknown {
   if ('delete' in edit) {
     if (Array.isArray(parent) && typeof last === 'number') {
       parent.splice(last, 1);
-    } else {
-      delete (parent as Record<string | number, unknown>)[last];
+      return top;
     }
-  } else {
-    (parent as Record<string | number, unknown>)[last] = edit.value;
+    delete (parent as Record<string | number, unknown>)[last];
+    return top;
   }
+  (parent as Record<string | number, unknown>)[last] = edit.value;
   return top;
 }
 
@@ -88,6 +96,7 @@ export function applyEdit(root: unknown, edit: Edit): unknown {
  * 把一步改动加进改动表：和上一步改的是同一个值（都是设值）时合成一步，免得打一个字记一步。
  * @param edits 已有的改动。
  * @param edit 新的一步。
+ * @returns 合并或追加后的新改动列表。
  */
 export function addEdit(edits: Edit[], edit: Edit): Edit[] {
   /** 上一步。 */
@@ -103,8 +112,9 @@ export function addEdit(edits: Edit[], edit: Edit): Edit[] {
  * 草稿：配置做完所有改动以后的样子。
  * @param config 拿到的配置。
  * @param edits 改动。
+ * @returns 依次应用所有改动后的草稿配置。
  */
-export function draftOf(config: unknown, edits: Edit[]): unknown {
+export function getDraft(config: unknown, edits: Edit[]): unknown {
   return edits.reduce(applyEdit, config);
 }
 
@@ -114,8 +124,10 @@ export function draftOf(config: unknown, edits: Edit[]): unknown {
  * @param config 拿到的配置。
  * @param draft 草稿。
  * @param path 路径。
+ * @returns 与原配置不同时为 true，否则为 false。
  */
 export function changedAt(config: unknown, draft: unknown, path: Path): boolean {
+  //M 分别取出原配置与草稿在该路径的值做序列化对比，用来判定字段是否仍处于已修改状态。
   return JSON.stringify(getAt(config, path)) !== JSON.stringify(getAt(draft, path));
 }
 
@@ -130,5 +142,7 @@ export function parseNumberList(text: string): number[] | undefined {
   const parts = text.split(/[,，\s]+/).filter(Boolean);
   /** 换成数字。 */
   const numbers = parts.map(Number);
-  return numbers.every((number) => Number.isFinite(number)) ? numbers : undefined;
+  if (numbers.every((number) => Number.isFinite(number))) return numbers;
+
+  return undefined;
 }

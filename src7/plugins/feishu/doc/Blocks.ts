@@ -37,6 +37,30 @@ export interface Block {
 
 
 /**
+ * 把行内匹配到的单个 Markdown 标记片断转换成 TextRun。
+ * @param token 匹配到的行内片段（`代码`、**粗体**、[文字](链接) 或 *斜体*）。
+ * @returns 对应的片段结构；非 http(s) 链接退为纯文字。
+ */
+function parseRunToken(token: string): TextRun {
+  if (token.startsWith('`')) return { content: token.slice(1, -1), style: { inline_code: true } };
+
+  if (token.startsWith('**')) return { content: token.slice(2, -2), style: { bold: true } };
+
+  if (token.startsWith('[')) {
+    const middle = token.indexOf('](');
+    const url = token.slice(middle + 2, -1);
+    let style: TextRun['style'] = {};
+    if (/^https?:\/\//iu.test(url)) {
+      style = { link: { url } };
+    }
+    return { content: token.slice(1, middle), style };
+  }
+
+  return { content: token.slice(1, -1), style: { italic: true } };
+}
+
+
+/**
  * 行内拆片段：`代码`、**粗体**、*斜体*、[文字](链接)。链接不是 http(s) 的退成纯文字（飞书只认 http(s)，相对路径会报 1770006）。
  * @param text 一行文字。
  * @returns 片段；空的去掉。
@@ -47,22 +71,18 @@ export function runs(text: string): TextRun[] {
   let last = 0;
   for (const match of text.matchAll(pattern)) {
     const start = match.index;
-    if (start > last) result.push({ content: text.slice(last, start), style: {} });
-    const token = match[0];
-    if (token.startsWith('`')) {
-      result.push({ content: token.slice(1, -1), style: { inline_code: true } });
-    } else if (token.startsWith('**')) {
-      result.push({ content: token.slice(2, -2), style: { bold: true } });
-    } else if (token.startsWith('[')) {
-      const middle = token.indexOf('](');
-      const url = token.slice(middle + 2, -1);
-      result.push({ content: token.slice(1, middle), style: /^https?:\/\//iu.test(url) ? { link: { url } } : {} });
-    } else {
-      result.push({ content: token.slice(1, -1), style: { italic: true } });
+    if (start > last) {
+      result.push({ content: text.slice(last, start), style: {} });
     }
+    const token = match[0];
+    //M 按行内语法前缀转成对应的 TextRun 片段并收进结果列表。
+    const parsed = parseRunToken(token);
+    result.push(parsed);
     last = start + token.length;
   }
-  if (last < text.length) result.push({ content: text.slice(last), style: {} });
+  if (last < text.length) {
+    result.push({ content: text.slice(last), style: {} });
+  }
   return result.filter((item) => item.content.length > 0);
 }
 
@@ -73,9 +93,18 @@ export function runs(text: string): TextRun[] {
  * @returns elements。
  */
 function elements(text: string): unknown[] {
+  //M 先拆出行内样式片段，再按飞书要求对 http(s) 链接做 URL 编码后组装为 text_run 数组。
   return runs(text).map((run) => {
-    const style = run.style.link === undefined ? run.style : { ...run.style, link: { url: encodeURIComponent(run.style.link.url) } };
-    return { text_run: { content: run.content, ...(Object.keys(style).length > 0 ? { text_element_style: style } : {}) } };
+    let style: TextRun['style'] = run.style;
+    if (run.style.link !== undefined) {
+      style = { ...run.style, link: { url: encodeURIComponent(run.style.link.url) } };
+    }
+
+    const textRun: Record<string, unknown> = { content: run.content };
+    if (Object.keys(style).length > 0) {
+      textRun['text_element_style'] = style;
+    }
+    return { text_run: textRun };
   });
 }
 
@@ -193,6 +222,7 @@ export function parse(markdown: string): DocNode[] {
     paragraph.push(trimmed);
     index++;
   }
+  //M 文档扫描结束时把末尾尚未提交的连续普通行冲刷为最后一个段落节点。
   flush();
   return nodes;
 }
@@ -211,6 +241,7 @@ export function toBlocks(node: Exclude<DocNode, { kind: 'table' }>): Block[] {
   return lines.map((line): Block => {
     if (node.kind === 'heading') {
       const level = Math.min(9, Math.max(1, node.level));
+      //M 将标题级别映射到飞书 block_type 与对应 headingN 字段并渲染行内文本元素。
       return { block_type: BLOCK.heading + level - 1, [`heading${String(level)}`]: { elements: elements(line), style: {} } };
     }
     const kinds = {
@@ -220,6 +251,7 @@ export function toBlocks(node: Exclude<DocNode, { kind: 'table' }>): Block[] {
       quote: { type: BLOCK.quote, field: 'quote' },
     } as const;
     const kind = kinds[node.kind];
+    //M 按段落、无序列表、有序列表或引用类型查表生成对应飞书块及行内文本元素。
     return { block_type: kind.type, [kind.field]: { elements: elements(line), style: {} } };
   });
 }

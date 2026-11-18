@@ -1,25 +1,64 @@
 /**
- * 命令行渠道：第一个渠道，也是别的渠道（HTTP、飞书）的样板。
+ * 命令行渠道：通过统一事件 channel/message 把本机命令行输入交给机器人；前台一轮里 channel_reply 几次就逐条打几行，
+ * 一次没调就打最后的话（routing.autoFinal）。本机输入就是本人（role: owner）。
  * 用法：bun src7/Main.ts [--bot 机器人] 你好
- *   把命令行里带的那句话发给机器人，等所有会话都停下来就退出（出过错退出码是 1）。
+ *   先把原始输入存进 channels/cli/<YYYY-MM-DD>.jsonl，再发出 channel/message；等所有会话停下退出（出过错退出码为 1）。
  *   没带话就什么也不做。它不从键盘读输入；要一问一答地聊，以后另写专门的插件。
  */
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as process from 'node:process';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as protocol from '../../Channels.ts';
+import { CliHistory } from './History.ts';
+
+
+/** 旧路 bots.channel 回调发送回执（结构对齐 bots 服务约定）。 */
+interface LegacySendReceipt {
+  status: 'accepted' | 'partial' | 'uncertain' | 'rejected';
+  reason: string;
+}
 
 /** 插件名。 */
 export const name = 'cli';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+//M 1.1.2：新增 History.ts（CliHistory）响应 channel/history，支持本人跨渠道与命令行会话查历史。
+//M 1.1.3：改成 channel_tool：一轮里能连发多条、逐条打印；零次回复打最后的话；收尾没回成红字、退出码 1；role 写 owner。
+//M 1.1.4：registerTextReply 接入 getTargetAddress 自行识别命令行跨渠道发话目标（本机 / cli:本机 / 命令行）。
+export const version = '1.1.4';
+
+/** 命令行跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
+const CLI_TARGET_CHATS = new Set(['', '本机', 'cli:本机', '命令行', 'local']);
 
 /** 用到的服务。 */
 export const inject = ['resources', 'bots', 'sessions'];
 
 
+/** 命令行渠道构造选项（主要给离线单测拦截退出与输出用，生产默认走 process.exit 和 console）。 */
+export interface CliOptions {
+  /** 覆盖退出动作。 */
+  exit?: (code: number) => void;
+  /** 覆盖终端输出动作。 */
+  write?: (line: string, isError?: boolean) => void;
+}
+
+
 /** 命令行渠道。 */
-class Cli {
+export class Cli {
   /** 渠道名。 */
   readonly name = 'cli';
+
+  /** 本次运行实例唯一号，和递增序号一起拼成稳定 sourceId（nativeId）。 */
+  private readonly runId = crypto.randomUUID();
+
+  /** 本次运行内的消息递增序号。 */
+  private seq = 0;
+
+  /** 单调毫秒时间戳游标，避免同毫秒多句撞在同一时刻上。 */
+  private lastAt = 0;
 
   /** 命令行里带的那句话发出去了没有。发了，等所有会话都停下来就退出。 */
   private sent = false;
@@ -27,11 +66,51 @@ class Cli {
   /** 退出码：有会话出过错是 1。 */
   private exitCode = 0;
 
+  /** 进程退出动作。 */
+  private readonly exitFn: (code: number) => void;
+
+  /** 输出打印动作。 */
+  private readonly writeFn: (line: string, isError?: boolean) => void;
+
   /**
    * @param ctx Cordis 给的 ctx。
+   * @param options 可选退出与输出钩子。
    */
-  constructor(private readonly ctx: cordis.Context) {
+  constructor(private readonly ctx: cordis.Context, options: CliOptions = {}) {
+    this.exitFn = options.exit ?? ((code) => process.exit(code));
+    this.writeFn = options.write ?? ((line, isError) => {
+      if (isError === true) {
+        console.error(line);
+        return;
+      }
+      console.log(line);
+    });
+
+    //M 旧路回话（relay 这类认领了会话、一轮结束自动回的）：bots 按渠道名调这里登记的 send。
     this.ctx.effect(() => this.ctx.bots.channel(this.name, (reply, session) => this.send(reply, session)));
+
+    //M 模型一轮里每调一次 channel_reply、零次兜底、审批直回，都经 channel/reply 到这里，逐条打出来。
+    protocol.registerTextReply(this.ctx, {
+      channel: this.name,
+      getTargetAddress: (chat) => this.getReplyTargetAddress(chat),
+      sendDirectText: (text, request) => {
+        this.writeFn(`[${request.bot}] ${text}`);
+      },
+    });
+
+    //M 挂上命令行历史监听，让其他渠道能按约定查本机记录。
+    new CliHistory(this.ctx);
+
+    //M 一轮收尾没回成（模型出错、停下）：红字打出原因，退出码记 1。
+    this.ctx.on('channel/settled', (event) => {
+      if (event.sourceSnapshot.channel !== this.name) return;
+
+      if (event.stage === 'sent' || event.stage === 'sending') return;
+
+      //M 终端以红字显示失败原因，同时留下失败退出码。
+      this.exitCode = 1;
+      this.writeFn(`\x1b[31m[${event.sourceSnapshot.botName}] 没回成：${event.note || event.stage}\x1b[0m`);
+    });
 
     //M 等 Main 把插件都挂完（事件 ready，带着命令行里剩下的参数）才发话：这时候工具、提示词都挂上了。
     this.ctx.on('ready', (argv) => {
@@ -45,11 +124,97 @@ class Cli {
   }
 
   /**
+   * 识别跨渠道发往命令行的目标聊天名称（仅接受本机命令行别名）；认不出时返回 undefined。
+   * @param chat 调用方传入的目标聊天名称。
+   */
+  private getReplyTargetAddress(chat: string): Record<string, unknown> | undefined {
+    if (!CLI_TARGET_CHATS.has(chat.trim())) return undefined;
+
+    return { customer: 'cli:本机' };
+  }
+
+  /**
+   * 落盘一行原始输入并发出标准 channel/message 事件；approval 消息级命令会被先消费一次。
+   * @param bot 目标机器人名。
+   * @param sentence 用户说的话。
+   * @returns channel/message 协调结果（给离线测试检查认领与消费次数）。
+   * @throws 目标机器人不存在或没有任何插件处理该消息时抛错。
+   */
+  async submitLine(bot: string, sentence: string): Promise<protocol.ChannelMessageControl> {
+    //G 确认机器人能接收这条输入，再写命令行原件。
+    if (bot === '' || this.ctx.bots.get(bot) === undefined) {
+      throw new Error(`没有这个机器人：${bot}`);
+    }
+
+    const now = Math.max(Date.now(), this.lastAt + 1);
+    this.lastAt = now;
+    const address = { customer: 'cli:本机' };
+
+    //M 渠道自己落盘原件（运行时目录 channels/cli/<YYYY-MM-DD>.jsonl），与原 bots.receive 记录格式一致。
+    const day = new Date(now).toLocaleDateString('sv-SE');
+    const file = path.join(this.ctx.resources.dir('channels', this.name), `${day}.jsonl`);
+    const rawEntry = { channel: this.name, bot, text: sentence, time: now, address };
+    fs.appendFileSync(file, `${JSON.stringify(rawEntry)}\n`, 'utf8');
+
+    //M 给本次运行中的输入分配唯一渠道消息号，供后续分派使用。
+    this.seq += 1;
+    const nativeId = `${this.runId}:${String(this.seq)}`;
+    const messageId = protocol.makeChannelMessageId(this.name, 'local', nativeId);
+
+    //T 跟踪：命令行收到一句话，转成统一事件发出。
+    const vars = { 机器人: bot, 序号: this.seq, 字数: sentence.length };
+    this.ctx.emit('trace', 'Cli.submitLine', '命令行收到一句话，发出 channel/message', "ctx.serial('channel/message')", vars);
+
+    const channelMessage: protocol.ChannelMessage = {
+      v: 1,
+      messageId,
+      nativeId,
+      channel: this.name,
+      accountId: 'local',
+      chatId: 'cli:本机',
+      chatType: 'local',
+      sender: { id: 'cli:本机', name: '本机' },
+      role: 'owner',
+      targetBots: [bot],
+      mentions: [],
+      rawText: sentence,
+      text: sentence,
+      attachments: [],
+      createdAt: now,
+      receivedAt: now,
+      timeSource: 'received',
+      replyTo: null,
+      origin: {
+        channel: this.name,
+        address: { ...address },
+      },
+      visibility: {
+        scope: 'cli:local:cli:本机',
+        trusted: true,
+        publicSourceIds: [],
+      },
+      routing: {
+        listenOnly: false,
+        autoFinal: true,
+      },
+    };
+
+    //M 发出 channel/message：approval 先看“同意 N”，bots 再排进前台（一轮里 channel_reply 几次打几条，一次没调就打最后的话）。
+    const control: protocol.ChannelMessageControl = { claims: [] };
+    await this.ctx.serial('channel/message', channelMessage, control);
+    if (control.approvalHandled !== true && control.claims.length === 0) {
+      throw new Error(`机器人 ${bot} 收到了消息，但前台没有定下进哪场会话`);
+    }
+    return control;
+  }
+
+  /**
    * 把命令行里带的那句话发给机器人。
    * @param argv 命令行里剩下的参数：--bot 机器人（不写就用名单里第一个），其余的拼成一句话。
    * 副作用：没有这个机器人、没有插件管分派时，打出原因，以退出码 1 退出。
    */
   private async start(argv: string[]): Promise<void> {
+    //M 从机器人名单取默认目标，再允许显式参数覆盖。
     const words = [...argv];
     let bot = this.ctx.bots.list()[0]?.name ?? '';
     const at = words.indexOf('--bot');
@@ -64,10 +229,13 @@ class Cli {
 
     this.sent = true;
     try {
-      await this.ctx.bots.receive(this.name, bot, sentence, { customer: 'cli:本机' });
+      //M 提交这句输入，发出后立即判断是否已无会话需要等待。
+      await this.submitLine(bot, sentence);
+      this.exitWhenIdle();
     } catch (error) {
-      console.error(`命令行没跑成：${textModule.messageOf(error)}`);
-      process.exit(1);
+      //G 输入提交失败时把原因写到错误输出，以失败退出码结束进程。
+      this.writeFn(`命令行没跑成：${textModule.getMessage(error)}`, true);
+      this.exitFn(1);
     }
   }
 
@@ -75,15 +243,20 @@ class Cli {
    * 把机器人的话打出来：[机器人名 会话号] 话。出错的用红色。
    * @param reply 要说的话。
    * @param session 是哪场会话的结果。
+   * @returns 渠道发送回执（accepted）。
    */
-  protected send(reply: string, session: Session): void {
+  protected send(reply: string, session: Session): LegacySendReceipt {
     const line = `[${session.row.bot} ${session.id}] ${reply}`;
+    //G 会话失败时仍交付回执，并用红字和退出码反映异常。
     if (session.row.state === 'failed') {
       this.exitCode = 1;
-      console.log(`\x1b[31m${line}\x1b[0m`);
-      return;
+      this.writeFn(`\x1b[31m${line}\x1b[0m`);
+      return { status: 'accepted', reason: '' };
     }
-    console.log(line);
+
+    //M 把正常会话的回复交给终端显示。
+    this.writeFn(line);
+    return { status: 'accepted', reason: '' };
   }
 
   /**
@@ -96,7 +269,7 @@ class Cli {
     setTimeout(() => {
       const running = this.ctx.sessions.find({ state: 'running' });
       if (running.length === 0) {
-        process.exit(this.exitCode);
+        this.exitFn(this.exitCode);
       }
     }, 0);
   }
@@ -111,5 +284,6 @@ class Cli {
  * @param ctx Cordis 给这个插件的 ctx。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 建立命令行渠道并登记输入、回复和会话状态监听。
   new Cli(ctx);
 }

@@ -66,8 +66,8 @@ bunTest.describe('附件', () => {
     const linked = attachments.withAttachmentLinks('见 @"F:/a b/报告 1.pdf"');
     bunTest.expect(linked).toContain('[报告 1.pdf](jmfile:');
     const href = /\((jmfile:[^)]+)\)/.exec(linked)?.[1];
-    bunTest.expect(attachments.pathFromLink(href)).toBe('F:/a b/报告 1.pdf');
-    bunTest.expect(attachments.pathFromLink('https://x')).toBeUndefined();
+    bunTest.expect(attachments.getPathFromLink(href)).toBe('F:/a b/报告 1.pdf');
+    bunTest.expect(attachments.getPathFromLink('https://x')).toBeUndefined();
     bunTest.expect(attachments.formatSize(512)).toBe('512 B');
     bunTest.expect(attachments.formatSize(1536)).toBe('1.5 KB');
     bunTest.expect(attachments.formatSize(5 * 1024 * 1024)).toBe('5.0 MB');
@@ -134,16 +134,16 @@ bunTest.describe('时间线', () => {
 
   bunTest.test('事件行、来源、排队的小字、模型写短', () => {
     const brief: types.DispatchBrief = { action: 'new', sessionId: 's1', title: '看图', file: '', model: 'magpie/workbuddy/hy4free', workspace: '日常', by: 'llm', reason: '' };
-    bunTest.expect(timeline.eventText(brief)).toBe('新开了会话「看图」，用 hy4free');
-    bunTest.expect(timeline.eventText({ ...brief, action: 'append', model: '' })).toBe('进了会话「看图」');
+    bunTest.expect(timeline.getEventText(brief)).toBe('新开了会话「看图」，用 hy4free');
+    bunTest.expect(timeline.getEventText({ ...brief, action: 'append', model: '' })).toBe('进了会话「看图」');
     //M 追加不换模型：有模型也不写“模型换成”。
-    bunTest.expect(timeline.eventText({ ...brief, action: 'append' })).toBe('进了会话「看图」');
-    bunTest.expect(timeline.channelLabel('feishu:cli_x', 'feishu:cli_x:oc:ou')).toBe('飞书');
-    bunTest.expect(timeline.channelLabel('http', 'web')).toBe('网页');
-    bunTest.expect(timeline.channelLabel('http', 'http')).toBe('HTTP');
-    bunTest.expect(timeline.pendingText('new')).toBe('等分派');
-    bunTest.expect(timeline.pendingText('queued')).toBe('排队中');
-    bunTest.expect(timeline.pendingText('taken')).toBe('');
+    bunTest.expect(timeline.getEventText({ ...brief, action: 'append' })).toBe('进了会话「看图」');
+    bunTest.expect(timeline.getChannelLabel('feishu:cli_x', 'feishu:cli_x:oc:ou')).toBe('飞书');
+    bunTest.expect(timeline.getChannelLabel('http', 'web')).toBe('网页');
+    bunTest.expect(timeline.getChannelLabel('http', 'http')).toBe('HTTP');
+    bunTest.expect(timeline.getPendingText('new')).toBe('等分派');
+    bunTest.expect(timeline.getPendingText('queued')).toBe('排队中');
+    bunTest.expect(timeline.getPendingText('taken')).toBe('');
     const now = new Date(2026, 10, 5, 20, 0).getTime();
     bunTest.expect(timeline.formatTime(new Date(2026, 10, 5, 9, 5).getTime(), now)).toBe('09:05');
     bunTest.expect(timeline.formatTime(new Date(2026, 10, 4, 9, 5).getTime(), now)).toBe('11-04 09:05');
@@ -186,35 +186,35 @@ bunTest.describe('斜杠命令', () => {
 
 bunTest.describe('审核卡片的规矩', () => {
   bunTest.test('不能错按：Enter 永远不算；输入框里打 y 不算；1 秒内不算；按着 Ctrl 不算', () => {
-    bunTest.expect(approvalRules.decisionForKey('y', true, true, false)).toBe('approve');
-    bunTest.expect(approvalRules.decisionForKey('N', true, true, false)).toBe('reject');
-    bunTest.expect(approvalRules.decisionForKey('Enter', true, true, false)).toBeNull();
-    bunTest.expect(approvalRules.decisionForKey(' ', true, true, false)).toBeNull();
-    bunTest.expect(approvalRules.decisionForKey('y', false, true, false)).toBeNull();
-    bunTest.expect(approvalRules.decisionForKey('y', true, false, false)).toBeNull();
-    bunTest.expect(approvalRules.decisionForKey('y', true, true, true)).toBeNull();
+    bunTest.expect(approvalRules.getDecisionForKey('y', true, true, false)).toBe('approve');
+    bunTest.expect(approvalRules.getDecisionForKey('N', true, true, false)).toBe('reject');
+    bunTest.expect(approvalRules.getDecisionForKey('Enter', true, true, false)).toBeNull();
+    bunTest.expect(approvalRules.getDecisionForKey(' ', true, true, false)).toBeNull();
+    bunTest.expect(approvalRules.getDecisionForKey('y', false, true, false)).toBeNull();
+    bunTest.expect(approvalRules.getDecisionForKey('y', true, false, false)).toBeNull();
+    bunTest.expect(approvalRules.getDecisionForKey('y', true, true, true)).toBeNull();
     bunTest.expect(approvalRules.isArmed(1000, 1000 + approvalRules.ARM_MS - 1)).toBe(false);
     bunTest.expect(approvalRules.isArmed(1000, 1000 + approvalRules.ARM_MS)).toBe(true);
   });
 
   bunTest.test('决定以后的提示：成功、已经处理过了、连不上', () => {
-    bunTest.expect(approvalRules.decisionNotice('approve', 200)).toBe('已同意执行');
-    bunTest.expect(approvalRules.decisionNotice('reject', 200)).toBe('已拒绝');
-    bunTest.expect(approvalRules.decisionNotice('approve', 404)).toContain('已经处理过了');
-    bunTest.expect(approvalRules.decisionNotice('reject', 0)).toContain('连不上');
+    bunTest.expect(approvalRules.getDecisionNotice('approve', 200)).toBe('已同意执行');
+    bunTest.expect(approvalRules.getDecisionNotice('reject', 200)).toBe('已拒绝');
+    bunTest.expect(approvalRules.getDecisionNotice('approve', 404)).toContain('已经处理过了');
+    bunTest.expect(approvalRules.getDecisionNotice('reject', 0)).toContain('连不上');
   });
 });
 
 
 bunTest.describe('右栏预览', () => {
   bunTest.test('按扩展名挑样子；工作区里的 md 要刷新', () => {
-    bunTest.expect(previewKinds.previewKind('F:/a/1.PNG')).toBe('image');
-    bunTest.expect(previewKinds.previewKind('F:/a/会话.md')).toBe('markdown');
-    bunTest.expect(previewKinds.previewKind('F:/a/x.json')).toBe('text');
-    bunTest.expect(previewKinds.previewKind('F:/a/报告.pdf')).toBe('pdf');
-    bunTest.expect(previewKinds.previewKind('F:/a/录音.opus')).toBe('audio');
-    bunTest.expect(previewKinds.previewKind('F:/a/v.mp4')).toBe('video');
-    bunTest.expect(previewKinds.previewKind('F:/a/压缩包.zip')).toBe('other');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/1.PNG')).toBe('image');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/会话.md')).toBe('markdown');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/x.json')).toBe('text');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/报告.pdf')).toBe('pdf');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/录音.opus')).toBe('audio');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/v.mp4')).toBe('video');
+    bunTest.expect(previewKinds.getPreviewKind('F:/a/压缩包.zip')).toBe('other');
     bunTest.expect(previewKinds.isLive('F:\\AIJMBots\\bots\\周小灵\\workspace\\日常\\1_标题.md')).toBe(true);
     bunTest.expect(previewKinds.isLive('F:/AIJMBots/bots/周小灵/memory/索引.md')).toBe(false);
   });

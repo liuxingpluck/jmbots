@@ -1,7 +1,7 @@
 /**
  * 按人分档收工具：owner 全有，builder 只在自己目录里动手，guest 只读（2026-11-17，0.7.16）。
  * 跑法：bun test ./src7/plugins/approval/NotOwner.test.ts
- * 真的 Cordis + 真的 approval、base-tools、exec 插件和飞书的 feishu_send_file 工具（media.setup），
+ * 真的 Cordis + 真的 approval、file-tools（含原 base-tools）、exec 插件和飞书的 feishu_send_file 工具（media.setup），
  * resources、bots、sessions、tools 是只够它们挂上的假服务；审核小会话的回答由假 sessions.ask 给。
  * 照骨架发 session/request（工具清单）和 session/before-tool（执行前），再直接调工具的 run，看落在哪个目录。
  * 哪一档只看回话地址里的 role、workspace（飞书插件照 people 写）；没写的渠道（网页）照旧全有。
@@ -13,15 +13,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
-import type { ChatRequest } from '../../Chat.ts';
 import type { ToolGate, ToolSpec } from '../../Tools.ts';
-import type { AskInput } from '../../Sessions.ts';
+import type { AskInput, ChatRequest } from '../../Sessions.ts';
 import type { Feishu } from '../feishu/index.ts';
-import * as baseTools from '../base-tools/index.ts';
+import * as fileTools from '../file-tools/index.ts';
 import * as execModule from '../exec/index.ts';
 import * as media from '../feishu/Media.ts';
-import * as promptModule from '../prompt/index.ts';
+import * as promptModule from '../bots/Prompt.ts';
 import * as approvalModule from './index.ts';
+import * as rules from './Rules.ts';
 
 
 /** 临时运行时目录：机器人的工作区、builder 的目录都在里面。 */
@@ -64,7 +64,7 @@ class FakeResources extends cordis.Service {
     return full;
   }
   /** base-tools 问模型收不收图：都不收。 */
-  modelOf(): { input: string[] } {
+  getModel(): { input: string[] } {
     return { input: ['text'] };
   }
 }
@@ -128,16 +128,25 @@ async function ready(): Promise<{ app: cordis.Context; specs: Map<string, ToolSp
   await app.plugin(FakeSessions);
   await app.plugin(FakeTools);
   await app.plugin(approvalModule, {});
-  await app.plugin(baseTools);
+  await app.plugin(fileTools);
   await app.plugin(execModule);
-  await app.plugin(promptModule);
+
+  //M 系统提示词 11-17 并进 bots（bots/Prompt.ts）：这里不挂整个 bots，只把 Prompt 挂成一个小插件（要 resources、bots，和 bots 里一样）。
+  const promptPlugin = {
+    name: 'prompt-test',
+    inject: ['resources', 'bots'],
+    apply: (ctx: cordis.Context): void => {
+      new promptModule.Prompt(ctx);
+    },
+  };
+  await app.plugin(promptPlugin);
   media.setup({} as unknown as Feishu, app);
   return { app, specs: (app.get('tools') as unknown as FakeTools).specs };
 }
 
 
 /** 一场飞书会话，回话地址是 address。 */
-function sessionOf(address: unknown): { id: string; row: Record<string, unknown> } {
+function getSession(address: unknown): { id: string; row: Record<string, unknown> } {
   return { id: 's1', row: { id: 's1', kind: 'work', bot: '周小灵', channel: 'feishu', address, messages: [] } };
 }
 
@@ -147,13 +156,19 @@ function sessionOf(address: unknown): { id: string; row: Record<string, unknown>
  * @param app 挂好的 Cordis。
  * @param address 会话现在记的回话地址。
  * @param call 要执行的工具名。
+ * @param args 这次调用的参数；不写是空的。
  */
-async function ask(app: cordis.Context, address: unknown, call = 'exec'): Promise<{ tools: string[]; system: string[]; denied?: string }> {
-  const session = sessionOf(address);
+async function ask(
+  app: cordis.Context,
+  address: unknown,
+  call = 'exec',
+  args: Record<string, unknown> = {},
+): Promise<{ tools: string[]; system: string[]; denied?: string }> {
+  const session = getSession(address);
   const request = { session, model: 'fake/text', messages: [], system: [] as string[], tools: TOOLS.map((name) => ({ name })) };
   await app.serial('session/request', request as unknown as ChatRequest);
 
-  const gate = { session, call: { type: 'toolCall', id: 'c1', name: call, arguments: {} } };
+  const gate = { session, call: { type: 'toolCall', id: 'c1', name: call, arguments: args } };
   await app.serial('session/before-tool', gate as unknown as ToolGate);
   return { tools: request.tools.map((tool) => tool.name), system: request.system, denied: (gate as { deny?: string }).deny };
 }
@@ -168,9 +183,9 @@ async function ask(app: cordis.Context, address: unknown, call = 'exec'): Promis
  * @returns 工具交回的话；抛错时交回 “错：原因”。
  */
 async function run(specs: Map<string, ToolSpec>, name: string, args: Record<string, unknown>, address: unknown): Promise<string> {
-  const session = sessionOf(address) as unknown as Parameters<ToolSpec['run']>[1];
+  const session = getSession(address) as unknown as Parameters<ToolSpec['run']>[1];
   try {
-    const result = await specs.get(name)!.run(args, session, new AbortController().signal);
+    const result = await specs.get(name)!.run(args, session, new AbortController().signal, 'call-1');
     return typeof result === 'string' ? result : JSON.stringify(result);
   } catch (error) {
     return `错：${String(error)}`;
@@ -294,6 +309,26 @@ describe('guest：只读', () => {
         expect(result.denied).toBeDefined();
       }
     }
+  });
+
+  //M 11-17：外人能用 workspace 看自己的工作区，只能 list、get；建、改名、归档执行前拦下。本人都能用。
+  test('guest、builder 用 workspace 只能 list、get；create、rename、archive 执行前拦，理由写清；本人不拦', async () => {
+    const { app } = await ready();
+    expect(rules.toolsFor('guest')?.has('workspace')).toBe(true);
+    expect(rules.toolsFor('builder')?.has('workspace')).toBe(true);
+
+    for (const address of [GUEST, BUILDER]) {
+      for (const action of ['list', 'get']) {
+        expect((await ask(app, address, 'workspace', { action })).denied).toBeUndefined();
+      }
+      for (const action of ['create', 'rename', 'archive']) {
+        const denied = (await ask(app, address, 'workspace', { action })).denied;
+        expect(denied).toContain('workspace 只能 list、get');
+        expect(denied).toContain(`${action} 只有本人能用`);
+      }
+    }
+
+    expect((await ask(app, OWNER, 'workspace', { action: 'create' })).denied).toBeUndefined();
   });
 
   //M 第 4 条：prompt 插件每一步拼的记忆目录，非本人那一轮不拼。

@@ -1,6 +1,6 @@
 /**
  * 跟踪点：骨架和插件走到关键的地方各发一个，说清“现在走到哪个模块的哪个函数、在干什么”。
- * 骨架只管发，不管打印；打印是 plugins/trace 的事。没挂打印插件时没人听，发了等于没发。
+ * 骨架只管发，不管打印；打印是 plugins/tutorial（Print.ts，配置 trace_console）的事。没挂它时没人听，发了等于没发。
  * 写法（一个跟踪点两行，//T 开头的注释标出来）：
  *   const vars = { 会话: session.id, 渠道: message.channel };
  *   this.ctx.emit('trace', 'Bot.receive', '消息交给这场会话，推它往下走', 'session.add(); session.run()', vars);
@@ -60,9 +60,17 @@ export interface DispatchLine {
  * @param max 最多几个字。
  */
 export function short(value: unknown, max: number): string {
-  const full = typeof value === 'string' ? value : String(JSON.stringify(value));
+  let full = '';
+  if (typeof value === 'string') {
+    full = value;
+  }
+  if (typeof value !== 'string') {
+    full = String(JSON.stringify(value));
+  }
   const line = full.replace(/\s+/gu, ' ');
-  return line.length > max ? `${line.slice(0, max)}…` : line;
+  if (line.length > max) return `${line.slice(0, max)}…`;
+
+  return line;
 }
 
 
@@ -113,7 +121,10 @@ export function dispatchLine(ctx: cordis.Context, mode: string, event: string, a
 
     //M 消息号先认：web-api/replied 带着会话对象（{ messageId, session }），下面认出会话就停了，放后面读不到。
     //M   web-api/received 的参数本身就是收件行，消息号是它的 id。
-    const receivedId = event === 'web-api/received' ? item?.['id'] : undefined;
+    let receivedId: unknown;
+    if (event === 'web-api/received') {
+      receivedId = item?.['id'];
+    }
     const messageId = item?.['messageId'] ?? receivedId;
     if (typeof messageId === 'number') line.messageId = messageId;
 
@@ -149,12 +160,14 @@ export function dispatchLine(ctx: cordis.Context, mode: string, event: string, a
     const message = args[1] as piAi.Message | undefined;
     if (message !== undefined) {
       line.vars['角色'] = message.role;
-      let said: string;
+      let said = '';
       if (typeof message.content === 'string') {
         said = message.content;
-      } else {
+      }
+      if (typeof message.content !== 'string') {
         said = piAi.contentText(message.content);
       }
+      //M 截短说话正文记进关键变量，供控制台和流日志一行展示。
       line.vars['说了'] = short(said, max);
 
       if (message.role === 'assistant') {
@@ -193,10 +206,10 @@ function parseFrame(frame: string): { file: string; line: string } | undefined {
 /**
  * 是哪一行代码走到这里的：调用栈里第一处不在本文件、不在 node_modules（Cordis 自己）、也不在 skip 里那几个文件夹的。
  * 跟踪点和 Cordis 报事件都是当场、同步调到监听里的，所以发它们的那一行还在调用栈里。
- * @param skip 听的那个插件自己的文件夹（如 'plugins/trace/'），跳过。
+ * @param skip 听的那个插件自己的文件夹（如 'plugins/tutorial/'），跳过。
  * @returns “文件:行号”，相对当前目录；找不到是“位置不明”。
  */
-export function callSite(skip: string[]): string {
+export function getCallSite(skip: string[]): string {
   //M 现场拿一份调用栈，一行一行往外找。
   const stack = new Error().stack ?? '';
   for (const frame of stack.split('\n')) {

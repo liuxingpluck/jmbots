@@ -109,6 +109,7 @@ export class TracePresenter {
    * 按持久化发送顺序整理事件，不按可能漂移的墙钟排序。
    * @param events 后端已关联、已脱敏的事件。
    * @returns 新的展示数组，不改变接口返回的数组。
+   * 副作用：无。
    */
   items(events: types.TraceEvent[]): TraceItem[] {
     /** id 是 events 表自增号；时间仅用于显示和解释相邻差值。 */
@@ -119,12 +120,14 @@ export class TracePresenter {
     let previousAt: number | undefined;
 
     for (const record of ordered) {
+      //M 判定事件类别、提取可展开字段，并在消息收走时基于此前入队时刻推导等待耗时。
       const category = this.category(record);
       const facts = this.facts(record.data, record.type);
       const queueWait = this.queueWait(record, queuedMessages);
       if (queueWait) {
         facts.push(queueWait);
       }
+      //M 组装单条时间线视图所需的分类符号、标题、摘要、本地时间及相邻间隔。
       const item: TraceItem = {
         record,
         category,
@@ -151,6 +154,8 @@ export class TracePresenter {
    * @param at Unix 毫秒，来自数据库记录。
    * @param withDate 是否显示年月日。
    * @param precise 是否保留精确毫秒，供原始证据核对。
+   * @returns 格式化后的本地时间字符串；时间缺失或无效时返回“未记录”。
+   * 副作用：无。
    */
   timestamp(at: number | null, withDate = true, precise = false): string {
     const t = this.t;
@@ -163,7 +168,10 @@ export class TracePresenter {
     const milliseconds = String(date.getMilliseconds()).padStart(3, '0');
     const clock = [date.getHours(), date.getMinutes(), date.getSeconds()];
     const seconds = clock.map(two).join(':');
-    const time = precise ? `${seconds}.${milliseconds}` : seconds;
+    let time = seconds;
+    if (precise) {
+      time = `${seconds}.${milliseconds}`;
+    }
     if (!withDate) {
       return time;
     }
@@ -173,14 +181,22 @@ export class TracePresenter {
   }
 
 
-  /** 保存的毫秒换成秒/分，首屏更易读；精确原值由 exactDuration 保留。 */
+  /**
+   * 保存的毫秒换成秒/分，首屏更易读；精确原值由 exactDuration 保留。
+   * @param ms 耗时毫秒数；空值或负数视为未记录。
+   * @returns 带秒/分单位的简明可读时长；无效值返回“未记录”。
+   * 副作用：无。
+   */
   duration(ms: number | null | undefined): string {
     const t = this.t;
     if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
       return t('未记录');
     }
     /** 一秒以下保留毫秒精度；更长的时间以十分之一秒阅读，原值不变。 */
-    const seconds = ms < 1000 ? ms / 1000 : Math.round(ms / 100) / 10;
+    let seconds = Math.round(ms / 100) / 10;
+    if (ms < 1000) {
+      seconds = ms / 1000;
+    }
     if (seconds < 60) {
       return t('{seconds} 秒', { seconds });
     }
@@ -191,7 +207,12 @@ export class TracePresenter {
   }
 
 
-  /** 精确毫秒仅用于标题、证据详情和核对，不代替首屏的秒/分阅读单位。 */
+  /**
+   * 精确毫秒仅用于标题、证据详情和核对，不代替首屏的秒/分阅读单位。
+   * @param ms 耗时毫秒数；空值或负数视为未记录。
+   * @returns 带毫秒单位的精确时长文本；无效值返回“未记录”。
+   * 副作用：无。
+   */
   exactDuration(ms: number | null | undefined): string {
     const t = this.t;
     if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) {
@@ -201,15 +222,27 @@ export class TracePresenter {
   }
 
 
-  /** 将实际保存文本缩成摘要；是否片段由原始字符数判断，不假装当前片段是全文。 */
+  /**
+   * 将实际保存文本缩成摘要；是否片段由原始字符数判断，不假装当前片段是全文。
+   * @param text 后端保存的文本或片段正文。
+   * @param totalChars 原始文本总字符数，用于判断是否为截断片段。
+   * @param max 摘要最大保留字符数，默认 160。
+   * @returns 包含摘要文本、是否可展开及片段提示的预览对象。
+   * 副作用：无。
+   */
   textPreview(text: string, totalChars: number, max = 160): TraceTextPreview {
     const t = this.t;
+    //M 压平多余空白字符并按长度上限截断，生成首屏单行文本摘要。
     const flattened = text.replace(/\s+/g, ' ').trim();
-    const summary = flattened.length > max ? `${flattened.slice(0, max)}…` : flattened;
+    let summary = flattened;
+    if (flattened.length > max) {
+      summary = `${flattened.slice(0, max)}…`;
+    }
     const fragment = totalChars > text.length;
-    const fragmentNotice = fragment
-      ? t('当前显示已保存片段；原文共 {count} 字，可在预览中继续阅读。', { count: totalChars })
-      : null;
+    let fragmentNotice: string | null = null;
+    if (fragment) {
+      fragmentNotice = t('当前显示已保存片段；原文共 {count} 字，可在预览中继续阅读。', { count: totalChars });
+    }
 
     return {
       summary: summary || t('没有文本内容'),
@@ -219,45 +252,67 @@ export class TracePresenter {
   }
 
 
-  /** 只显示分派当时保存的 reason，不依据现有配置或后来的模型回答补写理由。 */
+  /**
+   * 只显示分派当时保存的 reason，不依据现有配置或后来的模型回答补写理由。
+   * @param dispatch 分派记录证据对象。
+   * @returns 当时保存的分派理由；缺失或为空白时返回明确提示。
+   * 副作用：无。
+   */
   dispatchReason(dispatch: types.TraceDispatch): string {
     const t = this.t;
     const reason = dispatch.result.reason;
-    return typeof reason === 'string' && reason.trim()
-      ? reason
-      : t('当时的分派理由未记录。');
+    if (typeof reason === 'string' && reason.trim()) return reason;
+
+    return t('当时的分派理由未记录。');
   }
 
 
-  /** 阶段首屏保留采用状态与真实耗时来源，不把各次调用相加叫作阶段墙钟时间。 */
+  /**
+   * 阶段首屏保留采用状态与真实耗时来源，不把各次调用相加叫作阶段墙钟时间。
+   * @param stages 后端返回的分派阶段证据列表。
+   * @returns 按原顺序整理后的阶段首屏视图数组。
+   * 副作用：无。
+   */
   stages(stages: types.TraceStage[]): TraceStageView[] {
     const t = this.t;
     return stages.map((stage) => {
       let title = t('程序兜底');
       if (stage.kind === 'decision') {
         title = t('决策模型阶段');
-      } else if (stage.kind === 'quick') {
+      }
+      if (stage.kind === 'quick') {
         title = t('低思考模型阶段');
       }
 
       let used = t('是否采用未记录');
       if (stage.used === true) {
         used = t('已采用');
-      } else if (stage.used === false) {
+      }
+      if (stage.used === false) {
         used = t('未采用');
       }
 
       let elapsedLabel = t('耗时来源未记录');
       if (stage.msSource === 'stage') {
         elapsedLabel = t('阶段实测');
-      } else if (stage.msSource === 'calls-sum') {
+      }
+      if (stage.msSource === 'calls-sum') {
         elapsedLabel = t('模型调用记录合计');
       }
 
+      let model = stage.model;
+      if (!model) {
+        model = t('模型未记录');
+        if (stage.kind === 'fallback') {
+          model = t('程序规则');
+        }
+      }
+
+      //M 汇总阶段标题、模型名、采用状态与秒/毫秒两种粒度耗时，生成首屏阶段卡片数据。
       return {
         stage,
         title,
-        model: stage.model || (stage.kind === 'fallback' ? t('程序规则') : t('模型未记录')),
+        model,
         used,
         elapsedLabel,
         elapsed: this.duration(stage.ms),
@@ -267,7 +322,12 @@ export class TracePresenter {
   }
 
 
-  /** 分类概率只做显示换算；原始数值由控件 title 保留，未知不补零。 */
+  /**
+   * 分类概率只做显示换算；原始数值由控件 title 保留，未知不补零。
+   * @param value 0 到 1 之间的概率值；未知时为 `null`。
+   * @returns 保留一位小数的百分比字符串；无效值返回“未记录”。
+   * 副作用：无。
+   */
   probability(value: number | null): string {
     const t = this.t;
     if (value === null || !Number.isFinite(value)) {
@@ -277,7 +337,12 @@ export class TracePresenter {
   }
 
 
-  /** 合并首屏的历史缺口说明；完整 notes 留在单个折叠区。 */
+  /**
+   * 合并首屏的历史缺口说明；完整 notes 留在单个折叠区。
+   * @param trace 包含追踪范围、结束来源、事件数组与说明数组的视图对象。
+   * @returns 首屏展示的记录完整性摘要文本。
+   * 副作用：无。
+   */
   noteSummary(trace: Pick<types.ReplyTraceView, 'scope' | 'endSource' | 'events' | 'notes'>): string {
     const t = this.t;
     if (trace.scope === 'message-only') {
@@ -296,6 +361,7 @@ export class TracePresenter {
    * 按真实结束证据选择标签；即使 scope=exact，回执过期后也只能称回复记录。
    * @param trace 后端给出的结束时间来源。
    * @returns 概览标签；不推测被清理的事件内容。
+   * 副作用：无。
    */
   timingLabels(trace: Pick<types.ReplyTraceView, 'endSource'>): TraceTimingLabels {
     const t = this.t;
@@ -312,7 +378,12 @@ export class TracePresenter {
   }
 
 
-  /** 原始数据另行折叠，保留层次便于查看关联依据。 */
+  /**
+   * 原始数据另行折叠，保留层次便于查看关联依据。
+   * @param value 要展示的原始事件数据或嵌套字段。
+   * @returns 两格缩进的 JSON 原文字符串。
+   * 副作用：无。
+   */
   raw(value: unknown): string {
     return JSON.stringify(value, null, 2);
   }
@@ -322,7 +393,7 @@ export class TracePresenter {
   private category(record: types.TraceEvent): TraceCategory {
     const type = record.type;
     //M 新格式（src7 的跟踪行）：函数行是程序走到哪，事件行是记录。
-    const line = traceLine(record);
+    const line = getTraceLine(record);
     if (line === '函数') {
       return 'program';
     }
@@ -334,31 +405,38 @@ export class TracePresenter {
       if (by === 'decision' || by === 'quick' || by === 'llm') {
         return 'model';
       }
-      return by === 'fallback' ? 'program' : 'record';
+      if (by === 'fallback') return 'program';
+
+      return 'record';
     }
     if (type === 'review.decided') {
       const by = record.data.by;
-      if (by === 'decision' || by === 'llm') {
-        return 'model';
-      }
-      if (by === 'rule') {
-        return 'program';
-      }
-      return by === 'user' ? 'receipt' : 'record';
+      if (by === 'decision' || by === 'llm') return 'model';
+
+      if (by === 'rule') return 'program';
+
+      if (by === 'user') return 'receipt';
+
+      return 'record';
     }
-    if (type === 'tool.before') {
-      return 'model';
-    }
+    if (type === 'tool.before') return 'model';
+
     if (type === 'message.received') {
       const source = record.data.source;
-      return source === 'handoff' || source === 'review' ? 'program' : 'receipt';
+      if (source === 'handoff' || source === 'review') return 'program';
+
+      return 'receipt';
     }
     if (type === 'search.done') {
-      return record.data.kind === 'local' ? 'program' : 'receipt';
+      if (record.data.kind === 'local') return 'program';
+
+      return 'receipt';
     }
     if (type === 'model.completed') {
       //G 只有 SDK 结果带 apiMs；本地校验异常也有完成事件，但不能冒充外部回执。
-      return typeof record.data.apiMs === 'number' ? 'receipt' : 'program';
+      if (typeof record.data.apiMs === 'number') return 'receipt';
+
+      return 'program';
     }
     const receiptTypes = ['step.after', 'tool.after', 'reply.sent', 'agent.taken', 'agent.result'];
     if (receiptTypes.includes(type)) {
@@ -400,17 +478,7 @@ export class TracePresenter {
 
   /** 类别是程序对记录的说明，未知事件不会被悄悄当成某类决定。 */
   private categoryText(category: TraceCategory): string {
-    const t = this.t;
-    switch (category) {
-      case 'program':
-        return t('程序规则');
-      case 'model':
-        return t('模型决策');
-      case 'receipt':
-        return t('外部回执');
-      case 'record':
-        return t('事件记录');
-    }
+    return CATEGORY_LABELS[category](this.t);
   }
 
 
@@ -418,89 +486,21 @@ export class TracePresenter {
   private title(record: types.TraceEvent): string {
     const t = this.t;
     //M 新格式：函数行写“函数 模块.函数”，事件行写“事件 事件名（挨个问 / 通知）”。
-    const line = traceLine(record);
+    const line = getTraceLine(record);
     if (line === '函数') {
       return t('函数 {name}', { name: record.type });
     }
     if (line === '事件') {
-      const mode = typeof record.data.mode === 'string' ? `（${record.data.mode}）` : '';
+      let mode = '';
+      if (typeof record.data.mode === 'string') {
+        mode = `（${record.data.mode}）`;
+      }
       return t('事件 {name}', { name: `${record.type}${mode}` });
     }
-    switch (record.type) {
-      case 'message.received':
-        return t('收到来源消息');
-      case 'batch.taken':
-        return t('结束合批等待，领走消息');
-      case 'dispatch.started':
-        return t('开始分派');
-      case 'dispatch.context':
-        return t('分派读取上下文');
-      case 'dispatch.decided':
-        return t('分派得出结论');
-      case 'message.queued':
-        return t('消息进入会话队列');
-      case 'message.taken':
-        return t('会话收走排队消息');
-      case 'turn.started':
-        return t('开始本轮用户输入');
-      case 'run.started':
-        return t('开始执行本次运行');
-      case 'run.ended':
-        return t('本次运行结束');
-      case 'search.started':
-        return t('开始检索');
-      case 'search.done':
-        return t('检索返回结果');
-      case 'context.built':
-        return t('准备本次模型上下文');
-      case 'step.before':
-        return t('准备下一步模型请求');
-      case 'step.after':
-        return t('收到本步模型结果');
-      case 'model.queued':
-        return t('模型请求排队');
-      case 'model.started':
-        return t('取得名额，开始调用模型');
-      case 'model.completed':
-        return t('模型调用结束');
-      case 'model.retry':
-        return t('连接重试等待');
-      case 'model.retry.done':
-        return t('连接重试等待结束');
-      case 'model.fallback':
-        return t('程序选择备用模型');
-      case 'model.skipped':
-        return t('跳过当前模型');
-      case 'model.switched':
-        return t('实际模型发生切换');
-      case 'tool.before':
-        return t('开始执行模型选择的工具');
-      case 'tool.after':
-        return t('工具返回结果');
-      case 'reply.before':
-        return t('向渠道发送回复');
-      case 'reply.sent':
-        return t('收到回复发送回执');
-      case 'compact.done':
-        return t('上下文压缩完成');
-      case 'review.pending':
-        return t('命令等待审核');
-      case 'review.decided':
-        return t('命令审核得到结论');
-      case 'limit.reached':
-        return t('运行达到时间上限');
-      case 'gate.decided':
-        return t('程序拦点得到结论');
-      case 'agent.queued':
-        return t('排入外部 AI 队列');
-      case 'agent.taken':
-        return t('外部 AI 认领（不等于开工）');
-      case 'agent.result':
-        return t('收到外部结果');
-      case 'agent.delivered':
-        return t('结果送回会话');
-      default: return record.type;
-    }
+    const format = EVENT_TITLES[record.type];
+    if (format) return format(t);
+
+    return record.type;
   }
 
 
@@ -531,9 +531,8 @@ export class TracePresenter {
   ): TraceFact | undefined {
     const t = this.t;
     const fields = record.data;
-    const messageIds = Array.isArray(fields.messageIds)
-      ? fields.messageIds.filter((id): id is number => typeof id === 'number')
-      : [];
+    //M 提取当前事件携带的纯数字消息编号列表，用于登记入队或计算收走等待。
+    const messageIds = getNumberList(fields.messageIds);
 
     if (record.type === 'message.queued' && typeof fields.queuedAt === 'number') {
       for (const id of messageIds) {
@@ -555,6 +554,7 @@ export class TracePresenter {
         continue;
       }
 
+      //M 用收走时刻减去最近一次入队时刻换算等待时长，并格式化精确起止时间作为依据。
       const elapsed = takenAt - queued.queuedAt;
       const duration = `${this.duration(elapsed)}（${this.exactDuration(elapsed)}）`;
       const start = this.timestamp(queued.queuedAt, true, true);
@@ -583,13 +583,16 @@ export class TracePresenter {
     const fields = record.data;
     const parts: string[] = [];
     //M 新格式：函数行是人话；事件行是听的人。后面都带会话和代码位置。
-    const line = traceLine(record);
+    const line = getTraceLine(record);
     if (line !== undefined) {
       if (line === '函数' && typeof fields.text === 'string') {
         parts.push(fields.text);
       }
       if (line === '事件') {
-        const listeners = Array.isArray(fields.listeners) ? fields.listeners.join('、') : '';
+        let listeners = '';
+        if (Array.isArray(fields.listeners)) {
+          listeners = fields.listeners.join('、');
+        }
         parts.push(t('听的人：{listeners}', { listeners: listeners || t('（没人听）') }));
       }
       if (record.sessionId) {
@@ -601,15 +604,20 @@ export class TracePresenter {
       return parts.join(' · ');
     }
     /** 集合条数来自实际消息号；缺集合就不拿单条 messageId 猜批次大小。 */
-    const ids = Array.isArray(fields.messageIds)
-      ? fields.messageIds.filter((id): id is number => typeof id === 'number')
-      : [];
+    //M 提取事件记录中的纯数字消息编号列表，用于统计本轮或本批涉及的消息数。
+    const ids = getNumberList(fields.messageIds);
     if (record.type === 'turn.started') {
       parts.push(t('本轮开始读取 {count} 条输入：{ids}', { count: ids.length, ids: ids.join('、') }));
     }
     if (record.type === 'message.received') {
-      const channel = typeof fields.channel === 'string' ? fields.channel : t('渠道未记录');
-      const source = typeof fields.source === 'string' ? fields.source : t('来源未记录');
+      let channel = t('渠道未记录');
+      if (typeof fields.channel === 'string') {
+        channel = fields.channel;
+      }
+      let source = t('来源未记录');
+      if (typeof fields.source === 'string') {
+        source = fields.source;
+      }
       parts.push(t('{channel} · {source}', { channel, source }));
     }
     if (record.type === 'batch.taken' || record.type === 'message.taken') {
@@ -618,11 +626,15 @@ export class TracePresenter {
       parts.push(t('{actor} 在 {session} 取走 {count} 条消息', { actor, session, count: ids.length }));
     }
     if (record.type === 'batch.taken' && typeof fields.startedAt === 'number' && typeof fields.endedAt === 'number') {
+      //M 按批次起止实测时间戳换算最早消息已等待时长，补充到概览中。
       const waited = this.duration(fields.endedAt - fields.startedAt);
       parts.push(t('最早消息已等待 {duration}', { duration: waited }));
     }
     if (record.type === 'message.queued') {
-      const session = typeof fields.targetSession === 'string' ? fields.targetSession : record.sessionId;
+      let session = record.sessionId;
+      if (typeof fields.targetSession === 'string') {
+        session = fields.targetSession;
+      }
       parts.push(t('{count} 条消息排入会话 {session}', { count: ids.length, session: session || t('未记录') }));
     }
     if (record.type === 'context.built' && typeof fields.contextCount === 'number') {
@@ -641,9 +653,11 @@ export class TracePresenter {
       parts.push(fields.tool);
     }
     if (typeof fields.ms === 'number') {
+      //M 将记录的实测执行耗时格式化为可读时长并追加到概览。
       parts.push(this.duration(fields.ms));
     }
     if (typeof fields.waitMs === 'number') {
+      //M 将模型请求在队列中的等待时长格式化后追加到概览。
       parts.push(t('模型排队 {duration}', { duration: this.duration(fields.waitMs) }));
     }
     /** 只有模型调用记录的设置才称请求/发送；分派目标配置不会被拿来当生成设置。 */
@@ -656,7 +670,8 @@ export class TracePresenter {
       if (typeof sent === 'string') {
         parts.push(t('发送档位 {level}', { level: sent }));
       }
-    } else if (record.type === 'message.queued' && typeof fields.thinking === 'string') {
+    }
+    if (record.type === 'message.queued' && typeof fields.thinking === 'string') {
       parts.push(t('会话设置 {level}', { level: fields.thinking }));
     }
     if (typeof fields.hits === 'number') {
@@ -672,7 +687,13 @@ export class TracePresenter {
   }
 
 
-  /** 将保存的分派解释归回同一批、同一起点的真实事件，无法确认时留在历史入口。 */
+  /**
+   * 将保存的分派解释归回同一批、同一起点的真实事件，无法确认时留在历史入口。
+   * @param record 当前按 id 顺序查到的事件记录。
+   * @param dispatches 后端关联返回的候选分派证据数组。
+   * @returns 确认归属当前事件的分派记录；无法匹配时返回 `undefined`。
+   * 副作用：无。
+   */
   dispatchFor(record: types.TraceEvent, dispatches: types.TraceDispatch[]): types.TraceDispatch | undefined {
     if (record.type !== 'dispatch.decided' || !Array.isArray(record.data.messageIds)) {
       return undefined;
@@ -692,6 +713,7 @@ export class TracePresenter {
   private facts(fields: Record<string, unknown>, eventType: string): TraceFact[] {
     const result: TraceFact[] = [];
     for (const [key, value] of Object.entries(fields)) {
+      //M 将每个原始事件字段映射为业务可读标签与格式化后的值。
       const fact: TraceFact = {
         key,
         label: this.fieldLabel(key, eventType),
@@ -707,163 +729,15 @@ export class TracePresenter {
   /** 常见字段加业务含义，其余字段继续用原名，保持可核查。 */
   private fieldLabel(key: string, eventType: string): string {
     const t = this.t;
-    switch (key) {
-      case 'kind':
-        return t('行的种类');
-      case 'mode':
-        return t('发法');
-      case 'listeners':
-        return t('听的人');
-      case 'text':
-        return t('人话');
-      case 'code':
-        return t('代码');
-      case 'site':
-        return t('代码位置');
-      case 'messageIds':
-        return t('来源消息号');
-      case 'run':
-        return t('运行次数');
-      case 'step':
-        return t('模型步数');
-      case 'model':
-        return t('本次模型');
-      case 'defaultModel':
-        return t('配置默认模型');
-      case 'requestedModel':
-        return t('最初请求模型');
-      case 'askedModel':
-        return t('最初请求模型');
-      case 'from':
-        return t('原模型');
-      case 'to':
-        return t('目标模型');
-      case 'tried':
-        return t('实际尝试顺序');
-      case 'by':
-        return t('决定来自');
-      case 'reason':
-        return t('依据');
-      case 'error':
-        return t('记录的错误');
-      case 'errorKind':
-        return t('错误类别');
-      case 'thinkingRequested':
-      case 'thinkingAsked':
-        return t('请求思考档位');
-      case 'thinkingSent':
-      case 'thinking':
-        return t('发送／保存的思考设置');
-      case 'thinkingReported':
-        return t('供应商明确回报档位');
-      case 'mergeMs':
-        return t('合批静默规则（毫秒）');
-      case 'maxWaitMs':
-        return t('最早消息等待上限（毫秒）');
-      case 'waits':
-        return t('各消息实际等待');
-      case 'ms':
-        return t('实际耗时');
-      case 'queueMs':
-        return t('模型队列实际等待');
-      case 'waitMs':
-        return t('模型队列实际等待');
-      case 'apiMs':
-        return t('API 调用耗时');
-      case 'delayMs':
-        return t('重试间隔规则（毫秒）');
-      case 'startedAt':
-        return t('操作开始');
-      case 'endedAt':
-        return t('操作结束');
-      case 'queuedAt':
-        return t('实际入队');
-      case 'until':
-        return t('冷却截止');
-      case 'coolingUntil':
-        return t('冷却截止');
-      case 'requestId':
-        return t('请求编号');
-      case 'attemptId':
-        return t('尝试编号');
-      case 'callId':
-        return t('工具调用编号');
-      case 'context':
-        return t('实际上下文清单');
-      case 'messages':
-        return t('实际上下文消息');
-      case 'promptFiles':
-        return t('提示词文件');
-      case 'promptChars':
-        return t('提示词字符数');
-      case 'systemChars':
-        return t('系统提示词字符数');
-      case 'contextCount':
-        return t('实际上下文条数');
-      case 'omitted':
-        return t('清单未展开的条数');
-      case 'fitted':
-        return t('上下文是否裁剪');
-      case 'chars':
-        return t('文本字符数');
-      case 'bytes':
-        return t('文本字节数');
-      case 'resultChars':
-        return t('返回文本字符数');
-      case 'outputChars':
-        return t('返回文本字符数');
-      case 'resultBytes':
-        return t('返回文本字节数');
-      case 'outputBytes':
-        return t('返回文本字节数');
-      case 'images':
-        return t('图片数量');
-      case 'input':
-        return t('输入 token');
-      case 'output':
-        return t('输出 token');
-      case 'cacheRead':
-        return t('缓存读 token');
-      case 'cacheWrite':
-        return t('缓存写 token');
-      case 'checks':
-        return t('程序核对依据');
-      case 'sessionId':
-        return t('目标会话');
-      case 'targetSession':
-        return t('目标会话');
-      case 'targetBot':
-        return t('目标机器人');
-      case 'via':
-        return t('入队途径');
-      case 'takenAt':
-        return eventType.startsWith('agent.') ? t('外部认领时刻') : t('实际收走');
-      case 'receivedAt':
-        return t('外部结果接收');
-      case 'executionStartedAt':
-        return t('实际开始执行');
-      case 'queuedToClaimMs':
-        return t('排队到认领间隔');
-      case 'claimedToResultMs':
-        return t('认领到结果间隔');
-      case 'lastReceivedAt':
-        return t('批次最后接收');
-      case 'tool':
-        return t('工具');
-      case 'args':
-        return t('读取或执行参数');
-      case 'result':
-        return t('返回内容片段');
-      case 'hits':
-        return t('命中条数');
-      case 'files':
-        return t('涉及文件');
-      case 'agent':
-        return t('外部 AI');
-      case 'taskId':
-        return t('外部任务号');
-      default: return key;
+    if (key === 'takenAt') {
+      if (eventType.startsWith('agent.')) return t('外部认领时刻');
+
+      return t('实际收走');
     }
+    const format = FIELD_LABELS[key];
+    if (format) return format(t);
+
+    return key;
   }
 
 
@@ -879,20 +753,25 @@ export class TracePresenter {
         'receivedAt', 'executionStartedAt',
       ];
       if (timestampFields.includes(key)) {
+        //M 已知时间戳字段按浏览器本地时区格式化为带毫秒的完整时间。
         return this.timestamp(value, true, true);
       }
       const durationFields = ['ms', 'queueMs', 'waitMs', 'apiMs', 'queuedToClaimMs', 'claimedToResultMs'];
       if (durationFields.includes(key)) {
+        //M 已知耗时字段同时生成可读秒/分单位与精确毫秒原值，方便核对。
         const readable = this.duration(value);
         const exact = this.exactDuration(value);
         return `${readable}（${exact}）`;
       }
     }
     if (typeof value === 'object') {
+      //M 对象或数组字段格式化为缩进 JSON 原文，避免界面显示为 [object Object]。
       return this.raw(value);
     }
     if (typeof value === 'boolean') {
-      return value ? t('是') : t('否');
+      if (value) return t('是');
+
+      return t('否');
     }
     if (typeof value === 'string') {
       return value;
@@ -905,12 +784,154 @@ export class TracePresenter {
 }
 
 
+/** 类别展示文案映射；保留字面量 t(...) 供语言包提取。 */
+const CATEGORY_LABELS: Record<TraceCategory, (t: i18n.Translate) => string> = {
+  program: (t) => t('程序规则'),
+  model: (t) => t('模型决策'),
+  receipt: (t) => t('外部回执'),
+  record: (t) => t('事件记录'),
+};
+
+
+/** 事件类型标题映射；保留字面量 t(...) 供语言包提取。 */
+const EVENT_TITLES: Record<string, (t: i18n.Translate) => string> = {
+  'message.received': (t) => t('收到来源消息'),
+  'batch.taken': (t) => t('结束合批等待，领走消息'),
+  'dispatch.started': (t) => t('开始分派'),
+  'dispatch.context': (t) => t('分派读取上下文'),
+  'dispatch.decided': (t) => t('分派得出结论'),
+  'message.queued': (t) => t('消息进入会话队列'),
+  'message.taken': (t) => t('会话收走排队消息'),
+  'turn.started': (t) => t('开始本轮用户输入'),
+  'run.started': (t) => t('开始执行本次运行'),
+  'run.ended': (t) => t('本次运行结束'),
+  'search.started': (t) => t('开始检索'),
+  'search.done': (t) => t('检索返回结果'),
+  'context.built': (t) => t('准备本次模型上下文'),
+  'step.before': (t) => t('准备下一步模型请求'),
+  'step.after': (t) => t('收到本步模型结果'),
+  'model.queued': (t) => t('模型请求排队'),
+  'model.started': (t) => t('取得名额，开始调用模型'),
+  'model.completed': (t) => t('模型调用结束'),
+  'model.retry': (t) => t('连接重试等待'),
+  'model.retry.done': (t) => t('连接重试等待结束'),
+  'model.fallback': (t) => t('程序选择备用模型'),
+  'model.skipped': (t) => t('跳过当前模型'),
+  'model.switched': (t) => t('实际模型发生切换'),
+  'tool.before': (t) => t('开始执行模型选择的工具'),
+  'tool.after': (t) => t('工具返回结果'),
+  'reply.before': (t) => t('向渠道发送回复'),
+  'reply.sent': (t) => t('收到回复发送回执'),
+  'compact.done': (t) => t('上下文压缩完成'),
+  'review.pending': (t) => t('命令等待审核'),
+  'review.decided': (t) => t('命令审核得到结论'),
+  'limit.reached': (t) => t('运行达到时间上限'),
+  'gate.decided': (t) => t('程序拦点得到结论'),
+  'agent.queued': (t) => t('排入外部 AI 队列'),
+  'agent.taken': (t) => t('外部 AI 认领（不等于开工）'),
+  'agent.result': (t) => t('收到外部结果'),
+  'agent.delivered': (t) => t('结果送回会话'),
+};
+
+
+/** 字段展示名称映射；保留字面量 t(...) 供语言包提取。 */
+const FIELD_LABELS: Record<string, (t: i18n.Translate) => string> = {
+  kind: (t) => t('行的种类'),
+  mode: (t) => t('发法'),
+  listeners: (t) => t('听的人'),
+  text: (t) => t('人话'),
+  code: (t) => t('代码'),
+  site: (t) => t('代码位置'),
+  messageIds: (t) => t('来源消息号'),
+  run: (t) => t('运行次数'),
+  step: (t) => t('模型步数'),
+  model: (t) => t('本次模型'),
+  defaultModel: (t) => t('配置默认模型'),
+  requestedModel: (t) => t('最初请求模型'),
+  askedModel: (t) => t('最初请求模型'),
+  from: (t) => t('原模型'),
+  to: (t) => t('目标模型'),
+  tried: (t) => t('实际尝试顺序'),
+  by: (t) => t('决定来自'),
+  reason: (t) => t('依据'),
+  error: (t) => t('记录的错误'),
+  errorKind: (t) => t('错误类别'),
+  thinkingRequested: (t) => t('请求思考档位'),
+  thinkingAsked: (t) => t('请求思考档位'),
+  thinkingSent: (t) => t('发送／保存的思考设置'),
+  thinking: (t) => t('发送／保存的思考设置'),
+  thinkingReported: (t) => t('供应商明确回报档位'),
+  mergeMs: (t) => t('合批静默规则（毫秒）'),
+  maxWaitMs: (t) => t('最早消息等待上限（毫秒）'),
+  waits: (t) => t('各消息实际等待'),
+  ms: (t) => t('实际耗时'),
+  queueMs: (t) => t('模型队列实际等待'),
+  waitMs: (t) => t('模型队列实际等待'),
+  apiMs: (t) => t('API 调用耗时'),
+  delayMs: (t) => t('重试间隔规则（毫秒）'),
+  startedAt: (t) => t('操作开始'),
+  endedAt: (t) => t('操作结束'),
+  queuedAt: (t) => t('实际入队'),
+  until: (t) => t('冷却截止'),
+  coolingUntil: (t) => t('冷却截止'),
+  requestId: (t) => t('请求编号'),
+  attemptId: (t) => t('尝试编号'),
+  callId: (t) => t('工具调用编号'),
+  context: (t) => t('实际上下文清单'),
+  messages: (t) => t('实际上下文消息'),
+  promptFiles: (t) => t('提示词文件'),
+  promptChars: (t) => t('提示词字符数'),
+  systemChars: (t) => t('系统提示词字符数'),
+  contextCount: (t) => t('实际上下文条数'),
+  omitted: (t) => t('清单未展开的条数'),
+  fitted: (t) => t('上下文是否裁剪'),
+  chars: (t) => t('文本字符数'),
+  bytes: (t) => t('文本字节数'),
+  resultChars: (t) => t('返回文本字符数'),
+  outputChars: (t) => t('返回文本字符数'),
+  resultBytes: (t) => t('返回文本字节数'),
+  outputBytes: (t) => t('返回文本字节数'),
+  images: (t) => t('图片数量'),
+  input: (t) => t('输入 token'),
+  output: (t) => t('输出 token'),
+  cacheRead: (t) => t('缓存读 token'),
+  cacheWrite: (t) => t('缓存写 token'),
+  checks: (t) => t('程序核对依据'),
+  sessionId: (t) => t('目标会话'),
+  targetSession: (t) => t('目标会话'),
+  targetBot: (t) => t('目标机器人'),
+  via: (t) => t('入队途径'),
+  receivedAt: (t) => t('外部结果接收'),
+  executionStartedAt: (t) => t('实际开始执行'),
+  queuedToClaimMs: (t) => t('排队到认领间隔'),
+  claimedToResultMs: (t) => t('认领到结果间隔'),
+  lastReceivedAt: (t) => t('批次最后接收'),
+  tool: (t) => t('工具'),
+  args: (t) => t('读取或执行参数'),
+  result: (t) => t('返回内容片段'),
+  hits: (t) => t('命中条数'),
+  files: (t) => t('涉及文件'),
+  agent: (t) => t('外部 AI'),
+  taskId: (t) => t('外部任务号'),
+};
+
+
+/** 提取纯数字列表（忽略非数字或非数组字段）。 */
+function getNumberList(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw.filter((id): id is number => typeof id === 'number');
+}
+
+
 /**
  * 这条是不是 src7 的跟踪行（journal 记的新格式）：data.kind 是“函数”或“事件”。
  * @param record 一条事件。
  * @returns 函数、事件；老格式是 undefined。
  */
-function traceLine(record: types.TraceEvent): '函数' | '事件' | undefined {
+function getTraceLine(record: types.TraceEvent): '函数' | '事件' | undefined {
   const kind = record.data.kind;
-  return kind === '函数' || kind === '事件' ? kind : undefined;
+  if (kind === '函数' || kind === '事件') return kind;
+
+  return undefined;
 }

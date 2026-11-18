@@ -79,8 +79,10 @@ export class DocumentReader {
    * @param offset 本段真实字节起点。
    * @param nextOffset API 返回的后续完整字符位置，读完为 null。
    * @returns 本段的结构；未知中段保留原文，不误把代码当标题。
+   * 副作用：若 `nextOffset` 非空、当前段结构已知且以换行结尾，将 `page.endingFence` 记录到 `this.boundaries` 供后续分段使用。
    */
   read(text: string, offset = 0, nextOffset: number | null = null): DocumentPage {
+    //M 读取本段起点的已知代码围栏状态并解析当前片段的文档结构。
     const fence = this.boundaries.get(offset);
     const page = this.parse(text, offset, fence);
     if (nextOffset !== null && page.endingFence !== undefined && text.endsWith('\n')) {
@@ -92,6 +94,7 @@ export class DocumentReader {
   /** 给读取后的段提供结构；不读文件、不执行工具，也不改原文。 */
   private parse(text: string, offset: number, initialFence: string | null | undefined): DocumentPage {
     if (initialFence === undefined) {
+      //G 上文围栏状态未知时不做标题解析，整段作为接续原文块返回以避免把代码误判为章节。
       const fragment = this.block('fragment', '', 0, text, text, offset, 0);
       return {
         blocks: [fragment],
@@ -105,7 +108,10 @@ export class DocumentReader {
     const blocks: DocumentBlock[] = [];
     let fence = initialFence;
     let heading = '';
-    let kind: DocumentKind = initialFence ? 'fragment' : 'section';
+    let kind: DocumentKind = 'section';
+    if (initialFence) {
+      kind = 'fragment';
+    }
     let level = 0;
     let firstLine = 0;
     let rawLines: string[] = [];
@@ -116,6 +122,7 @@ export class DocumentReader {
       if (rawLines.length === 0) {
         return;
       }
+      //M 拼合当前块累计的原文与正文行并生成阅读块，随后重置行缓存。
       const raw = rawLines.join('\n');
       const body = bodyLines.join('\n');
       blocks.push(this.block(kind, heading, level, body, raw, offset, firstLine));
@@ -144,22 +151,33 @@ export class DocumentReader {
       const title = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
       const role = /^【(用户|助手|调用|结果|思考|程序|审核)([^】]*)】(.*)$/.exec(line);
       if (title || role) {
+        //M 遇到新标题或角色头时先结算上一块内容，再初始化新块的标题与类型。
         flush();
         firstLine = lineNumber;
-        heading = title ? title[2]! : `${role![1]!}${role![2]!}`;
-        level = title ? title[1]!.length : 0;
-        kind = role ? ROLES[role[1]!]! : this.headingKind(heading);
+        if (role) {
+          heading = `${role[1]!}${role[2]!}`;
+          level = 0;
+          kind = ROLES[role[1]!]!;
+        }
+        if (!role && title) {
+          heading = title[2]!;
+          level = title[1]!.length;
+          //M 按会话已有标题文本识别为运行、步骤或普通章节类型。
+          kind = this.headingKind(heading);
+        }
         rawLines.push(line);
         if (role?.[3]) {
           bodyLines.push(role[3]);
         }
-      } else {
-        rawLines.push(line);
-        bodyLines.push(line);
+        continue;
       }
+      rawLines.push(line);
+      bodyLines.push(line);
     }
+    //M 文本逐行扫描结束后，把最后尚未结算的一块写入结果列表。
     flush();
 
+    //M 按标题层级把扁平阅读块组织成树状结构，并提取层级标题作为片段目录。
     return {
       blocks,
       nodes: this.tree(blocks),
@@ -181,11 +199,11 @@ export class DocumentReader {
         }
       }
       const parent = parents.at(-1);
+      let target = roots;
       if (parent) {
-        parent.children.push(node);
-      } else {
-        roots.push(node);
+        target = parent.children;
       }
+      target.push(node);
       if (block.level > 0) {
         parents.push(node);
       }
@@ -214,8 +232,12 @@ export class DocumentReader {
     offset: number,
     line: number,
   ): DocumentBlock {
+    //M 剥离 Markdown 格式符号并压缩空白，生成块收起状态下的纯文本短摘要。
     const plain = body.replace(/[`#*>]/g, '').replace(/\s+/g, ' ').trim();
-    const summary = plain.length > 180 ? `${plain.slice(0, 180)}…` : plain;
+    let summary = plain;
+    if (plain.length > 180) {
+      summary = `${plain.slice(0, 180)}…`;
+    }
     const time = /\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?\b/.exec(title)?.[0] ?? null;
     return {
       key: `doc:${String(offset)}:${String(line)}:${kind}`,

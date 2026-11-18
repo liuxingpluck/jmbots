@@ -5,6 +5,7 @@
  */
 import type { GuideStep } from './types.ts';
 
+/** 积木客服页（/wechat-kefu/）右上角「演示引导」使用的步骤列表。 */
 export const WECHAT_STEPS: GuideStep[] = [
   {
     id: 'welcome',

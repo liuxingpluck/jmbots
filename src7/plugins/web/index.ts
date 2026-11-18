@@ -15,6 +15,8 @@ import * as assets from '../../utils/Embedded.ts';
 
 /** 插件名。 */
 export const name = 'web';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.0';
 
 /** 用到的服务：http 的 app；resources 读 plugins 名单，按插件名登记插件页面（2026-11-14）。 */
 export const inject = ['http', 'resources'];
@@ -33,7 +35,7 @@ const LONG_CACHE = 'public, max-age=31536000, immutable';
  * 所以这里登记的路由赶得上。Fastify 按路径的具体程度匹配，/* 永远排在别的路由后面，不用管谁先登记。
  * 对 GET 登记的路由，Fastify 自动也接 HEAD。
  * @param ctx Cordis 给这个插件的 ctx。
- * 副作用：在 ctx.http.app 上登记一条路由；发一个跟踪点。
+ * 副作用：在 ctx.http.app 上登记插件页面路由与兜底路由 GET /*；发一个跟踪点。
  */
 export async function apply(ctx: cordis.Context): Promise<void> {
   //M 2026-11-14 jm开发：插件页面按约定挂在 /<插件名>/。config.yaml 里挂了的插件，dist/web 里有同名 <插件名>.html 的（如 memory.html），
@@ -49,6 +51,7 @@ export async function apply(ctx: cordis.Context): Promise<void> {
     });
   }
 
+  //M 登记兜底路由 GET /*，用于托管单页应用静态资源、插件页面以及未命中接口的 404 提示。
   ctx.http.app.get<{ Params: { '*': string } }>('/*', async (request, reply) => {
     //M Fastify 已经把路径里的 %xx 解开了，这里拿到的就是相对 dist/web 的路径。
     const relative = request.params['*'];
@@ -89,9 +92,13 @@ export async function apply(ctx: cordis.Context): Promise<void> {
     if (data === undefined) return reply.code(404).type('text/plain; charset=utf-8').send(NOT_BUILT);
 
     //M assets/ 下的长缓存；别的（主要是 index.html）每次都问，换版本马上生效。
+    let cache = 'no-cache';
+    if (found !== undefined && file.startsWith('assets/')) {
+      cache = LONG_CACHE;
+    }
     if (found === undefined) file = 'index.html';
-    const cache = found !== undefined && file.startsWith('assets/') ? LONG_CACHE : 'no-cache';
-    return reply.header('Cache-Control', cache).type(mime.typeOf(file)).send(data);
+    //M 按最终文件的 MIME 类型与缓存策略发回静态资源字节。
+    return reply.header('Cache-Control', cache).type(mime.getType(file)).send(data);
   });
 
   //T 跟踪：网页路由登记好了。

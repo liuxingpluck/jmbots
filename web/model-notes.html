@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 页面挂在 /model-notes/ 下：base 让 ./assets/… 指到根目录的 /assets/（web 插件也认 /model-notes/assets/…，双保险）。 -->
+    <base href="/" />
+    <title>模型介绍和评价 · jmbots</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 第六个打包入口（web/Build.ts）：模型介绍和评价页，web 插件把 dist/web/model-notes.html 挂在 /model-notes/（model-notes 插件提供接口）。2026-11-17 -->
+    <script type="module" src="./src/ModelNotes/ModelNotesMain.tsx"></script>
+  </body>
+</html>

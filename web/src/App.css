@@ -397,9 +397,10 @@ button {
 /* 左下角的更新提醒。 */
 .jm-update-entry {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  margin-top: auto;
+  margin-top: 8px;
   padding: 8px 12px;
   border: 1px solid var(--jm-accent);
   border-radius: var(--jm-radius);
@@ -409,7 +410,8 @@ button {
 }
 
 .jm-update-note {
-  margin-top: auto;
+  flex: 0 0 auto;
+  margin-top: 6px;
   padding: 4px 12px;
   color: var(--jm-muted);
   font-size: 12px;
@@ -426,23 +428,44 @@ button {
 
 .jm-footer-row {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
   margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--jm-border);
 }
+
 .jm-settings-entry {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
+  justify-content: space-between;
+  gap: 4px 8px;
+  width: 100%;
   min-width: 0;
   margin-top: 0;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 0;
   border-radius: var(--jm-radius);
   background: transparent;
   color: var(--jm-muted);
   cursor: pointer;
+}
+
+.jm-settings-main {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.jm-settings-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .jm-running {
@@ -501,6 +524,10 @@ button {
   margin-left: auto;
 }
 
+.jm-settings-meta .jm-dots {
+  margin-left: 0;
+}
+
 .jm-dot {
   width: 6px;
   height: 6px;
@@ -515,29 +542,15 @@ button {
 }
 
 .jm-version {
-  margin-left: 6px;
-  font-size: 10px;
+  margin-left: 0;
+  font-size: 11px;
   color: var(--jm-muted);
   white-space: nowrap;
 }
 
-.jm-settings-entry:hover,
-.jm-refresh-entry:hover {
+.jm-settings-entry:hover {
   background: var(--jm-hover);
   color: var(--jm-text);
-}
-.jm-refresh-entry {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  padding: 10px 12px;
-  border: 0;
-  border-radius: var(--jm-radius);
-  background: transparent;
-  color: var(--jm-muted);
-  cursor: pointer;
-  font-size: 13px;
 }
 
 /* —— 中栏：聊天 —— */
@@ -554,11 +567,6 @@ button {
   gap: 10px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--jm-border);
-}
-
-.jm-chat-refresh {
-  margin-left: auto;
-  color: var(--jm-muted);
 }
 
 .jm-guide-btn {
@@ -1431,14 +1439,35 @@ button {
   flex-direction: column;
 }
 
+/* 时间线是 react-virtuoso 的滚动元素（Chat/MessageList.tsx）：边距和项间空隙放在 .jm-timeline-head、.jm-timeline-item 上，滚动元素自己不留 padding。 */
 .jm-timeline {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px 24px 12px;
+}
+
+/* 没有消息时空提示居中。 */
+.jm-timeline-empty {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+}
+
+/* 顶上：原来滚动容器的上边距，加“往上滚看更早的”。 */
+.jm-timeline-head {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px 0;
+}
+
+.jm-timeline-head .jm-timeline-more {
+  margin-bottom: 14px;
+}
+
+/* 每一项：左右边距和项与项之间的 14px 空隙；里面照旧是竖排，事件行 align-self:center 才居中。 */
+.jm-timeline-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0 24px 14px;
 }
 
 .jm-timeline-more {
@@ -2095,6 +2124,13 @@ button {
   overflow-y: auto;
 }
 
+/* 选会话是 react-virtuoso（Chat/Composer.tsx）：每行外面这一层竖排让按钮撑满宽，行间 4px。 */
+.jm-pick-row {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+}
+
 .jm-pick-item {
   display: flex;
   justify-content: space-between;
@@ -2371,6 +2407,13 @@ button {
   color: var(--jm-text);
 }
 
+/* 会话列表是 react-virtuoso（Panel/Workspace.tsx）：每行外面这一层竖排让按钮撑满宽，行间 4px（原来 .jm-workspace-sessions 的 gap）。 */
+.jm-workspace-session-row {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+}
+
 .jm-workspace-title {
   min-width: 0;
   overflow: hidden;
@@ -2383,10 +2426,9 @@ button {
   font-size: 12px;
 }
 
+/* 记忆文件树的高度上限交给 antd Tree 的 height（Panel/MemoryFiles.tsx，自带虚拟滚动），这里不再限高、不再自己滚。 */
 .jm-memory-files {
-  max-height: 34%;
   flex-shrink: 0;
-  overflow: auto;
   padding: 12px 14px 0;
 }
 
@@ -2414,10 +2456,7 @@ button {
   font-size: 12px;
 }
 
-.jm-workspace-files .ant-tree {
-  max-height: 260px;
-  overflow: auto;
-}
+/* 工作区文件树的 260px 上限改由 antd Tree 的 height 给（Panel/WorkspaceFiles.tsx，自带虚拟滚动），这里不再限高。 */
 
 .jm-workspace-file-row {
   display: inline-flex;
@@ -2576,6 +2615,34 @@ button {
   font-size: 12px;
 }
 
+/* 会话打分条（紧贴控制条下方，用 Theme.ts 深色变量）。 */
+.jm-session-rate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--jm-border);
+  border-radius: var(--jm-radius);
+  background: var(--jm-surface);
+}
+
+.jm-session-rate-label {
+  font-size: 12px;
+  color: var(--jm-muted);
+}
+
+.jm-session-rate-done {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--jm-accent);
+}
+
+.jm-session-rate-note {
+  flex: 1;
+  min-width: 140px;
+}
+
 /* 步骤和分派记录（G批设计 8.3）。 */
 .jm-steps {
   display: flex;
@@ -2596,6 +2663,11 @@ button {
 
 .jm-step-label {
   font-size: 12px;
+}
+
+/* 每步一个折叠面板（Panel/StepsView.tsx 虚拟滚动），步与步之间留一点空。 */
+.jm-step-item {
+  padding-bottom: 4px;
 }
 
 .jm-step-body {
@@ -2661,8 +2733,13 @@ button {
   flex-direction: column;
 }
 
-.jm-panel-messages .jm-timeline {
-  padding: 12px;
+.jm-panel-messages .jm-timeline-head {
+  padding: 12px 12px 0;
+}
+
+.jm-panel-messages .jm-timeline-item {
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 .jm-details {
@@ -2919,6 +2996,11 @@ button {
   gap: 6px;
   max-height: 50vh;
   overflow-y: auto;
+}
+
+/* 勾选列表是 react-virtuoso（Settings/Sections.tsx）：行间 6px 放在每行外面。 */
+.jm-pull-row {
+  padding-bottom: 6px;
 }
 
 .jm-settings-alert {
@@ -3206,3 +3288,38 @@ button {
 .jm-todo-item { padding: 2px 0; }
 .jm-todo-done { opacity: 0.6; text-decoration: line-through; }
 .jm-todo-doing { font-weight: 600; }
+
+/* —— 时间线底部留白、用量表头不折行、右栏新版记忆服务区与左栏独立页快捷入口 —— */
+.jm-timeline-foot { height: 18px; }
+
+.jm-usage .ant-table-thead > tr > th,
+.jm-usage .ant-table-tbody > tr > td {
+  white-space: nowrap;
+}
+
+.jm-memory-service {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  background: var(--jm-surface);
+  font-size: 12px;
+}
+
+.jm-memory-links {
+  display: flex;
+  gap: 10px;
+}
+
+.jm-memory-links a {
+  color: var(--jm-accent);
+  text-decoration: none;
+}
+
+.jm-memory-links a:hover {
+  text-decoration: underline;
+}

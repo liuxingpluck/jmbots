@@ -62,7 +62,7 @@ bunTest.test('回退后新看目标丢弃前进；相同 Windows 文件不同分
   store.getState().panelForward();
   bunTest.expect(store.getState().panelHistory.map((entry) => entry.tab)).toEqual(['preview', 'workspace', 'usage']);
   bunTest.expect(store.getState().panelTab).toBe('usage');
-  bunTest.expect(historyModule.fileIdentity('/Docs/A.md')).not.toBe(historyModule.fileIdentity('/docs/a.md'));
+  bunTest.expect(historyModule.getFileIdentity('/Docs/A.md')).not.toBe(historyModule.getFileIdentity('/docs/a.md'));
 });
 
 

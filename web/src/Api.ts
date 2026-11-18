@@ -48,9 +48,12 @@ export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 
     response = await fetch(url, requestOptions);
   } catch (error) {
+    //G fetch 抛异常说明断网或后端未响应，包装成 status=0 的 ApiError 供轮询和界面统一按离线处理。
     throw new ApiError(0, `连不上后端：${String(error)}`);
   }
+
   /** 正文。 */
+  //M 先读出响应原始文本，既用于非 2xx 时提取错误信息，也避免空响应体直接进 JSON.parse 报错。
   const text = await response.text();
   if (!response.ok) {
     //G 401 是让填令牌：发一个事件，TokenPrompt.tsx 听到就弹输入框。
@@ -64,9 +67,13 @@ export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       //M 不是 JSON 就用原文。
     }
+
+    //G 非 2xx 统一转成带 HTTP 状态码和错误说明的 ApiError 抛出，便于调用方区分 401/404 与 5xx。
     throw new ApiError(response.status, message);
   }
-  return (text ? JSON.parse(text) : undefined) as T;
+  if (!text) return undefined as T;
+
+  return JSON.parse(text) as T;
 }
 
 
@@ -86,24 +93,28 @@ export function sendJson<T>(url: string, method: 'POST' | 'PUT', body: unknown):
     body: JSON.stringify(body),
   };
 
+  //M 复用 getJson 统一注入 Bearer 令牌、广播 401 事件与包装 ApiError，避免维护两套错误处理。
   return getJson<T>(url, options);
 }
 
 
 /** 健康检查。 */
 export function health(): Promise<{ ok: boolean; problems: string[] }> {
+  //M 拉取后端及插件健康检查结果，用于展示启动或运行时诊断问题。
   return getJson('/api/health');
 }
 
 
 /** 全部机器人和状态。 */
 export function bots(): Promise<types.BotView[]> {
+  //M 拉取全量机器人状态列表，供轮询刷新左栏机器人卡片与在线态。
   return getJson('/api/bots');
 }
 
 
 /** 还在等用户点的命令。 */
 export function approvals(): Promise<types.ApprovalView[]> {
+  //M 拉取当前待人工确认的命令审批卡片，供轮询更新审批弹窗和右栏待审核页。
   return getJson('/api/approvals');
 }
 
@@ -121,6 +132,7 @@ export function messages(bot: string, query: { before?: number; after?: number; 
       params.set(name, String(value));
     }
   }
+  //M 携带机器人名、分页游标与渠道筛选参数请求消息分页，支撑时间线加载更多与增量同步。
   return getJson(`/api/messages?${params.toString()}`);
 }
 
@@ -139,6 +151,7 @@ export function messageTrace(
   const query = new URLSearchParams({ reply: String(replyIndex) });
   const url = `/api/messages/${String(messageId)}/trace?${query.toString()}`;
 
+  //M 按精确消息号和回复下标拉取只读脱敏追溯数据，供右栏事件页展示因果与用量。
   return getJson(url);
 }
 
@@ -150,6 +163,7 @@ export function messageTrace(
  */
 export function resolveMessages(bot: string, ids: number[]): Promise<types.MessageResolution> {
   const query = new URLSearchParams({ bot, ids: ids.join(',') });
+  //M 按指定消息号列表补取未在当前分页内的关联来源消息，不改变现有时间线游标。
   return getJson(`/api/messages/resolve?${query.toString()}`);
 }
 
@@ -158,7 +172,7 @@ export function resolveMessages(bot: string, ids: number[]): Promise<types.Messa
  * 文件的地址（img、audio、video 直接用）。
  * @param path 绝对路径。
  */
-export function fileUrl(path: string): string {
+export function getFileUrl(path: string): string {
   //M img、video 加不了请求头，令牌放进地址。
   return withToken(`/api/files?path=${encodeURIComponent(path)}`, TOKEN);
 }
@@ -185,6 +199,7 @@ export interface TokenInfo {
 
 /** 全部访问令牌（只有本机能看）。 */
 export function tokens(): Promise<TokenInfo[]> {
+  //M 拉取全部访问令牌元信息供设置页管理列表展示（仅本机请求可通过鉴权）。
   return getJson('/api/tokens');
 }
 
@@ -195,6 +210,7 @@ export function tokens(): Promise<TokenInfo[]> {
  * @param minutes 临时的写几分钟；不写是永久的。
  */
 export function createToken(name: string, minutes?: number): Promise<TokenInfo> {
+  //M 提交令牌用途名和可选有效期让后端签发新令牌，拿到含值的对象供用户复制。
   return sendJson('/api/tokens', 'POST', { name, minutes });
 }
 
@@ -204,6 +220,7 @@ export function createToken(name: string, minutes?: number): Promise<TokenInfo> 
  * @param id 号。
  */
 export function refreshToken(id: string): Promise<TokenInfo> {
+  //M 通知后端立即轮换该令牌的密钥值，让旧凭证作废并返回更新后的新令牌。
   return sendJson(`/api/tokens/${encodeURIComponent(id)}/refresh`, 'POST', {});
 }
 
@@ -213,6 +230,7 @@ export function refreshToken(id: string): Promise<TokenInfo> {
  * @param id 号。
  */
 export function deleteToken(id: string): Promise<{ ok: boolean }> {
+  //M 请求后端吊销并移除指定访问令牌，立即终止外部客户端的访问授权。
   return getJson(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
@@ -258,14 +276,20 @@ export function uploadFile(file: File, onProgress: (ratio: number) => void): Pro
         const body = JSON.parse(request.responseText) as UploadResult & { error?: string };
         if (request.status >= 200 && request.status < 300) {
           resolve(body);
-        } else {
-          reject(new ApiError(request.status, body.error ?? request.statusText));
+          return;
         }
+
+        //G 非 2xx 时用后端返回的状态码和 error 文案拒绝 Promise，供输入框展示上传失败提示。
+        reject(new ApiError(request.status, body.error ?? request.statusText));
       } catch {
+        //G 响应正文不是合法 JSON（如网关错误页）时仍带状态码与原始文本拒绝，不吞掉错误。
         reject(new ApiError(request.status, request.responseText || '上传的回答读不出来'));
       }
     };
+
+    //G 发生网络断开或跨域拦截时触发 onerror，统一包装成 status=0 的 ApiError 拒绝。
     request.onerror = () => reject(new ApiError(0, '连不上后端，上传失败'));
+    //M 直接发送原始 File 字节流（不做 base64 编码），配合 XHR 上传进度事件回调。
     request.send(file);
   });
 }
@@ -303,6 +327,7 @@ export function sendMessage(input: {
     reply_to: input.reply_to,
   };
 
+  //M 把网页消息文本、附件上传号及可选指定会话发给入站接口，拿回分配的消息号用于时间线关联。
   return sendJson('/api/message', 'POST', body);
 }
 
@@ -345,6 +370,8 @@ export function sessions(bot: string, status?: string): Promise<SessionBrief[]> 
   if (status) {
     params.set('status', status);
   }
+
+  //M 按机器人名称与可选状态条件拉取会话列表，供工作区会话清单展示与筛选。
   return getJson(`/api/ui/sessions?${params.toString()}`);
 }
 
@@ -379,6 +406,7 @@ export interface RunningTask {
  * @param bot 机器人名。
  */
 export function runningTasks(bot: string): Promise<RunningTask[]> {
+  //M 拉取指定机器人当前运行中的前后台任务，供右栏顶部实时任务栏展示进度与跳转。
   return getJson(`/api/ui/running?bot=${encodeURIComponent(bot)}`);
 }
 
@@ -388,6 +416,7 @@ export function runningTasks(bot: string): Promise<RunningTask[]> {
  * @param id 会话号。
  */
 export function sessionDetail(id: string): Promise<types.SessionDetail> {
+  //M 获取会话元信息、运行历史与 Markdown 记录全文，供右栏会话页和 #session 深链接使用。
   return getJson(`/api/sessions/${encodeURIComponent(id)}`);
 }
 
@@ -401,6 +430,7 @@ export function sessionDetail(id: string): Promise<types.SessionDetail> {
 export function sessionSteps(id: string, after = 0, limit = 500): Promise<types.SessionStep[]> {
   /** 查询参数。 */
   const params = new URLSearchParams({ after: String(after), limit: String(limit) });
+  //M 带增量序号游标拉取会话步骤与分派记录，实现右栏会话详情的增量追加渲染。
   return getJson(`/api/sessions/${encodeURIComponent(id)}/steps?${params.toString()}`);
 }
 
@@ -416,6 +446,7 @@ export function changeSessionModel(
   model: string,
   thinking: string | null,
 ): Promise<{ id: string; model: string; thinking: string | null; status: string }> {
+  //M 把会话的新模型和思考档写回后端会话记录，使该会话下一轮调用按新配置执行。
   return sendJson(`/api/sessions/${encodeURIComponent(id)}/model`, 'POST', { model, thinking });
 }
 
@@ -430,6 +461,7 @@ export function stopSession(
   id: string,
   reason?: string,
 ): Promise<{ id: string; stopped: boolean; status: string; reason?: string }> {
+  //M 通知后端在下一次检查点中断指定运行中的会话，拿回是否停下及未停原因用于界面反馈。
   return sendJson(`/api/sessions/${encodeURIComponent(id)}/stop`, 'POST', { reason });
 }
 
@@ -442,10 +474,13 @@ export function stopSession(
  */
 export async function decideApproval(id: number, approve: boolean): Promise<number> {
   try {
+    //M 把用户的批准或拒绝决定发给审批接口，成功则返回 200 让卡片立即收口。
     await sendJson(`/api/approvals/${id}`, 'POST', { approve });
     return 200;
   } catch (error) {
-    return error instanceof ApiError ? error.status : 0;
+    if (error instanceof ApiError) return error.status;
+
+    return 0;
   }
 }
 
@@ -470,6 +505,7 @@ export interface BotInfo {
  * @param name 机器人名。
  */
 export function botInfo(name: string): Promise<BotInfo> {
+  //M 拉取单个机器人的目录位置、工作区清单和记忆索引全文，供右栏工作区与记忆页渲染。
   return getJson(`/api/ui/bots/${encodeURIComponent(name)}`);
 }
 
@@ -494,6 +530,7 @@ export interface DirEntry {
  * @param path 绝对路径。
  */
 export function listDir(path: string): Promise<DirEntry[]> {
+  //M 列出指定目录的直接子文件与子文件夹元数据，供右栏工作区文件树按需展开。
   return getJson(`/api/files/list?path=${encodeURIComponent(path)}`);
 }
 
@@ -528,6 +565,7 @@ export class FilePreviewLoader {
     this.revision += 1;
     const revision = this.revision;
     try {
+      //M 按当前偏移和单页字节预算拉取这一段文本，返回前再比对 revision 以免过期响应回写。
       const page = await fileText(path, this.maxBytes, offset);
       if (revision !== this.revision) {
         return undefined;
@@ -563,28 +601,67 @@ export async function fileText(path: string, maxBytes: number, offset = 0): Prom
   /** 回答。 */
   let response: Response;
   try {
-    const headers = { range: `bytes=${requestedStart}-${requestedStart + limit - 1}` };
-    response = await fetch(fileUrl(path), { headers, cache: 'no-store' });
+    const headers: Record<string, string> = { range: `bytes=${requestedStart}-${requestedStart + limit - 1}` };
+    if (TOKEN) {
+      headers.authorization = `Bearer ${TOKEN}`;
+    }
+
+    //M 拼出带令牌的文件 URL 并附带 Range 头只请求该字节区间，防止预览大文件时下载全文。
+    response = await fetch(getFileUrl(path), { headers, cache: 'no-store' });
   } catch (error) {
+    //G 网络中断或连不上后端时包装成 status=0 的 ApiError 抛出，与 getJson 保持统一离线口径。
     throw new ApiError(0, `连不上后端：${String(error)}`);
   }
   if (!response.ok) {
-    throw new ApiError(response.status, (await response.text()) || response.statusText);
+    //M 读取错误响应正文，优先抽后端 JSON 里的 error 字段，否则退回状态描述。
+    const raw = await response.text();
+    let message = raw || response.statusText;
+    try {
+      message = (JSON.parse(raw) as { error?: string }).error ?? message;
+    } catch {
+      //M 不是 JSON 就用原文。
+    }
+
+    //G 服务端返回非 2xx 时抛出带状态码和原因的 ApiError，交由预览组件展示报错。
+    throw new ApiError(response.status, message);
   }
   if (requestedStart > 0 && response.status !== 206) {
+    //G 非零起点未返回 206 分段，先取消响应流防止下载整份大文件，再报错提示改为下载原文件。
     await response.body?.cancel();
+    //G 明确拒绝降级为全量读取，提醒调用方只能改用原文件下载入口。
     throw new ApiError(response.status, '文件服务没有返回请求的分段，不能继续读取；可下载原文件');
   }
 
   /** 206 的总长与起点优先来自 Content-Range；200 才退到 Content-Length。 */
+  //M 解析 Content-Range 响应头，还原后端实际返回分段的起始偏移与文件总字节数。
   const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(response.headers.get('content-range') ?? '');
+  //M 当响应为 200 或 Content-Range 未给出精确总长时，取 Content-Length 作为总字节数兜底。
   const contentLength = response.headers.get('content-length');
-  const totalText = range?.[3] === '*' ? null : range?.[3] ?? contentLength;
-  const total = totalText === null || totalText === undefined ? null : Number(totalText);
-  const rangeStart = range ? Number(range[1]) : requestedStart;
+  let totalText: string | null = contentLength;
+  if (range?.[3] === '*') {
+    totalText = null;
+  }
+  if (range?.[3] && range[3] !== '*') {
+    totalText = range[3];
+  }
+  let total: number | null = null;
+  if (totalText !== null && totalText !== undefined) {
+    total = Number(totalText);
+  }
+  let rangeStart = requestedStart;
+  if (range) {
+    rangeStart = Number(range[1]);
+  }
+
+  //M 从响应流按上限最多收取 limit 字节，保证即使服务器忽略 Range 也不会把巨型文件吃进内存。
   const bytes = await boundedBytes(response, limit);
-  const atEnd = total !== null ? rangeStart + bytes.length >= total : bytes.length < limit;
-  const span = utf8Span(bytes, rangeStart > 0, atEnd);
+  let atEnd = bytes.length < limit;
+  if (total !== null) {
+    atEnd = rangeStart + bytes.length >= total;
+  }
+
+  //M 裁掉分片首尾被截断的 UTF-8 半个字符，避免解码出现乱码并把末尾残余字节留给下一段。
+  const span = getUtf8Span(bytes, rangeStart > 0, atEnd);
   if (!atEnd) {
     /** 有完整行时在行末继续，避免把标题或围栏拆成伪结构；超长行仍保持字节预算。 */
     const newline = bytes.lastIndexOf(10, span.end - 1);
@@ -594,7 +671,14 @@ export async function fileText(path: string, maxBytes: number, offset = 0): Prom
   }
   const start = rangeStart + span.start;
   const end = rangeStart + span.end;
-  const hasMore = total !== null ? end < total : !atEnd;
+  let hasMore = !atEnd;
+  if (total !== null) {
+    hasMore = end < total;
+  }
+  let nextOffset: number | null = null;
+  if (hasMore) {
+    nextOffset = end;
+  }
 
   return {
     text: new TextDecoder().decode(bytes.subarray(span.start, span.end)),
@@ -602,7 +686,7 @@ export async function fileText(path: string, maxBytes: number, offset = 0): Prom
     start,
     end,
     total,
-    nextOffset: hasMore ? end : null,
+    nextOffset,
   };
 }
 
@@ -617,6 +701,7 @@ async function boundedBytes(response: Response, limit: number): Promise<Uint8Arr
   let length = 0;
   try {
     while (length < limit) {
+      //M 按流逐块读取响应字节，在达到单页字节预算时立刻停读，防止大响应撑爆内存。
       const chunk = await reader.read();
       if (chunk.done) {
         break;
@@ -626,6 +711,7 @@ async function boundedBytes(response: Response, limit: number): Promise<Uint8Arr
       length += accepted.length;
     }
   } finally {
+    //M 达到上限提前结束或读流异常时主动取消剩余响应体并释放锁，避免挂起网络连接。
     await reader.cancel();
     reader.releaseLock();
   }
@@ -633,8 +719,20 @@ async function boundedBytes(response: Response, limit: number): Promise<Uint8Arr
 }
 
 
+/** 按 UTF-8 首字节前缀判断完整字符长度；ASCII 和坏字节按 1 处理。 */
+function getUtf8CharLength(byte: number): number {
+  if ((byte & 0xf8) === 0xf0) return 4;
+
+  if ((byte & 0xf0) === 0xe0) return 3;
+
+  if ((byte & 0xe0) === 0xc0) return 2;
+
+  return 1;
+}
+
+
 /** 合法 UTF-8 在分段边缘可能不完整；尾部留给下次，任意中段起点跳过残余续字节。 */
-function utf8Span(bytes: Uint8Array, middle: boolean, atEnd: boolean): { start: number; end: number } {
+function getUtf8Span(bytes: Uint8Array, middle: boolean, atEnd: boolean): { start: number; end: number } {
   let start = 0;
   if (middle) {
     while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) {
@@ -647,16 +745,9 @@ function utf8Span(bytes: Uint8Array, middle: boolean, atEnd: boolean): { start: 
     while (lead > start && (bytes[lead]! & 0xc0) === 0x80) {
       lead -= 1;
     }
-    const byte = bytes[lead]!;
-    /** UTF-8 前缀决定完整字符长度；ASCII 和坏字节不擅自删除。 */
-    let expected = 1;
-    if ((byte & 0xf8) === 0xf0) {
-      expected = 4;
-    } else if ((byte & 0xf0) === 0xe0) {
-      expected = 3;
-    } else if ((byte & 0xe0) === 0xc0) {
-      expected = 2;
-    }
+
+    //M 根据末尾多字节字符首字节计算完整字符应占字节数，判断结尾字符是否被分片截断。
+    const expected = getUtf8CharLength(bytes[lead]!);
     if (end - lead < expected) {
       end = lead;
     }
@@ -691,6 +782,7 @@ export interface ModelInfo {
  * @param input 供应商的名字、地址、密钥、协议。
  */
 export function providerModels(input: { provider: string; base_url: string; api_key: string; api: string }): Promise<{ models: ModelInfo[] }> {
+  //M 把表单里暂未落盘的供应商地址与密钥直接发给后端拉取模型清单，支持设置页先试连再保存。
   return sendJson('/api/ui/provider-models', 'POST', input);
 }
 
@@ -712,30 +804,77 @@ export interface UpdateInfo {
 
 /** 版本更新的状态。 */
 export function updateInfo(): Promise<UpdateInfo> {
+  //M 查询经后端转发的基地更新状态，供左下角提示新版本及变更说明。
   return getJson('/api/update');
 }
 
 
 /** 开始换版本（先试运行，失败退回）。 */
 export function applyUpdate(): Promise<{ ok: boolean }> {
+  //M 触发基地试运行新版本并执行切换，按钮点下后由后端与基地协同换版。
   return sendJson('/api/update/apply', 'POST', {});
 }
 
 
 /** 各渠道连着没有。 */
 export function uiStatus(): Promise<{ channels: { name: string; bot?: string; connected: boolean; detail: string }[] }> {
+  //M 拉取各外接渠道的连接健康状态，供左下角连接指示灯与悬停详情渲染。
   return getJson('/api/ui/status');
+}
+
+
+/** 后端已挂载的插件状态（'loading' 还没问过；'unknown' 没有教程接口、按全部可见处理；数组是 state==='ok' 的插件名）。 */
+export type MountedPlugins = 'loading' | 'unknown' | readonly string[];
+
+
+/**
+ * 查一次当前后端真正挂载（state === 'ok'）的插件名单，避免反复轮询未挂载插件的 404 接口。
+ * @returns 已挂载插件名列表；如果连 /api/tutorial/plugins 都没有（404）返回 'unknown'。
+ */
+export async function mountedPlugins(): Promise<string[] | 'unknown'> {
+  try {
+    //M 请求插件挂载清单接口筛选 state 为 ok 的插件名，供轮询与界面入口按需门控。
+    const result = await getJson<{ list?: { name: string; state: string }[] }>('/api/tutorial/plugins');
+    if (!Array.isArray(result?.list)) {
+      return 'unknown';
+    }
+    return result.list.filter((item) => item.state === 'ok').map((item) => item.name);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return 'unknown';
+    }
+    throw error;
+  }
+}
+
+
+/**
+ * 判断某个插件的界面或轮询现在要不要启用。
+ * @param mounted 已拿到的挂载状态。
+ * @param name 插件名。
+ * @param whileLoading 还在加载时要不要先显示（比如静态菜单可先显示，轮询要等拿到再开）。
+ */
+export function isPluginMounted(mounted: MountedPlugins, name: string, whileLoading = false): boolean {
+  if (mounted === 'loading') return whileLoading;
+
+  if (mounted === 'unknown') return true;
+
+  return mounted.includes(name);
 }
 
 
 /** 这个机器人正在做的事的进度（新的在前）。 */
 export function progress(bot: string): Promise<types.ProgressView[]> {
+  if (!bot.trim()) return Promise.resolve([]);
+
+  //M 查询指定机器人当前正在执行的进度卡片，供左栏底部实时更新阶段与动作。
   return getJson(`/api/progress?bot=${encodeURIComponent(bot)}`);
 }
 
 
 /** 点进度上的按钮：终止，或限时（minutes 是 0 就是不限时）。 */
 export function progressAct(id: number, action: 'stop' | 'limit', minutes: number): Promise<{ text: string }> {
+  //M 把用户在进度卡片上选择的终止或改限时操作提交给后端执行，返回提示结果文案。
   return sendJson(`/api/progress/${id}`, 'POST', { action, minutes });
 }
 
@@ -745,30 +884,35 @@ export function progressAct(id: number, action: 'stop' | 'limit', minutes: numbe
  * @param provider 只重连这一家；不给就每家都重连。
  */
 export function reconnectModels(provider?: string): Promise<{ results: types.ReconnectResult[] }> {
+  //M 让后端向指定或全部供应商重拉模型清单并原地刷新目录，在设置页无需重启即可重连。
   return sendJson('/api/models/reconnect', 'POST', { provider });
 }
 
 
 /** 开机自启开着没有（基地没开、是老版本时报错）。 */
 export function autostart(): Promise<{ enabled: boolean }> {
+  //M 经后端转发查询基地上的开机自启配置状态，供设置页初始化开关状态。
   return getJson('/api/autostart');
 }
 
 
 /** 打开或关掉开机自启。 */
 export function setAutostart(enabled: boolean): Promise<{ enabled: boolean }> {
+  //M 经后端转发修改基地开机自启开关，并返回实际落盘后的启用状态。
   return sendJson('/api/autostart', 'POST', { enabled });
 }
 
 
 /** 全部可用的模型。 */
 export function models(): Promise<ModelInfo[]> {
+  //M 拉取当前后端所有已加载的可用模型清单，供会话切换模型、设置页和建机器人下拉框使用。
   return getJson('/api/models');
 }
 
 
 /** 配置内容（密钥已打码）。 */
 export function settings(): Promise<{ config: Record<string, unknown> }> {
+  //M 拉取密钥已脱敏的 config.yaml 配置对象，供设置页加载表单初值与比对改动。
   return getJson('/api/settings');
 }
 
@@ -778,18 +922,21 @@ export function settings(): Promise<{ config: Record<string, unknown> }> {
  * @param edits 改动。
  */
 export function saveSettings(edits: unknown[]): Promise<{ ok: boolean; changed: number; note: string }> {
+  //M 按顺序提交设置页记录的增量路径修改写回 config.yaml，保留原配置文件的注释和结构。
   return sendJson('/api/settings', 'PUT', edits);
 }
 
 
 /** 重启生效：后端在后台换版本，马上返回。 */
 export function applySettings(): Promise<{ ok: boolean; startedAt: number }> {
+  //M 通知后端应用刚保存的配置并在后台触发重启，返回旧进程 startedAt 供前端等待新进程就绪。
   return sendJson('/api/settings/apply', 'POST', {});
 }
 
 
 /** 重启服务（设置“重连”用）：基地停掉后端再拉起，马上返回；老版本基地、源码模式和重启生效一样。 */
 export function restartService(): Promise<{ ok: boolean; startedAt: number }> {
+  //M 请求由基地守护拉起或源码重启后端服务，拿回旧进程 startedAt 供前端轮询恢复。
   return sendJson('/api/service/restart', 'POST', {});
 }
 
@@ -814,7 +961,13 @@ export interface UiInfo {
   shell?: ProgramVersion | null;
 }
 
+/**
+ * 读取当前后端进程与界面信息（GET /api/ui/info）：后端启动时刻、界面配置语言，以及后端与壳子版本。
+ * 轮询依赖 startedAt 变化感知后端重启；左下角版本显示、语言同步和重启等待新进程都会调用它。
+ * @returns 包含进程启动时间、可选语言及前后端版本信息的对象。
+ */
 export function uiInfo(): Promise<UiInfo> {
+  //M 向后端请求进程启动时刻、界面语言与版本号，供轮询检测重启、同步语言和左下角显示版本。
   return getJson('/api/ui/info');
 }
 
@@ -839,6 +992,7 @@ export async function waitNewProcess(startedAt: number): Promise<boolean> {
     await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_MS));
     try {
       /** 现在的进程。 */
+      //M 轮询查询当前进程启动时刻，只要与重启前记录的 startedAt 不同即确认新进程已就绪。
       const info = await uiInfo();
       if (info.startedAt !== startedAt) {
         return true;
@@ -892,9 +1046,75 @@ export interface RagHit {
 }
 
 
-/** 记忆库的清单（壳子 /health）。 */
-export function memoryLibs(): Promise<{ libs: { name: string; root?: string | null }[] }> {
+/** 记忆健康/库清单（兼容新版 jmbots-memory 与旧版 memorycli）。 */
+export interface MemoryHealth {
+  /** 旧版 memorycli 的库清单。 */
+  libs?: { name: string; root?: string | null }[];
+  /** 新版服务名（jmbots-memory）。 */
+  service?: string;
+  /** 服务版本号。 */
+  version?: string;
+  /** 服务是否健康。 */
+  ok?: boolean;
+  /** 新版统计计数。 */
+  counts?: {
+    customers?: number;
+    docs?: number;
+    embedded?: number;
+    entities?: number;
+    relations?: number;
+    history?: number;
+    knowledge?: number;
+  };
+}
+
+
+/** 记忆库的状态与清单（/api/memory/health）。 */
+export function memoryLibs(): Promise<MemoryHealth> {
+  //M 查询记忆服务的健康状态与库列表，供右栏记忆页判断当前后端形态并展示库概览。
   return getJson('/api/memory/health');
+}
+
+
+/** 图谱/公共知识库检索命中条（/api/memory-graph/search）。 */
+export interface MemoryGraphSearchHit {
+  /** 文档段落号。 */
+  id: number;
+  /** 标题或出处。 */
+  title: string;
+  /** 片段正文。 */
+  snippet: string;
+  /** 相关度分数。 */
+  score: number;
+  /** 命中路数（keyword / vector / graph）。 */
+  via: string[];
+  /** 范围（knowledge / history）。 */
+  scope: string;
+  /** 原文件路径（知识库文件时可有）。 */
+  file?: string;
+  /** 段落定位。 */
+  where?: string;
+  /** 原始来源标识。 */
+  source?: string;
+  /** 命中的关系摘要。 */
+  relations?: string[];
+}
+
+
+/**
+ * 从记忆关系图接口检索公共知识库（不传客户只查公共知识库，遵守客户隔离）。
+ * @param query 查询词。
+ * @param limit 最多返回条数。
+ */
+export function memoryGraphKnowledgeSearch(query: string, limit = 10): Promise<{ hits: MemoryGraphSearchHit[] }> {
+  const params = new URLSearchParams({
+    q: query,
+    mode: 'hybrid',
+    knowledge: '1',
+    limit: String(limit),
+  });
+  //M 以混合检索方式只查公共知识库（不传客户参数以保隔离），取回匹配片段与关系摘要。
+  return getJson(`/api/memory-graph/search?${params.toString()}`);
 }
 
 
@@ -910,6 +1130,8 @@ export function memorySearch(query: string, libs: string[], limit = 10): Promise
   if (libs.length > 0) {
     params.set('lib', libs.join(','));
   }
+
+  //M 向记忆搜索接口提交关键词与限定库名，拿回命中的记忆文档及上下文片段。
   return getJson(`/api/memory/search?${params.toString()}`);
 }
 
@@ -926,6 +1148,8 @@ export function ragSearch(query: string, libs: string[], limit = 10): Promise<{ 
   if (libs.length > 0) {
     params.set('lib', libs.join(','));
   }
+
+  //M 发起 RAG 段落检索，取回匹配文本块及尚未建索引的库列表提示用户建索引。
   return getJson(`/api/rag/search?${params.toString()}`);
 }
 
@@ -935,7 +1159,13 @@ export function ragSearch(query: string, libs: string[], limit = 10): Promise<{ 
  * @param libs 库名（空是全部）。
  */
 export function ragIndex(libs: string[]): Promise<{ started: string[]; already_running: string[] }> {
-  return sendJson('/api/rag/index', 'POST', libs.length > 0 ? { lib: libs.join(',') } : {});
+  const body: { lib?: string } = {};
+  if (libs.length > 0) {
+    body.lib = libs.join(',');
+  }
+
+  //M 触发后台为指定或全部记忆库重建 RAG 索引，马上拿回已启动和正在运行中的库名。
+  return sendJson('/api/rag/index', 'POST', body);
 }
 
 
@@ -947,7 +1177,12 @@ export function ragIndex(libs: string[]): Promise<{ started: string[]; already_r
  */
 export function searchChat(keyword: string, bot?: string): Promise<types.SearchResult> {
   /** 查询参数。 */
-  const query = new URLSearchParams({ q: keyword, ...(bot ? { bot } : {}) });
+  const query = new URLSearchParams({ q: keyword });
+  if (bot) {
+    query.set('bot', bot);
+  }
+
+  //M 把关键字与可选机器人过滤发给全文搜索接口，用于搜索弹窗渲染命中的消息和会话。
   return getJson<types.SearchResult>(`/api/search?${query.toString()}`);
 }
 
@@ -958,6 +1193,7 @@ export function searchChat(keyword: string, bot?: string): Promise<types.SearchR
  * @throws 名字不对、重名、模型不在清单里时抛错，带原因。
  */
 export function createBot(input: types.NewBotInput): Promise<types.NewBotResult> {
+  //M 提交新建机器人的身份、语言、模型和飞书参数，让后端即时创建并热挂载生效。
   return sendJson<types.NewBotResult>('/api/bots', 'POST', input);
 }
 
@@ -981,5 +1217,59 @@ export function usage(query: {
     from: String(query.from),
     to: String(query.to),
   });
+  //M 携带时间粒度、分组维度与时间窗口查询用量汇总报表，供右栏用量页展示表格与图表。
   return getJson<types.UsageReport>(`/api/usage?${params.toString()}`);
+}
+
+
+/** 模型的一条会话评价（GET /api/model-notes 里的一项）。 */
+export interface ModelRatingItem {
+  /** 评价时间。 */
+  at: string;
+  /** 评价者。 */
+  by: string;
+  /** 分数，1 到 5。 */
+  score: number;
+  /** 关联会话号；旧记录为空串。 */
+  session: string;
+  /** 当时思考档；没有为空串。 */
+  thinking: string;
+  /** 旧格式任务名。 */
+  task: string;
+  /** 一句话评语。 */
+  note: string;
+}
+
+
+/** 一个模型的介绍与评价汇总。 */
+export interface ModelNoteItem {
+  /** 模型 ID。 */
+  model: string;
+  /** 模型介绍。 */
+  intro: string;
+  /** 评价列表（旧在前，已按同人同会话去重）。 */
+  ratings: ModelRatingItem[];
+  /** 打过分的会话数 N。 */
+  sessionCount: number;
+  /** 平均分（1 位小数；无评价为 0）。 */
+  average: number;
+}
+
+
+/**
+ * 取所有模型的介绍与评价汇总（GET /api/model-notes）。
+ */
+export function getModelNotes(): Promise<{ list: ModelNoteItem[] }> {
+  //M 拉取所有模型的介绍与会话评价汇总，供模型评价页或详情展示。
+  return getJson<{ list: ModelNoteItem[] }>('/api/model-notes');
+}
+
+
+/**
+ * 给指定会话打分或改分（POST /api/model-notes/rate）。
+ * @param input session 会话号，by 评价者，score 1..5，note 一句话可选。
+ */
+export function rateSession(input: { session: string; by: string; score: number; note: string }): Promise<{ ok: boolean; note: ModelNoteItem }> {
+  //M 提交用户对指定会话的评分与一句话评语，拿回更新后的模型汇总用于页面即时刷新。
+  return sendJson<{ ok: boolean; note: ModelNoteItem }>('/api/model-notes/rate', 'POST', input);
 }

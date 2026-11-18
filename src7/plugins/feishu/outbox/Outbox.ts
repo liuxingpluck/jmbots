@@ -20,6 +20,7 @@ export const OUTBOX_INTERVAL_MS = 5000;
  * @param ctx 本插件的 ctx。
  */
 export function setup(feishu: Feishu, ctx: cordis.Context): void {
+  //M 初始化发件箱待发与已发目录，确保运行时目录存在。
   const outbox = ctx.resources.dir('integrations', 'feishu', 'outbox');
   const sent = ctx.resources.dir('integrations', 'feishu', 'sent');
   let busy = false;
@@ -36,10 +37,12 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         if (!fs.statSync(from).isFile()) continue;
         const text = fs.readFileSync(from, 'utf8').trim();
         if (text !== '') {
+          //M 查询最近私聊用户作为默认投递目标，无私聊记录则抛错中止本轮。
           const to = feishu.lastPrivate();
           if (to === undefined) {
             throw new Error('飞书还没有人私聊过，不知道发给谁');
           }
+          //M 通过飞书文本消息通道把发件箱正文推给该用户。
           await feishu.sendText(to, text);
         }
 
@@ -51,7 +54,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         ctx.emit('trace', 'Outbox.tick', '飞书发件箱发出一份，挪进 sent', 'feishu.sendText(lastPrivate(), text)', vars);
       }
     } catch (error) {
-      console.error(`${new Date().toLocaleString('zh-CN', { hour12: false })} 飞书发件箱：发送失败，下一轮再试：${textModule.messageOf(error)}`);
+      console.error(`${new Date().toLocaleString('zh-CN', { hour12: false })} 飞书发件箱：发送失败，下一轮再试：${textModule.getMessage(error)}`);
     } finally {
       busy = false;
     }
@@ -59,6 +62,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
 
   ctx.on('ready', () => {
     timer = setInterval(() => {
+      //M 周期性触发发件箱扫描投递，防重入由内部 busy 标志位兜底。
       void tick();
     }, OUTBOX_INTERVAL_MS);
   });

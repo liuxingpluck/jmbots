@@ -3,16 +3,23 @@
  * Sessions 管表；Session 是一场对话：一份记录（row），加上推它往下走的循环（run）。
  * 谁开的会话、话从哪来、回话往哪送，骨架都不知道，那是插件的事（机器人是 plugins/bots）。
  *
- * 主线全是直接调用，按 F12 能跳到实现：工具清单和执行工具调 ctx.tools，发请求调 Chat.ts 的 chat()。
- * 事件只留给插件接进来，会话发三个，都声明在这个文件里：
- *   session/request  每一步调模型之前，请求交给插件挨个改；
- *   session/message  对话里新接了一条，只是通知；
- *   session/change   状态变了，只是通知。
+ * 主线全是直接调用，按 F12 能跳到实现：工具清单和执行工具调 ctx.tools，发模型请求调 Sessions.chat()。
+ * 发模型请求只依赖 pi（PI agent SDK，@earendil-works/pi-ai）。
+ * 一轮不数步数：模型不再要工具就做完了，有人喊停就停下。
+ *
+ * 事件只留给插件接进来。每一步有四个关口，插件挨个看，谁写了 stop 这一轮就停在那里（类型见 SessionGate）：
+ *   session/request      调模型之前，请求交给插件挨个改（本文件）；
+ *   session/after-model  模型回来之后、回答接进对话之前（本文件）；
+ *   session/before-tool  执行一个工具之前，还能用 deny 只拦这一个（声明和发都在 Tools.ts）；
+ *   session/after-tool   一个工具执行完、结果接进对话之前（本文件）。
+ * 另外三个只是通知，也声明在本文件：
+ *   session/message  对话里新接了一条；
+ *   session/change   状态变了；
+ *   model/failed     模型调用失败了一次。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import * as chatModule from './Chat.ts';
-import type { ChatRequest, Thinking } from './Chat.ts';
+import type { ToolDone } from './Tools.ts';
 import { stampId } from './utils/Names.ts';
 import * as textModule from './utils/Text.ts';
 
@@ -24,25 +31,101 @@ declare module 'cordis' {
   }
   interface Events {
     /**
-     * 每一步调模型之前：这一步的请求交给插件挨个改，照插件挂上去的先后一个个 await。
+     * 关口一，每一步调模型之前：这一步的请求交给插件挨个改，照插件挂上去的先后一个个 await。
      * 加提示词就往 request.system 里 push；压缩、检索、拼最近往来就改 request.messages；
-     * 直接给回答的（假模型）填 request.answer。
-     * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了。
+     * 直接给回答的（假模型）填 request.answer；要这一轮停在这里、不调模型，就在 request.stop 写理由。
+     * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了（下面三个关口也一样）。
      */
     'session/request'(request: ChatRequest): void | Promise<void>;
+    /**
+     * 关口二，模型回来之后、回答接进对话之前：照先后一个个 await。
+     * 能看能改 request.answer（换掉也行，以最后的为准）；在 request.stop 写理由，这次回答就不要了
+     * （里面要的工具也不执行），这一轮停在这里。
+     */
+    'session/after-model'(request: AnsweredRequest): void | Promise<void>;
+    /**
+     * 关口四，一个工具执行完、结果接进对话之前：照先后一个个 await。没执行、被 deny 拦下的也走这里。
+     * 能改 done.outcome（文字、图片、是否出错）；在 done.stop 写理由，结果照样接进对话（要和工具调用配对），
+     * 这一轮停在这里，这一批后面的工具不再执行。
+     */
+    'session/after-tool'(done: ToolDone): void | Promise<void>;
     /** 对话里新接了一条（用户的话、模型的回答、工具的结果）。只是通知。 */
     'session/message'(session: Session, message: piAi.Message): void;
     /** 状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。 */
     'session/change'(session: Session): void;
+    /** 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。 */
+    'model/failed'(info: ModelFailed): void;
   }
 }
+
+
+/** 事件 model/failed 带的东西。 */
+export interface ModelFailed {
+  /** 是哪场会话的请求。 */
+  session: Session;
+  /** 哪个模型，供应商名/模型 ID。 */
+  model: string;
+  /** pi 给的错误文字。 */
+  error: string;
+  /** 这一次从发出到失败用了多少毫秒。 */
+  ms: number;
+}
+
+
+/** 思考档：off 不思考，往后越来越深。模型不支持的档位，pi 自动换成最近的。 */
+export type Thinking = piAi.ModelThinkingLevel;
+
+
+/**
+ * 四个关口事件（session/request、session/after-model、session/before-tool、session/after-tool）共有的两项。
+ * 各关口的数据都在它上面加自己的东西：两个模型关口用 ChatRequest，两个工具关口用 Tools.ts 的 ToolGate。
+ */
+export interface SessionGate {
+  /** 是哪场会话的。插件靠它知道种类、机器人、整场对话。 */
+  session: Session;
+  /**
+   * 喊停的理由。谁要这一轮停在这个关口就写上；写了会话就停下（Session.stop），不往下走，
+   * 理由写进 session.row.reply。没人写就接着走。
+   */
+  stop?: string;
+}
+
+
+/**
+ * 一步的请求。会话备好，先交给插件挨个改（事件 session/request），再交给 Sessions.chat() 发出去；
+ * 回答回来以后，带着回答再交给插件看一遍（事件 session/after-model，数据是 AnsweredRequest）。
+ * chat() 只看模型、思考档、提示词、工具、对话、取消信号，不看 session、stop、answer。
+ */
+export interface ChatRequest extends SessionGate {
+  /** 用哪个模型，供应商名/模型 ID。 */
+  model: string;
+  /** 思考档。 */
+  thinking: Thinking;
+  /** 系统提示词的段落；发请求时用空行拼起来。 */
+  system: string[];
+  /** 这一步给模型看的工具定义。 */
+  tools: piAi.Tool[];
+  /** 这一步要发给模型的对话，是副本：改它不会改库里存的原文。 */
+  messages: piAi.Message[];
+  /** 取消信号：喊停时触发，正在等的请求马上断开。 */
+  signal: AbortSignal;
+  /** 插件直接给的回答（比如假模型）。有了它，会话就不调 chat()。 */
+  answer?: piAi.AssistantMessage;
+}
+
+
+/** 事件 session/after-model 的数据：就是这一步的请求，回答已经有了（模型回的，或者插件给的）。 */
+export type AnsweredRequest = ChatRequest & {
+  /** 这一步的回答。插件可以改它、换掉它，接进对话的是最后这一份。 */
+  answer: piAi.AssistantMessage;
+};
 
 
 /**
  * 会话的状态。
  *   running  正在转：在等模型回答，或者在执行工具
  *   done     做完了。新开的、还没用过的会话也是它
- *   stopped  停下了：有人喊停，或者到了最多几步
+ *   stopped  停下了：有人喊停（stop_session、界面按钮），或者某个关口上有插件写了 stop
  *   failed   出错了
  */
 export type SessionState = 'running' | 'done' | 'stopped' | 'failed';
@@ -138,6 +221,7 @@ export class Sessions extends cordis.Service {
    * 副作用：写库。
    */
   create(input: NewSession): Session {
+    //M 读取全局默认配置并预编译查重语句，避免高并发同毫秒生成会话号时撞号覆盖。
     const config = this.ctx.resources.config;
     const existsQuery = this.ctx.resources.db.query('SELECT 1 FROM sessions WHERE id = ?');
 
@@ -164,7 +248,9 @@ export class Sessions extends cordis.Service {
         messages: [],
         updatedAt: Date.now(),
       };
+      //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。
       const session = new Session(row, this.ctx);
+      //M 立即落库持久化并缓存到 live 表，确保后续消息与停止动作能命中同一实例。
       session.save();
       this.live.set(row.id, session);
       return session;
@@ -178,6 +264,7 @@ export class Sessions extends cordis.Service {
    * @throws 没有这场时抛错。
    */
   open(id: string): Session {
+    //M 先查内存里已打开的会话对象，直接复用以保持运行开关和未入队消息一致。
     const opened = this.live.get(id);
     if (opened !== undefined) return opened;
 
@@ -191,6 +278,7 @@ export class Sessions extends cordis.Service {
       throw new Error(`没有这场会话：${id}`);
     }
 
+    //M 解析磁盘元信息与对话历史重建会话实例，并放入 live 供同一场对话复用。
     const meta = JSON.parse(stored.meta) as SessionMeta;
     const messages = JSON.parse(stored.messages) as piAi.Message[];
     const session = new Session({ ...meta, messages }, this.ctx);
@@ -208,6 +296,7 @@ export class Sessions extends cordis.Service {
     let sql = 'SELECT meta FROM sessions WHERE 1 = 1';
     /** 填进 SQL 里问号的值：每一项两个，先是 JSON 路径（$.state），再是要等于的值。 */
     const values: (string | number)[] = [];
+    //M 逐条追加过滤键到 WHERE 子句与绑定参数，最后按更新时间倒序返回。
     textModule.eachEntry(where, (key, value) => {
       sql += ' AND json_extract(meta, ?) = ?';
       values.push(`$.${key}`, value as string | number);
@@ -247,6 +336,76 @@ export class Sessions extends cordis.Service {
     //M 做完了才算问成；没做完 reply 是原因。
     const ok = child.row.state === 'done';
     return { ok, reply: child.row.reply };
+  }
+
+  /**
+   * 用 pi 发一次模型请求。不管会话怎么走，也不存状态：给它什么请求它发什么。
+   * 会话循环每一步调它（Session.loop）；model-fallback 换模型再试时也调它（ctx.sessions.chat）。
+   * @param request 模型、思考档、提示词、对话、工具、取消信号。
+   * @returns 模型回的整条（文字、工具调用都在里面）。
+   * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。
+   * 副作用：发 HTTP 请求；每失败一次发一次 model/failed。
+   */
+  async chat(request: ChatRequest): Promise<piAi.AssistantMessage> {
+    /** 建好的供应商、模型和重试的配置，都在 resources 里（src7/Resources.ts）。 */
+    const resources = this.ctx.resources;
+    const retry = resources.config.retry;
+    //M 按“供应商/模型”名查出配置好的 pi 模型定义与参数，供下面构建上下文和重连使用。
+    const model = resources.getModel(request.model);
+
+    //M 拼 pi 要的上下文：提示词的段落用空行连成一段。
+    const systemPrompt = request.system.join('\n\n');
+    const context: piAi.Context = {
+      systemPrompt,
+      messages: request.messages,
+      tools: request.tools,
+    };
+
+    //M 请求选项：pi 自己不重试（maxRetries 0），重试交给下面的 retryAssistantCall。
+    const options: piAi.SimpleStreamOptions = {
+      signal: request.signal,
+      timeoutMs: retry.timeoutMs,
+      maxRetries: 0,
+    };
+
+    //M 思考档不是 off 才传 reasoning；off 就不传，模型不思考。
+    if (request.thinking !== 'off') {
+      options.reasoning = request.thinking;
+    }
+
+    //M 重试的规矩：临时的错（断网、限流、超时）隔一会儿再试，最多再试 retry.times 次；喊停了不再试。
+    //M   重试、判断哪种错值得再试，都是 pi 的 retryAssistantCall 做的。
+    const policy: piAi.RetryPolicy = {
+      enabled: true,
+      maxRetries: retry.times,
+      baseDelayMs: retry.waitMs,
+    };
+
+    //M 发一次：每次失败（stopReason 是 error）发一次通知 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。
+    const send = async (): Promise<piAi.AssistantMessage> => {
+      const start = Date.now();
+      const answer = await resources.models.completeSimple(model, context, options);
+      if (answer.stopReason !== 'error') return answer;
+
+      const failed: ModelFailed = {
+        session: request.session,
+        model: request.model,
+        error: answer.errorMessage ?? '',
+        ms: Date.now() - start,
+      };
+      this.ctx.emit('model/failed', failed);
+      return answer;
+    };
+
+    //M 发请求，失败了照上面的规矩再试。
+    const answer = await piAi.retryAssistantCall(send, policy, request.signal);
+
+    //G pi 把失败写在回答的 stopReason 里，不抛错。出错、被喊停都在这里统一抛出去。
+    if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {
+      const reason = answer.errorMessage ?? `模型请求没成（${answer.stopReason}）`;
+      throw new Error(reason);
+    }
+    return answer;
   }
 }
 
@@ -296,7 +455,7 @@ export class Session {
     } catch (error) {
       //G 被喊停时请求是被掐断的，状态已经是 stopped；还是 running 才算出错。
       if (this.row.state === 'running') {
-        const reason = textModule.messageOf(error);
+        const reason = textModule.getMessage(error);
         this.change('failed', `出错了：${reason}`);
       }
     } finally {
@@ -310,13 +469,13 @@ export class Session {
   }
 
   /**
-   * 循环本身：一步 = 调一次模型，加上执行它要的工具。
+   * 循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到下面三种情况之一：
+   * 模型不再要工具（做完了）；有人喊停（stop()）；某个关口上有插件写了 stop。
    * @param signal 这一轮的取消信号。
    */
   private async loop(signal: AbortSignal): Promise<void> {
-    /** 一轮最多走几步。 */
-    const max = this.ctx.resources.config.maxSteps;
-    for (let step = 1; step <= max; step += 1) {
+    //M step 只用来记这是第几步（给跟踪看），不拿它限制会话。
+    for (let step = 1; ; step += 1) {
       //G 被喊停了 → 不往下走。
       if (this.row.state !== 'running') return;
 
@@ -325,7 +484,7 @@ export class Session {
         this.append(waiting);
       }
 
-      //M 备好这一步的请求，交给插件挨个改（session/request）。
+      //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/request）。
       const request: ChatRequest = {
         session: this,
         model: this.row.model,
@@ -336,6 +495,12 @@ export class Session {
         signal,
       };
       await this.ctx.serial('session/request', request);
+
+      //G 有插件喊停 → 不调模型，这一轮停在这里，理由写进 reply。
+      if (request.stop !== undefined) {
+        this.stop(request.stop);
+        return;
+      }
 
       //T 跟踪：调模型；插件已经给了回答（假模型）就写明没有调。
       const vars = {
@@ -348,18 +513,29 @@ export class Session {
       if (request.answer !== undefined) {
         doing = '插件已经给了回答，不调模型';
       }
-      this.ctx.emit('trace', 'Session.loop', doing, 'chat(ctx, request)', vars);
+      this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);
 
-      //M 调模型。插件已经给了回答（假模型）就不发请求。
+      //M 调模型（Sessions.chat，就在本文件上面）。插件已经给了回答（假模型）就不发请求。
       let answer = request.answer;
       if (answer === undefined) {
-        answer = await chatModule.chat(this.ctx, request);
+        answer = await this.ctx.sessions.chat(request);
       }
 
       //G 等模型的时候被喊停了 → 这次回答不要了。
       if (this.row.state !== 'running') return;
 
-      //M 模型的回答接进对话。
+      //M 关口二，模型回来之后：回答接进对话之前，带着回答交给插件挨个看（session/after-model）。
+      const answered: AnsweredRequest = { ...request, answer };
+      await this.ctx.serial('session/after-model', answered);
+
+      //G 有插件喊停 → 这次回答不要了（里面要的工具也不执行），这一轮停在这里。
+      if (answered.stop !== undefined) {
+        this.stop(answered.stop);
+        return;
+      }
+
+      //M 插件可能改了、换了回答，以最后这一份为准，接进对话。
+      answer = answered.answer;
       this.append(answer);
 
       //M 从回答里挑出工具调用。
@@ -374,9 +550,16 @@ export class Session {
         return;
       }
 
-      //M 模型要了工具 → 一个个执行，结果接进对话，回到开头走下一步。
+      //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。
       for (const call of calls) {
-        const outcome = await this.ctx.tools.execute(call, this, signal);
+        const executed = await this.ctx.tools.execute(call, this, signal);
+
+        //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。
+        const done: ToolDone = { session: this, call, outcome: executed };
+        await this.ctx.serial('session/after-tool', done);
+
+        //M 插件可能改了结果，以改过的为准。
+        const outcome = done.outcome;
 
         //M 结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。
         const textBlock: piAi.TextContent = { type: 'text', text: outcome.text };
@@ -389,17 +572,21 @@ export class Session {
           isError: outcome.isError,
           timestamp: Date.now(),
         };
+        //M 把打包好的工具结果追加到对话历史并落库广播，供下一步继续喂给模型。
         this.append(result);
+
+        //G 有插件喊停 → 这一轮停在这里。结果已经接进对话（要和工具调用配对）；
+        //G   这一批后面的工具，Tools.execute 看到停了就不执行，只交回“未执行”接进对话。
+        if (done.stop !== undefined) {
+          this.stop(done.stop);
+        }
       }
     }
-
-    //G 走满了步数，模型还在要工具 → 停下。
-    this.change('stopped', `到 ${String(max)} 步了，先停在这里`);
   }
 
   /**
-   * 喊停。前台的 stop_session 工具、将来的界面按钮都调它。
-   * @param by 谁喊的。
+   * 喊停。前台的 stop_session 工具、将来的界面按钮都调它；四个关口上有插件写了 stop，会话循环也调它。
+   * @param by 谁喊的，或者为什么停（关口上插件写的 stop）。写进 reply：已停止（by）。
    * 副作用：状态改成 stopped；正在等的模型请求马上掐掉；正在跑的那个工具拿到同一个停止信号，
    *   慢的马上断开（快的照常做完），后面的不再执行。
    */
@@ -409,6 +596,11 @@ export class Session {
     //G 没在转 → 没有要停的。
     if (aborter === undefined) return;
 
+    //G 这一轮已经停了、还在收尾（后面的工具交回“未执行”）→ 不再停一次。
+    //G   再停一次会再发一次 session/change，bots 就会把停下的话再发给用户一遍。
+    if (this.row.state !== 'running') return;
+
+    //M 改写停止状态并落库广播，同时触发 abort 掐断等待中的模型请求与工具。
     this.change('stopped', `已停止（${by}）`);
     aborter.abort();
   }
@@ -425,6 +617,7 @@ export class Session {
     const metaJson = JSON.stringify(meta);
     const messagesJson = JSON.stringify(messages);
 
+    //M 按主键覆盖持久化这一场会话的元信息与完整对话数组。
     const sql = 'INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)';
     const query = this.ctx.resources.db.query(sql);
     query.run(meta.id, metaJson, messagesJson);
@@ -435,6 +628,7 @@ export class Session {
    * @param message 用户的话、模型的回答，或者工具的结果。
    */
   private append(message: piAi.Message): void {
+    //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。
     this.row.messages.push(message);
     this.save();
     this.ctx.emit('session/message', this, message);
@@ -446,6 +640,7 @@ export class Session {
    * @param reply 这一轮的结果，要回给用户的话；刚开始转时是空的。
    */
   private change(state: SessionState, reply: string): void {
+    //M 同步更新状态与结果正文并落库，再通知监听状态变更的插件。
     this.row.state = state;
     this.row.reply = reply;
     this.save();

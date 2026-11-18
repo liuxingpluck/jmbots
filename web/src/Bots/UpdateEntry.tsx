@@ -24,6 +24,7 @@ const NOTICED_KEY = 'jmbots.updateNoticed';
 
 /** 更新提醒。 */
 export function UpdateEntry(): react.JSX.Element | null {
+  //M 订阅界面翻译函数，用于格式化更新徽章、变更日志弹窗及结果提示文案。
   const t = i18n.useT();
   /** 基地说的状态。 */
   const [info, setInfo] = react.useState<api.UpdateInfo | null>(null);
@@ -44,14 +45,23 @@ export function UpdateEntry(): react.JSX.Element | null {
     /** 问一次。 */
     const load = async (): Promise<void> => {
       /** 问到的；问不到（基地没开，或者后端正在换）就留着上一次的。 */
+      //M 向本地守护接口查询更新状态与版本说明；后端重启替换期间问不到时静默保留旧状态。
       const next = await api.updateInfo().catch(() => undefined);
       if (!stopped) {
         if (next) {
           setInfo(next);
         }
-        timer = setTimeout(() => void load(), applying ? APPLYING_REFRESH_MS : REFRESH_MS);
+        let delay = REFRESH_MS;
+        if (applying) {
+          delay = APPLYING_REFRESH_MS;
+        }
+
+        //M 根据是否正在切换版本选择 2 秒或 30 秒间隔，调度下一轮更新状态查询。
+        timer = setTimeout(() => void load(), delay);
       }
     };
+
+    //M 挂载或进入/退出更新态时立即发起首次查询，启动轮询链。
     void load();
     return () => {
       stopped = true;
@@ -80,27 +90,46 @@ export function UpdateEntry(): react.JSX.Element | null {
   }
   /** 新版本。 */
   const available = info?.available;
+  let badgeText = t('有新版本 {version}', { version: available?.version ?? '' });
+  if (applying) {
+    badgeText = t('正在更新…');
+  }
+  let modalTitle = t('正在更新');
+  if (available) {
+    modalTitle = t('新版本 {version}（现在是 {current}）', { version: available.version, current: info?.current?.version ?? t('还没有') });
+  }
   return (
     <>
       {toastHolder}
       <button type="button" className="jm-update-entry" onClick={() => setOpen(true)}>
         <icons.CloudDownloadOutlined />
-        <span>{applying ? t('正在更新…') : t('有新版本 {version}', { version: available?.version ?? '' })}</span>
+        <span>{badgeText}</span>
       </button>
       <antd.Modal
         open={open}
-        title={available ? t('新版本 {version}（现在是 {current}）', { version: available.version, current: info?.current?.version ?? t('还没有') }) : t('正在更新')}
+        title={modalTitle}
         okText={t('更新')}
         cancelText={t('先不更新')}
         okButtonProps={{ disabled: applying || !available }}
         onCancel={() => setOpen(false)}
         onOk={() => {
+          //M 用户确认更新后通知守护进程试运行并替换新版本，成功后切入更新中状态，失败则在弹窗内保留报错。
           void api.applyUpdate().then(
             () => {
-              setInfo((old) => (old ? { ...old, applying: true } : old));
+              setInfo((old) => {
+                if (!old) return old;
+
+                return { ...old, applying: true };
+              });
               setNotice(t('正在换：先试运行新版本，通过才替换，失败会退回旧版本。后端会断一下，等它回来。'));
             },
-            (error: unknown) => setNotice(t('没开始：{reason}', { reason: error instanceof Error ? error.message : String(error) })),
+            (error: unknown) => {
+              let reason = String(error);
+              if (error instanceof Error) {
+                reason = error.message;
+              }
+              setNotice(t('没开始：{reason}', { reason }));
+            },
           );
         }}
       >

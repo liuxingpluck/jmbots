@@ -228,12 +228,12 @@ export class Services {
   }
 
   /** 内部地址（同进程别处要直连时用）。 */
-  urlOf(name: string): string | undefined {
+  getUrl(name: string): string | undefined {
     return this.items.find((item) => item.spec.name === name)?.url;
   }
 
   /** 问 /health：'mine' 自己的（服务名、数据目录对得上；旧版不报这两项也算）、'other' 别人的、'none' 没应答。 */
-  private async healthOf(item: Hosted): Promise<'mine' | 'other' | 'none'> {
+  private async getHealth(item: Hosted): Promise<'mine' | 'other' | 'none'> {
     try {
       const response = await fetch(`${item.url}${item.spec.health}`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
       if (!response.ok) return 'none';
@@ -273,7 +273,7 @@ export class Services {
 
   /** 看一个服务：健康就算了；自己的进程还在启动期就等；不在了就（退避后）拉起。 */
   private async watch(item: Hosted): Promise<void> {
-    const who = await this.healthOf(item);
+    const who = await this.getHealth(item);
     item.healthy = who === 'mine';
     if (who === 'other') {
       //M 端口上是别的服务（或别的数据目录的同名服务）：自己没进程在跑就顺延到下一个端口，下一轮再起。

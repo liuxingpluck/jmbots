@@ -9,8 +9,10 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import type { Session, SessionMeta, SessionState } from '../../Sessions.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as mime from '../../utils/Mime.ts';
 import * as traceModule from './Trace.ts';
+import * as failureModule from '../../utils/Failure.ts';
 
 
 /** 回话清单里的一句（存进 replies 列的 JSON）。 */
@@ -47,6 +49,8 @@ export interface MessageRecord {
   replies: StoredReply[];
   createdAt: number;
   updatedAt: number;
+  /** 属于哪个聊天（CHAT_SQL 算的）：飞书 chatId、微信 chat、命令行 cli:本机、网页 http:本机。 */
+  chat: string;
 }
 
 
@@ -58,6 +62,23 @@ export interface NewMessage {
   text: string;
   address: string | null;
   reply_to?: number;
+  /** 别的渠道的标准消息号（channel/message 的 messageId）；网页自己的、旧路进来的不写。 */
+  source_id?: string;
+}
+
+
+/** GET /api/channels 的一个渠道（web/src/Chat/ChannelTabs.tsx 的 parseChannelsResponse 照它读）。 */
+export interface ChannelSummary {
+  /** 渠道名：http、feishu、wechat、cli…… */
+  id: string;
+  /** 显示名：网页、飞书、微信、命令行；没列的用渠道名。 */
+  label: string;
+  /** 这个机器人在这个渠道收过几条。 */
+  count: number;
+  /** 最近一条的时刻，毫秒；没有是 0。 */
+  updatedAt: number;
+  /** 聊天：新的在前。 */
+  chats: { id: string; label: string; count: number; updatedAt: number }[];
 }
 
 
@@ -66,6 +87,8 @@ interface RawRow {
   reply_to: number | null;
   id: number; bot: string; channel: string; source: string; address: string | null; text: string;
   session_id: string | null; status: 'taken' | 'replied'; replies: string; created_at: number; updated_at: number;
+  /** ROW_SQL 带出来的聊天号。 */
+  chat: string;
 }
 
 
@@ -83,6 +106,19 @@ const SNIPPET_AROUND = 40;
 /** 网页发的话 source 是它（web/src/Api.ts:325 的 from）。 */
 const WEB_SOURCE = 'web';
 
+/**
+ * 一行属于哪个聊天（SQL 表达式，筛选、分组、取行都用它，只写这一处）：
+ * 飞书地址的 chatId、微信地址的 chat、命令行地址的 customer（cli:本机）；网页自己的（地址空）是 http:本机。
+ */
+const CHAT_SQL = "COALESCE(json_extract(address, '$.chatId'), json_extract(address, '$.chat'), json_extract(address, '$.customer'),"
+  + " CASE WHEN channel = 'http' THEN 'http:本机' END, '')";
+
+/** 取整行，连同它属于哪个聊天（chat 列）。 */
+const ROW_SQL = `SELECT *, ${CHAT_SQL} AS chat FROM web_messages`;
+
+/** 渠道的显示名；没列的用渠道名本身。 */
+const CHANNEL_LABELS: Record<string, string> = { http: '网页', feishu: '飞书', wechat: '微信', cli: '命令行' };
+
 /** 会话标题取总结的前几个字。 */
 const TITLE_MAX = 30;
 
@@ -97,7 +133,7 @@ const RESOLVE_MAX = 100;
  * @param createdAt 原消息收到的时刻。
  * @param now 回话追加的时刻。
  */
-function elapsedOf(session: Session, createdAt: number, now: number): { frontMs: number; workMs?: number } {
+function getElapsed(session: Session, createdAt: number, now: number): { frontMs: number; workMs?: number } {
   if (session.row.kind === 'work') {
     const lastUser = session.row.messages.findLast((message) => message.role === 'user');
     const start = lastUser?.timestamp ?? now;
@@ -121,7 +157,7 @@ export function title(meta: SessionMeta): string {
  * 会话状态换成网页认的三种（同 src6/utils/Views.ts:46-51）：running → running，done/stopped → idle，failed → error。
  * @param state 骨架的状态。
  */
-export function statusOf(state: SessionState): 'running' | 'idle' | 'error' {
+export function getStatus(state: SessionState): 'running' | 'idle' | 'error' {
   if (state === 'running') return 'running';
 
   return state === 'failed' ? 'error' : 'idle';
@@ -143,23 +179,6 @@ export function sessionFiles(root: string, meta: SessionMeta): { md: string; jso
 
 
 /**
- * 网址里的可选非负整数（同 0.4 的 optionalCount，HttpUi.ts:516-527）。
- * @param value 网址里的值。
- * @param where 参数名，报错用。
- * @returns 没写是 undefined。
- * @throws Failure(400)：不是非负整数。
- */
-export function count(value: string | undefined, where: string): number | undefined {
-  if (value === undefined || value === '') return undefined;
-
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < 0) throw new traceModule.Failure(400, `${where} 要是非负整数`);
-
-  return number;
-}
-
-
-/**
  * 认出文字里的附件：@绝对路径（带空格时是 @"路径"），查大小（同 0.4：HttpUi.ts:336-349、:376-391）。
  * @param text 原话或回话。
  * @returns 附件；文件不在了 size 是 null。同一个路径只算一次。
@@ -173,7 +192,7 @@ export async function attachments(text: string): Promise<{ path: string; name: s
   }
   return Promise.all(found.map(async (file) => {
     const stat = await fsp.stat(file).catch(() => undefined);
-    return { path: file, name: path.basename(file.replace(/\\/gu, '/')), kind: mime.kindOf(file), size: stat?.size ?? null };
+    return { path: file, name: path.basename(file.replace(/\\/gu, '/')), kind: mime.getKind(file), size: stat?.size ?? null };
   }));
 }
 
@@ -213,10 +232,18 @@ export class Timeline {
     db.exec('CREATE TABLE IF NOT EXISTS web_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
       + ' channel TEXT NOT NULL, source TEXT NOT NULL, address TEXT, text TEXT NOT NULL, session_id TEXT,'
       + " status TEXT NOT NULL, replies TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
+
+    //G 查看旧库是否缺引用列，仅在缺列时补齐。
     const columns = db.query('PRAGMA table_info(web_messages)').all() as { name: string }[];
     if (!columns.some((column) => column.name === 'reply_to')) {
       db.exec('ALTER TABLE web_messages ADD COLUMN reply_to INTEGER');
     }
+
+    //M 别的渠道的消息记下标准消息号（channel/message 的 messageId）：回话按“消息号 + 机器人”精确挂回，不再按地址找最新一行。
+    if (!columns.some((column) => column.name === 'source_id')) {
+      db.exec('ALTER TABLE web_messages ADD COLUMN source_id TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS web_messages_source ON web_messages (source_id, bot)');
     db.exec('CREATE INDEX IF NOT EXISTS web_messages_bot ON web_messages (bot, id)');
     db.exec('CREATE INDEX IF NOT EXISTS web_messages_updated ON web_messages (bot, updated_at)');
     db.exec('CREATE INDEX IF NOT EXISTS web_messages_address ON web_messages (channel, address)');
@@ -228,11 +255,12 @@ export class Timeline {
    * @returns 消息号。
    */
   insert(input: NewMessage): number {
+    //M 把入站原文和来源写入收件表，保留新编号供会话绑定与通知使用。
     const now = Date.now();
-    const sql = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies, created_at, updated_at, reply_to)'
-      + " VALUES (?, ?, ?, ?, ?, NULL, 'taken', '[]', ?, ?, ?)";
+    const sql = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies, created_at, updated_at, reply_to, source_id)'
+      + " VALUES (?, ?, ?, ?, ?, NULL, 'taken', '[]', ?, ?, ?, ?)";
     const result = this.ctx.resources.db.query(sql).run(
-      input.bot, input.channel, input.source, input.address, input.text, now, now, input.reply_to ?? null,
+      input.bot, input.channel, input.source, input.address, input.text, now, now, input.reply_to ?? null, input.source_id ?? null,
     );
     const id = Number(result.lastInsertRowid);
 
@@ -248,6 +276,7 @@ export class Timeline {
    * @param id 消息号。
    */
   remove(id: number): void {
+    //M 撤掉未能分派的收件记录，避免时间线留下未接收的消息。
     this.ctx.resources.db.query('DELETE FROM web_messages WHERE id = ?').run(id);
   }
 
@@ -257,21 +286,45 @@ export class Timeline {
    * @returns 没有是 undefined。
    */
   get(id: number): MessageRecord | undefined {
-    const raw = this.ctx.resources.db.query('SELECT * FROM web_messages WHERE id = ?').get(id) as RawRow | null;
+    //M 按编号取一条消息，并把库中的行转为时间线内部记录。
+    const raw = this.ctx.resources.db.query(`${ROW_SQL} WHERE id = ?`).get(id) as RawRow | null;
     return raw === null ? undefined : this.parse(raw);
   }
 
   /**
-   * 按机器人、渠道、回话地址找最新的那一行：别的渠道的会话回话时用它找回原话。
+   * 按标准消息号和机器人找那一行：别的渠道的回话照它精确挂回原话（同一条消息给几个机器人时各一行）。
    * @param bot 机器人。
-   * @param channel 渠道名。
-   * @param address 回话地址的 JSON。
-   * @returns 消息号；找不到是 undefined（比如插件挂上之前收的话）。
+   * @param sourceId 标准消息号（channel/message 的 messageId）。
+   * @returns 消息号；找不到是 undefined（插件挂上之前收的、旧路进来没记消息号的）。
    */
-  findByAddress(bot: string, channel: string, address: string): number | undefined {
-    const sql = 'SELECT id FROM web_messages WHERE channel = ? AND address = ? AND bot = ? ORDER BY id DESC LIMIT 1';
-    const found = this.ctx.resources.db.query(sql).get(channel, address, bot) as { id: number } | null;
+  findBySource(bot: string, sourceId: string): number | undefined {
+    //M 用标准消息号和目标机器人反查收件编号，给跨渠道回话定位原件。
+    const sql = 'SELECT id FROM web_messages WHERE source_id = ? AND bot = ? ORDER BY id DESC LIMIT 1';
+    const found = this.ctx.resources.db.query(sql).get(sourceId, bot) as { id: number } | null;
     return found?.id;
+  }
+
+  /**
+   * 把一条标成回完（这一轮收尾了，或审批直回这种没有模型轮的）。
+   * @param id 消息号。
+   * 副作用：写库。
+   */
+  markReplied(id: number): void {
+    //M 将已收尾的消息标为回完，更新时间供网页增量轮询发现变化。
+    const sql = 'UPDATE web_messages SET status = ?, updated_at = ? WHERE id = ?';
+    this.ctx.resources.db.query(sql).run('replied', Date.now(), id);
+  }
+
+  /**
+   * 记下这条进了哪场会话（还没记过才记）。
+   * @param id 消息号。
+   * @param sessionId 会话号。
+   * 副作用：写库。
+   */
+  bindSession(id: number, sessionId: string): void {
+    //M 记录消息第一次进的会话，保留现有绑定供引用回复定位。
+    const sql = 'UPDATE web_messages SET session_id = COALESCE(session_id, ?) WHERE id = ?';
+    this.ctx.resources.db.query(sql).run(sessionId, id);
   }
 
   /**
@@ -282,6 +335,7 @@ export class Timeline {
    * 副作用：写库。消息不在了（被删、地址是插件挂上前的）就什么也不做。
    */
   reply(id: number, session: Session, text: string): void {
+    //G 原收件记录已不存在时直接结束，避免把回话加到其他消息。
     const record = this.get(id);
     if (record === undefined) return;
 
@@ -294,7 +348,9 @@ export class Timeline {
       record.status = 'replied';
       return;
     }
-    record.replies.push({ at: now, sessionId: session.id, text, generation: traceModule.generationOf(session.row, text), ...elapsedOf(session, record.createdAt, now) });
+
+    //M 把生成依据和耗时随本句回话一起保存，并更新网页要显示的消息状态。
+    record.replies.push({ at: now, sessionId: session.id, text, generation: traceModule.getGeneration(session.row, text), ...getElapsed(session, record.createdAt, now) });
     const status = session.row.state === 'running' ? record.status : 'replied';
     const sql = 'UPDATE web_messages SET replies = ?, session_id = COALESCE(session_id, ?), status = ?, updated_at = ? WHERE id = ?';
     this.ctx.resources.db.query(sql).run(JSON.stringify(record.replies), session.id, status, now, id);
@@ -322,7 +378,10 @@ export class Timeline {
 
   /** 一条收件消息给网页的样子，引用内容独立于正文返回。 */
   async view(record: MessageRecord): Promise<Record<string, unknown>> {
+    //M 按引用编号加载原消息，供网页单独显示引用内容。
     const quoted = record.reply_to === null ? undefined : this.get(record.reply_to);
+
+    //M 为每句回话查询会话摘要，给网页提供标题和对话文件入口。
     const replies = await Promise.all(record.replies.map(async (item) => {
       const meta = this.ctx.sessions.find({ id: item.sessionId })[0];
       return {
@@ -334,18 +393,26 @@ export class Timeline {
           kind: meta?.kind,
         },
         text: item.text,
+
+        //M 提取回话中的附件供网页单独显示。
         attachments: await attachments(item.text),
         generation: item.generation,
+
+        //M 用原收件编号标记这句回话的来源，供追溯定位。
         association: this.association(record.id),
         frontMs: item.frontMs ?? (item.workMs === undefined ? Math.max(0, item.at - record.createdAt) : item.frontMs),
         workMs: item.workMs,
       };
     }));
+
+    //M 组装网页时间线要显示的消息资料，包括各渠道的聊天名称和引用摘要。
     return {
       id: record.id,
       bot: record.bot,
       channel: record.channel,
       peer: this.peer(record),
+      chat: record.chat,
+      chatLabel: this.peer(record),
       reply_to: record.reply_to,
       replyTo: quoted === undefined ? null : { id: quoted.id, peer: this.peer(quoted), text: quoted.text },
       source: record.source,
@@ -355,6 +422,8 @@ export class Timeline {
       file: '',
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
+
+      //M 从原话提取附件，供网页独立展示文件。
       attachments: await attachments(record.text),
       replies,
       dispatch: null,
@@ -375,13 +444,24 @@ export class Timeline {
    */
   routes(scope: fastify.FastifyInstance): void {
     type Query = { Querystring: Record<string, string | undefined> };
+    //M 为网页登记收件列表、原消息补取和全文搜索入口。
     scope.get<Query>('/api/messages', async (request) => this.list(request.query));
     scope.get<Query>('/api/messages/resolve', async (request) => this.resolve(request.query));
     scope.get<Query>('/api/search', async (request) => this.search(request.query));
-    scope.get<{ Params: { id: string } }>('/api/messages/:id', async (request) => {
-      const record = this.get(Number(request.params.id));
-      if (record === undefined) throw new traceModule.Failure(404, `没有这条消息：${request.params.id}`);
 
+    //M 为渠道选择器列出指定机器人的聊天清单。
+    scope.get<Query>('/api/channels', async (request) => {
+      const bot = this.getBot(request.query['bot']);
+      return { channels: this.getChannels(bot) };
+    });
+
+    //M 给网页单条消息入口接上按编号读取和展示逻辑。
+    scope.get<{ Params: { id: string } }>('/api/messages/:id', async (request) => {
+      //G 消息号找不到时交回 404，结束查询。
+      const record = this.get(Number(request.params.id));
+      if (record === undefined) throw new failureModule.Failure(404, `没有这条消息：${request.params.id}`);
+
+      //M 把读到的记录展开成网页需要的完整消息。
       return this.view(record);
     });
   }
@@ -392,15 +472,20 @@ export class Timeline {
    * @param query bot、before、after、limit、origin。
    */
   private async list(query: Record<string, string | undefined>): Promise<Record<string, unknown>> {
-    const bot = this.botOf(query['bot']);
+    //G 先确定查询的机器人，没有默认机器人时直接交回空页。
+    const bot = this.getBot(query['bot']);
     if (bot === undefined) return { messages: [], hasMore: false, cursor: 0 };
 
-    const before = count(query['before'], 'before');
-    const after = count(query['after'], 'after');
-    const limit = Math.min(count(query['limit'], 'limit') ?? DEFAULT_LIMIT, MAX_LIMIT);
+    //M 整数参数在入口查一次（utils/Checks.ts 的 checkCount，同 0.4 的 optionalCount），写错了回 400；limit 没写按默认，超了按上限。
+    const before = checks.checkCount(query['before'], 'before');
+    const after = checks.checkCount(query['after'], 'after');
+    const wantedLimit = checks.checkCount(query['limit'], 'limit') ?? DEFAULT_LIMIT;
+    const limit = Math.min(wantedLimit, MAX_LIMIT);
+
+    //G 拒绝无法映射到消息来源筛选条件的参数。
     const origin = query['origin'];
     if (origin !== undefined && origin !== '' && origin !== 'web' && origin !== 'other') {
-      throw new traceModule.Failure(400, 'origin 要是 web 或 other');
+      throw new failureModule.Failure(400, 'origin 要是 web 或 other');
     }
 
     //M 拼条件：机器人；origin=web 只要网页发的，other 只要别的（右栏“消息”）。
@@ -410,13 +495,23 @@ export class Timeline {
       where += origin === 'web' ? ' AND source = ?' : ' AND source != ?';
       values.push(WEB_SOURCE);
     }
+    //M channel 只认认得的渠道（有显示名的、现在挂着的）；chat 是 /api/channels 给的聊天号，要和 channel 一起写。
     const channel = query['channel'];
     if (channel !== undefined && channel !== '') {
-      if (!['http', 'feishu', 'wechat'].includes(channel)) {
-        throw new traceModule.Failure(400, 'channel 要是 http、feishu 或 wechat');
+      const known = new Set([...Object.keys(CHANNEL_LABELS), ...this.ctx.bots.channelNames()]);
+      if (!known.has(channel)) {
+        throw new failureModule.Failure(400, `channel 要是这几个之一：${[...known].join('、')}`);
       }
       where += ' AND channel = ?';
       values.push(channel);
+    }
+    //G 聊天号依赖所属渠道，缺少渠道时拒绝含糊的筛选条件。
+    const chat = query['chat'];
+    if (chat !== undefined && chat !== '') {
+      if (channel === undefined || channel === '') throw new failureModule.Failure(400, 'chat 要和 channel 一起写');
+
+      where += ` AND ${CHAT_SQL} = ?`;
+      values.push(chat);
     }
     let rows: RawRow[];
     if (after === undefined) {
@@ -424,12 +519,16 @@ export class Timeline {
         where += ' AND id < ?';
         values.push(before);
       }
-      const sql = `SELECT * FROM web_messages WHERE ${where} ORDER BY id DESC LIMIT ?`;
+      //M 倒序多取一条判断是否还有更早消息，再恢复时间线顺序。
+      const sql = `${ROW_SQL} WHERE ${where} ORDER BY id DESC LIMIT ?`;
       rows = (this.ctx.resources.db.query(sql).all(...values, limit + 1) as RawRow[]).reverse();
     } else {
-      const sql = `SELECT * FROM web_messages WHERE ${where} AND updated_at >= ? ORDER BY id`;
+      //M 按更新时间筛出增量，再按收件编号交给网页。
+      const sql = `${ROW_SQL} WHERE ${where} AND updated_at >= ? ORDER BY id`;
       rows = this.ctx.resources.db.query(sql).all(...values, after) as RawRow[];
     }
+
+    //M 去掉探测下一页时多取的记录，把当前页展开成网页消息。
     const hasMore = after === undefined && rows.length > limit;
     const shown = (hasMore ? rows.slice(1) : rows).map((raw) => this.parse(raw));
     const messages = await Promise.all(shown.map((record) => this.view(record)));
@@ -442,17 +541,20 @@ export class Timeline {
    * @param query bot（必填）、ids（逗号分隔，最多 100 个正整数）。
    */
   private async resolve(query: Record<string, string | undefined>): Promise<Record<string, unknown>> {
+    //G 按号补取必须锁定一个已注册的机器人。
     const bot = query['bot'];
-    if (bot === undefined || bot === '') throw new traceModule.Failure(400, '补取原消息必须写 bot');
-    if (this.ctx.bots.get(bot) === undefined) throw new traceModule.Failure(400, `没有这个机器人：${bot}`);
+    if (bot === undefined || bot === '') throw new failureModule.Failure(400, '补取原消息必须写 bot');
+    if (this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
+    //G 检查编号清单和上限，再按编号补取记录。
     const tokens = (query['ids'] ?? '').split(',');
     if (tokens.length > RESOLVE_MAX || tokens.some((id) => !/^[1-9]\d{0,15}$/u.test(id))) {
-      throw new traceModule.Failure(400, 'ids 要是最多 100 个逗号分隔的正整数');
+      throw new failureModule.Failure(400, 'ids 要是最多 100 个逗号分隔的正整数');
     }
     const records: MessageRecord[] = [];
     const missingIds: number[] = [];
     for (const id of new Set(tokens.map(Number))) {
+      //M 逐个补取去重后的编号，按机器人归属区分记录和缺失号。
       const record = this.get(id);
       if (record === undefined || record.bot !== bot) {
         missingIds.push(id);
@@ -460,6 +562,8 @@ export class Timeline {
         records.push(record);
       }
     }
+
+    //M 将查到的记录展开为完整消息，与缺失编号一起返回。
     return { messages: await Promise.all(records.map((record) => this.view(record))), missingIds };
   }
 
@@ -468,18 +572,22 @@ export class Timeline {
    * @param query q（必填）、bot（不写搜全部）、limit（每组几条）。
    */
   private search(query: Record<string, string | undefined>): Record<string, unknown> {
+    //G 拒绝空关键字，避免无条件扫描收件和会话。
     const keyword = (query['q'] ?? '').trim();
-    if (keyword === '') throw new traceModule.Failure(400, '要写搜什么：?q=关键字');
+    if (keyword === '') throw new failureModule.Failure(400, '要写搜什么：?q=关键字');
 
+    //G 搜索指定机器人时先检查它存在，空参数则查全部。
     const bot = query['bot'] === undefined || query['bot'] === '' ? undefined : query['bot'];
-    if (bot !== undefined && this.ctx.bots.get(bot) === undefined) throw new traceModule.Failure(400, `没有这个机器人：${bot}`);
+    if (bot !== undefined && this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
-    const limit = Math.min(count(query['limit'], 'limit') ?? SEARCH_LIMIT, MAX_SEARCH_LIMIT);
+    //M limit 在入口查一次（utils/Checks.ts 的 checkCount），没写按默认，超了按上限。
+    const wantedLimit = checks.checkCount(query['limit'], 'limit') ?? SEARCH_LIMIT;
+    const limit = Math.min(wantedLimit, MAX_SEARCH_LIMIT);
 
     //M 消息：库里先用 LIKE 粗筛（replies 列是 JSON，可能误中生成依据里的字），再逐条看原话、回话原文，新的在前。
     const escaped = keyword.replace(/[\\%_]/gu, (char) => `\\${char}`);
     const like = `%${escaped}%`;
-    const sql = "SELECT * FROM web_messages WHERE (text LIKE ? ESCAPE '\\' OR replies LIKE ? ESCAPE '\\')"
+    const sql = `${ROW_SQL} WHERE (text LIKE ? ESCAPE '\\' OR replies LIKE ? ESCAPE '\\')`
       + (bot === undefined ? '' : ' AND bot = ?') + ' ORDER BY id DESC LIMIT 1000';
     const values = bot === undefined ? [like, like] : [like, like, bot];
     const messages: Record<string, unknown>[] = [];
@@ -507,13 +615,58 @@ export class Timeline {
   }
 
   /**
+   * GET /api/channels：现在挂着的渠道，每个渠道下列出这个机器人收过消息的聊天（名字、最近一条的时间、条数），新的在前。
+   * 网页自己（http）总有“网页”这一项，没说过话也列。只给本人：HTTP 统一查令牌（本机、免令牌地址、带对令牌的），进得来的就是本人，
+   * 群里的外人（飞书 guest）没有 HTTP 入口；外人只能看自己聊天的限制在历史工具、记忆那边。
+   * @param bot 机器人名；一个机器人都没有是 undefined（清单里聊天都是空的）。
+   * @returns [{ id: 渠道名, label: 显示名, count, updatedAt, chats: [{ id: 聊天号, label: 聊天名, count, updatedAt }] }]。
+   */
+  getChannels(bot: string | undefined): ChannelSummary[] {
+    //M 先按挂着的渠道建好空的一项。
+    const channels: ChannelSummary[] = [];
+    for (const name of this.ctx.bots.channelNames()) {
+      channels.push({ id: name, label: CHANNEL_LABELS[name] ?? name, count: 0, updatedAt: 0, chats: [] });
+    }
+    if (bot === undefined) return channels;
+
+    //M 按（渠道、聊天）分组数：条数、最近一条的时刻、最近一条的号（用它的地址取聊天名）。
+    const sql = `SELECT channel, ${CHAT_SQL} AS chat, COUNT(*) AS count, MAX(created_at) AS last_at, MAX(id) AS last_id`
+      + ' FROM web_messages WHERE bot = ? GROUP BY channel, chat ORDER BY last_at DESC';
+    const groups = this.ctx.resources.db.query(sql).all(bot) as { channel: string; chat: string; count: number; last_at: number; last_id: number }[];
+    for (const group of groups) {
+      //G 没挂着的渠道（插件拔了）、认不出聊天号的旧行 → 不列。
+      const owner = channels.find((item) => item.id === group.channel);
+      if (owner === undefined || group.chat === '') continue;
+
+      //G 找不到该组最近一条消息时，跳过缺少展示依据的聊天。
+      const last = this.get(group.last_id);
+      if (last === undefined) continue;
+
+      //M 取最近消息的对端名展示聊天，同时汇总该渠道的计数和时间。
+      owner.chats.push({ id: group.chat, label: this.peer(last), count: group.count, updatedAt: group.last_at });
+      owner.count += group.count;
+      owner.updatedAt = Math.max(owner.updatedAt, group.last_at);
+    }
+
+    //M 网页总有“网页”这一项：自己还没说过话也能选中它发话。
+    const web = channels.find((item) => item.id === 'http');
+    if (web !== undefined && web.chats.length === 0) {
+      web.chats.push({ id: 'http:本机', label: '网页', count: 0, updatedAt: 0 });
+    }
+    return channels;
+  }
+
+  /**
    * 网址里的机器人：不写是名单第一个；写了没有这个机器人 400。
    * @param bot 网址里的值。
    * @returns 机器人名；一个机器人都没有是 undefined。
    */
-  botOf(bot: string | undefined): string | undefined {
+  getBot(bot: string | undefined): string | undefined {
+    //M 没有指定机器人时使用名单中的第一个。
     if (bot === undefined || bot === '') return this.ctx.bots.list()[0]?.name;
-    if (this.ctx.bots.get(bot) === undefined) throw new traceModule.Failure(400, `没有这个机器人：${bot}`);
+
+    //G 显式指定的机器人必须存在，避免把无效名称当成默认目标。
+    if (this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
     return bot;
   }
@@ -528,6 +681,7 @@ export class Timeline {
       reply_to: raw.reply_to,
       sessionId: raw.session_id, status: raw.status, replies: JSON.parse(raw.replies) as StoredReply[],
       createdAt: raw.created_at, updatedAt: raw.updated_at,
+      chat: raw.chat,
     };
   }
 }

@@ -12,7 +12,7 @@ import * as piCompletions from '@earendil-works/pi-ai/api/openai-completions.laz
 import * as piResponses from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import * as cordis from 'cordis';
 import * as yaml from 'yaml';
-import type { Thinking } from './Chat.ts';
+import type { Thinking } from './Sessions.ts';
 import * as checks from './utils/Checks.ts';
 import * as textModule from './utils/Text.ts';
 
@@ -79,7 +79,7 @@ export interface PluginStatus {
  * 没挂上、没开工的说明，给 /api/health 的 problems。
  * @param status 这次启动实际尝试挂过的插件。
  */
-export function pluginProblems(status: PluginStatus[]): string[] {
+export function getPluginProblems(status: PluginStatus[]): string[] {
   const problems: string[] = [];
   for (const item of status) {
     //M 没挂上：有原因就带上原因。
@@ -110,8 +110,6 @@ export interface JmbotsConfig {
   providers: Record<string, ProviderConfig>;
   /** 要挂哪些插件，照写的先后挂。 */
   plugins: PluginEntry[];
-  /** 一轮最多走几步（engine.max_rounds）。 */
-  maxSteps: number;
   /** 新会话默认的思考档（engine.thinking）。 */
   thinking: Thinking;
   /** 模型请求出错怎么重试（engine.retry）。 */
@@ -148,7 +146,7 @@ export class Resources extends cordis.Service {
   /** 数据库连接 data/jmbots7.db；会话存在里面，插件也在里面建自己的表。 */
   readonly db: Database;
 
-  /** 建好了各家供应商的 pi 集合；chat() 用它发请求。 */
+  /** 建好了各家供应商的 pi 集合；Sessions.chat() 用它发请求。 */
   readonly models: piAi.MutableModels;
 
   /**
@@ -202,10 +200,11 @@ export class Resources extends cordis.Service {
     textModule.eachEntry(this.config.providers, (name, provider) => {
       /** 这家用的协议在 pi 里的实现。 */
       const api = CHAT_APIS[provider.api]();
+      //M 构造带配置密钥回调的 pi 供应商并注册进模型集合，供后续发模型请求复用。
       const created = piAi.createProvider({
         id: name,
         baseUrl: provider.baseUrl,
-        auth: this.authOf(provider),
+        auth: this.getAuth(provider),
         models: [],
         api,
       });
@@ -224,9 +223,12 @@ export class Resources extends cordis.Service {
    *   resolve 是 pi 每次发请求前调的回调（pi 的 auth/resolve.js 的 resolveApiKey），交回密钥；
    *   source 是给人看的来源标签（pi 自己的例子是 "ANTHROPIC_API_KEY"、"OAuth"），写 config.yaml。
    */
-  authOf(provider: ProviderConfig): piAi.ProviderAuth {
+  getAuth(provider: ProviderConfig): piAi.ProviderAuth {
     //M 本地服务可以不要密钥；pi 约定空密钥用 no-key。
-    const apiKey = provider.apiKey === '' ? 'no-key' : provider.apiKey;
+    let apiKey = provider.apiKey;
+    if (apiKey === '') {
+      apiKey = 'no-key';
+    }
     return {
       apiKey: {
         name: '配置里的密钥',
@@ -250,10 +252,10 @@ export class Resources extends cordis.Service {
   /**
    * 照“供应商名/模型 ID”拼出 pi 的模型对象。
    * @param name 供应商名/模型 ID。
-   * @returns chat() 要的那个模型。
+   * @returns Sessions.chat() 要的那个模型。
    * @throws 供应商不在配置里时抛错。
    */
-  modelOf(name: string): piAi.Model<piAi.Api> {
+  getModel(name: string): piAi.Model<piAi.Api> {
     //M 第一个斜杠前是供应商名，后面是模型 ID（模型 ID 自己也可以带斜杠）。
     const slash = name.indexOf('/');
     const providerName = name.slice(0, slash);

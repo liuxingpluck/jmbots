@@ -18,9 +18,18 @@ import type { Wechat } from '../index.ts';
 
 
 /** 请求体、查询里的一个字符串；没有是 ''。 */
+//M 提取可读错误文本。
+function getErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+
+  return String(error);
+}
+
 function field(from: unknown, key: string): string {
   const value = (from as Record<string, unknown> | undefined)?.[key];
-  return typeof value === 'string' ? value : '';
+  if (typeof value === 'string') return value;
+
+  return '';
 }
 
 
@@ -48,7 +57,7 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
       //M 2026-11-15 00:17 EST：chat_limit 默认 5000（用户实际约 1459 个，原先默认 1000 会截断）。
       chats = await wechat.reader.sessions(account, wechat.config.chatLimit);
     } catch (error) {
-      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(500).send({ error: getErrorText(error) });
     }
     return chats.map((chat) => {
       const flag = flags.find((item) => item.chat === chat.username);
@@ -63,9 +72,13 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
       db.query('DELETE FROM wechat_watch WHERE account = ? AND chat = ?').run(account, chat);
       return { ok: true };
     }
+    let autoFlag = 0;
+    if (body['auto'] === true) {
+      autoFlag = 1;
+    }
     db.query('INSERT INTO wechat_watch (account, chat, name, auto, last_time) VALUES (?, ?, ?, ?, NULL)'
       + ' ON CONFLICT (account, chat) DO UPDATE SET name = excluded.name, auto = excluded.auto')
-      .run(account, chat, field(body, 'name') || chat, body['auto'] === true ? 1 : 0);
+      .run(account, chat, field(body, 'name') || chat, autoFlag);
     //M 勾上监听后，后台把这个会话的全部历史补进库（只存不交）；不阻塞这次保存开关。
     void wechat.fillWatched(account, chat, field(body, 'name') || chat);
     return { ok: true };
@@ -81,7 +94,7 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
       try {
         await wechat.syncChats(account, [{ chat, name: field(request.query, 'name') || chat, since: null, at: 0 }]);
       } catch (error) {
-        return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+        return reply.code(500).send({ error: getErrorText(error) });
       }
     }
     const watched = db.query('SELECT 1 FROM wechat_watch WHERE account = ? AND chat = ?').get(account, chat);
@@ -103,7 +116,7 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
       const found = await wechat.reader.image(account, chat, source, localId);
       return reply.header('Cache-Control', 'private, max-age=86400').type(found.mime).send(fs.readFileSync(found.file));
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(404).send({ error: getErrorText(error) });
     }
   });
 
@@ -118,8 +131,12 @@ export function routes(http: Http, db: Database, wechat: Wechat): void {
       if (row === null) return reply.code(502).send({ error: '模型没有生成回复' });
       return row;
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      return reply.code(text.includes('请先勾选监听') ? 400 : 500).send({ error: text });
+      const text = getErrorText(error);
+      let code = 500;
+      if (text.includes('请先勾选监听')) {
+        code = 400;
+      }
+      return reply.code(code).send({ error: text });
     }
   });
 

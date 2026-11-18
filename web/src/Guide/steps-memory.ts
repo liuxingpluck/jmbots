@@ -6,6 +6,7 @@
 import { ERP_CUSTOMER, ERP_QUESTIONS } from '../Memory/questions.ts';
 import type { GuideStep } from './types.ts';
 
+/** 记忆检索页（/memory/）右上角「演示引导」使用的步骤列表。 */
 export const MEMORY_STEPS: GuideStep[] = [
   {
     id: 'welcome',

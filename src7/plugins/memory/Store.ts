@@ -3,7 +3,7 @@
  * - 聊天记录：有渠道、没有 parent 的会话（用户看得到的），用户的话和机器人回的文字，一条消息一段（长的切开）。
  * - 知识库：运行时目录 knowledge/（公共）和 bots/<机器人>/knowledge/（自己的）下的 .md、.txt，按段切，记行号；
  *   文件改了、删了，下次搜之前（最多 30 秒一次）或 POST /api/memory/knowledge 之后重建那个文件的片段。
- * - 客户：渠道:用户（customerFrom / customerOf）。飞书私聊是 feishu:<open_id>，飞书群是 feishu:group:<chat_id>（按群一场，不按发言人）；
+ * - 客户：渠道:用户（customerFrom / getCustomer）。飞书私聊是 feishu:<open_id>，飞书群是 feishu:group:<chat_id>（按群一场，不按发言人）；
  *   微信是 wechat:<会话 username>（也是按聊天一场）；网页（渠道名 http）没有登录是 http:本机。
  *   address 里有 customer 就用；否则再看 userId、openId、user。插件也可以直接在会话记录上写 customer（账号合并时写成合并后的主号）。
  * 设计：docs/src7插件设计/memory.md 第 11 节。
@@ -19,7 +19,7 @@ import * as graphPolicy from './GraphPolicy.ts';
 
 declare module '../../Sessions.ts' {
   interface SessionRow {
-    /** 客户：渠道:用户。不写就照渠道和 address 推（customerOf）。 */
+    /** 客户：渠道:用户。不写就照渠道和 address 推（getCustomer）。 */
     customer?: string;
     /** 记忆库已经收到第几条消息（不含）：重启、续聊不重复收。 */
     memoryIndexed?: number;
@@ -76,7 +76,7 @@ export class Store {
       for (const piece of chunks(text)) {
         //M 按 history_graph / no_graph_customers 打标记：不进图的带 graph: false（外部服务照样收、能搜，只是不抽关系）。
         docs.push(graphPolicy.markGraph(this.policy, {
-          source: `session:${row.id}`, scope: 'history', bot: meta.bot ?? '', customer: customerOf(row), session: row.id,
+          source: `session:${row.id}`, scope: 'history', bot: meta.bot ?? '', customer: getCustomer(row), session: row.id,
           title: message.role === 'user' ? '用户说' : '机器人答', text: piece, at: message.timestamp ?? Date.now(), start: index, end: index,
         }));
       }
@@ -211,7 +211,7 @@ export function customerFrom(channel: string | undefined, address: unknown): str
  * @param row 会话记录。
  * @returns 没有渠道是 ''。
  */
-export function customerOf(row: SessionRow): string {
+export function getCustomer(row: SessionRow): string {
   if (typeof row.customer === 'string' && row.customer !== '') return row.customer;
   const meta = row as SessionRow & { channel?: string; address?: unknown };
   return customerFrom(meta.channel, meta.address);

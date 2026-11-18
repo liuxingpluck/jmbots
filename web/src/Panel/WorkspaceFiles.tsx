@@ -9,7 +9,12 @@ import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as privacy from '../Privacy/Mask.tsx';
+import * as vscodeLink from '../VscodeLink.tsx';
 import type * as types from '../Types.ts';
+
+
+/** 文件树最高多少像素（原来是 CSS 的 max-height: 260px）；交给 antd Tree 的 height，开它自带的虚拟滚动。 */
+const TREE_HEIGHT = 260;
 
 
 /** 树上的一个节点。 */
@@ -37,10 +42,12 @@ interface TreeNode {
  */
 function attach(nodes: TreeNode[], key: string, children: TreeNode[]): TreeNode[] {
   return nodes.map((node) => {
-    if (node.key === key) {
-      return { ...node, children };
-    }
-    return node.children ? { ...node, children: attach(node.children, key, children) } : node;
+    if (node.key === key) return { ...node, children };
+
+    if (!node.children) return node;
+
+    //M 未命中目标节点但存在已加载子节点时继续递归向下查找并挂载。
+    return { ...node, children: attach(node.children, key, children) };
   });
 }
 
@@ -51,12 +58,13 @@ function attach(nodes: TreeNode[], key: string, children: TreeNode[]): TreeNode[
  * @param root 工作区目录（绝对路径），算相对路径用。
  */
 function toNodes(entries: api.DirEntry[], root: string): TreeNode[] {
+  //M 将后端目录项转换为树节点结构，并换算出相对工作区的展示路径。
   return entries.map((entry) => ({
     key: entry.path,
     title: entry.name,
     isLeaf: !entry.dir,
     dir: entry.dir,
-    rel: relativeOf(entry.path, root),
+    rel: getRelativePath(entry.path, root),
   }));
 }
 
@@ -66,7 +74,7 @@ function toNodes(entries: api.DirEntry[], root: string): TreeNode[] {
  * @param target 绝对路径。
  * @param root 工作区目录。
  */
-function relativeOf(target: string, root: string): string {
+function getRelativePath(target: string, root: string): string {
   //G 后端给的路径理应都在工作区下；不在就原样显示，不猜。
   if (!target.startsWith(root)) {
     return target;
@@ -86,9 +94,12 @@ interface WorkspaceFilesProps {
 
 /**
  * 一个工作区的文件树：根节点是工作区名，展开时懒加载；单击行插标签，文件行尾按钮预览。
- * @param props 机器人和工作区。
+ * @param props 机器人和工作区信息（机器人名与工作区名称、说明、目录）。
+ * @returns 工作区文件树区域元素。
+ * 副作用：挂载及展开文件夹时请求目录列表接口，单击节点添加工作区标签或打开文件预览。
  */
 export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
+  //M 订阅翻译函数、演示打码状态，以及向输入框插标签和打开预览的动作。
   const t = i18n.useT();
   const masked = privacy.useMask();
   const addWorkspaceTag = context.useUi((state) => state.addWorkspaceTag);
@@ -108,6 +119,7 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
     setError('');
     /** 停了没有（卸载或刷新后不再写状态）。 */
     let stopped = false;
+    //M 请求工作区根目录列表，仅在未卸载或未刷新时挂回树根节点。
     void api.listDir(dir).then(
       (entries) => {
         if (!stopped) {
@@ -116,7 +128,11 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
       },
       (problem: unknown) => {
         if (!stopped) {
-          setError(problem instanceof Error ? problem.message : String(problem));
+          let message = String(problem);
+          if (problem instanceof Error) {
+            message = problem.message;
+          }
+          setError(message);
         }
       },
     );
@@ -134,10 +150,15 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
     const target = String(node.key);
     try {
       /** 目录里的东西。 */
+      //M 懒加载展开目录的子项并挂载到对应树节点下。
       const entries = await api.listDir(target);
       setTree((old) => attach(old, target, toNodes(entries, dir)));
     } catch (problem) {
-      setError(problem instanceof Error ? problem.message : String(problem));
+      let message = String(problem);
+      if (problem instanceof Error) {
+        message = problem.message;
+      }
+      setError(message);
     }
   };
 
@@ -145,7 +166,7 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
    * 单击一行：往输入框插一个标签（文件写文件名，文件夹写文件夹名，根写「工作区名 工作区」）。
    * @param node 点到的节点。
    */
-  const tagOf = (node: TreeNode): types.WorkspaceTag => {
+  const getTag = (node: TreeNode): types.WorkspaceTag => {
     if (node.rel === '') {
       return {
         path: node.key,
@@ -153,8 +174,60 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
         kind: 'dir',
       };
     }
-    return { path: node.key, label: node.title, kind: node.dir ? 'dir' : 'file' };
+    let kind: 'dir' | 'file' = 'file';
+    if (node.dir) {
+      kind = 'dir';
+    }
+    return { path: node.key, label: node.title, kind };
   };
+
+  //G 演示打码开启时只展示脱敏后的占位文本，不挂载真实文件树。
+  let treeNode: react.ReactNode = <div className="jm-muted">{privacy.text('文件树', true)}</div>;
+  if (!masked) {
+    treeNode = (
+      <antd.Tree<TreeNode>
+        key={reloadKey}
+        className="jm-memory-tree"
+        height={TREE_HEIGHT}
+        treeData={tree}
+        loadData={loadData}
+        showLine
+        titleRender={(node) => {
+          let tip = `${props.workspace.name}/${node.rel}`;
+          if (node.rel === '') {
+            tip = dir;
+          }
+          //M 渲染树节点行，对提示路径、节点名及预览按钮无障碍标签执行脱敏。
+          return (
+            <span className="jm-workspace-file-row" title={privacy.text(tip, masked)}>
+              <span className="jm-workspace-file-name">{privacy.name(node.title, masked)}</span>
+              {!node.dir && (
+                <button
+                  type="button"
+                  className="jm-workspace-file-eye"
+                  aria-label={t('预览 {name}', { name: privacy.name(node.title, masked) })}
+                  onClick={(event) => {
+                    //G 别让这一次点击又插一个标签：这个按钮只做预览。
+                    event.stopPropagation();
+                    openPanel('preview', { path: node.key, name: node.title });
+                  }}
+                >
+                  <icons.EyeOutlined />
+                </button>
+              )}
+              {!masked && <vscodeLink.VsCodeOpen site={node.key} />}
+            </span>
+          );
+        }}
+        onSelect={(_keys, info) => {
+          if (masked) return;
+
+          //M 单击节点时把选中的文件或目录转为工作区标签插入输入框。
+          addWorkspaceTag(getTag(info.node));
+        }}
+      />
+    );
+  }
 
   return (
     <section className="jm-workspace-files">
@@ -169,42 +242,13 @@ export function WorkspaceFiles(props: WorkspaceFilesProps): react.JSX.Element {
           onClick={() => setReloadKey((key) => key + 1)}
         />
       </div>
-      {error && <div className="jm-field-error">{privacy.text(error, masked)}</div>}
+      {
+        //G 目录读取失败时展示按演示状态脱敏后的错误提示。
+        error && <div className="jm-field-error">{privacy.text(error, masked)}</div>
+      }
       {/* //M 普通 Tree 单击标题不展开（expandAction 是 DirectoryTree 才有的），展开只认箭头，正好“单击只插标签”。 */}
-      {masked ? <div className="jm-muted">{privacy.text('文件树', true)}</div> : <antd.Tree<TreeNode>
-        key={reloadKey}
-        className="jm-memory-tree"
-        treeData={tree}
-        loadData={loadData}
-        showLine
-        titleRender={(node) => (
-          <span
-            className="jm-workspace-file-row"
-            title={privacy.text(node.rel === '' ? dir : `${props.workspace.name}/${node.rel}`, masked)}
-          >
-            <span className="jm-workspace-file-name">{privacy.name(node.title, masked)}</span>
-            {!node.dir && (
-              <button
-                type="button"
-                className="jm-workspace-file-eye"
-                aria-label={t('预览 {name}', { name: privacy.name(node.title, masked) })}
-                onClick={(event) => {
-                  //G 别让这一次点击又插一个标签：这个按钮只做预览。
-                  event.stopPropagation();
-                  openPanel('preview', { path: node.key, name: node.title });
-                }}
-              >
-                <icons.EyeOutlined />
-              </button>
-            )}
-          </span>
-        )}
-        onSelect={(_keys, info) => {
-          if (masked) return;
-
-          addWorkspaceTag(tagOf(info.node));
-        }}
-      />}
+      {/* //M 给了 height 才开 antd Tree 自带的虚拟滚动（用户 11-17）；height 是最高多少，文件少时照旧矮。 */}
+      {treeNode}
     </section>
   );
 }

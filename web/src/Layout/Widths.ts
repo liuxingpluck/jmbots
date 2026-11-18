@@ -44,13 +44,21 @@ const STORAGE_KEY = 'jmbots.columns';
  */
 export function clampWidths(total: number, widths: ColumnWidths, rightOpen: boolean): ColumnWidths {
   /** 两条分隔线（右栏收起时一条）。 */
-  const splitters = SPLITTER_WIDTH * (rightOpen ? 2 : 1);
+  let dividerCount = 1;
+  if (rightOpen) {
+    dividerCount = 2;
+  }
+  const splitters = SPLITTER_WIDTH * dividerCount;
   /** 左栏。 */
   let left = Math.min(MAX_LEFT_WIDTH, Math.max(MIN_WIDTHS.left, Math.round(widths.left)));
   /** 右栏。 */
   let right = Math.max(MIN_WIDTHS.right, Math.round(widths.right));
   /** 中栏还剩多少。 */
-  let center = total - splitters - left - (rightOpen ? right : 0);
+  let rightWidth = 0;
+  if (rightOpen) {
+    rightWidth = right;
+  }
+  let center = total - splitters - left - rightWidth;
   if (center < MIN_WIDTHS.center && rightOpen) {
     right = Math.max(MIN_WIDTHS.right, right - (MIN_WIDTHS.center - center));
     center = total - splitters - left - right;
@@ -73,7 +81,12 @@ export function clampWidths(total: number, widths: ColumnWidths, rightOpen: bool
 export function dragWidths(start: ColumnWidths, which: 'left' | 'right', delta: number, total: number, rightOpen: boolean): ColumnWidths {
   //M 左边那条往右拖，左栏变宽；右边那条往右拖，右栏变窄。
   /** 想要的。 */
-  const wanted = which === 'left' ? { ...start, left: start.left + delta } : { ...start, right: start.right - delta };
+  let wanted = { ...start, right: start.right - delta };
+  if (which === 'left') {
+    wanted = { ...start, left: start.left + delta };
+  }
+
+  //M 把拖拽算出的目标宽度收进当前窗口与三栏最小宽度约束内，避免中栏被挤没。
   return clampWidths(total, wanted, rightOpen);
 }
 
@@ -84,7 +97,11 @@ export function dragWidths(start: ColumnWidths, which: 'left' | 'right', delta: 
  * @param rightOpen 右栏开着没有。
  */
 export function isNarrow(total: number, rightOpen = false): boolean {
-  return total < (rightOpen ? MIN_WIDTHS.left + MIN_WIDTHS.center + MIN_WIDTHS.right + SPLITTER_WIDTH * 2 : NARROW_WIDTH);
+  let limit = NARROW_WIDTH;
+  if (rightOpen) {
+    limit = MIN_WIDTHS.left + MIN_WIDTHS.center + MIN_WIDTHS.right + SPLITTER_WIDTH * 2;
+  }
+  return total < limit;
 }
 
 

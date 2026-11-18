@@ -59,8 +59,10 @@ export const RISK_TEXT: Record<RiskLevel, string> = { low: '低', medium: '中',
  * 认风险等级：low/medium/high，也认“低 / 中 / 高”；认不出当 medium。
  * @param value 模型给的。
  */
-export function riskLevel(value: unknown): RiskLevel {
-  const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+export function getRiskLevel(value: unknown): RiskLevel {
+  if (typeof value !== 'string') return 'medium';
+
+  const text = value.trim().toLowerCase();
   if (text === 'low' || text === '低') return 'low';
   if (text === 'high' || text === '高') return 'high';
   return 'medium';
@@ -71,7 +73,7 @@ export function riskLevel(value: unknown): RiskLevel {
  * 卡片写成几行文字：给只认文字的渠道（命令行、没有卡片的聊天）和待确认的 detail 用。
  * @param card 卡片。
  */
-export function cardText(card: CardData): string {
+export function getCardText(card: CardData): string {
   //M 标题一行，后面有什么写什么：为什么、每一条具体信息、风险、结果。
   const lines = [card.title];
   if (card.reason !== '') {

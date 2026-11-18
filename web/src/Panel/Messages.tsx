@@ -16,18 +16,26 @@ import * as privacy from '../Privacy/Mask.tsx';
 const ALL = '全部';
 
 
-/** 消息。 */
+/**
+ * 右栏“消息”标签页：展示飞书、微信等外部渠道的消息时间线，支持按渠道筛选并在定位时重置筛选。
+ * @returns 渠道筛选栏与外部渠道消息时间线；未选中机器人时返回空状态提示。
+ * 副作用：订阅当前机器人、外部渠道消息列表、追踪跳转与定位状态，支持点击打开文件预览或事件追踪。
+ */
 export function Messages(): react.JSX.Element {
+  //M 取当前语言翻译函数与演示打码开关状态。
   const t = i18n.useT();
   const masked = privacy.useMask();
   /** 正在聊的机器人。 */
+  //M 订阅当前选中的机器人与打开文件预览动作。
   const bot = context.useUi((state) => state.currentBot);
   const openPanel = context.useUi((state) => state.openPanel);
   /** 外部渠道的回复和中栏使用同一个精确追踪入口。 */
+  //M 订阅事件追踪跳转入口、当前追踪目标及消息定位状态。
   const openTrace = context.useUi((state) => state.openTrace);
   const traceTarget = context.useUi((state) => state.traceTarget);
   const location = context.useUi((state) => state.chatLocation);
   /** 别的渠道的消息。 */
+  //M 拉取并订阅当前机器人来自网页以外渠道的消息集合。
   const state = useMessagesModule.useMessages(bot, 'other');
   /** 只看哪个渠道。 */
   const [channel, setChannel] = react.useState(ALL);
@@ -37,12 +45,16 @@ export function Messages(): react.JSX.Element {
     }
   }, [location?.serial, bot]);
   /** 取到的消息里有哪些渠道。 */
-  const channels = react.useMemo(() => [...new Set([...state.messages.values()].map((message) => timeline.channelLabel(message.channel, message.source, t)))].sort(), [state.messages, t]);
+  //M 从已取到的外部消息汇总去重并排序后的渠道标签列表，用于生成筛选分段。
+  const channels = react.useMemo(() => [...new Set([...state.messages.values()].map((message) => timeline.getChannelLabel(message.channel, message.source, t)))].sort(), [state.messages, t]);
   /** 筛过的状态。 */
-  const shown = react.useMemo(
-    () => (channel === ALL ? state : { ...state, messages: new Map([...state.messages].filter(([, message]) => timeline.channelLabel(message.channel, message.source, t) === channel)) }),
-    [state, channel, t],
-  );
+  const shown = react.useMemo(() => {
+    if (channel === ALL) return state;
+
+    //M 按所选渠道标签过滤消息映射表，只保留命中该渠道的条目。
+    const entries = [...state.messages].filter(([, message]) => timeline.getChannelLabel(message.channel, message.source, t) === channel);
+    return { ...state, messages: new Map(entries) };
+  }, [state, channel, t]);
 
   /** 在预览里打开一个文件。 */
   const onOpen = react.useCallback((target: { path: string; name: string }) => openPanel('preview', target), [openPanel]);
@@ -53,6 +65,7 @@ export function Messages(): react.JSX.Element {
   return (
     <div className="jm-panel-messages">
       {channels.length > 1 && (
+        //M 存在多个外部渠道时显示分段筛选条，并按演示开关脱敏渠道名称。
         <antd.Segmented className="jm-channel-filter" size="small" value={channel} options={[{ value: ALL, label: t('全部') }, ...channels.map((label) => ({ value: label, label: privacy.text(label, masked) }))]} onChange={(value) => setChannel(String(value))} />
       )}
       <messageList.MessageList

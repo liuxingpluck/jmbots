@@ -38,13 +38,13 @@ bunTest.describe('用量页', () => {
       row({ period: '2026-11-07', key: 'b', input: 50, output: 0 }),
     ];
     /** 按分组。 */
-    const keys = usageData.byKey(rows);
+    const keys = usageData.getByKey(rows);
     bunTest.expect(keys.map((item) => `${item.key}|${String(item.calls)}|${String(item.failures)}`)).toEqual(['a|2|1', 'b|1|0']);
     bunTest.expect(keys[0]!.hitRate).toBeCloseTo(400 / 600);
     bunTest.expect(keys[0]!.period).toBe('');
     /** 按时间段（倒着给也排回从早到晚）。 */
-    const periods = usageData.byPeriod([...rows].reverse());
-    bunTest.expect(periods.map((item) => `${item.period}|${String(usageData.tokensOf(item))}`)).toEqual(['2026-11-07|260', '2026-11-08|410']);
+    const periods = usageData.getByPeriod([...rows].reverse());
+    bunTest.expect(periods.map((item) => `${item.period}|${String(usageData.getTokens(item))}`)).toEqual(['2026-11-07|260', '2026-11-08|410']);
     bunTest.expect(periods[0]!.key).toBe('');
   });
 
@@ -56,12 +56,12 @@ bunTest.describe('用量页', () => {
     bunTest.expect(usageData.formatCost(0.0123)).toBe('$0.0123');
     bunTest.expect(usageData.formatCost(12.5)).toBe('$12.50');
     bunTest.expect(usageData.formatRate(0.4567)).toBe('45.7%');
-    bunTest.expect(usageData.hitRateOf({ input: 0, cacheRead: 0 })).toBe(0);
-    bunTest.expect(usageData.rangeOf(7, 1e12)).toEqual({ from: 1e12 - 7 * 24 * 60 * 60 * 1000, to: 1e12 });
+    bunTest.expect(usageData.getHitRate({ input: 0, cacheRead: 0 })).toBe(0);
+    bunTest.expect(usageData.getRange(7, 1e12)).toEqual({ from: 1e12 - 7 * 24 * 60 * 60 * 1000, to: 1e12 });
   });
 
   bunTest.test('柱子的路径：顶上两个角圆、底下方；矮的柱子圆角不超过高', () => {
-    bunTest.expect(usageData.barPath({ x: 0, y: 10, width: 8, height: 20 }, 4)).toBe('M0,30 V14 Q0,10 4,10 H4 Q8,10 8,14 V30 Z');
-    bunTest.expect(usageData.barPath({ x: 0, y: 0, width: 8, height: 2 }, 4)).toBe('M0,2 V2 Q0,0 2,0 H6 Q8,0 8,2 V2 Z');
+    bunTest.expect(usageData.getBarPath({ x: 0, y: 10, width: 8, height: 20 }, 4)).toBe('M0,30 V14 Q0,10 4,10 H4 Q8,10 8,14 V30 Z');
+    bunTest.expect(usageData.getBarPath({ x: 0, y: 0, width: 8, height: 2 }, 4)).toBe('M0,2 V2 Q0,0 2,0 H6 Q8,0 8,2 V2 Z');
   });
 });

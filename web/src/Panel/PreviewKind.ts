@@ -27,10 +27,12 @@ const KINDS: Record<string, PreviewKind> = {
 
 
 /**
- * 一个文件按什么样子预览。
+ * 根据文件名或路径的扩展名判断一个文件按什么样子预览。
  * @param name 文件名或路径。
+ * @returns 对应的预览分类；未收录的扩展名返回 `'other'`。
+ * 副作用：无。
  */
-export function previewKind(name: string): PreviewKind {
+export function getPreviewKind(name: string): PreviewKind {
   /** 扩展名。 */
   const extension = /\.([^./\\]+)$/.exec(name)?.[1]?.toLowerCase() ?? '';
   return KINDS[extension] ?? 'other';
@@ -38,8 +40,10 @@ export function previewKind(name: string): PreviewKind {
 
 
 /**
- * 要不要一直刷新：工作区里的会话 md（运行中的会话一直在写）。
- * @param path 绝对路径。
+ * 判断文件是否需要持续轮询刷新：工作区目录里的会话 `.md` 在运行期间会一直写入。
+ * @param path 文件绝对路径。
+ * @returns 位于工作区且为 `.md` 文件时返回 `true`，否则返回 `false`。
+ * 副作用：无。
  */
 export function isLive(path: string): boolean {
   return /[\\/]workspace[\\/]/.test(path) && /\.md$/i.test(path);
@@ -51,8 +55,9 @@ export function isLive(path: string): boolean {
  * @param currentPath 当前文件绝对路径。
  * @param href Markdown 链接或附件给出的路径。
  * @returns 文件路径；网络、邮件和纯锚点返回 null，访问范围仍由后端检查。
+ * 副作用：无。
  */
-export function documentLink(currentPath: string, href: string): string | null {
+export function getDocumentLink(currentPath: string, href: string): string | null {
   if (!href || href.startsWith('#')) {
     return null;
   }
@@ -64,8 +69,15 @@ export function documentLink(currentPath: string, href: string): string | null {
   }
   try {
     const base = currentPath.replaceAll('\\', '/');
-    const baseUrl = base.startsWith('//') ? `file:${base}` : `file:///${base.replace(/^\//, '')}`;
-    const target = new URL(windowsPath ? `file:///${normalized}` : normalized, baseUrl);
+    let baseUrl = `file:///${base.replace(/^\//, '')}`;
+    if (base.startsWith('//')) {
+      baseUrl = `file:${base}`;
+    }
+    let rawTarget = normalized;
+    if (windowsPath) {
+      rawTarget = `file:///${normalized}`;
+    }
+    const target = new URL(rawTarget, baseUrl);
     if (target.protocol !== 'file:') {
       return null;
     }
@@ -73,7 +85,9 @@ export function documentLink(currentPath: string, href: string): string | null {
     if (/^\/[A-Za-z]:\//.test(path)) {
       path = path.slice(1);
     }
-    return target.host ? `//${target.host}${path}` : path;
+    if (target.host) return `//${target.host}${path}`;
+
+    return path;
   } catch {
     return null;
   }

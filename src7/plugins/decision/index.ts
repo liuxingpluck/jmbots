@@ -8,10 +8,13 @@ import * as piAi from '@earendil-works/pi-ai';
 import * as piSystemOne from '@earendil-works/pi-ai/api/typesafe-system-one.lazy';
 import * as cordis from 'cordis';
 import type { AskInput } from '../../Sessions.ts';
+import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../../utils/RequestEvent.ts';
 
 
 /** 插件名。 */
 export const name = 'decision';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.2';
 
 /** 默认的决策模型：Magpie 里的 jev-1.14 分类器（jev-router 在这个地区用不了）。 */
 const DEFAULT_MODELS = [{ model: 'magpie/openrouter/typesafe/jev-1.14', type: 'classifier' }];
@@ -24,6 +27,12 @@ declare module 'cordis' {
   interface Context {
     /** 决策模型服务，实现在 src7/plugins/decision/index.ts。 */
     decision: Decision;
+  }
+  interface Events {
+    /** 请求（serial）：决策模型打分并合成 allow / deny / unsure 结论，回发 decision/judge-result。 */
+    'decision/judge'(request: DecisionJudgeRequest): void | Promise<void>;
+    /** 回执（emit）：决策裁定结果（按 requestId 配对）。 */
+    'decision/judge-result'(result: DecisionJudgeResult): void;
   }
 }
 
@@ -55,6 +64,16 @@ export interface Judgement {
   results: ModelResult[];
 }
 
+/** decision/judge 请求载荷。 */
+export type DecisionJudgeRequest = RequestEnvelope & JudgeInput;
+
+/** decision/judge-result 回执载荷。 */
+export interface DecisionJudgeResult extends ResultEnvelope {
+  verdict: 'allow' | 'deny' | 'unsure';
+  score?: number;
+  reason: string;
+}
+
 /** 配置里的一个模型。 */
 interface Member { name: string; type: 'chat' | 'classifier' }
 
@@ -76,6 +95,34 @@ const REASON = /reason"?\s*[:：]\s*"([^"]*)"/u;
 const COMBINE_WORDS = { average: '取平均', min: '取最低', max: '取最高' } as const;
 
 
+/** 按各模型有效分数合出结论和理由。 */
+function buildJudgement(
+  scores: number[],
+  results: ModelResult[],
+  combine: DecisionConfig['combine'],
+  allowAt: number,
+  denyAt: number,
+): Judgement {
+  if (scores.length === 0) {
+    const details = results.map((result) => `${result.model} ${result.error ?? '没答出分'}`).join('；');
+    return { verdict: 'unsure', reason: `决策模型都没答上来：${details}`, results };
+  }
+  let score = Math.max(...scores);
+  if (combine === 'min') {
+    score = Math.min(...scores);
+  }
+  if (combine === 'average') {
+    score = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  }
+  const how = `${String(scores.length)} 个模型${COMBINE_WORDS[combine]}`;
+  const shown = score.toFixed(2);
+  if (score >= allowAt) return { verdict: 'allow', score, reason: `决策模型认为是（${shown} ≥ ${String(allowAt)}，${how}）`, results };
+  if (score < denyAt) return { verdict: 'deny', score, reason: `决策模型认为否（${shown} < ${String(denyAt)}，${how}）`, results };
+
+  return { verdict: 'unsure', score, reason: `决策模型拿不准（${shown}，${how}）`, results };
+}
+
+
 /** 决策模型服务。 */
 export class Decision extends cordis.Service {
   /** 只放分类器的 pi 集合；没有分类器就是 undefined。 */
@@ -85,9 +132,18 @@ export class Decision extends cordis.Service {
    * 登记 decision 插件：把 Decision 作为服务挂到 Cordis 上（super(ctx, 'decision') 做的；以后用 ctx.decision 取）；有分类器就照 0.4 建一份只放分类器的集合。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
+   * 副作用：把 Decision 服务挂到 ctx.decision；存在分类器时单独建一份分类器模型集合。
    */
   constructor(ctx: cordis.Context, private readonly config: DecisionConfig) {
     super(ctx, 'decision');
+    //M 先挂事件驱动裁定入口，确保即使未配置 classifier 成员也能响应对话模型判定请求。
+    onRequestEvent(ctx, 'decision/judge', 'decision/judge-result', async (request) => {
+      //M 转调内部多模型合成函数并抽取外部协议需要的精简结论。
+      const judgement = await this.judge(request);
+      const out: Omit<DecisionJudgeResult, 'requestId'> = { verdict: judgement.verdict, reason: judgement.reason };
+      if (judgement.score !== undefined) out.score = judgement.score;
+      return out;
+    });
     const wanted = config.members.filter((member) => member.type === 'classifier');
     if (wanted.length === 0) {
       this.classifiers = undefined;
@@ -105,11 +161,11 @@ export class Decision extends cordis.Service {
       const written = ctx.resources.config.providers[provider];
       if (written === undefined) continue;
 
-      //M 密钥和骨架建对话模型用同一份（Resources 的 authOf：取 config.yaml 里这家的 api_key）。
+      //M 密钥和骨架建对话模型用同一份（Resources 的 getAuth：取 config.yaml 里这家的 api_key）。
       this.classifiers.setProvider(piAi.createProvider({
         id: provider,
         baseUrl: written.baseUrl,
-        auth: ctx.resources.authOf(written),
+        auth: ctx.resources.getAuth(written),
         models: ids.map((id): piAi.ClassifierModel<piAi.ClassifierApi> => ({
           id, name: id, provider, baseUrl: written.baseUrl, type: 'classifier', api: 'typesafe-system-one',
           input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0,
@@ -124,31 +180,30 @@ export class Decision extends cordis.Service {
    * 同时问所有模型，各自限时；有分的合起来，比阈值。不抛错。
    * @param input 题、现状、阈值。
    * @returns 结论和每个模型的结果。
+   * 副作用：向配置的决策模型发请求或开启 decision 小会话；发一条 trace 跟踪事件。
    */
   async judge(input: JudgeInput): Promise<Judgement> {
+    //M 并发向配置中的所有决策模型限时打分，收集各模型的结果（含超时与出错）。
     const results = await Promise.all(this.config.members.map((member) => this.limited(member, input)));
-    const scores = results.flatMap((result) => (result.score === undefined ? [] : [result.score]));
+    const scores: number[] = [];
+    for (const result of results) {
+      if (result.score !== undefined) {
+        scores.push(result.score);
+      }
+    }
+    //M 取传入阈值或配置默认阈值，把各模型的有效分合并成 allow / deny / unsure 结论。
     const allowAt = input.allowAt ?? this.config.allowAt;
     const denyAt = input.denyAt ?? this.config.denyAt;
-    let judgement: Judgement;
-    if (scores.length === 0) {
-      judgement = { verdict: 'unsure', reason: `决策模型都没答上来：${results.map((result) => `${result.model} ${result.error ?? '没答出分'}`).join('；')}`, results };
-    } else {
-      const combine = this.config.combine;
-      const score = combine === 'average' ? scores.reduce((sum, value) => sum + value, 0) / scores.length
-        : combine === 'min' ? Math.min(...scores) : Math.max(...scores);
-      const how = `${String(scores.length)} 个模型${COMBINE_WORDS[combine]}`;
-      const shown = score.toFixed(2);
-      judgement = score >= allowAt
-        ? { verdict: 'allow', score, reason: `决策模型认为是（${shown} ≥ ${String(allowAt)}，${how}）`, results }
-        : score < denyAt
-          ? { verdict: 'deny', score, reason: `决策模型认为否（${shown} < ${String(denyAt)}，${how}）`, results }
-          : { verdict: 'unsure', score, reason: `决策模型拿不准（${shown}，${how}）`, results };
-    }
+    const judgement = buildJudgement(scores, results, this.config.combine, allowAt, denyAt);
+    const summaryList = results.map((result) => {
+      if (result.score === undefined) return `${result.model}=（${result.error ?? ''}） ${String(result.ms)}ms`;
+
+      return `${result.model}=${result.score.toFixed(2)} ${String(result.ms)}ms`;
+    });
     //T 跟踪：每个模型的分和结论。
     this.ctx.emit('trace', 'Decision.judge', `${input.kind}：${judgement.verdict}`, 'Promise.all(members.map(ask))', {
       kind: input.kind, 结论: judgement.verdict, 分: judgement.score, 原因: judgement.reason,
-      各模型: results.map((result) => `${result.model}=${result.score === undefined ? `（${result.error ?? ''}）` : result.score.toFixed(2)} ${String(result.ms)}ms`),
+      各模型: summaryList,
     });
     return judgement;
   }
@@ -164,8 +219,13 @@ export class Decision extends cordis.Service {
         resolve({ model: member.name, error: `超过 ${String(this.config.timeoutMs)} 毫秒没回`, ms: Date.now() - began });
       }, this.config.timeoutMs);
     });
+    //M 发起单模型打分并在失败时把异常折成 error 字段，便于和超时定时器竞速。
     const asked = this.ask(member, input, stop.signal)
-      .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }))
+      .catch((error: unknown) => {
+        if (error instanceof Error) return { error: error.message };
+
+        return { error: String(error) };
+      })
       .then((part): ModelResult => ({ model: member.name, ...part, ms: Date.now() - began }));
     try {
       return await Promise.race([asked, late]);
@@ -186,7 +246,9 @@ export class Decision extends cordis.Service {
       }, { signal });
       if (result.stopReason !== 'stop') return { error: `${result.stopReason}：${result.errorMessage ?? ''}` };
       const answer = result.answers['q'] as { probability?: number } | undefined;
-      return typeof answer?.probability === 'number' ? { score: answer.probability } : { error: '没答出分' };
+      if (typeof answer?.probability === 'number') return { score: answer.probability };
+
+      return { error: '没答出分' };
     }
 
     //M sessions.ask 开一场 kind: 'decision' 的小会话问一次（走骨架循环，循环里调 chat()，假模型也接得住），思考档 off；超时（signal）就停。
@@ -207,6 +269,7 @@ export class Decision extends cordis.Service {
       text,
       signal,
     };
+    //M 开一场不带工具和思考的 decision 小会话向对话模型提问，拿回文本供解析概率。
     const { ok, reply } = await this.ctx.sessions.ask(askInput);
 
     //G 没做完（出错、超时停了）→ 原因当错误交回。
@@ -214,10 +277,15 @@ export class Decision extends cordis.Service {
 
     //M 从回答里找分和理由。
     const found = PROBABILITY.exec(reply);
-    const score = found === null ? Number.NaN : Number(found[1]);
+    if (found === null) return { error: '没答出分' };
+
+    const score = Number(found[1]);
     if (!(score >= 0 && score <= 1)) return { error: '没答出分' };
+
     const reason = REASON.exec(reply)?.[1];
-    return reason === undefined ? { score } : { score, reason };
+    if (reason === undefined) return { score };
+
+    return { score, reason };
   }
 }
 
@@ -236,7 +304,10 @@ function checkConfig(raw: unknown, providers: Record<string, unknown>): Decision
   if (!Array.isArray(models) || models.length === 0) throw new Error('decision 段要写 models（至少一个）');
   const members = models.map((item: unknown, index): Member => {
     const label = `decision.models[${String(index)}]`;
-    const entry = typeof item === 'string' ? { model: item, type: 'chat' } : item as Record<string, unknown> | null;
+    let entry: Record<string, unknown> | null = item as Record<string, unknown> | null;
+    if (typeof item === 'string') {
+      entry = { model: item, type: 'chat' };
+    }
     const model = entry?.['model'];
     const type = entry?.['type'] ?? 'chat';
     if (typeof model !== 'string' || !model.includes('/')) throw new Error(`${label} 要写成“供应商名/模型 ID”或 { model, type: classifier }`);
@@ -251,6 +322,7 @@ function checkConfig(raw: unknown, providers: Record<string, unknown>): Decision
     if (typeof value !== 'number' || value < 0 || value > 1) throw new Error(`decision.${key} 要是 0～1 的数`);
     return value;
   };
+  //M 解析并校验 allow_at 与 deny_at 阈值（均须落在 0～1），供后续比对大小关系。
   const allowAt = ratio('allow_at', 0.8);
   const denyAt = ratio('deny_at', 0);
   if (denyAt > allowAt) throw new Error('decision.deny_at 要小于等于 allow_at');
@@ -264,7 +336,10 @@ function checkConfig(raw: unknown, providers: Record<string, unknown>): Decision
  * 挂上决策模型。
  * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。配置在顶层 decision 段（骨架不认的顶层段原样留在 raw 里）。
  * @param ctx Cordis 给这个插件的 ctx。
+ * @throws decision 段配置写得不对时抛错。
+ * 副作用：校验配置并把 Decision 服务挂到 ctx.decision。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 校验顶层 decision 配置并实例化 Decision 服务挂到 ctx.decision。
   new Decision(ctx, checkConfig(ctx.resources.raw['decision'], ctx.resources.config.providers));
 }

@@ -1,0 +1,18 @@
+/*
+ * 左栏机器人与运行会话虚拟列表的间距样式。
+ * 间距放在每行外层，保证 react-virtuoso 计算高度准确，且不改动公用 App.css。
+ */
+
+.jm-bot-vrow {
+  padding-bottom: 6px;
+}
+
+.jm-running-vhead {
+  padding: 12px 12px 4px;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-running-vrow {
+  padding: 0 4px 2px;
+}

@@ -40,6 +40,7 @@ interface Matched {
 /**
  * 宽松匹配用的规整：Unicode 兼容规整（NFKC），去掉每行行尾空白，引号、破折号、特殊空格换成 ASCII 的。
  * @param text 文本。
+ * @returns 可用于宽松匹配的文字；只处理传入的字符串。
  */
 export function normalizeForFuzzyMatch(text: string): string {
   return text
@@ -65,17 +66,32 @@ export function normalizeForFuzzyMatch(text: string): string {
 export function applyEdits(content: string, edits: Edit[], file: string): string {
   //M 1. 拿掉 BOM，换行统一成 \n，记下原来用的是哪种。
   /** 有没有 BOM。 */
-  const bom = content.startsWith('\uFEFF') ? '\uFEFF' : '';
+  let bom = '';
+  if (content.startsWith('\uFEFF')) {
+    bom = '\uFEFF';
+  }
   /** 去掉 BOM 的内容。 */
   const body = content.slice(bom.length);
   /** 原来的换行符：第一个换行是 \r\n 就算 \r\n。 */
-  const lineEnding = body.indexOf('\n') > 0 && body[body.indexOf('\n') - 1] === '\r' ? '\r\n' : '\n';
+  const firstLf = body.indexOf('\n');
+  let lineEnding = '\n';
+  if (firstLf > 0 && body[firstLf - 1] === '\r') {
+    lineEnding = '\r\n';
+  }
+
+  //M 统一原文与编辑片段的换行符，使精确定位基于同一种行分隔。
   /** 统一成 \n 的内容。 */
+  //M 统一底稿的行分隔，匹配和偏移计算都基于这份文本。
   const normalized = toLF(body);
   /** 修改也统一成 \n。 */
+  //M 把查找片段和替换片段也转成相同换行格式。
   const list = edits.map((edit) => ({ oldText: toLF(edit.oldText), newText: toLF(edit.newText) }));
   /** 报错时怎么称呼第几处。 */
-  const label = (index: number) => (list.length === 1 ? '原文' : `edits[${index}]`);
+  const label = (index: number): string => {
+    if (list.length === 1) return '原文';
+
+    return `edits[${index}]`;
+  };
 
   //G 2. 原文不能为空（新建文件请用 base-tools 的 write）。
   for (const [index, edit] of list.entries()) {
@@ -88,11 +104,19 @@ export function applyEdits(content: string, edits: Edit[], file: string): string
   /** 要不要宽松匹配。 */
   const fuzzy = list.some((edit) => !normalized.includes(edit.oldText));
   /** 在哪份内容上找。 */
-  const base = fuzzy ? normalizeForFuzzyMatch(normalized) : normalized;
+  let base = normalized;
+  if (fuzzy) {
+    //M 精确搜索失败时规整整份底稿，供本次所有编辑统一定位。
+    base = normalizeForFuzzyMatch(normalized);
+  }
   /** 找到的每处修改。 */
   const matches: Matched[] = list.map((edit, index) => {
     /** 要找的原文（宽松匹配时也规整）。 */
-    const needle = fuzzy ? normalizeForFuzzyMatch(edit.oldText) : edit.oldText;
+    let needle = edit.oldText;
+    if (fuzzy) {
+      //M 宽松匹配时把查找片段规整成和底稿一致的形式。
+      needle = normalizeForFuzzyMatch(edit.oldText);
+    }
     /** 位置。 */
     const start = base.indexOf(needle);
     if (start < 0) {
@@ -120,13 +144,24 @@ export function applyEdits(content: string, edits: Edit[], file: string): string
 
   //M 5. 换。宽松匹配时只有被改到的行用规整后的文字。
   /** 改好的内容（\n 换行）。 */
-  const changed = fuzzy ? replaceKeepingOtherLines(normalized, base, matches) : replaceAll(base, matches, 0);
+  const replaceContent = (): string => {
+    //M 宽松匹配只重写命中的行，保留其他行的原文。
+    if (fuzzy) return replaceKeepingOtherLines(normalized, base, matches);
+
+    //M 精确命中时直接依照原有偏移做全部替换。
+    return replaceAll(base, matches, 0);
+  };
+
+  //M 得到拟写回的内容，用来判断这次编辑是否真的产生改动。
+  const changed = replaceContent();
   if (changed === normalized) {
     throw new Error(`${file} 没有变化：替换后和原来一样`);
   }
 
   //M 6. 还原换行符和 BOM。
-  return bom + (lineEnding === '\r\n' ? changed.replace(/\n/g, '\r\n') : changed);
+  if (lineEnding === '\r\n') return bom + changed.replace(/\n/g, '\r\n');
+
+  return bom + changed;
 }
 
 
@@ -175,12 +210,15 @@ function splitKeepingNewlines(content: string): string[] {
  * @throws 两份内容行数对不上时抛错。
  */
 function replaceKeepingOtherLines(original: string, base: string, matches: Matched[]): string {
+  //M 保留原文各行，稍后逐段恢复未被编辑的部分。
   /** 原文的行。 */
+  //M 保留原文各行，稍后逐段恢复未被编辑的部分。
   const originalLines = splitKeepingNewlines(original);
   /** 规整后每行的起止位置。 */
   const spans: Array<{ start: number; end: number }> = [];
   /** 算位置用的游标。 */
   let cursor = 0;
+  //M 从规整稿计算每行的偏移区间，把匹配范围映射到行。
   for (const line of splitKeepingNewlines(base)) {
     spans.push({ start: cursor, end: cursor + line.length });
     cursor += line.length;
@@ -226,6 +264,7 @@ function replaceKeepingOtherLines(original: string, base: string, matches: Match
     const groupStart = (spans[group.first] as { start: number }).start;
     /** 这一组在规整后内容里的终点。 */
     const groupEnd = (spans[group.end - 1] as { end: number }).end;
+    //M 仅在当前受影响的行组里套用替换，使用该组起点换算偏移。
     result += replaceAll(base.slice(groupStart, groupEnd), group.items, groupStart);
     copied = group.end;
   }

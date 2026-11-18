@@ -102,7 +102,7 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
     db,
     approval: undefined,
     progress: undefined,
-    appsOf: () => [APP_ID],
+    getApps: () => [APP_ID],
     lastPrivate: () => last,
     sendCard: (address: FeishuAddress) => {
       serial += 1;
@@ -156,7 +156,7 @@ const LAST: FeishuAddress = { appId: APP_ID, chatId: LAST_CHAT, messageId: 'om_l
 
 
 /** 一件待确认。 */
-function pendingOf(session: string): render.PendingLike {
+function getPending(session: string): render.PendingLike {
   return { id: 1, kind: 'exec', title: '要执行一条命令', detail: 'rm -rf build', bot: BOT, session, state: 'waiting' };
 }
 
@@ -164,7 +164,7 @@ function pendingOf(session: string): render.PendingLike {
 describe('群里不发卡片', () => {
   test('群里的会话有待确认：卡片发本人私聊，群里只有一句文字', async () => {
     const world = cardWorld([GROUP_ROW, OWNER_ROW], LAST);
-    await fire(world, 'approval/asked', pendingOf('g1'));
+    await fire(world, 'approval/asked', getPending('g1'));
 
     expect(world.cardsTo).toEqual([OWNER_CHAT]);
     expect(world.texts).toEqual([{ chatId: GROUP_CHAT, text: '这一步要 leon 确认，已发到他私聊' }]);
@@ -172,7 +172,7 @@ describe('群里不发卡片', () => {
 
   test('找不到本人的私聊：卡片退回这个应用最近私聊的人，群里还是一句', async () => {
     const world = cardWorld([GROUP_ROW], LAST);
-    await fire(world, 'approval/asked', pendingOf('g1'));
+    await fire(world, 'approval/asked', getPending('g1'));
 
     expect(world.cardsTo).toEqual([LAST_CHAT]);
     expect(world.cardsTo).not.toContain(GROUP_CHAT);
@@ -181,7 +181,7 @@ describe('群里不发卡片', () => {
 
   test('私聊来的会话照旧发到会话的聊天，不多说话', async () => {
     const world = cardWorld([OWNER_ROW], LAST);
-    await fire(world, 'approval/asked', pendingOf('p1'));
+    await fire(world, 'approval/asked', getPending('p1'));
 
     expect(world.cardsTo).toEqual([OWNER_CHAT]);
     expect(world.texts).toEqual([]);

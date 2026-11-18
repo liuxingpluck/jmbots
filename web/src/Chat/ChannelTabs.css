@@ -1,0 +1,222 @@
+/*
+ * 内容区顶上的渠道标签栏、聊天下拉浮层与输入框上方的查看上下文横幅样式。
+ * 所有配色全部使用 Theme.ts 注入的 --jm-* 变量，不写死颜色值。
+ */
+
+.jm-channel-tabs {
+  position: relative;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--jm-panel);
+  border-bottom: 1px solid var(--jm-border);
+  flex: none;
+}
+
+.jm-channel-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--jm-border);
+  border-radius: 999px;
+  background: var(--jm-surface);
+  color: var(--jm-text);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.jm-channel-pill:hover {
+  background: var(--jm-hover);
+}
+
+.jm-channel-pill.is-active {
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
+.jm-channel-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.jm-channel-pill.has-dropdown .jm-channel-tab-btn {
+  padding-right: 6px;
+}
+
+.jm-channel-tab-count {
+  font-size: 11px;
+  color: var(--jm-muted);
+}
+
+.jm-channel-tab-sub {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--jm-accent);
+}
+
+.jm-channel-tab-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid var(--jm-border);
+  background: transparent;
+  color: var(--jm-muted);
+  padding: 0 9px 0 7px;
+  font-size: 11px;
+  cursor: pointer;
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
+}
+
+.jm-channel-tab-arrow:hover {
+  color: var(--jm-text);
+  background: var(--jm-hover);
+}
+
+.jm-channel-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 310px;
+  max-width: min(340px, calc(100vw - 32px));
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--jm-border);
+  background: var(--jm-panel);
+  color: var(--jm-text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.jm-channel-search {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--jm-border);
+  background: var(--jm-surface);
+  color: var(--jm-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.jm-channel-search::placeholder {
+  color: var(--jm-muted);
+}
+
+.jm-channel-search:focus {
+  border-color: var(--jm-accent);
+}
+
+.jm-channel-chat-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--jm-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jm-channel-chat-item:hover {
+  background: var(--jm-hover);
+}
+
+.jm-channel-chat-item.is-selected {
+  background: var(--jm-accent-soft);
+  color: var(--jm-accent);
+}
+
+.jm-channel-chat-all {
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--jm-border);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.jm-channel-chat-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jm-channel-chat-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--jm-muted);
+  white-space: nowrap;
+}
+
+.jm-channel-chat-list {
+  width: 100%;
+}
+
+.jm-channel-chat-empty {
+  padding: 14px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--jm-muted);
+}
+
+.jm-composer-view {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--jm-border);
+  background: var(--jm-surface);
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.jm-composer-view-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--jm-text);
+}
+
+.jm-composer-view-clear {
+  flex: none;
+  color: var(--jm-muted);
+}
+
+.jm-channel-error {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--jm-border);
+  background: var(--jm-danger-soft);
+  color: var(--jm-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}

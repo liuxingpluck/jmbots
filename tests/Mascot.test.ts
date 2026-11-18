@@ -1,6 +1,6 @@
 /**
  * 标题栏鲸鱼娘的离线测试（docs/界面/任务书/发0.2.6_DSH.md 第 1 步）：
- * moodOf 按进度和审核状态算出该显示哪种样子；Images.ts 的 40 张图都在、每张 whale/*.webp 文件都存在。
+ * getMood 按进度和审核状态算出该显示哪种样子；Images.ts 的 40 张图都在、每张 whale/*.webp 文件都存在。
  * 组件长什么样靠 AOBB 截图核对，这里不起浏览器。
  */
 import * as bunTest from 'bun:test';
@@ -16,7 +16,7 @@ type Mood = 'idle' | 'dispatch' | 'work' | 'search' | 'wait' | 'done' | 'error';
 /** 从 Mascot.tsx 里取出来的东西。 */
 interface MascotModule {
   /** 从这个机器人的进度算出现在的状态。 */
-  moodOf: (items: types.ProgressView[], waiting: boolean) => Mood;
+  getMood: (items: types.ProgressView[], waiting: boolean) => Mood;
 }
 
 
@@ -41,35 +41,35 @@ function progressOf(patch: Partial<types.ProgressView> = {}): types.ProgressView
 }
 
 
-bunTest.describe('鲸鱼娘的状态（moodOf）', () => {
+bunTest.describe('鲸鱼娘的状态（getMood）', () => {
   bunTest.test('分派中：dispatch', async () => {
     const mascot = await loadMascot();
-    bunTest.expect(mascot.moodOf([progressOf({ stage: 'dispatching' })], false)).toBe('dispatch');
+    bunTest.expect(mascot.getMood([progressOf({ stage: 'dispatching' })], false)).toBe('dispatch');
   });
 
   bunTest.test('机器人在等审核：wait', async () => {
     const mascot = await loadMascot();
     //M 机器人在等审核：没有进度也要显示等待。
-    bunTest.expect(mascot.moodOf([], true)).toBe('wait');
+    bunTest.expect(mascot.getMood([], true)).toBe('wait');
     //M 有进度在跑、同时也在等审核：还是 wait。
-    bunTest.expect(mascot.moodOf([progressOf()], true)).toBe('wait');
+    bunTest.expect(mascot.getMood([progressOf()], true)).toBe('wait');
   });
 
   bunTest.test('动作里调用 find/read/memory/web_search：search', async () => {
     const mascot = await loadMascot();
     //M 四种算查资料的工具。
     for (const tool of ['find', 'read', 'memory', 'web_search']) {
-      bunTest.expect(mascot.moodOf([progressOf({ action: `调用 ${tool} 做点什么` })], false)).toBe('search');
+      bunTest.expect(mascot.getMood([progressOf({ action: `调用 ${tool} 做点什么` })], false)).toBe('search');
     }
     //M 别的工具不算查资料，按干活算。
-    bunTest.expect(mascot.moodOf([progressOf({ action: '调用 edit 改文件' })], false)).toBe('work');
+    bunTest.expect(mascot.getMood([progressOf({ action: '调用 edit 改文件' })], false)).toBe('work');
   });
 
   bunTest.test('别的在跑：work；几件事同时跑也是 work', async () => {
     const mascot = await loadMascot();
-    bunTest.expect(mascot.moodOf([progressOf({ stage: 'thinking', action: '调用模型' })], false)).toBe('work');
+    bunTest.expect(mascot.getMood([progressOf({ stage: 'thinking', action: '调用模型' })], false)).toBe('work');
     bunTest.expect(
-      mascot.moodOf([progressOf({ id: 1, stage: 'thinking', action: '调用模型' }), progressOf({ id: 2, stage: 'running', action: '调用 exec' })], false),
+      mascot.getMood([progressOf({ id: 1, stage: 'thinking', action: '调用模型' }), progressOf({ id: 2, stage: 'running', action: '调用 exec' })], false),
     ).toBe('work');
   });
 
@@ -78,17 +78,17 @@ bunTest.describe('鲸鱼娘的状态（moodOf）', () => {
     /** 现在。 */
     const now = Date.now();
     //M 1 秒前做完：done。
-    bunTest.expect(mascot.moodOf([progressOf({ stage: 'done', endedAt: now - 1000 })], false)).toBe('done');
+    bunTest.expect(mascot.getMood([progressOf({ stage: 'done', endedAt: now - 1000 })], false)).toBe('done');
     //M 1 秒前出错：error。
-    bunTest.expect(mascot.moodOf([progressOf({ stage: 'error', endedAt: now - 1000 })], false)).toBe('error');
+    bunTest.expect(mascot.getMood([progressOf({ stage: 'error', endedAt: now - 1000 })], false)).toBe('error');
   });
 
   bunTest.test('都没有：idle；结束超过 8 秒的不算', async () => {
     const mascot = await loadMascot();
-    bunTest.expect(mascot.moodOf([], false)).toBe('idle');
+    bunTest.expect(mascot.getMood([], false)).toBe('idle');
     //M 9 秒前结束的 done、error 都已经回到 idle。
-    bunTest.expect(mascot.moodOf([progressOf({ stage: 'done', endedAt: Date.now() - 9000 })], false)).toBe('idle');
-    bunTest.expect(mascot.moodOf([progressOf({ stage: 'error', endedAt: Date.now() - 9000 })], false)).toBe('idle');
+    bunTest.expect(mascot.getMood([progressOf({ stage: 'done', endedAt: Date.now() - 9000 })], false)).toBe('idle');
+    bunTest.expect(mascot.getMood([progressOf({ stage: 'error', endedAt: Date.now() - 9000 })], false)).toBe('idle');
   });
 
   bunTest.test('优先级：分派 > 等审核 > 查资料 > 干活 > 刚结束', async () => {
@@ -101,13 +101,13 @@ bunTest.describe('鲸鱼娘的状态（moodOf）', () => {
       progressOf({ id: 5, stage: 'error', endedAt: Date.now() - 1000 }),
     ];
     //M 有分派就是分派，别的都往后排。
-    bunTest.expect(mascot.moodOf(items, false)).toBe('dispatch');
+    bunTest.expect(mascot.getMood(items, false)).toBe('dispatch');
     //M 去掉分派，查资料赢过干活。
-    bunTest.expect(mascot.moodOf(items.slice(1), false)).toBe('search');
+    bunTest.expect(mascot.getMood(items.slice(1), false)).toBe('search');
     //M 去掉查资料，只剩干活和刚结束的错误：干活优先。
-    bunTest.expect(mascot.moodOf([items[2]!, items[3]!], false)).toBe('work');
+    bunTest.expect(mascot.getMood([items[2]!, items[3]!], false)).toBe('work');
     //M 等审核赢过查资料和干活。
-    bunTest.expect(mascot.moodOf(items.slice(1), true)).toBe('wait');
+    bunTest.expect(mascot.getMood(items.slice(1), true)).toBe('wait');
   });
 });
 

@@ -8,12 +8,13 @@
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
-import type { ChatRequest } from '../../Chat.ts';
-import type { Session } from '../../Sessions.ts';
+import type { ChatRequest, Session } from '../../Sessions.ts';
 
 
 /** 插件名。 */
 export const name = 'assist';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.0';
 
 /** 用到的服务：resources 存表；tools 登记工具；http 开接口。 */
 export const inject = ['resources', 'tools', 'http', 'sessions'];
@@ -52,6 +53,7 @@ class Assist {
     ctx.resources.db.exec('CREATE INDEX IF NOT EXISTS assist_items_bot ON assist_items (bot, id)');
 
     ctx.on('session/request', (request) => {
+      //M 发给模型前把当前会话类型的回话规范追加到系统提示词。
       this.style(request);
       //M 刚点过表情：这一轮不再调模型，空回答直接结束，免得模型再补一句“已点表情”。
       if (this.quiet.delete(request.session.row.id)) request.answer = piAi.fauxAssistantMessage('');
@@ -86,8 +88,11 @@ class Assist {
       },
       kinds: ['front', 'work'],
       run: (args, session) => {
+        //G 过滤空白选项并校验数量在 2～6 个之间，避免发出无法选择的卡片。
         const options = (args['options'] as unknown[]).map((item) => String(item).trim()).filter((item) => item !== '');
         if (options.length < 2 || options.length > 6) throw new Error('选项要 2～6 个');
+
+        //M 把问题与选项写入 assist_items 表并拿回卡片 id，告诉模型等待用户点击。
         const id = this.add(session, 'ask', { question: String(args['question']), options });
         return `已发出选项卡片 ${String(id)}，等用户点选。`;
       },
@@ -108,6 +113,7 @@ class Assist {
       },
       kinds: ['front', 'work'],
       run: (args, session) => {
+        //M 读取待办清单和清空标志，先查出当前会话及其子会话的 id 家族。
         const items = (args['items'] as { text: string; status: string }[] | undefined) ?? [];
         const clear = args['clear'] === true;
         const db = this.ctx.resources.db;
@@ -161,9 +167,11 @@ class Assist {
     const bot = session.row.bot;
     let messageId: number | null = null;
     try {
+      //M 若挂了 web-api，查出该机器人最新一条网页消息 id，用来把助手卡片挂到对应消息下。
       const latest = db.query('SELECT id FROM web_messages WHERE bot = ? ORDER BY id DESC LIMIT 1').get(bot) as { id: number } | null;
       messageId = latest?.id ?? null;
     } catch { /* 没挂 web-api：不挂消息 */ }
+    //M 补齐时间戳并把助手项写入 assist_items 表，返回新生成的主键 id。
     const now = Date.now();
     const result = db.query('INSERT INTO assist_items (bot, kind, session_id, message_id, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(bot, kind, session.row.id, messageId, JSON.stringify(data), now, now);
@@ -177,6 +185,7 @@ class Assist {
    * @param session 当前这场（前台或后台都行）。
    */
   private familyIds(session: Session): string[] {
+    //M 找出发起当前家族的根会话，再查出它派出的所有子会话并去重，限定待办操作范围。
     const root = session.row.parent ?? session.row.id;
     const kids = this.ctx.sessions.find({ parent: root }).map((row) => row.id);
     return [...new Set([root, session.row.id, ...kids])];
@@ -187,26 +196,33 @@ class Assist {
    * @returns 删了几行。
    */
   private deleteTodos(ids: string[]): number {
+    //G 没有目标会话 id 时直接返回 0，避免拼出空的 SQL IN 条件。
     if (ids.length === 0) return 0;
+
+    //M 按会话 id 批量删除旧待办记录并返回实际受影响行数。
     const placeholders = ids.map(() => '?').join(', ');
     const result = this.ctx.resources.db.query(`DELETE FROM assist_items WHERE kind = 'todo' AND session_id IN (${placeholders})`).run(...ids);
     return Number(result.changes);
   }
 
   /** 一场会话的根：有父就是父，没有就是自己。 */
-  private rootOf(sessionId: string): string {
+  private getRoot(sessionId: string): string {
+    //M 查会话元数据取其父会话 id，把子会话待办归并到对应的前端根会话下。
     const meta = this.ctx.sessions.find({ id: sessionId })[0];
     return meta?.parent ?? sessionId;
   }
 
   /** GET /api/assist：最近 300 项，按种类分好。待办带 root（这场所属的前台会话号）。 */
   private list(bot: string): Record<string, unknown> {
+    //M 按倒序拉取该机器人最近 300 条助手记录。
     const rows = this.ctx.resources.db.query('SELECT * FROM assist_items WHERE bot = ? ORDER BY id DESC LIMIT 300').all(bot) as Row[];
     const of = (row: Row): Record<string, unknown> => ({ id: row.id, sessionId: row.session_id, messageId: row.message_id, updatedAt: row.updated_at, ...JSON.parse(row.data) as object });
+
+    //M 展开 JSON 数据并按 react / ask / todo 分类，同时为待办补上所属根会话 id 供网页展示。
     return {
       reactions: rows.filter((row) => row.kind === 'react').map(of),
       asks: rows.filter((row) => row.kind === 'ask').map(of),
-      todos: rows.filter((row) => row.kind === 'todo').map((row) => ({ ...of(row), root: this.rootOf(row.session_id) })),
+      todos: rows.filter((row) => row.kind === 'todo').map((row) => ({ ...of(row), root: this.getRoot(row.session_id) })),
     };
   }
 }
@@ -216,7 +232,9 @@ class Assist {
  * 挂上助手体验。
  * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
+ * 副作用：建 assist_items 表和索引、监听 session/request、登记 react/ask/todo 工具与 /api/assist 相关 HTTP 接口。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 实例化 Assist，完成建表、事件订阅、工具登记和 HTTP 接口注册。
   new Assist(ctx);
 }

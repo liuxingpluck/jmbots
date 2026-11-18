@@ -1,11 +1,12 @@
 /**
- * 跑命令。
- *   服务 exec.run：不经过模型、不审核，起一个 shell 跑一条命令，交回退出码和输出（工具 exec、以后的命令窗口 runs 都用它）。
+ * 跑命令与命令窗口（由 exec 与原 runs 合并）：
+ *   服务 exec.run：不经过模型、不审核，起一个 shell 跑一条命令，交回退出码和输出。
  *   工具 exec：先 approval.review，放行就跑；拒绝、去问用户了，都把一句话交给模型。
  *     在这一轮的工作区里跑（飞书上 builder 说话时是他的目录，审核也照这个目录把关）。
  *   用户后来同意了（approval/decided，kind 是 exec）：跑命令，结果当一句新的话交回那场会话，推它往下走。
+ *   命令窗口 Runs（Runs.ts，可选 config.runs 默认开启）：http 在时挂 /api/run、/api/runs* 五条 HTTP 接口。
  * 停止：工具拿到的停止信号（Tools.ts 给的 signal）一触发，连子进程整棵杀掉（Windows 用 taskkill /T /F），两秒内交回。
- * 设计：docs/src7插件设计/exec.md。
+ * 设计：docs/src7插件设计/exec.md、runs.md。
  */
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
@@ -13,15 +14,21 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
-import type { Pending, ReviewInput } from '../approval/index.ts';
 import * as cut from '../../utils/Cut.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
+import type { Pending, ReviewInput } from '../approval/index.ts';
+import * as runsModule from './Runs.ts';
+
+
+export { mountRunsRoutes, readRunsEnabled, Runs, type RunRecord } from './Runs.ts';
 
 
 /** 插件名。 */
 export const name = 'exec';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.1.0';
 
-/** 用到的服务：approval 是必须的（没有审核就不让跑命令）。 */
+/** 用到的服务：approval 是必须的（没有审核就不让跑命令）；http 为可选（存在时才挂载 /api/run* 命令窗口）。 */
 export const inject = ['resources', 'tools', 'bots', 'sessions', 'approval'];
 
 
@@ -161,7 +168,9 @@ export class Exec extends cordis.Service {
         clearTimeout(closeTimer);
         input.signal?.removeEventListener('abort', onAbort);
         const result: ExecResult = { code, timedOut, stopped, output, ms: Date.now() - start };
-        if (error !== undefined) result.error = error;
+        if (error !== undefined) {
+          result.error = error;
+        }
         resolve(result);
       };
 
@@ -173,8 +182,12 @@ export class Exec extends cordis.Service {
       input.signal?.addEventListener('abort', onAbort, { once: true });
 
       //M Windows 的 cmd 默认 GBK，先切成 UTF-8；工具目录放到 PATH 最前面，几个变量只给这个子进程。
-      const command = WINDOWS ? `chcp 65001 >nul & ${input.command}` : input.command;
-      const pathKey = WINDOWS ? (Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'Path') : 'PATH';
+      let command = input.command;
+      let pathKey = 'PATH';
+      if (WINDOWS) {
+        command = `chcp 65001 >nul & ${input.command}`;
+        pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'Path';
+      }
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         [pathKey]: [...this.dirs.tools, process.env[pathKey] ?? ''].join(path.delimiter),
@@ -231,8 +244,11 @@ export class Exec extends cordis.Service {
     if (bot === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
 
     //M 在这一轮的工作区里跑：飞书上 builder 说话时是他的目录，审核也照这个目录把关（confined）。
-    const cwd = workspaceModule.of(bot.workspace, session.row.address);
-    const confined = cwd === bot.workspace ? undefined : cwd;
+    const cwd = workspaceModule.getWorkspace(bot.workspace, session.row.address);
+    let confined: string | undefined;
+    if (cwd !== bot.workspace) {
+      confined = cwd;
+    }
     const timeoutMs = ((args['timeout'] as number | undefined) ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
     const payload: ExecPayload = { command, cwd, timeoutMs };
     const reviewInput: ReviewInput = {
@@ -294,17 +310,30 @@ export class Exec extends cordis.Service {
  * @param result exec.run 的结果。
  */
 export function report(result: ExecResult): string {
-  let head = `退出码 ${result.code === null ? '无' : String(result.code)}`;
-  if (result.timedOut) head += '（超时，已结束）';
-  if (result.stopped) head += '（被停下了）';
+  let codeText = '无';
+  if (result.code !== null) {
+    codeText = String(result.code);
+  }
+  let head = `退出码 ${codeText}`;
+  if (result.timedOut) {
+    head += '（超时，已结束）';
+  }
+  if (result.stopped) {
+    head += '（被停下了）';
+  }
   head += `，用时 ${(result.ms / 1000).toFixed(1)} 秒`;
-  if (result.error !== undefined) head += `，出错：${result.error}`;
+  if (result.error !== undefined) {
+    head += `，出错：${result.error}`;
+  }
 
   const output = result.output.replace(/\r\n/g, '\n').replace(/\n$/u, '');
   if (output === '') return `${head}\n（没有输出）`;
 
   const kept = cut.tail(output);
-  const note = kept.cut ? `[输出太长，只留最后 ${String(kept.kept)} 行（共 ${String(kept.total)} 行）]\n` : '';
+  let note = '';
+  if (kept.cut) {
+    note = `[输出太长，只留最后 ${String(kept.kept)} 行（共 ${String(kept.total)} 行）]\n`;
+  }
   return `${head}\n${note}${kept.text}`;
 }
 
@@ -313,7 +342,7 @@ export function report(result: ExecResult): string {
  * 工具目录：paths.runtimes、paths.program 下每个文件夹，有 bin/、Scripts/ 用它们，都没有用文件夹本身，按名字排。
  * @param dirs 两个目录，绝对路径。
  */
-function toolDirsOf(dirs: string[]): string[] {
+function getToolDirs(dirs: string[]): string[] {
   const found: string[] = [];
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) continue;
@@ -321,7 +350,11 @@ function toolDirsOf(dirs: string[]): string[] {
     const names = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
     for (const item of names) {
       const subs = ['bin', 'Scripts'].map((sub) => path.join(dir, item, sub)).filter((sub) => fs.existsSync(sub));
-      found.push(...(subs.length > 0 ? subs : [path.join(dir, item)]));
+      if (subs.length > 0) {
+        found.push(...subs);
+        continue;
+      }
+      found.push(path.join(dir, item));
     }
   }
   return found;
@@ -329,19 +362,27 @@ function toolDirsOf(dirs: string[]): string[] {
 
 
 /**
- * 挂上跑命令。
+ * 挂上跑命令与可选的 HTTP 命令窗口。
  * apply 是 Cordis 插件的入口：inject 里的服务（含 approval）都就绪后 Cordis 调一次；approval 没挂，这个插件就一直不开工。
- * 插件自己没有配置；工具目录读顶层 paths 段，在这里校验一次。
+ * 工具目录读顶层 paths 段；`config.runs` 默认开启，传 `false` 可关闭 `/api/run*` 路由。
  * @param ctx Cordis 给这个插件的 ctx。
- * @throws paths.runtimes、paths.program 不是字符串时抛错。
+ * @param raw 插件配置（可不写）。
+ * @throws paths.runtimes、paths.program 不是字符串或 `config.runs` 类型不合法时抛错。
  */
-export function apply(ctx: cordis.Context): void {
+export function apply(ctx: cordis.Context, raw?: Record<string, unknown>): void {
   const paths = (ctx.resources.raw['paths'] ?? {}) as Record<string, unknown>;
   const runtimes = paths['runtimes'] ?? 'runtimes';
   const program = paths['program'] ?? 'program';
   if (typeof runtimes !== 'string' || typeof program !== 'string') {
     throw new Error('paths.runtimes、paths.program 要写成目录（相对运行时目录或绝对路径）');
   }
+  const runsEnabled = runsModule.readRunsEnabled(raw?.['runs']);
   const dirs = { runtimes: path.resolve(ctx.resources.root, runtimes), program: path.resolve(ctx.resources.root, program) };
-  new Exec(ctx, { ...dirs, tools: toolDirsOf([dirs.runtimes, dirs.program]) });
+  const exec = new Exec(ctx, { ...dirs, tools: getToolDirs([dirs.runtimes, dirs.program]) });
+  if (runsEnabled) {
+    const runs = new runsModule.Runs(ctx, exec);
+    void ctx.inject(['http'], (sub) => {
+      runsModule.mountRunsRoutes(sub.http.app, runs);
+    });
+  }
 }

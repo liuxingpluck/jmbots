@@ -84,7 +84,7 @@ export const TABLE_TEXTS: readonly string[] = [
   '搜索',
   '网页搜索按顺序试',
   '引擎',
-  '轮询、步数、压缩、审核门槛、记忆搜索地址',
+  '轮询、压缩、审核门槛、记忆搜索地址',
   '并发',
   '同一时间最多几个调用，超了排队',
   '服务',
@@ -116,6 +116,10 @@ export const TABLE_TEXTS: readonly string[] = [
   '浅色',
   '科技',
   '护眼',
+  // Approval/ApprovalCard.tsx 的 RISK_TEXT：风险等级。
+  '低',
+  '中',
+  '高',
 ];
 
 
@@ -132,7 +136,10 @@ function walk(dir: string): string[] {
     const full = path.join(dir, name);
     if (fs.statSync(full).isDirectory()) {
       files.push(...walk(full));
-    } else if (name.endsWith('.ts') || name.endsWith('.tsx')) {
+      continue;
+    }
+
+    if (name.endsWith('.ts') || name.endsWith('.tsx')) {
       files.push(full);
     }
   }
@@ -149,7 +156,12 @@ function keysInFile(file: string): string[] {
   /** 文件内容。 */
   const text = fs.readFileSync(file, 'utf8');
   /** 语法树（注释会被丢掉，注释里写的 t(...) 不算）。 */
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  let scriptKind = ts.ScriptKind.TS;
+  if (file.endsWith('.tsx')) {
+    scriptKind = ts.ScriptKind.TSX;
+  }
+
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind);
   /** 找到的原文。 */
   const keys: string[] = [];
   /**
@@ -250,6 +262,12 @@ if (import.meta.main) {
   const result = extract();
   console.log(`提取到 ${result.keys.length} 个键。`);
   for (const language of PACKS) {
-    console.log(`${language}：新增 ${result.added[language]!.length} 个，多余 ${result.extra[language]!.length} 个${result.extra[language]!.length > 0 ? `（${result.extra[language]!.join('、')}）` : ''}`);
+    const extraList = result.extra[language]!;
+    let extraNote = '';
+    if (extraList.length > 0) {
+      extraNote = `（${extraList.join('、')}）`;
+    }
+
+    console.log(`${language}：新增 ${result.added[language]!.length} 个，多余 ${extraList.length} 个${extraNote}`);
   }
 }

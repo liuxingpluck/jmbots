@@ -31,8 +31,10 @@ export function append(resources: Resources, session: Session, message: piAi.Mes
   //G 系统消息（pi 的 system 这种）不是对话，不写。
   if (message.role === 'system') return;
 
-  const time = textModule.clock(message.timestamp, 'date');
+  //M 把消息时间转成本地时间，供各角色的 Markdown 标题共用。
+  const time = textModule.getClock(message.timestamp, 'date');
   if (message.role === 'user') {
+    //M 从用户消息提取正文，按原顺序写入对话记录。
     write(resources, session, `## 用户 · ${time}\n\n${piAi.contentText(message.content)}\n`);
     return;
   }
@@ -41,13 +43,23 @@ export function append(resources: Resources, session: Session, message: piAi.Mes
     const calls = message.content.filter((block) => block.type === 'toolCall');
     const lines = calls.map((call) => `> 调用工具 \`${call.name}\` ${JSON.stringify(call.arguments)}`);
     const said = piAi.contentText(message.content);
-    const body = [said === '' ? '（没说话）' : said, ...lines].join('\n\n');
+    let shown = said;
+    if (shown === '') {
+      shown = '（没说话）';
+    }
+    const body = [shown, ...lines].join('\n\n');
+    //M 把已拼好的模型正文和工具调用记在同一个段落。
     write(resources, session, `## 模型 · ${time}（${message.provider}/${message.model}）\n\n${body}\n`);
     return;
   }
 
   //M 工具的结果：放进 ~~~ 围起来的块里（结果里常有 ```，用 ~~~ 不会被它截断），太长只留开头。
-  const mark = message.isError ? '（出错）' : '';
+  let mark = '';
+  if (message.isError) {
+    mark = '（出错）';
+  }
+
+  //M 截出工具结果的预览，连同工具名和错误标记一起追加。
   const result = cut.chars(piAi.contentText(message.content), RESULT_MAX_CHARS);
   write(resources, session, `## 工具结果 \`${message.toolName}\`${mark} · ${time}\n\n~~~text\n${result}\n~~~\n`);
 }
@@ -61,7 +73,8 @@ export function append(resources: Resources, session: Session, message: piAi.Mes
  * 副作用：写文件。
  */
 export function said(resources: Resources, session: Session, text: string): void {
-  write(resources, session, `## 中途告诉用户 · ${textModule.clock(Date.now(), 'date')}\n\n${text}\n`);
+  //M 用当前时间标出助手中途补充的话，追加到对话文件。
+  write(resources, session, `## 中途告诉用户 · ${textModule.getClock(Date.now(), 'date')}\n\n${text}\n`);
 }
 
 
@@ -73,7 +86,8 @@ export function said(resources: Resources, session: Session, text: string): void
  */
 export function ended(resources: Resources, session: Session): void {
   const state = STATES[session.row.state] ?? session.row.state;
-  write(resources, session, `---\n\n*这一轮${state} · ${textModule.clock(Date.now(), 'date')}*\n`);
+  //M 在轮次分隔线上记录结束状态和时间。
+  write(resources, session, `---\n\n*这一轮${state} · ${textModule.getClock(Date.now(), 'date')}*\n`);
 }
 
 
@@ -86,9 +100,13 @@ export function ended(resources: Resources, session: Session): void {
  */
 function write(resources: Resources, session: Session, section: string): void {
   const row = session.row;
+  //M 按机器人和会话定位对话文件，必要时先写会话头。
   const file = path.join(resources.dir('bots', row.bot, 'sessions', session.id), '对话.md');
   if (!fs.existsSync(file)) {
-    const parent = row.parent === undefined ? '' : `，嵌在 ${row.parent} 里`;
+    let parent = '';
+    if (row.parent !== undefined) {
+      parent = `，嵌在 ${row.parent} 里`;
+    }
     const head = `# 会话 ${session.id}\n\n- 机器人：${row.bot}\n- 种类：${row.kind}${parent}\n- 模型：${row.model}\n`;
     fs.writeFileSync(file, head, 'utf8');
   }

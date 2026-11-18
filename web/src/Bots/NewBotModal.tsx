@@ -29,6 +29,7 @@ interface FormValues {
 
 /** 新建机器人的弹窗：开没开由状态仓库的 newBotOpen 管（左上角 ＋ 改它）。 */
 export function NewBotModal(): react.JSX.Element {
+  //M 订阅翻译函数与弹窗开关、机器人列表刷新及切换动作，用于创建表单展示和建好后自动切过去。
   const t = i18n.useT();
   const open = context.useUi((state) => state.newBotOpen);
   const setNewBotOpen = context.useUi((state) => state.setNewBotOpen);
@@ -48,8 +49,10 @@ export function NewBotModal(): react.JSX.Element {
     if (!open) {
       return;
     }
+
     form.resetFields();
     setError('');
+    //M 每次打开弹窗时拉取可用模型清单填进“默认模型”下拉框，拉不到时退回空数组。
     void api.models().then(
       (list) => setModels(list.map((item) => item.id)),
       () => setModels([]),
@@ -69,14 +72,20 @@ export function NewBotModal(): react.JSX.Element {
       /** 飞书的两项。 */
       const appId = values.appId?.trim() ?? '';
       const appSecret = values.appSecret?.trim() ?? '';
-      /** 后端回的。 */
-      const result = await api.createBot({
+      const payload: Parameters<typeof api.createBot>[0] = {
         name: values.name.trim(),
         identity: values.identity?.trim() ?? '',
         language: values.language,
-        ...(values.model ? { model: values.model } : {}),
-        ...(appId || appSecret ? { feishu: { app_id: appId, app_secret: appSecret } } : {}),
-      });
+      };
+      if (values.model) {
+        payload.model = values.model;
+      }
+      if (appId || appSecret) {
+        payload.feishu = { app_id: appId, app_secret: appSecret };
+      }
+      /** 后端回的。 */
+      //M 提交新建表单并在成功后立刻重拉机器人清单刷新全局状态，随即选中新机器人并关闭弹窗。
+      const result = await api.createBot(payload);
       setPolled({ online: true, bots: await api.bots() });
       selectBot(result.bot.name);
       setNewBotOpen(false);
@@ -84,16 +93,25 @@ export function NewBotModal(): react.JSX.Element {
       const done = t('建好了：{name}', { name: result.bot.name });
       if (result.feishu && result.feishu !== '已连上') {
         void toast.warning(`${done}；${t('飞书：{state}', { state: result.feishu })}`, 8);
-      } else {
-        void toast.success(result.feishu ? `${done}；${t('飞书：{state}', { state: t('已连上') })}` : done);
+        return;
       }
+      let toastMessage = done;
+      if (result.feishu) {
+        toastMessage = `${done}；${t('飞书：{state}', { state: t('已连上') })}`;
+      }
+      void toast.success(toastMessage);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      let message = String(reason);
+      if (reason instanceof Error) {
+        message = reason.message;
+      }
+      setError(message);
     } finally {
       setSaving(false);
     }
   };
 
+  //M 渲染新建机器人表单弹窗与提示占位；点确定时触发校验与创建请求，点取消时关闭弹窗。
   return (
     <>
       {toastHolder}

@@ -34,7 +34,7 @@ export class Window {
    * @param url AOBW 地址。
    * @param lockFile 绑定锁：和积木客服用同一个文件，谁在操作微信窗口另一边就等着（jimukefu WxLocate.ts:640-668）。
    */
-  constructor(readonly url: string, readonly lockFile: string) {}
+  constructor(readonly url: string, readonly lockFile: string) { }
 
   /**
    * 找到微信主窗口，后台绑定、截一张客户区、解绑，算出布局。
@@ -58,7 +58,7 @@ export class Window {
       const image = parseBmp(new Uint8Array(await response.arrayBuffer()));
       if (isBlack(image)) throw new Error('后台截图是全黑的');
 
-      const dpi = dpiOf(hwnd);
+      const dpi = getDpi(hwnd);
       return { hwnd, width, height, dpi, layout: detectLayout(image, dpi / 96) };
     } finally {
       if (bound) await this.call('UnBindWindow', []).catch(() => undefined);
@@ -92,7 +92,10 @@ export class Window {
       const title = String((await this.call('GetWindowTitle', [handle]))['result'] ?? '').trim();
       found.push({ handle, area, main: MAIN_TITLES.has(title) });
     }
-    const pool = found.some((f) => f.main) ? found.filter((f) => f.main) : found;
+    let pool = found;
+    if (found.some((f) => f.main)) {
+      pool = found.filter((f) => f.main);
+    }
     pool.sort((a, b) => b.area - a.area);
     if (pool[0] === undefined) throw new Error('没有找到可见的微信主窗口（最小化时后台截图不可用）');
 
@@ -109,7 +112,10 @@ export class Window {
 
   /** GET（没有 body）或 POST JSON。 */
   private async request(pathname: string, body?: unknown): Promise<Record<string, unknown>> {
-    const init: RequestInit = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    let init: RequestInit = {};
+    if (body !== undefined) {
+      init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    }
     const response = await fetch(new URL(pathname, `${this.url}/`).href, { ...init, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`AOBW 返回 HTTP ${String(response.status)}`);
 
@@ -131,7 +137,11 @@ export function parseBmp(bytes: Uint8Array): Image {
   return {
     width, height,
     pixel: (x, y) => {
-      const i = offset + (raw > 0 ? height - 1 - y : y) * stride + x * step;
+      let row = y;
+      if (raw > 0) {
+        row = height - 1 - y;
+      }
+      const i = offset + row * stride + x * step;
       return [bytes[i + 2] ?? 0, bytes[i + 1] ?? 0, bytes[i] ?? 0];
     },
   };
@@ -188,11 +198,13 @@ export function detectLayout(image: Image, scale: number): Frame['layout'] {
 }
 
 /** 窗口的 DPI：Windows 上问 user32 的 GetDpiForWindow，别的系统（离线测试）当 96。 */
-function dpiOf(hwnd: string): number {
+function getDpi(hwnd: string): number {
   if (process.platform !== 'win32') return 96;
 
   const lib = dlopen('user32.dll', { GetDpiForWindow: { args: [FFIType.u64], returns: FFIType.u32 } });
   const dpi = lib.symbols.GetDpiForWindow(BigInt(hwnd));
   lib.close();
-  return dpi > 0 ? dpi : 96;
+  if (dpi > 0) return dpi;
+
+  return 96;
 }

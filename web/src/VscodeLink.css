@@ -1,0 +1,44 @@
+/*
+ * VS Code 跳转链接共用样式：供 Tutorial、Panel、Memory、Graph、Approval、Chat 等共同复用。
+ * 使用 --jm-accent 并保留暗色可读默认值，不写死亮底。
+ */
+
+.jm-site-inline,
+.tu-site-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.jm-site-link,
+.tu-site-link {
+  color: var(--jm-accent, #7cc4ff);
+  text-decoration: underline dotted;
+  word-break: break-all;
+}
+
+.jm-site-link:hover,
+.tu-site-link:hover {
+  text-decoration: underline;
+  opacity: 0.9;
+}
+
+.jm-vscode,
+.tu-vscode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--jm-accent, #7cc4ff);
+  line-height: 0;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.jm-vscode:hover,
+.tu-vscode:hover {
+  opacity: 0.85;
+}

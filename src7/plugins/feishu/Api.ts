@@ -26,19 +26,18 @@ const NETWORK_RESET = /socket hang up|ECONNRESET|EPIPE/u;
 const PERMISSION_CODES = new Set([99991672, 99991679, 99991668, 230027, 234009, 1770032, 1063002, 91204]);
 
 
+/**
+ * 确定没发出去的错：飞书回了错误码或 4xx（请求到了、被拒了），或者地址不对根本没发。
+ * 别的错（断网、超时、5xx）不知道飞书收没收，照旧是普通 Error。
+ * 发消息回退（Media.message）和发送回执（Feishu.send）靠它分“确定没发”和“不知道”。
+ */
+export class NotSent extends Error {}
+
+
 /** 飞书接口交回的业务结果里我们看的两项。 */
 interface Coded {
   code?: unknown;
   msg?: unknown;
-}
-
-
-/**
- * 等一会儿。
- * @param ms 毫秒。
- */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 
@@ -49,15 +48,19 @@ export function sleep(ms: number): Promise<void> {
  * @param msg 飞书的说明。
  * @returns 一句话。
  */
-export function explain(action: string, code: number, msg: unknown): string {
-  const said = typeof msg === 'string' && msg !== '' ? msg : '没有说明';
+export function getExplain(action: string, code: number, msg: unknown): string {
+  let said = '没有说明';
+  if (typeof msg === 'string' && msg !== '') {
+    said = msg;
+  }
   let text = `飞书${action}失败：错误码 ${String(code)}，${said}`;
 
   //M 权限类：云文档的动作要 docx、drive 权限，别的（收发消息、下载资源）要 im 权限。开完权限要发布一次版本才生效。
   if (PERMISSION_CODES.has(code) || /permission|scope|access denied|forbidden|权限/iu.test(said)) {
-    const need = action.startsWith('云文档')
-      ? 'docx:document、drive:drive'
-      : 'im:message、im:message:send_as_bot、im:resource';
+    let need = 'im:message、im:message:send_as_bot、im:resource';
+    if (action.startsWith('云文档')) {
+      need = 'docx:document、drive:drive';
+    }
     text += `。请在飞书开放平台给应用开权限 ${need}，再发布一次版本`;
   }
   return text;
@@ -81,28 +84,44 @@ export async function call<T>(action: string, run: () => Promise<T>, waitMs = RE
       const response = (error as { response?: { status?: number; data?: unknown } } | null)?.response;
       const body = (response?.data ?? undefined) as Coded | undefined;
       const limited = response?.status === 429 || (typeof body?.code === 'number' && RATE_LIMIT_CODES.has(body.code));
-      const reset = response === undefined && NETWORK_RESET.test(textModule.messageOf(error));
+      //M 无 HTTP 响应时提取错误文本判定是否为对端提前断连（可安全退让重试）。
+      const reset = response === undefined && NETWORK_RESET.test(textModule.getMessage(error));
 
       //G 限流、连接刚被断掉，还能再试 → 等 0.5、1、2、4、8 秒再来。
       if ((limited || reset) && attempt < RETRY_TIMES) {
-        await sleep(waitMs * 2 ** attempt);
+        await Bun.sleep(waitMs * 2 ** attempt);
         continue;
       }
+      //G 飞书回了错误码：请求到了、被拒了 → 确定没发。
       if (typeof body?.code === 'number') {
-        throw new Error(explain(action, body.code, body.msg));
+        //M 飞书返回明确错误码时换成中文报错说明，按确定未发出抛出。
+        const reason = getExplain(action, body.code, body.msg);
+        throw new NotSent(reason);
       }
-      const status = response?.status === undefined ? '' : `HTTP ${String(response.status)} `;
-      throw new Error(`飞书${action}失败：${status}${textModule.messageOf(error)}`);
+      let status = '';
+      if (response?.status !== undefined) {
+        status = `HTTP ${String(response.status)} `;
+      }
+      const said = `飞书${action}失败：${status}${textModule.getMessage(error)}`;
+
+      //G 4xx：请求到了、被拒了 → 确定没发。断网、超时、5xx 不知道收没收，照旧是普通 Error。
+      const code = response?.status ?? 0;
+      if (code >= 400 && code < 500) {
+        throw new NotSent(said);
+      }
+      throw new Error(said);
     }
 
     //M HTTP 200：带 code 的看 code；上传类不带 code，直接算成功。
     const coded = result as Coded | null;
     if (coded !== null && typeof coded === 'object' && typeof coded.code === 'number' && coded.code !== 0) {
       if (RATE_LIMIT_CODES.has(coded.code) && attempt < RETRY_TIMES) {
-        await sleep(waitMs * 2 ** attempt);
+        await Bun.sleep(waitMs * 2 ** attempt);
         continue;
       }
-      throw new Error(explain(action, coded.code, coded.msg));
+      //M 飞书返回明确业务错误码且非可重试限流，翻译为中文权限/错误说明并抛出 NotSent。
+      const reason = getExplain(action, coded.code, coded.msg);
+      throw new NotSent(reason);
     }
     return result;
   }

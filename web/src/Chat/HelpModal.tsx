@@ -24,8 +24,10 @@ const SHORTCUTS: [string, string][] = [
 /**
  * 帮助弹窗。
  * @param props open 开着没有；onClose 关。
+ * @returns 展示快捷键表与斜杠命令清单的弹窗元素。
  */
 export function HelpModal(props: { open: boolean; onClose: () => void }): react.JSX.Element {
+  //M 订阅界面翻译函数，用来把快捷键说明和斜杠命令提示翻成当前界面语言。
   const t = i18n.useT();
   return (
     <antd.Modal open={props.open} onCancel={props.onClose} footer={null} title={t('快捷键和用法')} width={620}>

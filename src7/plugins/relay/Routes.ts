@@ -5,18 +5,7 @@
 import type * as fastify from 'fastify';
 import type { Http } from '../http/index.ts';
 import type { Relay } from './index.ts';
-
-
-/** 带状态码的错误：relay 抛它，接口照状态码回。 */
-export class Failure extends Error {
-  /**
-   * @param status 状态码：400 请求不对，404 没有这个收件号。
-   * @param message 一句话。
-   */
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
+import * as failureModule from '../../utils/Failure.ts';
 
 
 /** 收件的三种状态，GET /api/relay/inbox 的 state 只许写这几个。 */
@@ -29,20 +18,29 @@ const STATES = new Set(['pending', 'replied', 'expired']);
  *   POST /api/relay/reply { id | chat, text, bot?, helper?, reply_to?, file?, done? } → { ok: true, item }
  * @param http HTTP 服务。
  * @param relay relay 插件本体。
+ * 副作用：在 http.app 上加两条路由。
  */
 export function routes(http: Http, relay: Relay): void {
+  //M 收件：外部助手定时来拉自己的那几条；查询参数在这里转成数、查一遍，出错由 answer 回 400。
   http.app.get<{ Querystring: Record<string, unknown> }>('/api/relay/inbox', (request, reply) => {
     return answer(reply, () => {
       const query = request.query;
       const since = whole(query['since'], 0, 'since');
-      const limit = Math.min(whole(query['limit'], 50, 'limit'), 200);
-      const only = { bot: text(query['bot']), state: text(query['state']), helper: text(query['helper']) };
-      if (only.state !== undefined && !STATES.has(only.state)) {
-        throw new Failure(400, 'state 只能写 pending、replied、expired');
+      let limit = Math.min(whole(query['limit'], 50, 'limit'), 200);
+      if (limit === 0) {
+        limit = 50;
       }
-      return relay.list(since, limit === 0 ? 50 : limit, only);
+      //M 三个筛选条件：没写、空串都当不筛（text 回 undefined）。
+      const only = { bot: text(query['bot']), state: text(query['state']), helper: text(query['helper']) };
+      //G state 写了别的词：直接 400，不拿去查。
+      if (only.state !== undefined && !STATES.has(only.state)) {
+        throw new failureModule.Failure(400, 'state 只能写 pending、replied、expired');
+      }
+      //M 查过的条件交给 relay 列收件，回 { items, last }。
+      return relay.list(since, limit, only);
     });
   });
+  //M 回信：正文原样交给 relay.accept 查和落库，来源记成 http。
   http.app.post<{ Body: unknown }>('/api/relay/reply', (request, reply) => {
     return answer(reply, () => ({ ok: true, item: relay.accept(request.body, 'http') }));
   });
@@ -57,10 +55,13 @@ export function routes(http: Http, relay: Relay): void {
  */
 async function answer(reply: fastify.FastifyReply, act: () => unknown): Promise<unknown> {
   try {
+    //M 跑这条接口自己的事，结果原样交给 Fastify 回。
     return act();
   } catch (error) {
-    if (!(error instanceof Failure)) throw error;
+    //G 不是 Failure 的（程序自己的错）原样抛，让 Fastify 回 500。
+    if (!(error instanceof failureModule.Failure)) throw error;
 
+    //M Failure 是查参数时抛的：照它带的状态码回 { error }。
     await reply.code(error.status).send({ error: error.message });
     return reply;
   }
@@ -77,8 +78,9 @@ async function answer(reply: fastify.FastifyReply, act: () => unknown): Promise<
  */
 function whole(value: unknown, fallback: number, key: string): number {
   if (value === undefined || value === '') return fallback;
+  //M 查询参数都是字符串：先转成数，不是非负整数就 400。
   const number = Number(value);
-  if (!Number.isInteger(number) || number < 0) throw new Failure(400, `${key} 要写成非负整数`);
+  if (!Number.isInteger(number) || number < 0) throw new failureModule.Failure(400, `${key} 要写成非负整数`);
   return number;
 }
 
@@ -89,5 +91,7 @@ function whole(value: unknown, fallback: number, key: string): number {
  * @returns 字符串或 undefined。
  */
 function text(value: unknown): string | undefined {
-  return typeof value === 'string' && value !== '' ? value : undefined;
+  if (typeof value === 'string' && value !== '') return value;
+
+  return undefined;
 }

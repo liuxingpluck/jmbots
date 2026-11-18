@@ -20,24 +20,30 @@ function SlashList(props: { items: slash.SlashCommand[]; selected: number; onPic
   }
   return (
     <div className="jm-slash" role="listbox" aria-label={props.t('斜杠命令')}>
-      {props.items.map((command, index) => (
-        <button
-          key={command.name}
-          type="button"
-          role="option"
-          aria-selected={index === props.selected}
-          className={index === props.selected ? 'jm-slash-item jm-active' : 'jm-slash-item'}
-          onMouseDown={(event) => {
-            //M 按下时就选，免得输入框先失焦、列表先关掉。
-            event.preventDefault();
-            props.onPick(index);
-          }}
-        >
-          <span className="jm-slash-name">/{props.t(command.name)}</span>
-          <span className="jm-slash-hint">{props.t(command.hint)}</span>
-          <span className="jm-slash-group">{props.t(command.group)}</span>
-        </button>
-      ))}
+      {props.items.map((command, index) => {
+        let itemClass = 'jm-slash-item';
+        if (index === props.selected) {
+          itemClass = 'jm-slash-item jm-active';
+        }
+        return (
+          <button
+            key={command.name}
+            type="button"
+            role="option"
+            aria-selected={index === props.selected}
+            className={itemClass}
+            onMouseDown={(event) => {
+              //M 按下时就选，免得输入框先失焦、列表先关掉。
+              event.preventDefault();
+              props.onPick(index);
+            }}
+          >
+            <span className="jm-slash-name">/{props.t(command.name)}</span>
+            <span className="jm-slash-hint">{props.t(command.hint)}</span>
+            <span className="jm-slash-group">{props.t(command.group)}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -48,6 +54,7 @@ function SlashList(props: { items: slash.SlashCommand[]; selected: number; onPic
  * @param getContext 执行命令时拿界面的几个动作（每次执行时现取，拿到的是最新的）。
  * @param t 翻译函数（列表在独立 React 根里，不能 useT，由调用方传进来）。
  * @returns Tiptap 扩展（优先级高于“Enter 发送”，列表开着时 Enter 是选命令）。
+ * 副作用：菜单打开时向 document.body 挂载独立宿主节点与 React 根节点，关闭时卸载并移除 DOM。
  */
 export function createSlashExtension(getContext: () => slash.SlashActions, t: i18n.Translate): tiptapReact.Extension {
   return tiptapReact.Extension.create({
@@ -60,6 +67,7 @@ export function createSlashExtension(getContext: () => slash.SlashActions, t: i1
           char: '/',
           items: ({ query }) => slash.filterCommands(query),
           command: ({ editor, range, props }) => {
+            //M 删掉输入的 /命令 文本后，现取最新界面动作并执行选中命令。
             editor.chain().focus().deleteRange(range).run();
             props.run({ ...getContext(), editor });
           },
@@ -98,6 +106,7 @@ export function createSlashExtension(getContext: () => slash.SlashActions, t: i1
                 items = props.items;
                 selected = 0;
                 pick = props.command;
+                //M 同步初始过滤结果与高亮下标，首次把命令列表画进新挂载的 React 根节点。
                 paint();
                 unmount = props.mount(element);
               },
@@ -105,13 +114,23 @@ export function createSlashExtension(getContext: () => slash.SlashActions, t: i1
                 items = props.items;
                 selected = Math.min(selected, Math.max(items.length - 1, 0));
                 pick = props.command;
+                //M 过滤结果变化并收敛选中下标后，重画命令列表同步最新条目与高亮。
                 paint();
               },
               onKeyDown: ({ event, view }) => {
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                   /** 挪一格（转圈）。 */
-                  const step = event.key === 'ArrowDown' ? 1 : -1;
-                  selected = items.length === 0 ? 0 : (selected + step + items.length) % items.length;
+                  let step = -1;
+                  if (event.key === 'ArrowDown') {
+                    step = 1;
+                  }
+                  if (items.length === 0) {
+                    selected = 0;
+                  }
+                  if (items.length > 0) {
+                    selected = (selected + step + items.length) % items.length;
+                  }
+                  //M 方向键循环移动选中下标后立即重画列表，让高亮项与键盘位置一致。
                   paint();
                   return true;
                 }

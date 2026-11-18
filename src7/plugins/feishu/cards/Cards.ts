@@ -11,7 +11,7 @@ import type { SessionMeta } from '../../../Sessions.ts';
 import * as textModule from '../../../utils/Text.ts';
 import * as workspaceModule from '../../../utils/Workspace.ts';
 import { feishuCustomer } from '../index.ts';
-import type { FeishuAddress, Feishu, Toast } from '../index.ts';
+import type { FeishuAddress, Feishu, FeishuPerson, Toast } from '../index.ts';
 import * as render from './Render.ts';
 
 
@@ -50,12 +50,6 @@ interface CardRow {
 }
 
 
-/** 现在的本地时间，日志用。 */
-function now(): string {
-  return new Date().toLocaleString('zh-CN', { hour12: false });
-}
-
-
 /**
  * approval 在时开工：听 asked、decided，记下 approval 服务给 onAction 用。
  * @param feishu 飞书渠道。
@@ -70,9 +64,11 @@ export function setupApproval(feishu: Feishu, ctx: cordis.Context): void {
     };
   });
   ctx.on('approval/asked', (pending) => {
+    //M 收到待确认请求时异步群发通知与交互卡片。
     void onAsked(feishu, ctx, pending);
   });
   ctx.on('approval/decided', (pending) => {
+    //M 审批状态落定后异步把发出过的相关卡片更新为灰底终态。
     void onDecided(feishu, pending);
   });
 }
@@ -91,6 +87,7 @@ export function setupProgress(feishu: Feishu, ctx: cordis.Context): void {
     };
   });
   ctx.on('progress/update', (item) => {
+    //M 长任务进度更新时异步发送或原地刷新对应私聊进度卡片。
     void onProgress(feishu, ctx, item);
   });
 }
@@ -102,8 +99,9 @@ export function setupProgress(feishu: Feishu, ctx: cordis.Context): void {
  * @param sessionId 会话号；没有就没有地址。
  * @returns 飞书来的会话交回地址，别的是 undefined。
  */
-export function addressOf(ctx: cordis.Context, sessionId?: string): FeishuAddress | undefined {
+export function getAddress(ctx: cordis.Context, sessionId?: string): FeishuAddress | undefined {
   if (sessionId === undefined || sessionId === '') return undefined;
+  //M 按会话号查库确认渠道属于 feishu 后取出其回话地址结构。
   const row = ctx.sessions.find({ id: sessionId })[0];
   if (row?.channel !== 'feishu') return undefined;
   return row.address as FeishuAddress;
@@ -144,14 +142,25 @@ export function ownerChat(feishu: Feishu, ctx: cordis.Context, appId: string): {
 
     const found = row.address as FeishuAddress;
     const address: FeishuAddress = { appId, chatId: found.chatId, messageId: found.messageId, openId: person.openId, chatType: 'p2p' };
+    //M 按统一规则补齐客户唯一标识，方便后续会话复用与记忆索引。
     address.customer = feishuCustomer('p2p', found.chatId, person.openId);
     return { name: person.name || OWNER_FALLBACK, address };
   }
 
   //M 找不到：退回这个应用最近私聊的人；名字照那个人（是本人的话），不然照 people 里的本人。
   const last = feishu.lastPrivate(appId);
-  const person = last === undefined ? undefined : feishu.config.people.get(last.openId);
-  const name = person?.role === 'owner' && person.name !== '' ? person.name : ownerName(feishu);
+  let person: FeishuPerson | undefined;
+  if (last !== undefined) {
+    person = feishu.config.people.get(last.openId);
+  }
+  let name = '';
+  if (person?.role === 'owner' && person.name !== '') {
+    name = person.name;
+  }
+  if (name === '') {
+    //M 最近私聊人不是已填名字的本人，回退取 people 里登记的本人名称。
+    name = ownerName(feishu);
+  }
   return { name, address: last };
 }
 
@@ -166,17 +175,30 @@ export function ownerChat(feishu: Feishu, ctx: cordis.Context, appId: string): {
  * @returns 地址清单；可能是空的。
  */
 export function targets(feishu: Feishu, ctx: cordis.Context, pending: render.PendingLike): FeishuAddress[] {
-  const own = addressOf(ctx, pending.session);
+  //M 读取发起会话的原始飞书地址，决定卡片首站投递到当前私聊还是转投本人私聊。
+  const own = getAddress(ctx, pending.session);
   //G 群里的会话：卡片换成发本人私聊。
-  const first = own !== undefined && workspaceModule.isGroup(own) ? ownerChat(feishu, ctx, own.appId).address : own;
-  const list = first === undefined ? [] : [first];
-  for (const appId of feishu.appsOf(pending.bot)) {
+  let first = own;
+  if (own !== undefined && workspaceModule.isGroup(own)) {
+    //M 群会话改查本人在同一应用下的私聊回话地址。
+    first = ownerChat(feishu, ctx, own.appId).address;
+  }
+  const list: FeishuAddress[] = [];
+  if (first !== undefined) {
+    list.push(first);
+  }
+  //M 补充收集该机器人名下其他飞书应用的最近私聊地址。
+  for (const appId of feishu.getApps(pending.bot)) {
     if (appId === own?.appId) continue;
     const last = feishu.lastPrivate(appId);
-    if (last !== undefined) list.push(last);
+    if (last !== undefined) {
+      list.push(last);
+    }
   }
   if (list.length === 0) {
-    console.error(`${now()} 飞书：机器人 ${pending.bot} 在飞书上还没人私聊过，待确认 #${String(pending.id)} 没推`);
+    //M 无任何可用私聊投递目标时取时间戳打印提示日志。
+    const logTime = textModule.getClock(Date.now(), 'date');
+    console.error(`${logTime} 飞书：机器人 ${pending.bot} 在飞书上还没人私聊过，待确认 #${String(pending.id)} 没推`);
   }
   return list;
 }
@@ -198,13 +220,15 @@ async function onAsked(feishu: Feishu, ctx: cordis.Context, pending: render.Pend
       const sql = 'INSERT OR REPLACE INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, ?, ?, 0, ?)';
       feishu.db.query(sql).run(cardId, 'approval', String(pending.id), Date.now());
     } catch (error) {
-      console.error(`${now()} 飞书：待确认 #${String(pending.id)} 的卡片没发出去，改发文字：${textModule.messageOf(error)}`);
+      const logTime = textModule.getClock(Date.now(), 'date');
+      console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 的卡片没发出去，改发文字：${textModule.getMessage(error)}`);
       const id = String(pending.id);
       const text = `待确认 #${id}：${pending.title}\n${pending.detail}\n回复“同意 ${id}”或“拒绝 ${id}”。`;
       try {
         await feishu.sendText(address, text);
       } catch (again) {
-        console.error(`${now()} 飞书：待确认 #${id} 的文字也没发出去：${textModule.messageOf(again)}`);
+        const againTime = textModule.getClock(Date.now(), 'date');
+        console.error(`${againTime} 飞书：待确认 #${id} 的文字也没发出去：${textModule.getMessage(again)}`);
       }
     }
   }
@@ -218,17 +242,21 @@ async function onAsked(feishu: Feishu, ctx: cordis.Context, pending: render.Pend
  * @param pending 那件事。
  */
 async function groupNote(feishu: Feishu, ctx: cordis.Context, pending: render.PendingLike): Promise<void> {
-  const own = addressOf(ctx, pending.session);
+  //M 取该会话所属的飞书回话地址，仅当请求确实源自群聊时才在群里发文字提醒。
+  const own = getAddress(ctx, pending.session);
   if (own === undefined || !workspaceModule.isGroup(own)) return;
 
   //M 本人的私聊找到了说“已发到他私聊”，没人私聊过就说发不过去。
   const owner = ownerChat(feishu, ctx, own.appId);
-  const sent = `这一步要 ${owner.name} 确认，已发到他私聊`;
-  const text = owner.address === undefined ? `这一步要 ${owner.name} 确认，他还没私聊过机器人，卡片发不过去` : sent;
+  let text = `这一步要 ${owner.name} 确认，已发到他私聊`;
+  if (owner.address === undefined) {
+    text = `这一步要 ${owner.name} 确认，他还没私聊过机器人，卡片发不过去`;
+  }
   try {
     await feishu.sendText(own, text);
   } catch (error) {
-    console.error(`${now()} 飞书：待确认 #${String(pending.id)} 群里那句没发出去：${textModule.messageOf(error)}`);
+    const logTime = textModule.getClock(Date.now(), 'date');
+    console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 群里那句没发出去：${textModule.getMessage(error)}`);
   }
 }
 
@@ -240,13 +268,17 @@ async function groupNote(feishu: Feishu, ctx: cordis.Context, pending: render.Pe
  */
 async function onDecided(feishu: Feishu, pending: render.PendingLike): Promise<void> {
   const sql = "SELECT card_id, kind, ref, ended FROM feishu_cards WHERE kind = 'approval' AND ref = ?";
+  //M 查出该审批编号曾发出过的全部卡片 ID，逐张更新成终态样式。
   const rows = feishu.db.query(sql).all(String(pending.id)) as CardRow[];
   for (const row of rows) {
     try {
+      //M 按最新审批结果重新渲染卡片并调用飞书接口原地更新内容。
       await feishu.updateCard(row.card_id, render.approval(pending));
       feishu.db.query('UPDATE feishu_cards SET ended = 1 WHERE card_id = ?').run(row.card_id);
     } catch (error) {
-      console.error(`${now()} 飞书：待确认 #${String(pending.id)} 的卡片没改成：${textModule.messageOf(error)}`);
+      //M 取格式化日期前缀用于记录更新卡片失败的错误日志。
+      const logTime = textModule.getClock(Date.now(), 'date');
+      console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 的卡片没改成：${textModule.getMessage(error)}`);
     }
   }
 }
@@ -260,7 +292,8 @@ async function onDecided(feishu: Feishu, pending: render.PendingLike): Promise<v
  * @param item 一项进度。
  */
 async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.ProgressItemLike): Promise<void> {
-  const address = addressOf(ctx, item.sessionId);
+  //M 按会话号查飞书回话地址，非飞书会话或群聊会话直接跳过不发进度卡片。
+  const address = getAddress(ctx, item.sessionId);
   if (address === undefined) return;
 
   //G 群里的会话不发进度卡片。
@@ -268,20 +301,28 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
   try {
     const sql = "SELECT card_id, kind, ref, ended FROM feishu_cards WHERE kind = 'progress' AND ref = ? AND ended = 0";
     const row = feishu.db.query(sql).get(item.sessionId) as CardRow | null;
-    let cardId: string;
+    let cardId = row?.card_id ?? '';
     if (row === null) {
-      cardId = await feishu.sendCard(address, render.progress(item));
+      //M 尚无未结束卡片：渲染进度卡片结构并发送到私聊记录 feishu_cards。
+      const payload = render.progress(item);
+      //M 发送首次进度卡片到当前飞书私聊并保存返回的 card_id。
+      cardId = await feishu.sendCard(address, payload);
       const insert = 'INSERT OR REPLACE INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, ?, ?, 0, ?)';
       feishu.db.query(insert).run(cardId, 'progress', item.sessionId, Date.now());
-    } else {
-      cardId = row.card_id;
-      await feishu.updateCard(cardId, render.progress(item));
+    }
+    if (row !== null) {
+      //M 已有未结束的进度卡片：按最新进展渲染卡片结构并原地刷新。
+      const payload = render.progress(item);
+      //M 调飞书更新卡片接口将原进度卡片刷新到最新状态。
+      await feishu.updateCard(cardId, payload);
     }
     if (item.endedAt !== undefined) {
       feishu.db.query('UPDATE feishu_cards SET ended = 1 WHERE card_id = ?').run(cardId);
     }
   } catch (error) {
-    console.error(`${now()} 飞书：会话 ${item.sessionId} 的进度卡片没发成：${textModule.messageOf(error)}`);
+    //M 取格式化日期前缀用于记录进度卡片发送或刷新失败的错误日志。
+    const logTime = textModule.getClock(Date.now(), 'date');
+    console.error(`${logTime} 飞书：会话 ${item.sessionId} 的进度卡片没发成：${textModule.getMessage(error)}`);
   }
 }
 
@@ -302,24 +343,38 @@ export function onAction(
   value: Record<string, unknown>,
 ): Promise<Toast | undefined> {
   //G 不是本人点的：只回提示，什么都不动。
-  if (workspaceModule.roleOf(address) !== 'owner') return Promise.resolve({ type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` });
+  if (workspaceModule.getRole(address) !== 'owner') return Promise.resolve({ type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` });
 
+  //M 反查该卡片对应的业务类型与审批/会话编号，库里找不到则忽略。
   const row = feishu.db.query('SELECT card_id, kind, ref, ended FROM feishu_cards WHERE card_id = ?').get(cardId) as CardRow | null;
   if (row === null) return Promise.resolve(undefined);
 
   if (row.kind === 'approval' && feishu.approval !== undefined) {
     const approve = value['action'] === 'approve';
+    //M 调用 approval 服务提交审批结果，已处理过的则交回原有结论给用户提示。
     const result = feishu.approval.decide(Number(row.ref), approve, `飞书卡片 ${address.openId}`);
     if (typeof result === 'string') {
       return Promise.resolve({ type: 'info', content: `待确认 #${row.ref} 已经处理过了：${result}` });
     }
     //M 卡片由随后的 approval/decided 改成灰色。
-    return Promise.resolve({ type: 'success', content: approve ? '已同意执行' : '已拒绝' });
+    let toastText = '已拒绝';
+    if (approve) {
+      toastText = '已同意执行';
+    }
+    return Promise.resolve({ type: 'success', content: toastText });
   }
   if (row.kind === 'progress' && feishu.progress !== undefined) {
-    const action = value['action'] === 'stop' ? 'stop' : 'limit';
-    const minutes = action === 'limit' ? Number(value['minutes'] ?? 0) : undefined;
-    return Promise.resolve({ type: 'info', content: feishu.progress.act(row.ref, action, minutes) });
+    let action: 'stop' | 'limit' = 'limit';
+    if (value['action'] === 'stop') {
+      action = 'stop';
+    }
+    let minutes: number | undefined;
+    if (action === 'limit') {
+      minutes = Number(value['minutes'] ?? 0);
+    }
+    //M 调用进度服务执行终止或限时操作并交回给用户的小提示文本。
+    const feedback = feishu.progress.act(row.ref, action, minutes);
+    return Promise.resolve({ type: 'info', content: feedback });
   }
   return Promise.resolve(undefined);
 }

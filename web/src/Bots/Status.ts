@@ -36,7 +36,7 @@ export const STATUS_LOOKS: Record<ShownStatus, StatusLook> = {
  * @param online 连得上后端吗。
  * @param bot 后端给的机器人；还没拿到是 undefined。
  */
-export function shownStatus(online: boolean, bot: types.BotView | undefined): ShownStatus {
+export function getShownStatus(online: boolean, bot: types.BotView | undefined): ShownStatus {
   if (!online || !bot) {
     return 'off';
   }
@@ -50,7 +50,7 @@ export function shownStatus(online: boolean, bot: types.BotView | undefined): Sh
  * @param bot 后端给的机器人。
  * @param t 翻译函数；不传是简体中文原文。
  */
-export function statusShort(status: ShownStatus, bot: types.BotView | undefined, t: i18n.Translate = i18n.source): string {
+export function getStatusShort(status: ShownStatus, bot: types.BotView | undefined, t: i18n.Translate = i18n.source): string {
   if (status === 'off' || !bot) {
     return t('连不上');
   }
@@ -73,7 +73,7 @@ export function statusShort(status: ShownStatus, bot: types.BotView | undefined,
  * @param bot 后端给的机器人。
  * @param t 翻译函数；不传是简体中文原文。
  */
-export function statusDetail(status: ShownStatus, bot: types.BotView | undefined, t: i18n.Translate = i18n.source): string {
+export function getStatusDetail(status: ShownStatus, bot: types.BotView | undefined, t: i18n.Translate = i18n.source): string {
   if (status === 'off' || !bot) {
     return t('连不上后端');
   }

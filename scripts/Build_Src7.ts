@@ -78,12 +78,13 @@ function importPath(file: string): string {
  * 副作用：写 Register.ts 和 Entry.ts。
  */
 function writeEntry(workDir: string, webDir: string): string {
-  //M src7 的源码原文（不含测试）：boot-trail 照“文件:行号”取 JSDoc 给 /flow/ 的“看启动”，编译版磁盘上没有源码。
-  //M   拷成 workDir/src7-text/<路径>.ts.txt 再嵌：.ts 原文件直接 with { type: 'file' }，Bun 会把同一个模块当成文件资源，
+  //M src7 的源码原文（不含测试）：tutorial 照“文件:行号”取 JSDoc、函数源码给教程页，编译版磁盘上没有源码。
+  //M   插件的 说明.md 一起嵌：教程页「说明」标签读它。
+  //M   拷成 workDir/src7-text/<路径>.txt 再嵌：.ts 原文件直接 with { type: 'file' }，Bun 会把同一个模块当成文件资源，
   //M   Main.ts 那边的命名导出就没了（0.7.6 编包时踩到）。登记名仍是 src7/<路径>。
   const textDir = path.join(workDir, 'src7-text');
   const sources = walk(path.join(serveProcess.ROOT, 'src7'))
-    .filter((item) => item.endsWith('.ts') && !item.endsWith('.test.ts'))
+    .filter((item) => (item.endsWith('.ts') && !item.endsWith('.test.ts')) || item.endsWith('说明.md'))
     .map((item): [string, string] => {
       const copy = path.join(textDir, `${item}.txt`);
       fs.mkdirSync(path.dirname(copy), { recursive: true });

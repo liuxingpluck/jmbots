@@ -3,7 +3,7 @@
  * 这是调试用的（CLAUDE.md：调试插件一律全量原样显示），不打码、不截断、不限层数；只有三样不往里读：
  * 绕回来的写 [循环]，函数写 ƒ 名字，Cordis 的 ctx、数据库连接、网络连接、Fastify 这类外部资源对象写 [类名]。
  * boot-trail（启动每一步拍一份）和 flow（现在、运行时每个事件拍一份）都用这里；放 utils 是因为插件之间不互相 import。
- * 函数：walkState 遍历，diffOf 比差异，group 读一组，snapshotOf 拼一份，bytesOf 估一份新占多少字节。只读不改：不调 getter，不发事件。
+ * 函数：walkState 遍历，getDiff 比差异，group 读一组，getSnapshot 拼一份，getBytes 估一份新占多少字节。只读不改：不调 getter，不发事件。
  */
 import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
@@ -34,7 +34,7 @@ const NOTES: Record<string, string> = {
   error: '这组读不到的原因',
 };
 
-/** snapshotOf 拍下的快照：遍历时又遇到（boot-trail 每步存着的）只写 [快照]，不往里读。 */
+/** getSnapshot 拍下的快照：遍历时又遇到（boot-trail 每步存着的）只写 [快照]，不往里读。 */
 const TAKEN = new WeakSet<object>();
 
 /** 每组的 JSON：拍下一份时和上一份同名的组比，没变就沿用上一份的那组，几百份快照不至于占太多内存。 */
@@ -47,7 +47,7 @@ const JSON_OF = new WeakMap<StateGroup, string>();
  * @param value 一个对象。
  * @returns 类名；不是这类是 undefined。
  */
-function resourceName(value: object): string | undefined {
+function getResourceName(value: object): string | undefined {
   if (cordis.Context.is(value)) return 'Context';
 
   //M Fastify 实例是普通对象，按它特有的几个方法认（用 in，不读值，免得碰到 getter）。
@@ -61,7 +61,9 @@ function resourceName(value: object): string | undefined {
     || value instanceof WeakSet
     || value instanceof ArrayBuffer
     || ArrayBuffer.isView(value);
-  return resource ? value.constructor.name : undefined;
+  if (resource) return value.constructor.name;
+
+  return undefined;
 }
 
 
@@ -81,7 +83,7 @@ export function walkState(value: unknown, above: object[] = []): unknown {
   //G 拍下的快照、绕回来的、外部资源：只写一个记号，不往里读。
   if (TAKEN.has(value)) return '[快照]';
   if (above.includes(value)) return '[循环]';
-  const resource = resourceName(value);
+  const resource = getResourceName(value);
   if (resource !== undefined) return `[${resource}]`;
 
   if (value instanceof Date) return value.toLocaleString('zh-CN', { hourCycle: 'h23' });
@@ -103,10 +105,14 @@ export function walkState(value: unknown, above: object[] = []): unknown {
     for (const [name, item] of value as Map<unknown, unknown>) {
       pairs.push([String(name), item]);
     }
-  } else {
+  }
+  if (!(value instanceof Map)) {
     for (const name of Object.keys(value)) {
       const slot = Object.getOwnPropertyDescriptor(value, name);
-      const item = slot?.get === undefined ? slot?.value : '[getter]';
+      let item: unknown = '[getter]';
+      if (slot?.get === undefined) {
+        item = slot?.value;
+      }
       pairs.push([name, item]);
     }
   }
@@ -117,6 +123,7 @@ export function walkState(value: unknown, above: object[] = []): unknown {
   if (pairs.length === 0 && !plain) return `[${value.constructor.name}]`;
 
   const out: Record<string, unknown> = {};
+  //M 逐对递归展开下层字段，完成全量可读结构转换。
   for (const [name, item] of pairs) {
     out[name] = walkState(item, inner);
   }
@@ -136,11 +143,13 @@ export function group(name: string, note: string, read: () => unknown, previous:
   let value: unknown;
   let shown = notes;
   try {
+    //M 现取该组服务对象并用 walkState 安全序列化；任一服务读取报错不拖累整份快照。
     value = walkState(read());
   } catch (error) {
-    value = { error: textModule.messageOf(error) };
+    value = { error: textModule.getMessage(error) };
     shown = { error: NOTES['error'] ?? '' };
   }
+  //M 序列化对比上一份同名组的 JSON，完全一致直接沿用旧对象节省内存与 diff 开销。
   const json = JSON.stringify(value);
   const old = previous.find((item) => item.name === name);
   if (old !== undefined && JSON_OF.get(old) === json) return old;
@@ -157,7 +166,7 @@ export function group(name: string, note: string, read: () => unknown, previous:
  * @param previous 上一份；同名的组没变就沿用。
  * @returns 各组。
  */
-export function snapshotOf(ctx: cordis.Context, previous: StateGroup[] = []): StateGroup[] {
+export function getSnapshot(ctx: cordis.Context, previous: StateGroup[] = []): StateGroup[] {
   //M main 组：启动参数、是不是试运行（照 --mode candidate 认）、进程号。
   const argv = process.argv.slice(2);
   const mode = argv.indexOf('--mode');
@@ -174,6 +183,7 @@ export function snapshotOf(ctx: cordis.Context, previous: StateGroup[] = []): St
     //G 撤掉的、Cordis 自带的（根 fiber 提供的，runtime 是 null）不看。
     if (impl?.value === undefined || impl.ctx.fiber.runtime === null) continue;
 
+    //M 读取该插件提供的服务对象并归组（只读不改）。
     const read = (): unknown => impl.value;
     groups.push(group(impl.name, `${impl.ctx.fiber.name} 提供的服务`, read, previous));
   }
@@ -187,7 +197,7 @@ export function snapshotOf(ctx: cordis.Context, previous: StateGroup[] = []): St
  * @param groups 这一份。
  * @param previous 上一份；没有给 []。
  */
-export function bytesOf(groups: StateGroup[], previous: StateGroup[] = []): number {
+export function getBytes(groups: StateGroup[], previous: StateGroup[] = []): number {
   let bytes = 0;
   for (const item of groups) {
     if (previous.includes(item)) continue;
@@ -206,7 +216,7 @@ export function bytesOf(groups: StateGroup[], previous: StateGroup[] = []): numb
  * @param out 收结果的地方。
  * @returns 变了的地方，每处是一串键名（列表的下标也写成字）；多了、少了、改了都算，多了少了只报它自己那一层。
  */
-export function diffOf(before: unknown, after: unknown, at: string[] = [], out: string[][] = []): string[][] {
+export function getDiff(before: unknown, after: unknown, at: string[] = [], out: string[][] = []): string[][] {
   if (before === after) return out;
 
   const nested = typeof before === 'object' && before !== null
@@ -223,7 +233,7 @@ export function diffOf(before: unknown, after: unknown, at: string[] = [], out: 
   const names = new Set([...Object.keys(older), ...Object.keys(newer)]);
   for (const name of names) {
     const childAt = [...at, name];
-    diffOf(older[name], newer[name], childAt, out);
+    getDiff(older[name], newer[name], childAt, out);
   }
   return out;
 }

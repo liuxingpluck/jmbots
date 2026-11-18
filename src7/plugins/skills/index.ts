@@ -13,6 +13,8 @@ import * as yaml from 'yaml';
 
 /** 插件名。 */
 export const name = 'skills';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+export const version = '1.0.1';
 
 /** 用到的服务：resources 拿目录；tools 登记 skill 工具。 */
 export const inject = ['resources', 'tools'];
@@ -36,16 +38,23 @@ export interface Skill {
 /**
  * 扫几个技能根目录。同名时后面的盖掉前面的（先全局、后个人，个人优先），按名字排。
  * @param roots 根目录，先全局后个人。
+ * @returns 去重并按技能名排好序的技能列表。
  */
 export function list(roots: string[]): Skill[] {
   const found = new Map<string, Skill>();
   for (const root of roots) {
-    const entries = fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : [];
+    let entries: fs.Dirent[] = [];
+    if (fs.existsSync(root)) {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
       const file = path.join(root, entry.name, 'SKILL.md');
-      const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+      let text = '';
+      if (fs.existsSync(file)) {
+        text = fs.readFileSync(file, 'utf8');
+      }
       if (text.trim() === '') continue;
 
       //M 开头有 ---…--- 就用 yaml 解析出 name、description；解析坏了当没有。
@@ -61,9 +70,15 @@ export function list(roots: string[]): Skill[] {
           head = {};
         }
       }
-      const skillName = (typeof head['name'] === 'string' ? head['name'].trim() : '') || entry.name;
+      let skillName = entry.name;
+      if (typeof head['name'] === 'string' && head['name'].trim() !== '') {
+        skillName = head['name'].trim();
+      }
       const firstLine = body.split(/\r?\n/u).map((line) => line.trim()).find((line) => line !== '') ?? '';
-      let description = (typeof head['description'] === 'string' ? head['description'] : '') || firstLine.replace(/^#+\s*/u, '');
+      let description = firstLine.replace(/^#+\s*/u, '');
+      if (typeof head['description'] === 'string' && head['description'] !== '') {
+        description = head['description'];
+      }
       description = description.replace(/\s+/gu, ' ').trim();
       if ([...description].length > DESCRIPTION_MAX) description = `${[...description].slice(0, DESCRIPTION_MAX).join('')}…`;
       found.set(skillName, { name: skillName, description, file });
@@ -77,17 +92,20 @@ export function list(roots: string[]): Skill[] {
  * 挂上技能。
  * apply 是 Cordis 插件的入口：inject 里的服务就绪后 Cordis 调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
+ * 副作用：监听 session/request 往干活会话系统提示词注入技能清单，并登记只读工具 skill。
  */
 export function apply(ctx: cordis.Context): void {
   /** 这个机器人能用的技能：先全局后个人。每次现扫，不缓存（改了马上生效）。 */
-  const skillsOf = (bot: string): Skill[] => list([ctx.resources.dir('skills'), ctx.resources.dir('bots', bot, 'skills')]);
+  const getSkills = (bot: string): Skill[] => list([ctx.resources.dir('skills'), ctx.resources.dir('bots', bot, 'skills')]);
 
   //M 听 session/request：只给干活的会话加技能清单（前台、小会话不带，同 0.4）。
   ctx.on('session/request', (request) => {
+    //G 非 work 会话不需要注入技能清单，直接跳过。
     const row = request.session.row;
     if (row.kind !== 'work') return;
 
-    const skills = skillsOf(row.bot);
+    //M 现扫当前机器人可用的全局和个人技能，有技能时把清单拼进系统提示词。
+    const skills = getSkills(row.bot);
     if (skills.length === 0) return;
     request.system.push(`${HEAD}\n${skills.map((skill) => `- ${skill.name}：${skill.description}（@${skill.file}）`).join('\n')}`);
   });
@@ -105,13 +123,19 @@ export function apply(ctx: cordis.Context): void {
     },
     kinds: ['work'],
     run: (args, session) => {
-      const skills = skillsOf(session.row.bot);
+      //M 现扫当前机器人可用技能并按名字精确查找目标技能，找不到就列出已有名称报错。
+      const skills = getSkills(session.row.bot);
       const skill = skills.find((item) => item.name === args['name']);
       if (skill === undefined) {
         throw new Error(`没有技能「${String(args['name'])}」。有的是：${skills.map((item) => item.name).join('、') || '（一个也没有）'}`);
       }
       const folder = path.dirname(skill.file);
-      const target = path.resolve(folder, typeof args['file'] === 'string' && args['file'] !== '' ? args['file'] : 'SKILL.md');
+      let relativeFile = 'SKILL.md';
+      const rawFile = args['file'];
+      if (typeof rawFile === 'string' && rawFile !== '') {
+        relativeFile = rawFile;
+      }
+      const target = path.resolve(folder, relativeFile);
       const back = path.relative(folder, target);
       if (back.startsWith('..') || path.isAbsolute(back)) throw new Error(`只能读技能文件夹 ${folder} 里的文件`);
       if (!fs.existsSync(target) || !fs.statSync(target).isFile()) throw new Error(`技能里没有这个文件：${back}`);

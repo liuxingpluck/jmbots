@@ -88,12 +88,12 @@ bunTest.test('普通 Markdown 也按标题分层，key稳定，非标题段保�
 
 
 bunTest.test('相对文档链接以当前目录解析；外链和纯锚点不改变原聊天行为', () => {
-  bunTest.expect(kinds.documentLink('F:\\docs\\folder\\source.md', '../next%20file.md#part'))
+  bunTest.expect(kinds.getDocumentLink('F:\\docs\\folder\\source.md', '../next%20file.md#part'))
     .toBe('F:/docs/next file.md');
-  bunTest.expect(kinds.documentLink('/docs/folder/source.md', './child.md')).toBe('/docs/folder/child.md');
-  bunTest.expect(kinds.documentLink('F:/docs/source.md', 'F:\\other\\file.md')).toBe('F:/other/file.md');
-  bunTest.expect(kinds.documentLink('F:/docs/source.md', 'https://example.com/doc.md')).toBeNull();
-  bunTest.expect(kinds.documentLink('F:/docs/source.md', '#part')).toBeNull();
+  bunTest.expect(kinds.getDocumentLink('/docs/folder/source.md', './child.md')).toBe('/docs/folder/child.md');
+  bunTest.expect(kinds.getDocumentLink('F:/docs/source.md', 'F:\\other\\file.md')).toBe('F:/other/file.md');
+  bunTest.expect(kinds.getDocumentLink('F:/docs/source.md', 'https://example.com/doc.md')).toBeNull();
+  bunTest.expect(kinds.getDocumentLink('F:/docs/source.md', '#part')).toBeNull();
 });
 
 

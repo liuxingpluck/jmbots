@@ -33,5 +33,6 @@ export function useUiStore(): UiStore {
  * @param selector 选择函数。
  */
 export function useUi<T>(selector: (state: storeModule.UiState) => T): T {
+  //M 从 Context 取到状态仓库并立刻订阅 selector 切片，只在选中字段变化时触发组件重渲染。
   return useUiStore()(selector);
 }

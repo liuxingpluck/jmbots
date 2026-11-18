@@ -4,18 +4,28 @@
  *   函数行：骨架和插件发的跟踪点 trace（模块.函数、人话、代码、变量），带“文件:行号”；
  *   事件行：Cordis 每发一个事件先发 internal/dispatch，这里听它：事件名、挨个问还是通知、听的人、会话、文件:行号。
  * 0.4 的“run.started / step.after / tool.after……”那套事件名不再用：插件模式下事件就是 Cordis 的事件本身，谁发、谁听一目了然。
- * 另外没挂 files-mirror 时，把每场会话照对话的先后写成一份 对话.md（Markdown.ts）。不改任何东西：不拦、不问、不回话。
+ * 另外会同步挂上完整会话文件镜像 FilesMirror（原 files-mirror 已并入 ./FilesMirror.ts，保留 ctx.filesMirror）；
+ * 若关闭 mirror: false，才回退由 Markdown.ts 写简版 对话.md。另提供流水与镜像路径的查询事件。
  * 设计：docs/src7插件设计/journal.md（第 12 节是 11-14 改成跟踪行的说明）。
  */
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
+import * as checks from '../../utils/Checks.ts';
 import * as cut from '../../utils/Cut.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
+import { FilesMirror } from './FilesMirror.ts';
 import * as markdown from './Markdown.ts';
+
+export { FilesMirror } from './FilesMirror.ts';
 
 
 /** 插件名。 */
 export const name = 'journal';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+//M 1.1.0：并入原 files-mirror（统一提供 ctx.journal 与 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json）。
+export const version = '1.1.1';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
@@ -26,9 +36,48 @@ declare module 'cordis' {
     /** 流水服务，实现在 src7/plugins/journal/index.ts。别的插件当可选依赖，用 ctx.get('journal') 现取。 */
     journal: Journal;
   }
+  interface Events {
+    /** 查消息轨迹、流水或会话镜像路径。 */
+    'journal/request'(request: JournalRequest): void | Promise<void>;
+    /** 返回对应查询结果。 */
+    'journal/result'(result: JournalResult): void;
+  }
 }
-//M model/fallback（换了备选模型）声明在 src7/plugins/model-fallback/index.ts。
+//M model/fallback（换了备选模型）声明在 src7/plugins/model-catalog/Fallback.ts。
 
+/** 流水服务支持的查询。 */
+type JournalRequest = requestEventModule.RequestEnvelope & ({
+  /** 按消息号查轨迹。 */
+  action: 'message-lines';
+  /** 收件表的消息号。 */
+  message: number;
+  /** 最多取几行。 */
+  limit: number;
+} | {
+  /** 按筛选条件查流水。 */
+  action: 'query';
+  /** 与 GET /api/events 一致的查询参数。 */
+  params: Record<string, string | undefined>;
+} | {
+  /** 查会话镜像目录。 */
+  action: 'mirror-dir';
+  /** 机器人名。 */
+  bot: string;
+  /** 会话号。 */
+  sessionId: string;
+});
+
+/** 流水查询的回执。 */
+interface JournalResult extends requestEventModule.ResultEnvelope {
+  /** query 是否成功。 */
+  ok?: boolean;
+  /** message-lines 或 query 的流水。 */
+  lines?: JournalEvent[];
+  /** query 校验失败的原因。 */
+  error?: string;
+  /** mirror-dir 的镜像目录，关闭文件镜像时为空。 */
+  dir?: string;
+}
 
 /** 一条跟踪行。 */
 export interface JournalEvent {
@@ -110,12 +159,25 @@ export class Journal extends cordis.Service {
     ctx.on('trace', (where, text, code, vars) => {
       const session = vars['会话'] ?? vars['session'];
       const bot = vars['机器人'];
+      let botValue: string | null = null;
+      if (typeof bot === 'string') {
+        botValue = bot;
+      }
+      let sessionValue: string | null = null;
+      if (typeof session === 'string') {
+        sessionValue = session;
+      }
       //M 2026-11-16：跟踪点带着“消息号”的（Timeline.insert、WebApi.accept、Timeline.reply）也记进 message_id，/flow/ 按消息号收一条请求的轨迹要用。
       const messageId = vars['消息号'];
+      let messageIdValue: number | null = null;
+      if (typeof messageId === 'number' && Number.isSafeInteger(messageId)) {
+        messageIdValue = messageId;
+      }
+
+      //M 把跟踪点和消息号一同写入流水，供轨迹页按消息定位。
       this.record({
-        kind: '函数', name: where, mode: '', listeners: [], text, code, site: traceUtils.callSite(['plugins/journal/']),
-        bot: typeof bot === 'string' ? bot : null, sessionId: typeof session === 'string' ? session : null,
-        messageId: typeof messageId === 'number' && Number.isSafeInteger(messageId) ? messageId : null, vars,
+        kind: '函数', name: where, mode: '', listeners: [], text, code, site: traceUtils.getCallSite(['plugins/journal/']),
+        bot: botValue, sessionId: sessionValue, messageId: messageIdValue, vars,
       });
     });
 
@@ -124,21 +186,29 @@ export class Journal extends cordis.Service {
       if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/')) return;
       const line = traceUtils.dispatchLine(ctx, mode, event, args, VAR_MAX);
       this.record({
-        kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '', site: traceUtils.callSite(['plugins/journal/']),
+        kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '', site: traceUtils.getCallSite(['plugins/journal/']),
         bot: line.bot ?? null, sessionId: line.session ?? null, messageId: line.messageId ?? null, vars: line.vars,
       });
     });
 
-    //M 简版 对话.md 只在没挂 files-mirror 时写：挂了它，它写那份完整的。files-mirror 是可选的服务，ctx.get 现取。
+    //M 简版 对话.md 只在没挂 filesMirror 时写：挂了它，它写那份完整的。filesMirror 是可选的服务，ctx.get 现取。
     const mirrorless = (): boolean => ctx.get('filesMirror') === undefined;
     ctx.on('session/message', (session, message) => {
-      if (mirrorless()) markdown.append(ctx.resources, session, message);
+      if (mirrorless()) {
+        markdown.append(ctx.resources, session, message);
+      }
     });
     ctx.on('session/change', (session) => {
-      if (session.row.state !== 'running' && mirrorless()) markdown.ended(ctx.resources, session);
+      //G 一轮结束后只在没有完整镜像服务时向简版对话补结束标记。
+      if (session.row.state !== 'running' && mirrorless()) {
+        markdown.ended(ctx.resources, session);
+      }
     });
     ctx.on('bot/say', (session, text) => {
-      if (mirrorless()) markdown.said(ctx.resources, session, text);
+      //G 没有完整镜像服务时，由流水保存助手中途说的话。
+      if (mirrorless()) {
+        markdown.said(ctx.resources, session, text);
+      }
     });
   }
 
@@ -151,6 +221,7 @@ export class Journal extends cordis.Service {
     const now = Date.now();
     const sql = 'INSERT INTO journal_lines (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, vars)'
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    //M 把跟踪行连同截短后的内容和变量写入数据库，供轨迹查询。
     this.ctx.resources.db.query(sql).run(now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.chars(line.text, TEXT_MAX_CHARS),
       cut.chars(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId, shrink(line.vars));
 
@@ -158,6 +229,7 @@ export class Journal extends cordis.Service {
     if (now - this.prunedAt < DAY_MS) return;
 
     this.prunedAt = now;
+    //M 按配置天数清理过期流水，变更行数用来记录本次清理。
     const gone = this.ctx.resources.db.query('DELETE FROM journal_lines WHERE at < ?').run(now - this.keepDays * DAY_MS);
     //T 跟踪：删过期的行。
     const vars = { 删了几条: gone.changes, 留几天: this.keepDays };
@@ -180,8 +252,9 @@ export class Journal extends cordis.Service {
     const start = db.query(startSql).get(message) as { id: number } | null;
     if (start === null) return undefined;
 
+    //M 从该消息的起点顺序取限量流水，交给调用方筛选。
     const rows = db.query('SELECT * FROM journal_lines WHERE id >= ? ORDER BY id LIMIT ?').all(start.id, limit) as Row[];
-    return rows.map(eventOf);
+    return rows.map(getEvent);
   }
 
   /**
@@ -191,21 +264,32 @@ export class Journal extends cordis.Service {
    * @throws 400：message、since、limit 不是非负整数；kind 不对。
    */
   query(params: Record<string, string | undefined>): JournalEvent[] {
-    const message = count(params['message'], 'message');
-    const since = count(params['since'], 'since');
-    const limit = Math.min(count(params['limit'], 'limit') ?? LIST_DEFAULT, LIST_MAX);
+    //M 三个整数参数在入口查一次（utils/Checks.ts 的 checkCount），写错了回 400；limit 没写按默认，超了按上限。
+    const message = checks.checkCount(params['message'], 'message');
+    const since = checks.checkCount(params['since'], 'since');
+    const wantedLimit = checks.checkCount(params['limit'], 'limit') ?? LIST_DEFAULT;
+    const limit = Math.min(wantedLimit, LIST_MAX);
+
     let sql = 'SELECT * FROM journal_lines WHERE 1 = 1';
     const values: (string | number)[] = [];
 
     //M name 写成 xxx* 就是这一类都要（LIKE 'xxx%'），否则要全名。
     const name = params['name'] ?? params['type'];
     if (name !== undefined && name !== '') {
-      sql += name.endsWith('*') ? ' AND name LIKE ?' : ' AND name = ?';
-      values.push(name.endsWith('*') ? `${name.slice(0, -1)}%` : name);
+      let op = ' = ?';
+      let pattern = name;
+      if (name.endsWith('*')) {
+        op = ' LIKE ?';
+        pattern = `${name.slice(0, -1)}%`;
+      }
+      sql += ` AND name${op}`;
+      values.push(pattern);
     }
     const kind = params['kind'];
     if (kind !== undefined && kind !== '') {
-      if (kind !== '函数' && kind !== '事件') throw Object.assign(new Error('kind 只能是 函数 或 事件'), { statusCode: 400 });
+      if (kind !== '函数' && kind !== '事件') {
+        throw Object.assign(new Error('kind 只能是 函数 或 事件'), { statusCode: 400 });
+      }
       sql += ' AND kind = ?';
       values.push(kind);
     }
@@ -226,7 +310,7 @@ export class Journal extends cordis.Service {
     sql += ' ORDER BY id DESC LIMIT ?';
     values.push(limit);
     const rows = this.ctx.resources.db.query(sql).all(...values) as Row[];
-    return rows.reverse().map(eventOf);
+    return rows.reverse().map(getEvent);
   }
 }
 
@@ -253,7 +337,7 @@ interface Row {
  * 表里一行转成 JournalEvent。
  * @param row 表里的一行。
  */
-function eventOf(row: Row): JournalEvent {
+function getEvent(row: Row): JournalEvent {
   const { session_id: sessionId, message_id: messageId, listeners, vars, ...rest } = row;
   return { ...rest, sessionId, messageId, listeners: JSON.parse(listeners) as string[], vars: JSON.parse(vars) as Record<string, unknown> };
 }
@@ -267,54 +351,94 @@ function eventOf(row: Row): JournalEvent {
 function shrink(data: Record<string, unknown>): string {
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') {
-      return value.length > TEXT_MAX_CHARS ? `${value.slice(0, TEXT_MAX_CHARS)}……（共 ${String(value.length)} 字）` : value;
+      if (value.length > TEXT_MAX_CHARS) return `${value.slice(0, TEXT_MAX_CHARS)}……（共 ${String(value.length)} 字）`;
+
+      return value;
     }
     if (Array.isArray(value)) return value.map(walk);
     if (typeof value === 'object' && value !== null) {
+      //M 保留变量对象的键，对子值沿用同样的递归截短规则。
       return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]));
     }
     return value;
   };
+
+  //M 先将逐值截短后的变量序列化，再判断总长度是否超出上限。
   const json = JSON.stringify(walk(data));
 
   //G 整条还是太长 → 只留开头一段，写明截了。
   if (json.length <= DATA_MAX_CHARS) return json;
 
+  //M 持久化定长预览与截断标志，让读取方知道原有数据未全部保留。
   return JSON.stringify({ truncated: true, preview: cut.chars(json, DATA_MAX_CHARS) });
 }
 
 
-/**
- * 网址里的可选非负整数。
- * @param value 网址里的值。
- * @param key 参数名，报错用。
- * @returns 没写是 undefined。
- * @throws 带 statusCode 400 的错：不是非负整数。
- */
-function count(value: string | undefined, key: string): number | undefined {
-  if (value === undefined || value === '') return undefined;
-
-  if (!/^\d+$/u.test(value)) {
-    throw Object.assign(new Error(`${key} 要是非负整数`), { statusCode: 400 });
-  }
-  return Number(value);
+/** journal 插件的可选配置。 */
+export interface JournalConfig {
+  /** 是否挂载完整会话文件镜像 ctx.filesMirror（生成完整 对话.md 和 session.json）；不写默认 true。 */
+  mirror?: boolean;
 }
 
 
 /**
- * 挂上流水。
+ * 挂上流水与完整会话文件镜像。
  * apply 是 Cordis 插件的入口：inject 里的 resources 就绪后 Cordis 调一次（详见 plugins/Index.ts 的 PluginModule）。
- * 配置读顶层 events 段（events.keep_days，默认 30），在这里校验一次。
+ * 配置读顶层 events 段（events.keep_days，默认 30）与插件自身可选 config.mirror（默认 true），在这里校验一次。
  * @param ctx Cordis 给这个插件的 ctx。
- * @throws keep_days 不是正整数时抛错。
+ * @param config 插件配置（可选 mirror: boolean）。
+ * @throws keep_days 不是正整数或 mirror 不是布尔时抛错。
  */
-export function apply(ctx: cordis.Context): void {
+export function apply(ctx: cordis.Context, config?: unknown): void {
   const events = (ctx.resources.raw['events'] ?? {}) as Record<string, unknown>;
   const keepDays = events['keep_days'] ?? 30;
   if (typeof keepDays !== 'number' || !Number.isInteger(keepDays) || keepDays < 1) {
     throw new Error('events.keep_days 要是正整数（事件留几天）');
   }
+  if (config !== undefined && (typeof config !== 'object' || config === null || Array.isArray(config))) {
+    throw new Error('journal 插件的 config 要写成对象');
+  }
+  const own = (config ?? {}) as Record<string, unknown>;
+  const mirror = own['mirror'] ?? true;
+  if (typeof mirror !== 'boolean') {
+    throw new Error('journal 的 mirror 要写成 true 或 false');
+  }
+
+  let filesMirror: FilesMirror | undefined;
+  if (mirror) {
+    //M 先挂镜像服务，避免 Journal 把第一轮对话也写入简版。
+    filesMirror = new FilesMirror(ctx);
+  }
+
+  //M 建流水表并开始记录跟踪行。
   const journal = new Journal(ctx, keepDays);
+
+  //M 用同一监听按 action 分派三种查询，复用原服务方法。
+  requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (request) => {
+    if (request.action === 'message-lines') {
+      //M 按消息起点取轨迹，找不到起点时 lines 为空。
+      const lines = journal.request(request.message, request.limit);
+      return { lines };
+    }
+    if (request.action === 'query') {
+      try {
+        //M 沿用流水 HTTP 接口的参数校验和筛选规则。
+        const lines = journal.query(request.params);
+        return { ok: true, lines };
+      } catch (error) {
+        //G 查询失败时回空列表并说明原因。
+        const detail = textModule.getMessage(error);
+        return { ok: false, lines: [], error: detail };
+      }
+    }
+    if (filesMirror === undefined) return {};
+
+    const row = { bot: request.bot, id: request.sessionId };
+
+    //M 只用机器人名和会话号定位镜像目录。
+    const dir = filesMirror.getDir(row);
+    return { dir };
+  });
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口；没挂 http 就不开。
   void ctx.inject(['http'], (sub) => {

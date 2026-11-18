@@ -16,6 +16,7 @@ import { TOKEN_KEY } from '../Token.ts';
  * @returns 弹框（关着时也挂着，open 控制显示）。
  */
 export function TokenPrompt(): react.JSX.Element | null {
+  //M 取当前界面语言对应的翻译函数，用于弹框标题、说明文本与按钮文案。
   const t = i18n.useT();
   /** 弹框开着没有。 */
   const [open, setOpen] = react.useState(false);

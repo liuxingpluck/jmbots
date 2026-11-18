@@ -1,6 +1,6 @@
 /**
- * 文件工具：edit（改文件里的一处或几处）、find（按文件名、内容找文件）。路径都相对机器人的工作区，出不去。
- * 读、写整个文件是 base-tools 的 read、write；这里只补这两个。find 自己走目录（Bun.Glob），不依赖机器上装了 rg。
+ * 文件工具：统一管理工作区的基础文件读写（time、read、list_dir、write + 接图片监听，原 base-tools 并入 BaseTools.ts）
+ * 以及精确/宽松修改与搜索（edit、find，FileTools + EditMatch.ts）。路径均按当前轮工作区解符号链接判界，出不去。
  * 设计：docs/src7插件设计/file-tools.md。
  */
 import * as fs from 'node:fs';
@@ -10,14 +10,20 @@ import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as cut from '../../utils/Cut.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
+import { BaseTools } from './BaseTools.ts';
 import * as editMatch from './EditMatch.ts';
+
+export { BaseTools } from './BaseTools.ts';
 
 
 /** 插件名。 */
 export const name = 'file-tools';
+//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
+//M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/request 监听）。
+export const version = '1.1.0';
 
-/** 用到的服务：tools 登记工具；bots 找机器人的工作区。 */
-export const inject = ['tools', 'bots'];
+/** 用到的服务：resources 查模型是否收图；tools 登记六个工具；bots 找机器人的工作区。 */
+export const inject = ['resources', 'tools', 'bots'];
 
 
 /** find 默认最多几条。 */
@@ -36,14 +42,14 @@ const BINARY_PROBE_BYTES = 8192;
 const SKIP_DIRS = new Set(['node_modules', '.git']);
 
 
-/** 文件工具。 */
-class FileTools {
+/** 文件编辑与搜索工具。 */
+export class FileTools {
   /**
    * 登记 edit、find。
    * @param ctx Cordis 给这个插件的 ctx。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M edit：会改东西，只给干活的会话（和 base-tools 的 write 一样）。说明照 0.4 原文。
+    //M edit：会改东西，只给干活的会话（和 write 一样）。说明照 0.4 原文。
     ctx.tools.register({
       definition: {
         name: 'edit',
@@ -79,6 +85,7 @@ class FileTools {
         }),
       },
       kinds: ['front', 'work'],
+      //M 将已校验的查找参数交给工作区搜索，结果直接返回给模型。
       run: (args, session) => this.find(args, session),
     });
   }
@@ -91,8 +98,11 @@ class FileTools {
   private edit(args: Record<string, unknown>, session: Session): string {
     const relative = args['path'] as string;
     const edits = args['edits'] as editMatch.Edit[];
-    const file = this.fileOf(session, relative);
+    //G 把待编辑路径解析到本轮工作区后才读取原文。
+    const file = this.getFile(session, relative);
     const original = fs.readFileSync(file, 'utf8');
+
+    //M 先验证并应用所有替换，完整生成新内容后才写盘。
     const changed = editMatch.applyEdits(original, edits, relative);
     fs.writeFileSync(file, changed, 'utf8');
 
@@ -113,11 +123,18 @@ class FileTools {
     if ((name ?? '') === '' && (text ?? '') === '') throw new Error('name 和 text 至少给一个');
 
     const from = (args['path'] as string | undefined) ?? '.';
-    const root = this.fileOf(session, from);
+    //M 用本轮工作区内的指定目录作为文件通配的起点。
+    const root = this.getFile(session, from);
     const limit = (args['limit'] as number | undefined) ?? FIND_DEFAULT;
 
     //M 文件名通配：带斜杠或以 ** 开头就原样用，否则在任意一层找（**/名字）。
-    const pattern = name === undefined || name === '' ? '**/*' : name.includes('/') || name.startsWith('**') ? name : `**/${name}`;
+    let pattern = '**/*';
+    if (name !== undefined && name !== '') {
+      pattern = `**/${name}`;
+      if (name.includes('/') || name.startsWith('**')) {
+        pattern = name;
+      }
+    }
     const found: string[] = [];
     let full = false;
     for await (const rel of new Bun.Glob(pattern).scan({ cwd: root, onlyFiles: true, dot: true })) {
@@ -127,7 +144,8 @@ class FileTools {
       const shown = parts.join('/');
       if (text === undefined || text === '') {
         found.push(shown);
-      } else {
+      }
+      if (text !== undefined && text !== '') {
         found.push(...matchLines(path.join(root, rel), shown, text, limit - found.length));
       }
       if (found.length >= limit) {
@@ -140,29 +158,41 @@ class FileTools {
     const vars = { 会话: session.id, 起点: from, 几条: found.length };
     this.ctx.emit('trace', 'FileTools.find', '找完了', 'new Bun.Glob(pattern).scan({ cwd: root })', vars);
     if (found.length === 0) {
-      const what = [name ? `名字像 ${name}` : '', text ? `内容含 ${String(args['text'])}` : ''].filter((item) => item !== '').join(' ');
-      return `${from} 下没找到 ${what} 的文件`;
+      const whatParts: string[] = [];
+      if (name) {
+        whatParts.push(`名字像 ${name}`);
+      }
+      if (text) {
+        whatParts.push(`内容含 ${String(args['text'])}`);
+      }
+      return `${from} 下没找到 ${whatParts.join(' ')} 的文件`;
     }
 
     //M 太长按 2000 行 / 50KB 截（从头留），末尾说清截了多少。
     const kept = cut.head(found.join('\n'));
     let result = kept.text;
-    if (kept.cut) result += `\n[输出太长，只留前 ${String(kept.kept)} 行（共 ${String(kept.total)} 行）]`;
-    if (full) result += `\n[只列了前 ${String(limit)} 条，缩小范围或加大 limit]`;
+    if (kept.cut) {
+      result += `\n[输出太长，只留前 ${String(kept.kept)} 行（共 ${String(kept.total)} 行）]`;
+    }
+    if (full) {
+      result += `\n[只列了前 ${String(limit)} 条，缩小范围或加大 limit]`;
+    }
     return result;
   }
 
   /**
    * 相对工作区的路径落成绝对路径。
-   * @param session 哪场会话：用它的机器人的工作区；飞书上 builder 说话的这一轮用他的目录（workspaceModule.of）。
+   * @param session 哪场会话：用它的机器人的工作区；飞书上 builder 说话的这一轮用他的目录（workspaceModule.getWorkspace）。
    * @param relative 模型给的路径。
    * @throws 没有这个机器人、出了工作区时抛错。
    */
-  private fileOf(session: Session, relative: string): string {
+  private getFile(session: Session, relative: string): string {
+    //M 先找到会话所属的机器人工作区，再按本轮地址取实际目录。
     const botWorkspace = this.ctx.bots.get(session.row.bot)?.workspace;
     if (botWorkspace === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
 
-    const workspace = workspaceModule.of(botWorkspace, session.row.address);
+    //M 按回话地址解析本轮工作区根目录，再把相对路径安全落盘到工作区内。
+    const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
     return workspaceModule.inside(workspace, relative);
   }
 }
@@ -190,7 +220,10 @@ function matchLines(file: string, shown: string, text: string, room: number): st
 
     if (!line.toLowerCase().includes(text)) continue;
 
-    const shortened = line.length > LINE_MAX_CHARS ? `${line.slice(0, LINE_MAX_CHARS)}…` : line;
+    let shortened = line;
+    if (line.length > LINE_MAX_CHARS) {
+      shortened = `${line.slice(0, LINE_MAX_CHARS)}…`;
+    }
     hits.push(`${shown}:${String(index + 1)}: ${shortened}`);
   }
   return hits;
@@ -198,10 +231,12 @@ function matchLines(file: string, shown: string, text: string, room: number): st
 
 
 /**
- * 挂上文件工具。
- * apply 是 Cordis 插件的入口：inject 里的 tools、bots 都就绪后 Cordis 调一次。没有配置。
+ * 挂上统一后的工作区文件工具（含原 base-tools 的 time/read/list_dir/write + 接图片，以及 edit/find）。
+ * apply 是 Cordis 插件的入口：inject 里的 resources、tools、bots 都就绪后 Cordis 调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
  */
 export function apply(ctx: cordis.Context): void {
+  //M 一起登记基础文件工具和编辑、搜索工具，组成同一个插件入口。
+  new BaseTools(ctx);
   new FileTools(ctx);
 }

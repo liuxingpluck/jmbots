@@ -64,8 +64,10 @@ interface ToolCall {
  * 是字符串就原样，不是就空串。
  * @param value 任何值。
  */
-function text(value: unknown): string {
-  return typeof value === 'string' ? value : '';
+function getText(value: unknown): string {
+  if (typeof value === 'string') return value;
+
+  return '';
 }
 
 
@@ -73,7 +75,7 @@ function text(value: unknown): string {
  * 安全取一个对象值：不是对象一律当空表（后端在补键，缺了不能崩）。
  * @param value 任何值。
  */
-function recordOf(value: unknown): Record<string, unknown> {
+function getRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return {};
   }
@@ -85,7 +87,7 @@ function recordOf(value: unknown): Record<string, unknown> {
  * 安全取 event.calls：不是列表当没有，坏项跳过；args 不是字符串就序列化。
  * @param event 步骤的 event。
  */
-function callsOf(event: Record<string, unknown>): ToolCall[] {
+function getCalls(event: Record<string, unknown>): ToolCall[] {
   /** 原始的 calls。 */
   const raw = event.calls;
   if (!Array.isArray(raw)) {
@@ -95,14 +97,20 @@ function callsOf(event: Record<string, unknown>): ToolCall[] {
   const calls: ToolCall[] = [];
   for (const item of raw) {
     /** 一个调用。 */
-    const record = recordOf(item);
+    //G 把每条工具调用规范为普通对象，无效或空对象直接跳过。
+    const record = getRecord(item);
     if (Object.keys(record).length === 0) {
       continue;
     }
+    let args = JSON.stringify(record.args ?? {});
+    if (typeof record.args === 'string') {
+      args = record.args;
+    }
+    //M 提取调用编号、工具名与文本化入参，组装为统一调用记录写入列表。
     calls.push({
-      id: text(record.id),
-      name: text(record.name),
-      args: typeof record.args === 'string' ? record.args : JSON.stringify(record.args ?? {}),
+      id: getText(record.id),
+      name: getText(record.name),
+      args,
     });
   }
   return calls;
@@ -121,16 +129,19 @@ export class StepsPresenter {
   /**
    * steps 列表 → 界面条目（顺序不变）。
    * @param steps 后端返回的原始步骤。
+   * @returns 供步骤列表渲染的 `StepItem` 数组，保持原顺序。
+   * 副作用：无。
    */
   items(steps: types.SessionStep[]): StepItem[] {
+    //M 逐条把原始步骤投影为时间、状态变更、一句话摘要与可展开事实，保持原有顺序。
     return steps.map((step) => ({
       seq: step.seq,
       row: step.row,
       eventType: step.eventType,
-      time: this.timeOf(step.at),
+      time: this.getTime(step.at),
       state: `${step.stateBefore} → ${step.stateAfter}`,
-      summary: this.summaryOf(step),
-      facts: this.factsOf(step),
+      summary: this.getSummary(step),
+      facts: this.getFacts(step),
       dispatch: step.row === '分派',
     }));
   }
@@ -139,11 +150,14 @@ export class StepsPresenter {
   /**
    * 只取分派记录（steps 里 row === '分派'，stored 是整份分派记录）。
    * @param steps 后端返回的原始步骤。
+   * @returns 只含分派步骤的卡片展示数据数组。
+   * 副作用：无。
    */
   dispatches(steps: types.SessionStep[]): DispatchCardView[] {
+    //M 筛选出分派步骤并把整份分派记录投影为界面展示卡片。
     return steps
       .filter((step) => step.row === '分派')
-      .map((step) => this.dispatchCardOf(step.stored));
+      .map((step) => this.getDispatchCard(step.stored));
   }
 
 
@@ -151,7 +165,7 @@ export class StepsPresenter {
    * 毫秒 → HH:MM:SS（浏览器本地时区）。
    * @param at 记录时间。
    */
-  private timeOf(at: number): string {
+  private getTime(at: number): string {
     //G 时间不对劲就明说，不猜。
     if (!Number.isFinite(at)) {
       return this.t('未记录');
@@ -180,78 +194,89 @@ export class StepsPresenter {
    * 一句话摘要：按行号取 event/stored 里有的键；认不出的行用事件名。
    * @param step 原始步骤。
    */
-  private summaryOf(step: types.SessionStep): string {
+  private getSummary(step: types.SessionStep): string {
     const t = this.t;
     /** 这一步的事件数据。 */
     const event = step.event;
-    switch (step.row) {
-      case '分派': {
-        /** 分派结论。 */
-        const result = recordOf(step.stored.result);
+    const getToolSummary = (): string => {
+      //M 提取工具名称，缺失时退回泛称“工具”用于组成结果摘要。
+      let name = getText(event.name);
+      if (name === '') {
+        name = t('工具');
+      }
+      //G 后端明确说失败才算失败；ok/isError 两个键都认（在补的过程中可能只有其一）。
+      if (event.ok === false || event.isError === true) return t('工具 {name} 出错', { name });
+
+      if (typeof event.resultChars === 'number') {
+        return t('工具 {name} 完成 · 结果 {chars} 字', { name, chars: event.resultChars });
+      }
+      return t('工具 {name} 完成', { name });
+    };
+    const getEndSummary = (): string => {
+      //M 从结束事件读取结局状态与错误说明，拼成运行结束摘要。
+      const ending = getText(event.ending) || t('未记录');
+      const error = getText(event.error);
+      if (error === '') return t('运行结束 · {ending}', { ending });
+
+      return t('运行结束 · {ending} · {error}', { ending, error });
+    };
+    const handlers: Record<string, () => string> = {
+      分派: () => {
+        //M 提取分派结论中的目标会话与选用模型，拼装分派摘要。
+        const result = getRecord(step.stored.result);
         return t('分派到会话 {session} · 模型 {model}', {
-          session: text(result.session) || t('未记录'),
-          model: text(result.model) || t('未记录'),
+          session: getText(result.session) || t('未记录'),
+          model: getText(result.model) || t('未记录'),
         });
-      }
-      case 'E1': {
-        /** 开跑时的模型（后端在补，可能没有）。 */
-        const model = text(event.model);
-        return model === '' ? t('运行开始') : t('运行开始 · 模型 {model}', { model });
-      }
-      case 'E2': {
-        /** 这一步调的工具名。 */
-        const names = this.toolNames(event);
-        return names.length === 0 ? t('模型返回') : t('模型返回 · 调用 {names}', { names: names.join('、') });
-      }
-      case 'E3':
-      case 'E4': {
-        /** 工具名和结果长度。 */
-        const name = text(event.name) === '' ? t('工具') : text(event.name);
-        //G 后端明确说失败才算失败；ok/isError 两个键都认（在补的过程中可能只有其一）。
-        if (event.ok === false || event.isError === true) {
-          return t('工具 {name} 出错', { name });
-        }
-        /** 结果字符数。 */
-        const chars = event.resultChars;
-        return typeof chars === 'number'
-          ? t('工具 {name} 完成 · 结果 {chars} 字', { name, chars })
-          : t('工具 {name} 完成', { name });
-      }
-      case 'E5': {
-        /** 结局。 */
-        const ending = text(event.ending);
-        return ending === '' ? t('回复已发出') : t('回复已发出 · 结局 {ending}', { ending });
-      }
-      case 'E6':
-        return t('准备调模型');
-      case 'E7':
-      case 'E10':
-      case 'E11': {
-        /** 结局和错误。 */
-        const ending = text(event.ending) || t('未记录');
-        const error = text(event.error);
-        return error === ''
-          ? t('运行结束 · {ending}', { ending })
-          : t('运行结束 · {ending} · {error}', { ending, error });
-      }
-      case 'E8': {
-        /** 停下的说明。 */
-        const note = text(event.note);
-        return note === '' ? t('要求停下') : t('要求停下：{note}', { note });
-      }
-      case 'E9': {
-        /** 换的前后模型。 */
-        const from = text(event.from);
-        const to = text(event.to);
-        return from === '' || to === ''
-          ? t('换模型')
-          : t('换模型 · {from} → {to}', { from, to });
-      }
-      case '恢复':
-        return t('会话恢复');
-      default:
-        return step.eventType;
-    }
+      },
+      E1: () => {
+        //M 读取运行开始事件记录的模型名称，补充到摘要中。
+        const model = getText(event.model);
+        if (model === '') return t('运行开始');
+
+        return t('运行开始 · 模型 {model}', { model });
+      },
+      E2: () => {
+        //M 取出模型本步调用的工具名列表，拼入模型返回摘要。
+        const names = this.getToolNames(event);
+        if (names.length === 0) return t('模型返回');
+
+        return t('模型返回 · 调用 {names}', { names: names.join('、') });
+      },
+      E3: getToolSummary,
+      E4: getToolSummary,
+      E5: () => {
+        //M 读取回复发送的结局字段，若存在则附在回复摘要后。
+        const ending = getText(event.ending);
+        if (ending === '') return t('回复已发出');
+
+        return t('回复已发出 · 结局 {ending}', { ending });
+      },
+      E6: () => t('准备调模型'),
+      E7: getEndSummary,
+      E10: getEndSummary,
+      E11: getEndSummary,
+      E8: () => {
+        //M 读取停止原因备注，若存在则拼入停下提示摘要。
+        const note = getText(event.note);
+        if (note === '') return t('要求停下');
+
+        return t('要求停下：{note}', { note });
+      },
+      E9: () => {
+        //M 提取切换前后的模型名称，拼装换模型摘要。
+        const from = getText(event.from);
+        const to = getText(event.to);
+        if (from === '' || to === '') return t('换模型');
+
+        return t('换模型 · {from} → {to}', { from, to });
+      },
+      恢复: () => t('会话恢复'),
+    };
+    const format = handlers[step.row];
+    if (format) return format();
+
+    return step.eventType;
   }
 
 
@@ -259,18 +284,22 @@ export class StepsPresenter {
    * 这一步调了哪些工具：优先 event.calls 的名字，没有就退回 event.tools。
    * @param event 步骤的 event。
    */
-  private toolNames(event: Record<string, unknown>): string[] {
+  private getToolNames(event: Record<string, unknown>): string[] {
     /** calls 里的名字。 */
-    const fromCalls = callsOf(event)
-      .map((call) => (call.name === '' ? this.t('工具') : call.name));
+    //M 优先从结构化的 event.calls 提取工具名，缺名时补默认“工具”。
+    const fromCalls = getCalls(event).map((call) => {
+      if (call.name === '') return this.t('工具');
+
+      return call.name;
+    });
     if (fromCalls.length > 0) {
       return fromCalls;
     }
     /** 老的 tools 键（字符串列表）。 */
     const tools = event.tools;
-    return Array.isArray(tools)
-      ? tools.filter((item): item is string => typeof item === 'string')
-      : [];
+    if (!Array.isArray(tools)) return [];
+
+    return tools.filter((item): item is string => typeof item === 'string');
   }
 
 
@@ -279,18 +308,25 @@ export class StepsPresenter {
    * 再把 event 里的标量键列上；对象、数组交给原始 JSON 那块（StepsView）。
    * @param step 原始步骤。
    */
-  private factsOf(step: types.SessionStep): StepItem['facts'] {
+  private getFacts(step: types.SessionStep): StepItem['facts'] {
     /** 攒出来的事实。 */
+    //M 遍历本步提取出的工具调用，将名称与入参整理成可展开事实条目。
     const facts: StepItem['facts'] = [];
-    for (const call of callsOf(step.event)) {
+    for (const call of getCalls(step.event)) {
+      let toolName = call.name;
+      if (toolName === '') {
+        toolName = this.t('工具');
+      }
+      //M 截断过长的工具调用参数文本并记入事实列表。
       facts.push({
         key: `call:${call.id}`,
-        label: this.t('调用 {name}', { name: call.name === '' ? this.t('工具') : call.name }),
+        label: this.t('调用 {name}', { name: toolName }),
         value: this.clip(call.args),
       });
     }
     /** 工具结果片段（E3/E4，后端在补）。 */
     const result = step.event.result;
+    //G 存在非空字符串工具结果时截断过长正文并记入事实列表。
     if (typeof result === 'string' && result !== '') {
       facts.push({ key: 'result', label: this.t('工具结果'), value: this.clip(result) });
     }
@@ -309,28 +345,40 @@ export class StepsPresenter {
    * 0.6.0 的旧记录形状不一样（workspaces 是字符串数组、有 lastSession），读不出就显示未记录，不崩。
    * @param stored 分派步的 stored（整份分派记录；键缺了显示“未记录”）。
    */
-  private dispatchCardOf(stored: Record<string, unknown>): DispatchCardView {
+  private getDispatchCard(stored: Record<string, unknown>): DispatchCardView {
     const t = this.t;
     /** 分派记录的几块。 */
-    const from = recordOf(stored.from);
-    const situation = recordOf(stored.situation);
-    const result = recordOf(stored.result);
+    //M 安全取出分派记录的来源、情景与结果子对象，缺失时按空表处理以免崩页。
+    const from = getRecord(stored.from);
+    const situation = getRecord(stored.situation);
+    const result = getRecord(stored.result);
     /** 没有就写未记录。 */
     const unknown = t('未记录');
 
     /** 谁分来的：渠道 · 来源。 */
-    const fromParts = [text(from.channel), text(from.source)].filter((part) => part !== '');
+    //M 过滤空串并拼接渠道与来源说明，形成分派来源标签。
+    const fromParts = [getText(from.channel), getText(from.source)].filter((part) => part !== '');
     /** 当时有哪些工作区（新记录是对象数组，旧记录是字符串数组）。 */
-    const workspaces = Array.isArray(situation.workspaces)
-      ? situation.workspaces
-        .map((item) => (typeof item === 'string' ? item : text(recordOf(item).name)))
-        .filter((name) => name !== '')
-      : [];
+    let workspaces: string[] = [];
+    if (Array.isArray(situation.workspaces)) {
+      workspaces = situation.workspaces
+        .map((item) => {
+          if (typeof item === 'string') return item;
+
+          //M 兼容新版对象数组格式的工作区条目，安全提取其 name 字段。
+          return getText(getRecord(item).name);
+        })
+        .filter((name) => name !== '');
+    }
     /** 候选会话有几个。 */
-    const sessionCount = Array.isArray(situation.sessions) ? situation.sessions.length : 0;
+    let sessionCount = 0;
+    if (Array.isArray(situation.sessions)) {
+      sessionCount = situation.sessions.length;
+    }
     /** 情况几段。 */
-    const situationParts = [`${t('机器人')} ${text(situation.bot) || unknown}`];
-    const original = text(situation.text);
+    //M 依次提取机器人、用户原话、候选会话数与工作区名称，组装分派情景说明。
+    const situationParts = [`${t('机器人')} ${getText(situation.bot) || unknown}`];
+    const original = getText(situation.text);
     if (original !== '') {
       situationParts.push(`${t('原话')}「${original}」`);
     }
@@ -339,27 +387,39 @@ export class StepsPresenter {
       situationParts.push(`${t('当时的工作区')} ${workspaces.join('、')}`);
     }
     /** 思考档。 */
-    const thinking = text(result.thinking);
+    //M 读取分派结果记录的思考档位，缺省时标注默认最高档。
+    const thinking = getText(result.thinking);
+    let thinkingLabel = thinking;
+    if (thinking === '') {
+      thinkingLabel = t('默认（最高档）');
+    }
     /** 理由。 */
-    const reason = text(result.reason);
+    //M 读取分派结果记录的理由原文，未记录时给出明确提示。
+    const reason = getText(result.reason);
+    let reasonText = reason;
+    if (reason === '') {
+      reasonText = t('当时的分派理由未记录。');
+    }
     /** 谁定的。 */
+    const byHandlers: Record<string, () => string> = {
+      direct: () => t('调用方指定'),
+      decision: () => t('决策模型'),
+      quick: () => t('低思考模型'),
+      llm: () => t('常规模型'),
+    };
+    //M 按决策方标识查找对应的中文来源说明，未命中时归为程序兜底。
+    const byFormat = byHandlers[getText(stored.by)];
     let by = t('程序兜底');
-    if (stored.by === 'direct') {
-      by = t('调用方指定');
-    } else if (stored.by === 'decision') {
-      by = t('决策模型');
-    } else if (stored.by === 'quick') {
-      by = t('低思考模型');
-    } else if (stored.by === 'llm') {
-      by = t('常规模型');
+    if (byFormat) {
+      by = byFormat();
     }
     return {
       from: fromParts.join(' · ') || unknown,
       situation: situationParts.join('；'),
-      model: `${text(result.model) || unknown} · ${t('思考档')} ${thinking === '' ? t('默认（最高档）') : thinking}`,
-      reason: reason === '' ? t('当时的分派理由未记录。') : reason,
+      model: `${getText(result.model) || unknown} · ${t('思考档')} ${thinkingLabel}`,
+      reason: reasonText,
       by,
-      target: `${t('会话')} ${text(result.session) || unknown} · ${t('工作区')} ${text(result.workspace) || unknown}`,
+      target: `${t('会话')} ${getText(result.session) || unknown} · ${t('工作区')} ${getText(result.workspace) || unknown}`,
     };
   }
 }

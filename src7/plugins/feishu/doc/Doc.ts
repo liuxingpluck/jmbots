@@ -50,6 +50,7 @@ interface Target {
  * @param ctx 本插件的 ctx。
  */
 export function setup(feishu: Feishu, ctx: cordis.Context): void {
+  //M 向骨架注册发布飞书云文档模型工具，将 Markdown 与图片转为在线 docx 并授予会话方编辑权限。
   ctx.tools.register({
     definition: {
       name: 'feishu_doc',
@@ -69,6 +70,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
     }),
   });
 
+  //M 向骨架注册删除飞书云文档模型工具，把指定 docToken 移入回收站。
   ctx.tools.register({
     definition: {
       name: 'feishu_doc_delete',
@@ -90,32 +92,36 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
  * @returns 应用、客户端、给谁权限。
  * @throws 这个机器人没配飞书应用时抛错。
  */
-export function target(feishu: Feishu, session: Session): Target {
+export function getTarget(feishu: Feishu, session: Session): Target {
   const row = session.row;
   const address = row.address as FeishuAddress | undefined;
   if (row.channel === 'feishu' && address !== undefined && typeof address.appId === 'string') {
+    //M 当前会话来自飞书渠道时，沿用收信应用对应的 SDK 客户端并将文档权限授给发信本人。
     return { appId: address.appId, client: feishu.client(address.appId), openId: address.openId || undefined };
   }
-  const appId = feishu.appsOf(row.bot)[0];
+  //M 非飞书会话（如网页或定时器）改取该机器人名下第一个飞书应用，并找最近私聊者授权。
+  const appId = feishu.getApps(row.bot)[0];
   if (appId === undefined) {
     throw new Error('这个机器人没配飞书应用，发不了云文档');
   }
+  //M 封装默认飞书应用客户端及最近私聊联系人 openId 作为授权目标。
   return { appId, client: feishu.client(appId), openId: feishu.lastPrivate(appId)?.openId };
 }
 
 
 /**
- * 工具参数里的路径落成绝对路径：去开头的 @ 和引号，相对这一轮的工作区（builder 说话时是他的目录，见 utils/Workspace.ts 的 of）。
+ * 工具参数里的路径落成绝对路径：去开头的 @ 和引号，相对这一轮的工作区（builder 说话时是他的目录，见 utils/Workspace.ts 的 getWorkspace）。
  * @param ctx 取机器人工作区和运行时目录。
  * @param session 哪场会话。
  * @param value 模型给的路径。
  * @returns 绝对路径。
  * @throws 指向运行时目录的 config.yaml（有密钥）时抛错。
  */
-export function file(ctx: cordis.Context, session: Session, value: string): string {
+export function getFile(ctx: cordis.Context, session: Session, value: string): string {
   const cleaned = value.trim().replace(/^@/u, '').replace(/^["']|["']$/gu, '');
+  //M 读取所属机器人配置工作区（缺失则回落默认 bots 工作区），再按角色地址收窄目录。
   const botWorkspace = ctx.bots.get(session.row.bot)?.workspace ?? ctx.resources.dir('bots', session.row.bot, 'workspace');
-  const workspace = workspaceModule.of(botWorkspace, session.row.address);
+  const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
   const full = path.resolve(workspace, cleaned);
   if (full === path.join(ctx.resources.root, 'config.yaml')) {
     throw new Error('不能读 config.yaml');
@@ -143,9 +149,16 @@ export async function publish(
   if (title === '') {
     throw new Error('标题不能是空的');
   }
-  const { client, openId } = target(feishu, session);
-  const text = fs.readFileSync(file(ctx, session, args.markdown), 'utf8');
-  const images = args.images.map((item) => file(ctx, session, item));
+  //M 解析目标飞书客户端并换算会话对应的授权用户 openId。
+  const { client, openId } = getTarget(feishu, session);
+  //M 解析工作区 Markdown 路径并读取正文内容。
+  const markdownPath = getFile(ctx, session, args.markdown);
+  const text = fs.readFileSync(markdownPath, 'utf8');
+  //M 逐个解析前置图片在工作区中的绝对路径并检查全部存在。
+  const images = args.images.map((item) => {
+    //M 解析单张前置图片在工作区中的路径。
+    return getFile(ctx, session, item);
+  });
   for (const image of images) {
     if (!fs.existsSync(image)) throw new Error(`图片不存在：${image}`);
   }
@@ -154,6 +167,7 @@ export async function publish(
   const vars = { 会话: session.id, 标题: title, 图片几张: images.length, 字数: text.length };
   ctx.emit('trace', 'Doc.publish', '把 Markdown 发布成飞书云文档', 'client.docx.v1.document.create(...)', vars);
 
+  //M 带限流重试创建空白飞书云文档并拿到新文档 ID。
   const created = await api.call('云文档建文档', () => client.docx.v1.document.create({ data: { title } }));
   const docId = created.data?.document?.document_id;
   if (docId === undefined || docId === '') {
@@ -165,7 +179,7 @@ export async function publish(
   for (const image of images) {
     await insertImage(client, docId, image, index);
     index++;
-    await api.sleep(PACE_MS);
+    await Bun.sleep(PACE_MS);
   }
 
   //M 别的块攒着，满 40 个插一批；遇到表格先把攒着的插完，再单独建表格。
@@ -175,8 +189,9 @@ export async function publish(
     await insert(client, docId, docId, pending, index);
     index += pending.length;
     pending = [];
-    await api.sleep(PACE_MS);
+    await Bun.sleep(PACE_MS);
   };
+  //M 把 Markdown 拆解为抽象节点流：表格节点单独冲刷建表，其余节点批量转块并按 40 块上限提交。
   for (const node of blocks.parse(text)) {
     if (node.kind === 'table') {
       await flush();
@@ -184,33 +199,50 @@ export async function publish(
       index++;
       continue;
     }
+    //M 将非表格节点展开为飞书块结构追加进缓冲队列，满批立即提交。
     pending.push(...blocks.toBlocks(node));
     if (pending.length >= BATCH) await flush();
   }
+  //M 冲刷末尾未满一批的剩余文档块，确保全文落盘。
   await flush();
 
   //M 权限：有人给这个人编辑权限；没人改成组织内可编辑。没给成写进结果，不算失败。
   let granted: string;
   try {
-    if (openId !== undefined) {
-      await api.call('云文档给权限', () => client.drive.v1.permissionMember.create({
-        params: { type: 'docx', need_notification: false },
-        path: { token: docId },
-        data: { member_type: 'openid', member_id: openId, perm: 'full_access' },
-      }));
-      granted = '可编辑权限已给聊天里的用户';
-    } else {
-      await api.call('云文档改公开范围', () => client.drive.v1.permissionPublic.patch({
-        params: { type: 'docx' },
-        path: { token: docId },
-        data: { link_share_entity: 'tenant_editable' },
-      }));
-      granted = '还没人私聊过机器人，改成了组织内可编辑';
-    }
+    //M 为刚建成的云文档授个人或组织内可编辑权限。
+    granted = await grantAccess(client, docId, openId);
   } catch (error) {
-    granted = `权限没给成：${textModule.messageOf(error)}`;
+    granted = `权限没给成：${textModule.getMessage(error)}`;
   }
   return `已发布飞书文档《${title}》：${DOC_URL}${docId}（${granted}）`;
+}
+
+
+/**
+ * 给刚发布的云文档赋编辑权限：能认出具体聊过天的用户给个人可编辑，否则改组织内可编辑。
+ * @param client SDK 客户端。
+ * @param docId 文档号。
+ * @param openId 授权用户的 open_id；没有则是 undefined。
+ * @returns 给模型看的权限结果说明。
+ */
+async function grantAccess(client: lark.Client, docId: string, openId: string | undefined): Promise<string> {
+  if (openId !== undefined) {
+    //M 聊天里有明确用户时，直接授予该用户云文档可编辑权限（full_access）。
+    await api.call('云文档给权限', () => client.drive.v1.permissionMember.create({
+      params: { type: 'docx', need_notification: false },
+      path: { token: docId },
+      data: { member_type: 'openid', member_id: openId, perm: 'full_access' },
+    }));
+    return '可编辑权限已给聊天里的用户';
+  }
+
+  //M 无具体对话人可授时回退设置组织内获得链接可编辑，避免文档无人打得开。
+  await api.call('云文档改公开范围', () => client.drive.v1.permissionPublic.patch({
+    params: { type: 'docx' },
+    path: { token: docId },
+    data: { link_share_entity: 'tenant_editable' },
+  }));
+  return '还没人私聊过机器人，改成了组织内可编辑';
 }
 
 
@@ -224,6 +256,7 @@ export async function publish(
  * @returns 新块的块号，照先后。
  */
 async function insert(client: lark.Client, docId: string, parentId: string, list: blocks.Block[], index: number): Promise<string[]> {
+  //M 带限流重试往文档根或表格单元格下的指定索引插入一批块，并提取新生成块 ID。
   const inserted = await api.call('云文档插块', () => client.docx.v1.documentBlockChildren.create({
     path: { document_id: docId, block_id: parentId },
     data: { children: list as unknown as Children, index },
@@ -240,11 +273,13 @@ async function insert(client: lark.Client, docId: string, parentId: string, list
  * @param index 插在第几个位置。
  */
 async function insertImage(client: lark.Client, docId: string, image: string, index: number): Promise<void> {
+  //M 先占位插入一个空图片块，以拿回供素材上传绑定的 blockId。
   const [blockId = ''] = await insert(client, docId, docId, [{ block_type: blocks.BLOCK.image, image: {} }], index);
   if (blockId === '') {
     throw new Error('飞书建图片块成功但没有交回块号');
   }
   const data = fs.readFileSync(image);
+  //M 将本地图片流绑定该图片块 ID 上传至云文档媒体库，换回 file_token。
   const uploaded = await api.call('云文档传图', () => client.drive.v1.media.uploadAll({
     data: { file_name: path.basename(image), parent_type: 'docx_image', parent_node: blockId, size: data.length, file: data },
   }));
@@ -252,6 +287,7 @@ async function insertImage(client: lark.Client, docId: string, image: string, in
   if (token === undefined || token === '') {
     throw new Error('飞书传图成功但没有交回 file_token');
   }
+  //M 调用块更新接口执行 replace_image，将刚上传的素材正式挂进该空图片块。
   await api.call('云文档换图', () => client.docx.v1.documentBlock.patch({
     path: { document_id: docId, block_id: blockId },
     params: { document_revision_id: -1 },
@@ -283,6 +319,7 @@ async function insertTable(client: lark.Client, docId: string, rows: string[][],
       },
     },
   };
+  //M 在限定 9×9 上限内创建初始表格骨架块，取回 tableId 供后续扩充行列与填格。
   const [tableId = ''] = await insert(client, docId, docId, [table], index);
   if (tableId === '') {
     throw new Error('飞书建表格成功但没有交回块号');
@@ -292,11 +329,11 @@ async function insertTable(client: lark.Client, docId: string, rows: string[][],
   const where = { path: { document_id: docId, block_id: tableId }, params: { document_revision_id: -1 } };
   for (let added = createRows; added < grid.length; added++) {
     await api.call('云文档加行', () => client.docx.v1.documentBlock.patch({ ...where, data: { insert_table_row: { row_index: -1 } } }));
-    await api.sleep(PACE_MS);
+    await Bun.sleep(PACE_MS);
   }
   for (let added = createColumns; added < columns; added++) {
     await api.call('云文档加列', () => client.docx.v1.documentBlock.patch({ ...where, data: { insert_table_column: { column_index: -1 } } }));
-    await api.sleep(PACE_MS);
+    await Bun.sleep(PACE_MS);
   }
 
   //M 单元格飞书自己建好；只取这个表格块，按 children 的先后（逐行逐列）填字。
@@ -311,7 +348,7 @@ async function insertTable(client: lark.Client, docId: string, rows: string[][],
       const cellId = cells[row * columns + column];
       if (text === '' || cellId === undefined) continue;
       await insert(client, docId, cellId, blocks.toBlocks({ kind: 'paragraph', text }), 0);
-      await api.sleep(PACE_MS);
+      await Bun.sleep(PACE_MS);
     }
   }
 }
@@ -330,15 +367,17 @@ export async function remove(feishu: Feishu, session: Session, documents: string
   if (ids.length === 0) {
     throw new Error('要给至少一个文档 ID');
   }
-  const { client } = target(feishu, session);
+  //M 从当前会话解析飞书 SDK 客户端，逐个调用删除接口把云文档移入回收站。
+  const { client } = getTarget(feishu, session);
   const done: string[] = [];
   const failed: string[] = [];
   for (const id of ids) {
     try {
+      //M 通过 drive 删除接口软删云文档（进回收站），分流收集成功与失败清单。
       await api.call('云文档删除', () => client.drive.v1.file.delete({ path: { file_token: id }, params: { type: 'docx' } }));
       done.push(id);
     } catch (error) {
-      failed.push(`${id}（${textModule.messageOf(error)}）`);
+      failed.push(`${id}（${textModule.getMessage(error)}）`);
     }
   }
   const parts: string[] = [];
