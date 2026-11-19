@@ -52,6 +52,7 @@
   "trace.feishu.receiveMessage": "Consigner le message Feishu d’origine et émettre channel/message",
   "trace.feishu.sendOutbox": "Envoyer un élément de la boîte d’envoi Feishu puis le déplacer dans sent",
   "trace.feishu.skipGroupReply": "Ne pas répondre au message de groupe qui ne mentionne pas le robot",
+  "trace.feishu.wsReceived": "Le WebSocket Feishu a reçu im.message.receive_v1, transmis au traitement entrant (première case de la trace)",
   "trace.field.account": "Compte",
   "trace.field.action": "Action",
   "trace.field.appId": "ID d’application",

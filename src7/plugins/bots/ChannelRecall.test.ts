@@ -1,9 +1,5 @@
 /**
- * 消息撤回即停（用户 #142）端到端离线验证：
- *   1. 飞书正在跑这一轮时撤回 → 立刻中止模型请求并停跑，不向飞书回发任何话（含“已停止”）；
- *   2. 排队中还没开跑时撤回 → 从队列移除，前一条正常结束后该条绝不运行；
- *   3. 派出的后台（work）跟着停、不回传结果给前台，已经彻底跑完（done）的不管；
- *   4. 群里外人撤回自己的话照样停他那条，但不能停别人的；本人（owner）撤回可停。
+ * 飞书撤回离线验证：活动模型与工具、排队项、受管后台、撤回权限。
  *
  * 跑法：bun test ./src7/plugins/bots/ChannelRecall.test.ts
  */
@@ -91,7 +87,7 @@ interface FeishuTestStub {
 function createFeishuStub(
   feishu: feishuModule.Feishu,
   appId: string,
-  options?: { botOpenId?: string },
+  options?: { botOpenId?: string; replyCode?: () => Promise<number> },
 ): FeishuTestStub {
   const inside = feishu as unknown as {
     apps: Map<string, {
@@ -126,10 +122,11 @@ function createFeishuStub(
     delete: () => Promise.resolve({ code: 0, data: {} }),
   };
   imV1.message = {
-    reply: (input: { path: { message_id: string }; data: { content: string } }) => {
+    reply: async (input: { path: { message_id: string }; data: { content: string } }) => {
       const parsed = JSON.parse(input.data.content) as { text?: string };
       textCalls.push({ chatId: '', text: parsed.text ?? '', replyToId: input.path.message_id });
-      return Promise.resolve({ code: 0, data: { message_id: nextId() } });
+      const code = await options?.replyCode?.();
+      return { code: code ?? 0, data: { message_id: nextId() } };
     },
     create: (input: { data: { receive_id: string; content: string } }) => {
       const parsed = JSON.parse(input.data.content) as { text?: string };
@@ -189,7 +186,7 @@ function waitAbortOrResolve(
 }
 
 
-test('1. 正在跑时撤回：立即掐断模型请求并停跑，绝不向飞书回话或发已停止', async () => {
+test.each(['模型', '工具', '工具关口', '回复发送'])('正在等%s时撤回，保全在途工作并重判', async (phase) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-recall-running-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = new cordis.Context();
@@ -210,16 +207,55 @@ test('1. 正在跑时撤回：立即掐断模型请求并停跑，绝不向飞�
     people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
   });
 
-  const stub = createFeishuStub(ctx.get('feishu') as feishuModule.Feishu, appId, { botOpenId: 'ou_bot' });
-  let chatCalls = 0;
-  let activeSignal: AbortSignal | undefined;
+  const pendingReply = Promise.withResolvers<number>();
+  const feishu = ctx.get('feishu') as feishuModule.Feishu;
+  const stub = createFeishuStub(feishu, appId, {
+    botOpenId: 'ou_bot',
+    replyCode: () => pendingReply.promise,
+  });
+  const chatRequests: sessionsModule.ChatRequest[] = [];
   const blocker = { finish: (_ans: piAi.AssistantMessage) => undefined };
+  const pendingTool = Promise.withResolvers<string>();
+  const pendingGate = Promise.withResolvers<void>();
+  let toolSignal: AbortSignal | undefined;
+  let waitingAtGate = false;
+  const ran: string[] = [];
+  ctx.tools.register({
+    definition: { name: 'do_work', description: '模拟在途工具', parameters: piAi.Type.Object({}) },
+    sessionKinds: ['front'],
+    run: (_args, _session, signal, id) => {
+      ran.push(id);
+      toolSignal = signal;
+      return pendingTool.promise;
+    },
+  });
+  ctx.on('session/before-tool', (gate) => {
+    if (phase !== '工具关口' || gate.call.id !== 'first') return;
+
+    waitingAtGate = true;
+    return pendingGate.promise;
+  });
   ctx.sessions.chat = (request) => {
-    chatCalls += 1;
-    activeSignal = request.signal;
-    return waitAbortOrResolve(request.signal, blocker);
+    chatRequests.push(request);
+    if (chatRequests.length === 1) {
+      if (phase === '模型') return waitAbortOrResolve(request.signal, blocker);
+
+      if (phase === '回复发送') {
+        const reply = piAi.fauxToolCall('channel_reply', { text: '正在发的回复' }, { id: 'on-the-way' });
+        return Promise.resolve(piAi.fauxAssistantMessage([reply], { stopReason: 'toolUse' }));
+      }
+      const first = piAi.fauxToolCall('do_work', {}, { id: 'first' });
+      const second = piAi.fauxToolCall('do_work', {}, { id: 'second' });
+      return Promise.resolve(piAi.fauxAssistantMessage([first, second], { stopReason: 'toolUse' }));
+    }
+    if (chatRequests.length === 2 && phase !== '回复发送') {
+      const reply = piAi.fauxToolCall('channel_reply', { text: '看过撤回，继续原来的事' });
+      return Promise.resolve(piAi.fauxAssistantMessage([reply], { stopReason: 'toolUse' }));
+    }
+    return Promise.resolve(piAi.fauxAssistantMessage('处理完了'));
   };
 
+  const originalText = '帮我写一份长报告\n“保留原话”';
   await stub.triggerInbound({
     sender: { sender_id: { open_id: 'ou_owner' }, sender_type: 'user' },
     message: {
@@ -227,27 +263,72 @@ test('1. 正在跑时撤回：立即掐断模型请求并停跑，绝不向飞�
       chat_id: 'oc_p2p_1',
       chat_type: 'p2p',
       message_type: 'text',
-      content: JSON.stringify({ text: '帮我写一份长报告' }),
+      content: JSON.stringify({ text: originalText }),
     },
   });
 
-  await waitFor(() => chatCalls === 1 && activeSignal !== undefined);
+  await waitFor(() => {
+    if (phase === '工具') return toolSignal !== undefined;
+    if (phase === '工具关口') return waitingAtGate;
+    if (phase === '回复发送') return stub.textCalls.length === 1;
+    return chatRequests.length === 1;
+  });
+  const recalledAt = 1795110000000;
   await stub.triggerRecall({
     app_id: appId,
     message_id: 'om_run_1',
     chat_id: 'oc_p2p_1',
     recall_type: 'message_owner',
+    recall_time: String(recalledAt),
   });
 
-  const front = ctx.sessions.find({ kind: 'front' })[0];
-  expect(activeSignal?.aborted).toBe(true);
-  expect(front?.state).toBe('stopped');
-  expect(front?.reply).toBe('已停止（用户撤回了消息）');
+  expect(chatRequests[0]?.signal.aborted).toBe(true);
+  if (phase === '工具') {
+    expect(toolSignal?.aborted).toBe(false);
+    expect(chatRequests).toHaveLength(1);
+    expect(ctx.sessions.find({ kind: 'front' })[0]?.state).toBe('running');
+    pendingTool.resolve('已保存工具结果');
+  }
+  if (phase === '工具关口') {
+    pendingGate.resolve();
+  }
+  if (phase === '回复发送') {
+    expect(chatRequests).toHaveLength(1);
+    //M 飞书明确拒绝已经递交的引用请求，发送出口才改走普通发送。
+    pendingReply.resolve(230011);
+  }
 
-  //M 等过修复轮定时器窗口，确认既不回话也不再跑模型。
-  await Bun.sleep(60);
-  expect(stub.textCalls).toHaveLength(0);
-  expect(chatCalls).toBe(1);
+  await waitFor(() => ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
+  const messages = chatRequests[1]?.messages ?? [];
+  const notice = messages.at(-1);
+  expect(notice?.role).toBe('system');
+  expect(notice?.content).toContain(new Date(recalledAt).toISOString());
+  expect(notice?.content).toContain(JSON.stringify(originalText));
+  const tools = messages.filter((message) => message.role === 'toolResult');
+  if (phase === '模型') {
+    expect(tools).toHaveLength(0);
+  }
+  if (phase === '工具' || phase === '工具关口') {
+    expect(tools.map((message) => message.toolCallId)).toEqual(['first', 'second']);
+    expect(piAi.contentText(tools[1]?.content ?? [])).toContain('未执行');
+  }
+  if (phase === '工具') {
+    expect(ran).toEqual(['first']);
+    expect(piAi.contentText(tools[0]?.content ?? [])).toBe('已保存工具结果');
+  }
+  if (phase === '工具关口') {
+    expect(ran).toEqual([]);
+    expect(piAi.contentText(tools[0]?.content ?? [])).toContain('未执行');
+  }
+  if (phase === '回复发送') {
+    expect(tools.map((message) => message.toolCallId)).toEqual(['on-the-way']);
+    expect(stub.textCalls).toEqual([
+      { chatId: '', text: '正在发的回复', replyToId: 'om_run_1' },
+      { chatId: 'oc_p2p_1', text: '正在发的回复' },
+    ]);
+    return;
+  }
+  expect(stub.textCalls).toEqual([{ chatId: 'oc_p2p_1', text: '看过撤回，继续原来的事' }]);
 });
 
 
@@ -341,7 +422,7 @@ test('2. 排队时撤回：从队列移除且绝不开跑，前一条照常回�
 });
 
 
-test('3. 派出的后台跟着停且不回传，已经跑完的不管', async () => {
+test('3. 派出的后台看到撤回后继续交回，已跑完的会话保持原状态', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-recall-work-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = new cordis.Context();
@@ -364,6 +445,7 @@ test('3. 派出的后台跟着停且不回传，已经跑完的不管', async ()
 
   const stub = createFeishuStub(ctx.get('feishu') as feishuModule.Feishu, appId, { botOpenId: 'ou_bot' });
   let workSignal: AbortSignal | undefined;
+  let workNotice: string | undefined;
   const workBlocker = { finish: (_ans: piAi.AssistantMessage) => undefined };
   let mode: 'stall-work' | 'finish-all' = 'stall-work';
 
@@ -388,10 +470,14 @@ test('3. 派出的后台跟着停且不回传，已经跑完的不管', async ()
       workSignal = request.signal;
       return waitAbortOrResolve(request.signal, workBlocker);
     }
+    const notice = request.messages.at(-1);
+    if (notice?.role === 'system') {
+      workNotice = piAi.contentText(notice.content);
+    }
     return Promise.resolve(piAi.fauxAssistantMessage('后台全部搞定'));
   };
 
-  //M 3a. 派出的后台正在跑时撤回原消息 → 后台立即停跑且绝不把“停下了”结果回传前台或发给用户。
+  //M 派出的后台正在等模型时撤回，下一次请求应从撤回说明接着做。
   await stub.triggerInbound({
     sender: { sender_id: { open_id: 'ou_owner' }, sender_type: 'user' },
     message: {
@@ -407,6 +493,7 @@ test('3. 派出的后台跟着停且不回传，已经跑完的不管', async ()
   await waitFor(() => ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
   expect(stub.textCalls).toHaveLength(1);
 
+  mode = 'finish-all';
   await stub.triggerRecall({
     app_id: appId,
     message_id: 'om_work_1',
@@ -414,16 +501,15 @@ test('3. 派出的后台跟着停且不回传，已经跑完的不管', async ()
     recall_type: 'message_owner',
   });
 
-  const stoppedWork = ctx.sessions.find({ kind: 'work' })[0];
   expect(workSignal?.aborted).toBe(true);
-  expect(stoppedWork?.state).toBe('stopped');
-  expect(stoppedWork?.frontTask?.paused).toBe(true);
-
-  await Bun.sleep(60);
-  expect(stub.textCalls).toHaveLength(1);
+  await waitFor(() => stub.textCalls.length === 2);
+  const resumedWork = ctx.sessions.find({ kind: 'work' })[0];
+  expect(workNotice).toContain('派后台跑起来');
+  expect(resumedWork?.state).toBe('done');
+  expect(resumedWork?.frontTask?.paused).toBe(false);
+  expect(stub.textCalls[1]).toEqual({ chatId: 'oc_p2p_3', text: '后台已完成汇报' });
 
   //M 3b. 已经彻底跑完（done）的消息与后台再撤回 → 状态维持 done 不改写。
-  mode = 'finish-all';
   await stub.triggerInbound({
     sender: { sender_id: { open_id: 'ou_owner' }, sender_type: 'user' },
     message: {
@@ -435,11 +521,13 @@ test('3. 派出的后台跟着停且不回传，已经跑完的不管', async ()
     },
   });
 
-  await waitFor(() => stub.textCalls.some((item) => item.text.includes('后台已完成汇报')));
-  const doneFront = ctx.sessions.find({ kind: 'front' }).find((item) => item.id !== stoppedWork?.frontTask?.front);
+  await waitFor(() => stub.textCalls.some((item) => {
+    return item.replyToId === 'om_done_1' && item.text.includes('后台已完成汇报');
+  }));
+  const doneFront = ctx.sessions.find({ kind: 'front' }).find((item) => item.id !== resumedWork?.frontTask?.front);
   await waitFor(() => doneFront !== undefined && ctx.sessions.open(doneFront.id).row.state === 'done');
 
-  const doneWorks = ctx.sessions.find({ kind: 'work' }).filter((item) => item.id !== stoppedWork?.id);
+  const doneWorks = ctx.sessions.find({ kind: 'work' }).filter((item) => item.id !== resumedWork?.id);
   expect(doneWorks).toHaveLength(1);
   expect(doneWorks[0]?.state).toBe('done');
 
@@ -458,7 +546,7 @@ test('3. 派出的后台跟着停且不回传，已经跑完的不管', async ()
 });
 
 
-test('4. 群聊权限边界：外人撤自己的照样停但不能停别人的，本人（owner）撤回可停', async () => {
+test('4. 群聊权限边界：原发者可撤自己的消息，本人可撤其他人的消息', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-recall-group-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = new cordis.Context();
@@ -492,6 +580,11 @@ test('4. 群聊权限边界：外人撤自己的照样停但不能停别人的�
   let roundSeq = 0;
 
   ctx.sessions.chat = (request) => {
+    const recent = request.messages.at(-1);
+    if (recent?.role === 'system' && piAi.contentText(recent.content).includes('用户撤回了这条')) {
+      const reply = piAi.fauxToolCall('channel_reply', { text: '收到撤回说明' });
+      return Promise.resolve(piAi.fauxAssistantMessage([reply], { stopReason: 'toolUse' }));
+    }
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'user') {
       roundSeq += 1;
@@ -581,7 +674,7 @@ test('4. 群聊权限边界：外人撤自己的照样停但不能停别人的�
   expect(ranTexts.some((text) => text.includes('A自己的话'))).toBe(false);
   expect(ranTexts.some((text) => text.includes('B的第二条'))).toBe(true);
 
-  //M 本人（owner）通过 operator_id 撤停 B 正在跑的 om_b_2 → 允许立即停跑且不外发回话。
+  //M 本人（owner）通过 operator_id 撤回 B 正在跑的消息，下一步看到说明并直发原群。
   await stub.triggerRecall({
     app_id: appId,
     message_id: 'om_b_2',
@@ -591,7 +684,8 @@ test('4. 群聊权限边界：外人撤自己的照样停但不能停别人的�
   });
 
   expect(thirdSignal?.aborted).toBe(true);
-  expect(ctx.sessions.find({ kind: 'front' })[0]?.state).toBe('stopped');
-  await Bun.sleep(60);
-  expect(stub.textCalls).toHaveLength(1);
+  await waitFor(() => stub.textCalls.length === 2 && ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
+  expect(stub.textCalls[1]?.chatId).toBe('oc_grp_1');
+  expect(stub.textCalls[1]?.replyToId).toBeUndefined();
+  expect(stub.textCalls[1]?.text).toContain('收到撤回说明');
 });

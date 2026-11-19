@@ -36,7 +36,7 @@ declare module 'cordis' {
      * 加提示词就往 request.system 里 push；压缩、检索、拼最近往来就改 request.messages；
      * 直接给回答的（假模型）填 request.answer；要这一轮停在这里、不调模型，就在 request.stop 写理由。
      * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了（下面三个关口也一样）。
-     * 谁发：src7/Sessions.ts 的 Session.loop
+     * 谁发：src7/Sessions.ts 的 Session.getStepAnswer
      * 谁接：
      *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/assist/index.ts 的 Assist.constructor
@@ -44,7 +44,6 @@ declare module 'cordis' {
      *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.constructor
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
      *   src7/plugins/bots/Prompt.ts 的 Prompt.constructor
-     *   src7/plugins/context-fit/Compress.ts 的 Compress.constructor
      *   src7/plugins/context-fit/index.ts 的 apply
      *   src7/plugins/fake-model/index.ts 的 apply
      *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.constructor
@@ -62,7 +61,7 @@ declare module 'cordis' {
      * 关口二，模型回来之后、回答接进对话之前：照先后一个个 await。
      * 能看能改 request.answer（换掉也行，以最后的为准）；在 request.stop 写理由，这次回答就不要了
      * （里面要的工具也不执行），这一轮停在这里。
-     * 谁发：src7/Sessions.ts 的 Session.loop
+     * 谁发：src7/Sessions.ts 的 Session.getStepAnswer
      * 谁接：暂无
      */
     'session/after-model'(request: AnsweredRequest): void | Promise<void>;
@@ -617,6 +616,9 @@ export class Session {
   /** 正在转的这一轮的取消开关；没在转是 undefined。喊停时用它掐断正在等的模型请求，它的信号也交给工具。 */
   private aborter?: AbortController;
 
+  /** 当前模型步骤的取消开关；撤回只掐模型并阻止这一步尚未执行的工具。 */
+  private stepAborter?: AbortController;
+
   /**
    * 用户说了、还没接进对话的话。每一步开头才接进去，避免插在模型的回答和工具结果之间。
    * `Message` 的四种形状见本文件 L96。
@@ -637,6 +639,17 @@ export class Session {
    */
   queueUserMessage(text: string): void {
     this.inbox.push({ role: 'user', content: text, timestamp: Date.now() });
+  }
+
+  /** 补一条会话系统消息，并让下一步模型根据更新后的历史判断。 */
+  reconsider(text: string): void {
+    //G 已经收尾的轮次不重新启动。
+    if (this.row.state !== 'running') return;
+
+    //M 到下一步才接入系统消息，让当前工具结果先跟调用配对。
+    const message: piAi.Message = { role: 'system', content: text, timestamp: Date.now() };
+    this.inbox.push(message);
+    this.stepAborter?.abort();
   }
 
   /**
@@ -669,6 +682,7 @@ export class Session {
         this.change('failed', `出错了：${reason}`);
       }
     } finally {
+      this.stepAborter = undefined;
       this.aborter = undefined;
     }
 
@@ -695,6 +709,12 @@ export class Session {
       //M   在关口一之前加，插件在 session/before-model 里读到的就是“这是第几步”；骨架只记，不拿它限制会话。
       this.row.steps += 1;
 
+      //M 模型同时响应整轮停止与单步取消；工具执行仍只拿整轮停止信号。
+      const stepAborter = new AbortController();
+      this.stepAborter = stepAborter;
+      const stepSignal = stepAborter.signal;
+      const modelSignal = AbortSignal.any([signal, stepSignal]);
+
       //M 用户说了、还没接进对话的话，这时候接进去。
       for (const waiting of this.inbox.splice(0)) {
         this.append(waiting);
@@ -708,56 +728,13 @@ export class Session {
         system: [],
         tools: this.ctx.tools.listToolsForSessionKind(this.row.kind),
         messages: [...this.row.messages],
-        signal,
+        signal: modelSignal,
       };
-      await this.ctx.serial('session/before-model', request);
-
-      //G 有插件喊停 → 不调模型，这一轮停在这里，理由写进 reply。
-      if (request.stop !== undefined) {
-        this.stop(request.stop);
-        return;
-      }
-
-      //==========================================================
-      //M 取得模型回答或使用插件给出的回答
-      //==========================================================
-      //T 跟踪：调模型；插件已经给了回答（假模型）就写明没有调。
-      const vars = {
-        session: this.id,
-        step: this.row.steps,
-        model: request.model,
-        messageCount: request.messages.length,
-      };
-      let doing = 'trace.sessions.callModel';
-      if (request.answer !== undefined) {
-        doing = 'trace.sessions.answerProvided';
-      }
-      this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);
-
-      //M 调模型（Sessions.chat，就在本文件上面）。插件已经给了回答（假模型）就不发请求。
-      let answer = request.answer;
-      if (answer === undefined) {
-        answer = await this.ctx.sessions.chat(request);
-      }
-
-      //G 等模型的时候被喊停了 → 这次回答不要了。
-      if (this.row.state !== 'running') return;
-
-      //==========================================================
-      //M 关口二 让插件检查回答并接进对话
-      //==========================================================
-      //M 关口二，模型回来之后：回答接进对话之前，带着回答交给插件挨个看（session/after-model）。
-      const answered: AnsweredRequest = { ...request, answer };
-      await this.ctx.serial('session/after-model', answered);
-
-      //G 有插件喊停 → 这次回答不要了（里面要的工具也不执行），这一轮停在这里。
-      if (answered.stop !== undefined) {
-        this.stop(answered.stop);
-        return;
-      }
+      //M 经过两个模型关口后接入回答；这一步被取消时，重新从队列取话。
+      const answer = await this.getStepAnswer(request);
+      if (answer === undefined || modelSignal.aborted) continue;
 
       //M 插件可能改了、换了回答，以最后这一份为准，接进对话。
-      answer = answered.answer;
       this.append(answer);
 
       //==========================================================
@@ -785,7 +762,7 @@ export class Session {
 
       //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。
       for (const call of calls) {
-        const executed = await this.ctx.tools.execute(call, this, signal);
+        const executed = await this.ctx.tools.execute(call, this, signal, stepSignal);
 
         //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。
         const done: ToolDone = { session: this, call, outcome: executed };
@@ -822,6 +799,61 @@ export class Session {
           this.stop(done.stop);
         }
       }
+    }
+  }
+
+  /** 走两个模型关口。收到取消信号时丢弃该步回答。 */
+  private async getStepAnswer(request: ChatRequest): Promise<piAi.AssistantMessage | undefined> {
+    const signal = request.signal;
+    //G 接入队列时也可能触发取消，旧请求无需进入关口。
+    if (signal.aborted) return;
+
+    try {
+      //M 关口一：插件在这里修改请求，也可以提供现成回答。
+      await this.ctx.serial('session/before-model', request);
+      if (signal.aborted) return;
+
+      //G 有插件喊停 → 不调模型，理由写进 reply。
+      if (request.stop !== undefined) {
+        this.stop(request.stop);
+        return;
+      }
+
+      //T 跟踪：调模型；插件已经给了回答就写明没有调。
+      const vars = {
+        session: this.id,
+        step: this.row.steps,
+        model: request.model,
+        messageCount: request.messages.length,
+      };
+      let doing = 'trace.sessions.callModel';
+      if (request.answer !== undefined) {
+        doing = 'trace.sessions.answerProvided';
+      }
+      this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);
+
+      //M 采用插件给出的回答，或用本步的信号请求模型。
+      let answer = request.answer;
+      if (answer === undefined) {
+        answer = await this.ctx.sessions.chat(request);
+      }
+      if (signal.aborted) return;
+
+      //M 关口二：插件在回答进入历史前检查或替换回答。
+      const answered: AnsweredRequest = { ...request, answer };
+      await this.ctx.serial('session/after-model', answered);
+      if (signal.aborted) return;
+
+      //G 有插件喊停 → 这次回答和它要求的工具都不接入对话。
+      if (answered.stop !== undefined) {
+        this.stop(answered.stop);
+        return;
+      }
+      return answered.answer;
+    } catch (error) {
+      //G 模型会在取消时抛错，让会话回到循环处理排队的说明。
+      if (signal.aborted) return;
+      throw error;
     }
   }
 

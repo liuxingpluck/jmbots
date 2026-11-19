@@ -52,6 +52,7 @@
   "trace.feishu.receiveMessage": "飞书收到一条消息，存原始件并广播 channel/message",
   "trace.feishu.sendOutbox": "飞书发件箱发出一份，挪进 sent",
   "trace.feishu.skipGroupReply": "群里这条没 @ 机器人，不回",
+  "trace.feishu.wsReceived": "飞书长连接收到 im.message.receive_v1，交给入站处理（轨迹的第一格）",
   "trace.field.account": "账号",
   "trace.field.action": "要做",
   "trace.field.appId": "应用",

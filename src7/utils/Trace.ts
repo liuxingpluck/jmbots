@@ -21,7 +21,7 @@ declare module 'cordis' {
     /**
      * 一个跟踪点。只是通知，谁也不许靠它改流程。
      * 谁发：
-     *   src7/Sessions.ts 的 Session.loop
+     *   src7/Sessions.ts 的 Session.getStepAnswer
      *   src7/Tools.ts 的 Tools.execute
      *   src7/plugins/approval/index.ts 的 Approval.answer、Approval.ask、Approval.onRequest、Approval.settle、Approval.traced
      *   src7/plugins/assist/Reminders.ts 的 Reminders.arm、Reminders.closeCard、Reminders.start
@@ -41,7 +41,7 @@ declare module 'cordis' {
      *   src7/plugins/exec/index.ts 的 Exec.onDecided、Exec.onTool、Exec.run
      *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.handleInboundMessage、FeishuInbound.keepDropped、FeishuInbound.onCard、FeishuInbound.onMessage、FeishuInbound.onRecall
      *   src7/plugins/feishu/doc/Doc.ts 的 publish
-     *   src7/plugins/feishu/index.ts 的 Feishu.mark
+     *   src7/plugins/feishu/index.ts 的 Feishu.mark、Feishu.start
      *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
      *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.attachImages
      *   src7/plugins/file-tools/index.ts 的 FileTools.edit、FileTools.find
@@ -97,6 +97,8 @@ export interface DispatchLine {
   bot?: string;
   /** web-api 收件表的消息号。 */
   messageId?: number;
+  /** 标准消息号（渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])）；事件参数里的 messageId 或 sourceId，或参数里 message 的这两项。 */
+  sourceId?: string;
   /** 认得的关键值（状态、角色、说了什么、要了什么工具）。 */
   vars: Record<string, unknown>;
 }
@@ -140,6 +142,20 @@ function sessionLike(value: unknown): { id: string; row: Record<string, unknown>
 
 
 /**
+ * 认标准消息号：渠道的标准消息号是 JSON.stringify([渠道, 账号, 平台原消息号])，一定以 [" 开头；
+ * 平台原消息号（om_xxx）、提醒号（reminder:xxx）不是，不认。
+ * @param value 跟踪点变量或事件参数里的某一项。
+ * @returns 是标准消息号就原样交回；不是是 undefined。
+ */
+export function getSourceId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (!value.startsWith('["')) return undefined;
+
+  return value;
+}
+
+
+/**
  * 拼一个事件行：Cordis 每发一个事件先发 internal/dispatch（发法、事件名、参数），trace、journal 都听它。
  * 会话从参数里找：参数本身是会话、带 session（ChatRequest、model/failed 的 info）、带 sessionId 或 session 号（待确认、进度）。
  * @param ctx 听的那个插件的 ctx（用来查这个事件登记着哪些监听）。
@@ -175,6 +191,18 @@ export function buildDispatchLine(ctx: cordis.Context, mode: string, event: stri
     }
     const messageId = item?.['messageId'] ?? receivedId;
     if (typeof messageId === 'number') line.messageId = messageId;
+
+    //M 标准消息号：参数本身带（channel/message 的 messageId），或参数里的 message 带（bot/receive 的 message.sourceId）。
+    const inner = item?.['message'];
+    let nested: Record<string, unknown> | undefined;
+    if (typeof inner === 'object' && inner !== null) {
+      nested = inner as Record<string, unknown>;
+    }
+    const sourceId = getSourceId(item?.['messageId'])
+      ?? getSourceId(item?.['sourceId'])
+      ?? getSourceId(nested?.['messageId'])
+      ?? getSourceId(nested?.['sourceId']);
+    if (sourceId !== undefined && line.sourceId === undefined) line.sourceId = sourceId;
 
     //M 参数本身是会话，或带着会话对象（session）：会话号、机器人都从它取，找到就停。
     const found = sessionLike(arg) ?? sessionLike(item?.['session']);

@@ -1,68 +1,27 @@
-/** 处理渠道撤回，停止被撤的前后台轮次并拦截迟到回复。 */
+/** 处理渠道撤回，清掉待办原消息并通知正在处理它的会话。 */
 import type * as cordis from 'cordis';
 import * as protocol from '../../Channels.ts';
+import type { Session } from '../../Sessions.ts';
 import * as utils from '../../utils/index.ts';
 import * as dispatch from './DispatchResults.ts';
-import type { DispatchResults } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 
-/** 保存已经确认的撤回及其渠道监听。 */
+/** 撤回只影响这条原消息及其派出的后台工作。 */
 export class DispatchRecall {
-  /** 拦截撤回瞬间在途的回复与后台回传，最多留 500 条。 */
-  private readonly recalledMessages = new Set<string>();
-
-  /** 在机器人插件的上下文处理撤回，向前台清理待判断消息。 */
   constructor(
     private readonly home: cordis.Context,
     private readonly desk: FrontDesk,
   ) {}
 
-  /** 拦截一条迟到的消息或结果。 */
-  has(messageId: string): boolean {
-    //G 只拒绝已经通过授权检查并登记的撤回消息。
-    return this.recalledMessages.has(messageId);
-  }
-
-  /** 以原来的顺序登记两个撤回关口。 */
-  listen(queue: DispatchResults): void {
-    //M 收到渠道撤回事件时移除未跑的排队项并喊停正在跑的前台与派生后台会话。
+  /** 接收渠道已经核定身份的撤回事件。 */
+  listen(): void {
+    //M 渠道核验平台身份，bots 再按来源匹配排队项和活动会话。
     this.home.on('channel/recall', (event) => {
-      this.onChannelRecall(event, queue);
+      this.onChannelRecall(event);
     });
-
-    //M 拦截原消息已撤回但在途的 channel/reply 请求，直接回传 rejected 回执，不再外发。
-    this.home.on('channel/reply', (request) => {
-      if (!this.recalledMessages.has(request.sourceSnapshot.messageId)) return;
-
-      request.handled = true;
-      const reason = 'recalled：原消息已撤回，不再发送回复';
-      //G 让调用方立即知道原消息已经撤回。
-      const receipt = protocol.getReceipt(request, 'rejected', reason);
-      protocol.emitReplied(this.home, request, receipt);
-    }, { prepend: true });
   }
 
-  /**
-   * 登记已撤回的标准消息号（最多保留 500 条），用于拦截撤回瞬间在途的回复与延迟回传。
-   * @param messageId 标准消息 ID。
-   */
-  private rememberRecalled(messageId: string): void {
-    //M 将撤回消息号记入有限缓存集合，超过上限时删掉最早一条防内存增长。
-    this.recalledMessages.add(messageId);
-    if (this.recalledMessages.size <= 500) return;
-
-    const oldest = this.recalledMessages.values().next().value;
-    if (oldest !== undefined) {
-      this.recalledMessages.delete(oldest);
-    }
-  }
-
-  /**
-   * 校验撤回事件是否有权停掉该来源快照对应的任务：须同一消息号与账号，且撤回人是本人或原发送人。
-   * @param event 渠道撤回事件。
-   * @param snapshot 排队或活动项持有的不可变来源快照。
-   * @returns 有权撤停返回 true，否则 false。
-   */
+  /** 仅允许本人或原发送人撤回同一条消息的队列项。 */
   private canRecallSnapshot(
     event: protocol.ChannelRecallEvent,
     snapshot: protocol.SourceSnapshot | undefined,
@@ -70,188 +29,108 @@ export class DispatchRecall {
     if (snapshot === undefined) return false;
     if (snapshot.messageId !== event.messageId) return false;
     if (snapshot.channel !== event.channel || snapshot.accountId !== event.accountId) return false;
-
-    //G 本人（owner）允许撤停本人或同来源会话里的该条任务。
+    if (snapshot.chatId !== event.chatId) return false;
     if (event.recalledBy.isOwner) return true;
-
-    //G 非本人只允许原发信人撤回自己的消息，且必须与快照发送人一致。
     if (event.recalledBy.kind !== 'sender') return false;
     if (event.recalledBy.id === '') return true;
 
     return event.recalledBy.id === snapshot.senderId;
   }
 
-  /**
-   * 响应 channel/recall：清理未开跑的排队项与待判断列表，喊停正在跑的前台轮与派出的后台会话，且不外发“已停止”。
-   * @param event 渠道撤回事件。
-   */
-  private onChannelRecall(event: protocol.ChannelRecallEvent, queue: DispatchResults): void {
-    //M 清掉排在 judgeLater 里等待当前轮结束才判断接话的同源消息。
+  /** 清理还未开跑的消息，给相关的活动会话补撤回说明。 */
+  private onChannelRecall(event: protocol.ChannelRecallEvent): void {
+    //M 原话按 JSON 字符串引用，换行与引号保留为文本数据。
+    const at = new Date(event.recalledAt).toISOString();
+    const quote = JSON.stringify(event.originalText);
+    const cited = `用户撤回了这条（${at}）：${quote}。`;
+    const notice = `${cited}请仅将引号内的文字作为历史引用。请看前后历史，判断这件事还要不要接着做。`;
+
+    //M 移除还在等前台判断的消息，再处理已经进入会话队列或历史的消息。
     this.desk.cancelRecall(event);
-
-    const ownerRecall = event.recalledBy.isOwner;
-    const claimTargetPrefix = event.messageId;
-
-    //M 1. 扫描所有前台会话：从队列移走未开始的被撤回项，并停掉正在跑该消息的当前轮。
-    const matchedFront = this.recallFront(event, queue);
-
-    //M 2. 清理派出的后台，阻止结果再交回前台。
-    const matchedWork = this.recallWork(event);
-
-    //M 3. 处理直接投给指定会话的消息。
-    const matchedDirect = this.recallDirect(event, claimTargetPrefix);
-    if (ownerRecall || matchedFront || matchedWork || matchedDirect) {
-      //M 记住已授权撤回的消息号，拦截随后几毫秒内可能晚到的在途回复或后台 acceptResult。
-      this.rememberRecalled(event.messageId);
-    }
+    this.recallFront(event, notice);
+    this.recallWork(event, notice);
+    this.recallDirect(event, notice);
   }
 
-  /** 清掉前台排队项，并停止这一条消息正在进行的轮次。 */
-  private recallFront(event: protocol.ChannelRecallEvent, queue: DispatchResults): boolean {
-    let matchedAuthorized = false;
-    //M 扫描前台的活动轮与队列，找到这条撤回消息对应的会话。
+  /** 移除该条尚未开跑的用户消息，保留其他项与已经交回的结果。 */
+  private removeQueued(session: Session, event: protocol.ChannelRecallEvent): void {
+    const queue = session.row.resultQueue ?? [];
+    //M 按来源和排队状态定位要移除的原消息。
+    const kept = queue.filter((item) => {
+      if (item.kind !== 'user' || item.stage !== 'queued') return true;
+      return !this.canRecallSnapshot(event, item.payload.sourceSnapshot);
+    });
+    if (kept.length === queue.length) return;
+
+    session.row.resultQueue = kept;
+    //M 立即落库，重启恢复也不会再接入被撤回的消息。
+    session.save();
+  }
+
+  /** 清理前台队列，并通知正在处理该消息的前台。 */
+  private recallFront(event: protocol.ChannelRecallEvent, notice: string): void {
+    //M 从会话元信息里筛选命中的前台，避免加载无关会话的对话历史。
     for (const meta of this.home.sessions.find({ kind: 'front' })) {
-      const maybeActive = meta.activeSourceSnapshot?.messageId === event.messageId;
-      const queueItems = meta.resultQueue ?? [];
-      const maybeQueued = queueItems.some((item) => item.payload.sourceSnapshot?.messageId === event.messageId);
-      if (!maybeActive && !maybeQueued) {
-        continue;
-      }
+      const active = dispatch.getActive(meta);
+      const snapshot = active?.payload.sourceSnapshot ?? meta.activeSourceSnapshot;
+      const matchesActive = this.canRecallSnapshot(event, snapshot);
+      const queued = meta.resultQueue ?? [];
+      const matchesQueue = queued.some((item) => item.payload.sourceSnapshot?.messageId === event.messageId);
+      if (!matchesActive && !matchesQueue) continue;
 
-      //M 打开命中会话并取出队列，准备清理尚未开跑的被撤回排队项。
       const front = this.home.sessions.open(meta.id);
-      const beforeQueue = front.row.resultQueue ?? [];
-      //M 剔除所有尚在排队（stage 为 queued）且属于同一授权撤回消息的条目。
-      const nextQueue = beforeQueue.filter((item) => {
-        if (item.stage !== 'queued') return true;
-        if (!this.canRecallSnapshot(event, item.payload.sourceSnapshot)) return true;
-
-        matchedAuthorized = true;
-        return false;
-      });
-      if (nextQueue.length !== beforeQueue.length) {
-        //M 将删去被撤回排队项后的队列存盘。
-        front.row.resultQueue = nextQueue;
-        front.save();
-      }
-
-      //M 检查当前正在处理的那一项是否就是被撤回的原消息。
-      const activeItem = dispatch.getActive(front.row);
-      const activeSnap = activeItem?.payload.sourceSnapshot ?? front.row.activeSourceSnapshot;
-      if (this.canRecallSnapshot(event, activeSnap)) {
-        //M 登记该撤回消息号并清理可能等待触发的零次回复修补定时器。
-        matchedAuthorized = true;
-        this.rememberRecalled(event.messageId);
-        queue.cancelRepairTimer(front.id);
-
-        if (activeItem?.replyControl !== undefined) {
-          //M 将本轮回复控制标为已撤回，避免触发修复轮或直接发最后的话并持久化。
-          activeItem.replyControl.reminder = 'used';
-          activeItem.replyControl.outcome = 'recalled';
-        }
-        if (front.row.state === 'running') {
-          //M 先落盘结构化撤停标记供 Bots.onChange 识别并阻止外发“已停止”，再立即喊停该前台轮。
-          front.row.recalledStop = true;
-          front.save();
-          front.stop('用户撤回了消息');
-        }
-        if (front.row.state !== 'running') {
-          //M 非运行中但更新过 replyControl 时落盘持久化。
-          front.save();
-        }
-        if (front.row.state !== 'running' && activeItem !== undefined && activeItem.stage === 'working') {
-          //M 若卡在首轮刚结束待修复定时器的间隙，主动收尾释放 activeKey 并继续处理队列里别人的话。
-          queue.finishChannelFront(front, activeItem);
-        }
+      this.removeQueued(front, event);
+      if (matchesActive && active?.stage !== 'sending') {
+        //M 原活动轮继续负责收发，下一模型步骤会看到撤回说明。
+        front.reconsider(notice);
       }
     }
-    return matchedAuthorized;
   }
 
-  /** 扫描后台会话，停止正在跑或还有待处理队列的任务。 */
-  private recallWork(event: protocol.ChannelRecallEvent): boolean {
-    let matchedAuthorized = false;
-    //M 通过后台继承的来源快照找到从该条消息派出的任务。
+  /** 通知派出的后台，并保留已完成工具、交回结果与无关的排队消息。 */
+  private recallWork(event: protocol.ChannelRecallEvent, notice: string): void {
+    //M 按派活时继承的来源匹配，而不是按后台最后一次回话的地址猜。
     for (const meta of this.home.sessions.find({ kind: 'work' })) {
-      const workSnap = meta.frontTask?.sourceSnapshot ?? meta.activeSourceSnapshot;
-      //G 后台也按原消息与发送人核对撤回权限。
-      if (!this.canRecallSnapshot(event, workSnap)) {
-        continue;
-      }
+      const snapshot = meta.frontTask?.sourceSnapshot ?? meta.activeSourceSnapshot;
+      const matchesActive = this.canRecallSnapshot(event, snapshot);
+      const queued = meta.resultQueue ?? [];
+      const matchesQueue = queued.some((item) => item.payload.sourceSnapshot?.messageId === event.messageId);
+      if (!matchesActive && !matchesQueue) continue;
 
-      //M 登记撤回消息号防止并发交回并检查该后台会话是否仍在跑或有排队项。
-      matchedAuthorized = true;
-      this.rememberRecalled(event.messageId);
-      const hasWaiting = dispatch.getWaiting(meta.resultQueue ?? []).length > 0;
-      if (meta.state !== 'running' && !hasWaiting) {
-        continue;
-      }
-
-      //M 先移除队列里未开始的项并将 frontTask.paused 与 recalledStop 落盘，防止 stop 后 returnWork 或外发“已停止”。
       const work = this.home.sessions.open(meta.id);
-      work.row.resultQueue = (work.row.resultQueue ?? []).filter((item) => item.stage !== 'queued');
-      if (work.row.frontTask !== undefined) {
-        work.row.frontTask.paused = true;
-      }
-      if (work.row.state === 'running') {
-        work.row.recalledStop = true;
-      }
-      //M 持久化清理后的后台队列与停跑标记，防止紧接的 stop 回传前台。
-      work.save();
-
-      if (work.row.state === 'running') {
-        //M 掐断正在等待的模型请求与工具信号，彻底停下该派出后台任务，随即清掉瞬时撤停标记。
-        work.stop('用户撤回了消息');
-        delete work.row.recalledStop;
-        work.save();
+      this.removeQueued(work, event);
+      if (matchesActive) {
+        //M 后台的后续结果仍经原前台整理。
+        work.reconsider(notice);
       }
     }
-    return matchedAuthorized;
   }
 
-  /** 检查直接投递到其他种类会话的撤回。 */
-  private recallDirect(event: protocol.ChannelRecallEvent, claimTargetPrefix: string): boolean {
-    let matchedAuthorized = false;
-    //M 直接投递可进入前后台之外的会话，用认领记录定位。
+  /** 检查从渠道直接投给其他种类会话的活动消息。 */
+  private recallDirect(event: protocol.ChannelRecallEvent, notice: string): void {
+    //M 用认领记录和当前地址定位直接投递的消息。
     for (const meta of this.home.sessions.find({})) {
-      if (meta.kind === 'front' || meta.kind === 'work' || meta.state !== 'running') {
-        continue;
-      }
+      if (meta.kind === 'front' || meta.kind === 'work' || meta.state !== 'running') continue;
+      if (meta.channel !== event.channel) continue;
 
-      //M 核对会话是否确实认领过该标准消息号。
-      const claimKey = protocol.getClaimKey(claimTargetPrefix, meta.bot);
-      if (!(meta.sourceClaims ?? []).includes(claimKey)) {
-        continue;
-      }
+      const claimKey = protocol.getClaimKey(event.messageId, meta.bot);
+      if (!(meta.sourceClaims ?? []).includes(claimKey)) continue;
 
-      //M 核对渠道与账号是否匹配撤回事件。
-      const sameChannel = meta.channel === event.channel;
-      const addrAccount = utils.getStringField(meta.address, 'appId');
-      const sameAccount = addrAccount === '' || addrAccount === event.accountId;
-      if (!sameChannel || !sameAccount) {
-        continue;
-      }
+      const accountId = utils.getStringField(meta.address, 'appId');
+      const chatId = utils.getStringField(meta.address, 'chatId');
+      const nativeId = utils.getStringField(meta.address, 'messageId');
+      if (accountId !== '' && accountId !== event.accountId) continue;
+      if (chatId !== '' && chatId !== event.chatId) continue;
+      if (nativeId !== '' && nativeId !== event.nativeId) continue;
 
-      //M 非本人时只允许原发送人撤回自己触发的会话，绝不越权停别人。
-      const addrSender = utils.getStringField(meta.address, 'openId');
-      let allowedOther = event.recalledBy.isOwner;
-      if (!allowedOther && event.recalledBy.kind === 'sender') {
-        allowedOther = event.recalledBy.id === '' || addrSender === '' || event.recalledBy.id === addrSender;
-      }
-      if (!allowedOther) {
-        continue;
-      }
+      //G 非本人只能撤回自己的消息，渠道未提供身份时沿用原有的自撤校验。
+      const sender = utils.getStringField(meta.address, 'openId');
+      const actor = event.recalledBy;
+      const sameSender = actor.kind === 'sender' && (actor.id === '' || sender === '' || actor.id === sender);
+      if (!actor.isOwner && !sameSender) continue;
 
-      matchedAuthorized = true;
-      //M 先记下结构化撤停标记再停掉该直接投递会话，由 Bots.onChange 拦截外发“已停止”后随即清除瞬时标记。
       const target = this.home.sessions.open(meta.id);
-      target.row.recalledStop = true;
-      target.save();
-      target.stop('用户撤回了消息');
-      delete target.row.recalledStop;
-      target.save();
+      target.reconsider(notice);
     }
-
-    return matchedAuthorized;
   }
 }

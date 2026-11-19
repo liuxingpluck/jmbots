@@ -2,9 +2,9 @@
   {
     "id": "r-main",
     "parent": null,
-    "title": "src7/Main.ts（共 266 行）",
+    "title": "src7/Main.ts（共 267 行）",
     "summary": "骨架入口：校验参数，挂 Resources、Tools、Sessions 三个服务，按配置发起插件挂载；单个插件等到完成或超时，超时后后台继续起，随后发 ready 并续跑会话。",
-    "body": "## src7/Main.ts（共 266 行）分块目录\n\n分组：\n\n- 准备入口（L1–L52）：导入、ready 事件的声明。\n- main：启动全过程（L53–L233）：参数、挂三个骨架、选名单、循环挂插件、发 ready、续跑会话。\n- 外部插件入口和兜底（L234–L266）：外部插件入口的加载，以及文件底部调用 main 并兜底。\n\n执行顺序：程序入口（[Main.ts L262](#lines=Main.json&line=262)）→ main（[Main.ts L60](#lines=Main.json&line=60)）→ version / serve → checkArgs → 依次挂 Resources、Tools、Sessions → 选名单、备状态 → 循环挂插件（完成或超时先往后）→ 查缺服务 → 发 ready → 续跑 running 会话。外部路径才调 loadExternalPlugin；后台状态变化由 internal/status 监听更新。\n",
+    "body": "## src7/Main.ts（共 267 行）分块目录\n\n分组：\n\n- 准备入口（L1–L52）：导入、ready 事件的声明。\n- main：启动全过程（L54–L234）：参数、挂三个骨架、选名单、循环挂插件、发 ready、续跑会话。\n- 外部插件入口和兜底（L235–L267）：外部插件入口的加载，以及文件底部调用 main 并兜底。\n\n执行顺序：程序入口（[Main.ts L263](#lines=Main.json&line=262)）→ main（[Main.ts L61](#lines=Main.json&line=60)）→ version / serve → checkArgs → 依次挂 Resources、Tools、Sessions → 选名单、备状态 → 循环挂插件（完成或超时先往后）→ 查缺服务 → 发 ready → 续跑 running 会话。外部路径才调 loadExternalPlugin；后台状态变化由 internal/status 监听更新。\n",
     "sources": [
       "src7/Main.ts"
     ]
@@ -12,9 +12,9 @@
   {
     "id": "r-main-g1",
     "parent": "r-main",
-    "title": "L1–L52 准备入口",
+    "title": "L1–L53 准备入口",
     "summary": "导入、ready 事件的声明。",
-    "body": "## 准备入口\n\n- L1–L21 文件头和导入：文件头说清入口干什么、怎么运行；导入 Node 模块、Cordis、三个骨架模块和工具。\n- L22–L52 声明开工事件 ready：骨架挂好、配置的插件都发起挂载后发 ready，通知大家开工；超时的插件继续在后台起。",
+    "body": "## 准备入口\n\n- L1–L21 文件头和导入：文件头说清入口干什么、怎么运行；导入 Node 模块、Cordis、三个骨架模块和工具。\n- L22–L53 声明开工事件 ready：骨架挂好、配置的插件都发起挂载后发 ready，通知大家开工；超时的插件继续在后台起。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -32,9 +32,9 @@
   {
     "id": "r-main-02",
     "parent": "r-main-g1",
-    "title": "L22–L52 声明开工事件 ready",
+    "title": "L22–L53 声明开工事件 ready",
     "summary": "骨架挂好、配置的插件都发起挂载后发 ready，通知大家开工；超时的插件继续在后台起。",
-    "body": "**行号：L22–L52**\n\n### 代码原文\n```ts\n 22  declare module 'cordis' {\n 23    interface Events {\n 24      /**\n 25       * 骨架挂好、配置的插件都发起挂载后通知开工。超时的插件继续在后台启动。\n 26       * 命令行渠道等到它才把命令行里带的那句话发出去。\n 27       * 谁发：src7/Main.ts 的 main\n 28       * 谁接：\n 29       *   src7/plugins/approval/Outbound.ts 的 Outbound.constructor\n 30       *   src7/plugins/assist/index.ts 的 apply\n 31       *   src7/plugins/base-bridge/UpdateWatch.ts 的 mountUpdateWatch\n 32       *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen\n 33       *   src7/plugins/bots/index.ts 的 Bots.constructor\n 34       *   src7/plugins/cli/index.ts 的 Cli.constructor\n 35       *   src7/plugins/feishu/index.ts 的 Feishu.constructor\n 36       *   src7/plugins/feishu/outbox/Outbox.ts 的 setup\n 37       *   src7/plugins/http/index.ts 的 Http.constructor\n 38       *   src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.constructor\n 39       *   src7/plugins/memory/index.ts 的 apply\n 40       *   src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor\n 41       *   src7/plugins/programs/index.ts 的 apply\n 42       *   src7/plugins/relay/index.ts 的 Relay.constructor\n 43       *   src7/plugins/tutorial/Boot.ts 的 BootTrail.constructor\n 44       *   src7/plugins/voice/index.ts 的 apply\n 45       *   src7/plugins/wechat/index.ts 的 Wechat.constructor\n 46       * @param argv 命令行里剩下的参数，谁要谁用。\n 47       */\n 48      'ready'(argv: string[]): void;\n 49    }\n 50  }\n 51  \n 52  \n```\n\n### 解释\n- L48：事件签名：带命令行里剩下的参数 argv，谁要谁用（命令行渠道靠它发出那句话）。\n- 谁发：main 的 L225；谁在听：下面“谁在听”。\n\n### 事件 ready：谁发、谁在听\n- 谁发：`main`（L225），在所有配置的插件都发起挂载之后。\n- 谁在听（grep 现查）：\n  - [approval](#plugin=approval)（approval/Outbound.ts）：开工后恢复上次没发完的审批外发\n  - [assist](#plugin=assist)（assist/index.ts）：开工后启动提醒调度\n  - [base-bridge](#plugin=base-bridge)（base-bridge/UpdateWatch.ts）：开工后排第一次查更新\n  - [bots](#plugin=bots)（bots/DispatchResults.ts）：开工后把上次停在半路的派活队列项接着处理\n  - [bots](#plugin=bots)（bots/index.ts）：开工后启动各机器人\n  - [cli](#plugin=cli)（cli/index.ts）：命令行渠道等到开工才把命令行里带的那句话发出去\n  - [context-fit](#plugin=context-fit)（context-fit/index.ts）：开工后汇总检查哪些模型没登记窗口\n  - [feishu](#plugin=feishu)（feishu/index.ts）：开工后连飞书\n  - [feishu](#plugin=feishu)（feishu/outbox/Outbox.ts）：开工后恢复飞书发件箱\n  - [http](#plugin=http)（http/index.ts）：开工后开始监听 HTTP 端口\n  - [memory](#plugin=memory)（memory/ChannelBackfill.ts）：开工后补录渠道聊天记录\n  - [memory](#plugin=memory)（memory/index.ts）：开工后同步知识库\n  - [programs](#plugin=programs)（programs/ResourceGuard.ts）：开工后启动资源守护\n  - [programs](#plugin=programs)（programs/index.ts）：开工后拉起配置里的外部程序\n  - [relay](#plugin=relay)（relay/index.ts）：开工后恢复转话\n  - [tutorial](#plugin=tutorial)（tutorial/Boot.ts）：教程记下开工这一刻\n  - [voice](#plugin=voice)（voice/index.ts）：开工后预热语音模型\n  - [wechat](#plugin=wechat)（wechat/index.ts）：开工后开始轮询微信",
+    "body": "**行号：L22–L53**\n\n### 代码原文\n```ts\n 22  declare module 'cordis' {\n 23    interface Events {\n 24      /**\n 25       * 骨架挂好、配置的插件都发起挂载后通知开工。超时的插件继续在后台启动。\n 26       * 命令行渠道等到它才把命令行里带的那句话发出去。\n 27       * 谁发：src7/Main.ts 的 main\n 28       * 谁接：\n 29       *   src7/plugins/approval/Outbound.ts 的 Outbound.constructor\n 30       *   src7/plugins/assist/index.ts 的 apply\n 31       *   src7/plugins/base-bridge/UpdateWatch.ts 的 mountUpdateWatch\n 32       *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen\n 33       *   src7/plugins/bots/index.ts 的 Bots.constructor\n 34       *   src7/plugins/cli/index.ts 的 Cli.constructor\n 35       *   src7/plugins/context-fit/index.ts 的 apply\n 36       *   src7/plugins/feishu/index.ts 的 Feishu.constructor\n 37       *   src7/plugins/feishu/outbox/Outbox.ts 的 setup\n 38       *   src7/plugins/http/index.ts 的 Http.constructor\n 39       *   src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.constructor\n 40       *   src7/plugins/memory/index.ts 的 apply\n 41       *   src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor\n 42       *   src7/plugins/programs/index.ts 的 apply\n 43       *   src7/plugins/relay/index.ts 的 Relay.constructor\n 44       *   src7/plugins/tutorial/Boot.ts 的 BootTrail.constructor\n 45       *   src7/plugins/voice/index.ts 的 apply\n 46       *   src7/plugins/wechat/index.ts 的 Wechat.constructor\n 47       * @param argv 命令行里剩下的参数，谁要谁用。\n 48       */\n 49      'ready'(argv: string[]): void;\n 50    }\n 51  }\n 52\n 53\n```\n\n### 解释\n- L48：事件签名：带命令行里剩下的参数 argv，谁要谁用（命令行渠道靠它发出那句话）。\n- 谁发：main 的 L225；谁在听：下面“谁在听”。\n\n### 事件 ready：谁发、谁在听\n- 谁发：`main`（L225），在所有配置的插件都发起挂载之后。\n- 谁在听（grep 现查）：\n  - [approval](#plugin=approval)（approval/Outbound.ts）：开工后恢复上次没发完的审批外发\n  - [assist](#plugin=assist)（assist/index.ts）：开工后启动提醒调度\n  - [base-bridge](#plugin=base-bridge)（base-bridge/UpdateWatch.ts）：开工后排第一次查更新\n  - [bots](#plugin=bots)（bots/DispatchResults.ts）：开工后把上次停在半路的派活队列项接着处理\n  - [bots](#plugin=bots)（bots/index.ts）：插件都挂过后检查一次：memory 没启动就打一行警告（前台往来不会保存）\n  - [cli](#plugin=cli)（cli/index.ts）：命令行渠道等到开工才把命令行里带的那句话发出去\n  - [context-fit](#plugin=context-fit)（context-fit/index.ts）：开工后汇总检查哪些模型没登记窗口\n  - [feishu](#plugin=feishu)（feishu/index.ts）：都挂完了才连飞书：这时机器人、前台都在，收到的消息有人接\n  - [feishu](#plugin=feishu)（feishu/outbox/Outbox.ts）：开工后每隔一段时间扫描一次发件箱并投递\n  - [http](#plugin=http)（http/index.ts）：都挂完了才开始监听 HTTP 端口：这时别的插件的路径都登记好了\n  - [memory](#plugin=memory)（memory/ChannelBackfill.ts）：开工后让补录批次开始发送（active 置真并唤醒）\n  - [memory](#plugin=memory)（memory/index.ts）：开工后同步知识库\n  - [programs](#plugin=programs)（programs/ResourceGuard.ts）：开工后启动资源守护\n  - [programs](#plugin=programs)（programs/index.ts）：开工后拉起配置里的外部程序\n  - [relay](#plugin=relay)（relay/index.ts）：开工后把上次没送出的回信再送一遍，文件里积着的回信读一遍\n  - [tutorial](#plugin=tutorial)（tutorial/Boot.ts）：教程记下开工这一刻\n  - [voice](#plugin=voice)（voice/index.ts）：开工后预热语音模型\n  - [wechat](#plugin=wechat)（wechat/index.ts）：开工后按配置的周期开始轮询微信会话增量",
     "sources": [
       "src7/Main.ts"
     ]
@@ -42,9 +42,9 @@
   {
     "id": "r-main-g2",
     "parent": "r-main",
-    "title": "L53–L233 main：启动全过程",
+    "title": "L54–L234 main：启动全过程",
     "summary": "参数、挂三个骨架、选名单、循环挂插件、发 ready、续跑会话。",
-    "body": "## main：启动全过程\n\n- L53–L60 main 的说明和签名：main 的文档注释和函数签名：参数、副作用、什么时候抛错。\n- L61–L87 处理参数、挂三个骨架：version 子命令只打印版本；装报错标记；去掉 serve；校验参数；依次挂 Resources、Tools、Sessions，挂一个等一个。\n- L88–L144 选名单、备状态、监听启动：正常按配置选插件，试运行只选 http；备好失败记账函数；监听插件的启动状态，等依赖或超时后才起好的也能更新自己那一行。\n- L145–L208 循环挂插件（逐个等到完成或超时）：对名单里每个插件：取内置或外部模块、发起挂载、等到完成或超过上限；超时先挂后面的，它在后台继续起。\n- L209–L233 查缺服务、发 ready、续跑会话：挂载循环走完：说明缺哪些服务；发 ready 通知开工；把库里还是 running 的会话接着跑。",
+    "body": "## main：启动全过程\n\n- L54–L61 main 的说明和签名：main 的文档注释和函数签名：参数、副作用、什么时候抛错。\n- L62–L88 处理参数、挂三个骨架：version 子命令只打印版本；装报错标记；去掉 serve；校验参数；依次挂 Resources、Tools、Sessions，挂一个等一个。\n- L89–L145 选名单、备状态、监听启动：正常按配置选插件，试运行只选 http；备好失败记账函数；监听插件的启动状态，等依赖或超时后才起好的也能更新自己那一行。\n- L146–L209 循环挂插件（逐个等到完成或超时）：对名单里每个插件：取内置或外部模块、发起挂载、等到完成或超过上限；超时先挂后面的，它在后台继续起。\n- L210–L234 查缺服务、发 ready、续跑会话：挂载循环走完：说明缺哪些服务；发 ready 通知开工；把库里还是 running 的会话接着跑。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -52,9 +52,9 @@
   {
     "id": "r-main-03",
     "parent": "r-main-g2",
-    "title": "L53–L60 main 的说明和签名",
+    "title": "L54–L61 main 的说明和签名",
     "summary": "main 的文档注释和函数签名：参数、副作用、什么时候抛错。",
-    "body": "**行号：L53–L60**\n\n### 代码原文\n```ts\n 53  /**\n 54   * 启动。\n 55   * @param argv 命令行参数，去掉了 bun 和脚本路径。\n 56   * 副作用：挂骨架和插件、开数据库、发 ready、接着跑上次没跑完的会话（可能发模型请求）；\n 57   *   挂载结果写进 app.resources.pluginStatus，没挂上、没开工的打到标准错误。\n 58   * @throws 命令行、config.yaml 不对，或试运行却没配 http 插件时抛错；文件最底下接住。\n 59   */\n 60  async function main(argv: string[]): Promise<void> {\n```\n\n### 解释\n- L55：命令行参数，去掉了 bun 和脚本路径。\n- L56：挂骨架和插件、开数据库、发 ready、接着跑没跑完的会话；挂载结果写进 resources.pluginStatus。\n- L60：函数签名。\n\n### 谁调它\n- 文件最底下：程序入口 [Main.ts L262](#lines=Main.json&line=262) 把去掉 bun 和脚本路径的命令行参数交给它；抛出来的错在那里接住，打一行原因、退出码 1。\n- 基地（base）拉起编译版时走 `serve` 子命令，进的也是这里。",
+    "body": "**行号：L54–L61**\n\n### 代码原文\n```ts\n 54  /**\n 55   * 启动。\n 56   * @param argv 命令行参数，去掉了 bun 和脚本路径。\n 57   * 副作用：挂骨架和插件、开数据库、发 ready、接着跑上次没跑完的会话（可能发模型请求）；\n 58   *   挂载结果写进 app.resources.pluginStatus，没挂上、没开工的打到标准错误。\n 59   * @throws 命令行、config.yaml 不对，或试运行却没配 http 插件时抛错；文件最底下接住。\n 60   */\n 61  async function main(argv: string[]): Promise<void> {\n```\n\n### 解释\n- L56：命令行参数，去掉了 bun 和脚本路径。\n- L57：挂骨架和插件、开数据库、发 ready、接着跑没跑完的会话；挂载结果写进 resources.pluginStatus。\n- L61：函数签名。\n\n### 谁调它\n- 文件最底下：程序入口 [Main.ts L262](#lines=Main.json&line=262) 把去掉 bun 和脚本路径的命令行参数交给它；抛出来的错在那里接住，打一行原因、退出码 1。\n- 基地（base）拉起编译版时走 `serve` 子命令，进的也是这里。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -62,9 +62,9 @@
   {
     "id": "r-main-04",
     "parent": "r-main-g2",
-    "title": "L61–L87 处理参数、挂三个骨架",
+    "title": "L62–L88 处理参数、挂三个骨架",
     "summary": "version 子命令只打印版本；装报错标记；去掉 serve；校验参数；依次挂 Resources、Tools、Sessions，挂一个等一个。",
-    "body": "**行号：L61–L87**\n\n### 代码原文\n```ts\n 61    //==========================================================\n 62    //M 处理启动参数并挂上基础服务\n 63    //==========================================================\n 64    //M version 子命令：只打印版本表就退出，不起服务。\n 65    if (argv[0] === 'version') {\n 66      versions.printVersionInfo();\n 67      return;\n 68    }\n 69  \n 70    //M 在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。\n 71    backendLog.installBackendErrorLogger();\n 72  \n 73    //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。\n 74    let flags = argv;\n 75    if (argv[0] === 'serve') {\n 76      flags = argv.slice(1);\n 77    }\n 78  \n 79    //M 校验命令行参数并整理出运行时目录与透传参数。\n 80    const args = checks.checkArgs(flags);\n 81    const app = new cordis.Context();\n 82  \n 83    //M 骨架三个，挂一个等一个，先后不能换。\n 84    await app.plugin(resourcesModule.Resources, { dir: args.dataDir });\n 85    await app.plugin(toolsModule.Tools);\n 86    await app.plugin(sessionsModule.Sessions);\n 87  \n```\n\n### 解释\n- L65–L68：守卫：version 子命令：只打印版本表就退出，不起服务。\n- L71：在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。\n- L74–L76：serve 子命令和不写子命令是一回事：去掉 serve，剩下的参数一样认。\n- L80：**外部入口**：命令行参数在这里校验一次，整理出运行时目录和透传参数；内部不再查。\n- L81：建 Cordis 根 ctx。\n- L84–L86：骨架三个，挂一个等一个，先后不能换：Resources 读配置开库，Tools 工具登记表，Sessions 会话服务。\n\n### 这段代码调用了\n- `versions.printVersionInfo`（[Versions.ts:20](src7/utils/Versions.ts:20) · 骨架工具）—— 打印版本表。\n- `backendLog.installBackendErrorLogger`（[BackendLog.ts:23](src7/utils/BackendLog.ts:23) · 骨架工具）—— 把后端的报错统一加上标记，方便日志里找。\n- `checks.checkArgs`（[Checks.ts:89](src7/utils/Checks.ts:89) · 骨架工具）—— 校验命令行参数，整理出运行时目录、是否试运行、透传参数。\n- `Resources 构造函数`（[Resources.ts L238](#lines=Resources.json&line=238) · 骨架）—— 读配置、开数据库、建供应商、监听配置文件。\n- `Tools 构造函数`（[Tools.ts L122](#lines=Tools.json&line=122) · 骨架）—— 登记成名叫 tools 的服务，准备空的登记表。\n- `Sessions 构造函数`（[Sessions.ts L326](#lines=Sessions.json&line=326) · 骨架）—— 登记成名叫 sessions 的服务，没有 sessions 表就建。\n- `app.plugin`（cordis · Node 或第三方）—— 为服务建子 ctx 并挂载；await 会等它的初始化。",
+    "body": "**行号：L62–L88**\n\n### 代码原文\n```ts\n 62    //==========================================================\n 63    //M 处理启动参数并挂上基础服务\n 64    //==========================================================\n 65    //M version 子命令：只打印版本表就退出，不起服务。\n 66    if (argv[0] === 'version') {\n 67      versions.printVersionInfo();\n 68      return;\n 69    }\n 70  \n 71    //M 在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。\n 72    backendLog.installBackendErrorLogger();\n 73  \n 74    //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。\n 75    let flags = argv;\n 76    if (argv[0] === 'serve') {\n 77      flags = argv.slice(1);\n 78    }\n 79  \n 80    //M 校验命令行参数并整理出运行时目录与透传参数。\n 81    const args = checks.checkArgs(flags);\n 82    const app = new cordis.Context();\n 83  \n 84    //M 骨架三个，挂一个等一个，先后不能换。\n 85    await app.plugin(resourcesModule.Resources, { dir: args.dataDir });\n 86    await app.plugin(toolsModule.Tools);\n 87    await app.plugin(sessionsModule.Sessions);\n 88  \n```\n\n### 解释\n- L66–L69：守卫：version 子命令：只打印版本表就退出，不起服务。\n- L72：在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。\n- L75–L77：serve 子命令和不写子命令是一回事：去掉 serve，剩下的参数一样认。\n- L81：**外部入口**：命令行参数在这里校验一次，整理出运行时目录和透传参数；内部不再查。\n- L82：建 Cordis 根 ctx。\n- L85–L87：骨架三个，挂一个等一个，先后不能换：Resources 读配置开库，Tools 工具登记表，Sessions 会话服务。\n\n### 这段代码调用了\n- `versions.printVersionInfo`（[utils/Versions.ts:20](src7/utils/Versions.ts:20) · 骨架工具）—— 打印版本表。\n- `backendLog.installBackendErrorLogger`（[utils/BackendLog.ts:23](src7/utils/BackendLog.ts:23) · 骨架工具）—— 把后端的报错统一加上标记，方便日志里找。\n- `checks.checkArgs`（[utils/Checks.ts:89](src7/utils/Checks.ts:89) · 骨架工具）—— 校验命令行参数，整理出运行时目录、是否试运行、透传参数。\n- `Resources 构造函数`（[Resources.ts L238](#lines=Resources.json&line=238) · 骨架）—— 读配置、开数据库、建供应商、监听配置文件。\n- `Tools 构造函数`（[Tools.ts L122](#lines=Tools.json&line=122) · 骨架）—— 登记成名叫 tools 的服务，准备空的登记表。\n- `Sessions 构造函数`（[Sessions.ts L326](#lines=Sessions.json&line=326) · 骨架）—— 登记成名叫 sessions 的服务，没有 sessions 表就建。\n- `app.plugin`（cordis · Node 或第三方）—— 为服务建子 ctx 并挂载；await 会等它的初始化。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -72,9 +72,9 @@
   {
     "id": "r-main-05",
     "parent": "r-main-g2",
-    "title": "L88–L144 选名单、备状态、监听启动",
+    "title": "L89–L145 选名单、备状态、监听启动",
     "summary": "正常按配置选插件，试运行只选 http；备好失败记账函数；监听插件的启动状态，等依赖或超时后才起好的也能更新自己那一行。",
-    "body": "**行号：L88–L144**\n\n### 代码原文\n```ts\n 88    //==========================================================\n 89    //M 决定要挂哪些插件并监听它们的启动状态\n 90    //==========================================================\n 91    //M 按配置顺序发起挂载，逐个等到启动完成或超过等待上限。\n 92    const { plugins: configured, pluginMountTimeoutMs } = app.resources.config;\n 93  \n 94    //M 试运行（基地换版前先试跑新程序）只挂 http，够它做健康检查就行，不开渠道。\n 95    /** 这次真要挂的插件。 */\n 96    let entries = configured;\n 97    if (args.candidate) {\n 98      entries = configured.filter((entry) => entry.name === 'http');\n 99    }\n100  \n101    //G 试运行却没配 http → 健康检查没法做，直接报错。\n102    if (args.candidate && entries.length === 0) {\n103      throw new Error('试运行模式需要挂 http 插件，才能做健康检查');\n104    }\n105  \n106    const starting = new Map<cordis.Fiber, resourcesModule.PluginStatus>();\n107  \n108    function recordPluginFailure(row: resourcesModule.PluginStatus, error: unknown): void {\n109      //G 启动真的失败才记为失败，错误原文给标准错误排查。\n110      const text = textModule.getErrorMessage(error);\n111      console.error(`插件 ${row.name} 没挂上：${text}`);\n112      row.mounted = false;\n113      row.started = false;\n114      row.missing = [];\n115      row.error = text;\n116      if (/Cannot find module/iu.test(text)) {\n117        //G health 和教程只给出找不到入口的原因，不带模块系统的绝对路径。\n118        row.error = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';\n119      }\n120    }\n121  \n122    //M 以真实 fiber 为键。等依赖或超时后继续启动的插件都能更新自己的那一行。\n123    app.on('internal/status', (fiber) => {\n124      const row = starting.get(fiber);\n125      if (row === undefined) return;\n126  \n127      if (fiber.state === cordis.FiberState.ACTIVE) {\n128        starting.delete(fiber);\n129        row.mounted = true;\n130        row.started = true;\n131        row.missing = [];\n132        row.error = '';\n133        return;\n134      }\n135      if (fiber.state !== cordis.FiberState.FAILED) return;\n136  \n137      //M 缺依赖时首轮等待可能早已返回，由状态事件取出随后启动失败的原因。\n138      void fiber.await().catch((error: unknown) => {\n139        if (!starting.delete(fiber)) return;\n140  \n141        recordPluginFailure(row, error);\n142      });\n143    }, { prepend: true });\n144  \n```\n\n### 解释\n- L92：拿到配置里的 plugins 和单插件等待上限。\n- L96–L99：试运行（基地换版前先试跑）只留 http，够做健康检查，不开渠道。\n- L102：守卫：试运行却没配 http → 抛错。",
+    "body": "**行号：L89–L145**\n\n### 代码原文\n```ts\n 89    //==========================================================\n 90    //M 决定要挂哪些插件并监听它们的启动状态\n 91    //==========================================================\n 92    //M 按配置顺序发起挂载，逐个等到启动完成或超过等待上限。\n 93    const { plugins: configured, pluginMountTimeoutMs } = app.resources.config;\n 94  \n 95    //M 试运行（基地换版前先试跑新程序）只挂 http，够它做健康检查就行，不开渠道。\n 96    /** 这次真要挂的插件。 */\n 97    let entries = configured;\n 98    if (args.candidate) {\n 99      entries = configured.filter((entry) => entry.name === 'http');\n100    }\n101  \n102    //G 试运行却没配 http → 健康检查没法做，直接报错。\n103    if (args.candidate && entries.length === 0) {\n104      throw new Error('试运行模式需要挂 http 插件，才能做健康检查');\n105    }\n106  \n107    const starting = new Map<cordis.Fiber, resourcesModule.PluginStatus>();\n108  \n109    function recordPluginFailure(row: resourcesModule.PluginStatus, error: unknown): void {\n110      //G 启动真的失败才记为失败，错误原文给标准错误排查。\n111      const text = textModule.getErrorMessage(error);\n112      console.error(`插件 ${row.name} 没挂上：${text}`);\n113      row.mounted = false;\n114      row.started = false;\n115      row.missing = [];\n116      row.error = text;\n117      if (/Cannot find module/iu.test(text)) {\n118        //G health 和教程只给出找不到入口的原因，不带模块系统的绝对路径。\n119        row.error = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';\n120      }\n121    }\n122  \n123    //M 以真实 fiber 为键。等依赖或超时后继续启动的插件都能更新自己的那一行。\n124    app.on('internal/status', (fiber) => {\n125      const row = starting.get(fiber);\n126      if (row === undefined) return;\n127  \n128      if (fiber.state === cordis.FiberState.ACTIVE) {\n129        starting.delete(fiber);\n130        row.mounted = true;\n131        row.started = true;\n132        row.missing = [];\n133        row.error = '';\n134        return;\n135      }\n136      if (fiber.state !== cordis.FiberState.FAILED) return;\n137  \n138      //M 缺依赖时首轮等待可能早已返回，由状态事件取出随后启动失败的原因。\n139      void fiber.await().catch((error: unknown) => {\n140        if (!starting.delete(fiber)) return;\n141  \n142        recordPluginFailure(row, error);\n143      });\n144    }, { prepend: true });\n145  \n```\n\n### 解释\n- L93：拿到配置里的 plugins 和单插件等待上限。\n- L97–L100：试运行（基地换版前先试跑）只留 http，够做健康检查，不开渠道。\n- L103：守卫：试运行却没配 http → 抛错。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -82,9 +82,9 @@
   {
     "id": "r-main-05-1",
     "parent": "r-main-05",
-    "title": "L88–L105 选出要挂的插件",
+    "title": "L89–L106 选出要挂的插件",
     "summary": "正常按配置，试运行只选 http，没配 http 就报错。",
-    "body": "**行号：L88–L105**\n\n### 代码原文\n```ts\n 88    //==========================================================\n 89    //M 决定要挂哪些插件并监听它们的启动状态\n 90    //==========================================================\n 91    //M 按配置顺序发起挂载，逐个等到启动完成或超过等待上限。\n 92    const { plugins: configured, pluginMountTimeoutMs } = app.resources.config;\n 93  \n 94    //M 试运行（基地换版前先试跑新程序）只挂 http，够它做健康检查就行，不开渠道。\n 95    /** 这次真要挂的插件。 */\n 96    let entries = configured;\n 97    if (args.candidate) {\n 98      entries = configured.filter((entry) => entry.name === 'http');\n 99    }\n100  \n101    //G 试运行却没配 http → 健康检查没法做，直接报错。\n102    if (args.candidate && entries.length === 0) {\n103      throw new Error('试运行模式需要挂 http 插件，才能做健康检查');\n104    }\n105  \n```\n\n### 解释\n- L92：拿到配置的 plugins 和单插件等待上限 pluginMountTimeoutMs。\n- L96–L99：默认全部；candidate 只保留名字为 http 的项。\n- L102–L104：守卫：试运行却没 http → 直接抛错。\n\n### 这段代码调用了\n- `Array.filter`（JavaScript 内置 · Node 或第三方）—— 从配置里挑出试运行需要的 http 项。\n- `app.resources.config`（[Resources.ts L202](#lines=Resources.json&line=202) · 骨架）—— 最近一次通过校验的配置，包含插件名单和等待上限。",
+    "body": "**行号：L89–L106**\n\n### 代码原文\n```ts\n 89    //==========================================================\n 90    //M 决定要挂哪些插件并监听它们的启动状态\n 91    //==========================================================\n 92    //M 按配置顺序发起挂载，逐个等到启动完成或超过等待上限。\n 93    const { plugins: configured, pluginMountTimeoutMs } = app.resources.config;\n 94  \n 95    //M 试运行（基地换版前先试跑新程序）只挂 http，够它做健康检查就行，不开渠道。\n 96    /** 这次真要挂的插件。 */\n 97    let entries = configured;\n 98    if (args.candidate) {\n 99      entries = configured.filter((entry) => entry.name === 'http');\n100    }\n101  \n102    //G 试运行却没配 http → 健康检查没法做，直接报错。\n103    if (args.candidate && entries.length === 0) {\n104      throw new Error('试运行模式需要挂 http 插件，才能做健康检查');\n105    }\n106  \n```\n\n### 解释\n- L93：拿到配置的 plugins 和单插件等待上限 pluginMountTimeoutMs。\n- L97–L100：默认全部；candidate 只保留名字为 http 的项。\n- L103–L105：守卫：试运行却没 http → 直接抛错。\n\n### 这段代码调用了\n- `Array.filter`（JavaScript 内置 · Node 或第三方）—— 从配置里挑出试运行需要的 http 项。\n- `app.resources.config`（[Resources.ts L202](#lines=Resources.json&line=202) · 骨架）—— 最近一次通过校验的配置，包含插件名单和等待上限。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -92,9 +92,9 @@
   {
     "id": "r-main-05-2",
     "parent": "r-main-05",
-    "title": "L106–L121 备状态表和失败记账函数",
+    "title": "L107–L122 备状态表和失败记账函数",
     "summary": "starting 表以 fiber 为键找回自己的状态行；失败记账把原因写进状态行，找不到入口的换成人话。",
-    "body": "**行号：L106–L121**\n\n### 代码原文\n```ts\n106    const starting = new Map<cordis.Fiber, resourcesModule.PluginStatus>();\n107  \n108    function recordPluginFailure(row: resourcesModule.PluginStatus, error: unknown): void {\n109      //G 启动真的失败才记为失败，错误原文给标准错误排查。\n110      const text = textModule.getErrorMessage(error);\n111      console.error(`插件 ${row.name} 没挂上：${text}`);\n112      row.mounted = false;\n113      row.started = false;\n114      row.missing = [];\n115      row.error = text;\n116      if (/Cannot find module/iu.test(text)) {\n117        //G health 和教程只给出找不到入口的原因，不带模块系统的绝对路径。\n118        row.error = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';\n119      }\n120    }\n121  \n```\n\n### 解释\n- L106：fiber → 状态行。\n- L108–L120：真失败才记：错误原文给标准错误排查；状态行写 mounted/started 为 false、记 error；找不到模块的换成人话。\n\n### 这段代码调用了\n- `textModule.getErrorMessage`（[Text.ts:13](src7/utils/Text.ts:13) · 骨架工具）—— 把任何抛出来的东西变成一句报错文字。",
+    "body": "**行号：L107–L122**\n\n### 代码原文\n```ts\n107    const starting = new Map<cordis.Fiber, resourcesModule.PluginStatus>();\n108  \n109    function recordPluginFailure(row: resourcesModule.PluginStatus, error: unknown): void {\n110      //G 启动真的失败才记为失败，错误原文给标准错误排查。\n111      const text = textModule.getErrorMessage(error);\n112      console.error(`插件 ${row.name} 没挂上：${text}`);\n113      row.mounted = false;\n114      row.started = false;\n115      row.missing = [];\n116      row.error = text;\n117      if (/Cannot find module/iu.test(text)) {\n118        //G health 和教程只给出找不到入口的原因，不带模块系统的绝对路径。\n119        row.error = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';\n120      }\n121    }\n122  \n```\n\n### 解释\n- L107：fiber → 状态行。\n- L109–L121：真失败才记：错误原文给标准错误排查；状态行写 mounted/started 为 false、记 error；找不到模块的换成人话。\n\n### 这段代码调用了\n- `textModule.getErrorMessage`（[utils/Text.ts:13](src7/utils/Text.ts:13) · 骨架工具）—— 把任何抛出来的东西变成一句报错文字。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -102,9 +102,9 @@
   {
     "id": "r-main-05-3",
     "parent": "r-main-05",
-    "title": "L122–L144 监听插件的启动状态",
+    "title": "L123–L145 监听插件的启动状态",
     "summary": "等依赖或超时后才起好、或才失败的插件，靠 internal/status 事件更新自己的状态行。",
-    "body": "**行号：L122–L144**\n\n### 代码原文\n```ts\n122    //M 以真实 fiber 为键。等依赖或超时后继续启动的插件都能更新自己的那一行。\n123    app.on('internal/status', (fiber) => {\n124      const row = starting.get(fiber);\n125      if (row === undefined) return;\n126  \n127      if (fiber.state === cordis.FiberState.ACTIVE) {\n128        starting.delete(fiber);\n129        row.mounted = true;\n130        row.started = true;\n131        row.missing = [];\n132        row.error = '';\n133        return;\n134      }\n135      if (fiber.state !== cordis.FiberState.FAILED) return;\n136  \n137      //M 缺依赖时首轮等待可能早已返回，由状态事件取出随后启动失败的原因。\n138      void fiber.await().catch((error: unknown) => {\n139        if (!starting.delete(fiber)) return;\n140  \n141        recordPluginFailure(row, error);\n142      });\n143    }, { prepend: true });\n144  \n```\n\n### 解释\n- L123：监听 Cordis 的内部状态事件（不是 jmbots 事件）。\n- L127：起好了 → 状态行记 mounted、started。\n- L138：起失败了 → 取出原因记账。\n\n### 这段代码调用了\n- `app.on`（cordis · Node 或第三方）—— 监听 Cordis 的事件；这里听 internal/status 看每个插件什么时候真正起好或失败。",
+    "body": "**行号：L123–L145**\n\n### 代码原文\n```ts\n123    //M 以真实 fiber 为键。等依赖或超时后继续启动的插件都能更新自己的那一行。\n124    app.on('internal/status', (fiber) => {\n125      const row = starting.get(fiber);\n126      if (row === undefined) return;\n127  \n128      if (fiber.state === cordis.FiberState.ACTIVE) {\n129        starting.delete(fiber);\n130        row.mounted = true;\n131        row.started = true;\n132        row.missing = [];\n133        row.error = '';\n134        return;\n135      }\n136      if (fiber.state !== cordis.FiberState.FAILED) return;\n137  \n138      //M 缺依赖时首轮等待可能早已返回，由状态事件取出随后启动失败的原因。\n139      void fiber.await().catch((error: unknown) => {\n140        if (!starting.delete(fiber)) return;\n141  \n142        recordPluginFailure(row, error);\n143      });\n144    }, { prepend: true });\n145  \n```\n\n### 解释\n- L124：监听 Cordis 的内部状态事件（不是 jmbots 事件）。\n- L128：起好了 → 状态行记 mounted、started。\n- L139：起失败了 → 取出原因记账。\n\n### 这段代码调用了\n- `app.on`（cordis · Node 或第三方）—— 监听 Cordis 的事件；这里听 internal/status 看每个插件什么时候真正起好或失败。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -112,9 +112,9 @@
   {
     "id": "r-main-06",
     "parent": "r-main-g2",
-    "title": "L145–L208 循环挂插件（逐个等到完成或超时）",
+    "title": "L146–L209 循环挂插件（逐个等到完成或超时）",
     "summary": "对名单里每个插件：取内置或外部模块、发起挂载、等到完成或超过上限；超时先挂后面的，它在后台继续起。",
-    "body": "**行号：L145–L208**\n\n### 代码原文\n```ts\n145    //==========================================================\n146    //M 按配置顺序发起挂载并限时等待\n147    //==========================================================\n148    for (const entry of entries) {\n149      //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。\n150      const builtIn = pluginIndex.BUILT_IN[entry.name];\n151      const row: resourcesModule.PluginStatus = {\n152        name: entry.name,\n153        mounted: false,\n154        started: false,\n155        missing: [],\n156        error: '',\n157        inject: builtIn?.inject ?? [],\n158      };\n159      try {\n160        let plugin = builtIn;\n161        if (plugin === undefined) {\n162          //M 内置表查不到才从外部插件文件夹加载入口。\n163          const root = app.resources.root;\n164          plugin = await loadExternalPlugin(entry.name, root);\n165        }\n166  \n167        //M 等待 Cordis apply。状态监听使用 thenable 后面的原 fiber。\n168        row.inject = plugin.inject ?? [];\n169        const mounted = app.plugin(plugin, entry.config);\n170        const fiber = mounted.ctx.fiber;\n171        starting.set(fiber, row);\n172  \n173        //M 首次等待结束时也可能在等注入。异步失败即使发生在超时之后也照常记账。\n174        const finished = fiber.await().then(() => {\n175          if (fiber.state === cordis.FiberState.PENDING && row.error === '') {\n176            row.mounted = true;\n177          }\n178          return true;\n179        }, (error: unknown) => {\n180          if (starting.delete(fiber)) {\n181            recordPluginFailure(row, error);\n182          }\n183          return true;\n184        });\n185  \n186        const timer = new AbortController();\n187        const options = { signal: timer.signal };\n188        const deadline = timers.setTimeout(pluginMountTimeoutMs, false, options);\n189        const waiting = [finished, deadline];\n190        try {\n191          const inTime = await Promise.race(waiting);\n192          if (!inTime && starting.has(fiber)) {\n193            //G 到点只结束本次等待。保留 fiber，让它完成后还能发状态和服务通知。\n194            const seconds = pluginMountTimeoutMs / 1000;\n195            row.mounted = false;\n196            row.error = `启动超过 ${String(seconds)} 秒，先挂后面的，它继续在后台起`;\n197            console.error(`插件 ${row.name} ${row.error}`);\n198          }\n199        } finally {\n200          timer.abort();\n201        }\n202      } catch (error) {\n203        recordPluginFailure(row, error);\n204      }\n205      //M 维持配置顺序，每次发起挂载只占一行，供 health 和启动流程读。\n206      app.resources.pluginStatus.push(row);\n207    }\n208  \n```\n\n### 解释\n- L148：照配置先后一个个来。\n- 每项只在 pluginStatus 里占一行（L206），供 health 和教程读。",
+    "body": "**行号：L146–L209**\n\n### 代码原文\n```ts\n146    //==========================================================\n147    //M 按配置顺序发起挂载并限时等待\n148    //==========================================================\n149    for (const entry of entries) {\n150      //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。\n151      const builtIn = pluginIndex.BUILT_IN[entry.name];\n152      const row: resourcesModule.PluginStatus = {\n153        name: entry.name,\n154        mounted: false,\n155        started: false,\n156        missing: [],\n157        error: '',\n158        inject: builtIn?.inject ?? [],\n159      };\n160      try {\n161        let plugin = builtIn;\n162        if (plugin === undefined) {\n163          //M 内置表查不到才从外部插件文件夹加载入口。\n164          const root = app.resources.root;\n165          plugin = await loadExternalPlugin(entry.name, root);\n166        }\n167  \n168        //M 等待 Cordis apply。状态监听使用 thenable 后面的原 fiber。\n169        row.inject = plugin.inject ?? [];\n170        const mounted = app.plugin(plugin, entry.config);\n171        const fiber = mounted.ctx.fiber;\n172        starting.set(fiber, row);\n173  \n174        //M 首次等待结束时也可能在等注入。异步失败即使发生在超时之后也照常记账。\n175        const finished = fiber.await().then(() => {\n176          if (fiber.state === cordis.FiberState.PENDING && row.error === '') {\n177            row.mounted = true;\n178          }\n179          return true;\n180        }, (error: unknown) => {\n181          if (starting.delete(fiber)) {\n182            recordPluginFailure(row, error);\n183          }\n184          return true;\n185        });\n186  \n187        const timer = new AbortController();\n188        const options = { signal: timer.signal };\n189        const deadline = timers.setTimeout(pluginMountTimeoutMs, false, options);\n190        const waiting = [finished, deadline];\n191        try {\n192          const inTime = await Promise.race(waiting);\n193          if (!inTime && starting.has(fiber)) {\n194            //G 到点只结束本次等待。保留 fiber，让它完成后还能发状态和服务通知。\n195            const seconds = pluginMountTimeoutMs / 1000;\n196            row.mounted = false;\n197            row.error = `启动超过 ${String(seconds)} 秒，先挂后面的，它继续在后台起`;\n198            console.error(`插件 ${row.name} ${row.error}`);\n199          }\n200        } finally {\n201          timer.abort();\n202        }\n203      } catch (error) {\n204        recordPluginFailure(row, error);\n205      }\n206      //M 维持配置顺序，每次发起挂载只占一行，供 health 和启动流程读。\n207      app.resources.pluginStatus.push(row);\n208    }\n209  \n```\n\n### 解释\n- L149：照配置先后一个个来。\n- 每项只在 pluginStatus 里占一行（L207），供 health 和教程读。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -122,9 +122,9 @@
   {
     "id": "r-main-06-1",
     "parent": "r-main-06",
-    "title": "L145–L158 取内置模块、备状态行",
+    "title": "L146–L159 取内置模块、备状态行",
     "summary": "先按名字在内置表找插件，备好这一项的状态行。",
-    "body": "**行号：L145–L158**\n\n### 代码原文\n```ts\n145    //==========================================================\n146    //M 按配置顺序发起挂载并限时等待\n147    //==========================================================\n148    for (const entry of entries) {\n149      //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。\n150      const builtIn = pluginIndex.BUILT_IN[entry.name];\n151      const row: resourcesModule.PluginStatus = {\n152        name: entry.name,\n153        mounted: false,\n154        started: false,\n155        missing: [],\n156        error: '',\n157        inject: builtIn?.inject ?? [],\n158      };\n```\n\n### 解释\n- L148：循环头。\n- L150：先按配置名找内置插件。\n- L151–L158：状态行：名字、挂上没有、开工没有、缺什么、错误、要的服务。\n\n### 这段代码调用了\n- `pluginIndex.BUILT_IN`（[Index.ts:79](src7/plugins/Index.ts:79) · 骨架工具）—— 内置插件表：配置里的名字 → 插件模块。",
+    "body": "**行号：L146–L159**\n\n### 代码原文\n```ts\n146    //==========================================================\n147    //M 按配置顺序发起挂载并限时等待\n148    //==========================================================\n149    for (const entry of entries) {\n150      //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。\n151      const builtIn = pluginIndex.BUILT_IN[entry.name];\n152      const row: resourcesModule.PluginStatus = {\n153        name: entry.name,\n154        mounted: false,\n155        started: false,\n156        missing: [],\n157        error: '',\n158        inject: builtIn?.inject ?? [],\n159      };\n```\n\n### 解释\n- L149：循环头。\n- L151：先按配置名找内置插件。\n- L152–L159：状态行：名字、挂上没有、开工没有、缺什么、错误、要的服务。\n\n### 这段代码调用了\n- `pluginIndex.BUILT_IN`（[Index.ts:79](src7/plugins/Index.ts:79) · 骨架工具）—— 内置插件表：配置里的名字 → 插件模块。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -132,9 +132,9 @@
   {
     "id": "r-main-06-2",
     "parent": "r-main-06",
-    "title": "L159–L166 内置表没有就加载外部入口",
+    "title": "L160–L167 内置表没有就加载外部入口",
     "summary": "内置表查不到才从外部插件文件夹加载入口。",
-    "body": "**行号：L159–L166**\n\n### 代码原文\n```ts\n159      try {\n160        let plugin = builtIn;\n161        if (plugin === undefined) {\n162          //M 内置表查不到才从外部插件文件夹加载入口。\n163          const root = app.resources.root;\n164          plugin = await loadExternalPlugin(entry.name, root);\n165        }\n166  \n```\n\n### 解释\n- L160–L164：内置有就用内置；没有才去运行时目录找外部插件。\n\n### 这段代码调用了\n- `loadExternalPlugin`（[Main.ts L240](#lines=Main.json&line=240) · 骨架）—— 按运行时目录解析外部插件路径，动态 import 出模块。",
+    "body": "**行号：L160–L167**\n\n### 代码原文\n```ts\n160      try {\n161        let plugin = builtIn;\n162        if (plugin === undefined) {\n163          //M 内置表查不到才从外部插件文件夹加载入口。\n164          const root = app.resources.root;\n165          plugin = await loadExternalPlugin(entry.name, root);\n166        }\n167  \n```\n\n### 解释\n- L161–L165：内置有就用内置；没有才去运行时目录找外部插件。\n\n### 这段代码调用了\n- `loadExternalPlugin`（[Main.ts L241](#lines=Main.json&line=241) · 骨架）—— 按运行时目录解析外部插件路径，动态 import 出模块。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -142,9 +142,9 @@
   {
     "id": "r-main-06-3",
     "parent": "r-main-06",
-    "title": "L167–L185 发起挂载、等 fiber",
+    "title": "L168–L186 发起挂载、等 fiber",
     "summary": "用 app.plugin 发起挂载，记下 fiber 和状态行；等到启动完成或失败都算这一轮等待结束。",
-    "body": "**行号：L167–L185**\n\n### 代码原文\n```ts\n167        //M 等待 Cordis apply。状态监听使用 thenable 后面的原 fiber。\n168        row.inject = plugin.inject ?? [];\n169        const mounted = app.plugin(plugin, entry.config);\n170        const fiber = mounted.ctx.fiber;\n171        starting.set(fiber, row);\n172  \n173        //M 首次等待结束时也可能在等注入。异步失败即使发生在超时之后也照常记账。\n174        const finished = fiber.await().then(() => {\n175          if (fiber.state === cordis.FiberState.PENDING && row.error === '') {\n176            row.mounted = true;\n177          }\n178          return true;\n179        }, (error: unknown) => {\n180          if (starting.delete(fiber)) {\n181            recordPluginFailure(row, error);\n182          }\n183          return true;\n184        });\n185  \n```\n\n### 解释\n- L168：记下它声明要的服务。\n- L169：**发起挂载**：把插件和它的配置交给 Cordis；返回的 fiber 状态由前面的 internal/status 监听更新。\n- L174–L184：等 fiber：成功只标记；失败按真实失败记账。\n\n### 这段代码调用了\n- `app.plugin`（cordis · Node 或第三方）—— 挂载一个插件并返回它的 fiber。",
+    "body": "**行号：L168–L186**\n\n### 代码原文\n```ts\n168        //M 等待 Cordis apply。状态监听使用 thenable 后面的原 fiber。\n169        row.inject = plugin.inject ?? [];\n170        const mounted = app.plugin(plugin, entry.config);\n171        const fiber = mounted.ctx.fiber;\n172        starting.set(fiber, row);\n173  \n174        //M 首次等待结束时也可能在等注入。异步失败即使发生在超时之后也照常记账。\n175        const finished = fiber.await().then(() => {\n176          if (fiber.state === cordis.FiberState.PENDING && row.error === '') {\n177            row.mounted = true;\n178          }\n179          return true;\n180        }, (error: unknown) => {\n181          if (starting.delete(fiber)) {\n182            recordPluginFailure(row, error);\n183          }\n184          return true;\n185        });\n186  \n```\n\n### 解释\n- L169：记下它声明要的服务。\n- L170：**发起挂载**：把插件和它的配置交给 Cordis；返回的 fiber 状态由前面的 internal/status 监听更新。\n- L175–L185：等 fiber：成功只标记；失败按真实失败记账。\n\n### 这段代码调用了\n- `app.plugin`（cordis · Node 或第三方）—— 挂载一个插件并返回它的 fiber。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -152,9 +152,9 @@
   {
     "id": "r-main-06-4",
     "parent": "r-main-06",
-    "title": "L186–L201 限时等待：到点先挂后面的",
+    "title": "L187–L202 限时等待：到点先挂后面的",
     "summary": "起好或超时二选一；超时只结束这次等待，插件保留 fiber 在后台继续起。",
-    "body": "**行号：L186–L201**\n\n### 代码原文\n```ts\n186        const timer = new AbortController();\n187        const options = { signal: timer.signal };\n188        const deadline = timers.setTimeout(pluginMountTimeoutMs, false, options);\n189        const waiting = [finished, deadline];\n190        try {\n191          const inTime = await Promise.race(waiting);\n192          if (!inTime && starting.has(fiber)) {\n193            //G 到点只结束本次等待。保留 fiber，让它完成后还能发状态和服务通知。\n194            const seconds = pluginMountTimeoutMs / 1000;\n195            row.mounted = false;\n196            row.error = `启动超过 ${String(seconds)} 秒，先挂后面的，它继续在后台起`;\n197            console.error(`插件 ${row.name} ${row.error}`);\n198          }\n199        } finally {\n200          timer.abort();\n201        }\n```\n\n### 解释\n- L188：到点的计时器。\n- L191：谁先到听谁的。\n- L192–L198：守卫：到点还没起好 → 状态行记“启动超过 N 秒，先挂后面的”，只结束本次等待。\n- L200：不管怎样把计时器收掉。\n\n### 这段代码调用了\n- `timers.setTimeout`（node:timers/promises · Node 或第三方）—— 定时器，到点交回 false。",
+    "body": "**行号：L187–L202**\n\n### 代码原文\n```ts\n187        const timer = new AbortController();\n188        const options = { signal: timer.signal };\n189        const deadline = timers.setTimeout(pluginMountTimeoutMs, false, options);\n190        const waiting = [finished, deadline];\n191        try {\n192          const inTime = await Promise.race(waiting);\n193          if (!inTime && starting.has(fiber)) {\n194            //G 到点只结束本次等待。保留 fiber，让它完成后还能发状态和服务通知。\n195            const seconds = pluginMountTimeoutMs / 1000;\n196            row.mounted = false;\n197            row.error = `启动超过 ${String(seconds)} 秒，先挂后面的，它继续在后台起`;\n198            console.error(`插件 ${row.name} ${row.error}`);\n199          }\n200        } finally {\n201          timer.abort();\n202        }\n```\n\n### 解释\n- L189：到点的计时器。\n- L192：谁先到听谁的。\n- L193–L199：守卫：到点还没起好 → 状态行记“启动超过 N 秒，先挂后面的”，只结束本次等待。\n- L201：不管怎样把计时器收掉。\n\n### 这段代码调用了\n- `timers.setTimeout`（node:timers/promises · Node 或第三方）—— 定时器，到点交回 false。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -162,9 +162,9 @@
   {
     "id": "r-main-06-5",
     "parent": "r-main-06",
-    "title": "L202–L208 失败记账、登记状态行",
+    "title": "L203–L209 失败记账、登记状态行",
     "summary": "加载或挂载抛错就记账；每个插件只占一行，维持配置顺序。",
-    "body": "**行号：L202–L208**\n\n### 代码原文\n```ts\n202      } catch (error) {\n203        recordPluginFailure(row, error);\n204      }\n205      //M 维持配置顺序，每次发起挂载只占一行，供 health 和启动流程读。\n206      app.resources.pluginStatus.push(row);\n207    }\n208  \n```\n\n### 解释\n- L203：加载、挂载抛错：记失败。\n- L206：每次发起挂载只占一行，供 health 和教程读。",
+    "body": "**行号：L203–L209**\n\n### 代码原文\n```ts\n203      } catch (error) {\n204        recordPluginFailure(row, error);\n205      }\n206      //M 维持配置顺序，每次发起挂载只占一行，供 health 和启动流程读。\n207      app.resources.pluginStatus.push(row);\n208    }\n209  \n```\n\n### 解释\n- L204：加载、挂载抛错：记失败。\n- L207：每次发起挂载只占一行，供 health 和教程读。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -172,9 +172,9 @@
   {
     "id": "r-main-07",
     "parent": "r-main-g2",
-    "title": "L209–L233 查缺服务、发 ready、续跑会话",
+    "title": "L210–L234 查缺服务、发 ready、续跑会话",
     "summary": "挂载循环走完：说明缺哪些服务；发 ready 通知开工；把库里还是 running 的会话接着跑。",
-    "body": "**行号：L209–L233**\n\n### 代码原文\n```ts\n209    //==========================================================\n210    //M 记录缺失依赖，通知开工并续跑会话\n211    //==========================================================\n212    //G 缺注入的插件会等服务出现，保留原有的缺服务说明。\n213    for (const row of app.resources.pluginStatus) {\n214      if (!row.mounted || row.started) continue;\n215  \n216      const missing = row.inject.filter((service) => app.get(service) === undefined);\n217      if (missing.length === 0) continue;\n218  \n219      const names = missing.join('、');\n220      console.error(`插件 ${row.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);\n221      row.missing = missing;\n222    }\n223  \n224    //M 配置的插件都已发起挂载，告诉大家开工，带上命令行里剩下的参数。\n225    app.emit('ready', args.rest);\n226  \n227    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n228    for (const row of app.sessions.find({ state: 'running' })) {\n229      void app.sessions.open(row.id).run();\n230    }\n231  }\n232  \n233  \n```\n\n### 解释\n- 三步见下面三个子块。",
+    "body": "**行号：L210–L234**\n\n### 代码原文\n```ts\n210    //==========================================================\n211    //M 记录缺失依赖，通知开工并续跑会话\n212    //==========================================================\n213    //G 缺注入的插件会等服务出现，保留原有的缺服务说明。\n214    for (const row of app.resources.pluginStatus) {\n215      if (!row.mounted || row.started) continue;\n216  \n217      const missing = row.inject.filter((service) => app.get(service) === undefined);\n218      if (missing.length === 0) continue;\n219  \n220      const names = missing.join('、');\n221      console.error(`插件 ${row.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);\n222      row.missing = missing;\n223    }\n224  \n225    //M 配置的插件都已发起挂载，告诉大家开工，带上命令行里剩下的参数。\n226    app.emit('ready', args.rest);\n227  \n228    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n229    for (const row of app.sessions.find({ state: 'running' })) {\n230      void app.sessions.open(row.id).run();\n231    }\n232  }\n233  \n234  \n```\n\n### 解释\n- 三步见下面三个子块。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -182,9 +182,9 @@
   {
     "id": "r-main-07-1",
     "parent": "r-main-07",
-    "title": "L209–L223 说明缺哪些服务",
+    "title": "L210–L224 说明缺哪些服务",
     "summary": "挂上了却没开工的插件，查它要的服务谁都没提供，打一行说明。",
-    "body": "**行号：L209–L223**\n\n### 代码原文\n```ts\n209    //==========================================================\n210    //M 记录缺失依赖，通知开工并续跑会话\n211    //==========================================================\n212    //G 缺注入的插件会等服务出现，保留原有的缺服务说明。\n213    for (const row of app.resources.pluginStatus) {\n214      if (!row.mounted || row.started) continue;\n215  \n216      const missing = row.inject.filter((service) => app.get(service) === undefined);\n217      if (missing.length === 0) continue;\n218  \n219      const names = missing.join('、');\n220      console.error(`插件 ${row.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);\n221      row.missing = missing;\n222    }\n223  \n```\n\n### 解释\n- L213：看每个插件的状态行。\n- L216：它要的服务里哪些没人提供。\n- L220：写明缺哪些服务，状态行记下 missing。",
+    "body": "**行号：L210–L224**\n\n### 代码原文\n```ts\n210    //==========================================================\n211    //M 记录缺失依赖，通知开工并续跑会话\n212    //==========================================================\n213    //G 缺注入的插件会等服务出现，保留原有的缺服务说明。\n214    for (const row of app.resources.pluginStatus) {\n215      if (!row.mounted || row.started) continue;\n216  \n217      const missing = row.inject.filter((service) => app.get(service) === undefined);\n218      if (missing.length === 0) continue;\n219  \n220      const names = missing.join('、');\n221      console.error(`插件 ${row.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);\n222      row.missing = missing;\n223    }\n224  \n```\n\n### 解释\n- L214：看每个插件的状态行。\n- L217：它要的服务里哪些没人提供。\n- L221：写明缺哪些服务，状态行记下 missing。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -192,9 +192,9 @@
   {
     "id": "r-main-07-2",
     "parent": "r-main-07",
-    "title": "L224–L226 发 ready 通知开工",
+    "title": "L225–L227 发 ready 通知开工",
     "summary": "发 ready 事件，带上命令行里剩下的参数。",
-    "body": "**行号：L224–L226**\n\n### 代码原文\n```ts\n224    //M 配置的插件都已发起挂载，告诉大家开工，带上命令行里剩下的参数。\n225    app.emit('ready', args.rest);\n226  \n```\n\n### 解释\n- L225：**发 ready**：不是关口，只通知；下面“谁在听”的插件各自开工。\n\n### 这段代码调用了\n- `ready`（发事件 · 通知）—— 所有配置的插件都发起挂载之后发出，带命令行里剩下的参数 args.rest。\n  - 谁在听（grep 现查）：\n    - [approval](#plugin=approval)（Outbound.ts）：开工后恢复上次没发完的审批外发\n    - [assist](#plugin=assist)（index.ts）：开工后启动提醒调度\n    - [base-bridge](#plugin=base-bridge)（UpdateWatch.ts）：开工后排第一次查更新\n    - [bots](#plugin=bots)（DispatchResults.ts）：开工后把上次停在半路的派活队列项接着处理\n    - [bots](#plugin=bots)（index.ts）：开工后启动各机器人\n    - [cli](#plugin=cli)（index.ts）：命令行渠道等到开工才把命令行里带的那句话发出去\n    - [context-fit](#plugin=context-fit)（index.ts）：开工后汇总检查哪些模型没登记窗口\n    - [feishu](#plugin=feishu)（index.ts）：开工后连飞书\n    - [feishu](#plugin=feishu)（outbox/Outbox.ts）：开工后恢复飞书发件箱\n    - [http](#plugin=http)（index.ts）：开工后开始监听 HTTP 端口\n    - [memory](#plugin=memory)（ChannelBackfill.ts）：开工后补录渠道聊天记录\n    - [memory](#plugin=memory)（index.ts）：开工后同步知识库\n    - [programs](#plugin=programs)（ResourceGuard.ts）：开工后启动资源守护\n    - [programs](#plugin=programs)（index.ts）：开工后拉起配置里的外部程序\n    - [relay](#plugin=relay)（index.ts）：开工后恢复转话\n    - [tutorial](#plugin=tutorial)（Boot.ts）：教程记下开工这一刻\n    - [voice](#plugin=voice)（index.ts）：开工后预热语音模型\n    - [wechat](#plugin=wechat)（index.ts）：开工后开始轮询微信",
+    "body": "**行号：L225–L227**\n\n### 代码原文\n```ts\n225    //M 配置的插件都已发起挂载，告诉大家开工，带上命令行里剩下的参数。\n226    app.emit('ready', args.rest);\n227  \n```\n\n### 解释\n- L226：**发 ready**：不是关口，只通知；下面“谁在听”的插件各自开工。\n\n### 这段代码调用了\n- `ready`（发事件 · 通知）—— 所有配置的插件都发起挂载之后发出，带命令行里剩下的参数 args.rest。\n  - 谁在听（grep 现查）：\n    - [approval](#plugin=approval)（Outbound.ts）：开工后恢复上次没发完的审批外发\n    - [assist](#plugin=assist)（index.ts）：开工后启动提醒调度\n    - [base-bridge](#plugin=base-bridge)（UpdateWatch.ts）：开工后排第一次查更新\n    - [bots](#plugin=bots)（DispatchResults.ts）：开工后把上次停在半路的派活队列项接着处理\n    - [bots](#plugin=bots)（index.ts）：插件都挂过后检查一次：memory 没启动就打一行警告（前台往来不会保存）\n    - [cli](#plugin=cli)（index.ts）：命令行渠道等到开工才把命令行里带的那句话发出去\n    - [context-fit](#plugin=context-fit)（index.ts）：开工后汇总检查哪些模型没登记窗口\n    - [feishu](#plugin=feishu)（index.ts）：都挂完了才连飞书：这时机器人、前台都在，收到的消息有人接\n    - [feishu](#plugin=feishu)（outbox/Outbox.ts）：开工后每隔一段时间扫描一次发件箱并投递\n    - [http](#plugin=http)（index.ts）：都挂完了才开始监听 HTTP 端口：这时别的插件的路径都登记好了\n    - [memory](#plugin=memory)（ChannelBackfill.ts）：开工后让补录批次开始发送（active 置真并唤醒）\n    - [memory](#plugin=memory)（index.ts）：开工后同步知识库\n    - [programs](#plugin=programs)（ResourceGuard.ts）：开工后启动资源守护\n    - [programs](#plugin=programs)（index.ts）：开工后拉起配置里的外部程序\n    - [relay](#plugin=relay)（index.ts）：开工后把上次没送出的回信再送一遍，文件里积着的回信读一遍\n    - [tutorial](#plugin=tutorial)（Boot.ts）：教程记下开工这一刻\n    - [voice](#plugin=voice)（index.ts）：开工后预热语音模型\n    - [wechat](#plugin=wechat)（index.ts）：开工后按配置的周期开始轮询微信会话增量",
     "sources": [
       "src7/Main.ts"
     ]
@@ -202,9 +202,9 @@
   {
     "id": "r-main-07-3",
     "parent": "r-main-07",
-    "title": "L227–L233 续跑没跑完的会话",
+    "title": "L228–L234 续跑没跑完的会话",
     "summary": "库里状态还是 running 的会话（上次没跑完就退出了），逐个打开、接着跑。",
-    "body": "**行号：L227–L233**\n\n### 代码原文\n```ts\n227    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n228    for (const row of app.sessions.find({ state: 'running' })) {\n229      void app.sessions.open(row.id).run();\n230    }\n231  }\n232  \n233  \n```\n\n### 解释\n- L228：按记录里的状态找出还是 running 的会话。\n- L229：逐个打开，调 run 往下走，不等。\n\n### 这段代码调用了\n- `Sessions.find`（[Sessions.ts L454](#lines=Sessions.json&line=454) · 骨架）—— 按给的几项找会话记录（不带对话）。\n- `Sessions.open`（[Sessions.ts L386](#lines=Sessions.json&line=386) · 骨架）—— 打开一场会话（内存里有就复用，没有从库里读）。\n- `Session.run`（[Sessions.ts L655](#lines=Sessions.json&line=655) · 骨架）—— 推这场会话往下走，进入主循环。",
+    "body": "**行号：L228–L234**\n\n### 代码原文\n```ts\n228    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n229    for (const row of app.sessions.find({ state: 'running' })) {\n230      void app.sessions.open(row.id).run();\n231    }\n232  }\n233  \n234  \n```\n\n### 解释\n- L229：按记录里的状态找出还是 running 的会话。\n- L230：逐个打开，调 run 往下走，不等。\n\n### 这段代码调用了\n- `Sessions.find`（[Sessions.ts L454](#lines=Sessions.json&line=454) · 骨架）—— 按给的几项找会话记录（不带对话）。\n- `Sessions.open`（[Sessions.ts L386](#lines=Sessions.json&line=386) · 骨架）—— 打开一场会话（内存里有就复用，没有从库里读）。\n- `Session.run`（[Sessions.ts L668](#lines=Sessions.json&line=668) · 骨架）—— 推这场会话往下走，进入主循环。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -212,9 +212,9 @@
   {
     "id": "r-main-g3",
     "parent": "r-main",
-    "title": "L234–L266 外部插件入口和兜底",
+    "title": "L235–L267 外部插件入口和兜底",
     "summary": "外部插件入口的加载，以及文件底部调用 main 并兜底。",
-    "body": "## 外部插件入口和兜底\n\n- L234–L258 加载外部插件入口 loadExternalPlugin：先按运行时目录解析路径，优先 index.ts 再 index.js；转成 file:// 网址动态 import；有 default 导出就用 default。\n- L259–L266 程序入口并兜底报错：去掉 bun 和脚本路径，剩下的交给 main；没跑成就打一行原因、退出码 1。",
+    "body": "## 外部插件入口和兜底\n\n- L235–L259 加载外部插件入口 loadExternalPlugin：先按运行时目录解析路径，优先 index.ts 再 index.js；转成 file:// 网址动态 import；有 default 导出就用 default。\n- L260–L267 程序入口并兜底报错：去掉 bun 和脚本路径，剩下的交给 main；没跑成就打一行原因、退出码 1。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -222,9 +222,9 @@
   {
     "id": "r-main-08",
     "parent": "r-main-g3",
-    "title": "L234–L258 加载外部插件入口 loadExternalPlugin",
+    "title": "L235–L259 加载外部插件入口 loadExternalPlugin",
     "summary": "先按运行时目录解析路径，优先 index.ts 再 index.js；转成 file:// 网址动态 import；有 default 导出就用 default。",
-    "body": "**行号：L234–L258**\n\n### 代码原文\n```ts\n234  /**\n235   * 从外部插件文件夹加载入口，优先使用 index.ts，再找 index.js。\n236   * @param name 外部插件的文件夹路径，相对路径从运行时目录算。\n237   * @param root 配置所在的运行时目录。\n238   * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。\n239   */\n240  async function loadExternalPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {\n241    //M 按运行时目录解析外部路径，保留已有的入口优先级。\n242    const dir = path.resolve(root, name);\n243    let entry = path.join(dir, 'index.ts');\n244    if (!fs.existsSync(entry)) {\n245      entry = path.join(dir, 'index.js');\n246    }\n247  \n248    //M 动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。\n249    const entryUrl = pathToFileURL(entry).href;\n250    const loaded = await import(entryUrl) as pluginIndex.PluginModule & {\n251      default?: pluginIndex.PluginModule;\n252    };\n253  \n254    //M 模块有 default 导出就用 default（DSH 的加载器也是这么做的）。\n255    return loaded.default ?? loaded;\n256  }\n257  \n258  \n```\n\n### 解释\n- L242：外部路径按运行时目录解析。\n- L243–L246：优先 index.ts，没有再找 index.js。\n- L249：动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。\n- L255：模块有 default 导出就用 default（DSH 的加载器也是这么做的）。\n\n### 谁调它\n- 骨架：main 里内置表没有这个插件名时调它（[Main.ts L164](#lines=Main.json&line=164)）。",
+    "body": "**行号：L235–L259**\n\n### 代码原文\n```ts\n235  /**\n236   * 从外部插件文件夹加载入口，优先使用 index.ts，再找 index.js。\n237   * @param name 外部插件的文件夹路径，相对路径从运行时目录算。\n238   * @param root 配置所在的运行时目录。\n239   * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。\n240   */\n241  async function loadExternalPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {\n242    //M 按运行时目录解析外部路径，保留已有的入口优先级。\n243    const dir = path.resolve(root, name);\n244    let entry = path.join(dir, 'index.ts');\n245    if (!fs.existsSync(entry)) {\n246      entry = path.join(dir, 'index.js');\n247    }\n248  \n249    //M 动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。\n250    const entryUrl = pathToFileURL(entry).href;\n251    const loaded = await import(entryUrl) as pluginIndex.PluginModule & {\n252      default?: pluginIndex.PluginModule;\n253    };\n254  \n255    //M 模块有 default 导出就用 default（DSH 的加载器也是这么做的）。\n256    return loaded.default ?? loaded;\n257  }\n258  \n259  \n```\n\n### 解释\n- L243：外部路径按运行时目录解析。\n- L244–L247：优先 index.ts，没有再找 index.js。\n- L250：动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。\n- L256：模块有 default 导出就用 default（DSH 的加载器也是这么做的）。\n\n### 谁调它\n- 骨架：main 里内置表没有这个插件名时调它（[Main.ts L164](#lines=Main.json&line=164)）。",
     "sources": [
       "src7/Main.ts"
     ]
@@ -232,9 +232,9 @@
   {
     "id": "r-main-09",
     "parent": "r-main-g3",
-    "title": "L259–L266 程序入口并兜底报错",
+    "title": "L260–L267 程序入口并兜底报错",
     "summary": "去掉 bun 和脚本路径，剩下的交给 main；没跑成就打一行原因、退出码 1。",
-    "body": "**行号：L259–L266**\n\n### 代码原文\n```ts\n259  //M 程序从这里开始：去掉 bun 和脚本路径，剩下的交给 main；没跑成打一行原因，退出码 1。\n260  const argv = process.argv.slice(2);\n261  try {\n262    await main(argv);\n263  } catch (error) {\n264    console.error(`没跑成：${textModule.getErrorMessage(error)}`);\n265    process.exit(1);\n266  }\n```\n\n### 解释\n- L260：命令行参数。\n- L262：**程序从这里调 main**。\n- L264：main 里抛的错（参数不对、配置不对、试运行没配 http……）在这里接住，打一行原因，`process.exit(1)`。\n\n### 这段代码调用了\n- `main`（[Main.ts L60](#lines=Main.json&line=60) · 骨架）—— 启动全过程。\n- `textModule.getErrorMessage`（[Text.ts:13](src7/utils/Text.ts:13) · 骨架工具）—— 把抛出来的东西变成一句报错文字。",
+    "body": "**行号：L260–L267**\n\n### 代码原文\n```ts\n260  //M 程序从这里开始：去掉 bun 和脚本路径，剩下的交给 main；没跑成打一行原因，退出码 1。\n261  const argv = process.argv.slice(2);\n262  try {\n263    await main(argv);\n264  } catch (error) {\n265    console.error(`没跑成：${textModule.getErrorMessage(error)}`);\n266    process.exit(1);\n267  }\n```\n\n### 解释\n- L261：命令行参数。\n- L263：**程序从这里调 main**。\n- L265：main 里抛的错（参数不对、配置不对、试运行没配 http……）在这里接住，打一行原因，`process.exit(1)`。\n\n### 这段代码调用了\n- `main`（[Main.ts L61](#lines=Main.json&line=61) · 骨架）—— 启动全过程。\n- `textModule.getErrorMessage`（[utils/Text.ts:13](src7/utils/Text.ts:13) · 骨架工具）—— 把抛出来的东西变成一句报错文字。",
     "sources": [
       "src7/Main.ts"
     ]

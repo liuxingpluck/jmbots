@@ -299,8 +299,8 @@ export class Timeline {
     const result = this.ctx.resources.db.query(sql).run(...row);
     const id = Number(result.lastInsertRowid);
 
-    //T 跟踪：收件表记下一条。
-    const vars = { messageId: id, bot: input.bot, channel: input.channel, length: input.text.length };
+    //T 跟踪：收件表记下一条。sourceId 是渠道的标准消息号（没有就不带），journal 靠它把收件号和渠道那几行接上。
+    const vars = { messageId: id, sourceId: input.source_id, bot: input.bot, channel: input.channel, length: input.text.length };
     this.ctx.emit('trace', 'Timeline.insert', 'trace.timeline.insert', 'INSERT INTO web_messages', vars);
     const { bot, channel, source, text } = input;
     const received = { id, bot, channel, source, text, at: createdAt };

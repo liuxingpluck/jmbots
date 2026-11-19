@@ -52,6 +52,7 @@
   "trace.feishu.receiveMessage": "Record the original Feishu message and emit channel/message",
   "trace.feishu.sendOutbox": "Send an item from the Feishu outbox and move it to sent",
   "trace.feishu.skipGroupReply": "Skip replying to the group message without a bot mention",
+  "trace.feishu.wsReceived": "Feishu WebSocket received im.message.receive_v1, handed to inbound handling (first cell of the trail)",
   "trace.field.account": "Account",
   "trace.field.action": "Action",
   "trace.field.appId": "App ID",

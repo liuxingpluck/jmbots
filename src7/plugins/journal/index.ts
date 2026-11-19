@@ -29,7 +29,10 @@ export const name = 'journal';
 //M 1.1.0：并入原 files-mirror（统一提供 ctx.journal 与 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json）。
 //M 1.2.0：“跟踪行 → 步骤”只留一份，从 tutorial/Trail.ts 挪进 Trail.ts；
 //M   journal/request 的 message-lines 换成 trail（教程页）、reply-lines（聊天页追溯）。
-export const version = '1.2.1';
+//M 1.2.2：journal_lines 加 source_id 列（标准消息号，渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])）；
+//M   trail、reply-lines 按它把渠道那几行（飞书 WebSocket 收到、去重、认 @、channel/message）串在收件行前面，
+//M   轨迹第一格不再是“收件表记下”；/api/events 加 source 参数。
+export const version = '1.2.2';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
@@ -142,6 +145,8 @@ export interface JournalEvent {
   sessionId: string | null;
   /** web-api 收件表的消息号。 */
   messageId: number | null;
+  /** 标准消息号：渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])；没带的行是 null。查库交出的行一定有这项，测试里手拼的行可以省。 */
+  sourceId?: string | null;
   /** 截短过的关键变量。 */
   vars: Record<string, unknown>;
 }
@@ -186,10 +191,16 @@ export class Journal extends cordis.Service {
       + ' kind TEXT NOT NULL,'
       + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL,'
       + ' site TEXT NOT NULL,'
-      + ' bot TEXT, session_id TEXT, message_id INTEGER, vars TEXT NOT NULL)');
+      + ' bot TEXT, session_id TEXT, message_id INTEGER, source_id TEXT, vars TEXT NOT NULL)');
+    //M 1.3.0 以前建的表没有 source_id 列：补一列（旧行是空）。
+    const columns = db.query('PRAGMA table_info(journal_lines)').all() as { name: string }[];
+    if (!columns.some((column) => column.name === 'source_id')) {
+      db.exec('ALTER TABLE journal_lines ADD COLUMN source_id TEXT');
+    }
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_name ON journal_lines (name, at)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_session ON journal_lines (session_id, at)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_message ON journal_lines (message_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS journal_lines_source ON journal_lines (source_id)');
     //M 0.4 格式的旧表（第一批时建的）不再写，也不再读，留着不删。
     this.listen();
   }
@@ -217,11 +228,15 @@ export class Journal extends cordis.Service {
         messageIdValue = messageId;
       }
 
+      //M 2026-11-19：渠道的跟踪点（飞书收到、去重、认 @）带标准消息号（messageId 写成标准号字符串，或单写 sourceId），记进 source_id。
+      //M   Timeline.insert 同时带数字的收件号和 sourceId，journal.request 靠这一行把收件号和标准号接上。
+      const sourceId = traceUtils.getSourceId(vars['sourceId']) ?? traceUtils.getSourceId(vars['messageId']) ?? null;
+
       //M 把跟踪点和消息号一同写入流水，供轨迹页按消息定位。
       this.record({
         kind: '函数', name: where, mode: '', listeners: [], text, code,
         site: traceUtils.getCallSite(['plugins/journal/']),
-        bot: botValue, sessionId: sessionValue, messageId: messageIdValue, vars,
+        bot: botValue, sessionId: sessionValue, messageId: messageIdValue, sourceId, vars,
       });
     });
 
@@ -236,7 +251,8 @@ export class Journal extends cordis.Service {
       this.record({
         kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '',
         site: traceUtils.getCallSite(['plugins/journal/']),
-        bot: line.bot ?? null, sessionId: line.session ?? null, messageId: line.messageId ?? null, vars: line.vars,
+        bot: line.bot ?? null, sessionId: line.session ?? null, messageId: line.messageId ?? null,
+        sourceId: line.sourceId ?? null, vars: line.vars,
       });
     });
 
@@ -269,12 +285,13 @@ export class Journal extends cordis.Service {
   private record(line: Omit<JournalEvent, 'id' | 'at'>): void {
     const now = Date.now();
     const sql = 'INSERT INTO journal_lines'
-      + ' (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, vars)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      + ' (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, source_id, vars)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     //M 把跟踪行连同截短后的内容和变量写入数据库，供轨迹查询。
     this.ctx.resources.db.query(sql).run(
       now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.clipTextWithLength(line.text, TEXT_MAX_CHARS),
-      cut.clipTextWithLength(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId, shrink(line.vars));
+      cut.clipTextWithLength(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId,
+      line.sourceId ?? null, shrink(line.vars));
 
     //G 一天之内删过了 → 不再删。
     if (now - this.prunedAt < DAY_MS) return;
@@ -290,7 +307,9 @@ export class Journal extends cordis.Service {
   }
 
   /**
-   * 从收件行起按消息号或明确关联的会话取流水，上限只计算匹配行。
+   * 从这条消息的第一行起按消息号、标准消息号或明确关联的会话取流水，上限只计算匹配行。
+   * 渠道（飞书）的消息，收件行前面还有渠道那几行（收到、去重、认 @、channel/message）：它们只带标准消息号，
+   * 靠 Timeline.insert 那一行同时带着收件号和标准号接上，从标准号第一次出现的那行起取。
    * @param message 收件表的消息号。
    * @param maxLines 最多几条（含 web-api/received 那行）。
    * @param sessions 调用方已知的相关会话号。
@@ -300,25 +319,36 @@ export class Journal extends cordis.Service {
   request(message: number, maxLines: number, sessions: string[] = [], to = Number.MAX_SAFE_INTEGER): JournalEvent[] | undefined {
     const db = this.ctx.resources.db;
 
-    //M 收件表记下这条消息的那一行：从它起算。
+    //M 收件表记下这条消息的那一行：没有它就不是一条收下的消息。
     const startSql = "SELECT id FROM journal_lines WHERE name = 'web-api/received' AND message_id = ?"
       + ' ORDER BY id LIMIT 1';
     const start = db.query(startSql).get(message) as { id: number } | null;
     if (start === null) return undefined;
 
-    //M 有其他消息号的行归那条消息。无消息号的行只认明确关联的会话。
+    //M 渠道来的消息：Timeline.insert 那行带着标准消息号，从这个标准号第一次出现的行起算；别的渠道、网页来的没有，从收件行起算。
+    const bridge = db.query('SELECT source_id FROM journal_lines WHERE message_id = ? AND source_id IS NOT NULL ORDER BY id LIMIT 1')
+      .get(message) as { source_id: string } | null;
+    const sourceId = bridge?.source_id ?? null;
+    let from = start.id;
+    if (sourceId !== null) {
+      const first = db.query('SELECT MIN(id) AS id FROM journal_lines WHERE source_id = ?').get(sourceId) as { id: number };
+      from = Math.min(from, first.id);
+    }
+
+    //M 有其他消息号的行归那条消息（同一条群消息给几个机器人，各有各的收件号）。
+    //M   无收件号、无会话、带这条标准号的行（渠道收到、channel/message）归这条；其余无收件号的行只认明确关联的会话。
     const sql = 'SELECT * FROM journal_lines WHERE id >= ? AND at <= ? AND name NOT IN (?, ?, ?, ?)'
-      + ' AND (message_id = ? OR (message_id IS NULL AND session_id IN ('
+      + ' AND (message_id = ? OR (message_id IS NULL AND session_id IS NULL AND source_id = ?) OR (message_id IS NULL AND session_id IN ('
       + ' SELECT session_id FROM journal_lines WHERE message_id = ? AND id >= ? AND at <= ? AND session_id IS NOT NULL'
       + ' UNION SELECT value FROM json_each(?)))) ORDER BY id LIMIT ?';
     const knownSessions = JSON.stringify(sessions);
-    const rows = db.query(sql).all(start.id, to, ...READ_EVENTS, message, message, start.id, to, knownSessions, maxLines) as Row[];
+    const rows = db.query(sql).all(from, to, ...READ_EVENTS, message, sourceId, message, from, to, knownSessions, maxLines) as Row[];
     return rows.map(getEvent);
   }
 
   /**
    * GET /api/events：校验参数（外面进来的），取最新的 limit 条，按号从小到大。
-   * @param params 网址参数：name（全名，或写成 session/* 取一类；老写法 type 也认）、kind（函数 / 事件）、session、message、since、limit。
+   * @param params 网址参数：name（全名，或写成 session/* 取一类；老写法 type 也认）、kind（函数 / 事件）、session、message、source（标准消息号）、since、limit。
    * @returns 跟踪行。
    * @throws 400：message、since、limit 不是非负整数；kind 不对。
    */
@@ -360,6 +390,10 @@ export class Journal extends cordis.Service {
       sql += ' AND message_id = ?';
       values.push(message);
     }
+    if (params['source'] !== undefined && params['source'] !== '') {
+      sql += ' AND source_id = ?';
+      values.push(params['source']);
+    }
     if (since !== undefined) {
       sql += ' AND at >= ?';
       values.push(since);
@@ -388,6 +422,7 @@ interface Row {
   bot: string | null;
   session_id: string | null;
   message_id: number | null;
+  source_id: string | null;
   vars: string;
 }
 
@@ -397,9 +432,9 @@ interface Row {
  * @param row 表里的一行。
  */
 function getEvent(row: Row): JournalEvent {
-  const { session_id: sessionId, message_id: messageId, listeners, vars, ...rest } = row;
+  const { session_id: sessionId, message_id: messageId, source_id: sourceId, listeners, vars, ...rest } = row;
   return {
-    ...rest, sessionId, messageId,
+    ...rest, sessionId, messageId, sourceId,
     listeners: JSON.parse(listeners) as string[], vars: JSON.parse(vars) as Record<string, unknown>,
   };
 }

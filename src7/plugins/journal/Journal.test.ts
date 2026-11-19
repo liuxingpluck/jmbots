@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
+import type { ChannelMessage } from '../../Channels.ts';
 import type { Session, SessionRow } from '../../Sessions.ts';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as journalModule from './index.ts';
@@ -98,7 +99,7 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认同时提供 ctx.journal 和 ctx.filesMirror，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.2.1');
+    expect(journalModule.version).toBe('1.2.2');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeDefined();
@@ -188,6 +189,61 @@ describe('journal（含 FilesMirror 并入）', () => {
 
     expect(() => ctx.journal.query({ limit: 'abc' })).toThrow('非负整数');
     expect(() => ctx.journal.query({ kind: '无效' })).toThrow('kind');
+  });
+
+  test('轨迹按标准消息号串：飞书收到那几行排在收件行前面，别的机器人的行不混进来', async () => {
+    const { ctx } = await setup();
+    const sourceId = JSON.stringify(['feishu', 'cli_a', 'om_1']);
+
+    //M 渠道那几行只带标准消息号（跟踪点的 messageId 是标准号字符串；channel/message 事件的参数本身带 messageId）。
+    ctx.emit('trace', 'Feishu.start', 'trace.feishu.wsReceived', 'im.message.receive_v1', { appId: 'cli_a', messageId: sourceId });
+    ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.receiveMessage', 'serial', { appId: 'cli_a', messageId: sourceId });
+    await ctx.serial('channel/message', { messageId: sourceId } as unknown as ChannelMessage);
+    //M 平台原消息号（om_ 开头）和提醒号不是标准号，不记。
+    ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.duplicateMessage', 'x', { messageId: 'om_1' });
+
+    //M 同一条群消息给两个机器人：各一行收件，Timeline.insert 同时带收件号和 sourceId。
+    ctx.emit('trace', 'Timeline.insert', '收件表记下', 'insert', { messageId: 90, sourceId, bot: '甲' });
+    ctx.emit('web-api/received', { id: 90, bot: '甲', channel: 'feishu', source: 'feishu', text: 'hi', at: Date.now() });
+    ctx.emit('trace', 'Timeline.insert', '收件表记下', 'insert', { messageId: 91, sourceId, bot: '乙' });
+    ctx.emit('web-api/received', { id: 91, bot: '乙', channel: 'feishu', source: 'feishu', text: 'hi', at: Date.now() });
+    ctx.emit('trace', 'Bots.say', '交给会话', 'say', { 会话: 's_a', 消息号: 90 });
+
+    const names = ctx.journal.request(90, 20)?.map((line) => line.name);
+    expect(names).toEqual(['Feishu.start', 'Feishu.onMessage', 'channel/message', 'Timeline.insert', 'web-api/received', 'Bots.say']);
+    const other = ctx.journal.request(91, 20)?.map((line) => line.name);
+    expect(other).toEqual(['Feishu.start', 'Feishu.onMessage', 'channel/message', 'Timeline.insert', 'web-api/received']);
+
+    //M 教程页用的 trail：第一格是飞书；按标准号查 /api/events 也行。
+    const payload = { action: 'trail', message: 90, maxLines: 20 } as const;
+    const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
+    expect(result.trail?.steps[0]?.rows[0]?.name).toBe('Feishu.start');
+    expect(result.picked?.map((line) => line.name)).toContain('Feishu.start');
+    const bySource = ctx.journal.query({ source: sourceId });
+    expect(bySource.map((line) => line.sourceId)).not.toContain(null);
+    expect(bySource.map((line) => line.name)).not.toContain('Bots.say');
+  });
+
+  test('1.2.2 以前建的 journal_lines 没有 source_id 列：启动时补上，旧行照常读', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-journal-old-'));
+    closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    await ctx.plugin(FakeResources, { root });
+    const db = ctx.resources.db;
+    db.exec('CREATE TABLE journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL,'
+      + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL,'
+      + ' site TEXT NOT NULL, bot TEXT, session_id TEXT, message_id INTEGER, vars TEXT NOT NULL)');
+    //M 旧行的时刻写成现在：第一条新行进来会删过期的，写 1 会被删掉。
+    const insert = "INSERT INTO journal_lines (at, kind, name, mode, listeners, text, code, site, vars) VALUES (?, '函数', '旧行', '', '[]', '', '', 'x', '{}')";
+    db.query(insert).run(Date.now());
+
+    await ctx.plugin(journalModule);
+    ctx.emit('trace', '新行', '', '', { messageId: '["feishu","a","b"]' });
+
+    //M 第一条新行进来时 journal 自己记一行清理（Journal.record），不算。
+    const lines = ctx.journal.query({}).filter((line) => line.name !== 'Journal.record');
+    expect(lines.map((line) => [line.name, line.sourceId])).toEqual([['旧行', null], ['新行', '["feishu","a","b"]']]);
   });
 
   test('流水事件回传筛选结果、错误及会话镜像目录', async () => {

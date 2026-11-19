@@ -382,3 +382,31 @@ button.tu-dep-tag:hover { border-color: var(--jm-accent); background: var(--jm-a
 .tu-program { display: flex; flex-direction: column; gap: 8px; }
 .tu-program h4 { margin: 8px 0 4px; }
 .tu-program-link { border: 0; padding: 0; background: none; color: var(--jm-accent); cursor: pointer; text-align: left; }
+
+/* 顺序图（SeqChart.tsx）：一道一个插件、时间往下，事件是箭头。 */
+.tu-seq { display: block; font-size: 12px; }
+.tu-seq text { fill: var(--jm-text); }
+.tu-seq-head rect { fill: var(--jm-panel); stroke: var(--jm-border); }
+.tu-seq-head.clickable { cursor: pointer; }
+.tu-seq-head.active rect { stroke: var(--jm-accent); fill: var(--jm-accent-soft); }
+.tu-seq-life { stroke: var(--jm-border); stroke-dasharray: 4 4; }
+.tu-seq-block { cursor: pointer; }
+.tu-seq-block rect { fill: var(--jm-surface); stroke: var(--jm-border); }
+.tu-seq-block:hover rect { stroke: var(--jm-accent); }
+.tu-seq-block.picked rect { fill: var(--jm-accent-soft); stroke: var(--jm-accent); stroke-width: 1.8; }
+.tu-seq-block.error rect { stroke: var(--jm-danger); }
+.tu-seq-arrow { cursor: pointer; }
+.tu-seq-arrow .tu-seq-hit { stroke: transparent; stroke-width: 12; }
+.tu-seq-arrow .tu-seq-line { stroke: var(--jm-muted); stroke-width: 1.3; }
+.tu-seq-arrow text { fill: var(--jm-muted); font-size: 11px; }
+#tu-seq-arrow path { fill: var(--jm-muted); }
+.tu-seq-arrow:hover .tu-seq-line, .tu-seq-arrow.hit .tu-seq-line { stroke: var(--jm-warning); }
+.tu-seq-arrow.picked .tu-seq-line { stroke: var(--jm-accent); stroke-width: 2.4; }
+.tu-seq-arrow.picked text { fill: var(--jm-accent); }
+.tu-seq-arrow.error .tu-seq-line { stroke: var(--jm-danger); }
+.tu-tool-btn[aria-pressed='true'] { border-color: var(--jm-accent); color: var(--jm-accent); background: var(--jm-accent-soft); }
+.tu-arrow-detail h5 { margin: 8px 0 4px; }
+.tu-seq-type { margin-top: 6px; }
+.tu-route-stop { padding: 6px 10px; font-size: 12px; line-height: 1.5; }
+.tu-route-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.tu-route-event { font-size: 11px; color: var(--jm-muted); }

@@ -481,3 +481,71 @@ export class TutorialApi {
     return { status: response.status, text };
   }
 }
+
+
+/** 事件目录里一个类型的字段（GET /api/tutorial/events，Check_Event_Docs.ts 扫出来的）。 */
+export interface EventField {
+  /** 字段名。 */
+  name: string;
+  /** 能不能不带。 */
+  optional: boolean;
+  /** TS 类型。 */
+  type: string;
+  /** 注释。 */
+  doc: string;
+  /** 文件:行号。 */
+  site: string;
+}
+
+
+/** 事件目录里事件参数用到的一个类型。 */
+export interface EventType {
+  /** 类型名。 */
+  name: string;
+  /** interface、type 等。 */
+  kind: string;
+  /** 文件:行号。 */
+  site: string;
+  /** 注释。 */
+  doc: string;
+  /** 不是对象形状的类型写在这里。 */
+  definition: string;
+  /** 字段。 */
+  fields: EventField[];
+}
+
+
+/** 事件目录里发或听的一处。 */
+export interface EventSite {
+  /** 插件名。 */
+  plugin: string;
+  /** 函数名。 */
+  function: string;
+  /** 文件:行号。 */
+  site: string;
+}
+
+
+/** 事件目录的一项。 */
+export interface EventCatalogItem {
+  /** 事件名。 */
+  name: string;
+  /** 挨个问、通知、请求-回执。 */
+  mode: string;
+  /** 一问一答的另一半。 */
+  pair: string;
+  /** 声明处。 */
+  declaredAt: string;
+  /** 函数签名。 */
+  signature: string;
+  /** 注释。 */
+  doc: string;
+  /** 参数。 */
+  params: { name: string; optional: boolean; type: string; doc: string }[];
+  /** 参数用到的类型。 */
+  types: EventType[];
+  /** 谁发。 */
+  senders: EventSite[];
+  /** 谁听。 */
+  listeners: EventSite[];
+}

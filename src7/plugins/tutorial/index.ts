@@ -19,6 +19,7 @@
  *   GET /api/tutorial/line?name=            读一份骨架逐行 JSON
  *   GET /api/tutorial/program-readme?name=  进程插件（config 里 programs 登记的程序）目录下的 说明.md；运行状态网页直接读 /api/programs
  *   GET /api/tutorial/reading?name=         清单内一篇组块 Markdown 原文
+ *   GET /api/tutorial/events                事件目录：每个事件的发法、谁发谁听（带文件:行）、数据的 TS 类型字段和注释，读 src7/docs/事件目录.json（Check_Event_Docs.ts 扫出来的）
  *   GET /api/tutorial/utils                 骨架工具层 src7/utils/ 下的 .ts 文件名清单（不含测试），按现有文件动态列
  *   GET /api/tutorial/util-readme?name=     清单内一个工具文件的说明：文件头注释和函数表，从源码实时提取
  *   GET /api/tutorial/state?name=           这个插件现在的运行时变量：它提供的服务对象，加它用 ctx.flow.state 登记的，全量原样
@@ -114,7 +115,8 @@ export const name = 'tutorial';
 /** 版本号。 */
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
-export const version = '1.1.13';
+//M 1.1.14：加 GET /api/tutorial/events 读事件目录 src7/docs/事件目录.json；消息轨迹按标准消息号串，第一格是飞书收到（journal 做）。1.1.15：教程页画布加顺序图、点箭头看事件详情、左栏加静态路线，只改网页。
+export const version = '1.1.15';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -246,6 +248,9 @@ const CORDIS_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/Cordis用法/`;
 
 /** 骨架逐行目录，一份 JSON 对应骨架里的一个文件，读法同组块阅读。 */
 const LINES_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/骨架逐行/`;
+
+/** 事件目录文件：ztools/check-events/Check_Event_Docs.ts 扫源码写出来，编译版由 scripts/Build_Src7.ts 嵌进去。 */
+const EVENTS_FILE = `${sourceDirModule.SOURCE_PREFIX}docs/事件目录.json`;
 
 /** 骨架工具层目录，左栏「骨架工具（utils）」列它下面的文件。 */
 const UTILS_DIR = `${sourceDirModule.SOURCE_PREFIX}utils/`;
@@ -534,6 +539,14 @@ class Tutorial {
       suffix: '.json',
       label: '骨架逐行文件名',
       missing: '没有这份骨架逐行',
+    });
+
+    //M 事件目录：扫出来的 JSON 原样交给页面；还没扫过（没有这个文件）回 404 并写明怎么生成。
+    app.get('/api/tutorial/events', async (_request, reply) => {
+      const lines = await sourceModule.readLines(EVENTS_FILE);
+      if (lines === undefined) return reply.code(404).send({ error: '没有事件目录，先跑 bun ztools/check-events/Check_Event_Docs.ts' });
+
+      return JSON.parse(lines.join('\n')) as unknown;
     });
 
     //M 左栏「骨架工具（utils）」按文件名顺序列出工具文件。

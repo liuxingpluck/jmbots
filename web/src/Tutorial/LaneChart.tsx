@@ -12,6 +12,7 @@ import * as virtuoso from 'react-virtuoso';
 import * as i18n from '../I18n.ts';
 import * as traceText from '../locales/Trace.ts';
 import { CallerList, JsonBlock, PATH_SEP, SiteLink, SourceToggle, TutorialScrollContext, VIRTUAL_THRESHOLD } from './Code.tsx';
+import { EventArrowDetail } from './SeqChart.tsx';
 import { TutorialApi, type Canvas, type CodeDoc, type LaneCell, type StateGroup, type Trail, type TrailRow, type TrailStep } from './TutorialApi.ts';
 
 const COLUMN_TEXT: Record<string, string> = {
@@ -692,6 +693,8 @@ export function StepDetail(props: {
   //M 过滤出当前步中属于函数跟踪点的执行记录。
   const functions = getFunctionRows(step);
   const events = step.rows.filter((row) => row.kind !== '函数');
+  //M 点了箭头（或高亮了某个事件）：这一步里这个事件的行，右栏顶上看它的详情。
+  const arrowRows = events.filter((row) => row.name === props.highlightEvent);
   const heard = step.rows.flatMap((row) => row.listeners);
   const listeners = [...new Set(heard)];
   const stepIsPlugin = props.pluginNames.has(step.node);
@@ -721,6 +724,16 @@ export function StepDetail(props: {
         )}
       </div>
       <p>{title}</p>
+
+      {arrowRows.length > 0 && (
+        <EventArrowDetail
+          rows={arrowRows}
+          workspace={workspace}
+          notes={notes}
+          pluginNames={props.pluginNames}
+          onSelectPlugin={props.onSelectPlugin}
+        />
+      )}
 
       {functions.length > 0 && (
         <div className="tu-block">

@@ -32,6 +32,7 @@ declare module 'cordis' {
      *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/cli/index.ts 的 Cli.constructor
+     *   src7/plugins/context-fit/index.ts 的 apply
      *   src7/plugins/feishu/index.ts 的 Feishu.constructor
      *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
      *   src7/plugins/http/index.ts 的 Http.constructor

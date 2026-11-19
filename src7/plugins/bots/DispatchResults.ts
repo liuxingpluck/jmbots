@@ -6,7 +6,6 @@ import type { Session, SessionMeta, SessionState } from '../../Sessions.ts';
 import * as namesModule from '../../utils/Names.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as protocol from '../../Channels.ts';
-import type { DispatchRecall } from './DispatchRecall.ts';
 import type { Origin, ReceiveEvent } from './index.ts';
 
 /** 前台派的后台记在会话上的。 */
@@ -169,7 +168,6 @@ export class DispatchResults {
   /** 始终使用 bots 的上下文，外部通过服务调用时也一样。 */
   constructor(
     private readonly home: cordis.Context,
-    private readonly recall: DispatchRecall,
   ) {
     //M 被拔掉时：记下 disposed，清掉还没到点的补救轮定时器。
     this.home.effect(() => () => {
@@ -228,12 +226,6 @@ export class DispatchResults {
     const inheritedSnapshot = input.sourceSnapshot
       ?? activeItem?.payload.sourceSnapshot
       ?? target.row.activeSourceSnapshot;
-
-    //G 原消息已被撤回 → 丢弃迟到的结果交回，只执行调用方同步收尾避免重推。
-    if (inheritedSnapshot !== undefined && this.recall.has(inheritedSnapshot.messageId)) {
-      commitSource();
-      return { status: 'duplicate', key: input.key };
-    }
 
     //M 保存前先固定这一项的回话目标和回复轮。
     const item = this.getResultItem(target, input, hash, activeItem, inheritedSnapshot);
@@ -469,7 +461,7 @@ export class DispatchResults {
       return;
     }
 
-    //G legacy_auto 前台在途被撤回停跑 → 标 rejected 并清理收尾，绝不把原文补发回渠道。
+    //G 兼容升级前已标记撤回停跑的旧轮次。
     if (row.recalledStop === true || item.replyControl?.outcome === 'recalled') {
       item.stage = 'rejected';
       item.note = '已停止（用户撤回了消息）';
@@ -724,17 +716,6 @@ export class DispatchResults {
     if (bot !== undefined && bot.config['relay'] === 'direct') return true;
 
     return session.row.kind === 'relay';
-  }
-
-  /** 撤回某个前台轮前，取消它尚未启动的零次回复修复。 */
-  cancelRepairTimer(frontId: string): void {
-    //M 定时器按前台号保存，撤回时只找这场会话的修复轮。
-    const timer = this.repairTimers.get(frontId);
-    if (timer === undefined) return;
-
-    //M 取消当前定时器并释放登记，保留其他轮次。
-    clearTimeout(timer);
-    this.repairTimers.delete(frontId);
   }
 
   /**

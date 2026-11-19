@@ -162,20 +162,33 @@ export class Tools extends cordis.Service {
    * 执行模型要的一个工具。
    * @param call 模型要求的这次 `ToolCall`，字段见本文件 L100。
    * @param session 是哪场会话要执行。
-   * @param signal 这一轮的停止信号（就是掐模型请求的那个），原样交给工具。
+   * @param signal 这一轮的停止信号，原样交给已经启动的工具。
+   * @param stepSignal 当前步骤的取消信号，只在工具启动前检查。
    * @returns 结果。不抛错：没执行、出错、被停止，都写在结果里给模型看。
    * 副作用：执行工具。
    */
-  async execute(call: piAi.ToolCall, session: Session, signal: AbortSignal): Promise<ToolOutcome> {
+  async execute(
+    call: piAi.ToolCall,
+    session: Session,
+    signal: AbortSignal,
+    stepSignal?: AbortSignal,
+  ): Promise<ToolOutcome> {
     //==========================================================
     //M 关口三 检查会话和插件是否允许执行工具
     //==========================================================
     //G 会话被喊停了 → 这一批里后面的工具都不执行。
     if (session.row.state !== 'running') return { text: '未执行：停下来了', isError: true };
 
+    //G 撤回后不再让这一步剩下的工具进入关口。
+    if (stepSignal?.aborted) return { text: '未执行：这一步已取消，请重新判断', isError: true };
+
     //M 关口三，执行之前：挨个问 session/before-tool。不让执行这一个的写 gate.deny，要整场停下的写 gate.stop。没人管就放行。
     const gate: ToolGate = { session, call };
     await this.ctx.serial('session/before-tool', gate);
+
+    //G 审核期间撤回或停止，审核返回后也不能启动这个工具。
+    if (signal.aborted) return { text: '未执行：停下来了', isError: true };
+    if (stepSignal?.aborted) return { text: '未执行：这一步已取消，请重新判断', isError: true };
 
     //G 有插件喊停 → 这个工具不执行，会话停下；这一批后面的工具碰到开头那条守卫，也不执行。
     if (gate.stop !== undefined) {

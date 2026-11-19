@@ -53,13 +53,13 @@ export class Dispatch extends cordis.Service {
 
     //M 队列在原来的插件上下文收结果，认领和撤回都操作同一份队列。
     const recall = new recallModule.DispatchRecall(ctx, desk);
-    this.results = new resultsModule.DispatchResults(ctx, recall);
+    this.results = new resultsModule.DispatchResults(ctx);
     this.claims = new claimModule.DispatchClaim(ctx, desk, this.results);
 
     //M 顺序与拆分前一致，先挂派活工具，再处理收尾、恢复和撤回。
     new toolsModule.DispatchTools(ctx, desk);
     this.results.listen();
-    recall.listen(this.results);
+    recall.listen();
   }
 
   /** 把结果、去重与同步收尾交给同一个持久化队列。 */

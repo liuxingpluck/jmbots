@@ -12,13 +12,13 @@
 //!   重启：网页设置“重连”里的“重启服务”经后端转到 POST /restart，这里停掉后端，守护线程看到它不在了马上重新拉起。
 
 use crate::config::Settings;
+use crate::process_job::JobChild;
 use crate::{backend, log};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,6 +33,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const SCAN_EVERY: Duration = Duration::from_secs(30);
 /// 新版本要在这么久内健康。
 const HEALTH_WAIT: Duration = Duration::from_secs(90);
+/// 等后端结束和端口释放时的检查间隔。
+const STOP_POLL: Duration = Duration::from_millis(100);
 /// 打印版本最多等多久。
 const VERSION_WAIT: Duration = Duration::from_secs(30);
 /// 重启服务时先等多久再停后端：让后端先把这次请求答完（它在等基地的回答）。
@@ -160,7 +162,7 @@ pub(crate) fn hide_window(command: &mut Command) {
     }
 }
 
-/// 停写窗口只存于当前基地进程，和换版的临时暂停分开。
+/// 手动停写或关停失败产生的暂停只存于当前基地进程。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum WindowState {
@@ -183,7 +185,7 @@ struct UpdateState {
     applying: bool,
     /// 保留常规重启从受理到执行完的时段，防止进入窗口后旧请求才来结束进程。
     restart_pending: bool,
-    /// 手动停写窗口的状态。
+    /// 手动停写或关停失败后的守护状态。
     window: WindowState,
     /// 结束窗口后，守护按一次新启动重新累计健康失败。
     reset_watch_health: bool,
@@ -206,7 +208,7 @@ pub struct Supervisor {
     /// 配置。
     settings: Settings,
     /// 基地拉起来的后端；别人起的是 None。
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<JobChild>>,
     /// 更新状态。
     state: Mutex<UpdateState>,
     /// 要停了（从托盘退出）。
@@ -249,7 +251,7 @@ impl Supervisor {
     }
 
     /// 拉起后端（普通模式），输出记到运行时 data/logs/backend.log。
-    fn spawn_server(&self, file: &Path) -> Result<Child> {
+    fn spawn_server(&self, file: &Path) -> Result<JobChild> {
         let dir = self.settings.runtime.join("data").join("logs");
         std::fs::create_dir_all(&dir)?;
         let log_file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("backend.log"))?;
@@ -261,8 +263,7 @@ impl Supervisor {
             .stdin(Stdio::null())
             .stdout(log_file.try_clone()?)
             .stderr(log_file);
-        hide_window(&mut command);
-        command.spawn().with_context(|| format!("拉不起来 {}", file.display()))
+        JobChild::spawn(&mut command).with_context(|| format!("拉不起来 {}", file.display()))
     }
 
     /// 守护线程：退出了或者一直没响应就重启；连续起不来时越等越久。
@@ -285,7 +286,7 @@ impl Supervisor {
             }
             //G 暂停和拉起使用同一把锁；保护最后一次检查到执行 spawn 的时段。
             let mut state = self.state.lock().expect("更新状态的锁");
-            if state.window != WindowState::Running {
+            if state.window != WindowState::Running || state.applying || state.restart_pending {
                 continue;
             }
             if std::mem::take(&mut state.reset_watch_health) {
@@ -295,16 +296,26 @@ impl Supervisor {
             unhealthy += 1;
             let mut child = self.child.lock().expect("守护的锁");
             let exited = match child.as_mut() {
-                Some(running) => running.try_wait().ok().flatten().is_some(),
+                Some(running) => running.child.try_wait().ok().flatten().is_some(),
                 None => true,
             };
             //G 还在跑、只是还没响应：多等等，真卡死了才重启。
             if !exited && unhealthy < UNHEALTHY_LIMIT {
                 continue;
             }
-            if let Some(mut stuck) = child.take() {
-                let _ = stuck.kill();
-                let _ = stuck.wait();
+            if let Some(stuck) = child.as_mut() {
+                if let Err(error) = stuck.terminate() {
+                    log::line(&self.settings, &format!("守护未能结束后端进程树：{error}"));
+                    continue;
+                }
+                if !stuck.drained().unwrap_or(false) {
+                    continue;
+                }
+                *child = None;
+            }
+            //G 连不上健康接口时端口也可能仍被占用。等可绑定后才自动拉起。
+            if bind_backend_port(self.settings.backend_port).is_err() {
+                continue;
             }
             let file = self.server_file();
             //M 第一次装：运行时里还没有后端，用 updates/ 里最新的。
@@ -459,8 +470,8 @@ impl Supervisor {
             if state.window != WindowState::Running {
                 return Err("停写窗口仍有效，请先结束窗口".to_string());
             }
-            if state.applying {
-                return Err("已经在换了".to_string());
+            if state.applying || state.restart_pending {
+                return Err("换版或重启正在进行".to_string());
             }
             let Some(file) = state.available_file.clone() else {
                 return Err("没有新版本".to_string());
@@ -486,8 +497,9 @@ impl Supervisor {
                     "换好了".to_string()
                 }
                 Err(error) => {
-                    crate::notify::error("更新失败", &format!("还在用旧版本：{error:#}"));
-                    format!("没换成，还在用旧版本：{error:#}")
+                    let detail = format!("没换成：{error:#}");
+                    crate::notify::error("更新失败", &detail);
+                    detail
                 }
             };
             log::line(&worker.settings, &format!("换版本：{}", state.message));
@@ -525,7 +537,9 @@ impl Supervisor {
             log::line(&worker.settings, "网页上点了重启服务：停掉后端，守护马上重新拉起");
             crate::notify::info("正在重启", "后端即将重启，守护会把它重新拉起");
             if let Err(error) = worker.stop_server() {
-                log::line(&worker.settings, &format!("重启服务：{error:#}"));
+                let detail = format!("重启服务：{error:#}");
+                log::line(&worker.settings, &detail);
+                crate::notify::error("重启服务失败", &detail);
             }
             worker.state.lock().expect("更新状态的锁").restart_pending = false;
         });
@@ -550,13 +564,18 @@ impl Supervisor {
     fn stop_owned_backend(&self) -> Result<&'static str> {
         let pid = {
             let mut child = self.child.lock().expect("守护的锁");
-            if let Some(running) = child.as_mut() && running.try_wait()?.is_none() {
-                Some(running.id())
+            if let Some(running) = child.as_mut() && running.child.try_wait()?.is_none() {
+                Some(running.child.id())
             } else {
                 None
             }
         };
         let Some(pid) = pid else {
+            let mut child = self.child.lock().expect("守护的锁");
+            if child.is_some() {
+                self.stop_and_wait(&mut child)?;
+                return Ok("already_stopped");
+            }
             self.require_backend_port_closed()?;
             return Ok("already_stopped");
         };
@@ -574,7 +593,7 @@ impl Supervisor {
         loop {
             let mut child = self.child.lock().expect("守护的锁");
             let running = child.as_mut().context("主站句柄已被基地退出流程取走")?;
-            if let Some(exit) = running.try_wait()? {
+            if let Some(exit) = running.child.try_wait()? {
                 *child = None;
                 if accepted && exit.success() {
                     return Ok("graceful");
@@ -582,8 +601,8 @@ impl Supervisor {
                 return Ok("exited");
             }
             if Instant::now() >= deadline {
-                running.kill().context("强制结束主站失败")?;
-                running.wait().context("等待主站强制退出失败")?;
+                running.terminate().context("强制结束主站进程树失败")?;
+                running.child.wait().context("等待主站强制退出失败")?;
                 *child = None;
                 return Ok("forced");
             }
@@ -593,9 +612,8 @@ impl Supervisor {
     }
 
     fn require_backend_port_closed(&self) -> Result<()> {
-        let socket = SocketAddr::from(([127, 0, 0, 1], self.settings.backend_port));
-        //G Windows 的 TCP 连接超时无法证明无人监听。先确认目标回环端口可绑定。
-        std::net::TcpListener::bind(socket).map(drop).context("主站端口不可用，基地没有可操作的主站句柄")
+        //G Windows 的 TCP 连接超时无法证明无人监听。确认后端使用的地址可绑定。
+        bind_backend_port(self.settings.backend_port).context("主站端口不可用，基地没有可操作的主站句柄")
     }
 
     /// 结束手动暂停，直接拉正常版主站，后续仍由原守护线程照看。
@@ -612,7 +630,7 @@ impl Supervisor {
         }
         let mut child = self.child.lock().expect("守护的锁");
         if let Some(running) = child.as_mut() {
-            if running.try_wait().map_err(|error| error.to_string())?.is_none() {
+            if running.child.try_wait().map_err(|error| error.to_string())?.is_none() {
                 state.window = WindowState::Running;
                 state.reset_watch_health = true;
                 return Ok(());
@@ -638,26 +656,62 @@ impl Supervisor {
         false
     }
 
-    /// 停掉正在跑的后端：基地拉起的直接停；别人起的按它写的 pid 文件停。
+    /// 停掉后端并确认它的作业及端口都已释放。失败时暂停守护，保留文件和现场。
     fn stop_server(&self) -> Result<()> {
-        if let Some(mut running) = self.child.lock().expect("守护的锁").take() {
-            let _ = running.kill();
-            let _ = running.wait();
-        } else {
-            let pid_file = self.settings.runtime.join("data").join(format!("serve_{}.pid", self.settings.backend_port));
-            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
-                kill_pid(pid.trim());
+        let result = {
+            let mut child = self.child.lock().expect("守护的锁");
+            //M 外部启动的后端沿用 PID 文件，基地自己启动的实例使用独立的作业句柄。
+            if child.is_none() {
+                let pid_file = self.settings.runtime.join("data").join(format!("serve_{}.pid", self.settings.backend_port));
+                if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                    kill_pid(pid.trim());
+                }
             }
+            self.stop_and_wait(&mut child)
+        };
+        if result.is_err() {
+            let mut state = self.state.lock().expect("更新状态的锁");
+            state.window = WindowState::Paused;
+            return result.context("守护已暂停");
         }
-        //M 等端口空出来。
-        let started = Instant::now();
-        while self.healthy(&self.settings.server) {
-            if started.elapsed() > Duration::from_secs(20) {
-                bail!("旧版本停不下来");
+        result
+    }
+
+    /// 回收自己持有的实例，并在配置的期限内确认主端口可绑定且健康检查已停止。
+    fn stop_and_wait(&self, child: &mut Option<JobChild>) -> Result<()> {
+        if let Some(running) = child.as_mut() {
+            //M 即使根 PID 已退出，作业句柄也能回收仍在运行的子程序。
+            running.terminate().context("结束旧版进程树失败")?;
+        }
+        let port = self.settings.backend_port;
+        let seconds = self.settings.backend.stop_timeout_secs;
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let drained = match child.as_mut() {
+                Some(running) => running.drained().context("检查旧版进程树失败")?,
+                None => true,
+            };
+            let binding = bind_backend_port(port);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if drained && binding.is_ok() && !remaining.is_zero() {
+                //M 可绑定后再确认健康已经中断，单次 HTTP 探测也受同一截止时间约束。
+                let agent = backend::agent(remaining.min(backend::TIMEOUT));
+                let health = backend::health_at(&agent, &self.settings.server, &self.settings.backend.health);
+                if health.is_err() && bind_backend_port(port).is_ok() {
+                    *child = None;
+                    return Ok(());
+                }
             }
-            std::thread::sleep(Duration::from_millis(300));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                binding.with_context(|| format!("旧版端口没释放（{port}，已等待 {seconds} 秒）"))?;
+                if !drained {
+                    bail!("旧版进程树 {seconds} 秒后仍未退出");
+                }
+                bail!("旧版健康接口 {seconds} 秒后仍可用");
+            }
+            std::thread::sleep(remaining.min(STOP_POLL));
         }
-        Ok(())
     }
 
     /// 换到新版本：先复制成固定文件名试运行，健康了才停旧的、换文件、起正式的；起不来就退回。
@@ -673,12 +727,12 @@ impl Supervisor {
         let mut trial = {
             let mut command = Command::new(&next);
             command.args(["serve", "--mode", "candidate", "--port"]).arg(port.to_string()).arg("--runtime").arg(&self.settings.runtime).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-            hide_window(&mut command);
-            command.spawn().with_context(|| format!("新版本跑不起来：{}", next.display()))?
+            JobChild::spawn(&mut command).with_context(|| format!("新版本跑不起来：{}", next.display()))?
         };
         let passed = self.wait_healthy(&format!("http://{}:{port}", crate::config::LOCAL_HOST));
-        let _ = trial.kill();
-        let _ = trial.wait();
+        trial.terminate().context("结束试运行进程树失败")?;
+        trial.child.wait().context("等待试运行进程退出失败")?;
+        drop(trial);
         if !passed {
             let _ = std::fs::remove_file(&next);
             bail!("新版本试运行时 {} 秒内没响应", HEALTH_WAIT.as_secs());
@@ -723,10 +777,66 @@ impl Supervisor {
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         if let Some(mut running) = self.child.lock().expect("守护的锁").take() {
-            let _ = running.kill();
-            let _ = running.wait();
+            if running.terminate().is_ok() {
+                let _ = running.child.wait();
+            }
         }
     }
+}
+
+/// 按后端实际使用的所有 IPv4 网卡地址试绑。探测成功后即释放监听句柄。
+fn bind_backend_port(port: u16) -> std::io::Result<()> {
+    //G Windows 的通配试绑可能与某个特定地址上的监听共存，先查系统监听表。
+    #[cfg(windows)]
+    if windows_port_listening(port)? {
+        return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "TCP 监听表仍有这个端口"));
+    }
+    std::net::TcpListener::bind((crate::config::LISTEN_HOST, port)).map(drop)
+}
+
+#[cfg(windows)]
+fn windows_port_listening(port: u16) -> std::io::Result<bool> {
+    use std::io::{Error, ErrorKind};
+    use std::mem::{offset_of, size_of};
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetTcpTable2, MIB_TCP_STATE_LISTEN, MIB_TCPROW2, MIB_TCPTABLE2,
+    };
+
+    let mut bytes = 0;
+    let status = unsafe { GetTcpTable2(std::ptr::null_mut(), &mut bytes, 0) };
+    if status != ERROR_INSUFFICIENT_BUFFER {
+        return Err(Error::from_raw_os_error(status as i32));
+    }
+    let offset = offset_of!(MIB_TCPTABLE2, table);
+    //M 表大小可能随连接数增长，用有对齐的缓冲区重试。
+    for _ in 0..3 {
+        let words = (bytes as usize).div_ceil(size_of::<u32>());
+        let mut buffer = vec![0u32; words];
+        let table = buffer.as_mut_ptr().cast::<MIB_TCPTABLE2>();
+        let status = unsafe { GetTcpTable2(table, &mut bytes, 0) };
+        if status == ERROR_INSUFFICIENT_BUFFER {
+            continue;
+        }
+        if status != NO_ERROR {
+            return Err(Error::from_raw_os_error(status as i32));
+        }
+        let available = words * size_of::<u32>();
+        if available < offset {
+            return Err(Error::new(ErrorKind::InvalidData, "Windows TCP 监听表缺少表头"));
+        }
+        let count = unsafe { (*table).dwNumEntries } as usize;
+        if count > (available - offset) / size_of::<MIB_TCPROW2>() {
+            return Err(Error::new(ErrorKind::InvalidData, "Windows TCP 监听表长度不一致"));
+        }
+        let first = unsafe { buffer.as_ptr().cast::<u8>().add(offset).cast::<MIB_TCPROW2>() };
+        let rows = unsafe { std::slice::from_raw_parts(first, count) };
+        let listening = rows.iter().any(|row| {
+            row.dwState == MIB_TCP_STATE_LISTEN as u32 && u16::from_be(row.dwLocalPort as u16) == port
+        });
+        return Ok(listening);
+    }
+    Err(Error::from_raw_os_error(ERROR_INSUFFICIENT_BUFFER as i32))
 }
 
 /// 试运行用的端口：主端口之后第一个既连不上、也能占的端口（跳过壳子自己的端口）。
@@ -945,8 +1055,8 @@ mod tests {
         let mut command = Command::new(bun);
         command.args(["--eval", script]).stdout(Stdio::piped());
         hide_window(&mut command);
-        let mut child = command.spawn().unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut child = JobChild::spawn(&mut command).unwrap();
+        let mut output = BufReader::new(child.child.stdout.take().unwrap());
         let mut ready = String::new();
         output.read_line(&mut ready).unwrap();
         assert_eq!(ready.trim(), "ready");
@@ -1099,18 +1209,21 @@ mod tests {
         let release = runtime.join("updates").join("jmbots-server-0.3.6-20261106180000000000.exe");
         std::fs::copy(&exe, &release).expect("放新版本");
         std::fs::write(runtime.join(server_name()), b"OLD").expect("放旧后端");
-        /** 试运行端口（backend_port + 1）一直健康；正式端口第一次 500 让 stop_server 立刻返回。 */
+        /** 试跑一直健康，正式后端的绑定位置空着，健康替身先回 500 再回 200。 */
         let (candidate_port, _c) = fake_health(true);
         let (main_port, _m) = fake_health(false);
-        /** 基地。 */
-        let sup = make_supervisor(&runtime, main_port, candidate_port - 1);
+        let probe = TcpListener::bind("0.0.0.0:0").unwrap();
+        let backend_port = probe.local_addr().unwrap().port();
+        let mut sup = make_supervisor(&runtime, main_port, backend_port);
+        Arc::get_mut(&mut sup).unwrap().settings.trial_port = Some(candidate_port);
+        drop(probe);
         set_available(&sup, &release);
         sup.apply().expect("能开始换");
         wait_for_apply(&sup);
         /** 基地拉起的假后端进程，放掉。 */
         if let Some(mut child) = sup.child.lock().expect("守护锁").take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.terminate();
+            let _ = child.child.wait();
         }
         /** 接口回答。 */
         let status = sup.status();
@@ -1124,6 +1237,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&runtime);
     }
 
+    #[test]
+    fn apply_keeps_old_file_and_pauses_watch_when_port_stays_owned() {
+        let runtime = temp_dir("swap-port-busy");
+        let updates = runtime.join("updates");
+        std::fs::create_dir_all(&updates).unwrap();
+        std::fs::create_dir_all(runtime.join("data")).unwrap();
+        let release = updates.join("jmbots-server-0.3.6-20261106090254307274.exe");
+        std::fs::copy(fake_exe(), &release).unwrap();
+        let old_path = runtime.join(server_name());
+        std::fs::write(&old_path, b"OLD").unwrap();
+
+        //M 在独立的临时端口模拟无健康回执的监听，保持句柄直到换版已中止。
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let (candidate_port, _candidate) = fake_health(true);
+        let mut sup = make_supervisor(&runtime, port, port);
+        let settings = &mut Arc::get_mut(&mut sup).unwrap().settings;
+        settings.trial_port = Some(candidate_port);
+        settings.backend.stop_timeout_secs = 1;
+        set_available(&sup, &release);
+        sup.apply().expect("能试跑");
+        wait_for_apply(&sup);
+
+        let status = sup.status();
+        let message = status["message"].as_str().unwrap_or("");
+        assert!(message.contains("旧版端口没释放"), "{status}");
+        assert_eq!(status["windowState"], "paused");
+        assert_eq!(std::fs::read(old_path).unwrap(), b"OLD".to_vec());
+        assert!(!runtime.join(old_server_name()).exists());
+        assert!(release.exists());
+        assert!(sup.child.lock().unwrap().is_none());
+        drop(occupied);
+        let _ = std::fs::remove_dir_all(&runtime);
+    }
+
     /// 重启服务：后端不在本机、运行时里没有后端程序、正在换版本时不动；
     /// 能重启时停掉后端（重新拉起是守护线程的事，测试里不开守护线程）。
     #[test]
@@ -1131,8 +1279,10 @@ mod tests {
         /** 临时运行时。 */
         let runtime = temp_dir("restart");
         std::fs::create_dir_all(runtime.join("data").join("logs")).expect("建 data/logs");
-        /** 后端的健康检查：第一次回 500，stop_server 当它已经停了，立刻返回。 */
-        let (port, _h) = fake_health(false);
+        /** 独立的临时端口，供停服校验监听释放。 */
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
         /** 后端在别的机器上（server 不是本机的 backend_port）。 */
         let remote = make_supervisor(&runtime, port, port.wrapping_add(1));
         assert!(remote.restart().is_err(), "后端不在本机时不重启");
@@ -1144,12 +1294,9 @@ mod tests {
         assert!(sup.restart().is_err(), "正在换版本时不重启");
         sup.state.lock().expect("状态锁").applying = false;
         /** 基地拉起的后端（假的，拿到参数马上退出）。 */
-        let child = Command::new(fake_exe())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("起假后端");
+        let mut command = Command::new(fake_exe());
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let child = JobChild::spawn(&mut command).expect("起假后端");
         *sup.child.lock().expect("守护锁") = Some(child);
         sup.restart().expect("能重启");
         for _ in 0..500 {

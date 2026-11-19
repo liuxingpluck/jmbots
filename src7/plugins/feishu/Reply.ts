@@ -142,16 +142,6 @@ export class FeishuReply {
 
     request.handled = true;
 
-    //G 原飞书消息已在本插件登记撤回 → 拒绝发送并回传 rejected 回执。
-    const nativeKey = `${request.sourceSnapshot.accountId}:${request.sourceSnapshot.nativeId ?? ''}`;
-    if (request.sourceSnapshot.channel === this.name && this.feishu.inbound.recalledNativeIds.has(nativeKey)) {
-      //M 将撤回拒收回执发出并结束当前外发处理。
-      const reason = 'recalled：原消息已撤回，不再发送回复';
-      const rejected = protocol.getReceipt(request, 'rejected', reason);
-      protocol.emitReplied(this.ctx, request, rejected);
-      return;
-    }
-
     if (request.mode !== 'text') {
       //M 当前统一回复口仅实现纯文字模式，拒绝非文本请求并回报不支持状态。
       const reason = 'capability_unsupported：飞书 channel/reply 当前只支持纯文字';

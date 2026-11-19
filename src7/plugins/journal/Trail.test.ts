@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { LINES, SESSION as S } from './tests/Lines.ts';
-import { getNode, getTrail } from './Trail.ts';
+import { getNode, getTrail, type TrailLine } from './Trail.ts';
 import * as traceText from '../../../web/src/locales/Trace.ts';
 
 
@@ -30,6 +30,26 @@ describe('Trail', () => {
     expect(names.filter((name) => name === 'session/new-message')).toHaveLength(4);
     expect(trail.ms).toBe(2033);
     expect(trail.steps[2]?.title).toContain('调模型（等了 2.0 秒）');
+  });
+
+  test('渠道来的消息：只带标准消息号的行排在收件行前面也算，别的收件号的行不算', () => {
+    const sourceId = '["feishu","cli_a","om_1"]';
+    const make = (id: number, name: string, site: string, extra: Partial<TrailLine>): TrailLine => {
+      return { id, at: id, kind: '函数', name, listeners: [], text: name, site, sessionId: null, messageId: null, vars: {}, ...extra };
+    };
+    const lines = [
+      make(1, 'Feishu.start', 'src7/plugins/feishu/index.ts:600', { sourceId, vars: { messageId: sourceId } }),
+      make(2, 'Feishu.onMessage', 'src7/plugins/feishu/Inbound.ts:236', { sourceId, vars: { messageId: sourceId } }),
+      make(3, 'Timeline.insert', 'src7/plugins/web-api/Timeline.ts:304', { messageId: 8, sourceId, vars: { messageId: 8, sourceId } }),
+      make(4, 'Timeline.insert', 'src7/plugins/web-api/Timeline.ts:304', { messageId: 9, sourceId, vars: { messageId: 9, sourceId } }),
+      make(5, 'Bot.receive', 'src7/plugins/bots/index.ts:355', { sessionId: 's8', messageId: 8, vars: { messageId: 8 } }),
+      make(6, 'Feishu.onMessage', 'src7/plugins/feishu/Inbound.ts:236', { sourceId: '["feishu","cli_a","om_2"]', vars: { messageId: 'x' } }),
+    ];
+    const trail = getTrail(8, lines);
+    const names = trail.steps.flatMap((step) => step.rows.map((row) => row.name));
+    expect(names).toEqual(['Feishu.start', 'Feishu.onMessage', 'Timeline.insert', 'Bot.receive']);
+    expect(trail.steps[0]?.node).toBe('feishu');
+    expect(trail.session).toBe('s8');
   });
 
   test('关键变量的键换成英文，说明表里是原来的中文名', () => {

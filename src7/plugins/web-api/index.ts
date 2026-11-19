@@ -40,7 +40,8 @@ export const name = 'web-api';
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
 //M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
 //M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
-export const version = '1.1.15';
+//M 1.1.16：Timeline.insert 的跟踪点带 sourceId（标准消息号），journal 按它把渠道那几行串在收件行前面。
+export const version = '1.1.16';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);

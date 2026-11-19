@@ -3,7 +3,7 @@
  * 收到消息：按消息号去重（存表，重启也认得）→ 认出 @ 了哪些机器人、文字、谁在哪个群说的、投给哪些机器人
  * → 群里没 @ 也没登记只听的只落盘、记流水“丢了” → 记最近私聊的人、拼回话地址 → 挂表情、补引用转发、附件存进渠道目录
  * → 拼标准消息落盘、发 channel/message → 记去重、汇总认领结果写来往流水、没人接就撤表情。
- * 撤回：只认本人或原发信人，登记撤回（拦住还在处理的入站和在途回话），发 channel/recall。
+ * 撤回：只认本人或原发信人，登记撤回后拦住尚未投递的入站，并发 channel/recall。
  * 点卡片：拼回话地址（谁点的、哪一档），交给 cards/。
  */
 import * as fs from 'node:fs';
@@ -171,7 +171,7 @@ export class FeishuInbound {
       //G 重推或正在处理中：只有落盘并完成分派以后才写 feishu_seen。
       const seenRow = db.query(sql).get(messageId);
       if (seenRow !== null || this.inFlight.has(messageId)) {
-        const vars = { appId: appId, messageId: messageId };
+        const vars = { appId: appId, messageId: JSON.stringify([this.name, appId, messageId]), nativeId: messageId };
         //M 保留重复投递的去重流水。
         this.ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.duplicateMessage', 'SELECT feishu_seen', vars);
         return;
@@ -227,6 +227,7 @@ export class FeishuInbound {
 
     const vars = {
       appId: appId,
+      messageId: facts.standardMessageId,
       bot: facts.targetBots.join('、'),
       type: message.message_type,
       chat: message.chat_type,
@@ -475,7 +476,7 @@ export class FeishuInbound {
     this.markSeen(facts.appId, message.message_id);
     //M 追加一条“丢了”来往流水供核对群过滤情况。
     this.feishu.contacts.log(facts.contact, '丢了');
-    const vars = { appId: facts.appId, chat: message.chat_id };
+    const vars = { appId: facts.appId, messageId: facts.standardMessageId, chat: message.chat_id };
     this.ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.skipGroupReply', 'atMe === false', vars);
   }
 
@@ -842,7 +843,7 @@ export class FeishuInbound {
   }
 
   /**
-   * 收到飞书 im.message.recalled_v1 撤回事件：只认本人或原发消息人撤回，通知 bots 停掉对应正在跑或排队的任务。
+   * 收到飞书 im.message.recalled_v1：只认本人或原发消息人撤回，通知 bots 处理该条消息。
    * @param appId 哪个飞书应用收到撤回事件。
    * @param data 飞书撤回事件载荷。
    */
@@ -853,6 +854,10 @@ export class FeishuInbound {
     const nativeId = data.message_id ?? '';
     const chatId = data.chat_id ?? '';
     if (nativeId === '' || chatId === '') return;
+
+    //G 同一事件重投时不再补一条撤回说明。
+    const nativeKey = `${appId}:${nativeId}`;
+    if (this.recalledNativeIds.has(nativeKey)) return;
 
     //M 按与 channel/message 完全一致的口径算出标准消息号，并读取本地聊天日志查出原发送人。
     const standardMessageId = protocol.makeChannelMessageId(this.name, appId, nativeId);
@@ -895,18 +900,28 @@ export class FeishuInbound {
       }
     }
 
-    //M 先登记撤回消息号以拦截附件下载中的入站和在途回话，再发 channel/recall 让 bots 立即停跑与清队列。
+    //M 把外部时间转成毫秒，平台未给出有效值时记接收时间。
+    let recalledAt = Number(data.recall_time);
+    if (!(recalledAt > 0 && recalledAt <= 8.64e15)) {
+      recalledAt = Date.now();
+    }
+
+    //M 先登记撤回消息号，入站据此去重，发送据此取消引用。
     this.rememberRecalledNative(appId, nativeId);
-    const vars = { appId: appId, chat: chatId, originalMessageId: nativeId, recalledBy: recalledId || 'message_owner', owner: isOwner };
+    const vars = { appId: appId, messageId: standardMessageId, chat: chatId, originalMessageId: nativeId, recalledBy: recalledId || 'message_owner', owner: isOwner };
     this.ctx.emit('trace', 'Feishu.onRecall', 'trace.feishu.recallMessage', "ctx.serial('channel/recall', event)", vars);
-    await this.ctx.serial('channel/recall', {
+    const event: protocol.ChannelRecallEvent = {
       channel: this.name,
       accountId: appId,
       chatId,
       messageId: standardMessageId,
       nativeId,
+      recalledAt,
+      originalText: logged?.text ?? '',
       recalledBy: { id: recalledId, kind, isOwner },
-    });
+    };
+    //M 把核定的撤回和原话交给 bots 更新排队或活动会话。
+    await this.ctx.serial('channel/recall', event);
   }
 
   /**

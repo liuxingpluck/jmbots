@@ -5,7 +5,7 @@
  *   - channel/reply(request) ↔ channel/replied(event)：回复工具或系统提醒发回复请求，匹配的渠道发完回发回执；
  *   - channel/settled(event)：一轮 channel_tool 收尾后发出通知；
  *   - channel/history(request) ↔ channel/history-result(event)：历史工具按绑定来源快照请求本聊天历史，渠道回传授权范围内的结果；
- *   - channel/recall(event)：渠道收到本人或原发送人撤回消息后发出，bots 停掉该消息正在跑或排队的任务与派出的后台会话。
+ *   - channel/recall(event)：渠道确认原消息撤回后发出，bots 移除排队消息并通知正在处理它的会话。
  */
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
@@ -464,7 +464,7 @@ export interface ChannelSettledEvent {
 }
 
 
-/** 事件 channel/recall 载荷：渠道收到消息撤回通知后发出，bots 停掉该消息正在跑或排队的任务。 */
+/** 事件 channel/recall 载荷：渠道确认原消息被撤回后发出。 */
 export interface ChannelRecallEvent {
   /** 渠道名（feishu / wechat / http / cli）。 */
   channel: string;
@@ -476,6 +476,10 @@ export interface ChannelRecallEvent {
   messageId: string;
   /** 平台原始消息 ID（可用时）。 */
   nativeId?: string;
+  /** 撤回时刻，Unix 毫秒。 */
+  recalledAt: number;
+  /** 渠道日志里的原话，日志未写入时为空。 */
+  originalText: string;
   /** 谁撤回的：由渠道根据可信身份配置与本地聊天日志核定。 */
   recalledBy: {
     /** 撤回人渠道原始 ID（平台仅返回 message_owner 且本地尚未落盘时为空串）。 */
@@ -512,7 +516,6 @@ declare module 'cordis' {
      * 谁发：src7/Channels.ts 的 requestChannelReply
      * 谁接：
      *   src7/Channels.ts 的 registerTextReply
-     *   src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
      *   src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor
      *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex
@@ -521,13 +524,8 @@ declare module 'cordis' {
      */
     'channel/reply'(request: ChannelReplyRequest): void | Promise<void>;
     /**
-     * 渠道回复发完或确认失败后回传回执。
-     * 谁发：
-     *   src7/Channels.ts 的 registerTextReply
-     *   src7/plugins/approval/Outbound.ts 的 Outbound.publish
-     *   src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
-     *   src7/plugins/feishu/Reply.ts 的 FeishuReply.onChannelReply
-     *   src7/plugins/voice/Replies.ts 的 VoiceReplies.onReply
+     * 渠道和审批插件在回复发送或确认失败后经 emitReplied 回传回执。
+     * 谁发：src7/Channels.ts 的 emitReplied
      * 谁接：
      *   src7/Channels.ts 的 requestChannelReply
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
@@ -566,7 +564,7 @@ declare module 'cordis' {
      */
     'channel/history-result'(event: ChannelHistoryResultEvent): void;
     /**
-     * 渠道收到本人或原发信人撤回消息后发出：bots 停掉该消息正在跑的会话、移除排队项并停掉其派出的后台会话。
+     * 渠道确认本人或原发信人撤回消息后发出。bots 清理排队原消息，通知正在处理它的会话。
      * 谁发：src7/plugins/feishu/Inbound.ts 的 FeishuInbound.onRecall
      * 谁接：src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
      */

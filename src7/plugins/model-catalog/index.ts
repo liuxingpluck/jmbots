@@ -93,7 +93,7 @@ declare module 'cordis' {
      * 问模型清单（serial 发、等 model-catalog/result）：find 查一个模型，prompt 取派活用的模型介绍评价和思考档。本插件听。
      * 谁发：
      *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.onRequest
-     *   src7/plugins/context-fit/index.ts 的 apply
+     *   src7/plugins/context-fit/index.ts 的 readModelWindow
      *   src7/plugins/model-catalog/Usage.ts 的 Usage.add
      *   src7/plugins/progress/index.ts 的 Progress.getThinking
      *   src7/plugins/settings/index.ts 的 Settings.checkModel
@@ -106,7 +106,7 @@ declare module 'cordis' {
      * 谁发：src7/plugins/model-catalog/index.ts 的 ModelCatalog.constructor
      * 谁接：
      *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.onRequest
-     *   src7/plugins/context-fit/index.ts 的 apply
+     *   src7/plugins/context-fit/index.ts 的 readModelWindow
      *   src7/plugins/model-catalog/Usage.ts 的 Usage.add
      *   src7/plugins/progress/index.ts 的 Progress.getThinking
      *   src7/plugins/settings/index.ts 的 Settings.checkModel

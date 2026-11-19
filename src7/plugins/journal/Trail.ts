@@ -33,6 +33,8 @@ export interface TrailLine {
   site: string;
   sessionId: string | null;
   messageId: number | null;
+  /** 标准消息号（渠道发来的）；旧行、启动合成行没有。 */
+  sourceId?: string | null;
   vars: Record<string, unknown>;
   /** 泳道图上的道；不给就按 site 认（getNode）。启动轨迹给：一个插件一步。 */
   node?: string;
@@ -311,7 +313,14 @@ export function pick(
   lines: TrailLine[],
 ): { picked: TrailLine[]; session: string | null; state: string } {
   //M 会话：先找带着这个消息号又带会话的行（Timeline.reply）；没有就用开始后第一个出现的会话（Bot.receive）。
-  const carries = (line: TrailLine): boolean => line.messageId === message || (line.vars['messageId'] ?? line.vars['消息号']) === message;
+  //M   渠道来的消息，收件行前面还有渠道那几行（飞书收到、去重、认 @、channel/message）：没有收件号和会话、只带这条的标准消息号，也算。
+  const sourceId = lines.find((line) => line.messageId === message && typeof line.sourceId === 'string')?.sourceId ?? null;
+  const carriesSource = (line: TrailLine): boolean => {
+    return sourceId !== null && line.messageId === null && line.sessionId === null && line.sourceId === sourceId;
+  };
+  const carries = (line: TrailLine): boolean => {
+    return line.messageId === message || (line.vars['messageId'] ?? line.vars['消息号']) === message || carriesSource(line);
+  };
   const byMessage = lines.find((line) => line.sessionId !== null && carries(line));
   const firstSession = lines.find((line) => line.sessionId !== null);
   const session = byMessage?.sessionId ?? firstSession?.sessionId ?? null;

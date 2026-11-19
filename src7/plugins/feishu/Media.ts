@@ -541,7 +541,9 @@ export async function message(
 ): Promise<string> {
   //M 获取发送应用对应的飞书客户端实例。
   const client = feishu.client(appId);
-  if (messageId) {
+  const nativeKey = `${appId}:${messageId ?? ''}`;
+  //M 已确认撤回时直接走聊天直发，适用于文字、文件及旧发送入口。
+  if (messageId && !feishu.inbound.recalledNativeIds.has(nativeKey)) {
     try {
       //M 若带有原消息号则优先作为引用回复发出（可带限流重试）。
       const replied = await api.call('回复消息', () => client.im.v1.message.reply({

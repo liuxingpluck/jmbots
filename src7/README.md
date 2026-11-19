@@ -181,7 +181,7 @@ src7/
 | `meta` | TEXT NOT NULL | 否 | 记录去掉 `messages` 后的 JSON：骨架的 id、kind、parent、model、thinking、state、reply、updatedAt，加插件声明的项（如 bot、channel、address、customer、summary、frontTask、resultQueue 等）；`sessions.find` 照它里面的项找 | `Session.save`：新开（`create`）、接进一条消息（`append`）、改状态（`change`）时，以及插件改完 `row` 自己调 `save()` 时；每次整行 INSERT OR REPLACE，`updatedAt` 改成当时 |
 | `messages` | TEXT NOT NULL | 否 | 整场对话 JSON（pi 的 Message 数组） | 同上 |
 
-依据：建表 `src7/Sessions.ts:208-210`；写 `:603-614`（`save`，由 `create` `:251`、`append` `:622`、`change` `:634` 调）。
+依据：建表 `src7/Sessions.ts:207-209`；写 `:603-614`（`save`，由 `create` `:251`、`append` `:622`、`change` `:634` 调）。
 
 ## 插件
 

@@ -26,7 +26,7 @@ pub const DEFAULT_MEMORY_PORT: u16 = 30087;
 pub const DEFAULT_BACKEND_ARGS: [&str; 3] = ["serve", "--runtime", "{runtime}"];
 /// 主后端默认的健康路径。
 pub const DEFAULT_BACKEND_HEALTH: &str = "/api/health";
-/// 停写窗口等待主站退出的默认秒数。
+/// 停写窗口等待主站退出、换版等待旧端口释放的默认秒数。
 const DEFAULT_STOP_TIMEOUT_SECS: u64 = 30;
 /// 运行时目录的文件夹名：程序旁边的这个文件夹，存在就读取，不存在就创建（用户 11-05）。
 pub const RUNTIME_DIR_NAME: &str = "jmbotsData";
@@ -86,7 +86,7 @@ pub struct BackendSpec {
     pub args: Vec<String>,
     /// 健康路径，如 /api/health。
     pub health: String,
-    /// 停写窗口等待主站正常退出的秒数。
+    /// 停写窗口等待正常退出、换版等待进程和端口释放的秒数。
     pub stop_timeout_secs: u64,
 }
 

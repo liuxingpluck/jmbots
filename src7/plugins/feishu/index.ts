@@ -65,7 +65,8 @@ export const name = 'feishu';
 //M 1.1.11：channel/history 的游标和分页改用骨架的 paginateChannelHistory，飞书只认应用、聊天和挑 @我。
 //M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、findChatByIdOrName：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
-export const version = '1.1.17';
+//M 1.1.18：长连接收到消息先发一个跟踪点 Feishu.start，入站的几个跟踪点都带 messageId（标准消息号），教程轨迹第一格就是飞书收到。
+export const version = '1.1.19';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -593,6 +594,14 @@ export class Feishu {
     //M   点卡片要等：交回的 { toast } 就是给飞书的回应，SDK 把它带回去（lib/index.js handleEventData）。
     const dispatcher = new lark.EventDispatcher({ loggerLevel: lark.LoggerLevel.warn, logger: SDK_LOGGER }).register({
       'im.message.receive_v1': (data: ReceiveData) => {
+        //T 跟踪：长连接收到一条消息，轨迹的第一格；messageId 是标准消息号，journal 按它把后面的行串起来。
+        const vars = {
+          appId: appId,
+          messageId: JSON.stringify([this.name, appId, data.message.message_id]),
+          type: data.message.message_type,
+          chat: data.message.chat_type,
+        };
+        this.ctx.emit('trace', 'Feishu.start', 'trace.feishu.wsReceived', 'im.message.receive_v1', vars);
         void this.inbound.onMessage(appId, data);
       },
       'im.message.recalled_v1': (data: RecallData) => {

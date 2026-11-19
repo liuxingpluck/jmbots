@@ -15,9 +15,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type Mouse
 import * as antd from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import * as virtuoso from 'react-virtuoso';
+import * as i18n from '../I18n.ts';
 import * as theme from '../Theme.ts';
 import { TOKEN, withToken } from '../Token.ts';
 import { JsonBlock, TutorialScrollContext, TutorialWorkspaceContext, VIRTUAL_THRESHOLD } from './Code.tsx';
+import { SeqChart, RouteStopItem, FEISHU_ROUTE, getSeqLayout } from './SeqChart.tsx';
 import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
 import { CodeTab, TryTab } from './PluginTabs.tsx';
 import { buildReadmeTabItems, MarkdownContent } from './ReadmeTabs.tsx';
@@ -59,6 +61,7 @@ interface GroupOpenState {
   plugins: boolean;
   boot: boolean;
   messages: boolean;
+  route: boolean;
 }
 
 /** 左栏单一虚拟列表的行结构：分组标题、分割细线、骨架/插件条目、启动流程、消息条目或空提示。 */
@@ -74,6 +77,7 @@ type LeftNavRow =
   | { key: string; kind: 'cordis-map' }
   | { key: string; kind: 'boot' }
   | { key: string; kind: 'message'; message: MessageCanvasItem }
+  | { key: string; kind: 'route'; index: number }
   | { key: string; kind: 'empty'; text: string };
 
 
@@ -764,6 +768,7 @@ function CanvasStage(props: {
   name: string;
   step: number;
   onPick: (step: number) => void;
+  onPickArrow: (step: number, event: string) => void;
   keyword: string;
   hasSnapshot?: boolean;
   pluginNames: Set<string>;
@@ -779,6 +784,9 @@ function CanvasStage(props: {
   isNarrow: boolean;
 }): JSX.Element {
   const [canvas, setCanvas] = useState<Canvas | null>(null);
+  //M 画布两种看法：表格（泳道）、顺序图。
+  const [look, setLook] = useState<'table' | 'seq'>('table');
+  const tr = i18n.useT();
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
   const [transform, setTransform] = useState<CanvasTransform>({ tx: 296, ty: 68, scale: 1 });
@@ -812,12 +820,21 @@ function CanvasStage(props: {
     };
   }, [props.name, onTrailLoaded]);
 
+  const seqLayout = useMemo(() => {
+    if (canvas === null) return null;
+
+    //M 顺序图的摆法：道、方块、箭头。
+    return getSeqLayout(canvas.trail, tr);
+  }, [canvas, tr]);
+
   const layout = useMemo(() => {
     if (canvas === null) return null;
 
-    //M 预计算当前泳道图的格子坐标及每步包围盒缓存，供视图居中与 HUD 对齐复用。
+    //M 预计算当前看法的尺寸及每步包围盒缓存，供视图居中与 HUD 对齐复用。
+    if (look === 'seq') return seqLayout;
+
     return getCanvasLayout(canvas.lanes);
-  }, [canvas]);
+  }, [canvas, look, seqLayout]);
 
   //M 计算此刻不被左右两浮栏挡住的中间区域。
   const getLiveSafe = useCallback((): SafeViewport => {
@@ -1091,19 +1108,34 @@ function CanvasStage(props: {
             transformOrigin: '0 0',
           }}
         >
-          <LaneChart
-            canvas={canvas}
-            picked={props.step}
-            onPick={props.onPick}
-            pluginNames={props.pluginNames}
-            activePlugin={props.activePlugin}
-            matchedSteps={matchedSet}
-            onSelectPlugin={props.onSelectPlugin}
-            panZoom
-          />
+          {look === 'table' && (
+            <LaneChart
+              canvas={canvas}
+              picked={props.step}
+              onPick={props.onPick}
+              pluginNames={props.pluginNames}
+              activePlugin={props.activePlugin}
+              matchedSteps={matchedSet}
+              onSelectPlugin={props.onSelectPlugin}
+              panZoom
+            />
+          )}
+          {look === 'seq' && seqLayout !== null && (
+            <SeqChart
+              canvas={canvas}
+              layout={seqLayout}
+              picked={props.step}
+              event={props.highlightEvent}
+              onPick={props.onPick}
+              onPickArrow={props.onPickArrow}
+              pluginNames={props.pluginNames}
+              activePlugin={props.activePlugin}
+              onSelectPlugin={props.onSelectPlugin}
+            />
+          )}
         </div>
       )}
-      {canvas !== null && props.isNarrow && (
+      {canvas !== null && props.isNarrow && look === 'table' && (
         <LaneChart
           canvas={canvas}
           picked={props.step}
@@ -1119,6 +1151,8 @@ function CanvasStage(props: {
       {/* 画布左下角控件：适应窗口、100%、当前比例、交互说明。 */}
       {!props.isNarrow && canvas !== null && (
         <div className="tu-stage-tools" style={{ left: hudLeft }}>
+          <button type="button" className="tu-tool-btn" aria-pressed={look === 'table'} onClick={() => setLook('table')}>表格</button>
+          <button type="button" className="tu-tool-btn" aria-pressed={look === 'seq'} onClick={() => setLook('seq')}>顺序图</button>
           <button type="button" className="tu-tool-btn" onClick={fitToWindow}>适应窗口</button>
           <button type="button" className="tu-tool-btn" onClick={resetToHundred}>100%</button>
           <span className="tu-tool-zoom">{zoomPercent}%</span>
@@ -1158,6 +1192,7 @@ export function TutorialPage(): JSX.Element {
     plugins: true,
     boot: true,
     messages: true,
+    route: true,
   });
 
   //M 左右悬浮栏宽度与收起状态，读写 localStorage 均包 try/catch。
@@ -1544,6 +1579,12 @@ export function TutorialPage(): JSX.Element {
     navigate({ ...route, step: stepNo, plugin: nextPlugin, ptab: nextPtab, rtab: 'step', doc: false });
   };
 
+  //M 点顺序图的箭头：选中这一步、高亮这个事件，右栏「这一步」顶上看事件详情。
+  const onPickArrow = (stepNo: number, eventName: string): void => {
+    toggleRightCollapsed(false);
+    navigate({ ...route, step: stepNo, event: eventName, rtab: 'step', doc: false });
+  };
+
   //M 点事件名：高亮命中步，选中第一处并展开右栏「这一步」。
   const onSelectEvent = (eventName: string): void => {
     const hasRealCanvas = route.canvas !== '' && route.canvas !== SENTINEL_AUTO;
@@ -1748,6 +1789,13 @@ export function TutorialPage(): JSX.Element {
       rows.push({ key: 'item:boot', kind: 'boot' });
     }
     rows.push({ key: 'div:boot-messages', kind: 'divider' });
+
+    //M 静态的“一条飞书消息”路线，没跑过消息也能看，搜索时不参与。
+    rows.push({ key: 'head:route', kind: 'group-head', groupKey: 'route', title: '一条飞书消息的路线', count: FEISHU_ROUTE.length, expanded: openGroups.route });
+    if (openGroups.route) {
+      FEISHU_ROUTE.forEach((_stop, index) => rows.push({ key: `route:${String(index)}`, kind: 'route', index }));
+    }
+    rows.push({ key: 'div:route-messages', kind: 'divider' });
 
     rows.push({ key: 'head:messages', kind: 'group-head', groupKey: 'messages', title: '最近消息', count: filteredMessages.length, expanded: messagesExpanded });
     if (messagesExpanded) {
@@ -2064,6 +2112,21 @@ export function TutorialPage(): JSX.Element {
         </div>
       );
     }
+    if (row.kind === 'route') {
+      return (
+        <div className="tu-side-row">
+          <RouteStopItem
+            index={row.index}
+            stop={FEISHU_ROUTE[row.index]!}
+            pluginNames={pluginNames}
+            onSelectPlugin={
+              //M 点路线上的插件标签，右栏看这个插件的事件。
+              (name, ptab) => onSelectPlugin(name, ptab, !route.doc)
+            }
+          />
+        </div>
+      );
+    }
     if (row.kind === 'message') {
       return (
         <div className="tu-side-row">
@@ -2144,6 +2207,7 @@ export function TutorialPage(): JSX.Element {
                 name={route.canvas}
                 step={route.step}
                 onPick={onPickStep}
+                onPickArrow={onPickArrow}
                 keyword={keyword}
                 hasSnapshot={activeMessage?.hasSnapshot}
                 pluginNames={pluginNames}
