@@ -1,6 +1,6 @@
 /* 只在思维导图看法中覆盖原画布，保留泳道的缩放和选中状态。 */
 .tu-view-choice, .tu-mind-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tu-view-choice button[aria-pressed="true"], .tu-mind-toolbar button[aria-pressed="true"] {
+.tu-view-choice button[aria-pressed="true"], .tu-mind-toolbar button[aria-pressed="true"], .tu-mind-direction button[aria-pressed="true"] {
   color: var(--jm-accent);
   border-color: var(--jm-accent);
   background: var(--jm-accent-soft);
@@ -18,6 +18,11 @@
   background: var(--jm-bg);
 }
 .tu-mind-toolbar { flex: none; padding: 8px; background: var(--jm-panel); border-bottom: 1px solid var(--jm-border); }
+/* 三栏时骨架逐行的块详情放在右侧详情里，去掉画布旁的边框和定宽。 */
+.tu-line-detail-host .tu-lines-detail { width: auto; padding: 0; border: 0; background: none; overflow: visible; }
+/* 左右、上下展开是画布右上角的小切换，不占一整排。 */
+.tu-mind-direction { position: absolute; top: 6px; right: 8px; z-index: 6; display: flex; gap: 4px; }
+.tu-mind .tu-mind-direction button { padding: 1px 6px; font-size: 12px; background: color-mix(in srgb, var(--jm-panel) 90%, transparent); }
 .tu-view-choice button,
 .tu-mind button {
   border: 1px solid var(--jm-border);

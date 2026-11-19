@@ -959,5 +959,14 @@
   "选择文件": "Choose file",
   "看全部": "Show all",
   "读不到骨架逐行": "Cannot read the line-by-line file",
-  "来源": "Source"
+  "来源": "Source",
+  "三方握手图": "Three-way handshake",
+  "展开方向": "Layout direction",
+  "正在读取工具说明…": "Loading utility notes…",
+  "没有匹配的工具": "No matching utilities",
+  "读不到工具说明": "Could not load the utility notes",
+  "这是 {file} 的逐行图，点块看每段代码": "This is the line-by-line map of {file}; click a block to see its code",
+  "这是进程插件三方握手的流程图，点块看每一步": "This is the three-way handshake of process plugins; click a block to see each step",
+  "进程插件": "Process plugins",
+  "骨架工具（utils）": "Core utilities (utils)"
 }

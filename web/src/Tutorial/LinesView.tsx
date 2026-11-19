@@ -1,5 +1,6 @@
 /** 教程“骨架逐行”视图：一份骨架文件拆成的树，画布可拖可缩放，点节点看代码和解释。 */
 import * as react from 'react';
+import * as reactDom from 'react-dom';
 import * as antd from 'antd';
 import * as xy from '@xyflow/react';
 import * as i18n from '../I18n.ts';
@@ -134,10 +135,15 @@ interface ViewProps {
   onSelectPlugin: (name: string) => void;
   /** 共用工具栏的左右或上下方向。 */
   direction: layout.MindDirection;
+  /** 三栏时右侧详情里留给块详情的位置；没有就在画布旁边显示。 */
+  detailHost: HTMLElement | null;
+  /** 点了一块，请右侧详情切过来显示它。 */
+  onDetail: () => void;
 }
 
 /** 左栏选文件，中间画布，右边详情。 */
-export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): react.JSX.Element {
+export function LinesView(props: ViewProps): react.JSX.Element {
+  const { t, plugin, onSelectPlugin, direction, detailHost, onDetail } = props;
   const [files, setFiles] = react.useState<string[]>([]);
   const [nodes, setNodes] = react.useState<LineNode[]>([]);
   const [failed, setFailed] = react.useState(false);
@@ -192,6 +198,13 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   }, [name]);
 
   const tree = react.useMemo(() => getLineTree(nodes), [nodes]);
+
+  react.useEffect(() => {
+    if (selectedId === '') return;
+
+    //M 选中一块就请右侧详情切到块详情。
+    onDetail();
+  }, [selectedId]);
 
   const locate = (line: number): void => {
     //M 选包含该行的最细节点，展开它的祖先，退出子树聚焦，选中并等画布居中。
@@ -356,6 +369,32 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   //M 下拉里按源文件名显示，值仍是 JSON 文件名。
   const fileOptions = files.map((file) => ({ value: file, label: getFileLabel(file) }));
 
+  //M 块详情：三栏时放进右侧详情，没有位置就放在画布旁边。
+  const detail = (
+    <>
+      {selected === undefined && tree !== undefined && (
+        <aside className="tu-lines-detail">
+          <p>{introLabel}</p>
+          <ol>
+            {tree.children.map((branch) => (
+              <li key={branch.node.id}>
+                <button type="button" onClick={() => setSelectedId(branch.node.id)}>{branch.node.title}</button>
+              </li>
+            ))}
+          </ol>
+        </aside>
+      )}
+      {selected !== undefined && (
+        <aside className="tu-lines-detail">
+          <h3>{selected.title}</h3>
+          <p>{selected.summary}</p>
+          <readme.MarkdownContent body={selected.body} onHashLink={onHashLink} />
+          <p className="tu-muted">{sourceLabel}：{selected.sources.join('、')}</p>
+        </aside>
+      )}
+    </>
+  );
+
   return (
     <div className="tu-lines">
       <div className="tu-lines-bar">
@@ -389,27 +428,9 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
           <xy.Background />
           <xy.Controls showInteractive={false} />
         </xy.ReactFlow>
-        {selected === undefined && tree !== undefined && (
-          <aside className="tu-lines-detail">
-            <p>{introLabel}</p>
-            <ol>
-              {tree.children.map((branch) => (
-                <li key={branch.node.id}>
-                  <button type="button" onClick={() => setSelectedId(branch.node.id)}>{branch.node.title}</button>
-                </li>
-              ))}
-            </ol>
-          </aside>
-        )}
-        {selected !== undefined && (
-          <aside className="tu-lines-detail">
-            <h3>{selected.title}</h3>
-            <p>{selected.summary}</p>
-            <readme.MarkdownContent body={selected.body} onHashLink={onHashLink} />
-            <p className="tu-muted">{sourceLabel}：{selected.sources.join('、')}</p>
-          </aside>
-        )}
+        {detailHost === null && detail}
       </div>
+      {detailHost !== null && reactDom.createPortal(detail, detailHost)}
     </div>
   );
 }

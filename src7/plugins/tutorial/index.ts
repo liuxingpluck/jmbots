@@ -17,6 +17,8 @@
  *   GET /api/tutorial/line?name=            读一份骨架逐行 JSON
  *   GET /api/tutorial/program-readme?name=  进程插件（config 里 programs 登记的程序）目录下的 说明.md；运行状态网页直接读 /api/programs
  *   GET /api/tutorial/reading?name=         清单内一篇组块 Markdown 原文
+ *   GET /api/tutorial/utils                 骨架工具层 src7/utils/ 下的 .ts 文件名清单（不含测试），按现有文件动态列
+ *   GET /api/tutorial/util-readme?name=     清单内一个工具文件的说明：文件头注释和函数表，从源码实时提取
  *   GET /api/tutorial/state?name=           这个插件现在的运行时变量：它提供的服务对象，加它用 ctx.flow.state 登记的，全量原样
  *   GET /api/tutorial/canvases              左栏画布：启动流程，加 data/flow/ 里每条带关键词的消息
  *   GET /api/tutorial/canvas?name=          一张画布：轨迹和泳道图（name 是 boot 或消息号）
@@ -221,6 +223,17 @@ const READING_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/组块阅读/`;
 
 /** 骨架逐行目录，一份 JSON 对应骨架里的一个文件，读法同组块阅读。 */
 const LINES_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/骨架逐行/`;
+
+/** 骨架工具层目录，左栏「骨架工具（utils）」列它下面的文件。 */
+const UTILS_DIR = `${sourceDirModule.SOURCE_PREFIX}utils/`;
+
+
+/** 骨架工具层的源码文件名，测试文件不列。 */
+async function getUtilFiles(): Promise<string[]> {
+  //M 和组块、骨架逐行同一套列目录，编译版走内嵌登记表。
+  const files = await getReadingFiles(UTILS_DIR, '.ts');
+  return files.filter((name) => !name.endsWith('.test.ts'));
+}
 
 
 /**
@@ -519,6 +532,25 @@ class Tutorial {
 
       const text = lines.join('\n');
       return { name, file, text };
+    });
+
+    //M 左栏「骨架工具（utils）」按文件名顺序列出工具文件。
+    app.get('/api/tutorial/utils', async () => {
+      const files = await getUtilFiles();
+      return { files };
+    });
+
+    //M 一个工具文件的说明，照骨架模块的做法从源码注释实时提取。
+    app.get<Query>('/api/tutorial/util-readme', async (request, reply) => {
+      const name = request.query['name'] ?? '';
+      if (name === '') return reply.code(400).send({ error: '要给 name（工具文件名）' });
+
+      //G 只认清单里的完整文件名，外部传来的路径不能直接用于读文件。
+      const files = await getUtilFiles();
+      if (!files.includes(name)) return reply.code(404).send({ error: '没有这个工具文件' });
+
+      //M 校验过的文件名拼回目录，现读源码组装说明。
+      return skeletonModule.getUtilReadme(UTILS_DIR + name, this.boot.source);
     });
 
     //M 读一个进程插件的 说明.md：程序目录只从 config 的 programs 登记推出来，防目录穿越。

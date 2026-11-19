@@ -2,11 +2,14 @@
  * 教程页（/tutorial/，tutorial 插件；/flow/ 跳过来）：
  *   1. 最底层是铺满视口的泳道图画布，按住空白拖动平移、滚轮按鼠标位置缩放、附「适应窗口」「100%」和角落操作提示，
  *      选中某一步时自动把被左右栏遮住的步平移回中间可见区；
- *   2. 左右两栏均以带阴影的半透明深色卡片悬浮在画布上方：都能拖动改宽（220~45% 视口 / 300~45% 视口）、读写 localStorage 包 try/catch，
- *      也都能收起成边缘窄条，释放画布面积；< 800px 窄屏自动退化为上下排布；
- *   3. 右栏顶设「这一步」「插件」两页签（步骤详情全部挪进右栏，右栏独立虚拟滚动，画布始终停在原地不动）；
+ *   2. 有画布的页面三栏：左栏 | 画布 | 右侧详情。左栏拖宽 220~45% 视口；右侧默认占去掉左栏后剩余宽度的一半，
+ *      拖动改窄、最大也是一半，拖过的宽度记在 localStorage（包 try/catch）。两栏都能收起成边缘窄条；< 800px 窄屏退化为上下排布；
+ *      没有画布的页面（左栏点开的插件说明、进程插件、组块阅读、骨架工具）两栏：左栏 | 内容，地址带 page=doc；
+ *   3. 左栏顺序：骨架（第一行是项目结构，点模块进骨架逐行）→ 骨架工具（utils）→ 启动流程 → 最近消息（点了看这条消息走过的路）
+ *      → 组块阅读 → 插件 → 进程插件；原来画布顶上的树切换挪进左栏，左右/上下展开是画布右上角的小切换。
+ *      右栏顶设「这一步」「插件」「组块阅读」页签，右栏独立滚动，画布停在原地不动；骨架逐行的块详情也显示在「这一步」；
  *   4. 所有“文件:行号”与依赖表位置列均通过 TutorialWorkspaceContext 直接复用 Code.tsx 的 getVscodeHref 在 VS Code 打开；
- *   5. 浏览器前进/后退/刷新通过 history.pushState + popstate 保持原地（canvas / step / plugin / ptab / event / rtab）。
+ *   5. 浏览器前进/后退/刷新通过 history.pushState + popstate 保持原地（canvas / step / plugin / ptab / event / rtab / util / page）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import * as antd from 'antd';
@@ -38,13 +41,18 @@ interface RouteState {
   event: string;
   /** 右栏选中的组块文件名，空串表示未选。 */
   reading: string;
-  /** 右侧悬浮栏的页签：步骤详情、插件说明或组块阅读。 */
-  rtab: 'step' | 'plugin' | 'reading';
+  /** 右侧悬浮栏的页签：步骤详情、插件说明、组块阅读或骨架工具说明。 */
+  rtab: 'step' | 'plugin' | 'reading' | 'util';
+  /** 左栏选中的骨架工具文件名（如 Checks.ts），空串表示未选。 */
+  util: string;
+  /** 没有画布的页面（左栏点开的插件说明、进程插件）：两栏，内容占满左栏右边。 */
+  doc: boolean;
 }
 
-/** 左栏各组折叠状态（骨架、组块阅读、插件、启动流程、最近消息）。 */
+/** 左栏各组折叠状态（骨架、骨架工具、启动流程、最近消息、组块阅读、插件、进程插件）。 */
 interface GroupOpenState {
   skeleton: boolean;
+  utils: boolean;
   programs: boolean;
   reading: boolean;
   plugins: boolean;
@@ -58,6 +66,8 @@ type LeftNavRow =
   | { key: string; kind: 'divider' }
   | { key: string; kind: 'plugin'; plugin: PluginItem }
   | { key: string; kind: 'reading'; name: string }
+  | { key: string; kind: 'util'; name: string }
+  | { key: string; kind: 'project' }
   | { key: string; kind: 'program'; program: ProgramItem }
   | { key: string; kind: 'handshake' }
   | { key: string; kind: 'boot' }
@@ -103,11 +113,13 @@ interface SafeViewport {
 
 /** 默认和极值常量。 */
 const STATE_MS = 3000;
-const PANE_WIDTH_KEY = 'jm.tutorial.paneWidth';
+/** 三栏时右侧详情拖过的宽度；没拖过不存，默认取去掉左栏后剩余宽度的一半。 */
+const DETAIL_WIDTH_KEY = 'jm.tutorial.detailWidth';
 const LEFT_WIDTH_KEY = 'jm.tutorial.leftWidth';
 const LEFT_COLLAPSED_KEY = 'jm.tutorial.leftCollapsed';
 const RIGHT_COLLAPSED_KEY = 'jm.tutorial.rightCollapsed';
-const DEFAULT_PANE_WIDTH = 440;
+/** 右侧详情最多占去掉左栏后剩余宽度的这一比例。 */
+const DETAIL_RATIO = 0.5;
 const DEFAULT_LEFT_WIDTH = 264;
 const MIN_LEFT_WIDTH = 220;
 const MIN_PANE_WIDTH = 300;
@@ -144,7 +156,7 @@ function clamp(value: number, min: number, max: number): number {
 
 
 /**
- * 计算左/右悬浮栏允许的最大宽度（视口宽度的 45%，保底不小于最小宽）。
+ * 计算左栏允许的最大宽度（视口宽度的 45%，保底不小于最小宽）；右侧详情另按剩余宽度算。
  * @param minWidth 对应栏位的最小宽度。
  */
 function getMaxSideWidth(minWidth: number): number {
@@ -172,6 +184,32 @@ function getStoredWidth(key: string, fallback: number, min: number): number {
     return Math.min(fallback, max);
   }
   return Math.min(fallback, max);
+}
+
+
+/**
+ * 右侧详情最大宽：去掉左栏后剩余宽度的一半，保底不小于最小宽。
+ * @param viewport 当前视口宽。
+ * @param leftSpace 左栏连同间距占掉的宽度，收起或窄屏时是 0。
+ */
+function getMaxDetailWidth(viewport: number, leftSpace: number): number {
+  const byRatio = Math.floor((viewport - leftSpace - 24) * DETAIL_RATIO);
+  return Math.max(MIN_PANE_WIDTH, byRatio);
+}
+
+
+/**
+ * 读拖过的右侧详情宽度（包 try/catch）；没拖过或读不到是 0，表示用默认的一半。
+ */
+function getStoredDetailWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(DETAIL_WIDTH_KEY) ?? '';
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isSafeInteger(parsed) && parsed >= MIN_PANE_WIDTH) return parsed;
+  } catch {
+    return 0;
+  }
+  return 0;
 }
 
 
@@ -299,6 +337,9 @@ function getRouteFromUrl(search: string): RouteState {
   const tab = params.get('tab') ?? '';
   const rawRtab = params.get('rtab') ?? '';
   const reading = params.get('reading') ?? '';
+  const util = params.get('util') ?? '';
+  //M page=doc 是左栏点开的没有画布的页面，刷新后仍是两栏。
+  const doc = params.get('page') === 'doc';
 
   //M 右栏页签优先认 URL 里的 rtab；没给时：无画布/只带 plugin 落到「插件」，其余默认看「这一步」。
   let rtab: RouteState['rtab'] = 'step';
@@ -312,6 +353,9 @@ function getRouteFromUrl(search: string): RouteState {
   //M 直接打开组块链接时显示文档，显式点过的其他右栏页签随地址保留。
   if (rawRtab === 'reading' || (rawRtab === '' && reading !== '')) {
     rtab = 'reading';
+  }
+  if (rawRtab === 'util' || (rawRtab === '' && util !== '')) {
+    rtab = 'util';
   }
 
   //M 显式给了画布参数：canvas=boot / 数字消息号 / boot=1 / 旧 tab=boot。
@@ -329,17 +373,18 @@ function getRouteFromUrl(search: string): RouteState {
     if (targetPlugin === '') {
       targetPlugin = SENTINEL_FIRST;
     }
-    if (rtab !== 'reading') {
+    if (rtab !== 'reading' && rtab !== 'util') {
       rtab = 'plugin';
     }
-    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab };
+    //M 只看插件的旧链接没有画布，按两栏打开。
+    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab, util, doc: true };
   }
 
   //M 裸 /tutorial/ 或旧 ?tab=session 但未指定消息号：待消息列表到达后自动落最新一条（无消息落 boot）。
   if (canvas === '') {
     canvas = SENTINEL_AUTO;
   }
-  return { canvas, step, plugin, ptab, event, reading, rtab };
+  return { canvas, step, plugin, ptab, event, reading, rtab, util, doc };
 }
 
 
@@ -351,6 +396,7 @@ function buildRouteUrl(route: RouteState): string {
   const url = new URL(window.location.href);
   const routeKeys = [
     'tab', 'plugin', 'canvas', 'step', 'message', 'session', 'boot', 'ptab', 'event', 'full', 'reading', 'rtab',
+    'util', 'page',
   ];
   for (const key of routeKeys) {
     url.searchParams.delete(key);
@@ -373,8 +419,14 @@ function buildRouteUrl(route: RouteState): string {
   if (route.reading !== '') {
     url.searchParams.set('reading', route.reading);
   }
+  if (route.util !== '') {
+    url.searchParams.set('util', route.util);
+  }
   if (route.rtab !== 'step' || route.reading !== '') {
     url.searchParams.set('rtab', route.rtab);
+  }
+  if (route.doc) {
+    url.searchParams.set('page', 'doc');
   }
   return url.toString();
 }
@@ -445,8 +497,8 @@ function usePluginReadme(name: string): { text: string | null; error: string } {
 }
 
 
-/** 读取并展示一篇组块，切换时由文件名重建组件。 */
-function ReadingView(props: { name: string; loadingLabel: string; errorLabel: string }): JSX.Element {
+/** 读取并展示一篇组块或骨架工具说明，切换时由文件名重建组件。 */
+function ReadingView(props: { name: string; loadingLabel: string; errorLabel: string; util?: boolean }): JSX.Element {
   const { name } = props;
   const [text, setText] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -454,7 +506,9 @@ function ReadingView(props: { name: string; loadingLabel: string; errorLabel: st
   useEffect(() => {
     let active = true;
     //M 右栏只读所选文档，跳走后忽略未完成的请求。
-    const loading = TutorialApi.getReading(name);
+    let load = TutorialApi.getReading;
+    if (props.util) load = TutorialApi.getUtilReadme;
+    const loading = load(name);
     void loading.then((result) => {
       if (!active) return;
 
@@ -467,7 +521,7 @@ function ReadingView(props: { name: string; loadingLabel: string; errorLabel: st
     return () => {
       active = false;
     };
-  }, [name]);
+  }, [name, props.util]);
 
   if (failed) return <p className="tu-error" role="alert">{props.errorLabel}</p>;
 
@@ -1067,6 +1121,8 @@ export function TutorialPage(): JSX.Element {
   const programs = programView.usePrograms();
   const [readingFiles, setReadingFiles] = useState<string[] | null>(null);
   const [readingListFailed, setReadingListFailed] = useState(false);
+  const [utilFiles, setUtilFiles] = useState<string[] | null>(null);
+  const [utilListFailed, setUtilListFailed] = useState(false);
   const [messages, setMessages] = useState<MessageCanvasItem[]>([]);
   const [canvasesLoaded, setCanvasesLoaded] = useState(false);
   const [error, setError] = useState('');
@@ -1074,6 +1130,7 @@ export function TutorialPage(): JSX.Element {
   const [searchText, setSearchText] = useState('');
   const [openGroups, setOpenGroups] = useState<GroupOpenState>({
     skeleton: true,
+    utils: true,
     programs: true,
     reading: true,
     plugins: true,
@@ -1083,9 +1140,11 @@ export function TutorialPage(): JSX.Element {
 
   //M 左右悬浮栏宽度与收起状态，读写 localStorage 均包 try/catch。
   const [leftWidth, setLeftWidth] = useState<number>(() => getStoredWidth(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH, MIN_LEFT_WIDTH));
-  const [paneWidth, setPaneWidth] = useState<number>(() => getStoredWidth(PANE_WIDTH_KEY, DEFAULT_PANE_WIDTH, MIN_PANE_WIDTH));
+  const [paneWidth, setPaneWidth] = useState<number>(getStoredDetailWidth);
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => getStoredCollapsed(LEFT_COLLAPSED_KEY, false));
   const [rightCollapsed, setRightCollapsed] = useState<boolean>(() => getStoredCollapsed(RIGHT_COLLAPSED_KEY, false));
+  const [lineDetailHost, setLineDetailHost] = useState<HTMLDivElement | null>(null);
   const [resizing, setResizing] = useState(false);
   const [isNarrow, setIsNarrow] = useState<boolean>(() => window.innerWidth < NARROW_BREAKPOINT);
 
@@ -1097,10 +1156,15 @@ export function TutorialPage(): JSX.Element {
   const [messageApi, contextHolder] = antd.message.useMessage();
   //M 读回教程上次选的视图，并将新控件按当前语言显示。
   const tutorialView = mind.useTutorialView();
+  //M 顶上的三种树改成左栏入口，画布只留下方向小切换。
+  const mindTree = mind.useMindTree();
   const t = mind.useMindWords();
   const viewLabel = t('教程视图');
   const canvasLabel = t('画布');
   const mindLabel = t('思维导图');
+  const utilsLabel = t('骨架工具（utils）');
+  const utilsLoadingLabel = t('正在读取工具说明…');
+  const utilsErrorLabel = t('读不到工具说明');
   const readingLabel = t('组块阅读');
   const readingLoadingLabel = t('正在读取组块…');
   const readingErrorLabel = t('读不到组块');
@@ -1120,7 +1184,7 @@ export function TutorialPage(): JSX.Element {
     const onResize = (): void => {
       setIsNarrow(window.innerWidth < NARROW_BREAKPOINT);
       setLeftWidth((prev) => Math.min(prev, getMaxSideWidth(MIN_LEFT_WIDTH)));
-      setPaneWidth((prev) => Math.min(prev, getMaxSideWidth(MIN_PANE_WIDTH)));
+      setViewportWidth(window.innerWidth);
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
@@ -1184,6 +1248,14 @@ export function TutorialPage(): JSX.Element {
     rightScrollParent.scrollTop = 0;
   }, [rightScrollParent, route.reading, route.rtab]);
 
+  //M 地址里直接带三方握手图时，打开骨架逐行那棵树。
+  useEffect(() => {
+    if (route.plugin !== programView.HANDSHAKE) return;
+
+    //M 切到骨架逐行，由它按模块名打开 进程插件.json。
+    mindTree.select('lines');
+  }, [route.plugin, mindTree.select]);
+
   //M 拉插件、组块和最近消息画布列表。
   const load = useCallback(() => {
     const pluginLoading = TutorialApi.get<PluginList>('/api/tutorial/plugins');
@@ -1191,6 +1263,9 @@ export function TutorialPage(): JSX.Element {
     //M 把组块清单的失败留在组块分组，插件和画布仍可使用。
     const readingLoading = TutorialApi.getReadings();
     void readingLoading.then((result) => setReadingFiles(result.files), () => setReadingListFailed(true));
+    //M 工具清单是动态的，新增 src7/utils/index.ts 后不用改网页。
+    const utilsLoading = TutorialApi.getUtils();
+    void utilsLoading.then((result) => setUtilFiles(result.files), () => setUtilListFailed(true));
     const canvasLoading = TutorialApi.get<CanvasList>('/api/tutorial/canvases');
     canvasLoading.then((result) => {
       if (Array.isArray(result.messages)) {
@@ -1261,19 +1336,19 @@ export function TutorialPage(): JSX.Element {
   const startRightResize = (event: ReactMouseEvent<HTMLDivElement>): void => {
     event.preventDefault();
     setResizing(true);
-    const maxWidth = getMaxSideWidth(MIN_PANE_WIDTH);
-    let latestWidth = clamp(paneWidth, MIN_PANE_WIDTH, maxWidth);
+    const maxWidth = maxDetailWidth;
+    let latestWidth = clampedRightWidth;
 
     const onMove = (moveEvent: MouseEvent): void => {
       const candidate = Math.round(window.innerWidth - moveEvent.clientX - 12);
-      //M 拖动中实时把右栏宽限制在最小宽到 45% 视口之间再更新状态。
+      //M 右栏最大只能占去掉左栏后剩余空间的一半。
       latestWidth = clamp(candidate, MIN_PANE_WIDTH, maxWidth);
       setPaneWidth(latestWidth);
     };
     const onUp = (): void => {
       setResizing(false);
       //M 松手后把最终右栏宽记忆进 localStorage 持久化。
-      saveStored(PANE_WIDTH_KEY, String(latestWidth));
+      saveStored(DETAIL_WIDTH_KEY, String(latestWidth));
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -1317,6 +1392,17 @@ export function TutorialPage(): JSX.Element {
 
     return files.filter((name) => name.toLowerCase().includes(query));
   }, [hasSearch, query, readingFiles, readingLabel]);
+  //M 骨架工具按文件名搜索，清单顺序由接口给。
+  const filteredUtils = useMemo(() => {
+    const files = utilFiles ?? [];
+    if (!hasSearch || utilsLabel.toLowerCase().includes(query)) return files;
+
+    return files.filter((name) => name.toLowerCase().includes(query));
+  }, [hasSearch, query, utilFiles, utilsLabel]);
+  let utilStatus = utilsLoadingLabel;
+  //M 清单到了还是空就是没匹配上，读失败另说。
+  if (utilFiles !== null) utilStatus = t('没有匹配的工具');
+  if (utilListFailed) utilStatus = utilsErrorLabel;
   let readingStatus = readingLoadingLabel;
   if (readingFiles !== null) {
     readingStatus = t('没有匹配的组块');
@@ -1363,17 +1449,28 @@ export function TutorialPage(): JSX.Element {
 
   //M 点左栏「启动流程」或「最近消息」：切画布、清无效步号；当前若在「这一步」页签留在原地看新画布。
   const onSelectCanvas = (canvasName: string): void => {
-    navigate({ ...route, canvas: canvasName, step: 0 });
+    //M 思维导图里看这条消息（或这次启动）走过的路，泳道画布照旧；右侧详情展开。
+    toggleRightCollapsed(false);
+    mindTree.select('trace');
+    let rtab = route.rtab;
+    if (rtab === 'reading' || rtab === 'util') rtab = 'step';
+    navigate({ ...route, canvas: canvasName, step: 0, rtab, doc: false });
   };
 
   //M 点左栏组块时展开右栏，并把完整文件名写入地址以便刷新恢复。
   const onSelectReading = (name: string): void => {
     toggleRightCollapsed(false);
-    navigate({ ...route, reading: name, rtab: 'reading' });
+    navigate({ ...route, reading: name, rtab: 'reading', doc: true });
+  };
+
+  const onSelectUtil = (name: string): void => {
+    //M 工具说明没有思维导图，左栏之外整个区域都是正文。
+    toggleRightCollapsed(false);
+    navigate({ ...route, util: name, rtab: 'util', doc: true });
   };
 
   //M 点左栏插件、画布道名、步骤详情“查看 xxx 插件”或监听标签：展开右栏并切到「插件」页签。
-  const onSelectPlugin = (pluginName: string, nextPtab?: string): void => {
+  const onSelectPlugin = (pluginName: string, nextPtab?: string, keepCanvas = false): void => {
     if (pluginName === '') return;
 
     let resolvedPtab = nextPtab ?? 'overview';
@@ -1382,7 +1479,18 @@ export function TutorialPage(): JSX.Element {
     }
     //M 选择插件后自动展开右栏并跳转至「插件」页签。
     toggleRightCollapsed(false);
-    navigate({ ...route, plugin: pluginName, ptab: resolvedPtab, rtab: 'plugin' });
+    const item = pluginList.find((plugin) => plugin.name === pluginName);
+    let doc = !keepCanvas;
+    let rtab: RouteState['rtab'] = 'plugin';
+    //M 左栏骨架模块和三方握手直接进骨架逐行，右侧显示点中的块。
+    const toLines = item?.kind === 'skeleton' || pluginName === programView.HANDSHAKE;
+    if (toLines && !keepCanvas) {
+      mindTree.select('lines');
+      tutorialView.select('mind');
+      doc = false;
+      rtab = 'step';
+    }
+    navigate({ ...route, plugin: pluginName, ptab: resolvedPtab, rtab, doc });
   };
 
   //M 点画布中某一步：自动展开右栏并切到「这一步」；若这一步落在已知插件上，也同步记下方便用户点「插件」标签。
@@ -1397,7 +1505,7 @@ export function TutorialPage(): JSX.Element {
       }
       nextPlugin = pickedStep.node;
     }
-    navigate({ ...route, step: stepNo, plugin: nextPlugin, ptab: nextPtab, rtab: 'step' });
+    navigate({ ...route, step: stepNo, plugin: nextPlugin, ptab: nextPtab, rtab: 'step', doc: false });
   };
 
   //M 点事件名：高亮命中步，选中第一处并展开右栏「这一步」。
@@ -1426,7 +1534,7 @@ export function TutorialPage(): JSX.Element {
     }
     //M 自动展开右栏以便查看命中该事件的第一步详情。
     toggleRightCollapsed(false);
-    navigate({ ...route, event: eventName, step: nextStep, rtab: 'step' });
+    navigate({ ...route, event: eventName, step: nextStep, rtab: 'step', doc: false });
   };
 
   const hasRealCanvas = route.canvas !== '' && route.canvas !== SENTINEL_AUTO;
@@ -1444,14 +1552,22 @@ export function TutorialPage(): JSX.Element {
   const pluginsExpanded = openGroups.plugins || hasSearch;
   const bootExpanded = openGroups.boot || hasSearch;
   const messagesExpanded = openGroups.messages || hasSearch;
+  const utilsExpanded = openGroups.utils || hasSearch;
 
-  //M 将记忆下来的左右浮栏宽度实时钳制到最小栏宽与视口 45% 安全上限之间。
+  //M 没有画布的说明页是两栏，画布页是三栏；从画布点的插件仍留在三栏详情里。
+  const contentOnly = route.doc || route.rtab === 'reading' || route.rtab === 'util';
+  //M 左栏保留旧的宽度记忆，右栏默认取剩余空间一半；拖过才用本地记住的宽。
   const clampedLeftWidth = clamp(leftWidth, MIN_LEFT_WIDTH, getMaxSideWidth(MIN_LEFT_WIDTH));
-  const clampedRightWidth = clamp(paneWidth, MIN_PANE_WIDTH, getMaxSideWidth(MIN_PANE_WIDTH));
+  let detailLeftSpace = clampedLeftWidth + 24;
+  if (leftCollapsed || isNarrow) detailLeftSpace = 0;
+  const maxDetailWidth = getMaxDetailWidth(viewportWidth, detailLeftSpace);
+  let clampedRightWidth = maxDetailWidth;
+  if (paneWidth > 0) clampedRightWidth = clamp(paneWidth, MIN_PANE_WIDTH, maxDetailWidth);
 
   let bodyClass = 'tu-body';
   if (resizing) bodyClass += ' resizing';
-  if (showMind) bodyClass += ' tu-mind-active';
+  if (showMind && !contentOnly) bodyClass += ' tu-mind-active';
+  if (contentOnly) bodyClass += ' tu-content-only';
 
   let mindLeft = 12;
   let mindRight = 12;
@@ -1474,12 +1590,39 @@ export function TutorialPage(): JSX.Element {
       tutorialView.select('mind');
     }
     //M 插件节点打开已有的说明或对外函数页签。
-    onSelectPlugin(target.name, target.tab);
+    onSelectPlugin(target.name, target.tab, target.name !== programView.HANDSHAKE);
   }
   const onOpenHandshake = (): void => {
     //M 左栏和详情里的三方握手入口共用一个模块名，导图看到它后自动切骨架逐行。
     tutorialView.select('mind');
     onSelectPlugin(programView.HANDSHAKE);
+  };
+  const onOpenProject = (): void => {
+    //M 左栏「项目结构」恢复三栏画布，不沿用旧页签上的组块或工具说明。
+    tutorialView.select('mind');
+    mindTree.select('project');
+    toggleRightCollapsed(false);
+    navigate({ ...route, rtab: 'step', doc: false });
+  };
+  const onLineDetail = (): void => {
+    //M 点逐行图里的块后自动展开右侧，已在「这一步」就不动。
+    toggleRightCollapsed(false);
+    if (route.rtab === 'step') return;
+
+    const next: RouteState = { ...route, rtab: 'step' };
+    setRoute(next);
+    //M 只换掉当前地址，不增加浏览历史。
+    window.history.replaceState(window.history.state, '', buildRouteUrl(next));
+  };
+  const onLinesPlugin = (name: string): void => {
+    const item = pluginList.find((plugin) => plugin.name === name);
+    if (item?.kind === 'skeleton' || name === programView.HANDSHAKE) {
+      //M 逐行图下拉换文件：仍在骨架逐行，右侧看块详情。
+      onSelectPlugin(name);
+      return;
+    }
+    //M 逐行图里链到普通插件：留在三栏，右侧看插件说明。
+    onSelectPlugin(name, undefined, true);
   };
   const onSelectProgram = (name: string): void => {
     //M config 里登记的程序走专用右栏，地址带前缀与普通插件隔开。
@@ -1496,38 +1639,53 @@ export function TutorialPage(): JSX.Element {
     bootItemClass = 'tu-nav-item active';
   }
 
-  //M 骨架、组块、插件、启动和消息共用同一虚拟列表，组块沿用接口返回的文件名顺序。
+  //M 左栏顺序：骨架（含项目结构）→ 骨架工具 → 启动流程 → 最近消息 → 组块阅读 → 插件 → 进程插件，共用一个虚拟列表。
   const leftRows = useMemo<LeftNavRow[]>(() => {
     const rows: LeftNavRow[] = [
-      { key: 'head:skeleton', kind: 'group-head', groupKey: 'skeleton', title: '骨架', count: filteredSkeletons.length, expanded: skeletonExpanded },
+      {
+        key: 'head:skeleton', kind: 'group-head', groupKey: 'skeleton', title: '骨架',
+        count: filteredSkeletons.length + 1, expanded: skeletonExpanded,
+      },
     ];
     if (skeletonExpanded) {
-      if (filteredSkeletons.length === 0) {
-        rows.push({ key: 'empty:skeleton', kind: 'empty', text: '没有匹配的骨架模块' });
-      }
+      //M 原来顶上的「项目结构」放在骨架组第一行。
+      rows.push({ key: 'skeleton:project', kind: 'project' });
       for (const item of filteredSkeletons) {
         rows.push({ key: `skeleton:${item.name}`, kind: 'plugin', plugin: item });
       }
     }
-    //M 骨架下面是进程插件一组：先三方握手图，再 config 里登记的每个程序。
-    rows.push({ key: 'div:skeleton-programs', kind: 'divider' });
-    //M 组头数量把握手图算进去，搜索时强制展开。
+    //M 骨架工具紧跟骨架，一个 src7/utils/ 文件一行。
+    rows.push({ key: 'div:skeleton-utils', kind: 'divider' });
+    //M 组头数量是现有工具文件数，搜索时强制展开。
     rows.push({
-      key: 'head:programs', kind: 'group-head', groupKey: 'programs', title: '进程插件',
-      count: programs.length + 1, expanded: openGroups.programs || hasSearch,
+      key: 'head:utils', kind: 'group-head', groupKey: 'utils', title: utilsLabel,
+      count: filteredUtils.length, expanded: utilsExpanded,
     });
-    if (openGroups.programs || hasSearch) {
-      //M 握手图固定第一行，不参与搜索过滤。
-      rows.push({ key: 'programs:handshake', kind: 'handshake' });
-      for (const program of programs) {
-        if (hasSearch && !`${program.name} ${program.title}`.toLowerCase().includes(query)) continue;
-
-        //M 一个程序一行，状态和版本取自 /api/programs。
-        rows.push({ key: `program:${program.name}`, kind: 'program', program });
+    if (utilsExpanded) {
+      if (filteredUtils.length === 0) rows.push({ key: 'empty:utils', kind: 'empty', text: utilStatus });
+      for (const name of filteredUtils) {
+        rows.push({ key: `util:${name}`, kind: 'util', name });
       }
     }
-    //M 进程插件组和组块阅读之间的分隔线。
-    rows.push({ key: 'div:programs-reading', kind: 'divider' });
+    rows.push({ key: 'div:utils-boot', kind: 'divider' });
+
+    rows.push({ key: 'head:boot', kind: 'group-head', groupKey: 'boot', title: '启动流程', count: showBootGroupCount, expanded: bootExpanded });
+    if (bootExpanded && showBoot) {
+      rows.push({ key: 'item:boot', kind: 'boot' });
+    }
+    rows.push({ key: 'div:boot-messages', kind: 'divider' });
+
+    rows.push({ key: 'head:messages', kind: 'group-head', groupKey: 'messages', title: '最近消息', count: filteredMessages.length, expanded: messagesExpanded });
+    if (messagesExpanded) {
+      if (filteredMessages.length === 0) {
+        rows.push({ key: 'empty:messages', kind: 'empty', text: '没有匹配的消息' });
+      }
+      for (const item of filteredMessages) {
+        rows.push({ key: `msg:${item.name}`, kind: 'message', message: item });
+      }
+    }
+    rows.push({ key: 'div:messages-reading', kind: 'divider' });
+
     rows.push({
       key: 'head:reading',
       kind: 'group-head',
@@ -1555,20 +1713,20 @@ export function TutorialPage(): JSX.Element {
         rows.push({ key: `plugin:${item.name}`, kind: 'plugin', plugin: item });
       }
     }
-    rows.push({ key: 'div:plugins-boot', kind: 'divider' });
+    //M 进程插件也是插件，排在插件组后面：先三方握手图，再 config 里登记的每个程序。
+    rows.push({ key: 'div:plugins-programs', kind: 'divider' });
+    rows.push({
+      key: 'head:programs', kind: 'group-head', groupKey: 'programs', title: '进程插件',
+      count: programs.length + 1, expanded: openGroups.programs || hasSearch,
+    });
+    if (openGroups.programs || hasSearch) {
+      //M 握手图固定第一行，不参与搜索过滤。
+      rows.push({ key: 'programs:handshake', kind: 'handshake' });
+      for (const program of programs) {
+        if (hasSearch && !`${program.name} ${program.title}`.toLowerCase().includes(query)) continue;
 
-    rows.push({ key: 'head:boot', kind: 'group-head', groupKey: 'boot', title: '启动流程', count: showBootGroupCount, expanded: bootExpanded });
-    if (bootExpanded && showBoot) {
-      rows.push({ key: 'item:boot', kind: 'boot' });
-    }
-
-    rows.push({ key: 'head:messages', kind: 'group-head', groupKey: 'messages', title: '最近消息', count: filteredMessages.length, expanded: messagesExpanded });
-    if (messagesExpanded) {
-      if (filteredMessages.length === 0) {
-        rows.push({ key: 'empty:messages', kind: 'empty', text: '没有匹配的消息' });
-      }
-      for (const item of filteredMessages) {
-        rows.push({ key: `msg:${item.name}`, kind: 'message', message: item });
+        //M 一个程序一行，状态和版本取自 /api/programs。
+        rows.push({ key: `program:${program.name}`, kind: 'program', program });
       }
     }
     return rows;
@@ -1578,6 +1736,7 @@ export function TutorialPage(): JSX.Element {
     filteredReadings,
     filteredRegularPlugins,
     filteredSkeletons,
+    filteredUtils,
     messagesExpanded,
     pluginsExpanded,
     readingLabel,
@@ -1586,6 +1745,9 @@ export function TutorialPage(): JSX.Element {
     showBoot,
     showBootGroupCount,
     skeletonExpanded,
+    utilsExpanded,
+    utilsLabel,
+    utilStatus,
     programs,
     openGroups.programs,
     hasSearch,
@@ -1748,6 +1910,30 @@ export function TutorialPage(): JSX.Element {
         </div>
       );
     }
+    if (row.kind === 'project') {
+      let itemClass = 'tu-nav-item';
+      if (!contentOnly && showMind && mindTree.mode === 'project') itemClass = 'tu-nav-item active';
+      return (
+        <div className="tu-side-row">
+          <button type="button" className={itemClass} onClick={onOpenProject}>{t('项目结构')}</button>
+        </div>
+      );
+    }
+    if (row.kind === 'util') {
+      const name = row.name;
+      const active = route.rtab === 'util' && route.util === name;
+      let itemClass = 'tu-nav-item';
+      if (active) itemClass = 'tu-nav-item active';
+      //M 点了显示这个工具文件的说明，两栏。
+      const onClick = (): void => onSelectUtil(name);
+      return (
+        <div className="tu-side-row">
+          <button type="button" className={itemClass} aria-current={active} title={name} onClick={onClick}>
+            <span className="tu-menu-item"><span className="tu-menu-name">{name.replace(/\.ts$/u, '')}</span></span>
+          </button>
+        </div>
+      );
+    }
     if (row.kind === 'reading') {
       const name = row.name;
       //M 去掉扩展名显示文件名，选择时仍使用带扩展名的完整名称。
@@ -1806,10 +1992,11 @@ export function TutorialPage(): JSX.Element {
   };
 
   let leftStyle: { width?: number } = {};
-  let rightStyle: { width?: number } = {};
+  let rightStyle: { width?: number | string; left?: number; maxWidth?: number | string } = {};
   if (!isNarrow) {
     leftStyle = { width: clampedLeftWidth };
     rightStyle = { width: clampedRightWidth };
+    if (contentOnly) rightStyle = { left: mindLeft, width: 'auto', maxWidth: 'none' };
   }
 
   return (
@@ -1861,12 +2048,12 @@ export function TutorialPage(): JSX.Element {
 
           <div className={bodyClass}>
             {/* 最底层：全视口泳道画布舞台，在左右两浮栏后面全幅铺开。 */}
-            {!canvasesLoaded && route.canvas === SENTINEL_AUTO && (
+            {!contentOnly && !canvasesLoaded && route.canvas === SENTINEL_AUTO && (
               <div className="tu-stage">
                 <div className="tu-stage-center"><antd.Spin /></div>
               </div>
             )}
-            {hasRealCanvas && (
+            {!contentOnly && hasRealCanvas && (
               <CanvasStage
                 name={route.canvas}
                 step={route.step}
@@ -1876,7 +2063,10 @@ export function TutorialPage(): JSX.Element {
                 pluginNames={pluginNames}
                 activePlugin={resolvedPluginName}
                 highlightEvent={route.event}
-                onSelectPlugin={onSelectPlugin}
+                onSelectPlugin={
+                  //M 泳道上点插件名留在三栏，右侧看说明。
+                  (name) => onSelectPlugin(name, undefined, true)
+                }
                 onClearEvent={() => navigate({ ...route, event: '' })}
                 onTrailLoaded={handleTrailLoaded}
                 leftOpen={!leftCollapsed}
@@ -1886,7 +2076,7 @@ export function TutorialPage(): JSX.Element {
                 isNarrow={isNarrow}
               />
             )}
-            {!hasRealCanvas && canvasesLoaded && route.canvas !== SENTINEL_AUTO && (
+            {!contentOnly && !hasRealCanvas && canvasesLoaded && route.canvas !== SENTINEL_AUTO && (
               <div className="tu-stage">
                 <div className="tu-stage-center">
                   <p className="tu-muted">请在左栏选择「启动流程」或任意一条「最近消息」查看实时流程画布</p>
@@ -1894,7 +2084,7 @@ export function TutorialPage(): JSX.Element {
               </div>
             )}
 
-            {showMind && (
+            {!contentOnly && showMind && (
               <mind.TutorialMindMap
                 plugins={pluginList}
                 trail={mindTrail}
@@ -1904,8 +2094,11 @@ export function TutorialPage(): JSX.Element {
                 t={t}
                 onPick={onMindPick}
                 plugin={route.plugin}
-                onSelectPlugin={onSelectPlugin}
+                onSelectPlugin={onLinesPlugin}
                 programs={programs}
+                mode={mindTree.mode}
+                detailHost={lineDetailHost}
+                onLineDetail={onLineDetail}
               />
             )}
 
@@ -1977,7 +2170,7 @@ export function TutorialPage(): JSX.Element {
             )}
 
             {/* 悬浮右栏：顶上「这一步」「插件」两页签；展开带左边缘拖宽，收起退成窄条。 */}
-            {!isNarrow && rightCollapsed && (
+            {!isNarrow && !contentOnly && rightCollapsed && (
               <button
                 type="button"
                 className="tu-edge-toggle tu-edge-right"
@@ -1990,14 +2183,14 @@ export function TutorialPage(): JSX.Element {
                 ◀ 详情
               </button>
             )}
-            {(isNarrow || !rightCollapsed) && (
+            {(isNarrow || contentOnly || !rightCollapsed) && (
               <aside className="tu-plugin-pane tu-float-right" style={rightStyle}>
-                {!isNarrow && (
+                {!isNarrow && !contentOnly && (
                   <div
                     className="tu-resizer tu-resizer-left"
                     role="separator"
                     aria-orientation="vertical"
-                    title="拖动调整右栏宽度（300px ~ 视口 45%）"
+                    title="拖动调整右栏宽度（不超过剩余空间的一半）"
                     onMouseDown={startRightResize}
                   />
                 )}
@@ -2009,7 +2202,7 @@ export function TutorialPage(): JSX.Element {
                         role="tab"
                         aria-selected={route.rtab === 'step'}
                         className={stepTabClass}
-                        onClick={() => navigate({ ...route, rtab: 'step' })}
+                        onClick={() => navigate({ ...route, rtab: 'step', doc: false })}
                       >
                         这一步
                         {route.step > 0 && <span className="tu-rtab-badge">#{String(route.step)}</span>}
@@ -2038,7 +2231,7 @@ export function TutorialPage(): JSX.Element {
                       </button>
                     </div>
                     <div className="tu-pane-bar-actions">
-                      {!isNarrow && (
+                      {!isNarrow && !contentOnly && (
                         <button
                           type="button"
                           className="tu-collapse-btn"
@@ -2056,7 +2249,10 @@ export function TutorialPage(): JSX.Element {
 
                   <div className="tu-pane-body" ref={attachRightScroll}>
                     <TutorialScrollContext.Provider value={rightScrollParent}>
-                      {route.rtab === 'step' && (
+                      {route.rtab === 'step' && showMind && mindTree.mode === 'lines' && !contentOnly && (
+                        <div className="tu-line-detail-host" ref={setLineDetailHost} />
+                      )}
+                      {route.rtab === 'step' && (!showMind || mindTree.mode !== 'lines' || contentOnly) && (
                         <>
                           {pickedStep !== undefined && activeTrail !== null && hasRealCanvas && (
                             <StepDetail
@@ -2067,7 +2263,10 @@ export function TutorialPage(): JSX.Element {
                               keyword={keyword}
                               pluginNames={pluginNames}
                               highlightEvent={route.event}
-                              onSelectPlugin={onSelectPlugin}
+                              onSelectPlugin={
+                                //M 步骤详情里点插件名留在三栏。
+                                (name) => onSelectPlugin(name, undefined, true)
+                              }
                               onSelectEvent={onSelectEvent}
                             />
                           )}
@@ -2103,6 +2302,16 @@ export function TutorialPage(): JSX.Element {
                         />
                       )}
 
+                      {route.rtab === 'util' && route.util !== '' && (
+                        <ReadingView
+                          key={`util:${route.util}`}
+                          name={route.util}
+                          util
+                          loadingLabel={utilsLoadingLabel}
+                          errorLabel={utilsErrorLabel}
+                        />
+                      )}
+
                       {route.rtab === 'plugin' && isProcess && (
                         <programView.ProgramView
                           key={resolvedPluginName}
@@ -2134,7 +2343,7 @@ export function TutorialPage(): JSX.Element {
                               onSelectEvent={onSelectEvent}
                               onSelectPlugin={
                                 //M 从插件详情内部的依赖/路由跳转到目标插件说明视图。
-                                (name) => onSelectPlugin(name)
+                                (name) => onSelectPlugin(name, undefined, !route.doc)
                               }
                             />
                           )}

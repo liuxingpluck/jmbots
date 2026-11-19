@@ -181,4 +181,20 @@ describe('Skeleton：系统骨架左栏与代码提取', () => {
     expect(sessionsNames).toContain('Sessions.create');
     expect(sessionsNames).toContain('Session.run');
   });
+
+  test('骨架工具：一个 utils 文件的说明有文件头、对外函数和内部函数', async () => {
+    const source = new sourceModule.SourceDocs();
+    //M 拿 Checks.ts 试：文件头写了“校验”，导出 checkArgs。
+    const readme = await skeletonModule.getUtilReadme('src7/utils/Checks.ts', source);
+    expect(readme.name).toBe('Checks.ts');
+    expect(readme.text).toContain('# Checks.ts');
+    expect(readme.text).toContain('校验');
+    expect(readme.text).toContain('## 对外函数');
+    expect(readme.text).toContain('`checkArgs`');
+    expect(readme.text).toContain('## 内部函数');
+
+    //M 读不到的文件给空说明，不抛错。
+    const missing = await skeletonModule.getUtilReadme('src7/utils/没有这个.ts', source);
+    expect(missing.text).toBe('');
+  });
 });

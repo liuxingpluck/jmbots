@@ -7,7 +7,6 @@ import * as api from './TutorialApi.ts';
 import * as data from './MindData.ts';
 import * as readme from './ReadmeTabs.tsx';
 import * as lines from './LinesView.tsx';
-import * as programView from './ProgramView.tsx';
 import '@xyflow/react/dist/style.css';
 import './MindMap.css';
 
@@ -18,7 +17,7 @@ const VIEWS = ['canvas', 'mind'] as const;
 const DIRECTIONS = ['sides', 'down'] as const;
 const TREES = ['project', 'trace', 'lines'] as const;
 
-type TreeView = (typeof TREES)[number];
+export type TreeView = (typeof TREES)[number];
 
 /** 读取持久化选择，只接受给定选项，访问失败使用默认。 */
 function getChoice<T extends string>(key: string, defaults: T, allowed: readonly T[]): T {
@@ -51,6 +50,18 @@ export function useTutorialView() {
     saveChoice(VIEW_KEY, next);
   };
   return { view, select };
+}
+
+/** 画布上显示哪棵树（项目结构、消息走过的路、骨架逐行），由左栏点选，记住上次的。 */
+export function useMindTree() {
+  //M 第一次打开是项目结构，以后恢复上次看的树。
+  const [mode, setMode] = react.useState(() => getChoice(TREE_KEY, 'project', TREES));
+  const select = react.useCallback((next: TreeView): void => {
+    //M 马上换树，同时为下次打开记住。
+    setMode(next);
+    saveChoice(TREE_KEY, next);
+  }, []);
+  return { mode, select };
 }
 
 /** 教程独立入口沿用地址和浏览器语言偏好。 */
@@ -233,14 +244,20 @@ interface Props {
   onSelectPlugin: (name: string) => void;
   /** /api/programs 的进程插件清单，项目树里单独一组。 */
   programs: readonly api.ProgramItem[];
+  /** 显示哪棵树，左栏点「项目结构」、消息、骨架模块时切换。 */
+  mode: TreeView;
+  /** 骨架逐行的块详情放进右侧详情的位置。 */
+  detailHost: HTMLElement | null;
+  /** 点了骨架逐行的一块。 */
+  onLineDetail: () => void;
 }
 
-/** 两棵树和方向按钮共用一片画布，节点操作打开相应内容。 */
+/** 三棵树共用一片画布，方向是画布角上的小切换，节点操作打开相应内容。 */
 export function TutorialMindMap(props: Props): react.JSX.Element {
-  const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin, programs } = props;
-  //M 记住上次看的树和方向，第一次使用左右排布的项目树。
+  const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin, programs, mode } = props;
+  const { detailHost, onLineDetail } = props;
+  //M 记住上次的方向，第一次使用左右排布。
   const [direction, setDirection] = react.useState(() => getChoice(DIRECTION_KEY, 'sides', DIRECTIONS));
-  const [mode, setMode] = react.useState(() => getChoice(TREE_KEY, 'project', TREES));
   const [expanded, setExpanded] = react.useState<ReadonlySet<string>>(() => new Set(['skeleton']));
   const [event, setEvent] = react.useState('');
   const docs = useDocs(plugins);
@@ -252,20 +269,10 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
     saveChoice(DIRECTION_KEY, next);
   }
 
-  /** 切换树根时收起上一次打开的事件关系。 */
-  function selectTree(next: TreeView): void {
-    //M 换树后事件面板也换掉，恢复时从本次选择进入。
-    setMode(next);
-    setEvent('');
-    saveChoice(TREE_KEY, next);
-  }
-
   react.useEffect(() => {
-    if (plugin !== programView.HANDSHAKE) return;
-
-    //M 选中三方握手图（左栏或项目树）就切到骨架逐行，由它打开 进程插件.json。
-    selectTree('lines');
-  }, [plugin]);
+    //M 左栏换了树，收起上一棵树打开的事件关系。
+    setEvent('');
+  }, [mode]);
 
   /** 分支按钮切换子树，叶子将详情交给事件面板或原右栏。 */
   function pick(branch: data.Branch): void {
@@ -297,17 +304,12 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
   if (mode === 'project') tree = data.getProjectTree(plugins, docs, expanded, t, programs);
   if (mode === 'trace' && trail !== null) tree = data.getTrailTree(trail, t);
   const title = t('思维导图');
-  const projectLabel = t('项目结构');
-  const traceLabel = t('这条消息走过的路');
+  const directionLabel = t('展开方向');
   const sidesLabel = t('左右展开');
   const downLabel = t('上下展开');
-  const linesLabel = t('骨架逐行');
   const emptyLabel = t('请在左栏选择一条消息');
 
-  //M 工具栏操作切换树或方向，并保留上次选择。
-  const showProject = () => selectTree('project');
-  const showTrace = () => selectTree('trace');
-  const showLines = () => selectTree('lines');
+  //M 角上的小切换只管方向，并保留上次选择。
   const showSides = () => selectDirection('sides');
   const showDown = () => selectDirection('down');
 
@@ -321,16 +323,7 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
 
   return (
     <section className="tu-mind" style={{ left, right }} aria-label={title}>
-      <div className="tu-mind-toolbar">
-        <button type="button" aria-pressed={mode === 'project'} onClick={showProject}>
-          {projectLabel}
-        </button>
-        <button type="button" aria-pressed={mode === 'trace'} onClick={showTrace}>
-          {traceLabel}
-        </button>
-        <button type="button" aria-pressed={mode === 'lines'} onClick={showLines}>
-          {linesLabel}
-        </button>
+      <div className="tu-mind-direction" role="group" aria-label={directionLabel}>
         <button type="button" data-look="mind-lr" aria-pressed={direction === 'sides'} onClick={showSides}>
           {sidesLabel}
         </button>
@@ -339,7 +332,14 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
         </button>
       </div>
       {mode === 'lines' && (
-        <lines.LinesView t={t} plugin={plugin} onSelectPlugin={onSelectPlugin} direction={direction} />
+        <lines.LinesView
+          t={t}
+          plugin={plugin}
+          onSelectPlugin={onSelectPlugin}
+          direction={direction}
+          detailHost={detailHost}
+          onDetail={onLineDetail}
+        />
       )}
       {mode !== 'lines' && chart === undefined && <p className="tu-mind-empty">{emptyLabel}</p>}
       {mode !== 'lines' && chart !== undefined && (

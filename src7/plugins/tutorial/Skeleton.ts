@@ -738,3 +738,63 @@ export async function getSkeletonReadme(
   ].join('\n');
   return { name: spec.name, file: spec.file, text };
 }
+
+
+/**
+ * 骨架工具层（src7/utils/）一个文件的说明：文件头注释、src7/README.md 里那一句、导出和内部函数表。
+ * 和骨架模块一样从源码实时提取，不另写 说明.md。
+ * @param file 已按清单校验过的文件路径，如 src7/utils/Checks.ts。
+ * @param source 共用源码缓存实例。
+ * @returns 对齐 GET /api/tutorial/readme 的响应体；读不到文件 text 是空串。
+ */
+export async function getUtilReadme(
+  file: string,
+  source: sourceModule.SourceDocs,
+): Promise<{ name: string; file: string; text: string }> {
+  const name = path.posix.basename(file);
+  //M 现读源码，读不到就交回空说明，由网页显示“读不到”。
+  const lines = await source.read(file);
+  if (lines === undefined) return { name, file, text: '' };
+
+  //M 文件头 JSDoc 是这一份工具的主说明。
+  const headBlock = sourceModule.getHeadBlock(lines);
+  let introBody = '文件头没写说明。';
+  if (headBlock !== undefined) introBody = sourceModule.splitDoc(headBlock).summary.trim() || introBody;
+
+  //M src7/README.md 的 utils/ 一段里找这个文件那一行。
+  const arch = await readArchNote(source, name);
+  const archRow = arch.utilNotes.find((row) => row.startsWith(`${name} `));
+  const introParts = [introBody];
+  if (archRow !== undefined) introParts.push(`目录说明（\`${README}\`）：\`${archRow}\``);
+  introParts.push(`源码位置：\`${file}:1\`（骨架工具层，本说明从源码注释实时提取）。`);
+
+  //M 只扫顶层：导出的进「对外函数」，没导出的进「内部函数」。
+  const symbols = extractFileSymbols(file, lines, false);
+  const publicRows = symbols
+    .filter((sym) => sym.isPublic)
+    .map((sym) => `| \`${sym.name}\` | ${sym.site} | ${escapeCell(sym.summary)} |`);
+  const internalRows = symbols
+    .filter((sym) => !sym.isPublic)
+    .map((sym) => `| \`${sym.name}\` | ${sym.site} | ${escapeCell(sym.summary)} |`);
+  const head = ['| 名字 | 位置 | 说明 |', '|---|---|---|'];
+  let publicBody = '无。';
+  if (publicRows.length > 0) publicBody = [...head, ...publicRows].join('\n');
+  let internalBody = '无。';
+  if (internalRows.length > 0) internalBody = [...head, ...internalRows].join('\n');
+
+  const text = [
+    `# ${name}`,
+    '',
+    introParts.join('\n\n'),
+    '',
+    '## 对外函数',
+    '',
+    publicBody,
+    '',
+    '## 内部函数',
+    '',
+    internalBody,
+    '',
+  ].join('\n');
+  return { name, file, text };
+}

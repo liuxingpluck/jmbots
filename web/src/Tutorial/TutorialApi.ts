@@ -405,6 +405,24 @@ export class TutorialApi {
     return TutorialApi.get<{ text: string }>(route);
   }
 
+  /** 左栏「骨架工具（utils）」：src7/utils/ 下现有的工具文件名，后端动态列。 */
+  static async getUtils(): Promise<{ files: string[] }> {
+    const route = '/api/tutorial/utils';
+    //M 复用教程接口的令牌和错误处理。
+    return TutorialApi.get<{ files: string[] }>(route);
+  }
+
+  /**
+   * 读一个工具文件的说明（文件头注释和函数表，后端从源码实时提取）。
+   * @param name 清单中的文件名，如 Checks.ts。
+   */
+  static async getUtilReadme(name: string): Promise<{ text: string }> {
+    const encoded = encodeURIComponent(name);
+    const route = `/api/tutorial/util-readme?name=${encoded}`;
+    //M 文件名是否在清单里由后端校验。
+    return TutorialApi.get<{ text: string }>(route);
+  }
+
   /** 取 programs 托管的进程插件和运行状态；没挂 programs 时接口不存在，交给调用方当空清单。 */
   static async getPrograms(): Promise<{ programs: ProgramItem[] }> {
     const route = '/api/programs';

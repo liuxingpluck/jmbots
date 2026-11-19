@@ -959,5 +959,14 @@
   "选择文件": "Choisir un fichier",
   "看全部": "Tout afficher",
   "读不到骨架逐行": "Impossible de lire le fichier ligne par ligne",
-  "来源": "Source"
+  "来源": "Source",
+  "三方握手图": "Poignée de main à trois",
+  "展开方向": "Sens de déploiement",
+  "正在读取工具说明…": "Chargement des notes de l’utilitaire…",
+  "没有匹配的工具": "Aucun utilitaire correspondant",
+  "读不到工具说明": "Impossible de lire les notes de l’utilitaire",
+  "这是 {file} 的逐行图，点块看每段代码": "Voici la carte ligne par ligne de {file} ; cliquez sur un bloc pour voir son code",
+  "这是进程插件三方握手的流程图，点块看每一步": "Voici la poignée de main à trois des plugins de processus ; cliquez sur un bloc pour voir chaque étape",
+  "进程插件": "Plugins de processus",
+  "骨架工具（utils）": "Utilitaires du squelette (utils)"
 }
