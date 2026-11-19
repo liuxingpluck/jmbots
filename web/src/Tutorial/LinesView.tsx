@@ -118,6 +118,7 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   const [flowNodes, setFlowNodes, onNodesChange] = xy.useNodesState<Card>([]);
   const moved = react.useRef(new Map<string, { x: number; y: number }>());
   const flow = react.useRef<xy.ReactFlowInstance<Card> | null>(null);
+  const fitting = react.useRef(true);
   //M 左栏和下拉共用模块名，插件说明不属于骨架时回到入口 Main。
   const requested = FILES.find((file) => file.toLowerCase() === `${plugin}.json`);
   const name = requested ?? 'Main.json';
@@ -143,14 +144,11 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
       if (!active) return;
 
       const list = JSON.parse(result.text) as LineNode[];
-      const root = getLineTree(list);
-      //M 默认只展开根，看到按顺序排的各块，再逐层点开。
-      const open = new Set(list.map((item) => item.id));
-      open.delete(root?.node.id ?? '');
       moved.current = new Map();
       setFailed(false);
       setNodes(list);
-      setFolded(open);
+      //M 打开时全部展开，＋/－ 仍可手动折叠。
+      setFolded(new Set());
       setFocusId('');
       setSelectedId('');
     }, () => {
@@ -198,7 +196,11 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
         folded: folded.has(id),
         hasChildren: item.children.length > 0,
         toggle,
-        focus: () => setFocusId(id),
+        focus: () => {
+          //M 只看这棵子树时子树也全展开。
+          setFolded(new Set());
+          setFocusId(id);
+        },
         pick: () => setSelectedId(id),
       };
       let arranged = position;
@@ -224,12 +226,17 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   }, [chart]);
 
   react.useEffect(() => {
-    const instance = flow.current;
-    if (instance === null) return;
-
-    //M 换文件、子树或方向才重新适应；折叠展开和缩放都不重挂画布，缩放比例保留。
-    void instance.fitView(FIT);
+    //M 换文件、子树或方向才重新适应；等卡片真正换进画布后再适应，折叠展开和缩放不触发。
+    fitting.current = true;
   }, [name, focusId, direction, tree]);
+
+  react.useEffect(() => {
+    const instance = flow.current;
+    if (instance === null || !fitting.current || flowNodes.length === 0) return;
+
+    fitting.current = false;
+    void instance.fitView(FIT);
+  }, [flowNodes]);
 
   const onInit = (instance: xy.ReactFlowInstance<Card>): void => {
     //M 记下这块画布自己的实例，之后的适应视图只作用于它。

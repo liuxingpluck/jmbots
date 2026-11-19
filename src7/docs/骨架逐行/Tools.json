@@ -4,14 +4,24 @@
     "parent": null,
     "title": "src7/Tools.ts（共 194 行）",
     "summary": "工具服务：自己不带任何工具，只管一张登记表。插件调 register 登记工具；会话每一步调 list 要这种会话能用的清单；模型要了工具就调 execute，先过关口三 session/before-tool，再照定义校验参数并执行。",
-    "body": "## src7/Tools.ts 分块目录（共 194 行，按代码进入顺序）\n\n- L1–L11：文件头与导入（import 区）\n- L12–L33：给 ctx 加 tools，声明关口三 session/before-tool（declare module 'cordis'）\n- L34–L53：ToolSpec：登记一个工具要给的东西\n- L54–L57：ToolResult：工具 run 交回的东西\n- L58–L68：ToolOutcome：一次工具调用的结果\n- L69–L77：ToolGate：关口三的数据\n- L78–L84：ToolDone：关口四的数据\n- L85–L97：Tools 类头、登记表与构造函数\n- L98–L120：register：登记一个工具\n- L121–L132：list：这种会话能用的工具清单\n- L133–L194：execute：执行模型要的一个工具\n\n执行顺序：Main.ts:79 挂 Tools → 各插件 apply 时调 L103 register → 会话每一步 Sessions.ts:548 调 L126 list → 模型要了工具，Sessions.ts:610 调 L141 execute（守卫 → 关口三 → 查登记表 → 跟踪 → 校验参数并 run → 整理结果）。\n关口四 session/after-tool 不在这里发，由 Sessions.ts 的会话循环发（Sessions.ts:614）。",
+    "body": "## src7/Tools.ts 分块目录（共 194 行，先按主题分组，每组 3～5 块）\n\n- 准备与登记数据（L1–L53）：导入、给 ctx 加 tools，以及登记工具要给的东西。\n- 调用的数据形状（L54–L84）：工具返回、调用结果、关口三和关口四的数据。\n- Tools 类（L85–L194）：类头与登记表、登记、列清单、执行一个工具。\n\n执行顺序：Main.ts:79 挂 Tools → 各插件 apply 时调 L103 register → 会话每一步 Sessions.ts:548 调 L126 list → 模型要了工具，Sessions.ts:610 调 L141 execute（守卫 → 关口三 → 查登记表 → 跟踪 → 校验参数并 run → 整理结果）。",
+    "sources": [
+      "src7/Tools.ts"
+    ]
+  },
+  {
+    "id": "r-tools-g1",
+    "parent": "r-tools",
+    "title": "准备与登记数据（L1–L53）",
+    "summary": "导入、给 ctx 加 tools，以及登记工具要给的东西。",
+    "body": "## 准备与登记数据\n\n- L1–L11 文件头与导入（import 区）：文件头注释说清工具服务只管登记表；导入 pi、Cordis、Sessions.ts 的两个类型和 Text 工具。\n- L12–L33 给 ctx 加 tools，声明关口三 session/before-tool（declare module 'cordis'）：Context 上加 tools 字段；Events 上加关口三：要执行一个工具之前，照插件挂上去的先后挨个 await，可以 deny 只拦这一个，或 stop 整轮停下。\n- L34–L53 ToolSpec：登记一个工具要给的东西：三项：给模型看的定义、给哪几种会话用、执行函数 run。run 拿到已校验的参数、会话、停止信号、调用号，交回给模型看的结果。",
     "sources": [
       "src7/Tools.ts"
     ]
   },
   {
     "id": "r-tools-01",
-    "parent": "r-tools",
+    "parent": "r-tools-g1",
     "title": "L1–L11 文件头与导入（import 区）",
     "summary": "文件头注释说清工具服务只管登记表；导入 pi、Cordis、Sessions.ts 的两个类型和 Text 工具。",
     "body": "**行号：L1–L11**\n\n### 代码原文\n```ts\n  1  /**\n  2   * 工具：自己不带任何工具，只管一张登记表。\n  3   * 自带的、别的插件的工具都调 register 登记进来；\n  4   * 会话每一步调 list 要清单，模型要了工具就调 execute 一个个执行。\n  5   */\n  6  import * as piAi from '@earendil-works/pi-ai';\n  7  import * as cordis from 'cordis';\n  8  import type { Session, SessionGate } from './Sessions.ts';\n  9  import * as textModule from './utils/Text.ts';\n 10  \n 11  \n```\n\n### 解释\n- L1–L5：文件头注释：自己不带工具，只管登记表；自带的、插件的工具都调 register；会话每一步调 list 要清单；模型要了工具就调 execute 一个个执行。\n- L6：pi 本体，用它的 Tool、ToolCall、内容块类型和 validateToolArguments、contentText。\n- L7：Cordis；Tools 继承它的 Service。\n- L8：只拿 Sessions.ts 的 `Session`、`SessionGate` 类型（import type，运行时不加载）。\n- L9：文字小工具 Text，用它的 getMessage。\n- L10–L11：空行。\n\n### 调到别处\nsrc7/Sessions.ts:469 Session；src7/Sessions.ts:138 SessionGate；src7/utils/Text.ts",
@@ -21,7 +31,7 @@
   },
   {
     "id": "r-tools-02",
-    "parent": "r-tools",
+    "parent": "r-tools-g1",
     "title": "L12–L33 给 ctx 加 tools，声明关口三 session/before-tool（declare module 'cordis'）",
     "summary": "Context 上加 tools 字段；Events 上加关口三：要执行一个工具之前，照插件挂上去的先后挨个 await，可以 deny 只拦这一个，或 stop 整轮停下。",
     "body": "**行号：L12–L33**\n\n### 代码原文\n```ts\n 12  declare module 'cordis' {\n 13    interface Context {\n 14      /** 工具服务，实现在 src7/Tools.ts。 */\n 15      tools: Tools;\n 16    }\n 17    interface Events {\n 18      /**\n 19       * 关口三，要执行一个工具了，先给把关的人看：照插件挂上去的先后一个个 await。\n 20       * 只不让执行这一个的，在 gate.deny 里写上理由（理由会当成工具结果给模型看，会话接着走）；\n 21       * 要整场这一轮停下的，在 gate.stop 里写理由。监听的函数不许有返回值。\n 22       * 关口四 session/after-tool 由会话循环发，声明在 Sessions.ts，数据是下面的 ToolDone。\n 23       * 谁发：src7/Tools.ts 的 Tools.execute\n 24       * 谁接：\n 25       *   src7/plugins/approval/index.ts 的 Approval.constructor\n 26       *   src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 27       *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools\n 28       */\n 29      'session/before-tool'(gate: ToolGate): void | Promise<void>;\n 30    }\n 31  }\n 32  \n 33  \n```\n\n### 解释\n- L12–L16：`declare module 'cordis'`，`interface Context` 加 `tools: Tools`。\n- L17：`interface Events` 开始。\n- L18–L22：注释：关口三，执行前给把关的人看；`gate.deny` 只不让执行这一个（理由当成工具结果给模型，会话接着走）；`gate.stop` 整场这一轮停下；监听函数不许有返回值（有了 Cordis 的 serial 就不再问后面的人）。关口四声明在 Sessions.ts。\n- L23–L28：注释：谁发（Tools.execute），谁接（approval、bots 的 ChannelTools、progress 的 GroupDaily）。\n- L29：`'session/before-tool'(gate: ToolGate): void | Promise<void>`。\n- L30–L31：闭合。L32–L33：空行。\n\n### 调到别处\n无（只是类型声明；发出处 src7/Tools.ts:147）",
@@ -31,7 +41,7 @@
   },
   {
     "id": "r-tools-03",
-    "parent": "r-tools",
+    "parent": "r-tools-g1",
     "title": "L34–L53 ToolSpec：登记一个工具要给的东西",
     "summary": "三项：给模型看的定义、给哪几种会话用、执行函数 run。run 拿到已校验的参数、会话、停止信号、调用号，交回给模型看的结果。",
     "body": "**行号：L34–L53**\n\n### 代码原文\n```ts\n 34  /** 登记一个工具要给的东西。 */\n 35  export interface ToolSpec {\n 36    /** 给模型看的：名字、说明、参数的形状。 */\n 37    definition: piAi.Tool;\n 38    /** 给哪几种会话用。比如只写 ['work']，前台对话（kind 是 front）就拿不到它。 */\n 39    kinds: string[];\n 40    /**\n 41     * 执行。\n 42     * @param args 模型给的参数，已经照 definition.parameters 校验过，直接用。\n 43     * @param session 是哪场会话要执行。\n 44     * @param signal 停止信号：网页、飞书点了停止就触发。要等很久的工具（搜索、生图、跑命令、子任务）把它传给 fetch、子进程，\n 45     *   或者听它的 abort 事件，收到就断开、抛错；写文件这类快的不用管它，照常做完。老工具不写这个参数也行。\n 46     * @param callId 模型这次调用的调用号（piAi.ToolCall 的 id）：同一次调用重来还是它。要防重复执行的工具（agent_task 派活）拿它当键；\n 47     *   别的工具不写这个参数也行。\n 48     * @returns 给模型看的文字。抛错就算出错，原因给模型看。\n 49     */\n 50    run(args: Record<string, unknown>, session: Session, signal: AbortSignal, callId: string): Promise<ToolResult> | ToolResult;\n 51  }\n 52  \n 53  \n```\n\n### 解释\n- L34–L35：注释“登记一个工具要给的东西”，`export interface ToolSpec`。\n- L36–L37：`definition: piAi.Tool`：名字、说明、参数形状，给模型看。\n- L38–L39：`kinds: string[]`：给哪几种会话用；比如只写 ['work']，前台对话（kind 是 front）就拿不到。\n- L40–L49：run 的文档注释：args 已照 definition.parameters 校验过；session 是哪场会话；signal 是停止信号，慢工具要传给 fetch、子进程或听 abort，快的不用管；callId 是这次调用号，同一次调用重来还是它，要防重复执行的工具拿它当键；返回给模型看的文字，抛错就算出错。\n- L50：`run(args, session, signal, callId): Promise<ToolResult> | ToolResult`。\n- L51：闭合。L52–L53：空行。\n\n### 调到别处\n无（类型声明）",
@@ -40,8 +50,18 @@
     ]
   },
   {
-    "id": "r-tools-04",
+    "id": "r-tools-g2",
     "parent": "r-tools",
+    "title": "调用的数据形状（L54–L84）",
+    "summary": "工具返回、调用结果、关口三和关口四的数据。",
+    "body": "## 调用的数据形状\n\n- L54–L57 ToolResult：工具 run 交回的东西：要么一段文字，要么一组文字块和图片块（看图模型才收图片，比如 read 读到图片）。\n- L58–L68 ToolOutcome：一次工具调用的结果：execute 交回的统一形状：给模型看的文字、可选的图片、是不是出错。\n- L69–L77 ToolGate：关口三的数据：在关口共有的 session、stop 上加两项：模型的这次调用 call，和只拦这一个的理由 deny。\n- L78–L84 ToolDone：关口四的数据：和 ToolGate 同一份但去掉 deny（已经执行过了），多一项执行结果 outcome；插件可以改它、换掉它，接进对话的是最后这一份。",
+    "sources": [
+      "src7/Tools.ts"
+    ]
+  },
+  {
+    "id": "r-tools-04",
+    "parent": "r-tools-g2",
     "title": "L54–L57 ToolResult：工具 run 交回的东西",
     "summary": "要么一段文字，要么一组文字块和图片块（看图模型才收图片，比如 read 读到图片）。",
     "body": "**行号：L54–L57**\n\n### 代码原文\n```ts\n 54  /** 工具 run 交回的：一段文字；或者文字和图片块（看图模型才收图片，比如 read 读到图片）。 */\n 55  export type ToolResult = string | (piAi.TextContent | piAi.ImageContent)[];\n 56  \n 57  \n```\n\n### 解释\n- L54：注释。\n- L55：`string | (piAi.TextContent | piAi.ImageContent)[]`。\n- L56–L57：空行。\n\n### 调到别处\n无（类型声明）",
@@ -51,7 +71,7 @@
   },
   {
     "id": "r-tools-05",
-    "parent": "r-tools",
+    "parent": "r-tools-g2",
     "title": "L58–L68 ToolOutcome：一次工具调用的结果",
     "summary": "execute 交回的统一形状：给模型看的文字、可选的图片、是不是出错。",
     "body": "**行号：L58–L68**\n\n### 代码原文\n```ts\n 58  /** 一次工具调用的结果。 */\n 59  export interface ToolOutcome {\n 60    /** 给模型看的文字。 */\n 61    text: string;\n 62    /** 给模型看的图片；没有就不写。 */\n 63    images?: piAi.ImageContent[];\n 64    /** 是不是出错了。 */\n 65    isError: boolean;\n 66  }\n 67  \n 68  \n```\n\n### 解释\n- L58–L59：注释“一次工具调用的结果”，`export interface ToolOutcome`。\n- L60–L61：`text` 给模型看的文字。\n- L62–L63：`images?` 给模型看的图片，没有就不写。\n- L64–L65：`isError` 是不是出错。\n- L66：闭合。L67–L68：空行。\n\n### 调到别处\n无（类型声明）",
@@ -61,7 +81,7 @@
   },
   {
     "id": "r-tools-06",
-    "parent": "r-tools",
+    "parent": "r-tools-g2",
     "title": "L69–L77 ToolGate：关口三的数据",
     "summary": "在关口共有的 session、stop 上加两项：模型的这次调用 call，和只拦这一个的理由 deny。",
     "body": "**行号：L69–L77**\n\n### 代码原文\n```ts\n 69  /** 事件 session/before-tool 的数据：关口共有的 session、stop，加上这次调用。 */\n 70  export interface ToolGate extends SessionGate {\n 71    /** 模型的这次调用：工具名、参数、调用号。 */\n 72    call: piAi.ToolCall;\n 73    /** 不让执行这一个的理由；谁不让执行谁写。没人写就放行。和 stop 不同：会话接着走。 */\n 74    deny?: string;\n 75  }\n 76  \n 77  \n```\n\n### 解释\n- L69：注释：关口共有的 session、stop，加上这次调用。\n- L70：`export interface ToolGate extends SessionGate`。\n- L71–L72：`call: piAi.ToolCall` 工具名、参数、调用号。\n- L73–L74：`deny?` 不让执行这一个的理由；没人写就放行。和 stop 不同：会话接着走。\n- L75：闭合。L76–L77：空行。\n\n### 调到别处\nsrc7/Sessions.ts:138 SessionGate",
@@ -71,7 +91,7 @@
   },
   {
     "id": "r-tools-07",
-    "parent": "r-tools",
+    "parent": "r-tools-g2",
     "title": "L78–L84 ToolDone：关口四的数据",
     "summary": "和 ToolGate 同一份但去掉 deny（已经执行过了），多一项执行结果 outcome；插件可以改它、换掉它，接进对话的是最后这一份。",
     "body": "**行号：L78–L84**\n\n### 代码原文\n```ts\n 78  /** 事件 session/after-tool 的数据：和 before-tool 同一份（已经执行过了，不再有 deny），多了执行的结果。 */\n 79  export type ToolDone = Omit<ToolGate, 'deny'> & {\n 80    /** 执行的结果（没执行、被拦下、出错的也在这）。插件可以改它、换掉它，接进对话的是最后这一份。 */\n 81    outcome: ToolOutcome;\n 82  };\n 83  \n 84  \n```\n\n### 解释\n- L78：注释。\n- L79：`Omit<ToolGate, 'deny'> & { ... }`。\n- L80–L81：`outcome: ToolOutcome`，没执行、被拦下、出错的也在这。\n- L82：闭合。L83–L84：空行。\n\n### 调到别处\n无（类型声明；用处 src7/Sessions.ts:613）",
@@ -80,8 +100,18 @@
     ]
   },
   {
-    "id": "r-tools-08",
+    "id": "r-tools-g3",
     "parent": "r-tools",
+    "title": "Tools 类（L85–L194）",
+    "summary": "类头与登记表、登记、列清单、执行一个工具。",
+    "body": "## Tools 类\n\n- L85–L97 Tools 类头、登记表与构造函数：Tools 继承 Cordis 的 Service；私有登记表是一个 Map（工具名 → ToolSpec，按登记先后）；构造函数只把自己登记成名叫 tools 的服务。\n- L98–L120 register：登记一个工具：同名的登记第二次就抛错；否则用 ctx.effect 放进登记表，并挂一个清理：登记它的那个插件被拔掉时，工具自动撤掉。\n- L121–L132 list：这种会话能用的工具清单：从登记表里挑出 kinds 包含这个种类的工具，只交出给模型看的定义，顺序就是登记的先后。\n- L133–L194 execute：执行模型要的一个工具：一次执行的全过程：会话已停就不执行；过关口三（stop 停整轮、deny 只拦这一个）；查登记表和 kinds；打一行跟踪；照定义校验参数后调 run；把结果整理成 ToolOutcome。从不往外抛错，出错、停止都写在结果里给模型看。",
+    "sources": [
+      "src7/Tools.ts"
+    ]
+  },
+  {
+    "id": "r-tools-08",
+    "parent": "r-tools-g3",
     "title": "L85–L97 Tools 类头、登记表与构造函数",
     "summary": "Tools 继承 Cordis 的 Service；私有登记表是一个 Map（工具名 → ToolSpec，按登记先后）；构造函数只把自己登记成名叫 tools 的服务。",
     "body": "**行号：L85–L97**\n\n### 代码原文\n```ts\n 85  /** 工具服务。 */\n 86  export class Tools extends cordis.Service {\n 87    /** 登记表：工具名 → 工具，按登记的先后。 */\n 88    private readonly specs = new Map<string, ToolSpec>();\n 89  \n 90    /**\n 91     * 登记 tools 插件：把 Tools 作为服务挂到 Cordis 上，名字叫 tools（super(ctx, 'tools') 做的；以后用 ctx.tools 取）。\n 92     * @param ctx Cordis 给的 ctx。\n 93     */\n 94    constructor(ctx: cordis.Context) {\n 95      super(ctx, 'tools');\n 96    }\n 97  \n```\n\n### 解释\n- L85–L86：注释“工具服务”，`export class Tools extends cordis.Service`。\n- L87–L88：`private readonly specs = new Map<string, ToolSpec>()`：登记表，Map 会记住插入先后。\n- L90–L93：构造函数文档注释：super(ctx, 'tools') 把它挂成服务，以后用 ctx.tools 取。\n- L94–L96：`constructor(ctx)`，只有一句 `super(ctx, 'tools')`。\n- L97：空行。\n\n### 调到别处\n无（cordis.Service 的构造函数）",
@@ -91,7 +121,7 @@
   },
   {
     "id": "r-tools-09",
-    "parent": "r-tools",
+    "parent": "r-tools-g3",
     "title": "L98–L120 register：登记一个工具",
     "summary": "同名的登记第二次就抛错；否则用 ctx.effect 放进登记表，并挂一个清理：登记它的那个插件被拔掉时，工具自动撤掉。",
     "body": "**行号：L98–L120**\n\n### 代码原文\n```ts\n 98    /**\n 99     * 登记一个工具。登记它的那个插件被拔掉，这个工具自动撤掉。\n100     * @param spec 定义、给哪几种会话用、执行函数。\n101     * @throws 同名的登记第二次抛错。\n102     */\n103    register(spec: ToolSpec): void {\n104      const name = spec.definition.name;\n105  \n106      //G 同名的已经登记过 → 抛错，不悄悄盖掉。\n107      if (this.specs.has(name)) {\n108        throw new Error(`工具 ${name} 已经登记过了`);\n109      }\n110  \n111      //M 在服务的方法里，this.ctx 是调用方（登记工具的那个插件）的 ctx，所以这个清理挂在那个插件身上。\n112      const specs = this.specs;\n113      this.ctx.effect(() => {\n114        specs.set(name, spec);\n115        return () => {\n116          specs.delete(name);\n117        };\n118      });\n119    }\n120  \n```\n\n### 解释\n- L98–L102：文档注释：插件被拔掉，工具自动撤掉；同名第二次抛错。\n- L103：`register(spec: ToolSpec): void`。\n- L104：工具名取自 `spec.definition.name`。\n- L106–L109：守卫：登记表里已有这个名字 → 抛“工具 X 已经登记过了”，不悄悄盖掉。\n- L111：注释：在服务的方法里，`this.ctx` 是调用方插件的 ctx，所以清理挂在那个插件身上。\n- L112：先把登记表存到局部变量 `specs`。\n- L113–L118：`this.ctx.effect`：执行时 `specs.set(name, spec)`，交回的清理函数 `specs.delete(name)`。\n- L119：函数结束。L120：空行。\n\n### 调到别处\ncordis 的 ctx.effect",
@@ -101,7 +131,7 @@
   },
   {
     "id": "r-tools-10",
-    "parent": "r-tools",
+    "parent": "r-tools-g3",
     "title": "L121–L132 list：这种会话能用的工具清单",
     "summary": "从登记表里挑出 kinds 包含这个种类的工具，只交出给模型看的定义，顺序就是登记的先后。",
     "body": "**行号：L121–L132**\n\n### 代码原文\n```ts\n121    /**\n122     * 这种会话能用的工具清单。\n123     * @param kind 会话的种类。\n124     * @returns 给模型看的工具定义，按登记的先后。\n125     */\n126    list(kind: string): piAi.Tool[] {\n127      //M 登记表里挑出这种会话能用的，只交出给模型看的定义。\n128      const all = [...this.specs.values()];\n129      const usable = all.filter((spec) => spec.kinds.includes(kind));\n130      return usable.map((spec) => spec.definition);\n131    }\n132  \n```\n\n### 解释\n- L121–L125：文档注释：参数 kind 是会话种类；交回给模型看的定义，按登记先后。\n- L126：`list(kind: string): piAi.Tool[]`。\n- L127：注释。\n- L128：`[...this.specs.values()]` 取出全部。\n- L129：`filter` 留下 `spec.kinds.includes(kind)` 的。\n- L130：`map` 成 `spec.definition` 交回。\n- L131：函数结束。L132：空行。\n\n### 调到别处\n无；调用方 src7/Sessions.ts:548",
@@ -111,7 +141,7 @@
   },
   {
     "id": "r-tools-11",
-    "parent": "r-tools",
+    "parent": "r-tools-g3",
     "title": "L133–L194 execute：执行模型要的一个工具",
     "summary": "一次执行的全过程：会话已停就不执行；过关口三（stop 停整轮、deny 只拦这一个）；查登记表和 kinds；打一行跟踪；照定义校验参数后调 run；把结果整理成 ToolOutcome。从不往外抛错，出错、停止都写在结果里给模型看。",
     "body": "**行号：L133–L194**\n\n### 代码原文\n```ts\n133    /**\n134     * 执行模型要的一个工具。\n135     * @param call 模型的这次调用：工具名、参数、调用号。\n136     * @param session 是哪场会话要执行。\n137     * @param signal 这一轮的停止信号（就是掐模型请求的那个），原样交给工具。\n138     * @returns 结果。不抛错：没执行、出错、被停止，都写在结果里给模型看。\n139     * 副作用：执行工具。\n140     */\n141    async execute(call: piAi.ToolCall, session: Session, signal: AbortSignal): Promise<ToolOutcome> {\n142      //G 会话被喊停了 → 这一批里后面的工具都不执行。\n143      if (session.row.state !== 'running') return { text: '未执行：停下来了', isError: true };\n144  \n145      //M 关口三，执行之前：挨个问 session/before-tool。不让执行这一个的写 gate.deny，要整场停下的写 gate.stop。没人管就放行。\n146      const gate: ToolGate = { session, call };\n147      await this.ctx.serial('session/before-tool', gate);\n148  \n149      //G 有插件喊停 → 这个工具不执行，会话停下；这一批后面的工具碰到开头那条守卫，也不执行。\n150      if (gate.stop !== undefined) {\n151        session.stop(gate.stop);\n152        return { text: `未执行：${gate.stop}`, isError: true };\n153      }\n154  \n155      //G 有插件不让执行这一个 → 理由给模型看，会话接着走。\n156      if (gate.deny !== undefined) return { text: `未执行：${gate.deny}`, isError: true };\n157  \n158      //G 没登记这个名字，或者这种会话不能用它。\n159      const spec = this.specs.get(call.name);\n160      if (spec === undefined || !spec.kinds.includes(session.row.kind)) {\n161        return { text: `没有这个工具：${call.name}`, isError: true };\n162      }\n163  \n164      //T 跟踪：执行工具。结果接进对话时，打印插件会再打一行。\n165      const vars = {\n166        会话: session.id,\n167        工具: call.name,\n168        参数: call.arguments,\n169      };\n170      this.ctx.emit('trace', 'Tools.execute', '执行工具', 'spec.run(args, session, signal, call.id)', vars);\n171      try {\n172        //M 模型给的参数是外面进来的，在这里照工具的定义校验一次；工具里面直接用。调用号原样交给工具。\n173        const args = piAi.validateToolArguments(spec.definition, call) as Record<string, unknown>;\n174        const result = await spec.run(args, session, signal, call.id);\n175  \n176        //M 工具交回一段文字：原样给模型。\n177        if (typeof result === 'string') return { text: result, isError: false };\n178  \n179        //M 工具交回几块：文字拼起来，图片单独挑出来。\n180        const text = piAi.contentText(result);\n181        const images = result.filter((block): block is piAi.ImageContent => {\n182          return block.type === 'image';\n183        });\n184        return { text, images, isError: false };\n185      } catch (error) {\n186        //G 点了停止、工具收到信号断开抛的错 → 记成“已停止”，不算工具出错。已经做了的不回滚。\n187        if (signal.aborted) return { text: '已停止：点了停止，工具没做完', isError: false };\n188  \n189        //M 参数不对、工具抛错，都不往外抛：原因当成结果给模型看，它自己决定怎么办。\n190        const reason = textModule.getMessage(error);\n191        return { text: `出错：${reason}`, isError: true };\n192      }\n193    }\n194  }\n```\n\n### 解释\n- 输入：模型的这次调用 call、会话 session、这一轮的停止信号 signal。\n- 输出：ToolOutcome（text、images、isError）。\n- 六步见下面六个子块。\n\n### 调到别处\nsrc7/Sessions.ts:648 Session.stop；src7/utils/Text.ts:17 getMessage；src7/utils/Trace.ts:80 trace 事件；pi 的 validateToolArguments、contentText（外部包）；调用方 src7/Sessions.ts:610",
