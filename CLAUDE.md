@@ -23,7 +23,7 @@
   - **一个插件管一件用户叫得出名字的事**（云端顾问 04-4，用户 #156“少插件”）：同一件事的子功能放进这个插件里的文件，不另起插件；加新插件前先想能不能并进已有的。
   - **插件之间尽量只靠事件**（用户 11-17 #113）：插件只发事件、收事件；要别人帮忙就发一个事件、等别人回一个事件，自己不管别人怎么做、做多久。直接调别的插件的函数尽量减少；
   - **会话每一步都有关口事件**（用户 11-17 #113）：调模型之前、模型回来之后、执行工具之前、执行工具之后，各发一个事件，插件在关口上决定要不要往下走（把关插件 approval 就挂在这里）。不按步数限制会话（骨架里的步数限制已定删除，用户 #114）；
-  - 打印执行路径的插件一定要有（`src7/plugins/trace/`）：看一条消息从头到尾走过哪个模块、哪个函数、哪个事件、谁响应的，带一句人话、一句代码、关键变量。
+  - 打印执行路径的插件一定要有（现在是教程插件 `src7/plugins/tutorial/`，11-17 由 flow、boot-trail、trace 合成）：看一条消息从头到尾走过哪个模块、哪个函数、哪个事件、谁响应的，带一句人话、一句代码、关键变量。
 
 - **相似的函数合成一个**（用户 11-11：“我并不是一定追求要代码少，而是担心ai去做的代码过分喜欢冗余，例如做出了某一类函数 其作用差不多 只是面对情况不同，但其实可以通过 if 或 switch 把功能合并 从而减少代码”）：
   - 几个函数做的事差不多、只是面对的情况不同，就合成一个，用参数加 `if` 分情况（不用 switch、不写 else，见“代码约定”）；
@@ -123,7 +123,7 @@
 
 以机器人为核心的多机器人后端：HTTP 服务为主，飞书等是外接渠道。一条消息经分派进入会话，会话循环跑到不再调工具。代码和文档里统一叫 jmbots。
 
-- 项目在 `F:\aidata\source\jmbots`，入口 `src/entries/Main.ts`，分层和每个模块的函数见设计文档。
+- 项目在 `F:\aidata\source\jmbots`，入口 `src7/Main.ts`，骨架和“一条消息怎么走”见 `src7/README.md`，插件见 `src7/docs/插件地图.md`。
 - 运行时目录 `F:\aidata\AIJMBots\jmbotsData`：现在是 src7 在用的数据（用户 11-14 13:37 EST：原来的 `jmbotsDataS7` 改名成 `jmbotsData`，原来的正式数据改名成 `jmbotsDataS4`，**`jmbotsDataS4` 不碰**）；基地 `jmbots.exe` 在上一层 `F:\aidata\AIJMBots`。目录里有：`bots/<机器人>/`（`message/` 一条消息一个文件夹，`workspace/`，`memory/`）、`skills/`、`memory/`（公共记忆）、`prompts/`、`integrations/`、`data/`（`data/index/libs/` 记忆库，`data/index/rag/` RAG 索引，`data/logs/` 日志）、`updates/`。给 jmbots 写的一次性脚本放这里；编译、下载用的缓存放 `F:\aidata\cache\`，不放 C 盘。
 - 界面（设计见 `docs/界面/01_界面设计.md`，方向见 `docs/界面/02_一个程序跑起来的规划.md`）：`local/` 是 Rust（Tauri）写的**基地** `jmbots.exe`，双击开窗口装载后端托管的网页，带托盘和命令行，memorycli 作为库融合进来，自己的 HTTP 接口提供记忆搜索和 RAG（取代独立的 memorycli 服务）；`web/` 是 React + antd + Tiptap 的网页，Bun 后端托管 `dist/web`（`bun run build:web`），浏览器单开也能用。
 
@@ -135,8 +135,8 @@
   - `POST /api/relay/reply {id, text}` 回，回信前面自动署“Claude：”。
 - 给 jm开发 派活：`POST /api/message {bot: '周小灵', text: 'jm开发 …', from: 'claude'}`，它的回信落在这条消息的 replies 里，以“jm开发：”开头。
 - 周小灵给 Claude 的留言是执行端为 Claude、`reply: false` 的 agent_task，用 `node ztools/claude-link/Claude_Link.mjs inbox` 列、`take <任务号>` 取（老目录 `integrations/claude/inbox/` 只读留底）。要用户操作、在等回复、做完要告知时，往 `integrations/feishu/outbox/` 放 `.md` 发飞书。
-- 运行的是基地守护的二进制（`jmbots-server.exe`），源码放心改。基地守护时 `Swap_Serve` 会拒绝，它只留给源码模式。
-- **0.4 冻结，不再发新版**（用户 11-10：“0.4以后肯定不发布版本啊，它就这样了，以后用新版本接手，调到 0.6.x 开始”）：以后由 Cordis 版 `src6/` 接手，版本号从 0.6.x 开始，它的发版和守护在 H 批做。0.4 原来的发版流程不再使用：`src/Versions.ts` 加一项，跑 `bun run release`。
+- 运行的是基地守护的二进制（`jmbots-server.exe`），源码放心改；换版只走 `updates/` 让基地换（见“分工”里的换后端版本）。
+- **只有 src7**（用户 11-19 #219：“src4 和 src6 都是不需要的，都要删除的”）：0.4（`src/`、`tests/`）和 `src6/`、`tests6/` 等已删，删前打了标签 `pre-src-rename` 并整份归档在 `F:\aidata\source\jmbots-archive\20261119\`。发版照 `docs/协作/中控接班/中控接班提示词.md` 第 6 节（`src7/utils/Versions.json` 加一项 → `Build_Src7.ts` 编进 `updates/` → 基地换）。
 
 ## 在哪里跑
 
@@ -165,14 +165,13 @@
 ## 命令
 
 ```bash
-bun run typecheck   # 类型检查
-bun run lint        # eslint，--max-warnings 0
-bun run test        # 即 bun test ./tests，离线测试
-bun run release     # 0.4 的发版，已冻结不再用（Cordis 版的发版在 H 批做）
-bun run swap        # 只用于源码模式：先检查，再试运行，再替换正式服务
+bun run typecheck:src7   # 类型检查（后端 + 网页）
+bun run test:src7        # src7 全量测试（要先问用户）
+bun run build:web        # 网页打包
+bun scripts/Build_Src7.ts --out <目录>   # 编后端 exe
 ```
 
-`tests/Live_*.ts` 和 `bun run eval:models` 会真实调用模型、产生费用，用户批准后才跑。
+会真实调用模型、产生费用的测试，用户批准后才跑。
 
 ## 代码约定（细则见 `docs/TypeScript书写规范.md`）
 

@@ -32,6 +32,9 @@ describe('isProjectCheck', () => {
     const rejected = [
       'bun run typecheck:src7 & del x',
       'bun run build',
+      'bun run release',
+      'bun scripts/Swap_Serve.ts',
+      'bun scripts/Build_Release.ts',
       'bun scripts/Other.ts',
       'bun scripts/Build_Src7.ts --out "a b"',
       'bun scripts/Build_Src7.ts --out x | more',

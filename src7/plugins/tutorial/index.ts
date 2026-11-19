@@ -12,6 +12,8 @@
  * 页面 /tutorial/ 由 web 插件按约定托管（dist/web/tutorial.html，源码 web/src/Tutorial/）；/flow/ 跳到 /tutorial/。接口：
  *   GET /api/tutorial/plugins               左栏插件：名字、版本、挂没挂上、有没有说明，加快照关键词、源码根目录
  *   GET /api/tutorial/readme?name=          插件的 说明.md 原文；还没写是空串
+ *   GET /api/tutorial/readings              组块阅读文件名清单
+ *   GET /api/tutorial/reading?name=         清单内一篇组块 Markdown 原文
  *   GET /api/tutorial/state?name=           这个插件现在的运行时变量：它提供的服务对象，加它用 ctx.flow.state 登记的，全量原样
  *   GET /api/tutorial/canvases              左栏画布：启动流程，加 data/flow/ 里每条带关键词的消息
  *   GET /api/tutorial/canvas?name=          一张画布：轨迹和泳道图（name 是 boot 或消息号）
@@ -25,8 +27,10 @@ import type * as cordis from 'cordis';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
+import * as embedded from '../../utils/Embedded.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as sourceDirModule from '../../utils/SourceDir.ts';
+import * as textModule from '../../utils/Text.ts';
 import * as snapshotModule from './Snapshot.ts';
 import type * as pluginIndex from '../Index.ts';
 import * as bootModule from './Boot.ts';
@@ -101,7 +105,7 @@ export const name = 'tutorial';
 /** 版本号。 */
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
-export const version = '1.1.11';
+export const version = '1.1.12';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -207,6 +211,37 @@ const CANVAS_NAME = /^(?:boot|\d+)$/u;
 
 /** 插件名：小写字母开头，字母、数字、横线。 */
 const PLUGIN_NAME = /^[a-z][a-z0-9-]*$/u;
+
+/** 组块阅读目录，和 readLines 共用登记路径。 */
+const READING_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/组块阅读/`;
+
+
+/** 列出组块目录直属的 Markdown 文件名，按文件名排序。 */
+async function getReadingFiles(): Promise<string[]> {
+  if (embedded.isCompiled()) {
+    //M 编译版从登记表列出组块，目录下的子目录不列入清单。
+    const registered = embedded.getNames();
+    const files = registered
+      .filter((file) => file.startsWith(READING_DIR))
+      .map((file) => file.slice(READING_DIR.length))
+      .filter((name) => name.endsWith('.md') && !name.includes('/'));
+    return files.sort();
+  }
+
+  //M 源码版从 readLines 使用的仓库根目录列出实际的 Markdown 文件。
+  const dir = path.resolve(import.meta.dir, '../../..', READING_DIR);
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
+    //G 未放入任何组块时返回空清单，其余读取错误交给 HTTP 层。
+    const code = textModule.getText(error, 'code');
+    if (code === 'ENOENT') return [];
+
+    throw error;
+  });
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+    .map((entry) => entry.name);
+  return files.sort();
+}
 
 
 /**
@@ -426,6 +461,30 @@ class Tutorial {
         text = lines.join('\n');
       }
       return { name: plugin, file, text };
+    });
+
+    //M 左栏按文件名顺序列出组块阅读。
+    app.get('/api/tutorial/readings', async () => {
+      const files = await getReadingFiles();
+      return { files };
+    });
+
+    //M 按清单读取一篇 Markdown，使用与插件说明相同的源码和内嵌读取逻辑。
+    app.get<Query>('/api/tutorial/reading', async (request, reply) => {
+      const name = request.query['name'] ?? '';
+      if (name === '') return reply.code(400).send({ error: '要给 name（组块文件名）' });
+
+      //G 只认清单里的完整文件名，外部传来的路径不能直接用于读文件。
+      const files = await getReadingFiles();
+      if (!files.includes(name)) return reply.code(404).send({ error: '没有这篇组块' });
+
+      //M 用已校验的文件名读取全文，文件已移除时返回 404。
+      const file = READING_DIR + name;
+      const lines = await sourceModule.readLines(file);
+      if (lines === undefined) return reply.code(404).send({ error: '没有这篇组块' });
+
+      const text = lines.join('\n');
+      return { name, file, text };
     });
 
     //M 登记「代码」「试一试」数据接口，返回插件导出的函数、路由和模型工具。

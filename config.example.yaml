@@ -252,7 +252,7 @@ channels:
 #           # 需要给机器人接消息的程序才登记 channels；机器人名须在顶层 bots 中启用。
 #           # 同一个渠道只交给一个程序，也避开正在运行的内置渠道名。普通服务不写 channels。
 #           # channels: [{ name: example-channel, bot: 助手 }]
-#           # 正式交给外置微信前，先给 plugins 中的 wechat、wechat-kefu 项加 disabled: true，确认旧实例已停。
+#           # 正式交给外置微信前，先给 plugins 中的 wechat-kefu 项加 disabled: true，确认旧实例已停。
 #           # 外置微信项的 channels 写成 [{ name: wechat, bot: 助手 }]，args 里的 --channel 同步改成 wechat。
 #           # 切回时先停外置微信并移除程序项，再恢复原内置项并去掉 disabled: true。channel_aliases 可以保留。
 #           # 外置微信验证用独立数据与引擎，并给进程传 --channel wechat-external，与 channels 中 name 相同。
@@ -274,8 +274,8 @@ channels:
 #   - name: desktop                # 窗口操控：/api/desktop/status、/api/desktop/action；程序在 <paths.program>/AOBW/aobw-capability.exe
 #   - name: screen                 # 录屏点击讲解，默认关闭，见顶层 screen 段
 #   - name: voice                  # 麦克风听写字幕，默认关闭，见顶层 voice 段
-#   - name: wechat                 # 微信渠道 + 客服页 /wechat/（积木客服改写）；引擎在 <运行时目录>/program/wechat（python/、runtime/）
-#     # disabled: true            # 正式用外置微信时取消这一行的内层注释；若用 wechat-kefu 名称也同样停用
+#   - name: wechat-kefu            # 微信渠道 + 客服页 /wechat-kefu/；引擎在 <运行时目录>/program/wechat（python/、runtime/）
+#     # disabled: true            # 正式用外置微信时取消这一行的内层注释
 #     config: { bot: 助手, interval_ms: 3000 }   # 可选 root、python、ocr_python、aobw_url（默认 http://127.0.0.1:30010）、lock_file、at_names
 #   - name: model-catalog          # 模型清单与运行兜底（已并入原 model-fallback）：从 providers 拉清单，并在模型限流/超长时换模型、排队
 #                                  # 要写在所有往系统提示词/messages 里加东西的插件（和 fake-model）后面，一般放最后

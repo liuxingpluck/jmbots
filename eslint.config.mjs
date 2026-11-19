@@ -1,4 +1,4 @@
-// TS 源码、Bun 脚本与离线测试共用只检查不产物的工程；MJS 保持 Node 兼容规则。
+// Bun 脚本和网页沿用各自的类型项目，MJS 使用 Node 规则。
 import eslintJs from '@eslint/js';
 import * as eslintConfig from 'eslint/config';
 import prettier from 'eslint-config-prettier';
@@ -20,14 +20,12 @@ export default eslintConfig.defineConfig([
       // 2026-10-29 重写前的旧代码，只作参考，不检查。
       '*_bak/**',
       'bak/**',
-      // Cordis 源码克隆、搬 0.5 时的参考文件、NamiDSH：只读，不检查。
-      'src6/cordis/**',
-      'src6/参考_src5/**',
+      // NamiDSH 只读，不检查。
       'namidsh/**',
     ],
   },
   {
-    files: ['src/**/*.ts', 'scripts/**/*.ts', 'scripts6/**/*.ts', 'tests/**/*.ts', 'src6/**/*.ts', 'tests6/**/*.ts', 'web/Build.ts', 'testpage/Build.ts', 'learn/**/*.ts'],
+    files: ['scripts/**/*.ts', 'web/Build.ts'],
     extends: [
       eslintJs.configs.recommended,
       ...tseslint.configs.recommendedTypeChecked,
@@ -55,23 +53,8 @@ export default eslintConfig.defineConfig([
       },
     },
   },
-  // 接口测试页：和网页同一套规则，用 testpage/tsconfig.json。
   {
-    files: ['testpage/src/**/*.{ts,tsx}'],
-    extends: [
-      eslintJs.configs.recommended,
-      ...tseslint.configs.recommendedTypeChecked,
-    ],
-    languageOptions: {
-      globals: globals.browser,
-      parserOptions: {
-        project: ['./testpage/tsconfig.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
-  },
-  {
-    files: ['scripts/**/*.mjs', 'tests/**/*.mjs', 'eslint.config.mjs'],
+    files: ['scripts/**/*.mjs', 'eslint.config.mjs'],
     extends: [eslintJs.configs.recommended],
     languageOptions: { globals: globals.node },
   },
@@ -79,15 +62,8 @@ export default eslintConfig.defineConfig([
   prettier,
   {
     files: [
-      'src/**/*.ts',
-      'src6/**/*.ts',
-      'tests6/**/*.ts',
       'web/**/*.{ts,tsx}',
-      'testpage/**/*.{ts,tsx}',
       'scripts/**/*.{ts,mjs}',
-      'scripts6/**/*.ts',
-      'tests/**/*.{ts,mjs}',
-      'learn/**/*.ts',
       'eslint.config.mjs',
     ],
     rules: {

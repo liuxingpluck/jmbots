@@ -9,30 +9,12 @@
     "bun": ">=1.3.14"
   },
   "scripts": {
-    "dev": "bun --watch src/entries/Main.ts serve",
-    "serve6": "bun src6/Main.ts",
-    "start": "bun run build:web && bun src/entries/Main.ts serve",
     "build:web": "bun web/Build.ts",
-    "build:testpage": "bun testpage/Build.ts",
-    "eval:models": "bun scripts/Eval_Models.ts",
-    "swap": "bun scripts/Swap_Serve.ts",
-    "release": "bun scripts/Build_Release.ts",
-    "serve:bg": "bun scripts/Start_Serve.ts",
-    "guard": "bun scripts/Guard.ts",
-    "autostart": "bun scripts/Install_Autostart.ts",
-    "release6": "bun scripts6/Build_Release.ts",
-    "swap6": "bun scripts6/Swap_Serve.ts",
-    "guard6": "bun scripts6/Guard.ts",
-    "typecheck": "tsc -p tsconfig.check.json && tsc -p web/tsconfig.json && tsc -p testpage/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json && tsc -p web/tsconfig.json",
     "typecheck:src7": "tsc -p tsconfig.src7.json && tsc -p web/tsconfig.json",
-    "test": "bun test ./tests ./tests6",
+    "test": "bun run test:src7",
     "test:src7": "bun test ./src7/plugins ./src7/tests/Web_Token.test.ts ./src7/tests/Session_Gates.test.ts &&bun src7/tests/Batch1_Test.ts && bun src7/tests/Cards_Test.ts && bun src7/tests/Feishu_Test.ts",
-    "dev:hold": "bun scripts/Dev_Hold.ts",
-    "guard:restart": "bun scripts/Guard_Restart.ts",
-    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,mjs}\" package.json tsconfig.json tsconfig.check.json eslint.config.mjs .prettierrc.json .vscode/launch.json .vscode/tasks.json .vscode/settings.json .vscode/extensions.json",
-    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,mjs}\" package.json tsconfig.json tsconfig.check.json eslint.config.mjs .prettierrc.json .vscode/launch.json .vscode/tasks.json .vscode/settings.json .vscode/extensions.json",
-    "lint": "eslint \"src/**/*.ts\" \"web/**/*.{ts,tsx}\" \"testpage/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" \"scripts6/**/*.ts\" \"tests/**/*.{ts,mjs}\" \"src6/**/*.ts\" \"tests6/**/*.ts\" \"learn/**/*.ts\" eslint.config.mjs --max-warnings 0",
-    "lint:budget": "eslint -c eslint.budget.config.mjs --no-error-on-unmatched-pattern \"src6/**/*.ts\""
+    "lint": "eslint \"web/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" eslint.config.mjs --max-warnings 0"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.4",

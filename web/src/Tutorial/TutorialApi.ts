@@ -363,6 +363,24 @@ export class TutorialApi {
     return body;
   }
 
+  /** 取左栏组块清单，文件名顺序由后端确定。 */
+  static async getReadings(): Promise<{ files: string[] }> {
+    const route = '/api/tutorial/readings';
+    //M 复用教程接口的令牌和错误处理。
+    return TutorialApi.get<{ files: string[] }>(route);
+  }
+
+  /**
+   * 读所选组块的 Markdown 原文。
+   * @param name 清单中的完整文件名。
+   */
+  static async getReading(name: string): Promise<{ text: string }> {
+    const encoded = encodeURIComponent(name);
+    const route = `/api/tutorial/reading?name=${encoded}`;
+    //M 用查询参数传文件名，文件是否可读由后端的清单校验。
+    return TutorialApi.get<{ text: string }>(route);
+  }
+
   /**
    * 「试一试」发一个请求：不管状态码是多少，都原样交回（不当错误抛）。
    * @param method 方法。

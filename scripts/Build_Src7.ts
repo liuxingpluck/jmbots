@@ -8,7 +8,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as serveProcess from '../scripts6/Serve_Process.ts';
+import * as serveProcess from './Serve_Process.ts';
 
 
 /** 这个平台可执行文件的后缀。 */
@@ -79,12 +79,19 @@ function importPath(file: string): string {
  */
 function writeEntry(workDir: string, webDir: string): string {
   //M src7 的源码原文（不含测试）：tutorial 照“文件:行号”取 JSDoc、函数源码给教程页，编译版磁盘上没有源码。
-  //M   插件的 说明.md 一起嵌：教程页「说明」标签读它。
+  //M   插件说明和组块 Markdown 一起嵌，供教程页读取。
   //M   拷成 workDir/src7-text/<路径>.txt 再嵌：.ts 原文件直接 with { type: 'file' }，Bun 会把同一个模块当成文件资源，
   //M   Main.ts 那边的命名导出就没了（0.7.6 编包时踩到）。登记名仍是 src7/<路径>。
   const textDir = path.join(workDir, 'src7-text');
+  const readingDir = 'docs/组块阅读';
   const sources = walk(path.join(serveProcess.ROOT, 'src7'))
-    .filter((item) => (item.endsWith('.ts') && !item.endsWith('.test.ts')) || item.endsWith('说明.md'))
+    .filter((item) => {
+      const source = item.endsWith('.ts') && !item.endsWith('.test.ts');
+      const readme = item.endsWith('说明.md');
+      const folder = path.posix.dirname(item);
+      const reading = folder === readingDir && item.endsWith('.md');
+      return source || readme || reading;
+    })
     .map((item): [string, string] => {
       const copy = path.join(textDir, `${item}.txt`);
       fs.mkdirSync(path.dirname(copy), { recursive: true });

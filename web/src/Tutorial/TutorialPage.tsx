@@ -17,7 +17,7 @@ import { TOKEN, withToken } from '../Token.ts';
 import { JsonBlock, TutorialScrollContext, TutorialWorkspaceContext, VIRTUAL_THRESHOLD } from './Code.tsx';
 import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
 import { CodeTab, TryTab } from './PluginTabs.tsx';
-import { buildReadmeTabItems } from './ReadmeTabs.tsx';
+import { buildReadmeTabItems, MarkdownContent } from './ReadmeTabs.tsx';
 import * as mind from './MindMap.tsx';
 import type * as mindData from './MindData.ts';
 import { TutorialApi, type Canvas, type CanvasList, type MessageCanvasItem, type PluginItem, type PluginList, type StateGroup, type Trail } from './TutorialApi.ts';
@@ -35,13 +35,16 @@ interface RouteState {
   ptab: string;
   /** 当前画布高亮的事件名；'' 不高亮。 */
   event: string;
-  /** 右侧悬浮栏顶上当前选中的页签：step 看这一步详情，plugin 看插件说明与代码。 */
-  rtab: 'step' | 'plugin';
+  /** 右栏选中的组块文件名，空串表示未选。 */
+  reading: string;
+  /** 右侧悬浮栏的页签：步骤详情、插件说明或组块阅读。 */
+  rtab: 'step' | 'plugin' | 'reading';
 }
 
-/** 左栏四组折叠状态（骨架、插件、启动流程、最近消息）。 */
+/** 左栏各组折叠状态（骨架、组块阅读、插件、启动流程、最近消息）。 */
 interface GroupOpenState {
   skeleton: boolean;
+  reading: boolean;
   plugins: boolean;
   boot: boolean;
   messages: boolean;
@@ -52,6 +55,7 @@ type LeftNavRow =
   | { key: string; kind: 'group-head'; groupKey: keyof GroupOpenState; title: string; count: number; expanded: boolean }
   | { key: string; kind: 'divider' }
   | { key: string; kind: 'plugin'; plugin: PluginItem }
+  | { key: string; kind: 'reading'; name: string }
   | { key: string; kind: 'boot' }
   | { key: string; kind: 'message'; message: MessageCanvasItem }
   | { key: string; kind: 'empty'; text: string };
@@ -290,14 +294,20 @@ function getRouteFromUrl(search: string): RouteState {
   const rawCanvas = params.get('canvas') ?? params.get('message') ?? '';
   const tab = params.get('tab') ?? '';
   const rawRtab = params.get('rtab') ?? '';
+  const reading = params.get('reading') ?? '';
 
   //M 右栏页签优先认 URL 里的 rtab；没给时：无画布/只带 plugin 落到「插件」，其余默认看「这一步」。
-  let rtab: 'step' | 'plugin' = 'step';
+  let rtab: RouteState['rtab'] = 'step';
   if (rawRtab === 'plugin') {
     rtab = 'plugin';
   }
   if (rawRtab !== 'step' && rawRtab !== 'plugin' && step === 0 && (plugin !== '' || tab === 'plugins')) {
     rtab = 'plugin';
+  }
+
+  //M 直接打开组块链接时显示文档，显式点过的其他右栏页签随地址保留。
+  if (rawRtab === 'reading' || (rawRtab === '' && reading !== '')) {
+    rtab = 'reading';
   }
 
   //M 显式给了画布参数：canvas=boot / 数字消息号 / boot=1 / 旧 tab=boot。
@@ -315,14 +325,17 @@ function getRouteFromUrl(search: string): RouteState {
     if (targetPlugin === '') {
       targetPlugin = SENTINEL_FIRST;
     }
-    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, rtab: 'plugin' };
+    if (rtab !== 'reading') {
+      rtab = 'plugin';
+    }
+    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab };
   }
 
   //M 裸 /tutorial/ 或旧 ?tab=session 但未指定消息号：待消息列表到达后自动落最新一条（无消息落 boot）。
   if (canvas === '') {
     canvas = SENTINEL_AUTO;
   }
-  return { canvas, step, plugin, ptab, event, rtab };
+  return { canvas, step, plugin, ptab, event, reading, rtab };
 }
 
 
@@ -332,7 +345,10 @@ function getRouteFromUrl(search: string): RouteState {
  */
 function buildRouteUrl(route: RouteState): string {
   const url = new URL(window.location.href);
-  for (const key of ['tab', 'plugin', 'canvas', 'step', 'message', 'session', 'boot', 'ptab', 'event', 'full', 'rtab']) {
+  const routeKeys = [
+    'tab', 'plugin', 'canvas', 'step', 'message', 'session', 'boot', 'ptab', 'event', 'full', 'reading', 'rtab',
+  ];
+  for (const key of routeKeys) {
     url.searchParams.delete(key);
   }
   if (route.canvas !== '' && route.canvas !== SENTINEL_AUTO) {
@@ -350,8 +366,11 @@ function buildRouteUrl(route: RouteState): string {
   if (route.event !== '') {
     url.searchParams.set('event', route.event);
   }
-  if (route.rtab === 'plugin') {
-    url.searchParams.set('rtab', 'plugin');
+  if (route.reading !== '') {
+    url.searchParams.set('reading', route.reading);
+  }
+  if (route.rtab !== 'step' || route.reading !== '') {
+    url.searchParams.set('rtab', route.rtab);
   }
   return url.toString();
 }
@@ -419,6 +438,39 @@ function usePluginReadme(name: string): { text: string | null; error: string } {
   }, [name]);
 
   return { text, error };
+}
+
+
+/** 读取并展示一篇组块，切换时由文件名重建组件。 */
+function ReadingView(props: { name: string; loadingLabel: string; errorLabel: string }): JSX.Element {
+  const { name } = props;
+  const [text, setText] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    //M 右栏只读所选文档，跳走后忽略未完成的请求。
+    const loading = TutorialApi.getReading(name);
+    void loading.then((result) => {
+      if (!active) return;
+
+      setText(result.text);
+    }, () => {
+      if (!active) return;
+
+      setFailed(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [name]);
+
+  if (failed) return <p className="tu-error" role="alert">{props.errorLabel}</p>;
+
+  if (text === null) return <antd.Spin aria-label={props.loadingLabel} />;
+
+  //M 复用插件说明页签的 Markdown、代码和表格渲染。
+  return <article className="tu-doc"><MarkdownContent body={text} /></article>;
 }
 
 
@@ -1007,12 +1059,20 @@ export function TutorialPage(): JSX.Element {
   const [themeName, setThemeName] = useState<theme.ThemeName>(() => theme.loadThemeName(window.localStorage));
   const themeSpec = theme.THEMES[themeName];
   const [plugins, setPlugins] = useState<PluginList | null>(null);
+  const [readingFiles, setReadingFiles] = useState<string[] | null>(null);
+  const [readingListFailed, setReadingListFailed] = useState(false);
   const [messages, setMessages] = useState<MessageCanvasItem[]>([]);
   const [canvasesLoaded, setCanvasesLoaded] = useState(false);
   const [error, setError] = useState('');
   const [route, setRoute] = useState<RouteState>(() => getRouteFromUrl(window.location.search));
   const [searchText, setSearchText] = useState('');
-  const [openGroups, setOpenGroups] = useState<GroupOpenState>({ skeleton: true, plugins: true, boot: true, messages: true });
+  const [openGroups, setOpenGroups] = useState<GroupOpenState>({
+    skeleton: true,
+    reading: true,
+    plugins: true,
+    boot: true,
+    messages: true,
+  });
 
   //M 左右悬浮栏宽度与收起状态，读写 localStorage 均包 try/catch。
   const [leftWidth, setLeftWidth] = useState<number>(() => getStoredWidth(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH, MIN_LEFT_WIDTH));
@@ -1034,6 +1094,9 @@ export function TutorialPage(): JSX.Element {
   const viewLabel = t('教程视图');
   const canvasLabel = t('画布');
   const mindLabel = t('思维导图');
+  const readingLabel = t('组块阅读');
+  const readingLoadingLabel = t('正在读取组块…');
+  const readingErrorLabel = t('读不到组块');
   const showMind = tutorialView.view === 'mind';
 
   const attachRightScroll = useCallback((el: HTMLDivElement | null): void => {
@@ -1107,10 +1170,20 @@ export function TutorialPage(): JSX.Element {
     window.history.replaceState(window.history.state, '', buildRouteUrl(cleared));
   }, [activeTrail, loadedCanvasName, route]);
 
-  //M 拉插件列表和最近消息画布列表。
+  //M 切换组块时从新文档开头读，不沿用上一篇的滚动位置。
+  useEffect(() => {
+    if (route.rtab !== 'reading' || rightScrollParent === null) return;
+
+    rightScrollParent.scrollTop = 0;
+  }, [rightScrollParent, route.reading, route.rtab]);
+
+  //M 拉插件、组块和最近消息画布列表。
   const load = useCallback(() => {
     const pluginLoading = TutorialApi.get<PluginList>('/api/tutorial/plugins');
     pluginLoading.then(setPlugins, (failed: unknown) => setError((failed as Error).message));
+    //M 把组块清单的失败留在组块分组，插件和画布仍可使用。
+    const readingLoading = TutorialApi.getReadings();
+    void readingLoading.then((result) => setReadingFiles(result.files), () => setReadingListFailed(true));
     const canvasLoading = TutorialApi.get<CanvasList>('/api/tutorial/canvases');
     canvasLoading.then((result) => {
       if (Array.isArray(result.messages)) {
@@ -1127,7 +1200,7 @@ export function TutorialPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    //M 教程页首次挂载完毕立即并发请求插件列表和近期消息画布清单。
+    //M 教程页首次挂载后并发请求左栏清单。
     load();
   }, [load]);
 
@@ -1146,7 +1219,7 @@ export function TutorialPage(): JSX.Element {
     }
     if (route.plugin === SENTINEL_FIRST && plugins !== null) {
       const firstPlugin = plugins.list[0]?.name ?? '';
-      const settled = { ...route, plugin: firstPlugin, rtab: 'plugin' as const };
+      const settled = { ...route, plugin: firstPlugin };
       setRoute(settled);
       //M 将旧版 ?tab=plugins 对应的 __FIRST__ 哨兵静态替换为首个插件名并定稿地址栏。
       window.history.replaceState(window.history.state, '', buildRouteUrl(settled));
@@ -1227,10 +1300,23 @@ export function TutorialPage(): JSX.Element {
   const pluginNames = useMemo(() => new Set(pluginList.map((item) => item.name)), [pluginList]);
   const workspace = plugins?.workspace ?? '';
 
-  //M 过滤左栏四组项：骨架在最上面，与插件之间隔开，随后是启动流程与最近消息。
+  //M 各组沿用左栏搜索；组块匹配文件名或本组名称。
   const query = searchText.trim().toLowerCase();
   const hasSearch = query !== '';
   const showBoot = !hasSearch || '启动流程boot'.includes(query);
+  const filteredReadings = useMemo(() => {
+    const files = readingFiles ?? [];
+    if (!hasSearch || readingLabel.toLowerCase().includes(query)) return files;
+
+    return files.filter((name) => name.toLowerCase().includes(query));
+  }, [hasSearch, query, readingFiles, readingLabel]);
+  let readingStatus = readingLoadingLabel;
+  if (readingFiles !== null) {
+    readingStatus = t('没有匹配的组块');
+  }
+  if (readingListFailed) {
+    readingStatus = readingErrorLabel;
+  }
   const filteredMessages = useMemo(() => {
     return messages.filter((item) => {
       if (!hasSearch) return true;
@@ -1271,6 +1357,12 @@ export function TutorialPage(): JSX.Element {
   //M 点左栏「启动流程」或「最近消息」：切画布、清无效步号；当前若在「这一步」页签留在原地看新画布。
   const onSelectCanvas = (canvasName: string): void => {
     navigate({ ...route, canvas: canvasName, step: 0 });
+  };
+
+  //M 点左栏组块时展开右栏，并把完整文件名写入地址以便刷新恢复。
+  const onSelectReading = (name: string): void => {
+    toggleRightCollapsed(false);
+    navigate({ ...route, reading: name, rtab: 'reading' });
   };
 
   //M 点左栏插件、画布道名、步骤详情“查看 xxx 插件”或监听标签：展开右栏并切到「插件」页签。
@@ -1338,6 +1430,7 @@ export function TutorialPage(): JSX.Element {
   const pickedStep = activeTrail?.steps.find((item) => item.no === route.step);
 
   const skeletonExpanded = openGroups.skeleton || hasSearch;
+  const readingsExpanded = openGroups.reading || hasSearch;
   const pluginsExpanded = openGroups.plugins || hasSearch;
   const bootExpanded = openGroups.boot || hasSearch;
   const messagesExpanded = openGroups.messages || hasSearch;
@@ -1378,7 +1471,7 @@ export function TutorialPage(): JSX.Element {
     bootItemClass = 'tu-nav-item active';
   }
 
-  //M 拼成左栏单一虚拟列表的行数组：最上是骨架，细线隔开插件，其后是启动流程与最近消息，消除多 customScrollParent 导致的负偏移盖头问题。
+  //M 骨架、组块、插件、启动和消息共用同一虚拟列表，组块沿用接口返回的文件名顺序。
   const leftRows = useMemo<LeftNavRow[]>(() => {
     const rows: LeftNavRow[] = [
       { key: 'head:skeleton', kind: 'group-head', groupKey: 'skeleton', title: '骨架', count: filteredSkeletons.length, expanded: skeletonExpanded },
@@ -1391,7 +1484,24 @@ export function TutorialPage(): JSX.Element {
         rows.push({ key: `skeleton:${item.name}`, kind: 'plugin', plugin: item });
       }
     }
-    rows.push({ key: 'div:skeleton-plugins', kind: 'divider' });
+    rows.push({ key: 'div:skeleton-reading', kind: 'divider' });
+    rows.push({
+      key: 'head:reading',
+      kind: 'group-head',
+      groupKey: 'reading',
+      title: readingLabel,
+      count: filteredReadings.length,
+      expanded: readingsExpanded,
+    });
+    if (readingsExpanded) {
+      if (filteredReadings.length === 0) {
+        rows.push({ key: 'empty:reading', kind: 'empty', text: readingStatus });
+      }
+      for (const name of filteredReadings) {
+        rows.push({ key: `reading:${name}`, kind: 'reading', name });
+      }
+    }
+    rows.push({ key: 'div:reading-plugins', kind: 'divider' });
 
     rows.push({ key: 'head:plugins', kind: 'group-head', groupKey: 'plugins', title: '插件', count: filteredRegularPlugins.length, expanded: pluginsExpanded });
     if (pluginsExpanded) {
@@ -1422,10 +1532,14 @@ export function TutorialPage(): JSX.Element {
   }, [
     bootExpanded,
     filteredMessages,
+    filteredReadings,
     filteredRegularPlugins,
     filteredSkeletons,
     messagesExpanded,
     pluginsExpanded,
+    readingLabel,
+    readingsExpanded,
+    readingStatus,
     showBoot,
     showBootGroupCount,
     skeletonExpanded,
@@ -1438,6 +1552,11 @@ export function TutorialPage(): JSX.Element {
   let pluginTabClass = 'tu-rtab';
   if (route.rtab === 'plugin') {
     pluginTabClass = 'tu-rtab active';
+  }
+
+  let readingTabClass = 'tu-rtab';
+  if (route.rtab === 'reading') {
+    readingTabClass = 'tu-rtab active';
   }
 
   //M 顶栏简洁摘要。
@@ -1530,6 +1649,7 @@ export function TutorialPage(): JSX.Element {
           <button
             type="button"
             className="tu-group-head"
+            aria-expanded={row.expanded}
             onClick={
               //M 点击左栏分组标题时切换该组的展开或折叠状态。
               () => toggleGroup(row.groupKey)
@@ -1552,6 +1672,32 @@ export function TutorialPage(): JSX.Element {
             //M 交由插件与骨架统一条目渲染函数输出状态点、名称与版本号。
             renderPluginNav(row.plugin)
           }
+        </div>
+      );
+    }
+    if (row.kind === 'reading') {
+      const name = row.name;
+      //M 去掉扩展名显示文件名，选择时仍使用带扩展名的完整名称。
+      const label = name.slice(0, -3) || name;
+      const active = route.rtab === 'reading' && route.reading === name;
+      let itemClass = 'tu-nav-item';
+      if (active) {
+        itemClass = 'tu-nav-item active';
+      }
+      return (
+        <div className="tu-side-row">
+          <button
+            type="button"
+            className={itemClass}
+            aria-current={active}
+            title={label}
+            onClick={
+              //M 选择对应的文档并展开右栏。
+              () => onSelectReading(name)
+            }
+          >
+            <span className="tu-menu-item"><span className="tu-menu-name">{label}</span></span>
+          </button>
         </div>
       );
     }
@@ -1802,6 +1948,18 @@ export function TutorialPage(): JSX.Element {
                         插件
                         {hasPluginName && <span className="tu-rtab-badge">{resolvedPluginName}</span>}
                       </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={route.rtab === 'reading'}
+                        className={readingTabClass}
+                        onClick={
+                          //M 回到先前在右栏阅读的组块。
+                          () => navigate({ ...route, rtab: 'reading' })
+                        }
+                      >
+                        {readingLabel}
+                      </button>
                     </div>
                     <div className="tu-pane-bar-actions">
                       {!isNarrow && (
@@ -1855,6 +2013,18 @@ export function TutorialPage(): JSX.Element {
                             </div>
                           )}
                         </>
+                      )}
+
+                      {route.rtab === 'reading' && route.reading === '' && (
+                        <p className="tu-muted">{t('在左栏选择一篇组块')}</p>
+                      )}
+                      {route.rtab === 'reading' && route.reading !== '' && (
+                        <ReadingView
+                          key={route.reading}
+                          name={route.reading}
+                          loadingLabel={readingLoadingLabel}
+                          errorLabel={readingErrorLabel}
+                        />
                       )}
 
                       {route.rtab === 'plugin' && (
