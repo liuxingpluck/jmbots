@@ -226,10 +226,15 @@ interface Props {
   right: number;
   t: i18n.Translate;
   onPick: (target: data.Pick) => void;
+  /** 左栏选中的模块，用于骨架逐行双向同步。 */
+  plugin: string;
+  /** 把骨架文件选择交回教程路由。 */
+  onSelectPlugin: (name: string) => void;
 }
 
 /** 两棵树和方向按钮共用一片画布，节点操作打开相应内容。 */
-export function TutorialMindMap({ plugins, trail, canvas, left, right, t, onPick }: Props): react.JSX.Element {
+export function TutorialMindMap(props: Props): react.JSX.Element {
+  const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin } = props;
   //M 记住上次看的树和方向，第一次使用左右排布的项目树。
   const [direction, setDirection] = react.useState(() => getChoice(DIRECTION_KEY, 'sides', DIRECTIONS));
   const [mode, setMode] = react.useState(() => getChoice(TREE_KEY, 'project', TREES));
@@ -323,7 +328,9 @@ export function TutorialMindMap({ plugins, trail, canvas, left, right, t, onPick
           {downLabel}
         </button>
       </div>
-      {mode === 'lines' && <lines.LinesView t={t} />}
+      {mode === 'lines' && (
+        <lines.LinesView t={t} plugin={plugin} onSelectPlugin={onSelectPlugin} direction={direction} />
+      )}
       {mode !== 'lines' && chart === undefined && <p className="tu-mind-empty">{emptyLabel}</p>}
       {mode !== 'lines' && chart !== undefined && (
         <xy.ReactFlow

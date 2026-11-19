@@ -71,9 +71,9 @@
   .tu-top:has(.tu-view-choice) { height: auto; min-height: 50px; flex-wrap: wrap; gap: 4px; padding-block: 6px; }
   .tu-top:has(.tu-view-choice) .tu-top-right { flex-wrap: wrap; }
 }
-.tu-lines { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tu-lines { flex: 1; min-height: 0; display: flex; flex-direction: column; container: tu-lines / inline-size; }
 .tu-lines-bar { flex: none; display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--jm-border); }
-.tu-lines-bar select { border: 1px solid var(--jm-border); border-radius: 6px; padding: 4px 8px; background: var(--jm-surface); color: var(--jm-text); font: inherit; }
+.tu-lines-bar .ant-select { min-width: 140px; }
 .tu-lines-main { flex: 1; min-height: 0; display: flex; }
 .tu-lines-main > .react-flow { flex: 1; min-width: 0; --xy-edge-stroke-default: var(--jm-muted); }
 .tu-lines .react-flow__handle { opacity: 0; pointer-events: none; }
@@ -90,5 +90,7 @@
 .tu-lines .react-flow__controls-button { background: var(--jm-surface); color: var(--jm-text); }
 .tu-lines-detail { flex: none; width: min(46%, 640px); overflow: auto; padding: 10px 14px; border-left: 1px solid var(--jm-border); background: var(--jm-panel); }
 .tu-lines-detail h3 { margin: 0 0 6px; }
+.tu-lines-detail ol { margin: 8px 0 0; padding-left: 1.4em; line-height: 1.8; }
+.tu-lines-detail ol button { border: 0; padding: 0; background: none; color: var(--jm-accent); text-align: left; }
 .tu-lines-detail pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre; tab-size: 2; }
-@media (max-width: 799px) { .tu-lines-main { flex-direction: column; } .tu-lines-detail { width: auto; border-left: 0; border-top: 1px solid var(--jm-border); } }
+@container tu-lines (max-width: 799px) { .tu-lines-main { flex-direction: column; } .tu-lines-detail { width: auto; max-height: 45%; border-left: 0; border-top: 1px solid var(--jm-border); } }

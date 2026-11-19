@@ -1830,6 +1830,8 @@ export function TutorialPage(): JSX.Element {
                 right={mindRight}
                 t={t}
                 onPick={onMindPick}
+                plugin={route.plugin}
+                onSelectPlugin={onSelectPlugin}
               />
             )}
 

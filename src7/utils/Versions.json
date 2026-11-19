@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.59",
+    "date": "2026-11-19",
+    "changes": [
+      "教程“骨架逐行”跟左栏同步：左栏点 main 就是 Main.ts，点 sessions 就切到 Sessions.ts；默认先开 Main",
+      "按代码顺序读：块都排在根的右边、从上到下（上下展开时从左到右），不再左右分边；下拉按 Main → Resources → Tools → Sessions → Channels 排",
+      "没点节点时中间只给一句提示和目录；画布展开折叠不再重置缩放；两侧栏开着时画布也看得清"
+    ]
+  },
+  {
     "version": "0.7.58",
     "date": "2026-11-19",
     "changes": [
