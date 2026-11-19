@@ -128,7 +128,20 @@ export interface ModelFailed {
 }
 
 
-/** 思考档：off 不思考，往后越来越深。模型不支持的档位，pi 自动换成最近的。 */
+/**
+ * 思考档：直接用 pi 的 ModelThinkingLevel，不再另列一份类型。
+ * - off：不思考；请求怎么关、模型能不能真关，要看接口（见下面的说明）。
+ * - minimal：最少思考，尽量快答。
+ * - low：轻量思考，适合简单任务。
+ * - medium：中等思考，在速度和推敲之间折中。
+ * - high：深入思考，给复杂问题多一点推敲。
+ * - xhigh：比 high 更深，只在模型明确支持时可用。
+ * - max：最深一档，只在模型明确支持时可用，不等于无限 token。
+ * 模型不支持的档位，pi 自动换成最近的可用档（先往更深找，找不到再往浅找）。
+ * pi 模型的 thinkingLevelMap 把通用档位映射成接口值；null 表示不支持，缺项走供应商默认。
+ * 同一档不保证不同模型花一样多时间或 token；我们的 thinking 清单也不等于这个映射表。
+ * 各模型支持哪些档、实际发什么，见 [model-catalog「思考档位」](plugins/model-catalog/说明.md#思考档位)。
+ */
 export type Thinking = piAi.ModelThinkingLevel;
 
 
