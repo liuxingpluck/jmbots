@@ -6,7 +6,7 @@ import type { JSX, MouseEvent, ReactNode } from 'react';
 import * as antd from 'antd';
 import * as reactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { SiteLink, SourceToggle, VIRTUAL_THRESHOLD, getSiteParts } from './Code.tsx';
+import { SiteLink, SourceToggle, VIRTUAL_THRESHOLD, VsCodeOpen, getSiteParts } from './Code.tsx';
 import type { PluginItem } from './TutorialApi.ts';
 import * as sourceDirModule from '../../../src7/utils/SourceDir.ts';
 
@@ -489,15 +489,83 @@ function InlineMarkdown(props: { text: string }): JSX.Element {
 }
 
 
-/** 正文里的链接：“#”开头不跳页面只回调，其余当源码位置做 VS Code 链接。 */
-function MarkdownLink(props: { href: string; onHashLink: (href: string) => void; children?: ReactNode }): JSX.Element {
-  if (!props.href.startsWith('#')) return <SiteLink site={props.href} label={props.children} />;
+/**
+ * 逐行跳转（#lines=Sessions.json&line=648）对应的源码位置，给 VS Code 图标用。
+ * @param href “#”开头的站内链接。
+ * @returns 骨架文件的“src7/文件.ts:行号”；不是逐行跳转，或文件不是骨架源码（如 进程插件.json）时交回 undefined。
+ */
+function getLinesSite(href: string): string | undefined {
+  const params = new URLSearchParams(href.slice(1));
+  //M 取要跳的 JSON 文件名。
+  const file = params.get('lines');
+  //M 取要定位的行号。
+  const line = params.get('line');
+  //G 只有骨架文件（英文名的 X.json 对应 src7/X.ts）才有源码行。
+  if (file === null || line === null) return undefined;
+  const matched = /^([A-Z][A-Za-z]*)\.json$/u.exec(file);
+  if (matched === null) return undefined;
 
-  const onClick = (event: MouseEvent<HTMLAnchorElement>): void => {
+  return `${sourceDirModule.SOURCE_DIR}/${matched[1] ?? ''}.ts:${line}`;
+}
+
+
+/**
+ * 源码位置对应的教程内跳转：骨架文件跳逐行，插件文件跳左栏那个插件。
+ * @param site 正文里的源码位置，如 src7/Sessions.ts:648、src7/plugins/bots/index.ts:505。
+ * @returns “#”开头的站内链接；工具函数、外部文件没有教程页，交回 undefined。
+ */
+function getTutorialHash(site: string): string | undefined {
+  const prefix = sourceDirModule.SOURCE_DIR;
+  const skeleton = new RegExp(`^${prefix}/([A-Z][A-Za-z]*)\\.ts(?::(\\d+))?$`, 'u').exec(site);
+  if (skeleton !== null) return `#lines=${skeleton[1] ?? ''}.json&line=${skeleton[2] ?? '1'}`;
+
+  const plugin = new RegExp(`^${prefix}/plugins/([^/]+)/`, 'u').exec(site);
+  if (plugin !== null) return `#plugin=${plugin[1] ?? ''}`;
+
+  return undefined;
+}
+
+
+/**
+ * 正文里的链接：每个源码位置都给两样——教程内跳转和 VS Code 打开那一行的图标。
+ * “#”开头的不跳页面只回调，能对上骨架源码的后面补 VS Code 图标；
+ * 其余当源码位置做 VS Code 链接，骨架文件、插件文件后面补一个教程内跳转。
+ */
+function MarkdownLink(props: { href: string; onHashLink: (href: string) => void; children?: ReactNode }): JSX.Element {
+  const onHashLink = props.onHashLink;
+  //M 点站内链接不跳页面，交给回调切文件、定位或切插件。
+  const jump = (href: string) => (event: MouseEvent<HTMLAnchorElement>): void => {
     event.preventDefault();
-    props.onHashLink(props.href);
+    onHashLink(href);
   };
-  return <a href={props.href} onClick={onClick}>{props.children}</a>;
+
+  //M 源码位置：先给 VS Code 链接；骨架、插件文件再补一个“在教程里看”的跳转。
+  if (!props.href.startsWith('#')) {
+    const hash = getTutorialHash(props.href);
+    if (hash === undefined) return <SiteLink site={props.href} label={props.children} />;
+
+    //M 跳转小箭头点了不跳页面，在教程里切过去。
+    const onJump = jump(hash);
+    return (
+      <span className="tu-link-pair">
+        <SiteLink site={props.href} label={props.children} />
+        <a className="tu-tutorial-jump" href={hash} title="在教程里看" onClick={onJump}>↪</a>
+      </span>
+    );
+  }
+
+  //M 站内跳转：骨架文件的逐行跳转后面补 VS Code 图标，直接打开那一行。
+  const site = getLinesSite(props.href);
+  //M 链接文字点了在教程里切文件或插件。
+  const onLink = jump(props.href);
+  if (site === undefined) return <a href={props.href} onClick={onLink}>{props.children}</a>;
+
+  return (
+    <span className="tu-link-pair">
+      <a href={props.href} onClick={onLink}>{props.children}</a>
+      <VsCodeOpen site={site} />
+    </span>
+  );
 }
 
 

@@ -250,8 +250,8 @@ export class Sessions extends cordis.Service {
   /** 用到的服务。 */
   static inject = ['resources', 'tools'];
 
-  /** 打开过的会话：会话号 → 对象。同一场永远是同一个对象，喊停才能按到正在转的那个。 */
-  private readonly live = new Map<string, Session>();
+  /** 打开过的会话：会话号 → 对象。启动以来新开或从库里读出来的都留在这，跑完也不删（不是“正在跑的会话”）；同一场永远是同一个对象，喊停才能按到正在转的那个。 */
+  private readonly openedSessions = new Map<string, Session>();
 
   /**
    * 登记 sessions 插件：把 Sessions 作为服务挂到 Cordis 上，名字叫 sessions（以后用 ctx.sessions 取）；数据库里没有 sessions 表就建。
@@ -285,15 +285,12 @@ export class Sessions extends cordis.Service {
     for (let attempt = 0; ; attempt += 1) {
       const id = stampId();
       const exists = existsQuery.get(id);
-      if (exists !== null) {
-        //G 连撞好几次 → 不再试，抛错。
-        if (attempt >= 5) {
-          throw new Error('生成会话号连续撞上已有记录');
-        }
-        continue;
-      }
 
-      //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 live。
+      //G 号被占了：连撞 5 次就不再试、抛错；没到 5 次就换一个号再来一轮。
+      if (exists !== null && attempt >= 5) throw new Error('生成会话号连续撞上已有记录');
+      if (exists !== null) continue;
+
+      //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 openedSessions。
       const row: SessionRow = {
         ...input,
         id,
@@ -306,9 +303,9 @@ export class Sessions extends cordis.Service {
       };
       //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。
       const session = new Session(row, this.ctx);
-      //M 立即落库持久化并缓存到 live 表，确保后续消息与停止动作能命中同一实例。
+      //M 立即落库持久化并缓存到 openedSessions，确保后续消息与停止动作能命中同一实例。
       session.save();
-      this.live.set(row.id, session);
+      this.openedSessions.set(row.id, session);
       return session;
     }
   }
@@ -321,7 +318,7 @@ export class Sessions extends cordis.Service {
    */
   open(id: string): Session {
     //M 先查内存里已打开的会话对象，直接复用以保持运行开关和未入队消息一致。
-    const opened = this.live.get(id);
+    const opened = this.openedSessions.get(id);
     if (opened !== undefined) return opened;
 
     //M 库里的两块读出来，拼回一份记录。
@@ -334,11 +331,11 @@ export class Sessions extends cordis.Service {
       throw new Error(`没有这场会话：${id}`);
     }
 
-    //M 解析磁盘元信息与对话历史重建会话实例，并放入 live 供同一场对话复用。
+    //M 解析磁盘元信息与对话历史重建会话实例，并放入 openedSessions 供同一场对话复用。
     const meta = JSON.parse(stored.meta) as SessionMeta;
     const messages = JSON.parse(stored.messages) as piAi.Message[];
     const session = new Session({ ...meta, messages }, this.ctx);
-    this.live.set(id, session);
+    this.openedSessions.set(id, session);
     return session;
   }
 

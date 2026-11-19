@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.65",
+    "date": "2026-11-20",
+    "changes": [
+      "教程骨架逐行按新代码重排（Main、Resources、Tools、Sessions、Channels）：“调到别处”改成“这段代码调用了 / 谁调它 / 相关位置”，每项写清函数、位置、类别、一句话；骨架源码链接自动带 VS Code 图标；Tools 讲清 register 里 this.ctx 为什么是调用方的；kinds 改称 sessionKinds",
+      "会话表 live 改名 openedSessions（打开过的会话，不是正在跑的）；新开会话撞号重试写成两行"
+    ]
+  },
+  {
     "version": "0.7.64",
     "date": "2026-11-20",
     "changes": [

@@ -248,7 +248,7 @@ export class Shots {
     if (this.sessions.has(id)) return true;
 
     //M 当前会话不在集合中时向上查父会话是否被监控，借此连带捕捉派生子会话。
-    const parent = this.ctx.get('sessions')?.['live'].get(id)?.row.parent;
+    const parent = this.ctx.get('sessions')?.['openedSessions'].get(id)?.row.parent;
     if (parent === undefined || !this.isArmed(parent)) return false;
 
     //M 确认父会话处于监控态后把当前子会话一并登记，免去后续重复回溯。

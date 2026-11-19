@@ -173,7 +173,7 @@ async function serve(journal?: ReturnType<typeof getJournal>, config: tutorialMo
     [Symbol('logger')]: impl('logger', '', { secret: '自带的不看' }),
     [Symbol('resources')]: impl('resources', 'Resources', resources),
     [Symbol('tools')]: impl('tools', 'Tools', { specs: new Map([['read', { definition: { name: 'read' }, sessionKinds: ['work'] }]]) }),
-    [Symbol('sessions')]: impl('sessions', 'Sessions', { live: new Map([[session.id, session]]) }),
+    [Symbol('sessions')]: impl('sessions', 'Sessions', { openedSessions: new Map([[session.id, session]]) }),
     [Symbol('bots')]: impl('bots', 'bots', bots),
     [Symbol('http')]: impl('http', 'http', { app }),
     [Symbol('demo')]: impl('demo', 'demo', demo),
@@ -297,7 +297,7 @@ describe('运行时变量', () => {
 
     //M 会话原样：row 里的聊天内容、用户号、回话地址都在；AbortController 没有自己的字段，写类名。
     expect(value('sessions')).toEqual({
-      live: { [session.id]: { ...session, aborter: '[AbortController]' } },
+      openedSessions: { [session.id]: { ...session, aborter: '[AbortController]' } },
     });
     expect(value('http')).toEqual({ app: '[Fastify]' });
 
@@ -382,7 +382,7 @@ describe('运行时变量', () => {
     expect(getMissing(second.body, REGISTERED_ONLY)).toEqual([]);
     const shot = second.json() as { no: number; node: string; groups: snapshotModule.StateGroup[]; changed: string[][] };
     expect(shot).toMatchObject({ no: 2, node: 'bots' });
-    expect(shot.changed).toEqual([['sessions', 'live', session.id, 'row', 'state']]);
+    expect(shot.changed).toEqual([['sessions', 'openedSessions', session.id, 'row', 'state']]);
 
     //M 第 1 步前面没有可比的。
     const first = (await app.inject({ method: 'GET', url: '/api/tutorial/snapshot?name=7&step=1' })).json() as { changed: unknown };
