@@ -4,8 +4,8 @@
  *      选中某一步时自动把被左右栏遮住的步平移回中间可见区；
  *   2. 有画布的页面三栏：左栏 | 画布 | 右侧详情。左栏拖宽 220~45% 视口；右侧默认占去掉左栏后剩余宽度的一半，
  *      拖动改窄、最大也是一半，拖过的宽度记在 localStorage（包 try/catch）。两栏都能收起成边缘窄条；< 800px 窄屏退化为上下排布；
- *      没有画布的页面（左栏点开的插件说明、进程插件、组块阅读、骨架工具）两栏：左栏 | 内容，地址带 page=doc；
- *   3. 左栏顺序：骨架（第一行是项目结构，点模块进骨架逐行）→ 骨架工具（utils）→ 启动流程 → 最近消息（点了看这条消息走过的路）
+ *      没有画布的页面（左栏点开的插件说明、进程插件、组块阅读、Cordis 用法文档、骨架工具）两栏：左栏 | 内容，地址带 page=doc；
+ *   3. 左栏顺序：骨架（第一行是项目结构，点模块进骨架逐行）→ 骨架工具（utils）→ Cordis 用法（第一行动态图进骨架逐行，其余两栏读文档）→ 启动流程 → 最近消息（点了看这条消息走过的路）
  *      → 组块阅读 → 插件 → 进程插件；原来画布顶上的树切换挪进左栏，左右/上下展开是画布右上角的小切换。
  *      右栏顶设「这一步」「插件」「组块阅读」页签，右栏独立滚动，画布停在原地不动；骨架逐行的块详情也显示在「这一步」；
  *   4. 所有“文件:行号”与依赖表位置列均通过 TutorialWorkspaceContext 直接复用 Code.tsx 的 getVscodeHref 在 VS Code 打开；
@@ -53,6 +53,7 @@ interface RouteState {
 interface GroupOpenState {
   skeleton: boolean;
   utils: boolean;
+  cordis: boolean;
   programs: boolean;
   reading: boolean;
   plugins: boolean;
@@ -70,6 +71,7 @@ type LeftNavRow =
   | { key: string; kind: 'project' }
   | { key: string; kind: 'program'; program: ProgramItem }
   | { key: string; kind: 'handshake' }
+  | { key: string; kind: 'cordis-map' }
   | { key: string; kind: 'boot' }
   | { key: string; kind: 'message'; message: MessageCanvasItem }
   | { key: string; kind: 'empty'; text: string };
@@ -367,6 +369,11 @@ function getRouteFromUrl(search: string): RouteState {
     canvas = rawCanvas;
   }
 
+  //M Cordis 动态图不是插件说明，直达地址、刷新和前进后退都还原三栏画布。
+  if (plugin === 'cordis') {
+    return { canvas: canvas || SENTINEL_AUTO, step: 0, plugin, ptab, event, reading, rtab: 'step', util, doc: false };
+  }
+
   //M 旧只看插件的链接（?plugin=xxx 且没有画布参数，或 ?tab=plugins）：保持无画布直达插件。
   if (canvas === '' && (plugin !== '' || tab === 'plugins')) {
     let targetPlugin = plugin;
@@ -498,7 +505,9 @@ function usePluginReadme(name: string): { text: string | null; error: string } {
 
 
 /** 读取并展示一篇组块或骨架工具说明，切换时由文件名重建组件。 */
-function ReadingView(props: { name: string; loadingLabel: string; errorLabel: string; util?: boolean }): JSX.Element {
+function ReadingView(props: {
+  name: string; loadingLabel: string; errorLabel: string; util?: boolean; onHashLink?: (href: string) => void;
+}): JSX.Element {
   const { name } = props;
   const [text, setText] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -508,7 +517,13 @@ function ReadingView(props: { name: string; loadingLabel: string; errorLabel: st
     //M 右栏只读所选文档，跳走后忽略未完成的请求。
     let load = TutorialApi.getReading;
     if (props.util) load = TutorialApi.getUtilReadme;
-    const loading = load(name);
+    let file = name;
+    if (name.startsWith('cordis/')) {
+      load = TutorialApi.getCordisReading;
+      file = name.slice('cordis/'.length);
+    }
+    //M 文档名已选好，按所属目录读取。
+    const loading = load(file);
     void loading.then((result) => {
       if (!active) return;
 
@@ -527,8 +542,12 @@ function ReadingView(props: { name: string; loadingLabel: string; errorLabel: st
 
   if (text === null) return <antd.Spin aria-label={props.loadingLabel} />;
 
+  //G 只有 Cordis 用法接管站内链接；组块阅读保持原来的链接行为。
+  let onHashLink: ((href: string) => void) | undefined;
+  if (name.startsWith('cordis/')) onHashLink = props.onHashLink;
+
   //M 复用插件说明页签的 Markdown、代码和表格渲染。
-  return <article className="tu-doc"><MarkdownContent body={text} /></article>;
+  return <article className="tu-doc"><MarkdownContent body={text} onHashLink={onHashLink} /></article>;
 }
 
 
@@ -1121,6 +1140,8 @@ export function TutorialPage(): JSX.Element {
   const programs = programView.usePrograms();
   const [readingFiles, setReadingFiles] = useState<string[] | null>(null);
   const [readingListFailed, setReadingListFailed] = useState(false);
+  const [cordisFiles, setCordisFiles] = useState<string[] | null>(null);
+  const [cordisListFailed, setCordisListFailed] = useState(false);
   const [utilFiles, setUtilFiles] = useState<string[] | null>(null);
   const [utilListFailed, setUtilListFailed] = useState(false);
   const [messages, setMessages] = useState<MessageCanvasItem[]>([]);
@@ -1131,6 +1152,7 @@ export function TutorialPage(): JSX.Element {
   const [openGroups, setOpenGroups] = useState<GroupOpenState>({
     skeleton: true,
     utils: true,
+    cordis: true,
     programs: true,
     reading: true,
     plugins: true,
@@ -1250,7 +1272,7 @@ export function TutorialPage(): JSX.Element {
 
   //M 地址里直接带三方握手图时，打开骨架逐行那棵树。
   useEffect(() => {
-    if (route.plugin !== programView.HANDSHAKE) return;
+    if (route.plugin !== programView.HANDSHAKE && route.plugin !== 'cordis') return;
 
     //M 切到骨架逐行，由它按模块名打开 进程插件.json。
     mindTree.select('lines');
@@ -1261,6 +1283,9 @@ export function TutorialPage(): JSX.Element {
     const pluginLoading = TutorialApi.get<PluginList>('/api/tutorial/plugins');
     pluginLoading.then(setPlugins, (failed: unknown) => setError((failed as Error).message));
     //M 把组块清单的失败留在组块分组，插件和画布仍可使用。
+    //M Cordis 文档一组，清单取新目录，避免在网页硬编码 00–04 的文件名。
+    const cordisLoading = TutorialApi.getCordisDocs();
+    void cordisLoading.then((result) => setCordisFiles(result.files), () => setCordisListFailed(true));
     const readingLoading = TutorialApi.getReadings();
     void readingLoading.then((result) => setReadingFiles(result.files), () => setReadingListFailed(true));
     //M 工具清单是动态的，新增 src7/utils/index.ts 后不用改网页。
@@ -1392,6 +1417,17 @@ export function TutorialPage(): JSX.Element {
 
     return files.filter((name) => name.toLowerCase().includes(query));
   }, [hasSearch, query, readingFiles, readingLabel]);
+  //M Cordis 组和其他左栏组共用搜索，文档仍按编号顺序。
+  const filteredCordis = useMemo(() => {
+    const files = cordisFiles ?? [];
+    if (!hasSearch || 'cordis用法'.includes(query)) return files;
+
+    return files.filter((name) => name.toLowerCase().includes(query));
+  }, [cordisFiles, hasSearch, query]);
+  let cordisStatus = '正在读取 Cordis 文档…';
+  if (cordisFiles !== null) cordisStatus = '没有匹配的 Cordis 文档';
+  if (cordisListFailed) cordisStatus = '读不到 Cordis 文档';
+
   //M 骨架工具按文件名搜索，清单顺序由接口给。
   const filteredUtils = useMemo(() => {
     const files = utilFiles ?? [];
@@ -1483,7 +1519,7 @@ export function TutorialPage(): JSX.Element {
     let doc = !keepCanvas;
     let rtab: RouteState['rtab'] = 'plugin';
     //M 左栏骨架模块和三方握手直接进骨架逐行，右侧显示点中的块。
-    const toLines = item?.kind === 'skeleton' || pluginName === programView.HANDSHAKE;
+    const toLines = item?.kind === 'skeleton' || pluginName === programView.HANDSHAKE || pluginName === 'cordis';
     if (toLines && !keepCanvas) {
       mindTree.select('lines');
       tutorialView.select('mind');
@@ -1597,6 +1633,28 @@ export function TutorialPage(): JSX.Element {
     tutorialView.select('mind');
     onSelectPlugin(programView.HANDSHAKE);
   };
+  const onOpenCordis = (): void => {
+    //M 示意图沿用骨架逐行画布（Cordis.json），不是本次运行录下来的轨迹。
+    onSelectPlugin('cordis');
+  };
+  const onReadingHash = (href: string): void => {
+    //M Cordis 组块正文可跳同组文档、动态图、骨架和插件。
+    const params = new URLSearchParams(href.slice(1));
+    const doc = params.get('cordis');
+    if (doc !== null) {
+      onSelectReading(`cordis/${doc}`);
+      return;
+    }
+    //M #lines=Cordis.json（可带 :行号）→ 打开那张逐行图；行号定位留给图里自己点。
+    const file = params.get('lines');
+    if (file !== null) {
+      onLinesPlugin(file.replace(/(\.json)?(:\d+)?$/u, '').toLowerCase());
+      return;
+    }
+    //M #plugin=名字 → 插件说明。
+    const name = params.get('plugin');
+    if (name !== null) onSelectPlugin(name);
+  };
   const onOpenProject = (): void => {
     //M 左栏「项目结构」恢复三栏画布，不沿用旧页签上的组块或工具说明。
     tutorialView.select('mind');
@@ -1616,7 +1674,7 @@ export function TutorialPage(): JSX.Element {
   };
   const onLinesPlugin = (name: string): void => {
     const item = pluginList.find((plugin) => plugin.name === name);
-    if (item?.kind === 'skeleton' || name === programView.HANDSHAKE) {
+    if (item?.kind === 'skeleton' || name === programView.HANDSHAKE || name === 'cordis') {
       //M 逐行图下拉换文件：仍在骨架逐行，右侧看块详情。
       onSelectPlugin(name);
       return;
@@ -1667,7 +1725,23 @@ export function TutorialPage(): JSX.Element {
         rows.push({ key: `util:${name}`, kind: 'util', name });
       }
     }
-    rows.push({ key: 'div:utils-boot', kind: 'divider' });
+    //M Cordis 放在骨架工具后：五份文档两栏阅读，动态图进三栏画布。
+    rows.push({ key: 'div:utils-cordis', kind: 'divider' });
+    rows.push({
+      key: 'head:cordis', kind: 'group-head', groupKey: 'cordis', title: 'Cordis 用法',
+      count: filteredCordis.length + 1, expanded: openGroups.cordis || hasSearch,
+    });
+    if (openGroups.cordis || hasSearch) {
+      //M 图在组内第一行，文档按文件名排序。
+      rows.push({ key: 'cordis:map', kind: 'cordis-map' });
+      if (filteredCordis.length === 0) rows.push({ key: 'empty:cordis', kind: 'empty', text: cordisStatus });
+      for (const name of filteredCordis) {
+        //M 复用组块文档路由，前缀区分文档目录。
+        rows.push({ key: `cordis:${name}`, kind: 'reading', name: `cordis/${name}` });
+      }
+    }
+    //M Cordis 组和启动流程之间的分隔线。
+    rows.push({ key: 'div:cordis-boot', kind: 'divider' });
 
     rows.push({ key: 'head:boot', kind: 'group-head', groupKey: 'boot', title: '启动流程', count: showBootGroupCount, expanded: bootExpanded });
     if (bootExpanded && showBoot) {
@@ -1750,6 +1824,9 @@ export function TutorialPage(): JSX.Element {
     utilStatus,
     programs,
     openGroups.programs,
+    openGroups.cordis,
+    filteredCordis,
+    cordisStatus,
     hasSearch,
     query,
   ]);
@@ -1903,6 +1980,15 @@ export function TutorialPage(): JSX.Element {
         </div>
       );
     }
+    if (row.kind === 'cordis-map') {
+      let itemClass = 'tu-nav-item';
+      if (!contentOnly && route.plugin === 'cordis') itemClass += ' active';
+      return (
+        <div className="tu-side-row">
+          <button type="button" className={itemClass} onClick={onOpenCordis}>动态图：挂上到卸下</button>
+        </div>
+      );
+    }
     if (row.kind === 'handshake') {
       return (
         <div className="tu-side-row">
@@ -1937,7 +2023,7 @@ export function TutorialPage(): JSX.Element {
     if (row.kind === 'reading') {
       const name = row.name;
       //M 去掉扩展名显示文件名，选择时仍使用带扩展名的完整名称。
-      const label = name.slice(0, -3) || name;
+      const label = name.replace(/^cordis\//u, '').slice(0, -3) || name;
       const active = route.rtab === 'reading' && route.reading === name;
       let itemClass = 'tu-nav-item';
       if (active) {
@@ -2299,6 +2385,7 @@ export function TutorialPage(): JSX.Element {
                           name={route.reading}
                           loadingLabel={readingLoadingLabel}
                           errorLabel={readingErrorLabel}
+                          onHashLink={onReadingHash}
                         />
                       )}
 

@@ -85,6 +85,7 @@ function writeEntry(workDir: string, webDir: string): string {
   const textDir = path.join(workDir, 'src7-text');
   const readingDir = 'docs/组块阅读';
   const linesDir = 'docs/骨架逐行';
+  const cordisDir = 'docs/Cordis用法';
   const sources = walk(path.join(serveProcess.ROOT, 'src7'))
     .filter((item) => {
       const source = item.endsWith('.ts') && !item.endsWith('.test.ts');
@@ -92,7 +93,8 @@ function writeEntry(workDir: string, webDir: string): string {
       const folder = path.posix.dirname(item);
       const reading = folder === readingDir && item.endsWith('.md');
       const lines = folder === linesDir && item.endsWith('.json');
-      return source || readme || reading || lines;
+      const cordis = folder === cordisDir && item.endsWith('.md');
+      return source || readme || reading || lines || cordis;
     })
     .map((item): [string, string] => {
       const copy = path.join(textDir, `${item}.txt`);

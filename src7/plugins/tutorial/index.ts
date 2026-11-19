@@ -12,6 +12,8 @@
  * 页面 /tutorial/ 由 web 插件按约定托管（dist/web/tutorial.html，源码 web/src/Tutorial/）；/flow/ 跳到 /tutorial/。接口：
  *   GET /api/tutorial/plugins               左栏插件：名字、版本、挂没挂上、有没有说明，加快照关键词、源码根目录
  *   GET /api/tutorial/readme?name=          插件的 说明.md 原文；还没写是空串
+ *   GET /api/tutorial/cordis                Cordis 用法文档清单
+ *   GET /api/tutorial/cordis-reading?name=   一篇 Cordis 用法 Markdown
  *   GET /api/tutorial/readings              组块阅读文件名清单
  *   GET /api/tutorial/lines                 骨架逐行 JSON 文件名清单
  *   GET /api/tutorial/line?name=            读一份骨架逐行 JSON
@@ -220,6 +222,9 @@ const PLUGIN_NAME = /^[a-z][a-z0-9-]*$/u;
 
 /** 组块阅读目录，和 readLines 共用登记路径。 */
 const READING_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/组块阅读/`;
+
+/** Cordis 用法：只读组块文档，动态图沿用骨架逐行接口。 */
+const CORDIS_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/Cordis用法/`;
 
 /** 骨架逐行目录，一份 JSON 对应骨架里的一个文件，读法同组块阅读。 */
 const LINES_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/骨架逐行/`;
@@ -509,6 +514,29 @@ class Tutorial {
 
       const text = lines.join('\n');
       return { name, file, text };
+    });
+
+    //M Cordis 用法组的文档清单，开发版读目录，编译版读内嵌登记表。
+    app.get('/api/tutorial/cordis', async () => {
+      const files = await getReadingFiles(CORDIS_DIR, '.md');
+      return { files };
+    });
+
+    //M Cordis 文档只认清单里的文件名，路径不能由外部直接传进来。
+    app.get<Query>('/api/tutorial/cordis-reading', async (request, reply) => {
+      const name = request.query['name'] ?? '';
+      if (name === '') return reply.code(400).send({ error: '要给 name（Cordis 文档名）' });
+
+      //G 目录穿越、非 Markdown、已删除文件都不能读。
+      const files = await getReadingFiles(CORDIS_DIR, '.md');
+      if (!files.includes(name)) return reply.code(404).send({ error: '没有这篇 Cordis 文档' });
+
+      //M 和组块阅读共用源码读取，编译版走 Embedded。
+      const file = CORDIS_DIR + name;
+      const lines = await sourceModule.readLines(file);
+      if (lines === undefined) return reply.code(404).send({ error: '没有这篇 Cordis 文档' });
+
+      return { name, file, text: lines.join('\n') };
     });
 
     //M 左栏「骨架逐行」按文件名顺序列出 JSON。

@@ -504,6 +504,8 @@ function getLinesSite(href: string): string | undefined {
   if (file === null || line === null) return undefined;
   const matched = /^([A-Z][A-Za-z]*)\.json$/u.exec(file);
   if (matched === null) return undefined;
+  //G Cordis.json 讲第三方库，不对应 src7/Cordis.ts。
+  if (matched[1] === 'Cordis') return undefined;
 
   return `${sourceDirModule.SOURCE_DIR}/${matched[1] ?? ''}.ts:${line}`;
 }

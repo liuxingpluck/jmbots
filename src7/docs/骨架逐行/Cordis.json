@@ -1,0 +1,245 @@
+[
+  {
+    "id": "r-cordis",
+    "parent": null,
+    "title": "Cordis：一个插件从挂上到卸下",
+    "summary": "按时间顺序走一遍 cordis 4.0.0-rc.12 怎么挂插件、等依赖、运行、卸下清理；每步对照 Cordis 源码和我们的调用位置。",
+    "body": "## 看什么\n\n- Cordis 源码：`node_modules/cordis/lib/index.js`，版本 **4.0.0-rc.12**（单文件，下面的行号都指它）；\n- 我们的调用：`src7/` 里真实的“文件:行号”，点了能在 VS Code 打开。\n\n## 按时间分 4 组\n\n- 挂上：建档：根 ctx 先建好；每次 ctx.plugin 给插件开一份 Fiber 档案、一张自己的 ctx，并登记到父插件名下。\n- 等依赖、开诊：inject 的服务到齐才跑 apply 或构造；服务类在构造里 provide；状态一变发 internal/status。\n- 运行中：开诊后登记监听、发事件、取服务、登记要撤的事；它们都记在当前插件名下。\n- 卸下：清理：dispose 或依赖的服务撤了 → 先等依赖自己的插件放手，再按档案撤掉名下所有 effect。\n\n这是示意图，不是本次运行录下来的轨迹。逐个概念的讲解在左栏「Cordis 用法」的 00～04 文档。",
+    "sources": [
+      "src7/Channels.ts",
+      "src7/Main.ts",
+      "src7/Resources.ts",
+      "src7/Sessions.ts",
+      "src7/Tools.ts",
+      "src7/plugins/feishu/index.ts",
+      "src7/plugins/memory/index.ts",
+      "src7/plugins/tutorial/Boot.ts",
+      "src7/plugins/tutorial/index.ts",
+      "src7/plugins/wechat/index.ts",
+      "src7/tests/Resources.test.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-g1",
+    "parent": "r-cordis",
+    "title": "挂上：建档",
+    "summary": "根 ctx 先建好；每次 ctx.plugin 给插件开一份 Fiber 档案、一张自己的 ctx，并登记到父插件名下。",
+    "body": "## 挂上：建档\n\n根 ctx 先建好；每次 ctx.plugin 给插件开一份 Fiber 档案、一张自己的 ctx，并登记到父插件名下。",
+    "sources": []
+  },
+  {
+    "id": "r-cordis-g2",
+    "parent": "r-cordis",
+    "title": "等依赖、开诊",
+    "summary": "inject 的服务到齐才跑 apply 或构造；服务类在构造里 provide；状态一变发 internal/status。",
+    "body": "## 等依赖、开诊\n\ninject 的服务到齐才跑 apply 或构造；服务类在构造里 provide；状态一变发 internal/status。",
+    "sources": []
+  },
+  {
+    "id": "r-cordis-g3",
+    "parent": "r-cordis",
+    "title": "运行中",
+    "summary": "开诊后登记监听、发事件、取服务、登记要撤的事；它们都记在当前插件名下。",
+    "body": "## 运行中\n\n开诊后登记监听、发事件、取服务、登记要撤的事；它们都记在当前插件名下。",
+    "sources": []
+  },
+  {
+    "id": "r-cordis-g4",
+    "parent": "r-cordis",
+    "title": "卸下：清理",
+    "summary": "dispose 或依赖的服务撤了 → 先等依赖自己的插件放手，再按档案撤掉名下所有 effect。",
+    "body": "## 卸下：清理\n\ndispose 或依赖的服务撤了 → 先等依赖自己的插件放手，再按档案撤掉名下所有 effect。",
+    "sources": []
+  },
+  {
+    "id": "r-cordis-01",
+    "parent": "r-cordis-g1",
+    "title": "建根 ctx",
+    "summary": "L1529：根 ctx 本身就是 Proxy，后面“换身份”全靠它。",
+    "body": "**行号：index.js L1526–L1538**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n1526    constructor() {\n1527      this[symbols.isolate] = /* @__PURE__ */ Object.create(null);\n1528      this[symbols.intercept] = /* @__PURE__ */ Object.create(null);\n1529      const self = new Proxy(this, ReflectService.handler);\n1530      this[symbols.root] = self;\n1531      this.baseUrl = void 0;\n1532      this.fiber = new Fiber(self, {}, /* @__PURE__ */ Object.create(null), null, () => []);\n1533      this.reflect = new ReflectService(self);\n1534      this.registry = new RegistryService(self);\n1535      this.events = new EventsService(self);\n1536      this.logger = new LoggerService(self);\n1537      this.fiber._disposables.clear();\n1538      return self;\n```\n\n### 解释\n- L1529：根 ctx 本身就是 Proxy，后面“换身份”全靠它。\n- L1532：根 ctx 也有一个 fiber（没有 runtime），所有插件都挂在它名下。\n- L1533–L1536：反射（服务表）、注册表、事件、日志四样内建服务。\n\n### 我们的调用\n- `src7/Main.ts:77` 建根：`const app = new cordis.Context();`",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-02",
+    "parent": "r-cordis-g1",
+    "title": "ctx.plugin 建 Fiber",
+    "summary": "L1492：调用方自己必须还活着，已卸下的插件不能再挂子插件。",
+    "body": "**行号：index.js L1489–L1492、L1500–L1505**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n1489    plugin(plugin, config, getOuterStack = buildOuterStack()) {\n1490      const callback = this.resolve(plugin);\n1491      if (!callback) throw new Error('invalid plugin, expect function or object with an \"apply\" method, received ' + typeof plugin);\n1492      this.ctx.fiber.assertActive();\n   …\n1500      const fiber = new Fiber(this.ctx, config, Inject.resolve(plugin.inject), runtime, getOuterStack);\n1501      const wrapped = Object.create(fiber);\n1502      wrapped.then = (onFulfilled, onRejected) => {\n1503        return fiber.await().then(onFulfilled, onRejected);\n1504      };\n1505      return wrapped;\n```\n\n### 解释\n- L1492：调用方自己必须还活着，已卸下的插件不能再挂子插件。\n- L1500：`Inject.resolve(plugin.inject)` 把开诊条件整理好，交给新 Fiber。\n- L1501–L1504：返回值是 fiber 的“影子”，多一个 `then`，所以能 `await`，等的是 `fiber.await()`。\n\n### 我们的调用\n- `src7/Main.ts:80` 骨架三样逐个 await：`await app.plugin(resourcesModule.Resources, { dir: args.dataDir });`\n- `src7/Main.ts:159` 按 config.yaml 挂插件：`const mounted = app.plugin(plugin, entry.config);`\n- `src7/Main.ts:160` 取原 fiber 记账：`const fiber = mounted.ctx.fiber;`",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-03",
+    "parent": "r-cordis-g1",
+    "title": "新 ctx 和 internal/plugin",
+    "summary": "L341：插件拿到的 ctx 是父 ctx 扩展出来的，带着自己的 `fiber`。",
+    "body": "**行号：index.js L339–L341、L359–L362**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 339      if (runtime) {\n 340        this.uid = parent.registry.counter;\n 341        this.ctx = this.context = parent.extend({ fiber: this });\n   …\n 359        this.context.emit(\"internal/plugin\", this);\n 360        for (const name of Object.keys(this.inject)) {\n 361          this._checkImpl(name);\n 362        }\n```\n\n### 解释\n- L341：插件拿到的 ctx 是父 ctx 扩展出来的，带着自己的 `fiber`。\n- L359：先发 `internal/plugin`，这时 apply 还没跑。\n- L360–L362：逐个看 inject 的服务现在在不在。\n\n### 我们的调用\n- `src7/plugins/tutorial/Boot.ts:232` 启动流程图听“开始挂”：`this.ctx.on('internal/plugin', (fiber) => {`",
+    "sources": [
+      "src7/plugins/tutorial/Boot.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-04",
+    "parent": "r-cordis-g1",
+    "title": "登记到父插件名下",
+    "summary": "插件本身是父插件 fiber 上的一件 effect（标签 `ctx.plugin()`，L387）。",
+    "body": "**行号：index.js L363–L370**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 363        this.dispose = parent.fiber.effect(() => {\n 364          const remove = runtime.fibers.push(this);\n 365          try {\n 366            this._refresh();\n 367          } catch (error) {\n 368            this.ctx.logger.error(error);\n 369            this._error = error;\n 370          }\n```\n\n### 解释\n- 插件本身是父插件 fiber 上的一件 effect（标签 `ctx.plugin()`，L387）。\n- 父插件卸下 → 撤这件 effect → 子插件跟着卸。\n- L366：`_refresh` 决定现在能不能开跑（下一组）。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:416` ctx.inject 开的小插件挂在 tutorial 名下：`void ctx.inject(['http'], (sub) => {`",
+    "sources": [
+      "src7/plugins/tutorial/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-05",
+    "parent": "r-cordis-g2",
+    "title": "查开诊条件",
+    "summary": "L574–L579：inject 里任何一个服务不在，epoch 就是 INACTIVE（不开诊）。",
+    "body": "**行号：index.js L572–L583**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 572    _refresh() {\n 573      let epoch = `${this._revision}`;\n 574      for (const name of Object.keys(this.inject)) {\n 575        const impl = this._store[name];\n 576        if (!impl) {\n 577          epoch = INACTIVE;\n 578          break;\n 579        }\n 580        epoch += \":\" + impl.uid;\n 581      }\n 582      this._setEpoch(epoch);\n 583    }\n```\n\n### 解释\n- L574–L579：inject 里任何一个服务不在，epoch 就是 INACTIVE（不开诊）。\n- 服务都在时，epoch 由各服务的 uid 拼成；服务换了实例，epoch 跟着变，插件会重跑。\n\n### 我们的调用\n- `src7/Sessions.ts:251` 会话等资源和工具：`static inject = ['resources', 'tools'];`\n- `src7/plugins/wechat/index.ts:51` 微信的开诊条件：`export const inject = ['resources', 'bots', 'sessions', 'http'];`",
+    "sources": [
+      "src7/Sessions.ts",
+      "src7/plugins/wechat/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-06",
+    "parent": "r-cordis-g2",
+    "title": "切 epoch：加载或卸载",
+    "summary": "L591–L593：从不能开诊变成能开诊 → `_reload`，状态 LOADING。",
+    "body": "**行号：index.js L584–L597**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 584    _setEpoch(epoch) {\n 585      const oldEpoch = this._runner.epoch;\n 586      if (epoch === oldEpoch) return;\n 587      if (this._error) return;\n 588      this._runner.epoch = epoch;\n 589      if (this.inertia) return;\n 590      this._updateState(() => {\n 591        if (epoch !== INACTIVE && oldEpoch === INACTIVE) {\n 592          this.inertia = this._reload();\n 593          return 1 /* LOADING */;\n 594        } else {\n 595          this.inertia = this._unload();\n 596          return 5 /* UNLOADING */;\n 597        }\n```\n\n### 解释\n- L591–L593：从不能开诊变成能开诊 → `_reload`，状态 LOADING。\n- L594–L596：反过来 → `_unload`，状态 UNLOADING。\n- `inertia` 是手头正在做的加载 / 卸载，`fiber.await()` 等的就是它。\n\n### 我们的调用\n- `src7/Main.ts:164` 等首次加载结束：`const finished = fiber.await().then(() => {`\n- `src7/Main.ts:165` 等完还是 PENDING = 在等注入：`if (fiber.state === cordis.FiberState.PENDING && row.error === '') {`",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-07",
+    "parent": "r-cordis-g2",
+    "title": "跑 apply 或构造",
+    "summary": "L601–L605：记下这次用到哪些服务，并把自己登记成它们的依赖方。",
+    "body": "**行号：index.js L600–L611、L345–L355**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 600    async _reload() {\n 601      this.committed = { ...this._store };\n 602      for (const impl of Object.values(this.committed)) {\n 603        if (impl.ctx.fiber === this) continue;\n 604        impl.dependents.add(this);\n 605      }\n 606      const oldEpoch = this._runner.epoch;\n 607      try {\n 608        await Promise.resolve();\n 609        if (this._runner.epoch === oldEpoch) {\n 610          await this._execute(this._runner);\n 611        }\n 345          execute: /* @__PURE__ */ __name(function() {\n 346            const config2 = this._resolve(this.config);\n 347            if (isConstructor(runtime.callback)) {\n 348              const instance = new runtime.callback(this.ctx, config2);\n 349              for (const hook of instance?.[symbols.initHooks] ?? []) {\n 350                hook();\n 351              }\n 352              return instance?.[symbols.init]?.();\n 353            } else {\n 354              return runtime.callback(this.ctx, config2);\n 355            }\n```\n\n### 解释\n- L601–L605：记下这次用到哪些服务，并把自己登记成它们的依赖方。\n- L610：真正执行 `_runner.execute`。\n- L347–L352：插件是类就 `new`（骨架服务都是类）；L354：是函数就直接调 `apply(ctx, config)`。\n\n### 我们的调用\n- `src7/Tools.ts:94` Tools 的构造：`constructor(ctx: cordis.Context) {`\n- `src7/plugins/memory/index.ts:766` 函数式插件的 apply：`export function apply(ctx: cordis.Context, config?: Record<string, unknown>): void {`",
+    "sources": [
+      "src7/Tools.ts",
+      "src7/plugins/memory/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-08",
+    "parent": "r-cordis-g2",
+    "title": "服务挂出来",
+    "summary": "服务类构造的最后一步就是 `provide`（L1078）。",
+    "body": "**行号：index.js L1078、L961–L962、L971–L978**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n1078      self.ctx.reflect.provide(name, self, this[symbols.check]);\n 961    provide(name, value, check) {\n 962      return this.ctx.fiber.effect(() => {\n   …\n 971        const impl = { uid: ++this._implCounter, name, value, ctx: this.ctx, check, isolate: key, dependents: /* @__PURE__ */ new Set() };\n 972        if (this.store[key]) {\n 973          throw new Error(`service \"${name}\" has been registered at <${this.store[key].ctx.fiber.name}>`);\n 974        }\n 975        this.store[key] = impl;\n 976        this.ctx.fiber.provisions.add(impl);\n 977        if (this.ctx.fiber.state === 2 /* ACTIVE */) {\n 978          this.notify([name]);\n```\n\n### 解释\n- 服务类构造的最后一步就是 `provide`（L1078）。\n- provide 本身是一件 effect（L962），卸下时自动撤。\n- L972–L974：同名服务再挂直接报错；L977–L978：本插件已 ACTIVE 时立刻通知等它的插件。\n\n### 我们的调用\n- `src7/Tools.ts:95` 挂成 tools：`super(ctx, 'tools');`\n- `src7/plugins/feishu/index.ts:1240` 对象直接挂成 feishu：`ctx.provide('feishu', feishu);`",
+    "sources": [
+      "src7/Tools.ts",
+      "src7/plugins/feishu/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-09",
+    "parent": "r-cordis-g2",
+    "title": "状态变了：internal/status",
+    "summary": "状态真变了才发（L550）。",
+    "body": "**行号：index.js L547–L551**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 547    _updateState(callback) {\n 548      const oldState = this.state;\n 549      this.state = callback() ?? this._getState();\n 550      if (oldState === this.state) return;\n 551      this.context.emit(\"internal/status\", this, oldState);\n```\n\n### 解释\n- 状态真变了才发（L550）。\n- 带上旧状态：PENDING 0、LOADING 1、ACTIVE 2、FAILED 3、DISPOSED 4、UNLOADING 5（L305–L313）。\n\n### 我们的调用\n- `src7/Main.ts:116` 启动记账：`app.on('internal/status', (fiber) => {`\n- `src7/plugins/tutorial/Boot.ts:235` 启动流程图：`this.ctx.on('internal/status', (fiber) => {`",
+    "sources": [
+      "src7/Main.ts",
+      "src7/plugins/tutorial/Boot.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-10",
+    "parent": "r-cordis-g3",
+    "title": "ctx.on 登记监听",
+    "summary": "L806：插件已卸下就不能再登记。",
+    "body": "**行号：index.js L802–L811、L784–L791**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 802    on(name, listener, options) {\n 803      if (typeof options !== \"object\") {\n 804        options = { prepend: options };\n 805      }\n 806      this.ctx.fiber.assertActive();\n 807      listener = this.ctx.reflect.bind(listener);\n 808      const result = this.bail(this.ctx, \"internal/listener\", name, listener, options);\n 809      if (result) return result;\n 810      const label = `ctx.on(${typeof name === \"string\" ? JSON.stringify(name) : name.toString()})`;\n 811      return this.register(label, name, listener, options);\n 784    register(label, name, callback, options) {\n 785      const method = options.prepend ? \"unshift\" : \"push\";\n 786      return this.ctx.fiber.effect(() => {\n 787        const hooks = this._hooks[name] ??= [];\n 788        hooks[method]({ ctx: this.ctx, callback, ...options });\n 789        return () => this.unregister(name, callback);\n 790      }, label);\n 791    }\n```\n\n### 解释\n- L806：插件已卸下就不能再登记。\n- L785：默认 push，排在名单末尾；`prepend` 才插到最前。\n- L786–L789：登记包在 `ctx.fiber.effect` 里，撤销就是 unregister。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:413` 听 flow/state：`ctx.on('flow/state', (notice) => this.onFlowState(notice));`\n- `src7/Main.ts:116` 听 internal/status：`app.on('internal/status', (fiber) => {`",
+    "sources": [
+      "src7/Main.ts",
+      "src7/plugins/tutorial/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-11",
+    "parent": "r-cordis-g3",
+    "title": "emit 通知，serial 挨个问",
+    "summary": "emit：同步挨个调，不等、不看返回值。",
+    "body": "**行号：index.js L750–L760**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 750    emit(...args) {\n 751      const [thisArg, callbacks] = this._resolve(\"emit\", args);\n 752      for (const callback of callbacks) Reflect.apply(callback, thisArg, args);\n 753    }\n 754    async serial(...args) {\n 755      const [thisArg, callbacks] = this._resolve(\"serial\", args);\n 756      for (const callback of callbacks) {\n 757        const result = await Reflect.apply(callback, thisArg, args);\n 758        if (isBailed(result)) return result;\n 759      }\n 760    }\n```\n\n### 解释\n- emit：同步挨个调，不等、不看返回值。\n- serial：一个个 await；返回截停值（L758）就不再往下问。\n- 名单顺序 = 登记顺序 = 插件挂上的先后。\n\n### 我们的调用\n- `src7/Main.ts:212` 通知 ready：`app.emit('ready', args.rest);`\n- `src7/Tools.ts:147` 工具执行前挨个问：`await this.ctx.serial('session/before-tool', gate);`\n- `src7/Channels.ts:852` 挨个问渠道插件投递：`void ctx.serial('channel/reply', fullRequest).then(() => {`",
+    "sources": [
+      "src7/Channels.ts",
+      "src7/Main.ts",
+      "src7/Tools.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-12",
+    "parent": "r-cordis-g3",
+    "title": "取服务时换身份",
+    "summary": "读 ctx 上的服务，先过 `getTraceable`（L885）。",
+    "body": "**行号：index.js L884–L886、L151–L158**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 884        if (Reflect.has(target, prop)) {\n 885          return getTraceable(ctx, Reflect.get(target, prop, ctx));\n 886        }\n 151  function createTraceable(ctx, value, tracker) {\n 152    const defSite = ctx[symbols.shadow] ?? ctx;\n 153    const useSite = ctx[symbols.shadow] ? Object.getPrototypeOf(ctx) : ctx;\n 154    const proxy = new Proxy(value, {\n 155      get: /* @__PURE__ */ __name((target, prop, receiver) => {\n 156        if (prop === symbols.original) return target;\n 157        if (prop === symbols.caller) return defSite;\n 158        if (prop === tracker.property) return useSite;\n```\n\n### 解释\n- 读 ctx 上的服务，先过 `getTraceable`（L885）。\n- 包出来的 Proxy 里读 `ctx` 得到调用方的 ctx（L158 `useSite`）。\n- 所以服务方法里的 `this.ctx.effect` 挂在调用方名下。\n\n### 我们的调用\n- `src7/Tools.ts:111` 注释写明 this.ctx 是调用方：`//M 在服务的方法里，this.ctx 是调用方（登记工具的那个插件）的 ctx，所以这个清理挂在那个插件身上。`\n- `src7/Tools.ts:113` 清理挂在登记工具的插件上：`this.ctx.effect(() => {`",
+    "sources": [
+      "src7/Tools.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-13",
+    "parent": "r-cordis-g3",
+    "title": "ctx.effect 登记要撤的事",
+    "summary": "L516：立刻执行；返回的撤销函数收进 `disposables`。",
+    "body": "**行号：index.js L484–L485、L516、L522–L526、L535–L536**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 484    effect(execute, label = \"anonymous\") {\n 485      this.assertActive();\n   …\n 516        task = this._execute(runner);\n   …\n 522      const wrapper = defineProperty2(() => {\n 523        if (!runner.epoch) return;\n 524        runner.epoch = false;\n 525        return task ? task.then(dispose) : dispose();\n 526      }, symbols.effect, meta);\n   …\n 535      disposables.push(this._disposables.push(wrapper));\n 536      return wrapper;\n```\n\n### 解释\n- L516：立刻执行；返回的撤销函数收进 `disposables`。\n- L522–L526：包成 wrapper；手动调它可以提前撤。\n- L535：记进本插件的 `_disposables`，卸下时统一撤。\n\n### 我们的调用\n- `src7/Resources.ts:228` 关数据库：`this.ctx.effect(() => {`\n- `src7/plugins/wechat/index.ts:252` 清定时器：`this.ctx.effect(() => () => clearInterval(timer));`\n- `src7/plugins/wechat/index.ts:256` 关发送 worker：`this.ctx.effect(() => () => this.sender.close());`",
+    "sources": [
+      "src7/Resources.ts",
+      "src7/plugins/wechat/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-14",
+    "parent": "r-cordis-g3",
+    "title": "ctx.get 问一声",
+    "summary": "按名字找服务；没挂返回 undefined。",
+    "body": "**行号：index.js L939–L947**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 939    get(name, strict = true) {\n 940      return getTraceable(this.ctx, this._getImpl(name, strict)?.value);\n 941    }\n 942    _getImpl(name, strict = true) {\n 943      const key = this.ctx[symbols.isolate][name];\n 944      const impl = key && this.store[key];\n 945      if (!impl) return;\n 946      if (strict && impl.ctx.fiber.state !== 2 /* ACTIVE */) return;\n 947      return impl;\n```\n\n### 解释\n- 按名字找服务；没挂返回 undefined。\n- L946：严格模式下，服务所在插件不是 ACTIVE 也返回 undefined。\n- 和 inject 不同：不等、不会让自己停诊。\n\n### 我们的调用\n- `src7/plugins/feishu/index.ts:1243` 有 http 才开查询接口：`const http = ctx.get('http');`\n- `src7/Main.ts:203` 启动报告列缺了哪些服务：`const missing = row.inject.filter((service) => app.get(service) === undefined);`",
+    "sources": [
+      "src7/Main.ts",
+      "src7/plugins/feishu/index.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-15",
+    "parent": "r-cordis-g4",
+    "title": "dispose：撤父插件上的那件 effect",
+    "summary": "L372–L373：先作废 uid，再发一次 `internal/plugin`。",
+    "body": "**行号：index.js L371–L387**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 371          return async () => {\n 372            this.uid = null;\n 373            this.context.emit(\"internal/plugin\", this);\n 374            if (this.ctx.registry.has(runtime.callback)) {\n 375              remove();\n 376              if (!runtime.fibers.length) {\n 377                this.ctx.registry.delete(runtime.callback);\n 378              }\n 379            }\n 380            this._setEpoch(INACTIVE);\n 381            while (this.inertia) {\n 382              await this.inertia;\n 383            }\n 384            this._updateState(() => {\n 385            });\n 386          };\n 387        }, \"ctx.plugin()\");\n```\n\n### 解释\n- L372–L373：先作废 uid，再发一次 `internal/plugin`。\n- L380：epoch 设成 INACTIVE → `_unload`。\n- L381–L385：等卸载做完，最后更新一次状态。\n\n### 我们的调用\n- `src7/tests/Resources.test.ts:48` 测试收尾卸插件：`cleanups.push(() => ctx.fiber.dispose());`",
+    "sources": [
+      "src7/tests/Resources.test.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-16",
+    "parent": "r-cordis-g4",
+    "title": "等依赖自己的插件放手",
+    "summary": "自己 provide 的服务还有人依赖，就一直等（L629–L631）。",
+    "body": "**行号：index.js L628–L632**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 628    async _unload() {\n 629      while ([...this.provisions].some((impl) => impl.dependents.size)) {\n 630        await new Promise((resolve) => this._release = resolve);\n 631      }\n 632      this._release = void 0;\n```\n\n### 解释\n- 自己 provide 的服务还有人依赖，就一直等（L629–L631）。\n- 依赖方先卸，自己后卸，服务不会在别人用着时消失。\n\n### 我们的调用\n- `src7/Sessions.ts:251` 会话依赖资源：资源卸下要等会话先放手：`static inject = ['resources', 'tools'];`",
+    "sources": [
+      "src7/Sessions.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-17",
+    "parent": "r-cordis-g4",
+    "title": "撤掉名下所有 effect",
+    "summary": "L633：一次清空 `_disposables`，逐个 await 撤销。",
+    "body": "**行号：index.js L633–L640**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 633      await Promise.all(this._disposables.clear().map(async (dispose) => {\n 634        try {\n 635          await composeError(async (info) => {\n 636            await Promise.resolve();\n 637            info.error = new Error();\n 638            await dispose();\n 639          }, this._runner.getOuterStack);\n 640        } catch (reason) {\n```\n\n### 解释\n- L633：一次清空 `_disposables`，逐个 await 撤销。\n- 监听、服务、子插件、自己写的 effect 都在这里撤。\n\n### 我们的调用\n- `src7/Tools.ts:116` 删掉登记过的工具：`specs.delete(name);`\n- `src7/Resources.ts:230` 关数据库：`this.db.close();`",
+    "sources": [
+      "src7/Resources.ts",
+      "src7/Tools.ts"
+    ]
+  },
+  {
+    "id": "r-cordis-18",
+    "parent": "r-cordis-g4",
+    "title": "撤监听、撤服务",
+    "summary": "unregister：从名单里删掉这个回调，名单空了连事件名一起删。",
+    "body": "**行号：index.js L792–L801、L980–L989**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 792    unregister(name, callback) {\n 793      const hooks = this._hooks[name];\n 794      if (!hooks) return;\n 795      const index = hooks.findIndex((hook) => hook.callback === callback);\n 796      if (index >= 0) {\n 797        hooks.splice(index, 1);\n 798        if (!hooks.length) delete this._hooks[name];\n 799        return true;\n 800      }\n 801    }\n   …\n 980        return async () => {\n 981          if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];\n 982          this.ctx.isolate(name, impl.isolate).reflect.notify([name]);\n 983          await new Promise((resolve) => {\n 984            impl.release = resolve;\n 985            if (!impl.dependents.size) resolve();\n 986          });\n 987          impl.release = void 0;\n 988          this.ctx.fiber.provisions.delete(impl);\n 989        };\n```\n\n### 解释\n- unregister：从名单里删掉这个回调，名单空了连事件名一起删。\n- provide 的撤销：从服务表删掉，通知等它的插件（它们会转入不开诊），再等依赖方放手。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:413` tutorial 卸下后 flow/state 不再进来：`ctx.on('flow/state', (notice) => this.onFlowState(notice));`\n- `src7/plugins/feishu/index.ts:1240` 飞书卸下后 ctx.get('feishu') 变 undefined：`ctx.provide('feishu', feishu);`",
+    "sources": [
+      "src7/plugins/feishu/index.ts",
+      "src7/plugins/tutorial/index.ts"
+    ]
+  }
+]

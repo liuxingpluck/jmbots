@@ -405,6 +405,19 @@ export class TutorialApi {
     return TutorialApi.get<{ text: string }>(route);
   }
 
+  /** Cordis 用法：和组块阅读分组列出，文件名仍从后端清单取。 */
+  static async getCordisDocs(): Promise<{ files: string[] }> {
+    //M 共用教程的令牌与错误处理。
+    return TutorialApi.get<{ files: string[] }>('/api/tutorial/cordis');
+  }
+
+  /** 读取 Cordis 用法的一篇文档，name 必须在后端清单里。 */
+  static async getCordisReading(name: string): Promise<{ text: string }> {
+    const route = `/api/tutorial/cordis-reading?name=${encodeURIComponent(name)}`;
+    //M 名称的边界校验由后端清单完成。
+    return TutorialApi.get<{ text: string }>(route);
+  }
+
   /** 左栏「骨架工具（utils）」：src7/utils/ 下现有的工具文件名，后端动态列。 */
   static async getUtils(): Promise<{ files: string[] }> {
     const route = '/api/tutorial/utils';
