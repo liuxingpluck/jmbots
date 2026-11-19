@@ -96,7 +96,7 @@ function stubFeishuClient(
       client: { im: { v1: Record<string, unknown> } };
     }>;
     chats: Map<string, unknown>;
-    onMessage: (appId: string, data: unknown) => Promise<void>;
+    inbound: { onMessage: (appId: string, data: unknown) => Promise<void> };
   };
   const app = inside.apps.get(appId);
   if (app === undefined) {
@@ -158,7 +158,7 @@ function stubFeishuClient(
   inside.chats.set('oc_chat_1', { name: '测试群', members: chats, at: Date.now() });
 
   return {
-    triggerInbound: (data: unknown) => inside.onMessage(appId, data),
+    triggerInbound: (data: unknown) => inside.inbound.onMessage(appId, data),
   };
 }
 

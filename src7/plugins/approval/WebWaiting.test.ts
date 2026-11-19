@@ -4,6 +4,7 @@ import * as sqlite from 'bun:sqlite';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import * as approvalModule from './index.ts';
+import * as outbound from './Outbound.ts';
 
 bunTest.test('网页只取最早 200 条，仍显示最近提醒，处理后后续卡片补位', async () => {
   const ctx = new cordis.Context();
@@ -12,7 +13,8 @@ bunTest.test('网页只取最早 200 条，仍显示最近提醒，处理后后�
   ctx.provide('resources', { db, root: import.meta.dir, raw: {}, config: { providers: {} } });
   ctx.provide('bots', { list: () => [] });
   ctx.provide('sessions', { find: () => [] });
-  ctx.provide('http', { app });
+  let verified = true;
+  ctx.provide('http', { app, isVerified: () => verified });
   try {
     await ctx.plugin(approvalModule, {});
     const addSql = `INSERT INTO approval_pending
@@ -47,6 +49,23 @@ bunTest.test('网页只取最早 200 条，仍显示最近提醒，处理后后�
     bunTest.expect(remaining[199]?.id).toBe(203);
     const done = await app.inject('/api/approvals/overflow');
     bunTest.expect(done.json<{ count: number }>()).toEqual({ count: 0 });
+
+    const input = {
+      kind: outbound.REMINDER_APPROVAL_KIND, title: '合成提醒', detail: '合成正文',
+      bot: 'fixture', payload: { reminderId: 1 },
+    };
+    const card = ctx.approval.ask(input);
+    const request = { method: 'POST' as const, url: `/api/approvals/${card.id}`, payload: { approve: true } };
+    verified = false;
+    const hidden = await app.inject('/api/approvals');
+    const hiddenIds = hidden.json<{ id: number }[]>();
+    bunTest.expect(hiddenIds.some((item) => item.id === card.id)).toBe(false);
+    const denied = await app.inject(request);
+    bunTest.expect(denied.statusCode).toBe(404);
+
+    verified = true;
+    const accepted = await app.inject(request);
+    bunTest.expect(accepted.statusCode).toBe(200);
   } finally {
     await ctx.fiber.dispose();
     await app.close();

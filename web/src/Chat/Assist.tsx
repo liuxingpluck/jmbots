@@ -30,8 +30,23 @@ interface Ask { id: number; messageId: number | null; question: string; options:
 interface TodoStep { text: string; status: 'todo' | 'doing' | 'done' }
 /** 一场会话的待办。 */
 interface Todo { id: number; sessionId: string; root?: string; updatedAt: number; items: TodoStep[] }
+/** 原群聊或私聊的一条定时提醒。 */
+interface Reminder {
+  /** 提醒号。 */
+  id: number;
+  /** 提醒配置时区里的日期和时间。 */
+  at: string;
+  /** 显示时间使用的 IANA 时区。 */
+  timeZone: string;
+  /** 用户需要到点提醒的正文。 */
+  text: string;
+  /** 调度和发送进度。 */
+  state: 'awaiting' | 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'cancelled' | 'rejected';
+  /** 渠道回执的失败或待核对原因。 */
+  reason: string | null;
+}
 /** GET /api/assist 的回答。 */
-interface AssistData { reactions: Reaction[]; asks: Ask[]; todos: Todo[] }
+interface AssistData { bot?: string; reactions: Reaction[]; asks: Ask[]; todos: Todo[]; reminders?: Reminder[] }
 
 
 /** 小仓库：当前机器人的数据和订阅者。 */
@@ -46,7 +61,9 @@ const subscribe = (listener: () => void): (() => void) => {
 async function load(bot: string): Promise<void> {
   try {
     //M 拉取指定机器人的助手数据刷新模块小仓库，出错时重置为空集避免残留旧数据。
-    data = await api.getJson<AssistData>(`/api/assist?bot=${encodeURIComponent(bot)}`);
+    const url = `/api/assist?bot=${encodeURIComponent(bot)}`;
+    const result = await api.getJson<AssistData>(url);
+    data = { ...result, bot };
   } catch {
     data = { reactions: [], asks: [], todos: [] };
   }
@@ -177,7 +194,12 @@ export function TodoPanel(): react.JSX.Element {
   const mountedPlugins = context.useUi((state) => state.mountedPlugins);
   const assistEnabled = api.isPluginMounted(mountedPlugins, 'assist', false);
   usePoll(bot, assistEnabled);
-  const all = [...useData().todos].sort((a, b) => b.updatedAt - a.updatedAt);
+  const current = useData();
+  const all = [...current.todos].sort((a, b) => b.updatedAt - a.updatedAt);
+  let reminders: Reminder[] = [];
+  if (current.bot === bot) {
+    reminders = current.reminders ?? [];
+  }
   const focus = panelSessionId ?? all[0]?.sessionId ?? null;
   const focusRoot = all.find((item) => item.sessionId === focus)?.root ?? focus;
   let todos: typeof all = [];
@@ -230,6 +252,18 @@ export function TodoPanel(): react.JSX.Element {
     </div>
   );
 
+  const reminderStates = {
+    awaiting: t('等你确认'), pending: t('待提醒'), sending: t('正在发送'), sent: t('已提醒'),
+    failed: t('发送失败'), uncertain: t('发送结果待核对'), cancelled: t('已取消'), rejected: t('已拒绝'),
+  };
+  const renderReminder = (reminder: Reminder): react.ReactNode => (
+    <div className="jm-todo">
+      <div className="jm-muted">{reminder.at} {reminder.timeZone} · {reminderStates[reminder.state]}</div>
+      <div className="jm-todo-item">{reminder.text}</div>
+      {reminder.reason !== null && <div className="jm-muted">{reminder.reason}</div>}
+    </div>
+  );
+
   //M 渲染待办工具栏（含清除按钮）、空态提示与各会话待办条目；份数多了跟着右栏滚动只画看得见的。
   return (
     <div className="jm-todo-panel">
@@ -246,6 +280,18 @@ export function TodoPanel(): react.JSX.Element {
         gap={TODO_GAP}
         scrollParent={panelScroll}
       />
+      {reminders.length > 0 && (
+        <section aria-label={t('提醒')}>
+          <h3>{t('提醒')}</h3>
+          <longList.LongList
+            items={reminders}
+            getKey={(reminder) => reminder.id}
+            render={renderReminder}
+            gap={TODO_GAP}
+            scrollParent={panelScroll}
+          />
+        </section>
+      )}
     </div>
   );
 }

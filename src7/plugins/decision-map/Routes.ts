@@ -1,9 +1,14 @@
-/** 决策图 HTTP 接口和选择通知。 */
+/** 决策图 HTTP 接口、插件指令和中控收件投递。 */
+import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as failureModule from '../../utils/Failure.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as storeModule from './Store.ts';
+import type * as types from './Types.ts';
+
+/** 新节点提供必填字段，更新只给节点号及待改内容。 */
+type NodePatch = Pick<types.DecisionNode, 'id'> & Partial<types.DecisionNode>;
 
 /** 只给中控收件用的请求，不向机器人会话投递。 */
 export interface DecisionRelayRequest extends events.RequestEnvelope {
@@ -11,7 +16,7 @@ export interface DecisionRelayRequest extends events.RequestEnvelope {
   action: 'deliver' | 'ack';
   /** relay 配置中的中控助手名。 */
   helper: string;
-  /** 收件的稳定键：选择用节点号，留言用「节点号#留言号」。 */
+  /** 收件稳定键，选择按节点，留言按留言号，任务变化按提交序号。 */
   node: string;
   /** 投递时记录实际节点和留言，方便回信时定位。 */
   target?: storeModule.ReplyTarget;
@@ -61,6 +66,10 @@ interface ChosenNotice {
 
 declare module 'cordis' {
   interface Events {
+    /** 插件注册或局部更新一批节点，保存后通知中控。 */
+    'decision-map/upsert'(nodes: NodePatch | readonly NodePatch[]): void | Promise<void>;
+    /** 插件修改单个任务的状态，保存后通知中控。 */
+    'decision-map/status'(change: { id: string; status: types.DecisionStatus }): void | Promise<void>;
     /** 用户的选择已保存。 */
     'decision-map/chosen'(notice: ChosenNotice): void;
     /** 决策图向 relay 投递或确认属于中控的一条收件。 */
@@ -111,6 +120,48 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
     return { ok: true };
   }, replyOptions);
 
+  //M 插件和网页用同一份存储。投递发生在快照和历史提交以后。
+  const deliverTasks = async (tasks: readonly types.DecisionTaskChange[], revision: number) => {
+    if (helper === undefined) return tasks.map(() => RETRY);
+
+    const requests = tasks.map(async (task) => {
+      let change = `新建，状态 ${task.status}`;
+      if (task.previousStatus !== undefined) {
+        change = `状态从 ${task.previousStatus} 改为 ${task.status}`;
+      }
+      const text = `任务树「${task.title}」\n节点 ${task.node}，${change}。`;
+      const node = `${task.node}#change:${String(revision)}`;
+      const target = { node: task.node };
+      const relay = { action: 'deliver', node, helper, text, target } as const;
+
+      //M 收件按提交序号去重，回话地址仍是实际任务节点。
+      const result = await requestRelay(ctx, relay);
+      if (!result.ok || result.id === undefined) return RETRY;
+
+      return { relayId: result.id };
+    });
+    return Promise.all(requests);
+  };
+
+  ctx.on('decision-map/upsert', async (input) => {
+    let nodes: unknown = input;
+    if (!Array.isArray(input)) nodes = [input];
+
+    //M 单节点和批量共用父链校验、原子保存与通知。
+    const { graph, tasks } = store.put(nodes, 'plugin');
+    await deliverTasks(tasks, graph.revision);
+  });
+  ctx.on('decision-map/status', async (input) => {
+    const body = storeModule.readObject(input);
+    const id = storeModule.readText(body['id'], 'id');
+    const status = storeModule.readStatus(body['status']);
+
+    //M 保留既有决定与对话；重复设置同一状态不会通知。
+    const { tasks } = store.setStatus(id, status, 'plugin');
+    const { revision } = store.getGraph();
+    await deliverTasks(tasks, revision);
+  });
+
   //M 用独立作用域统一处理节点校验和持久化错误，沿用 HTTP 插件鉴权。
   void app.register(async (scope) => {
     scope.setErrorHandler((error, _request, reply) => {
@@ -125,11 +176,39 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
     //M 页面读当前快照，中控的批量修改统一进入同一快照。
     scope.get(`${PREFIX}/graph`, () => store.getGraph());
     scope.put<{ Body: unknown }>(`${PREFIX}/nodes`, (request) => {
-      if (Array.isArray(request.body)) return store.put(request.body);
+      if (Array.isArray(request.body)) return store.put(request.body, 'central').graph;
 
       //M 包装对象里取出 nodes，也支持直接提交节点列表。
       const body = storeModule.readObject(request.body);
-      return store.put(body['nodes']);
+      return store.put(body['nodes'], 'central').graph;
+    });
+    scope.post<{ Body: unknown }>(`${PREFIX}/child`, async (request) => {
+      const body = storeModule.readObject(request.body);
+      const parent = storeModule.readText(body['parent'], 'parent');
+      const title = storeModule.readText(body['title'], 'title');
+      const id = crypto.randomUUID();
+      const child = { id, parent, title, kind: 'work', status: 'open' };
+
+      //M 父节点验证随提交完成，失败不改变历史也不通知中控。
+      const { graph, tasks } = store.put([child], 'user');
+      const delivery = await deliverTasks(tasks, graph.revision);
+      return { id, graph, delivery };
+    });
+    scope.route<{ Body: unknown }>({
+      method: ['POST', 'PUT'],
+      url: `${PREFIX}/status`,
+      async handler(request) {
+        const body = storeModule.readObject(request.body);
+        const id = storeModule.readText(body['id'], 'id');
+        const status = storeModule.readStatus(body['status']);
+        if (request.method === 'PUT') return store.setStatus(id, status, 'central');
+
+        //M 网页改状态进中控收件；中控走 PUT 更新自己的图。
+        const changed = store.setStatus(id, status, 'user');
+        const { revision } = store.getGraph();
+        const delivery = await deliverTasks(changed.tasks, revision);
+        return { node: changed.node, delivery };
+      },
     });
     //M 允许中控按版本只提取尚未处理的变化。
     scope.get<{ Querystring: { since?: string } }>(`${PREFIX}/changes`, (request) => {

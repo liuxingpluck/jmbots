@@ -24,6 +24,7 @@ import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as approvalModule from '../approval/index.ts';
+import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as botsPlugin from '../bots/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 import * as webApiModule from './index.ts';
@@ -79,6 +80,10 @@ class FakeHttp extends cordis.Service {
     super(ctx, 'http');
     this.app = fastify.default({ logger: false });
     ctx.effect(() => () => void this.app.close());
+  }
+
+  isVerified(request: fastify.FastifyRequest): boolean {
+    return request.headers['x-fixture-unverified'] !== '1';
   }
 }
 
@@ -259,6 +264,44 @@ async function post(ctx: cordis.Context, payload: Record<string, unknown>): Prom
   expect(response.statusCode).toBe(200);
   return (response.json() as { id: number }).id;
 }
+
+test('网页来源标记由 HTTP 钩子生成，已批准的定时提醒只写一次原机器人时间线', async () => {
+  const world = await makeWeb(() => piAi.fauxAssistantMessage('知道了'));
+  const { ctx, emitted } = world;
+  const original = { text: '定一条提醒', bot: '助手', verifiedOwner: true };
+  const rejectedSource = {
+    method: 'POST' as const, url: '/api/message', payload: original, headers: { 'x-fixture-unverified': '1' },
+  };
+  const unverified = await ctx.http.app.inject(rejectedSource);
+  expect(unverified.statusCode).toBe(200);
+  expect(emitted[0]?.message.origin.address['verifiedOwner']).toBe(false);
+  const id = await post(ctx, original);
+  expect(emitted[1]?.message.origin.address['verifiedOwner']).toBe(true);
+  await settled(ctx, id);
+
+  const row = Object.freeze({
+    id: 17, bot: '助手', channel: 'http', account: 'local', chat: 'http:本机', text: '提醒：测试会议', confirmed: true,
+  });
+  requestEventModule.onRequestEvent(ctx, 'assist/reminder-read', 'assist/reminder-row', (request) => {
+    if (request.reminderId !== row.id) return {};
+
+    return { row };
+  });
+  const payload = { reminderId: row.id };
+  const options = { timeoutMs: 500, onFallback: () => ({ requestId: '', receipt: { status: 'failed' } as ProviderReceipt }) };
+  const before = world.steps();
+  const first = await requestEventModule.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
+  const repeated = await requestEventModule.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
+  expect(first.receipt.status).toBe('sent');
+  expect(repeated.receipt.status).toBe('sent');
+  expect(world.steps()).toBe(before);
+  const sql = "SELECT id FROM web_messages WHERE bot = ? AND source = 'reminder' ORDER BY id";
+  const reminders = ctx.resources.db.query<{ id: number }, [string]>(sql).all('助手');
+  expect(reminders).toHaveLength(1);
+  const url = `/api/messages/${reminders[0]!.id}`;
+  const visible = await ctx.http.app.inject(url);
+  expect(visible.json()).toMatchObject({ text: '（系统）提醒：测试会议', channel: 'http', status: 'replied' });
+});
 
 
 /**

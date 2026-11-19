@@ -26,6 +26,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
  * workspace 给（11-17）：外人看自己范围里的工作区（workspaces 插件按范围挡）；只许 OTHERS_WORKSPACE_ACTIONS 里的动作，
  *   建、改名、归档在 approval 的 session/before-tool 关口拦下。
  * channel_search 给（11-18）：memory 插件的渠道消息查询，外人只查得到这一轮这个聊天（ChannelIndex.ts 照来源快照挡）。
+ * 提醒工具只在本轮来源快照绑定的聊天登记，外人只查和取消自己的提醒。到点发送仍由 Outbound 处理。
  */
 export const READ_ONLY_TOOLS = new Set([
   'time', 'read', 'list_dir', 'find', 'web_search', 'skill',
@@ -33,6 +34,7 @@ export const READ_ONLY_TOOLS = new Set([
   'memory_search', 'memory_get',
   'channel_reply', 'channel_history', 'channel_mentions', 'channel_visible_history',
   'react', 'ask', 'todo', 'relay_send', 'workspace', 'channel_search',
+  'remind_add', 'remind_list', 'remind_cancel',
 ]);
 
 /** 外人（guest、builder）用 workspace 工具只许这几个动作：看清单、看一个。 */

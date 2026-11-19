@@ -38,6 +38,7 @@ function getState(entry: types.DecisionNode): { key: StateKey; label: string } {
   if (entry.kind === 'pending' && entry.status === 'open') return { key: 'pending', label: t('★ 待定') };
   if (entry.status === 'done' || entry.status === 'dropped') return { key: 'done', label: t('做完') };
   if (entry.status === 'working') return { key: 'working', label: t('进行中') };
+  if (entry.status === 'open' && entry.chosen !== undefined) return { key: 'open', label: t('未开始') };
   if (entry.kind === 'decided' || entry.status === 'decided') return { key: 'decided', label: t('已定 ✓') };
 
   //M 剩下的是还没动的功能和分叉。
@@ -253,19 +254,50 @@ interface ListRow {
   entry: types.DecisionNode;
   /** 在所属分支里的层深，一级分支是 0。 */
   depth: number;
+  /** 此行可以展开下级。 */
+  hasChildren: boolean;
 }
 
-/** 按先根后子的顺序把一支摊成缩进行。 */
-function getRows(
-  entry: types.DecisionNode, depth: number, byParent: Map<string, types.DecisionNode[]>, rows: ListRow[],
-): void {
-  //M 先放自己，再按顺序放子节点。
-  rows.push({ entry, depth });
-  const children = byParent.get(entry.id) ?? [];
-  for (const child of children) {
-    //M 子节点紧跟在父节点下面，层深加一。
-    getRows(child, depth + 1, byParent, rows);
+/** 同级按快照顺序排列，供清单与聚焦路径使用。 */
+function getChildren(nodes: types.DecisionNode[]) {
+  const children = new Map<string, types.DecisionNode[]>();
+  for (const entry of nodes) {
+    if (entry.parent === null) continue;
+
+    const siblings = children.get(entry.parent) ?? [];
+    siblings.push(entry);
+    children.set(entry.parent, siblings);
   }
+  return children;
+}
+
+/** 从快照取出单棵子树和从总目标到它的面包屑。 */
+export function getScope(nodes: types.DecisionNode[], focus?: string) {
+  if (focus === undefined) return { nodes, path: [] };
+
+  const byId = new Map(nodes.map((entry) => [entry.id, entry]));
+  const root = byId.get(focus);
+  if (root === undefined) return { nodes, path: [] };
+
+  const path = [root];
+  let parent = root.parent;
+  while (parent !== null) {
+    const entry = byId.get(parent);
+    if (entry === undefined) break;
+
+    path.push(entry);
+    parent = entry.parent;
+  }
+
+  //M 只把当前视图的根视为顶层，保存的真实父编号保持原样。
+  const children = getChildren(nodes);
+  const scope: types.DecisionNode[] = [{ ...root, parent: null }];
+  for (const entry of scope) {
+    for (const child of children.get(entry.id) ?? []) {
+      scope.push(child);
+    }
+  }
+  return { nodes: scope, path: path.reverse() };
 }
 
 /** 为虚拟清单保留列表语义；部件引用固定，更新选中节点时不用重建清单。 */
@@ -275,41 +307,55 @@ const LIST_PARTS: virtuoso.Components<ListRow> = {
   }),
 };
 
-/** 按一级分支排列节点；分支标题本身仍是一条可点的节点。 */
-function getListRows(nodes: types.DecisionNode[]): ListRow[] {
+/** 按深度优先列出所有未折叠的行，任意层都可以继续展开。 */
+function getListRows(nodes: types.DecisionNode[], folds: ReadonlyMap<string, boolean>): ListRow[] {
   const root = nodes.find((entry) => entry.parent === null);
   if (root === undefined) return [];
 
-  //M 同级保持快照里的顺序。
-  const byParent = new Map<string, types.DecisionNode[]>();
-  for (const entry of nodes) {
-    if (entry.parent === null) continue;
+  //M 显式栈让任意深度的分支仍按父项在前的顺序列出。
+  const children = getChildren(nodes);
+  const rows: ListRow[] = [];
+  const stack = [{ entry: root, depth: -1 }];
+  while (stack.length > 0) {
+    const { entry, depth } = stack.pop()!;
+    const below = children.get(entry.id) ?? [];
+    const hasChildren = below.length > 0;
+    rows.push({ entry, depth: Math.max(0, depth), hasChildren });
+    if (folds.get(entry.id) === false) continue;
 
-    const siblings = byParent.get(entry.parent) ?? [];
-    siblings.push(entry);
-    byParent.set(entry.parent, siblings);
-  }
-
-  //M 中心目标先显示，各分支及子节点紧随其后。
-  const rows = [{ entry: root, depth: 0 }];
-  const branches = byParent.get(root.id) ?? [];
-  for (const branch of branches) {
-    getRows(branch, 0, byParent, rows);
+    for (let index = below.length - 1; index >= 0; index -= 1) {
+      stack.push({ entry: below[index]!, depth: depth + 1 });
+    }
   }
   return rows;
 }
 
+interface ListProps extends ViewProps {
+  /** 与画布共用的展开状态。 */
+  folds: ReadonlyMap<string, boolean>;
+  /** 折叠或展开指定父节点。 */
+  toggle: (id: string, expand: boolean) => void;
+}
+
 /** 清单看法：按一级分支分组的缩进列表，手机上最好读。 */
-export function ListView({ nodes, selected, open }: ViewProps) {
+export function ListView({ nodes, selected, open, folds, toggle }: ListProps) {
   //M 快照更新时才重新摊平分支，滚动时只生成视口附近的行。
-  const rows = react.useMemo(() => getListRows(nodes), [nodes]);
+  const rows = react.useMemo(() => getListRows(nodes, folds), [nodes, folds]);
   if (rows.length === 0) return <p className="decision-view__empty">{t('还没有决策节点')}</p>;
 
   /** 一行就是一个按钮，点了打开侧栏。 */
   const getItem = (index: number, row: ListRow) => {
     const entry = row.entry;
     const state = getState(entry);
-    const indent = { paddingLeft: `${String(12 + row.depth * 18)}px` };
+    const indent = { paddingLeft: `min(${String(12 + row.depth * 18)}px, 25vw)` };
+    const expanded = folds.get(entry.id) !== false;
+    const labelArgs = { title: entry.title };
+    let foldLabel = t('展开「{title}」下的子项', labelArgs);
+    let foldIcon = '+';
+    if (expanded) {
+      foldLabel = t('折叠「{title}」下的子项', labelArgs);
+      foldIcon = '−';
+    }
     const button = (
       <button
         type="button"
@@ -324,19 +370,35 @@ export function ListView({ nodes, selected, open }: ViewProps) {
         <span className="decision-list__title">{entry.title}</span>
       </button>
     );
+    const item = (
+      <div className="decision-list__row">
+        {button}
+        {row.hasChildren && (
+          <button
+            className="decision-task-button"
+            type="button"
+            data-fold-node={entry.id}
+            aria-expanded={expanded}
+            aria-label={foldLabel}
+            title={foldLabel}
+            onClick={() => toggle(entry.id, !expanded)}
+          >{foldIcon}</button>
+        )}
+      </div>
+    );
 
     //M 分支标题保留原来的分隔线和名称，同时作为可点击的节点行。
     if (index > 0 && row.depth === 0) {
       return (
         <div role="listitem">
           <section className="decision-list__section" aria-label={entry.title}>
-            {button}
+            {item}
           </section>
         </div>
       );
     }
 
-    return <div role="listitem">{button}</div>;
+    return <div role="listitem">{item}</div>;
   };
 
   //M 清单占满原视图，由 Virtuoso 按每行实际高度滚动。

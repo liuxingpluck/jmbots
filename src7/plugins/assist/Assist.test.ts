@@ -1,8 +1,11 @@
 /** 用内存库和假 ctx 验证 todo 工具的入口：超过上限退回模型，不截断；上限以内照常写入。不调用模型。 */
 import * as sqlite from 'bun:sqlite';
 import { expect, test } from 'bun:test';
-import type * as cordis from 'cordis';
+import * as cordis from 'cordis';
+import * as fastify from 'fastify';
 import type { Session } from '../../Sessions.ts';
+import type { ToolSpec } from '../../Tools.ts';
+import * as approval from '../approval/index.ts';
 import * as assist from './index.ts';
 
 /** 登记进来的工具：只留测试要调的 run。 */
@@ -15,6 +18,8 @@ test('todo 超过 50 项抛错退回模型，50 项以内照常写入', () => {
   const ctx = {
     resources: { db },
     on: () => undefined,
+    effect: () => undefined,
+    inject: () => undefined,
     emit: () => undefined,
     tools: {
       register: (tool: { definition: { name: string }; run: ToolRun }) => {
@@ -42,4 +47,43 @@ test('todo 超过 50 项抛错退回模型，50 项以内照常写入', () => {
   expect(run({ items: enough }, session)).toBe('待办已更新：0/50 做完');
   const saved = db.query("SELECT COUNT(*) AS n FROM assist_items WHERE kind = 'todo'").get() as { n: number };
   expect(saved.n).toBe(1);
+});
+
+test('插件就绪后登记提醒工具，网页提醒列表继承核验结果', async () => {
+  const ctx = new cordis.Context();
+  const db = new sqlite.Database(':memory:');
+  const app = fastify.default();
+  const specs = new Map<string, ToolSpec>();
+  let verified = false;
+  ctx.provide('resources', { db, root: import.meta.dir, raw: {}, config: { providers: {} } });
+  ctx.provide('bots', { list: () => [] });
+  ctx.provide('sessions', { find: () => [] });
+  ctx.provide('http', { app, isVerified: () => verified });
+  ctx.provide('tools', { register: (spec: ToolSpec) => specs.set(spec.definition.name, spec) });
+  try {
+    await ctx.plugin(approval, {});
+    await ctx.plugin(assist, { reminders: { time_zone: 'UTC' } });
+    ctx.emit('ready', []);
+    const tool = specs.get('remind_add')!;
+    const snapshot = {
+      channel: 'feishu', accountId: 'fixture-account', chatId: 'fixture-chat', chatType: 'p2p',
+      senderId: 'fixture-owner', role: 'owner', replyRoundKey: 'fixture-1',
+    };
+    const row = { id: 'fixture-session', bot: 'fixture', activeSourceSnapshot: snapshot };
+    const session = { row } as unknown as Session;
+    const args = { at: '2099-12-01', text: '提醒正文' };
+    const signal = new AbortController().signal;
+    await tool.run(args, session, signal, 'fixture-call');
+
+    const url = '/api/assist?bot=fixture';
+    const unverified = await app.inject(url);
+    expect(unverified.json().reminders).toEqual([]);
+    verified = true;
+    const visible = await app.inject(url);
+    expect(visible.json().reminders).toMatchObject([{ text: '提醒正文', state: 'pending' }]);
+  } finally {
+    await ctx.fiber.dispose();
+    await app.close();
+    db.close();
+  }
 });

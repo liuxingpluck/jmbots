@@ -1,4 +1,4 @@
-/** 本人的渠道发送确认，持久绑定原草稿、批准及发送结果。 */
+/** 本人的渠道发送确认，持久绑定原草稿或主动消息、批准及发送结果。 */
 import * as crypto from 'node:crypto';
 import type * as sqlite from 'bun:sqlite';
 import type * as cordis from 'cordis';
@@ -11,10 +11,51 @@ import type { ApprovedCall, ChannelSendResult, ProgramDraft, ProviderReceipt } f
 const APPROVAL_MS = 600_000;
 /** 进程退出或传输中断后的在途请求只供本人核对。 */
 const UNKNOWN: ProviderReceipt = { status: 'uncertain', reason: '发送结果待核对，不自动重发' };
+/** 主站主动发件采用独立账本命名空间，和外置程序草稿隔离。 */
+export const DIRECT_PROGRAM = '@channel';
+/** 通过现有本人审批界面登记的定时提醒。 */
+export const REMINDER_APPROVAL_KIND = 'assist-reminder';
+
+/** 由可信入口提交的主动纯文本消息。 */
+export interface ChannelSendMessage {
+  /** 接收发送事件的渠道。 */
+  channel: string;
+  /** 精确的发送账号。 */
+  account: string;
+  /** 精确的聊天 ID。 */
+  chat: string;
+  /** 待本人确认的原文。 */
+  text: string;
+  /** 由入口填写的申请来源，如 http 或 model。 */
+  from: string;
+  /** 网页提醒的目标机器人，由已确认的提醒记录给出。 */
+  targetBot?: string;
+}
+
+/** 持久确认后交给渠道的一次性发送载荷。 */
+export type ApprovedChannelSend = Readonly<ChannelSendMessage & {
+  /** 意图 UUID，渠道可用来给供应方去重。 */
+  intentId: string;
+  /** 持久业务发送号，和事件等待用的 requestId 不同。 */
+  sendId: string;
+  /** 已批准请求的截止时间，UTC 毫秒。 */
+  expiresAt: number;
+}>;
+
+const approvedChannelSends = new WeakSet<ApprovedChannelSend>();
+
+/** 渠道在实际发送前消费本进程签发的载荷，同一个载荷只能用一次。 */
+export function takeChannelSendApproval(call: ApprovedChannelSend): boolean {
+  //G 普通对象、复制的对象和已经消费的批准都没有发送资格。
+  if (!approvedChannelSends.delete(call)) return false;
+
+  return call.expiresAt > Date.now();
+}
 
 /** 程序界面经主站鉴权后可以执行的明确操作。 */
 export type OutboundAction =
   | { action: 'prepare'; draftId: number }
+  | { action: 'prepare-channel'; message: ChannelSendMessage; toolKey?: string }
   | { action: 'confirm'; intentId: string; observedIntentDigest: string; interactionId: string; decision: 'approve' }
   | { action: 'status'; intentId: string }
   | { action: 'status'; draftId: number }
@@ -34,6 +75,14 @@ declare module 'cordis' {
     'approval/outbound-request'(request: OutboundRequest): void | Promise<void>;
     /** 本次确认的单独回执，和普通审批、模型回复隔离。 */
     'approval/outbound-result'(result: OutboundResult): void;
+    /** 定时器只交记录号，目标和批准从持久记录查回。 */
+    'approval/reminder-send'(request: events.RequestEnvelope & { reminderId: number }): void | Promise<void>;
+    /** 由同一个主动发件账返回渠道回执。 */
+    'approval/reminder-sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
+    /** Outbound 已占位并批准的主动纯文本发送，由对应渠道处理。 */
+    'channel/send'(request: events.RequestEnvelope & { call: ApprovedChannelSend }): void | Promise<void>;
+    /** 主动消息运输的回执，先由 Outbound 保存再通知通用订阅者。 */
+    'channel/sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
   }
 }
 
@@ -57,6 +106,8 @@ interface IntentRow {
   account: string;
   /** 确切目标会话。 */
   chat: string;
+  /** 网页聊天所属的机器人，飞书用账号和聊天寻址。 */
+  target_bot: string | null;
   /** 提交和预览共用的原文。 */
   text: string;
   /** 包含精确草稿及来源身份的摘要。 */
@@ -89,8 +140,11 @@ function getView(row: IntentRow) {
 }
 
 /** 用固定字段按原字节计算展示摘要，换账号、聊天、正文或代次都会失效。 */
-function digestDraft(program: string, draft: ProgramDraft): string {
+function digestDraft(program: string, draft: ProgramDraft, targetBot?: string): string {
   const binding = [program, draft.generation, draft.channel, draft.draftId, draft.account, draft.chat, draft.text];
+  if (targetBot !== undefined) {
+    binding.push(targetBot);
+  }
   const bytes = JSON.stringify(binding);
   const hash = crypto.createHash('sha256');
   //M 摘要包含固定字段与原始正文。
@@ -110,11 +164,16 @@ export class Outbound {
     const sql = 'CREATE TABLE IF NOT EXISTS approval_outbound (id TEXT PRIMARY KEY,'
       + ' send_id TEXT NOT NULL UNIQUE,'
       + ' approval_id TEXT NOT NULL UNIQUE, program TEXT NOT NULL, generation TEXT NOT NULL, channel TEXT NOT NULL,'
-      + ' draft_id INTEGER NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL,'
+      + ' draft_id INTEGER NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL, target_bot TEXT,'
       + ' text TEXT NOT NULL, digest TEXT NOT NULL,'
       + ' state TEXT NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, interaction_id TEXT,'
       + ' receipt TEXT, checked TEXT, notified_at INTEGER)';
     this.db.exec(sql);
+    const columns = this.db.query<{ name: string }, []>('PRAGMA table_info(approval_outbound)').all();
+    if (!columns.some((column) => column.name === 'target_bot')) {
+      //M 兼容现有主动发件与外置草稿账，原记录的摘要保持不变。
+      this.db.exec('ALTER TABLE approval_outbound ADD COLUMN target_bot TEXT');
+    }
     const index = 'CREATE INDEX IF NOT EXISTS approval_outbound_draft ON approval_outbound (program, draft_id)';
     this.db.exec(index);
     //M 只由约定的事件入口取结果，不接受通用 approval/decide。
@@ -124,12 +183,63 @@ export class Outbound {
     };
     //M 请求回执工具负责等待和关联，不把确认交给普通审批的监听者。
     events.onRequestEvent(ctx, 'approval/outbound-request', 'approval/outbound-result', handle, failures);
+    //M 定时发送没有可提交目标的 HTTP 或模型入口，只能消费已到期的提醒行。
+    const sendReminder = async (request: events.EventArg<'approval/reminder-send'>) => {
+      const receipt = await this.sendReminder(request.reminderId);
+      return { receipt };
+    };
+    const reminderFailure = { onError: () => ({ receipt: UNKNOWN }) };
+    events.onRequestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', sendReminder, reminderFailure);
     //M 重启后在途账只转待核；通知等待主程序所有插件已经挂载。
     ctx.on('ready', () => this.recover());
   }
 
+  /** 以创建时的授权和已占位提醒为依据，使用原主动发件账。 */
+  private async sendReminder(reminderId: number): Promise<ProviderReceipt> {
+    const payload = { reminderId };
+    const options = { timeoutMs: 1000, onFallback: () => ({ requestId: '' }) };
+    const lookup = await events.requestEvent(this.ctx, 'assist/reminder-read', 'assist/reminder-row', payload, options);
+    const row = lookup.row;
+    if (row?.confirmed !== true) return { status: 'failed', reason: '提醒未到期、未获批准或已经处理' };
+
+    const message: ChannelSendMessage = {
+      channel: row.channel, account: row.account, chat: row.chat, text: row.text, from: 'reminder',
+    };
+    if (row.channel === 'http') {
+      message.targetBot = row.bot;
+    }
+    const interactionId = `assist-reminder:${reminderId}`;
+    //M 重入同一提醒时复用同一个意图和渠道去重键。
+    const prepared = this.prepareChannel(message, interactionId, true);
+    if ('error' in prepared) return { status: 'failed', reason: prepared.error };
+
+    const intent = prepared.intent;
+    const stored = this.get(DIRECT_PROGRAM, intent.intentId);
+    if (stored === null) return UNKNOWN;
+
+    const confirmation = {
+      action: 'confirm' as const, intentId: intent.intentId, observedIntentDigest: intent.digest,
+      interactionId, decision: 'approve' as const,
+    };
+    //M 到点才创建运输意图，批准来自建提醒时的记录。
+    const result = await this.confirm(stored, confirmation);
+    if ('error' in result) return { status: 'failed', reason: result.error };
+
+    return result.intent.receipt ?? UNKNOWN;
+  }
+
   /** 拒绝外人和同发起人代批，按已校验的操作选择读写。 */
   private async handle(request: OutboundRequest): Promise<events.StripResultId<OutboundResult>> {
+    if (request.action === 'prepare-channel') {
+      //G 模型只能递交自己的同会话申请；确认和查询仍要求核验本人。
+      if (request.program !== DIRECT_PROGRAM || !['owner', 'model'].includes(request.actor)) {
+        return { code: 403, error: '主动发件申请来源无效' };
+      }
+
+      //M 固定已校验的目标及原文，准备阶段完全不接触渠道运输。
+      return this.prepareChannel(request.message, request.toolKey);
+    }
+
     if (request.actor !== 'owner') return { code: 403, error: '发送确认只允许本人操作' };
 
     //M 准备只读取并展示原草稿。
@@ -210,16 +320,10 @@ export class Outbound {
       if (existing?.state === 'waiting' && existing.digest === digest && existing.expires_at > now) return existing;
 
       //M 分开意图号、业务永久号和已批准时使用的外置批准号。
-      const id = crypto.randomUUID();
       const suffix = crypto.randomUUID();
       const sendId = 'kefu-draft:' + String(draftId) + ':' + suffix;
-      const approvalId = crypto.randomUUID();
       const expiresAt = now + APPROVAL_MS;
-      const sql = 'INSERT INTO approval_outbound (id,send_id,approval_id,program,generation,channel,draft_id,'
-        + " account,chat,text,digest,state,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'waiting',?) RETURNING *";
-      const insert = this.db.query<IntentRow, sqlite.SQLQueryBindings[]>(sql);
-      return insert.get(id, sendId, approvalId, program, draft.generation, draft.channel, draftId,
-        draft.account, draft.chat, draft.text, digest, expiresAt);
+      return this.insertIntent(program, draft, sendId, digest, expiresAt);
     });
     //M 并发准备只得到一个仍有效的预览；发送在明确确认之后。
     const inserted = create.immediate();
@@ -227,6 +331,61 @@ export class Outbound {
 
     //M 交给本人展示原文和确认摘要。
     return { intent: getView(inserted) };
+  }
+
+  /** 把两类发件写成同一格式的待确认意图。 */
+  private insertIntent(
+    program: string,
+    draft: ProgramDraft,
+    sendId: string,
+    digest: string,
+    expiresAt: number,
+    targetBot?: string,
+  ) {
+    const id = crypto.randomUUID();
+    const approvalId = crypto.randomUUID();
+    const sql = 'INSERT INTO approval_outbound (id,send_id,approval_id,program,generation,channel,draft_id,'
+      + " account,chat,target_bot,text,digest,state,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'waiting',?) RETURNING *";
+    const insert = this.db.query<IntentRow, sqlite.SQLQueryBindings[]>(sql);
+
+    //M 主动消息使用草稿号 0，并用代次字段保存可信申请来源。
+    return insert.get(id, sendId, approvalId, program, draft.generation, draft.channel, draft.draftId,
+      draft.account, draft.chat, targetBot ?? null, draft.text, digest, expiresAt);
+  }
+
+  /** 记录主动消息。工具重放沿用原意图，另一段正文不能换进已建的意图。 */
+  private prepareChannel(message: ChannelSendMessage, toolKey: string | undefined, reminder = false) {
+    const targetBot = message.targetBot;
+    const localReminder = reminder && message.channel === 'http' && message.account === 'local'
+      && message.chat === 'http:本机' && targetBot !== undefined && targetBot !== '';
+    if (message.channel !== 'feishu' && !localReminder) {
+      return { code: 409, error: '主动发送当前只支持飞书和本机网页的已确认提醒' };
+    }
+
+    const draft = { ...message, draftId: 0, generation: message.from };
+    const digest = digestDraft(DIRECT_PROGRAM, draft, targetBot);
+    let suffix: string = crypto.randomUUID();
+    if (toolKey !== undefined) {
+      const hash = crypto.createHash('sha256');
+      const updated = hash.update(toolKey);
+      suffix = updated.digest('hex');
+    }
+    const sendId = 'channel-send:' + suffix;
+    const expiresAt = this.now() + APPROVAL_MS;
+
+    //M 在同一事务中处理工具重放和首次申请。
+    const create = this.db.transaction(() => {
+      const sql = 'SELECT * FROM approval_outbound WHERE send_id = ?';
+      const current = this.db.query<IntentRow, [string]>(sql).get(sendId);
+      if (current !== null) return current;
+
+      return this.insertIntent(DIRECT_PROGRAM, draft, sendId, digest, expiresAt, targetBot);
+    });
+    const row = create.immediate();
+    if (row === null) return { code: 500, error: '无法保存主动发件意图' };
+    if (row.digest !== digest) return { code: 409, error: '同一次工具调用的发件目标或原文已变化' };
+
+    return { intent: getView(row) };
   }
 
   /** 核对刚展示的摘要和新读到的草稿，再持久占住唯一发送位置。 */
@@ -238,22 +397,23 @@ export class Outbound {
     if (row.state !== 'waiting') return { intent: getView(row) };
     if (row.expires_at <= this.now()) return { code: 409, error: '待确认意图已过期' };
 
-    //M 发送前再向外置核对原草稿。
-    const result = await this.readDraft(row.program, row.draft_id);
-    if ('error' in result) return { code: result.code, error: result.error };
-    if (!('draft' in result)) return { code: 502, error: '外部草稿回执不完整' };
-    if (row.generation !== result.draft.generation) return { code: 409, error: '外部程序已换代，请重新准备确认' };
+    if (row.program !== DIRECT_PROGRAM) {
+      //M 外置草稿发送前需重读；主动消息已原样存入主站账。
+      const result = await this.readDraft(row.program, row.draft_id);
+      if ('error' in result) return { code: result.code, error: result.error };
+      if (!('draft' in result)) return { code: 502, error: '外部草稿回执不完整' };
+      if (row.generation !== result.draft.generation) return { code: 409, error: '外部程序已换代，请重新准备确认' };
 
-    //G 正文和目标必须与展示时一致，校验精确字节。
-    const draft = result.draft;
-    const activeDigest = digestDraft(row.program, draft);
-    if (activeDigest !== row.digest) return { code: 409, error: '草稿目标或正文已变化，请重新确认' };
+      //G 外置正文和目标必须与展示时一致。
+      const activeDigest = digestDraft(row.program, result.draft);
+      if (activeDigest !== row.digest) return { code: 409, error: '草稿目标或正文已变化，请重新确认' };
+    }
 
     const now = this.now();
     const expiresAt = now + APPROVAL_MS;
     const claim = this.db.transaction(() => {
       //G 另一页可能已准备新意图或已经占位，旧页面不能发。
-      const latest = this.latest(row.program, row.draft_id);
+      const latest = this.getConfirmable(row);
       if (latest?.id !== row.id || latest.state !== 'waiting' || latest.expires_at <= now) {
         return { row: latest, claimed: false };
       }
@@ -284,8 +444,21 @@ export class Outbound {
     return { intent: getView(done) };
   }
 
+  /** 主动意图各自确认，外置草稿只许确认当前版本。 */
+  private getConfirmable(row: IntentRow): IntentRow | null {
+    if (row.program === DIRECT_PROGRAM) return this.get(row.program, row.id);
+
+    return this.latest(row.program, row.draft_id);
+  }
+
   /** 使用原业务号提交一次；未知结果从此只查或核对。 */
   private async submit(row: IntentRow): Promise<{ receipt: ProviderReceipt; invalidated: boolean }> {
+    if (row.program === DIRECT_PROGRAM) {
+      //M 主站已批准的文本由内置渠道消费一次性凭证并发出。
+      const receipt = await this.submitChannel(row);
+      return { receipt, invalidated: false };
+    }
+
     const call: ApprovedCall = {
       requestId: row.send_id, channel: row.channel, account: row.account, chat: row.chat, text: row.text,
       approval: { id: row.approval_id, state: 'approved', expiresAt: row.expires_at },
@@ -312,6 +485,39 @@ export class Outbound {
     return { receipt: UNKNOWN, invalidated: false };
   }
 
+  /** 把已经批准的原目标和正文发送给内置渠道。 */
+  private async submitChannel(row: IntentRow): Promise<ProviderReceipt> {
+    const target: ChannelSendMessage = {
+      channel: row.channel, account: row.account, chat: row.chat, text: row.text,
+      from: row.generation,
+    };
+    if (row.target_bot !== null) {
+      target.targetBot = row.target_bot;
+    }
+    const message = { ...target, intentId: row.id, sendId: row.send_id, expiresAt: row.expires_at };
+    const call = Object.freeze(message);
+    const payload = { call };
+    const options = {
+      timeoutMs: 90_000,
+      onFallback: (reason: events.FallbackReason) => {
+        if (reason === 'unhandled') {
+          const receipt: ProviderReceipt = { status: 'failed', reason: '对应的渠道发送能力未挂载' };
+          return { requestId: '', receipt };
+        }
+        return { requestId: '', receipt: UNKNOWN };
+      },
+    };
+
+    //M 此次事件才能消费原对象，超时或结束后撤销尚未领取的资格。
+    approvedChannelSends.add(call);
+    try {
+      const result = await events.requestEvent(this.ctx, 'channel/send', 'channel/sent', payload, options);
+      return result.receipt;
+    } finally {
+      approvedChannelSends.delete(call);
+    }
+  }
+
   /** 先归档再发通用事件；重启恢复或重复回执无法覆盖已有结果。 */
   private saveReceipt(row: IntentRow, receipt: ProviderReceipt, invalidated = false): IntentRow {
     const sql = "UPDATE approval_outbound SET state = ?, receipt = ? WHERE id = ? AND state = 'sending' RETURNING *";
@@ -329,7 +535,7 @@ export class Outbound {
 
     //M 已持久化的事件不会启动第二次发送；不确定同时提示本人核对。
     this.publish(changed, receipt);
-    if (receipt.status === 'uncertain') void this.notify(changed);
+    if (receipt.status === 'uncertain' && row.program !== DIRECT_PROGRAM) void this.notify(changed);
     return changed;
   }
 

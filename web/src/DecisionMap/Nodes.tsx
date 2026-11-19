@@ -2,6 +2,9 @@
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
 import type * as layout from './Layout.ts';
+import * as words from './Words.ts';
+
+const t = words.t;
 
 const SIDES = [xyflow.Position.Top, xyflow.Position.Right, xyflow.Position.Bottom, xyflow.Position.Left];
 
@@ -9,13 +12,14 @@ const SIDES = [xyflow.Position.Top, xyflow.Position.Right, xyflow.Position.Botto
 function getAppearance(entry: types.DecisionNode): { state: string; badge: string } {
   if (entry.kind === 'goal') return { state: 'goal', badge: '当前目标' };
   if (entry.kind === 'pending' && entry.status === 'open') return { state: 'pending', badge: '★ 要你定' };
+  if (entry.status === 'done') return { state: 'done', badge: '已完成' };
+  if (entry.status === 'dropped') return { state: 'done', badge: '已放下' };
+  if (entry.status === 'working') return { state: 'working', badge: '进行中' };
+  if (entry.status === 'open' && entry.chosen !== undefined) return { state: 'open', badge: t('未开始') };
   if (entry.kind === 'decided' && entry.decidedBy === 'central') return { state: 'confirmed', badge: '中控已定 ✓' };
   if (entry.chosen !== undefined && entry.acknowledgedAt !== undefined) return { state: 'confirmed', badge: '已定 ✓' };
   if (entry.chosen !== undefined) return { state: 'chosen', badge: '已定 ✓' };
-  if (entry.status === 'done') return { state: 'done', badge: '已完成' };
-  if (entry.status === 'dropped') return { state: 'done', badge: '已放下' };
   if (entry.kind === 'decided' || entry.status === 'decided') return { state: 'confirmed', badge: '已定 ✓' };
-  if (entry.status === 'working') return { state: 'working', badge: '进行中' };
   if (entry.kind === 'fork') return { state: 'fork', badge: '分叉' };
 
   return { state: 'open', badge: '功能' };
@@ -74,10 +78,10 @@ function FoldButton(
   { fold, title, open }: Required<Pick<layout.FlowNode['data'], 'fold' | 'open'>> & { title: string },
 ) {
   let badge = `+${fold.count}`;
-  let label = `展开「${title}」下的 ${fold.count} 项`;
+  let label = t('展开「{title}」下的子项', { title });
   if (fold.expanded) {
     badge = `−${fold.count}`;
-    label = `折叠「${title}」下的 ${fold.count} 项`;
+    label = t('折叠「{title}」下的子项', { title });
   }
 
   //M 展开控件只切换分支，卡片本身继续打开完整说明。
@@ -88,7 +92,8 @@ function FoldButton(
       title={label}
       aria-label={label}
       aria-expanded={fold.expanded}
-      onClick={() => open(fold.id, true)}
+      data-fold-node={fold.id}
+      onClick={() => open(fold.id, !fold.expanded)}
     >
       {badge}
     </button>

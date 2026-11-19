@@ -1,25 +1,33 @@
 /**
- * 助手体验：三个工具，加一段回话规范（docs/src7插件设计/助手体验对照.md）。
+ * 助手体验：表情、卡片、待办、定时提醒与回话规范。
  *   - react：给用户刚发的那条消息点个表情，代替一句“收到”。
  *   - ask：发一张带选项的问题卡片；用户点了哪个，网页就把那个选项当作用户的回复发回来。
  *   - todo：这场会话正在做的事的清单，整份替换（只动这场和它派出的后台子会话；clear 默认也只清这一家）；网页右栏“待办”看得见。
+ *   - remind_add / remind_list / remind_cancel：登记和管理回到原飞书或网页聊天的定时提醒。
  * 回话规范：听 session/request，给前台、后台会话的系统提示词加一段（先给结论、简短、长活在关键节点用 reply 报一句进度）。
  * 都记在表 assist_items 里，网页轮询 GET /api/assist；点选项走 POST /api/assist/asks/:id；
- * 清待办走 POST /api/assist/todos/clear。不发新事件，飞书以后读同一张表。
+ * 清待办走 POST /api/assist/todos/clear。定时提醒的出站走审批和渠道事件。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
+import * as events from '../../utils/RequestEvent.ts';
+import type { ProviderReceipt } from '../programs/ChannelSend.ts';
+import * as remindersModule from './Reminders.ts';
 
 
 /** 插件名。 */
 export const name = 'assist';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.0';
+export const version = '1.2.0';
 
 /** 用到的服务：resources 存表；tools 登记工具；http 开接口。 */
 export const inject = ['resources', 'tools', 'http', 'sessions'];
 
+interface Config {
+  /** 提醒使用的配置时区与默认早上时刻。 */
+  reminders?: unknown;
+}
 
 /** 一项的种类。 */
 type Kind = 'react' | 'ask' | 'todo';
@@ -55,7 +63,7 @@ class Assist {
    * 建表、登记工具和接口、挂上回话规范。
    * @param ctx Cordis 给这个插件的 ctx。
    */
-  constructor(private readonly ctx: cordis.Context) {
+  constructor(private readonly ctx: cordis.Context, private readonly reminders: remindersModule.Reminders) {
     ctx.resources.db.exec('CREATE TABLE IF NOT EXISTS assist_items (id INTEGER PRIMARY KEY AUTOINCREMENT,'
       + ' bot TEXT NOT NULL, kind TEXT NOT NULL,'
       + ' session_id TEXT NOT NULL, message_id INTEGER, data TEXT NOT NULL,'
@@ -65,6 +73,8 @@ class Assist {
     ctx.on('session/request', (request) => {
       //M 发给模型前把当前会话类型的回话规范追加到系统提示词。
       this.style(request);
+      //M 提醒工具按配置时区向模型提供当前日期和「早上」的时刻。
+      this.reminders.hint(request);
       //M 刚点过表情：这一轮不再调模型，空回答直接结束，免得模型再补一句“已点表情”。
       if (this.quiet.delete(request.session.row.id)) request.answer = piAi.fauxAssistantMessage('');
     });
@@ -148,7 +158,15 @@ class Assist {
     //M 接口：网页轮询取这个机器人最近的表情、卡片、待办；点选项记下答案。
     ctx.http.app.get<{ Querystring: { bot?: string } }>(
       '/api/assist',
-      async (request) => this.list(String(request.query.bot ?? '')),
+      async (request) => {
+        const bot = String(request.query.bot ?? '');
+        const items = this.list(bot);
+        //G 提醒含渠道内容，只有经过 HTTP 核验的本人网页可查看各聊天的列表。
+        if (!ctx.http.isVerified(request)) return { ...items, reminders: [] };
+
+        const reminders = this.reminders.listForBot(bot);
+        return { ...items, reminders };
+      },
     );
     ctx.http.app.post<{
       Querystring: { bot?: string; session?: string };
@@ -270,11 +288,34 @@ class Assist {
 
 /**
  * 挂上助手体验。
- * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。没有配置。
+ * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。
  * @param ctx Cordis 给这个插件的 ctx。
- * 副作用：建 assist_items 表和索引、监听 session/request、登记 react/ask/todo 工具与 /api/assist 相关 HTTP 接口。
+ * @param config 提醒的时区及早上默认时刻。
  */
-export function apply(ctx: cordis.Context): void {
+export function apply(ctx: cordis.Context, config?: Config): void {
+  //M 同一插件的提醒和待办共用工具入口、网页轮询与资源数据库。
+  const reminders = new remindersModule.Reminders(ctx, config?.reminders);
+  ctx.effect(() => () => reminders.stop());
+  //M 等审批服务就绪后启动调度；定时入口只发送持久记录号。
+  void ctx.inject(['approval'], (sub) => {
+    const send = async (message: remindersModule.Delivery): Promise<ProviderReceipt> => {
+      const payload = { reminderId: message.id };
+      const options = {
+        timeoutMs: 95_000,
+        onFallback: (reason: events.FallbackReason) => {
+          let receipt: ProviderReceipt = { status: 'uncertain', reason: '发送结果待核对，未自动重发' };
+          if (reason === 'unhandled') {
+            receipt = { status: 'failed', reason: '定时发送审核未挂载' };
+          }
+          return { requestId: '', receipt };
+        },
+      };
+      const result = await events.requestEvent(sub, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
+      return result.receipt;
+    };
+    sub.on('ready', () => reminders.start(send));
+    sub.effect(() => () => reminders.stop());
+  });
   //M 实例化 Assist，完成建表、事件订阅、工具登记和 HTTP 接口注册。
-  new Assist(ctx);
+  new Assist(ctx, reminders);
 }

@@ -57,3 +57,21 @@ export function addNote(node: string, text: string, option?: string): Promise<No
   //M 服务端校验并落盘后才返回，页面用回执刷新面板。
   return request('/note', options);
 }
+
+/** 从网页新建一个子任务，服务端负责生成稳定节点号。 */
+export function addChild(parent: string, title: string): Promise<{ id: string; graph: types.DecisionGraph }> {
+  const body = JSON.stringify({ parent, title });
+  const options = { method: 'POST', headers: { 'content-type': 'application/json' }, body };
+
+  //M 网页入口会把新任务通知中控。
+  return request('/child', options);
+}
+
+/** 只保存任务状态，节点上的已有决定与留言继续保留。 */
+export function setStatus(id: string, status: types.DecisionStatus): Promise<{ node: types.DecisionNode }> {
+  const body = JSON.stringify({ id, status });
+  const options = { method: 'POST', headers: { 'content-type': 'application/json' }, body };
+
+  //M 网页入口会把状态变化通知中控。
+  return request('/status', options);
+}

@@ -43,6 +43,45 @@ const HISTORY_HINT = '用 memory_search 的 front=true 翻看本场及已交办�
   + '带 #编号的往来可把该编号作为 ref 交给 memory_get 取全文。'
   + '需要通读或总结大量历史时用 hand_session 交给后台会话。';
 
+/** 工具 history 给模型看的：往前翻这个客户的往来（旧名，经 memory 的统一归档入口转发）。 */
+const HISTORY_TOOL: piAi.Tool = {
+  name: 'history',
+  description: '往前翻这个客户的往来记录（本场前台和它交办的后台），跨渠道。',
+  parameters: piAi.Type.Object({
+    count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '要几条，默认 20' })),
+    before: piAi.Type.Optional(piAi.Type.Number({ description: '从哪个毫秒时间戳往前；不写就是从现在' })),
+  }),
+};
+
+/** 工具 history_search 给模型看的：按关键词、时间、发送人、编号翻这场对话的全部往来。 */
+const HISTORY_SEARCH_TOOL: piAi.Tool = {
+  name: 'history_search',
+  description: '查找这场对话的全部历史往来（不限最近 N 条），只查当前这场前台对话和它交办出去的后台会话。'
+    + '只用来回答“我们之前聊过什么”；问事实、业务知识（合同、负责人、联系方式等）先用 memory 的 history / knowledge 查记忆。'
+    + '可按关键词、时间范围、发送人筛选，也可从最早一条往后、或从某个编号前后翻页。每次最多 20 条，每条截短并带编号和时间；要看全文用 history_get。'
+    + '有关键词时同时做语义检索，说法不同也能对上（比如用「晚饭选项」能找到「今晚候选」）。'
+    + '若需要通读或总结大量历史，不要反复调用本工具，请用 hand_session 交给后台会话。',
+  parameters: piAi.Type.Object({
+    keyword: piAi.Type.Optional(piAi.Type.String({ description: '要找的内容；按字匹配，同时做语义检索（说法不同也能对上）。不写就不按内容筛' })),
+    from: piAi.Type.Optional(piAi.Type.Number({ description: '起始毫秒时间戳，含；不写就不限' })),
+    to: piAi.Type.Optional(piAi.Type.Number({ description: '截止毫秒时间戳，含；不写就不限' })),
+    who: piAi.Type.Optional(piAi.Type.String({ description: "只看谁说的：user 用户，bot 机器人；不写就都要" })),
+    from_earliest: piAi.Type.Optional(piAi.Type.Boolean({ description: 'true：从最早一条往后翻；默认是从最近往前' })),
+    after: piAi.Type.Optional(piAi.Type.Integer({ description: '从编号大于它的往来往后（更晚）翻' })),
+    before: piAi.Type.Optional(piAi.Type.Integer({ description: '从编号小于它的往来往前（更早）翻' })),
+    count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '要几条，默认 20，最多 20' })),
+  }),
+};
+
+/** 工具 history_get 给模型看的：按编号取一条往来的全文。 */
+const HISTORY_GET_TOOL: piAi.Tool = {
+  name: 'history_get',
+  description: '按编号取一条往来的全文。编号来自 history_search 或最近往来背景里的 #号。',
+  parameters: piAi.Type.Object({
+    id: piAi.Type.Integer({ minimum: 1, description: '往来编号' }),
+  }),
+};
+
 
 /** 前台的配置：config.yaml 的 plugins 段里 bots 的 config.front，bots 的 apply 校验过。 */
 export interface FrontDeskConfig {
@@ -103,7 +142,7 @@ export class FrontDesk {
   /** 会话正在转时来的、要判断的话：前台会话号 → 最后一句；这一轮结束记完排着的话，再对它问一次决策模型（session/change）。 */
   private readonly judgeLater = new Map<string, JudgeLater>();
   /**
-   * 建往来记录的表，登记三个查历史工具，挂四个监听（session/request、session/message、session/change、bot/say）。
+   * 建往来记录的表，登记三个查历史工具（定义在模块顶上），挂六个监听（session/request、session/message、session/change、bot/say、channel/replied、channel/reply）。
    * @param ctx Cordis 给的 ctx。
    * @param config 带多少条往来。
    */
@@ -130,69 +169,24 @@ export class FrontDesk {
       )
     `);
 
-    //M history：把往前翻页的旧名交给统一归档入口，保留原时间戳和条数。
+    //M history：把往前翻页的旧名交给统一归档入口，交 getRecentHistory 取往前 count 条。
     historyTools.registerHistoryAlias(this.ctx, 'front-recent', {
-      definition: {
-        name: 'history',
-        description: '往前翻这个客户的往来记录（本场前台和它交办的后台），跨渠道。',
-        parameters: piAi.Type.Object({
-          count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '要几条，默认 20' })),
-          before: piAi.Type.Optional(piAi.Type.Number({ description: '从哪个毫秒时间戳往前；不写就是从现在' })),
-        }),
-      },
+      definition: HISTORY_TOOL,
       kinds: ['front'],
-      run: (args, session) => {
-        const count = (args['count'] as number | undefined) ?? 20;
-
-        //M 取这个客户（本场前台和它交办的后台，跨渠道）往前 count 条往来，每条用 formatEntry 排成一行给模型看。
-        const ids = this.scopeIds(session);
-        const before = args['before'] as number | undefined;
-        const entries = this.recent(session.row.bot, count, before, ids);
-        if (entries.length === 0) return '没有更早的往来。';
-
-        //M 旧名仍返回原有的一行一条格式。
-        return entries.map((entry) => formatEntry(entry)).join('\n');
-      },
+      run: (args, session) => this.getRecentHistory(session, args),
     });
 
-    //M 旧关键词、发送人和编号翻页参数走与 memory_search 相同的归档入口。
+    //M history_search：旧关键词、发送人和编号翻页参数走与 memory_search 相同的归档入口，交 searchHistory 搜（受每轮次数限制）。
     historyTools.registerHistoryAlias(this.ctx, 'front-search', {
-      definition: {
-        name: 'history_search',
-        description: '查找这场对话的全部历史往来（不限最近 N 条），只查当前这场前台对话和它交办出去的后台会话。'
-          + '只用来回答“我们之前聊过什么”；问事实、业务知识（合同、负责人、联系方式等）先用 memory 的 history / knowledge 查记忆。'
-          + '可按关键词、时间范围、发送人筛选，也可从最早一条往后、或从某个编号前后翻页。每次最多 20 条，每条截短并带编号和时间；要看全文用 history_get。'
-          + '有关键词时同时做语义检索，说法不同也能对上（比如用「晚饭选项」能找到「今晚候选」）。'
-          + '若需要通读或总结大量历史，不要反复调用本工具，请用 hand_session 交给后台会话。',
-        parameters: piAi.Type.Object({
-          keyword: piAi.Type.Optional(piAi.Type.String({ description: '要找的内容；按字匹配，同时做语义检索（说法不同也能对上）。不写就不按内容筛' })),
-          from: piAi.Type.Optional(piAi.Type.Number({ description: '起始毫秒时间戳，含；不写就不限' })),
-          to: piAi.Type.Optional(piAi.Type.Number({ description: '截止毫秒时间戳，含；不写就不限' })),
-          who: piAi.Type.Optional(piAi.Type.String({ description: "只看谁说的：user 用户，bot 机器人；不写就都要" })),
-          from_earliest: piAi.Type.Optional(piAi.Type.Boolean({ description: 'true：从最早一条往后翻；默认是从最近往前' })),
-          after: piAi.Type.Optional(piAi.Type.Integer({ description: '从编号大于它的往来往后（更晚）翻' })),
-          before: piAi.Type.Optional(piAi.Type.Integer({ description: '从编号小于它的往来往前（更早）翻' })),
-          count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '要几条，默认 20，最多 20' })),
-        }),
-      },
+      definition: HISTORY_SEARCH_TOOL,
       kinds: ['front'],
-
-      //M 模型调 history_search：交 searchHistory 按参数搜（同时受每轮次数限制），搜出来的往来排成文字回给模型。
       run: (args, session) => this.searchHistory(session, args),
     });
 
-    //M 旧数字编号与 memory_get 的带前缀编号共用同一份往来记录。
+    //M history_get：旧数字编号与 memory_get 的带前缀编号共用同一份往来记录，交 getHistory 取全文（受每轮次数限制）。
     historyTools.registerHistoryAlias(this.ctx, 'front-get', {
-      definition: {
-        name: 'history_get',
-        description: '按编号取一条往来的全文。编号来自 history_search 或最近往来背景里的 #号。',
-        parameters: piAi.Type.Object({
-          id: piAi.Type.Integer({ minimum: 1, description: '往来编号' }),
-        }),
-      },
+      definition: HISTORY_GET_TOOL,
       kinds: ['front'],
-
-      //M 模型调 history_get：交 getHistory 按编号取那一条的全文（同样受每轮次数限制）。
       run: (args, session) => this.getHistory(session, args['id'] as number),
     });
 
@@ -209,34 +203,9 @@ export class FrontDesk {
       this.onMessage(session, message);
     });
 
-    //M 会话状态变了：一轮结束时记机器人这一句、清查历史次数、存转的时候排着的话，再对排着要判断的那句问一次决策模型。
+    //M 会话状态变了：onChange 在一轮结束时记机器人这一句、清查历史次数、存排着的话、对排着要判断的那句问决策模型。
     this.ctx.on('session/change', (session) => {
-      //G 还在转 → 这一轮没结束，不记。
-      if (session.row.state === 'running') return;
-
-      //M channel_tool 轮只在收到 channel/replied 成功回执时记往来，不在 session/change 误把草稿写进 bot_log。
-      const activeChannelTool = session.row.activeSourceSnapshot !== undefined
-        || (session.row.resultQueue ?? []).some((item) => item.key === session.row.activeKey && item.deliveryMode === 'channel_tool');
-
-      //M 前台派的后台（Dispatch.ts）和 channel_tool 轮的草稿不在这里直记，真正经渠道发完的才记。
-      if (session.row.frontTask === undefined && !activeChannelTool) {
-        this.logBot(session, session.row.reply);
-      }
-      if (session.row.kind === 'front') this.historyCalls.delete(session.row.id);
-
-      //M 转的时候排着的只听的话，这一轮结束了存进对话。
-      const waiting = this.heard.get(session.id);
-      if (waiting !== undefined) {
-        this.heard.delete(session.id);
-        this.record(session, waiting);
-      }
-
-      //M 排着要判断的那句：这一轮的话都记完了，对最后一句问一次决策模型，要不要接着回。
-      const later = this.judgeLater.get(session.id);
-      if (later !== undefined) {
-        this.judgeLater.delete(session.id);
-        void this.followUp(session, later);
-      }
+      this.onChange(session);
     });
 
     //M 会话中途先说的一句（bot/say）：也记成机器人说的一条往来。
@@ -248,44 +217,112 @@ export class FrontDesk {
       this.logBot(session, text);
     });
 
-    //M 渠道回报发出去了（channel/replied）：发成功的才把缓存的那句话记成机器人往来，发失败的不记。
+    //M 渠道回报发出去了（channel/replied）：onReplied 把发成功的那句话记成机器人往来，发失败的不记。
     this.ctx.on('channel/replied', (event) => {
-      const receipt = event.receipt;
-      if (receipt.status !== 'sent' && receipt.status !== 'partial') return;
-
-      const sentTexts = this.sentReplyTexts.get(receipt.replyRequestKey);
-      this.sentReplyTexts.delete(receipt.replyRequestKey);
-      if (sentTexts === undefined) return;
-
-      //M 发送回执未绑定来源会话时从缓存目标找；已绑定会话的 channel_reply / bot/say 照此写进 bot_log。
-      const front = this.findSessionByRoundKey(event.replyRoundKey);
-      if (front === undefined) return;
-
-      //M 渠道确认发出去了：把这句话记成这个客户的机器人往来（bot_log 一行）。
-      const row = front.row;
-      this.log({
-        bot: row.bot,
-        channel: row.channel ?? '',
-        who: 'bot',
-        sessionId: row.id,
-        text: sentTexts.text,
-        time: Date.now(),
-      });
+      this.onReplied(event);
     });
 
-    //M 渠道要发一条文字回复（channel/reply）：先把正文暂存，等 channel/replied 确认发出去了再记往来。
+    //M 渠道要发一条文字回复（channel/reply）：onReply 先把正文暂存，等 channel/replied 确认发出去了再记往来。
     this.ctx.on('channel/reply', (request) => {
-      if (request.mode !== 'text') return;
-
-      const text = request.parts.map((part) => part.text ?? '').filter((one) => one !== '').join('\n');
-      if (text === '') return;
-
-      this.sentReplyTexts.set(request.replyRequestKey, { text });
+      this.onReply(request);
     });
   }
 
   /** 发出的 channel/reply 正文暂存（replyRequestKey → text），等 channel/replied 确认已发才写 bot_log。 */
   private readonly sentReplyTexts = new Map<string, { text: string }>();
+
+  /**
+   * 工具 history 的执行：取这个客户（本场前台和它交办的后台，跨渠道）往前 count 条往来，一行一条。
+   * @param session 调工具的前台会话。
+   * @param args 模型给的参数（count、before），已照 HISTORY_TOOL 校验过。
+   * @returns 给模型看的文字；没有就说没有更早的往来。
+   */
+  private getRecentHistory(session: Session, args: Record<string, unknown>): string {
+    const count = (args['count'] as number | undefined) ?? 20;
+
+    //M 取这个客户往前 count 条往来。
+    const ids = this.scopeIds(session);
+    const before = args['before'] as number | undefined;
+    const entries = this.recent(session.row.bot, count, before, ids);
+    if (entries.length === 0) return '没有更早的往来。';
+
+    //M 旧名仍返回原有的一行一条格式，每条用 formatEntry 排成一行。
+    return entries.map((entry) => formatEntry(entry)).join('\n');
+  }
+
+  /**
+   * 收 session/change：一轮结束时记机器人这一句、清查历史次数、存转的时候排着的话，再对排着要判断的那句问一次决策模型。
+   * @param session 状态变了的会话。
+   */
+  private onChange(session: Session): void {
+    //G 还在转 → 这一轮没结束，不记。
+    if (session.row.state === 'running') return;
+
+    //M channel_tool 轮只在收到 channel/replied 成功回执时记往来，不在 session/change 误把草稿写进 bot_log。
+    const activeChannelTool = session.row.activeSourceSnapshot !== undefined
+      || (session.row.resultQueue ?? []).some((item) => item.key === session.row.activeKey && item.deliveryMode === 'channel_tool');
+
+    //M 前台派的后台（Dispatch.ts）和 channel_tool 轮的草稿不在这里直记，真正经渠道发完的才记。
+    if (session.row.frontTask === undefined && !activeChannelTool) {
+      this.logBot(session, session.row.reply);
+    }
+    if (session.row.kind === 'front') this.historyCalls.delete(session.row.id);
+
+    //M 转的时候排着的只听的话，这一轮结束了存进对话。
+    const waiting = this.heard.get(session.id);
+    if (waiting !== undefined) {
+      this.heard.delete(session.id);
+      this.record(session, waiting);
+    }
+
+    //M 排着要判断的那句：这一轮的话都记完了，对最后一句问一次决策模型，要不要接着回。
+    const later = this.judgeLater.get(session.id);
+    if (later !== undefined) {
+      this.judgeLater.delete(session.id);
+      void this.followUp(session, later);
+    }
+  }
+
+  /**
+   * 收 channel/replied：发成功（sent、partial）的才把 onReply 暂存的那句话记成这个客户的机器人往来。
+   * @param event 渠道回执。
+   */
+  private onReplied(event: protocol.ChannelRepliedEvent): void {
+    const receipt = event.receipt;
+    if (receipt.status !== 'sent' && receipt.status !== 'partial') return;
+
+    const sentTexts = this.sentReplyTexts.get(receipt.replyRequestKey);
+    this.sentReplyTexts.delete(receipt.replyRequestKey);
+    if (sentTexts === undefined) return;
+
+    //M 发送回执未绑定来源会话时从缓存目标找；已绑定会话的 channel_reply / bot/say 照此写进 bot_log。
+    const front = this.findSessionByRoundKey(event.replyRoundKey);
+    if (front === undefined) return;
+
+    //M 渠道确认发出去了：把这句话记成这个客户的机器人往来（bot_log 一行）。
+    const row = front.row;
+    this.log({
+      bot: row.bot,
+      channel: row.channel ?? '',
+      who: 'bot',
+      sessionId: row.id,
+      text: sentTexts.text,
+      time: Date.now(),
+    });
+  }
+
+  /**
+   * 收 channel/reply：文字回复先把正文暂存进 sentReplyTexts，等 onReplied 确认发出去了再记往来。
+   * @param request 渠道回复请求。
+   */
+  private onReply(request: protocol.ChannelReplyRequest): void {
+    if (request.mode !== 'text') return;
+
+    const text = request.parts.map((part) => part.text ?? '').filter((one) => one !== '').join('\n');
+    if (text === '') return;
+
+    this.sentReplyTexts.set(request.replyRequestKey, { text });
+  }
 
   /** 延迟判断结果确认需要补入 channel_tool 队列时的回调（由 Dispatch 注入，避免循环引用）。 */
   onChannelJudgeAllow?: (

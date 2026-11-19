@@ -23,6 +23,8 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as protocol from '../../Channels.ts';
+import * as outbound from '../approval/Outbound.ts';
+import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import { WebHistory } from './History.ts';
 
 
@@ -37,7 +39,7 @@ export const name = 'web-api';
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
 //M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
 //M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
-export const version = '1.1.10';
+export const version = '1.1.11';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -139,6 +141,17 @@ class WebApi {
 
     //M 初始化收件表和时间线，让网页查询与历史监听共享已建好的记录。
     this.timeline = new timelineModule.Timeline(ctx);
+
+    //M 已确认的网页提醒直接写原机器人的时间线，避免启动新的模型轮。
+    const remind = (request: requestEventModule.EventArg<'channel/send'>) => {
+      const receipt = this.sendApprovedReminder(request.call);
+      return { receipt };
+    };
+    const outboundOptions = {
+      filter: (request: requestEventModule.EventArg<'channel/send'>) => request.call.channel === this.name,
+      onError: () => ({ receipt: { status: 'failed', reason: '写入网页提醒失败' } satisfies ProviderReceipt }),
+    };
+    requestEventModule.onRequestEvent(ctx, 'channel/send', 'channel/sent', remind, outboundOptions);
 
     //M 登记网页历史监听，为渠道历史工具提供分页结果。
     new WebHistory(ctx);
@@ -269,7 +282,11 @@ class WebApi {
     type Query = { Querystring: Record<string, string | undefined> };
     type Id = { Params: { id: string } };
     //M 登记网页发话入口，交给渠道入站逻辑统一校验和分派。
-    scope.post<{ Body: unknown }>('/api/message', async (request) => this.accept(request.body));
+    scope.post<{ Body: unknown }>('/api/message', async (request) => {
+      //M 来源标记取自 HTTP 钩子，正文里的身份字段不会进入可信快照。
+      const verified = this.ctx.http.isVerified(request);
+      return this.accept(request.body, verified);
+    });
 
     //M 让网页按消息号和回话下标查询回复的生成过程。
     scope.get<Id & Query>('/api/messages/:id/trace', async (request) => this.trace(request.params.id, request.query['reply']));
@@ -358,10 +375,11 @@ class WebApi {
   /**
    * POST /api/message：校验、存附件、记一行、推给机器人。
    * @param raw 请求体。
+   * @param verifiedOwner HTTP 服务记录的身份核验结果。
    * @returns { id: 消息号, file: '' }（src7 不给每条消息写文件）。
    * @throws Failure(400)：字段不对、没有机器人或会话、上传号失效、分派失败。Failure(503/500)：附件存不下。
    */
-  private async accept(raw: unknown): Promise<{ id: number; file: string }> {
+  private async accept(raw: unknown, verifiedOwner: boolean): Promise<{ id: number; file: string }> {
     //M 外面进来的，这里校验一次。
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new failureModule.Failure(400, '请求体要是 JSON 对象');
 
@@ -491,7 +509,7 @@ class WebApi {
 
     //M 推给机器人；回话地址就是消息号。推不进去（比如没有插件管分派）就删掉这一行，告诉调用方。
     try {
-      await this.emitChannelMessage(id, wanted, said, input, routing, view, grants);
+      await this.emitChannelMessage(id, wanted, said, input, routing, view, grants, verifiedOwner);
     } catch (error) {
       this.timeline.remove(id);
       throw new failureModule.Failure(400, textModule.getMessage(error));
@@ -510,6 +528,7 @@ class WebApi {
    * @param routing accept 里算好的路由（指定会话、引用来源、autoFinal）。
    * @param view 网页正在看哪儿（getView 校验过）；没带是 undefined，消息上就不写这一项。
    * @param grants 授权范围（checkGrants 查过、规范化过）；没带是 undefined，地址上就不写这一项。
+   * @param verifiedOwner HTTP 服务核对过本机或令牌后写入的标记。
    * @throws 没人认领、也不是“同意 N”时抛错。
    * 副作用：认领到会话的，把会话号记到这一行上。
    */
@@ -521,11 +540,12 @@ class WebApi {
     routing: protocol.ChannelRouting,
     view: protocol.ChannelView | undefined,
     grants: checksModule.Grants | undefined,
+    verifiedOwner: boolean,
   ): Promise<void> {
     const now = Math.max(Date.now(), this.lastAt + 1);
     this.lastAt = now;
     //M 网页来源已经由 http 插件按本机/令牌核验过身份，带上 owner: true 让 approval 认出可批所有待确认。
-    const address: Record<string, unknown> = { messageId: id, customer: 'http:本机', owner: true };
+    const address: Record<string, unknown> = { messageId: id, customer: 'http:本机', owner: true, verifiedOwner };
 
     //M 带了授权范围就写进回话地址：bots.route 把地址记到会话上，交办的后台会话也带着，approval 审 exec 时读 grants.dirs。
     if (grants !== undefined) {
@@ -667,6 +687,34 @@ class WebApi {
     if (!WEB_TARGET_CHATS.has(chat.trim())) return undefined;
 
     return { customer: 'http:本机', owner: true };
+  }
+
+  /** 把一次性批准的提醒写到原机器人在本机网页的时间线。 */
+  private sendApprovedReminder(call: outbound.ApprovedChannelSend): ProviderReceipt {
+    const bot = call.targetBot;
+    if (call.from !== 'reminder' || call.account !== 'local' || call.chat !== 'http:本机' || bot === undefined) {
+      return { status: 'failed', reason: '网页主动接收仅支持已确认的本机提醒' };
+    }
+    if (!outbound.takeChannelSendApproval(call)) {
+      return { status: 'failed', reason: '没有有效的一次性发送批准' };
+    }
+    if (this.ctx.bots.get(bot) === undefined) return { status: 'failed', reason: '原机器人已不存在' };
+
+    const sourceId = `reminder:${call.intentId}`;
+    const session = this.getOrCreateWebFront(bot);
+    const write = this.ctx.resources.db.transaction(() => {
+      const existing = this.timeline.findBySource(bot, sourceId);
+      if (existing !== undefined) return;
+
+      //M 复用网页的系统提示行，展示一个提醒条目。
+      const text = `（系统）${call.text}`;
+      const item = { bot, channel: this.name, source: 'reminder', text, address: null, source_id: sourceId };
+      const id = this.timeline.insert(item);
+      this.timeline.bindSession(id, session.id);
+      this.timeline.markReplied(id);
+    });
+    write.immediate();
+    return { status: 'sent' };
   }
 
   /**

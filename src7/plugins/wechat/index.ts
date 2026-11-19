@@ -44,7 +44,8 @@ export const name = 'wechat-kefu';
 //M   不再在 bot/receive 里按客户认领前台（bots 按来源范围找，同客户的旧前台沿用）。
 //M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
 //M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
-export const version = '1.2.3';
+//M 1.2.4：跨聊天发话认目标时，拆目标串（去“微信·”、拆“账号:聊天”）改用骨架的 parseChatTarget；查表规则不变。
+export const version = '1.2.4';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http', 'tools'];
@@ -508,35 +509,22 @@ export class Wechat {
    * @param rawChat 调用方传入的聊天标识、备注名或带账号/wechat 前缀的写法。
    */
   private getReplyTargetAddress(rawChat: string): Record<string, unknown> | undefined {
-    const exact = rawChat.trim();
-    if (exact === '') return undefined;
+    //M 拆目标串：去掉网页展示的“微信·”前缀（剩下的按备注名认），拆出可选的“账号:聊天”“wechat:聊天”。
+    const labelPrefixes = ['微信·'];
+    const target = protocol.parseChatTarget(rawChat, labelPrefixes);
+    if (target.exact === '') return undefined;
 
-    //M 剥离“微信·”前缀以便用展示名反查备注；同时解析可选 account:chat / wechat:chat 前缀。
-    let labelTarget = exact;
-    if (exact.startsWith('微信·')) {
-      labelTarget = exact.slice('微信·'.length);
+    //M 冒号右边是聊天号；左边不是 wechat 就当指定的微信账号。
+    let targetChat = target.exact;
+    if (target.chat !== '') {
+      targetChat = target.chat;
     }
-
     let preferredAccount = '';
-    let plainChat = '';
-    const sep = exact.indexOf(':');
-    if (sep > 0) {
-      const left = exact.slice(0, sep).trim();
-      const right = exact.slice(sep + 1).trim();
-      if (left !== '' && right !== '') {
-        plainChat = right;
-        if (left !== 'wechat') {
-          preferredAccount = left;
-        }
-      }
+    if (target.prefix !== '' && target.prefix !== this.name) {
+      preferredAccount = target.prefix;
     }
 
-    let targetChat = exact;
-    if (plainChat !== '') {
-      targetChat = plainChat;
-    }
-
-    //M 按监听名单、同步表、消息表顺序检索匹配的微信账号和聊天编号。
+    //M 按监听名单、同步表、消息表顺序检索匹配的微信账号和聊天编号（微信的号和备注名在库里按索引查，不拼候选清单）。
     const tables: Array<'wechat_watch' | 'wechat_sync' | 'wechat_messages'> = [
       'wechat_watch', 'wechat_sync', 'wechat_messages',
     ];
@@ -545,7 +533,7 @@ export class Wechat {
         continue;
       }
       //M 按当前表核对微信聊天或备注名称，未命中或字段不完整则顺延下一张表。
-      const found = this.getChatRowFromTable(table, preferredAccount, exact, targetChat, labelTarget);
+      const found = this.getChatRowFromTable(table, preferredAccount, target.exact, targetChat, target.label);
       if (found === undefined || found.account === '' || found.chat === '') {
         continue;
       }

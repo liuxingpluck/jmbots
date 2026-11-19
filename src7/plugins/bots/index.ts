@@ -51,7 +51,8 @@ export const name = 'bots';
 //M 1.4.8：requestChannelHistory 从骨架 Channels.ts 挪进 bots/HistoryRequest.ts，只有 bots 的历史工具用。
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
-export const version = '1.5.0';
+//M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
+export const version = '1.5.1';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 Dispatch.ts），开了 reply_tool 再加 reply。

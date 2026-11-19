@@ -7,6 +7,7 @@
  */
 import type * as cordis from 'cordis';
 import type { SessionMeta } from '../../../Sessions.ts';
+import * as outbound from '../../approval/Outbound.ts';
 import * as requestEventModule from '../../../utils/RequestEvent.ts';
 import * as textModule from '../../../utils/Text.ts';
 import * as workspaceModule from '../../../utils/Workspace.ts';
@@ -161,6 +162,15 @@ export function ownerChat(
 export function targets(feishu: Feishu, ctx: cordis.Context, pending: render.PendingLike): FeishuAddress[] {
   //M 读取发起会话的原始飞书地址，决定卡片首站投递到当前私聊还是转投本人私聊。
   const own = getAddress(ctx, pending.session);
+  if (pending.kind === outbound.REMINDER_APPROVAL_KIND) {
+    if (own === undefined) return [];
+
+    //G 提醒卡有待发送正文，只投给来源应用登记的本人。
+    const address = ownerChat(feishu, ctx, own.appId).address;
+    if (address === undefined || feishu.config.people.get(address.openId)?.role !== 'owner') return [];
+
+    return [address];
+  }
   //G 群里的会话：卡片换成发本人私聊。
   let first = own;
   if (own !== undefined && workspaceModule.isGroup(own)) {
@@ -226,6 +236,8 @@ async function onAsked(feishu: Feishu, ctx: cordis.Context, pending: render.Pend
  * @param pending 那件事。
  */
 async function groupNote(feishu: Feishu, ctx: cordis.Context, pending: render.PendingLike): Promise<void> {
+  if (pending.kind === outbound.REMINDER_APPROVAL_KIND) return;
+
   //M 取该会话所属的飞书回话地址，仅当请求确实源自群聊时才在群里发文字提醒。
   const own = getAddress(ctx, pending.session);
   if (own === undefined || !workspaceModule.isGroup(own)) return;

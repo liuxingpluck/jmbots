@@ -2,6 +2,8 @@
 import * as react from 'react';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
 import * as longList from '../Shared/LongList.tsx';
+import * as markdown from '../Chat/Markdown.tsx';
+import * as api from './DecisionMapApi.ts';
 import * as words from './Words.ts';
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
@@ -25,6 +27,12 @@ interface DrawerProps {
   noteError?: string;
   /** 把话发给中控，可带选项；实现在 DecisionMapPage 的 sendNote，成功返回 true。 */
   send: (text: string, option?: string) => Promise<boolean>;
+  /** 进入当前节点的子树。 */
+  focus: () => void;
+  /** 任务变更后刷新整图。 */
+  refresh: () => Promise<void>;
+  /** 展开新子项的父节点。 */
+  expand: (id: string) => void;
 }
 
 /** 毫秒时间戳写成本地的月日时分。 */
@@ -140,8 +148,87 @@ function DecisionHistory({ node }: { node: types.DecisionNode }) {
   );
 }
 
+/** 侧栏的任务操作。选项和留言继续走各自入口。 */
+function TaskActions({ node, focus, refresh, expand }: Pick<DrawerProps, 'node' | 'focus' | 'refresh' | 'expand'>) {
+  const [adding, setAdding] = react.useState(false);
+  const [title, setTitle] = react.useState('');
+  const [busy, setBusy] = react.useState(false);
+  const [error, setError] = react.useState('');
+  const text = title.trim();
+
+  async function save(action: () => Promise<void>): Promise<void> {
+    if (busy) return;
+
+    setBusy(true);
+    setError('');
+    try {
+      //M 成功后读新快照，失败时保留标题和原状态。
+      await action();
+      await refresh();
+    } catch (reason) {
+      if (reason instanceof Error) {
+        setError(reason.message);
+        return;
+      }
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const change = (event: react.ChangeEvent<HTMLSelectElement>): void => {
+    const status = event.currentTarget.value as types.DecisionStatus;
+    //M 档位选中后立即提交，由服务端保留节点上的决定记录。
+    void save(async () => {
+      await api.setStatus(node.id, status);
+    });
+  };
+  const add = (event: react.FormEvent): void => {
+    event.preventDefault();
+    if (text === '') return;
+
+    void save(async () => {
+      //M 新项挂在当前侧栏的节点下，保存后展开父项。
+      await api.addChild(node.id, text);
+      expand(node.id);
+      setTitle('');
+      setAdding(false);
+    });
+  };
+
+  return (
+    <div className="decision-task-actions">
+      <div className="decision-task-actions__row">
+        <label>
+          {t('任务状态')}
+          <select data-task-status value={node.status} onChange={change} disabled={busy}>
+            {node.status === 'decided' && <option value="decided" disabled>{t('已定')}</option>}
+            <option value="open">{t('未开始')}</option>
+            <option value="working">{t('进行中')}</option>
+            <option value="done">{t('做完')}</option>
+            <option value="dropped">{t('已放下')}</option>
+          </select>
+        </label>
+        <button type="button" className="decision-task-button" data-tree-focus onClick={focus}>{t('只看这棵子树')}</button>
+        <button type="button" className="decision-task-button" data-task-child onClick={() => setAdding(true)} disabled={adding}>
+          {t('加子项')}
+        </button>
+      </div>
+      {adding && (
+        <form className="decision-task-actions__row" onSubmit={add}>
+          <label htmlFor="decision-child-title">{t('子项标题')}</label>
+          <input id="decision-child-title" data-task-title value={title} onChange={(event) => setTitle(event.target.value)} />
+          <button type="submit" className="decision-task-button" disabled={busy || text === ''}>{t('保存')}</button>
+          <button type="button" className="decision-task-button" onClick={() => setAdding(false)} disabled={busy}>{t('取消')}</button>
+        </form>
+      )}
+      {error !== '' && <p className="decision-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 /** 待定时显示点击即可提交的选项，已定时显示中控接收状态。 */
-export function Drawer({ node, saving, error, close, choose, sending, noteError, send }: DrawerProps) {
+export function Drawer({ node, saving, error, close, choose, sending, noteError, send, focus, refresh, expand }: DrawerProps) {
   const [draft, setDraft] = react.useState('');
   /** 侧栏本身（.decision-drawer 会滚动），交给留言列表当滚动容器。 */
   const [scroller, setScroller] = react.useState<HTMLElement | null>(null);
@@ -199,6 +286,8 @@ export function Drawer({ node, saving, error, close, choose, sending, noteError,
       </div>
       <h2 id="decision-drawer-title">{node.title}</h2>
       {node.summary !== '' && <p className="decision-drawer__summary">{node.summary}</p>}
+      <TaskActions node={node} focus={focus} refresh={refresh} expand={expand} />
+      {node.body && <div className="decision-drawer__body"><markdown.Markdown text={node.body} onOpen={() => undefined} /></div>}
       {isPending && (
         <div className="decision-options" aria-label="可选决定">
           {node.options?.map((option) => (

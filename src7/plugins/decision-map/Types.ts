@@ -68,6 +68,8 @@ export interface DecisionNode {
   note?: string;
   /** 详细说明在仓库中的位置。 */
   detailPath?: string;
+  /** 侧栏展示的 Markdown 正文。 */
+  body?: string;
   /** 记录决定来历的文档路径。 */
   sources?: string[];
   /** 可打开的证据链接。 */
@@ -88,6 +90,18 @@ export interface DecisionGraph {
   nodes: DecisionNode[];
 }
 
+/** 一项值得通知中控的任务变化。 */
+export interface DecisionTaskChange {
+  /** 实际节点号，回信仍写进该节点。 */
+  node: string;
+  /** 变化时的标题。 */
+  title: string;
+  /** 新状态。 */
+  status: DecisionStatus;
+  /** 原状态，创建节点时省略。 */
+  previousStatus?: DecisionStatus;
+}
+
 /** 每次改动追加到历史的一条。 */
 export interface DecisionChange {
   /** 可用于增量查询的递增序号。 */
@@ -95,11 +109,13 @@ export interface DecisionChange {
   /** 改动时间戳。 */
   at: number;
   /** 改动发起者。 */
-  actor: 'central' | 'user';
+  actor: 'central' | 'user' | 'plugin';
   /** 操作名称。 */
-  action: 'put' | 'choose' | 'ack' | 'note' | 'reply';
+  action: 'put' | 'status' | 'choose' | 'ack' | 'note' | 'reply';
   /** 受影响的节点号。 */
   nodes: readonly string[];
+  /** 新建及状态变化详情，relay 不可用时可按变更接口读取。 */
+  tasks?: readonly DecisionTaskChange[];
   /** 用户选择时的选项号。 */
   option?: string;
   /** 用户选择时的节点标题。 */

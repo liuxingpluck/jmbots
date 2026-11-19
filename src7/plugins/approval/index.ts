@@ -24,6 +24,7 @@ import type { ReceiveEvent } from '../bots/index.ts';
 import * as protocol from '../../Channels.ts';
 import * as rules from './Rules.ts';
 import * as outboundModule from './Outbound.ts';
+import * as channelSend from './ChannelSend.ts';
 import * as cardUtils from '../../utils/Card.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -34,7 +35,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.1';
+export const version = '1.2.3';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -176,6 +177,14 @@ export type ApprovalRequest = requestEventModule.RequestEnvelope & (
     /** 只要这个机器人的；不给是全部。 */
     bot?: string;
   }
+  | {
+    /** 查已有的定时提醒确认卡，供持久调度恢复。 */
+    action: 'reminder-card';
+    /** assist 的提醒记录号。 */
+    reminderId: number;
+    /** 该提醒的机器人。 */
+    bot: string;
+  }
 );
 
 /** approval/result 的回执：按请求的 action 带回对应的一项，没办成的写 error。 */
@@ -218,7 +227,8 @@ const SAFE = {
 
 /** 这一轮是 guest 说的：工具已经只剩只读的，这段告诉模型别答应做不了的事。 */
 const GUEST_PROMPT = '这一轮说话的不是用户本人（比如群里用户的朋友）。你只能查、读、搜、回答；'
-  + '跑命令、写文件、改代码、发文件、生图这类动手的事做不了，也不要答应，告诉对方要用户本人来说。';
+  + '跑命令、写文件、改代码、发文件、生图这类动手的事做不了，也不要答应，告诉对方要用户本人来说。'
+  + '对方明确要到点提醒时，可以登记本聊天的提醒，等本人确认后才会发送。';
 
 
 /**
@@ -618,7 +628,7 @@ export class Approval extends cordis.Service {
       where = this.ctx.sessions.find({ id: pending.session })[0]?.address;
     }
     //G 群聊会话不在群内发确认口令，直接返回登记结果。
-    if (workspaceModule.isGroup(where)) return pending;
+    if (workspaceModule.isGroup(where) || pending.kind === outboundModule.REMINDER_APPROVAL_KIND) return pending;
 
     //M 有会话就跟用户说一句怎么回（照 0.4：src/executors/ExecReview.ts:452-458）。
     if (pending.session !== undefined) {
@@ -645,10 +655,12 @@ export class Approval extends cordis.Service {
    * @returns 定好的那件；找不到、已经定过的交回一句原因。
    * 副作用：改表；发 approval/decided。
    */
-  decide(id: number, approve: boolean, by: string): Pending | string {
+  decide(id: number, approve: boolean, by: string, verified = true): Pending | string {
     //G 先按号找出这件待确认：找不到、已经定过的交回原因，不动表。
     const found = this.getRow(id);
     if (found === undefined) return `没有待确认 #${String(id)}`;
+
+    if (!verified && found.kind === outboundModule.REMINDER_APPROVAL_KIND) return '定时提醒只接受本人确认';
 
     if (found.state !== 'waiting') return `待确认 #${String(id)} 已经定过了（${STATE_TEXT[found.state]}）`;
 
@@ -782,6 +794,17 @@ export class Approval extends cordis.Service {
       return getSettled(closed);
     }
 
+    if (request.action === 'reminder-card') {
+      const payload = JSON.stringify({ reminderId: request.reminderId });
+      const kind = outboundModule.REMINDER_APPROVAL_KIND;
+      const sql = 'SELECT * FROM approval_pending WHERE kind = ? AND bot = ? AND payload = ? ORDER BY id LIMIT 1';
+      const row = this.ctx.resources.db.query<Row, [string, string, string]>(sql).get(kind, request.bot, payload);
+      if (row === null) return {};
+
+      const pending = getPending(row);
+      return { pending };
+    }
+
     //M list：还在等的，照给了的 kind、bot 筛。
     const { kind, bot } = request;
     const items = this.list().filter((item) => {
@@ -832,7 +855,8 @@ export class Approval extends cordis.Service {
     const bot = event.bot.name;
     const speaker = getSpeaker(event.message.channel, event.message.address);
     const owner = isOwner(event.message.address);
-    const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner));
+    const verified = event.message.channel !== 'http' || textModule.getField(event.message.address, 'verifiedOwner') === true;
+    const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner, verified));
     const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
 
     //M “待确认有哪些”：只列当事人自己能看的项；一件都没有就当普通消息交给前台，不回“现在没有”，免得泄露这是一条审核指令。
@@ -847,7 +871,7 @@ export class Approval extends cordis.Service {
     //G 长跑提醒（同意 = 终止）不认没点号的“同意”：免得随口一句“同意”把会话停了。
     let candidates = waiting;
     if (said.id === undefined) {
-      candidates = waiting.filter((item) => item.session !== undefined && item.card.kind !== 'long-run');
+      candidates = waiting.filter(isImplicitDecision);
     }
     let named: Pending | undefined;
     if (said.id !== undefined) {
@@ -906,7 +930,8 @@ export class Approval extends cordis.Service {
     const speaker = getSpeaker(message.channel, message.origin.address);
     const owner = message.role === 'owner' && isOwner(message.origin.address);
     const targetSet = new Set(message.targetBots);
-    const waiting = this.list().filter((item) => targetSet.has(item.bot) && allowed(item, speaker, owner));
+    const verified = message.channel !== 'http' || message.origin.address['verifiedOwner'] === true;
+    const waiting = this.list().filter((item) => targetSet.has(item.bot) && allowed(item, speaker, owner, verified));
     const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
 
     //M “待确认有哪些”：只列当事人自己能看的；一件都没有就放过，当普通消息。
@@ -922,7 +947,7 @@ export class Approval extends cordis.Service {
     //M 挑候选：没点号的只算卡着会话的（长跑提醒不算，免得随口一句“同意”把会话停了）；点了号的要在候选里。
     let candidates = waiting;
     if (said.id === undefined) {
-      candidates = waiting.filter((item) => item.session !== undefined && item.card.kind !== 'long-run');
+      candidates = waiting.filter(isImplicitDecision);
     }
     let named: Pending | undefined;
     if (said.id !== undefined) {
@@ -1307,14 +1332,28 @@ export function isOwner(address: unknown): boolean {
  * @param item 待确认。
  * @param speaker 说话人。
  * @param owner 是不是用户本人。
+ * @param verified 网页文字审批有没有经过身份核验，其他渠道在入口核验。
  * @returns 能处理是 true。
  */
-export function allowed(item: Pending, speaker: { customer: string; actor: string }, owner: boolean): boolean {
+export function allowed(
+  item: Pending,
+  speaker: { customer: string; actor: string },
+  owner: boolean,
+  verified = true,
+): boolean {
+  if (item.kind === outboundModule.REMINDER_APPROVAL_KIND) return owner && verified;
+
   if (owner) return true;
 
   //G 说话人在群里，或这件是群里的会话提的 → 只认本人。
   if (workspaceModule.isGroup(speaker) || workspaceModule.isGroup(item)) return false;
   return item.actor !== undefined && item.actor !== '' && item.actor === speaker.actor;
+}
+
+/** 需要专门确认的卡片只能用按钮或带编号的文字决定。 */
+function isImplicitDecision(item: Pending): boolean {
+  return item.session !== undefined && item.card.kind !== 'long-run'
+    && item.kind !== outboundModule.REMINDER_APPROVAL_KIND;
 }
 
 
@@ -1372,10 +1411,16 @@ function view(pending: Pending): Record<string, unknown> {
  * @param app http 的 Fastify 实例。
  * @param approval 服务。
  */
-function routes(app: fastify.FastifyInstance, approval: Approval): void {
+function routes(
+  app: fastify.FastifyInstance,
+  approval: Approval,
+  isVerified: (request: fastify.FastifyRequest) => boolean,
+): void {
   //M 网页只拉最早一批待审核。最近已定的长跑提醒仍照原样附在数组里。
-  app.get('/api/approvals', async () => {
-    const waiting = approval.list(WEB_WAITING_LIMIT);
+  app.get('/api/approvals', async (request) => {
+    const verified = isVerified(request);
+    const waiting = approval.list(WEB_WAITING_LIMIT)
+      .filter((item) => verified || item.kind !== outboundModule.REMINDER_APPROVAL_KIND);
     const recent = approval.recent();
     return [...waiting, ...recent].map(view);
   });
@@ -1393,7 +1438,9 @@ function routes(app: fastify.FastifyInstance, approval: Approval): void {
     if (typeof body['approve'] !== 'boolean') return reply.code(400).send({ error: 'approve 要是 true 或 false' });
 
     //M 按号定这件事，记成“HTTP”定的；找不到、定过了回 404。
-    const result = approval.decide(Number(request.params.id), body['approve'], 'HTTP');
+    const verified = isVerified(request);
+    const id = Number(request.params.id);
+    const result = approval.decide(id, body['approve'], 'HTTP', verified);
     if (typeof result === 'string') return reply.code(404).send({ error: result });
 
     //M 把定好的那件转成网页要的形状交回。
@@ -1445,6 +1492,14 @@ export function apply(ctx: cordis.Context, config: unknown): void {
 
   //M http 是可选的：ctx.inject(服务, 回调) 等于再挂一个小插件，http 在了才调回调、登记接口。
   void ctx.inject(['http'], (sub) => {
-    routes(sub.http.app, approval);
+    const isVerified = (request: fastify.FastifyRequest): boolean => sub.http.isVerified(request);
+    routes(sub.http.app, approval, isVerified);
+    //M 主站发件复用这套 HTTP 鉴权及同一个 Outbound 账。
+    channelSend.mountChannelSend(sub, sub.http);
+  });
+
+  //M 工具服务就绪后才提供本轮聊天的发件申请。
+  void ctx.inject(['tools'], (sub) => {
+    channelSend.registerChannelSendTool(sub);
   });
 }

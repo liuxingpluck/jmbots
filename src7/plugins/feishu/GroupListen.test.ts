@@ -298,7 +298,7 @@ function world(decision?: FakeDecision): World {
   const inside = feishu as unknown as {
     apps: Map<string, { botOpenId?: string; client: { im: { v1: { messageReaction: Record<string, unknown> } } } }>;
     chats: Map<string, unknown>;
-    onMessage: (appId: string, data: unknown) => Promise<void>;
+    inbound: { onMessage: (appId: string, data: unknown) => Promise<void> };
   };
   const app = inside.apps.get(APP_ID);
   if (app === undefined) throw new Error('应用没建起来');
@@ -328,7 +328,7 @@ function world(decision?: FakeDecision): World {
         content: JSON.stringify({ text: atMe ? `@_user_1 ${text}` : text }), mentions,
       },
     };
-    await inside.onMessage(APP_ID, data);
+    await inside.inbound.onMessage(APP_ID, data);
   };
   const change = (session: FakeSession): void => {
     for (const handler of handlers.get('session/change') ?? []) handler(session);
@@ -345,7 +345,7 @@ const getFront = (made: World, chatId: string): FakeSession | undefined => [...m
   .find((one) => one.row.kind === 'front' && one.row.customer === `feishu:group:${chatId}`);
 
 /** 流水里每条的处理结果，按先后。 */
-const outcomes = (made: World): string[] => made.feishu.contacts(100).reverse().map((line) => line.outcome);
+const outcomes = (made: World): string[] => made.feishu.contacts.list(100).reverse().map((line) => line.outcome);
 
 describe('登记了 listen: all 的群', () => {
   test('不 @ 的普通话只记进群的前台会话（登记的名字优先），不交给会话跑；流水记“只记”', async () => {
@@ -419,7 +419,7 @@ describe('没登记的群、私聊', () => {
     await made.send(PLAIN, '长'.repeat(100));
     await made.send('oc_p2p', '在吗', { chatType: 'p2p', sender: OWNER });
 
-    const [p2p, dropped] = made.feishu.contacts(10);
+    const [p2p, dropped] = made.feishu.contacts.list(10);
     expect(dropped).toMatchObject({
       app: APP_ID, chatType: 'group', chatId: PLAIN, chatName: '普通群', openId: FRIEND, sender: '周周', atMe: false, outcome: '丢了',
     });
@@ -427,8 +427,8 @@ describe('没登记的群、私聊', () => {
     expect(dropped?.at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u);
     expect(p2p).toMatchObject({ chatType: 'p2p', openId: OWNER, sender: 'leon', atMe: true, text: '在吗', outcome: '交给会话' });
     //M 只要最近 1 行：就是上面最近 10 行里的第一行（私聊那行）。
-    const latest = made.feishu.contacts(10).slice(0, 1);
-    expect(made.feishu.contacts(1)).toEqual(latest);
+    const latest = made.feishu.contacts.list(10).slice(0, 1);
+    expect(made.feishu.contacts.list(1)).toEqual(latest);
   });
 
   test('owner、role、workspace：照 people 写；没登记的是 guest；builder 带他的目录，guest 没写目录的用 guests/_guest/', async () => {

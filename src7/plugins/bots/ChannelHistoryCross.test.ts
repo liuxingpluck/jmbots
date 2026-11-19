@@ -87,6 +87,11 @@ class FakeHttp extends cordis.Service {
     this.app = fastify.default({ logger: false });
     ctx.effect(() => () => void this.app.close());
   }
+
+  /** 这些注入请求模拟已核验的本机网页。 */
+  isVerified(): boolean {
+    return true;
+  }
 }
 
 
@@ -113,7 +118,7 @@ function stubFeishuClient(
       client: { im: { v1: Record<string, unknown> } };
     }>;
     chats: Map<string, unknown>;
-    onMessage: (appId: string, data: unknown) => Promise<void>;
+    inbound: { onMessage: (appId: string, data: unknown) => Promise<void> };
   };
   const app = inside.apps.get(appId);
   if (app === undefined) {
@@ -152,7 +157,7 @@ function stubFeishuClient(
   inside.chats.set('oc_other_chat', { name: '机密备忘群', members, at: Date.now() });
 
   return {
-    triggerInbound: (data: unknown) => inside.onMessage(appId, data),
+    triggerInbound: (data: unknown) => inside.inbound.onMessage(appId, data),
   };
 }
 

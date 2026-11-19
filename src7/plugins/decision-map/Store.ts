@@ -33,6 +33,14 @@ export function readText(value: unknown, field: string): string {
   return value.trim();
 }
 
+/** 校验入口传来的任务状态。 */
+export function readStatus(value: unknown): types.DecisionStatus {
+  const status = value as types.DecisionStatus;
+  if (!types.STATUSES.includes(status)) return invalid('status 不合法');
+
+  return status;
+}
+
 /** 校验可省略的字符串字段。 */
 function readOptional(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
@@ -96,11 +104,10 @@ function readOptions(value: unknown): types.DecisionOption[] | undefined {
 function readNode(id: string, raw: Record<string, unknown>, before: types.DecisionNode | undefined, now: number) {
   const item = { ...before, ...raw };
   const kind = item['kind'] as types.DecisionKind;
-  const status = item['status'] as types.DecisionStatus;
+  const status = readStatus(item['status']);
 
   //G 只有约定的节点类型和状态能进入画布。
   if (!types.KINDS.includes(kind)) return invalid(`${id} 的 kind 不合法`);
-  if (!types.STATUSES.includes(status)) return invalid(`${id} 的 status 不合法`);
 
   //M 标题用于图上节点，摘要用于详情栏。
   const title = readText(item['title'], 'title');
@@ -127,6 +134,10 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
 
   //M 详情材料、依赖和既有确认随快照一起保存。
   const detailPath = readOptional(item['detailPath'], 'detailPath');
+  const body = item['body'];
+  //G 正文保留原样，Markdown 的缩进和换行有含义。
+  if (body !== undefined && typeof body !== 'string') return invalid('body 要是文本');
+
   const sources = readList(item['sources'], 'sources');
   const links = readList(item['links'], 'links');
   const needs = readList(item['needs'], 'needs');
@@ -136,7 +147,8 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
   let decidedBy = item['decidedBy'];
 
   //G 已做的选择不会被中控的过期快照覆盖。
-  if (before?.chosen !== undefined && (chosen !== before.chosen || kind !== 'decided' || status === 'open')) {
+  const reopens = status === 'open' && before?.status !== 'open';
+  if (before?.chosen !== undefined && (chosen !== before.chosen || kind !== 'decided' || reopens)) {
     throw new failureModule.Failure(409, `${id} 已经作出了选择`);
   }
   if (chosen !== undefined && (kind !== 'decided' || !options?.some((option) => option.id === chosen))) {
@@ -155,7 +167,7 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
   }
 
   return {
-    id, kind, title, summary, parent, status, options, chosen, detailPath, sources, links, main, needs,
+    id, kind, title, summary, parent, status, options, chosen, detailPath, body, sources, links, main, needs,
     createdAt: before?.createdAt ?? createdAt, decidedAt, decidedBy,
     acknowledgedAt: before?.acknowledgedAt, note: before?.note, notes: before?.notes,
   } satisfies types.DecisionNode;
@@ -172,16 +184,20 @@ function checkGraph(nodes: Map<string, types.DecisionNode>): void {
   if (roots.length !== 1 || root?.kind !== 'goal') return invalid('决策图需要一个中心目标');
 
   const mainParents = new Set<string>();
+  const checked = new Set([root.id]);
   for (const node of nodes.values()) {
     //G 每个节点都应沿 parent 回到中心，否则父节点缺失或构成循环。
     let next = node.parent;
     const visited = new Set([node.id]);
-    while (next !== null) {
+    while (next !== null && !checked.has(next)) {
       const parent = nodes.get(next);
       if (parent === undefined || visited.has(next)) return invalid(`${node.id} 的父节点缺失或成环`);
 
       visited.add(next);
       next = parent.parent;
+    }
+    for (const id of visited) {
+      checked.add(id);
     }
 
     //G 主线从中心向外单独延伸，不能从中间跳过节点或再分成两支。
@@ -271,12 +287,13 @@ export class Store {
   }
 
   /** 校验整批节点，成功后一次提交。 */
-  put(raw: unknown): types.DecisionGraph {
+  put(raw: unknown, actor: types.DecisionChange['actor']) {
     //G 只对具体的节点变更提交版本。
     if (!Array.isArray(raw) || raw.length === 0) return invalid('nodes 要是非空列表');
 
     const nodes = new Map(this.saved.nodes.map((node) => [node.id, node]));
     const ids = new Set<string>();
+    const tasks: types.DecisionTaskChange[] = [];
     const now = Date.now();
     for (const entry of raw) {
       //G 单批只有一个同名条目，防止修改顺序造成歧义。
@@ -287,15 +304,35 @@ export class Store {
       //M 先在草稿里合并节点，失败时不改变当前图。
       const before = nodes.get(id);
       const node = readNode(id, input, before, now);
+      if (before?.status !== node.status) {
+        tasks.push({ node: id, title: node.title, status: node.status, previousStatus: before?.status });
+      }
       ids.add(id);
       nodes.set(id, node);
     }
 
     //M 合并后再检查关系，允许同一批里先加子节点后加父节点。
     checkGraph(nodes);
-    const change = { action: 'put', actor: 'central', nodes: [...ids] } as const;
+    const change = { action: 'put', actor, nodes: [...ids], tasks } as const;
     this.commit([...nodes.values()], change);
-    return this.getGraph();
+    return { graph: this.getGraph(), tasks };
+  }
+
+  /** 只推进任务状态，保留决定、作者与对话。重复设置同一状态照旧。 */
+  setStatus(id: string, status: types.DecisionStatus, actor: types.DecisionChange['actor']) {
+    const node = this.getNode(id);
+    if (node.status === status) return { node, tasks: [] };
+
+    if (node.kind === 'pending' && status === 'open' && !node.options?.length) {
+      return invalid(`${id} 待定时至少要有一个选项`);
+    }
+
+    const updated = { ...node, status };
+    const tasks = [{ node: id, title: node.title, status, previousStatus: node.status }];
+    const change = { action: 'status', actor, nodes: [id], tasks } as const;
+    //M 状态和可补查的通知内容一起提交。
+    this.replace(updated, change);
+    return { node: updated, tasks };
   }
 
   /** 校验选项并定稿。同一选择重试时返回原节点。 */

@@ -846,6 +846,94 @@ export interface TextReplyAdapter {
 }
 
 
+/** 渠道认跨渠道发话的目标聊天时，拆好的目标串（parseChatTarget 交回）。 */
+export interface ChatTarget {
+  /** trim 后的整串。 */
+  exact: string;
+  /** 去掉展示前缀（如“微信·”）的整串，按名字认聊天用；拆出“前缀:聊天”后要不要换成 chat 由渠道定。 */
+  label: string;
+  /** “前缀:聊天”写法冒号左边（trim 后）；不是这种写法是空串。前缀代表应用号、账号还是渠道名，由渠道自己认。 */
+  prefix: string;
+  /** “前缀:聊天”写法冒号右边（trim 后）；不是这种写法是空串。 */
+  chat: string;
+}
+
+
+/** 一个候选聊天：渠道从自己的数据里拼出来，交给 pickChat 认。 */
+export interface ChatCandidate<T> {
+  /** 能认出它的号（群号、聊天号、open_id 等）。 */
+  ids: string[];
+  /** 能认出它的名字（群名、人名）；空串不参与比对。 */
+  names: string[];
+  /** 认中后交回的东西（渠道自己的地址片段）。 */
+  value: T;
+}
+
+
+/**
+ * 拆跨渠道发话的目标串：trim、去掉网页展示的渠道前缀、拆出“前缀:聊天”。
+ * @param raw 调用方给的原始聊天串。
+ * @param labelPrefixes 渠道的展示前缀（如“飞书·群·”“微信·”），命中第一个就去掉。
+ * @returns 拆好的目标串。
+ */
+export function parseChatTarget(raw: string, labelPrefixes: string[]): ChatTarget {
+  const exact = raw.trim();
+
+  //M 去掉网页展示名前面带的渠道前缀，剩下的按名字认。
+  let label = exact;
+  const labelPrefix = labelPrefixes.find((one) => exact.startsWith(one));
+  if (labelPrefix !== undefined) {
+    label = exact.slice(labelPrefix.length);
+  }
+
+  //M “前缀:聊天”写法：冒号不在开头、两边去空白后都不空才算。
+  const plain = { exact, label, prefix: '', chat: '' };
+  const sep = exact.indexOf(':');
+  if (sep <= 0) return plain;
+
+  const prefix = exact.slice(0, sep).trim();
+  const chat = exact.slice(sep + 1).trim();
+  if (prefix === '' || chat === '') return plain;
+
+  return { exact, label, prefix, chat };
+}
+
+
+/**
+ * 在候选清单里认聊天：按先后看，号对上、或名字（不空）对上的第一个就是。
+ * 候选可以边认边拼（生成器）：认到就停，排在后面的来源不再读。
+ * @param candidates 渠道拼出的候选，排在前面的优先。
+ * @param id 要找的号。
+ * @param name 要找的名字。
+ * @returns 认中的那个候选带的 value；都没对上是 undefined。
+ */
+export function pickChat<T>(candidates: Iterable<ChatCandidate<T>>, id: string, name: string): T | undefined {
+  for (const candidate of candidates) {
+    //M 号对上就是它。
+    if (candidate.ids.includes(id)) return candidate.value;
+
+    //M 名字对上也算；空名字不算，免得空串认错。
+    const sameName = candidate.names.some((one) => one !== '' && one === name);
+    if (sameName) return candidate.value;
+  }
+  return undefined;
+}
+
+
+/**
+ * 认不出目标聊天时的原因文字（registerTextReply 和自己认聊天的飞书共用）。
+ * @param chat 调用方给的原始聊天串。
+ * @returns “chat_not_found：没有叫 X 的聊天”，X 是 trim 后的串，空串写成（空）。
+ */
+export function getChatNotFound(chat: string): string {
+  let label = chat.trim();
+  if (label === '') {
+    label = '（空）';
+  }
+  return `chat_not_found：没有叫 ${label} 的聊天`;
+}
+
+
 /**
  * 生成跨插件统一的渠道消息 ID：JSON.stringify([channel, accountId, nativeId])。
  * @param channel 渠道名。
@@ -947,12 +1035,8 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
       //M 调用渠道自带认聊天回调解析目标地址。
       targetAddress = adapter.getTargetAddress(request.target.chat, request);
       if (targetAddress === undefined) {
-        let chatLabel = request.target.chat.trim();
-        if (chatLabel === '') {
-          chatLabel = '（空）';
-        }
         //G 目标聊天不在本渠道自己的清单/会话表里时回传 rejected。
-        const notFoundReason = `chat_not_found：没有叫 ${chatLabel} 的聊天`;
+        const notFoundReason = getChatNotFound(request.target.chat);
         emitReplied(request, buildFailure(request, 'rejected', notFoundReason));
         return;
       }

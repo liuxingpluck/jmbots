@@ -91,7 +91,8 @@ export function DecisionMapPage() {
   const [direction, setDirection] = react.useState<layout.MindDirection>(getStartDirection);
   const [sending, setSending] = react.useState(false);
   const [noteError, setNoteError] = react.useState<string>();
-  const [expanded, setExpanded] = react.useState<ReadonlySet<string>>(() => new Set());
+  const [folds, setFolds] = react.useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const [focused, setFocused] = react.useState<string>();
   const canvas = react.useRef<HTMLElement>(null);
   const flow = react.useRef<xyflow.ReactFlowInstance<layout.FlowNode> | undefined>(undefined);
   const lastPending = react.useRef<string | undefined>(undefined);
@@ -149,16 +150,10 @@ export function DecisionMapPage() {
     };
   }, [refresh]);
 
-  const open = react.useCallback((id: string, isFold = false) => {
-    if (isFold) {
-      //M 展开状态由节点编号保留，轮询刷新后同一分组仍然打开。
-      setExpanded((current) => {
-        const next = new Set(current);
-        if (next.delete(id)) return next;
-
-        next.add(id);
-        return next;
-      });
+  const open = react.useCallback((id: string, expand?: boolean) => {
+    if (expand !== undefined) {
+      //M 按节点编号保存开关，切换视图和轮询后仍可继续读同一分支。
+      setFolds((current) => new Map(current).set(id, expand));
       return;
     }
     setChooseError(undefined);
@@ -178,20 +173,30 @@ export function DecisionMapPage() {
     return () => window.removeEventListener('keydown', escape);
   }, [close]);
 
+  //M 聚焦后只布置目标节点和它的后代，祖先作为面包屑保留。
+  const scope = react.useMemo(() => views.getScope(graph?.nodes ?? [], focused), [graph, focused]);
+
+  /** 进子树或回上层。聚焦根至少展开一层。 */
+  function focusTree(id?: string): void {
+    close();
+    setFocused(id);
+    if (id !== undefined) open(id, true);
+  }
+
   //M 视图变化后重新布置节点，普通的轮询维持画布位置。
   const diagram = react.useMemo(() => {
-    const entries = graph?.nodes ?? [];
     if (size.width === 0 || size.height === 0) return { nodes: [], edges: [] };
 
-    const view = { mode, expanded, portrait, ...size };
+    const view = { mode, folds, portrait, ...size };
+    if (scope.path.length > 0) view.mode = 'all';
     //M 卡片和连线按此时的画布比例和看法一起计算；表格和清单不用画布。
-    if (look === 'mind') return layout.getMindLayout(entries, view, open, direction);
-    if (look === 'radial') return layout.getLayout(entries, view, open);
+    if (look === 'mind') return layout.getMindLayout(scope.nodes, view, open, direction);
+    if (look === 'radial') return layout.getLayout(scope.nodes, view, open);
 
     return { nodes: [], edges: [] };
-  }, [graph, mode, expanded, portrait, size, open, look, direction]);
+  }, [scope, mode, folds, portrait, size, open, look, direction]);
   const isCanvas = look === 'mind' || look === 'radial';
-  const pending = graph?.nodes.filter((node) => node.kind === 'pending' && node.status === 'open') ?? [];
+  const pending = scope.nodes.filter((node) => node.kind === 'pending' && node.status === 'open');
   const selected = graph?.nodes.find((node) => node.id === nodeId);
   let fit = FIT;
   if (portrait) {
@@ -329,7 +334,7 @@ export function DecisionMapPage() {
           <a href="/" className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
           <h1>决策图</h1>
         </div>
-        {isCanvas && (
+        {isCanvas && scope.path.length === 0 && (
           <div className="decision-filters" role="group" aria-label="画布显示范围">
             <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
             <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
@@ -379,11 +384,25 @@ export function DecisionMapPage() {
         )}
         {pending.length === 0 && graph !== undefined && <span className="decision-all-clear">当前无待定项</span>}
       </header>
+      {scope.path.length > 0 && (
+        <nav className="decision-breadcrumb" aria-label={t('任务树路径')}>
+          <button type="button" data-tree-root onClick={() => focusTree()}>{t('全部节点')}</button>
+          {scope.path.map((entry) => {
+            if (entry.id === focused) return <span key={entry.id} aria-current="location">{entry.title}</span>;
+
+            return (
+              <button type="button" key={entry.id} data-tree-ancestor={entry.id} onClick={() => focusTree(entry.id)}>
+                {entry.title}
+              </button>
+            );
+          })}
+        </nav>
+      )}
 
       <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
         {isCanvas && diagram.nodes.length > 0 && (
           <xyflow.ReactFlow<layout.FlowNode>
-            key={`${look}-${direction}-${mode}-${size.width}x${size.height}-${expanded.size}`}
+            key={`${look}-${direction}-${mode}-${size.width}x${size.height}-${focused ?? ''}`}
             nodes={diagram.nodes}
             edges={diagram.edges}
             nodeTypes={NODE_TYPES}
@@ -406,10 +425,10 @@ export function DecisionMapPage() {
         {isCanvas && diagram.nodes.length === 0 && <div className="decision-empty" role="status">{empty}</div>}
         {!isCanvas && graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
         {look === 'table' && graph !== undefined && (
-          <views.TableView nodes={graph.nodes} selected={nodeId} open={open} />
+          <views.TableView nodes={scope.nodes} selected={nodeId} open={open} />
         )}
         {look === 'list' && graph !== undefined && (
-          <views.ListView nodes={graph.nodes} selected={nodeId} open={open} />
+          <views.ListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
         )}
         {isCanvas && diagram.nodes.length > 0 && (
           <ul className="decision-legend" aria-label="图例">
@@ -430,6 +449,9 @@ export function DecisionMapPage() {
             sending={sending}
             noteError={noteError}
             send={sendNote}
+            focus={() => focusTree(selected.id)}
+            refresh={refresh}
+            expand={(id) => open(id, true)}
           />
         )}
       </section>

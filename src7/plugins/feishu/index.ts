@@ -1,6 +1,9 @@
 /**
- * 飞书：一个插件管飞书的全部——渠道收发（这个文件）、确认卡片和进度卡片（cards/）、飞书云文档工具（doc/）、发件箱（outbox/）。
+ * 飞书：一个插件管飞书的全部——渠道收发、确认卡片和进度卡片（cards/）、飞书云文档工具（doc/）、发件箱（outbox/）。
  * 用户定了：平台型插件放在一个插件里，用子文件夹分管功能。设计见同目录 说明.md 的「设计要点」一节。
+ * 渠道收发按职责分文件：这个文件是入口（类型、配置校验、长连接、别的插件调的发送口、apply）；
+ * 收消息、撤回、点卡片在 Inbound.ts，channel/reply、channel/send 在 Reply.ts，聊天日志和 channel/history 在 History.ts，
+ * 来往流水在 Contacts.ts。拆出去的几个类由 Feishu 构造时建好，挂在 feishu.inbound / reply / history / contacts 上。
  *
  * 渠道：照 config.yaml 的 channels.feishu 名单，一个飞书应用一个 SDK 客户端、一条长连接（WebSocket），等 ready 才连。
  * 渠道只有一个，名字 feishu；回话地址（FeishuAddress）里的 appId 分清是哪个应用，回话从收消息的那个应用发回去。
@@ -21,13 +24,20 @@ import * as path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
-import type { Session, SessionMeta } from '../../Sessions.ts';
-import * as namesModule from '../../utils/Names.ts';
+import type { Session } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
-import * as protocol from '../../Channels.ts';
 import * as api from './Api.ts';
+import * as cards from './cards/Cards.ts';
+import { FeishuContacts } from './Contacts.ts';
+import * as doc from './doc/Doc.ts';
+import { FeishuHistory } from './History.ts';
+import { FeishuInbound } from './Inbound.ts';
+import type { RecallData, ReceiveData } from './Inbound.ts';
+import * as media from './Media.ts';
+import * as outbox from './outbox/Outbox.ts';
+import { FeishuReply } from './Reply.ts';
 
 
 /** 旧路 bots.channel 回调发送回执（结构对齐 bots 服务约定）。 */
@@ -42,10 +52,6 @@ interface LegacyOrigin {
   channel?: string;
   address?: unknown;
 }
-import * as cards from './cards/Cards.ts';
-import * as doc from './doc/Doc.ts';
-import * as media from './Media.ts';
-import * as outbox from './outbox/Outbox.ts';
 
 
 /** 插件名。 */
@@ -55,7 +61,10 @@ export const name = 'feishu';
 //M 1.1.3：监听 im.message.recalled_v1 撤回消息事件，校验本人或原发信人后发出 channel/recall。
 //M 1.1.4：onChannelReply 支持带 target 的跨渠道发话，在飞书自有群/私聊/流水数据里自认聊天。
 //M 1.1.9：登记群内每日进度的时间、机器人和提示，progress 读取已校验的配置。
-export const version = '1.1.9';
+//M 1.1.11：channel/history 的游标和分页改用骨架的 paginateChannelHistory，飞书只认应用、聊天和挑 @我。
+//M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、pickChat：飞书只交出候选清单（getChatCandidates）。
+//M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
+export const version = '1.1.13';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -215,32 +224,8 @@ export interface FeishuConfig {
 }
 
 
-/** 来往流水的一行（data/logs/feishu-contacts.jsonl、GET /api/feishu/contacts）。 */
-export interface Contact {
-  /** 收到的本地时间，2026-11-17 10:30:05 的样子（textModule.getClock）。 */
-  at: string;
-  /** 哪个飞书应用收的。 */
-  app: string;
-  /** p2p、group。 */
-  chatType: string;
-  chatId: string;
-  /** 群名：登记的或查到的；私聊、查不到是 ''。 */
-  chatName: string;
-  /** 说话人 open_id。 */
-  openId: string;
-  /** 说话人名字：登记的或查到的；都没有是 ''。 */
-  sender: string;
-  /** 有没有 @ 机器人；私聊算 @ 了。 */
-  atMe: boolean;
-  /** 话的前 80 字，超了带“…”（附件是 [图片] 这类标记）。 */
-  text: string;
-  /** 最后怎么处理的：交给会话、转外部助手、只记、丢了、别的插件处理掉了、没处理成：原因。 */
-  outcome: string;
-}
-
-
 /** 一个应用运行时的样子。 */
-interface AppState {
+export interface AppState {
   /** 配置里那一项。 */
   config: FeishuApp;
   /** SDK 客户端：调开放接口用，令牌 SDK 自己管。 */
@@ -266,41 +251,6 @@ interface ChatNames {
   members: Map<string, string>;
   /** 查的时刻，毫秒。 */
   at: number;
-}
-
-
-/** 收到的消息事件里用到的几项（SDK 的 im.message.receive_v1，types/index.d.ts:319138）。 */
-interface ReceiveData {
-  sender: { sender_id?: { open_id?: string }; sender_type: string };
-  message: {
-    message_id: string;
-    parent_id?: string;
-    root_id?: string;
-    chat_id: string;
-    chat_type: string;
-    message_type: string;
-    content: string;
-    mentions?: { key: string; id: { open_id?: string }; name: string }[];
-  };
-}
-
-
-/** 飞书 im.message.recalled_v1 撤回消息事件的字段。 */
-interface RecallData {
-  /** 事件唯一标识。 */
-  event_id?: string;
-  /** 飞书应用号。 */
-  app_id?: string;
-  /** 被撤回的原消息 ID。 */
-  message_id?: string;
-  /** 发生撤回的聊天 ID。 */
-  chat_id?: string;
-  /** 撤回毫秒时间戳字符串。 */
-  recall_time?: string;
-  /** 撤回者身份类型：message_owner 为原发消息人自撤，其余为群主/群管/企业管理员代撤。 */
-  recall_type?: 'message_owner' | 'group_owner' | 'group_manager' | 'enterprise_manager';
-  /** 可选操作者标识（带 open_id 时一并核验本人或原发信人）。 */
-  operator_id?: { open_id?: string };
 }
 
 
@@ -367,20 +317,6 @@ function brief(parts: unknown[]): string {
 }
 
 
-/**
- * 一条消息最后怎么处理的，写进来往流水。
- * @param kind 接它的会话种类（Feishu.takenBy）；没有会话接是 undefined。
- * @param listenOnly 是不是只听的话。
- * @returns 一个词。
- */
-function getOutcome(kind: string | undefined, listenOnly: boolean): string {
-  if (kind === 'relay') return '转外部助手';
-  if (kind !== undefined) return '交给会话';
-  if (listenOnly) return '只记';
-  return '别的插件处理掉了';
-}
-
-
 /** 发送选项；多个应用时用 appId 精确指定。 */
 export interface SendFileOptions {
   /** 上传类型；不填按扩展名识别。 */
@@ -413,62 +349,28 @@ interface SendFileResult extends requestEventModule.ResultEnvelope {
   error?: string;
 }
 
-/** 飞书聊天本地原始日志的一行（存于 channels/feishu/chats/<appId>/<chatId>.jsonl）。 */
-interface FeishuChatLogEntry {
-  /** 标准消息 ID。 */
-  messageId: string;
-  /** 飞书原始消息 ID。 */
-  nativeId: string | null;
-  /** 所属应用 ID。 */
-  appId: string;
-  /** 聊天 ID。 */
-  chatId: string;
-  /** 方向：user 入站 / bot 出站。 */
-  direction: 'user' | 'bot';
-  /** UTC 毫秒时间戳。 */
-  createdAt: number;
-  /** 发送者信息。 */
-  sender: { id: string; name?: string };
-  /** 展示文本。 */
-  text: string;
-  /** @ 提及清单。 */
-  mentions: protocol.ChannelMention[];
-  /** 附件元数据（含脱敏字段）。 */
-  attachments: Array<{ id: string; name: string; mime?: string; size?: number; state: 'available' | 'unavailable' }>;
-}
-
-/** 飞书发送幂等记录（存于 channels/feishu/replies/<appId>.jsonl）。 */
-interface FeishuReplyRecord {
-  /** 回复请求幂等键。 */
-  replyRequestKey: string;
-  /** 正文载荷摘要。 */
-  payloadHash: string;
-  /** 保存下来的回执。 */
-  receipt: protocol.ReplyReceipt;
-}
-
 /** 飞书渠道；外部发送复用实例方法。 */
 export class Feishu {
   /** 渠道名。 */
   readonly name = 'feishu';
 
-  /** 应用号 → 应用，照配置的先后。 */
-  private readonly apps = new Map<string, AppState>();
+  /** 应用号 → 应用，照配置的先后（History.ts、Reply.ts、Inbound.ts 也读）。 */
+  readonly apps = new Map<string, AppState>();
 
-  /** 正在处理中的入站消息号（防并发重推穿透），保存+广播后写入 feishu_seen。 */
-  private readonly inFlight = new Set<string>();
+  /** 群号 → 群名和成员名字（chatNames 查的；Reply.ts 认目标聊天也读）。 */
+  readonly chats = new Map<string, ChatNames>();
 
-  /** 回复幂等键缓存（replyRequestKey → 记录）。 */
-  private readonly replyCache = new Map<string, FeishuReplyRecord>();
+  /** 收：收消息、撤回、点卡片，start 把 SDK 的事件交给它（Inbound.ts）。 */
+  readonly inbound: FeishuInbound;
 
-  /** 已从磁盘加载过回复幂等文件的应用集合。 */
-  private readonly loadedReplyApps = new Set<string>();
+  /** 聊天历史：聊天日志落盘和读，响应 channel/history（History.ts）。 */
+  readonly history: FeishuHistory;
 
-  /** 已收到撤回通知的原消息键 `${appId}:${nativeId}` 集合，拦截尚在下载附件的入站或刚撤回时的在途回话。 */
-  private readonly recalledNativeIds = new Set<string>();
+  /** 来往流水：记、读 data/logs/feishu-contacts.jsonl，听 bot/judged 补记（Contacts.ts）。 */
+  readonly contacts: FeishuContacts;
 
-  /** 群号 → 群名和成员名字（chatNames 查的）。 */
-  private readonly chats = new Map<string, ChatNames>();
+  /** 回话：响应 channel/reply、channel/send（Reply.ts）。 */
+  readonly reply: FeishuReply;
 
   /**
    * 建表、给每个应用建 SDK 客户端；ready 时连长连接；被拔掉时关长连接。
@@ -521,26 +423,27 @@ export class Feishu {
       this.apps.set(app.appId, { config: app, client, state: '还没连', connected: false, at: Date.now() });
     }
 
+    //M 收（Inbound.ts）：不登记事件，start 把长连接收到的消息、撤回、点卡片交给它。
+    this.inbound = new FeishuInbound(this.ctx, this);
+
     //M 都挂完了才连：这时候机器人、前台都在了，收到的消息有人接。
     this.ctx.on('ready', () => {
       this.connect();
     });
 
-    //M 前台在会话跑完以后才判断完的话（bot/judged）：补记一行流水，写明判断的结果。
-    this.ctx.on('bot/judged', (address, text, outcome) => {
-      this.logJudged(address, text, outcome);
-    });
+    //M 来往流水（Contacts.ts）：自己登记 bot/judged 监听，前台判断完补记一行。
+    this.contacts = new FeishuContacts(this.ctx, this);
 
     //M 网页问连接状态（web-api 发，挨个问）。没挂 web-api 就没人问。
     this.ctx.on('web-api/status', (list) => {
       this.status(list);
     });
 
-    //M 统一渠道回复出口（接口 A）：监听 channel/reply，只发送纯文字并返回 channel/replied 回执。
-    this.ctx.on('channel/reply', (request) => this.onChannelReply(request));
+    //M 回话（Reply.ts）：自己登记 channel/reply（会话的回复）和 channel/send（已批准的主动发件）监听。
+    this.reply = new FeishuReply(this.ctx, this);
 
-    //M 统一渠道历史入口（接口 A）：监听 channel/history，在授权范围内返回已落盘记录。
-    this.ctx.on('channel/history', (request) => this.onChannelHistory(request));
+    //M 聊天历史（History.ts）：自己登记 channel/history 监听。
+    this.history = new FeishuHistory(this.ctx, this);
 
     const requestOptions = {
       onError: (error: unknown) => {
@@ -677,14 +580,14 @@ export class Feishu {
     //M   点卡片要等：交回的 { toast } 就是给飞书的回应，SDK 把它带回去（lib/index.js handleEventData）。
     const dispatcher = new lark.EventDispatcher({ loggerLevel: lark.LoggerLevel.warn, logger: SDK_LOGGER }).register({
       'im.message.receive_v1': (data: ReceiveData) => {
-        void this.onMessage(appId, data);
+        void this.inbound.onMessage(appId, data);
       },
       'im.message.recalled_v1': (data: RecallData) => {
         //M 收到消息撤回事件时异步核对本人或原发信人身份并通知机器人停止对应任务。
-        void this.onRecall(appId, data);
+        void this.inbound.onRecall(appId, data);
       },
       //M 交互卡片按钮点击必须异步等候校验与业务结果，以便把 toast 及时带回飞书客户端。
-      'card.action.trigger': (data: unknown) => this.onCard(appId, data),
+      'card.action.trigger': (data: unknown) => this.inbound.onCard(appId, data),
       'im.message.message_read_v1': () => undefined,
       'im.message.reaction.created_v1': () => undefined,
       'im.message.reaction.deleted_v1': () => undefined,
@@ -777,7 +680,7 @@ export class Feishu {
    * @param chatId 群号。
    * @returns 群名、成员名字。
    */
-  private async chatNames(app: AppState, chatId: string): Promise<ChatNames> {
+  async chatNames(app: AppState, chatId: string): Promise<ChatNames> {
     //M 先命中未过期的群信息本地缓存，减少群聊高频发言带来的接口请求。
     const known = this.chats.get(chatId);
     if (known !== undefined && Date.now() - known.at < CHAT_NAMES_MS) return known;
@@ -811,1221 +714,6 @@ export class Feishu {
     }
     this.chats.set(chatId, found);
     return found;
-  }
-
-  /**
-   * 收到一条消息：去重、记最近私聊的人、挂表情、换成文字、下载附件、交给机器人。
-   * @param appId 哪个应用收的。
-   * @param data 飞书的消息事件。
-   * 副作用：写表；下载文件进工作区；推给机器人；出错给这个聊天发一句。
-   */
-  private async onMessage(appId: string, data: ReceiveData): Promise<void> {
-    //M 按事件所属应用 ID 查找应用实例，找不到直接忽略。
-    const app = this.apps.get(appId);
-    if (app === undefined) return;
-    const message = data.message;
-    const db = this.ctx.resources.db;
-
-    //G 重推或正在处理中（先查去重表和 inFlight；只有 raw 落盘并完成短分派之后才写 feishu_seen）。
-    const seenRow = db.query("SELECT 1 FROM feishu_seen WHERE message_id = ? AND kind = 'in'").get(message.message_id);
-    if (seenRow !== null || this.inFlight.has(message.message_id)) {
-      //T 跟踪：重复的消息，去重挡掉。
-      const vars = { 应用: appId, 消息: message.message_id };
-      this.ctx.emit('trace', 'Feishu.onMessage', '同一条消息飞书又推了一次，不管', 'SELECT feishu_seen', vars);
-      return;
-    }
-    //M 标记当前 message_id 正在异步入站处理，防飞书重推与自身异步周期并发重入。
-    this.inFlight.add(message.message_id);
-
-    try {
-      //M 交由入站管线执行消息解析、存盘、分发，并在 finally 释放并发锁。
-      await this.handleInboundMessage(appId, app, data);
-    } finally {
-      this.inFlight.delete(message.message_id);
-    }
-  }
-
-  /**
-   * 处理已确认非重推的飞书入站消息：解析 @ 提及与群配置 → 下载附件进渠道目录 → 写原始消息日志 →
-   * 发统一事件 channel/message（支持单账号多机器人各自认领）→ 最后落盘 feishu_seen、流水并清理无回话表情。
-   * @param appId 应用号。
-   * @param app 应用运行时状态。
-   * @param data 飞书消息事件。
-   */
-  private async handleInboundMessage(appId: string, app: AppState, data: ReceiveData): Promise<void> {
-    const message = data.message;
-    const db = this.ctx.resources.db;
-    //M 取出该飞书账号配置允许投递的机器人名单，供群 @ 识别与路由拆解。
-    const allowedBots = this.getAllowedBots(app.config);
-    const mentions = message.mentions ?? [];
-    const group = message.chat_type !== 'p2p';
-    const self = app.botOpenId;
-
-    //M @ 映射：已知本应用 botOpenId 时精确匹配，缺省时若群里有人被 @ 则按默认机器人命中（仅在当前应用允许名单里选）。
-    const standardMentions: protocol.ChannelMention[] = mentions.map((item) => {
-      const id = item.id.open_id ?? '';
-      const botNames: string[] = [];
-      if (self !== undefined && id === self) {
-        botNames.push(app.config.bot);
-      }
-      if (self === undefined && id !== '') {
-        botNames.push(app.config.bot);
-      }
-      let name = '';
-      if (item.name !== undefined) {
-        name = item.name;
-      }
-      //M 群内 @ 名称若与允许列表中的机器人名吻合，也记作命中该机器人。
-      const matched = allowedBots.find((botName) => botName === name);
-      if (matched !== undefined && !botNames.includes(matched)) {
-        botNames.push(matched);
-      }
-      const out: protocol.ChannelMention = { id, botNames };
-      if (item.key !== undefined && item.key !== '') out.token = item.key;
-      if (item.name !== undefined && item.name !== '') out.name = item.name;
-      return out;
-    });
-
-    let atMe = !group;
-    if (group && self === undefined) {
-      atMe = mentions.length > 0;
-    }
-    if (group && self !== undefined) {
-      atMe = mentions.some((item) => item.id.open_id === self);
-    }
-
-    //M 换成文字，去掉 @ 占位符（rawText 保留带占位符的平台可读全文，丢掉也要记流水）。
-    const described = media.describe(message.message_type, message.content);
-    let body = described.text;
-    for (const mention of mentions) {
-      body = body.replaceAll(mention.key, '');
-    }
-
-    //M 认人、认群：config 里登记的名字优先；群名、人名没登记的，群里再去飞书查。
-    const openId = data.sender.sender_id?.open_id ?? '';
-    const person = this.config.people.get(openId);
-    let registered: FeishuGroup | undefined;
-    if (group) {
-      registered = this.config.groups.get(message.chat_id);
-    }
-    let chatName = registered?.name ?? '';
-    let senderName = person?.name ?? '';
-    if (group && (chatName === '' || senderName === '')) {
-      const names = await this.chatNames(app, message.chat_id);
-      chatName = chatName || names.name;
-      senderName = senderName || (names.members.get(openId) ?? '');
-    }
-
-    const contact: Omit<Contact, 'outcome'> = {
-      //M 取格式化日期时间戳作为联系人流水记录时间，后文裁剪正文前 80 字。
-      at: textModule.getClock(Date.now(), 'date'),
-      app: appId,
-      chatType: message.chat_type,
-      chatId: message.chat_id,
-      chatName,
-      openId,
-      sender: senderName,
-      atMe,
-      //M 截断消息文本保留摘要片段写入流水表，避免超长对话刷爆日志。
-      text: textModule.clip(body.trim(), 80),
-    };
-
-    const listenOnly = !atMe;
-    let targetBots: string[] = [];
-    const byBotRouting: Record<string, protocol.BotRoutingHint> = {};
-    if (!group) {
-      targetBots = [...allowedBots];
-      for (const botName of targetBots) {
-        byBotRouting[botName] = { listenOnly: false };
-      }
-    }
-    if (group) {
-      const canListenAll = registered?.listen === 'all' || registered?.listen === 'judge';
-      for (const botName of allowedBots) {
-        const mentionedBot = standardMentions.some((m) => m.botNames.includes(botName));
-        const activeForBot = mentionedBot || (atMe && botName === app.config.bot);
-        if (activeForBot) {
-          targetBots.push(botName);
-          byBotRouting[botName] = { listenOnly: false };
-          continue;
-        }
-        if (canListenAll) {
-          targetBots.push(botName);
-          byBotRouting[botName] = { listenOnly: true, judge: registered?.listen === 'judge' };
-        }
-      }
-    }
-
-    const standardMessageId = JSON.stringify([this.name, appId, message.message_id]);
-    let chatType: protocol.ChannelChatType = 'group';
-    if (message.chat_type === 'p2p') {
-      chatType = 'p2p';
-    }
-    if (message.chat_type !== 'p2p' && message.chat_type !== 'group') {
-      chatType = 'group';
-    }
-
-    //G 群里没 @ 任何目标机器人且未登记只听：存 raw 日志、记 seen、记流水“丢了”后返回。
-    if (targetBots.length === 0) {
-      const senderInfo: { id: string; name?: string } = { id: openId || 'unknown' };
-      if (senderName !== '') {
-        senderInfo.name = senderName;
-      }
-      const droppedEntry: FeishuChatLogEntry = {
-        messageId: standardMessageId,
-        nativeId: message.message_id,
-        appId,
-        chatId: message.chat_id,
-        direction: 'user',
-        createdAt: Date.now(),
-        sender: senderInfo,
-        text: body.trim() || '[空消息]',
-        mentions: standardMentions,
-        attachments: [],
-      };
-      //M 未触发回复或监听的群聊消息仍需落盘原始聊天历史、登记已见防重投并记为“丢了”。
-      this.appendChatLog(appId, message.chat_id, droppedEntry);
-      db.query('INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)')
-        .run(message.message_id, appId, 'in', Date.now());
-      //M 追加一条“丢了”来往流水供核对群过滤情况。
-      this.logContact(contact, '丢了');
-      const vars = { 应用: appId, 聊天: message.chat_id };
-      this.ctx.emit('trace', 'Feishu.onMessage', '群里这条没 @ 机器人，不回', 'atMe === false', vars);
-      return;
-    }
-
-    if (message.chat_type === 'p2p' && openId !== '') {
-      const sql = 'INSERT INTO feishu_p2p (app_id, chat_id, open_id, message_id, at) VALUES (?, ?, ?, ?, ?)'
-        + ' ON CONFLICT(app_id) DO UPDATE SET chat_id = excluded.chat_id, open_id = excluded.open_id,'
-        + ' message_id = excluded.message_id, at = excluded.at';
-      //M 更新该应用最近私聊联系人映射，供发件箱、定时提醒与跨渠道云文档授权复用。
-      db.query(sql).run(appId, message.chat_id, openId, message.message_id, Date.now());
-    }
-
-    const address: FeishuAddress = {
-      appId,
-      chatId: message.chat_id,
-      messageId: message.message_id,
-      openId,
-      chatType: message.chat_type,
-      //M 按会话类型计算统一客户键，供前台与记忆插件区分私聊与群聊上下文。
-      customer: feishuCustomer(message.chat_type, message.chat_id, openId),
-      //M 根据配置填充说话人的身份角色与限定工作目录（owner 不写 workspace）。
-      ...roleFields(person, this.ctx.resources.dir('guests', GUEST_DIR)),
-    };
-    if (chatName !== '') address.chatName = chatName;
-    if (senderName !== '') address.senderName = senderName;
-    if (listenOnly) address.listenOnly = true;
-    if (listenOnly && registered?.listen === 'judge') address.judge = true;
-    if (listenOnly && registered?.listen === 'judge' && registered.judgeThreshold !== undefined) {
-      address.judgeThreshold = registered.judgeThreshold;
-    }
-    if (registered !== undefined) address.relay = registered.relay;
-    if (registered !== undefined) address.trusted = registered.trusted;
-
-    const vars = {
-      应用: appId,
-      机器人: targetBots.join('、'),
-      类型: message.message_type,
-      聊天: message.chat_type,
-      只听: listenOnly,
-    };
-    const summary = '飞书收到一条消息，存原始件并广播 channel/message';
-    this.ctx.emit('trace', 'Feishu.onMessage', summary, 'ctx.serial("channel/message", msg)', vars);
-
-    try {
-      //M 挂“敲键盘”表情，告诉用户收到了；仅在需要回复且非只听时挂。
-      try {
-        if (!listenOnly) {
-          const reaction = await api.call('挂表情', () => app.client.im.v1.messageReaction.create({
-            path: { message_id: message.message_id },
-            data: { reaction_type: { emoji_type: 'Typing' } },
-          }));
-          const reactionId = reaction.data?.reaction_id;
-          if (reactionId !== undefined && reactionId !== '') address.typingReaction = reactionId;
-        }
-      } catch (error) {
-        //M 取格式化日期前缀记录挂“敲键盘”表情失败日志，不阻断主流程。
-        const logTime = textModule.getClock(Date.now(), 'date');
-        console.error(`${logTime} 飞书：表情没挂上：${textModule.getMessage(error)}`);
-      }
-
-      //M 若本条属于引用回复或合并转发消息，补充拉取上下文原文及其附带资源列表。
-      const more = await media.related(this, appId, {
-        messageId: message.message_id,
-        parentId: message.parent_id || message.root_id,
-        type: message.message_type,
-      });
-
-      //M 资源先存在飞书自己的渠道存储目录下，不直接写入单一机器人私有工作区；认领后再由每个机器人按授权工作区物化。
-      const attachments: protocol.ChannelAttachment[] = [];
-      const failed: string[] = [];
-      const attachDir = this.ctx.resources.dir(
-        'channels',
-        'feishu',
-        'attachments',
-        namesModule.getSafeName(appId, Infinity),
-        new Date().toLocaleDateString('sv-SE'),
-      );
-      for (const [idx, resource] of [...described.resources, ...more.resources].entries()) {
-        const attachId = `${message.message_id}:${String(idx)}`;
-        try {
-          const content = await media.download(this, appId, resource.messageId ?? message.message_id, resource);
-          const safe = namesModule.getSafeName(path.win32.basename(resource.name), Infinity);
-          const prefix = namesModule.getSafeName(message.message_id, 60);
-          const filePath = path.join(attachDir, `${prefix}_${String(idx)}_${safe}`);
-          fs.writeFileSync(filePath, content);
-          attachments.push({
-            id: attachId,
-            name: resource.name,
-            size: content.length,
-            sourceRef: filePath,
-            state: 'available',
-          });
-        } catch (error) {
-          //M 单个附件下载失败时记为不可用并把报错附进正文，不阻塞整条消息处理。
-          const reason = textModule.getMessage(error);
-          failed.push(`[${resource.name} 没下载下来：${reason}]`);
-          attachments.push({
-            id: attachId,
-            name: resource.name,
-            sourceRef: '',
-            state: 'unavailable',
-            reason,
-          });
-        }
-      }
-
-      const parts = [more.quote, body.trim(), more.forwarded, failed.join('\n')];
-      const text = parts.filter((part) => part !== '').join('\n') || '[空消息]';
-      const receivedAt = Date.now();
-      let replyTo: protocol.ChannelReplyTo | null = null;
-      const rawParent = message.parent_id || message.root_id;
-      if (rawParent !== undefined && rawParent !== '') {
-        replyTo = {
-          nativeId: rawParent,
-          messageId: JSON.stringify([this.name, appId, rawParent]),
-        };
-      }
-
-      const role: protocol.ChannelRole = address.role ?? 'guest';
-      const trusted = !group || address.trusted === true;
-      const scope = `${this.name}:${appId}:${message.chat_id}`;
-      const senderInfo: { id: string; name?: string } = { id: openId || 'unknown' };
-      if (senderName !== '') {
-        senderInfo.name = senderName;
-      }
-      const routing: protocol.ChannelRouting = { listenOnly, byBot: byBotRouting };
-      if (address.judge === true) {
-        routing.judge = true;
-      }
-      const channelMessage: protocol.ChannelMessage = {
-        v: 1,
-        messageId: standardMessageId,
-        nativeId: message.message_id,
-        channel: this.name,
-        accountId: appId,
-        chatId: message.chat_id,
-        chatType,
-        sender: senderInfo,
-        role,
-        targetBots,
-        mentions: standardMentions,
-        rawText: described.text,
-        text,
-        attachments,
-        createdAt: receivedAt,
-        receivedAt,
-        timeSource: 'received',
-        replyTo,
-        origin: {
-          channel: this.name,
-          address: structuredClone(address) as unknown as Record<string, unknown>,
-        },
-        visibility: {
-          scope,
-          trusted,
-          publicSourceIds: [],
-        },
-        routing,
-      };
-
-      //M 先持久化渠道原始记录，再发出 channel/message；短分派完成后才记 feishu_seen 去重。
-      const chatEntry: FeishuChatLogEntry = {
-        messageId: standardMessageId,
-        nativeId: message.message_id,
-        appId,
-        chatId: message.chat_id,
-        direction: 'user',
-        createdAt: channelMessage.createdAt,
-        sender: channelMessage.sender,
-        text,
-        mentions: standardMentions,
-        attachments: attachments.map((item) => {
-          const clean: FeishuChatLogEntry['attachments'][number] = {
-            id: item.id,
-            name: item.name,
-            state: item.state,
-          };
-          if (item.mime !== undefined) clean.mime = item.mime;
-          if (item.size !== undefined) clean.size = item.size;
-          return clean;
-        }),
-      };
-      //M 将入站消息标准化条目写入本地渠道聊天日志，供后续历史查询及审计使用。
-      this.appendChatLog(appId, message.chat_id, chatEntry);
-
-      //G 处理入站期间原消息已被撤回 → 补记去重与流水后立即退出，不再发 channel/message 拉起会话。
-      if (this.recalledNativeIds.has(`${appId}:${message.message_id}`)) {
-        db.query('INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)')
-          .run(message.message_id, appId, 'in', Date.now());
-        this.logContact(contact, '已撤回');
-        return;
-      }
-
-      const control: protocol.ChannelMessageControl = { claims: [] };
-      await this.ctx.serial('channel/message', channelMessage, control);
-
-      //M 确认原消息存盘且同步分发流程完成后才写 feishu_seen，防止崩溃丢消息。
-      db.query('INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)')
-        .run(message.message_id, appId, 'in', Date.now());
-
-      //M 根据各插件填回的认领声明汇总本条消息的最终流向并写入来往流水。
-      const outcome = this.resolveOutcome(control, listenOnly, message.message_id, address.judged);
-      this.logContact(contact, outcome);
-
-      //M 若无机器人认领会话（或被审批插件直接截断），立即撤掉之前挂上的“敲键盘”表情。
-      const hasSessionClaim = control.claims.some((c) => c.status === 'claimed' || c.status === 'relay');
-      if (address.typingReaction !== undefined
-        && (control.approvalHandled === true
-          || (!hasSessionClaim && this.takenBy(message.message_id) === undefined))) {
-        //M 调用撤回接口移除“正在输入”表情反馈。
-        await this.untype(address);
-      }
-    } catch (error) {
-      //M 捕获入站异常后登记失败流水与控制台报错，并尝试向发信方回传简明失败原因。
-      const said = textModule.getMessage(error);
-      this.logContact(contact, `没处理成：${said}`);
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：消息 ${message.message_id} 没处理成：${said}`);
-      try {
-        //M 向原聊天发回兜底失败提示并清理可能残余的“敲键盘”表情。
-        await this.sendText(address, `这条消息没处理成：${said}`);
-        await this.untype(address);
-      } catch (again) {
-        //M 连兜底错误通知也发送失败时取时间前缀记录二次日志。
-        const againTime = textModule.getClock(Date.now(), 'date');
-        console.error(`${againTime} 飞书：“没处理成”也没发出去：${textModule.getMessage(again)}`);
-      }
-    }
-  }
-
-  /**
-   * 汇总一条飞书消息在 channel/message 后的流水结果文案。
-   * @param control 协调结果。
-   * @param listenOnly 原默认是否只听。
-   * @param nativeId 飞书原生消息号（兼容未迁移路径）。
-   * @param legacyJudged 旧字段 judged。
-   */
-  private resolveOutcome(
-    control: protocol.ChannelMessageControl,
-    listenOnly: boolean,
-    nativeId: string,
-    legacyJudged?: string,
-  ): string {
-    if (control.approvalHandled === true) return '别的插件处理掉了';
-
-    //M 先查看是否有决定型或转发型插件在认领列表里给出了自定义结果说明。
-    const judgedClaim = control.claims.find((c) => c.judged !== undefined);
-    if (judgedClaim?.judged !== undefined) return judgedClaim.judged;
-
-    if (legacyJudged !== undefined) return legacyJudged;
-
-    //M 若认领表中标记为转给外部助手，则记为转外部助手。
-    const relayClaim = control.claims.find((c) => c.status === 'relay');
-    if (relayClaim !== undefined) return '转外部助手';
-
-    //M 若已被某个会话正式认领或去重归并，则记为交给会话。
-    const sessionClaim = control.claims.find((c) => c.status === 'claimed' || c.status === 'duplicate');
-    if (sessionClaim !== undefined) return '交给会话';
-
-    //M 若仅以旁听背景形式记录下来，则记为只记。
-    const listenClaim = control.claims.find((c) => c.status === 'listen');
-    if (listenClaim !== undefined) return '只记';
-
-    //M 若被拦截性插件直接消化处理，则记为别的插件处理掉了。
-    const handledClaim = control.claims.find((c) => c.status === 'handled');
-    if (handledClaim !== undefined) return '别的插件处理掉了';
-
-    //M 全无声明时回退按本地会话表认领记录归类最终流水状态。
-    const kind = this.takenBy(nativeId);
-    return getOutcome(kind, listenOnly);
-  }
-
-  /**
-   * 一个飞书应用配置允许的目标机器人名单（去重保序，缺省 [config.bot]）。
-   * @param app 应用配置。
-   */
-  private getAllowedBots(app: FeishuApp): string[] {
-    const list = [app.bot, ...(app.bots ?? [])];
-    return [...new Set(list)];
-  }
-
-  /**
-   * 响应 channel/reply（接口 A）：仅接受本渠道且 mode === 'text' 的纯文字发送（绝不把 @/abs/path 解释为附件）。
-   * 支持按 replyRequestKey 幂等与同键冲突拒绝；发送完写入渠道回执日志、聊天历史并 emit channel/replied。
-   * @param request 回复请求。
-   */
-  private async onChannelReply(request: protocol.ChannelReplyRequest): Promise<void> {
-    if (request.channel !== this.name || request.handled === true) return;
-
-    request.handled = true;
-    const emitReplied = (receipt: protocol.ReplyReceipt): void => {
-      this.ctx.emit('channel/replied', {
-        requestId: request.requestId,
-        replyRoundKey: request.replyRoundKey,
-        receipt,
-      });
-    };
-
-    const buildRejected = (reason: string): protocol.ReplyReceipt => ({
-      v: 2,
-      ok: false,
-      status: 'rejected',
-      replyRequestKey: request.replyRequestKey,
-      replyRoundKey: request.replyRoundKey,
-      replyIndex: request.replyIndex,
-      kind: request.kind,
-      parts: request.parts.map((part) => ({
-        partId: part.partId,
-        kind: part.kind,
-        status: 'rejected',
-        reason,
-      })),
-      reason,
-      at: Date.now(),
-    });
-
-    //G 原飞书消息已在本插件登记撤回 → 拒绝发送并回传 rejected 回执。
-    const nativeKey = `${request.sourceSnapshot.accountId}:${request.sourceSnapshot.nativeId ?? ''}`;
-    if (request.sourceSnapshot.channel === this.name && this.recalledNativeIds.has(nativeKey)) {
-      //M 将撤回拒收回执发出并结束当前外发处理。
-      emitReplied(buildRejected('recalled：原消息已撤回，不再发送回复'));
-      return;
-    }
-
-    if (request.mode !== 'text') {
-      //M 当前统一回复口仅实现纯文字模式，拒绝非文本请求并回报不支持状态。
-      emitReplied(buildRejected('capability_unsupported：飞书 channel/reply 当前只支持纯文字'));
-      return;
-    }
-
-    //M 默认沿用当前轮绑定的来源地址；若请求附带 target，只在飞书自有群/私聊/流水数据中认出目标聊天。
-    let appId = request.sourceSnapshot.accountId;
-    let chatId = request.sourceSnapshot.chatId;
-    let address: FeishuAddress = {
-      ...(request.sourceSnapshot.origin.address as unknown as FeishuAddress),
-      appId,
-      chatId,
-      messageId: request.sourceSnapshot.nativeId ?? '',
-    };
-    if (request.target !== undefined) {
-      //M 按目标渠道自带的认聊天逻辑解析目标应用与地址，认不出即回 rejected。
-      const targetResolved = this.getReplyTargetAddress(request.bot, request.target.chat);
-      if (typeof targetResolved === 'string') {
-        emitReplied(buildRejected(targetResolved));
-        return;
-      }
-      appId = targetResolved.appId;
-      chatId = targetResolved.chatId;
-      address = targetResolved;
-    }
-
-    //M 按应用号和幂等键查历史发信回执，保证同一条回复重发不重复投递。
-    const existing = this.getReplyRecord(appId, request.replyRequestKey);
-    if (existing !== undefined) {
-      if (existing.payloadHash === request.payloadHash) {
-        //M 同键同载荷命中幂等记录，直接复播原有回执。
-        emitReplied(existing.receipt);
-        return;
-      }
-      //M 同键不同载荷说明重放冲突，拒绝发送并告知上游拒绝回执。
-      emitReplied(buildRejected('reply_conflict：同一 replyRequestKey 的发送内容不一致'));
-      return;
-    }
-
-    //M 校验请求指向的飞书应用与会话 chatId 有效，缺失则直接拒发。
-    const app = this.apps.get(appId);
-    if (app === undefined || chatId === '') {
-      //M 反馈目标应用或会话无效的拒绝回执。
-      emitReplied(buildRejected('飞书应用或聊天号无效'));
-      return;
-    }
-    const rawText = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\n');
-    //M 补齐群聊 @ 发信人前缀并将文内 @昵称 替换为飞书 <at> 标签。
-    const body = this.mentioned(address, this.withAt(address, rawText));
-
-    let receipt: protocol.ReplyReceipt;
-    try {
-      let providerId = '';
-      if (body.trim() !== '') {
-        //M 非空白正文经统一发信方法发出（按原消息号回复，必要时退回直发）。
-        providerId = await media.message(this, appId, chatId, 'text', { text: body }, address.messageId || undefined);
-      }
-      const now = Date.now();
-      const receiptPart: protocol.ReplyReceiptPart = {
-        partId: request.parts[0]?.partId ?? 'text:0',
-        kind: 'text',
-        status: 'sent',
-      };
-      if (providerId !== '') {
-        receiptPart.providerId = providerId;
-      }
-      receipt = {
-        v: 2,
-        ok: true,
-        status: 'sent',
-        replyRequestKey: request.replyRequestKey,
-        replyRoundKey: request.replyRoundKey,
-        replyIndex: request.replyIndex,
-        kind: request.kind,
-        parts: [receiptPart],
-        at: now,
-      };
-      if (providerId !== '') {
-        receipt.messageIds = [providerId];
-      }
-      let nativeOutId: string | null = null;
-      if (providerId !== '') {
-        nativeOutId = providerId;
-      }
-      //M 将机器人发出回复同步写入本地聊天历史以便 channel/history 查询回溯。
-      this.appendChatLog(appId, chatId, {
-        messageId: JSON.stringify([this.name, appId, providerId || `out_${request.requestId}`]),
-        nativeId: nativeOutId,
-        appId,
-        chatId,
-        direction: 'bot',
-        createdAt: now,
-        sender: { id: app.botOpenId ?? request.bot, name: request.bot },
-        text: rawText,
-        mentions: [],
-        attachments: [],
-      });
-      if (request.kind === 'final' && address.typingReaction !== undefined) {
-        //M 最终回复发出后立即撤销之前挂上的“敲键盘”表态。
-        await this.untype(address);
-      }
-    } catch (error) {
-      //M 发信失败时解析错误说明，按 Api.NotSent 区分明确拒收与超时未知状态。
-      const reason = textModule.getMessage(error);
-      let status: protocol.ReplyStatus = 'uncertain';
-      if (error instanceof api.NotSent) {
-        status = 'rejected';
-      }
-      receipt = {
-        v: 2,
-        ok: false,
-        status,
-        replyRequestKey: request.replyRequestKey,
-        replyRoundKey: request.replyRoundKey,
-        replyIndex: request.replyIndex,
-        kind: request.kind,
-        parts: [{ partId: request.parts[0]?.partId ?? 'text:0', kind: 'text', status, reason }],
-        reason,
-        at: Date.now(),
-      };
-    }
-
-    //M 落盘回复幂等记录，保存每次发送回执的哈希与状态。
-    this.saveReplyRecord(appId, {
-      replyRequestKey: request.replyRequestKey,
-      payloadHash: request.payloadHash,
-      receipt,
-    });
-    //M 对外推送 channel/replied 标准化回执事件通知上游发信方。
-    emitReplied(receipt);
-  }
-
-  /**
-   * 仅从飞书自有数据（群名缓存、groups 配置、feishu_p2p 表、来往流水与聊天日志）识别跨渠道/跨聊天发送目标。
-   * 认不出时交回明确原因“没有叫 X 的聊天”；认出时交回干净的 FeishuAddress（不带原消息号与 openId，避免误 @ 路人）。
-   * @param bot 当前机器人名。
-   * @param rawChat 调用方给出的原始聊天串（群号、群名、私聊名或 appId:chatId）。
-   */
-  private getReplyTargetAddress(bot: string, rawChat: string): FeishuAddress | string {
-    const exact = rawChat.trim();
-    if (exact === '') return 'chat_not_found：没有叫 （空） 的聊天';
-
-    //M 剥离网页常见的“飞书·群·”与“飞书·私聊·”展示前缀，以便用群名/人名匹配飞书记录。
-    let labelTarget = exact;
-    if (exact.startsWith('飞书·群·')) {
-      labelTarget = exact.slice('飞书·群·'.length);
-    }
-    if (exact.startsWith('飞书·私聊·')) {
-      labelTarget = exact.slice('飞书·私聊·'.length);
-    }
-
-    //M 查询绑定到该机器人的全部飞书应用号，校验或限定 appId 前缀。
-    const allowedApps = this.getApps(bot);
-    if (allowedApps.length === 0) return `chat_not_found：没有叫 ${exact} 的聊天`;
-
-    let candidateApps = allowedApps;
-    let lookupChat = exact;
-    const sep = exact.indexOf(':');
-    if (sep > 0) {
-      const left = exact.slice(0, sep).trim();
-      const right = exact.slice(sep + 1).trim();
-      if (left !== '' && right !== '' && (this.apps.has(left) || left === this.name)) {
-        if (left !== this.name && !allowedApps.includes(left)) {
-          return `chat_not_found：没有叫 ${exact} 的聊天`;
-        }
-        if (left !== this.name) {
-          candidateApps = [left];
-        }
-        lookupChat = right;
-        labelTarget = right;
-      }
-    }
-
-    let appId = '';
-    let chatId = '';
-    let chatType = 'group';
-    let chatName = '';
-
-    //M 1) 先在已缓存的飞书群列表（含群号与群名）里核对目标群。
-    for (const [id, info] of this.chats) {
-      if (id === lookupChat || (info.name !== '' && info.name === labelTarget)) {
-        chatId = id;
-        chatName = info.name;
-        chatType = 'group';
-        break;
-      }
-    }
-
-    //M 2) 再在配置 groups（专项群配置）中核对目标群号与群名。
-    if (chatId === '') {
-      for (const group of this.config.groups.values()) {
-        if (group.chatId === lookupChat || (group.name !== '' && group.name === labelTarget)) {
-          chatId = group.chatId;
-          chatName = group.name;
-          chatType = 'group';
-          break;
-        }
-      }
-    }
-
-    //M 3) 再查飞书私聊表 feishu_p2p（按 chatId、openId 或配置人名 matching）。
-    if (chatId === '') {
-      const p2pSql = 'SELECT app_id, chat_id, open_id FROM feishu_p2p ORDER BY at DESC LIMIT 200';
-      const p2pQuery = this.ctx.resources.db.query(p2pSql);
-      const p2pRows = p2pQuery
-        .all() as Array<{ app_id: string; chat_id: string; open_id: string }>;
-      for (const row of p2pRows) {
-        if (!candidateApps.includes(row.app_id)) {
-          continue;
-        }
-        //M 从人员表读取配置人名并核对 chatId、openId 或展示名。
-        const personName = this.config.people.get(row.open_id)?.name ?? '';
-        const sameChat = row.chat_id === lookupChat || row.open_id === lookupChat;
-        if (sameChat || (personName !== '' && personName === labelTarget)) {
-          appId = row.app_id;
-          chatId = row.chat_id;
-          chatType = 'p2p';
-          break;
-        }
-      }
-    }
-
-    //M 4) 再查飞书来往流水 data/logs/feishu-contacts.jsonl，覆盖历史出现过的群聊或私聊。
-    if (chatId === '') {
-      for (const contact of this.contacts(500)) {
-        if (!candidateApps.includes(contact.app)) {
-          continue;
-        }
-        const matchId = contact.chatId === lookupChat;
-        const matchGroup = contact.chatName !== '' && contact.chatName === labelTarget;
-        const matchPerson = contact.chatType === 'p2p' && contact.sender !== '' && contact.sender === labelTarget;
-        if (matchId || matchGroup || matchPerson) {
-          appId = contact.app;
-          chatId = contact.chatId;
-          chatType = contact.chatType || 'group';
-          chatName = contact.chatName;
-          break;
-        }
-      }
-    }
-
-    //M 5) 最后只读检查本地聊天历史文件是否存在（不新建目录）。
-    if (chatId === '') {
-      for (const candidateApp of candidateApps) {
-        const logFile = path.join(
-          this.ctx.resources.root,
-          'channels',
-          'feishu',
-          'chats',
-          namesModule.getSafeName(candidateApp, Infinity),
-          `${namesModule.getSafeName(lookupChat, Infinity)}.jsonl`,
-        );
-        if (fs.existsSync(logFile)) {
-          appId = candidateApp;
-          chatId = lookupChat;
-          if (lookupChat.startsWith('ou_')) {
-            chatType = 'p2p';
-          }
-          break;
-        }
-      }
-    }
-
-    if (chatId === '') return `chat_not_found：没有叫 ${exact} 的聊天`;
-
-    //M 未确定所属 appId 时，优先挑本地存在该聊天历史文件的应用，否则取绑定列表第一个应用。
-    if (appId === '') {
-      for (const candidateApp of candidateApps) {
-        const logFile = path.join(
-          this.ctx.resources.root,
-          'channels',
-          'feishu',
-          'chats',
-          namesModule.getSafeName(candidateApp, Infinity),
-          `${namesModule.getSafeName(chatId, Infinity)}.jsonl`,
-        );
-        if (fs.existsSync(logFile)) {
-          appId = candidateApp;
-          break;
-        }
-      }
-    }
-    if (appId === '') {
-      appId = candidateApps[0] ?? '';
-    }
-    if (appId === '') return `chat_not_found：没有叫 ${exact} 的聊天`;
-
-    //M 返回干净的目标地址，openId 与 messageId 置空避免群里误 @ 路人或错挂回复。
-    const address: FeishuAddress = {
-      appId,
-      chatId,
-      messageId: '',
-      openId: '',
-      chatType,
-      customer: feishuCustomer(chatType, chatId, '', chatType === 'p2p'),
-    };
-    if (chatName !== '') {
-      address.chatName = chatName;
-    }
-    return address;
-  }
-
-  /**
-   * 响应 channel/history（接口 A）：在当前账号/聊天与授权交集内返回已落盘记录。
-   * 明确校验游标防篡改、mentions 缺 botOpenId 时报错 identity_unresolved（不把 @任何人 当 @自己）。
-   * @param request 历史查询请求。
-   */
-  private onChannelHistory(request: protocol.ChannelHistoryRequest): void {
-    if (request.channel !== this.name) return;
-
-    request.handled = true;
-    const emitResult = (result: protocol.ChannelHistoryResult): void => {
-      this.ctx.emit('channel/history-result', { ...result, requestId: request.requestId });
-    };
-
-    //M 按统一协议判断当前发起者是否为拥有跨聊天查询权限的 owner 账号。
-    const snapshot = request.sourceSnapshot;
-    const isOwner = protocol.isHistoryOwner(snapshot);
-    let rawChat = '';
-    if (request.chatId !== undefined && request.chatId.trim() !== '') {
-      rawChat = request.chatId.trim();
-    }
-    if (rawChat === '' && snapshot.channel === this.name) {
-      rawChat = snapshot.chatId;
-    }
-
-    //G 再核聊天范围权限：guest / builder 仅当前飞书聊天，owner 可跨渠道、跨聊天查询任意飞书应用聊天。
-    const isSameChat = snapshot.channel === this.name && rawChat !== '' && rawChat === snapshot.chatId;
-    if (!isOwner && !isSameChat) {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'forbidden', message: `无权访问聊天 ${rawChat}` },
-      });
-      return;
-    }
-
-    //M 解析目标应用号与聊天 ID：支持传入 appId:chatId，跨渠道时优先挑选存在聊天记录的机器人应用。
-    let appId = '';
-    let targetChatId = rawChat;
-    if (rawChat.includes(':')) {
-      const sep = rawChat.indexOf(':');
-      const maybeApp = rawChat.slice(0, sep);
-      const maybeChat = rawChat.slice(sep + 1);
-      if (this.apps.has(maybeApp) && maybeChat !== '') {
-        appId = maybeApp;
-        targetChatId = maybeChat;
-      }
-    }
-    if (appId === '' && snapshot.channel === this.name && this.apps.has(snapshot.accountId)) {
-      appId = snapshot.accountId;
-    }
-    if (appId === '') {
-      //M 查该机器人配置的全部飞书应用列表作为备选，没有则兜底枚举所有已配置飞书应用。
-      let candidates = this.getApps(snapshot.botName);
-      if (candidates.length === 0) {
-        candidates = [...this.apps.keys()];
-      }
-      if (targetChatId !== '') {
-        for (const candidate of candidates) {
-          if (fs.existsSync(this.chatLogFile(candidate, targetChatId))) {
-            appId = candidate;
-            break;
-          }
-        }
-      }
-      if (appId === '' && candidates[0] !== undefined) {
-        appId = candidates[0];
-      }
-    }
-
-    if (targetChatId === '' && appId !== '') {
-      //M 跨渠道仅指定应用而未指明 chatId 时，默认回落到该应用最近私聊过的聊天。
-      targetChatId = this.lastPrivate(appId)?.chatId ?? '';
-    }
-    if (targetChatId === '') {
-      //M 目标聊天仍为空时返回参数错误结果并提前终止查询。
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'invalid_argument', message: '跨渠道查询飞书历史需要指定 chat' },
-      });
-      return;
-    }
-
-    //M 校验解析出的应用 ID 已注册，不存在则返回渠道不可用错误。
-    const app = this.apps.get(appId);
-    if (app === undefined) {
-      //M 找不到对应飞书应用配置时通过结果事件回报错误码。
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'channel_unavailable', message: `未知飞书应用 ${appId}` },
-      });
-      return;
-    }
-
-    if (request.mode === 'mentions') {
-      if (app.botOpenId === undefined) {
-        //M 尚未拿到机器人自身 open_id 时拒绝精确 mentions 过滤并返回 identity_unresolved。
-        emitResult({
-          ok: false,
-          items: [],
-          nextCursor: null,
-          scope: `${this.name}:${appId}:${targetChatId}`,
-          completeness: 'local_only',
-          error: { code: 'identity_unresolved', message: `应用 ${appId} 尚未取得机器人自己的 open_id，无法精确识别 @ 提及` },
-        });
-        return;
-      }
-    }
-
-    const expectedSenderId = request.senderId ?? '';
-    let decodedCursor: protocol.HistoryCursorPayload | undefined;
-    if (request.before !== undefined && request.before !== '') {
-      //M 解码并严格校对翻页游标签名与当前查询上下文是否一致，防止跨会话越权伪造游标。
-      decodedCursor = protocol.decodeHistoryCursor(request.before, {
-        channel: this.name,
-        accountId: appId,
-        chatId: targetChatId,
-        mode: request.mode,
-        senderId: expectedSenderId,
-        botName: snapshot.botName,
-      });
-      if (decodedCursor === undefined) {
-        //M 游标验签或范围校验失败时返回 invalid_cursor 终止翻页。
-        emitResult({
-          ok: false,
-          items: [],
-          nextCursor: null,
-          scope: `${this.name}:${appId}:${targetChatId}`,
-          completeness: 'local_only',
-          error: { code: 'invalid_cursor', message: '历史翻页游标无效或与当前查询范围不匹配' },
-        });
-        return;
-      }
-    }
-
-    //M 从本地 jsonl 日志加载当前群/私聊的全部已落盘消息供后续过滤分页。
-    const rawEntries = this.readChatLog(appId, targetChatId);
-    const filtered = rawEntries.filter((entry) => {
-      if (request.mode === 'mentions') {
-        return entry.mentions.some((m) => {
-          return m.botNames.includes(snapshot.botName) || (app.botOpenId !== undefined && m.id === app.botOpenId);
-        });
-      }
-      if (request.mode === 'visible') {
-        return entry.sender.id === expectedSenderId;
-      }
-      return true;
-    });
-
-    //M 按 (createdAt, messageId) 稳定升序排列，再严格切取 cursor 之前最近 limit 条。
-    filtered.sort((a, b) => {
-      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-      if (a.messageId < b.messageId) return -1;
-      if (a.messageId > b.messageId) return 1;
-      return 0;
-    });
-
-    let bounded = filtered;
-    if (decodedCursor !== undefined) {
-      bounded = filtered.filter((entry) => {
-        if (entry.createdAt < decodedCursor.beforeAt) return true;
-        return entry.createdAt === decodedCursor.beforeAt && entry.messageId < decodedCursor.beforeId;
-      });
-    }
-
-    const page = bounded.slice(-request.limit);
-    let nextCursor: string | null = null;
-    if (bounded.length > page.length && page[0] !== undefined) {
-      //M 仍有更早消息可翻页时，按当前页首条消息的 (时间, ID) 及查询作用域签发下一页游标。
-      nextCursor = protocol.encodeHistoryCursor({
-        beforeAt: page[0].createdAt,
-        beforeId: page[0].messageId,
-        channel: this.name,
-        accountId: appId,
-        chatId: targetChatId,
-        mode: request.mode,
-        senderId: expectedSenderId,
-        botName: snapshot.botName,
-      });
-    }
-
-    const items: protocol.ChannelHistoryItem[] = page.map((entry) => ({
-      messageId: entry.messageId,
-      nativeId: entry.nativeId,
-      direction: entry.direction,
-      createdAt: entry.createdAt,
-      sender: entry.sender,
-      text: entry.text,
-      mentions: entry.mentions,
-      attachments: entry.attachments,
-    }));
-
-    //M 发出本地落盘历史的成功查询结果事件。
-    emitResult({
-      ok: true,
-      items,
-      nextCursor,
-      scope: `${this.name}:${appId}:${targetChatId}`,
-      completeness: 'local_only',
-    });
-  }
-
-  /** 飞书聊天本地日志文件（channels/feishu/chats/<app>/<chat>.jsonl）。 */
-  private chatLogFile(appId: string, chatId: string): string {
-    //M 将 appId 安全转义为目录名，生成对应的聊天历史文件夹并拼出聊天日志文件。
-    const dir = this.ctx.resources.dir('channels', 'feishu', 'chats', namesModule.getSafeName(appId, Infinity));
-    return path.join(dir, `${namesModule.getSafeName(chatId, Infinity)}.jsonl`);
-  }
-
-  /** 追加写入一条聊天原始记录（同 messageId 去重，防重启或重放双写）。 */
-  private appendChatLog(appId: string, chatId: string, entry: FeishuChatLogEntry): void {
-    //M 定位日志文件并扫现有记录，同一 messageId 已存在则跳过，防重放双写。
-    const file = this.chatLogFile(appId, chatId);
-    const existing = this.readChatLog(appId, chatId);
-    if (existing.some((item) => item.messageId === entry.messageId)) return;
-
-    fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
-  }
-
-  /** 读取某个聊天的全部已保存原始消息。 */
-  private readChatLog(appId: string, chatId: string): FeishuChatLogEntry[] {
-    //M 按应用号和聊天 ID 解析 jsonl 路径，不存在即视为空历史。
-    const file = this.chatLogFile(appId, chatId);
-    if (!fs.existsSync(file)) return [];
-
-    const lines = fs.readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '');
-    const items: FeishuChatLogEntry[] = [];
-    for (const line of lines) {
-      try {
-        items.push(JSON.parse(line) as FeishuChatLogEntry);
-      } catch {
-        continue;
-      }
-    }
-    return items;
-  }
-
-  /** 飞书回复幂等记录文件（channels/feishu/replies/<app>.jsonl）。 */
-  private replyLogFile(appId: string): string {
-    //M 初始化存储各飞书应用已发回复幂等凭据的运行时目录。
-    const dir = this.ctx.resources.dir('channels', 'feishu', 'replies');
-    return path.join(dir, `${namesModule.getSafeName(appId, Infinity)}.jsonl`);
-  }
-
-  /** 确保把该应用历史回复幂等键读入内存缓存。 */
-  private ensureReplyLoaded(appId: string): void {
-    if (this.loadedReplyApps.has(appId)) return;
-
-    //M 首次访问该应用时标记已加载，并逐行把历史幂等记录装载进内存 Map。
-    this.loadedReplyApps.add(appId);
-    const file = this.replyLogFile(appId);
-    if (!fs.existsSync(file)) return;
-
-    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-      if (line.trim() === '') continue;
-      try {
-        const rec = JSON.parse(line) as FeishuReplyRecord;
-        this.replyCache.set(rec.replyRequestKey, rec);
-      } catch {
-        continue;
-      }
-    }
-  }
-
-  /** 查同应用已保存的回复幂等记录。 */
-  private getReplyRecord(appId: string, replyRequestKey: string): FeishuReplyRecord | undefined {
-    //M 先懒加载历史回复日志，再从内存缓存检索对应请求幂等键。
-    this.ensureReplyLoaded(appId);
-    return this.replyCache.get(replyRequestKey);
-  }
-
-  /** 保存并持久化回复幂等记录。 */
-  private saveReplyRecord(appId: string, record: FeishuReplyRecord): void {
-    //M 先同步加载防覆盖旧键，再同时写入内存索引和磁盘 jsonl 追加日志。
-    this.ensureReplyLoaded(appId);
-    this.replyCache.set(record.replyRequestKey, record);
-    fs.appendFileSync(this.replyLogFile(appId), `${JSON.stringify(record)}\n`, 'utf8');
-  }
-
-  /**
-   * 这条消息是哪种会话接的：回话地址是它的那场飞书会话。
-   * @param messageId 飞书消息号。
-   * @returns 会话种类（front、relay……）；没有会话接（只记了、被别的插件处理掉了）是 undefined。
-   */
-  private takenBy(messageId: string): string | undefined {
-    //M Sessions.find 每一项用 json_extract(meta, '$.项') 比，所以 address.messageId 这种嵌套的也能找。
-    const where = { channel: 'feishu', 'address.messageId': messageId } as unknown as Partial<SessionMeta>;
-    return this.ctx.sessions.find(where)[0]?.kind;
-  }
-
-  /**
-   * 来往流水记一行：运行时目录 data/logs/feishu-contacts.jsonl，追加。开发阶段不打码。
-   * @param contact 这条消息的时间、应用、聊天、说话人、有没有 @、话的前 80 字。
-   * @param outcome 最后怎么处理的。
-   * 副作用：写文件；写不进只打日志，不挡消息。
-   */
-  private logContact(contact: Omit<Contact, 'outcome'>, outcome: string): void {
-    const line: Contact = { ...contact, outcome };
-    try {
-      //M 以追加行写入 data/logs/feishu-contacts.jsonl 记录全量来往流水。
-      fs.appendFileSync(this.contactsFile(), `${JSON.stringify(line)}\n`, 'utf8');
-    } catch (error) {
-      //M 写流水失败仅打印带时间戳日志，不阻断正常消息处理。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：来往流水没写进去：${textModule.getMessage(error)}`);
-    }
-  }
-
-  /**
-   * 最近的来往流水，接口 GET /api/feishu/contacts 用。
-   * @param limit 最多几条。
-   * @returns 新的在前。
-   */
-  contacts(limit: number): Contact[] {
-    //M 解析流水文件路径，未生成过直接返回空列表。
-    const file = this.contactsFile();
-    if (!fs.existsSync(file)) return [];
-
-    const lines = fs.readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '');
-    return lines.slice(-limit).reverse().map((line) => JSON.parse(line) as Contact);
-  }
-
-  /** @returns 来往流水文件的绝对路径（文件夹没有就建）。 */
-  private contactsFile(): string {
-    //M 确保 data/logs 运行时子目录存在并拼接飞书来往流水 jsonl 路径。
-    return path.join(this.ctx.resources.dir('data', 'logs'), 'feishu-contacts.jsonl');
-  }
-
-  /**
-   * 点卡片按钮：认出是哪张卡片、谁点的、按钮值，交给 cards/ 处理，回给飞书一个小提示。
-   * @param appId 哪个应用收的。
-   * @param data 飞书的 card.action.trigger 事件（新版回调）；旧版字段也认。
-   * @returns { toast }：SDK 把它当回调的回应带回飞书。
-   */
-  private async onCard(appId: string, data: unknown): Promise<{ toast: Toast }> {
-    const event = (data ?? {}) as {
-      operator?: { open_id?: string };
-      context?: { open_message_id?: string; open_chat_id?: string };
-      action?: { value?: unknown };
-      open_id?: string;
-      open_message_id?: string;
-      open_chat_id?: string;
-    };
-    const openId = event.operator?.open_id ?? event.open_id ?? '';
-    const cardId = event.context?.open_message_id ?? event.open_message_id ?? '';
-    const chatId = event.context?.open_chat_id ?? event.open_chat_id ?? '';
-
-    //M 按钮值：对象直接用；字符串先当 JSON 解析。
-    let value = event.action?.value;
-    if (typeof value === 'string') {
-      try {
-        value = JSON.parse(value);
-      } catch {
-        value = {};
-      }
-    }
-    //M 结合 feishu_p2p 表反查点击来源是否为私聊并构建标准回话地址结构。
-    const p2pSql = 'SELECT 1 FROM feishu_p2p WHERE app_id = ? AND chat_id = ?';
-    const p2p = chatId !== '' && this.ctx.resources.db.query(p2pSql).get(appId, chatId) !== null;
-    let chatType = '';
-    if (chatId !== '') {
-      chatType = 'group';
-    }
-    if (p2p) {
-      chatType = 'p2p';
-    }
-    let customerChatType = '';
-    if (p2p) {
-      customerChatType = 'p2p';
-    }
-    //M 按聊天类型与私聊反查结果生成标准客户标识（群与私聊保持隔离）。
-    const customer = feishuCustomer(customerChatType, chatId, openId, p2p);
-    const address: FeishuAddress = { appId, chatId, messageId: cardId, openId, chatType, customer };
-    //M 点卡片的人是哪一档：和收消息一样只看 people。
-    const guestDir = this.ctx.resources.dir('guests', GUEST_DIR);
-    //M 提取人员档位字段（owner / role / workspace）写入回话地址。
-    const fields = roleFields(this.config.people.get(openId), guestDir);
-    Object.assign(address, fields);
-    //M 群受不受信：和收消息一样按群号查 groups。
-    if (!p2p) {
-      const registered = this.config.groups.get(chatId);
-      if (registered !== undefined) {
-        address.trusted = registered.trusted;
-      }
-    }
-
-
-    //T 跟踪：点了卡片按钮。
-    const vars = { 应用: appId, 卡片: cardId, 按钮: JSON.stringify(value ?? {}) };
-    this.ctx.emit('trace', 'Feishu.onCard', '飞书卡片上点了按钮，交给卡片那块', 'cards.onAction(...)', vars);
-    try {
-      const action = (value ?? {}) as Record<string, unknown>;
-
-      //M 转交卡片操作，等待进度事件或审批结果生成提示。
-      const toast = await cards.onAction(this, this.ctx, address, cardId, action);
-      return { toast: toast ?? { type: 'info', content: '这个按钮没有用了' } };
-    } catch (error) {
-      return { toast: { type: 'error', content: `没处理成：${textModule.getMessage(error)}` } };
-    }
   }
 
   /**
@@ -2123,7 +811,7 @@ export class Feishu {
     const found = new Map<string, string>();
 
     //M 流水里这个群见过的说话人。
-    for (const line of this.contacts(1000)) {
+    for (const line of this.contacts.list(1000)) {
       if (line.chatId === address.chatId && line.sender !== '' && line.openId !== '') {
         found.set(line.sender, line.openId);
       }
@@ -2147,7 +835,7 @@ export class Feishu {
    * @param text 要发的话。
    * @returns 换好的话。
    */
-  private mentioned(address: FeishuAddress, text: string): string {
+  mentioned(address: FeishuAddress, text: string): string {
     //G 私聊或正文不含 @ 符号时无需转换 <at> 标签，直接原样返回。
     if (!workspaceModule.isGroup(address) || !text.includes('@')) return text;
 
@@ -2167,7 +855,7 @@ export class Feishu {
    * @param reply 机器人的话。
    * @returns 加好 @ 的话。
    */
-  private withAt(address: FeishuAddress | undefined, reply: string): string {
+  withAt(address: FeishuAddress | undefined, reply: string): string {
     //G 私聊、无目标发言人 openId 或空回复不额外前置 @ 标签。
     if (address === undefined || !workspaceModule.isGroup(address)) return reply;
     if (address.openId === '' || reply.trim() === '') return reply;
@@ -2181,27 +869,6 @@ export class Feishu {
     const name = this.config.people.get(address.openId)?.name || address.senderName
       || this.chats.get(address.chatId)?.members.get(address.openId) || address.openId.slice(-6);
     return `<at ${tag}>${name}</at> ${reply}`;
-  }
-
-  /**
-   * 前台补报一次判断的结果：补记一行流水，outcome 写 judge:回 / judge:不回(0.32)。
-   * @param address 回话地址（不是飞书的忽略）。
-   * @param text 那句话。
-   * @param outcome 判断的结果。
-   */
-  private logJudged(address: unknown, text: string, outcome: string): void {
-    //M 从透传地址安全取出 appId，确认属于飞书渠道再补记决策结果流水。
-    const appId = textModule.getText(address, 'appId');
-    if (!this.apps.has(appId)) return;
-    const contact: Omit<Contact, 'outcome'> = {
-      //M 汇总日期戳、聊天元信息与裁剪后正文构成流水条，写入来往记录。
-      at: textModule.getClock(Date.now(), 'date'), app: appId, chatType: textModule.getText(address, 'chatType'),
-      chatId: textModule.getText(address, 'chatId'), chatName: textModule.getText(address, 'chatName'),
-      openId: textModule.getText(address, 'openId'), sender: textModule.getText(address, 'senderName'), atMe: false,
-      text: textModule.clip(text.trim(), 80),
-    };
-    //M 将前台补充判定的结果标签追加写入联系人流水文件。
-    this.logContact(contact, outcome);
   }
 
   /**
@@ -2244,7 +911,7 @@ export class Feishu {
    * 撤掉“敲键盘”表情。撤过就从地址上去掉，免得同一个地址撤两次；撤不掉只打日志。
    * @param address 回话地址。
    */
-  private async untype(address: FeishuAddress): Promise<void> {
+  async untype(address: FeishuAddress): Promise<void> {
     const reactionId = address.typingReaction;
     if (reactionId === undefined) return;
     delete address.typingReaction;
@@ -2277,88 +944,6 @@ export class Feishu {
     }
   }
 
-  /**
-   * 登记已收到撤回通知的平台原消息键 `${appId}:${nativeId}`（最多保留 500 条）。
-   * @param appId 飞书应用号。
-   * @param nativeId 飞书原生消息号。
-   */
-  private rememberRecalledNative(appId: string, nativeId: string): void {
-    //M 将平台原消息键写入已撤回集合，超过容量上限时淘汰最早登记的一条。
-    this.recalledNativeIds.add(`${appId}:${nativeId}`);
-    if (this.recalledNativeIds.size <= 500) return;
-
-    const oldest = this.recalledNativeIds.values().next().value;
-    if (oldest !== undefined) {
-      this.recalledNativeIds.delete(oldest);
-    }
-  }
-
-  /**
-   * 收到飞书 im.message.recalled_v1 撤回事件：只认本人或原发消息人撤回，通知 bots 停掉对应正在跑或排队的任务。
-   * @param appId 哪个飞书应用收到撤回事件。
-   * @param data 飞书撤回事件载荷。
-   */
-  private async onRecall(appId: string, data: RecallData): Promise<void> {
-    //G 忽略未知应用或缺少消息/聊天标识的残缺事件。
-    if (!this.apps.has(appId)) return;
-
-    const nativeId = data.message_id ?? '';
-    const chatId = data.chat_id ?? '';
-    if (nativeId === '' || chatId === '') return;
-
-    //M 按与 channel/message 完全一致的口径算出标准消息号，并读取本地聊天日志查出原发送人。
-    const standardMessageId = protocol.makeChannelMessageId(this.name, appId, nativeId);
-    const logged = this.readChatLog(appId, chatId).find((entry) => entry.messageId === standardMessageId);
-
-    //G 机器人自己撤回的出站消息不触发停任务。
-    if (logged?.direction === 'bot') return;
-
-    //M 若事件携带操作者 open_id，核对是否本人（owner）或该条原发消息人。
-    const operatorId = data.operator_id?.open_id ?? '';
-    let recalledId = '';
-    let isOwner = false;
-    let kind: 'sender' | 'owner' = 'sender';
-    if (operatorId !== '') {
-      //M 查询操作者在 people 配置里的身份档位并对照原消息发送者。
-      const operatorOwner = this.config.people.get(operatorId)?.role === 'owner';
-      let operatorIsSender = data.recall_type === 'message_owner';
-      if (logged !== undefined) {
-        operatorIsSender = logged.sender.id === operatorId;
-      }
-      if (!operatorOwner && !operatorIsSender) return;
-
-      recalledId = operatorId;
-      isOwner = operatorOwner;
-      if (operatorOwner) {
-        kind = 'owner';
-      }
-    }
-
-    //M 标准飞书撤回事件未带操作者时，仅放行原发信人本人自撤（message_owner），群管代撤无法确认是否本人一律忽略。
-    if (operatorId === '') {
-      if (data.recall_type !== 'message_owner') return;
-
-      //M 查出原发信人 ID 并校验其是否在 people 里登记为本人（owner）。
-      recalledId = logged?.sender.id ?? '';
-      isOwner = recalledId !== '' && this.config.people.get(recalledId)?.role === 'owner';
-      if (isOwner) {
-        kind = 'owner';
-      }
-    }
-
-    //M 先登记撤回消息号以拦截附件下载中的入站和在途回话，再发 channel/recall 让 bots 立即停跑与清队列。
-    this.rememberRecalledNative(appId, nativeId);
-    const vars = { 应用: appId, 聊天: chatId, 原消息: nativeId, 撤回人: recalledId || 'message_owner', 本人: isOwner };
-    this.ctx.emit('trace', 'Feishu.onRecall', '飞书收到撤回消息事件，通知 bots 停掉对应任务', "ctx.serial('channel/recall', event)", vars);
-    await this.ctx.serial('channel/recall', {
-      channel: this.name,
-      accountId: appId,
-      chatId,
-      messageId: standardMessageId,
-      nativeId,
-      recalledBy: { id: recalledId, kind, isOwner },
-    });
-  }
 }
 
 
@@ -2464,27 +1049,8 @@ function getEntries(value: unknown, key: string): Record<string, unknown>[] {
 }
 
 
-/**
- * 回话地址里“这个人是哪一档”的几项：owner、role，builder、guest 再加 workspace。收消息、点卡片共用。
- * @param person 登记的人；没登记是 undefined，当 guest。
- * @param guestDir 没登记的 guest 用的目录（运行时目录 guests/_guest/）。
- * @returns 要并进地址的几项。
- */
-function roleFields(
-  person: FeishuPerson | undefined,
-  guestDir: string,
-): Pick<FeishuAddress, 'owner' | 'role' | 'workspace'> {
-  const role = person?.role ?? 'guest';
-  const fields: Pick<FeishuAddress, 'owner' | 'role' | 'workspace'> = { owner: role === 'owner', role };
-  if (person?.role === 'builder') fields.workspace = person.dir;
-  //M guest 也不读机器人的工作区（里面有用户的收件、截图）：登记了用他的目录，没登记的用 guests/_guest/；guest 只有只读工具。
-  if (role === 'guest') fields.workspace = person?.dir || guestDir;
-  return fields;
-}
-
-
-/** 没登记的 guest 共用的目录名：运行时目录 guests/_guest/。 */
-const GUEST_DIR = '_guest';
+/** 没登记的 guest 共用的目录名：运行时目录 guests/_guest/（Inbound.ts 收消息、点卡片时也用）。 */
+export const GUEST_DIR = '_guest';
 
 
 /** people 里 role 能写的值。 */
@@ -2661,7 +1227,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   if (http !== undefined) {
     http.app.get<{ Querystring: { limit?: string } }>('/api/feishu/contacts', (request) => {
       const limit = textModule.getNumber(request.query.limit, 50, 1, 1000);
-      return { items: feishu.contacts(limit) };
+      return { items: feishu.contacts.list(limit) };
     });
   }
 

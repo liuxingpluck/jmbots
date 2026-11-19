@@ -26,8 +26,8 @@ interface Fold {
 type VisualData = {
   /** 当前快照的节点。 */
   entry: types.DecisionNode;
-  /** 打开节点或切换折叠，由 DecisionMapPage 提供。 */
-  open: (id: string, isFold?: boolean) => void;
+  /** 打开节点，传入目标展开状态时改为折叠操作。 */
+  open: (id: string, expand?: boolean) => void;
   /** 有折叠内容的卡片在角落显示 +N。 */
   fold?: Fold;
 };
@@ -52,8 +52,8 @@ interface Branch {
 interface View {
   /** 进展概览、只看待定、全部分支。 */
   mode: ViewMode;
-  /** 当前视图里用户显式展开的节点。 */
-  expanded: ReadonlySet<string>;
+  /** 用户显式展开或收起的节点，与清单共用。 */
+  folds: ReadonlyMap<string, boolean>;
   /** 画布宽度。 */
   width: number;
   /** 画布高度。 */
@@ -425,35 +425,56 @@ function getIncluded(
 
 /** 将未展开的整支子树收进父卡片，减少首屏参与适应窗口的节点。 */
 function getBranch(
-  entry: types.DecisionNode, byParent: Map<string, types.DecisionNode[]>, included: Set<string>, view: View,
+  root: types.DecisionNode, byParent: Map<string, types.DecisionNode[]>, included: Set<string>, view: View,
 ): Branch {
-  const children = byParent.get(entry.id) ?? [];
-  //M 先计算子树的总数与完成情况，父卡片的 +N 才能包含后代。
-  const branches = children.map((child) => getBranch(child, byParent, included, view));
+  //M 逐层收集再从后往前组装。深层任务的数量统计无需增加调用栈。
+  const ordered = [root];
+  for (const entry of ordered) {
+    for (const child of byParent.get(entry.id) ?? []) {
+      ordered.push(child);
+    }
+  }
+  const built = new Map<string, Branch>();
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const entry = ordered[index]!;
+    const children = byParent.get(entry.id) ?? [];
+    const branches = children.map((child) => built.get(child.id)!);
+    const branch = getFolded(entry, branches, included, view);
+    built.set(entry.id, branch);
+  }
+  return built.get(root.id)!;
+}
+
+/** 应用当前模式的默认折叠，再服从用户显式开关。 */
+function getFolded(entry: types.DecisionNode, branches: Branch[], included: Set<string>, view: View): Branch {
   const size = branches.reduce((sum, child) => sum + child.size, 1);
   const terminal = entry.status === 'done' || entry.status === 'dropped' || entry.status === 'decided';
   const complete = terminal && entry.main !== true && branches.every((child) => child.complete);
+  const id = entry.id;
+  let visible = branches;
   if (view.mode === 'pending') {
-    const kept = branches.filter((branch) => included.has(branch.entry.id));
-    return { entry, children: kept, size, complete };
+    visible = branches.filter((branch) => included.has(branch.entry.id));
+  }
+  if (visible.length === 0) return { entry, children: visible, size, complete };
+
+  const choice = view.folds.get(id);
+  const count = visible.reduce((sum, child) => sum + child.size, 0);
+  const fold = { id, count, expanded: true };
+  if (choice === false) return { entry, children: [], size, complete, fold: { ...fold, expanded: false } };
+  if (choice === true || complete || view.mode === 'pending') {
+    return { entry, children: visible, size, complete, fold };
   }
 
-  //M 概览收起暂时不需看的节点。全图也可一次收起同父节点的已完结整支。
-  const hidden = branches.filter((branch) => {
-    if (view.mode === 'main' && included.has(entry.id)) return !included.has(branch.entry.id);
+  //M 概览优先展示进展，全图默认收起完成的分支。每个有子节点的卡片都能手动折叠。
+  const kept = visible.filter((branch) => {
+    if (view.mode === 'main' && included.has(id)) return included.has(branch.entry.id);
 
-    return branch.complete;
+    return !branch.complete;
   });
-  if (hidden.length === 0 || complete) return { entry, children: branches, size, complete };
+  if (kept.length === visible.length) return { entry, children: kept, size, complete, fold };
 
-  const id = entry.id;
-  const count = hidden.reduce((sum, branch) => sum + branch.size, 0);
-  const expanded = view.expanded.has(id);
-  const fold = { id, count, expanded };
-  if (expanded) return { entry, children: branches, size, complete, fold };
-
-  const kept = branches.filter((branch) => !hidden.includes(branch));
-  return { entry, children: kept, size, complete, fold };
+  const shown = kept.reduce((sum, child) => sum + child.size, 0);
+  return { entry, children: kept, size, complete, fold: { id, count: count - shown, expanded: false } };
 }
 
 /** 从卡片向目标方向选择适合的边缘；给了轴时只在这条轴的两边里选。 */

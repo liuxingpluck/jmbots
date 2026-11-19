@@ -98,8 +98,10 @@ function createFeishuStub(
       client: { im: { v1: Record<string, unknown> } };
     }>;
     chats: Map<string, unknown>;
-    onMessage: (appId: string, data: unknown) => Promise<void>;
-    onRecall: (appId: string, data: unknown) => Promise<void>;
+    inbound: {
+      onMessage: (appId: string, data: unknown) => Promise<void>;
+      onRecall: (appId: string, data: unknown) => Promise<void>;
+    };
   };
   const app = inside.apps.get(appId);
   if (app === undefined) {
@@ -147,8 +149,8 @@ function createFeishuStub(
 
   return {
     textCalls,
-    triggerInbound: (data: unknown) => inside.onMessage(appId, data),
-    triggerRecall: (data: unknown) => inside.onRecall(appId, data),
+    triggerInbound: (data: unknown) => inside.inbound.onMessage(appId, data),
+    triggerRecall: (data: unknown) => inside.inbound.onRecall(appId, data),
   };
 }
 

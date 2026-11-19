@@ -1,17 +1,17 @@
-/** 让中控发布决策节点，网页用户可点选、写话并把决定和话交回中控。 */
+/** 收集插件和网页的任务节点，把任务变化、选择与留言交给中控。 */
 import type * as cordis from 'cordis';
 import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
 
 export const name = 'decision-map';
-export const version = '1.2.1';
+export const version = '1.3.0';
 export const inject = ['resources', 'http'];
 
 /**
  * 校验配置并把当前数据目录的图挂到主 HTTP 服务上。
  * @param ctx Cordis 插件上下文。
  * @param config 可选 relay_helper。缺省时中控通过变化接口读取结果。
- * 副作用：打开图和历史，挂载七条接口。
+ * 副作用：打开图和历史，挂载 HTTP 入口和插件事件。
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   let helper: string | undefined;

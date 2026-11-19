@@ -1,0 +1,504 @@
+/** 保存本轮聊天的提醒，管理到点发送和重启后的补发。 */
+import * as piAi from '@earendil-works/pi-ai';
+import type * as sqlite from 'bun:sqlite';
+import type * as cordis from 'cordis';
+import type { SourceSnapshot } from '../../Channels.ts';
+import type { ChatRequest, Session } from '../../Sessions.ts';
+import * as events from '../../utils/RequestEvent.ts';
+import type { Pending } from '../approval/index.ts';
+import * as outbound from '../approval/Outbound.ts';
+import type { ProviderReceipt } from '../programs/ChannelSend.ts';
+import * as reminderTime from './ReminderTime.ts';
+
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAX_TEXT = 2000;
+const UNCERTAIN = '发送结果待核对，未自动重发';
+const LIST_ORDER = " ORDER BY state NOT IN ('awaiting', 'pending'),"
+  + " CASE WHEN state IN ('awaiting', 'pending') THEN due_at ELSE -id END LIMIT 100";
+
+/** 提醒的持久行只记录当前机器人、明确的渠道目标和预定内容。 */
+interface Row {
+  id: number;
+  bot: string;
+  channel: string;
+  account: string;
+  chat: string;
+  sender: string;
+  due_at: number;
+  local_at: string;
+  time_zone: string;
+  text: string;
+  session_id: string;
+  confirmed: number;
+  send_text: string | null;
+  state: 'awaiting' | 'pending' | 'sending' | 'cancelled' | 'rejected' | ProviderReceipt['status'];
+  reason: string | null;
+}
+
+/** 只把已占位提醒的原目标交给发送入口。 */
+export interface Delivery {
+  /** 原提醒的持久编号。 */
+  id: number;
+  /** 原来源渠道。 */
+  channel: string;
+  /** 原来源账号。 */
+  account: string;
+  /** 原群或私聊 ID。 */
+  chat: string;
+  /** 提醒内容，错过时间时带补发说明。 */
+  text: string;
+}
+
+declare module 'cordis' {
+  interface Events {
+    /** 审批在发件前按编号读取 assist 已占位的提醒。 */
+    'assist/reminder-read'(request: events.RequestEnvelope & { reminderId: number }): void | Promise<void>;
+    /** 冻结原目标、原正文和创建时的确认结论。 */
+    'assist/reminder-row'(result: events.ResultEnvelope & {
+      row?: Readonly<Delivery & { bot: string; confirmed: boolean }>;
+    }): void;
+  }
+}
+
+/** 生产用系统钟，测试换成推进时间就能触发的假时钟。 */
+export interface Clock {
+  /** 当前 UTC 毫秒。 */
+  now(): number;
+  /** 安排一次唤醒并返回取消函数。 */
+  wait(delay: number, callback: () => void): () => void;
+}
+
+const systemClock: Clock = {
+  now: Date.now,
+  wait: (delay, callback) => {
+    const timer = setTimeout(callback, delay);
+    return () => clearTimeout(timer);
+  },
+};
+
+/** 读机器人本轮的不可变来话地址，只接受接入提醒的原聊天。 */
+function getSource(session: Session): SourceSnapshot | undefined {
+  const snapshot = session.row.activeSourceSnapshot ?? session.row.frontTask?.sourceSnapshot;
+  if (snapshot?.channel === 'http' && snapshot.accountId === 'local' && snapshot.chatId === 'http:本机'
+    && snapshot.role === 'owner' && snapshot.origin.address['verifiedOwner'] === true) return snapshot;
+
+  if (snapshot?.channel !== 'feishu' || snapshot.accountId === '' || snapshot.chatId === ''
+    || snapshot.senderId === '' || (snapshot.chatType !== 'group' && snapshot.chatType !== 'p2p')) {
+    return undefined;
+  }
+  return snapshot;
+}
+
+/** 交回前后端使用的展示字段，隐藏去重键和发送者。 */
+function getView(row: Row) {
+  return {
+    id: row.id,
+    at: row.local_at,
+    timeZone: row.time_zone,
+    text: row.text,
+    state: row.state,
+    reason: row.reason,
+  };
+}
+
+/** assist 的提醒仓库和调度器，共用 resources 的 SQLite。 */
+export class Reminders {
+  private readonly time: reminderTime.ReminderTime;
+  private readonly db: sqlite.Database;
+  private stopWait?: () => void;
+  private send?: (message: Delivery) => Promise<ProviderReceipt>;
+  private startedAt = 0;
+  private draining = false;
+  private registered = false;
+  private readonly issuing = new Set<number>();
+
+  /** 建表并留待发送入口接通。 */
+  constructor(
+    private readonly ctx: cordis.Context,
+    config: unknown,
+    private readonly clock: Clock = systemClock,
+  ) {
+    this.time = new reminderTime.ReminderTime(config);
+    this.db = ctx.resources.db;
+
+    //M 时间、目标和调用去重键一起保存，重启后可以继续处理待发提醒。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS assist_reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot TEXT NOT NULL, channel TEXT NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL,
+      sender TEXT NOT NULL, round_key TEXT NOT NULL, call_key TEXT NOT NULL,
+      due_at INTEGER NOT NULL, local_at TEXT NOT NULL, time_zone TEXT NOT NULL, text TEXT NOT NULL,
+      session_id TEXT NOT NULL, confirmed INTEGER NOT NULL, late INTEGER NOT NULL DEFAULT 0, send_text TEXT,
+      state TEXT NOT NULL, reason TEXT,
+      UNIQUE (bot, round_key, call_key)
+    )`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS assist_reminders_due ON assist_reminders (state, due_at, id)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS assist_reminders_chat ON assist_reminders (bot, channel, account, chat)');
+  }
+
+  /** 给可设置提醒的模型说明本轮采用的日历时间。 */
+  hint(request: ChatRequest): void {
+    if (this.send === undefined) return;
+
+    const source = getSource(request.session);
+    if (source === undefined) return;
+
+    const now = this.clock.now();
+    const local = this.time.format(now);
+    const weekdayFormat = new Intl.DateTimeFormat('zh-CN', { timeZone: this.time.zone, weekday: 'long' });
+    const weekday = weekdayFormat.format(now);
+    const hint = `提醒按 ${this.time.zone} 计算，现在是 ${local} ${weekday}。`
+      + `把「周六早上」等相对说法换算成当地日期；只给日期就用 ${this.time.morning}。`
+      + '用户明确要到点提醒时调用 remind_add，提醒时间和被提醒的事项时间分开。'
+      + '结果是 awaiting 时告诉对方要等本人确认。';
+
+    //M 用配置时区提供当轮日期，避免按服务器的自然日换算。
+    request.system.push(hint);
+  }
+
+  /** 启动时补发到期的 pending；已在途且结果未知的记录不重复发送。 */
+  start(send: (message: Delivery) => Promise<ProviderReceipt>): void {
+    if (this.send !== undefined) return;
+
+    this.startedAt = this.clock.now();
+    const sql = "UPDATE assist_reminders SET state = 'uncertain', reason = ? WHERE state = 'sending'";
+    this.db.query(sql).run(UNCERTAIN);
+    this.send = send;
+    if (!this.registered) {
+      //M 发送入口就绪才让模型登记提醒，目标仍由会话来源决定。
+      this.registerTools();
+      this.ctx.on('approval/decided', (pending) => this.onDecision(pending));
+      //M 仅发送方可以从已占位的行得到冻结的目标和正文。
+      const read = (request: events.EventArg<'assist/reminder-read'>) => this.getDelivery(request.reminderId);
+      events.onRequestEvent(this.ctx, 'assist/reminder-read', 'assist/reminder-row', read);
+      this.registered = true;
+    }
+
+    //M 审批状态先于事件写入，进程恢复时用持久卡片补齐可能遗漏的决定。
+    const waiting = this.db.query<Row, []>("SELECT * FROM assist_reminders WHERE state = 'awaiting'").all();
+    for (const reminder of waiting) {
+      void this.ensureCard(reminder).catch(() => {
+        this.ctx.emit('trace', 'Assist.reminders', '恢复提醒确认失败', 'Reminders.ensureCard', { id: reminder.id });
+      });
+    }
+    //M 处理早于启动时刻的记录，再等下一条到期。
+    this.arm();
+  }
+
+  /** 插件卸载时关闭唤醒，保留 SQLite 中的任务及在途记录。 */
+  stop(): void {
+    this.send = undefined;
+    this.stopWait?.();
+    this.stopWait = undefined;
+  }
+
+  /** 给已核验网页按机器人展示各聊天下的提醒。 */
+  listForBot(bot: string) {
+    const sql = 'SELECT * FROM assist_reminders WHERE bot = ?' + LIST_ORDER;
+    const rows = this.db.query<Row, [string]>(sql).all(bot);
+    return rows.map(getView);
+  }
+
+  /** 声明工具参数及作用范围，供现有 Tools 关口校验和执行。 */
+  private registerTools(): void {
+    const kinds = ['front', 'work'];
+    const strict = { additionalProperties: false };
+    this.ctx.tools.register({
+      kinds,
+      definition: {
+        name: 'remind_add',
+        description: '在本轮飞书群、飞书私聊或已核验网页聊天定一条纯文字提醒，到点发回这里。',
+        parameters: piAi.Type.Object({
+          at: piAi.Type.String({ description: '配置时区的 YYYY-MM-DD HH:mm；只有早上日期时可写 YYYY-MM-DD' }),
+          text: piAi.Type.String({ minLength: 1, maxLength: MAX_TEXT, description: '到点要发的提醒正文' }),
+        }, strict),
+      },
+      run: async (args, session, signal, callId) => {
+        if (signal.aborted) throw new Error('设置提醒已取消');
+
+        const at = args['at'] as string;
+        const text = args['text'] as string;
+        const saved = this.add(session, at, text, callId);
+        if (saved.state === 'awaiting') {
+          //M 群聊或外人创建只登记请求，由本人现在确认一次。
+          await this.ensureCard(saved);
+        }
+        const current = this.getById(saved.id);
+        return JSON.stringify(getView(current));
+      },
+    });
+
+    this.ctx.tools.register({
+      kinds,
+      definition: {
+        name: 'remind_list',
+        description: '列本轮聊天的提醒及发送状态。访客只能查看自己设置的提醒。',
+        parameters: piAi.Type.Object({}, strict),
+      },
+      run: (_args, session) => {
+        const source = getSource(session);
+        if (source === undefined) throw new Error('提醒需要本轮可信聊天来源');
+
+        const scope = this.getScope(session, source);
+        const sql = 'SELECT * FROM assist_reminders WHERE bot = ? AND channel = ? AND account = ? AND chat = ?'
+          + ' AND (? = 1 OR sender = ?)' + LIST_ORDER;
+        const rows = this.db.query<Row, sqlite.SQLQueryBindings[]>(sql).all(...scope);
+        const reminders = rows.map(getView);
+        return JSON.stringify(reminders);
+      },
+    });
+
+    this.ctx.tools.register({
+      kinds,
+      definition: {
+        name: 'remind_cancel',
+        description: '按编号取消本轮聊天里尚未发送的提醒。访客只能取消自己设置的提醒。',
+        parameters: piAi.Type.Object({ id: piAi.Type.Integer({ minimum: 1, description: '提醒编号' }) }, strict),
+      },
+      run: async (args, session) => {
+        const source = getSource(session);
+        if (source === undefined) throw new Error('提醒需要本轮可信聊天来源');
+
+        const id = args['id'] as number;
+        const scope = this.getScope(session, source);
+        const sql = "UPDATE assist_reminders SET state = 'cancelled', reason = NULL WHERE id = ?"
+          + " AND state IN ('pending', 'awaiting')"
+          + ' AND bot = ? AND channel = ? AND account = ? AND chat = ? AND (? = 1 OR sender = ?)';
+        const changed = this.db.query(sql).run(id, ...scope);
+        if (changed.changes === 0) return '当前聊天里没有可取消的这条提醒';
+
+        //M 已取消的队首立即从计时表移开，下一条补位。
+        this.arm();
+        const row = this.getById(id);
+        if (row.confirmed === 1) return '已取消该提醒';
+
+        //M 作废卡片失败时仍交回已经保存的取消结果。
+        const card = await this.getCard(row).catch(() => undefined);
+        if (card?.state === 'waiting') {
+          await this.closeCard(card.id);
+        }
+        return '已取消该提醒';
+      },
+    });
+  }
+
+  /** 请审批服务读取它持久保存的提醒卡。 */
+  private async getCard(row: Row): Promise<Pending | undefined> {
+    const payload = { action: 'reminder-card' as const, reminderId: row.id, bot: row.bot };
+    const options = { timeoutMs: 5000, onFallback: () => ({ requestId: '', error: '确认卡读取暂不可用' }) };
+    const result = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', payload, options);
+    if (result.error !== undefined) throw new Error(result.error);
+
+    return result.pending;
+  }
+
+  /** 读已存在的提醒，返回最新状态给同一次工具调用。 */
+  private getById(id: number): Row {
+    const sql = 'SELECT * FROM assist_reminders WHERE id = ?';
+    return this.db.query<Row, [number]>(sql).get(id)!;
+  }
+
+  /** 建一次确认卡，恢复或重放时沿用先前的持久审批。 */
+  private async ensureCard(row: Row): Promise<void> {
+    if (this.issuing.has(row.id)) return;
+
+    this.issuing.add(row.id);
+    try {
+      const existing = await this.getCard(row);
+      if (this.send === undefined || this.getById(row.id).state !== 'awaiting') return;
+
+      if (existing !== undefined) {
+        this.applyDecision(row.id, row.bot, existing.state);
+        return;
+      }
+      const payload = { reminderId: row.id };
+      const input = {
+        kind: outbound.REMINDER_APPROVAL_KIND,
+        title: `确认定时提醒 #${row.id}`,
+        detail: `发回飞书聊天 ${row.chat}\n原定 ${row.local_at} ${row.time_zone}\n${row.text}\n错过原定时刻时会注明时间并补发。`,
+        payload, bot: row.bot, session: row.session_id,
+      };
+      const request = { action: 'ask' as const, input };
+      const options = { timeoutMs: 5000, onFallback: () => ({ requestId: '', error: '确认卡登记暂不可用' }) };
+      //M 复用本人审批卡，不因到点再次询问。
+      const reply = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
+      if (this.send === undefined) return;
+
+      const card = reply.pending;
+      const current = this.getById(row.id);
+      if (card === undefined) throw new Error(reply.error ?? '确认卡登记暂不可用');
+
+      if (current.state === 'cancelled') {
+        await this.closeCard(card.id);
+        return;
+      }
+      const sql = "UPDATE assist_reminders SET reason = NULL WHERE id = ? AND state = 'awaiting'";
+      this.db.query(sql).run(row.id);
+    } catch (error) {
+      if (this.send === undefined) return;
+
+      let reason = '确认卡处理暂不可用';
+      if (error instanceof Error) {
+        reason = error.message;
+      }
+      const sql = "UPDATE assist_reminders SET reason = ? WHERE id = ? AND state = 'awaiting'";
+      this.db.query(sql).run(reason, row.id);
+    } finally {
+      this.issuing.delete(row.id);
+    }
+  }
+
+  /** 取消提醒时顺手作废尚未表决的卡片。 */
+  private async closeCard(id: number): Promise<void> {
+    const request = { action: 'close' as const, id, note: '提醒已取消' };
+    const options = { timeoutMs: 5000, onFallback: () => ({ requestId: '' }) };
+    await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
+  }
+
+  /** 只消费本插件发起的确认；确认及拒绝都落入提醒列表。 */
+  private onDecision(pending: Pending): void {
+    if (this.send === undefined || pending.kind !== outbound.REMINDER_APPROVAL_KIND) return;
+
+    const payload = pending.payload as { reminderId?: number } | null;
+    const id = payload?.reminderId;
+    if (id === undefined || !Number.isSafeInteger(id)) return;
+
+    //M 审批服务只在已持久化决定后广播；取消等终态由更新条件保护。
+    this.applyDecision(id, pending.bot, pending.state);
+  }
+
+  /** 已批准的提醒加入队列，过了约定时刻就带补发说明。 */
+  private applyDecision(id: number, bot: string, state: Pending['state']): void {
+    if (state === 'waiting') return;
+
+    let next = 'rejected';
+    if (state === 'approved') {
+      next = 'pending';
+    }
+    const now = this.clock.now();
+    const confirmed = Number(state === 'approved');
+    const sql = "UPDATE assist_reminders SET state = ?, reason = NULL, confirmed = ?, late = (due_at < ?)"
+      + " WHERE id = ? AND bot = ? AND state = 'awaiting'";
+    this.db.query(sql).run(next, confirmed, now, id, bot);
+    this.arm();
+  }
+
+  /** 共享列表和取消的范围，本人可管理同聊，外人还要对上创建者。 */
+  private getScope(session: Session, source: SourceSnapshot): sqlite.SQLQueryBindings[] {
+    const owner = Number(source.role === 'owner');
+    return [session.row.bot, source.channel, source.accountId, source.chatId, owner, source.senderId];
+  }
+
+  /** 同一轮同一工具调用重放时沿用原记录。 */
+  private add(session: Session, at: string, text: string, callId: string): Row {
+    const source = getSource(session);
+    if (source === undefined) throw new Error('提醒需要本轮可信聊天来源');
+
+    const bot = session.row.bot;
+    const round = source.replyRoundKey;
+    const content = text.trim();
+    if (content === '') throw new Error('提醒正文不能为空');
+
+    const due = this.time.parse(at);
+    const local = this.time.format(due);
+    const save = this.db.transaction(() => {
+      const lookup = 'SELECT * FROM assist_reminders WHERE bot = ? AND round_key = ? AND call_key = ?';
+      const existing = this.db.query<Row, [string, string, string]>(lookup).get(bot, round, callId);
+      if (existing !== null) {
+        if (existing.due_at !== due || existing.text !== content) throw new Error('同次调用的提醒内容已变化');
+
+        return existing;
+      }
+
+      const now = this.clock.now();
+      if (due <= now) throw new Error('提醒时间要晚于当前时间');
+
+      const ownPrivate = source.role === 'owner' && source.chatType === 'p2p';
+      const ownerConfirmed = Number(ownPrivate || source.channel === 'http');
+      let state = 'awaiting';
+      if (ownerConfirmed === 1) {
+        state = 'pending';
+      }
+      const sql = 'INSERT INTO assist_reminders (bot, channel, account, chat, sender, round_key, call_key,'
+        + ' due_at, local_at, time_zone, text, session_id, confirmed, state)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *';
+      return this.db.query<Row, sqlite.SQLQueryBindings[]>(sql).get(
+        bot, source.channel, source.accountId, source.chatId, source.senderId, round, callId,
+        due, local, this.time.zone, content, session.row.id, ownerConfirmed, state,
+      )!;
+    });
+
+    //M 原子登记后再计算最近到期时刻，调用重放不会多记一条。
+    const reminder = save.immediate();
+    this.arm();
+    return reminder;
+  }
+
+  /** 给审批发件入口交回当前已确认的冻结记录。 */
+  private getDelivery(id: number) {
+    const sql = "SELECT * FROM assist_reminders WHERE id = ? AND state = 'sending' AND due_at <= ?";
+    const now = this.clock.now();
+    const row = this.db.query<Row, [number, number]>(sql).get(id, now);
+    if (row?.send_text == null) return {};
+
+    const delivery = Object.freeze({
+      id: row.id, bot: row.bot, channel: row.channel, account: row.account, chat: row.chat, text: row.send_text,
+      confirmed: row.confirmed === 1,
+    });
+    return { row: delivery };
+  }
+
+  /** 只为最早一条待发记录等待，超过计时器上限时到时再计算。 */
+  private arm(): void {
+    if (this.send === undefined || this.draining) return;
+
+    this.stopWait?.();
+    this.stopWait = undefined;
+    const row = this.db.query<{ due_at: number }, []>(
+      "SELECT due_at FROM assist_reminders WHERE state = 'pending' ORDER BY due_at, id LIMIT 1",
+    ).get();
+    if (row === null) return;
+
+    const delay = Math.min(MAX_TIMEOUT_MS, Math.max(0, row.due_at - this.clock.now()));
+    //M 到点后以数据库中的最新状态为准，取消与发送的占位互斥。
+    this.stopWait = this.clock.wait(delay, () => {
+      this.stopWait = undefined;
+      void this.drain().catch(() => {
+        this.ctx.emit('trace', 'Assist.reminders', '调度提醒失败', 'Reminders.drain', {});
+      });
+    });
+  }
+
+  /** 顺序占位并记录渠道回执，启动前错过的提醒前缀标明补发。 */
+  private async drain(): Promise<void> {
+    if (this.draining) return;
+
+    this.draining = true;
+    try {
+      while (this.send !== undefined) {
+        const now = this.clock.now();
+        const sql = "UPDATE assist_reminders SET state = 'sending', send_text = CASE WHEN due_at < ? OR late = 1"
+          + " THEN '补发提醒（原定 ' || local_at || ' ' || time_zone || '）：' || text ELSE '提醒：' || text END"
+          + " WHERE id = (SELECT id FROM assist_reminders WHERE state = 'pending' AND due_at <= ?"
+          + ' ORDER BY due_at, id LIMIT 1) RETURNING *';
+        const row = this.db.query<Row, [number, number]>(sql).get(this.startedAt, now);
+        if (row === null) return;
+
+        const message = { id: row.id, channel: row.channel, account: row.account, chat: row.chat, text: row.send_text! };
+        let receipt: ProviderReceipt = { status: 'uncertain', reason: UNCERTAIN };
+        try {
+          //M 每条只经已接通的主动发送入口提交一次；异常交给未知状态。
+          receipt = await this.send(message);
+        } catch {
+          //G 运输异常可能发生在收到消息之后，保留占位结果供核对。
+        }
+        if (this.send === undefined) return;
+
+        const update = "UPDATE assist_reminders SET state = ?, reason = ? WHERE id = ? AND state = 'sending'";
+        this.db.query(update).run(receipt.status, receipt.reason ?? null, row.id);
+      }
+    } finally {
+      this.draining = false;
+      this.arm();
+    }
+  }
+}

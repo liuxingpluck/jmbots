@@ -525,6 +525,8 @@ async function uploadAndSend(
  * @param chatId 发到哪个聊天。
  * @param type 消息类型：text、image、file、media、audio、interactive。
  * @param content 消息内容（会转成 JSON 字符串）。
+ * @param messageId 可引用回复的原消息号。
+ * @param uuid 直发的供应方去重键。同一发送请求内部重试沿用该键。
  * @returns 新消息的 message_id。
  * @throws 发不出去时抛错：飞书明确拒了是 api.NotSent，断网、超时这类不知道收没收的是普通 Error。
  */
@@ -535,6 +537,7 @@ export async function message(
   type: string,
   content: unknown,
   messageId?: string,
+  uuid?: string,
 ): Promise<string> {
   //M 获取发送应用对应的飞书客户端实例。
   const client = feishu.client(appId);
@@ -554,10 +557,17 @@ export async function message(
       console.error(`飞书回复失败，改为普通发送：${textModule.getMessage(error)}`);
     }
   }
-  //M 无原消息号或回复被明确拒收时走群聊直发通道发出消息。
-  const sent = await api.call('发消息', () => client.im.v1.message.create({
-    params: { receive_id_type: 'chat_id' },
-    data: { receive_id: chatId, msg_type: type, content: JSON.stringify(content) },
-  }));
+  //M 无原消息号或回复被明确拒收时走聊天直发通道。
+  const data: NonNullable<Parameters<typeof client.im.v1.message.create>[0]>['data'] = {
+    receive_id: chatId,
+    msg_type: type,
+    content: JSON.stringify(content),
+  };
+  if (uuid !== undefined) {
+    data.uuid = uuid;
+  }
+
+  const payload = { params: { receive_id_type: 'chat_id' as const }, data };
+  const sent = await api.call('发消息', () => client.im.v1.message.create(payload));
   return sent.data?.message_id ?? '';
 }
