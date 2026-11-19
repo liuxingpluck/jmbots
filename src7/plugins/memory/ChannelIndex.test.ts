@@ -11,6 +11,7 @@ import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
 import type * as protocolModule from '../../Channels.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
+import * as archiveModule from './FrontArchive.ts';
 import * as searchModule from './Search.ts';
 import type { MemoryService } from './index.ts';
 
@@ -19,8 +20,9 @@ import type { MemoryService } from './index.ts';
 interface Bench {
   /** 索引。 */
   index: channelIndexModule.ChannelIndex;
-  /** 登记的 channel_search。 */
-  tool: toolsModule.ToolSpec;
+  archive: archiveModule.FrontArchive;
+  /** 登记的记忆工具。 */
+  tools: toolsModule.ToolSpec[];
   /** 照骨架发一个事件给登记的监听。 */
   emit: (name: string, payload: unknown) => void;
 }
@@ -35,6 +37,7 @@ function makeBench(): Bench {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
     emit: () => undefined,
+    sessions: { find: () => [] },
     tools: {
       register: (spec: toolsModule.ToolSpec) => {
         tools.push(spec);
@@ -43,15 +46,18 @@ function makeBench(): Bench {
     inject: () => Promise.resolve(),
   } as unknown as cordis.Context;
 
-  const index = new channelIndexModule.ChannelIndex(new Database(':memory:'));
-  const unified = new searchModule.Search(ctx, {} as MemoryService, index);
-  channelIndexModule.applyChannelIndex(ctx, index, unified);
+  const db = new Database(':memory:');
+  const index = new channelIndexModule.ChannelIndex(db);
+  const archive = new archiveModule.FrontArchive(db, index);
+  const unified = new searchModule.Search(ctx, {} as MemoryService, index, undefined, undefined, archive);
+  unified.registerTools();
+  channelIndexModule.applyChannelIndex(ctx, index);
   const emit = (name: string, payload: unknown): void => {
     for (const handler of handlers.get(name) ?? []) {
       handler(payload);
     }
   };
-  return { index, tool: tools[0]!, emit };
+  return { index, archive, tools, emit };
 }
 
 
@@ -91,12 +97,12 @@ function getSession(chatId: string, role: string, chatType: string): Session {
     channel: 'feishu', accountId: 'cli_a', chatId, chatType, role, senderId: 'ou_1',
     origin: { channel: 'feishu', address },
   };
-  return { id: 's1', row: { id: 's1', address, activeSourceSnapshot: snapshot } } as unknown as Session;
+  return { id: 's1', row: { id: 's1', messages: [], bot: '助手', address, activeSourceSnapshot: snapshot } } as unknown as Session;
 }
 
 
 /**
- * 调一次 channel_search。
+ * 从统一模型工具入口查记录。
  * @param bench 用例的摆设。
  * @param args 参数。
  * @param session 会话。
@@ -104,7 +110,10 @@ function getSession(chatId: string, role: string, chatType: string): Session {
  */
 async function search(bench: Bench, args: Record<string, unknown>, session: Session): Promise<string> {
   try {
-    const result = await bench.tool.run(args, session, new AbortController().signal, 'call-1');
+    const tool = bench.tools.find((spec) => spec.definition.name === 'memory_search')!;
+    const query = { sources: 'channel', ...args };
+    const signal = new AbortController().signal;
+    const result = await tool.run(query, session, signal, 'call-1');
     return String(result);
   } catch (error) {
     return `错：${String(error)}`;
@@ -152,7 +161,7 @@ test('听 channel/message、channel/reply 记进表，同一条不重复；按�
 });
 
 
-test('channel_search：本人能查别的聊天；外人、群里的本人只查这个聊天，写了别的被拒', async () => {
+test('memory_search 按聊天授权检索，支持只查渠道而不填关键词', async () => {
   const bench = makeBench();
   bench.emit('channel/message', getMessage('m1', 'oc_1', '我的私事', '2026-11-16T09:00:00'));
   const shared = getMessage('m2', 'oc_2', '群里的事', '2026-11-17T09:00:00');
@@ -179,11 +188,59 @@ test('channel_search：本人能查别的聊天；外人、群里的本人只查
   //M 本人在群里：同样只查这个群（查到的会回到群里，群里的人看得到）。
   const ownerInGroup = getSession('oc_2', 'owner', 'group');
   expect(await search(bench, { chat: 'oc_1' }, ownerInGroup)).toContain('只能查这个聊天');
-  const groupResult = await search(bench, { person: 'person:feishu:ou_1' }, ownerInGroup);
+  const groupResult = await search(bench, {}, ownerInGroup);
   expect(groupResult).toContain('群里的事');
   expect(groupResult).not.toContain('他的私聊');
   expect(groupResult).not.toContain('我的私事');
 
   //M 时间写错：说清怎么写。
   expect(await search(bench, { since: '昨天' }, owner)).toContain('2026-11-17');
+});
+
+test('memory_get 默认本聊天，同毫秒消息分页稳定并绑定账号和查询条件', async () => {
+  const bench = makeBench();
+  const at = '2026-11-17T09:00:00';
+  bench.emit('channel/message', getMessage('m1', 'oc_1', '同一毫秒第一条', at));
+  bench.emit('channel/message', getMessage('m2', 'oc_1', '同一毫秒第二条', at));
+  const accountOther = getMessage('m3', 'oc_1', '另一个账号同名聊天', at);
+  bench.emit('channel/message', { ...accountOther, accountId: 'cli_b' });
+  bench.emit('channel/message', getMessage('m4', 'oc_2', '本人其他聊天', at));
+
+  const session = getSession('oc_1', 'owner', 'p2p');
+  const tool = bench.tools.find((spec) => spec.definition.name === 'memory_get')!;
+  const signal = new AbortController().signal;
+  const read = async (args: Record<string, unknown>) => {
+    const result = await tool.run(args, session, signal, 'read');
+    return JSON.parse(String(result)) as { hits: channelIndexModule.ChannelRow[]; nextCursor: string | null };
+  };
+  const first = await read({ limit: 1 });
+  expect(first.hits.map((row) => row.text)).toEqual(['同一毫秒第二条']);
+  expect(typeof first.nextCursor).toBe('string');
+
+  const next = await read({ before: first.nextCursor, limit: 1 });
+  expect(next.hits.map((row) => row.text)).toEqual(['同一毫秒第一条']);
+  expect(next.nextCursor).toBeNull();
+  await expect(read({ before: first.nextCursor, chat: 'oc_2' })).rejects.toThrow('翻页游标');
+  await expect(read({ before: first.nextCursor + 'x' })).rejects.toThrow('翻页游标');
+});
+
+test('统一工具直接读前台编号，外来会话仍按渠道归属读取', async () => {
+  const bench = makeBench();
+  const message: archiveModule.FrontMessage = {
+    bot: '助手', sessionId: 's1', who: 'user', channel: 'feishu', text: '这场前台的归档', time: 100,
+  };
+  bench.archive.record(message, 10);
+  bench.archive.record({ ...message, sessionId: 'other', text: '其他前台的原文' }, 11);
+  const owner = getSession('oc_1', 'owner', 'p2p');
+  owner.row.kind = 'front';
+  const guest = getSession('oc_1', 'guest', 'p2p');
+  guest.row.kind = 'front';
+  const get = bench.tools.find((spec) => spec.definition.name === 'memory_get')!;
+  const find = bench.tools.find((spec) => spec.definition.name === 'memory_search')!;
+  const signal = new AbortController().signal;
+
+  expect(await find.run({ front: true }, owner, signal, 'list')).toContain('#10');
+  expect(await get.run({ ref: '#10' }, owner, signal, 'get')).toContain('这场前台的归档');
+  expect(await get.run({ ref: '#11' }, owner, signal, 'other')).toContain('不属于这场对话');
+  await expect(get.run({ ref: '#10' }, guest, signal, 'forbidden')).rejects.toThrow('当前渠道聊天');
 });

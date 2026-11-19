@@ -16,7 +16,7 @@ import type * as cordis from 'cordis';
 import * as snapshotModule from './Snapshot.ts';
 import * as traceUtils from '../../utils/Trace.ts';
 import type { FlowFiles } from './Files.ts';
-import { NOISE, type TrailLine } from '../journal/Trail.ts';
+import { NOISE, type TrailLine } from '../../utils/Trail.ts';
 
 
 /** 运行时留最近几份。 */

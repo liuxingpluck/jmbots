@@ -3,6 +3,7 @@
  * 以及精确/宽松修改与搜索（edit、find，FileTools + EditMatch.ts）。路径均按当前轮工作区解符号链接判界，出不去。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -21,10 +22,10 @@ export const name = 'file-tools';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/before-model 监听）。
 //M 1.1.1：读图片文件的 getImageBlock 从骨架 utils/Image.ts 挪进 BaseTools.ts，只有这里用。
-export const version = '1.1.1';
+export const version = '1.1.2';
 
 /** 用到的服务：resources 查模型是否收图；tools 登记六个工具；bots 找机器人的工作区。 */
-export const inject = ['resources', 'tools', 'bots'];
+export const inject = ['resources', 'tools'];
 
 
 /** find 默认最多几条。 */
@@ -183,17 +184,13 @@ export class FileTools {
 
   /**
    * 相对工作区的路径落成绝对路径。
-   * @param session 哪场会话：用它的机器人的工作区；飞书上 builder 说话的这一轮用他的目录（workspaceModule.getWorkspace）。
+   * @param session 哪场会话：用它的机器人的工作区；飞书上 builder 说话的这一轮用他的目录（botUtils.getSessionWorkspace）。
    * @param relative 模型给的路径。
    * @throws 没有这个机器人、出了工作区时抛错。
    */
   private getFile(session: Session, relative: string): string {
-    //M 先找到会话所属的机器人工作区，再按本轮地址取实际目录。
-    const botWorkspace = this.ctx.bots.get(session.row.bot)?.workspace;
-    if (botWorkspace === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
-
-    //M 按回话地址解析本轮工作区根目录，再把相对路径安全落盘到工作区内。
-    const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
+    //M 按本轮来源选择目录，再把目标路径限制在该目录。
+    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, session);
     return workspaceModule.resolveWorkspacePath(workspace, relative);
   }
 }

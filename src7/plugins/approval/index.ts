@@ -16,6 +16,7 @@
  * 不挡别的消息：review 只在提问的那场会话的工具里 await，别的会话、别的消息照常走；问用户时不等，马上交回“已经去问了”。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as fastify from 'fastify';
@@ -36,7 +37,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.7';
+export const version = '1.2.9';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -44,8 +45,8 @@ export const DECISION_PASS = 0.8;
 /** 问决策模型最多等多久（契约 3.1：decision/judge 20 秒）；没回当拿不准，往下一档。 */
 const DECISION_WAIT_MS = 20_000;
 
-/** 用到的服务：bots 挑默认机器人，sessions 开审核小会话、找会话。decision 走事件、http 用 ctx.inject，都不写在这里（写进 inject 就成了“必须有”）。 */
-export const inject = ['resources', 'bots', 'sessions'];
+/** 用到的服务：resources 提供默认机器人，sessions 开审核小会话、找会话。decision 走事件、http 用 ctx.inject，都不写在这里（写进 inject 就成了“必须有”）。 */
+export const inject = ['resources', 'sessions'];
 
 
 declare module 'cordis' {
@@ -287,6 +288,24 @@ const GUEST_PROMPT = '这一轮说话的不是用户本人（比如群里用户�
 
 
 /**
+ * 这一轮说话人的档位，给 rules.toolsFor 挑工具：地址写了 role 就用它；
+ * 没写 role 又不是本人（isOwnerTurn：微信这类渠道不写 owner 就是外人）的当 guest；本人是 ''（不限）。
+ * @param channel 会话现在的渠道（session.row.channel），内部小会话没有。
+ * @param address 会话现在记的回话地址（session.row.address）。
+ */
+function getTurnRole(channel: string | undefined, address: unknown): string {
+  //M 地址上已有档位（owner、builder、guest）：照它。
+  const role = workspaceModule.getSpeakerRole(address);
+  if (role !== '') return role;
+
+  //G 没档位又不是本人：当 guest，只给只读工具。
+  if (!workspaceModule.isOwnerTurn(channel ?? '', address)) return 'guest';
+
+  return '';
+}
+
+
+/**
  * 这一轮是 builder 说的：告诉模型他能在哪动、哪些事做不了。
  * @param dir 他的目录（回话地址的 workspace）。
  * @returns 提示词。
@@ -409,7 +428,7 @@ export class Approval extends cordis.Service {
     ctx.on('session/before-model', (request) => {
       if (request.session.row.kind === REVIEW_KIND) request.system.push(REVIEW_PROMPT);
       const address = request.session.row.address;
-      const role = workspaceModule.getSpeakerRole(address);
+      const role = getTurnRole(request.session.row.channel, address);
       const allowedTools = rules.toolsFor(role);
       if (allowedTools === undefined) return;
 
@@ -430,7 +449,7 @@ export class Approval extends cordis.Service {
       if (gate.deny !== undefined) return;
 
       //M 本人（toolsFor 交回 undefined）：不拦。
-      const role = workspaceModule.getSpeakerRole(gate.session.row.address);
+      const role = getTurnRole(gate.session.row.channel, gate.session.row.address);
       const allowedTools = rules.toolsFor(role);
       if (allowedTools === undefined) return;
 
@@ -502,7 +521,7 @@ export class Approval extends cordis.Service {
 
     //M 准备给后面几档看的材料：要跑的脚本内容、记在哪个机器人名下、命令现状。
     const script = rules.readScript(command, cwd);
-    const bot = input.bot ?? this.ctx.bots.list()[0]?.name ?? '';
+    const bot = input.bot ?? botUtils.getDefaultBot(this.ctx.resources.raw) ?? '';
     const state: Record<string, unknown> = { 命令: command, 执行目录: cwd };
     if (script !== undefined) Object.assign(state, { 要跑的脚本: script.file, 脚本内容: script.content });
     if (input.session !== undefined) state['哪场会话'] = input.session;

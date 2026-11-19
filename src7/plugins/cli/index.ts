@@ -5,6 +5,7 @@
  *   先把原始输入存进 channels/cli/<YYYY-MM-DD>.jsonl，再发出 channel/message；等所有会话停下退出（出过错退出码为 1）。
  *   没带话就什么也不做。它不从键盘读输入；要一问一答地聊，以后另写专门的插件。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -13,7 +14,6 @@ import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as protocol from '../../Channels.ts';
-import { CliHistory } from './History.ts';
 
 
 /** 旧路 bots.channel 回调发送回执（结构对齐 bots 服务约定）。 */
@@ -25,10 +25,9 @@ interface LegacySendReceipt {
 /** 插件名。 */
 export const name = 'cli';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-//M 1.1.2：新增 History.ts（CliHistory）响应 channel/history，支持本人跨渠道与命令行会话查历史。
 //M 1.1.3：改成 channel_tool：一轮里能连发多条、逐条打印；零次回复打最后的话；收尾没回成红字、退出码 1；role 写 owner。
 //M 1.1.4：registerTextReply 接入 getTargetAddress 自行识别命令行跨渠道发话目标（本机 / cli:本机 / 命令行）。
-export const version = '1.1.4';
+export const version = '1.1.6';
 
 /** 命令行跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const CLI_TARGET_CHATS = new Set(['', '本机', 'cli:本机', '命令行', 'local']);
@@ -99,7 +98,6 @@ export class Cli {
     });
 
     //M 挂上命令行历史监听，让其他渠道能按约定查本机记录。
-    new CliHistory(this.ctx);
 
     //M 一轮收尾没回成（模型出错、停下）：红字打出原因，退出码记 1。
     this.ctx.on('channel/settled', (event) => {
@@ -142,7 +140,7 @@ export class Cli {
    */
   async submitLine(bot: string, sentence: string): Promise<protocol.ChannelMessageControl> {
     //G 确认机器人能接收这条输入，再写命令行原件。
-    if (bot === '' || this.ctx.bots.get(bot) === undefined) {
+    if (bot === '' || botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) {
       throw new Error(`没有这个机器人：${bot}`);
     }
 
@@ -216,7 +214,7 @@ export class Cli {
   private async start(argv: string[]): Promise<void> {
     //M 从机器人名单取默认目标，再允许显式参数覆盖。
     const words = [...argv];
-    let bot = this.ctx.bots.list()[0]?.name ?? '';
+    let bot = botUtils.getDefaultBot(this.ctx.resources.raw) ?? '';
     const at = words.indexOf('--bot');
     if (at >= 0) {
       bot = words[at + 1] ?? '';

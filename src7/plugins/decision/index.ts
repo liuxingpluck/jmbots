@@ -6,6 +6,7 @@
  * 请求带 want: ['what'] 时，对话模型在同一次回答里顺带写一句“执行完会做成什么”，回执带回 what（只用来显示，不进合分）；分类器给不出文字，不带 what。
  * 照 0.4 src/capabilities/Model.ts:382-390、446-453、727-744。设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as piAi from '@earendil-works/pi-ai';
 import * as piSystemOne from '@earendil-works/pi-ai/api/typesafe-system-one.lazy';
 import * as cordis from 'cordis';
@@ -16,13 +17,13 @@ import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../..
 /** 插件名。 */
 export const name = 'decision';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.0';
+export const version = '1.1.1';
 
 /** 默认的决策模型：Magpie 里的 jev-1.14 分类器（jev-router 在这个地区用不了）。 */
 const DEFAULT_MODELS = [{ model: 'magpie/openrouter/typesafe/jev-1.14', type: 'classifier' }];
 
 /** 用到的服务：resources 拿配置和供应商；sessions 开小会话；bots 小会话记在哪个机器人名下。 */
-export const inject = ['resources', 'sessions', 'bots'];
+export const inject = ['resources', 'sessions'];
 
 
 declare module 'cordis' {
@@ -313,7 +314,7 @@ export class Decision extends cordis.Service {
     }
 
     //M sessions.ask 开一场 kind: 'decision' 的小会话问一次（走骨架循环，循环里调 chat()，假模型也接得住），思考档 off；超时（signal）就停。
-    const bot = input.bot ?? this.ctx.bots.list()[0]?.name ?? '';
+    const bot = input.bot ?? botUtils.getDefaultBot(this.ctx.resources.raw) ?? '';
     //M 带了 want: ['what']：同一次提问里多要一句执行结果，不另调模型；不带就照原样只要分和理由。
     const wantWhat = input.want?.includes('what') === true;
     let answerFormat = PLAIN_FORMAT;

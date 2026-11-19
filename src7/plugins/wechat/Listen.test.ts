@@ -9,7 +9,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { Session } from '../../Sessions.ts';
-import type { HistoryToolRequest } from '../memory/HistoryTools.ts';
 import { Wechat, describe as describeView } from './index.ts';
 import type { WechatConfig } from './index.ts';
 import { Reader } from './read/Reader.ts';
@@ -183,8 +182,8 @@ describe('微信后台全量监听、只听不发', () => {
     expect((ctx.resources.db.query('SELECT state FROM wechat_outbox WHERE id = ?').get(row.id) as { state: string }).state).toBe('draft');
   });
 
-  test('最近 50 条进 system；微信归档读取更早的消息，缺页时补录', async () => {
-    const { wechat, ctx, handlers } = fake();
+  test('最近 50 条进 system，并提示从记忆翻页', async () => {
+    const { ctx, handlers } = fake();
     const insert = ctx.resources.db.query('INSERT INTO wechat_messages (account, chat, source, local_id, at, from_self, kind, sender, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (let i = 1; i <= 60; i++) insert.run('acc1', 'wxid_a', 'm0', 1000 + i, 1000 + i, i % 2, 'text', '', `第${String(i)}条`);
     const address = { account: 'acc1', chat: 'wxid_a', name: '甲', customer: 'wechat:wxid_a' };
@@ -197,19 +196,6 @@ describe('微信后台全量监听、只听不发', () => {
     expect(request.system[0]).toContain('第60条');
     expect(request.system[0]).not.toContain('第10条');
 
-    wechat.reader.backfill = async (_a, _c, until): Promise<SyncResult> => ({ chat: 'wxid_a', missing: false, messages: Array.from({ length: 30 }, (_, i) => msg(900 + i, until - 30 + i, `更早${String(i)}`)) });
-    //M 模拟 memory_get 交给微信归档提供方的读取事件。
-    const session = { row: { address } } as Session;
-    const signal = new AbortController().signal;
-    const history: HistoryToolRequest = {
-      route: 'wechat-archive', args: { skip: 50, limit: 30 }, session, signal, callId: 'test-archive',
-    };
-    await ctx.serial('memory/history-tool', history);
-    const text = history.result;
-    expect(typeof text).toBe('string');
-    expect(text).toContain('第1条');
-    expect(text).toContain('更早');
-    expect(text).not.toContain('第60条');
   });
 
   test('没勾监听：draftReply 抛错且不调机器人；勾了才调用 receive', async () => {

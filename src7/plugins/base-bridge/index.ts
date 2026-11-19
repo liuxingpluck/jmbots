@@ -20,7 +20,7 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.4';
+export const version = '1.2.5';
 export const inject = ['resources'];
 
 /** 基地子模块共享的地址配置路径，供错误提示使用。 */
@@ -301,9 +301,9 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
       notifyModule.mountNotify(sub, notifySettings);
     });
   }
-  //M 更新监听只要 bots（挑机器人）、sessions（找前台会话）；待确认走 approval/request 事件，不再硬等 approval 挂上。
+  //M 更新监听用 resources 读取默认机器人、sessions 找前台会话；待确认走 approval/request 事件，不再硬等 approval 挂上。
   if (watchSettings.enabled) {
-    void ctx.inject(['bots', 'sessions'], (sub) => {
+    void ctx.inject(['sessions'], (sub) => {
       updateWatchModule.mountUpdateWatch(sub, watchSettings);
     });
   }

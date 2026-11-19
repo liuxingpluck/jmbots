@@ -29,7 +29,9 @@ afterEach(async () => {
 
 /** 假资源服务：提供不同模型是否支持图片输入。 */
 class FakeResources extends cordis.Service {
-  constructor(ctx: cordis.Context) {
+  readonly raw = { bots: [{ name: '测试机' }] };
+
+  constructor(ctx: cordis.Context, readonly root: string) {
     super(ctx, 'resources');
   }
 
@@ -38,21 +40,6 @@ class FakeResources extends cordis.Service {
       return { input: ['text', 'image'] };
     }
     return { input: ['text'] };
-  }
-}
-
-
-/** 假机器人服务：只映射测试机器人工作区。 */
-class FakeBots extends cordis.Service {
-  constructor(ctx: cordis.Context, private readonly workspace: string) {
-    super(ctx, 'bots');
-  }
-
-  get(name: string): { name: string; workspace: string } | undefined {
-    if (name === '测试机') {
-      return { name, workspace: this.workspace };
-    }
-    return undefined;
   }
 }
 
@@ -83,16 +70,15 @@ function makeSession(kind: 'front' | 'work', model: string, address?: Record<str
 /** 初始化挂好 tools + file-tools 的 Cordis 上下文。 */
 async function setup(): Promise<{ ctx: cordis.Context; workspace: string; root: string }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-unit-'));
-  const workspace = path.join(root, 'bot-ws');
+  const workspace = path.join(root, 'bots', '测试机', 'workspace');
   fs.mkdirSync(workspace, { recursive: true });
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
 
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
 
-  await ctx.plugin(FakeResources);
+  await ctx.plugin(FakeResources, root);
   await ctx.plugin(toolsModule.Tools);
-  await ctx.plugin(FakeBots, workspace);
   //M 模拟前台优先挂上 session/before-model（例如在前台替换 request.messages），验证 file-tools 排在其后。
   ctx.on('session/before-model', (request) => {
     if (request.session.row.kind === 'front' && request.messages.length === 0) {
@@ -105,8 +91,8 @@ async function setup(): Promise<{ ctx: cordis.Context; workspace: string; root: 
 
 
 describe('file-tools（含 BaseTools 并入）', () => {
-  test('版本为 1.1.1，front 与 work 的工具集合与预期一致', async () => {
-    expect(fileToolsModule.version).toBe('1.1.1');
+  test('版本为 1.1.2，front 与 work 的工具集合与预期一致', async () => {
+    expect(fileToolsModule.version).toBe('1.1.2');
     const { ctx } = await setup();
     const frontNames = ctx.tools.listToolsForSessionKind('front').map((tool) => tool.name);
     const workNames = ctx.tools.listToolsForSessionKind('work').map((tool) => tool.name);

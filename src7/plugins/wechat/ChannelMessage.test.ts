@@ -17,7 +17,9 @@ import * as cordis from 'cordis';
 import type * as channels from '../../Channels.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
+import * as workspaceModule from '../../utils/Workspace.ts';
 import * as approvalModule from '../approval/index.ts';
+import * as rules from '../approval/Rules.ts';
 import * as botsPlugin from '../bots/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 import { Wechat, checkConfig } from './index.ts';
@@ -113,8 +115,11 @@ test('wechat 监听新消息：先存表再发 1 次 channel/message、认领 1 
   });
 
   let modelRuns = 0;
+  //M 记下模型这一步拿到的工具名（本监听在 approval 之后挂，看到的是已按说话人过滤的清单）。
+  let toolNames: string[] = [];
   ctx.on('session/before-model', (request) => {
     modelRuns += 1;
+    toolNames = request.tools.map((tool) => tool.name);
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     let said = '';
     if (last?.role === 'user') {
@@ -169,6 +174,14 @@ test('wechat 监听新消息：先存表再发 1 次 channel/message、认领 1 
   expect(modelRuns).toBe(1);
   const firstOut = ctx.resources.db.query('SELECT text, state FROM wechat_outbox ORDER BY id').all() as Array<{ text: string; state: string }>;
   expect(firstOut).toEqual([{ text: '微信草稿：在吗问个价格', state: 'draft' }]);
+
+  //G 微信联系人起的会话按外人算：说话人档位是 guest，工具清单里只剩只读白名单的工具。
+  const guestFront = ctx.sessions.find({ bot: '助手', kind: 'front', customer: 'wechat:wxid_c1' })[0];
+  expect(guestFront?.address).toMatchObject({ chat: 'wxid_c1', owner: false });
+  expect(workspaceModule.getSpeakerRole(guestFront?.address)).toBe('guest');
+  expect(workspaceModule.isOwnerTurn('wechat', guestFront?.address)).toBe(false);
+  expect(toolNames.length).toBeGreaterThan(0);
+  expect(toolNames.filter((name) => !rules.READ_ONLY_TOOLS.has(name))).toEqual([]);
 
   //M 从同一微信客户前台会话发起待确认，再从微信发“同意 1”：channel/message 只发 1 次，approval 只消费 1 次。
   const front = ctx.sessions.find({ bot: '助手', kind: 'front', customer: 'wechat:wxid_c1' })[0];

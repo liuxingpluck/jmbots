@@ -1,6 +1,6 @@
 /**
  * 飞书回话：响应标准事件 channel/reply（会话的回复，按 replyRequestKey 去重，带 target 时跨聊天认目标）
- * 和 channel/send（Outbound 已批准的主动发件，原样直发）。发出去的写进聊天日志（History.ts）。
+ * 和 channel/send（Outbound 已批准的主动发件，原样直发）。发出去的写进聊天日志（ChatLog.ts）。
  * 回复去重记录存 channels/feishu/replies/<应用>.jsonl。
  * 会话一轮结束的旧路发送（bots.channel 登记的 send）、别的插件调的 sendText 还在 index.ts 的 Feishu 上。
  */
@@ -14,7 +14,7 @@ import * as protocol from '../../Channels.ts';
 import * as approvedSend from '../approval/Outbound.ts';
 import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as api from './Api.ts';
-import type { FeishuChatLogEntry } from './History.ts';
+import type { FeishuChatLogEntry } from './ChatLog.ts';
 import { feishuCustomer } from './index.ts';
 import type { Feishu, FeishuAddress } from './index.ts';
 import * as media from './Media.ts';
@@ -222,7 +222,7 @@ export class FeishuReply {
       if (providerId !== '') {
         nativeOutId = providerId;
       }
-      //M 将机器人发出回复同步写入本地聊天历史以便 channel/history 查询回溯。
+      //M 将机器人发出回复同步写入本地聊天历史以便追踪该聊天的收发记录。
       this.feishu.history.appendChatLog(appId, chatId, {
         messageId: JSON.stringify([this.name, appId, providerId || `out_${request.requestId}`]),
         nativeId: nativeOutId,

@@ -2,6 +2,7 @@
  * 基础工作区工具：time、read、list_dir、write，以及将用户 @图片接入模型请求的 session/before-model 监听。
  * 由原 base-tools 插件并入 file-tools；工具名、参数、会话范围与跟踪名均保持不变，便于无缝兼容。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -208,20 +209,15 @@ export class BaseTools {
 
   /**
    * 把模型给的相对路径落到这场会话的工作区里（解开符号链接再比）。
-   * 工作区是机器人的；飞书上 builder / guest 说话的这一轮是他的目录（utils/Workspace.ts 的 getWorkspace）。
+   * 工作区是机器人的；飞书上 builder / guest 说话的这一轮是他的目录（utils/Bots.ts 的 getSessionWorkspace）。
    * @param session 这场会话。
    * @param relative 相对工作区的路径。
    * @returns 解开符号链接后的绝对路径。
    * @throws 没有这个机器人、路径跑到工作区外面时抛错。
    */
   private getFile(session: Session, relative: string): string {
-    //M 先以当前机器人的工作区作为本轮路径解析的起点。
-    const botWorkspace = this.ctx.bots.get(session.row.bot)?.workspace;
-    if (botWorkspace === undefined) {
-      throw new Error(`没有这个机器人：${session.row.bot}`);
-    }
-    //M 按回话地址取本轮隔离工作区，再做符号链接物理越界校验。
-    const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
+    //M 按本轮来源选择目录，再校验目标的实际位置。
+    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, session);
     return workspaceModule.resolveWorkspacePath(workspace, relative);
   }
 }

@@ -2,20 +2,19 @@
  * 渠道消息索引（C 块，11-18，用户 #130）：各渠道的消息按聊天记进一张表，能按“渠道 + 聊天 + 时间范围 + 关键词”查。
  * 增量：听 channel/message（用户的话；飞书、微信、网页、命令行都是先落盘再发）、channel/reply（机器人的话，带来源快照和正文），
  *   键分别是 messageId、replyRequestKey，INSERT OR IGNORE 幂等。
- * 查：工具 channel_search、GET /api/memory/channel。外人（src7/Channels.ts 的 isHistoryOwner 不过，群里本人也算）只查这一轮来源快照里的这个聊天。
- * 补旧：scripts/Backfill_Channel_Index.ts 用这里的 ChannelIndex 写。
+ * 查：工具 memory_search、memory_get 和 GET /api/memory/channel。受限会话只查本轮来源聊天。
+ * 补旧：ztools/memory/Backfill_Channel_Index.ts 用这里的 ChannelIndex 写。
  * 归属键：每行带 memory_key（MemoryKey.ts 算，私聊归人、群归群、本机归本人），统一检索的 person、group 按它查。
  * 不用 FTS5：中文没有分词，unicode61 整句当一个词、trigram 查不了两个字的词；先按渠道、聊天、时间走索引缩小范围，再 LIKE。
  * 设计：docs/开发进度/132_渠道消息进记忆_20261118.md。
  */
 import type { Database } from 'bun:sqlite';
-import * as piAi from '@earendil-works/pi-ai';
+import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as protocolModule from '../../Channels.ts';
-import type { Search } from './Search.ts';
 import type { ChannelBackfill } from './ChannelBackfill.ts';
 import * as memoryKeyModule from './MemoryKey.ts';
 
@@ -73,6 +72,8 @@ export interface ChannelQuery extends ChannelScope {
   bot?: string;
   /** 只查明确 @ 过该机器人的消息。 */
   mentionedBot?: string;
+  /** 只读指定发言人的消息。 */
+  senderId?: string;
   /** 从这个时刻起（毫秒，含）；不给不限。 */
   since?: number;
   /** 到这个时刻止（毫秒，含）；不给不限。 */
@@ -101,8 +102,8 @@ function getMemoryKeyFilter(query: ChannelQuery): { sql: string; legacy: boolean
 const LIMIT_DEFAULT = 50;
 const LIMIT_MAX = 200;
 
-/** 工具结果里一条正文最多留多少字。 */
-const TEXT_MAX = 1000;
+/** 启动时生成签名密钥，游标只在同次运行内有效。 */
+const CURSOR_SECRET = crypto.randomBytes(32);
 
 
 /** 渠道消息索引：一张表 memory_channel_messages。 */
@@ -239,6 +240,57 @@ export class ChannelIndex {
    * @returns 命中的消息。
    */
   search(query: ChannelQuery): ChannelRow[] {
+    //M 搜索与翻页共用同一套授权和时间筛选。
+    const rows = this.searchRows(query, query.limit);
+    return rows.map(getRow);
+  }
+
+  /** 按同一聊天的入库顺序翻页，游标只在原查询范围可用。 */
+  page(query: ChannelQuery, before: string): { hits: ChannelRow[]; nextCursor: string | null } {
+    //M 签名绑定全部筛选条件，允许下一页调整条数。
+    const { limit, ...scope } = query;
+    const binding = JSON.stringify(scope);
+    const position = this.readCursor(before, binding);
+    const rows = this.searchRows(query, limit + 1, position);
+    const shown = rows.slice(0, limit);
+    let nextCursor: string | null = null;
+    const last = shown.at(-1);
+    if (rows.length > shown.length && last !== undefined) {
+      const values = [last['at'], last['id']];
+      const raw = Buffer.from(JSON.stringify(values)).toString('base64url');
+      const signature = this.signCursor(raw, binding);
+      nextCursor = `${raw}.${signature}`;
+    }
+    return { hits: shown.map(getRow), nextCursor };
+  }
+
+  /** 签名覆盖页边界与原查询条件。 */
+  private signCursor(raw: string, binding: string): string {
+    const value = `${raw}.${binding}`;
+    return crypto.createHmac('sha256', CURSOR_SECRET).update(value).digest('base64url');
+  }
+
+  /** 验证后把游标的时间与入库编号交给 SQL。 */
+  private readCursor(before: string, binding: string): [number, number] | undefined {
+    if (before === '') return undefined;
+
+    const [raw, signature, extra] = before.split('.');
+    const error = '历史翻页游标无效或与当前查询范围不匹配';
+    if (raw === undefined || signature === undefined || extra !== undefined) throw new Error(error);
+
+    const expected = this.signCursor(raw, binding);
+    if (signature !== expected) throw new Error(error);
+
+    const decoded = Buffer.from(raw, 'base64url').toString('utf8');
+    return JSON.parse(decoded) as [number, number];
+  }
+
+  /** 取索引原行，翻页时内部编号用来区分同毫秒的消息。 */
+  private searchRows(
+    query: ChannelQuery,
+    limit: number,
+    before?: [number, number],
+  ): Record<string, unknown>[] {
     //G 前台专用往来只能按会话权限读，渠道查询即使是本人也不能绕过前台范围。
     const conditions = ['front_only = 0'];
     const values: (string | number)[] = [];
@@ -266,6 +318,14 @@ export class ChannelIndex {
       conditions.push('EXISTS (SELECT 1 FROM json_each(mentioned_bots) WHERE value = ?)');
       values.push(query.mentionedBot);
     }
+    if (query.senderId !== undefined) {
+      conditions.push('sender_id = ?');
+      values.push(query.senderId);
+    }
+    if (before !== undefined) {
+      conditions.push('(at, id) < (?, ?)');
+      values.push(...before);
+    }
     //M 归属过滤保留已锁定聊天的老行；不限账号的本人筛选仍要求已打标。
     if (query.memoryKey !== undefined) {
       const filter = getMemoryKeyFilter(query);
@@ -282,11 +342,8 @@ export class ChannelIndex {
     //M 拼 SQL：没有条件就是全部。
     const where = conditions.join(' AND ');
     const sql = `SELECT * FROM memory_channel_messages WHERE ${where} ORDER BY at DESC, id DESC LIMIT ?`;
-    values.push(query.limit);
-
-    //M 查出来的行是表里的列名，用 getRow 逐行转成 ChannelRow 交回。
-    const rows = this.db.query(sql).all(...values) as Record<string, unknown>[];
-    return rows.map(getRow);
+    values.push(limit);
+    return this.db.query(sql).all(...values) as Record<string, unknown>[];
   }
 
   /** 按消息键定位，按时间和入库顺序取同一聊天前后的消息。 */
@@ -431,7 +488,7 @@ export function getReplyRow(request: protocolModule.ChannelReplyRequest): Channe
 
 /**
  * 这一轮能查多大范围：照来源快照（受管后台是派活时的 frontTask.sourceSnapshot，前台是 activeSourceSnapshot）。
- * 本人（isHistoryOwner：不是外人、不在群里，飞书本人或本机网页、命令行）全都能查；别的只查快照里这个聊天。
+ * 按本轮身份与来源划定范围，受限会话只查当前聊天。
  * @param session 调工具的会话。
  */
 export function getAccess(session: Session): ChannelAccess {
@@ -511,30 +568,8 @@ export function getQuery(args: Record<string, unknown>, scope: ChannelScope): Ch
   const until = getTime(args['until'], 'until');
   if (since !== undefined && until !== undefined && since > until) throw new Error('since 不能晚于 until');
 
-  return { ...scope, since, until, words, limit };
-}
-
-
-/**
- * 工具结果：一条一行“[时间] 渠道·聊天 发言人：正文”，新的在前。
- * @param rows 命中的消息。
- * @param query 查询（写在开头）。
- */
-export function getResultText(rows: ChannelRow[], query: ChannelQuery): string {
-  const where = `${query.channel ?? '所有渠道'}·${query.chat ?? '所有聊天'}`;
-  if (rows.length === 0) return `${where} 没找到消息`;
-
-  const lines = [`${where} 找到 ${String(rows.length)} 条（新的在前，最多 ${String(query.limit)} 条）：`];
-  for (const row of rows) {
-    const time = new Date(row.at).toLocaleString('sv-SE').slice(0, 16);
-    let who = row.senderName || row.senderId;
-    if (row.direction === 'bot') {
-      who = `机器人 ${row.bot}`;
-    }
-    const text = row.text.replace(/\s+/gu, ' ').slice(0, TEXT_MAX);
-    lines.push(`[${time}] ${row.channel}·${row.chat} ${who}：${text}`);
-  }
-  return lines.join('\n');
+  const senderId = utils.getStringField(args, 'senderId') || undefined;
+  return { ...scope, since, until, words, limit, senderId };
 }
 
 
@@ -553,14 +588,14 @@ export function readEnabled(raw: unknown): boolean {
 
 
 /**
- * 挂上渠道消息索引：听两个渠道事件写索引，登记工具 channel_search，http 在就开 GET /api/memory/channel。memory 的 apply 调。
+ * 挂上渠道消息索引的实时事件和 GET /api/memory/channel。
  * @param ctx memory 插件的 ctx。
  * @param index 索引。
  * @param rust 渠道同步任务，缺省时只写本地索引。
  * 副作用：登记监听、工具、接口。
  */
 export function applyChannelIndex(
-  ctx: cordis.Context, index: ChannelIndex, unified: Search, rust?: ChannelBackfill,
+  ctx: cordis.Context, index: ChannelIndex, rust?: ChannelBackfill,
 ): void {
   //M 用户的话：渠道先落盘再发 channel/message；记不上只打日志，不挡别人认领。
   ctx.on('channel/message', (message) => {
@@ -591,31 +626,6 @@ export function applyChannelIndex(
       console.error(`memory：机器人的回复记不进索引：${textModule.getErrorMessage(error)}`);
     }
   }, { prepend: true });
-
-  //M 工具 channel_search：前台、后台都给；外人那一轮 approval 的只读名单里有它，但只查得到自己这个聊天。
-  ctx.tools.register({
-    definition: {
-      name: 'channel_search',
-      description: '按渠道、聊天、时间、关键词查各渠道（飞书、微信、网页、命令行）的聊天记录，新的在前。'
-        + '本人：channel、chat 都可以写（chat 是飞书 chat_id、微信会话名、http:本机、cli:本机），不写就查全部；'
-        + '不是本人、或者在群里：只能查这个聊天，写了别的会被拒。'
-        + 'since、until 写成 2026-11-17 或 2026-11-17 08:30；query 是关键词，空格分开的几个都要有；limit 默认 50、最多 200。',
-      parameters: piAi.Type.Object({
-        channel: piAi.Type.Optional(piAi.Type.String({ description: '渠道：feishu、wechat、http、cli' })),
-        chat: piAi.Type.Optional(piAi.Type.String({ description: '聊天号' })),
-        since: piAi.Type.Optional(piAi.Type.String({ description: '从什么时候起' })),
-        until: piAi.Type.Optional(piAi.Type.String({ description: '到什么时候止' })),
-        query: piAi.Type.Optional(piAi.Type.String({ description: '关键词，空格分开' })),
-        limit: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, maximum: LIMIT_MAX, description: '最多几条，默认 50' })),
-      }),
-    },
-    sessionKinds: ['front', 'work'],
-    run: (args, session) => {
-      //M 兼容原参数和文本格式，查询和权限交给统一检索。
-      const { rows, query } = unified.findChannel(args, session);
-      return getResultText(rows, query);
-    },
-  });
 
   //M 接口：令牌由 http 统一查（本机来的不查），这里按本人全量查。
   void ctx.inject(['http'], (sub) => {

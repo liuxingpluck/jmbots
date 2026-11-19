@@ -9,6 +9,7 @@
  * 关系图（GraphRoutes.ts、GraphStore.ts、GraphSources.ts，原 memory-graph 并入）：GET /graph/、/api/memory-graph/* 与对话附带关系图链接提示。
  * 设计：docs/src7插件设计/memory.md。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -33,17 +34,17 @@ import * as storeModule from './Store.ts';
 
 /** 插件名。 */
 export const name = 'memory';
-//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。1.2.0：渠道消息索引（ChannelIndex.ts、工具 channel_search）。
+//M 插件版本号写成 x.y.z，供 plugins/Index.ts 加载时校验。
 //M 1.2.1：听请求事件 memory/request（record-history、search-history、embed）回 memory/result；前台“先查记忆”的提示（MEMORY_HINT）从 bots 挪来自己加。
 //M 1.6.0：不再托管 jmbots-memory（删 Services.ts、services 配置、/memory/* 转发、/api/memory/services），改由 programs 拉起；
 //M   只按 service_url 调 HTTP，连不上时检索、事件回执、工具都写明“记忆服务没在线”。
 //M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
-export const version = '1.10.4';
+export const version = '1.10.7';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
-export const inject = ['resources', 'tools', 'bots'];
+export const inject = ['resources', 'tools'];
 
 
 declare module '../../Sessions.ts' {
@@ -166,9 +167,8 @@ export class Memory {
     const session = request.session;
     const row = session.row;
 
-    //M 普通模型请求展示统一检索工具；channel_search 仍可从工具执行表调用。
-    const active = request.tools.filter((tool) => tool.name !== 'channel_search');
-    request.tools = active.map((tool) => {
+    //M 记忆文件工具只展示文件操作，正文检索由两个专用工具负责。
+    request.tools = request.tools.map((tool) => {
       if (tool.name !== 'memory') return tool;
 
       return { ...tool, description: FILE_DESCRIPTION, parameters: FILE_PARAMETERS };
@@ -343,13 +343,14 @@ export class Memory {
       throw new Error('私人记忆文件和知识库仅本人可访问');
     }
 
-    //G 会话的机器人要存在：自己的记忆目录（bot.memory）从它取。
-    const bot = this.ctx.bots.get(session.row.bot);
+    //G 沿用机器人归属，找不到配置时拒绝读取私有记忆。
+    const botName = session.row.bot;
+    const bot = botUtils.getBotConfig(this.ctx.resources.raw, botName);
     if (bot === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
 
     //M 公共记忆目录：所有机器人共用，scope 写 shared 才用它。
     const shared = this.ctx.resources.ensureRuntimeDir('memory');
-    let dir = bot.memory;
+    let dir = botUtils.getBotDir(this.ctx.resources, bot.name, 'memory');
     if (args['scope'] === 'shared') {
       dir = shared;
     }
@@ -421,7 +422,7 @@ export class Memory {
   /** 机器人的语言，不写是 zh（和 prompt 同一个读法）。 */
   private language(bot: string): string {
     //M 从机器人服务（bots）取这个机器人的配置，读 language；机器人不在或没写就是 zh。
-    return String(this.ctx.bots.get(bot)?.config['language'] ?? 'zh');
+    return botUtils.getBotLanguage(this.ctx.resources.raw, bot);
   }
 }
 
@@ -562,7 +563,7 @@ export class MemoryService extends cordis.Service {
     super(ctx, 'memory');
 
     //M 检索共用 Rust 网关和可选的渠道索引。
-    this.unified = new searchModule.Search(ctx, this, channelIndex, graphStore, disk);
+    this.unified = new searchModule.Search(ctx, this, channelIndex, graphStore, disk, frontArchive);
 
     //M 别的插件请记忆库办事走请求事件 memory/request：onRequest 按 action 调下面的方法，办完回 memory/result。
     //M   方法抛的错（记忆服务没在线、记不成、搜不成）转成 { ok: false, error }，调用方不干等超时。
@@ -814,7 +815,7 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   if (channelIndex !== undefined) {
     //M 实时队列始终接新事件，历史回填由资源守卫和手动开关控制。
     const backfill = new channelBackfillModule.ChannelBackfill(ctx, channelIndex, memoryService, backfillSettings);
-    channelIndexModule.applyChannelIndex(ctx, channelIndex, unified, backfill);
+    channelIndexModule.applyChannelIndex(ctx, channelIndex, backfill);
   }
 
   //M 关系图路由（GraphRoutes）和记忆库的 HTTP 接口（routes）：http 插件在才真正登记。
@@ -934,7 +935,7 @@ function routes(
       }
       if (typeof body['name'] !== 'string' || typeof body['content'] !== 'string') return reply.code(400).send({ error: '要给 name、content' });
       //G 指定了机器人就要存在，免得知识库文件写进没人用的目录。
-      if (bot !== '' && ctx.bots.get(bot) === undefined) return reply.code(400).send({ error: `没有这个机器人：${bot}` });
+      if (bot !== '' && botUtils.getBotConfig(ctx.resources.raw, bot) === undefined) return reply.code(400).send({ error: `没有这个机器人：${bot}` });
       try {
         //M 写一篇知识库文件并马上收进记忆库，成功交回文件路径；失败（名字不合法之类）回 400 并带原因。
         return { file: await store.writeKnowledge(bot, body['name'], body['content']) };

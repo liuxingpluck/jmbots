@@ -10,8 +10,6 @@ import * as textModule from '../../utils/Text.ts';
 import type { MessageRecord } from './Timeline.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
-import * as traceText from '../../../web/src/locales/Trace.ts';
-import * as trailModule from '../journal/Trail.ts';
 
 
 /** 一句回话的生成依据，形状照网页的 ReplyGeneration（web/src/Types.ts:149-172）。 */
@@ -241,7 +239,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   const journalQuery = { action: 'reply-lines', message: message.id, maxLines: EVENT_LIMIT, sessions: linkedSessions, to } as const;
   const journalOptions = {
     timeoutMs: TRACE_QUERY_TIMEOUT_MS,
-    onFallback: () => ({ requestId: '', lines: undefined }),
+    onFallback: () => ({ requestId: '', events: undefined }),
   };
   const usageQuery = { sessions, from, to, limit: USAGE_LIMIT };
   const usageOptions = {
@@ -266,13 +264,13 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   );
   const [journal, used] = await Promise.all([pendingJournal, pendingUsage]);
 
-  //M journal 返回截至本句回话的匹配行；cut 表示还有匹配行因上限未返回。
-  const events = journal.lines ?? [];
+  //M journal 返回截至本句回话的匹配行，已换成网页的事件外壳；cut 表示还有匹配行因上限未返回。
+  const events = journal.events ?? [];
   const cut = journal.cut ?? false;
 
   //M 缺流水时仅展示消息本身，缺用量时保留已有事件。
   let scope = 'exact';
-  if (journal.lines === undefined) {
+  if (journal.events === undefined) {
     scope = 'message-only';
     notes.push('没有流水明细或查询超时');
   }
@@ -321,34 +319,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
       createdAt: message.createdAt,
       file: '',
     }],
-    //M 跟踪行换成网页 TraceEvent 的外壳：type 是事件名或“模块.函数”，source 是听的人（函数行是发它的文件:行号），
-    //M   data 里放跟踪行本身（kind、发法、听的人、人话、代码、位置、变量），网页按 data.kind 认出这是新格式。
-    events: events.map((event) => {
-      let source = event.site;
-      const data: Record<string, unknown> = { kind: event.kind };
-      if (event.mode !== '') {
-        data['mode'] = event.mode;
-      }
-      if (event.kind === '事件') {
-        source = event.listeners.join('、');
-        data['listeners'] = event.listeners;
-        if (traceText.getTraceModeId(event.mode) !== event.mode) {
-          const text = trailModule.getEventTextId(event, event.name);
-          if (text !== '') data['text'] = text;
-        }
-      }
-      if (event.text !== '') {
-        data['text'] = event.text;
-      }
-      if (event.code !== '') {
-        data['code'] = event.code;
-      }
-      return {
-        id: event.id, type: event.name, at: event.at, source,
-        bot: event.bot, sessionId: event.sessionId, messageId: event.messageId, key: null, parent: null, depth: 0,
-        data: { ...data, site: event.site, ...event.vars },
-      };
-    }),
+    events,
     dispatches: [],
     usage: used.rows,
     usageScope: 'session-window',

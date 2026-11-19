@@ -8,6 +8,7 @@
  * 骨架的 resources.raw 是启动时读的、只读，这里改的文件要重启才生效。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -20,10 +21,10 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.6';
+export const version = '1.0.7';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
-export const inject = ['resources', 'http', 'bots'];
+export const inject = ['resources', 'http'];
 
 
 /** 退出前等多久，让回应先发出去。 */
@@ -117,7 +118,7 @@ class Settings {
       list = written['bots'] as { name?: unknown }[];
     }
     //G 同时比对配置文件与内存机器人表防止重名，命中则返回 400。
-    if (list.some((item) => item.name === botName) || this.ctx.bots.get(botName) !== undefined) {
+    if (list.some((item) => item.name === botName) || botUtils.getBotConfig(this.ctx.resources.raw, botName) !== undefined) {
       throw new failureModule.Failure(400, `已经有机器人「${botName}」了`);
     }
     //M 飞书：两个都空当没填；只填一个、或这个应用已经绑给别的机器人 → 400。

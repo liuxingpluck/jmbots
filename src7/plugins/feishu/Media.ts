@@ -3,6 +3,7 @@
  * 都是函数，不建 class；要用 SDK 客户端时从 feishu.client(应用号) 取。
  * 照 0.4 的 src/channels/Feishu.ts（describeContent、fetchRelated、send）、FeishuSdk.ts（postText）、FeishuMedia.ts（上传前查大小格式）。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -12,7 +13,6 @@ import type { FeishuAddress } from './index.ts';
 import * as cutModule from '../../utils/Cut.ts';
 import * as mime from '../../utils/Mime.ts';
 import * as textModule from '../../utils/Text.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import * as api from './Api.ts';
 import type { Feishu } from './index.ts';
 
@@ -109,8 +109,8 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
       }
       //M 将入参路径解析成工作区内规范路径，并对目录越界做 realpath 校验。
       const file = doc.getFile(ctx, session, args['path'] as string);
-      //G 只发这一轮工作区里的文件：builder 说话时是他的目录（utils/Workspace.ts 的 getWorkspace），别的是机器人的工作区。
-      const workspace = workspaceModule.getWorkspace(ctx.bots.get(session.row.bot)!.workspace, address);
+      //G 只发这一轮工作区里的文件：builder 说话时是他的目录（utils/Bots.ts 的 getSessionWorkspace），别的是机器人的工作区。
+      const workspace = botUtils.getSessionWorkspace(ctx.resources, session);
       const relative = path.relative(fs.realpathSync(workspace), fs.realpathSync(file));
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
         throw new Error('只能发送这一轮工作区里的文件');

@@ -24,7 +24,8 @@ const APPS = [
 
 function getConfig(groups: unknown[], apps = APPS.slice(0, 1)): feishu.FeishuConfig {
   const ctx = new cordis.Context();
-  ctx.provide('resources', { raw: { channels: { feishu: apps } }, config: { plugins: [] } });
+  const raw = { bots: [{ name: BOT }, { name: '助手' }], channels: { feishu: apps } };
+  ctx.provide('resources', { raw, config: { plugins: [] } });
   ctx.provide('bots', { get: (name: string) => ({ name }) });
   return feishu.checkConfig(ctx, { groups });
 }
@@ -83,7 +84,7 @@ test('定时标准消息发给原群指定机器人，日报工具只查同群�
       routing: { listenOnly: false, autoFinal: true, sessionId: 'synthetic-report-session' },
     });
     expect(message.text).toContain(PROMPT);
-    expect(message.text).toContain('2026-11-18 17:30 至 2026-11-19 17:30');
+    expect(message.text).toContain('since 设为 2026-11-18 17:30，until 设为 2026-11-19 17:30');
 
     const claimKey = channel.getClaimKey(message.messageId, BOT);
     const replyRoundKey = channel.getReplyRoundKey(message.messageId, BOT, 'synthetic-report-session');
@@ -104,13 +105,13 @@ test('定时标准消息发给原群指定机器人，日报工具只查同群�
     expect(index.search(query).map((row) => row.text)).toEqual(['小林完成联调']);
 
     const parameters = piAi.Type.Object({});
-    const tools = ['channel_reply', 'channel_search', 'read'].map((name) => ({ name, description: name, parameters }));
+    const tools = ['channel_reply', 'memory_get', 'read'].map((name) => ({ name, description: name, parameters }));
     const signal = new AbortController().signal;
     const request: ChatRequest = {
       session, tools, signal, model: 'fake/report', thinking: 'low', system: [], messages: [],
     };
     await ctx.serial('session/before-model', request);
-    expect(request.tools.map((tool) => tool.name)).toEqual(['channel_reply', 'channel_search']);
+    expect(request.tools.map((tool) => tool.name)).toEqual(['channel_reply', 'memory_get']);
     const denied = { session, call: { name: 'read' } } as ToolGate;
     await ctx.serial('session/before-tool', denied);
     expect(denied.deny).toContain('本群');
@@ -137,7 +138,7 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
     daily.bindReportTools(ctx);
 
     ctx.tools.register({
-      definition: { name: 'channel_search', description: '合成群汇报', parameters: piAi.Type.Object({}) },
+      definition: { name: 'memory_get', description: '合成群汇报', parameters: piAi.Type.Object({}) },
       sessionKinds: ['front'],
       run: () => '小林：联调完成。',
     });
@@ -155,7 +156,7 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
       }
       const call = last?.role === 'toolResult'
         ? piAi.fauxToolCall('channel_reply', { text: summary })
-        : piAi.fauxToolCall('channel_search', {});
+        : piAi.fauxToolCall('memory_get', {});
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
     });
     const ended = Promise.withResolvers<void>();

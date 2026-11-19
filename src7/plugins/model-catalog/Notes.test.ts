@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
+import { registerHttpErrorHandler } from '../http/index.ts';
 import * as checks from './Checks.ts';
 import * as utils from '../../utils/index.ts';
 import * as notesModule from './Notes.ts';
@@ -66,6 +67,8 @@ async function world(
 
   const ctx = new cordis.Context();
   const app = fastify();
+  //M 路由断言沿用生产 HTTP 的错误响应。
+  registerHttpErrorHandler(app);
   closers.push(() => app.close());
   closers.push(() => ctx.fiber.dispose());
   await ctx.plugin(FakeSessions, sessions);

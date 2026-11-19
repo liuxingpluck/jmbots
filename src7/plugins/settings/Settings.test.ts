@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
+import { registerHttpErrorHandler } from '../http/index.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as settings from './index.ts';
 
@@ -34,11 +35,15 @@ async function setup(withBotReply = true, extraConfig: string[] = []) {
 
   const ctx = new cordis.Context();
   const app = fastify.default();
+  //M 使用生产 HTTP 的统一错误响应。
+  registerHttpErrorHandler(app);
   cleanups.push(() => app.close(), () => ctx.fiber.dispose());
 
   const bots = new Map<string, { memory: string }>();
+  const known: Array<{ name: string }> = [];
   ctx.provide('resources', {
     root,
+    raw: { bots: known },
     config: { providers: { mock: {} } },
     ensureRuntimeDir: (...segments: string[]) => {
       const target = path.join(root, ...segments);
@@ -47,9 +52,6 @@ async function setup(withBotReply = true, extraConfig: string[] = []) {
     },
   });
   ctx.provide('http', { app });
-  ctx.provide('bots', {
-    get: (bot: string) => bots.get(bot),
-  });
   if (withBotReply) {
     //M 模拟机器人登记并返回新建的记忆目录，测试不调用机器人服务的方法。
     events.onRequestEvent(ctx, 'bot/request', 'bot/result', (request) => {
@@ -59,6 +61,7 @@ async function setup(withBotReply = true, extraConfig: string[] = []) {
       const memory = fs.mkdtempSync(path.join(root, 'bot-memory-'));
       const bot = { name, memory, workspace: root };
       bots.set(name, bot);
+      known.push(request.config);
       return { ok: true, bot };
     });
   }

@@ -16,6 +16,7 @@ import * as cordis from 'cordis';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
+import * as botUtils from '../../utils/Bots.ts';
 import * as botsPlugin from './index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 
@@ -165,6 +166,7 @@ test('bot/request 有人答：hand、save-file、add、accept-result 都回 bot/
   expect(added.bot?.name).toBe('新来的');
   expect(added.bot?.memory).toBe(ctx.bots.get('新来的')?.memory);
   expect(fs.existsSync(added.bot?.workspace ?? '')).toBe(true);
+  expect(botUtils.getBotConfig(ctx.resources.raw, '新来的')).toEqual(add.config);
 
   //M accept-result：排进前台的结果队列，回执带 queued 和结果键；同键同内容再交是 duplicate。
   const front = ctx.sessions.create({ kind: 'front', bot: '助手', customer: 'test:u2' });

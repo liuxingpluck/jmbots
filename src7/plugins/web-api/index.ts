@@ -1,4 +1,4 @@
-﻿/**
+/**
  * web-api：HTTP 渠道，加上网页要的全部核心接口。
  * 它是一个渠道（渠道名 http）：POST /api/message 收话，记进自己的收件表 web_messages，用消息号当回话地址发 channel/message；
  * 模型一轮里每调一次 channel_reply（还有零次兜底、审批直回）都经 channel/reply 追加到那条消息的回话清单，一轮收尾（channel/settled）标成回完。
@@ -9,6 +9,7 @@
  * 文件：本文件（渠道和会话、机器人的接口）、Timeline.ts（收件表、时间线、补取、搜索）、Trace.ts（步骤、追溯、生成依据）。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
@@ -26,13 +27,11 @@ import * as checksModule from '../../utils/Checks.ts';
 import * as protocol from '../../Channels.ts';
 import * as outbound from '../approval/Outbound.ts';
 import type { ProviderReceipt } from '../programs/ChannelSend.ts';
-import { WebHistory } from './History.ts';
 
 
 /** 插件名。 */
 export const name = 'web-api';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-//M 1.1.2：新增 History.ts（WebHistory）响应 channel/history，支持本人跨渠道与网页会话查历史。
 //M 1.1.3：指定会话、引用别的渠道的消息也走 channel/message（routing.sessionId、replyOrigin），去掉 bot.hand 旁路；
 //M   网页改成 channel_tool：一轮里 channel_reply 几次就追加几条，收尾（channel/settled）才标回完；role 写 owner；
 //M   别的渠道的回话按“标准消息号 + 机器人”精确挂回（source_id 列），不再按地址找最新一行。
@@ -41,7 +40,8 @@ export const name = 'web-api';
 //M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
 //M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
 //M 1.1.16：Timeline.insert 的跟踪点带 sourceId（标准消息号），journal 按它把渠道那几行串在收件行前面。
-export const version = '1.1.16';
+//M 1.1.19：回话追溯不再 import journal/Trail.ts：reply-lines 回的已是网页事件外壳 events，流水行换壳那段并进 journal/Trace.ts。
+export const version = '1.1.19';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -172,7 +172,6 @@ class WebApi {
     requestEventModule.onRequestEvent(ctx, 'channel/send', 'channel/sent', remind, outboundOptions);
 
     //M 登记网页历史监听，为渠道历史工具提供分页结果。
-    new WebHistory(ctx);
 
     //M 语音只在 ASR 确认整句后写入时间线，使用与半句任务相同的标准来源号。
     ctx.on('voice/record', (message, sessionId) => {
@@ -424,8 +423,8 @@ class WebApi {
     }
 
     //G 按请求和引用信息确定目标机器人，并核对指定会话是否归它。
-    const wanted = body.bot ?? quoted?.bot ?? session?.bot ?? this.ctx.bots.list()[0]?.name;
-    if (typeof wanted !== 'string' || this.ctx.bots.get(wanted) === undefined) {
+    const wanted = body.bot ?? quoted?.bot ?? session?.bot ?? botUtils.getDefaultBot(this.ctx.resources.raw);
+    if (typeof wanted !== 'string' || botUtils.getBotConfig(this.ctx.resources.raw, wanted) === undefined) {
       throw new failureModule.Failure(400, `没有这个机器人：${String(wanted)}`);
     }
     if (session !== undefined && session.bot !== wanted) {
@@ -703,7 +702,7 @@ class WebApi {
     if (!outbound.takeChannelSendApproval(call)) {
       return { status: 'failed', reason: '没有有效的一次性发送批准' };
     }
-    if (this.ctx.bots.get(bot) === undefined) return { status: 'failed', reason: '原机器人已不存在' };
+    if (botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) return { status: 'failed', reason: '原机器人已不存在' };
 
     const sourceId = `reminder:${call.intentId}`;
     const session = this.getOrCreateWebFront(bot);
@@ -1225,7 +1224,8 @@ class WebApi {
     const pending = listed.items ?? [];
 
     //M 为每个机器人汇总审核项与运行会话，计算网页显示的状态。
-    return this.ctx.bots.list().map((bot) => {
+    const bots = botUtils.getBotConfigs(this.ctx.resources.raw);
+    return bots.map((bot) => {
       //M 干活中的后台子会话也算（有 parent，不出现在会话下拉里，但机器人应显示在干活）。
       const running = this.ctx.sessions.find({ bot: bot.name, state: 'running' }).length;
       const waiting = pending.filter((item) => (
@@ -1241,7 +1241,7 @@ class WebApi {
       }
 
       //M 在机器人没有设置语言时给网页默认语言。
-      const language = getBotLanguage(bot.config);
+      const language = botUtils.getBotLanguage(this.ctx.resources.raw, bot.name);
       return { name: bot.name, language, status, running, queued: 0, approvals };
     });
   }
@@ -1253,27 +1253,29 @@ class WebApi {
    */
   private botInfo(botName: string): Record<string, unknown> {
     //G 机器人不存在时用 404 结束详情查询。
-    const bot = this.ctx.bots.get(botName);
+    const bot = botUtils.getBotConfig(this.ctx.resources.raw, botName);
     if (bot === undefined) throw new failureModule.Failure(404, `没有这个机器人：${botName}`);
 
-    const index = ['索引.md', 'index.md'].map((file) => path.join(bot.memory, file)).find((file) => fs.existsSync(file));
+    const memory = botUtils.getBotDir(this.ctx.resources, botName, 'memory');
+    const workspace = botUtils.getBotDir(this.ctx.resources, botName, 'workspace');
+    const index = ['索引.md', 'index.md'].map((file) => path.join(memory, file)).find((file) => fs.existsSync(file));
     let memoryIndex = '';
     if (index !== undefined) {
       memoryIndex = fs.readFileSync(index, 'utf8');
     }
 
     //M 为详情页提供机器人的语言、目录和记忆入口。
-    const language = getBotLanguage(bot.config);
+    const language = botUtils.getBotLanguage(this.ctx.resources.raw, bot.name);
     return {
       name: bot.name,
       language,
       paths: {
         botDir: path.join(this.ctx.resources.root, 'bots', bot.name),
-        messageDir: path.join(bot.workspace, 'inbox'),
-        workspaceRoot: bot.workspace,
-        memoryDir: bot.memory,
+        messageDir: path.join(workspace, 'inbox'),
+        workspaceRoot: workspace,
+        memoryDir: memory,
       },
-      workspaces: [{ name: 'workspace', description: '机器人的工作区：工具在这里读写文件，收到的附件在 inbox/ 下', dir: bot.workspace }],
+      workspaces: [{ name: 'workspace', description: '机器人的工作区：工具在这里读写文件，收到的附件在 inbox/ 下', dir: workspace }],
       memoryIndex,
     };
   }
@@ -1311,17 +1313,6 @@ class WebApi {
 }
 
 
-/**
- * 读取机器人的页面语言，无字符串配置时使用中文。
- * @param config 机器人配置。
- * @returns 页面语言标识。
- */
-function getBotLanguage(config: Record<string, unknown>): string {
-  const language = config['language'];
-  if (typeof language === 'string') return language;
-
-  return 'zh';
-}
 
 
 /**

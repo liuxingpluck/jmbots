@@ -1,8 +1,9 @@
-﻿/**
+/**
  * 收件表 web_messages 和网页的时间线：一条消息给网页的样子、时间线（分页、取变化）、按号补取、搜索。
  * HTTP 来的、别的渠道（飞书、命令行）来的消息都记在这张表里，一条消息一行，回话追加在它的 replies 里。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fsp from 'node:fs/promises';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -694,7 +695,7 @@ export class Timeline {
     //G 按号补取必须锁定一个已注册的机器人。
     const bot = query['bot'];
     if (bot === undefined || bot === '') throw new failureModule.Failure(400, '补取原消息必须写 bot');
-    if (this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
+    if (botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
     //G 检查编号清单和上限，再按编号补取记录。
     const tokens = (query['ids'] ?? '').split(',');
@@ -728,7 +729,7 @@ export class Timeline {
 
     //G 搜索指定机器人时先检查它存在，空参数则查全部。
     const bot = query['bot'] || undefined;
-    if (bot !== undefined && this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
+    if (bot !== undefined && botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
     //M limit 在入口查一次（utils/Checks.ts 的 checkCount），没写按默认，超了按上限。
     const wantedLimit = checks.checkCount(query['limit'], 'limit') ?? SEARCH_LIMIT;
@@ -835,10 +836,10 @@ export class Timeline {
    */
   getBot(bot: string | undefined): string | undefined {
     //M 没有指定机器人时使用名单中的第一个。
-    if (bot === undefined || bot === '') return this.ctx.bots.list()[0]?.name;
+    if (bot === undefined || bot === '') return botUtils.getDefaultBot(this.ctx.resources.raw);
 
     //G 显式指定的机器人必须存在，避免把无效名称当成默认目标。
-    if (this.ctx.bots.get(bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
+    if (botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) throw new failureModule.Failure(400, `没有这个机器人：${bot}`);
 
     return bot;
   }

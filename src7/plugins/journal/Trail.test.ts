@@ -4,7 +4,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { LINES, SESSION as S } from './tests/Lines.ts';
-import { getNode, getTrail, type TrailLine } from './Trail.ts';
+import type { TrailLine } from '../../utils/Trail.ts';
+import { getNode, getTrail } from './Trail.ts';
 import * as traceText from '../../../web/src/locales/Trace.ts';
 
 

@@ -11,6 +11,7 @@
  * 每次变化发 progress/update（一场一秒最多一次，结束马上发）：feishu 画卡片、journal 记流水、网页 GET /api/progress 轮询。
  * 照 0.4 src/capabilities/Progress.ts、Review.ts。设计见同目录 说明.md 的「设计要点」一节（含复盘）。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -34,10 +35,10 @@ export const name = 'progress';
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
 //M 1.1.6：接入已登记飞书群的每日进度调度。
 //M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
-export const version = '1.1.10';
+export const version = '1.1.12';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
-export const inject = ['resources', 'bots', 'sessions'];
+export const inject = ['resources', 'sessions'];
 
 
 /** progress 插件配置（plugins[progress].config）。 */
@@ -944,9 +945,9 @@ export class Progress extends cordis.Service {
    * 副作用：保存接手会话与进度标记，定格老会话，通知用户结果。
    */
   private async handOff(item: Item): Promise<void> {
-    //M 取所属机器人实例和老会话记录文件路径，为创建新会话接手准备上下文。
+    //M 取所属机器人配置和老会话记录文件路径，为创建新会话接手准备上下文。
     const row = item.session.row;
-    const bot = this.ctx.bots.get(row.bot);
+    const bot = botUtils.getBotConfig(this.ctx.resources.raw, row.bot);
     const md = path.join(this.ctx.resources.root, 'bots', row.bot, 'sessions', row.id, '对话.md');
     const note = item.handoffNote ?? '';
     if (bot === undefined) {
@@ -1221,7 +1222,7 @@ export class Progress extends cordis.Service {
   /** 机器人的语言，不写是 zh。 */
   private language(item: Item): string {
     //M 读取当前机器人配置中的首选语言，缺省时按中文选用提示词。
-    return String(this.ctx.bots.get(item.bot)?.config['language'] ?? 'zh');
+    return botUtils.getBotLanguage(this.ctx.resources.raw, item.bot);
   }
 
   /**

@@ -1,4 +1,5 @@
 /** 带持久化的结果队列、状态推进、回复收尾与重启恢复。 */
+import * as botUtils from '../../utils/Bots.ts';
 import * as crypto from 'node:crypto';
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
@@ -712,8 +713,8 @@ export class DispatchResults {
    */
   private isRelayDirectSession(session: Session): boolean {
     //M 机器人配置里写了 relay: direct，就是整个机器人都转给外部助手。
-    const bot = this.home.bots.get(session.row.bot);
-    if (bot !== undefined && bot.config['relay'] === 'direct') return true;
+    const bot = botUtils.getBotConfig(this.home.resources.raw, session.row.bot);
+    if (bot !== undefined && bot['relay'] === 'direct') return true;
 
     return session.row.kind === 'relay';
   }

@@ -127,6 +127,28 @@ const LISTEN_WAIT_MS = 80_000;
 const LISTEN_RETRY_MS = 2000;
 
 
+/** 为生产服务和 Fastify 测试替身安装同一套错误响应。 */
+export function registerHttpErrorHandler(app: fastify.FastifyInstance): void {
+  //M 保留业务和 Fastify 的状态码，其他异常按 500 回。
+  app.setErrorHandler((error, _request, reply) => {
+    let status = 500;
+    const statusCode = (error as { statusCode?: unknown } | null)?.statusCode;
+    if (typeof statusCode === 'number' && statusCode >= 400 && statusCode <= 599) {
+      status = statusCode;
+    }
+    if (error instanceof failureModule.Failure) {
+      status = error.status;
+    }
+
+    //M 客户端从 error 字段读实际错误信息。
+    const message = textModule.getErrorMessage(error);
+    const body = { error: message };
+    reply.code(status);
+    return reply.send(body);
+  });
+}
+
+
 /** HTTP 服务。 */
 export class Http extends cordis.Service {
   /** Fastify 的实例。别的插件在自己挂上的时候拿它登记路径；开始监听以后不能再加。 */
@@ -162,23 +184,8 @@ export class Http extends cordis.Service {
     //M forceCloseConnections：拔插件时连着的 keep-alive 连接一起关，不然 close 要等它们自己断。
     this.app = fastify.default({ logger: false, bodyLimit: BODY_LIMIT, forceCloseConnections: true });
 
-    //M 接口共用错误正文，保留业务和 Fastify 的状态码，其他异常按 500 回。
-    this.app.setErrorHandler((error, _request, reply) => {
-      let status = 500;
-      const statusCode = (error as { statusCode?: unknown } | null)?.statusCode;
-      if (typeof statusCode === 'number' && statusCode >= 400 && statusCode <= 599) {
-        status = statusCode;
-      }
-      if (error instanceof failureModule.Failure) {
-        status = error.status;
-      }
-
-      //M 客户端从 error 字段读实际错误信息。
-      const message = textModule.getErrorMessage(error);
-      const body = { error: message };
-      reply.code(status);
-      return reply.send(body);
-    });
+    //M 根实例统一生成错误响应，各路由仍保留自己的业务状态码。
+    registerHttpErrorHandler(this.app);
 
     //M 先挂登记簿的钩子，后面登记的每条路径（含下面的健康检查）都记下来。
     routesModule.watchRoutes(this.app, this.routes);

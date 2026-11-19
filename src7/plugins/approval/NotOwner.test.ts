@@ -52,7 +52,7 @@ const review = { reply: '{"safe": false, "risk": "出了目录"}', asked: [] as 
 class FakeResources extends cordis.Service {
   db = new Database(':memory:');
   root = root;
-  raw = {};
+  raw = { bots: [{ name: '周小灵' }] };
   config = { providers: {} };
   constructor(ctx: cordis.Context) {
     super(ctx, 'resources');
@@ -66,20 +66,6 @@ class FakeResources extends cordis.Service {
   /** base-tools 问模型收不收图：都不收。 */
   getModel(): { input: string[] } {
     return { input: ['text'] };
-  }
-}
-
-
-/** 假的 bots：一个机器人周小灵，工作区在临时目录里。 */
-class FakeBots extends cordis.Service {
-  constructor(ctx: cordis.Context) {
-    super(ctx, 'bots');
-  }
-  list(): unknown[] {
-    return [{ name: '周小灵' }];
-  }
-  get(name: string): unknown {
-    return name === '周小灵' ? { name, workspace: BOT_WORKSPACE, config: {} } : undefined;
   }
 }
 
@@ -124,17 +110,16 @@ const GUEST = { ...OWNER, openId: 'ou_friend', owner: false, role: 'guest', work
 async function ready(): Promise<{ app: cordis.Context; specs: Map<string, ToolSpec> }> {
   const app = new cordis.Context();
   await app.plugin(FakeResources);
-  await app.plugin(FakeBots);
   await app.plugin(FakeSessions);
   await app.plugin(FakeTools);
   await app.plugin(approvalModule, {});
   await app.plugin(fileTools);
   await app.plugin(execModule);
 
-  //M 系统提示词 11-17 并进 bots（bots/Prompt.ts）：这里不挂整个 bots，只把 Prompt 挂成一个小插件（要 resources、bots，和 bots 里一样）。
+  //M 系统提示词 11-17 并进 bots（bots/Prompt.ts）：这里不挂整个 bots，只把 Prompt 挂成一个小插件（从 resources 读配置）。
   const promptPlugin = {
     name: 'prompt-test',
-    inject: ['resources', 'bots'],
+    inject: ['resources'],
     apply: (ctx: cordis.Context): void => {
       new promptModule.Prompt(ctx);
     },
@@ -145,9 +130,9 @@ async function ready(): Promise<{ app: cordis.Context; specs: Map<string, ToolSp
 }
 
 
-/** 一场飞书会话，回话地址是 address。 */
-function getSession(address: unknown): { id: string; row: Record<string, unknown> } {
-  return { id: 's1', row: { id: 's1', kind: 'work', bot: '周小灵', channel: 'feishu', address, messages: [] } };
+/** 一场会话（默认飞书），渠道是 channel，回话地址是 address。 */
+function getSession(address: unknown, channel = 'feishu'): { id: string; row: Record<string, unknown> } {
+  return { id: 's1', row: { id: 's1', kind: 'work', bot: '周小灵', channel, address, messages: [] } };
 }
 
 
@@ -157,14 +142,16 @@ function getSession(address: unknown): { id: string; row: Record<string, unknown
  * @param address 会话现在记的回话地址。
  * @param call 要执行的工具名。
  * @param args 这次调用的参数；不写是空的。
+ * @param channel 会话的渠道；不写是飞书。
  */
 async function ask(
   app: cordis.Context,
   address: unknown,
   call = 'exec',
   args: Record<string, unknown> = {},
+  channel = 'feishu',
 ): Promise<{ tools: string[]; system: string[]; denied?: string }> {
-  const session = getSession(address);
+  const session = getSession(address, channel);
   const request = { session, model: 'fake/text', messages: [], system: [] as string[], tools: TOOLS.map((name) => ({ name })) };
   await app.serial('session/before-model', request as unknown as ChatRequest);
 
@@ -207,11 +194,20 @@ describe('owner：什么都能用', () => {
     expect(fs.existsSync(path.join(BOT_WORKSPACE, 'owner.txt'))).toBe(true);
   });
 
-  test('没写 role 的渠道（网页）照旧全有', async () => {
+  test('没写 role 的网页、命令行照旧全有', async () => {
     const { app } = await ready();
-    const result = await ask(app, { messageId: 'm1' });
-    expect(result.tools).toEqual(TOOLS);
-    expect(result.denied).toBeUndefined();
+    for (const channel of ['http', 'cli']) {
+      const result = await ask(app, { messageId: 'm1' }, 'exec', {}, channel);
+      expect(result.tools).toEqual(TOOLS);
+      expect(result.denied).toBeUndefined();
+    }
+  });
+
+  test('没写 role、owner 的其他渠道（微信这类）算外人：只给只读工具，exec 被拦', async () => {
+    const { app } = await ready();
+    const result = await ask(app, { messageId: 'm1' }, 'exec', {}, 'wechat');
+    expect(result.tools).toEqual(['read', 'find', 'web_search', 'hand_session', 'relay_send']);
+    expect(result.denied).toContain('不是用户本人');
   });
 });
 

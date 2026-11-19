@@ -1,4 +1,4 @@
-﻿/**
+/**
  * web-api 接入 channel/message 后的冒烟与离线测试（渠道统一第 2、3、4 步）：
  *   1. POST /api/message 返回 { id, file: '' } 与原先一字不差；
  *      channel/message 只发 1 次，目标机器人只认领 1 次，回复照旧落进 GET /api/messages/:id 的 replies；
@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
+import { registerHttpErrorHandler } from '../http/index.ts';
 import * as channels from '../../Channels.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
@@ -80,6 +81,8 @@ class FakeHttp extends cordis.Service {
   constructor(ctx: cordis.Context) {
     super(ctx, 'http');
     this.app = fastify.default({ logger: false });
+    //M 注入请求使用生产 HTTP 的错误正文和状态码。
+    registerHttpErrorHandler(this.app);
     ctx.effect(() => () => void this.app.close());
   }
 
@@ -554,20 +557,18 @@ test('回话追溯查询流水和用量，无应答时保留消息与缺项说�
   const stopJournal = requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (query) => {
     expect(query).toMatchObject({ action: 'reply-lines', message: id, maxLines: 500, sessions: [sessionId] });
     return {
-      lines: [{
+      events: [{
         id: 1,
+        type: '测试事件',
         at: 0,
-        kind: '事件' as const,
-        name: '测试事件',
-        mode: '通知',
-        listeners: ['测试插件'],
-        text: '',
-        code: '',
-        site: 'WebApi.test.ts',
+        source: '测试插件',
         bot: '助手',
         sessionId,
         messageId: id,
-        vars: {},
+        key: null,
+        parent: null,
+        depth: 0,
+        data: { kind: '事件', mode: '通知', listeners: ['测试插件'], site: 'WebApi.test.ts' },
       }],
     };
   });

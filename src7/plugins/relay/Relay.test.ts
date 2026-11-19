@@ -174,6 +174,10 @@ function world(db = new Database(':memory:')): World {
     resources: {
       db,
       root,
+      get raw() {
+        const config = { ...bot.config, name: bot.name };
+        return { bots: [config] };
+      },
       ensureRuntimeDir: (...parts: string[]): string => {
         const full = path.join(root, ...parts);
         fs.mkdirSync(full, { recursive: true });

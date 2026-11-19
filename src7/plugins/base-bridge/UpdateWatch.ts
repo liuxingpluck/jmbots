@@ -6,6 +6,7 @@
  * 和 approval、bots 说话都走事件（契约第五节第一份 #10–#12、#27）：没挂 approval 时当没有待确认、登记不上就记一行跳过。
  * 默认关闭：需在 plugins[base-bridge].config.update_watch 显式传 true 或对象才开启。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
@@ -244,7 +245,7 @@ export class UpdateWatch {
     if (waiting.some((item) => (item.payload as { version?: string } | null)?.version === available.version)) return;
 
     //M 选第一个在线配置的机器人作为审批条目与结果播报的归属。
-    const bot = this.ctx.bots.list()[0]?.name;
+    const bot = botUtils.getDefaultBot(this.ctx.resources.raw);
     if (bot === undefined) return;
 
     //M 把各版本的更新内容拼成一段（最多 600 字），连同风险建议写进待确认的细节。

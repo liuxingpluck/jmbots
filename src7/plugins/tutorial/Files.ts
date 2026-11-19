@@ -15,11 +15,14 @@ import * as snapshotModule from './Snapshot.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as bootModule from './Boot.ts';
 import type * as stateModule from './State.ts';
-import * as trailModule from '../journal/Trail.ts';
+import type * as trailModule from '../../utils/Trail.ts';
 
 
 /** 流水查询最多等五秒。 */
 const JOURNAL_TIMEOUT_MS = 5000;
+
+/** 向 journal 要一条消息的轨迹时，筛完消息和相关会话后最多取几行。 */
+export const TRAIL_MAX_LINES = 800;
 
 /** 一行拍下的那份：什么时刻、运行时变量。 */
 export interface Taken {
@@ -260,6 +263,27 @@ export class FlowFiles {
   }
 
   /**
+   * 问 journal 把启动行收成启动轨迹（消息号 0，和请求轨迹同一个格式）。
+   * @param lines 启动录下的行（boot.getLines()）。
+   * @param notes 关键变量的说明表（boot.notes）。
+   * @returns 启动轨迹。
+   * @throws journal 没挂、超时或没回轨迹时抛：启动文件、启动画布都靠它，没有就是出错。
+   */
+  async getBootTrail(lines: trailModule.TrailLine[], notes: Record<string, string>): Promise<trailModule.Trail> {
+    const request = { action: 'boot-trail', lines, notes } as const;
+    const options = {
+      timeoutMs: JOURNAL_TIMEOUT_MS,
+      onFallback: () => ({ requestId: '' }),
+    };
+
+    //M 通过事件请求启动轨迹；回执里没有 trail 就是 journal 没挂或超时。
+    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
+    if (result.trail === undefined) throw new Error('journal 没有交回启动轨迹（没挂或超时）');
+
+    return result.trail;
+  }
+
+  /**
    * 文件里用户那句话、渠道、机器人：只读开头 HEAD_BYTES 字节，不把整份（可能几十 MB 的快照）读进来。
    * @param full 文件的完整路径。
    * @returns preview/channel/bot；找不到是空串。
@@ -332,7 +356,7 @@ export class FlowFiles {
     //M 读取全部启动轨迹行并对齐各行快照，合并成可独立回看的启动文件。
     const lines = await boot.getLines();
     const taken = lines.map((line) => boot.getSnapshot(line.id));
-    const trail = trailModule.getBootTrail(lines, boot.notes);
+    const trail = await this.getBootTrail(lines, boot.notes);
     return addShots(trail, taken);
   }
 
@@ -343,7 +367,7 @@ export class FlowFiles {
    */
   private async getMessageFile(message: number, shots: stateModule.Shots): Promise<FlowFile> {
     //M 只有取得轨迹才生成新快照，查不到就保留已有文件。
-    const got = await this.getMessageTrail(message, trailModule.TRAIL_MAX_LINES);
+    const got = await this.getMessageTrail(message, TRAIL_MAX_LINES);
     if (got === undefined) throw new Error(`跟踪行里没有消息 ${String(message)}`);
 
     //M journal 挑出的行逐行对回内存快照，再与轨迹的步配对打包。

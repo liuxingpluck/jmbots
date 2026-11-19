@@ -2,7 +2,6 @@
  * 外部程序的渠道回调，所有外部渠道程序共用（微信、INS、AOBW 客服……）：
  *   入站：程序 POST <回调前缀>/channel/message（带 x-jmbots-key），校验后发标准 channel/message，回收下、重复或拒收；
  *   回复：channel/reply 的渠道登记给了程序时，经骨架 registerTextReply 转给程序的 /jmbots/v1/channel/reply，照程序的回执回 channel/replied；
- *   历史：channel/history 的渠道登记给了程序时，按权限向程序的 /jmbots/v1/channel/history 要一页，签好游标回 channel/history-result。
  * 认身份：Host 每次拉起发一把一次性密钥，只在子进程环境变量里；入站要带对，渠道名只能是 config 给这个程序登记的。
  */
 import * as timers from 'node:timers/promises';
@@ -20,8 +19,6 @@ import type * as specModule from './Spec.ts';
 
 /** 回复接口最多等多久：比 requestChannelReply 的 30 秒短，超时自己记成不确定。 */
 const REPLY_TIMEOUT_MS = 25_000;
-/** 历史接口最多等多久：比 requestChannelHistory 的 15 秒短。 */
-const HISTORY_TIMEOUT_MS = 12_000;
 /** 附件原件留在程序里，主程序拿不到，机器人看到的是这句说明。 */
 const ATTACHMENT_REASON = '原件在外部程序里，主程序只拿到摘要';
 
@@ -33,25 +30,13 @@ interface Owner {
   channel: specModule.ProgramChannel;
 }
 
-/** 程序历史接口交回的一页，校验过。 */
-interface HistoryPage {
-  /** 程序认出的账号（请求里账号为空时也有）。 */
-  account: string;
-  /** 本页所属聊天，必须与请求一致。 */
-  chat: string;
-  /** 本页历史，时间升序。 */
-  notes: protocolModule.HistoryNote[];
-  /** 程序自己的下一页游标，没有更早的是 null。 */
-  next: string | null;
-}
-
 /** 入站路由的路径参数。 */
 interface InboundRoute {
   /** name 是路径里的程序名，按它找宿主。 */
   Params: { name: string };
 }
 
-/** 外部程序的渠道回调：入站、回复出口、历史代答。 */
+/** 外部程序的渠道回调：入站和回复出口。 */
 export class ChannelBridge {
   /** 渠道名 → 负责它的程序。 */
   private readonly owners = new Map<string, Owner>();
@@ -61,7 +46,7 @@ export class ChannelBridge {
   private app?: fastify.FastifyInstance;
 
   /**
-   * 按程序登记的渠道接上回复和历史；不启动任何东西。
+   * 按程序登记的渠道接上回复；不启动任何东西。
    * @param ctx programs 插件的上下文，监听随插件卸载撤销。
    * @param hosts 程序名 → 本插件建的宿主。
    * @param db 主程序数据库，用来跨重启记住已接收的消息。
@@ -83,15 +68,13 @@ export class ChannelBridge {
         this.owners.set(channel.name, { host, channel });
         channelsModule.registerTextReply(ctx, {
           channel: channel.name,
-          //M 跨聊天发话只有本人走得到（ChannelTools 先查 isHistoryOwner）；账号留空，由程序按聊天号或名字自己认。
+          //M 跨聊天发话只有本人走得到（ChannelTools 核对权限）；账号留空，由程序按聊天号或名字自己认。
           getTargetAddress: (chat) => ({ account: '', chat }),
           sendDirectText: (text, request, target) => this.reply(host, text, request, target),
         });
       }
     }
 
-    //M 历史查询：渠道登记给了程序的才接，别的留给内置渠道。
-    ctx.on('channel/history', (request) => this.onHistory(request));
   }
 
   /**
@@ -423,7 +406,7 @@ export class ChannelBridge {
     let decoded: unknown;
     try {
       //M 交给程序的回复接口；同一条回复重试时请求号不变，程序按它去重。
-      decoded = await this.call(host, 'reply', call, REPLY_TIMEOUT_MS);
+      decoded = await this.call(host, call, REPLY_TIMEOUT_MS);
     } catch (error) {
       //G 发出去以后断了、超时、回的不是 JSON：不知道程序有没有发，记不确定，不当发了。
       return { status: 'uncertain', reason: `外部程序 ${host.spec.name}：${textModule.getErrorMessage(error)}` };
@@ -438,148 +421,8 @@ export class ChannelBridge {
   }
 
   /**
-   * channel/history：渠道登记给了程序的才接，同步置 handled，查完回 channel/history-result。
-   * @param request 标准历史请求。
-   */
-  private async onHistory(request: channelsModule.ChannelHistoryRequest): Promise<void> {
-    //G 只接登记给程序的渠道；别人已经接了的不抢。
-    const owner = this.owners.get(request.channel);
-    if (owner === undefined || request.handled === true) return;
-
-    //M 先同步认领，bots 等完 serial 就知道有人接了，不会回“渠道没接入”。
-    request.handled = true;
-    const result = await this.getHistory(owner.host, request);
-
-    //M 带上请求号送回，bots 的历史工具按号配对。
-    this.ctx.emit('channel/history-result', { ...result, requestId: request.requestId });
-  }
-
-  /**
-   * 按权限向程序要一页历史，转成标准历史项，程序的游标包进签名游标。
-   * @param host 登记这个渠道的程序。
-   * @param request 标准历史请求。
-   * @returns 标准历史结果；没权限、程序没在线、程序回失败都写进 error。
-   */
-  private async getHistory(
-    host: hostModule.Host,
-    request: channelsModule.ChannelHistoryRequest,
-  ): Promise<channelsModule.ChannelHistoryResult> {
-    //M 本渠道里查，默认就是当前聊天、当前账号；从别的渠道查要给聊天号，账号留空由程序自己认。
-    const snapshot = request.sourceSnapshot;
-    const sameChannel = snapshot.channel === request.channel;
-    let account = '';
-    let chat = request.chatId ?? '';
-    if (sameChannel) account = snapshot.accountId;
-    if (sameChannel && chat === '') chat = snapshot.chatId;
-    const scope = `${request.channel}:${account}:${chat}`;
-
-    //G 外人只能查自己这个聊天；本人在私聊里才能跨聊天、跨渠道查（群里的外人会看到取回来的东西）。
-    const sameChat = sameChannel && chat === snapshot.chatId;
-    if (!sameChat && !channelsModule.isHistoryOwner(snapshot)) {
-      return channelsModule.getHistoryError(scope, 'unsupported', 'forbidden', `无权查 ${request.channel} 的聊天 ${chat}`);
-    }
-
-    //G 从别的渠道查又没说哪个聊天。
-    if (chat === '') return channelsModule.getHistoryError(scope, 'unsupported', 'chat_required', `查 ${request.channel} 的历史要给聊天号`);
-
-    //G 外部程序的历史不带结构化的 @ 提及。
-    if (request.mode === 'mentions') {
-      return channelsModule.getHistoryError(scope, 'unsupported', 'identity_unresolved', `外部程序的 ${request.channel} 历史不带 @ 提及`);
-    }
-
-    //M 游标绑定这次的渠道、账号、聊天、模式、发信人和机器人：翻页时换不了聊天，也改不了条件。
-    const senderId = request.senderId ?? '';
-    if (request.mode === 'visible' && senderId === '') {
-      return channelsModule.getHistoryError(scope, 'unsupported', 'invalid_argument', '按发送者查历史需要提供发送者编号');
-    }
-
-    const binding = {
-      channel: request.channel,
-      accountId: account,
-      chatId: chat,
-      mode: request.mode,
-      senderId,
-      botName: snapshot.botName,
-    };
-    const call: protocolModule.HistoryCall = { channel: request.channel, account, chat, limit: request.limit };
-    if (request.mode === 'visible' && senderId !== '') call.senderId = senderId;
-
-    //G 带了游标就验签：验不过（伪造、换了聊天或条件）直接拒，程序只拿到自己上一页交回的游标。
-    if (request.before !== undefined && request.before !== '') {
-      const cursor = channelsModule.decodeHistoryCursor(request.before, binding);
-      if (cursor === undefined) return channelsModule.getHistoryError(scope, 'unsupported', 'invalid_cursor', '历史翻页游标无效或与当前查询范围不匹配');
-
-      call.before = cursor.beforeId;
-    }
-
-    let decoded: unknown;
-    try {
-      //M 向程序要一页。
-      decoded = await this.call(host, 'history', call, HISTORY_TIMEOUT_MS);
-    } catch (error) {
-      return channelsModule.getHistoryError(scope, 'unsupported', 'history_error', `向外部程序要历史失败：${textModule.getErrorMessage(error)}`);
-    }
-
-    //G 程序没在线。
-    const offline = `外部程序 ${host.spec.name} 没在线`;
-    if (decoded === undefined) return channelsModule.getHistoryError(scope, 'unsupported', 'channel_unavailable', offline);
-
-    //G 程序明确回了失败：带它自己的错误码和原因。
-    if (utils.getField(decoded, 'ok') !== true) {
-      const error = utils.getField(decoded, 'error');
-      const code = utils.getStringField(error, 'code') || 'history_error';
-      const message = utils.getStringField(error, 'message') || '外部程序没说原因';
-      return channelsModule.getHistoryError(scope, 'unsupported', code, message);
-    }
-
-    //G 成功的回执也是外面来的，校验一次再用。
-    let page: HistoryPage;
-    try {
-      page = readHistoryPage(decoded);
-    } catch (error) {
-      return channelsModule.getHistoryError(scope, 'unsupported', 'history_error', `外部程序交回的历史格式不对：${textModule.getErrorMessage(error)}`);
-    }
-
-    //G 外部回执只能交当前请求的账号、聊天和发送者，避免把误选的记录交给机器人。
-    const wrongAccount = account !== '' && page.account !== account;
-    const wrongSender = call.senderId !== undefined && page.notes.some((note) => note.sender.id !== call.senderId);
-    if (wrongAccount || page.chat !== chat || wrongSender || page.notes.length > call.limit) {
-      return channelsModule.getHistoryError(scope, 'unsupported', 'history_error', '外部程序返回的历史与请求范围不符');
-    }
-
-    //M 转成标准历史项：消息号用程序认出的账号，和入站时的号对得上；附件只有摘要，标成取不到。
-    const items = page.notes.map((note) => {
-      const messageId = channelsModule.makeChannelMessageId(request.channel, page.account, note.nativeId);
-      const noteAttachments = note.attachments.map((item, index) => {
-        const id = `${note.nativeId}:${String(index)}`;
-        return { id, ...item, state: 'unavailable' as const };
-      });
-      const item: channelsModule.ChannelHistoryItem = {
-        messageId,
-        nativeId: note.nativeId,
-        direction: note.direction,
-        createdAt: note.createdAt,
-        sender: note.sender,
-        text: note.text,
-        mentions: [],
-        attachments: noteAttachments,
-      };
-      return item;
-    });
-
-    //M 程序说还有更早的：把它的游标包进签名游标，beforeAt 记本页最早一条的时刻。
-    let nextCursor: string | null = null;
-    if (page.next !== null) {
-      const beforeAt = items[0]?.createdAt ?? 0;
-      nextCursor = channelsModule.encodeHistoryCursor({ ...binding, beforeAt, beforeId: page.next });
-    }
-    return { ok: true, items, nextCursor, scope, completeness: 'local_only' };
-  }
-
-  /**
-   * 调程序自己的渠道接口（/jmbots/v1/channel/<route>），带它这次启动的密钥。
+   * 调程序自己的渠道接口（/jmbots/v1/channel/reply），带它这次启动的密钥。
    * @param host 负责这个渠道的程序。
-   * @param route reply 或 history。
    * @param body 请求正文。
    * @param timeoutMs 最多等多久。
    * @returns 程序回的 JSON；程序没就绪是 undefined。
@@ -587,8 +430,7 @@ export class ChannelBridge {
    */
   private async call(
     host: hostModule.Host,
-    route: 'reply' | 'history',
-    body: protocolModule.ReplyCall | protocolModule.HistoryCall,
+    body: protocolModule.ReplyCall,
     timeoutMs: number,
   ): Promise<unknown> {
     //G 只调本插件拉起、已就绪的程序；没就绪交回 undefined，由调用方如实回失败。
@@ -603,7 +445,7 @@ export class ChannelBridge {
     const options: RequestInit = { method: 'POST', redirect: 'error', headers, body: payload, signal };
 
     //M 程序回什么状态码都读 JSON：失败时它也写原因。
-    const response = await fetch(`${url}/jmbots/v1/channel/${route}`, options);
+    const response = await fetch(`${url}/jmbots/v1/channel/reply`, options);
     return await response.json();
   }
 }
@@ -687,47 +529,7 @@ function readInbound(body: unknown): protocolModule.InboundMessage {
 }
 
 /**
- * 校验程序历史接口的成功回执。
- * @param decoded 程序回的 JSON，ok 已经是 true。
- * @returns 程序认出的账号、本页历史（时间升序）、下一页游标。
- * @throws 缺字段或类型不对。
- */
-function readHistoryPage(decoded: unknown): HistoryPage {
-  //G 账号要有（消息号靠它），next 是非空文字或 null。
-  const raw = checks.checkRecord(decoded, '历史回执');
-  const account = checks.checkNonEmptyText(raw['account'], 'account');
-  const chat = checks.checkNonEmptyText(raw['chat'], 'chat');
-  const next = raw['next'] ?? null;
-  if (next !== null && (typeof next !== 'string' || next === '')) throw new Error('next 要是非空文字或 null');
-
-  //M 每一条各查一次字段。
-  const listed = checks.checkArray(raw['items'], 'items');
-  const notes = listed.map((entry, index) => {
-    const label = `items[${String(index)}]`;
-    const item = checks.checkRecord(entry, label);
-    const createdAt = item['createdAt'];
-    if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) {
-      throw new Error(`${label}.createdAt 要是 Unix 毫秒`);
-    }
-    const text = item['text'];
-    if (typeof text !== 'string') throw new Error(`${label}.text 要是文字`);
-
-    //M 必填项各查一次，只取约定的字段。
-    const note: protocolModule.HistoryNote = {
-      nativeId: checks.checkNonEmptyText(item['nativeId'], `${label}.nativeId`),
-      direction: checks.checkAllowedValue(item['direction'], ['user', 'bot'], `${label}.direction`),
-      createdAt,
-      sender: readSender(item['sender'], `${label}.sender`),
-      text,
-      attachments: readAttachments(item['attachments'], `${label}.attachments`),
-    };
-    return note;
-  });
-  return { account, chat, notes, next };
-}
-
-/**
- * 校验发信人：id 必填，name 可选（空串当没有）。入站和历史共用。
+ * 校验发信人：id 必填，name 可选（空串当没有）。
  * @param value 原始值。
  * @param label 报错用的字段名。
  * @returns 只含 id、name 两项的新对象。
@@ -745,7 +547,7 @@ function readSender(value: unknown, label: string): { id: string; name?: string 
 }
 
 /**
- * 校验附件摘要列表：不写是空列表；每项 name 必填，mime、size 可选。入站和历史共用。
+ * 校验附件摘要列表：不写是空列表；每项 name 必填，mime、size 可选。
  * @param value 原始值。
  * @param label 报错用的字段名。
  * @returns 只含 name、mime、size 的新对象列表。

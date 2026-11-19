@@ -16,7 +16,9 @@ import * as path from 'node:path';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as snapshotModule from './Snapshot.ts';
 import * as tutorialModule from './index.ts';
-import { getTrail, pick, type TrailLine } from '../journal/Trail.ts';
+import type { TrailLine } from '../../utils/Trail.ts';
+// 测试用：假 journal 拿真的收轨迹函数回执（运行代码不 import journal）。
+import { getBootTrail, getTrail, pick } from '../journal/Trail.ts';
 
 
 /** 微信 openid 的样子：o 开头 28 位。 */
@@ -151,6 +153,8 @@ async function serve(journal?: ReturnType<typeof getJournal>, config: tutorialMo
   if (journal !== undefined) {
     requestEvents.onRequestEvent(bus, 'journal/request', 'journal/result', (request) => {
       if (request.action === 'query') return { ok: true, lines: journal.query(request.params) };
+      //M 照真的 journal：启动行收成启动轨迹。
+      if (request.action === 'boot-trail') return { trail: getBootTrail(request.lines, request.notes) };
       //M 照真的 journal：从起点取行，挑出这条的行、收成轨迹一起交回。
       if (request.action === 'trail') {
         const raw = journal.request(request.message, request.maxLines);

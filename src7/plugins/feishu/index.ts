@@ -2,7 +2,7 @@
  * 飞书：一个插件管飞书的全部——渠道收发、确认卡片和进度卡片（cards/）、飞书云文档工具（doc/）、发件箱（outbox/）。
  * 用户定了：平台型插件放在一个插件里，用子文件夹分管功能。设计见同目录 说明.md 的「设计要点」一节。
  * 渠道收发按职责分文件：这个文件是入口（类型、配置校验、长连接、别的插件调的发送口、apply）；
- * 收消息、撤回、点卡片在 Inbound.ts，channel/reply、channel/send 在 Reply.ts，聊天日志和 channel/history 在 History.ts，
+ * 收消息、撤回、点卡片在 Inbound.ts，channel/reply、channel/send 在 Reply.ts，聊天日志在 ChatLog.ts，
  * 来往流水在 Contacts.ts。拆出去的几个类由 Feishu 构造时建好，挂在 feishu.inbound / reply / history / contacts 上。
  *
  * 渠道：照 config.yaml 的 channels.feishu 名单，一个飞书应用一个 SDK 客户端、一条长连接（WebSocket），等 ready 才连。
@@ -19,6 +19,7 @@
  * Cordis 大白话：apply 是插件的 main()，ctx 是它拿到的遥控器；通过 ctx 听的事件、登记的工具、ctx.effect 登记的收尾，
  * 插件被拔掉时 Cordis 自动撤掉。审批和进度卡片通过事件接收更新与发起操作。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Database } from 'bun:sqlite';
@@ -34,7 +35,7 @@ import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
 import { FeishuContacts } from './Contacts.ts';
 import * as doc from './doc/Doc.ts';
-import { FeishuHistory } from './History.ts';
+import { FeishuChatLog } from './ChatLog.ts';
 import { FeishuInbound } from './Inbound.ts';
 import type { RecallData, ReceiveData } from './Inbound.ts';
 import * as media from './Media.ts';
@@ -58,15 +59,13 @@ interface LegacyOrigin {
 /** 插件名。 */
 export const name = 'feishu';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-//M 1.1.2：channel/history 支持本人（owner）跨渠道、跨聊天查询飞书本地历史；外人仍仅限当前聊天。
 //M 1.1.3：监听 im.message.recalled_v1 撤回消息事件，校验本人或原发信人后发出 channel/recall。
 //M 1.1.4：onChannelReply 支持带 target 的跨渠道发话，在飞书自有群/私聊/流水数据里自认聊天。
 //M 1.1.9：登记群内每日进度的时间、机器人和提示，progress 读取已校验的配置。
-//M 1.1.11：channel/history 的游标和分页改用骨架的 paginateChannelHistory，飞书只认应用、聊天和挑 @我。
 //M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、findChatByIdOrName：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
 //M 1.1.18：长连接收到消息先发一个跟踪点 Feishu.start，入站的几个跟踪点都带 messageId（标准消息号），教程轨迹第一格就是飞书收到。
-export const version = '1.1.19';
+export const version = '1.1.21';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -368,7 +367,7 @@ export class Feishu {
   /** 渠道名。 */
   readonly name = 'feishu';
 
-  /** 应用号 → 应用，照配置的先后（History.ts、Reply.ts、Inbound.ts 也读）。 */
+  /** 应用号 → 应用，照配置的先后（Reply.ts、Inbound.ts 也读）。 */
   readonly apps = new Map<string, AppState>();
 
   /** 群号 → 群名和成员名字（chatNames 查的；Reply.ts 认目标聊天也读）。 */
@@ -377,8 +376,8 @@ export class Feishu {
   /** 收：收消息、撤回、点卡片，start 把 SDK 的事件交给它（Inbound.ts）。 */
   readonly inbound: FeishuInbound;
 
-  /** 聊天历史：聊天日志落盘和读，响应 channel/history（History.ts）。 */
-  readonly history: FeishuHistory;
+  /** 聊天原始日志，供撤回核验与回复定位。 */
+  readonly history: FeishuChatLog;
 
   /** 来往流水：记、读 data/logs/feishu-contacts.jsonl，听 bot/judged 补记（Contacts.ts）。 */
   readonly contacts: FeishuContacts;
@@ -456,8 +455,8 @@ export class Feishu {
     //M 回话（Reply.ts）：自己登记 channel/reply（会话的回复）和 channel/send（已批准的主动发件）监听。
     this.reply = new FeishuReply(this.ctx, this);
 
-    //M 聊天历史（History.ts）：自己登记 channel/history 监听。
-    this.history = new FeishuHistory(this.ctx, this);
+    //M 保留飞书聊天原始日志，供撤回核验与回复定位。
+    this.history = new FeishuChatLog(this.ctx);
 
     const requestOptions = {
       onError: (error: unknown) => {
@@ -1031,7 +1030,7 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
     if (typeof appId !== 'string' || appId === '') throw new Error(`${where} 要写非空的 app_id`);
     if (typeof appSecret !== 'string' || appSecret === '') throw new Error(`${where} 要写非空的 app_secret`);
     //M 校验主机器人名字存在于已配置的机器人名单中。
-    if (typeof bot !== 'string' || ctx.bots.get(bot) === undefined) {
+    if (typeof bot !== 'string' || botUtils.getBotConfig(ctx.resources.raw, bot) === undefined) {
       throw new Error(`${where} 的 bot 要写机器人名单里有的名字`);
     }
     if (apps.some((app) => app.appId === appId)) throw new Error(`${where} 的 app_id 和前面的重了`);
@@ -1040,7 +1039,7 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
     if (extraBotsRaw !== undefined) {
       //M 校验多机器人共享账号配置的每一个追加机器人名均合法存在。
       const botsInvalid = !Array.isArray(extraBotsRaw)
-        || extraBotsRaw.some((one) => typeof one !== 'string' || ctx.bots.get(one) === undefined);
+        || extraBotsRaw.some((one) => typeof one !== 'string' || botUtils.getBotConfig(ctx.resources.raw, one) === undefined);
       if (botsInvalid) {
         throw new Error(`${where} 的 bots 要写成机器人名单里已有名字的清单`);
       }

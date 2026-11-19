@@ -813,14 +813,7 @@ test('最终语音与未播报的回复各入档一次，网页和渠道可按�
   const other = await app.inject('/api/messages?channel=voice&chat=other-device');
   expect(other.json()).toMatchObject({ messages: [] });
 
-  //M 历史事件和记忆索引使用同一个设备号，且没有半句或重复回复。
-  let history: channel.ChannelHistoryResultEvent | undefined;
-  ctx.on('channel/history-result', (result) => { history = result; });
-  const request: channel.ChannelHistoryRequest = {
-    requestId: 'voice-history', channel: 'voice', mode: 'current', limit: 10, sourceSnapshot: source!,
-  };
-  ctx.emit('channel/history', request);
-  expect(history).toMatchObject({ ok: true, items: [{ direction: 'user', text: corrected }, { direction: 'bot', text }] });
+  //M 记忆索引按设备读到两条正文。
   const query = { channel: 'voice', chat: device, words: [], limit: 10 };
   const indexed = index.search(query);
   expect(indexed).toHaveLength(2);

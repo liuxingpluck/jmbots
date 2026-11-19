@@ -97,7 +97,8 @@ for (const role of ['guest', 'builder'] as const) {
     const allowed = toolsFor(role);
     expect(allowed?.has('memory_search')).toBe(true);
     expect(allowed?.has('memory_get')).toBe(true);
-    expect(allowed?.has('channel_search')).toBe(true);
+    expect(allowed?.has('memory_search')).toBe(true);
+    expect(allowed?.has('memory_get')).toBe(true);
 
     const db = new Database(':memory:');
     try {
@@ -172,9 +173,8 @@ for (const role of ['guest', 'builder'] as const) {
       const filtered = await search.find({ q: '退款', person, source: 'channel', channel: 'feishu', chat: 'dm' });
       expect(filtered.hits.map((hit) => hit.id)).toEqual(['person-tagged']);
 
-      const request = { args: {}, session, signal: new AbortController().signal, callId: 'read' };
-      await expect(search.readHistory({ ...request, route: 'front-search' })).rejects.toThrow('当前渠道聊天');
-      await expect(search.readHistory({ ...request, route: 'wechat-archive' })).rejects.toThrow('当前渠道聊天');
+      //G 不带引用时也只能翻本轮来源聊天。
+      await expect(search.get({ chat: 'other' }, session)).rejects.toThrow('只能查这个聊天');
     } finally {
       db.close();
     }

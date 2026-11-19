@@ -6,7 +6,7 @@ import type * as cordis from 'cordis';
 import * as files from '../../utils/Files.ts';
 import * as requestEvent from '../../utils/RequestEvent.ts';
 import * as text from '../../utils/Text.ts';
-import * as archives from './Backfill_Channel_Index.ts';
+import * as archives from './ArchiveCandidates.ts';
 import * as channel from './ChannelIndex.ts';
 import type { ChannelIndex, ChannelRow } from './ChannelIndex.ts';
 import type { MemoryService } from './index.ts';

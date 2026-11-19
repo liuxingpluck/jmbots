@@ -8,6 +8,7 @@
  * 停止：工具拿到的停止信号（Tools.ts 给的 signal）一触发，连子进程整棵杀掉（Windows 用 taskkill /T /F），两秒内交回。
  * 设计见同目录 说明.md 的「设计要点」一节（含 runs）。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -15,7 +16,6 @@ import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as cut from '../../utils/Cut.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import * as runsModule from './Runs.ts';
 
 
@@ -25,13 +25,13 @@ export { mountRunsRoutes, readRunsEnabled, Runs, type RunRecord } from './Runs.t
 /** 插件名。 */
 export const name = 'exec';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.2';
+export const version = '1.1.3';
 
 /**
  * 用到的服务：resources、tools、bots、sessions。审核不写在这里，走 approval/request 事件：没挂 approval 时一律拒绝（没有审核就不让跑命令）；
  * http 为可选（存在时才挂载 /api/run* 命令窗口）。
  */
-export const inject = ['resources', 'tools', 'bots', 'sessions'];
+export const inject = ['resources', 'tools', 'sessions'];
 
 
 declare module 'cordis' {
@@ -259,15 +259,13 @@ export class Exec extends cordis.Service {
    * @returns 给模型看的话。
    */
   private async onTool(args: Record<string, unknown>, session: Session, signal: AbortSignal): Promise<string> {
-    //M 取出命令，找到这场会话的机器人（工作区挂在它名下）。
     const command = args['command'] as string;
-    const bot = this.ctx.bots.get(session.row.bot);
-    if (bot === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
-
-    //M 在这一轮的工作区里跑：飞书上 builder 说话时是他的目录，审核也照这个目录把关（confined）。
-    const cwd = workspaceModule.getWorkspace(bot.workspace, session.row.address);
+    //M 工作目录和隔离目录都以本轮来源为准，默认工作区不额外限制。
+    const cwd = botUtils.getSessionWorkspace(this.ctx.resources, session);
+    const botName = session.row.bot;
+    const base = botUtils.getBotDir(this.ctx.resources, botName, 'workspace');
     let confined: string | undefined;
-    if (cwd !== bot.workspace) {
+    if (cwd !== base) {
       confined = cwd;
     }
     const timeoutMs = ((args['timeout'] as number | undefined) ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
@@ -276,7 +274,7 @@ export class Exec extends cordis.Service {
       command,
       cwd,
       confined,
-      bot: bot.name,
+      bot: botName,
       session: session.id,
       kind: 'exec',
       payload,

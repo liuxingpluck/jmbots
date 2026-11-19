@@ -73,8 +73,8 @@ async function getPlugin(config: unknown = getConfig(), pluginNames: string[] = 
   cleanups.push(() => db.close());
   const plugins = pluginNames.map((name) => ({ name, config: {} }));
   const raw = { server: { host: '127.0.0.1', port: 1, token: mainToken } };
-  const dir = (name: string): string => path.join(root, name);
-  ctx.provide('resources', { root, config: { plugins }, db, raw, dir, pluginStatus: [] });
+  const ensureRuntimeDir = (name: string): string => path.join(root, name);
+  ctx.provide('resources', { root, config: { plugins }, db, raw, ensureRuntimeDir, pluginStatus: [] });
   if (mainToken === undefined) {
     //M 与身份无关的回归继续用独立 Fastify；身份测试走真正的 HTTP 插件。
     const isolated = fastify.default();

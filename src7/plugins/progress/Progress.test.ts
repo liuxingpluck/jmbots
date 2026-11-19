@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 
-/** 构建临时运行时目录并挂上假 resources / bots / sessions（可选 approval / filesMirror）。 */
+/** 构建临时运行时目录并挂上假 resources / sessions（可选 approval / filesMirror）。 */
 async function setupWorld(options: {
   withApproval?: boolean;
   withoutClose?: boolean;
@@ -70,6 +70,7 @@ async function setupWorld(options: {
 
   class MockResources extends cordis.Service {
     readonly root = root;
+    readonly raw = { bots: [{ name: '周小灵', language: 'zh' }] };
     constructor(parent: cordis.Context) {
       super(parent, 'resources');
     }
@@ -77,17 +78,6 @@ async function setupWorld(options: {
       const target = path.join(root, ...parts);
       fs.mkdirSync(target, { recursive: true });
       return target;
-    }
-  }
-
-  class MockBots extends cordis.Service {
-    constructor(parent: cordis.Context) {
-      super(parent, 'bots');
-    }
-    get(name: string): { config: Record<string, unknown> } | undefined {
-      if (name === '周小灵') return { config: { language: 'zh' } };
-
-      return undefined;
     }
   }
 
@@ -158,7 +148,6 @@ async function setupWorld(options: {
   }
 
   await ctx.plugin(MockResources);
-  await ctx.plugin(MockBots);
   await ctx.plugin(MockSessions);
   if (options.listenSay !== false) {
     ctx.on('bot/say', (_session, text) => { sayLogs.push(text); });

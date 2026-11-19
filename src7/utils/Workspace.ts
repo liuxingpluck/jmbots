@@ -1,6 +1,6 @@
 /**
  * 工作区里的路径：模型给的相对路径落成绝对路径，不许跑出工作区（符号链接解开再比）。base-tools、file-tools 用。
- * 这一轮说话人是哪一档（getSpeakerRole）、用哪个工作区（getWorkspace）：approval、base-tools、file-tools、exec、feishu、memory、prompt、前台共用。
+ * 这一轮说话人是哪一档（getSpeakerRole）、是不是本人（isOwnerTurn）、用哪个工作区（getWorkspace）：approval、base-tools、file-tools、exec、feishu、memory、prompt、前台共用。
  * 这一轮能不能带用户的私人记忆（isPrivateMemoryAllowed）：prompt、memory、前台共用。是不是群（isGroup）：再加 approval、飞书卡片。
  * 比路径（getPathKey、isPathInDirectories）：approval 的可信目录、Checks.ts 的 checkDirs 用。
  */
@@ -11,7 +11,7 @@ import * as utils from './index.ts';
 
 /**
  * 这一轮说话人是哪一档：渠道写在地址里的 role（飞书照插件配置的 people 写：owner、builder、guest）。
- * 只写了 owner: false、没写 role 的地址当 guest；都没写的渠道（网页、命令行、微信）和小会话是 ''，照旧不限。
+ * 只写了 owner: false、没写 role 的地址当 guest；都没写的是 ''（地址本身分不出，要不要当本人看 isOwnerTurn）。
  * @param address 会话现在记的回话地址：最后一句带渠道的话从哪来。
  * @returns owner、builder、guest 或 ''。
  */
@@ -22,6 +22,31 @@ export function getSpeakerRole(address: unknown): string {
   if (utils.getField(address, 'owner') === false) return 'guest';
 
   return '';
+}
+
+
+/** 不写 owner、role 也算本人的渠道：本机网页、命令行；会话没有渠道（内部小会话）也算。 */
+const LOCAL_CHANNELS = new Set(['', 'http', 'web', 'cli']);
+
+
+/**
+ * 这一轮是不是用户本人在说：“本人”只在这里判，供工具、记忆和跨聊天回复检查。
+ * 规则：地址写了 role 就照它（只有 owner 算本人）；写了 owner: true 是本人，owner: false 是外人；
+ * 什么都没写的，只有网页、命令行（和没有渠道的内部会话）默认算本人，其他渠道（微信、飞书……）一律算外人。
+ * @param channel 会话现在的渠道名（session.row.channel；快照上是 snapshot.channel）；没有渠道传 ''。
+ * @param address 会话现在记的回话地址。
+ * @returns 本人 true，外人 false。
+ */
+export function isOwnerTurn(channel: string, address: unknown): boolean {
+  //M 地址上明确写了档位：只有 owner 算本人（builder、guest 不算）。
+  const role = getSpeakerRole(address);
+  if (role !== '') return role === 'owner';
+
+  //G 只写了 owner: true（没写 role）：本人。owner: false 已在 getSpeakerRole 里变成 guest。
+  if (utils.getField(address, 'owner') === true) return true;
+
+  //M 什么都没写：本机网页、命令行默认本人，其他渠道不写 owner 就是外人。
+  return LOCAL_CHANNELS.has(channel);
 }
 
 
@@ -66,7 +91,7 @@ export function isGroup(address: unknown): boolean {
 /**
  * 这场会话这一轮的工作区：回话地址里写了 workspace（飞书给 builder、guest 写的他自己的目录）就用它，没写用机器人的。
  * 地址跟着最后一句带渠道的话换，群里换了人，工作区跟着换。
- * @param botWorkspace 机器人的工作区（ctx.bots.get(bot).workspace）。
+ * @param botWorkspace 机器人的默认工作区（utils/Bots.ts 的 getBotDir）。
  * @param address 会话现在记的回话地址（session.row.address）。
  * @returns 绝对路径。
  */

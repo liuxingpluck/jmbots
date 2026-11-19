@@ -3,7 +3,7 @@
  * 消息 7，会话 s1：web-api 收下 → bots 分给会话 → 调模型要了工具 time → 执行（出错）→ 再调一次模型 → 做完 → 回话写回。
  * 中间夹着别的会话的一行、定时的 web-api/status、回话写回之后的一行，都不该算进来。
  */
-import type { TrailLine } from '../Trail.ts';
+import type { TrailLine } from '../../../utils/Trail.ts';
 
 
 let id = 0;

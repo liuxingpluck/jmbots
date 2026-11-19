@@ -11,6 +11,7 @@
  * 原插件 prompt，2026-11-17 并进 bots（docs/协作/任务板/合并做法.md）：默认开，bots 的配置写 prompt: false 才不挂。
  * session/before-model 的监听挂在 bots 自己的几个监听（前台、派后台、渠道工具）后面；1、2 段用 unshift，不管排第几都在最前。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
@@ -102,7 +103,7 @@ export class Prompt {
     const row = request.session.row;
 
     //M 语言看机器人名单里这个机器人的 language，不写是 zh。
-    const language = String(this.ctx.bots.get(row.bot)?.config['language'] ?? 'zh');
+    const language = botUtils.getBotLanguage(this.ctx.resources.raw, row.bot);
     const prompts = this.ctx.resources.ensureRuntimeDir('prompts');
 
     //M 第一段 DSH 原文（每次现读，除去首尾空白一字不改）、第二段 jmbots 功能声明：用 unshift 放最前，不管监听排第几都是开头。

@@ -341,7 +341,7 @@ test('前台“先查记忆”的提示：有 memory_search 工具、本人才�
     return request;
   };
 
-  const ownTools = ['memory_search', 'memory_get', 'channel_search'];
+  const ownTools = ['memory_search', 'memory_get'];
   const own = await ask('front', { customer: 'test:u1' }, ownTools);
   expect(own.system).toHaveLength(1);
   expect(own.system[0]).toContain('先用 memory_search');
@@ -350,7 +350,7 @@ test('前台“先查记忆”的提示：有 memory_search 工具、本人才�
   const guest = await ask('front', { customer: 'test:u2', role: 'guest' }, ['memory_search']);
   expect(guest.system).toEqual([]);
 
-  const noTool = await ask('front', { customer: 'test:u1' }, ['channel_search']);
+  const noTool = await ask('front', { customer: 'test:u1' }, ['memory_get']);
   expect(noTool.system).toEqual([]);
 
   //M 干活的会话 recall 已经是 ''（搜过没搜到）：不加提示，也不再搜。

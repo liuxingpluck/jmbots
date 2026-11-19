@@ -84,38 +84,6 @@ export interface ReplyCall {
 /** 程序回复接口的回执状态：已发、已存草稿、失败、不确定。 */
 export type ReplyCallStatus = 'sent' | 'draft' | 'failed' | 'uncertain';
 
-/** 主程序向程序要一页历史：POST <程序>/jmbots/v1/channel/history。 */
-export interface HistoryCall {
-  /** 渠道名。 */
-  channel: string;
-  /** 平台账号；从别的渠道查时为空串，由程序自己认。 */
-  account: string;
-  /** 聊天号。 */
-  chat: string;
-  /** 最多几条（1 到 200）。 */
-  limit: number;
-  /** 程序上一页交回的 next，第一页不给。 */
-  before?: string;
-  /** 只看这个人说的（visible 模式），不给就是全部。 */
-  senderId?: string;
-}
-
-/** 程序交回的一条历史。 */
-export interface HistoryNote {
-  /** 来源消息号，和入站时的 nativeId 同一套。 */
-  nativeId: string;
-  /** user 对方说的，bot 我方发的。 */
-  direction: 'user' | 'bot';
-  /** Unix 毫秒。 */
-  createdAt: number;
-  /** 发信人。 */
-  sender: { id: string; name?: string };
-  /** 正文。 */
-  text: string;
-  /** 附件摘要。 */
-  attachments: AttachmentNote[];
-}
-
 /**
  * 按固定时间比较两把密钥，不因为前几个字相同就早退。
  * @param expected 这次启动发出去的密钥；程序没在运行是 undefined。

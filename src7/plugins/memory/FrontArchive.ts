@@ -1,3 +1,5 @@
+import type { Session, Sessions } from '../../Sessions.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 /** 前台往来的正文统一由渠道消息索引持有，关联表只保留编号和会话归属。 */
 import * as crypto from 'node:crypto';
 import type { Database } from 'bun:sqlite';
@@ -201,4 +203,38 @@ export class FrontArchive {
     //M 给出这场有权读取的前台编号及其索引正文。
     return this.db.query<FrontEntry, (string | number)[]>(sql).all(...values, query.limit);
   }
+}
+
+/** 计算这场前台及它交办的后台会话范围。 */
+export function getFrontSessionIds(sessions: Sessions, session: Session): string[] {
+  //M 和 assist 一样：后台会话的 parent 是交出它的前台对话。
+  const root = session.row.parent ?? session.row.id;
+  const kids = sessions.find({ parent: root }).map((row) => row.id);
+  const ids = new Set<string>([root, session.row.id, ...kids]);
+  //M 还没记下 parent 的旧后台：只有一场前台时也算进来，免得分会话落地前查不到交办记录。
+  //M   非本人（builder、guest）说的那一轮不算：旧后台不知道是谁的，可能是用户自己的活。
+  const access = memoryKeyModule.getMemoryAccess(session.row);
+  if (!access.full) return [...ids];
+  if (session.row.kind === 'front' && sessions.find({ bot: session.row.bot, kind: 'front' }).length <= 1) {
+    for (const work of sessions.find({ bot: session.row.bot, kind: 'work' })) {
+      if (work.parent === undefined) ids.add(work.id);
+    }
+  }
+  return [...ids];
+}
+
+/** 把一条前台往来写成带原文编号的一行。 */
+export function formatFrontEntry(entry: FrontEntry, clip?: number): string {
+  const when = new Date(entry.time).toLocaleString('zh-CN', { hour12: false });
+  let who = '机器人';
+  if (entry.who === 'user') {
+    who = '用户';
+  }
+  let body = entry.text;
+  let suffix = '';
+  if (clip !== undefined && body.length > clip) {
+    body = body.slice(0, clip);
+    suffix = '…（把 #编号交给 memory_get 取全文）';
+  }
+  return `#${String(entry.id)} [${when} ${entry.channel} ${who}] ${body}${suffix}`;
 }

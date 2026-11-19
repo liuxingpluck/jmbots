@@ -20,6 +20,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type { Session, Thinking } from '../../Sessions.ts';
+import * as botUtils from '../../utils/Bots.ts';
+import type { BotConfig } from '../../utils/Bots.ts';
 import * as namesModule from '../../utils/Names.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -42,18 +44,17 @@ export const name = 'bots';
 //M 1.3.0：工作区交给 workspaces 插件——建机器人时原地登记默认工作区和配置里的目录，hand_session 可写 workspaceId，后台绑定工作区 ID。
 //M 1.4.0：并进 prompt（Prompt.ts，默认开）、reply-tool（ReplyTool.ts，默认关）；legacy_auto 渠道的 channel/message 在这里交前台，去掉渠道里的过渡监听。
 //M 1.4.1：渠道统一第 3、4 步——routing.sessionId 指定会话；网页、命令行、微信也走 channel_tool（去掉 deliveryMode）；
-//M   routing.autoFinal 零次回复直接发最后的话；一轮收尾发 channel/settled；front.history_limit 默认 80。
+//M   routing.autoFinal 零次回复直接发最后的话；一轮收尾发 channel/settled。
 //M 1.4.2：结果队列的来源加 relay（外部助手的回信），前台看到“外部助手 <名字> 的回信”。
 //M 1.4.3：监听 channel/recall，消息被撤回时移除排队项、喊停正在跑的会话及派出的后台会话，且不再回发“已停止”。
-//M 1.4.4：channel_reply 支持非群聊本人（isHistoryOwner）指定 channel、chat 往别的渠道或聊天发话。
+//M 1.4.4：channel_reply 支持非群聊本人（canReplyAcrossChats）指定 channel、chat 往别的渠道或聊天发话。
 //M 1.4.5：跨渠道 channel_reply 改为发 target 交目标渠道自己认聊天，bots 不再查各渠道数据。
 //M 1.4.6：插件互调改事件第一阶段——听 bot/request（hand、save-file、add、accept-result）回 bot/result，听通知 bot/route；
 //M   前台的“先查记忆”提示交给 memory 自己加，记往来、搜聊天记录、算向量改发 memory/request；模型介绍改发 model-catalog/request（prompt）。
-//M 1.4.8：requestChannelHistory 从骨架 Channels.ts 挪进 bots/HistoryRequest.ts，只有 bots 的历史工具用。
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
-export const version = '1.5.7';
+export const version = '1.5.9';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -187,12 +188,7 @@ export type ChannelSend = (
 ) => void | SendReceipt | Promise<void | SendReceipt>;
 
 
-/** bots 名单里的一项。除了 name，别的项原样留着，哪个插件要用哪个插件自己读（比如 language）。 */
-export interface BotConfig {
-  /** 机器人名，也是运行时目录 bots/ 下的文件夹名。 */
-  name: string;
-  [key: string]: unknown;
-}
+export type { BotConfig } from '../../utils/Bots.ts';
 
 
 /** 渠道送进来的一条消息。 */
@@ -449,7 +445,13 @@ export class Bots extends cordis.Service {
 
     //M add：运行中新建一个机器人（只加进内存，config.yaml 由调用方写），回执带名字、工作区、记忆目录。
     if (request.action === 'add') {
+      const raw = this.home.resources.raw;
+      const configs = botUtils.getBotConfigs(raw);
       const bot = this.add(request.config);
+      //M 让新机器人立即进入只读名单，文件监听随后读取完整的已保存配置。
+      if (!configs.some((item) => item.name === bot.name)) {
+        raw['bots'] = [...configs, bot.config];
+      }
       const created = { name: bot.name, workspace: bot.workspace, memory: bot.memory };
       return { ok: true, bot: created };
     }
@@ -890,8 +892,11 @@ export class Bot {
     this.name = config.name;
 
     //M 工作区和记忆目录放在运行时目录 bots/<机器人>/ 下，resources.ensureRuntimeDir 没有就建，返回绝对路径。
-    this.workspace = this.ctx.resources.ensureRuntimeDir('bots', this.name, 'workspace');
-    this.memory = this.ctx.resources.ensureRuntimeDir('bots', this.name, 'memory');
+    const workspace = botUtils.getBotDir(this.ctx.resources, this.name, 'workspace');
+    const memory = botUtils.getBotDir(this.ctx.resources, this.name, 'memory');
+    //M 建立配置机器人的默认工作区与记忆目录。
+    this.workspace = filesModule.ensureDir(workspace);
+    this.memory = filesModule.ensureDir(memory);
 
     //M 工作区原地登记，不搬不删：默认的 bots/<机器人>/workspace/。登记过的按目录认，重启不重登。
     const workspaces = this.ctx.workspaces;
@@ -989,8 +994,8 @@ export class Bot {
 export interface BotsPluginConfig {
   /** 后台会话的思考档；不写是 medium。 */
   thinking?: Thinking;
-  /** 前台（原插件 bot-front-desk 的配置）：recent 带最近几条往来，不写是 50；vision_model 有图要转后台时用的看图模型；history_limit 渠道历史默认条数（1..200，不写 80）。 */
-  front?: Partial<FrontDeskConfig> & { history_limit?: number };
+  /** 前台（原插件 bot-front-desk 的配置）：recent 带最近几条往来，不写是 50；vision_model 有图要转后台时用的看图模型。 */
+  front?: Partial<FrontDeskConfig>;
   /** 系统提示词（原插件 prompt，Prompt.ts）：不写是 true；写 false 不加系统提示词。 */
   prompt?: boolean;
   /** 工具 reply（原插件 reply-tool，ReplyTool.ts）：写 true 才登记；不写不登记。 */
@@ -1009,10 +1014,7 @@ export interface BotsPluginConfig {
 export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   //M 名单是外面进来的（config.yaml 顶层的 bots 段），在这里校验一次：
   //M   一张清单；整段不写就是一个叫“助手”的机器人。每项的 name 由 Bots.add 校验（非空、不重名）。
-  const written = ctx.resources.raw['bots'] ?? [{ name: '助手' }];
-  if (!Array.isArray(written)) {
-    throw new Error('bots 要写成一张清单');
-  }
+  const written = botUtils.getBotConfigs(ctx.resources.raw);
 
   //M 前台的配置也是外面进来的，在这里校验一次：front 不写就全用默认。
   const front: unknown = config.front ?? {};
@@ -1021,17 +1023,11 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   }
   const frontConfig = front as Partial<FrontDeskConfig>;
 
-  //M recent 不写是 50，必须是正整数；history_limit 默认 80，范围 1..200。
-  const frontWithHistory = front as Partial<FrontDeskConfig> & { history_limit?: unknown };
+  //M recent 不写是 50，必须是正整数。
   const recent = frontConfig.recent ?? 50;
   if (!Number.isInteger(recent) || recent <= 0) {
     throw new Error('bots 的 front.recent 必须是正整数');
   }
-  const historyLimit = frontWithHistory.history_limit ?? 80;
-  if (typeof historyLimit !== 'number' || !Number.isInteger(historyLimit) || historyLimit < 1 || historyLimit > 200) {
-    throw new Error('bots 的 front.history_limit 必须是 1 到 200 的整数');
-  }
-
   //M vision_model 写了就要是“供应商名/模型 ID”，供应商在 providers 里。
   const vision = frontConfig.vision_model;
   if (vision !== undefined && (typeof vision !== 'string' || ctx.resources.config.providers[vision.slice(0, vision.indexOf('/'))] === undefined)) {
@@ -1047,10 +1043,10 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
 
   //M 先后照并进来之前：机器人服务（回话的监听）在前，前台（往来记录、拼上下文）其次，派后台（结果队列）最后，紧接登记渠道工具。
   //M   都挂在本插件的 ctx 上，所以前台的 session/before-model 排在 file-tools 这些后挂的插件前面。
-  new Bots(ctx, { bots: written as BotConfig[], thinking: config.thinking ?? 'medium' });
+  new Bots(ctx, { bots: [...written], thinking: config.thinking ?? 'medium' });
   const desk = new FrontDesk(ctx, { recent, vision_model: vision });
   new Dispatch(ctx, desk);
-  new ChannelTools(ctx, historyLimit);
+  new ChannelTools(ctx);
 
   //M 系统提示词（Prompt.ts）：session/before-model 挂在上面几个之后。并进来之前它排在 relay、memory 后面，现在排到它们前面，
   //M   只是 work 会话“开场先搜”的那段（memory 加的）从人设、记忆文件前面挪到后面；底座和功能声明用 unshift，照旧在最前。

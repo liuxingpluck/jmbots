@@ -3,6 +3,7 @@
  * feishu_doc_delete 把文档放进回收站。照 0.4 的 src/channels/FeishuDoc.ts 和 src/capabilities/tools/Tools.ts。
  * 每个开放接口调用都过 Api.call（429 退让重试、错误码换中文）。这两个工具都很快结束，不用骨架的停止信号。
  */
+import * as botUtils from '../../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -10,7 +11,6 @@ import type * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
 import type { Session } from '../../../Sessions.ts';
 import * as textModule from '../../../utils/Text.ts';
-import * as workspaceModule from '../../../utils/Workspace.ts';
 import * as api from '../Api.ts';
 import type { Feishu, FeishuAddress } from '../index.ts';
 import * as blocks from './Blocks.ts';
@@ -121,10 +121,8 @@ export function getTarget(feishu: Feishu, session: Session): Target {
  */
 export function getFile(ctx: cordis.Context, session: Session, value: string): string {
   const cleaned = value.trim().replace(/^@/u, '').replace(/^["']|["']$/gu, '');
-  //M 读取所属机器人配置工作区（缺失则回落默认 bots 工作区），再按角色地址收窄目录。
-  const botWorkspace = ctx.bots.get(session.row.bot)?.workspace
-    ?? ctx.resources.ensureRuntimeDir('bots', session.row.bot, 'workspace');
-  const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
+  //M 相对路径按本轮工作区解析。
+  const workspace = botUtils.getSessionWorkspace(ctx.resources, session);
   const full = path.resolve(workspace, cleaned);
   if (full === path.join(ctx.resources.root, 'config.yaml')) {
     throw new Error('不能读 config.yaml');

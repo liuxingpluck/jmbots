@@ -31,12 +31,10 @@ test('没挂基地照常启动，后来挂上但断连时静默，恢复后才�
   const ctx = new cordis.Context();
 
   class FakeResources extends cordis.Service {
+
+    readonly raw = { bots: [{ name: '测试机器人' }] };
     ensureRuntimeDir(): string { return root; }
     constructor(c: cordis.Context) { super(c, 'resources'); }
-  }
-  class FakeBots extends cordis.Service {
-    list(): { name: string }[] { return [{ name: '测试机器人' }]; }
-    constructor(c: cordis.Context) { super(c, 'bots'); }
   }
   //M 假基地：后挂上；online 之前一律断连。
   class FakeBase extends cordis.Service {
@@ -63,7 +61,6 @@ test('没挂基地照常启动，后来挂上但断连时静默，恢复后才�
 
   try {
     await ctx.plugin(FakeResources);
-    await ctx.plugin(FakeBots);
     requestEvents.onRequestEvent(ctx, 'approval/request', 'approval/result', answer);
 
     //M 先挂 watch，再出现 base，证明没有把缺失的服务固定在启动时。
@@ -101,12 +98,10 @@ test('没挂 approval：当没有在等的，新版本登记不上就记一行�
   const ctx = new cordis.Context();
 
   class FakeResources extends cordis.Service {
+
+    readonly raw = { bots: [{ name: '测试机器人' }] };
     ensureRuntimeDir(): string { return root; }
     constructor(c: cordis.Context) { super(c, 'resources'); }
-  }
-  class FakeBots extends cordis.Service {
-    list(): { name: string }[] { return [{ name: '测试机器人' }]; }
-    constructor(c: cordis.Context) { super(c, 'bots'); }
   }
   class FakeBase extends cordis.Service {
     async getJson(): Promise<{ status: number; body: unknown }> {
@@ -117,7 +112,6 @@ test('没挂 approval：当没有在等的，新版本登记不上就记一行�
 
   try {
     await ctx.plugin(FakeResources);
-    await ctx.plugin(FakeBots);
     await ctx.plugin(FakeBase);
     const watch = new bridge.UpdateWatch(ctx, 60_000);
 
@@ -142,6 +136,7 @@ test('换版无响应时不重发，中控只在基地空闲且结论一致时�
   let requests = 0;
   let applying = true;
   class FakeResources extends cordis.Service {
+    readonly raw = { bots: [{ name: '测试机器人' }] };
     ensureRuntimeDir(): string { return root; }
     constructor(c: cordis.Context) { super(c, 'resources'); }
   }
@@ -204,6 +199,7 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
     });
     const ctx = new cordis.Context();
     class FakeResources extends cordis.Service {
+      readonly raw = { bots: [{ name: '测试机器人' }] };
       ensureRuntimeDir(): string { return root; }
       constructor(c: cordis.Context) { super(c, 'resources'); }
     }
@@ -211,10 +207,6 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
     class FakeTools extends cordis.Service {
       register(): void { toolCount += 1; }
       constructor(c: cordis.Context) { super(c, 'tools'); }
-    }
-    class FakeBots extends cordis.Service {
-      list(): { name: string }[] { return [{ name: '测试' }]; }
-      constructor(c: cordis.Context) { super(c, 'bots'); }
     }
     class FakeApproval extends cordis.Service {
       list(): unknown[] { return []; }
@@ -226,7 +218,6 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
 
     await ctx.plugin(FakeResources);
     await ctx.plugin(FakeTools);
-    await ctx.plugin(FakeBots);
     await ctx.plugin(FakeApproval);
     await ctx.plugin(FakeSessions);
     //M 默认不写 notify 与 update_watch 时两者都不开。
@@ -237,7 +228,6 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
     //M 显式开启 update_watch 后触发定时扫基地；卸载后停止继续请求。
     const ctx2 = new cordis.Context();
     await ctx2.plugin(FakeResources);
-    await ctx2.plugin(FakeBots);
     await ctx2.plugin(FakeApproval);
     await ctx2.plugin(FakeSessions);
     const indexUrl = `http://127.0.0.1:${String(remote.port)}`;

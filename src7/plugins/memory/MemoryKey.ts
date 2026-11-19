@@ -98,7 +98,9 @@ export function getSessionMemoryKey(row: SessionMeta): string {
     return getMemoryKey(source);
   }
   const origin = row.frontTask?.origin;
-  const channel = origin?.channel ?? row.channel ?? '';
+  let channel = origin?.channel ?? row.channel ?? '';
+  if (channel === 'web') channel = 'http';
+  if (channel === 'wechat-kefu') channel = 'wechat';
   const address = origin?.address ?? row.address;
   //M 旧来源仅使用会话当时记下的渠道和地址。
   const source = getOriginSource(channel, address);
@@ -136,8 +138,8 @@ export function getMemoryAccess(row: SessionMeta): MemoryAccess {
     //M 后台沿用派活时的快照，前台沿用本轮渠道快照。
     const source = getSnapshotSource(snapshot);
     //G 渠道档位决定本人身份，受信群的标记从同一份来源快照里取。
-    const owner = snapshot.role === 'owner';
     const address = snapshot.origin.address;
+    const owner = snapshot.role === 'owner' && workspaceModule.isOwnerTurn(snapshot.channel, address);
     const full = canReadAll(owner, address, source.chatType);
     const scope = { full, channel: snapshot.channel, chat: snapshot.chatId, account: snapshot.accountId };
     if (full) return scope;
@@ -155,20 +157,27 @@ export function getMemoryAccess(row: SessionMeta): MemoryAccess {
   const channel = origin?.channel ?? row.channel ?? '';
   const address = origin?.address ?? row.address;
   const source = getOriginSource(channel, address);
-  const role = workspaceModule.getSpeakerRole(address);
-  const internal = channel === '' || source.chatType === 'local';
-  //G 缺少角色只在内部非群聊沿用本人的旧默认。群聊必须明确识别出本人。
-  const localOwner = role === '' && internal && source.chatType !== 'group';
-  const owner = role === 'owner' || localOwner;
+  //G 是不是本人只问 isOwnerTurn：地址没写档位时，只有网页、命令行、内部会话算本人；群里能不能读由 canReadAll 再管。
+  const owner = workspaceModule.isOwnerTurn(channel, address);
   const full = canReadAll(owner, address, source.chatType);
-  if (full) return { full };
+  let account = utils.getStringField(address, 'accountId')
+    || utils.getStringField(address, 'appId')
+    || utils.getStringField(address, 'account');
+  if (source.chatType === 'local') {
+    if (!full) return { full };
+    account = 'local';
+    if (source.chat === '' && (channel === 'cli' || channel === 'http')) {
+      source.chat = `${channel}:本机`;
+    }
+  }
+  const scope = { full, channel: channel || undefined, chat: source.chat || undefined, account: account || undefined };
+  if (full) return scope;
 
   if (source.chatType === 'local') return { full };
 
   //M 老来源只能按明确的归属和渠道帐号继续读取。
   const key = getMemoryKey(source);
-  const account = utils.getStringField(address, 'accountId') || utils.getStringField(address, 'appId');
-  return { full, key: key || undefined, channel: channel || undefined, chat: source.chat || undefined, account };
+  return { ...scope, key: key || undefined };
 }
 
 

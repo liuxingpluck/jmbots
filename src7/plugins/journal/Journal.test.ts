@@ -13,6 +13,7 @@ import type { ChannelMessage } from '../../Channels.ts';
 import type { Session, SessionRow } from '../../Sessions.ts';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as journalModule from './index.ts';
+import { getTraceEvent } from './Trace.ts';
 
 
 const closers: Array<() => Promise<unknown> | void> = [];
@@ -99,7 +100,7 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认同时提供 ctx.journal 和 ctx.filesMirror，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.2.2');
+    expect(journalModule.version).toBe('1.3.0');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeDefined();
@@ -169,12 +170,12 @@ describe('journal（含 FilesMirror 并入）', () => {
     const to = trail?.[2]?.at ?? 0;
     const replyQuery = { action: 'reply-lines' as const, message: 77, maxLines: 3, sessions: ['s_req_1'], to };
     const replied = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', replyQuery, eventOptions);
-    expect(replied.lines).toEqual(trail);
+    expect(replied.events).toEqual(trail?.map(getTraceEvent));
     expect(replied.cut).toBe(false);
 
     const shortQuery = { ...replyQuery, maxLines: 2 };
     const short = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', shortQuery, eventOptions);
-    expect(short.lines).toEqual(trail?.slice(0, 2));
+    expect(short.events).toEqual(trail?.slice(0, 2).map(getTraceEvent));
     expect(short.cut).toBe(true);
 
     const usageQuery = { sessions: ['s_req_1'], from: 0, to, limit: 10 };

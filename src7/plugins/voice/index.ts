@@ -18,7 +18,7 @@ import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
 
 export const name = 'voice';
-export const version = '0.6.0';
+export const version = '0.6.1';
 export const inject = ['resources', 'http', 'sessions'];
 
 type Provider = 'fake' | 'sherpa' | 'bailian' | 'xiaomi';

@@ -10,7 +10,9 @@ import { describe, expect, test } from 'bun:test';
 import * as lanesModule from './Lanes.ts';
 import * as sourceModule from './Source.ts';
 import { LINES as MESSAGE_LINES } from '../journal/tests/Lines.ts';
-import { getBootTrail, getTrail, type TrailLine } from '../journal/Trail.ts';
+import type { TrailLine } from '../../utils/Trail.ts';
+// 测试用：拿 journal 真的收轨迹函数造轨迹夹具（运行代码不 import journal）。
+import { getBootTrail, getTrail } from '../journal/Trail.ts';
 
 
 /** 一段注释。 */

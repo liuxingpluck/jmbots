@@ -481,7 +481,7 @@ describe('checkConfig 收登记', () => {
     const ctx = {
       resources: {
         root,
-        raw: { channels: { feishu: [{ app_id: APP_ID, app_secret: 'x', bot: BOT }] } },
+        raw: { bots: [{ name: BOT }], channels: { feishu: [{ app_id: APP_ID, app_secret: 'x', bot: BOT }] } },
         config: { plugins: [{ name: 'relay', config: relay }] },
       },
       bots: { get: (name: string) => (name === BOT ? { name } : undefined) },
@@ -665,9 +665,9 @@ describe('群里发的话 @ 人', () => {
 
 describe('checkConfig 认 judge', () => {
   const getConfig = (own: Record<string, unknown>): ReturnType<typeof feishuModule.checkConfig> => {
+    const raw = { bots: [{ name: BOT }], channels: { feishu: [{ app_id: APP_ID, app_secret: 'x', bot: BOT }] } };
     const ctx = {
-      resources: { root, raw: { channels: { feishu: [{ app_id: APP_ID, app_secret: 'x', bot: BOT }] } }, config: { plugins: [] } },
-      bots: { get: (name: string) => (name === BOT ? { name } : undefined) },
+      resources: { root, raw, config: { plugins: [] } },
     } as unknown as cordis.Context;
     return feishuModule.checkConfig(ctx, own);
   };

@@ -6,6 +6,7 @@
  * 挑中就先在那场会话记录上记 reviewedAt，模型出错、重启都不会反复问同一件。
  * 照 0.4 src/capabilities/Review.ts。设计见同目录 说明.md 的「设计要点」一节（复盘）。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
@@ -230,7 +231,7 @@ export class Review {
         continue;
       }
       //G 确认登记所属机器人仍存在，已移除则跳过该条记录。
-      if (this.ctx.bots.get(parsed.bot) === undefined) {
+      if (botUtils.getBotConfig(this.ctx.resources.raw, parsed.bot) === undefined) {
         continue;
       }
       //G 核对会话是否存在且尚未复盘过本时间点记录，只选最早一条未复盘项。

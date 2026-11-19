@@ -3,9 +3,9 @@ import * as bunTest from 'bun:test';
 import * as sqlite from 'bun:sqlite';
 import type { SessionMeta } from '../../Sessions.ts';
 import * as backfill from './ChannelBackfill.ts';
-import * as migrate from './Backfill_Memory_Keys.ts';
+import * as migrate from '../../../ztools/memory/Backfill_Memory_Keys.ts';
 import * as channel from './ChannelIndex.ts';
-import * as stats from './Count_Memory_Keys.ts';
+import * as stats from '../../../ztools/memory/Count_Memory_Keys.ts';
 import * as keys from './MemoryKey.ts';
 
 

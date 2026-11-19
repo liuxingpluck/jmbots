@@ -11,7 +11,7 @@ type GroupReport = NonNullable<FeishuGroup['daily']> & Pick<FeishuGroup, 'chatId
 /** 延迟不到一整分钟的定时器仍跑这次，停机错过的整分钟不补。 */
 const MINUTE_MS = 60_000;
 const DAILY_SOURCE = 'daily-progress';
-const DAILY_TOOLS = new Set(['channel_search', 'channel_reply']);
+const DAILY_TOOLS = new Set(['memory_get', 'channel_reply']);
 
 
 /** 取运行机器的本地时分及前后日，保持夏令时切换时按日历调度。 */
@@ -54,7 +54,7 @@ export async function dispatchReport(ctx: cordis.Context, group: GroupReport, sc
   const heading = '【群进度定时任务 ' + until + '】';
   const instructions = [
     heading + ' 这条消息由系统发起。',
-    '先用 channel_search 查询本群 ' + since + ' 至 ' + until + ' 的群记录，limit 设为 200。',
+    '先用 memory_get 查本群记录，不给 ref，since 设为 ' + since + '，until 设为 ' + until + '，limit 设为 200。',
     '按成员实际汇报归纳今天的项目进度，昨晚的补充注明日期。忽略其他定时提示与机器人回复。',
     '根据配置列出的应汇报成员找出未汇报的人，使用 @群名片姓名。没有明确名单就说明，避免猜测。',
     '列出明天的安排。用 channel_reply 在本群发一条汇总，保留下面的项目要求。',

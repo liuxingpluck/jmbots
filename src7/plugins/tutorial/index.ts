@@ -6,7 +6,7 @@
  *   Boot.ts   录这次启动：每个插件挂了多久、多出哪些服务和工具、每步的快照；
  *   State.ts  带快照关键词（默认 #调试）的消息，每个事件拍一份运行时变量；
  *   Files.ts  快照写成 data/flow/boot.json、<消息号>.json，左栏「画布」读的就是这些文件；
- *   Lanes.ts  把轨迹摆成泳道图；跟踪行、录下的启动 → 一步一步在 journal/Trail.ts（消息的问 journal 要，启动的直接调）；
+ *   Lanes.ts  把轨迹摆成泳道图；跟踪行、录下的启动 → 一步一步在 journal/Trail.ts（消息的、启动的都发 journal/request 问 journal 要）；
  *   Source.ts 读源码：注释、函数源码、谁调它，和插件的 说明.md；
  *   Print.ts  控制台打印执行路径（原 trace 插件），配置 trace_console 打开。
  * 页面 /tutorial/ 由 web 插件按约定托管（dist/web/tutorial.html，源码 web/src/Tutorial/）；/flow/ 跳到 /tutorial/。接口：
@@ -51,7 +51,7 @@ import * as programsModule from './Programs.ts';
 import * as skeletonModule from './Skeleton.ts';
 import * as sourceModule from './Source.ts';
 import * as stateModule from './State.ts';
-import * as trailModule from '../journal/Trail.ts';
+import type * as trailModule from '../../utils/Trail.ts';
 
 
 declare module 'cordis' {
@@ -116,7 +116,8 @@ export const name = 'tutorial';
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
 //M 1.1.14：加 GET /api/tutorial/events 读事件目录 src7/docs/事件目录.json；消息轨迹按标准消息号串，第一格是飞书收到（journal 做）。1.1.15：教程页画布加顺序图、点箭头看事件详情、左栏加静态路线，只改网页。
-export const version = '1.1.15';
+//M 1.1.16：不再 import journal：轨迹形状和 NOISE、FOLDERS 改读 utils/Trail.ts，启动轨迹发 journal/request 的 boot-trail 要；TRAIL_MAX_LINES 归 Files.ts。
+export const version = '1.1.16';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -933,7 +934,7 @@ class Tutorial {
     //M 启动：这次录下的行。
     if (canvas === 'boot') {
       const lines = await this.boot.getLines();
-      return trailModule.getBootTrail(lines, this.boot.notes);
+      return this.files.getBootTrail(lines, this.boot.notes);
     }
 
     //M 快照文件：去掉每步快照（很大，点中一步再要），只给轨迹。
@@ -945,7 +946,7 @@ class Tutorial {
 
     //M 没有文件：问 journal 现算。
     const message = Number.parseInt(canvas, 10);
-    const got = await this.files.getMessageTrail(message, trailModule.TRAIL_MAX_LINES);
+    const got = await this.files.getMessageTrail(message, filesModule.TRAIL_MAX_LINES);
     return got?.trail;
   }
 
@@ -960,8 +961,8 @@ class Tutorial {
     if (canvas === 'boot') {
       const lines = await this.boot.getLines();
       const taken = lines.map((line) => this.boot.getSnapshot(line.id));
-      const steps = trailModule.getSteps(lines).steps;
-      return filesModule.getStepShot(steps, taken, no);
+      const bootTrail = await this.files.getBootTrail(lines, this.boot.notes);
+      return filesModule.getStepShot(bootTrail.steps, taken, no);
     }
 
     //M 快照文件里存好了每步的。
@@ -970,7 +971,7 @@ class Tutorial {
 
     //M 还没写成文件（还在跑）：问 journal 要轨迹，和内存里的快照对。
     const message = Number.parseInt(canvas, 10);
-    const got = await this.files.getMessageTrail(message, trailModule.TRAIL_MAX_LINES);
+    const got = await this.files.getMessageTrail(message, filesModule.TRAIL_MAX_LINES);
     if (got === undefined) return undefined;
 
     //M journal 挑出的行逐行对回内存快照，按轨迹的步定位第 no 步对应的运行时状态。

@@ -8,7 +8,7 @@
  *   一步的几行跨了阶段（比如 web-api 那一步先收到、再存），这一步在两格里各出现一次，点哪格都是看这一步。
  *   箭头：照行的先后，从上一行所在的格连到下一行所在的格（同一对只连一次）；启动的「服务就绪」格从它那道的加载格连过来。
  */
-import type * as trailModule from '../journal/Trail.ts';
+import type * as trailModule from '../../utils/Trail.ts';
 import type { TraceParams } from '../../../web/src/locales/Trace.ts';
 
 

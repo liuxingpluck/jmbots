@@ -8,6 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import fastify from 'fastify';
+import { registerHttpErrorHandler } from '../http/index.ts';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as settings from '../settings/index.ts';
 import * as webApi from '../web-api/index.ts';
@@ -29,6 +30,8 @@ afterEach(async () => {
 //M 事件总线照 cordis 的三样做：on 交回退订函数，emit 照名字分发，serial 挨个 await（utils/RequestEvent.ts 只用这三样）。
 function world(allowRestart = false) {
   const app = fastify();
+  //M 本地接口按生产服务的格式交回错误。
+  registerHttpErrorHandler(app);
   const db = new Database(':memory:');
   const services = new Map<string, unknown>();
   const tools = new Map<string, Tool>();

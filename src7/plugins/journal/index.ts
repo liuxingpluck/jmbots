@@ -16,8 +16,10 @@ import * as cut from '../../utils/Cut.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
+import type * as trailTypes from '../../utils/Trail.ts';
 import { FilesMirror } from './FilesMirror.ts';
 import * as markdown from './Markdown.ts';
+import * as traceModule from './Trace.ts';
 import * as trailModule from './Trail.ts';
 
 export { FilesMirror } from './FilesMirror.ts';
@@ -29,10 +31,12 @@ export const name = 'journal';
 //M 1.1.0：并入原 files-mirror（统一提供 ctx.journal 与 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json）。
 //M 1.2.0：“跟踪行 → 步骤”只留一份，从 tutorial/Trail.ts 挪进 Trail.ts；
 //M   journal/request 的 message-lines 换成 trail（教程页）、reply-lines（聊天页追溯）。
+//M 1.3.0：Trail 只走 journal/request（新增 boot-trail），tutorial 不再 import Trail.ts；
+//M   web-api/Trace.ts 里流水行换网页事件那段并进 Trace.ts，reply-lines 直接回网页事件 events。
 //M 1.2.2：journal_lines 加 source_id 列（标准消息号，渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])）；
 //M   trail、reply-lines 按它把渠道那几行（飞书 WebSocket 收到、去重、认 @、channel/message）串在收件行前面，
 //M   轨迹第一格不再是“收件表记下”；/api/events 加 source 参数。
-export const version = '1.2.2';
+export const version = '1.3.0';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
@@ -48,7 +52,7 @@ declare module 'cordis' {
      * 查消息轨迹、流水或会话镜像路径。
      * 谁发：
      *   src7/plugins/progress/Review.ts 的 Review.check
-     *   src7/plugins/tutorial/Files.ts 的 FlowFiles.getMessageTrail
+     *   src7/plugins/tutorial/Files.ts 的 FlowFiles.getMessageTrail、FlowFiles.getBootTrail
      *   src7/plugins/tutorial/index.ts 的 Tutorial.getRecentMessages
      *   src7/plugins/web-api/Trace.ts 的 trace
      * 谁接：src7/plugins/journal/index.ts 的 apply
@@ -59,7 +63,7 @@ declare module 'cordis' {
      * 谁发：src7/plugins/journal/index.ts 的 apply
      * 谁接：
      *   src7/plugins/progress/Review.ts 的 Review.check
-     *   src7/plugins/tutorial/Files.ts 的 FlowFiles.getMessageTrail
+     *   src7/plugins/tutorial/Files.ts 的 FlowFiles.getMessageTrail、FlowFiles.getBootTrail
      *   src7/plugins/tutorial/index.ts 的 Tutorial.getRecentMessages
      *   src7/plugins/web-api/Trace.ts 的 trace
      */
@@ -76,6 +80,13 @@ type JournalRequest = requestEventModule.RequestEnvelope & ({
   message: number;
   /** 筛完消息和相关会话后最多取几行。 */
   maxLines: number;
+} | {
+  /** 教程页：把 tutorial 录下的启动行收成启动轨迹（消息号 0）。 */
+  action: 'boot-trail';
+  /** tutorial/Boot.ts 的 getLines()。 */
+  lines: trailTypes.TrailLine[];
+  /** tutorial/Boot.ts 的关键变量说明表（BootTrail.notes）。 */
+  notes: Record<string, string>;
 } | {
   /** 聊天页回话追溯：按消息号挑出到这句回话为止的行。 */
   action: 'reply-lines';
@@ -105,12 +116,14 @@ type JournalRequest = requestEventModule.RequestEnvelope & ({
 interface JournalResult extends requestEventModule.ResultEnvelope {
   /** query 是否成功。 */
   ok?: boolean;
-  /** reply-lines 或 query 的流水。 */
+  /** query 的流水。 */
   lines?: JournalEvent[];
-  /** trail：收好的轨迹；跟踪行里没有这条消息时不给。 */
-  trail?: trailModule.Trail;
+  /** reply-lines：截至这句回话的匹配行，已换成网页追溯的事件外壳；没有这条消息时不给。 */
+  events?: traceModule.TraceEvent[];
+  /** trail、boot-trail：收好的轨迹；trail 在跟踪行里没有这条消息时不给。 */
+  trail?: trailTypes.Trail;
   /** trail：挑出属于这条请求的行（tutorial 拿去对内存里的快照）。 */
-  picked?: trailModule.TrailLine[];
+  picked?: trailTypes.TrailLine[];
   /** reply-lines：这句回话之前还有匹配行未返回。 */
   cut?: boolean;
   /** query 校验失败的原因。 */
@@ -510,7 +523,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 建流水表并开始记录跟踪行。
   const journal = new Journal(ctx, keepDays);
 
-  //M 用同一监听按 action 分派四种查询，复用原服务方法。
+  //M 用同一监听按 action 分派五种查询，复用原服务方法。
   requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (request) => {
     if (request.action === 'trail') {
       //M 教程页：只取与入站消息和关联会话有关的流水。
@@ -522,14 +535,21 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
       const trail = trailModule.getTrail(request.message, raw);
       return { trail, picked };
     }
+    if (request.action === 'boot-trail') {
+      //M 启动行是 tutorial 自己录的，不在流水里；这里只负责收成步骤。
+      const trail = trailModule.getBootTrail(request.lines, request.notes);
+      return { trail };
+    }
     if (request.action === 'reply-lines') {
       //M 只取截至这句回话的匹配行，多读一行判断截断。
       const probeLimit = request.maxLines + 1;
       const raw = journal.request(request.message, probeLimit, request.sessions, request.to);
       if (raw === undefined) return {};
 
+      //M 流水行换成网页追溯的事件外壳（原来在 web-api/Trace.ts 里做）。
       const lines = raw.slice(0, request.maxLines);
-      return { lines, cut: raw.length > request.maxLines };
+      const events = lines.map(traceModule.getTraceEvent);
+      return { events, cut: raw.length > request.maxLines };
     }
     if (request.action === 'query') {
       try {

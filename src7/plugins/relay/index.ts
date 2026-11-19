@@ -16,6 +16,7 @@
  * AgentTasks.ts 管外部 AI 的任务和单向留言，工具 agent_task 与 /api/agents* 在 http 就绪后挂。
  * 转话这一块要配置 helpers 才挂；只用任务通道的可以不写 helpers。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -43,7 +44,7 @@ export const name = 'relay';
 //  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
 //  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
-export const version = '1.4.5';
+export const version = '1.4.6';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'decision-map';
@@ -289,7 +290,7 @@ export class Relay {
     }
 
     //M 先把文件夹和两个文件建好，外部助手一看就知道往哪写。
-    for (const bot of this.ctx.bots.list()) {
+    for (const bot of botUtils.getBotConfigs(this.ctx.resources.raw)) {
       if (this.getMode(bot.name) !== undefined) this.getDir(bot.name);
     }
 
@@ -346,7 +347,7 @@ export class Relay {
       if (previous !== undefined) return { ok: true, id: previous.id };
 
       //M 收件列表需要机器人标识，取运行时名单中第一个。
-      const bot = this.ctx.bots.list()[0]?.name;
+      const bot = botUtils.getDefaultBot(this.ctx.resources.raw);
       if (bot === undefined || request.text === undefined) return { ok: false, error: '缺少收件内容或机器人' };
 
       const sender = '决策图';
@@ -466,7 +467,7 @@ export class Relay {
     if (this.config.bots.includes(bot)) return 'direct';
 
     //M 插件名单以外按机器人的配置决定转发模式。
-    return this.ctx.bots.get(bot)?.config['relay'] as RelayMode | undefined;
+    return botUtils.getBotConfig(this.ctx.resources.raw, bot)?.['relay'] as RelayMode | undefined;
   }
 
   /**
@@ -1112,7 +1113,7 @@ export class Relay {
    */
   private pollFile(): void {
     //M 逐个查看机器人，文件回信只从开启转发的机器人读取。
-    for (const bot of this.ctx.bots.list()) {
+    for (const bot of botUtils.getBotConfigs(this.ctx.resources.raw)) {
       if (this.getMode(bot.name) === undefined) continue;
       try {
         //M 单独处理该机器人的新增回信，个别读取失败不妨碍其他机器人。
@@ -1323,8 +1324,9 @@ export class Relay {
 
     //M 许可的目录：机器人的工作区（假机器人可能没有）、它的多个工作区、relay 给它的目录。
     const dirs: string[] = [];
-    const workspace = this.ctx.bots.get(bot)?.workspace;
-    if (workspace !== undefined) {
+    const config = botUtils.getBotConfig(this.ctx.resources.raw, bot);
+    if (config !== undefined) {
+      const workspace = botUtils.getBotDir(this.ctx.resources, bot, 'workspace');
       dirs.push(workspace);
     }
 
@@ -1711,8 +1713,8 @@ function applyRelay(ctx: cordis.Context, written: RelayWritten): void {
   }
 
   //M 名单项的 relay 也在这里查一次：只许 direct、model，或者不写。按群分的写在飞书插件配置的 groups 里。
-  for (const bot of ctx.bots.list()) {
-    const mode = bot.config['relay'];
+  for (const bot of botUtils.getBotConfigs(ctx.resources.raw)) {
+    const mode = bot['relay'];
     if (mode !== undefined && mode !== 'direct' && mode !== 'model') {
       throw new Error(`机器人 ${bot.name} 的 relay 只能写 direct 或 model（按群分的写在 feishu 插件配置的 groups 里）`);
     }

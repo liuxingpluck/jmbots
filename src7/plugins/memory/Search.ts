@@ -1,21 +1,43 @@
 /** 统一检索与原文读取。网页、内部事件和模型共用检索，模型的范围由会话来源决定。 */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
 import type { Session } from '../../Sessions.ts';
-import type { ToolResult } from '../../Tools.ts';
 import * as text from '../../utils/Text.ts';
 import * as workspace from '../../utils/Workspace.ts';
 import * as channel from './ChannelIndex.ts';
 import type { GraphRoutes } from './GraphRoutes.ts';
 import type { GraphStore } from './GraphStore.ts';
-import type { HistoryToolRequest } from './HistoryTools.ts';
+import * as frontArchive from './FrontArchive.ts';
+import type { FrontEntry, FrontQuery } from './FrontArchive.ts';
 import type { MemoryService } from './index.ts';
 import * as memoryKeyModule from './MemoryKey.ts';
 import * as recall from './Recall.ts';
 import * as store from './Store.ts';
 
+/** 查历史时每条截短到这么多字；全文用 memory_get。 */
+const HISTORY_CLIP = 240;
+
+/** 前台归档查询每次最多交回几条。 */
+const HISTORY_PAGE = 20;
+
+/** 历史查询的附加条件，未提供的字段不参与筛选。 */
+interface HistoryRange {
+  /** 只取这一类发送人。 */
+  who?: 'user' | 'bot';
+  /** 最早时间，含。 */
+  from?: number;
+  /** 最晚时间，含。 */
+  to?: number;
+  /** 只取此编号之后的往来。 */
+  after?: number;
+  /** 只取此编号之前的往来。 */
+  before?: number;
+}
+
+const HISTORY_UNAVAILABLE = '前台往来暂时读不到，请以本轮消息为准。';
 const SOURCES = ['history', 'channel', 'knowledge', 'card'] as const;
 const MODES = ['keyword', 'semantic', 'hybrid', 'graph'] as const;
 const SEARCH_LIMIT = 50;
@@ -135,6 +157,7 @@ export class Search {
     private readonly index?: channel.ChannelIndex,
     private readonly graphStore?: GraphStore,
     private readonly disk?: store.Store,
+    private readonly front?: frontArchive.FrontArchive,
   ) {}
 
   /** HTTP、工具和可信内部事件共用的查询。会话缺省时按已验证的网页或内部调用者范围查。 */
@@ -255,7 +278,7 @@ export class Search {
         name: 'memory_search',
         description: '按问题搜往来、渠道、知识库和卡片。front 查这场的归档，mentions 查 @。要看原文用 memory_get。',
         parameters: piAi.Type.Object({
-          q: piAi.Type.Optional(piAi.Type.String({ description: '检索词，翻看归档或 @ 时可省' })),
+          q: piAi.Type.Optional(piAi.Type.String({ description: '检索词，单查渠道、归档或 @ 时可省' })),
           sources: piAi.Type.Optional(piAi.Type.String({ description: '逗号分隔 history,channel,knowledge,card，默认全部' })),
           mode: piAi.Type.Optional(piAi.Type.Union(MODES.map((mode) => piAi.Type.Literal(mode)))),
           customer: piAi.Type.Optional(piAi.Type.String({ description: '当前客户号' })),
@@ -265,6 +288,7 @@ export class Search {
           mentions: piAi.Type.Optional(piAi.Type.Boolean({ description: '只查提到当前机器人的渠道消息' })),
           front: piAi.Type.Optional(piAi.Type.Boolean({ description: '查这场前台及它交办的往来归档' })),
           who: piAi.Type.Optional(piAi.Type.Union([piAi.Type.Literal('user'), piAi.Type.Literal('bot')])),
+          senderId: piAi.Type.Optional(piAi.Type.String({ description: '只查这位发言人的渠道消息' })),
           after: piAi.Type.Optional(piAi.Type.Integer({ description: '前台往来编号，向后翻页' })),
           before: piAi.Type.Optional(piAi.Type.Union([PAGE_CURSOR, piAi.Type.Integer({ description: '前台往来编号' })])),
           from_earliest: piAi.Type.Optional(piAi.Type.Boolean({ description: '从最早一条往后翻' })),
@@ -272,12 +296,18 @@ export class Search {
         }),
       },
       sessionKinds: ['front', 'work'],
-      run: async (args, session, signal, callId) => {
+      run: async (args, session) => {
         //G 前台先扣本轮额度，再按来源和权限检索。
         this.takeTurn(session);
-        const request = { args, session, signal, callId };
-        const archived = await this.searchArchive(request);
-        if (archived !== undefined) return archived;
+        if (args['front'] === true) {
+          this.checkFrontAccess(session);
+          return this.searchFront(session, args);
+        }
+        if (args['mentions'] === true && getText(args, 'q') === '') {
+          //M 无关键词时按本聊天翻看 @，沿用原文翻页游标。
+          const page = await this.get(args, session);
+          return JSON.stringify(page);
+        }
 
         //M 常规检索返回跨来源的结构化命中。
         const result = await this.find(args, session);
@@ -289,22 +319,26 @@ export class Search {
     this.ctx.tools.register({
       definition: {
         name: 'memory_get',
-        description: '用 ref 取原文和上下文。省略 ref 翻渠道历史，可用 before 游标。微信用 wechat_skip 跳过最近消息。',
+        description: '用 ref 取原文和上下文。省略 ref 读取本聊天最近几条，下一页给 before 游标。',
         parameters: piAi.Type.Object({
           ref: piAi.Type.Optional(piAi.Type.String({ description: '来源引用或 bot-log:往来编号' })),
           before: piAi.Type.Optional(PAGE_CURSOR),
           senderId: piAi.Type.Optional(piAi.Type.String({ description: '只看这位发言人的历史' })),
-          wechat_skip: piAi.Type.Optional(piAi.Type.Integer({ minimum: 0 })),
+          mentions: piAi.Type.Optional(piAi.Type.Boolean({ description: '只看提及当前机器人的消息' })),
           ...FILTERS,
         }),
       },
       sessionKinds: ['front', 'work'],
-      run: async (args, session, signal, callId) => {
+      run: async (args, session) => {
         //G 检索与取原文共用同一份前台额度。
         this.takeTurn(session);
-        const request = { args, session, signal, callId };
-        const archived = await this.getArchive(request);
-        if (archived !== undefined) return archived;
+        const ref = getText(args, 'ref');
+        const entry = /^(?:bot-log:|#)([1-9]\d*)$/u.exec(ref);
+        if (entry !== null) {
+          this.checkFrontAccess(session);
+          const id = Number(entry[1]);
+          return this.getFront(session, id);
+        }
 
         //M 索引引用和按时间截取的渠道消息走统一原文查找。
         const result = await this.get(args, session);
@@ -313,105 +347,158 @@ export class Search {
     });
   }
 
-  /** 按归属检查读取请求，再交给原归档提供方。 */
-  async readHistory(request: HistoryToolRequest): Promise<ToolResult | undefined> {
-    const { route, session } = request;
-    //G 原始归档可能还没有归属。受限会话统一走带归属的检索和原文索引。
+  /** 前台编号只能在有本人权限的前台会话中读取。 */
+  private checkFrontAccess(session: Session): void {
     const access = channel.getAccess(session);
-    if (!access.full || (route.startsWith('front-') && session.row.kind !== 'front')) {
-      throw new Error('这一轮只能查当前渠道聊天，请用 memory_search 或 channel_search 查询已归属的记录');
+    //G 原前台归档编号可能关联未补标的旧记录。
+    if (!access.full || session.row.kind !== 'front') {
+      throw new Error('这一轮只能查当前渠道聊天，请用 memory_search 查询已归属的记录');
     }
-    //M 由拥有归档、签名游标和原权限检查的插件答复。
-    await this.ctx.serial('memory/history-tool', request);
-    return request.result;
   }
 
-  /** 前台往来和不带关键词的 @ 归档按原来源分页。 */
-  private async searchArchive(request: Omit<HistoryToolRequest, 'route'>): Promise<ToolResult | undefined> {
-    const { args } = request;
-    if (args['front'] === true) {
-      //M 通用时间和条数参数换成前台归档的游标条件。
-      const query = channel.getQuery(args, {});
-      const params = {
-        keyword: args['q'], count: args['limit'], from: query.since, to: query.until, who: args['who'],
-        before: args['before'], after: args['after'], from_earliest: args['from_earliest'],
-      };
-      const routed = { ...request, route: 'front-search' as const, args: params };
-      //M 前台插件负责旧记录的编号、翻页和发言人筛选。
-      return this.readHistory(routed);
+  /**
+   * 按条件翻一页前台往来，最多 20 条。有关键词时合并文字匹配和语义检索。
+   * @param session 前台对话。
+   * @param args 工具参数。
+   */
+  private async searchFront(session: Session, args: Record<string, unknown>): Promise<string> {
+    //M 只查这场前台和它交办的后台会话（同一个客户），范围外的往来看不到。
+    const ids = frontArchive.getFrontSessionIds(this.ctx.sessions, session);
+    if (ids.length === 0) return '没有往来。';
+
+    const requestedCount = (args['count'] as number | undefined) ?? HISTORY_PAGE;
+    const take = Math.min(HISTORY_PAGE, Math.max(1, requestedCount));
+    const rawKeyword = args['keyword'];
+    let keyword: string | undefined;
+    if (typeof rawKeyword === 'string') {
+      keyword = rawKeyword.trim() || undefined;
     }
 
-    //M 无检索词时按渠道原始 @ 记录翻页，包括还没有收进索引的记录。
-    const q = getText(args, 'q');
-    if (args['mentions'] !== true || q !== '') return undefined;
+    //M 只把工具传来的有效筛选项交给两路检索共用。
+    const range: HistoryRange = {};
+    const who = args['who'];
+    if (who === 'user' || who === 'bot') {
+      range.who = who;
+    }
+    const numericKeys = ['from', 'to', 'after', 'before'] as const;
+    for (const key of numericKeys) {
+      const value = args[key];
+      if (typeof value === 'number') {
+        range[key] = value;
+      }
+    }
+    const fromEarliest = args['from_earliest'] === true || range.after !== undefined;
+    //M 同一份筛选条件约束关键词和语义两路，确保它们都只看当前会话范围。
+    const filter = { bot: session.row.bot, sessionIds: ids, ...range };
 
-    if (args['channel'] !== undefined || args['chat'] !== undefined) throw new Error('只可翻看当前聊天的 @ 记录');
+    //M 有关键词才查语义。语义命中时再取更多关键词候选，合并后按相关程度排序。
+    let semantic: Array<{ entry: FrontEntry; score: number }> = [];
+    if (keyword !== undefined) {
+      const hits = await this.semanticHits(filter, keyword);
+      if (hits === undefined) return HISTORY_UNAVAILABLE;
 
-    //M 受限来源按归属读索引里的提及，不打开可能尚未打标的原始归档。
-    const access = channel.getAccess(request.session);
-    if (!access.full) {
-      const filters = { ...args, mentions: true };
-      const { rows, query } = this.findChannel(filters, request.session);
-      return channel.getResultText(rows, query);
+      semantic = hits;
+    }
+    const ranked = semantic.length > 0;
+    let candidateCount = take;
+    if (ranked) {
+      candidateCount = 2000;
     }
 
-    //M 原渠道使用结构化提及和它签发的游标翻页。
-    const routed = { ...request, route: 'channel-mentions' as const };
-    return this.readHistory(routed);
+    //M 保留按字匹配和语义匹配的去重总数，用于提示翻页。
+    let order: FrontQuery['order'] = 'last';
+    if (fromEarliest) {
+      order = 'first';
+    }
+    const query = { ...filter, keyword, order, limit: candidateCount };
+    const keywordRows = this.front?.read(query);
+    if (keywordRows === undefined) return HISTORY_UNAVAILABLE;
+
+    if (!fromEarliest) {
+      keywordRows.reverse();
+    }
+    const semanticRows = semantic.map((hit) => hit.entry);
+    const union = uniqueById(keywordRows, semanticRows);
+    let shown = keywordRows;
+    let orderNote = '按时间从早到晚';
+    if (ranked) {
+      shown = mergeHistoryHits(keywordRows, semantic, take);
+      orderNote = '按相关程度';
+    }
+    if (shown.length === 0) return '没有符合条件的往来。';
+
+    //M 开头一句说总数和这页范围、还有更多怎么翻；每条往来用 formatEntry 截短排成一行，回给模型。
+    const total = union.length;
+    const first = String(shown[0]?.id);
+    const last = String(shown.at(-1)?.id);
+    let head = `共 ${String(total)} 条，这页 ${String(shown.length)} 条（编号 ${first}–${last}，${orderNote}）。`;
+    if (total > shown.length) {
+      head += '还有更多时，用 after 往后翻或 before 往前翻。';
+    }
+    //M 每条只放截短的正文和编号，模型需要全文时可用历史工具。
+    const lines = shown.map((entry) => frontArchive.formatFrontEntry(entry, HISTORY_CLIP));
+    return [head, ...lines].join('\n');
   }
 
-  /** 用前台编号取往来，或从原渠道读连续页、微信归档。 */
-  private async getArchive(request: Omit<HistoryToolRequest, 'route'>): Promise<ToolResult | undefined> {
-    const { args } = request;
-    //M 统一识别旧往来编号和索引引用，后者继续由 get 处理。
-    const ref = getText(args, 'ref');
-    const entry = /^(?:bot-log:|#)([1-9]\d*)$/u.exec(ref);
-    if (entry !== null) {
-      const id = Number(entry[1]);
-      const routed = { ...request, route: 'front-get' as const, args: { id } };
-      return this.readHistory(routed);
+  /** 语义检索只比较同一会话范围的候选，向量由记忆服务按需计算。 */
+  private async semanticHits(
+    filter: Omit<FrontQuery, 'order' | 'limit'>,
+    keyword: string,
+  ): Promise<Array<{ entry: FrontEntry; score: number }> | undefined> {
+    const query: FrontQuery = { ...filter, order: 'last', limit: 2000 };
+    //G 先按会话权限取候选，没有可查的往来就不向记忆模型请求向量。
+    const candidates = this.front?.read(query);
+    if (candidates === undefined) return undefined;
+
+    if (candidates.length === 0) return [];
+
+    //M 记忆服务离线时仍保留字面检索。
+    const words = [keyword];
+    const queryVec = await this.service.embed(words).catch(() => undefined);
+    const vector = queryVec?.[0];
+    if (vector === undefined) return [];
+
+    const hits: Array<{ entry: FrontEntry; score: number }> = [];
+    for (let offset = 0; offset < candidates.length; offset += 32) {
+      //M 按与原前台同样的批量大小编码，不再另建 SQLite 向量缓存。
+      const batch = candidates.slice(offset, offset + 32);
+      const texts = batch.map((entry) => entry.text);
+      const vectors = await this.service.embed(texts).catch(() => undefined);
+      if (vectors === undefined) break;
+
+      for (const [index, entry] of batch.entries()) {
+        const value = vectors[index];
+        if (value === undefined) continue;
+
+        //M 和查询向量同维且超过原门槛的才参与前台结果排序。
+        const score = cosine(vector, value);
+        if (score >= SEMANTIC_MIN) {
+          hits.push({ entry, score });
+        }
+      }
     }
-    if (ref !== '') return undefined;
-
-    //M 受限会话的普通翻页由 get 走带归属的渠道索引。
-    const access = channel.getAccess(request.session);
-    if (!access.full) return undefined;
-
-    if (args['wechat_skip'] !== undefined) {
-      //M 微信按当前来源的会话和归档偏移读取，原有补录和排序由微信插件处理。
-      const params = { skip: args['wechat_skip'], limit: args['limit'] };
-      const routed = { ...request, route: 'wechat-archive' as const, args: params };
-      return this.readHistory(routed);
-    }
-    if (args['since'] !== undefined || args['until'] !== undefined) return undefined;
-
-    if (args['senderId'] !== undefined) {
-      if (args['channel'] !== undefined) throw new Error('按发言人翻页只能查当前渠道');
-
-      //M 原渠道模式按发送者权限和游标翻页，参数 chat 换成原模式的 chatId。
-      const params = { ...args, chatId: args['chat'] };
-      const routed = { ...request, route: 'channel-visible' as const, args: params };
-      return this.readHistory(routed);
-    }
-    //M 默认走当前渠道读取，拥有者的跨聊天权限由该渠道按来源检查。
-    const routed = { ...request, route: 'channel-current' as const };
-    return this.readHistory(routed);
+    hits.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
+    return hits.slice(0, HISTORY_PAGE);
   }
 
-  /** 旧 channel_search 的兼容入口，无关键词时仍能按时间列消息。 */
-  findChannel(args: Record<string, unknown>, session: Session): {
-    rows: channel.ChannelRow[]; query: channel.ChannelQuery;
-  } {
-    //M 旧工具沿用原日期和条数参数，按统一索引范围查询。
-    const access = channel.getAccess(session);
-    const scope = channel.getScope(args, access);
-    const query = channel.getQuery(args, scope);
-    if (args['mentions'] === true) {
-      query.mentionedBot = session.row.bot;
-    }
-    //M 仅查询本轮授权范围内的渠道索引行。
-    const rows = this.searchChannel(query);
-    return { rows, query };
+
+  /**
+   * 读取本场前台归档中指定编号的全文。
+   * @param session 前台对话。
+   * @param id 往来编号。
+   */
+  private getFront(session: Session, id: number): string {
+    //G 同时按机器人、会话范围和编号查，越界时没有结果。
+    const sessionIds = frontArchive.getFrontSessionIds(this.ctx.sessions, session);
+    const query: FrontQuery = { bot: session.row.bot, sessionIds, id, order: 'last', limit: 1 };
+    const entries = this.front?.read(query);
+    if (entries === undefined) return HISTORY_UNAVAILABLE;
+
+    const row = entries[0];
+    if (row === undefined) return `没有编号 ${String(id)} 的往来，或不属于这场对话。`;
+
+    //M 范围内的才排成一行（不截短）回给模型。
+    return frontArchive.formatFrontEntry(row);
   }
 
   /** 按 ref 读取原文。在查询数据前把聊天范围固定为本轮获准的范围。 */
@@ -420,7 +507,18 @@ export class Search {
     const ref = getText(args, 'ref');
     const access = channel.getAccess(session);
     //M 渠道原文按稳定消息键定位，或按聊天和时间列一段完整消息。
-    if (ref === '' || ref.startsWith(`${CHANNEL_ROUTE}?`)) {
+    if (ref === '') {
+      //M 省略引用时按本轮聊天翻页，两个账号的同名会话仍固定到当前账号。
+      const scope = this.getChannelPageScope(args, access);
+      const query = channel.getQuery(args, scope);
+      if (args['mentions'] === true) query.mentionedBot = session.row.bot;
+      const index = this.index;
+      if (index === undefined) throw new Error('渠道消息索引未开启');
+
+      const before = getText(args, 'before');
+      return index.page(query, before);
+    }
+    if (ref.startsWith(`${CHANNEL_ROUTE}?`)) {
       const params = new URLSearchParams(ref.slice(CHANNEL_ROUTE.length + 1));
       const chosen = { ...args };
       for (const key of ['channel', 'chat'] as const) {
@@ -431,18 +529,15 @@ export class Search {
       const scope = channel.getScope(chosen, access);
       if (scope.chat === undefined) throw new Error('请给 ref 或 chat');
 
-      //G 有引用时必须明确给消息键；纯聊天查询才允许列最近消息。
+      //G 引用必须明确给出消息键。
       const id = params.get('id');
-      if (id === null && ref !== '') throw new Error('引用缺少消息编号');
+      if (id === null) throw new Error('引用缺少消息编号');
 
-      //M 同一套时间、条数和聊天范围用于列表及锚点的前后文。
-      if (id !== null) chosen['limit'] = getLimit(args['limit'], 3, 20);
+      //M 用索引定位这条消息和附近原文。
+      chosen['limit'] = getLimit(args['limit'], 3, 20);
       const query = channel.getQuery(chosen, scope);
       const index = this.index;
       if (index === undefined) throw new Error('渠道消息索引未开启');
-
-      //M 没有锚点时直接返回这段时间内的消息。
-      if (id === null) return { hits: index.search(query) };
 
       //M 有锚点时取这条原文和附近的消息。
       return index.context(id, query);
@@ -482,6 +577,22 @@ export class Search {
     const limit = getLimit(args['limit'], 5, 20);
     const start = Math.max(1, line - limit);
     return { ref, line, start, text: lines.slice(start - 1, line + limit).join('\n') };
+  }
+
+  /** 默认本聊天。本人可以明确指定其他聊天，受限会话仍按来源授权。 */
+  private getChannelPageScope(args: Record<string, unknown>, access: channel.ChannelAccess): channel.ChannelScope {
+    const requestedChannel = getText(args, 'channel') || access.channel;
+    let chat = getText(args, 'chat');
+    if (chat === '' && requestedChannel === access.channel) {
+      chat = access.chat ?? '';
+    }
+    const chosen = { channel: requestedChannel, chat };
+    const scope = channel.getScope(chosen, access);
+    if (scope.channel === undefined || scope.chat === undefined) throw new Error('当前会话没有聊天来源，请给 ref 或指定 channel 和 chat');
+    if (scope.channel === access.channel && scope.chat === access.chat) {
+      scope.account = access.account;
+    }
+    return scope;
   }
 
   /** 核对 Rust 段落权限，并在本地库与服务一致时补前文和后文。 */
@@ -530,12 +641,12 @@ export class Search {
 
   /** 将输入装成四路共用的查询。显式指定的越权范围报错，默认范围跳过不可查询的来源。 */
   private getQuery(args: Record<string, unknown>, session?: Session): SearchQuery {
-    //G 查询词是检索的必要条件。
+    //G 空关键词只用于渠道检索或翻看 @，其他来源需要问题或关键词。
     const q = getText(args, 'q');
-    if (q === '') throw new Error('要给 q');
+    const requested = getText(args, 'sources') || getText(args, 'source');
+    if (q === '' && requested !== 'channel' && args['mentions'] !== true) throw new Error('要给 q');
 
     //G 只接受已经定义的来源名。
-    const requested = getText(args, 'sources') || getText(args, 'source');
     let sources: readonly string[] = SOURCES;
     if (requested !== '' && requested !== 'all') sources = requested.split(',').map((item) => item.trim());
     if (sources.some((source) => !SOURCES.includes(source as Source))) {
@@ -619,10 +730,17 @@ export class Search {
     }
     //G 渠道查询必须使用来源快照授权的聊天和账号。
     let scope: channel.ChannelScope = {};
-    if (allowed.has('channel')) scope = channel.getScope(args, access);
+    if (allowed.has('channel')) {
+      scope = channel.getScope(args, access);
+      if (q === '' && args['mentions'] === true && session !== undefined) {
+        scope = this.getChannelPageScope(args, access);
+      }
+    }
 
-    //M 时间参数与渠道历史读取共用，条数夹到统一检索上限。
-    const limit = getLimit(args['limit'], 10, SEARCH_LIMIT);
+    //M 只查渠道时继承原有的 200 条上限，跨来源仍限制在 50 条。
+    let max = SEARCH_LIMIT;
+    if (allowed.size === 1 && allowed.has('channel')) max = 200;
+    const limit = getLimit(args['limit'], 10, max);
     const filters = { ...args, query: q, limit };
     const channelQuery = channel.getQuery(filters, scope);
     if (args['mentions'] === true) channelQuery.mentionedBot = bot;
@@ -802,10 +920,11 @@ export class Search {
     //M 根目录来自配置及机器人实例，避免把机器人参数当作文件路径。
     const shared = this.ctx.resources.ensureRuntimeDir('memory');
     const roots = new Map<string, string>([[shared, '']]);
-    const bots = this.ctx.bots.list();
+    const bots = botUtils.getBotConfigs(this.ctx.resources.raw);
     for (const item of bots) {
       if (bot !== '' && item.name !== bot) continue;
-      if (!roots.has(item.memory)) roots.set(item.memory, item.name);
+      const memory = botUtils.getBotDir(this.ctx.resources, item.name, 'memory');
+      if (!roots.has(memory)) roots.set(memory, item.name);
     }
     return roots;
   }
@@ -906,3 +1025,88 @@ function inTime(at: number, query: channel.ChannelQuery): boolean {
   return at >= (query.since ?? 0) && at <= (query.until ?? Infinity);
 }
 
+/** 语义命中的最低余弦相似度（bge-m3 已 L2 归一化）。 */
+const SEMANTIC_MIN = 0.22;
+
+
+
+
+
+/**
+ * 把关键词命中和语义命中按编号合并，语义分数高的靠前；只要关键词命中也保留。
+ * @param keywordRows 按字匹配到的往来。
+ * @param semantic 语义命中。
+ * @param take 最多留几条。
+ */
+function mergeHistoryHits(
+  keywordRows: FrontEntry[],
+  semantic: Array<{ entry: FrontEntry; score: number }>,
+  take: number,
+): FrontEntry[] {
+  const scores = new Map<number, { entry: FrontEntry; score: number }>();
+  for (const entry of keywordRows) {
+    scores.set(entry.id, { entry, score: 1 });
+  }
+  for (const hit of semantic) {
+    const prev = scores.get(hit.entry.id);
+    if (prev === undefined) {
+      scores.set(hit.entry.id, hit);
+      continue;
+    }
+
+    //M 同一条同时命中关键词和语义时提高它的分数。
+    const score = hit.score + 1;
+    if (score > prev.score) {
+      scores.set(hit.entry.id, { entry: prev.entry, score });
+    }
+  }
+
+  //M 先按分数，再按编号稳定排序，只交回当前页的原文记录。
+  const ranked = [...scores.values()];
+  ranked.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
+  const shown = ranked.slice(0, take);
+  return shown.map((row) => row.entry);
+}
+
+
+/**
+ * 按编号去重，先出现的留下。
+ * @param groups 若干组往来。
+ */
+function uniqueById(...groups: FrontEntry[][]): FrontEntry[] {
+  const seen = new Set<number>();
+  const out: FrontEntry[] = [];
+  for (const group of groups) {
+    for (const entry of group) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      //M 两路命中同一个编号时，只把第一次出现的那条留下。
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+
+/**
+ * 余弦相似度；长度不同或零向量交回 0。
+ * @param a 向量 a。
+ * @param b 向量 b。
+ */
+function cosine(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  if (denom === 0) return 0;
+
+  return dot / denom;
+}

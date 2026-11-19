@@ -4,6 +4,7 @@
  * 慢工具：骨架给的停止信号和 5 分钟超时合在一起交给 fetch，点了停止马上断开。把图发给用户归渠道（认回话里的 @路径）。
  * 照 0.4 src/capabilities/tools/Tools.ts:636-654、1664-1728。设计见同目录 说明.md 的「设计要点」一节。
  */
+import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -17,10 +18,10 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'image-gen';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.3';
+export const version = '1.0.4';
 
 /** 用到的服务：resources 拿配置；tools 登记工具；bots 找工作区。 */
-export const inject = ['resources', 'tools', 'bots'];
+export const inject = ['resources', 'tools'];
 
 
 /** 校验后的生图模型。 */
@@ -108,9 +109,8 @@ class ImageGen {
     const model = this.model;
     if (model === undefined) throw new Error(`没配生图模型 ${IMAGE_MODEL_PATH}，请填“供应商/模型 ID”`);
 
-    //G 查出当前会话对应机器人的工作区目录以备保存图片，机器人不存在时立刻报错。
-    const workspace = this.ctx.bots.get(session.row.bot)?.workspace;
-    if (workspace === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
+    //M 生成的图片保存到当前会话的工作区。
+    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, session);
     const prompt = String(args['prompt']);
     const body = {
       model: model.model, prompt, n: 1, size: (args['size'] as string | undefined) ?? '1024x1024',

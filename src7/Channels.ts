@@ -4,7 +4,6 @@
  *   - channel/message(message, control)：渠道收到原始消息并落盘后发出；approval 消息级指令先消费一次，bots 按 targetBots 逐个独立认领；
  *   - channel/reply(request) ↔ channel/replied(event)：回复工具或系统提醒发回复请求，匹配的渠道发完回发回执；
  *   - channel/settled(event)：一轮 channel_tool 收尾后发出通知；
- *   - channel/history(request) ↔ channel/history-result(event)：历史工具按绑定来源快照请求本聊天历史，渠道回传授权范围内的结果；
  *   - channel/recall(event)：渠道确认原消息撤回后发出，bots 移除排队消息并通知正在处理它的会话。
  */
 import * as crypto from 'node:crypto';
@@ -26,9 +25,6 @@ export type ReplyKind = 'progress' | 'final';
 
 /** v2 渠道发送回执状态；与 acceptResult 的 queued / duplicate 严格区分。 */
 export type ReplyStatus = 'queued' | 'sent' | 'draft' | 'partial' | 'uncertain' | 'rejected';
-
-/** 历史查询模式。 */
-export type ChannelHistoryMode = 'current' | 'mentions' | 'visible';
 
 
 /** 消息里的 @ 提及。 */
@@ -351,108 +347,6 @@ export interface ChannelRepliedEvent {
 }
 
 
-/** 渠道历史查询摘要项（不暴露未授权本机源路径）。 */
-export interface ChannelHistoryItem {
-  /** 标准消息 ID。 */
-  messageId: string;
-  /** 平台原始消息 ID。 */
-  nativeId: string | null;
-  /** 消息方向：user 入站 / bot 出站。 */
-  direction: 'user' | 'bot';
-  /** 毫秒时间戳。 */
-  createdAt: number;
-  /** 发送者原始 ID 与名字。 */
-  sender: { id: string; name?: string };
-  /** 可见文本内容。 */
-  text: string;
-  /** @ 提及列表。 */
-  mentions: ChannelMention[];
-  /** 脱敏后的附件元数据（不含源文件系统路径）。 */
-  attachments: Array<{ id: string; name: string; mime?: string; size?: number; state: 'available' | 'unavailable' }>;
-}
-
-
-/** 渠道历史错误对象。 */
-export interface ChannelHistoryError {
-  /** 错误码（例如 invalid_cursor / identity_unresolved / forbidden / channel_unavailable）。 */
-  code: string;
-  /** 中文错误说明。 */
-  message: string;
-}
-
-
-/** 渠道历史工具返回与事件结果。 */
-export interface ChannelHistoryResult {
-  /** 是否成功。 */
-  ok: boolean;
-  /** 消息摘要数组（时间升序，较早在前）。 */
-  items: ChannelHistoryItem[];
-  /** 下一页游标（绑定聊天/模式/发送人条件，无更早消息为 null）。 */
-  nextCursor: string | null;
-  /** 实际生效查询范围说明。 */
-  scope: string;
-  /** 完整性标示。 */
-  completeness: 'complete' | 'local_only' | 'unsupported';
-  /** 失败详情。 */
-  error?: ChannelHistoryError;
-}
-
-
-/** 事件 channel/history 请求载荷。 */
-export interface ChannelHistoryRequest {
-  /** 单次事件往返局部关联 ID。 */
-  requestId: string;
-  /** 渠道名。 */
-  channel: string;
-  /** 不可变来源快照。 */
-  sourceSnapshot: SourceSnapshot;
-  /** 查询模式。 */
-  mode: ChannelHistoryMode;
-  /** 可选指定聊天（需在授权范围内）。 */
-  chatId?: string;
-  /** 可选过滤发送者原始 ID（visible 模式必填）。 */
-  senderId?: string;
-  /** 返回条数上限（已校验 1..200）。 */
-  limit: number;
-  /** 可选不透明翻页游标。 */
-  before?: string;
-  /** 渠道插件接单后置 true。 */
-  handled?: boolean;
-}
-
-
-/**
- * 构造不含查询条目的历史失败结果。
- * @param scope 查询所属的可见范围。
- * @param completeness 此次查询覆盖的数据范围。
- * @param code 给调用方识别的错误码。
- * @param message 给调用方阅读的失败原因。
- * @returns 带失败原因、空条目和空游标的结果。
- */
-export function getHistoryError(
-  scope: string,
-  completeness: ChannelHistoryResult['completeness'],
-  code: string,
-  message: string,
-): ChannelHistoryResult {
-  return {
-    ok: false,
-    items: [],
-    nextCursor: null,
-    scope,
-    completeness,
-    error: { code, message },
-  };
-}
-
-
-/** 事件 channel/history-result 响应载荷。 */
-export interface ChannelHistoryResultEvent extends ChannelHistoryResult {
-  /** 对应请求的 requestId。 */
-  requestId: string;
-}
-
-
 /** 一轮 channel_tool 收尾的通知（channel/settled）。 */
 export interface ChannelSettledEvent {
   /** 这一轮的来源快照：渠道照 channel、origin.address 认出是自己哪条消息。 */
@@ -542,28 +436,6 @@ declare module 'cordis' {
      */
     'channel/settled'(event: ChannelSettledEvent): void;
     /**
-     * 渠道历史工具发出：匹配 channel 的渠道插件在授权范围内查询并回传 channel/history-result。
-     * 谁发：src7/plugins/bots/HistoryRequest.ts 的 requestChannelHistory
-     * 谁接：
-     *   src7/plugins/cli/History.ts 的 CliHistory.constructor
-     *   src7/plugins/feishu/History.ts 的 FeishuHistory.constructor
-     *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.constructor
-     *   src7/plugins/web-api/History.ts 的 WebHistory.constructor
-     *   src7/plugins/wechat/History.ts 的 WechatHistory.constructor
-     */
-    'channel/history'(request: ChannelHistoryRequest): void | Promise<void>;
-    /**
-     * 渠道历史查询结果回传。
-     * 谁发：
-     *   src7/plugins/cli/History.ts 的 CliHistory.onChannelHistory
-     *   src7/plugins/feishu/History.ts 的 FeishuHistory.onChannelHistory
-     *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.onHistory
-     *   src7/plugins/web-api/History.ts 的 WebHistory.onChannelHistory
-     *   src7/plugins/wechat/History.ts 的 WechatHistory.onChannelHistory
-     * 谁接：src7/plugins/bots/HistoryRequest.ts 的 requestChannelHistory
-     */
-    'channel/history-result'(event: ChannelHistoryResultEvent): void;
-    /**
      * 渠道确认本人或原发信人撤回消息后发出。bots 清理排队原消息，通知正在处理它的会话。
      * 谁发：src7/plugins/feishu/Inbound.ts 的 FeishuInbound.onRecall
      * 谁接：src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
@@ -571,10 +443,6 @@ declare module 'cordis' {
     'channel/recall'(event: ChannelRecallEvent): void | Promise<void>;
   }
 }
-
-
-/** 默认游标签名密钥（同一进程周期内校验跨聊天/防篡改游标）。 */
-const CURSOR_SECRET = crypto.randomBytes(32);
 
 
 /**
@@ -662,102 +530,20 @@ export function getPayloadHash(value: unknown): string {
 }
 
 
-/** 签名游标载荷：绑定边界防止跨聊天/跨条件篡改。 */
-export interface HistoryCursorPayload {
-  /** 本页最早一条的 createdAt。 */
-  beforeAt: number;
-  /** 本页最早一条的 messageId。 */
-  beforeId: string;
-  /** 绑定渠道。 */
-  channel: string;
-  /** 绑定账号。 */
-  accountId: string;
-  /** 绑定聊天。 */
-  chatId: string;
-  /** 绑定模式。 */
-  mode: ChannelHistoryMode;
-  /** 绑定发送者（visible 模式）。 */
-  senderId: string;
-  /** 绑定机器人。 */
-  botName: string;
-}
-
-
 /**
- * 对历史翻页游标签名编码。
- * @param payload 游标载荷与绑定边界。
- * @returns 不透明签名游标字符串。
- */
-export function encodeHistoryCursor(payload: HistoryCursorPayload): string {
-  const raw = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', CURSOR_SECRET).update(raw).digest('base64url');
-  return `${raw}.${sig}`;
-}
-
-
-/**
- * 解码并校验历史翻页游标，验证签名且边界与当前查询严格一致。
- * @param cursor 不透明游标。
- * @param expected 预期的绑定边界。
- * @returns 校验通过的载荷，失败返回 undefined。
- */
-export function decodeHistoryCursor(
-  cursor: string,
-  expected: Omit<HistoryCursorPayload, 'beforeAt' | 'beforeId'>,
-): HistoryCursorPayload | undefined {
-  const dot = cursor.indexOf('.');
-  if (dot <= 0) return undefined;
-
-  const raw = cursor.slice(0, dot);
-  const sig = cursor.slice(dot + 1);
-  const actualSig = crypto.createHmac('sha256', CURSOR_SECRET).update(raw).digest('base64url');
-  if (sig.length !== actualSig.length) return undefined;
-
-  const validSig = crypto.timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(actualSig, 'utf8'));
-  if (!validSig) return undefined;
-
-  try {
-    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Partial<HistoryCursorPayload>;
-    if (typeof parsed.beforeAt !== 'number' || typeof parsed.beforeId !== 'string') return undefined;
-    if (parsed.channel !== expected.channel || parsed.accountId !== expected.accountId) return undefined;
-    if (parsed.chatId !== expected.chatId || parsed.mode !== expected.mode) return undefined;
-    if (parsed.senderId !== expected.senderId || parsed.botName !== expected.botName) return undefined;
-    return parsed as HistoryCursorPayload;
-  } catch {
-    return undefined;
-  }
-}
-
-
-/** 共用渠道历史分页函数的入参。 */
-export interface PaginateHistoryInput {
-  /** 渠道历史查询请求。 */
-  request: ChannelHistoryRequest;
-  /** 实际命中的渠道名。 */
-  channel: string;
-  /** 实际命中的渠道账号 ID。 */
-  accountId: string;
-  /** 实际命中的聊天 ID。 */
-  chatId: string;
-  /** 已映射好的标准历史摘要项列表。 */
-  entries: ChannelHistoryItem[];
-}
-
-
-/**
- * 统一判定当前来源快照是否拥有本人（owner）跨渠道、跨聊天查询历史的权限。
- * 外人（地址含 guest / builder 或 owner: false）一律拒绝；飞书 owner 放行；本机网页和命令行默认视为本人。
+ * 统一判定当前来源快照是否拥有本人（owner）跨渠道、跨聊天发话的权限。
+ * 外人（isOwnerTurn 判：地址含 guest / builder、owner: false，或渠道不是网页、命令行又没写 owner）一律拒绝；飞书 owner 放行；本机网页和命令行默认视为本人。
  * @param snapshot 不可变来源快照。
  * @returns 是本人返回 true，外人返回 false。
  */
-export function isHistoryOwner(snapshot: SourceSnapshot): boolean {
-  //G 回话地址显式标为非本人（guest、builder 或 owner: false）时一律禁止越界。
-  if (workspaceModule.isNonOwnerSpeaker(snapshot.origin.address)) return false;
+export function canReplyAcrossChats(snapshot: SourceSnapshot): boolean {
+  //G 这一轮不是本人（地址标了 guest、builder、owner: false，或非网页、命令行的渠道没写 owner）一律禁止越界。
+  if (!workspaceModule.isOwnerTurn(snapshot.channel, snapshot.origin.address)) return false;
 
-  //G 群聊里本人说话也不跨：取到的别处历史会回到群里，群里的外人能看到（11-18 中控补）。
+  //G 群聊里本人说话也不跨：当前群聊调用不能切换到别的聊天（11-18 中控补）。
   if (snapshot.chatType === 'group') return false;
 
-  //M 飞书等渠道已验证为 owner 档位时允许跨渠道、跨聊天查询。
+  //M 飞书等渠道已验证为 owner 档位时允许跨渠道、跨聊天发送。
   if (snapshot.role === 'owner') return true;
 
   //M 本机网页与命令行入口未标记为外人时默认视为本人操作。
@@ -765,96 +551,6 @@ export function isHistoryOwner(snapshot: SourceSnapshot): boolean {
   if (isLocalChannel && snapshot.chatType === 'local' && snapshot.role !== 'builder') return true;
 
   return false;
-}
-
-
-/**
- * 按渠道标准协议校验翻页游标、按模式过滤、按 (createdAt, messageId) 升序稳定分页并生成下一页签名游标。
- * @param input 分页入参（请求、渠道、账号、聊天与候选摘要项）。
- * @returns 标准渠道历史结果。
- */
-export function paginateChannelHistory(input: PaginateHistoryInput): ChannelHistoryResult {
-  //==========================================================
-  //M 确定查询范围并校验翻页游标
-  //==========================================================
-  const snapshot = input.request.sourceSnapshot;
-  /** 实际查询作用域描述，固定为 channel:accountId:chatId。 */
-  const scope = `${input.channel}:${input.accountId}:${input.chatId}`;
-  /** 预期发送者过滤键（非 visible 模式固定为空串）。 */
-  const expectedSenderId = input.request.senderId ?? '';
-  let decodedCursor: HistoryCursorPayload | undefined;
-
-  //G 传入翻页游标时严格核验签名及绑定边界。
-  if (input.request.before !== undefined && input.request.before !== '') {
-    decodedCursor = decodeHistoryCursor(input.request.before, {
-      channel: input.channel,
-      accountId: input.accountId,
-      chatId: input.chatId,
-      mode: input.request.mode,
-      senderId: expectedSenderId,
-      botName: snapshot.botName,
-    });
-    if (decodedCursor === undefined) {
-      return getHistoryError(scope, 'local_only', 'invalid_cursor', '历史翻页游标无效或与当前查询范围不匹配');
-    }
-  }
-
-  //==========================================================
-  //M 筛出当前范围内、游标之前的消息
-  //==========================================================
-  //M 按查询模式筛选候选消息。
-  let filtered = input.entries;
-  if (input.request.mode === 'visible') {
-    filtered = input.entries.filter((entry) => entry.sender.id === expectedSenderId);
-  }
-
-  //M 按 (createdAt, messageId) 稳定升序排列，再严格切取游标之前最近 limit 条。
-  const sorted = [...filtered].sort((a, b) => {
-    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-    if (a.messageId < b.messageId) return -1;
-    if (a.messageId > b.messageId) return 1;
-    return 0;
-  });
-
-  let bounded = sorted;
-  if (decodedCursor !== undefined) {
-    const cursorAt = decodedCursor.beforeAt;
-    const cursorId = decodedCursor.beforeId;
-    //M 只保留严格早于上一页游标的时间与消息号，翻页不会重复边界记录。
-    bounded = sorted.filter((entry) => {
-      if (entry.createdAt < cursorAt) return true;
-
-      return entry.createdAt === cursorAt && entry.messageId < cursorId;
-    });
-  }
-
-  //==========================================================
-  //M 截取本页并生成下一页游标
-  //==========================================================
-  const page = bounded.slice(-input.request.limit);
-  let nextCursor: string | null = null;
-  const first = page[0];
-  if (bounded.length > page.length && first !== undefined) {
-    //M 还有更早的历史项时，以本页最早一条构造并签名下一页翻页游标。
-    nextCursor = encodeHistoryCursor({
-      beforeAt: first.createdAt,
-      beforeId: first.messageId,
-      channel: input.channel,
-      accountId: input.accountId,
-      chatId: input.chatId,
-      mode: input.request.mode,
-      senderId: expectedSenderId,
-      botName: snapshot.botName,
-    });
-  }
-
-  return {
-    ok: true,
-    items: page,
-    nextCursor,
-    scope,
-    completeness: 'local_only',
-  };
 }
 
 
