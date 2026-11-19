@@ -2,6 +2,7 @@
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as events from '../../utils/RequestEvent.ts';
+import * as outbound from '../approval/Outbound.ts';
 import type { OutboundAction } from '../approval/Outbound.ts';
 import type { Host } from './Host.ts';
 import * as protocol from './Protocol.ts';
@@ -137,7 +138,7 @@ async function callProgram(host: Host, request: ChannelSendRequest) {
   const headers = { [protocol.KEY_HEADER]: target.key, 'content-type': 'application/json' };
   if (request.action === 'draft') {
     //M 从现有只读草稿接口按编号取记录，不相信客户端或者模型传入正文。
-    const signal = AbortSignal.timeout(5000);
+    const signal = AbortSignal.timeout(outbound.DRAFT_HTTP_WAIT_MS);
     const options = { headers, signal, redirect: 'error' as const };
     const response = await fetch(target.base + DRAFTS_ROUTE, options);
     if (!response.ok) return { code: 502, error: '外部草稿读取失败' };
@@ -160,7 +161,7 @@ async function callProgram(host: Host, request: ChannelSendRequest) {
 
   //M 保留批准上的全部原值；没有结果时只交回待核，不在这里重试。
   const body = JSON.stringify(request.call);
-  const signal = AbortSignal.timeout(90_000);
+  const signal = AbortSignal.timeout(outbound.CHANNEL_WAIT_MS);
   const options = { method: 'POST', headers, body, signal, redirect: 'error' as const };
   const response = await fetch(target.base + SEND_ROUTE, options);
   const decoded: unknown = await response.json();
@@ -261,21 +262,8 @@ async function handleOutbound(
   const action = getAction(name, body);
   if (action === undefined) return reply.code(400).send({ error: '发送确认参数无效' });
 
-  const payload = { ...action, program, actor: 'owner' as const };
-  const options = {
-    timeoutMs: 105_000,
-    onFallback: (reason: events.FallbackReason) => {
-      if (reason === 'timeout' && action.action !== 'status') {
-        return { requestId: '', code: 504, error: '发件操作结果不确定，请核对原意图状态' };
-      }
-
-      return { requestId: '', code: 503, error: '发送确认暂不可用，请查原意图状态' };
-    },
-  };
   //M 交给 approval 查原记录、批准及归档，路由本身不生成批准。
-  const result = await events.requestEvent(
-    ctx, 'approval/outbound-request', 'approval/outbound-result', payload, options,
-  );
+  const result = await outbound.requestOutbound(ctx, program, 'owner', action);
   if ('error' in result) return reply.code(result.code).send({ error: result.error });
 
   return { intent: result.intent };

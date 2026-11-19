@@ -79,18 +79,20 @@ function importPath(file: string): string {
  */
 function writeEntry(workDir: string, webDir: string): string {
   //M src7 的源码原文（不含测试）：tutorial 照“文件:行号”取 JSDoc、函数源码给教程页，编译版磁盘上没有源码。
-  //M   插件说明和组块 Markdown 一起嵌，供教程页读取。
+  //M   插件说明、组块 Markdown 和骨架逐行 JSON 一起嵌，供教程页读取。
   //M   拷成 workDir/src7-text/<路径>.txt 再嵌：.ts 原文件直接 with { type: 'file' }，Bun 会把同一个模块当成文件资源，
   //M   Main.ts 那边的命名导出就没了（0.7.6 编包时踩到）。登记名仍是 src7/<路径>。
   const textDir = path.join(workDir, 'src7-text');
   const readingDir = 'docs/组块阅读';
+  const linesDir = 'docs/骨架逐行';
   const sources = walk(path.join(serveProcess.ROOT, 'src7'))
     .filter((item) => {
       const source = item.endsWith('.ts') && !item.endsWith('.test.ts');
       const readme = item.endsWith('说明.md');
       const folder = path.posix.dirname(item);
       const reading = folder === readingDir && item.endsWith('.md');
-      return source || readme || reading;
+      const lines = folder === linesDir && item.endsWith('.json');
+      return source || readme || reading || lines;
     })
     .map((item): [string, string] => {
       const copy = path.join(textDir, `${item}.txt`);

@@ -35,7 +35,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.5';
+export const version = '1.2.7';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -158,7 +158,7 @@ export interface ReviewInput {
   payload: unknown;
   /** 前三档都放不了行时问不问用户；不写是 true。不问就直接拒绝。 */
   ask?: boolean;
-  /** 提问的那场会话被喊停时触发：审核小会话跟着停（设计文档没写，总管 11-14 加的）。 */
+  /** 会话停止或 exec 结束等待时触发，终止这次审核。 */
   signal?: AbortSignal;
 }
 
@@ -174,7 +174,7 @@ export type Verdict =
 
 /**
  * approval/request 的请求（契约 3.2 第 1 条）：按 action 分五种，各对应本服务一个现有方法。
- * review 要等审核小会话，发的一方等 65 秒、透传 input.signal；没人答、超时一律当拒绝（exec 那边做）。
+ * review 要等审核小会话，input.signal 带会话停止和 exec 的等待时限。
  */
 export type ApprovalRequest = requestEventModule.RequestEnvelope & (
   | {
@@ -310,6 +310,9 @@ const REVIEW_PROMPT = '你是命令审核员。一个机器人要在用户的电
 /** 审核小会话的种类：不叫 review，免得和复盘插件 review 混。 */
 const REVIEW_KIND = 'exec-review';
 
+/** 请求方的审核等待截止时，用于回执和卡片作废原因。 */
+const REVIEW_TIMED_OUT = '命令审核已超时';
+
 /** 定了的长跑提醒卡片在网页上留多久（变灰）。 */
 const RECENT_MS = 10 * 60_000;
 /** 网页每轮最多带回这么多条待审核。 */
@@ -441,6 +444,10 @@ export class Approval extends cordis.Service {
    * 副作用：可能开一场审核小会话（调模型）；可能登记一件待确认。
    */
   async review(input: ReviewInput): Promise<Verdict> {
+    //G 请求方已结束等待时跳过所有审核和登记。
+    const stopped = getStoppedReview(input.signal);
+    if (stopped !== undefined) return this.traced(input, stopped);
+
     const { command, cwd } = input;
 
     //M 第一档：程序规则。碰了密钥文件直接拒绝；项目自己的检查直接放行。
@@ -490,6 +497,10 @@ export class Approval extends cordis.Service {
     //M 第二档：决策模型（只用来放行只读、低风险的）。必须人审的那一小块不问它。
     if (danger === undefined) {
       const judged = await this.askDecision(input, bot, state);
+      //G 结束等待后不采用决策回执，也不再启动审核小会话。
+      const afterDecision = getStoppedReview(input.signal);
+      if (afterDecision !== undefined) return this.traced(input, afterDecision);
+
       if (judged.verdict === 'allow') return this.traced(input, { result: 'pass', by: 'decision', reason: `决策模型认为安全：${judged.reason}` });
       if (judged.verdict === 'deny') return this.traced(input, { result: 'reject', by: 'decision', reason: judged.reason });
 
@@ -507,6 +518,10 @@ export class Approval extends cordis.Service {
     //M 第三档：开一场不带工具的审核小会话，让模型看一眼，要它只回一段 JSON。
     const why = this.getWhy(input.session);
     const answer = await this.askModel(input, bot, script, why);
+    //G 审核小会话可能晚于截止才回，结束等待后不放行也不弹卡片。
+    const afterModel = getStoppedReview(input.signal);
+    if (afterModel !== undefined) return this.traced(input, afterModel);
+
     if (answer?.['safe'] === true && danger === undefined) {
       let what = '（没写）';
       if (typeof answer['what'] === 'string') {
@@ -539,6 +554,13 @@ export class Approval extends cordis.Service {
     const card = reviewCard(input, script, answer, why, asks, decisionWhat);
     const detail = cardUtils.getCardText({ ...card, state: 'waiting' });
     const pending = this.ask({ kind: input.kind, title: card.title, detail, payload: input.payload, bot, session: input.session, card });
+    //G 登记通知期间若已经截止，将这张卡片作废并保存明确原因。
+    const afterAsk = getStoppedReview(input.signal);
+    if (afterAsk !== undefined) {
+      this.close(pending.id, afterAsk.reason);
+      return this.traced(input, afterAsk);
+    }
+
     return this.traced(input, { result: 'asked', id: pending.id, reason: `等用户决定（待确认 #${String(pending.id)}）` });
   }
 
@@ -693,6 +715,10 @@ export class Approval extends cordis.Service {
     //G 先按号找出这件待确认：找不到、已经定过的交回原因，不动表。
     const found = this.getRow(id);
     if (found === undefined) return `没有待确认 #${String(id)}`;
+
+    //G 卡片作废后仍可能被点到，直接交回已超时的原因。
+    const expired = found.card.state === 'ended' && found.by === REVIEW_TIMED_OUT;
+    if (expired) return `待确认 #${String(id)} ${REVIEW_TIMED_OUT}`;
 
     if (!verified && found.kind === outboundModule.REMINDER_APPROVAL_KIND) return '定时提醒只接受本人确认';
 
@@ -1166,6 +1192,19 @@ function getSettled(result: Pending | string): requestEventModule.StripResultId<
 
   return { settled: result };
 }
+
+/** 把请求方取消审核的原因收成统一拒绝回执。 */
+function getStoppedReview(signal: AbortSignal | undefined): Extract<Verdict, { result: 'reject' }> | undefined {
+  if (signal?.aborted !== true) return undefined;
+
+  let reason = '命令审核已取消';
+  const cause: unknown = signal.reason;
+  if (cause instanceof DOMException && cause.name === 'TimeoutError') {
+    reason = REVIEW_TIMED_OUT;
+  }
+  return { result: 'reject', by: 'rule', reason };
+}
+
 
 /**
  * 问决策模型没回（没挂 decision、超时、停了、出错）时的退回：当拿不准，requestId 留空串让 review 认出是退回的。

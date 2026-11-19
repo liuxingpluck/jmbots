@@ -134,7 +134,7 @@ describe('decision/judge 事件裁定', () => {
     //M 超时设成一分钟：秒回说明是“没人接单”退回的，不是等到点。
     const began = Date.now();
     const result = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', input, options);
-    expect(result).toEqual({ requestId: '', verdict: 'unsure', reason: 'unhandled' });
+    expect(result).toEqual({ requestId: '', verdict: 'unsure', reason: 'unhandled', fallback: 'unhandled' });
     expect(Date.now() - began).toBeLessThan(1000);
   });
 

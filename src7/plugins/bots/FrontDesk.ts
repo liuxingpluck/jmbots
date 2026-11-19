@@ -30,59 +30,22 @@ import type { ReceiveEvent } from './index.ts';
 import * as protocol from '../../Channels.ts';
 
 
-/** 查历史时每条截短到这么多字；全文用 history_get。 */
+/** 查历史时每条截短到这么多字；全文用 memory_get。 */
 const HISTORY_CLIP = 240;
 
-/** history_search / history_get 每次最多交回几条。 */
+/** 前台归档查询每次最多交回几条。 */
 const HISTORY_PAGE = 20;
 
 /** 这两个工具每轮一共最多调用几次。 */
 const HISTORY_MAX_CALLS = 3;
 
+/** 归档读取失败时给模型的提示，和查询成功但没有匹配项区分。 */
+const HISTORY_UNAVAILABLE = '前台往来暂时读不到（记忆插件未返回记录），请以本轮消息为准。';
+
 /** 提醒前台如何翻这场往来和取全文。 */
 const HISTORY_HINT = '用 memory_search 的 front=true 翻看本场及已交办会话的往来，可按 who、时间或编号筛选。'
   + '带 #编号的往来可把该编号作为 ref 交给 memory_get 取全文。'
   + '需要通读或总结大量历史时用 hand_session 交给后台会话。';
-
-/** 工具 history 给模型看的：往前翻这个客户的往来（旧名，经 memory 的统一归档入口转发）。 */
-const HISTORY_TOOL: piAi.Tool = {
-  name: 'history',
-  description: '往前翻这个客户的往来记录（本场前台和它交办的后台），跨渠道。',
-  parameters: piAi.Type.Object({
-    count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '要几条，默认 20' })),
-    before: piAi.Type.Optional(piAi.Type.Number({ description: '从哪个毫秒时间戳往前；不写就是从现在' })),
-  }),
-};
-
-/** 工具 history_search 给模型看的：按关键词、时间、发送人、编号翻这场对话的全部往来。 */
-const HISTORY_SEARCH_TOOL: piAi.Tool = {
-  name: 'history_search',
-  description: '查找这场对话的全部历史往来（不限最近 N 条），只查当前这场前台对话和它交办出去的后台会话。'
-    + '只用来回答“我们之前聊过什么”；问事实、业务知识（合同、负责人、联系方式等）先用 memory 的 history / knowledge 查记忆。'
-    + '可按关键词、时间范围、发送人筛选，也可从最早一条往后、或从某个编号前后翻页。每次最多 20 条，每条截短并带编号和时间；要看全文用 history_get。'
-    + '有关键词时同时做语义检索，说法不同也能对上（比如用「晚饭选项」能找到「今晚候选」）。'
-    + '若需要通读或总结大量历史，不要反复调用本工具，请用 hand_session 交给后台会话。',
-  parameters: piAi.Type.Object({
-    keyword: piAi.Type.Optional(piAi.Type.String({ description: '要找的内容；按字匹配，同时做语义检索（说法不同也能对上）。不写就不按内容筛' })),
-    from: piAi.Type.Optional(piAi.Type.Number({ description: '起始毫秒时间戳，含；不写就不限' })),
-    to: piAi.Type.Optional(piAi.Type.Number({ description: '截止毫秒时间戳，含；不写就不限' })),
-    who: piAi.Type.Optional(piAi.Type.String({ description: "只看谁说的：user 用户，bot 机器人；不写就都要" })),
-    from_earliest: piAi.Type.Optional(piAi.Type.Boolean({ description: 'true：从最早一条往后翻；默认是从最近往前' })),
-    after: piAi.Type.Optional(piAi.Type.Integer({ description: '从编号大于它的往来往后（更晚）翻' })),
-    before: piAi.Type.Optional(piAi.Type.Integer({ description: '从编号小于它的往来往前（更早）翻' })),
-    count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '要几条，默认 20，最多 20' })),
-  }),
-};
-
-/** 工具 history_get 给模型看的：按编号取一条往来的全文。 */
-const HISTORY_GET_TOOL: piAi.Tool = {
-  name: 'history_get',
-  description: '按编号取一条往来的全文。编号来自 history_search 或最近往来背景里的 #号。',
-  parameters: piAi.Type.Object({
-    id: piAi.Type.Integer({ minimum: 1, description: '往来编号' }),
-  }),
-};
-
 
 /** 前台的配置：config.yaml 的 plugins 段里 bots 的 config.front，bots 的 apply 校验过。 */
 export interface FrontDeskConfig {
@@ -131,38 +94,28 @@ interface HistoryRange {
 
 /** 机器人的前台。 */
 export class FrontDesk {
-  /** 这一轮已调用 history_search / history_get 的次数：前台会话号 → 次数。 */
+  /** 这一轮已读取前台归档的次数：前台会话号 → 次数。 */
   private readonly historyCalls = new Map<string, number>();
   /** 会话正在转时来的只听的话：前台会话号 → 排着的用户话；这一轮结束再存进对话（listen、session/change）。 */
   private readonly heard = new Map<string, piAi.Message[]>();
   /** 会话正在转时来的、要判断的话：前台会话号 → 最后一句；这一轮结束记完排着的话，再对它问一次决策模型（session/change）。 */
   private readonly judgeLater = new Map<string, JudgeLater>();
   /**
-   * 建往来记录的表，登记三个查历史工具。
+   * 登记统一记忆工具可查询的前台归档。
    * 监听 session/request、session/message、session/change、bot/say、channel/replied、channel/reply。
    * @param ctx Cordis 给的 ctx。
    * @param config 带多少条往来。
    */
   constructor(private readonly ctx: cordis.Context, private readonly config: FrontDeskConfig) {
-    //M history：把往前翻页的旧名交给统一归档入口，交 getRecentHistory 取往前 count 条。
-    historyTools.registerHistoryAlias(this.ctx, 'front-recent', {
-      definition: HISTORY_TOOL,
-      kinds: ['front'],
-      run: (args, session) => this.getRecentHistory(session, args),
-    });
+    //M 让 memory_search 继续读取前台与它交办的往来归档。
+    const searchRoute = 'front-search';
+    historyTools.registerHistoryReader(this.ctx, searchRoute, (args, session) => this.searchHistory(session, args));
 
-    //M history_search：旧关键词、发送人和编号翻页参数走与 memory_search 相同的归档入口，交 searchHistory 搜（受每轮次数限制）。
-    historyTools.registerHistoryAlias(this.ctx, 'front-search', {
-      definition: HISTORY_SEARCH_TOOL,
-      kinds: ['front'],
-      run: (args, session) => this.searchHistory(session, args),
-    });
-
-    //M history_get：旧数字编号与 memory_get 的带前缀编号共用同一份往来记录，交 getHistory 取全文（受每轮次数限制）。
-    historyTools.registerHistoryAlias(this.ctx, 'front-get', {
-      definition: HISTORY_GET_TOOL,
-      kinds: ['front'],
-      run: (args, session) => this.getHistory(session, args['id'] as number),
+    //M 让 memory_get 按归档编号读取原文。
+    const getRoute = 'front-get';
+    historyTools.registerHistoryReader(this.ctx, getRoute, (args, session) => {
+      const id = args['id'] as number;
+      return this.getHistory(session, id);
     });
 
     //M list_sessions、hand_session、stop_session 在 Dispatch.ts（前台派后台和结果队列），bots 的 apply 里接着挂。
@@ -203,25 +156,6 @@ export class FrontDesk {
 
   /** 暂存发送请求正文，等 channel/replied 确认后才归档实际回复。 */
   private readonly sentReplyTexts = new Map<string, { text: string }>();
-
-  /**
-   * 工具 history 的执行：取这个客户（本场前台和它交办的后台，跨渠道）往前 count 条往来，一行一条。
-   * @param session 调工具的前台会话。
-   * @param args 模型给的参数（count、before），已照 HISTORY_TOOL 校验过。
-   * @returns 给模型看的文字；没有就说没有更早的往来。
-   */
-  private async getRecentHistory(session: Session, args: Record<string, unknown>): Promise<string> {
-    const count = (args['count'] as number | undefined) ?? 20;
-
-    //M 取这个客户往前 count 条往来。
-    const ids = this.scopeIds(session);
-    const before = args['before'] as number | undefined;
-    const entries = await this.recent(session, count, before, ids);
-    if (entries.length === 0) return '没有更早的往来。';
-
-    //M 旧名仍返回原有的一行一条格式，每条用 formatEntry 排成一行。
-    return entries.map((entry) => formatEntry(entry)).join('\n');
-  }
 
   /**
    * 收 session/change：一轮结束时记机器人这一句、清查历史次数、存转的时候排着的话，再对排着要判断的那句问一次决策模型。
@@ -684,11 +618,15 @@ export class FrontDesk {
 
     //G 原始往来没有归属字段，只在本人会话里加载；其他会话用已标的召回。
     const access = memoryKeyModule.getMemoryAccess(row);
-    let entries: BotLogEntry[] = [];
+    let entries: BotLogEntry[] | undefined = [];
     if (access.full) {
       const ids = this.scopeIds(request.session);
       const time = thisRound[0]?.timestamp;
       entries = await this.recent(request.session, this.config.recent, time, ids);
+    }
+    //M 归档请求没成功时明说原因，本轮消息仍交给模型处理。
+    if (entries === undefined) {
+      request.system.push(HISTORY_UNAVAILABLE);
     }
     //M 前台有两个统一工具时才提醒用它们查归档。
     const hasMemory = request.tools.some((tool) => tool.name === 'memory_search');
@@ -697,12 +635,12 @@ export class FrontDesk {
     }
 
     //T 跟踪：拼最近往来。
-    const vars = { 会话: row.id, 带了几条往来: entries.length, 这一轮几条: thisRound.length };
+    const vars = { 会话: row.id, 带了几条往来: entries?.length ?? 0, 这一轮几条: thisRound.length };
     this.ctx.emit('trace', 'FrontDesk.onRequest', '给前台对话拼上最近往来', 'request.messages = …', vars);
     request.messages = thisRound;
 
     //M 没有更早的往来：不拼背景，只看这一轮有没有图片要提醒，然后就这样发给模型。
-    if (entries.length === 0) {
+    if (entries === undefined || entries.length === 0) {
       this.imageHint(request);
       return;
     }
@@ -880,7 +818,7 @@ export class FrontDesk {
     //G 同一轮共用次数上限，先读已用次数再决定能否查询。
     const used = this.historyCalls.get(session.row.id) ?? 0;
     if (used >= HISTORY_MAX_CALLS) {
-      return `本轮 history_search / history_get 已调用 ${String(HISTORY_MAX_CALLS)} 次，不能再查。`
+      return `本轮 memory_search / memory_get 已调用 ${String(HISTORY_MAX_CALLS)} 次，不能再查。`
         + '若需要通读或总结大量历史，请用 hand_session 交给后台会话。';
     }
     this.historyCalls.set(session.row.id, used + 1);
@@ -910,12 +848,12 @@ export class FrontDesk {
   }
 
   /**
-   * history_search：按条件翻一页，最多 20 条。有关键词时先按字匹配，再叠加语义检索，合并排序。
+   * 按条件翻一页前台往来，最多 20 条。有关键词时合并文字匹配和语义检索。
    * @param session 前台对话。
    * @param args 工具参数。
    */
   private async searchHistory(session: Session, args: Record<string, unknown>): Promise<string> {
-    //G 每轮 history_search、history_get 一共最多 3 次：满了直接把拒绝的提示回给模型，不查。
+    //G 本轮前台归档读取已满三次时把提示回给模型。
     const denied = this.touchHistory(session);
     if (denied !== undefined) return denied;
 
@@ -951,7 +889,10 @@ export class FrontDesk {
     //M 有关键词才查语义。语义命中时再取更多关键词候选，合并后按相关程度排序。
     let semantic: Array<{ entry: BotLogEntry; score: number }> = [];
     if (keyword !== undefined) {
-      semantic = await this.semanticHits(session, filter, keyword);
+      const hits = await this.semanticHits(session, filter, keyword);
+      if (hits === undefined) return HISTORY_UNAVAILABLE;
+
+      semantic = hits;
     }
     const ranked = semantic.length > 0;
     let candidateCount = take;
@@ -966,6 +907,8 @@ export class FrontDesk {
     }
     const query = { ...filter, keyword, order, limit: candidateCount };
     const keywordRows = await this.readFront(session, query);
+    if (keywordRows === undefined) return HISTORY_UNAVAILABLE;
+
     if (!fromEarliest) {
       keywordRows.reverse();
     }
@@ -987,21 +930,22 @@ export class FrontDesk {
     if (total > shown.length) {
       head += '还有更多时，用 after 往后翻或 before 往前翻。';
     }
-    const useMemoryRef = args['use_memory_ref'] === true;
     //M 每条只放截短的正文和编号，模型需要全文时可用历史工具。
-    const lines = shown.map((entry) => formatEntry(entry, HISTORY_CLIP, useMemoryRef));
+    const lines = shown.map((entry) => formatEntry(entry, HISTORY_CLIP));
     return [head, ...lines].join('\n');
   }
 
-  /** 记忆的本地索引负责按同一权限、分页条件取前台归档。 */
-  private async readFront(session: Session, query: FrontQuery): Promise<BotLogEntry[]> {
+  /** 记忆索引按权限和分页条件取前台归档，读失败返回 undefined。 */
+  private async readFront(session: Session, query: FrontQuery): Promise<BotLogEntry[] | undefined> {
     //G 兼容工具也要校验本轮身份，不能仅凭编号读取前台专用记录。
     const access = memoryKeyModule.getMemoryAccess(session.row);
     if (!access.full) return [];
 
     const request = { action: 'front-history' as const, query };
-    //M 请求同一记忆服务，没挂插件时没有归档，模型仍可以继续当前会话。
+    //M 向记忆插件查询，保留查询失败和成功但无记录的区别。
     const result = await this.askMemory(request, 1500);
+    if (!result.ok) return undefined;
+
     return result.frontEntries ?? [];
   }
 
@@ -1010,10 +954,12 @@ export class FrontDesk {
     session: Session,
     filter: Omit<FrontQuery, 'order' | 'limit'>,
     keyword: string,
-  ): Promise<Array<{ entry: BotLogEntry; score: number }>> {
+  ): Promise<Array<{ entry: BotLogEntry; score: number }> | undefined> {
     const query: FrontQuery = { ...filter, order: 'last', limit: 2000 };
     //G 先按会话权限取候选，没有可查的往来就不向记忆模型请求向量。
     const candidates = await this.readFront(session, query);
+    if (candidates === undefined) return undefined;
+
     if (candidates.length === 0) return [];
 
     //M 记忆服务离线时仍保留字面检索。
@@ -1079,12 +1025,12 @@ export class FrontDesk {
   }
 
   /**
-   * history_get：取一条全文，只给这场对话范围内的。
+   * 读取本场前台归档中指定编号的全文。
    * @param session 前台对话。
    * @param id 往来编号。
    */
   private async getHistory(session: Session, id: number): Promise<string> {
-    //G 每轮 history_search、history_get 一共最多 3 次：满了直接把拒绝的提示回给模型，不查。
+    //G 本轮前台归档读取已满三次时把提示回给模型。
     const denied = this.touchHistory(session);
     if (denied !== undefined) return denied;
 
@@ -1092,6 +1038,8 @@ export class FrontDesk {
     const sessionIds = this.scopeIds(session);
     const query: FrontQuery = { bot: session.row.bot, sessionIds, id, order: 'last', limit: 1 };
     const entries = await this.readFront(session, query);
+    if (entries === undefined) return HISTORY_UNAVAILABLE;
+
     const row = entries[0];
     if (row === undefined) return `没有编号 ${String(id)} 的往来，或不属于这场对话。`;
 
@@ -1105,7 +1053,7 @@ export class FrontDesk {
     count: number,
     before: number | undefined,
     sessionIds: string[],
-  ): Promise<BotLogEntry[]> {
+  ): Promise<BotLogEntry[] | undefined> {
     const query: FrontQuery = {
       bot: session.row.bot,
       sessionIds,
@@ -1115,14 +1063,14 @@ export class FrontDesk {
     };
     //M 按会话范围取最近一页，拼入模型上下文时恢复时间正序。
     const entries = await this.readFront(session, query);
-    return entries.reverse();
+    return entries?.reverse();
   }
 
 
   /**
    * 记一条往来。
    * @param entry 谁说的、哪个渠道、哪场会话、说了什么。
-   * 副作用：写库。
+   * 副作用：通知 memory 保存往来。
    */
   private log(entry: FrontMessage): void {
     //M 与渠道索引共用正文，前台仍按会话保存自己的往来关系。
@@ -1192,9 +1140,8 @@ function getLine(message: piAi.Message, bot: string): string {
  * 把一条往来写成一行：[时间 渠道 谁] 话。
  * @param entry 往来。
  * @param clip 正文最多留几个字，不给就保留全文。
- * @param useMemoryRef 新工具回执用 memory_get 说明全文入口。
  */
-function formatEntry(entry: BotLogEntry, clip?: number, useMemoryRef = false): string {
+function formatEntry(entry: BotLogEntry, clip?: number): string {
   const when = new Date(entry.time).toLocaleString('zh-CN', { hour12: false });
   let who = '机器人';
   if (entry.who === 'user') {
@@ -1204,8 +1151,7 @@ function formatEntry(entry: BotLogEntry, clip?: number, useMemoryRef = false): s
   let suffix = '';
   if (clip !== undefined && body.length > clip) {
     body = body.slice(0, clip);
-    suffix = '…（全文用 history_get 取）';
-    if (useMemoryRef) suffix = '…（把 #编号交给 memory_get 取全文）';
+    suffix = '…（把 #编号交给 memory_get 取全文）';
   }
   return `#${String(entry.id)} [${when} ${entry.channel} ${who}] ${body}${suffix}`;
 }

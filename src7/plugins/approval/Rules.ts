@@ -19,9 +19,8 @@ import * as workspaceModule from '../../utils/Workspace.ts';
  * 见 docs/开发进度/131_群聊转话_20261117.md。
  * 不给的：exec、write、edit、feishu_send_file、feishu_doc、feishu_doc_delete、image_generate、memory（会写记忆）、
  * reply（话里 @路径 会把本机文件发出去）、notify_user、agent_task、stop_session。
- * 也不给 list_sessions（列这个机器人干活的会话和总结，旧的没记客户的后台会话会一起列出来）、
- * wechat_history（读用户微信里这场会话的原文，是用户的私人聊天）。
- * history、history_search、history_get 给：只查这场前台（飞书群是这个群、私聊是这个人）和它交办的后台；非本人那一轮不带旧后台（bots/FrontDesk.ts 的 scopeIds）。
+ * 也不给 list_sessions（可能列出没有客户归属的旧后台会话）。
+ * memory_search、memory_get 给，检索和原文查询都限于本轮已授权的渠道归属。
  * hand_session 给：交出去的后台会话带着同一个回话地址，在那边一样只有这些工具，工作区也是他的目录。
  * workspace 给（11-17）：外人看自己范围里的工作区（workspaces 插件按范围挡）；只许 OTHERS_WORKSPACE_ACTIONS 里的动作，
  *   建、改名、归档在 approval 的 session/before-tool 关口拦下。
@@ -30,9 +29,9 @@ import * as workspaceModule from '../../utils/Workspace.ts';
  */
 export const READ_ONLY_TOOLS = new Set([
   'time', 'read', 'list_dir', 'find', 'web_search', 'skill',
-  'history', 'history_search', 'history_get', 'hand_session',
+  'hand_session',
   'memory_search', 'memory_get',
-  'channel_reply', 'channel_history', 'channel_mentions', 'channel_visible_history',
+  'channel_reply',
   'react', 'ask', 'todo', 'relay_send', 'workspace', 'channel_search',
   'remind_add', 'remind_list', 'remind_cancel',
 ]);

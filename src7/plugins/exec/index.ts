@@ -25,7 +25,7 @@ export { mountRunsRoutes, readRunsEnabled, Runs, type RunRecord } from './Runs.t
 /** 插件名。 */
 export const name = 'exec';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.1';
+export const version = '1.1.2';
 
 /**
  * 用到的服务：resources、tools、bots、sessions。审核不写在这里，走 approval/request 事件：没挂 approval 时一律拒绝（没有审核就不让跑命令）；
@@ -306,6 +306,9 @@ export class Exec extends cordis.Service {
    */
   private async onDecided(pending: runsModule.Pending): Promise<void> {
     if (pending.kind !== 'exec' || pending.session === undefined) return;
+
+    //G 已作废的审核已经由 requestReview 告知会话，结束通知不再唤醒会话。
+    if (pending.card.state === 'ended') return;
 
     //M payload 是 onTool 自己放的，直接用。
     const { command, cwd, timeoutMs } = pending.payload as ExecPayload;

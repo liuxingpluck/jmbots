@@ -20,7 +20,7 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.3';
+export const version = '1.2.4';
 export const inject = ['resources'];
 
 /** 基地子模块共享的地址配置路径，供错误提示使用。 */

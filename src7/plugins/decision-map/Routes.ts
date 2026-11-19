@@ -323,7 +323,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 归档这条留言的收件，Wait_Relay 下次只唤醒新的话。
       const result = await requestRelay(ctx, relay);
-      if (result.error === RELAY_UNCERTAIN) {
+      if (events.isUnsure(result)) {
         return { node: replied.node, note: replied.note, notification: RELAY_UNCERTAIN };
       }
       return { node: replied.node, note: replied.note, notified: result.ok };
@@ -345,7 +345,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 归档对应收件，让 Wait_Relay 下次只唤醒新的决定。
       const result = await requestRelay(ctx, relay);
-      if (result.error === RELAY_UNCERTAIN) return { node, notification: RELAY_UNCERTAIN };
+      if (events.isUnsure(result)) return { node, notification: RELAY_UNCERTAIN };
 
       return { node, notified: result.ok };
     });
@@ -353,20 +353,16 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 }
 
 /** 只在收到确切收件号时标为投递成功。未确认时可从变化接口只读查询。 */
-function getDelivery(result: DecisionRelayResult) {
+function getDelivery(result: DecisionRelayResult & events.RequestFallback) {
   if (result.ok && result.id !== undefined) return { relayId: result.id };
-  if (result.error === RELAY_UNCERTAIN) return { ...RETRY, error: RELAY_UNCERTAIN };
+  if (events.isUnsure(result)) return { ...RETRY, error: RELAY_UNCERTAIN };
 
   return RETRY;
 }
 
 /** 向 relay 发并等待一次配对回执，无监听时保留轮询路径。 */
 function requestRelay(ctx: cordis.Context, request: events.StripEnvelope<DecisionRelayRequest>) {
-  const onFallback = (reason: events.FallbackReason) => {
-    if (reason === 'timeout') return { requestId: '', ok: false, error: RELAY_UNCERTAIN };
-
-    return { requestId: '', ok: false };
-  };
+  const onFallback = () => ({ requestId: '', ok: false });
   const options = { timeoutMs: 3000, onFallback };
 
   //M 检查 relay 是否确认了对应的收件，缺席时 RequestEvent 会立即返回。

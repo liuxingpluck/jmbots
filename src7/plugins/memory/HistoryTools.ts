@@ -1,11 +1,10 @@
-/** 旧工具继续在 Tools 验参，新旧调用共用记忆工具的来源分发。 */
+/** 统一记忆工具经事件向各归档来源读历史。 */
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type { ToolResult, ToolSpec } from '../../Tools.ts';
-import type { MemoryService } from './index.ts';
 
 /** 归档查询的用途。每个来源仍由拥有记录和权限规则的插件读取。 */
-export type HistoryRoute = 'front-recent' | 'front-search' | 'front-get'
+export type HistoryRoute = 'front-search' | 'front-get'
   | 'channel-current' | 'channel-visible' | 'channel-mentions' | 'wechat-archive';
 
 /** 工具给归档来源的读取请求。 */
@@ -29,37 +28,26 @@ declare module 'cordis' {
     /**
      * 记忆工具读取前台、渠道或微信的归档记录。
      * 谁发：src7/plugins/memory/Search.ts 的 Search.readHistory
-     * 谁接：src7/plugins/memory/HistoryTools.ts 的 registerHistoryAlias
+     * 谁接：src7/plugins/memory/HistoryTools.ts 的 registerHistoryReader
      */
     'memory/history-tool'(request: HistoryToolRequest): void | Promise<void>;
   }
 }
 
-/** 挂来源处理器及旧名兼容入口。旧调用继续保留原工具参数、权限和回执。 */
-export function registerHistoryAlias(ctx: cordis.Context, route: HistoryRoute, spec: ToolSpec): void {
-  //M 处理新工具或旧别名转来的读取，继续使用原渠道的签名游标和权限判断。
+/**
+ * 登记归档来源的读取函数，并把结果交回原查询。
+ * @param ctx 归档提供方的上下文。
+ * @param route 此函数负责的归档路由。
+ * @param run 读取该归档的处理函数。
+ */
+export function registerHistoryReader(ctx: cordis.Context, route: HistoryRoute, run: ToolSpec['run']): void {
+  //M 每个归档仍由提供方核对权限和游标。
   ctx.on('memory/history-tool', async (request) => {
     if (request.route !== route) return;
 
     //M 归档由其原来的工具实现读取，避免切换后丢掉未收进索引的记录。
     const { args, session, signal, callId } = request;
-    request.result = await spec.run(args, session, signal, callId);
-  });
-
-  //M Tools.execute 先按旧名经过关口和校验，随后把操作转换成统一来源请求。
-  ctx.tools.register({
-    ...spec,
-    run: async (args, session, signal, callId) => {
-      //M 无 memory 插件的部署沿用原工具，挂了才使用统一分发。
-      const memory = ctx.get('memory') as MemoryService | undefined;
-      if (memory === undefined) return spec.run(args, session, signal, callId);
-
-      //M 已挂统一工具时，把旧操作交给它转发给归档来源。
-      const request = { route, args, session, signal, callId };
-      const result = await memory.unified.readHistory(request, true);
-      if (result === undefined) throw new Error('历史来源未挂载');
-
-      return result;
-    },
+    const result = await run(args, session, signal, callId);
+    request.result = result;
   });
 }

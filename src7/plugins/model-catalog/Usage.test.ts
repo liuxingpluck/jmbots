@@ -106,7 +106,7 @@ test('用量插件未挂载时查询退回空列表', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   const result = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', query, eventOptions);
-  expect(result).toEqual({ requestId: 'unhandled', rows: [], truncated: false });
+  expect(result).toEqual({ requestId: 'unhandled', rows: [], truncated: false, fallback: 'unhandled' });
 });
 
 

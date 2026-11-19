@@ -112,7 +112,7 @@ class FakeTools extends cordis.Service {
 
 
 /** 一步请求里原本的工具：动手的、只读的都有。 */
-const TOOLS = ['exec', 'write', 'edit', 'feishu_send_file', 'reply', 'memory', 'read', 'find', 'web_search', 'hand_session', 'relay_send', 'list_sessions', 'wechat_history'];
+const TOOLS = ['exec', 'write', 'edit', 'feishu_send_file', 'reply', 'memory', 'read', 'find', 'web_search', 'hand_session', 'relay_send', 'list_sessions'];
 
 /** 三档的回话地址（飞书照 people 写的样子）；群是登记了 trusted: true 的（飞书照 groups 写）。 */
 const OWNER = { appId: 'cli_x', chatId: 'oc_g', openId: 'ou_owner', chatType: 'group', customer: 'feishu:group:oc_g', owner: true, role: 'owner', trusted: true };
@@ -299,15 +299,14 @@ describe('guest：只读', () => {
     expect(fs.readFileSync(path.join(BOT_WORKSPACE, 'switch.txt'), 'utf8')).toBe('o');
   });
 
-  //M 第 3 条：list_sessions（列干活的会话）、wechat_history（用户微信原文）对非本人拿掉。
-  test('guest、builder 调 list_sessions、wechat_history 拿不到，执行前也拦', async () => {
+  //M 列后台会话可能包含未归属的旧任务，只允许本人。
+  test('guest、builder 看不到 list_sessions，执行前也拦', async () => {
     const { app } = await ready();
     for (const address of [GUEST, BUILDER]) {
-      for (const call of ['list_sessions', 'wechat_history']) {
-        const result = await ask(app, address, call);
-        expect(result.tools).not.toContain(call);
-        expect(result.denied).toBeDefined();
-      }
+      const call = 'list_sessions';
+      const result = await ask(app, address, call);
+      expect(result.tools).not.toContain(call);
+      expect(result.denied).toBeDefined();
     }
   });
 

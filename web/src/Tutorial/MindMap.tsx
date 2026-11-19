@@ -6,6 +6,7 @@ import * as layout from '../Shared/MindMap.ts';
 import * as api from './TutorialApi.ts';
 import * as data from './MindData.ts';
 import * as readme from './ReadmeTabs.tsx';
+import * as lines from './LinesView.tsx';
 import '@xyflow/react/dist/style.css';
 import './MindMap.css';
 
@@ -14,7 +15,7 @@ const DIRECTION_KEY = 'jmbots.tutorial.mind-direction';
 const TREE_KEY = 'jmbots.tutorial.mind-tree';
 const VIEWS = ['canvas', 'mind'] as const;
 const DIRECTIONS = ['sides', 'down'] as const;
-const TREES = ['project', 'trace'] as const;
+const TREES = ['project', 'trace', 'lines'] as const;
 
 type TreeView = (typeof TREES)[number];
 
@@ -285,11 +286,13 @@ export function TutorialMindMap({ plugins, trail, canvas, left, right, t, onPick
   const traceLabel = t('这条消息走过的路');
   const sidesLabel = t('左右展开');
   const downLabel = t('上下展开');
+  const linesLabel = t('骨架逐行');
   const emptyLabel = t('请在左栏选择一条消息');
 
   //M 工具栏操作切换树或方向，并保留上次选择。
   const showProject = () => selectTree('project');
   const showTrace = () => selectTree('trace');
+  const showLines = () => selectTree('lines');
   const showSides = () => selectDirection('sides');
   const showDown = () => selectDirection('down');
 
@@ -310,6 +313,9 @@ export function TutorialMindMap({ plugins, trail, canvas, left, right, t, onPick
         <button type="button" aria-pressed={mode === 'trace'} onClick={showTrace}>
           {traceLabel}
         </button>
+        <button type="button" aria-pressed={mode === 'lines'} onClick={showLines}>
+          {linesLabel}
+        </button>
         <button type="button" data-look="mind-lr" aria-pressed={direction === 'sides'} onClick={showSides}>
           {sidesLabel}
         </button>
@@ -317,8 +323,9 @@ export function TutorialMindMap({ plugins, trail, canvas, left, right, t, onPick
           {downLabel}
         </button>
       </div>
-      {chart === undefined && <p className="tu-mind-empty">{emptyLabel}</p>}
-      {chart !== undefined && (
+      {mode === 'lines' && <lines.LinesView t={t} />}
+      {mode !== 'lines' && chart === undefined && <p className="tu-mind-empty">{emptyLabel}</p>}
+      {mode !== 'lines' && chart !== undefined && (
         <xy.ReactFlow
           key={frame}
           nodes={chart.nodes}

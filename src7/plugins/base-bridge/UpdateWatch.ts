@@ -258,18 +258,13 @@ export class UpdateWatch {
     };
     const askRequest = { action: 'ask', input } as const;
     const uncertain = '更新送审结果不确定';
-    const onFallback = (reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply => {
-      if (reason === 'timeout') return { requestId: '', error: uncertain };
-
-      return getEmptyReply(reason, detail);
-    };
-    const askOptions = { prefix: 'apr', timeoutMs: ASK_WAIT_MS, onFallback };
+    const askOptions = { prefix: 'apr', timeoutMs: ASK_WAIT_MS, onFallback: getEmptyReply };
 
     //M 发 approval/request（action: ask）：登记一条没有会话的待确认，approval 发 approval/asked，网页和飞书卡片去推。
     const asked = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', askRequest, askOptions);
 
-    //G 等待超时可能已经登记，保留同版本的占用并让中控核对。
-    if (asked.error === uncertain) {
+    //G 未获回执时可能已经登记，保留同版本的占用并让中控核对。
+    if (requestEventModule.isUnsure(asked)) {
       this.uncertainApproval = available.version;
       console.error(`盯更新：新版本 ${available.version} 的${uncertain}`);
       return;

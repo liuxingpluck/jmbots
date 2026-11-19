@@ -167,14 +167,11 @@ export class Reminders {
     request.system.push(hint);
   }
 
-  /** 启动时补发到期的 pending；已在途且结果未知的记录不重复发送。 */
+  /** 启动时交回在途提醒取发件回执，再继续调度待发提醒。 */
   start(send: (message: Delivery) => Promise<ProviderReceipt>): void {
     if (this.send !== undefined) return;
 
     this.startedAt = this.clock.now();
-    const sql = "UPDATE assist_reminders SET state = 'uncertain', reason = ? WHERE state = 'sending'";
-    //G 上次发送占位尚未取得回执，恢复时标为结果未知，避免重复发件。
-    this.db.query(sql).run(UNCERTAIN);
     this.send = send;
     if (!this.registered) {
       //M 发送入口就绪才让模型登记提醒，目标仍由会话来源决定。
@@ -193,7 +190,17 @@ export class Reminders {
         this.ctx.emit('trace', 'Assist.reminders', '恢复提醒确认失败', 'Reminders.ensureCard', { id: reminder.id });
       });
     }
-    //M 处理早于启动时刻的记录，再等下一条到期。
+    //M 原有在途记录以同一编号和正文重新交给 Outbound，由发件账决定是否需要发送。
+    const sql = "SELECT * FROM assist_reminders WHERE state = 'sending' ORDER BY due_at, id";
+    const stuck = this.db.query<Row, []>(sql).all();
+    if (stuck.length > 0) {
+      void this.drain(stuck).catch(() => {
+        this.ctx.emit('trace', 'Assist.reminders', '恢复在途提醒失败', 'Reminders.drain', {});
+      });
+      return;
+    }
+
+    //M 按排期处理待发记录。
     this.arm();
   }
 
@@ -351,11 +358,7 @@ export class Reminders {
         payload, bot: row.bot, session: row.session_id,
       };
       const request = { action: 'ask' as const, input };
-      const onFallback = (reason: events.FallbackReason) => {
-        if (reason === 'timeout') return { requestId: '', error: CARD_UNCERTAIN };
-
-        return { requestId: '', error: '确认卡登记暂不可用' };
-      };
+      const onFallback = () => ({ requestId: '', error: '确认卡登记暂不可用' });
       const options = { timeoutMs: 5000, onFallback };
       //M 复用本人审批卡，不因到点再次询问。
       const reply = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
@@ -364,6 +367,9 @@ export class Reminders {
       const card = reply.pending;
       //M 请求卡片期间可能已有取消操作，按最新状态决定是否作废卡片。
       const current = this.getById(row.id);
+      //G 登记结果不确定时沿用持久待核对原因，下次核对原卡。
+      if (events.isUnsure(reply)) throw new Error(CARD_UNCERTAIN);
+
       if (card === undefined) throw new Error(reply.error ?? '确认卡登记暂不可用');
 
       if (current.state === 'cancelled') {
@@ -392,20 +398,16 @@ export class Reminders {
     }
   }
 
-  /** 取消提醒时作废待表决卡片。超时时返回需要核对的说明。 */
+  /** 取消提醒时作废待表决卡片。回执结果不确定时提示核对。 */
   private async closeCard(id: number): Promise<string | undefined> {
     const request = { action: 'close' as const, id, note: '提醒已取消' };
     const uncertain = '确认卡作废结果不确定';
-    const onFallback = (reason: events.FallbackReason) => {
-      if (reason === 'timeout') return { requestId: '', error: uncertain };
-
-      return { requestId: '' };
-    };
+    const onFallback = () => ({ requestId: '' });
     const options = { timeoutMs: 5000, onFallback };
 
     //M 已保存的取消状态继续有效，卡片结果单独记录。
     const result = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
-    if (result.error !== uncertain) return undefined;
+    if (!events.isUnsure(result)) return undefined;
 
     const vars = { 卡片: id };
     this.ctx.emit('trace', 'Reminders.closeCard', uncertain, 'approval/request close', vars);
@@ -534,11 +536,15 @@ export class Reminders {
   }
 
   /** 顺序占位并记录渠道回执，启动前错过的提醒前缀标明补发。 */
-  private async drain(): Promise<void> {
+  private async drain(stuck: Row[] = []): Promise<void> {
     if (this.draining) return;
 
     this.draining = true;
     try {
+      //M 先补齐上次没有保存的回执，再为新到期的提醒占位。
+      for (const row of stuck) {
+        await this.deliver(row);
+      }
       while (this.send !== undefined) {
         const now = this.clock.now();
         const sql = "UPDATE assist_reminders SET state = 'sending', send_text = CASE WHEN due_at < ? OR late = 1"
@@ -549,30 +555,39 @@ export class Reminders {
         const row = this.db.query<Row, [number, number]>(sql).get(this.startedAt, now);
         if (row === null) return;
 
-        const message = {
-          id: row.id,
-          channel: row.channel,
-          account: row.account,
-          chat: row.chat,
-          text: row.send_text!,
-        };
-        let receipt: ProviderReceipt = { status: 'uncertain', reason: UNCERTAIN };
-        try {
-          //M 每条只经已接通的主动发送入口提交一次；异常交给未知状态。
-          receipt = await this.send(message);
-        } catch {
-          //G 运输异常可能发生在收到消息之后，保留占位结果供核对。
-        }
-        if (this.send === undefined) return;
-
-        const update = "UPDATE assist_reminders SET state = ?, reason = ? WHERE id = ? AND state = 'sending'";
-        //M 保存渠道实际回执，列表按它显示发送结果。
-        this.db.query(update).run(receipt.status, receipt.reason ?? null, row.id);
+        //M 新占位与重启恢复共用冻结的正文和发送编号。
+        await this.deliver(row);
       }
     } finally {
       this.draining = false;
       //M 本轮占位结束后重新等待下一条到期记录。
       this.arm();
     }
+  }
+
+  /** 提交已占位的提醒，把发件账回执记回该行。 */
+  private async deliver(row: Row): Promise<void> {
+    const send = this.send;
+    if (send === undefined) return;
+
+    const message = {
+      id: row.id,
+      channel: row.channel,
+      account: row.account,
+      chat: row.chat,
+      text: row.send_text!,
+    };
+    let receipt: ProviderReceipt = { status: 'uncertain', reason: UNCERTAIN };
+    try {
+      //M 以原编号提交同一提醒，重复交接由发件账去重。
+      receipt = await send(message);
+    } catch {
+      //G 运输异常可能发生在收到消息后，保留结果待核。
+    }
+    if (this.send !== send) return;
+
+    //M 仅更新仍在途的记录，展示发件账实际回执。
+    const update = "UPDATE assist_reminders SET state = ?, reason = ? WHERE id = ? AND state = 'sending'";
+    this.db.query(update).run(receipt.status, receipt.reason ?? null, row.id);
   }
 }

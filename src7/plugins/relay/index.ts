@@ -42,7 +42,7 @@ export const name = 'relay';
 //  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
 //  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
-export const version = '1.4.4';
+export const version = '1.4.5';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'decision-map';
@@ -949,16 +949,12 @@ export class Relay {
     const resultName = 'decision-map/relay-replied';
     const payload = { id: reply.id, key, target, text: reply.text };
     const uncertain = '决策图回信写入结果不确定';
-    const onFallback = (reason: requestEventModule.FallbackReason) => {
-      if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
-
-      return { requestId: '', ok: false };
-    };
+    const onFallback = () => ({ requestId: '', ok: false });
     const options = { timeoutMs: 3000, onFallback };
 
     //M 给写图端持久回信号。晚到或再次核对按同一编号去重。
     const result = await requestEventModule.requestEvent(this.ctx, requestName, resultName, payload, options);
-    if (result.error === uncertain) {
+    if (requestEventModule.isUnsure(result)) {
       console.error(`relay：回信 #${String(reply.id)} 的${uncertain}，保留原回信号待对账`);
       return;
     }
@@ -1378,13 +1374,11 @@ export class Relay {
       };
       const reasons: Record<requestEventModule.FallbackReason, string> = {
         unhandled: '飞书插件没挂，没人接发文件的请求',
-        timeout: '等了 30 秒飞书没回，发送结果不确定',
+        timeout: '等了 30 秒飞书没回',
         aborted: '请求被中止',
         error: '飞书处理时出错',
       };
-      let timedOut = false;
       const onFallback = (reason: requestEventModule.FallbackReason, detail?: string) => {
-        timedOut = reason === 'timeout';
         const error = `${reasons[reason]} ${detail ?? ''}`.trim();
         return { requestId: '', ok: false, error };
       };
@@ -1403,8 +1397,8 @@ export class Relay {
         options,
       );
       result = `没发出去：${received.error ?? '原因不明'}`;
-      if (timedOut) {
-        result = received.error ?? '飞书文件发送结果不确定';
+      if (requestEventModule.isUnsure(received)) {
+        result = `飞书文件发送结果不确定：${received.error ?? '未获回执'}`;
       }
       if (received.ok) {
         result = `已发 ${received.messageId ?? ''}`;

@@ -4,13 +4,14 @@
  * 真的 Cordis + 真的 approval 插件；resources、bots、sessions 是只够它挂上的假服务，审核小会话的回答由假 sessions.ask 给；
  * 决策模型是测试里挂的假 decision/judge 监听，照 fakeDecision 回，不调任何模型。命令只审不跑。
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import * as requestEvents from '../../utils/RequestEvent.ts';
+import { requestReview } from '../exec/Runs.ts';
 import * as approvalModule from './index.ts';
 
 
@@ -24,7 +25,11 @@ for (const dir of [DATA, TRUSTED, OUTSIDE]) {
 }
 
 /** 审核小会话回什么（假 sessions.ask 交回），和问了几次。 */
-const model = { reply: '{"safe": false}', asked: 0 };
+type FakeAnswer = { ok: boolean; reply: string };
+const model: { reply: string; asked: number; wait?: () => Promise<FakeAnswer> } = {
+  reply: '{"safe": false}',
+  asked: 0,
+};
 
 /** 假决策模型回什么：结论和顺带写的执行结果（空串当没写）；wants 记下每次请求带的 want。 */
 const fakeDecision = {
@@ -65,6 +70,8 @@ class FakeSessions extends cordis.Service {
   }
   ask(): Promise<{ ok: boolean; reply: string }> {
     model.asked += 1;
+    if (model.wait !== undefined) return model.wait();
+
     return Promise.resolve({ ok: true, reply: model.reply });
   }
 }
@@ -200,4 +207,77 @@ describe('放行规则不变', () => {
     const verdict = await review('a5.txt');
     expect(verdict).toEqual({ result: 'reject', by: 'decision', reason: '假决策模型' });
   });
+});
+
+
+/** 按 exec 的真实入口审一条合成记录，测试环境未挂命令执行器。 */
+function reviewFixture() {
+  fakeDecision.verdict = 'unsure';
+  fakeDecision.what = '';
+  model.reply = '{"safe": false}';
+  const input = { kind: 'test-review', command: '合成审核记录', cwd: OUTSIDE, payload: null };
+  return input;
+}
+
+
+test('审核等候超时后，迟到的审核结果不能登记待确认', async () => {
+  const input = reviewFixture();
+  const began = Promise.withResolvers<void>();
+  const modelReply = Promise.withResolvers<FakeAnswer>();
+  const answered = Promise.withResolvers<void>();
+  const waitingBefore = app.approval.list().map((item) => item.id);
+  const dispose = app.on('approval/result', () => answered.resolve());
+  model.wait = () => {
+    began.resolve();
+    return modelReply.promise;
+  };
+
+  vi.useFakeTimers();
+  try {
+    //M 暂停审核小会话，在虚拟时钟上走完 exec 的等待期限。
+    const review = requestReview(app, input);
+    await began.promise;
+    vi.advanceTimersByTime(65_000);
+    const verdict = await review;
+    expect(verdict).toMatchObject({ result: 'reject', reason: '命令审核已超时' });
+
+    //M 即便审核随后仍回了结果，也不能增加一张可同意的卡片。
+    modelReply.resolve({ ok: true, reply: '{"safe": false}' });
+    await answered.promise;
+    expect(app.approval.list().map((item) => item.id)).toEqual(waitingBefore);
+  } finally {
+    modelReply.resolve({ ok: false, reply: '' });
+    model.wait = undefined;
+    dispose();
+    vi.useRealTimers();
+  }
+});
+
+
+test('审核截止时已登记的卡片作废，确认入口返回已超时', async () => {
+  const input = reviewFixture();
+  const notified = Promise.withResolvers<number>();
+  const answered = Promise.withResolvers<void>();
+  const disposeResult = app.on('approval/result', () => answered.resolve());
+  vi.useFakeTimers();
+  const disposeCard = app.on('approval/asked', (pending) => {
+    //M 在登记通知与审核回执之间模拟截止，验证同一张卡片的作废状态。
+    if (pending.kind !== input.kind) return;
+
+    vi.advanceTimersByTime(65_000);
+    notified.resolve(pending.id);
+  });
+  try {
+    const verdict = await requestReview(app, input);
+    expect(verdict.result).toBe('reject');
+    const id = await notified.promise;
+    await answered.promise;
+    const decision = app.approval.decide(id, true, '合成测试');
+    expect(decision).toBe(`待确认 #${String(id)} 命令审核已超时`);
+    expect(app.approval.list().some((item) => item.id === id)).toBe(false);
+  } finally {
+    disposeCard();
+    disposeResult();
+    vi.useRealTimers();
+  }
 });

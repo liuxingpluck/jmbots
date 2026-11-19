@@ -1,6 +1,6 @@
 /**
  * 渠道历史跨渠道查询与各渠道应答端到端离线验证（B 块）：
- *   1. 默认条数 80（描述写明“一般 50–100 条够用，自己定”）、before 游标翻页与条数上限 200；
+ *   1. memory_get 的默认 80 条、签名 before 游标与 200 条上限；
  *   2. 本人（owner）从网页或飞书会话跨渠道查询微信、网页、命令行、飞书历史，含附件脱敏（不泄漏本机路径）与预留 view 默认入口；
  *   3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊天被直接拒绝并说明原因，且直接发 channel/history 事件也无法绕过权限防线。
  *
@@ -19,12 +19,19 @@ import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as cliModule from '../cli/index.ts';
 import * as feishuModule from '../feishu/index.ts';
+import * as memoryIndex from '../memory/ChannelIndex.ts';
+import * as memoryPlugin from '../memory/index.ts';
 import * as webApiModule from '../web-api/index.ts';
 import * as wechatModule from '../wechat/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 import * as historyRequest from './HistoryRequest.ts';
 import * as botsPlugin from './index.ts';
 
+
+//M 使用真实记忆入口，Rust 检索和回填从这些离线夹具关闭。
+const memoryConfig = {
+  service_url: 'http://127.0.0.1:9', history: false, recall_history: 0, recall_knowledge: 0,
+};
 
 //M 每个测例后自动释放插件与临时目录。
 const closers: Array<() => Promise<unknown> | void> = [];
@@ -184,7 +191,7 @@ function insertWechatMsg(
 }
 
 
-test('1. channel_history 默认条数 80、工具说明含 50–100 提示且支持 before 游标翻页与 200 上限', async () => {
+test('1. memory_get 默认 80 条，支持签名 before 游标翻页与 200 条上限', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-hist-80-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = new cordis.Context();
@@ -196,19 +203,22 @@ test('1. channel_history 默认条数 80、工具说明含 50–100 提示且支
   await ctx.plugin(sessionsModule.Sessions);
   await ctx.plugin(workspacesPlugin);
   await ctx.plugin(botsPlugin, {});
+  await ctx.plugin(memoryPlugin, memoryConfig);
   await ctx.plugin(webApiModule);
   await ctx.http.app.ready();
 
   const wechat = new wechatModule.Wechat(ctx, wechatModule.checkConfig(ctx, { bot: '小史', interval_ms: 0, send: false }));
   wechat.reader.accounts = () => [{ id: 'acc1', nickname: '客服号', wxid: 'wxid_me' }];
 
-  //M 校验未配 history_limit 时描述包含默认 80 与“一般 50–100 条够用，自己定”。
-  const frontTools = ctx.tools.list('front');
-  const historyTool = frontTools.find((item) => item.name === 'channel_history');
-  expect(historyTool?.description).toContain('80');
-  expect(historyTool?.description).toContain('一般 50–100 条够用');
+  //M 在真实注册表中验证删掉的入口与保留的群日报工具。
+  const tools = ctx.tools.list('front').map((item) => item.name);
+  const retired = ['history', 'history_search', 'history_get', 'channel_history', 'channel_mentions',
+    'channel_visible_history', 'wechat_history'];
+  expect(tools.filter((name) => retired.includes(name))).toEqual([]);
+  expect(tools).toContain('memory_get');
+  expect(tools).toContain('channel_search');
 
-  //M 写入 210 条微信消息：验证不传 limit 默认 80、游标翻页、以及显式 limit=200 与越限 250 被拦。
+  //M 写入 210 条微信消息，验证默认 80 条和签名游标，超额由归档裁到 200 条。
   for (let i = 1; i <= 210; i += 1) {
     insertWechatMsg(ctx.resources.db, {
       account: 'acc1',
@@ -233,16 +243,16 @@ test('1. channel_history 默认条数 80、工具说明含 50–100 提示且支
       return;
     }
     if (phase === 'default80') {
-      const call = piAi.fauxToolCall('channel_history', { channel: 'wechat', chat: 'wxid_page' });
+      const call = piAi.fauxToolCall('memory_get', { channel: 'wechat', chat: 'wxid_page' });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
     if (phase === 'cursor') {
-      const call = piAi.fauxToolCall('channel_history', { channel: 'wechat', chat: 'wxid_page', before: cursorToUse });
+      const call = piAi.fauxToolCall('memory_get', { channel: 'wechat', chat: 'wxid_page', before: cursorToUse });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
-    const call = piAi.fauxToolCall('channel_history', { channel: 'wechat', chat: 'wxid_page', limit: 200 });
+    const call = piAi.fauxToolCall('memory_get', { channel: 'wechat', chat: 'wxid_page', limit: 200 });
     request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
   });
 
@@ -276,17 +286,19 @@ test('1. channel_history 默认条数 80、工具说明含 50–100 提示且支
   expect(captured[2]?.items[199]?.text).toBe('微信第210条');
   expect(captured[2]?.nextCursor).not.toBeNull();
 
-  //M 4) 超过 200 的 limit 被工具入参校验直接拒绝。
+  //M 4) 通用工具接受正整数，原归档上限仍为 200。
   const frontMeta = ctx.sessions.find({ kind: 'front', bot: '小史' })[0]!;
   const frontSession = ctx.sessions.open(frontMeta.id);
   frontSession.row.state = 'running';
   const overLimit = await ctx.tools.execute(
-    { type: 'toolCall', id: 'c_over', name: 'channel_history', arguments: { channel: 'wechat', chat: 'wxid_page', limit: 250 } },
+    { type: 'toolCall', id: 'c_over', name: 'memory_get', arguments: { channel: 'wechat', chat: 'wxid_page', limit: 250 } },
     frontSession,
     new AbortController().signal,
   );
   frontSession.row.state = 'done';
-  expect(overLimit.isError).toBe(true);
+  expect(overLimit.isError).toBe(false);
+  const overPage = JSON.parse(overLimit.text) as channels.ChannelHistoryResult;
+  expect(overPage.items).toHaveLength(200);
 });
 
 
@@ -307,6 +319,7 @@ test('2. 本人跨渠道取微信/网页/命令行/飞书历史（含附件脱�
   await ctx.plugin(sessionsModule.Sessions);
   await ctx.plugin(workspacesPlugin);
   await ctx.plugin(botsPlugin, {});
+  await ctx.plugin(memoryPlugin, memoryConfig);
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
     people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
@@ -351,7 +364,7 @@ test('2. 本人跨渠道取微信/网页/命令行/飞书历史（含附件脱�
   ctx.on('session/request', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
-      if (last.toolName === 'channel_history') {
+      if (last.toolName === 'memory_get') {
         const parsed = JSON.parse(piAi.contentText(last.content)) as channels.ChannelHistoryResult;
         historyResults.push(parsed);
         if (request.tools.some((tool) => tool.name === 'channel_reply')) {
@@ -374,31 +387,31 @@ test('2. 本人跨渠道取微信/网页/命令行/飞书历史（含附件脱�
       return;
     }
     if (stepMode === 'web_to_wechat') {
-      const call = piAi.fauxToolCall('channel_history', { channel: 'wechat', chat: 'wxid_c1' });
+      const call = piAi.fauxToolCall('memory_get', { channel: 'wechat', chat: 'wxid_c1' });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
     if (stepMode === 'web_to_cli') {
-      const call = piAi.fauxToolCall('channel_history', { channel: 'cli' });
+      const call = piAi.fauxToolCall('memory_get', { channel: 'cli' });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
     if (stepMode === 'web_to_feishu') {
-      const call = piAi.fauxToolCall('channel_history', { channel: 'feishu', chat: 'oc_chat_1' });
+      const call = piAi.fauxToolCall('memory_get', { channel: 'feishu', chat: 'oc_chat_1' });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
     if (stepMode === 'feishu_to_http') {
-      const call = piAi.fauxToolCall('channel_history', { channel: 'http' });
+      const call = piAi.fauxToolCall('memory_get', { channel: 'http' });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
     if (stepMode === 'feishu_to_other_group') {
-      const call = piAi.fauxToolCall('channel_history', { chat: 'oc_other_chat' });
+      const call = piAi.fauxToolCall('memory_get', { chat: 'oc_other_chat' });
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
-    const call = piAi.fauxToolCall('channel_history', {});
+    const call = piAi.fauxToolCall('memory_get', {});
     request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
   });
 
@@ -532,7 +545,7 @@ test('2. 本人跨渠道取微信/网页/命令行/飞书历史（含附件脱�
   httpFront.row.address = { messageId: webMsgId, customer: 'http:本机', view: { channel: 'wechat', chat: 'wxid_c1' } };
   httpFront.row.state = 'running';
   const viewExec = await ctx.tools.execute(
-    { type: 'toolCall', id: 'c_view', name: 'channel_history', arguments: {} },
+    { type: 'toolCall', id: 'c_view', name: 'memory_get', arguments: {} },
     httpFront,
     new AbortController().signal,
   );
@@ -562,6 +575,7 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
   await ctx.plugin(sessionsModule.Sessions);
   await ctx.plugin(workspacesPlugin);
   await ctx.plugin(botsPlugin, {});
+  await ctx.plugin(memoryPlugin, memoryConfig);
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
     people: [
@@ -591,7 +605,7 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
   });
 
   //M 先写入飞书测试主群一条当前消息与另一群一条机密消息。
-  const results: channels.ChannelHistoryResult[] = [];
+  const results: { isError: boolean; text: string }[] = [];
   let nextArgs: Record<string, string | number | boolean> = {};
   let captureActive = false;
   const denySessionsIdle = (): boolean => ctx.sessions
@@ -601,8 +615,9 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
   ctx.on('session/request', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
-      if (last.toolName === 'channel_history') {
-        results.push(JSON.parse(piAi.contentText(last.content)) as channels.ChannelHistoryResult);
+      if (last.toolName === 'memory_get') {
+        const text = piAi.contentText(last.content);
+        results.push({ isError: last.isError ?? false, text });
         const replyCall = piAi.fauxToolCall('channel_reply', { text: '已拦截或完成' });
         request.answer = piAi.fauxAssistantMessage([replyCall], { stopReason: 'toolUse' });
         return;
@@ -615,7 +630,7 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
       request.answer = piAi.fauxAssistantMessage([seedReply], { stopReason: 'toolUse' });
       return;
     }
-    const call = piAi.fauxToolCall('channel_history', nextArgs);
+    const call = piAi.fauxToolCall('memory_get', nextArgs);
     request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
   });
 
@@ -646,9 +661,8 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     },
   });
   await waitFor(() => results.length >= 1 && denySessionsIdle());
-  expect(results[0]?.ok).toBe(false);
-  expect(results[0]?.error?.code).toBe('forbidden');
-  expect(results[0]?.error?.message).toContain('外人');
+  expect(results[0]?.isError).toBe(true);
+  expect(results[0]?.text).toContain('只能查这个聊天');
 
   //M 2) guest 在 oc_chat_1 跨渠道查微信 → 被拒。
   nextArgs = { channel: 'wechat', chat: 'wxid_c1' };
@@ -664,9 +678,8 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     },
   });
   await waitFor(() => results.length >= 2 && denySessionsIdle());
-  expect(results[1]?.ok).toBe(false);
-  expect(results[1]?.error?.code).toBe('forbidden');
-  expect(results[1]?.error?.message).toContain('跨渠道');
+  expect(results[1]?.isError).toBe(true);
+  expect(results[1]?.text).toContain('只能查这个聊天');
 
   //M 3) builder 跨渠道查网页 → 被拒；查当前聊天 oc_chat_1 → 允许。
   nextArgs = { channel: 'http' };
@@ -682,8 +695,8 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     },
   });
   await waitFor(() => results.length >= 3 && denySessionsIdle());
-  expect(results[2]?.ok).toBe(false);
-  expect(results[2]?.error?.code).toBe('forbidden');
+  expect(results[2]?.isError).toBe(true);
+  expect(results[2]?.text).toContain('只能查这个聊天');
 
   nextArgs = {};
   await feishuStub.triggerInbound({
@@ -698,42 +711,57 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     },
   });
   await waitFor(() => results.length >= 4 && denySessionsIdle());
-  expect(results[3]?.ok).toBe(true);
-  expect(results[3]?.scope).toBe(`feishu:${appId}:oc_chat_1`);
+  expect(results[3]?.isError).toBe(false);
+  const groupResult = JSON.parse(results[3]!.text) as { hits: memoryIndex.ChannelRow[] };
+  expect(groupResult.hits.length).toBeGreaterThan(0);
+  expect(groupResult.hits.every((item) => item.chat === 'oc_chat_1' && item.account === appId)).toBe(true);
+  expect(results[3]?.text).not.toContain('机密群记录');
 
   //M 4) 微信客户（非 owner）查自己聊天允许，指定别人微信聊天或跨渠道查网页一律被拒。
   const wxSession = ctx.sessions.create({ bot: '小守', kind: 'front', customer: 'wechat:wxid_c1' });
   wxSession.row.channel = 'wechat';
-  wxSession.row.address = { account: 'acc1', chat: 'wxid_c1', name: '客户1', customer: 'wechat:wxid_c1' };
+  wxSession.row.address = { account: 'acc1', accountId: 'acc1', chat: 'wxid_c1', chatType: 'p2p', role: 'guest' };
   wxSession.row.state = 'running';
 
+  //M 受限查询走已标明归属的渠道索引。先放进两个聊天的测试数据。
+  const index = new memoryIndex.ChannelIndex(ctx.resources.db);
+  const ownRow = {
+    key: 'own-wechat', channel: 'wechat', account: 'acc1', chat: 'wxid_c1', chatType: 'p2p',
+    direction: 'user' as const, senderId: 'wxid_c1', senderName: '客户1', bot: '小守',
+    text: '客户1私聊', memoryKey: 'person:wechat:wxid_c1', at: 1_700_002_000_000,
+  };
+  index.add(ownRow);
+  const otherRow = {
+    ...ownRow, key: 'other-wechat', chat: 'wxid_other', senderId: 'wxid_other',
+    text: '绝密他人消息', memoryKey: 'person:wechat:wxid_other',
+  };
+  index.add(otherRow);
+
   const wxOwnExec = await ctx.tools.execute(
-    { type: 'toolCall', id: 'wx_own', name: 'channel_history', arguments: {} },
+    { type: 'toolCall', id: 'wx_own', name: 'memory_get', arguments: {} },
     wxSession,
     new AbortController().signal,
   );
-  const wxOwnRes = JSON.parse(wxOwnExec.text) as channels.ChannelHistoryResult;
-  expect(wxOwnRes.ok).toBe(true);
-  expect(wxOwnRes.items).toHaveLength(1);
-  expect(wxOwnRes.items[0]?.text).toBe('客户1私聊');
+  expect(wxOwnExec.isError).toBe(false);
+  const wxOwnRes = JSON.parse(wxOwnExec.text) as { hits: memoryIndex.ChannelRow[] };
+  expect(wxOwnRes.hits).toHaveLength(1);
+  expect(wxOwnRes.hits[0]?.text).toBe('客户1私聊');
 
   const wxCrossChatExec = await ctx.tools.execute(
-    { type: 'toolCall', id: 'wx_cross_chat', name: 'channel_history', arguments: { chat: 'wxid_other' } },
+    { type: 'toolCall', id: 'wx_cross_chat', name: 'memory_get', arguments: { chat: 'wxid_other' } },
     wxSession,
     new AbortController().signal,
   );
-  const wxCrossChatRes = JSON.parse(wxCrossChatExec.text) as channels.ChannelHistoryResult;
-  expect(wxCrossChatRes.ok).toBe(false);
-  expect(wxCrossChatRes.error?.code).toBe('forbidden');
+  expect(wxCrossChatExec.isError).toBe(true);
+  expect(wxCrossChatExec.text).toContain('只能查这个聊天');
 
   const wxCrossChExec = await ctx.tools.execute(
-    { type: 'toolCall', id: 'wx_cross_ch', name: 'channel_history', arguments: { channel: 'http' } },
+    { type: 'toolCall', id: 'wx_cross_ch', name: 'memory_get', arguments: { channel: 'http' } },
     wxSession,
     new AbortController().signal,
   );
-  const wxCrossChRes = JSON.parse(wxCrossChExec.text) as channels.ChannelHistoryResult;
-  expect(wxCrossChRes.ok).toBe(false);
-  expect(wxCrossChRes.error?.code).toBe('forbidden');
+  expect(wxCrossChExec.isError).toBe(true);
+  expect(wxCrossChExec.text).toContain('只能查这个聊天');
   wxSession.row.state = 'done';
 
   //M 5) 外人直接构造 channel/history 事件请求各渠道处理函数，仍被各渠道处理器二次拒绝。

@@ -156,7 +156,7 @@ test('模型清单未挂载时查询立即走无人接单退路', async () => {
   closers.push(() => ctx.fiber.dispose());
   const lookup = { action: 'find', model: 'mock/primary' } as const;
   const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', lookup, catalogOptions);
-  expect(result).toEqual({ requestId: 'unhandled' });
+  expect(result).toEqual({ requestId: 'unhandled', fallback: 'unhandled' });
 });
 
 test('prompt 事件：交回模型介绍评价和清单里有的模型的思考档；没有介绍时两段都是空串', async () => {

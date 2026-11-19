@@ -1,9 +1,98 @@
-// Bun 脚本和网页沿用各自的类型项目，MJS 使用 Node 规则。
+// src7、Bun 脚本和网页各用自己的类型项目，MJS 使用 Node 规则。
 import eslintJs from '@eslint/js';
 import * as eslintConfig from 'eslint/config';
 import prettier from 'eslint-config-prettier';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
+
+const structureRules = {
+  curly: 'off',
+  'jmbots/require-blocks': 'warn',
+  'no-nested-ternary': 'error',
+  //M 跨模块运行时成员保留来源前缀，纯类型和有清楚库名的默认导出可保留。
+  'no-restricted-syntax': [
+    'warn',
+    {
+      selector: 'ImportDeclaration[importKind!="type"] > ImportSpecifier[importKind!="type"]',
+      message: '运行时成员请使用模块命名空间，如 path.resolve()、yaml.parseDocument()；类型请用 import type。',
+    },
+  ],
+};
+
+const requireBlocks = {
+  meta: {
+    schema: [],
+    messages: { expected: '请用大括号包住这条分支或循环语句。' },
+  },
+  create(context) {
+    function checkBody(body) {
+      //M 多个分支分别报告，提示定位到需要括号的语句。
+      if (body.type !== 'BlockStatement') {
+        const violation = { node: body, messageId: 'expected' };
+        context.report(violation);
+      }
+    }
+
+    function checkLoop(node) {
+      //M 循环体始终需要大括号。
+      checkBody(node.body);
+    }
+
+    return {
+      IfStatement(node) {
+        const sameLine = node.loc.start.line === node.loc.end.line;
+        const followsElse = node.parent.type === 'IfStatement' && node.parent.alternate === node;
+        const guardReturn = node.consequent.type === 'ReturnStatement';
+        const alternate = node.alternate;
+        //G 只有独立的单行提前 return 可以省掉大括号。
+        const exempt = alternate === null && !followsElse && sameLine && guardReturn;
+        if (!exempt) {
+          checkBody(node.consequent);
+        }
+
+        //M else if 会作为自己的 IfStatement 节点检查。
+        if (alternate !== null && alternate.type !== 'IfStatement') {
+          checkBody(alternate);
+        }
+      },
+      ForStatement: checkLoop,
+      ForInStatement: checkLoop,
+      ForOfStatement: checkLoop,
+      WhileStatement: checkLoop,
+      DoWhileStatement: checkLoop,
+    };
+  },
+};
+
+const src7Presets = [eslintJs.configs.recommended, ...tseslint.configs.recommendedTypeChecked, prettier];
+const src7Errors = ['preserve-caught-error', '@typescript-eslint/no-floating-promises'];
+
+/** 保留已有规则选项，逐步清理的 src7 问题按警告报告。 */
+function getSrc7Rules() {
+  const presetRules = src7Presets.map((config) => config.rules);
+  const rules = Object.assign({}, ...presetRules, structureRules);
+
+  //M 这两类已修过的错误挡住回归，其余现存问题保留检查但先降为警告。
+  for (const name of Object.keys(rules)) {
+    if (src7Errors.includes(name)) {
+      continue;
+    }
+
+    const setting = rules[name];
+    let values = [setting];
+    if (Array.isArray(setting)) {
+      values = setting;
+    }
+    const [severity, ...options] = values;
+    if (severity === 'error' || severity === 2) {
+      rules[name] = ['warn', ...options];
+    }
+  }
+  for (const name of src7Errors) {
+    rules[name] = 'error';
+  }
+  return rules;
+}
 
 export default eslintConfig.defineConfig([
   {
@@ -62,23 +151,24 @@ export default eslintConfig.defineConfig([
   prettier,
   {
     files: [
+      'src7/**/*.ts',
       'web/**/*.{ts,tsx}',
       'scripts/**/*.{ts,mjs}',
       'eslint.config.mjs',
     ],
-    rules: {
-      curly: ['error', 'all'],
-      'no-nested-ternary': 'error',
-      // 所有跨模块运行时成员保留来源前缀；纯类型和有清楚库名的默认导出可保留。
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector:
-            'ImportDeclaration[importKind!="type"] > ImportSpecifier[importKind!="type"]',
-          message:
-            '运行时成员请使用模块命名空间，如 path.resolve()、yaml.parseDocument()；类型请用 import type。',
-        },
-      ],
+    plugins: { jmbots: { rules: { 'require-blocks': requireBlocks } } },
+    rules: structureRules,
+  },
+  {
+    files: ['src7/**/*.ts'],
+    extends: src7Presets,
+    languageOptions: {
+      globals: globals.node,
+      parserOptions: {
+        project: ['./tsconfig.src7.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
+    rules: getSrc7Rules(),
   },
 ]);

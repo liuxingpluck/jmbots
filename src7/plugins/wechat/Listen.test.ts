@@ -3,11 +3,13 @@
  * 跑法：bun test src7/plugins/wechat/Listen.test.ts
  * 不跑真的微信引擎：Reader 的 sessions / syncBatch / backfill 换成假的，数据全是合成的。
  * 查的是：全部会话都抓取存表；第一轮全是存量只存不交；只有勾了“监听”的会话，对方私聊、群里 @我 才交给机器人（没勾的 bots.receive 一次都不调）；公众号不交；
- * 一轮最多同步 60 个会话；机器人回复只成草稿、deliver 也不发；最近 50 条拼进 system；wechat_history 工具不够时用 backfill 补。
+ * 一轮最多同步 60 个会话；机器人回复只成草稿、deliver 也不发；最近 50 条拼进 system；微信归档不足时用 backfill 补。
  * 2026-11-15：人手点“让 AI 回复”只对已监听会话调用 receive；监听会话 backfillAll 把更早的消息全部入库且不交机器人。
  */
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import type { Session } from '../../Sessions.ts';
+import type { HistoryToolRequest } from '../memory/HistoryTools.ts';
 import { Wechat, describe as describeView } from './index.ts';
 import type { WechatConfig } from './index.ts';
 import { Reader } from './read/Reader.ts';
@@ -22,7 +24,6 @@ function msg(id: number, at: number, text: string, fromSelf = false, atMe = fals
 function fake() {
   const received: { text: string; address: unknown }[] = [];
   const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
-  const tools = new Map<string, { run: (args: Record<string, unknown>, session: unknown) => unknown }>();
   const ctx = {
     get: () => undefined,
     resources: { db: new Database(':memory:') },
@@ -51,12 +52,11 @@ function fake() {
     },
     bots: { channel: () => () => undefined, receive: async (_c: string, _b: string, text: string, address: unknown) => { received.push({ text, address }); } },
     sessions: {},
-    tools: { register: (spec: { definition: { name: string }; run: (args: Record<string, unknown>, session: unknown) => unknown }) => { tools.set(spec.definition.name, spec); } },
   };
   const config: WechatConfig = { bot: '助手', root: '.', python: 'x', ocrPython: 'x', aobwUrl: 'http://127.0.0.1:1', lockFile: 'x', intervalMs: 0, atNames: '', chatLimit: 1000, send: false };
   const wechat = new Wechat(ctx as never, config);
   wechat.reader.backfill = async (_a, chat): Promise<SyncResult> => ({ chat, missing: false, messages: [] });
-  return { wechat, ctx, received, handlers, tools };
+  return { wechat, ctx, received, handlers };
 }
 
 describe('微信后台全量监听、只听不发', () => {
@@ -183,8 +183,8 @@ describe('微信后台全量监听、只听不发', () => {
     expect((ctx.resources.db.query('SELECT state FROM wechat_outbox WHERE id = ?').get(row.id) as { state: string }).state).toBe('draft');
   });
 
-  test('最近 50 条进 system；wechat_history 读更早的，不够用 backfill 补', async () => {
-    const { wechat, ctx, handlers, tools } = fake();
+  test('最近 50 条进 system；微信归档读取更早的消息，缺页时补录', async () => {
+    const { wechat, ctx, handlers } = fake();
     const insert = ctx.resources.db.query('INSERT INTO wechat_messages (account, chat, source, local_id, at, from_self, kind, sender, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     for (let i = 1; i <= 60; i++) insert.run('acc1', 'wxid_a', 'm0', 1000 + i, 1000 + i, i % 2, 'text', '', `第${String(i)}条`);
     const address = { account: 'acc1', chat: 'wxid_a', name: '甲', customer: 'wechat:wxid_a' };
@@ -198,7 +198,15 @@ describe('微信后台全量监听、只听不发', () => {
     expect(request.system[0]).not.toContain('第10条');
 
     wechat.reader.backfill = async (_a, _c, until): Promise<SyncResult> => ({ chat: 'wxid_a', missing: false, messages: Array.from({ length: 30 }, (_, i) => msg(900 + i, until - 30 + i, `更早${String(i)}`)) });
-    const text = await tools.get('wechat_history')!.run({ skip: 50, limit: 30 }, { row: { address } }) as string;
+    //M 模拟 memory_get 交给微信归档提供方的读取事件。
+    const session = { row: { address } } as Session;
+    const signal = new AbortController().signal;
+    const history: HistoryToolRequest = {
+      route: 'wechat-archive', args: { skip: 50, limit: 30 }, session, signal, callId: 'test-archive',
+    };
+    await ctx.serial('memory/history-tool', history);
+    const text = history.result;
+    expect(typeof text).toBe('string');
     expect(text).toContain('第1条');
     expect(text).toContain('更早');
     expect(text).not.toContain('第60条');

@@ -2,7 +2,7 @@
  * 渠道回复与渠道历史工具：
  *   - channel_reply：只在当前轮有 channel_tool 绑定时开放；纯文字发送（绝不把 @路径 当成文件上传），经 channel/reply ↔ channel/replied 拿回真实回执；
  *     受管后台会话（work）调 channel_reply 时先转回原前台，不越级直发原渠道；
- *   - 给统一记忆工具提供渠道归档，并保留三个旧名的权限、游标和回执。
+ *   - 给统一记忆工具提供渠道归档，归档提供方核对查询范围和游标。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
@@ -24,21 +24,6 @@ const MAX_HISTORY_LIMIT = 200;
 const CHANNEL_REPLY_HINT = '当前渠道不会自动把你的普通文字回答发给用户。'
   + '需要向用户汇报进度或给出最终回复时，必须调用 channel_reply 工具发送纯文字（纯文字不会把 @路径 当文件发送；同一次调用失败可查看回执）。'
   + '平常回复当前聊天不要填 channel 和 chat；只有用户本人明确要求去别的渠道或别的聊天发话时才填 channel 和 chat，不要自作主张往别处发。';
-
-/** 渠道工具名集合。 */
-const CHANNEL_TOOL_NAMES = new Set([
-  'channel_reply',
-  'channel_history',
-  'channel_mentions',
-  'channel_visible_history',
-]);
-
-/** 渠道历史工具名集合。 */
-const HISTORY_TOOL_NAMES = new Set([
-  'channel_history',
-  'channel_mentions',
-  'channel_visible_history',
-]);
 
 
 /** 登记并约束渠道回复和历史工具的生命周期与权限范围。 */
@@ -87,62 +72,17 @@ export class ChannelTools {
       run: (args, session) => this.runReply(args, session),
     });
 
-    //M channel_history：查询当前或跨渠道聊天的历史消息（本人可跨渠道，外人限当前聊天）。
-    historyTools.registerHistoryAlias(this.ctx, 'channel-current', {
-      definition: {
-        name: 'channel_history',
-        description: `翻看渠道历史记录（默认 ${String(this.historyLimit)} 条，一般 50–100 条够用，自己定，最多 ${String(MAX_HISTORY_LIMIT)} 条）。`
-          + '本人可指定 channel 和 chat 跨渠道查历史；不写默认取当前会话（或网页正在看）的聊天；外人只能查当前聊天。',
-        parameters: piAi.Type.Object({
-          channel: piAi.Type.Optional(piAi.Type.String({
-            minLength: 1,
-            description: '可选渠道名（feishu / wechat / http / cli），缺省取当前聊天所在渠道；仅本人可跨渠道',
-          })),
-          chat: piAi.Type.Optional(piAi.Type.String({
-            minLength: 1,
-            description: '可选聊天标识（如飞书 chatId、微信 wxid/群号或 account:chat、网页 http:本机、命令行 cli:本机），缺省取当前聊天；外人不能指定别的聊天',
-          })),
-          limit: piAi.Type.Optional(piAi.Type.Integer({
-            minimum: 1,
-            maximum: MAX_HISTORY_LIMIT,
-            description: `返回条数，默认 ${String(this.historyLimit)}（一般 50–100 条够用，自己定），最多 ${String(MAX_HISTORY_LIMIT)}`,
-          })),
-          before: piAi.Type.Optional(piAi.Type.String({ description: '上一页返回的 nextCursor 游标' })),
-        }),
-      },
-      kinds: ['front', 'work'],
-      run: (args, session) => this.runHistory('current', args, session),
-    });
+    //M 给统一记忆工具读取当前或获准的跨渠道聊天。
+    const currentRoute = 'channel-current';
+    historyTools.registerHistoryReader(this.ctx, currentRoute, (args, session) => this.runHistory('current', args, session));
 
-    //M channel_mentions：只看当前绑定聊天里 @ 当前机器人的消息。
-    historyTools.registerHistoryAlias(this.ctx, 'channel-mentions', {
-      definition: {
-        name: 'channel_mentions',
-        description: `查看当前绑定聊天中 @ 当前机器人的渠道历史消息（默认 ${String(this.historyLimit)} 条）。`,
-        parameters: piAi.Type.Object({
-          limit: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, maximum: MAX_HISTORY_LIMIT, description: `返回条数，默认 ${String(this.historyLimit)}` })),
-          before: piAi.Type.Optional(piAi.Type.String({ description: '上一页返回的 nextCursor 游标' })),
-        }),
-      },
-      kinds: ['front', 'work'],
-      run: (args, session) => this.runHistory('mentions', args, session),
-    });
+    //M 从当前绑定聊天读取提及机器人的消息。
+    const mentionsRoute = 'channel-mentions';
+    historyTools.registerHistoryReader(this.ctx, mentionsRoute, (args, session) => this.runHistory('mentions', args, session));
 
-    //M channel_visible_history：查询授权范围内指定发送者的历史发言。
-    historyTools.registerHistoryAlias(this.ctx, 'channel-visible', {
-      definition: {
-        name: 'channel_visible_history',
-        description: `查询授权范围内某个发送者（senderId）在聊天的渠道发言记录（默认 ${String(this.historyLimit)} 条）。guest/builder 仅限当前聊天。`,
-        parameters: piAi.Type.Object({
-          senderId: piAi.Type.String({ minLength: 1, description: '渠道原始发送者 ID' }),
-          chatId: piAi.Type.Optional(piAi.Type.String({ minLength: 1, description: '可选聊天 ID，缺省当前聊天' })),
-          limit: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, maximum: MAX_HISTORY_LIMIT, description: `返回条数，默认 ${String(this.historyLimit)}` })),
-          before: piAi.Type.Optional(piAi.Type.String({ description: '上一页返回的 nextCursor 游标' })),
-        }),
-      },
-      kinds: ['front', 'work'],
-      run: (args, session) => this.runHistory('visible', args, session),
-    });
+    //M 按获准的发言人和聊天读取消息。
+    const visibleRoute = 'channel-visible';
+    historyTools.registerHistoryReader(this.ctx, visibleRoute, (args, session) => this.runHistory('visible', args, session));
 
     //M 记录正在执行的 call.id 供 channel_reply 生成幂等键。
     this.ctx.on('session/before-tool', (gate) => {
@@ -158,12 +98,6 @@ export class ChannelTools {
       //G 未绑定 channel_tool 时不能执行 channel_reply。
       if (gate.call.name === 'channel_reply' && !this.hasBinding(gate.session)) {
         gate.deny = '当前会话没有活跃的渠道来源绑定，不能调用渠道工具';
-        return;
-      }
-
-      //G 没有任何渠道来源（既无 channel_tool 快照也无 legacy_auto 渠道地址）时不能执行渠道历史工具。
-      if (HISTORY_TOOL_NAMES.has(gate.call.name) && this.getHistorySnapshot(gate.session) === undefined) {
-        gate.deny = '当前会话没有活跃的渠道来源绑定，不能调用渠道工具';
       }
     });
 
@@ -177,14 +111,14 @@ export class ChannelTools {
   }
 
   /**
-   * 过滤这一步工具清单：未绑定渠道快照时隐藏 channel_reply；无渠道来源时隐藏历史工具；已绑定 channel_tool 时移除旧 reply 并加纯文字回复提示。
+   * 按本轮渠道绑定控制 channel_reply、旧 reply 和纯文字回复提示。
    * @param request 请求对象。
    */
   private filterTools(request: ChatRequest): void {
     const row = request.session.row;
     if (row.kind !== 'front' && row.kind !== 'work') return;
 
-    //G 未启用 channel_tool 的会话保留兼容旧工具，仅隐藏 channel_reply；历史工具按是否能取得渠道来源决定。
+    //G 未绑定渠道回复能力时不展示 channel_reply。
     const hasReplyBinding = this.hasBinding(request.session);
     if (!hasReplyBinding) {
       request.tools = request.tools.filter((tool) => tool.name !== 'channel_reply');
@@ -193,15 +127,6 @@ export class ChannelTools {
     //M relay direct 会话没有真模型；受管后台启用 channel_tool 时禁用旧 reply。
     if (hasReplyBinding && row.kind === 'work' && row.frontTask?.deliveryMode === 'channel_tool') {
       request.tools = request.tools.filter((tool) => tool.name !== 'reply');
-    }
-
-    //G 无渠道来源时隐藏所有历史工具；非飞书来源隐藏暂不支持结构化 @ 的 channel_mentions。
-    const historySnapshot = this.getHistorySnapshot(request.session);
-    if (historySnapshot === undefined) {
-      request.tools = request.tools.filter((tool) => !HISTORY_TOOL_NAMES.has(tool.name));
-    }
-    if (historySnapshot !== undefined && historySnapshot.channel !== 'feishu') {
-      request.tools = request.tools.filter((tool) => tool.name !== 'channel_mentions');
     }
 
     //M channel_tool 模式必须显式调 channel_reply。
@@ -722,7 +647,7 @@ export class ChannelTools {
         nextCursor: null,
         scope: snapshot.visibility.scope,
         completeness: 'unsupported',
-        error: { code: 'invalid_argument', message: 'channel_visible_history 需要提供非空的 senderId' },
+        error: { code: 'invalid_argument', message: '按发言人查询需要提供非空的 senderId' },
       };
       return JSON.stringify(bad);
     }

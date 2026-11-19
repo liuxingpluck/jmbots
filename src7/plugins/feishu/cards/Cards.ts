@@ -335,10 +335,10 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
  * @param timeoutMs 等待回执的上限。
  * @returns 可直接回给飞书卡片的警告提示。
  */
-function reportActionTimeout(row: CardRow, action: string, timeoutMs: number): Toast {
+function reportActionUncertain(row: CardRow, action: string, reason: requestEventModule.FallbackReason): Toast {
   //M 保留卡片号、业务号和动作，便于从流水核对真正的处理结果。
   const logTime = textModule.getClock(Date.now(), 'date');
-  console.warn(`${logTime} 飞书：卡片 ${row.card_id}（${row.kind} ${row.ref}），${action} 回执等待 ${String(timeoutMs)} 毫秒超时，结果不确定`);
+  console.warn(`${logTime} 飞书：卡片 ${row.card_id}（${row.kind} ${row.ref}），${action} 未获回执（${reason}），结果不确定`);
   return { type: 'warning', content: UNCERTAIN_ACTION };
 }
 
@@ -382,11 +382,9 @@ export async function onAction(
     const id = Number(row.ref);
     const by = `飞书卡片 ${address.openId}`;
     const input = { action: 'decide', id, approve, by } as const;
-    let timedOut = false;
     const options = {
       timeoutMs: APPROVAL_TIMEOUT_MS,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        timedOut = reason === 'timeout';
         return { requestId: '', error: detail ?? `审批未获回执（${reason}）` };
       },
     };
@@ -394,10 +392,10 @@ export async function onAction(
     //M 交给审核插件处理，只有明确完成才回成功提示。
     const result = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', input, options);
 
-    //G 超时仍保留占用，迟到的 approval/decided 可以刷新整件审批的终态。
-    if (timedOut) {
+    //G 回执缺失时保留占用，迟到的决定仍可刷新整件审批的终态。
+    if (requestEventModule.isUnsure(result)) {
       const action = `提交审批决定 approve=${String(approve)}`;
-      return reportActionTimeout(row, action, APPROVAL_TIMEOUT_MS);
+      return reportActionUncertain(row, action, result.fallback);
     }
 
     //G 无人接单或明确失败时释放占用，已收到的终态不会被改回可提交。
@@ -427,18 +425,16 @@ export async function onAction(
       minutes = Number(value['minutes'] ?? 0);
     }
     const input = { action: 'act', sessionId: row.ref, op: action, minutes } as const;
-    let timedOut = false;
     const options = {
       timeoutMs: PROGRESS_TIMEOUT_MS,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        timedOut = reason === 'timeout';
         return { requestId: '', ok: false, text: detail ?? `进度控制暂不可用（${reason}）` };
       },
     };
 
     //M 把终止或限时交给进度插件，用回执生成卡片提示。
     const result = await requestEventModule.requestEvent(ctx, 'progress/request', 'progress/result', input, options);
-    if (timedOut) return reportActionTimeout(row, action, PROGRESS_TIMEOUT_MS);
+    if (requestEventModule.isUnsure(result)) return reportActionUncertain(row, action, result.fallback);
 
     if (result.ok !== true) return { type: 'warning', content: result.text ?? '进度控制失败' };
 

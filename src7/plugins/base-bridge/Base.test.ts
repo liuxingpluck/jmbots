@@ -232,7 +232,7 @@ describe('base-bridge 基地服务', () => {
     const options = { ...baseOptions, timeoutMs: 60_000 };
     const began = Date.now();
     const result = await requestEvent(ctx, 'base/request', 'base/result', get, options);
-    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled' });
+    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled', fallback: 'unhandled' });
     expect(Date.now() - began).toBeLessThan(1000);
   });
 

@@ -1,0 +1,262 @@
+[
+  {
+    "id": "r-main",
+    "parent": null,
+    "title": "src7/Main.ts（共 206 行）",
+    "summary": "骨架入口：校验命令行、挂三个骨架服务、按 config.yaml 逐个动态加载插件、发 ready、接着跑没跑完的会话。",
+    "body": "## src7/Main.ts 分块目录（共 206 行，按代码进入顺序）\n\n- L1–L19：导入与文件头\n- L20–L49：ready 事件的类型声明\n- L50–L63：main 的说明与 version 子命令\n- L64–L66：安装统一报错标记\n- L67–L72：serve 子命令等同不写子命令\n- L73–L76：校验命令行参数并创建 Cordis 根\n- L77–L81：挂三个骨架服务\n- L82–L88：准备挂载表与配置里的插件清单\n- L89–L100：试运行模式：只挂 http\n- L101–L140：逐个动态加载并挂载插件\n- L141–L159：检查有没有插件在干等没人提供的服务\n- L160–L162：发出 ready 事件\n- L163–L169：接着跑上次没跑完的会话\n- L170–L198：loadPlugin：按 name 取出一个插件\n- L199–L206：程序入口：调 main 并兜底报错\n\n执行顺序：L199 程序入口 → L57 main → version/serve → checkArgs → 挂 Resources/Tools/Sessions → 循环挂插件（调 L176 loadPlugin）→ 查缺服务 → emit ready → 续跑 running 会话。",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-01",
+    "parent": "r-main",
+    "title": "L1–L19 导入与文件头（import 区）",
+    "summary": "文件头注释说明入口做什么，再把骨架、插件名单、工具模块全部 import 进来。",
+    "body": "**行号：L1–L19**\n\n### 代码原文\n```ts\n  1  /**\n  2   * 入口：挂骨架，照 config.yaml 的 plugins 段挂插件，告诉大家开工，接着跑上次没跑完的会话。\n  3   * 运行：bun src7/Main.ts [--data|--runtime 运行时目录] [给命令行渠道的其余参数]\n  4   *   编译版还认：version（打印 JSON 后退出）、serve [--runtime 目录] [--port 端口] [--mode candidate]\n  5   */\n  6  import * as fs from 'node:fs';\n  7  import * as path from 'node:path';\n  8  import * as process from 'node:process';\n  9  import { pathToFileURL } from 'node:url';\n 10  import * as cordis from 'cordis';\n 11  import * as pluginIndex from './plugins/Index.ts';\n 12  import * as resourcesModule from './Resources.ts';\n 13  import * as sessionsModule from './Sessions.ts';\n 14  import * as toolsModule from './Tools.ts';\n 15  import * as backendLog from './utils/BackendLog.ts';\n 16  import * as checks from './utils/Checks.ts';\n 17  import * as textModule from './utils/Text.ts';\n 18  import * as versions from './utils/Versions.ts';\n 19  \n```\n\n### 解释\n- L1–L5：文件头注释，写明这个入口干什么、怎么运行（`bun src7/Main.ts [--data|--runtime 目录]`），编译版另认 `version` 和 `serve` 子命令。\n- L6–L9：Node 内置模块 fs、path、process、url 的 pathToFileURL。\n- L10：`cordis`，骨架的依赖注入框架。\n- L11–L14：插件名单 `plugins/Index.ts`，以及三个骨架服务 Resources、Sessions、Tools。\n- L15–L18：四个工具模块 BackendLog、Checks、Text、Versions。\n- L19：空行。\n\n### 调到别处\nsrc7/plugins/Index.ts、src7/Resources.ts、src7/Sessions.ts、src7/Tools.ts、src7/utils/*.ts",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-02",
+    "parent": "r-main",
+    "title": "L20–L49 ready 事件的类型声明（declare module 'cordis'）",
+    "summary": "给 Cordis 的 Events 加一个 `ready` 事件的类型，注释里列了谁发、谁接。",
+    "body": "**行号：L20–L49**\n\n### 代码原文\n```ts\n 20  \n 21  declare module 'cordis' {\n 22    interface Events {\n 23      /**\n 24       * 骨架和插件都挂完了，可以开工了。命令行渠道等到它才把命令行里带的那句话发出去。只是通知。\n 25       * 谁发：src7/Main.ts 的 main\n 26       * 谁接：\n 27       *   src7/plugins/approval/Outbound.ts 的 Outbound.constructor\n 28       *   src7/plugins/assist/index.ts 的 apply\n 29       *   src7/plugins/base-bridge/UpdateWatch.ts 的 mountUpdateWatch\n 30       *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen\n 31       *   src7/plugins/cli/index.ts 的 Cli.constructor\n 32       *   src7/plugins/feishu/index.ts 的 Feishu.constructor\n 33       *   src7/plugins/feishu/outbox/Outbox.ts 的 setup\n 34       *   src7/plugins/http/index.ts 的 Http.constructor\n 35       *   src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.constructor\n 36       *   src7/plugins/memory/index.ts 的 apply\n 37       *   src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor\n 38       *   src7/plugins/programs/index.ts 的 apply\n 39       *   src7/plugins/relay/index.ts 的 Relay.constructor\n 40       *   src7/plugins/tutorial/Boot.ts 的 BootTrail.constructor\n 41       *   src7/plugins/voice/index.ts 的 apply\n 42       *   src7/plugins/wechat/index.ts 的 Wechat.constructor\n 43       * @param argv 命令行里剩下的参数，谁要谁用。\n 44       */\n 45      'ready'(argv: string[]): void;\n 46    }\n 47  }\n 48  \n 49  \n```\n\n### 解释\n- L21–L22：扩充 cordis 模块的 `Events` 接口。\n- L23–L44：注释，说明 ready 是“骨架和插件都挂完了，可以开工了”，命令行渠道等它才把命令行里带的那句话发出去；只是通知。谁发：本文件 main（L161）；谁接：列了 16 处（approval、assist、base-bridge、bots、cli、feishu、http、memory、programs、relay、tutorial、voice、wechat 等插件）。\n- L45：`'ready'(argv: string[]): void`，参数是命令行里剩下的参数。\n- L46–L49：闭合括号与空行。\n\n### 调到别处\n接收方文件见 L26–L42 注释；发出点在 src7/Main.ts:161",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-03",
+    "parent": "r-main",
+    "title": "L50–L63 main 的说明与 version 子命令",
+    "summary": "main 函数的文档注释和函数头；第一件事：命令行是 version 就只打印版本表然后退出。",
+    "body": "**行号：L50–L63**\n\n### 代码原文\n```ts\n 50  /**\n 51   * 启动。\n 52   * @param argv 命令行参数，去掉了 bun 和脚本路径。\n 53   * 副作用：挂骨架和插件、开数据库、发 ready、接着跑上次没跑完的会话（可能发模型请求）；\n 54   *   挂载结果写进 app.resources.pluginStatus，没挂上、没开工的打到标准错误。\n 55   * @throws 命令行、config.yaml 不对，或试运行却没配 http 插件时抛错；文件最底下接住。\n 56   */\n 57  async function main(argv: string[]): Promise<void> {\n 58    //M version 子命令：只打印版本表就退出，不起服务。\n 59    if (argv[0] === 'version') {\n 60      versions.print();\n 61      return;\n 62    }\n 63  \n```\n\n### 解释\n- L50–L56：main 的文档注释：启动，参数是去掉 bun 和脚本路径的命令行；副作用是挂骨架和插件、开数据库、发 ready、接着跑上次没跑完的会话；失败抛错，文件最底下接住。\n- L57：`async function main(argv)` 函数开始。\n- L58–L62：`argv[0] === 'version'` 时调 `versions.print()` 并 return，不起服务。\n- L63：空行。\n\n### 调到别处\nsrc7/utils/Versions.ts:20 print",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-04",
+    "parent": "r-main",
+    "title": "L64–L66 安装统一报错标记（backendLog.install）",
+    "summary": "在挂骨架和插件之前先装上报错标记，这样配置和挂载失败也能被标记。",
+    "body": "**行号：L64–L66**\n\n### 代码原文\n```ts\n 64    //M 在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。\n 65    backendLog.install();\n 66  \n```\n\n### 解释\n- L64：注释，说明要在挂载之前装。\n- L65：`backendLog.install()`，默认把 console.error 接管。\n- L66：空行。\n\n### 调到别处\nsrc7/utils/BackendLog.ts:23 install",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-05",
+    "parent": "r-main",
+    "title": "L67–L72 serve 子命令等同不写子命令",
+    "summary": "`serve` 是基地起编译版的写法，去掉这个词，剩下的参数一样认。",
+    "body": "**行号：L67–L72**\n\n### 代码原文\n```ts\n 67    //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。\n 68    let flags = argv;\n 69    if (argv[0] === 'serve') {\n 70      flags = argv.slice(1);\n 71    }\n 72  \n```\n\n### 解释\n- L67：注释。\n- L68：`flags` 先等于整个 argv。\n- L69–L71：第一个词是 `serve` 就取 `argv.slice(1)`。\n- L72：空行。\n\n### 调到别处\n无",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-06",
+    "parent": "r-main",
+    "title": "L73–L76 校验命令行参数并创建 Cordis 根",
+    "summary": "用 checkArgs 一次性校验命令行，得到 dataDir、candidate、rest；再新建 Cordis Context 作为 app。",
+    "body": "**行号：L73–L76**\n\n### 代码原文\n```ts\n 73    //M 校验命令行参数并整理出运行时目录与透传参数。\n 74    const args = checks.checkArgs(flags);\n 75    const app = new cordis.Context();\n 76  \n```\n\n### 解释\n- L73：注释：入口校验一次，内部直接用。\n- L74：`checks.checkArgs(flags)` 返回 MainArgs：dataDir（运行时目录）、candidate（是否试运行）、rest（透传参数）。非法时抛错，由文件底部接住。\n- L75：`new cordis.Context()` 即 app。\n- L76：空行。\n\n### 调到别处\nsrc7/utils/Checks.ts:51 checkArgs（返回类型 MainArgs 在 Checks.ts:19）",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-07",
+    "parent": "r-main",
+    "title": "L77–L81 挂三个骨架服务",
+    "summary": "按 Resources、Tools、Sessions 的先后，挂一个等一个，先后不能换。",
+    "body": "**行号：L77–L81**\n\n### 代码原文\n```ts\n 77    //M 骨架三个，挂一个等一个，先后不能换。\n 78    await app.plugin(resourcesModule.Resources, { dir: args.dataDir });\n 79    await app.plugin(toolsModule.Tools);\n 80    await app.plugin(sessionsModule.Sessions);\n 81  \n```\n\n### 解释\n- L77：注释：骨架三个，先后不能换。\n- L78：挂 Resources，传 `{ dir: args.dataDir }`，读 config.yaml、开数据库。\n- L79：挂 Tools（工具服务）。\n- L80：挂 Sessions（会话服务）。\n- L81：空行。\n\n### 调到别处\nsrc7/Resources.ts:136 Resources；src7/Tools.ts:86 Tools；src7/Sessions.ts:248 Sessions",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-08",
+    "parent": "r-main",
+    "title": "L82–L88 准备挂载表与配置里的插件清单",
+    "summary": "注释说明插件的先后就是 session/request 挨个问的先后；声明 mounted 数组并取出 config.yaml 的 plugins。",
+    "body": "**行号：L82–L88**\n\n### 代码原文\n```ts\n 82    //M 插件：照 config.yaml 里写的先后，挂一个等一个。这个先后也是 session/request 挨个问的先后。\n 83    //M   机器人（bots）、渠道、工具、提示词都是插件，骨架不认得它们。\n 84    /** 挂上去的插件（带配置里的名字）；下面查它们要的服务用。 */\n 85    const mounted: { name: string; plugin: pluginIndex.PluginModule }[] = [];\n 86    /** config.yaml 里写的全部插件。 */\n 87    const configured = app.resources.config.plugins;\n 88  \n```\n\n### 解释\n- L82–L83：注释：照 config.yaml 的先后挂；机器人、渠道、工具、提示词都是插件，骨架不认得它们。\n- L84–L85：`mounted` 数组，存挂上去的插件（带配置里的名字），后面检查它们要的服务用。\n- L86–L87：`configured = app.resources.config.plugins`，config.yaml 里写的全部插件。\n- L88：空行。\n\n### 调到别处\nsrc7/Resources.ts:136 的 config.plugins",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-09",
+    "parent": "r-main",
+    "title": "L89–L100 试运行模式：只挂 http",
+    "summary": "试运行（基地换版前先试跑）只留 http 插件做健康检查；若没配 http 就报错。",
+    "body": "**行号：L89–L100**\n\n### 代码原文\n```ts\n 89    //M 试运行（基地换版前先试跑新程序）只挂 http，够它做健康检查就行，不开渠道。\n 90    /** 这次真要挂的插件。 */\n 91    let entries = configured;\n 92    if (args.candidate) {\n 93      entries = configured.filter((entry) => entry.name === 'http');\n 94    }\n 95  \n 96    //G 试运行却没配 http → 健康检查没法做，直接报错。\n 97    if (args.candidate && entries.length === 0) {\n 98      throw new Error('试运行模式需要挂 http 插件，才能做健康检查');\n 99    }\n100  \n```\n\n### 解释\n- L89：注释说明试运行用途。\n- L90–L91：`entries` 先等于全部 configured。\n- L92–L94：`args.candidate` 为真时，只留名字是 `http` 的。\n- L96–L99：试运行却过滤后为空，抛“试运行模式需要挂 http 插件，才能做健康检查”，由文件底部接住并退出码 1。\n- L100：空行。\n\n### 调到别处\n无（只用 args.candidate）",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-10",
+    "parent": "r-main",
+    "title": "L101–L140 逐个动态加载并挂载插件（for 循环）",
+    "summary": "按顺序对每个插件：加载、挂入 Cordis、记入挂载表；失败只打一行原因，不挡别的插件。",
+    "body": "**行号：L101–L140**\n\n### 代码原文\n```ts\n101    for (const entry of entries) {\n102      try {\n103        //M 从内置清单或外部文件夹动态加载插件并挂入 Cordis，拿到插件实例以记入挂载表。\n104        const plugin = await loadPlugin(entry.name, app.resources.root);\n105        await app.plugin(plugin, entry.config);\n106        mounted.push({ name: entry.name, plugin });\n107  \n108        //M 挂上了：结果写到 resources.pluginStatus，给 /api/health 和 /flow/ 用。\n109        app.resources.pluginStatus.push({\n110          name: entry.name,\n111          mounted: true,\n112          started: true,\n113          missing: [],\n114          error: '',\n115          inject: plugin.inject ?? [],\n116        });\n117      } catch (error) {\n118        //G 找不到、起不来 → 打一行原因，不挡别的插件。\n119        const text = textModule.getMessage(error);\n120        console.error(`插件 ${entry.name} 没挂上：${text}`);\n121  \n122        //G 写给 health / /flow/ 的原因不带模块系统的绝对路径：找不到模块的，换成一句人话。\n123        let reason = text;\n124        if (/Cannot find module/iu.test(text)) {\n125          reason = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';\n126        }\n127  \n128        //M 没挂上也记一行；它声明要的服务照自带名单里写的填（别人写的插件没加载成，填空）。\n129        const builtIn = pluginIndex.BUILT_IN[entry.name];\n130        app.resources.pluginStatus.push({\n131          name: entry.name,\n132          mounted: false,\n133          started: false,\n134          missing: [],\n135          error: reason,\n136          inject: builtIn?.inject ?? [],\n137        });\n138      }\n139    }\n140  \n```\n\n### 解释\n- 对 `entries` 里的每一项依次执行，每个挂完再挂下一个，先后就是 config.yaml 的先后。\n- 成功和失败都会往 `app.resources.pluginStatus` 记一行，给 `/api/health` 和 `/flow/` 用。\n\n### 调到别处\nloadPlugin（Main.ts:176）、app.plugin（Cordis）、textModule.getMessage（Text.ts:17）、pluginIndex.BUILT_IN（Index.ts:78）",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-10-1",
+    "parent": "r-main-10",
+    "title": "L101–L107 加载插件并挂入 Cordis、记入 mounted",
+    "summary": "try 里先加载插件模块，再 app.plugin 挂上，最后 push 进 mounted。",
+    "body": "**行号：L101–L107**\n\n### 代码原文\n```ts\n101    for (const entry of entries) {\n102      try {\n103        //M 从内置清单或外部文件夹动态加载插件并挂入 Cordis，拿到插件实例以记入挂载表。\n104        const plugin = await loadPlugin(entry.name, app.resources.root);\n105        await app.plugin(plugin, entry.config);\n106        mounted.push({ name: entry.name, plugin });\n107  \n```\n\n### 解释\n- L101：for 循环取一项。\n- L102：try 开始。\n- L103：注释。\n- L104：`loadPlugin(entry.name, app.resources.root)` 取到模块（自带的或外部文件夹的）。\n- L105：`await app.plugin(plugin, entry.config)`，传该插件在 config.yaml 里的配置。\n- L106：`mounted.push({ name, plugin })`。\n- L107：空行。\n\n### 调到别处\nMain.ts:176 loadPlugin；Cordis app.plugin",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-10-2",
+    "parent": "r-main-10",
+    "title": "L108–L116 挂上了：把成功结果写进 pluginStatus",
+    "summary": "往 pluginStatus 追加一行：mounted、started 为 true，missing 为空，error 为空，inject 取插件声明的服务。",
+    "body": "**行号：L108–L116**\n\n### 代码原文\n```ts\n108        //M 挂上了：结果写到 resources.pluginStatus，给 /api/health 和 /flow/ 用。\n109        app.resources.pluginStatus.push({\n110          name: entry.name,\n111          mounted: true,\n112          started: true,\n113          missing: [],\n114          error: '',\n115          inject: plugin.inject ?? [],\n116        });\n```\n\n### 解释\n- L108：注释。\n- L109–L115：`push({ name, mounted: true, started: true, missing: [], error: '', inject: plugin.inject ?? [] })`。\n- L116：try 块结束。注意这里 started 先记 true，后面 L141 的检查可能把它改成 false。\n\n### 调到别处\nsrc7/Resources.ts:156 pluginStatus；插件的 inject 见 src7/plugins/Index.ts:44 PluginModule",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-10-3",
+    "parent": "r-main-10",
+    "title": "L117–L127 插件加载或挂载出错：打一行原因并换成人话",
+    "summary": "catch 里取出错误文字，打到标准错误；“找不到模块”的绝对路径换成一句人话再写给 health。",
+    "body": "**行号：L117–L127**\n\n### 代码原文\n```ts\n117      } catch (error) {\n118        //G 找不到、起不来 → 打一行原因，不挡别的插件。\n119        const text = textModule.getMessage(error);\n120        console.error(`插件 ${entry.name} 没挂上：${text}`);\n121  \n122        //G 写给 health / /flow/ 的原因不带模块系统的绝对路径：找不到模块的，换成一句人话。\n123        let reason = text;\n124        if (/Cannot find module/iu.test(text)) {\n125          reason = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';\n126        }\n127  \n```\n\n### 解释\n- L117：catch 开始，不抛出，不挡别的插件。\n- L118：注释。\n- L119：`textModule.getMessage(error)` 取错误文字。\n- L120：打 `插件 xxx 没挂上：原因`。\n- L122：注释：写给 health 和 /flow/ 的原因不带模块系统的绝对路径。\n- L123：`reason` 先等于原文。\n- L124–L126：文字匹配 `Cannot find module` 时换成“找不到这个插件（自带名单里没有，也没有对应的入口文件）”。\n- L127：空行。\n\n### 调到别处\nsrc7/utils/Text.ts:17 getMessage",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-10-4",
+    "parent": "r-main-10",
+    "title": "L128–L140 没挂上也记一行，结束循环",
+    "summary": "把失败结果写进 pluginStatus：mounted、started 为 false，写上原因；它要的服务照自带名单里写的填。",
+    "body": "**行号：L128–L140**\n\n### 代码原文\n```ts\n128        //M 没挂上也记一行；它声明要的服务照自带名单里写的填（别人写的插件没加载成，填空）。\n129        const builtIn = pluginIndex.BUILT_IN[entry.name];\n130        app.resources.pluginStatus.push({\n131          name: entry.name,\n132          mounted: false,\n133          started: false,\n134          missing: [],\n135          error: reason,\n136          inject: builtIn?.inject ?? [],\n137        });\n138      }\n139    }\n140  \n```\n\n### 解释\n- L128：注释：别人写的没加载成就填空。\n- L129：`pluginIndex.BUILT_IN[entry.name]` 取自带模块。\n- L130–L136：`push({ name, mounted: false, started: false, missing: [], error: reason, inject: builtIn?.inject ?? [] })`。\n- L137–L139：catch 和 for 闭合。\n- L140：空行。\n\n### 调到别处\nsrc7/plugins/Index.ts:78 BUILT_IN",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-11",
+    "parent": "r-main",
+    "title": "L141–L159 检查有没有插件在干等没人提供的服务",
+    "summary": "Cordis 里要用的服务没人提供，插件会一直等着，不开工也不报错；这里打一行说清它在等谁，并把状态改成没开工。",
+    "body": "**行号：L141–L159**\n\n### 代码原文\n```ts\n141    //G 插件要用的服务到现在还没人提供 → Cordis 会让它一直等着，不开工也不报错。打一行说清它在等谁。\n142    for (const item of mounted) {\n143      /** 它声明要的服务。 */\n144      const wanted = item.plugin.inject ?? [];\n145      /** 其中到现在还没人提供的。 */\n146      const missing = wanted.filter((service) => app.get(service) === undefined);\n147      if (missing.length === 0) continue;\n148  \n149      const names = missing.join('、');\n150      console.error(`插件 ${item.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);\n151  \n152      //M 把挂载结果里它那一行改成没开工，写上缺谁。\n153      const row = app.resources.pluginStatus.find((status) => status.name === item.name);\n154      if (row !== undefined) {\n155        row.started = false;\n156        row.missing = missing;\n157      }\n158    }\n159  \n```\n\n### 解释\n- 对每个已挂上的插件，检查它声明要的服务有没有人提供。\n- 缺了就打一行并更新 pluginStatus 里它那一行。\n\n### 调到别处\napp.get（Cordis）；src7/Resources.ts:156 pluginStatus",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-11-1",
+    "parent": "r-main-11",
+    "title": "L141–L147 算出缺哪些服务",
+    "summary": "遍历 mounted，对每个插件取它声明的 inject，筛出 `app.get(service) === undefined` 的。",
+    "body": "**行号：L141–L147**\n\n### 代码原文\n```ts\n141    //G 插件要用的服务到现在还没人提供 → Cordis 会让它一直等着，不开工也不报错。打一行说清它在等谁。\n142    for (const item of mounted) {\n143      /** 它声明要的服务。 */\n144      const wanted = item.plugin.inject ?? [];\n145      /** 其中到现在还没人提供的。 */\n146      const missing = wanted.filter((service) => app.get(service) === undefined);\n147      if (missing.length === 0) continue;\n```\n\n### 解释\n- L141：注释：没人提供会一直等。\n- L142：for 遍历 mounted。\n- L143–L144：`wanted = item.plugin.inject ?? []`。\n- L145–L146：`missing = wanted.filter(service => app.get(service) === undefined)`。\n- L147：没缺就 continue。\n\n### 调到别处\nCordis app.get",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-11-2",
+    "parent": "r-main-11",
+    "title": "L148–L159 打日志并把状态行改成没开工",
+    "summary": "打“没开工：要用的 X 没人提供”，找到 pluginStatus 里这一行，改 started=false、missing=缺的名单。",
+    "body": "**行号：L148–L159**\n\n### 代码原文\n```ts\n148  \n149      const names = missing.join('、');\n150      console.error(`插件 ${item.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);\n151  \n152      //M 把挂载结果里它那一行改成没开工，写上缺谁。\n153      const row = app.resources.pluginStatus.find((status) => status.name === item.name);\n154      if (row !== undefined) {\n155        row.started = false;\n156        row.missing = missing;\n157      }\n158    }\n159  \n```\n\n### 解释\n- L149：`names` 用“、”连起来。\n- L150：`console.error` 打一行。\n- L152：注释。\n- L153：在 pluginStatus 里按 name 找行。\n- L154–L157：找到就 `row.started = false; row.missing = missing`。\n- L158：for 闭合；L159 空行。\n\n### 调到别处\nsrc7/Resources.ts:156 pluginStatus",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-12",
+    "parent": "r-main",
+    "title": "L160–L162 发出 ready 事件",
+    "summary": "全部挂完，`app.emit('ready', args.rest)`，带上命令行里剩下的参数，让大家开工。",
+    "body": "**行号：L160–L162**\n\n### 代码原文\n```ts\n160    //M 都挂完了：告诉大家开工，带上命令行里剩下的参数。\n161    app.emit('ready', args.rest);\n162  \n```\n\n### 解释\n- L160：注释。\n- L161：`app.emit('ready', args.rest)`。命令行渠道等到它才发出命令行里的话；其它插件在这里开监听、起服务（接收方名单见 L26–L42）。\n- L162：空行。\n\n### 调到别处\n事件 ready（声明在 Main.ts:45）；接收方见 L26–L42",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-13",
+    "parent": "r-main",
+    "title": "L163–L169 接着跑上次没跑完的会话",
+    "summary": "库里还是 running 状态的会话，逐个打开并继续运行；main 到此结束。",
+    "body": "**行号：L163–L169**\n\n### 代码原文\n```ts\n163    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n164    for (const row of app.sessions.find({ state: 'running' })) {\n165      void app.sessions.open(row.id).run();\n166    }\n167  }\n168  \n169  \n```\n\n### 解释\n- L163：注释。\n- L164：`app.sessions.find({ state: 'running' })` 查出所有 running 的会话。\n- L165：对每个 `app.sessions.open(row.id).run()`，用 `void` 不等待，各会话并行。\n- L166–L167：for 与 main 函数闭合。\n- L168–L169：空行。\n\n### 调到别处\nsrc7/Sessions.ts:349 find；src7/Sessions.ts:321 open；返回的 Session 的 run",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-14",
+    "parent": "r-main",
+    "title": "L170–L198 loadPlugin：按 name 取出一个插件",
+    "summary": "自带的从名单里取，别人写的按文件夹路径动态 import 入口并取 default 或模块本身。",
+    "body": "**行号：L170–L198**\n\n### 代码原文\n```ts\n170  /**\n171   * 照 config.yaml 里写的 name 取出一个插件。\n172   * @param name 自带插件的名字，或者别人写的插件的文件夹路径。\n173   * @param root 运行时目录；相对路径从它算。\n174   * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。\n175   */\n176  async function loadPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {\n177    //M 自带的：名字在名单里。\n178    const builtIn = pluginIndex.BUILT_IN[name];\n179    if (builtIn !== undefined) return builtIn;\n180  \n181    //M 别人写的：name 是文件夹路径，入口是里面的 index.ts，没有就 index.js。\n182    const dir = path.resolve(root, name);\n183    let entry = path.join(dir, 'index.ts');\n184    if (!fs.existsSync(entry)) {\n185      entry = path.join(dir, 'index.js');\n186    }\n187  \n188    //M 动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。\n189    const entryUrl = pathToFileURL(entry).href;\n190    const loaded = await import(entryUrl) as pluginIndex.PluginModule & {\n191      default?: pluginIndex.PluginModule;\n192    };\n193  \n194    //M 模块有 default 导出就用 default（DSH 的加载器也是这么做的）。\n195    return loaded.default ?? loaded;\n196  }\n197  \n198  \n```\n\n### 解释\n- 输入 name（自带名或文件夹路径）和 root（运行时目录）。\n- 返回 PluginModule（导出 name、inject、apply）。\n\n### 调到别处\npluginIndex.BUILT_IN（Index.ts:78）、pathToFileURL、动态 import",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-14-1",
+    "parent": "r-main-14",
+    "title": "L170–L180 函数头与自带插件分支",
+    "summary": "文档注释和函数头；名字在 BUILT_IN 名单里就直接返回。",
+    "body": "**行号：L170–L180**\n\n### 代码原文\n```ts\n170  /**\n171   * 照 config.yaml 里写的 name 取出一个插件。\n172   * @param name 自带插件的名字，或者别人写的插件的文件夹路径。\n173   * @param root 运行时目录；相对路径从它算。\n174   * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。\n175   */\n176  async function loadPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {\n177    //M 自带的：名字在名单里。\n178    const builtIn = pluginIndex.BUILT_IN[name];\n179    if (builtIn !== undefined) return builtIn;\n180  \n```\n\n### 解释\n- L170–L175：文档注释：参数 name、root，返回插件模块，导出不对 Cordis 挂载时报错。\n- L176：`async function loadPlugin(name, root)`。\n- L177：注释：自带的。\n- L178：`builtIn = pluginIndex.BUILT_IN[name]`。\n- L179：不是 undefined 就直接 return。\n- L180：空行。\n\n### 调到别处\nsrc7/plugins/Index.ts:78 BUILT_IN",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-14-2",
+    "parent": "r-main-14",
+    "title": "L181–L187 别人写的：找到入口文件",
+    "summary": "name 当文件夹路径，从 root 算起；入口是 index.ts，没有就 index.js。",
+    "body": "**行号：L181–L187**\n\n### 代码原文\n```ts\n181    //M 别人写的：name 是文件夹路径，入口是里面的 index.ts，没有就 index.js。\n182    const dir = path.resolve(root, name);\n183    let entry = path.join(dir, 'index.ts');\n184    if (!fs.existsSync(entry)) {\n185      entry = path.join(dir, 'index.js');\n186    }\n187  \n```\n\n### 解释\n- L181：注释。\n- L182：`dir = path.resolve(root, name)`。\n- L183：入口先设 `index.ts`。\n- L184–L186：`fs.existsSync` 不存在就换 `index.js`。\n- L187：空行。\n\n### 调到别处\nnode:path resolve/join；node:fs existsSync",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-14-3",
+    "parent": "r-main-14",
+    "title": "L188–L193 转成 file:// 网址并动态 import",
+    "summary": "动态 import 认网址，Windows 盘符路径要先转成 file:// 网址，才不会被当成别的协议。",
+    "body": "**行号：L188–L193**\n\n### 代码原文\n```ts\n188    //M 动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。\n189    const entryUrl = pathToFileURL(entry).href;\n190    const loaded = await import(entryUrl) as pluginIndex.PluginModule & {\n191      default?: pluginIndex.PluginModule;\n192    };\n193  \n```\n\n### 解释\n- L188：注释。\n- L189：`pathToFileURL(entry).href`。\n- L190–L192：`await import(entryUrl)`，类型断言成 PluginModule 加可选的 default。\n- L193：空行。\n\n### 调到别处\nnode:url pathToFileURL",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-14-4",
+    "parent": "r-main-14",
+    "title": "L194–L198 返回 default 或模块本身",
+    "summary": "模块有 default 导出就用 default（DSH 的加载器也是这么做的），否则用模块本身。",
+    "body": "**行号：L194–L198**\n\n### 代码原文\n```ts\n194    //M 模块有 default 导出就用 default（DSH 的加载器也是这么做的）。\n195    return loaded.default ?? loaded;\n196  }\n197  \n198  \n```\n\n### 解释\n- L194：注释。\n- L195：`return loaded.default ?? loaded`。\n- L196：函数结束。\n- L197–L198：空行。\n\n### 调到别处\n无",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  },
+  {
+    "id": "r-main-15",
+    "parent": "r-main",
+    "title": "L199–L206 程序入口：调 main 并兜底报错",
+    "summary": "取命令行，调 main；没跑成就打一行原因并以退出码 1 结束。",
+    "body": "**行号：L199–L206**\n\n### 代码原文\n```ts\n199  //M 程序从这里开始：去掉 bun 和脚本路径，剩下的交给 main；没跑成打一行原因，退出码 1。\n200  const argv = process.argv.slice(2);\n201  try {\n202    await main(argv);\n203  } catch (error) {\n204    console.error(`没跑成：${textModule.getMessage(error)}`);\n205    process.exit(1);\n206  }\n```\n\n### 解释\n- L199：注释。\n- L200：`process.argv.slice(2)` 去掉 bun 和脚本路径。\n- L201–L203：try 里 `await main(argv)`（顶层 await）。\n- L204：catch：打“没跑成：原因”。\n- L205：`process.exit(1)`。\n- L206：闭合。main 里各处 throw（checkArgs 非法、试运行没 http）最终到这里。\n\n### 调到别处\nMain.ts:57 main；src7/utils/Text.ts:17 getMessage",
+    "sources": [
+      "src7/Main.ts"
+    ]
+  }
+]

@@ -206,11 +206,43 @@ test('重启后错过的待发提醒只补发一次，并标明原定时刻', as
   expect(again.listForBot('合成助手')).toMatchObject([{ state: 'sent' }]);
 });
 
-test('重启时仍在途的提醒保留待核对状态，避免重复发给原群', async () => {
+test.each(['未交接', '已发', '在途'])('重启按原提醒号和正文查发件账：%s', async (phase) => {
   const world = setup();
   const original = world.make();
-  const hold = Promise.withResolvers<ProviderReceipt>();
-  original.start(() => hold.promise);
+  const calls: outbound.ApprovedChannelSend[] = [];
+  const sent: ProviderReceipt = { status: 'sent' };
+  const originalReceipt = Promise.withResolvers<ProviderReceipt>();
+  const channelReceipt = Promise.withResolvers<ProviderReceipt>();
+  new outbound.Outbound(world.ctx);
+
+  //M 只用合成渠道。悬住“在途”回执以保留发件账已经占位的状态。
+  events.onRequestEvent(world.ctx, 'channel/send', 'channel/sent', async (request) => {
+    expect(outbound.takeChannelSendApproval(request.call)).toBe(true);
+    calls.push(request.call);
+    if (phase === '在途') {
+      const receipt = await channelReceipt.promise;
+      return { receipt };
+    }
+    return { receipt: sent };
+  });
+
+  const send = async (message: reminderModule.Delivery): Promise<ProviderReceipt> => {
+    const payload = { reminderId: message.id };
+    const options = {
+      timeoutMs: 1000,
+      onFallback: () => ({ requestId: '', receipt: { status: 'failed', reason: '未获模拟回执' } as ProviderReceipt }),
+    };
+    const result = await events.requestEvent(world.ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
+    return result.receipt;
+  };
+
+  //M 中断上次 assist 对回执的保存，留下三种可能的发件账状态。
+  original.start(async (message) => {
+    if (phase !== '未交接') {
+      await send(message);
+    }
+    return originalReceipt.promise;
+  });
   const args = { at: '2026-11-21', text: CONTENT };
   const owner = session({ chatType: 'p2p', role: 'owner' });
   await world.call('remind_add', args, owner);
@@ -218,12 +250,27 @@ test('重启时仍在途的提醒保留待核对状态，避免重复发给原�
   expect(original.listForBot('合成助手')).toMatchObject([{ state: 'sending' }]);
   original.stop();
 
+  //M 重启时已过原定时刻，仍应保留首次冻结的正文并复用同一发送号。
   const restarted = world.make();
-  restarted.start(world.deliver);
-  hold.resolve({ status: 'sent' });
-  await world.clock.advance(SATURDAY + 1000);
-  expect(world.sent).toEqual([]);
-  expect(restarted.listForBot('合成助手')).toMatchObject([{ state: 'uncertain' }]);
+  const restartAt = SATURDAY + 1000;
+  await world.clock.advance(restartAt);
+  restarted.start(send);
+  await world.clock.advance(restartAt);
+
+  try {
+    let expected: ProviderReceipt['status'] = 'sent';
+    if (phase === '在途') {
+      expected = 'uncertain';
+    }
+    expect(calls).toMatchObject([{ text: `提醒：${CONTENT}` }]);
+    expect(restarted.listForBot('合成助手')).toMatchObject([{ state: expected }]);
+  } finally {
+    //M 模拟请求都等完后再清理数据库和事件监听。
+    channelReceipt.resolve(sent);
+    originalReceipt.resolve(sent);
+    await world.clock.advance(restartAt);
+  }
+  expect(calls).toHaveLength(1);
 });
 
 test('重启后读回已持久确认的卡片，并补发原定时间已过的提醒', async () => {

@@ -21,7 +21,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.5';
+export const version = '1.0.6';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http', 'bots'];
@@ -174,8 +174,6 @@ class Settings {
     const options = {
       timeoutMs: BOT_ADD_TIMEOUT_MS,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
-
         return { requestId: '', ok: false, error: detail ?? `机器人登记未获回执（${reason}）` };
       },
     };
@@ -184,8 +182,8 @@ class Settings {
     const added = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
     const bot = added.bot;
 
-    //G 超时可能已登记，保留配置并提示核对，不走失败路径。
-    if (added.error === uncertain) throw new failureModule.Failure(504, uncertain);
+    //G 失去回执时可能已登记，保留配置并提示核对。
+    if (requestEventModule.isUnsure(added)) throw new failureModule.Failure(504, uncertain);
 
     //G 确定未登记时告诉调用者配置已保存，可重启生效。
     if (!added.ok || bot === undefined) {
@@ -325,18 +323,22 @@ class Settings {
     const options = {
       timeoutMs: HTTP_CLOSE_TIMEOUT_MS,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        if (reason === 'unhandled') {
-          //G 未开始关闭，允许用户在 HTTP 插件恢复后重新申请。
-          this.restarting = false;
-          return { requestId: '', ok: false, error: '无人处理 HTTP 关闭请求' };
-        }
-        return { requestId: '', ok: false, error: `HTTP 关闭结果不确定（${detail ?? reason}）` };
+        return { requestId: '', ok: false, error: detail ?? reason };
       },
     };
 
     //M 只发一次关闭请求。十秒内未确认时，保留尚在关闭的原进程。
     const result = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
     if (result.ok) return;
+
+    //G 未开始关闭，允许 HTTP 插件恢复后重新申请。
+    if (result.fallback === 'unhandled') {
+      this.restarting = false;
+      throw new Error('无人处理 HTTP 关闭请求');
+    }
+
+    //G 接单状态未知时保留停止占用，并报告事件失败原因。
+    if (requestEventModule.isUnsure(result)) throw new Error(`HTTP 关闭结果不确定（${result.error}）`);
 
     //G 处理方已开始关闭但等待到期，同样无法确认监听是否已释放。
     if (result.error === '等待 HTTP 关闭超时') throw new Error('HTTP 关闭结果不确定，请核对运行状态');
@@ -356,8 +358,6 @@ class Settings {
     const options = {
       timeoutMs: BASE_TIMEOUT_MS + 1000,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
-
         return { requestId: '', ok: false, error: detail ?? `基地重启未获回执（${reason}）` };
       },
     };
@@ -366,7 +366,7 @@ class Settings {
     const response = await requestEventModule.requestEvent(this.ctx, 'base/request', 'base/result', request, options);
 
     //G 基地可能已收到请求，超时或响应中断时保留占用。
-    if (response.error === uncertain || response.error === '基地没响应') {
+    if (requestEventModule.isUnsure(response) || response.error === '基地没响应') {
       throw new failureModule.Failure(504, uncertain);
     }
 

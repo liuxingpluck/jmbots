@@ -25,6 +25,13 @@ interface Props {
   onExpand: (name: string) => void;
 }
 
+/** 取绘图时写入的节点或关系原始编号。 */
+function getRawId(target: cytoscape.SingularElementArgument): number {
+  //M Cytoscape 返回宽类型，沿用原编号转换。
+  const raw: unknown = target.data('raw');
+  return Number(raw);
+}
+
 const STYLE = [
   { selector: 'node', style: {
     'background-fill': 'radial-gradient',
@@ -80,10 +87,20 @@ export function GraphCanvas(props: Props) {
   useLayoutEffect(() => {
     const cy = cytoscape({ container: box.current, style: STYLE, minZoom: 0.15, maxZoom: 4, wheelSensitivity: 0.3 });
     cyRef.current = cy;
-    cy.on('tap', 'node', (event) => handlers.current.onNode(Number(event.target.data('raw'))));
-    cy.on('tap', 'edge', (event) => handlers.current.onEdge(Number(event.target.data('raw'))));
-    cy.on('dbltap', 'node', (event) => {
-      const name = names.current.get(Number(event.target.data('raw')));
+    cy.on('tap', 'node', (event: cytoscape.EventObjectNode) => {
+      //M 节点点击按创建时保存的原始编号分发。
+      const id = getRawId(event.target);
+      handlers.current.onNode(id);
+    });
+    cy.on('tap', 'edge', (event: cytoscape.EventObjectEdge) => {
+      //M 关系点击用同一套编号转换。
+      const id = getRawId(event.target);
+      handlers.current.onEdge(id);
+    });
+    cy.on('dbltap', 'node', (event: cytoscape.EventObjectNode) => {
+      //M 双击仍按原始实体名展开邻居。
+      const id = getRawId(event.target);
+      const name = names.current.get(id);
       if (name !== undefined) handlers.current.onExpand(name);
     });
     cy.on('mouseover', 'node', (event) => { (event.target as cytoscape.NodeSingular).connectedEdges().addClass('label'); });
@@ -178,7 +195,7 @@ export function GraphCanvas(props: Props) {
       },
       gravity: 0.15,
       numIter: 1500,
-    } as cytoscape.LayoutOptions).run();
+    }).run();
   }, [props.graph, props.hitEdges, props.hitNodes, props.version]);
 
   //M 开关改变时也刷新 merge 留下的旧元素；布局前提交，避免下一帧绘制原名。

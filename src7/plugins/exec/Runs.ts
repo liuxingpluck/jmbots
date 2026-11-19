@@ -62,8 +62,9 @@ const LIST_MAX = 200;
 const WAIT_MAX_SEC = 120;
 /** 表里留最近几条已结束的。 */
 const KEEP = 300;
-/** 审一条命令最多等多久：审核小会话要跑一阵（契约 3.1：review 65 秒）。 */
+/** 审一条命令最多等多久：到期后中止审批里的判断和待确认登记。 */
 const REVIEW_WAIT_MS = 65_000;
+const REVIEW_TIMEOUT_MESSAGE = '命令审核已超时';
 /** 结尾留几行、几个字节。 */
 const TAIL_LINES = 200;
 const TAIL_BYTES = 20_000;
@@ -75,18 +76,33 @@ class BadInput extends Error {}
 
 /**
  * 请审核插件审一条命令：发请求事件 approval/request（action: review，契约 3.2 第 1 条），等 approval/result。工具 exec、命令窗口都用它。
- * 没挂 approval、超过 65 秒、提问的会话喊停、approval 出错，一律当拒绝（契约 3.1：安全把关类，没有审核就不让跑命令）。
+ * 没挂 approval、超过 65 秒、提问的会话喊停、approval 出错，一律拒绝。等待退回时也停止审批方的审核。
  * @param ctx exec 插件的 ctx。
  * @param input 命令、目录、机器人、会话、提的人、payload、问不问用户、停止信号（透传给审核，审核小会话跟着停）。
  * @returns 放行、拒绝，或已经去问用户了。
  */
 export async function requestReview(ctx: cordis.Context, input: ReviewInput): Promise<ReviewVerdict> {
-  const request = { action: 'review', input } as const;
+  //M 审批方同时响应会话停止和本次等待退回；调用方仍由原信号和 requestEvent 的时限结算。
+  const review = new AbortController();
+  let signal = review.signal;
+  if (input.signal !== undefined) {
+    const signals = [input.signal, review.signal];
+    signal = AbortSignal.any(signals);
+  }
+  const request = { action: 'review', input: { ...input, signal } } as const;
   const options = {
     prefix: 'apr',
     timeoutMs: REVIEW_WAIT_MS,
     signal: input.signal,
-    onFallback: getRejected,
+    onFallback: (reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply => {
+      let cause: DOMException | undefined;
+      if (reason === 'timeout') {
+        cause = new DOMException(REVIEW_TIMEOUT_MESSAGE, 'TimeoutError');
+      }
+      //M 在等待结算时立即告诉审批方，迟到的结果不能再登记待确认。
+      review.abort(cause);
+      return getRejected(reason, detail);
+    },
   };
 
   //M 发 approval/request 等审核结论；提问的会话喊停，这次等待跟着结束（退回拒绝）。
@@ -106,6 +122,10 @@ export async function requestReview(ctx: cordis.Context, input: ReviewInput): Pr
  * @param detail 出错时的原话。
  */
 function getRejected(reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply {
+  if (reason === 'timeout') {
+    return { requestId: '', verdict: { result: 'reject', by: 'rule', reason: REVIEW_TIMEOUT_MESSAGE } };
+  }
+
   let text = `审核未就绪或超时（${reason}），没有审核就不跑命令`;
   if (detail !== undefined) {
     text = `审核出错：${detail}，没有审核就不跑命令`;
@@ -299,6 +319,9 @@ export class Runs {
   /** 用户定了：还是 pending 才管；同意就跑，拒绝就记 rejected。 */
   private onDecided(pending: Pending): void {
     if (pending.kind !== 'run') return;
+
+    //G 作废由等待方结算，不作为用户决定改写命令记录。
+    if (pending.card.state === 'ended') return;
 
     const runId = (pending.payload as { runId?: unknown } | undefined)?.runId;
     if (typeof runId !== 'string') return;

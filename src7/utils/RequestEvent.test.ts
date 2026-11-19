@@ -8,7 +8,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
-import { onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope } from './RequestEvent.ts';
+import { isUnsure, onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope } from './RequestEvent.ts';
 
 
 declare module 'cordis' {
@@ -77,6 +77,8 @@ describe('RequestEvent 通用请求-回执', () => {
 
     expect(r1.ok).toBe(true);
     expect(r1.answer).toBe('echo:one');
+    expect(r1.fallback).toBeUndefined();
+    expect(isUnsure(r1)).toBe(false);
     expect(r1.requestId.startsWith('t_')).toBe(true);
     expect(r2.ok).toBe(true);
     expect(r2.answer).toBe('echo:two');
@@ -92,7 +94,8 @@ describe('RequestEvent 通用请求-回执', () => {
       onFallback: (reason) => ({ requestId: '', ok: false, answer: 'fallback', reason }),
     });
     expect(Date.now() - start1).toBeLessThan(200);
-    expect(miss).toEqual({ requestId: '', ok: false, answer: 'fallback', reason: 'unhandled' });
+    expect(miss).toEqual({ requestId: '', ok: false, answer: 'fallback', reason: 'unhandled', fallback: 'unhandled' });
+    expect(isUnsure(miss)).toBe(false);
 
     onRequestEvent(
       ctx,
@@ -121,6 +124,8 @@ describe('RequestEvent 通用请求-回执', () => {
       onFallback: (reason) => ({ requestId: '', ok: false, answer: '', reason }),
     });
     expect(timedOut.reason).toBe('timeout');
+    expect(timedOut.fallback).toBe('timeout');
+    expect(isUnsure(timedOut)).toBe(true);
     stopSlow();
 
     onRequestEvent(
@@ -140,6 +145,28 @@ describe('RequestEvent 通用请求-回执', () => {
     });
     expect(failed.ok).toBe(false);
     expect(failed.reason).toBe('处理炸了');
+    expect(failed.fallback).toBeUndefined();
+    expect(isUnsure(failed)).toBe(false);
+  });
+
+  test('接单后抛错且未回执时，退回保留原因和细节', async () => {
+    const ctx = createWorld();
+    //M 构造可能已完成部分写入、但未返回业务回执的监听者。
+    ctx.on('test/req', (request) => {
+      request.handled = true;
+      throw new Error('部分写入后出错');
+    });
+    const payload = { value: 'write' };
+    const options = {
+      timeoutMs: 1000,
+      onFallback: (_reason: unknown, detail?: string) => ({ requestId: '', ok: false, answer: detail ?? '' }),
+    };
+
+    //M 检查错误详情仍由调用方决定，是否不确定由公共函数判断。
+    const result = await requestEvent(ctx, 'test/req', 'test/res', payload, options);
+    expect(result.answer).toBe('部分写入后出错');
+    expect(result.fallback).toBe('error');
+    expect(isUnsure(result)).toBe(true);
   });
 
   test('AbortSignal 中止：提前 aborted 与等待中途 abort 都立刻返回 aborted', async () => {
@@ -152,6 +179,7 @@ describe('RequestEvent 通用请求-回执', () => {
       onFallback: (reason) => ({ requestId: '', ok: false, answer: '', reason }),
     });
     expect(immediate.reason).toBe('aborted');
+    expect(immediate.fallback).toBe('aborted');
 
     ctx.on('test/req', async (req) => {
       req.handled = true;
@@ -167,5 +195,7 @@ describe('RequestEvent 通用请求-回执', () => {
     });
     expect(Date.now() - start).toBeLessThan(300);
     expect(aborted.reason).toBe('aborted');
+    expect(aborted.fallback).toBe('aborted');
+    expect(isUnsure(aborted)).toBe(true);
   });
 });

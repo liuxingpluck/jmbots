@@ -9,6 +9,22 @@ import type { ApprovedCall, ChannelSendResult, ProgramDraft, ProviderReceipt } f
 
 /** 待确认意图及批准各有十分钟期限。 */
 const APPROVAL_MS = 600_000;
+/** 外置草稿 HTTP 读取上限。 */
+export const DRAFT_HTTP_WAIT_MS = 5000;
+/** 内置渠道回执或外置发送 HTTP 请求的等待上限。 */
+export const CHANNEL_WAIT_MS = 90_000;
+/** 给 HTTP 回执或读取错误留出一秒转为事件回执。 */
+const DRAFT_WAIT_MS = DRAFT_HTTP_WAIT_MS + 1000;
+/** 外置发件经托管程序运输，事件回执比底层 HTTP 多等五秒。 */
+const PROGRAM_WAIT_MS = CHANNEL_WAIT_MS + 5000;
+/** 已冻结的定时提醒记录读取上限。 */
+const REMINDER_READ_WAIT_MS = 1000;
+/** 外层等待预留四秒供账本落盘及回执传递。 */
+const RECEIPT_MARGIN_MS = 4000;
+/** assist 等待提醒读记录、发件与记账的总上限。 */
+export const REMINDER_WAIT_MS = REMINDER_READ_WAIT_MS + CHANNEL_WAIT_MS + RECEIPT_MARGIN_MS;
+/** 确认入口等待重新读草稿、外置发件与记账的总上限。 */
+const CONFIRM_WAIT_MS = DRAFT_WAIT_MS + PROGRAM_WAIT_MS + RECEIPT_MARGIN_MS;
 /** 进程退出或传输中断后的在途请求只供本人核对。 */
 const UNKNOWN: ProviderReceipt = { status: 'uncertain', reason: '发送结果待核对，不自动重发' };
 /** 主站主动发件采用独立账本命名空间，和外置程序草稿隔离。 */
@@ -74,8 +90,7 @@ declare module 'cordis' {
     /**
      * 程序界面请 approval 读取或明确确认发件意图。
      * 谁发：
-     *   src7/plugins/approval/ChannelSend.ts 的 requestOutbound
-     *   src7/plugins/programs/ChannelSend.ts 的 handleOutbound
+     *   src7/plugins/approval/Outbound.ts 的 requestOutbound（主站及程序界面入口共用）
      * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
      */
     'approval/outbound-request'(request: OutboundRequest): void | Promise<void>;
@@ -83,8 +98,7 @@ declare module 'cordis' {
      * 本次确认的单独回执，和普通审批、模型回复隔离。
      * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
      * 谁接：
-     *   src7/plugins/approval/ChannelSend.ts 的 requestOutbound
-     *   src7/plugins/programs/ChannelSend.ts 的 handleOutbound
+     *   src7/plugins/approval/Outbound.ts 的 requestOutbound（主站及程序界面入口共用）
      */
     'approval/outbound-result'(result: OutboundResult): void;
     /**
@@ -112,6 +126,33 @@ declare module 'cordis' {
      */
     'channel/sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
   }
+}
+
+/**
+ * 让核验后的入口向发件账申请、查看或确认原意图。
+ * @param ctx 发起请求的插件上下文。
+ * @param program 主站发件账或已登记的外置程序名。
+ * @param actor 可信入口核验出的本人或模型身份。
+ * @param action 已校验的意图操作与凭据。
+ * @returns 发件账回执，或适用于原操作的未获回执说明。
+ */
+export async function requestOutbound(
+  ctx: cordis.Context,
+  program: string,
+  actor: 'owner' | 'model',
+  action: OutboundAction,
+): Promise<OutboundResult> {
+  const payload = { ...action, program, actor };
+  const options = {
+    timeoutMs: CONFIRM_WAIT_MS,
+    onFallback: () => ({ requestId: '', code: 503, error: '发件确认暂不可用，请按原意图核对' }),
+  };
+  //M 两种入口共用批准账，等待原操作的配对回执。
+  const result = await events.requestEvent(ctx, 'approval/outbound-request', 'approval/outbound-result', payload, options);
+  if (action.action !== 'status' && events.isUnsure(result)) {
+    return { requestId: '', code: 504, error: '发件操作结果不确定，请核对原意图，避免重复提交' };
+  }
+  return result;
 }
 
 /** 持久行包含精确正文，但不保存程序密钥或主站令牌。 */
@@ -222,7 +263,7 @@ export class Outbound {
   /** 以创建时的授权和已占位提醒为依据，使用原主动发件账。 */
   private async sendReminder(reminderId: number): Promise<ProviderReceipt> {
     const payload = { reminderId };
-    const options = { timeoutMs: 1000, onFallback: () => ({ requestId: '' }) };
+    const options = { timeoutMs: REMINDER_READ_WAIT_MS, onFallback: () => ({ requestId: '' }) };
     //G 只按提醒编号读取已占位的持久记录，发送目标和正文由提醒服务提供。
     const lookup = await events.requestEvent(this.ctx, 'assist/reminder-read', 'assist/reminder-row', payload, options);
     const row = lookup.row;
@@ -313,7 +354,7 @@ export class Outbound {
   private readDraft(program: string, draftId: number): Promise<ChannelSendResult> {
     const payload = { action: 'draft' as const, program, draftId };
     const options = {
-      timeoutMs: 6000,
+      timeoutMs: DRAFT_WAIT_MS,
       onFallback: () => ({ requestId: '', code: 503, error: '外部程序未就绪或草稿读取失败' }),
     };
     //M 批准不解析程序地址，也不持有启动密钥。
@@ -500,17 +541,16 @@ export class Outbound {
     };
     const payload = { action: 'send' as const, program: row.program, generation: row.generation, call };
     const options = {
-      timeoutMs: 95_000,
-      onFallback: (reason: events.FallbackReason): ChannelSendResult => {
-        if (reason === 'unhandled') return { requestId: '', code: 503, error: '外部程序运输未挂载' };
-
-        return { requestId: '', receipt: UNKNOWN };
-      },
+      timeoutMs: PROGRAM_WAIT_MS,
+      onFallback: (): ChannelSendResult => ({ requestId: '', code: 503, error: '外部程序运输未挂载' }),
     };
     //M 运输回执和局部事件等待号无关，外置只认保存的 P2 业务号。
     const result = await events.requestEvent(
       this.ctx, 'programs/channel-send-request', 'programs/channel-send-result', payload, options,
     );
+    //G 运输可能已发出，保留意图供核对。
+    if (events.isUnsure(result)) return { receipt: UNKNOWN, invalidated: false };
+
     if ('receipt' in result) return { receipt: result.receipt, invalidated: false };
     if ('error' in result) {
       //G 运输已证明未发出时，保存本次失败，允许本人重新准备另一项确认。
@@ -533,13 +573,10 @@ export class Outbound {
     const call = Object.freeze(message);
     const payload = { call };
     const options = {
-      timeoutMs: 90_000,
-      onFallback: (reason: events.FallbackReason) => {
-        if (reason === 'unhandled') {
-          const receipt: ProviderReceipt = { status: 'failed', reason: '对应的渠道发送能力未挂载' };
-          return { requestId: '', receipt };
-        }
-        return { requestId: '', receipt: UNKNOWN };
+      timeoutMs: CHANNEL_WAIT_MS,
+      onFallback: () => {
+        const receipt: ProviderReceipt = { status: 'failed', reason: '对应的渠道发送能力未挂载' };
+        return { requestId: '', receipt };
       },
     };
 
@@ -547,6 +584,9 @@ export class Outbound {
     approvedChannelSends.add(call);
     try {
       const result = await events.requestEvent(this.ctx, 'channel/send', 'channel/sent', payload, options);
+      //G 有人可能已经领走凭证，保留原发送号并等核对。
+      if (events.isUnsure(result)) return UNKNOWN;
+
       return result.receipt;
     } finally {
       approvedChannelSends.delete(call);

@@ -322,7 +322,6 @@ export function MemoryPage() {
   //M 网址带了 q 就先检索一次。
   useEffect(() => {
     if (PARAMS.get('q')) void search();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const importKnowledge = async () => {

@@ -12,6 +12,17 @@ import * as textModule from './Text.ts';
 /** 请求未获得正常业务回执时的退回原因。 */
 export type FallbackReason = 'unhandled' | 'timeout' | 'aborted' | 'error';
 
+/** 仅本地退回值附带的原因，配对的业务回执没有这个字段。 */
+export interface RequestFallback {
+  /** 未取得回执的原因。 */
+  fallback?: FallbackReason;
+}
+
+/** 写操作未取得回执时，只有无人接单能确定对方未执行。 */
+export function isUnsure(reply: RequestFallback): reply is { fallback: Exclude<FallbackReason, 'unhandled'> } {
+  return reply.fallback !== undefined && reply.fallback !== 'unhandled';
+}
+
 /** 需要回执或接单判定的请求信封。 */
 export interface RequestEnvelope {
   /** 局部请求号：供回执按 requestId 精确配对；不等回执的通知式指令可省略。 */
@@ -71,7 +82,7 @@ interface InternalBus {
  * @param resultEventName 回执事件名（emit 回收）。
  * @param payload 不含 requestId 与 handled 的业务载荷。
  * @param options 前缀、超时、中止信号与退回策略。
- * @returns 正常收到的回执或 onFallback 构造的退回值。
+ * @returns 正常收到的回执，或附带 fallback 原因的退回值。
  */
 export async function requestEvent<
   ReqKey extends keyof cordis.Events,
@@ -82,26 +93,33 @@ export async function requestEvent<
   resultEventName: ResKey,
   payload: StripEnvelope<EventArg<ReqKey>>,
   options: RequestEventOptions<EventArg<ResKey>>,
-): Promise<EventArg<ResKey>> {
+): Promise<EventArg<ResKey> & RequestFallback> {
+  //M 统一附上运输层原因，保留各调用方构造的退回正文。
+  const getFallback = (reason: FallbackReason, detail?: string): EventArg<ResKey> & RequestFallback => {
+    const result = options.onFallback(reason, detail);
+    const metadata = { fallback: reason };
+    return Object.assign({}, result, metadata);
+  };
+
   //G 发起前已经被中止：直接按 aborted 退回，不再注册监听与定时器。
-  if (options.signal?.aborted === true) return options.onFallback('aborted');
+  if (options.signal?.aborted === true) return getFallback('aborted');
 
   const prefix = options.prefix ?? 'req';
   const requestId = `${prefix}_${crypto.randomUUID()}`;
   const fullRequest = { ...(payload as Record<string, unknown>), requestId } as unknown as RequestEnvelope;
   const bus = ctx as unknown as InternalBus;
 
-  return await new Promise<EventArg<ResKey>>((resolve) => {
+  return await new Promise<EventArg<ResKey> & RequestFallback>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let dispose: () => boolean = () => false;
 
     const onAbort = (): void => {
       //M 外部信号中止时立即结束等待并清理监听。
-      finish(options.onFallback('aborted'));
+      finishFallback('aborted');
     };
 
-    const finish = (result: EventArg<ResKey>): void => {
+    const finish = (result: EventArg<ResKey> & RequestFallback): void => {
       if (settled) return;
 
       settled = true;
@@ -110,6 +128,14 @@ export async function requestEvent<
       //M 退订回执事件监听，避免单次请求后残留监听器。
       dispose();
       resolve(result);
+    };
+
+    const finishFallback = (reason: FallbackReason, detail?: string): void => {
+      //G 回执或中止已经结束等待时，迟到的失败不再构造第二份结果。
+      if (settled) return;
+
+      const result = getFallback(reason, detail);
+      finish(result);
     };
 
     //M 先订回执事件再 serial 发请求，避免监听器同步 emit 回执时漏接。
@@ -122,7 +148,7 @@ export async function requestEvent<
 
     timer = setTimeout(() => {
       //M 等待回执超时，调用退回构造器收尾。
-      finish(options.onFallback('timeout'));
+      finishFallback('timeout');
     }, options.timeoutMs);
     timer.unref?.();
 
@@ -133,10 +159,11 @@ export async function requestEvent<
       if (settled || fullRequest.handled === true) return;
 
       //G 没有任何监听者置 handled = true：立即退回 unhandled。
-      finish(options.onFallback('unhandled'));
+      finishFallback('unhandled');
     }).catch((error: unknown) => {
       //M 监听器抛出未捕获异常，按 error 原因走统一退回逻辑。
-      finish(options.onFallback('error', textModule.getMessage(error)));
+      const detail = textModule.getMessage(error);
+      finishFallback('error', detail);
     });
   });
 }

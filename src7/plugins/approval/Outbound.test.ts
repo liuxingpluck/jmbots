@@ -67,6 +67,27 @@ function getWorld() {
   return { ctx, db, draft, state, calls, notices, replies, request, prepare, confirm };
 }
 
+test('共用请求入口只在写操作失去回执时返回结果不确定', async () => {
+  const ctx = new cordis.Context();
+  cleanups.push(() => ctx.fiber.dispose());
+  const missing = { action: 'status', intentId: 'original' } as const;
+
+  //M 没有接单方时返回明确不可用。
+  const absent = await outbound.requestOutbound(ctx, 'test', 'owner', missing);
+  expect(absent).toMatchObject({ code: 503 });
+
+  //M 模拟接单后失去回执，读取与有副作用的申请分别走原语义。
+  ctx.on('approval/outbound-request', (request) => {
+    request.handled = true;
+    throw new Error('读写中断');
+  });
+  const status = await outbound.requestOutbound(ctx, 'test', 'owner', missing);
+  expect(status).toMatchObject({ code: 503 });
+  const write = { action: 'prepare', draftId: 3 } as const;
+  const uncertain = await outbound.requestOutbound(ctx, 'test', 'owner', write);
+  expect(uncertain).toMatchObject({ code: 504, error: expect.stringContaining('结果不确定') });
+});
+
 test('guest 即使提供本人意图和同一个动作号也不能自批', async () => {
   const world = getWorld();
   const intent = await world.prepare();

@@ -34,7 +34,7 @@ export const name = 'progress';
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
 //M 1.1.6：接入已登记飞书群的每日进度调度。
 //M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
-export const version = '1.1.9';
+export const version = '1.1.10';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'bots', 'sessions'];
@@ -548,8 +548,6 @@ export class Progress extends cordis.Service {
     const options = {
       timeoutMs: 5000,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        if (reason === 'timeout') return { requestId: '', error: uncertain };
-
         return { requestId: '', error: detail ?? reason };
       },
     };
@@ -564,8 +562,8 @@ export class Progress extends cordis.Service {
     const cardVars = { 会话: item.sessionId, 干了: elapsed, 卡片: pending?.id, 错误: reply.error };
     this.ctx.emit('trace', 'Progress.sendCard', '请审核插件登记长跑提醒', 'approval/request ask', cardVars);
 
-    //G 超时可能已经登记，不额外发文字或再次登记。
-    if (reply.error === uncertain) {
+    //G 未获回执时可能已经登记，等待原卡或保留待核对状态。
+    if (requestEventModule.isUnsure(reply)) {
       item.cardId = 0;
       this.note(item, uncertain);
       return;
@@ -987,8 +985,6 @@ export class Progress extends cordis.Service {
     const options = {
       timeoutMs: 10_000,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
-
         return { requestId: '', ok: false, error: detail ?? `转交未获回执（${reason}）` };
       },
     };
@@ -997,7 +993,7 @@ export class Progress extends cordis.Service {
     const reply = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
 
     //G 老会话已经停止。未确认转交时保留新旧关联，避免旧会话交回或再转。
-    if (reply.error === uncertain) {
+    if (requestEventModule.isUnsure(reply)) {
       this.note(item, uncertain);
       this.close(item, 'stopped', uncertain);
       this.ctx.emit('bot/say', item.session, uncertain);

@@ -103,8 +103,12 @@ test('定时标准消息发给原群指定机器人，日报工具只查同群�
     const query = memory.getQuery({}, scoped);
     expect(index.search(query).map((row) => row.text)).toEqual(['小林完成联调']);
 
-    const tools = ['channel_reply', 'channel_search', 'read'].map((name) => ({ name }));
-    const request = { session, tools } as ChatRequest;
+    const parameters = piAi.Type.Object({});
+    const tools = ['channel_reply', 'channel_search', 'read'].map((name) => ({ name, description: name, parameters }));
+    const signal = new AbortController().signal;
+    const request: ChatRequest = {
+      session, tools, signal, model: 'fake/report', thinking: 'low', system: [], messages: [],
+    };
     await ctx.serial('session/request', request);
     expect(request.tools.map((tool) => tool.name)).toEqual(['channel_reply', 'channel_search']);
     const denied = { session, call: { name: 'read' } } as ToolGate;

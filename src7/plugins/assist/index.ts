@@ -12,6 +12,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as events from '../../utils/RequestEvent.ts';
+import * as outbound from '../approval/Outbound.ts';
 import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as remindersModule from './Reminders.ts';
 
@@ -19,7 +20,7 @@ import * as remindersModule from './Reminders.ts';
 /** 插件名。 */
 export const name = 'assist';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.1';
+export const version = '1.2.3';
 
 /** 用到的服务：resources 存表；tools 登记工具；http 开接口。 */
 export const inject = ['resources', 'tools', 'http', 'sessions'];
@@ -301,16 +302,16 @@ export function apply(ctx: cordis.Context, config?: Config): void {
     const send = async (message: remindersModule.Delivery): Promise<ProviderReceipt> => {
       const payload = { reminderId: message.id };
       const options = {
-        timeoutMs: 95_000,
-        onFallback: (reason: events.FallbackReason) => {
-          let receipt: ProviderReceipt = { status: 'uncertain', reason: '发送结果待核对，未自动重发' };
-          if (reason === 'unhandled') {
-            receipt = { status: 'failed', reason: '定时发送审核未挂载' };
-          }
+        timeoutMs: outbound.REMINDER_WAIT_MS,
+        onFallback: () => {
+          const receipt: ProviderReceipt = { status: 'failed', reason: '定时发送审核未挂载' };
           return { requestId: '', receipt };
         },
       };
       const result = await events.requestEvent(sub, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
+      //G 可能已提交原发送号，保留待核对状态。
+      if (events.isUnsure(result)) return { status: 'uncertain', reason: '发送结果待核对，未自动重发' };
+
       return result.receipt;
     };
     sub.on('ready', () => reminders.start(send));

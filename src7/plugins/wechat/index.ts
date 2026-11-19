@@ -19,7 +19,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
-import * as piAi from '@earendil-works/pi-ai';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { Approval, Pending } from '../approval/index.ts';
@@ -45,10 +44,10 @@ export const name = 'wechat-kefu';
 //M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
 //M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
 //M 1.2.4：跨聊天发话认目标时，拆目标串（去“微信·”、拆“账号:聊天”）改用骨架的 parseChatTarget；查表规则不变。
-export const version = '1.2.6';
+export const version = '1.2.7';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
-export const inject = ['resources', 'bots', 'sessions', 'http', 'tools'];
+export const inject = ['resources', 'bots', 'sessions', 'http'];
 
 /** 一轮最多同步几个会话（第一次全量时 500 个会话分几轮做完，免得一个引擎进程跑太久）。 */
 const SYNC_BATCH = 60;
@@ -193,20 +192,9 @@ export class Wechat {
 
     //M 微信来的会话：最近 50 条（自己的、对方的都算）拼进 system，和现在会话把最近对话给模型看是一个意思。
     this.ctx.on('session/request', (request) => this.onRequest(request));
-    //M 保留旧调用的偏移量和文本回执，新工具也可读同一微信归档。
-    historyTools.registerHistoryAlias(this.ctx, 'wechat-archive', {
-      definition: {
-        name: 'wechat_history',
-        description: `读当前微信会话更早的聊天记录（只读）。最近 ${String(CONTEXT_MESSAGES)} 条已经在上下文里了；要更早的就用它，`
-          + `skip 跳过最近几条（默认 ${String(CONTEXT_MESSAGES)}，也就是从上下文之前开始），limit 读几条（默认 50，最多 500）。你自己决定读多少。`,
-        parameters: piAi.Type.Object({
-          skip: piAi.Type.Optional(piAi.Type.Number({ description: `跳过最近几条，默认 ${String(CONTEXT_MESSAGES)}` })),
-          limit: piAi.Type.Optional(piAi.Type.Number({ description: '读几条，默认 50，最多 500' })),
-        }),
-      },
-      kinds: ['front', 'work'],
-      run: (args, session) => this.history(session, args),
-    });
+    //M 让 memory_get 按偏移读取当前微信会话，缺页时由微信读取器补录。
+    const archiveRoute = 'wechat-archive';
+    historyTools.registerHistoryReader(this.ctx, archiveRoute, (args, session) => this.history(session, args));
 
     //M 把最近轮询错误或累计轮数填进网页的渠道状态。
     this.ctx.on('web-api/status', (list) => {

@@ -954,5 +954,10 @@
   "请在左栏选择一条消息": "Sélectionnez un message à gauche",
   "说明未记载": "Non documenté",
   "谁发": "Émetteurs",
-  "谁听": "Écouteurs"
+  "谁听": "Écouteurs",
+  "骨架逐行": "Squelette ligne par ligne",
+  "选择文件": "Choisir un fichier",
+  "看全部": "Tout afficher",
+  "读不到骨架逐行": "Impossible de lire le fichier ligne par ligne",
+  "来源": "Source"
 }

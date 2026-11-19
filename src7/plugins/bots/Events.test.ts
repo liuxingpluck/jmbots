@@ -6,7 +6,7 @@
  * 真实 Cordis + 骨架 Sessions、Tools + workspaces、bots 插件；模型是测试里的假回答，库是内存库，数据放临时目录。
  * 跑法：bun test ./src7/plugins/bots
  */
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -33,6 +33,7 @@ afterEach(async () => {
 class FakeResources extends cordis.Service {
   readonly db = new Database(':memory:');
   readonly raw = { bots: [{ name: '助手' }] };
+  readonly pluginStatus = [];
   readonly config = {
     defaultModel: 'fake/fake',
     thinking: 'low',
@@ -113,6 +114,28 @@ async function waitFor(check: () => boolean): Promise<void> {
   }
   throw new Error('等了 3 秒条件还不成立');
 }
+
+
+test('缺少 memory 时启动说一次，前台告诉模型读不到历史仍继续应答', async () => {
+  const { ctx, sent, systems } = await world();
+
+  //M 模拟启动结束，核对告警出现一次且不影响运行。
+  const warning = spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    ctx.emit('ready', []);
+    ctx.emit('ready', []);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('前台往来不会保存'));
+  } finally {
+    warning.mockRestore();
+  }
+
+  const origin = { customer: 'test:owner', role: 'owner' };
+  await ctx.bots.receive('test', '助手', '这轮照常回答', origin);
+  await waitFor(() => sent.includes('做完了：这轮照常回答'));
+  const system = systems.at(-1) ?? [];
+  expect(system.join('\n')).toContain('前台往来暂时读不到');
+});
 
 
 test('bot/request 有人答：hand、save-file、add、accept-result 都回 bot/result', async () => {
@@ -203,7 +226,7 @@ test('没挂 bots：bot/request 立刻走无人接单退路', async () => {
   closers.push(() => ctx.fiber.dispose());
   const add = { action: 'add' as const, config: { name: '甲' } };
   const result = await events.requestEvent(ctx, 'bot/request', 'bot/result', add, botOptions);
-  expect(result).toEqual({ requestId: 'unhandled', ok: false, error: 'unhandled' });
+  expect(result).toEqual({ requestId: 'unhandled', ok: false, error: 'unhandled', fallback: 'unhandled' });
 });
 
 

@@ -261,6 +261,7 @@ export function GraphPage() {
   if (customer !== '') {
     selectedCustomer = String(history.findIndex((c) => c.customer === customer));
   }
+  const warnings = found?.warnings ?? [];
   let foundModeLabel = '混合';
   if (found?.mode === 'graph') {
     foundModeLabel = '图谱+重排';
@@ -358,7 +359,7 @@ export function GraphPage() {
               <span><b>{found.total_ms}</b>毫秒（{foundModeLabel}）</span>
             </div>
             {found.queryEntities.length > 0 && <div className="mg-muted">问句实体：{privacy.text(found.queryEntities.join('、'), mask)}</div>}
-            {(found.warnings ?? []).length > 0 && <div className="mg-muted">提示：{privacy.text(found.warnings!.join('；'), mask)}</div>}
+            {warnings.length > 0 && <div className="mg-muted">提示：{privacy.text(warnings.join('；'), mask)}</div>}
             <h2>本次检索命中的原文（{found.hits.length}）</h2>
             {sideEl !== null && found.hits.length > 0 && (
               <virtuoso.Virtuoso

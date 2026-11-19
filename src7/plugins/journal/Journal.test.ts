@@ -217,7 +217,7 @@ describe('journal（含 FilesMirror 并入）', () => {
     closers.push(() => ctx.fiber.dispose());
     const query = { action: 'query', params: {} } as const;
     const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', query, eventOptions);
-    expect(result).toEqual({ requestId: 'unhandled' });
+    expect(result).toEqual({ requestId: 'unhandled', fallback: 'unhandled' });
   });
 
   test('默认写入完整 对话.md（不与简版双写）及防抖 session.json；子会话不镜像', async () => {

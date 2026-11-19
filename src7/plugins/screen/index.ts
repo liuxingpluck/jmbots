@@ -8,7 +8,7 @@ import * as protocol from './Protocol.ts';
 import * as runtime from './Screen.ts';
 
 export const name = 'screen';
-export const version = '0.3.1';
+export const version = '0.3.2';
 export const inject = ['resources', 'http'];
 
 interface StatusRequest extends requests.RequestEnvelope {

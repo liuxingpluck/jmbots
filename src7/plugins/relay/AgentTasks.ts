@@ -40,20 +40,18 @@ export const TASKS_INJECT = ['resources', 'tools', 'http'];
  */
 export async function requestResultDelivery(ctx: cordis.Context, input: dispatchModule.ResultInput) {
   const request = { action: 'accept-result', input } as const;
-  let uncertain = false;
   const options = {
     timeoutMs: 5000,
     onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-      uncertain = reason === 'timeout';
-      if (uncertain) return { requestId: '', ok: false, error: '结果投递状态不确定' };
-
       return { requestId: '', ok: false, error: detail ?? `结果投递未获回执（${reason}）` };
     },
   };
 
   //M 两个入口都以稳定键提交，只有确定收到入队回执才能标为已送。
   const result = await requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
-  return { ...result, uncertain };
+  if (requestEventModule.isUnsure(result)) return { ...result, uncertain: true, error: '结果投递状态不确定' };
+
+  return { ...result, uncertain: false };
 }
 
 

@@ -333,8 +333,6 @@ export class Review {
     const askOptions = {
       timeoutMs: 5000,
       onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        if (reason === 'timeout') return { requestId: '', error: uncertain };
-
         return { requestId: '', error: detail ?? `审核未获回执（${reason}）` };
       },
     };
@@ -344,8 +342,8 @@ export class Review {
       this.ctx, 'approval/request', 'approval/result', ask, askOptions,
     );
 
-    //G 超时保留已复盘标记，不另发确认卡，也不生成未经确认的写入。
-    if (asked.error === uncertain) return this.skip(uncertain);
+    //G 未确认登记时保留已复盘标记，避免再次发卡或写入。
+    if (requestEventModule.isUnsure(asked)) return this.skip(uncertain);
 
     //G 无人接单或明确登记失败，记录原因供排查。
     if (asked.pending === undefined || asked.error !== undefined) {

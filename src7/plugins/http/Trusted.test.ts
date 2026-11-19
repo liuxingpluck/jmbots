@@ -178,7 +178,7 @@ test('HTTP 插件未挂载时使用无人接单退路', async () => {
   try {
     const probe = { action: 'inject', method: 'GET', url: '/api/health' } as const;
     const result = await events.requestEvent(ctx, 'http/request', 'http/result', probe, eventOptions);
-    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled' });
+    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled', fallback: 'unhandled' });
   } finally {
     await ctx.fiber.dispose();
   }

@@ -14,7 +14,7 @@ import * as guardModule from './ResourceGuard.ts';
 
 /** 插件名和版本。 */
 export const name = 'programs';
-export const version = '1.7.1';
+export const version = '1.7.2';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 

@@ -3,7 +3,7 @@
  *   1. `legacy_auto` 模式兼容（原 `ctx.bots.receive` 自动发送 `row.reply`，`acceptResult` `queued`/`duplicate` 与渠道 `sent` 不混淆）；
  *   2. 飞书单应用 + 单机器人 `channel/message` → `claimKey` 去重 → `channel_reply` 纯文字发送（绝不把 `@/abs/file` 当文件上传，同键幂等、同键不同正文报错、`row.reply` 不自动发）；
  *   3. 同一条 `channel/message` N 机器人独立认领 + `approval` 消息级“同意 1”只消费一次；
- *   4. 渠道历史 `channel_history` / `channel_mentions` / `channel_visible_history`（默认 80 条可配、`before` 游标翻页、跨聊天/篡改游标拒、`guest` 越权拒、`identity_unresolved` 报错）；
+ *   4. 统一记忆的渠道归档（可配默认条数、签名游标翻页、受限来源隔离、`identity_unresolved` 报错）；
  *   5. 零次回复兜底（0 次回复工具调用 → 保留 `activeKey`、仅 `request.system` 注入 `"你还没调用回复工具"` 跑 1 次修复轮、排队用户消息不串轮；失败的 `channel_reply` 或 `kind: 'progress'` 不触发兜底；修复后仍 0 次标 `missing_reply`）。
  *   6. 前台归档带标准消息号，重放后同一会话只保留一条往来和一份正文。
  *
@@ -23,6 +23,8 @@ import * as approvalModule from '../approval/index.ts';
 import * as feishuModule from '../feishu/index.ts';
 import * as channelIndexModule from '../memory/ChannelIndex.ts';
 import * as frontArchiveModule from '../memory/FrontArchive.ts';
+import type { HistoryRoute, HistoryToolRequest } from '../memory/HistoryTools.ts';
+import * as memoryPlugin from '../memory/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 import * as historyRequest from './HistoryRequest.ts';
 import * as botsPlugin from './index.ts';
@@ -456,6 +458,8 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
   await ctx.plugin(workspacesPlugin);
   await ctx.plugin(botsPlugin, { front: { history_limit: 3 } });
   await ctx.plugin(approvalModule, {});
+  const memoryConfig = { service_url: 'http://127.0.0.1:9', history: false, recall_history: 0, recall_knowledge: 0 };
+  await ctx.plugin(memoryPlugin, memoryConfig);
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
     people: [
@@ -471,14 +475,14 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
   const capturedHistory: channels.ChannelHistoryResult[] = [];
   let modeUnderTest: 'default' | 'cursor' | 'cross_chat' | 'mentions_unresolved' = 'default';
   let savedCursor: string | undefined;
+  let savedSource: channels.SourceSnapshot | undefined;
+  let forbiddenText: string | undefined;
 
-  ctx.on('session/request', (request) => {
+  ctx.on('session/request', async (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
-      const name = last.toolName;
-      if (name === 'channel_history' || name === 'channel_visible_history' || name === 'channel_mentions') {
-        const parsed = JSON.parse(piAi.contentText(last.content)) as channels.ChannelHistoryResult;
-        capturedHistory.push(parsed);
+      if (last.toolName === 'memory_get') {
+        if (last.isError) forbiddenText = piAi.contentText(last.content);
         const reply = piAi.fauxToolCall('channel_reply', { text: '查完历史了' });
         request.answer = piAi.fauxAssistantMessage([reply], { stopReason: 'toolUse' });
         return;
@@ -487,23 +491,33 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
       return;
     }
 
-    if (modeUnderTest === 'default') {
-      const call = piAi.fauxToolCall('channel_history', {});
-      request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
-      return;
-    }
-    if (modeUnderTest === 'cursor') {
-      const call = piAi.fauxToolCall('channel_history', { before: savedCursor ?? '' });
-      request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
-      return;
-    }
+    //M 受限用户从公共工具入口核对归属。
     if (modeUnderTest === 'cross_chat') {
-      const call = piAi.fauxToolCall('channel_visible_history', { senderId: 'ou_owner', chatId: 'oc_other_chat' });
+      const args = { senderId: 'ou_owner', chat: 'oc_other_chat' };
+      const call = piAi.fauxToolCall('memory_get', args);
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
       return;
     }
-    const call = piAi.fauxToolCall('channel_mentions', {});
-    request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
+    //M 其余三项测试归档来源本身的可配条数、游标及 @ 身份要求。
+    const session = request.session;
+    if (modeUnderTest === 'default') savedSource = session.row.activeSourceSnapshot;
+    let route: HistoryRoute = 'channel-current';
+    const args: Record<string, unknown> = {};
+    if (modeUnderTest === 'cursor') {
+      args['before'] = savedCursor;
+    }
+    if (modeUnderTest === 'mentions_unresolved') {
+      route = 'channel-mentions';
+    }
+    const signal = new AbortController().signal;
+    const history: HistoryToolRequest = { route, args, session, signal, callId: 'test-history' };
+    await ctx.serial('memory/history-tool', history);
+    if (typeof history.result !== 'string') throw new Error('归档查询没有返回文字回执');
+
+    const parsed = JSON.parse(history.result) as channels.ChannelHistoryResult;
+    capturedHistory.push(parsed);
+    const reply = piAi.fauxToolCall('channel_reply', { text: '查完历史了' });
+    request.answer = piAi.fauxAssistantMessage([reply], { stopReason: 'toolUse' });
   });
 
   //M 先写入 4 条同群只听消息（不会触发回复，只写渠道原始记录），再发第 5 条触发历史工具。
@@ -559,7 +573,7 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
   expect(secondPage.items.some((item) => item.text === '群聊第1句')).toBe(true);
   expect(secondPage.nextCursor).toBeNull();
 
-  //M guest 跨聊天查 channel_visible_history 被拒绝。
+  //M guest 跨聊天查其他发言人被拒绝。
   modeUnderTest = 'cross_chat';
   await stub.triggerInbound({
     sender: { sender_id: { open_id: 'ou_guest' }, sender_type: 'user' },
@@ -572,11 +586,10 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
       mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_unknown' }, name: '小史' }],
     },
   });
-  await waitFor(() => capturedHistory.length >= 3 && ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
-  expect(capturedHistory[2]?.ok).toBe(false);
-  expect(capturedHistory[2]?.error?.code).toBe('forbidden');
+  await waitFor(() => forbiddenText !== undefined && ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
+  expect(forbiddenText).toContain('只能查这个聊天');
 
-  //M botOpenId 未知时调用 channel_mentions 明确返回 identity_unresolved，不能拿任何 @ 当 @自己。
+  //M botOpenId 未知时，读取原始提及归档会返回 identity_unresolved。
   modeUnderTest = 'mentions_unresolved';
   await stub.triggerInbound({
     sender: { sender_id: { open_id: 'ou_owner' }, sender_type: 'user' },
@@ -589,25 +602,35 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
       mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot_unknown' }, name: '小史' }],
     },
   });
-  await waitFor(() => capturedHistory.length >= 4 && ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
-  expect(capturedHistory[3]?.ok).toBe(false);
-  expect(capturedHistory[3]?.error?.code).toBe('identity_unresolved');
+  await waitFor(() => capturedHistory.length >= 3 && ctx.sessions.find({ kind: 'front' })[0]?.state === 'done');
+  expect(capturedHistory[2]?.ok).toBe(false);
+  expect(capturedHistory[2]?.error?.code).toBe('identity_unresolved');
 
   //M 篡改或跨聊天使用游标被拒绝（invalid_cursor）。
-  const frontMeta = ctx.sessions.find({ kind: 'front' })[0]!;
-  const snap = frontMeta.resultQueue?.[0]?.payload.sourceSnapshot;
-  if (snap !== undefined && savedCursor !== undefined) {
-    const tampered = await historyRequest.requestChannelHistory(ctx, {
-      channel: 'feishu',
-      sourceSnapshot: snap,
-      mode: 'current',
-      chatId: 'oc_chat_1',
-      limit: 50,
-      before: `${savedCursor}x`,
-    });
-    expect(tampered.ok).toBe(false);
-    expect(tampered.error?.code).toBe('invalid_cursor');
-  }
+  if (savedSource === undefined || savedCursor === undefined) throw new Error('没有收集到查询来源和上一页游标');
+
+  const tamperedQuery = {
+    channel: 'feishu', sourceSnapshot: savedSource, mode: 'current' as const,
+    chatId: 'oc_chat_1', limit: 50, before: `${savedCursor}x`,
+  };
+  const tampered = await historyRequest.requestChannelHistory(ctx, tamperedQuery);
+  expect(tampered.ok).toBe(false);
+  expect(tampered.error?.code).toBe('invalid_cursor');
+
+  //M 按发言人读取仍使用原归档，并以当前群的来源限制查询。
+  const ownerSession = ctx.sessions.open(ctx.sessions.find({ kind: 'front' })[0]!.id);
+  ownerSession.row.activeSourceSnapshot = savedSource;
+  const signal = new AbortController().signal;
+  const visible: HistoryToolRequest = {
+    route: 'channel-visible', args: { senderId: 'ou_owner' }, session: ownerSession, signal, callId: 'test-visible',
+  };
+  await ctx.serial('memory/history-tool', visible);
+  if (typeof visible.result !== 'string') throw new Error('没有按发言人返回的归档');
+
+  const visibleHistory = JSON.parse(visible.result) as channels.ChannelHistoryResult;
+  expect(visibleHistory.ok).toBe(true);
+  expect(visibleHistory.items).not.toHaveLength(0);
+  expect(visibleHistory.items.every((item) => item.sender.id === 'ou_owner')).toBe(true);
 });
 
 

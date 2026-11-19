@@ -300,7 +300,7 @@ export class Search {
       },
       kinds: ['front', 'work'],
       run: async (args, session, signal, callId) => {
-        //G 两个新工具和旧前台分页共用同一份本轮额度。
+        //G 检索与取原文共用同一份前台额度。
         this.takeTurn(session);
         const request = { args, session, signal, callId };
         const archived = await this.getArchive(request);
@@ -313,21 +313,13 @@ export class Search {
     });
   }
 
-  /** 新工具和旧名均经这里读取原插件的归档，不改变提供方的安全范围或游标。 */
-  async readHistory(request: HistoryToolRequest, compatibility = false): Promise<ToolResult | undefined> {
+  /** 按归属检查读取请求，再交给原归档提供方。 */
+  async readHistory(request: HistoryToolRequest): Promise<ToolResult | undefined> {
     const { route, session } = request;
     //G 原始归档可能还没有归属。受限会话统一走带归属的检索和原文索引。
     const access = channel.getAccess(session);
-    if (!access.full || (!compatibility && route.startsWith('front-') && session.row.kind !== 'front')) {
+    if (!access.full || (route.startsWith('front-') && session.row.kind !== 'front')) {
       throw new Error('这一轮只能查当前渠道聊天，请用 memory_search 或 channel_search 查询已归属的记录');
-    }
-    if (compatibility && (route === 'front-search' || route === 'front-get')) {
-      //G 旧前台分页和取全文也使用新工具的同一份额度，兼容名保留原提示和文本返回。
-      try {
-        this.takeTurn(session);
-      } catch {
-        return '本轮 history_search / history_get 已调用 3 次，不能再查。若需要通读或总结大量历史，请用 hand_session 交给后台会话。';
-      }
     }
     //M 由拥有归档、签名游标和原权限检查的插件答复。
     await this.ctx.serial('memory/history-tool', request);
@@ -342,7 +334,7 @@ export class Search {
       const query = channel.getQuery(args, {});
       const params = {
         keyword: args['q'], count: args['limit'], from: query.since, to: query.until, who: args['who'],
-        before: args['before'], after: args['after'], from_earliest: args['from_earliest'], use_memory_ref: true,
+        before: args['before'], after: args['after'], from_earliest: args['from_earliest'],
       };
       const routed = { ...request, route: 'front-search' as const, args: params };
       //M 前台插件负责旧记录的编号、翻页和发言人筛选。

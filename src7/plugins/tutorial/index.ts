@@ -13,6 +13,8 @@
  *   GET /api/tutorial/plugins               左栏插件：名字、版本、挂没挂上、有没有说明，加快照关键词、源码根目录
  *   GET /api/tutorial/readme?name=          插件的 说明.md 原文；还没写是空串
  *   GET /api/tutorial/readings              组块阅读文件名清单
+ *   GET /api/tutorial/lines                 骨架逐行 JSON 文件名清单
+ *   GET /api/tutorial/line?name=            读一份骨架逐行 JSON
  *   GET /api/tutorial/reading?name=         清单内一篇组块 Markdown 原文
  *   GET /api/tutorial/state?name=           这个插件现在的运行时变量：它提供的服务对象，加它用 ctx.flow.state 登记的，全量原样
  *   GET /api/tutorial/canvases              左栏画布：启动流程，加 data/flow/ 里每条带关键词的消息
@@ -215,21 +217,28 @@ const PLUGIN_NAME = /^[a-z][a-z0-9-]*$/u;
 /** 组块阅读目录，和 readLines 共用登记路径。 */
 const READING_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/组块阅读/`;
 
+/** 骨架逐行目录，一份 JSON 对应骨架里的一个文件，读法同组块阅读。 */
+const LINES_DIR = `${sourceDirModule.SOURCE_PREFIX}docs/骨架逐行/`;
 
-/** 列出组块目录直属的 Markdown 文件名，按文件名排序。 */
-async function getReadingFiles(): Promise<string[]> {
+
+/**
+ * 列出目录直属、给定后缀的文件名，按文件名排序。
+ * @param dirName 登记路径形式的目录，以 / 结尾。
+ * @param suffix 文件后缀，如 .md、.json。
+ */
+async function getReadingFiles(dirName: string, suffix: string): Promise<string[]> {
   if (embedded.isCompiled()) {
     //M 编译版从登记表列出组块，目录下的子目录不列入清单。
     const registered = embedded.getNames();
     const files = registered
-      .filter((file) => file.startsWith(READING_DIR))
-      .map((file) => file.slice(READING_DIR.length))
-      .filter((name) => name.endsWith('.md') && !name.includes('/'));
+      .filter((file) => file.startsWith(dirName))
+      .map((file) => file.slice(dirName.length))
+      .filter((name) => name.endsWith(suffix) && !name.includes('/'));
     return files.sort();
   }
 
   //M 源码版从 readLines 使用的仓库根目录列出实际的 Markdown 文件。
-  const dir = path.resolve(import.meta.dir, '../../..', READING_DIR);
+  const dir = path.resolve(import.meta.dir, '../../..', dirName);
   const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
     //G 未放入任何组块时返回空清单，其余读取错误交给 HTTP 层。
     const code = textModule.getText(error, 'code');
@@ -238,7 +247,7 @@ async function getReadingFiles(): Promise<string[]> {
     throw error;
   });
   const files = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(suffix))
     .map((entry) => entry.name);
   return files.sort();
 }
@@ -465,7 +474,7 @@ class Tutorial {
 
     //M 左栏按文件名顺序列出组块阅读。
     app.get('/api/tutorial/readings', async () => {
-      const files = await getReadingFiles();
+      const files = await getReadingFiles(READING_DIR, '.md');
       return { files };
     });
 
@@ -475,13 +484,36 @@ class Tutorial {
       if (name === '') return reply.code(400).send({ error: '要给 name（组块文件名）' });
 
       //G 只认清单里的完整文件名，外部传来的路径不能直接用于读文件。
-      const files = await getReadingFiles();
+      const files = await getReadingFiles(READING_DIR, '.md');
       if (!files.includes(name)) return reply.code(404).send({ error: '没有这篇组块' });
 
       //M 用已校验的文件名读取全文，文件已移除时返回 404。
       const file = READING_DIR + name;
       const lines = await sourceModule.readLines(file);
       if (lines === undefined) return reply.code(404).send({ error: '没有这篇组块' });
+
+      const text = lines.join('\n');
+      return { name, file, text };
+    });
+
+    //M 左栏「骨架逐行」按文件名顺序列出 JSON。
+    app.get('/api/tutorial/lines', async () => {
+      const files = await getReadingFiles(LINES_DIR, '.json');
+      return { files };
+    });
+
+    //M 按清单读一份骨架逐行 JSON 原文，由网页解析成树。
+    app.get<Query>('/api/tutorial/line', async (request, reply) => {
+      const name = request.query['name'] ?? '';
+      if (name === '') return reply.code(400).send({ error: '要给 name（骨架逐行文件名）' });
+
+      //G 只认清单里的完整文件名，外部传来的路径不能直接用于读文件。
+      const files = await getReadingFiles(LINES_DIR, '.json');
+      if (!files.includes(name)) return reply.code(404).send({ error: '没有这份骨架逐行' });
+
+      const file = LINES_DIR + name;
+      const lines = await sourceModule.readLines(file);
+      if (lines === undefined) return reply.code(404).send({ error: '没有这份骨架逐行' });
 
       const text = lines.join('\n');
       return { name, file, text };

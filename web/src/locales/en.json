@@ -954,5 +954,10 @@
   "请在左栏选择一条消息": "Select a message on the left",
   "说明未记载": "Not documented",
   "谁发": "Emitters",
-  "谁听": "Listeners"
+  "谁听": "Listeners",
+  "骨架逐行": "Skeleton line by line",
+  "选择文件": "Choose file",
+  "看全部": "Show all",
+  "读不到骨架逐行": "Cannot read the line-by-line file",
+  "来源": "Source"
 }

@@ -80,10 +80,14 @@ export function copyText(text: string, said: (word: string) => void): void {
  * @param keys 库给的路径：有的版本含这个键自己，有的只到上一层，最后一个不是它就补上。
  * @param keyName 这个键。
  */
-function getKeyPath(keys: readonly unknown[] | undefined, keyName: unknown): string[] {
+function getKeyPath(keys: readonly (string | number)[] | undefined, keyName: string | number | undefined): string[] {
   const path = (keys ?? []).map(String);
-  if (keyName !== undefined && path.at(-1) !== String(keyName)) {
-    path.push(String(keyName));
+  if (keyName === undefined) return path;
+
+  //M 当前键可能已经在库返回的路径末尾。
+  const key = String(keyName);
+  if (path.at(-1) !== key) {
+    path.push(key);
   }
   return path;
 }
@@ -123,15 +127,16 @@ export function JsonBlock(props: { head: ReactNode; value: unknown; empty: strin
           {/* 键名不带引号：解释跟在键名后面，带引号会夹在引号里。 */}
           <JsonView.Quote render={() => <span />} />
           {/* 键名：有解释或变了才自己画，别的返回 undefined 交回库默认的。 */}
-          <JsonView.KeyName
+          <JsonView.KeyName<'span'>
             render={(attrs, result) => {
-              const keys = (result as { keys?: unknown[] }).keys;
+              const { keys, keyName } = result;
               let name = '';
-              if (result.keyName !== undefined) {
-                name = String(result.keyName);
+              if (keyName !== undefined) {
+                name = String(keyName);
               }
               //M 计算当前键的完整路径标识，以便对齐后端 diff 与中文解释映射表。
-              const keyPath = getKeyPath(keys, result.keyName).join(PATH_SEP);
+              const path = getKeyPath(keys, keyName);
+              const keyPath = path.join(PATH_SEP);
               const mark = marks.has(keyPath);
               const note = notes.get(name);
               if (!mark && note === undefined) return undefined;

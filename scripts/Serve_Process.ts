@@ -253,55 +253,6 @@ export function spawnDetached(options: DetachedOptions): number | undefined {
 }
 
 
-/** 起一个服务要的东西。 */
-export interface StartServeOptions {
-  /** 运行时目录（日志和 pid 文件写在它的 data 下）。 */
-  runtimeDir: string;
-  /** 端口。 */
-  port: number;
-  /** 用哪份代码起；默认项目根。看门狗回退时传快照目录。 */
-  root?: string;
-  /** 是不是试运行（--mode candidate：只起 HTTP，不开渠道、不碰运行状态）。 */
-  candidate?: boolean;
-  /** 直接跑编译好的 exe；不给就用 bun 跑源码。 */
-  exe?: string;
-}
-
-
-/**
- * 用某份代码（或编译好的 exe）在某个端口起服务（独立进程，输出写到运行时 data\serve_<端口>_<时间>.log）。
- * @param options 运行时目录、端口、代码目录、是否试运行、可选 exe。
- * @param logName 日志文件名里的时间部分，调用方给（各脚本的 ID 规则一致）。
- * @returns 进程号；拿不到时是 undefined。
- * 副作用：起子进程。
- */
-export function startServe(options: StartServeOptions, logName: string): number | undefined {
-  /** 用哪份代码。 */
-  const root = options.root ?? ROOT;
-  /** 输出文件。 */
-  const logFile = path.join(options.runtimeDir, 'data', `serve_${String(options.port)}_${logName}.log`);
-  /** 给程序的参数：exe 直接 serve，源码前面加 Main.ts。 */
-  const serveArgs = [
-    'serve',
-    '--runtime', options.runtimeDir,
-    '--port', String(options.port),
-    ...(options.candidate ? ['--mode', 'candidate'] : []),
-  ];
-  /** 完整参数。 */
-  const args = options.exe === undefined
-    ? [path.join(root, 'src6', 'Main.ts'), ...serveArgs]
-    : serveArgs;
-  /** 起进程要的东西。 */
-  const processOptions = {
-    args,
-    cwd: root,
-    logFile,
-    ...(options.exe === undefined ? {} : { exe: options.exe }),
-  };
-  return spawnDetached(processOptions);
-}
-
-
 /**
  * 查一次某个端口上的服务活着没有。
  * @param port 端口。

@@ -285,7 +285,7 @@ export class Reader {
 
   /**
    * 取某个时间之前的一批历史消息（只读，jimukefu python/wechat_cli/commands/backfill.py）：create_time < until 的最近 limit 条，升序。
-   * 2026-11-14 23:15 EST：给工具 wechat_history 用——库里存的不够时，模型要读更早的就从微信里补。
+   * memory_get 读取微信归档时，库里缺少的早期记录从微信里补。
    */
   async backfill(account: string, chat: string, until: number, limit: number): Promise<SyncResult> {
     //M 用最早已知时间继续向前读取，把这批旧消息交给调用方入库。

@@ -129,10 +129,17 @@ export function data<T>(value: T, enabled: boolean): T {
 
   //M 按值类型递归脱敏：裸字符串整段替换，数组逐项递归生成新副本，不改动原始 API 数据。
   if (typeof value === 'string') return text(value, true) as T;
-  if (Array.isArray(value)) return value.map((item) => data(item, true)) as T;
+  if (Array.isArray(value)) {
+    const items: readonly unknown[] = value;
+    const masked = items.map((item) => data(item, true));
+    return masked as T;
+  }
   if (value !== null && typeof value === 'object') {
     //M 对象自身剥离原引用并递归遮罩全部属性值，确保任意键名的展示字段都不透出原文。
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, data(item, true)])) as T;
+    const fields = value as Record<string, unknown>;
+    const entries = Object.entries(fields);
+    const masked = entries.map(([key, item]): [string, unknown] => [key, data(item, true)]);
+    return Object.fromEntries(masked) as T;
   }
   return value;
 }
@@ -163,9 +170,15 @@ export function record<T>(value: T, enabled: boolean): T {
   if (!enabled) return value;
 
   //M 数组逐项沿用结构化分级规则递归脱敏，保持列表长度与结构供界面渲染。
-  if (Array.isArray(value)) return value.map((item) => record(item, true)) as T;
+  if (Array.isArray(value)) {
+    const items: readonly unknown[] = value;
+    const masked = items.map((item) => record(item, true));
+    return masked as T;
+  }
   if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value).map(([key, item]) => {
+    const fields = value as Record<string, unknown>;
+    const source = Object.entries(fields);
+    const entries = source.map(([key, item]): [string, unknown] => {
       //M 原始负载字段内部可能带有技术字段名，必须整体走 data 彻底遮罩以免绕过白名单。
       if (PAYLOADS.has(key)) return [key, data(item, true)];
       //M 嵌套对象或数组继续按结构化白名单逐层递归脱敏。

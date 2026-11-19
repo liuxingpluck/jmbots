@@ -52,7 +52,7 @@ export const name = 'bots';
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
-export const version = '1.5.4';
+export const version = '1.5.6';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -337,6 +337,15 @@ export class Bots extends cordis.Service {
     for (const item of config.bots) {
       this.add(item);
     }
+
+    //M 插件都挂过后检查一次归档服务；memory 可选，缺失时前台仍可答话。
+    this.ctx.once('ready', () => {
+      const status = this.ctx.resources.pluginStatus;
+      const memory = status.find((item) => item.name === 'memory');
+      if (memory?.started === true) return;
+
+      console.warn('bots：memory 插件未启动，前台往来不会保存，历史往来暂时无法读取。');
+    });
 
     //M 会话状态变了（跑完、出错、被停）就看要不要把这一轮的回话发回渠道；还在转、没渠道、别人自己送的一律不管。
     this.ctx.on('session/change', (session) => {

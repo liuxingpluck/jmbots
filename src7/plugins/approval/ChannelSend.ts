@@ -3,7 +3,6 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type { Http } from '../http/index.ts';
-import * as events from '../../utils/RequestEvent.ts';
 import * as text from '../../utils/Text.ts';
 import * as outbound from './Outbound.ts';
 
@@ -41,25 +40,6 @@ function getAction(body: unknown): outbound.OutboundAction | undefined {
   return { action, intentId, observedIntentDigest, interactionId, decision: 'approve' };
 }
 
-/** 让两种入口复用主站已有的确认、占位和回执账。 */
-function requestOutbound(ctx: cordis.Context, action: outbound.OutboundAction, actor: 'owner' | 'model') {
-  const program = outbound.DIRECT_PROGRAM;
-  const payload = { ...action, program, actor };
-  const options = {
-    timeoutMs: 105_000,
-    onFallback: (reason: events.FallbackReason) => {
-      if (reason === 'timeout' && action.action !== 'status') {
-        return { requestId: '', code: 504, error: '发件操作结果不确定，请核对原意图，避免重复提交' };
-      }
-
-      return { requestId: '', code: 503, error: '发件确认暂不可用，请按原意图核对' };
-    },
-  };
-
-  //M 入口不直接接触渠道；确认权限和值都由 Outbound 核对。
-  return events.requestEvent(ctx, 'approval/outbound-request', 'approval/outbound-result', payload, options);
-}
-
 /**
  * 注册主动发送的 HTTP 申请、查询和确认。
  * @param ctx 审批插件上下文。
@@ -76,7 +56,7 @@ export function mountChannelSend(ctx: cordis.Context, http: Pick<Http, 'app' | '
     if (action === undefined) return reply.code(400).send({ error: '主动发件参数无效' });
 
     //M 只有本机或验过匹配令牌的请求才作为本人操作进入原有发送账。
-    const result = await requestOutbound(ctx, action, 'owner');
+    const result = await outbound.requestOutbound(ctx, outbound.DIRECT_PROGRAM, 'owner', action);
     if ('error' in result) return reply.code(result.code).send({ error: result.error });
 
     return { intent: result.intent };
@@ -118,7 +98,7 @@ export function registerChannelSendTool(ctx: cordis.Context): void {
       const action = { action: 'prepare-channel' as const, message, toolKey };
 
       //M 只建立与本轮及工具调用绑定的意图，模型拿不到确认权限。
-      const result = await requestOutbound(ctx, action, 'model');
+      const result = await outbound.requestOutbound(ctx, outbound.DIRECT_PROGRAM, 'model', action);
       if ('error' in result) throw new Error(result.error);
 
       const { intentId, status } = result.intent;

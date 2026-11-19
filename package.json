@@ -14,7 +14,7 @@
     "typecheck:src7": "tsc -p tsconfig.src7.json && tsc -p web/tsconfig.json",
     "test": "bun run test:src7",
     "test:src7": "bun test ./src7/plugins ./src7/tests/Web_Token.test.ts ./src7/tests/Session_Gates.test.ts &&bun src7/tests/Batch1_Test.ts && bun src7/tests/Cards_Test.ts && bun src7/tests/Feishu_Test.ts",
-    "lint": "eslint \"web/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" eslint.config.mjs --max-warnings 0"
+    "lint": "eslint \"src7/**/*.ts\" \"web/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" eslint.config.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.4",

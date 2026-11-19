@@ -275,7 +275,7 @@ test('审批回执超时提示结果不确定，同一审批号的重复点击�
     expect(concurrent).toEqual(expected);
     expect(await pending).toEqual(expected);
     expect(warning).toHaveBeenCalledTimes(1);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_a（approval 1），提交审批决定 approve=true 回执等待 5000 毫秒超时，结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_a（approval 1），提交审批决定 approve=true 未获回执（timeout），结果不确定'));
 
     //M 超时后连后来登记的同号卡片也不能再次发决定。
     world.db.query(insert).run('om_later');
@@ -338,8 +338,8 @@ test('终止和限时等不到回执时提示结果不确定，并按会话和�
     expect(await Promise.all([stopped, limited])).toEqual([expected, expected]);
     expect(world.calls).toEqual(['stop', 'limit']);
     expect(warning).toHaveBeenCalledTimes(2);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_stop（progress p1），stop 回执等待 5000 毫秒超时，结果不确定'));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_limit（progress p2），limit 回执等待 5000 毫秒超时，结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_stop（progress p1），stop 未获回执（timeout），结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_limit（progress p2），limit 未获回执（timeout），结果不确定'));
   } finally {
     warning.mockRestore();
     await world.actionCtx.fiber.dispose();

@@ -39,7 +39,7 @@ export const name = 'memory';
 //M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
-export const version = '1.10.3';
+export const version = '1.10.4';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -63,12 +63,6 @@ const DEFAULT_SERVICE_URL = 'http://127.0.0.1:30087';
 
 /** history、knowledge 默认给几条。 */
 const CITE_HITS = 8;
-
-/** 兼容名在执行表中保留，只从发给模型的定义清单移除。 */
-const HISTORY_ALIASES = new Set([
-  'history', 'history_search', 'history_get', 'channel_history', 'channel_visible_history',
-  'channel_mentions', 'channel_search', 'wechat_history',
-]);
 
 const FILE_ACTIONS = ['list', 'read', 'write', 'delete'] as const;
 const FILE_DESCRIPTION = '管理自己的记忆（scope=own）或公共记忆（scope=shared）。用 list、read、write、delete。'
@@ -171,8 +165,8 @@ export class Memory {
     const session = request.session;
     const row = session.row;
 
-    //M 每步只向模型公开两个检索工具，旧名和 memory 的旧动作留给 Tools.execute 兼容调用。
-    const active = request.tools.filter((tool) => !HISTORY_ALIASES.has(tool.name));
+    //M 普通模型请求展示统一检索工具；channel_search 仍可从工具执行表调用。
+    const active = request.tools.filter((tool) => tool.name !== 'channel_search');
     request.tools = active.map((tool) => {
       if (tool.name !== 'memory') return tool;
 

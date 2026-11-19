@@ -245,7 +245,7 @@ const requestVoice = requests.requestEvent as unknown as (
   result: 'voice/result',
   payload: VoicePayload,
   options: requests.RequestEventOptions<VoiceResult>,
-) => Promise<VoiceResult>;
+) => Promise<VoiceResult & requests.RequestFallback>;
 
 /** 按现有信号安全识别业务错误，不把未知异常原文传给客户端。 */
 function getError(error: unknown): protocol.ScreenError {
@@ -715,19 +715,15 @@ export class Screen {
     const group = this.getVoiceGroup(state);
     const interrupt = segment === 1;
     const request = { action: 'speak', text, group, interrupt } as const;
-    let timedOut = false;
     const options = {
       timeoutMs: VOICE_WAIT_MS,
-      onFallback: (reason: requests.FallbackReason) => {
-        timedOut = reason === 'timeout';
-        return { requestId: '', ok: false };
-      },
+      onFallback: () => ({ requestId: '', ok: false }),
     };
 
-    //M 同一片段只发一次，超时保留段号占用。
+    //M 同一片段只发一次，等待原语音回执。
     const answer = await requestVoice(this.ctx, 'voice/request', 'voice/result', request, options);
     if (answer.ok) return { ok: true, speech: 'accepted' };
-    if (timedOut) return { ok: true, speech: 'uncertain', reason: '播报结果不确定' };
+    if (requests.isUnsure(answer)) return { ok: true, speech: 'uncertain', reason: '播报结果不确定' };
 
     return { ok: true, speech: 'unavailable' };
   }
