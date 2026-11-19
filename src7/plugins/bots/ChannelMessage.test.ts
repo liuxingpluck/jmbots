@@ -5,6 +5,7 @@
  *   3. 同一条 `channel/message` N 机器人独立认领 + `approval` 消息级“同意 1”只消费一次；
  *   4. 渠道历史 `channel_history` / `channel_mentions` / `channel_visible_history`（默认 80 条可配、`before` 游标翻页、跨聊天/篡改游标拒、`guest` 越权拒、`identity_unresolved` 报错）；
  *   5. 零次回复兜底（0 次回复工具调用 → 保留 `activeKey`、仅 `request.system` 注入 `"你还没调用回复工具"` 跑 1 次修复轮、排队用户消息不串轮；失败的 `channel_reply` 或 `kind: 'progress'` 不触发兜底；修复后仍 0 次标 `missing_reply`）。
+ *   6. 前台归档带标准消息号，重放后同一会话只保留一条往来和一份正文。
  *
  * 跑法：bun test ./src7/plugins/bots/ChannelMessage.test.ts
  */
@@ -20,6 +21,8 @@ import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as approvalModule from '../approval/index.ts';
 import * as feishuModule from '../feishu/index.ts';
+import * as channelIndexModule from '../memory/ChannelIndex.ts';
+import * as frontArchiveModule from '../memory/FrontArchive.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 import * as historyRequest from './HistoryRequest.ts';
 import * as botsPlugin from './index.ts';
@@ -770,4 +773,109 @@ test('5. 零次回复兜底：0 次调用只触发一次“你还没调用回复
   expect(missingItem?.replyControl?.outcome).toBe('missing_reply');
   expect(missingItem?.stage).toBe('rejected');
   expect(records.textCalls.some((item) => item.text.includes('仍然忘记调工具'))).toBe(false);
+});
+
+
+test('6. 重放同一前台归档事件只写一条往来和一份正文', async () => {
+  //M 复用离线渠道夹具，把真实前台事件接到内存归档。
+  const tempDir = os.tmpdir();
+  const prefix = path.join(tempDir, 'ch-front-archive-');
+  const root = fs.mkdtempSync(prefix);
+  closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx = new cordis.Context();
+  const bot = '助手';
+  const appId = 'cli_1111222233334444';
+  const resourceOptions: FakeResourceOptions = {
+    root,
+    bots: [{ name: bot }],
+    feishuApps: [{ app_id: appId, app_secret: 'sec', bot }],
+  };
+  await ctx.plugin(FakeResources, resourceOptions);
+  const db = ctx.resources.db;
+  closers.push(() => db.close());
+  closers.push(() => ctx.fiber.dispose());
+  await ctx.plugin(toolsModule.Tools);
+  await ctx.plugin(sessionsModule.Sessions);
+  await ctx.plugin(workspacesPlugin);
+  const botsOptions = {};
+  await ctx.plugin(botsPlugin, botsOptions);
+  const feishuOptions = {
+    domain: 'http://127.0.0.1:9',
+    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+  };
+  await ctx.plugin(feishuModule, feishuOptions);
+  const feishu = ctx.get('feishu') as feishuModule.Feishu;
+  const records: FeishuCallRecord = { textCalls: [], uploadCalls: 0 };
+  const stubOptions = { botOpenId: 'ou_bot' };
+  const stub = stubFeishuClient(feishu, appId, records, stubOptions);
+  const index = new channelIndexModule.ChannelIndex(db);
+  const archive = new frontArchiveModule.FrontArchive(db, index);
+  const events: frontArchiveModule.FrontMessage[] = [];
+  const writes: boolean[] = [];
+  ctx.on('memory/front-message', (entry) => {
+    //G 此处只数本次要重放的用户往来。
+    if (entry.who !== 'user') return;
+
+    //M 归档使用生产实现，记录首次保存和重放的结果。
+    events.push(entry);
+    const saved = archive.record(entry);
+    writes.push(saved);
+  });
+  ctx.on('session/request', (request) => {
+    //M 用假模型回复，让这轮会话走完，避免发网络请求。
+    const last = request.messages.at(-1);
+    const summary = '已完成';
+    if (last?.role === 'toolResult') {
+      request.answer = piAi.fauxAssistantMessage(summary);
+      return;
+    }
+
+    const reply = { text: summary };
+    const call = piAi.fauxToolCall('channel_reply', reply);
+    const stop = { stopReason: 'toolUse' } as const;
+    request.answer = piAi.fauxAssistantMessage([call], stop);
+  });
+
+  //M 从飞书标准入口发来用户消息，核对前台归档沿用渠道消息号。
+  const nativeId = 'om_front_archive';
+  const text = '应只归档一次的用户消息';
+  const incoming = {
+    sender: { sender_id: { open_id: 'ou_owner' }, sender_type: 'user' },
+    message: {
+      message_id: nativeId,
+      chat_id: 'oc_p2p_1',
+      chat_type: 'p2p',
+      message_type: 'text',
+      content: JSON.stringify({ text }),
+    },
+  };
+  await stub.triggerInbound(incoming);
+  const filter = { kind: 'front' } as const;
+  const isDone = () => ctx.sessions.find(filter)[0]?.state === 'done';
+  await waitFor(isDone);
+  expect(events).toHaveLength(1);
+  const [entry] = events;
+  if (entry === undefined) throw new Error('未收到前台归档事件');
+
+  const messageId = channels.makeChannelMessageId('feishu', appId, nativeId);
+  expect(entry.sourceKey).toBe(messageId);
+
+  //M 在归档入口重放，直接验证归档去重，避免渠道认领层先丢掉重放。
+  ctx.emit('memory/front-message', entry);
+  expect(writes).toEqual([true, false]);
+  const query: frontArchiveModule.FrontQuery = {
+    bot,
+    sessionIds: [entry.sessionId],
+    order: 'first',
+    limit: 10,
+  };
+  const history = archive.read(query);
+  expect(history).toHaveLength(1);
+  expect(history[0]?.text).toBe(text);
+
+  //M 核对索引正文也只有一份，避免只有会话关联去重。
+  const sql = 'SELECT text FROM memory_channel_messages';
+  const statement = db.query(sql);
+  const indexRows = statement.all();
+  expect(indexRows).toEqual([{ text }]);
 });

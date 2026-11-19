@@ -446,7 +446,9 @@ export class Reader {
         detail = error.message;
       }
       console.error(`微信引擎拉不起来（wechat_cli ${command}）：${detail}`);
-      throw new Error(`微信引擎拉不起来（wechat_cli ${command}）：python 不在或没权限启动`);
+      //G 回给界面原有提示，同时让排查能追到启动异常。
+      const options = { cause: error };
+      throw new Error(`微信引擎拉不起来（wechat_cli ${command}）：python 不在或没权限启动`, options);
     }
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; child.kill(); }, TIMEOUT_MS);

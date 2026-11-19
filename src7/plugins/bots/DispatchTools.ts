@@ -519,7 +519,10 @@ export class DispatchTools {
     try {
       dir = workspaceModule.inside(access.root, pick.workspace);
     } catch (error) {
-      throw new Error(`workspace_outside_scope：${textModule.getMessage(error)}`);
+      //G 保留路径校验失败的原异常，继续给工具回原拒绝原因。
+      const reason = textModule.getMessage(error);
+      const options = { cause: error };
+      throw new Error(`workspace_outside_scope：${reason}`, options);
     }
     fs.mkdirSync(dir, { recursive: true });
     const byDirectory = {
@@ -555,7 +558,10 @@ export class DispatchTools {
     try {
       this.home.resources.getModel(picked);
     } catch (error) {
-      throw new Error(`model_unavailable：${textModule.getMessage(error)}`);
+      //G 保留模型不可用的原异常，继续给工具回原错误文字。
+      const reason = textModule.getMessage(error);
+      const options = { cause: error };
+      throw new Error(`model_unavailable：${reason}`, options);
     }
 
     //M 有图而模型看不了图：写了模型的报错，没写的换看图模型（沿用的思考档 pi 会换成最近的）。

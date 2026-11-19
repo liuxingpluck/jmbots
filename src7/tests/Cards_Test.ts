@@ -1,7 +1,7 @@
 /**
  * 动态审批卡片、长跑提醒卡片、客服记忆库的验收脚本。Windows 上用 bun 跑：
  *   bun src7/tests/Cards_Test.ts
- * data1（15731，假模型）：卡片数据、长跑提醒（3 秒）三种点法、记忆库本地后端；data3（15733）：外部检索服务（假的，15732）和它挂了时退回本地。
+ * data1（15731，假模型）：卡片数据、长跑提醒（3 秒）、统一记忆检索；data3（15733）：旧检索接口的本地回落。记忆服务使用本机的假 Rust 接口（15732）。
  * 全部假模型、离线、每次结果一样。真模型（data2，magpie）那条 2026-11-14 19:30 搬到 Live_Cards.ts（跑前先问用户）。只按自己起的 PID 关进程。结果写 result.txt。
  */
 import { Database } from 'bun:sqlite';
@@ -9,11 +9,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import * as render from '../plugins/feishu/cards/Render.ts';
+import type { MemoryDoc, MemoryQuery } from '../plugins/memory/Backend.ts';
 
 const ROOT = path.resolve(import.meta.dir, '../..');
 const HERE = path.join(ROOT, 'cache/test-src7-cards');
 const RESULT = path.join(HERE, 'result.txt');
 const lines: string[] = [];
+const originalConfigs = new Map<string, string>();
 let passed = 0;
 let failed = 0;
 
@@ -51,21 +53,54 @@ const search = Bun.serve({
   },
 });
 
-// ———— 假外部检索服务（vector-graph-rag 的位置）————
-const external: { route: string; body: any }[] = [];
+// ———— 假 Rust 记忆服务：只有实际入库的片段才能从检索和原文接口读回 ————
+const passages = new Map<number, MemoryDoc>();
+let nextPassage = 1;
 let externalDown = false;
-const vector = Bun.serve({
+const memory = Bun.serve({
   port: 15732, hostname: '127.0.0.1',
   async fetch(request) {
     const url = new URL(request.url);
     if (externalDown) return new Response('挂了', { status: 503 });
-    const body = request.method === 'POST' ? await request.json() : undefined;
-    external.push({ route: url.pathname, body });
-    if (url.pathname === '/health') return Response.json({ ok: true, engine: '假向量图' });
-    if (url.pathname === '/search') {
-      return Response.json({ hits: [{ scope: 'knowledge', source: '外部://图谱/退货', bot: '', customer: '', session: '', title: '图谱', snippet: '外部服务找到：退货要在七天内', score: 0.93, at: 1, start: 0, end: 0 }] });
+    if (url.pathname === '/health') return Response.json({ ok: true });
+    if (url.pathname === '/ingest') {
+      const body = await request.json() as { docs: MemoryDoc[] };
+      for (const doc of body.docs) {
+        passages.set(nextPassage, doc);
+        nextPassage += 1;
+      }
+      return Response.json({ ok: true, count: body.docs.length });
     }
-    return Response.json({ ok: true });
+    if (url.pathname === '/remove') {
+      const body = await request.json() as { source: string };
+      for (const [id, doc] of passages) {
+        if (doc.source === body.source) passages.delete(id);
+      }
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === '/search') {
+      const query = await request.json() as MemoryQuery & { not_session?: string };
+      const terms = query.query.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1);
+      const hits = [];
+      for (const [id, doc] of passages) {
+        if (query.scope !== 'all' && doc.scope !== query.scope) continue;
+        if (query.bot && doc.bot && doc.bot !== query.bot) continue;
+        if (doc.scope === 'history' && query.customer && doc.customer !== query.customer) continue;
+        if (query.session && doc.session !== query.session) continue;
+        if (doc.session === query.not_session || doc.session === query.notSession) continue;
+        if (!terms.some((word) => doc.text.includes(word))) continue;
+
+        hits.push({ ...doc, id, snippet: doc.text, score: 0.93, via: ['keyword'] });
+      }
+      return Response.json({ hits: hits.slice(0, query.limit) });
+    }
+    if (url.pathname.startsWith('/passages/')) {
+      const id = Number(url.pathname.slice('/passages/'.length));
+      const doc = passages.get(id);
+      if (doc === undefined) return Response.json({ error: '无此片段' }, { status: 404 });
+      return Response.json({ passage: { ...doc, id, snippet: doc.text, via: ['keyword'] } });
+    }
+    return Response.json({ error: '未实现的假服务接口' }, { status: 404 });
   },
 });
 
@@ -73,6 +108,15 @@ const vector = Bun.serve({
 interface Service { child: childProcess.ChildProcess; port: number; dir: string; }
 const started: number[] = [];
 async function start(dir: string, port: number, label: string): Promise<Service> {
+  //M 旧隔离模板仍用 engine 阈值及 memory.services。按现行插件配置启动，所有记忆请求只去本机假服务。
+  const config = path.join(dir, 'config.yaml');
+  const original = fs.readFileSync(config, 'utf8');
+  originalConfigs.set(config, original);
+  const current = original
+    .replace(/^  - name: (?:usage|bot-front-desk|prompt|base-tools|files-api)\r?\n/gmu, '')
+    .replace(/^  - name: progress\r?\n/mu, '  - name: progress\n    config: { long_run_card_minutes: 0.05 }\n')
+    .replace(/^  - name: memory(?:\r?\n {4}[^\r\n]*)*/mu, '  - name: memory\n    config: { service_url: "http://127.0.0.1:15732", backend_url: memory, backend_timeout_ms: 2000 }');
+  fs.writeFileSync(config, current, 'utf8');
   const log = fs.openSync(path.join(dir, `serve_${label}.log`), 'a');
   const child = childProcess.spawn(process.execPath, ['src7/Main.ts', '--data', dir], { cwd: ROOT, stdio: ['ignore', log, log], windowsHide: true });
   started.push(child.pid ?? 0);
@@ -158,9 +202,11 @@ async function main(): Promise<void> {
   check('长跑提醒：3 秒后发卡片（kind long-run）', card1 !== undefined, card1?.card);
   check('长跑提醒：卡片写已运行、现在在做；“终止”危险色、“继续”普通', card1?.card?.items?.some((i: any) => i.label === '已运行') && card1?.card?.items?.some((i: any) => i.label === '现在在做')
     && card1?.card?.buttons?.[0]?.label === '终止' && card1?.card?.buttons?.[0]?.style === 'danger' && card1?.card?.buttons?.[1]?.label === '继续', card1?.card);
-  const fl = JSON.stringify(render.approval(card1 as any ?? {}));
+  //G 缺卡时报告具体失败，不把空对象传给渲染器或访问不存在的审批号。
+  if (card1 === undefined) throw new Error('继续场景没有收到长跑提醒卡片');
+  const fl = JSON.stringify(render.approval(card1));
   note(`（飞书长跑提醒卡片：${fl.slice(0, 500)}）`);
-  await api(s, 'POST', `/api/approvals/${card1?.id}`, { approve: false });
+  await api(s, 'POST', `/api/approvals/${card1.id}`, { approve: false });
   await sleep(6000);
   const cards1 = (await approvals(s)).filter((p) => p.sessionId === l1);
   check('长跑提醒：点继续后还在跑、没有第二张、卡片灰着（rejected）', runState(s, l1) === 'running' && cards1.length === 1 && cards1[0]?.card?.state === 'rejected', { state: runState(s, l1), cards: cards1.map((p) => p.card?.state) });
@@ -170,8 +216,10 @@ async function main(): Promise<void> {
   // ———— 长跑提醒：点“终止” → 停 ————
   const l2 = await work(s, 'web_search', { query: '慢20' });
   const card2 = await waitFor(async () => (await approvals(s)).find((p) => p.sessionId === l2 && p.card?.kind === 'long-run' && p.card.state === 'waiting'), 15_000);
+  //G 只有已登记的长跑卡片才能验证点终止。
+  if (card2 === undefined) throw new Error('终止场景没有收到长跑提醒卡片');
   const t2 = Date.now();
-  await api(s, 'POST', `/api/approvals/${card2?.id}`, { approve: true });
+  await api(s, 'POST', `/api/approvals/${card2.id}`, { approve: true });
   const stopped = await waitFor(() => (runState(s, l2) !== 'running' ? runState(s, l2) : undefined), 10_000);
   check('长跑提醒：点终止几秒内停下', stopped === 'stopped' && Date.now() - t2 < 5000, `${stopped}（${Date.now() - t2} 毫秒）`);
 
@@ -198,51 +246,63 @@ async function main(): Promise<void> {
   await sleep(4000);
   const h1 = await api(s, 'GET', '/api/memory/recall?q=' + encodeURIComponent('订单号 A123') + '&scope=history&customer=' + ME);
   const hit1 = h1.json?.hits?.[0];
-  check('记忆库：聊天记录收了，按客户 http:本机（网页渠道名叫 http）能搜到，带会话号和片段', h1.json?.backend === 'local' && hit1?.customer === 'http:本机' && hit1?.source?.startsWith('session:') && hit1?.snippet?.includes('A123'), h1.json);
+  check('记忆库：聊天记录收了，按客户 http:本机能搜到，带会话号和片段', h1.json?.backend === 'http' && hit1?.customer === 'http:本机' && hit1?.source?.startsWith('session:') && hit1?.snippet?.includes('A123'), h1.json);
   const h2 = await api(s, 'GET', '/api/memory/recall?q=A123&scope=history&customer=feishu:ou_x');
   check('记忆库：别的客户搜不到这个客户的', h2.json?.hits?.length === 0, h2.json);
 
   // ———— 记忆库：知识库 ————
   const k1 = await api(s, 'POST', '/api/memory/knowledge', { name: '售后/退货政策.md', content: '# 退货政策\n\n买了七天内可以无理由退货，运费由买家出。\n\n质量问题十五天内包换，运费我们出。\n' });
   check('记忆库：POST /api/memory/knowledge 写成文件', k1.status === 200 && fs.existsSync(k1.json?.file ?? ''), k1.text);
-  const k2 = await api(s, 'GET', '/api/memory/recall?q=' + encodeURIComponent('退货几天') + '&scope=knowledge');
+  //M 统一检索从 Rust 读知识库，验证写入的文件和行号能随引用返回。
+  const knowledgeUrl = '/api/memory/search?sources=knowledge&q=';
+  const k2 = await api(s, 'GET', knowledgeUrl + encodeURIComponent('七天'));
   const kh = k2.json?.hits?.[0];
-  check('记忆库：知识库搜到，带文件和行号、片段', kh?.scope === 'knowledge' && kh?.source?.endsWith('退货政策.md') && kh?.start >= 1 && kh?.snippet?.includes('七天'), k2.json);
+  check('记忆库：知识库搜到，带文件和行号、片段', kh?.source === 'knowledge' && kh?.file?.endsWith('退货政策.md') && kh?.start >= 1 && kh?.snippet?.includes('七天'), k2.json);
   fs.writeFileSync(path.join(HERE, 'data1/knowledge/发货.txt'), '下单后四十八小时内发货，偏远地区顺延。\n', 'utf8');
   await sleep(31_000);
-  const k3 = await api(s, 'GET', '/api/memory/recall?q=' + encodeURIComponent('多久发货') + '&scope=knowledge');
-  check('记忆库：直接放进 knowledge/ 的文件 30 秒内收进来', k3.json?.hits?.some((h: any) => h.source.endsWith('发货.txt')), k3.json?.hits?.map((h: any) => h.source));
+  const k3 = await api(s, 'GET', knowledgeUrl + encodeURIComponent('发货'));
+  check('记忆库：直接放进 knowledge/ 的文件收进来', k3.json?.hits?.some((h: any) => h.file?.endsWith('发货.txt')), k3.json?.hits);
   const k4 = await api(s, 'GET', '/api/memory/recall?q=');
   check('记忆库：q 空回 400', k4.status === 400, k4.text);
   const k5 = await api(s, 'POST', '/api/memory/knowledge', { name: '../越界.md', content: 'x' });
   check('记忆库：知识库文件越界回 400', k5.status === 400, k5.text);
 
-  // ———— 记忆库：工具 history、knowledge、开场先搜 ————
-  const m1 = await work(s, 'memory', { action: 'knowledge', query: '退货运费谁出' });
+  // ———— 记忆库：统一检索工具、读取引用原文、开场先搜 ————
+  const knowledgeQuery = { sources: 'knowledge', q: '运费' };
+  const m1 = await work(s, 'memory_search', knowledgeQuery);
   const mr1 = await toolResult(s, m1);
-  check('memory 工具 knowledge：带 [1] 编号、知识库 @文件 第几行', mr1.includes('[1] 知识库 @') && mr1.includes('退货政策.md') && mr1.includes('行'), mr1.slice(0, 400));
-  const m2 = await work(s, 'memory', { action: 'history', query: '蓝色水杯 退货' });
+  check('memory_search 工具：命中知识库文件并带 ref', mr1.includes('退货政策.md') && mr1.includes('/api/memory-graph/passage/'), mr1.slice(0, 400));
+  //M 通过检索得到的引用读回整段原文。
+  const quoted = { ref: kh?.ref ?? '' };
+  const original = await work(s, 'memory_get', quoted);
+  const originalText = await toolResult(s, original);
+  check('memory_get 工具：从引用读回知识库原文', originalText.includes('七天内可以无理由退货'), originalText.slice(0, 400));
+  const historyQuery = { sources: 'history', q: '蓝色水杯' };
+  const m2 = await work(s, 'memory_search', historyQuery);
   const mr2 = await toolResult(s, m2);
-  check('memory 工具 history：按这个客户搜到以前的话', mr2.includes('[1] 聊天记录') && mr2.includes('蓝色水杯'), mr2.slice(0, 400));
+  check('memory_search 工具：按这个客户搜到以前的订单原话', mr2.includes('"source":"history"') && mr2.includes('我的订单号是 A123，买的蓝色水杯想退货'), mr2.slice(0, 400));
   const meta2 = sessionsOf(s, 'work').find((row) => row.id === m2) as any;
   check('开场先搜：带上这个客户以前说的和知识库', String(meta2?.recall ?? '').includes('可能相关的聊天记录和知识库') && String(meta2?.recall).includes('[1]'), String(meta2?.recall ?? '').slice(0, 500));
   const b1 = await api(s, 'GET', '/api/memory/backend');
-  check('记忆库：/api/memory/backend 本地，片段数、知识库文件数', b1.json?.backend === 'local' && b1.json?.chunks?.history > 0 && b1.json?.knowledgeFiles === 2, b1.json);
+  check('记忆库：/api/memory/backend 有 Rust 状态、本地备份片段数、知识库文件数', b1.json?.remote?.ok === true && b1.json?.local?.chunks?.history > 0 && b1.json?.knowledgeFiles === 2, b1.json);
   const ev = await api(s, 'GET', '/api/events?name=Memory.*&limit=20');
-  check('journal：Memory.recall / Memory.cite 这些函数行记下了', Array.isArray(ev.json) && ev.json.some((e: any) => String(e.name ?? e.type).startsWith('Memory.')), ev.json?.slice?.(0, 3));
+  check('journal：Memory.recall 函数行记下了', Array.isArray(ev.json) && ev.json.some((e: any) => e.name === 'Memory.recall'), ev.json?.slice?.(0, 3));
   kill(s.child.pid ?? 0);
 
-  // ———— 外部检索服务（data3）————
+  // ———— 独立数据目录验证旧接口的 Rust 请求及本地回落（data3）————
+  passages.clear();
   const s3 = await start(path.join(HERE, 'data3'), 15733, 'c');
   await api(s3, 'POST', '/api/message', { text: '我想问一下退货的事' });
   await sleep(4000);
-  check('外部后端：聊天记录也送去 /ingest', external.some((e) => e.route === '/ingest' && e.body?.docs?.some((d: any) => d.scope === 'history')), external.map((e) => e.route));
-  const x1 = await api(s3, 'GET', '/api/memory/recall?q=' + encodeURIComponent('退货') + '&customer=' + ME);
-  check('外部后端：搜的是外部服务的结果', x1.json?.backend === 'http' && x1.json?.hits?.[0]?.source === '外部://图谱/退货', x1.json);
+  check('外部后端：聊天记录也送去 /ingest', [...passages.values()].some((doc) => doc.scope === 'history' && doc.text.includes('退货的事')));
+  const x1 = await api(s3, 'GET', '/api/memory/recall?q=' + encodeURIComponent('退货的事') + '&scope=history&customer=' + ME);
+  check('外部后端：旧检索接口返回假服务的结果', x1.json?.backend === 'http' && x1.json?.hits?.[0]?.score === 0.93 && x1.json?.hits?.[0]?.snippet?.includes('退货的事'), x1.json);
   externalDown = true;
   const x2 = await api(s3, 'GET', '/api/memory/recall?q=' + encodeURIComponent('退货的事') + '&scope=history&customer=' + ME);
   const x3 = await api(s3, 'GET', '/api/memory/backend');
   check('外部后端挂了：退回本地结果，lastError 写原因', x2.json?.hits?.[0]?.snippet?.includes('退货') && String(x3.json?.lastError).includes('503'), { hits: x2.json?.hits?.length, err: x3.json?.lastError });
+  const unavailable = await api(s3, 'GET', '/api/memory/search?q=退货&sources=history&customer=' + ME);
+  check('统一检索：记忆服务离线，明确标出 history 不可用', unavailable.json?.unavailable?.includes('history') && unavailable.json?.hits?.length === 0, unavailable.json);
   kill(s3.child.pid ?? 0);
 }
 
@@ -252,8 +312,24 @@ try {
   check('脚本自己出错', false, error instanceof Error ? error.stack ?? error.message : String(error));
 } finally {
   for (const pid of started) kill(pid);
-  search.stop(true);
-  vector.stop(true);
+  for (const [config, original] of originalConfigs) {
+    //M 隔离服务停止后还原缓存模板。
+    fs.writeFileSync(config, original, 'utf8');
+  }
+  //M 等两个假服务都收尾，再汇总结果和退出。
+  const closeActiveConnections = true;
+  const stopSearch = search.stop(closeActiveConnections);
+  const stopMemory = memory.stop(closeActiveConnections);
+  const stops = [stopSearch, stopMemory] as const;
+  const [searchResult, memoryResult] = await Promise.allSettled(stops);
+  if (searchResult.status === 'rejected') {
+    //G 假搜索服务收尾失败也计入验收结果。
+    check('关闭假搜索服务', false, searchResult.reason);
+  }
+  if (memoryResult.status === 'rejected') {
+    //G 假检索服务收尾失败也计入验收结果。
+    check('关闭假检索服务', false, memoryResult.reason);
+  }
   note(`合计：通过 ${passed}，不通 ${failed}`);
   // 2026-11-14 17:55：有不通就退出码 1，test:src7 的退出码才算数（原来总是 0）。
   process.exit(failed > 0 ? 1 : 0);

@@ -642,16 +642,18 @@ describe('群里发的话 @ 人', () => {
     const front = (address: feishuModule.FeishuAddress): FakeSession => ({
       id: 'sx', row: { id: 'sx', bot: BOT, kind: 'front', state: 'done', messages: [], address }, save: () => undefined,
     });
-    const send = (session: FakeSession): Promise<void> => (made.feishu as unknown as { send: (reply: string, session: FakeSession) => Promise<void> })
-      .send('好的，已经查了', session);
+    const sender = made.feishu as unknown as { send: (reply: string, session: FakeSession) => Promise<void> };
+    const send = (session: FakeSession, reply = '好的，已经查了'): Promise<void> => sender.send(reply, session);
 
     await send(front(getAddress(PLAIN, FRIEND)));
     await send(front(getAddress(PLAIN, OWNER)));
     await send(front(getAddress('oc_p2p', OWNER, 'p2p')));
     await made.feishu.sendText(getAddress(PLAIN, FRIEND), '@周周 自己写了');
-    (made.feishu as unknown as { send: (reply: string, session: FakeSession) => Promise<void> })
-      .send('@周周 自己写了', front(getAddress(PLAIN, FRIEND)));
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    //M 等飞书发送结束再核对，避免按固定延时猜测发送是否完成。
+    const groupAddress = getAddress(PLAIN, FRIEND);
+    const groupSession = front(groupAddress);
+    const mentioned = '@周周 自己写了';
+    await send(groupSession, mentioned);
 
     expect(made.said[0]).toBe('<at user_id="ou_friend">周周</at> 好的，已经查了');
     expect(made.said[1]).toBe('<at user_id="ou_owner">leon</at> 好的，已经查了');

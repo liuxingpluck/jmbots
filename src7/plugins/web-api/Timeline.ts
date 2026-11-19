@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 收件表 web_messages 和网页的时间线：一条消息给网页的样子、时间线（分页、取变化）、按号补取、搜索。
  * HTTP 来的、别的渠道（飞书、命令行）来的消息都记在这张表里，一条消息一行，回话追加在它的 replies 里。
  * 设计见同目录 说明.md 的「设计要点」一节。
@@ -11,6 +11,7 @@ import type * as fastify from 'fastify';
 import type { Session, SessionMeta, SessionState } from '../../Sessions.ts';
 import * as checks from '../../utils/Checks.ts';
 import * as mime from '../../utils/Mime.ts';
+import * as text from '../../utils/Text.ts';
 import * as traceModule from './Trace.ts';
 import * as failureModule from '../../utils/Failure.ts';
 
@@ -115,8 +116,10 @@ const WEB_SOURCE = 'web';
 /**
  * 一行属于哪个聊天（SQL 表达式，筛选、分组、取行都用它，只写这一处）：
  * 飞书地址的 chatId、微信地址的 chat、命令行地址的 customer（cli:本机）；网页自己的（地址空）是 http:本机。
+ * 旧地址损坏时视为缺少聊天号，避免 SQLite 中断整页读取。
  */
-const CHAT_SQL = "COALESCE(json_extract(address, '$.chatId'), json_extract(address, '$.chat'), json_extract(address, '$.customer'),"
+const CHAT_SQL = "COALESCE(CASE WHEN json_valid(address) THEN COALESCE(json_extract(address, '$.chatId'),"
+  + " json_extract(address, '$.chat'), json_extract(address, '$.customer')) END,"
   + " CASE WHEN channel = 'http' THEN 'http:本机' END, '')";
 
 /** 取整行，连同它属于哪个聊天（chat 列）。 */
@@ -438,20 +441,45 @@ export class Timeline {
 
     if (record.channel === 'voice') return '语音';
 
-    const address = JSON.parse(record.address ?? '{}') ?? {};
-    if (record.channel === 'feishu') {
-      let kind = '私聊';
-      if (address.chatType === 'group') {
-        kind = '群';
+    if (record.channel !== 'feishu' && record.channel !== 'wechat') return record.channel;
+
+    //G 时间线也要展示地址损坏的旧消息，无法解析时按没有地址处理。
+    let address: unknown;
+    if (record.address !== null) {
+      try {
+        address = JSON.parse(record.address);
+      } catch {
+        address = undefined;
       }
-      const who = address.name || address.chatName || address.userName || address.openId?.slice(-4);
-      if (who) return `飞书·${kind}·${who}`;
-
-      return `飞书·${kind}`;
     }
-    if (record.channel === 'wechat') return `微信·${address.name || address.chat || ''}`;
 
-    return record.channel;
+    //M 两个渠道都优先显示地址里存的名称。
+    const name = text.getText(address, 'name');
+    if (record.channel === 'wechat') {
+      //M 微信里没存名称时显示聊天号。
+      const chat = text.getText(address, 'chat');
+      const who = name || chat;
+      return `微信·${who}`;
+    }
+
+    //M 飞书用聊天类型区分群和私聊，再从地址里取可显示的名称。
+    const chatType = text.getText(address, 'chatType');
+    let kind = '私聊';
+    if (chatType === 'group') {
+      kind = '群';
+    }
+
+    const chatName = text.getText(address, 'chatName');
+    const userName = text.getText(address, 'userName');
+    const who = name || chatName || userName;
+    if (who !== '') return `飞书·${kind}·${who}`;
+
+    //M 没有名称时用用户编号的末四位，缺编号时只显示聊天类型。
+    const openId = text.getText(address, 'openId');
+    if (openId === '') return `飞书·${kind}`;
+
+    const suffix = openId.slice(-4);
+    return `飞书·${kind}·${suffix}`;
   }
 
   /** 一条收件消息给网页的样子，引用内容独立于正文返回。 */
@@ -507,14 +535,17 @@ export class Timeline {
       replyTo = { id: quoted.id, peer, text: quoted.text };
     }
 
+    //M 对端名供两处展示共用，同一条地址只解析一次。
+    const peer = this.peer(record);
+
     //M 组装网页时间线要显示的消息资料，包括各渠道的聊天名称和引用摘要。
     return {
       id: record.id,
       bot: record.bot,
       channel: record.channel,
-      peer: this.peer(record),
+      peer,
       chat: record.chat,
-      chatLabel: this.peer(record),
+      chatLabel: peer,
       reply_to: record.reply_to,
       replyTo,
       source: record.source,

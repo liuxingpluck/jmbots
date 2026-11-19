@@ -298,12 +298,13 @@ export async function fetchMemory(base: string, route: string, init: RequestInit
 
     //G 超时说明服务在、只是忙（大查询、抽图），和没起来分开说。AbortSignal.timeout 抛的是 DOMException，按 name 认。
     const name = (error as { name?: unknown } | null)?.name;
+    const options = { cause: error };
     if (name === 'TimeoutError') {
-      throw new Error(`记忆服务超时没回（${base}${route}）：${reason}`);
+      throw new Error(`记忆服务超时没回（${base}${route}）：${reason}`, options);
     }
 
     //M 剩下的都是连不上：记忆服务由 programs 插件拉起，没起来或已退出时就是这句。
-    throw new Error(`记忆服务没在线（${base}）：${reason}`);
+    throw new Error(`记忆服务没在线（${base}）：${reason}`, options);
   }
 }
 

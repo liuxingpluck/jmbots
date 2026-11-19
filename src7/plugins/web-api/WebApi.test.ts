@@ -1,4 +1,4 @@
-/**
+﻿/**
  * web-api 接入 channel/message 后的冒烟与离线测试（渠道统一第 2、3、4 步）：
  *   1. POST /api/message 返回 { id, file: '' } 与原先一字不差；
  *      channel/message 只发 1 次，目标机器人只认领 1 次，回复照旧落进 GET /api/messages/:id 的 replies；
@@ -733,6 +733,36 @@ test('第 3 步：网页引用别的渠道的消息，进原会话，回话回�
   expect(row).toEqual({ channel: 'http', reply_to: quotedId });
   const quoted = ctx.resources.db.query('SELECT replies FROM web_messages WHERE id = ?').get(quotedId) as { replies: string };
   expect(quoted.replies).toBe('[]');
+});
+
+
+test('时间线能读取损坏地址，并用其余字符串字段生成渠道标签', async () => {
+  //M 在收件表放入解析失败和字段类型不符的旧地址，同时保留正常地址作对照。
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  const insert = 'INSERT INTO web_messages (bot, channel, source, address, text, status, created_at, updated_at)'
+    + " VALUES ('助手', ?, 'test', ?, ?, 'replied', 1000, 1000)";
+  const save = ctx.resources.db.query(insert);
+  const badId = JSON.stringify({ chatId: 'oc_bad', chatType: 'group', openId: 42 });
+  const user = JSON.stringify({ name: { text: '错类型' }, chatName: '', userName: '用户甲', openId: 'ou_1234' });
+  const suffixOnly = JSON.stringify({ openId: 'ou_9876' });
+  const wechat = JSON.stringify({ name: ['错类型'], chat: 'wx_chat' });
+  save.run('feishu', '{', '坏地址');
+  save.run('feishu', badId, '坏编号');
+  save.run('feishu', user, '备用名字');
+  save.run('feishu', suffixOnly, '编号末四位');
+  save.run('wechat', wechat, '微信聊天号');
+
+  //M 一条地址出错时仍返回整页，并按各渠道的规则生成两个展示字段。
+  const response = await ctx.http.app.inject('/api/messages?bot=助手');
+  expect(response.statusCode).toBe(200);
+  const page = response.json<{ messages: Array<{ text: string; peer: string; chatLabel: string }> }>();
+  expect(page.messages.map((item) => [item.text, item.peer, item.chatLabel])).toEqual([
+    ['坏地址', '飞书·私聊', '飞书·私聊'],
+    ['坏编号', '飞书·群', '飞书·群'],
+    ['备用名字', '飞书·私聊·用户甲', '飞书·私聊·用户甲'],
+    ['编号末四位', '飞书·私聊·9876', '飞书·私聊·9876'],
+    ['微信聊天号', '微信·wx_chat', '微信·wx_chat'],
+  ]);
 });
 
 

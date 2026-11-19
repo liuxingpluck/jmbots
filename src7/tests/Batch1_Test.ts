@@ -1,5 +1,5 @@
 /**
- * 第一批插件（journal、approval、exec、file-tools、web-search、usage、settings）的验收脚本。Windows 上用 bun 跑：
+ * 第一批插件（journal、approval、exec、file-tools、web-search、model-catalog 用量、settings）的验收脚本。Windows 上用 bun 跑：
  *   bun src7/tests/Batch1_Test.ts
  * 自己起测试服务（data1 端口 15723）和一个假搜索服务（15725）（data2 真模型那段 2026-11-14 20:10 搬到 Live_Approval.ts），用 HTTP 跑一遍，读库核对，最后只按自己起的 PID 关进程。
  * 结果写进 cache\test-src7-batch1\result.txt，一行一项：通过 / 不通 名称 细节。
@@ -12,9 +12,11 @@ import * as childProcess from 'node:child_process';
 const ROOT = path.resolve(import.meta.dir, '../..');
 const HERE = path.join(ROOT, 'cache/test-src7-batch1');
 const RESULT = path.join(HERE, 'result.txt');
+const TEST_CONFIG = path.join(HERE, 'data1/config.yaml');
 const lines: string[] = [];
 let passed = 0;
 let failed = 0;
+let originalConfig: string | undefined;
 
 function note(text: string): void {
   console.log(text);
@@ -112,7 +114,10 @@ async function main(): Promise<void> {
   note(`第一批验收开始 ${new Date().toLocaleString('zh-CN', { hour12: false })}`);
   const dir1 = path.join(HERE, 'data1');
   for (const name of ['data', 'bots']) fs.rmSync(path.join(dir1, name), { recursive: true, force: true });
-  fs.copyFileSync(path.join(dir1, 'config.yaml'), path.join(dir1, 'config.yaml.orig'));
+  //M 让旧缓存配置挂上现行计量插件，保留本轮设置校验要检查的 YAML 注释。
+  originalConfig = fs.readFileSync(TEST_CONFIG, 'utf8');
+  const current = originalConfig.replace(/^(  - name:) usage(?=\r?$)/mu, '$1 model-catalog');
+  fs.writeFileSync(TEST_CONFIG, current, 'utf8');
   let s = await start(dir1, 15723, 'a');
 
   // ———— journal ————
@@ -272,10 +277,13 @@ async function main(): Promise<void> {
   // ———— settings ————
   const g1 = await api(s, 'GET', '/api/settings');
   check('settings：GET 不含密钥原文、有代号、没有 plugins', g1.status === 200 && !g1.text.includes('test-key-1') && !g1.text.includes('test-secret-1') && !g1.text.includes('test-token-1') && g1.text.includes('‹已设置:') && g1.json.config.plugins === undefined, g1.text.slice(0, 200));
-  const cfg = path.join(dir1, 'config.yaml');
-  const p1 = await api(s, 'PUT', '/api/settings', [{ path: ['engine', 'retry', 'wait_ms'], value: 50 }]);
+  const cfg = TEST_CONFIG;
+  //M 校验骨架实际读取的重试设置，兼容旧 engine 路径的读法已经退役。
+  const retryWait = ['models', 'retry', 'wait_ms'];
+  const putRetryWait = [{ path: retryWait, value: 50 }];
+  const p1 = await api(s, 'PUT', '/api/settings', putRetryWait);
   const after1 = fs.readFileSync(cfg, 'utf8');
-  check('settings：PUT retry.wait_ms=50，注释都在', p1.status === 200 && p1.json.changed === 1 && after1.includes('wait_ms: 50') && after1.includes('# 假搜索：测试脚本自己起的服务'), p1.text);
+  check('settings：PUT models.retry.wait_ms=50，注释都在', p1.status === 200 && p1.json.changed === 1 && after1.includes('wait_ms: 50') && after1.includes('# 假搜索：测试脚本自己起的服务'), p1.text);
   const p2 = await api(s, 'PUT', '/api/settings', [{ path: ['channels', 'feishu'], value: g1.json.config.channels.feishu }]);
   check('settings：带代号写回飞书表，文件里还是原密钥', p2.status === 200 && fs.readFileSync(cfg, 'utf8').includes('test-secret-1'), p2.text);
   const p3 = await api(s, 'PUT', '/api/settings', [{ path: ['providers', 'fake', 'api_key'], value: '‹已设置:00000000›' }]);
@@ -283,8 +291,10 @@ async function main(): Promise<void> {
   const p4 = await api(s, 'PUT', '/api/settings', [{ path: ['plugins'], value: [] }]);
   check('settings：改 plugins 400', p4.status === 400, p4.text);
   const before5 = fs.readFileSync(cfg, 'utf8');
-  const p5 = await api(s, 'PUT', '/api/settings', [{ path: ['engine', 'retry', 'wait_ms'], value: 'abc' }]);
-  check('settings：retry.wait_ms=abc 400、文件没变', p5.status === 400 && fs.readFileSync(cfg, 'utf8') === before5, p5.text);
+  //M 对同一个现行字段写错类型，验证骨架拒绝整次写入。
+  const invalidRetryWait = [{ path: retryWait, value: 'abc' }];
+  const p5 = await api(s, 'PUT', '/api/settings', invalidRetryWait);
+  check('settings：models.retry.wait_ms=abc 400、文件没变', p5.status === 400 && fs.readFileSync(cfg, 'utf8') === before5, p5.text);
   const p6 = await api(s, 'PUT', '/api/settings', [{ path: ['models', 'decision', 'model'], value: 'fake/fake' }]);
   const g6 = await api(s, 'GET', '/api/settings');
   check('settings：网页的 models.decision.model 写成 decision.models', p6.status === 200 && /decision:\s*\n\s*models:\s*\n\s*- fake\/fake/u.test(fs.readFileSync(cfg, 'utf8')) && g6.json?.config?.models?.decision?.model === 'fake/fake', p6.text);
@@ -308,8 +318,6 @@ async function main(): Promise<void> {
   const newPid = Number(fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : 0);
   check('settings：几秒后 startedAt 变了，pid 文件是新进程', changed !== undefined && newPid > 0 && newPid !== s.child.pid, { changed, newPid, old: s.child.pid });
   if (newPid > 0 && newPid !== s.child.pid) started.push(newPid);
-  for (const pid of [...started]) kill(pid);
-  fs.copyFileSync(path.join(dir1, 'config.yaml.orig'), path.join(dir1, 'config.yaml'));
 
   // 2026-11-14 20:10：真模型审核（data2：echo hi 放行、rmdir 去问用户）搬到 src7/tests/Live_Approval.ts，test:src7 全部离线（Claude 19:58 第 6 节第 1 条）。
 }
@@ -320,7 +328,13 @@ try {
   check('脚本自己出错', false, error instanceof Error ? error.stack ?? error.message : String(error));
 } finally {
   for (const pid of started) kill(pid);
-  search.stop(true);
+  if (originalConfig !== undefined) {
+    //M 隔离服务停止后还原缓存模板，异常途中也不会留下已改过的设置。
+    fs.writeFileSync(TEST_CONFIG, originalConfig, 'utf8');
+  }
+  //M 等假搜索服务关闭后再退出，确保端口已经释放。
+  const closeActiveConnections = true;
+  await search.stop(closeActiveConnections);
   note(`合计：通过 ${passed}，不通 ${failed}`);
   // 2026-11-14 17:55：有不通就退出码 1，test:src7 的退出码才算数（原来总是 0）。
   process.exit(failed > 0 ? 1 : 0);

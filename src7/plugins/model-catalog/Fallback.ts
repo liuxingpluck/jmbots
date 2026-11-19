@@ -279,7 +279,9 @@ export class ModelFallback {
       //M 报错若是限流则登记该模型冷却期并通知外部，随后按是否熔断决定向外抛哪个错误。
       this.noteLimit(model, text);
       if (cut) {
-        throw new Error(text);
+        //G 保留熔断前的原异常，外层仍按限流原因回退。
+        const options = { cause: error };
+        throw new Error(text, options);
       }
       throw error;
     } finally {

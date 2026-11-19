@@ -109,7 +109,9 @@ export async function call<T>(action: string, run: () => Promise<T>, waitMs = RE
       if (code >= 400 && code < 500) {
         throw new NotSent(said);
       }
-      throw new Error(said);
+      //G 保留传输原异常，供排查发送结果不确定的原因。
+      const options = { cause: error };
+      throw new Error(said, options);
     }
 
     //M HTTP 200：带 code 的看 code；上传类不带 code，直接算成功。
