@@ -4,6 +4,7 @@
  */
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import * as textModule from '../../utils/Text.ts';
 
 
 /** 本地搜最多给几个文件（开场先搜用）。 */
@@ -57,15 +58,6 @@ export function grams(text: string): Set<string> {
     for (let index = 0; index + 1 < chars.length; index += 1) found.add(`${chars[index]}${chars[index + 1]}`);
   }
   return found;
-}
-
-/**
- * 截到 max 个字，截了加“…”（记忆的片段只是提示，不用写共多少字）。
- * @param text 一段字。
- * @param max 最多几个字。
- */
-export function short(text: string, max: number): string {
-  return [...text].length > max ? `${[...text].slice(0, max).join('')}…` : text;
 }
 
 /** 一组字算几分：整词 2 分，两个字一组 1 分。 */
@@ -153,7 +145,7 @@ export async function local(roots: string[], query: string, options: {
       if (first === undefined) continue;
 
       //M 保留原始行号和短摘要，供查询结果定位原文。
-      const lines = matching.map((item) => short(item.line, LINE_CHARS));
+      const lines = matching.map((item) => textModule.clipText(item.line, LINE_CHARS));
       hits.push({ root, file, score: matched / Math.sqrt(text.length + 100), lines, at, line: first.index + 1 });
     }
   }

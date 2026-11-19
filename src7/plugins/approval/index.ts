@@ -136,6 +136,22 @@ export interface Pending {
   card: cardUtils.CardData;
 }
 
+/** 已识别的文字批复及应回到的待确认项。 */
+interface TextAnswer {
+  /** 回复对应的待确认项，用它定位原会话。 */
+  about: Pending;
+  /** 回给说话人的文字。 */
+  text: string;
+  /** 需要写入的批复，查清单和请用户选号时省略。 */
+  decision?: {
+    /** 本次要处理的待确认项。 */
+    targets: Pending[];
+    /** 同意为 true，拒绝为 false。 */
+    approve: boolean;
+  };
+}
+
+
 /** ask 要给的：card 可以不给，不给就照 title、detail 拼一张普通的。 */
 export type AskInput = Pick<Pending, 'kind' | 'title' | 'detail' | 'payload' | 'bot' | 'session'> & {
   card?: Omit<cardUtils.CardData, 'state' | 'result'>;
@@ -347,7 +363,7 @@ export class Approval extends cordis.Service {
   /**
    * 登记成 ctx.approval（cordis.Service 的构造函数做的：super(ctx, '名字') 就是“把我挂到 ctx 上叫这个名字”），
    * 建表，听 approval/request（别的插件请审核办事）、channel/message 和 bot/receive（认文字回答）、
-   * session/request（给审核小会话加提示词；guest、builder 说的这一轮只给这一档的工具）和 session/before-tool（这一档没有的工具不让执行）。
+   * session/before-model（给审核小会话加提示词；guest、builder 说的这一轮只给这一档的工具）和 session/before-tool（这一档没有的工具不让执行）。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
    */
@@ -365,7 +381,7 @@ export class Approval extends cordis.Service {
     //M   现有方法抛的错转成 { error }，调用方不干等超时；review 没带回 verdict，exec 照“没有审核就不让跑命令”当拒绝。
     const requestOptions = {
       onError: (error: unknown) => {
-        const message = textModule.getMessage(error);
+        const message = textModule.getErrorMessage(error);
         return { error: message };
       },
     };
@@ -390,10 +406,10 @@ export class Approval extends cordis.Service {
     //M 审核小会话的提示词：prompt 插件只认 front、work，这种会话的提示词由这里给。
     //M 这一轮说话的是 guest、builder（渠道在回话地址里写的 role）：只留这一档的工具（rules.toolsFor），
     //M   别的直接从这一步的工具里拿掉，再在提示词里说一句，免得模型答应做不了的事。
-    ctx.on('session/request', (request) => {
+    ctx.on('session/before-model', (request) => {
       if (request.session.row.kind === REVIEW_KIND) request.system.push(REVIEW_PROMPT);
       const address = request.session.row.address;
-      const role = workspaceModule.getRole(address);
+      const role = workspaceModule.getSpeakerRole(address);
       const allowedTools = rules.toolsFor(role);
       if (allowedTools === undefined) return;
 
@@ -414,7 +430,7 @@ export class Approval extends cordis.Service {
       if (gate.deny !== undefined) return;
 
       //M 本人（toolsFor 交回 undefined）：不拦。
-      const role = workspaceModule.getRole(gate.session.row.address);
+      const role = workspaceModule.getSpeakerRole(gate.session.row.address);
       const allowedTools = rules.toolsFor(role);
       if (allowedTools === undefined) return;
 
@@ -653,8 +669,8 @@ export class Approval extends cordis.Service {
     if ('by' in verdict) {
       decidedBy = verdict.by;
     }
-    const vars = { 命令: input.command.slice(0, 80), 结论: verdict.result, 谁定的: decidedBy, 原因: verdict.reason };
-    this.ctx.emit('trace', 'Approval.review', '审完一条命令', 'approval.review(input)', vars);
+    const vars = { command: input.command.slice(0, 80), verdict: verdict.result, decidedBy: decidedBy, reason: verdict.reason };
+    this.ctx.emit('trace', 'Approval.review', 'trace.approval.review', 'approval.review(input)', vars);
     return verdict;
   }
 
@@ -675,8 +691,8 @@ export class Approval extends cordis.Service {
     const pending = this.getRow(Number(done.lastInsertRowid)) as Pending;
 
     //T 跟踪：登记了一件待确认。
-    const vars = { 号: pending.id, 谁提的: pending.kind, 机器人: pending.bot, 会话: pending.session ?? '（没有）' };
-    this.ctx.emit('trace', 'Approval.ask', '登记一件待确认，告诉用户', "ctx.emit('approval/asked', pending)", vars);
+    const vars = { id: pending.id, requestedBy: pending.kind, bot: pending.bot, session: pending.session };
+    this.ctx.emit('trace', 'Approval.ask', 'trace.approval.ask', "ctx.emit('approval/asked', pending)", vars);
     this.ctx.emit('approval/asked', pending);
 
     //G 飞书群里的会话不说细节和怎么回：群里谁都看得到、都能回，群里只由飞书卡片那块回一句“要本人确认”，卡片发本人私聊。
@@ -769,8 +785,8 @@ export class Approval extends cordis.Service {
     const pending = this.getRow(id) as Pending;
 
     //T 跟踪：用户定了一件待确认。
-    const vars = { 号: id, 结果: pending.state, 谁定的: by };
-    this.ctx.emit('trace', 'Approval.decide', '定了一件待确认，通知提的人', "ctx.emit('approval/decided', pending)", vars);
+    const vars = { id: id, result: pending.state, decidedBy: by };
+    this.ctx.emit('trace', 'Approval.decide', 'trace.approval.decide', "ctx.emit('approval/decided', pending)", vars);
     this.ctx.emit('approval/decided', pending);
     return pending;
   }
@@ -828,8 +844,8 @@ export class Approval extends cordis.Service {
    */
   private async onRequest(request: ApprovalRequest): Promise<requestEventModule.StripResultId<ApprovalResult>> {
     //T 跟踪：别的插件经事件请审核办事。
-    const vars = { 要做: request.action, 请求号: request.requestId ?? '（不等回执）' };
-    this.ctx.emit('trace', 'Approval.onRequest', '别的插件经事件 approval/request 请审核办事', `approval/request（${request.action}）`, vars);
+    const vars = { action: request.action, requestId: request.requestId };
+    this.ctx.emit('trace', 'Approval.onRequest', 'trace.approval.request', `approval/request（${request.action}）`, vars);
 
     //M review：审一条命令，可能要等审核小会话。
     if (request.action === 'review') {
@@ -918,57 +934,13 @@ export class Approval extends cordis.Service {
     const owner = isOwner(event.message.address);
     const verified = event.message.channel !== 'http' || utils.getField(event.message.address, 'verifiedOwner') === true;
     const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner, verified));
-    const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
+    //M 标记已消费后才执行批复，审批监听者看到的时序保持一致。
+    const answer = this.getTextAnswer(said, waiting);
+    if (answer === undefined) return;
 
-    //M “待确认有哪些”：只列当事人自己能看的项；一件都没有就当普通消息交给前台，不回“现在没有”，免得泄露这是一条审核指令。
-    if ('list' in said) {
-      if (waiting.length === 0) return;
-      event.handled = true;
-      this.answer(bot, waiting[0], `${listText(waiting)}\n回复“同意 号”或“拒绝 号”。`);
-      return;
-    }
-
-    //M 没点号只算卡着会话的（0.4：BotLoop.ts:686-688）；点的号不在自己能处理的里面、或者没有候选 → 不算回答，照常进前台。
-    //G 长跑提醒（同意 = 终止）不认没点号的“同意”：免得随口一句“同意”把会话停了。
-    let candidates = waiting;
-    if (said.id === undefined) {
-      candidates = waiting.filter(isImplicitDecision);
-    }
-    let named: Pending | undefined;
-    if (said.id !== undefined) {
-      named = candidates.find((item) => item.id === said.id);
-    }
-    if (candidates.length === 0 || (said.id !== undefined && named === undefined)) return;
-
-    //M 这条话是在回答待确认，标记一下，前台不用再处理；再挑出要办的几条。
     event.handled = true;
-    let targets: Pending[] = [];
-    if (named !== undefined) {
-      targets = [named];
-    }
-    if (named === undefined && (said.all === true || candidates.length === 1)) {
-      targets = candidates;
-    }
-
-    //G 没点号、候选有好几条又没说“全部”：回一句让用户点明是哪一条，这次不办。
-    if (targets.length === 0) {
-      const text = `现在有 ${String(candidates.length)} 条，要说是哪一条：\n${listText(candidates)}\n回复“同意 号”“拒绝 号”或“全部同意”。`;
-      this.answer(bot, candidates[0], text);
-      return;
-    }
-    for (const item of targets) {
-      //M 逐条把文字批复写入待确认记录并触发决断通知。
-      this.decide(item.id, said.approve, `${event.message.channel} 文字回复`);
-    }
-
-    //M 把办了的号拼成一句话。
-    const ids = targets.map((item) => `#${String(item.id)}`).join('、');
-    let word = '已拒绝';
-    if (said.approve) {
-      word = '已同意';
-    }
-    //M 向会话回复本次文字批复的处理结果。
-    this.answer(bot, targets[0], `${word}待确认 ${ids}。`);
+    this.applyTextAnswer(answer, event.message.channel);
+    this.answer(bot, answer.about, answer.text);
   }
 
   /**
@@ -993,60 +965,79 @@ export class Approval extends cordis.Service {
     const targetSet = new Set(message.targetBots);
     const verified = message.channel !== 'http' || message.origin.address['verifiedOwner'] === true;
     const waiting = this.list().filter((item) => targetSet.has(item.bot) && allowed(item, speaker, owner, verified));
-    const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
+    //M 同条渠道消息只提交一次审批，处理结果发回原聊天。
+    const answer = this.getTextAnswer(said, waiting);
+    if (answer === undefined) return;
 
-    //M “待确认有哪些”：只列当事人自己能看的；一件都没有就放过，当普通消息。
+    if (control !== undefined) {
+      control.approvalHandled = true;
+    }
+    this.applyTextAnswer(answer, message.channel);
+    await this.answerChannel(message, answer.about, answer.text);
+  }
+
+  /**
+   * 从说话人可处理的待确认中选出批复目标和答复文字。
+   * @param said 已经识别的文字指令。
+   * @param waiting 这位说话人有权限处理的待确认。
+   * @returns 本次要回复和处理的内容，没命中时由调用方继续处理普通消息。
+   */
+  private getTextAnswer(said: rules.Reply, waiting: Pending[]): TextAnswer | undefined {
+    //G 无权处理任何一条时把原话留给前台，避免透露审批指令。
+    if (waiting.length === 0) return undefined;
+
+    //M 清单只列授权范围内的项目，不写入审批决定。
     if ('list' in said) {
-      if (waiting.length === 0) return;
-
-      //M 标记这条消息已被审批指令消费，别的机器人不再答一遍；然后把清单回给当事人。
-      if (control !== undefined) control.approvalHandled = true;
-      await this.answerChannel(message, waiting[0], `${listText(waiting)}\n回复“同意 号”或“拒绝 号”。`);
-      return;
+      const list = getListText(waiting);
+      const text = `${list}\n回复“同意 号”或“拒绝 号”。`;
+      return { about: waiting[0]!, text };
     }
 
-    //M 挑候选：没点号的只算卡着会话的（长跑提醒不算，免得随口一句“同意”把会话停了）；点了号的要在候选里。
+    //G 未点号时只考虑正在等文字批复的项目，避免随口同意误停长跑。
     let candidates = waiting;
     if (said.id === undefined) {
       candidates = waiting.filter(isImplicitDecision);
     }
-    let named: Pending | undefined;
-    if (said.id !== undefined) {
-      named = candidates.find((item) => item.id === said.id);
-    }
-    if (candidates.length === 0 || (said.id !== undefined && named === undefined)) return;
+    if (candidates.length === 0) return undefined;
 
-    //M 这条话是在回答待确认，标记已消费；再挑出要办的几条。
-    if (control !== undefined) control.approvalHandled = true;
-    let targets: Pending[] = [];
-    if (named !== undefined) {
+    //M 点号只处理命中的一项，不点号可以批复唯一候选或全部。
+    let targets = candidates;
+    if (said.id !== undefined) {
+      const named = candidates.find((item) => item.id === said.id);
+      if (named === undefined) return undefined;
+
       targets = [named];
     }
-    if (named === undefined && (said.all === true || candidates.length === 1)) {
-      targets = candidates;
+    if (said.id === undefined && said.all !== true && candidates.length > 1) {
+      const list = getListText(candidates);
+      const text = `现在有 ${String(candidates.length)} 条，要说是哪一条：\n${list}\n回复“同意 号”“拒绝 号”或“全部同意”。`;
+      return { about: candidates[0]!, text };
     }
 
-    //G 没点号、候选有好几条又没说“全部”：回一句让用户点明是哪一条，这次不办。
-    if (targets.length === 0) {
-      const text = `现在有 ${String(candidates.length)} 条，要说是哪一条：\n${listText(candidates)}\n回复“同意 号”“拒绝 号”或“全部同意”。`;
-      await this.answerChannel(message, candidates[0], text);
-      return;
-    }
-
-    //M 逐条把文字批复写入待确认记录并触发决断通知。
-    for (const item of targets) {
-      this.decide(item.id, said.approve, `${message.channel} 文字回复`);
-    }
-
-    //M 把办了的号拼成一句话。
+    //M 回话列出实际处理的审批号。
     const ids = targets.map((item) => `#${String(item.id)}`).join('、');
     let word = '已拒绝';
     if (said.approve) {
       word = '已同意';
     }
+    const decision = { targets, approve: said.approve };
+    const text = `${word}待确认 ${ids}。`;
+    return { about: targets[0]!, text, decision };
+  }
 
-    //M 回用户处理结果。
-    await this.answerChannel(message, targets[0], `${word}待确认 ${ids}。`);
+  /**
+   * 在调用方标记消息已消费后保存批复，发出各项的决定事件。
+   * @param answer 刚选出的文字答复和批复事项。
+   * @param channel 说话所在的渠道，用于记录决定来源。
+   */
+  private applyTextAnswer(answer: TextAnswer, channel: string): void {
+    if (answer.decision === undefined) return;
+
+    //M 批复继续走同一个持久化与通知入口。
+    const source = `${channel} 文字回复`;
+    for (const item of answer.decision.targets) {
+      this.decide(item.id, answer.decision.approve, source);
+    }
   }
 
   /**
@@ -1067,40 +1058,11 @@ export class Approval extends cordis.Service {
     const claimKey = protocol.getClaimKey(message.messageId, bot);
     const replyRoundKey = protocol.getReplyRoundKey(message.messageId, bot, 'approval');
     const replyRequestKey = protocol.getReplyRequestKey(replyRoundKey, `approval_${String(Date.now())}`);
-    const snapshot: protocol.SourceSnapshot = {
-      messageId: message.messageId,
-      nativeId: message.nativeId,
-      channel: message.channel,
-      accountId: message.accountId,
-      chatId: message.chatId,
-      chatType: message.chatType,
-      senderId: message.sender.id,
-      role: message.role,
-      targetBots: [...message.targetBots],
-      mentions: structuredClone(message.mentions),
-      origin: { channel: message.origin.channel, address: structuredClone(message.origin.address) },
-      visibility: structuredClone(message.visibility),
-      botName: bot,
-      claimKey,
-      replyRoundKey,
-    };
-    if (message.sender.name !== undefined) {
-      snapshot.senderName = message.sender.name;
-    }
-    //M 把正文包成一段文字，经 channel/reply 请求发回原聊天。
-    const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
-    await protocol.requestChannelReply(this.ctx, {
-      channel: message.channel,
-      bot,
-      replyRequestKey,
-      replyRoundKey,
-      replyIndex: 0,
-      kind: 'final',
-      mode: 'text',
-      sourceSnapshot: snapshot,
-      payloadHash: protocol.getPayloadHash({ kind: 'final', mode: 'text', parts }),
-      parts,
-    });
+    const snapshot = protocol.getSourceSnapshot(message, bot, message.origin, claimKey, replyRoundKey);
+
+    const options = { replyRequestKey, replyIndex: 0, kind: 'final' as const };
+    //M 将文字确认发回原消息所在的聊天。
+    await protocol.requestTextReply(this.ctx, snapshot, text, options);
   }
 
   /**
@@ -1148,7 +1110,7 @@ export class Approval extends cordis.Service {
       return;
     }
     //T 跟踪：没有会话可回。
-    this.ctx.emit('trace', 'Approval.answer', '没有会话可回，这句只记在跟踪里', "ctx.emit('bot/say')", { 机器人: bot, 话: text });
+    this.ctx.emit('trace', 'Approval.answer', 'trace.approval.answerWithoutSession', "ctx.emit('bot/say')", { bot: bot, spoken: text });
   }
 
   /**
@@ -1331,17 +1293,17 @@ function reviewCard(
   if (what === '') {
     what = `说不清会做成什么（命令：${input.command}）`;
   }
-  const whatLine = `要做什么：${textModule.clip(what, CARD_LINE_MAX)}`;
+  const whatLine = `要做什么：${textModule.clipText(what, CARD_LINE_MAX)}`;
 
   //M 第二行“动哪些”：命令里的路径和审核列的路径。
-  const pathsLine = `动哪些：${textModule.clip(getCardPaths(input, paths), CARD_LINE_MAX)}`;
+  const pathsLine = `动哪些：${textModule.clipText(getCardPaths(input, paths), CARD_LINE_MAX)}`;
 
   //M 第三行“为什么问你”：每一档没放行的原因；一条都没有（不该出现）就照实说。
   let askText = asks.join('；');
   if (askText === '') {
     askText = '前几档都没能放行';
   }
-  const askLine = `为什么问你：${textModule.clip(askText, CARD_LINE_MAX)}`;
+  const askLine = `为什么问你：${textModule.clipText(askText, CARD_LINE_MAX)}`;
 
   //M 风险说明写具体理由：审核小会话的理由原文，没给就写“审核没给出理由”。
   const riskText = getReviewReason(answer);
@@ -1422,6 +1384,15 @@ export function allowed(
   //G 说话人在群里，或这件是群里的会话提的 → 只认本人。
   if (workspaceModule.isGroup(speaker) || workspaceModule.isGroup(item)) return false;
   return item.actor !== undefined && item.actor !== '' && item.actor === speaker.actor;
+}
+
+/**
+ * 生成说话人有权查看的待确认项目列表。
+ * @param items 待确认事项。
+ * @returns 每行显示编号与标题的清单。
+ */
+function getListText(items: Pending[]): string {
+  return items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
 }
 
 /** 需要专门确认的卡片只能用按钮或带编号的文字决定。 */

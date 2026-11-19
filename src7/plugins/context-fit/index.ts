@@ -1,14 +1,15 @@
 /**
  * 会话上下文与总结、压缩（由 compress、context-fit、summary 合一；主名沿用被依赖/后置裁剪最靠后的 context-fit）：
  *   1. Summary（Summary.ts，听 session/change）：干活的会话做完一轮写一句总结进 row.summary；
- *   2. Compress（Compress.ts，先听 session/request）：上一步用量达到阈值时把旧对话压成摘要（写 compress_log）；
- *   3. ContextFit（本文件，后听 session/request）：压缩后仍超预算时，先省略旧工具结果、再按段丢掉最早对话。
- * 顺序保证：Compress 必须排在 ContextFit 之前注册到 session/request，才能先把超长历史压缩后再做窗口裁剪。
+ *   2. Compress（Compress.ts）：上一步用量达到模型窗口比例时把旧对话压成摘要（写 compress_log）；
+ *   3. ContextFit（本文件）：压缩后仍超预算时，先省略旧工具结果、再按段丢掉最早对话。
+ * 在同一个 session/before-model 监听里先按窗口压缩，再裁剪请求。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as utils from '../../utils/index.ts';
 import type * as dbModule from '../db/index.ts';
 import * as compressModule from './Compress.ts';
 import compressionSql from './migrations/0000_compress_log.sql' with { type: 'text' };
@@ -22,7 +23,7 @@ export { readSummaryEnabled } from './Summary.ts';
 /** 插件名。 */
 export const name = 'context-fit';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.2';
+export const version = '1.1.3';
 
 /** Resources 读模型上限，Sessions 开小会话，db 管压缩表。 */
 export const inject = ['resources', 'sessions', 'db'];
@@ -44,16 +45,19 @@ export interface Config {
 
 /** 裁完的结果。 */
 export interface Fitted {
+  /** 裁剪后保留的对话消息 Message。role 区分消息种类，content 放内容，timestamp 记时间。 */
   messages: piAi.Message[];
   tokens: number;
   trimmed: number;
   dropped: number;
 }
 
-/** 模型清单回执中裁剪用到的字段。 */
-interface CatalogWindow {
-  /** 模型窗口上限，单位 token。 */
-  contextWindow: number;
+/** 求得的两个窗口，0 表示无可用窗口。 */
+interface ModelWindow {
+  /** 真实登记的窗口，用于决定是否压缩。 */
+  registered: number;
+  /** 裁剪允许使用既有的估算窗口。 */
+  fit: number;
 }
 
 /** 模型目录查询最多等三秒。 */
@@ -70,7 +74,7 @@ export function estimate(value: unknown): number {
 
 /**
  * 一条工具结果换成“已省略”。
- * @param message 工具结果。
+ * @param message 工具结果 ToolResultMessage。toolCallId 对应调用，content 存正文和图片，isError 标记失败。
  * @param order 第几条（从 1 数）。
  */
 function trimmed(message: piAi.ToolResultMessage, order: number): piAi.ToolResultMessage {
@@ -179,14 +183,84 @@ function readConfig(config: Record<string, unknown> | undefined): Config {
   return { keep, ratio };
 }
 
+/**
+ * 先查模型目录，再查经过 Resources 校验的手写配置。
+ * @param ctx 插件上下文，用来查模型目录和配置。
+ * @param modelName 要发请求的供应商名/模型 ID。
+ * @param signal 会话的取消信号，启动检查时省略。
+ * @returns 压缩使用已登记的窗口，裁剪也可使用既有的估算值。
+ */
+async function readModelWindow(ctx: cordis.Context, modelName: string, signal?: AbortSignal): Promise<ModelWindow> {
+  const lookup = { action: 'find', model: modelName } as const;
+  const options = {
+    timeoutMs: CATALOG_WAIT_MS,
+    signal,
+    onFallback: () => ({ requestId: '' }),
+  };
+  //M 两个处理阶段共用这次目录查询。会话取消时结束等待。
+  const result = await requestEventModule.requestEvent(
+    ctx,
+    'model-catalog/request',
+    'model-catalog/result',
+    lookup,
+    options,
+  );
+  const info = result.info;
+  const listed = info?.contextWindow ?? 0;
+  if (listed > 0 && info?.contextWindowEstimated !== true) return { registered: listed, fit: listed };
+
+  //M 从原始配置识别明确登记的窗口，Resources 的校验结果会为省略项补估算值。
+  const slash = modelName.indexOf('/');
+  const providerName = modelName.slice(0, slash);
+  const modelId = modelName.slice(slash + 1);
+  const rawProvider = utils.getField(ctx.resources.raw['providers'], providerName);
+  const rawModels = utils.getField(rawProvider, 'models');
+  const rawModel = utils.getField(rawModels, modelId);
+  const written = utils.getField(rawModel, 'context_window');
+  if (typeof written === 'number' && written > 0) return { registered: written, fit: written };
+
+  //G 压缩只认登记值。裁剪继续用模型目录或 Resources 的保守估算。
+  if (listed > 0) return { registered: 0, fit: listed };
+  if (ctx.resources.config.providers[providerName] === undefined) return { registered: 0, fit: 0 };
+
+  const model = ctx.resources.getModel(modelName);
+  return { registered: 0, fit: model.contextWindow };
+}
+
+/** 启动时汇总默认模型、手写模型和兼容配置中的未登记窗口。 */
+async function warnMissingWindows(ctx: cordis.Context): Promise<void> {
+  const config = ctx.resources.config;
+  const names = new Set([config.defaultModel]);
+  //M 纳入所有在 providers 里列出或自定义兼容方式的模型。
+  utils.eachEntry(config.providers, (providerName, provider) => {
+    const ids = [...Object.keys(provider.models), ...Object.keys(provider.modelCompat)];
+    for (const id of ids) {
+      names.add(`${providerName}/${id}`);
+    }
+  });
+
+  const missing: string[] = [];
+  for (const name of names) {
+    //M 使用与请求相同的登记规则，查不到就加入本次启动的汇总。
+    const window = await readModelWindow(ctx, name);
+    if (window.registered === 0) {
+      missing.push(name);
+    }
+  }
+  if (missing.length === 0) return;
+
+  const models = missing.join('、');
+  console.warn(`context-fit 有模型尚未登记上下文窗口，自动压缩会跳过 ${models}`);
+}
+
 
 /**
  * 挂上总结、压缩与上下文裁剪。
- * 按固定先后挂载：先挂总结（session/change）→ 再挂压缩（先听 session/request）→ 最后挂上下文裁剪（后听 session/request）。
+ * 模型请求先压缩历史，再按窗口预算裁剪。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param raw 插件配置（可带 keep、ratio，以及子配置 compress、summary）。
  * @throws `keep`、`ratio`、`compress` 或 `summary` 配置不合法时抛错。
- * 副作用：按顺序挂载 Summary、Compress（若启用）以及 `session/request` 窗口裁剪监听。
+ * 副作用：挂载总结与模型请求监听，启动时汇总缺少窗口的模型。
  */
 export function apply(ctx: cordis.Context, raw: Record<string, unknown> | undefined): void {
   //M 入口统一校验裁剪、总结与压缩三部分配置，不合法直接阻止加载。
@@ -198,41 +272,30 @@ export function apply(ctx: cordis.Context, raw: Record<string, unknown> | undefi
   if (summaryEnabled) {
     new summaryModule.Summary(ctx);
   }
-  //M 顺序关键：Compress 必须在 ContextFit 之前监听 session/request，使压缩后的 [摘要, ...尾部] 继续接受窗口预算裁剪。
+  let compress: compressModule.Compress | undefined;
   if (compressSettings.enabled) {
-    //M 启动时先迁移自有表，再让 Compress 开始查询和保存摘要。
+    //M 启动时先迁移自有表，再准备查询和保存摘要。
     ctx.db.migrate(compressionMigrations);
-    const compressConfig = { at: compressSettings.at, keep: compressSettings.keep };
+    const compressConfig = { ratio: compressSettings.ratio, keep: compressSettings.keep };
     const orm = ctx.db.orm;
-    new compressModule.Compress(ctx, compressConfig, orm);
+    compress = new compressModule.Compress(ctx, compressConfig, orm);
   }
 
-  //M 听 session/request：所有种类的会话都裁。
-  ctx.on('session/request', async (request) => {
-    const lookup = { action: 'find', model: request.model } as const;
-    const options = {
-      timeoutMs: CATALOG_WAIT_MS,
-      signal: request.signal,
-      onFallback: () => ({ requestId: '' }),
-    };
+  //M 启动时等模型目录监听挂好，再汇总一次窗口登记。
+  ctx.once('ready', () => warnMissingWindows(ctx));
 
-    //M 先问清单的窗口上限，会话喊停时结束这次等待。
-    const result = await requestEventModule.requestEvent(
-      ctx,
-      'model-catalog/request',
-      'model-catalog/result',
-      lookup,
-      options,
-    );
-    const info: CatalogWindow | undefined = result.info;
-    let window = info?.contextWindow ?? 0;
-    if (window === 0) {
-      //M 没有目录上限就用 providers 手写的上限。
-      const model = ctx.resources.getModel(request.model);
-      window = model.contextWindow;
+  //M 查一次模型窗口，先按登记值压缩，再按裁剪预算处理请求。
+  ctx.on('session/before-model', async (request) => {
+    const windows = await readModelWindow(ctx, request.model, request.signal);
+    if (request.signal.aborted) return;
+
+    if (compress !== undefined) {
+      //M 先写入摘要，再让裁剪计算这一轮真正要发的消息。
+      await compress.onRequest(request, windows.registered);
     }
 
     //G 上限不为正数时跳过裁剪。
+    const window = windows.fit;
     if (window <= 0) return;
 
     //G 扣除系统提示与工具定义占用后算出对话预算，未超预算时直接放行。
@@ -246,9 +309,9 @@ export function apply(ctx: cordis.Context, raw: Record<string, unknown> | undefi
 
     //T 跟踪：裁了。
     const vars = {
-      会话: request.session.id, 模型: request.model, 上限: window, 预算: budget,
-      裁前: before, 裁后: fitted.tokens, 换掉: fitted.trimmed, 丢了: fitted.dropped,
+      session: request.session.id, model: request.model, contextLimit: window, budget: budget,
+      tokensBefore: before, tokensAfter: fitted.tokens, trimmedCount: fitted.trimmed, droppedCount: fitted.dropped,
     };
-    ctx.emit('trace', 'ContextFit.fit', '装不下，裁了旧的工具结果', 'fit(request.messages, budget, keep)', vars);
+    ctx.emit('trace', 'ContextFit.fit', 'trace.contextFit.trim', 'fit(request.messages, budget, keep)', vars);
   });
 }

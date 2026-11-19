@@ -143,26 +143,7 @@ export class DispatchClaim {
   ): QueueItem {
     //M 构造本轮不可变来源快照（深拷贝 origin，避免后续渠道地址覆盖）。
     const replyRoundKey = protocol.getReplyRoundKey(message.messageId, bot.name, 'receive');
-    const snapshot: protocol.SourceSnapshot = {
-      messageId: message.messageId,
-      nativeId: message.nativeId,
-      channel: message.channel,
-      accountId: message.accountId,
-      chatId: message.chatId,
-      chatType: message.chatType,
-      senderId: message.sender.id,
-      role: message.role,
-      targetBots: [...message.targetBots],
-      mentions: structuredClone(message.mentions),
-      origin: { channel: botOrigin.channel, address: structuredClone(botOrigin.address) },
-      visibility: structuredClone(message.visibility),
-      botName: bot.name,
-      claimKey,
-      replyRoundKey,
-    };
-    if (message.sender.name !== undefined) {
-      snapshot.senderName = message.sender.name;
-    }
+    const snapshot = protocol.getSourceSnapshot(message, bot.name, botOrigin, claimKey, replyRoundKey);
 
     //M 网页发话时带的“正在看哪儿”：跟着快照走，前台这一轮的提示（ChannelTools）和历史工具的默认目标都读它。
     if (message.view !== undefined) {
@@ -259,26 +240,7 @@ export class DispatchClaim {
 
     //M 给这次延迟接话编一个回复轮键，写进来源快照，修复轮、回执都认它。
     const replyRoundKey = protocol.getReplyRoundKey(message.messageId, bot.name, 'judge_followup');
-    const snapshot: protocol.SourceSnapshot = {
-      messageId: message.messageId,
-      nativeId: message.nativeId,
-      channel: message.channel,
-      accountId: message.accountId,
-      chatId: message.chatId,
-      chatType: message.chatType,
-      senderId: message.sender.id,
-      role: message.role,
-      targetBots: [...message.targetBots],
-      mentions: structuredClone(message.mentions),
-      origin: { channel: botOrigin.channel, address: structuredClone(botOrigin.address) },
-      visibility: structuredClone(message.visibility),
-      botName: bot.name,
-      claimKey: followKey,
-      replyRoundKey,
-    };
-    if (message.sender.name !== undefined) {
-      snapshot.senderName = message.sender.name;
-    }
+    const snapshot = protocol.getSourceSnapshot(message, bot.name, botOrigin, followKey, replyRoundKey);
     const startIndex = Math.max(0, front.row.messages.length - 1);
     const replyControl: ReplyControl = {
       roundKey: replyRoundKey,

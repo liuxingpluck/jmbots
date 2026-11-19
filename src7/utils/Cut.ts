@@ -29,7 +29,7 @@ export interface Cut {
  * @param text 原文。
  * @returns 留下的开头一段。
  */
-export function head(text: string): Cut {
+export function keepLeadingLines(text: string): Cut {
   //M 按行拆开并从开头方向受限截取，保留靠前最核心内容。
   return take(text.split('\n'), false);
 }
@@ -40,14 +40,14 @@ export function head(text: string): Cut {
  * @param text 原文。
  * @returns 留下的结尾一段。
  */
-export function tail(text: string): Cut {
+export function keepTrailingLines(text: string): Cut {
   //M 按行拆开并从结尾反向截取，保住命令末端的报错或结论。
   return take(text.split('\n'), true);
 }
 
 
 /**
- * head、tail 共用：照方向一行行收。
+ * keepLeadingLines、keepTrailingLines 共用：照方向一行行收。
  * @param lines 原文切好的行。
  * @param fromEnd true 从结尾往前收。
  */
@@ -79,7 +79,7 @@ function take(lines: string[], fromEnd: boolean): Cut {
  * @param max 最多几个字。
  * @returns 没超就是原文。
  */
-export function chars(text: string, max: number): string {
+export function clipTextWithLength(text: string, max: number): string {
   if (text.length <= max) return text;
 
   return `${text.slice(0, max)}……（共 ${String(text.length)} 字，后面省略）`;

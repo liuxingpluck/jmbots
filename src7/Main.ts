@@ -30,6 +30,7 @@ declare module 'cordis' {
      *   src7/plugins/assist/index.ts 的 apply
      *   src7/plugins/base-bridge/UpdateWatch.ts 的 mountUpdateWatch
      *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen
+     *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/cli/index.ts 的 Cli.constructor
      *   src7/plugins/feishu/index.ts 的 Feishu.constructor
      *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
@@ -57,14 +58,17 @@ declare module 'cordis' {
  * @throws 命令行、config.yaml 不对，或试运行却没配 http 插件时抛错；文件最底下接住。
  */
 async function main(argv: string[]): Promise<void> {
+  //==========================================================
+  //M 处理启动参数并挂上基础服务
+  //==========================================================
   //M version 子命令：只打印版本表就退出，不起服务。
   if (argv[0] === 'version') {
-    versions.print();
+    versions.printVersionInfo();
     return;
   }
 
   //M 在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。
-  backendLog.install();
+  backendLog.installBackendErrorLogger();
 
   //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。
   let flags = argv;
@@ -81,6 +85,9 @@ async function main(argv: string[]): Promise<void> {
   await app.plugin(toolsModule.Tools);
   await app.plugin(sessionsModule.Sessions);
 
+  //==========================================================
+  //M 决定要挂哪些插件并监听它们的启动状态
+  //==========================================================
   //M 按配置顺序发起挂载，逐个等到启动完成或超过等待上限。
   const { plugins: configured, pluginMountTimeoutMs } = app.resources.config;
 
@@ -100,7 +107,7 @@ async function main(argv: string[]): Promise<void> {
 
   function recordPluginFailure(row: resourcesModule.PluginStatus, error: unknown): void {
     //G 启动真的失败才记为失败，错误原文给标准错误排查。
-    const text = textModule.getMessage(error);
+    const text = textModule.getErrorMessage(error);
     console.error(`插件 ${row.name} 没挂上：${text}`);
     row.mounted = false;
     row.started = false;
@@ -135,6 +142,9 @@ async function main(argv: string[]): Promise<void> {
     });
   }, { prepend: true });
 
+  //==========================================================
+  //M 按配置顺序发起挂载并限时等待
+  //==========================================================
   for (const entry of entries) {
     //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。
     const builtIn = pluginIndex.BUILT_IN[entry.name];
@@ -196,6 +206,9 @@ async function main(argv: string[]): Promise<void> {
     app.resources.pluginStatus.push(row);
   }
 
+  //==========================================================
+  //M 记录缺失依赖，通知开工并续跑会话
+  //==========================================================
   //G 缺注入的插件会等服务出现，保留原有的缺服务说明。
   for (const row of app.resources.pluginStatus) {
     if (!row.mounted || row.started) continue;
@@ -248,6 +261,6 @@ const argv = process.argv.slice(2);
 try {
   await main(argv);
 } catch (error) {
-  console.error(`没跑成：${textModule.getMessage(error)}`);
+  console.error(`没跑成：${textModule.getErrorMessage(error)}`);
   process.exit(1);
 }

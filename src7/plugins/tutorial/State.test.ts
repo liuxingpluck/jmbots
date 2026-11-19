@@ -91,6 +91,7 @@ const resources = {
   raw: { providers: { fake: { api_key: 'sk-FAKE-KEY-123456' } }, plugins: [{ name: 'relay', config: relayConfig }] },
   config: {
     defaultModel: 'fake/echo',
+    sessionCacheMax: 500,
     thinking: 'low',
     providers: {
       fake: { baseUrl: 'http://10.9.9.9/v1', apiKey: 'sk-FAKE-KEY-123456', api: 'openai-completions', models: { echo: { maxTokens: 4096 } } },
@@ -527,14 +528,14 @@ describe('运行时变量', () => {
     handlers['internal/dispatch']?.('emit', 'web-api/received', [{ id: 32, text: '帮我查一下 #调试' }]);
     lines.push({ id: 3, at: baseAt + 10, kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: 32, vars: {} });
     lines.push({ id: 4, at: baseAt + 11, kind: '函数', name: 'Bots.receive', listeners: [], text: '收到', site: 'src7/plugins/bots/index.ts:10', sessionId: 's32', messageId: 32, vars: { 渠道: 'feishu', 机器人: '周小灵' } });
-    lines.push({ id: 5, at: baseAt + 12, kind: '事件', name: 'session/message', listeners: [], text: '', site: 'src7/Sessions.ts:10', sessionId: 's32', messageId: 32, vars: { 角色: 'user', 说了: '帮我查一下' } });
+    lines.push({ id: 5, at: baseAt + 12, kind: '事件', name: 'session/new-message', listeners: [], text: '', site: 'src7/Sessions.ts:10', sessionId: 's32', messageId: 32, vars: { 角色: 'user', 说了: '帮我查一下' } });
 
     lines.push({ id: 6, at: baseAt + 20, kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: 33, vars: {} });
     lines.push({ id: 7, at: baseAt + 20, kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: 33, vars: {} });
-    lines.push({ id: 8, at: baseAt + 21, kind: '事件', name: 'session/message', listeners: [], text: '', site: 'src7/Sessions.ts:10', sessionId: 's33', messageId: 33, vars: { 角色: 'user', 说了: '普通消息三十三' } });
+    lines.push({ id: 8, at: baseAt + 21, kind: '事件', name: 'session/new-message', listeners: [], text: '', site: 'src7/Sessions.ts:10', sessionId: 's33', messageId: 33, vars: { 角色: 'user', 说了: '普通消息三十三' } });
 
     lines.push({ id: 9, at: baseAt + 30, kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: 34, vars: {} });
-    lines.push({ id: 10, at: baseAt + 31, kind: '事件', name: 'session/message', listeners: [], text: '', site: 'src7/Sessions.ts:10', sessionId: 's34', messageId: 34, vars: { 角色: 'user', 说了: '普通消息三十四' } });
+    lines.push({ id: 10, at: baseAt + 31, kind: '事件', name: 'session/new-message', listeners: [], text: '', site: 'src7/Sessions.ts:10', sessionId: 's34', messageId: 34, vars: { 角色: 'user', 说了: '普通消息三十四' } });
 
     const canvases = (await app.inject({ method: 'GET', url: '/api/tutorial/canvases' })).json() as {
       list: { name: string }[];

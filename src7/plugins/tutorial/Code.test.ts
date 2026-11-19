@@ -163,7 +163,7 @@ describe('Skeleton：系统骨架左栏与代码提取', () => {
     const sessionsReadme = await skeletonModule.getSkeletonReadme('sessions', source);
     expect(sessionsReadme.file).toBe('src7/Sessions.ts');
     expect(sessionsReadme.text).toContain(`# sessions v${versionsModule.VERSION}`);
-    expect(sessionsReadme.text).toContain('session/request');
+    expect(sessionsReadme.text).toContain('session/before-model');
     expect(sessionsReadme.text).toContain('Sessions.create');
 
     //M main 代码清单应包含入口 main 函数与 utils 工具模块导出函数。

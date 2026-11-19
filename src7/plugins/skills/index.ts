@@ -94,16 +94,16 @@ export function list(roots: string[]): Skill[] {
  * 挂上技能。
  * apply 是 Cordis 插件的入口：inject 里的服务就绪后 Cordis 调一次。没有配置。
  * @param ctx Cordis 给这个插件的 ctx。
- * 副作用：监听 session/request 往干活会话系统提示词注入技能清单，并登记只读工具 skill。
+ * 副作用：监听 session/before-model 往干活会话系统提示词注入技能清单，并登记只读工具 skill。
  */
 export function apply(ctx: cordis.Context): void {
   /** 这个机器人能用的技能：先全局后个人。每次现扫，不缓存（改了马上生效）。 */
   const getSkills = (bot: string): Skill[] => list([
-    ctx.resources.dir('skills'), ctx.resources.dir('bots', bot, 'skills'),
+    ctx.resources.ensureRuntimeDir('skills'), ctx.resources.ensureRuntimeDir('bots', bot, 'skills'),
   ]);
 
-  //M 听 session/request：只给干活的会话加技能清单（前台、小会话不带，同 0.4）。
-  ctx.on('session/request', (request) => {
+  //M 听 session/before-model：只给干活的会话加技能清单（前台、小会话不带，同 0.4）。
+  ctx.on('session/before-model', (request) => {
     //G 非 work 会话不需要注入技能清单，直接跳过。
     const row = request.session.row;
     if (row.kind !== 'work') return;

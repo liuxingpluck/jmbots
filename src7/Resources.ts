@@ -6,11 +6,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as util from 'node:util';
+import type { TraceLanguage } from '../web/src/locales/Trace.ts';
 import { Database } from 'bun:sqlite';
 import * as piAi from '@earendil-works/pi-ai';
 import * as piAnthropic from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
 import * as piCompletions from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import * as piResponses from '@earendil-works/pi-ai/api/openai-responses.lazy';
+import * as piCatalog from '@earendil-works/pi-ai/providers/all';
 import * as cordis from 'cordis';
 import * as yaml from 'yaml';
 import type { Thinking } from './Sessions.ts';
@@ -28,6 +30,8 @@ declare module 'cordis' {
   interface Events {
     /**
      * Resources 成功应用 config.yaml 更新后发出。当前无内置监听者。
+     * 谁发：src7/Resources.ts 的 Resources.reloadConfig
+     * 谁接：暂无
      * @param keys 新增、删除或内容有变化的顶层键名。
      */
     'config/changed'(keys: string[]): void;
@@ -50,8 +54,14 @@ export interface ProviderConfig {
   apiKey: string;
   /** 请求协议。 */
   api: 'openai-completions' | 'openai-responses' | 'anthropic-messages';
-  /** 手写的模型：模型 ID → 上下文多长、最多输出多少、会不会思考、收不收图片（vision: true 收）。没写的模型用保守值。 */
-  models: Record<string, { contextWindow: number; maxTokens: number; reasoning: boolean; input: ('text' | 'image')[] }>;
+  /** 手写的模型。窗口、输入类型和思考映射经过配置入口校验。 */
+  models: Record<string, {
+    contextWindow: number;
+    maxTokens: number;
+    reasoning: boolean;
+    input: ('text' | 'image')[];
+    thinkingLevelMap?: piAi.ThinkingLevelMap;
+  }>;
   /** 发请求时的兼容设置（compat 段），所有模型共用；原样交给 pi。 */
   compat: Record<string, unknown>;
   /** 个别模型再加的兼容设置（model_compat 段）：模型 ID → 设置，盖在 compat 上面。 */
@@ -114,6 +124,8 @@ export function getPluginProblems(status: PluginStatus[]): string[] {
 
 /** config.yaml 里骨架用到的那几项，校验后。由 utils/Checks.ts 的 checkConfig 交回。 */
 export interface JmbotsConfig {
+  /** 控制台及文件跟踪点使用的语言。 */
+  traceLanguage: TraceLanguage;
   /** 新会话默认用的模型，供应商名/模型 ID。 */
   defaultModel: string;
   /** 各家供应商：名字 → 地址、密钥、协议、模型。 */
@@ -122,6 +134,8 @@ export interface JmbotsConfig {
   plugins: PluginEntry[];
   /** 开工前最多等待单个插件挂载的毫秒数。 */
   pluginMountTimeoutMs: number;
+  /** 内存里最多留几场打开过的会话（session_cache_max）；超了挪出最久没用、闲着的，见 Sessions.openedSessions。 */
+  sessionCacheMax: number;
   /** 新会话默认的思考档（models.thinking）。 */
   thinking: Thinking;
   /** 模型请求出错怎么重试（models.retry）。 */
@@ -197,7 +211,15 @@ export class Resources extends cordis.Service {
   /** 数据库连接 data/jmbots7.db；会话存在里面，插件也在里面建自己的表。 */
   readonly db: Database;
 
-  /** 建好了各家供应商的 pi 集合；Sessions.chat() 用它发请求。 */
+  /**
+   * pi-ai 的 `MutableModels` 集中管理运行中的供应商。Sessions.chat() 通过它发请求。
+   * - `setProvider(provider)` 按供应商 `id` 新增或替换实例。
+   * - `deleteProvider(id)` 移除指定供应商。
+   * - `clearProviders()` 清除已登记的供应商。
+   * - `getModel(provider, id)` 从当前目录读一个对话模型，找不到时返回 `undefined`。
+   * - `completeSimple(model, context, options)` 等待一次对话模型的完整回答。
+   * 全部成员见 node_modules/@earendil-works/pi-ai/dist/models.d.ts:201，继承的 `Models` 见同文件 137 行。
+   */
   readonly models: piAi.MutableModels;
 
   /**
@@ -222,7 +244,7 @@ export class Resources extends cordis.Service {
     this.current = readConfig(file);
 
     //M 开数据库 data/jmbots7.db（没有就建）；这个服务被拔掉时关。
-    const dbFile = path.join(this.dir('data'), 'jmbots7.db');
+    const dbFile = path.join(this.ensureRuntimeDir('data'), 'jmbots7.db');
     this.db = new Database(dbFile, { create: true });
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.ctx.effect(() => {
@@ -241,6 +263,19 @@ export class Resources extends cordis.Service {
 
   /** 按 ID 更新 pi 集合。密钥变动由请求时的解析回调处理。 */
   private updateProviders(providers: JmbotsConfig['providers'], previous: JmbotsConfig['providers']): void {
+    //==========================================================
+    //M 准备新增或连接配置变更的供应商
+    //==========================================================
+    /**
+     * 待登记的 pi-ai `Provider` 实例连接模型目录、鉴权和请求。
+     * - `id` 是供应商标识，用于登记和查找。
+     * - `name` 是展示名。
+     * - `baseUrl` 可选，是请求的基础地址。
+     * - `auth` 提供供应商鉴权。
+     * - `getModels()` 同步读取当前已知的对话模型。
+     * - `streamSimple(model, context, options)` 发出对话请求并返回事件流。
+     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/models.d.ts:72。
+     */
     const created: piAi.Provider[] = [];
     utils.eachEntry(providers, (name, provider) => {
       const old = previous[name];
@@ -249,7 +284,7 @@ export class Resources extends cordis.Service {
       //M 先建好新增或连接参数变动的供应商，再更新现有集合。
       const getApi = CHAT_APIS[provider.api];
       const api = getApi();
-      const auth = this.getAuth(provider, name);
+      const auth = this.getProviderAuth(provider, name);
       const options = {
         id: name, baseUrl: provider.baseUrl, auth, models: [], api,
       };
@@ -257,6 +292,9 @@ export class Resources extends cordis.Service {
       created.push(item);
     });
 
+    //==========================================================
+    //M 把配置变更应用到运行中的供应商集合
+    //==========================================================
     //M 移除配置里删掉的供应商，再登记准备好的新实现。
     const configured = Object.keys(previous);
     for (const name of configured) {
@@ -303,7 +341,7 @@ export class Resources extends cordis.Service {
       this.updateProviders(next.config.providers, this.config.providers);
       this.current = next;
     } catch (error) {
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       console.error(`config.yaml 重读失败，继续使用原配置：${reason}`);
       return;
     }
@@ -316,9 +354,12 @@ export class Resources extends cordis.Service {
    * 交给 pi 的供应商鉴权。对话模型和 decision 的分类器都用它。
    * @param provider 配置中的供应商对象，用于兼容调用方按对象登记。
    * @param name 调用方已知道的供应商名。
-   * @returns 每次请求前按供应商名从当前配置解析密钥和地址。
+   * @returns pi-ai 的 `ProviderAuth`，描述供应商可用的鉴权方式。
+   * - `apiKey` 可选，通过 `resolve()` 提供请求凭据。这里每次从当前配置取密钥和地址。
+   * - `oauth` 可选，定义 `login()`、`refresh()` 和 `toAuth()` 等登录与令牌处理能力。
+   * 全部字段见 node_modules/@earendil-works/pi-ai/dist/auth/types.d.ts:241。
    */
-  getAuth(provider: ProviderConfig, name?: string): piAi.ProviderAuth {
+  getProviderAuth(provider: ProviderConfig, name?: string): piAi.ProviderAuth {
     const providers = this.config.providers;
     const providerName = name ?? Object.keys(providers).find((key) => providers[key] === provider);
     return {
@@ -340,11 +381,11 @@ export class Resources extends cordis.Service {
 
   /**
    * 运行时目录下的一个文件夹，没有就建。
-   * @param parts 一层层的文件夹名，比如 dir('bots', '助手', 'workspace')。
+   * @param parts 一层层的文件夹名，比如 ensureRuntimeDir('bots', '助手', 'workspace')。
    * @returns 绝对路径。
    * 副作用：可能建目录。
    */
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     //M 确保运行时目录下的目标路径可供调用方使用。
     return filesModule.ensureDir(full);
@@ -353,7 +394,19 @@ export class Resources extends cordis.Service {
   /**
    * 照“供应商名/模型 ID”拼出 pi 的模型对象。
    * @param name 供应商名/模型 ID。
-   * @returns Sessions.chat() 要的那个模型。
+   * @returns Sessions.chat() 用的 pi-ai `Model<Api>`，是一份可发对话请求的模型定义。
+   * - `id` 是供应商中的模型标识。
+   * - `provider` 是供应商标识。
+   * - `baseUrl` 是接口地址。
+   * - `api` 是接口适配器标识。`Api` 包含已知标识和扩展字符串。
+   *   jmbots 在这里用 `'openai-completions'`、`'openai-responses'` 或 `'anthropic-messages'`。
+   * - `input` 列出支持的输入模态，元素为 `'text'` 或 `'image'`。
+   * - `reasoning` 表示模型是否支持思考。
+   * - `thinkingLevelMap` 保存配置或 pi 内置的档位映射。
+   * - `contextWindow` 是上下文 token 窗口。
+   * - `maxTokens` 是模型声明的输出 token 上限。
+   * - `cost` 是输入、输出和缓存的计费单价。
+   * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:643，`BaseModel` 与 `Api` 见同文件 630、21 行。
    * @throws 供应商不在配置里时抛错。
    */
   getModel(name: string): piAi.Model<piAi.Api> {
@@ -368,13 +421,13 @@ export class Resources extends cordis.Service {
       throw new Error(`模型 ${name} 的供应商不在 config.yaml 的 providers 里`);
     }
 
-    /** 手写的四项：contextWindow、maxTokens、reasoning、input；没写用保守值。 */
+    /** 经过校验的模型字段，未手写的模型先取保守值。 */
     const written = provider.models[id] ?? checks.MODEL_DEFAULTS;
     //M 兼容设置：供应商的 compat，再盖上这个模型自己的 model_compat。
     const compat = { ...provider.compat, ...provider.modelCompat[id] };
 
     //M 拼成 pi 的模型对象；骨架不算费用，cost 都写 0。
-    return {
+    const model = {
       id,
       name: id,
       provider: providerName,
@@ -384,5 +437,21 @@ export class Resources extends cordis.Service {
       compat,
       ...written,
     } as piAi.Model<piAi.Api>;
+
+    //G 先用已校验的配置覆盖映射。
+    if (model.thinkingLevelMap !== undefined) return model;
+
+    //M 同一供应商、模型和协议才沿用 pi 内置映射，保持配置的请求地址与其他设置。
+    const builtinProviders = piCatalog.getBuiltinProviders();
+    const builtinProvider = builtinProviders.find((item) => item === providerName);
+    if (builtinProvider === undefined) return model;
+
+    const builtinModels: piAi.Model<piAi.Api>[] = piCatalog.getBuiltinModels(builtinProvider);
+    const builtin = builtinModels.find((item) => item.id === id && item.api === provider.api);
+    if (builtin?.thinkingLevelMap === undefined) return model;
+
+    model.thinkingLevelMap = { ...builtin.thinkingLevelMap };
+    model.reasoning = builtin.reasoning;
+    return model;
   }
 }

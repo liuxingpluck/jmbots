@@ -10,6 +10,7 @@
  * 对外：index.ts 的 journal/request 用 trail、reply-lines 两个 action 交出去；tutorial 收启动轨迹时直接 import 本文件（纯函数，不用 journal 挂着）。
  * 本文件不 import 别的插件，也不 import 同目录的 index.ts。
  */
+import * as traceText from '../../../web/src/locales/Trace.ts';
 
 
 /** 一段函数注释：启动轨迹由 tutorial/Source.ts 从源码取（CodeDoc，字段更多），这里只认名字，别的原样带给页面。 */
@@ -25,6 +26,8 @@ export interface TrailLine {
   at: number;
   kind: string;
   name: string;
+  /** Cordis 发法；旧流水和启动合成行可传旧文字或省略。 */
+  mode?: string;
   listeners: string[];
   text: string;
   site: string;
@@ -50,8 +53,10 @@ export interface TrailRow {
   kind: string;
   /** 跟踪点是“模块.函数”，事件是事件名。 */
   name: string;
-  /** 一句人话：函数行用它自己的，事件行按事件名配。 */
+  /** 文案编号或旧行原文。 */
   text: string;
+  /** 当前文案需要的插值。旧行没有。 */
+  params?: traceText.TraceParams;
   /** 事件行：听的人（去掉只记账的 journal、tutorial、usage）。 */
   listeners: string[];
   /** 文件:行号。 */
@@ -149,24 +154,35 @@ const FACT_NOTES = Object.fromEntries(Object.entries(FACT_KEYS).map(([said, key]
 const ROW_NOTES: Record<string, string> = { name: '这一行是哪个函数或事件' };
 
 /** 会话状态的说法。 */
-const STATE_WORDS: Record<string, string> = { running: '开始跑', done: '做完了', failed: '出错停了', stopped: '被停下' };
+const STATE_TEXT: Record<string, string> = {
+  running: 'trace.event.sessionRunning',
+  done: 'trace.event.sessionDone',
+  failed: 'trace.event.sessionFailed',
+  stopped: 'trace.event.sessionStopped',
+};
 
-/** 事件名 → 一句人话（session/change、session/message 要看变量，另外配）。 */
-const EVENT_WORDS: Record<string, string> = {
-  'web-api/received': '收件表记下这条消息',
-  'web-api/replied': '回话写回收件表（网页轮询就能看到）',
-  'channel/message': '渠道收到消息并广播给各机器人按名字认领',
-  'channel/reply': '请求渠道发出纯文字回复',
-  'channel/replied': '渠道返回发送回执',
-  'channel/history': '向渠道查询当前聊天或提及历史',
-  'channel/history-result': '渠道返回历史记录结果',
-  'bot/receive': '挨个问：这条消息谁来接、进哪场会话',
-  'bot/say': '会话中途先回一句',
-  'session/request': '要调模型了，挨个问各插件补提示词、工具、记忆',
-  'session/after-model': '模型回来了，回答接进对话前挨个问一声（能改、能喊停）',
-  'session/before-tool': '调工具前挨个问一声（审批可以拦）',
-  'session/after-tool': '工具做完了，结果接进对话前挨个问一声（能改、能喊停）',
-  'model/failed': '模型调用失败',
+/** 旧流水里的事件仍照原样存储，拼轨迹时用当前的事件名。 */
+const TRAIL_EVENT_NAMES = new Map([
+  ['session/request', 'session/before-model'],
+  ['session/message', 'session/new-message'],
+]);
+
+/** 事件名 → 一句人话（session/change、session/new-message 要看变量，另外配）。 */
+const EVENT_TEXT: Record<string, string> = {
+  'web-api/received': 'trace.event.webApiReceived',
+  'web-api/replied': 'trace.event.webApiReplied',
+  'channel/message': 'trace.event.channelMessage',
+  'channel/reply': 'trace.event.channelReply',
+  'channel/replied': 'trace.event.channelReplied',
+  'channel/history': 'trace.event.channelHistory',
+  'channel/history-result': 'trace.event.channelHistoryResult',
+  'bot/receive': 'trace.event.botReceive',
+  'bot/say': 'trace.event.botSay',
+  'session/before-model': 'trace.event.sessionRequest',
+  'session/after-model': 'trace.event.sessionAfterModel',
+  'session/before-tool': 'trace.event.sessionBeforeTool',
+  'session/after-tool': 'trace.event.sessionAfterTool',
+  'model/failed': 'trace.event.modelFailed',
 };
 
 /** 一条请求最多拿几行。 */
@@ -210,44 +226,51 @@ export function getNode(site: string): string {
 export function isLineError(line: TrailLine): boolean {
   if (line.name === 'model/failed') return true;
 
-  //M 跟踪点的变量是中文名（出错）；启动轨迹的行 vars 就是 facts，是英文名（failed）。
-  const failed = line.vars['出错'] ?? line.vars['failed'];
+  //M 优先读取稳定键，旧流水原字段仍可定位错误。
+  const failed = line.vars['failed'] ?? line.vars['出错'];
   if (failed === true || failed === 'true' || failed === 1) return true;
 
-  return line.name === 'session/change' && line.vars['状态'] === 'failed';
+  const state = line.vars['state'] ?? line.vars['状态'];
+  return line.name === 'session/change' && state === 'failed';
 }
 
 
 /**
  * 事件行配一句人话。
  * @param line 事件行。
+ * @param name 当前事件名，旧流水中的名字已映射。
  * @returns 认不得的事件是空串。
  */
-function getEventText(line: TrailLine): string {
-  //M 会话状态变了：照状态说。
-  if (line.name === 'session/change') {
-    const state = String(line.vars['状态'] ?? '');
-    const word = STATE_WORDS[state];
-    if (word !== undefined) return `会话${word}`;
-
-    return `会话状态变成 ${state}`;
+export function getEventTextId(line: TrailLine, name: string): string {
+  if (name === 'session/change') {
+    const state = String(line.vars['state'] ?? line.vars['状态'] ?? '');
+    return STATE_TEXT[state] ?? 'trace.event.sessionChanged';
   }
+  if (name !== 'session/new-message') return EVENT_TEXT[name] ?? '';
 
-  //M 会话里多了一条：照角色说；模型的回答要了工具就说要了哪些。
-  if (line.name === 'session/message') {
-    const role = line.vars['角色'];
-    if (role === 'user') return '记下用户这句话';
-    if (role === 'toolResult') return `工具 ${String(line.vars['工具'] ?? '')} 给了结果`;
-    if (role !== 'assistant') return '会话里多了一条';
+  const role = line.vars['role'] ?? line.vars['角色'];
+  if (role === 'user') return 'trace.event.userMessage';
+  if (role === 'toolResult') return 'trace.event.toolResult';
+  if (role !== 'assistant') return 'trace.event.sessionMessage';
+  const calls = line.vars['toolCalls'] ?? line.vars['要了工具'];
+  if (calls === undefined) return 'trace.event.modelAnswer';
 
-    const calls = line.vars['要了工具'];
-    if (calls === undefined) return '模型给出回答';
+  return 'trace.event.toolCalls';
+}
 
-    return `模型要用工具：${String(calls)}`;
-  }
 
-  //M 别的事件：查表，查不到是空串。
-  return EVENT_WORDS[line.name] ?? '';
+/** 新行交画布文案编号，旧行保持之前的显示。 */
+function getEventText(line: TrailLine, name: string): string {
+  const id = getEventTextId(line, name);
+  const mode = line.mode ?? '';
+  if (traceText.getTraceModeId(mode) !== mode) return id;
+
+  const params = {
+    state: String(line.vars['state'] ?? line.vars['状态'] ?? ''),
+    tool: String(line.vars['tool'] ?? line.vars['工具'] ?? ''),
+    toolCalls: String(line.vars['toolCalls'] ?? line.vars['要了工具'] ?? ''),
+  };
+  return traceText.getTraceText('zh', id, params);
 }
 
 
@@ -258,7 +281,7 @@ function getEventText(line: TrailLine): string {
 function getFacts(vars: Record<string, unknown>): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
   for (const [said, key] of Object.entries(FACT_KEYS)) {
-    const value = vars[said];
+    const value = vars[key] ?? vars[said];
     if (typeof value === 'number' || typeof value === 'boolean') {
       out[key] = value;
       continue;
@@ -288,7 +311,7 @@ export function pick(
   lines: TrailLine[],
 ): { picked: TrailLine[]; session: string | null; state: string } {
   //M 会话：先找带着这个消息号又带会话的行（Timeline.reply）；没有就用开始后第一个出现的会话（Bot.receive）。
-  const carries = (line: TrailLine): boolean => line.messageId === message || line.vars['消息号'] === message;
+  const carries = (line: TrailLine): boolean => line.messageId === message || (line.vars['messageId'] ?? line.vars['消息号']) === message;
   const byMessage = lines.find((line) => line.sessionId !== null && carries(line));
   const firstSession = lines.find((line) => line.sessionId !== null);
   const session = byMessage?.sessionId ?? firstSession?.sessionId ?? null;
@@ -308,7 +331,8 @@ export function pick(
     //M 这一行是不是这条请求的：消息号对得上、会话对得上、或会话出现前不带会话和消息号的。
     const mine = carries(line);
     const sameSession = session !== null && line.sessionId === session;
-    const loose = !seenSession && line.sessionId === null && line.messageId === null && line.vars['消息号'] === undefined;
+    const rawMessageId = line.vars['messageId'] ?? line.vars['消息号'];
+    const loose = !seenSession && line.sessionId === null && line.messageId === null && rawMessageId === undefined;
     if (endAt !== null && !sameSession && !mine) continue;
     if (!mine && !sameSession && !loose) continue;
 
@@ -321,10 +345,11 @@ export function pick(
     picked.push(line);
 
     //M 会话这一轮结束了：记下时刻和状态，再收一小会儿。
-    const ended = sameSession && line.name === 'session/change' && line.vars['状态'] !== 'running';
+    const recordedState = line.vars['state'] ?? line.vars['状态'];
+    const ended = sameSession && line.name === 'session/change' && recordedState !== 'running';
     if (ended && endAt === null) {
       endAt = line.at;
-      state = String(line.vars['状态'] ?? 'unknown');
+      state = String(recordedState ?? 'unknown');
     }
 
     //G 回话已写回收件表 → 这条请求结束。
@@ -351,8 +376,9 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
     if (next !== undefined) {
       gap = next.at - line.at;
     }
-    //M 事件行按预设描述模板取人话，函数行再覆写为跟踪点自带的描述。
-    let text = getEventText(line);
+    //M 新旧流水用相同事件名分组和取描述，函数行用跟踪点自带的描述。
+    const name = TRAIL_EVENT_NAMES.get(line.name) ?? line.name;
+    let text = getEventText(line, name);
     if (line.kind === '函数') {
       text = line.text;
     }
@@ -360,8 +386,9 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
       t: line.at - start,
       gap,
       kind: line.kind,
-      name: line.name,
+      name,
       text,
+      params: traceText.getTraceParams(text, line.vars),
       listeners: line.listeners.filter((name) => !PASSIVE.has(name)),
       site: line.site,
       facts: line.facts ?? getFacts(line.vars),
@@ -395,7 +422,7 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
     }
     //M 用到下一步开始的间隔算耗时，再提炼这一步的标题。
     step.ms = until - step.t;
-    step.title = getTitle(step);
+    step.title = traceText.getTraceStepTitle(step.rows, (text, params) => traceText.getTraceText('zh', text, params));
 
     //M 收到通知但这一轮里自己没留下跟踪点的插件，单列出来。
     const heard = new Set(step.rows.flatMap((row) => row.listeners));
@@ -417,17 +444,21 @@ export function getTrail(message: number, lines: TrailLine[]): Trail {
   const { steps, start, end } = getSteps(picked);
 
   //M 机器人、渠道、用户那句话：各找第一行带着的。
-  const botLine = picked.find((line) => typeof line.vars['机器人'] === 'string');
-  const channelLine = picked.find((line) => typeof line.vars['渠道'] === 'string');
-  const userLine = picked.find((line) => line.vars['角色'] === 'user' && typeof line.vars['说了'] === 'string');
-  const preview = String(userLine?.vars['说了'] ?? '').trim();
+  const botLine = picked.find((line) => typeof (line.vars['bot'] ?? line.vars['机器人']) === 'string');
+  const channelLine = picked.find((line) => typeof (line.vars['channel'] ?? line.vars['渠道']) === 'string');
+  const userLine = picked.find((line) => {
+    const role = line.vars['role'] ?? line.vars['角色'];
+    const content = line.vars['content'] ?? line.vars['说了'];
+    return role === 'user' && typeof content === 'string';
+  });
+  const preview = String(userLine?.vars['content'] ?? userLine?.vars['说了'] ?? '').trim();
 
   const anyError = steps.some((step) => step.error);
   return {
     message,
     session,
-    bot: String(botLine?.vars['机器人'] ?? ''),
-    channel: String(channelLine?.vars['渠道'] ?? ''),
+    bot: String(botLine?.vars['bot'] ?? botLine?.vars['机器人'] ?? ''),
+    channel: String(channelLine?.vars['channel'] ?? channelLine?.vars['渠道'] ?? ''),
     preview,
     at: start,
     ms: end - start,
@@ -471,32 +502,3 @@ export function getBootTrail(lines: TrailLine[], notes: Record<string, string> =
 }
 
 
-/**
- * 一步的标题：优先用第一句函数行的人话，没有就用前三句事件说明；等模型的长间隔、执行的工具点出来。
- * @param step 收好的一步。
- */
-function getTitle(step: TrailStep): string {
-  //M 先找函数行的人话；没有函数行（全是事件）时，把前三句不同的事件说明连起来；再没有用第一行的名字。
-  const texts = step.rows.map((row) => row.text).filter((text) => text !== '');
-  const events = [...new Set(texts)].slice(0, 3).join('，');
-  const fnRow = step.rows.find((row) => row.kind === '函数' && row.text !== '');
-  let said = fnRow?.text ?? events;
-  if (said === '') {
-    said = step.rows[0]?.name ?? '';
-  }
-
-  //M 有等模型的长间隔：标题写等了几秒，接着是模型的回答。
-  const waited = step.rows.find((row) => row.name === 'Session.loop' && row.gap >= 500);
-  if (waited !== undefined) {
-    const answer = step.rows.find((row) => row.name === 'session/message' && row.facts['role'] === 'assistant');
-    const seconds = (waited.gap / 1000).toFixed(1);
-    return `调模型（等了 ${seconds} 秒）→ ${answer?.text ?? said}`;
-  }
-
-  //M 执行工具这类，标题里带上工具名。
-  const toolRow = step.rows.find((row) => row.kind === '函数' && typeof row.facts['tool'] === 'string');
-  const tool = toolRow?.facts['tool'];
-  if (typeof tool === 'string' && !said.includes(tool)) return `${said}：${tool}`;
-
-  return said;
-}

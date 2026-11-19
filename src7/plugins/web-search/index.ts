@@ -99,7 +99,7 @@ class WebSearch {
         if (failed.length > 0) {
           before = `；前面没成：${failed.join('；')}`;
         }
-        return `（用 ${provider.name} 搜的${before}）\n\n${cut.chars(text, MAX_CHARS)}`;
+        return `（用 ${provider.name} 搜的${before}）\n\n${cut.clipTextWithLength(text, MAX_CHARS)}`;
       } catch (error) {
         //G 点了停止 → 不再试下一家，抛出去（骨架记成“已停止”）。
         if (signal.aborted) throw error;
@@ -108,7 +108,7 @@ class WebSearch {
         this.trace(index, provider, false, 0);
 
         //M 网关的报错正文可能把请求头回显出来，密钥在这里换成 ***，不进给模型的话。
-        let safeMessage = textModule.getMessage(error);
+        let safeMessage = textModule.getErrorMessage(error);
         if (provider.apiKey !== '') {
           safeMessage = safeMessage.replaceAll(provider.apiKey, '***');
         }
@@ -127,8 +127,8 @@ class WebSearch {
    */
   private trace(index: number, provider: SearchProvider, ok: boolean, chars: number): void {
     //T 跟踪：试了一家搜索。
-    const vars = { 第几家: index + 1, 名字: provider.name, 种类: provider.kind, 成没成: ok, 字数: chars };
-    this.ctx.emit('trace', 'WebSearch.search', '试了一家搜索', 'this.once(provider, query, signal)', vars);
+    const vars = { providerIndex: index + 1, name: provider.name, category: provider.kind, ok: ok, length: chars };
+    this.ctx.emit('trace', 'WebSearch.search', 'trace.webSearch.tryProvider', 'this.once(provider, query, signal)', vars);
   }
 
   /**

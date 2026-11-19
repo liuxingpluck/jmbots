@@ -79,13 +79,13 @@ export interface Timings {
  */
 export function timingsText(steps: number, timings: Timings, usedMs: number): string {
   const parts: string[] = [];
-  if (steps > 0) parts.push(`思考 ${String(steps)} 步 ${textModule.getDuration(timings.modelMs)}`);
+  if (steps > 0) parts.push(`思考 ${String(steps)} 步 ${textModule.formatDuration(timings.modelMs)}`);
   if (timings.tools.length > 0) {
     const byTime = [...timings.tools].sort((left, right) => right.ms - left.ms);
-    const toolTexts = byTime.map((item) => `${item.name} ×${String(item.count)} ${textModule.getDuration(item.ms)}`);
+    const toolTexts = byTime.map((item) => `${item.name} ×${String(item.count)} ${textModule.formatDuration(item.ms)}`);
     parts.push(toolTexts.join('、'));
   }
-  parts.push(`总共 ${textModule.getDuration(usedMs)}`);
+  parts.push(`总共 ${textModule.formatDuration(usedMs)}`);
   return parts.join('；');
 }
 
@@ -103,7 +103,7 @@ export function argsBrief(args: Record<string, unknown>): string {
     ?? args['text']
     ?? args['action']
     ?? args['prompt'];
-  if (typeof main === 'string') return textModule.clip(main.replace(/\s+/gu, ' '), 60);
+  if (typeof main === 'string') return textModule.clipText(main.replace(/\s+/gu, ' '), 60);
 
   return '';
 }
@@ -133,7 +133,7 @@ export function readVerdict(text: string): Verdict {
   const json = extractJson(text);
   //G 未提取到有效对象或关键布尔字段缺失时，按无法判定处理并带上原回答片段停下收尾。
   if (json === undefined || typeof json['absurd'] !== 'boolean' || typeof json['handoff'] !== 'boolean') {
-    return none(`审核的回答读不出结论，停下收尾：${textModule.clip(text.replace(/\s+/gu, ' '), 200)}`);
+    return none(`审核的回答读不出结论，停下收尾：${textModule.clipText(text.replace(/\s+/gu, ' '), 200)}`);
   }
   let absurdWhy = '';
   if (typeof json['absurdWhy'] === 'string') {

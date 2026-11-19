@@ -109,7 +109,7 @@ test('定时标准消息发给原群指定机器人，日报工具只查同群�
     const request: ChatRequest = {
       session, tools, signal, model: 'fake/report', thinking: 'low', system: [], messages: [],
     };
-    await ctx.serial('session/request', request);
+    await ctx.serial('session/before-model', request);
     expect(request.tools.map((tool) => tool.name)).toEqual(['channel_reply', 'channel_search']);
     const denied = { session, call: { name: 'read' } } as ToolGate;
     await ctx.serial('session/before-tool', denied);
@@ -126,8 +126,8 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
   const db = new Database(':memory:');
   try {
     ctx.provide('resources', {
-      db, root: process.cwd(), raw: { bots: [{ name: BOT }] }, dir: () => process.cwd(),
-      config: { defaultModel: 'fake/report', thinking: 'low', plugins: [], providers: {} },
+      db, root: process.cwd(), raw: { bots: [{ name: BOT }] }, ensureRuntimeDir: () => process.cwd(),
+      config: { defaultModel: 'fake/report', sessionCacheMax: 500, thinking: 'low', plugins: [], providers: {} },
       getModel: () => ({ input: ['text'] }),
     });
     ctx.provide('workspaces', { ensureDefault: () => undefined, getAccess: () => ({}) });
@@ -147,7 +147,7 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
       channel: 'feishu',
       sendDirectText: (text, request) => { sent.push({ chat: request.sourceSnapshot.chatId, text }); },
     });
-    ctx.on('session/request', (request) => {
+    ctx.on('session/before-model', (request) => {
       const last = request.messages.at(-1);
       if (last?.role === 'toolResult' && last.toolName === 'channel_reply') {
         request.answer = piAi.fauxAssistantMessage('已发送日报');

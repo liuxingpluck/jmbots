@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as utils from '../../utils/index.ts';
 import * as protocol from '../../Channels.ts';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 
 
 /** channels/cli/*.jsonl 单行原始记录结构。 */
@@ -34,21 +35,25 @@ export class CliHistory {
    * @param ctx Cli 插件的 Cordis 上下文（随插件卸载自动注销监听）。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M 响应渠道历史查询事件，仅处理 channel 为 cli 的请求。
-    this.ctx.on('channel/history', (request) => this.onChannelHistory(request));
+    const options = {
+      replySynchronously: true,
+      filter: (request: protocol.ChannelHistoryRequest) => request.channel === this.name,
+    };
+    //M 命令行历史按请求号应答，渠道只负责授权和读取记录。
+    requestEvents.onRequestEvent(
+      this.ctx,
+      'channel/history',
+      'channel/history-result',
+      (request) => this.getHistory(request),
+      options,
+    );
   }
 
   /**
    * 处理命令行历史查询请求：校验权限与游标后读取 channels/cli/*.jsonl 分页返回。
    * @param request 渠道历史查询请求。
    */
-  private onChannelHistory(request: protocol.ChannelHistoryRequest): void {
-    if (request.channel !== this.name) return;
-
-    request.handled = true;
-    const emitResult = (result: protocol.ChannelHistoryResult): void => {
-      this.ctx.emit('channel/history-result', { ...result, requestId: request.requestId });
-    };
+  private getHistory(request: protocol.ChannelHistoryRequest): protocol.ChannelHistoryResult {
 
     //M 把命令行聊天别名归一，供权限判断和记录筛选共用。
     const snapshot = request.sourceSnapshot;
@@ -58,28 +63,14 @@ export class CliHistory {
     const isOwner = protocol.isHistoryOwner(snapshot);
     const isSameChat = snapshot.channel === this.name && targetChatId === snapshot.chatId;
     if (!isOwner && !isSameChat) {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'forbidden', message: `无权访问命令行聊天 ${targetChatId}` },
-      });
-      return;
+      const message = `无权访问命令行聊天 ${targetChatId}`;
+      return protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'forbidden', message);
     }
 
     //G 命令行渠道不支持平台 @ 提及过滤，明确返回 identity_unresolved。
     if (request.mode === 'mentions') {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: `${this.name}:local:${targetChatId}`,
-        completeness: 'local_only',
-        error: { code: 'identity_unresolved', message: '命令行渠道没有平台 @ 提及标识' },
-      });
-      return;
+      const message = '命令行渠道没有平台 @ 提及标识';
+      return protocol.getHistoryError(`${this.name}:local:${targetChatId}`, 'local_only', 'identity_unresolved', message);
     }
 
     //M 读取目标聊天的记录，按照统一游标分页并发回查询结果。
@@ -91,9 +82,7 @@ export class CliHistory {
       chatId: targetChatId,
       entries,
     });
-
-    //M 分页结果带回原请求号，供发起方对应到这次查询。
-    emitResult(result);
+    return result;
   }
 
   /**

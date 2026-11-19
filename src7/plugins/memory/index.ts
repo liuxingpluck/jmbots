@@ -141,24 +141,24 @@ export class Memory {
       run: (args, session) => this.run(args, session),
     });
 
-    //M 听 session/request：每一步调模型前骨架挨个问插件（ctx.serial），前台加“先查记忆”的提示，干活的会话加开场搜到的那段。
-    ctx.on('session/request', (request) => this.onRequest(request));
+    //M 听 session/before-model：每一步调模型前骨架挨个问插件（ctx.serial），前台加“先查记忆”的提示，干活的会话加开场搜到的那段。
+    ctx.on('session/before-model', (request) => this.onRequest(request));
 
-    //M 听 session/message（通知）：用户看得到的会话（有渠道、没有 parent）每接一条就收进聊天记录。收不成只打日志，不挡会话。
+    //M 听 session/new-message（通知）：用户看得到的会话（有渠道、没有 parent）每接一条就收进聊天记录。收不成只打日志，不挡会话。
     if (settings.history) {
-      ctx.on('session/message', (session, message) => {
+      ctx.on('session/new-message', (session, message) => {
         if (message.role !== 'user' && message.role !== 'assistant') return;
         void store.ingestSession(session.row).then((count) => {
           if (count > 0) {
             session.save();
           }
-        }).catch((error: unknown) => console.error(`记忆库收聊天记录出错：${textModule.getMessage(error)}`));
+        }).catch((error: unknown) => console.error(`记忆库收聊天记录出错：${textModule.getErrorMessage(error)}`));
       });
     }
   }
 
   /**
-   * 响应 session/request。前台：这一轮有 memory 工具、又能带私人记忆，加“先查记忆”的提示（MEMORY_HINT）。
+   * 响应 session/before-model。前台：这一轮有 memory 工具、又能带私人记忆，加“先查记忆”的提示（MEMORY_HINT）。
    * 干活的会话（开场先搜）：第一次调模型前搜一次，结果记在 row.recall，以后每一步带同一段。
    * @param request 这一步的请求。
    */
@@ -249,8 +249,8 @@ export class Memory {
       session.save();
 
       //T 跟踪：开场先搜完了。
-      const vars = { 会话: session.id, 技能: hits.length, 引用: cited.length, 用时毫秒: Date.now() - started };
-      this.ctx.emit('trace', 'Memory.recall', '开场先搜完了', 'recall.local + Search.find', vars);
+      const vars = { session: session.id, skillCount: hits.length, citationCount: cited.length, durationMs: Date.now() - started };
+      this.ctx.emit('trace', 'Memory.recall', 'trace.memory.recall', 'recall.local + Search.find', vars);
     }
     if (row.recall !== '') {
       request.system.push(row.recall);
@@ -348,7 +348,7 @@ export class Memory {
     if (bot === undefined) throw new Error(`没有这个机器人：${session.row.bot}`);
 
     //M 公共记忆目录：所有机器人共用，scope 写 shared 才用它。
-    const shared = this.ctx.resources.dir('memory');
+    const shared = this.ctx.resources.ensureRuntimeDir('memory');
     let dir = bot.memory;
     if (args['scope'] === 'shared') {
       dir = shared;
@@ -384,9 +384,9 @@ export class Memory {
       //M 写入前确保记忆文件的上层目录存在。
       filesModule.ensureDir(parentDir);
       fs.writeFileSync(file, content, 'utf8');
-      //M 交回写了多大（utils/Text.ts 的 getSizeText）。
+      //M 交回写了多大（utils/Text.ts 的 formatByteSize）。
       const bytes = Buffer.byteLength(content, 'utf8');
-      const sizeText = textModule.getSizeText(bytes);
+      const sizeText = textModule.formatByteSize(bytes);
       return `已写入记忆 ${file}（${sizeText}）`;
     }
     fs.rmSync(file);
@@ -415,7 +415,7 @@ export class Memory {
   /** 两个技能目录：全局的、机器人自己的。 */
   private skillRoots(bot: string): string[] {
     //M 目录从资源服务（resources）算：机器人自己的 skills/ 在前，全局 skills/ 在后。
-    return [this.ctx.resources.dir('bots', bot, 'skills'), this.ctx.resources.dir('skills')];
+    return [this.ctx.resources.ensureRuntimeDir('bots', bot, 'skills'), this.ctx.resources.ensureRuntimeDir('skills')];
   }
 
   /** 机器人的语言，不写是 zh（和 prompt 同一个读法）。 */
@@ -568,7 +568,7 @@ export class MemoryService extends cordis.Service {
     //M   方法抛的错（记忆服务没在线、记不成、搜不成）转成 { ok: false, error }，调用方不干等超时。
     const options = {
       onError: (error: unknown) => {
-        const message = textModule.getMessage(error);
+        const message = textModule.getErrorMessage(error);
         return { ok: false, error: message };
       },
     };
@@ -646,7 +646,7 @@ export class MemoryService extends cordis.Service {
       return { url, ok: response.ok, ms: Date.now() - started, ...body };
     } catch (error) {
       //M 连不上、超时也不抛：把原因写进交回的 error，让调用方（记忆页、关系图页）显示。
-      return { url, ok: false, ms: Date.now() - started, error: textModule.getMessage(error) };
+      return { url, ok: false, ms: Date.now() - started, error: textModule.getErrorMessage(error) };
     }
   }
 
@@ -824,7 +824,7 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   routes(ctx, store, graphRoutes, memoryService);
 
   //M 全部挂完先同步一次知识库（后台跑，不挡启动）。
-  ctx.on('ready', () => void store.syncKnowledge(true).catch((error: unknown) => console.error(`知识库同步出错：${textModule.getMessage(error)}`)));
+  ctx.on('ready', () => void store.syncKnowledge(true).catch((error: unknown) => console.error(`知识库同步出错：${textModule.getErrorMessage(error)}`)));
 }
 
 
@@ -939,7 +939,7 @@ function routes(
         //M 写一篇知识库文件并马上收进记忆库，成功交回文件路径；失败（名字不合法之类）回 400 并带原因。
         return { file: await store.writeKnowledge(bot, body['name'], body['content']) };
       } catch (error) {
-        return reply.code(400).send({ error: textModule.getMessage(error) });
+        return reply.code(400).send({ error: textModule.getErrorMessage(error) });
       }
     });
 

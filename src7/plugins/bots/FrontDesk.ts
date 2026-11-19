@@ -13,7 +13,7 @@
  * 用户发了图片而前台模型不收图片：提醒前台把图转给后台；hand_session 这时新开的后台会话用看图模型（vision_model）。
  * 2026-11-17 由插件 bot-front-desk 并进 bots（用户 #114、#115）：只挪了位置，逻辑没改。
  * 记忆库只由 memory 读写，前台发请求事件 memory/request 请它办（askMemory，2026-11-18 起不再 inject memory）：
- *   没挂 memory 时不记历史向量、搜历史没有语义结果，前台照常答话；“先查记忆”的提示由 memory 自己在 session/request 里加。
+ *   没挂 memory 时不记历史向量、搜历史没有语义结果，前台照常答话；“先查记忆”的提示由 memory 自己在 session/before-model 里加。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
@@ -96,13 +96,13 @@ interface HistoryRange {
 export class FrontDesk {
   /** 这一轮已读取前台归档的次数：前台会话号 → 次数。 */
   private readonly historyCalls = new Map<string, number>();
-  /** 会话正在转时来的只听的话：前台会话号 → 排着的用户话；这一轮结束再存进对话（listen、session/change）。 */
+  /** 正在转的会话暂存只听不回的 Message，role 为 user，content 存正文，timestamp 记时间。本轮结束后入对话。 */
   private readonly heard = new Map<string, piAi.Message[]>();
   /** 会话正在转时来的、要判断的话：前台会话号 → 最后一句；这一轮结束记完排着的话，再对它问一次决策模型（session/change）。 */
   private readonly judgeLater = new Map<string, JudgeLater>();
   /**
    * 登记统一记忆工具可查询的前台归档。
-   * 监听 session/request、session/message、session/change、bot/say、channel/replied、channel/reply。
+   * 监听 session/before-model、session/new-message、session/change、bot/say、channel/replied、channel/reply。
    * @param ctx Cordis 给的 ctx。
    * @param config 带多少条往来。
    */
@@ -122,10 +122,10 @@ export class FrontDesk {
 
     //M 收消息不听 bot/receive：Bot.receive 问完 bot/receive 没人认领，才经 Dispatch.receive 调 onReceive。
     //M 前台会话每一步调模型前：onRequest 把最近往来拼成一条 system 消息，加上查历史的提示。
-    this.ctx.on('session/request', (request) => this.onRequest(request));
+    this.ctx.on('session/before-model', (request) => this.onRequest(request));
 
     //M 会话里每进一条消息：onMessage 看它是不是用户说的话，是的话记一条往来。
-    this.ctx.on('session/message', (session, message) => {
+    this.ctx.on('session/new-message', (session, message) => {
       this.onMessage(session, message);
     });
 
@@ -492,8 +492,8 @@ export class FrontDesk {
     }
 
     //T 跟踪：问决策模型要不要接话。
-    const vars = { 会话: session.id, 几句: recent.length };
-    this.ctx.emit('trace', 'FrontDesk.judge', '群里没 @ 机器人的话，问决策模型要不要接话', 'decision.judge(question)', vars);
+    const vars = { session: session.id, messageCount: recent.length };
+    this.ctx.emit('trace', 'FrontDesk.judge', 'trace.bots.judgeGroupReply', 'decision.judge(question)', vars);
 
     //M 问决策模型：allow 才接话，deny、unsure 都不接；分数用来写进流水。
     const verdict = await decision.judge(input);
@@ -568,13 +568,13 @@ export class FrontDesk {
   }
 
   /**
-   * 只听的话存进对话（不走 session.add：那是要它往下走的话，下一步就会调模型），再各记一条往来。
+   * 只听的话存进对话（不走 session.queueUserMessage：那是要它往下走的话，下一步就会调模型），再各记一条往来。
    * @param session 前台对话。
    * @param messages 要存的用户话。
    * 副作用：改对话并存库；写往来记录。
    */
   private record(session: Session, messages: piAi.Message[]): void {
-    //M 直接放进对话的消息列表（不走 session.add，免得推它调模型），存库。
+    //M 直接放进对话的消息列表（不走 session.queueUserMessage，免得推它调模型），存库。
     session.row.messages.push(...messages);
     session.save();
 
@@ -584,12 +584,12 @@ export class FrontDesk {
     }
 
     //T 跟踪：只听的话记进前台对话。
-    const vars = { 会话: session.id, 几句: messages.length };
-    this.ctx.emit('trace', 'FrontDesk.record', '群里没 @ 机器人的话记进前台对话当背景，不回', 'session.row.messages.push(...)', vars);
+    const vars = { session: session.id, messageCount: messages.length };
+    this.ctx.emit('trace', 'FrontDesk.record', 'trace.bots.recordGroupContext', 'session.row.messages.push(...)', vars);
   }
 
   /**
-   * 响应 session/request：给前台对话拼上下文。
+   * 响应 session/before-model：给前台对话拼上下文。
    * @param request 这一步的请求；改它的 messages。
    */
   private async onRequest(request: ChatRequest): Promise<void> {
@@ -635,8 +635,8 @@ export class FrontDesk {
     }
 
     //T 跟踪：拼最近往来。
-    const vars = { 会话: row.id, 带了几条往来: entries?.length ?? 0, 这一轮几条: thisRound.length };
-    this.ctx.emit('trace', 'FrontDesk.onRequest', '给前台对话拼上最近往来', 'request.messages = …', vars);
+    const vars = { session: row.id, contextMessages: entries?.length ?? 0, turnMessages: thisRound.length };
+    this.ctx.emit('trace', 'FrontDesk.onRequest', 'trace.bots.addRecentContext', 'request.messages = …', vars);
     request.messages = thisRound;
 
     //M 没有更早的往来：不拼背景，只看这一轮有没有图片要提醒，然后就这样发给模型。
@@ -722,7 +722,7 @@ export class FrontDesk {
   }
 
   /**
-   * 响应 session/message：用户说的话记一条往来。
+   * 响应 session/new-message：用户说的话记一条往来。
    * @param session 哪场会话。
    * @param message 刚接进对话的那一条。
    */
@@ -734,6 +734,7 @@ export class FrontDesk {
       const active = (row.resultQueue ?? []).find((item) => item.key === row.activeKey);
       const replyControl = active?.replyControl;
       if (replyControl !== undefined && replyControl.policy === 'channel_tool') {
+        //M ToolCall 是模型要求执行的工具，id 对应结果，name 指工具，arguments 带参数。
         const calls = message.content.filter((block): block is piAi.ToolCall => block.type === 'toolCall');
         let changed = false;
         for (const call of calls) {

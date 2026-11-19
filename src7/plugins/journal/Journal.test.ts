@@ -48,7 +48,7 @@ class FakeResources extends cordis.Service {
     }
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -56,7 +56,7 @@ class FakeResources extends cordis.Service {
 }
 
 
-/** 构造内存 Session 对象。 */
+/** 构造带对话的内存 Session。Message 用 role 区分种类，content 存内容，timestamp 记时间。 */
 function makeSession(
   id: string,
   state: SessionRow['state'],
@@ -72,6 +72,7 @@ function makeSession(
     state,
     reply: '这一轮好了',
     messages,
+    steps: 1,
     updatedAt: Date.now(),
   };
   if (parent !== undefined) {
@@ -125,7 +126,7 @@ describe('journal（含 FilesMirror 并入）', () => {
 
     //M 发出模拟 web-api 收消息和会话事件。
     ctx.emit('trace', 'WebApi.accept', '收件表记下', 'insert()', { 消息号: 42, 会话: 's_req_1', 机器人: '小记' });
-    await ctx.serial('session/message', makeSession('s_req_1', 'running', []), {
+    await ctx.serial('session/new-message', makeSession('s_req_1', 'running', []), {
       role: 'user',
       content: '早上好',
       timestamp: Date.now(),
@@ -134,11 +135,11 @@ describe('journal（含 FilesMirror 并入）', () => {
 
     const allEvents = ctx.journal.query({});
     expect(allEvents.some((e) => e.kind === '函数' && e.name === 'WebApi.accept')).toBe(true);
-    expect(allEvents.some((e) => e.kind === '事件' && e.name === 'session/message')).toBe(true);
+    expect(allEvents.some((e) => e.kind === '事件' && e.name === 'session/new-message')).toBe(true);
 
     const sessionEvents = ctx.journal.query({ name: 'session/*', kind: '事件', limit: '5' });
     expect(sessionEvents).toHaveLength(1);
-    expect(sessionEvents[0]?.name).toBe('session/message');
+    expect(sessionEvents[0]?.name).toBe('session/new-message');
 
     const bySession = ctx.journal.query({ session: 's_req_1' });
     expect(bySession.length).toBeGreaterThanOrEqual(2);
@@ -236,10 +237,10 @@ describe('journal（含 FilesMirror 并入）', () => {
     const session = makeSession('s_full_1', 'running', [userMsg]);
 
     ctx.emit('session/change', session);
-    ctx.emit('session/message', session, userMsg);
+    ctx.emit('session/new-message', session, userMsg);
 
     session.row.messages.push(assistantMsg);
-    ctx.emit('session/message', session, assistantMsg);
+    ctx.emit('session/new-message', session, assistantMsg);
 
     session.row.state = 'done';
     ctx.emit('session/change', session);
@@ -259,7 +260,7 @@ describe('journal（含 FilesMirror 并入）', () => {
 
     //M 子会话（parent !== undefined）跳过镜像目录生成。
     const childSession = makeSession('s_child_1', 'done', [userMsg], 's_full_1');
-    ctx.emit('session/message', childSession, userMsg);
+    ctx.emit('session/new-message', childSession, userMsg);
     ctx.emit('session/change', childSession);
     const childDir = path.join(ctx.resources.root, 'bots', '小记', 'sessions', 's_child_1');
     expect(fs.existsSync(path.join(childDir, '对话.md'))).toBe(false);
@@ -281,7 +282,7 @@ describe('journal（含 FilesMirror 并入）', () => {
     const userMsg: piAi.Message = { role: 'user', content: '简版测试', timestamp: Date.now() };
     const session = makeSession('s_lite_1', 'done', [userMsg]);
 
-    ctx.emit('session/message', session, userMsg);
+    ctx.emit('session/new-message', session, userMsg);
     ctx.emit('bot/say', session, '先回一句');
     ctx.emit('session/change', session);
 

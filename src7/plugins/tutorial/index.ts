@@ -31,6 +31,7 @@
  *   不走 bot/receive 的路用 ctx.flow.mark 认快照关键词。是可选依赖，接法见 FlowState。
  */
 import type * as cordis from 'cordis';
+import type * as fastify from 'fastify';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
@@ -196,6 +197,23 @@ interface PluginItem {
 /** Fastify 路由的查询参数。 */
 type Query = { Querystring: Record<string, string | undefined> };
 
+
+/** 一组教程文档的两个路由和文件读取规则。 */
+interface DocRoutes {
+  /** 清单路由。 */
+  listPath: string;
+  /** 读一份正文的路由。 */
+  readPath: string;
+  /** 源码或内嵌快照的目录。 */
+  dir: string;
+  /** 清单允许的文件后缀。 */
+  suffix: string;
+  /** 缺少文件名时给出的提示。 */
+  label: string;
+  /** 清单里没有文件或文件已删除时的提示。 */
+  missing: string;
+}
+
 /** 不写 snapshot_keyword 时的关键词。 */
 const DEFAULT_KEYWORD = '#调试';
 
@@ -249,7 +267,7 @@ async function getUtilFiles(): Promise<string[]> {
 async function getReadingFiles(dirName: string, suffix: string): Promise<string[]> {
   if (embedded.isCompiled()) {
     //M 编译版从登记表列出组块，目录下的子目录不列入清单。
-    const registered = embedded.getNames();
+    const registered = embedded.getEmbeddedFileNames();
     const files = registered
       .filter((file) => file.startsWith(dirName))
       .map((file) => file.slice(dirName.length))
@@ -492,74 +510,30 @@ class Tutorial {
       return { name: plugin, file, text };
     });
 
-    //M 左栏按文件名顺序列出组块阅读。
-    app.get('/api/tutorial/readings', async () => {
-      const files = await getReadingFiles(READING_DIR, '.md');
-      return { files };
+    //M 三组文档共用列目录和安全读取逻辑，保留各自的 URL 与提示。
+    this.addDocRoutes(app, {
+      listPath: '/api/tutorial/readings',
+      readPath: '/api/tutorial/reading',
+      dir: READING_DIR,
+      suffix: '.md',
+      label: '组块文件名',
+      missing: '没有这篇组块',
     });
-
-    //M 按清单读取一篇 Markdown，使用与插件说明相同的源码和内嵌读取逻辑。
-    app.get<Query>('/api/tutorial/reading', async (request, reply) => {
-      const name = request.query['name'] ?? '';
-      if (name === '') return reply.code(400).send({ error: '要给 name（组块文件名）' });
-
-      //G 只认清单里的完整文件名，外部传来的路径不能直接用于读文件。
-      const files = await getReadingFiles(READING_DIR, '.md');
-      if (!files.includes(name)) return reply.code(404).send({ error: '没有这篇组块' });
-
-      //M 用已校验的文件名读取全文，文件已移除时返回 404。
-      const file = READING_DIR + name;
-      const lines = await sourceModule.readLines(file);
-      if (lines === undefined) return reply.code(404).send({ error: '没有这篇组块' });
-
-      const text = lines.join('\n');
-      return { name, file, text };
+    this.addDocRoutes(app, {
+      listPath: '/api/tutorial/cordis',
+      readPath: '/api/tutorial/cordis-reading',
+      dir: CORDIS_DIR,
+      suffix: '.md',
+      label: 'Cordis 文档名',
+      missing: '没有这篇 Cordis 文档',
     });
-
-    //M Cordis 用法组的文档清单，开发版读目录，编译版读内嵌登记表。
-    app.get('/api/tutorial/cordis', async () => {
-      const files = await getReadingFiles(CORDIS_DIR, '.md');
-      return { files };
-    });
-
-    //M Cordis 文档只认清单里的文件名，路径不能由外部直接传进来。
-    app.get<Query>('/api/tutorial/cordis-reading', async (request, reply) => {
-      const name = request.query['name'] ?? '';
-      if (name === '') return reply.code(400).send({ error: '要给 name（Cordis 文档名）' });
-
-      //G 目录穿越、非 Markdown、已删除文件都不能读。
-      const files = await getReadingFiles(CORDIS_DIR, '.md');
-      if (!files.includes(name)) return reply.code(404).send({ error: '没有这篇 Cordis 文档' });
-
-      //M 和组块阅读共用源码读取，编译版走 Embedded。
-      const file = CORDIS_DIR + name;
-      const lines = await sourceModule.readLines(file);
-      if (lines === undefined) return reply.code(404).send({ error: '没有这篇 Cordis 文档' });
-
-      return { name, file, text: lines.join('\n') };
-    });
-
-    //M 左栏「骨架逐行」按文件名顺序列出 JSON。
-    app.get('/api/tutorial/lines', async () => {
-      const files = await getReadingFiles(LINES_DIR, '.json');
-      return { files };
-    });
-
-    //M 按清单读一份骨架逐行 JSON 原文，由网页解析成树。
-    app.get<Query>('/api/tutorial/line', async (request, reply) => {
-      const name = request.query['name'] ?? '';
-      if (name === '') return reply.code(400).send({ error: '要给 name（骨架逐行文件名）' });
-
-      //G 只认清单里的完整文件名，外部传来的路径不能直接用于读文件。
-      const files = await getReadingFiles(LINES_DIR, '.json');
-      if (!files.includes(name)) return reply.code(404).send({ error: '没有这份骨架逐行' });
-
-      const file = LINES_DIR + name;
-      const lines = await sourceModule.readLines(file);
-      if (lines === undefined) return reply.code(404).send({ error: '没有这份骨架逐行' });
-
-      const text = lines.join('\n');
-      return { name, file, text };
+    this.addDocRoutes(app, {
+      listPath: '/api/tutorial/lines',
+      readPath: '/api/tutorial/line',
+      dir: LINES_DIR,
+      suffix: '.json',
+      label: '骨架逐行文件名',
+      missing: '没有这份骨架逐行',
     });
 
     //M 左栏「骨架工具（utils）」按文件名顺序列出工具文件。
@@ -675,6 +649,37 @@ class Tutorial {
       if (source === undefined) return reply.code(404).send({ error: `读不到 ${file} 第 ${String(line)} 行` });
 
       return source;
+    });
+  }
+
+  /**
+   * 为一组教程文档登记清单和正文路由。
+   * @param app 教程所在的 HTTP 服务。
+   * @param routes 路径、文件过滤条件和原有错误提示。
+   */
+  private addDocRoutes(app: fastify.FastifyInstance, routes: DocRoutes): void {
+    //M 清单对运行目录和内嵌源码使用相同的文件筛选规则。
+    app.get(routes.listPath, async () => {
+      const files = await getReadingFiles(routes.dir, routes.suffix);
+      return { files };
+    });
+
+    //G 只按清单里的完整文件名读文档，避免直接使用请求路径。
+    app.get<Query>(routes.readPath, async (request, reply) => {
+      const name = request.query['name'] ?? '';
+      const required = `要给 name（${routes.label}）`;
+      if (name === '') return reply.code(400).send({ error: required });
+
+      const files = await getReadingFiles(routes.dir, routes.suffix);
+      if (!files.includes(name)) return reply.code(404).send({ error: routes.missing });
+
+      //M 文件可能在列目录之后被移除，仍按原接口交回 404。
+      const file = routes.dir + name;
+      const lines = await sourceModule.readLines(file);
+      if (lines === undefined) return reply.code(404).send({ error: routes.missing });
+
+      const text = lines.join('\n');
+      return { name, file, text };
     });
   }
 

@@ -21,8 +21,8 @@ export const OUTBOX_INTERVAL_MS = 5000;
  */
 export function setup(feishu: Feishu, ctx: cordis.Context): void {
   //M 初始化发件箱待发与已发目录，确保运行时目录存在。
-  const outbox = ctx.resources.dir('integrations', 'feishu', 'outbox');
-  const sent = ctx.resources.dir('integrations', 'feishu', 'sent');
+  const outbox = ctx.resources.ensureRuntimeDir('integrations', 'feishu', 'outbox');
+  const sent = ctx.resources.ensureRuntimeDir('integrations', 'feishu', 'sent');
   let busy = false;
   let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -50,12 +50,12 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         fs.renameSync(from, path.join(sent, name));
 
         //T 跟踪：发件箱发出一份。
-        const vars = { 文件: name, 字数: text.length };
-        ctx.emit('trace', 'Outbox.tick', '飞书发件箱发出一份，挪进 sent', 'feishu.sendText(lastPrivate(), text)', vars);
+        const vars = { file: name, length: text.length };
+        ctx.emit('trace', 'Outbox.tick', 'trace.feishu.sendOutbox', 'feishu.sendText(lastPrivate(), text)', vars);
       }
     } catch (error) {
       const failedAt = new Date().toLocaleString('zh-CN', { hour12: false });
-      console.error(`${failedAt} 飞书发件箱：发送失败，下一轮再试：${textModule.getMessage(error)}`);
+      console.error(`${failedAt} 飞书发件箱：发送失败，下一轮再试：${textModule.getErrorMessage(error)}`);
     } finally {
       busy = false;
     }

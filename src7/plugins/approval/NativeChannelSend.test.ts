@@ -161,7 +161,7 @@ test('插件入口经真实 HTTP 核验，并用批准目标和固定 UUID 调�
   ctx.provide('resources', {
     db,
     raw: { server: { port: 1, token, trusted_ips: [ip] } },
-    dir: (name: string) => {
+    ensureRuntimeDir: (name: string) => {
       if (name === 'channels') throw new Error('合成历史写入失败');
 
       return 'src7/plugins/http/fixtures-no-tokens';

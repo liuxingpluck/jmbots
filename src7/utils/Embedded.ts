@@ -1,6 +1,6 @@
 /**
  * 编译进单个程序里的文件（网页、出厂提示词）。
- * 打包脚本生成的 Register.ts 先调 register，再跑 Main.ts；源码跑时这张表是空的，isCompiled() 为 false。
+ * 打包脚本生成的 Register.ts 先调 registerEmbeddedFiles，再跑 Main.ts；源码跑时这张表是空的，isCompiled() 为 false。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -23,10 +23,10 @@ let built = 0;
  * @param time 编译时刻，毫秒。
  * 副作用：写进 files，标成编译版。
  */
-export function register(entries: Record<string, string>, time: number): void {
+export function registerEmbeddedFiles(entries: Record<string, string>, time: number): void {
   compiled = true;
   built = time;
-  //M 相对路径统一成正斜杠再登记，find 时同样换过，Windows 上打的包也对得上。
+  //M 相对路径统一成正斜杠再登记，findEmbeddedFilePath 时同样换过，Windows 上打的包也对得上。
   utils.eachEntry(entries, (relative, file) => {
     const key = relative.replaceAll('\\', '/');
     files.set(key, file);
@@ -51,7 +51,7 @@ export function getBuiltTime(): number {
  * @param name 登记时的相对路径，如 web/index.html、prompts/00_base_dsh.md。
  * @returns 路径；没有这个文件是 undefined。
  */
-export function find(name: string): string | undefined {
+export function findEmbeddedFilePath(name: string): string | undefined {
   return files.get(name.replaceAll('\\', '/'));
 }
 
@@ -60,7 +60,7 @@ export function find(name: string): string | undefined {
  * 登记过的全部相对路径。boot-trail 找“谁调它”时从这里挑出 src7/ 下的源码。
  * @returns 如 src7/Main.ts、web/index.html；源码跑时是空的。
  */
-export function getNames(): string[] {
+export function getEmbeddedFileNames(): string[] {
   return [...files.keys()];
 }
 
@@ -77,7 +77,7 @@ const WEB_DIR = path.resolve(import.meta.dir, '../../dist/web');
  */
 export async function readAsset(relative: string): Promise<Buffer | undefined> {
   //M 编译版：登记时路径是 web/…，也认不带前缀的（兼容旧入口）。
-  const file = find(`web/${relative}`) ?? find(relative);
+  const file = findEmbeddedFilePath(`web/${relative}`) ?? findEmbeddedFilePath(relative);
   if (file !== undefined) {
     const content = await Bun.file(file).arrayBuffer();
     return Buffer.from(content);

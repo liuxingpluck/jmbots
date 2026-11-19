@@ -75,14 +75,14 @@ export class FilesMirror extends cordis.Service {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
-   * 登记 filesMirror 服务并监听 session/message、session/change。
+   * 登记 filesMirror 服务并监听 session/new-message、session/change。
    * @param ctx Cordis 给 journal 插件的 ctx。
    */
   constructor(ctx: cordis.Context) {
     super(ctx, 'filesMirror');
 
-    //M session/message（通知）：对话里新接了一条 → 追加一块；条数对不上就整份重写。
-    ctx.on('session/message', (session, message) => {
+    //M session/new-message（通知）：对话里新接了一条 → 追加一块；条数对不上就整份重写。
+    ctx.on('session/new-message', (session, message) => {
       if (session.row.parent !== undefined) return;
 
       //M 安全追加这条顶层会话消息，写盘异常由镜像自己记录。
@@ -115,7 +115,7 @@ export class FilesMirror extends cordis.Service {
       work();
     } catch (error) {
       //G 把写盘异常转成日志文字，让会话继续运行。
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       console.error(`会话文件没写成：${detail}`);
     }
   }
@@ -126,13 +126,13 @@ export class FilesMirror extends cordis.Service {
    */
   getDir(row: Pick<SessionRow, 'bot' | 'id'>): string {
     //M 用机器人名和会话号定位镜像，沿用资源服务的目录创建规则。
-    return this.ctx.resources.dir('bots', row.bot, 'sessions', row.id);
+    return this.ctx.resources.ensureRuntimeDir('bots', row.bot, 'sessions', row.id);
   }
 
   /**
    * 新接一条消息：记过的条数正好是前一条 → 追加；不然（新开的、重启后第一次见、漏了）整份重写。
    * @param session 当前会话。
-   * @param message 新加的一条消息。
+   * @param message 新加入的 Message。role 区分作者和工具结果，content 存消息内容，timestamp 记时间。
    */
   private onMessage(session: Session, message: piAi.Message): void {
     const row = session.row;
@@ -167,7 +167,7 @@ export class FilesMirror extends cordis.Service {
     }
     if (row.state === 'running') {
       //M 追加开轮标记，并安排同步本轮的会话元数据。
-      fs.appendFileSync(file, `${SEPARATOR}## 一轮开始 · ${textModule.getClock(Date.now(), 'date')}`, 'utf8');
+      fs.appendFileSync(file, `${SEPARATOR}## 一轮开始 · ${textModule.formatLocalTime(Date.now(), 'date')}`, 'utf8');
       this.saveJson(session);
       return;
     }
@@ -180,7 +180,7 @@ export class FilesMirror extends cordis.Service {
       }
       fs.appendFileSync(
         file,
-        `${SEPARATOR}【这一轮】${word} · ${textModule.getClock(Date.now())}：${hardBreaks(reply)}\n`,
+        `${SEPARATOR}【这一轮】${word} · ${textModule.formatLocalTime(Date.now())}：${hardBreaks(reply)}\n`,
         'utf8',
       );
     }
@@ -221,14 +221,14 @@ export class FilesMirror extends cordis.Service {
    */
   private block(message: piAi.Message, index: number, step: number): string {
     if (message.role === 'user') {
-      return `${SEPARATOR}【用户 · ${textModule.getClock(message.timestamp)}】\n`
+      return `${SEPARATOR}【用户 · ${textModule.formatLocalTime(message.timestamp)}】\n`
         + hardBreaks(piAi.contentText(message.content));
     }
     if (message.role === 'assistant') {
       const usage = message.usage;
       const context = usage.input + usage.cacheRead + usage.cacheWrite;
       const lines = [
-        `### 第 ${String(step)} 步 · ${textModule.getClock(message.timestamp)} · `
+        `### 第 ${String(step)} 步 · ${textModule.formatLocalTime(message.timestamp)} · `
         + `${message.provider}/${message.model} · 上下文 ${String(context)}`,
       ];
       for (const block of message.content) {

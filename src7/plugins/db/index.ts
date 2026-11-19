@@ -166,7 +166,7 @@ export class Db extends cordis.Service implements DbEngine<SqliteOrm, SqliteTx> 
  * @param raw db 配置，engine 省略时取 sqlite。
  */
 export function apply(ctx: cordis.Context, raw: unknown): void {
-  const config = checksModule.record(raw ?? {}, 'db');
+  const config = checksModule.checkRecord(raw ?? {}, 'db');
   const engine = config['engine'] ?? 'sqlite';
   if (engine !== 'sqlite') throw new Error('db.engine 当前只支持 sqlite');
 

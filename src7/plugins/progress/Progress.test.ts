@@ -1,6 +1,6 @@
 /**
  * progress（含并入的 Review 超时复盘）单元测试：
- *   1. Progress 主流程：running 启动、session/message 记步数与工具耗时、act(stop) 终止、写入 data/overtime.jsonl；
+ *   1. Progress 主流程：running 启动、session/new-message 记步数与工具耗时、act(stop) 终止、写入 data/overtime.jsonl；
  *   2. Review 完整链路：空闲时读超时记录，生成建议，经 approval/request 登记后等待用户决定。
  *   3. 配置入口校验与开关：review: false / enabled: false 关闭复盘；非法 first_ms / every_ms 抛错。
  */
@@ -73,7 +73,7 @@ async function setupWorld(options: {
     constructor(parent: cordis.Context) {
       super(parent, 'resources');
     }
-    dir(...parts: string[]): string {
+    ensureRuntimeDir(...parts: string[]): string {
       const target = path.join(root, ...parts);
       fs.mkdirSync(target, { recursive: true });
       return target;
@@ -109,7 +109,7 @@ async function setupWorld(options: {
       updatedAt: Date.now(),
       messages: [],
     },
-    add: () => undefined,
+    queueUserMessage: () => undefined,
     run: async () => undefined,
     stop: () => {
       fakeSession.row.state = 'stopped';
@@ -267,19 +267,20 @@ test('1. Progress 主流程：running 启动、消息与工具耗时累计、act
   expect(world.ctx.progress.list('周小灵').length).toBe(1);
   expect(world.ctx.progress.list('周小灵')[0]?.stage).toBe('running');
 
-  world.ctx.emit('session/message', world.session, {
+  //M Message 是一条历史消息。用 role 标记种类，content 给正文，timestamp 给可控的测试时间。
+  world.ctx.emit('session/new-message', world.session, {
     role: 'user',
     content: '查一下这个问题出在哪',
     timestamp: baseAt + 100,
   } as piAi.Message);
-  world.ctx.emit('session/message', world.session, {
+  world.ctx.emit('session/new-message', world.session, {
     role: 'assistant',
     provider: 'mock',
     model: 'test-model',
     content: [{ type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'a.ts' } }],
     timestamp: baseAt + 250,
   } as unknown as piAi.Message);
-  world.ctx.emit('session/message', world.session, {
+  world.ctx.emit('session/new-message', world.session, {
     role: 'toolResult',
     toolCallId: 'c1',
     toolName: 'read',
@@ -361,7 +362,7 @@ test('2. Review 并入链路：忙时跳过、空闲读对话记录与超时行�
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
   await new Promise((resolve) => setTimeout(resolve, 45));
-  expect(world.traces.some((item) => item.where === 'Review.check' && item.vars?.['原因'] === '有进度在转')).toBe(true);
+  expect(world.traces.some((item) => item.what === 'trace.review.skip' && item.vars?.['reason'] === '有进度在转')).toBe(true);
 
   //M 停止任务产生 overtime.jsonl，手动等待下一轮不可能等 5 秒，重新挂载一份短周期实例或等待 5s？
   //M 更好的测法：停掉当前进程并用 short every_ms 测试——改用 first_ms: 80, 让运行态在前 25ms 内结束。
@@ -380,7 +381,7 @@ test('3. Review 完整闭环：空闲挑选超时条目、记 reviewedAt、送�
   //M 20ms 内完成并产生 overtime.jsonl；70ms 时插件空闲触发复盘。
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
-  world.ctx.emit('session/message', world.session, { role: 'user', content: '分析插件合并缓慢原因', timestamp: Date.now() } as piAi.Message);
+  world.ctx.emit('session/new-message', world.session, { role: 'user', content: '分析插件合并缓慢原因', timestamp: Date.now() } as piAi.Message);
   world.ctx.progress.act(world.session.id, 'stop');
 
   //M 等待复盘定时器执行完成并写入 approval.ask。
@@ -438,10 +439,10 @@ test('查到一张待确认的复盘卡片时不再生成复盘', async () => {
   world.ctx.progress.act(world.session.id, 'stop');
 
   const deadline = Date.now() + 1000;
-  while (!world.traces.some((item) => item.vars?.['原因'] === '有复盘在等用户') && Date.now() < deadline) {
+  while (!world.traces.some((item) => item.vars?.['reason'] === '有复盘在等用户') && Date.now() < deadline) {
     await Bun.sleep(10);
   }
-  expect(world.traces).toContainEqual(expect.objectContaining({ where: 'Review.check', vars: { 原因: '有复盘在等用户' } }));
+  expect(world.traces).toContainEqual(expect.objectContaining({ what: 'trace.review.skip', vars: { reason: '有复盘在等用户' } }));
   expect(world.askInputs).toEqual([]);
 });
 
@@ -461,10 +462,10 @@ test('复盘列表无人应答仍生成建议，送审无人应答按拒绝处�
 
   const reason = '审核未确认登记，复盘按拒绝处理：审核未获回执（unhandled）';
   const deadline = Date.now() + 1000;
-  while (!world.traces.some((item) => item.vars?.['原因'] === reason) && Date.now() < deadline) {
+  while (!world.traces.some((item) => item.vars?.['reason'] === reason) && Date.now() < deadline) {
     await Bun.sleep(10);
   }
-  expect(world.traces).toContainEqual(expect.objectContaining({ where: 'Review.check', vars: { 原因: reason } }));
+  expect(world.traces).toContainEqual(expect.objectContaining({ what: 'trace.review.skip', vars: { reason } }));
   expect(world.askInputs[0]?.kind).toBe('review');
   expect(world.session.row.reviewedAt).toBeDefined();
   expect(world.approvalAskList).toEqual([]);
@@ -549,7 +550,7 @@ test.each([{ withDecision: true }, { withDecision: false }])(
     await Bun.sleep(10);
   }
   expect(world.traces).toContainEqual(expect.objectContaining({
-    where: 'Progress.onDeadline', vars: expect.objectContaining({ 延: withDecision }),
+    what: 'trace.progress.deadline', vars: expect.objectContaining({ extend: withDecision }),
   }));
   if (withDecision) {
     expect(world.decisionRequests).toHaveLength(3);

@@ -159,7 +159,7 @@ export class Search {
       if (lane.status === 'rejected') {
         unavailable.push(query.sources[i]!);
         //M 原因（如“记忆服务没在线”）放进 warnings：记忆页的“提示”和模型都看得到，不只剩一个来源名。
-        warnings.add(text.getMessage(lane.reason));
+        warnings.add(text.getErrorMessage(lane.reason));
         continue;
       }
       for (const [rank, hit] of lane.value.hits.entries()) {
@@ -187,7 +187,7 @@ export class Search {
         const result = await this.find(request.query);
         return graph.decorateSearch(result, request.query);
       } catch (error) {
-        return reply.code(400).send({ error: text.getMessage(error) });
+        return reply.code(400).send({ error: text.getErrorMessage(error) });
       }
     });
 
@@ -468,7 +468,7 @@ export class Search {
     const roots = [...cardRoots.keys(), ...this.skillRoots(session.row.bot)];
     const realRoots = await Promise.all(roots.map((root) => fs.realpath(root).catch(() => '')));
     const existing = realRoots.filter(Boolean);
-    if (!workspace.isUnder(existing, file)) throw new Error('引用超出记忆目录');
+    if (!workspace.isPathInDirectories(existing, file)) throw new Error('引用超出记忆目录');
 
     const stat = await fs.stat(file);
     if (!stat.isFile() || stat.size > 256 * 1024) throw new Error('记忆卡片不可读取');
@@ -769,7 +769,7 @@ export class Search {
       const outcomes = await Promise.allSettled(requests);
       for (const outcome of outcomes) {
         if (outcome.status === 'rejected') {
-          warnings.add(text.getMessage(outcome.reason));
+          warnings.add(text.getErrorMessage(outcome.reason));
           continue;
         }
         const one = outcome.value;
@@ -800,7 +800,7 @@ export class Search {
   /** 公共记忆一直查，指定机器人时只另查它的卡片。 */
   private cardRoots(bot: string): Map<string, string> {
     //M 根目录来自配置及机器人实例，避免把机器人参数当作文件路径。
-    const shared = this.ctx.resources.dir('memory');
+    const shared = this.ctx.resources.ensureRuntimeDir('memory');
     const roots = new Map<string, string>([[shared, '']]);
     const bots = this.ctx.bots.list();
     for (const item of bots) {
@@ -813,8 +813,8 @@ export class Search {
   /** 保留兼容搜索之前可查的技能卡片目录。 */
   skillRoots(bot: string): string[] {
     //M 从资源目录定位机器人与全局技能卡片。
-    const own = this.ctx.resources.dir('bots', bot, 'skills');
-    const shared = this.ctx.resources.dir('skills');
+    const own = this.ctx.resources.ensureRuntimeDir('bots', bot, 'skills');
+    const shared = this.ctx.resources.ensureRuntimeDir('skills');
     return [own, shared];
   }
 

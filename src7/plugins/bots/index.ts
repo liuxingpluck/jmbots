@@ -362,8 +362,8 @@ export class Bots extends cordis.Service {
       if (row.recalledStop === true || activeOutcome === 'recalled') return;
 
       //T 跟踪：回话。
-      const vars = { 渠道: row.channel, 会话: row.id, 状态: row.state, 话多少字: row.reply.length };
-      this.ctx.emit('trace', 'Bots.onChange', '把机器人的话交给用户', 'this.send(session, reply)', vars);
+      const vars = { channel: row.channel, session: row.id, state: row.state, textLength: row.reply.length };
+      this.ctx.emit('trace', 'Bots.onChange', 'trace.bots.deliverReply', 'this.send(session, reply)', vars);
       void this.send(session, row.reply);
     });
 
@@ -374,20 +374,10 @@ export class Bots extends cordis.Service {
       //M 当前轮带来源快照的（channel_tool 会话）：把这句话包成 progress 回复，交渠道协议的 channel/reply 发出去。
       const snapshot = session.row.activeSourceSnapshot;
       if (snapshot !== undefined) {
-        const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
-        const replyRequestKey = protocol.getReplyRequestKey(snapshot.replyRoundKey, `say:${namesModule.stampId()}`);
-        void protocol.requestChannelReply(this.home, {
-          channel: snapshot.channel,
-          bot: snapshot.botName,
-          replyRequestKey,
-          replyRoundKey: snapshot.replyRoundKey,
-          replyIndex: 0,
-          kind: 'progress',
-          mode: 'text',
-          sourceSnapshot: structuredClone(snapshot),
-          payloadHash: protocol.getPayloadHash({ kind: 'progress', mode: 'text', parts }),
-          parts,
-        });
+        const replyRequestKey = protocol.getReplyRequestKey(snapshot.replyRoundKey, `say:${namesModule.createTimestampId()}`);
+        const options = { replyRequestKey, replyIndex: 0, kind: 'progress' as const };
+        //M 中途说明沿本轮来源发出，不阻塞当前会话。
+        void protocol.requestTextReply(this.home, snapshot, text, options);
         return;
       }
 
@@ -404,7 +394,7 @@ export class Bots extends cordis.Service {
     //M   现有方法抛的错（没有这个机器人、重名、会话不在、结果冲突）转成 { ok: false, error }，调用方不干等超时。
     const requestOptions = {
       onError: (error: unknown) => {
-        const message = textModule.getMessage(error);
+        const message = textModule.getErrorMessage(error);
         return { ok: false, error: message };
       },
     };
@@ -438,8 +428,8 @@ export class Bots extends cordis.Service {
    */
   private onRequest(request: BotRequest): requestEventModule.StripResultId<BotResult> {
     //T 跟踪：别的插件经事件请机器人办事。
-    const vars = { 要做: request.action, 请求号: request.requestId ?? '（不等回执）' };
-    this.ctx.emit('trace', 'Bots.onRequest', '别的插件经事件 bot/request 请机器人办事', `bot/request（${request.action}）`, vars);
+    const vars = { action: request.action, requestId: request.requestId };
+    this.ctx.emit('trace', 'Bots.onRequest', 'trace.bots.request', `bot/request（${request.action}）`, vars);
 
     //M hand：交给这个机器人的一场后台（新开或接着），回执带会话号。
     if (request.action === 'hand') {
@@ -634,7 +624,7 @@ export class Bots extends cordis.Service {
         const safe = namesModule.getSafeName(base, Infinity);
         let full = path.join(inboxDir, `${stamp}_${safe}`);
         if (fs.existsSync(full)) {
-          full = path.join(inboxDir, `${stamp}_${namesModule.stampId().slice(-4)}_${safe}`);
+          full = path.join(inboxDir, `${stamp}_${namesModule.createTimestampId().slice(-4)}_${safe}`);
         }
         fs.copyFileSync(attachment.sourceRef, full);
         let token = `@${full}`;
@@ -643,8 +633,8 @@ export class Bots extends cordis.Service {
         }
         paths.push(token);
       } catch (error) {
-        //G 存工作区失败：用 getMessage 取出原因写进提示，让用户和模型都看得到哪个附件没存成。
-        failed.push(`[${attachment.name} 存工作区失败：${textModule.getMessage(error)}]`);
+        //G 存工作区失败：用 getErrorMessage 取出原因写进提示，让用户和模型都看得到哪个附件没存成。
+        failed.push(`[${attachment.name} 存工作区失败：${textModule.getErrorMessage(error)}]`);
       }
     }
     const baseText = message.text;
@@ -689,7 +679,7 @@ export class Bots extends cordis.Service {
       return receipt;
     } catch (error) {
       //G 渠道抛错：不知道发到一半没有，取出原因记成 uncertain，不往外抛。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       return { status: 'uncertain', reason };
     }
   }
@@ -734,15 +724,15 @@ export class Bots extends cordis.Service {
     const message: IncomingMessage = { channel: name, bot, text, time: Date.now(), address };
 
     //T 跟踪：渠道收到一句话。
-    const vars = { 渠道: name, 机器人: bot, 字数: text.length };
-    this.ctx.emit('trace', 'Bots.receive', '渠道收到一句话，存下来，推给机器人', 'bot.receive(message)', vars);
+    const vars = { channel: name, bot: bot, length: text.length };
+    this.ctx.emit('trace', 'Bots.receive', 'trace.bots.receiveFromChannel', 'bot.receive(message)', vars);
 
     //M 渠道自己存一份：运行时目录 channels/<渠道名>/ 下，一天一个文件，一条一行 JSON。
     /** 本地日期，2026-11-13 的样子（sv-SE 这个地区的写法正好是它）。 */
     const day = new Date(message.time).toLocaleDateString('sv-SE');
 
     //M 取（没有就建）运行时目录里这个渠道自己的文件夹，当天的文件追加一行。
-    const file = path.join(this.ctx.resources.dir('channels', name), `${day}.jsonl`);
+    const file = path.join(this.ctx.resources.ensureRuntimeDir('channels', name), `${day}.jsonl`);
     fs.appendFileSync(file, `${JSON.stringify(message)}\n`, 'utf8');
 
     //M 推给机器人。直接调，不走事件。
@@ -863,8 +853,8 @@ export class Bots extends cordis.Service {
    */
   say(session: Session, text: string): void {
     //T 跟踪：会话中途先跟用户说一句。
-    const vars = { 会话: session.id, 渠道: session.row.channel ?? '（没有）', 字数: text.length };
-    this.ctx.emit('trace', 'Bots.say', '会话中途先跟用户说一句', "ctx.emit('bot/say', session, text)", vars);
+    const vars = { session: session.id, channel: session.row.channel, length: text.length };
+    this.ctx.emit('trace', 'Bots.say', 'trace.bots.say', "ctx.emit('bot/say', session, text)", vars);
 
     //M 发通知 bot/say：构造函数里的监听按会话的渠道发出去，前台再记一条往来；发了不等。
     this.ctx.emit('bot/say', session, text);
@@ -899,9 +889,9 @@ export class Bot {
   ) {
     this.name = config.name;
 
-    //M 工作区和记忆目录放在运行时目录 bots/<机器人>/ 下，resources.dir 没有就建，返回绝对路径。
-    this.workspace = this.ctx.resources.dir('bots', this.name, 'workspace');
-    this.memory = this.ctx.resources.dir('bots', this.name, 'memory');
+    //M 工作区和记忆目录放在运行时目录 bots/<机器人>/ 下，resources.ensureRuntimeDir 没有就建，返回绝对路径。
+    this.workspace = this.ctx.resources.ensureRuntimeDir('bots', this.name, 'workspace');
+    this.memory = this.ctx.resources.ensureRuntimeDir('bots', this.name, 'memory');
 
     //M 工作区原地登记，不搬不删：默认的 bots/<机器人>/workspace/。登记过的按目录认，重启不重登。
     const workspaces = this.ctx.workspaces;
@@ -938,8 +928,8 @@ export class Bot {
     //G 已经处理掉了（handled：插件处理掉、只听的话只记、排着等前台整理完）→ 不进会话。
     if (event.handled === true) {
       //T 跟踪：处理掉了，不进会话。
-      const vars = { 渠道: message.channel, 字数: message.text.length };
-      this.ctx.emit('trace', 'Bot.receive', '这条已经处理掉，不进会话', 'event.handled === true', vars);
+      const vars = { channel: message.channel, length: message.text.length };
+      this.ctx.emit('trace', 'Bot.receive', 'trace.bots.receiveHandled', 'event.handled === true', vars);
       return;
     }
 
@@ -950,8 +940,8 @@ export class Bot {
     }
 
     //T 跟踪：机器人收到一条消息。
-    const vars = { 会话: session.id, 渠道: message.channel, 字数: message.text.length };
-    this.ctx.emit('trace', 'Bot.receive', '消息交给这场会话，推它往下走', 'session.add(); session.run()', vars);
+    const vars = { session: session.id, channel: message.channel, length: message.text.length };
+    this.ctx.emit('trace', 'Bot.receive', 'trace.bots.receiveIntoSession', 'session.queueUserMessage(); session.run()', vars);
     this.deliver(session, message.text, { channel: message.channel, address: message.address });
   }
 
@@ -989,7 +979,7 @@ export class Bot {
     this.ctx.bots.route(session, origin);
 
     //M 话进会话（它已经在转的话，下一步会带上这句），再推它往下跑，不等模型。
-    session.add(text);
+    session.queueUserMessage(text);
     void session.run();
   }
 }
@@ -1056,13 +1046,13 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   }
 
   //M 先后照并进来之前：机器人服务（回话的监听）在前，前台（往来记录、拼上下文）其次，派后台（结果队列）最后，紧接登记渠道工具。
-  //M   都挂在本插件的 ctx 上，所以前台的 session/request 排在 file-tools 这些后挂的插件前面。
+  //M   都挂在本插件的 ctx 上，所以前台的 session/before-model 排在 file-tools 这些后挂的插件前面。
   new Bots(ctx, { bots: written as BotConfig[], thinking: config.thinking ?? 'medium' });
   const desk = new FrontDesk(ctx, { recent, vision_model: vision });
   new Dispatch(ctx, desk);
   new ChannelTools(ctx, historyLimit);
 
-  //M 系统提示词（Prompt.ts）：session/request 挂在上面几个之后。并进来之前它排在 relay、memory 后面，现在排到它们前面，
+  //M 系统提示词（Prompt.ts）：session/before-model 挂在上面几个之后。并进来之前它排在 relay、memory 后面，现在排到它们前面，
   //M   只是 work 会话“开场先搜”的那段（memory 加的）从人设、记忆文件前面挪到后面；底座和功能声明用 unshift，照旧在最前。
   if (promptOn) {
     new Prompt(ctx);
@@ -1074,5 +1064,5 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   }
 
   //M 2026-11-18：不再 inject memory。前台记往来、搜聊天记录、算向量改发请求事件 memory/request（FrontDesk.ts 的 askMemory），
-  //M   “先查记忆”的提示由 memory 自己在 session/request 里加；没挂 memory 前台照常答话。
+  //M   “先查记忆”的提示由 memory 自己在 session/before-model 里加；没挂 memory 前台照常答话。
 }

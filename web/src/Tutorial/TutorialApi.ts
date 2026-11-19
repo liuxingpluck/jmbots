@@ -3,6 +3,7 @@
  * 类型照后端 src7/plugins/tutorial/ 交的样子写（Trail.ts、Lanes.ts、Files.ts、Source.ts、index.ts），不 import 后端。
  */
 import { TOKEN, withToken } from '../Token.ts';
+import type { TraceParams } from '../locales/Trace.ts';
 
 
 /** 左栏插件列表的一项（GET /api/tutorial/plugins）。 */
@@ -113,8 +114,10 @@ export interface TrailRow {
   kind: string;
   /** 跟踪点是“模块.函数”，事件是事件名。 */
   name: string;
-  /** 一句人话。 */
+  /** 文案编号或旧行原文。 */
   text: string;
+  /** 文案插值。 */
+  params?: TraceParams;
   /** 事件行：听的人。 */
   listeners: string[];
   /** 文件:行号。 */
@@ -182,6 +185,8 @@ export interface LaneItem {
   step: number;
   /** 一句话。 */
   text: string;
+  /** 文案插值。 */
+  params?: TraceParams;
 }
 
 

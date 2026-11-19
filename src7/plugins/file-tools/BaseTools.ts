@@ -1,5 +1,5 @@
 /**
- * 基础工作区工具：time、read、list_dir、write，以及将用户 @图片接入模型请求的 session/request 监听。
+ * 基础工作区工具：time、read、list_dir、write，以及将用户 @图片接入模型请求的 session/before-model 监听。
  * 由原 base-tools 插件并入 file-tools；工具名、参数、会话范围与跟踪名均保持不变，便于无缝兼容。
  */
 import * as fs from 'node:fs';
@@ -23,11 +23,11 @@ const SENDABLE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 /**
  * 把一个图片文件读成图片块。
  * @param file 绝对路径。
- * @returns 图片块；不是能发的图片、文件不在或太大时是 undefined。
+ * @returns 图片块 ImageContent，含 type 为 image、Base64 的 data 和 mimeType。图片不可发送时返回 undefined。
  */
 function getImageBlock(file: string): piAi.ImageContent | undefined {
   //G 不是能发的图片类型、文件不在、太大 → 不发。
-  const mimeType = mimeModule.getType(file);
+  const mimeType = mimeModule.getMimeType(file);
   if (!SENDABLE.has(mimeType) || !fs.existsSync(file)) return undefined;
   if (fs.statSync(file).size > MAX_BYTES) return undefined;
 
@@ -98,7 +98,7 @@ export class BaseTools {
     });
 
     //M 看图模型：用户的话里 @ 了工作区里的图片，就把图片块接在这句话后面一起发（只改请求副本，库里存的还是原话）。
-    this.ctx.on('session/request', (request) => {
+    this.ctx.on('session/before-model', (request) => {
       this.attachImages(request);
     });
 
@@ -161,7 +161,7 @@ export class BaseTools {
   }
 
   /**
-   * 响应 session/request：看图模型的请求里，用户的话 @ 了工作区里的图片 → 这句话换成“原话 + 图片块”。
+   * 响应 session/before-model：看图模型的请求里，用户的话 @ 了工作区里的图片 → 这句话换成“原话 + 图片块”。
    * @param request 这一步的请求；改它的 messages（副本）。
    */
   private attachImages(request: ChatRequest): void {
@@ -200,8 +200,8 @@ export class BaseTools {
       if (blocks.length === 0) return message;
 
       //T 跟踪：把图片接进用户的话。
-      const vars = { 会话: request.session.id, 模型: request.model, 几张图: blocks.length };
-      this.ctx.emit('trace', 'base-tools.attachImages', '把用户 @ 的图片接进这句话', 'message.content = [文字, 图片…]', vars);
+      const vars = { session: request.session.id, model: request.model, imageCount: blocks.length };
+      this.ctx.emit('trace', 'base-tools.attachImages', 'trace.fileTools.attachImages', 'message.content = [文字, 图片…]', vars);
       return { ...message, content: [{ type: 'text', text: message.content }, ...blocks] };
     });
   }
@@ -222,6 +222,6 @@ export class BaseTools {
     }
     //M 按回话地址取本轮隔离工作区，再做符号链接物理越界校验。
     const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
-    return workspaceModule.inside(workspace, relative);
+    return workspaceModule.resolveWorkspacePath(workspace, relative);
   }
 }

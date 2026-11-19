@@ -250,7 +250,7 @@ export class ChannelBackfill {
       }
     } catch (error) {
       //G 归档、守卫或 Rust 未确认时保留未完成记录，下次重试。
-      const message = text.getMessage(error);
+      const message = text.getErrorMessage(error);
       if (this.reason !== '记忆服务或历史归档暂不可用，稍后重试') {
         console.error(`memory：渠道同步失败：${message}`);
       }

@@ -36,6 +36,7 @@ class FakeResources extends cordis.Service {
   readonly pluginStatus = [];
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -45,7 +46,7 @@ class FakeResources extends cordis.Service {
     super(ctx, 'resources');
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -81,7 +82,7 @@ async function world(): Promise<{ ctx: cordis.Context; sent: string[]; systems: 
 
   //M 排在 bots 后面：先记下前台这一步的系统提示词，再给假回答。
   const systems: string[][] = [];
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     if (request.session.row.kind === 'front') {
       systems.push([...request.system]);
     }

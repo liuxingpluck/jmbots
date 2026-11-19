@@ -141,8 +141,8 @@ export class Exec extends cordis.Service {
     if (input.signal?.aborted === true) return Promise.resolve({ code: null, timedOut: false, stopped: true, output: '', ms: 0 });
 
     //T 跟踪：起子进程。
-    const vars = { 命令: input.command.slice(0, 120), 目录: input.cwd, 超时毫秒: input.timeoutMs };
-    this.ctx.emit('trace', 'Exec.run', '起子进程跑一条命令', 'child_process.spawn(command, { shell: true, signal })', vars);
+    const vars = { command: input.command.slice(0, 120), directory: input.cwd, timeoutMs: input.timeoutMs };
+    this.ctx.emit('trace', 'Exec.run', 'trace.exec.run', 'child_process.spawn(command, { shell: true, signal })', vars);
 
     return new Promise((resolve) => {
       let output = '';
@@ -287,8 +287,8 @@ export class Exec extends cordis.Service {
     const verdict = await runsModule.requestReview(this.ctx, reviewInput);
 
     //T 跟踪：审核结论。
-    const vars = { 会话: session.id, 结论: verdict.result, 原因: verdict.reason };
-    this.ctx.emit('trace', 'Exec.onTool', '审核完了', "requestEvent('approval/request', review)", vars);
+    const vars = { session: session.id, verdict: verdict.result, reason: verdict.reason };
+    this.ctx.emit('trace', 'Exec.onTool', 'trace.exec.reviewDone', "requestEvent('approval/request', review)", vars);
     if (verdict.result === 'reject') return `未执行：${verdict.reason}`;
 
     if (verdict.result === 'asked') {
@@ -324,11 +324,11 @@ export class Exec extends cordis.Service {
     }
 
     //T 跟踪：结果交回会话。
-    const vars = { 会话: session.id, 号: pending.id, 结果: pending.state };
-    this.ctx.emit('trace', 'Exec.onDecided', '用户定了，结果交回会话', 'session.add(text); session.run()', vars);
+    const vars = { session: session.id, id: pending.id, result: pending.state };
+    this.ctx.emit('trace', 'Exec.onDecided', 'trace.exec.userDecision', 'session.queueUserMessage(text); session.run()', vars);
 
     //M 正在转的话，下一步会带上这句；没在转就推它转一轮。
-    session.add(text);
+    session.queueUserMessage(text);
     void session.run();
   }
 }
@@ -361,7 +361,7 @@ export function report(result: ExecResult): string {
   if (output === '') return `${head}\n（没有输出）`;
 
   //M 输出太长就只留最后一段，截了的话在前面写明留了几行、共几行。
-  const kept = cut.tail(output);
+  const kept = cut.keepTrailingLines(output);
   let note = '';
   if (kept.cut) {
     note = `[输出太长，只留最后 ${String(kept.kept)} 行（共 ${String(kept.total)} 行）]\n`;

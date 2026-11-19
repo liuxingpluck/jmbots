@@ -16,7 +16,10 @@ providers:
     # model_compat:                   # 个别模型再加的兼容设置，如 DeepSeek 思考模式下调工具，要把上一步的思考原样带回去
     #   some-model: { requiresReasoningContentOnAssistantMessages: true }
     # models:                         # 手写的优先。清单只给 ID 时，没写的用保守值（上下文 128000、最大输出 8192、看不了图）
-    #   some-model: { context_window: 128000, max_output_tokens: 8192, vision: true, thinking: [off, high], price: { input: 0.27, output: 1.1 } }
+    #   some-model: { context_window: 128000, max_output_tokens: 8192, vision: true, thinking: [off, low, high, max], price: { input: 0.27, output: 1.1 } }
+    #   mapped-model: { thinking: { off: 'none', low: 'low', xhigh: 'very_high' } }
+    # thinking 列表使用同名接口值，对象可指定接口值；没列的档及写 null 的档不可选。
+    # 可配置 off、minimal、low、medium、high、xhigh、max。省略 thinking 时沿用匹配模型的 pi 内置映射。
   # deepseek:                         # 再接一家照样写
   #   base_url: https://api.deepseek.com/v1
   #   api_key: ''
@@ -24,6 +27,10 @@ providers:
 # 程序默认的模型：新开会话和 exec 审核的小循环用它。写成“供应商/模型 ID”。
 # 会话要换模型由用户在网页上换；分派不再挑模型。
 default_model: my_provider/some-model
+
+# 内存里最多留几场打开过的会话，正整数，不写是 500。超了从最久没用的挪出闲着的；
+# 库里有完整记录，再打开从库读回，不丢东西。在转的、有话排着的不挪。
+# session_cache_max: 500
 
 # 程序级的决策模型。thinking：off、minimal、low、medium、high、xhigh、max，模型不支持的档位自动换成最近的。
 models:
@@ -204,8 +211,8 @@ channels:
 #     # backend_token、backend_timeout_ms 可配置外部 Rust 的认证和写入超时。
 #   - name: skills                 # 技能清单放进后台会话的系统提示词，skill 工具只读技能文件；写在 bots 后面
 #   - name: db                     # 数据库迁移和事务。默认 SQLite，沿用 Resources 的原连接。
-#   - name: context-fit            # 会话上下文总结、压缩与裁剪（已并入原 summary、compress）；先按 compress.at 压缩旧对话，再按上下文窗口 ratio 裁剪并保留最近 keep 段
-#     config: { keep: 6, ratio: 0.9, compress: { at: 200000, keep: 6 }, summary: true }
+#   - name: context-fit            # 会话上下文总结、压缩与裁剪。compress 默认开启，上一轮用量达到登记窗口的 compress.ratio 就压缩。
+#     config: { keep: 6, ratio: 0.9, compress: { ratio: 0.8, keep: 6 }, summary: true }
 #   - name: progress               # 进度、限时与超时复盘（已并入原 review）：GET /api/progress、POST /api/progress/:id；写在 bots、compress 后面
 #     config:                     # 原 engine 的限时和模型键迁到此处；保留已设的值。
 #       long_run_card_minutes: 15

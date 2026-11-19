@@ -27,6 +27,7 @@ class FakeResources extends cordis.Service {
   root = ROOT;
   config = {
     defaultModel: 'fake/echo',
+    sessionCacheMax: 500,
     providers: { fake: { baseUrl: 'http://10.0.0.1/v1', apiKey: KEY, api: 'openai-completions', models: {} } },
     plugins: [{ name: 'tutorial' }, { name: 'alpha' }, { name: 'missing-one' }, { name: 'beta' }],
     thinking: 'low',

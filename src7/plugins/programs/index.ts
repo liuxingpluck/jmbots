@@ -156,7 +156,7 @@ class Programs extends cordis.Service {
       //M 通知交给现有发件箱，入队失败不解除启动阻止。
       this.notify(key, message, now);
     } catch (error) {
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       console.error(`外部程序 ${name} 的渠道冲突通知入队失败：${detail}`);
     }
     return reason;

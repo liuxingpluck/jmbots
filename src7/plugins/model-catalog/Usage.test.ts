@@ -82,12 +82,12 @@ test('用量事件返回按模型价格入账的调用，目录缺席时按零�
   const model = `${reply.provider}/${reply.model}`;
 
   //M 等本轮事件投递和入账完成后，再卸掉模型目录。
-  ctx.emit('session/message', session, message);
+  ctx.emit('session/new-message', session, message);
   await Bun.sleep(0);
   stop();
 
   //M 同样的非零用量没有价格时要留下记录，失败尝试也单独记一行。
-  ctx.emit('session/message', session, message);
+  ctx.emit('session/new-message', session, message);
   ctx.emit('model/failed', { session, model, ms: 4, error: '测试连接失败' });
   await Bun.sleep(0);
 
@@ -166,7 +166,7 @@ test('model-catalog自动挂用量，晚到的HTTP保持路径，卸载撤掉服
 
   const session = { id: 'session-1', row: { bot: '助手', kind: 'work' } } as Session;
   const message = piAi.fauxAssistantMessage('宿主记账');
-  ctx.emit('session/message', session, message);
+  ctx.emit('session/new-message', session, message);
   const model = `${message.provider}/${message.model}`;
   ctx.emit('model/failed', { session, model, ms: 1, error: '离线测试' });
   await Bun.sleep(0);
@@ -181,7 +181,7 @@ test('model-catalog自动挂用量，晚到的HTTP保持路径，卸载撤掉服
   expect(ctx.get('usage')).toBeUndefined();
   const gone = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', query, eventOptions);
   expect(gone.requestId).toBe('unhandled');
-  ctx.emit('session/message', session, message);
+  ctx.emit('session/new-message', session, message);
   await Bun.sleep(0);
   const count = ctx.resources.db.query('SELECT COUNT(*) AS n FROM model_usage').get();
   expect(count).toEqual({ n: 2 });

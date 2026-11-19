@@ -24,7 +24,7 @@ class FakeResources extends cordis.Service {
   }
 
   /** 用固定的测试路径模拟不存在的令牌文件。 */
-  dir(): string {
+  ensureRuntimeDir(): string {
     return 'src7/plugins/http/fixtures-no-tokens';
   }
 }
@@ -234,7 +234,7 @@ test('合成主站先确认受理，等待 programs 和主库关闭后正常退�
     const received = Promise.withResolvers();
     ctx.provide('resources', {
       raw: { server: { port: 1 } },
-      dir: () => 'src7/plugins/http/fixtures-no-tokens',
+      ensureRuntimeDir: () => 'src7/plugins/http/fixtures-no-tokens',
       db: { close: () => console.log('db-closed') },
     });
     ctx.provide('programs', { shutdown: async () => {

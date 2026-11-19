@@ -608,7 +608,7 @@ export class SourceDocs {
     //M 编译版磁盘上没有源码，只能从登记表里挑；源码跑时递归列 src7/，换成正斜杠和登记名一个样子。
     let all: string[] = [];
     if (embedded.isCompiled()) {
-      all = embedded.getNames();
+      all = embedded.getEmbeddedFileNames();
     }
     //M 非单文件编译模式时再改走文件系统递归枚举。
     if (!embedded.isCompiled()) {
@@ -790,7 +790,7 @@ function getEmptyDoc(name: string, file: string, important: boolean): CodeDoc {
  */
 export async function readLines(file: string): Promise<string[] | undefined> {
   //M 优先查找单文件编译时嵌入包内的只读副本，未命中再回退读取代码目录磁盘文件。
-  const inside = embedded.find(file);
+  const inside = embedded.findEmbeddedFilePath(file);
   try {
     let text = '';
     if (inside !== undefined) {

@@ -5,6 +5,7 @@ import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import * as yaml from 'yaml';
 import * as resourcesModule from '../Resources.ts';
+import * as checks from '../utils/Checks.ts';
 import * as filesModule from '../utils/Files.ts';
 
 const cleanups: (() => void | Promise<unknown>)[] = [];
@@ -21,10 +22,13 @@ async function start() {
   const root = fs.mkdtempSync(prefix);
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const requests: { url: string; authorization: string | undefined }[] = [];
+  const reasoningEfforts: unknown[] = [];
   const app = fastify.default();
   cleanups.push(() => app.close());
   app.post('/:endpoint/chat/completions', (request, reply) => {
     requests.push({ url: request.url, authorization: request.headers.authorization });
+    const body = request.body as Record<string, unknown>;
+    reasoningEfforts.push(body['reasoning_effort']);
     const chunk = JSON.stringify({
       id: 'test', object: 'chat.completion.chunk', created: 1, model: 'test-model',
       choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
@@ -48,7 +52,7 @@ async function start() {
   cleanups.push(() => ctx.fiber.dispose());
   const args = { dir: root };
   await ctx.plugin(resourcesModule.Resources, args);
-  return { ctx, config, file, endpoint, requests };
+  return { ctx, config, file, endpoint, requests, reasoningEfforts };
 }
 
 /** 在原子保存之前登记通知，等新快照实际生效。 */
@@ -57,6 +61,68 @@ function nextChange(ctx: cordis.Context): Promise<string[]> {
     ctx.once('config/changed', resolve);
   });
 }
+
+test.test('手写档位映射把 max 原样发给接口，缺少配置的模型没有映射', async () => {
+  const { ctx, config, file, reasoningEfforts } = await start();
+  const first = {
+    ...config.providers.first,
+    models: { 'test-model': { thinking: ['off', 'low', 'high', 'max'] } },
+  };
+  const updated = { ...config, providers: { ...config.providers, first } };
+  const changed = nextChange(ctx);
+  const source = yaml.stringify(updated);
+  filesModule.writeTextAtomic(file, source);
+  await changed;
+
+  const resources = ctx.resources;
+  const model = resources.getModel('first/test-model');
+  test.expect(model.thinkingLevelMap).toMatchObject({ off: 'off', low: 'low', high: 'high', xhigh: null, max: 'max' });
+  test.expect(resources.getModel('spare/unlisted').thinkingLevelMap).toBeUndefined();
+
+  //M 走本地协议替身，校验配置在真实适配器里进入请求正文。
+  const input = { messages: [] };
+  const options = { reasoning: 'max' as const };
+  const answer = await resources.models.completeSimple(model, input, options);
+  test.expect(answer.stopReason).toBe('stop');
+  test.expect(reasoningEfforts).toEqual(['max']);
+});
+
+test.test('对象配置覆盖供应商值，省略配置时保留 pi 内置模型映射', async () => {
+  const { ctx, config, file } = await start();
+  const qwen = {
+    ...config.providers.first,
+    models: {
+      'qwen3.8-flash': { thinking: { off: null, high: 'deep', max: 'very-deep' } },
+      'qwen3.8-max': {},
+    },
+  };
+  const providers = { ...config.providers, 'qwen-token-plan': qwen };
+  const changed = nextChange(ctx);
+  const updated = { ...config, providers };
+  //M 两个千问模型共用同一供应商，分别覆盖映射和沿用 pi 的内置映射。
+  const source = yaml.stringify(updated);
+  filesModule.writeTextAtomic(file, source);
+  await changed;
+
+  const mapped = ctx.resources.getModel('qwen-token-plan/qwen3.8-flash');
+  test.expect(mapped.thinkingLevelMap).toMatchObject({ off: null, high: 'deep', xhigh: null, max: 'very-deep' });
+  const native = ctx.resources.getModel('qwen-token-plan/qwen3.8-max');
+  test.expect(native.reasoning).toBe(true);
+  test.expect(native.thinkingLevelMap).toMatchObject({ low: 'low', medium: 'medium', high: null, xhigh: 'xhigh' });
+});
+
+test.test('思考档列表和对象在读配置时拒绝未知档位与非字符串映射', () => {
+  const invalidThinking = [['ultra'], { ultra: 'deep' }, { high: 3 }];
+  for (const thinking of invalidThinking) {
+    const config = {
+      default_model: 'first/test-model',
+      providers: {
+        first: { base_url: 'http://127.0.0.1', models: { 'test-model': { thinking } } },
+      },
+    };
+    test.expect(() => checks.checkConfig(config)).toThrow('providers.first.models.test-model.thinking');
+  }
+});
 
 test.test('原子保存密钥后，下一次 pi 请求使用新密钥且保留现有供应商', async () => {
   const { ctx, config, file, requests } = await start();

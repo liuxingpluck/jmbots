@@ -113,7 +113,7 @@ function writeEntry(workDir: string, webDir: string): string {
   const register = [
     `import * as embedded from ${importPath(path.join(serveProcess.ROOT, 'src7', 'utils', 'Embedded.ts'))};`,
     ...files.map(([, file], index) => `import f${String(index)} from ${importPath(file)} with { type: 'file' };`),
-    `embedded.register({\n${registrations.join('\n')}\n}, ${String(Date.now())});`,
+    `embedded.registerEmbeddedFiles({\n${registrations.join('\n')}\n}, ${String(Date.now())});`,
     '',
   ].join('\n');
   fs.writeFileSync(path.join(workDir, 'Register.ts'), register);

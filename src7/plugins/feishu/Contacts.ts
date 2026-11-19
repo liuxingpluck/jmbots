@@ -13,7 +13,7 @@ import type { Feishu } from './index.ts';
 
 /** 来往流水的一行（data/logs/feishu-contacts.jsonl、GET /api/feishu/contacts）。 */
 export interface Contact {
-  /** 收到的本地时间，2026-11-17 10:30:05 的样子（textModule.getClock）。 */
+  /** 收到的本地时间，2026-11-17 10:30:05 的样子（textModule.formatLocalTime）。 */
   at: string;
   /** 哪个飞书应用收的。 */
   app: string;
@@ -66,8 +66,8 @@ export class FeishuContacts {
       fs.appendFileSync(this.getFile(), `${JSON.stringify(line)}\n`, 'utf8');
     } catch (error) {
       //M 写流水失败仅打印带时间戳日志，不阻断正常消息处理。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：来往流水没写进去：${textModule.getMessage(error)}`);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      console.error(`${logTime} 飞书：来往流水没写进去：${textModule.getErrorMessage(error)}`);
     }
   }
 
@@ -88,7 +88,7 @@ export class FeishuContacts {
   /** @returns 来往流水文件的绝对路径（文件夹没有就建）。 */
   private getFile(): string {
     //M 确保 data/logs 运行时子目录存在并拼接飞书来往流水 jsonl 路径。
-    return path.join(this.ctx.resources.dir('data', 'logs'), 'feishu-contacts.jsonl');
+    return path.join(this.ctx.resources.ensureRuntimeDir('data', 'logs'), 'feishu-contacts.jsonl');
   }
 
   /**
@@ -103,10 +103,10 @@ export class FeishuContacts {
     if (!this.feishu.apps.has(appId)) return;
     const contact: Omit<Contact, 'outcome'> = {
       //M 汇总日期戳、聊天元信息与裁剪后正文构成流水条，写入来往记录。
-      at: textModule.getClock(Date.now(), 'date'), app: appId, chatType: utils.getStringField(address, 'chatType'),
+      at: textModule.formatLocalTime(Date.now(), 'date'), app: appId, chatType: utils.getStringField(address, 'chatType'),
       chatId: utils.getStringField(address, 'chatId'), chatName: utils.getStringField(address, 'chatName'),
       openId: utils.getStringField(address, 'openId'), sender: utils.getStringField(address, 'senderName'), atMe: false,
-      text: textModule.clip(text.trim(), 80),
+      text: textModule.clipText(text.trim(), 80),
     };
     //M 将前台补充判定的结果标签追加写入联系人流水文件。
     this.log(contact, outcome);

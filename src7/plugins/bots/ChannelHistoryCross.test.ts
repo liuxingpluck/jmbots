@@ -51,6 +51,7 @@ class FakeResources extends cordis.Service {
   readonly builtTime = Date.now();
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -73,7 +74,7 @@ class FakeResources extends cordis.Service {
     };
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -211,7 +212,7 @@ test('1. memory_get 默认 80 条，支持签名 before 游标翻页与 200 条�
   wechat.reader.accounts = () => [{ id: 'acc1', nickname: '客服号', wxid: 'wxid_me' }];
 
   //M 在真实注册表中验证删掉的入口与保留的群日报工具。
-  const tools = ctx.tools.list('front').map((item) => item.name);
+  const tools = ctx.tools.listToolsForSessionKind('front').map((item) => item.name);
   const retired = ['history', 'history_search', 'history_get', 'channel_history', 'channel_mentions',
     'channel_visible_history', 'wechat_history'];
   expect(tools.filter((name) => retired.includes(name))).toEqual([]);
@@ -235,7 +236,7 @@ test('1. memory_get 默认 80 条，支持签名 before 游标翻页与 200 条�
   let phase: 'default80' | 'cursor' | 'limit200' = 'default80';
   let cursorToUse = '';
   const captured: channels.ChannelHistoryResult[] = [];
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       captured.push(JSON.parse(piAi.contentText(last.content)) as channels.ChannelHistoryResult);
@@ -361,7 +362,7 @@ test('2. 本人跨渠道取微信/网页/命令行/飞书历史（含附件脱�
   //M 预置飞书两个群的历史消息。
   let stepMode: 'plain' | 'web_to_wechat' | 'web_to_cli' | 'web_to_feishu' | 'feishu_to_http' | 'feishu_to_other_group' | 'web_with_view' = 'plain';
   const historyResults: channels.ChannelHistoryResult[] = [];
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       if (last.toolName === 'memory_get') {
@@ -612,7 +613,7 @@ test('3. 外人（guest / builder / 微信客户）跨渠道或指定其他聊�
     .find({ kind: 'front', bot: '小守' })
     .every((s) => s.state !== 'running' && s.activeKey === undefined);
 
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       if (last.toolName === 'memory_get') {

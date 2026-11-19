@@ -7,7 +7,7 @@
  */
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
-import { stampId } from '../../utils/Names.ts';
+import { createTimestampId } from '../../utils/Names.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { Exec } from './index.ts';
@@ -209,7 +209,7 @@ export class Runs {
 
     //M 记一行新命令：号用时间戳，其余字段取上面校验过的值。
     const row: Row = {
-      id: stampId(),
+      id: createTimestampId(),
       command,
       cwd: text('cwd', this.ctx.resources.root),
       why: text('why', ''),
@@ -540,8 +540,8 @@ export function mountRunsRoutes(app: fastify.FastifyInstance, runs: Runs): void 
 
   //M GET /api/runs：最近几条命令的列表。
   app.get<{ Querystring: { limit?: string } }>('/api/runs', async (request) => {
-    //M limit 夹在 [1, LIST_MAX]；没给、不是整数、比 1 小都按 LIST_DEFAULT（utils/Text.ts 的 getNumber）。
-    const limit = textModule.getNumber(request.query.limit, LIST_DEFAULT, 1, LIST_MAX);
+    //M limit 夹在 [1, LIST_MAX]；没给、不是整数、比 1 小都按 LIST_DEFAULT（utils/Text.ts 的 parseBoundedInt）。
+    const limit = textModule.parseBoundedInt(request.query.limit, LIST_DEFAULT, 1, LIST_MAX);
     return runs.list(limit);
   });
 

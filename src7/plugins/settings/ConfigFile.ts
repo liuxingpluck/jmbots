@@ -353,7 +353,7 @@ export class ConfigFile {
  * 非 null 对象转成键值表，其它给空对象。
  * @param raw 原始值。
  */
-function asRecord(raw: unknown): Record<string, unknown> {
+export function asRecord(raw: unknown): Record<string, unknown> {
   if (typeof raw === 'object' && raw !== null) return raw as Record<string, unknown>;
 
   return {};

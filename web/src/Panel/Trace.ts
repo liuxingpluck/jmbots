@@ -3,6 +3,7 @@
  * 这里只整理已有记录，不补造事件、不推测额度，也不请求模型或改执行状态。
  */
 import * as i18n from '../I18n.ts';
+import * as traceText from '../locales/Trace.ts';
 import type * as types from '../Types.ts';
 
 
@@ -585,8 +586,9 @@ export class TracePresenter {
     //M 新格式：函数行是人话；事件行是听的人。后面都带会话和代码位置。
     const line = getTraceLine(record);
     if (line !== undefined) {
-      if (line === '函数' && typeof fields.text === 'string') {
-        parts.push(fields.text);
+      if (typeof fields.text === 'string' && (line === '函数' || traceText.isTraceText(fields.text))) {
+        const params = traceText.getTraceParams(fields.text, fields);
+        parts.push(i18n.renderTrace(t, fields.text, params));
       }
       if (line === '事件') {
         let listeners = '';
@@ -712,12 +714,25 @@ export class TracePresenter {
   /** 每个字段保留原名；复杂上下文独立成多行，避免挤成一行长 JSON。 */
   private facts(fields: Record<string, unknown>, eventType: string): TraceFact[] {
     const result: TraceFact[] = [];
+    const localized = typeof fields.text === 'string' && traceText.isTraceText(fields.text);
     for (const [key, value] of Object.entries(fields)) {
       //M 将每个原始事件字段映射为业务可读标签与格式化后的值。
+      let label = this.fieldLabel(key, eventType);
+      const fieldId = `trace.field.${key}`;
+      if (localized && traceText.isTraceText(fieldId)) label = this.t(fieldId);
+      let shown = this.fieldValue(key, value);
+      if (key === 'mode' && typeof value === 'string') {
+        const modeId = traceText.getTraceModeId(value);
+        shown = i18n.renderTrace(this.t, modeId);
+      }
+      if (key === 'text' && localized && typeof value === 'string') {
+        const params = traceText.getTraceParams(value, fields);
+        shown = this.t(value, params);
+      }
       const fact: TraceFact = {
         key,
-        label: this.fieldLabel(key, eventType),
-        value: this.fieldValue(key, value),
+        label,
+        value: shown,
       };
 
       result.push(fact);

@@ -126,10 +126,10 @@ export async function apply(ctx: cordis.Context, config?: WebConfig): Promise<vo
     }
     if (found === undefined) file = 'index.html';
     //M 按最终文件的 MIME 类型与缓存策略发回静态资源字节。
-    return reply.header('Cache-Control', cache).type(mime.getType(file)).send(data);
+    return reply.header('Cache-Control', cache).type(mime.getMimeType(file)).send(data);
   });
 
   //T 跟踪：网页路由登记好了。
-  const vars = { 路由: 'GET /*' };
-  ctx.emit('trace', 'web.apply', '登记网页的兜底路由', "ctx.http.app.get('/*', …)", vars);
+  const vars = { route: 'GET /*' };
+  ctx.emit('trace', 'web.apply', 'trace.web.fallbackRoute', "ctx.http.app.get('/*', …)", vars);
 }

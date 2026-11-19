@@ -138,7 +138,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
   const app = ctx.http.app;
   const replyEvent = 'decision-map/relay-reply';
   const receiptEvent = 'decision-map/relay-replied';
-  const onError = (error: unknown) => ({ ok: false, error: textModule.getMessage(error) });
+  const onError = (error: unknown) => ({ ok: false, error: textModule.getErrorMessage(error) });
   const replyOptions = { onError };
 
   //M relay 确认写图完成后才结清自己的回信，失败时留待重试。
@@ -189,17 +189,8 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
     await deliverTasks(tasks, revision);
   });
 
-  //M 用独立作用域统一处理节点校验和持久化错误，沿用 HTTP 插件鉴权。
+  //M 决策图接口沿用 HTTP 插件的鉴权和错误处理。
   void app.register(async (scope) => {
-    scope.setErrorHandler((error, _request, reply) => {
-      let status = (error as { statusCode?: number }).statusCode ?? 500;
-      if (error instanceof failureModule.Failure) status = error.status;
-
-      //M 统一回复调用端可以展示的错误文字。
-      const message = textModule.getMessage(error);
-      return reply.code(status).send({ error: message });
-    });
-
     //M 页面读当前快照，中控的批量修改统一进入同一快照。
     scope.get(`${PREFIX}/graph`, () => store.getGraph());
     scope.put<{ Body: unknown }>(`${PREFIX}/nodes`, (request) => {

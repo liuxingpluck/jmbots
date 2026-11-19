@@ -39,6 +39,7 @@ class FakeResources extends cordis.Service {
   readonly root: string;
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -51,7 +52,7 @@ class FakeResources extends cordis.Service {
     this.raw = { bots: options.bots };
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -101,7 +102,7 @@ test('cli 收到输入：channel/message 只发 1 次、目标机器人认领 1 
   });
 
   let modelRuns = 0;
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     modelRuns += 1;
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     let said = '';

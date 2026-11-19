@@ -117,7 +117,7 @@ async function sendNotice(ctx: cordis.Context, settings: NotifySettings, notice:
     if (base === undefined) return '基地没响应';
 
     //M 已挂 base-bridge 时抽取可读错误信息回传给工具调用方。
-    return textModule.getMessage(error);
+    return textModule.getErrorMessage(error);
   }
 }
 
@@ -213,6 +213,6 @@ export function mountNotify(ctx: cordis.Context, settings: NotifySettings): void
   if (shownUrl === '') {
     shownUrl = 'ctx.base /notify';
   }
-  const vars = { 地址: shownUrl, 开着: settings.enabled };
-  ctx.emit('trace', 'notify.apply', '通知转到基地右下角', 'POST <url> {title, body}', vars);
+  const vars = { host: shownUrl, enabled: settings.enabled };
+  ctx.emit('trace', 'notify.apply', 'trace.base.notify', 'POST <url> {title, body}', vars);
 }

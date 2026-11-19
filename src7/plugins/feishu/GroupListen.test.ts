@@ -177,7 +177,7 @@ function world(decision?: FakeDecision): World {
       root: dir,
       raw: {},
       config: { providers: {}, plugins: [] },
-      dir: (...parts: string[]): string => {
+      ensureRuntimeDir: (...parts: string[]): string => {
         const full = path.join(dir, ...parts);
         fs.mkdirSync(full, { recursive: true });
         return full;

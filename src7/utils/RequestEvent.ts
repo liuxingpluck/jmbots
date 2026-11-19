@@ -53,6 +53,8 @@ export interface RequestEventOptions<Res> {
   prefix?: string;
   /** 最长等待毫秒数。 */
   timeoutMs: number;
+  /** 退出前仍要等到超时结果时，让定时器保持进程运行。 */
+  keepAlive?: boolean;
   /** 可选中止信号；触发后立即撤监听并退回 'aborted'。 */
   signal?: AbortSignal;
   /** 无人接单、超时、中止或监听器抛错时的退回值构造器。 */
@@ -63,6 +65,8 @@ export interface RequestEventOptions<Res> {
 export interface OnRequestEventOptions<Req extends RequestEnvelope, Res extends ResultEnvelope> {
   /** 可选前置过滤器；返回 false 时不置 handled，让后续监听者接单。 */
   filter?: (request: Req) => boolean;
+  /** 同步处理完成时立即发出回执，保留原有同步应答的事件顺序。 */
+  replySynchronously?: boolean;
   /** 业务处理抛错且存在 requestId 时，将异常转成结构化失败回执发出。 */
   onError?: (error: unknown, request: Req) => StripResultId<Res>;
 }
@@ -150,7 +154,9 @@ export async function requestEvent<
       //M 等待回执超时，调用退回构造器收尾。
       finishFallback('timeout');
     }, options.timeoutMs);
-    timer.unref?.();
+    if (options.keepAlive !== true) {
+      timer.unref?.();
+    }
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -162,7 +168,7 @@ export async function requestEvent<
       finishFallback('unhandled');
     }).catch((error: unknown) => {
       //M 监听器抛出未捕获异常，按 error 原因走统一退回逻辑。
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       finishFallback('error', detail);
     });
   });
@@ -197,7 +203,10 @@ export function onRequestEvent<
     request.handled = true;
     try {
       //M 执行业务处理器并收集不含 requestId 的结果正文。
-      const body = await handler(request);
+      let body = handler(request);
+      if (options?.replySynchronously !== true || body instanceof Promise) {
+        body = await body;
+      }
       if (request.requestId === undefined) return;
 
       //M 调用方要求等待回执（带了 requestId）：原样拼上 requestId 广播结果事件。

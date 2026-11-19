@@ -72,8 +72,8 @@ export class Summary {
     ];
 
     //T 跟踪：写总结。
-    const vars = { 会话: row.id };
-    this.ctx.emit('trace', 'summary.onChange', '开一场小会话写总结', 'sessions.ask(askInput)', vars);
+    const vars = { session: row.id };
+    this.ctx.emit('trace', 'summary.onChange', 'trace.contextFit.summarize', 'sessions.ask(askInput)', vars);
 
     //M 开一场小会话来写，不思考。等它跑完。
     const askInput: AskInput = {

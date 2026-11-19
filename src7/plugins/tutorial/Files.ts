@@ -302,7 +302,7 @@ export class FlowFiles {
     setTimeout(() => {
       //M 后台落盘失败时用 textModule 收束出错原因，只记日志不向上抛。
       this.write(file, build).catch((error: unknown) => {
-        const reason = textModule.getMessage(error);
+        const reason = textModule.getErrorMessage(error);
         console.error(`tutorial 写 ${file} 没写成：${reason}`);
       });
     }, 0);

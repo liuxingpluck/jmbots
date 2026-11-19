@@ -444,9 +444,9 @@ export class ModelNotes {
     fs.writeFileSync(file, updated, 'utf8');
 
     //T 跟踪：记下或修改了一条会话评价。
-    const vars = { 模型: model, 会话: input.session, 思考档: thinking, 评价者: input.by, 分数: input.score, 文件: file };
+    const vars = { model: model, session: input.session, thinking: thinking, reviewer: input.by, score: input.score, file: file };
     const code = 'fs.writeFileSync(file, upsertRatingLine(text, input.session, input.by, line))';
-    this.ctx.emit('trace', 'ModelNotes.rate', '给会话打分并记到模型评价', code, vars);
+    this.ctx.emit('trace', 'ModelNotes.rate', 'trace.modelCatalog.rateSession', code, vars);
     return getNote(model, updated);
   }
 
@@ -468,21 +468,13 @@ export class ModelNotes {
       try {
         input = checks.checkRating(request.body);
       } catch (error) {
-        const message = textModule.getMessage(error);
+        const message = textModule.getErrorMessage(error);
         return reply.code(400).send({ error: message });
       }
 
-      try {
-        //M 写入或覆盖该会话对应模型的评价记录，并将最新模型详情回给前端。
-        const note = this.rate(input);
-        return { ok: true, note };
-      } catch (error) {
-        //G 可预期的业务错误（如会话不存在或模型非法）按对应 HTTP 状态码返回，其余继续抛出。
-        if (error instanceof Failure) {
-          return reply.code(error.status).send({ error: error.message });
-        }
-        throw error;
-      }
+      //M 写入或覆盖该会话对应模型的评价记录，并将最新模型详情回给前端。
+      const note = this.rate(input);
+      return { ok: true, note };
     });
   }
 

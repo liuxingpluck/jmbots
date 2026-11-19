@@ -98,7 +98,7 @@ export interface QueueItem {
   deliveryMode?: 'channel_tool' | 'legacy_auto';
   /** 入队认领键（channel_tool 项使用）。 */
   claimKey?: string;
-  /** listen: judge 延迟判回时原话已记进 messages，drain 时不再 session.add 一遍。 */
+  /** listen: judge 延迟判回时原话已记进 messages，drain 时不再 session.queueUserMessage 一遍。 */
   alreadyRecorded?: boolean;
   /** v2 发送回执（channel_tool 或已归一回执写入）。 */
   deliveryReceipt?: protocol.ReplyReceipt;
@@ -258,8 +258,8 @@ export class DispatchResults {
     }
 
     //T 跟踪：一份结果排进队列。
-    const vars = { 结果键: input.key, 交给: target.id, 种类: target.row.kind, 排着几项: getWaiting(next).length };
-    this.home.emit('trace', 'Dispatch.acceptResult', '一份结果排进会话的结果队列，空闲了再处理', 'resultQueue.push(item)', vars);
+    const vars = { resultKey: input.key, targetSession: target.id, category: target.row.kind, queuedCount: getWaiting(next).length };
+    this.home.emit('trace', 'Dispatch.acceptResult', 'trace.bots.queueResult', 'resultQueue.push(item)', vars);
 
     //M 下一拍再看目标会话：它空闲就开一轮处理这一项，在转就等它这一轮结束。
     this.later(target);
@@ -336,7 +336,7 @@ export class DispatchResults {
 
     //M 排进前台的队列，kind user；处理时先接它。
     const item: QueueItem = {
-      key: `user:${namesModule.stampId()}`,
+      key: `user:${namesModule.createTimestampId()}`,
       kind: 'user',
       hash: '',
       source: { type: 'user', id: event.message.channel },
@@ -353,8 +353,8 @@ export class DispatchResults {
     event.handled = true;
 
     //T 跟踪：前台在整理结果，用户的话先排着。
-    const vars = { 会话: session.id, 渠道: event.message.channel, 字数: event.message.text.length };
-    this.home.emit('trace', 'Dispatch.hold', '前台正在整理后台结果，用户的话先排着，发完再接', 'resultQueue.push(item)', vars);
+    const vars = { session: session.id, channel: event.message.channel, length: event.message.text.length };
+    this.home.emit('trace', 'Dispatch.hold', 'trace.bots.holdMessage', 'resultQueue.push(item)', vars);
   }
 
 
@@ -437,7 +437,7 @@ export class DispatchResults {
         work.save();
       });
     } catch (error) {
-      console.error(`后台 ${work.id} 的结果没交回前台 ${task.front}：${textModule.getMessage(error)}`);
+      console.error(`后台 ${work.id} 的结果没交回前台 ${task.front}：${textModule.getErrorMessage(error)}`);
     }
 
     //M 交回后下一拍再看这场后台自己的队列（外部结果排着的话接着处理）。
@@ -455,10 +455,7 @@ export class DispatchResults {
     const row = front.row;
     const item = getActive(row);
     if (item === undefined) {
-      delete row.activeKey;
-      delete row.quiet;
-      delete row.activeSourceSnapshot;
-      delete row.recalledStop;
+      this.clearActive(row);
       front.save();
       return;
     }
@@ -476,10 +473,7 @@ export class DispatchResults {
     if (row.recalledStop === true || item.replyControl?.outcome === 'recalled') {
       item.stage = 'rejected';
       item.note = '已停止（用户撤回了消息）';
-      delete row.activeKey;
-      delete row.quiet;
-      delete row.activeSourceSnapshot;
-      delete row.recalledStop;
+      this.clearActive(row);
       row.resultQueue = getKept(row.resultQueue ?? []);
       front.save();
       this.later(front);
@@ -516,16 +510,13 @@ export class DispatchResults {
     });
 
     //M 收尾：清掉“正在处理”的标记，队列只留最近的几项（处理完的留键去重），存库。
-    delete row.activeKey;
-    delete row.quiet;
-    delete row.activeSourceSnapshot;
-    delete row.recalledStop;
+    this.clearActive(row);
     row.resultQueue = getKept(row.resultQueue ?? []);
     front.save();
 
     //T 跟踪：后台结果整理好发出去了。
-    const vars = { 会话: front.id, 结果键: item.key, 回执: receipt.status, 原因: receipt.reason };
-    const action = '前台整理好后台结果，发回原渠道，记回执';
+    const vars = { session: front.id, resultKey: item.key, receipt: receipt.status, reason: receipt.reason };
+    const action = 'trace.bots.finishFront';
     const call = 'ctx.bots.send(front, text, item.origin)';
     this.home.emit('trace', 'Dispatch.finishFront', action, call, vars);
 
@@ -562,7 +553,7 @@ export class DispatchResults {
       return;
     }
 
-    //M 零次回复兜底触发：同步只落盘 pending 并挂一个宏任务，不动 Session.add，不提前清 activeKey。
+    //M 零次回复兜底触发：同步只落盘 pending 并挂一个宏任务，不动 Session.queueUserMessage，不提前清 activeKey。
     if (eligibleZeroFallback && control !== undefined) {
       control.reminder = 'pending';
       front.save();
@@ -582,10 +573,7 @@ export class DispatchResults {
     this.recordChannelOutcome(row, item);
 
     //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库。
-    delete row.activeKey;
-    delete row.quiet;
-    delete row.activeSourceSnapshot;
-    delete row.recalledStop;
+    this.clearActive(row);
     row.resultQueue = getKept(row.resultQueue ?? []);
     front.save();
 
@@ -594,6 +582,17 @@ export class DispatchResults {
 
     //M 这一项收完了：下一拍再看队列里还有没有排着的，有就接着处理。
     this.later(front);
+  }
+
+  /**
+   * 释放已结束轮次的标记，后续轮次不继承旧来源或撤回状态。
+   * @param row 当前前台会话，调用者负责持久化。
+   */
+  private clearActive(row: SessionMeta): void {
+    delete row.activeKey;
+    delete row.quiet;
+    delete row.activeSourceSnapshot;
+    delete row.recalledStop;
   }
 
   /** 按渠道回执和停跑原因记录该轮处理结果。 */
@@ -664,33 +663,24 @@ export class DispatchResults {
     }
 
     //M 和 channel_reply 一样拼一次回复请求：固定的请求键，重启重放也不会发两遍。
-    const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
     const replyIndex = control.nextReplyIndex;
     control.nextReplyIndex = replyIndex + 1;
     const replyRequestKey = protocol.getReplyRequestKey(control.roundKey, 'auto_final');
     control.receiptKeys.push(replyRequestKey);
     front.save();
 
-    //M 把这句话包成一条 final 回复请求：带来源快照的深拷贝和内容摘要（payloadHash），渠道据此认出发给谁、防重复。
-    const replyRequest = {
-      channel: snapshot.channel,
-      bot: snapshot.botName,
+    //T 跟踪：零次回复，直接把最后的话发出去。
+    const vars = { session: front.id, channel: snapshot.channel, length: text.length };
+    this.home.emit('trace', 'Dispatch.sendLastWords', 'trace.bots.sendLastWords', "ctx.serial('channel/reply')", vars);
+
+    //M 发 channel/reply 请求，等渠道交回回执（发到了、发了一部分、没收）。
+    const options = {
       replyRequestKey,
       replyRoundKey: control.roundKey,
       replyIndex,
       kind: 'final' as const,
-      mode: 'text' as const,
-      sourceSnapshot: structuredClone(snapshot),
-      payloadHash: protocol.getPayloadHash({ kind: 'final', mode: 'text', parts }),
-      parts,
     };
-
-    //T 跟踪：零次回复，直接把最后的话发出去。
-    const vars = { 会话: front.id, 渠道: snapshot.channel, 字数: text.length };
-    this.home.emit('trace', 'Dispatch.sendLastWords', '这一轮没调回复工具，把最后的话发出去', "ctx.serial('channel/reply')", vars);
-
-    //M 发 channel/reply 请求，等渠道交回回执（发到了、发了一部分、没收）。
-    const receipt = await protocol.requestChannelReply(this.home, replyRequest);
+    const receipt = await protocol.requestTextReply(this.home, snapshot, text, options);
 
     //M 记回执和结果，再走一遍收尾（reminder 是 used，不会再进兜底）。
     item.deliveryReceipt = receipt;
@@ -815,7 +805,7 @@ export class DispatchResults {
 
   /**
    * 处理队列里的下一项：会话空闲、没在处理、没暂停才开始。用户排着的话先接；再按先后处理结果。
-   * 结果写成一条带标记的 user 话直接存进对话（不走 session.add，不当成用户说的、不记往来），再推会话跑一轮。
+   * 结果写成一条带标记的 user 话直接存进对话（不走 session.queueUserMessage，不当成用户说的、不记往来），再推会话跑一轮。
    * @param session 前台或后台。
    * 副作用：改对话并存库；推会话跑（调模型）。
    */
@@ -860,6 +850,7 @@ export class DispatchResults {
     }
 
     //M 结果存进对话，推它跑一轮。
+    //M Message 是一条对话消息。这里的 role 标识输入，content 放子会话结果，timestamp 记时间。
     const message: piAi.Message = {
       role: 'user',
       content: getResultText(item, row.kind),
@@ -870,8 +861,8 @@ export class DispatchResults {
     session.save();
 
     //T 跟踪：开始处理队列里的一项。
-    const vars = { 会话: session.id, 种类: row.kind, 结果键: item.key, 还排着: getWaiting(queue).length - 1 };
-    this.home.emit('trace', 'Dispatch.drain', '会话空闲了，处理结果队列里的下一项', 'session.run()', vars);
+    const vars = { session: session.id, category: row.kind, resultKey: item.key, remainingCount: getWaiting(queue).length - 1 };
+    this.home.emit('trace', 'Dispatch.drain', 'trace.bots.drainResult', 'session.run()', vars);
 
     //M 推会话跑一轮，不等；这一轮结束时 session/change 进 onChange 收尾。
     void session.run();
@@ -896,7 +887,7 @@ export class DispatchResults {
       this.home.bots.route(session, said.origin);
       session.save();
       if (said.alreadyRecorded !== true) {
-        session.add(said.payload.text);
+        session.queueUserMessage(said.payload.text);
       }
 
       //M 推会话跑一轮，不等；回话由 channel_tool 的回复工具发。
@@ -907,7 +898,7 @@ export class DispatchResults {
     //M 旧路径：这一句从队列取出来，回话地址换成它的来源，话进对话，推会话跑一轮。
     row.resultQueue = queue.filter((item) => item !== said);
     this.home.bots.route(session, said.origin);
-    session.add(said.payload.text);
+    session.queueUserMessage(said.payload.text);
     void session.run();
     return;
   }
@@ -962,9 +953,7 @@ export class DispatchResults {
       item.replyControl.outcome = 'uncertain';
       item.stage = 'uncertain';
       item.note = '重启前正在执行零次回复修复轮，不自动重跑';
-      delete row.activeKey;
-      delete row.quiet;
-      delete row.activeSourceSnapshot;
+      this.clearActive(row);
       session.save();
       this.later(session);
       return;
@@ -985,9 +974,7 @@ export class DispatchResults {
       }
 
       //M 不管发没发到，都释放“正在处理”的标记，存库，下一拍接着处理队列里别的项。
-      delete row.activeKey;
-      delete row.quiet;
-      delete row.activeSourceSnapshot;
+      this.clearActive(row);
       session.save();
       this.later(session);
       return;
@@ -1137,24 +1124,12 @@ export function normalizeLegacyReceipt(
   if (v1Status === 'rejected') {
     status = 'rejected';
   }
-  const ok = status === 'sent';
-  const parts: protocol.ReplyReceiptPart[] = [{ partId: 'text:0', kind: 'text', status }];
-  if (reason !== '') {
-    parts[0]!.reason = reason;
-  }
-  const receipt: protocol.ReplyReceipt = {
-    v: 2,
-    ok,
-    status,
-    replyRequestKey: meta.replyRequestKey,
-    replyRoundKey: meta.replyRoundKey,
-    replyIndex: meta.replyIndex,
-    kind: meta.kind,
-    parts,
-    at: Date.now(),
+  const source: protocol.ReceiptSource = {
+    ...meta,
+    parts: [{ partId: 'text:0', kind: 'text' }],
   };
-  if (reason !== '') {
-    receipt.reason = reason;
-  }
-  return receipt;
+  //M 沿用旧渠道的空原因约定，转成标准回执。
+  if (reason === '') return protocol.getReceipt(source, status);
+
+  return protocol.getReceipt(source, status, reason);
 }

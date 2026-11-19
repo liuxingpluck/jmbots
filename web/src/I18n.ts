@@ -9,6 +9,7 @@ import en from './locales/en.json' with { type: 'json' };
 import fr from './locales/fr.json' with { type: 'json' };
 import zhTW from './locales/zh-TW.json' with { type: 'json' };
 import * as context from './Context.ts';
+import * as traceText from './locales/Trace.ts';
 
 
 /** 支持的语言：代码和它自己的名字（下拉框里显示）。 */
@@ -80,6 +81,11 @@ export function saveLanguage(storage: Pick<Storage, 'setItem'>, language: Langua
  * @param params 参数。
  */
 export function translate(language: Language, text: string, params?: Record<string, string | number>): string {
+  if (traceText.isTraceText(text)) {
+    const traceLanguage = traceText.getTraceLanguage(language);
+    return traceText.getTraceText(traceLanguage, text, params);
+  }
+
   //M 简体中文原文不用再查英文包兜底。
   let fallback: string | undefined;
   if (language !== 'zh-CN') {
@@ -100,6 +106,13 @@ export function translate(language: Language, text: string, params?: Record<stri
 
 /** 翻译函数的样子。 */
 export type Translate = (text: string, params?: Record<string, string | number>) => string;
+
+/** 跟踪点的已知编号按当前语言翻译，旧记录直接显示原文。 */
+export function renderTrace(t: Translate, text: string, params?: traceText.TraceParams): string {
+  if (!traceText.isTraceText(text)) return text;
+
+  return t(text, params);
+}
 
 
 /**

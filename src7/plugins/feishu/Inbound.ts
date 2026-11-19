@@ -171,9 +171,9 @@ export class FeishuInbound {
       //G 重推或正在处理中：只有落盘并完成分派以后才写 feishu_seen。
       const seenRow = db.query(sql).get(messageId);
       if (seenRow !== null || this.inFlight.has(messageId)) {
-        const vars = { 应用: appId, 消息: messageId };
+        const vars = { appId: appId, messageId: messageId };
         //M 保留重复投递的去重流水。
-        this.ctx.emit('trace', 'Feishu.onMessage', '同一条消息飞书又推了一次，不管', 'SELECT feishu_seen', vars);
+        this.ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.duplicateMessage', 'SELECT feishu_seen', vars);
         return;
       }
 
@@ -183,7 +183,7 @@ export class FeishuInbound {
       await this.handleInboundMessage(appId, app, data);
     } catch (error) {
       //G SDK 回调不等这个 Promise。去重、解析和前置落盘失败也要有消息号与原因。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       this.logFailedMessage(messageId, reason);
     } finally {
       if (ownsSlot) {
@@ -196,7 +196,7 @@ export class FeishuInbound {
   /** 记录任一入站阶段的失败，沿用原有消息日志格式。 */
   private logFailedMessage(messageId: string, reason: string): void {
     //M 日志带本机时间，便于按消息号和时间找入站失败。
-    const logTime = textModule.getClock(Date.now(), 'date');
+    const logTime = textModule.formatLocalTime(Date.now(), 'date');
     //M 记录消息号和失败原因供排查。
     console.error(`${logTime} 飞书：消息 ${messageId} 没处理成：${reason}`);
   }
@@ -226,13 +226,13 @@ export class FeishuInbound {
     const address = this.getAddress(facts);
 
     const vars = {
-      应用: appId,
-      机器人: facts.targetBots.join('、'),
-      类型: message.message_type,
-      聊天: message.chat_type,
-      只听: facts.listenOnly,
+      appId: appId,
+      bot: facts.targetBots.join('、'),
+      type: message.message_type,
+      chat: message.chat_type,
+      listenOnly: facts.listenOnly,
     };
-    const summary = '飞书收到一条消息，存原始件并广播 channel/message';
+    const summary = 'trace.feishu.receiveMessage';
     this.ctx.emit('trace', 'Feishu.onMessage', summary, 'ctx.serial("channel/message", msg)', vars);
 
     try {
@@ -259,7 +259,7 @@ export class FeishuInbound {
       await this.deliver(facts, address, channelMessage);
     } catch (error) {
       //M 捕获入站异常后登记失败流水与控制台报错，并尝试向发信方回传简明失败原因。
-      const said = textModule.getMessage(error);
+      const said = textModule.getErrorMessage(error);
       this.feishu.contacts.log(facts.contact, `没处理成：${said}`);
       this.logFailedMessage(message.message_id, said);
       try {
@@ -268,8 +268,8 @@ export class FeishuInbound {
         await this.feishu.untype(address);
       } catch (again) {
         //M 连兜底错误通知也发送失败时取时间前缀记录二次日志。
-        const againTime = textModule.getClock(Date.now(), 'date');
-        console.error(`${againTime} 飞书：“没处理成”也没发出去：${textModule.getMessage(again)}`);
+        const againTime = textModule.formatLocalTime(Date.now(), 'date');
+        console.error(`${againTime} 飞书：“没处理成”也没发出去：${textModule.getErrorMessage(again)}`);
       }
     }
   }
@@ -317,7 +317,7 @@ export class FeishuInbound {
 
     const contact: Omit<Contact, 'outcome'> = {
       //M 取格式化日期时间戳作为联系人流水记录时间，后文裁剪正文前 80 字。
-      at: textModule.getClock(Date.now(), 'date'),
+      at: textModule.formatLocalTime(Date.now(), 'date'),
       app: appId,
       chatType: message.chat_type,
       chatId: message.chat_id,
@@ -326,7 +326,7 @@ export class FeishuInbound {
       sender: senderName,
       atMe: mentioned.atMe,
       //M 截断消息文本保留摘要片段写入流水表，避免超长对话刷爆日志。
-      text: textModule.clip(body.trim(), 80),
+      text: textModule.clipText(body.trim(), 80),
     };
 
     //M 定投给谁：私聊投给全部允许的机器人；群里 @ 到的要回，登记了只听的群其余的只听。
@@ -475,8 +475,8 @@ export class FeishuInbound {
     this.markSeen(facts.appId, message.message_id);
     //M 追加一条“丢了”来往流水供核对群过滤情况。
     this.feishu.contacts.log(facts.contact, '丢了');
-    const vars = { 应用: facts.appId, 聊天: message.chat_id };
-    this.ctx.emit('trace', 'Feishu.onMessage', '群里这条没 @ 机器人，不回', 'atMe === false', vars);
+    const vars = { appId: facts.appId, chat: message.chat_id };
+    this.ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.skipGroupReply', 'atMe === false', vars);
   }
 
   /**
@@ -512,7 +512,7 @@ export class FeishuInbound {
       //M 按会话类型计算统一客户键，供前台与记忆插件区分私聊与群聊上下文。
       customer: feishuCustomer(message.chat_type, message.chat_id, facts.openId),
       //M 根据配置填充说话人的身份角色与限定工作目录（owner 不写 workspace）。
-      ...roleFields(facts.person, this.ctx.resources.dir('guests', GUEST_DIR)),
+      ...roleFields(facts.person, this.ctx.resources.ensureRuntimeDir('guests', GUEST_DIR)),
     };
     if (facts.chatName !== '') address.chatName = facts.chatName;
     if (facts.senderName !== '') address.senderName = facts.senderName;
@@ -543,8 +543,8 @@ export class FeishuInbound {
       if (reactionId !== undefined && reactionId !== '') address.typingReaction = reactionId;
     } catch (error) {
       //M 取格式化日期前缀记录挂“敲键盘”表情失败日志，不阻断主流程。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：表情没挂上：${textModule.getMessage(error)}`);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      console.error(`${logTime} 飞书：表情没挂上：${textModule.getErrorMessage(error)}`);
     }
   }
 
@@ -566,7 +566,7 @@ export class FeishuInbound {
     //M 分应用和落盘日期保存原附件，等各机器人认领后再复制到自己的目录。
     const appDir = namesModule.getSafeName(facts.appId, Infinity);
     const day = new Date().toLocaleDateString('sv-SE');
-    const attachDir = this.ctx.resources.dir('channels', 'feishu', 'attachments', appDir, day);
+    const attachDir = this.ctx.resources.ensureRuntimeDir('channels', 'feishu', 'attachments', appDir, day);
     for (const [idx, resource] of resources.entries()) {
       const attachId = `${message.message_id}:${String(idx)}`;
       try {
@@ -588,7 +588,7 @@ export class FeishuInbound {
         });
       } catch (error) {
         //M 单个附件下载失败时记为不可用并把报错附进正文，不阻塞整条消息处理。
-        const reason = textModule.getMessage(error);
+        const reason = textModule.getErrorMessage(error);
         failed.push(`[${resource.name} 没下载下来：${reason}]`);
         attachments.push({
           id: attachId,
@@ -897,8 +897,8 @@ export class FeishuInbound {
 
     //M 先登记撤回消息号以拦截附件下载中的入站和在途回话，再发 channel/recall 让 bots 立即停跑与清队列。
     this.rememberRecalledNative(appId, nativeId);
-    const vars = { 应用: appId, 聊天: chatId, 原消息: nativeId, 撤回人: recalledId || 'message_owner', 本人: isOwner };
-    this.ctx.emit('trace', 'Feishu.onRecall', '飞书收到撤回消息事件，通知 bots 停掉对应任务', "ctx.serial('channel/recall', event)", vars);
+    const vars = { appId: appId, chat: chatId, originalMessageId: nativeId, recalledBy: recalledId || 'message_owner', owner: isOwner };
+    this.ctx.emit('trace', 'Feishu.onRecall', 'trace.feishu.recallMessage', "ctx.serial('channel/recall', event)", vars);
     await this.ctx.serial('channel/recall', {
       channel: this.name,
       accountId: appId,
@@ -955,7 +955,7 @@ export class FeishuInbound {
     const customer = feishuCustomer(customerChatType, chatId, openId, p2p);
     const address: FeishuAddress = { appId, chatId, messageId: cardId, openId, chatType, customer };
     //M 点卡片的人是哪一档：和收消息一样只看 people。
-    const guestDir = this.ctx.resources.dir('guests', GUEST_DIR);
+    const guestDir = this.ctx.resources.ensureRuntimeDir('guests', GUEST_DIR);
     //M 提取人员档位字段（owner / role / workspace）写入回话地址。
     const fields = roleFields(this.feishu.config.people.get(openId), guestDir);
     Object.assign(address, fields);
@@ -969,8 +969,8 @@ export class FeishuInbound {
 
 
     //T 跟踪：点了卡片按钮。
-    const vars = { 应用: appId, 卡片: cardId, 按钮: JSON.stringify(value ?? {}) };
-    this.ctx.emit('trace', 'Feishu.onCard', '飞书卡片上点了按钮，交给卡片那块', 'cards.onAction(...)', vars);
+    const vars = { appId: appId, cardId: cardId, button: JSON.stringify(value ?? {}) };
+    this.ctx.emit('trace', 'Feishu.onCard', 'trace.feishu.cardAction', 'cards.onAction(...)', vars);
     try {
       const action = (value ?? {}) as Record<string, unknown>;
 
@@ -978,7 +978,7 @@ export class FeishuInbound {
       const toast = await cards.onAction(this.feishu, this.ctx, address, cardId, action);
       return { toast: toast ?? { type: 'info', content: '这个按钮没有用了' } };
     } catch (error) {
-      return { toast: { type: 'error', content: `没处理成：${textModule.getMessage(error)}` } };
+      return { toast: { type: 'error', content: `没处理成：${textModule.getErrorMessage(error)}` } };
     }
   }
 }

@@ -2,7 +2,7 @@
 import * as text from './Text.ts';
 import * as trace from './Trace.ts';
 
-/** 已有日期头使用 Text.getClock 的 date 格式，保留发出方记录的时刻。 */
+/** 已有日期头使用 Text.formatLocalTime 的 date 格式，保留发出方记录的时刻。 */
 const DATED_HEAD = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?=[ \t\r\n]|$)/u;
 const LOG_HOME = ['utils/BackendLog.ts'];
 
@@ -20,7 +20,7 @@ function getSource(site: string): string {
  * @param output 后端使用的控制台。
  * 副作用：包装该控制台的 error，保留原 formatter 处理占位符、对象和多行栈。
  */
-export function install(output: Pick<Console, 'error'> = console): void {
+export function installBackendErrorLogger(output: Pick<Console, 'error'> = console): void {
   //M 保留控制台原有的写入方式，基地已经负责把标准错误收进文件。
   const writeError = output.error.bind(output);
   output.error = (...args: unknown[]): void => {
@@ -30,7 +30,7 @@ export function install(output: Pick<Console, 'error'> = console): void {
     const site = trace.getCallSite(LOG_HOME);
     const source = getSource(site);
     let first = args[0];
-    let time = text.getClock(now, 'date');
+    let time = text.formatLocalTime(now, 'date');
 
     if (typeof first === 'string') {
       const existing = DATED_HEAD.exec(first)?.[0];

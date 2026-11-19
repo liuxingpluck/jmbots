@@ -6,7 +6,7 @@
  *   GET /api/memory-graph/graph                  整张关系图
  *   GET /api/memory/search                       统一检索返回原文定位和可选命中子图
  *   GET /api/memory-graph/passage/:id、/entity/:id、/edge/:id
- *   session/request                              用到记忆时提示模型在末尾附 [查看关系图](/graph/?...)
+ *   session/before-model                              用到记忆时提示模型在末尾附 [查看关系图](/graph/?...)
  */
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -155,7 +155,7 @@ export class GraphRoutes {
   private readonly sources: Sources;
 
   /**
-   * @param ctx memory 插件 ctx（用于挂 session/request 提示）。
+   * @param ctx memory 插件 ctx（用于挂 session/before-model 提示）。
    * @param root 运行时根目录（Sources 定位磁盘文件用）。
    * @param memoryService 同插件构造好的 MemoryService。
    * @param settings `readGraphSettings` 校验后的配置。
@@ -173,7 +173,7 @@ export class GraphRoutes {
     this.sources = new Sources(root, (id) => String(((this.store.passage(id) as { passage?: { text?: unknown } }).passage?.text) ?? ''));
     //M 必须在 Memory 之后注册：先等 Memory.onRequest 把开场检索结果写进 row.recall，再用到了才附链接。
     if (settings.enabled && settings.link) {
-      ctx.on('session/request', (request) => {
+      ctx.on('session/before-model', (request) => {
         //M 这一步用没用到记忆：用到了才有提示，加进系统提示词，让模型回答末尾附关系图链接。
         const hint = buildLinkHint(request);
         if (hint !== undefined) {

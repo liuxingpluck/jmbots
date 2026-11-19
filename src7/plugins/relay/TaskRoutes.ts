@@ -1,7 +1,7 @@
 /**
  * 任务通道的 7 个接口和接入说明 GUIDE（照 0.4 src/channels/Http.ts:372-531、src/capabilities/AgentTasks.ts:70-95，11-17 加新协议 v1）。
  * 11-17 由原 agent-tasks/Routes.ts 挪进 relay（relay 自己转话的两条接口在 Routes.ts）。
- * 除了说明页都要令牌（本机来的不查，http 插件统一查）；出错一律 { error: 一句话 }，状态码照 Failure（utils/Failure.ts），别的 400。
+ * 除了说明页都要令牌（本机来的不查，http 插件统一查）；错误由 HTTP 插件统一返回。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -109,21 +109,6 @@ function shown(task: Task): ShownTask {
 }
 
 
-/**
- * 出错回 { error }：Failure 照它的状态码，别的 400。
- * @param reply 路由的 reply。
- * @param error 抛出来的错。
- */
-function fail(reply: Reply, error: unknown): unknown {
-  let status = 400;
-  if (error instanceof failureModule.Failure) {
-    status = error.status;
-  }
-
-  //M 把异常整理成统一的 HTTP 错误正文，保留任务服务给出的状态码。
-  return reply.code(status).send({ error: textModule.getMessage(error) });
-}
-
 
 /**
  * 交回的正文 → finish 要的。新协议的 protocolResult 交给 Checks.ts 的 checkTaskResult 查；旧格式查 ok、text。uploads 两种都能带。
@@ -134,20 +119,26 @@ function getFinishInput(body: Record<string, unknown>): FinishInput {
   //G uploads：上传号清单，可以不带。
   const uploads = body['uploads'] ?? [];
   if (!Array.isArray(uploads) || !uploads.every((item) => typeof item === 'string')) {
-    throw new Error('uploads 要是上传号清单（PUT /api/uploads/<文件名> 回的 id）');
+    throw new failureModule.Failure(400, 'uploads 要是上传号清单（PUT /api/uploads/<文件名> 回的 id）');
   }
 
   //M 新协议：protocolResult 就是 result.json 的内容。
   if (body['protocolResult'] !== undefined) {
-    const result = checksModule.checkTaskResult(body['protocolResult']);
-    return { uploads, result };
+    try {
+      const result = checksModule.checkTaskResult(body['protocolResult']);
+      return { uploads, result };
+    } catch (error) {
+      //G 只把输入协议校验失败标为 400，任务落库失败交给全局处理。
+      const message = textModule.getErrorMessage(error);
+      throw new failureModule.Failure(400, message);
+    }
   }
 
   //M 旧格式：{ ok?: true/false, text?: 字符串 }。
   const ok = body['ok'] ?? true;
   const text = body['text'] ?? '';
   if (typeof ok !== 'boolean' || typeof text !== 'string') {
-    throw new Error('要 { ok?: true/false, text?: 字符串, uploads?: 上传号[] }；新协议交 { protocolResult, uploads? }');
+    throw new failureModule.Failure(400, '要 { ok?: true/false, text?: 字符串, uploads?: 上传号[] }；新协议交 { protocolResult, uploads? }');
   }
   return { ok, text, uploads };
 }
@@ -187,14 +178,16 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     const checked = check(request.params, reply);
     if (checked === undefined) return reply;
 
+    //M 校验执行端提交的说明和能力，再登记上线并返回登记结果。
+    let said: ReturnType<typeof checksModule.checkAgentHello>;
     try {
-      //M 校验执行端提交的说明和能力，再登记上线并返回登记结果。
-      const said = checksModule.checkAgentHello(request.body);
-      return tasks.hello(checked.agent, said);
+      said = checksModule.checkAgentHello(request.body);
     } catch (error) {
-      //G 将无效登记或服务错误转成接口约定的错误响应。
-      return fail(reply, error);
+      //G 登记正文格式错误沿用 400，实际登记故障由 HTTP 插件处理。
+      const message = textModule.getErrorMessage(error);
+      throw new failureModule.Failure(400, message);
     }
+    return tasks.hello(checked.agent, said);
   });
 
   //M 提供按执行端及可选状态筛选的任务列表。
@@ -223,14 +216,9 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     const badKey = claimKey !== undefined && (typeof claimKey !== 'string' || claimKey === '' || claimKey.length > 200);
     if (badKey) return reply.code(400).send({ error: 'claimKey 要是 1 到 200 字的文字（可以不带）' });
 
-    try {
-      //M 用领取键登记或重取任务，把任务按 HTTP 约定返回给执行端。
-      const task = tasks.take(checked.agent, checked.id, claimKey as string | undefined);
-      return shown(task);
-    } catch (error) {
-      //G 将任务缺失或领取冲突返回给执行端。
-      return fail(reply, error);
-    }
+    //M 用领取键登记或重取任务，把任务按 HTTP 约定返回给执行端。
+    const task = tasks.take(checked.agent, checked.id, claimKey as string | undefined);
+    return shown(task);
   });
 
   //M 执行端按任务号下载输入附件或该任务内的其他文件。
@@ -264,14 +252,9 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     if (checked === undefined) return reply;
 
     const body = (request.body ?? {}) as Record<string, unknown>;
-    try {
-      //M 把新旧格式转成任务服务的输入，落库后按接口格式返回结果。
-      const input = getFinishInput(body);
-      const task = await tasks.finish(checked.agent, checked.id, input);
-      return { ok: true, task: shown(task) };
-    } catch (error) {
-      //G 把校验失败或交回冲突转换为执行端可处理的错误响应。
-      return fail(reply, error);
-    }
+    //M 把新旧格式转成任务服务的输入，落库后按接口格式返回结果。
+    const input = getFinishInput(body);
+    const task = await tasks.finish(checked.agent, checked.id, input);
+    return { ok: true, task: shown(task) };
   });
 }

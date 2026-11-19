@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { LINES, SESSION as S } from './tests/Lines.ts';
 import { getNode, getTrail } from './Trail.ts';
+import * as traceText from '../../../web/src/locales/Trace.ts';
 
 
 describe('Trail', () => {
@@ -25,6 +26,8 @@ describe('Trail', () => {
     const names = trail.steps.flatMap((step) => step.rows.map((row) => row.name));
     expect(names).not.toContain('web-api/status');
     expect(names.filter((name) => name === 'Session.loop')).toHaveLength(1);
+    expect(names.filter((name) => name === 'session/before-model')).toHaveLength(2);
+    expect(names.filter((name) => name === 'session/new-message')).toHaveLength(4);
     expect(trail.ms).toBe(2033);
     expect(trail.steps[2]?.title).toContain('调模型（等了 2.0 秒）');
   });
@@ -51,5 +54,20 @@ describe('Trail', () => {
     expect(texts).toContain('模型要用工具：time');
     expect(texts).toContain('工具 time 给了结果');
     expect(texts).toContain('会话做完了');
+  });
+
+  test('同一轨迹兼容新旧流水，步骤保留文案编号和所需插值', () => {
+    const mixed = LINES.map((line) => {
+      if (line.name !== 'Tools.execute') return line;
+
+      return { ...line, text: 'trace.relay.accept', vars: { helper: 'reviewer', session: S, privateText: '只给流水' } };
+    });
+    const trail = getTrail(7, mixed);
+    const rows = trail.steps.flatMap((step) => step.rows);
+    const added = rows.find((row) => row.text === 'trace.relay.accept');
+    expect(added?.params).toEqual({ helper: 'reviewer' });
+    expect(traceText.getTraceText('en', added!.text, added!.params)).toBe('Received a reply from reviewer');
+    expect(rows.map((row) => row.text)).toContain('收件表记下这条消息');
+    expect(JSON.stringify(trail.steps)).not.toContain('只给流水');
   });
 });

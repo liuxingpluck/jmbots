@@ -198,7 +198,7 @@ export class ResourceGuard {
       if (this.control.signal.aborted) return;
 
       //M 将内部错误转为可读诊断，不影响后续采样或清理。
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       console.error(`资源守卫本轮动作失败：${detail}`);
     }).finally(() => { this.ticking = undefined; });
     return this.ticking;
@@ -698,7 +698,7 @@ export class ResourceGuard {
       }
     } catch (error) {
       //M 将内部错误转为可读诊断，不影响后续采样或清理。
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       console.error(`资源守卫通知入队失败：${detail}`);
     }
   }

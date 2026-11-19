@@ -9,7 +9,7 @@
  *      私人记忆文件由来源授权确定。群聊和其他人的私聊使用 memory 的归属召回。
  * 小会话（压缩、总结）要它做什么，写在开它的插件发给它的那句话里；这里只在有提示词文件时才给它加。
  * 原插件 prompt，2026-11-17 并进 bots（docs/协作/任务板/合并做法.md）：默认开，bots 的配置写 prompt: false 才不挂。
- * session/request 的监听挂在 bots 自己的几个监听（前台、派后台、渠道工具）后面；1、2 段用 unshift，不管排第几都在最前。
+ * session/before-model 的监听挂在 bots 自己的几个监听（前台、派后台、渠道工具）后面；1、2 段用 unshift，不管排第几都在最前。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -47,13 +47,13 @@ const BUILT_IN: Record<string, string> = {
 /** 提示词。bots 的 apply 里建（config.prompt 不是 false 时）。 */
 export class Prompt {
   /**
-   * 出厂的第一段复制进运行时目录，挂上 session/request 的监听。
+   * 出厂的第一段复制进运行时目录，挂上 session/before-model 的监听。
    * @param ctx bots 插件的 ctx：拔掉 bots 时监听一起撤掉。
    * 副作用：可能复制一个文件进运行时 prompts/。
    */
   constructor(private readonly ctx: cordis.Context) {
     //M 出厂的第一段复制进运行时目录（已有的不覆盖，用户改的是运行时那份）；编译版从内嵌的文件导出。
-    const base = path.join(this.ctx.resources.dir('prompts'), BASE_FILE);
+    const base = path.join(this.ctx.resources.ensureRuntimeDir('prompts'), BASE_FILE);
     const factory = path.join(FACTORY_DIR, BASE_FILE);
     if (!fs.existsSync(base) && fs.existsSync(factory)) {
       fs.copyFileSync(factory, base);
@@ -63,8 +63,8 @@ export class Prompt {
       void this.exportEmbedded(`prompts/${BASE_FILE}`, base);
     }
 
-    //M 每一步调模型前骨架发 session/request：在这里往请求里加系统提示词。
-    this.ctx.on('session/request', (request) => {
+    //M 每一步调模型前骨架发 session/before-model：在这里往请求里加系统提示词。
+    this.ctx.on('session/before-model', (request) => {
       this.onRequest(request);
     });
   }
@@ -81,7 +81,7 @@ export class Prompt {
     if (fs.existsSync(dest)) return true;
 
     //M 查找内嵌文件真实句柄；源码模式或未收录时退出不建空文件。
-    const file = embedded.find(name);
+    const file = embedded.findEmbeddedFilePath(name);
     if (file === undefined) return false;
 
     //M 建好上层目录，读出内嵌文件的字节，写下去。
@@ -95,7 +95,7 @@ export class Prompt {
   }
 
   /**
-   * 响应 session/request：往 request.system 里加段落。提示词文件和记忆文件每次现读，改了马上生效。
+   * 响应 session/before-model：往 request.system 里加段落。提示词文件和记忆文件每次现读，改了马上生效。
    * @param request 这一步的请求。
    */
   private onRequest(request: ChatRequest): void {
@@ -103,7 +103,7 @@ export class Prompt {
 
     //M 语言看机器人名单里这个机器人的 language，不写是 zh。
     const language = String(this.ctx.bots.get(row.bot)?.config['language'] ?? 'zh');
-    const prompts = this.ctx.resources.dir('prompts');
+    const prompts = this.ctx.resources.ensureRuntimeDir('prompts');
 
     //M 第一段 DSH 原文（每次现读，除去首尾空白一字不改）、第二段 jmbots 功能声明：用 unshift 放最前，不管监听排第几都是开头。
     //M   功能声明的文件没有才用内置的；文件在但是空的，就是不要这一段。
@@ -132,7 +132,7 @@ export class Prompt {
     if (row.kind !== 'front' && row.kind !== 'work') return;
 
     //M 第四段：人设 bots/<机器人>/persona.md，有就带，任何一轮都带（里面只有身份和说话风格，不是私人记忆）。
-    const persona = path.join(this.ctx.resources.dir('bots', row.bot), 'persona.md');
+    const persona = path.join(this.ctx.resources.ensureRuntimeDir('bots', row.bot), 'persona.md');
     const personaText = getFileText(persona) ?? '';
     if (personaText !== '') {
       request.system.push(personaText);
@@ -143,7 +143,7 @@ export class Prompt {
     if (!access.full) return;
 
     //M 记忆：两个目录下的 .md、.txt，按文件名的先后，一个文件一段。
-    const dirs = [this.ctx.resources.dir('bots', row.bot, 'memory'), this.ctx.resources.dir('memory')];
+    const dirs = [this.ctx.resources.ensureRuntimeDir('bots', row.bot, 'memory'), this.ctx.resources.ensureRuntimeDir('memory')];
     for (const dir of dirs) {
       const names = fs.readdirSync(dir).filter((item) => item.endsWith('.md') || item.endsWith('.txt'));
       for (const item of names.sort()) {

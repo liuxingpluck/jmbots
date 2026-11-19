@@ -175,7 +175,7 @@ function buildJudgement(
 
 /** 决策模型服务。 */
 export class Decision extends cordis.Service {
-  /** 只放分类器的 pi 集合；没有分类器就是 undefined。 */
+  /** 分类器使用的 MutableModels。setProvider 登记供应商，getModelOfType 取分类模型，classify 执行分类。 */
   private readonly classifiers: piAi.MutableModels | undefined;
 
   /**
@@ -215,11 +215,12 @@ export class Decision extends cordis.Service {
       const written = ctx.resources.config.providers[provider];
       if (written === undefined) continue;
 
-      //M 密钥和骨架建对话模型用同一份（Resources 的 getAuth：取 config.yaml 里这家的 api_key）。
+      //M 密钥和骨架建对话模型用同一份（Resources 的 getProviderAuth：取 config.yaml 里这家的 api_key）。
       this.classifiers.setProvider(piAi.createProvider({
         id: provider,
         baseUrl: written.baseUrl,
-        auth: ctx.resources.getAuth(written),
+        auth: ctx.resources.getProviderAuth(written),
+        //M ClassifierModel 描述分类器的 id、type 和 api。ClassifierApi 是分类适配器标识，例如 typesafe-system-one。
         models: ids.map((id): piAi.ClassifierModel<piAi.ClassifierApi> => ({
           id, name: id, provider, baseUrl: written.baseUrl, type: 'classifier', api: 'typesafe-system-one',
           input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0,
@@ -260,9 +261,9 @@ export class Decision extends cordis.Service {
       return `${result.model}=${result.score.toFixed(2)} ${String(result.ms)}ms`;
     });
     //T 跟踪：每个模型的分和结论。
-    this.ctx.emit('trace', 'Decision.judge', `${input.kind}：${judgement.verdict}`, 'Promise.all(members.map(ask))', {
-      kind: input.kind, 结论: judgement.verdict, 分: judgement.score, 原因: judgement.reason, 执行结果: judgement.what,
-      各模型: summaryList,
+    this.ctx.emit('trace', 'Decision.judge', 'trace.decision.judge', 'Promise.all(members.map(ask))', {
+      category: input.kind, verdict: judgement.verdict, score: judgement.score, reason: judgement.reason, executionResult: judgement.what,
+      models: summaryList,
     });
     return judgement;
   }
@@ -300,6 +301,7 @@ export class Decision extends cordis.Service {
       const model = this.classifiers?.getModelOfType('classifier', member.name.slice(0, slash), member.name.slice(slash + 1));
       if (model === undefined) return { error: '分类器没建起来（供应商不在 providers 里？）' };
       const result = await this.classifiers!.classify(model, {
+        //M JsonObject 是给分类器的 JSON 状态对象，键是字符串，值可以嵌套对象或数组。
         state: input.state as piAi.JsonObject,
         questions: { q: { type: 'bool', instructions: input.question.instructions, criteria: { true: input.question.yes, false: input.question.no } } },
       }, { signal });

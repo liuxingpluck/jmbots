@@ -270,22 +270,9 @@ class WebApi {
       if (session.row.state !== 'running') this.recordOther(session, session.row.reply);
     });
 
-    //M 路由登记在一个作用域里（register 开出来的子作用域）：这里设的错误处理只管这些接口，出错统一回 { error }。
     //M Fastify 在 http 开始监听时才执行这个函数，那时别的插件的路径都登记好了，hasRoute 查得到。
     ctx.http.app.register(async (scope) => {
-      scope.setErrorHandler(async (error, _request, reply) => {
-        //M 自己抛的 Failure 照它的状态码；Fastify 自己的错（比如请求体不是 JSON）带 statusCode；别的算 500。
-        let status = (error as { statusCode?: number }).statusCode ?? 500;
-        if (error instanceof failureModule.Failure) {
-          status = error.status;
-        }
-        //M 用同一结构把错误文字与选定的 HTTP 状态码交回网页。
-        const message = textModule.getMessage(error);
-        await reply.code(status).send({ error: message });
-        return reply;
-      });
-
-      //M 把网页入口和收件查询都装进统一的错误处理作用域。
+      //M 延迟登记网页路由，等其他插件先挂好自己的路径。
       this.routes(scope);
       this.timeline.routes(scope);
     });
@@ -318,8 +305,8 @@ class WebApi {
       const row = this.open(request.params.id).row;
 
       //M 网址里的 after、limit：写错按默认，超上限按上限。
-      const after = textModule.getNumber(request.query['after'], 0, 0, Infinity);
-      const limit = textModule.getNumber(request.query['limit'], STEPS_DEFAULT, 0, STEPS_MAX);
+      const after = textModule.parseBoundedInt(request.query['after'], 0, 0, Infinity);
+      const limit = textModule.parseBoundedInt(request.query['limit'], STEPS_DEFAULT, 0, STEPS_MAX);
       return traceModule.steps(row, after, limit);
     });
 
@@ -521,15 +508,15 @@ class WebApi {
     if (session !== undefined) {
       sessionLabel = session.id;
     }
-    const vars = { 消息号: id, 机器人: wanted, 附件几个: paths.length, 指定会话: sessionLabel };
-    this.ctx.emit('trace', 'WebApi.accept', '收下一条消息，推给机器人', "ctx.serial('channel/message')", vars);
+    const vars = { messageId: id, bot: wanted, attachmentCount: paths.length, targetSession: sessionLabel };
+    this.ctx.emit('trace', 'WebApi.accept', 'trace.webApi.accept', "ctx.serial('channel/message')", vars);
 
     //M 推给机器人；回话地址就是消息号。推不进去（比如没有插件管分派）就删掉这一行，告诉调用方。
     try {
       await this.emitChannelMessage(id, wanted, said, input, routing, view, grants, verifiedOwner);
     } catch (error) {
       this.timeline.remove(id);
-      throw new failureModule.Failure(400, textModule.getMessage(error));
+      throw new failureModule.Failure(400, textModule.getErrorMessage(error));
     }
     return { id, file: '' };
   }
@@ -819,7 +806,7 @@ class WebApi {
     if (!Array.isArray(value)) throw new failureModule.Failure(400, 'uploads 要是上传号的数组');
 
     //M 定位上传暂存目录，用上传号前缀匹配已落盘的文件。
-    const dir = this.ctx.resources.dir('data', 'tmp', 'uploads');
+    const dir = this.ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads');
     const names = fs.readdirSync(dir);
     return value.map((id: unknown) => {
       //G 只接受约定格式的上传号和确实存在的暂存文件。
@@ -1193,8 +1180,8 @@ class WebApi {
     session.save();
 
     //T 跟踪：换了模型。
-    const vars = { 会话: id, 原来: `${change.from} ${change.thinkingFrom}`, 换成: `${change.to} ${change.thinkingTo}` };
-    this.ctx.emit('trace', 'WebApi.setModel', '网页换了会话的模型', 'row.model = model; session.save()', vars);
+    const vars = { session: id, previous: `${change.from} ${change.thinkingFrom}`, next: `${change.to} ${change.thinkingTo}` };
+    this.ctx.emit('trace', 'WebApi.setModel', 'trace.webApi.setModel', 'row.model = model; session.save()', vars);
     this.ctx.emit('web-api/model', change);
     return { id, model: row.model, thinking: row.thinking, status: timelineModule.getStatus(row.state) };
   }

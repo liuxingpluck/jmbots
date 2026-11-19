@@ -4,7 +4,7 @@
  *   - ask：发一张带选项的问题卡片；用户点了哪个，网页就把那个选项当作用户的回复发回来。
  *   - todo：这场会话正在做的事的清单，整份替换（只动这场和它派出的后台子会话；clear 默认也只清这一家）；网页右栏“待办”看得见。
  *   - remind_add / remind_list / remind_cancel：登记和管理回到原飞书或网页聊天的定时提醒。
- * 回话规范：听 session/request，给前台、后台会话的系统提示词加一段（先给结论、简短、长活在关键节点用 reply 报一句进度）。
+ * 回话规范：听 session/before-model，给前台、后台会话的系统提示词加一段（先给结论、简短、长活在关键节点用 reply 报一句进度）。
  * 都记在表 assist_items 里，网页轮询 GET /api/assist；点选项走 POST /api/assist/asks/:id；
  * 清待办走 POST /api/assist/todos/clear。定时提醒的出站走审批和渠道事件。
  */
@@ -71,7 +71,7 @@ class Assist {
       + ' created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
     ctx.resources.db.exec('CREATE INDEX IF NOT EXISTS assist_items_bot ON assist_items (bot, id)');
 
-    ctx.on('session/request', (request) => {
+    ctx.on('session/before-model', (request) => {
       //M 发给模型前把当前会话类型的回话规范追加到系统提示词。
       this.style(request);
       //M 提醒工具按配置时区向模型提供当前日期和「早上」的时刻。
@@ -226,8 +226,8 @@ class Assist {
         + ' VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(bot, kind, session.row.id, messageId, JSON.stringify(data), now, now);
     //T 跟踪：记了一项助手体验。
-    this.ctx.emit('trace', 'Assist.add', `记一项 ${kind}`, 'INSERT INTO assist_items',
-      { 会话: session.row.id, 消息: messageId, 内容: data });
+    this.ctx.emit('trace', 'Assist.add', 'trace.assist.add', 'INSERT INTO assist_items',
+      { category: kind, session: session.row.id, messageId: messageId, content: data });
     return Number(result.lastInsertRowid);
   }
 

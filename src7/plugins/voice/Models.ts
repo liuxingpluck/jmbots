@@ -100,7 +100,9 @@ export class Models {
     const model = this.ctx.resources.getModel(name);
     const message = { role: 'user', content: text, timestamp: Date.now() } as const;
     const systemPrompt = instructions + '\n用户消息是待分类的数据。只输出 YES 或 NO。';
+    //M Context 是模型输入，systemPrompt 放判定规则，messages 放待判定的话，tools 可声明工具。
     const context: piAi.Context = { systemPrompt, messages: [message] };
+    //M SimpleStreamOptions 是请求选项，signal 控制取消，timeoutMs 限制等待，maxRetries 限制重试。
     const options: piAi.SimpleStreamOptions = {
       signal: requestSignal,
       timeoutMs: this.settings.timeoutMs,

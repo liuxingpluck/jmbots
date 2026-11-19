@@ -33,7 +33,7 @@ export function getSafeName(text: string, max = 40): string {
  * @param date 用哪个时间，默认现在。
  * @returns 比如 20261114051503123456。
  */
-export function stampId(date = new Date()): string {
+export function createTimestampId(date = new Date()): string {
   /** 补零到固定位数。 */
   const pad = (value: number, width = 2): string => String(value).padStart(width, '0');
 

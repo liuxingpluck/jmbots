@@ -95,7 +95,7 @@ interface World {
   tools: { definition: { name: string; description: string }; run: (args: Record<string, unknown>, session: unknown) => unknown }[];
   /** 新开一场会话（不走 bot/receive）。 */
   open: (options: { bot: string; kind: string; customer?: string }) => FakeSession;
-  /** 照骨架给这场会话备一步请求（带 relay_send 和别的工具），挨个问 session/request；回问完的工具名和系统提示词。 */
+  /** 照骨架给这场会话备一步请求（带 relay_send 和别的工具），挨个问 session/before-model；回问完的工具名和系统提示词。 */
   ask: (session: FakeSession) => { tools: string[]; system: string[] };
   /** 走模型的会话把回信排到这里。 */
   resultQueue: FakeResultQueue;
@@ -126,13 +126,13 @@ function world(db = new Database(':memory:')): World {
   const crash: { mode: CrashMode } = { mode: 'none' };
 
   /**
-   * 推一步：照骨架的样子发 session/request，插件填了 answer 就原样接进对话（Session.append 接的就是 answer 本身，
+   * 推一步：照骨架的样子发 session/before-model，插件填了 answer 就原样接进对话（Session.append 接的就是 answer 本身，
    * 带着插件加的字段，比如 relayReplyId），再改状态、发 session/change。crash 照它停在半路。
    */
   const step = async (session: FakeSession): Promise<void> => {
     session.row.state = 'running';
     const request: { session: FakeSession; answer?: { content: { type: string; text: string }[]; [key: string]: unknown } } = { session };
-    for (const handler of handlers.get('session/request') ?? []) handler(request);
+    for (const handler of handlers.get('session/before-model') ?? []) handler(request);
 
     //M 断电在写进对话之前：什么都没留下。
     if (crash.mode === 'beforeWrite') {
@@ -174,7 +174,7 @@ function world(db = new Database(':memory:')): World {
     resources: {
       db,
       root,
-      dir: (...parts: string[]): string => {
+      ensureRuntimeDir: (...parts: string[]): string => {
         const full = path.join(root, ...parts);
         fs.mkdirSync(full, { recursive: true });
         return full;
@@ -271,7 +271,7 @@ function world(db = new Database(':memory:')): World {
 
   const ask = (session: FakeSession): { tools: string[]; system: string[] } => {
     const request = { session, system: [] as string[], tools: [{ name: 'relay_send' }, { name: 'read' }] };
-    for (const handler of handlers.get('session/request') ?? []) handler(request);
+    for (const handler of handlers.get('session/before-model') ?? []) handler(request);
     return { tools: request.tools.map((tool) => tool.name), system: request.system };
   };
 
@@ -430,8 +430,8 @@ describe('relay 接两个助手', () => {
     fs.writeFileSync(inside, '要发的');
     const payload = { id: 1, text: '附件', file: `integrations/relay/${BOT}/send.txt` };
     const sent = (): string[] => made.emitted
-      .filter((one) => one.name === 'trace' && one.args[0] === 'Relay.sendFile')
-      .map((one) => String((one.args[3] as { 结果: string }).结果));
+      .filter((one) => one.name === 'trace' && one.args[1] === 'trace.relay.sendFile')
+      .map((one) => String((one.args[3] as { result: string }).result));
 
     //M 没人答：没有任何监听者接 feishu/send-file，立即退回，trace 写没发出去。
     const nobody = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload });

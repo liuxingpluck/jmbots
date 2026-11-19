@@ -255,7 +255,7 @@ function getError(error: unknown): protocol.ScreenError {
   return new protocol.ScreenError('model_failed');
 }
 
-/** 把一轮返回校验成一两句纯文本讲解。 */
+/** 从模型回答 AssistantMessage 取纯文本讲解，检查 stopReason 并解析 content。 */
 function getExplanation(answer: piAi.AssistantMessage): Explanation {
   //G 工具请求、截断和非完整 JSON 都不能进入浮窗。
   if (answer.stopReason !== 'stop' || answer.content.some((part) => part.type === 'toolCall')) {
@@ -744,7 +744,10 @@ export class Screen {
     this.cache.clear();
   }
 
-  /** 取这一阶段选定的模型。手写配置缺图像声明时复用最新模型目录。 */
+  /**
+   * 取该阶段的对话模型 Model。id 定模型，input 声明图像支持，api 的类型 Api 指定接口适配器。
+   * 手写配置缺图像声明时复用最新模型目录。
+   */
   private getModel(): { model?: piAi.Model<piAi.Api>; reason: StatusReason } {
     const name = this.config.model;
     if (!this.config.enabled) return { reason: 'disabled' };
@@ -911,6 +914,7 @@ export class Screen {
     }
 
     //M 不接会话或工具，本次输入只有净化文本与可选 JPEG。
+    //M TextContent 用 type 和 text 存文字。ImageContent 用 type、data 和 mimeType 存图片。
     const content: (piAi.TextContent | piAi.ImageContent)[] = [{ type: 'text', text: click.contextText }];
     if (click.image !== null) {
       content.push({ type: 'image', data: click.image, mimeType: 'image/jpeg' });
@@ -923,11 +927,13 @@ export class Screen {
     if (onPhrase !== undefined) {
       systemPrompt = STREAM_PROMPT;
     }
+    //M Context 是模型输入，systemPrompt 放指令，messages 放图文，tools 声明可用工具。
     const context: piAi.Context = {
       systemPrompt,
       messages: [{ role: 'user', content, timestamp: Date.now() }],
       tools: [],
     };
+    //M SimpleStreamOptions 是请求选项，signal 控制取消，timeoutMs 控制超时，reasoning 选择思考档。
     const options: piAi.SimpleStreamOptions = {
       maxTokens: this.config.maxTokens,
       maxRetries: 0,
@@ -939,6 +945,7 @@ export class Screen {
     }
 
     const started = performance.now();
+    //M Usage 记模型调用的 token 与费用，input、output 是输入输出用量，totalTokens 给总数。
     let usage: piAi.Usage | undefined;
     let errorCode: protocol.ErrorCode | undefined;
     let previewed = false;

@@ -194,7 +194,7 @@ export function targets(feishu: Feishu, ctx: cordis.Context, pending: render.Pen
   }
   if (list.length === 0) {
     //M 无任何可用私聊投递目标时取时间戳打印提示日志。
-    const logTime = textModule.getClock(Date.now(), 'date');
+    const logTime = textModule.formatLocalTime(Date.now(), 'date');
     console.error(`${logTime} 飞书：机器人 ${pending.bot} 在飞书上还没人私聊过，待确认 #${String(pending.id)} 没推`);
   }
   return list;
@@ -217,15 +217,15 @@ async function onAsked(feishu: Feishu, ctx: cordis.Context, pending: render.Pend
       const sql = 'INSERT OR REPLACE INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, ?, ?, 0, ?)';
       feishu.db.query(sql).run(cardId, 'approval', String(pending.id), Date.now());
     } catch (error) {
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 的卡片没发出去，改发文字：${textModule.getMessage(error)}`);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 的卡片没发出去，改发文字：${textModule.getErrorMessage(error)}`);
       const id = String(pending.id);
       const text = `待确认 #${id}：${pending.title}\n${pending.detail}\n回复“同意 ${id}”或“拒绝 ${id}”。`;
       try {
         await feishu.sendText(address, text);
       } catch (again) {
-        const againTime = textModule.getClock(Date.now(), 'date');
-        console.error(`${againTime} 飞书：待确认 #${id} 的文字也没发出去：${textModule.getMessage(again)}`);
+        const againTime = textModule.formatLocalTime(Date.now(), 'date');
+        console.error(`${againTime} 飞书：待确认 #${id} 的文字也没发出去：${textModule.getErrorMessage(again)}`);
       }
     }
   }
@@ -254,8 +254,8 @@ async function groupNote(feishu: Feishu, ctx: cordis.Context, pending: render.Pe
   try {
     await feishu.sendText(own, text);
   } catch (error) {
-    const logTime = textModule.getClock(Date.now(), 'date');
-    console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 群里那句没发出去：${textModule.getMessage(error)}`);
+    const logTime = textModule.formatLocalTime(Date.now(), 'date');
+    console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 群里那句没发出去：${textModule.getErrorMessage(error)}`);
   }
 }
 
@@ -278,8 +278,8 @@ async function onDecided(feishu: Feishu, pending: render.PendingLike): Promise<v
       await feishu.updateCard(row.card_id, render.approval(pending));
     } catch (error) {
       //M 取格式化日期前缀用于记录更新卡片失败的错误日志。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 的卡片没改成：${textModule.getMessage(error)}`);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      console.error(`${logTime} 飞书：待确认 #${String(pending.id)} 的卡片没改成：${textModule.getErrorMessage(error)}`);
     }
   }
 }
@@ -322,8 +322,8 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
     }
   } catch (error) {
     //M 取格式化日期前缀用于记录进度卡片发送或刷新失败的错误日志。
-    const logTime = textModule.getClock(Date.now(), 'date');
-    console.error(`${logTime} 飞书：会话 ${item.sessionId} 的进度卡片没发成：${textModule.getMessage(error)}`);
+    const logTime = textModule.formatLocalTime(Date.now(), 'date');
+    console.error(`${logTime} 飞书：会话 ${item.sessionId} 的进度卡片没发成：${textModule.getErrorMessage(error)}`);
   }
 }
 
@@ -337,7 +337,7 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
  */
 function reportActionUncertain(row: CardRow, action: string, reason: requestEventModule.FallbackReason): Toast {
   //M 保留卡片号、业务号和动作，便于从流水核对真正的处理结果。
-  const logTime = textModule.getClock(Date.now(), 'date');
+  const logTime = textModule.formatLocalTime(Date.now(), 'date');
   console.warn(`${logTime} 飞书：卡片 ${row.card_id}（${row.kind} ${row.ref}），${action} 未获回执（${reason}），结果不确定`);
   return { type: 'warning', content: UNCERTAIN_ACTION };
 }
@@ -361,7 +361,7 @@ export async function onAction(
   value: Record<string, unknown>,
 ): Promise<Toast | undefined> {
   //G 不是本人点的：只回提示，什么都不动。
-  if (workspaceModule.getRole(address) !== 'owner') return { type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` };
+  if (workspaceModule.getSpeakerRole(address) !== 'owner') return { type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` };
 
   //M 反查该卡片对应的业务类型与审批/会话编号，库里找不到则忽略。
   const cardQuery = feishu.db.query('SELECT card_id, kind, ref, ended FROM feishu_cards WHERE card_id = ?');

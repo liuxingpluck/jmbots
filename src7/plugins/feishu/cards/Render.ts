@@ -139,7 +139,7 @@ export function card(spec: CardSpec): Record<string, unknown> {
 export function approval(pending: PendingLike): Record<string, unknown> {
   //M 若已提供统一结构化卡片数据，直接转绘为飞书交互卡片结构，与网页审批面板保持一致。
   if (pending.card !== undefined) return fromCard(pending.id, pending.card);
-  const sections = [`\`\`\`\n${textModule.clip(pending.detail, DETAIL_MAX)}\n\`\`\``];
+  const sections = [`\`\`\`\n${textModule.clipText(pending.detail, DETAIL_MAX)}\n\`\`\``];
   if (pending.session !== undefined && pending.session !== '') {
     sections.push(`**机器人 / 会话** ${pending.bot} / ${pending.session}`);
   }
@@ -182,14 +182,14 @@ export function progress(item: ProgressItemLike, at = Date.now()): Record<string
   const end = item.endedAt ?? at;
   const head = [
     `**${stage.icon} ${item.action || stage.text}**`,
-    `用了 ${textModule.getDuration(end - item.startedAt)}`,
+    `用了 ${textModule.formatDuration(end - item.startedAt)}`,
     `第 ${String(item.steps)} 步`,
   ];
   if (item.limitMinutes !== undefined && item.limitMinutes > 0) {
     let left = '';
     if (item.deadline !== undefined && item.endedAt === undefined) {
       //M 任务未结束且设置截止时间时计算剩余时长文本。
-      const leftText = textModule.getDuration(item.deadline - at);
+      const leftText = textModule.formatDuration(item.deadline - at);
       left = `（还剩 ${leftText}）`;
     }
     head.push(`限时 ${String(item.limitMinutes)} 分钟${left}`);
@@ -198,14 +198,14 @@ export function progress(item: ProgressItemLike, at = Date.now()): Record<string
 
   //M 各段耗时：模型多久，每个工具几次、多久。
   const tools = item.timings.tools.map((tool) => {
-    return `${tool.name} ×${String(tool.count)} ${textModule.getDuration(tool.ms)}`;
+    return `${tool.name} ×${String(tool.count)} ${textModule.formatDuration(tool.ms)}`;
   });
   let toolSuffix = '';
   if (tools.length > 0) {
     toolSuffix = `；${tools.join('；')}`;
   }
   //M 格式化模型累计耗时文本并拼接各工具调用统计。
-  const modelCost = textModule.getDuration(item.timings.modelMs);
+  const modelCost = textModule.formatDuration(item.timings.modelMs);
   sections.push(`**耗时** 模型 ${modelCost}${toolSuffix}`);
   if (item.result !== undefined && item.result !== '') {
     sections.push(`**结果** ${item.result}`);
@@ -249,12 +249,12 @@ export function fromCard(id: number, data: cardUtils.CardData): Record<string, u
   const sections: string[] = [];
   if (head !== '') {
     //M 裁剪顶部摘要行长度后放进卡片首段正文：审批卡片是三行（要做什么、动哪些、为什么问你），每行最多 160 字，600 字放得下。
-    const clippedHead = textModule.clip(head, 600);
+    const clippedHead = textModule.clipText(head, 600);
     sections.push(clippedHead);
   }
   const more: string[] = data.items.map((item) => {
     //M 按详情最大字数截断字段值，代码类条目单独包裹围栏块。
-    const clipped = textModule.clip(item.value, DETAIL_MAX);
+    const clipped = textModule.clipText(item.value, DETAIL_MAX);
     if (item.code === true) return `**${item.label}**\n\`\`\`\n${clipped}\n\`\`\``;
 
     return `**${item.label}** ${clipped}`;
@@ -263,7 +263,7 @@ export function fromCard(id: number, data: cardUtils.CardData): Record<string, u
     more.push(`**风险** ${data.risk.text}`);
   }
   if (data.details !== undefined) {
-    const detailJson = textModule.clip(JSON.stringify(data.details.data, null, 2), DETAIL_MAX);
+    const detailJson = textModule.clipText(JSON.stringify(data.details.data, null, 2), DETAIL_MAX);
     more.push(`**${data.details.label}**\n\`\`\`json\n${detailJson}\n\`\`\``);
   }
   let fold: CardSpec['fold'];

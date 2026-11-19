@@ -973,7 +973,7 @@ class VoiceConnection {
     if (reason === undefined) return;
 
     //T 不将供应商响应、音频或字幕写入线路切换记录。
-    this.ctx.emit('trace', 'Voice.route', reason, 'reportRoute(stage, place, reason)', details);
+    this.ctx.emit('trace', 'Voice.route', 'trace.voice.route', 'reportRoute(stage, place, reason)', details);
   }
 
   /** 发布本连接内字幕；可选监听者只收到文本事件，音频不进入事件。 */

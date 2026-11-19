@@ -189,7 +189,7 @@ describe('微信后台全量监听、只听不发', () => {
     for (let i = 1; i <= 60; i++) insert.run('acc1', 'wxid_a', 'm0', 1000 + i, 1000 + i, i % 2, 'text', '', `第${String(i)}条`);
     const address = { account: 'acc1', chat: 'wxid_a', name: '甲', customer: 'wechat:wxid_a' };
     const request = { session: { row: { address } }, system: [] as string[], tools: [{ name: 'memory_get' }] };
-    for (const fn of handlers.get('session/request') ?? []) {
+    for (const fn of handlers.get('session/before-model') ?? []) {
       fn(request);
     }
     expect(request.system.length).toBe(1);

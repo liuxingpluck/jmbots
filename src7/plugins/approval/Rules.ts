@@ -322,7 +322,7 @@ export function getUntrusted(command: string, cwd: string, dirs: string[]): stri
   for (const target of targets) {
     const full = path.resolve(base, target);
     const key = workspaceModule.getPathKey(full);
-    if (!workspaceModule.isUnder(dirs, key)) return `${full} 不在可信目录里`;
+    if (!workspaceModule.isPathInDirectories(dirs, key)) return `${full} 不在可信目录里`;
   }
   return undefined;
 }

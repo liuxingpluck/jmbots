@@ -152,7 +152,7 @@ export class Cli {
 
     //M 渠道自己落盘原件（运行时目录 channels/cli/<YYYY-MM-DD>.jsonl），与原 bots.receive 记录格式一致。
     const day = new Date(now).toLocaleDateString('sv-SE');
-    const file = path.join(this.ctx.resources.dir('channels', this.name), `${day}.jsonl`);
+    const file = path.join(this.ctx.resources.ensureRuntimeDir('channels', this.name), `${day}.jsonl`);
     const rawEntry = { channel: this.name, bot, text: sentence, time: now, address };
     fs.appendFileSync(file, `${JSON.stringify(rawEntry)}\n`, 'utf8');
 
@@ -162,8 +162,8 @@ export class Cli {
     const messageId = protocol.makeChannelMessageId(this.name, 'local', nativeId);
 
     //T 跟踪：命令行收到一句话，转成统一事件发出。
-    const vars = { 机器人: bot, 序号: this.seq, 字数: sentence.length };
-    this.ctx.emit('trace', 'Cli.submitLine', '命令行收到一句话，发出 channel/message', "ctx.serial('channel/message')", vars);
+    const vars = { bot: bot, sequence: this.seq, length: sentence.length };
+    this.ctx.emit('trace', 'Cli.submitLine', 'trace.cli.submitLine', "ctx.serial('channel/message')", vars);
 
     const channelMessage: protocol.ChannelMessage = {
       v: 1,
@@ -234,7 +234,7 @@ export class Cli {
       this.exitWhenIdle();
     } catch (error) {
       //G 输入提交失败时把原因写到错误输出，以失败退出码结束进程。
-      this.writeFn(`命令行没跑成：${textModule.getMessage(error)}`, true);
+      this.writeFn(`命令行没跑成：${textModule.getErrorMessage(error)}`, true);
       this.exitFn(1);
     }
   }

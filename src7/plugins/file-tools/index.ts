@@ -19,7 +19,7 @@ export { BaseTools } from './BaseTools.ts';
 /** 插件名。 */
 export const name = 'file-tools';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-//M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/request 监听）。
+//M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/before-model 监听）。
 //M 1.1.1：读图片文件的 getImageBlock 从骨架 utils/Image.ts 挪进 BaseTools.ts，只有这里用。
 export const version = '1.1.1';
 
@@ -108,8 +108,8 @@ export class FileTools {
     fs.writeFileSync(file, changed, 'utf8');
 
     //T 跟踪：改了文件。
-    const vars = { 会话: session.id, 文件: relative, 几处: edits.length };
-    this.ctx.emit('trace', 'FileTools.edit', '改了文件', 'editMatch.applyEdits(original, edits, path)', vars);
+    const vars = { session: session.id, file: relative, editCount: edits.length };
+    this.ctx.emit('trace', 'FileTools.edit', 'trace.fileTools.edit', 'editMatch.applyEdits(original, edits, path)', vars);
     return `已修改 ${relative}（${String(edits.length)} 处）`;
   }
 
@@ -156,8 +156,8 @@ export class FileTools {
     }
 
     //T 跟踪：找完了。
-    const vars = { 会话: session.id, 起点: from, 几条: found.length };
-    this.ctx.emit('trace', 'FileTools.find', '找完了', 'new Bun.Glob(pattern).scan({ cwd: root })', vars);
+    const vars = { session: session.id, start: from, matchCount: found.length };
+    this.ctx.emit('trace', 'FileTools.find', 'trace.fileTools.find', 'new Bun.Glob(pattern).scan({ cwd: root })', vars);
     if (found.length === 0) {
       const whatParts: string[] = [];
       if (name) {
@@ -170,7 +170,7 @@ export class FileTools {
     }
 
     //M 太长按 2000 行 / 50KB 截（从头留），末尾说清截了多少。
-    const kept = cut.head(found.join('\n'));
+    const kept = cut.keepLeadingLines(found.join('\n'));
     let result = kept.text;
     if (kept.cut) {
       result += `\n[输出太长，只留前 ${String(kept.kept)} 行（共 ${String(kept.total)} 行）]`;
@@ -194,7 +194,7 @@ export class FileTools {
 
     //M 按回话地址解析本轮工作区根目录，再把相对路径安全落盘到工作区内。
     const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
-    return workspaceModule.inside(workspace, relative);
+    return workspaceModule.resolveWorkspacePath(workspace, relative);
   }
 }
 

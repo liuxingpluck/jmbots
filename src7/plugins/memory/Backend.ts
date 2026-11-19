@@ -256,14 +256,14 @@ export class HttpBackend implements MemoryBackend {
     const local = await this.local.health();
 
     //M 问外部服务的 /health；连不上不抛，把原因写进 remote 交回。
-    const remote = await this.call('GET', '/health').then((body) => body, (error: unknown) => ({ ok: false, error: textModule.getMessage(error) }));
+    const remote = await this.call('GET', '/health').then((body) => body, (error: unknown) => ({ ok: false, error: textModule.getErrorMessage(error) }));
     return { backend: 'http', url: this.url, remote, local, lastError: this.lastError };
   }
 
   /** 记下错（不抛：外部服务挂了不能挡会话）。 */
   private fail(error: unknown): void {
     //M 只把原因文字存进 lastError，health 里看得到；调用的人决定要不要退回本地。
-    this.lastError = textModule.getMessage(error);
+    this.lastError = textModule.getErrorMessage(error);
   }
 
   /** 发一个请求，交回 JSON；不是 2xx 抛错。 */
@@ -294,7 +294,7 @@ export async function fetchMemory(base: string, route: string, init: RequestInit
     return await fetch(`${base}${route}`, init);
   } catch (error) {
     //M 原因原样带上（如 ECONNREFUSED），排查时知道是哪一种连不上。
-    const reason = textModule.getMessage(error);
+    const reason = textModule.getErrorMessage(error);
 
     //G 超时说明服务在、只是忙（大查询、抽图），和没起来分开说。AbortSignal.timeout 抛的是 DOMException，按 name 认。
     const name = (error as { name?: unknown } | null)?.name;

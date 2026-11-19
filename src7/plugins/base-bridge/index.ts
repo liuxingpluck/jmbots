@@ -107,7 +107,7 @@ export class Base extends cordis.Service {
     //M 没配地址、连不上、超时（getJson、postJson 抛的错）由 onError 转成 { ok: false, error }，发的一方不干等。
     const requestOptions = {
       onError: (error: unknown) => {
-        const message = textModule.getMessage(error);
+        const message = textModule.getErrorMessage(error);
         return { ok: false, error: message };
       },
     };
@@ -130,8 +130,8 @@ export class Base extends cordis.Service {
    */
   private async onRequest(request: BaseRequest): Promise<Omit<BaseResult, 'requestId'>> {
     //T 跟踪：别的插件经事件请基地办事。
-    const vars = { 方法: request.method, 路径: request.route, 请求号: request.requestId ?? '（不等回执）' };
-    this.ctx.emit('trace', 'Base.onRequest', '别的插件经事件 base/request 请基地办事', `base/request（${request.method}）`, vars);
+    const vars = { method: request.method, path: request.route, requestId: request.requestId };
+    this.ctx.emit('trace', 'Base.onRequest', 'trace.base.request', `base/request（${request.method}）`, vars);
 
     //M GET：问基地要 JSON。
     if (request.method === 'GET') {

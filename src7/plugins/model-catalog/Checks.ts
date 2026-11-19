@@ -34,7 +34,7 @@ const SESSION_ID = /^[A-Za-z0-9_-]+$/u;
  */
 export function checkModelId(model: string): string {
   //G 校验模型 ID 为非空字符串且各斜杠分段符合安全文件名字符要求。
-  const trimmed = checks.text(model, 'model').trim();
+  const trimmed = checks.checkNonEmptyText(model, 'model').trim();
   const segments = trimmed.split('/');
   const goodModel = segments.every((segment) => MODEL_SEGMENT.test(segment) && !segment.includes('__'));
   if (!goodModel) {
@@ -54,16 +54,16 @@ export function checkModelId(model: string): string {
  */
 export function checkRating(body: unknown): RatingInput {
   //M 先把请求正文确认成键值对象，再逐项校验会话号、打分人和评语。
-  const item = checks.record(body, '评价');
+  const item = checks.checkRecord(body, '评价');
 
   //M session：非空合法会话号（只含字母、数字、下划线、横杠）。
-  const session = checks.text(item['session'], 'session').trim();
+  const session = checks.checkNonEmptyText(item['session'], 'session').trim();
   if (!SESSION_ID.test(session)) {
     throw new Error('session 要写成合法的会话号（只含字母、数字、下划线、横杠）');
   }
 
   //M by：谁打的分，非空；score：1 到 5 的整数。
-  const by = checks.text(item['by'], 'by').trim();
+  const by = checks.checkNonEmptyText(item['by'], 'by').trim();
   const score = item['score'];
   if (typeof score !== 'number' || !Number.isInteger(score) || score < 1 || score > 5) {
     throw new Error('score 要写成 1 到 5 的整数');

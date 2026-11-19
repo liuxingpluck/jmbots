@@ -102,15 +102,9 @@ export class VoiceReplies {
     }
     //M 后台最终回话沿用固定调用号，多次转发仍可合并为一条。
     const replyRequestKey = channel.getReplyRequestKey(replyRoundKey, callId);
-    const parts: channel.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
-    //M 保存本次正文的摘要，检查同一请求重试时正文是否一致。
-    const payloadHash = channel.getPayloadHash(parts);
-    const request = {
-      channel: 'voice', bot: botName, replyRequestKey, replyRoundKey, replyIndex: 0,
-      kind, mode: 'text' as const, sourceSnapshot, payloadHash, parts,
-    };
-    //M 记忆、时间线和语音播放现在共同使用这一次标准回复。
-    const receipt = await channel.requestChannelReply(this.ctx, request);
+    const options = { replyRequestKey, replyIndex: 0, kind };
+    //M 记忆、时间线和语音播放共用这次标准回复。
+    const receipt = await channel.requestTextReply(this.ctx, sourceSnapshot, text, options);
     if (receipt.ok) return { status: 'accepted', reason: '' };
 
     return { status: 'rejected', reason: receipt.reason ?? '语音回复未提交' };
@@ -127,9 +121,8 @@ export class VoiceReplies {
     //M 统一生成首发或重试的回执。
     const result = this.getResult(request, existing);
     const receipt = await result;
-    const event = { requestId: request.requestId, replyRoundKey: request.replyRoundKey, receipt };
     //M 回执携带实际播放状态，文字经过持久化仍可在断开后查看。
-    this.ctx.emit('channel/replied', event);
+    channel.emitReplied(this.ctx, request, receipt);
   }
 
   /** 在播报前写入回执 Promise，重试和并发收到同一结果。 */
@@ -174,19 +167,8 @@ export class VoiceReplies {
     if (reason !== undefined) {
       status = 'rejected';
     }
-    const parts = request.parts.map((part) => ({ partId: part.partId, kind: part.kind, status, reason }));
-    return {
-      v: 2,
-      ok: status === 'sent',
-      status,
-      kind: request.kind,
-      replyRequestKey: request.replyRequestKey,
-      replyRoundKey: request.replyRoundKey,
-      replyIndex: request.replyIndex,
-      parts,
-      at: Date.now(),
-      spoken,
-      reason,
-    };
+    //M 文字渠道状态和浏览器实际播报结果分别记录。
+    const receipt = channel.getReceipt(request, status, reason);
+    return { ...receipt, spoken };
   }
 }

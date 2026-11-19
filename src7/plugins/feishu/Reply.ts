@@ -20,7 +20,7 @@ import type { Feishu, FeishuAddress } from './index.ts';
 import * as media from './Media.ts';
 
 
-/** 跨聊天发话认出的目标聊天（FeishuReply.getChatCandidates 的候选带着它，pickChat 认中后交回）。 */
+/** 跨聊天发话认出的目标聊天（FeishuReply.getChatCandidates 的候选带着它，findChatByIdOrName 认中后交回）。 */
 interface FeishuChatFound {
   /** 应用号；群名缓存和配置群认出的不带，是空串。 */
   appId: string;
@@ -103,7 +103,7 @@ export class FeishuReply {
       providerId = await media.message(this.feishu, account, chat, 'text', content, undefined, uuid);
     } catch (error) {
       //G 只有飞书明确拒收时才记发送失败。传输异常留给本人从原意图查询。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       if (error instanceof api.NotSent) return { status: 'failed', reason };
 
       return { status: 'uncertain', reason };
@@ -126,7 +126,7 @@ export class FeishuReply {
     try {
       this.feishu.history.appendChatLog(account, chat, entry);
     } catch (error) {
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       console.error(`飞书主动消息 ${sendId} 已发送，聊天历史写入失败：${reason}`);
     }
     return { status: 'sent' };
@@ -141,43 +141,22 @@ export class FeishuReply {
     if (request.channel !== this.name || request.handled === true) return;
 
     request.handled = true;
-    const emitReplied = (receipt: protocol.ReplyReceipt): void => {
-      this.ctx.emit('channel/replied', {
-        requestId: request.requestId,
-        replyRoundKey: request.replyRoundKey,
-        receipt,
-      });
-    };
-
-    const buildRejected = (reason: string): protocol.ReplyReceipt => ({
-      v: 2,
-      ok: false,
-      status: 'rejected',
-      replyRequestKey: request.replyRequestKey,
-      replyRoundKey: request.replyRoundKey,
-      replyIndex: request.replyIndex,
-      kind: request.kind,
-      parts: request.parts.map((part) => ({
-        partId: part.partId,
-        kind: part.kind,
-        status: 'rejected',
-        reason,
-      })),
-      reason,
-      at: Date.now(),
-    });
 
     //G 原飞书消息已在本插件登记撤回 → 拒绝发送并回传 rejected 回执。
     const nativeKey = `${request.sourceSnapshot.accountId}:${request.sourceSnapshot.nativeId ?? ''}`;
     if (request.sourceSnapshot.channel === this.name && this.feishu.inbound.recalledNativeIds.has(nativeKey)) {
       //M 将撤回拒收回执发出并结束当前外发处理。
-      emitReplied(buildRejected('recalled：原消息已撤回，不再发送回复'));
+      const reason = 'recalled：原消息已撤回，不再发送回复';
+      const rejected = protocol.getReceipt(request, 'rejected', reason);
+      protocol.emitReplied(this.ctx, request, rejected);
       return;
     }
 
     if (request.mode !== 'text') {
       //M 当前统一回复口仅实现纯文字模式，拒绝非文本请求并回报不支持状态。
-      emitReplied(buildRejected('capability_unsupported：飞书 channel/reply 当前只支持纯文字'));
+      const reason = 'capability_unsupported：飞书 channel/reply 当前只支持纯文字';
+      const rejected = protocol.getReceipt(request, 'rejected', reason);
+      protocol.emitReplied(this.ctx, request, rejected);
       return;
     }
 
@@ -194,7 +173,8 @@ export class FeishuReply {
       //M 按目标渠道自带的认聊天逻辑解析目标应用与地址，认不出即回 rejected。
       const targetResolved = this.getReplyTargetAddress(request.bot, request.target.chat);
       if (typeof targetResolved === 'string') {
-        emitReplied(buildRejected(targetResolved));
+        const rejected = protocol.getReceipt(request, 'rejected', targetResolved);
+        protocol.emitReplied(this.ctx, request, rejected);
         return;
       }
       appId = targetResolved.appId;
@@ -207,11 +187,13 @@ export class FeishuReply {
     if (existing !== undefined) {
       if (existing.payloadHash === request.payloadHash) {
         //M 同键同载荷命中幂等记录，直接复播原有回执。
-        emitReplied(existing.receipt);
+        protocol.emitReplied(this.ctx, request, existing.receipt);
         return;
       }
       //M 同键不同载荷说明重放冲突，拒绝发送并告知上游拒绝回执。
-      emitReplied(buildRejected('reply_conflict：同一 replyRequestKey 的发送内容不一致'));
+      const reason = 'reply_conflict：同一 replyRequestKey 的发送内容不一致';
+      const rejected = protocol.getReceipt(request, 'rejected', reason);
+      protocol.emitReplied(this.ctx, request, rejected);
       return;
     }
 
@@ -219,7 +201,9 @@ export class FeishuReply {
     const app = this.feishu.apps.get(appId);
     if (app === undefined || chatId === '') {
       //M 反馈目标应用或会话无效的拒绝回执。
-      emitReplied(buildRejected('飞书应用或聊天号无效'));
+      const reason = '飞书应用或聊天号无效';
+      const rejected = protocol.getReceipt(request, 'rejected', reason);
+      protocol.emitReplied(this.ctx, request, rejected);
       return;
     }
     const rawText = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\n');
@@ -235,28 +219,14 @@ export class FeishuReply {
         const replyTo = address.messageId || undefined;
         providerId = await media.message(this.feishu, appId, chatId, 'text', messageBody, replyTo);
       }
-      const now = Date.now();
-      const receiptPart: protocol.ReplyReceiptPart = {
-        partId: request.parts[0]?.partId ?? 'text:0',
-        kind: 'text',
-        status: 'sent',
-      };
-      if (providerId !== '') {
-        receiptPart.providerId = providerId;
-      }
-      receipt = {
-        v: 2,
-        ok: true,
-        status: 'sent',
-        replyRequestKey: request.replyRequestKey,
-        replyRoundKey: request.replyRoundKey,
-        replyIndex: request.replyIndex,
-        kind: request.kind,
-        parts: [receiptPart],
-        at: now,
-      };
+      //M 飞书把各段合成一条消息，平台编号随首段和整张回执交回。
+      receipt = protocol.getReceipt(request, 'sent');
       if (providerId !== '') {
         receipt.messageIds = [providerId];
+        const first = receipt.parts[0];
+        if (first !== undefined) {
+          first.providerId = providerId;
+        }
       }
       let nativeOutId: string | null = null;
       if (providerId !== '') {
@@ -269,7 +239,7 @@ export class FeishuReply {
         appId,
         chatId,
         direction: 'bot',
-        createdAt: now,
+        createdAt: receipt.at,
         sender: { id: app.botOpenId ?? request.bot, name: request.bot },
         text: rawText,
         mentions: [],
@@ -281,23 +251,13 @@ export class FeishuReply {
       }
     } catch (error) {
       //M 发信失败时解析错误说明，按 Api.NotSent 区分明确拒收与超时未知状态。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       let status: protocol.ReplyStatus = 'uncertain';
       if (error instanceof api.NotSent) {
         status = 'rejected';
       }
-      receipt = {
-        v: 2,
-        ok: false,
-        status,
-        replyRequestKey: request.replyRequestKey,
-        replyRoundKey: request.replyRoundKey,
-        replyIndex: request.replyIndex,
-        kind: request.kind,
-        parts: [{ partId: request.parts[0]?.partId ?? 'text:0', kind: 'text', status, reason }],
-        reason,
-        at: Date.now(),
-      };
+      //M 为每一段保留飞书返回的失败状态和原因。
+      receipt = protocol.getReceipt(request, status, reason);
     }
 
     //M 落盘回复幂等记录，保存每次发送回执的哈希与状态。
@@ -307,7 +267,7 @@ export class FeishuReply {
       receipt,
     });
     //M 对外推送 channel/replied 标准化回执事件通知上游发信方。
-    emitReplied(receipt);
+    protocol.emitReplied(this.ctx, request, receipt);
   }
 
   /**
@@ -318,7 +278,7 @@ export class FeishuReply {
    */
   private getReplyTargetAddress(bot: string, rawChat: string): FeishuAddress | string {
     //M 各种查找分支共用同一条找不到目标的说明。
-    const notFound = protocol.getChatNotFound(rawChat);
+    const notFound = protocol.getChatNotFoundMessage(rawChat);
 
     //M 拆目标串：去掉网页展示的“飞书·群·”“飞书·私聊·”前缀（剩下的按群名、人名认），拆出“前缀:聊天”。
     const labelPrefixes = ['飞书·群·', '飞书·私聊·'];
@@ -350,7 +310,7 @@ export class FeishuReply {
 
     //M 按群名缓存、配置群、私聊表、来往流水、本地聊天日志的先后认聊天，认到就停。
     const candidates = this.getChatCandidates(candidateApps, lookupChat);
-    const found = protocol.pickChat(candidates, lookupChat, labelTarget);
+    const found = protocol.findChatByIdOrName(candidates, lookupChat, labelTarget);
     if (found === undefined) return notFound;
 
     //M 群名缓存和配置群认出的不带应用号：优先挑本地存着这个聊天日志的应用，否则取绑定列表第一个应用。
@@ -381,7 +341,7 @@ export class FeishuReply {
 
   /**
    * 飞书认目标聊天的候选清单，按先后交出：群名缓存、配置群、私聊表、来往流水、本地聊天日志。
-   * 边认边拼：pickChat 认到就停，后面的来源（查私聊表、读流水、看日志文件）不再做。
+   * 边认边拼：findChatByIdOrName 认到就停，后面的来源（查私聊表、读流水、看日志文件）不再做。
    * @param candidateApps 这次能用的应用号（机器人绑定的，或“应用号:聊天”指定的那一个）。
    * @param lookupChat 要找的号；本地聊天日志只能按号认。
    */
@@ -452,7 +412,7 @@ export class FeishuReply {
   /** 飞书回复幂等记录文件（channels/feishu/replies/<app>.jsonl）。 */
   private replyLogFile(appId: string): string {
     //M 初始化存储各飞书应用已发回复幂等凭据的运行时目录。
-    const dir = this.ctx.resources.dir('channels', 'feishu', 'replies');
+    const dir = this.ctx.resources.ensureRuntimeDir('channels', 'feishu', 'replies');
     return path.join(dir, `${namesModule.getSafeName(appId, Infinity)}.jsonl`);
   }
 

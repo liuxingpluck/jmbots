@@ -8,6 +8,7 @@ import type * as cordis from 'cordis';
 import type { Database } from 'bun:sqlite';
 import * as mimeModule from '../../utils/Mime.ts';
 import * as protocol from '../../Channels.ts';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 
 
 /** web_messages 表查询行结构。 */
@@ -84,7 +85,7 @@ function sanitizeWebText(rawText: string, idPrefix: string): SanitizedContent {
     const filePath = absFiles[index] ?? '';
     //M 取得附件的展示名称和类型，供历史结果渲染文件元数据。
     const fileName = path.basename(filePath.replace(/\\/gu, '/')) || '未命名';
-    const mime = mimeModule.getType(filePath);
+    const mime = mimeModule.getMimeType(filePath);
     let state: 'available' | 'unavailable' = 'unavailable';
     let size: number | undefined;
     try {
@@ -125,22 +126,26 @@ export class WebHistory {
    * @param ctx WebApi 插件的 Cordis 上下文（随插件卸载自动注销监听）。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M 响应渠道历史查询事件，仅处理 channel 为 http 的请求。
-    this.ctx.on('channel/history', (request) => this.onChannelHistory(request));
+    const options = {
+      replySynchronously: true,
+      filter: (request: protocol.ChannelHistoryRequest) => request.channel === this.name || request.channel === 'voice',
+    };
+    //M 网页和语音历史按请求号应答，渠道只负责授权和读取记录。
+    requestEvents.onRequestEvent(
+      this.ctx,
+      'channel/history',
+      'channel/history-result',
+      (request) => this.getHistory(request),
+      options,
+    );
   }
 
   /**
    * 处理网页历史查询请求：校验权限与游标后从 web_messages 读取用户消息与回复并分页返回。
    * @param request 渠道历史查询请求。
    */
-  private onChannelHistory(request: protocol.ChannelHistoryRequest): void {
+  private getHistory(request: protocol.ChannelHistoryRequest): protocol.ChannelHistoryResult {
     const channel = request.channel;
-    if (channel !== this.name && channel !== 'voice') return;
-
-    request.handled = true;
-    const emitResult = (result: protocol.ChannelHistoryResult): void => {
-      this.ctx.emit('channel/history-result', { ...result, requestId: request.requestId });
-    };
 
     //M 解析请求指向的聊天与机器人，供权限判断和历史查询使用。
     const snapshot = request.sourceSnapshot;
@@ -150,28 +155,14 @@ export class WebHistory {
     const isOwner = protocol.isHistoryOwner(snapshot);
     const isSameChat = snapshot.channel === channel && target.chatId === snapshot.chatId;
     if (!isOwner && !isSameChat) {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'forbidden', message: `无权访问网页聊天 ${target.chatId}` },
-      });
-      return;
+      const message = `无权访问网页聊天 ${target.chatId}`;
+      return protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'forbidden', message);
     }
 
     //G 网页渠道不支持平台 @ 提及清单，明确返回 identity_unresolved。
     if (request.mode === 'mentions') {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: `${channel}:local:${target.chatId}`,
-        completeness: 'local_only',
-        error: { code: 'identity_unresolved', message: '网页渠道没有平台 @ 提及标识' },
-      });
-      return;
+      const message = '网页渠道没有平台 @ 提及标识';
+      return protocol.getHistoryError(`${channel}:local:${target.chatId}`, 'local_only', 'identity_unresolved', message);
     }
 
     //M 从目标聊天读取历史，按统一游标分页后回传查询结果。
@@ -183,9 +174,7 @@ export class WebHistory {
       chatId: target.chatId,
       entries,
     });
-
-    //M 带上原请求号返回分页结果，供发起方对应到本次查询。
-    emitResult(result);
+    return result;
   }
 
   /**

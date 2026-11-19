@@ -166,7 +166,7 @@ export class Review {
       //M 用户批准写入公共记忆，将复盘建议落盘到 memory/复盘/ 供后续复用。
       const file = this.write(payload.entry, payload.advice);
       //T 跟踪：复盘写好了。
-      ctx.emit('trace', 'Review.write', '复盘写进公共记忆', 'fs.writeFileSync(memory/复盘/…)', { 文件: file });
+      ctx.emit('trace', 'Review.write', 'trace.review.write', 'fs.writeFileSync(memory/复盘/…)', { file: file });
     });
 
     //M 定时器用普通 setTimeout，在 ctx.effect 里登记清理：插件被拔掉时清掉定时器且不再重排。
@@ -174,10 +174,7 @@ export class Review {
     let disposed = false;
     const tick = (): void => {
       void this.check().catch((error: unknown) => {
-        let message = String(error);
-        if (error instanceof Error) {
-          message = error.message;
-        }
+        const message = textModule.getErrorMessage(error);
         console.error(`复盘出错：${message}`);
       }).finally(() => {
         if (!disposed) {
@@ -216,7 +213,7 @@ export class Review {
     if (listed.items !== undefined && listed.items.length > 0) return this.skip('有复盘在等用户');
 
     //G 尚未产生 overtime.jsonl 超时登记文件时说明无可复盘记录，直接跳过。
-    const file = path.join(this.ctx.resources.dir('data'), 'overtime.jsonl');
+    const file = path.join(this.ctx.resources.ensureRuntimeDir('data'), 'overtime.jsonl');
     if (!fs.existsSync(file)) return this.skip('还没有超时登记');
 
     //M 按先后挑第一行：机器人还在、会话还在、它的 reviewedAt 比这一行早（或没有）。坏的行跳过。
@@ -253,8 +250,8 @@ export class Review {
     session.save();
 
     //T 跟踪：挑中一件。
-    const checkVars = { 会话: entry.sessionId, 结局: entry.stage, 用时: textModule.getDuration(entry.usedMs) };
-    this.ctx.emit('trace', 'Review.check', '挑中一件做太久的事', 'sessions.open(entry.sessionId)', checkVars);
+    const checkVars = { session: entry.sessionId, outcome: entry.stage, duration: textModule.formatDuration(entry.usedMs) };
+    this.ctx.emit('trace', 'Review.check', 'trace.review.select', 'sessions.open(entry.sessionId)', checkVars);
 
     const request = { action: 'mirror-dir', bot: session.row.bot, sessionId: session.id } as const;
     const options = {
@@ -287,7 +284,7 @@ export class Review {
       PROMPT,
       '',
       `用户的话：${entry.text}`,
-      `结局：${entry.stage}，用了 ${textModule.getDuration(entry.usedMs)}`,
+      `结局：${entry.stage}，用了 ${textModule.formatDuration(entry.usedMs)}`,
       `各段耗时：${entry.timingsText ?? JSON.stringify(entry.timings ?? {})}`,
       '',
       `工作过程（会话记录末尾）：\n${log}`,
@@ -317,7 +314,7 @@ export class Review {
     const detail = [
       advice,
       '',
-      `这件事做了 ${textModule.getDuration(entry.usedMs)}（${entry.stage}），上面是看了工作过程写的建议`,
+      `这件事做了 ${textModule.formatDuration(entry.usedMs)}（${entry.stage}），上面是看了工作过程写的建议`,
       '同意后写进公共记忆 memory/复盘/，所有机器人以后做同类事会参考它',
       '建议对就同意；不对或没用就拒绝，这件事不再问',
     ].join('\n');
@@ -379,11 +376,11 @@ export class Review {
       title = '复盘';
     }
     //M 结合运行期公共记忆复盘目录拼出最终 Markdown 文件绝对路径并写入。
-    const file = path.join(this.ctx.resources.dir('memory', '复盘'), `${stamp}_${title}.md`);
+    const file = path.join(this.ctx.resources.ensureRuntimeDir('memory', '复盘'), `${stamp}_${title}.md`);
     const lines = [
       `# 复盘：${rawTitle}`,
       '',
-      `- 机器人：${entry.bot}；会话：${entry.sessionId}；结局：${entry.stage}；用了 ${textModule.getDuration(entry.usedMs)}`,
+      `- 机器人：${entry.bot}；会话：${entry.sessionId}；结局：${entry.stage}；用了 ${textModule.formatDuration(entry.usedMs)}`,
       `- 用户的话：${entry.text}`,
       `- 各段耗时：${entry.timingsText ?? ''}`,
       '',
@@ -403,6 +400,6 @@ export class Review {
   /** 跳过这次：发跟踪事件说明原因。 */
   private skip(why: string): void {
     //T 跟踪：这次不复盘。
-    this.ctx.emit('trace', 'Review.check', '这次不复盘', 'check()', { 原因: why });
+    this.ctx.emit('trace', 'Review.check', 'trace.review.skip', 'check()', { reason: why });
   }
 }

@@ -1,7 +1,7 @@
 /**
  * model-catalog（含并入的 Fallback / Queue）单元测试：
  *   1. 清单合并（手写 + list_models: false）与 model/cooldown 维护 limitedUntil（过期自动清除）；
- *   2. 真实 Sessions.run() 链路下：挂在前方的 session/request 插件先写 system，排在后面的 ModelFallback 接管调用 chat()；
+ *   2. 真实 Sessions.run() 链路下：挂在前方的 session/before-model 插件先写 system，排在后面的 ModelFallback 接管调用 chat()；
  *      429 限流连续触发两次 model/failed 即掐断、发 model/cooldown（同步进 ModelCatalog）与 model/fallback，切备选成功；再次请求直接走 cooldown；
  *   3. 上下文超长（context-overflow）：按 ModelCatalog 窗口降序挑更大上下文候选；
  *   4. Queue 并发排队与取消信号，以及 config.fallback 入口校验和 fallback: false 关闭开关。
@@ -89,6 +89,7 @@ async function setupWorld(options: {
     readonly raw = raw;
     readonly config = {
       defaultModel: 'mock/primary',
+      sessionCacheMax: 500,
       thinking: 'low' as const,
       retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
       providers: providerConfig,
@@ -198,7 +199,7 @@ test('2. 限流回退：前置插件先改 system，429 重试超 1 次掐断、
   const world = await setupWorld({
     beforeMount: (ctx) => {
       //M 模拟排在前面的 prompt 等插件先向 request.system 加段话。
-      ctx.on('session/request', (request) => {
+      ctx.on('session/before-model', (request) => {
         request.system.push('前置系统提示');
       });
     },
@@ -218,7 +219,7 @@ test('2. 限流回退：前置插件先改 system，429 重试超 1 次掐断、
 
   //M 第 1 轮：primary 限流 → 记进冷却 → 切到 mock/medium 回复；且前置系统提示保留。
   const session1 = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
-  session1.add('你好');
+  session1.queueUserMessage('你好');
   await session1.run();
 
   expect(session1.row.state).toBe('done');
@@ -236,7 +237,7 @@ test('2. 限流回退：前置插件先改 system，429 重试超 1 次掐断、
   seenModels.length = 0;
   world.fallbackEvents.length = 0;
   const session2 = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
-  session2.add('再来一次');
+  session2.queueUserMessage('再来一次');
   await session2.run();
 
   expect(session2.row.state).toBe('done');
@@ -266,7 +267,7 @@ test('3. 上下文超长：过滤掉更小窗口候选并按窗口降序优先�
   };
 
   const session = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
-  session.add('长文');
+  session.queueUserMessage('长文');
   await session.run();
 
   expect(session.row.state).toBe('done');
@@ -305,7 +306,7 @@ test('4. Queue 并发上限与取消信号、fallback: false 开关与配置校�
     throw new Error('HTTP 429 rate limit');
   };
   const session = disabledWorld.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
-  session.add('不回退');
+  session.queueUserMessage('不回退');
   await session.run();
   expect(fallbackRan).toBe(true);
   expect(disabledWorld.fallbackEvents.length).toBe(0);

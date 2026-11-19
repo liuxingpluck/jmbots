@@ -214,7 +214,7 @@ export async function attachments(text: string): Promise<{ path: string; name: s
   }
   return Promise.all(found.map(async (file) => {
     const stat = await fsp.stat(file).catch(() => undefined);
-    return { path: file, name: path.basename(file.replace(/\\/gu, '/')), kind: mime.getKind(file), size: stat?.size ?? null };
+    return { path: file, name: path.basename(file.replace(/\\/gu, '/')), kind: mime.getFileKind(file), size: stat?.size ?? null };
   }));
 }
 
@@ -300,8 +300,8 @@ export class Timeline {
     const id = Number(result.lastInsertRowid);
 
     //T 跟踪：收件表记下一条。
-    const vars = { 消息号: id, 机器人: input.bot, 渠道: input.channel, 字数: input.text.length };
-    this.ctx.emit('trace', 'Timeline.insert', '收件表记下一条消息', 'INSERT INTO web_messages', vars);
+    const vars = { messageId: id, bot: input.bot, channel: input.channel, length: input.text.length };
+    this.ctx.emit('trace', 'Timeline.insert', 'trace.timeline.insert', 'INSERT INTO web_messages', vars);
     const { bot, channel, source, text } = input;
     const received = { id, bot, channel, source, text, at: createdAt };
     this.ctx.emit('web-api/received', received);
@@ -367,8 +367,8 @@ export class Timeline {
     const updated = this.ctx.resources.db.query(sql).run(sessionId, id);
     if (updated.changes === 0) return;
 
-    const vars = { 消息号: id, 会话: sessionId };
-    this.ctx.emit('trace', 'Timeline.bindSession', '收件消息已绑定会话', 'UPDATE web_messages SET session_id', vars);
+    const vars = { messageId: id, session: sessionId };
+    this.ctx.emit('trace', 'Timeline.bindSession', 'trace.timeline.bindSession', 'UPDATE web_messages SET session_id', vars);
   }
 
   /**
@@ -426,8 +426,8 @@ export class Timeline {
     this.ctx.resources.db.query(sql).run(replies, sessionId, status, now, id);
 
     //T 跟踪：追加一句回话。
-    const vars = { 消息号: id, 会话: sessionId, 字数: text.length, 状态: status };
-    this.ctx.emit('trace', 'Timeline.reply', '收件表追加一句回话', 'UPDATE web_messages SET replies', vars);
+    const vars = { messageId: id, session: sessionId, length: text.length, state: status };
+    this.ctx.emit('trace', 'Timeline.reply', 'trace.timeline.reply', 'UPDATE web_messages SET replies', vars);
     if (session !== undefined) {
       //M 依赖会话的订阅者只接收可以打开会话的回话通知。
       const event = { messageId: id, replyIndex: record.replies.length - 1, session, text, at: now };

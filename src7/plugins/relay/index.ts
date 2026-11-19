@@ -8,7 +8,7 @@
  *   model 模式：照常走模型，模型用工具 relay_send 转话（只转给默认助手）；回信作为一句新的用户话交回那场会话，由模型转述。
  *   机器人没写 relay 时，飞书插件配置 groups 里登记了 relay: model 的群也算 model（飞书写进回话地址的 relay，见 sessionMode）。
  * 每条收件记下转给了哪个助手、谁在哪说的（owner、sender、chat、chatName）：回执、回信前面的署名、推不推 webhook，都照它。
- * 不调模型靠的是骨架现成的口子：插件在 session/request 里填了 request.answer，会话就不调 chat()。不用改骨架。
+ * 不调模型靠的是骨架现成的口子：插件在 session/before-model 里填了 request.answer，会话就不调 chat()。不用改骨架。
  * 配了 webhook_url 的助手，转出时推一次；没配的自己来看：读收件箱文件，或 GET /api/relay/inbox?helper=名字&since=号。
  * 收件带 files：话里 @路径 写的附件（渠道用 bots.saveFile 存进工作区的），换成相对运行时目录的路径，见 getFiles。
  * 设计和给外部助手看的用法见同目录 说明.md 的「设计要点」「给外部助手的用法」两节。
@@ -294,13 +294,13 @@ export class Relay {
     }
 
     //M 三个监听。ctx.on 挂在本插件的 ctx 上：插件被拔掉时 Cordis 自动撤掉。
-    //M   bot/receive、session/request 是“挨个问”（serial），先后照 config.yaml 里 plugins 写的先后。
+    //M   bot/receive、session/before-model 是“挨个问”（serial），先后照 config.yaml 里 plugins 写的先后。
     this.ctx.on('bot/receive', (event) => {
       this.onReceive(event);
     });
 
     //M 在模型请求入口决定本轮是直转还是开放转话工具。
-    this.ctx.on('session/request', (request) => {
+    this.ctx.on('session/before-model', (request) => {
       this.onRequest(request);
     });
 
@@ -674,8 +674,8 @@ export class Relay {
     }
 
     //T 跟踪：收到一条回信。
-    const vars = { 收件号: itemId, 会话: item.session_id, 从哪来: via, 回完了: done, 字数: text.length };
-    this.ctx.emit('trace', 'Relay.accept', `收到 ${item.helper} 的回信`, 'INSERT INTO relay_replies', vars);
+    const vars = { helper: item.helper, inboxId: itemId, session: item.session_id, deliverySource: via, complete: done, length: text.length };
+    this.ctx.emit('trace', 'Relay.accept', 'trace.relay.accept', 'INSERT INTO relay_replies', vars);
 
     //M 按收件来源回到真实会话或决策图节点。
     void this.deliverSoon(item.session_id, item.channel);
@@ -731,7 +731,7 @@ export class Relay {
   }
 
   /**
-   * 响应 session/request：direct 机器人的会话（不是小会话）一定填 request.answer，绝不落到真模型。
+   * 响应 session/before-model：direct 机器人的会话（不是小会话）一定填 request.answer，绝不落到真模型。
    * 有新话 → 登记收件，回“已转给”；没新话、有没送的回信 → 回信当回答；都没有 → 回一句“没有新消息”。
    * @param request 这一步的请求。
    */
@@ -779,8 +779,8 @@ export class Relay {
       this.answering.set(session.id, reply.id);
 
       //T 跟踪：送出一条回信。
-      const vars = { 收件号: reply.item_id, 会话: session.id, 渠道: row.channel ?? '（没有）', 字数: reply.text.length };
-      this.ctx.emit('trace', 'Relay.onRequest', '回信当回答，送回当时那条消息', 'request.answer = said(reply.text)', vars);
+      const vars = { inboxId: reply.item_id, session: session.id, channel: row.channel, length: reply.text.length };
+      this.ctx.emit('trace', 'Relay.onRequest', 'trace.relay.returnReply', 'request.answer = said(reply.text)', vars);
       return;
     }
 
@@ -873,7 +873,7 @@ export class Relay {
       //M 恢复接收回信的原会话，后面按会话模式选择回传方式。
       session = this.ctx.sessions.open(sessionId);
     } catch (error) {
-      console.error(`relay：回信送不出去：${textModule.getMessage(error)}`);
+      console.error(`relay：回信送不出去：${textModule.getErrorMessage(error)}`);
       return;
     }
 
@@ -924,7 +924,7 @@ export class Relay {
         lastId = reply.id;
       }
     } catch (error) {
-      console.error(`relay：会话 ${sessionId} 的回信投递出错：${textModule.getMessage(error)}`);
+      console.error(`relay：会话 ${sessionId} 的回信投递出错：${textModule.getErrorMessage(error)}`);
     } finally {
       this.delivering.delete(sessionId);
     }
@@ -1034,13 +1034,13 @@ export class Relay {
       this.run(sql, params);
     } catch (error) {
       //M 本地标记失败时保留回信，重试用相同结果键补记。
-      console.error(`relay：回信 #${String(reply.id)} 投递或标记失败：${textModule.getMessage(error)}`);
+      console.error(`relay：回信 #${String(reply.id)} 投递或标记失败：${textModule.getErrorMessage(error)}`);
       return;
     }
 
     //T 跟踪：回信排进结果队列。
-    const vars = { 回信号: reply.id, 收件号: reply.item_id, 会话: sessionId, 键: key };
-    this.ctx.emit('trace', 'Relay.queueReply', '回信排进会话的结果队列', 'bot/request accept-result', vars);
+    const vars = { replyId: reply.id, inboxId: reply.item_id, session: sessionId, key: key };
+    this.ctx.emit('trace', 'Relay.queueReply', 'trace.relay.queueReply', 'bot/request accept-result', vars);
   }
 
   /**
@@ -1063,8 +1063,8 @@ export class Relay {
     void this.push(item, helper, session.row.address);
 
     //T 跟踪：转出一条。
-    const vars = { 收件号: item.id, 会话: session.id, 渠道: item.channel, 说话人: item.sender, 聊天: item.chat, 字数: text.length };
-    this.ctx.emit('trace', 'Relay.register', `转出一条给 ${helper.name}：写进收件箱`, 'fs.appendFileSync(inbox.jsonl)', vars);
+    const vars = { helper: helper.name, inboxId: item.id, session: session.id, channel: item.channel, sender: item.sender, chat: item.chat, length: text.length };
+    this.ctx.emit('trace', 'Relay.register', 'trace.relay.register', 'fs.appendFileSync(inbox.jsonl)', vars);
     return item.id;
   }
 
@@ -1118,7 +1118,7 @@ export class Relay {
         //M 单独处理该机器人的新增回信，个别读取失败不妨碍其他机器人。
         this.pollOne(bot.name);
       } catch (error) {
-        console.error(`relay：读 ${bot.name} 的回信文件出错：${textModule.getMessage(error)}`);
+        console.error(`relay：读 ${bot.name} 的回信文件出错：${textModule.getErrorMessage(error)}`);
       }
     }
   }
@@ -1159,7 +1159,7 @@ export class Relay {
         this.accept(JSON.parse(line) as unknown, 'file', bot);
       } catch (error) {
         //G 保存坏行与异常原因，便于排查并让后续行继续处理。
-        const failed = { line, reason: textModule.getMessage(error), at: local(Date.now()) };
+        const failed = { line, reason: textModule.getErrorMessage(error), at: local(Date.now()) };
         fs.appendFileSync(path.join(dir, 'replies.err.jsonl'), `${JSON.stringify(failed)}\n`, 'utf8');
       }
     }
@@ -1191,12 +1191,12 @@ export class Relay {
 
       const shown = String(Math.floor(minutes));
       let text = `${item.helper} 还没回复（#${String(item.id)}，已 ${shown} 分钟），话还在它的收件箱里，回了会接着发给你。`;
-      let traceSummary = '没回，提醒一次';
+      let traceSummary = 'trace.relay.remind';
       if (expire) {
         //M 达到超时上限时结束等待，并记录已提醒。
         this.run("UPDATE relay_items SET state = 'expired', reminded = 1 WHERE id = ?", [item.id]);
         text = `${item.helper} ${shown} 分钟没回（#${String(item.id)}），这条先放下；之后回了还会发给你。`;
-        traceSummary = '太久没回，先放下';
+        traceSummary = 'trace.relay.expire';
       }
       if (!expire) {
         //M 还没到期时只记已提醒，等待助手继续回复。
@@ -1208,7 +1208,7 @@ export class Relay {
       this.ctx.emit('bot/say', session, text);
 
       //T 跟踪：提醒或放下。
-      const vars = { 收件号: item.id, 会话: item.session_id, 分钟: shown };
+      const vars = { inboxId: item.id, session: item.session_id, minutes: shown };
       this.ctx.emit('trace', 'Relay.checkLate', traceSummary, "ctx.emit('bot/say', session, text)", vars);
     }
   }
@@ -1252,13 +1252,13 @@ export class Relay {
         });
         result = `HTTP ${String(response.status)}`;
       } catch (error) {
-        result = `推不出去：${textModule.getMessage(error)}`;
+        result = `推不出去：${textModule.getErrorMessage(error)}`;
       }
     }
 
     //T 跟踪：推 webhook。
-    const vars = { 收件号: item.id, 聊天: body.chat, 本人: body.owner, 结果: result };
-    this.ctx.emit('trace', 'Relay.push', `推给 ${helper.name} 的 webhook`, 'fetch(webhook_url)', vars);
+    const vars = { helper: helper.name, inboxId: item.id, chat: body.chat, owner: body.owner, result: result };
+    this.ctx.emit('trace', 'Relay.push', 'trace.relay.push', 'fetch(webhook_url)', vars);
   }
 
   /**
@@ -1336,7 +1336,7 @@ export class Relay {
     let real: string | undefined;
     for (const dir of dirs) {
       try {
-        real = workspaceModule.inside(dir, full);
+        real = workspaceModule.resolveWorkspacePath(dir, full);
         break;
       } catch {
         //M 不在这个目录里：看下一个。
@@ -1407,8 +1407,8 @@ export class Relay {
     }
 
     //T 跟踪：回信带的文件。
-    const vars = { 收件号: item.id, 文件: full, 结果: result };
-    const people = `${item.helper} 回信带的文件`;
+    const vars = { helper: item.helper, inboxId: item.id, file: full, result: result };
+    const people = 'trace.relay.sendFile';
     const code = "requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', request, options)";
     this.ctx.emit('trace', 'Relay.sendFile', people, code, vars);
   }
@@ -1448,7 +1448,7 @@ export class Relay {
    * @param bot 机器人名。
    * @param text 要说的话。
    * @param replyId 这句是哪条回信（relay_replies.id）：记在回答的 relayReplyId 上，跟着对话存盘，markWritten 照它对账；不是回信不写。
-   * @returns 填进 request.answer 的回答。
+   * @returns 填进 request.answer 的 AssistantMessage。content 放转话文字，provider 和 model 标记来源。
    */
   private said(bot: string, text: string, replyId?: number): piAi.AssistantMessage {
     const answer: piAi.AssistantMessage & { relayReplyId?: number } = {
@@ -1507,7 +1507,7 @@ export class Relay {
    */
   private getDir(bot: string): string {
     //M 按机器人定位文件通道目录，后面确保收件与回信文件可用。
-    const dir = this.ctx.resources.dir('integrations', 'relay', bot);
+    const dir = this.ctx.resources.ensureRuntimeDir('integrations', 'relay', bot);
     for (const file of ['inbox.jsonl', 'replies.jsonl']) {
       const full = path.join(dir, file);
       if (!fs.existsSync(full)) fs.writeFileSync(full, '');
@@ -1612,7 +1612,7 @@ export class Relay {
  * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里写的服务
  * （resources、sessions、bots）都就绪，再调一次 apply(ctx, 配置)。插件通过 ctx 听事件、登记工具和定时器，
  * 插件被拔掉时这些登记自动撤掉。详见 plugins/Index.ts 的 PluginModule。
- * 先后：写在 http、fake-model 后面，model-fallback 前面（session/request、bot/receive 照挂的先后挨个问）。
+ * 先后：写在 http、fake-model 后面，model-fallback 前面（session/before-model、bot/receive 照挂的先后挨个问）。
  *   前台在 bots 里：bot/receive 问完了没人认领才轮到前台，所以 relay 的认领总在前台前面。
  * 挂两样：转话（写了 helpers 才挂）和任务通道（http 就绪后挂）。
  * @param ctx Cordis 给这个插件的 ctx。
@@ -1658,7 +1658,7 @@ interface RelayWritten {
 
 
 /**
- * 挂上转话：查 helpers 等配置，建 Relay（登记 relay_send、听 bot/receive 和 session/request、两条接口、定时读回信）。
+ * 挂上转话：查 helpers 等配置，建 Relay（登记 relay_send、听 bot/receive 和 session/before-model、两条接口、定时读回信）。
  * @param ctx relay 的 ctx。
  * @param written config.yaml 里写给 relay 的（apply 查过写了 helpers）。
  * @throws helpers 是空的、名字重复、前缀有空串，别的项写得不对时抛错，插件不挂。

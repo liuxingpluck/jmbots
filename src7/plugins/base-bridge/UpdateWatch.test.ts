@@ -31,7 +31,7 @@ test('没挂基地照常启动，后来挂上但断连时静默，恢复后才�
   const ctx = new cordis.Context();
 
   class FakeResources extends cordis.Service {
-    dir(): string { return root; }
+    ensureRuntimeDir(): string { return root; }
     constructor(c: cordis.Context) { super(c, 'resources'); }
   }
   class FakeBots extends cordis.Service {
@@ -101,7 +101,7 @@ test('没挂 approval：当没有在等的，新版本登记不上就记一行�
   const ctx = new cordis.Context();
 
   class FakeResources extends cordis.Service {
-    dir(): string { return root; }
+    ensureRuntimeDir(): string { return root; }
     constructor(c: cordis.Context) { super(c, 'resources'); }
   }
   class FakeBots extends cordis.Service {
@@ -142,7 +142,7 @@ test('换版无响应时不重发，中控只在基地空闲且结论一致时�
   let requests = 0;
   let applying = true;
   class FakeResources extends cordis.Service {
-    dir(): string { return root; }
+    ensureRuntimeDir(): string { return root; }
     constructor(c: cordis.Context) { super(c, 'resources'); }
   }
   class FakeBase extends cordis.Service {
@@ -204,7 +204,7 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
     });
     const ctx = new cordis.Context();
     class FakeResources extends cordis.Service {
-      dir(): string { return root; }
+      ensureRuntimeDir(): string { return root; }
       constructor(c: cordis.Context) { super(c, 'resources'); }
     }
     let toolCount = 0;

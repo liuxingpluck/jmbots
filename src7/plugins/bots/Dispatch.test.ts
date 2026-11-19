@@ -31,6 +31,7 @@ class FakeResources extends cordis.Service {
   readonly raw = { bots: [{ name: '助手' }] };
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -40,7 +41,7 @@ class FakeResources extends cordis.Service {
     super(ctx, 'resources');
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -104,7 +105,7 @@ async function world(): Promise<{ ctx: cordis.Context; sent: Sent[] }> {
   await ctx.plugin(sessionsModule.Sessions);
   await ctx.plugin(workspacesPlugin);
   await ctx.plugin(botsPlugin, {});
-  ctx.on('session/request', fakeAnswer);
+  ctx.on('session/before-model', fakeAnswer);
 
   const sent: Sent[] = [];
   ctx.bots.channel('test', (reply, _session, origin) => {

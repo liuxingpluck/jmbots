@@ -48,6 +48,7 @@ class FakeResources extends cordis.Service {
   readonly root: string;
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -63,7 +64,7 @@ class FakeResources extends cordis.Service {
     };
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -166,7 +167,7 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 
-/** 构建等待取消信号才结束的可控挂起模型响应。 */
+/** 暂挂可手动完成的模型回答 AssistantMessage，content 是内容块，stopReason 说明如何结束。 */
 function waitAbortOrResolve(
   signal: AbortSignal,
   controller: { finish: (answer: piAi.AssistantMessage) => void },

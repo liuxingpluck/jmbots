@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 import * as filesModule from '../../../utils/Files.ts';
+import * as textModule from '../../../utils/Text.ts';
 
 
 /** 一个微信账号（runtime/data/accounts.yaml 里 status 是 connected 的）。 */
@@ -448,10 +449,7 @@ export class Reader {
       if (media !== undefined) {
         throw new MediaUnavailable('找不到微信引擎或没有启动权限', 'engine_start_failed');
       }
-      let detail = String(error);
-      if (error instanceof Error) {
-        detail = error.message;
-      }
+      const detail = textModule.getErrorMessage(error);
       console.error(`微信引擎拉不起来（wechat_cli ${command}）：${detail}`);
       //G 回给界面原有提示，同时让排查能追到启动异常。
       const options = { cause: error };

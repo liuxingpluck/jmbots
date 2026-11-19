@@ -217,7 +217,7 @@ function formatMessageText(
 
   //M 别的类型：写上类型名，后面跟原文 JSON；太长就截（utils/Cut.ts 的 chars）。
   const json = JSON.stringify(content, null, 2);
-  const shown = cutModule.chars(json, RAW_MAX);
+  const shown = cutModule.clipTextWithLength(json, RAW_MAX);
   return `[${TYPE_NAMES[type] ?? type}]\n${shown}`;
 }
 
@@ -331,7 +331,7 @@ export async function related(
         result.quote = `【回复的消息：${quoted}】`;
       }
     } catch (error) {
-      result.quote = `[引用的消息没取到：${textModule.getMessage(error)}]`;
+      result.quote = `[引用的消息没取到：${textModule.getErrorMessage(error)}]`;
     }
   }
   if (message.type === 'merge_forward') {
@@ -348,7 +348,7 @@ export async function related(
       });
       result.forwarded = lines.join('\n');
     } catch (error) {
-      result.forwarded = `[合并转发的内容没取到：${textModule.getMessage(error)}]`;
+      result.forwarded = `[合并转发的内容没取到：${textModule.getErrorMessage(error)}]`;
     }
   }
   return result;
@@ -424,7 +424,7 @@ export async function sendFile(
   }
   const extension = path.extname(file).toLowerCase();
   //M 调用方未指定类别时按扩展名自动识别图片或普通文件。
-  const kind = requestedKind ?? mime.getKind(file);
+  const kind = requestedKind ?? mime.getFileKind(file);
   if (requestedKind === 'image' && (!IMAGE_EXTENSIONS.has(extension) || data.length > IMAGE_MAX)) {
     throw new Error('图片格式不支持或超过 10MB');
   }
@@ -462,7 +462,7 @@ export async function sendFile(
         said = '视频';
       }
       const failedAt = new Date().toLocaleString('zh-CN', { hour12: false });
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       console.error(`${failedAt} 飞书：${path.basename(file)} 按${said}消息没发成，改按附件发：${reason}`);
     }
   }
@@ -554,7 +554,7 @@ export async function message(
       if (!(error instanceof api.NotSent)) throw error;
 
       //M 飞书明确拒了回复（原消息撤回了这类）→ 改普通发送。
-      console.error(`飞书回复失败，改为普通发送：${textModule.getMessage(error)}`);
+      console.error(`飞书回复失败，改为普通发送：${textModule.getErrorMessage(error)}`);
     }
   }
   //M 无原消息号或回复被明确拒收时走聊天直发通道。

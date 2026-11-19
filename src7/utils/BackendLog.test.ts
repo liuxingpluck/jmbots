@@ -20,17 +20,17 @@ function getLog() {
   const options = { stdout: sink, stderr: sink, colorMode: false } as const;
   //M Bun 合并后的 Console 构造类型漏了实例 error，测试取实际使用的这个方法。
   const output = new nodeConsole.Console(options) as unknown as Pick<Console, 'error'>;
-  backendLog.install(output);
+  backendLog.installBackendErrorLogger(output);
   return { output, getContent: () => content };
 }
 
 test('按本机时间和调用方模块给多行错误加一个报错头', () => {
   const { output, getContent } = getLog();
-  const before = text.getClock(Date.now(), 'date');
+  const before = text.formatLocalTime(Date.now(), 'date');
 
   output.error('样例失败 %s\n    at 模拟栈帧', '***');
 
-  const after = text.getClock(Date.now(), 'date');
+  const after = text.formatLocalTime(Date.now(), 'date');
   const [first, second, empty] = getContent().split('\n');
   expect([before, after]).toContain(DATE.exec(first ?? '')?.[1] ?? '');
   expect(first).toEndWith('[BackendLog.test] 样例失败 ***');

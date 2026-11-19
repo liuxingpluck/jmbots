@@ -103,7 +103,7 @@ function isReportRound(row: SessionMeta): boolean {
 /** 仅给日报轮开放本群检索和回复工具。 */
 export function bindReportTools(ctx: cordis.Context): void {
   //M 模型只看到它能用的群内工具，普通聊天保持原清单。
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     if (!isReportRound(request.session.row)) return;
 
     request.tools = request.tools.filter((tool) => DAILY_TOOLS.has(tool.name));
@@ -140,7 +140,7 @@ export function setupGroupReports(ctx: cordis.Context, groups: Iterable<FeishuGr
 
           //M 只执行仍在预定分钟内的群任务，房间归属来自已校验配置。
           void dispatchReport(ctx, report, at).catch((error: unknown) => {
-            const reason = textModule.getMessage(error);
+            const reason = textModule.getErrorMessage(error);
             console.error('群进度定时任务失败 ' + report.chatId + '：' + reason);
           });
         }, delay);

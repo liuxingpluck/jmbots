@@ -17,7 +17,7 @@ export const VERSION = VERSIONS[0]!.version;
  * 打印版本 JSON 到标准输出。
  * 副作用：写一行 JSON。
  */
-export function print(): void {
+export function printVersionInfo(): void {
   //M 汇编版号、编译时间戳（源码跑兜底当前时刻）和更新说明后打印 JSON 给基地读取。
   const payload = {
     version: VERSION,

@@ -35,7 +35,7 @@ async function setup(helper?: string) {
   cleanups.push(async () => { await app.close(); }, async () => { await ctx.fiber.dispose(); });
   ctx.provide('http', { app });
   ctx.provide('resources', {
-    dir(...parts: string[]) {
+    ensureRuntimeDir(...parts: string[]) {
       const dir = path.join(root, ...parts);
       fs.mkdirSync(dir, { recursive: true });
       return dir;

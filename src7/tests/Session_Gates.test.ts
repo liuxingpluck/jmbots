@@ -1,7 +1,8 @@
 /**
- * 会话的四个关口（src7/Sessions.ts、src7/Tools.ts）：session/request、session/after-model、session/before-tool、
- * session/after-tool 上写 stop 就停下；after-tool 能改结果；不数步数，工具连着要几十轮也走到底。
- * 真实 Cordis + 骨架 Sessions、Tools；模型是假回答（session/request 里填 answer），库是内存库。
+ * 会话的四个关口（src7/Sessions.ts、src7/Tools.ts）：session/before-model、session/after-model、session/before-tool、
+ * session/after-tool 上写 stop 就停下；after-tool 能改结果；不按步数限制，工具连着要几十轮也走到底；
+ * 步数 row.steps 跨 run 累计；打开过的会话表有上限，超了挪出闲着的。
+ * 真实 Cordis + 骨架 Sessions、Tools；模型是假回答（session/before-model 里填 answer），库是内存库。
  * 另从 Main.ts 启动独立进程，验证插件挂载超时与最终状态。
  * 跑法：bun test ./src7/tests/Session_Gates.test.ts
  */
@@ -34,6 +35,7 @@ class FakeResources extends cordis.Service {
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
+    sessionCacheMax: 500,
   };
 
   constructor(ctx: cordis.Context) {
@@ -80,7 +82,7 @@ async function world(rounds: number, calls: number): Promise<World> {
   });
 
   //M 假模型。
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const results = request.messages.filter((item) => item.role === 'toolResult');
     if (results.length >= rounds * calls) {
       request.answer = piAi.fauxAssistantMessage('做完了');
@@ -98,7 +100,7 @@ async function world(rounds: number, calls: number): Promise<World> {
   });
 
   const session = ctx.sessions.create({ kind: 't', bot: '测试' });
-  session.add('开始');
+  session.queueUserMessage('开始');
   return { ctx, session, ran, states };
 }
 
@@ -134,9 +136,9 @@ test('不数步数：工具连着要 40 轮（原来默认 30 步就停）也走
 });
 
 
-test('关口一 session/request 写 stop：不调模型，停下，理由写进 reply', async () => {
+test('关口一 session/before-model 写 stop：不调模型，停下，理由写进 reply', async () => {
   const { ctx, session, states } = await world(1, 1);
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     request.stop = '先别调';
   });
   await session.run();
@@ -208,6 +210,86 @@ test('关口四 session/after-tool 能改结果；写 stop 结果照样接进对
   expect(second.ran.count).toBe(1);
   expect(getResultTexts(second.session)).toEqual(['ok', '未执行：停下来了']);
   expect(second.states).toEqual(['running', 'stopped']);
+});
+
+
+test('步数跨 run 累计：喊停后再 run 接着加，不归零；从库读回不变，早先没有 steps 的补 0', async () => {
+  //M 工具要 3 轮，第 2 步的工具执行完就喊停。
+  const { ctx, session } = await world(3, 1);
+  ctx.on('session/after-tool', (done) => {
+    if (done.session.row.steps === 2) {
+      done.stop = '先停一下';
+    }
+  });
+  await session.run();
+  expect(session.row.state).toBe('stopped');
+  expect(session.row.steps).toBe(2);
+
+  //M 再说一句接着跑：第 3 步要最后一个工具，第 4 步做完。
+  session.queueUserMessage('接着做');
+  await session.run();
+  expect(session.row.state).toBe('done');
+  expect(session.row.steps).toBe(4);
+
+  //M 上限改成 1 再开一场，这场被挪出内存；再 open 从库读回，步数不变。
+  ctx.resources.config.sessionCacheMax = 1;
+  ctx.sessions.create({ kind: 't', bot: '测试' });
+  const reopened = ctx.sessions.open(session.id);
+  expect(reopened).not.toBe(session);
+  expect(reopened.row.steps).toBe(4);
+  const found = ctx.sessions.find({ id: session.id });
+  expect(found[0]?.steps).toBe(4);
+
+  //M 早先存的会话 meta 里没有 steps：读库那一处补 0。
+  const oldMeta = {
+    id: 'old',
+    kind: 't',
+    model: 'fake/fake',
+    thinking: 'low',
+    state: 'done',
+    reply: '',
+    updatedAt: 1,
+  };
+  const oldJson = JSON.stringify(oldMeta);
+  const sql = 'INSERT INTO sessions (id, meta, messages) VALUES (?, ?, ?)';
+  const insert = ctx.resources.db.query(sql);
+  insert.run('old', oldJson, '[]');
+  expect(ctx.sessions.open('old').row.steps).toBe(0);
+});
+
+
+test('打开过的会话有上限：超了挪出最久没用、闲着的，再 open 从库读回新对象；在转的不挪', async () => {
+  //M 上限 2。world 开的那场先转起来，卡在关口一等放行。
+  const { ctx, session: running } = await world(1, 1);
+  ctx.resources.config.sessionCacheMax = 2;
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = () => {
+      resolve();
+    };
+  });
+  ctx.on('session/before-model', async () => {
+    await gate;
+  });
+  const runningDone = running.run();
+
+  //M 再开 3 场闲着的：每超一次挪出最旧的闲着那场，在转的那场一直跳过。
+  const input = { kind: 't', bot: '测试' };
+  const oldest = ctx.sessions.create(input);
+  ctx.sessions.create(input);
+  const newest = ctx.sessions.create(input);
+  expect(ctx.sessions.open(running.id)).toBe(running);
+  expect(ctx.sessions.open(newest.id)).toBe(newest);
+
+  //M 最旧的那场被挪出过：再 open 从库读回，是新对象，记录一样。
+  const reopened = ctx.sessions.open(oldest.id);
+  expect(reopened).not.toBe(oldest);
+  expect(reopened.row).toEqual(oldest.row);
+
+  //M 放行，在转的那场照常跑完。
+  release();
+  await runningDone;
+  expect(running.row.state).toBe('done');
 });
 
 
@@ -319,7 +401,7 @@ test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起�
 
     const logs = await stderr;
     if (failure !== undefined) {
-      const message = textModule.getMessage(failure.cause);
+      const message = textModule.getErrorMessage(failure.cause);
       throw new Error(`${message}\n${logs}`, failure);
     }
     expect(logs).toContain('插件 slow-fixture 启动超过 0.06 秒，先挂后面的，它继续在后台起');

@@ -124,9 +124,9 @@ export interface JournalEvent {
   at: number;
   /** 函数（跟踪点）还是事件（Cordis 发的事件）。 */
   kind: '函数' | '事件';
-  /** 函数行是“模块.函数”，如 Bot.receive；事件行是事件名，如 session/message。 */
+  /** 函数行是“模块.函数”，如 Bot.receive；事件行是事件名，如 session/new-message。 */
   name: string;
-  /** 事件行：挨个问、通知；函数行是空的。 */
+  /** 事件行的 Cordis 发法，旧记录可能是显示文字。函数行为空。 */
   mode: string;
   /** 事件行：听的人（插件名）；函数行是空的。 */
   listeners: string[];
@@ -200,8 +200,8 @@ export class Journal extends cordis.Service {
   private listen(): void {
     const ctx = this.ctx;
     ctx.on('trace', (where, text, code, vars) => {
-      const session = vars['会话'] ?? vars['session'];
-      const bot = vars['机器人'];
+      const session = vars['session'] ?? vars['会话'];
+      const bot = vars['bot'] ?? vars['机器人'];
       let botValue: string | null = null;
       if (typeof bot === 'string') {
         botValue = bot;
@@ -211,7 +211,7 @@ export class Journal extends cordis.Service {
         sessionValue = session;
       }
       //M 2026-11-16：跟踪点带着“消息号”的（Timeline.insert、WebApi.accept、Timeline.reply）也记进 message_id，/flow/ 按消息号收一条请求的轨迹要用。
-      const messageId = vars['消息号'];
+      const messageId = vars['messageId'] ?? vars['消息号'];
       let messageIdValue: number | null = null;
       if (typeof messageId === 'number' && Number.isSafeInteger(messageId)) {
         messageIdValue = messageId;
@@ -232,7 +232,7 @@ export class Journal extends cordis.Service {
       //G 查询流水或用量时不写流水，重复查看不会把查询本身记成运行步骤。
       if (READ_EVENT_NAMES.has(event)) return;
 
-      const line = traceUtils.dispatchLine(ctx, mode, event, args, VAR_MAX);
+      const line = traceUtils.buildDispatchLine(ctx, mode, event, args, VAR_MAX);
       this.record({
         kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '',
         site: traceUtils.getCallSite(['plugins/journal/']),
@@ -242,7 +242,7 @@ export class Journal extends cordis.Service {
 
     //M 简版 对话.md 只在没挂 filesMirror 时写：挂了它，它写那份完整的。filesMirror 是可选的服务，ctx.get 现取。
     const mirrorless = (): boolean => ctx.get('filesMirror') === undefined;
-    ctx.on('session/message', (session, message) => {
+    ctx.on('session/new-message', (session, message) => {
       if (mirrorless()) {
         markdown.append(ctx.resources, session, message);
       }
@@ -273,8 +273,8 @@ export class Journal extends cordis.Service {
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     //M 把跟踪行连同截短后的内容和变量写入数据库，供轨迹查询。
     this.ctx.resources.db.query(sql).run(
-      now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.chars(line.text, TEXT_MAX_CHARS),
-      cut.chars(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId, shrink(line.vars));
+      now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.clipTextWithLength(line.text, TEXT_MAX_CHARS),
+      cut.clipTextWithLength(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId, shrink(line.vars));
 
     //G 一天之内删过了 → 不再删。
     if (now - this.prunedAt < DAY_MS) return;
@@ -285,8 +285,8 @@ export class Journal extends cordis.Service {
       .query('DELETE FROM journal_lines WHERE at < ?')
       .run(now - this.keepDays * DAY_MS);
     //T 跟踪：删过期的行。
-    const vars = { 删了几条: gone.changes, 留几天: this.keepDays };
-    this.ctx.emit('trace', 'Journal.record', '一天一次：删掉过期的跟踪行', 'DELETE FROM journal_lines WHERE at < ?', vars);
+    const vars = { deletedCount: gone.changes, retentionDays: this.keepDays };
+    this.ctx.emit('trace', 'Journal.record', 'trace.journal.prune', 'DELETE FROM journal_lines WHERE at < ?', vars);
   }
 
   /**
@@ -432,7 +432,7 @@ function shrink(data: Record<string, unknown>): string {
   if (json.length <= DATA_MAX_CHARS) return json;
 
   //M 持久化定长预览与截断标志，让读取方知道原有数据未全部保留。
-  return JSON.stringify({ truncated: true, preview: cut.chars(json, DATA_MAX_CHARS) });
+  return JSON.stringify({ truncated: true, preview: cut.clipTextWithLength(json, DATA_MAX_CHARS) });
 }
 
 
@@ -503,7 +503,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
         return { ok: true, lines };
       } catch (error) {
         //G 查询失败时回空列表并说明原因。
-        const detail = textModule.getMessage(error);
+        const detail = textModule.getErrorMessage(error);
         return { ok: false, lines: [], error: detail };
       }
     }

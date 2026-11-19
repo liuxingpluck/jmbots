@@ -121,7 +121,7 @@ describe('关系图配置与路由合并回归', () => {
     let onRequest: ((req: ChatRequest) => void) | undefined;
     const fakeCtx = {
       on(event: string, listener: (req: ChatRequest) => void): void {
-        if (event === 'session/request') {
+        if (event === 'session/before-model') {
           onRequest = listener;
         }
       },

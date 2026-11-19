@@ -40,7 +40,7 @@ async function setup(withBotReply = true, extraConfig: string[] = []) {
   ctx.provide('resources', {
     root,
     config: { providers: { mock: {} } },
-    dir: (...segments: string[]) => {
+    ensureRuntimeDir: (...segments: string[]) => {
       const target = path.join(root, ...segments);
       fs.mkdirSync(target, { recursive: true });
       return target;
@@ -298,9 +298,9 @@ test.each([
   const restart = mockRestart(order);
   const stoppedTrace = Promise.withResolvers<string>();
   ctx.on('trace', (name, text, _code, vars) => {
-    if (name !== 'Settings.restart' || text !== '重启停止，保留原进程') return;
+    if (name !== 'Settings.restart' || text !== 'trace.settings.restartCancelled') return;
 
-    stoppedTrace.resolve(String(vars['原因']));
+    stoppedTrace.resolve(String(vars['reason']));
   });
   ctx.on('http/request', (request) => { order.push(request.action); });
   events.onRequestEvent(ctx, 'http/request', 'http/result', (request) => {

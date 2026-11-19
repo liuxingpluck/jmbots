@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
-import { getSafeName, stampId } from '../../utils/Names.ts';
+import { getSafeName, createTimestampId } from '../../utils/Names.ts';
 import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 
@@ -117,8 +117,8 @@ class ImageGen {
       background: (args['background'] as string | undefined) ?? 'auto', output_format: 'png',
     };
     //T 跟踪：发请求前。
-    this.ctx.emit('trace', 'ImageGen.generate', '发生图请求', 'fetch(images/generations)',
-      { 模型: model.name, 尺寸: body.size, 背景: body.background, 提示词: prompt.slice(0, 40) });
+    this.ctx.emit('trace', 'ImageGen.generate', 'trace.imageGen.request', 'fetch(images/generations)',
+      { model: model.name, size: body.size, background: body.background, prompt: prompt.slice(0, 40) });
 
     //G 停止信号和 5 分钟超时合成一个：哪个先到都断开 fetch（被停下时 fetch 抛 AbortError，骨架把它记成工具出错）。
     const limit = (): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]);
@@ -153,12 +153,12 @@ class ImageGen {
     if (typeof args['name'] === 'string' && args['name'] !== '') {
       named = args['name'];
     }
-    const file = path.join(workspace, `${getSafeName(named)}_${stampId()}.png`);
+    const file = path.join(workspace, `${getSafeName(named)}_${createTimestampId()}.png`);
     fs.writeFileSync(file, bytes);
 
-    //T 跟踪：存好。大小写成字（utils/Text.ts 的 getSizeText），跟踪和交回的话共用。
-    const sizeText = textModule.getSizeText(bytes.length);
-    this.ctx.emit('trace', 'ImageGen.generate', '存好了', 'fs.writeFileSync', { 文件: file, 大小: sizeText });
+    //T 跟踪：存好。大小写成字（utils/Text.ts 的 formatByteSize），跟踪和交回的话共用。
+    const sizeText = textModule.formatByteSize(bytes.length);
+    this.ctx.emit('trace', 'ImageGen.generate', 'trace.imageGen.saved', 'fs.writeFileSync', { file: file, size: sizeText });
     return `已生成：@${file}（${sizeText}）。要发给用户就在 reply 里写上这个 @路径。`;
   }
 }
@@ -174,7 +174,7 @@ class ImageGen {
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 挂载时校验插件配置的生图模型，工具执行时使用这一结果。
-  const own = checks.record(config ?? {}, 'image-gen.config');
+  const own = checks.checkRecord(config ?? {}, 'image-gen.config');
   const value = own['image_model'];
   const providers = ctx.resources.config.providers;
   const model = readModel(value, providers);

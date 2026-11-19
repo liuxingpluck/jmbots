@@ -2,9 +2,9 @@
   {
     "id": "r-resources",
     "parent": null,
-    "title": "src7/Resources.ts（共 388 行）",
-    "summary": "资源服务：读并校验 config.yaml、开数据库、建 pi 供应商、给出运行时目录下的文件夹；config.yaml 改了会热重载，失败继续用旧配置。",
-    "body": "## src7/Resources.ts 分块目录（共 388 行，每组 3～5 块）\n\n- 导入与类型（L1–L87）：文件头、导入、给 ctx 加 resources 和 config/changed 事件，再定配置与插件状态的类型。\n- 配置与快照（L88–L178）：插件问题清单、骨架配置项、三种协议表和配置快照，以及启动、重读共用的 readConfig。\n- 类与构造（L179–L241）：Resources 的字段（root、配置快照、db、models、pluginStatus）和构造函数：读配置、开库、建供应商、开始监听。\n- 配置热重载（L242–L314）：改 config.yaml 后：合并多次文件通知，重读校验，只更新变了的供应商，再发 config/changed；失败继续用旧配置。\n- 对外的方法（L315–L388）：getAuth 每次请求时按当前配置取密钥，dir 取运行时目录下的文件夹（ensureDir），getModel 拼 pi 的模型对象。\n\n执行顺序：Main.ts 的 [L80](#lines=Main.json&line=80) 挂 Resources → [L216 构造函数](#lines=Resources.json&line=216)（readConfig → 开库 → updateProviders → watchConfig）→ 之后 Sessions.chat 调 [L359 getModel](#lines=Resources.json&line=359)，插件随时调 [L347 dir](#lines=Resources.json&line=347)；Main.ts 挂插件时往 [L207 pluginStatus](#lines=Resources.json&line=207) 写；改了 config.yaml → [L272 watchConfig](#lines=Resources.json&line=272) → [L294 reloadConfig](#lines=Resources.json&line=294) → 发 config/changed。",
+    "title": "src7/Resources.ts（共 457 行）",
+    "summary": "资源服务：运行时目录里的东西都归它管。读 config.yaml 并校验、开数据库、向 pi 注册供应商、给出运行时目录下的文件夹、拼出 pi 的模型对象；配置改动校验通过后更新供应商和密钥。",
+    "body": "## src7/Resources.ts（共 457 行）分块目录\n\n分组：\n\n- 文件头、事件与小类型（L1–L124）：导入、config/changed 事件、配置项、插件项和挂载状态的类型，以及“没挂上”的说明函数。\n- 配置的形状与读取（L125–L192）：骨架用到的配置项、三种协议表、配置快照和读取校验。\n- Resources 类（L193–L457）：字段、构造、供应商更新、配置监听与重读、鉴权、目录、拼模型对象。\n\n执行顺序：Main.ts 挂 Resources（[Main.ts L84](#lines=Main.json&line=84)）→ 构造函数：读首份配置、开库、建供应商、监听配置文件 → Tools、Sessions 以及所有插件都从 `ctx.resources` 取配置、数据库、文件夹 → 会话每一步 Sessions.chat 用 getModel 取模型对象，经 models 发请求 → config.yaml 改了：防抖后 reloadConfig 重读、更新供应商、发 config/changed。\n",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -12,9 +12,9 @@
   {
     "id": "r-resources-g1",
     "parent": "r-resources",
-    "title": "L1–L87 导入与类型",
-    "summary": "文件头、导入、给 ctx 加 resources 和 config/changed 事件，再定配置与插件状态的类型。",
-    "body": "## 导入与类型\n\n- L1–L22 导入与文件头：文件头说清资源服务管什么，再导入 Node、sqlite、pi、Cordis、YAML 和几个工具。\n- L23–L37 声明服务与事件：给 ctx 加 resources 服务，给 Events 加 config/changed。\n- L38–L61 定入口和供应商：入口传进来的运行时目录，和 config.yaml 里一家供应商校验后的样子。\n- L62–L87 定插件项与状态：plugins 段里的一项，和一个插件这次启动的挂载结果。",
+    "title": "L1–L124 文件头、事件与小类型",
+    "summary": "导入、config/changed 事件、配置项、插件项和挂载状态的类型，以及“没挂上”的说明函数。",
+    "body": "## 文件头、事件与小类型\n\n- L1–L24 文件头和导入：文件头说清资源管什么：运行时目录里的东西、配置、数据库、pi 的供应商；导入 Node、pi、Cordis、yaml 和工具。\n- L25–L41 给 ctx 加 resources、声明 config/changed：给 Context 加 resources 服务；声明配置重读成功后的通知 config/changed。\n- L42–L48 给 Resources 插件的配置：只有一项：运行时目录的绝对路径，入口校验好才传进来。\n- L49–L71 一家供应商的配置 ProviderConfig：请求地址、密钥、协议、手写的模型、兼容设置；都是 checkConfig 校验后的。\n- L72–L80 插件项 PluginEntry：plugins 段里的一项：名字和给它的配置；写了 disabled: true 的已经去掉。\n- L81–L97 挂载结果 PluginStatus：一个插件这次启动：挂上没有、开工没有、缺哪些服务、没挂上的原因、它要的服务。\n- L98–L124 没挂上、没开工的说明 getPluginProblems：把状态表里没挂上的、挂上了却没开工的，各写成一句人话，给 /api/health 的 problems。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -22,9 +22,9 @@
   {
     "id": "r-resources-01",
     "parent": "r-resources-g1",
-    "title": "L1–L22 导入与文件头",
-    "summary": "文件头说清资源服务管什么，再导入 Node、sqlite、pi、Cordis、YAML 和几个工具。",
-    "body": "**行号：L1–L22**\n\n### 代码原文\n```ts\n  1  /**\n  2   * 资源：运行时目录里的东西都归它管。\n  3   * 读 config.yaml、开数据库、向 pi 注册供应商、给出运行时目录下的文件夹。\n  4   * 配置改动通过校验后更新供应商和密钥。config.yaml 只读，不打印配置原文。\n  5   */\n  6  import * as fs from 'node:fs';\n  7  import * as path from 'node:path';\n  8  import * as util from 'node:util';\n  9  import { Database } from 'bun:sqlite';\n 10  import * as piAi from '@earendil-works/pi-ai';\n 11  import * as piAnthropic from '@earendil-works/pi-ai/api/anthropic-messages.lazy';\n 12  import * as piCompletions from '@earendil-works/pi-ai/api/openai-completions.lazy';\n 13  import * as piResponses from '@earendil-works/pi-ai/api/openai-responses.lazy';\n 14  import * as cordis from 'cordis';\n 15  import * as yaml from 'yaml';\n 16  import type { Thinking } from './Sessions.ts';\n 17  import * as checks from './utils/Checks.ts';\n 18  import * as filesModule from './utils/Files.ts';\n 19  import * as textModule from './utils/Text.ts';\n 20  import * as utils from './utils/index.ts';\n 21  \n 22  \n```\n\n### 解释\n- L1–L5：文件头：运行时目录里的东西归它管：\n  - 读 config.yaml、开数据库\n  - 向 pi 注册供应商、给出运行时目录下的文件夹\n  - 配置改动通过校验后更新供应商和密钥；config.yaml 只读，不打印原文。\n- L6–L8：Node 内置：fs（读文件、监听目录）、path、util（isDeepStrictEqual 比较新旧配置）。\n- L9：Bun 自带的 sqlite `Database`。\n- L10–L13：pi 本体和三种协议的懒加载实现（anthropic-messages、openai-completions、openai-responses）。\n- L14–L15：Cordis 和 yaml。\n- L16：只拿 Sessions.ts 的 `Thinking` 类型。\n- L17–L20：工具模块：Checks（checkConfig、MODEL_DEFAULTS）、Files（ensureDir）、Text（getMessage）、utils（eachEntry）。\n- L21–L22：空行。\n\n### 这段代码调用了\n- `Thinking`（[Sessions.ts L132](#lines=Sessions.json&line=132) · 骨架）—— 思考档的类型（这里只用类型）。\n- `checks.checkConfig`（[Checks.ts:121](src7/utils/Checks.ts:121) · 骨架工具）—— 校验 config.yaml 的骨架配置项，交回 JmbotsConfig。\n- `filesModule.ensureDir`（[Files.ts:47](src7/utils/Files.ts:47) · 骨架工具）—— 确保目录存在，没有就递归建好。\n- `utils.eachEntry`（[index.ts:44](src7/utils/index.ts:44) · 骨架工具）—— 挨个走对象的键和值。\n- `textModule.getMessage`（[Text.ts:13](src7/utils/Text.ts:13) · 骨架工具）—— 把抛出来的东西变成一句报错文字。",
+    "title": "L1–L24 文件头和导入",
+    "summary": "文件头说清资源管什么：运行时目录里的东西、配置、数据库、pi 的供应商；导入 Node、pi、Cordis、yaml 和工具。",
+    "body": "**行号：L1–L24**\n\n### 代码原文\n```ts\n  1  /**\n  2   * 资源：运行时目录里的东西都归它管。\n  3   * 读 config.yaml、开数据库、向 pi 注册供应商、给出运行时目录下的文件夹。\n  4   * 配置改动通过校验后更新供应商和密钥。config.yaml 只读，不打印配置原文。\n  5   */\n  6  import * as fs from 'node:fs';\n  7  import * as path from 'node:path';\n  8  import * as util from 'node:util';\n  9  import type { TraceLanguage } from '../web/src/locales/Trace.ts';\n 10  import { Database } from 'bun:sqlite';\n 11  import * as piAi from '@earendil-works/pi-ai';\n 12  import * as piAnthropic from '@earendil-works/pi-ai/api/anthropic-messages.lazy';\n 13  import * as piCompletions from '@earendil-works/pi-ai/api/openai-completions.lazy';\n 14  import * as piResponses from '@earendil-works/pi-ai/api/openai-responses.lazy';\n 15  import * as piCatalog from '@earendil-works/pi-ai/providers/all';\n 16  import * as cordis from 'cordis';\n 17  import * as yaml from 'yaml';\n 18  import type { Thinking } from './Sessions.ts';\n 19  import * as checks from './utils/Checks.ts';\n 20  import * as filesModule from './utils/Files.ts';\n 21  import * as textModule from './utils/Text.ts';\n 22  import * as utils from './utils/index.ts';\n 23  \n 24  \n```\n\n### 解释\n- L1–L5：文件头：读 config.yaml、开数据库、向 pi 注册供应商、给出运行时目录下的文件夹；配置改动校验通过后更新供应商和密钥；config.yaml 只读，不打印原文。\n- L6–L22：导入 Node 文件和路径、bun:sqlite 的 Database、pi-ai 和三种协议的懒加载入口、cordis、yaml、校验和文件工具。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -32,9 +32,9 @@
   {
     "id": "r-resources-02",
     "parent": "r-resources-g1",
-    "title": "L23–L37 声明服务与事件",
-    "summary": "给 ctx 加 resources 服务，给 Events 加 config/changed。",
-    "body": "**行号：L23–L37**\n\n### 代码原文\n```ts\n 23  declare module 'cordis' {\n 24    interface Context {\n 25      /** 资源服务，实现在 src7/Resources.ts。 */\n 26      resources: Resources;\n 27    }\n 28    interface Events {\n 29      /**\n 30       * Resources 成功应用 config.yaml 更新后发出。当前无内置监听者。\n 31       * @param keys 新增、删除或内容有变化的顶层键名。\n 32       */\n 33      'config/changed'(keys: string[]): void;\n 34    }\n 35  }\n 36  \n 37  \n```\n\n### 解释\n- L23–L27：Context 上加 `resources: Resources`，以后用 ctx.resources 取。\n- L28–L33：Events 上加 `config/changed(keys)`：成功应用 config.yaml 更新后发，keys 是有变化的顶层键名；注释写明当前没有内置监听者。\n- L34–L35：闭合；L36–L37 空行。",
+    "title": "L25–L41 给 ctx 加 resources、声明 config/changed",
+    "summary": "给 Context 加 resources 服务；声明配置重读成功后的通知 config/changed。",
+    "body": "**行号：L25–L41**\n\n### 代码原文\n```ts\n 25  declare module 'cordis' {\n 26    interface Context {\n 27      /** 资源服务，实现在 src7/Resources.ts。 */\n 28      resources: Resources;\n 29    }\n 30    interface Events {\n 31      /**\n 32       * Resources 成功应用 config.yaml 更新后发出。当前无内置监听者。\n 33       * 谁发：src7/Resources.ts 的 Resources.reloadConfig\n 34       * 谁接：暂无\n 35       * @param keys 新增、删除或内容有变化的顶层键名。\n 36       */\n 37      'config/changed'(keys: string[]): void;\n 38    }\n 39  }\n 40  \n 41  \n```\n\n### 解释\n- L28：`ctx.resources` 就是下面的 Resources 类。\n- L37：事件签名：带上新增、删除或内容有变化的顶层键名；只是通知，不能拦。\n\n### 事件 config/changed：谁发、谁在听\n- 谁发：`Resources.reloadConfig`（L350），config.yaml 重读并校验通过之后。\n- 谁在听：暂无（grep 现查，没有插件监听）。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -42,9 +42,9 @@
   {
     "id": "r-resources-03",
     "parent": "r-resources-g1",
-    "title": "L38–L61 定入口和供应商",
-    "summary": "入口传进来的运行时目录，和 config.yaml 里一家供应商校验后的样子。",
-    "body": "**行号：L38–L61**\n\n### 代码原文\n```ts\n 38  /** 入口校验好以后传进来的。 */\n 39  export interface ResourcesConfig {\n 40    /** 运行时目录的绝对路径。 */\n 41    dir: string;\n 42  }\n 43  \n 44  \n 45  /** config.yaml 里的一家供应商，校验后。 */\n 46  export interface ProviderConfig {\n 47    /** 请求地址，末尾不带斜杠。 */\n 48    baseUrl: string;\n 49    /** 请求密钥；空的表示本地服务不要密钥。 */\n 50    apiKey: string;\n 51    /** 请求协议。 */\n 52    api: 'openai-completions' | 'openai-responses' | 'anthropic-messages';\n 53    /** 手写的模型：模型 ID → 上下文多长、最多输出多少、会不会思考、收不收图片（vision: true 收）。没写的模型用保守值。 */\n 54    models: Record<string, { contextWindow: number; maxTokens: number; reasoning: boolean; input: ('text' | 'image')[] }>;\n 55    /** 发请求时的兼容设置（compat 段），所有模型共用；原样交给 pi。 */\n 56    compat: Record<string, unknown>;\n 57    /** 个别模型再加的兼容设置（model_compat 段）：模型 ID → 设置，盖在 compat 上面。 */\n 58    modelCompat: Record<string, Record<string, unknown>>;\n 59  }\n 60  \n 61  \n```\n\n### 解释\n- L38–L42：`ResourcesConfig`：只有 `dir`，运行时目录的绝对路径，由 Main.ts 校验好传进来。\n- L45–L59：`ProviderConfig`：\n  - `baseUrl` 请求地址（末尾无斜杠）、`apiKey`（空表示本地服务不要密钥）\n  - `api` 三种协议之一\n  - `models` 手写的模型参数，没写的用保守值\n  - `compat` 全部模型共用的兼容设置，`modelCompat` 个别模型再盖一层。\n- L43–L44、L60–L61：空行。",
+    "title": "L42–L48 给 Resources 插件的配置",
+    "summary": "只有一项：运行时目录的绝对路径，入口校验好才传进来。",
+    "body": "**行号：L42–L48**\n\n### 代码原文\n```ts\n 42  /** 入口校验好以后传进来的。 */\n 43  export interface ResourcesConfig {\n 44    /** 运行时目录的绝对路径。 */\n 45    dir: string;\n 46  }\n 47  \n 48  \n```\n\n### 解释\n- L45：运行时目录的绝对路径。\n\n### 谁调它\n- 骨架：Main.ts 挂 Resources 时传 `{ dir: args.dataDir }`（[Main.ts L84](#lines=Main.json&line=84)）。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -52,9 +52,39 @@
   {
     "id": "r-resources-04",
     "parent": "r-resources-g1",
-    "title": "L62–L87 定插件项与状态",
-    "summary": "plugins 段里的一项，和一个插件这次启动的挂载结果。",
-    "body": "**行号：L62–L87**\n\n### 代码原文\n```ts\n 62  /** config.yaml 的 plugins 段里的一项，校验后。写了 disabled: true 的已经去掉了。 */\n 63  export interface PluginEntry {\n 64    /** 自带插件的名字（plugins/ 下的文件夹名），或者别人写的插件的文件夹路径（相对路径从运行时目录算）。 */\n 65    name: string;\n 66    /** 给这个插件的配置；没写是空对象。插件自己校验。 */\n 67    config: unknown;\n 68  }\n 69  \n 70  \n 71  /** 一个插件这次启动的挂载结果。Main.ts 写，健康检查和 /flow/ 读。没尝试挂的不在里面。 */\n 72  export interface PluginStatus {\n 73    /** 配置里的插件名。 */\n 74    name: string;\n 75    /** apply 有没有成功跑完。 */\n 76    mounted: boolean;\n 77    /** inject 的服务是不是都有了（没人提供就会一直等着，等于没开工）。 */\n 78    started: boolean;\n 79    /** 还缺哪些服务。 */\n 80    missing: string[];\n 81    /** 没挂上时的原因；挂上了是空串。 */\n 82    error: string;\n 83    /** 它声明要的服务。 */\n 84    inject: string[];\n 85  }\n 86  \n 87  \n```\n\n### 解释\n- L62–L68：`PluginEntry`：`name`（自带插件名或外部文件夹路径）和 `config`（给它的那段配置，插件自己校验）；写了 disabled 的已去掉。\n- L71–L85：`PluginStatus`：Main.ts 写，健康检查和 /flow/ 读：\n  - `mounted` apply 有没有跑完\n  - `started` inject 的服务是不是都有了\n  - `missing` 还缺哪些服务\n  - `error` 没挂上的原因（超时时是“启动超过 N 秒……”）\n  - `inject` 它声明要的服务\n- L69–L70、L86–L87：空行。",
+    "title": "L49–L71 一家供应商的配置 ProviderConfig",
+    "summary": "请求地址、密钥、协议、手写的模型、兼容设置；都是 checkConfig 校验后的。",
+    "body": "**行号：L49–L71**\n\n### 代码原文\n```ts\n 49  /** config.yaml 里的一家供应商，校验后。 */\n 50  export interface ProviderConfig {\n 51    /** 请求地址，末尾不带斜杠。 */\n 52    baseUrl: string;\n 53    /** 请求密钥；空的表示本地服务不要密钥。 */\n 54    apiKey: string;\n 55    /** 请求协议。 */\n 56    api: 'openai-completions' | 'openai-responses' | 'anthropic-messages';\n 57    /** 手写的模型。窗口、输入类型和思考映射经过配置入口校验。 */\n 58    models: Record<string, {\n 59      contextWindow: number;\n 60      maxTokens: number;\n 61      reasoning: boolean;\n 62      input: ('text' | 'image')[];\n 63      thinkingLevelMap?: piAi.ThinkingLevelMap;\n 64    }>;\n 65    /** 发请求时的兼容设置（compat 段），所有模型共用；原样交给 pi。 */\n 66    compat: Record<string, unknown>;\n 67    /** 个别模型再加的兼容设置（model_compat 段）：模型 ID → 设置，盖在 compat 上面。 */\n 68    modelCompat: Record<string, Record<string, unknown>>;\n 69  }\n 70  \n 71  \n```\n\n### 解释\n- L52、L54、L56：地址、密钥（空表示本地服务不要密钥）、请求协议。\n- L58–L64：手写的模型：窗口、最大输出、是否思考、输入类型、思考档映射。\n- L66、L68：兼容设置，供应商共用的和个别模型再加的。\n\n### 谁调它\n- 骨架：Checks.checkConfig 生成它；Resources.updateProviders 和 getModel 读它。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-05",
+    "parent": "r-resources-g1",
+    "title": "L72–L80 插件项 PluginEntry",
+    "summary": "plugins 段里的一项：名字和给它的配置；写了 disabled: true 的已经去掉。",
+    "body": "**行号：L72–L80**\n\n### 代码原文\n```ts\n 72  /** config.yaml 的 plugins 段里的一项，校验后。写了 disabled: true 的已经去掉了。 */\n 73  export interface PluginEntry {\n 74    /** 自带插件的名字（plugins/ 下的文件夹名），或者别人写的插件的文件夹路径（相对路径从运行时目录算）。 */\n 75    name: string;\n 76    /** 给这个插件的配置；没写是空对象。插件自己校验。 */\n 77    config: unknown;\n 78  }\n 79  \n 80  \n```\n\n### 解释\n- L75：自带插件名，或外部插件的文件夹路径。\n- L77：给这个插件的配置，插件自己校验。\n\n### 谁调它\n- 骨架：Main.ts 循环里一项项取（[Main.ts L148](#lines=Main.json&line=148)）。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-06",
+    "parent": "r-resources-g1",
+    "title": "L81–L97 挂载结果 PluginStatus",
+    "summary": "一个插件这次启动：挂上没有、开工没有、缺哪些服务、没挂上的原因、它要的服务。",
+    "body": "**行号：L81–L97**\n\n### 代码原文\n```ts\n 81  /** 一个插件这次启动的挂载结果。Main.ts 写，健康检查和 /flow/ 读。没尝试挂的不在里面。 */\n 82  export interface PluginStatus {\n 83    /** 配置里的插件名。 */\n 84    name: string;\n 85    /** apply 有没有成功跑完。 */\n 86    mounted: boolean;\n 87    /** inject 的服务是不是都有了（没人提供就会一直等着，等于没开工）。 */\n 88    started: boolean;\n 89    /** 还缺哪些服务。 */\n 90    missing: string[];\n 91    /** 没挂上时的原因；挂上了是空串。 */\n 92    error: string;\n 93    /** 它声明要的服务。 */\n 94    inject: string[];\n 95  }\n 96  \n 97  \n```\n\n### 解释\n- L86、L88：apply 跑完了没有；inject 的服务是不是都有了。\n- L90、L92、L94：缺什么、为什么没挂上、声明要的服务。\n\n### 谁调它\n- 骨架：Main.ts 写（[Main.ts L108](#lines=Main.json&line=108)）；http 插件的健康检查、教程页读。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-07",
+    "parent": "r-resources-g1",
+    "title": "L98–L124 没挂上、没开工的说明 getPluginProblems",
+    "summary": "把状态表里没挂上的、挂上了却没开工的，各写成一句人话，给 /api/health 的 problems。",
+    "body": "**行号：L98–L124**\n\n### 代码原文\n```ts\n 98  /**\n 99   * 没挂上、没开工的说明，给 /api/health 的 problems。\n100   * @param status 这次启动实际尝试挂过的插件。\n101   */\n102  export function getPluginProblems(status: PluginStatus[]): string[] {\n103    const problems: string[] = [];\n104    for (const item of status) {\n105      //M 没挂上：有原因就带上原因。\n106      if (!item.mounted) {\n107        let problem = `插件 ${item.name} 没挂上`;\n108        if (item.error !== '') {\n109          problem += `：${item.error}`;\n110        }\n111        problems.push(problem);\n112        continue;\n113      }\n114  \n115      //M 挂上了却没开工：写明缺哪些服务。\n116      if (!item.started) {\n117        const names = item.missing.join('、');\n118        problems.push(`插件 ${item.name} 没开工：它要用的 ${names} 没人提供`);\n119      }\n120    }\n121    return problems;\n122  }\n123  \n124  \n```\n\n### 解释\n- L106–L113：没挂上：有原因就带上原因。\n- L116–L119：挂上了却没开工：写明缺哪些服务。\n\n### 谁调它\n- 插件：http 插件的健康检查接口（`/api/health`）调它，把交回的句子放进 problems。骨架里没有调用方。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -62,39 +92,9 @@
   {
     "id": "r-resources-g2",
     "parent": "r-resources",
-    "title": "L88–L178 配置与快照",
-    "summary": "插件问题清单、骨架配置项、三种协议表和配置快照，以及启动、重读共用的 readConfig。",
-    "body": "## 配置与快照\n\n- L88–L114 列出插件问题：把没挂上、没开工的插件写成一句句说明。\n- L115–L138 定骨架配置项：checkConfig 交回的骨架配置：默认模型、供应商、插件、挂载等待上限、思考档、重试。\n- L139–L157 协议表和快照：三种协议对应的 pi 实现；配置快照的形状；两个常量。\n- L158–L178 读取并校验配置：启动和重读共用：读文件、解析 YAML、校验，错误里不带原文。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-05",
-    "parent": "r-resources-g2",
-    "title": "L88–L114 列出插件问题",
-    "summary": "把没挂上、没开工的插件写成一句句说明。",
-    "body": "**行号：L88–L114**\n\n### 代码原文\n```ts\n 88  /**\n 89   * 没挂上、没开工的说明，给 /api/health 的 problems。\n 90   * @param status 这次启动实际尝试挂过的插件。\n 91   */\n 92  export function getPluginProblems(status: PluginStatus[]): string[] {\n 93    const problems: string[] = [];\n 94    for (const item of status) {\n 95      //M 没挂上：有原因就带上原因。\n 96      if (!item.mounted) {\n 97        let problem = `插件 ${item.name} 没挂上`;\n 98        if (item.error !== '') {\n 99          problem += `：${item.error}`;\n100        }\n101        problems.push(problem);\n102        continue;\n103      }\n104  \n105      //M 挂上了却没开工：写明缺哪些服务。\n106      if (!item.started) {\n107        const names = item.missing.join('、');\n108        problems.push(`插件 ${item.name} 没开工：它要用的 ${names} 没人提供`);\n109      }\n110    }\n111    return problems;\n112  }\n113  \n114  \n```\n\n### 解释\n- L88–L91：文档注释：给 /api/health 的 problems；参数是这次实际尝试挂过的插件。\n- L92–L94：`getPluginProblems(status)`，逐个看。\n- L95–L103：没挂上：写“插件 X 没挂上”，有原因就接上原因；continue。\n- L105–L109：挂上了却没开工：写明缺哪些服务（用“、”连）。\n- L110–L112：交回 problems；L113–L114 空行。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-06",
-    "parent": "r-resources-g2",
-    "title": "L115–L138 定骨架配置项",
-    "summary": "checkConfig 交回的骨架配置：默认模型、供应商、插件、挂载等待上限、思考档、重试。",
-    "body": "**行号：L115–L138**\n\n### 代码原文\n```ts\n115  /** config.yaml 里骨架用到的那几项，校验后。由 utils/Checks.ts 的 checkConfig 交回。 */\n116  export interface JmbotsConfig {\n117    /** 新会话默认用的模型，供应商名/模型 ID。 */\n118    defaultModel: string;\n119    /** 各家供应商：名字 → 地址、密钥、协议、模型。 */\n120    providers: Record<string, ProviderConfig>;\n121    /** 要挂哪些插件，照写的先后挂。 */\n122    plugins: PluginEntry[];\n123    /** 开工前最多等待单个插件挂载的毫秒数。 */\n124    pluginMountTimeoutMs: number;\n125    /** 新会话默认的思考档（models.thinking）。 */\n126    thinking: Thinking;\n127    /** 模型请求出错怎么重试（models.retry）。 */\n128    retry: {\n129      /** 出错以后最多再试几次。 */\n130      times: number;\n131      /** 第一次重试前等多久，毫秒；以后每次翻倍。 */\n132      waitMs: number;\n133      /** 一次请求最多等多久，毫秒。 */\n134      timeoutMs: number;\n135    };\n136  }\n137  \n138  \n```\n\n### 解释\n- L115–L116：`JmbotsConfig`，由 utils/Checks.ts 的 checkConfig 交回。\n- L117–L122：`defaultModel`（供应商名/模型 ID）、`providers`、`plugins`（照写的先后挂）。\n- L123–L124：`pluginMountTimeoutMs`：开工前最多等单个插件挂载多少毫秒，Main.ts 的挂载循环用它（配置名 plugin_mount_timeout_ms，默认 15000）。\n- L125–L126：`thinking` 新会话默认的思考档。\n- L127–L135：`retry`：最多再试几次、第一次重试前等多久（以后翻倍）、一次请求最多等多久。\n- L136：闭合；L137–L138 空行。\n\n### 这段代码调用了\n- `checks.checkConfig`（[Checks.ts:121](src7/utils/Checks.ts:121) · 骨架工具）—— 生成这份配置的校验函数。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-07",
-    "parent": "r-resources-g2",
-    "title": "L139–L157 协议表和快照",
-    "summary": "三种协议对应的 pi 实现；配置快照的形状；两个常量。",
-    "body": "**行号：L139–L157**\n\n### 代码原文\n```ts\n139  /** 三种协议对应的 pi 实现，和 learn/Agent.ts 同一套懒加载入口。 */\n140  const CHAT_APIS: Record<ProviderConfig['api'], () => ReturnType<typeof piCompletions.openAICompletionsApi>> = {\n141    'openai-completions': piCompletions.openAICompletionsApi,\n142    'openai-responses': piResponses.openAIResponsesApi,\n143    'anthropic-messages': piAnthropic.anthropicMessagesApi,\n144  };\n145  \n146  \n147  /** 校验后的骨架配置和来自同一份 YAML 的原始对象。 */\n148  interface ConfigSnapshot {\n149    /** 骨架直接使用的配置。 */\n150    config: JmbotsConfig;\n151    /** 插件读取的配置原文对象，包含密钥。 */\n152    raw: Record<string, unknown>;\n153  }\n154  \n155  const CONFIG_FILE = 'config.yaml';\n156  const CONFIG_RELOAD_DELAY_MS = 500;\n157  \n```\n\n### 解释\n- L139–L144：`CHAT_APIS`：协议名 → pi 的懒加载入口，和 learn/Agent.ts 同一套。\n- L147–L153：`ConfigSnapshot`：`config` 骨架用的校验后配置，`raw` 给插件读的原文对象（含密钥）；两者来自同一份 YAML。\n- L155：`CONFIG_FILE = 'config.yaml'`。\n- L156：`CONFIG_RELOAD_DELAY_MS = 500`：文件通知后等 500 毫秒再重读，合并一次保存触发的多次通知。\n- L145–L146、L154、L157：空行。",
+    "title": "L125–L192 配置的形状与读取",
+    "summary": "骨架用到的配置项、三种协议表、配置快照和读取校验。",
+    "body": "## 配置的形状与读取\n\n- L125–L152 骨架用的配置项 JmbotsConfig：语言、默认模型、供应商、插件名单、挂载等待上限、会话缓存上限、思考档、重试规矩。\n- L153–L160 协议表 CHAT_APIS：三种请求协议各对应 pi 的一个懒加载实现。\n- L161–L171 配置快照和常量：快照 = 校验后的配置加原始对象；配置文件名和重读的防抖时间。\n- L172–L192 读取并校验配置 readConfig：读文件、解析 YAML（错误只留行号）、交给 checkConfig 校验一次，交回配置和原始对象。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -102,9 +102,39 @@
   {
     "id": "r-resources-08",
     "parent": "r-resources-g2",
-    "title": "L158–L178 读取并校验配置",
-    "summary": "启动和重读共用：读文件、解析 YAML、校验，错误里不带原文。",
-    "body": "**行号：L158–L178**\n\n### 代码原文\n```ts\n158  /** 从磁盘读取并校验配置，错误信息不含 YAML 原文。 */\n159  function readConfig(file: string): ConfigSnapshot {\n160    //M 启动和重读共用同一份入口校验。\n161    const yamlText = fs.readFileSync(file, 'utf8');\n162    const document = yaml.parseDocument(yamlText);\n163  \n164    //G YAML 解析错误会带出原文，错误里只保留行号。\n165    const broken = document.errors[0];\n166    if (broken !== undefined) {\n167      const line = String(broken.linePos?.[0].line ?? '?');\n168      throw new Error(`config.yaml 不是合法的 YAML（第 ${line} 行附近）`);\n169    }\n170  \n171    const written: unknown = document.toJSON();\n172    //M 交给 checkConfig 校验一次。顶层确认是对象后，插件仍可读取原始值。\n173    const config = checks.checkConfig(written);\n174    const raw = written as Record<string, unknown>;\n175    return { config, raw };\n176  }\n177  \n178  \n```\n\n### 解释\n- L158–L159：`readConfig(file): ConfigSnapshot`。\n- L160–L162：读文本，`yaml.parseDocument` 解析。\n- L164–L169：YAML 有错 → 只报“第几行附近”，不把原文带进错误。\n- L171–L175：转成对象，交给 checkConfig 校验一次；raw 留原值给插件。\n- L176：函数结束；L163、L170、L177–L178 空行。\n\n### 这段代码调用了\n- `fs.readFileSync`（node:fs · Node 或第三方）—— 同步读出 config.yaml 的文本。\n- `yaml.parseDocument`（yaml · Node 或第三方）—— 解析 YAML 文本，错误放在 document.errors 里。\n- `checks.checkConfig`（[Checks.ts:121](src7/utils/Checks.ts:121) · 骨架工具）—— 校验骨架配置项，不对就抛错。",
+    "title": "L125–L152 骨架用的配置项 JmbotsConfig",
+    "summary": "语言、默认模型、供应商、插件名单、挂载等待上限、会话缓存上限、思考档、重试规矩。",
+    "body": "**行号：L125–L152**\n\n### 代码原文\n```ts\n125  /** config.yaml 里骨架用到的那几项，校验后。由 utils/Checks.ts 的 checkConfig 交回。 */\n126  export interface JmbotsConfig {\n127    /** 控制台及文件跟踪点使用的语言。 */\n128    traceLanguage: TraceLanguage;\n129    /** 新会话默认用的模型，供应商名/模型 ID。 */\n130    defaultModel: string;\n131    /** 各家供应商：名字 → 地址、密钥、协议、模型。 */\n132    providers: Record<string, ProviderConfig>;\n133    /** 要挂哪些插件，照写的先后挂。 */\n134    plugins: PluginEntry[];\n135    /** 开工前最多等待单个插件挂载的毫秒数。 */\n136    pluginMountTimeoutMs: number;\n137    /** 内存里最多留几场打开过的会话（session_cache_max）；超了挪出最久没用、闲着的，见 Sessions.openedSessions。 */\n138    sessionCacheMax: number;\n139    /** 新会话默认的思考档（models.thinking）。 */\n140    thinking: Thinking;\n141    /** 模型请求出错怎么重试（models.retry）。 */\n142    retry: {\n143      /** 出错以后最多再试几次。 */\n144      times: number;\n145      /** 第一次重试前等多久，毫秒；以后每次翻倍。 */\n146      waitMs: number;\n147      /** 一次请求最多等多久，毫秒。 */\n148      timeoutMs: number;\n149    };\n150  }\n151  \n152  \n```\n\n### 解释\n- L130、L140：新会话默认用的模型和思考档。\n- L132、L134、L136：供应商、要挂的插件、单个插件最多等多久。\n- L138、L142–L149：会话缓存上限；模型请求出错怎么重试（次数、第一次等多久、一次最多等多久）。\n\n### 谁调它\n- 骨架：Sessions.chat 读 retry，Sessions.remember 读 sessionCacheMax，Sessions.create 读 defaultModel、thinking，Main.ts 读 plugins。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-09",
+    "parent": "r-resources-g2",
+    "title": "L153–L160 协议表 CHAT_APIS",
+    "summary": "三种请求协议各对应 pi 的一个懒加载实现。",
+    "body": "**行号：L153–L160**\n\n### 代码原文\n```ts\n153  /** 三种协议对应的 pi 实现，和 learn/Agent.ts 同一套懒加载入口。 */\n154  const CHAT_APIS: Record<ProviderConfig['api'], () => ReturnType<typeof piCompletions.openAICompletionsApi>> = {\n155    'openai-completions': piCompletions.openAICompletionsApi,\n156    'openai-responses': piResponses.openAIResponsesApi,\n157    'anthropic-messages': piAnthropic.anthropicMessagesApi,\n158  };\n159  \n160  \n```\n\n### 解释\n- L154–L158：openai-completions、openai-responses、anthropic-messages 三种协议各取一个 pi 的 API 工厂。\n\n### 谁调它\n- 骨架：Resources.updateProviders 按供应商的协议取工厂（[Resources.ts L285](#lines=Resources.json&line=285)）。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-10",
+    "parent": "r-resources-g2",
+    "title": "L161–L171 配置快照和常量",
+    "summary": "快照 = 校验后的配置加原始对象；配置文件名和重读的防抖时间。",
+    "body": "**行号：L161–L171**\n\n### 代码原文\n```ts\n161  /** 校验后的骨架配置和来自同一份 YAML 的原始对象。 */\n162  interface ConfigSnapshot {\n163    /** 骨架直接使用的配置。 */\n164    config: JmbotsConfig;\n165    /** 插件读取的配置原文对象，包含密钥。 */\n166    raw: Record<string, unknown>;\n167  }\n168  \n169  const CONFIG_FILE = 'config.yaml';\n170  const CONFIG_RELOAD_DELAY_MS = 500;\n171  \n```\n\n### 解释\n- L162–L167：config 骨架直接用；raw 是整份对象，插件读自己那一段。\n- L169、L170：文件名；合并多次文件通知的等待毫秒数。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-11",
+    "parent": "r-resources-g2",
+    "title": "L172–L192 读取并校验配置 readConfig",
+    "summary": "读文件、解析 YAML（错误只留行号）、交给 checkConfig 校验一次，交回配置和原始对象。",
+    "body": "**行号：L172–L192**\n\n### 代码原文\n```ts\n172  /** 从磁盘读取并校验配置，错误信息不含 YAML 原文。 */\n173  function readConfig(file: string): ConfigSnapshot {\n174    //M 启动和重读共用同一份入口校验。\n175    const yamlText = fs.readFileSync(file, 'utf8');\n176    const document = yaml.parseDocument(yamlText);\n177  \n178    //G YAML 解析错误会带出原文，错误里只保留行号。\n179    const broken = document.errors[0];\n180    if (broken !== undefined) {\n181      const line = String(broken.linePos?.[0].line ?? '?');\n182      throw new Error(`config.yaml 不是合法的 YAML（第 ${line} 行附近）`);\n183    }\n184  \n185    const written: unknown = document.toJSON();\n186    //M 交给 checkConfig 校验一次。顶层确认是对象后，插件仍可读取原始值。\n187    const config = checks.checkConfig(written);\n188    const raw = written as Record<string, unknown>;\n189    return { config, raw };\n190  }\n191  \n192  \n```\n\n### 解释\n- L175：读 config.yaml 原文。\n- L179–L183：守卫：YAML 解析错误会带出原文，错误里只保留行号。\n- L187：**外部入口**：交给 checkConfig 校验一次，之后内部直接用。\n- L189：校验后的配置和原始对象一起交回。\n\n### 这段代码调用了\n- `checks.checkConfig`（[Checks.ts:159](src7/utils/Checks.ts:159) · 骨架工具）—— 校验配置：默认值、类型、供应商和插件名单，错了抛带位置的错误。\n- `yaml.parseDocument`（yaml · Node 或第三方）—— 解析 YAML 文本，保留错误位置。\n\n### 谁调它\n- 骨架：Resources 构造函数读首份配置（[Resources.ts L244](#lines=Resources.json&line=244)），reloadConfig 每次重读时再读一份。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -112,39 +142,9 @@
   {
     "id": "r-resources-g3",
     "parent": "r-resources",
-    "title": "L179–L241 类与构造",
-    "summary": "Resources 的字段（root、配置快照、db、models、pluginStatus）和构造函数：读配置、开库、建供应商、开始监听。",
-    "body": "## 类与构造\n\n- L179–L208 类头和字段：Resources 服务的字段：root、当前快照、config / raw 两个读取口、db、models、pluginStatus。\n- L209–L223 挂服务读配置：登记成 resources 服务，算出 root，首次读入并校验配置。\n- L224–L233 开数据库：开 data/jmbots7.db，开 WAL，服务被拔掉时关。\n- L234–L241 建供应商开监听：建好 pi 集合接入配置里的供应商，再开始监听 config.yaml。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-09",
-    "parent": "r-resources-g3",
-    "title": "L179–L208 类头和字段",
-    "summary": "Resources 服务的字段：root、当前快照、config / raw 两个读取口、db、models、pluginStatus。",
-    "body": "**行号：L179–L208**\n\n### 代码原文\n```ts\n179  /** 资源服务。 */\n180  export class Resources extends cordis.Service {\n181    /** 运行时目录的绝对路径。 */\n182    readonly root: string;\n183  \n184    /** 最近一次通过校验的配置快照。 */\n185    private current: ConfigSnapshot;\n186  \n187    /** 校验后的配置，骨架调用方可以直接读。 */\n188    get config(): JmbotsConfig {\n189      return this.current.config;\n190    }\n191  \n192    /** 整份 config.yaml 的对象，插件读自己那一段并校验。包含密钥。 */\n193    get raw(): Record<string, unknown> {\n194      return this.current.raw;\n195    }\n196  \n197    /** 数据库连接 data/jmbots7.db；会话存在里面，插件也在里面建自己的表。 */\n198    readonly db: Database;\n199  \n200    /** 建好了各家供应商的 pi 集合；Sessions.chat() 用它发请求。 */\n201    readonly models: piAi.MutableModels;\n202  \n203    /**\n204     * 这次启动各插件的挂载结果；Main.ts 在挂插件时写入。\n205     * 试运行（只挂 http）也只记实际尝试过的，不会把没挂的都报成失败。\n206     */\n207    pluginStatus: PluginStatus[] = [];\n208  \n```\n\n### 解释\n- L179–L180：`class Resources extends cordis.Service`。\n- L181–L182：`root` 运行时目录的绝对路径。\n- L184–L185：`current` 最近一次通过校验的配置快照（私有）；热重载时整份换掉。\n- L187–L195：`config`、`raw` 改成 getter，读的总是当前快照，所以重读后调用方拿到的是新配置。\n- L197–L201：`db` 数据库连接（data/jmbots7.db）；`models` 各家供应商的 pi 集合，Sessions.chat() 用它发请求。\n- L203–L207：`pluginStatus` 这次启动各插件的挂载结果，Main.ts 写；试运行只记实际尝试过的。\n- L183、L186、L191、L196、L199、L202、L208：空行。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-10",
-    "parent": "r-resources-g3",
-    "title": "L209–L223 挂服务读配置",
-    "summary": "登记成 resources 服务，算出 root，首次读入并校验配置。",
-    "body": "**行号：L209–L223**\n\n### 代码原文\n```ts\n209    /**\n210     * 登记 resources 插件：把 Resources 作为服务挂到 Cordis 上，名字叫 resources（以后用 ctx.resources 取）；\n211     * 再读配置并校验一次、开数据库、把 pi 的供应商建好。\n212     * @param ctx Cordis 给的 ctx。\n213     * @param config 运行时目录。\n214     * @throws 找不到 config.yaml、不是合法 YAML、哪一项不对时抛错；错误信息不带配置原文。\n215     */\n216    constructor(ctx: cordis.Context, config: ResourcesConfig) {\n217      super(ctx, 'resources');\n218      this.root = path.resolve(config.dir);\n219  \n220      //M 首次读入校验后的快照，供数据库和插件初始化使用。\n221      const file = path.join(this.root, CONFIG_FILE);\n222      this.current = readConfig(file);\n223  \n```\n\n### 解释\n- L209–L215：文档注释：挂成服务、读配置并校验、开数据库、建供应商；配置不对会抛错，错误不带原文。\n- L216–L217：构造函数，`super(ctx, 'resources')` 挂成服务。\n- L218：`root = path.resolve(config.dir)`。\n- L220–L222：拼出 config.yaml 路径，调 readConfig 得到首份快照。\n- L219、L223：空行。\n\n### 这段代码调用了\n- `cordis.Service`（cordis · Node 或第三方）—— super(ctx, 名字) 把这个类挂成服务，以后用 ctx.resources 取。\n- `readConfig`（[Resources.ts L159](#lines=Resources.json&line=159) · 骨架）—— 读文件、解析、校验，交回配置快照。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-11",
-    "parent": "r-resources-g3",
-    "title": "L224–L233 开数据库",
-    "summary": "开 data/jmbots7.db，开 WAL，服务被拔掉时关。",
-    "body": "**行号：L224–L233**\n\n### 代码原文\n```ts\n224      //M 开数据库 data/jmbots7.db（没有就建）；这个服务被拔掉时关。\n225      const dbFile = path.join(this.dir('data'), 'jmbots7.db');\n226      this.db = new Database(dbFile, { create: true });\n227      this.db.exec('PRAGMA journal_mode = WAL;');\n228      this.ctx.effect(() => {\n229        return () => {\n230          this.db.close();\n231        };\n232      });\n233  \n```\n\n### 解释\n- L224–L225：`this.dir('data')` 确保 data 文件夹存在，再拼库文件路径。\n- L226–L227：没有就建库，打开 WAL 日志模式。\n- L228–L232：`ctx.effect` 登记撤销函数：服务被拔掉时 `db.close()`。\n- L233：空行。\n\n### 这段代码调用了\n- `dir`（[Resources.ts L347](#lines=Resources.json&line=347) · 骨架）—— 运行时目录下的文件夹，没有就建。\n- `new Database`（bun:sqlite · Node 或第三方）—— 打开（或新建）sqlite 数据库。\n- `ctx.effect`（cordis · Node 或第三方）—— 登记撤销函数，服务被拔掉时关库。",
+    "title": "L193–L457 Resources 类",
+    "summary": "字段、构造、供应商更新、配置监听与重读、鉴权、目录、拼模型对象。",
+    "body": "## Resources 类\n\n- L193–L230 类头和字段：Resources 继承 Cordis 的 Service：运行时目录、配置快照、数据库、pi 的供应商集合、插件挂载状态。\n- L231–L263 构造函数：读配置、开库、建供应商：登记成 resources 服务；读首份配置并校验；开数据库；用 pi 建供应商集合；开始监听 config.yaml。\n- L264–L308 更新供应商 updateProviders：按配置里的供应商建好新增或连接参数变了的，移除被删掉的，登记准备好的。\n- L309–L330 监听 config.yaml watchConfig：监听运行时目录，只认 config.yaml 的改动；500 毫秒内多次通知合成一次；服务被拔掉就收掉监听。\n- L331–L352 重读配置并通知 reloadConfig：重读并校验；顶层键没变就什么都不做；变了先更新供应商再换快照，最后发 config/changed；失败继续用原配置。\n- L353–L381 给 pi 的供应商鉴权 getProviderAuth：交回 pi 要的 ProviderAuth：每次请求时现取当前配置里的密钥和地址；供应商被删了就不再交密钥。\n- L382–L393 取运行时目录下的文件夹 ensureRuntimeDir：把给的文件夹名接在运行时目录后面，没有就建，交回绝对路径。\n- L394–L457 拼出模型对象 getModel：“供应商/模型”拆成两半；供应商不在配置里就抛错；用配置的模型字段（没写的取保守值）拼出 pi 的 Model；没写思考档映射时沿用 pi 内置的。",
     "sources": [
       "src7/Resources.ts"
     ]
@@ -152,89 +152,169 @@
   {
     "id": "r-resources-12",
     "parent": "r-resources-g3",
-    "title": "L234–L241 建供应商开监听",
-    "summary": "建好 pi 集合接入配置里的供应商，再开始监听 config.yaml。",
-    "body": "**行号：L234–L241**\n\n### 代码原文\n```ts\n234      //M 用同一集合接入配置里的供应商，供 Sessions 后续请求复用。\n235      this.models = piAi.createModels();\n236      this.updateProviders(this.config.providers, {});\n237  \n238      //M 监听父目录，设置页用临时文件原子替换后仍能继续监听。\n239      this.watchConfig(file);\n240    }\n241  \n```\n\n### 解释\n- L234–L236：`piAi.createModels()` 建集合，`updateProviders(当前供应商, {})`：旧的当空，所以全部新建。\n- L238–L239：`watchConfig(file)`：监听父目录，设置页用临时文件原子替换后也能继续收到通知。\n- L240：构造函数结束；L237、L241 空行。\n\n### 这段代码调用了\n- `piAi.createModels`（@earendil-works/pi-ai · Node 或第三方）—— 建一个可增删供应商的模型集合。\n- `updateProviders`（[Resources.ts L243](#lines=Resources.json&line=243) · 骨架）—— 按 ID 新增、替换、删除供应商。\n- `watchConfig`（[Resources.ts L272](#lines=Resources.json&line=272) · 骨架）—— 监听 config.yaml，合并多次通知后重读。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-g4",
-    "parent": "r-resources",
-    "title": "L242–L314 配置热重载",
-    "summary": "改 config.yaml 后：合并多次文件通知，重读校验，只更新变了的供应商，再发 config/changed；失败继续用旧配置。",
-    "body": "## 配置热重载\n\n- L242–L270 增删供应商：只为新增或连接参数变了的供应商建新实现，删掉配置里没了的。\n- L271–L292 监听配置文件：监听运行时目录，config.yaml 有动静就延后 500 毫秒重读。\n- L293–L314 重读并通知：校验新快照，只在有变化时更新供应商和快照，再发 config/changed。",
+    "title": "L193–L230 类头和字段",
+    "summary": "Resources 继承 Cordis 的 Service：运行时目录、配置快照、数据库、pi 的供应商集合、插件挂载状态。",
+    "body": "**行号：L193–L230**\n\n### 代码原文\n```ts\n193  /** 资源服务。 */\n194  export class Resources extends cordis.Service {\n195    /** 运行时目录的绝对路径。 */\n196    readonly root: string;\n197  \n198    /** 最近一次通过校验的配置快照。 */\n199    private current: ConfigSnapshot;\n200  \n201    /** 校验后的配置，骨架调用方可以直接读。 */\n202    get config(): JmbotsConfig {\n203      return this.current.config;\n204    }\n205  \n206    /** 整份 config.yaml 的对象，插件读自己那一段并校验。包含密钥。 */\n207    get raw(): Record<string, unknown> {\n208      return this.current.raw;\n209    }\n210  \n211    /** 数据库连接 data/jmbots7.db；会话存在里面，插件也在里面建自己的表。 */\n212    readonly db: Database;\n213  \n214    /**\n215     * pi-ai 的 `MutableModels` 集中管理运行中的供应商。Sessions.chat() 通过它发请求。\n216     * - `setProvider(provider)` 按供应商 `id` 新增或替换实例。\n217     * - `deleteProvider(id)` 移除指定供应商。\n218     * - `clearProviders()` 清除已登记的供应商。\n219     * - `getModel(provider, id)` 从当前目录读一个对话模型，找不到时返回 `undefined`。\n220     * - `completeSimple(model, context, options)` 等待一次对话模型的完整回答。\n221     * 全部成员见 node_modules/@earendil-works/pi-ai/dist/models.d.ts:201，继承的 `Models` 见同文件 137 行。\n222     */\n223    readonly models: piAi.MutableModels;\n224  \n225    /**\n226     * 这次启动各插件的挂载结果；Main.ts 在挂插件时写入。\n227     * 试运行（只挂 http）也只记实际尝试过的，不会把没挂的都报成失败。\n228     */\n229    pluginStatus: PluginStatus[] = [];\n230  \n```\n\n### 解释\n- L194：继承 `cordis.Service`，ctx.resources 取到它。\n- L196：运行时目录的绝对路径。\n- L202、L207：校验后的配置（骨架直接读）；整份 config.yaml 对象（插件读自己那一段，含密钥）。\n- L212：数据库 data/jmbots7.db；会话存在里面，插件也在里面建自己的表。\n- L223：pi 的 MutableModels，集中管运行中的供应商，Sessions.chat 通过它发请求。\n- L229：这次启动各插件的挂载结果，Main.ts 写入。\n\n### 谁调它\n- 骨架：Main.ts 挂它；Sessions.ts 读 `ctx.resources.config`、`db`、`models`（[Sessions.ts L519](#lines=Sessions.json&line=519)）。\n- 插件：几乎每个插件都读 `ctx.resources.config` / `raw` / `db` / `root`；bots、feishu、memory、relay、http 等用 ensureRuntimeDir 取自己的文件夹。",
     "sources": [
       "src7/Resources.ts"
     ]
   },
   {
     "id": "r-resources-13",
-    "parent": "r-resources-g4",
-    "title": "L242–L270 增删供应商",
-    "summary": "只为新增或连接参数变了的供应商建新实现，删掉配置里没了的。",
-    "body": "**行号：L242–L270**\n\n### 代码原文\n```ts\n242    /** 按 ID 更新 pi 集合。密钥变动由请求时的解析回调处理。 */\n243    private updateProviders(providers: JmbotsConfig['providers'], previous: JmbotsConfig['providers']): void {\n244      const created: piAi.Provider[] = [];\n245      utils.eachEntry(providers, (name, provider) => {\n246        const old = previous[name];\n247        if (old?.baseUrl === provider.baseUrl && old.api === provider.api) return;\n248  \n249        //M 先建好新增或连接参数变动的供应商，再更新现有集合。\n250        const getApi = CHAT_APIS[provider.api];\n251        const api = getApi();\n252        const auth = this.getAuth(provider, name);\n253        const options = {\n254          id: name, baseUrl: provider.baseUrl, auth, models: [], api,\n255        };\n256        const item = piAi.createProvider(options);\n257        created.push(item);\n258      });\n259  \n260      //M 移除配置里删掉的供应商，再登记准备好的新实现。\n261      const configured = Object.keys(previous);\n262      for (const name of configured) {\n263        if (Object.hasOwn(providers, name)) continue;\n264        this.models.deleteProvider(name);\n265      }\n266      for (const item of created) {\n267        this.models.setProvider(item);\n268      }\n269    }\n270  \n```\n\n### 解释\n- L242–L243：`updateProviders(providers, previous)`；密钥变动不在这里处理，请求时由 getAuth 的回调现取。\n- L244–L248：逐个看新配置；地址和协议都没变的跳过（只改密钥不用重建）。\n- L249–L257：按协议取 pi 实现，配上 getAuth 的鉴权，`createProvider` 建好先放进 created。\n- L260–L265：旧配置里有、新配置里没有的，`deleteProvider` 删掉。\n- L266–L268：再把建好的逐个 `setProvider` 登记（同 ID 即替换）。\n- L269：函数结束；L259、L270 空行。\n\n### 这段代码调用了\n- `utils.eachEntry`（[index.ts:44](src7/utils/index.ts:44) · 骨架工具）—— 挨个走新配置里的供应商。\n- `getAuth`（[Resources.ts L321](#lines=Resources.json&line=321) · 骨架）—— 给 pi 的鉴权：每次请求时现取密钥和地址。\n- `piAi.createProvider`（@earendil-works/pi-ai · Node 或第三方）—— 按 ID、地址、鉴权、协议建一个供应商。\n- `models.deleteProvider / setProvider`（@earendil-works/pi-ai · Node 或第三方）—— 从集合里删掉或登记（替换）供应商。",
+    "parent": "r-resources-g3",
+    "title": "L231–L263 构造函数：读配置、开库、建供应商",
+    "summary": "登记成 resources 服务；读首份配置并校验；开数据库；用 pi 建供应商集合；开始监听 config.yaml。",
+    "body": "**行号：L231–L263**\n\n### 代码原文\n```ts\n231    /**\n232     * 登记 resources 插件：把 Resources 作为服务挂到 Cordis 上，名字叫 resources（以后用 ctx.resources 取）；\n233     * 再读配置并校验一次、开数据库、把 pi 的供应商建好。\n234     * @param ctx Cordis 给的 ctx。\n235     * @param config 运行时目录。\n236     * @throws 找不到 config.yaml、不是合法 YAML、哪一项不对时抛错；错误信息不带配置原文。\n237     */\n238    constructor(ctx: cordis.Context, config: ResourcesConfig) {\n239      super(ctx, 'resources');\n240      this.root = path.resolve(config.dir);\n241  \n242      //M 首次读入校验后的快照，供数据库和插件初始化使用。\n243      const file = path.join(this.root, CONFIG_FILE);\n244      this.current = readConfig(file);\n245  \n246      //M 开数据库 data/jmbots7.db（没有就建）；这个服务被拔掉时关。\n247      const dbFile = path.join(this.ensureRuntimeDir('data'), 'jmbots7.db');\n248      this.db = new Database(dbFile, { create: true });\n249      this.db.exec('PRAGMA journal_mode = WAL;');\n250      this.ctx.effect(() => {\n251        return () => {\n252          this.db.close();\n253        };\n254      });\n255  \n256      //M 用同一集合接入配置里的供应商，供 Sessions 后续请求复用。\n257      this.models = piAi.createModels();\n258      this.updateProviders(this.config.providers, {});\n259  \n260      //M 监听父目录，设置页用临时文件原子替换后仍能继续监听。\n261      this.watchConfig(file);\n262    }\n263  \n```\n\n### 解释\n- L239：登记成名叫 resources 的服务。\n- L244：首次读入校验后的快照。\n- L248–L249：开数据库（没有就建），WAL 模式。\n- L250–L254：这个服务被拔掉时关数据库。\n- L257–L258：建 pi 的供应商集合，把配置里的供应商都登记进去。\n- L261：监听 config.yaml，改了自动重读。\n\n### 这段代码调用了\n- `readConfig`（[Resources.ts L173](#lines=Resources.json&line=173) · 骨架）—— 读文件并校验。\n- `Resources.updateProviders`（[Resources.ts L265](#lines=Resources.json&line=265) · 骨架）—— 按配置建好供应商并登记到 pi 集合。\n- `Resources.watchConfig`（[Resources.ts L310](#lines=Resources.json&line=310) · 骨架）—— 监听 config.yaml。\n- `Resources.ensureRuntimeDir`（[Resources.ts L388](#lines=Resources.json&line=388) · 骨架）—— 取运行时目录下的 data 文件夹放数据库。\n- `new Database`（bun:sqlite · Node 或第三方）—— 打开或新建 SQLite 数据库文件。\n- `piAi.createModels`（@earendil-works/pi-ai · Node 或第三方）—— 建一个空的可变供应商集合。\n- `ctx.effect`（cordis · Node 或第三方）—— 登记这个服务被拔掉时要做的清理。\n\n### 谁调它\n- 骨架：Main.ts 的 main 第一个挂它（[Main.ts L84](#lines=Main.json&line=84)），Tools、Sessions 都排在它后面。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-13-1",
+    "parent": "r-resources-13",
+    "title": "L231–L245 登记服务、读首份配置",
+    "summary": "登记成 resources；记运行时目录；读首份配置。",
+    "body": "**行号：L231–L245**\n\n### 代码原文\n```ts\n231    /**\n232     * 登记 resources 插件：把 Resources 作为服务挂到 Cordis 上，名字叫 resources（以后用 ctx.resources 取）；\n233     * 再读配置并校验一次、开数据库、把 pi 的供应商建好。\n234     * @param ctx Cordis 给的 ctx。\n235     * @param config 运行时目录。\n236     * @throws 找不到 config.yaml、不是合法 YAML、哪一项不对时抛错；错误信息不带配置原文。\n237     */\n238    constructor(ctx: cordis.Context, config: ResourcesConfig) {\n239      super(ctx, 'resources');\n240      this.root = path.resolve(config.dir);\n241  \n242      //M 首次读入校验后的快照，供数据库和插件初始化使用。\n243      const file = path.join(this.root, CONFIG_FILE);\n244      this.current = readConfig(file);\n245  \n```\n\n### 解释\n- L239：登记服务。\n- L240：运行时目录取绝对路径。\n- L244：首份配置读入并校验。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-13-2",
+    "parent": "r-resources-13",
+    "title": "L246–L255 开数据库",
+    "summary": "没有就建；WAL 模式；服务被拔掉时关库。",
+    "body": "**行号：L246–L255**\n\n### 代码原文\n```ts\n246      //M 开数据库 data/jmbots7.db（没有就建）；这个服务被拔掉时关。\n247      const dbFile = path.join(this.ensureRuntimeDir('data'), 'jmbots7.db');\n248      this.db = new Database(dbFile, { create: true });\n249      this.db.exec('PRAGMA journal_mode = WAL;');\n250      this.ctx.effect(() => {\n251        return () => {\n252          this.db.close();\n253        };\n254      });\n255  \n```\n\n### 解释\n- L247：数据库文件放运行时目录的 data 下。\n- L249：WAL 模式。\n- L252：服务被拔掉时关库。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-13-3",
+    "parent": "r-resources-13",
+    "title": "L256–L263 建供应商、开监听",
+    "summary": "建 pi 的供应商集合并登记配置里的供应商；开始监听 config.yaml。",
+    "body": "**行号：L256–L263**\n\n### 代码原文\n```ts\n256      //M 用同一集合接入配置里的供应商，供 Sessions 后续请求复用。\n257      this.models = piAi.createModels();\n258      this.updateProviders(this.config.providers, {});\n259  \n260      //M 监听父目录，设置页用临时文件原子替换后仍能继续监听。\n261      this.watchConfig(file);\n262    }\n263  \n```\n\n### 解释\n- L257：建集合。\n- L258：以前什么都没有，所以 previous 传空。\n- L261：开始监听。",
     "sources": [
       "src7/Resources.ts"
     ]
   },
   {
     "id": "r-resources-14",
-    "parent": "r-resources-g4",
-    "title": "L271–L292 监听配置文件",
-    "summary": "监听运行时目录，config.yaml 有动静就延后 500 毫秒重读。",
-    "body": "**行号：L271–L292**\n\n### 代码原文\n```ts\n271    /** 监听 config.yaml，合并保存动作产生的多次文件通知。 */\n272    private watchConfig(file: string): void {\n273      this.ctx.effect(() => {\n274        let pending: ReturnType<typeof setTimeout> | undefined;\n275        //M 非持久监听与定时器让命令行模式能照常退出。\n276        const watcher = fs.watch(this.root, { persistent: false }, (_event, name) => {\n277          if (name !== null && name.toLowerCase() !== CONFIG_FILE) return;\n278  \n279          clearTimeout(pending);\n280          pending = setTimeout(() => this.reloadConfig(file), CONFIG_RELOAD_DELAY_MS);\n281          pending.unref();\n282        });\n283        watcher.on('error', (error) => {\n284          console.error(`config.yaml 监听失败：${error.message}`);\n285        });\n286        return () => {\n287          clearTimeout(pending);\n288          watcher.close();\n289        };\n290      });\n291    }\n292  \n```\n\n### 解释\n- L271–L273：`watchConfig(file)`，整段包在 `ctx.effect` 里，服务被拔掉时自动停。\n- L274–L276：`fs.watch(this.root, { persistent: false })`：监听目录而不是文件；非持久，不挡命令行模式退出。\n- L277：通知的文件名不是 config.yaml（不分大小写）就不管。\n- L279–L281：清掉上一次的定时器，500 毫秒后调 reloadConfig；`unref()` 让定时器不挡进程退出。\n- L283–L285：监听出错打一行，不抛。\n- L286–L290：撤销函数：清定时器、关 watcher。L291 结束；L278、L292 空行。\n\n### 这段代码调用了\n- `ctx.effect`（cordis · Node 或第三方）—— 登记监听和它的撤销函数。\n- `fs.watch`（node:fs · Node 或第三方）—— 监听运行时目录的文件变化。\n- `setTimeout / clearTimeout`（JavaScript / Node · Node 或第三方）—— 把一次保存产生的多次通知合并成一次重读。\n- `reloadConfig`（[Resources.ts L294](#lines=Resources.json&line=294) · 骨架）—— 重读并校验，应用新快照。",
+    "parent": "r-resources-g3",
+    "title": "L264–L308 更新供应商 updateProviders",
+    "summary": "按配置里的供应商建好新增或连接参数变了的，移除被删掉的，登记准备好的。",
+    "body": "**行号：L264–L308**\n\n### 代码原文\n```ts\n264    /** 按 ID 更新 pi 集合。密钥变动由请求时的解析回调处理。 */\n265    private updateProviders(providers: JmbotsConfig['providers'], previous: JmbotsConfig['providers']): void {\n266      //==========================================================\n267      //M 准备新增或连接配置变更的供应商\n268      //==========================================================\n269      /**\n270       * 待登记的 pi-ai `Provider` 实例连接模型目录、鉴权和请求。\n271       * - `id` 是供应商标识，用于登记和查找。\n272       * - `name` 是展示名。\n273       * - `baseUrl` 可选，是请求的基础地址。\n274       * - `auth` 提供供应商鉴权。\n275       * - `getModels()` 同步读取当前已知的对话模型。\n276       * - `streamSimple(model, context, options)` 发出对话请求并返回事件流。\n277       * 全部字段见 node_modules/@earendil-works/pi-ai/dist/models.d.ts:72。\n278       */\n279      const created: piAi.Provider[] = [];\n280      utils.eachEntry(providers, (name, provider) => {\n281        const old = previous[name];\n282        if (old?.baseUrl === provider.baseUrl && old.api === provider.api) return;\n283  \n284        //M 先建好新增或连接参数变动的供应商，再更新现有集合。\n285        const getApi = CHAT_APIS[provider.api];\n286        const api = getApi();\n287        const auth = this.getProviderAuth(provider, name);\n288        const options = {\n289          id: name, baseUrl: provider.baseUrl, auth, models: [], api,\n290        };\n291        const item = piAi.createProvider(options);\n292        created.push(item);\n293      });\n294  \n295      //==========================================================\n296      //M 把配置变更应用到运行中的供应商集合\n297      //==========================================================\n298      //M 移除配置里删掉的供应商，再登记准备好的新实现。\n299      const configured = Object.keys(previous);\n300      for (const name of configured) {\n301        if (Object.hasOwn(providers, name)) continue;\n302        this.models.deleteProvider(name);\n303      }\n304      for (const item of created) {\n305        this.models.setProvider(item);\n306      }\n307    }\n308  \n```\n\n### 解释\n- 先建后换：新增或地址、协议变了的供应商先全部建好，再统一删旧、登记新，不会出现一半新一半旧。\n- 密钥变动不用重建：请求时由鉴权回调现取当前配置。\n\n### 这段代码调用了\n- `Resources.getProviderAuth`（[Resources.ts L362](#lines=Resources.json&line=362) · 骨架）—— 给供应商拼 pi 要的鉴权：每次请求现取密钥和地址。\n- `utils.eachEntry`（[index.ts:44](src7/utils/index.ts:44) · 骨架工具）—— 逐项遍历对象。\n- `piAi.createProvider`（@earendil-works/pi-ai · Node 或第三方）—— 按 id、地址、鉴权、协议建一个供应商实例。\n- `models.setProvider / deleteProvider`（@earendil-works/pi-ai · Node 或第三方）—— 往集合里登记或移除一个供应商。\n\n### 谁调它\n- 骨架：Resources 构造函数首次建供应商（[Resources.ts L258](#lines=Resources.json&line=258)），reloadConfig 配置重读成功后更新。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-14-1",
+    "parent": "r-resources-14",
+    "title": "L264–L265 签名和说明",
+    "summary": "一句话说明和函数签名。",
+    "body": "**行号：L264–L265**\n\n### 代码原文\n```ts\n264    /** 按 ID 更新 pi 集合。密钥变动由请求时的解析回调处理。 */\n265    private updateProviders(providers: JmbotsConfig['providers'], previous: JmbotsConfig['providers']): void {\n```\n\n### 解释\n- L265：参数：新的供应商表、旧的供应商表。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-14-2",
+    "parent": "r-resources-14",
+    "title": "L266–L294 准备新增或变了的供应商",
+    "summary": "遍历新配置：地址和协议没变的跳过；其余建出 pi 的供应商实例，先存起来。",
+    "body": "**行号：L266–L294**\n\n### 代码原文\n```ts\n266      //==========================================================\n267      //M 准备新增或连接配置变更的供应商\n268      //==========================================================\n269      /**\n270       * 待登记的 pi-ai `Provider` 实例连接模型目录、鉴权和请求。\n271       * - `id` 是供应商标识，用于登记和查找。\n272       * - `name` 是展示名。\n273       * - `baseUrl` 可选，是请求的基础地址。\n274       * - `auth` 提供供应商鉴权。\n275       * - `getModels()` 同步读取当前已知的对话模型。\n276       * - `streamSimple(model, context, options)` 发出对话请求并返回事件流。\n277       * 全部字段见 node_modules/@earendil-works/pi-ai/dist/models.d.ts:72。\n278       */\n279      const created: piAi.Provider[] = [];\n280      utils.eachEntry(providers, (name, provider) => {\n281        const old = previous[name];\n282        if (old?.baseUrl === provider.baseUrl && old.api === provider.api) return;\n283  \n284        //M 先建好新增或连接参数变动的供应商，再更新现有集合。\n285        const getApi = CHAT_APIS[provider.api];\n286        const api = getApi();\n287        const auth = this.getProviderAuth(provider, name);\n288        const options = {\n289          id: name, baseUrl: provider.baseUrl, auth, models: [], api,\n290        };\n291        const item = piAi.createProvider(options);\n292        created.push(item);\n293      });\n294  \n```\n\n### 解释\n- L280：逐个供应商。\n- L282：守卫：地址和协议都没变 → 跳过（密钥变了不用重建）。\n- L285：按协议取 pi 的实现。\n- L291：建供应商实例，鉴权用 getProviderAuth 给的。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-14-3",
+    "parent": "r-resources-14",
+    "title": "L295–L308 应用到运行中的集合",
+    "summary": "先移除配置里删掉的供应商，再登记准备好的新实现。",
+    "body": "**行号：L295–L308**\n\n### 代码原文\n```ts\n295      //==========================================================\n296      //M 把配置变更应用到运行中的供应商集合\n297      //==========================================================\n298      //M 移除配置里删掉的供应商，再登记准备好的新实现。\n299      const configured = Object.keys(previous);\n300      for (const name of configured) {\n301        if (Object.hasOwn(providers, name)) continue;\n302        this.models.deleteProvider(name);\n303      }\n304      for (const item of created) {\n305        this.models.setProvider(item);\n306      }\n307    }\n308  \n```\n\n### 解释\n- L299–L302：旧表里有、新表里没有的，从集合里删掉。\n- L304–L305：登记准备好的新实现。",
     "sources": [
       "src7/Resources.ts"
     ]
   },
   {
     "id": "r-resources-15",
-    "parent": "r-resources-g4",
-    "title": "L293–L314 重读并通知",
-    "summary": "校验新快照，只在有变化时更新供应商和快照，再发 config/changed。",
-    "body": "**行号：L293–L314**\n\n### 代码原文\n```ts\n293    /** 校验并应用新快照，失败时继续使用原配置。 */\n294    private reloadConfig(file: string): void {\n295      let changed: string[];\n296      try {\n297        const next = readConfig(file);\n298        const names = new Set([...Object.keys(this.raw), ...Object.keys(next.raw)]);\n299        changed = Array.from(names).filter((name) => !util.isDeepStrictEqual(this.raw[name], next.raw[name]));\n300        if (changed.length === 0) return;\n301  \n302        //M 同步更新 pi 集合与配置快照，再向监听者通知新状态。\n303        this.updateProviders(next.config.providers, this.config.providers);\n304        this.current = next;\n305      } catch (error) {\n306        const reason = textModule.getMessage(error);\n307        console.error(`config.yaml 重读失败，继续使用原配置：${reason}`);\n308        return;\n309      }\n310  \n311      //M 只通知变动的顶层键，供需要刷新配置的插件监听。\n312      this.ctx.emit('config/changed', changed);\n313    }\n314  \n```\n\n### 解释\n- L293–L295：`reloadConfig(file)`，失败时继续用原配置。\n- L297：调 readConfig 读新快照（不合法会抛错，落到 catch）。\n- L298–L300：新旧 raw 的顶层键合起来，用 `util.isDeepStrictEqual` 逐项比，挑出变了的键；一个没变就 return。\n- L302–L304：先按新旧 providers 更新 pi 集合，再整份换成新快照。\n- L305–L309：出错只打“重读失败，继续使用原配置：原因”，然后 return，不发事件。\n- L311–L312：发 `config/changed`，带上变了的顶层键。L313 结束；L301、L310、L314 空行。\n\n### 这段代码调用了\n- `readConfig`（[Resources.ts L159](#lines=Resources.json&line=159) · 骨架）—— 读文件、解析、校验，交回新快照。\n- `util.isDeepStrictEqual`（node:util · Node 或第三方）—— 深比较新旧配置的同一项。\n- `updateProviders`（[Resources.ts L243](#lines=Resources.json&line=243) · 骨架）—— 只重建变了的供应商。\n- `textModule.getMessage`（[Text.ts:13](src7/utils/Text.ts:13) · 骨架工具）—— 把重读失败的错误变成一句文字。\n- `ctx.emit`（cordis · Node 或第三方）—— 通知监听者哪些顶层键变了。",
-    "sources": [
-      "src7/Resources.ts"
-    ]
-  },
-  {
-    "id": "r-resources-g5",
-    "parent": "r-resources",
-    "title": "L315–L388 对外的方法",
-    "summary": "getAuth 每次请求时按当前配置取密钥，dir 取运行时目录下的文件夹（ensureDir），getModel 拼 pi 的模型对象。",
-    "body": "## 对外的方法\n\n- L315–L340 交给 pi 的鉴权：交回一个鉴权对象：每次请求前按供应商名从当前配置现取密钥和地址。\n- L341–L352 取运行时文件夹：运行时目录下的一个文件夹，没有就建（ensureDir），交回绝对路径。\n- L353–L388 拼出模型对象：照“供应商名/模型 ID”拼出 Sessions.chat() 要的 pi 模型对象。",
+    "parent": "r-resources-g3",
+    "title": "L309–L330 监听 config.yaml watchConfig",
+    "summary": "监听运行时目录，只认 config.yaml 的改动；500 毫秒内多次通知合成一次；服务被拔掉就收掉监听。",
+    "body": "**行号：L309–L330**\n\n### 代码原文\n```ts\n309    /** 监听 config.yaml，合并保存动作产生的多次文件通知。 */\n310    private watchConfig(file: string): void {\n311      this.ctx.effect(() => {\n312        let pending: ReturnType<typeof setTimeout> | undefined;\n313        //M 非持久监听与定时器让命令行模式能照常退出。\n314        const watcher = fs.watch(this.root, { persistent: false }, (_event, name) => {\n315          if (name !== null && name.toLowerCase() !== CONFIG_FILE) return;\n316  \n317          clearTimeout(pending);\n318          pending = setTimeout(() => this.reloadConfig(file), CONFIG_RELOAD_DELAY_MS);\n319          pending.unref();\n320        });\n321        watcher.on('error', (error) => {\n322          console.error(`config.yaml 监听失败：${error.message}`);\n323        });\n324        return () => {\n325          clearTimeout(pending);\n326          watcher.close();\n327        };\n328      });\n329    }\n330  \n```\n\n### 解释\n- L314：监听父目录（设置页用临时文件原子替换后仍能继续监听）；非持久监听让命令行模式能照常退出。\n- L315：守卫：不是 config.yaml 的改动不管。\n- L318：防抖：500 毫秒后才调重读。\n- L326：服务被拔掉时收掉监听和定时器。\n\n### 这段代码调用了\n- `Resources.reloadConfig`（[Resources.ts L332](#lines=Resources.json&line=332) · 骨架）—— 重读并校验配置，成功就更新并通知。\n- `ctx.effect`（cordis · Node 或第三方）—— 登记服务被拔掉时的清理。\n\n### 谁调它\n- 骨架：Resources 构造函数最后一步调它（[Resources.ts L261](#lines=Resources.json&line=261)）。",
     "sources": [
       "src7/Resources.ts"
     ]
   },
   {
     "id": "r-resources-16",
-    "parent": "r-resources-g5",
-    "title": "L315–L340 交给 pi 的鉴权",
-    "summary": "交回一个鉴权对象：每次请求前按供应商名从当前配置现取密钥和地址。",
-    "body": "**行号：L315–L340**\n\n### 代码原文\n```ts\n315    /**\n316     * 交给 pi 的供应商鉴权。对话模型和 decision 的分类器都用它。\n317     * @param provider 配置中的供应商对象，用于兼容调用方按对象登记。\n318     * @param name 调用方已知道的供应商名。\n319     * @returns 每次请求前按供应商名从当前配置解析密钥和地址。\n320     */\n321    getAuth(provider: ProviderConfig, name?: string): piAi.ProviderAuth {\n322      const providers = this.config.providers;\n323      const providerName = name ?? Object.keys(providers).find((key) => providers[key] === provider);\n324      return {\n325        apiKey: {\n326          name: '配置里的密钥',\n327          resolve: async () => {\n328            const providers = this.config.providers;\n329            //G 删除供应商后，旧的鉴权回调不再交回密钥。\n330            if (providerName === undefined || !Object.hasOwn(providers, providerName)) return undefined;\n331  \n332            //M 在同一快照取地址和密钥，缓存过模型的调用方也会向当前地址请求。\n333            const current = providers[providerName]!;\n334            const apiKey = current.apiKey || 'no-key';\n335            return { auth: { apiKey, baseUrl: current.baseUrl }, source: CONFIG_FILE };\n336          },\n337        },\n338      };\n339    }\n340  \n```\n\n### 解释\n- L315–L320：文档注释：对话模型和 decision 分类器都用；provider 是配置里的对象，name 是调用方已知的供应商名。\n- L321–L323：没给 name 时，按对象在当前配置里反查出供应商名。\n- L324–L327：交回 `{ apiKey: { name, resolve } }`，resolve 每次请求时才调。\n- L328–L330：resolve 里读**当前**配置；供应商已被删掉就交回 undefined，旧回调不再给密钥。\n- L332–L335：在同一份快照里取地址和密钥（空密钥用 no-key），所以改了配置不用重建模型。\n- L336–L339：闭合；L331、L340 空行。",
+    "parent": "r-resources-g3",
+    "title": "L331–L352 重读配置并通知 reloadConfig",
+    "summary": "重读并校验；顶层键没变就什么都不做；变了先更新供应商再换快照，最后发 config/changed；失败继续用原配置。",
+    "body": "**行号：L331–L352**\n\n### 代码原文\n```ts\n331    /** 校验并应用新快照，失败时继续使用原配置。 */\n332    private reloadConfig(file: string): void {\n333      let changed: string[];\n334      try {\n335        const next = readConfig(file);\n336        const names = new Set([...Object.keys(this.raw), ...Object.keys(next.raw)]);\n337        changed = Array.from(names).filter((name) => !util.isDeepStrictEqual(this.raw[name], next.raw[name]));\n338        if (changed.length === 0) return;\n339  \n340        //M 同步更新 pi 集合与配置快照，再向监听者通知新状态。\n341        this.updateProviders(next.config.providers, this.config.providers);\n342        this.current = next;\n343      } catch (error) {\n344        const reason = textModule.getErrorMessage(error);\n345        console.error(`config.yaml 重读失败，继续使用原配置：${reason}`);\n346        return;\n347      }\n348  \n349      //M 只通知变动的顶层键，供需要刷新配置的插件监听。\n350      this.ctx.emit('config/changed', changed);\n351    }\n352  \n```\n\n### 解释\n- L335：重读校验，不对会抛错。\n- L337–L338：比出变化的顶层键，一个都没变就返回。\n- L341：先更新 pi 的供应商，再 L342 换快照。\n- L345：守卫：失败只打一行，继续用原配置。\n- L350：**发 config/changed**：通知，不能拦；目前没有插件监听。\n\n### 这段代码调用了\n- `readConfig`（[Resources.ts L173](#lines=Resources.json&line=173) · 骨架）—— 读文件并校验。\n- `Resources.updateProviders`（[Resources.ts L265](#lines=Resources.json&line=265) · 骨架）—— 更新供应商。\n- `config/changed`（发事件 · 通知）—— 配置重读成功后发，带变化的顶层键名。\n  - 谁在听：暂无（grep 现查，没有插件监听）。\n\n### 谁调它\n- 骨架：watchConfig 的防抖定时器到点后调它（[Resources.ts L318](#lines=Resources.json&line=318)）。",
     "sources": [
       "src7/Resources.ts"
     ]
   },
   {
     "id": "r-resources-17",
-    "parent": "r-resources-g5",
-    "title": "L341–L352 取运行时文件夹",
-    "summary": "运行时目录下的一个文件夹，没有就建（ensureDir），交回绝对路径。",
-    "body": "**行号：L341–L352**\n\n### 代码原文\n```ts\n341    /**\n342     * 运行时目录下的一个文件夹，没有就建。\n343     * @param parts 一层层的文件夹名，比如 dir('bots', '助手', 'workspace')。\n344     * @returns 绝对路径。\n345     * 副作用：可能建目录。\n346     */\n347    dir(...parts: string[]): string {\n348      const full = path.join(this.root, ...parts);\n349      //M 确保运行时目录下的目标路径可供调用方使用。\n350      return filesModule.ensureDir(full);\n351    }\n352  \n```\n\n### 解释\n- L341–L346：文档注释：例子 `dir('bots', '助手', 'workspace')`；副作用是可能建目录。\n- L347–L348：`dir(...parts)`，拼出 `root/...parts`。\n- L349–L350：交给 `filesModule.ensureDir`：递归建好（已存在不报错），交回同一路径。\n- L351：函数结束；L352 空行。\n\n### 这段代码调用了\n- `filesModule.ensureDir`（[Files.ts:47](src7/utils/Files.ts:47) · 骨架工具）—— 确保目录存在，按需递归创建父目录，交回路径。",
+    "parent": "r-resources-g3",
+    "title": "L353–L381 给 pi 的供应商鉴权 getProviderAuth",
+    "summary": "交回 pi 要的 ProviderAuth：每次请求时现取当前配置里的密钥和地址；供应商被删了就不再交密钥。",
+    "body": "**行号：L353–L381**\n\n### 代码原文\n```ts\n353    /**\n354     * 交给 pi 的供应商鉴权。对话模型和 decision 的分类器都用它。\n355     * @param provider 配置中的供应商对象，用于兼容调用方按对象登记。\n356     * @param name 调用方已知道的供应商名。\n357     * @returns pi-ai 的 `ProviderAuth`，描述供应商可用的鉴权方式。\n358     * - `apiKey` 可选，通过 `resolve()` 提供请求凭据。这里每次从当前配置取密钥和地址。\n359     * - `oauth` 可选，定义 `login()`、`refresh()` 和 `toAuth()` 等登录与令牌处理能力。\n360     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/auth/types.d.ts:241。\n361     */\n362    getProviderAuth(provider: ProviderConfig, name?: string): piAi.ProviderAuth {\n363      const providers = this.config.providers;\n364      const providerName = name ?? Object.keys(providers).find((key) => providers[key] === provider);\n365      return {\n366        apiKey: {\n367          name: '配置里的密钥',\n368          resolve: async () => {\n369            const providers = this.config.providers;\n370            //G 删除供应商后，旧的鉴权回调不再交回密钥。\n371            if (providerName === undefined || !Object.hasOwn(providers, providerName)) return undefined;\n372  \n373            //M 在同一快照取地址和密钥，缓存过模型的调用方也会向当前地址请求。\n374            const current = providers[providerName]!;\n375            const apiKey = current.apiKey || 'no-key';\n376            return { auth: { apiKey, baseUrl: current.baseUrl }, source: CONFIG_FILE };\n377          },\n378        },\n379      };\n380    }\n381  \n```\n\n### 解释\n- L364：名字没给就按对象找。\n- L368：pi 每次请求前调这个回调。\n- L371：守卫：供应商已被删 → 不再交回密钥。\n- L375：同一快照取地址和密钥，缓存过模型的调用方也会向当前地址请求。\n\n### 谁调它\n- 骨架：Resources.updateProviders 建供应商时调（[Resources.ts L287](#lines=Resources.json&line=287)）。\n- 插件：decision 的分类器也用它拿鉴权。",
     "sources": [
       "src7/Resources.ts"
     ]
   },
   {
     "id": "r-resources-18",
-    "parent": "r-resources-g5",
-    "title": "L353–L388 拼出模型对象",
-    "summary": "照“供应商名/模型 ID”拼出 Sessions.chat() 要的 pi 模型对象。",
-    "body": "**行号：L353–L388**\n\n### 代码原文\n```ts\n353    /**\n354     * 照“供应商名/模型 ID”拼出 pi 的模型对象。\n355     * @param name 供应商名/模型 ID。\n356     * @returns Sessions.chat() 要的那个模型。\n357     * @throws 供应商不在配置里时抛错。\n358     */\n359    getModel(name: string): piAi.Model<piAi.Api> {\n360      //M 第一个斜杠前是供应商名，后面是模型 ID（模型 ID 自己也可以带斜杠）。\n361      const slash = name.indexOf('/');\n362      const providerName = name.slice(0, slash);\n363      const id = name.slice(slash + 1);\n364  \n365      //G 供应商不在配置里 → 抛错。\n366      const provider = this.config.providers[providerName];\n367      if (provider === undefined) {\n368        throw new Error(`模型 ${name} 的供应商不在 config.yaml 的 providers 里`);\n369      }\n370  \n371      /** 手写的四项：contextWindow、maxTokens、reasoning、input；没写用保守值。 */\n372      const written = provider.models[id] ?? checks.MODEL_DEFAULTS;\n373      //M 兼容设置：供应商的 compat，再盖上这个模型自己的 model_compat。\n374      const compat = { ...provider.compat, ...provider.modelCompat[id] };\n375  \n376      //M 拼成 pi 的模型对象；骨架不算费用，cost 都写 0。\n377      return {\n378        id,\n379        name: id,\n380        provider: providerName,\n381        baseUrl: provider.baseUrl,\n382        api: provider.api,\n383        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },\n384        compat,\n385        ...written,\n386      } as piAi.Model<piAi.Api>;\n387    }\n388  }\n```\n\n### 解释\n- L353–L359：文档注释与函数头 `getModel(name)`；供应商不在配置里时抛错。\n- L360–L363：第一个斜杠前是供应商名，后面是模型 ID（ID 自己也能带斜杠）。\n- L365–L369：供应商不在当前配置的 providers 里 → 抛错。\n- L371–L374：手写的四项（没写用 MODEL_DEFAULTS 保守值）；兼容设置是 compat 再盖上 model_compat。\n- L376–L386：拼成 pi 的模型对象，cost 都写 0（骨架不算费用）。\n- L387–L388：方法和类结束；L364、L370、L375 空行。\n\n### 这段代码调用了\n- `checks.MODEL_DEFAULTS`（[Checks.ts:42](src7/utils/Checks.ts:42) · 骨架工具）—— 没手写参数的模型用的保守值。",
+    "parent": "r-resources-g3",
+    "title": "L382–L393 取运行时目录下的文件夹 ensureRuntimeDir",
+    "summary": "把给的文件夹名接在运行时目录后面，没有就建，交回绝对路径。",
+    "body": "**行号：L382–L393**\n\n### 代码原文\n```ts\n382    /**\n383     * 运行时目录下的一个文件夹，没有就建。\n384     * @param parts 一层层的文件夹名，比如 ensureRuntimeDir('bots', '助手', 'workspace')。\n385     * @returns 绝对路径。\n386     * 副作用：可能建目录。\n387     */\n388    ensureRuntimeDir(...parts: string[]): string {\n389      const full = path.join(this.root, ...parts);\n390      //M 确保运行时目录下的目标路径可供调用方使用。\n391      return filesModule.ensureDir(full);\n392    }\n393  \n```\n\n### 解释\n- L389：接路径。\n- L391：没有就建，交回绝对路径。\n\n### 这段代码调用了\n- `filesModule.ensureDir`（[Files.ts:47](src7/utils/Files.ts:47) · 骨架工具）—— 确保目录存在，交回它的路径。\n\n### 谁调它\n- 骨架：Resources 构造函数取 data 文件夹放数据库。\n- 插件：bots、feishu、memory、relay、http、screen、progress、model-catalog、journal、programs 等用它取自己的文件夹，比如 `ensureRuntimeDir('bots', '助手', 'workspace')`。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-19",
+    "parent": "r-resources-g3",
+    "title": "L394–L457 拼出模型对象 getModel",
+    "summary": "“供应商/模型”拆成两半；供应商不在配置里就抛错；用配置的模型字段（没写的取保守值）拼出 pi 的 Model；没写思考档映射时沿用 pi 内置的。",
+    "body": "**行号：L394–L457**\n\n### 代码原文\n```ts\n394    /**\n395     * 照“供应商名/模型 ID”拼出 pi 的模型对象。\n396     * @param name 供应商名/模型 ID。\n397     * @returns Sessions.chat() 用的 pi-ai `Model<Api>`，是一份可发对话请求的模型定义。\n398     * - `id` 是供应商中的模型标识。\n399     * - `provider` 是供应商标识。\n400     * - `baseUrl` 是接口地址。\n401     * - `api` 是接口适配器标识。`Api` 包含已知标识和扩展字符串。\n402     *   jmbots 在这里用 `'openai-completions'`、`'openai-responses'` 或 `'anthropic-messages'`。\n403     * - `input` 列出支持的输入模态，元素为 `'text'` 或 `'image'`。\n404     * - `reasoning` 表示模型是否支持思考。\n405     * - `thinkingLevelMap` 保存配置或 pi 内置的档位映射。\n406     * - `contextWindow` 是上下文 token 窗口。\n407     * - `maxTokens` 是模型声明的输出 token 上限。\n408     * - `cost` 是输入、输出和缓存的计费单价。\n409     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:643，`BaseModel` 与 `Api` 见同文件 630、21 行。\n410     * @throws 供应商不在配置里时抛错。\n411     */\n412    getModel(name: string): piAi.Model<piAi.Api> {\n413      //M 第一个斜杠前是供应商名，后面是模型 ID（模型 ID 自己也可以带斜杠）。\n414      const slash = name.indexOf('/');\n415      const providerName = name.slice(0, slash);\n416      const id = name.slice(slash + 1);\n417  \n418      //G 供应商不在配置里 → 抛错。\n419      const provider = this.config.providers[providerName];\n420      if (provider === undefined) {\n421        throw new Error(`模型 ${name} 的供应商不在 config.yaml 的 providers 里`);\n422      }\n423  \n424      /** 经过校验的模型字段，未手写的模型先取保守值。 */\n425      const written = provider.models[id] ?? checks.MODEL_DEFAULTS;\n426      //M 兼容设置：供应商的 compat，再盖上这个模型自己的 model_compat。\n427      const compat = { ...provider.compat, ...provider.modelCompat[id] };\n428  \n429      //M 拼成 pi 的模型对象；骨架不算费用，cost 都写 0。\n430      const model = {\n431        id,\n432        name: id,\n433        provider: providerName,\n434        baseUrl: provider.baseUrl,\n435        api: provider.api,\n436        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },\n437        compat,\n438        ...written,\n439      } as piAi.Model<piAi.Api>;\n440  \n441      //G 先用已校验的配置覆盖映射。\n442      if (model.thinkingLevelMap !== undefined) return model;\n443  \n444      //M 同一供应商、模型和协议才沿用 pi 内置映射，保持配置的请求地址与其他设置。\n445      const builtinProviders = piCatalog.getBuiltinProviders();\n446      const builtinProvider = builtinProviders.find((item) => item === providerName);\n447      if (builtinProvider === undefined) return model;\n448  \n449      const builtinModels: piAi.Model<piAi.Api>[] = piCatalog.getBuiltinModels(builtinProvider);\n450      const builtin = builtinModels.find((item) => item.id === id && item.api === provider.api);\n451      if (builtin?.thinkingLevelMap === undefined) return model;\n452  \n453      model.thinkingLevelMap = { ...builtin.thinkingLevelMap };\n454      model.reasoning = builtin.reasoning;\n455      return model;\n456    }\n457  }\n```\n\n### 解释\n- 三步见下面三个子块。\n\n### 谁调它\n- 骨架：Sessions.chat 每次发请求先取模型对象（[Sessions.ts L522](#lines=Sessions.json&line=522)）。\n- 插件：bots、context-fit、file-tools、model-catalog、programs、screen、voice 也用它查模型。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-19-1",
+    "parent": "r-resources-19",
+    "title": "L394–L423 拆名字、查供应商",
+    "summary": "第一个斜杠前是供应商名，后面是模型 ID；供应商不在配置里就抛错。",
+    "body": "**行号：L394–L423**\n\n### 代码原文\n```ts\n394    /**\n395     * 照“供应商名/模型 ID”拼出 pi 的模型对象。\n396     * @param name 供应商名/模型 ID。\n397     * @returns Sessions.chat() 用的 pi-ai `Model<Api>`，是一份可发对话请求的模型定义。\n398     * - `id` 是供应商中的模型标识。\n399     * - `provider` 是供应商标识。\n400     * - `baseUrl` 是接口地址。\n401     * - `api` 是接口适配器标识。`Api` 包含已知标识和扩展字符串。\n402     *   jmbots 在这里用 `'openai-completions'`、`'openai-responses'` 或 `'anthropic-messages'`。\n403     * - `input` 列出支持的输入模态，元素为 `'text'` 或 `'image'`。\n404     * - `reasoning` 表示模型是否支持思考。\n405     * - `thinkingLevelMap` 保存配置或 pi 内置的档位映射。\n406     * - `contextWindow` 是上下文 token 窗口。\n407     * - `maxTokens` 是模型声明的输出 token 上限。\n408     * - `cost` 是输入、输出和缓存的计费单价。\n409     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:643，`BaseModel` 与 `Api` 见同文件 630、21 行。\n410     * @throws 供应商不在配置里时抛错。\n411     */\n412    getModel(name: string): piAi.Model<piAi.Api> {\n413      //M 第一个斜杠前是供应商名，后面是模型 ID（模型 ID 自己也可以带斜杠）。\n414      const slash = name.indexOf('/');\n415      const providerName = name.slice(0, slash);\n416      const id = name.slice(slash + 1);\n417  \n418      //G 供应商不在配置里 → 抛错。\n419      const provider = this.config.providers[providerName];\n420      if (provider === undefined) {\n421        throw new Error(`模型 ${name} 的供应商不在 config.yaml 的 providers 里`);\n422      }\n423  \n```\n\n### 解释\n- L414：第一个斜杠前是供应商名，后面是模型 ID（ID 自己也可以带斜杠）。\n- L420–L422：守卫：供应商不在配置里 → 抛错。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-19-2",
+    "parent": "r-resources-19",
+    "title": "L424–L440 拼成 pi 的模型对象",
+    "summary": "取手写的模型字段（没写的用保守默认），合并兼容设置；cost 全写 0，骨架不算费用。",
+    "body": "**行号：L424–L440**\n\n### 代码原文\n```ts\n424      /** 经过校验的模型字段，未手写的模型先取保守值。 */\n425      const written = provider.models[id] ?? checks.MODEL_DEFAULTS;\n426      //M 兼容设置：供应商的 compat，再盖上这个模型自己的 model_compat。\n427      const compat = { ...provider.compat, ...provider.modelCompat[id] };\n428  \n429      //M 拼成 pi 的模型对象；骨架不算费用，cost 都写 0。\n430      const model = {\n431        id,\n432        name: id,\n433        provider: providerName,\n434        baseUrl: provider.baseUrl,\n435        api: provider.api,\n436        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },\n437        compat,\n438        ...written,\n439      } as piAi.Model<piAi.Api>;\n440  \n```\n\n### 解释\n- L425：没手写的模型取保守值。\n- L427：兼容设置：供应商共用的，再盖上这个模型自己的。\n- L430–L439：拼出模型对象。\n\n### 这段代码调用了\n- `checks.MODEL_DEFAULTS`（[Checks.ts:44](src7/utils/Checks.ts:44) · 骨架工具）—— 没手写的模型用的保守值：窗口 12.8 万、最大输出 8192、不思考、只收文字。",
+    "sources": [
+      "src7/Resources.ts"
+    ]
+  },
+  {
+    "id": "r-resources-19-3",
+    "parent": "r-resources-19",
+    "title": "L441–L457 没写思考档映射就沿用 pi 内置的",
+    "summary": "配置里已写思考档映射就直接用；否则同供应商、同模型、同协议才沿用 pi 内置的映射。",
+    "body": "**行号：L441–L457**\n\n### 代码原文\n```ts\n441      //G 先用已校验的配置覆盖映射。\n442      if (model.thinkingLevelMap !== undefined) return model;\n443  \n444      //M 同一供应商、模型和协议才沿用 pi 内置映射，保持配置的请求地址与其他设置。\n445      const builtinProviders = piCatalog.getBuiltinProviders();\n446      const builtinProvider = builtinProviders.find((item) => item === providerName);\n447      if (builtinProvider === undefined) return model;\n448  \n449      const builtinModels: piAi.Model<piAi.Api>[] = piCatalog.getBuiltinModels(builtinProvider);\n450      const builtin = builtinModels.find((item) => item.id === id && item.api === provider.api);\n451      if (builtin?.thinkingLevelMap === undefined) return model;\n452  \n453      model.thinkingLevelMap = { ...builtin.thinkingLevelMap };\n454      model.reasoning = builtin.reasoning;\n455      return model;\n456    }\n457  }\n```\n\n### 解释\n- L442：守卫：配置里写了就用配置的。\n- L445–L451：找 pi 内置的同名供应商和同 ID、同协议的模型；找不到就原样交回。\n- L453：沿用内置的档位映射和是否思考。\n\n### 这段代码调用了\n- `piCatalog.getBuiltinProviders / getBuiltinModels`（@earendil-works/pi-ai · Node 或第三方）—— pi 自带的供应商和模型目录。",
     "sources": [
       "src7/Resources.ts"
     ]

@@ -76,7 +76,7 @@ function makeBench(withBot = true): Bench {
 
   const resources = {
     db,
-    dir: (...parts: string[]): string => {
+    ensureRuntimeDir: (...parts: string[]): string => {
       const full = path.join(root, ...parts);
       fs.mkdirSync(full, { recursive: true });
       return full;

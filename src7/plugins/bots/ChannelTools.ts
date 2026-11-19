@@ -105,7 +105,7 @@ export class ChannelTools {
       this.currentCallId.delete(done.session.id);
     });
 
-    this.ctx.on('session/request', (request) => {
+    this.ctx.on('session/before-model', (request) => {
       this.filterTools(request);
     });
   }
@@ -224,15 +224,17 @@ export class ChannelTools {
       //M 计算标准回复幂等键，供受管后台转前台排队及拒收校验共用。
       const replyRequestKey = protocol.getReplyRequestKey(roundKey, callId);
       const workCross = this.getRequestedTarget(workSnapshot, rawChannel, rawChat);
+      const receiptSource: protocol.ReceiptSource = {
+        replyRequestKey,
+        replyRoundKey: roundKey,
+        replyIndex: 0,
+        kind,
+        parts: [{ partId: 'text:0', kind: 'text' }],
+      };
       if (workCross.isElsewhere && !protocol.isHistoryOwner(workSnapshot)) {
         //G 外人或群聊本人在受管后台也不能指定往别的渠道/聊天发话。
-        const denied = this.getRejectedReceipt(
-          replyRequestKey,
-          roundKey,
-          0,
-          kind,
-          this.getCrossForbiddenReason(workSnapshot),
-        );
+        const reason = this.getCrossForbiddenReason(workSnapshot);
+        const denied = protocol.getReceipt(receiptSource, 'rejected', reason);
         return JSON.stringify(denied);
       }
 
@@ -256,19 +258,11 @@ export class ChannelTools {
       };
       //M 将转交通知排入原前台会话单队列，等待原前台整理发回。
       this.ctx.frontDesk.acceptResult(noticeInput, () => undefined);
-      const queuedReceipt: protocol.ReplyReceipt = {
-        v: 2,
-        ok: true,
-        status: 'queued',
-        replyRequestKey,
-        replyRoundKey: roundKey,
-        replyIndex: 0,
-        kind,
-        parts: [{ partId: 'text:0', kind: 'text', status: 'queued', reason: '已转交原前台整理并回复原渠道' }],
-        receiptId: noticeKey,
-        reason: '受管后台不越级直发渠道，已转交原前台',
-        at: Date.now(),
-      };
+      //M 回执分别说明整笔请求和正文段为什么转交，并保留队列编号。
+      const partReason = '已转交原前台整理并回复原渠道';
+      const queuedReceipt = protocol.getReceipt(receiptSource, 'queued', partReason);
+      queuedReceipt.reason = '受管后台不越级直发渠道，已转交原前台';
+      queuedReceipt.receiptId = noticeKey;
       return JSON.stringify(queuedReceipt);
     }
 
@@ -300,20 +294,21 @@ export class ChannelTools {
 
     //M 仅判定当前调用是否要求发到当前绑定聊天之外；若指定别处，先用 isHistoryOwner 验权。
     const requested = this.getRequestedTarget(snapshot, rawChannel, rawChat);
-    const parts: protocol.ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
-    let sendChannel = snapshot.channel;
     let target: protocol.ChannelReplyTarget | undefined;
 
     if (requested.isElsewhere) {
       //G 只有非群聊用户本人（isHistoryOwner）才能往别的渠道或聊天发话，外人与群聊本人直接拒收。
       if (!protocol.isHistoryOwner(snapshot)) {
-        const forbidden = this.getRejectedReceipt(
+        const receiptSource: protocol.ReceiptSource = {
           replyRequestKey,
           replyRoundKey,
           replyIndex,
           kind,
-          this.getCrossForbiddenReason(snapshot),
-        );
+          parts: [{ partId: 'text:0', kind: 'text' }],
+        };
+        //G 用标准回执说明当前身份无法跨聊天发送。
+        const reason = this.getCrossForbiddenReason(snapshot);
+        const forbidden = protocol.getReceipt(receiptSource, 'rejected', reason);
         if (active !== undefined) {
           active.deliveryReceipt = forbidden;
           session.save();
@@ -321,39 +316,13 @@ export class ChannelTools {
         return JSON.stringify(forbidden);
       }
 
-      sendChannel = requested.channel;
       //M 原样传入目标渠道和聊天串，由目标渠道在自己的 channel/reply 监听里识别聊天；bots 不触碰别家数据。
       target = { channel: requested.channel, chat: requested.chat };
     }
 
-    //M 经统一事件 channel/reply 发往目标渠道；目标渠道未挂时由 requestChannelReply 直接回报“渠道 X 没挂”。
-    const hashInput: { kind: protocol.ReplyKind; mode: 'text'; parts: protocol.ReplyPartInput[]; target?: protocol.ChannelReplyTarget } = {
-      kind,
-      mode: 'text',
-      parts,
-    };
-    if (target !== undefined) {
-      hashInput.target = target;
-    }
-    //M 计算包含 target 在内的正文摘要哈希。
-    const payloadHash = protocol.getPayloadHash(hashInput);
-    const replyReq: Omit<protocol.ChannelReplyRequest, 'requestId'> = {
-      channel: sendChannel,
-      bot: snapshot.botName,
-      replyRequestKey,
-      replyRoundKey,
-      replyIndex,
-      kind,
-      mode: 'text',
-      sourceSnapshot: structuredClone(snapshot),
-      payloadHash,
-      parts,
-    };
-    if (target !== undefined) {
-      replyReq.target = target;
-    }
-    //M 经 channel/reply 发出回复请求；未挂载渠道由协议层直接回“渠道 X 没挂”。
-    const receipt = await protocol.requestChannelReply(this.ctx, replyReq);
+    const options = { replyRequestKey, replyRoundKey, replyIndex, kind, target };
+    //M 统一发送文字，让目标渠道识别指定的聊天并交回回执。
+    const receipt = await protocol.requestTextReply(this.ctx, snapshot, text, options);
 
     if (active !== undefined) {
       //M 将渠道返回的真实发送回执落盘记到当前活动队列项。
@@ -361,36 +330,6 @@ export class ChannelTools {
       session.save();
     }
     return JSON.stringify(receipt);
-  }
-
-  /**
-   * 构造标准 v2 拒绝发送回执。
-   * @param replyRequestKey 本次请求幂等键。
-   * @param replyRoundKey 所属回复轮键。
-   * @param replyIndex 本轮序号。
-   * @param kind 回复类别。
-   * @param reason 拒绝原因说明。
-   * @returns rejected 状态的 ReplyReceipt。
-   */
-  private getRejectedReceipt(
-    replyRequestKey: string,
-    replyRoundKey: string,
-    replyIndex: number,
-    kind: protocol.ReplyKind,
-    reason: string,
-  ): protocol.ReplyReceipt {
-    return {
-      v: 2,
-      ok: false,
-      status: 'rejected',
-      replyRequestKey,
-      replyRoundKey,
-      replyIndex,
-      kind,
-      parts: [{ partId: 'text:0', kind: 'text', status: 'rejected', reason }],
-      reason,
-      at: Date.now(),
-    };
   }
 
   /**
@@ -588,14 +527,7 @@ export class ChannelTools {
   private async runHistory(mode: protocol.ChannelHistoryMode, args: Record<string, unknown>, session: Session): Promise<string> {
     const snapshot = this.getHistorySnapshot(session);
     if (snapshot === undefined) {
-      const err: protocol.ChannelHistoryResult = {
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: '',
-        completeness: 'unsupported',
-        error: { code: 'no_channel_binding', message: '当前会话没有绑定的渠道来源快照' },
-      };
+      const err = protocol.getHistoryError('', 'unsupported', 'no_channel_binding', '当前会话没有绑定的渠道来源快照');
       return JSON.stringify(err);
     }
 
@@ -641,44 +573,20 @@ export class ChannelTools {
 
     //G visible 模式必须传非空 senderId。
     if (mode === 'visible' && (senderId === undefined || senderId === '')) {
-      const bad: protocol.ChannelHistoryResult = {
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'invalid_argument', message: '按发言人查询需要提供非空的 senderId' },
-      };
+      const message = '按发言人查询需要提供非空的 senderId';
+      const bad = protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'invalid_argument', message);
       return JSON.stringify(bad);
     }
 
     //G 外人（guest / builder）指定其他渠道或当前聊天之外的任何聊天一律拒绝。
     if (!isOwner && requestedChannel !== snapshot.channel) {
-      const forbidden: protocol.ChannelHistoryResult = {
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: {
-          code: 'forbidden',
-          message: `外人（${snapshot.role}）只能查询当前渠道（${snapshot.channel}）的历史，不能跨渠道查询 ${requestedChannel}`,
-        },
-      };
+      const message = `外人（${snapshot.role}）只能查询当前渠道（${snapshot.channel}）的历史，不能跨渠道查询 ${requestedChannel}`;
+      const forbidden = protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'forbidden', message);
       return JSON.stringify(forbidden);
     }
     if (!isOwner && requestedChatId !== undefined && requestedChatId !== snapshot.chatId) {
-      const forbidden: protocol.ChannelHistoryResult = {
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: {
-          code: 'forbidden',
-          message: `外人（${snapshot.role}）只能查询当前聊天（${snapshot.chatId}）的历史，无权查看别的聊天 ${requestedChatId}`,
-        },
-      };
+      const message = `外人（${snapshot.role}）只能查询当前聊天（${snapshot.chatId}）的历史，无权查看别的聊天 ${requestedChatId}`;
+      const forbidden = protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'forbidden', message);
       return JSON.stringify(forbidden);
     }
 

@@ -54,6 +54,7 @@ class FakeResources extends cordis.Service {
   readonly root: string;
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -69,7 +70,7 @@ class FakeResources extends cordis.Service {
     };
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -196,7 +197,7 @@ test('1. legacy_auto 兼容与回执语义隔离：bots.receive 照常自动发 
   await ctx.plugin(workspacesPlugin);
   await ctx.plugin(botsPlugin, {});
 
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     let said = '';
     if (last?.role === 'user') {
@@ -265,7 +266,7 @@ test('2. 单飞书账号单机器人：channel/message → claim 去重 → chan
 
   //M 假模型：第一步调用 channel_reply 并故意在 text 里包含 @真实文件路径；收到工具结果后收尾只输出普通助手文本（验证不自动发送）。
   const toolResults: string[] = [];
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       const txt = piAi.contentText(last.content);
@@ -383,7 +384,7 @@ test('3. 多机器人独立认领与 approval 仅消费一次：同条消息两�
   const stub = stubFeishuClient(feishu, appId, records, { botOpenId: 'ou_bot' });
 
   const repliedBots: string[] = [];
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       repliedBots.push(request.session.row.bot);
@@ -478,7 +479,7 @@ test('4. 渠道历史工具：默认 80 条与可配条数、before 游标翻页
   let savedSource: channels.SourceSnapshot | undefined;
   let forbiddenText: string | undefined;
 
-  ctx.on('session/request', async (request) => {
+  ctx.on('session/before-model', async (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       if (last.toolName === 'memory_get') {
@@ -671,7 +672,7 @@ test('5. 零次回复兜底：0 次调用只触发一次“你还没调用回复
   });
   let concurrentInjected = false;
 
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     systemSeen.push([...request.system]);
     const hasReminder = request.system.includes('你还没调用回复工具');
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
@@ -844,7 +845,7 @@ test('6. 重放同一前台归档事件只写一条往来和一份正文', async
     const saved = archive.record(entry);
     writes.push(saved);
   });
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     //M 用假模型回复，让这轮会话走完，避免发网络请求。
     const last = request.messages.at(-1);
     const summary = '已完成';

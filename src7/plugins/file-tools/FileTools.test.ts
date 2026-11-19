@@ -93,8 +93,8 @@ async function setup(): Promise<{ ctx: cordis.Context; workspace: string; root: 
   await ctx.plugin(FakeResources);
   await ctx.plugin(toolsModule.Tools);
   await ctx.plugin(FakeBots, workspace);
-  //M 模拟前台优先挂上 session/request（例如在前台替换 request.messages），验证 file-tools 排在其后。
-  ctx.on('session/request', (request) => {
+  //M 模拟前台优先挂上 session/before-model（例如在前台替换 request.messages），验证 file-tools 排在其后。
+  ctx.on('session/before-model', (request) => {
     if (request.session.row.kind === 'front' && request.messages.length === 0) {
       request.messages = [{ role: 'user', content: '未赋值占位', timestamp: Date.now() }];
     }
@@ -108,8 +108,8 @@ describe('file-tools（含 BaseTools 并入）', () => {
   test('版本为 1.1.1，front 与 work 的工具集合与预期一致', async () => {
     expect(fileToolsModule.version).toBe('1.1.1');
     const { ctx } = await setup();
-    const frontNames = ctx.tools.list('front').map((tool) => tool.name);
-    const workNames = ctx.tools.list('work').map((tool) => tool.name);
+    const frontNames = ctx.tools.listToolsForSessionKind('front').map((tool) => tool.name);
+    const workNames = ctx.tools.listToolsForSessionKind('work').map((tool) => tool.name);
 
     expect(frontNames).toEqual(['time', 'read', 'list_dir', 'find']);
     expect(workNames).toEqual(['time', 'read', 'list_dir', 'write', 'edit', 'find']);
@@ -219,7 +219,7 @@ describe('file-tools（含 BaseTools 并入）', () => {
     expect(fs.existsSync(path.join(workspace, 'own.txt'))).toBe(false);
   });
 
-  test('session/request 监听：看图模型接入用户 @图片块，非看图模型注入不写识图脚本提醒', async () => {
+  test('session/before-model 监听：看图模型接入用户 @图片块，非看图模型注入不写识图脚本提醒', async () => {
     const { ctx, workspace } = await setup();
     const picPath = path.join(workspace, 'snap.png');
     fs.writeFileSync(picPath, PNG_BYTES);
@@ -237,7 +237,7 @@ describe('file-tools（含 BaseTools 并入）', () => {
       tools: [],
       stop: undefined,
     } as unknown as ChatRequest;
-    await ctx.serial('session/request', visionReq);
+    await ctx.serial('session/before-model', visionReq);
 
     const userContent = visionReq.messages[0]?.content;
     expect(Array.isArray(userContent)).toBe(true);
@@ -254,7 +254,7 @@ describe('file-tools（含 BaseTools 并入）', () => {
       tools: [],
       stop: undefined,
     } as unknown as ChatRequest;
-    await ctx.serial('session/request', textReq);
+    await ctx.serial('session/before-model', textReq);
 
     expect(textReq.messages.some((m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('不要自己写 OCR'))).toBe(true);
   });

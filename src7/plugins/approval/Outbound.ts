@@ -2,7 +2,7 @@
 import * as crypto from 'node:crypto';
 import type * as sqlite from 'bun:sqlite';
 import type * as cordis from 'cordis';
-import type { ChannelRepliedEvent, ReplyStatus } from '../../Channels.ts';
+import * as channels from '../../Channels.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type { FeishuAddress } from '../feishu/index.ts';
 import type { ApprovedCall, ChannelSendResult, ProgramDraft, ProviderReceipt } from '../programs/ChannelSend.ts';
@@ -88,17 +88,15 @@ type OutboundResult = events.ResultEnvelope & (
 declare module 'cordis' {
   interface Events {
     /**
-     * 程序界面请 approval 读取或明确确认发件意图。
-     * 谁发：
-     *   src7/plugins/approval/Outbound.ts 的 requestOutbound（主站及程序界面入口共用）
+     * 主站和程序界面共用入口，请 approval 读取或明确确认发件意图。
+     * 谁发：src7/plugins/approval/Outbound.ts 的 requestOutbound
      * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
      */
     'approval/outbound-request'(request: OutboundRequest): void | Promise<void>;
     /**
-     * 本次确认的单独回执，和普通审批、模型回复隔离。
+     * 交回主站和程序界面的单独回执，和普通审批、模型回复隔离。
      * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
-     * 谁接：
-     *   src7/plugins/approval/Outbound.ts 的 requestOutbound（主站及程序界面入口共用）
+     * 谁接：src7/plugins/approval/Outbound.ts 的 requestOutbound
      */
     'approval/outbound-result'(result: OutboundResult): void;
     /**
@@ -631,24 +629,26 @@ export class Outbound {
 
   /** 沿用通用 channel/replied；P2 failed 在标准事件中是 rejected。 */
   private publish(row: IntentRow, receipt: ProviderReceipt): void {
-    let status: ReplyStatus = 'rejected';
+    let status: channels.ReplyStatus = 'rejected';
     if (receipt.status !== 'failed') {
       status = receipt.status;
     }
     const round = 'approved-send:' + row.send_id;
     const key = JSON.stringify([round, row.send_id]);
-    const notice: ChannelRepliedEvent = {
-      requestId: row.send_id,
+    const source: channels.ReceiptSource = {
+      replyRequestKey: key,
       replyRoundKey: round,
-      receipt: {
-        v: 2, ok: receipt.status === 'sent', status, replyRequestKey: key, replyRoundKey: round,
-        replyIndex: 0, kind: 'final', parts: [{ partId: 'text', kind: 'text', status, reason: receipt.reason }],
-        reason: receipt.reason, at: this.now(),
-      },
+      replyIndex: 0,
+      kind: 'final',
+      parts: [{ partId: 'text', kind: 'text' }],
     };
+    //M 标准回执沿用发送意图使用的注入时钟。
+    const result = channels.getReceipt(source, status, receipt.reason);
+    result.at = this.now();
+    const notice = { requestId: row.send_id, replyRoundKey: round };
     try {
       //M 回执已经落库，订阅者出错也不影响后续核对。
-      this.ctx.emit('channel/replied', notice);
+      channels.emitReplied(this.ctx, notice, result);
     } catch {
       console.error('外部渠道发送回执通知失败');
     }

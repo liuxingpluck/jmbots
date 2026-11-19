@@ -13,7 +13,6 @@ import * as streamPromises from 'node:stream/promises';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as mime from '../../utils/Mime.ts';
-import * as text from '../../utils/Text.ts';
 import * as failureModule from '../../utils/Failure.ts';
 
 
@@ -60,46 +59,27 @@ export class FilesApi {
         done(null, payload);
       });
       //M 上传接口只使用这个子作用域的原始流解析器，不影响外面的 JSON 接口。
-      scope.put<{ Params: { name: string } }>('/api/uploads/:name', (request, reply) => {
+      scope.put<{ Params: { name: string } }>('/api/uploads/:name', (request) => {
         const body = request.body as NodeJS.ReadableStream | undefined;
-        return this.answer(reply, () => this.upload(request.params.name, body));
+        return this.upload(request.params.name, body);
       });
     });
 
-    //M 登记按绝对路径读取文件的接口，统一包装异常并支持 Range 分段传输。
+    //M 登记按绝对路径读取文件的接口，支持 Range 分段传输。
     app.get<{ Querystring: { path?: unknown } }>('/api/files', (request, reply) => {
-      return this.answer(reply, () => this.send(request.query.path, request, reply));
+      return this.send(request.query.path, request, reply);
     });
 
     //M 路径相对运行时目录（用户 11-05：方便别的程序直接拿网址取），拼成绝对路径后和 /api/files 走同一条路。
     app.get<{ Params: { '*': string } }>('/files/*', (request, reply) => {
       const file = path.join(this.root, request.params['*']);
-      return this.answer(reply, () => this.send(file, request, reply));
+      return this.send(file, request, reply);
     });
 
     //M 登记列目录接口，返回受控目录下非敏感文件与子目录列表。
-    app.get<{ Querystring: { path?: unknown } }>('/api/files/list', (request, reply) => {
-      return this.answer(reply, () => this.list(request.query.path));
+    app.get<{ Querystring: { path?: unknown } }>('/api/files/list', (request) => {
+      return this.list(request.query.path);
     });
-  }
-
-  /**
-   * 四个接口共用的出错处理：Failure 照它的状态码回，别的错误回 400（同 0.4），都是 { error: 一句话 }。
-   * @param reply 回应。
-   * @param work 这个接口真正要做的事。
-   * @returns work 的结果；出错时是已经发出去的 reply。
-   */
-  private async answer(reply: fastify.FastifyReply, work: () => Promise<unknown>): Promise<unknown> {
-    try {
-      return await work();
-    } catch (error) {
-      let status = 400;
-      if (error instanceof failureModule.Failure) {
-        status = error.status;
-      }
-      //M 把 Failure 的状态码或兜底的 400 转成 { error } JSON 回给前端。
-      return reply.code(status).send({ error: text.getMessage(error) });
-    }
   }
 
   /**
@@ -149,7 +129,7 @@ export class FilesApi {
     const id = stamp + String(Math.floor(Math.random() * 1000)).padStart(3, '0');
 
     //M 有请求体就边收边写；没有就写一个空文件。
-    const file = path.join(this.ctx.resources.dir('data', 'tmp', 'uploads'), `${id}_${name}`);
+    const file = path.join(this.ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads'), `${id}_${name}`);
     const writeUpload = async (): Promise<void> => {
       if (body === undefined) {
         await fsp.writeFile(file, '');
@@ -162,9 +142,9 @@ export class FilesApi {
     const size = (await fsp.stat(file)).size;
 
     //T 跟踪：收下一个上传。
-    const vars = { 上传号: id, 文件名: name, 大小: size };
-    this.ctx.emit('trace', 'FilesApi.upload', '收下一个上传，写进暂存目录', 'pipeline(body, createWriteStream(file))', vars);
-    return { id, name, size, kind: mime.getKind(name) };
+    const vars = { uploadId: id, fileName: name, size: size };
+    this.ctx.emit('trace', 'FilesApi.upload', 'trace.web.upload', 'pipeline(body, createWriteStream(file))', vars);
+    return { id, name, size, kind: mime.getFileKind(name) };
   }
 
   /**
@@ -189,7 +169,7 @@ export class FilesApi {
 
     //M 解析 Range 请求头并设置响应头与 MIME 类型，范围非法时直接回 416。
     const range = this.range(request.headers.range, stat.size);
-    reply.header('Accept-Ranges', 'bytes').type(mime.getType(file));
+    reply.header('Accept-Ranges', 'bytes').type(mime.getMimeType(file));
     if (range === 'invalid') return reply.code(416).header('Content-Range', `bytes */${String(stat.size)}`).send();
 
     if (range !== undefined) {

@@ -24,7 +24,7 @@ const STATES: Record<string, string> = { done: '做完了', stopped: '停下了'
  * 对话里新接了一条：追加一段。
  * @param resources 拿运行时目录。
  * @param session 哪场会话。
- * @param message 用户的话、模型的回答、工具的结果。
+ * @param message 要追加的 Message，按 role 区分种类，content 取正文，timestamp 取记录时间。
  * 副作用：写文件。
  */
 export function append(resources: Resources, session: Session, message: piAi.Message): void {
@@ -32,7 +32,7 @@ export function append(resources: Resources, session: Session, message: piAi.Mes
   if (message.role === 'system') return;
 
   //M 把消息时间转成本地时间，供各角色的 Markdown 标题共用。
-  const time = textModule.getClock(message.timestamp, 'date');
+  const time = textModule.formatLocalTime(message.timestamp, 'date');
   if (message.role === 'user') {
     //M 从用户消息提取正文，按原顺序写入对话记录。
     write(resources, session, `## 用户 · ${time}\n\n${piAi.contentText(message.content)}\n`);
@@ -60,7 +60,7 @@ export function append(resources: Resources, session: Session, message: piAi.Mes
   }
 
   //M 截出工具结果的预览，连同工具名和错误标记一起追加。
-  const result = cut.chars(piAi.contentText(message.content), RESULT_MAX_CHARS);
+  const result = cut.clipTextWithLength(piAi.contentText(message.content), RESULT_MAX_CHARS);
   write(resources, session, `## 工具结果 \`${message.toolName}\`${mark} · ${time}\n\n~~~text\n${result}\n~~~\n`);
 }
 
@@ -74,7 +74,7 @@ export function append(resources: Resources, session: Session, message: piAi.Mes
  */
 export function said(resources: Resources, session: Session, text: string): void {
   //M 用当前时间标出助手中途补充的话，追加到对话文件。
-  write(resources, session, `## 中途告诉用户 · ${textModule.getClock(Date.now(), 'date')}\n\n${text}\n`);
+  write(resources, session, `## 中途告诉用户 · ${textModule.formatLocalTime(Date.now(), 'date')}\n\n${text}\n`);
 }
 
 
@@ -87,7 +87,7 @@ export function said(resources: Resources, session: Session, text: string): void
 export function ended(resources: Resources, session: Session): void {
   const state = STATES[session.row.state] ?? session.row.state;
   //M 在轮次分隔线上记录结束状态和时间。
-  write(resources, session, `---\n\n*这一轮${state} · ${textModule.getClock(Date.now(), 'date')}*\n`);
+  write(resources, session, `---\n\n*这一轮${state} · ${textModule.formatLocalTime(Date.now(), 'date')}*\n`);
 }
 
 
@@ -101,7 +101,7 @@ export function ended(resources: Resources, session: Session): void {
 function write(resources: Resources, session: Session, section: string): void {
   const row = session.row;
   //M 按机器人和会话定位对话文件，必要时先写会话头。
-  const file = path.join(resources.dir('bots', row.bot, 'sessions', session.id), '对话.md');
+  const file = path.join(resources.ensureRuntimeDir('bots', row.bot, 'sessions', session.id), '对话.md');
   if (!fs.existsSync(file)) {
     let parent = '';
     if (row.parent !== undefined) {

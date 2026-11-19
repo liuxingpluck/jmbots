@@ -23,7 +23,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   }
 
   //M 统一把图与历史存在当前运行时目录的 data/decision-map 下。
-  const dir = ctx.resources.dir('data', 'decision-map');
+  const dir = ctx.resources.ensureRuntimeDir('data', 'decision-map');
   const store = new storeModule.Store(dir);
   routesModule.mount(ctx, store, helper);
 }

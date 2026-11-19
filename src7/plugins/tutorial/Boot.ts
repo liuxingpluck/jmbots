@@ -70,6 +70,8 @@ interface Step {
   name: string;
   /** 取不到注释时的人话。 */
   fallback: string;
+  /** 实际跟踪点交回的文案编号或旧文案。 */
+  caption?: string;
   /** 什么时刻，毫秒时间戳。 */
   at: number;
   /** 这一步对应哪一行代码。 */
@@ -241,8 +243,8 @@ export class BootTrail {
     this.ctx.on('ready', () => {
       this.onReady();
     });
-    this.ctx.on('trace', (where, _text, _code, vars) => {
-      if (where === 'Http.listen') this.onListen(vars);
+    this.ctx.on('trace', (where, text, _code, vars) => {
+      if (where === 'Http.listen') this.onListen(text, vars);
     });
   }
 
@@ -267,7 +269,7 @@ export class BootTrail {
 
       //M 人话：第一段注释的第一句；取不到用本文件写的那句。
       const summary = docs[0]?.summary ?? '';
-      let text = sourceModule.getFirstSentence(summary);
+      let text = step.caption ?? sourceModule.getFirstSentence(summary);
       if (text === '') {
         text = step.fallback;
       }
@@ -358,7 +360,7 @@ export class BootTrail {
         fn(RESOURCES, 'constructor(ctx: cordis.Context, config: ResourcesConfig)', 'Resources 构造', true),
         fn(RESOURCES, 'function readConfig(', '读入并校验配置', true),
         fn(CHECKS, 'export function checkConfig(', 'checkConfig', true),
-        fn(RESOURCES, '  dir(...parts: string[])', 'Resources.dir', true),
+        fn(RESOURCES, '  ensureRuntimeDir(...parts: string[])', 'Resources.ensureRuntimeDir', true),
         fn(CHECKS, 'function record(', 'record', false),
         fn(CHECKS, 'function list(', 'list', false),
         fn(CHECKS, 'function text(', 'text', false),
@@ -614,13 +616,14 @@ export class BootTrail {
 
   /**
    * 响应跟踪点 Http.listen：HTTP 开始监听，从这一刻起收得到消息。记完叫 Files.ts 写 boot.json。
-   * @param vars http 插件给的关键变量（跟踪点的中文名）：地址、端口、有没有令牌；记成英文键 host、port、hasToken。
+   * @param caption HTTP 跟踪点的文案编号或旧文案。
+   * @param vars http 插件给的跟踪变量，仍接受旧的中文键。
    */
-  private onListen(vars: Record<string, unknown>): void {
+  private onListen(caption: string, vars: Record<string, unknown>): void {
     const facts: Facts = {};
     const keys: Record<string, string> = { 地址: 'host', 端口: 'port', 有令牌: 'hasToken' };
     for (const [said, key] of Object.entries(keys)) {
-      const value = vars[said];
+      const value = vars[key] ?? vars[said];
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         facts[key] = value;
       }
@@ -631,6 +634,7 @@ export class BootTrail {
     this.tail.push({
       node: 'http',
       name: 'Http.listen',
+      caption,
       fallback: 'HTTP 服务开始监听，开始收消息',
       at: Date.now(),
       site: { file: HTTP, find: 'private async listen(' },

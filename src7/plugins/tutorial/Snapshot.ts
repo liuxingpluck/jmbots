@@ -146,7 +146,7 @@ export function group(name: string, note: string, read: () => unknown, previous:
     //M 现取该组服务对象并用 walkState 安全序列化；任一服务读取报错不拖累整份快照。
     value = walkState(read());
   } catch (error) {
-    value = { error: textModule.getMessage(error) };
+    value = { error: textModule.getErrorMessage(error) };
     shown = { error: NOTES['error'] ?? '' };
   }
   //M 序列化对比上一份同名组的 JSON，完全一致直接沿用旧对象节省内存与 diff 开销。

@@ -361,7 +361,7 @@ class FakeResources extends cordis.Service {
   constructor(ctx: cordis.Context) {
     super(ctx, 'resources');
   }
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;

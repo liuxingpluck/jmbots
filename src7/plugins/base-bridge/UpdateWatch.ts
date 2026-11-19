@@ -114,7 +114,7 @@ export class UpdateWatch {
    */
   constructor(private readonly ctx: cordis.Context, private readonly everyMs: number) {
     //M 拼接数据目录下的 update_watch.json 路径，供后续读写已拒版本与换版状态。
-    this.file = path.join(ctx.resources.dir('data'), 'update_watch.json');
+    this.file = path.join(ctx.resources.ensureRuntimeDir('data'), 'update_watch.json');
   }
 
   /**
@@ -143,7 +143,7 @@ export class UpdateWatch {
       //M 发起一轮更新检查，异常就地记日志以保证周期轮询不中断。
       await this.check();
     } catch (error) {
-      console.error(`盯更新：${textModule.getMessage(error)}`);
+      console.error(`盯更新：${textModule.getErrorMessage(error)}`);
     }
     //M 只要未被 stop 清空定时器，就继续按固定周期预约下一轮检查。
     if (this.timer !== undefined) {
@@ -208,7 +208,7 @@ export class UpdateWatch {
       //M 换版已有明确结论，先把 swapping 状态清除落盘以免下一轮重复播报。
       this.save(rest);
       //T 跟踪：报结果。
-      this.ctx.emit('trace', 'UpdateWatch.check', '报更新结果', 'tell(bot, words)', { 版本: version, 基地说: message });
+      this.ctx.emit('trace', 'UpdateWatch.check', 'trace.base.reportUpdate', 'tell(bot, words)', { version: version, desktopMessage: message });
       if (bot !== undefined) {
         this.tell(bot, words);
       }
@@ -277,7 +277,7 @@ export class UpdateWatch {
     }
 
     //T 跟踪：登记新版本。
-    this.ctx.emit('trace', 'UpdateWatch.check', '登记新版本', "requestEvent('approval/request', ask)", { 版本: available.version, 待确认: asked.pending.id });
+    this.ctx.emit('trace', 'UpdateWatch.check', 'trace.base.registerUpdate', "requestEvent('approval/request', ask)", { version: available.version, approvalId: asked.pending.id });
   }
 
   /**
@@ -315,14 +315,14 @@ export class UpdateWatch {
       //M 基地已接受换版请求，记下 swapping 状态待下一轮检查向用户播报结果。
       this.save({ ...state, swapping: { version, bot: pending.bot } });
       //T 跟踪：叫基地换。
-      this.ctx.emit('trace', 'UpdateWatch.onDecided', '叫基地换', "base.postJson('/update/apply')", { 版本: version });
+      this.ctx.emit('trace', 'UpdateWatch.onDecided', 'trace.base.applyUpdate', "base.postJson('/update/apply')", { version: version });
     } catch (error) {
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       //G 基地可能已经收到 POST。只记原因，保留占用给中控核对。
       if (reason === '基地没响应') {
         this.uncertainSwap = { version };
-        const vars = { 版本: version, 原因: reason };
-        this.ctx.emit('trace', 'UpdateWatch.onDecided', '换版结果不确定', 'base.postJson', vars);
+        const vars = { version: version, reason: reason };
+        this.ctx.emit('trace', 'UpdateWatch.onDecided', 'trace.base.updateUncertain', 'base.postJson', vars);
         console.error(`盯更新：换版到 ${version} 结果不确定（${reason}）`);
         return;
       }
@@ -378,8 +378,8 @@ export class UpdateWatch {
     this.uncertainSwap = undefined;
     if (this.uncertainApproval === version) this.uncertainApproval = undefined;
 
-    const vars = { 版本: version, 核对结果: outcome };
-    this.ctx.emit('trace', 'UpdateWatch.reconcile', '已核对换版结果并解除占用', 'GET /update', vars);
+    const vars = { version: version, reconciledOutcome: outcome };
+    this.ctx.emit('trace', 'UpdateWatch.reconcile', 'trace.base.reconcileUpdate', 'GET /update', vars);
   }
 
   /** 说给这个机器人的前台会话；没有只打跟踪点。 */
@@ -387,7 +387,7 @@ export class UpdateWatch {
     //M sessions.find 照记录的项找（bot、kind 是插件加的项）；新的在前。
     const front = this.ctx.sessions.find({ bot, kind: 'front' })[0];
     if (front === undefined) {
-      this.ctx.emit('trace', 'UpdateWatch.tell', '没有前台会话，说不了', 'sessions.find', { 机器人: bot, 话: text });
+      this.ctx.emit('trace', 'UpdateWatch.tell', 'trace.base.noFrontSession', 'sessions.find', { bot: bot, spoken: text });
       return;
     }
     //M 打开该机器人的最新前台会话，发通知 bot/say 把更新结果或提示告诉用户（bots 听它，按会话的渠道发出去）。
@@ -455,13 +455,8 @@ export function mountUpdateWatch(ctx: cordis.Context, settings: UpdateWatchSetti
         return reply.code(400).send({ error: '请提供 version 和 applied 或 not-applied 的 outcome' });
       }
 
-      try {
-        await watch.reconcile(version, outcome);
-      } catch (error) {
-        if (error instanceof failureModule.Failure) return reply.code(error.status).send({ error: error.message });
-
-        throw error;
-      }
+      //M 已核验的结论交给换版监听器，错误由 HTTP 插件返回。
+      await watch.reconcile(version, outcome);
       return { ok: true };
     });
   });

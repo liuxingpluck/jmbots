@@ -10,6 +10,8 @@ import * as textModule from '../../utils/Text.ts';
 import type { MessageRecord } from './Timeline.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as traceText from '../../../web/src/locales/Trace.ts';
+import * as trailModule from '../journal/Trail.ts';
 
 
 /** 一句回话的生成依据，形状照网页的 ReplyGeneration（web/src/Types.ts:149-172）。 */
@@ -73,6 +75,7 @@ export function getGeneration(row: SessionRow | undefined, text: string): Genera
   };
   if (row === undefined) return program;
 
+  //M AssistantMessage 是模型回答。按 role 找到回答，从 content 取正文，用 timestamp 对齐轨迹。
   const assistants = row.messages.filter((item): item is piAi.AssistantMessage => item.role === 'assistant');
   const last = assistants.at(-1);
   if (last === undefined) return program;
@@ -128,8 +131,8 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
       }
       //M 保留输入字数，将正文缩成网页步骤可展示的预览。
       all.push({
-        seq, at: message.timestamp, row: '用户', eventType: 'session/message（user）',
-        event: { text: textModule.clip(text, STEP_TEXT_MAX), chars: text.length },
+        seq, at: message.timestamp, row: '用户', eventType: 'session/new-message（user）',
+        event: { text: textModule.clipText(text, STEP_TEXT_MAX), chars: text.length },
         stateBefore: 'idle', stateAfter: 'wait_response', ...empty,
       });
       return;
@@ -154,7 +157,7 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
       //M 为模型步骤记录模型名、正文预览、工具调用和用量。
       const event = {
         model: `${message.provider}/${message.model}`,
-        text: textModule.clip(piAi.contentText(message.content), STEP_TEXT_MAX),
+        text: textModule.clipText(piAi.contentText(message.content), STEP_TEXT_MAX),
         calls,
         stopReason: message.stopReason,
         input: message.usage.input,
@@ -162,7 +165,7 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
         ms,
       };
       all.push({
-        seq, at: message.timestamp, row: 'E2', eventType: 'session/message（assistant）', event,
+        seq, at: message.timestamp, row: 'E2', eventType: 'session/new-message（assistant）', event,
         stateBefore: 'wait_response', stateAfter, ...empty,
       });
       return;
@@ -176,8 +179,8 @@ export function steps(row: SessionRow, after: number, limit: number): SessionSte
         stepRow = 'E4';
       }
       all.push({
-        seq, at: message.timestamp, row: stepRow, eventType: 'session/message（toolResult）',
-        event: { name: message.toolName, ok: !message.isError, resultChars: result.length, result: textModule.clip(result, STEP_TEXT_MAX) },
+        seq, at: message.timestamp, row: stepRow, eventType: 'session/new-message（toolResult）',
+        event: { name: message.toolName, ok: !message.isError, resultChars: result.length, result: textModule.clipText(result, STEP_TEXT_MAX) },
         stateBefore: 'run_tools', stateAfter: 'wait_response', ...empty,
       });
     }
@@ -296,7 +299,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
       sessionId: reply.sessionId,
       at: reply.at,
       //M 限制目标回话预览长度，保留完整字数供网页显示。
-      text: textModule.clip(reply.text, TRACE_TEXT_MAX),
+      text: textModule.clipText(reply.text, TRACE_TEXT_MAX),
       textChars: reply.text.length,
       sessionTitle: input.sessionTitle,
       workspace: 'workspace',
@@ -313,7 +316,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
       channel: message.channel,
       source: message.source,
       //M 限制原消息预览长度，保留完整字数供网页显示。
-      text: textModule.clip(message.text, TRACE_TEXT_MAX),
+      text: textModule.clipText(message.text, TRACE_TEXT_MAX),
       textChars: message.text.length,
       createdAt: message.createdAt,
       file: '',
@@ -329,6 +332,10 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
       if (event.kind === '事件') {
         source = event.listeners.join('、');
         data['listeners'] = event.listeners;
+        if (traceText.getTraceModeId(event.mode) !== event.mode) {
+          const text = trailModule.getEventTextId(event, event.name);
+          if (text !== '') data['text'] = text;
+        }
       }
       if (event.text !== '') {
         data['text'] = event.text;

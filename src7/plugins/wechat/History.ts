@@ -5,6 +5,7 @@
 import type * as cordis from 'cordis';
 import type { Database } from 'bun:sqlite';
 import * as protocol from '../../Channels.ts';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 
 
 /** wechat_messages 表查询行结构。 */
@@ -51,21 +52,25 @@ export class WechatHistory {
    * @param ctx Wechat 插件的 Cordis 上下文（随插件卸载自动注销监听）。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M 响应渠道历史查询事件，仅处理 channel 为 wechat 的请求。
-    this.ctx.on('channel/history', (request) => this.onChannelHistory(request));
+    const options = {
+      replySynchronously: true,
+      filter: (request: protocol.ChannelHistoryRequest) => request.channel === this.name,
+    };
+    //M 微信历史按请求号应答，渠道只负责授权和读取记录。
+    requestEvents.onRequestEvent(
+      this.ctx,
+      'channel/history',
+      'channel/history-result',
+      (request) => this.getHistory(request),
+      options,
+    );
   }
 
   /**
    * 处理微信历史查询请求：校验权限与游标后从 wechat_messages 分页返回。
    * @param request 渠道历史查询请求。
    */
-  private onChannelHistory(request: protocol.ChannelHistoryRequest): void {
-    if (request.channel !== this.name) return;
-
-    request.handled = true;
-    const emitResult = (result: protocol.ChannelHistoryResult): void => {
-      this.ctx.emit('channel/history-result', { ...result, requestId: request.requestId });
-    };
+  private getHistory(request: protocol.ChannelHistoryRequest): protocol.ChannelHistoryResult {
 
     const snapshot = request.sourceSnapshot;
     const db = this.ctx.resources.db;
@@ -78,28 +83,14 @@ export class WechatHistory {
       && target.account === snapshot.accountId
       && target.chat === snapshot.chatId;
     if (!isOwner && !isSameChat) {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'forbidden', message: `无权访问微信聊天 ${target.chat}` },
-      });
-      return;
+      const message = `无权访问微信聊天 ${target.chat}`;
+      return protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'forbidden', message);
     }
 
     //G 微信本地消息表尚未保存结构化 @ 提及清单，mentions 模式明确返回 identity_unresolved。
     if (request.mode === 'mentions') {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: `${this.name}:${target.account}:${target.chat}`,
-        completeness: 'local_only',
-        error: { code: 'identity_unresolved', message: '微信本地消息表未保存结构化 @ 提及对象' },
-      });
-      return;
+      const message = '微信本地消息表未保存结构化 @ 提及对象';
+      return protocol.getHistoryError(`${this.name}:${target.account}:${target.chat}`, 'local_only', 'identity_unresolved', message);
     }
 
     //M 从 wechat_messages 读取目标会话全部已存消息并转换成标准历史项。
@@ -111,9 +102,7 @@ export class WechatHistory {
       chatId: target.chat,
       entries,
     });
-
-    //M 带上请求号送回分页结果，让调用方关联这次查询。
-    emitResult(result);
+    return result;
   }
 
   /**

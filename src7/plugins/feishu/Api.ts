@@ -85,7 +85,7 @@ export async function call<T>(action: string, run: () => Promise<T>, waitMs = RE
       const body = (response?.data ?? undefined) as Coded | undefined;
       const limited = response?.status === 429 || (typeof body?.code === 'number' && RATE_LIMIT_CODES.has(body.code));
       //M 无 HTTP 响应时提取错误文本判定是否为对端提前断连（可安全退让重试）。
-      const reset = response === undefined && NETWORK_RESET.test(textModule.getMessage(error));
+      const reset = response === undefined && NETWORK_RESET.test(textModule.getErrorMessage(error));
 
       //G 限流、连接刚被断掉，还能再试 → 等 0.5、1、2、4、8 秒再来。
       if ((limited || reset) && attempt < RETRY_TIMES) {
@@ -102,7 +102,7 @@ export async function call<T>(action: string, run: () => Promise<T>, waitMs = RE
       if (response?.status !== undefined) {
         status = `HTTP ${String(response.status)} `;
       }
-      const said = `飞书${action}失败：${status}${textModule.getMessage(error)}`;
+      const said = `飞书${action}失败：${status}${textModule.getErrorMessage(error)}`;
 
       //G 4xx：请求到了、被拒了 → 确定没发。断网、超时、5xx 不知道收没收，照旧是普通 Error。
       const code = response?.status ?? 0;

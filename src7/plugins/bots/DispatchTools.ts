@@ -106,7 +106,7 @@ export class DispatchTools {
     });
 
     //M onRequest 要等 model-catalog 回模型介绍，交回它的 Promise：骨架 serial 等它跑完再问下一个（Promise 落定的值是 undefined，不挡后面的人）。
-    this.home.on('session/request', (request) => this.onRequest(request));
+    this.home.on('session/before-model', (request) => this.onRequest(request));
   }
 
   /**
@@ -146,7 +146,7 @@ export class DispatchTools {
     }
 
     //G 非本人（builder、guest）不能挑模型、思考档，用前台的。
-    if (workspaceModule.isOther(front.row.address) && (model !== '' || thinking !== '')) {
+    if (workspaceModule.isNonOwnerSpeaker(front.row.address) && (model !== '' || thinking !== '')) {
       throw new Error('只有本人能指定模型和思考档；不写就用前台的');
     }
 
@@ -287,7 +287,7 @@ export class DispatchTools {
       }
 
       //M 补的话进会话，推它往下走（它在转，下一步会带上这句）；回执给前台模型。
-      work.add(plan.text);
+      work.queueUserMessage(plan.text);
       void work.run();
       return getReceipt('append', work, front);
     }
@@ -473,7 +473,7 @@ export class DispatchTools {
     }
 
     //M 非本人：派活时的说话人要是他。
-    if (workspaceModule.isOther(front.row.address)) {
+    if (workspaceModule.isNonOwnerSpeaker(front.row.address)) {
       const speaker = utils.getStringField(front.row.address, 'openId');
       const owner = utils.getStringField(work.row.frontTask?.origin.address, 'openId');
       if (speaker === '' || speaker !== owner) return `session_not_owned：会话 ${work.id} 不是你派的`;
@@ -518,10 +518,10 @@ export class DispatchTools {
     //M 相对路径：出了范围 inside 抛错；目录不在就建，再原地登记成这个范围的工作区。
     let dir = '';
     try {
-      dir = workspaceModule.inside(access.root, pick.workspace);
+      dir = workspaceModule.resolveWorkspacePath(access.root, pick.workspace);
     } catch (error) {
       //G 保留路径校验失败的原异常，继续给工具回原拒绝原因。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       const options = { cause: error };
       throw new Error(`workspace_outside_scope：${reason}`, options);
     }
@@ -561,7 +561,7 @@ export class DispatchTools {
       this.home.resources.getModel(picked);
     } catch (error) {
       //G 保留模型不可用的原异常，继续给工具回原错误文字。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       const options = { cause: error };
       throw new Error(`model_unavailable：${reason}`, options);
     }
@@ -592,7 +592,7 @@ export class DispatchTools {
     return { model: picked, thinking: level };
   }
   /**
-   * 响应 session/request：暂停的受管后台不调模型；前台整理结果那一轮拿掉派活工具；普通前台轮加上派活和选模型的说明。
+   * 响应 session/before-model：暂停的受管后台不调模型；前台整理结果那一轮拿掉派活工具；普通前台轮加上派活和选模型的说明。
    * @param request 这一步的请求。
    * 副作用：本人的前台轮发请求事件 model-catalog/request（action: prompt），最多等 3 秒；没挂 model-catalog 立刻退回、不加模型介绍。
    */
@@ -623,7 +623,7 @@ export class DispatchTools {
     request.system.push(HAND_HINT);
 
     //G 非本人（builder、guest）不挑模型：不带模型介绍。
-    if (workspaceModule.isOther(row.address)) return;
+    if (workspaceModule.isNonOwnerSpeaker(row.address)) return;
 
     //M 本人才能挑模型：发请求事件 model-catalog/request（action: prompt，契约 3.2 第 7 条），一次拿齐模型介绍评价和能用的思考档。
     //M   没挂 model-catalog、超时、出错都退回两段空串，这一轮只带派活说明。

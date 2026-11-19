@@ -187,7 +187,7 @@ export class Reminders {
     const waiting = this.db.query<Row, []>("SELECT * FROM assist_reminders WHERE state = 'awaiting'").all();
     for (const reminder of waiting) {
       void this.ensureCard(reminder).catch(() => {
-        this.ctx.emit('trace', 'Assist.reminders', '恢复提醒确认失败', 'Reminders.ensureCard', { id: reminder.id });
+        this.ctx.emit('trace', 'Assist.reminders', 'trace.assist.restoreReminderApprovalFailed', 'Reminders.ensureCard', { id: reminder.id });
       });
     }
     //M 原有在途记录以同一编号和正文重新交给 Outbound，由发件账决定是否需要发送。
@@ -195,7 +195,7 @@ export class Reminders {
     const stuck = this.db.query<Row, []>(sql).all();
     if (stuck.length > 0) {
       void this.drain(stuck).catch(() => {
-        this.ctx.emit('trace', 'Assist.reminders', '恢复在途提醒失败', 'Reminders.drain', {});
+        this.ctx.emit('trace', 'Assist.reminders', 'trace.assist.restorePendingRemindersFailed', 'Reminders.drain', {});
       });
       return;
     }
@@ -409,8 +409,8 @@ export class Reminders {
     const result = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
     if (!events.isUnsure(result)) return undefined;
 
-    const vars = { 卡片: id };
-    this.ctx.emit('trace', 'Reminders.closeCard', uncertain, 'approval/request close', vars);
+    const vars = { cardId: id };
+    this.ctx.emit('trace', 'Reminders.closeCard', 'trace.assist.closeReminderCardUncertain', 'approval/request close', vars);
     return uncertain;
   }
 
@@ -530,7 +530,7 @@ export class Reminders {
     this.stopWait = this.clock.wait(delay, () => {
       this.stopWait = undefined;
       void this.drain().catch(() => {
-        this.ctx.emit('trace', 'Assist.reminders', '调度提醒失败', 'Reminders.drain', {});
+        this.ctx.emit('trace', 'Assist.reminders', 'trace.assist.scheduleReminderFailed', 'Reminders.drain', {});
       });
     });
   }

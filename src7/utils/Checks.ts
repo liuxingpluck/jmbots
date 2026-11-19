@@ -9,7 +9,9 @@
  */
 import * as path from 'node:path';
 import * as process from 'node:process';
+import type * as piAi from '@earendil-works/pi-ai';
 import type { JmbotsConfig, PluginEntry, ProviderConfig } from '../Resources.ts';
+import * as traceText from '../../web/src/locales/Trace.ts';
 import * as embedded from './Embedded.ts';
 import * as utils from './index.ts';
 import * as workspaceModule from './Workspace.ts';
@@ -40,6 +42,42 @@ const DEFAULT_PLUGINS = ['workspaces', 'bots', 'cli', 'file-tools', 'context-fit
 
 /** config.yaml 里没手写的模型用的保守值。Resources.getModel 也用它。 */
 export const MODEL_DEFAULTS = { contextWindow: 128000, maxTokens: 8192, reasoning: false, input: ['text' as const] };
+
+/**
+ * 校验手写模型的思考档，并在配置入口补齐所有未声明的档位。
+ * @param value 模型的 thinking 配置。
+ * @param label 配置中的完整字段名。
+ * @returns 供 pi 使用的映射。没有写 thinking 时保留 undefined。
+ */
+function checkThinkingMap(value: unknown, label: string): piAi.ThinkingLevelMap | undefined {
+  if (value === undefined) return undefined;
+
+  const map: piAi.ThinkingLevelMap = {};
+  for (const level of THINKING) {
+    map[level] = null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      //M 旧列表中的 none 沿用 off，其余档位直接使用同名供应商值。
+      let level: piAi.ModelThinkingLevel = 'off';
+      if (item !== 'none') {
+        level = checkAllowedValue(item, THINKING, label);
+      }
+      map[level] = level;
+    }
+    return map;
+  }
+
+  const written = checkRecord(value, label);
+  //M 对象形式按档位读取供应商值，null 表示不支持。
+  utils.eachEntry(written, (key, item) => {
+    const level = checkAllowedValue(key, THINKING, label);
+    if (item === null) return;
+
+    map[level] = checkNonEmptyText(item, `${label}.${level}`);
+  });
+  return map;
+}
 
 
 /**
@@ -120,54 +158,59 @@ function defaultDataDir(): string {
  */
 export function checkConfig(raw: unknown): JmbotsConfig {
   //M 先校验顶层配置对象，再解析供应商、默认模型、插件与模型运行设置。
-  const root = record(raw, 'config.yaml');
+  const root = checkRecord(raw, 'config.yaml');
 
   //M providers：每家要有 base_url；api_key 不写是空的（本地服务不要密钥）；api 不写是 openai-completions。
   //M   models 是手写的模型：上下文多长、最多输出多少、thinking 里有 off 以外的档就是会思考、vision: true 就收图片。
   //M   compat、model_compat 是发请求时的兼容设置，原样交给 pi（不认的项 pi 不管）。
   const providers: Record<string, ProviderConfig> = {};
-  const providersWritten = record(root['providers'], 'providers');
+  const providersWritten = checkRecord(root['providers'], 'providers');
   utils.eachEntry(providersWritten, (name, value) => {
     /** 错误信息里说是哪一家，比如 providers.openrouter。 */
     const label = `providers.${name}`;
     //M 校验这家供应商配置是否为对象，再逐个校验它手写的模型条目。
-    const item = record(value, label);
+    const item = checkRecord(value, label);
 
     //M 这家手写的模型：一个个查，没写的项用保守值。
     const models: ProviderConfig['models'] = {};
-    const modelsWritten = record(item['models'] ?? {}, `${label}.models`);
+    const modelsWritten = checkRecord(item['models'] ?? {}, `${label}.models`);
     utils.eachEntry(modelsWritten, (id, written) => {
-      const model = record(written ?? {}, `${label}.models.${id}`);
+      const modelLabel = `${label}.models.${id}`;
+      const model = checkRecord(written ?? {}, modelLabel);
       const contextWindow = model['context_window'] ?? MODEL_DEFAULTS.contextWindow;
       const maxTokens = model['max_output_tokens'] ?? MODEL_DEFAULTS.maxTokens;
-      /** 手写的思考档；里面有 off 以外的档，就算会思考。 */
-      const levels = model['thinking'];
-      const reasoning = Array.isArray(levels) && levels.some((level) => level !== 'off');
+      //M 统一将列表或对象校验成 pi 映射，再据非 off 档判断是否支持思考。
+      const thinkingLevelMap = checkThinkingMap(model['thinking'], `${modelLabel}.thinking`);
+      const reasoning = THINKING.some((level) => level !== 'off' && typeof thinkingLevelMap?.[level] === 'string');
       let input: ('text' | 'image')[] = ['text'];
       if (model['vision'] === true) {
         input = ['text', 'image'];
       }
 
       //M 校验上下文窗与输出上限均为正整数，连同推理与图片能力登记进该供应商模型表。
-      models[id] = {
+      const parsed: ProviderConfig['models'][string] = {
         contextWindow: int(contextWindow, `${label} 的 context_window`),
         maxTokens: int(maxTokens, `${label} 的 max_output_tokens`),
         reasoning,
         input,
       };
+      if (thinkingLevelMap !== undefined) {
+        parsed.thinkingLevelMap = thinkingLevelMap;
+      }
+      models[id] = parsed;
     });
 
     //M 地址去掉末尾的斜杠；api_key 不写是空的；api 不写是 openai-completions。
-    const baseUrl = text(item['base_url'], `${label}.base_url`);
+    const baseUrl = checkNonEmptyText(item['base_url'], `${label}.base_url`);
     const apiWritten = item['api'] ?? 'openai-completions';
-    const api = oneOf(apiWritten, APIS, `${label}.api`);
-    const compat = record(item['compat'] ?? {}, `${label}.compat`);
+    const api = checkAllowedValue(apiWritten, APIS, `${label}.api`);
+    const compat = checkRecord(item['compat'] ?? {}, `${label}.compat`);
 
     //M 个别模型的兼容设置：模型 ID → 一组“名字: 值”。
     const modelCompat: ProviderConfig['modelCompat'] = {};
-    const modelCompatWritten = record(item['model_compat'] ?? {}, `${label}.model_compat`);
+    const modelCompatWritten = checkRecord(item['model_compat'] ?? {}, `${label}.model_compat`);
     utils.eachEntry(modelCompatWritten, (id, written) => {
-      modelCompat[id] = record(written, `${label}.model_compat.${id}`);
+      modelCompat[id] = checkRecord(written, `${label}.model_compat.${id}`);
     });
 
     providers[name] = {
@@ -181,7 +224,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
   });
 
   //M default_model：写成“供应商名/模型 ID”，供应商要在 providers 里。
-  const defaultModel = text(root['default_model'], 'default_model');
+  const defaultModel = checkNonEmptyText(root['default_model'], 'default_model');
   const providerName = defaultModel.slice(0, defaultModel.indexOf('/'));
   if (providers[providerName] === undefined) {
     throw new Error('default_model 要写成“供应商名/模型 ID”，供应商要在 providers 里');
@@ -190,12 +233,12 @@ export function checkConfig(raw: unknown): JmbotsConfig {
   //M plugins：一张清单，每项 { name, config?, disabled? }；disabled 是 true 的去掉。整段不写就挂默认的那几个。
   const plugins: PluginEntry[] = [];
   const pluginsWritten = root['plugins'] ?? DEFAULT_PLUGINS.map((name) => ({ name }));
-  for (const value of list(pluginsWritten, 'plugins')) {
-    const item = record(value, 'plugins 里的每一项');
+  for (const value of checkArray(pluginsWritten, 'plugins')) {
+    const item = checkRecord(value, 'plugins 里的每一项');
     if (item['disabled'] === true) continue;
 
     //M 跳过已禁用的插件后，校验插件名并把配置原文透传给各插件自检。
-    const name = text(item['name'], 'plugins 里每一项的 name');
+    const name = checkNonEmptyText(item['name'], 'plugins 里每一项的 name');
     const config = item['config'] ?? {};
     plugins.push({ name, config });
   }
@@ -207,21 +250,30 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     throw new Error('plugin_mount_timeout_ms 不能超过 2147483647');
   }
 
+  //M 内存里最多留几场打开过的会话，超了挪出最久没用、闲着的（Sessions.remember）。
+  const sessionCacheWritten = root['session_cache_max'] ?? 500;
+  const sessionCacheMax = int(sessionCacheWritten, 'session_cache_max');
+
   //M 骨架在插件启动前就可开会话，共用的思考档和重试放在现有 models 段。
-  const modelSettings = record(root['models'] ?? {}, 'models');
-  const retry = record(modelSettings['retry'] ?? {}, 'models.retry');
+  const modelSettings = checkRecord(root['models'] ?? {}, 'models');
+  const retry = checkRecord(modelSettings['retry'] ?? {}, 'models.retry');
 
   //M 校验配置中的思考档和重试参数，缺项沿用默认值。
   const level = modelSettings['thinking'] ?? 'low';
-  const thinking = oneOf(level, THINKING, 'models.thinking');
+  const thinking = checkAllowedValue(level, THINKING, 'models.thinking');
   const times = retry['times'] ?? 5;
   const waitMs = retry['wait_ms'] ?? 3000;
   const timeoutMs = retry['timeout_ms'] ?? 120000;
+  //M 复用界面语言设置，供后端打印使用；未设置时默认简体中文。
+  const language = utils.getField(root['ui'], 'language');
+  const traceLanguage = traceText.getTraceLanguage(language);
   return {
+    traceLanguage,
     defaultModel,
     providers,
     plugins,
     pluginMountTimeoutMs,
+    sessionCacheMax,
     thinking,
     retry: {
       times: int(times, 'models.retry.times'),
@@ -237,7 +289,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
  * @param value 原始值。
  * @param label 是配置里的哪一项，写进错误信息。
  */
-export function record(value: unknown, label: string): Record<string, unknown> {
+export function checkRecord(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} 没写，或者写得不对：要写成一组“名字: 值”`);
   }
@@ -250,7 +302,7 @@ export function record(value: unknown, label: string): Record<string, unknown> {
  * @param value 原始值。
  * @param label 是配置里的哪一项，写进错误信息。
  */
-export function list(value: unknown, label: string): unknown[] {
+export function checkArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new Error(`${label} 要写成一张清单`);
   }
@@ -263,7 +315,7 @@ export function list(value: unknown, label: string): unknown[] {
  * @param value 原始值。
  * @param label 是配置里的哪一项，写进错误信息。
  */
-export function text(value: unknown, label: string): string {
+export function checkNonEmptyText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value === '') {
     throw new Error(`${label} 要写成非空的文字`);
   }
@@ -276,10 +328,10 @@ export function text(value: unknown, label: string): string {
  * @param value 原始值。
  * @param label 是哪一项，写进错误信息。
  */
-export function texts(value: unknown, label: string): string[] {
+export function checkNonEmptyTextList(value: unknown, label: string): string[] {
   //M 先校验外层为数组，再逐项检查每个元素均为非空文字。
-  const items = list(value, label);
-  return items.map((item, index) => text(item, `${label}[${String(index)}]`));
+  const items = checkArray(value, label);
+  return items.map((item, index) => checkNonEmptyText(item, `${label}[${String(index)}]`));
 }
 
 
@@ -302,7 +354,7 @@ function int(value: unknown, label: string): number {
  * @param allowed 允许的写法。
  * @param label 是配置里的哪一项，写进错误信息。
  */
-export function oneOf<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
+export function checkAllowedValue<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
   //G 仅接受枚举清单里出现的固定值，其余抛错提示合法范围。
   const found = allowed.find((item) => item === value);
   if (found === undefined) {
@@ -318,7 +370,7 @@ const COUNT_PATTERN = /^\d+$/u;
 
 /**
  * 查网址里的一个可选非负整数（before、after、since、limit、message 这类）。journal、web-api 的 GET 接口调。
- * 和 Text.ts 的 getNumber 不一样：写错了不按默认值，而是回 400，让调的人知道写错了。
+ * 和 Text.ts 的 parseBoundedInt 不一样：写错了不按默认值，而是回 400，让调的人知道写错了。
  * @param value 网址里的值，可能没给。
  * @param key 参数名，报错用。
  * @returns 那个整数；没给、给了空串是 undefined。

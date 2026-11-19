@@ -2,13 +2,14 @@
  * 模型清单与运行兜底（已并入原 model-fallback）：
  * 1. 清单：起来就向 providers 里每一家拉 <base_url>/models，和手写的合成一张模型表，给网页看、给别的插件查；
  *    一家拉不到不挡别家、不挡起服务：先用它手写的模型，每 60 秒再试，连上就换。
- * 2. 回退（Fallback.ts / Queue.ts）：在 session/request 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
+ * 2. 回退（Fallback.ts / Queue.ts）：在 session/before-model 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
  * 3. 模型介绍和评价（Notes.ts，11-18 并进原 model-notes）：运行时目录 models/ 下一个模型一份 MD；接口 /api/model-notes* 路径照旧；
  *    事件 model-catalog/request 的 action: 'prompt' 一次交回模型介绍评价和能用的思考档，前台派活时带上。
  * 4. 用量（Usage.ts，11-18 并进原 usage）：保留 usage 服务、usage/list 事件和 GET /api/usage。
  * 只是一张表加回退层：正常调模型仍走骨架的 ctx.resources.getModel。
  * 设计：docs/src7插件设计/model-catalog.md、docs/src7插件设计/model-fallback.md。
  */
+import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as text from '../../utils/Text.ts';
@@ -30,7 +31,7 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.4';
+export const version = '1.3.6';
 
 /** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
@@ -198,7 +199,7 @@ export class ModelCatalog extends cordis.Service {
     //M   出错（比如 models/ 读不了）打一行日志、回空回执，调用方当没查到，不干等超时。
     const options = {
       onError: (error: unknown) => {
-        console.error(`model-catalog 回答查询出错：${text.getMessage(error)}`);
+        console.error(`model-catalog 回答查询出错：${text.getErrorMessage(error)}`);
         return {};
       },
     };
@@ -304,7 +305,7 @@ export class ModelCatalog extends cordis.Service {
         results.push({ provider: one, ok: true, models: this.tables.get(one)?.length ?? 0 });
       } catch (error) {
         //G 单家重拉失败时不中断循环，保留原表数量并记下错误原因返回给调用方。
-        results.push({ provider: one, ok: false, models: this.tables.get(one)?.length ?? 0, error: text.getMessage(error) });
+        results.push({ provider: one, ok: false, models: this.tables.get(one)?.length ?? 0, error: text.getErrorMessage(error) });
       }
     }
     return results;
@@ -334,7 +335,7 @@ export class ModelCatalog extends cordis.Service {
       const entries = await pull.fetchList(baseUrl, input.apiKey);
       return pull.merge(provider, entries, {}).models;
     } catch (error) {
-      throw new Error(`拉供应商 ${provider}（${baseUrl}）的模型清单失败：${text.getMessage(error)}`, { cause: error });
+      throw new Error(`拉供应商 ${provider}（${baseUrl}）的模型清单失败：${text.getErrorMessage(error)}`, { cause: error });
     }
   }
 
@@ -368,13 +369,13 @@ export class ModelCatalog extends cordis.Service {
       if (this.warned.delete(provider)) console.log(`供应商 ${provider} 的模型清单拉到了，${String(merged.models.length)} 个模型`);
 
       //T 跟踪：拉到了一家的清单。
-      const vars = { 供应商: provider, 模型: merged.models.length, 用了保守值: merged.guessed };
-      this.ctx.emit('trace', 'model-catalog.pull', '拉到一家的模型清单，和手写的合并', 'merge(provider, fetchList(baseUrl, apiKey), written)', vars);
+      const vars = { provider: provider, modelCount: merged.models.length, guessedCount: merged.guessed };
+      this.ctx.emit('trace', 'model-catalog.pull', 'trace.modelCatalog.pull', 'merge(provider, fetchList(baseUrl, apiKey), written)', vars);
     } catch (error) {
-      const reason = text.getMessage(error);
+      const reason = text.getErrorMessage(error);
       //T 跟踪：没拉到。
-      const vars = { 供应商: provider, 原因: reason, 现在几个模型: this.tables.get(provider)?.length ?? 0 };
-      this.ctx.emit('trace', 'model-catalog.pull', '没拉到这家的模型清单，先用手写的', 'fetchList(baseUrl, apiKey)', vars);
+      const vars = { provider: provider, reason: reason, modelCount: this.tables.get(provider)?.length ?? 0 };
+      this.ctx.emit('trace', 'model-catalog.pull', 'trace.modelCatalog.pullFallback', 'fetchList(baseUrl, apiKey)', vars);
       if (required) throw new Error(`拉供应商 ${provider}（${config.baseUrl}）的模型清单失败：${reason}`, { cause: error });
       if (!this.warned.has(provider)) {
         this.warned.add(provider);
@@ -444,13 +445,13 @@ async function answer(reply: fastify.FastifyReply, work: () => Promise<unknown>)
     return await work();
   } catch (error) {
     //G 接口校验或执行抛错时提取可读提示文本，统一按 HTTP 400 返回给前端展示。
-    return reply.code(400).send({ error: text.getMessage(error) });
+    return reply.code(400).send({ error: text.getErrorMessage(error) });
   }
 }
 
 
 /**
- * 校验一家手写的一个模型里骨架不收的那几项（name、vision、thinking、price）；context_window、max_output_tokens 骨架已查过。
+ * 校验目录使用的 name、vision、price。窗口、输出上限和思考映射由 Resources 校验。
  * @param value 原样的那一段。
  * @param label 报错用的位置，如 providers.mock.models.b。
  * @returns 校验后的。
@@ -469,14 +470,6 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
     if (typeof model['vision'] !== 'boolean') throw new Error(`${label}.vision 要写 true 或 false`);
     result.vision = model['vision'];
   }
-  if (model['thinking'] !== undefined) {
-    const levels = model['thinking'];
-    const known = [...pull.THINKING_LEVELS, 'none'];
-    if (!Array.isArray(levels) || !levels.every((level) => typeof level === 'string' && known.includes(level))) {
-      throw new Error(`${label}.thinking 要写成档位列表，档位只能是 ${pull.THINKING_LEVELS.join('、')}`);
-    }
-    result.thinking = levels as string[];
-  }
   if (model['price'] !== undefined) {
     const price = model['price'] as Record<string, unknown> | null;
     const ok = (item: unknown): boolean => item === undefined || (typeof item === 'number' && item >= 0);
@@ -494,11 +487,11 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
  * 挂上模型清单与运行兜底（model-fallback 已并入）。
  * apply 是 Cordis 插件的入口：Cordis 等 inject 里的 resources、sessions 都就绪后调一次。
  * 先校验 providers 与 fallback、notes、usage 配置，再建模型介绍、ModelCatalog 与 Usage 服务。
- * 可选 HTTP 统一登记模型与用量接口；最后建 ModelFallback，听 session/request 兜底调模型。
+ * 可选 HTTP 统一登记模型与用量接口；最后建 ModelFallback，听 session/before-model 兜底调模型。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param config 插件配置：fallback、notes 与原 usage 的空配置 usage。
  * @throws providers、fallback、notes 或 usage 配置写得不对时抛错。
- * 副作用：注册 modelCatalog 服务并拉取模型清单；没有 models/ 目录就建；可选挂载 HTTP 接口、定时重试任务及 session/request 回退处理器。
+ * 副作用：注册 modelCatalog 服务并拉取模型清单；没有 models/ 目录就建；可选挂载 HTTP 接口、定时重试任务及 session/before-model 回退处理器。
  */
 export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
   //G 原用量插件没有配置项，入口只接收空配置对象，避免错写配置而静默忽略。
@@ -525,7 +518,14 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
     const written: Record<string, pull.WrittenModel> = {};
     //M 逐条校验该供应商 config.yaml 手写的模型属性，生成供合并使用的手写表。
     utils.eachEntry((item['models'] ?? {}) as Record<string, unknown>, (id, value) => {
-      written[id] = checkWritten(value, `providers.${provider}.models.${id}`);
+      const modelInfo = checkWritten(value, `providers.${provider}.models.${id}`);
+      const name = `${provider}/${id}`;
+      //M 按真正发请求的映射显示可用档位，模型入口已经完成配置校验。
+      const model = ctx.resources.getModel(name);
+      if (model.thinkingLevelMap !== undefined) {
+        modelInfo.thinking = piAi.getSupportedThinkingLevels(model);
+      }
+      written[id] = modelInfo;
     });
     plans[provider] = { listModels, written };
   }
@@ -553,13 +553,13 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
     usage.routes(app);
 
     //T 跟踪：模型介绍和评价的接口挂好了。
-    const vars = { 目录: notesSettings.dir, 时区: notesSettings.timeZone };
+    const vars = { directory: notesSettings.dir, timezone: notesSettings.timeZone };
     const code = "app.get('/api/model-notes'); app.post('/api/model-notes/rate')";
-    sub.emit('trace', 'model-catalog.notes', '模型介绍和评价挂好了', code, vars);
+    sub.emit('trace', 'model-catalog.notes', 'trace.modelCatalog.notesReady', code, vars);
   });
 
   if (fallbackSettings.enabled) {
-    //M 启用回退时挂载换模型处理器，接管 session/request 兜底调用与限流冷却。
+    //M 启用回退时挂载换模型处理器，接管 session/before-model 兜底调用与限流冷却。
     new fallback.ModelFallback(ctx, fallbackSettings, catalog);
   }
 }

@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as namesModule from '../../utils/Names.ts';
 import * as protocol from '../../Channels.ts';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 import type { Feishu } from './index.ts';
 
 
@@ -50,8 +51,18 @@ export class FeishuHistory {
     private readonly ctx: cordis.Context,
     private readonly feishu: Feishu,
   ) {
-    //M 统一渠道历史入口（接口 A）：监听 channel/history，在授权范围内返回已落盘记录。
-    this.ctx.on('channel/history', (request) => this.onChannelHistory(request));
+    const options = {
+      replySynchronously: true,
+      filter: (request: protocol.ChannelHistoryRequest) => request.channel === this.name,
+    };
+    //M 飞书历史按请求号应答，渠道只负责授权和读取记录。
+    requestEvents.onRequestEvent(
+      this.ctx,
+      'channel/history',
+      'channel/history-result',
+      (request) => this.getHistory(request),
+      options,
+    );
   }
 
   /**
@@ -60,13 +71,7 @@ export class FeishuHistory {
    * 游标、分页交给骨架的 paginateChannelHistory。
    * @param request 历史查询请求。
    */
-  private onChannelHistory(request: protocol.ChannelHistoryRequest): void {
-    if (request.channel !== this.name) return;
-
-    request.handled = true;
-    const emitResult = (result: protocol.ChannelHistoryResult): void => {
-      this.ctx.emit('channel/history-result', { ...result, requestId: request.requestId });
-    };
+  private getHistory(request: protocol.ChannelHistoryRequest): protocol.ChannelHistoryResult {
 
     //M 按统一协议判断当前发起者是否为拥有跨聊天查询权限的 owner 账号。
     const snapshot = request.sourceSnapshot;
@@ -82,15 +87,7 @@ export class FeishuHistory {
     //G 再核聊天范围权限：guest / builder 仅当前飞书聊天，owner 可跨渠道、跨聊天查询任意飞书应用聊天。
     const isSameChat = snapshot.channel === this.name && rawChat !== '' && rawChat === snapshot.chatId;
     if (!isOwner && !isSameChat) {
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'forbidden', message: `无权访问聊天 ${rawChat}` },
-      });
-      return;
+      return protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'forbidden', `无权访问聊天 ${rawChat}`);
     }
 
     //M 解析目标应用号与聊天 ID：支持传入 appId:chatId，跨渠道时优先挑选存在聊天记录的机器人应用。
@@ -129,44 +126,23 @@ export class FeishuHistory {
     }
     if (targetChatId === '') {
       //M 目标聊天仍为空时返回参数错误结果并提前终止查询。
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'invalid_argument', message: '跨渠道查询飞书历史需要指定 chat' },
-      });
-      return;
+      const message = '跨渠道查询飞书历史需要指定 chat';
+      return protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'invalid_argument', message);
     }
 
     //M 校验解析出的应用 ID 已注册，不存在则返回渠道不可用错误。
     const app = this.feishu.apps.get(appId);
     if (app === undefined) {
       //M 找不到对应飞书应用配置时通过结果事件回报错误码。
-      emitResult({
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope: snapshot.visibility.scope,
-        completeness: 'unsupported',
-        error: { code: 'channel_unavailable', message: `未知飞书应用 ${appId}` },
-      });
-      return;
+      const message = `未知飞书应用 ${appId}`;
+      return protocol.getHistoryError(snapshot.visibility.scope, 'unsupported', 'channel_unavailable', message);
     }
 
     if (request.mode === 'mentions') {
       if (app.botOpenId === undefined) {
         //M 尚未拿到机器人自身 open_id 时拒绝精确 mentions 过滤并返回 identity_unresolved。
-        emitResult({
-          ok: false,
-          items: [],
-          nextCursor: null,
-          scope: `${this.name}:${appId}:${targetChatId}`,
-          completeness: 'local_only',
-          error: { code: 'identity_unresolved', message: `应用 ${appId} 尚未取得机器人自己的 open_id，无法精确识别 @ 提及` },
-        });
-        return;
+        const message = `应用 ${appId} 尚未取得机器人自己的 open_id，无法精确识别 @ 提及`;
+        return protocol.getHistoryError(`${this.name}:${appId}:${targetChatId}`, 'local_only', 'identity_unresolved', message);
       }
     }
 
@@ -200,9 +176,7 @@ export class FeishuHistory {
     };
     //M 用统一规则把聊天记录切成这一页，并计算下一页游标。
     const result = protocol.paginateChannelHistory(paginateInput);
-
-    //M 带上请求号送回分页结果。
-    emitResult(result);
+    return result;
   }
 
   /**
@@ -227,7 +201,7 @@ export class FeishuHistory {
   /** 飞书聊天本地日志文件（channels/feishu/chats/<app>/<chat>.jsonl）。 */
   private chatLogFile(appId: string, chatId: string): string {
     //M 将 appId 安全转义为目录名，生成对应的聊天历史文件夹并拼出聊天日志文件。
-    const dir = this.ctx.resources.dir('channels', 'feishu', 'chats', namesModule.getSafeName(appId, Infinity));
+    const dir = this.ctx.resources.ensureRuntimeDir('channels', 'feishu', 'chats', namesModule.getSafeName(appId, Infinity));
     return path.join(dir, `${namesModule.getSafeName(chatId, Infinity)}.jsonl`);
   }
 

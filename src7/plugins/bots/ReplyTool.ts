@@ -30,8 +30,8 @@ export function registerReplyTool(ctx: cordis.Context): void {
       const text = String(args['text']);
 
       //T 跟踪：reply 工具先回用户一句。
-      const vars = { 会话: session.row.id, 渠道: session.row.channel, 字数: text.length };
-      ctx.emit('trace', 'ReplyTool.run', '先回用户一句', 'bots.say(session, text)', vars);
+      const vars = { session: session.row.id, channel: session.row.channel, length: text.length };
+      ctx.emit('trace', 'ReplyTool.run', 'trace.bots.replyTool', 'bots.say(session, text)', vars);
 
       //M bots.say：发通知 bot/say，渠道和前台都听；不等渠道发完。
       ctx.bots.say(session, text);

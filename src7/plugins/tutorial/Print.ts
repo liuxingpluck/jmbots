@@ -11,6 +11,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
+import * as traceText from '../../../web/src/locales/Trace.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
 
@@ -27,11 +28,16 @@ export interface PrintConfig {
 
 
 /** 两种行在控制台上的颜色（ANSI 颜色号）：函数青色，事件黄色。 */
-const COLORS = { 函数: '36', 事件: '33' };
+const COLORS = { function: '36', event: '33' };
 
 
 /** 打印。 */
 export class Printer {
+  /** 每次显示取当前配置语言，设置页保存后跟随最新配置。 */
+  private get language(): traceText.TraceLanguage {
+    return this.ctx.resources.config.traceLanguage;
+  }
+
   /**
    * 挂上两个监听：跟踪点、Cordis 报的每个事件。
    * @param ctx tutorial 的 ctx。
@@ -63,11 +69,13 @@ export class Printer {
     const shown: string[] = [];
     for (const [key, value] of Object.entries(vars)) {
       //M 按配置的字数上限裁剪变量值，避免控制台被大对象刷屏。
-      const short = traceUtils.short(value, this.config.varLimit);
-      shown.push(`${key}=${short}`);
+      const short = traceUtils.formatTraceValue(value, this.config.varLimit);
+      const label = traceText.getTraceFieldLabel(this.language, key);
+      shown.push(`${label}=${short}`);
     }
     //M 把跟踪点名、人话、源码句和裁剪后的变量拼成“函数”行写出。
-    this.write('函数', [where, text, code, shown.join(' ')]);
+    const caption = traceText.getTraceText(this.language, text, vars);
+    this.write('function', [where, caption, code, shown.join(' ')]);
   }
 
   /**
@@ -83,20 +91,26 @@ export class Printer {
     if (event.startsWith('internal/')) return;
 
     //M 拼事件行（和 journal 记进库的是同一种行）：事件名、发法、听的人、会话、认得的关键值。
-    const line = traceUtils.dispatchLine(this.ctx, mode, event, args, this.config.varLimit);
-    const head = `${line.name}（${line.mode}）听的人：${line.listeners.join('、')}`;
+    const line = traceUtils.buildDispatchLine(this.ctx, mode, event, args, this.config.varLimit);
+    const modeId = traceText.getTraceModeId(line.mode);
+    const modeText = traceText.getTraceText(this.language, modeId);
+    const listeners = line.listeners.join('、');
+    const heading = { name: line.name, mode: modeText, listeners };
+    const head = traceText.getTraceText(this.language, 'trace.event.heading', heading);
 
     //M 第二段：会话，再接认得的关键值。
     const values: string[] = [];
     if (line.session !== undefined) {
-      values.push(`会话=${line.session}`);
+      const label = traceText.getTraceFieldLabel(this.language, 'session');
+      values.push(`${label}=${line.session}`);
     }
     for (const [key, value] of Object.entries(line.vars)) {
-      const short = traceUtils.short(value, this.config.varLimit);
-      values.push(`${key}=${short}`);
+      const short = traceUtils.formatTraceValue(value, this.config.varLimit);
+      const label = traceText.getTraceFieldLabel(this.language, key);
+      values.push(`${label}=${short}`);
     }
     //M 把事件头与关键参数拼成“事件”行输出到控制台和当日日志。
-    this.write('事件', [head, values.join(' ')]);
+    this.write('event', [head, values.join(' ')]);
   }
 
   /**
@@ -105,24 +119,26 @@ export class Printer {
    * @param parts 这一行的几段；空的那几段不打。
    * 副作用：config.console 开着时打控制台；config.file 开着时追加到运行时目录 trace/ 下当天的文件。
    */
-  private write(kind: '函数' | '事件', parts: string[]): void {
+  private write(kind: 'function' | 'event', parts: string[]): void {
     //M 取精确到毫秒的本地时钟，作为每条输出行的统一时间前缀。
-    const time = textModule.getClock(Date.now(), 'ms');
+    const time = textModule.formatLocalTime(Date.now(), 'ms');
     const body = parts.filter((part) => part !== '').join(' │ ');
+    const kindId = `trace.kind.${kind}`;
+    const label = traceText.getTraceText(this.language, kindId);
 
     //M 是哪一行代码发的：从调用栈里自动找，不用发的人自己写。
     const at = traceUtils.getCallSite(['plugins/tutorial/']);
 
     //M 控制台上：开头那两个字带颜色，一眼分得开；位置用暗色。
     if (this.config.console) {
-      console.log(`${time} \x1b[${COLORS[kind]}m${kind}\x1b[0m ${body} \x1b[90m│ ${at}\x1b[0m`);
+      console.log(`${time} \x1b[${COLORS[kind]}m${label}\x1b[0m ${body} \x1b[90m│ ${at}\x1b[0m`);
     }
 
     //M 文件：本地日期（2026-11-13 的样子）一天一个。
     if (this.config.file) {
       const day = new Date().toLocaleDateString('sv-SE');
-      const file = path.join(this.ctx.resources.dir('trace'), `${day}.log`);
-      fs.appendFileSync(file, `${time} ${kind} ${body} │ ${at}\n`, 'utf8');
+      const file = path.join(this.ctx.resources.ensureRuntimeDir('trace'), `${day}.log`);
+      fs.appendFileSync(file, `${time} ${label} ${body} │ ${at}\n`, 'utf8');
     }
   }
 }

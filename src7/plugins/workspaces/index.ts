@@ -228,7 +228,7 @@ export class Workspaces extends cordis.Service {
   getAccess(bot: string, address: unknown): WorkspaceAccess {
     //M 本人：范围 private，根是机器人的默认工作区。
     const home = this.getHome(bot);
-    const owner = !workspaceModule.isOther(address);
+    const owner = !workspaceModule.isNonOwnerSpeaker(address);
     if (owner) return { bot, owner, scopeKey: PRIVATE, root: home };
 
     //M 外人：根是地址里写的他自己的目录（飞书给 builder、guest 写的；没写落回默认工作区，和现在一样），范围就是这个根。
@@ -249,10 +249,10 @@ export class Workspaces extends cordis.Service {
     //G 只给本人。
     if (!access.owner) throw new WorkspaceError('workspace_forbidden', '只有本人能新建工作区');
 
-    //M ID 先生成，目录照 ID 建（resources.dir 没有就建）；名字只用来显示。
+    //M ID 先生成，目录照 ID 建（resources.ensureRuntimeDir 没有就建）；名字只用来显示。
     const workspaceName = getName(input.name);
     const id = crypto.randomUUID();
-    const full = this.home.resources.dir('bots', access.bot, 'workspaces', id);
+    const full = this.home.resources.ensureRuntimeDir('bots', access.bot, 'workspaces', id);
 
     //M 拼一条新登记：目录换成存法（运行时目录里存相对路径），范围 private，不是默认。
     const draft: WorkspaceDraft = {
@@ -448,7 +448,7 @@ export class Workspaces extends cordis.Service {
     } catch (error) {
       //G 出错：交回错误码和一句话，原因里不带别的工作区的名字、目录。
       let code = 'workspace_error';
-      let message = textModule.getMessage(error);
+      let message = textModule.getErrorMessage(error);
       if (error instanceof WorkspaceError) {
         code = error.code;
         message = error.reason;
@@ -606,8 +606,8 @@ export class Workspaces extends cordis.Service {
     const directory = path.resolve(this.home.resources.root, workspace.directory);
 
     //T 跟踪：定下在哪个工作区干。
-    const vars = { 工作区: workspace.id, 名字: workspace.name, 范围: workspace.scopeKey, 目录: directory };
-    this.home.emit('trace', 'Workspaces.resolve', '定下在哪个工作区干', 'workspaces.resolve(access, selection)', vars);
+    const vars = { workspace: workspace.id, name: workspace.name, scope: workspace.scopeKey, directory: directory };
+    this.home.emit('trace', 'Workspaces.resolve', 'trace.workspaces.resolve', 'workspaces.resolve(access, selection)', vars);
     return { workspace, directory };
   }
 
@@ -620,8 +620,8 @@ export class Workspaces extends cordis.Service {
     const change: WorkspaceChange = { workspaceId: workspace.id, bot: workspace.bot, action };
 
     //T 跟踪：工作区变了。
-    const vars = { 工作区: workspace.id, 机器人: workspace.bot, 名字: workspace.name, 动作: action };
-    this.home.emit('trace', 'Workspaces.emitChanged', '工作区新建、改名或归档了', "ctx.emit('workspaces/changed', change)", vars);
+    const vars = { workspace: workspace.id, bot: workspace.bot, name: workspace.name, action: action };
+    this.home.emit('trace', 'Workspaces.emitChanged', 'trace.workspaces.changed', "ctx.emit('workspaces/changed', change)", vars);
     this.home.emit('workspaces/changed', change);
   }
 

@@ -108,8 +108,10 @@ describe('泳道图', () => {
     expect(lanes.lanes).toEqual(['main', 'resources', 'tutorial', 'alpha', 'http']);
 
     //M 服务就绪：tutorial 提供 flow，resources 本身就是服务；alpha 没多出服务，没有这一格。
-    expect(getCell(lanes, 'tutorial', '服务就绪（inject）')?.items).toEqual([{ step: 3, text: '提供 flow' }]);
-    expect(getCell(lanes, 'resources', '服务就绪（inject）')?.items[0]?.text).toBe('提供 resources');
+    expect(getCell(lanes, 'tutorial', '服务就绪（inject）')?.items).toEqual([
+      { step: 3, text: 'trace.lane.serviceReady', params: { services: 'flow' } },
+    ]);
+    expect(getCell(lanes, 'resources', '服务就绪（inject）')?.items[0]?.params).toEqual({ services: 'resources' });
     expect(getCell(lanes, 'alpha', '服务就绪（inject）')).toBeUndefined();
 
     //M ready、接着跑会话是同一步，落在 main 的「发事件」一格；alpha 出错标红。

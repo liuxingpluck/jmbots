@@ -9,6 +9,7 @@
  */
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
+import * as requestEvents from './utils/RequestEvent.ts';
 import * as textModule from './utils/Text.ts';
 import * as utils from './utils/index.ts';
 import * as workspaceModule from './utils/Workspace.ts';
@@ -274,7 +275,7 @@ export interface ReplyReceiptPart {
 export interface ReplyReceipt {
   /** 协议版本。 */
   v: 2;
-  /** 是否整体成功（sent / queued 且请求无冲突时 true；draft/rejected/uncertain/partial 时看具体语义，sent/queued 为 true）。 */
+  /** 渠道已接收回复时为 true，对应 sent、queued、draft。 */
   ok: boolean;
   /** 细粒度回执状态。 */
   status: ReplyStatus;
@@ -417,6 +418,31 @@ export interface ChannelHistoryRequest {
   before?: string;
   /** 渠道插件接单后置 true。 */
   handled?: boolean;
+}
+
+
+/**
+ * 构造不含查询条目的历史失败结果。
+ * @param scope 查询所属的可见范围。
+ * @param completeness 此次查询覆盖的数据范围。
+ * @param code 给调用方识别的错误码。
+ * @param message 给调用方阅读的失败原因。
+ * @returns 带失败原因、空条目和空游标的结果。
+ */
+export function getHistoryError(
+  scope: string,
+  completeness: ChannelHistoryResult['completeness'],
+  code: string,
+  message: string,
+): ChannelHistoryResult {
+  return {
+    ok: false,
+    items: [],
+    nextCursor: null,
+    scope,
+    completeness,
+    error: { code, message },
+  };
 }
 
 
@@ -565,6 +591,47 @@ export function getClaimKey(messageId: string, botName: string): string {
 
 
 /**
+ * 复制一条渠道消息的固定来源，供队列和回复定位当前轮。
+ * @param message 渠道接入时规范化的消息。
+ * @param botName 当前认领或回复的机器人。
+ * @param origin 供当前机器人使用的渠道地址。
+ * @param claimKey 此次消息认领键。
+ * @param replyRoundKey 此次回复轮键。
+ * @returns 隔离于原消息变更的来源快照。
+ */
+export function getSourceSnapshot(
+  message: ChannelMessage,
+  botName: string,
+  origin: ChannelOrigin,
+  claimKey: string,
+  replyRoundKey: string,
+): SourceSnapshot {
+  //M 执行期间渠道可能更新地址及可见范围，快照保留本轮开始时的数据。
+  const snapshot: SourceSnapshot = {
+    messageId: message.messageId,
+    nativeId: message.nativeId,
+    channel: message.channel,
+    accountId: message.accountId,
+    chatId: message.chatId,
+    chatType: message.chatType,
+    senderId: message.sender.id,
+    role: message.role,
+    targetBots: [...message.targetBots],
+    mentions: structuredClone(message.mentions),
+    origin: { channel: origin.channel, address: structuredClone(origin.address) },
+    visibility: structuredClone(message.visibility),
+    botName,
+    claimKey,
+    replyRoundKey,
+  };
+  if (message.sender.name !== undefined) {
+    snapshot.senderName = message.sender.name;
+  }
+  return snapshot;
+}
+
+
+/**
  * 计算某一轮回复键。
  * @param messageId 标准消息 ID。
  * @param botName 机器人名。
@@ -687,7 +754,7 @@ export interface PaginateHistoryInput {
  */
 export function isHistoryOwner(snapshot: SourceSnapshot): boolean {
   //G 回话地址显式标为非本人（guest、builder 或 owner: false）时一律禁止越界。
-  if (workspaceModule.isOther(snapshot.origin.address)) return false;
+  if (workspaceModule.isNonOwnerSpeaker(snapshot.origin.address)) return false;
 
   //G 群聊里本人说话也不跨：取到的别处历史会回到群里，群里的外人能看到（11-18 中控补）。
   if (snapshot.chatType === 'group') return false;
@@ -709,6 +776,9 @@ export function isHistoryOwner(snapshot: SourceSnapshot): boolean {
  * @returns 标准渠道历史结果。
  */
 export function paginateChannelHistory(input: PaginateHistoryInput): ChannelHistoryResult {
+  //==========================================================
+  //M 确定查询范围并校验翻页游标
+  //==========================================================
   const snapshot = input.request.sourceSnapshot;
   /** 实际查询作用域描述，固定为 channel:accountId:chatId。 */
   const scope = `${input.channel}:${input.accountId}:${input.chatId}`;
@@ -727,17 +797,13 @@ export function paginateChannelHistory(input: PaginateHistoryInput): ChannelHist
       botName: snapshot.botName,
     });
     if (decodedCursor === undefined) {
-      return {
-        ok: false,
-        items: [],
-        nextCursor: null,
-        scope,
-        completeness: 'local_only',
-        error: { code: 'invalid_cursor', message: '历史翻页游标无效或与当前查询范围不匹配' },
-      };
+      return getHistoryError(scope, 'local_only', 'invalid_cursor', '历史翻页游标无效或与当前查询范围不匹配');
     }
   }
 
+  //==========================================================
+  //M 筛出当前范围内、游标之前的消息
+  //==========================================================
   //M 按查询模式筛选候选消息。
   let filtered = input.entries;
   if (input.request.mode === 'visible') {
@@ -764,6 +830,9 @@ export function paginateChannelHistory(input: PaginateHistoryInput): ChannelHist
     });
   }
 
+  //==========================================================
+  //M 截取本页并生成下一页游标
+  //==========================================================
   const page = bounded.slice(-input.request.limit);
   let nextCursor: string | null = null;
   const first = page[0];
@@ -804,94 +873,78 @@ export async function requestChannelReply(
   req: Omit<ChannelReplyRequest, 'requestId'>,
   timeoutMs = 30_000,
 ): Promise<ReplyReceipt> {
-  const requestId = `rep_${crypto.randomUUID()}`;
-  const fullRequest: ChannelReplyRequest = { ...req, requestId };
+  //M 没人接单能确认没发，超时或异常时无法确认投递。
+  const onFallback = (cause: requestEvents.FallbackReason, detail?: string): ChannelRepliedEvent => {
+    let status: ReplyStatus = 'uncertain';
+    let reason = detail ?? '等待渠道发送回执超时';
+    if (cause === 'unhandled') {
+      status = 'rejected';
+      reason = `channel_unavailable：渠道 ${req.channel} 没挂`;
+    }
+    const receipt = getReceipt(req, status, reason);
+    return { requestId: '', replyRoundKey: req.replyRoundKey, receipt };
+  };
 
-  return await new Promise<ReplyReceipt>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let dispose: () => void = () => undefined;
+  const options = { prefix: 'rep', timeoutMs, keepAlive: true, onFallback };
+  //M 交给公共请求工具配对回执，只向上层交回渠道处理结果。
+  const result = await requestEvents.requestEvent(ctx, 'channel/reply', 'channel/replied', req, options);
+  return result.receipt;
+}
 
-    const finish = (receipt: ReplyReceipt): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      dispose();
-      resolve(receipt);
-    };
 
-    //M 监听匹配本请求 requestId 的渠道回执事件，收到后第一时间收口并返回回执。
-    dispose = ctx.on('channel/replied', (event) => {
-      if (event.requestId !== requestId) return;
-      //M 收到匹配的发送回执后立即结束等待。
-      finish(event.receipt);
-    });
+/** 单段文字回复的发送选项。 */
+interface TextReplyOptions {
+  /** 本次回复的幂等键。 */
+  replyRequestKey: string;
+  /** 按本轮队列号发送时由队列提供，通常沿用来源快照的轮键。 */
+  replyRoundKey?: string;
+  /** 本轮的发送序号。 */
+  replyIndex: number;
+  /** 中途说明或最终回复。 */
+  kind: ReplyKind;
+  /** 显式跨聊天时由目标渠道核对和识别。 */
+  target?: ChannelReplyTarget;
+}
 
-    //G 超过约定等待时间仍未收到回执时，返回 uncertain 状态，绝不伪造成功回执。
-    timer = setTimeout(() => {
-      finish({
-        v: 2,
-        ok: false,
-        status: 'uncertain',
-        replyRequestKey: req.replyRequestKey,
-        replyRoundKey: req.replyRoundKey,
-        replyIndex: req.replyIndex,
-        kind: req.kind,
-        parts: req.parts.map((part) => ({
-          partId: part.partId,
-          kind: part.kind,
-          status: 'uncertain',
-          reason: '等待渠道发送回执超时',
-        })),
-        reason: '等待渠道发送回执超时',
-        at: Date.now(),
-      });
-    }, timeoutMs);
 
-    //M 串行通知渠道插件投递回复；无人接单时立回 rejected，抛错时回 uncertain。
-    void ctx.serial('channel/reply', fullRequest).then(() => {
-      if (settled) return;
-      if (fullRequest.handled === true) return;
-
-      //G 没有任何渠道接单时直接回报明确原因，不伪造发送成功。
-      const unhandledReason = `channel_unavailable：渠道 ${req.channel} 没挂`;
-      finish({
-        v: 2,
-        ok: false,
-        status: 'rejected',
-        replyRequestKey: req.replyRequestKey,
-        replyRoundKey: req.replyRoundKey,
-        replyIndex: req.replyIndex,
-        kind: req.kind,
-        parts: req.parts.map((part) => ({
-          partId: part.partId,
-          kind: part.kind,
-          status: 'rejected',
-          reason: unhandledReason,
-        })),
-        reason: unhandledReason,
-        at: Date.now(),
-      });
-    }).catch((error: unknown) => {
-      let reason = String(error);
-      if (error instanceof Error) {
-        reason = error.message;
-      }
-      //M 派发异常无法确认对方是否收到，统一以 uncertain 状态收口。
-      finish({
-        v: 2,
-        ok: false,
-        status: 'uncertain',
-        replyRequestKey: req.replyRequestKey,
-        replyRoundKey: req.replyRoundKey,
-        replyIndex: req.replyIndex,
-        kind: req.kind,
-        parts: req.parts.map((part) => ({ partId: part.partId, kind: part.kind, status: 'uncertain', reason })),
-        reason,
-        at: Date.now(),
-      });
-    });
-  });
+/**
+ * 通过标准渠道请求发送一段纯文字并等待回执。
+ * @param ctx 发起请求的 Cordis 上下文。
+ * @param snapshot 本轮的固定渠道来源。
+ * @param text 要发出的纯文字。
+ * @param options 幂等键、回复类型和可选目标。
+ * @returns 渠道返回的回执。
+ */
+export async function requestTextReply(
+  ctx: cordis.Context,
+  snapshot: SourceSnapshot,
+  text: string,
+  options: TextReplyOptions,
+): Promise<ReplyReceipt> {
+  const kind = options.kind;
+  const mode = 'text';
+  const parts: ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
+  const target = options.target;
+  //M 保留原有字段顺序和目标范围，已落盘的哈希在同键重试时仍可匹配。
+  const hashInput = { kind, mode, parts, target };
+  const payloadHash = getPayloadHash(hashInput);
+  const reply: Omit<ChannelReplyRequest, 'requestId'> = {
+    channel: target?.channel ?? snapshot.channel,
+    bot: snapshot.botName,
+    replyRequestKey: options.replyRequestKey,
+    replyRoundKey: options.replyRoundKey ?? snapshot.replyRoundKey,
+    replyIndex: options.replyIndex,
+    kind,
+    mode,
+    sourceSnapshot: structuredClone(snapshot),
+    payloadHash,
+    parts,
+  };
+  if (target !== undefined) {
+    reply.target = target;
+  }
+  //M 渠道识别目标并发回发送结果，调用方只提供正文和来源。
+  return requestChannelReply(ctx, reply);
 }
 
 
@@ -938,7 +991,7 @@ export interface ChatTarget {
 }
 
 
-/** 一个候选聊天：渠道从自己的数据里拼出来，交给 pickChat 认。 */
+/** 一个候选聊天：渠道从自己的数据里拼出来，交给 findChatByIdOrName 认。 */
 export interface ChatCandidate<T> {
   /** 能认出它的号（群号、聊天号、open_id 等）。 */
   ids: string[];
@@ -986,7 +1039,7 @@ export function parseChatTarget(raw: string, labelPrefixes: string[]): ChatTarge
  * @param name 要找的名字。
  * @returns 认中的那个候选带的 value；都没对上是 undefined。
  */
-export function pickChat<T>(candidates: Iterable<ChatCandidate<T>>, id: string, name: string): T | undefined {
+export function findChatByIdOrName<T>(candidates: Iterable<ChatCandidate<T>>, id: string, name: string): T | undefined {
   for (const candidate of candidates) {
     //M 号对上就是它。
     if (candidate.ids.includes(id)) return candidate.value;
@@ -1004,7 +1057,7 @@ export function pickChat<T>(candidates: Iterable<ChatCandidate<T>>, id: string, 
  * @param chat 调用方给的原始聊天串。
  * @returns “chat_not_found：没有叫 X 的聊天”，X 是 trim 后的串，空串写成（空）。
  */
-export function getChatNotFound(chat: string): string {
+export function getChatNotFoundMessage(chat: string): string {
   let label = chat.trim();
   if (label === '') {
     label = '（空）';
@@ -1043,6 +1096,69 @@ export function resolveLegacyRole(address: Record<string, unknown>): ChannelRole
 }
 
 
+/** 生成回执只需要回复键、类别和每段的标识。 */
+export type ReceiptSource = Pick<ChannelReplyRequest, 'replyRequestKey' | 'replyRoundKey' | 'replyIndex' | 'kind'> & {
+  /** 原回复的段号和种类，按发送顺序排列。 */
+  parts: ReadonlyArray<Pick<ReplyPartInput, 'partId' | 'kind'>>;
+};
+
+
+/**
+ * 按请求和渠道结果生成回执，逐段带上状态和可选原因。
+ * @param request 原请求的回复元数据。
+ * @param status 渠道处理结果。
+ * @param reason 处理结果的说明。
+ * @returns 包含回复键、逐段状态和生成时间的回执。
+ */
+export function getReceipt(request: ReceiptSource, status: ReplyStatus, reason?: string): ReplyReceipt {
+  //M 保留每段标识，发送方可以用段号对上原请求。
+  const parts = request.parts.map((part) => {
+    const result: ReplyReceiptPart = { partId: part.partId, kind: part.kind, status };
+    if (reason !== undefined) {
+      result.reason = reason;
+    }
+    return result;
+  });
+
+  const receipt: ReplyReceipt = {
+    v: 2,
+    ok: status === 'sent' || status === 'queued' || status === 'draft',
+    status,
+    replyRequestKey: request.replyRequestKey,
+    replyRoundKey: request.replyRoundKey,
+    replyIndex: request.replyIndex,
+    kind: request.kind,
+    parts,
+    at: Date.now(),
+  };
+  if (reason !== undefined) {
+    receipt.reason = reason;
+  }
+  return receipt;
+}
+
+
+/**
+ * 把渠道回复回执交回发起请求的一方。
+ * @param ctx 发出回执事件的渠道上下文。
+ * @param request 用请求号和轮次关联等待方。
+ * @param receipt 渠道构造的标准回执。
+ */
+export function emitReplied(
+  ctx: cordis.Context,
+  request: Pick<ChannelReplyRequest, 'requestId' | 'replyRoundKey'>,
+  receipt: ReplyReceipt,
+): void {
+  const event = {
+    requestId: request.requestId,
+    replyRoundKey: request.replyRoundKey,
+    receipt,
+  };
+  //M 用请求号通知等待本次渠道回复的调用方。
+  ctx.emit('channel/replied', event);
+}
+
+
 /**
  * 登记只发纯文字的渠道的 channel/reply 响应器：模型一轮里调几次 channel_reply 就发几条，零次兜底、approval 直回也走这里。
  * 带按 replyRequestKey 的幂等重放与同键冲突拦截，并回发标准 channel/replied 事件。
@@ -1052,33 +1168,11 @@ export function resolveLegacyRole(address: Record<string, unknown>): ChannelRole
 export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter): void {
   const sent = new Map<string, { payloadHash: string; receipt: ReplyReceipt }>();
 
-  const emitReplied = (request: ChannelReplyRequest, receipt: ReplyReceipt): void => {
-    ctx.emit('channel/replied', {
-      requestId: request.requestId,
-      replyRoundKey: request.replyRoundKey,
-      receipt,
-    });
-  };
-
-  const buildFailure = (
-    request: ChannelReplyRequest,
-    status: 'rejected' | 'uncertain',
-    reason: string,
-  ): ReplyReceipt => ({
-    v: 2,
-    ok: false,
-    status,
-    replyRequestKey: request.replyRequestKey,
-    replyRoundKey: request.replyRoundKey,
-    replyIndex: request.replyIndex,
-    kind: request.kind,
-    parts: request.parts.map((part) => ({ partId: part.partId, kind: part.kind, status, reason })),
-    reason,
-    at: Date.now(),
-  });
-
   //M 挂载当前纯文字渠道的 channel/reply 响应监听器，随插件上下文生命周期自动撤销。
   ctx.on('channel/reply', async (request) => {
+    //==========================================================
+    //M 认领本渠道请求并核对重试与发送方式
+    //==========================================================
     if (request.channel !== adapter.channel || request.handled === true) return;
 
     request.handled = true;
@@ -1088,30 +1182,35 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
     if (existing !== undefined) {
       if (existing.payloadHash === request.payloadHash) {
         //M 同键同摘要视为重放：原样回传上次已记录的回执。
-        emitReplied(request, existing.receipt);
+        emitReplied(ctx, request, existing.receipt);
         return;
       }
       //G 同键但正文摘要不同：拦截潜在串包或篡改，回发 rejected 回执。
-      emitReplied(request, buildFailure(request, 'rejected', 'reply_conflict：同一 replyRequestKey 的发送内容不一致'));
+      const reason = 'reply_conflict：同一 replyRequestKey 的发送内容不一致';
+      const receipt = getReceipt(request, 'rejected', reason);
+      emitReplied(ctx, request, receipt);
       return;
     }
 
     if (request.mode !== 'text') {
       //G 纯文字适配器不支持非 text 模式（如附件），明确拒收。
       const reason = `capability_unsupported：渠道 ${adapter.channel} 当前只支持纯文字直回`;
-      const receipt = buildFailure(request, 'rejected', reason);
-      emitReplied(request, receipt);
+      const receipt = getReceipt(request, 'rejected', reason);
+      emitReplied(ctx, request, receipt);
       return;
     }
 
+    //==========================================================
+    //M 解析指定聊天的发送地址
+    //==========================================================
     //M 若请求带有跨渠道/跨聊天目标，调用本渠道自带的“认聊天”回调核实目标地址。
     let targetAddress: Record<string, unknown> | undefined;
     if (request.target !== undefined) {
       if (adapter.getTargetAddress === undefined) {
         //G 渠道未实现目标识别能力时明确拒绝，避免误发回原聊天。
         const reason = `capability_unsupported：渠道 ${adapter.channel} 不支持指定目标聊天`;
-        const receipt = buildFailure(request, 'rejected', reason);
-        emitReplied(request, receipt);
+        const receipt = getReceipt(request, 'rejected', reason);
+        emitReplied(ctx, request, receipt);
         return;
       }
 
@@ -1119,12 +1218,16 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
       targetAddress = adapter.getTargetAddress(request.target.chat, request);
       if (targetAddress === undefined) {
         //G 目标聊天不在本渠道自己的清单/会话表里时回传 rejected。
-        const notFoundReason = getChatNotFound(request.target.chat);
-        emitReplied(request, buildFailure(request, 'rejected', notFoundReason));
+        const notFoundReason = getChatNotFoundMessage(request.target.chat);
+        const receipt = getReceipt(request, 'rejected', notFoundReason);
+        emitReplied(ctx, request, receipt);
         return;
       }
     }
 
+    //==========================================================
+    //M 发送正文，保存可重放的回执并通知调用方
+    //==========================================================
     const body = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\n');
     try {
       //M 将正文与可选跨渠道解析地址交由渠道适配器的直发逻辑写出；不交回结果的渠道照旧算已发。
@@ -1133,31 +1236,20 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
       if (returned !== undefined) {
         outcome = returned;
       }
-      const ok = outcome.status === 'sent' || outcome.status === 'draft';
-      const receipt: ReplyReceipt = {
-        v: 2,
-        ok,
-        status: outcome.status,
-        replyRequestKey: request.replyRequestKey,
-        replyRoundKey: request.replyRoundKey,
-        replyIndex: request.replyIndex,
-        kind: request.kind,
-        parts: [{ partId: request.parts[0]?.partId ?? 'text:0', kind: 'text', status: outcome.status }],
-        at: Date.now(),
-      };
-      if (outcome.reason !== undefined) {
-        receipt.reason = outcome.reason;
-      }
+      //M 用渠道实际交回的状态为请求各段生成回执。
+      const receipt = getReceipt(request, outcome.status, outcome.reason);
 
       //G 只记已发、已存草稿的回执给同键重放；失败、不确定的，同键再来照样交给渠道再试。
-      if (ok) {
+      if (receipt.status === 'sent' || receipt.status === 'draft') {
         sent.set(request.replyRequestKey, { payloadHash: request.payloadHash, receipt });
       }
       //M 发出渠道交回的回执（不交回的就是 sent）。
-      emitReplied(request, receipt);
+      emitReplied(ctx, request, receipt);
     } catch (error) {
       //G 直发过程抛出异常时，读取简洁错误说明并以 uncertain 状态回报。
-      emitReplied(request, buildFailure(request, 'uncertain', textModule.getMessage(error)));
+      const reason = textModule.getErrorMessage(error);
+      const receipt = getReceipt(request, 'uncertain', reason);
+      emitReplied(ctx, request, receipt);
     }
   });
 }

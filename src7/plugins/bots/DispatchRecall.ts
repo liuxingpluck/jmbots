@@ -35,30 +35,10 @@ export class DispatchRecall {
       if (!this.recalledMessages.has(request.sourceSnapshot.messageId)) return;
 
       request.handled = true;
-      const receipt: protocol.ReplyReceipt = {
-        v: 2,
-        ok: false,
-        status: 'rejected',
-        replyRequestKey: request.replyRequestKey,
-        replyRoundKey: request.replyRoundKey,
-        replyIndex: request.replyIndex,
-        kind: request.kind,
-        parts: request.parts.map((part) => ({
-          partId: part.partId,
-          kind: part.kind,
-          status: 'rejected',
-          reason: 'recalled：原消息已撤回，不再发送回复',
-        })),
-        reason: 'recalled：原消息已撤回，不再发送回复',
-        at: Date.now(),
-      };
-
-      //M 发一个 channel/replied 回执（rejected）：让发的一方知道这条没发出去，别一直等。
-      this.home.emit('channel/replied', {
-        requestId: request.requestId,
-        replyRoundKey: request.replyRoundKey,
-        receipt,
-      });
+      const reason = 'recalled：原消息已撤回，不再发送回复';
+      //G 让调用方立即知道原消息已经撤回。
+      const receipt = protocol.getReceipt(request, 'rejected', reason);
+      protocol.emitReplied(this.home, request, receipt);
     }, { prepend: true });
   }
 

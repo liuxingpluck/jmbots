@@ -86,7 +86,7 @@ test('飞书历史 @我 只选本机器人并保留原有分页边界', async ()
   const db = new sqlite.Database(':memory:');
   try {
     //M 用真实飞书事件监听和合成日志，不触发 ready 或 SDK 请求。
-    ctx.provide('resources', { db, root, dir: () => root });
+    ctx.provide('resources', { db, root, ensureRuntimeDir: () => root });
     ctx.provide('bots', { channel: () => () => undefined });
     const config = {
       domain: 'http://127.0.0.1:9',

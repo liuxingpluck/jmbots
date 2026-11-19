@@ -12,7 +12,6 @@ import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
-import type * as fastify from 'fastify';
 import * as configFile from './ConfigFile.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -61,8 +60,8 @@ class Settings {
     //M 构造运行时 config.yaml 处理器并把配置读写、建机器人及重启五条接口挂到 HTTP 服务上。
     this.file = new configFile.ConfigFile(path.join(ctx.resources.root, 'config.yaml'));
     const app = ctx.http.app;
-    app.get('/api/settings', (_request, reply) => this.answer(reply, () => ({ config: this.file.masked() })));
-    app.put<{ Body: unknown }>('/api/settings', (request, reply) => this.answer(reply, () => {
+    app.get('/api/settings', () => ({ config: this.file.masked() }));
+    app.put<{ Body: unknown }>('/api/settings', (request) => {
       //M 校验并原子改写 config.yaml，拿到被修改的顶层段名用于返回值提示与跟踪记录。
       const changed = this.file.edit(request.body);
       let count = 0;
@@ -71,33 +70,15 @@ class Settings {
       }
 
       //T 跟踪：存了配置（只带改了哪些段，不带值）。
-      this.ctx.emit('trace', 'Settings.save', '改了 config.yaml', 'configFile.edit(edits)',
-        { 段: changed.join('、'), 步数: count });
+      this.ctx.emit('trace', 'Settings.save', 'trace.settings.save', 'configFile.edit(edits)',
+        { sections: changed.join('、'), stepCount: count });
       return { ok: true, changed: count, note: `改了 ${changed.join('、')}：config.yaml 是启动时读的，重启后生效` };
-    }));
-    //M 登记新建机器人及两种方式的重启接口，统一走 answer 捕获错误并返回状态码。
+    });
+    //M 登记新建机器人和重启接口，业务错误由 HTTP 插件统一返回。
     app.post<{ Body: unknown }>('/api/bots',
-      (request, reply) => this.answer(reply, () => this.createBot(request.body)));
-    app.post('/api/settings/apply', (_request, reply) => this.answer(reply, () => this.restart(false)));
-    app.post('/api/service/restart', (_request, reply) => this.answer(reply, () => this.restart(true)));
-  }
-
-  /**
-   * 五个接口共用的出错处理：Failure 照它的状态码回，别的回 400，都是 { error }。
-   * @param reply 回应。
-   * @param work 这个接口真正要做的事。
-   */
-  private async answer(reply: fastify.FastifyReply, work: () => unknown): Promise<unknown> {
-    try {
-      return await work();
-    } catch (error) {
-      let status = 400;
-      if (error instanceof failureModule.Failure) {
-        status = error.status;
-      }
-      //M 区分业务 Failure 状态码与未知错误（默认 400），统一按 { error } 返回前端。
-      return reply.code(status).send({ error: (error as Error).message });
-    }
+      (request) => this.createBot(request.body));
+    app.post('/api/settings/apply', () => this.restart(false));
+    app.post('/api/service/restart', () => this.restart(true));
   }
 
   /**
@@ -108,7 +89,7 @@ class Settings {
    */
   private async createBot(raw: unknown): Promise<Record<string, unknown>> {
     //G 解析请求体并校验机器人名非空且不含文件夹禁用字符，避免后续建目录报错。
-    const body = asRecord(raw);
+    const body = configFile.asRecord(raw);
     const botName = getTrimmed(body['name']);
     if (botName === '' || BAD_NAME.test(botName) || /[. ]$/u.test(botName)) {
       throw new failureModule.Failure(400, '机器人名不能为空，不能有 \\ / < > : " | ? * 和控制字符，不能以点或空格结尾');
@@ -140,7 +121,7 @@ class Settings {
       throw new failureModule.Failure(400, `已经有机器人「${botName}」了`);
     }
     //M 飞书：两个都空当没填；只填一个、或这个应用已经绑给别的机器人 → 400。
-    const feishu = asRecord(body['feishu']);
+    const feishu = configFile.asRecord(body['feishu']);
     const appId = getTrimmed(feishu['app_id']);
     const appSecret = getTrimmed(feishu['app_secret']);
     if ((appId === '') !== (appSecret === '')) throw new failureModule.Failure(400, '飞书的 app_id 和 app_secret 要一起填');
@@ -205,8 +186,8 @@ class Settings {
     }
 
     //T 跟踪：建了机器人。
-    this.ctx.emit('trace', 'Settings.createBot', '新建了机器人', 'bot/request add',
-      { 机器人: botName, 飞书: appId !== '' });
+    this.ctx.emit('trace', 'Settings.createBot', 'trace.settings.createBot', 'bot/request add',
+      { bot: botName, feishu: appId !== '' });
     const result: Record<string, unknown> = { ok: true, bot: { name: botName, language } };
     if (appId !== '') result['feishu'] = '飞书要重启后才连上：设置页点“立即重启”';
     return result;
@@ -279,7 +260,7 @@ class Settings {
         await this.closeHttp();
 
         //M 为新进程定位重启日志目录。
-        const logDir = this.ctx.resources.dir('data', 'logs');
+        const logDir = this.ctx.resources.ensureRuntimeDir('data', 'logs');
         const logPath = path.join(logDir, 'restart.log');
         const args = process.argv.slice(1);
         const cwd = process.cwd();
@@ -298,8 +279,8 @@ class Settings {
           child.unref();
 
           //T 跟踪：新进程起了。
-          const vars = { 新进程: child.pid };
-          this.ctx.emit('trace', 'Settings.restart', '起了新进程', 'childProcess.spawn(process.execPath, argv)', vars);
+          const vars = { processId: child.pid };
+          this.ctx.emit('trace', 'Settings.restart', 'trace.settings.spawn', 'childProcess.spawn(process.execPath, argv)', vars);
         } finally {
           fs.closeSync(log);
         }
@@ -393,14 +374,14 @@ class Settings {
    */
   private exitSoon(why: string, before?: () => Promise<void>): void {
     //T 跟踪：要重启了。
-    this.ctx.emit('trace', 'Settings.restart', '要重启了', 'process.exit(0)', { 原因: why });
+    this.ctx.emit('trace', 'Settings.restart', 'trace.settings.restart', 'process.exit(0)', { reason: why });
     setTimeout(() => {
       //M 只有重启前置步骤完成才退出。关闭未确认时保留进程并记下原因。
       void Promise.resolve().then(before).then(() => {
         process.exit(0);
       }).catch((error: unknown) => {
-        const vars = { 原因: String(error) };
-        this.ctx.emit('trace', 'Settings.restart', '重启停止，保留原进程', 'before()', vars);
+        const vars = { reason: String(error) };
+        this.ctx.emit('trace', 'Settings.restart', 'trace.settings.restartCancelled', 'before()', vars);
       });
     }, EXIT_DELAY_MS);
   }
@@ -433,13 +414,6 @@ class Settings {
   }
 }
 
-
-/** 非 null 对象转成键值表，其它给空对象。 */
-function asRecord(raw: unknown): Record<string, unknown> {
-  if (typeof raw === 'object' && raw !== null) return raw as Record<string, unknown>;
-
-  return {};
-}
 
 
 /** 取出去掉两头空白的字符串；不是字符串给空串。 */

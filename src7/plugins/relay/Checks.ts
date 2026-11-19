@@ -45,7 +45,7 @@ export interface AgentHello {
  */
 export function checkAgentHello(body: unknown): AgentHello {
   //M 允许空请求体兜底为对象，校验描述文字和可选的模型能力列表。
-  const item = checks.record(body ?? {}, 'hello 的正文');
+  const item = checks.checkRecord(body ?? {}, 'hello 的正文');
 
   //M description：可以不写，写了要是文字。
   const description = item['description'] ?? '';
@@ -58,12 +58,12 @@ export function checkAgentHello(body: unknown): AgentHello {
 
   //M models：每项 { id, efforts }，efforts 从低到高写。
   const models: AgentModel[] = [];
-  const written = checks.list(item['models'], 'models');
+  const written = checks.checkArray(item['models'], 'models');
   for (const [index, raw] of written.entries()) {
     const label = `models[${String(index)}]`;
-    const model = checks.record(raw, label);
-    const id = checks.text(model['id'], `${label}.id`);
-    const efforts = checks.texts(model['efforts'], `${label}.efforts`);
+    const model = checks.checkRecord(raw, label);
+    const id = checks.checkNonEmptyText(model['id'], `${label}.id`);
+    const efforts = checks.checkNonEmptyTextList(model['efforts'], `${label}.efforts`);
     models.push({ id, efforts });
   }
 
@@ -73,7 +73,7 @@ export function checkAgentHello(body: unknown): AgentHello {
     throw new Error('subagents 要写成 true 或 false');
   }
   //G 限制结果交回方式只取已知枚举值（默认 http）。
-  const returnMode = checks.oneOf(item['returnMode'] ?? 'http', RETURN_MODES, 'returnMode');
+  const returnMode = checks.checkAllowedValue(item['returnMode'] ?? 'http', RETURN_MODES, 'returnMode');
 
   return { description, abilities: { models, subagents, returnMode } };
 }
@@ -174,7 +174,7 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
  */
 export function checkTaskResult(body: unknown): TaskResult {
   //M 先确认回传正文是键值对象，再核对协议版本、任务号与附件字段。
-  const item = checks.record(body, '结果');
+  const item = checks.checkRecord(body, '结果');
 
   //G 版本和种类：只认 v1 的 result。
   if (item['version'] !== 1 || item['kind'] !== 'result') {
@@ -182,10 +182,10 @@ export function checkTaskResult(body: unknown): TaskResult {
   }
 
   //M 任务号、领取键、结论、具体结论。
-  const taskId = checks.text(item['taskId'], 'taskId');
-  const claimKey = checks.text(item['claimKey'], 'claimKey');
-  const status = checks.oneOf(item['status'], RESULT_STATUSES, 'status');
-  const summary = checks.text(item['summary'], 'summary');
+  const taskId = checks.checkNonEmptyText(item['taskId'], 'taskId');
+  const claimKey = checks.checkNonEmptyText(item['claimKey'], 'claimKey');
+  const status = checks.checkAllowedValue(item['status'], RESULT_STATUSES, 'status');
+  const summary = checks.checkNonEmptyText(item['summary'], 'summary');
 
   //G resultKey 只有一种写法；没写就补上。
   const resultKey = `${taskId}/${claimKey}/result`;
@@ -195,63 +195,63 @@ export function checkTaskResult(body: unknown): TaskResult {
   }
 
   //M actualExecution：每项都要写，核实不了写 unknown。
-  const actual = checks.record(item['actualExecution'], 'actualExecution');
+  const actual = checks.checkRecord(item['actualExecution'], 'actualExecution');
   const subagents: ActualSubagent[] = [];
-  for (const [index, raw] of checks.list(actual['subagents'] ?? [], 'actualExecution.subagents').entries()) {
+  for (const [index, raw] of checks.checkArray(actual['subagents'] ?? [], 'actualExecution.subagents').entries()) {
     const label = `actualExecution.subagents[${String(index)}]`;
-    const subagent = checks.record(raw, label);
+    const subagent = checks.checkRecord(raw, label);
     subagents.push({
-      id: checks.text(subagent['id'], `${label}.id`),
-      responsibility: checks.text(subagent['responsibility'], `${label}.responsibility`),
-      model: checks.text(subagent['model'], `${label}.model`),
-      thinking: checks.text(subagent['thinking'], `${label}.thinking`),
+      id: checks.checkNonEmptyText(subagent['id'], `${label}.id`),
+      responsibility: checks.checkNonEmptyText(subagent['responsibility'], `${label}.responsibility`),
+      model: checks.checkNonEmptyText(subagent['model'], `${label}.model`),
+      thinking: checks.checkNonEmptyText(subagent['thinking'], `${label}.thinking`),
     });
   }
   //M 逐项校验执行端实际记录的主机、会话及请求/实际模型档字段是否为非空文字。
   const actualExecution: ActualExecution = {
-    host: checks.text(actual['host'], 'actualExecution.host'),
-    sessionId: checks.text(actual['sessionId'], 'actualExecution.sessionId'),
-    requestedModel: checks.text(actual['requestedModel'], 'actualExecution.requestedModel'),
-    requestedThinking: checks.text(actual['requestedThinking'], 'actualExecution.requestedThinking'),
-    actualModel: checks.text(actual['actualModel'], 'actualExecution.actualModel'),
-    actualThinking: checks.text(actual['actualThinking'], 'actualExecution.actualThinking'),
+    host: checks.checkNonEmptyText(actual['host'], 'actualExecution.host'),
+    sessionId: checks.checkNonEmptyText(actual['sessionId'], 'actualExecution.sessionId'),
+    requestedModel: checks.checkNonEmptyText(actual['requestedModel'], 'actualExecution.requestedModel'),
+    requestedThinking: checks.checkNonEmptyText(actual['requestedThinking'], 'actualExecution.requestedThinking'),
+    actualModel: checks.checkNonEmptyText(actual['actualModel'], 'actualExecution.actualModel'),
+    actualThinking: checks.checkNonEmptyText(actual['actualThinking'], 'actualExecution.actualThinking'),
     subagents,
   };
 
   //M artifacts：路径只能是 result/artifacts/ 里的相对路径（不许绝对路径、不许 ..），SHA-256 写对格式。
   const artifacts: ResultArtifact[] = [];
-  for (const [index, raw] of checks.list(item['artifacts'] ?? [], 'artifacts').entries()) {
+  for (const [index, raw] of checks.checkArray(item['artifacts'] ?? [], 'artifacts').entries()) {
     const label = `artifacts[${String(index)}]`;
-    const artifact = checks.record(raw, label);
-    const file = checks.text(artifact['path'], `${label}.path`);
+    const artifact = checks.checkRecord(raw, label);
+    const file = checks.checkNonEmptyText(artifact['path'], `${label}.path`);
     const parts = file.split(/[\\/]/u);
     if (path.isAbsolute(file) || path.win32.isAbsolute(file) || parts.includes('..')) {
       throw new Error(`${label}.path 要写相对 result/artifacts/ 的路径，不能是绝对路径、不能有 ..`);
     }
     //G 校核交付物的校验和格式及一句话描述，随后登记到结果列表。
-    const sha256 = checks.text(artifact['sha256'], `${label}.sha256`);
+    const sha256 = checks.checkNonEmptyText(artifact['sha256'], `${label}.sha256`);
     if (!SHA256_PATTERN.test(sha256)) {
       throw new Error(`${label}.sha256 要写成 64 位小写十六进制`);
     }
     //M 校验交付物的一句话描述为非空文字，再写入结果数组。
-    const description = checks.text(artifact['description'], `${label}.description`);
+    const description = checks.checkNonEmptyText(artifact['description'], `${label}.description`);
     artifacts.push({ path: file, sha256, description });
   }
 
   //M verification：每项 { check, outcome }。
   const verification: ResultCheck[] = [];
-  for (const [index, raw] of checks.list(item['verification'] ?? [], 'verification').entries()) {
+  for (const [index, raw] of checks.checkArray(item['verification'] ?? [], 'verification').entries()) {
     const label = `verification[${String(index)}]`;
-    const check = checks.record(raw, label);
+    const check = checks.checkRecord(raw, label);
     verification.push({
-      check: checks.text(check['check'], `${label}.check`),
-      outcome: checks.oneOf(check['outcome'], CHECK_OUTCOMES, `${label}.outcome`),
+      check: checks.checkNonEmptyText(check['check'], `${label}.check`),
+      outcome: checks.checkAllowedValue(check['outcome'], CHECK_OUTCOMES, `${label}.outcome`),
     });
   }
 
   //M remaining、capabilityMissing：文字清单，可以不写。
-  const remaining = checks.texts(item['remaining'] ?? [], 'remaining');
-  const capabilityMissing = checks.texts(item['capabilityMissing'] ?? [], 'capabilityMissing');
+  const remaining = checks.checkNonEmptyTextList(item['remaining'] ?? [], 'remaining');
+  const capabilityMissing = checks.checkNonEmptyTextList(item['capabilityMissing'] ?? [], 'capabilityMissing');
 
   return {
     version: 1,

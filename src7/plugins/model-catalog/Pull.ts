@@ -15,6 +15,8 @@ export interface ModelInfo {
   kind: 'chat' | 'decision';
   /** 上下文多长（token）。 */
   contextWindow: number;
+  /** 缺少登记值时，contextWindow 是目录给出的估算值。 */
+  contextWindowEstimated?: true;
   /** 最多输出多少（token）；决策模型没有。 */
   maxOutputTokens?: number;
   /** 支持的思考档，从低到高；一个都没有是 ['off']；决策模型是 []。 */
@@ -134,13 +136,14 @@ export function merge(
     }
 
     const listedWindow = entry.context_window ?? entry.context_length;
+    const declaredWindow = own?.context_window ?? listedWindow;
     const listedOutput = entry.max_output_tokens ?? entry.top_provider?.max_completion_tokens;
     let listedMissing = NON_CHAT_MODEL.test(entry.id);
     if (detailed) {
       listedMissing = !listedWindow || !listedOutput;
     }
     if (own === undefined && listedMissing) continue;
-    if (!(own?.context_window ?? listedWindow) || !(own?.max_output_tokens ?? listedOutput)) guessed += 1;
+    if (!declaredWindow || !(own?.max_output_tokens ?? listedOutput)) guessed += 1;
 
     //M 思考档：none、off 都算 off；按 off…max 的顺序留支持的；一个都没有就只列 off（用模型自己的默认）。
     const efforts = (own?.thinking ?? (entry.supported_reasoning_levels ?? []).map((level) => level.effort))
@@ -165,16 +168,21 @@ export function merge(
     if (resolvedThinking.length === 0) {
       resolvedThinking = ['off'];
     }
-    models.push({
+    const model: ModelInfo = {
       id,
       name,
       kind: 'chat',
-      contextWindow: own?.context_window ?? listedWindow ?? UNKNOWN_CONTEXT_WINDOW,
+      contextWindow: declaredWindow ?? UNKNOWN_CONTEXT_WINDOW,
       maxOutputTokens: own?.max_output_tokens ?? listedOutput ?? UNKNOWN_MAX_OUTPUT,
       thinking: resolvedThinking,
       vision: own?.vision ?? inputs.includes('image'),
       price,
-    });
+    };
+    //M 保留估算值供裁剪使用，同时让依赖真实窗口的功能识别缺少登记。
+    if (declaredWindow === undefined) {
+      model.contextWindowEstimated = true;
+    }
+    models.push(model);
   }
   return { models, guessed };
 }

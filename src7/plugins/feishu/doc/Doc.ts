@@ -123,7 +123,7 @@ export function getFile(ctx: cordis.Context, session: Session, value: string): s
   const cleaned = value.trim().replace(/^@/u, '').replace(/^["']|["']$/gu, '');
   //M 读取所属机器人配置工作区（缺失则回落默认 bots 工作区），再按角色地址收窄目录。
   const botWorkspace = ctx.bots.get(session.row.bot)?.workspace
-    ?? ctx.resources.dir('bots', session.row.bot, 'workspace');
+    ?? ctx.resources.ensureRuntimeDir('bots', session.row.bot, 'workspace');
   const workspace = workspaceModule.getWorkspace(botWorkspace, session.row.address);
   const full = path.resolve(workspace, cleaned);
   if (full === path.join(ctx.resources.root, 'config.yaml')) {
@@ -167,8 +167,8 @@ export async function publish(
   }
 
   //T 跟踪：发布飞书云文档。
-  const vars = { 会话: session.id, 标题: title, 图片几张: images.length, 字数: text.length };
-  ctx.emit('trace', 'Doc.publish', '把 Markdown 发布成飞书云文档', 'client.docx.v1.document.create(...)', vars);
+  const vars = { session: session.id, title: title, imageCount: images.length, length: text.length };
+  ctx.emit('trace', 'Doc.publish', 'trace.feishu.publishDocument', 'client.docx.v1.document.create(...)', vars);
 
   //M 带限流重试创建空白飞书云文档并拿到新文档 ID。
   const created = await api.call('云文档建文档', () => client.docx.v1.document.create({ data: { title } }));
@@ -215,7 +215,7 @@ export async function publish(
     //M 为刚建成的云文档授个人或组织内可编辑权限。
     granted = await grantAccess(client, docId, openId);
   } catch (error) {
-    granted = `权限没给成：${textModule.getMessage(error)}`;
+    granted = `权限没给成：${textModule.getErrorMessage(error)}`;
   }
   return `已发布飞书文档《${title}》：${DOC_URL}${docId}（${granted}）`;
 }
@@ -396,7 +396,7 @@ export async function remove(feishu: Feishu, session: Session, documents: string
       await api.call('云文档删除', () => client.drive.v1.file.delete(deleteArgs));
       done.push(id);
     } catch (error) {
-      failed.push(`${id}（${textModule.getMessage(error)}）`);
+      failed.push(`${id}（${textModule.getErrorMessage(error)}）`);
     }
   }
   const parts: string[] = [];

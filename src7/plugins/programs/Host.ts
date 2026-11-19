@@ -197,7 +197,7 @@ export class Host {
       this.ctx.emit('program/state', event);
     } catch (error) {
       //G 订阅方错误不能把本来健康的自有程序变成一次崩溃重启。
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       console.error(`program/state订阅方失败：${detail}`);
     }
   }
@@ -364,7 +364,7 @@ export class Host {
 
       //M 留下没有进入正常启停路径的错误原因。
       this.state = 'failed';
-      this.note = textModule.getMessage(error);
+      this.note = textModule.getErrorMessage(error);
       //M 监督异常也有明确状态回执，不让界面停在ready。
       this.publishState();
     }
@@ -417,7 +417,7 @@ export class Host {
         try {
           fs.writeSync(log, `${line}\n`);
         } catch (error) {
-          console.error(`外部程序 ${this.spec.name} 写启动日志失败：${textModule.getMessage(error)}`);
+          console.error(`外部程序 ${this.spec.name} 写启动日志失败：${textModule.getErrorMessage(error)}`);
         }
       });
 
@@ -467,7 +467,7 @@ export class Host {
       }
 
       //M 留下启动超时、进程管道或健康接口的错误说明。
-      this.note = textModule.getMessage(error);
+      this.note = textModule.getErrorMessage(error);
     } finally {
       //M 子进程要退了，它的密钥立刻作废，之后带这把钥匙的回调一律拒。
       this.key = undefined;

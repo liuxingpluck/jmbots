@@ -103,8 +103,8 @@ export class Shots {
       //G 没有要拍的消息：第一步就回。
       if (this.isIdle()) return;
 
-      const rawSession = vars['会话'] ?? vars['session'];
-      const rawMessage = vars['消息号'];
+      const rawSession = vars['session'] ?? vars['会话'];
+      const rawMessage = vars['messageId'] ?? vars['消息号'];
       let session: string | null = null;
       if (typeof rawSession === 'string') {
         session = rawSession;
@@ -133,10 +133,10 @@ export class Shots {
       if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/') || NOISE.has(event)) return;
 
       //M 按跟踪日志同款规则提取事件里的会话号与消息号，供后续命中判断。
-      const line = traceUtils.dispatchLine(this.ctx, mode, event, args, 1);
+      const line = traceUtils.buildDispatchLine(this.ctx, mode, event, args, 1);
       let rawState: unknown;
       if (event === 'session/change') {
-        rawState = line.vars['状态'];
+        rawState = line.vars['state'];
       }
       let state: string | undefined;
       if (typeof rawState === 'string') {
@@ -248,6 +248,7 @@ export class Shots {
     if (this.sessions.has(id)) return true;
 
     //M 当前会话不在集合中时向上查父会话是否被监控，借此连带捕捉派生子会话。
+    //M   openedSessions 有上限，被挪出内存的会话这里取不到父会话，只是少连带拍一场调试快照，可以接受。
     const parent = this.ctx.get('sessions')?.['openedSessions'].get(id)?.row.parent;
     if (parent === undefined || !this.isArmed(parent)) return false;
 

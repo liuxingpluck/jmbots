@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
+import * as failureModule from '../../utils/Failure.ts';
 import * as routesModule from './Routes.ts';
 import * as tokensModule from './Tokens.ts';
 import { getPluginProblems } from '../../Resources.ts';
@@ -161,6 +162,24 @@ export class Http extends cordis.Service {
     //M forceCloseConnections：拔插件时连着的 keep-alive 连接一起关，不然 close 要等它们自己断。
     this.app = fastify.default({ logger: false, bodyLimit: BODY_LIMIT, forceCloseConnections: true });
 
+    //M 接口共用错误正文，保留业务和 Fastify 的状态码，其他异常按 500 回。
+    this.app.setErrorHandler((error, _request, reply) => {
+      let status = 500;
+      const statusCode = (error as { statusCode?: unknown } | null)?.statusCode;
+      if (typeof statusCode === 'number' && statusCode >= 400 && statusCode <= 599) {
+        status = statusCode;
+      }
+      if (error instanceof failureModule.Failure) {
+        status = error.status;
+      }
+
+      //M 客户端从 error 字段读实际错误信息。
+      const message = textModule.getErrorMessage(error);
+      const body = { error: message };
+      reply.code(status);
+      return reply.send(body);
+    });
+
     //M 先挂登记簿的钩子，后面登记的每条路径（含下面的健康检查）都记下来。
     routesModule.watchRoutes(this.app, this.routes);
 
@@ -196,7 +215,7 @@ export class Http extends cordis.Service {
     });
 
     //M 初始化令牌管理器，读取 data/tokens.json 并挂载本机专属的令牌管理接口。
-    const file = path.join(this.ctx.resources.dir('data'), 'tokens.json');
+    const file = path.join(this.ctx.resources.ensureRuntimeDir('data'), 'tokens.json');
     this.tokens = new tokensModule.Tokens(this, file, config.token);
 
     //M 都挂完了才监听：这时候别的插件的路径都登记好了。
@@ -207,7 +226,7 @@ export class Http extends cordis.Service {
     const options = {
       onError: (error: unknown) => {
         //G Fastify 执行失败时把原因随回执交给调用方。
-        const detail = textModule.getMessage(error);
+        const detail = textModule.getErrorMessage(error);
         return { ok: false, error: detail };
       },
     };
@@ -408,7 +427,7 @@ export class Http extends cordis.Service {
         await this.app.listen({ host: this.config.host, port });
         break;
       } catch (error) {
-        const text = String(error);
+        const text = textModule.getErrorMessage(error);
         const inUse = (error as NodeJS.ErrnoException).code === 'EADDRINUSE' || /in use/iu.test(text);
         if (!inUse || Date.now() > deadline) {
           console.error(`HTTP 服务没起来：${text}`);
@@ -420,7 +439,7 @@ export class Http extends cordis.Service {
     }
 
     //M 进程号写进 data/serve_<端口>.pid，基地换版本时按它停旧进程；被拔掉、进程退出、收到 SIGTERM/SIGINT 时删掉。
-    this.pidFile = path.join(this.ctx.resources.dir('data'), `serve_${String(port)}.pid`);
+    this.pidFile = path.join(this.ctx.resources.ensureRuntimeDir('data'), `serve_${String(port)}.pid`);
     fs.writeFileSync(this.pidFile, String(process.pid));
     //M 'exit' 必须同步删；SIGTERM/SIGINT 在 Bun 里不一定会走到 'exit'，所以另外登记。
     process.once('exit', this.onExit);
@@ -428,8 +447,8 @@ export class Http extends cordis.Service {
     process.once('SIGINT', this.onSignal);
 
     //T 跟踪：HTTP 服务开始监听。
-    const vars = { 地址: this.config.host, 端口: port, 有令牌: !this.tokens.none() };
-    this.ctx.emit('trace', 'Http.listen', 'HTTP 服务开始监听', "app.listen({ host, port })", vars);
+    const vars = { host: this.config.host, port: port, hasToken: !this.tokens.none() };
+    this.ctx.emit('trace', 'Http.listen', 'trace.http.listen', "app.listen({ host, port })", vars);
     console.log(`HTTP 服务已开：http://<本机地址>:${String(port)}（本机请求不用令牌；别的机器要带令牌）`);
   }
 

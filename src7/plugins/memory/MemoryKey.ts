@@ -120,7 +120,7 @@ function getSnapshotSource(snapshot: channelProtocol.SourceSnapshot): KeySource 
 /** 本人的私人记忆可进入非群聊和明确登记的受信群。 */
 function canReadAll(owner: boolean, address: unknown, chatType: string): boolean {
   //G 以本轮身份和渠道设置为准；来源标为群时仍须有明确的 trusted 字段。
-  if (!owner || !workspaceModule.privateAllowed(address)) return false;
+  if (!owner || !workspaceModule.isPrivateMemoryAllowed(address)) return false;
 
   if (chatType !== 'group') return true;
 
@@ -155,7 +155,7 @@ export function getMemoryAccess(row: SessionMeta): MemoryAccess {
   const channel = origin?.channel ?? row.channel ?? '';
   const address = origin?.address ?? row.address;
   const source = getOriginSource(channel, address);
-  const role = workspaceModule.getRole(address);
+  const role = workspaceModule.getSpeakerRole(address);
   const internal = channel === '' || source.chatType === 'local';
   //G 缺少角色只在内部非群聊沿用本人的旧默认。群聊必须明确识别出本人。
   const localOwner = role === '' && internal && source.chatType !== 'group';

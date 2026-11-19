@@ -1,7 +1,7 @@
 /**
  * 用量：模型每调用一次记一行（表 model_usage，列照 0.4），给网页的用量页按时间段、分组合计（GET /api/usage），
  * 也给回话追溯按会话、时间窗取（事件 usage/list，兼容服务 usage.list）。
- * 成功的听 session/message（接进对话的模型回答）；失败的听骨架的 model/failed（重试的每一次都算）。
+ * 成功的听 session/new-message（接进对话的模型回答）；失败的听骨架的 model/failed（重试的每一次都算）。
  * 钱：按模型清单事件给的价格算（美元每百万 token），查询未响应或没价格时记 0。
  * model-catalog 内的用量子模块，保留 usage 服务名与原事件、统计接口。
  */
@@ -169,7 +169,7 @@ export class Usage extends cordis.Service {
     db.exec('CREATE INDEX IF NOT EXISTS model_usage_session ON model_usage (session_id, at)');
 
     //M 接进对话的是模型的回答 → 记一行成功的。假模型（插件直接给的回答）也记，token 是 0。
-    ctx.on('session/message', (session, message) => {
+    ctx.on('session/new-message', (session, message) => {
       if (message.role !== 'assistant') return;
 
       const model = `${message.provider}/${message.model}`;
@@ -181,6 +181,7 @@ export class Usage extends cordis.Service {
 
     //M 一次没成的调用 → 记一行失败的；重试的每一次都会来一次。
     ctx.on('model/failed', (info) => {
+      //M Usage 是调用用量，input 和 output 记输入、输出 token，cacheRead 等字段单列缓存用量。
       const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as piAi.Usage;
       const error = info.error.slice(0, ERROR_MAX_CHARS);
 
@@ -275,7 +276,7 @@ export class Usage extends cordis.Service {
       insert.run(...values);
     } catch (error) {
       //G 通知入口不等待写库，失败时记录原因供排查。
-      const detail = textModule.getMessage(error);
+      const detail = textModule.getErrorMessage(error);
       console.error(`模型用量没记成：${detail}`);
     }
   }

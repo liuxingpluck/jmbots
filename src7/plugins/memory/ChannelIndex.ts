@@ -573,7 +573,7 @@ export function applyChannelIndex(
       rust?.wake();
     } catch (error) {
       //G 记不进索引只打日志，不往外抛，别挡别人认领这条消息。
-      console.error(`memory：渠道消息记不进索引：${textModule.getMessage(error)}`);
+      console.error(`memory：渠道消息记不进索引：${textModule.getErrorMessage(error)}`);
     }
   }, { prepend: true });
 
@@ -588,7 +588,7 @@ export function applyChannelIndex(
       rust?.wake();
     } catch (error) {
       //G 记不进索引只打日志，不往外抛，别挡回复发出去。
-      console.error(`memory：机器人的回复记不进索引：${textModule.getMessage(error)}`);
+      console.error(`memory：机器人的回复记不进索引：${textModule.getErrorMessage(error)}`);
     }
   }, { prepend: true });
 
@@ -635,7 +635,7 @@ export function applyChannelIndex(
         return { hits: index.search(query) };
       } catch (error) {
         //G 参数写错（比如时间认不出来）回 400 并带原因。
-        return reply.code(400).send({ error: textModule.getMessage(error) });
+        return reply.code(400).send({ error: textModule.getErrorMessage(error) });
       }
     });
   });

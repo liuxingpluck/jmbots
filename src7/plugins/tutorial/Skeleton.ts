@@ -58,7 +58,7 @@ interface ExtractedSymbol {
 
 /** 源码里提取到的发送事件调用点。 */
 interface EmittedEventInfo {
-  /** 事件名（如 session/request）。 */
+  /** 事件名（如 session/before-model）。 */
   name: string;
   /** 触发方法（ctx.emit / ctx.serial / ctx.parallel）。 */
   way: string;

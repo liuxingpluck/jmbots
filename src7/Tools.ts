@@ -1,7 +1,7 @@
 /**
  * 工具：自己不带任何工具，只管一张登记表。
  * 自带的、别的插件的工具都调 register 登记进来；
- * 会话每一步调 list 要清单，模型要了工具就调 execute 一个个执行。
+ * 会话每一步调 listToolsForSessionKind 要清单，模型要了工具就调 execute 一个个执行。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
@@ -33,7 +33,14 @@ declare module 'cordis' {
 
 /** 登记一个工具要给的东西。 */
 export interface ToolSpec {
-  /** 给模型看的：名字、说明、参数的形状。 */
+  /**
+   * 给模型看的 pi-ai `Tool` 定义。
+   * - `name` 是工具名，用来登记和匹配模型的调用。
+   * - `description` 告诉模型工具能做什么。
+   * - `parameters` 是 TypeBox 的参数 schema，用来校验模型传来的参数。
+   * - `constrainedSampling` 可选，取 `false` 或 `ConstrainedSamplingConfig`。
+   * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:528。
+   */
   definition: piAi.Tool;
   /** 哪几种会话能用这个工具（会话的 kind：front 前台对话 / work 后台干活 / relay 转话）。只写 ['work'] 时前台对话拿不到它。 */
   sessionKinds: string[];
@@ -43,7 +50,7 @@ export interface ToolSpec {
    * @param session 是哪场会话要执行。
    * @param signal 停止信号：网页、飞书点了停止就触发。要等很久的工具（搜索、生图、跑命令、子任务）把它传给 fetch、子进程，
    *   或者听它的 abort 事件，收到就断开、抛错；写文件这类快的不用管它，照常做完。老工具不写这个参数也行。
-   * @param callId 模型这次调用的调用号（piAi.ToolCall 的 id）：同一次调用重来还是它。要防重复执行的工具（agent_task 派活）拿它当键；
+   * @param callId 模型这次调用的 `id`（`ToolCall` 见本文件 L100）。同一次调用重来还是它。要防重复执行的工具（agent_task 派活）拿它当键；
    *   别的工具不写这个参数也行。
    * @returns 给模型看的文字。抛错就算出错，原因给模型看。
    */
@@ -51,7 +58,19 @@ export interface ToolSpec {
 }
 
 
-/** 工具 run 交回的：一段文字；或者文字和图片块（看图模型才收图片，比如 read 读到图片）。 */
+/**
+ * 工具 run 交回一段文字或文字、图片块数组。支持看图的模型可以接收图片块。
+ * pi-ai 的 `TextContent` 是一块文字。
+ * - `type: 'text'` 用来认出文字块。
+ * - `text` 是正文。
+ * - `textSignature` 可选，记录文字块的签名。
+ * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:252。
+ * pi-ai 的 `ImageContent` 是一张图片。
+ * - `type: 'image'` 用来认出图片块。
+ * - `data` 是以 Base64 表示的图片数据。
+ * - `mimeType` 表示图片格式，例如 `image/png`。
+ * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:266。
+ */
 export type ToolResult = string | (piAi.TextContent | piAi.ImageContent)[];
 
 
@@ -59,7 +78,7 @@ export type ToolResult = string | (piAi.TextContent | piAi.ImageContent)[];
 export interface ToolOutcome {
   /** 给模型看的文字。 */
   text: string;
-  /** 给模型看的图片；没有就不写。 */
+  /** 给模型看的图片，没有时省略。`ImageContent` 的字段见本文件 L74。 */
   images?: piAi.ImageContent[];
   /** 是不是出错了。 */
   isError: boolean;
@@ -68,7 +87,16 @@ export interface ToolOutcome {
 
 /** 事件 session/before-tool 的数据：关口共有的 session、stop，加上这次调用。 */
 export interface ToolGate extends SessionGate {
-  /** 模型的这次调用：工具名、参数、调用号。 */
+  /**
+   * pi-ai 的 `ToolCall` 是模型要求执行的一次调用。
+   * - `type: 'toolCall'` 用来从回答的其他内容块里认出调用。
+   * - `id` 是配对工具结果的调用号。
+   * - `name` 是登记的工具名。
+   * - `arguments` 是待校验的 `JsonObject`。
+   * - `argumentsError` 可选，记录原始参数文本及解析问题。此时 `arguments` 为 `{}`。
+   * - `namespace` 可选，是 OpenAI Responses 接口的工具命名空间。
+   * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:271。
+   */
   call: piAi.ToolCall;
   /** 不让执行这一个的理由；谁不让执行谁写。没人写就放行。和 stop 不同：会话接着走。 */
   deny?: string;
@@ -121,9 +149,9 @@ export class Tools extends cordis.Service {
   /**
    * 这种会话能用的工具清单。
    * @param kind 会话的种类。
-   * @returns 给模型看的工具定义，按登记的先后。
+   * @returns 给模型看的 `Tool` 定义，按登记的先后。字段见本文件 L44。
    */
-  list(kind: string): piAi.Tool[] {
+  listToolsForSessionKind(kind: string): piAi.Tool[] {
     //M 登记表里挑出这种会话能用的，只交出给模型看的定义。
     const all = [...this.specs.values()];
     const usable = all.filter((spec) => spec.sessionKinds.includes(kind));
@@ -132,13 +160,16 @@ export class Tools extends cordis.Service {
 
   /**
    * 执行模型要的一个工具。
-   * @param call 模型的这次调用：工具名、参数、调用号。
+   * @param call 模型要求的这次 `ToolCall`，字段见本文件 L100。
    * @param session 是哪场会话要执行。
    * @param signal 这一轮的停止信号（就是掐模型请求的那个），原样交给工具。
    * @returns 结果。不抛错：没执行、出错、被停止，都写在结果里给模型看。
    * 副作用：执行工具。
    */
   async execute(call: piAi.ToolCall, session: Session, signal: AbortSignal): Promise<ToolOutcome> {
+    //==========================================================
+    //M 关口三 检查会话和插件是否允许执行工具
+    //==========================================================
     //G 会话被喊停了 → 这一批里后面的工具都不执行。
     if (session.row.state !== 'running') return { text: '未执行：停下来了', isError: true };
 
@@ -161,23 +192,30 @@ export class Tools extends cordis.Service {
       return { text: `没有这个工具：${call.name}`, isError: true };
     }
 
+    //==========================================================
+    //M 校验参数并执行已放行的工具
+    //==========================================================
     //T 跟踪：执行工具。结果接进对话时，打印插件会再打一行。
     const vars = {
-      会话: session.id,
-      工具: call.name,
-      参数: call.arguments,
+      session: session.id,
+      tool: call.name,
+      args: call.arguments,
     };
-    this.ctx.emit('trace', 'Tools.execute', '执行工具', 'spec.run(args, session, signal, call.id)', vars);
+    this.ctx.emit('trace', 'Tools.execute', 'trace.tools.execute', 'spec.run(args, session, signal, call.id)', vars);
     try {
       //M 模型给的参数是外面进来的，在这里照工具的定义校验一次；工具里面直接用。调用号原样交给工具。
       const args = piAi.validateToolArguments(spec.definition, call) as Record<string, unknown>;
       const result = await spec.run(args, session, signal, call.id);
 
+      //==========================================================
+      //M 整理工具输出，交给会话循环的关口四
+      //==========================================================
       //M 工具交回一段文字：原样给模型。
       if (typeof result === 'string') return { text: result, isError: false };
 
       //M 工具交回几块：文字拼起来，图片单独挑出来。
       const text = piAi.contentText(result);
+      /** 从工具结果里分出图片块。`ImageContent` 的字段见本文件 L74。 */
       const images = result.filter((block): block is piAi.ImageContent => {
         return block.type === 'image';
       });
@@ -187,7 +225,7 @@ export class Tools extends cordis.Service {
       if (signal.aborted) return { text: '已停止：点了停止，工具没做完', isError: false };
 
       //M 参数不对、工具抛错，都不往外抛：原因当成结果给模型看，它自己决定怎么办。
-      const reason = textModule.getMessage(error);
+      const reason = textModule.getErrorMessage(error);
       return { text: `出错：${reason}`, isError: true };
     }
   }

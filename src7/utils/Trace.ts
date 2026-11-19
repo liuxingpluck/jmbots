@@ -2,9 +2,9 @@
  * 跟踪点：骨架和插件走到关键的地方各发一个，说清“现在走到哪个模块的哪个函数、在干什么”。
  * 骨架只管发，不管打印；打印是 plugins/tutorial（Print.ts，配置 trace_console）的事。没挂它时没人听，发了等于没发。
  * 写法（一个跟踪点两行，//T 开头的注释标出来）：
- *   const vars = { 会话: session.id, 渠道: message.channel };
- *   this.ctx.emit('trace', 'Bot.receive', '消息交给这场会话，推它往下走', 'session.add(); session.run()', vars);
- * 会话发的三个事件（session/request、session/message、session/change）不用另发跟踪点：
+ *   const vars = { session: session.id, channel: message.channel };
+ *   this.ctx.emit('trace', 'Bot.receive', 'trace.bots.receiveIntoSession', 'session.queueUserMessage(); session.run()', vars);
+ * 会话发的三个事件（session/before-model、session/new-message、session/change）不用另发跟踪点：
  * Cordis 每发一个事件都会自己报一声，打印插件顺带打出来。
  *
  * 下面几个函数是 trace（打到控制台）和 journal（记进库给网页看）共用的：两边记的是同一种行，
@@ -73,9 +73,9 @@ declare module 'cordis' {
      *   src7/plugins/tutorial/Print.ts 的 Printer.constructor
      *   src7/plugins/tutorial/State.ts 的 Shots.constructor
      * @param where 哪个模块的哪个函数，比如 Bot.receive。
-     * @param text 一句人话：现在在干什么。
+     * @param text 文案编号。旧发出方仍可传原文。
      * @param code 一句代码：对应的那行调用，比如 chat(resources, request)。
-     * @param vars 关键变量。
+     * @param vars 关键变量，使用稳定英文键。
      */
     'trace'(where: string, text: string, code: string, vars: Record<string, unknown>): void;
   }
@@ -83,15 +83,11 @@ declare module 'cordis' {
 
 
 
-/** Cordis 的发法，换成说明里的叫法：挨个问是照挂上去的先后一个个等；通知是只告诉大家。 */
-export const MODES: Record<string, string> = { serial: '挨个问', emit: '通知', parallel: '通知', bail: '挨个问' };
-
-
 /** 一个事件行：发了哪个事件、怎么发的、谁在听、归哪场会话，和几个认得的关键值。 */
 export interface DispatchLine {
-  /** 事件名，如 session/message。 */
+  /** 事件名，如 session/new-message。 */
   name: string;
-  /** 挨个问、通知。 */
+  /** Cordis 发法，例如 serial、emit。 */
   mode: string;
   /** 听的人：登记监听的插件名。 */
   listeners: string[];
@@ -111,7 +107,7 @@ export interface DispatchLine {
  * @param value 值。
  * @param max 最多几个字。
  */
-export function short(value: unknown, max: number): string {
+export function formatTraceValue(value: unknown, max: number): string {
   let full = '';
   if (typeof value === 'string') {
     full = value;
@@ -152,13 +148,13 @@ function sessionLike(value: unknown): { id: string; row: Record<string, unknown>
  * @param args 事件带的参数。
  * @param max 一个值最多几个字。
  */
-export function dispatchLine(ctx: cordis.Context, mode: string, event: string, args: unknown[], max: number): DispatchLine {
+export function buildDispatchLine(ctx: cordis.Context, mode: string, event: string, args: unknown[], max: number): DispatchLine {
   //M 听的人：这个事件现在登记着的监听，各取登记它的那个插件的名字。
   const hooks = ctx.events._hooks[event] ?? [];
   const pluginNames = hooks.map((hook) => hook.ctx.fiber.name);
   const line: DispatchLine = {
     name: event,
-    mode: MODES[mode] ?? mode,
+    mode,
     listeners: [...new Set(pluginNames)],
     vars: {},
   };
@@ -202,16 +198,16 @@ export function dispatchLine(ctx: cordis.Context, mode: string, event: string, a
   if (event === 'session/change') {
     const session = sessionLike(args[0]);
     if (session !== undefined) {
-      line.vars['状态'] = session.row['state'];
-      line.vars['回话'] = short(session.row['reply'], max);
+      line.vars['state'] = session.row['state'];
+      line.vars['reply'] = formatTraceValue(session.row['reply'], max);
     }
   }
 
-  //M session/message：记角色、说了什么；模型的回答再记要了哪些工具、哪个模型；工具结果记工具名、有没有出错。
-  if (event === 'session/message') {
+  //M session/new-message：记角色、说了什么；模型的回答再记要了哪些工具、哪个模型；工具结果记工具名、有没有出错。
+  if (event === 'session/new-message') {
     const message = args[1] as piAi.Message | undefined;
     if (message !== undefined) {
-      line.vars['角色'] = message.role;
+      line.vars['role'] = message.role;
       let said = '';
       if (typeof message.content === 'string') {
         said = message.content;
@@ -220,7 +216,7 @@ export function dispatchLine(ctx: cordis.Context, mode: string, event: string, a
         said = piAi.contentText(message.content);
       }
       //M 截短说话正文记进关键变量，供控制台和流日志一行展示。
-      line.vars['说了'] = short(said, max);
+      line.vars['content'] = formatTraceValue(said, max);
 
       if (message.role === 'assistant') {
         const calls = message.content.filter((block): block is piAi.ToolCall => {
@@ -228,14 +224,14 @@ export function dispatchLine(ctx: cordis.Context, mode: string, event: string, a
         });
         const callNames = calls.map((call) => call.name);
         if (callNames.length > 0) {
-          line.vars['要了工具'] = callNames.join('、');
+          line.vars['toolCalls'] = callNames.join(', ');
         }
-        line.vars['模型'] = `${message.provider}/${message.model}`;
+        line.vars['model'] = `${message.provider}/${message.model}`;
       }
 
       if (message.role === 'toolResult') {
-        line.vars['工具'] = message.toolName;
-        line.vars['出错'] = message.isError;
+        line.vars['tool'] = message.toolName;
+        line.vars['failed'] = message.isError;
       }
     }
   }

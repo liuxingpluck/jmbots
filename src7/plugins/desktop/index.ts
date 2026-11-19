@@ -8,6 +8,7 @@ import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
+import * as textModule from '../../utils/Text.ts';
 
 
 /** 插件名。 */
@@ -84,13 +85,6 @@ function status(exe: string): Status {
   return { available: true };
 }
 
-/** 提取可读错误文本。 */
-function getErrorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-
-  return String(error);
-}
-
 /** 起程序、写输入、读一个 JSON（照 0.4 DesktopProcess.run）。 */
 function run(exe: string, action: DesktopAction, signal: AbortSignal): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -161,7 +155,7 @@ export function apply(ctx: cordis.Context): void {
     try {
       action = parse(request.body);
     } catch (error) {
-      return reply.code(400).send({ error: getErrorText(error) });
+      return reply.code(400).send({ error: textModule.getErrorMessage(error) });
     }
     //G 先确认当前为 Windows 且 aobw-capability.exe 存在，并且没有进行中的定位操作，否则回 503 或 409。
     const now = status(exe);
@@ -175,7 +169,7 @@ export function apply(ctx: cordis.Context): void {
     try {
       return await run(exe, action, controller.signal);
     } catch (error) {
-      return reply.code(502).send({ error: getErrorText(error) });
+      return reply.code(502).send({ error: textModule.getErrorMessage(error) });
     } finally {
       reply.raw.off('close', disconnect);
       if (action.op === 'pick') picking = false;

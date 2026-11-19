@@ -17,19 +17,12 @@
 import * as fs from 'node:fs';
 import type * as fastify from 'fastify';
 import type { Database } from 'bun:sqlite';
+import * as textModule from '../../../utils/Text.ts';
 import type { Http } from '../../http/index.ts';
 import type { Wechat } from '../index.ts';
 import * as readerModule from '../read/Reader.ts';
 import type * as voiceModule from '../read/Voice.ts';
 
-
-/** 请求体、查询里的一个字符串；没有是 ''。 */
-//M 提取可读错误文本。
-function getErrorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-
-  return String(error);
-}
 
 /** 客服页收到固定原因和错误码，文件系统或引擎的原始错误只在内部使用。 */
 function getMediaError(error: unknown, fallback: string): { error: string; code: string } {
@@ -100,7 +93,7 @@ export function readRoutes(
       chats = await (read ?? wechat.reader.sessions(account, limit));
     } catch (error) {
       //G 保留引擎提供的简短错误。
-      const reason = getErrorText(error);
+      const reason = textModule.getErrorMessage(error);
       return reply.code(500).send({ error: reason });
     }
 
@@ -132,7 +125,7 @@ export function readRoutes(
         const conversations = [{ chat, name, since, at: 0 }];
         await wechat.syncChats(account, conversations);
       } catch (error) {
-        return reply.code(500).send({ error: getErrorText(error) });
+        return reply.code(500).send({ error: textModule.getErrorMessage(error) });
       }
     }
 
@@ -255,7 +248,7 @@ export function routes(http: Http, db: Database, wechat: Wechat, voice: voiceMod
       if (row === null) return reply.code(502).send({ error: '模型没有生成回复' });
       return row;
     } catch (error) {
-      const text = getErrorText(error);
+      const text = textModule.getErrorMessage(error);
       let code = 500;
       if (text.includes('请先勾选监听')) {
         code = 400;

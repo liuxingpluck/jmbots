@@ -9,6 +9,7 @@
  *   箭头：照行的先后，从上一行所在的格连到下一行所在的格（同一对只连一次）；启动的「服务就绪」格从它那道的加载格连过来。
  */
 import type * as trailModule from '../journal/Trail.ts';
+import type { TraceParams } from '../../../web/src/locales/Trace.ts';
 
 
 /** 格子里的一项：哪一步、这一格里它在干什么。 */
@@ -17,6 +18,8 @@ export interface LaneItem {
   step: number;
   /** 一句话：这一步落在这格的第一行的人话；服务就绪格是多出的服务。 */
   text: string;
+  /** 文案插值。 */
+  params?: TraceParams;
 }
 
 
@@ -120,9 +123,9 @@ class LaneMaker {
    * @param text 这一行的人话。
    * @param error 这一行出没出错。
    */
-  addRow(lane: string, column: string, rank: number, step: number, text: string, error: boolean): void {
+  addRow(lane: string, column: string, rank: number, step: number, text: string, error: boolean, params?: TraceParams): void {
     //M 先把这一行落进对应格子并取得格子键，再决定要不要和上一格连箭头。
-    const key = this.addItem(lane, column, rank, step, text, error);
+    const key = this.addItem(lane, column, rank, step, text, error, params);
 
     //M 和上一行不在同一格：连一个箭头。
     if (this.last !== '' && this.last !== key) {
@@ -140,7 +143,7 @@ class LaneMaker {
    * @param text 这一项的人话。
    * @param error 出没出错。
    */
-  addItem(lane: string, column: string, rank: number, step: number, text: string, error: boolean): string {
+  addItem(lane: string, column: string, rank: number, step: number, text: string, error: boolean, params?: TraceParams): string {
     if (!this.lanes.includes(lane)) {
       this.lanes.push(lane);
     }
@@ -157,10 +160,11 @@ class LaneMaker {
     //M 这一步在这格还没有项：加一项，人话用这一步落进来的第一行的；已经有了、那项没人话就补上。
     const item = cell.items.find((one) => one.step === step);
     if (item === undefined) {
-      cell.items.push({ step, text });
+      cell.items.push({ step, text, params });
     }
     if (item !== undefined && item.text === '') {
       item.text = text;
+      item.params = params;
     }
     cell.error ||= error;
     return key;
@@ -250,7 +254,7 @@ function addBoot(maker: LaneMaker, trail: trailModule.Trail): void {
       }
       //M 确定列名下标后把当前启动行摆入对应道与列。
       const rank = BOOT_COLUMNS.indexOf(column);
-      maker.addRow(step.node, column, rank, step.no, row.text, row.error);
+      maker.addRow(step.node, column, rank, step.no, row.text, row.error, row.params);
 
       //G 不在加载列的行，没有「服务就绪」可说。
       if (rank !== 0) continue;
@@ -269,7 +273,8 @@ function addBoot(maker: LaneMaker, trail: trailModule.Trail): void {
       //M 放进「服务就绪」，从这道的加载格连过去。
       const serviceColumn = BOOT_COLUMNS[1] ?? '';
       const loadKey = `${step.node}\0${column}`;
-      const serviceKey = maker.addItem(step.node, serviceColumn, 1, step.no, `提供 ${services}`, false);
+      const params = { services };
+      const serviceKey = maker.addItem(step.node, serviceColumn, 1, step.no, 'trace.lane.serviceReady', false, params);
       maker.addEdge(loadKey, serviceKey);
     }
   }
@@ -278,14 +283,14 @@ function addBoot(maker: LaneMaker, trail: trailModule.Trail): void {
 
 /**
  * 消息的每一行摆进列：收到 → 存 → 分给机器人 → 会话第 N 步 → 回复。
- * 阶段只往后走：认到「存」「分给机器人」的行才往后挪；每个 session/request 开一个新的会话步；认到回复的行进「回复」。
+ * 阶段只往后走：认到「存」「分给机器人」的行才往后挪；每个 session/before-model 开一个新的会话步；认到回复的行进「回复」。
  * @param maker 摆格子的。
  * @param trail 一条消息的轨迹。
  */
 function addMessage(maker: LaneMaker, trail: trailModule.Trail): void {
   /** 现在在哪一列的先后号：0 收到、1 存、2 分给机器人、2+N 会话第 N 步、REPLY_RANK 回复。 */
   let rank = 0;
-  /** 会话走到第几步（第几次 session/request）。 */
+  /** 会话走到第几步（第几次 session/before-model）。 */
   let round = 0;
 
   for (const step of trail.steps) {
@@ -299,7 +304,7 @@ function addMessage(maker: LaneMaker, trail: trailModule.Trail): void {
       }
 
       //M 要调模型了：开新的一步。
-      if (row.name === 'session/request') {
+      if (row.name === 'session/before-model') {
         round += 1;
         rank = 2 + round;
       }
@@ -313,7 +318,7 @@ function addMessage(maker: LaneMaker, trail: trailModule.Trail): void {
 
       //M 根据推进后的阶段编号算列名并把当前消息行落入对应格子。
       const column = getMessageColumn(rank);
-      maker.addRow(step.node, column, rank, step.no, row.text, row.error);
+      maker.addRow(step.node, column, rank, step.no, row.text, row.error, row.params);
     }
   }
 }

@@ -48,6 +48,7 @@ class FakeResources extends cordis.Service {
   readonly builtTime = Date.now();
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -60,7 +61,7 @@ class FakeResources extends cordis.Service {
     this.raw = { bots: options.bots };
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -122,7 +123,7 @@ test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 chann
   });
 
   let modelRuns = 0;
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     modelRuns += 1;
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     let said = '';
@@ -203,7 +204,7 @@ test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 chann
 
 /**
  * 搭一套挂好 web-api 的环境：两个机器人（助手、备选），假模型由 answer 决定每一步回什么。
- * @param answer 每次 session/request 调一次：第几次（从 1 数）、这场会话；交回这一步的模型回答。
+ * @param answer 每次 session/before-model 收到步数（从 1 数）和会话，交回 AssistantMessage，含 content 和 stopReason。
  * @param options 可省略审核插件或替换为没有事件应答的机器人清单。
  */
 async function makeWeb(
@@ -246,7 +247,7 @@ async function makeWeb(
 
   //M 假模型：第几步回什么由 answer 定。
   let step = 0;
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     step += 1;
     request.answer = answer(step, request.session);
   });
@@ -411,7 +412,7 @@ test.each([{ withApproval: true, approvals: 1 }, { withApproval: false, approval
 test('机器人确认保存附件后，网页消息引用实际路径并消费暂存上传', async () => {
   const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
   const upload = '20261118065001001001';
-  const dir = ctx.resources.dir('data', 'tmp', 'uploads');
+  const dir = ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads');
   const file = path.join(dir, `${upload}_笔记.txt`);
   fs.writeFileSync(file, '原始附件');
   const requests: requestEventModule.EventArg<'bot/request'>[] = [];
@@ -437,7 +438,7 @@ test('保存附件无人应答时回 503 并保留上传，不提交消息', asy
   const options = { withApproval: false, withBotEvents: false };
   const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'), options);
   const upload = '20261118065001001001';
-  const dir = ctx.resources.dir('data', 'tmp', 'uploads');
+  const dir = ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads');
   const file = path.join(dir, `${upload}_笔记.txt`);
   fs.writeFileSync(file, '原始附件');
 
@@ -454,7 +455,7 @@ test('暂存上传在等落盘回执期间只能由一条消息占用，失败�
   const options = { withApproval: false, withBotEvents: false };
   const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'), options);
   const upload = '20261118065001001001';
-  const dir = ctx.resources.dir('data', 'tmp', 'uploads');
+  const dir = ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads');
   const file = path.join(dir, `${upload}_笔记.txt`);
   fs.writeFileSync(file, '原始附件');
   const received = Promise.withResolvers<void>();
@@ -770,7 +771,7 @@ test('A 块：GET /api/channels 列挂着的渠道和聊天；时间线按 chann
   //M 假模型记下前台每一步的系统提示。
   const systems: string[][] = [];
   const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     systems.push([...request.system]);
   });
 

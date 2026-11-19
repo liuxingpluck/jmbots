@@ -17,15 +17,15 @@ export const version = '1.0.1';
 
 
 /**
- * 挂上假模型：听 session/request，把回答直接填进 request.answer，会话就不发请求了。
+ * 挂上假模型：听 session/before-model，把回答直接填进 request.answer，会话就不发请求了。
  * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里写的服务都就绪，
  * 再调一次 apply(ctx, 配置)。插件在 apply 里通过 ctx 听事件、登记工具；插件被拔掉时，这些登记自动撤掉。
  * 详见 plugins/Index.ts 的 PluginModule。
  * @param ctx Cordis 给这个插件的 ctx。
- * 副作用：监听 session/request 事件；模型名以 fake/ 开头时直接填写 request.answer，不向远端发请求。
+ * 副作用：监听 session/before-model 事件；模型名以 fake/ 开头时直接填写 request.answer，不向远端发请求。
  */
 export function apply(ctx: cordis.Context): void {
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     //G 只管模型名以 fake/ 开头的；别的照常发给真模型。
     if (!request.model.startsWith('fake/')) return;
 

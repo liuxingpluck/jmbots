@@ -2,7 +2,7 @@
  * memory 插件改事件第一阶段（11-18）：
  *   1. 请求事件 memory/request（record-history、search-history、embed）有人答，回 memory/result；
  *      记忆服务没在线时（1.6.0 起服务由 programs 拉起）三种都回 ok: false 写明“记忆服务没在线”，统一检索在 warnings 里写明；没挂 memory 走无人接单退路；
- *   2. 前台“先查记忆”的提示（MEMORY_HINT，原在 bots/FrontDesk.ts）由 memory 在 session/request 里自己加：有 memory 工具、本人才加。
+ *   2. 前台“先查记忆”的提示（MEMORY_HINT，原在 bots/FrontDesk.ts）由 memory 在 session/before-model 里自己加：有 memory 工具、本人才加。
  * 假记忆服务用 Fastify 监听 127.0.0.1 的随机端口，没在线的用连上就断的 net 服务模拟，不碰真服务；数据放临时目录。
  * 跑法：bun test ./src7/plugins/memory
  */
@@ -233,7 +233,7 @@ test('前台和后台开场召回只提供当前人或群的往来，旧私人�
       session: { id: row.id, row, save: () => undefined },
       system: [] as string[], tools: [{ name: 'memory_search' }], messages,
     } as unknown as ChatRequest;
-    await ctx.serial('session/request', request);
+    await ctx.serial('session/before-model', request);
     return request.system.join('\n');
   };
 
@@ -321,7 +321,7 @@ test('前台“先查记忆”的提示：有 memory_search 工具、本人才�
   new memoryPlugin.Memory(ctx, store, { history: false, recallHistory: 0, recallKnowledge: 0 });
 
   /**
-   * 拼一步请求，过一遍 session/request，交回加进 system 的段落。
+   * 拼一步请求，过一遍 session/before-model，交回加进 system 的段落。
    * @param kind 会话种类。
    * @param address 回话地址。
    * @param toolNames 这一步的工具名。
@@ -337,7 +337,7 @@ test('前台“先查记忆”的提示：有 memory_search 工具、本人才�
       tools: toolNames.map((name) => ({ name })),
       messages: [],
     } as unknown as ChatRequest;
-    await ctx.serial('session/request', request);
+    await ctx.serial('session/before-model', request);
     return request;
   };
 

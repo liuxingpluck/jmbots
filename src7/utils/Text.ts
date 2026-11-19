@@ -1,7 +1,7 @@
 /** 文字处理工具：错误转述、字串裁剪、日期和单位格式化、整数参数解析。 */
 
 
-/** getClock 写成什么样：time 时:分:秒；ms 时:分:秒.毫秒；date 年-月-日 时:分:秒。 */
+/** formatLocalTime 写成什么样：time 时:分:秒；ms 时:分:秒.毫秒；date 年-月-日 时:分:秒。 */
 export type ClockShape = 'time' | 'ms' | 'date';
 
 
@@ -10,7 +10,7 @@ export type ClockShape = 'time' | 'ms' | 'date';
  * @param error catch 到的值。
  * @returns 出错的原因。
  */
-export function getMessage(error: unknown): string {
+export function getErrorMessage(error: unknown): string {
   //M 是 Error 取它的 message，别的值（字符串、对象）转成字。
   if (error instanceof Error) return error.message;
 
@@ -23,7 +23,7 @@ export function getMessage(error: unknown): string {
  * @param ms 毫秒；负的当 0。
  * @returns 一句话。
  */
-export function getDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   //M 不到一分钟：秒带一位小数。
   const positive = Math.max(0, ms);
   if (positive < 60_000) return `${(positive / 1000).toFixed(1)} 秒`;
@@ -44,7 +44,7 @@ export function getDuration(ms: number): string {
  * @param shape 写成什么样，默认时:分:秒。
  * @returns 比如 13:05:02、13:05:02.123、2026-11-17 13:05:02。
  */
-export function getClock(at: number, shape: ClockShape = 'time'): string {
+export function formatLocalTime(at: number, shape: ClockShape = 'time'): string {
   const date = new Date(at);
   /** 补零到固定位数。 */
   const pad = (value: number, width = 2): string => String(value).padStart(width, '0');
@@ -70,7 +70,7 @@ export function getClock(at: number, shape: ClockShape = 'time'): string {
  * @param max 最多几个字。
  * @returns 不超就是原文。
  */
-export function clip(text: string, max: number): string {
+export function clipText(text: string, max: number): string {
   const chars = [...text];
   if (chars.length <= max) return text;
 
@@ -83,7 +83,7 @@ export function clip(text: string, max: number): string {
  * @param bytes 字节数。
  * @returns 一段字。
  */
-export function getSizeText(bytes: number): string {
+export function formatByteSize(bytes: number): string {
   //M 不到 1 KB：原样写字节数。
   if (bytes < 1024) return `${String(bytes)} B`;
 
@@ -105,7 +105,7 @@ export function getSizeText(bytes: number): string {
  * @param max 上限（不限写 Infinity）。
  * @returns 能直接用的整数。
  */
-export function getNumber(value: string | undefined, fallback: number, min: number, max: number): number {
+export function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
   const number = Number(value);
 
   //G 没给、不是整数、比下限小 → 默认。

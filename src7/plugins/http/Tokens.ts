@@ -105,7 +105,7 @@ export class Tokens {
   }
 
   /**
-   * 管令牌的四个接口共用：不是本机回 403；act 抛 Failure 照它的状态码回；否则回 act 的结果。
+   * 管令牌的四个接口共用本机校验，通过后执行对应操作。
    * @param request 请求。
    * @param reply 回应。
    * @param act 这个接口要做的事。
@@ -121,16 +121,8 @@ export class Tokens {
       await reply.code(403).send({ error: '令牌只能在本机管' });
       return reply;
     }
-    try {
-      //M 本机校验通过后执行具体管理动作，下方再把业务 Failure 转成对应状态码。
-      return act();
-    } catch (error) {
-      if (!(error instanceof failureModule.Failure)) throw error;
-
-      //G 业务可预期错误按 Failure 自带状态码和原因回给前端，避免被当成 500。
-      await reply.code(error.status).send({ error: error.message });
-      return reply;
-    }
+    //M 本机校验通过后执行操作，失败交给 HTTP 插件返回。
+    return act();
   }
 
   /**

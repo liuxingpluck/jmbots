@@ -1,6 +1,6 @@
 /**
  * 换模型与限流回退（原 plugins/model-fallback，已并入 model-catalog）：
- * 在 session/request 里排最后，自己调骨架的 ctx.sessions.chat(request)，把回答填进 request.answer（骨架看到有回答就不再发）。
+ * 在 session/before-model 里排最后，自己调骨架的 ctx.sessions.chat(request)，把回答填进 request.answer（骨架看到有回答就不再发）。
  * 出错时：限流 → 记冷却、换备选链里下一个；上下文超长 → 换窗口更大的；别的（鉴权、参数错）→ 不换，原样抛。
  * 被限流的模型记冷却（报错里读几点恢复，读不出按分钟数，最长一天），冷却里先不撞它；每个模型、每家供应商有并发名额（Queue.ts）。
  * 同一个模型的重试在 Sessions.chat() 里（pi 按 models.retry）；限流时这里只让它再试 1 次就掐断、换下一个。
@@ -140,7 +140,7 @@ export function getResetTime(error: string, now: number): number | undefined {
 }
 
 
-/** 换模型处理器：挂载 session/request，失败时监听 model/failed 并按冷却/大窗口切换备选。 */
+/** 换模型处理器：挂载 session/before-model，失败时监听 model/failed 并按冷却/大窗口切换备选。 */
 export class ModelFallback {
   /** 冷却表：模型 → 冷却到几点、那次的错。只在内存，重启就清（同 0.4）。 */
   private readonly cooldowns = new Map<string, { until: number; error: string }>();
@@ -152,7 +152,7 @@ export class ModelFallback {
    * @param ctx Cordis 给 model-catalog 的上下文。
    * @param settings 校验后的回退配置。
    * @param catalog 同插件的模型清单服务实例（可选，便于单测单独构造 ModelFallback）。
-   * 副作用：向 ctx 挂载 session/request 事件监听。
+   * 副作用：向 ctx 挂载 session/before-model 事件监听。
    */
   constructor(
     private readonly ctx: cordis.Context,
@@ -161,8 +161,8 @@ export class ModelFallback {
   ) {
     //M 按校验后的并发上限建队列，限制各模型及供应商的同时在途请求数。
     this.queue = new queueModule.Queue(settings.limits);
-    //M 听 session/request：骨架挨个问插件，这里排最后，自己调模型填 answer。
-    ctx.on('session/request', (request) => this.onRequest(request));
+    //M 听 session/before-model：骨架挨个问插件，这里排最后，自己调模型填 answer。
+    ctx.on('session/before-model', (request) => this.onRequest(request));
   }
 
   /**
@@ -187,7 +187,7 @@ export class ModelFallback {
           throw error;
         }
         //G 取错误文本判断是否为限流或上下文超长；鉴权、参数等其他错误直接原样抛出不走回退。
-        first = textModule.getMessage(error);
+        first = textModule.getErrorMessage(error);
         if (!isRateLimited(first) && !isOverflow(first)) {
           throw error;
         }
@@ -223,7 +223,7 @@ export class ModelFallback {
           throw error;
         }
         //M 排除外部取消后收集本次备选失败的报错原文，供全部失败时拼装错误提示。
-        tried.push({ model, error: textModule.getMessage(error) });
+        tried.push({ model, error: textModule.getErrorMessage(error) });
       }
     }
 
@@ -241,6 +241,7 @@ export class ModelFallback {
    * 占名额调一次模型；抛错时是限流就记冷却，再原样抛。
    * @param request 原请求。
    * @param model 这次用哪个。
+   * @returns 重发后得到的 AssistantMessage，content 是回答内容块，usage 是用量，stopReason 说明如何结束。
    */
   private async attempt(request: ChatRequest, model: string): Promise<piAi.AssistantMessage> {
     //M 限流时 pi 的重试只留 RATE_LIMIT_RETRIES 次（用户 11-14：429 最多再试 1 次就换下一个）：听 model/failed 数这一次的限流，
@@ -273,7 +274,7 @@ export class ModelFallback {
       return await this.queue.run(model, send, controller.signal);
     } catch (error) {
       const cut = limited > RATE_LIMIT_RETRIES && !request.signal.aborted;
-      let text = textModule.getMessage(error);
+      let text = textModule.getErrorMessage(error);
       if (cut) {
         text = limitError;
       }
@@ -323,8 +324,8 @@ export class ModelFallback {
 
     this.ctx.emit('model/cooldown', { model, until, reason: error.slice(0, 200) });
     //T 跟踪：记了冷却。
-    const traceVars = { 模型: model, 到几点: new Date(until).toLocaleString() };
-    this.ctx.emit('trace', 'ModelFallback.noteLimit', '模型被限流，记冷却', 'cooldowns.set(model, until)', traceVars);
+    const traceVars = { model: model, until: new Date(until).toLocaleString() };
+    this.ctx.emit('trace', 'ModelFallback.noteLimit', 'trace.modelCatalog.rateLimited', 'cooldowns.set(model, until)', traceVars);
   }
 
   /**

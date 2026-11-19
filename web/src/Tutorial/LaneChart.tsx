@@ -9,9 +9,32 @@
  */
 import { useContext, useEffect, useState, type JSX } from 'react';
 import * as virtuoso from 'react-virtuoso';
+import * as i18n from '../I18n.ts';
+import * as traceText from '../locales/Trace.ts';
 import { CallerList, JsonBlock, PATH_SEP, SiteLink, SourceToggle, TutorialScrollContext, VIRTUAL_THRESHOLD } from './Code.tsx';
 import { TutorialApi, type Canvas, type CodeDoc, type LaneCell, type StateGroup, type Trail, type TrailRow, type TrailStep } from './TutorialApi.ts';
 
+const COLUMN_TEXT: Record<string, string> = {
+  '加载（apply）': 'trace.column.load',
+  '服务就绪（inject）': 'trace.column.ready',
+  发事件: 'trace.column.emit',
+  开始监听: 'trace.column.listen',
+  收到: 'trace.column.received',
+  存: 'trace.column.store',
+  分给机器人: 'trace.column.assign',
+  回复: 'trace.column.reply',
+};
+
+/** 泳道的列名兼容已存快照，按语言翻译显示。 */
+function getColumnTitle(t: i18n.Translate, column: string): string {
+  const id = COLUMN_TEXT[column];
+  if (id !== undefined) return t(id);
+
+  const number = /^会话第 (\d+) 步$/u.exec(column)?.[1];
+  if (number !== undefined) return t('trace.column.round', { round: number });
+
+  return column;
+}
 
 /** 第一列（道名）多宽，像素。 */
 const LABEL_W = 156;
@@ -197,6 +220,7 @@ export function LaneChart(props: {
   panZoom?: boolean;
 }): JSX.Element {
   const { lanes } = props.canvas;
+  const t = i18n.useT();
   //M 计算泳道画布布局尺寸与全部格子的绝对位置，供单元格及 SVG 连线共用。
   const { tops, heights, width, total, boxes } = getCanvasLayout(lanes);
 
@@ -212,7 +236,7 @@ export function LaneChart(props: {
       {/* 表头：每列的阶段名。 */}
       {lanes.columns.map((column, index) => (
         <div key={column} className="tu-lane-head" style={{ left: LABEL_W + index * COLUMN_W, width: COLUMN_W }}>
-          {column}
+          {getColumnTitle(t, column)}
         </div>
       ))}
 
@@ -330,7 +354,8 @@ export function LaneChart(props: {
               if (item.step === props.picked) {
                 itemClass += ' picked';
               }
-              const title = `第 ${String(item.step)} 步：${item.text}`;
+              const caption = i18n.renderTrace(t, item.text, item.params);
+              const title = t('trace.lane.step', { step: item.step, caption });
               return (
                 <button
                   key={item.step}
@@ -342,7 +367,7 @@ export function LaneChart(props: {
                     () => props.onPick(item.step)
                   }
                 >
-                  <b>{item.step}</b> {item.text}
+                  <b>{item.step}</b> {caption}
                 </button>
               );
             })}
@@ -377,6 +402,7 @@ interface FunctionSummaryRow {
   name: string;
   site: string;
   text: string;
+  params?: traceText.TraceParams;
   count: number;
 }
 
@@ -396,7 +422,7 @@ function getFunctionRows(step: TrailStep): FunctionSummaryRow[] {
       before.count += 1;
       continue;
     }
-    found.set(key, { name: row.name, site: row.site, text: row.text, count: 1 });
+    found.set(key, { name: row.name, site: row.site, text: row.text, params: row.params, count: 1 });
   }
   return [...found.values()];
 }
@@ -439,11 +465,13 @@ function DocItemBody(props: { doc: CodeDoc; workspace: string }): JSX.Element {
  */
 function FunctionRowBody(props: { item: FunctionSummaryRow; workspace: string }): JSX.Element {
   const { item } = props;
+  const t = i18n.useT();
+  const caption = i18n.renderTrace(t, item.text, item.params);
   return (
     <>
       <code className="tu-fn-name">{item.name}</code>
       {item.count > 1 && <span className="tu-muted"> ×{item.count}</span>}
-      {item.text !== '' && <span> {item.text}</span>}
+      {caption !== '' && <span> {caption}</span>}
       <div className="tu-site">
         <SiteLink workspace={props.workspace} site={item.site} />
       </div>
@@ -466,6 +494,8 @@ function EventRowBody(props: {
   onSelectEvent: (eventName: string) => void;
 }): JSX.Element {
   const { row } = props;
+  const t = i18n.useT();
+  const caption = i18n.renderTrace(t, row.text, row.params);
   let pillClass = 'tu-event-pill';
   if (props.highlightEvent === row.name) {
     pillClass = 'tu-event-pill active';
@@ -483,10 +513,10 @@ function EventRowBody(props: {
       >
         {row.name}
       </button>
-      {row.text !== '' && <span> {row.text}</span>}
+      {caption !== '' && <span> {caption}</span>}
       {row.listeners.length > 0 && (
         <div className="tu-listener-tags">
-          <span className="tu-muted">听的人：</span>
+          <span className="tu-muted">{t('trace.listeners', { listeners: '' })}</span>
           {row.listeners.map((listener) => {
             if (props.pluginNames.has(listener)) {
               return (
@@ -645,6 +675,19 @@ export function StepDetail(props: {
   onSelectEvent: (eventName: string) => void;
 }): JSX.Element {
   const { step, workspace } = props;
+  const t = i18n.useT();
+  const hasCaption = step.rows.some((row) => traceText.isTraceText(row.text));
+  let title = step.title;
+  let notes = props.trail.notes;
+  if (hasCaption) {
+    title = traceText.getTraceStepTitle(step.rows, (text, params) => i18n.renderTrace(t, text, params));
+    notes = Object.fromEntries(Object.entries(notes).map(([key, source]) => {
+      const fieldId = `trace.field.${key}`;
+      if (traceText.isTraceText(fieldId)) return [key, t(fieldId)];
+
+      return [key, source];
+    }));
+  }
   const scrollParent = useContext(TutorialScrollContext);
   //M 过滤出当前步中属于函数跟踪点的执行记录。
   const functions = getFunctionRows(step);
@@ -661,8 +704,8 @@ export function StepDetail(props: {
     <div className="tu-detail">
       <div className="tu-head-row">
         <h3>
-          第 {step.no} 步 · {step.node}
-          <span className="tu-muted"> · 用了 {step.ms} 毫秒</span>
+          {t('trace.lane.stepTitle', { step: step.no, node: step.node })}
+          <span className="tu-muted"> · {t('trace.lane.ms', { ms: step.ms })}</span>
         </h3>
         {stepIsPlugin && (
           <button
@@ -673,15 +716,15 @@ export function StepDetail(props: {
               () => props.onSelectPlugin(step.node)
             }
           >
-            查看 {step.node} 插件 →
+            {t('trace.lane.viewPlugin', { plugin: step.node })}
           </button>
         )}
       </div>
-      <p>{step.title}</p>
+      <p>{title}</p>
 
       {functions.length > 0 && (
         <div className="tu-block">
-          <h4>走到的函数（{functions.length}）</h4>
+          <h4>{t('trace.lane.functions', { count: functions.length })}</h4>
           {virtFunctions && (
             <div className="tu-virt-list">
               <virtuoso.Virtuoso
@@ -710,7 +753,7 @@ export function StepDetail(props: {
 
       {events.length > 0 && (
         <div className="tu-block">
-          <h4>发的事件（{events.length}）</h4>
+          <h4>{t('trace.lane.events', { count: events.length })}</h4>
           {virtEvents && (
             <div className="tu-virt-list">
               <virtuoso.Virtuoso
@@ -749,20 +792,20 @@ export function StepDetail(props: {
             </ul>
           )}
           {listeners.length > 0 && step.notified.length > 0 && (
-            <p className="tu-muted">只听没留下跟踪点的：{step.notified.join('、')}</p>
+            <p className="tu-muted">{t('trace.lane.passive', { listeners: step.notified.join('、') })}</p>
           )}
         </div>
       )}
 
       <div className="tu-block">
         <JsonBlock
-          head={<h4>关键变量</h4>}
+          head={<h4>{t('trace.lane.variables')}</h4>}
           value={
             //M 合并并抽取本步所有跟踪行携带的关键调试变量。
             getStepVars(step)
           }
-          empty="这一步没有记下变量。"
-          notes={props.trail.notes}
+          empty={t('trace.lane.noVariables')}
+          notes={notes}
         />
       </div>
 

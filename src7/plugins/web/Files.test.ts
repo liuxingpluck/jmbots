@@ -56,7 +56,7 @@ async function setup(config?: webPlugin.WebConfig): Promise<World> {
     }
 
     /** @param parts 临时根内子路径；返回目录并创建该测试用目录。 */
-    dir(...parts: string[]): string {
+    ensureRuntimeDir(...parts: string[]): string {
       const full = path.join(root, ...parts);
       fs.mkdirSync(full, { recursive: true });
       return full;

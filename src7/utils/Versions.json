@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.7.69",
+    "date": "2026-11-20",
+    "changes": [
+      "会话事件改名：session/request → session/before-model，session/message → session/new-message（旧流水照样能看）",
+      "打开过的会话表加上限 session_cache_max（默认 500，只挪空闲的）；会话步数 steps 跨轮累计存库，喊停、重启后不归零",
+      "上下文到模型窗口 80% 自动压缩（比例可配，窗口没登记的不压并在启动时列出）；压缩默认打开",
+      "跟踪点不再写死中文：改成编号加英文键，界面按语言显示（中文、繁体、英文、法文）",
+      "骨架和插件里用到 pi-ai 类型的地方写清有哪些字段（总表 src7/docs/pi-ai类型.md）；骨架长函数的大块加等号框注释",
+      "新增教程行号检查工具 ztools/check-lines"
+    ]
+  },
+  {
     "version": "0.7.68",
     "date": "2026-11-20",
     "changes": [

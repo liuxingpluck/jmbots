@@ -63,7 +63,7 @@ export const name = 'feishu';
 //M 1.1.4：onChannelReply 支持带 target 的跨渠道发话，在飞书自有群/私聊/流水数据里自认聊天。
 //M 1.1.9：登记群内每日进度的时间、机器人和提示，progress 读取已校验的配置。
 //M 1.1.11：channel/history 的游标和分页改用骨架的 paginateChannelHistory，飞书只认应用、聊天和挑 @我。
-//M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、pickChat：飞书只交出候选清单（getChatCandidates）。
+//M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、findChatByIdOrName：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
 export const version = '1.1.17';
 
@@ -151,7 +151,7 @@ export interface FeishuAddress {
   judged?: string;
   /** 这个群登记的 relay：model 时 @ 机器人的话由模型判断要不要转外部助手（relay 读）；没登记不写。 */
   relay?: 'direct' | 'model';
-  /** 这个群登记的 trusted：true 时本人在群里说话照旧带私人记忆（utils/Workspace.ts 的 privateAllowed 读）；没登记、私聊不写，当 false。 */
+  /** 这个群登记的 trusted：true 时本人在群里说话照旧带私人记忆（utils/Workspace.ts 的 isPrivateMemoryAllowed 读）；没登记、私聊不写，当 false。 */
   trusted?: boolean;
 }
 
@@ -461,7 +461,7 @@ export class Feishu {
     const requestOptions = {
       onError: (error: unknown) => {
         //G 发文件失败时通过回执把原因交给调用方。
-        const detail = textModule.getMessage(error);
+        const detail = textModule.getErrorMessage(error);
         return { ok: false, error: detail };
       },
     };
@@ -638,7 +638,7 @@ export class Feishu {
       await ws.start({ eventDispatcher: dispatcher });
     } catch (error) {
       //M 长连接握手或启动抛错时提取可读报错写入状态面板。
-      this.mark(app, `出错 ${textModule.getMessage(error)}`, false);
+      this.mark(app, `出错 ${textModule.getErrorMessage(error)}`, false);
     }
   }
 
@@ -653,7 +653,7 @@ export class Feishu {
     app.connected = connected;
     app.at = Date.now();
     //M 取带日期的时间戳前缀写入连接状态变化日志。
-    const logTime = textModule.getClock(Date.now(), 'date');
+    const logTime = textModule.formatLocalTime(Date.now(), 'date');
     const line = `${logTime} 飞书 ${app.config.appId}（${app.config.bot}）${state}`;
     if (connected) {
       console.log(line);
@@ -663,8 +663,8 @@ export class Feishu {
     }
 
     //T 跟踪：飞书连接状态变了。
-    const vars = { 应用: app.config.appId, 机器人: app.config.bot, 状态: state };
-    this.ctx.emit('trace', 'Feishu.mark', '飞书长连接状态变了', 'app.state = state', vars);
+    const vars = { appId: app.config.appId, bot: app.config.bot, state: state };
+    this.ctx.emit('trace', 'Feishu.mark', 'trace.feishu.connectionChanged', 'app.state = state', vars);
   }
 
   /**
@@ -681,8 +681,8 @@ export class Feishu {
       app.botOpenId = info.bot?.open_id;
     } catch (error) {
       //M 查询自身信息失败仅记日志不阻断连线，后续群 @ 退回模糊放行策略。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书 ${app.config.appId} 没查到机器人自己的 open_id（群里有 @ 就回）：${textModule.getMessage(error)}`);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      console.error(`${logTime} 飞书 ${app.config.appId} 没查到机器人自己的 open_id（群里有 @ 就回）：${textModule.getErrorMessage(error)}`);
     }
   }
 
@@ -721,8 +721,8 @@ export class Feishu {
       }
     } catch (error) {
       //M 查询失败时记录日期日志并缓存空名结构，避免同一群后续消息反复触发出错调用。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      const reason = textModule.getMessage(error);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      const reason = textModule.getErrorMessage(error);
       console.error(`${logTime} 飞书 ${app.config.appId} 没查到群 ${chatId} 的名字（用群号、open_id 后 6 位代替）：${reason}`);
     }
     this.chats.set(chatId, found);
@@ -746,8 +746,8 @@ export class Feishu {
       receipt = await this.sendText(address, this.withAt(address, reply));
     } catch (error) {
       //M 提取异常说明并带时间戳输出发送失败日志，再按 NotSent 区分回执状态。
-      const reason = textModule.getMessage(error);
-      const logTime = textModule.getClock(Date.now(), 'date');
+      const reason = textModule.getErrorMessage(error);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
       console.error(`${logTime} 飞书：会话 ${session.id} 的回话没发出去：${reason}`);
 
       //M 飞书明确拒了是 rejected；别的（断网、超时）不知道收没收，是 uncertain。
@@ -800,8 +800,8 @@ export class Feishu {
         await media.sendFile(this, address.appId, address.chatId, item.file, undefined, address.messageId);
       } catch (error) {
         //M 单个附件发送失败时拼接文件名与失败原因，取日期前缀打印控制台，并补发文字告知用户。
-        const said = `「${baseName(item.file)}」没发出去：${textModule.getMessage(error)}`;
-        const logTime = textModule.getClock(Date.now(), 'date');
+        const said = `「${baseName(item.file)}」没发出去：${textModule.getErrorMessage(error)}`;
+        const logTime = textModule.formatLocalTime(Date.now(), 'date');
         console.error(`${logTime} 飞书：${said}`);
         failed.push(said);
         //M 把该附件未送达的原因文字单独发到原会话，不阻断后续其余文件投递。
@@ -936,8 +936,8 @@ export class Feishu {
       }));
     } catch (error) {
       //M 撤表态失败仅带时间戳记日志，避免异常外溢影响主回话收尾。
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：表情没撤掉：${textModule.getMessage(error)}`);
+      const logTime = textModule.formatLocalTime(Date.now(), 'date');
+      console.error(`${logTime} 飞书：表情没撤掉：${textModule.getErrorMessage(error)}`);
     }
   }
 
@@ -1243,7 +1243,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   const http = ctx.get('http');
   if (http !== undefined) {
     http.app.get<{ Querystring: { limit?: string } }>('/api/feishu/contacts', (request) => {
-      const limit = textModule.getNumber(request.query.limit, 50, 1, 1000);
+      const limit = textModule.parseBoundedInt(request.query.limit, 50, 1, 1000);
       return { items: feishu.contacts.list(limit) };
     });
   }

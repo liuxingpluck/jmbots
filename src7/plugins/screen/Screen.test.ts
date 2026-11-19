@@ -31,8 +31,12 @@ const image = {
   height: 1,
 };
 
+//M Context 是模型输入，含 systemPrompt、messages 和 tools。
+//M SimpleStreamOptions 是请求选项，含 signal、timeoutMs 和 reasoning。
+//M AssistantMessage 是模型回答，content 存内容块，usage 记用量，stopReason 说明结束原因。
 type Complete = (context: piAi.Context, options: piAi.SimpleStreamOptions) =>
   piAi.AssistantMessage | Promise<piAi.AssistantMessage>;
+//M AssistantMessageEventStream 可异步读取增量事件，result() 返回最终回答，测试用 push() 写入事件。
 type Stream = () => piAi.AssistantMessageEventStream;
 const answer = (): piAi.AssistantMessage => {
   const json = JSON.stringify({ text: TEXT, uncertain: false });

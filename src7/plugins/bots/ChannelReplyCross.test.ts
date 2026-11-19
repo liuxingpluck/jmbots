@@ -45,6 +45,7 @@ class FakeResources extends cordis.Service {
   readonly builtTime = Date.now();
   readonly config = {
     defaultModel: 'fake/fake',
+    sessionCacheMax: 500,
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 1000 },
     providers: {},
@@ -67,7 +68,7 @@ class FakeResources extends cordis.Service {
     };
   }
 
-  dir(...parts: string[]): string {
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -301,7 +302,7 @@ test('1. 网页本人让 AI 往飞书群发话：飞书收到 channel/reply 且�
   let mode: 'seed' | '1a' | '1b' = 'seed';
   let callsIn1b = 0;
 
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     systems.push(request.system.join('\n'));
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
@@ -355,7 +356,7 @@ test('1. 网页本人让 AI 往飞书群发话：飞书收到 channel/reply 且�
   systems.length = 0;
 
   //M 验证工具说明与系统提示明确写明“只在本人口头要求时才发别处，绝不自作主张”。
-  const replyTool = ctx.tools.list('front').find((item) => item.name === 'channel_reply');
+  const replyTool = ctx.tools.listToolsForSessionKind('front').find((item) => item.name === 'channel_reply');
   expect(replyTool?.description).toContain('别处');
   expect(replyTool?.description).toContain('自作主张');
 
@@ -440,7 +441,7 @@ test('2. 本人跨渠道发微信照守“点头才发”规矩（不改微信�
 
   const receipts: channels.ReplyReceipt[] = [];
   let nextArgs: Record<string, string> = {};
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       receipts.push(JSON.parse(piAi.contentText(last.content)) as channels.ReplyReceipt);
@@ -567,7 +568,7 @@ test('3. 外人（guest / builder / 微信客户）与群聊里的本人（含 t
   });
 
   let nextCallArgs: Record<string, string> | undefined;
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       receipts.push(JSON.parse(piAi.contentText(last.content)) as channels.ReplyReceipt);
@@ -734,7 +735,7 @@ test('4. 不写 channel 和 chat 时严格保持现状：网页带 view 看飞�
   feishuStub.chats.set('oc_group_1', { name: '项目甲群', members, at: Date.now() });
 
   let replyText = '群里收到了';
-  ctx.on('session/request', (request) => {
+  ctx.on('session/before-model', (request) => {
     const last = request.messages.findLast((item) => (item.role as string) !== 'system');
     if (last?.role === 'toolResult') {
       request.answer = piAi.fauxAssistantMessage('done');

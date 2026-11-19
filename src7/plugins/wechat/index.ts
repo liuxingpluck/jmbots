@@ -192,7 +192,7 @@ export class Wechat {
 
 
     //M 微信来的会话：最近 50 条（自己的、对方的都算）拼进 system，和现在会话把最近对话给模型看是一个意思。
-    this.ctx.on('session/request', (request) => this.onRequest(request));
+    this.ctx.on('session/before-model', (request) => this.onRequest(request));
     //M 让 memory_get 按偏移读取当前微信会话，缺页时由微信读取器补录。
     const archiveRoute = 'wechat-archive';
     historyTools.registerHistoryReader(this.ctx, archiveRoute, (args, session) => this.history(session, args));
@@ -330,7 +330,7 @@ export class Wechat {
       this.status.lastError = '';
     } catch (error) {
       //G 记录这轮轮询错误，让状态页能说明失败原因。
-      this.status.lastError = textModule.getMessage(error);
+      this.status.lastError = textModule.getErrorMessage(error);
     } finally {
       this.status.busy = false;
       this.status.rounds += 1;
@@ -418,8 +418,8 @@ export class Wechat {
       const messageId = protocol.makeChannelMessageId(this.name, account, nativeId);
 
       //T 跟踪：微信来了一条要回的，先存表，再发出标准 channel/message。
-      const vars = { 账号: account, 会话: row.name, 客户: address.customer, 字数: said.length };
-      this.ctx.emit('trace', 'Wechat.store', '微信新消息，发出 channel/message', "ctx.serial('channel/message')", vars);
+      const vars = { account: account, chat: row.name, customer: address.customer, length: said.length };
+      this.ctx.emit('trace', 'Wechat.store', 'trace.wechat.receiveMessage', "ctx.serial('channel/message')", vars);
 
       const channelMessage: protocol.ChannelMessage = {
         v: 1,
@@ -897,15 +897,15 @@ export class Wechat {
       this.mark(id, outboxState, String(result['status'] ?? ''));
     } catch (error) {
       //G 把发送失败的文字原因记回发件表，供客服处理。
-      this.mark(id, 'failed', textModule.getMessage(error));
+      this.mark(id, 'failed', textModule.getErrorMessage(error));
     }
 
     //T 跟踪：发了一条微信。
     const after = this.ctx.resources.db
       .query('SELECT state, note FROM wechat_outbox WHERE id = ?')
       .get(id) as { state: string; note: string };
-    const vars = { 发件号: id, 会话: item.name, 结果: after.state, 说明: after.note.slice(0, 80) };
-    this.ctx.emit('trace', 'Wechat.deliver', '后台发一条微信，回读确认', 'sender.send(target, text, requestId)', vars);
+    const vars = { outboxId: id, chat: item.name, result: after.state, note: after.note.slice(0, 80) };
+    this.ctx.emit('trace', 'Wechat.deliver', 'trace.wechat.deliver', 'sender.send(target, text, requestId)', vars);
   }
 
   /** 待确认定了：同意就发，拒绝记下。 */
@@ -1005,7 +1005,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   const wechat = new Wechat(ctx, checkConfig(ctx, config));
 
   //M 播放时把核实过的语音留在这个机器人的消息目录。
-  const messages = ctx.resources.dir('bots', wechat.config.bot, 'message');
+  const messages = ctx.resources.ensureRuntimeDir('bots', wechat.config.bot, 'message');
   const voice = new voiceModule.VoiceAudio(wechat.reader, messages);
   page.routes(ctx.http, ctx.resources.db, wechat, voice);
   void ctx.inject(['approval'], (sub) => {

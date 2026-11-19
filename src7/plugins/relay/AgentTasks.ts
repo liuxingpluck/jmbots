@@ -298,10 +298,10 @@ export class AgentTasks {
     return getTask(row);
   }
 
-  /** 任务文件夹：integrations/agents/<名字>/tasks/<号>/…（resources.dir 没有就建）。 */
+  /** 任务文件夹：integrations/agents/<名字>/tasks/<号>/…（resources.ensureRuntimeDir 没有就建）。 */
   dir(agent: string, id: number | string, ...more: string[]): string {
     //M 定位该执行端的任务文件，必要时由资源服务创建父目录。
-    return this.ctx.resources.dir('integrations', 'agents', agent, 'tasks', String(id), ...more);
+    return this.ctx.resources.ensureRuntimeDir('integrations', 'agents', agent, 'tasks', String(id), ...more);
   }
 
   /**
@@ -320,8 +320,8 @@ export class AgentTasks {
       const task = getTask(same);
 
       //T 跟踪：查重命中，没派第二件。
-      const sameVars = { 任务: task.id, 调用键: input.requestKey };
-      const sameSummary = `同一次调用又来：回 #${task.id}，不再派`;
+      const sameVars = { taskId: task.id, requestKey: input.requestKey };
+      const sameSummary = 'trace.agentTasks.reuse';
       this.ctx.emit('trace', 'AgentTasks.send', sameSummary, 'SELECT agent_tasks by requestKey', sameVars);
       return task;
     }
@@ -368,15 +368,15 @@ export class AgentTasks {
 
     //T 跟踪：派出一件。
     const vars = {
-      任务: id,
-      外部AI: agent.name,
-      会话: session.row.id,
-      附件: sources.length,
-      模型: execution?.model,
-      思考档: execution?.thinking,
-      子代理: execution?.subagents.length ?? 0,
+      taskId: id,
+      externalAgent: agent.name,
+      session: session.row.id,
+      attachmentCount: sources.length,
+      model: execution?.model,
+      thinking: execution?.thinking,
+      subagentCount: execution?.subagents.length ?? 0,
     };
-    const sendSummary = `交给 ${agent.name}：#${String(id)}`;
+    const sendSummary = 'trace.agentTasks.send';
     this.ctx.emit('trace', 'AgentTasks.send', sendSummary, 'INSERT agent_tasks + task.json', vars);
 
     //M 返回已落库的任务及任务单，用于生成工具回执。
@@ -436,8 +436,8 @@ export class AgentTasks {
     }
 
     //T 跟踪：被领走。
-    const takeSummary = `${agent} 领走 #${String(id)}`;
-    const takeVars = { 任务: id, 外部AI: agent, 领取键: key ?? '（旧任务没有）' };
+    const takeSummary = 'trace.agentTasks.take';
+    const takeVars = { taskId: id, externalAgent: agent, claimKey: key };
     this.ctx.emit('trace', 'AgentTasks.take', takeSummary, 'UPDATE agent_tasks', takeVars);
     return task;
   }
@@ -615,14 +615,14 @@ export class AgentTasks {
     //T 跟踪：交回并排进会话的结果队列。
     const done = this.get(agent, id)!;
     const vars = {
-      任务: id,
-      外部AI: agent,
-      会话: done.sessionId,
-      状态: done.status,
-      文件: files.length,
-      新协议: protocol !== undefined,
+      taskId: id,
+      externalAgent: agent,
+      session: done.sessionId,
+      state: done.status,
+      file: files.length,
+      usesProtocol: protocol !== undefined,
     };
-    const finishSummary = `${agent} 交回 #${String(id)}`;
+    const finishSummary = 'trace.agentTasks.finish';
     this.ctx.emit('trace', 'AgentTasks.finish', finishSummary, 'bot/request accept-result + UPDATE agent_tasks', vars);
     return done;
   }
@@ -672,7 +672,7 @@ export class AgentTasks {
         }
 
         this.broken.set(task.id, mark);
-        console.error(`任务 #${task.id} 的 result/result.json 收不了：${textModule.getMessage(error)}（文件改了会再试）`);
+        console.error(`任务 #${task.id} 的 result/result.json 收不了：${textModule.getErrorMessage(error)}（文件改了会再试）`);
       }
     }
   }
@@ -686,7 +686,7 @@ export class AgentTasks {
    */
   private getSources(session: Session, files: string[]): string[] {
     //M 从派活会话所属机器人的目录定位可附带的文件。
-    const botDir = this.ctx.resources.dir('bots', session.row.bot);
+    const botDir = this.ctx.resources.ensureRuntimeDir('bots', session.row.bot);
     const workspace = path.join(botDir, 'workspace');
     return files.map((file) => {
       const full = path.resolve(workspace, file.replace(/^@/u, ''));
@@ -787,7 +787,7 @@ export class AgentTasks {
    */
   private copyUploads(uploads: string[], folder: string): CopiedUpload[] {
     //M 定位上传暂存目录，后面按上传号查找原文件。
-    const uploadDir = this.ctx.resources.dir('data', 'tmp', 'uploads');
+    const uploadDir = this.ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads');
     const present = fs.readdirSync(uploadDir);
     const copied: CopiedUpload[] = [];
     for (const upload of uploads) {
@@ -1153,7 +1153,7 @@ export function applyAgentTasks(ctx: cordis.Context, every: number): void {
   ctx.effect(() => {
     const timer = setInterval(() => {
       //M 从文件收结果时等待投递回执，扫描异常写日志供下次排查。
-      void tasks.scan().catch((error: unknown) => console.error(`扫描任务结果失败：${textModule.getMessage(error)}`));
+      void tasks.scan().catch((error: unknown) => console.error(`扫描任务结果失败：${textModule.getErrorMessage(error)}`));
     }, every);
     return () => clearInterval(timer);
   });

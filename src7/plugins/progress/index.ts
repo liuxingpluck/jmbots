@@ -274,19 +274,19 @@ export class Progress extends cordis.Service {
         return;
       }
       //M 会话结束或出错时异步触发收尾总结与超时登记，兜底记录错误防止未捕获异常。
-      void this.end(session).catch((error: unknown) => console.error(`进度收尾出错：${textModule.getMessage(error)}`));
+      void this.end(session).catch((error: unknown) => console.error(`进度收尾出错：${textModule.getErrorMessage(error)}`));
     });
 
-    //M session/message（通知）：对话里新接了一条 → 记步数、用时、在做什么、工作过程。
-    ctx.on('session/message', (session, message) => this.onMessage(session, message));
+    //M session/new-message（通知）：对话里新接了一条 → 记步数、用时、在做什么、工作过程。
+    ctx.on('session/new-message', (session, message) => this.onMessage(session, message));
 
-    //M session/request（挨个问）：过了报时点就在这一步发给模型的对话末尾加一句报时。只改这一步的副本，不进对话。
+    //M session/before-model（挨个问）：过了报时点就在这一步发给模型的对话末尾加一句报时。只改这一步的副本，不进对话。
     //M   要在 plugins 里写在 bots（前台）、compress 后面：它们会整个换掉 request.messages。
-    ctx.on('session/request', (request) => {
+    ctx.on('session/before-model', (request) => {
       const item = this.items.get(request.session.id);
       if (item === undefined || item.endedAt !== undefined || item.remindAt === undefined) return;
       if (Date.now() < item.remindAt) return;
-      const content = `（系统）这件事已经干了 ${textModule.getDuration(Date.now() - item.startedAt)}，${this.limitText(item)}。`
+      const content = `（系统）这件事已经干了 ${textModule.formatDuration(Date.now() - item.startedAt)}，${this.limitText(item)}。`
         + '回复用户时说清干了多久、做到哪了；快到点了就抓紧收尾，做不完就写清做到哪了、还剩什么。';
       request.messages.push({ role: 'user', content, timestamp: Date.now() });
     });
@@ -311,8 +311,8 @@ export class Progress extends cordis.Service {
       this.note(item, '长跑提醒：用户点了继续');
 
       //T 跟踪：用户点了继续。
-      const continueVars = { 会话: sessionId, 卡片: pending.id };
-      this.ctx.emit('trace', 'Progress.continue', '长跑提醒点了继续，一直做下去', "ctx.on('approval/decided')", continueVars);
+      const continueVars = { session: sessionId, cardId: pending.id };
+      this.ctx.emit('trace', 'Progress.continue', 'trace.progress.continue', "ctx.on('approval/decided')", continueVars);
     });
 
     const requestOptions = {
@@ -320,7 +320,7 @@ export class Progress extends cordis.Service {
         if (request.action === 'list') return { items: [] };
 
         //G 操作没做成时把错误说明回给卡片调用方。
-        const text = textModule.getMessage(error);
+        const text = textModule.getErrorMessage(error);
         return { ok: false, text };
       },
     };
@@ -417,7 +417,7 @@ export class Progress extends cordis.Service {
     }
     //M 剩余限时还充足，立即向外推送更新后的限时和倒计时信息。
     this.push(item, true);
-    return `最多做 ${String(minutes)} 分钟，还剩 ${textModule.getDuration(left)}`;
+    return `最多做 ${String(minutes)} 分钟，还剩 ${textModule.formatDuration(left)}`;
   }
 
   /**
@@ -452,7 +452,7 @@ export class Progress extends cordis.Service {
     let text = '';
     if (lastUser !== undefined) {
       //M 提取最近一条用户文本并截短为 80 字作为本轮任务标题展示。
-      text = textModule.clip(piAi.contentText(lastUser.content), 80);
+      text = textModule.clipText(piAi.contentText(lastUser.content), 80);
     }
     let stage: ProgressStage = 'running';
     let action = '开始干活';
@@ -502,7 +502,7 @@ export class Progress extends cordis.Service {
     const cardDelay = Math.max(0, item.startedAt + this.settings.longRunMinutes * MINUTE - Date.now());
     item.timers.card = setTimeout(() => {
       //M 卡片登记需要等回执，定时器只发起请求并记录意外错误。
-      void this.sendCard(item).catch((error: unknown) => console.error(`长跑提醒出错：${textModule.getMessage(error)}`));
+      void this.sendCard(item).catch((error: unknown) => console.error(`长跑提醒出错：${textModule.getErrorMessage(error)}`));
     }, cardDelay);
   }
 
@@ -516,7 +516,7 @@ export class Progress extends cordis.Service {
     if (item.endedAt !== undefined || item.stopAsked !== undefined || item.cardId !== undefined) return;
 
     //M 取当前耗时，填入待确认卡片和文字退路。
-    const elapsed = textModule.getDuration(Date.now() - item.startedAt);
+    const elapsed = textModule.formatDuration(Date.now() - item.startedAt);
     const card: Omit<cardUtils.CardData, 'state' | 'result'> = {
       kind: 'long-run',
       title: `这件事已经干了 ${elapsed}，要不要终止？`,
@@ -559,8 +559,8 @@ export class Progress extends cordis.Service {
 
     //T 跟踪：记录卡片是否登记成功。
     const pending = reply.pending;
-    const cardVars = { 会话: item.sessionId, 干了: elapsed, 卡片: pending?.id, 错误: reply.error };
-    this.ctx.emit('trace', 'Progress.sendCard', '请审核插件登记长跑提醒', 'approval/request ask', cardVars);
+    const cardVars = { session: item.sessionId, elapsed: elapsed, cardId: pending?.id, error: reply.error };
+    this.ctx.emit('trace', 'Progress.sendCard', 'trace.progress.requestCard', 'approval/request ask', cardVars);
 
     //G 未获回执时可能已经登记，等待原卡或保留待核对状态。
     if (requestEventModule.isUnsure(reply)) {
@@ -599,7 +599,7 @@ export class Progress extends cordis.Service {
   /**
    * 对话里新接了一条：用户的话记下；模型的回答算一步、记在调哪个工具；工具结果记次数和用时。
    * @param session 哪场会话。
-   * @param message 新接的一条。
+   * @param message 新接的 Message，按 role 区分种类，content 取正文或工具调用，timestamp 记消息时间。
    */
   private onMessage(session: Session, message: piAi.Message): void {
     //G 会话未建进度项或已进入结束态时忽略后续消息事件。
@@ -620,8 +620,8 @@ export class Progress extends cordis.Service {
       //M 记录本轮用户发言原文进日志；若进度标题尚空则取此句前 80 字补齐。
       const said = piAi.contentText(message.content);
       item.said.push(said);
-      if (item.text === '') item.text = textModule.clip(said, 80);
-      this.note(item, `用户：${textModule.clip(said, LOG_CHARS)}`);
+      if (item.text === '') item.text = textModule.clipText(said, 80);
+      this.note(item, `用户：${textModule.clipText(said, LOG_CHARS)}`);
       return;
     }
     if (message.role === 'assistant') {
@@ -632,13 +632,13 @@ export class Progress extends cordis.Service {
         //M 将模型该步的思考首行、文本输出与工具入参逐条摘录进工作过程日志。
         if (block.type === 'thinking' && block.thinking.trim() !== '') {
           const firstLine = block.thinking.trim().split('\n')[0] ?? '';
-          this.note(item, `思考：${textModule.clip(firstLine, LOG_CHARS)}`);
+          this.note(item, `思考：${textModule.clipText(firstLine, LOG_CHARS)}`);
         }
         if (block.type === 'text' && block.text.trim() !== '') {
-          this.note(item, `说：${textModule.clip(block.text.trim(), LOG_CHARS)}`);
+          this.note(item, `说：${textModule.clipText(block.text.trim(), LOG_CHARS)}`);
         }
         if (block.type === 'toolCall') {
-          const argsText = textModule.clip(JSON.stringify(block.arguments), LOG_CHARS);
+          const argsText = textModule.clipText(JSON.stringify(block.arguments), LOG_CHARS);
           this.note(item, `调用 ${block.name} ${argsText}`);
         }
       }
@@ -670,7 +670,7 @@ export class Progress extends cordis.Service {
         errSuffix = '（出错）';
       }
       //M 把工具返回摘要（标明是否出错）写入日志，并将当前行动状态切换为思考下一步。
-      const resultText = textModule.clip(piAi.contentText(message.content), LOG_CHARS);
+      const resultText = textModule.clipText(piAi.contentText(message.content), LOG_CHARS);
       this.note(item, `结果 ${message.toolName}${errSuffix}：${resultText}`);
       item.action = '在想下一步';
     }
@@ -707,11 +707,11 @@ export class Progress extends cordis.Service {
     item.timers.remind = setTimeout(() => {
       if (item.endedAt !== undefined) return;
       //M 到了提前报时时刻时计算已用时长并记入日志，同时通知用户临近限时。
-      const elapsed = textModule.getDuration(Date.now() - item.startedAt);
+      const elapsed = textModule.formatDuration(Date.now() - item.startedAt);
       this.note(item, `过了报时点（干了 ${elapsed}），开始报时`);
       //T 跟踪：开始报时。
-      const remindVars = { 会话: item.sessionId, 干了: elapsed };
-      this.ctx.emit('trace', 'Progress.remind', '开始报时', "ctx.emit('bot/say', session, text)", remindVars);
+      const remindVars = { session: item.sessionId, elapsed: elapsed };
+      this.ctx.emit('trace', 'Progress.remind', 'trace.progress.remind', "ctx.emit('bot/say', session, text)", remindVars);
       const limit = this.limitText(item);
       const text = `⏳ 这件事已经干了 ${elapsed}，${limit}；到点会先停下，把做到哪写给你。`;
 
@@ -730,7 +730,7 @@ export class Progress extends cordis.Service {
     if (item.deadline === undefined) return;
     //M 排定到点定时器触发 onDeadline 评估是否停下或延长，异常时兜底停下会话。
     item.timers.limit = setTimeout(() => {
-      void this.onDeadline(item).catch((error: unknown) => this.stop(item, `到点判断出错：${textModule.getMessage(error)}`));
+      void this.onDeadline(item).catch((error: unknown) => this.stop(item, `到点判断出错：${textModule.getErrorMessage(error)}`));
     }, Math.max(0, item.deadline - Date.now()));
   }
 
@@ -754,8 +754,8 @@ export class Progress extends cordis.Service {
     const verdict = await this.judge(item);
 
     //T 跟踪：到点判断。
-    const deadlineVars = { 会话: item.sessionId, 延: verdict.extend, 为什么: verdict.why };
-    this.ctx.emit('trace', 'Progress.onDeadline', '到点了，判断要不要延', 'judge(item)', deadlineVars);
+    const deadlineVars = { session: item.sessionId, extend: verdict.extend, reason: verdict.why };
+    this.ctx.emit('trace', 'Progress.onDeadline', 'trace.progress.deadline', 'judge(item)', deadlineVars);
     if (item.endedAt !== undefined || item.stopAsked !== undefined) return;
     if (!verdict.extend) {
       this.stop(item, verdict.why);
@@ -778,7 +778,7 @@ export class Progress extends cordis.Service {
   private async judge(item: Item): Promise<{ extend: boolean; why: string }> {
     //M 组装任务摘要、已耗时和最近工作日志作为判断上下文，并发询问三道评估题。
     const state = {
-      用户的话: item.text, 已经干了: textModule.getDuration(Date.now() - item.startedAt), 限时: this.limitText(item),
+      用户的话: item.text, 已经干了: textModule.formatDuration(Date.now() - item.startedAt), 限时: this.limitText(item),
       最近的工作过程: item.log.slice(-JUDGE_LOG_LINES).join('\n'),
     };
     const options = {
@@ -1070,7 +1070,7 @@ export class Progress extends cordis.Service {
 
     //M 卡片清理是单向指令，不等待回执。
     void this.ctx.serial('approval/request', request).catch((error: unknown) => {
-      console.error(`关闭长跑提醒 #${String(id)} 失败：${textModule.getMessage(error)}`);
+      console.error(`关闭长跑提醒 #${String(id)} 失败：${textModule.getErrorMessage(error)}`);
     });
   }
 
@@ -1087,7 +1087,7 @@ export class Progress extends cordis.Service {
     item.action = action;
 
     //M 收尾只保留简短结果，供进度页显示。
-    if (result !== undefined && result !== '') item.result = textModule.clip(result, 240);
+    if (result !== undefined && result !== '') item.result = textModule.clipText(result, 240);
 
     //M 结束后清除定时器和会话进度记录，随后通知进度页。
     this.clearTimers(item, false);
@@ -1100,11 +1100,11 @@ export class Progress extends cordis.Service {
 
     //T 跟踪：一轮定格。
     const closeVars = {
-      会话: item.sessionId,
-      结局: stage,
-      用时: textModule.getDuration(item.endedAt - item.startedAt),
+      session: item.sessionId,
+      outcome: stage,
+      duration: textModule.formatDuration(item.endedAt - item.startedAt),
     };
-    this.ctx.emit('trace', 'Progress.close', '一轮定格', 'close(item, stage)', closeVars);
+    this.ctx.emit('trace', 'Progress.close', 'trace.progress.close', 'close(item, stage)', closeVars);
 
     const usedMs = item.endedAt - item.startedAt;
     const forced = ['timeout', 'stopped', 'flagged', 'handed'].includes(stage);
@@ -1124,7 +1124,7 @@ export class Progress extends cordis.Service {
       model: item.model,
     };
     //M 将超时记录追加写入 overtime.jsonl，供空闲时 Review 挑选复盘。
-    fs.appendFileSync(path.join(this.ctx.resources.dir('data'), 'overtime.jsonl'), `${JSON.stringify(line)}\n`, 'utf8');
+    fs.appendFileSync(path.join(this.ctx.resources.ensureRuntimeDir('data'), 'overtime.jsonl'), `${JSON.stringify(line)}\n`, 'utf8');
   }
 
   /** 合并成一秒一次推 progress/update；now 时马上推。 */

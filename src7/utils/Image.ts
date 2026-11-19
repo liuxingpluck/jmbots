@@ -32,5 +32,5 @@ export function getAtPaths(text: string): string[] {
  */
 export function getImagePaths(text: string): string[] {
   //M 先摘出消息里所有 @路径，再按扩展名对应的 MIME 过滤出看图模型支持发送的图片类型。
-  return getAtPaths(text).filter((file) => SENDABLE.has(mimeModule.getType(file)));
+  return getAtPaths(text).filter((file) => SENDABLE.has(mimeModule.getMimeType(file)));
 }

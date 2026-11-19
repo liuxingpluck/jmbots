@@ -3,7 +3,7 @@
  * 跑法：bun test ./src7/plugins/approval/NotOwner.test.ts
  * 真的 Cordis + 真的 approval、file-tools（含原 base-tools）、exec 插件和飞书的 feishu_send_file 工具（media.setup），
  * resources、bots、sessions、tools 是只够它们挂上的假服务；审核小会话的回答由假 sessions.ask 给。
- * 照骨架发 session/request（工具清单）和 session/before-tool（执行前），再直接调工具的 run，看落在哪个目录。
+ * 照骨架发 session/before-model（工具清单）和 session/before-tool（执行前），再直接调工具的 run，看落在哪个目录。
  * 哪一档只看回话地址里的 role、workspace（飞书插件照 people 写）；没写的渠道（网页）照旧全有。
  * 群里带不带私人记忆看地址的 trusted（飞书插件照 groups 写）；人设 persona.md 任何一轮都带（2026-11-17，0.7.17）。
  */
@@ -57,8 +57,8 @@ class FakeResources extends cordis.Service {
   constructor(ctx: cordis.Context) {
     super(ctx, 'resources');
   }
-  /** prompt 插件读提示词、记忆目录：照 Resources.dir，没有就建。 */
-  dir(...parts: string[]): string {
+  /** prompt 插件读提示词、记忆目录：照 Resources.ensureRuntimeDir，没有就建。 */
+  ensureRuntimeDir(...parts: string[]): string {
     const full = path.join(root, ...parts);
     fs.mkdirSync(full, { recursive: true });
     return full;
@@ -166,7 +166,7 @@ async function ask(
 ): Promise<{ tools: string[]; system: string[]; denied?: string }> {
   const session = getSession(address);
   const request = { session, model: 'fake/text', messages: [], system: [] as string[], tools: TOOLS.map((name) => ({ name })) };
-  await app.serial('session/request', request as unknown as ChatRequest);
+  await app.serial('session/before-model', request as unknown as ChatRequest);
 
   const gate = { session, call: { type: 'toolCall', id: 'c1', name: call, arguments: args } };
   await app.serial('session/before-tool', gate as unknown as ToolGate);
