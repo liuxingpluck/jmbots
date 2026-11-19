@@ -397,6 +397,33 @@ describe('登记了 listen: all 的群', () => {
 });
 
 describe('没登记的群、私聊', () => {
+  test('前置原始日志落盘失败时记下消息号和原因，下一条继续认领', async () => {
+    const made = world();
+    const reason = '模拟原始聊天日志写入失败';
+    const append = spyOn(made.feishu.history, 'appendChatLog').mockImplementationOnce(() => {
+      throw new Error(reason);
+    });
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      //M 未登记群且没 @ 时，保存原文在旧 try 边界之前。失败也要结束本次入站。
+      const messageId = `om_${String(messageNo + 1)}`;
+      await made.send(PLAIN, '本次写不进去');
+      expect(errors.mock.calls).toHaveLength(1);
+      expect(errors.mock.calls[0]?.[0]).toContain(`飞书：消息 ${messageId} 没处理成：${reason}`);
+      expect(made.delivered).toEqual([]);
+
+      //M 下一条由当前应用正常完成分派并写入认领流水。
+      await made.send(PLAIN, '下一条照常收到', { atMe: true });
+      expect(made.delivered).toHaveLength(1);
+      expect(made.delivered[0]?.text).toContain('下一条照常收到');
+      expect(outcomes(made)).toEqual(['交给会话']);
+      expect(errors.mock.calls).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+      append.mockRestore();
+    }
+  });
+
   test('没登记的群：不 @ 的（cc 开头的也一样）丢掉但记进流水，@ 的照常交下去', async () => {
     const made = world();
 

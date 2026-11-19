@@ -157,35 +157,53 @@ export class FeishuInbound {
    * 副作用：写表；下载文件进工作区；推给机器人；出错给这个聊天发一句。
    */
   async onMessage(appId: string, data: ReceiveData): Promise<void> {
-    //M 按事件所属应用 ID 查找应用实例，找不到直接忽略。
-    const app = this.feishu.apps.get(appId);
-    if (app === undefined) return;
-    const message = data.message;
-    const db = this.ctx.resources.db;
-
-    //G 重推或正在处理中（先查去重表和 inFlight；只有 raw 落盘并完成短分派之后才写 feishu_seen）。
-    const seenRow = db.query("SELECT 1 FROM feishu_seen WHERE message_id = ? AND kind = 'in'").get(message.message_id);
-    if (seenRow !== null || this.inFlight.has(message.message_id)) {
-      //T 跟踪：重复的消息，去重挡掉。
-      const vars = { 应用: appId, 消息: message.message_id };
-      this.ctx.emit('trace', 'Feishu.onMessage', '同一条消息飞书又推了一次，不管', 'SELECT feishu_seen', vars);
-      return;
-    }
-    //M 标记当前 message_id 正在异步入站处理，防飞书重推与自身异步周期并发重入。
-    this.inFlight.add(message.message_id);
-
+    let messageId = '（未知）';
+    let ownsSlot = false;
     try {
-      //M 交由入站管线执行消息解析、存盘、分发，并在 finally 释放并发锁。
+      //M 按事件所属应用 ID 查找应用实例，找不到直接忽略。
+      const app = this.feishu.apps.get(appId);
+      if (app === undefined) return;
+
+      messageId = data.message.message_id;
+      const db = this.ctx.resources.db;
+      const sql = "SELECT 1 FROM feishu_seen WHERE message_id = ? AND kind = 'in'";
+
+      //G 重推或正在处理中：只有落盘并完成分派以后才写 feishu_seen。
+      const seenRow = db.query(sql).get(messageId);
+      if (seenRow !== null || this.inFlight.has(messageId)) {
+        const vars = { 应用: appId, 消息: messageId };
+        //M 保留重复投递的去重流水。
+        this.ctx.emit('trace', 'Feishu.onMessage', '同一条消息飞书又推了一次，不管', 'SELECT feishu_seen', vars);
+        return;
+      }
+
+      //M 只让这一份入站占住消息号，再交给解析、存盘和分发管线。
+      this.inFlight.add(messageId);
+      ownsSlot = true;
       await this.handleInboundMessage(appId, app, data);
+    } catch (error) {
+      //G SDK 回调不等这个 Promise。去重、解析和前置落盘失败也要有消息号与原因。
+      const reason = textModule.getMessage(error);
+      this.logFailedMessage(messageId, reason);
     } finally {
-      this.inFlight.delete(message.message_id);
+      if (ownsSlot) {
+        //M 只有占到消息号的这份入站可以释放它，让失败的消息后续能重投。
+        this.inFlight.delete(messageId);
+      }
     }
+  }
+
+  /** 记录任一入站阶段的失败，沿用原有消息日志格式。 */
+  private logFailedMessage(messageId: string, reason: string): void {
+    const logTime = textModule.getClock(Date.now(), 'date');
+    //M 记录消息号和失败原因供排查。
+    console.error(`${logTime} 飞书：消息 ${messageId} 没处理成：${reason}`);
   }
 
   /**
    * 处理已确认非重推的飞书入站消息：解析 @ 提及与群配置 → 下载附件进渠道目录 → 写原始消息日志 →
    * 发统一事件 channel/message（支持单账号多机器人各自认领）→ 最后落盘 feishu_seen、流水并清理无回话表情。
-   * 第 1、2、3 步在 try 外面；从挂表情起出错，记流水“没处理成”并给这个聊天发一句。
+   * 前三步失败交给 onMessage 记日志。从挂表情起出错时还能记来往流水并回告原聊天。
    * @param appId 应用号。
    * @param app 应用运行时状态。
    * @param data 飞书消息事件。
@@ -241,8 +259,7 @@ export class FeishuInbound {
       //M 捕获入站异常后登记失败流水与控制台报错，并尝试向发信方回传简明失败原因。
       const said = textModule.getMessage(error);
       this.feishu.contacts.log(facts.contact, `没处理成：${said}`);
-      const logTime = textModule.getClock(Date.now(), 'date');
-      console.error(`${logTime} 飞书：消息 ${message.message_id} 没处理成：${said}`);
+      this.logFailedMessage(message.message_id, said);
       try {
         //M 向原聊天发回兜底失败提示并清理可能残余的“敲键盘”表情。
         await this.feishu.sendText(address, `这条消息没处理成：${said}`);

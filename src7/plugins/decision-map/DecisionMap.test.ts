@@ -200,7 +200,11 @@ test('relay 缺席仍能轮询用户选择，启动时补记快照里未追加�
   const first = data.trim().split('\n')[0]!;
   fs.writeFileSync(history, `${first}\n{"seq":`, 'utf8');
   const restored = new storeModule.Store(dir);
-  expect(restored.getGraph()).toMatchObject({ revision: 2 });
+  //M 快照恢复时读回选择当时保存的作者。
+  const restoredGraph = restored.getGraph();
+  const restoredNode = restoredGraph.nodes.find((node) => node.id === 'release');
+  expect(restoredGraph.revision).toBe(2);
+  expect(restoredNode).toMatchObject({ chosen: 'a', decidedBy: 'user' });
   expect(restored.getChanges(1)).toMatchObject({ changes: [{ seq: 2, action: 'choose', option: 'a' }] });
 });
 

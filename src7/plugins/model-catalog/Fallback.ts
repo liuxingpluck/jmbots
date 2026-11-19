@@ -10,7 +10,6 @@
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
-import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { ModelCatalog } from './index.ts';
 import * as queueModule from './Queue.ts';
@@ -419,7 +418,7 @@ function readLimitTable(value: unknown, label: string): Record<string, number> {
 
 
 /**
- * 读取并校验回退配置：优先读 plugins[model-catalog].config.fallback，入口兼容旧 engine 回退项，并发仍沿用顶层 concurrency。
+ * 读取并校验 plugins[model-catalog].config.fallback，并发可沿用顶层 concurrency。
  * @param ctx Cordis 上下文（含 resources）。
  * @param rawConfig plugins[model-catalog].config 原值。
  * @returns 校验并合并默认值后的回退与并发上限配置。
@@ -455,15 +454,11 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
     enabled = sub['enabled'];
   }
 
-  const engine = (ctx.resources.raw['engine'] ?? {}) as Record<string, unknown>;
   const concurrency = (ctx.resources.raw['concurrency'] ?? {}) as Record<string, unknown>;
 
-  //M 回退设置以插件自己的位置为准，兼容上一版同用途的四个键。
+  //M 未配回退链时用默认模型，保留显式空链。
   const chainLabel = 'plugins[model-catalog].config.fallback.chain';
-  const rawChain = checks.getMigratedConfig(
-    sub['chain'], engine['fallback_chain'] ?? undefined, 'engine.fallback_chain', chainLabel,
-  );
-  let chain = rawChain;
+  let chain = sub['chain'];
   if (chain === undefined) {
     chain = [ctx.resources.config.defaultModel];
   }
@@ -473,10 +468,7 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
 
   //M 同供应商的免费候选默认启用，必须能保留显式 false。
   const siblingsLabel = 'plugins[model-catalog].config.fallback.include_siblings';
-  const siblingValue = checks.getMigratedConfig(
-    sub['include_siblings'], engine['fallback_include_siblings'] ?? undefined,
-    'engine.fallback_include_siblings', siblingsLabel,
-  );
+  const siblingValue = sub['include_siblings'];
   let siblings = true;
   if (siblingValue !== undefined) {
     if (typeof siblingValue !== 'boolean') throw new Error(`${siblingsLabel} 要是 true 或 false`);
@@ -486,10 +478,7 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
 
   //M 默认只把限流模型冷却五分钟，显式 0 则不用默认冷却。
   const minutesLabel = 'plugins[model-catalog].config.fallback.cooldown_minutes';
-  const cooldown = checks.getMigratedConfig(
-    sub['cooldown_minutes'], engine['rate_limit_cooldown_minutes'] ?? undefined,
-    'engine.rate_limit_cooldown_minutes', minutesLabel,
-  );
+  const cooldown = sub['cooldown_minutes'];
   let minutes = 5;
   if (cooldown !== undefined) {
     if (typeof cooldown !== 'number' || !Number.isFinite(cooldown) || cooldown < 0) {
@@ -500,9 +489,7 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
 
   //M 回退尝试上限只算备选，和同一模型的重试次数分开。
   const maxTriesLabel = 'plugins[model-catalog].config.fallback.max_tries';
-  const rawMaxTries = checks.getMigratedConfig(
-    sub['max_tries'], engine['fallback_max_tries'], 'engine.fallback_max_tries', maxTriesLabel,
-  );
+  const rawMaxTries = sub['max_tries'];
 
   const rawSubConcurrency = sub['concurrency'];
   if (rawSubConcurrency !== undefined && rawSubConcurrency !== null && (typeof rawSubConcurrency !== 'object' || Array.isArray(rawSubConcurrency))) {

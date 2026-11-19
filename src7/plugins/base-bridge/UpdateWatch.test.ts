@@ -154,7 +154,6 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
     });
     const ctx = new cordis.Context();
     class FakeResources extends cordis.Service {
-      readonly raw = { engine: { index_url: `http://127.0.0.1:${String(remote.port)}` } };
       dir(): string { return root; }
       constructor(c: cordis.Context) { super(c, 'resources'); }
     }
@@ -191,7 +190,9 @@ test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停
     await ctx2.plugin(FakeBots);
     await ctx2.plugin(FakeApproval);
     await ctx2.plugin(FakeSessions);
-    await ctx2.plugin(bridge, { update_watch: { first_ms: 5, every_ms: 15 } });
+    const indexUrl = `http://127.0.0.1:${String(remote.port)}`;
+    const config = { index_url: indexUrl, update_watch: { first_ms: 5, every_ms: 15 } };
+    await ctx2.plugin(bridge, config);
     ctx2.emit('ready', []);
     for (let i = 0; baseCalls === 0 && i < 60; i += 1) {
       await Bun.sleep(10);

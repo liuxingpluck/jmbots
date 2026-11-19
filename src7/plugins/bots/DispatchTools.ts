@@ -10,8 +10,8 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as modelCatalogPlugin from '../model-catalog/index.ts';
 import type * as workspacesPlugin from '../workspaces/index.ts';
 import type * as protocol from '../../Channels.ts';
-import type { FrontTask, Stage } from './Dispatch.ts';
-import * as dispatch from './Dispatch.ts';
+import type { FrontTask, Stage } from './DispatchResults.ts';
+import * as dispatch from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import type { Bot, Origin } from './index.ts';
 

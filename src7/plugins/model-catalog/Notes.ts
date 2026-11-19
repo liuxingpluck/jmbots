@@ -30,11 +30,11 @@ export interface Rating {
   by: string;
   /** 分数，1 到 5。 */
   score: number;
-  /** 哪场会话；旧的手写行没有会话号时是空串。 */
+  /** 被评价的会话号。 */
   session: string;
-  /** 那场会话当时的思考档（预留口子以后按档位细分）；未知或旧行是空串。 */
+  /** 那场会话当时的思考档，未知时是空串。 */
   thinking: string;
-  /** 旧格式里的任务名；会话评价为空串。 */
+  /** 供现有接口调用方读取，会话评价固定为空串。 */
   task: string;
   /** 一句话评语；没写是空串。 */
   note: string;
@@ -49,7 +49,7 @@ export interface ModelNote {
   intro: string;
   /** 评价，照文件里的先后（旧的在前；同人同会话只留最新一条）。 */
   ratings: Rating[];
-  /** 打过分的会话数 N（按会话号去重；旧的无会话号行单算）。 */
+  /** 打过分的会话数 N，按会话号去重。 */
   sessionCount: number;
   /** 平均分，按 N 场会话算术平均并保留一位小数；没有评价是 0。 */
   average: number;
@@ -72,14 +72,9 @@ const RATINGS_HEADING = '## 评价';
 const NO_INTRO = '（待补介绍）';
 
 /**
- * 新格式评价行：- 时间 · 评价者 · 分数/5 · 会话 会话号（可选思考档） · 可选一句话。
+ * 会话评价行：- 时间 · 评价者 · 分数/5 · 会话 会话号（可选思考档） · 可选一句话。
  */
 const SESSION_RATING_LINE = /^- (.+?) · (.+?) · ([1-5])\/5 · 会话 ([A-Za-z0-9_-]+)(?:（([^（）\r\n]*)）)?(?: ·(?: (.*))?)?$/u;
-
-/**
- * 旧格式评价行：- 时间 · 评价者 · 分数/5 · 任务：任务 · 可选一句话（兼容已有记录）。
- */
-const LEGACY_RATING_LINE = /^- (.+?) · (.+?) · ([1-5])\/5 · 任务：(.*?)(?: ·(?: (.*))?)?$/u;
 
 /** getPrompt 每个模型带最近几条评价。 */
 const RECENT = 3;
@@ -121,39 +116,25 @@ export function readNotesSettings(root: string, config: unknown): NotesSettings 
 
 
 /**
- * 解析一行评价（新会话格式或旧任务格式）。
+ * 解析带会话号的一行评价。
  * @param line MD 里的一行。
  * @returns 解析不了是 undefined（调用方跳过这一行）。
  */
 function getRating(line: string): Rating | undefined {
   const trimmed = line.trim();
 
-  //M 优先认新格式：带会话号与可选括号思考档。
+  //G 跳过缺会话号或格式不合法的行。
   const found = SESSION_RATING_LINE.exec(trimmed);
-  if (found !== null) {
-    return {
-      at: found[1] ?? '',
-      by: found[2] ?? '',
-      score: Number(found[3]),
-      session: found[4] ?? '',
-      thinking: (found[5] ?? '').trim(),
-      task: '',
-      note: (found[6] ?? '').trim(),
-    };
-  }
-
-  //M 兼容旧格式：带“任务：”。
-  const legacy = LEGACY_RATING_LINE.exec(trimmed);
-  if (legacy === null) return undefined;
+  if (found === null) return undefined;
 
   return {
-    at: legacy[1] ?? '',
-    by: legacy[2] ?? '',
-    score: Number(legacy[3]),
-    session: '',
-    thinking: '',
-    task: (legacy[4] ?? '').trim(),
-    note: (legacy[5] ?? '').trim(),
+    at: found[1] ?? '',
+    by: found[2] ?? '',
+    score: Number(found[3]),
+    session: found[4] ?? '',
+    thinking: (found[5] ?? '').trim(),
+    task: '',
+    note: (found[6] ?? '').trim(),
   };
 }
 
@@ -166,11 +147,10 @@ function getRating(line: string): Rating | undefined {
 function deduplicateRatings(rawRatings: Rating[]): Rating[] {
   const result: Rating[] = [];
   for (const rating of rawRatings) {
-    if (rating.session !== '') {
-      const prevIndex = result.findIndex((item) => item.session === rating.session && item.by === rating.by);
-      if (prevIndex >= 0) {
-        result.splice(prevIndex, 1);
-      }
+    //M 用同一评价者在同一场会话里的最后一条评分。
+    const prevIndex = result.findIndex((item) => item.session === rating.session && item.by === rating.by);
+    if (prevIndex >= 0) {
+      result.splice(prevIndex, 1);
     }
     result.push(rating);
   }
@@ -188,10 +168,6 @@ function getSessionStats(ratings: Rating[]): { sessionCount: number; average: nu
   const unitScores: number[] = [];
 
   for (const rating of ratings) {
-    if (rating.session === '') {
-      unitScores.push(rating.score);
-      continue;
-    }
     const list = bySession.get(rating.session) ?? [];
     list.push(rating.score);
     bySession.set(rating.session, list);
@@ -551,15 +527,11 @@ export class ModelNotes {
 
 
 /**
- * 一条评价写成字：新会话格式或旧任务格式。MD 里的评价行（前面加“- ”）和 getPrompt 共用。
+ * 将一条会话评价写成文字，供 MD 的评价行和 getPrompt 共用。
  * @param rating 一条评价。
  * @returns 一行字，不带“- ”。
  */
 function getRatingText(rating: Rating): string {
-  if (rating.session === '') {
-    return `${rating.at} · ${rating.by} · ${String(rating.score)}/5 · 任务：${rating.task} · ${rating.note}`.trimEnd();
-  }
-
   let sessionPart = `会话 ${rating.session}`;
   if (rating.thinking !== '') {
     sessionPart = `会话 ${rating.session}（${rating.thinking}）`;

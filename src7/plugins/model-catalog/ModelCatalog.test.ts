@@ -81,12 +81,6 @@ async function setupWorld(options: {
         },
       },
     },
-    engine: {
-      fallback_chain: ['mock/medium', 'mock/huge'],
-      fallback_max_tries: 5,
-      fallback_include_siblings: true,
-      rate_limit_cooldown_minutes: 5,
-    },
   };
 
   class MockResources extends cordis.Service {
@@ -120,7 +114,10 @@ async function setupWorld(options: {
     options.beforeMount(ctx);
   }
 
-  await ctx.plugin(catalogPlugin, options.pluginConfig);
+  //M 默认夹具提供两级备选，个别用例可替换回退设置。
+  const fallbackConfig = { chain: ['mock/medium', 'mock/huge'] };
+  const pluginConfig = options.pluginConfig ?? { fallback: fallbackConfig };
+  await ctx.plugin(catalogPlugin, pluginConfig);
 
   return { ctx, fallbackEvents, cooldownEvents };
 }
@@ -324,30 +321,45 @@ test('4. Queue 并发上限与取消信号、fallback: false 开关与配置校�
 });
 
 
-test('回退配置逐键兼容旧 engine，显式的新链、0 和 false 优先', async () => {
+test('回退忽略旧 engine，插件配置支持显式的链、0 和 false', async () => {
   const { ctx } = await setupWorld();
-  const settings = fallback.readFallbackSettings(ctx, {
-    fallback: { chain: ['mock/small'], max_tries: 0, include_siblings: false },
-  });
+  ctx.resources.raw['engine'] = {
+    fallback_chain: ['mock/huge'],
+    fallback_max_tries: 1,
+    fallback_include_siblings: false,
+    rate_limit_cooldown_minutes: 1,
+  };
+
+  //M 只填旧键时按现有回退默认值处理。
+  const defaults = fallback.readFallbackSettings(ctx, undefined);
+  expect(defaults.chain).toEqual(['mock/primary']);
+  expect(defaults.maxTries).toBe(5);
+  expect(defaults.siblings).toBe(true);
+  expect(defaults.cooldownMs).toBe(300_000);
+
+  //M 新位置的 0 和 false 都是有效的显式配置。
+  const config = { fallback: { chain: ['mock/small'], max_tries: 0, include_siblings: false, cooldown_minutes: 0 } };
+  const settings = fallback.readFallbackSettings(ctx, config);
   expect(settings.chain).toEqual(['mock/small']);
   expect(settings.maxTries).toBe(0);
   expect(settings.siblings).toBe(false);
-  expect(settings.cooldownMs).toBe(300_000);
+  expect(settings.cooldownMs).toBe(0);
 });
 
-test('骨架的思考档和重试可搬进 models，部分迁移保留其他旧值', () => {
+test('骨架从 models 读取思考档和重试，旧 engine 不生效', () => {
   const shared = { providers: { mock: { base_url: 'http://127.0.0.1:9' } }, default_model: 'mock/primary' };
   const engine = { thinking: 'medium', retry: { times: 2, wait_ms: 25, timeout_ms: 6000 } };
-  const old = checks.checkConfig({ ...shared, engine });
-  expect(old.thinking).toBe('medium');
-  expect(old.retry).toEqual({ times: 2, waitMs: 25, timeoutMs: 6000 });
 
+  //M 只填旧键时使用默认值。
+  const oldConfig = { ...shared, engine };
+  const defaults = checks.checkConfig(oldConfig);
+  expect(defaults.thinking).toBe('low');
+  expect(defaults.retry).toEqual({ times: 5, waitMs: 3000, timeoutMs: 120_000 });
+
+  //M 新配置缺项时各自使用默认值。
   const models = { thinking: 'high', retry: { times: 4 } };
-  const mixed = checks.checkConfig({ ...shared, engine, models });
-  expect(mixed.thinking).toBe('high');
-  expect(mixed.retry).toEqual({ times: 4, waitMs: 25, timeoutMs: 6000 });
-
-  const migrated = checks.checkConfig({ ...shared, models });
-  expect(migrated.thinking).toBe('high');
-  expect(migrated.retry).toEqual({ times: 4, waitMs: 3000, timeoutMs: 120_000 });
+  const currentConfig = { ...shared, engine, models };
+  const current = checks.checkConfig(currentConfig);
+  expect(current.thinking).toBe('high');
+  expect(current.retry).toEqual({ times: 4, waitMs: 3000, timeoutMs: 120_000 });
 });

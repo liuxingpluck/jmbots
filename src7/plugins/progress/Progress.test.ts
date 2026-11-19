@@ -7,7 +7,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, expect, spyOn, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
 import type { AskInput, Session } from '../../Sessions.ts';
@@ -38,7 +38,6 @@ async function setupWorld(options: {
   withDecision?: boolean;
   withMirror?: boolean;
   withCatalog?: boolean;
-  engine?: Record<string, number | string>;
   reviewReply?: string;
   listenSay?: boolean;
   pluginConfig?: progressPlugin.ProgressConfig;
@@ -71,7 +70,6 @@ async function setupWorld(options: {
 
   class MockResources extends cordis.Service {
     readonly root = root;
-    readonly raw = { engine: { overtime_minutes: 0, long_run_card_minutes: 0, ...options.engine } };
     constructor(parent: cordis.Context) {
       super(parent, 'resources');
     }
@@ -252,7 +250,9 @@ async function setupWorld(options: {
     traces.push({ where, what, vars });
   });
 
-  await ctx.plugin(progressPlugin, options.pluginConfig);
+  //M 测试默认关闭超时门槛与长跑提醒；用例可单独启用。
+  const pluginConfig = { overtime_minutes: 0, long_run_card_minutes: 0, ...options.pluginConfig };
+  await ctx.plugin(progressPlugin, pluginConfig);
 
   return { ctx, root, session: fakeSession, askedReviews, askInputs, approvalAskList, decisionRequests, sayLogs, traces };
 }
@@ -374,7 +374,6 @@ test('3. Review 完整闭环：空闲挑选超时条目、记 reviewedAt、送�
     withApproval: true,
     withMirror: true,
     withCatalog: true,
-    engine: { wrapup_model: 'mock/old-model' },
     pluginConfig: { wrapup_model: 'mock/new-model', review: { first_ms: 70, every_ms: 5000 } },
   });
 
@@ -482,8 +481,7 @@ test.each([{ withoutClose: true }, { withoutClose: false }])(
   const world = await setupWorld({
     withApproval: true,
     withoutClose,
-    engine: { long_run_card_minutes: 0.00005 },
-    pluginConfig: { review: false },
+    pluginConfig: { long_run_card_minutes: 0.00005, review: false },
   });
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
@@ -512,8 +510,7 @@ test.each([{ withoutClose: true }, { withoutClose: false }])(
 
 test('长跑提醒、报时和收尾用通知发送，模型无人应答用最低默认档', async () => {
   const world = await setupWorld({
-    engine: { long_run_card_minutes: 0.00005 },
-    pluginConfig: { review: false },
+    pluginConfig: { long_run_card_minutes: 0.00005, review: false },
   });
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
@@ -542,8 +539,7 @@ test.each([{ withDecision: true }, { withDecision: false }])(
   '到点判断三题有回执时延长，决策应答为 $withDecision', async ({ withDecision }) => {
   const world = await setupWorld({
     withDecision,
-    engine: { limit_default_minutes: 0.0005 },
-    pluginConfig: { review: false },
+    pluginConfig: { limit_default_minutes: 0.0005, review: false },
   });
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
@@ -571,7 +567,7 @@ test.each([
     withCatalog,
     listenSay,
     withHand: true,
-    engine: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
+    pluginConfig: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
     reviewReply: '{"absurd":false,"handoff":true,"handoffNote":"继续核对已有结果"}',
   });
   world.session.row.state = 'running';
@@ -591,7 +587,7 @@ test.each([
 
 test('转交无人应答时撤销老会话的转交标记，进度和通知都写失败', async () => {
   const world = await setupWorld({
-    engine: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
+    pluginConfig: { limit_default_minutes: 0.0005, limit_extend_times: 0 },
     reviewReply: '{"absurd":false,"handoff":true,"handoffNote":"核对已有结果"}',
   });
   world.session.row.frontTask = { front: 'front-1', round: 2, workspace: '工作区', origin: {}, paused: false };
@@ -625,36 +621,3 @@ test('4. ProgressConfig 入口校验与 review: false 开关', async () => {
   expect(disabledWorld.approvalAskList.length).toBe(0);
 });
 
-
-test('旧限时配置逐项兼容，新值优先且每个旧键只提示一次', async () => {
-  const legacy = { limit_default_minutes: 75, limit_remind_before_minutes: 12 };
-
-  //M 捕获入口提示，覆盖旧值续用与新旧同时设置的两次挂载。
-  const warn = spyOn(console, 'warn');
-  warn.mockImplementation(() => undefined);
-  try {
-    const oldWorld = await setupWorld({ engine: legacy, pluginConfig: { review: false } });
-    oldWorld.session.row.state = 'running';
-
-    //M 旧配置只写 engine 时，正常启动的会话沿用原有限时。
-    oldWorld.ctx.emit('session/change', oldWorld.session);
-    expect(oldWorld.session.row.progress?.limitMinutes).toBe(75);
-
-    const pluginConfig = { limit_default_minutes: 30, review: false } as const;
-    const newWorld = await setupWorld({ engine: legacy, pluginConfig });
-    newWorld.session.row.state = 'running';
-
-    //M 同一个字段在两处都写时，服务使用插件配置里的值。
-    newWorld.ctx.emit('session/change', newWorld.session);
-    expect(newWorld.session.row.progress?.limitMinutes).toBe(30);
-
-    //M 提示指出旧键和新位置，两次挂载也只记录一次。
-    const oldKey = 'engine.limit_remind_before_minutes';
-    const newKey = 'plugins[progress].config.limit_remind_before_minutes';
-    const matching = warn.mock.calls.filter(([message]) => String(message).includes(oldKey));
-    expect(matching).toHaveLength(1);
-    expect(matching[0]?.[0]).toContain(newKey);
-  } finally {
-    warn.mockRestore();
-  }
-});

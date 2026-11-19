@@ -5,7 +5,7 @@
  * 渠道（命令行、HTTP、飞书）直接调 Bot.receive，不走事件。
  * 机器人收到消息以后先问一圈“谁要认领这条消息”（事件 bot/receive）：relay 转外部助手、微信按客户开会话、approval 认出“同意 3”。
  * 没人认领的，进这个机器人对这个客户的前台对话（FrontDesk.ts）：简单的前台自己答，要干活就派后台（Dispatch.ts），
- * 后台的结果先回前台整理，再发回原渠道。前台在整理结果时用户又说话，先排着（Dispatch.ts 的 hold）。
+ * 后台的结果先回前台整理，再发回原渠道。前台整理结果时用户的新话先排着（DispatchResults.hold）。
  * 想换一种分派办法：写一个插件听 bot/receive，把 event.session 填上，前台就不接这条了。
  * 渠道（命令行、HTTP、飞书、微信）向本服务登记发送函数：ctx.bots.channel(name, send)；收话调 ctx.bots.receive，附件调 ctx.bots.saveFile。
  * 会话跑到一半要先跟用户说一句，调 ctx.bots.say(session, text)：发通知 bot/say，本服务按会话的渠道名找到登记的 send 发出去。
@@ -52,10 +52,10 @@ export const name = 'bots';
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
-export const version = '1.5.1';
+export const version = '1.5.2';
 
 /**
- * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 Dispatch.ts），开了 reply_tool 再加 reply。
+ * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
  * workspaces：建机器人时登记工作区，前台派后台时选工作区（plugins 段要写在本插件前面）。
  */
 export const inject = ['resources', 'sessions', 'tools', 'workspaces'];

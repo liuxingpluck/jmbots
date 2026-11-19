@@ -243,12 +243,6 @@ export class Store {
     if (fs.existsSync(this.current)) {
       const encoded = fs.readFileSync(this.current, 'utf8');
       this.saved = JSON.parse(encoded) as SavedGraph;
-      for (const node of this.saved.nodes) {
-        //M 旧版只有网页点选会写 decidedAt，据此恢复旧快照的决定来源。
-        if (node.decidedBy === undefined && node.chosen !== undefined && node.decidedAt !== undefined) {
-          node.decidedBy = 'user';
-        }
-      }
     }
     if (fs.existsSync(this.history)) {
       const encoded = fs.readFileSync(this.history, 'utf8');

@@ -64,7 +64,7 @@ export const name = 'feishu';
 //M 1.1.11：channel/history 的游标和分页改用骨架的 paginateChannelHistory，飞书只认应用、聊天和挑 @我。
 //M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、pickChat：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
-export const version = '1.1.13';
+export const version = '1.1.14';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];

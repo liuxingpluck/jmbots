@@ -79,8 +79,8 @@ async function world(
 
 
 describe('model-catalog 的模型介绍和评价', () => {
-  //M 介绍原样读；新旧评价都能解析，同场会话多人打分只算一场，平均分按场算；坏行和下一个标题之后的不算。
-  test('解析：新旧格式、同场多人去重算场数与平均分', async () => {
+  //M 介绍原样读。会话评价按场计分，旧任务评价、坏行和其他小节的行都跳过。
+  test('解析会话评价并按场计分，忽略旧任务格式', async () => {
     const text = [
       '# magpie/workbuddy/deepseek-v4.1-flash',
       '',
@@ -91,7 +91,7 @@ describe('model-catalog 的模型介绍和评价', () => {
       '简单的活。',
       '',
       '## 评价',
-      '- 2026-11-17 10:20 EST · Claude · 4/5 · 任务：插件盘点 · 分析细，但慢',
+      '- 2026-11-17 10:20 EST · Claude · 1/5 · 任务：插件盘点 · 分析细，但慢',
       '- 2026-11-17 13:50 EST · 用户 · 4/5 · 会话 202611171350001（high） · 稳',
       '- 2026-11-17 13:55 EST · Claude · 2/5 · 会话 202611171350001（high）',
       '- 这一行写乱了',
@@ -114,13 +114,12 @@ describe('model-catalog 的模型介绍和评价', () => {
     const deepseek = list[1];
     expect(deepseek?.intro).toBe('便宜、快，适合跑命令、查进程。\n第二行介绍。\n\n## 擅长\n简单的活。');
     expect(deepseek?.ratings).toEqual([
-      { at: '2026-11-17 10:20 EST', by: 'Claude', score: 4, session: '', thinking: '', task: '插件盘点', note: '分析细，但慢' },
       { at: '2026-11-17 13:50 EST', by: '用户', score: 4, session: '202611171350001', thinking: 'high', task: '', note: '稳' },
       { at: '2026-11-17 13:55 EST', by: 'Claude', score: 2, session: '202611171350001', thinking: 'high', task: '', note: '' },
       { at: '2026-11-17 12:00 EST', by: 'Codex', score: 5, session: '202611171200001', thinking: '', task: '', note: '' },
     ]);
-    //M 旧行(4) + 会话1350001均值(3) + 会话1200001(5) = 12 / 3 = 4。
-    expect(deepseek?.sessionCount).toBe(3);
+    //M 两场会话的分数分别是 3 和 5，平均分为 4。
+    expect(deepseek?.sessionCount).toBe(2);
     expect(deepseek?.average).toBe(4);
   });
 

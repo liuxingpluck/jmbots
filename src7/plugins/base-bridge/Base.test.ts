@@ -44,20 +44,22 @@ class FakeHttp extends cordis.Service {
 async function world(indexUrl?: unknown, withHttp = true): Promise<{
   ctx: cordis.Context;
   app: FastifyInstance;
-  raw: { engine: { index_url: unknown } };
+  config: { index_url: unknown };
   base: bridge.Base;
 }> {
   const ctx = new cordis.Context();
   const app = fastify();
-  const raw = { engine: { index_url: indexUrl } };
+  const config = { index_url: indexUrl };
   closers.push(() => app.close());
   closers.push(() => ctx.fiber.dispose());
-  await ctx.plugin(FakeResources, raw);
+  await ctx.plugin(FakeResources, {});
   if (withHttp) await ctx.plugin(FakeHttp, app);
-  await ctx.plugin(bridge);
+
+  //M 传入插件自己的配置，便于检查入口只读取一次地址。
+  await ctx.plugin(bridge, config);
   const base = ctx.get('base') as bridge.Base | undefined;
   if (base === undefined) throw new Error('基地服务没有挂上');
-  return { ctx, app, raw, base };
+  return { ctx, app, config, base };
 }
 
 //M 假基地统一在测试结束后关闭；地址由操作系统分配，不使用生产端口。
@@ -88,20 +90,24 @@ describe('base-bridge 基地服务', () => {
 
   //M 服务不依赖 HTTP；入口去掉两端空白和末尾斜杠，之后不重读配置。
   test('没挂 http 仍提供服务，基地地址只在入口读取一次', async () => {
-    const { ctx, raw, base } = await world('  http://127.0.0.1:32123/root///  ', false);
+    const { ctx, config, base } = await world('  http://127.0.0.1:32123/root///  ', false);
     expect(base.url).toBe('http://127.0.0.1:32123/root');
     expect(ctx.get('http')).toBeUndefined();
-    raw.engine.index_url = 'http://127.0.0.1:32124';
+    config.index_url = 'http://127.0.0.1:32124';
     expect(base.url).toBe('http://127.0.0.1:32123/root');
   });
 
-  test('插件地址优先，显式空串关闭默认基地地址', async () => {
-    for (const indexUrl of ['http://127.0.0.1:32125', '']) {
+  test('基地地址忽略旧 engine，允许显式空串或省略地址', async () => {
+    for (const indexUrl of ['http://127.0.0.1:32125', '', undefined]) {
       const ctx = new cordis.Context();
       closers.push(() => ctx.fiber.dispose());
-      await ctx.plugin(FakeResources, { engine: { index_url: 'http://127.0.0.1:32124' } });
-      await ctx.plugin(bridge, { index_url: indexUrl });
-      expect(ctx.base.url).toBe(indexUrl);
+      const resources = { engine: { index_url: 'http://127.0.0.1:32124' } };
+      const config = { index_url: indexUrl };
+
+      //M 用旧地址作为干扰值，核对插件只读取自己的配置。
+      await ctx.plugin(FakeResources, resources);
+      await ctx.plugin(bridge, config);
+      expect(ctx.base.url).toBe(indexUrl ?? '');
     }
   });
 
@@ -110,8 +116,11 @@ describe('base-bridge 基地服务', () => {
     for (const value of [123, {}, '/relative', 'file:///tmp/base', 'http://localhost/?q=1', 'http://localhost/#part']) {
       const ctx = new cordis.Context();
       closers.push(() => ctx.fiber.dispose());
-      await ctx.plugin(FakeResources, { engine: { index_url: value } });
-      expect(() => bridge.apply(ctx)).toThrow('plugins[base-bridge].config.index_url');
+      await ctx.plugin(FakeResources, {});
+      const config = { index_url: value };
+
+      //G 非法地址会在挂载服务前抛错。
+      expect(() => bridge.apply(ctx, config)).toThrow('plugins[base-bridge].config.index_url');
       expect(ctx.get('base')).toBeUndefined();
     }
   });

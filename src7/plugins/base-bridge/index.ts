@@ -8,7 +8,6 @@
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../../utils/RequestEvent.ts';
-import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as notifyModule from './Notify.ts';
 import * as updateWatchModule from './UpdateWatch.ts';
@@ -21,7 +20,7 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.1';
+export const version = '1.2.2';
 export const inject = ['resources'];
 
 /** 基地子模块共享的地址配置路径，供错误提示使用。 */
@@ -260,8 +259,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const watchSettings = updateWatchModule.readUpdateWatchSettings(own['update_watch']);
 
   //M 基地服务、默认通知和更新监听共用一个校验后的地址。
-  const engine = ctx.resources.raw['engine'] as Record<string, unknown> | undefined;
-  const raw = checks.getMigratedConfig(own['index_url'], engine?.['index_url'], 'engine.index_url', INDEX_URL_PATH);
+  const raw = own['index_url'];
   if (raw !== undefined && typeof raw !== 'string') throw new Error(`${INDEX_URL_PATH} 要是字符串`);
 
   const url = (raw ?? '').trim().replace(/\/+$/u, '');

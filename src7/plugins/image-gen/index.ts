@@ -17,7 +17,7 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'image-gen';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.2';
+export const version = '1.0.3';
 
 /** 用到的服务：resources 拿配置；tools 登记工具；bots 找工作区。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -45,7 +45,7 @@ const IMAGE_MODEL_PATH = 'plugins[image-gen].config.image_model';
 
 /**
  * 校验生图模型配置，允许没填，确保供应商已配置。
- * @param value 新配置或迁移后的原值。
+ * @param value 插件配置的 image_model 原值。
  * @param providers 骨架校验过的供应商。
  */
 function readModel(
@@ -173,12 +173,11 @@ class ImageGen {
  * 副作用：读取生图模型配置，并在 ctx.tools 上登记 image_generate 工具。
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
-  //M 在挂插件时读取新、旧位置，内部工具只使用校验好的模型。
+  //M 挂载时校验插件配置的生图模型，工具执行时使用这一结果。
   const own = checks.record(config ?? {}, 'image-gen.config');
-  const engine = ctx.resources.raw['engine'] as Record<string, unknown> | undefined;
-  const legacy = engine?.['image_model'];
-  const value = checks.getMigratedConfig(own['image_model'], legacy, 'engine.image_model', IMAGE_MODEL_PATH);
-  const model = readModel(value, ctx.resources.config.providers);
+  const value = own['image_model'];
+  const providers = ctx.resources.config.providers;
+  const model = readModel(value, providers);
 
   //M 向模型工具表登记 image_generate。
   new ImageGen(ctx, model);

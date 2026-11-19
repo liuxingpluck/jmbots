@@ -16,7 +16,6 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { AskInput, Session, Thinking } from '../../Sessions.ts';
-import * as checks from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as cardUtils from '../../utils/Card.ts';
@@ -35,7 +34,7 @@ export const name = 'progress';
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
 //M 1.1.6：接入已登记飞书群的每日进度调度。
 //M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
-export const version = '1.1.7';
+export const version = '1.1.8';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'bots', 'sessions'];
@@ -1235,26 +1234,15 @@ export class Progress extends cordis.Service {
 
 
 /**
- * 在插件入口逐项合并新配置和 0.4 的旧键，再校验限时与模型。
+ * 在插件入口校验限时数值和可选模型。
  * @param config 插件清单项里的 progress 配置。
- * @param legacy 旧 engine 段。
  * @returns 服务和复盘共用的配置。
  * @throws 数值或模型格式不合法时抛错。
  */
-function readSettings(config: ProgressConfig, legacy: Record<string, unknown> | undefined): Settings {
-  const getValue = (key: keyof ProgressConfig): unknown => {
-    const oldPath = `engine.${key}`;
-    const newPath = `plugins[progress].config.${key}`;
-    const current = config[key];
-    const previous = legacy?.[key];
-
-    //M 用项目共用迁移规则保留旧值，并在本进程提示一次。
-    return checks.getMigratedConfig(current, previous, oldPath, newPath);
-  };
+function readSettings(config: ProgressConfig): Settings {
   const number = (key: keyof ProgressConfig, fallback: number, allowZero = false): number => {
-    //M 旧值合并后按现有数值规则校验，未填时沿用默认。
-    const configured = getValue(key);
-    const value = configured ?? fallback;
+    //M 校验配置数值，未填时沿用默认。
+    const value = config[key] ?? fallback;
     if (typeof value !== 'number' || value < 0 || (!allowZero && value === 0)) {
       let kind = '正';
       if (allowZero) {
@@ -1266,7 +1254,7 @@ function readSettings(config: ProgressConfig, legacy: Record<string, unknown> | 
   };
   const model = (key: keyof ProgressConfig): string | undefined => {
     //M 保留模型留空时回退到原会话模型的行为。
-    const value = getValue(key);
+    const value = config[key];
     if (value === undefined || value === null || value === '') return undefined;
     const invalid = `progress.${key} 要写成 供应商名/模型 ID`;
     //G 非空模型配置必须带供应商。
@@ -1301,11 +1289,10 @@ function readSettings(config: ProgressConfig, legacy: Record<string, unknown> | 
  * 副作用：注册 progress 服务，可选挂载 Review 复盘定时器与 HTTP 进度查询/操作路由。
  */
 export function apply(ctx: cordis.Context, config?: ProgressConfig): void {
-  //M 校验插件配置形状和复盘设置，再在入口迁移 0.4 的旧进度键。
+  //M 先校验插件配置形状和复盘设置，再读限时与模型设置。
   const reviewSettings = reviewModule.readReviewSettings(config);
-  const legacy = ctx.resources.raw['engine'] as Record<string, unknown> | undefined;
   const current = config ?? {};
-  const settings = readSettings(current, legacy);
+  const settings = readSettings(current);
 
   //M 进度服务和复盘都使用入口解析好的配置。
   const progress = new Progress(ctx, settings);
