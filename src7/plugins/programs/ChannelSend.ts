@@ -80,9 +80,17 @@ export type ChannelSendResult = events.ResultEnvelope & (
 
 declare module 'cordis' {
   interface Events {
-    /** 审核插件读草稿或请求发送。 */
+    /**
+     * 审核插件读草稿或请求发送。
+     * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.readDraft、Outbound.submit
+     * 谁接：src7/plugins/programs/ChannelSend.ts 的 listenChannelSend
+     */
     'programs/channel-send-request'(request: ChannelSendRequest): void | Promise<void>;
-    /** 与运输请求关联的回执，永不携带密钥。 */
+    /**
+     * 与运输请求关联的回执，永不携带密钥。
+     * 谁发：src7/plugins/programs/ChannelSend.ts 的 listenChannelSend
+     * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.readDraft、Outbound.submit
+     */
     'programs/channel-send-result'(result: ChannelSendResult): void;
   }
 }
@@ -256,7 +264,13 @@ async function handleOutbound(
   const payload = { ...action, program, actor: 'owner' as const };
   const options = {
     timeoutMs: 105_000,
-    onFallback: () => ({ requestId: '', code: 503, error: '发送确认暂不可用，请查原意图状态' }),
+    onFallback: (reason: events.FallbackReason) => {
+      if (reason === 'timeout' && action.action !== 'status') {
+        return { requestId: '', code: 504, error: '发件操作结果不确定，请核对原意图状态' };
+      }
+
+      return { requestId: '', code: 503, error: '发送确认暂不可用，请查原意图状态' };
+    },
   };
   //M 交给 approval 查原记录、批准及归档，路由本身不生成批准。
   const result = await events.requestEvent(

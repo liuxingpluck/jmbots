@@ -152,7 +152,7 @@ async function serve(journal?: ReturnType<typeof getJournal>, config: tutorialMo
       if (request.action === 'query') return { ok: true, lines: journal.query(request.params) };
       //M 照真的 journal：从起点取行，挑出这条的行、收成轨迹一起交回。
       if (request.action === 'trail') {
-        const raw = journal.request(request.message, request.limit);
+        const raw = journal.request(request.message, request.maxLines);
         if (raw === undefined) return {};
 
         const picked = pick(request.message, raw).picked;

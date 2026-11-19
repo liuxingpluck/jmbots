@@ -1,11 +1,10 @@
 /**
  * Trail.ts：一条请求按消息号收成按插件走的步骤；别的会话的行、web-api/status 不混进来；出错标红；不带对话内容；
- * 回话追溯按消息号或涉及的会话挑到这句回话为止，取满了还没到就算截了。
  * 跑法：bun test ./src7/plugins/journal
  */
 import { describe, expect, test } from 'bun:test';
 import { LINES, SESSION as S } from './tests/Lines.ts';
-import { getNode, getTrail, pickReply } from './Trail.ts';
+import { getNode, getTrail } from './Trail.ts';
 
 
 describe('Trail', () => {
@@ -52,23 +51,5 @@ describe('Trail', () => {
     expect(texts).toContain('模型要用工具：time');
     expect(texts).toContain('工具 time 给了结果');
     expect(texts).toContain('会话做完了');
-  });
-});
-
-
-describe('pickReply', () => {
-  test('留这条消息的、涉及会话的行，到这句回话为止', () => {
-    const to = 2020;
-    const chosen = pickReply(7, [S], to, LINES, 500);
-    const ids = chosen.lines.map((line) => line.id);
-    expect(ids).toEqual([1, 2, 5, 6, 8, 9, 10, 11, 12]);
-    expect(chosen.cut).toBe(false);
-  });
-
-  test('取满了、最后一行还没到这句回话：算截了；到了就不算', () => {
-    const head = LINES.slice(0, 4);
-    expect(pickReply(7, [S], 2033, head, 4).cut).toBe(true);
-    expect(pickReply(7, [S], 3, head, 4).cut).toBe(false);
-    expect(pickReply(7, [S], 2033, head, 5).cut).toBe(false);
   });
 });

@@ -4,7 +4,7 @@ import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
 
 export const name = 'decision-map';
-export const version = '1.3.1';
+export const version = '1.3.2';
 export const inject = ['resources', 'http'];
 
 /**

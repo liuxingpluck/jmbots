@@ -231,7 +231,7 @@ describe('基地调用方', () => {
   });
 
   //M 只请求受守护模式的失败分支；环境变量恢复，且 ctx.emit 会阻止任何真实退出安排。
-  test('请基地重启时基地没响应返回 503', async () => {
+  test('基地未响应时返回结果不确定，并拦住重复重启', async () => {
     const { ctx, app, traces } = world();
     app.get('/api/ui/info', async () => ({ startedAt: 42 }));
     settings.apply(ctx);
@@ -243,9 +243,12 @@ describe('基地调用方', () => {
         calls.push([request.route, request.body, request.timeoutMs]);
         return { ok: false, error: '基地没响应' };
       });
-      const offline = await app.inject({ method: 'POST', url: '/api/service/restart' });
-      expect(offline.statusCode).toBe(503);
-      expect(offline.json<{ error: string }>()).toEqual({ error: '基地没响应' });
+      const input = { method: 'POST', url: '/api/service/restart' } as const;
+      const offline = await app.inject(input);
+      expect(offline.statusCode).toBe(504);
+      expect(offline.json<{ error: string }>().error).toContain('基地重启结果不确定');
+      const duplicate = await app.inject(input);
+      expect(duplicate.statusCode).toBe(409);
       expect(calls).toEqual([['/restart', {}, 15_000]]);
       expect(traces).toHaveLength(0);
     } finally {

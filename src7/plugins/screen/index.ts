@@ -8,7 +8,7 @@ import * as protocol from './Protocol.ts';
 import * as runtime from './Screen.ts';
 
 export const name = 'screen';
-export const version = '0.3.0';
+export const version = '0.3.1';
 export const inject = ['resources', 'http'];
 
 interface StatusRequest extends requests.RequestEnvelope {
@@ -18,17 +18,41 @@ interface StatusRequest extends requests.RequestEnvelope {
 
 declare module 'cordis' {
   interface Events {
-    /** 内部只读查询。 */
+    /**
+     * 内部只读查询。
+     * 谁发：暂无
+     * 谁接：src7/plugins/screen/index.ts 的 apply
+     */
     'screen/status'(request: StatusRequest): void | Promise<void>;
-    /** 可用性和租约摘要。 */
+    /**
+     * 可用性和租约摘要。
+     * 谁发：src7/plugins/screen/index.ts 的 apply
+     * 谁接：暂无
+     */
     'screen/status-result'(result: runtime.StatusResult & requests.ResultEnvelope): void;
-    /** 内部状态更新。 */
+    /**
+     * 内部状态更新。
+     * 谁发：暂无
+     * 谁接：src7/plugins/screen/index.ts 的 apply
+     */
     'screen/control'(request: protocol.StateInput & requests.RequestEnvelope): void | Promise<void>;
-    /** 回传状态动作是否生效。 */
+    /**
+     * 回传状态动作是否生效。
+     * 谁发：src7/plugins/screen/index.ts 的 apply
+     * 谁接：暂无
+     */
     'screen/control-result'(result: runtime.StateResult & requests.ResultEnvelope): void;
-    /** 告知基地已经显示了当前点击的讲解。 */
+    /**
+     * 告知基地已经显示了当前点击的讲解。
+     * 谁发：暂无
+     * 谁接：src7/plugins/screen/index.ts 的 apply
+     */
     'screen/presented'(request: protocol.PresentedInput & requests.RequestEnvelope): void | Promise<void>;
-    /** 回传呈现确认和播报状态，不带讲解文本。 */
+    /**
+     * 回传呈现确认和播报状态，不带讲解文本。
+     * 谁发：src7/plugins/screen/index.ts 的 apply
+     * 谁接：暂无
+     */
     'screen/presented-result'(result: runtime.SpeechResult & requests.ResultEnvelope): void;
   }
 }

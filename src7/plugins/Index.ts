@@ -65,7 +65,7 @@ export interface PluginModule {
 // 自带插件分类（每个插件提供什么、用了谁，见 src7/docs/插件地图.md）。下面名单的先后不动，挂载先后照 config.yaml 的 plugins 段。
 //   骨架配套：workspaces（机器人的工作区，bots 依赖它）、bots（含前台和派后台，11-17 并进原 bot-front-desk、prompt、reply-tool）、fake-model
 //   HTTP 底座和网页：http、web（已并入原 files-api）
-//   渠道：cli、web-api、feishu、wechat（wechat-kefu）
+//   渠道：cli、web-api、feishu、wechat-kefu
 //   分派：relay（转话、外部 AI 任务与免回信留言；用 agent_task 派活或留言，前台在 bots 里）
 //   给模型的工具：file-tools（已并入原 base-tools）、exec（已并入原 runs）、web-search、image-gen、assist（reply 工具在 bots 里）
 //   审核和流程：approval、decision、progress（已并入原 review）
@@ -107,8 +107,6 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'assist': assist,
   'base-bridge': baseBridge,
   'desktop': desktop,
-  'wechat': wechat,
-  // 2026-11-14：监听客服插件对外名字是 wechat-kefu（页面 /wechat-kefu/）；仍保留 wechat 别名，旧测试配置还能挂上。
   'wechat-kefu': wechat,
 };
 

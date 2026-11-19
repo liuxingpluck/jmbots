@@ -20,6 +20,8 @@ import * as render from './Render.ts';
 const APPROVAL_TIMEOUT_MS = 5000;
 /** 进度卡片按钮最多等五秒。 */
 const PROGRESS_TIMEOUT_MS = 5000;
+/** 写操作没等到回执时请点击者回看卡片状态。 */
+const UNCERTAIN_ACTION = '操作结果不确定，请稍后刷新卡片核对';
 
 
 /** 表 feishu_cards 的一行。 */
@@ -27,6 +29,7 @@ interface CardRow {
   card_id: string;
   kind: string;
   ref: string;
+  /** 0 可处理，1 已结束，审批卡的 2 表示决定已占用，正在等待确认。 */
   ended: number;
 }
 
@@ -264,13 +267,15 @@ async function groupNote(feishu: Feishu, ctx: cordis.Context, pending: render.Pe
  */
 async function onDecided(feishu: Feishu, pending: render.PendingLike): Promise<void> {
   const sql = "SELECT card_id, kind, ref, ended FROM feishu_cards WHERE kind = 'approval' AND ref = ?";
-  //M 查出该审批编号曾发出过的全部卡片 ID，逐张更新成终态样式。
-  const rows = feishu.db.query(sql).all(String(pending.id)) as CardRow[];
+  const ref = String(pending.id);
+  const endedSql = "UPDATE feishu_cards SET ended = 1 WHERE kind = 'approval' AND ref = ?";
+  //M 决定已经落定，先禁止旧按钮再次提交，再逐张刷新终态样式。
+  feishu.db.query(endedSql).run(ref);
+  const rows = feishu.db.query(sql).all(ref) as CardRow[];
   for (const row of rows) {
     try {
       //M 按最新审批结果重新渲染卡片并调用飞书接口原地更新内容。
       await feishu.updateCard(row.card_id, render.approval(pending));
-      feishu.db.query('UPDATE feishu_cards SET ended = 1 WHERE card_id = ?').run(row.card_id);
     } catch (error) {
       //M 取格式化日期前缀用于记录更新卡片失败的错误日志。
       const logTime = textModule.getClock(Date.now(), 'date');
@@ -324,6 +329,21 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
 
 
 /**
+ * 记录卡片写操作超时并返回给点击者的提示。
+ * @param row 触发操作的卡片。
+ * @param action 发给业务插件的动作。
+ * @param timeoutMs 等待回执的上限。
+ * @returns 可直接回给飞书卡片的警告提示。
+ */
+function reportActionTimeout(row: CardRow, action: string, timeoutMs: number): Toast {
+  //M 保留卡片号、业务号和动作，便于从流水核对真正的处理结果。
+  const logTime = textModule.getClock(Date.now(), 'date');
+  console.warn(`${logTime} 飞书：卡片 ${row.card_id}（${row.kind} ${row.ref}），${action} 回执等待 ${String(timeoutMs)} 毫秒超时，结果不确定`);
+  return { type: 'warning', content: UNCERTAIN_ACTION };
+}
+
+
+/**
  * 点了卡片按钮。先认人：只有本人（回话地址的 role 是 owner，飞书照 people 写）点的才算，
  * 别人点（还留在群里的旧卡片）回一句“只有 某某 能处理”，不定、不终止、不限时。
  * @param feishu 飞书渠道。
@@ -348,27 +368,49 @@ export async function onAction(
   const row = cardQuery.get(cardId) as CardRow | null;
   if (row === null) return undefined;
 
+  //G 旧卡片可能还没刷新，已结束的操作不再发给业务插件。
+  if (row.ended === 1) return { type: 'info', content: '这张卡片已处理，请刷新查看结果' };
+
   if (row.kind === 'approval') {
+    //G 同一审批号可有多张卡片，提交前原子占住整件审批。
+    const claimSql = "UPDATE feishu_cards SET ended = 2 WHERE kind = 'approval' AND ref = ? AND ended = 0"
+      + " AND NOT EXISTS (SELECT 1 FROM feishu_cards WHERE kind = 'approval' AND ref = ? AND ended IN (1, 2))";
+    const claim = feishu.db.query(claimSql).run(row.ref, row.ref);
+    if (claim.changes === 0) return { type: 'warning', content: UNCERTAIN_ACTION };
+
     const approve = value['action'] === 'approve';
     const id = Number(row.ref);
     const by = `飞书卡片 ${address.openId}`;
     const input = { action: 'decide', id, approve, by } as const;
+    let timedOut = false;
     const options = {
       timeoutMs: APPROVAL_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', error: detail ?? `审批未获回执（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        timedOut = reason === 'timeout';
+        return { requestId: '', error: detail ?? `审批未获回执（${reason}）` };
+      },
     };
 
     //M 交给审核插件处理，只有明确完成才回成功提示。
     const result = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', input, options);
 
-    //G 缺回执或审核拒绝受理时，把失败原因如实提示给点击者。
+    //G 超时仍保留占用，迟到的 approval/decided 可以刷新整件审批的终态。
+    if (timedOut) {
+      const action = `提交审批决定 approve=${String(approve)}`;
+      return reportActionTimeout(row, action, APPROVAL_TIMEOUT_MS);
+    }
+
+    //G 无人接单或明确失败时释放占用，已收到的终态不会被改回可提交。
     if (result.settled === undefined || result.error !== undefined) {
+      const releaseSql = "UPDATE feishu_cards SET ended = 0 WHERE kind = 'approval' AND ref = ? AND ended = 2";
+      feishu.db.query(releaseSql).run(row.ref);
       const reason = result.error ?? '未返回审批结果';
       return { type: 'warning', content: `待确认 #${row.ref} 没办成：${reason}` };
     }
-    //M 卡片由随后的 approval/decided 改成灰色。
+
+    //M 完成回执也能确认终态，待确认卡片样式仍由 approval/decided 更新。
+    const endedSql = "UPDATE feishu_cards SET ended = 1 WHERE kind = 'approval' AND ref = ?";
+    feishu.db.query(endedSql).run(row.ref);
     let toastText = '已拒绝';
     if (approve) {
       toastText = '已同意执行';
@@ -385,17 +427,19 @@ export async function onAction(
       minutes = Number(value['minutes'] ?? 0);
     }
     const input = { action: 'act', sessionId: row.ref, op: action, minutes } as const;
+    let timedOut = false;
     const options = {
       timeoutMs: PROGRESS_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '',
-        ok: false,
-        text: detail ?? `进度控制暂不可用或超时（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        timedOut = reason === 'timeout';
+        return { requestId: '', ok: false, text: detail ?? `进度控制暂不可用（${reason}）` };
+      },
     };
 
     //M 把终止或限时交给进度插件，用回执生成卡片提示。
     const result = await requestEventModule.requestEvent(ctx, 'progress/request', 'progress/result', input, options);
+    if (timedOut) return reportActionTimeout(row, action, PROGRESS_TIMEOUT_MS);
+
     if (result.ok !== true) return { type: 'warning', content: result.text ?? '进度控制失败' };
 
     return { type: 'info', content: result.text ?? '已处理' };

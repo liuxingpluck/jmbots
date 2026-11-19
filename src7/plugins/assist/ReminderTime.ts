@@ -50,6 +50,7 @@ export class ReminderTime {
   format(at: number): string {
     const parts = this.clock.formatToParts(at);
     const get = (type: Intl.DateTimeFormatPartTypes): string => {
+      //M 按字段名取日期和时间片段，结果顺序由提醒格式固定。
       const part = parts.find((item) => item.type === type);
       return part!.value;
     };
@@ -80,7 +81,9 @@ export class ReminderTime {
       if (!Number.isFinite(candidate)) continue;
 
       const localMinute = `${date} ${time}`;
-      if (this.format(candidate) === localMinute) {
+      //G 换算回配置时区后仍是用户写的那一分钟，才接受这个 UTC 时刻。
+      const candidateMinute = this.format(candidate);
+      if (candidateMinute === localMinute) {
         earliest = Math.min(earliest, candidate);
       }
     }

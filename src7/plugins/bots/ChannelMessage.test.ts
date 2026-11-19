@@ -636,9 +636,13 @@ test('5. 零次回复兜底：0 次调用只触发一次“你还没调用回复
   //M 场景 A：第 1 轮不调回复工具，只直接说普通文字；期待下一轮 system 收到精确提示“你还没调用回复工具”，
   //M        并且修复轮持有同一 activeKey 期间并发进来的第 2 条用户消息老实排队不抢先跑；
   //M        修复轮首次调 channel_reply（故意遇到 1 次网络失败）也记为已调，不再开第 3 轮；
-  //M        同时系统提醒正文绝对不进 bot_log 或 user 消息历史。
+  //M        同时系统提醒正文不作为用户往来交给 memory，也不进 user 消息历史。
   let scenario: 'zero_then_fail' | 'progress_only' | 'still_zero' = 'zero_then_fail';
   const systemSeen: string[][] = [];
+  const recordedFrontText: string[] = [];
+  ctx.on('memory/front-message', (message) => {
+    recordedFrontText.push(message.text);
+  });
   let concurrentInjected = false;
 
   ctx.on('session/request', (request) => {
@@ -716,12 +720,12 @@ test('5. 零次回复兜底：0 次调用只触发一次“你还没调用回复
   const reminderSteps = systemSeen.filter((arr) => arr.includes('你还没调用回复工具'));
   expect(reminderSteps).toHaveLength(1);
 
-  //M 确保“你还没调用回复工具”从未作为用户话写进 session.messages 或 bot_log。
+  //M 确保修复提示只出现于系统提示，不作为前台往来归档。
   const frontSession = ctx.sessions.open(ctx.sessions.find({ kind: 'front' })[0]!.id);
   const fakeUsers = frontSession.row.messages.filter((m) => m.role === 'user' && piAi.contentText(m.content).includes('你还没调用回复工具'));
   expect(fakeUsers).toHaveLength(0);
-  const leakedLog = ctx.resources.db.query("SELECT * FROM bot_log WHERE text LIKE '%你还没调用回复工具%'").all();
-  expect(leakedLog).toHaveLength(0);
+  expect(recordedFrontText.some((text) => text.includes('第2条排队消息'))).toBe(true);
+  expect(recordedFrontText.some((text) => text.includes('你还没调用回复工具'))).toBe(false);
 
   //M 第 1 项因为修复轮调用过 channel_reply（虽然第一次网络失败）收尾标记为 uncertain，不再二次修复。
   const item1 = frontSession.row.resultQueue?.find((item) => item.key.includes('om_fb_1'));

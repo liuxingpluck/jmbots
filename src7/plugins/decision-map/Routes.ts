@@ -66,25 +66,54 @@ interface ChosenNotice {
 
 declare module 'cordis' {
   interface Events {
-    /** 插件注册或局部更新一批节点，保存后通知中控。 */
+    /**
+     * 插件注册或局部更新一批节点，保存后通知中控。
+     * 谁发：暂无
+     * 谁接：src7/plugins/decision-map/Routes.ts 的 mount
+     */
     'decision-map/upsert'(nodes: NodePatch | readonly NodePatch[]): void | Promise<void>;
-    /** 插件修改单个任务的状态，保存后通知中控。 */
+    /**
+     * 插件修改单个任务的状态，保存后通知中控。
+     * 谁发：暂无
+     * 谁接：src7/plugins/decision-map/Routes.ts 的 mount
+     */
     'decision-map/status'(change: { id: string; status: types.DecisionStatus }): void | Promise<void>;
-    /** 用户的选择已保存。 */
+    /**
+     * 用户的选择已保存。
+     * 谁发：src7/plugins/decision-map/Routes.ts 的 mount
+     * 谁接：暂无
+     */
     'decision-map/chosen'(notice: ChosenNotice): void;
-    /** 决策图向 relay 投递或确认属于中控的一条收件。 */
+    /**
+     * 决策图向 relay 投递或确认属于中控的一条收件。
+     * 谁发：src7/plugins/decision-map/Routes.ts 的 requestRelay
+     * 谁接：src7/plugins/relay/index.ts 的 Relay.constructor
+     */
     'decision-map/relay'(request: DecisionRelayRequest): void | Promise<void>;
-    /** relay 回送中控收件号或失败原因。 */
+    /**
+     * relay 回送中控收件号或失败原因。
+     * 谁发：src7/plugins/relay/index.ts 的 Relay.constructor
+     * 谁接：src7/plugins/decision-map/Routes.ts 的 requestRelay
+     */
     'decision-map/relay-result'(result: DecisionRelayResult): void;
-    /** relay 交回决策图来源的收件回复。 */
+    /**
+     * relay 交回决策图来源的收件回复。
+     * 谁发：src7/plugins/relay/index.ts 的 Relay.queueDecisionReply
+     * 谁接：src7/plugins/decision-map/Routes.ts 的 mount
+     */
     'decision-map/relay-reply'(request: RelayReplyRequest): void | Promise<void>;
-    /** 决策图确认回话已经落盘。 */
+    /**
+     * 决策图确认回话已经落盘。
+     * 谁发：src7/plugins/decision-map/Routes.ts 的 mount
+     * 谁接：src7/plugins/relay/index.ts 的 Relay.queueDecisionReply
+     */
     'decision-map/relay-replied'(result: RelayReplyResult): void;
   }
 }
 
 const PREFIX = '/api/decision-map';
 const RETRY = { method: 'GET', path: `${PREFIX}/changes` };
+const RELAY_UNCERTAIN = '中控收件操作结果不确定';
 /** 一条留言或回话最多多少字，防止误贴整份文件进收件箱。 */
 const NOTE_MAX = 2000;
 
@@ -136,9 +165,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 收件按提交序号去重，回话地址仍是实际任务节点。
       const result = await requestRelay(ctx, relay);
-      if (!result.ok || result.id === undefined) return RETRY;
-
-      return { relayId: result.id };
+      return getDelivery(result);
     });
     return Promise.all(requests);
   };
@@ -194,6 +221,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
       const delivery = await deliverTasks(tasks, graph.revision);
       return { id, graph, delivery };
     });
+    //M 网页和中控都可改任务状态，只有网页提交需要通知中控。
     scope.route<{ Body: unknown }>({
       method: ['POST', 'PUT'],
       url: `${PREFIX}/status`,
@@ -241,9 +269,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 同一选择重试也可以补投，relay 按节点号去重。
       const result = await requestRelay(ctx, relay);
-      if (!result.ok || result.id === undefined) return { node: picked.node, delivery: RETRY };
-
-      return { node: picked.node, delivery: { relayId: result.id } };
+      return { node: picked.node, delivery: getDelivery(result) };
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/note`, async (request) => {
       //G 入口校验一次：节点号、文字非空且不超长，选项可省略。
@@ -279,9 +305,7 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 每条留言单独进中控收件，relay 按「节点号#留言号」去重。
       const result = await requestRelay(ctx, relay);
-      if (!result.ok || result.id === undefined) return { node: added.node, note: added.note, delivery: RETRY };
-
-      return { node: added.node, note: added.note, delivery: { relayId: result.id } };
+      return { node: added.node, note: added.note, delivery: getDelivery(result) };
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/reply`, async (request) => {
       //G 中控回话入口同样只校验一次：节点号、留言号、文字。
@@ -299,6 +323,9 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 归档这条留言的收件，Wait_Relay 下次只唤醒新的话。
       const result = await requestRelay(ctx, relay);
+      if (result.error === RELAY_UNCERTAIN) {
+        return { node: replied.node, note: replied.note, notification: RELAY_UNCERTAIN };
+      }
       return { node: replied.node, note: replied.note, notified: result.ok };
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/ack`, async (request) => {
@@ -318,14 +345,29 @@ export function mount(ctx: cordis.Context, store: storeModule.Store, helper?: st
 
       //M 归档对应收件，让 Wait_Relay 下次只唤醒新的决定。
       const result = await requestRelay(ctx, relay);
+      if (result.error === RELAY_UNCERTAIN) return { node, notification: RELAY_UNCERTAIN };
+
       return { node, notified: result.ok };
     });
   });
 }
 
+/** 只在收到确切收件号时标为投递成功。未确认时可从变化接口只读查询。 */
+function getDelivery(result: DecisionRelayResult) {
+  if (result.ok && result.id !== undefined) return { relayId: result.id };
+  if (result.error === RELAY_UNCERTAIN) return { ...RETRY, error: RELAY_UNCERTAIN };
+
+  return RETRY;
+}
+
 /** 向 relay 发并等待一次配对回执，无监听时保留轮询路径。 */
 function requestRelay(ctx: cordis.Context, request: events.StripEnvelope<DecisionRelayRequest>) {
-  const options = { timeoutMs: 3000, onFallback: () => ({ requestId: '', ok: false }) };
+  const onFallback = (reason: events.FallbackReason) => {
+    if (reason === 'timeout') return { requestId: '', ok: false, error: RELAY_UNCERTAIN };
+
+    return { requestId: '', ok: false };
+  };
+  const options = { timeoutMs: 3000, onFallback };
 
   //M 检查 relay 是否确认了对应的收件，缺席时 RequestEvent 会立即返回。
   return events.requestEvent(ctx, 'decision-map/relay', 'decision-map/relay-result', request, options);

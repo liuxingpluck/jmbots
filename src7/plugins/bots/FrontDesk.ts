@@ -24,6 +24,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as decisionPlugin from '../decision/index.ts';
 import * as historyTools from '../memory/HistoryTools.ts';
+import type { FrontEntry as BotLogEntry, FrontMessage, FrontQuery } from '../memory/FrontArchive.ts';
 import * as memoryKeyModule from '../memory/MemoryKey.ts';
 import type { ReceiveEvent } from './index.ts';
 import * as protocol from '../../Channels.ts';
@@ -114,24 +115,19 @@ const JUDGE_QUESTION = {
   }
 
 
-/** 往来记录里的一条：用户说的，或者机器人回的。库表 bot_log 的列和它一一对应。 */
-interface BotLogEntry {
-  /** 往来编号，库表 bot_log 的 id。 */
-  id: number;
-  /** 哪个机器人。 */
-  bot: string;
-  /** 哪个渠道。 */
-  channel: string;
-  /** 谁说的：user 用户；bot 机器人。 */
-  who: 'user' | 'bot';
-  /** 是哪场会话里的。 */
-  sessionId: string;
-  /** 说了什么。 */
-  text: string;
-  /** 毫秒时间戳。 */
-  time: number;
+/** 历史查询的附加条件，未提供的字段不参与筛选。 */
+interface HistoryRange {
+  /** 只取这一类发送人。 */
+  who?: 'user' | 'bot';
+  /** 最早时间，含。 */
+  from?: number;
+  /** 最晚时间，含。 */
+  to?: number;
+  /** 只取此编号之后的往来。 */
+  after?: number;
+  /** 只取此编号之前的往来。 */
+  before?: number;
 }
-
 
 /** 机器人的前台。 */
 export class FrontDesk {
@@ -142,33 +138,12 @@ export class FrontDesk {
   /** 会话正在转时来的、要判断的话：前台会话号 → 最后一句；这一轮结束记完排着的话，再对它问一次决策模型（session/change）。 */
   private readonly judgeLater = new Map<string, JudgeLater>();
   /**
-   * 建往来记录的表，登记三个查历史工具（定义在模块顶上），挂六个监听（session/request、session/message、session/change、bot/say、channel/replied、channel/reply）。
+   * 建往来记录的表，登记三个查历史工具。
+   * 监听 session/request、session/message、session/change、bot/say、channel/replied、channel/reply。
    * @param ctx Cordis 给的 ctx。
    * @param config 带多少条往来。
    */
   constructor(private readonly ctx: cordis.Context, private readonly config: FrontDeskConfig) {
-    //M 建往来记录表 bot_log 和它的向量表 bot_log_vec（已经有就不动），查历史、拼上下文都读它。
-    this.ctx.resources.db.exec(`
-      CREATE TABLE IF NOT EXISTS bot_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bot TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        who TEXT NOT NULL,
-        sessionId TEXT NOT NULL,
-        text TEXT NOT NULL,
-        time INTEGER NOT NULL
-      )
-    `);
-    this.ctx.resources.db.exec('CREATE INDEX IF NOT EXISTS bot_log_bot_time ON bot_log (bot, time)');
-    this.ctx.resources.db.exec('CREATE INDEX IF NOT EXISTS bot_log_bot_session ON bot_log (bot, sessionId, id)');
-    this.ctx.resources.db.exec(`
-      CREATE TABLE IF NOT EXISTS bot_log_vec (
-        id INTEGER PRIMARY KEY,
-        dim INTEGER NOT NULL,
-        vec BLOB NOT NULL
-      )
-    `);
-
     //M history：把往前翻页的旧名交给统一归档入口，交 getRecentHistory 取往前 count 条。
     historyTools.registerHistoryAlias(this.ctx, 'front-recent', {
       definition: HISTORY_TOOL,
@@ -194,9 +169,7 @@ export class FrontDesk {
 
     //M 收消息不听 bot/receive：Bot.receive 问完 bot/receive 没人认领，才经 Dispatch.receive 调 onReceive。
     //M 前台会话每一步调模型前：onRequest 把最近往来拼成一条 system 消息，加上查历史的提示。
-    this.ctx.on('session/request', (request) => {
-      this.onRequest(request);
-    });
+    this.ctx.on('session/request', (request) => this.onRequest(request));
 
     //M 会话里每进一条消息：onMessage 看它是不是用户说的话，是的话记一条往来。
     this.ctx.on('session/message', (session, message) => {
@@ -210,7 +183,7 @@ export class FrontDesk {
 
     //M 会话中途先说的一句（bot/say）：也记成机器人说的一条往来。
     this.ctx.on('bot/say', (session, text) => {
-      //G channel_tool 会话的 bot/say 经 channel/reply 发，实际发出会在 channel/replied 记进 bot_log。
+      //G channel_tool 会话的 bot/say 经 channel/reply 发，成功回执统一做前台归档。
       if (session.row.activeSourceSnapshot !== undefined) return;
 
       //M 旧会话的中途一句：直接记一条机器人往来。
@@ -228,7 +201,7 @@ export class FrontDesk {
     });
   }
 
-  /** 发出的 channel/reply 正文暂存（replyRequestKey → text），等 channel/replied 确认已发才写 bot_log。 */
+  /** 暂存发送请求正文，等 channel/replied 确认后才归档实际回复。 */
   private readonly sentReplyTexts = new Map<string, { text: string }>();
 
   /**
@@ -237,13 +210,13 @@ export class FrontDesk {
    * @param args 模型给的参数（count、before），已照 HISTORY_TOOL 校验过。
    * @returns 给模型看的文字；没有就说没有更早的往来。
    */
-  private getRecentHistory(session: Session, args: Record<string, unknown>): string {
+  private async getRecentHistory(session: Session, args: Record<string, unknown>): Promise<string> {
     const count = (args['count'] as number | undefined) ?? 20;
 
     //M 取这个客户往前 count 条往来。
     const ids = this.scopeIds(session);
     const before = args['before'] as number | undefined;
-    const entries = this.recent(session.row.bot, count, before, ids);
+    const entries = await this.recent(session, count, before, ids);
     if (entries.length === 0) return '没有更早的往来。';
 
     //M 旧名仍返回原有的一行一条格式，每条用 formatEntry 排成一行。
@@ -258,9 +231,11 @@ export class FrontDesk {
     //G 还在转 → 这一轮没结束，不记。
     if (session.row.state === 'running') return;
 
-    //M channel_tool 轮只在收到 channel/replied 成功回执时记往来，不在 session/change 误把草稿写进 bot_log。
+    //M channel_tool 轮只凭成功回执归档，session/change 的正文仅是草稿。
+    const queue = session.row.resultQueue ?? [];
+    const activeKey = session.row.activeKey;
     const activeChannelTool = session.row.activeSourceSnapshot !== undefined
-      || (session.row.resultQueue ?? []).some((item) => item.key === session.row.activeKey && item.deliveryMode === 'channel_tool');
+      || queue.some((item) => item.key === activeKey && item.deliveryMode === 'channel_tool');
 
     //M 前台派的后台（Dispatch.ts）和 channel_tool 轮的草稿不在这里直记，真正经渠道发完的才记。
     if (session.row.frontTask === undefined && !activeChannelTool) {
@@ -291,15 +266,16 @@ export class FrontDesk {
     const receipt = event.receipt;
     if (receipt.status !== 'sent' && receipt.status !== 'partial') return;
 
+    //M 用回执的请求号对上此前暂存的正文，实发后才记进往来。
     const sentTexts = this.sentReplyTexts.get(receipt.replyRequestKey);
     this.sentReplyTexts.delete(receipt.replyRequestKey);
     if (sentTexts === undefined) return;
 
-    //M 发送回执未绑定来源会话时从缓存目标找；已绑定会话的 channel_reply / bot/say 照此写进 bot_log。
+    //M 通过不可变回复轮键查到这条回复所属的前台。
     const front = this.findSessionByRoundKey(event.replyRoundKey);
     if (front === undefined) return;
 
-    //M 渠道确认发出去了：把这句话记成这个客户的机器人往来（bot_log 一行）。
+    //M 发送成功才为前台关联这条回复的索引正文。
     const row = front.row;
     this.log({
       bot: row.bot,
@@ -308,6 +284,7 @@ export class FrontDesk {
       sessionId: row.id,
       text: sentTexts.text,
       time: Date.now(),
+      sourceKey: receipt.replyRequestKey,
     });
   }
 
@@ -348,26 +325,38 @@ export class FrontDesk {
     const fronts = this.ctx.sessions.find({ bot, kind: 'front' });
     const exact = fronts.find((row) => {
       const s = row.sourceScope;
-      return s !== undefined && s.channel === scope.channel && s.accountId === scope.accountId && s.chatId === scope.chatId;
+      if (s === undefined) return false;
+
+      return s.channel === scope.channel && s.accountId === scope.accountId && s.chatId === scope.chatId;
     });
 
     //M 来源域完全一致的前台已经有了：直接打开它，不新建。
     if (exact !== undefined) return this.ctx.sessions.open(exact.id);
 
     //M 未绑定其他账号的同客户旧前台：补写 sourceScope 沿用；不同 appId 的旧前台不混用。
-    const compatible = customer === '' ? undefined : fronts.find((row) => {
-      if (row.customer !== customer) return false;
-      const existingApp = textModule.getText(row.address, 'appId');
-      return row.sourceScope === undefined && (existingApp === '' || existingApp === scope.accountId);
-    });
-    if (compatible !== undefined) {
-      const session = this.ctx.sessions.open(compatible.id);
-      session.row.sourceScope = scope;
-      session.save();
-      return session;
+    if (customer !== '') {
+      const compatible = fronts.find((row) => {
+        if (row.customer !== customer) return false;
+
+        //G 旧前台有账号时必须与当前账号一致，沿用时不会串到别的飞书应用。
+        const existingApp = textModule.getText(row.address, 'appId');
+        return row.sourceScope === undefined && (existingApp === '' || existingApp === scope.accountId);
+      });
+      if (compatible !== undefined) {
+        //M 旧前台属于同一客户和账号时只补齐来源，保留它的往来。
+        const session = this.ctx.sessions.open(compatible.id);
+        session.row.sourceScope = scope;
+        session.save();
+        return session;
+      }
     }
 
-    const input: { bot: string; kind: string; sourceScope: { channel: string; accountId: string; chatId: string }; customer?: string } = {
+    const input: {
+      bot: string;
+      kind: string;
+      sourceScope: typeof scope;
+      customer?: string;
+    } = {
       bot,
       kind: 'front',
       sourceScope: scope,
@@ -468,10 +457,20 @@ export class FrontDesk {
     const bot = event.bot.name;
     const address = event.message.address;
     const customer = textModule.getText(address, 'customer');
-    const found = this.ctx.sessions.find({ bot, kind: 'front', ...(customer === '' ? {} : { customer }) })[0];
-    const session = found === undefined
-      ? this.ctx.sessions.create({ bot, kind: 'front', ...(customer === '' ? {} : { customer }) })
-      : this.ctx.sessions.open(found.id);
+    const input: { bot: string; kind: string; customer?: string } = { bot, kind: 'front' };
+    if (customer !== '') {
+      input.customer = customer;
+    }
+
+    //M 旧入口按客户找已有前台，没有时用相同条件开一场。
+    const found = this.ctx.sessions.find(input)[0];
+    let session: Session | undefined;
+    if (found !== undefined) {
+      session = this.ctx.sessions.open(found.id);
+    }
+    if (session === undefined) {
+      session = this.ctx.sessions.create(input);
+    }
 
     //M 渠道标了只听（飞书登记了 listen: all 的群里没 @ 机器人的话）：记进这场前台对话当背景，不推它往下走、不回；这条就算处理掉了。
     if (textModule.getField(address, 'listenOnly') === true) {
@@ -529,7 +528,11 @@ export class FrontDesk {
    * @param last 最后这句（“说话人：话”）；还没记进对话时它排在最近几句后面，已经记了就传 undefined。
    * @returns reply 接不接；outcome 写进流水的结果（judge:回 / judge:不回(0.32)）。
    */
-  private async judgeReply(session: Session, address: unknown, last: string): Promise<{ reply: boolean; outcome: string }> {
+  private async judgeReply(
+    session: Session,
+    address: unknown,
+    last: string,
+  ): Promise<{ reply: boolean; outcome: string }> {
     //G 决策模型是可选服务（不 inject）：没挂就不接话，不报错。
     const decision = this.ctx.get('decision') as decisionPlugin.Decision | undefined;
     if (decision === undefined) return { reply: false, outcome: 'judge:不回(没有决策模型)' };
@@ -538,13 +541,21 @@ export class FrontDesk {
     const lines = session.row.messages.map((message) => getLine(message, session.row.bot)).filter((one) => one !== '');
     const recent = [...lines, last].filter((one) => one !== '').slice(-JUDGE_LINES);
     const threshold = textModule.getField(address, 'judgeThreshold');
+    const originalPrefix = '你是群里的助手。';
+    const promptBody = JUDGE_QUESTION.instructions.slice(originalPrefix.length);
+    const question = {
+      ...JUDGE_QUESTION,
+      instructions: `你是群里的助手 ${session.row.bot}。${promptBody}`,
+    };
     const input: decisionPlugin.JudgeInput = {
       kind: 'group-listen',
       bot: session.row.bot,
-      question: { ...JUDGE_QUESTION, instructions: `你是群里的助手 ${session.row.bot}。${JUDGE_QUESTION.instructions.slice('你是群里的助手。'.length)}` },
+      question,
       state: { 最后一句: recent.at(-1) ?? '', 最近群聊: recent },
-      ...(typeof threshold === 'number' ? { allowAt: threshold } : {}),
     };
+    if (typeof threshold === 'number') {
+      input.allowAt = threshold;
+    }
 
     //T 跟踪：问决策模型要不要接话。
     const vars = { 会话: session.id, 几句: recent.length };
@@ -553,7 +564,10 @@ export class FrontDesk {
     //M 问决策模型：allow 才接话，deny、unsure 都不接；分数用来写进流水。
     const verdict = await decision.judge(input);
     if (verdict.verdict === 'allow') return { reply: true, outcome: 'judge:回' };
-    const score = verdict.score === undefined ? '' : `(${verdict.score.toFixed(2)})`;
+    let score = '';
+    if (verdict.score !== undefined) {
+      score = `(${verdict.score.toFixed(2)})`;
+    }
     return { reply: false, outcome: `judge:不回${score}` };
   }
 
@@ -580,7 +594,10 @@ export class FrontDesk {
 
     //M 接话：channel_tool 路径经队列重新触发，旧路径沿 bots.route + session.run。
     delete (later.address as Record<string, unknown>)['listenOnly'];
-    if (later.message !== undefined && later.botOrigin !== undefined && later.claimKey !== undefined && this.onChannelJudgeAllow !== undefined) {
+    if (
+      later.message !== undefined && later.botOrigin !== undefined
+      && later.claimKey !== undefined && this.onChannelJudgeAllow !== undefined
+    ) {
       this.onChannelJudgeAllow(session.row.bot, later.message, later.botOrigin, later.claimKey);
       return;
     }
@@ -606,7 +623,9 @@ export class FrontDesk {
     const message: piAi.Message = { role: 'user', content: `${sender}：${text}`, timestamp: Date.now() };
 
     if (session.row.state === 'running') {
-      this.heard.set(session.id, [...(this.heard.get(session.id) ?? []), message]);
+      //M 会话还在转，先暂存这句只听的话，等这一轮结束再写入。
+      const heard = this.heard.get(session.id) ?? [];
+      this.heard.set(session.id, [...heard, message]);
       return;
     }
 
@@ -625,7 +644,7 @@ export class FrontDesk {
     session.row.messages.push(...messages);
     session.save();
 
-    //M 每句各记一条用户往来：onMessage 看到 user 角色的消息就写进 bot_log。
+    //M 每句照普通用户消息发出通知，由 onMessage 交给记忆插件归档。
     for (const message of messages) {
       this.onMessage(session, message);
     }
@@ -639,7 +658,7 @@ export class FrontDesk {
    * 响应 session/request：给前台对话拼上下文。
    * @param request 这一步的请求；改它的 messages。
    */
-  private onRequest(request: ChatRequest): void {
+  private async onRequest(request: ChatRequest): Promise<void> {
     const row = request.session.row;
 
     //G 不是前台对话 → 不管。
@@ -657,7 +676,7 @@ export class FrontDesk {
       thisRound = row.messages.slice(fixedStart);
     }
 
-    //M 零次回复兜底修复轮：只追加精确提示原文（不进会话消息列表、不进 bot_log），仅当还未调过回复工具时注入。
+    //M 零次回复修复只加系统提示，只有记录中尚无回复工具调用时才提示。
     const control = active?.replyControl;
     if (control !== undefined && control.reminder === 'running' && control.calledIds.length === 0) {
       request.system.push('你还没调用回复工具');
@@ -669,7 +688,7 @@ export class FrontDesk {
     if (access.full) {
       const ids = this.scopeIds(request.session);
       const time = thisRound[0]?.timestamp;
-      entries = this.recent(row.bot, this.config.recent, time, ids);
+      entries = await this.recent(request.session, this.config.recent, time, ids);
     }
     //M 前台有两个统一工具时才提醒用它们查归档。
     const hasMemory = request.tools.some((tool) => tool.name === 'memory_search');
@@ -714,9 +733,12 @@ export class FrontDesk {
     if (this.roundImages(request.session).length === 0) return;
 
     //M 前台模型能看图就告诉它图已经发给它了，看不了就提醒它把图转给后台（后台用看图模型）。
-    const hint = this.sees(request.model)
-      ? '用户这一轮发了图片，图片已经直接发给你了，你能看到。只是看图、描述图、回答图里的问题，就自己直接回答，不要转后台、不要写脚本。'
-      : '用户这一轮发了图片，你这个前台模型看不到图片。请直接调 hand_session，把用户的原话连同图片路径（@路径）原样交给后台，后台会用看图模型来看；不要回答说自己看不了。';
+    let hint = '用户这一轮发了图片，你这个前台模型看不到图片。'
+      + '请直接调 hand_session，把用户的原话连同图片路径（@路径）原样交给后台，后台会用看图模型来看；不要回答说自己看不了。';
+    if (this.sees(request.model)) {
+      hint = '用户这一轮发了图片，图片已经直接发给你了，你能看到。'
+        + '只是看图、描述图、回答图里的问题，就自己直接回答，不要转后台、不要写脚本。';
+    }
     request.messages = [...request.messages, { role: 'system', content: hint, timestamp: Date.now() }];
   }
 
@@ -727,8 +749,19 @@ export class FrontDesk {
   roundImages(session: Session): string[] {
     //M 这一轮从上一次不调工具的回答之后算起；把这之后用户话里 @ 的图片路径逐条取出来（getImagePaths 认路径写法）。
     const messages = session.row.messages;
-    const lastDone = messages.findLastIndex((item) => item.role === 'assistant' && !item.content.some((block) => block.type === 'toolCall'));
-    return messages.slice(lastDone + 1).flatMap((item) => (item.role === 'user' ? imageModule.getImagePaths(piAi.contentText(item.content)) : []));
+    const lastDone = messages.findLastIndex((item) => {
+      if (item.role !== 'assistant') return false;
+
+      return !item.content.some((block) => block.type === 'toolCall');
+    });
+    const round = messages.slice(lastDone + 1);
+    return round.flatMap((item) => {
+      if (item.role !== 'user') return [];
+
+      //M 只从这轮用户发来的文本中找图片路径。
+      const text = piAi.contentText(item.content);
+      return imageModule.getImagePaths(text);
+    });
   }
 
   /**
@@ -773,6 +806,7 @@ export class FrontDesk {
           if (call.arguments['kind'] === 'progress') {
             replyKind = 'progress';
           }
+          //M 保存这次调用，队列收尾用它判断是否需要补跑回复。
           replyControl.calledIds.push({ id: call.id, name: call.name, kind: replyKind });
           if (replyControl.reminder === 'running') {
             replyControl.outcome = 'attempted';
@@ -792,15 +826,27 @@ export class FrontDesk {
 
     if (row.kind === 'front') this.historyCalls.delete(row.id);
 
-    //M 用户说的话记一条往来（bot_log 一行），前台查历史、拼最近往来都读它。
-    this.log({
+    //M 当前活动轮首条用户话能对上不可变来源时，给归档带上标准消息号。
+    const active = (row.resultQueue ?? []).find((item) => item.key === row.activeKey);
+    let sourceKey: string | undefined;
+    if (
+      active?.kind === 'user' && active.alreadyRecorded !== true
+      && active.replyControl?.startMessageIndex === row.messages.length - 1
+    ) {
+      sourceKey = active.payload.sourceSnapshot?.messageId;
+    }
+    const content = piAi.contentText(message.content);
+    const entry: FrontMessage = {
       bot: row.bot,
       channel: row.channel ?? '',
       who: 'user',
       sessionId: row.id,
-      text: piAi.contentText(message.content),
+      text: content,
       time: message.timestamp,
-    });
+      sourceKey,
+    };
+    //M 归档由记忆插件持有，已有渠道行时复用正文。
+    this.log(entry);
   }
 
   /**
@@ -814,7 +860,7 @@ export class FrontDesk {
     //G 没有渠道（小会话）、没有话 → 不记。
     if (row.channel === undefined || text === '') return;
 
-    //M 机器人说的话记一条往来（bot_log 一行），和用户那句一起组成最近往来。
+    //M 这是一条没有标准渠道回执的旧式会话回复，照会话归档。
     this.log({
       bot: row.bot,
       channel: row.channel,
@@ -831,9 +877,11 @@ export class FrontDesk {
    * @returns 满了就是拒绝的提示；没满就记下并返回 undefined。
    */
   private touchHistory(session: Session): string | undefined {
+    //G 同一轮共用次数上限，先读已用次数再决定能否查询。
     const used = this.historyCalls.get(session.row.id) ?? 0;
     if (used >= HISTORY_MAX_CALLS) {
-      return `本轮 history_search / history_get 已调用 ${String(HISTORY_MAX_CALLS)} 次，不能再查。若需要通读或总结大量历史，请用 hand_session 交给后台会话。`;
+      return `本轮 history_search / history_get 已调用 ${String(HISTORY_MAX_CALLS)} 次，不能再查。`
+        + '若需要通读或总结大量历史，请用 hand_session 交给后台会话。';
     }
     this.historyCalls.set(session.row.id, used + 1);
     return undefined;
@@ -875,255 +923,127 @@ export class FrontDesk {
     const ids = this.scopeIds(session);
     if (ids.length === 0) return '没有往来。';
 
-    const take = Math.min(HISTORY_PAGE, Math.max(1, (args['count'] as number | undefined) ?? HISTORY_PAGE));
-    const keyword = typeof args['keyword'] === 'string' ? args['keyword'].trim() : '';
-    const who = args['who'] === 'user' || args['who'] === 'bot' ? args['who'] : undefined;
-    const from = typeof args['from'] === 'number' ? args['from'] : undefined;
-    const to = typeof args['to'] === 'number' ? args['to'] : undefined;
-    const after = typeof args['after'] === 'number' ? args['after'] : undefined;
-    const before = typeof args['before'] === 'number' ? args['before'] : undefined;
-    const fromEarliest = args['from_earliest'] === true || after !== undefined;
+    const requestedCount = (args['count'] as number | undefined) ?? HISTORY_PAGE;
+    const take = Math.min(HISTORY_PAGE, Math.max(1, requestedCount));
+    const rawKeyword = args['keyword'];
+    let keyword: string | undefined;
+    if (typeof rawKeyword === 'string') {
+      keyword = rawKeyword.trim() || undefined;
+    }
 
-    //M 把发送人、时间、编号条件拼成共用的筛选条件，关键词路和语义路都用它。
-    const filter = this.historyFilter(session.row.bot, ids, { who, from, to, after, before });
+    //M 只把工具传来的有效筛选项交给两路检索共用。
+    const range: HistoryRange = {};
+    const who = args['who'];
+    if (who === 'user' || who === 'bot') {
+      range.who = who;
+    }
+    const numericKeys = ['from', 'to', 'after', 'before'] as const;
+    for (const key of numericKeys) {
+      const value = args[key];
+      if (typeof value === 'number') {
+        range[key] = value;
+      }
+    }
+    const fromEarliest = args['from_earliest'] === true || range.after !== undefined;
+    //M 同一份筛选条件约束关键词和语义两路，确保它们都只看当前会话范围。
+    const filter = { bot: session.row.bot, sessionIds: ids, ...range };
 
-    //M 有关键词时先做语义检索（记忆服务不可用就是空），再按字匹配取候选，两路合并去重、排序。
-    const semantic = keyword === '' ? [] : await this.semanticHits(session, filter, keyword);
+    //M 有关键词才查语义。语义命中时再取更多关键词候选，合并后按相关程度排序。
+    let semantic: Array<{ entry: BotLogEntry; score: number }> = [];
+    if (keyword !== undefined) {
+      semantic = await this.semanticHits(session, filter, keyword);
+    }
     const ranked = semantic.length > 0;
-    const keywordRows = this.selectHistory(filter, keyword === '' ? undefined : keyword, fromEarliest, ranked ? 2000 : take);
-    const union = uniqueById(keywordRows, semantic.map((hit) => hit.entry));
-    const shown = ranked ? mergeHistoryHits(keywordRows, semantic, take) : keywordRows;
+    let candidateCount = take;
+    if (ranked) {
+      candidateCount = 2000;
+    }
+
+    //M 保留按字匹配和语义匹配的去重总数，用于提示翻页。
+    let order: FrontQuery['order'] = 'last';
+    if (fromEarliest) {
+      order = 'first';
+    }
+    const query = { ...filter, keyword, order, limit: candidateCount };
+    const keywordRows = await this.readFront(session, query);
+    if (!fromEarliest) {
+      keywordRows.reverse();
+    }
+    const semanticRows = semantic.map((hit) => hit.entry);
+    const union = uniqueById(keywordRows, semanticRows);
+    let shown = keywordRows;
+    let orderNote = '按时间从早到晚';
+    if (ranked) {
+      shown = mergeHistoryHits(keywordRows, semantic, take);
+      orderNote = '按相关程度';
+    }
     if (shown.length === 0) return '没有符合条件的往来。';
 
     //M 开头一句说总数和这页范围、还有更多怎么翻；每条往来用 formatEntry 截短排成一行，回给模型。
     const total = union.length;
-    const orderNote = ranked ? '按相关程度' : '按时间从早到晚';
-    const head = `共 ${String(total)} 条，这页 ${String(shown.length)} 条（编号 ${String(shown[0]?.id)}–${String(shown[shown.length - 1]?.id)}，${orderNote}）。`
-      + (total > shown.length ? '还有更多时，用 after 往后翻或 before 往前翻。' : '');
+    const first = String(shown[0]?.id);
+    const last = String(shown.at(-1)?.id);
+    let head = `共 ${String(total)} 条，这页 ${String(shown.length)} 条（编号 ${first}–${last}，${orderNote}）。`;
+    if (total > shown.length) {
+      head += '还有更多时，用 after 往后翻或 before 往前翻。';
+    }
     const useMemoryRef = args['use_memory_ref'] === true;
+    //M 每条只放截短的正文和编号，模型需要全文时可用历史工具。
     const lines = shown.map((entry) => formatEntry(entry, HISTORY_CLIP, useMemoryRef));
     return [head, ...lines].join('\n');
   }
 
-  /**
-   * 历史筛选条件（不含关键词，给关键词路和语义路共用）。
-   * @param bot 机器人名。
-   * @param ids 这场对话范围内的会话号。
-   * @param extra 发送人、时间、编号范围。
-   */
-  private historyFilter(bot: string, ids: string[], extra: { who?: 'user' | 'bot'; from?: number; to?: number; after?: number; before?: number }): { where: string; values: (string | number)[] } {
-    const where: string[] = ['bot = ?', `sessionId IN (${ids.map(() => '?').join(', ')})`];
-    const values: (string | number)[] = [bot, ...ids];
-    if (extra.who !== undefined) {
-      where.push('who = ?');
-      values.push(extra.who);
-    }
-    if (extra.from !== undefined) {
-      where.push('time >= ?');
-      values.push(extra.from);
-    }
-    if (extra.to !== undefined) {
-      where.push('time <= ?');
-      values.push(extra.to);
-    }
-    if (extra.after !== undefined) {
-      where.push('id > ?');
-      values.push(extra.after);
-    }
-    if (extra.before !== undefined) {
-      where.push('id < ?');
-      values.push(extra.before);
-    }
-    return { where: where.join(' AND '), values };
+  /** 记忆的本地索引负责按同一权限、分页条件取前台归档。 */
+  private async readFront(session: Session, query: FrontQuery): Promise<BotLogEntry[]> {
+    //G 兼容工具也要校验本轮身份，不能仅凭编号读取前台专用记录。
+    const access = memoryKeyModule.getMemoryAccess(session.row);
+    if (!access.full) return [];
+
+    const request = { action: 'front-history' as const, query };
+    //M 请求同一记忆服务，没挂插件时没有归档，模型仍可以继续当前会话。
+    const result = await this.askMemory(request, 1500);
+    return result.frontEntries ?? [];
   }
 
-  /**
-   * 按条件取出往来；keyword 有就再按字匹配。
-   * @param filter 共用筛选。
-   * @param keyword 要包含的字；不写就不按字筛。
-   * @param fromEarliest 从早到晚（否则先取最近再翻成从早到晚）。
-   * @param take 最多几条。
-   */
-  private selectHistory(filter: { where: string; values: (string | number)[] }, keyword: string | undefined, fromEarliest: boolean, take: number): BotLogEntry[] {
-    const where = keyword === undefined || keyword === '' ? filter.where : `${filter.where} AND instr(text, ?) > 0`;
-    const values = keyword === undefined || keyword === '' ? filter.values : [...filter.values, keyword];
-    const order = fromEarliest ? 'id ASC' : 'id DESC';
-    const sql = `SELECT id, bot, channel, who, sessionId, text, time FROM bot_log WHERE ${where} ORDER BY ${order} LIMIT ?`;
-
-    //M 在往来表里按条件取 take 条；先取最近的，需要从早到晚时下面再翻过来。
-    const rows = this.ctx.resources.db.query(sql).all(...values, take) as BotLogEntry[];
-    return fromEarliest ? rows : rows.reverse();
-  }
-
-  /**
-   * 用记忆服务的本地嵌入给当前会话历史做语义检索；服务不可用就交回空数组，由调用方只保留关键词命中。
-   * 优先 POST /embed（增量写入 bot_log_vec，本地余弦排序）；没有 /embed 再试 POST /ingest + /search（hybrid，不调大模型）。
-   * @param session 前台对话。
-   * @param filter 共用筛选。
-   * @param keyword 查询句。
-   */
-  private async semanticHits(session: Session, filter: { where: string; values: (string | number)[] }, keyword: string): Promise<Array<{ entry: BotLogEntry; score: number }>> {
-    //M 2026-11-14：记忆服务由 memory 插件托管，地址只有它知道；这里只调 ctx.memory。
-    //M 先走 /embed（本地向量算余弦）；服务没有 /embed 或模型没就绪，再改走 /ingest + /search。
-    try {
-      const byEmbed = await this.semanticByEmbed(filter, keyword);
-      if (byEmbed !== undefined) return byEmbed;
-      return await this.semanticBySearch(session, filter, keyword);
-    } catch {
-      return [];
-    }
-  }
-
-  /**
-   * 调 /embed：把还没向量的往来增量嵌入，和查询句算余弦，达到门槛的交回。
-   * @param filter 共用筛选。
-   * @param keyword 查询句。
-   * @returns 服务没有 /embed 或模型没就绪时交回 undefined，好改走 /search。
-   */
-  private async semanticByEmbed(filter: { where: string; values: (string | number)[] }, keyword: string): Promise<Array<{ entry: BotLogEntry; score: number }> | undefined> {
-    //M 先把查询句算成向量；记忆服务算不出来（没挂、没就绪）就交回 undefined，让上面改走 /search。
-    const queryVec = await this.embedTexts([keyword]);
-    if (queryVec === undefined) return undefined;
-    const q = queryVec[0];
-    if (q === undefined) return [];
-
-    //M 范围内最近 2000 条往来当候选。
-    const candidates = this.ctx.resources.db.query(
-      `SELECT id, bot, channel, who, sessionId, text, time FROM bot_log WHERE ${filter.where} ORDER BY id DESC LIMIT 2000`,
-    ).all(...filter.values) as BotLogEntry[];
+  /** 语义检索只比较同一会话范围的候选，向量由记忆服务按需计算。 */
+  private async semanticHits(
+    session: Session,
+    filter: Omit<FrontQuery, 'order' | 'limit'>,
+    keyword: string,
+  ): Promise<Array<{ entry: BotLogEntry; score: number }>> {
+    const query: FrontQuery = { ...filter, order: 'last', limit: 2000 };
+    //G 先按会话权限取候选，没有可查的往来就不向记忆模型请求向量。
+    const candidates = await this.readFront(session, query);
     if (candidates.length === 0) return [];
 
-    //M 还没存向量的候选，每 32 条一批交记忆服务算好存进 bot_log_vec（增量，算过的不重算）。
-    const missing =candidates.filter((entry) => this.getVec(entry.id) === undefined);
-    for (let i = 0; i < missing.length; i += 32) {
-      const batch = missing.slice(i, i + 32);
-      const vectors = await this.embedTexts(batch.map((entry) => entry.text));
-      if (vectors === undefined) return undefined;
-      this.saveVecs(batch, vectors);
-    }
+    //M 记忆服务离线时仍保留字面检索。
+    const queryVec = await this.embedTexts([keyword]);
+    const vector = queryVec?.[0];
+    if (vector === undefined) return [];
 
-    //M 取每条候选存好的向量，和查询句的向量算余弦，达到门槛的留下，后面按相关程度排。
     const hits: Array<{ entry: BotLogEntry; score: number }> = [];
-    for (const entry of candidates) {
-      const vec = this.getVec(entry.id);
-      if (vec === undefined) continue;
-      const score = cosine(q, vec);
-      if (score >= SEMANTIC_MIN) hits.push({ entry, score });
+    for (let offset = 0; offset < candidates.length; offset += 32) {
+      //M 按与原前台同样的批量大小编码，不再另建 SQLite 向量缓存。
+      const batch = candidates.slice(offset, offset + 32);
+      const texts = batch.map((entry) => entry.text);
+      const vectors = await this.embedTexts(texts);
+      if (vectors === undefined) break;
+
+      for (const [index, entry] of batch.entries()) {
+        const value = vectors[index];
+        if (value === undefined) continue;
+
+        //M 和查询向量同维且超过原门槛的才参与前台结果排序。
+        const score = cosine(vector, value);
+        if (score >= SEMANTIC_MIN) {
+          hits.push({ entry, score });
+        }
+      }
     }
     hits.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
     return hits.slice(0, HISTORY_PAGE);
   }
 
-  /**
-   * 调 /ingest + /search（hybrid，不调大模型）。嵌入由服务后台补，短等后再搜；仍没有命中就交回空。
-   * @param session 前台对话。
-   * @param filter 共用筛选。
-   * @param keyword 查询句。
-   */
-  private async semanticBySearch(session: Session, filter: { where: string; values: (string | number)[] }, keyword: string): Promise<Array<{ entry: BotLogEntry; score: number }>> {
-    //M 范围内最近 2000 条往来，要同步给记忆服务的就是它们。
-    const entries = this.ctx.resources.db.query(
-      `SELECT id, bot, channel, who, sessionId, text, time FROM bot_log WHERE ${filter.where} ORDER BY id DESC LIMIT 2000`,
-    ).all(...filter.values) as BotLogEntry[];
-    if (entries.length === 0) return [];
-
-    //M 先把没同步过的往来写进记忆服务，再搜；嵌入由服务后台补，最多搜 8 次、每次隔 400 毫秒，搜到就返回。
-    await this.syncLogs(session, entries);
-    for (let i = 0; i < 8; i++) {
-      if (i > 0) await Bun.sleep(400);
-      const hits = await this.searchRemote(session, keyword);
-      if (hits.length > 0) return hits;
-    }
-    return [];
-  }
-
-  /**
-   * 把还没同步过的往来增量写入记忆服务（source 为 bot-log:会话号，start/end 为 bot_log 编号，方便对回原文）。
-   * @param session 前台对话。
-   * @param entries 范围内的往来。
-   */
-  private async syncLogs(session: Session, entries: BotLogEntry[]): Promise<void> {
-    //G 隔离：没有客户号就不往记忆服务写（写进去会成为“没有客户”的聊天记录）。
-    const previous = session.row.customer ?? '';
-    const groups = new Map<string, BotLogEntry[]>();
-    for (const entry of entries) {
-      const list = groups.get(entry.sessionId) ?? [];
-      list.push(entry);
-      groups.set(entry.sessionId, list);
-    }
-    for (const [sessionId, list] of groups) {
-      //M 以每个来源会话的地址定归属，避免重建 bot-log 段落时抹掉已有补标。
-      let meta = session.row as Omit<Session['row'], 'messages'> | undefined;
-      if (sessionId !== session.row.id) {
-        const metas = this.ctx.sessions.find({ id: sessionId });
-        meta = metas[0];
-      }
-      let customer = previous;
-      if (meta !== undefined) {
-        const key = memoryKeyModule.getSessionMemoryKey(meta);
-        customer = key || meta.customer || previous;
-      }
-      if (customer === '') continue;
-
-      const source = `bot-log:${sessionId}`;
-      //M 往来也是聊天记录：进不进关系图由 memory 插件定（history_graph / no_graph_customers），这里不管。
-      const docs = list.map((entry) => ({
-        source,
-        scope: 'history' as const,
-        bot: entry.bot,
-        customer,
-        session: sessionId,
-        title: entry.who === 'user' ? '用户' : '机器人',
-        text: entry.text,
-        at: entry.time,
-        start: entry.id,
-        end: entry.id,
-      }));
-
-      //G 没记下（没挂 memory、服务没开、超时）：抛给 semanticHits，当没有语义结果，不再白等后面的检索。
-      const recorded = await this.askMemory({ action: 'record-history', source, docs }, 20_000);
-      if (!recorded.ok) throw new Error(`记忆服务没记下往来：${recorded.error ?? ''}`);
-    }
-  }
-
-  /**
-   * 向记忆服务发 hybrid 检索（不走 graph，避免调大模型），把命中对回 bot_log。
-   * @param session 前台对话。
-   * @param keyword 查询句。
-   */
-  private async searchRemote(session: Session, keyword: string): Promise<Array<{ entry: BotLogEntry; score: number }>> {
-    //G 隔离：检索必须带客户号，没有就不搜。
-    const key = memoryKeyModule.getSessionMemoryKey(session.row);
-    const customer = key || session.row.customer || '';
-    if (customer === '') return [];
-
-    //M 发 memory/request（search-history）：没挂 memory、搜不成都是空的。
-    const query = {
-      action: 'search-history' as const, query: keyword, bot: session.row.bot, customer, limit: HISTORY_PAGE,
-    };
-    const searched = await this.askMemory(query, 10_000);
-    const hits = searched.hits ?? [];
-    const out: Array<{ entry: BotLogEntry; score: number }> = [];
-    const seen = new Set<number>();
-    for (const hit of hits) {
-      if (hit === null || typeof hit !== 'object') continue;
-      const rec = hit as { start?: unknown; score?: unknown; text?: unknown };
-      const id = typeof rec.start === 'number' ? rec.start : undefined;
-      if (id === undefined || seen.has(id)) continue;
-
-      //M 命中里记的 start 就是 bot_log 编号：按它读回这一条往来的原文。
-      const row = this.ctx.resources.db.query(
-        'SELECT id, bot, channel, who, sessionId, text, time FROM bot_log WHERE id = ? AND bot = ?',
-      ).get(id, session.row.bot) as BotLogEntry | null;
-
-      //G 隔离：读不到、或不在这场对话（前台加它交办的后台）范围内的丢掉。
-      if (row === null || !this.scopeIds(session).includes(row.sessionId)) continue;
-      seen.add(id);
-      const score = typeof rec.score === 'number' ? rec.score : 0;
-      out.push({ entry: row, score });
-    }
-    return out;
-  }
 
   /**
    * 请 memory 算向量（它调记忆服务 POST /embed）。没挂 memory、404、模型没就绪或网络失败交回 undefined。
@@ -1137,7 +1057,7 @@ export class FrontDesk {
 
   /**
    * 发请求事件 memory/request 请 memory 插件办一件事（契约 3.2 第 6 条），等 memory/result。
-   * @param payload 记往来（record-history）、搜聊天记录（search-history）或算向量（embed）。
+   * @param payload 查询前台归档（front-history）或按需计算向量（embed）。
    * @param timeoutMs 最多等多久：记往来 20 秒、搜 10 秒、算向量 30 秒。
    * @returns memory 的回执；没挂 memory、超时、出错都是 ok: false（不带 hits、vectors），不抛。
    */
@@ -1159,92 +1079,54 @@ export class FrontDesk {
   }
 
   /**
-   * 读一条已缓存的向量。
-   * @param id bot_log 编号。
-   */
-  private getVec(id: number): number[] | undefined {
-    //M 按往来编号读缓存的向量；没存过就是 null。
-    const row = this.ctx.resources.db.query('SELECT vec FROM bot_log_vec WHERE id = ?').get(id) as { vec: Uint8Array | Buffer } | null;
-    if (row === null) return undefined;
-
-    //M 把存库的 blob 还原成浮点数组，格式不对（不是 4 的整数倍）时是 undefined。
-    return unpackVec(row.vec);
-  }
-
-  /**
-   * 把一批向量写入 bot_log_vec。
-   * @param entries 对应的往来。
-   * @param vectors 向量，和下标一一对应。
-   */
-  private saveVecs(entries: BotLogEntry[], vectors: number[][]): void {
-    //M 预备一条“有就覆盖”的写入语句，逐条把向量打成 blob（packVec）存进 bot_log_vec；缺向量的那条跳过。
-    const query =this.ctx.resources.db.query('INSERT OR REPLACE INTO bot_log_vec (id, dim, vec) VALUES (?, ?, ?)');
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const vec = vectors[i];
-      if (entry === undefined || vec === undefined) continue;
-      query.run(entry.id, vec.length, packVec(vec));
-    }
-  }
-
-  /**
    * history_get：取一条全文，只给这场对话范围内的。
    * @param session 前台对话。
    * @param id 往来编号。
    */
-  private getHistory(session: Session, id: number): string {
+  private async getHistory(session: Session, id: number): Promise<string> {
     //G 每轮 history_search、history_get 一共最多 3 次：满了直接把拒绝的提示回给模型，不查。
     const denied = this.touchHistory(session);
     if (denied !== undefined) return denied;
 
-    //M 按编号读这一条往来的全文，只在这个机器人的往来里找。
-    const row = this.ctx.resources.db.query(
-      'SELECT id, bot, channel, who, sessionId, text, time FROM bot_log WHERE id = ? AND bot = ?',
-    ).get(id, session.row.bot) as BotLogEntry | null;
-
-    //G 隔离：没有这个编号、或不在这场对话（前台加它交办的后台）范围内，一律说没有，不透露别的会话的内容。
-    if (row === null || !this.scopeIds(session).includes(row.sessionId)) return `没有编号 ${String(id)} 的往来，或不属于这场对话。`;
+    //G 同时按机器人、会话范围和编号查，越界时没有结果。
+    const sessionIds = this.scopeIds(session);
+    const query: FrontQuery = { bot: session.row.bot, sessionIds, id, order: 'last', limit: 1 };
+    const entries = await this.readFront(session, query);
+    const row = entries[0];
+    if (row === undefined) return `没有编号 ${String(id)} 的往来，或不属于这场对话。`;
 
     //M 范围内的才排成一行（不截短）回给模型。
     return formatEntry(row);
   }
 
-  /**
-   * 一个机器人最近的往来；可以限定在若干场会话里（前台对话加它交办的后台）。
-   * @param bot 机器人名。
-   * @param count 要几条。
-   * @param before 从哪个时间往前数（不含）；不给就是从现在。
-   * @param sessionIds 只看这些会话；不给就这个机器人全部。
-   * @returns 照时间从早到晚。
-   */
-  private recent(bot: string, count: number, before?: number, sessionIds?: string[]): BotLogEntry[] {
-    const until = before ?? Date.now() + 1;
-    if (sessionIds !== undefined && sessionIds.length === 0) return [];
-    let sql = 'SELECT id, bot, channel, who, sessionId, text, time FROM bot_log WHERE bot = ? AND time < ?';
-    const values: (string | number)[] = [bot, until];
-    if (sessionIds !== undefined) {
-      sql += ` AND sessionId IN (${sessionIds.map(() => '?').join(', ')})`;
-      values.push(...sessionIds);
-    }
-    sql += ' ORDER BY time DESC, id DESC LIMIT ?';
-    values.push(count);
-
-    //M 先取最近的 count 条（新的在前），交回前翻成从早到晚。
-    const rows = this.ctx.resources.db.query(sql).all(...values) as BotLogEntry[];
-    return rows.reverse();
+  /** 读取本轮前的近期归档，再按时间从早到晚交给模型。 */
+  private async recent(
+    session: Session,
+    count: number,
+    before: number | undefined,
+    sessionIds: string[],
+  ): Promise<BotLogEntry[]> {
+    const query: FrontQuery = {
+      bot: session.row.bot,
+      sessionIds,
+      order: 'time',
+      limit: count,
+      beforeTime: before ?? Date.now() + 1,
+    };
+    //M 按会话范围取最近一页，拼入模型上下文时恢复时间正序。
+    const entries = await this.readFront(session, query);
+    return entries.reverse();
   }
+
 
   /**
    * 记一条往来。
    * @param entry 谁说的、哪个渠道、哪场会话、说了什么。
    * 副作用：写库。
    */
-  private log(entry: Omit<BotLogEntry, 'id'>): void {
-    //M 往 bot_log 表追加一行（编号自增），一句话一行，不改旧的。
-    const query =this.ctx.resources.db.query(
-      'INSERT INTO bot_log (bot, channel, who, sessionId, text, time) VALUES (?, ?, ?, ?, ?, ?)',
-    );
-    query.run(entry.bot, entry.channel, entry.who, entry.sessionId, entry.text, entry.time);
+  private log(entry: FrontMessage): void {
+    //M 与渠道索引共用正文，前台仍按会话保存自己的往来关系。
+    this.ctx.emit('memory/front-message', entry);
   }
 
   /**
@@ -1289,10 +1171,20 @@ function getLine(message: piAi.Message, bot: string): string {
 
   //M 消息内容可能是字符串或分段数组：分段的逐段用 getText 取出 text 拼起来。
   const content: unknown = message.content;
-  const text = typeof content === 'string' ? content
-    : (Array.isArray(content) ? content : []).map((part: unknown) => textModule.getText(part, 'text')).join('');
-  if (text.trim() === '') return '';
-  return message.role === 'assistant' ? `${bot}：${text.trim()}` : text.trim();
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  }
+  if (Array.isArray(content)) {
+    const pieces = content.map((part: unknown) => textModule.getText(part, 'text'));
+    text = pieces.join('');
+  }
+  const line = text.trim();
+  if (line === '') return '';
+
+  if (message.role === 'assistant') return `${bot}：${line}`;
+
+  return line;
 }
 
 
@@ -1304,7 +1196,10 @@ function getLine(message: piAi.Message, bot: string): string {
  */
 function formatEntry(entry: BotLogEntry, clip?: number, useMemoryRef = false): string {
   const when = new Date(entry.time).toLocaleString('zh-CN', { hour12: false });
-  const who = entry.who === 'user' ? '用户' : '机器人';
+  let who = '机器人';
+  if (entry.who === 'user') {
+    who = '用户';
+  }
   let body = entry.text;
   let suffix = '';
   if (clip !== undefined && body.length > clip) {
@@ -1329,17 +1224,34 @@ const SEMANTIC_MIN = 0.22;
  * @param semantic 语义命中。
  * @param take 最多留几条。
  */
-function mergeHistoryHits(keywordRows: BotLogEntry[], semantic: Array<{ entry: BotLogEntry; score: number }>, take: number): BotLogEntry[] {
+function mergeHistoryHits(
+  keywordRows: BotLogEntry[],
+  semantic: Array<{ entry: BotLogEntry; score: number }>,
+  take: number,
+): BotLogEntry[] {
   const scores = new Map<number, { entry: BotLogEntry; score: number }>();
   for (const entry of keywordRows) {
     scores.set(entry.id, { entry, score: 1 });
   }
   for (const hit of semantic) {
     const prev = scores.get(hit.entry.id);
-    if (prev === undefined) scores.set(hit.entry.id, hit);
-    else if (hit.score + 1 > prev.score) scores.set(hit.entry.id, { entry: prev.entry, score: hit.score + 1 });
+    if (prev === undefined) {
+      scores.set(hit.entry.id, hit);
+      continue;
+    }
+
+    //M 同一条同时命中关键词和语义时提高它的分数。
+    const score = hit.score + 1;
+    if (score > prev.score) {
+      scores.set(hit.entry.id, { entry: prev.entry, score });
+    }
   }
-  return [...scores.values()].sort((a, b) => b.score - a.score || a.entry.id - b.entry.id).slice(0, take).map((row) => row.entry);
+
+  //M 先按分数，再按编号稳定排序，只交回当前页的原文记录。
+  const ranked = [...scores.values()];
+  ranked.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
+  const shown = ranked.slice(0, take);
+  return shown.map((row) => row.entry);
 }
 
 
@@ -1354,6 +1266,7 @@ function uniqueById(...groups: BotLogEntry[][]): BotLogEntry[] {
     for (const entry of group) {
       if (seen.has(entry.id)) continue;
       seen.add(entry.id);
+      //M 两路命中同一个编号时，只把第一次出现的那条留下。
       out.push(entry);
     }
   }
@@ -1379,34 +1292,7 @@ function cosine(a: number[], b: number[]): number {
     nb += y * y;
   }
   const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom === 0 ? 0 : dot / denom;
+  if (denom === 0) return 0;
+
+  return dot / denom;
 }
-
-
-/**
- * 把浮点向量打成 blob 存库。
- * @param vec 向量。
- */
-function packVec(vec: number[]): Buffer {
-  const buf = Buffer.alloc(vec.length * 4);
-  for (let i = 0; i < vec.length; i++) buf.writeFloatLE(vec[i] ?? 0, i * 4);
-  return buf;
-}
-
-
-/**
- * 从库里的 blob 还原浮点向量。
- * @param raw SQLite 交回的二进制。
- */
-function unpackVec(raw: Uint8Array | Buffer): number[] | undefined {
-  const bytes = raw instanceof Buffer ? raw : Buffer.from(raw);
-  if (bytes.length < 4 || bytes.length % 4 !== 0) return undefined;
-  const out: number[] = [];
-  for (let i = 0; i < bytes.length; i += 4) out.push(bytes.readFloatLE(i));
-  return out;
-}
-
-
-// 2026-11-14：postJson 去掉——记忆服务的 HTTP 调用都在 memory 插件（ctx.memory）里。
-// 2026-11-17：自己的 sleep 去掉，改用 Bun.sleep（http、memory、runs 也这么等）。
-// 2026-11-17：并进 bots，apply 去掉：配置校验、建 FrontDesk 和 Dispatch、接 memory 都在 bots/index.ts 的 apply。

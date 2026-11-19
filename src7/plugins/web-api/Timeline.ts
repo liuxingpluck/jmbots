@@ -257,25 +257,19 @@ function includes(text: string, keyword: string): boolean {
 /** 收件表和时间线。 */
 export class Timeline {
   /**
-   * 建表 web_messages 和三个索引（没有才建）。
+   * 初始化收件表及索引，保留已有的数据。
    * @param ctx web-api 的 ctx：用 resources.db、sessions、bots，发通知。
    */
   constructor(private readonly ctx: cordis.Context) {
     const db = ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS web_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
+    //M 新装时一次建齐引用列和来源号，保存原始消息关联。
+    const create = 'CREATE TABLE IF NOT EXISTS web_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
       + ' channel TEXT NOT NULL, source TEXT NOT NULL, address TEXT, text TEXT NOT NULL, session_id TEXT,'
-      + " status TEXT NOT NULL, replies TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)");
+      + " status TEXT NOT NULL, replies TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL,"
+      + ' updated_at INTEGER NOT NULL, reply_to INTEGER, source_id TEXT)';
+    db.exec(create);
 
-    //G 查看旧库是否缺引用列，仅在缺列时补齐。
-    const columns = db.query('PRAGMA table_info(web_messages)').all() as { name: string }[];
-    if (!columns.some((column) => column.name === 'reply_to')) {
-      db.exec('ALTER TABLE web_messages ADD COLUMN reply_to INTEGER');
-    }
-
-    //M 别的渠道的消息记下标准消息号（channel/message 的 messageId）：回话按“消息号 + 机器人”精确挂回，不再按地址找最新一行。
-    if (!columns.some((column) => column.name === 'source_id')) {
-      db.exec('ALTER TABLE web_messages ADD COLUMN source_id TEXT');
-    }
+    //M 按来源匹配跨渠道回话，按机器人、更新时间和地址读取时间线。
     db.exec('CREATE INDEX IF NOT EXISTS web_messages_source ON web_messages (source_id, bot)');
     db.exec('CREATE INDEX IF NOT EXISTS web_messages_bot ON web_messages (bot, id)');
     db.exec('CREATE INDEX IF NOT EXISTS web_messages_updated ON web_messages (bot, updated_at)');
@@ -365,9 +359,13 @@ export class Timeline {
    * 副作用：写库。
    */
   bindSession(id: number, sessionId: string): void {
-    //M 记录消息第一次进的会话，保留现有绑定供引用回复定位。
-    const sql = 'UPDATE web_messages SET session_id = COALESCE(session_id, ?) WHERE id = ?';
-    this.ctx.resources.db.query(sql).run(sessionId, id);
+    //M 记录第一次认领，同时把收件号和会话号交给流水，供回复之前查询轨迹。
+    const sql = 'UPDATE web_messages SET session_id = ? WHERE id = ? AND session_id IS NULL';
+    const updated = this.ctx.resources.db.query(sql).run(sessionId, id);
+    if (updated.changes === 0) return;
+
+    const vars = { 消息号: id, 会话: sessionId };
+    this.ctx.emit('trace', 'Timeline.bindSession', '收件消息已绑定会话', 'UPDATE web_messages SET session_id', vars);
   }
 
   /**

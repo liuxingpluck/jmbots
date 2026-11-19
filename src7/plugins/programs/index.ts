@@ -14,7 +14,7 @@ import * as guardModule from './ResourceGuard.ts';
 
 /** 插件名和版本。 */
 export const name = 'programs';
-export const version = '1.7.0';
+export const version = '1.7.1';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 
@@ -36,7 +36,11 @@ export interface ProgramState {
 
 declare module 'cordis' {
   interface Events {
-    /** 名字、运行状态、程序自报授权与同源界面；只在业务字段变化时广播。 */
+    /**
+     * 名字、运行状态、程序自报授权与同源界面；只在业务字段变化时广播。
+     * 谁发：src7/plugins/programs/Host.ts 的 Host.publishState
+     * 谁接：暂无
+     */
     'program/state'(state: ProgramState): void;
   }
   interface Context {

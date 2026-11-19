@@ -20,6 +20,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 import * as backendModule from './Backend.ts';
 import * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
+import * as frontArchiveModule from './FrontArchive.ts';
 import * as memoryKeyModule from './MemoryKey.ts';
 import * as graphPolicy from './GraphPolicy.ts';
 import * as graphRoutesModule from './GraphRoutes.ts';
@@ -38,7 +39,7 @@ export const name = 'memory';
 //M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
-export const version = '1.10.0';
+export const version = '1.10.2';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools', 'bots'];
@@ -461,9 +462,17 @@ declare module 'cordis' {
     memory: MemoryService;
   }
   interface Events {
-    /** 别的插件请记忆库办事（serial 发、等 memory/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听（MemoryService.onRequest）。 */
+    /**
+     * 别的插件请记忆库办事（serial 发、等 memory/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听（MemoryService.onRequest）。
+     * 谁发：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.askMemory
+     * 谁接：src7/plugins/memory/index.ts 的 MemoryService.constructor
+     */
     'memory/request'(request: MemoryRequest): void | Promise<void>;
-    /** memory/request 的回执（emit），按 requestId 配对。 */
+    /**
+     * memory/request 的回执（emit），按 requestId 配对。
+     * 谁发：src7/plugins/memory/index.ts 的 MemoryService.constructor
+     * 谁接：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.askMemory
+     */
     'memory/result'(result: MemoryResult): void;
   }
 }
@@ -489,6 +498,11 @@ export type MemoryRequest = requestEventModule.RequestEnvelope & ({
   /** 最多几条。 */
   limit: number;
 } | {
+  /** 读取可信前台会话范围内的归档。 */
+  action: 'front-history';
+  /** 会话范围、分页和关键词等过滤条件。 */
+  query: frontArchiveModule.FrontQuery;
+} | {
   /** 按统一接口搜所有来源。 */
   action: 'search';
   /** 与 GET /api/memory/search 相同，支持 person 或 group；调用插件负责确认用户权限。 */
@@ -509,6 +523,8 @@ export interface MemoryResult extends requestEventModule.ResultEnvelope {
   hits?: Array<{ start?: unknown; score?: unknown; text?: unknown }>;
   /** search：统一检索回执；某一路没响应写在它的 unavailable、warnings 里。 */
   search?: searchModule.SearchResult;
+  /** front-history：按机器人和会话范围过滤后的往来。 */
+  frontEntries?: frontArchiveModule.FrontEntry[];
   /** embed：每段一个向量；服务在线但模型没就绪是空。 */
   vectors?: number[][];
   /** 没办成的原因，如“记忆服务没在线（http://127.0.0.1:30087）：…”。 */
@@ -543,6 +559,7 @@ export class MemoryService extends cordis.Service {
     graphStore?: graphStoreModule.GraphStore,
     disk?: storeModule.Store,
     private readonly token = '',
+    private readonly frontArchive?: frontArchiveModule.FrontArchive,
   ) {
     //M 登记成 ctx.memory 服务：别的插件 inject 里写 memory 就能用下面这几个方法。
     super(ctx, 'memory');
@@ -595,6 +612,12 @@ export class MemoryService extends cordis.Service {
       //M 搜这个客户的聊天记录交回命中；没有客户号时 searchHistory 交回空。
       const hits = await this.searchHistory(query);
       return { ok: true, hits };
+    }
+
+    if (request.action === 'front-history') {
+      //M 归档只从渠道索引读取，会话范围已由 bots 依据父子关系决定。
+      const frontEntries = this.frontArchive?.read(request.query) ?? [];
+      return { ok: true, frontEntries };
     }
 
     if (request.action === 'search') {
@@ -768,15 +791,23 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
 
   //M 给统一检索和渠道监听共用的索引；channel_index 不写是开。
   const channelIndexOn = channelIndexModule.readEnabled(own['channel_index']);
+  const db = ctx.resources.db;
+  const archiveIndex = new channelIndexModule.ChannelIndex(db);
+  const frontArchive = new frontArchiveModule.FrontArchive(db, archiveIndex);
   let channelIndex: channelIndexModule.ChannelIndex | undefined;
   if (channelIndexOn) {
-    channelIndex = new channelIndexModule.ChannelIndex(ctx.resources.db);
+    channelIndex = archiveIndex;
   }
+
+  //M 前台归档沿用本地库，即使关闭了原始渠道监听也保存会话往来。
+  ctx.on('memory/front-message', (message) => {
+    frontArchive.record(message);
+  });
 
   //M 登记查询和知识库同步共用的 Rust 地址，图谱库用于读取同一来源的邻段。
   const graphStore = new graphStoreModule.GraphStore(graphSettings.db);
   const memoryService = new MemoryService(
-    ctx, address, settings.graph, channelIndex, graphStore, store, settings.token,
+    ctx, address, settings.graph, channelIndex, graphStore, store, settings.token, frontArchive,
   );
 
   //M 先登记工具和开场检索钩子，随后让关系图钩子检查这一轮有没有用到记忆。

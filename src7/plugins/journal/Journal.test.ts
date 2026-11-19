@@ -97,7 +97,7 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认同时提供 ctx.journal 和 ctx.filesMirror，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.2.0');
+    expect(journalModule.version).toBe('1.2.1');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeDefined();
@@ -146,30 +146,42 @@ describe('journal（含 FilesMirror 并入）', () => {
     const byMsg = ctx.journal.query({ message: '42' });
     expect(byMsg.some((e) => e.name === 'WebApi.accept')).toBe(true);
 
-    //M Journal.request 从 web-api/received（若无则 undefined），插入一条测试起点再测一次。
+    //M 从收件行关联到已认领的会话，其他消息和会话的行不占名额。
     expect(ctx.journal.request(9999, 10)).toBeUndefined();
-    ctx.emit('trace', 'WebApi.accept', '入口', 'x', {});
-    ctx.resources.db.query(
-      "INSERT INTO journal_lines (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, vars) VALUES (?, '事件', 'web-api/received', '通知', '[]', '', '', 'x:1', '小记', 's_req_1', 77, '{}')",
-    ).run(Date.now());
+    const received = { id: 77, bot: '小记', channel: 'http', source: 'http', text: '开始', at: Date.now() };
+    ctx.emit('web-api/received', received);
+    ctx.emit('trace', 'Other.session', '其他会话', 'z', { 会话: 's_other' });
+    ctx.emit('trace', 'Other.message', '同会话的其他消息', 'z', { 消息号: 78, 会话: 's_req_1' });
+    ctx.emit('trace', 'Timeline.bindSession', '绑定会话', 'bind()', { 消息号: 77, 会话: 's_req_1' });
     ctx.emit('trace', 'After.step', '后续', 'y', { 会话: 's_req_1' });
-    const trail = ctx.journal.request(77, 10);
-    expect(trail).toBeDefined();
-    expect(trail?.[0]?.name).toBe('web-api/received');
-    expect(trail?.some((e) => e.name === 'After.step')).toBe(true);
+    const trail = ctx.journal.request(77, 3);
+    expect(trail?.map((line) => line.name)).toEqual(['web-api/received', 'Timeline.bindSession', 'After.step']);
 
-    //M trail：从起点取行收成轨迹，挑出的行一起给；reply-lines：挑到这句回话为止。
-    const payload = { action: 'trail', message: 77, limit: 10 } as const;
+    //M 两种轨迹查询以及用量查询都不写入流水。
+    const before = ctx.journal.query({}).length;
+    const payload = { action: 'trail', message: 77, maxLines: 3 } as const;
     const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
     expect(result.trail?.message).toBe(77);
     expect(result.trail?.session).toBe('s_req_1');
     expect(result.picked?.map((line) => line.name)).toContain('After.step');
-    const to = trail?.[1]?.at ?? 0;
-    const replyQuery = { action: 'reply-lines' as const, message: 77, limit: 2, sessions: ['s_req_1'], to };
+    const to = trail?.[2]?.at ?? 0;
+    const replyQuery = { action: 'reply-lines' as const, message: 77, maxLines: 3, sessions: ['s_req_1'], to };
     const replied = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', replyQuery, eventOptions);
-    expect(replied.lines).toEqual(trail?.slice(0, 2));
+    expect(replied.lines).toEqual(trail);
     expect(replied.cut).toBe(false);
-    const missing = { action: 'trail', message: 9999, limit: 10 } as const;
+
+    const shortQuery = { ...replyQuery, maxLines: 2 };
+    const short = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', shortQuery, eventOptions);
+    expect(short.lines).toEqual(trail?.slice(0, 2));
+    expect(short.cut).toBe(true);
+
+    const usageQuery = { sessions: ['s_req_1'], from: 0, to, limit: 10 };
+    await ctx.serial('usage/list', usageQuery);
+    const usageResult = { requestId: 'usage-test', rows: [], truncated: false };
+    ctx.emit('usage/list-result', usageResult);
+    expect(ctx.journal.query({})).toHaveLength(before);
+
+    const missing = { action: 'trail', message: 9999, maxLines: 10 } as const;
     const none = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', missing, eventOptions);
     expect(none.trail).toBeUndefined();
 

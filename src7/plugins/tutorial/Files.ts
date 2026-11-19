@@ -238,14 +238,14 @@ export class FlowFiles {
   /**
    * 问 journal 要一条消息的轨迹（journal/Trail.ts 收好的），供画布、预览和文件快照共用。
    * @param message 收件表的消息号。
-   * @param limit 从收件行起最多取几行。
+   * @param maxLines 筛出这条消息和相关会话后最多取几行。
    * @returns 轨迹和挑出的行（对快照用）；跟踪行里没有、journal 没挂或没应答是 undefined。
    */
   async getMessageTrail(
     message: number,
-    limit: number,
+    maxLines: number,
   ): Promise<{ trail: trailModule.Trail; picked: trailModule.TrailLine[] } | undefined> {
-    const request = { action: 'trail', message, limit } as const;
+    const request = { action: 'trail', message, maxLines } as const;
     const options = {
       timeoutMs: JOURNAL_TIMEOUT_MS,
       onFallback: () => ({ requestId: '' }),

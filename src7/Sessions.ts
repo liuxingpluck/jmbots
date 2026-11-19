@@ -35,25 +35,80 @@ declare module 'cordis' {
      * 加提示词就往 request.system 里 push；压缩、检索、拼最近往来就改 request.messages；
      * 直接给回答的（假模型）填 request.answer；要这一轮停在这里、不调模型，就在 request.stop 写理由。
      * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了（下面三个关口也一样）。
+     * 谁发：src7/Sessions.ts 的 Session.loop
+     * 谁接：
+     *   src7/plugins/approval/index.ts 的 Approval.constructor
+     *   src7/plugins/assist/index.ts 的 Assist.constructor
+     *   src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor
+     *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.constructor
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/bots/Prompt.ts 的 Prompt.constructor
+     *   src7/plugins/context-fit/Compress.ts 的 Compress.constructor
+     *   src7/plugins/context-fit/index.ts 的 apply
+     *   src7/plugins/fake-model/index.ts 的 apply
+     *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.constructor
+     *   src7/plugins/memory/GraphRoutes.ts 的 GraphRoutes.constructor
+     *   src7/plugins/memory/index.ts 的 Memory.constructor
+     *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.constructor
+     *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools
+     *   src7/plugins/progress/index.ts 的 Progress.constructor
+     *   src7/plugins/relay/index.ts 的 Relay.constructor
+     *   src7/plugins/skills/index.ts 的 apply
+     *   src7/plugins/wechat/index.ts 的 Wechat.constructor
      */
     'session/request'(request: ChatRequest): void | Promise<void>;
     /**
      * 关口二，模型回来之后、回答接进对话之前：照先后一个个 await。
      * 能看能改 request.answer（换掉也行，以最后的为准）；在 request.stop 写理由，这次回答就不要了
      * （里面要的工具也不执行），这一轮停在这里。
+     * 谁发：src7/Sessions.ts 的 Session.loop
+     * 谁接：暂无
      */
     'session/after-model'(request: AnsweredRequest): void | Promise<void>;
     /**
      * 关口四，一个工具执行完、结果接进对话之前：照先后一个个 await。没执行、被 deny 拦下的也走这里。
      * 能改 done.outcome（文字、图片、是否出错）；在 done.stop 写理由，结果照样接进对话（要和工具调用配对），
      * 这一轮停在这里，这一批后面的工具不再执行。
+     * 谁发：src7/Sessions.ts 的 Session.loop
+     * 谁接：src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor
      */
     'session/after-tool'(done: ToolDone): void | Promise<void>;
-    /** 对话里新接了一条（用户的话、模型的回答、工具的结果）。只是通知。 */
+    /**
+     * 对话里新接了一条（用户的话、模型的回答、工具的结果）。只是通知。
+     * 谁发：src7/Sessions.ts 的 Session.append
+     * 谁接：
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor
+     *   src7/plugins/journal/index.ts 的 Journal.listen
+     *   src7/plugins/memory/index.ts 的 Memory.constructor
+     *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
+     *   src7/plugins/progress/index.ts 的 Progress.constructor
+     */
     'session/message'(session: Session, message: piAi.Message): void;
-    /** 状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。 */
+    /**
+     * 状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。
+     * 谁发：src7/Sessions.ts 的 Session.change
+     * 谁接：
+     *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/bots/index.ts 的 Bots.constructor
+     *   src7/plugins/cli/index.ts 的 Cli.constructor
+     *   src7/plugins/context-fit/Summary.ts 的 Summary.constructor
+     *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor
+     *   src7/plugins/journal/index.ts 的 Journal.listen
+     *   src7/plugins/progress/index.ts 的 Progress.constructor
+     *   src7/plugins/relay/index.ts 的 Relay.constructor
+     *   src7/plugins/voice/index.ts 的 apply
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'session/change'(session: Session): void;
-    /** 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。 */
+    /**
+     * 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。
+     * 谁发：src7/Sessions.ts 的 Sessions.chat
+     * 谁接：
+     *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.attempt
+     *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
+     */
     'model/failed'(info: ModelFailed): void;
   }
 }

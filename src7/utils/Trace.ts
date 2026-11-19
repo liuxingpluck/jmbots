@@ -20,6 +20,58 @@ declare module 'cordis' {
   interface Events {
     /**
      * 一个跟踪点。只是通知，谁也不许靠它改流程。
+     * 谁发：
+     *   src7/Sessions.ts 的 Session.loop
+     *   src7/Tools.ts 的 Tools.execute
+     *   src7/plugins/approval/index.ts 的 Approval.answer、Approval.ask、Approval.onRequest、Approval.settle、Approval.traced
+     *   src7/plugins/assist/Reminders.ts 的 Reminders.arm、Reminders.closeCard、Reminders.start
+     *   src7/plugins/assist/index.ts 的 Assist.add
+     *   src7/plugins/base-bridge/Notify.ts 的 mountNotify
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.check、UpdateWatch.clearUncertainSwap、UpdateWatch.onDecided、UpdateWatch.tell
+     *   src7/plugins/base-bridge/index.ts 的 Base.onRequest
+     *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.acceptResult、DispatchResults.drain、DispatchResults.finishFront、DispatchResults.hold、DispatchResults.sendLastWords
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.judgeReply、FrontDesk.onRequest、FrontDesk.record
+     *   src7/plugins/bots/ReplyTool.ts 的 registerReplyTool
+     *   src7/plugins/bots/index.ts 的 Bot.receive、Bots.constructor、Bots.onRequest、Bots.receive、Bots.say
+     *   src7/plugins/cli/index.ts 的 Cli.submitLine
+     *   src7/plugins/context-fit/Compress.ts 的 Compress.compress
+     *   src7/plugins/context-fit/Summary.ts 的 Summary.onChange
+     *   src7/plugins/context-fit/index.ts 的 apply
+     *   src7/plugins/decision/index.ts 的 Decision.judge
+     *   src7/plugins/exec/index.ts 的 Exec.onDecided、Exec.onTool、Exec.run
+     *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.handleInboundMessage、FeishuInbound.keepDropped、FeishuInbound.onCard、FeishuInbound.onMessage、FeishuInbound.onRecall
+     *   src7/plugins/feishu/doc/Doc.ts 的 publish
+     *   src7/plugins/feishu/index.ts 的 Feishu.mark
+     *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
+     *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.attachImages
+     *   src7/plugins/file-tools/index.ts 的 FileTools.edit、FileTools.find
+     *   src7/plugins/http/index.ts 的 Http.listen
+     *   src7/plugins/image-gen/index.ts 的 ImageGen.generate
+     *   src7/plugins/journal/index.ts 的 Journal.record
+     *   src7/plugins/memory/index.ts 的 Memory.onRequest
+     *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.noteLimit
+     *   src7/plugins/model-catalog/Notes.ts 的 ModelNotes.rate
+     *   src7/plugins/model-catalog/index.ts 的 ModelCatalog.pull、apply
+     *   src7/plugins/people/index.ts 的 People.resolve
+     *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.dispatch
+     *   src7/plugins/progress/Review.ts 的 Review.check、Review.constructor、Review.skip
+     *   src7/plugins/progress/index.ts 的 Progress.close、Progress.constructor、Progress.onDeadline、Progress.sendCard、Progress.setLimit
+     *   src7/plugins/relay/AgentTasks.ts 的 AgentTasks.finishTask、AgentTasks.send、AgentTasks.take
+     *   src7/plugins/relay/index.ts 的 Relay.accept、Relay.checkLate、Relay.onRequest、Relay.push、Relay.queueReply、Relay.register、Relay.sendFile
+     *   src7/plugins/settings/index.ts 的 Settings.constructor、Settings.createBot、Settings.exitSoon、Settings.restart
+     *   src7/plugins/voice/index.ts 的 VoiceConnection.reportRoute
+     *   src7/plugins/web-api/Timeline.ts 的 Timeline.bindSession、Timeline.insert、Timeline.reply
+     *   src7/plugins/web-api/index.ts 的 WebApi.accept、WebApi.setModel
+     *   src7/plugins/web-search/index.ts 的 WebSearch.trace
+     *   src7/plugins/web/Files.ts 的 FilesApi.upload
+     *   src7/plugins/web/index.ts 的 apply
+     *   src7/plugins/wechat/index.ts 的 Wechat.deliver、Wechat.store
+     *   src7/plugins/workspaces/index.ts 的 Workspaces.emitChanged、Workspaces.getResolved
+     * 谁接：
+     *   src7/plugins/journal/index.ts 的 Journal.listen
+     *   src7/plugins/tutorial/Boot.ts 的 BootTrail.constructor
+     *   src7/plugins/tutorial/Print.ts 的 Printer.constructor
+     *   src7/plugins/tutorial/State.ts 的 Shots.constructor
      * @param where 哪个模块的哪个函数，比如 Bot.receive。
      * @param text 一句人话：现在在干什么。
      * @param code 一句代码：对应的那行调用，比如 chat(resources, request)。

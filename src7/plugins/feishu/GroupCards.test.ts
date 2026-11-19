@@ -6,7 +6,7 @@
  * 查的是：群里的会话有待确认，卡片发本人私聊、群里只有一句文字；找不到本人私聊退回最近私聊的人；进度卡片群里不发；
  * 别人点卡片回“只有 某某 能处理”、不定不终止；群里的发起人（不是本人）说“同意 N”不算，本人说才算。
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -251,6 +251,53 @@ test('审批卡片无人应答或明确失败时提示没办成', async () => {
   await world.actionCtx.fiber.dispose();
 });
 
+
+test('审批回执超时提示结果不确定，同一审批号的重复点击只提交一次', async () => {
+  const world = cardWorld([OWNER_ROW], undefined);
+  const insert = "INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, 'approval', '1', 0, 0)";
+  world.db.query(insert).run('om_a');
+  world.db.query(insert).run('om_duplicate');
+  const warning = spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    //M 模拟审批已接单但未在五秒内返回回执。
+    world.actionCtx.on('approval/request', async (request) => {
+      request.handled = true;
+      if (request.action !== 'decide') return;
+
+      world.calls.push(String(request.approve));
+      await Bun.sleep(5100);
+    });
+    const approve = { action: 'approve' };
+    const reject = { action: 'reject' };
+    const expected = { type: 'warning', content: '操作结果不确定，请稍后刷新卡片核对' };
+    const pending = cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_a', approve);
+    const concurrent = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_duplicate', reject);
+    expect(concurrent).toEqual(expected);
+    expect(await pending).toEqual(expected);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_a（approval 1），提交审批决定 approve=true 回执等待 5000 毫秒超时，结果不确定'));
+
+    //M 超时后连后来登记的同号卡片也不能再次发决定。
+    world.db.query(insert).run('om_later');
+    const repeated = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_later', reject);
+    expect(repeated).toEqual(expected);
+    expect(world.calls).toEqual(['true']);
+
+    //M 晚到的确定通知收尾所有相关卡片，后续点击只能查看结果。
+    const settled = { ...getPending('p1'), state: 'approved' };
+    await fire(world, 'approval/decided', settled);
+    const finished = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_a', approve);
+    expect(finished).toEqual({ type: 'info', content: '这张卡片已处理，请刷新查看结果' });
+    expect(world.db.query('SELECT ended FROM feishu_cards WHERE ended = 1').all()).toHaveLength(3);
+    expect(world.calls).toEqual(['true']);
+  } finally {
+    warning.mockRestore();
+    await world.actionCtx.fiber.dispose();
+    world.db.close();
+  }
+}, 9000);
+
+
 test('进度卡片通过请求改限时，进度失败或无人应答给出提示', async () => {
   const world = cardWorld([OWNER_ROW], undefined);
   world.db.query("INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES ('om_p', 'progress', 'p1', 0, 0)").run();
@@ -266,6 +313,39 @@ test('进度卡片通过请求改限时，进度失败或无人应答给出提�
   expect(rejected).toEqual({ type: 'warning', content: '这件事已经结束了' });
   await world.actionCtx.fiber.dispose();
 });
+
+
+test('终止和限时等不到回执时提示结果不确定，并按会话和动作记日志', async () => {
+  const world = cardWorld([OWNER_ROW], undefined);
+  const insert = "INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, 'progress', ?, 0, 0)";
+  world.db.query(insert).run('om_stop', 'p1');
+  world.db.query(insert).run('om_limit', 'p2');
+  const warning = spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    //M 两种进度操作都模拟接单后未返回，验证每种只发一次请求。
+    world.actionCtx.on('progress/request', async (request) => {
+      request.handled = true;
+      if (request.action !== 'act') return;
+
+      world.calls.push(request.op);
+      await Bun.sleep(5100);
+    });
+    const stopValue = { action: 'stop' };
+    const limitValue = { action: 'limit', minutes: 15 };
+    const expected = { type: 'warning', content: '操作结果不确定，请稍后刷新卡片核对' };
+    const stopped = cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_stop', stopValue);
+    const limited = cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_limit', limitValue);
+    expect(await Promise.all([stopped, limited])).toEqual([expected, expected]);
+    expect(world.calls).toEqual(['stop', 'limit']);
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_stop（progress p1），stop 回执等待 5000 毫秒超时，结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_limit（progress p2），limit 回执等待 5000 毫秒超时，结果不确定'));
+  } finally {
+    warning.mockRestore();
+    await world.actionCtx.fiber.dispose();
+    world.db.close();
+  }
+}, 9000);
 
 
 /** 临时运行时目录。 */

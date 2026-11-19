@@ -289,32 +289,40 @@ test('探活事件无人应答时返回错误，释放重启入口', async () =>
 });
 
 test.each([
-  { closeHasListener: true, wants: ['inject', 'close', 'close-result', 'spawn', 'exit'] },
-  { closeHasListener: false, wants: ['inject', 'close', 'spawn', 'exit'] },
-])('探活应答后会请求关闭，关闭监听状态为 $closeHasListener', async ({ closeHasListener, wants }) => {
+  { closeResult: { ok: true }, wants: ['inject', 'close', 'close-result', 'spawn', 'exit'] },
+  { closeResult: undefined, wants: ['inject', 'close'], stopped: '无人处理 HTTP 关闭请求' },
+  { closeResult: { ok: false, error: '等待 HTTP 关闭超时' }, wants: ['inject', 'close', 'close-result'], stopped: '结果不确定' },
+])('只在确认关闭 HTTP 后继续重启', async ({ closeResult, wants, stopped }) => {
   const { ctx, app } = await setup();
   const order: string[] = [];
   const restart = mockRestart(order);
+  const stoppedTrace = Promise.withResolvers<string>();
+  ctx.on('trace', (name, text, _code, vars) => {
+    if (name !== 'Settings.restart' || text !== '重启停止，保留原进程') return;
+
+    stoppedTrace.resolve(String(vars['原因']));
+  });
   ctx.on('http/request', (request) => { order.push(request.action); });
   events.onRequestEvent(ctx, 'http/request', 'http/result', (request) => {
     if (request.action === 'close') {
       order.push('close-result');
-      return { ok: true };
+      return closeResult ?? { ok: false };
     }
     expect(request).toMatchObject({ method: 'GET', url: '/api/ui/info' });
     return { ok: true, statusCode: 200, body: '{"startedAt":42}' };
   }, {
-    filter: (request) => request.action === 'inject' || closeHasListener,
+    filter: (request) => request.action === 'inject' || closeResult !== undefined,
   });
 
   const input = { method: 'POST', url: '/api/settings/apply' } as const;
   const response = await app.inject(input);
-  if (response.statusCode === 200) {
-    const duplicate = await app.inject(input);
-    await restart.finished;
-    expect(duplicate.statusCode).toBe(409);
-  }
   expect(response.statusCode).toBe(200);
   expect(response.json()).toMatchObject({ ok: true, startedAt: 42 });
+  const duplicate = await app.inject(input);
+  expect(duplicate.statusCode).toBe(409);
+
+  //M 等关闭请求完成，再检查有没有创建替代进程。
+  if (stopped === undefined) await restart.finished;
+  if (stopped !== undefined) expect(await stoppedTrace.promise).toContain(stopped);
   expect(order).toEqual([...wants]);
 }, 12_000);

@@ -45,7 +45,7 @@ export const name = 'wechat-kefu';
 //M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
 //M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
 //M 1.2.4：跨聊天发话认目标时，拆目标串（去“微信·”、拆“账号:聊天”）改用骨架的 parseChatTarget；查表规则不变。
-export const version = '1.2.4';
+export const version = '1.2.5';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http', 'tools'];

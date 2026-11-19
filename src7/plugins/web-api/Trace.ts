@@ -228,7 +228,14 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   const to = reply.at;
   const notes = ['只读：按收件表、流水、用量表现有的记录拼成，不重新执行'];
 
-  const journalQuery = { action: 'reply-lines', message: message.id, limit: EVENT_LIMIT, sessions, to } as const;
+  //M 流水纳入首次认领的会话，即使第一句回复来自另一场会话。
+  const journalSessions = new Set(sessions);
+  if (message.sessionId !== null) {
+    journalSessions.add(message.sessionId);
+  }
+  journalSessions.delete('');
+  const linkedSessions = [...journalSessions];
+  const journalQuery = { action: 'reply-lines', message: message.id, maxLines: EVENT_LIMIT, sessions: linkedSessions, to } as const;
   const journalOptions = {
     timeoutMs: TRACE_QUERY_TIMEOUT_MS,
     onFallback: () => ({ requestId: '', lines: undefined }),
@@ -239,7 +246,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
     onFallback: () => ({ requestId: '', rows: [], truncated: false }),
   };
 
-  //M 按消息取流水（journal 按 Trail.ts 的 pickReply 挑好）、按会话和时段取用量，两份明细可同时查询。
+  //M 两份明细可以并行查询。流水按消息及相关会话取，用量按会话和时段取。
   const pendingJournal = requestEventModule.requestEvent(
     ctx,
     'journal/request',
@@ -256,7 +263,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   );
   const [journal, used] = await Promise.all([pendingJournal, pendingUsage]);
 
-  //M journal 已挑出目标消息和涉及会话中截至本句回话的行；cut 是取满了、最后一行还没到这句回话。
+  //M journal 返回截至本句回话的匹配行；cut 表示还有匹配行因上限未返回。
   const events = journal.lines ?? [];
   const cut = journal.cut ?? false;
 

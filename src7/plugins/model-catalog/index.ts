@@ -81,11 +81,35 @@ declare module 'cordis' {
     modelCatalog: ModelCatalog;
   }
   interface Events {
-    /** 一个模型新记进冷却（model-fallback 发）。这里听它，给列表里那一项带上 limitedUntil。 */
+    /**
+     * 一个模型新记进冷却（model-fallback 发）。这里听它，给列表里那一项带上 limitedUntil。
+     * 谁发：src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.noteLimit
+     * 谁接：src7/plugins/model-catalog/index.ts 的 ModelCatalog.constructor
+     */
     'model/cooldown'(info: CooldownInfo): void;
-    /** 问模型清单（serial 发、等 model-catalog/result）：find 查一个模型，prompt 取派活用的模型介绍评价和思考档。本插件听。 */
+    /**
+     * 问模型清单（serial 发、等 model-catalog/result）：find 查一个模型，prompt 取派活用的模型介绍评价和思考档。本插件听。
+     * 谁发：
+     *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.onRequest
+     *   src7/plugins/context-fit/index.ts 的 apply
+     *   src7/plugins/model-catalog/Usage.ts 的 Usage.add
+     *   src7/plugins/progress/index.ts 的 Progress.getThinking
+     *   src7/plugins/settings/index.ts 的 Settings.checkModel
+     *   src7/plugins/web-api/index.ts 的 WebApi.setModel
+     * 谁接：src7/plugins/model-catalog/index.ts 的 ModelCatalog.constructor
+     */
     'model-catalog/request'(request: CatalogRequest): void | Promise<void>;
-    /** model-catalog/request 的回执（emit），按 requestId 配对。 */
+    /**
+     * model-catalog/request 的回执（emit），按 requestId 配对。
+     * 谁发：src7/plugins/model-catalog/index.ts 的 ModelCatalog.constructor
+     * 谁接：
+     *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.onRequest
+     *   src7/plugins/context-fit/index.ts 的 apply
+     *   src7/plugins/model-catalog/Usage.ts 的 Usage.add
+     *   src7/plugins/progress/index.ts 的 Progress.getThinking
+     *   src7/plugins/settings/index.ts 的 Settings.checkModel
+     *   src7/plugins/web-api/index.ts 的 WebApi.setModel
+     */
     'model-catalog/result'(result: CatalogResult): void;
   }
 }

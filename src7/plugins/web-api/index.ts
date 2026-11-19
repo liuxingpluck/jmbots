@@ -39,7 +39,7 @@ export const name = 'web-api';
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
 //M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
 //M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
-export const version = '1.1.11';
+export const version = '1.1.13';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -66,13 +66,29 @@ export interface ChannelStatus {
 
 declare module 'cordis' {
   interface Events {
-    /** GET /api/ui/status 每来一次就挨个问（ctx.serial）：每个渠道往 list 里 push 自己的一项或几项。监听的函数不许有返回值。 */
+    /**
+     * GET /api/ui/status 每来一次就挨个问（ctx.serial）：每个渠道往 list 里 push 自己的一项或几项。监听的函数不许有返回值。
+     * 谁发：src7/plugins/web-api/index.ts 的 WebApi.routes
+     * 谁接：src7/plugins/feishu/index.ts 的 Feishu.constructor；src7/plugins/wechat/index.ts 的 Wechat.constructor
+     */
     'web-api/status'(list: ChannelStatus[]): void | Promise<void>;
-    /** 收件表记下一条（HTTP 的、别的渠道的都算）。只是通知，journal 听。 */
+    /**
+     * 收件表记下一条（HTTP 的、别的渠道的都算）。journal 和 tutorial 通过 internal/dispatch 记录。
+     * 谁发：src7/plugins/web-api/Timeline.ts 的 Timeline.insert
+     * 谁接：暂无
+     */
     'web-api/received'(message: { id: number; bot: string; channel: string; source: string; text: string; at: number }): void;
-    /** 一句回话追加进收件表，replyIndex 是它在 replies 里的下标。只是通知，journal 听。 */
+    /**
+     * 一句回话追加进收件表，replyIndex 是它在 replies 里的下标。journal 和 tutorial 通过 internal/dispatch 记录。
+     * 谁发：src7/plugins/web-api/Timeline.ts 的 Timeline.reply
+     * 谁接：暂无
+     */
     'web-api/replied'(reply: { messageId: number; replyIndex: number; session: Session; text: string; at: number }): void;
-    /** 网页换了会话的模型。只是通知，journal 听。 */
+    /**
+     * 网页换了会话的模型。journal 通过 internal/dispatch 记录。
+     * 谁发：src7/plugins/web-api/index.ts 的 WebApi.setModel
+     * 谁接：暂无
+     */
     'web-api/model'(change: { session: Session; from: string; to: string; thinkingFrom: string; thinkingTo: string; by: 'HTTP' }): void;
   }
 }
@@ -840,11 +856,14 @@ class WebApi {
     }
 
     const paths: string[] = [];
+    const uncertain = '附件保存结果不确定，请核对工作区后再提交。';
     const options = {
       timeoutMs: 5000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', ok: false, error: detail ?? `保存附件未获回执（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
+
+        return { requestId: '', ok: false, error: detail ?? `保存附件未获回执（${reason}）` };
+      },
     };
     try {
       for (const file of files) {
@@ -853,7 +872,10 @@ class WebApi {
         //M 让机器人保存附件，收到实际路径后才能写进对话。
         const saved = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
 
-        //G 任一附件没确认保存就中止发消息，保留暂存上传供重试。
+        //G 保存超时时停止发消息，并保留暂存数据供核对。
+        if (saved.error === uncertain) throw new failureModule.Failure(504, uncertain);
+
+        //G 确定未保存时停止发消息，保留暂存上传供重试。
         if (!saved.ok || saved.path === undefined) {
           let status = 500;
           if (saved.requestId === '') {

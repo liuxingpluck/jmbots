@@ -8,7 +8,6 @@ import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
-import * as assist from './Assist.tsx';
 import * as channelTabs from './ChannelTabs.tsx';
 import * as composer from './Composer.tsx';
 import * as guide from '../Guide/Guide.tsx';
@@ -115,14 +114,9 @@ export function ChatArea(): react.JSX.Element {
   //M 按当前机器人与渠道聊天筛选条件订阅并拉取统一时间线消息流。
   const messages = useMessagesModule.useMessages(current, 'web', { channel: view.channel, chat: view.chat, unified: true });
   react.useEffect(() => setReply(null), [current]);
-  /** 后端挂着哪几个体验插件：未挂载时不显示也不轮询，避免反复 404。 */
-  //M 检查已挂载插件清单中是否启用 assist 与 progress，避免对未启用插件发轮询请求。
+  //M 检查已挂载插件清单，决定是否显示进度条。
   const mountedPlugins = context.useUi((state) => state.mountedPlugins);
-  const assistEnabled = api.isPluginMounted(mountedPlugins, 'assist', false);
   const progressEnabled = api.isPluginMounted(mountedPlugins, 'progress', false);
-  /** 表情、选项卡片、待办（assist 插件），每 2 秒取一次。 */
-  //M 在 assist 插件挂载时持续轮询当前机器人的表情、选项卡片和待办状态。
-  assist.usePoll(current, assistEnabled);
   /** 帮助开着没有。 */
   const [helpOpen, setHelpOpen] = react.useState(false);
 

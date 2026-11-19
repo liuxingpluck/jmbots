@@ -74,11 +74,23 @@ interface Reservation {
 
 declare module 'cordis' {
   interface Events {
-    /** 资源档位变更，后续插件自行接线，不直接调用别的插件。 */
+    /**
+     * 资源档位变更，后续插件自行接线，不直接调用别的插件。
+     * 谁发：src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.updatePressure
+     * 谁接：src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.constructor
+     */
     'resource/pressure'(pressure: ResourcePressure): void;
-    /** 开重活/加载模型前询问，监听器同步标handled。 */
+    /**
+     * 开重活/加载模型前询问，监听器同步标handled。
+     * 谁发：src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.backfill；src7/plugins/voice/Routes.ts 的 allowLocal
+     * 谁接：src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor
+     */
     'resource/request'(request: ResourceRequest): void | Promise<void>;
-    /** 使用同一requestId返回明确准入或拒绝。 */
+    /**
+     * 使用同一requestId返回明确准入或拒绝。
+     * 谁发：src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor
+     * 谁接：src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.backfill；src7/plugins/voice/Routes.ts 的 allowLocal
+     */
     'resource/result'(result: ResourceResult): void;
   }
 }

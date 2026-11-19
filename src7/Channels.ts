@@ -463,19 +463,86 @@ export interface ChannelRecallEvent {
 
 declare module 'cordis' {
   interface Events {
-    /** 渠道收到消息并存下原件后发出：approval 消息级命令先看，随后 bots 按 targetBots 逐个独立认领。 */
+    /**
+     * 渠道收到消息并存下原件后发出：approval 消息级命令先看，随后 bots 按 targetBots 逐个独立认领。
+     * 谁发：
+     *   src7/plugins/cli/index.ts 的 Cli.submitLine
+     *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.deliver
+     *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.dispatch
+     *   src7/plugins/progress/GroupDaily.ts 的 dispatchReport
+     *   src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch、VoiceTasks.record
+     *   src7/plugins/web-api/index.ts 的 WebApi.emitChannelMessage
+     *   src7/plugins/wechat/index.ts 的 Wechat.store
+     * 谁接：
+     *   src7/plugins/approval/index.ts 的 Approval.constructor
+     *   src7/plugins/bots/index.ts 的 Bots.constructor
+     *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'channel/message'(message: ChannelMessage, control?: ChannelMessageControl): void | Promise<void>;
-    /** 渠道回复工具或系统发话发出：匹配 channel 的渠道插件发完后回发 channel/replied。 */
+    /**
+     * 渠道回复工具或系统发话发出：匹配 channel 的渠道插件发完后回发 channel/replied。
+     * 谁发：src7/Channels.ts 的 requestChannelReply
+     * 谁接：
+     *   src7/Channels.ts 的 registerTextReply
+     *   src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor
+     *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex
+     *   src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'channel/reply'(request: ChannelReplyRequest): void | Promise<void>;
-    /** 渠道回复发完或确认失败后回传回执。 */
+    /**
+     * 渠道回复发完或确认失败后回传回执。
+     * 谁发：
+     *   src7/Channels.ts 的 registerTextReply
+     *   src7/plugins/approval/Outbound.ts 的 Outbound.publish
+     *   src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
+     *   src7/plugins/feishu/Reply.ts 的 FeishuReply.onChannelReply
+     *   src7/plugins/voice/Replies.ts 的 VoiceReplies.onReply
+     * 谁接：
+     *   src7/Channels.ts 的 requestChannelReply
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'channel/replied'(event: ChannelRepliedEvent): void;
-    /** 一轮 channel_tool 收尾了（只是通知，bots 的 Dispatch 发）：网页把那条标成回完，命令行出错时记退出码。 */
+    /**
+     * 一轮 channel_tool 收尾了（只是通知，bots 的 Dispatch 发）：网页把那条标成回完，命令行出错时记退出码。
+     * 谁发：src7/plugins/bots/DispatchResults.ts 的 DispatchResults.emitSettled
+     * 谁接：
+     *   src7/plugins/cli/index.ts 的 Cli.constructor
+     *   src7/plugins/voice/index.ts 的 apply
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'channel/settled'(event: ChannelSettledEvent): void;
-    /** 渠道历史工具发出：匹配 channel 的渠道插件在授权范围内查询并回传 channel/history-result。 */
+    /**
+     * 渠道历史工具发出：匹配 channel 的渠道插件在授权范围内查询并回传 channel/history-result。
+     * 谁发：src7/plugins/bots/HistoryRequest.ts 的 requestChannelHistory
+     * 谁接：
+     *   src7/plugins/cli/History.ts 的 CliHistory.constructor
+     *   src7/plugins/feishu/History.ts 的 FeishuHistory.constructor
+     *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.constructor
+     *   src7/plugins/web-api/History.ts 的 WebHistory.constructor
+     *   src7/plugins/wechat/History.ts 的 WechatHistory.constructor
+     */
     'channel/history'(request: ChannelHistoryRequest): void | Promise<void>;
-    /** 渠道历史查询结果回传。 */
+    /**
+     * 渠道历史查询结果回传。
+     * 谁发：
+     *   src7/plugins/cli/History.ts 的 CliHistory.onChannelHistory
+     *   src7/plugins/feishu/History.ts 的 FeishuHistory.onChannelHistory
+     *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.onHistory
+     *   src7/plugins/web-api/History.ts 的 WebHistory.onChannelHistory
+     *   src7/plugins/wechat/History.ts 的 WechatHistory.onChannelHistory
+     * 谁接：src7/plugins/bots/HistoryRequest.ts 的 requestChannelHistory
+     */
     'channel/history-result'(event: ChannelHistoryResultEvent): void;
-    /** 渠道收到本人或原发信人撤回消息后发出：bots 停掉该消息正在跑的会话、移除排队项并停掉其派出的后台会话。 */
+    /**
+     * 渠道收到本人或原发信人撤回消息后发出：bots 停掉该消息正在跑的会话、移除排队项并停掉其派出的后台会话。
+     * 谁发：src7/plugins/feishu/Inbound.ts 的 FeishuInbound.onRecall
+     * 谁接：src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen
+     */
     'channel/recall'(event: ChannelRecallEvent): void | Promise<void>;
   }
 }
@@ -688,6 +755,7 @@ export function paginateChannelHistory(input: PaginateHistoryInput): ChannelHist
   if (decodedCursor !== undefined) {
     const cursorAt = decodedCursor.beforeAt;
     const cursorId = decodedCursor.beforeId;
+    //M 只保留严格早于上一页游标的时间与消息号，翻页不会重复边界记录。
     bounded = sorted.filter((entry) => {
       if (entry.createdAt < cursorAt) return true;
 
@@ -768,7 +836,12 @@ export async function requestChannelReply(
         replyRoundKey: req.replyRoundKey,
         replyIndex: req.replyIndex,
         kind: req.kind,
-        parts: req.parts.map((part) => ({ partId: part.partId, kind: part.kind, status: 'uncertain', reason: '等待渠道发送回执超时' })),
+        parts: req.parts.map((part) => ({
+          partId: part.partId,
+          kind: part.kind,
+          status: 'uncertain',
+          reason: '等待渠道发送回执超时',
+        })),
         reason: '等待渠道发送回执超时',
         at: Date.now(),
       });
@@ -789,7 +862,12 @@ export async function requestChannelReply(
         replyRoundKey: req.replyRoundKey,
         replyIndex: req.replyIndex,
         kind: req.kind,
-        parts: req.parts.map((part) => ({ partId: part.partId, kind: part.kind, status: 'rejected', reason: unhandledReason })),
+        parts: req.parts.map((part) => ({
+          partId: part.partId,
+          kind: part.kind,
+          status: 'rejected',
+          reason: unhandledReason,
+        })),
         reason: unhandledReason,
         at: Date.now(),
       });
@@ -1019,7 +1097,9 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
 
     if (request.mode !== 'text') {
       //G 纯文字适配器不支持非 text 模式（如附件），明确拒收。
-      emitReplied(request, buildFailure(request, 'rejected', `capability_unsupported：渠道 ${adapter.channel} 当前只支持纯文字直回`));
+      const reason = `capability_unsupported：渠道 ${adapter.channel} 当前只支持纯文字直回`;
+      const receipt = buildFailure(request, 'rejected', reason);
+      emitReplied(request, receipt);
       return;
     }
 
@@ -1028,7 +1108,9 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
     if (request.target !== undefined) {
       if (adapter.getTargetAddress === undefined) {
         //G 渠道未实现目标识别能力时明确拒绝，避免误发回原聊天。
-        emitReplied(request, buildFailure(request, 'rejected', `capability_unsupported：渠道 ${adapter.channel} 不支持指定目标聊天`));
+        const reason = `capability_unsupported：渠道 ${adapter.channel} 不支持指定目标聊天`;
+        const receipt = buildFailure(request, 'rejected', reason);
+        emitReplied(request, receipt);
         return;
       }
 

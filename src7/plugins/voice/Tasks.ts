@@ -111,13 +111,29 @@ interface Recent extends Flight {
 
 declare module 'cordis' {
   interface Events {
-    /** 仅在机器人认领语音任务后通知。 */
+    /**
+     * 仅在机器人认领语音任务后通知。
+     * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch
+     * 谁接：暂无
+     */
     'voice/task'(task: VoiceTask): void;
-    /** 半句获准先开工，由 bots 复用认领入口，不进入标准历史流。 */
+    /**
+     * 半句获准先开工，由 bots 复用认领入口，不进入标准历史流。
+     * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch
+     * 谁接：src7/plugins/bots/index.ts 的 Bots.constructor；src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor
+     */
     'voice/dispatch'(message: channel.ChannelMessage, control: channel.ChannelMessageControl): Promise<void>;
-    /** 语音最终句先进入网页的持久时间线，随后才发标准渠道事件。 */
+    /**
+     * 语音最终句先进入网页的持久时间线，随后才发标准渠道事件。
+     * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch、VoiceTasks.record
+     * 谁接：src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor；src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'voice/record'(message: channel.ChannelMessage, sessionId?: string): void;
-    /** 没有最终字幕就失效的半句，取消关联回复等待。 */
+    /**
+     * 没有最终字幕就失效的半句，取消关联回复等待。
+     * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispose
+     * 谁接：src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor
+     */
     'voice/abandon'(messageId: string): void;
   }
 }

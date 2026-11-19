@@ -35,7 +35,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.3';
+export const version = '1.2.5';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -53,13 +53,51 @@ declare module 'cordis' {
     approval: Approval;
   }
   interface Events {
-    /** 存完一件待确认的事（通知）。journal、feishu 听。 */
+    /**
+     * 存完一件待确认的事（通知）。journal、feishu 听。
+     * 谁发：src7/plugins/approval/index.ts 的 Approval.ask
+     * 谁接：src7/plugins/base-bridge/Notify.ts 的 mountNotify；src7/plugins/feishu/cards/Cards.ts 的 setupApproval
+     */
     'approval/asked'(pending: Pending): void;
-    /** 定完一件事（通知），state 已是 approved / rejected。提的人（exec……）听它去做，journal、feishu 也听。 */
+    /**
+     * 定完一件事（通知），state 已是 approved / rejected。提的人（exec……）听它去做，journal、feishu 也听。
+     * 谁发：src7/plugins/approval/index.ts 的 Approval.settle
+     * 谁接：
+     *   src7/plugins/assist/Reminders.ts 的 Reminders.start
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 mountUpdateWatch
+     *   src7/plugins/exec/Runs.ts 的 Runs.constructor
+     *   src7/plugins/exec/index.ts 的 Exec.constructor
+     *   src7/plugins/feishu/cards/Cards.ts 的 setupApproval
+     *   src7/plugins/progress/Review.ts 的 Review.constructor
+     *   src7/plugins/progress/index.ts 的 Progress.constructor
+     *   src7/plugins/wechat/index.ts 的 apply
+     */
     'approval/decided'(pending: Pending): void;
-    /** 别的插件请审核办事（serial 发、等 approval/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。 */
+    /**
+     * 别的插件请审核办事（serial 发、等 approval/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。
+     * 谁发：
+     *   src7/plugins/assist/Reminders.ts 的 Reminders.closeCard、Reminders.ensureCard、Reminders.getCard
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.check
+     *   src7/plugins/exec/Runs.ts 的 Runs.dismiss、requestReview
+     *   src7/plugins/feishu/cards/Cards.ts 的 onAction
+     *   src7/plugins/progress/Review.ts 的 Review.check
+     *   src7/plugins/progress/index.ts 的 Progress.closeCard、Progress.sendCard
+     *   src7/plugins/web-api/index.ts 的 WebApi.botList
+     * 谁接：src7/plugins/approval/index.ts 的 Approval.constructor
+     */
     'approval/request'(request: ApprovalRequest): void | Promise<void>;
-    /** approval/request 的回执（emit），按 requestId 配对。 */
+    /**
+     * approval/request 的回执（emit），按 requestId 配对。
+     * 谁发：src7/plugins/approval/index.ts 的 Approval.constructor
+     * 谁接：
+     *   src7/plugins/assist/Reminders.ts 的 Reminders.closeCard、Reminders.ensureCard、Reminders.getCard
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.check
+     *   src7/plugins/exec/Runs.ts 的 requestReview
+     *   src7/plugins/feishu/cards/Cards.ts 的 onAction
+     *   src7/plugins/progress/Review.ts 的 Review.check
+     *   src7/plugins/progress/index.ts 的 Progress.sendCard
+     *   src7/plugins/web-api/index.ts 的 WebApi.botList
+     */
     'approval/result'(result: ApprovalResult): void;
   }
 }
@@ -316,12 +354,8 @@ export class Approval extends cordis.Service {
     //M 建待确认表（没有才建）。
     ctx.resources.db.exec('CREATE TABLE IF NOT EXISTS approval_pending (id INTEGER PRIMARY KEY AUTOINCREMENT,'
       + ' kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, payload TEXT NOT NULL, bot TEXT NOT NULL,'
-      + ' session TEXT, state TEXT NOT NULL, decided_by TEXT, asked_at INTEGER NOT NULL, decided_at INTEGER)');
-    //M 卡片列是 11-14 加的：老库没有就补上（老的行 card 是空的，读的时候照 title、detail 拼一张）。
-    const columns = ctx.resources.db.query('PRAGMA table_info(approval_pending)').all() as { name: string }[];
-    if (!columns.some((column) => column.name === 'card')) ctx.resources.db.exec('ALTER TABLE approval_pending ADD COLUMN card TEXT');
-    if (!columns.some((column) => column.name === 'customer')) ctx.resources.db.exec('ALTER TABLE approval_pending ADD COLUMN customer TEXT');
-    if (!columns.some((column) => column.name === 'actor')) ctx.resources.db.exec('ALTER TABLE approval_pending ADD COLUMN actor TEXT');
+      + ' session TEXT, state TEXT NOT NULL, decided_by TEXT, asked_at INTEGER NOT NULL, decided_at INTEGER,'
+      + ' card TEXT, customer TEXT, actor TEXT)');
 
     //M 别的插件请审核办事走请求事件 approval/request（契约 3.2 第 1 条）：onRequest 按 action 调现有方法，办完回 approval/result。
     //M   现有方法抛的错转成 { error }，调用方不干等超时；review 没带回 verdict，exec 照“没有审核就不让跑命令”当拒绝。

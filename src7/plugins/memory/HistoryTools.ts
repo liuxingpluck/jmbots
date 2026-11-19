@@ -26,7 +26,11 @@ export interface HistoryToolRequest {
 
 declare module 'cordis' {
   interface Events {
-    /** 记忆工具读取前台、渠道或微信的归档记录。 */
+    /**
+     * 记忆工具读取前台、渠道或微信的归档记录。
+     * 谁发：src7/plugins/memory/Search.ts 的 Search.readHistory
+     * 谁接：src7/plugins/memory/HistoryTools.ts 的 registerHistoryAlias
+     */
     'memory/history-tool'(request: HistoryToolRequest): void | Promise<void>;
   }
 }

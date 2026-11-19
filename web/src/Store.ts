@@ -3,7 +3,7 @@
  * 只放几栏共用的东西；一栏自己的（比如输入框里的字）放在那个组件里。
  */
 import * as zustand from 'zustand';
-import type * as api from './Api.ts';
+import * as api from './Api.ts';
 import type * as i18n from './I18n.ts';
 import * as theme from './Theme.ts';
 import type * as types from './Types.ts';
@@ -13,6 +13,76 @@ import * as replyLinkModule from './Chat/ReplyLink.ts';
 
 /** 右栏的标签；事件目标和文件预览目标分别保存。 */
 export type PanelTab = 'preview' | 'workspace' | 'session' | 'messages' | 'approvals' | 'memory' | 'details' | 'usage' | 'events' | 'todo';
+
+
+/** 消息下的一个表情。 */
+interface Reaction {
+  /** 表情记录号。 */
+  id: number;
+  /** 表情所在的消息号。 */
+  messageId: number | null;
+  /** 展示的表情。 */
+  emoji: string;
+}
+/** 一张选项卡片。 */
+export interface Ask {
+  /** 卡片记录号。 */
+  id: number;
+  /** 卡片所在的消息号。 */
+  messageId: number | null;
+  /** 给用户的问题。 */
+  question: string;
+  /** 可选答案。 */
+  options: string[];
+  /** 用户已选的答案。 */
+  answer?: string;
+}
+/** 待办里的一项。 */
+export interface TodoStep {
+  /** 待做的事。 */
+  text: string;
+  /** 执行状态。 */
+  status: 'todo' | 'doing' | 'done';
+}
+/** 一场会话的待办。 */
+export interface Todo {
+  /** 待办记录号。 */
+  id: number;
+  /** 建立待办的会话号。 */
+  sessionId: string;
+  /** 所属前台或后台根会话的编号。 */
+  root?: string;
+  /** 最近更新时间戳。 */
+  updatedAt: number;
+  /** 待办的各项。 */
+  items: TodoStep[];
+}
+/** 原群聊或私聊的一条定时提醒。 */
+export interface Reminder {
+  /** 提醒号。 */
+  id: number;
+  /** 提醒配置时区里的日期和时间。 */
+  at: string;
+  /** 显示时间使用的 IANA 时区。 */
+  timeZone: string;
+  /** 用户需要到点提醒的正文。 */
+  text: string;
+  /** 调度和发送进度。 */
+  state: 'awaiting' | 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'cancelled' | 'rejected';
+  /** 渠道回执的失败或待核对原因。 */
+  reason: string | null;
+}
+/** GET /api/assist 的响应。 */
+export interface AssistData {
+  /** 消息下的表情。 */
+  reactions: Reaction[];
+  /** 消息下的选项卡片。 */
+  asks: Ask[];
+  /** 各会话的待办。 */
+  todos: Todo[];
+  /** 支持定时提醒的版本会返回这一项。 */
+  reminders?: Reminder[];
+}
 
 
 /** 右栏要看的东西。 */
@@ -92,6 +162,8 @@ export interface UiState {
   approvals: types.ApprovalView[];
   /** 全部机器人的进度卡片（在转的和结束不到 10 分钟的）；左栏、聊天区进度条、鲸鱼娘共用这一份。 */
   progress: types.ProgressView[];
+  /** 聊天区与右栏共用的助手数据，带上取数时的机器人。 */
+  assist: (AssistData & { bot: string }) | null;
   /** 右栏展开没有。 */
   panelOpen: boolean;
   /** 右栏在哪个标签。 */
@@ -145,6 +217,8 @@ export interface UiState {
     approvals?: types.ApprovalView[];
     progress?: types.ProgressView[];
   }) => void;
+  /** 为当前机器人取助手数据，轮询和操作完成后的即时刷新共用。 */
+  refreshAssist: (bot: string) => Promise<void>;
   /** 这条待确认决定了：不等下一次轮询，马上拿掉。 */
   dropApproval: (id: number) => void;
   /** 换个机器人聊。 */
@@ -213,7 +287,9 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
   const history = new historyModule.PanelHistory();
   /** 只给本地只读定位编号，不与任何后端运行号混用。 */
   let locationSerial = 0;
-  return zustand.create<UiState>((set) => {
+  /** 每次取助手数据递增，用于丢弃比操作后刷新更早的响应。 */
+  let assistRequestId = 0;
+  return zustand.create<UiState>((set, get) => {
     /** 恢复已有条目时只切本地查看，保留原有文件多标签。 */
     /** 切换机器人时清空旧机器人专属的面板定位和工作区标签，并切到新机器人的历史栈。 */
     const getBotSwitchPatch = (changedBot: boolean, nextBot: string | null): Partial<UiState> => {
@@ -263,6 +339,7 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
       currentBot: null,
       approvals: [],
       progress: [],
+      assist: null,
       panelOpen: false,
       panelTab: 'preview',
       panelTarget: null,
@@ -287,6 +364,26 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
       themeName: initialTheme,
       language: initialLanguage,
       setMountedPlugins: (mountedPlugins) => set({ mountedPlugins }),
+      refreshAssist: async (bot) => {
+        const state = get();
+        //G 切换机器人或没挂插件时跳过这个机器人的取数请求。
+        if (state.currentBot !== bot) return;
+
+        const enabled = api.isPluginMounted(state.mountedPlugins, 'assist', false);
+        if (!enabled) return;
+
+        //M 轮询、答选项和清待办都读同一份接口响应，失败时保留上次成功的数据。
+        const requestId = ++assistRequestId;
+        const url = `/api/assist?bot=${encodeURIComponent(bot)}`;
+        const result = await api.getJson<AssistData>(url).catch(() => undefined);
+        if (result === undefined) return;
+
+        //G 慢响应不能覆盖较新的请求结果，也不能写到切换后的机器人。
+        if (requestId !== assistRequestId || get().currentBot !== bot) return;
+
+        const assist = { ...result, bot };
+        set({ assist });
+      },
       setPolled: (result) =>
         set((state) => {
           /** 新的机器人列表；这次没拿到就留着旧的。 */

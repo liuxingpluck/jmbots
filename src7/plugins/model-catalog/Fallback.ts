@@ -66,7 +66,11 @@ export interface FallbackSettings {
 
 declare module 'cordis' {
   interface Events {
-    /** 每换一个模型去试之前发（journal 记成 model.fallback）。 */
+    /**
+     * 每换一个模型去试之前发（journal 记成 model.fallback）。
+     * 谁发：src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.onRequest
+     * 谁接：暂无
+     */
     'model/fallback'(info: FallbackInfo): void;
   }
 }

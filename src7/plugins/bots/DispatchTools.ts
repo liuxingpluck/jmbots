@@ -301,6 +301,7 @@ export class DispatchTools {
       workspace,
       allowArchived: true,
     };
+    //M 沿用已绑定的目录并复核权限，模型按本次派活及图片需要更新。
     const resolved = this.getWorkspace(bot, plan.origin.address, pick);
     const picked = this.getModel(work.row.model, work.row.thinking, plan);
     work.row.model = picked.model;
@@ -449,6 +450,7 @@ export class DispatchTools {
       parts.push(getWorkspaceText(row, task, names));
       parts.push(`回报：${returned}`);
     }
+    //M 列完派活状态，再补模型与摘要，便于选择要续接的会话。
     parts.push(`模型 ${row.model}（${row.thinking}）`);
     parts.push(row.summary ?? '（还没有总结）');
     return parts.join(' ');
@@ -609,6 +611,7 @@ export class DispatchTools {
     const canHand = request.tools.some((tool) => tool.name === 'hand_session');
     if (!canHand) return;
 
+    //M 工具仍可用才把如何派活告诉模型。
     request.system.push(HAND_HINT);
 
     //G 非本人（builder、guest）不挑模型：不带模型介绍。
@@ -636,6 +639,7 @@ export class DispatchTools {
     const prompt = result.prompt ?? '';
     if (prompt === '') return;
 
+    //M 仅本人的前台请求附上模型介绍，方便为后台任务选模型。
     request.system.push(prompt);
 
     //M 有介绍的模型各自能用的思考档：有才加。
@@ -705,6 +709,7 @@ function getReceipt(action: string, work: Session, front: Session): string {
  * @param images 这一轮的图片路径。
  */
 function getTextWithImages(text: string, images: string[]): string {
+  //M 只补用户没写进任务的图片路径，已引用的保留原写法。
   const missing = images.filter((file) => !text.includes(`@${file}`) && !text.includes(`@"${file}"`));
   const tokens = missing.map((file) => {
     if (/\s/u.test(file)) return `@"${file}"`;

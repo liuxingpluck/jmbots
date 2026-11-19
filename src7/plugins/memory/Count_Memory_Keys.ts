@@ -122,7 +122,12 @@ export function countChannelKeys(
   const counts = { empty: 0, recoverable: 0, reasons: getChannelReasons() };
   const table = `${schema}.memory_channel_messages`;
   const findPeers = getPeerLookup(index, table);
-  const sql = `SELECT msg_key AS messageKey, ${attributionFields} FROM ${table} WHERE memory_key = ''`;
+  let outsideFront = '';
+  if (columns.some((column) => column.name === 'front_only')) {
+    //G 私有前台归档没有可确认的渠道归属，不进入渠道补标。
+    outsideFront = ' AND front_only = 0';
+  }
+  const sql = `SELECT msg_key AS messageKey, ${attributionFields} FROM ${table} WHERE memory_key = ''${outsideFront}`;
   const rows = index.query<AttributionRow & { messageKey: string }, []>(sql);
   for (const row of rows.iterate()) {
     counts.empty += 1;

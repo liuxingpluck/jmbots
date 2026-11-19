@@ -36,6 +36,7 @@ export function readText(value: unknown, field: string): string {
 /** 校验入口传来的任务状态。 */
 export function readStatus(value: unknown): types.DecisionStatus {
   const status = value as types.DecisionStatus;
+  //G 状态必须在画布支持的取值内，后续的任务推进才能使用。
   if (!types.STATUSES.includes(status)) return invalid('status 不合法');
 
   return status;
@@ -104,6 +105,7 @@ function readOptions(value: unknown): types.DecisionOption[] | undefined {
 function readNode(id: string, raw: Record<string, unknown>, before: types.DecisionNode | undefined, now: number) {
   const item = { ...before, ...raw };
   const kind = item['kind'] as types.DecisionKind;
+  //G 合并后的状态也要符合画布支持的取值。
   const status = readStatus(item['status']);
 
   //G 只有约定的节点类型和状态能进入画布。
@@ -138,6 +140,7 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
   //G 正文保留原样，Markdown 的缩进和换行有含义。
   if (body !== undefined && typeof body !== 'string') return invalid('body 要是文本');
 
+  //M 核对详情引用、依赖、决定选项和时间，供画布显示。
   const sources = readList(item['sources'], 'sources');
   const links = readList(item['links'], 'links');
   const needs = readList(item['needs'], 'needs');
@@ -271,6 +274,7 @@ export class Store {
 
   /** 从给定序号之后轮询改动，包含可靠的用户选择。 */
   getChanges(since: number) {
+    //M 轮询只返回客户端最后看过的序号之后的变化。
     const changes = this.changes.filter((record) => record.seq > since);
     const head = this.saved.head;
     if (head !== undefined && head.seq > since && changes.at(-1)?.seq !== head.seq) {
@@ -314,10 +318,12 @@ export class Store {
 
   /** 只推进任务状态，保留决定、作者与对话。重复设置同一状态照旧。 */
   setStatus(id: string, status: types.DecisionStatus, actor: types.DecisionChange['actor']) {
+    //M 找到现有任务，保留原节点内容，只改状态。
     const node = this.getNode(id);
     if (node.status === status) return { node, tasks: [] };
 
     if (node.kind === 'pending' && status === 'open' && !node.options?.length) {
+      //G 待定节点重新打开后必须有选项可供用户选择。
       return invalid(`${id} 待定时至少要有一个选项`);
     }
 

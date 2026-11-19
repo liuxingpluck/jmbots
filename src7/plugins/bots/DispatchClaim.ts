@@ -59,7 +59,8 @@ export class DispatchClaim {
 
     //G 同一条消息对该机器人已经认领过（front 或 sourceClaims 已记）→ 返回 duplicate，不再重复入队。
     const claimedList = front.row.sourceClaims ?? [];
-    const queuedSame = (front.row.resultQueue ?? []).some((item) => item.claimKey === claimKey || item.key === claimKey);
+    const queue = front.row.resultQueue ?? [];
+    const queuedSame = queue.some((item) => item.claimKey === claimKey || item.key === claimKey);
     if (claimedList.includes(claimKey) || queuedSame) {
       control?.claims.push({
         bot: bot.name,
@@ -88,6 +89,7 @@ export class DispatchClaim {
         if (listened.outcome !== undefined) {
           record.judged = listened.outcome;
         }
+        //M 原渠道收到只听的认领记录，可以把判断结论写进来往流水。
         control?.claims.push(record);
         return;
       }

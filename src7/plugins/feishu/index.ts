@@ -64,7 +64,7 @@ export const name = 'feishu';
 //M 1.1.11：channel/history 的游标和分页改用骨架的 paginateChannelHistory，飞书只认应用、聊天和挑 @我。
 //M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、pickChat：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
-export const version = '1.1.14';
+export const version = '1.1.15';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -89,11 +89,23 @@ declare module 'cordis' {
     feishu: Feishu;
   }
   interface Events {
-    /** web-api 每来一次 GET /api/ui/status 挨个问一遍：各渠道往 list 里 push 自己的连接状态。这里每个飞书应用 push 一项。 */
+    /**
+     * web-api 每来一次 GET /api/ui/status 挨个问一遍：各渠道往 list 里 push 自己的连接状态。这里每个飞书应用 push 一项。
+     * 谁发：src7/plugins/web-api/index.ts 的 WebApi.routes
+     * 谁接：src7/plugins/feishu/index.ts 的 Feishu.constructor；src7/plugins/wechat/index.ts 的 Wechat.constructor
+     */
     'web-api/status'(list: ChannelStatus[]): void | Promise<void>;
-    /** 通过指定机器人向飞书聊天发送本地文件。 */
+    /**
+     * 通过指定机器人向飞书聊天发送本地文件。
+     * 谁发：src7/plugins/relay/index.ts 的 Relay.sendFile
+     * 谁接：src7/plugins/feishu/index.ts 的 Feishu.constructor
+     */
     'feishu/send-file'(request: SendFileRequest): void | Promise<void>;
-    /** 返回发送结果，失败时带原因。 */
+    /**
+     * 返回发送结果，失败时带原因。
+     * 谁发：src7/plugins/feishu/index.ts 的 Feishu.constructor
+     * 谁接：src7/plugins/relay/index.ts 的 Relay.sendFile
+     */
     'feishu/send-file-result'(result: SendFileResult): void;
   }
 }
@@ -935,6 +947,7 @@ export class Feishu {
   private status(list: ChannelStatus[]): void {
     for (const app of this.apps.values()) {
       const at = new Date(app.at).toLocaleString('zh-CN', { hour12: false });
+      //M 把每个应用的连接状态和更新时间分别显示在网页上。
       list.push({
         name: `feishu:${app.config.appId}`,
         bot: app.config.bot,
@@ -1027,6 +1040,7 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
     if (botsList !== undefined) {
       appEntry.bots = botsList;
     }
+    //M 把校验完的一项加入已配置应用清单，启动时按这个清单连飞书。
     apps.push(appEntry);
   }
   //M 校验并解析人员权限清单与群配置清单后拼出完整飞书配置对象。

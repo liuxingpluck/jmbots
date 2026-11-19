@@ -19,6 +19,7 @@ export class DispatchRecall {
 
   /** 拦截一条迟到的消息或结果。 */
   has(messageId: string): boolean {
+    //G 只拒绝已经通过授权检查并登记的撤回消息。
     return this.recalledMessages.has(messageId);
   }
 
@@ -128,9 +129,11 @@ export class DispatchRecall {
   /** 清掉前台排队项，并停止这一条消息正在进行的轮次。 */
   private recallFront(event: protocol.ChannelRecallEvent, queue: DispatchResults): boolean {
     let matchedAuthorized = false;
+    //M 扫描前台的活动轮与队列，找到这条撤回消息对应的会话。
     for (const meta of this.home.sessions.find({ kind: 'front' })) {
       const maybeActive = meta.activeSourceSnapshot?.messageId === event.messageId;
-      const maybeQueued = (meta.resultQueue ?? []).some((item) => item.payload.sourceSnapshot?.messageId === event.messageId);
+      const queueItems = meta.resultQueue ?? [];
+      const maybeQueued = queueItems.some((item) => item.payload.sourceSnapshot?.messageId === event.messageId);
       if (!maybeActive && !maybeQueued) {
         continue;
       }
@@ -188,8 +191,10 @@ export class DispatchRecall {
   /** 扫描后台会话，停止正在跑或还有待处理队列的任务。 */
   private recallWork(event: protocol.ChannelRecallEvent): boolean {
     let matchedAuthorized = false;
+    //M 通过后台继承的来源快照找到从该条消息派出的任务。
     for (const meta of this.home.sessions.find({ kind: 'work' })) {
       const workSnap = meta.frontTask?.sourceSnapshot ?? meta.activeSourceSnapshot;
+      //G 后台也按原消息与发送人核对撤回权限。
       if (!this.canRecallSnapshot(event, workSnap)) {
         continue;
       }
@@ -227,6 +232,7 @@ export class DispatchRecall {
   /** 检查直接投递到其他种类会话的撤回。 */
   private recallDirect(event: protocol.ChannelRecallEvent, claimTargetPrefix: string): boolean {
     let matchedAuthorized = false;
+    //M 直接投递可进入前后台之外的会话，用认领记录定位。
     for (const meta of this.home.sessions.find({})) {
       if (meta.kind === 'front' || meta.kind === 'work' || meta.state !== 'running') {
         continue;

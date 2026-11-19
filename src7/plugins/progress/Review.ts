@@ -329,11 +329,14 @@ export class Review {
       payload: { entry, advice, requiresReceipt: true },
     };
     const ask = { action: 'ask', input: askParams } as const;
+    const uncertain = '复盘送审结果不确定';
     const askOptions = {
       timeoutMs: 5000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', error: detail ?? `审核未获回执（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'timeout') return { requestId: '', error: uncertain };
+
+        return { requestId: '', error: detail ?? `审核未获回执（${reason}）` };
+      },
     };
 
     //M 送审成功仍需等待用户批准，才由 approval/decided 写入公共记忆。
@@ -341,7 +344,10 @@ export class Review {
       this.ctx, 'approval/request', 'approval/result', ask, askOptions,
     );
 
-    //G 无人应答或登记失败按拒绝处理，记录原因供排查。
+    //G 超时保留已复盘标记，不另发确认卡，也不生成未经确认的写入。
+    if (asked.error === uncertain) return this.skip(uncertain);
+
+    //G 无人接单或明确登记失败，记录原因供排查。
     if (asked.pending === undefined || asked.error !== undefined) {
       const rejected = `审核未确认登记，复盘按拒绝处理：${asked.error ?? '未返回待确认项'}`;
       this.skip(rejected);

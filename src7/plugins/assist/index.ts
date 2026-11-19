@@ -19,7 +19,7 @@ import * as remindersModule from './Reminders.ts';
 /** 插件名。 */
 export const name = 'assist';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.0';
+export const version = '1.2.1';
 
 /** 用到的服务：resources 存表；tools 登记工具；http 开接口。 */
 export const inject = ['resources', 'tools', 'http', 'sessions'];

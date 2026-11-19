@@ -21,7 +21,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.4';
+export const version = '1.0.5';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http', 'bots'];
@@ -170,18 +170,24 @@ class Settings {
 
     const config = { name: botName, language };
     const request = { action: 'add', config } as const;
+    const uncertain = `机器人「${botName}」的配置已保存，实时登记结果不确定。请核对机器人列表后再操作。`;
     const options = {
       timeoutMs: BOT_ADD_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', ok: false, error: detail ?? `机器人登记未获回执（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
+
+        return { requestId: '', ok: false, error: detail ?? `机器人登记未获回执（${reason}）` };
+      },
     };
 
     //M 让机器人插件按已保存的配置实时登记，并返回它分配的记忆目录。
     const added = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
     const bot = added.bot;
 
-    //G 实时登记未确认时告诉调用者配置已保存，可重启生效。
+    //G 超时可能已登记，保留配置并提示核对，不走失败路径。
+    if (added.error === uncertain) throw new failureModule.Failure(504, uncertain);
+
+    //G 确定未登记时告诉调用者配置已保存，可重启生效。
     if (!added.ok || bot === undefined) {
       const reason = added.error ?? '未返回机器人信息';
       const error = `机器人「${botName}」的配置已保存，实时登记没办成：${reason}。请重启后生效。`;
@@ -254,7 +260,7 @@ class Settings {
     try {
       //M 读取当前进程启动时间，供前端轮询确认新进程接管。
       const startedAt = await this.startedAt();
-      const note = '正在重启：等 /api/ui/info 的 startedAt 变了就是新进程';
+      const note = '重启请求已受理。等 /api/ui/info 的 startedAt 变化再确认新进程已接管';
 
       //M 基地拉起的进程由基地接管，显式请求基地重启时等它答复。
       if (process.env['JMBOTS_SUPERVISED'] !== undefined) {
@@ -302,57 +308,69 @@ class Settings {
       });
       return { ok: true, startedAt, note };
     } catch (error) {
-      this.restarting = false;
+      //G 基地可能已开始重启时保留占用，防止前端重复发起。
+      if (!(error instanceof failureModule.Failure) || error.status !== 504) {
+        this.restarting = false;
+      }
       throw error;
     }
   }
 
   /**
-   * 关闭 HTTP。无人应答或等待超时后继续重启。
-   * @throws HTTP 已应答但明确报告关闭失败。
+   * 关闭 HTTP，确认关完才允许启动替代进程。
+   * @throws 无人处理、关闭失败或结果不确定时停止重启。
    */
   private async closeHttp(): Promise<void> {
     const request = { action: 'close' } as const;
     const options = {
       timeoutMs: HTTP_CLOSE_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '',
-        ok: false,
-        error: detail ?? reason,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'unhandled') {
+          //G 未开始关闭，允许用户在 HTTP 插件恢复后重新申请。
+          this.restarting = false;
+          return { requestId: '', ok: false, error: '无人处理 HTTP 关闭请求' };
+        }
+        return { requestId: '', ok: false, error: `HTTP 关闭结果不确定（${detail ?? reason}）` };
+      },
     };
 
-    //M 交给 HTTP 插件关监听，事件请求最多等十秒。
+    //M 只发一次关闭请求。十秒内未确认时，保留尚在关闭的原进程。
     const result = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
     if (result.ok) return;
 
-    //G HTTP 明确报告关闭失败时，交给原退出流程记录错误。
-    const error = result.error ?? 'HTTP 关闭失败';
-    if (result.requestId !== '') throw new Error(error);
+    //G 处理方已开始关闭但等待到期，同样无法确认监听是否已释放。
+    if (result.error === '等待 HTTP 关闭超时') throw new Error('HTTP 关闭结果不确定，请核对运行状态');
 
-    //T HTTP 没应答，记录原因后继续重启。
-    const vars = { 原因: error };
-    this.ctx.emit('trace', 'Settings.restart', 'HTTP 关闭未获回执，继续重启', "requestEvent('http/request', close)", vars);
+    //G HTTP 没有确认释放端口时，不启动替代进程。
+    throw new Error(result.error ?? 'HTTP 未确认关闭');
   }
 
   /**
    * 通过 base/request 请基地重启，等待其明确答复。
    * @returns 基地确认重启后结束等待。
-   * @throws Failure(503)：基地没响应；Failure(409)：基地不肯。
+   * @throws Failure(503)：本地提交失败。Failure(504)：结果不确定。Failure(409)：基地不肯。
    */
   private async askBase(): Promise<void> {
     const request = { method: 'POST', route: '/restart', body: {}, timeoutMs: BASE_TIMEOUT_MS } as const;
+    const uncertain = '基地重启结果不确定。请核对服务的启动时间后再操作。';
     const options = {
       timeoutMs: BASE_TIMEOUT_MS + 1000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', ok: false, error: detail ?? `基地重启未获回执（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
+
+        return { requestId: '', ok: false, error: detail ?? `基地重启未获回执（${reason}）` };
+      },
     };
 
     //M 等待基地完成请求，预留一秒用于返回连接错误。
     const response = await requestEventModule.requestEvent(this.ctx, 'base/request', 'base/result', request, options);
 
-    //G 基地没有明确回应时失败，允许调用方重试。
+    //G 基地可能已收到请求，超时或响应中断时保留占用。
+    if (response.error === uncertain || response.error === '基地没响应') {
+      throw new failureModule.Failure(504, uncertain);
+    }
+
+    //G 无人接单或本地明确失败时结束请求，允许修复后重试。
     if (!response.ok || response.status === undefined) {
       throw new failureModule.Failure(503, response.error ?? '基地未返回重启结果');
     }
@@ -371,15 +389,19 @@ class Settings {
   /**
    * 过一会儿退出，让回应先发出去。
    * @param why 跟踪里写的原因。
-   * @param before 退出前要做的事（源码模式：关监听、起新进程）；出错也照样退出。
+   * @param before 退出前必须完成的事。源码模式先关闭监听，再起新进程。
    */
   private exitSoon(why: string, before?: () => Promise<void>): void {
     //T 跟踪：要重启了。
     this.ctx.emit('trace', 'Settings.restart', '要重启了', 'process.exit(0)', { 原因: why });
     setTimeout(() => {
-      void (before?.() ?? Promise.resolve()).catch((error: unknown) => {
-        this.ctx.emit('trace', 'Settings.restart', '退出前的事出错了', 'before()', { 错误: String(error) });
-      }).finally(() => process.exit(0));
+      //M 只有重启前置步骤完成才退出。关闭未确认时保留进程并记下原因。
+      void Promise.resolve().then(before).then(() => {
+        process.exit(0);
+      }).catch((error: unknown) => {
+        const vars = { 原因: String(error) };
+        this.ctx.emit('trace', 'Settings.restart', '重启停止，保留原进程', 'before()', vars);
+      });
     }, EXIT_DELAY_MS);
   }
 

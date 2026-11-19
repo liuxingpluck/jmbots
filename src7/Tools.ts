@@ -20,6 +20,11 @@ declare module 'cordis' {
      * 只不让执行这一个的，在 gate.deny 里写上理由（理由会当成工具结果给模型看，会话接着走）；
      * 要整场这一轮停下的，在 gate.stop 里写理由。监听的函数不许有返回值。
      * 关口四 session/after-tool 由会话循环发，声明在 Sessions.ts，数据是下面的 ToolDone。
+     * 谁发：src7/Tools.ts 的 Tools.execute
+     * 谁接：
+     *   src7/plugins/approval/index.ts 的 Approval.constructor
+     *   src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor
+     *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools
      */
     'session/before-tool'(gate: ToolGate): void | Promise<void>;
   }

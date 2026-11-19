@@ -195,6 +195,7 @@ export class FeishuInbound {
 
   /** 记录任一入站阶段的失败，沿用原有消息日志格式。 */
   private logFailedMessage(messageId: string, reason: string): void {
+    //M 日志带本机时间，便于按消息号和时间找入站失败。
     const logTime = textModule.getClock(Date.now(), 'date');
     //M 记录消息号和失败原因供排查。
     console.error(`${logTime} 飞书：消息 ${messageId} 没处理成：${reason}`);
@@ -247,6 +248,7 @@ export class FeishuInbound {
         type: message.message_type,
       });
       const resources = [...facts.described.resources, ...more.resources];
+      //M 引用和转发里的附件也归这次入站，连原消息的附件一起下载。
       const saved = await this.saveAttachments(facts, resources);
 
       //M 6. 拼成标准消息，先持久化渠道原始记录。
@@ -419,6 +421,7 @@ export class FeishuInbound {
     standardMentions: protocol.ChannelMention[],
     atMe: boolean,
   ): { targetBots: string[]; byBotRouting: Record<string, protocol.BotRoutingHint> } {
+    //G 群里的提及和监听设置只在当前飞书应用允许的机器人中匹配。
     const allowedBots = this.getAllowedBots(app.config);
     let targetBots: string[] = [];
     const byBotRouting: Record<string, protocol.BotRoutingHint> = {};
@@ -434,11 +437,13 @@ export class FeishuInbound {
         const mentionedBot = standardMentions.some((m) => m.botNames.includes(botName));
         const activeForBot = mentionedBot || (atMe && botName === app.config.bot);
         if (activeForBot) {
+          //M 被点名的机器人进入要回复的分派。
           targetBots.push(botName);
           byBotRouting[botName] = { listenOnly: false };
           continue;
         }
         if (canListenAll) {
+          //M 群已登记全量监听时，没被点名的机器人也能记背景或判断是否接话。
           targetBots.push(botName);
           byBotRouting[botName] = { listenOnly: true, judge: registered?.listen === 'judge' };
         }
@@ -529,6 +534,7 @@ export class FeishuInbound {
    */
   private async addTyping(app: AppState, messageId: string, address: FeishuAddress): Promise<void> {
     try {
+      //M 先给当前这条消息挂表情，让用户看到机器人已收到。
       const reaction = await api.call('挂表情', () => app.client.im.v1.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: 'Typing' } },
@@ -557,21 +563,22 @@ export class FeishuInbound {
     const message = facts.message;
     const attachments: protocol.ChannelAttachment[] = [];
     const failed: string[] = [];
-    const attachDir = this.ctx.resources.dir(
-      'channels',
-      'feishu',
-      'attachments',
-      namesModule.getSafeName(facts.appId, Infinity),
-      new Date().toLocaleDateString('sv-SE'),
-    );
+    //M 分应用和落盘日期保存原附件，等各机器人认领后再复制到自己的目录。
+    const appDir = namesModule.getSafeName(facts.appId, Infinity);
+    const day = new Date().toLocaleDateString('sv-SE');
+    const attachDir = this.ctx.resources.dir('channels', 'feishu', 'attachments', appDir, day);
     for (const [idx, resource] of resources.entries()) {
       const attachId = `${message.message_id}:${String(idx)}`;
       try {
-        const content = await media.download(this.feishu, facts.appId, resource.messageId ?? message.message_id, resource);
-        const safe = namesModule.getSafeName(path.win32.basename(resource.name), Infinity);
+        //M 引用或转发里的资源按它自己的消息号下载。
+        const sourceMessageId = resource.messageId ?? message.message_id;
+        const content = await media.download(this.feishu, facts.appId, sourceMessageId, resource);
+        const originalName = path.win32.basename(resource.name);
+        const safe = namesModule.getSafeName(originalName, Infinity);
         const prefix = namesModule.getSafeName(message.message_id, 60);
         const filePath = path.join(attachDir, `${prefix}_${String(idx)}_${safe}`);
         fs.writeFileSync(filePath, content);
+        //M 文件已落盘才登记为可用，认领时通过此引用找到原件。
         attachments.push({
           id: attachId,
           name: resource.name,
@@ -612,6 +619,7 @@ export class FeishuInbound {
     const message = facts.message;
     const appId = facts.appId;
     const parts = [more.quote, facts.body.trim(), more.forwarded, saved.failed.join('\n')];
+    //M 合并引用、原话和附件错误，统一用占位文字表示空消息。
     const text = parts.filter((part) => part !== '').join('\n') || '[空消息]';
     const receivedAt = Date.now();
     let replyTo: protocol.ChannelReplyTo | null = null;
@@ -751,6 +759,7 @@ export class FeishuInbound {
    */
   private markSeen(appId: string, messageId: string): void {
     const sql = 'INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)';
+    //M 分派完成后记住消息号与时间，后续重推可以跳过。
     this.ctx.resources.db.query(sql).run(messageId, appId, 'in', Date.now());
   }
 
@@ -847,7 +856,8 @@ export class FeishuInbound {
 
     //M 按与 channel/message 完全一致的口径算出标准消息号，并读取本地聊天日志查出原发送人。
     const standardMessageId = protocol.makeChannelMessageId(this.name, appId, nativeId);
-    const logged = this.feishu.history.readChatLog(appId, chatId).find((entry) => entry.messageId === standardMessageId);
+    const chatLog = this.feishu.history.readChatLog(appId, chatId);
+    const logged = chatLog.find((entry) => entry.messageId === standardMessageId);
 
     //G 机器人自己撤回的出站消息不触发停任务。
     if (logged?.direction === 'bot') return;

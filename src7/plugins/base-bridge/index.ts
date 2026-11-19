@@ -20,7 +20,7 @@ export { mountUpdateWatch, readUpdateWatchSettings, UpdateWatch, type UpdateWatc
 //M 服务只依赖配置；HTTP、tools、更新监听各自按需 inject，其他最小单测只挂 resources 就能用 ctx.base。
 export const name = 'base-bridge';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.2';
+export const version = '1.2.3';
 export const inject = ['resources'];
 
 /** 基地子模块共享的地址配置路径，供错误提示使用。 */
@@ -56,9 +56,17 @@ declare module 'cordis' {
     base: Base;
   }
   interface Events {
-    /** 请求（serial）：向基地转发 GET / POST JSON 请求。本插件听，回 base/result。 */
+    /**
+     * 请求（serial）：向基地转发 GET / POST JSON 请求。本插件听，回 base/result。
+     * 谁发：src7/plugins/settings/index.ts 的 Settings.askBase；src7/plugins/web-api/index.ts 的 WebApi.shellVersion
+     * 谁接：src7/plugins/base-bridge/index.ts 的 Base.constructor
+     */
     'base/request'(request: BaseRequest): void | Promise<void>;
-    /** 回执（emit）：基地响应或断连错误回执，按 requestId 配对。 */
+    /**
+     * 回执（emit）：基地响应或断连错误回执，按 requestId 配对。
+     * 谁发：src7/plugins/base-bridge/index.ts 的 Base.constructor
+     * 谁接：src7/plugins/settings/index.ts 的 Settings.askBase；src7/plugins/web-api/index.ts 的 WebApi.shellVersion
+     */
     'base/result'(result: BaseResult): void;
   }
 }

@@ -92,13 +92,29 @@ interface VoiceResult extends requests.ResultEnvelope {
 
 declare module 'cordis' {
   interface Events {
-    /** 语音状态以及可按来源组发起或取消的播报。 */
+    /**
+     * 语音状态以及可按来源组发起或取消的播报。
+     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.presented、Screen.stopVoice
+     * 谁接：src7/plugins/voice/index.ts 的 apply
+     */
     'voice/request'(request: VoiceRequest): void | Promise<void>;
-    /** 状态结果，携带现有连接信息，不含字幕。 */
+    /**
+     * 状态结果，携带现有连接信息，不含字幕。
+     * 谁发：src7/plugins/voice/index.ts 的 apply
+     * 谁接：src7/plugins/screen/Screen.ts 的 Screen.presented
+     */
     'voice/result'(result: VoiceResult): void;
-    /** 每次更新某句短暂转写。 */
+    /**
+     * 每次更新某句短暂转写。
+     * 谁发：src7/plugins/voice/index.ts 的 VoiceConnection.publish
+     * 谁接：暂无
+     */
     'voice/transcript'(event: taskModule.Transcript): void;
-    /** 听写状态变化。 */
+    /**
+     * 听写状态变化。
+     * 谁发：src7/plugins/voice/index.ts 的 Voice.attach、VoiceConnection.setState
+     * 谁接：暂无
+     */
     'voice/state'(event: { state: State; reason?: string }): void;
   }
 }

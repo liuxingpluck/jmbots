@@ -1,5 +1,5 @@
 /**
- * 轮询（docs/界面/01_界面设计.md 第 5 节）：每 1.5 秒问一次机器人、待确认和进度卡片；页面在后台时放慢到 5 秒。后端换了版本就刷新网页。
+ * 轮询（docs/界面/01_界面设计.md 第 5 节）：每 1.5 秒问一次机器人、待确认、进度卡片和助手数据；页面在后台时放慢到 5 秒。后端换了版本就刷新网页。
  * 一轮问完才排下一轮，网络慢时不会叠起来。连不上（或后端 5xx）就记成离线，左栏显示休假中。
  * 界面语言跟 config.yaml 的 ui.language 走（/api/ui/info 带回来），浏览器也记一份，下次打开不闪。
  */
@@ -18,9 +18,9 @@ export const HIDDEN_POLL_MS = 5000;
 
 
 /**
- * 问一轮：机器人、待确认和进度卡片。
+ * 问一轮：机器人、待确认、进度卡片和当前机器人的助手数据。
  * @param store 状态仓库。
- * 副作用：发三个请求（插件没挂的那项不发），结果写进仓库。
+ * 副作用：请求已启用的数据并写进仓库。
  */
 export async function pollOnce(store: zustand.StoreApi<storeModule.UiState>): Promise<void> {
   try {
@@ -55,7 +55,13 @@ export async function pollOnce(store: zustand.StoreApi<storeModule.UiState>): Pr
       //G 单次取数失败时交给仓库保留上一份；只有未挂载或成功读到空列表才清空。
       progress = await api.progress().catch(() => undefined);
     }
+    //M 先提交机器人列表，让首轮轮询也能取到默认机器人的助手数据。
     store.getState().setPolled({ online: true, bots, approvals, progress });
+    const bot = store.getState().currentBot;
+    if (bot === null) return;
+
+    //M 由页面轮询一次，聊天区和右栏都订阅这一份。
+    await store.getState().refreshAssist(bot);
   } catch (error) {
     //M 连不上或后端出错 → 离线；别的错（4xx）说明后端在，只是这次没问对，不算离线。
     /** 是不是后端不在。 */

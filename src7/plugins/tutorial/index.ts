@@ -49,6 +49,8 @@ declare module 'cordis' {
     /**
      * 通知：插件露自己的运行时变量（和 ctx.flow.state 一样，只是不用 inject flow；契约 3.2 第 12 条）。本插件听，没挂 tutorial 就没人听、什么也不发生。
      * 带 read 是登记（同名再登记换掉旧的）；不带 read 是注销那一组（插件被拔掉时在 ctx.effect 里发）。
+     * 谁发：暂无
+     * 谁接：src7/plugins/tutorial/index.ts 的 Tutorial.constructor
      */
     'flow/state'(notice: FlowStateNotice): void;
   }
@@ -99,7 +101,7 @@ export const name = 'tutorial';
 /** 版本号。 */
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
-export const version = '1.1.10';
+export const version = '1.1.11';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];

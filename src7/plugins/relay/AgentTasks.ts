@@ -36,19 +36,24 @@ export const TASKS_INJECT = ['resources', 'tools', 'http'];
  * 把外部任务结果或转话回信交给派活会话的结果队列。
  * @param ctx 调用方的 Cordis 上下文。
  * @param input 含稳定结果键的投递内容。
- * @returns 机器人给出的投递回执，或带原因的失败回执。
+ * @returns 机器人投递回执和结果是否不确定。
  */
-export function requestResultDelivery(ctx: cordis.Context, input: dispatchModule.ResultInput) {
+export async function requestResultDelivery(ctx: cordis.Context, input: dispatchModule.ResultInput) {
   const request = { action: 'accept-result', input } as const;
+  let uncertain = false;
   const options = {
     timeoutMs: 5000,
-    onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-      requestId: '', ok: false, error: detail ?? `结果投递未获回执（${reason}）`,
-    }),
+    onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+      uncertain = reason === 'timeout';
+      if (uncertain) return { requestId: '', ok: false, error: '结果投递状态不确定' };
+
+      return { requestId: '', ok: false, error: detail ?? `结果投递未获回执（${reason}）` };
+    },
   };
 
-  //M 让机器人入队，交回和转话共用回执与失败规则。
-  return requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
+  //M 两个入口都以稳定键提交，只有确定收到入队回执才能标为已送。
+  const result = await requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
+  return { ...result, uncertain };
 }
 
 
@@ -175,16 +180,12 @@ export class AgentTasks {
   constructor(private readonly ctx: cordis.Context) {
     const db = ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS agent_tasks_agents (name TEXT PRIMARY KEY, description TEXT NOT NULL,'
-      + ' hello INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0)');
+      + ' hello INTEGER NOT NULL, seen INTEGER NOT NULL DEFAULT 0, abilities TEXT)');
     db.exec('CREATE TABLE IF NOT EXISTS agent_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL,'
       + ' bot TEXT NOT NULL, session TEXT NOT NULL,'
       + ' title TEXT NOT NULL, text TEXT NOT NULL, files TEXT NOT NULL, status TEXT NOT NULL,'
       + ' result_text TEXT, result_files TEXT,'
-      + ' created_at INTEGER NOT NULL, taken_at INTEGER, done_at INTEGER)');
-
-    //M 新协议加的两列：登记表的 abilities（报的能力 JSON）、任务表的 protocol（Protocol JSON，旧任务是 NULL）。老库没有就补上。
-    this.addColumn('agent_tasks_agents', 'abilities');
-    this.addColumn('agent_tasks', 'protocol');
+      + ' created_at INTEGER NOT NULL, taken_at INTEGER, done_at INTEGER, protocol TEXT)');
 
     //M 派活调用键唯一：同一次工具调用（会话号/callId）只能派出一件。旧任务 protocol 是 NULL，唯一索引不管 NULL。
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_request_key ON agent_tasks'
@@ -587,7 +588,13 @@ export class AgentTasks {
     //M 等机器人确认稳定结果键已入队，才能登记本地任务结果。
     const delivered = await requestResultDelivery(this.ctx, resultInput);
 
-    //G 送不回时保留任务状态和原件，告知执行端可以重试。
+    //G 超时保留任务状态和上传原件，按同一结果键核对是否已入队。
+    if (delivered.uncertain) {
+      const reason = `任务 #${task.id} 的结果投递状态不确定，请按原任务号核对`;
+      throw new failureModule.Failure(504, reason);
+    }
+
+    //G 确定未送达时保留任务状态和原件，告知执行端可以重试。
     const receipt = delivered.receipt;
     if (!delivered.ok || receipt === undefined) {
       const reason = `任务 #${task.id} 的结果送不回会话 ${task.sessionId}：${delivered.error ?? '未返回投递凭据'}`;
@@ -660,8 +667,8 @@ export class AgentTasks {
         await this.finish(task.agent, id, input);
         this.broken.delete(task.id);
       } catch (error) {
-        //G 投递失败可以重试；文件保持待收，下次扫描继续尝试。
-        if (error instanceof failureModule.Failure && error.status === 503) {
+        //G 明确失败或结果不确定都保留结果文件。下轮仍只用原结果键核对。
+        if (error instanceof failureModule.Failure && (error.status === 503 || error.status === 504)) {
           console.error(error.message);
           continue;
         }
@@ -670,21 +677,6 @@ export class AgentTasks {
         console.error(`任务 #${task.id} 的 result/result.json 收不了：${textModule.getMessage(error)}（文件改了会再试）`);
       }
     }
-  }
-
-  /**
-   * 老库补一列（TEXT）：ALTER TABLE 不认 IF NOT EXISTS，先看表里有没有。
-   * @param table 表名（代码里写死的两张表）。
-   * @param column 列名。
-   * 副作用：改表结构。
-   */
-  private addColumn(table: string, column: string): void {
-    //G 用表的当前列判断是否已经迁移，避免重复添加。
-    const columns = this.ctx.resources.db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
-    const found = columns.some((item) => item.name === column);
-    if (found) return;
-
-    this.ctx.resources.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
   }
 
   /**

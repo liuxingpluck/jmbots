@@ -105,6 +105,7 @@ export class FeishuHistory {
         targetChatId = maybeChat;
       }
     }
+    //M 目标没指定应用时，优先沿用来源快照中仍在配置里的飞书应用。
     if (appId === '' && snapshot.channel === this.name && this.feishu.apps.has(snapshot.accountId)) {
       appId = snapshot.accountId;
     }
@@ -197,6 +198,7 @@ export class FeishuHistory {
       chatId: targetChatId,
       entries,
     };
+    //M 用统一规则把聊天记录切成这一页，并计算下一页游标。
     const result = protocol.paginateChannelHistory(paginateInput);
 
     //M 带上请求号送回分页结果。
@@ -212,14 +214,11 @@ export class FeishuHistory {
    */
   getAppWithLog(candidateApps: string[], chatId: string): string | undefined {
     for (const candidateApp of candidateApps) {
-      const logFile = path.join(
-        this.ctx.resources.root,
-        'channels',
-        'feishu',
-        'chats',
-        namesModule.getSafeName(candidateApp, Infinity),
-        `${namesModule.getSafeName(chatId, Infinity)}.jsonl`,
-      );
+      //M 用写聊天日志时的命名规则找文件，查询时只看已有的文件。
+      const accountName = namesModule.getSafeName(candidateApp, Infinity);
+      const chatName = namesModule.getSafeName(chatId, Infinity);
+      const logName = `${chatName}.jsonl`;
+      const logFile = path.join(this.ctx.resources.root, 'channels', 'feishu', 'chats', accountName, logName);
       if (fs.existsSync(logFile)) return candidateApp;
     }
     return undefined;
@@ -255,7 +254,9 @@ export class FeishuHistory {
     const items: FeishuChatLogEntry[] = [];
     for (const line of lines) {
       try {
-        items.push(JSON.parse(line) as FeishuChatLogEntry);
+        //M 单条日志解析成功就加入历史，损坏的行由下面的 catch 跳过。
+        const entry = JSON.parse(line) as FeishuChatLogEntry;
+        items.push(entry);
       } catch {
         continue;
       }

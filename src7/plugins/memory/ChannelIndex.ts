@@ -112,26 +112,25 @@ export class ChannelIndex {
    * 副作用：建表。
    */
   constructor(private readonly db: Database) {
-    db.exec('CREATE TABLE IF NOT EXISTS memory_channel_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, msg_key TEXT NOT NULL UNIQUE,'
-      + ' channel TEXT NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL, chat_type TEXT NOT NULL, direction TEXT NOT NULL,'
-      + ' sender_id TEXT NOT NULL, sender_name TEXT NOT NULL, bot TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL)');
+    db.exec('CREATE TABLE IF NOT EXISTS memory_channel_messages'
+      + ' (id INTEGER PRIMARY KEY AUTOINCREMENT, msg_key TEXT NOT NULL UNIQUE,'
+      + ' channel TEXT NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL,'
+      + ' chat_type TEXT NOT NULL, direction TEXT NOT NULL, sender_id TEXT NOT NULL,'
+      + ' sender_name TEXT NOT NULL, bot TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL,'
+      + " mentioned_bots TEXT NOT NULL DEFAULT '[]', rust_state INTEGER NOT NULL DEFAULT 0,"
+      + " memory_key TEXT NOT NULL DEFAULT '', front_only INTEGER NOT NULL DEFAULT 0)");
+
+    //M 已有索引行沿用渠道可见性，只有待迁的前台原文会显式标记为前台归档。
+    const columns = db.query<{ name: string }, []>('PRAGMA table_info(memory_channel_messages)').all();
+    if (!columns.some((column) => column.name === 'front_only')) {
+      db.exec('ALTER TABLE memory_channel_messages ADD COLUMN front_only INTEGER NOT NULL DEFAULT 0');
+    }
 
     //M 按聊天看一段时间（最常用）、不分聊天按时间看。
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_chat ON memory_channel_messages (channel, chat, at)');
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_at ON memory_channel_messages (at)');
-    //M 旧行照常可查。新消息进入实时队列，旧行等手动回填。
-    const columns = db.query('PRAGMA table_info(memory_channel_messages)').all() as { name: string }[];
-    if (!columns.some((column) => column.name === 'mentioned_bots')) {
-      db.exec("ALTER TABLE memory_channel_messages ADD COLUMN mentioned_bots TEXT NOT NULL DEFAULT '[]'");
-    }
-    if (!columns.some((column) => column.name === 'rust_state')) {
-      db.exec('ALTER TABLE memory_channel_messages ADD COLUMN rust_state INTEGER NOT NULL DEFAULT 0');
-    }
+    //M 队列按入库状态扫描，归属查询按键与时间扫描。
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_rust ON memory_channel_messages (rust_state, id)');
-    //M 记忆归属键（按人分记忆）：新消息写进来时算好；旧行是空串，等下一步补写。按人、按群查走索引。
-    if (!columns.some((column) => column.name === 'memory_key')) {
-      db.exec("ALTER TABLE memory_channel_messages ADD COLUMN memory_key TEXT NOT NULL DEFAULT ''");
-    }
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_key ON memory_channel_messages (memory_key, at)');
   }
 
@@ -139,9 +138,9 @@ export class ChannelIndex {
   ownershipRows(): { key: string; count: number; name: string }[] {
     //M 显示名取该人的最新非空渠道名。群名不在索引里，列表可退回聊天号。
     const sql = "WITH owners AS (SELECT memory_key, COUNT(*) AS count FROM memory_channel_messages"
-      + " WHERE memory_key <> '' GROUP BY memory_key)"
+      + " WHERE front_only = 0 AND memory_key <> '' GROUP BY memory_key)"
       + " SELECT owners.memory_key AS key, owners.count, COALESCE((SELECT sender_name FROM memory_channel_messages"
-      + " WHERE memory_key = owners.memory_key AND direction = 'user' AND sender_name <> ''"
+      + " WHERE front_only = 0 AND memory_key = owners.memory_key AND direction = 'user' AND sender_name <> ''"
       + " ORDER BY at DESC, id DESC LIMIT 1), '') AS name FROM owners";
     return this.db.query<{ key: string; count: number; name: string }, []>(sql).all();
   }
@@ -149,7 +148,7 @@ export class ChannelIndex {
   /** Rust 会话已补归属但渠道旧行没打标时，仍可用渠道发话人 ID 找显示名。 */
   ownershipName(channel: string, id: string): string {
     const sql = "SELECT sender_name AS name FROM memory_channel_messages WHERE channel = ? AND sender_id = ?"
-      + " AND direction = 'user' AND sender_name <> '' ORDER BY at DESC, id DESC LIMIT 1";
+      + " AND front_only = 0 AND direction = 'user' AND sender_name <> '' ORDER BY at DESC, id DESC LIMIT 1";
     //M 以同一渠道的稳定身份取最近名字，避免把机器人的回复名算成对方。
     const statement = this.db.query<{ name: string }, [string, string]>(sql);
     return statement.get(channel, id)?.name ?? '';
@@ -159,19 +158,20 @@ export class ChannelIndex {
    * 记一条；同一个键已经有了就不动。
    * @param row 一条消息。
    * @param live 是否来自实时渠道事件。
+   * @param frontOnly 正文仅允许经会话关联查询。
    * @returns 新记了是 true，早有了是 false。
    * 副作用：写库。
    */
-  add(row: ChannelRow, live = false): boolean {
+  add(row: ChannelRow, live = false, frontOnly = false): boolean {
     const sql = 'INSERT OR IGNORE INTO memory_channel_messages'
       + ' (msg_key, channel, account, chat, chat_type, direction, sender_id, sender_name, bot, text, at,'
-      + ' mentioned_bots, rust_state, memory_key)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      + ' mentioned_bots, rust_state, memory_key, front_only)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     const mentions = JSON.stringify(row.mentionedBots ?? []);
     const state = Number(live);
     const memoryKey = row.memoryKey ?? '';
     const values = [row.key, row.channel, row.account, row.chat, row.chatType, row.direction,
-      row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state, memoryKey];
+        row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state, memoryKey, Number(frontOnly)];
     //M 幂等写入，按 SQLite 的影响行数区分新消息和重复消息。
     const changes = this.db.query(sql).run(...values).changes;
     if (changes === 0 && live) {
@@ -185,7 +185,7 @@ export class ChannelIndex {
   /** 按持久化队列取一批未确认记录。实时和历史各有一条队列。 */
   getRustBatch(live: boolean, limit: number): ChannelRow[] {
     const state = Number(live);
-    const sql = 'SELECT * FROM memory_channel_messages WHERE rust_state = ? ORDER BY id LIMIT ?';
+    const sql = 'SELECT * FROM memory_channel_messages WHERE front_only = 0 AND rust_state = ? ORDER BY id LIMIT ?';
 
     //M 使用状态索引取最早一批，Rust 确认的行不会再取到。
     const rows = this.db.query(sql).all(state, limit) as Record<string, unknown>[];
@@ -208,7 +208,8 @@ export class ChannelIndex {
 
   /** 按已索引消息和 Rust 确认的消息统计进度。 */
   getRustProgress(): { total: number; done: number } {
-    const sql = 'SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE rust_state = 2) AS done FROM memory_channel_messages';
+    const sql = 'SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE rust_state = 2) AS done'
+      + ' FROM memory_channel_messages WHERE front_only = 0';
 
     //M 计数和写入确认取自同一张表，页面轮询可以读到一致的进度。
     return this.db.query(sql).get() as { total: number; done: number };
@@ -220,7 +221,8 @@ export class ChannelIndex {
    * @param windowMs 时间差。
    */
   hasSimilar(row: ChannelRow, windowMs: number): boolean {
-    const sql = 'SELECT 1 FROM memory_channel_messages WHERE channel = ? AND account = ? AND chat = ?'
+    const sql = 'SELECT 1 FROM memory_channel_messages'
+      + ' WHERE front_only = 0 AND channel = ? AND account = ? AND chat = ?'
       + ' AND direction = ? AND text = ? AND at BETWEEN ? AND ? LIMIT 1';
     const from = row.at - windowMs;
     const to = row.at + windowMs;
@@ -236,7 +238,8 @@ export class ChannelIndex {
    * @returns 命中的消息。
    */
   search(query: ChannelQuery): ChannelRow[] {
-    const conditions: string[] = [];
+    //G 前台专用往来只能按会话权限读，渠道查询即使是本人也不能绕过前台范围。
+    const conditions = ['front_only = 0'];
     const values: (string | number)[] = [];
 
     //M 渠道、聊天、时间：有才加。
@@ -276,11 +279,8 @@ export class ChannelIndex {
     }
 
     //M 拼 SQL：没有条件就是全部。
-    let sql = 'SELECT * FROM memory_channel_messages';
-    if (conditions.length > 0) {
-      sql += ` WHERE ${conditions.join(' AND ')}`;
-    }
-    sql += ' ORDER BY at DESC, id DESC LIMIT ?';
+    const where = conditions.join(' AND ');
+    const sql = `SELECT * FROM memory_channel_messages WHERE ${where} ORDER BY at DESC, id DESC LIMIT ?`;
     values.push(query.limit);
 
     //M 查出来的行是表里的列名，用 getRow 逐行转成 ChannelRow 交回。
@@ -291,7 +291,7 @@ export class ChannelIndex {
   /** 按消息键定位，按时间和入库顺序取同一聊天前后的消息。 */
   context(key: string, query: ChannelQuery): { anchor: ChannelRow; before: ChannelRow[]; after: ChannelRow[] } {
     //M 用索引中的唯一消息键定位原文，再确认它位于可读的账号和聊天。
-    const sql = 'SELECT * FROM memory_channel_messages WHERE msg_key = ?';
+    const sql = 'SELECT * FROM memory_channel_messages WHERE msg_key = ? AND front_only = 0';
     const found = this.db.query(sql).get(key) as Record<string, unknown> | null;
     if (found === null) throw new Error('找不到这条渠道消息');
 
@@ -311,7 +311,8 @@ export class ChannelIndex {
     }
 
     //M 用 (at,id) 决定同毫秒消息的前后，账号和聊天均跟着锚点。
-    let source = 'SELECT * FROM memory_channel_messages WHERE channel = ? AND account = ? AND chat = ?';
+    let source = 'SELECT * FROM memory_channel_messages'
+      + ' WHERE front_only = 0 AND channel = ? AND account = ? AND chat = ?';
     const scope = [anchor.channel, anchor.account, anchor.chat];
     if (query.memoryKey !== undefined) {
       source += ` AND ${filter.sql}`;
@@ -573,7 +574,7 @@ export function applyChannelIndex(
       //G 记不进索引只打日志，不往外抛，别挡别人认领这条消息。
       console.error(`memory：渠道消息记不进索引：${textModule.getMessage(error)}`);
     }
-  });
+  }, { prepend: true });
 
   //M 机器人的话：回复工具发出时（channel/reply）记，同一个 replyRequestKey 重试不重复。
   ctx.on('channel/reply', (request) => {
@@ -588,7 +589,7 @@ export function applyChannelIndex(
       //G 记不进索引只打日志，不往外抛，别挡回复发出去。
       console.error(`memory：机器人的回复记不进索引：${textModule.getMessage(error)}`);
     }
-  });
+  }, { prepend: true });
 
   //M 工具 channel_search：前台、后台都给；外人那一轮 approval 的只读名单里有它，但只查得到自己这个聊天。
   ctx.tools.register({

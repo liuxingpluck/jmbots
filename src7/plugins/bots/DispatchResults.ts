@@ -525,7 +525,9 @@ export class DispatchResults {
 
     //T 跟踪：后台结果整理好发出去了。
     const vars = { 会话: front.id, 结果键: item.key, 回执: receipt.status, 原因: receipt.reason };
-    this.home.emit('trace', 'Dispatch.finishFront', '前台整理好后台结果，发回原渠道，记回执', 'ctx.bots.send(front, text, item.origin)', vars);
+    const action = '前台整理好后台结果，发回原渠道，记回执';
+    const call = 'ctx.bots.send(front, text, item.origin)';
+    this.home.emit('trace', 'Dispatch.finishFront', action, call, vars);
 
     //M 这一项收完了：下一拍再看队列里还有没有排着的，有就接着处理。
     this.later(front);
@@ -706,7 +708,9 @@ export class DispatchResults {
 
     //M 收尾后的 stage 只会是这几种；别的（还在排、还在做）不是收尾，不发。
     const stage = item.stage;
-    const settledStages: protocol.ChannelSettledEvent['stage'][] = ['sent', 'partial', 'uncertain', 'rejected', 'sending'];
+    const settledStages: protocol.ChannelSettledEvent['stage'][] = [
+      'sent', 'partial', 'uncertain', 'rejected', 'sending',
+    ];
     const settled = settledStages.find((one) => one === stage);
     if (settled === undefined) return;
 
@@ -734,6 +738,7 @@ export class DispatchResults {
 
   /** 撤回某个前台轮前，取消它尚未启动的零次回复修复。 */
   cancelRepairTimer(frontId: string): void {
+    //M 定时器按前台号保存，撤回时只找这场会话的修复轮。
     const timer = this.repairTimers.get(frontId);
     if (timer === undefined) return;
 
@@ -750,6 +755,7 @@ export class DispatchResults {
    * @param expectedRoundKey 预期 replyRoundKey。
    */
   private scheduleRepairRun(front: Session, expectedKey: string, expectedRoundKey: string): void {
+    //G 这个前台已有定时器时沿用它，确保只加跑一次修复。
     if (this.repairTimers.has(front.id)) return;
 
     //M 到下一个宏任务才真正起修复轮：到点先核对活动项和回复轮键没变，对得上才落盘 running 并唤醒原会话。
@@ -760,7 +766,10 @@ export class DispatchResults {
       const control = active?.replyControl;
 
       //G 来源已变或已被其他收尾清掉 → 不消费新来源身份，直接跳过。
-      if (row.activeKey !== expectedKey || active === undefined || control === undefined || control.roundKey !== expectedRoundKey) {
+      if (
+        row.activeKey !== expectedKey || active === undefined
+        || control === undefined || control.roundKey !== expectedRoundKey
+      ) {
         return;
       }
       if (control.reminder !== 'pending') return;
@@ -826,6 +835,7 @@ export class DispatchResults {
       return;
     }
 
+    //M 用户排队项处理完后，再取仍需处理的后台结果。
     const item = queue.find((one) => {
       if (one.stage !== 'queued') return false;
 
@@ -855,6 +865,7 @@ export class DispatchResults {
       content: getResultText(item, row.kind),
       timestamp: Date.now(),
     };
+    //M 直接将交回结果落入会话，下一轮用它继续完成或整理。
     row.messages.push(message);
     session.save();
 
@@ -1025,6 +1036,7 @@ export function getActive(row: SessionMeta): QueueItem | undefined {
  * @param queue 结果队列。
  */
 export function getWaiting(queue: QueueItem[]): QueueItem[] {
+  //M 保留尚需会话处理的项，已有渠道排队或草稿回执的交给渠道。
   return queue.filter((item) => {
     const receiptStatus = item.deliveryReceipt?.status;
     if (item.stage === 'sending' && (receiptStatus === 'queued' || receiptStatus === 'draft')) {
@@ -1075,9 +1087,11 @@ function getResultText(item: QueueItem, kind: string): string {
       lines.push('请把它整理成给用户的回复，调用 channel_reply 工具发给用户：先说结论，简短；纯文字不会自动发文件。这一轮不要再派活。');
       return lines.join('\n');
     }
+    //M 兼容自动回话允许用已知文件路径，由渠道解释附件。
     lines.push('请把它整理成给用户的回复：先说结论，简短；要把文件发给用户就原样写 @路径（只能写上面出现过的）。这一轮不要再派活。');
     return lines.join('\n');
   }
+  //M 后台收到结果后继续完成任务，最后仍交回前台。
   lines.push('这是你之前交出去的活交回的结果，接着做；做完的回答会交回前台。');
   return lines.join('\n');
 }
@@ -1089,7 +1103,8 @@ function getResultText(item: QueueItem, kind: string): string {
  * @param payload 这一项的结果。
  */
 function getAllowedText(reply: string, payload: ResultPayload): string {
-  return reply.replace(/@"([^"]+)"|@([^\s"]+)/gu, (token: string, quoted: string | undefined, bare: string | undefined) => {
+  const fileToken = /@"([^"]+)"|@([^\s"]+)/gu;
+  return reply.replace(fileToken, (token: string, quoted: string | undefined, bare: string | undefined) => {
     const file = quoted ?? bare ?? '';
     const listed = payload.files.includes(file) || payload.text.includes(file);
     if (listed) return token;

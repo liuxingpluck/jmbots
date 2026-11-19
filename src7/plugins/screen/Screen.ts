@@ -161,13 +161,15 @@ export interface StateResult {
   errorCode?: protocol.ErrorCode;
 }
 
-type Speech = 'accepted' | 'unavailable' | 'disabled' | 'already_requested';
+type Speech = 'accepted' | 'uncertain' | 'unavailable' | 'disabled' | 'already_requested';
 
 export interface SpeechResult {
   /** 呈现确认是否对应当前回执。 */
   ok: boolean;
   /** 语音交付结果。 */
   speech?: Speech;
+  /** 语音请求超时时供核对的说明。 */
+  reason?: string;
   /** 回执已失效的固定原因。 */
   errorCode?: protocol.ErrorCode;
 }
@@ -206,11 +208,23 @@ interface UsageSummary {
 
 declare module 'cordis' {
   interface Events {
-    /** 私有关口，只暴露身份及模型摘要。 */
+    /**
+     * 私有关口，只暴露身份及模型摘要。
+     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.getModelAnswer
+     * 谁接：暂无
+     */
     'screen/before-model'(gate: Gate): void | Promise<void>;
-    /** 呈现前的私有关口，仍不携带模型原文。 */
+    /**
+     * 呈现前的私有关口，仍不携带模型原文。
+     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.getModelAnswer
+     * 谁接：暂无
+     */
     'screen/after-model'(gate: Gate): void | Promise<void>;
-    /** 单次模型请求计量，无图、界面文字或模型原文。 */
+    /**
+     * 单次模型请求计量，无图、界面文字或模型原文。
+     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.getModelAnswer
+     * 谁接：暂无
+     */
     'screen/model-usage'(usage: UsageSummary): void;
   }
 }
@@ -701,12 +715,19 @@ export class Screen {
     const group = this.getVoiceGroup(state);
     const interrupt = segment === 1;
     const request = { action: 'speak', text, group, interrupt } as const;
+    let timedOut = false;
     const options = {
       timeoutMs: VOICE_WAIT_MS,
-      onFallback: () => ({ requestId: '', ok: false }),
+      onFallback: (reason: requests.FallbackReason) => {
+        timedOut = reason === 'timeout';
+        return { requestId: '', ok: false };
+      },
     };
+
+    //M 同一片段只发一次，超时保留段号占用。
     const answer = await requestVoice(this.ctx, 'voice/request', 'voice/result', request, options);
     if (answer.ok) return { ok: true, speech: 'accepted' };
+    if (timedOut) return { ok: true, speech: 'uncertain', reason: '播报结果不确定' };
 
     return { ok: true, speech: 'unavailable' };
   }

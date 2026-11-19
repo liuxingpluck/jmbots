@@ -135,6 +135,56 @@ test('没挂 approval：当没有在等的，新版本登记不上就记一行�
 });
 
 
+test('换版无响应时不重发，中控只在基地空闲且结论一致时解锁', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-update-watch-reconcile-'));
+  const errors = spyOn(console, 'error').mockImplementation(() => {});
+  const ctx = new cordis.Context();
+  let requests = 0;
+  let applying = true;
+  class FakeResources extends cordis.Service {
+    dir(): string { return root; }
+    constructor(c: cordis.Context) { super(c, 'resources'); }
+  }
+  class FakeBase extends cordis.Service {
+    async getJson() {
+      return { status: 200, body: { managed: true, applying, current: { version: '1' } } };
+    }
+    async postJson() {
+      requests += 1;
+      if (requests === 1) throw new Error('基地没响应');
+
+      return { status: 200, body: { ok: true } };
+    }
+    constructor(c: cordis.Context) { super(c, 'base'); }
+  }
+  try {
+    await ctx.plugin(FakeResources);
+    await ctx.plugin(FakeBase);
+    const watch = new bridge.UpdateWatch(ctx, 60_000);
+    const approved = { id: 1, kind: 'update', state: 'approved', payload: { version: '2' } } as Pending;
+    await watch.onDecided(approved);
+    await watch.onDecided(approved);
+    expect(requests).toBe(1);
+    expect(String(errors.mock.calls[0]?.[0])).toContain('结果不确定');
+    await expect(watch.reconcile('2', 'not-applied')).rejects.toThrow('空闲版本');
+
+    applying = false;
+    await expect(watch.reconcile('2', 'applied')).rejects.toThrow('不一致');
+    await watch.reconcile('2', 'not-applied');
+    expect(requests).toBe(1);
+
+    //M 只有之后新的批准才能再次触发换版。
+    const next = { ...approved, id: 2 };
+    await watch.onDecided(next);
+    expect(requests).toBe(2);
+  } finally {
+    await ctx.fiber.dispose();
+    errors.mockRestore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
 test('notify 与 update_watch 默认关闭；开启 update_watch 后卸载会停掉定时器', async () => {
   expect(readUpdateWatchSettings(undefined).enabled).toBe(false);
   expect(readUpdateWatchSettings(false).enabled).toBe(false);

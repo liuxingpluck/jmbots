@@ -13,7 +13,15 @@ import { onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope
 
 declare module 'cordis' {
   interface Events {
+    /**
+     * 谁发：src7/utils/RequestEvent.test.ts 的 模块顶层
+     * 谁接：src7/utils/RequestEvent.test.ts 的 模块顶层
+     */
     'test/req'(request: TestRequest): void | Promise<void>;
+    /**
+     * 谁发：src7/utils/RequestEvent.test.ts 的 模块顶层
+     * 谁接：src7/utils/RequestEvent.test.ts 的 模块顶层
+     */
     'test/res'(result: TestResult): void;
   }
 }

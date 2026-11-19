@@ -19,9 +19,17 @@ declare module 'cordis' {
     usage: Usage;
   }
   interface Events {
-    /** 按会话和时间窗取用量记录。 */
+    /**
+     * 按会话和时间窗取用量记录。
+     * 谁发：src7/plugins/web-api/Trace.ts 的 trace
+     * 谁接：src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
+     */
     'usage/list'(request: UsageQuery & requestEventModule.RequestEnvelope): void | Promise<void>;
-    /** 返回记录和截断标记。 */
+    /**
+     * 返回记录和截断标记。
+     * 谁发：src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
+     * 谁接：src7/plugins/web-api/Trace.ts 的 trace
+     */
     'usage/list-result'(result: UsageList & requestEventModule.ResultEnvelope): void;
   }
 }

@@ -52,7 +52,7 @@ export const name = 'bots';
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
-export const version = '1.5.2';
+export const version = '1.5.3';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -72,17 +72,61 @@ declare module 'cordis' {
      * 要认领的插件把 event.session 填上；前面已经有人填了，后面的不要再填。监听的函数不许有返回值。
      * 插件（比如 approval 认出“同意 3”）可以写 event.handled = true：这条已经处理掉，不进任何会话。
      * 问完没人认领的，本插件的前台接（FrontDesk.onReceive）。
+     * 谁发：src7/plugins/bots/index.ts 的 Bot.receive、Bots.onChannelMessage
+     * 谁接：
+     *   src7/plugins/approval/index.ts 的 Approval.constructor
+     *   src7/plugins/relay/index.ts 的 Relay.constructor
+     *   src7/plugins/tutorial/State.ts 的 Shots.constructor
+     *   src7/plugins/voice/index.ts 的 apply
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
      */
     'bot/receive'(event: ReceiveEvent): void | Promise<void>;
-    /** 会话跑到一半先跟用户说一句（通知）。本插件听它：按会话的渠道发出去，前台再记一条往来。 */
+    /**
+     * 会话跑到一半先跟用户说一句（通知）。本插件听它：按会话的渠道发出去，前台再记一条往来。
+     * 谁发：
+     *   src7/plugins/approval/index.ts 的 Approval.answer、Approval.ask
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.tell
+     *   src7/plugins/bots/index.ts 的 Bots.say
+     *   src7/plugins/progress/index.ts 的 Progress.end、Progress.handOff、Progress.sendCard、Progress.setLimit
+     *   src7/plugins/relay/index.ts 的 Relay.checkLate
+     * 谁接：
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/bots/index.ts 的 Bots.constructor
+     *   src7/plugins/journal/index.ts 的 Journal.listen
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'bot/say'(session: Session, text: string): void;
-    /** 前台（FrontDesk.ts）对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。 */
+    /**
+     * 前台（FrontDesk.ts）对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。
+     * 谁发：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.followUp
+     * 谁接：src7/plugins/feishu/Contacts.ts 的 FeishuContacts.constructor
+     */
     'bot/judged'(address: unknown, text: string, outcome: string): void;
-    /** 别的插件请机器人办事（serial 发、等 bot/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。 */
+    /**
+     * 别的插件请机器人办事（serial 发、等 bot/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。
+     * 谁发：
+     *   src7/plugins/progress/index.ts 的 Progress.handOff
+     *   src7/plugins/relay/AgentTasks.ts 的 requestResultDelivery
+     *   src7/plugins/settings/index.ts 的 Settings.createBot
+     *   src7/plugins/web-api/index.ts 的 WebApi.saveAttachments
+     * 谁接：src7/plugins/bots/index.ts 的 Bots.constructor
+     */
     'bot/request'(request: BotRequest): void | Promise<void>;
-    /** bot/request 的回执（emit），按 requestId 配对。 */
+    /**
+     * bot/request 的回执（emit），按 requestId 配对。
+     * 谁发：src7/plugins/bots/index.ts 的 Bots.constructor
+     * 谁接：
+     *   src7/plugins/progress/index.ts 的 Progress.handOff
+     *   src7/plugins/relay/AgentTasks.ts 的 requestResultDelivery
+     *   src7/plugins/settings/index.ts 的 Settings.createBot
+     *   src7/plugins/web-api/index.ts 的 WebApi.saveAttachments
+     */
     'bot/result'(result: BotResult): void;
-    /** 通知：改一场会话的回话往哪送（同 Bots.route），发了不等。本插件听。 */
+    /**
+     * 通知：改一场会话的回话往哪送（同 Bots.route），发了不等。本插件听。
+     * 谁发：暂无
+     * 谁接：src7/plugins/bots/index.ts 的 Bots.constructor
+     */
     'bot/route'(notice: BotRouteNotice): void;
   }
 }

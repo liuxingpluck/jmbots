@@ -22,6 +22,24 @@ declare module 'cordis' {
   interface Events {
     /**
      * 骨架和插件都挂完了，可以开工了。命令行渠道等到它才把命令行里带的那句话发出去。只是通知。
+     * 谁发：src7/Main.ts 的 main
+     * 谁接：
+     *   src7/plugins/approval/Outbound.ts 的 Outbound.constructor
+     *   src7/plugins/assist/index.ts 的 apply
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 mountUpdateWatch
+     *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen
+     *   src7/plugins/cli/index.ts 的 Cli.constructor
+     *   src7/plugins/feishu/index.ts 的 Feishu.constructor
+     *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
+     *   src7/plugins/http/index.ts 的 Http.constructor
+     *   src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.constructor
+     *   src7/plugins/memory/index.ts 的 apply
+     *   src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor
+     *   src7/plugins/programs/index.ts 的 apply
+     *   src7/plugins/relay/index.ts 的 Relay.constructor
+     *   src7/plugins/tutorial/Boot.ts 的 BootTrail.constructor
+     *   src7/plugins/voice/index.ts 的 apply
+     *   src7/plugins/wechat/index.ts 的 Wechat.constructor
      * @param argv 命令行里剩下的参数，谁要谁用。
      */
     'ready'(argv: string[]): void;

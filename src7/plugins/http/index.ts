@@ -32,9 +32,17 @@ declare module 'cordis' {
     http: Http;
   }
   interface Events {
-    /** 关闭 HTTP 服务或在 Fastify 内部发起请求。 */
+    /**
+     * 关闭 HTTP 服务或在 Fastify 内部发起请求。
+     * 谁发：src7/plugins/settings/index.ts 的 Settings.closeHttp、Settings.startedAt
+     * 谁接：src7/plugins/http/index.ts 的 Http.constructor
+     */
     'http/request'(request: HttpRequest): void | Promise<void>;
-    /** 返回关闭结果或注入请求的响应。 */
+    /**
+     * 返回关闭结果或注入请求的响应。
+     * 谁发：src7/plugins/http/index.ts 的 Http.constructor
+     * 谁接：src7/plugins/settings/index.ts 的 Settings.closeHttp、Settings.startedAt
+     */
     'http/result'(result: HttpResult): void;
   }
 }

@@ -71,17 +71,45 @@ type OutboundResult = events.ResultEnvelope & (
 
 declare module 'cordis' {
   interface Events {
-    /** 程序界面请 approval 读取或明确确认发件意图。 */
+    /**
+     * 程序界面请 approval 读取或明确确认发件意图。
+     * 谁发：
+     *   src7/plugins/approval/ChannelSend.ts 的 requestOutbound
+     *   src7/plugins/programs/ChannelSend.ts 的 handleOutbound
+     * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
+     */
     'approval/outbound-request'(request: OutboundRequest): void | Promise<void>;
-    /** 本次确认的单独回执，和普通审批、模型回复隔离。 */
+    /**
+     * 本次确认的单独回执，和普通审批、模型回复隔离。
+     * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
+     * 谁接：
+     *   src7/plugins/approval/ChannelSend.ts 的 requestOutbound
+     *   src7/plugins/programs/ChannelSend.ts 的 handleOutbound
+     */
     'approval/outbound-result'(result: OutboundResult): void;
-    /** 定时器只交记录号，目标和批准从持久记录查回。 */
+    /**
+     * 定时器只交记录号，目标和批准从持久记录查回。
+     * 谁发：src7/plugins/assist/index.ts 的 apply
+     * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
+     */
     'approval/reminder-send'(request: events.RequestEnvelope & { reminderId: number }): void | Promise<void>;
-    /** 由同一个主动发件账返回渠道回执。 */
+    /**
+     * 由同一个主动发件账返回渠道回执。
+     * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.constructor
+     * 谁接：src7/plugins/assist/index.ts 的 apply
+     */
     'approval/reminder-sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
-    /** Outbound 已占位并批准的主动纯文本发送，由对应渠道处理。 */
+    /**
+     * Outbound 已占位并批准的主动纯文本发送，由对应渠道处理。
+     * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.submitChannel
+     * 谁接：src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor；src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
     'channel/send'(request: events.RequestEnvelope & { call: ApprovedChannelSend }): void | Promise<void>;
-    /** 主动消息运输的回执，先由 Outbound 保存再通知通用订阅者。 */
+    /**
+     * 主动消息运输的回执，先由 Outbound 保存再通知通用订阅者。
+     * 谁发：src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor；src7/plugins/web-api/index.ts 的 WebApi.constructor
+     * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.submitChannel
+     */
     'channel/sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
   }
 }
@@ -143,6 +171,7 @@ function getView(row: IntentRow) {
 function digestDraft(program: string, draft: ProgramDraft, targetBot?: string): string {
   const binding = [program, draft.generation, draft.channel, draft.draftId, draft.account, draft.chat, draft.text];
   if (targetBot !== undefined) {
+    //M 网页提醒的摘要还绑定目标机器人，换机器人后原确认失效。
     binding.push(targetBot);
   }
   const bytes = JSON.stringify(binding);
@@ -169,11 +198,6 @@ export class Outbound {
       + ' state TEXT NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, interaction_id TEXT,'
       + ' receipt TEXT, checked TEXT, notified_at INTEGER)';
     this.db.exec(sql);
-    const columns = this.db.query<{ name: string }, []>('PRAGMA table_info(approval_outbound)').all();
-    if (!columns.some((column) => column.name === 'target_bot')) {
-      //M 兼容现有主动发件与外置草稿账，原记录的摘要保持不变。
-      this.db.exec('ALTER TABLE approval_outbound ADD COLUMN target_bot TEXT');
-    }
     const index = 'CREATE INDEX IF NOT EXISTS approval_outbound_draft ON approval_outbound (program, draft_id)';
     this.db.exec(index);
     //M 只由约定的事件入口取结果，不接受通用 approval/decide。
@@ -189,6 +213,7 @@ export class Outbound {
       return { receipt };
     };
     const reminderFailure = { onError: () => ({ receipt: UNKNOWN }) };
+    //M 监听到期发送并返回渠道回执，出错时向提醒队列交回未知状态。
     events.onRequestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', sendReminder, reminderFailure);
     //M 重启后在途账只转待核；通知等待主程序所有插件已经挂载。
     ctx.on('ready', () => this.recover());
@@ -198,6 +223,7 @@ export class Outbound {
   private async sendReminder(reminderId: number): Promise<ProviderReceipt> {
     const payload = { reminderId };
     const options = { timeoutMs: 1000, onFallback: () => ({ requestId: '' }) };
+    //G 只按提醒编号读取已占位的持久记录，发送目标和正文由提醒服务提供。
     const lookup = await events.requestEvent(this.ctx, 'assist/reminder-read', 'assist/reminder-row', payload, options);
     const row = lookup.row;
     if (row?.confirmed !== true) return { status: 'failed', reason: '提醒未到期、未获批准或已经处理' };
@@ -214,6 +240,7 @@ export class Outbound {
     if ('error' in prepared) return { status: 'failed', reason: prepared.error };
 
     const intent = prepared.intent;
+    //M 用发件账中实际保存的行核对原意图，再占住发送位置。
     const stored = this.get(DIRECT_PROGRAM, intent.intentId);
     if (stored === null) return UNKNOWN;
 
@@ -345,7 +372,9 @@ export class Outbound {
     const id = crypto.randomUUID();
     const approvalId = crypto.randomUUID();
     const sql = 'INSERT INTO approval_outbound (id,send_id,approval_id,program,generation,channel,draft_id,'
-      + " account,chat,target_bot,text,digest,state,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'waiting',?) RETURNING *";
+      + ' account,chat,target_bot,text,digest,state,expires_at)'
+      + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'waiting',?) RETURNING *";
+    //M 预备写入语句，保存后直接返回刚建立的待确认意图。
     const insert = this.db.query<IntentRow, sqlite.SQLQueryBindings[]>(sql);
 
     //M 主动消息使用草稿号 0，并用代次字段保存可信申请来源。
@@ -363,10 +392,12 @@ export class Outbound {
     }
 
     const draft = { ...message, draftId: 0, generation: message.from };
+    //M 将渠道、目标和原文一起绑定到用户将核对的摘要。
     const digest = digestDraft(DIRECT_PROGRAM, draft, targetBot);
     let suffix: string = crypto.randomUUID();
     if (toolKey !== undefined) {
       const hash = crypto.createHash('sha256');
+      //M 同一工具调用算出相同发送编号，重复申请会取回已有意图。
       const updated = hash.update(toolKey);
       suffix = updated.digest('hex');
     }
@@ -379,12 +410,14 @@ export class Outbound {
       const current = this.db.query<IntentRow, [string]>(sql).get(sendId);
       if (current !== null) return current;
 
+      //M 条件查询没有找到记录时才建意图，继续留在同一个事务里。
       return this.insertIntent(DIRECT_PROGRAM, draft, sendId, digest, expiresAt, targetBot);
     });
     const row = create.immediate();
     if (row === null) return { code: 500, error: '无法保存主动发件意图' };
     if (row.digest !== digest) return { code: 409, error: '同一次工具调用的发件目标或原文已变化' };
 
+    //M 返回已保存的意图和摘要，让调用方展示可确认的内容。
     return { intent: getView(row) };
   }
 
@@ -446,8 +479,10 @@ export class Outbound {
 
   /** 主动意图各自确认，外置草稿只许确认当前版本。 */
   private getConfirmable(row: IntentRow): IntentRow | null {
+    //M 直接发件的确认按独立意图编号读取。
     if (row.program === DIRECT_PROGRAM) return this.get(row.program, row.id);
 
+    //M 外置程序的草稿可能已更新，确认前读取这一草稿最新的意图。
     return this.latest(row.program, row.draft_id);
   }
 

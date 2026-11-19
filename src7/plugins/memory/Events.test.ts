@@ -19,6 +19,8 @@ import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type * as backendModule from './Backend.ts';
 import * as graphPolicy from './GraphPolicy.ts';
+import * as channelIndexModule from './ChannelIndex.ts';
+import * as frontArchiveModule from './FrontArchive.ts';
 import * as memoryPlugin from './index.ts';
 import * as storeModule from './Store.ts';
 
@@ -112,7 +114,10 @@ async function offlineUrl(): Promise<string> {
  * @param address 记忆服务的地址（假服务的，或 offlineUrl 给的连上就断的）。
  * @returns 根 ctx（发请求事件用）和建好的 MemoryService（直接调 health 用）。
  */
-async function serviceWorld(address: string): Promise<{ ctx: cordis.Context; service: memoryPlugin.MemoryService }> {
+async function serviceWorld(
+  address: string,
+  archive?: frontArchiveModule.FrontArchive,
+): Promise<{ ctx: cordis.Context; service: memoryPlugin.MemoryService }> {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   const policy = graphPolicy.readGraphPolicy({});
@@ -120,13 +125,38 @@ async function serviceWorld(address: string): Promise<{ ctx: cordis.Context; ser
   const plugin = {
     name: 'memory-service',
     apply: (sub: cordis.Context) => {
-      service = new memoryPlugin.MemoryService(sub, address, policy);
+      service = new memoryPlugin.MemoryService(sub, address, policy, undefined, undefined, undefined, '', archive);
     },
   };
   await ctx.plugin(plugin);
   return { ctx, service: service! };
 }
 
+
+test('memory/request 的前台往来只读指定机器人及会话范围', async () => {
+  const db = new Database(':memory:');
+  closers.push(() => db.close());
+  const index = new channelIndexModule.ChannelIndex(db);
+  const archive = new frontArchiveModule.FrontArchive(db, index);
+  const address = await offlineUrl();
+  const { ctx } = await serviceWorld(address, archive);
+  const row = {
+    bot: '机器人', channel: 'feishu', who: 'user' as const, sessionId: 'own',
+    text: '同一机器人的往来', time: 12,
+  };
+  archive.record(row, 10);
+  archive.record({ ...row, sessionId: 'other', text: '另一场的往来' }, 11);
+  archive.record({ ...row, bot: '另一个机器人' }, 12);
+
+  const query: frontArchiveModule.FrontQuery = { bot: row.bot, sessionIds: ['own'], order: 'time', limit: 10 };
+  const request = { action: 'front-history' as const, query };
+  const result = await events.requestEvent(ctx, 'memory/request', 'memory/result', request, memoryOptions);
+  expect(result.ok).toBe(true);
+  expect(result.frontEntries?.map((entry) => entry.id)).toEqual([10]);
+  const hidden = { ...request, query: { ...query, id: 11 } };
+  const forbidden = await events.requestEvent(ctx, 'memory/request', 'memory/result', hidden, memoryOptions);
+  expect(forbidden.frontEntries).toEqual([]);
+});
 
 test('memory/request 有人答：记往来、搜聊天记录、算向量都回 memory/result', async () => {
   const { url, got } = await fakeService();

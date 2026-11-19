@@ -17,7 +17,10 @@ export type {
 
 declare module 'cordis' {
   interface Context {
-    /** 前台派后台和结果队列，实现在 src7/plugins/bots/Dispatch.ts 的 Dispatch。agent-tasks 交回结果调 acceptResult；Bot.receive 收消息调 receive。 */
+    /**
+     * 前台派后台和结果队列，实现在 src7/plugins/bots/Dispatch.ts 的 Dispatch。
+     * agent-tasks 交回结果调 acceptResult；Bot.receive 收消息调 receive。
+     */
     frontDesk: Dispatch;
   }
 }

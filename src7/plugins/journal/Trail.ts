@@ -6,7 +6,7 @@
  * 连着落在同一处的行收成一步，tutorial 的泳道图（tutorial/Lanes.ts）再把步摆进格子。
  * 每步只留事件名、听的人、代码位置、工具名、模型、状态这些（见 FACT_KEYS）；整条带一句用户原话（preview，左栏和标题用）。
  * 启动轨迹（tutorial/Boot.ts 记的）也收成同一个格式，消息号写 0。
- * 两种挑法：教程页按 pick（消息号、会话、收尾后再收一会儿）；聊天页回话追溯按 pickReply（消息号或涉及的会话、到这句回话为止）。
+ * 教程页用 pick 保留收尾附近的行。聊天页由 index.ts 查询到指定回话为止。
  * 对外：index.ts 的 journal/request 用 trail、reply-lines 两个 action 交出去；tutorial 收启动轨迹时直接 import 本文件（纯函数，不用 journal 挂着）。
  * 本文件不 import 别的插件，也不 import 同目录的 index.ts。
  */
@@ -331,34 +331,6 @@ export function pick(
     if (endAt !== null && line.name === 'web-api/replied') break;
   }
   return { picked, session, state };
-}
-
-
-/**
- * 聊天页回话追溯要的行：消息号对得上、或会话在这句回话之前出现过的，而且不晚于这句回话。
- * 原来写在 web-api/Trace.ts 的 trace() 里，11-18 并到这里；挑法照旧，不跳杂事件、不看收尾。
- * @param message 消息号。
- * @param sessions 这条消息从第一句到这一句回话出现过的会话号。
- * @param to 这句回话的时刻，毫秒。
- * @param lines 从 web-api/received 那行起、按号从小到大（最多 limit 行）。
- * @param limit 取行时的上限：取满了、最后一行还没到 to，就算后面的没取到。
- * @returns 挑出的行；cut 是后面还有没取到的。
- */
-export function pickReply<T extends TrailLine>(
-  message: number,
-  sessions: string[],
-  to: number,
-  lines: T[],
-  limit: number,
-): { lines: T[]; cut: boolean } {
-  //M 只留这条消息的、或涉及会话的，再限到这句回话为止。
-  const mine = (line: T): boolean => line.messageId === message || sessions.includes(line.sessionId ?? '');
-  const picked = lines.filter((line) => line.at <= to && mine(line));
-
-  //M 取满了、最后一行还没到这句回话：后面的没取到。
-  const lastAt = lines.at(-1)?.at ?? to;
-  const cut = lines.length >= limit && lastAt < to;
-  return { lines: picked, cut };
 }
 
 

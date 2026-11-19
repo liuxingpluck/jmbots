@@ -551,7 +551,7 @@ test('回话追溯查询流水和用量，无应答时保留消息与缺项说�
 
   //M 流水以收件编号为键，用量以相关会话和起止时刻为键。
   const stopJournal = requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (query) => {
-    expect(query).toMatchObject({ action: 'reply-lines', message: id, limit: 500, sessions: [sessionId] });
+    expect(query).toMatchObject({ action: 'reply-lines', message: id, maxLines: 500, sessions: [sessionId] });
     return {
       lines: [{
         id: 1,
@@ -697,6 +697,12 @@ test('第 3 步：指定会话只进那场、只回一次；显式会话不投�
 
 test('第 3 步：网页引用别的渠道的消息，进原会话，回话回到网页这条', async () => {
   const { ctx, emitted } = await makeWeb((_step, session) => piAi.fauxAssistantMessage(`原会话 ${session.id} 回`));
+
+  //M 在新装数据库核对引用和跨渠道来源两列的类型。
+  const schema = 'PRAGMA table_info(web_messages)';
+  const columns = ctx.resources.db.query(schema).all();
+  expect(columns).toContainEqual(expect.objectContaining({ name: 'reply_to', type: 'INTEGER', notnull: 0 }));
+  expect(columns).toContainEqual(expect.objectContaining({ name: 'source_id', type: 'TEXT', notnull: 0 }));
 
   //M 造一条飞书群里的消息：原会话是助手的一场前台，收件表里记了它（照 bot/receive 记的样子）。
   const original = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'feishu:group:oc_1' });

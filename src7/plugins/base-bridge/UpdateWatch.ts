@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
+import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -99,6 +100,12 @@ export class UpdateWatch {
   private readonly file: string;
   /** 下一次问的定时器。 */
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** 已发出换版且仍在等待回执。 */
+  private swapping = false;
+  /** 发出换版后未收到结果的版本。保存在本进程内存中。 */
+  private uncertainSwap: { version: string } | undefined;
+  /** 送审已发出，但未收到回执的版本。 */
+  private uncertainApproval: string | undefined;
 
   /**
    * 构造更新监听器并定位本地状态文件。
@@ -149,6 +156,7 @@ export class UpdateWatch {
    * 副作用：可能读写 `update_watch.json`、变更或新增 `approval` 待确认条目、向前台会话发通知并发送 trace。
    */
   async check(): Promise<void> {
+    const observedSwap = this.uncertainSwap;
     //M 用时现取可选服务，插件挂载顺序不影响下一轮；没配或基地离线都静默跳过。
     const base = this.ctx.get('base');
     if (base === undefined) return;
@@ -165,6 +173,16 @@ export class UpdateWatch {
       return;
     }
     if (status.managed !== true || status.applying === true) return;
+
+    //G 对账只能读取状态。基地确认为目标版本后解除占用，不发送换版请求。
+    const uncertainSwap = this.uncertainSwap;
+    if (uncertainSwap !== undefined) {
+      const matches = uncertainSwap === observedSwap && status.current?.version === uncertainSwap.version;
+      if (status.applying === false && matches) {
+        this.clearUncertainSwap(uncertainSwap.version, 'applied');
+      }
+      return;
+    }
 
     //M 读出本地持久化的换版中与已拒绝记录，供下面决定是报结果还是推新版本。
     const state = this.load();
@@ -220,6 +238,7 @@ export class UpdateWatch {
 
     //G 没有新版本、用户拒过这个版本：不再登记。
     if (available === undefined || state.declined === available.version) return;
+    if (this.swapping || this.uncertainApproval === available.version) return;
 
     //G 这个版本已经在等用户了：不重复登记。
     if (waiting.some((item) => (item.payload as { version?: string } | null)?.version === available.version)) return;
@@ -238,12 +257,25 @@ export class UpdateWatch {
       payload: { version: available.version, command: `更新到 ${available.version}（现在是 ${status.current?.version ?? '未知'}）` },
     };
     const askRequest = { action: 'ask', input } as const;
-    const askOptions = { prefix: 'apr', timeoutMs: ASK_WAIT_MS, onFallback: getEmptyReply };
+    const uncertain = '更新送审结果不确定';
+    const onFallback = (reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply => {
+      if (reason === 'timeout') return { requestId: '', error: uncertain };
+
+      return getEmptyReply(reason, detail);
+    };
+    const askOptions = { prefix: 'apr', timeoutMs: ASK_WAIT_MS, onFallback };
 
     //M 发 approval/request（action: ask）：登记一条没有会话的待确认，approval 发 approval/asked，网页和飞书卡片去推。
     const asked = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', askRequest, askOptions);
 
-    //G 没登记上（没挂 approval、超时、出错）：记一行，下一轮再试（契约 3.1：base-bridge 打错跳过）。
+    //G 等待超时可能已经登记，保留同版本的占用并让中控核对。
+    if (asked.error === uncertain) {
+      this.uncertainApproval = available.version;
+      console.error(`盯更新：新版本 ${available.version} 的${uncertain}`);
+      return;
+    }
+
+    //G 没接单或明确登记失败时，记录原因并等下一轮。
     if (asked.pending === undefined) {
       console.error(`盯更新：新版本 ${available.version} 没登记上待确认（${asked.error ?? '审核插件没回'}），下一轮再试`);
       return;
@@ -271,6 +303,10 @@ export class UpdateWatch {
       this.save({ ...state, declined: version });
       return;
     }
+    //G 已经在发或之前没有确认结果时，不重复请求换版。
+    if (this.swapping || this.uncertainSwap !== undefined || state.swapping !== undefined) return;
+
+    this.swapping = true;
     try {
       //M 用户已经同意才发更新请求；失败要告知，和后台探测的静默跳过区分开。
       const base = this.ctx.get('base');
@@ -286,9 +322,69 @@ export class UpdateWatch {
       //T 跟踪：叫基地换。
       this.ctx.emit('trace', 'UpdateWatch.onDecided', '叫基地换', "base.postJson('/update/apply')", { 版本: version });
     } catch (error) {
-      //M 发起换版失败时把原因发到前台会话，提示用户去网页手动更新。
-      this.tell(pending.bot, `没开始更新到 ${version}：${textModule.getMessage(error)}。可以在网页左下角手动更新。`);
+      const reason = textModule.getMessage(error);
+      //G 基地可能已经收到 POST。只记原因，保留占用给中控核对。
+      if (reason === '基地没响应') {
+        this.uncertainSwap = { version };
+        const vars = { 版本: version, 原因: reason };
+        this.ctx.emit('trace', 'UpdateWatch.onDecided', '换版结果不确定', 'base.postJson', vars);
+        console.error(`盯更新：换版到 ${version} 结果不确定（${reason}）`);
+        return;
+      }
+
+      //M 明确失败的原因交给前台会话。
+      this.tell(pending.bot, `没开始更新到 ${version}：${reason}。可以在网页左下角手动更新。`);
+    } finally {
+      this.swapping = false;
     }
+  }
+
+  /**
+   * 根据中控确认的结果并核对基地状态，解除指定版本的换版占用。
+   * @param version 等待核对的目标版本。
+   * @param outcome 中控已确认的结果。
+   * @throws 无对应占用、基地仍在换版或基地状态与确认结果矛盾时拒绝解除。
+   */
+  async reconcile(version: string, outcome: 'applied' | 'not-applied'): Promise<void> {
+    //G 防止清掉另一版本或仍在等待回执的请求。
+    const uncertainSwap = this.uncertainSwap;
+    if (uncertainSwap?.version !== version) throw new failureModule.Failure(409, '没有这个版本的待核对换版');
+
+    const base = this.ctx.get('base');
+    if (base === undefined) throw new failureModule.Failure(503, '缺少基地连接');
+
+    //M 只读基地状态作为二次核对，解锁不提交换版。
+    let status: UpdateInfo;
+    try {
+      const response = await base.getJson('/update', TIMEOUT_MS);
+      if (response.status < 200 || response.status >= 300) throw new Error('基地状态不可用');
+
+      status = response.body as UpdateInfo;
+    } catch {
+      throw new failureModule.Failure(503, '无法核对基地更新状态');
+    }
+
+    //G 核对要和中控确认一致。状态缺失或仍在换版时保留占用。
+    if (status?.managed !== true || status.applying !== false || !status.current?.version) {
+      throw new failureModule.Failure(409, '基地还未给出可核对的空闲版本');
+    }
+    const applied = status.current.version === version;
+    if (applied !== (outcome === 'applied')) throw new failureModule.Failure(409, '基地当前版本与确认结果不一致');
+
+    //G 查询期间可能已核对完成或开始了另一次换版。只处理本次占用。
+    if (this.uncertainSwap === undefined) return;
+    if (this.uncertainSwap !== uncertainSwap) throw new failureModule.Failure(409, '待核对的换版请求已改变');
+
+    this.clearUncertainSwap(version, outcome);
+  }
+
+  /** 解除换版与同版本送审占用，并记录核对结论。 */
+  private clearUncertainSwap(version: string, outcome: 'applied' | 'not-applied'): void {
+    this.uncertainSwap = undefined;
+    if (this.uncertainApproval === version) this.uncertainApproval = undefined;
+
+    const vars = { 版本: version, 核对结果: outcome };
+    this.ctx.emit('trace', 'UpdateWatch.reconcile', '已核对换版结果并解除占用', 'GET /update', vars);
   }
 
   /** 说给这个机器人的前台会话；没有只打跟踪点。 */
@@ -351,4 +447,27 @@ export function mountUpdateWatch(ctx: cordis.Context, settings: UpdateWatchSetti
   ctx.on('ready', () => watch.schedule(settings.firstMs));
   ctx.on('approval/decided', (pending: Pending) => void watch.onDecided(pending));
   ctx.effect(() => () => watch.stop());
+
+  //M 已核验的中控可提交核对结论。未核验的远程请求不能改变占用。
+  void ctx.inject(['http'], (sub) => {
+    sub.http.app.post<{ Body: unknown }>('/api/update/watch/reconcile', async (request, reply) => {
+      if (!sub.http.isVerified(request)) return reply.code(403).send({ error: '需要核验的中控访问' });
+
+      const body = request.body as { version?: unknown; outcome?: unknown } | undefined;
+      const version = body?.version;
+      const outcome = body?.outcome;
+      if (typeof version !== 'string' || version === '' || (outcome !== 'applied' && outcome !== 'not-applied')) {
+        return reply.code(400).send({ error: '请提供 version 和 applied 或 not-applied 的 outcome' });
+      }
+
+      try {
+        await watch.reconcile(version, outcome);
+      } catch (error) {
+        if (error instanceof failureModule.Failure) return reply.code(error.status).send({ error: error.message });
+
+        throw error;
+      }
+      return { ok: true };
+    });
+  });
 }

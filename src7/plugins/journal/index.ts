@@ -6,7 +6,7 @@
  * 0.4 的“run.started / step.after / tool.after……”那套事件名不再用：插件模式下事件就是 Cordis 的事件本身，谁发、谁听一目了然。
  * 另外会同步挂上完整会话文件镜像 FilesMirror（原 files-mirror 已并入 ./FilesMirror.ts，保留 ctx.filesMirror）；
  * 若关闭 mirror: false，才回退由 Markdown.ts 写简版 对话.md。另提供流水与镜像路径的查询事件。
- * 一条消息的行整理成步骤（教程页轨迹）、挑出一句回话的行（聊天页追溯）都在同目录 Trail.ts，经 journal/request 的 trail、reply-lines 交出去。
+ * 按消息或关联会话查询流水。教程轨迹由 Trail.ts 收成步骤，回话追溯直接返回截止到该句的行。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as cordis from 'cordis';
@@ -29,7 +29,7 @@ export const name = 'journal';
 //M 1.1.0：并入原 files-mirror（统一提供 ctx.journal 与 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json）。
 //M 1.2.0：“跟踪行 → 步骤”只留一份，从 tutorial/Trail.ts 挪进 Trail.ts；
 //M   journal/request 的 message-lines 换成 trail（教程页）、reply-lines（聊天页追溯）。
-export const version = '1.2.0';
+export const version = '1.2.1';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
@@ -41,9 +41,25 @@ declare module 'cordis' {
     journal: Journal;
   }
   interface Events {
-    /** 查消息轨迹、流水或会话镜像路径。 */
+    /**
+     * 查消息轨迹、流水或会话镜像路径。
+     * 谁发：
+     *   src7/plugins/progress/Review.ts 的 Review.check
+     *   src7/plugins/tutorial/Files.ts 的 FlowFiles.getMessageTrail
+     *   src7/plugins/tutorial/index.ts 的 Tutorial.getRecentMessages
+     *   src7/plugins/web-api/Trace.ts 的 trace
+     * 谁接：src7/plugins/journal/index.ts 的 apply
+     */
     'journal/request'(request: JournalRequest): void | Promise<void>;
-    /** 返回对应查询结果。 */
+    /**
+     * 返回对应查询结果。
+     * 谁发：src7/plugins/journal/index.ts 的 apply
+     * 谁接：
+     *   src7/plugins/progress/Review.ts 的 Review.check
+     *   src7/plugins/tutorial/Files.ts 的 FlowFiles.getMessageTrail
+     *   src7/plugins/tutorial/index.ts 的 Tutorial.getRecentMessages
+     *   src7/plugins/web-api/Trace.ts 的 trace
+     */
     'journal/result'(result: JournalResult): void;
   }
 }
@@ -55,15 +71,15 @@ type JournalRequest = requestEventModule.RequestEnvelope & ({
   action: 'trail';
   /** 收件表的消息号。 */
   message: number;
-  /** 从起点往后最多取几行。 */
-  limit: number;
+  /** 筛完消息和相关会话后最多取几行。 */
+  maxLines: number;
 } | {
   /** 聊天页回话追溯：按消息号挑出到这句回话为止的行。 */
   action: 'reply-lines';
   /** 收件表的消息号。 */
   message: number;
-  /** 从起点往后最多取几行。 */
-  limit: number;
+  /** 筛完消息和相关会话后最多取几行。 */
+  maxLines: number;
   /** 这条消息从第一句到这一句回话出现过的会话号。 */
   sessions: string[];
   /** 这句回话的时刻，毫秒。 */
@@ -92,7 +108,7 @@ interface JournalResult extends requestEventModule.ResultEnvelope {
   trail?: trailModule.Trail;
   /** trail：挑出属于这条请求的行（tutorial 拿去对内存里的快照）。 */
   picked?: trailModule.TrailLine[];
-  /** reply-lines：取满了还没到这句回话，后面的没取到。 */
+  /** reply-lines：这句回话之前还有匹配行未返回。 */
   cut?: boolean;
   /** query 校验失败的原因。 */
   error?: string;
@@ -146,6 +162,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** /api/events 默认几条、最多几条。 */
 const LIST_DEFAULT = 200;
 const LIST_MAX = 1000;
+
+/** 只取数的事件。混合读写的请求和回执继续记入流水。 */
+const READ_EVENTS = ['journal/request', 'journal/result', 'usage/list', 'usage/list-result'] as const;
+const READ_EVENT_NAMES: ReadonlySet<string> = new Set(READ_EVENTS);
 
 
 /** 流水服务。 */
@@ -208,6 +228,10 @@ export class Journal extends cordis.Service {
     //M Cordis 每发一个事件，都会先发一个 internal/dispatch：发法、事件名、带的参数。和 trace 插件拼法一样（utils/Trace.ts）。
     ctx.on('internal/dispatch', (mode, event, args) => {
       if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/')) return;
+
+      //G 查询流水或用量时不写流水，重复查看不会把查询本身记成运行步骤。
+      if (READ_EVENT_NAMES.has(event)) return;
+
       const line = traceUtils.dispatchLine(ctx, mode, event, args, VAR_MAX);
       this.record({
         kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '',
@@ -266,14 +290,14 @@ export class Journal extends cordis.Service {
   }
 
   /**
-   * 服务方法：一条请求的行。journal/request 的 trail、reply-lines 都先调它，调用方是插件，可信，不再校验。
-   * 先找“收件表记下这条消息”（web-api/received）那一行，再从那一号起往后按先后取。
-   * 还没挑过：同一时间别的消息的行也在里面，再按 Trail.ts 的 pick（教程页）或 pickReply（聊天页追溯）挑。
+   * 从收件行起按消息号或明确关联的会话取流水，上限只计算匹配行。
    * @param message 收件表的消息号。
-   * @param limit 最多几条（含 web-api/received 那行）。
-   * @returns 按号从小到大；跟踪行里没有这条消息（过期删了、不是 web-api 收的）是 undefined。
+   * @param maxLines 最多几条（含 web-api/received 那行）。
+   * @param sessions 调用方已知的相关会话号。
+   * @param to 可选的截止时间，包含该毫秒内的匹配行。
+   * @returns 按号从小到大。没有收件行时是 undefined。
    */
-  request(message: number, limit: number): JournalEvent[] | undefined {
+  request(message: number, maxLines: number, sessions: string[] = [], to = Number.MAX_SAFE_INTEGER): JournalEvent[] | undefined {
     const db = this.ctx.resources.db;
 
     //M 收件表记下这条消息的那一行：从它起算。
@@ -282,10 +306,13 @@ export class Journal extends cordis.Service {
     const start = db.query(startSql).get(message) as { id: number } | null;
     if (start === null) return undefined;
 
-    //M 从该消息的起点顺序取限量流水，交给调用方筛选。
-    const rows = db
-      .query('SELECT * FROM journal_lines WHERE id >= ? ORDER BY id LIMIT ?')
-      .all(start.id, limit) as Row[];
+    //M 有其他消息号的行归那条消息。无消息号的行只认明确关联的会话。
+    const sql = 'SELECT * FROM journal_lines WHERE id >= ? AND at <= ? AND name NOT IN (?, ?, ?, ?)'
+      + ' AND (message_id = ? OR (message_id IS NULL AND session_id IN ('
+      + ' SELECT session_id FROM journal_lines WHERE message_id = ? AND id >= ? AND at <= ? AND session_id IS NOT NULL'
+      + ' UNION SELECT value FROM json_each(?)))) ORDER BY id LIMIT ?';
+    const knownSessions = JSON.stringify(sessions);
+    const rows = db.query(sql).all(start.id, to, ...READ_EVENTS, message, message, start.id, to, knownSessions, maxLines) as Row[];
     return rows.map(getEvent);
   }
 
@@ -451,8 +478,8 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 用同一监听按 action 分派四种查询，复用原服务方法。
   requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (request) => {
     if (request.action === 'trail') {
-      //M 教程页：从消息起点取行，找不到起点时什么都不给。
-      const raw = journal.request(request.message, request.limit);
+      //M 教程页：只取与入站消息和关联会话有关的流水。
+      const raw = journal.request(request.message, request.maxLines);
       if (raw === undefined) return {};
 
       //M 挑出这条请求的行（tutorial 对快照用），再收成一步一步。
@@ -461,13 +488,13 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
       return { trail, picked };
     }
     if (request.action === 'reply-lines') {
-      //M 聊天页回话追溯：从消息起点取行，找不到起点时 lines 为空。
-      const raw = journal.request(request.message, request.limit);
+      //M 只取截至这句回话的匹配行，多读一行判断截断。
+      const probeLimit = request.maxLines + 1;
+      const raw = journal.request(request.message, probeLimit, request.sessions, request.to);
       if (raw === undefined) return {};
 
-      //M 挑到这句回话为止，顺带说后面有没有没取到的。
-      const chosen = trailModule.pickReply(request.message, request.sessions, request.to, raw, request.limit);
-      return { lines: chosen.lines, cut: chosen.cut };
+      const lines = raw.slice(0, request.maxLines);
+      return { lines, cut: raw.length > request.maxLines };
     }
     if (request.action === 'query') {
       try {

@@ -42,7 +42,7 @@ export const name = 'relay';
 //  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
 //  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
-export const version = '1.4.2';
+export const version = '1.4.4';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'decision-map';
@@ -948,11 +948,21 @@ export class Relay {
     const requestName = 'decision-map/relay-reply';
     const resultName = 'decision-map/relay-replied';
     const payload = { id: reply.id, key, target, text: reply.text };
-    const onFallback = () => ({ requestId: '', ok: false });
+    const uncertain = '决策图回信写入结果不确定';
+    const onFallback = (reason: requestEventModule.FallbackReason) => {
+      if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
+
+      return { requestId: '', ok: false };
+    };
     const options = { timeoutMs: 3000, onFallback };
 
-    //M 给写图端持久回信号，同一条失败重送也只会出现一次。
+    //M 给写图端持久回信号。晚到或再次核对按同一编号去重。
     const result = await requestEventModule.requestEvent(this.ctx, requestName, resultName, payload, options);
+    if (result.error === uncertain) {
+      console.error(`relay：回信 #${String(reply.id)} 的${uncertain}，保留原回信号待对账`);
+      return;
+    }
+
     if (!result.ok) {
       if (result.error !== undefined) console.error(`relay：决策图回信写入失败：${result.error}`);
       return;
@@ -1007,7 +1017,13 @@ export class Relay {
       //M 等机器人确认入队，重复回执也表示同一条已在队列里。
       const delivered = await agentTasksModule.requestResultDelivery(this.ctx, input);
 
-      //G 投递失败保留待送状态，让下次重试看到这条回信。
+      //G 未确认回执时保留待对账状态，使用原键避免把同一回信写两次。
+      if (delivered.uncertain) {
+        console.error(`relay：回信 #${String(reply.id)} 的投递结果不确定，保留结果键 ${key} 待对账`);
+        return;
+      }
+
+      //G 明确投递失败时保留待送状态。
       if (!delivered.ok || delivered.receipt === undefined) {
         const reason = delivered.error ?? '未返回投递凭据';
         console.error(`relay：回信 #${String(reply.id)} 排不进会话 ${sessionId} 的结果队列：${reason}`);
@@ -1362,11 +1378,13 @@ export class Relay {
       };
       const reasons: Record<requestEventModule.FallbackReason, string> = {
         unhandled: '飞书插件没挂，没人接发文件的请求',
-        timeout: '等了 30 秒飞书没回',
+        timeout: '等了 30 秒飞书没回，发送结果不确定',
         aborted: '请求被中止',
         error: '飞书处理时出错',
       };
+      let timedOut = false;
       const onFallback = (reason: requestEventModule.FallbackReason, detail?: string) => {
+        timedOut = reason === 'timeout';
         const error = `${reasons[reason]} ${detail ?? ''}`.trim();
         return { requestId: '', ok: false, error };
       };
@@ -1376,7 +1394,7 @@ export class Relay {
         onFallback,
       };
 
-      //M 发请求让飞书插件上传并发送，回执 ok: false、没人答、超时都照实记“没发出去”，不伪造成功。
+      //M 等飞书回执。超时可能已经发送，只记录结果不确定。
       const received = await requestEventModule.requestEvent(
         this.ctx,
         'feishu/send-file',
@@ -1385,6 +1403,9 @@ export class Relay {
         options,
       );
       result = `没发出去：${received.error ?? '原因不明'}`;
+      if (timedOut) {
+        result = received.error ?? '飞书文件发送结果不确定';
+      }
       if (received.ok) {
         result = `已发 ${received.messageId ?? ''}`;
       }

@@ -72,18 +72,14 @@ export class Store {
   constructor(private readonly db: sqlite.Database) {
     db.exec('CREATE TABLE IF NOT EXISTS wechat_watch'
       + ' (account TEXT, chat TEXT, name TEXT, auto INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
+    //M view 保存整条气泡视图 JSON，供页面按消息类型渲染。
     db.exec('CREATE TABLE IF NOT EXISTS wechat_messages'
       + ' (account TEXT, chat TEXT, source TEXT, local_id INTEGER, at INTEGER,'
-      + ' from_self INTEGER, kind TEXT, sender TEXT, text TEXT, PRIMARY KEY (account, chat, source, local_id))');
-    //M 2026-11-14 23:30 EST：存整条气泡视图（JSON），页面按种类画图片、语音条、卡片。老库补一列。
-    if (!(db.query('PRAGMA table_info(wechat_messages)').all() as { name: string }[])
-      .some((col) => col.name === 'view')) db.exec('ALTER TABLE wechat_messages ADD COLUMN view TEXT');
-    //M 2026-11-14 23:15 EST：全部会话的同步进度（原来记在 wechat_watch.last_time，只有重点监听的有）。
+      + ' from_self INTEGER, kind TEXT, sender TEXT, text TEXT, view TEXT, PRIMARY KEY (account, chat, source, local_id))');
+
+    //M 全部会话的同步进度，full=1 表示历史已补全。
     db.exec('CREATE TABLE IF NOT EXISTS wechat_sync'
-      + ' (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER, PRIMARY KEY (account, chat))');
-    //M 2026-11-15 00:17 EST：full=1 表示这个监听会话的历史已经全部补进库了（不只是最近一段）。
-    if (!(db.query('PRAGMA table_info(wechat_sync)').all() as { name: string }[])
-      .some((col) => col.name === 'full')) db.exec('ALTER TABLE wechat_sync ADD COLUMN full INTEGER');
+      + ' (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER, full INTEGER, PRIMARY KEY (account, chat))');
     db.exec('CREATE TABLE IF NOT EXISTS wechat_outbox'
       + ' (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, chat TEXT, name TEXT,'
       + ' text TEXT, state TEXT, note TEXT, at INTEGER)');

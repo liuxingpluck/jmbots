@@ -71,6 +71,7 @@ export class FeishuReply {
     const channelSendOptions = {
       filter: (request: { call: approvedSend.ApprovedChannelSend }) => request.call.channel === this.name,
     };
+    //M 登记主动发送的请求和回执，处理过的结果交给申请方记账。
     requestEventModule.onRequestEvent(
       this.ctx,
       'channel/send',
@@ -90,6 +91,7 @@ export class FeishuReply {
     if (!approved) return { status: 'failed', reason: '主动发件缺少有效批准' };
 
     const { account, chat, sendId, text } = call;
+    //G 按批准时绑定的账号取应用，找不到就返回明确的失败回执。
     const app = this.feishu.apps.get(account);
     if (app === undefined) return { status: 'failed', reason: '批准指定的飞书应用未配置' };
 
@@ -229,7 +231,9 @@ export class FeishuReply {
       let providerId = '';
       if (body.trim() !== '') {
         //M 非空白正文经统一发信方法发出（按原消息号回复，必要时退回直发）。
-        providerId = await media.message(this.feishu, appId, chatId, 'text', { text: body }, address.messageId || undefined);
+        const messageBody = { text: body };
+        const replyTo = address.messageId || undefined;
+        providerId = await media.message(this.feishu, appId, chatId, 'text', messageBody, replyTo);
       }
       const now = Date.now();
       const receiptPart: protocol.ReplyReceiptPart = {
@@ -313,6 +317,7 @@ export class FeishuReply {
    * @param rawChat 调用方给出的原始聊天串（群号、群名、私聊名或 appId:chatId）。
    */
   private getReplyTargetAddress(bot: string, rawChat: string): FeishuAddress | string {
+    //M 各种查找分支共用同一条找不到目标的说明。
     const notFound = protocol.getChatNotFound(rawChat);
 
     //M 拆目标串：去掉网页展示的“飞书·群·”“飞书·私聊·”前缀（剩下的按群名、人名认），拆出“前缀:聊天”。
@@ -406,6 +411,7 @@ export class FeishuReply {
         continue;
       }
 
+      //M 私聊除了聊天号和人员号，也可以按人员配置中的名字匹配。
       const personName = this.feishu.config.people.get(row.open_id)?.name ?? '';
       const value = { appId: row.app_id, chatId: row.chat_id, chatType: 'p2p', chatName: '' };
       yield { ids: [row.chat_id, row.open_id], names: [personName], value };
@@ -419,6 +425,7 @@ export class FeishuReply {
 
       const names = [contact.chatName];
       if (contact.chatType === 'p2p') {
+        //M 私聊把对方的名字纳入匹配，群聊仍按群名认目标。
         names.push(contact.sender);
       }
       const value = {
@@ -451,6 +458,7 @@ export class FeishuReply {
 
   /** 确保把该应用历史回复幂等键读入内存缓存。 */
   private ensureReplyLoaded(appId: string): void {
+    //G 同一应用的历史幂等记录只首次加载，后续查内存。
     if (this.loadedReplyApps.has(appId)) return;
 
     //M 首次访问该应用时标记已加载，并逐行把历史幂等记录装载进内存 Map。

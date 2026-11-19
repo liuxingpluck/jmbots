@@ -34,7 +34,7 @@ export const name = 'progress';
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
 //M 1.1.6：接入已登记飞书群的每日进度调度。
 //M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
-export const version = '1.1.8';
+export const version = '1.1.9';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'bots', 'sessions'];
@@ -131,11 +131,23 @@ declare module 'cordis' {
     progress: Progress;
   }
   interface Events {
-    /** 一项进度有变化（拷贝）。feishu 那边声明的是 ProgressItemLike，字段是这个的子集。 */
+    /**
+     * 一项进度有变化（拷贝）。feishu 那边声明的是 ProgressItemLike，字段是这个的子集。
+     * 谁发：src7/plugins/progress/index.ts 的 Progress.push
+     * 谁接：src7/plugins/base-bridge/Notify.ts 的 mountNotify；src7/plugins/feishu/cards/Cards.ts 的 setupProgress
+     */
     'progress/update'(item: ProgressItem): void;
-    /** 查询或操作会话进度。 */
+    /**
+     * 查询或操作会话进度。
+     * 谁发：src7/plugins/feishu/cards/Cards.ts 的 onAction；src7/plugins/web-api/index.ts 的 WebApi.runningList
+     * 谁接：src7/plugins/progress/index.ts 的 Progress.constructor
+     */
     'progress/request'(request: ProgressRequest): void | Promise<void>;
-    /** 返回进度列表或进度操作的反馈。 */
+    /**
+     * 返回进度列表或进度操作的反馈。
+     * 谁发：src7/plugins/progress/index.ts 的 Progress.constructor
+     * 谁接：src7/plugins/feishu/cards/Cards.ts 的 onAction；src7/plugins/web-api/index.ts 的 WebApi.runningList
+     */
     'progress/result'(result: ProgressResult): void;
   }
 }
@@ -532,14 +544,17 @@ export class Progress extends cordis.Service {
       card,
     };
     const request = { action: 'ask', input } as const;
+    const uncertain = '长跑提醒登记结果不确定';
     const options = {
       timeoutMs: 5000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', error: detail ?? reason,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'timeout') return { requestId: '', error: uncertain };
+
+        return { requestId: '', error: detail ?? reason };
+      },
     };
 
-    //M 等待审核插件确认登记，缺席、超时和出错都走文字退路。
+    //M 等待审核插件确认登记。明确未接单或登记失败才走文字退路。
     const reply = await requestEventModule.requestEvent(
       this.ctx, 'approval/request', 'approval/result', request, options,
     );
@@ -548,6 +563,13 @@ export class Progress extends cordis.Service {
     const pending = reply.pending;
     const cardVars = { 会话: item.sessionId, 干了: elapsed, 卡片: pending?.id, 错误: reply.error };
     this.ctx.emit('trace', 'Progress.sendCard', '请审核插件登记长跑提醒', 'approval/request ask', cardVars);
+
+    //G 超时可能已经登记，不额外发文字或再次登记。
+    if (reply.error === uncertain) {
+      item.cardId = 0;
+      this.note(item, uncertain);
+      return;
+    }
 
     //G 回执回来时会话已经结束，立即关闭刚登记的卡片。
     if (item.endedAt !== undefined) {
@@ -961,17 +983,28 @@ export class Progress extends cordis.Service {
     //M 把交接摘要投递给新会话并打上 handedOver 防止再转，随后定格老会话并告知用户去向。
     const origin = { channel: row.channel, address: row.address };
     const request = { action: 'hand', bot: row.bot, text, origin, sessionId: freshId } as const;
+    const uncertain = '转交结果不确定，请核对接手会话。';
     const options = {
       timeoutMs: 10_000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '', ok: false, error: detail ?? `转交未获回执（${reason}）`,
-      }),
+      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+        if (reason === 'timeout') return { requestId: '', ok: false, error: uncertain };
+
+        return { requestId: '', ok: false, error: detail ?? `转交未获回执（${reason}）` };
+      },
     };
 
     //M 把交接内容发给机器人，凭回执定位实际接手的会话。
     const reply = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
 
-    //G 转交失败，撤掉老会话的转交标记，留下真实失败原因。
+    //G 老会话已经停止。未确认转交时保留新旧关联，避免旧会话交回或再转。
+    if (reply.error === uncertain) {
+      this.note(item, uncertain);
+      this.close(item, 'stopped', uncertain);
+      this.ctx.emit('bot/say', item.session, uncertain);
+      return;
+    }
+
+    //G 明确转交失败时撤掉老会话的转交标记。
     if (!reply.ok || reply.sessionId === undefined) {
       if (task !== undefined && task.handedTo === freshId) {
         delete task.handedTo;

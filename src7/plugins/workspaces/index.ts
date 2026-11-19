@@ -36,7 +36,11 @@ declare module 'cordis' {
     workspaces: Workspaces;
   }
   interface Events {
-    /** 工作区新建、改名、归档了（存库以后发）。重复登记、改成同名、再归档一次不发。 */
+    /**
+     * 工作区新建、改名、归档了（存库以后发）。重复登记、改成同名、再归档一次不发。
+     * 谁发：src7/plugins/workspaces/index.ts 的 Workspaces.emitChanged
+     * 谁接：暂无
+     */
     'workspaces/changed'(change: WorkspaceChange): void;
   }
 }

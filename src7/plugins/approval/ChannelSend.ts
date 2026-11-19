@@ -14,6 +14,7 @@ function getAction(body: unknown): outbound.OutboundAction | undefined {
   const fields = body as Record<string, unknown>;
   const action = fields['action'];
   if (action === undefined || action === 'prepare') {
+    //G 申请必须同时带上完整目标和正文，后续确认才能核对这一份内容。
     const channel = text.getText(fields, 'channel');
     const account = text.getText(fields, 'account');
     const chat = text.getText(fields, 'chat');
@@ -25,11 +26,13 @@ function getAction(body: unknown): outbound.OutboundAction | undefined {
     return { action: 'prepare-channel', message };
   }
 
+  //G 查询和确认都要带已有意图的编号，限定长度后再交给发件账。
   const intentId = text.getText(fields, 'intentId');
   if (intentId.trim() === '' || intentId.length > 100) return undefined;
   if (action === 'status') return { action, intentId };
   if (action !== 'confirm' || fields['decision'] !== 'approve') return undefined;
 
+  //G 用户确认时要同时带看过的摘要和本次交互编号，供发件账核验。
   const observedIntentDigest = text.getText(fields, 'observedIntentDigest');
   const interactionId = text.getText(fields, 'interactionId');
   if (!/^[a-f0-9]{64}$/u.test(observedIntentDigest)) return undefined;
@@ -44,7 +47,13 @@ function requestOutbound(ctx: cordis.Context, action: outbound.OutboundAction, a
   const payload = { ...action, program, actor };
   const options = {
     timeoutMs: 105_000,
-    onFallback: () => ({ requestId: '', code: 503, error: '发件确认暂不可用，请按原意图核对' }),
+    onFallback: (reason: events.FallbackReason) => {
+      if (reason === 'timeout' && action.action !== 'status') {
+        return { requestId: '', code: 504, error: '发件操作结果不确定，请核对原意图，避免重复提交' };
+      }
+
+      return { requestId: '', code: 503, error: '发件确认暂不可用，请按原意图核对' };
+    },
   };
 
   //M 入口不直接接触渠道；确认权限和值都由 Outbound 核对。
@@ -62,6 +71,7 @@ export function mountChannelSend(ctx: cordis.Context, http: Pick<Http, 'app' | '
   http.app.post<{ Body: unknown }>(route, async (request, reply) => {
     if (!http.isVerified(request)) return reply.code(403).send({ error: '发件请求未通过身份核验' });
 
+    //G 校验请求正文再转交，缺少必要字段的请求直接返回错误。
     const action = getAction(request.body);
     if (action === undefined) return reply.code(400).send({ error: '主动发件参数无效' });
 
@@ -93,6 +103,7 @@ export function registerChannelSendTool(ctx: cordis.Context): void {
       if (snapshot?.channel !== 'feishu' || snapshot.accountId.trim() === '' || snapshot.chatId.trim() === '') {
         throw new Error('主动发件需要本轮可信飞书来源');
       }
+      //G 模型只提供非空正文，渠道、账号和聊天都从本轮快照取。
       const content = text.getText(args, 'text');
       if (content.trim() === '') throw new Error('发件正文不能为空');
 

@@ -1,6 +1,6 @@
 /**
  * 助手体验（docs/src7插件设计/助手体验对照.md）：消息下的小表情、选项卡片，右栏“待办”。
- * 数据来自 assist 插件的 GET /api/assist，ChatArea 里 usePoll 每 2 秒取一次，放在这个模块的小仓库里，各处按消息号取。
+ * 聊天区和右栏共用页面轮询取回的助手数据，表情与选项按消息号展示。
  * 卡片、待办、待办子项超过 30 条只画看得见的（Shared/LongList.tsx）；卡片的选项后端限 2～6 个，照旧逐个画。
  */
 import * as antd from 'antd';
@@ -10,6 +10,7 @@ import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as readingModule from '../Panel/Reading.ts';
 import * as longList from '../Shared/LongList.tsx';
+import type * as storeModule from '../Store.ts';
 
 
 /** 一条消息下卡片多到虚拟化时占多高，像素；外面已是聊天的虚拟列表，这里自己滚。 */
@@ -22,73 +23,18 @@ const STEPS_HEIGHT = 320;
 const TODO_GAP = 12;
 
 
-/** 一个表情。 */
-interface Reaction { id: number; messageId: number | null; emoji: string }
-/** 一张选项卡片。 */
-interface Ask { id: number; messageId: number | null; question: string; options: string[]; answer?: string }
-/** 待办里的一项。 */
-interface TodoStep { text: string; status: 'todo' | 'doing' | 'done' }
-/** 一场会话的待办。 */
-interface Todo { id: number; sessionId: string; root?: string; updatedAt: number; items: TodoStep[] }
-/** 原群聊或私聊的一条定时提醒。 */
-interface Reminder {
-  /** 提醒号。 */
-  id: number;
-  /** 提醒配置时区里的日期和时间。 */
-  at: string;
-  /** 显示时间使用的 IANA 时区。 */
-  timeZone: string;
-  /** 用户需要到点提醒的正文。 */
-  text: string;
-  /** 调度和发送进度。 */
-  state: 'awaiting' | 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'cancelled' | 'rejected';
-  /** 渠道回执的失败或待核对原因。 */
-  reason: string | null;
-}
-/** GET /api/assist 的回答。 */
-interface AssistData { bot?: string; reactions: Reaction[]; asks: Ask[]; todos: Todo[]; reminders?: Reminder[] }
+/** 切换机器人后还没取到该机器人数据时共用的空数据。 */
+const EMPTY_ASSIST: storeModule.AssistData = { reactions: [], asks: [], todos: [] };
 
 
-/** 小仓库：当前机器人的数据和订阅者。 */
-let data: AssistData = { reactions: [], asks: [], todos: [] };
-const listeners = new Set<() => void>();
-/** 订阅仓库。 */
-const subscribe = (listener: () => void): (() => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-/** 取一次，存进仓库，通知订阅者。没挂 assist 插件就一直是空的。 */
-async function load(bot: string): Promise<void> {
-  try {
-    //M 拉取指定机器人的助手数据刷新模块小仓库，出错时重置为空集避免残留旧数据。
-    const url = `/api/assist?bot=${encodeURIComponent(bot)}`;
-    const result = await api.getJson<AssistData>(url);
-    data = { ...result, bot };
-  } catch {
-    data = { reactions: [], asks: [], todos: [] };
-  }
-  for (const listener of listeners) listener();
-}
-/** 读仓库。 */
-const useData = (): AssistData => react.useSyncExternalStore(subscribe, () => data, () => data);
+/** 订阅当前机器人的助手数据。 */
+function useData(): storeModule.AssistData {
+  //M 聊天区与右栏读同一份页面仓库，切换时只显示所选机器人的数据。
+  return context.useUi((state) => {
+    if (state.assist?.bot !== state.currentBot) return EMPTY_ASSIST;
 
-
-/**
- * 每 2 秒取一次这个机器人的表情、卡片、待办。
- * @param bot 机器人；没有或 assist 插件未挂载时就不取。
- * @param enabled assist 插件有没有挂载。
- * @returns 无返回值。
- * 副作用：挂载或参数变化后每 2 秒轮询 GET /api/assist 并通知所有订阅组件刷新。
- */
-export function usePoll(bot: string | null, enabled = true): void {
-  react.useEffect(() => {
-    if (!bot || !enabled) return undefined;
-
-    //M 就绪后先立即拉一次，再按 2 秒周期轮询最新助手数据。
-    void load(bot);
-    const timer = window.setInterval(() => void load(bot), 2000);
-    return () => window.clearInterval(timer);
-  }, [bot, enabled]);
+    return state.assist ?? EMPTY_ASSIST;
+  });
 }
 
 
@@ -98,7 +44,7 @@ export function usePoll(bot: string | null, enabled = true): void {
  * @returns 去重后的小表情元素；没有表情时返回 null。
  */
 export function Reactions(props: { messageId: number }): react.JSX.Element | null {
-  //M 从模块小仓库订阅表情列表并筛选出属于本条消息的反应。
+  //M 从共享仓库订阅表情列表并筛选出属于本条消息的反应。
   const all = useData().reactions.filter((item) => item.messageId === props.messageId);
   if (all.length === 0) return null;
   return <div className="jm-reactions">{[...new Set(all.map((item) => item.emoji))].map((emoji) => <span key={emoji} className="jm-reaction">{emoji}</span>)}</div>;
@@ -115,16 +61,17 @@ export function Asks(props: { bot: string; messageId: number; onSent?: () => voi
   //M 订阅界面翻译并按消息号过滤选项卡片（最新的卡片排前面）。
   const t = i18n.useT();
   const asks = useData().asks.filter((item) => item.messageId === props.messageId).reverse();
+  const refreshAssist = context.useUi((state) => state.refreshAssist);
   const [busy, setBusy] = react.useState(0);
   if (asks.length === 0) return null;
   /** 点了一个选项。 */
-  const choose = async (ask: Ask, option: string): Promise<void> => {
+  const choose = async (ask: storeModule.Ask, option: string): Promise<void> => {
     setBusy(ask.id);
     try {
       //M 先向后端登记选项答案，再把它作为用户消息发出并立即刷新助手仓库与时间线。
       await api.sendJson(`/api/assist/asks/${String(ask.id)}`, 'POST', { answer: option });
       await api.sendMessage({ text: option, bot: props.bot, uploads: [] });
-      await load(props.bot);
+      await refreshAssist(props.bot);
       props.onSent?.();
     } catch (error) {
       let msg = String(error);
@@ -140,7 +87,7 @@ export function Asks(props: { bot: string; messageId: number; onSent?: () => voi
    * 画一张卡片：问题、选项按钮、已选的答案。
    * @param ask 选项卡片；由下面的 LongList 逐张传进来。
    */
-  const renderAsk = (ask: Ask): react.ReactNode => {
+  const renderAsk = (ask: storeModule.Ask): react.ReactNode => {
     let askClass = 'jm-ask';
     if (ask.answer !== undefined) {
       askClass = 'jm-ask jm-ask-done';
@@ -184,22 +131,17 @@ export function Asks(props: { bot: string; messageId: number; onSent?: () => voi
 /**
  * 右栏“待办”：只看当前打开的会话（及其后台子会话），最近改的在前。
  * @returns 待办面板元素。
- * 副作用：assist 插件挂载时每 2 秒轮询待办数据；点击清除待办时调用清理接口并刷新。
+ * 副作用：点击清除待办时调用清理接口并刷新共享数据。
  */
 export function TodoPanel(): react.JSX.Element {
-  //M 读取翻译、当前机器人、焦点会话与插件挂载状态，仅在 assist 启用时轮询待办数据。
+  //M 读取当前机器人和焦点会话，从共享数据中归并待办和提醒。
   const t = i18n.useT();
   const bot = context.useUi((state) => state.currentBot);
   const panelSessionId = context.useUi((state) => state.panelSessionId);
-  const mountedPlugins = context.useUi((state) => state.mountedPlugins);
-  const assistEnabled = api.isPluginMounted(mountedPlugins, 'assist', false);
-  usePoll(bot, assistEnabled);
+  const refreshAssist = context.useUi((state) => state.refreshAssist);
   const current = useData();
   const all = [...current.todos].sort((a, b) => b.updatedAt - a.updatedAt);
-  let reminders: Reminder[] = [];
-  if (current.bot === bot) {
-    reminders = current.reminders ?? [];
-  }
+  const reminders = current.reminders ?? [];
   const focus = panelSessionId ?? all[0]?.sessionId ?? null;
   const focusRoot = all.find((item) => item.sessionId === focus)?.root ?? focus;
   let todos: typeof all = [];
@@ -217,7 +159,7 @@ export function TodoPanel(): react.JSX.Element {
     try {
       //M 清除当前焦点会话及派生子会话的待办，随后立刻重拉一次数据更新视图。
       await api.sendJson(`/api/assist/todos/clear?bot=${encodeURIComponent(bot)}&session=${encodeURIComponent(focus)}`, 'POST', {});
-      await load(bot);
+      await refreshAssist(bot);
     } catch (error) {
       let msg = String(error);
       if (error instanceof Error) {
@@ -232,7 +174,7 @@ export function TodoPanel(): react.JSX.Element {
    * 画待办里的一项：状态圈和文字。
    * @param step 一项；由内层 LongList 逐项传进来。
    */
-  const renderStep = (step: TodoStep): react.ReactNode => (
+  const renderStep = (step: storeModule.TodoStep): react.ReactNode => (
     <div className={`jm-todo-item jm-todo-${step.status}`}><span>{mark[step.status]}</span> {step.text}</div>
   );
 
@@ -240,7 +182,7 @@ export function TodoPanel(): react.JSX.Element {
    * 画一份待办：哪场会话、几点改的，下面是各项；项多了在固定高度里只画看得见的。
    * @param todo 一份待办；由外层 LongList 逐份传进来。
    */
-  const renderTodo = (todo: Todo): react.ReactNode => (
+  const renderTodo = (todo: storeModule.Todo): react.ReactNode => (
     <div className="jm-todo">
       <div className="jm-muted">{t('会话 {id}', { id: todo.sessionId })} · {new Date(todo.updatedAt).toLocaleTimeString()}</div>
       <longList.LongList
@@ -256,7 +198,7 @@ export function TodoPanel(): react.JSX.Element {
     awaiting: t('等你确认'), pending: t('待提醒'), sending: t('正在发送'), sent: t('已提醒'),
     failed: t('发送失败'), uncertain: t('发送结果待核对'), cancelled: t('已取消'), rejected: t('已拒绝'),
   };
-  const renderReminder = (reminder: Reminder): react.ReactNode => (
+  const renderReminder = (reminder: storeModule.Reminder): react.ReactNode => (
     <div className="jm-todo">
       <div className="jm-muted">{reminder.at} {reminder.timeZone} · {reminderStates[reminder.state]}</div>
       <div className="jm-todo-item">{reminder.text}</div>
