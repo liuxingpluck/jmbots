@@ -7,6 +7,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
+import * as filesModule from '../../../utils/Files.ts';
 
 
 /** 一个微信账号（runtime/data/accounts.yaml 里 status 是 connected 的）。 */
@@ -271,15 +272,18 @@ export class Reader {
     const relative = path.join(
       'runtime', 'data', account, `jmbots_poll_${String(process.pid)}_${String(++this.seq)}.json`,
     );
-    fs.mkdirSync(path.dirname(path.join(this.root, relative)), { recursive: true });
-    fs.writeFileSync(path.join(this.root, relative), JSON.stringify({ chats, initial_limit: 50, limit: 500 }));
+    const requestFile = path.join(this.root, relative);
+    const requestDir = path.dirname(requestFile);
+    //M 确保同步请求文件的目录存在。
+    filesModule.ensureDir(requestDir);
+    fs.writeFileSync(requestFile, JSON.stringify({ chats, initial_limit: 50, limit: 500 }));
     try {
       const parsed = JSON.parse(
         await this.run(account, ['sync-batch', '--request', relative]),
       ) as { results?: SyncResult[] };
       return parsed.results ?? [];
     } finally {
-      fs.rmSync(path.join(this.root, relative), { force: true });
+      fs.rmSync(requestFile, { force: true });
     }
   }
 
@@ -320,7 +324,9 @@ export class Reader {
     const request = path.join(
       'runtime', 'data', account, `jmbots_media_${String(process.pid)}_${String(++this.seq)}.json`,
     );
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const imageDir = path.dirname(file);
+    //M 为引擎输出缩略图准备目录。
+    filesModule.ensureDir(imageDir);
     fs.writeFileSync(
       path.join(this.root, request),
       JSON.stringify({ op: 'image', chat, source, local_id: localId, out: relative, thumb: true }),
@@ -421,7 +427,8 @@ export class Reader {
    */
   private async exec(account: string, args: string[], media?: MediaKind): Promise<string | MediaResult> {
     const tmp = path.join(this.root, 'runtime', 'tmp');
-    fs.mkdirSync(tmp, { recursive: true });
+    //M 引擎使用这个目录存放自己的临时文件。
+    filesModule.ensureDir(tmp);
     const env: Record<string, string | undefined> = {
       ...process.env, JIMUKEFU_RUNTIME_DIR: path.join(this.root, 'runtime'), JIMUKEFU_ACCOUNT: account,
       JIMUKEFU_AT_NAMES: this.atNames, PYTHONPATH: path.join(this.root, 'python'), PYTHONUTF8: '1',

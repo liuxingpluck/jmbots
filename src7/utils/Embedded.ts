@@ -4,7 +4,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as textModule from './Text.ts';
+import * as utils from './index.ts';
 
 
 /** 相对路径 → Bun.file 能打开的路径。 */
@@ -27,7 +27,7 @@ export function register(entries: Record<string, string>, time: number): void {
   compiled = true;
   built = time;
   //M 相对路径统一成正斜杠再登记，find 时同样换过，Windows 上打的包也对得上。
-  textModule.eachEntry(entries, (relative, file) => {
+  utils.eachEntry(entries, (relative, file) => {
     const key = relative.replaceAll('\\', '/');
     files.set(key, file);
   });

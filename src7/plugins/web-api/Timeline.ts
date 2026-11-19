@@ -11,7 +11,7 @@ import type * as fastify from 'fastify';
 import type { Session, SessionMeta, SessionState } from '../../Sessions.ts';
 import * as checks from '../../utils/Checks.ts';
 import * as mime from '../../utils/Mime.ts';
-import * as text from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as traceModule from './Trace.ts';
 import * as failureModule from '../../utils/Failure.ts';
 
@@ -454,28 +454,28 @@ export class Timeline {
     }
 
     //M 两个渠道都优先显示地址里存的名称。
-    const name = text.getText(address, 'name');
+    const name = utils.getStringField(address, 'name');
     if (record.channel === 'wechat') {
       //M 微信里没存名称时显示聊天号。
-      const chat = text.getText(address, 'chat');
+      const chat = utils.getStringField(address, 'chat');
       const who = name || chat;
       return `微信·${who}`;
     }
 
     //M 飞书用聊天类型区分群和私聊，再从地址里取可显示的名称。
-    const chatType = text.getText(address, 'chatType');
+    const chatType = utils.getStringField(address, 'chatType');
     let kind = '私聊';
     if (chatType === 'group') {
       kind = '群';
     }
 
-    const chatName = text.getText(address, 'chatName');
-    const userName = text.getText(address, 'userName');
+    const chatName = utils.getStringField(address, 'chatName');
+    const userName = utils.getStringField(address, 'userName');
     const who = name || chatName || userName;
     if (who !== '') return `飞书·${kind}·${who}`;
 
     //M 没有名称时用用户编号的末四位，缺编号时只显示聊天类型。
-    const openId = text.getText(address, 'openId');
+    const openId = utils.getStringField(address, 'openId');
     if (openId === '') return `飞书·${kind}`;
 
     const suffix = openId.slice(-4);

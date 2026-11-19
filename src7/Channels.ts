@@ -10,6 +10,7 @@
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as textModule from './utils/Text.ts';
+import * as utils from './utils/index.ts';
 import * as workspaceModule from './utils/Workspace.ts';
 
 
@@ -1031,11 +1032,11 @@ export function makeChannelMessageId(channel: string, accountId: string, nativeI
  */
 export function resolveLegacyRole(address: Record<string, unknown>): ChannelRole {
   //M 先看地址里是否明确标了本人（owner: true 或 role === 'owner'）。
-  if (textModule.getField(address, 'owner') === true || textModule.getText(address, 'role') === 'owner') {
+  if (utils.getField(address, 'owner') === true || utils.getStringField(address, 'role') === 'owner') {
     return 'owner';
   }
   //M 其次识别 builder 角色档位。
-  if (textModule.getText(address, 'role') === 'builder') {
+  if (utils.getStringField(address, 'role') === 'builder') {
     return 'builder';
   }
   return 'guest';

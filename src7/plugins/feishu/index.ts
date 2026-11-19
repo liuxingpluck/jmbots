@@ -26,7 +26,9 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
@@ -38,7 +40,6 @@ import type { RecallData, ReceiveData } from './Inbound.ts';
 import * as media from './Media.ts';
 import * as outbox from './outbox/Outbox.ts';
 import { FeishuReply } from './Reply.ts';
-
 
 /** 旧路 bots.channel 回调发送回执（结构对齐 bots 服务约定）。 */
 interface LegacySendReceipt {
@@ -1113,7 +1114,8 @@ function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<strin
         throw new Error(`feishu 插件 people 里 ${name} 的名字当不了目录名，给他写 dir`);
       }
       dir = path.resolve(ctx.resources.root, written);
-      fs.mkdirSync(dir, { recursive: true });
+      //M 确保已按配置解析的工作区目录存在。
+      filesModule.ensureDir(dir);
     }
     //M guest 的目录：写了照写，没写是 guests/<名字>/，名字当不了目录名就用 guests/_guest/；只建这一个目录。
     if (role === 'guest') {
@@ -1124,14 +1126,15 @@ function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<strin
       const written = item['dir'] ?? defaultGuestDir;
       if (typeof written !== 'string' || written === '') throw new Error(`feishu 插件 people 里 ${name} 的 dir 要写目录`);
       dir = path.resolve(ctx.resources.root, written);
-      fs.mkdirSync(dir, { recursive: true });
+      //M 确保已按配置解析的工作区目录存在。
+      filesModule.ensureDir(dir);
     }
     people.set(openId, { openId, name, role: role as FeishuRole, dir });
   }
 
   //M 旧写法：relay 插件配置的 owner_open_ids。people 里登记过的照 people，没登记的补成本人。
   const relay = ctx.resources.config.plugins.find((entry) => entry.name === 'relay');
-  const legacy = textModule.getField(relay?.config, 'owner_open_ids') ?? [];
+  const legacy = utils.getField(relay?.config, 'owner_open_ids') ?? [];
   if (!Array.isArray(legacy) || !legacy.every((id) => typeof id === 'string')) {
     throw new Error('relay 的 owner_open_ids 要写成字符串清单（新写法是 feishu 插件 people 里 owner: true）');
   }

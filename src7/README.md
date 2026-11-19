@@ -96,37 +96,37 @@ src7/
 
 以飞书群里一条 @ 了机器人的普通消息为例。
 
-1. **收到群消息。** `Feishu.start` 监听飞书的 `im.message.receive_v1`，交给 `FeishuInbound.onMessage` 按消息号去重。 [`Feishu.start` · `im.message.receive_v1` · src7/plugins/feishu/index.ts:594](plugins/feishu/index.ts#L594) · [`FeishuInbound.onMessage` · src7/plugins/feishu/Inbound.ts:159](plugins/feishu/Inbound.ts#L159)
+1. **收到群消息。** `Feishu.start` 监听飞书的 `im.message.receive_v1`，交给 `FeishuInbound.onMessage` 按消息号去重。 [`Feishu.start` · `im.message.receive_v1` · src7/plugins/feishu/index.ts:595](plugins/feishu/index.ts#L595) · [`FeishuInbound.onMessage` · src7/plugins/feishu/Inbound.ts:159](plugins/feishu/Inbound.ts#L159)
 2. **存好再分发。** `FeishuInbound.handleInboundMessage` 识别 @ 和群设置、准备附件并存聊天日志，再由 `FeishuInbound.deliver` 发 `channel/message`。 [`FeishuInbound.handleInboundMessage` · src7/plugins/feishu/Inbound.ts:212](plugins/feishu/Inbound.ts#L212) · [`FeishuInbound.deliver` · `channel/message` · src7/plugins/feishu/Inbound.ts:736](plugins/feishu/Inbound.ts#L736)
-3. **审批先看是不是批复。** `Approval.onChannelMessage` 抢在机器人前读取 `channel/message`，有权处理的“同意 3”之类指令只消费一次并直回，普通消息继续分派。 [`Approval.constructor` · `channel/message` · src7/plugins/approval/index.ts:379](plugins/approval/index.ts#L379) · [`Approval.onChannelMessage` · src7/plugins/approval/index.ts:953](plugins/approval/index.ts#L953)
-4. **逐个机器人找会话。** `Bots.onChannelMessage` 给每个目标机器人准备附件并发 `bot/receive`，让 relay 等插件先认领，其余普通消息交前台。 [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:469](plugins/bots/index.ts#L469) · [`Bots.onChannelMessage` · `bot/receive` · src7/plugins/bots/index.ts:537](plugins/bots/index.ts#L537)
+3. **审批先看是不是批复。** `Approval.onChannelMessage` 抢在机器人前读取 `channel/message`，有权处理的“同意 3”之类指令只消费一次并直回，普通消息继续分派。 [`Approval.constructor` · `channel/message` · src7/plugins/approval/index.ts:383](plugins/approval/index.ts#L383) · [`Approval.onChannelMessage` · src7/plugins/approval/index.ts:980](plugins/approval/index.ts#L980)
+4. **逐个机器人找会话。** `Bots.onChannelMessage` 给每个目标机器人准备附件并发 `bot/receive`，让 relay 等插件先认领，其余普通消息交前台。 [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:479](plugins/bots/index.ts#L479) · [`Bots.onChannelMessage` · `bot/receive` · src7/plugins/bots/index.ts:547](plugins/bots/index.ts#L547)
 5. **把话排进前台。** `DispatchClaim.claimChannelMessage` 按渠道、账号、聊天找这台机器人的前台，去重后保存消息和原回话地址，由 `DispatchResults.startQueuedUser` 在轮到它时调用 `Session.add` 和 `Session.run`。 [`DispatchClaim.claimChannelMessage` · src7/plugins/bots/DispatchClaim.ts:39](plugins/bots/DispatchClaim.ts#L39) · [`DispatchResults.startQueuedUser` · src7/plugins/bots/DispatchResults.ts:881](plugins/bots/DispatchResults.ts#L881)
-6. **调模型前。** `Session.loop` 发 `session/request`，让插件调整提示词和工具清单，`approval` 按说话人筛工具，随后由 `Sessions.chat` 发出请求（插件已经给出回答或要求停下时跳过）。 [`Session.loop` · `session/request` · src7/Sessions.ts:552](Sessions.ts#L552) · [`Approval.constructor` · `session/request` · src7/plugins/approval/index.ts:389](plugins/approval/index.ts#L389) · [`Sessions.chat` · src7/Sessions.ts:404](Sessions.ts#L404)
-7. **模型回答后。** `Session.loop` 发 `session/after-model`，插件可以改回答或停止这一轮，放行的回答接进对话时由 `Session.append` 发 `session/message`。 [`Session.loop` · `session/after-model` · src7/Sessions.ts:584](Sessions.ts#L584) · [`Session.append` · `session/message` · src7/Sessions.ts:689](Sessions.ts#L689)
-8. **执行工具前。** `Tools.execute` 发 `session/before-tool`，`approval` 按当前说话人复核工具权限并可用 `gate.deny` 拦下单次调用，放行后才校验参数并执行。 [`Tools.execute` · `session/before-tool` · src7/Tools.ts:147](Tools.ts#L147) · [`Approval.constructor` · `session/before-tool` · src7/plugins/approval/index.ts:409](plugins/approval/index.ts#L409)
-9. **回复发回飞书。** 模型调用 `channel_reply` 时，`ChannelTools.runReply` 经 `requestChannelReply` 发 `channel/reply`，`FeishuReply.onChannelReply` 向原群发纯文字并交回 `channel/replied` 回执。 [`ChannelTools.runReply` · src7/plugins/bots/ChannelTools.ts:270](plugins/bots/ChannelTools.ts#L270) · [`requestChannelReply` · src7/Channels.ts:801](Channels.ts#L801) · [`FeishuReply.onChannelReply` · src7/plugins/feishu/Reply.ts:140](plugins/feishu/Reply.ts#L140)
-10. **工具交回结果后。** `Session.loop` 发 `session/after-tool` 让插件看结果并存进对话，继续执行这一批工具，轮次还在运行时再回第 6 步。 [`Session.loop` · `session/after-tool` · src7/Sessions.ts:614](Sessions.ts#L614)
-11. **这一轮收尾。** 模型没再要工具时，`Session.change` 存好结果并发 `session/change`，`DispatchResults.onChange` 接手，按回复回执收尾后发 `channel/settled` 并推进队列。 [`Session.change` · src7/Sessions.ts:697](Sessions.ts#L697) · [`DispatchResults.onChange` · src7/plugins/bots/DispatchResults.ts:365](plugins/bots/DispatchResults.ts#L365) · [`DispatchResults.emitSettled` · src7/plugins/bots/DispatchResults.ts:705](plugins/bots/DispatchResults.ts#L705)
+6. **调模型前。** `Session.loop` 发 `session/request`，让插件调整提示词和工具清单，`approval` 按说话人筛工具，随后由 `Sessions.chat` 发出请求（插件已经给出回答或要求停下时跳过）。 [`Session.loop` · `session/request` · src7/Sessions.ts:553](Sessions.ts#L553) · [`Approval.constructor` · `session/request` · src7/plugins/approval/index.ts:393](plugins/approval/index.ts#L393) · [`Sessions.chat` · src7/Sessions.ts:405](Sessions.ts#L405)
+7. **模型回答后。** `Session.loop` 发 `session/after-model`，插件可以改回答或停止这一轮，放行的回答接进对话时由 `Session.append` 发 `session/message`。 [`Session.loop` · `session/after-model` · src7/Sessions.ts:585](Sessions.ts#L585) · [`Session.append` · `session/message` · src7/Sessions.ts:690](Sessions.ts#L690)
+8. **执行工具前。** `Tools.execute` 发 `session/before-tool`，`approval` 按当前说话人复核工具权限并可用 `gate.deny` 拦下单次调用，放行后才校验参数并执行。 [`Tools.execute` · `session/before-tool` · src7/Tools.ts:147](Tools.ts#L147) · [`Approval.constructor` · `session/before-tool` · src7/plugins/approval/index.ts:413](plugins/approval/index.ts#L413)
+9. **回复发回飞书。** 模型调用 `channel_reply` 时，`ChannelTools.runReply` 经 `requestChannelReply` 发 `channel/reply`，`FeishuReply.onChannelReply` 向原群发纯文字并交回 `channel/replied` 回执。 [`ChannelTools.runReply` · src7/plugins/bots/ChannelTools.ts:195](plugins/bots/ChannelTools.ts#L195) · [`requestChannelReply` · src7/Channels.ts:802](Channels.ts#L802) · [`FeishuReply.onChannelReply` · src7/plugins/feishu/Reply.ts:140](plugins/feishu/Reply.ts#L140)
+10. **工具交回结果后。** `Session.loop` 发 `session/after-tool` 让插件看结果并存进对话，继续执行这一批工具，轮次还在运行时再回第 6 步。 [`Session.loop` · `session/after-tool` · src7/Sessions.ts:615](Sessions.ts#L615)
+11. **这一轮收尾。** 模型没再要工具时，`Session.change` 存好结果并发 `session/change`，`DispatchResults.onChange` 接手，按回复回执收尾后发 `channel/settled` 并推进队列。 [`Session.change` · src7/Sessions.ts:698](Sessions.ts#L698) · [`DispatchResults.onChange` · src7/plugins/bots/DispatchResults.ts:365](plugins/bots/DispatchResults.ts#L365) · [`DispatchResults.emitSettled` · src7/plugins/bots/DispatchResults.ts:705](plugins/bots/DispatchResults.ts#L705)
 
-群里没 @ 到机器人时，按群设置只存日志、记作背景或交给决策模型判断要不要接话。 [`FeishuInbound.getTargets` · src7/plugins/feishu/Inbound.ts:417](plugins/feishu/Inbound.ts#L417) · [`FrontDesk.handleChannelListen` · src7/plugins/bots/FrontDesk.ts:432](plugins/bots/FrontDesk.ts#L432)
+群里没 @ 到机器人时，按群设置只存日志、记作背景或交给决策模型判断要不要接话。 [`FeishuInbound.getTargets` · src7/plugins/feishu/Inbound.ts:417](plugins/feishu/Inbound.ts#L417) · [`FrontDesk.handleChannelListen` · src7/plugins/bots/FrontDesk.ts:316](plugins/bots/FrontDesk.ts#L316)
 
-`exec` 工具多一道命令审批。`Exec.onTool` 发 `approval/request` 并等 `approval/result`，放行后才执行命令，需要用户点头时转待确认。 [`Exec.onTool` · src7/plugins/exec/index.ts:261](plugins/exec/index.ts#L261) · [`requestReview` · `approval/request` · src7/plugins/exec/Runs.ts:93](plugins/exec/Runs.ts#L93)
+`exec` 工具多一道命令审批。`Exec.onTool` 发 `approval/request` 并等 `approval/result`，放行后才执行命令，需要用户点头时转待确认。 [`Exec.onTool` · src7/plugins/exec/index.ts:261](plugins/exec/index.ts#L261) · [`requestReview` · `approval/request` · src7/plugins/exec/Runs.ts:109](plugins/exec/Runs.ts#L109)
 
-飞书前台一轮正常结束且零次调用回复工具时，`DispatchResults.finishChannelFront` 只加跑一轮，提醒模型调用 `channel_reply`。 [`DispatchResults.finishChannelFront` · src7/plugins/bots/DispatchResults.ts:544](plugins/bots/DispatchResults.ts#L544) · [`FrontDesk.onRequest` · src7/plugins/bots/FrontDesk.ts:711](plugins/bots/FrontDesk.ts#L711)
+飞书前台一轮正常结束且零次调用回复工具时，`DispatchResults.finishChannelFront` 只加跑一轮，提醒模型调用 `channel_reply`。 [`DispatchResults.finishChannelFront` · src7/plugins/bots/DispatchResults.ts:544](plugins/bots/DispatchResults.ts#L544) · [`FrontDesk.onRequest` · src7/plugins/bots/FrontDesk.ts:595](plugins/bots/FrontDesk.ts#L595)
 
 ### 网页、微信和命令行从哪里进
 
-- **网页**的 `POST /api/message` 由 `WebApi.accept` 存入时间线并发 `channel/message`，指定或引用会话时带已校验的会话号。回话由 `WebApi.replyDirect` 追加到原网页消息。 [`WebApi.accept` · src7/plugins/web-api/index.ts:382](plugins/web-api/index.ts#L382) · [`WebApi.emitChannelMessage` · `channel/message` · src7/plugins/web-api/index.ts:592](plugins/web-api/index.ts#L592) · [`WebApi.replyDirect` · src7/plugins/web-api/index.ts:645](plugins/web-api/index.ts#L645)
-- **微信**的 `Wechat.store` 存好监听到的新消息后，把需要回复的消息发成 `channel/message`。`Wechat.deliverOrDraft` 把回话放进发件表，按设置直发、待确认或留草稿。 [`Wechat.store` · src7/plugins/wechat/index.ts:378](plugins/wechat/index.ts#L378) · [`Wechat.store` · `channel/message` · src7/plugins/wechat/index.ts:472](plugins/wechat/index.ts#L472) · [`Wechat.deliverOrDraft` · src7/plugins/wechat/index.ts:732](plugins/wechat/index.ts#L732)
+- **网页**的 `POST /api/message` 由 `WebApi.accept` 存入时间线并发 `channel/message`，指定或引用会话时带已校验的会话号。回话由 `WebApi.replyDirect` 追加到原网页消息。 [`WebApi.accept` · src7/plugins/web-api/index.ts:399](plugins/web-api/index.ts#L399) · [`WebApi.emitChannelMessage` · `channel/message` · src7/plugins/web-api/index.ts:609](plugins/web-api/index.ts#L609) · [`WebApi.replyDirect` · src7/plugins/web-api/index.ts:662](plugins/web-api/index.ts#L662)
+- **微信**的 `Wechat.store` 存好监听到的新消息后，把需要回复的消息发成 `channel/message`。`Wechat.deliverOrDraft` 把回话放进发件表，按设置直发、待确认或留草稿。 [`Wechat.store` · src7/plugins/wechat/index.ts:367](plugins/wechat/index.ts#L367) · [`Wechat.store` · `channel/message` · src7/plugins/wechat/index.ts:461](plugins/wechat/index.ts#L461) · [`Wechat.deliverOrDraft` · src7/plugins/wechat/index.ts:721](plugins/wechat/index.ts#L721)
 - **命令行**的 `Cli.submitLine` 存好原始输入后发 `channel/message`，回话逐条打印。 [`Cli.submitLine` · src7/plugins/cli/index.ts:143](plugins/cli/index.ts#L143) · [`Cli.constructor` · src7/plugins/cli/index.ts:79](plugins/cli/index.ts#L79)
 
-这三个渠道的普通前台消息都用 `channel_tool`，并设置 `routing.autoFinal`，一轮正常结束且零次调用回复工具时，由 `DispatchResults.sendLastWords` 把 `row.reply` 经 `channel/reply` 发出。 [`WebApi.accept` · src7/plugins/web-api/index.ts:382](plugins/web-api/index.ts#L382) · [`Wechat.store` · src7/plugins/wechat/index.ts:378](plugins/wechat/index.ts#L378) · [`Cli.submitLine` · src7/plugins/cli/index.ts:143](plugins/cli/index.ts#L143) · [`DispatchResults.sendLastWords` · src7/plugins/bots/DispatchResults.ts:655](plugins/bots/DispatchResults.ts#L655)
+这三个渠道的普通前台消息都用 `channel_tool`，并设置 `routing.autoFinal`，一轮正常结束且零次调用回复工具时，由 `DispatchResults.sendLastWords` 把 `row.reply` 经 `channel/reply` 发出。 [`WebApi.accept` · src7/plugins/web-api/index.ts:399](plugins/web-api/index.ts#L399) · [`Wechat.store` · src7/plugins/wechat/index.ts:367](plugins/wechat/index.ts#L367) · [`Cli.submitLine` · src7/plugins/cli/index.ts:143](plugins/cli/index.ts#L143) · [`DispatchResults.sendLastWords` · src7/plugins/bots/DispatchResults.ts:655](plugins/bots/DispatchResults.ts#L655)
 
 ### legacy_auto 还在哪里用
 
-`legacy_auto` 是兼容的自动回话方式。旧式会话结束时，若该轮有渠道且允许自动回话，`Bots` 的 `session/change` 监听器把 `row.reply` 交给渠道登记的发送函数；后台结果队列走这种方式时，由 `DispatchResults.finishFront` 发回原渠道。 [`Bots.constructor` · `session/change` · src7/plugins/bots/index.ts:342](plugins/bots/index.ts#L342) · [`DispatchResults.finishFront` · src7/plugins/bots/DispatchResults.ts:453](plugins/bots/DispatchResults.ts#L453)
+`legacy_auto` 是兼容的自动回话方式。旧式会话结束时，若该轮有渠道且允许自动回话，`Bots` 的 `session/change` 监听器把 `row.reply` 交给渠道登记的发送函数；后台结果队列走这种方式时，由 `DispatchResults.finishFront` 发回原渠道。 [`Bots.constructor` · `session/change` · src7/plugins/bots/index.ts:352](plugins/bots/index.ts#L352) · [`DispatchResults.finishFront` · src7/plugins/bots/DispatchResults.ts:453](plugins/bots/DispatchResults.ts#L453)
 
-旧入口 `ctx.bots.receive` 仍可用，微信客服页点“让 AI 回复”起草时还走它。网页直投非前台会话、relay 直接认领会话也可走兼容自动回话；后台派活或结果没有继承到 `channel_tool` 来源时默认用 `legacy_auto`。 [`Wechat.draftReply` · src7/plugins/wechat/index.ts:843](plugins/wechat/index.ts#L843) · [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:469](plugins/bots/index.ts#L469) · [`DispatchTools.getPlan` · src7/plugins/bots/DispatchTools.ts:179](plugins/bots/DispatchTools.ts#L179) · [`DispatchResults.getResultItem` · src7/plugins/bots/DispatchResults.ts:270](plugins/bots/DispatchResults.ts#L270)
+旧入口 `ctx.bots.receive` 仍可用，微信客服页点“让 AI 回复”起草时还走它。网页直投非前台会话、relay 直接认领会话也可走兼容自动回话；后台派活或结果没有继承到 `channel_tool` 来源时默认用 `legacy_auto`。 [`Wechat.draftReply` · src7/plugins/wechat/index.ts:832](plugins/wechat/index.ts#L832) · [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:479](plugins/bots/index.ts#L479) · [`DispatchTools.getPlan` · src7/plugins/bots/DispatchTools.ts:180](plugins/bots/DispatchTools.ts#L180) · [`DispatchResults.getResultItem` · src7/plugins/bots/DispatchResults.ts:270](plugins/bots/DispatchResults.ts#L270)
 
 
 ## 事件
@@ -286,13 +286,11 @@ plugins:
 - **事件**（黄色）：发了哪个事件、现在有哪些插件在听。Cordis 每发一个事件都会自己报一声，不用谁去发。
 
 ```text
-16:43:58.553 函数 Bots.receive │ 渠道收到一句话，存下来，推给机器人 │ bot.receive(message) │ 渠道=cli 机器人=助手 字数=5 │ src7/plugins/bots/index.ts:270
-16:43:58.555 事件 bot/receive（挨个问）听的人： │ src7/plugins/bots/index.ts:419
-16:43:58.559 函数 Bot.receive │ 消息交给这场会话，推它往下走 │ session.add(); session.run() │ 会话=2576b7eb 渠道=cli 字数=5 │ src7/plugins/bots/index.ts:440
-16:43:58.562 事件 session/change（通知）听的人：bots、cli、context-fit │ 会话=2576b7eb 状态=running 回话= │ src7/Sessions.ts:635
-16:43:58.569 事件 session/request（挨个问）听的人：bots、fake-model │ 会话=2576b7eb │ src7/Sessions.ts:490
-16:43:58.571 函数 Session.loop │ 调模型 │ ctx.sessions.chat(request) │ 会话=2576b7eb 第几步=1 模型=… 对话几条=1 │ src7/Sessions.ts:266
+16:43:58.553 函数 Cli.submitLine │ 命令行收到一句话，发出 channel/message │ ctx.serial('channel/message') │ 机器人=助手 序号=1 字数=5 │ src7/plugins/cli/index.ts:166
+16:43:58.555 事件 channel/message（挨个问）听的人：approval、bots │ src7/plugins/cli/index.ts:204
 ```
+
+命令行先发跟踪点，再经统一渠道事件入站。时间和变量为示例，监听者随所挂插件变化。 [跟踪点 · `Cli.submitLine` · `trace` · src7/plugins/cli/index.ts:166](plugins/cli/index.ts#L166) · [入站事件 · `Cli.submitLine` · `channel/message` · src7/plugins/cli/index.ts:204](plugins/cli/index.ts#L204)
 
 - 函数那种行：模块.函数 │ 一句人话 │ 一句代码 │ 关键变量。一个跟踪点两行代码，`//T` 开头的注释标出来，写法见 `utils/Trace.ts`。
 - 事件那种行：事件名（怎么发的）听的人，照挂上去的先后；会话的三个事件还顺带打出带着什么。“挨个问”“通知”就是上面「事件」一节说的两种发法。

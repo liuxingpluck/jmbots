@@ -11,6 +11,7 @@ import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import type { ModelCatalog } from './index.ts';
 import * as queueModule from './Queue.ts';
 
@@ -416,7 +417,7 @@ function readLimitTable(value: unknown, label: string): Record<string, number> {
   }
   const table: Record<string, number> = {};
   //M 逐条校验字典里的模型或供应商并发上限为正整数，存入最终映射表。
-  textModule.eachEntry(value as Record<string, unknown>, (key, item) => {
+  utils.eachEntry(value as Record<string, unknown>, (key, item) => {
     table[key] = readPositiveInt(item, `${label}.${key}`, 1);
   });
   return table;

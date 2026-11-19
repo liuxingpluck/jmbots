@@ -21,7 +21,7 @@ import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as namesModule from '../../utils/Names.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import type * as decisionPlugin from '../decision/index.ts';
 import * as historyTools from '../memory/HistoryTools.ts';
 import type { FrontEntry as BotLogEntry, FrontMessage, FrontQuery } from '../memory/FrontArchive.ts';
@@ -273,7 +273,7 @@ export class FrontDesk {
         if (row.customer !== customer) return false;
 
         //G 旧前台有账号时必须与当前账号一致，沿用时不会串到别的飞书应用。
-        const existingApp = textModule.getText(row.address, 'appId');
+        const existingApp = utils.getStringField(row.address, 'appId');
         return row.sourceScope === undefined && (existingApp === '' || existingApp === scope.accountId);
       });
       if (compatible !== undefined) {
@@ -323,7 +323,7 @@ export class FrontDesk {
     //M 从地址里取说话人，拼成“说话人：话”（和只听记的一样）；再看地址里有没有 judge 标记，决定要不要问决策模型。
     const sender = getSpeaker(botOrigin.address);
     const line = `${sender}：${botText}`;
-    const needJudge = textModule.getField(botOrigin.address, 'judge') === true;
+    const needJudge = utils.getField(botOrigin.address, 'judge') === true;
 
     //M 不用判断的只听话：记进前台对话当背景，不调模型、不回。
     if (!needJudge) {
@@ -390,7 +390,7 @@ export class FrontDesk {
     //M 客户号只读渠道写在回话地址里的 address.customer；按机器人加客户号找前台对话，没有就开一场。
     const bot = event.bot.name;
     const address = event.message.address;
-    const customer = textModule.getText(address, 'customer');
+    const customer = utils.getStringField(address, 'customer');
     const input: { bot: string; kind: string; customer?: string } = { bot, kind: 'front' };
     if (customer !== '') {
       input.customer = customer;
@@ -407,9 +407,9 @@ export class FrontDesk {
     }
 
     //M 渠道标了只听（飞书登记了 listen: all 的群里没 @ 机器人的话）：记进这场前台对话当背景，不推它往下走、不回；这条就算处理掉了。
-    if (textModule.getField(address, 'listenOnly') === true) {
+    if (utils.getField(address, 'listenOnly') === true) {
       //M 要判断的群（listen: judge）：先问决策模型，allow 就当 @ 了机器人，照下面交给这场前台对话跑。
-      if (textModule.getField(address, 'judge') === true && await this.judgeFirst(session, event)) {
+      if (utils.getField(address, 'judge') === true && await this.judgeFirst(session, event)) {
         event.session = session;
         return;
       }
@@ -474,7 +474,7 @@ export class FrontDesk {
     //M 最近 JUDGE_LINES 句：对话里的，加上还没记进去的最后一句。
     const lines = session.row.messages.map((message) => getLine(message, session.row.bot)).filter((one) => one !== '');
     const recent = [...lines, last].filter((one) => one !== '').slice(-JUDGE_LINES);
-    const threshold = textModule.getField(address, 'judgeThreshold');
+    const threshold = utils.getField(address, 'judgeThreshold');
     const originalPrefix = '你是群里的助手。';
     const promptBody = JUDGE_QUESTION.instructions.slice(originalPrefix.length);
     const question = {
@@ -552,8 +552,8 @@ export class FrontDesk {
    */
   private listen(session: Session, text: string, address: unknown): void {
     //M 从回话地址取说话人的名字（没有名字用 open_id 后 6 位），拼成“说话人：话”存进对话。
-    const openId = textModule.getText(address, 'openId');
-    const sender = textModule.getText(address, 'senderName') || openId.slice(-6) || '有人';
+    const openId = utils.getStringField(address, 'openId');
+    const sender = utils.getStringField(address, 'senderName') || openId.slice(-6) || '有人';
     const message: piAi.Message = { role: 'user', content: `${sender}：${text}`, timestamp: Date.now() };
 
     if (session.row.state === 'running') {
@@ -1104,7 +1104,7 @@ export class FrontDesk {
  */
 function getSpeaker(address: unknown): string {
   //M 先用地址里的 senderName，没有就用 open_id 后 6 位，再没有就叫“有人”。
-  return textModule.getText(address, 'senderName') || textModule.getText(address, 'openId').slice(-6) || '有人';
+  return utils.getStringField(address, 'senderName') || utils.getStringField(address, 'openId').slice(-6) || '有人';
 }
 
 
@@ -1117,14 +1117,14 @@ function getSpeaker(address: unknown): string {
 function getLine(message: piAi.Message, bot: string): string {
   if (message.role === 'toolResult') return '';
 
-  //M 消息内容可能是字符串或分段数组：分段的逐段用 getText 取出 text 拼起来。
+  //M 消息内容可能是字符串或分段数组：分段的逐段用 getStringField 取出 text 拼起来。
   const content: unknown = message.content;
   let text = '';
   if (typeof content === 'string') {
     text = content;
   }
   if (Array.isArray(content)) {
-    const pieces = content.map((part: unknown) => textModule.getText(part, 'text'));
+    const pieces = content.map((part: unknown) => utils.getStringField(part, 'text'));
     text = pieces.join('');
   }
   const line = text.trim();

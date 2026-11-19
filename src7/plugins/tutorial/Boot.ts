@@ -179,7 +179,7 @@ export class BootTrail {
   /** 插件那几步，照开始挂的先后。 */
   private readonly plugins: Step[] = [];
 
-  /** ready 时照 pluginStatus 排好的插件步骤（含 loadPlugin 就失败、没 fiber 的）；ready 前是 undefined。 */
+  /** ready 时照 pluginStatus 排好的插件步骤（含外部入口加载失败、没 fiber 的）；ready 前是 undefined。 */
   private ordered: Step[] | undefined;
 
   /** ready 以后的几步。 */
@@ -356,6 +356,7 @@ export class BootTrail {
       site: { file: MAIN, find: 'await app.plugin(resourcesModule.Resources' },
       docs: [
         fn(RESOURCES, 'constructor(ctx: cordis.Context, config: ResourcesConfig)', 'Resources 构造', true),
+        fn(RESOURCES, 'function readConfig(', '读入并校验配置', true),
         fn(CHECKS, 'export function checkConfig(', 'checkConfig', true),
         fn(RESOURCES, '  dir(...parts: string[])', 'Resources.dir', true),
         fn(CHECKS, 'function record(', 'record', false),
@@ -424,7 +425,7 @@ export class BootTrail {
   }
 
   /**
-   * 一个插件那一步。第一个插件那步多带 loadPlugin 的注释（Main.ts 怎么找到插件）。
+   * 一个插件那一步。第一个插件步骤附上 Main.ts 加载外部入口的函数说明。
    * @param plugin config.yaml 里写的名字。
    * @param at 开始挂的时刻。
    */
@@ -442,7 +443,10 @@ export class BootTrail {
     const file = `${ROOT}plugins/${getFolder(plugin)}/index.ts`;
     const docs = [fn(file, 'function apply(', `${plugin}.apply`, true)];
     if (this.plugins.length === 0) {
-      docs.unshift(fn(MAIN, 'async function loadPlugin(', 'loadPlugin', true));
+      const declaration = 'async function loadExternalPlugin(';
+      //M 首个插件步骤附上外部入口的加载说明，和 Main.ts 的函数名对齐。
+      const loader = fn(MAIN, declaration, 'loadExternalPlugin', true);
+      docs.unshift(loader);
     }
     return {
       node: plugin,
@@ -517,7 +521,7 @@ export class BootTrail {
 
   /**
    * 响应 ready：照 pluginStatus 补每个插件的结果，再记 ready、接着跑会话两步。
-   * loadPlugin 就失败的插件（找不到）没有 fiber，这里补一行，时刻跟前一个插件。
+   * 外部插件入口找不到时没有 fiber，这里补一行，时刻跟前一个插件。
    */
   private onReady(): void {
     const at = Date.now();
@@ -525,7 +529,7 @@ export class BootTrail {
     //M ready 这一刻拍一份：ready、接着跑两步用它，没挂上、没开工的插件那步（没等到挂好）也用它。
     const shot = this.shoot();
 
-    //M 照 pluginStatus 的先后排插件那几步；名字对不上的（loadPlugin 就失败了）补一步。
+    //M 按 pluginStatus 排插件步骤，给外部入口加载失败的条目补一步。
     const ordered: Step[] = [];
     let next = 0;
     const takeStep = (rowName: string): Step => {
@@ -534,7 +538,7 @@ export class BootTrail {
         next += 1;
         return candidate;
       }
-      //M 对不上的条目说明 loadPlugin 阶段已失败未建 fiber，按上一项时刻补记一个挂插件失败步。
+      //M 外部入口未加载成功就没有 fiber，按上一项时刻补记失败步骤。
       const lastAt = ordered.at(-1)?.at ?? at;
       return this.getPluginStep(rowName, lastAt);
     };

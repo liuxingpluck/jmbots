@@ -87,7 +87,7 @@ class Assist {
         description: '给用户刚发的那条消息点一个表情（比如 👍 ✅ 👀 ❤️ 😂），代替“收到”“好的”这种没内容的回话。点完后不要再发任何文字，不要说“已用表情回应”。',
         parameters: piAi.Type.Object({ emoji: piAi.Type.String({ description: '一个表情符号' }) }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => {
         const emoji = String(args['emoji']).trim().slice(0, 8);
         if (emoji === '') throw new Error('emoji 不能是空的');
@@ -107,7 +107,7 @@ class Assist {
           options: piAi.Type.Array(piAi.Type.String(), { description: '选项，2～6 个' }),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => {
         //G 过滤空白选项并校验数量在 2～6 个之间，避免发出无法选择的卡片。
         const options = (args['options'] as unknown[]).map((item) => String(item).trim()).filter((item) => item !== '');
@@ -137,7 +137,7 @@ class Assist {
           clear: piAi.Type.Optional(piAi.Type.Boolean({ description: 'true：先清掉这场会话和它派出的后台子会话的待办；items 为空就是只清空' })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => {
         //M 读取待办清单和清空标志，先查出当前会话及其子会话的 id 家族。
         const items = (args['items'] as { text: string; status: string }[] | undefined) ?? [];

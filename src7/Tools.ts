@@ -35,8 +35,8 @@ declare module 'cordis' {
 export interface ToolSpec {
   /** 给模型看的：名字、说明、参数的形状。 */
   definition: piAi.Tool;
-  /** 给哪几种会话用。比如只写 ['work']，前台对话（kind 是 front）就拿不到它。 */
-  kinds: string[];
+  /** 哪几种会话能用这个工具（会话的 kind：front 前台对话 / work 后台干活 / relay 转话）。只写 ['work'] 时前台对话拿不到它。 */
+  sessionKinds: string[];
   /**
    * 执行。
    * @param args 模型给的参数，已经照 definition.parameters 校验过，直接用。
@@ -126,7 +126,7 @@ export class Tools extends cordis.Service {
   list(kind: string): piAi.Tool[] {
     //M 登记表里挑出这种会话能用的，只交出给模型看的定义。
     const all = [...this.specs.values()];
-    const usable = all.filter((spec) => spec.kinds.includes(kind));
+    const usable = all.filter((spec) => spec.sessionKinds.includes(kind));
     return usable.map((spec) => spec.definition);
   }
 
@@ -157,7 +157,7 @@ export class Tools extends cordis.Service {
 
     //G 没登记这个名字，或者这种会话不能用它。
     const spec = this.specs.get(call.name);
-    if (spec === undefined || !spec.kinds.includes(session.row.kind)) {
+    if (spec === undefined || !spec.sessionKinds.includes(session.row.kind)) {
       return { text: `没有这个工具：${call.name}`, isError: true };
     }
 

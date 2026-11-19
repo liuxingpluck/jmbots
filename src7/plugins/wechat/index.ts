@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import type { Approval, Pending } from '../approval/index.ts';
 import * as historyTools from '../memory/HistoryTools.ts';
 import * as protocol from '../../Channels.ts';
@@ -213,10 +214,10 @@ export class Wechat {
       getTargetAddress: (chat) => this.getReplyTargetAddress(chat),
       sendDirectText: (text, request, targetAddress) => {
         const raw = targetAddress ?? request.sourceSnapshot.origin.address;
-        const account = textModule.getText(raw, 'account');
-        const chat = textModule.getText(raw, 'chat');
-        const chatName = textModule.getText(raw, 'name');
-        const customer = textModule.getText(raw, 'customer');
+        const account = utils.getStringField(raw, 'account');
+        const chat = utils.getStringField(raw, 'chat');
+        const chatName = utils.getStringField(raw, 'name');
+        const customer = utils.getStringField(raw, 'customer');
         if (account === '' || chat === '' || text.trim() === '') return;
 
         let displayName = chat;

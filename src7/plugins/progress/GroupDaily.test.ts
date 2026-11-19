@@ -138,7 +138,7 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
 
     ctx.tools.register({
       definition: { name: 'channel_search', description: '合成群汇报', parameters: piAi.Type.Object({}) },
-      kinds: ['front'],
+      sessionKinds: ['front'],
       run: () => '小林：联调完成。',
     });
     const summary = '小林已完成联调。@小周 请补充进度。明天验收。';

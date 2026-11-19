@@ -11,7 +11,7 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import type { JmbotsConfig, PluginEntry, ProviderConfig } from '../Resources.ts';
 import * as embedded from './Embedded.ts';
-import * as textModule from './Text.ts';
+import * as utils from './index.ts';
 import * as workspaceModule from './Workspace.ts';
 
 
@@ -127,7 +127,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
   //M   compat、model_compat 是发请求时的兼容设置，原样交给 pi（不认的项 pi 不管）。
   const providers: Record<string, ProviderConfig> = {};
   const providersWritten = record(root['providers'], 'providers');
-  textModule.eachEntry(providersWritten, (name, value) => {
+  utils.eachEntry(providersWritten, (name, value) => {
     /** 错误信息里说是哪一家，比如 providers.openrouter。 */
     const label = `providers.${name}`;
     //M 校验这家供应商配置是否为对象，再逐个校验它手写的模型条目。
@@ -136,7 +136,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     //M 这家手写的模型：一个个查，没写的项用保守值。
     const models: ProviderConfig['models'] = {};
     const modelsWritten = record(item['models'] ?? {}, `${label}.models`);
-    textModule.eachEntry(modelsWritten, (id, written) => {
+    utils.eachEntry(modelsWritten, (id, written) => {
       const model = record(written ?? {}, `${label}.models.${id}`);
       const contextWindow = model['context_window'] ?? MODEL_DEFAULTS.contextWindow;
       const maxTokens = model['max_output_tokens'] ?? MODEL_DEFAULTS.maxTokens;
@@ -166,7 +166,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     //M 个别模型的兼容设置：模型 ID → 一组“名字: 值”。
     const modelCompat: ProviderConfig['modelCompat'] = {};
     const modelCompatWritten = record(item['model_compat'] ?? {}, `${label}.model_compat`);
-    textModule.eachEntry(modelCompatWritten, (id, written) => {
+    utils.eachEntry(modelCompatWritten, (id, written) => {
       modelCompat[id] = record(written, `${label}.model_compat.${id}`);
     });
 
@@ -200,6 +200,13 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     plugins.push({ name, config });
   }
 
+  //M 每个插件有自己的启动等待上限，超过计时器可表示的范围会提前触发。
+  const mountTimeoutWritten = root['plugin_mount_timeout_ms'] ?? 15_000;
+  const pluginMountTimeoutMs = int(mountTimeoutWritten, 'plugin_mount_timeout_ms');
+  if (pluginMountTimeoutMs > 2_147_483_647) {
+    throw new Error('plugin_mount_timeout_ms 不能超过 2147483647');
+  }
+
   //M 骨架在插件启动前就可开会话，共用的思考档和重试放在现有 models 段。
   const modelSettings = record(root['models'] ?? {}, 'models');
   const retry = record(modelSettings['retry'] ?? {}, 'models.retry');
@@ -214,6 +221,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     defaultModel,
     providers,
     plugins,
+    pluginMountTimeoutMs,
     thinking,
     retry: {
       times: int(times, 'models.retry.times'),

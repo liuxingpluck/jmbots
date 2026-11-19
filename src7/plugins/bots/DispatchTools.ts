@@ -1,11 +1,12 @@
 /** 前台派活的三个模型工具，以及提示词和工具可见性。 */
-import * as fs from 'node:fs';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session, SessionMeta, Thinking } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as modelCatalogPlugin from '../model-catalog/index.ts';
 import type * as workspacesPlugin from '../workspaces/index.ts';
@@ -53,7 +54,7 @@ export class DispatchTools {
         description: '看这个客户干活的会话：正在跑的、暂停的、以前的，每场一行：会话号、状态、工作区、模型、结果回报到哪了、一句总结。',
         parameters: piAi.Type.Object({}),
       },
-      kinds: ['front'],
+      sessionKinds: ['front'],
 
       //M 模型调 list_sessions：交 list 列出本客户干活的会话，排成文字回给模型。
       run: (_args, session) => this.list(session),
@@ -83,7 +84,7 @@ export class DispatchTools {
           })),
         }),
       },
-      kinds: ['front'],
+      sessionKinds: ['front'],
 
       //M 模型调 hand_session：交 hand 校验参数，新开或接着一场后台，回执给模型。
       run: (args, session) => this.hand(args, session),
@@ -98,7 +99,7 @@ export class DispatchTools {
           sessionId: piAi.Type.String({ description: '哪一场' }),
         }),
       },
-      kinds: ['front'],
+      sessionKinds: ['front'],
 
       //M 模型调 stop_session：交 pause 暂停那一场（受管后台记暂停，别的喊停）。
       run: (args, session) => this.pause(String(args['sessionId']), session),
@@ -123,12 +124,12 @@ export class DispatchTools {
     }
 
     //M 参数：空串是没写。
-    const sessionId = textModule.getText(args, 'sessionId');
-    const model = textModule.getText(args, 'model');
-    const thinking = textModule.getText(args, 'thinking') as Thinking | '';
-    const written = textModule.getText(args, 'action');
-    const workspaceId = textModule.getText(args, 'workspaceId');
-    const workspace = textModule.getText(args, 'workspace');
+    const sessionId = utils.getStringField(args, 'sessionId');
+    const model = utils.getStringField(args, 'model');
+    const thinking = utils.getStringField(args, 'thinking') as Thinking | '';
+    const written = utils.getStringField(args, 'action');
+    const workspaceId = utils.getStringField(args, 'workspaceId');
+    const workspace = utils.getStringField(args, 'workspace');
 
     //G 工作区按 ID 选和旧写法只能写一个。
     if (workspaceId !== '' && workspace !== '') {
@@ -473,8 +474,8 @@ export class DispatchTools {
 
     //M 非本人：派活时的说话人要是他。
     if (workspaceModule.isOther(front.row.address)) {
-      const speaker = textModule.getText(front.row.address, 'openId');
-      const owner = textModule.getText(work.row.frontTask?.origin.address, 'openId');
+      const speaker = utils.getStringField(front.row.address, 'openId');
+      const owner = utils.getStringField(work.row.frontTask?.origin.address, 'openId');
       if (speaker === '' || speaker !== owner) return `session_not_owned：会话 ${work.id} 不是你派的`;
     }
     return '';
@@ -524,7 +525,8 @@ export class DispatchTools {
       const options = { cause: error };
       throw new Error(`workspace_outside_scope：${reason}`, options);
     }
-    fs.mkdirSync(dir, { recursive: true });
+    //M 确保已校验的工作区目录存在，再原地登记。
+    filesModule.ensureDir(dir);
     const byDirectory = {
       legacyDirectory: dir,
       legacyName: pick.workspace,

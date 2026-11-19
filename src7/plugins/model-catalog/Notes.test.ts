@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
 import * as checks from './Checks.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as notesModule from './Notes.ts';
 
 
@@ -60,7 +60,7 @@ async function world(
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const dir = path.join(root, 'models');
   fs.mkdirSync(dir);
-  textModule.eachEntry(files, (name, text) => {
+  utils.eachEntry(files, (name, text) => {
     fs.writeFileSync(path.join(dir, name), text, 'utf8');
   });
 

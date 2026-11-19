@@ -2,7 +2,7 @@
  * 教程页「插件」右栏的说明拆标签组件：前端按 说明.md 的二级标题（##）切段，拆成 概要 / 事件 / 对外函数 / 内部函数 / 数据 / 配置 / （可选）补充，
  * 表格用深色 antd.Table 显示，依赖的插件做成可点的小标签（点完在左栏切到那个插件），空段或“无”灰掉标签。
  */
-import type { JSX } from 'react';
+import type { JSX, MouseEvent, ReactNode } from 'react';
 import * as antd from 'antd';
 import * as reactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -489,6 +489,18 @@ function InlineMarkdown(props: { text: string }): JSX.Element {
 }
 
 
+/** 正文里的链接：“#”开头不跳页面只回调，其余当源码位置做 VS Code 链接。 */
+function MarkdownLink(props: { href: string; onHashLink: (href: string) => void; children?: ReactNode }): JSX.Element {
+  if (!props.href.startsWith('#')) return <SiteLink site={props.href} label={props.children} />;
+
+  const onClick = (event: MouseEvent<HTMLAnchorElement>): void => {
+    event.preventDefault();
+    props.onHashLink(props.href);
+  };
+  return <a href={props.href} onClick={onClick}>{props.children}</a>;
+}
+
+
 /**
  * 渲染正文：普通 Markdown 交由 react-markdown，GFM 表格用深色 antd.Table 渲染；
  * 依赖表首列支持跳插件，事件表首列支持点事件在画布高亮，位置列支持 VS Code 直开与就地展开看实现，长表开启虚拟滚动。
@@ -498,6 +510,7 @@ function InlineMarkdown(props: { text: string }): JSX.Element {
  * @param props.pluginFolder 当前插件所在目录（如 src7/plugins/bots），补全相对路径用。
  * @param props.activeEvent 当前画布高亮的事件名。
  * @param props.onSelectEvent 点击事件名在画布高亮的回调。
+ * @param props.onHashLink 点击“#开头”的站内链接时的回调（不跳页面）；没传就不接管链接。
  */
 export function MarkdownContent(props: {
   body: string;
@@ -506,7 +519,16 @@ export function MarkdownContent(props: {
   pluginFolder?: string;
   activeEvent?: string;
   onSelectEvent?: (eventName: string) => void;
+  onHashLink?: (href: string) => void;
 }): JSX.Element {
+  //M 传了 onHashLink 才接管链接：“#”开头走回调，源码位置走 VS Code 链接。
+  let linkComponents: reactMarkdown.Components | undefined;
+  if (props.onHashLink !== undefined) {
+    const onHashLink = props.onHashLink;
+    linkComponents = {
+      a: ({ href, children }) => <MarkdownLink href={href ?? ''} onHashLink={onHashLink}>{children}</MarkdownLink>,
+    };
+  }
   //M 把 Markdown 正文切成普通文本段与 GFM 表格块列表，分别套用对应渲染组件。
   const blocks = splitMarkdownBlocks(props.body);
   return (
@@ -515,7 +537,7 @@ export function MarkdownContent(props: {
         if (block.kind === 'md') {
           return (
             <div key={`md-${String(blockIndex)}`} className="tu-markdown">
-              <reactMarkdown.default remarkPlugins={[remarkGfm]}>{block.text}</reactMarkdown.default>
+              <reactMarkdown.default remarkPlugins={[remarkGfm]} components={linkComponents}>{block.text}</reactMarkdown.default>
             </div>
           );
         }

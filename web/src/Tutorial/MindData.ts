@@ -2,6 +2,7 @@
 import type * as api from './TutorialApi.ts';
 import type * as i18n from '../I18n.ts';
 import type * as readme from './ReadmeTabs.tsx';
+import * as programView from './ProgramView.tsx';
 
 export type PluginDoc = ReturnType<typeof readme.getMindReadme>;
 export type Pick =
@@ -23,6 +24,7 @@ export function getProjectTree(
   docs: ReadonlyMap<string, PluginDoc>,
   expanded: ReadonlySet<string>,
   t: i18n.Translate,
+  programs: readonly api.ProgramItem[],
 ): Branch {
   const root: Branch = { id: 'project', label: 'jmbots', children: [] };
   //M 系统骨架和普通插件分别挂到根的两支。
@@ -30,7 +32,21 @@ export function getProjectTree(
   const pluginsLabel = t('插件');
   const skeleton: Branch = { id: 'skeleton', label: skeletonLabel, children: [], expand: 'skeleton' };
   const modules: Branch = { id: 'plugins', label: pluginsLabel, children: [], expand: 'plugins' };
-  root.children.push(skeleton, modules);
+  //M 进程插件单独一支：三方握手图一个叶子，再挂 config 里登记的每个程序。
+  const programsLabel = t('进程插件');
+  const processes: Branch = { id: 'programs', label: programsLabel, children: [], expand: 'programs' };
+  root.children.push(skeleton, modules, processes);
+  if (expanded.has(processes.id)) {
+    const handshakeLabel = t('三方握手图');
+    const handshakePick = { kind: 'plugin', name: programView.HANDSHAKE } as const;
+    processes.children.push({ id: 'programs:handshake', label: handshakeLabel, children: [], pick: handshakePick });
+    for (const program of programs) {
+      //M 节点用带前缀的名字选中，右栏显示它的状态、接口和说明。
+      const name = programView.PROGRAM_PREFIX + program.name;
+      const pick = { kind: 'plugin', name } as const;
+      processes.children.push({ id: `program:${program.name}`, label: program.title, children: [], pick });
+    }
+  }
   for (const plugin of plugins) {
     let group = modules;
     if (plugin.kind === 'skeleton') group = skeleton;

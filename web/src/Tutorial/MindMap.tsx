@@ -7,6 +7,7 @@ import * as api from './TutorialApi.ts';
 import * as data from './MindData.ts';
 import * as readme from './ReadmeTabs.tsx';
 import * as lines from './LinesView.tsx';
+import * as programView from './ProgramView.tsx';
 import '@xyflow/react/dist/style.css';
 import './MindMap.css';
 
@@ -230,11 +231,13 @@ interface Props {
   plugin: string;
   /** 把骨架文件选择交回教程路由。 */
   onSelectPlugin: (name: string) => void;
+  /** /api/programs 的进程插件清单，项目树里单独一组。 */
+  programs: readonly api.ProgramItem[];
 }
 
 /** 两棵树和方向按钮共用一片画布，节点操作打开相应内容。 */
 export function TutorialMindMap(props: Props): react.JSX.Element {
-  const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin } = props;
+  const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin, programs } = props;
   //M 记住上次看的树和方向，第一次使用左右排布的项目树。
   const [direction, setDirection] = react.useState(() => getChoice(DIRECTION_KEY, 'sides', DIRECTIONS));
   const [mode, setMode] = react.useState(() => getChoice(TREE_KEY, 'project', TREES));
@@ -256,6 +259,13 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
     setEvent('');
     saveChoice(TREE_KEY, next);
   }
+
+  react.useEffect(() => {
+    if (plugin !== programView.HANDSHAKE) return;
+
+    //M 选中三方握手图（左栏或项目树）就切到骨架逐行，由它打开 进程插件.json。
+    selectTree('lines');
+  }, [plugin]);
 
   /** 分支按钮切换子树，叶子将详情交给事件面板或原右栏。 */
   function pick(branch: data.Branch): void {
@@ -284,7 +294,7 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
 
   //M 把选中的树交给同一个画布和布局算法。
   let tree: data.Branch | undefined;
-  if (mode === 'project') tree = data.getProjectTree(plugins, docs, expanded, t);
+  if (mode === 'project') tree = data.getProjectTree(plugins, docs, expanded, t, programs);
   if (mode === 'trace' && trail !== null) tree = data.getTrailTree(trail, t);
   const title = t('思维导图');
   const projectLabel = t('项目结构');

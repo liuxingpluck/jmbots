@@ -67,7 +67,7 @@ export class FileTools {
           ),
         }),
       },
-      kinds: ['work'],
+      sessionKinds: ['work'],
       run: (args, session) => this.edit(args, session),
     });
 
@@ -85,7 +85,7 @@ export class FileTools {
           limit: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: `最多几条，默认 ${String(FIND_DEFAULT)}` })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       //M 将已校验的查找参数交给工作区搜索，结果直接返回给模型。
       run: (args, session) => this.find(args, session),
     });

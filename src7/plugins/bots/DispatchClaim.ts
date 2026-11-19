@@ -2,7 +2,7 @@
 import type * as cordis from 'cordis';
 import type { Session, SessionMeta } from '../../Sessions.ts';
 import * as protocol from '../../Channels.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import type { DispatchResults, QueueItem, ReplyControl } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import type { Bot } from './index.ts';
@@ -47,7 +47,7 @@ export class DispatchClaim {
   ): Promise<void> {
     //M 来源域（渠道、账号、聊天）决定进哪场前台；客户号读地址里的 customer，没有旧前台可兼容时用它新开。
     const scope = { channel: message.channel, accountId: message.accountId, chatId: message.chatId };
-    const customer = textModule.getText(botOrigin.address, 'customer');
+    const customer = utils.getStringField(botOrigin.address, 'customer');
 
     //M 进哪场前台：指定了就是它；没指定按来源范围（渠道、账号、聊天）找，没有就开。
     let picked = target;
@@ -74,7 +74,7 @@ export class DispatchClaim {
 
     //M 群里只听的话：先按本机器人独立配置存背景或问决策模型，只有 judge=allow 才继续入队跑一轮。
     let inputText = botText;
-    if (textModule.getField(botOrigin.address, 'listenOnly') === true) {
+    if (utils.getField(botOrigin.address, 'listenOnly') === true) {
       const listened = await this.desk.handleChannelListen(front, message, botOrigin, botText, claimKey);
       if (!listened.reply) {
         front.row.sourceClaims = [...(front.row.sourceClaims ?? []), claimKey].slice(-200);
@@ -125,7 +125,7 @@ export class DispatchClaim {
       sessionId,
     };
     //M 地址里带决策模型的结论（judged）就记进认领回执，飞书把它写进来往流水。
-    const judgedText = textModule.getText(address, 'judged');
+    const judgedText = utils.getStringField(address, 'judged');
     if (judgedText !== '') {
       claimRecord.judged = judgedText;
     }
@@ -250,7 +250,7 @@ export class DispatchClaim {
   ): void {
     //M 按来源域和客户号找到这场前台（延迟判断时会话已存在，没有才新开）。
     const scope = { channel: message.channel, accountId: message.accountId, chatId: message.chatId };
-    const customer = textModule.getText(botOrigin.address, 'customer');
+    const customer = utils.getStringField(botOrigin.address, 'customer');
     const front = this.desk.findOrCreateFrontByScope(bot.name, scope, customer);
     const followKey = `${claimKey}:followup`;
 

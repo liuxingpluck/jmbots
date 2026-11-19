@@ -15,6 +15,7 @@ import type { Database } from 'bun:sqlite';
 import type { SessionRow } from '../../Sessions.ts';
 import * as backendModule from './Backend.ts';
 import * as graphPolicy from './GraphPolicy.ts';
+import * as filesModule from '../../utils/Files.ts';
 
 
 declare module '../../Sessions.ts' {
@@ -127,7 +128,9 @@ export class Store {
     const back = path.relative(dir, file);
     if (back === '' || back.startsWith('..') || path.isAbsolute(back)) throw new Error(`知识库文件只能在 ${dir} 里`);
     if (!/\.(md|txt)$/iu.test(file)) throw new Error('知识库文件要是 .md 或 .txt');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const parentDir = path.dirname(file);
+    //M 写入前确保已校验的知识库子目录存在。
+    filesModule.ensureDir(parentDir);
     fs.writeFileSync(file, content, 'utf8');
 
     //M 文件写好后马上重建它的片段（先删旧的再收新的），不等下次同步，写完就搜得到。

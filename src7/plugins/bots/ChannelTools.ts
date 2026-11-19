@@ -7,7 +7,7 @@
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as protocol from '../../Channels.ts';
 import * as historyTools from '../memory/HistoryTools.ts';
 import type { QueueItem, ResultInput } from './Dispatch.ts';
@@ -68,7 +68,7 @@ export class ChannelTools {
           })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => this.runReply(args, session),
     });
 
@@ -460,7 +460,7 @@ export class ChannelTools {
 
     const normalizedChannel = this.normalizeChannelName(channel);
     let accountId = 'local';
-    let chatId = textModule.getText(addressObj, 'customer');
+    let chatId = utils.getStringField(addressObj, 'customer');
     let chatType: protocol.ChannelChatType = 'local';
     let senderId = chatId || `${normalizedChannel}:本机`;
 
@@ -473,25 +473,25 @@ export class ChannelTools {
       senderId = 'cli:本机';
     }
     if (normalizedChannel === 'wechat') {
-      accountId = textModule.getText(addressObj, 'account') || 'local';
-      chatId = textModule.getText(addressObj, 'chat') || chatId;
+      accountId = utils.getStringField(addressObj, 'account') || 'local';
+      chatId = utils.getStringField(addressObj, 'chat') || chatId;
       chatType = 'p2p';
-      if (chatId.endsWith('@chatroom') || textModule.getText(addressObj, 'chatType') === 'group') {
+      if (chatId.endsWith('@chatroom') || utils.getStringField(addressObj, 'chatType') === 'group') {
         chatType = 'group';
       }
       senderId = chatId;
     }
     if (normalizedChannel === 'feishu') {
-      accountId = textModule.getText(addressObj, 'appId') || 'local';
-      chatId = textModule.getText(addressObj, 'chatId') || chatId;
+      accountId = utils.getStringField(addressObj, 'appId') || 'local';
+      chatId = utils.getStringField(addressObj, 'chatId') || chatId;
       chatType = 'p2p';
-      if (textModule.getText(addressObj, 'chatType') === 'group') {
+      if (utils.getStringField(addressObj, 'chatType') === 'group') {
         chatType = 'group';
       }
-      senderId = textModule.getText(addressObj, 'openId') || chatId;
+      senderId = utils.getStringField(addressObj, 'openId') || chatId;
     }
 
-    const rawMsgId = textModule.getField(addressObj, 'messageId');
+    const rawMsgId = utils.getField(addressObj, 'messageId');
     let snapshotMessageId = `${normalizedChannel}:${session.id}`;
     if (typeof rawMsgId === 'string' && rawMsgId !== '') {
       snapshotMessageId = rawMsgId;
@@ -514,7 +514,7 @@ export class ChannelTools {
       origin: { channel: normalizedChannel, address: addressObj },
       visibility: {
         scope: `${normalizedChannel}:${accountId}:${chatId}`,
-        trusted: chatType === 'local' || textModule.getField(addressObj, 'trusted') === true,
+        trusted: chatType === 'local' || utils.getField(addressObj, 'trusted') === true,
         publicSourceIds: [],
       },
       botName: row.bot,
@@ -523,7 +523,7 @@ export class ChannelTools {
     };
 
     //M 预留网页“正在看哪儿”视图上下文（131 接入 POST /api/message 的 view 后可随来源快照或 address 传入）。
-    const view = this.parseView(textModule.getField(addressObj, 'view'));
+    const view = this.parseView(utils.getField(addressObj, 'view'));
     if (view !== undefined) {
       snapshot.view = view;
     }
@@ -549,8 +549,8 @@ export class ChannelTools {
    * @returns 合法视图或 undefined。
    */
   private parseView(raw: unknown): protocol.ChannelView | undefined {
-    const rawChannel = textModule.getText(raw, 'channel').trim();
-    const rawChat = textModule.getText(raw, 'chat').trim();
+    const rawChannel = utils.getStringField(raw, 'channel').trim();
+    const rawChat = utils.getStringField(raw, 'chat').trim();
     if (rawChannel === '' || rawChannel === 'all' || rawChat === '') return undefined;
 
     return {
@@ -572,7 +572,7 @@ export class ChannelTools {
     //M 预留网页“正在看哪儿”默认入口：131 把 view: { channel, chat } 放进 channel/message（或 sourceSnapshot.view / origin.address.view）后，
     //M   本人未显式传 channel / chat 参数时默认查该视图对应的渠道和聊天；外人禁止使用 view 越出当前聊天。
     if (isOwner) {
-      const view = this.parseView(snapshot.view ?? textModule.getField(snapshot.origin.address, 'view'));
+      const view = this.parseView(snapshot.view ?? utils.getField(snapshot.origin.address, 'view'));
       if (view !== undefined) return { channel: view.channel, chatId: view.chat };
     }
 

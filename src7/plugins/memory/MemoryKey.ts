@@ -7,7 +7,7 @@
  */
 import type * as channelProtocol from '../../Channels.ts';
 import type { SessionMeta } from '../../Sessions.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type { ChannelRow } from './ChannelIndex.ts';
 
@@ -66,9 +66,9 @@ export function getMemoryKey(source: KeySource): string {
 /** 从旧回话地址取明确的群号或私聊对象。未知来源保持空归属。 */
 export function getOriginSource(channel: string, address: unknown): KeySource {
   //M 提取渠道持久化的聊天标识和对端用户标识。
-  let chat = textModule.getText(address, 'chatId') || textModule.getText(address, 'chat');
-  let chatType = textModule.getText(address, 'chatType');
-  let person = textModule.getText(address, 'senderId') || textModule.getText(address, 'openId');
+  let chat = utils.getStringField(address, 'chatId') || utils.getStringField(address, 'chat');
+  let chatType = utils.getStringField(address, 'chatType');
+  let person = utils.getStringField(address, 'senderId') || utils.getStringField(address, 'openId');
   if (channel === 'wechat' && chatType === 'p2p') {
     person = chat;
   }
@@ -79,7 +79,7 @@ export function getOriginSource(channel: string, address: unknown): KeySource {
   //G 旧地址若写明是群，不能用其中最后一位发言人推断个人归属。
   if (workspaceModule.isGroup(address)) {
     chatType = 'group';
-    const customer = textModule.getText(address, 'customer');
+    const customer = utils.getStringField(address, 'customer');
     const prefix = 'feishu:group:';
     if (chat === '' && channel === 'feishu' && customer.startsWith(prefix)) {
       chat = customer.slice(prefix.length);
@@ -125,7 +125,7 @@ function canReadAll(owner: boolean, address: unknown, chatType: string): boolean
   if (chatType !== 'group') return true;
 
   //G 普通群的地址可能没写聊天类型，仍要求受信标记是明确的布尔真值。
-  return textModule.getField(address, 'trusted') === true;
+  return utils.getField(address, 'trusted') === true;
 }
 
 
@@ -167,7 +167,7 @@ export function getMemoryAccess(row: SessionMeta): MemoryAccess {
 
   //M 老来源只能按明确的归属和渠道帐号继续读取。
   const key = getMemoryKey(source);
-  const account = textModule.getText(address, 'accountId') || textModule.getText(address, 'appId');
+  const account = utils.getStringField(address, 'accountId') || utils.getStringField(address, 'appId');
   return { full, key: key || undefined, channel: channel || undefined, chat: source.chat || undefined, account };
 }
 

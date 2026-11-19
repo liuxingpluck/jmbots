@@ -156,7 +156,7 @@ export function mountNotify(ctx: cordis.Context, settings: NotifySettings): void
         ], { description: '级别，不写是 info' })),
       }),
     },
-    kinds: ['front', 'work'],
+    sessionKinds: ['front', 'work'],
     run: (args) => {
       const level = args['level'];
       const notice: Notice = {

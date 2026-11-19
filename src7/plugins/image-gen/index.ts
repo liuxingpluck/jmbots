@@ -97,7 +97,7 @@ class ImageGen {
           name: piAi.Type.Optional(piAi.Type.String({ description: '文件名，不带扩展名；不写用提示词前 20 字' })),
         }),
       },
-      kinds: ['work'],
+      sessionKinds: ['work'],
       run: (args, session, signal) => this.generate(args, session, signal),
     });
   }

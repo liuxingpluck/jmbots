@@ -101,7 +101,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         ])),
       }),
     },
-    kinds: ['work'],
+    sessionKinds: ['work'],
     run: async (args, session) => {
       const address = session.row.address as FeishuAddress | undefined;
       if (session.row.channel !== 'feishu' || !address?.appId || !address.chatId) {

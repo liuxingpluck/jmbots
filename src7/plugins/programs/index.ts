@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as bridgeModule from './ChannelBridge.ts';
 import * as sendModule from './ChannelSend.ts';
 import * as noticesModule from './GuardNotices.ts';
@@ -387,7 +388,7 @@ async function forward(
   const linked = connection.toLowerCase().split(',').map((key) => key.trim());
 
   //M 原始请求仍保留业务头，连接专用字段由客户端重新生成。
-  textModule.eachEntry(request.headers, (key, value) => {
+  utils.eachEntry(request.headers, (key, value) => {
     //G 鉴权由主 HTTP 服务处理，主站令牌、Cookie、Referer 不交给程序。
     if (HOP_HEADERS.has(key) || linked.includes(key) || PRIVATE_HEADERS.has(key)) return;
     if (typeof value === 'string') headers.set(key, value);
@@ -511,7 +512,7 @@ export function apply(
   dependencies: guardModule.GuardDependencies = {},
 ): void {
   //M 外部配置只在入口校验一次，校验成功后建立托管服务。
-  const aliasConfig = textModule.getField(config, 'channel_aliases');
+  const aliasConfig = utils.getField(config, 'channel_aliases');
   const aliases = specModule.readChannelAliases(aliasConfig);
   const specs = specModule.readPrograms(config, aliases);
   const settings = specModule.readGuard(config);

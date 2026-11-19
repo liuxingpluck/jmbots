@@ -127,7 +127,7 @@ export function apply(ctx: cordis.Context): void {
         file: piAi.Type.Optional(piAi.Type.String({ description: '技能文件夹里的别的文件，相对路径；不给就是 SKILL.md' })),
       }),
     },
-    kinds: ['work'],
+    sessionKinds: ['work'],
     run: (args, session) => {
       //M 现扫当前机器人可用技能并按名字精确查找目标技能，找不到就列出已有名称报错。
       const skills = getSkills(session.row.bot);

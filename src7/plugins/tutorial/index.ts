@@ -15,6 +15,7 @@
  *   GET /api/tutorial/readings              组块阅读文件名清单
  *   GET /api/tutorial/lines                 骨架逐行 JSON 文件名清单
  *   GET /api/tutorial/line?name=            读一份骨架逐行 JSON
+ *   GET /api/tutorial/program-readme?name=  进程插件（config 里 programs 登记的程序）目录下的 说明.md；运行状态网页直接读 /api/programs
  *   GET /api/tutorial/reading?name=         清单内一篇组块 Markdown 原文
  *   GET /api/tutorial/state?name=           这个插件现在的运行时变量：它提供的服务对象，加它用 ctx.flow.state 登记的，全量原样
  *   GET /api/tutorial/canvases              左栏画布：启动流程，加 data/flow/ 里每条带关键词的消息
@@ -32,7 +33,7 @@ import * as process from 'node:process';
 import * as embedded from '../../utils/Embedded.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as sourceDirModule from '../../utils/SourceDir.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as snapshotModule from './Snapshot.ts';
 import type * as pluginIndex from '../Index.ts';
 import * as bootModule from './Boot.ts';
@@ -40,6 +41,7 @@ import * as codeModule from './Code.ts';
 import * as filesModule from './Files.ts';
 import * as lanesModule from './Lanes.ts';
 import * as printModule from './Print.ts';
+import * as programsModule from './Programs.ts';
 import * as skeletonModule from './Skeleton.ts';
 import * as sourceModule from './Source.ts';
 import * as stateModule from './State.ts';
@@ -107,7 +109,7 @@ export const name = 'tutorial';
 /** 版本号。 */
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
-export const version = '1.1.12';
+export const version = '1.1.13';
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -241,7 +243,7 @@ async function getReadingFiles(dirName: string, suffix: string): Promise<string[
   const dir = path.resolve(import.meta.dir, '../../..', dirName);
   const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
     //G 未放入任何组块时返回空清单，其余读取错误交给 HTTP 层。
-    const code = textModule.getText(error, 'code');
+    const code = utils.getStringField(error, 'code');
     if (code === 'ENOENT') return [];
 
     throw error;
@@ -517,6 +519,23 @@ class Tutorial {
 
       const text = lines.join('\n');
       return { name, file, text };
+    });
+
+    //M 读一个进程插件的 说明.md：程序目录只从 config 的 programs 登记推出来，防目录穿越。
+    app.get<Query>('/api/tutorial/program-readme', async (request, reply) => {
+      //G 外面进来的程序名只认小写字母、数字、横线。
+      const name = request.query['name'] ?? '';
+      if (!PLUGIN_NAME.test(name)) return reply.code(400).send({ error: '要给 name（程序名）' });
+
+      //G 只认 config 里登记过的程序。
+      const raw = this.ctx.resources.raw;
+      const root = this.ctx.resources.root;
+      const dir = programsModule.getProgramDir(raw, root, name);
+      if (dir === undefined) return reply.code(404).send({ error: `config 里没有登记程序 ${name}` });
+
+      //M 运行时现读，编译版不内嵌外部程序的说明。
+      const readme = await programsModule.readProgramReadme(dir);
+      return { name, file: readme.file, text: readme.text };
     });
 
     //M 登记「代码」「试一试」数据接口，返回插件导出的函数、路由和模型工具。

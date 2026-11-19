@@ -19,8 +19,9 @@ import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './Lan
 import { CodeTab, TryTab } from './PluginTabs.tsx';
 import { buildReadmeTabItems, MarkdownContent } from './ReadmeTabs.tsx';
 import * as mind from './MindMap.tsx';
+import * as programView from './ProgramView.tsx';
 import type * as mindData from './MindData.ts';
-import { TutorialApi, type Canvas, type CanvasList, type MessageCanvasItem, type PluginItem, type PluginList, type StateGroup, type Trail } from './TutorialApi.ts';
+import { TutorialApi, type Canvas, type CanvasList, type MessageCanvasItem, type PluginItem, type PluginList, type ProgramItem, type StateGroup, type Trail } from './TutorialApi.ts';
 
 
 /** 地址栏里记住的当前位置。 */
@@ -44,6 +45,7 @@ interface RouteState {
 /** 左栏各组折叠状态（骨架、组块阅读、插件、启动流程、最近消息）。 */
 interface GroupOpenState {
   skeleton: boolean;
+  programs: boolean;
   reading: boolean;
   plugins: boolean;
   boot: boolean;
@@ -56,6 +58,8 @@ type LeftNavRow =
   | { key: string; kind: 'divider' }
   | { key: string; kind: 'plugin'; plugin: PluginItem }
   | { key: string; kind: 'reading'; name: string }
+  | { key: string; kind: 'program'; program: ProgramItem }
+  | { key: string; kind: 'handshake' }
   | { key: string; kind: 'boot' }
   | { key: string; kind: 'message'; message: MessageCanvasItem }
   | { key: string; kind: 'empty'; text: string };
@@ -1059,6 +1063,8 @@ export function TutorialPage(): JSX.Element {
   const [themeName, setThemeName] = useState<theme.ThemeName>(() => theme.loadThemeName(window.localStorage));
   const themeSpec = theme.THEMES[themeName];
   const [plugins, setPlugins] = useState<PluginList | null>(null);
+  //M 独立程序不是普通插件，清单直接来自 programs 的状态接口。
+  const programs = programView.usePrograms();
   const [readingFiles, setReadingFiles] = useState<string[] | null>(null);
   const [readingListFailed, setReadingListFailed] = useState(false);
   const [messages, setMessages] = useState<MessageCanvasItem[]>([]);
@@ -1068,6 +1074,7 @@ export function TutorialPage(): JSX.Element {
   const [searchText, setSearchText] = useState('');
   const [openGroups, setOpenGroups] = useState<GroupOpenState>({
     skeleton: true,
+    programs: true,
     reading: true,
     plugins: true,
     boot: true,
@@ -1426,6 +1433,9 @@ export function TutorialPage(): JSX.Element {
   const resolvedPluginName = route.plugin;
   const hasPluginName = resolvedPluginName !== '' && resolvedPluginName !== SENTINEL_FIRST;
   const activePlugin = pluginList.find((item) => item.name === resolvedPluginName);
+  //M 进程插件用 program: 前缀，不和普通插件重名，右栏走专门的状态、接口、说明。
+  const programName = programView.getProgramName(resolvedPluginName);
+  const isProcess = programName !== undefined || resolvedPluginName === programView.HANDSHAKE;
   const activeMessage = messages.find((item) => item.name === route.canvas);
   const pickedStep = activeTrail?.steps.find((item) => item.no === route.step);
 
@@ -1459,9 +1469,24 @@ export function TutorialPage(): JSX.Element {
     }
     if (target.kind !== 'plugin') return;
 
+    if (target.name === programView.HANDSHAKE) {
+      //M 三方握手图节点切到骨架逐行，程序节点仍然打开右栏。
+      tutorialView.select('mind');
+    }
     //M 插件节点打开已有的说明或对外函数页签。
     onSelectPlugin(target.name, target.tab);
   }
+  const onOpenHandshake = (): void => {
+    //M 左栏和详情里的三方握手入口共用一个模块名，导图看到它后自动切骨架逐行。
+    tutorialView.select('mind');
+    onSelectPlugin(programView.HANDSHAKE);
+  };
+  const onSelectProgram = (name: string): void => {
+    //M config 里登记的程序走专用右栏，地址带前缀与普通插件隔开。
+    const target = programView.PROGRAM_PREFIX + name;
+    onSelectPlugin(target);
+  };
+
   let showBootGroupCount = 1;
   if (hasSearch && !showBoot) {
     showBootGroupCount = 0;
@@ -1484,7 +1509,25 @@ export function TutorialPage(): JSX.Element {
         rows.push({ key: `skeleton:${item.name}`, kind: 'plugin', plugin: item });
       }
     }
-    rows.push({ key: 'div:skeleton-reading', kind: 'divider' });
+    //M 骨架下面是进程插件一组：先三方握手图，再 config 里登记的每个程序。
+    rows.push({ key: 'div:skeleton-programs', kind: 'divider' });
+    //M 组头数量把握手图算进去，搜索时强制展开。
+    rows.push({
+      key: 'head:programs', kind: 'group-head', groupKey: 'programs', title: '进程插件',
+      count: programs.length + 1, expanded: openGroups.programs || hasSearch,
+    });
+    if (openGroups.programs || hasSearch) {
+      //M 握手图固定第一行，不参与搜索过滤。
+      rows.push({ key: 'programs:handshake', kind: 'handshake' });
+      for (const program of programs) {
+        if (hasSearch && !`${program.name} ${program.title}`.toLowerCase().includes(query)) continue;
+
+        //M 一个程序一行，状态和版本取自 /api/programs。
+        rows.push({ key: `program:${program.name}`, kind: 'program', program });
+      }
+    }
+    //M 进程插件组和组块阅读之间的分隔线。
+    rows.push({ key: 'div:programs-reading', kind: 'divider' });
     rows.push({
       key: 'head:reading',
       kind: 'group-head',
@@ -1543,6 +1586,10 @@ export function TutorialPage(): JSX.Element {
     showBoot,
     showBootGroupCount,
     skeletonExpanded,
+    programs,
+    openGroups.programs,
+    hasSearch,
+    query,
   ]);
 
   let stepTabClass = 'tu-rtab';
@@ -1672,6 +1719,32 @@ export function TutorialPage(): JSX.Element {
             //M 交由插件与骨架统一条目渲染函数输出状态点、名称与版本号。
             renderPluginNav(row.plugin)
           }
+        </div>
+      );
+    }
+    if (row.kind === 'program') {
+      const program = row.program;
+      const target = programView.PROGRAM_PREFIX + program.name;
+      let itemClass = 'tu-nav-item';
+      if (route.plugin === target) itemClass = 'tu-nav-item active';
+      //M 点了右栏打开这个程序的状态、接口和说明。
+      const onClick = (): void => onSelectProgram(program.name);
+      return (
+        <div className="tu-side-row">
+          <button type="button" className={itemClass} onClick={onClick}>
+            <span className="tu-menu-item">
+              <span className={`tu-dot ${programView.getStateDot(program.state)}`} />
+              <span className="tu-menu-name">{program.title}</span>
+              <span className="tu-menu-version">{program.version}</span>
+            </span>
+          </button>
+        </div>
+      );
+    }
+    if (row.kind === 'handshake') {
+      return (
+        <div className="tu-side-row">
+          <button type="button" className="tu-nav-item" onClick={onOpenHandshake}>三方握手图</button>
         </div>
       );
     }
@@ -1832,6 +1905,7 @@ export function TutorialPage(): JSX.Element {
                 onPick={onMindPick}
                 plugin={route.plugin}
                 onSelectPlugin={onSelectPlugin}
+                programs={programs}
               />
             )}
 
@@ -2029,7 +2103,16 @@ export function TutorialPage(): JSX.Element {
                         />
                       )}
 
-                      {route.rtab === 'plugin' && (
+                      {route.rtab === 'plugin' && isProcess && (
+                        <programView.ProgramView
+                          key={resolvedPluginName}
+                          name={programName ?? ''}
+                          programs={programs}
+                          onOpenHandshake={onOpenHandshake}
+                          onSelectProgram={onSelectProgram}
+                        />
+                      )}
+                      {route.rtab === 'plugin' && !isProcess && (
                         <>
                           {plugins === null && error === '' && <antd.Spin />}
                           {plugins !== null && !hasPluginName && (

@@ -21,8 +21,10 @@ import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type { Session, Thinking } from '../../Sessions.ts';
 import * as namesModule from '../../utils/Names.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as protocol from '../../Channels.ts';
 import { ChannelTools } from './ChannelTools.ts';
@@ -32,7 +34,6 @@ import { Prompt } from './Prompt.ts';
 import { registerReplyTool } from './ReplyTool.ts';
 
 export { normalizeLegacyReceipt, type ReplyControl, type ReplyPolicy } from './Dispatch.ts';
-
 
 /** 插件名。 */
 export const name = 'bots';
@@ -768,7 +769,8 @@ export class Bots extends cordis.Service {
     //M 一天一个文件夹，文件名前面带时分秒毫秒，免得同名覆盖。
     const now = new Date();
     const dir = path.join(target.workspace, 'inbox', now.toLocaleDateString('sv-SE'));
-    fs.mkdirSync(dir, { recursive: true });
+    //M 把收到的文件放进按日期归档的目录。
+    filesModule.ensureDir(dir);
     const stamp = now.toLocaleTimeString('sv-SE').replaceAll(':', '') + String(now.getMilliseconds()).padStart(3, '0');
 
     //M 文件名只取最后一段（/ 和 \ 都算分隔），再洗成安全的文件名；不限字数，免得把扩展名截掉。
@@ -805,7 +807,7 @@ export class Bots extends cordis.Service {
     }
 
     //G 逐项检查登记的目录：不是非空字符串就抛错，别等 Bot 构造时才发现。
-    textModule.eachEntry(registered as Record<string, unknown>, (label, directory) => {
+    utils.eachEntry(registered as Record<string, unknown>, (label, directory) => {
       if (typeof directory === 'string' && directory !== '') return;
 
       throw new Error(`机器人 ${config.name} 的 workspaces 里 ${label} 要写目录`);
@@ -909,7 +911,7 @@ export class Bot {
     //M   第一次登记用配置里的名字，以后改了名不会被配置盖回去；本人归档了的照样认出来（派新活时才挡）。
     const owner = workspaces.getAccess(this.name, undefined);
     const written = (config['workspaces'] ?? {}) as Record<string, string>;
-    textModule.eachEntry(written, (label, directory) => {
+    utils.eachEntry(written, (label, directory) => {
       const legacyDirectory = path.resolve(this.ctx.resources.root, directory);
       const selection = { legacyDirectory, legacyName: label, allowArchived: true };
 

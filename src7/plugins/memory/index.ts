@@ -15,6 +15,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as backendModule from './Backend.ts';
@@ -135,7 +136,7 @@ export class Memory {
           query: piAi.Type.Optional(piAi.Type.String({ description: 'search、history、knowledge 时：要找什么，整句或几个词' })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       //M 模型调 memory 工具时走 this.run，由它按 action 分到 list、search、read、write、delete、history、knowledge。
       run: (args, session) => this.run(args, session),
     });
@@ -379,7 +380,9 @@ export class Memory {
     if (action === 'write') {
       //G 写的内容必须给，但空串也算（写成空文件），所以 allowEmpty 给 true。
       const content = required(args, 'content', true);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const parentDir = path.dirname(file);
+      //M 写入前确保记忆文件的上层目录存在。
+      filesModule.ensureDir(parentDir);
       fs.writeFileSync(file, content, 'utf8');
       //M 交回写了多大（utils/Text.ts 的 getSizeText）。
       const bytes = Buffer.byteLength(content, 'utf8');

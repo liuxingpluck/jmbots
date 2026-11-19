@@ -13,6 +13,7 @@ import type * as fastify from 'fastify';
 import * as channelsModule from '../../Channels.ts';
 import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import type * as hostModule from './Host.ts';
 import * as protocolModule from './Protocol.ts';
 import type * as specModule from './Spec.ts';
@@ -401,7 +402,7 @@ export class ChannelBridge {
   ): Promise<channelsModule.TextReplyOutcome> {
     //M 跨聊天回目标地址，否则回这一轮的来源地址。
     const address = target ?? request.sourceSnapshot.origin.address;
-    const chat = textModule.getText(address, 'chat');
+    const chat = utils.getStringField(address, 'chat');
 
     //G 地址里没有聊天号、正文是空的，都明确拒收，不交给程序。
     if (chat === '') return { status: 'rejected', reason: 'no_chat：回复地址里没有聊天号' };
@@ -411,9 +412,9 @@ export class ChannelBridge {
     const call: protocolModule.ReplyCall = {
       requestId: request.replyRequestKey,
       channel: request.channel,
-      account: textModule.getText(address, 'account'),
+      account: utils.getStringField(address, 'account'),
       chat,
-      chatName: textModule.getText(address, 'name'),
+      chatName: utils.getStringField(address, 'name'),
       text,
       bot: request.bot,
       kind: request.kind,
@@ -523,10 +524,10 @@ export class ChannelBridge {
     if (decoded === undefined) return getHistoryError(scope, 'channel_unavailable', offline);
 
     //G 程序明确回了失败：带它自己的错误码和原因。
-    if (textModule.getField(decoded, 'ok') !== true) {
-      const error = textModule.getField(decoded, 'error');
-      const code = textModule.getText(error, 'code') || 'history_error';
-      const message = textModule.getText(error, 'message') || '外部程序没说原因';
+    if (utils.getField(decoded, 'ok') !== true) {
+      const error = utils.getField(decoded, 'error');
+      const code = utils.getStringField(error, 'code') || 'history_error';
+      const message = utils.getStringField(error, 'message') || '外部程序没说原因';
       return getHistoryError(scope, code, message);
     }
 
@@ -633,8 +634,8 @@ function getHistoryError(scope: string, code: string, message: string): channels
  */
 function getReplyOutcome(decoded: unknown): channelsModule.TextReplyOutcome {
   //M 先当不确定，认得出的状态再改。
-  const status = textModule.getText(decoded, 'status');
-  const reason = textModule.getText(decoded, 'reason');
+  const status = utils.getStringField(decoded, 'status');
+  const reason = utils.getStringField(decoded, 'reason');
   const outcome: channelsModule.TextReplyOutcome = { status: 'uncertain' };
 
   //M 已发、已存草稿：程序明确收下了。

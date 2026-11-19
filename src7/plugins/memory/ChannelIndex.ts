@@ -13,6 +13,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as protocolModule from '../../Channels.ts';
 import type { Search } from './Search.ts';
 import type { ChannelBackfill } from './ChannelBackfill.ts';
@@ -441,8 +442,8 @@ export function getAccess(session: Session): ChannelAccess {
 /** 按来源快照决定本轮能查的渠道、聊天和账号。 */
 export function getScope(args: Record<string, unknown>, access: ChannelAccess): ChannelScope {
   //G 本人可以指定聊天，外人和群聊只能用这一轮快照里的范围。
-  const channel = textModule.getText(args, 'channel') || undefined;
-  const chat = textModule.getText(args, 'chat') || undefined;
+  const channel = utils.getStringField(args, 'channel') || undefined;
+  const chat = utils.getStringField(args, 'chat') || undefined;
   if (access.full) return { channel, chat };
 
   if (!access.channel || !access.chat || !access.account || access.key === undefined) {
@@ -496,7 +497,7 @@ function getTime(value: unknown, label: string): number | undefined {
  */
 export function getQuery(args: Record<string, unknown>, scope: ChannelScope): ChannelQuery {
   //M 关键词参数按空白拆成几个词，每个词都要在正文里出现。
-  const words = textModule.getText(args, 'query').split(/\s+/u).filter((word) => word !== '');
+  const words = utils.getStringField(args, 'query').split(/\s+/u).filter((word) => word !== '');
 
   //M 条数：默认 50，1 到 200。
   let limit = LIMIT_DEFAULT;
@@ -608,7 +609,7 @@ export function applyChannelIndex(
         limit: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, maximum: LIMIT_MAX, description: '最多几条，默认 50' })),
       }),
     },
-    kinds: ['front', 'work'],
+    sessionKinds: ['front', 'work'],
     run: (args, session) => {
       //M 兼容原参数和文本格式，查询和权限交给统一检索。
       const { rows, query } = unified.findChannel(args, session);
@@ -622,12 +623,12 @@ export function applyChannelIndex(
       const params = request.query;
       try {
         const scope = {
-          channel: textModule.getText(params, 'channel') || undefined,
-          chat: textModule.getText(params, 'chat') || undefined,
+          channel: utils.getStringField(params, 'channel') || undefined,
+          chat: utils.getStringField(params, 'chat') || undefined,
         };
         //M 接口的关键词参数叫 q，换成工具用的 query 再拼查询；范围不限制（本人全量）。
         const query = getQuery({ ...params, query: params['q'] }, scope);
-        const id = textModule.getText(params, 'id');
+        const id = utils.getStringField(params, 'id');
         if (id !== '') return index.context(id, query);
 
         //M 常规接口保留按关键词和时间查消息的回执。

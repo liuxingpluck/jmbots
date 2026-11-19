@@ -3,7 +3,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type { Http } from '../http/index.ts';
-import * as text from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as outbound from './Outbound.ts';
 
 /** 校验 HTTP 输入。身份和申请来源不取自正文。 */
@@ -14,10 +14,10 @@ function getAction(body: unknown): outbound.OutboundAction | undefined {
   const action = fields['action'];
   if (action === undefined || action === 'prepare') {
     //G 申请必须同时带上完整目标和正文，后续确认才能核对这一份内容。
-    const channel = text.getText(fields, 'channel');
-    const account = text.getText(fields, 'account');
-    const chat = text.getText(fields, 'chat');
-    const content = text.getText(fields, 'text');
+    const channel = utils.getStringField(fields, 'channel');
+    const account = utils.getStringField(fields, 'account');
+    const chat = utils.getStringField(fields, 'chat');
+    const content = utils.getStringField(fields, 'text');
     if (channel.trim() === '' || account.trim() === '' || chat.trim() === '' || content.trim() === '') return undefined;
 
     //M 保存将展示给核验用户的精确目标和正文。
@@ -26,14 +26,14 @@ function getAction(body: unknown): outbound.OutboundAction | undefined {
   }
 
   //G 查询和确认都要带已有意图的编号，限定长度后再交给发件账。
-  const intentId = text.getText(fields, 'intentId');
+  const intentId = utils.getStringField(fields, 'intentId');
   if (intentId.trim() === '' || intentId.length > 100) return undefined;
   if (action === 'status') return { action, intentId };
   if (action !== 'confirm' || fields['decision'] !== 'approve') return undefined;
 
   //G 用户确认时要同时带看过的摘要和本次交互编号，供发件账核验。
-  const observedIntentDigest = text.getText(fields, 'observedIntentDigest');
-  const interactionId = text.getText(fields, 'interactionId');
+  const observedIntentDigest = utils.getStringField(fields, 'observedIntentDigest');
+  const interactionId = utils.getStringField(fields, 'interactionId');
   if (!/^[a-f0-9]{64}$/u.test(observedIntentDigest)) return undefined;
   if (interactionId.trim() === '' || interactionId.length > 100) return undefined;
 
@@ -73,7 +73,7 @@ export function registerChannelSendTool(ctx: cordis.Context): void {
   };
   const tool = {
     definition,
-    kinds: ['front', 'work'],
+    sessionKinds: ['front', 'work'],
     run: async (args: Record<string, unknown>, session: Session,
       signal: AbortSignal, callId: string): Promise<string> => {
       if (signal.aborted) throw new Error('发件申请已取消');
@@ -84,7 +84,7 @@ export function registerChannelSendTool(ctx: cordis.Context): void {
         throw new Error('主动发件需要本轮可信飞书来源');
       }
       //G 模型只提供非空正文，渠道、账号和聊天都从本轮快照取。
-      const content = text.getText(args, 'text');
+      const content = utils.getStringField(args, 'text');
       if (content.trim() === '') throw new Error('发件正文不能为空');
 
       const message = {

@@ -4,7 +4,7 @@
     "parent": null,
     "title": "src7/Sessions.ts（共 704 行）",
     "summary": "会话服务：骨架最重要的文件，只管一场会话怎么跑。Sessions 管表（新开、打开、查找、小会话问一次、发模型请求）；Session 是一场对话：一份记录 row，加上推它往下走的循环 run/loop。每一步有四个关口给插件接进来。",
-    "body": "## src7/Sessions.ts 分块目录（共 704 行，先按主题分组，每组 3～5 块）\n\n- 声明与类型（L1–L246）：导入、关口声明，以及请求、状态、记录和入参的各种类型。\n  - 导入与关口声明（L1–L129）：文件头、给 ctx 加 sessions、模型失败和思考档。\n  - 请求与状态类型（L130–L188）：关口共有项、一步请求、关口二数据、会话状态和记录。\n  - 记录与入参类型（L189–L246）：会话记录、去掉对话的元数据和新开、问一次的入参与结果。\n- Sessions 总类（L247–L395）：管会话的总类：建表、新开、打开、查找、问一次。\n- 发模型请求与单场会话（L396–L641）：chat 发请求，再看 Session 类的字段、说话、推进和循环。\n- 停止存储与改状态（L642–L704）：stop、save、append、change。\n\n执行顺序：Main.ts:80 挂 Sessions（L259 建表）→ 插件调 L278 create 或 L321 open 拿到 Session → L491 add 说一句 → L500 run → L531 loop 每一步：接 inbox → 关口一 session/request → L404 chat 调模型 → 关口二 session/after-model → 接回答 → 没要工具就 done；要了就逐个 Tools.execute（关口三在 Tools.ts）→ 关口四 session/after-tool → 接 toolResult → 下一步。",
+    "body": "## src7/Sessions.ts 分块目录（共 704 行，先按主题分组，每组 3～5 块）\n\n- 声明与类型（L1–L246）：导入、关口声明，以及请求、状态、记录和入参的各种类型。\n  - 导入与关口声明（L1–L129）：文件头、给 ctx 加 sessions、模型失败和思考档。\n  - 请求与状态类型（L130–L188）：关口共有项、一步请求、关口二数据、会话状态和记录。\n  - 记录与入参类型（L189–L246）：会话记录、去掉对话的元数据和新开、问一次的入参与结果。\n- Sessions 总类（L247–L395）：管会话的总类：建表、新开、打开、查找、问一次。\n- 发模型请求与单场会话（L396–L641）：chat 发请求，再看 Session 类的字段、说话、推进和循环。\n- 停止存储与改状态（L642–L704）：stop、save、append、change。\n\n执行顺序：\n1. Main.ts:80 挂 Sessions（L259 建表）\n2. 插件调 L278 create 或 L321 open 拿到 Session\n3. L491 add 说一句\n4. L500 run\n5. L531 loop 每一步：\n   1. 接 inbox\n   2. 关口一 session/request\n   3. L404 chat 调模型\n   4. 关口二 session/after-model\n   5. 接回答\n   6. 没要工具就 done；要了就逐个 Tools.execute（关口三在 Tools.ts）\n   7. 关口四 session/after-tool\n   8. 接 toolResult\n   9. 下一步",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -12,7 +12,7 @@
   {
     "id": "r-sessions-g1",
     "parent": "r-sessions",
-    "title": "声明与类型（L1–L246）",
+    "title": "L1–L246 声明与类型",
     "summary": "导入、关口声明，以及请求、状态、记录和入参的各种类型。",
     "body": "## 声明与类型（L1–L246）\n\n- 导入与关口声明（L1–L129）：文件头、给 ctx 加 sessions、模型失败和思考档。\n- 请求与状态类型（L130–L188）：关口共有项、一步请求、关口二数据、会话状态和记录。\n- 记录与入参类型（L189–L246）：会话记录、去掉对话的元数据和新开、问一次的入参与结果。",
     "sources": [
@@ -22,9 +22,9 @@
   {
     "id": "r-sessions-g1-1",
     "parent": "r-sessions-g1",
-    "title": "导入与关口声明（L1–L129）",
+    "title": "L1–L129 导入与关口声明",
     "summary": "文件头、给 ctx 加 sessions、模型失败和思考档。",
-    "body": "## 导入与关口声明\n\n- L1–L26 文件头与导入（import 区）：文件头注释是整个会话机制的总说明：Sessions 管表、Session 是一场对话、主线全是直接调用、四个关口和三个通知；然后导入 pi、Cordis、Tools.ts 的类型、会话号生成器和 Text 工具。\n- L27–L116 给 ctx 加 sessions，声明三个关口和三个通知（declare module 'cordis'）：Context 上加 sessions；Events 上声明本文件发的六个事件：关口一 session/request、关口二 session/after-model、关口四 session/after-tool，以及通知 session/message、session/change、model/failed。每个都在注释里写了谁发、谁接。\n- L117–L129 ModelFailed：model/failed 带的东西：四项：哪场会话、哪个模型、pi 给的错误文字、这一次用了多少毫秒。",
+    "body": "## 导入与关口声明\n\n- L1–L26 文件头与导入（import 区）：\n  - 文件头注释是整个会话机制的总说明，讲了五样：\n    - Sessions 管表\n    - Session 是一场对话\n    - 主线全是直接调用\n    - 四个关口\n    - 三个通知\n  - 然后导入 pi、Cordis、Tools.ts 的类型、会话号生成器和 Text 工具。\n- L27–L116 给 ctx 加 sessions，声明三个关口和三个通知（declare module 'cordis'）：\n  - Context 上加 sessions\n  - Events 上声明本文件发的六个事件：\n    - 关口一 session/request\n    - 关口二 session/after-model\n    - 关口四 session/after-tool\n    - 通知 session/message\n    - 通知 session/change\n    - 通知 model/failed\n  - 每个都在注释里写了谁发、谁接。\n- L117–L129 ModelFailed：model/failed 带的东西，四项：\n  - 哪场会话\n  - 哪个模型\n  - pi 给的错误文字\n  - 这一次用了多少毫秒",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -32,9 +32,9 @@
   {
     "id": "r-sessions-01",
     "parent": "r-sessions-g1-1",
-    "title": "L1–L26 文件头与导入（import 区）",
+    "title": "L1–L26 导入模块、写文件头",
     "summary": "文件头注释是整个会话机制的总说明：Sessions 管表、Session 是一场对话、主线全是直接调用、四个关口和三个通知；然后导入 pi、Cordis、Tools.ts 的类型、会话号生成器和 Text 工具。",
-    "body": "**行号：L1–L26**\n\n### 代码原文\n```ts\n  1  /**\n  2   * 会话：最重要的一个文件。骨架只管这一件事：一场会话怎么跑。\n  3   * Sessions 管表；Session 是一场对话：一份记录（row），加上推它往下走的循环（run）。\n  4   * 谁开的会话、话从哪来、回话往哪送，骨架都不知道，那是插件的事（机器人是 plugins/bots）。\n  5   *\n  6   * 主线全是直接调用，按 F12 能跳到实现：工具清单和执行工具调 ctx.tools，发模型请求调 Sessions.chat()。\n  7   * 发模型请求只依赖 pi（PI agent SDK，@earendil-works/pi-ai）。\n  8   * 一轮不数步数：模型不再要工具就做完了，有人喊停就停下。\n  9   *\n 10   * 事件只留给插件接进来。每一步有四个关口，插件挨个看，谁写了 stop 这一轮就停在那里（类型见 SessionGate）：\n 11   *   session/request      调模型之前，请求交给插件挨个改（本文件）；\n 12   *   session/after-model  模型回来之后、回答接进对话之前（本文件）；\n 13   *   session/before-tool  执行一个工具之前，还能用 deny 只拦这一个（声明和发都在 Tools.ts）；\n 14   *   session/after-tool   一个工具执行完、结果接进对话之前（本文件）。\n 15   * 另外三个只是通知，也声明在本文件：\n 16   *   session/message  对话里新接了一条；\n 17   *   session/change   状态变了；\n 18   *   model/failed     模型调用失败了一次。\n 19   */\n 20  import * as piAi from '@earendil-works/pi-ai';\n 21  import * as cordis from 'cordis';\n 22  import type { ToolDone } from './Tools.ts';\n 23  import { stampId } from './utils/Names.ts';\n 24  import * as textModule from './utils/Text.ts';\n 25  \n 26  \n```\n\n### 解释\n- L1–L4：会话是最重要的一个文件；Sessions 管表，Session 是“一份记录（row）+ 推它往下走的循环（run）”；谁开的会话、话从哪来、回话往哪送，骨架都不管，是插件的事。\n- L6–L8：主线全是直接调用（按 F12 能跳）：工具调 ctx.tools，模型请求调 Sessions.chat()，只依赖 pi；一轮不数步数，模型不再要工具就做完，有人喊停就停。\n- L10–L14：四个关口：session/request（调模型前）、session/after-model（模型回来后）、session/before-tool（在 Tools.ts）、session/after-tool（工具执行完）；谁写了 stop 这一轮就停在那里。\n- L15–L18：三个只是通知的事件：session/message、session/change、model/failed。\n- L20–L21：pi 本体和 Cordis。\n- L22：只拿 Tools.ts 的 `ToolDone` 类型。\n- L23：`stampId`，生成 20 位纯数字会话号。\n- L24：文字小工具 Text。\n- L25–L26：空行。\n\n### 调到别处\nsrc7/Tools.ts:79 ToolDone；src7/utils/Names.ts:36 stampId；src7/utils/Text.ts",
+    "body": "**行号：L1–L26**\n\n### 代码原文\n```ts\n  1  /**\n  2   * 会话：最重要的一个文件。骨架只管这一件事：一场会话怎么跑。\n  3   * Sessions 管表；Session 是一场对话：一份记录（row），加上推它往下走的循环（run）。\n  4   * 谁开的会话、话从哪来、回话往哪送，骨架都不知道，那是插件的事（机器人是 plugins/bots）。\n  5   *\n  6   * 主线全是直接调用，按 F12 能跳到实现：工具清单和执行工具调 ctx.tools，发模型请求调 Sessions.chat()。\n  7   * 发模型请求只依赖 pi（PI agent SDK，@earendil-works/pi-ai）。\n  8   * 一轮不数步数：模型不再要工具就做完了，有人喊停就停下。\n  9   *\n 10   * 事件只留给插件接进来。每一步有四个关口，插件挨个看，谁写了 stop 这一轮就停在那里（类型见 SessionGate）：\n 11   *   session/request      调模型之前，请求交给插件挨个改（本文件）；\n 12   *   session/after-model  模型回来之后、回答接进对话之前（本文件）；\n 13   *   session/before-tool  执行一个工具之前，还能用 deny 只拦这一个（声明和发都在 Tools.ts）；\n 14   *   session/after-tool   一个工具执行完、结果接进对话之前（本文件）。\n 15   * 另外三个只是通知，也声明在本文件：\n 16   *   session/message  对话里新接了一条；\n 17   *   session/change   状态变了；\n 18   *   model/failed     模型调用失败了一次。\n 19   */\n 20  import * as piAi from '@earendil-works/pi-ai';\n 21  import * as cordis from 'cordis';\n 22  import type { ToolDone } from './Tools.ts';\n 23  import { stampId } from './utils/Names.ts';\n 24  import * as textModule from './utils/Text.ts';\n 25  \n 26  \n```\n\n### 解释\n- L1–L4：会话是最重要的一个文件：\n  - Sessions 管表\n  - Session 是“一份记录（row）+ 推它往下走的循环（run）”\n  - 谁开的会话、话从哪来、回话往哪送，骨架都不管，是插件的事。\n- L6–L8：主线全是直接调用（按 F12 能跳）：\n  - 工具调 ctx.tools\n  - 模型请求调 Sessions.chat()，只依赖 pi\n  - 一轮不数步数，模型不再要工具就做完，有人喊停就停。\n- L10–L14：四个关口：\n  - session/request（调模型前）\n  - session/after-model（模型回来后）\n  - session/before-tool（在 Tools.ts）\n  - session/after-tool（工具执行完）\n  - 谁写了 stop 这一轮就停在那里。\n- L15–L18：三个只是通知的事件：\n  - session/message\n  - session/change\n  - model/failed\n- L20–L21：pi 本体和 Cordis。\n- L22：只拿 Tools.ts 的 `ToolDone` 类型。\n- L23：`stampId`，生成 20 位纯数字会话号。\n- L24：文字小工具 Text。\n- L25–L26：空行。\n\n### 调到别处\n- 骨架：[Tools.ts L79](#lines=Tools.json&line=79) ToolDone\n- 骨架工具：[Names.ts:36](src7/utils/Names.ts:36) stampId\n- 骨架工具：[Text.ts](src7/utils/Text.ts)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -42,8 +42,8 @@
   {
     "id": "r-sessions-02",
     "parent": "r-sessions-g1-1",
-    "title": "L27–L116 给 ctx 加 sessions，声明三个关口和三个通知（declare module 'cordis'）",
-    "summary": "Context 上加 sessions；Events 上声明本文件发的六个事件：关口一 session/request、关口二 session/after-model、关口四 session/after-tool，以及通知 session/message、session/change、model/failed。每个都在注释里写了谁发、谁接。",
+    "title": "L27–L116 声明关口和通知事件",
+    "summary": "Context 上加 sessions；Events 上声明本文件发的六个事件：关口一 session/request、关口二 session/after-model、关口四 session/after-tool，以及通知 session/message、session/change、model/failed。每个都在注释里写了谁发、谁接。（对应：`declare`、`module`、`cordis`）",
     "body": "**行号：L27–L116**\n\n### 代码原文\n```ts\n 27  declare module 'cordis' {\n 28    interface Context {\n 29      /** 会话服务，实现在 src7/Sessions.ts。 */\n 30      sessions: Sessions;\n 31    }\n 32    interface Events {\n 33      /**\n 34       * 关口一，每一步调模型之前：这一步的请求交给插件挨个改，照插件挂上去的先后一个个 await。\n 35       * 加提示词就往 request.system 里 push；压缩、检索、拼最近往来就改 request.messages；\n 36       * 直接给回答的（假模型）填 request.answer；要这一轮停在这里、不调模型，就在 request.stop 写理由。\n 37       * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了（下面三个关口也一样）。\n 38       * 谁发：src7/Sessions.ts 的 Session.loop\n 39       * 谁接：\n 40       *   src7/plugins/approval/index.ts 的 Approval.constructor\n 41       *   src7/plugins/assist/index.ts 的 Assist.constructor\n 42       *   src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 43       *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.constructor\n 44       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 45       *   src7/plugins/bots/Prompt.ts 的 Prompt.constructor\n 46       *   src7/plugins/context-fit/Compress.ts 的 Compress.constructor\n 47       *   src7/plugins/context-fit/index.ts 的 apply\n 48       *   src7/plugins/fake-model/index.ts 的 apply\n 49       *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.constructor\n 50       *   src7/plugins/memory/GraphRoutes.ts 的 GraphRoutes.constructor\n 51       *   src7/plugins/memory/index.ts 的 Memory.constructor\n 52       *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.constructor\n 53       *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools\n 54       *   src7/plugins/progress/index.ts 的 Progress.constructor\n 55       *   src7/plugins/relay/index.ts 的 Relay.constructor\n 56       *   src7/plugins/skills/index.ts 的 apply\n 57       *   src7/plugins/wechat/index.ts 的 Wechat.constructor\n 58       */\n 59      'session/request'(request: ChatRequest): void | Promise<void>;\n 60      /**\n 61       * 关口二，模型回来之后、回答接进对话之前：照先后一个个 await。\n 62       * 能看能改 request.answer（换掉也行，以最后的为准）；在 request.stop 写理由，这次回答就不要了\n 63       * （里面要的工具也不执行），这一轮停在这里。\n 64       * 谁发：src7/Sessions.ts 的 Session.loop\n 65       * 谁接：暂无\n 66       */\n 67      'session/after-model'(request: AnsweredRequest): void | Promise<void>;\n 68      /**\n 69       * 关口四，一个工具执行完、结果接进对话之前：照先后一个个 await。没执行、被 deny 拦下的也走这里。\n 70       * 能改 done.outcome（文字、图片、是否出错）；在 done.stop 写理由，结果照样接进对话（要和工具调用配对），\n 71       * 这一轮停在这里，这一批后面的工具不再执行。\n 72       * 谁发：src7/Sessions.ts 的 Session.loop\n 73       * 谁接：src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 74       */\n 75      'session/after-tool'(done: ToolDone): void | Promise<void>;\n 76      /**\n 77       * 对话里新接了一条（用户的话、模型的回答、工具的结果）。只是通知。\n 78       * 谁发：src7/Sessions.ts 的 Session.append\n 79       * 谁接：\n 80       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 81       *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor\n 82       *   src7/plugins/journal/index.ts 的 Journal.listen\n 83       *   src7/plugins/memory/index.ts 的 Memory.constructor\n 84       *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor\n 85       *   src7/plugins/progress/index.ts 的 Progress.constructor\n 86       */\n 87      'session/message'(session: Session, message: piAi.Message): void;\n 88      /**\n 89       * 状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。\n 90       * 谁发：src7/Sessions.ts 的 Session.change\n 91       * 谁接：\n 92       *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen\n 93       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 94       *   src7/plugins/bots/index.ts 的 Bots.constructor\n 95       *   src7/plugins/cli/index.ts 的 Cli.constructor\n 96       *   src7/plugins/context-fit/Summary.ts 的 Summary.constructor\n 97       *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor\n 98       *   src7/plugins/journal/index.ts 的 Journal.listen\n 99       *   src7/plugins/progress/index.ts 的 Progress.constructor\n100       *   src7/plugins/relay/index.ts 的 Relay.constructor\n101       *   src7/plugins/voice/index.ts 的 apply\n102       *   src7/plugins/web-api/index.ts 的 WebApi.constructor\n103       */\n104      'session/change'(session: Session): void;\n105      /**\n106       * 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。\n107       * 谁发：src7/Sessions.ts 的 Sessions.chat\n108       * 谁接：\n109       *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.attempt\n110       *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor\n111       */\n112      'model/failed'(info: ModelFailed): void;\n113    }\n114  }\n115  \n116  \n```\n\n### 解释\n- 关口用 ctx.serial 挨个 await，监听函数不许有返回值；通知用 ctx.emit，只管告诉大家。\n- 七个子块按声明顺序拆开。\n\n### 调到别处\n无（只是类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -52,7 +52,7 @@
   {
     "id": "r-sessions-02-1",
     "parent": "r-sessions-02",
-    "title": "L27–L32 Context 加 sessions，Events 开头",
+    "title": "L27–L32 给 ctx 加会话",
     "summary": "Cordis 的 Context 加一个 sessions 字段，类型是本文件的 Sessions；接着打开 Events 接口。",
     "body": "**行号：L27–L32**\n\n### 代码原文\n```ts\n 27  declare module 'cordis' {\n 28    interface Context {\n 29      /** 会话服务，实现在 src7/Sessions.ts。 */\n 30      sessions: Sessions;\n 31    }\n 32    interface Events {\n```\n\n### 解释\n- L27：`declare module 'cordis'`。\n- L28–L31：`interface Context` 加 `sessions: Sessions`，注释写明实现在本文件。\n- L32：`interface Events {` 开始。\n\n### 调到别处\n无",
     "sources": [
@@ -62,9 +62,9 @@
   {
     "id": "r-sessions-02-2",
     "parent": "r-sessions-02",
-    "title": "L33–L59 关口一 session/request：调模型之前",
-    "summary": "每一步调模型之前，请求交给插件挨个改：加提示词 push 到 system，改对话改 messages，假模型填 answer，要停就写 stop。接的插件最多，注释里列了 18 处。",
-    "body": "**行号：L33–L59**\n\n### 代码原文\n```ts\n 33      /**\n 34       * 关口一，每一步调模型之前：这一步的请求交给插件挨个改，照插件挂上去的先后一个个 await。\n 35       * 加提示词就往 request.system 里 push；压缩、检索、拼最近往来就改 request.messages；\n 36       * 直接给回答的（假模型）填 request.answer；要这一轮停在这里、不调模型，就在 request.stop 写理由。\n 37       * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了（下面三个关口也一样）。\n 38       * 谁发：src7/Sessions.ts 的 Session.loop\n 39       * 谁接：\n 40       *   src7/plugins/approval/index.ts 的 Approval.constructor\n 41       *   src7/plugins/assist/index.ts 的 Assist.constructor\n 42       *   src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 43       *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.constructor\n 44       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 45       *   src7/plugins/bots/Prompt.ts 的 Prompt.constructor\n 46       *   src7/plugins/context-fit/Compress.ts 的 Compress.constructor\n 47       *   src7/plugins/context-fit/index.ts 的 apply\n 48       *   src7/plugins/fake-model/index.ts 的 apply\n 49       *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.constructor\n 50       *   src7/plugins/memory/GraphRoutes.ts 的 GraphRoutes.constructor\n 51       *   src7/plugins/memory/index.ts 的 Memory.constructor\n 52       *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.constructor\n 53       *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools\n 54       *   src7/plugins/progress/index.ts 的 Progress.constructor\n 55       *   src7/plugins/relay/index.ts 的 Relay.constructor\n 56       *   src7/plugins/skills/index.ts 的 apply\n 57       *   src7/plugins/wechat/index.ts 的 Wechat.constructor\n 58       */\n 59      'session/request'(request: ChatRequest): void | Promise<void>;\n```\n\n### 解释\n- L34：照插件挂上去的先后一个个 await。\n- L35–L36：怎么改：提示词往 `request.system` 里 push；压缩、检索、拼最近往来改 `request.messages`；直接给回答的（假模型）填 `request.answer`；要停就在 `request.stop` 写理由。\n- L37：监听函数不许有返回值：有返回值 Cordis 就不再问后面的人（下面三个关口也一样）。\n- L38：谁发：Session.loop。\n- L39–L57：谁接：approval、assist、bots（ChannelTools、DispatchTools、FrontDesk、Prompt）、context-fit（Compress、index）、fake-model、file-tools、memory（GraphRoutes、index）、model-catalog 的 Fallback、progress（GroupDaily、index）、relay、skills、wechat。\n- L59：`'session/request'(request: ChatRequest): void | Promise<void>`。\n\n### 调到别处\n无（声明；发出处 src7/Sessions.ts:552）",
+    "title": "L33–L59 声明调模型前关口",
+    "summary": "每一步调模型之前，请求交给插件挨个改：加提示词 push 到 system，改对话改 messages，假模型填 answer，要停就写 stop。接的插件最多，注释里列了 18 处。（对应：`session/request`）",
+    "body": "**行号：L33–L59**\n\n### 代码原文\n```ts\n 33      /**\n 34       * 关口一，每一步调模型之前：这一步的请求交给插件挨个改，照插件挂上去的先后一个个 await。\n 35       * 加提示词就往 request.system 里 push；压缩、检索、拼最近往来就改 request.messages；\n 36       * 直接给回答的（假模型）填 request.answer；要这一轮停在这里、不调模型，就在 request.stop 写理由。\n 37       * 监听的函数不许有返回值：有了返回值，Cordis 就不再问后面的人了（下面三个关口也一样）。\n 38       * 谁发：src7/Sessions.ts 的 Session.loop\n 39       * 谁接：\n 40       *   src7/plugins/approval/index.ts 的 Approval.constructor\n 41       *   src7/plugins/assist/index.ts 的 Assist.constructor\n 42       *   src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 43       *   src7/plugins/bots/DispatchTools.ts 的 DispatchTools.constructor\n 44       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 45       *   src7/plugins/bots/Prompt.ts 的 Prompt.constructor\n 46       *   src7/plugins/context-fit/Compress.ts 的 Compress.constructor\n 47       *   src7/plugins/context-fit/index.ts 的 apply\n 48       *   src7/plugins/fake-model/index.ts 的 apply\n 49       *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.constructor\n 50       *   src7/plugins/memory/GraphRoutes.ts 的 GraphRoutes.constructor\n 51       *   src7/plugins/memory/index.ts 的 Memory.constructor\n 52       *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.constructor\n 53       *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools\n 54       *   src7/plugins/progress/index.ts 的 Progress.constructor\n 55       *   src7/plugins/relay/index.ts 的 Relay.constructor\n 56       *   src7/plugins/skills/index.ts 的 apply\n 57       *   src7/plugins/wechat/index.ts 的 Wechat.constructor\n 58       */\n 59      'session/request'(request: ChatRequest): void | Promise<void>;\n```\n\n### 解释\n- L34：照插件挂上去的先后一个个 await。\n- L35–L36：怎么改：\n  - 提示词：往 `request.system` 里 push\n  - 压缩、检索、拼最近往来：改 `request.messages`\n  - 直接给回答的（假模型）：填 `request.answer`\n  - 要停：在 `request.stop` 写理由。\n- L37：监听函数不许有返回值：有返回值 Cordis 就不再问后面的人（下面三个关口也一样）。\n- L38：谁发：Session.loop。\n- L39–L57：谁接：\n  - approval\n  - assist\n  - bots（ChannelTools、DispatchTools、FrontDesk、Prompt）\n  - context-fit（Compress、index）\n  - fake-model\n  - file-tools\n  - memory（GraphRoutes、index）\n  - model-catalog 的 Fallback\n  - progress（GroupDaily、index）\n  - relay\n  - skills\n  - wechat\n- L59：`'session/request'(request: ChatRequest): void | Promise<void>`。\n\n### 调到别处\n- 骨架：声明；发出处 [Sessions.ts L552](#lines=Sessions.json&line=552)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -72,9 +72,9 @@
   {
     "id": "r-sessions-02-3",
     "parent": "r-sessions-02",
-    "title": "L60–L67 关口二 session/after-model：模型回来之后",
-    "summary": "回答接进对话之前给插件看：能改能换 request.answer；写了 stop 这次回答就不要了，里面要的工具也不执行。目前没有插件接。",
-    "body": "**行号：L60–L67**\n\n### 代码原文\n```ts\n 60      /**\n 61       * 关口二，模型回来之后、回答接进对话之前：照先后一个个 await。\n 62       * 能看能改 request.answer（换掉也行，以最后的为准）；在 request.stop 写理由，这次回答就不要了\n 63       * （里面要的工具也不执行），这一轮停在这里。\n 64       * 谁发：src7/Sessions.ts 的 Session.loop\n 65       * 谁接：暂无\n 66       */\n 67      'session/after-model'(request: AnsweredRequest): void | Promise<void>;\n```\n\n### 解释\n- L61：照先后一个个 await。\n- L62–L63：能看能改 `request.answer`（以最后的为准）；写 `request.stop` 就丢掉这次回答，这一轮停在这里。\n- L64–L65：谁发 Session.loop；谁接：暂无。\n- L67：`'session/after-model'(request: AnsweredRequest): void | Promise<void>`。\n\n### 调到别处\n无（声明；发出处 src7/Sessions.ts:584）",
+    "title": "L60–L67 声明模型回来后关口",
+    "summary": "回答接进对话之前给插件看：能改能换 request.answer；写了 stop 这次回答就不要了，里面要的工具也不执行。目前没有插件接。（对应：`session/after-model`）",
+    "body": "**行号：L60–L67**\n\n### 代码原文\n```ts\n 60      /**\n 61       * 关口二，模型回来之后、回答接进对话之前：照先后一个个 await。\n 62       * 能看能改 request.answer（换掉也行，以最后的为准）；在 request.stop 写理由，这次回答就不要了\n 63       * （里面要的工具也不执行），这一轮停在这里。\n 64       * 谁发：src7/Sessions.ts 的 Session.loop\n 65       * 谁接：暂无\n 66       */\n 67      'session/after-model'(request: AnsweredRequest): void | Promise<void>;\n```\n\n### 解释\n- L61：照先后一个个 await。\n- L62–L63：\n  - 能看能改 `request.answer`（以最后的为准）\n  - 写 `request.stop` 就丢掉这次回答，这一轮停在这里。\n- L64–L65：\n  - 谁发 Session.loop\n  - 谁接：暂无。\n- L67：`'session/after-model'(request: AnsweredRequest): void | Promise<void>`。\n\n### 调到别处\n- 骨架：声明；发出处 [Sessions.ts L584](#lines=Sessions.json&line=584)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -82,9 +82,9 @@
   {
     "id": "r-sessions-02-4",
     "parent": "r-sessions-02",
-    "title": "L68–L75 关口四 session/after-tool：工具执行完之后",
-    "summary": "一个工具执行完、结果接进对话之前给插件看；没执行、被 deny 拦下的也走这里。能改 done.outcome；写 stop 结果照样接进对话（要和工具调用配对），这一批后面的工具不再执行。",
-    "body": "**行号：L68–L75**\n\n### 代码原文\n```ts\n 68      /**\n 69       * 关口四，一个工具执行完、结果接进对话之前：照先后一个个 await。没执行、被 deny 拦下的也走这里。\n 70       * 能改 done.outcome（文字、图片、是否出错）；在 done.stop 写理由，结果照样接进对话（要和工具调用配对），\n 71       * 这一轮停在这里，这一批后面的工具不再执行。\n 72       * 谁发：src7/Sessions.ts 的 Session.loop\n 73       * 谁接：src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 74       */\n 75      'session/after-tool'(done: ToolDone): void | Promise<void>;\n```\n\n### 解释\n- L69：没执行、被 deny 拦下的也走这里。\n- L70–L71：能改 `done.outcome`；写 `done.stop`：结果仍接进对话，这一轮停下，后面的工具不执行。\n- L72–L73：谁发 Session.loop；谁接 bots 的 ChannelTools。\n- L75：`'session/after-tool'(done: ToolDone): void | Promise<void>`。\n\n### 调到别处\n无（声明；发出处 src7/Sessions.ts:614）",
+    "title": "L68–L75 声明工具执行后关口",
+    "summary": "一个工具执行完、结果接进对话之前给插件看；没执行、被 deny 拦下的也走这里。能改 done.outcome；写 stop 结果照样接进对话（要和工具调用配对），这一批后面的工具不再执行。（对应：`session/after-tool`）",
+    "body": "**行号：L68–L75**\n\n### 代码原文\n```ts\n 68      /**\n 69       * 关口四，一个工具执行完、结果接进对话之前：照先后一个个 await。没执行、被 deny 拦下的也走这里。\n 70       * 能改 done.outcome（文字、图片、是否出错）；在 done.stop 写理由，结果照样接进对话（要和工具调用配对），\n 71       * 这一轮停在这里，这一批后面的工具不再执行。\n 72       * 谁发：src7/Sessions.ts 的 Session.loop\n 73       * 谁接：src7/plugins/bots/ChannelTools.ts 的 ChannelTools.constructor\n 74       */\n 75      'session/after-tool'(done: ToolDone): void | Promise<void>;\n```\n\n### 解释\n- L69：没执行、被 deny 拦下的也走这里。\n- L70–L71：\n  - 能改 `done.outcome`\n  - 写 `done.stop`：结果仍接进对话，这一轮停下，后面的工具不执行。\n- L72–L73：\n  - 谁发 Session.loop\n  - 谁接 bots 的 ChannelTools。\n- L75：`'session/after-tool'(done: ToolDone): void | Promise<void>`。\n\n### 调到别处\n- 骨架：声明；发出处 [Sessions.ts L614](#lines=Sessions.json&line=614)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -92,9 +92,9 @@
   {
     "id": "r-sessions-02-5",
     "parent": "r-sessions-02",
-    "title": "L76–L87 通知 session/message：对话里新接了一条",
-    "summary": "用户的话、模型的回答、工具的结果，每接进一条就发一次，只是通知。",
-    "body": "**行号：L76–L87**\n\n### 代码原文\n```ts\n 76      /**\n 77       * 对话里新接了一条（用户的话、模型的回答、工具的结果）。只是通知。\n 78       * 谁发：src7/Sessions.ts 的 Session.append\n 79       * 谁接：\n 80       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 81       *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor\n 82       *   src7/plugins/journal/index.ts 的 Journal.listen\n 83       *   src7/plugins/memory/index.ts 的 Memory.constructor\n 84       *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor\n 85       *   src7/plugins/progress/index.ts 的 Progress.constructor\n 86       */\n 87      'session/message'(session: Session, message: piAi.Message): void;\n```\n\n### 解释\n- L77：对话里新接了一条，只是通知。\n- L78：谁发：Session.append。\n- L79–L86：谁接：bots 的 FrontDesk、journal（FilesMirror、index）、memory、model-catalog 的 Usage、progress。\n- L87：`'session/message'(session: Session, message: piAi.Message): void`。\n\n### 调到别处\n无（声明；发出处 src7/Sessions.ts:689）",
+    "title": "L76–L87 声明新消息通知",
+    "summary": "用户的话、模型的回答、工具的结果，每接进一条就发一次，只是通知。（对应：`session/message`）",
+    "body": "**行号：L76–L87**\n\n### 代码原文\n```ts\n 76      /**\n 77       * 对话里新接了一条（用户的话、模型的回答、工具的结果）。只是通知。\n 78       * 谁发：src7/Sessions.ts 的 Session.append\n 79       * 谁接：\n 80       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 81       *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor\n 82       *   src7/plugins/journal/index.ts 的 Journal.listen\n 83       *   src7/plugins/memory/index.ts 的 Memory.constructor\n 84       *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor\n 85       *   src7/plugins/progress/index.ts 的 Progress.constructor\n 86       */\n 87      'session/message'(session: Session, message: piAi.Message): void;\n```\n\n### 解释\n- L77：对话里新接了一条，只是通知。\n- L78：谁发：Session.append。\n- L79–L86：谁接：\n  - bots 的 FrontDesk\n  - journal（FilesMirror、index）\n  - memory\n  - model-catalog 的 Usage\n  - progress\n- L87：`'session/message'(session: Session, message: piAi.Message): void`。\n\n### 调到别处\n- 骨架：声明；发出处 [Sessions.ts L689](#lines=Sessions.json&line=689)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -102,9 +102,9 @@
   {
     "id": "r-sessions-02-6",
     "parent": "r-sessions-02",
-    "title": "L88–L104 通知 session/change：状态变了",
-    "summary": "开始转了、或这一轮结束了都发；结束时 session.row.reply 是要回给用户的话。机器人、命令行、网页靠它把回话送出去。",
-    "body": "**行号：L88–L104**\n\n### 代码原文\n```ts\n 88      /**\n 89       * 状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。\n 90       * 谁发：src7/Sessions.ts 的 Session.change\n 91       * 谁接：\n 92       *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen\n 93       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 94       *   src7/plugins/bots/index.ts 的 Bots.constructor\n 95       *   src7/plugins/cli/index.ts 的 Cli.constructor\n 96       *   src7/plugins/context-fit/Summary.ts 的 Summary.constructor\n 97       *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor\n 98       *   src7/plugins/journal/index.ts 的 Journal.listen\n 99       *   src7/plugins/progress/index.ts 的 Progress.constructor\n100       *   src7/plugins/relay/index.ts 的 Relay.constructor\n101       *   src7/plugins/voice/index.ts 的 apply\n102       *   src7/plugins/web-api/index.ts 的 WebApi.constructor\n103       */\n104      'session/change'(session: Session): void;\n```\n\n### 解释\n- L89：开始转了或这一轮结束了，`session.row.reply` 是要回给用户的话。\n- L90：谁发：Session.change。\n- L91–L102：谁接：bots（DispatchResults、FrontDesk、index）、cli、context-fit 的 Summary、journal（FilesMirror、index）、progress、relay、voice、web-api。\n- L104：`'session/change'(session: Session): void`。\n\n### 调到别处\n无（声明；发出处 src7/Sessions.ts:702）",
+    "title": "L88–L104 声明状态变化通知",
+    "summary": "开始转了、或这一轮结束了都发；结束时 session.row.reply 是要回给用户的话。机器人、命令行、网页靠它把回话送出去。（对应：`session/change`）",
+    "body": "**行号：L88–L104**\n\n### 代码原文\n```ts\n 88      /**\n 89       * 状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。\n 90       * 谁发：src7/Sessions.ts 的 Session.change\n 91       * 谁接：\n 92       *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen\n 93       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n 94       *   src7/plugins/bots/index.ts 的 Bots.constructor\n 95       *   src7/plugins/cli/index.ts 的 Cli.constructor\n 96       *   src7/plugins/context-fit/Summary.ts 的 Summary.constructor\n 97       *   src7/plugins/journal/FilesMirror.ts 的 FilesMirror.constructor\n 98       *   src7/plugins/journal/index.ts 的 Journal.listen\n 99       *   src7/plugins/progress/index.ts 的 Progress.constructor\n100       *   src7/plugins/relay/index.ts 的 Relay.constructor\n101       *   src7/plugins/voice/index.ts 的 apply\n102       *   src7/plugins/web-api/index.ts 的 WebApi.constructor\n103       */\n104      'session/change'(session: Session): void;\n```\n\n### 解释\n- L89：开始转了或这一轮结束了，`session.row.reply` 是要回给用户的话。\n- L90：谁发：Session.change。\n- L91–L102：谁接：\n  - bots（DispatchResults、FrontDesk、index）\n  - cli\n  - context-fit 的 Summary\n  - journal（FilesMirror、index）\n  - progress\n  - relay\n  - voice\n  - web-api\n- L104：`'session/change'(session: Session): void`。\n\n### 调到别处\n- 骨架：声明；发出处 [Sessions.ts L702](#lines=Sessions.json&line=702)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -112,9 +112,9 @@
   {
     "id": "r-sessions-02-7",
     "parent": "r-sessions-02",
-    "title": "L105–L116 通知 model/failed，Events 与模块闭合",
-    "summary": "模型调用每失败一次（含会重试的那几次，被喊停的不算）发一次，用量、追溯、换模型这类插件听它。",
-    "body": "**行号：L105–L116**\n\n### 代码原文\n```ts\n105      /**\n106       * 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。\n107       * 谁发：src7/Sessions.ts 的 Sessions.chat\n108       * 谁接：\n109       *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.attempt\n110       *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor\n111       */\n112      'model/failed'(info: ModelFailed): void;\n113    }\n114  }\n115  \n116  \n```\n\n### 解释\n- L106：失败一次发一次，含重试的；被喊停的不算。\n- L107：谁发：Sessions.chat。\n- L108–L110：谁接：model-catalog 的 Fallback、Usage。\n- L112：`'model/failed'(info: ModelFailed): void`。\n- L113–L114：Events、declare module 闭合。L115–L116：空行。\n\n### 调到别处\n无（声明；发出处 src7/Sessions.ts:451）",
+    "title": "L105–L116 声明模型失败通知",
+    "summary": "模型调用每失败一次（含会重试的那几次，被喊停的不算）发一次，用量、追溯、换模型这类插件听它。（对应：`model/failed`、`Events`）",
+    "body": "**行号：L105–L116**\n\n### 代码原文\n```ts\n105      /**\n106       * 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。\n107       * 谁发：src7/Sessions.ts 的 Sessions.chat\n108       * 谁接：\n109       *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.attempt\n110       *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor\n111       */\n112      'model/failed'(info: ModelFailed): void;\n113    }\n114  }\n115  \n116  \n```\n\n### 解释\n- L106：失败一次发一次，含重试的；被喊停的不算。\n- L107：谁发：Sessions.chat。\n- L108–L110：谁接：\n  - model-catalog 的 Fallback\n  - Usage\n- L112：`'model/failed'(info: ModelFailed): void`。\n- L113–L114：Events、declare module 闭合。L115–L116：空行。\n\n### 调到别处\n- 骨架：声明；发出处 [Sessions.ts L451](#lines=Sessions.json&line=451)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -122,8 +122,8 @@
   {
     "id": "r-sessions-03",
     "parent": "r-sessions-g1-1",
-    "title": "L117–L129 ModelFailed：model/failed 带的东西",
-    "summary": "四项：哪场会话、哪个模型、pi 给的错误文字、这一次用了多少毫秒。",
+    "title": "L117–L129 定模型失败的数据",
+    "summary": "四项：哪场会话、哪个模型、pi 给的错误文字、这一次用了多少毫秒。（对应：`ModelFailed`、`model/failed`）",
     "body": "**行号：L117–L129**\n\n### 代码原文\n```ts\n117  /** 事件 model/failed 带的东西。 */\n118  export interface ModelFailed {\n119    /** 是哪场会话的请求。 */\n120    session: Session;\n121    /** 哪个模型，供应商名/模型 ID。 */\n122    model: string;\n123    /** pi 给的错误文字。 */\n124    error: string;\n125    /** 这一次从发出到失败用了多少毫秒。 */\n126    ms: number;\n127  }\n128  \n129  \n```\n\n### 解释\n- L117–L118：注释，`export interface ModelFailed`。\n- L119–L120：`session` 哪场会话的请求。\n- L121–L122：`model` 供应商名/模型 ID。\n- L123–L124：`error` pi 给的错误文字。\n- L125–L126：`ms` 从发出到失败的毫秒数。\n- L127：闭合。L128–L129：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -132,9 +132,9 @@
   {
     "id": "r-sessions-g1-2",
     "parent": "r-sessions-g1",
-    "title": "请求与状态类型（L130–L188）",
+    "title": "L130–L188 请求与状态类型",
     "summary": "关口共有项、一步请求、关口二数据、会话状态和记录。",
-    "body": "## 请求与状态类型\n\n- L130–L133 Thinking：思考档：直接用 pi 的思考档类型：off 不思考，往后越来越深；模型不支持的档位，pi 自动换成最近的。\n- L134–L148 SessionGate：四个关口共有的两项：所有关口数据的基础：session（是哪场会话）和 stop（喊停的理由）。两个模型关口在它上面加成 ChatRequest，两个工具关口加成 Tools.ts 的 ToolGate。\n- L149–L171 ChatRequest：一步的请求：会话备好的一步请求：模型、思考档、系统提示词段落、工具定义、对话副本、取消信号，以及插件可直接给的 answer。先过关口一，再交给 chat() 发出去。\n- L172–L178 AnsweredRequest：关口二的数据：就是这一步的请求，但 answer 已经必有（模型回的或插件给的）；插件可以改它、换掉它，接进对话的是最后这一份。\n- L179–L188 SessionState：会话的四种状态：running 正在转；done 做完了（新开的也是它）；stopped 有人喊停或关口写了 stop；failed 出错了。",
+    "body": "## 请求与状态类型\n\n- L130–L133 Thinking：思考档：直接用 pi 的思考档类型：off 不思考，往后越来越深；模型不支持的档位，pi 自动换成最近的。\n- L134–L148 SessionGate：四个关口共有的两项，所有关口数据的基础：\n  - session（是哪场会话）\n  - stop（喊停的理由）\n  - 两个模型关口在它上面加成 ChatRequest，两个工具关口加成 Tools.ts 的 ToolGate。\n- L149–L171 ChatRequest：一步的请求：会话备好的一步请求，包含：\n  - 模型\n  - 思考档\n  - 系统提示词段落\n  - 工具定义\n  - 对话副本\n  - 取消信号\n  - 插件可直接给的 answer\n  - 先过关口一，再交给 chat() 发出去。\n- L172–L178 AnsweredRequest：关口二的数据：就是这一步的请求，但 answer 已经必有（模型回的或插件给的）；插件可以改它、换掉它，接进对话的是最后这一份。\n- L179–L188 SessionState：会话的四种状态：\n  - running：正在转\n  - done：做完了（新开的也是它）\n  - stopped：有人喊停或关口写了 stop\n  - failed：出错了",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -142,9 +142,9 @@
   {
     "id": "r-sessions-04",
     "parent": "r-sessions-g1-2",
-    "title": "L130–L133 Thinking：思考档",
-    "summary": "直接用 pi 的思考档类型：off 不思考，往后越来越深；模型不支持的档位，pi 自动换成最近的。",
-    "body": "**行号：L130–L133**\n\n### 代码原文\n```ts\n130  /** 思考档：off 不思考，往后越来越深。模型不支持的档位，pi 自动换成最近的。 */\n131  export type Thinking = piAi.ModelThinkingLevel;\n132  \n133  \n```\n\n### 解释\n- L130：注释。\n- L131：`export type Thinking = piAi.ModelThinkingLevel`。\n- L132–L133：空行。\n\n### 调到别处\n无（类型别名；Resources.ts 也用它，见 src7/Resources.ts:15）",
+    "title": "L130–L133 定思考档类型",
+    "summary": "直接用 pi 的思考档类型：off 不思考，往后越来越深；模型不支持的档位，pi 自动换成最近的。（对应：`Thinking`）",
+    "body": "**行号：L130–L133**\n\n### 代码原文\n```ts\n130  /** 思考档：off 不思考，往后越来越深。模型不支持的档位，pi 自动换成最近的。 */\n131  export type Thinking = piAi.ModelThinkingLevel;\n132  \n133  \n```\n\n### 解释\n- L130：注释。\n- L131：`export type Thinking = piAi.ModelThinkingLevel`。\n- L132–L133：空行。\n\n### 调到别处\n- 骨架：类型别名；[Resources.ts](#lines=Resources.json&line=1) 也用它，见 [Resources.ts L15](#lines=Resources.json&line=15)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -152,8 +152,8 @@
   {
     "id": "r-sessions-05",
     "parent": "r-sessions-g1-2",
-    "title": "L134–L148 SessionGate：四个关口共有的两项",
-    "summary": "所有关口数据的基础：session（是哪场会话）和 stop（喊停的理由）。两个模型关口在它上面加成 ChatRequest，两个工具关口加成 Tools.ts 的 ToolGate。",
+    "title": "L134–L148 定关口共有两项",
+    "summary": "所有关口数据的基础：session（是哪场会话）和 stop（喊停的理由）。两个模型关口在它上面加成 ChatRequest，两个工具关口加成 Tools.ts 的 ToolGate。（对应：`SessionGate`）",
     "body": "**行号：L134–L148**\n\n### 代码原文\n```ts\n134  /**\n135   * 四个关口事件（session/request、session/after-model、session/before-tool、session/after-tool）共有的两项。\n136   * 各关口的数据都在它上面加自己的东西：两个模型关口用 ChatRequest，两个工具关口用 Tools.ts 的 ToolGate。\n137   */\n138  export interface SessionGate {\n139    /** 是哪场会话的。插件靠它知道种类、机器人、整场对话。 */\n140    session: Session;\n141    /**\n142     * 喊停的理由。谁要这一轮停在这个关口就写上；写了会话就停下（Session.stop），不往下走，\n143     * 理由写进 session.row.reply。没人写就接着走。\n144     */\n145    stop?: string;\n146  }\n147  \n148  \n```\n\n### 解释\n- L134–L137：注释：四个关口共有；模型关口用 ChatRequest，工具关口用 ToolGate。\n- L138：`export interface SessionGate`。\n- L139–L140：`session`：插件靠它知道种类、机器人、整场对话。\n- L141–L145：`stop?`：谁要这一轮停在这个关口就写上；写了会话就停下（Session.stop），理由写进 `session.row.reply`；没人写就接着走。\n- L146：闭合。L147–L148：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -162,9 +162,9 @@
   {
     "id": "r-sessions-06",
     "parent": "r-sessions-g1-2",
-    "title": "L149–L171 ChatRequest：一步的请求",
-    "summary": "会话备好的一步请求：模型、思考档、系统提示词段落、工具定义、对话副本、取消信号，以及插件可直接给的 answer。先过关口一，再交给 chat() 发出去。",
-    "body": "**行号：L149–L171**\n\n### 代码原文\n```ts\n149  /**\n150   * 一步的请求。会话备好，先交给插件挨个改（事件 session/request），再交给 Sessions.chat() 发出去；\n151   * 回答回来以后，带着回答再交给插件看一遍（事件 session/after-model，数据是 AnsweredRequest）。\n152   * chat() 只看模型、思考档、提示词、工具、对话、取消信号，不看 session、stop、answer。\n153   */\n154  export interface ChatRequest extends SessionGate {\n155    /** 用哪个模型，供应商名/模型 ID。 */\n156    model: string;\n157    /** 思考档。 */\n158    thinking: Thinking;\n159    /** 系统提示词的段落；发请求时用空行拼起来。 */\n160    system: string[];\n161    /** 这一步给模型看的工具定义。 */\n162    tools: piAi.Tool[];\n163    /** 这一步要发给模型的对话，是副本：改它不会改库里存的原文。 */\n164    messages: piAi.Message[];\n165    /** 取消信号：喊停时触发，正在等的请求马上断开。 */\n166    signal: AbortSignal;\n167    /** 插件直接给的回答（比如假模型）。有了它，会话就不调 chat()。 */\n168    answer?: piAi.AssistantMessage;\n169  }\n170  \n171  \n```\n\n### 解释\n- L149–L153：注释：先交给插件改（session/request），再交给 chat()；回来后带着回答再给插件看（session/after-model）；chat() 只看模型、思考档、提示词、工具、对话、取消信号，不看 session、stop、answer。\n- L154：`export interface ChatRequest extends SessionGate`。\n- L155–L158：`model`、`thinking`。\n- L159–L160：`system: string[]` 系统提示词段落，发请求时用空行拼起来。\n- L161–L162：`tools` 这一步给模型看的工具定义。\n- L163–L164：`messages` 要发给模型的对话，是副本，改它不改库里的原文。\n- L165–L166：`signal` 取消信号，喊停时触发。\n- L167–L168：`answer?` 插件直接给的回答（如假模型），有了它就不调 chat()。\n- L169：闭合。L170–L171：空行。\n\n### 调到别处\n无（类型声明）",
+    "title": "L149–L171 定一步的请求",
+    "summary": "会话备好的一步请求：模型、思考档、系统提示词段落、工具定义、对话副本、取消信号，以及插件可直接给的 answer。先过关口一，再交给 chat() 发出去。（对应：`ChatRequest`）",
+    "body": "**行号：L149–L171**\n\n### 代码原文\n```ts\n149  /**\n150   * 一步的请求。会话备好，先交给插件挨个改（事件 session/request），再交给 Sessions.chat() 发出去；\n151   * 回答回来以后，带着回答再交给插件看一遍（事件 session/after-model，数据是 AnsweredRequest）。\n152   * chat() 只看模型、思考档、提示词、工具、对话、取消信号，不看 session、stop、answer。\n153   */\n154  export interface ChatRequest extends SessionGate {\n155    /** 用哪个模型，供应商名/模型 ID。 */\n156    model: string;\n157    /** 思考档。 */\n158    thinking: Thinking;\n159    /** 系统提示词的段落；发请求时用空行拼起来。 */\n160    system: string[];\n161    /** 这一步给模型看的工具定义。 */\n162    tools: piAi.Tool[];\n163    /** 这一步要发给模型的对话，是副本：改它不会改库里存的原文。 */\n164    messages: piAi.Message[];\n165    /** 取消信号：喊停时触发，正在等的请求马上断开。 */\n166    signal: AbortSignal;\n167    /** 插件直接给的回答（比如假模型）。有了它，会话就不调 chat()。 */\n168    answer?: piAi.AssistantMessage;\n169  }\n170  \n171  \n```\n\n### 解释\n- L149–L153：注释：\n  1. 先交给插件改（session/request）\n  2. 再交给 chat()\n  3. 回来后带着回答再给插件看（session/after-model）\n  - chat() 只看模型、思考档、提示词、工具、对话、取消信号，不看 session、stop、answer。\n- L154：`export interface ChatRequest extends SessionGate`。\n- L155–L158：`model`、`thinking`。\n- L159–L160：`system: string[]` 系统提示词段落，发请求时用空行拼起来。\n- L161–L162：`tools` 这一步给模型看的工具定义。\n- L163–L164：`messages` 要发给模型的对话，是副本，改它不改库里的原文。\n- L165–L166：`signal` 取消信号，喊停时触发。\n- L167–L168：`answer?` 插件直接给的回答（如假模型），有了它就不调 chat()。\n- L169：闭合。L170–L171：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -172,8 +172,8 @@
   {
     "id": "r-sessions-07",
     "parent": "r-sessions-g1-2",
-    "title": "L172–L178 AnsweredRequest：关口二的数据",
-    "summary": "就是这一步的请求，但 answer 已经必有（模型回的或插件给的）；插件可以改它、换掉它，接进对话的是最后这一份。",
+    "title": "L172–L178 定关口二的数据",
+    "summary": "就是这一步的请求，但 answer 已经必有（模型回的或插件给的）；插件可以改它、换掉它，接进对话的是最后这一份。（对应：`AnsweredRequest`）",
     "body": "**行号：L172–L178**\n\n### 代码原文\n```ts\n172  /** 事件 session/after-model 的数据：就是这一步的请求，回答已经有了（模型回的，或者插件给的）。 */\n173  export type AnsweredRequest = ChatRequest & {\n174    /** 这一步的回答。插件可以改它、换掉它，接进对话的是最后这一份。 */\n175    answer: piAi.AssistantMessage;\n176  };\n177  \n178  \n```\n\n### 解释\n- L172：注释。\n- L173：`ChatRequest & { answer: piAi.AssistantMessage }`。\n- L174–L175：answer 必填。\n- L176：闭合。L177–L178：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -182,8 +182,8 @@
   {
     "id": "r-sessions-08",
     "parent": "r-sessions-g1-2",
-    "title": "L179–L188 SessionState：会话的四种状态",
-    "summary": "running 正在转；done 做完了（新开的也是它）；stopped 有人喊停或关口写了 stop；failed 出错了。",
+    "title": "L179–L188 定会话四种状态",
+    "summary": "running 正在转；done 做完了（新开的也是它）；stopped 有人喊停或关口写了 stop；failed 出错了。（对应：`SessionState`）",
     "body": "**行号：L179–L188**\n\n### 代码原文\n```ts\n179  /**\n180   * 会话的状态。\n181   *   running  正在转：在等模型回答，或者在执行工具\n182   *   done     做完了。新开的、还没用过的会话也是它\n183   *   stopped  停下了：有人喊停（stop_session、界面按钮），或者某个关口上有插件写了 stop\n184   *   failed   出错了\n185   */\n186  export type SessionState = 'running' | 'done' | 'stopped' | 'failed';\n187  \n188  \n```\n\n### 解释\n- L179–L185：注释，逐个说明四种状态的意思。\n- L186：`export type SessionState = 'running' | 'done' | 'stopped' | 'failed'`。\n- L187–L188：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -192,9 +192,9 @@
   {
     "id": "r-sessions-g1-3",
     "parent": "r-sessions-g1",
-    "title": "记录与入参类型（L189–L246）",
+    "title": "L189–L246 记录与入参类型",
     "summary": "会话记录、去掉对话的元数据和新开、问一次的入参与结果。",
-    "body": "## 记录与入参类型\n\n- L189–L215 SessionRow：一场对话的记录：骨架只管九项：会话号、种类、父会话、模型、思考档、状态、回话、整场对话、最后存库时间。插件要记自己的东西就用 declare module 给它加项，存库时一起存。\n- L216–L219 SessionMeta：记录去掉对话：find 交回的就是它：列清单用，不用把整场对话读出来。\n- L220–L228 NewSession：新开会话要给的东西：种类必须给；模型、思考档可给可不给（不给用配置里的）；插件加的必填项也要给。id、状态、回话、对话、时间由 create 自己填。\n- L229–L237 AskInput：开小会话问一次要给的东西：开会话的那些项，再加要问的话 text 和提问方的停止信号 signal。\n- L238–L246 AskResult：小会话问一次的结果：ok（做完了才是 true）和 reply（做完是回答，没做完是原因）。",
+    "body": "## 记录与入参类型\n\n- L189–L215 SessionRow：一场对话的记录，骨架只管九项：\n  - 会话号\n  - 种类\n  - 父会话\n  - 模型\n  - 思考档\n  - 状态\n  - 回话\n  - 整场对话\n  - 最后存库时间\n  - 插件要记自己的东西就用 declare module 给它加项，存库时一起存。\n- L216–L219 SessionMeta：记录去掉对话：find 交回的就是它：列清单用，不用把整场对话读出来。\n- L220–L228 NewSession：新开会话要给的东西：\n  - 种类必须给\n  - 模型、思考档可给可不给（不给用配置里的）\n  - 插件加的必填项也要给\n  - id、状态、回话、对话、时间由 create 自己填。\n- L229–L237 AskInput：开小会话问一次要给的东西：\n  - 开会话的那些项\n  - 要问的话 text\n  - 提问方的停止信号 signal\n- L238–L246 AskResult：小会话问一次的结果：\n  - ok（做完了才是 true）\n  - reply（做完是回答，没做完是原因）",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -202,8 +202,8 @@
   {
     "id": "r-sessions-09",
     "parent": "r-sessions-g1-3",
-    "title": "L189–L215 SessionRow：一场对话的记录",
-    "summary": "骨架只管九项：会话号、种类、父会话、模型、思考档、状态、回话、整场对话、最后存库时间。插件要记自己的东西就用 declare module 给它加项，存库时一起存。",
+    "title": "L189–L215 定会话记录",
+    "summary": "骨架只管九项：会话号、种类、父会话、模型、思考档、状态、回话、整场对话、最后存库时间。插件要记自己的东西就用 declare module 给它加项，存库时一起存。（对应：`SessionRow`）",
     "body": "**行号：L189–L215**\n\n### 代码原文\n```ts\n189  /**\n190   * 一场对话的记录。骨架只管下面这几项，都是循环要用的。\n191   * 插件要往上面记自己的东西（属于哪个机器人、回话的渠道、总结……），在自己的文件里用\n192   * declare module '../../Sessions.ts' 给这个 interface 加项（看 plugins/bots/index.ts），存库时会一起存。\n193   */\n194  export interface SessionRow {\n195    /** 会话号。 */\n196    id: string;\n197    /** 种类。骨架不解释它，只拿它去对工具登记时写的 kinds；有哪几种由开会话的插件定。 */\n198    kind: string;\n199    /** 嵌在哪场会话里；只有小会话有。 */\n200    parent?: string;\n201    /** 用哪个模型，供应商名/模型 ID。 */\n202    model: string;\n203    /** 思考档。 */\n204    thinking: Thinking;\n205    /** 状态。 */\n206    state: SessionState;\n207    /** 这一轮的结果，就是要回给用户的话：做完了是模型最后那句，出错、停下是原因。正在转时是空的。 */\n208    reply: string;\n209    /** 整场对话。 */\n210    messages: piAi.Message[];\n211    /** 最后一次存库的时间，毫秒时间戳。 */\n212    updatedAt: number;\n213  }\n214  \n215  \n```\n\n### 解释\n- L189–L193：注释：骨架只管循环要用的几项；插件在自己文件里 `declare module '../../Sessions.ts'` 加项（例子在 plugins/bots/index.ts）。\n- L194：`export interface SessionRow`。\n- L195–L196：`id` 会话号。\n- L197–L198：`kind` 种类；骨架不解释它，只拿去对工具的 kinds，有哪几种由开会话的插件定。\n- L199–L200：`parent?` 嵌在哪场会话里，只有小会话有。\n- L201–L204：`model`、`thinking`。\n- L205–L206：`state` 状态。\n- L207–L208：`reply` 这一轮的结果：做完是模型最后那句，出错、停下是原因，正在转时是空的。\n- L209–L210：`messages` 整场对话。\n- L211–L212：`updatedAt` 最后一次存库的毫秒时间戳。\n- L213：闭合。L214–L215：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -212,8 +212,8 @@
   {
     "id": "r-sessions-10",
     "parent": "r-sessions-g1-3",
-    "title": "L216–L219 SessionMeta：记录去掉对话",
-    "summary": "find 交回的就是它：列清单用，不用把整场对话读出来。",
+    "title": "L216–L219 定不含对话的记录",
+    "summary": "find 交回的就是它：列清单用，不用把整场对话读出来。（对应：`SessionMeta`）",
     "body": "**行号：L216–L219**\n\n### 代码原文\n```ts\n216  /** 会话记录去掉对话那一大块。find 交回的是它：列清单用，不用把整场对话读出来。 */\n217  export type SessionMeta = Omit<SessionRow, 'messages'>;\n218  \n219  \n```\n\n### 解释\n- L216：注释。\n- L217：`Omit<SessionRow, 'messages'>`。\n- L218–L219：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -222,8 +222,8 @@
   {
     "id": "r-sessions-11",
     "parent": "r-sessions-g1-3",
-    "title": "L220–L228 NewSession：新开会话要给的东西",
-    "summary": "种类必须给；模型、思考档可给可不给（不给用配置里的）；插件加的必填项也要给。id、状态、回话、对话、时间由 create 自己填。",
+    "title": "L220–L228 定新开会话的入参",
+    "summary": "种类必须给；模型、思考档可给可不给（不给用配置里的）；插件加的必填项也要给。id、状态、回话、对话、时间由 create 自己填。（对应：`NewSession`）",
     "body": "**行号：L220–L228**\n\n### 代码原文\n```ts\n220  /**\n221   * 新开会话要给的东西：种类必须给；模型、思考档不给就用配置里的（default_model、models.thinking）；\n222   * 插件给记录加的必填项（比如 bot）也要给。\n223   */\n224  export type NewSession =\n225    Omit<SessionRow, 'id' | 'model' | 'thinking' | 'state' | 'reply' | 'messages' | 'updatedAt'>\n226    & Partial<Pick<SessionRow, 'model' | 'thinking'>>;\n227  \n228  \n```\n\n### 解释\n- L220–L223：注释。\n- L224–L225：`Omit<SessionRow, 'id' | 'model' | 'thinking' | 'state' | 'reply' | 'messages' | 'updatedAt'>`：去掉 create 自己填的项，剩下 kind、parent 和插件加的项。\n- L226：`& Partial<Pick<SessionRow, 'model' | 'thinking'>>`：模型、思考档可选。\n- L227–L228：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -232,8 +232,8 @@
   {
     "id": "r-sessions-12",
     "parent": "r-sessions-g1-3",
-    "title": "L229–L237 AskInput：开小会话问一次要给的东西",
-    "summary": "开会话的那些项，再加要问的话 text 和提问方的停止信号 signal。",
+    "title": "L229–L237 定小会话的入参",
+    "summary": "开会话的那些项，再加要问的话 text 和提问方的停止信号 signal。（对应：`AskInput`）",
     "body": "**行号：L229–L237**\n\n### 代码原文\n```ts\n229  /** 开一场小会话问一次要给的东西：开会话的那些项，加上要问的话和停止信号。 */\n230  export type AskInput = NewSession & {\n231    /** 要问的话，整段交给小会话。 */\n232    text: string;\n233    /** 提问方的停止信号（提问的会话停了、超时）：断了小会话也停。不给就跑到底。 */\n234    signal?: AbortSignal;\n235  };\n236  \n237  \n```\n\n### 解释\n- L229：注释。\n- L230：`NewSession & { ... }`。\n- L231–L232：`text` 要问的话，整段交给小会话。\n- L233–L234：`signal?` 提问方的停止信号（提问的会话停了、超时）：断了小会话也停；不给就跑到底。\n- L235：闭合。L236–L237：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -242,8 +242,8 @@
   {
     "id": "r-sessions-13",
     "parent": "r-sessions-g1-3",
-    "title": "L238–L246 AskResult：小会话问一次的结果",
-    "summary": "ok（做完了才是 true）和 reply（做完是回答，没做完是原因）。",
+    "title": "L238–L246 定小会话的结果",
+    "summary": "ok（做完了才是 true）和 reply（做完是回答，没做完是原因）。（对应：`AskResult`）",
     "body": "**行号：L238–L246**\n\n### 代码原文\n```ts\n238  /** 小会话问一次的结果。 */\n239  export interface AskResult {\n240    /** 小会话做完了（done）才是 true；出错、停下是 false。 */\n241    ok: boolean;\n242    /** 小会话的 reply：做完了是回答，没做完是原因。 */\n243    reply: string;\n244  }\n245  \n246  \n```\n\n### 解释\n- L238–L239：注释，`export interface AskResult`。\n- L240–L241：`ok` 小会话 done 才是 true。\n- L242–L243：`reply` 小会话的 reply。\n- L244：闭合。L245–L246：空行。\n\n### 调到别处\n无（类型声明）",
     "sources": [
       "src7/Sessions.ts"
@@ -252,9 +252,9 @@
   {
     "id": "r-sessions-g2",
     "parent": "r-sessions",
-    "title": "Sessions 总类（L247–L395）",
-    "summary": "管会话的总类：建表、新开、打开、查找、问一次。",
-    "body": "## Sessions 总类\n\n- L247–L267 Sessions 类头、live 表与构造函数（建 sessions 表）：Sessions 继承 Cordis 的 Service，声明要用 resources 和 tools；live 表让同一场会话永远是同一个对象；构造函数登记成 sessions 服务，库里没有 sessions 表就建。\n- L268–L314 create：新开一场：用 stampId 生成会话号，库里撞号就换一个再试（最多 5 次）；拼一份新记录（模型、思考档没给用配置里的，状态 done、对话空），存库，放进 live。\n- L315–L343 open：打开一场：先看 live 里有没有已打开的对象，有就直接交回；没有就从库里读 meta 和 messages 两块，拼回一份记录，建 Session 放进 live。库里也没有就抛错。\n- L344–L366 find：按几项相等找会话：给的每一项都拼成一个 json_extract(meta, '$.项') = 值 的条件，所以插件加的项不改表也能拿来找；结果按 updatedAt 倒序，只读 meta，不打开会话。\n- L367–L395 ask：开一场小会话问一次：就是 create → add → run 连起来：开会话、说一句、跑到底；提问方的信号断了小会话也停；最后交回 ok（是否 done）和 reply。审批、压缩、总结、复盘、进度收尾、判断都用它。",
+    "title": "L247–L395 Sessions 总类",
+    "summary": "管会话的总类：建表、新开、打开、查找、问一次。（对应：`Sessions`）",
+    "body": "## Sessions 总类\n\n- L247–L267 Sessions 类头、live 表与构造函数（建 sessions 表）：\n  - Sessions 继承 Cordis 的 Service，声明要用 resources 和 tools\n  - live 表让同一场会话永远是同一个对象\n  - 构造函数登记成 sessions 服务，库里没有 sessions 表就建。\n- L268–L314 create：新开一场：\n  1. 用 stampId 生成会话号，库里撞号就换一个再试（最多 5 次）\n  2. 拼一份新记录（模型、思考档没给用配置里的，状态 done、对话空）\n  3. 存库\n  4. 放进 live。\n- L315–L343 open：打开一场：\n  1. 先看 live 里有没有已打开的对象，有就直接交回\n  2. 没有就从库里读 meta 和 messages 两块，拼回一份记录，建 Session 放进 live\n  3. 库里也没有就抛错。\n- L344–L366 find：按几项相等找会话：\n  - 给的每一项都拼成一个 json_extract(meta, '$.项') = 值 的条件，所以插件加的项不改表也能拿来找\n  - 结果按 updatedAt 倒序\n  - 只读 meta，不打开会话。\n- L367–L395 ask：开一场小会话问一次，就是 create → add → run 连起来：\n  1. 开会话\n  2. 说一句\n  3. 跑到底\n  - 提问方的信号断了小会话也停。\n  - 最后交回 ok（是否 done）和 reply。\n  - 审批、压缩、总结、复盘、进度收尾、判断都用它。",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -262,9 +262,9 @@
   {
     "id": "r-sessions-14",
     "parent": "r-sessions-g2",
-    "title": "L247–L267 Sessions 类头、live 表与构造函数（建 sessions 表）",
+    "title": "L247–L267 定义类头和建表",
     "summary": "Sessions 继承 Cordis 的 Service，声明要用 resources 和 tools；live 表让同一场会话永远是同一个对象；构造函数登记成 sessions 服务，库里没有 sessions 表就建。",
-    "body": "**行号：L247–L267**\n\n### 代码原文\n```ts\n247  /** 会话服务：管表。 */\n248  export class Sessions extends cordis.Service {\n249    /** 用到的服务。 */\n250    static inject = ['resources', 'tools'];\n251  \n252    /** 打开过的会话：会话号 → 对象。同一场永远是同一个对象，喊停才能按到正在转的那个。 */\n253    private readonly live = new Map<string, Session>();\n254  \n255    /**\n256     * 登记 sessions 插件：把 Sessions 作为服务挂到 Cordis 上，名字叫 sessions（以后用 ctx.sessions 取）；数据库里没有 sessions 表就建。\n257     * @param ctx Cordis 给的 ctx。\n258     */\n259    constructor(ctx: cordis.Context) {\n260      super(ctx, 'sessions');\n261  \n262      //M 一场会话一行，分两块存：meta 是记录去掉对话以后的 JSON，find 照它里面的项找；messages 是整场对话的 JSON。\n263      const sql = 'CREATE TABLE IF NOT EXISTS sessions'\n264        + ' (id TEXT PRIMARY KEY, meta TEXT NOT NULL, messages TEXT NOT NULL)';\n265      this.ctx.resources.db.exec(sql);\n266    }\n267  \n```\n\n### 解释\n- L247–L248：注释“会话服务：管表”，`export class Sessions extends cordis.Service`。\n- L249–L250：`static inject = ['resources', 'tools']`：Cordis 等这两个服务都有了才挂它。\n- L252–L253：`live`：会话号 → Session；同一场永远是同一个对象，喊停才能按到正在转的那个。\n- L255–L258：构造函数文档注释。\n- L259–L260：`constructor(ctx)`，`super(ctx, 'sessions')`。\n- L262：注释：一场一行，分两块存：meta 是记录去掉对话的 JSON（find 照它找），messages 是整场对话的 JSON。\n- L263–L265：`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, meta TEXT NOT NULL, messages TEXT NOT NULL)`，用 `this.ctx.resources.db.exec` 执行。\n- L266：构造函数结束。L267：空行。\n\n### 调到别处\nsrc7/Resources.ts:147 db",
+    "body": "**行号：L247–L267**\n\n### 代码原文\n```ts\n247  /** 会话服务：管表。 */\n248  export class Sessions extends cordis.Service {\n249    /** 用到的服务。 */\n250    static inject = ['resources', 'tools'];\n251  \n252    /** 打开过的会话：会话号 → 对象。同一场永远是同一个对象，喊停才能按到正在转的那个。 */\n253    private readonly live = new Map<string, Session>();\n254  \n255    /**\n256     * 登记 sessions 插件：把 Sessions 作为服务挂到 Cordis 上，名字叫 sessions（以后用 ctx.sessions 取）；数据库里没有 sessions 表就建。\n257     * @param ctx Cordis 给的 ctx。\n258     */\n259    constructor(ctx: cordis.Context) {\n260      super(ctx, 'sessions');\n261  \n262      //M 一场会话一行，分两块存：meta 是记录去掉对话以后的 JSON，find 照它里面的项找；messages 是整场对话的 JSON。\n263      const sql = 'CREATE TABLE IF NOT EXISTS sessions'\n264        + ' (id TEXT PRIMARY KEY, meta TEXT NOT NULL, messages TEXT NOT NULL)';\n265      this.ctx.resources.db.exec(sql);\n266    }\n267  \n```\n\n### 解释\n- L247–L248：注释“会话服务：管表”，`export class Sessions extends cordis.Service`。\n- L249–L250：`static inject = ['resources', 'tools']`：Cordis 等这两个服务都有了才挂它。\n- L252–L253：`live`：会话号 → Session；同一场永远是同一个对象，喊停才能按到正在转的那个。\n- L255–L258：构造函数文档注释。\n- L259–L260：`constructor(ctx)`，`super(ctx, 'sessions')`。\n- L262：注释：一场一行，分两块存：\n  - meta：记录去掉对话的 JSON（find 照它找）\n  - messages：整场对话的 JSON。\n- L263–L265：`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, meta TEXT NOT NULL, messages TEXT NOT NULL)`，用 `this.ctx.resources.db.exec` 执行。\n- L266：构造函数结束。L267：空行。\n\n### 调到别处\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -272,9 +272,9 @@
   {
     "id": "r-sessions-15",
     "parent": "r-sessions-g2",
-    "title": "L268–L314 create：新开一场",
-    "summary": "用 stampId 生成会话号，库里撞号就换一个再试（最多 5 次）；拼一份新记录（模型、思考档没给用配置里的，状态 done、对话空），存库，放进 live。",
-    "body": "**行号：L268–L314**\n\n### 代码原文\n```ts\n268    /**\n269     * 新开一场。\n270     * 会话号由 stampId() 生成：本机本地时间的年月日时分秒毫秒（17 位）加 3 位随机数字，共 20 位纯数字，\n271     * 和 0.4 src/utils/Utils.ts 的 createSessionId 一样（用 getHours 等本地时区，不用 UTC）。\n272     * 所有新会话（前台、后台、小会话）都走这里，不另写一套号。\n273     * 旧的 8 位十六进制会话号仍能打开、继续用，不迁移已有数据。\n274     * @param input 种类、嵌在哪场里、模型、思考档，加上插件给记录加的那些项；原样带进记录。\n275     * @returns 新会话，状态 done，对话是空的。\n276     * 副作用：写库。\n277     */\n278    create(input: NewSession): Session {\n279      //M 读取全局默认配置并预编译查重语句，避免高并发同毫秒生成会话号时撞号覆盖。\n280      const config = this.ctx.resources.config;\n281      const existsQuery = this.ctx.resources.db.query('SELECT 1 FROM sessions WHERE id = ?');\n282  \n283      //M 同一毫秒撞上时换一个再试（主键拦下）。save() 是 INSERT OR REPLACE，创建时先查重，免得把旧会话盖掉。\n284      for (let attempt = 0; ; attempt += 1) {\n285        const id = stampId();\n286        const exists = existsQuery.get(id);\n287        if (exists !== null) {\n288          //G 连撞好几次 → 不再试，抛错。\n289          if (attempt >= 5) {\n290            throw new Error('生成会话号连续撞上已有记录');\n291          }\n292          continue;\n293        }\n294  \n295        //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 live。\n296        const row: SessionRow = {\n297          ...input,\n298          id,\n299          model: input.model ?? config.defaultModel,\n300          thinking: input.thinking ?? config.thinking,\n301          state: 'done',\n302          reply: '',\n303          messages: [],\n304          updatedAt: Date.now(),\n305        };\n306        //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。\n307        const session = new Session(row, this.ctx);\n308        //M 立即落库持久化并缓存到 live 表，确保后续消息与停止动作能命中同一实例。\n309        session.save();\n310        this.live.set(row.id, session);\n311        return session;\n312      }\n313    }\n314  \n```\n\n### 解释\n- 输入 NewSession；输出新的 Session；副作用写库。\n- 三步见下面三个子块。\n\n### 调到别处\nsrc7/utils/Names.ts:36 stampId；src7/Resources.ts:141 config；src7/Resources.ts:147 db；src7/Sessions.ts:667 save",
+    "title": "L268–L314 新开一场会话",
+    "summary": "用 stampId 生成会话号，库里撞号就换一个再试（最多 5 次）；拼一份新记录（模型、思考档没给用配置里的，状态 done、对话空），存库，放进 live。（对应：`create`）",
+    "body": "**行号：L268–L314**\n\n### 代码原文\n```ts\n268    /**\n269     * 新开一场。\n270     * 会话号由 stampId() 生成：本机本地时间的年月日时分秒毫秒（17 位）加 3 位随机数字，共 20 位纯数字，\n271     * 和 0.4 src/utils/Utils.ts 的 createSessionId 一样（用 getHours 等本地时区，不用 UTC）。\n272     * 所有新会话（前台、后台、小会话）都走这里，不另写一套号。\n273     * 旧的 8 位十六进制会话号仍能打开、继续用，不迁移已有数据。\n274     * @param input 种类、嵌在哪场里、模型、思考档，加上插件给记录加的那些项；原样带进记录。\n275     * @returns 新会话，状态 done，对话是空的。\n276     * 副作用：写库。\n277     */\n278    create(input: NewSession): Session {\n279      //M 读取全局默认配置并预编译查重语句，避免高并发同毫秒生成会话号时撞号覆盖。\n280      const config = this.ctx.resources.config;\n281      const existsQuery = this.ctx.resources.db.query('SELECT 1 FROM sessions WHERE id = ?');\n282  \n283      //M 同一毫秒撞上时换一个再试（主键拦下）。save() 是 INSERT OR REPLACE，创建时先查重，免得把旧会话盖掉。\n284      for (let attempt = 0; ; attempt += 1) {\n285        const id = stampId();\n286        const exists = existsQuery.get(id);\n287        if (exists !== null) {\n288          //G 连撞好几次 → 不再试，抛错。\n289          if (attempt >= 5) {\n290            throw new Error('生成会话号连续撞上已有记录');\n291          }\n292          continue;\n293        }\n294  \n295        //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 live。\n296        const row: SessionRow = {\n297          ...input,\n298          id,\n299          model: input.model ?? config.defaultModel,\n300          thinking: input.thinking ?? config.thinking,\n301          state: 'done',\n302          reply: '',\n303          messages: [],\n304          updatedAt: Date.now(),\n305        };\n306        //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。\n307        const session = new Session(row, this.ctx);\n308        //M 立即落库持久化并缓存到 live 表，确保后续消息与停止动作能命中同一实例。\n309        session.save();\n310        this.live.set(row.id, session);\n311        return session;\n312      }\n313    }\n314  \n```\n\n### 解释\n- 输入 NewSession；输出新的 Session；副作用写库。\n- 三步见下面三个子块。\n\n### 调到别处\n- 骨架工具：[Names.ts:36](src7/utils/Names.ts:36) stampId\n- 骨架：[Resources.ts L141](#lines=Resources.json&line=141) config\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db\n- 骨架：[Sessions.ts L667](#lines=Sessions.json&line=667) save",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -282,9 +282,9 @@
   {
     "id": "r-sessions-15-1",
     "parent": "r-sessions-15",
-    "title": "L268–L282 注释、函数头，取配置和查重语句",
+    "title": "L268–L282 取配置、备查重语句",
     "summary": "文档注释说清会话号的格式；函数开头取出全局配置，并预先准备一条“这个号在库里有没有”的查询。",
-    "body": "**行号：L268–L282**\n\n### 代码原文\n```ts\n268    /**\n269     * 新开一场。\n270     * 会话号由 stampId() 生成：本机本地时间的年月日时分秒毫秒（17 位）加 3 位随机数字，共 20 位纯数字，\n271     * 和 0.4 src/utils/Utils.ts 的 createSessionId 一样（用 getHours 等本地时区，不用 UTC）。\n272     * 所有新会话（前台、后台、小会话）都走这里，不另写一套号。\n273     * 旧的 8 位十六进制会话号仍能打开、继续用，不迁移已有数据。\n274     * @param input 种类、嵌在哪场里、模型、思考档，加上插件给记录加的那些项；原样带进记录。\n275     * @returns 新会话，状态 done，对话是空的。\n276     * 副作用：写库。\n277     */\n278    create(input: NewSession): Session {\n279      //M 读取全局默认配置并预编译查重语句，避免高并发同毫秒生成会话号时撞号覆盖。\n280      const config = this.ctx.resources.config;\n281      const existsQuery = this.ctx.resources.db.query('SELECT 1 FROM sessions WHERE id = ?');\n282  \n```\n\n### 解释\n- L268–L277：文档注释：会话号由 stampId() 生成——本机本地时间年月日时分秒毫秒 17 位加 3 位随机数字，共 20 位纯数字，和 0.4 版的 createSessionId 一样；所有新会话都走这里；旧的 8 位十六进制号仍能打开；副作用写库。\n- L278：`create(input: NewSession): Session`。\n- L279：注释。\n- L280：`config = this.ctx.resources.config`。\n- L281：`existsQuery`：`SELECT 1 FROM sessions WHERE id = ?`。\n- L282：空行。\n\n### 调到别处\nsrc7/Resources.ts:141 config；src7/Resources.ts:147 db",
+    "body": "**行号：L268–L282**\n\n### 代码原文\n```ts\n268    /**\n269     * 新开一场。\n270     * 会话号由 stampId() 生成：本机本地时间的年月日时分秒毫秒（17 位）加 3 位随机数字，共 20 位纯数字，\n271     * 和 0.4 src/utils/Utils.ts 的 createSessionId 一样（用 getHours 等本地时区，不用 UTC）。\n272     * 所有新会话（前台、后台、小会话）都走这里，不另写一套号。\n273     * 旧的 8 位十六进制会话号仍能打开、继续用，不迁移已有数据。\n274     * @param input 种类、嵌在哪场里、模型、思考档，加上插件给记录加的那些项；原样带进记录。\n275     * @returns 新会话，状态 done，对话是空的。\n276     * 副作用：写库。\n277     */\n278    create(input: NewSession): Session {\n279      //M 读取全局默认配置并预编译查重语句，避免高并发同毫秒生成会话号时撞号覆盖。\n280      const config = this.ctx.resources.config;\n281      const existsQuery = this.ctx.resources.db.query('SELECT 1 FROM sessions WHERE id = ?');\n282  \n```\n\n### 解释\n- L268–L277：文档注释：\n  - 会话号由 stampId() 生成——本机本地时间年月日时分秒毫秒 17 位加 3 位随机数字，共 20 位纯数字，和 0.4 版的 createSessionId 一样\n  - 所有新会话都走这里\n  - 旧的 8 位十六进制号仍能打开\n  - 副作用写库。\n- L278：`create(input: NewSession): Session`。\n- L279：注释。\n- L280：`config = this.ctx.resources.config`。\n- L281：`existsQuery`：`SELECT 1 FROM sessions WHERE id = ?`。\n- L282：空行。\n\n### 调到别处\n- 骨架：[Resources.ts L141](#lines=Resources.json&line=141) config\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -292,9 +292,9 @@
   {
     "id": "r-sessions-15-2",
     "parent": "r-sessions-15",
-    "title": "L283–L294 生成会话号，撞了就再试",
+    "title": "L283–L294 生成会话号、撞了重试",
     "summary": "无限循环里每次生成一个号去库里查；有人用了就再来一次，第 5 次还撞就抛错。因为 save() 是 INSERT OR REPLACE，不先查重会把旧会话盖掉。",
-    "body": "**行号：L283–L294**\n\n### 代码原文\n```ts\n283      //M 同一毫秒撞上时换一个再试（主键拦下）。save() 是 INSERT OR REPLACE，创建时先查重，免得把旧会话盖掉。\n284      for (let attempt = 0; ; attempt += 1) {\n285        const id = stampId();\n286        const exists = existsQuery.get(id);\n287        if (exists !== null) {\n288          //G 连撞好几次 → 不再试，抛错。\n289          if (attempt >= 5) {\n290            throw new Error('生成会话号连续撞上已有记录');\n291          }\n292          continue;\n293        }\n294  \n```\n\n### 解释\n- L283：注释：同一毫秒撞上时换一个再试；save() 是覆盖写，所以先查重。\n- L284：`for (let attempt = 0; ; attempt += 1)`，没有结束条件，靠 return 或 throw 出去。\n- L285：`id = stampId()`。\n- L286：`existsQuery.get(id)` 查一下。\n- L287–L293：查到了：`attempt >= 5` 就抛“生成会话号连续撞上已有记录”，否则 `continue` 再来。\n- L294：空行。\n\n### 调到别处\nsrc7/utils/Names.ts:36 stampId",
+    "body": "**行号：L283–L294**\n\n### 代码原文\n```ts\n283      //M 同一毫秒撞上时换一个再试（主键拦下）。save() 是 INSERT OR REPLACE，创建时先查重，免得把旧会话盖掉。\n284      for (let attempt = 0; ; attempt += 1) {\n285        const id = stampId();\n286        const exists = existsQuery.get(id);\n287        if (exists !== null) {\n288          //G 连撞好几次 → 不再试，抛错。\n289          if (attempt >= 5) {\n290            throw new Error('生成会话号连续撞上已有记录');\n291          }\n292          continue;\n293        }\n294  \n```\n\n### 解释\n- L283：注释：同一毫秒撞上时换一个再试；save() 是覆盖写，所以先查重。\n- L284：`for (let attempt = 0; ; attempt += 1)`，没有结束条件，靠 return 或 throw 出去。\n- L285：`id = stampId()`。\n- L286：`existsQuery.get(id)` 查一下。\n- L287–L293：查到了：\n  - `attempt >= 5` 就抛“生成会话号连续撞上已有记录”\n  - 否则 `continue` 再来。\n- L294：空行。\n\n### 调到别处\n- 骨架工具：[Names.ts:36](src7/utils/Names.ts:36) stampId",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -302,9 +302,9 @@
   {
     "id": "r-sessions-15-3",
     "parent": "r-sessions-15",
-    "title": "L295–L314 拼新记录、存库、放进 live",
+    "title": "L295–L314 拼记录、存库",
     "summary": "号没人用：把 input 的项展开，补上 id、模型、思考档、状态 done、空 reply、空对话和时间；建 Session、save 存库、记进 live 后交回。",
-    "body": "**行号：L295–L314**\n\n### 代码原文\n```ts\n295        //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 live。\n296        const row: SessionRow = {\n297          ...input,\n298          id,\n299          model: input.model ?? config.defaultModel,\n300          thinking: input.thinking ?? config.thinking,\n301          state: 'done',\n302          reply: '',\n303          messages: [],\n304          updatedAt: Date.now(),\n305        };\n306        //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。\n307        const session = new Session(row, this.ctx);\n308        //M 立即落库持久化并缓存到 live 表，确保后续消息与停止动作能命中同一实例。\n309        session.save();\n310        this.live.set(row.id, session);\n311        return session;\n312      }\n313    }\n314  \n```\n\n### 解释\n- L295：注释。\n- L296–L305：`row: SessionRow`：`...input` 展开，`id`，`model: input.model ?? config.defaultModel`，`thinking: input.thinking ?? config.thinking`，`state: 'done'`，`reply: ''`，`messages: []`，`updatedAt: Date.now()`。\n- L306–L307：`new Session(row, this.ctx)`。\n- L308–L309：`session.save()` 马上落库。\n- L310：`this.live.set(row.id, session)`。\n- L311：交回。\n- L312：for 结束。L313：函数结束。L314：空行。\n\n### 调到别处\nsrc7/Sessions.ts:483 Session 构造函数；src7/Sessions.ts:667 save",
+    "body": "**行号：L295–L314**\n\n### 代码原文\n```ts\n295        //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 live。\n296        const row: SessionRow = {\n297          ...input,\n298          id,\n299          model: input.model ?? config.defaultModel,\n300          thinking: input.thinking ?? config.thinking,\n301          state: 'done',\n302          reply: '',\n303          messages: [],\n304          updatedAt: Date.now(),\n305        };\n306        //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。\n307        const session = new Session(row, this.ctx);\n308        //M 立即落库持久化并缓存到 live 表，确保后续消息与停止动作能命中同一实例。\n309        session.save();\n310        this.live.set(row.id, session);\n311        return session;\n312      }\n313    }\n314  \n```\n\n### 解释\n- L295：注释。\n- L296–L305：`row: SessionRow`：\n  - `...input` 展开\n  - `id`\n  - `model: input.model ?? config.defaultModel`\n  - `thinking: input.thinking ?? config.thinking`\n  - `state: 'done'`\n  - `reply: ''`\n  - `messages: []`\n  - `updatedAt: Date.now()`\n- L306–L307：`new Session(row, this.ctx)`。\n- L308–L309：`session.save()` 马上落库。\n- L310：`this.live.set(row.id, session)`。\n- L311：交回。\n- L312：for 结束。L313：函数结束。L314：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L483](#lines=Sessions.json&line=483) Session 构造函数\n- 骨架：[Sessions.ts L667](#lines=Sessions.json&line=667) save",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -312,9 +312,9 @@
   {
     "id": "r-sessions-16",
     "parent": "r-sessions-g2",
-    "title": "L315–L343 open：打开一场",
-    "summary": "先看 live 里有没有已打开的对象，有就直接交回；没有就从库里读 meta 和 messages 两块，拼回一份记录，建 Session 放进 live。库里也没有就抛错。",
-    "body": "**行号：L315–L343**\n\n### 代码原文\n```ts\n315    /**\n316     * 打开一场。\n317     * @param id 会话号。\n318     * @returns 会话对象。同一场永远交回同一个对象。\n319     * @throws 没有这场时抛错。\n320     */\n321    open(id: string): Session {\n322      //M 先查内存里已打开的会话对象，直接复用以保持运行开关和未入队消息一致。\n323      const opened = this.live.get(id);\n324      if (opened !== undefined) return opened;\n325  \n326      //M 库里的两块读出来，拼回一份记录。\n327      const sql = 'SELECT meta, messages FROM sessions WHERE id = ?';\n328      const query = this.ctx.resources.db.query(sql);\n329      const stored = query.get(id) as { meta: string; messages: string } | null;\n330  \n331      //G 库里没有 → 抛错。\n332      if (stored === null) {\n333        throw new Error(`没有这场会话：${id}`);\n334      }\n335  \n336      //M 解析磁盘元信息与对话历史重建会话实例，并放入 live 供同一场对话复用。\n337      const meta = JSON.parse(stored.meta) as SessionMeta;\n338      const messages = JSON.parse(stored.messages) as piAi.Message[];\n339      const session = new Session({ ...meta, messages }, this.ctx);\n340      this.live.set(id, session);\n341      return session;\n342    }\n343  \n```\n\n### 解释\n- 输入会话号；输出 Session，同一场永远交回同一个对象。\n- 三步见下面三个子块。\n\n### 调到别处\nsrc7/Resources.ts:147 db；src7/Sessions.ts:483 Session 构造函数",
+    "title": "L315–L343 打开一场会话",
+    "summary": "先看 live 里有没有已打开的对象，有就直接交回；没有就从库里读 meta 和 messages 两块，拼回一份记录，建 Session 放进 live。库里也没有就抛错。（对应：`open`）",
+    "body": "**行号：L315–L343**\n\n### 代码原文\n```ts\n315    /**\n316     * 打开一场。\n317     * @param id 会话号。\n318     * @returns 会话对象。同一场永远交回同一个对象。\n319     * @throws 没有这场时抛错。\n320     */\n321    open(id: string): Session {\n322      //M 先查内存里已打开的会话对象，直接复用以保持运行开关和未入队消息一致。\n323      const opened = this.live.get(id);\n324      if (opened !== undefined) return opened;\n325  \n326      //M 库里的两块读出来，拼回一份记录。\n327      const sql = 'SELECT meta, messages FROM sessions WHERE id = ?';\n328      const query = this.ctx.resources.db.query(sql);\n329      const stored = query.get(id) as { meta: string; messages: string } | null;\n330  \n331      //G 库里没有 → 抛错。\n332      if (stored === null) {\n333        throw new Error(`没有这场会话：${id}`);\n334      }\n335  \n336      //M 解析磁盘元信息与对话历史重建会话实例，并放入 live 供同一场对话复用。\n337      const meta = JSON.parse(stored.meta) as SessionMeta;\n338      const messages = JSON.parse(stored.messages) as piAi.Message[];\n339      const session = new Session({ ...meta, messages }, this.ctx);\n340      this.live.set(id, session);\n341      return session;\n342    }\n343  \n```\n\n### 解释\n- 输入会话号；输出 Session，同一场永远交回同一个对象。\n- 三步见下面三个子块。\n\n### 调到别处\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db\n- 骨架：[Sessions.ts L483](#lines=Sessions.json&line=483) Session 构造函数",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -322,9 +322,9 @@
   {
     "id": "r-sessions-16-1",
     "parent": "r-sessions-16",
-    "title": "L315–L325 注释、函数头，先查 live",
-    "summary": "已经打开过的会话直接复用，这样运行开关、还没接进对话的话都还在那个对象上。",
-    "body": "**行号：L315–L325**\n\n### 代码原文\n```ts\n315    /**\n316     * 打开一场。\n317     * @param id 会话号。\n318     * @returns 会话对象。同一场永远交回同一个对象。\n319     * @throws 没有这场时抛错。\n320     */\n321    open(id: string): Session {\n322      //M 先查内存里已打开的会话对象，直接复用以保持运行开关和未入队消息一致。\n323      const opened = this.live.get(id);\n324      if (opened !== undefined) return opened;\n325  \n```\n\n### 解释\n- L315–L320：文档注释：参数 id；同一场永远交回同一个对象；没有这场时抛错。\n- L321：`open(id: string): Session`。\n- L322：注释：直接复用，保持运行开关和未入队消息一致。\n- L323：`this.live.get(id)`。\n- L324：有就 return。\n- L325：空行。\n\n### 调到别处\n无",
+    "title": "L315–L325 先查 live 表",
+    "summary": "已经打开过的会话直接复用，这样运行开关、还没接进对话的话都还在那个对象上。（对应：`live`）",
+    "body": "**行号：L315–L325**\n\n### 代码原文\n```ts\n315    /**\n316     * 打开一场。\n317     * @param id 会话号。\n318     * @returns 会话对象。同一场永远交回同一个对象。\n319     * @throws 没有这场时抛错。\n320     */\n321    open(id: string): Session {\n322      //M 先查内存里已打开的会话对象，直接复用以保持运行开关和未入队消息一致。\n323      const opened = this.live.get(id);\n324      if (opened !== undefined) return opened;\n325  \n```\n\n### 解释\n- L315–L320：文档注释：\n  - 参数 id\n  - 同一场永远交回同一个对象\n  - 没有这场时抛错。\n- L321：`open(id: string): Session`。\n- L322：注释：直接复用，保持运行开关和未入队消息一致。\n- L323：`this.live.get(id)`。\n- L324：有就 return。\n- L325：空行。\n\n### 调到别处\n无",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -332,9 +332,9 @@
   {
     "id": "r-sessions-16-2",
     "parent": "r-sessions-16",
-    "title": "L326–L335 从库里读两块，没有就抛错",
+    "title": "L326–L335 从库里读两块",
     "summary": "用 SELECT 取出这场的 meta 和 messages 两列；库里没有这一行就抛“没有这场会话：id”。",
-    "body": "**行号：L326–L335**\n\n### 代码原文\n```ts\n326      //M 库里的两块读出来，拼回一份记录。\n327      const sql = 'SELECT meta, messages FROM sessions WHERE id = ?';\n328      const query = this.ctx.resources.db.query(sql);\n329      const stored = query.get(id) as { meta: string; messages: string } | null;\n330  \n331      //G 库里没有 → 抛错。\n332      if (stored === null) {\n333        throw new Error(`没有这场会话：${id}`);\n334      }\n335  \n```\n\n### 解释\n- L326：注释。\n- L327：`SELECT meta, messages FROM sessions WHERE id = ?`。\n- L328：`this.ctx.resources.db.query(sql)`。\n- L329：`query.get(id)`，结果是 `{ meta, messages }` 或 null。\n- L331–L334：守卫：null → 抛错。\n- L335：空行。\n\n### 调到别处\nsrc7/Resources.ts:147 db",
+    "body": "**行号：L326–L335**\n\n### 代码原文\n```ts\n326      //M 库里的两块读出来，拼回一份记录。\n327      const sql = 'SELECT meta, messages FROM sessions WHERE id = ?';\n328      const query = this.ctx.resources.db.query(sql);\n329      const stored = query.get(id) as { meta: string; messages: string } | null;\n330  \n331      //G 库里没有 → 抛错。\n332      if (stored === null) {\n333        throw new Error(`没有这场会话：${id}`);\n334      }\n335  \n```\n\n### 解释\n- L326：注释。\n- L327：`SELECT meta, messages FROM sessions WHERE id = ?`。\n- L328：`this.ctx.resources.db.query(sql)`。\n- L329：`query.get(id)`，结果是 `{ meta, messages }` 或 null。\n- L331–L334：守卫：null → 抛错。\n- L335：空行。\n\n### 调到别处\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -342,9 +342,9 @@
   {
     "id": "r-sessions-16-3",
     "parent": "r-sessions-16",
-    "title": "L336–L343 拼回 Session 并放进 live",
+    "title": "L336–L343 拼回会话入表",
     "summary": "两块 JSON 各自解析，合成一份记录，建 Session，记进 live 后交回。",
-    "body": "**行号：L336–L343**\n\n### 代码原文\n```ts\n336      //M 解析磁盘元信息与对话历史重建会话实例，并放入 live 供同一场对话复用。\n337      const meta = JSON.parse(stored.meta) as SessionMeta;\n338      const messages = JSON.parse(stored.messages) as piAi.Message[];\n339      const session = new Session({ ...meta, messages }, this.ctx);\n340      this.live.set(id, session);\n341      return session;\n342    }\n343  \n```\n\n### 解释\n- L336：注释。\n- L337：`JSON.parse(stored.meta)` 当 SessionMeta。\n- L338：`JSON.parse(stored.messages)` 当 `piAi.Message[]`。\n- L339：`new Session({ ...meta, messages }, this.ctx)`。\n- L340：`this.live.set(id, session)`。\n- L341：交回。\n- L342：函数结束。L343：空行。\n\n### 调到别处\nsrc7/Sessions.ts:483 Session 构造函数",
+    "body": "**行号：L336–L343**\n\n### 代码原文\n```ts\n336      //M 解析磁盘元信息与对话历史重建会话实例，并放入 live 供同一场对话复用。\n337      const meta = JSON.parse(stored.meta) as SessionMeta;\n338      const messages = JSON.parse(stored.messages) as piAi.Message[];\n339      const session = new Session({ ...meta, messages }, this.ctx);\n340      this.live.set(id, session);\n341      return session;\n342    }\n343  \n```\n\n### 解释\n- L336：注释。\n- L337：`JSON.parse(stored.meta)` 当 SessionMeta。\n- L338：`JSON.parse(stored.messages)` 当 `piAi.Message[]`。\n- L339：`new Session({ ...meta, messages }, this.ctx)`。\n- L340：`this.live.set(id, session)`。\n- L341：交回。\n- L342：函数结束。L343：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L483](#lines=Sessions.json&line=483) Session 构造函数",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -352,9 +352,9 @@
   {
     "id": "r-sessions-17",
     "parent": "r-sessions-g2",
-    "title": "L344–L366 find：按几项相等找会话",
-    "summary": "给的每一项都拼成一个 json_extract(meta, '$.项') = 值 的条件，所以插件加的项不改表也能拿来找；结果按 updatedAt 倒序，只读 meta，不打开会话。",
-    "body": "**行号：L344–L366**\n\n### 代码原文\n```ts\n344    /**\n345     * 找会话：给的几项都相等的那些。只读记录（不带对话），不打开。\n346     * @param where 照哪几项找，比如 { state: 'running' }；插件给记录加的项也能用，比如 { bot: '助手', kind: 'work' }。\n347     * @returns 记录，最近动过的在前。\n348     */\n349    find(where: Partial<SessionMeta>): SessionMeta[] {\n350      //M 每一项都用 json_extract 从 meta 里取出来比，所以插件加的项不用改表也能拿来找。\n351      let sql = 'SELECT meta FROM sessions WHERE 1 = 1';\n352      /** 填进 SQL 里问号的值：每一项两个，先是 JSON 路径（$.state），再是要等于的值。 */\n353      const values: (string | number)[] = [];\n354      //M 逐条追加过滤键到 WHERE 子句与绑定参数，最后按更新时间倒序返回。\n355      textModule.eachEntry(where, (key, value) => {\n356        sql += ' AND json_extract(meta, ?) = ?';\n357        values.push(`$.${key}`, value as string | number);\n358      });\n359      sql += \" ORDER BY json_extract(meta, '$.updatedAt') DESC\";\n360  \n361      //M 查出来的每行只有 meta 一列，解析回记录。\n362      const query = this.ctx.resources.db.query(sql);\n363      const found = query.all(...values) as { meta: string }[];\n364      return found.map((item) => JSON.parse(item.meta) as SessionMeta);\n365    }\n366  \n```\n\n### 解释\n- L344–L348：文档注释：例子 `{ state: 'running' }`、`{ bot: '助手', kind: 'work' }`；交回记录，最近动过的在前。\n- L349：`find(where: Partial<SessionMeta>): SessionMeta[]`。\n- L350–L351：起始 SQL `SELECT meta FROM sessions WHERE 1 = 1`（后面统一接 AND）。\n- L352–L353：`values` 填问号的值：每项两个，先 JSON 路径再值。\n- L354–L358：`textModule.eachEntry(where, …)`：每项接一段 ` AND json_extract(meta, ?) = ?`，values 里推 `$.key` 和值。\n- L359：接 `ORDER BY json_extract(meta, '$.updatedAt') DESC`。\n- L361–L363：执行查询 `query.all(...values)`，每行只有 meta 一列。\n- L364：逐行 `JSON.parse` 成 SessionMeta 交回。\n- L365：函数结束。L366：空行。\n\n### 调到别处\nsrc7/utils/Text.ts:66 eachEntry；src7/Resources.ts:147 db",
+    "title": "L344–L366 按条件找会话",
+    "summary": "给的每一项都拼成一个 json_extract(meta, '$.项') = 值 的条件，所以插件加的项不改表也能拿来找；结果按 updatedAt 倒序，只读 meta，不打开会话。（对应：`find`）",
+    "body": "**行号：L344–L366**\n\n### 代码原文\n```ts\n344    /**\n345     * 找会话：给的几项都相等的那些。只读记录（不带对话），不打开。\n346     * @param where 照哪几项找，比如 { state: 'running' }；插件给记录加的项也能用，比如 { bot: '助手', kind: 'work' }。\n347     * @returns 记录，最近动过的在前。\n348     */\n349    find(where: Partial<SessionMeta>): SessionMeta[] {\n350      //M 每一项都用 json_extract 从 meta 里取出来比，所以插件加的项不用改表也能拿来找。\n351      let sql = 'SELECT meta FROM sessions WHERE 1 = 1';\n352      /** 填进 SQL 里问号的值：每一项两个，先是 JSON 路径（$.state），再是要等于的值。 */\n353      const values: (string | number)[] = [];\n354      //M 逐条追加过滤键到 WHERE 子句与绑定参数，最后按更新时间倒序返回。\n355      textModule.eachEntry(where, (key, value) => {\n356        sql += ' AND json_extract(meta, ?) = ?';\n357        values.push(`$.${key}`, value as string | number);\n358      });\n359      sql += \" ORDER BY json_extract(meta, '$.updatedAt') DESC\";\n360  \n361      //M 查出来的每行只有 meta 一列，解析回记录。\n362      const query = this.ctx.resources.db.query(sql);\n363      const found = query.all(...values) as { meta: string }[];\n364      return found.map((item) => JSON.parse(item.meta) as SessionMeta);\n365    }\n366  \n```\n\n### 解释\n- L344–L348：文档注释：\n  - 例子 `{ state: 'running' }`、`{ bot: '助手', kind: 'work' }`\n  - 交回记录，最近动过的在前。\n- L349：`find(where: Partial<SessionMeta>): SessionMeta[]`。\n- L350–L351：起始 SQL `SELECT meta FROM sessions WHERE 1 = 1`（后面统一接 AND）。\n- L352–L353：`values` 填问号的值，每项两个：\n  1. JSON 路径\n  2. 值\n- L354–L358：`textModule.eachEntry(where, …)`：\n  - 每项接一段 ` AND json_extract(meta, ?) = ?`\n  - values 里推 `$.key` 和值\n- L359：接 `ORDER BY json_extract(meta, '$.updatedAt') DESC`。\n- L361–L363：执行查询 `query.all(...values)`，每行只有 meta 一列。\n- L364：逐行 `JSON.parse` 成 SessionMeta 交回。\n- L365：函数结束。L366：空行。\n\n### 调到别处\n- 骨架工具：[Text.ts:66](src7/utils/Text.ts:66) eachEntry\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -362,9 +362,9 @@
   {
     "id": "r-sessions-18",
     "parent": "r-sessions-g2",
-    "title": "L367–L395 ask：开一场小会话问一次",
-    "summary": "就是 create → add → run 连起来：开会话、说一句、跑到底；提问方的信号断了小会话也停；最后交回 ok（是否 done）和 reply。审批、压缩、总结、复盘、进度收尾、判断都用它。",
-    "body": "**行号：L367–L395**\n\n### 代码原文\n```ts\n367    /**\n368     * 开一场小会话问一次：开会话、说一句、跑到底、交回结果。审批、压缩、总结、复盘、进度收尾、判断都用它。\n369     * 只是 create → add → run 连起来，run 本身不动。\n370     * @param input 开会话的那些项（种类、嵌在哪场里、模型、思考档、bot……），加上要问的话和停止信号。\n371     * @returns 做没做完，和小会话的 reply。\n372     * 副作用：开会话、调模型、写库。\n373     */\n374    async ask(input: AskInput): Promise<AskResult> {\n375      //M 要问的话和停止信号不进记录，其余原样拿去开会话。\n376      const { text, signal, ...fields } = input;\n377      const child = this.create(fields);\n378      child.add(text);\n379  \n380      //M 提问方的信号断了 → 小会话也停，不再等模型。不管怎么结束都把监听摘掉。\n381      const stop = (): void => {\n382        child.stop('提问方停了');\n383      };\n384      signal?.addEventListener('abort', stop, { once: true });\n385      try {\n386        await child.run();\n387      } finally {\n388        signal?.removeEventListener('abort', stop);\n389      }\n390  \n391      //M 做完了才算问成；没做完 reply 是原因。\n392      const ok = child.row.state === 'done';\n393      return { ok, reply: child.row.reply };\n394    }\n395  \n```\n\n### 解释\n- L367–L373：文档注释：只是三步连起来，run 本身不动；副作用开会话、调模型、写库。\n- L374：`async ask(input: AskInput): Promise<AskResult>`。\n- L375–L376：把 text、signal 拆出来，其余 `fields` 拿去开会话（这两项不进记录）。\n- L377：`this.create(fields)`。\n- L378：`child.add(text)`。\n- L380–L383：`stop` 回调：`child.stop('提问方停了')`。\n- L384：信号存在就监听 abort，只触发一次。\n- L385–L389：`try { await child.run() } finally { 摘掉监听 }`，不管怎么结束都摘。\n- L391–L393：`ok = child.row.state === 'done'`，交回 `{ ok, reply: child.row.reply }`。\n- L394：函数结束。L395：空行。\n\n### 调到别处\nsrc7/Sessions.ts:278 create；src7/Sessions.ts:491 add；src7/Sessions.ts:500 run；src7/Sessions.ts:648 stop；调用方之一 src7/plugins/approval/index.ts:627",
+    "title": "L367–L395 开小会话问一次",
+    "summary": "就是 create → add → run 连起来：开会话、说一句、跑到底；提问方的信号断了小会话也停；最后交回 ok（是否 done）和 reply。审批、压缩、总结、复盘、进度收尾、判断都用它。（涉及插件：approval）（对应：`ask`）",
+    "body": "**行号：L367–L395**\n\n### 代码原文\n```ts\n367    /**\n368     * 开一场小会话问一次：开会话、说一句、跑到底、交回结果。审批、压缩、总结、复盘、进度收尾、判断都用它。\n369     * 只是 create → add → run 连起来，run 本身不动。\n370     * @param input 开会话的那些项（种类、嵌在哪场里、模型、思考档、bot……），加上要问的话和停止信号。\n371     * @returns 做没做完，和小会话的 reply。\n372     * 副作用：开会话、调模型、写库。\n373     */\n374    async ask(input: AskInput): Promise<AskResult> {\n375      //M 要问的话和停止信号不进记录，其余原样拿去开会话。\n376      const { text, signal, ...fields } = input;\n377      const child = this.create(fields);\n378      child.add(text);\n379  \n380      //M 提问方的信号断了 → 小会话也停，不再等模型。不管怎么结束都把监听摘掉。\n381      const stop = (): void => {\n382        child.stop('提问方停了');\n383      };\n384      signal?.addEventListener('abort', stop, { once: true });\n385      try {\n386        await child.run();\n387      } finally {\n388        signal?.removeEventListener('abort', stop);\n389      }\n390  \n391      //M 做完了才算问成；没做完 reply 是原因。\n392      const ok = child.row.state === 'done';\n393      return { ok, reply: child.row.reply };\n394    }\n395  \n```\n\n### 解释\n- L367–L373：文档注释：\n  - 只是三步连起来，run 本身不动\n  - 副作用开会话、调模型、写库。\n- L374：`async ask(input: AskInput): Promise<AskResult>`。\n- L375–L376：把 text、signal 拆出来，其余 `fields` 拿去开会话（这两项不进记录）。\n- L377：`this.create(fields)`。\n- L378：`child.add(text)`。\n- L380–L383：`stop` 回调：`child.stop('提问方停了')`。\n- L384：信号存在就监听 abort，只触发一次。\n- L385–L389：`try { await child.run() } finally { 摘掉监听 }`，不管怎么结束都摘。\n- L391–L393：`ok = child.row.state === 'done'`，交回 `{ ok, reply: child.row.reply }`。\n- L394：函数结束。L395：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L278](#lines=Sessions.json&line=278) create\n- 骨架：[Sessions.ts L491](#lines=Sessions.json&line=491) add\n- 骨架：[Sessions.ts L500](#lines=Sessions.json&line=500) run\n- 骨架：[Sessions.ts L648](#lines=Sessions.json&line=648) stop\n- [插件 approval](#plugin=approval)：调用方之一 [approval/index.ts:627](src7/plugins/approval/index.ts:627)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -372,9 +372,9 @@
   {
     "id": "r-sessions-g3",
     "parent": "r-sessions",
-    "title": "发模型请求与单场会话（L396–L641）",
+    "title": "L396–L641 发请求与单场会话",
     "summary": "chat 发请求，再看 Session 类的字段、说话、推进和循环。",
-    "body": "## 发模型请求与单场会话\n\n- L396–L466 chat：用 pi 发一次模型请求：不管会话怎么走、也不存状态：取模型定义，拼 pi 的上下文和请求选项，定好重试规矩，用 pi 的 retryAssistantCall 发；每失败一次发 model/failed；最后出错或被掐断统一抛错。会话循环每一步调它，model-catalog 换模型再试时也调它。\n- L467–L486 Session 类头、字段与构造函数：一场对话。只由 Sessions.create、Sessions.open 来建。字段：会话号 id、这一轮的取消开关 aborter、还没接进对话的话 inbox；构造函数存下 row 和 ctx。\n- L487–L494 add：对这场会话说一句话：只是把一条 user 消息放进 inbox；说完要它往下走，还得再调 run()。\n- L495–L525 run：推这场对话往下走：已经在转就直接返回；否则备好取消开关、状态改成 running、跑 loop；loop 抛错且还是 running 才记成 failed；最后收掉开关，收尾时又有人说话就再转一轮。自己不往外抛。\n- L526–L641 loop：循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到三种情况之一：模型不再要工具（done）、有人喊停、某个关口上有插件写了 stop。四个关口里有三个在这里发。",
+    "body": "## 发模型请求与单场会话\n\n- L396–L466 chat：用 pi 发一次模型请求，不管会话怎么走、也不存状态：\n  1. 取模型定义\n  2. 拼 pi 的上下文和请求选项\n  3. 定好重试规矩\n  4. 用 pi 的 retryAssistantCall 发\n  5. 每失败一次发 model/failed\n  6. 最后出错或被掐断统一抛错\n  - 会话循环每一步调它，model-catalog 换模型再试时也调它。\n- L467–L486 Session 类头、字段与构造函数：一场对话。只由 Sessions.create、Sessions.open 来建。\n  - 字段：\n    - 会话号 id\n    - 这一轮的取消开关 aborter\n    - 还没接进对话的话 inbox\n  - 构造函数存下 row 和 ctx。\n- L487–L494 add：对这场会话说一句话：只是把一条 user 消息放进 inbox；说完要它往下走，还得再调 run()。\n- L495–L525 run：推这场对话往下走：\n  1. 已经在转就直接返回\n  2. 否则备好取消开关、状态改成 running、跑 loop\n  3. loop 抛错且还是 running 才记成 failed\n  4. 最后收掉开关，收尾时又有人说话就再转一轮\n  - 自己不往外抛。\n- L526–L641 loop：循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到三种情况之一：\n  - 模型不再要工具（done）\n  - 有人喊停\n  - 某个关口上有插件写了 stop\n  - 四个关口里有三个在这里发。",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -382,9 +382,9 @@
   {
     "id": "r-sessions-19",
     "parent": "r-sessions-g3",
-    "title": "L396–L466 chat：用 pi 发一次模型请求",
-    "summary": "不管会话怎么走、也不存状态：取模型定义，拼 pi 的上下文和请求选项，定好重试规矩，用 pi 的 retryAssistantCall 发；每失败一次发 model/failed；最后出错或被掐断统一抛错。会话循环每一步调它，model-catalog 换模型再试时也调它。",
-    "body": "**行号：L396–L466**\n\n### 代码原文\n```ts\n396    /**\n397     * 用 pi 发一次模型请求。不管会话怎么走，也不存状态：给它什么请求它发什么。\n398     * 会话循环每一步调它（Session.loop）；model-fallback 换模型再试时也调它（ctx.sessions.chat）。\n399     * @param request 模型、思考档、提示词、对话、工具、取消信号。\n400     * @returns 模型回的整条（文字、工具调用都在里面）。\n401     * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。\n402     * 副作用：发 HTTP 请求；每失败一次发一次 model/failed。\n403     */\n404    async chat(request: ChatRequest): Promise<piAi.AssistantMessage> {\n405      /** 建好的供应商、模型和重试的配置，都在 resources 里（src7/Resources.ts）。 */\n406      const resources = this.ctx.resources;\n407      const retry = resources.config.retry;\n408      //M 按“供应商/模型”名查出配置好的 pi 模型定义与参数，供下面构建上下文和重连使用。\n409      const model = resources.getModel(request.model);\n410  \n411      //M 拼 pi 要的上下文：提示词的段落用空行连成一段。\n412      const systemPrompt = request.system.join('\\n\\n');\n413      const context: piAi.Context = {\n414        systemPrompt,\n415        messages: request.messages,\n416        tools: request.tools,\n417      };\n418  \n419      //M 请求选项：pi 自己不重试（maxRetries 0），重试交给下面的 retryAssistantCall。\n420      const options: piAi.SimpleStreamOptions = {\n421        signal: request.signal,\n422        timeoutMs: retry.timeoutMs,\n423        maxRetries: 0,\n424      };\n425  \n426      //M 思考档不是 off 才传 reasoning；off 就不传，模型不思考。\n427      if (request.thinking !== 'off') {\n428        options.reasoning = request.thinking;\n429      }\n430  \n431      //M 重试的规矩：临时的错（断网、限流、超时）隔一会儿再试，最多再试 retry.times 次；喊停了不再试。\n432      //M   重试、判断哪种错值得再试，都是 pi 的 retryAssistantCall 做的。\n433      const policy: piAi.RetryPolicy = {\n434        enabled: true,\n435        maxRetries: retry.times,\n436        baseDelayMs: retry.waitMs,\n437      };\n438  \n439      //M 发一次：每次失败（stopReason 是 error）发一次通知 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。\n440      const send = async (): Promise<piAi.AssistantMessage> => {\n441        const start = Date.now();\n442        const answer = await resources.models.completeSimple(model, context, options);\n443        if (answer.stopReason !== 'error') return answer;\n444  \n445        const failed: ModelFailed = {\n446          session: request.session,\n447          model: request.model,\n448          error: answer.errorMessage ?? '',\n449          ms: Date.now() - start,\n450        };\n451        this.ctx.emit('model/failed', failed);\n452        return answer;\n453      };\n454  \n455      //M 发请求，失败了照上面的规矩再试。\n456      const answer = await piAi.retryAssistantCall(send, policy, request.signal);\n457  \n458      //G pi 把失败写在回答的 stopReason 里，不抛错。出错、被喊停都在这里统一抛出去。\n459      if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {\n460        const reason = answer.errorMessage ?? `模型请求没成（${answer.stopReason}）`;\n461        throw new Error(reason);\n462      }\n463      return answer;\n464    }\n465  }\n466  \n```\n\n### 解释\n- 输入 ChatRequest；输出模型回的整条 AssistantMessage（文字、工具调用都在里面）。\n- 五步见下面五个子块。\n\n### 调到别处\nsrc7/Resources.ts:258 getModel；src7/Resources.ts:150 models；pi 的 completeSimple、retryAssistantCall（外部包）；调用方 src7/Sessions.ts:576、src7/plugins/model-catalog/Fallback.ts:271",
+    "title": "L396–L466 用 pi 发模型请求",
+    "summary": "不管会话怎么走、也不存状态：取模型定义，拼 pi 的上下文和请求选项，定好重试规矩，用 pi 的 retryAssistantCall 发；每失败一次发 model/failed；最后出错或被掐断统一抛错。会话循环每一步调它，model-catalog 换模型再试时也调它。（涉及插件：model-catalog）（对应：`chat`）",
+    "body": "**行号：L396–L466**\n\n### 代码原文\n```ts\n396    /**\n397     * 用 pi 发一次模型请求。不管会话怎么走，也不存状态：给它什么请求它发什么。\n398     * 会话循环每一步调它（Session.loop）；model-fallback 换模型再试时也调它（ctx.sessions.chat）。\n399     * @param request 模型、思考档、提示词、对话、工具、取消信号。\n400     * @returns 模型回的整条（文字、工具调用都在里面）。\n401     * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。\n402     * 副作用：发 HTTP 请求；每失败一次发一次 model/failed。\n403     */\n404    async chat(request: ChatRequest): Promise<piAi.AssistantMessage> {\n405      /** 建好的供应商、模型和重试的配置，都在 resources 里（src7/Resources.ts）。 */\n406      const resources = this.ctx.resources;\n407      const retry = resources.config.retry;\n408      //M 按“供应商/模型”名查出配置好的 pi 模型定义与参数，供下面构建上下文和重连使用。\n409      const model = resources.getModel(request.model);\n410  \n411      //M 拼 pi 要的上下文：提示词的段落用空行连成一段。\n412      const systemPrompt = request.system.join('\\n\\n');\n413      const context: piAi.Context = {\n414        systemPrompt,\n415        messages: request.messages,\n416        tools: request.tools,\n417      };\n418  \n419      //M 请求选项：pi 自己不重试（maxRetries 0），重试交给下面的 retryAssistantCall。\n420      const options: piAi.SimpleStreamOptions = {\n421        signal: request.signal,\n422        timeoutMs: retry.timeoutMs,\n423        maxRetries: 0,\n424      };\n425  \n426      //M 思考档不是 off 才传 reasoning；off 就不传，模型不思考。\n427      if (request.thinking !== 'off') {\n428        options.reasoning = request.thinking;\n429      }\n430  \n431      //M 重试的规矩：临时的错（断网、限流、超时）隔一会儿再试，最多再试 retry.times 次；喊停了不再试。\n432      //M   重试、判断哪种错值得再试，都是 pi 的 retryAssistantCall 做的。\n433      const policy: piAi.RetryPolicy = {\n434        enabled: true,\n435        maxRetries: retry.times,\n436        baseDelayMs: retry.waitMs,\n437      };\n438  \n439      //M 发一次：每次失败（stopReason 是 error）发一次通知 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。\n440      const send = async (): Promise<piAi.AssistantMessage> => {\n441        const start = Date.now();\n442        const answer = await resources.models.completeSimple(model, context, options);\n443        if (answer.stopReason !== 'error') return answer;\n444  \n445        const failed: ModelFailed = {\n446          session: request.session,\n447          model: request.model,\n448          error: answer.errorMessage ?? '',\n449          ms: Date.now() - start,\n450        };\n451        this.ctx.emit('model/failed', failed);\n452        return answer;\n453      };\n454  \n455      //M 发请求，失败了照上面的规矩再试。\n456      const answer = await piAi.retryAssistantCall(send, policy, request.signal);\n457  \n458      //G pi 把失败写在回答的 stopReason 里，不抛错。出错、被喊停都在这里统一抛出去。\n459      if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {\n460        const reason = answer.errorMessage ?? `模型请求没成（${answer.stopReason}）`;\n461        throw new Error(reason);\n462      }\n463      return answer;\n464    }\n465  }\n466  \n```\n\n### 解释\n- 输入 ChatRequest；输出模型回的整条 AssistantMessage（文字、工具调用都在里面）。\n- 五步见下面五个子块。\n\n### 调到别处\n- 骨架：[Resources.ts L258](#lines=Resources.json&line=258) getModel\n- 骨架：[Resources.ts L150](#lines=Resources.json&line=150) models\n- Node/第三方：pi 的 completeSimple、retryAssistantCall（外部包）\n- 骨架、[插件 model-catalog](#plugin=model-catalog)：调用方 [Sessions.ts L576](#lines=Sessions.json&line=576)、[model-catalog/Fallback.ts:271](src7/plugins/model-catalog/Fallback.ts:271)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -392,9 +392,9 @@
   {
     "id": "r-sessions-19-1",
     "parent": "r-sessions-19",
-    "title": "L396–L410 注释、函数头，取 resources、重试配置和模型",
+    "title": "L396–L410 取配置、重试和模型",
     "summary": "从 resources 取出重试配置，并照“供应商/模型”名拼出 pi 的模型定义。",
-    "body": "**行号：L396–L410**\n\n### 代码原文\n```ts\n396    /**\n397     * 用 pi 发一次模型请求。不管会话怎么走，也不存状态：给它什么请求它发什么。\n398     * 会话循环每一步调它（Session.loop）；model-fallback 换模型再试时也调它（ctx.sessions.chat）。\n399     * @param request 模型、思考档、提示词、对话、工具、取消信号。\n400     * @returns 模型回的整条（文字、工具调用都在里面）。\n401     * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。\n402     * 副作用：发 HTTP 请求；每失败一次发一次 model/failed。\n403     */\n404    async chat(request: ChatRequest): Promise<piAi.AssistantMessage> {\n405      /** 建好的供应商、模型和重试的配置，都在 resources 里（src7/Resources.ts）。 */\n406      const resources = this.ctx.resources;\n407      const retry = resources.config.retry;\n408      //M 按“供应商/模型”名查出配置好的 pi 模型定义与参数，供下面构建上下文和重连使用。\n409      const model = resources.getModel(request.model);\n410  \n```\n\n### 解释\n- L396–L403：文档注释：会话循环（Session.loop）和 model-fallback 都调它；试够次数还不成、或被喊停掐断时抛错，Session.run 接住；副作用发 HTTP、每失败一次发 model/failed。\n- L404：`async chat(request: ChatRequest): Promise<piAi.AssistantMessage>`。\n- L405–L406：`resources = this.ctx.resources`。\n- L407：`retry = resources.config.retry`。\n- L408–L409：`model = resources.getModel(request.model)`。\n- L410：空行。\n\n### 调到别处\nsrc7/Resources.ts:258 getModel；src7/Resources.ts:141 config",
+    "body": "**行号：L396–L410**\n\n### 代码原文\n```ts\n396    /**\n397     * 用 pi 发一次模型请求。不管会话怎么走，也不存状态：给它什么请求它发什么。\n398     * 会话循环每一步调它（Session.loop）；model-fallback 换模型再试时也调它（ctx.sessions.chat）。\n399     * @param request 模型、思考档、提示词、对话、工具、取消信号。\n400     * @returns 模型回的整条（文字、工具调用都在里面）。\n401     * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。\n402     * 副作用：发 HTTP 请求；每失败一次发一次 model/failed。\n403     */\n404    async chat(request: ChatRequest): Promise<piAi.AssistantMessage> {\n405      /** 建好的供应商、模型和重试的配置，都在 resources 里（src7/Resources.ts）。 */\n406      const resources = this.ctx.resources;\n407      const retry = resources.config.retry;\n408      //M 按“供应商/模型”名查出配置好的 pi 模型定义与参数，供下面构建上下文和重连使用。\n409      const model = resources.getModel(request.model);\n410  \n```\n\n### 解释\n- L396–L403：文档注释：\n  - 会话循环（Session.loop）和 model-fallback 都调它\n  - 试够次数还不成、或被喊停掐断时抛错，Session.run 接住\n  - 副作用发 HTTP、每失败一次发 model/failed。\n- L404：`async chat(request: ChatRequest): Promise<piAi.AssistantMessage>`。\n- L405–L406：`resources = this.ctx.resources`。\n- L407：`retry = resources.config.retry`。\n- L408–L409：`model = resources.getModel(request.model)`。\n- L410：空行。\n\n### 调到别处\n- 骨架：[Resources.ts L258](#lines=Resources.json&line=258) getModel\n- 骨架：[Resources.ts L141](#lines=Resources.json&line=141) config",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -402,9 +402,9 @@
   {
     "id": "r-sessions-19-2",
     "parent": "r-sessions-19",
-    "title": "L411–L430 拼上下文、请求选项和思考档",
+    "title": "L411–L430 拼上下文和请求选项",
     "summary": "提示词段落用空行连成一段，和对话、工具一起放进 pi 的 Context；选项里带取消信号、超时，pi 自己不重试；思考档不是 off 才传 reasoning。",
-    "body": "**行号：L411–L430**\n\n### 代码原文\n```ts\n411      //M 拼 pi 要的上下文：提示词的段落用空行连成一段。\n412      const systemPrompt = request.system.join('\\n\\n');\n413      const context: piAi.Context = {\n414        systemPrompt,\n415        messages: request.messages,\n416        tools: request.tools,\n417      };\n418  \n419      //M 请求选项：pi 自己不重试（maxRetries 0），重试交给下面的 retryAssistantCall。\n420      const options: piAi.SimpleStreamOptions = {\n421        signal: request.signal,\n422        timeoutMs: retry.timeoutMs,\n423        maxRetries: 0,\n424      };\n425  \n426      //M 思考档不是 off 才传 reasoning；off 就不传，模型不思考。\n427      if (request.thinking !== 'off') {\n428        options.reasoning = request.thinking;\n429      }\n430  \n```\n\n### 解释\n- L411–L412：`systemPrompt = request.system.join('\\n\\n')`。\n- L413–L417：`context: piAi.Context = { systemPrompt, messages, tools }`。\n- L419：注释：pi 自己不重试，交给下面的 retryAssistantCall。\n- L420–L424：`options`：`signal`、`timeoutMs: retry.timeoutMs`、`maxRetries: 0`。\n- L426–L429：`request.thinking !== 'off'` 才写 `options.reasoning`；off 就不传，模型不思考。\n- L430：空行。\n\n### 调到别处\n无",
+    "body": "**行号：L411–L430**\n\n### 代码原文\n```ts\n411      //M 拼 pi 要的上下文：提示词的段落用空行连成一段。\n412      const systemPrompt = request.system.join('\\n\\n');\n413      const context: piAi.Context = {\n414        systemPrompt,\n415        messages: request.messages,\n416        tools: request.tools,\n417      };\n418  \n419      //M 请求选项：pi 自己不重试（maxRetries 0），重试交给下面的 retryAssistantCall。\n420      const options: piAi.SimpleStreamOptions = {\n421        signal: request.signal,\n422        timeoutMs: retry.timeoutMs,\n423        maxRetries: 0,\n424      };\n425  \n426      //M 思考档不是 off 才传 reasoning；off 就不传，模型不思考。\n427      if (request.thinking !== 'off') {\n428        options.reasoning = request.thinking;\n429      }\n430  \n```\n\n### 解释\n- L411–L412：`systemPrompt = request.system.join('\\n\\n')`。\n- L413–L417：`context: piAi.Context = { systemPrompt, messages, tools }`。\n- L419：注释：pi 自己不重试，交给下面的 retryAssistantCall。\n- L420–L424：`options`：\n  - `signal`\n  - `timeoutMs: retry.timeoutMs`\n  - `maxRetries: 0`\n- L426–L429：`request.thinking !== 'off'` 才写 `options.reasoning`；off 就不传，模型不思考。\n- L430：空行。\n\n### 调到别处\n无",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -422,9 +422,9 @@
   {
     "id": "r-sessions-19-4",
     "parent": "r-sessions-19",
-    "title": "L439–L454 send：发一次，失败就发 model/failed",
-    "summary": "发一次请求并计时；pi 把失败写在 stopReason 里不抛错，所以 stopReason 是 error 时拼一份 ModelFailed 发通知，再把回答原样交回给重试器判断。",
-    "body": "**行号：L439–L454**\n\n### 代码原文\n```ts\n439      //M 发一次：每次失败（stopReason 是 error）发一次通知 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。\n440      const send = async (): Promise<piAi.AssistantMessage> => {\n441        const start = Date.now();\n442        const answer = await resources.models.completeSimple(model, context, options);\n443        if (answer.stopReason !== 'error') return answer;\n444  \n445        const failed: ModelFailed = {\n446          session: request.session,\n447          model: request.model,\n448          error: answer.errorMessage ?? '',\n449          ms: Date.now() - start,\n450        };\n451        this.ctx.emit('model/failed', failed);\n452        return answer;\n453      };\n454  \n```\n\n### 解释\n- L439：注释：每次失败发一次 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。\n- L440：`send` 是一个 async 箭头函数。\n- L441：`start = Date.now()`。\n- L442：`resources.models.completeSimple(model, context, options)` 发请求。\n- L443：不是 error 就直接交回。\n- L445–L450：`failed: ModelFailed`：session、model、`error: answer.errorMessage ?? ''`、`ms: Date.now() - start`。\n- L451：`this.ctx.emit('model/failed', failed)`。\n- L452：仍交回这个失败的回答（重试器看它决定要不要再试）。\n- L453：send 结束。L454：空行。\n\n### 调到别处\nsrc7/Resources.ts:150 models；pi 的 completeSimple（外部包）；接 model/failed 的见 L108–L110 注释",
+    "title": "L439–L454 发一次、失败发通知",
+    "summary": "发一次请求并计时；pi 把失败写在 stopReason 里不抛错，所以 stopReason 是 error 时拼一份 ModelFailed 发通知，再把回答原样交回给重试器判断。（对应：`send`、`model/failed`）",
+    "body": "**行号：L439–L454**\n\n### 代码原文\n```ts\n439      //M 发一次：每次失败（stopReason 是 error）发一次通知 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。\n440      const send = async (): Promise<piAi.AssistantMessage> => {\n441        const start = Date.now();\n442        const answer = await resources.models.completeSimple(model, context, options);\n443        if (answer.stopReason !== 'error') return answer;\n444  \n445        const failed: ModelFailed = {\n446          session: request.session,\n447          model: request.model,\n448          error: answer.errorMessage ?? '',\n449          ms: Date.now() - start,\n450        };\n451        this.ctx.emit('model/failed', failed);\n452        return answer;\n453      };\n454  \n```\n\n### 解释\n- L439：注释：每次失败发一次 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。\n- L440：`send` 是一个 async 箭头函数。\n- L441：`start = Date.now()`。\n- L442：`resources.models.completeSimple(model, context, options)` 发请求。\n- L443：不是 error 就直接交回。\n- L445–L450：`failed: ModelFailed`：\n  - session\n  - model\n  - `error: answer.errorMessage ?? ''`\n  - `ms: Date.now() - start`\n- L451：`this.ctx.emit('model/failed', failed)`。\n- L452：仍交回这个失败的回答（重试器看它决定要不要再试）。\n- L453：send 结束。L454：空行。\n\n### 调到别处\n- 骨架：[Resources.ts L150](#lines=Resources.json&line=150) models\n- Node/第三方：pi 的 completeSimple（外部包）\n- 插件（接收方见该块注释）：接 model/failed 的见 L108–L110 注释",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -432,9 +432,9 @@
   {
     "id": "r-sessions-19-5",
     "parent": "r-sessions-19",
-    "title": "L455–L466 重试着发，失败统一抛错",
+    "title": "L455–L466 重试发送、统一抛错",
     "summary": "用 retryAssistantCall 包住 send 发；最后的回答还是 error 或 aborted 就抛错（原因优先用 pi 的 errorMessage），否则交回回答。",
-    "body": "**行号：L455–L466**\n\n### 代码原文\n```ts\n455      //M 发请求，失败了照上面的规矩再试。\n456      const answer = await piAi.retryAssistantCall(send, policy, request.signal);\n457  \n458      //G pi 把失败写在回答的 stopReason 里，不抛错。出错、被喊停都在这里统一抛出去。\n459      if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {\n460        const reason = answer.errorMessage ?? `模型请求没成（${answer.stopReason}）`;\n461        throw new Error(reason);\n462      }\n463      return answer;\n464    }\n465  }\n466  \n```\n\n### 解释\n- L455–L456：`piAi.retryAssistantCall(send, policy, request.signal)`。\n- L458：守卫注释：出错、被喊停都在这里统一抛出去。\n- L459–L462：stopReason 是 error 或 aborted → `reason = answer.errorMessage ?? '模型请求没成（…）'`，抛错。\n- L463：交回回答。\n- L464：函数结束。L465：Sessions 类结束。L466：空行。\n\n### 调到别处\npi 的 retryAssistantCall（外部包）；抛出的错由 src7/Sessions.ts:510 的 catch 接住",
+    "body": "**行号：L455–L466**\n\n### 代码原文\n```ts\n455      //M 发请求，失败了照上面的规矩再试。\n456      const answer = await piAi.retryAssistantCall(send, policy, request.signal);\n457  \n458      //G pi 把失败写在回答的 stopReason 里，不抛错。出错、被喊停都在这里统一抛出去。\n459      if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {\n460        const reason = answer.errorMessage ?? `模型请求没成（${answer.stopReason}）`;\n461        throw new Error(reason);\n462      }\n463      return answer;\n464    }\n465  }\n466  \n```\n\n### 解释\n- L455–L456：`piAi.retryAssistantCall(send, policy, request.signal)`。\n- L458：守卫注释：出错、被喊停都在这里统一抛出去。\n- L459–L462：stopReason 是 error 或 aborted → `reason = answer.errorMessage ?? '模型请求没成（…）'`，抛错。\n- L463：交回回答。\n- L464：函数结束。L465：Sessions 类结束。L466：空行。\n\n### 调到别处\n- Node/第三方：pi 的 retryAssistantCall（外部包）\n- 骨架：抛出的错由 [Sessions.ts L510](#lines=Sessions.json&line=510) 的 catch 接住",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -442,9 +442,9 @@
   {
     "id": "r-sessions-20",
     "parent": "r-sessions-g3",
-    "title": "L467–L486 Session 类头、字段与构造函数",
+    "title": "L467–L486 定义单场会话类",
     "summary": "一场对话。只由 Sessions.create、Sessions.open 来建。字段：会话号 id、这一轮的取消开关 aborter、还没接进对话的话 inbox；构造函数存下 row 和 ctx。",
-    "body": "**行号：L467–L486**\n\n### 代码原文\n```ts\n467  \n468  /** 一场对话。只由 Sessions.create、Sessions.open 来建。 */\n469  export class Session {\n470    /** 会话号。 */\n471    readonly id: string;\n472  \n473    /** 正在转的这一轮的取消开关；没在转是 undefined。喊停时用它掐断正在等的模型请求，它的信号也交给工具。 */\n474    private aborter?: AbortController;\n475  \n476    /** 用户说了、还没接进对话的话。循环每一步开头才接进去，这样不会插在模型的回答和它要的工具结果中间。 */\n477    private readonly inbox: piAi.Message[] = [];\n478  \n479    /**\n480     * @param row 这场对话的记录。改了以后调 save() 存库。\n481     * @param ctx 发事件、取 resources 和 tools 用。\n482     */\n483    constructor(readonly row: SessionRow, private readonly ctx: cordis.Context) {\n484      this.id = row.id;\n485    }\n486  \n```\n\n### 解释\n- L467–L469：注释，`export class Session`。\n- L470–L471：`readonly id`。\n- L473–L474：`private aborter?: AbortController`：正在转的这一轮的取消开关，没在转是 undefined；喊停时用它掐断模型请求，它的信号也交给工具。\n- L476–L477：`private readonly inbox`：用户说了、还没接进对话的话；每一步开头才接进去，不会插在模型回答和它要的工具结果中间。\n- L479–L482：构造函数文档注释：row 改了以后调 save() 存库；ctx 发事件、取 resources 和 tools。\n- L483–L485：`constructor(readonly row, private readonly ctx)`，只做 `this.id = row.id`。\n- L486：空行。\n\n### 调到别处\n无",
+    "body": "**行号：L467–L486**\n\n### 代码原文\n```ts\n467  \n468  /** 一场对话。只由 Sessions.create、Sessions.open 来建。 */\n469  export class Session {\n470    /** 会话号。 */\n471    readonly id: string;\n472  \n473    /** 正在转的这一轮的取消开关；没在转是 undefined。喊停时用它掐断正在等的模型请求，它的信号也交给工具。 */\n474    private aborter?: AbortController;\n475  \n476    /** 用户说了、还没接进对话的话。循环每一步开头才接进去，这样不会插在模型的回答和它要的工具结果中间。 */\n477    private readonly inbox: piAi.Message[] = [];\n478  \n479    /**\n480     * @param row 这场对话的记录。改了以后调 save() 存库。\n481     * @param ctx 发事件、取 resources 和 tools 用。\n482     */\n483    constructor(readonly row: SessionRow, private readonly ctx: cordis.Context) {\n484      this.id = row.id;\n485    }\n486  \n```\n\n### 解释\n- L467–L469：注释，`export class Session`。\n- L470–L471：`readonly id`。\n- L473–L474：`private aborter?: AbortController`：正在转的这一轮的取消开关：\n  - 没在转是 undefined\n  - 喊停时用它掐断模型请求，它的信号也交给工具。\n- L476–L477：`private readonly inbox`：用户说了、还没接进对话的话；每一步开头才接进去，不会插在模型回答和它要的工具结果中间。\n- L479–L482：构造函数文档注释：\n  - row 改了以后调 save() 存库\n  - ctx 发事件、取 resources 和 tools。\n- L483–L485：`constructor(readonly row, private readonly ctx)`，只做 `this.id = row.id`。\n- L486：空行。\n\n### 调到别处\n无",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -452,8 +452,8 @@
   {
     "id": "r-sessions-21",
     "parent": "r-sessions-g3",
-    "title": "L487–L494 add：对这场会话说一句话",
-    "summary": "只是把一条 user 消息放进 inbox；说完要它往下走，还得再调 run()。",
+    "title": "L487–L494 对会话说一句话",
+    "summary": "只是把一条 user 消息放进 inbox；说完要它往下走，还得再调 run()。（对应：`add`）",
     "body": "**行号：L487–L494**\n\n### 代码原文\n```ts\n487    /**\n488     * 对这场会话说一句话。说完要它往下走，再调 run()。\n489     * @param text 用户说的话（渠道来的、别的会话交办的、插件要它做的）。\n490     */\n491    add(text: string): void {\n492      this.inbox.push({ role: 'user', content: text, timestamp: Date.now() });\n493    }\n494  \n```\n\n### 解释\n- L487–L490：文档注释：说的话可以来自渠道、别的会话交办、插件。\n- L491：`add(text: string): void`。\n- L492：`this.inbox.push({ role: 'user', content: text, timestamp: Date.now() })`。\n- L493：函数结束。L494：空行。\n\n### 调到别处\n无",
     "sources": [
       "src7/Sessions.ts"
@@ -462,9 +462,9 @@
   {
     "id": "r-sessions-22",
     "parent": "r-sessions-g3",
-    "title": "L495–L525 run：推这场对话往下走",
+    "title": "L495–L525 推会话往下走",
     "summary": "已经在转就直接返回；否则备好取消开关、状态改成 running、跑 loop；loop 抛错且还是 running 才记成 failed；最后收掉开关，收尾时又有人说话就再转一轮。自己不往外抛。",
-    "body": "**行号：L495–L525**\n\n### 代码原文\n```ts\n495    /**\n496     * 推这场对话往下走，走到做完、停下或者出错为止。自己不往外抛。\n497     * 谁都可以调：插件把话交给它以后、重启后接着跑。已经在转就直接返回，刚说的话下一步会带上。\n498     * 副作用：发事件、调模型、执行工具、写库。\n499     */\n500    async run(): Promise<void> {\n501      //G 已经在转 → return。\n502      if (this.aborter !== undefined) return;\n503  \n504      //M 备好这一轮的取消开关，状态改成 running，跑循环；不管怎么结束都把开关收掉。\n505      const aborter = new AbortController();\n506      this.aborter = aborter;\n507      this.change('running', '');\n508      try {\n509        await this.loop(aborter.signal);\n510      } catch (error) {\n511        //G 被喊停时请求是被掐断的，状态已经是 stopped；还是 running 才算出错。\n512        if (this.row.state === 'running') {\n513          const reason = textModule.getMessage(error);\n514          this.change('failed', `出错了：${reason}`);\n515        }\n516      } finally {\n517        this.aborter = undefined;\n518      }\n519  \n520      //G 收尾的那一下又有人说话 → 再转一轮。喊停后慢工具还在收尾时来的话也在这里转，不然要等下一句话才处理。\n521      if (this.inbox.length > 0) {\n522        void this.run();\n523      }\n524    }\n525  \n```\n\n### 解释\n- 谁都可以调：插件把话交给它以后、重启后接着跑（src7/Main.ts 的 L163–L169）。\n- 三步见下面三个子块。\n\n### 调到别处\nsrc7/Sessions.ts:531 loop；src7/Sessions.ts:697 change；src7/utils/Text.ts:17 getMessage",
+    "body": "**行号：L495–L525**\n\n### 代码原文\n```ts\n495    /**\n496     * 推这场对话往下走，走到做完、停下或者出错为止。自己不往外抛。\n497     * 谁都可以调：插件把话交给它以后、重启后接着跑。已经在转就直接返回，刚说的话下一步会带上。\n498     * 副作用：发事件、调模型、执行工具、写库。\n499     */\n500    async run(): Promise<void> {\n501      //G 已经在转 → return。\n502      if (this.aborter !== undefined) return;\n503  \n504      //M 备好这一轮的取消开关，状态改成 running，跑循环；不管怎么结束都把开关收掉。\n505      const aborter = new AbortController();\n506      this.aborter = aborter;\n507      this.change('running', '');\n508      try {\n509        await this.loop(aborter.signal);\n510      } catch (error) {\n511        //G 被喊停时请求是被掐断的，状态已经是 stopped；还是 running 才算出错。\n512        if (this.row.state === 'running') {\n513          const reason = textModule.getMessage(error);\n514          this.change('failed', `出错了：${reason}`);\n515        }\n516      } finally {\n517        this.aborter = undefined;\n518      }\n519  \n520      //G 收尾的那一下又有人说话 → 再转一轮。喊停后慢工具还在收尾时来的话也在这里转，不然要等下一句话才处理。\n521      if (this.inbox.length > 0) {\n522        void this.run();\n523      }\n524    }\n525  \n```\n\n### 解释\n- 谁都可以调：插件把话交给它以后、重启后接着跑（src7/Main.ts 的 L163–L169）。\n- 三步见下面三个子块。\n\n### 调到别处\n- 骨架：[Sessions.ts L531](#lines=Sessions.json&line=531) loop\n- 骨架：[Sessions.ts L697](#lines=Sessions.json&line=697) change\n- 骨架工具：[Text.ts:17](src7/utils/Text.ts:17) getMessage",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -472,9 +472,9 @@
   {
     "id": "r-sessions-22-1",
     "parent": "r-sessions-22",
-    "title": "L495–L503 注释、函数头，已经在转就返回",
+    "title": "L495–L503 已在转就返回",
     "summary": "aborter 有值说明这一轮还在转，刚说的话下一步会带上，直接返回。",
-    "body": "**行号：L495–L503**\n\n### 代码原文\n```ts\n495    /**\n496     * 推这场对话往下走，走到做完、停下或者出错为止。自己不往外抛。\n497     * 谁都可以调：插件把话交给它以后、重启后接着跑。已经在转就直接返回，刚说的话下一步会带上。\n498     * 副作用：发事件、调模型、执行工具、写库。\n499     */\n500    async run(): Promise<void> {\n501      //G 已经在转 → return。\n502      if (this.aborter !== undefined) return;\n503  \n```\n\n### 解释\n- L495–L499：文档注释：走到做完、停下或出错为止，自己不往外抛；已经在转就直接返回；副作用发事件、调模型、执行工具、写库。\n- L500：`async run(): Promise<void>`。\n- L501–L502：守卫：`this.aborter !== undefined` → return。\n- L503：空行。\n\n### 调到别处\n无",
+    "body": "**行号：L495–L503**\n\n### 代码原文\n```ts\n495    /**\n496     * 推这场对话往下走，走到做完、停下或者出错为止。自己不往外抛。\n497     * 谁都可以调：插件把话交给它以后、重启后接着跑。已经在转就直接返回，刚说的话下一步会带上。\n498     * 副作用：发事件、调模型、执行工具、写库。\n499     */\n500    async run(): Promise<void> {\n501      //G 已经在转 → return。\n502      if (this.aborter !== undefined) return;\n503  \n```\n\n### 解释\n- L495–L499：文档注释：\n  - 走到做完、停下或出错为止，自己不往外抛\n  - 已经在转就直接返回\n  - 副作用发事件、调模型、执行工具、写库。\n- L500：`async run(): Promise<void>`。\n- L501–L502：守卫：`this.aborter !== undefined` → return。\n- L503：空行。\n\n### 调到别处\n无",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -482,9 +482,9 @@
   {
     "id": "r-sessions-22-2",
     "parent": "r-sessions-22",
-    "title": "L504–L519 备好开关、改成 running、跑循环、出错收口",
+    "title": "L504–L519 备开关、跑循环、收口",
     "summary": "新建 AbortController 存为这一轮的开关，状态改成 running（发 session/change），await loop；出错时只有状态仍是 running 才算真出错，改成 failed；finally 里把开关收掉。",
-    "body": "**行号：L504–L519**\n\n### 代码原文\n```ts\n504      //M 备好这一轮的取消开关，状态改成 running，跑循环；不管怎么结束都把开关收掉。\n505      const aborter = new AbortController();\n506      this.aborter = aborter;\n507      this.change('running', '');\n508      try {\n509        await this.loop(aborter.signal);\n510      } catch (error) {\n511        //G 被喊停时请求是被掐断的，状态已经是 stopped；还是 running 才算出错。\n512        if (this.row.state === 'running') {\n513          const reason = textModule.getMessage(error);\n514          this.change('failed', `出错了：${reason}`);\n515        }\n516      } finally {\n517        this.aborter = undefined;\n518      }\n519  \n```\n\n### 解释\n- L504：注释。\n- L505–L506：`aborter = new AbortController()`，`this.aborter = aborter`。\n- L507：`this.change('running', '')`。\n- L508–L509：`try { await this.loop(aborter.signal) }`。\n- L510–L515：catch：被喊停时请求是被掐断的，状态已经是 stopped，不算出错；还是 running 才 `change('failed', '出错了：原因')`。\n- L516–L518：finally：`this.aborter = undefined`。\n- L519：空行。\n\n### 调到别处\nsrc7/Sessions.ts:697 change；src7/Sessions.ts:531 loop；src7/utils/Text.ts:17 getMessage",
+    "body": "**行号：L504–L519**\n\n### 代码原文\n```ts\n504      //M 备好这一轮的取消开关，状态改成 running，跑循环；不管怎么结束都把开关收掉。\n505      const aborter = new AbortController();\n506      this.aborter = aborter;\n507      this.change('running', '');\n508      try {\n509        await this.loop(aborter.signal);\n510      } catch (error) {\n511        //G 被喊停时请求是被掐断的，状态已经是 stopped；还是 running 才算出错。\n512        if (this.row.state === 'running') {\n513          const reason = textModule.getMessage(error);\n514          this.change('failed', `出错了：${reason}`);\n515        }\n516      } finally {\n517        this.aborter = undefined;\n518      }\n519  \n```\n\n### 解释\n- L504：注释。\n- L505–L506：`aborter = new AbortController()`，`this.aborter = aborter`。\n- L507：`this.change('running', '')`。\n- L508–L509：`try { await this.loop(aborter.signal) }`。\n- L510–L515：catch：\n  - 被喊停时请求是被掐断的，状态已经是 stopped，不算出错\n  - 还是 running 才 `change('failed', '出错了：原因')`。\n- L516–L518：finally：`this.aborter = undefined`。\n- L519：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L697](#lines=Sessions.json&line=697) change\n- 骨架：[Sessions.ts L531](#lines=Sessions.json&line=531) loop\n- 骨架工具：[Text.ts:17](src7/utils/Text.ts:17) getMessage",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -492,9 +492,9 @@
   {
     "id": "r-sessions-22-3",
     "parent": "r-sessions-22",
-    "title": "L520–L525 收尾时又有话就再转一轮",
+    "title": "L520–L525 有新话就再转一轮",
     "summary": "这一轮结束的那一下 inbox 里又有话（包括喊停后慢工具还在收尾时来的话），就再调一次 run，不用等下一句话。",
-    "body": "**行号：L520–L525**\n\n### 代码原文\n```ts\n520      //G 收尾的那一下又有人说话 → 再转一轮。喊停后慢工具还在收尾时来的话也在这里转，不然要等下一句话才处理。\n521      if (this.inbox.length > 0) {\n522        void this.run();\n523      }\n524    }\n525  \n```\n\n### 解释\n- L520：守卫注释。\n- L521–L523：`this.inbox.length > 0` → `void this.run()`（不 await）。\n- L524：函数结束。L525：空行。\n\n### 调到别处\nsrc7/Sessions.ts:500 run（自己）",
+    "body": "**行号：L520–L525**\n\n### 代码原文\n```ts\n520      //G 收尾的那一下又有人说话 → 再转一轮。喊停后慢工具还在收尾时来的话也在这里转，不然要等下一句话才处理。\n521      if (this.inbox.length > 0) {\n522        void this.run();\n523      }\n524    }\n525  \n```\n\n### 解释\n- L520：守卫注释。\n- L521–L523：`this.inbox.length > 0` → `void this.run()`（不 await）。\n- L524：函数结束。L525：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L500](#lines=Sessions.json&line=500) run（自己）",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -502,9 +502,9 @@
   {
     "id": "r-sessions-23",
     "parent": "r-sessions-g3",
-    "title": "L526–L641 loop：循环本身",
-    "summary": "一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到三种情况之一：模型不再要工具（done）、有人喊停、某个关口上有插件写了 stop。四个关口里有三个在这里发。",
-    "body": "**行号：L526–L641**\n\n### 代码原文\n```ts\n526    /**\n527     * 循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到下面三种情况之一：\n528     * 模型不再要工具（做完了）；有人喊停（stop()）；某个关口上有插件写了 stop。\n529     * @param signal 这一轮的取消信号。\n530     */\n531    private async loop(signal: AbortSignal): Promise<void> {\n532      //M step 只用来记这是第几步（给跟踪看），不拿它限制会话。\n533      for (let step = 1; ; step += 1) {\n534        //G 被喊停了 → 不往下走。\n535        if (this.row.state !== 'running') return;\n536  \n537        //M 用户说了、还没接进对话的话，这时候接进去。\n538        for (const waiting of this.inbox.splice(0)) {\n539          this.append(waiting);\n540        }\n541  \n542        //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/request）。\n543        const request: ChatRequest = {\n544          session: this,\n545          model: this.row.model,\n546          thinking: this.row.thinking,\n547          system: [],\n548          tools: this.ctx.tools.list(this.row.kind),\n549          messages: [...this.row.messages],\n550          signal,\n551        };\n552        await this.ctx.serial('session/request', request);\n553  \n554        //G 有插件喊停 → 不调模型，这一轮停在这里，理由写进 reply。\n555        if (request.stop !== undefined) {\n556          this.stop(request.stop);\n557          return;\n558        }\n559  \n560        //T 跟踪：调模型；插件已经给了回答（假模型）就写明没有调。\n561        const vars = {\n562          会话: this.id,\n563          第几步: step,\n564          模型: request.model,\n565          对话几条: request.messages.length,\n566        };\n567        let doing = '调模型';\n568        if (request.answer !== undefined) {\n569          doing = '插件已经给了回答，不调模型';\n570        }\n571        this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);\n572  \n573        //M 调模型（Sessions.chat，就在本文件上面）。插件已经给了回答（假模型）就不发请求。\n574        let answer = request.answer;\n575        if (answer === undefined) {\n576          answer = await this.ctx.sessions.chat(request);\n577        }\n578  \n579        //G 等模型的时候被喊停了 → 这次回答不要了。\n580        if (this.row.state !== 'running') return;\n581  \n582        //M 关口二，模型回来之后：回答接进对话之前，带着回答交给插件挨个看（session/after-model）。\n583        const answered: AnsweredRequest = { ...request, answer };\n584        await this.ctx.serial('session/after-model', answered);\n585  \n586        //G 有插件喊停 → 这次回答不要了（里面要的工具也不执行），这一轮停在这里。\n587        if (answered.stop !== undefined) {\n588          this.stop(answered.stop);\n589          return;\n590        }\n591  \n592        //M 插件可能改了、换了回答，以最后这一份为准，接进对话。\n593        answer = answered.answer;\n594        this.append(answer);\n595  \n596        //M 从回答里挑出工具调用。\n597        const calls = answer.content.filter((block): block is piAi.ToolCall => {\n598          return block.type === 'toolCall';\n599        });\n600  \n601        //M 模型没要工具 → 这一轮做完了，它说的就是回给用户的话。\n602        if (calls.length === 0) {\n603          const reply = piAi.contentText(answer.content);\n604          this.change('done', reply);\n605          return;\n606        }\n607  \n608        //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。\n609        for (const call of calls) {\n610          const executed = await this.ctx.tools.execute(call, this, signal);\n611  \n612          //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。\n613          const done: ToolDone = { session: this, call, outcome: executed };\n614          await this.ctx.serial('session/after-tool', done);\n615  \n616          //M 插件可能改了结果，以改过的为准。\n617          const outcome = done.outcome;\n618  \n619          //M 结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。\n620          const textBlock: piAi.TextContent = { type: 'text', text: outcome.text };\n621          const images = outcome.images ?? [];\n622          const result: piAi.Message = {\n623            role: 'toolResult',\n624            toolCallId: call.id,\n625            toolName: call.name,\n626            content: [textBlock, ...images],\n627            isError: outcome.isError,\n628            timestamp: Date.now(),\n629          };\n630          //M 把打包好的工具结果追加到对话历史并落库广播，供下一步继续喂给模型。\n631          this.append(result);\n632  \n633          //G 有插件喊停 → 这一轮停在这里。结果已经接进对话（要和工具调用配对）；\n634          //G   这一批后面的工具，Tools.execute 看到停了就不执行，只交回“未执行”接进对话。\n635          if (done.stop !== undefined) {\n636            this.stop(done.stop);\n637          }\n638        }\n639      }\n640    }\n641  \n```\n\n### 解释\n- 输入：这一轮的取消信号 signal。\n- 六步见下面六个子块。\n\n### 调到别处\nsrc7/Tools.ts:126 list；src7/Tools.ts:141 execute；src7/Sessions.ts:404 chat；src7/Sessions.ts:648 stop；src7/Sessions.ts:685 append；src7/Sessions.ts:697 change；src7/utils/Trace.ts:80 trace",
+    "title": "L526–L641 跑会话主循环",
+    "summary": "一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到三种情况之一：模型不再要工具（done）、有人喊停、某个关口上有插件写了 stop。四个关口里有三个在这里发。（对应：`loop`）",
+    "body": "**行号：L526–L641**\n\n### 代码原文\n```ts\n526    /**\n527     * 循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到下面三种情况之一：\n528     * 模型不再要工具（做完了）；有人喊停（stop()）；某个关口上有插件写了 stop。\n529     * @param signal 这一轮的取消信号。\n530     */\n531    private async loop(signal: AbortSignal): Promise<void> {\n532      //M step 只用来记这是第几步（给跟踪看），不拿它限制会话。\n533      for (let step = 1; ; step += 1) {\n534        //G 被喊停了 → 不往下走。\n535        if (this.row.state !== 'running') return;\n536  \n537        //M 用户说了、还没接进对话的话，这时候接进去。\n538        for (const waiting of this.inbox.splice(0)) {\n539          this.append(waiting);\n540        }\n541  \n542        //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/request）。\n543        const request: ChatRequest = {\n544          session: this,\n545          model: this.row.model,\n546          thinking: this.row.thinking,\n547          system: [],\n548          tools: this.ctx.tools.list(this.row.kind),\n549          messages: [...this.row.messages],\n550          signal,\n551        };\n552        await this.ctx.serial('session/request', request);\n553  \n554        //G 有插件喊停 → 不调模型，这一轮停在这里，理由写进 reply。\n555        if (request.stop !== undefined) {\n556          this.stop(request.stop);\n557          return;\n558        }\n559  \n560        //T 跟踪：调模型；插件已经给了回答（假模型）就写明没有调。\n561        const vars = {\n562          会话: this.id,\n563          第几步: step,\n564          模型: request.model,\n565          对话几条: request.messages.length,\n566        };\n567        let doing = '调模型';\n568        if (request.answer !== undefined) {\n569          doing = '插件已经给了回答，不调模型';\n570        }\n571        this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);\n572  \n573        //M 调模型（Sessions.chat，就在本文件上面）。插件已经给了回答（假模型）就不发请求。\n574        let answer = request.answer;\n575        if (answer === undefined) {\n576          answer = await this.ctx.sessions.chat(request);\n577        }\n578  \n579        //G 等模型的时候被喊停了 → 这次回答不要了。\n580        if (this.row.state !== 'running') return;\n581  \n582        //M 关口二，模型回来之后：回答接进对话之前，带着回答交给插件挨个看（session/after-model）。\n583        const answered: AnsweredRequest = { ...request, answer };\n584        await this.ctx.serial('session/after-model', answered);\n585  \n586        //G 有插件喊停 → 这次回答不要了（里面要的工具也不执行），这一轮停在这里。\n587        if (answered.stop !== undefined) {\n588          this.stop(answered.stop);\n589          return;\n590        }\n591  \n592        //M 插件可能改了、换了回答，以最后这一份为准，接进对话。\n593        answer = answered.answer;\n594        this.append(answer);\n595  \n596        //M 从回答里挑出工具调用。\n597        const calls = answer.content.filter((block): block is piAi.ToolCall => {\n598          return block.type === 'toolCall';\n599        });\n600  \n601        //M 模型没要工具 → 这一轮做完了，它说的就是回给用户的话。\n602        if (calls.length === 0) {\n603          const reply = piAi.contentText(answer.content);\n604          this.change('done', reply);\n605          return;\n606        }\n607  \n608        //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。\n609        for (const call of calls) {\n610          const executed = await this.ctx.tools.execute(call, this, signal);\n611  \n612          //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。\n613          const done: ToolDone = { session: this, call, outcome: executed };\n614          await this.ctx.serial('session/after-tool', done);\n615  \n616          //M 插件可能改了结果，以改过的为准。\n617          const outcome = done.outcome;\n618  \n619          //M 结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。\n620          const textBlock: piAi.TextContent = { type: 'text', text: outcome.text };\n621          const images = outcome.images ?? [];\n622          const result: piAi.Message = {\n623            role: 'toolResult',\n624            toolCallId: call.id,\n625            toolName: call.name,\n626            content: [textBlock, ...images],\n627            isError: outcome.isError,\n628            timestamp: Date.now(),\n629          };\n630          //M 把打包好的工具结果追加到对话历史并落库广播，供下一步继续喂给模型。\n631          this.append(result);\n632  \n633          //G 有插件喊停 → 这一轮停在这里。结果已经接进对话（要和工具调用配对）；\n634          //G   这一批后面的工具，Tools.execute 看到停了就不执行，只交回“未执行”接进对话。\n635          if (done.stop !== undefined) {\n636            this.stop(done.stop);\n637          }\n638        }\n639      }\n640    }\n641  \n```\n\n### 解释\n- 输入：这一轮的取消信号 signal。\n- 六步见下面六个子块。\n\n### 调到别处\n- 骨架：[Tools.ts L126](#lines=Tools.json&line=126) list\n- 骨架：[Tools.ts L141](#lines=Tools.json&line=141) execute\n- 骨架：[Sessions.ts L404](#lines=Sessions.json&line=404) chat\n- 骨架：[Sessions.ts L648](#lines=Sessions.json&line=648) stop\n- 骨架：[Sessions.ts L685](#lines=Sessions.json&line=685) append\n- 骨架：[Sessions.ts L697](#lines=Sessions.json&line=697) change\n- 骨架工具：[Trace.ts:80](src7/utils/Trace.ts:80) trace",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -512,9 +512,9 @@
   {
     "id": "r-sessions-23-1",
     "parent": "r-sessions-23",
-    "title": "L526–L541 注释、for 开头、停了就退出、接进 inbox",
+    "title": "L526–L541 开头检查、接 inbox",
     "summary": "每一步开头先看状态：不是 running（被喊停了）就退出；再把 inbox 里攒的话全部接进对话。",
-    "body": "**行号：L526–L541**\n\n### 代码原文\n```ts\n526    /**\n527     * 循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到下面三种情况之一：\n528     * 模型不再要工具（做完了）；有人喊停（stop()）；某个关口上有插件写了 stop。\n529     * @param signal 这一轮的取消信号。\n530     */\n531    private async loop(signal: AbortSignal): Promise<void> {\n532      //M step 只用来记这是第几步（给跟踪看），不拿它限制会话。\n533      for (let step = 1; ; step += 1) {\n534        //G 被喊停了 → 不往下走。\n535        if (this.row.state !== 'running') return;\n536  \n537        //M 用户说了、还没接进对话的话，这时候接进去。\n538        for (const waiting of this.inbox.splice(0)) {\n539          this.append(waiting);\n540        }\n541  \n```\n\n### 解释\n- L526–L530：文档注释：一步的定义和三种结束情况。\n- L531：`private async loop(signal: AbortSignal): Promise<void>`。\n- L532–L533：`for (let step = 1; ; step += 1)`：step 只给跟踪看是第几步，不拿它限制会话。\n- L534–L535：守卫：`this.row.state !== 'running'` → return。\n- L537–L540：`this.inbox.splice(0)` 取出并清空 inbox，逐条 `this.append(waiting)`。\n- L541：空行。\n\n### 调到别处\nsrc7/Sessions.ts:685 append",
+    "body": "**行号：L526–L541**\n\n### 代码原文\n```ts\n526    /**\n527     * 循环本身：一步 = 调一次模型，加上执行它要的工具。不数步数，一直走到下面三种情况之一：\n528     * 模型不再要工具（做完了）；有人喊停（stop()）；某个关口上有插件写了 stop。\n529     * @param signal 这一轮的取消信号。\n530     */\n531    private async loop(signal: AbortSignal): Promise<void> {\n532      //M step 只用来记这是第几步（给跟踪看），不拿它限制会话。\n533      for (let step = 1; ; step += 1) {\n534        //G 被喊停了 → 不往下走。\n535        if (this.row.state !== 'running') return;\n536  \n537        //M 用户说了、还没接进对话的话，这时候接进去。\n538        for (const waiting of this.inbox.splice(0)) {\n539          this.append(waiting);\n540        }\n541  \n```\n\n### 解释\n- L526–L530：文档注释：一步的定义和三种结束情况。\n- L531：`private async loop(signal: AbortSignal): Promise<void>`。\n- L532–L533：`for (let step = 1; ; step += 1)`：step 只给跟踪看是第几步，不拿它限制会话。\n- L534–L535：守卫：`this.row.state !== 'running'` → return。\n- L537–L540：`this.inbox.splice(0)` 取出并清空 inbox，逐条 `this.append(waiting)`。\n- L541：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L685](#lines=Sessions.json&line=685) append",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -522,9 +522,9 @@
   {
     "id": "r-sessions-23-2",
     "parent": "r-sessions-23",
-    "title": "L542–L559 关口一：备好请求，挨个问 session/request",
-    "summary": "拼这一步的 ChatRequest（工具清单向 Tools 要，对话是副本，system 先空着），用 ctx.serial 交给插件挨个改；有人写了 stop 就喊停、不调模型。",
-    "body": "**行号：L542–L559**\n\n### 代码原文\n```ts\n542        //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/request）。\n543        const request: ChatRequest = {\n544          session: this,\n545          model: this.row.model,\n546          thinking: this.row.thinking,\n547          system: [],\n548          tools: this.ctx.tools.list(this.row.kind),\n549          messages: [...this.row.messages],\n550          signal,\n551        };\n552        await this.ctx.serial('session/request', request);\n553  \n554        //G 有插件喊停 → 不调模型，这一轮停在这里，理由写进 reply。\n555        if (request.stop !== undefined) {\n556          this.stop(request.stop);\n557          return;\n558        }\n559  \n```\n\n### 解释\n- L542：注释。\n- L543–L551：`request`：session、model、thinking 取自记录；`system: []`；`tools: this.ctx.tools.list(this.row.kind)`；`messages: [...this.row.messages]` 副本；signal。\n- L552：`await this.ctx.serial('session/request', request)`。\n- L554–L558：守卫：`request.stop` 有值 → `this.stop(request.stop)`，return。\n- L559：空行。\n\n### 调到别处\nsrc7/Tools.ts:126 list；src7/Sessions.ts:648 stop；cordis 的 ctx.serial",
+    "title": "L542–L559 备请求、问关口一",
+    "summary": "拼这一步的 ChatRequest（工具清单向 Tools 要，对话是副本，system 先空着），用 ctx.serial 交给插件挨个改；有人写了 stop 就喊停、不调模型。（对应：`session/request`）",
+    "body": "**行号：L542–L559**\n\n### 代码原文\n```ts\n542        //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/request）。\n543        const request: ChatRequest = {\n544          session: this,\n545          model: this.row.model,\n546          thinking: this.row.thinking,\n547          system: [],\n548          tools: this.ctx.tools.list(this.row.kind),\n549          messages: [...this.row.messages],\n550          signal,\n551        };\n552        await this.ctx.serial('session/request', request);\n553  \n554        //G 有插件喊停 → 不调模型，这一轮停在这里，理由写进 reply。\n555        if (request.stop !== undefined) {\n556          this.stop(request.stop);\n557          return;\n558        }\n559  \n```\n\n### 解释\n- L542：注释。\n- L543–L551：`request`：\n  - session、model、thinking 取自记录\n  - `system: []`\n  - `tools: this.ctx.tools.list(this.row.kind)`\n  - `messages: [...this.row.messages]` 副本\n  - signal。\n- L552：`await this.ctx.serial('session/request', request)`。\n- L554–L558：守卫：`request.stop` 有值 → `this.stop(request.stop)`，return。\n- L559：空行。\n\n### 调到别处\n- 骨架：[Tools.ts L126](#lines=Tools.json&line=126) list\n- 骨架：[Sessions.ts L648](#lines=Sessions.json&line=648) stop\n- Node/第三方：cordis 的 ctx.serial",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -532,9 +532,9 @@
   {
     "id": "r-sessions-23-3",
     "parent": "r-sessions-23",
-    "title": "L560–L578 跟踪，然后调模型",
+    "title": "L560–L578 跟踪并调模型",
     "summary": "打一条 trace（第几步、模型、对话几条；插件已给回答就写明不调模型）；request.answer 为空才调 Sessions.chat 发请求。",
-    "body": "**行号：L560–L578**\n\n### 代码原文\n```ts\n560        //T 跟踪：调模型；插件已经给了回答（假模型）就写明没有调。\n561        const vars = {\n562          会话: this.id,\n563          第几步: step,\n564          模型: request.model,\n565          对话几条: request.messages.length,\n566        };\n567        let doing = '调模型';\n568        if (request.answer !== undefined) {\n569          doing = '插件已经给了回答，不调模型';\n570        }\n571        this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);\n572  \n573        //M 调模型（Sessions.chat，就在本文件上面）。插件已经给了回答（假模型）就不发请求。\n574        let answer = request.answer;\n575        if (answer === undefined) {\n576          answer = await this.ctx.sessions.chat(request);\n577        }\n578  \n```\n\n### 解释\n- L560：`//T` 跟踪注释。\n- L561–L566：`vars`：会话、第几步、模型、对话几条。\n- L567–L570：`doing` 默认“调模型”；有 answer 就改成“插件已经给了回答，不调模型”。\n- L571：`this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars)`。\n- L573：注释：Sessions.chat 就在本文件上面。\n- L574–L577：`answer = request.answer`；undefined 才 `await this.ctx.sessions.chat(request)`。\n- L578：空行。\n\n### 调到别处\nsrc7/Sessions.ts:404 chat；src7/utils/Trace.ts:80 trace",
+    "body": "**行号：L560–L578**\n\n### 代码原文\n```ts\n560        //T 跟踪：调模型；插件已经给了回答（假模型）就写明没有调。\n561        const vars = {\n562          会话: this.id,\n563          第几步: step,\n564          模型: request.model,\n565          对话几条: request.messages.length,\n566        };\n567        let doing = '调模型';\n568        if (request.answer !== undefined) {\n569          doing = '插件已经给了回答，不调模型';\n570        }\n571        this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);\n572  \n573        //M 调模型（Sessions.chat，就在本文件上面）。插件已经给了回答（假模型）就不发请求。\n574        let answer = request.answer;\n575        if (answer === undefined) {\n576          answer = await this.ctx.sessions.chat(request);\n577        }\n578  \n```\n\n### 解释\n- L560：`//T` 跟踪注释。\n- L561–L566：`vars`：\n  - 会话\n  - 第几步\n  - 模型\n  - 对话几条\n- L567–L570：`doing`：\n  - 默认“调模型”\n  - 有 answer 就改成“插件已经给了回答，不调模型”。\n- L571：`this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars)`。\n- L573：注释：Sessions.chat 就在本文件上面。\n- L574–L577：\n  - `answer = request.answer`\n  - undefined 才 `await this.ctx.sessions.chat(request)`。\n- L578：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L404](#lines=Sessions.json&line=404) chat\n- 骨架工具：[Trace.ts:80](src7/utils/Trace.ts:80) trace",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -542,9 +542,9 @@
   {
     "id": "r-sessions-23-4",
     "parent": "r-sessions-23",
-    "title": "L579–L595 关口二：带着回答问 session/after-model，再接进对话",
-    "summary": "等模型时被喊停就丢掉回答；否则把回答放进 AnsweredRequest 挨个给插件看，有人写 stop 就喊停（回答和工具都不要了）；没人停就以插件改过的最后一份为准接进对话。",
-    "body": "**行号：L579–L595**\n\n### 代码原文\n```ts\n579        //G 等模型的时候被喊停了 → 这次回答不要了。\n580        if (this.row.state !== 'running') return;\n581  \n582        //M 关口二，模型回来之后：回答接进对话之前，带着回答交给插件挨个看（session/after-model）。\n583        const answered: AnsweredRequest = { ...request, answer };\n584        await this.ctx.serial('session/after-model', answered);\n585  \n586        //G 有插件喊停 → 这次回答不要了（里面要的工具也不执行），这一轮停在这里。\n587        if (answered.stop !== undefined) {\n588          this.stop(answered.stop);\n589          return;\n590        }\n591  \n592        //M 插件可能改了、换了回答，以最后这一份为准，接进对话。\n593        answer = answered.answer;\n594        this.append(answer);\n595  \n```\n\n### 解释\n- L579–L580：守卫：等模型的时候被喊停（不再 running）→ return，这次回答不要了。\n- L582–L584：`answered = { ...request, answer }`，`await this.ctx.serial('session/after-model', answered)`。\n- L586–L590：守卫：`answered.stop` 有值 → `this.stop(...)`，return。\n- L592–L594：`answer = answered.answer`，`this.append(answer)`。\n- L595：空行。\n\n### 调到别处\nsrc7/Sessions.ts:648 stop；src7/Sessions.ts:685 append",
+    "title": "L579–L595 问关口二、接回答",
+    "summary": "等模型时被喊停就丢掉回答；否则把回答放进 AnsweredRequest 挨个给插件看，有人写 stop 就喊停（回答和工具都不要了）；没人停就以插件改过的最后一份为准接进对话。（对应：`session/after-model`）",
+    "body": "**行号：L579–L595**\n\n### 代码原文\n```ts\n579        //G 等模型的时候被喊停了 → 这次回答不要了。\n580        if (this.row.state !== 'running') return;\n581  \n582        //M 关口二，模型回来之后：回答接进对话之前，带着回答交给插件挨个看（session/after-model）。\n583        const answered: AnsweredRequest = { ...request, answer };\n584        await this.ctx.serial('session/after-model', answered);\n585  \n586        //G 有插件喊停 → 这次回答不要了（里面要的工具也不执行），这一轮停在这里。\n587        if (answered.stop !== undefined) {\n588          this.stop(answered.stop);\n589          return;\n590        }\n591  \n592        //M 插件可能改了、换了回答，以最后这一份为准，接进对话。\n593        answer = answered.answer;\n594        this.append(answer);\n595  \n```\n\n### 解释\n- L579–L580：守卫：等模型的时候被喊停（不再 running）→ return，这次回答不要了。\n- L582–L584：`answered = { ...request, answer }`，`await this.ctx.serial('session/after-model', answered)`。\n- L586–L590：守卫：`answered.stop` 有值 → `this.stop(...)`，return。\n- L592–L594：`answer = answered.answer`，`this.append(answer)`。\n- L595：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L648](#lines=Sessions.json&line=648) stop\n- 骨架：[Sessions.ts L685](#lines=Sessions.json&line=685) append",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -552,9 +552,9 @@
   {
     "id": "r-sessions-23-5",
     "parent": "r-sessions-23",
-    "title": "L596–L607 挑出工具调用，没要工具就做完",
+    "title": "L596–L607 挑出工具调用",
     "summary": "从回答内容里过滤出 type 为 toolCall 的块；一个都没有，这一轮就做完了：回答的文字就是回给用户的话，状态改成 done。",
-    "body": "**行号：L596–L607**\n\n### 代码原文\n```ts\n596        //M 从回答里挑出工具调用。\n597        const calls = answer.content.filter((block): block is piAi.ToolCall => {\n598          return block.type === 'toolCall';\n599        });\n600  \n601        //M 模型没要工具 → 这一轮做完了，它说的就是回给用户的话。\n602        if (calls.length === 0) {\n603          const reply = piAi.contentText(answer.content);\n604          this.change('done', reply);\n605          return;\n606        }\n607  \n```\n\n### 解释\n- L596–L599：`calls = answer.content.filter(block.type === 'toolCall')`。\n- L601：注释。\n- L602–L606：`calls.length === 0` → `reply = piAi.contentText(answer.content)`，`this.change('done', reply)`，return。\n- L607：空行。\n\n### 调到别处\nsrc7/Sessions.ts:697 change；pi 的 contentText（外部包）",
+    "body": "**行号：L596–L607**\n\n### 代码原文\n```ts\n596        //M 从回答里挑出工具调用。\n597        const calls = answer.content.filter((block): block is piAi.ToolCall => {\n598          return block.type === 'toolCall';\n599        });\n600  \n601        //M 模型没要工具 → 这一轮做完了，它说的就是回给用户的话。\n602        if (calls.length === 0) {\n603          const reply = piAi.contentText(answer.content);\n604          this.change('done', reply);\n605          return;\n606        }\n607  \n```\n\n### 解释\n- L596–L599：`calls = answer.content.filter(block.type === 'toolCall')`。\n- L601：注释。\n- L602–L606：`calls.length === 0` → `reply = piAi.contentText(answer.content)`，`this.change('done', reply)`，return。\n- L607：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L697](#lines=Sessions.json&line=697) change\n- Node/第三方：pi 的 contentText（外部包）",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -562,9 +562,9 @@
   {
     "id": "r-sessions-23-6",
     "parent": "r-sessions-23",
-    "title": "L608–L641 逐个执行工具，过关口四，结果接进对话",
+    "title": "L608–L641 执行工具、过关口四",
     "summary": "对每个工具调用：Tools.execute 执行（里面过关口三）；把结果包成 ToolDone 挨个问 session/after-tool；以插件改过的结果为准写成一条 toolResult 接进对话；有人写 stop 就喊停，这一批后面的工具在 Tools.execute 开头被拦成“未执行”。走完回到 for 开头下一步。",
-    "body": "**行号：L608–L641**\n\n### 代码原文\n```ts\n608        //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。\n609        for (const call of calls) {\n610          const executed = await this.ctx.tools.execute(call, this, signal);\n611  \n612          //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。\n613          const done: ToolDone = { session: this, call, outcome: executed };\n614          await this.ctx.serial('session/after-tool', done);\n615  \n616          //M 插件可能改了结果，以改过的为准。\n617          const outcome = done.outcome;\n618  \n619          //M 结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。\n620          const textBlock: piAi.TextContent = { type: 'text', text: outcome.text };\n621          const images = outcome.images ?? [];\n622          const result: piAi.Message = {\n623            role: 'toolResult',\n624            toolCallId: call.id,\n625            toolName: call.name,\n626            content: [textBlock, ...images],\n627            isError: outcome.isError,\n628            timestamp: Date.now(),\n629          };\n630          //M 把打包好的工具结果追加到对话历史并落库广播，供下一步继续喂给模型。\n631          this.append(result);\n632  \n633          //G 有插件喊停 → 这一轮停在这里。结果已经接进对话（要和工具调用配对）；\n634          //G   这一批后面的工具，Tools.execute 看到停了就不执行，只交回“未执行”接进对话。\n635          if (done.stop !== undefined) {\n636            this.stop(done.stop);\n637          }\n638        }\n639      }\n640    }\n641  \n```\n\n### 解释\n- L608：注释：关口三在 Tools.execute 里。\n- L609–L610：`for (const call of calls)`，`executed = await this.ctx.tools.execute(call, this, signal)`。\n- L612–L614：`done: ToolDone = { session: this, call, outcome: executed }`，`await this.ctx.serial('session/after-tool', done)`。\n- L616–L617：`outcome = done.outcome`，以改过的为准。\n- L619–L629：toolResult：文字块 `{ type: 'text', text }` 在前，图片（没有就空数组）跟在后面；带 toolCallId、toolName、isError、timestamp。\n- L630–L631：`this.append(result)`。\n- L633–L637：守卫：`done.stop` 有值 → `this.stop(done.stop)`；结果已接进对话（要和工具调用配对），不 return，后面的工具交回“未执行”也接进去。\n- L638：工具 for 结束。L639：步骤 for 结束。L640：函数结束。L641：空行。\n\n### 调到别处\nsrc7/Tools.ts:141 execute；src7/Sessions.ts:685 append；src7/Sessions.ts:648 stop",
+    "body": "**行号：L608–L641**\n\n### 代码原文\n```ts\n608        //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。\n609        for (const call of calls) {\n610          const executed = await this.ctx.tools.execute(call, this, signal);\n611  \n612          //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。\n613          const done: ToolDone = { session: this, call, outcome: executed };\n614          await this.ctx.serial('session/after-tool', done);\n615  \n616          //M 插件可能改了结果，以改过的为准。\n617          const outcome = done.outcome;\n618  \n619          //M 结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。\n620          const textBlock: piAi.TextContent = { type: 'text', text: outcome.text };\n621          const images = outcome.images ?? [];\n622          const result: piAi.Message = {\n623            role: 'toolResult',\n624            toolCallId: call.id,\n625            toolName: call.name,\n626            content: [textBlock, ...images],\n627            isError: outcome.isError,\n628            timestamp: Date.now(),\n629          };\n630          //M 把打包好的工具结果追加到对话历史并落库广播，供下一步继续喂给模型。\n631          this.append(result);\n632  \n633          //G 有插件喊停 → 这一轮停在这里。结果已经接进对话（要和工具调用配对）；\n634          //G   这一批后面的工具，Tools.execute 看到停了就不执行，只交回“未执行”接进对话。\n635          if (done.stop !== undefined) {\n636            this.stop(done.stop);\n637          }\n638        }\n639      }\n640    }\n641  \n```\n\n### 解释\n- L608：注释：关口三在 Tools.execute 里。\n- L609–L610：`for (const call of calls)`，`executed = await this.ctx.tools.execute(call, this, signal)`。\n- L612–L614：`done: ToolDone = { session: this, call, outcome: executed }`，`await this.ctx.serial('session/after-tool', done)`。\n- L616–L617：`outcome = done.outcome`，以改过的为准。\n- L619–L629：toolResult：\n  - 文字块 `{ type: 'text', text }` 在前，图片（没有就空数组）跟在后面\n  - 带 toolCallId、toolName、isError、timestamp。\n- L630–L631：`this.append(result)`。\n- L633–L637：守卫：\n  - `done.stop` 有值 → `this.stop(done.stop)`\n  - 结果已接进对话（要和工具调用配对），不 return，后面的工具交回“未执行”也接进去。\n- L638：工具 for 结束。L639：步骤 for 结束。L640：函数结束。L641：空行。\n\n### 调到别处\n- 骨架：[Tools.ts L141](#lines=Tools.json&line=141) execute\n- 骨架：[Sessions.ts L685](#lines=Sessions.json&line=685) append\n- 骨架：[Sessions.ts L648](#lines=Sessions.json&line=648) stop",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -572,9 +572,9 @@
   {
     "id": "r-sessions-g4",
     "parent": "r-sessions",
-    "title": "停止存储与改状态（L642–L704）",
+    "title": "L642–L704 停止存储与改状态",
     "summary": "stop、save、append、change。",
-    "body": "## 停止存储与改状态\n\n- L642–L662 stop：喊停：没在转就没东西可停；这一轮已经停了、还在收尾也不再停一次（免得再发 session/change，让 bots 把停下的话再发一遍）；否则状态改成 stopped（reply 写“已停止（谁）”），再 abort 掐断正在等的模型请求和慢工具。\n- L663–L680 save：把记录存进库：更新 updatedAt，把记录拆成对话和其余项两块，各自转 JSON，用 INSERT OR REPLACE 按主键整行覆盖写进 sessions 表。插件加的项在其余项里一起存。\n- L681–L691 append：往对话后面接一条：先推进 row.messages 并存库（保证不丢），再发 session/message 通知大家。\n- L692–L704 change：改状态：同时改 state 和 reply，存库，再发 session/change 通知大家。",
+    "body": "## 停止存储与改状态\n\n- L642–L662 stop：喊停：\n  - 没在转就没东西可停\n  - 这一轮已经停了、还在收尾也不再停一次（免得再发 session/change，让 bots 把停下的话再发一遍）\n  - 否则状态改成 stopped（reply 写“已停止（谁）”），再 abort 掐断正在等的模型请求和慢工具。\n- L663–L680 save：把记录存进库：\n  1. 更新 updatedAt\n  2. 把记录拆成对话和其余项两块\n  3. 各自转 JSON\n  4. 用 INSERT OR REPLACE 按主键整行覆盖写进 sessions 表\n  - 插件加的项在其余项里一起存。\n- L681–L691 append：往对话后面接一条：\n  1. 先推进 row.messages 并存库（保证不丢）\n  2. 再发 session/message 通知大家。\n- L692–L704 change：改状态：\n  1. 同时改 state 和 reply\n  2. 存库\n  3. 再发 session/change 通知大家。",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -582,9 +582,9 @@
   {
     "id": "r-sessions-24",
     "parent": "r-sessions-g4",
-    "title": "L642–L662 stop：喊停",
+    "title": "L642–L662 喊停会话",
     "summary": "没在转就没东西可停；这一轮已经停了、还在收尾也不再停一次（免得再发 session/change，让 bots 把停下的话再发一遍）；否则状态改成 stopped（reply 写“已停止（谁）”），再 abort 掐断正在等的模型请求和慢工具。",
-    "body": "**行号：L642–L662**\n\n### 代码原文\n```ts\n642    /**\n643     * 喊停。前台的 stop_session 工具、将来的界面按钮都调它；四个关口上有插件写了 stop，会话循环也调它。\n644     * @param by 谁喊的，或者为什么停（关口上插件写的 stop）。写进 reply：已停止（by）。\n645     * 副作用：状态改成 stopped；正在等的模型请求马上掐掉；正在跑的那个工具拿到同一个停止信号，\n646     *   慢的马上断开（快的照常做完），后面的不再执行。\n647     */\n648    stop(by: string): void {\n649      const aborter = this.aborter;\n650  \n651      //G 没在转 → 没有要停的。\n652      if (aborter === undefined) return;\n653  \n654      //G 这一轮已经停了、还在收尾（后面的工具交回“未执行”）→ 不再停一次。\n655      //G   再停一次会再发一次 session/change，bots 就会把停下的话再发给用户一遍。\n656      if (this.row.state !== 'running') return;\n657  \n658      //M 改写停止状态并落库广播，同时触发 abort 掐断等待中的模型请求与工具。\n659      this.change('stopped', `已停止（${by}）`);\n660      aborter.abort();\n661    }\n662  \n```\n\n### 解释\n- L642–L647：文档注释：前台的 stop_session 工具、界面按钮、关口上写了 stop 的都走这里；副作用：状态改 stopped，模型请求马上掐掉，正在跑的工具拿到同一个信号，后面的不再执行。\n- L648：`stop(by: string): void`。\n- L649：取出 `this.aborter`。\n- L651–L652：守卫：undefined（没在转）→ return。\n- L654–L656：守卫：状态已不是 running → return。\n- L658–L659：`this.change('stopped', '已停止（by）')`。\n- L660：`aborter.abort()`。\n- L661：函数结束。L662：空行。\n\n### 调到别处\nsrc7/Sessions.ts:697 change；调用方有 src7/Tools.ts:151、src7/Sessions.ts:382",
+    "body": "**行号：L642–L662**\n\n### 代码原文\n```ts\n642    /**\n643     * 喊停。前台的 stop_session 工具、将来的界面按钮都调它；四个关口上有插件写了 stop，会话循环也调它。\n644     * @param by 谁喊的，或者为什么停（关口上插件写的 stop）。写进 reply：已停止（by）。\n645     * 副作用：状态改成 stopped；正在等的模型请求马上掐掉；正在跑的那个工具拿到同一个停止信号，\n646     *   慢的马上断开（快的照常做完），后面的不再执行。\n647     */\n648    stop(by: string): void {\n649      const aborter = this.aborter;\n650  \n651      //G 没在转 → 没有要停的。\n652      if (aborter === undefined) return;\n653  \n654      //G 这一轮已经停了、还在收尾（后面的工具交回“未执行”）→ 不再停一次。\n655      //G   再停一次会再发一次 session/change，bots 就会把停下的话再发给用户一遍。\n656      if (this.row.state !== 'running') return;\n657  \n658      //M 改写停止状态并落库广播，同时触发 abort 掐断等待中的模型请求与工具。\n659      this.change('stopped', `已停止（${by}）`);\n660      aborter.abort();\n661    }\n662  \n```\n\n### 解释\n- L642–L647：文档注释：\n  - 前台的 stop_session 工具、界面按钮、关口上写了 stop 的都走这里\n  - 副作用：\n    - 状态改 stopped\n    - 模型请求马上掐掉\n    - 正在跑的工具拿到同一个信号，后面的不再执行。\n- L648：`stop(by: string): void`。\n- L649：取出 `this.aborter`。\n- L651–L652：守卫：undefined（没在转）→ return。\n- L654–L656：守卫：状态已不是 running → return。\n- L658–L659：`this.change('stopped', '已停止（by）')`。\n- L660：`aborter.abort()`。\n- L661：函数结束。L662：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L697](#lines=Sessions.json&line=697) change\n- 骨架：调用方有 [Tools.ts L151](#lines=Tools.json&line=151)、[Sessions.ts L382](#lines=Sessions.json&line=382)",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -592,9 +592,9 @@
   {
     "id": "r-sessions-25",
     "parent": "r-sessions-g4",
-    "title": "L663–L680 save：把记录存进库",
-    "summary": "更新 updatedAt，把记录拆成对话和其余项两块，各自转 JSON，用 INSERT OR REPLACE 按主键整行覆盖写进 sessions 表。插件加的项在其余项里一起存。",
-    "body": "**行号：L663–L680**\n\n### 代码原文\n```ts\n663    /**\n664     * 把记录存进库：对话一块，别的项（连同插件加的）一块。\n665     * 副作用：写库。\n666     */\n667    save(): void {\n668      this.row.updatedAt = Date.now();\n669  \n670      //M 记录拆成两块：对话一块，别的项（连同插件加的）一块，各自转成 JSON。\n671      const { messages, ...meta } = this.row;\n672      const metaJson = JSON.stringify(meta);\n673      const messagesJson = JSON.stringify(messages);\n674  \n675      //M 按主键覆盖持久化这一场会话的元信息与完整对话数组。\n676      const sql = 'INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)';\n677      const query = this.ctx.resources.db.query(sql);\n678      query.run(meta.id, metaJson, messagesJson);\n679    }\n680  \n```\n\n### 解释\n- L663–L666：文档注释，副作用写库。\n- L667：`save(): void`。\n- L668：`this.row.updatedAt = Date.now()`。\n- L670–L673：`const { messages, ...meta } = this.row`，两块各自 `JSON.stringify`。\n- L675–L678：`INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)`，`query.run(meta.id, metaJson, messagesJson)`。\n- L679：函数结束。L680：空行。\n\n### 调到别处\nsrc7/Resources.ts:147 db",
+    "title": "L663–L680 把记录存进库",
+    "summary": "更新 updatedAt，把记录拆成对话和其余项两块，各自转 JSON，用 INSERT OR REPLACE 按主键整行覆盖写进 sessions 表。插件加的项在其余项里一起存。（对应：`save`）",
+    "body": "**行号：L663–L680**\n\n### 代码原文\n```ts\n663    /**\n664     * 把记录存进库：对话一块，别的项（连同插件加的）一块。\n665     * 副作用：写库。\n666     */\n667    save(): void {\n668      this.row.updatedAt = Date.now();\n669  \n670      //M 记录拆成两块：对话一块，别的项（连同插件加的）一块，各自转成 JSON。\n671      const { messages, ...meta } = this.row;\n672      const metaJson = JSON.stringify(meta);\n673      const messagesJson = JSON.stringify(messages);\n674  \n675      //M 按主键覆盖持久化这一场会话的元信息与完整对话数组。\n676      const sql = 'INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)';\n677      const query = this.ctx.resources.db.query(sql);\n678      query.run(meta.id, metaJson, messagesJson);\n679    }\n680  \n```\n\n### 解释\n- L663–L666：文档注释，副作用写库。\n- L667：`save(): void`。\n- L668：`this.row.updatedAt = Date.now()`。\n- L670–L673：`const { messages, ...meta } = this.row`，两块各自 `JSON.stringify`。\n- L675–L678：`INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)`，`query.run(meta.id, metaJson, messagesJson)`。\n- L679：函数结束。L680：空行。\n\n### 调到别处\n- 骨架：[Resources.ts L147](#lines=Resources.json&line=147) db",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -602,9 +602,9 @@
   {
     "id": "r-sessions-26",
     "parent": "r-sessions-g4",
-    "title": "L681–L691 append：往对话后面接一条",
-    "summary": "先推进 row.messages 并存库（保证不丢），再发 session/message 通知大家。",
-    "body": "**行号：L681–L691**\n\n### 代码原文\n```ts\n681    /**\n682     * 往对话后面接一条：存库，通知大家。\n683     * @param message 用户的话、模型的回答，或者工具的结果。\n684     */\n685    private append(message: piAi.Message): void {\n686      //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。\n687      this.row.messages.push(message);\n688      this.save();\n689      this.ctx.emit('session/message', this, message);\n690    }\n691  \n```\n\n### 解释\n- L681–L684：文档注释：一条可以是用户的话、模型的回答或工具的结果。\n- L685：`private append(message: piAi.Message): void`。\n- L686–L688：`this.row.messages.push(message)`，`this.save()`。\n- L689：`this.ctx.emit('session/message', this, message)`。\n- L690：函数结束。L691：空行。\n\n### 调到别处\nsrc7/Sessions.ts:667 save",
+    "title": "L681–L691 往对话后追加一条",
+    "summary": "先推进 row.messages 并存库（保证不丢），再发 session/message 通知大家。（对应：`append`）",
+    "body": "**行号：L681–L691**\n\n### 代码原文\n```ts\n681    /**\n682     * 往对话后面接一条：存库，通知大家。\n683     * @param message 用户的话、模型的回答，或者工具的结果。\n684     */\n685    private append(message: piAi.Message): void {\n686      //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。\n687      this.row.messages.push(message);\n688      this.save();\n689      this.ctx.emit('session/message', this, message);\n690    }\n691  \n```\n\n### 解释\n- L681–L684：文档注释：一条可以是用户的话、模型的回答或工具的结果。\n- L685：`private append(message: piAi.Message): void`。\n- L686–L688：`this.row.messages.push(message)`，`this.save()`。\n- L689：`this.ctx.emit('session/message', this, message)`。\n- L690：函数结束。L691：空行。\n\n### 调到别处\n- 骨架：[Sessions.ts L667](#lines=Sessions.json&line=667) save",
     "sources": [
       "src7/Sessions.ts"
     ]
@@ -612,9 +612,9 @@
   {
     "id": "r-sessions-27",
     "parent": "r-sessions-g4",
-    "title": "L692–L704 change：改状态",
+    "title": "L692–L704 改会话状态",
     "summary": "同时改 state 和 reply，存库，再发 session/change 通知大家。",
-    "body": "**行号：L692–L704**\n\n### 代码原文\n```ts\n692    /**\n693     * 改状态：存库，通知大家。\n694     * @param state 新状态。\n695     * @param reply 这一轮的结果，要回给用户的话；刚开始转时是空的。\n696     */\n697    private change(state: SessionState, reply: string): void {\n698      //M 同步更新状态与结果正文并落库，再通知监听状态变更的插件。\n699      this.row.state = state;\n700      this.row.reply = reply;\n701      this.save();\n702      this.ctx.emit('session/change', this);\n703    }\n704  }\n```\n\n### 解释\n- L692–L696：文档注释：reply 是这一轮的结果，刚开始转时是空的。\n- L697：`private change(state: SessionState, reply: string): void`。\n- L698–L700：`this.row.state = state`，`this.row.reply = reply`。\n- L701：`this.save()`。\n- L702：`this.ctx.emit('session/change', this)`。\n- L703：函数结束。L704：类结束，也是文件最后一行。\n\n### 调到别处\nsrc7/Sessions.ts:667 save",
+    "body": "**行号：L692–L704**\n\n### 代码原文\n```ts\n692    /**\n693     * 改状态：存库，通知大家。\n694     * @param state 新状态。\n695     * @param reply 这一轮的结果，要回给用户的话；刚开始转时是空的。\n696     */\n697    private change(state: SessionState, reply: string): void {\n698      //M 同步更新状态与结果正文并落库，再通知监听状态变更的插件。\n699      this.row.state = state;\n700      this.row.reply = reply;\n701      this.save();\n702      this.ctx.emit('session/change', this);\n703    }\n704  }\n```\n\n### 解释\n- L692–L696：文档注释：reply 是这一轮的结果，刚开始转时是空的。\n- L697：`private change(state: SessionState, reply: string): void`。\n- L698–L700：`this.row.state = state`，`this.row.reply = reply`。\n- L701：`this.save()`。\n- L702：`this.ctx.emit('session/change', this)`。\n- L703：函数结束。L704：类结束，也是文件最后一行。\n\n### 调到别处\n- 骨架：[Sessions.ts L667](#lines=Sessions.json&line=667) save",
     "sources": [
       "src7/Sessions.ts"
     ]

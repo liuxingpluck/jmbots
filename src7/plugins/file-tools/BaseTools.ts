@@ -8,6 +8,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as mimeModule from '../../utils/Mime.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 
@@ -55,7 +56,7 @@ export class BaseTools {
         description: '返回当前本地时间和时区。不需要参数。',
         parameters: piAi.Type.Object({}),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: () => {
         const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         return `${new Date().toLocaleString('zh-CN', { hour12: false })}（${zone}）`;
@@ -73,7 +74,7 @@ export class BaseTools {
           count: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: '读几行；不写就读到末尾' })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => {
         const relative = args['path'] as string;
         //G 在读文件前，把模型路径解析到本轮工作区并判界。
@@ -110,7 +111,7 @@ export class BaseTools {
           path: piAi.Type.Optional(piAi.Type.String({ description: '相对工作区的路径' })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => {
         //G 将目标目录限制在本轮工作区，未指定时从根目录列出。
         const dir = this.getFile(session, (args['path'] as string | undefined) ?? '.');
@@ -137,11 +138,13 @@ export class BaseTools {
           content: piAi.Type.String({ description: '要写的全部内容' }),
         }),
       },
-      kinds: ['work'],
+      sessionKinds: ['work'],
       run: (args, session) => {
         //G 写文件前确认目标属于本轮工作区。
         const file = this.getFile(session, args['path'] as string);
-        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const parentDir = path.dirname(file);
+        //M 写入前确保已校验的目标文件有上层目录。
+        filesModule.ensureDir(parentDir);
         fs.writeFileSync(file, args['content'] as string, 'utf8');
         return '已写入';
       },

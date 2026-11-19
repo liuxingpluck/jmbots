@@ -101,7 +101,7 @@ channels:
 #   watch_rag_repeat: 3           # 同一句搜几次算反复
 
 # —— 以下是 src7 骨架用的 plugins 段样例（0.6 的程序暂时不读这一段）——
-# 不写 plugins 段时，src7 挂 workspaces、bots、cli、file-tools、context-fit 五个（前台、系统提示词在 bots 里）。
+# 不写 plugins 段沿用内置清单。启用 context-fit 的总结、压缩和裁剪时，按下方样例在它之前显式挂 db。
 # 机器人名单读的是上面顶层的 bots 段（插件 bots 读），不写就是一个叫“助手”的机器人。
 # 骨架的默认思考档与同模型重试配置见上面的 models 段。
 # plugins:
@@ -203,6 +203,7 @@ channels:
 #     # backend_url: memory      # 写了会话备份也发给 Rust（默认只进本地 SQLite）；旧写法是 Rust 地址时也当 service_url 用
 #     # backend_token、backend_timeout_ms 可配置外部 Rust 的认证和写入超时。
 #   - name: skills                 # 技能清单放进后台会话的系统提示词，skill 工具只读技能文件；写在 bots 后面
+#   - name: db                     # 数据库迁移和事务。默认 SQLite，沿用 Resources 的原连接。
 #   - name: context-fit            # 会话上下文总结、压缩与裁剪（已并入原 summary、compress）；先按 compress.at 压缩旧对话，再按上下文窗口 ratio 裁剪并保留最近 keep 段
 #     config: { keep: 6, ratio: 0.9, compress: { at: 200000, keep: 6 }, summary: true }
 #   - name: progress               # 进度、限时与超时复盘（已并入原 review）：GET /api/progress、POST /api/progress/:id；写在 bots、compress 后面

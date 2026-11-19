@@ -5,7 +5,10 @@
  */
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
+import * as drizzle from 'drizzle-orm';
 import type { AskInput, ChatRequest, SessionRow } from '../../Sessions.ts';
+import type * as dbModule from '../db/index.ts';
+import * as schema from './Schema.ts';
 
 
 /** 给压缩模块的配置。 */
@@ -58,19 +61,16 @@ export function readCompressSettings(raw: unknown): CompressSettings {
  */
 export class Compress {
   /**
-   * 建自己的表，挂监听。
-   * @param ctx Cordis 给的 ctx。
+   * 挂压缩监听，使用插件启动时迁移好的表。
+   * @param ctx Cordis 给的上下文。
    * @param config 多长才压、留几条。
-   * 副作用：在 `ctx.resources.db` 创建 `compress_log` 表并挂载 `session/request` 监听。
+   * @param orm db 插件提供的 Drizzle 实例。
    */
-  constructor(private readonly ctx: cordis.Context, private readonly config: CompressConfig) {
-    this.ctx.resources.db.exec(`
-      CREATE TABLE IF NOT EXISTS compress_log (
-        session TEXT PRIMARY KEY,
-        upto INTEGER NOT NULL,
-        summary TEXT NOT NULL
-      )
-    `);
+  constructor(
+    private readonly ctx: cordis.Context,
+    private readonly config: CompressConfig,
+    private readonly orm: dbModule.SqliteOrm,
+  ) {
     //M 在每步模型请求前检查会话用量，达到阈值时触发压缩并把摘要拼回请求消息。
     this.ctx.on('session/request', (request) => this.onRequest(request));
   }
@@ -86,9 +86,11 @@ export class Compress {
     //G 只压干活的会话：前台对话只带最近往来，小会话很短。
     if (row.kind !== 'work') return;
 
-    //M 这场以前压到哪了；没压过是 null。
-    const query = this.ctx.resources.db.query('SELECT upto, summary FROM compress_log WHERE session = ?');
-    let done = query.get(row.id) as Compressed | null;
+    //M 按原会话号读取以前的摘要和边界，没压过按空记录处理。
+    const table = schema.compressLog;
+    const where = drizzle.eq(table.session, row.id);
+    const saved = this.orm.select().from(table).where(where).get();
+    let done: Compressed | null = saved ?? null;
 
     //M 上一步模型实际用掉多少 token；到了 config.at 就再压一次。
     const lastAnswer = row.messages.findLast((item): item is piAi.AssistantMessage => item.role === 'assistant');
@@ -149,10 +151,10 @@ export class Compress {
 
     //M 小会话成功返回摘要后，将最新压缩进度与摘要覆盖存入 compress_log 供后续请求复用。
     const next: Compressed = { upto, summary: reply };
-    const save = this.ctx.resources.db.query(
-      'INSERT OR REPLACE INTO compress_log (session, upto, summary) VALUES (?, ?, ?)',
-    );
-    save.run(row.id, next.upto, next.summary);
+    const table = schema.compressLog;
+    const entry = { session: row.id, ...next };
+    const existing = { target: table.session, set: next };
+    this.orm.insert(table).values(entry).onConflictDoUpdate(existing).run();
     return next;
   }
 }

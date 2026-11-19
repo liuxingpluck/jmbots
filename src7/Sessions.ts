@@ -22,6 +22,7 @@ import * as cordis from 'cordis';
 import type { ToolDone } from './Tools.ts';
 import { stampId } from './utils/Names.ts';
 import * as textModule from './utils/Text.ts';
+import * as utils from './utils/index.ts';
 
 
 declare module 'cordis' {
@@ -196,7 +197,7 @@ export interface SessionRow {
   id: string;
   /** 种类。骨架不解释它，只拿它去对工具登记时写的 kinds；有哪几种由开会话的插件定。 */
   kind: string;
-  /** 嵌在哪场会话里；只有小会话有。 */
+  /** 上级会话号。后台指回派活的前台，小会话指回发起提问的会话。 */
   parent?: string;
   /** 用哪个模型，供应商名/模型 ID。 */
   model: string;
@@ -352,7 +353,7 @@ export class Sessions extends cordis.Service {
     /** 填进 SQL 里问号的值：每一项两个，先是 JSON 路径（$.state），再是要等于的值。 */
     const values: (string | number)[] = [];
     //M 逐条追加过滤键到 WHERE 子句与绑定参数，最后按更新时间倒序返回。
-    textModule.eachEntry(where, (key, value) => {
+    utils.eachEntry(where, (key, value) => {
       sql += ' AND json_extract(meta, ?) = ?';
       values.push(`$.${key}`, value as string | number);
     });

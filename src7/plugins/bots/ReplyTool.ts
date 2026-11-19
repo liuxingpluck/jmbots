@@ -22,7 +22,7 @@ export function registerReplyTool(ctx: cordis.Context): void {
         + '做完时的最后回答会自动发给用户，不要再用 reply 重复一遍。',
       parameters: piAi.Type.Object({ text: piAi.Type.String({ description: '要发的话' }) }),
     },
-    kinds: ['work'],
+    sessionKinds: ['work'],
     run: (args, session) => {
       //G row.channel 是 bots 加的项：没有渠道就没人收。
       if (session.row.channel === undefined) throw new Error('这场会话没有渠道，发不出去');

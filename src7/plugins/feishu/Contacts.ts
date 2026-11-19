@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import type { Feishu } from './index.ts';
 
 
@@ -98,13 +99,13 @@ export class FeishuContacts {
    */
   private logJudged(address: unknown, text: string, outcome: string): void {
     //M 从透传地址安全取出 appId，确认属于飞书渠道再补记决策结果流水。
-    const appId = textModule.getText(address, 'appId');
+    const appId = utils.getStringField(address, 'appId');
     if (!this.feishu.apps.has(appId)) return;
     const contact: Omit<Contact, 'outcome'> = {
       //M 汇总日期戳、聊天元信息与裁剪后正文构成流水条，写入来往记录。
-      at: textModule.getClock(Date.now(), 'date'), app: appId, chatType: textModule.getText(address, 'chatType'),
-      chatId: textModule.getText(address, 'chatId'), chatName: textModule.getText(address, 'chatName'),
-      openId: textModule.getText(address, 'openId'), sender: textModule.getText(address, 'senderName'), atMe: false,
+      at: textModule.getClock(Date.now(), 'date'), app: appId, chatType: utils.getStringField(address, 'chatType'),
+      chatId: utils.getStringField(address, 'chatId'), chatName: utils.getStringField(address, 'chatName'),
+      openId: utils.getStringField(address, 'openId'), sender: utils.getStringField(address, 'senderName'), atMe: false,
       text: textModule.clip(text.trim(), 80),
     };
     //M 将前台补充判定的结果标签追加写入联系人流水文件。

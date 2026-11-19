@@ -12,6 +12,7 @@ import * as cordis from 'cordis';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
+import * as dbPlugin from '../db/index.ts';
 import * as contextFitPlugin from './index.ts';
 
 
@@ -131,6 +132,7 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     await ctx.plugin(makeResources(5000));
     await ctx.plugin(toolsModule.Tools);
     await ctx.plugin(sessionsModule.Sessions);
+    await ctx.plugin(dbPlugin);
     await ctx.plugin(contextFitPlugin, { keep: 1, ratio: 1, summary: false, compress: false });
 
     const session = ctx.sessions.create({ kind: 'work', bot: '助手' });
@@ -171,6 +173,7 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     await ctx.plugin(makeResources(128000));
     await ctx.plugin(toolsModule.Tools);
     await ctx.plugin(sessionsModule.Sessions);
+    await ctx.plugin(dbPlugin);
     await ctx.plugin(contextFitPlugin, { compress: false, summary: true });
 
     let summaryAsked = 0;
@@ -198,6 +201,7 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     await ctx.plugin(makeResources(1600));
     await ctx.plugin(toolsModule.Tools);
     await ctx.plugin(sessionsModule.Sessions);
+    await ctx.plugin(dbPlugin);
     await ctx.plugin(contextFitPlugin, { keep: 1, ratio: 0.9, summary: false, compress: { at: 1000, keep: 4 } });
 
     let capturedWorkMessages: piAi.Message[] = [];
@@ -234,5 +238,42 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     expect(c1AfterFit).toBeDefined();
     expect(piAi.contentText(c1AfterFit!.content)).toContain('工具结果已省略');
     expect(piAi.contentText(c2AfterFit!.content)).toBe('短结果保留');
+  });
+
+  test('启动迁移沿用升级前的 compress_log 摘要和消息边界', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    await ctx.plugin(makeResources(128000));
+    await ctx.plugin(toolsModule.Tools);
+    await ctx.plugin(sessionsModule.Sessions);
+    const session = ctx.sessions.create({ kind: 'work', bot: '助手' });
+    session.row.messages = [
+      { role: 'user', content: '第一次聊天的全文', timestamp: 1 },
+      { role: 'user', content: '摘要后的新消息', timestamp: 2 },
+    ];
+
+    //M 先按旧版建表方式存一条跨启动的摘要，再挂新版两个插件。
+    const client = ctx.resources.db;
+    const legacy = 'CREATE TABLE compress_log (session TEXT PRIMARY KEY, upto INTEGER NOT NULL, summary TEXT NOT NULL)';
+    client.exec(legacy);
+    const insert = client.query('INSERT INTO compress_log (session, upto, summary) VALUES (?, ?, ?)');
+    insert.run(session.id, 1, '旧库保存的摘要');
+    await ctx.plugin(dbPlugin);
+    const config = { summary: false, compress: { at: 200000, keep: 6 } };
+    await ctx.plugin(contextFitPlugin, config);
+
+    //M 无需重新压缩，模型首条消息直接使用已有摘要。
+    const messages: string[] = [];
+    ctx.on('session/request', (request) => {
+      for (const item of request.messages) {
+        messages.push(piAi.contentText(item.content));
+      }
+      request.answer = piAi.fauxAssistantMessage('收到');
+    });
+    await session.run();
+
+    expect(messages[0]).toContain('旧库保存的摘要');
+    expect(messages).toContain('摘要后的新消息');
+    expect(messages).not.toContain('第一次聊天的全文');
   });
 });

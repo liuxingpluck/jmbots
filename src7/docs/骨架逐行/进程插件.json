@@ -1,0 +1,214 @@
+[
+ {
+  "id": "r-proc",
+  "parent": null,
+  "title": "进程插件：主程序、programs、二进制三方握手",
+  "summary": "收费插件编成二进制，由系统插件 programs 托管：拉起、握手、互相调用、重启和收尾，按时间顺序分 4 组。",
+  "body": "## 三方是谁\n\n- 主程序：骨架加内部插件（bots、approval……），只认事件和接口；\n- programs：系统插件，按 `config.yaml` 托管外部程序，一个程序一个 `Host`；\n- 二进制程序：收费插件，例如外置微信 `external/wechat`，独立进程，只露本机 HTTP。\n\n## 按时间分 4 组\n\n- 拉起前：配置、准入、密钥；\n- 握手：就绪行和身份核对；\n- 运行中：互相调用；\n- 出事和收尾。\n\n讲解在组块阅读第七块 `07_第七块.md`；规范全文在 [programs 说明](#plugin=programs)。",
+  "sources": [
+   "src7/plugins/programs/Host.ts",
+   "src7/plugins/programs/Protocol.ts",
+   "src7/plugins/programs/ChannelBridge.ts",
+   "src7/plugins/programs/index.ts"
+  ]
+ },
+ {
+  "id": "r-proc-g1",
+  "parent": "r-proc",
+  "title": "拉起前：配置、准入、密钥",
+  "summary": "主程序就绪后，programs 按配置逐个拉起；先过资源准入，再给子进程一把新密钥和回调前缀。",
+  "body": "## 拉起前：配置、准入、密钥\n\n主程序就绪后，programs 按配置逐个拉起；先过资源准入，再给子进程一把新密钥和回调前缀。",
+  "sources": []
+ },
+ {
+  "id": "r-proc-g2",
+  "parent": "r-proc",
+  "title": "握手：就绪行和身份核对",
+  "summary": "程序报端口，programs 核对协议、名字、info 和授权，全部对上才标 ready。",
+  "body": "## 握手：就绪行和身份核对\n\n程序报端口，programs 核对协议、名字、info 和授权，全部对上才标 ready。",
+  "sources": []
+ },
+ {
+  "id": "r-proc-g3",
+  "parent": "r-proc",
+  "title": "运行中：互相调用",
+  "summary": "健康检查一直在跑；程序带密钥回调主程序，主程序带密钥调程序的渠道接口。",
+  "body": "## 运行中：互相调用\n\n健康检查一直在跑；程序带密钥回调主程序，主程序带密钥调程序的渠道接口。",
+  "sources": []
+ },
+ {
+  "id": "r-proc-g4",
+  "parent": "r-proc",
+  "title": "出事和收尾",
+  "summary": "崩了按退避重启、连崩放弃；关停先请程序自己退出，最后密钥作废。",
+  "body": "## 出事和收尾\n\n崩了按退避重启、连崩放弃；关停先请程序自己退出，最后密钥作废。",
+  "sources": []
+ },
+ {
+  "id": "r-proc-01",
+  "parent": "r-proc-g1",
+  "title": "主程序 ready 后拉起",
+  "summary": "主程序发 ready，programs 把 autostart 的程序逐个 start。",
+  "body": "**行号：index.ts L524–L525、index.ts L172–L184**\n\n### 代码原文\n```ts\n// src7/plugins/programs/index.ts\n 524    //M 主服务就绪后才启动程序，HTTP 晚挂时也能补登记路由。\n 525    ctx.on('ready', () => programs.startConfigured());\n```\n\n```ts\n// src7/plugins/programs/index.ts\n 172    /** 主程序就绪后启动所有自动启动项。 */\n 173    startConfigured(): void {\n 174      if (this.closing) return;\n 175  \n 176      for (const host of this.hosts.values()) {\n 177        //G 启动检查包含手动项，配置有冲突时会先告警。\n 178        const blocked = this.getStartBlock(host.spec.name);\n 179        if (blocked !== undefined) continue;\n 180  \n 181        //M 标成手动启动的程序留在停止状态，仍能从状态页查到。\n 182        if (host.spec.autostart) host.start();\n 183      }\n 184    }\n```\n\n### 解释\n- L524–L525：programs 听骨架的 `ready`，主服务就绪后才拉起。\n- L172–L184：`startConfigured` 逐个看：\n  - 渠道和内置插件冲突的跳过；\n  - `autostart` 为 true 的才 `start()`，手动项留在停止状态。\n\n### 调到别处\n- 骨架发 ready：[Main.ts](#lines=Main.json&line=1)（源码 [Main.ts:212](src7/Main.ts:212)）\n- Host.start：[Host.ts:206](src7/plugins/programs/Host.ts:206)\n- 插件：[programs](#plugin=programs)",
+  "sources": [
+   "src7/plugins/programs/index.ts"
+  ]
+ },
+ {
+  "id": "r-proc-02",
+  "parent": "r-proc-g1",
+  "title": "过资源准入、找程序文件",
+  "summary": "每次拉起都先问资源守卫；程序文件不在就定期再看。",
+  "body": "**行号：Host.ts L312–L334**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 312        while (!signal.aborted) {\n 313          if (this.guard !== undefined) {\n 314            const request = { action: 'can-start' as const, heavy: this.spec.heavy, who: this.spec.name };\n 315            //M 自动重试也必须过守卫，不能绕过CPU或内存门槛拉起新进程。\n 316            const allowed = await this.guard.request(request);\n 317            if (signal.aborted) return;\n 318            if (!allowed.ok) {\n 319              this.note = allowed.reason;\n 320              await timers.setTimeout(this.timing.watchMs, undefined, wait);\n 321              continue;\n 322            }\n 323          }\n 324  \n 325          //G 程序还未安装时定期再看，安装前的等待不计作崩溃。\n 326          if (!fs.existsSync(this.launch.command)) {\n 327            this.note = `程序不在：${this.launch.command}`;\n 328            await timers.setTimeout(this.timing.missingMs, undefined, wait);\n 329            continue;\n 330          }\n 331  \n 332          //M 运行单个进程实例，直到它退出或需要重启。\n 333          this.note = '正在等就绪行';\n 334          await this.runChild(signal);\n```\n\n### 解释\n- L312–L322：`guard.request` 问一次能不能拉起，不行就记原因、等一会儿再问。\n- L324–L329：程序文件还没装，30 秒后再看，不算一次崩溃。\n- L332–L334：进入 `runChild`，跑到这个进程退出。\n\n### 调到别处\n- 资源守卫：[ResourceGuard.ts](src7/plugins/programs/ResourceGuard.ts)\n- runChild：[Host.ts:374](src7/plugins/programs/Host.ts:374)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-03",
+  "parent": "r-proc-g1",
+  "title": "发新密钥、算回调前缀",
+  "summary": "每次拉起换一把新密钥；登记了渠道的程序再给一个回调前缀。",
+  "body": "**行号：Host.ts L380–L390、ChannelBridge.ts L179–L203**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 380        //M 每次拉起换一把新密钥，只放进这个子进程的环境变量，不写日志、不进配置。\n 381        const key = crypto.randomBytes(32).toString('base64url');\n 382        const env: Record<string, string | undefined> = { ...this.launch.env, [protocolModule.KEY_ENV]: key };\n 383        delete env[protocolModule.CALLBACK_ENV];\n 384  \n 385        //M 登记了渠道的程序还要知道往哪回调；主服务没开始监听前在这里等着，停止时随 signal 取消。\n 386        const callback = await this.bridge?.getCallbackUrl(this.spec, signal);\n 387        if (callback !== undefined) {\n 388          env[protocolModule.CALLBACK_ENV] = callback;\n 389        }\n 390        this.key = key;\n```\n\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 179    async getCallbackUrl(spec: specModule.ProgramSpec, signal: AbortSignal): Promise<string | undefined> {\n 180      //G 没登记渠道的程序不回调；没挂 http 就没有地方收回调。\n 181      if (spec.channels.length === 0 || this.app === undefined) return undefined;\n 182  \n 183      //M 最多等 startup_ms（和等就绪行一样长）；监听上了 address() 才有端口。\n 184      const deadline = AbortSignal.timeout(spec.startupMs);\n 185      let address = this.app.server.address();\n 186      while (address === null) {\n 187        //G 等太久就当这次启动失败，交给 Host 退避重试，不一直卡在启动中。\n 188        if (deadline.aborted) throw new Error(`主服务一直没开始监听，拿不到回调地址（等了 ${String(spec.startupMs)} 毫秒）`);\n 189  \n 190        //M 每 100 毫秒看一次主服务监听上没有。\n 191        await timers.setTimeout(100, undefined, { signal });\n 192        address = this.app.server.address();\n 193      }\n 194  \n 195      //G 监听在管道上（不会这样配）就没有可回调的端口。\n 196      if (typeof address === 'string') return undefined;\n 197  \n 198      //M 主服务监听全部地址（0.0.0.0、::）时程序走本机回环，本机来的请求 http 插件不查主令牌。\n 199      let host = address.address;\n 200      if (host === '0.0.0.0' || host === '::') host = '127.0.0.1';\n 201      if (host.includes(':')) host = `[${host}]`;\n 202      return `http://${host}:${String(address.port)}/api/programs/${spec.name}`;\n 203    }\n```\n\n### 解释\n- Host L380–L383：新密钥放进子进程环境 `JMBOTS_PROGRAM_KEY`，先删掉旧的回调变量。\n- Host L385–L389：向 ChannelBridge 要回调前缀，放进 `JMBOTS_CALLBACK_URL`。\n- ChannelBridge L179–L203：\n  - 没登记渠道或没挂 http 就不给；\n  - 等主服务监听上，取端口，拼成 `http://127.0.0.1:端口/api/programs/<名字>`。\n\n### 调到别处\n- 常量：[Protocol.ts:10](src7/plugins/programs/Protocol.ts:10)\n- 插件：[http](#plugin=http)",
+  "sources": [
+   "src7/plugins/programs/ChannelBridge.ts",
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-04",
+  "parent": "r-proc-g1",
+  "title": "直接拉起子进程",
+  "summary": "不套命令行外壳，stdout 接管道读就绪行，stderr 写日志。",
+  "body": "**行号：Host.ts L392–L412**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 392        const logDir = path.dirname(this.logPath);\n 393        fs.mkdirSync(logDir, { recursive: true });\n 394        fd = fs.openSync(this.logPath, 'a');\n 395        const command = [this.launch.command, ...this.launch.args];\n 396        const options = {\n 397          cwd: this.launch.cwd, env,\n 398          stdin: 'ignore', stdout: 'pipe', stderr: fd, windowsHide: true,\n 399        } as const;\n 400  \n 401        //M 不套命令行外壳，读子进程的 stdout 并隐藏 Windows 控制台。\n 402        const child: Child = Bun.spawn(command, options);\n 403        this.child = child;\n 404        //M 业务批准跟随实际进程，退避重启也必须换代。\n 405        this.instance = crypto.randomUUID();\n 406        const death = new AbortController();\n 407        void child.exited.then(() => death.abort(), () => death.abort());\n 408        const lifetime = AbortSignal.any([signal, death.signal]);\n 409  \n 410        //M 从同一 stdout 管道识别端口，继续读剩余行防止进程阻塞。\n 411        const stdout = child.stdout as unknown as Parameters<typeof stream.Readable.fromWeb>[0];\n 412        output = stream.Readable.fromWeb(stdout);\n```\n\n### 解释\n- L392–L399：建日志目录，拼命令和选项：\n  - stdin 不接；\n  - stdout 接管道；\n  - stderr 写进 `data/logs/<名字>.log`；\n  - Windows 隐藏控制台。\n- L401–L402：`Bun.spawn` 拉起。\n- L404–L405：这次进程换一个新代次，发件批准跟着进程走。\n\n### 调到别处\n- 日志目录：[Resources.ts](#lines=Resources.json&line=1)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-05",
+  "parent": "r-proc-g2",
+  "title": "程序打印就绪行",
+  "summary": "二进制程序监听上端口后，在 stdout 打一行 JSON 报名字、版本和端口。",
+  "body": "**行号：Main.ts L175–L179**\n\n### 代码原文\n```ts\n// external/wechat/Main.ts\n 175    try {\n 176      const address = await app.listen({ port: options.port, host: '127.0.0.1' });\n 177      const port = Number(new URL(address).port);\n 178      const ready = { jmbots: identity.protocol, event: 'ready', name: identity.name, version: identity.version, port };\n 179      console.log(JSON.stringify(ready));\n```\n\n### 解释\n- 外置微信监听 `127.0.0.1`，端口由系统分配。\n- L178–L179：打印就绪行 `{\"jmbots\":1,\"event\":\"ready\",\"name\":…,\"version\":…,\"port\":…}`。\n- programs 只认第一条带数字 `jmbots` 字段的 JSON 行，其余照常当日志。\n\n### 调到别处\n- 外置微信说明：external/wechat/说明.md",
+  "sources": [
+   "external/wechat/Main.ts"
+  ]
+ },
+ {
+  "id": "r-proc-06",
+  "parent": "r-proc-g2",
+  "title": "核对就绪行",
+  "summary": "programs 等就绪行：协议版本、事件、名字、版本、端口都要对。",
+  "body": "**行号：Host.ts L424–L428、Protocol.ts L196–L226**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 424        //M 就绪行报端口，info 身份正确后才能向该程序转发或请求退出。\n 425        const ready = await protocolModule.waitReady(reader, this.spec, lifetime);\n 426        let host = this.spec.host;\n 427        if (host.includes(':')) host = `[${host}]`;\n 428        const url = `http://${host}:${String(ready.port)}`;\n```\n\n```ts\n// src7/plugins/programs/Protocol.ts\n 196  function parseReady(line: string, spec: ProgramSpec): ReadyLine | undefined {\n 197    let decoded: unknown;\n 198    try {\n 199      decoded = JSON.parse(line);\n 200    } catch {\n 201      return undefined;\n 202    }\n 203    if (typeof decoded !== 'object' || decoded === null) return undefined;\n 204  \n 205    const raw = decoded as Record<string, unknown>;\n 206    const protocol = raw['jmbots'];\n 207    if (typeof protocol !== 'number') return undefined;\n 208  \n 209    //G 版本不兼容时阻止自动重试，等用户换正确的程序。\n 210    if (protocol !== PROTOCOL) {\n 211      throw new UnsupportedProtocol(`协议版本不对（程序 ${String(protocol)}，jmbots 支持 ${String(PROTOCOL)}）`);\n 212    }\n 213    if (raw['event'] !== 'ready' || raw['name'] !== spec.name) {\n 214      throw new Error(`就绪行的事件或程序名和 ${spec.name} 不符`);\n 215    }\n 216    const version = raw['version'];\n 217    if (typeof version !== 'string' || version.trim() === '') throw new Error('就绪行缺少程序版本');\n 218  \n 219    const port = raw['port'];\n 220    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {\n 221      throw new Error('就绪行端口要是 1 至 65535 的整数');\n 222    }\n 223    if (spec.port !== 0 && port !== spec.port) throw new Error(`就绪行端口与配置 ${String(spec.port)} 不符`);\n 224  \n 225    return { version, port };\n 226  }\n```\n\n### 解释\n- Host L425：`waitReady` 等就绪行，超过 `startup_ms` 就算启动失败。\n- Protocol L206–L212：协议版本不对抛 `UnsupportedProtocol`，状态改 blocked，不再自动重试。\n- Protocol L213–L223：\n  - 事件不是 ready、名字不符，抛错；\n  - 缺版本，抛错；\n  - 端口不合法，或和配置的固定端口不同，抛错。\n\n### 调到别处\n- waitReady：[Protocol.ts:155](src7/plugins/programs/Protocol.ts:155)",
+  "sources": [
+   "src7/plugins/programs/Host.ts",
+   "src7/plugins/programs/Protocol.ts"
+  ]
+ },
+ {
+  "id": "r-proc-07",
+  "parent": "r-proc-g2",
+  "title": "问 info、读授权",
+  "summary": "就绪行之后再问 info 核对身份，再读 license。",
+  "body": "**行号：Host.ts L429–L440、Protocol.ts L275–L304**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 429        const report = await protocolModule.readReport(url, this.spec.name, 'info', this.timing.healthMs, lifetime);\n 430        lifetime.throwIfAborted();\n 431        if (report === undefined) {\n 432          throw new Error('程序 info 接口无有效身份回执');\n 433        }\n 434        this.canPause = report.pause;\n 435        this.uiPath = report.ui;\n 436        this.rssMb = report.rssMb;\n 437        this.rssAt = Date.now();\n 438        //M 身份核实后才读取授权；过期不杀程序，只供守卫通知。\n 439        this.license = await protocolModule.readLicense(url, lifetime);\n 440        lifetime.throwIfAborted();\n```\n\n```ts\n// src7/plugins/programs/Protocol.ts\n 275  export async function readReport(\n 276    url: string, name: string, route: 'info' | 'health', timeoutMs: number, signal: AbortSignal,\n 277  ): Promise<ProgramReport | undefined> {\n 278    const endpoint = `${url}/jmbots/v1/${route}`;\n 279    const timeout = AbortSignal.timeout(timeoutMs);\n 280    const until = AbortSignal.any([signal, timeout]);\n 281    const options: RequestInit = { signal: until, redirect: 'error' };\n 282    try {\n 283      //M 只信已核对协议与程序名的回执，不让错误服务提供资源排行或暂停能力。\n 284      const response = await fetch(endpoint, options);\n 285      const decoded: unknown = await response.json();\n 286      if (!response.ok || typeof decoded !== 'object' || decoded === null) return undefined;\n 287  \n 288      const raw = decoded as Record<string, unknown>;\n 289      if (raw['ok'] !== true || raw['protocol'] !== PROTOCOL || raw['name'] !== name) return undefined;\n 290  \n 291      const capabilities = raw['capabilities'];\n 292      const pause = Array.isArray(capabilities) && capabilities.includes('pause');\n 293      let rssMb: number | undefined;\n 294      const rss = raw['rssMb'];\n 295      if (typeof rss === 'number' && Number.isFinite(rss) && rss >= 0) {\n 296        rssMb = rss;\n 297      }\n 298      //M 界面只接受程序内部路径，不接受任意主机、端口或脚本URL。\n 299      const ui = getUiPath(raw['ui']);\n 300      return { pause, rssMb, ui };\n 301    } catch {\n 302      return undefined;\n 303    }\n 304  }\n```\n\n### 解释\n- Host L429–L433：问 `/jmbots/v1/info`，没有有效身份回执就当启动失败。\n- Host L434–L437：记下能不能暂停、界面路径、内存。\n- Host L438–L440：读 `/jmbots/v1/license`；过期不杀程序，只供通知。\n- Protocol L289：回执里 `ok`、协议版本、名字三样都要对，才算这个程序。\n\n### 调到别处\n- readLicense：[Protocol.ts:307](src7/plugins/programs/Protocol.ts:307)",
+  "sources": [
+   "src7/plugins/programs/Host.ts",
+   "src7/plugins/programs/Protocol.ts"
+  ]
+ },
+ {
+  "id": "r-proc-08",
+  "parent": "r-proc-g2",
+  "title": "标 ready、发 program/state",
+  "summary": "身份核实后才标 ready，广播 program/state，界面入口这时才出现。",
+  "body": "**行号：Host.ts L442–L448、Host.ts L166–L197**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 442        endpoint = url;\n 443        this.ready = ready;\n 444        this.url = endpoint;\n 445        this.state = 'ready';\n 446        this.note = '在运行';\n 447        //M 身份、授权和info都已核对，现在才公告ready及同源UI地址。\n 448        this.publishState();\n```\n\n```ts\n// src7/plugins/programs/Host.ts\n 166    private publishState(): void {\n 167      if (this.ctx === undefined) return;\n 168  \n 169      //M 只取快照的业务字段形成签名，不把PID、RSS或计时变化当上下线。\n 170      const status = this.status();\n 171      let state: ProgramPhase = 'failed';\n 172      if (status.state !== 'blocked') {\n 173        state = status.state;\n 174      }\n 175      if (status.state === 'ready' && status.paused) {\n 176        state = 'paused';\n 177      }\n 178      const event = {\n 179        name: status.name,\n 180        title: status.title,\n 181        state,\n 182        license: status.license ?? 'unknown',\n 183        licenseLabel: status.licenseLabel,\n 184        ui: status.ui,\n 185      };\n 186      const signature = JSON.stringify(event);\n 187      //G 从未启动的Host原本就是stopped，关闭空实例不是一次状态变化。\n 188      if (this.lastState === '' && state === 'stopped') {\n 189        this.lastState = signature;\n 190        return;\n 191      }\n 192      if (signature === this.lastState) return;\n 193  \n 194      this.lastState = signature;\n 195      try {\n 196        //M 其它插件订阅业务事件，不调用programs服务或依赖Host内部对象。\n 197        this.ctx.emit('program/state', event);\n```\n\n### 解释\n- L442–L448：记下地址，状态改 ready，发状态。\n- L166–L197：`publishState` 只在名字、状态、授权、界面这几项变化时发 `program/state`。\n- 其他插件靠这个事件知道谁在线，不直接调 programs 的函数。\n\n### 调到别处\n- 界面转发：`/programs/<名字>/`，见 [programs 说明](#plugin=programs)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-09",
+  "parent": "r-proc-g3",
+  "title": "健康检查",
+  "summary": "每 3 秒问一次 health，连续 5 次失败就交给监督重启。",
+  "body": "**行号：Host.ts L497–L534、Host.ts L40–L42**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 497    /** 定期核对活着的程序，达连续失败阈值后交给监督任务重启。 */\n 498    private async watchHealth(endpoint: string, signal: AbortSignal): Promise<void> {\n 499      let misses = 0;\n 500      let licenseAt = Date.now();\n 501      const wait = { signal };\n 502      while (!signal.aborted) {\n 503        await timers.setTimeout(this.timing.watchMs, undefined, wait);\n 504  \n 505        //M 独立探测健康接口，连接失败与身份不符都算一次失败。\n 506        const report = await protocolModule.readReport(\n 507          endpoint, this.spec.name, 'health', this.timing.healthMs, signal,\n 508        );\n 509        signal.throwIfAborted();\n 510        if (report !== undefined) {\n 511          this.rssMb = report.rssMb;\n 512          this.rssAt = Date.now();\n 513          if (Date.now() - licenseAt >= 60_000) {\n 514            //M 每分钟更新一次授权，缺接口或失败保持未知，不把未知当未授权。\n 515            this.license = await protocolModule.readLicense(endpoint, signal);\n 516            signal.throwIfAborted();\n 517            licenseAt = Date.now();\n 518            //M 授权状态变化单独广播，不把授权到期当停机。\n 519            this.publishState();\n 520          }\n 521          misses = 0;\n 522          this.note = '在运行';\n 523          continue;\n 524        }\n 525        misses += 1;\n 526        this.note = `健康检查连续失败 ${String(misses)} 次`;\n 527        if (misses >= this.timing.healthMisses) {\n 528          this.state = 'unhealthy';\n 529          //M 健康异常不再提供ready入口，后续正常停止/重试由监督处理。\n 530          this.publishState();\n 531          return;\n 532        }\n 533      }\n 534    }\n```\n\n```ts\n// src7/plugins/programs/Host.ts\n  40  const TIMING: Timing = {\n  41    watchMs: 3000, healthMs: 2500, healthMisses: 5,\n  42    retryMs: 3000, retryMaxMs: 60_000, crashWindowMs: 600_000, missingMs: 30_000,\n```\n\n### 解释\n- L503–L507：等 `watchMs`（默认 3000 毫秒），问 `/jmbots/v1/health`。\n- L509–L523：答上了就清零失败次数；每 60 秒顺便更新一次授权。\n- L524–L533：失败计数，达到 `healthMisses`（默认 5）改成 unhealthy 并返回，由监督重启。\n\n### 调到别处\n- readReport：[Protocol.ts:275](src7/plugins/programs/Protocol.ts:275)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-10",
+  "parent": "r-proc-g3",
+  "title": "程序 → 主程序：交来一条渠道消息",
+  "summary": "程序带密钥 POST 回调 /channel/message，programs 核对后发标准 channel/message。",
+  "body": "**行号：ChannelLink.ts L131–L132、ChannelBridge.ts L104–L106、ChannelBridge.ts L211–L233、ChannelBridge.ts L370–L371**\n\n### 代码原文\n```ts\n// external/wechat/ChannelLink.ts\n 131      const headers = { 'content-type': 'application/json', [protocol.KEY_HEADER]: this.key };\n 132      const url = `${this.callback}/channel/message`;\n```\n\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 104      //M 程序把渠道消息交进来。\n 105      const route = '/api/programs/:name/channel/message';\n 106      app.post<InboundRoute>(route, (request, reply) => this.onInbound(request, reply));\n```\n\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 211    private async onInbound(request: fastify.FastifyRequest<InboundRoute>, reply: fastify.FastifyReply) {\n 212      //G 只认本插件拉起、此刻还活着的程序，带对它这次启动的密钥；程序重启后旧密钥就不认了。\n 213      const host = this.hosts.get(request.params.name);\n 214      const given = request.headers[protocolModule.KEY_HEADER];\n 215      const key = host?.getKey();\n 216      if (host === undefined || !protocolModule.isSameKey(key, given)) {\n 217        const receipt = getRejected('没有这个程序在运行，或密钥不对');\n 218        return reply.code(401).send(receipt);\n 219      }\n 220  \n 221      //G 正文是外面来的，在这里校验一次，后面直接用。\n 222      let inbound: protocolModule.InboundMessage;\n 223      try {\n 224        inbound = readInbound(request.body);\n 225      } catch (error) {\n 226        return reply.code(400).send(getRejected(textModule.getMessage(error)));\n 227      }\n 228  \n 229      //G 渠道名只能是 config 给这个程序登记的，不能冒充别的渠道。\n 230      const owner = this.owners.get(inbound.channel);\n 231      if (owner === undefined || owner.host !== host) {\n 232        return reply.code(403).send(getRejected(`渠道 ${inbound.channel} 没有登记给程序 ${host.spec.name}`));\n 233      }\n```\n\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 370      //M 和内置渠道一样挨个问：approval 先看消息级指令，bots 再按 targetBots 认领。\n 371      await this.ctx.serial('channel/message', message, control);\n```\n\n### 解释\n- ChannelLink L131–L132：外置微信带 `x-jmbots-key` POST `<回调前缀>/channel/message`。\n- ChannelBridge L211–L233：\n  - 程序不在或密钥不对：401；\n  - 正文不合法：400；\n  - 渠道没登记给它：403。\n- ChannelBridge L371：通过后挨个问 `channel/message`，和内置渠道一样，bots 认领。\n\n### 调到别处\n- isSameKey：[Protocol.ts:125](src7/plugins/programs/Protocol.ts:125)\n- 插件：[bots](#plugin=bots)、[approval](#plugin=approval)\n- 渠道消息：[Channels.ts](#lines=Channels.json&line=1)",
+  "sources": [
+   "external/wechat/ChannelLink.ts",
+   "src7/plugins/programs/ChannelBridge.ts"
+  ]
+ },
+ {
+  "id": "r-proc-11",
+  "parent": "r-proc-g3",
+  "title": "主程序 → 程序：回复和历史",
+  "summary": "机器人回复和查历史，经 ChannelBridge 转成 HTTP，调程序的渠道接口。",
+  "body": "**行号：ChannelBridge.ts L587–L607、ChannelLink.ts L163–L170**\n\n### 代码原文\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 587    private async call(\n 588      host: hostModule.Host,\n 589      route: 'reply' | 'history',\n 590      body: protocolModule.ReplyCall | protocolModule.HistoryCall,\n 591      timeoutMs: number,\n 592    ): Promise<unknown> {\n 593      //G 只调本插件拉起、已就绪的程序；没就绪交回 undefined，由调用方如实回失败。\n 594      const url = host.getUrl();\n 595      const key = host.getKey();\n 596      if (url === undefined || key === undefined) return undefined;\n 597  \n 598      //M 带上这次启动的密钥：程序据此认出是主程序在调，不是本机别的进程。\n 599      const headers = { 'content-type': 'application/json', [protocolModule.KEY_HEADER]: key };\n 600      const signal = AbortSignal.timeout(timeoutMs);\n 601      const payload = JSON.stringify(body);\n 602      const options: RequestInit = { method: 'POST', redirect: 'error', headers, body: payload, signal };\n 603  \n 604      //M 程序回什么状态码都读 JSON：失败时它也写原因。\n 605      const response = await fetch(`${url}/jmbots/v1/channel/${route}`, options);\n 606      return await response.json();\n 607    }\n```\n\n```ts\n// external/wechat/ChannelLink.ts\n 163    /** 挂载只供当前主程序调用的回复和历史接口。 */\n 164    mount(app: fastify.FastifyInstance, cache?: historyModule.HistoryCache): void {\n 165      //G 同一个入口先查密钥和渠道，再查操作各自的参数。\n 166      const authorize = async (request: fastify.FastifyRequest, reply: fastify.FastifyReply) => {\n 167        const given = request.headers[protocol.KEY_HEADER];\n 168        if (!protocol.isSameKey(this.key, given)) {\n 169          return reply.code(401).send({ status: 'failed', reason: '主程序密钥不对' });\n 170        }\n```\n\n### 解释\n- ChannelBridge L593–L596：只调已就绪的程序，没就绪如实回失败。\n- ChannelBridge L598–L605：带这次的密钥 POST `/jmbots/v1/channel/reply` 或 `history`。\n- ChannelLink L166–L170：外置微信先核对密钥，不对回 401。\n- 外置微信收到回复默认只存草稿，不直接发出。\n\n### 调到别处\n- 回复事件：[Channels.ts](#lines=Channels.json&line=1)\n- 插件：[bots](#plugin=bots)",
+  "sources": [
+   "external/wechat/ChannelLink.ts",
+   "src7/plugins/programs/ChannelBridge.ts"
+  ]
+ },
+ {
+  "id": "r-proc-12",
+  "parent": "r-proc-g3",
+  "title": "程序 → 主程序：起草和发件确认",
+  "summary": "客服页起草和发件确认也走回调，同样先核对密钥。",
+  "body": "**行号：ChannelBridge.ts L108–L110、ChannelBridge.ts L113–L122、ChannelSend.ts L232–L241**\n\n### 代码原文\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 108      //M 客服页手动起草经当前程序回调，只调用文字模型。\n 109      const draft = '/api/programs/:name/channel/draft';\n 110      app.post<InboundRoute>(draft, { bodyLimit: 256_000 }, (request, reply) => this.onDraft(request, reply));\n```\n\n```ts\n// src7/plugins/programs/ChannelBridge.ts\n 113    /** 为已登记的程序生成一段建议。输入只作上下文，不挂任何工具或消息回执。 */\n 114    private async onDraft(request: fastify.FastifyRequest<InboundRoute>, reply: fastify.FastifyReply) {\n 115      const name = request.params.name;\n 116      //G 只从已登记托管表找回调程序。\n 117      const host = this.hosts.get(name);\n 118      const given = request.headers[protocolModule.KEY_HEADER];\n 119      const key = host?.getKey();\n 120      //G 只信这个程序此刻启动持有的密钥。\n 121      const allowed = protocolModule.isSameKey(key, given);\n 122      if (!allowed) return reply.code(401).send({ error: '起草回调密钥不对' });\n```\n\n```ts\n// src7/plugins/programs/ChannelSend.ts\n 232    //M 托管外置客服可把代理已核验的本人操作交回同一个确认入口。\n 233    const callback = '/api/programs/:name/channel/approval';\n 234    app.post<{ Params: { name: string }; Body: unknown }>(callback, { bodyLimit: 4096 }, async (request, reply) => {\n 235      const program = request.params.name;\n 236      const host = hosts.get(program);\n 237      const target = host?.getSendTarget();\n 238      const key = request.headers[protocol.KEY_HEADER];\n 239      //G 只有本次托管实例能转交代理核验过的确认，配置名不能自行冒充。\n 240      const verified = protocol.isSameKey(target?.key, key);\n 241      if (!verified) return reply.code(403).send({ error: '发送确认只允许当前托管程序转交' });\n```\n\n### 解释\n- ChannelBridge L108–L110：`/channel/draft`，客服页手动起草，只调文字模型。\n- ChannelBridge L115–L122：只认这个程序此刻启动持有的密钥，不对回 401。\n- ChannelSend L233–L241：`/channel/approval`，只有本次托管实例能转交确认，不对回 403；之后交给主站同一份批准账。\n\n### 调到别处\n- 外置微信调用处：[KefuRoutes.ts:124](external/wechat/KefuRoutes.ts:124)\n- 插件：[approval](#plugin=approval)",
+  "sources": [
+   "src7/plugins/programs/ChannelBridge.ts",
+   "src7/plugins/programs/ChannelSend.ts"
+  ]
+ },
+ {
+  "id": "r-proc-13",
+  "parent": "r-proc-g4",
+  "title": "崩了退避重启",
+  "summary": "进程退了就按 10 分钟内的失败次数退避再拉起。",
+  "body": "**行号：Host.ts L335–L359**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 335          if (signal.aborted || this.state === 'blocked' || this.child !== undefined) return;\n 336  \n 337          //M 只保留窗口内的失败，达到上限后等待用户重新启动。\n 338          const now = Date.now();\n 339          const threshold = now - this.timing.crashWindowMs;\n 340          crashes = crashes.filter((at) => at >= threshold);\n 341          crashes.push(now);\n 342          if (crashes.length >= MAX_CRASHES) {\n 343            this.state = 'failed';\n 344            this.gaveUp = true;\n 345            this.note = `10 分钟内连续失败 ${String(MAX_CRASHES)} 次，已放弃自动重启。最后一次：${this.note}`;\n 346            //M 连崩放弃是failed状态，而非授权失败或用户停机。\n 347            this.publishState();\n 348            return;\n 349          }\n 350  \n 351          const delay = Math.min(this.timing.retryMaxMs, this.timing.retryMs * 2 ** (crashes.length - 1));\n 352          this.state = 'starting';\n 353          this.note = `${this.note}，${String(delay / 1000)} 秒后重试`;\n 354          //M 退避阶段仍属于starting，界面入口保持撤下。\n 355          this.publishState();\n 356  \n 357          //M 重试等待可中止，用户关停后不会被定时器再次拉起。\n 358          await timers.setTimeout(delay, undefined, wait);\n 359          this.restarts += 1;\n```\n\n### 解释\n- L337–L341：只留 10 分钟窗口内的失败记录，加上这一次。\n- L351：等多久 = 3 秒 × 2^(次数−1)，最多 60 秒。\n- L352–L359：退避期间仍是 starting，界面入口撤下；等完再拉起，重启次数加一。\n\n### 调到别处\n- 时间默认值：[Host.ts:41](src7/plugins/programs/Host.ts:41)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-14",
+  "parent": "r-proc-g4",
+  "title": "连崩放弃",
+  "summary": "10 分钟内崩满 5 次，改成 failed、gaveUp，等用户手动启动。",
+  "body": "**行号：Host.ts L341–L349**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 341          crashes.push(now);\n 342          if (crashes.length >= MAX_CRASHES) {\n 343            this.state = 'failed';\n 344            this.gaveUp = true;\n 345            this.note = `10 分钟内连续失败 ${String(MAX_CRASHES)} 次，已放弃自动重启。最后一次：${this.note}`;\n 346            //M 连崩放弃是failed状态，而非授权失败或用户停机。\n 347            this.publishState();\n 348            return;\n 349          }\n```\n\n### 解释\n- L342：窗口内失败满 `MAX_CRASHES` 次（5 次，定义在 [Host.ts:48](src7/plugins/programs/Host.ts:48)）。\n- L343–L345：状态 failed，`gaveUp` 记 true，写明最后一次原因。\n- L347：发状态，资源守卫据此发通知。\n\n### 调到别处\n- 手动启动接口：[index.ts:215](src7/plugins/programs/index.ts:215)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ },
+ {
+  "id": "r-proc-15",
+  "parent": "r-proc-g4",
+  "title": "关停：先请它自己退出",
+  "summary": "先 POST /jmbots/v1/exit 请程序收尾，等不到再强制结束整棵进程树。",
+  "body": "**行号：Host.ts L537–L569、Protocol.ts L251–L262**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 537    private async releaseChild(endpoint: string | undefined): Promise<void> {\n 538      const child = this.child;\n 539      if (child === undefined) return;\n 540  \n 541      if (endpoint !== undefined && child.exitCode === null && child.signalCode === null) {\n 542        try {\n 543          //M 已确认身份的程序可以自己收尾，等待它完成退出。\n 544          await protocolModule.requestExit(endpoint, this.spec.exitWaitMs);\n 545        } catch {\n 546          // 退出请求失败时仍给进程一段收尾时间。\n 547        }\n 548        //M 退出请求回来后仍需等到进程退出，确保下次启动不冲突。\n 549        const exited = await waitExit(child, this.spec.exitWaitMs);\n 550        if (exited) {\n 551          this.child = undefined;\n 552          return;\n 553        }\n 554      }\n 555  \n 556      //M 未就绪或超时未退，用已保存的进程号结束它和子进程。\n 557      if (child.exitCode === null && child.signalCode === null) await killTree(child);\n 558  \n 559      //M 强制命令返回后继续核对子进程的退出通知。\n 560      const exited = await waitExit(child, FORCE_WAIT_MS);\n 561      if (exited) {\n 562        this.child = undefined;\n 563        return;\n 564      }\n 565      this.state = 'failed';\n 566      this.note = `进程 ${String(child.pid)} 强制结束后仍未退出`;\n 567      //M 回收失败也要报告failed，不能遗留ready事件或再启动另一实例。\n 568      this.publishState();\n 569    }\n```\n\n```ts\n// src7/plugins/programs/Protocol.ts\n 251  export async function requestExit(url: string, graceMs: number): Promise<void> {\n 252    const endpoint = `${url}/jmbots/v1/exit`;\n 253    const signal = AbortSignal.timeout(1000);\n 254    const body = JSON.stringify({ graceMs });\n 255    const options: RequestInit = {\n 256      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, signal, body,\n 257    };\n 258  \n 259    //M 请求程序收尾，读完短回执再由托管方等待进程退出。\n 260    const response = await fetch(endpoint, options);\n 261    await response.text();\n 262  }\n```\n\n### 解释\n- Host L541–L545：身份核对过的程序，先调 `requestExit`。\n- Host L548–L553：等它在 `exit_wait_ms` 内退出。\n- Host L556–L557：还不退，`killTree` 强制结束，Windows 用 `taskkill /T`。\n- Protocol L251–L262：`POST /jmbots/v1/exit`，正文带 `graceMs`。\n\n### 调到别处\n- 外置微信的退出接口：[Main.ts:157](external/wechat/Main.ts:157)\n- killTree：[Host.ts:589](src7/plugins/programs/Host.ts:589)",
+  "sources": [
+   "src7/plugins/programs/Host.ts",
+   "src7/plugins/programs/Protocol.ts"
+  ]
+ },
+ {
+  "id": "r-proc-16",
+  "parent": "r-proc-g4",
+  "title": "密钥作废、撤入口",
+  "summary": "进程一退，密钥、地址、界面入口立刻清掉。",
+  "body": "**行号：Host.ts L471–L484**\n\n### 代码原文\n```ts\n// src7/plugins/programs/Host.ts\n 471      } finally {\n 472        //M 子进程要退了，它的密钥立刻作废，之后带这把钥匙的回调一律拒。\n 473        this.key = undefined;\n 474        this.instance = undefined;\n 475        this.url = undefined;\n 476        this.ready = undefined;\n 477        this.paused = false;\n 478        this.canPause = false;\n 479        this.rssMb = undefined;\n 480        this.rssAt = 0;\n 481        this.license = undefined;\n 482        this.uiPath = null;\n 483        //M 退出/重试清理时先撤入口，不等整段正常停止流程结束。\n 484        this.publishState();\n```\n\n### 解释\n- L472–L473：密钥和代次清掉，之后带旧钥匙的回调一律拒。\n- L474–L482：地址、就绪行、暂停、内存、授权、界面路径都清掉。\n- L483–L484：先撤界面入口，再回收进程。\n\n### 调到别处\n- getKey：[Host.ts:254](src7/plugins/programs/Host.ts:254)",
+  "sources": [
+   "src7/plugins/programs/Host.ts"
+  ]
+ }
+]

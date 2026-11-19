@@ -172,7 +172,7 @@ async function serve(journal?: ReturnType<typeof getJournal>, config: tutorialMo
   const store = {
     [Symbol('logger')]: impl('logger', '', { secret: '自带的不看' }),
     [Symbol('resources')]: impl('resources', 'Resources', resources),
-    [Symbol('tools')]: impl('tools', 'Tools', { specs: new Map([['read', { definition: { name: 'read' }, kinds: ['work'] }]]) }),
+    [Symbol('tools')]: impl('tools', 'Tools', { specs: new Map([['read', { definition: { name: 'read' }, sessionKinds: ['work'] }]]) }),
     [Symbol('sessions')]: impl('sessions', 'Sessions', { live: new Map([[session.id, session]]) }),
     [Symbol('bots')]: impl('bots', 'bots', bots),
     [Symbol('http')]: impl('http', 'http', { app }),

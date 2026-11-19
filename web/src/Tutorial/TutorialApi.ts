@@ -343,6 +343,30 @@ export interface TryResult {
 }
 
 
+/** /api/programs 里一个进程插件（programs 托管的外部程序）的公开状态，只列教程要显示的几项。 */
+export interface ProgramItem {
+  /** config 里的程序名。 */
+  name: string;
+  /** 显示名，没写是 name。 */
+  title: string;
+  /** starting、ready、unhealthy、stopped、failed、blocked。 */
+  state: string;
+  /** 现在在干什么或上次失败的原因。 */
+  note: string;
+  /** 程序就绪行报的端口；没就绪是 null。 */
+  port: number | null;
+  /** 程序就绪行报的版本；没就绪是 null。 */
+  version: string | null;
+  /** 自动重启了几次。 */
+  restarts: number;
+  /** 授权标签：已授权、过期、不需要、未授权、未知。 */
+  licenseLabel: string;
+  /** 同源界面地址；没报界面或没就绪是 null。 */
+  ui: string | null;
+  /** 登记给它的渠道名。 */
+  channels: string[];
+}
+
 /** 和后端说话：get 出错抛后端给的 error；send 给「试一试」用，什么状态码都原样交回。 */
 export class TutorialApi {
   /**
@@ -379,6 +403,24 @@ export class TutorialApi {
     const route = `/api/tutorial/reading?name=${encoded}`;
     //M 用查询参数传文件名，文件是否可读由后端的清单校验。
     return TutorialApi.get<{ text: string }>(route);
+  }
+
+  /** 取 programs 托管的进程插件和运行状态；没挂 programs 时接口不存在，交给调用方当空清单。 */
+  static async getPrograms(): Promise<{ programs: ProgramItem[] }> {
+    const route = '/api/programs';
+    //M 直接读 programs 插件的只读状态接口，教程不另存一份。
+    return TutorialApi.get<{ programs: ProgramItem[] }>(route);
+  }
+
+  /**
+   * 读进程插件程序目录下的 说明.md。
+   * @param name config 里的程序名。
+   */
+  static async getProgramReadme(name: string): Promise<{ file: string; text: string }> {
+    const encoded = encodeURIComponent(name);
+    const route = `/api/tutorial/program-readme?name=${encoded}`;
+    //M 程序目录由后端从 config 推出来，这里只传名字。
+    return TutorialApi.get<{ file: string; text: string }>(route);
   }
 
   /**

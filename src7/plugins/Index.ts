@@ -6,12 +6,13 @@
  */
 import type * as cordis from 'cordis';
 import * as checksModule from '../utils/Checks.ts';
-import * as textModule from '../utils/Text.ts';
+import * as utils from '../utils/index.ts';
 import * as approval from './approval/index.ts';
 import * as baseBridge from './base-bridge/index.ts';
 import * as bots from './bots/index.ts';
 import * as cli from './cli/index.ts';
 import * as contextFit from './context-fit/index.ts';
+import * as db from './db/index.ts';
 import * as decision from './decision/index.ts';
 import * as decisionMap from './decision-map/index.ts';
 import * as desktop from './desktop/index.ts';
@@ -99,6 +100,7 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'memory': memory,
   'programs': programs,
   'skills': skills,
+  db,
   'context-fit': contextFit,
   'progress': progress,
   'decision': decision,
@@ -111,7 +113,7 @@ export const BUILT_IN: Record<string, PluginModule> = {
 };
 
 //M 自带插件逐个查版本号：没写或不是 x.y.z 的，启动时就报错，写明是哪个插件。
-textModule.eachEntry(BUILT_IN, (pluginName, plugin) => {
+utils.eachEntry(BUILT_IN, (pluginName, plugin) => {
   checksModule.checkVersion(pluginName, plugin.version);
 });
 

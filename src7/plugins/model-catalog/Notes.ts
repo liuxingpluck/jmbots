@@ -19,6 +19,7 @@ import type * as fastify from 'fastify';
 import type { } from '../../Sessions.ts';
 import * as checks from './Checks.ts';
 import { Failure } from '../../utils/Failure.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 
 
@@ -330,7 +331,8 @@ export class ModelNotes {
     private readonly ctx: cordis.Context,
     readonly settings: NotesSettings,
   ) {
-    fs.mkdirSync(settings.dir, { recursive: true });
+    //M 后续按模型读写评价时使用同一个目录。
+    filesModule.ensureDir(settings.dir);
     this.clock = new Intl.DateTimeFormat('en-US', {
       timeZone: settings.timeZone,
       year: 'numeric',

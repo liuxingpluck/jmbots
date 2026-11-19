@@ -222,7 +222,7 @@ export class AgentTasks {
           id: piAi.Type.Optional(piAi.Type.String({ description: '任务号（status）' })),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session, _signal, callId) => this.run(args, session, callId),
     });
   }

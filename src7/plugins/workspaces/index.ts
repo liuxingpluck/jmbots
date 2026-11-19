@@ -12,12 +12,13 @@
  * 设计和做法的为什么见同目录 说明.md 的「设计要点」一节。
  */
 import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as filesModule from '../../utils/Files.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 
 
@@ -212,7 +213,7 @@ export class Workspaces extends cordis.Service {
           includeArchived: piAi.Type.Optional(piAi.Type.Boolean({ description: '归档的也列出来（list）；不写不列' })),
         }),
       },
-      kinds: ['front'],
+      sessionKinds: ['front'],
       //M 模型调工具时转给 run：照 action 分派，出错换成 { ok: false, error } 交回模型。
       run: (args, session) => this.run(args, session),
     });
@@ -417,7 +418,8 @@ export class Workspaces extends cordis.Service {
   ensureDefault(bot: string): Workspace {
     //M 找到机器人自己的默认工作区目录，确保第一次使用时目录存在。
     const full = this.getHome(bot);
-    fs.mkdirSync(full, { recursive: true });
+    //M 先建机器人的默认工作区，再登记。
+    filesModule.ensureDir(full);
 
     //M 将目录转成存储用路径，复用同一范围内已有的默认登记。
     const directory = this.getStored(full);
@@ -433,9 +435,9 @@ export class Workspaces extends cordis.Service {
   private run(args: Record<string, unknown>, session: Session): string {
     //M 从会话身份和工具参数整理出动作、目标及访问范围。
     const access = this.getAccess(session.row.bot, session.row.address);
-    const action = textModule.getText(args, 'action');
-    const id = textModule.getText(args, 'id');
-    const workspaceName = textModule.getText(args, 'name');
+    const action = utils.getStringField(args, 'action');
+    const id = utils.getStringField(args, 'id');
+    const workspaceName = utils.getStringField(args, 'name');
     const includeArchived = args['includeArchived'] === true;
 
     try {

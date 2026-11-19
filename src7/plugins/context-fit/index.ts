@@ -9,7 +9,9 @@
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import type * as dbModule from '../db/index.ts';
 import * as compressModule from './Compress.ts';
+import compressionSql from './migrations/0000_compress_log.sql' with { type: 'text' };
 import * as summaryModule from './Summary.ts';
 
 
@@ -20,10 +22,16 @@ export { readSummaryEnabled } from './Summary.ts';
 /** 插件名。 */
 export const name = 'context-fit';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.1';
+export const version = '1.1.2';
 
-/** 用到的服务：resources 拿手写模型上限与库；sessions 供压缩和总结开小会话。 */
-export const inject = ['resources', 'sessions'];
+/** Resources 读模型上限，Sessions 开小会话，db 管压缩表。 */
+export const inject = ['resources', 'sessions', 'db'];
+
+/** 启用压缩时先确认已有或新建的压缩记录可用。 */
+const compressionMigrations: dbModule.MigrationPlan = {
+  plugin: name,
+  migrations: [{ version: 1, sql: compressionSql }],
+};
 
 
 /** 插件配置。 */
@@ -192,7 +200,11 @@ export function apply(ctx: cordis.Context, raw: Record<string, unknown> | undefi
   }
   //M 顺序关键：Compress 必须在 ContextFit 之前监听 session/request，使压缩后的 [摘要, ...尾部] 继续接受窗口预算裁剪。
   if (compressSettings.enabled) {
-    new compressModule.Compress(ctx, { at: compressSettings.at, keep: compressSettings.keep });
+    //M 启动时先迁移自有表，再让 Compress 开始查询和保存摘要。
+    ctx.db.migrate(compressionMigrations);
+    const compressConfig = { at: compressSettings.at, keep: compressSettings.keep };
+    const orm = ctx.db.orm;
+    new compressModule.Compress(ctx, compressConfig, orm);
   }
 
   //M 听 session/request：所有种类的会话都裁。

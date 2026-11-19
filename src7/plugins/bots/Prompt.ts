@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type { ChatRequest } from '../../Sessions.ts';
 import * as embedded from '../../utils/Embedded.ts';
+import * as filesModule from '../../utils/Files.ts';
 import * as memoryKeyModule from '../memory/MemoryKey.ts';
 
 
@@ -84,7 +85,9 @@ export class Prompt {
     if (file === undefined) return false;
 
     //M 建好上层目录，读出内嵌文件的字节，写下去。
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const promptDir = path.dirname(dest);
+    //M 释放内嵌提示词前确保上层目录存在。
+    filesModule.ensureDir(promptDir);
     const content = await Bun.file(file).arrayBuffer();
     const bytes = Buffer.from(content);
     fs.writeFileSync(dest, bytes);

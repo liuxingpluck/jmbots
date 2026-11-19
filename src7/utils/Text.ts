@@ -1,8 +1,4 @@
-/**
- * 小工具：没有状态、和谁都没有强关联的函数。
- * getMessage 把错收成一句话；getField、getText 读回话地址里的一项；eachEntry 逐个处理一组“名字: 值”；
- * getDuration、getClock 把时长、时刻写成字；getSizeText 把字节数写成字；clip 截字；getNumber 读网址里的整数参数。
- */
+/** 文字处理工具：错误转述、字串裁剪、日期和单位格式化、整数参数解析。 */
 
 
 /** getClock 写成什么样：time 时:分:秒；ms 时:分:秒.毫秒；date 年-月-日 时:分:秒。 */
@@ -19,57 +15,6 @@ export function getMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
 
   return String(error);
-}
-
-
-/**
- * 对象里的一项。读渠道的回话地址用：地址的形状归各渠道，插件只读约定好的几项（customer、openId、listenOnly 这类）。
- * @param value 一般是回话地址；不是对象（null、数组、字符串）当空对象。
- * @param key 哪一项。
- * @returns 那一项；没有是 undefined。
- */
-export function getField(value: unknown, key: string): unknown {
-  //M 只有普通对象才有“项”：null、数组、字符串、数字都当没有。
-  if (typeof value !== 'object') return undefined;
-  if (value === null) return undefined;
-  if (Array.isArray(value)) return undefined;
-
-  const where = value as Record<string, unknown>;
-  return where[key];
-}
-
-
-/**
- * 对象里的一项文字。
- * @param value 同 getField。
- * @param key 哪一项。
- * @returns 不是字符串是 ''。
- */
-export function getText(value: unknown, key: string): string {
-  //M 先按普通对象取字段，再限定必须是字符串才返回，防止把数字或对象当文本。
-  const field = getField(value, key);
-  //M 是字符串就原样给，别的（没有、数字、对象）给空串。
-  if (typeof field === 'string') return field;
-
-  return '';
-}
-
-
-/**
- * 逐个处理一组“名字: 值”（Record：配置里的 providers、models，内嵌文件表这类）。
- * 用它代替 `for (const [name, value] of Object.entries(record))`，读的人一眼看出是在逐个处理哪一样。
- * 只用于同步的处理：each 里不能 await，也不能 break；要提前停或要等的，照旧写 for 循环。
- * @param record 要遍历的对象。和 Object.entries 一样，只走它自己的、可枚举的字符串键，按写进去的先后。
- * @param each 每一项调一次。name 是键（比如供应商名），value 是值（比如这家供应商的配置）。
- * 副作用：本身没有；each 做什么由调用方定。
- */
-export function eachEntry<T>(
-  record: Readonly<Record<string, T>>,
-  each: (name: string, value: T) => void,
-): void {
-  for (const [name, value] of Object.entries(record)) {
-    each(name, value);
-  }
 }
 
 

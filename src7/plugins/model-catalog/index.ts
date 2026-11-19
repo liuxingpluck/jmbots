@@ -12,6 +12,7 @@
 import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as text from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as fallback from './Fallback.ts';
 import * as notesModule from './Notes.ts';
@@ -180,7 +181,7 @@ export class ModelCatalog extends cordis.Service {
     super(ctx, 'modelCatalog');
 
     //M 按各供应商的手写配置先填好初始模型表，并将需要在线拉清单的加入待重试集合。
-    text.eachEntry(plans, (provider, plan) => {
+    utils.eachEntry(plans, (provider, plan) => {
       this.tables.set(provider, pull.merge(provider, [], plan.written).models);
       if (plan.listModels) {
         this.pending.add(provider);
@@ -523,7 +524,7 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
     }
     const written: Record<string, pull.WrittenModel> = {};
     //M 逐条校验该供应商 config.yaml 手写的模型属性，生成供合并使用的手写表。
-    text.eachEntry((item['models'] ?? {}) as Record<string, unknown>, (id, value) => {
+    utils.eachEntry((item['models'] ?? {}) as Record<string, unknown>, (id, value) => {
       written[id] = checkWritten(value, `providers.${provider}.models.${id}`);
     });
     plans[provider] = { listModels, written };

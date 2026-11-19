@@ -6,6 +6,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
+import * as timers from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import * as cordis from 'cordis';
 import * as pluginIndex from './plugins/Index.ts';
@@ -21,7 +22,8 @@ import * as versions from './utils/Versions.ts';
 declare module 'cordis' {
   interface Events {
     /**
-     * 骨架和插件都挂完了，可以开工了。命令行渠道等到它才把命令行里带的那句话发出去。只是通知。
+     * 骨架挂好、配置的插件都发起挂载后通知开工。超时的插件继续在后台启动。
+     * 命令行渠道等到它才把命令行里带的那句话发出去。
      * 谁发：src7/Main.ts 的 main
      * 谁接：
      *   src7/plugins/approval/Outbound.ts 的 Outbound.constructor
@@ -79,12 +81,8 @@ async function main(argv: string[]): Promise<void> {
   await app.plugin(toolsModule.Tools);
   await app.plugin(sessionsModule.Sessions);
 
-  //M 插件：照 config.yaml 里写的先后，挂一个等一个。这个先后也是 session/request 挨个问的先后。
-  //M   机器人（bots）、渠道、工具、提示词都是插件，骨架不认得它们。
-  /** 挂上去的插件（带配置里的名字）；下面查它们要的服务用。 */
-  const mounted: { name: string; plugin: pluginIndex.PluginModule }[] = [];
-  /** config.yaml 里写的全部插件。 */
-  const configured = app.resources.config.plugins;
+  //M 按配置顺序发起挂载，逐个等到启动完成或超过等待上限。
+  const { plugins: configured, pluginMountTimeoutMs } = app.resources.config;
 
   //M 试运行（基地换版前先试跑新程序）只挂 http，够它做健康检查就行，不开渠道。
   /** 这次真要挂的插件。 */
@@ -98,66 +96,119 @@ async function main(argv: string[]): Promise<void> {
     throw new Error('试运行模式需要挂 http 插件，才能做健康检查');
   }
 
-  for (const entry of entries) {
-    try {
-      //M 从内置清单或外部文件夹动态加载插件并挂入 Cordis，拿到插件实例以记入挂载表。
-      const plugin = await loadPlugin(entry.name, app.resources.root);
-      await app.plugin(plugin, entry.config);
-      mounted.push({ name: entry.name, plugin });
+  const starting = new Map<cordis.Fiber, resourcesModule.PluginStatus>();
 
-      //M 挂上了：结果写到 resources.pluginStatus，给 /api/health 和 /flow/ 用。
-      app.resources.pluginStatus.push({
-        name: entry.name,
-        mounted: true,
-        started: true,
-        missing: [],
-        error: '',
-        inject: plugin.inject ?? [],
-      });
-    } catch (error) {
-      //G 找不到、起不来 → 打一行原因，不挡别的插件。
-      const text = textModule.getMessage(error);
-      console.error(`插件 ${entry.name} 没挂上：${text}`);
-
-      //G 写给 health / /flow/ 的原因不带模块系统的绝对路径：找不到模块的，换成一句人话。
-      let reason = text;
-      if (/Cannot find module/iu.test(text)) {
-        reason = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';
-      }
-
-      //M 没挂上也记一行；它声明要的服务照自带名单里写的填（别人写的插件没加载成，填空）。
-      const builtIn = pluginIndex.BUILT_IN[entry.name];
-      app.resources.pluginStatus.push({
-        name: entry.name,
-        mounted: false,
-        started: false,
-        missing: [],
-        error: reason,
-        inject: builtIn?.inject ?? [],
-      });
+  function recordPluginFailure(row: resourcesModule.PluginStatus, error: unknown): void {
+    //G 启动真的失败才记为失败，错误原文给标准错误排查。
+    const text = textModule.getMessage(error);
+    console.error(`插件 ${row.name} 没挂上：${text}`);
+    row.mounted = false;
+    row.started = false;
+    row.missing = [];
+    row.error = text;
+    if (/Cannot find module/iu.test(text)) {
+      //G health 和教程只给出找不到入口的原因，不带模块系统的绝对路径。
+      row.error = '找不到这个插件（自带名单里没有，也没有对应的入口文件）';
     }
   }
 
-  //G 插件要用的服务到现在还没人提供 → Cordis 会让它一直等着，不开工也不报错。打一行说清它在等谁。
-  for (const item of mounted) {
-    /** 它声明要的服务。 */
-    const wanted = item.plugin.inject ?? [];
-    /** 其中到现在还没人提供的。 */
-    const missing = wanted.filter((service) => app.get(service) === undefined);
+  //M 以真实 fiber 为键。等依赖或超时后继续启动的插件都能更新自己的那一行。
+  app.on('internal/status', (fiber) => {
+    const row = starting.get(fiber);
+    if (row === undefined) return;
+
+    if (fiber.state === cordis.FiberState.ACTIVE) {
+      starting.delete(fiber);
+      row.mounted = true;
+      row.started = true;
+      row.missing = [];
+      row.error = '';
+      return;
+    }
+    if (fiber.state !== cordis.FiberState.FAILED) return;
+
+    //M 缺依赖时首轮等待可能早已返回，由状态事件取出随后启动失败的原因。
+    void fiber.await().catch((error: unknown) => {
+      if (!starting.delete(fiber)) return;
+
+      recordPluginFailure(row, error);
+    });
+  }, { prepend: true });
+
+  for (const entry of entries) {
+    //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。
+    const builtIn = pluginIndex.BUILT_IN[entry.name];
+    const row: resourcesModule.PluginStatus = {
+      name: entry.name,
+      mounted: false,
+      started: false,
+      missing: [],
+      error: '',
+      inject: builtIn?.inject ?? [],
+    };
+    try {
+      let plugin = builtIn;
+      if (plugin === undefined) {
+        //M 内置表查不到才从外部插件文件夹加载入口。
+        const root = app.resources.root;
+        plugin = await loadExternalPlugin(entry.name, root);
+      }
+
+      //M 等待 Cordis apply。状态监听使用 thenable 后面的原 fiber。
+      row.inject = plugin.inject ?? [];
+      const mounted = app.plugin(plugin, entry.config);
+      const fiber = mounted.ctx.fiber;
+      starting.set(fiber, row);
+
+      //M 首次等待结束时也可能在等注入。异步失败即使发生在超时之后也照常记账。
+      const finished = fiber.await().then(() => {
+        if (fiber.state === cordis.FiberState.PENDING && row.error === '') {
+          row.mounted = true;
+        }
+        return true;
+      }, (error: unknown) => {
+        if (starting.delete(fiber)) {
+          recordPluginFailure(row, error);
+        }
+        return true;
+      });
+
+      const timer = new AbortController();
+      const options = { signal: timer.signal };
+      const deadline = timers.setTimeout(pluginMountTimeoutMs, false, options);
+      const waiting = [finished, deadline];
+      try {
+        const inTime = await Promise.race(waiting);
+        if (!inTime && starting.has(fiber)) {
+          //G 到点只结束本次等待。保留 fiber，让它完成后还能发状态和服务通知。
+          const seconds = pluginMountTimeoutMs / 1000;
+          row.mounted = false;
+          row.error = `启动超过 ${String(seconds)} 秒，先挂后面的，它继续在后台起`;
+          console.error(`插件 ${row.name} ${row.error}`);
+        }
+      } finally {
+        timer.abort();
+      }
+    } catch (error) {
+      recordPluginFailure(row, error);
+    }
+    //M 维持配置顺序，每次发起挂载只占一行，供 health 和启动流程读。
+    app.resources.pluginStatus.push(row);
+  }
+
+  //G 缺注入的插件会等服务出现，保留原有的缺服务说明。
+  for (const row of app.resources.pluginStatus) {
+    if (!row.mounted || row.started) continue;
+
+    const missing = row.inject.filter((service) => app.get(service) === undefined);
     if (missing.length === 0) continue;
 
     const names = missing.join('、');
-    console.error(`插件 ${item.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);
-
-    //M 把挂载结果里它那一行改成没开工，写上缺谁。
-    const row = app.resources.pluginStatus.find((status) => status.name === item.name);
-    if (row !== undefined) {
-      row.started = false;
-      row.missing = missing;
-    }
+    console.error(`插件 ${row.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);
+    row.missing = missing;
   }
 
-  //M 都挂完了：告诉大家开工，带上命令行里剩下的参数。
+  //M 配置的插件都已发起挂载，告诉大家开工，带上命令行里剩下的参数。
   app.emit('ready', args.rest);
 
   //M 上次没跑完的会话（库里还是 running 的），接着跑。
@@ -168,17 +219,13 @@ async function main(argv: string[]): Promise<void> {
 
 
 /**
- * 照 config.yaml 里写的 name 取出一个插件。
- * @param name 自带插件的名字，或者别人写的插件的文件夹路径。
- * @param root 运行时目录；相对路径从它算。
+ * 从外部插件文件夹加载入口，优先使用 index.ts，再找 index.js。
+ * @param name 外部插件的文件夹路径，相对路径从运行时目录算。
+ * @param root 配置所在的运行时目录。
  * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。
  */
-async function loadPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {
-  //M 自带的：名字在名单里。
-  const builtIn = pluginIndex.BUILT_IN[name];
-  if (builtIn !== undefined) return builtIn;
-
-  //M 别人写的：name 是文件夹路径，入口是里面的 index.ts，没有就 index.js。
+async function loadExternalPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {
+  //M 按运行时目录解析外部路径，保留已有的入口优先级。
   const dir = path.resolve(root, name);
   let entry = path.join(dir, 'index.ts');
   if (!fs.existsSync(entry)) {

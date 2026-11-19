@@ -5,7 +5,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as protocol from '../../Channels.ts';
 
 
@@ -145,7 +145,7 @@ export class CliHistory {
         if (typeof parsed.bot === 'string' && parsed.bot !== '' && botName !== '' && parsed.bot !== botName) continue;
 
         //G 按本机聊天标识筛选原件，兼容旧记录缺少来源的情况。
-        const customer = textModule.getText(parsed.address, 'customer') || 'cli:本机';
+        const customer = utils.getStringField(parsed.address, 'customer') || 'cli:本机';
         if (customer !== targetChatId) continue;
 
         //M 用原件文件名和行号生成历史项标识，保证翻页时可重复定位。

@@ -70,7 +70,7 @@ class WebSearch {
           query: piAi.Type.String({ description: '搜什么，一句话或关键词' }),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, _session, signal) => this.search(args['query'] as string, signal),
     });
   }

@@ -271,7 +271,7 @@ export class Search {
           ...FILTERS,
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: async (args, session, signal, callId) => {
         //G 前台先扣本轮额度，再按来源和权限检索。
         this.takeTurn(session);
@@ -298,7 +298,7 @@ export class Search {
           ...FILTERS,
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: async (args, session, signal, callId) => {
         //G 检索与取原文共用同一份前台额度。
         this.takeTurn(session);

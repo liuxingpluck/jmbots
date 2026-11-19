@@ -17,6 +17,7 @@ import * as versions from '../../utils/Versions.ts';
 import type * as fastify from 'fastify';
 import type { Session, SessionMeta, Thinking } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as timelineModule from './Timeline.ts';
 import * as traceModule from './Trace.ts';
 import * as failureModule from '../../utils/Failure.ts';
@@ -632,8 +633,8 @@ class WebApi {
       throw new failureModule.Failure(400, 'view 要写成 { channel, chat }');
     }
     //G 提取视图里的渠道和聊天字段，拒绝无法定位的字段类型。
-    const channel = textModule.getField(raw, 'channel');
-    const chat = textModule.getField(raw, 'chat') ?? '';
+    const channel = utils.getField(raw, 'channel');
+    const chat = utils.getField(raw, 'chat') ?? '';
     if (typeof channel !== 'string' || channel === '' || typeof chat !== 'string') {
       throw new failureModule.Failure(400, 'view 要写成 { channel, chat }，channel 是非空字符串，chat 不写或是字符串');
     }
@@ -1003,7 +1004,7 @@ class WebApi {
    */
   private brief(meta: SessionMeta): Record<string, unknown> {
     //M 从会话记录取显示用的客户名称，缺少时留空。
-    const customer = textModule.getText(meta, 'customer');
+    const customer = utils.getStringField(meta, 'customer');
 
     //M 将会话标题、状态和文件地址组装成网页列表与详情共用的摘要。
     return {
@@ -1074,7 +1075,7 @@ class WebApi {
     return this.ctx.sessions.find({ bot, state: 'running' }).map((meta) => {
       const card = cards.find((item) => item.sessionId === meta.id && item.endedAt === undefined);
       const session = this.ctx.sessions.open(meta.id);
-      const customer = textModule.getText(meta, 'customer');
+      const customer = utils.getStringField(meta, 'customer');
 
       //M 优先采用进度卡，缺失时从待办和对话补出开始时刻及当前动作。
       const startedAt = card?.startedAt ?? runStartedAt(session, meta.updatedAt);
@@ -1154,7 +1155,7 @@ class WebApi {
   private async setModel(id: string, raw: unknown): Promise<Record<string, unknown>> {
     //G 先确认会话存在，并校验请求带了可查询的模型名。
     const session = this.open(id);
-    const model = textModule.getField(raw, 'model');
+    const model = utils.getField(raw, 'model');
     if (typeof model !== 'string' || model === '') throw new failureModule.Failure(400, 'model 要是非空字符串');
 
     const request = { action: 'find', model } as const;
@@ -1175,7 +1176,7 @@ class WebApi {
     if (info === undefined || info.kind !== 'chat') throw new failureModule.Failure(400, `模型不可用：${model}`);
 
     //G 显式思考档必须受该模型支持，省略时使用最高档。
-    const requested = textModule.getField(raw, 'thinking');
+    const requested = utils.getField(raw, 'thinking');
     let thinking = info.thinking.at(-1) ?? 'off';
     if (requested !== null && requested !== undefined) {
       if (typeof requested !== 'string' || !info.thinking.includes(requested)) {
@@ -1206,7 +1207,7 @@ class WebApi {
   private stop(id: string, raw: unknown): Record<string, unknown> {
     //M 读取目标会话与请求原因，为停止动作准备参数。
     const session = this.open(id);
-    const reason = textModule.getText(raw, 'reason') || 'HTTP';
+    const reason = utils.getStringField(raw, 'reason') || 'HTTP';
     if (session.row.state !== 'running') {
       //G 已经不在运行的会话只交回当前状态，无需触发停止。
       return { id, stopped: false, status: timelineModule.getStatus(session.row.state), reason: '会话没在跑' };

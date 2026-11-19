@@ -16,7 +16,7 @@ import * as cordis from 'cordis';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as fallback from './Fallback.ts';
 import * as checks from '../../utils/Checks.ts';
 import type { FallbackInfo } from './Fallback.ts';
@@ -56,7 +56,7 @@ async function setupWorld(options: {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'models'));
-  textModule.eachEntry(options.notes ?? {}, (file, text) => {
+  utils.eachEntry(options.notes ?? {}, (file, text) => {
     fs.writeFileSync(path.join(root, 'models', file), text, 'utf8');
   });
 

@@ -82,7 +82,7 @@ export interface PluginCodeInfo {
 /** 工具登记表里一项要用到的部分（Tools.ts 的 ToolSpec；specs 是私有字段，读法同 Boot.ts）。 */
 interface ToolSpecLike {
   definition: { name: string; description?: string };
-  kinds: string[];
+  sessionKinds: string[];
 }
 
 /** 顶层 export function / export class。 */
@@ -241,7 +241,7 @@ export class PluginCode {
       //M 提取工具实现行号与一句话描述，供教程页「试一试/工具」展示。
       const site = await this.getToolSite(folder, toolName);
       const summary = sourceModule.getFirstSentence(spec.definition.description ?? '');
-      items.push({ name: toolName, summary, site, kinds: spec.kinds });
+      items.push({ name: toolName, summary, site, kinds: spec.sessionKinds });
     }
     return items;
   }

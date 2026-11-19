@@ -377,3 +377,8 @@ button.tu-dep-tag:hover { border-color: var(--jm-accent); background: var(--jm-a
   .tu-stage-center { position: static; transform: none; padding: 24px 0; }
   .tu-float-right { position: static; width: 100%; min-width: 0; max-height: 75vh; order: 3; }
 }
+
+/* 右栏「进程插件」：状态表、接口清单、说明，链接样式的按钮。 */
+.tu-program { display: flex; flex-direction: column; gap: 8px; }
+.tu-program h4 { margin: 8px 0 4px; }
+.tu-program-link { border: 0; padding: 0; background: none; color: var(--jm-accent); cursor: pointer; text-align: left; }

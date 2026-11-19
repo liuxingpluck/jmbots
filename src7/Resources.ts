@@ -1,10 +1,11 @@
 /**
  * 资源：运行时目录里的东西都归它管。
- * 读 config.yaml、开数据库、把 pi 的供应商建好、给出运行时目录下的文件夹。
- * 最底下一层，不依赖别的模块。config.yaml 只读不改写，不打印原文（里面有密钥）。
+ * 读 config.yaml、开数据库、向 pi 注册供应商、给出运行时目录下的文件夹。
+ * 配置改动通过校验后更新供应商和密钥。config.yaml 只读，不打印配置原文。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as util from 'node:util';
 import { Database } from 'bun:sqlite';
 import * as piAi from '@earendil-works/pi-ai';
 import * as piAnthropic from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
@@ -14,13 +15,22 @@ import * as cordis from 'cordis';
 import * as yaml from 'yaml';
 import type { Thinking } from './Sessions.ts';
 import * as checks from './utils/Checks.ts';
+import * as filesModule from './utils/Files.ts';
 import * as textModule from './utils/Text.ts';
+import * as utils from './utils/index.ts';
 
 
 declare module 'cordis' {
   interface Context {
     /** 资源服务，实现在 src7/Resources.ts。 */
     resources: Resources;
+  }
+  interface Events {
+    /**
+     * Resources 成功应用 config.yaml 更新后发出。当前无内置监听者。
+     * @param keys 新增、删除或内容有变化的顶层键名。
+     */
+    'config/changed'(keys: string[]): void;
   }
 }
 
@@ -110,6 +120,8 @@ export interface JmbotsConfig {
   providers: Record<string, ProviderConfig>;
   /** 要挂哪些插件，照写的先后挂。 */
   plugins: PluginEntry[];
+  /** 开工前最多等待单个插件挂载的毫秒数。 */
+  pluginMountTimeoutMs: number;
   /** 新会话默认的思考档（models.thinking）。 */
   thinking: Thinking;
   /** 模型请求出错怎么重试（models.retry）。 */
@@ -132,16 +144,55 @@ const CHAT_APIS: Record<ProviderConfig['api'], () => ReturnType<typeof piComplet
 };
 
 
+/** 校验后的骨架配置和来自同一份 YAML 的原始对象。 */
+interface ConfigSnapshot {
+  /** 骨架直接使用的配置。 */
+  config: JmbotsConfig;
+  /** 插件读取的配置原文对象，包含密钥。 */
+  raw: Record<string, unknown>;
+}
+
+const CONFIG_FILE = 'config.yaml';
+const CONFIG_RELOAD_DELAY_MS = 500;
+
+/** 从磁盘读取并校验配置，错误信息不含 YAML 原文。 */
+function readConfig(file: string): ConfigSnapshot {
+  //M 启动和重读共用同一份入口校验。
+  const yamlText = fs.readFileSync(file, 'utf8');
+  const document = yaml.parseDocument(yamlText);
+
+  //G YAML 解析错误会带出原文，错误里只保留行号。
+  const broken = document.errors[0];
+  if (broken !== undefined) {
+    const line = String(broken.linePos?.[0].line ?? '?');
+    throw new Error(`config.yaml 不是合法的 YAML（第 ${line} 行附近）`);
+  }
+
+  const written: unknown = document.toJSON();
+  //M 交给 checkConfig 校验一次。顶层确认是对象后，插件仍可读取原始值。
+  const config = checks.checkConfig(written);
+  const raw = written as Record<string, unknown>;
+  return { config, raw };
+}
+
+
 /** 资源服务。 */
 export class Resources extends cordis.Service {
   /** 运行时目录的绝对路径。 */
   readonly root: string;
 
-  /** 校验后的配置：骨架自己用到的那几项。谁要用直接读，不再检查。 */
-  readonly config: JmbotsConfig;
+  /** 最近一次通过校验的配置快照。 */
+  private current: ConfigSnapshot;
 
-  /** 整份 config.yaml 解析出来的对象，原样。插件读自己那一段（bots、channels、server……），自己校验。里面有密钥，不许打印。 */
-  readonly raw: Record<string, unknown>;
+  /** 校验后的配置，骨架调用方可以直接读。 */
+  get config(): JmbotsConfig {
+    return this.current.config;
+  }
+
+  /** 整份 config.yaml 的对象，插件读自己那一段并校验。包含密钥。 */
+  get raw(): Record<string, unknown> {
+    return this.current.raw;
+  }
 
   /** 数据库连接 data/jmbots7.db；会话存在里面，插件也在里面建自己的表。 */
   readonly db: Database;
@@ -166,24 +217,9 @@ export class Resources extends cordis.Service {
     super(ctx, 'resources');
     this.root = path.resolve(config.dir);
 
-    //M 读 config.yaml，先按 YAML 解析。
-    const file = path.join(this.root, 'config.yaml');
-    const yamlText = fs.readFileSync(file, 'utf8');
-    const document = yaml.parseDocument(yamlText);
-
-    //G YAML 自己的报错会带上出错那一行的原文（可能是密钥），所以只说第几行。
-    const broken = document.errors[0];
-    if (broken !== undefined) {
-      const line = String(broken.linePos?.[0].line ?? '?');
-      throw new Error(`config.yaml 不是合法的 YAML（第 ${line} 行附近）`);
-    }
-
-    //M 交给 checkConfig 校验一次，内部以后只用校验过的 this.config。
-    const raw: unknown = document.toJSON();
-    this.config = checks.checkConfig(raw);
-
-    //M checkConfig 已经查过顶层是一组“名字: 值”，这里原样留一份给插件读。
-    this.raw = raw as Record<string, unknown>;
+    //M 首次读入校验后的快照，供数据库和插件初始化使用。
+    const file = path.join(this.root, CONFIG_FILE);
+    this.current = readConfig(file);
 
     //M 开数据库 data/jmbots7.db（没有就建）；这个服务被拔掉时关。
     const dbFile = path.join(this.dir('data'), 'jmbots7.db');
@@ -195,44 +231,109 @@ export class Resources extends cordis.Service {
       };
     });
 
-    //M 照 providers 里的每一家，用 pi 的 createProvider 建好，放进同一个 pi 集合。只建这一次。
+    //M 用同一集合接入配置里的供应商，供 Sessions 后续请求复用。
     this.models = piAi.createModels();
-    textModule.eachEntry(this.config.providers, (name, provider) => {
-      /** 这家用的协议在 pi 里的实现。 */
-      const api = CHAT_APIS[provider.api]();
-      //M 构造带配置密钥回调的 pi 供应商并注册进模型集合，供后续发模型请求复用。
-      const created = piAi.createProvider({
-        id: name,
-        baseUrl: provider.baseUrl,
-        auth: this.getAuth(provider),
-        models: [],
-        api,
+    this.updateProviders(this.config.providers, {});
+
+    //M 监听父目录，设置页用临时文件原子替换后仍能继续监听。
+    this.watchConfig(file);
+  }
+
+  /** 按 ID 更新 pi 集合。密钥变动由请求时的解析回调处理。 */
+  private updateProviders(providers: JmbotsConfig['providers'], previous: JmbotsConfig['providers']): void {
+    const created: piAi.Provider[] = [];
+    utils.eachEntry(providers, (name, provider) => {
+      const old = previous[name];
+      if (old?.baseUrl === provider.baseUrl && old.api === provider.api) return;
+
+      //M 先建好新增或连接参数变动的供应商，再更新现有集合。
+      const getApi = CHAT_APIS[provider.api];
+      const api = getApi();
+      const auth = this.getAuth(provider, name);
+      const options = {
+        id: name, baseUrl: provider.baseUrl, auth, models: [], api,
+      };
+      const item = piAi.createProvider(options);
+      created.push(item);
+    });
+
+    //M 移除配置里删掉的供应商，再登记准备好的新实现。
+    const configured = Object.keys(previous);
+    for (const name of configured) {
+      if (Object.hasOwn(providers, name)) continue;
+      this.models.deleteProvider(name);
+    }
+    for (const item of created) {
+      this.models.setProvider(item);
+    }
+  }
+
+  /** 监听 config.yaml，合并保存动作产生的多次文件通知。 */
+  private watchConfig(file: string): void {
+    this.ctx.effect(() => {
+      let pending: ReturnType<typeof setTimeout> | undefined;
+      //M 非持久监听与定时器让命令行模式能照常退出。
+      const watcher = fs.watch(this.root, { persistent: false }, (_event, name) => {
+        if (name !== null && name.toLowerCase() !== CONFIG_FILE) return;
+
+        clearTimeout(pending);
+        pending = setTimeout(() => this.reloadConfig(file), CONFIG_RELOAD_DELAY_MS);
+        pending.unref();
       });
-      this.models.setProvider(created);
+      watcher.on('error', (error) => {
+        console.error(`config.yaml 监听失败：${error.message}`);
+      });
+      return () => {
+        clearTimeout(pending);
+        watcher.close();
+      };
     });
   }
 
-  /**
-   * 交给 pi 的一家供应商的密钥（createProvider 的 auth）。骨架建对话模型、decision 插件建分类器都用这一份。
-   * 真正的密钥是 apiKey：来自 config.yaml 的 providers.<名>.api_key（utils/Checks.ts 的 checkConfig 读进 config.providers）。
-   * pi 的密钥是回调，因为它支持“发请求时现取”：读环境变量、OAuth 过期了先刷新再给；
-   * 我们的密钥固定写在配置里，所以回调只是把闭包里的 apiKey 原样交回。
-   * @param provider config.providers 里的一家（校验过的）。
-   * @returns pi 的 ProviderAuth：
-   *   name 只是 pi 在状态、报错里显示的名字，不是密钥；
-   *   resolve 是 pi 每次发请求前调的回调（pi 的 auth/resolve.js 的 resolveApiKey），交回密钥；
-   *   source 是给人看的来源标签（pi 自己的例子是 "ANTHROPIC_API_KEY"、"OAuth"），写 config.yaml。
-   */
-  getAuth(provider: ProviderConfig): piAi.ProviderAuth {
-    //M 本地服务可以不要密钥；pi 约定空密钥用 no-key。
-    let apiKey = provider.apiKey;
-    if (apiKey === '') {
-      apiKey = 'no-key';
+  /** 校验并应用新快照，失败时继续使用原配置。 */
+  private reloadConfig(file: string): void {
+    let changed: string[];
+    try {
+      const next = readConfig(file);
+      const names = new Set([...Object.keys(this.raw), ...Object.keys(next.raw)]);
+      changed = Array.from(names).filter((name) => !util.isDeepStrictEqual(this.raw[name], next.raw[name]));
+      if (changed.length === 0) return;
+
+      //M 同步更新 pi 集合与配置快照，再向监听者通知新状态。
+      this.updateProviders(next.config.providers, this.config.providers);
+      this.current = next;
+    } catch (error) {
+      const reason = textModule.getMessage(error);
+      console.error(`config.yaml 重读失败，继续使用原配置：${reason}`);
+      return;
     }
+
+    //M 只通知变动的顶层键，供需要刷新配置的插件监听。
+    this.ctx.emit('config/changed', changed);
+  }
+
+  /**
+   * 交给 pi 的供应商鉴权。对话模型和 decision 的分类器都用它。
+   * @param provider 配置中的供应商对象，用于兼容调用方按对象登记。
+   * @param name 调用方已知道的供应商名。
+   * @returns 每次请求前按供应商名从当前配置解析密钥和地址。
+   */
+  getAuth(provider: ProviderConfig, name?: string): piAi.ProviderAuth {
+    const providers = this.config.providers;
+    const providerName = name ?? Object.keys(providers).find((key) => providers[key] === provider);
     return {
       apiKey: {
         name: '配置里的密钥',
-        resolve: () => Promise.resolve({ auth: { apiKey }, source: 'config.yaml' }),
+        resolve: async () => {
+          const providers = this.config.providers;
+          //G 删除供应商后，旧的鉴权回调不再交回密钥。
+          if (providerName === undefined || !Object.hasOwn(providers, providerName)) return undefined;
+
+          //M 在同一快照取地址和密钥，缓存过模型的调用方也会向当前地址请求。
+          const current = providers[providerName]!;
+          const apiKey = current.apiKey || 'no-key';
+          return { auth: { apiKey, baseUrl: current.baseUrl }, source: CONFIG_FILE };
+        },
       },
     };
   }
@@ -245,8 +346,8 @@ export class Resources extends cordis.Service {
    */
   dir(...parts: string[]): string {
     const full = path.join(this.root, ...parts);
-    fs.mkdirSync(full, { recursive: true });
-    return full;
+    //M 确保运行时目录下的目标路径可供调用方使用。
+    return filesModule.ensureDir(full);
   }
 
   /**

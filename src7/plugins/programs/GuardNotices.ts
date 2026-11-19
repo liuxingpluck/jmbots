@@ -2,6 +2,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as filesModule from '../../utils/Files.ts';
 
 /** 相同事件两次入队至少间隔十分钟。 */
 const NOTICE_MS = 600_000;
@@ -42,12 +43,14 @@ export class GuardNotices {
     const target = path.join(outbox, `${basename}.md`);
     const receiptTemp = path.join(receipts, `${digest}_${id}.tmp`);
     //M 同步写小正文后原子改后缀，既有扫描器不会读到半份消息。
-    fs.mkdirSync(outbox, { recursive: true });
+    //M 确保发件箱目录存在，再写待入队正文。
+    filesModule.ensureDir(outbox);
     fs.writeFileSync(pending, text, { flag: 'wx' });
     fs.renameSync(pending, target);
     this.sent.set(key, now);
     //M 记录成功入队时刻，后续实例沿用同一滑动窗口；送达与重试由飞书发件箱负责。
-    fs.mkdirSync(receipts, { recursive: true });
+    //M 确保去重回执目录存在，再写成功入队时刻。
+    filesModule.ensureDir(receipts);
     fs.writeFileSync(receiptTemp, JSON.stringify(now), { flag: 'wx' });
     fs.renameSync(receiptTemp, receipt);
     return true;

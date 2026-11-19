@@ -64,7 +64,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         images: piAi.Type.Optional(piAi.Type.Array(piAi.Type.String(), { description: '放在文档最前面的图片路径，相对工作区' })),
       }),
     },
-    kinds: ['work'],
+    sessionKinds: ['work'],
     run: (args, session) => publish(feishu, ctx, session, {
       title: args['title'] as string,
       markdown: args['markdown'] as string,
@@ -81,7 +81,7 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
         documents: piAi.Type.Array(piAi.Type.String(), { description: '文档 ID 列表' }),
       }),
     },
-    kinds: ['work'],
+    sessionKinds: ['work'],
     run: (args, session) => remove(feishu, session, args['documents'] as string[]),
   });
 }

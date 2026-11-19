@@ -24,6 +24,7 @@ import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import type { Origin, ReceiveEvent } from '../bots/index.ts';
@@ -415,19 +416,19 @@ export class Relay {
    */
   private getSpeaker(address: unknown): Speaker {
     //M 从渠道地址取发言人标识和会话号，作为显示名与群类型的来源。
-    const openId = textModule.getText(address, 'openId');
-    const chat = getChat(textModule.getText(address, 'customer'));
+    const openId = utils.getStringField(address, 'openId');
+    const chat = getChat(utils.getStringField(address, 'customer'));
     //M 名字、群名飞书插件写了才有（登记的优先，再是查到的）；都没有用 open_id 后 6 位、chat_id。
-    const sender = textModule.getText(address, 'senderName') || openId.slice(-6);
-    const groupName = textModule.getText(address, 'chatName') || textModule.getText(address, 'chatId');
+    const sender = utils.getStringField(address, 'senderName') || openId.slice(-6);
+    const groupName = utils.getStringField(address, 'chatName') || utils.getStringField(address, 'chatId');
     let chatName = '';
     if (chat === 'group') {
       chatName = groupName;
     }
     return {
-      owner: textModule.getField(address, 'owner') === true,
-      role: textModule.getText(address, 'role'),
-      workspace: textModule.getText(address, 'workspace'),
+      owner: utils.getField(address, 'owner') === true,
+      role: utils.getStringField(address, 'role'),
+      workspace: utils.getStringField(address, 'workspace'),
       sender,
       chat,
       chatName,
@@ -481,7 +482,7 @@ export class Relay {
     if (byBot !== undefined) return byBot;
 
     //M 机器人未指定模式时，读取渠道地址中的群转发设置。
-    if (textModule.getField(row.address, 'relay') === 'model') return 'model';
+    if (utils.getField(row.address, 'relay') === 'model') return 'model';
 
     return undefined;
   }
@@ -701,9 +702,9 @@ export class Relay {
     const bot = event.bot.name;
     const address = event.message.address;
     //M 取渠道里的客户标识，使转发会话按客户隔离。
-    const customer = textModule.getText(address, 'customer');
+    const customer = utils.getStringField(address, 'customer');
     //M direct 进前台会话；只听的话不整句转，和别的一样要以某个助手的前缀开头才进 relay 会话。都按客户分。
-    const listenOnly = textModule.getField(address, 'listenOnly') === true;
+    const listenOnly = utils.getField(address, 'listenOnly') === true;
     let kind: 'front' | 'relay' = 'front';
     if (listenOnly || this.getMode(bot) !== 'direct') {
       if (this.prefixed(event.message.text) === undefined) return;
@@ -939,9 +940,9 @@ export class Relay {
     const prefixLength = DECISION_CHANNEL.length + 1;
     const key = reply.session_id.slice(prefixLength);
     const origin = this.getOrigin(item);
-    const stored = textModule.getField(origin.address, 'decisionTarget');
-    const node = textModule.getText(stored, 'node');
-    const note = textModule.getText(stored, 'note') || undefined;
+    const stored = utils.getField(origin.address, 'decisionTarget');
+    const node = utils.getStringField(stored, 'node');
+    const note = utils.getStringField(stored, 'note') || undefined;
     let target: { node: string; note?: string } | undefined;
     if (node !== '') target = { node, note };
 
@@ -1230,12 +1231,12 @@ export class Relay {
       bodyText = text.slice(quoted[0].length);
     }
     //M 聊天号：飞书写 chatId，微信写 chat。
-    const chatId = textModule.getText(address, 'chatId') || textModule.getText(address, 'chat');
+    const chatId = utils.getStringField(address, 'chatId') || utils.getStringField(address, 'chat');
     const body = {
       id: item.id, bot: item.bot, channel: item.channel,
       chat: chatId, chat_type: item.chat, chat_name: item.chatName,
-      sender_open_id: textModule.getText(address, 'openId'), sender: item.sender,
-      message_id: textModule.getText(address, 'messageId'),
+      sender_open_id: utils.getStringField(address, 'openId'), sender: item.sender,
+      message_id: utils.getStringField(address, 'messageId'),
       owner: item.owner,
       role: item.role,
       workspace: item.workspace,
@@ -1426,7 +1427,7 @@ export class Relay {
           text: piAi.Type.String({ description: `要转给 ${helper} 的话：用户原话一字不改，或你整理好的问题` }),
         }),
       },
-      kinds: ['front', 'work'],
+      sessionKinds: ['front', 'work'],
       run: (args, session) => {
         //G 调用时再确认会话允许模型转发，避免普通会话误用工具。
         if (this.sessionMode(session) !== 'model') {

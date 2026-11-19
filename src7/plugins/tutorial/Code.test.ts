@@ -74,8 +74,8 @@ describe('PluginCode.getCode', () => {
     { method: 'GET', url: '/api/mystery', owner: '', site: '' },
   ];
   const specs = new Map([
-    ['edit', { definition: { name: 'edit', description: '改文件。第二句。' }, kinds: ['work'] }],
-    ['other-tool', { definition: { name: 'other-tool', description: '别人的' }, kinds: ['front'] }],
+    ['edit', { definition: { name: 'edit', description: '改文件。第二句。' }, sessionKinds: ['work'] }],
+    ['other-tool', { definition: { name: 'other-tool', description: '别人的' }, sessionKinds: ['front'] }],
   ]);
   const fake = {
     get: (name: string) => {

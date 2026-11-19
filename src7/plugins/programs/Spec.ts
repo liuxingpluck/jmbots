@@ -2,7 +2,7 @@
 import * as net from 'node:net';
 import * as path from 'node:path';
 import type { PluginEntry } from '../../Resources.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 
 /** 内置配置名对应实际登记的渠道。微信的两个插件名接同一个微信渠道。 */
 const BUILT_IN_CHANNELS = new Map([
@@ -314,7 +314,7 @@ export function getLaunch(root: string, spec: ProgramSpec) {
   const env = { ...process.env };
 
   //M 配置值覆盖本次子进程继承的环境变量。
-  textModule.eachEntry(spec.env, (key, value) => { env[key] = fill(value); });
+  utils.eachEntry(spec.env, (key, value) => { env[key] = fill(value); });
   return { command, args, cwd, env };
 }
 

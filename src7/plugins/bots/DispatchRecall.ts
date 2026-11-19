@@ -1,7 +1,7 @@
 /** 处理渠道撤回，停止被撤的前后台轮次并拦截迟到回复。 */
 import type * as cordis from 'cordis';
 import * as protocol from '../../Channels.ts';
-import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as dispatch from './DispatchResults.ts';
 import type { DispatchResults } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
@@ -246,14 +246,14 @@ export class DispatchRecall {
 
       //M 核对渠道与账号是否匹配撤回事件。
       const sameChannel = meta.channel === event.channel;
-      const addrAccount = textModule.getText(meta.address, 'appId');
+      const addrAccount = utils.getStringField(meta.address, 'appId');
       const sameAccount = addrAccount === '' || addrAccount === event.accountId;
       if (!sameChannel || !sameAccount) {
         continue;
       }
 
       //M 非本人时只允许原发送人撤回自己触发的会话，绝不越权停别人。
-      const addrSender = textModule.getText(meta.address, 'openId');
+      const addrSender = utils.getStringField(meta.address, 'openId');
       let allowedOther = event.recalledBy.isOwner;
       if (!allowedOther && event.recalledBy.kind === 'sender') {
         allowedOther = event.recalledBy.id === '' || addrSender === '' || event.recalledBy.id === addrSender;

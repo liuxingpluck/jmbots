@@ -114,7 +114,7 @@ export class Exec extends cordis.Service {
           timeout: piAi.Type.Optional(piAi.Type.Integer({ minimum: 1, description: `最多跑几秒，默认 ${String(DEFAULT_TIMEOUT_SECONDS)}` })),
         }),
       },
-      kinds: ['work'],
+      sessionKinds: ['work'],
       //M 模型调用 exec 时走 onTool：先审核，放行才跑。
       run: (args, session, signal) => this.onTool(args, session, signal),
     });

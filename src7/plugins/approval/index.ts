@@ -29,6 +29,7 @@ import * as cardUtils from '../../utils/Card.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 
 
@@ -401,7 +402,7 @@ export class Approval extends cordis.Service {
       let prompt = GUEST_PROMPT;
       if (role === 'builder') {
         //M builder 提示词写明他被限制在哪个子工作区。
-        prompt = builderPrompt(textModule.getText(address, 'workspace'));
+        prompt = builderPrompt(utils.getStringField(address, 'workspace'));
       }
 
       //M 把这一档的提示词加进系统提示词，告诉模型别答应做不了的事。
@@ -418,7 +419,7 @@ export class Approval extends cordis.Service {
       if (allowedTools === undefined) return;
 
       //G 外人能用 workspace 工具，但只能看（list、get）；建、改名、归档只给本人。
-      const action = textModule.getText(gate.call.arguments, 'action');
+      const action = utils.getStringField(gate.call.arguments, 'action');
       const changesWorkspace = gate.call.name === 'workspace' && !rules.OTHERS_WORKSPACE_ACTIONS.has(action);
       if (changesWorkspace) {
         gate.deny = `这一轮说话的不是用户本人：workspace 只能 list、get 看自己的工作区，${action} 只有本人能用`;
@@ -462,7 +463,7 @@ export class Approval extends cordis.Service {
       return this.traced(input, { result: 'pass', by: 'rule', reason: '项目自己的检查，直接执行' });
     }
 
-    //G 删系统级文件或目录、删注册表、删数据、格式化（Rules.ts mustAsk，范围故意很小）：不看可信目录、不问决策模型、不让审核小会话放行，直接问用户。
+    //G 命中 mustAsk 时跳过可信目录和决策模型。仍开审核小会话生成卡片内容，其结论不能放行。
     const danger = rules.mustAsk(command, this.ctx.resources.root, cwd);
 
     //M 每一档没放行的原因，照先后记下（用户 11-18 #172）：最后要问用户时，卡片的“为什么问你”就写这些，不写空话。
@@ -891,8 +892,8 @@ export class Approval extends cordis.Service {
     if (!isOwner(address)) return [];
 
     //M 地址里的 grants.dirs 是入口规范化过的绝对路径，直接用。
-    const grants = textModule.getField(address, 'grants');
-    const dirs = textModule.getField(grants, 'dirs');
+    const grants = utils.getField(address, 'grants');
+    const dirs = utils.getField(grants, 'dirs');
     if (!Array.isArray(dirs)) return [];
 
     return dirs as string[];
@@ -915,7 +916,7 @@ export class Approval extends cordis.Service {
     const bot = event.bot.name;
     const speaker = getSpeaker(event.message.channel, event.message.address);
     const owner = isOwner(event.message.address);
-    const verified = event.message.channel !== 'http' || textModule.getField(event.message.address, 'verifiedOwner') === true;
+    const verified = event.message.channel !== 'http' || utils.getField(event.message.address, 'verifiedOwner') === true;
     const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner, verified));
     const listText = (items: Pending[]): string => items.map((item) => `#${String(item.id)}：${item.title}`).join('\n');
 
@@ -1247,7 +1248,7 @@ function getReviewReason(answer: Record<string, unknown> | undefined): string {
   if (answer === undefined) return '没答上来（出错、超时或回的不是 JSON）';
 
   //G 没写理由、或者不放行却写“无”：照实说没给，不留空。
-  const risk = textModule.getText(answer, 'risk').trim();
+  const risk = utils.getStringField(answer, 'risk').trim();
   if (risk === '' || risk === '无') return '审核没给出理由';
 
   return risk;
@@ -1394,7 +1395,7 @@ export function getSpeaker(channel: string | undefined, address: unknown): { cus
  */
 export function isOwner(address: unknown): boolean {
   //M 读回话地址里的 owner，只有明写 true 才是本人。
-  return textModule.getField(address, 'owner') === true;
+  return utils.getField(address, 'owner') === true;
 }
 
 

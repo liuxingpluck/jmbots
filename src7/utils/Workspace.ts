@@ -6,7 +6,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as textModule from './Text.ts';
+import * as utils from './index.ts';
 
 
 /**
@@ -17,9 +17,9 @@ import * as textModule from './Text.ts';
  */
 export function getRole(address: unknown): string {
   //M 先读地址上标明的角色，没标再看 owner: false 判定为 guest，其余不限。
-  const role = textModule.getText(address, 'role');
+  const role = utils.getStringField(address, 'role');
   if (role !== '') return role;
-  if (textModule.getField(address, 'owner') === false) return 'guest';
+  if (utils.getField(address, 'owner') === false) return 'guest';
 
   return '';
 }
@@ -47,7 +47,7 @@ export function privateAllowed(address: unknown): boolean {
   if (isOther(address)) return false;
 
   //G 群里只有登记了 trusted: true 的才带。
-  return !isGroup(address) || textModule.getField(address, 'trusted') === true;
+  return !isGroup(address) || utils.getField(address, 'trusted') === true;
 }
 
 
@@ -58,8 +58,8 @@ export function privateAllowed(address: unknown): boolean {
  */
 export function isGroup(address: unknown): boolean {
   //M chatType 是 group，或客户号是 feishu:group: 开头。
-  const byType = textModule.getText(address, 'chatType') === 'group';
-  return byType || textModule.getText(address, 'customer').startsWith('feishu:group:');
+  const byType = utils.getStringField(address, 'chatType') === 'group';
+  return byType || utils.getStringField(address, 'customer').startsWith('feishu:group:');
 }
 
 
@@ -72,7 +72,7 @@ export function isGroup(address: unknown): boolean {
  */
 export function getWorkspace(botWorkspace: string, address: unknown): string {
   //M 优先采用回话地址绑定的隔离工作区（builder/guest 场景），未配时回落机器人默认工作区。
-  const assigned = textModule.getText(address, 'workspace');
+  const assigned = utils.getStringField(address, 'workspace');
   if (assigned !== '') return assigned;
 
   return botWorkspace;

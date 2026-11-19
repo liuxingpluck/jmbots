@@ -39,7 +39,16 @@ interface LineCardData {
 
 const ORIGIN: xy.NodeOrigin = [0.5, 0.5];
 const FIT = { padding: 0.14, maxZoom: 1.2, minZoom: 0.1 };
-const FILES = ['Main.json', 'Resources.json', 'Tools.json', 'Sessions.json', 'Channels.json'];
+const FILES = ['Main.json', 'Resources.json', 'Tools.json', 'Sessions.json', 'Channels.json', '进程插件.json'];
+/** 进程插件那张不是逐行，是主程序、programs、二进制三方的握手流程。 */
+const HANDSHAKE_FILE = '进程插件.json';
+
+/** 下拉和引导句里显示的名字：骨架文件显示成 .ts，握手图单独起名。 */
+function getFileLabel(file: string): string {
+  if (file === HANDSHAKE_FILE) return '进程插件（三方握手）';
+
+  return file.replace(/\.json$/u, '.ts');
+}
 
 /** 按 parent 连成树，同层按 id 排序；根是 parent 为 null 的节点。 */
 function getLineTree(nodes: readonly LineNode[]): LineBranch | undefined {
@@ -58,6 +67,26 @@ function getLineTree(nodes: readonly LineNode[]): LineBranch | undefined {
     branch.children.sort((left, right) => left.node.id.localeCompare(right.node.id));
   }
   return root;
+}
+
+/** 包含某行号的最细节点（行号范围最短的那个）；找不到返回 undefined。 */
+function findLineNode(nodes: readonly LineNode[], line: number): LineNode | undefined {
+  let best: LineNode | undefined;
+  let bestSpan = Infinity;
+  for (const node of nodes) {
+    //M 行号范围写在 body 开头：**行号：L73–L76**。
+    const hit = /\*\*行号：L(\d+)(?:–L(\d+))?\*\*/u.exec(node.body);
+    if (hit === null) continue;
+
+    const from = Number(hit[1]);
+    const to = Number(hit[2] ?? hit[1]);
+    if (line < from || line > to) continue;
+    if (to - from >= bestSpan) continue;
+
+    best = node;
+    bestSpan = to - from;
+  }
+  return best;
 }
 
 /** 从树里按 id 找一棵子树。 */
@@ -119,6 +148,9 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   const moved = react.useRef(new Map<string, { x: number; y: number }>());
   const flow = react.useRef<xy.ReactFlowInstance<Card> | null>(null);
   const fitting = react.useRef(true);
+  //M 链接跳转的待办：跨文件时先记下，等新文件加载完再定位；centerId 等画布换好卡片再居中。
+  const pending = react.useRef<{ file: string; line: number } | null>(null);
+  const centerId = react.useRef('');
   //M 左栏和下拉共用模块名，插件说明不属于骨架时回到入口 Main。
   const requested = FILES.find((file) => file.toLowerCase() === `${plugin}.json`);
   const name = requested ?? 'Main.json';
@@ -160,6 +192,53 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   }, [name]);
 
   const tree = react.useMemo(() => getLineTree(nodes), [nodes]);
+
+  const locate = (line: number): void => {
+    //M 选包含该行的最细节点，展开它的祖先，退出子树聚焦，选中并等画布居中。
+    const target = findLineNode(nodes, line);
+    if (target === undefined) return;
+
+    const open = new Set<string>();
+    let parent = target.parent;
+    while (parent !== null) {
+      open.add(parent);
+      parent = nodes.find((item) => item.id === parent)?.parent ?? null;
+    }
+    setFolded((current) => new Set([...current].filter((id) => !open.has(id))));
+    setFocusId('');
+    setSelectedId(target.id);
+    centerId.current = target.id;
+  };
+
+  react.useEffect(() => {
+    //M 新文件加载完（nodes 变了）才处理跨文件的待定位。
+    const todo = pending.current;
+    if (todo === null || todo.file !== name || nodes.length === 0) return;
+
+    pending.current = null;
+    locate(todo.line);
+  }, [nodes]);
+
+  const onHashLink = (href: string): void => {
+    //M #plugin=名字 切到左栏那个插件；#lines=文件.json&line=行号 切文件并定位。
+    const params = new URLSearchParams(href.slice(1));
+    const pluginName = params.get('plugin');
+    if (pluginName !== null) {
+      onSelectPlugin(pluginName);
+      return;
+    }
+
+    const file = params.get('lines');
+    const line = Number(params.get('line'));
+    if (file === null || Number.isNaN(line)) return;
+    if (file === name) {
+      locate(line);
+      return;
+    }
+
+    pending.current = { file, line };
+    onSelectPlugin(file.replace(/\.json$/u, '').toLowerCase());
+  };
 
   const chart = react.useMemo(() => {
     if (tree === undefined) return { cards: [] as Card[], edges: [] as xy.Edge[] };
@@ -232,7 +311,17 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
 
   react.useEffect(() => {
     const instance = flow.current;
-    if (instance === null || !fitting.current || flowNodes.length === 0) return;
+    if (instance === null || flowNodes.length === 0) return;
+
+    //M 有待居中的节点就居中它，不再整体适应。
+    const target = flowNodes.find((card) => card.id === centerId.current);
+    if (target !== undefined && selectedId === target.id) {
+      centerId.current = '';
+      fitting.current = false;
+      void instance.setCenter(target.position.x, target.position.y, { zoom: 1, duration: 300 });
+      return;
+    }
+    if (!fitting.current) return;
 
     fitting.current = false;
     void instance.fitView(FIT);
@@ -259,12 +348,13 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
   const allLabel = t('看全部');
   const failLabel = t('读不到骨架逐行');
   const sourceLabel = t('来源');
-  //M 没选块时的一句引导，带上当前源文件名。
-  const sourceName = name.replace(/\.json$/u, '.ts');
+  //M 没选块时的一句引导，带上当前源文件名；握手图换一句。
+  const sourceName = getFileLabel(name);
   const introParams = { file: `src7/${sourceName}` };
-  const introLabel = t('这是 {file} 的逐行图，点块看每段代码', introParams);
+  let introLabel = t('这是 {file} 的逐行图，点块看每段代码', introParams);
+  if (name === HANDSHAKE_FILE) introLabel = t('这是进程插件三方握手的流程图，点块看每一步');
   //M 下拉里按源文件名显示，值仍是 JSON 文件名。
-  const fileOptions = files.map((file) => ({ value: file, label: file.replace(/\.json$/u, '.ts') }));
+  const fileOptions = files.map((file) => ({ value: file, label: getFileLabel(file) }));
 
   return (
     <div className="tu-lines">
@@ -315,7 +405,7 @@ export function LinesView({ t, plugin, onSelectPlugin, direction }: ViewProps): 
           <aside className="tu-lines-detail">
             <h3>{selected.title}</h3>
             <p>{selected.summary}</p>
-            <readme.MarkdownContent body={selected.body} />
+            <readme.MarkdownContent body={selected.body} onHashLink={onHashLink} />
             <p className="tu-muted">{sourceLabel}：{selected.sources.join('、')}</p>
           </aside>
         )}

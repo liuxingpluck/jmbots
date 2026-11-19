@@ -221,11 +221,11 @@ export class Reminders {
 
   /** 声明工具参数及作用范围，供现有 Tools 关口校验和执行。 */
   private registerTools(): void {
-    const kinds = ['front', 'work'];
+    const sessionKinds = ['front', 'work'];
     const strict = { additionalProperties: false };
     //M 登记新增提醒的工具，目标从当前会话取。
     this.ctx.tools.register({
-      kinds,
+      sessionKinds,
       definition: {
         name: 'remind_add',
         description: '在本轮飞书群、飞书私聊或已核验网页聊天定一条纯文字提醒，到点发回这里。',
@@ -253,7 +253,7 @@ export class Reminders {
 
     //M 登记查询工具，按本轮聊天和说话人限制范围。
     this.ctx.tools.register({
-      kinds,
+      sessionKinds,
       definition: {
         name: 'remind_list',
         description: '列本轮聊天的提醒及发送状态。访客只能查看自己设置的提醒。',
@@ -276,7 +276,7 @@ export class Reminders {
 
     //M 登记取消工具，它只能更改尚未发送且属于当前来源的提醒。
     this.ctx.tools.register({
-      kinds,
+      sessionKinds,
       definition: {
         name: 'remind_cancel',
         description: '按编号取消本轮聊天里尚未发送的提醒。访客只能取消自己设置的提醒。',

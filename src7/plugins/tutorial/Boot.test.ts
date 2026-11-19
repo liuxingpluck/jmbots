@@ -4,7 +4,7 @@
  * 用真的 Cordis：假的 resources、sessions 两个服务先挂上（相当于骨架），再照 Main.ts 的样子一个个挂插件、推 pluginStatus、发 ready，
  * 最后发一个 Http.listen 的跟踪点。查的是：
  *   步骤的先后和道（main、resources、tools、sessions、各插件、ready、接着跑会话、http）；
- *   插件挂好、多出的服务、loadPlugin 就失败的那个也有一行；
+ *   插件挂好、多出的服务、外部入口加载失败的条目也有一行；
  *   注释真的从源码取到（Main.ts 的 main、Checks.ts 的 checkArgs），取不到的写明原因；
  *   记完 HTTP 监听叫写 boot.json。
  */
@@ -87,7 +87,7 @@ describe('录下这次启动', () => {
     await app.plugin(FakeSessions);
     const resources = app.get('resources') as unknown as FakeResources;
 
-    //M 照 Main.ts 挂插件：挂上的推 mounted:true；missing-one 是 loadPlugin 就失败（找不到），没有 fiber。
+    //M 照 Main.ts 挂插件。missing-one 模拟找不到外部入口，还没有创建 fiber。
     for (const entry of resources.config.plugins) {
       const plugin = PLUGINS[entry.name];
       if (plugin === undefined) {
@@ -152,8 +152,8 @@ describe('录下这次启动', () => {
     expect(checkArgs?.returns).not.toBe('');
     expect(byName('main').text).toBe('启动');
 
-    //M tutorial 的文件开头注释、第一个插件那步带 loadPlugin；取的是真的 src7/plugins/tutorial/index.ts。
-    expect(byName('tutorial').docs.map((doc) => doc.name)).toEqual(['tutorial', 'loadPlugin', 'tutorial.apply']);
+    //M 第一条插件步骤带外部入口说明，插件注释来自真实源码。
+    expect(byName('tutorial').docs.map((doc) => doc.name)).toEqual(['tutorial', 'loadExternalPlugin', 'tutorial.apply']);
     expect(byName('tutorial').docs.map((doc) => doc.missing)).toEqual(['', '', '']);
     expect(byName('tutorial').docs[2]?.summary).toContain('挂上教程插件');
 
@@ -259,7 +259,7 @@ describe('录下这次启动', () => {
     expect(calls).not.toContain('getDoc');
   });
 
-  test('getSource.callers：checkConfig 是 Resources 构造调的，带上方的 //M；插件自己的同名 checkConfig 不算', async () => {
+  test('getSource.callers：checkConfig 由 readConfig 调用，带上方的 //M；插件自己的同名 checkConfig 不算', async () => {
     const docs = new sourceModule.SourceDocs();
     const checksFile = 'src7/utils/Checks.ts';
     const checksLines = (await docs.read(checksFile)) ?? [];
@@ -269,7 +269,7 @@ describe('录下这次启动', () => {
 
     const sites = source?.callers.map((caller) => caller.site) ?? [];
     const fromResources = source?.callers.find((caller) => caller.site.startsWith('src7/Resources.ts:'));
-    expect(fromResources?.code).toContain('checks.checkConfig(raw)');
+    expect(fromResources?.code).toContain('checks.checkConfig(written)');
     expect(fromResources?.why).toContain('checkConfig');
     expect(sites.some((site) => site.startsWith('src7/plugins/decision/'))).toBe(false);
     expect(sites.some((site) => site.startsWith(`${checksFile}:${String(at + 1)}`))).toBe(false);
