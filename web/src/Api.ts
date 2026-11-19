@@ -863,12 +863,10 @@ export function isPluginMounted(mounted: MountedPlugins, name: string, whileLoad
 }
 
 
-/** 这个机器人正在做的事的进度（新的在前）。 */
-export function progress(bot: string): Promise<types.ProgressView[]> {
-  if (!bot.trim()) return Promise.resolve([]);
-
-  //M 查询指定机器人当前正在执行的进度卡片，供左栏底部实时更新阶段与动作。
-  return getJson(`/api/progress?bot=${encodeURIComponent(bot)}`);
+/** 全部机器人正在做的事的进度（新的在前），由 Poll.ts 每轮取一次放进仓库。 */
+export function progress(): Promise<types.ProgressView[]> {
+  //M 不带 bot 就是全部机器人；各处从仓库按机器人自己筛。
+  return getJson('/api/progress');
 }
 
 

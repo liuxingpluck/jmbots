@@ -1,4 +1,4 @@
-/** 在一个 AudioContext 排队播放语音回复，播放期间和尾音时暂停麦克风上传。 */
+/** 在一个 AudioContext 排队播放语音回复，为半双工提供播放和尾音状态。 */
 
 const PLAY_AHEAD_SECONDS = 0.02;
 const ECHO_TAIL_SECONDS = 0.15;
@@ -16,7 +16,7 @@ export class VoicePlayback {
     private readonly onPlayed: (utterId: string) => void,
   ) {}
 
-  /** 收音上传从音频开始帧暂停，等实际播放完和尾音消散。 */
+  /** 半双工从音频开始帧暂停上传，等实际播放完和尾音消散。 */
   get blocksMicrophone(): boolean {
     return this.receiving !== undefined || this.sources.size > 0 || this.audio.currentTime < this.muteUntil;
   }

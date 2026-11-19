@@ -90,6 +90,8 @@ export interface UiState {
   currentBot: string | null;
   /** 还在等用户点的命令。 */
   approvals: types.ApprovalView[];
+  /** 全部机器人的进度卡片（在转的和结束不到 10 分钟的）；左栏、聊天区进度条、鲸鱼娘共用这一份。 */
+  progress: types.ProgressView[];
   /** 右栏展开没有。 */
   panelOpen: boolean;
   /** 右栏在哪个标签。 */
@@ -137,7 +139,12 @@ export interface UiState {
   /** 记下后端已挂载的插件名单。 */
   setMountedPlugins: (plugins: api.MountedPlugins) => void;
   /** 记下一次轮询的结果。 */
-  setPolled: (result: { online: boolean; bots?: types.BotView[]; approvals?: types.ApprovalView[] }) => void;
+  setPolled: (result: {
+    online: boolean;
+    bots?: types.BotView[];
+    approvals?: types.ApprovalView[];
+    progress?: types.ProgressView[];
+  }) => void;
   /** 这条待确认决定了：不等下一次轮询，马上拿掉。 */
   dropApproval: (id: number) => void;
   /** 换个机器人聊。 */
@@ -255,6 +262,7 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
       bots: [],
       currentBot: null,
       approvals: [],
+      progress: [],
       panelOpen: false,
       panelTab: 'preview',
       panelTarget: null,
@@ -295,12 +303,18 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
           }
           /** 选中机器人消失或切换机器人时，旧条目和旧预览位置不能附到新机器人；首次从空定出默认机器人不算换掉。 */
           const changedBot = state.currentBot !== null && currentBot !== state.currentBot;
+          /** 进度卡片：这次没拿到就留旧的；两次都是空的也留旧数组，闲着时读它的组件不用每轮白画一遍。 */
+          let progress = result.progress ?? state.progress;
+          if (progress.length === 0 && state.progress.length === 0) {
+            progress = state.progress;
+          }
           return {
             ...getBotSwitchPatch(changedBot, currentBot),
             online: result.online,
             bots,
             currentBot,
             approvals: result.approvals ?? state.approvals,
+            progress,
             traceTarget,
           };
         }),

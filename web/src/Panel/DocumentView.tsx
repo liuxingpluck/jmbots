@@ -3,6 +3,7 @@
  * 展开、选中章节都保存为轻量 key，离开再返回时不必重新翻找。
  */
 import * as react from 'react';
+import * as virtuoso from 'react-virtuoso';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as i18n from '../I18n.ts';
 import * as readingModule from './Reading.ts';
@@ -28,10 +29,24 @@ interface SectionProps extends DocumentViewProps {
   node: documentModule.DocumentNode;
   /** 当前历史条目的阅读状态。 */
   reading: historyModule.PanelReadingState;
+  /** 当前段的展开标记，供大量节点常数时间查询。 */
+  expandedKeys: ReadonlySet<string>;
   /** 只保存当前条目的轻量状态。 */
   saveReading: readingModule.ReadingState['saveReading'];
+  /** 使用虚拟列表时，子节点由列表单独渲染。 */
+  flat?: boolean;
 }
 
+/** 大文档中一行对应一个可见节点，缩进沿用其原有层级。 */
+interface DocumentRow {
+  /** 当前节点及其正文。 */
+  node: documentModule.DocumentNode;
+  /** 相对于顶层的层级。 */
+  depth: number;
+}
+
+const OUTLINE_VIRTUAL_AFTER = 40;
+const BODY_VIRTUAL_AFTER = 24;
 
 /** 各文档节点类型对应的翻译函数；保留字面量 t(...) 以供语言包提取。 */
 const KIND_LABELS: Partial<Record<documentModule.DocumentKind, (t: i18n.Translate) => string>> = {
@@ -58,11 +73,27 @@ function getKindLabel(kind: documentModule.DocumentKind, t: i18n.Translate): str
 
 
 /** 默认展开项可记录 closed:key；默认收起的结果/思考仅在明确展开后显示。 */
-function isOpen(block: documentModule.DocumentBlock, expanded: string[]): boolean {
-  if (expanded.includes(`closed:${block.key}`)) {
-    return false;
+function isOpen(block: documentModule.DocumentBlock, expanded: ReadonlySet<string>): boolean {
+  if (expanded.has(`closed:${block.key}`)) return false;
+
+  return expanded.has(block.key) || !block.collapsed;
+}
+
+/** 保留原顺序，收起的子节点不进入虚拟滚动列表。 */
+function appendRows(
+  nodes: documentModule.DocumentNode[],
+  expanded: ReadonlySet<string>,
+  depth: number,
+  rows: DocumentRow[],
+): void {
+  for (const node of nodes) {
+    rows.push({ node, depth });
+    //M 展开后子节点紧随父段落显示。
+    if (isOpen(node.block, expanded)) {
+      const childDepth = depth + 1;
+      appendRows(node.children, expanded, childDepth, rows);
+    }
   }
-  return expanded.includes(block.key) || !block.collapsed;
 }
 
 
@@ -71,7 +102,7 @@ function DocumentSection(props: SectionProps): react.JSX.Element {
   //M 读取翻译函数、当前块展开状态及角色/结构显示标签，准备渲染折叠节点。
   const t = i18n.useT();
   const block = props.node.block;
-  const open = isOpen(block, props.reading.expanded);
+  const open = isOpen(block, props.expandedKeys);
   const label = getKindLabel(block.kind, t);
   const toggle = (nextOpen: boolean): void => {
     if (nextOpen === open) {
@@ -112,7 +143,7 @@ function DocumentSection(props: SectionProps): react.JSX.Element {
           {bodyContent}
         </div>
       )}
-      {open && props.node.children.length > 0 && (
+      {open && !props.flat && props.node.children.length > 0 && (
         <div className="jm-document-children">
           {props.node.children.map((node) => <DocumentSection {...props} key={node.block.key} node={node} />)}
         </div>
@@ -133,7 +164,41 @@ export function DocumentView(props: DocumentViewProps): react.JSX.Element {
   const t = i18n.useT();
   const { reading, saveReading } = readingModule.useReadingState();
   const container = react.useRef<HTMLDivElement>(null);
-  const sectionKeys = props.page.blocks.map((block) => block.key);
+  const bodyList = react.useRef<virtuoso.VirtuosoHandle>(null);
+  const [scrollParent, setScrollParent] = react.useState<HTMLElement | null>();
+  const [scrollKey, setScrollKey] = react.useState<string>();
+  const largeBody = props.page.blocks.length > BODY_VIRTUAL_AFTER;
+  const sectionKeys = react.useMemo(() => props.page.blocks.map((block) => block.key), [props.page.blocks]);
+  const expandedKeys = react.useMemo(() => new Set(reading.expanded), [reading.expanded]);
+  const visibleRows = react.useMemo(() => {
+    if (!largeBody) return [];
+
+    //M 一次把展开的正文摊成虚拟行，滚动保存时不重新遍历整段文档。
+    const rows: DocumentRow[] = [];
+    appendRows(props.page.nodes, expandedKeys, 0, rows);
+    return rows;
+  }, [largeBody, props.page.nodes, expandedKeys]);
+
+  react.useLayoutEffect(() => {
+    //M 复用预览自己的滚动元素及既有位置恢复，不产生第二个正文滚动条。
+    const scroll = container.current?.closest<HTMLElement>('.jm-reader-scroll');
+    setScrollParent(scroll ?? null);
+  }, []);
+
+  react.useEffect(() => {
+    if (scrollKey === undefined || !largeBody || !scrollParent) return undefined;
+
+    //M 等祖先展开，再按虚拟行号找尚未挂载的目标段落。
+    const index = visibleRows.findIndex((row) => row.node.block.key === scrollKey);
+    if (index < 0) return undefined;
+
+    const frame = requestAnimationFrame(() => {
+      const target = { index, align: 'start', behavior: 'auto' } as const;
+      bodyList.current?.scrollToIndex(target);
+      setScrollKey(undefined);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [largeBody, scrollKey, scrollParent, visibleRows]);
 
   /** 查找要定位的章节的祖先链，保证收起的父运行也能一并展开。 */
   const getParents = (nodes: documentModule.DocumentNode[], wanted: string): string[] | undefined => {
@@ -155,6 +220,11 @@ export function DocumentView(props: DocumentViewProps): react.JSX.Element {
     const expanded = reading.expanded.filter((item) => !ancestors.some((ancestor) => item === `closed:${ancestor}`));
     saveReading({ section: key, expanded: [...new Set([...expanded, ...ancestors])] });
 
+    if (largeBody && scrollParent) {
+      setScrollKey(key);
+      return;
+    }
+
     /** React 提交展开状态后再定位；已卸载的旧目标不滚动新页面。 */
     requestAnimationFrame(() => {
       const element = container.current?.querySelector(`[data-document-key="${key}"]`);
@@ -162,6 +232,67 @@ export function DocumentView(props: DocumentViewProps): react.JSX.Element {
         element.scrollIntoView({ block: 'start', behavior: 'auto' });
       }
     });
+  };
+
+  const renderOutlineItem = (block: documentModule.DocumentBlock): react.JSX.Element => {
+    let buttonClass = '';
+    if (block.key === reading.section) {
+      buttonClass = 'jm-document-current';
+    }
+    const padding = Math.max(0, block.level - 1) * 10 + 8;
+    return (
+      <button
+        type="button"
+        key={block.key}
+        className={buttonClass}
+        style={{ paddingInlineStart: padding }}
+        //M 保留点目录后展开祖先并定位的行为。
+        onClick={() => locate(block.key)}
+      >
+        {block.title}
+      </button>
+    );
+  };
+
+  const renderOutline = (): react.ReactNode => {
+    const outline = props.page.outline;
+    if (outline.length <= OUTLINE_VIRTUAL_AFTER) return outline.map(renderOutlineItem);
+
+    //M 大纲沿用原有的有限高度，只挂载当前可见的标题按钮。
+    return (
+      <virtuoso.Virtuoso
+        data={outline}
+        style={{ height: 200 }}
+        computeItemKey={(_index, block) => block.key}
+        itemContent={(_index, block) => (
+          <div style={{ display: 'grid', paddingBottom: 4 }}>{renderOutlineItem(block)}</div>
+        )}
+      />
+    );
+  };
+
+  const renderBody = (): react.ReactNode => {
+    const section = { ...props, reading, expandedKeys, saveReading };
+    if (!largeBody || scrollParent === null) {
+      return props.page.nodes.map((node) => <DocumentSection {...section} key={node.block.key} node={node} />);
+    }
+    if (scrollParent === undefined) return null;
+
+    //M 大段文档按可见行渲染，折叠状态仍取自同一个阅读条目。
+    return (
+      <virtuoso.Virtuoso
+        ref={bodyList}
+        customScrollParent={scrollParent}
+        data={visibleRows}
+        defaultItemHeight={110}
+        computeItemKey={(_index, row) => row.node.block.key}
+        itemContent={(_index, row) => (
+          <div style={{ paddingBlock: 1, paddingInlineStart: row.depth * 12 }}>
+            <DocumentSection {...section} node={row.node} flat />
+          </div>
+        )}
+      />
+    );
   };
 
   return (
@@ -180,29 +311,10 @@ export function DocumentView(props: DocumentViewProps): react.JSX.Element {
       </div>
       {props.page.outline.length > 0 && (
         <nav className="jm-document-outline" aria-label={t('当前片段章节')}>
-          {props.page.outline.map((block) => {
-            let buttonClass = '';
-            if (block.key === reading.section) {
-              buttonClass = 'jm-document-current';
-            }
-            return (
-              <button
-                type="button"
-                key={block.key}
-                className={buttonClass}
-                style={{ paddingInlineStart: `${Math.max(0, block.level - 1) * 10 + 8}px` }}
-                //M 点击目录项时先展开所属祖先节点并滚入可视区域。
-                onClick={() => locate(block.key)}
-              >
-                {block.title}
-              </button>
-            );
-          })}
+          {renderOutline()}
         </nav>
       )}
-      {props.page.nodes.map((node) => (
-        <DocumentSection {...props} key={node.block.key} node={node} reading={reading} saveReading={saveReading} />
-      ))}
+      {renderBody()}
     </div>
   );
 }

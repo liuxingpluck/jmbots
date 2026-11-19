@@ -18,12 +18,19 @@ import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
 
 export const name = 'voice';
-export const version = '0.5.0';
+export const version = '0.6.0';
 export const inject = ['resources', 'http', 'sessions'];
 
 type Provider = 'fake' | 'sherpa' | 'bailian' | 'xiaomi';
 type TtsProvider = 'xiaomi' | 'local';
 type State = 'idle' | 'listening' | 'error';
+
+export interface BargeIn {
+  /** 连续转写达到多少个有效字符才有足够证据停播。 */
+  minChars: number;
+  /** 当前字幕与播报片段足够相似时，将它当成回声。 */
+  echoSimilarity: number;
+}
 
 interface Settings {
   /** 是否允许开始听。 */
@@ -48,6 +55,8 @@ interface Settings {
   understanding?: models.ModelSettings;
   /** 半句判断与停顿参数；关闭时仅使用 ASR 的端点规则。 */
   turn?: { models: models.ModelSettings; pauseMs: number; maxPerMinute: number };
+  /** 开启双工时的插话判断；缺席时沿用半双工。 */
+  bargeIn?: BargeIn;
   /** 要优先使用的合成后端与音色。 */
   tts: { provider: TtsProvider; fallback?: TtsProvider; voice: string };
 }
@@ -139,6 +148,7 @@ const DEFAULT_WS = '/api/voice/ws';
 const STATUS_PATH = '/api/voice/status';
 const OPEN = 1;
 const PLAYBACK_MARGIN_MS = 100;
+const ECHO_TAIL_MS = 150;
 const ASR_STOP_WAIT_MS = 22_000;
 
 /** 排队或正在发送的播报，图片类调用用 group 限定自己的取消范围。 */
@@ -254,6 +264,27 @@ function getSettings(raw: unknown): Settings {
   if (typeof enabled !== 'boolean') {
     throw new Error('voice.enabled 要是布尔值');
   }
+
+  //G 听写的开关和回声阈值只在读取配置时校验。
+  const interrupt = voice['barge_in'];
+  if (interrupt !== undefined && typeof interrupt !== 'boolean') {
+    throw new Error('voice.barge_in 要是布尔值');
+  }
+
+  const minChars = number(voice['barge_in_min_chars'], 'barge_in_min_chars', 3);
+  let echoSimilarity = voice['barge_in_echo_similarity'];
+  if (echoSimilarity === undefined) {
+    echoSimilarity = 0.75;
+  }
+  if (typeof echoSimilarity !== 'number' || !Number.isFinite(echoSimilarity)
+    || echoSimilarity <= 0 || echoSimilarity > 1) {
+    throw new Error('voice.barge_in_echo_similarity 要大于 0 且不大于 1');
+  }
+  let bargeIn: BargeIn | undefined;
+  if (interrupt !== false) {
+    bargeIn = { minChars, echoSimilarity };
+  }
+
   let bot = voice['bot'];
   if (bot === undefined) {
     bot = '';
@@ -349,7 +380,7 @@ function getSettings(raw: unknown): Settings {
   }
   return {
     enabled, bot, wsPath, provider, asrFallback, asrModels, silenceMs, maxUtteranceMs,
-    tasks, understanding, turn: boundary, tts: synthesis,
+    tasks, understanding, turn: boundary, tts: synthesis, bargeIn,
   };
 }
 
@@ -360,6 +391,45 @@ function getBytes(raw: RawFrame): Buffer {
   if (Array.isArray(raw)) return Buffer.concat(raw);
 
   return Buffer.from(raw);
+}
+
+/** 统一全半角和大小写，只比较可能读出来的字母、数字及文字。 */
+function getSpokenText(text: string): string {
+  const normalized = text.normalize('NFKC');
+  const lower = normalized.toLowerCase();
+  return lower.replace(/[^\p{L}\p{N}\p{M}]/gu, '');
+}
+
+/** 比较整条字幕与播报中的最佳连续片段，允许少量错字或漏字。 */
+function matchesPlayback(text: string[], reply: string, similarity: number): boolean {
+  const exact = text.join('');
+  if (reply.includes(exact)) return true;
+
+  const requiredMatch = Math.ceil(text.length * similarity);
+  const maxEdits = text.length - requiredMatch;
+  if (maxEdits === 0 || reply.length < requiredMatch) return false;
+
+  //M 滚动更新编辑距离。首格保持为零，让片段可以从播报中任意位置开始。
+  const costs = new Uint32Array(text.length + 1);
+  for (let index = 1; index <= text.length; index += 1) {
+    costs[index] = index;
+  }
+  for (const character of reply) {
+    let diagonal = 0;
+    for (let index = 1; index <= text.length; index += 1) {
+      const previous = costs[index]!;
+      let replacement = diagonal;
+      if (character !== text[index - 1]) {
+        replacement += 1;
+      }
+      const insertion = costs[index - 1]! + 1;
+      const deletion = previous + 1;
+      costs[index] = Math.min(insertion, deletion, replacement);
+      diagonal = previous;
+    }
+    if (costs[text.length]! <= maxEdits) return true;
+  }
+  return false;
 }
 
 /** 这个连接的唯一转写流。关闭和被替换都立即释放音频处理。 */
@@ -376,6 +446,8 @@ class VoiceConnection {
   private queue: Speech[] = [];
   private playing?: Speech;
   private nextUtterance = 0;
+  private lastPlayback?: { job: Speech; text: string; echoUntil: number };
+  private echoSentence?: { job: Speech; text: string; expiresAt: number };
 
   /** 留下上下文与自己的连接，给下一次 start 创建新的转写流。 */
   constructor(
@@ -387,6 +459,7 @@ class VoiceConnection {
     private readonly taskSettings?: taskModule.TaskSettings,
     private readonly speak?: ttsModule.Speak,
     private readonly models?: Judging,
+    private readonly bargeIn?: BargeIn,
   ) {}
 
   /** 连接是否正在转写。 */
@@ -460,9 +533,20 @@ class VoiceConnection {
     active.controller.abort();
     if (active.audibleUntil > performance.now()) {
       //M 已送到浏览器的同组音频需要同步清掉。
-      this.send({ type: 'stop-audio' });
+      this.clearAudio(active);
     }
     active.audibleUntil = 0;
+  }
+
+  /** 清掉浏览器队列，并让刚停止的声音仍参与这一小段回声判断。 */
+  private clearAudio(job: Speech): void {
+    //M 打断、切线路和切采样率共用网页的停播帧。
+    this.send({ type: 'stop-audio' });
+    job.audibleUntil = 0;
+    const playback = this.lastPlayback;
+    if (playback?.job === job) {
+      playback.echoUntil = performance.now() + ECHO_TAIL_MS;
+    }
   }
 
   /** 当前正生成音频或正在等待这段音频播放完。 */
@@ -499,13 +583,13 @@ class VoiceConnection {
     let utterId: string | undefined;
     let activeRate: number | undefined;
     let place: routes.Place | undefined;
+    let spokenText: string | undefined;
     const report: routes.Report = (actual, reason) => {
       if (signal.aborted) return;
 
       if (place !== undefined && place !== actual && utterId !== undefined) {
         //M 同采样率的备选也从头合成，需要先清掉旧线路留在队列的声音。
-        this.send({ type: 'stop-audio' });
-        job.audibleUntil = 0;
+        this.clearAudio(job);
         activeRate = undefined;
         utterId = undefined;
       }
@@ -519,8 +603,7 @@ class VoiceConnection {
       if (audio.sampleRate !== activeRate) {
         if (utterId !== undefined) {
           //M 云端退回本地时停播旧采样率的剩余音频。
-          this.send({ type: 'stop-audio' });
-          job.audibleUntil = 0;
+          this.clearAudio(job);
         }
         this.nextUtterance += 1;
         utterId = 'voice-' + this.nextUtterance;
@@ -535,6 +618,12 @@ class VoiceConnection {
       const now = performance.now();
       const duration = audio.pcm.length * 500 / audio.sampleRate;
       job.audibleUntil = Math.max(job.audibleUntil, now + PLAYBACK_MARGIN_MS) + duration;
+      if (this.bargeIn === undefined) return;
+
+      //M 音频发完后还有排队的 PCM 和可能的尾音，仍用这句作为回声参考。
+      spokenText ??= getSpokenText(job.text);
+      const echoUntil = job.audibleUntil + ECHO_TAIL_MS;
+      this.lastPlayback = { job, text: spokenText, echoUntil };
     };
 
     try {
@@ -591,6 +680,16 @@ class VoiceConnection {
       pcm[index] = bytes.readInt16LE(index * 2);
     }
     try {
+      const playback = this.lastPlayback;
+      const now = performance.now();
+      if (playback !== undefined && now <= playback.echoUntil && this.partial === '') {
+        //M 只有播放窗口里收到有声帧才给这一句保留回声参考，供迟到的转写使用。
+        if (cloudAsr.hasSpeech(pcm)) {
+          const expiresAt = now + ASR_STOP_WAIT_MS;
+          this.echoSentence = { job: playback.job, text: playback.text, expiresAt };
+        }
+      }
+      //M 无论窗内窗外都连续供给 ASR，插话确认后沿用同一段音频收尾。
       stream.accept(pcm);
       const cut = stream.cut;
       if (cut !== undefined && this.turn !== undefined) {
@@ -783,7 +882,9 @@ class VoiceConnection {
       }
 
       //M 通知网页已能接收音频，随后发布正在听的状态。
-      this.send({ ...ready, stopWaitMs });
+      const bargeIn = this.bargeIn !== undefined;
+      const frame = { ...ready, stopWaitMs, bargeIn };
+      this.send(frame);
       this.setState('listening');
     } catch {
       //G 转写引擎无法启动时结束此连接。
@@ -830,6 +931,7 @@ class VoiceConnection {
 
     //M 用仍在显示的最近一条 partial 收尾，空句不发送 final。
     this.publish(this.partial, true);
+    this.echoSentence = undefined;
     const tasks = this.tasks;
     if (tasks === undefined) {
       this.stopping = false;
@@ -861,9 +963,49 @@ class VoiceConnection {
   /** 发布本连接内字幕；可选监听者只收到文本事件，音频不进入事件。 */
   private publish(text: string, final: boolean): void {
     const cleaned = text.trim();
+    const now = performance.now();
+    const playback = this.lastPlayback;
+    const pending = this.echoSentence;
+    if (this.partial === '' && (pending === undefined || pending.expiresAt <= now)
+      && playback !== undefined && playback.echoUntil > now && cleaned !== '') {
+      //M 播放中的实时字幕本身就是语音证据，轻声也能进入回声判断。
+      const expiresAt = now + ASR_STOP_WAIT_MS;
+      this.echoSentence = { job: playback.job, text: playback.text, expiresAt };
+    }
+    const echo = this.echoSentence;
+    if (final) {
+      this.echoSentence = undefined;
+    }
     if (cleaned === '') return;
 
     if (!final && cleaned === this.partial) return;
+
+    const bargeIn = this.bargeIn;
+    const hadOverlap = echo !== undefined && (this.partial !== '' || echo.expiresAt > now);
+    if (bargeIn !== undefined && hadOverlap) {
+      //G 短 partial 证据不足；不把重复自家播报的内容送给字幕或任务判断。
+      const spoken = getSpokenText(cleaned);
+      const characters = Array.from(spoken);
+      if (!final && characters.length < bargeIn.minChars) return;
+
+      const isEcho = characters.length === 0 || matchesPlayback(characters, echo.text, bargeIn.echoSimilarity);
+      if (isEcho) {
+        if (final && this.partial !== '') {
+          //M 识别器把已显示的插话改判为回声时，清掉临时字幕并回收该句。
+          const frame = { type: 'partial', seq: this.seq, text: '' };
+          this.send(frame);
+          this.partial = '';
+          this.turn?.reset();
+          this.seq += 1;
+        }
+        return;
+      }
+
+      if (!this.stopping && this.partial === '' && this.playing === echo.job) {
+        //M 用已有的停播路径清掉当前及排队语音，同时继续转写这句插话。
+        this.stopSpeech();
+      }
+    }
 
     //M partial 与对应的 final 使用同一序号，完整结果后才推进句子。
     let type = 'partial';
@@ -877,8 +1019,10 @@ class VoiceConnection {
     const transcript = { ...data, final, at: Date.now() };
     this.ctx.emit('voice/transcript', transcript);
 
-    //M 字幕发出后再判断是否开任务，模型等待不会卡住转写显示。
-    this.tasks?.push(transcript);
+    if (!hadOverlap || final) {
+      //M 插话可立即停播，等最终字幕排除 ASR 修订为回声后才交给任务判断。
+      this.tasks?.push(transcript);
+    }
     this.partial = cleaned;
     if (final) {
       this.turn?.reset();
@@ -933,6 +1077,7 @@ export class Voice {
     private readonly taskSettings?: taskModule.TaskSettings,
     private readonly synthesizer?: ttsModule.Speak,
     private readonly judging?: Judging,
+    private readonly bargeIn?: BargeIn,
   ) {}
 
   /** 读状态给 status 事件，不把连接对象或转写正文交出去。 */
@@ -958,6 +1103,7 @@ export class Voice {
       this.taskSettings,
       this.synthesizer,
       this.judging,
+      this.bargeIn,
     );
     this.current = connection;
     old?.dispose(4001);
@@ -1296,7 +1442,7 @@ export async function apply(ctx: cordis.Context): Promise<void> {
   }
 
   //M 用已确定的默认机器人和转写工厂管理语音接收。
-  const voice = new Voice(ctx, bot, createAsr, settings.provider, taskSettings, speak, judging);
+  const voice = new Voice(ctx, bot, createAsr, settings.provider, taskSettings, speak, judging, settings.bargeIn);
   const status: Status = {
     enabled: settings.enabled,
     available: false,

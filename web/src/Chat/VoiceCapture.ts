@@ -104,6 +104,7 @@ export class VoiceCapture {
   private closed = false;
   private stopping = false;
   private ready = false;
+  private bargeIn = false;
 
   /** 接受同源 WS 路径、选中机器人，以及回报状态/字幕的 UI 回调。 */
   constructor(
@@ -162,8 +163,8 @@ export class VoiceCapture {
         const socket = this.socket;
         if (!this.ready || this.stopping || socket?.readyState !== WebSocket.OPEN) return;
 
-        //G 回复播完及尾音消散前暂停上传，避免机器人把自己的话转写一遍。
-        if (this.playback?.blocksMicrophone) return;
+        //G 半双工等到回复和尾音播完；双工把回声交给后端判断。
+        if (!this.bargeIn && this.playback?.blocksMicrophone) return;
 
         if (!(event.data instanceof ArrayBuffer)) return;
 
@@ -285,6 +286,8 @@ export class VoiceCapture {
       if (typeof wait === 'number' && Number.isSafeInteger(wait) && wait >= 1500) {
         this.stopWaitMs = Math.min(wait, 2_147_483_647);
       }
+      //G 没有协商双工的旧服务端继续使用麦克风播放守卫。
+      this.bargeIn = frame['bargeIn'] === true;
 
       //M 节点输出静音，连接目标只为保持 worklet 活跃，不回放麦克风。
       const worklet = this.worklet!;

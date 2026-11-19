@@ -1,18 +1,13 @@
 /**
  * 左栏机器人卡片下面：正在做的事和待审核（docs/界面/04_空白处的功能.md 第一、二行）。
  * 每件一行：哪个机器人、现在在做什么、用了多久；点一下切到那个机器人。待审核点一下打开右栏的“待审核”。
- * 数据和飞书进度卡片是同一份（/api/progress）；没有在做的事、也没有待审核时整块不显示。
+ * 数据和飞书进度卡片是同一份（/api/progress），由 Poll.ts 每轮取一次放进仓库；行合进 BotList 的虚拟列表。
  */
 import * as react from 'react';
-import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as privacy from '../Privacy/Mask.tsx';
 import type * as types from '../Types.ts';
-
-
-/** 多久问一次，毫秒。 */
-const REFRESH_MS = 3000;
 
 
 /** 左栏正在做的事与待审核状态。 */
@@ -39,56 +34,16 @@ function getElapsedText(ms: number): string {
 
 
 /**
- * 订阅并轮询全部机器人正在做的事与待审核列表，供左栏虚拟列表按行消费。
+ * 从仓库读全部机器人正在做的事与待审核列表，供左栏虚拟列表按行消费。
  * @returns 正在做的进度数组与待审核数组。
  */
 export function useRunningState(): RunningState {
-  /** 所有机器人正在做的任务列表。 */
-  const [items, setItems] = react.useState<types.ProgressView[]>([]);
-
-  /** 当前待审核列表，直接读状态仓库。 */
-  //M 从全局状态仓库订阅待审核列表，与正在运行的任务一起交给左栏展示。
+  //M 进度卡片和待审核都由 Poll.ts 轮询写进仓库，这里只订阅。
+  const progress = context.useUi((state) => state.progress);
   const approvals = context.useUi((state) => state.approvals);
 
-  /** 是否已挂载 progress 插件。 */
-  //M 读取已挂载插件名单并判断 progress 是否启用，未挂载时跳过轮询避免请求 404。
-  const mountedPlugins = context.useUi((state) => state.mountedPlugins);
-  const progressEnabled = api.isPluginMounted(mountedPlugins, 'progress', false);
-
-  //M 插件开启后每 3 秒拉一次未结束的全局进度，未挂载则保持空列表避免 404。
-  react.useEffect(() => {
-    if (!progressEnabled) {
-      setItems([]);
-      return undefined;
-    }
-
-    /** 卸载守卫标记，防止异步回包更新已销毁组件。 */
-    let stopped = false;
-
-    /** 拉取一次所有机器人的运行进度。 */
-    const load = (): void => {
-      //M 拉取全部机器人进度并只保留未结束的运行项（组件卸载后忽略回包）。
-      void api.progress('').then(
-        (next) => {
-          if (!stopped) {
-            setItems(next.filter((item) => item.endedAt === undefined));
-          }
-        },
-        () => undefined,
-      );
-    };
-
-    //M 挂载或插件开启时立即拉取一次运行进度，随后启动 3 秒定时轮询。
-    load();
-
-    /** 轮询定时器句柄。 */
-    const timer = setInterval(load, REFRESH_MS);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [progressEnabled]);
-
+  //M 只留还没结束的；仓库换了新数组才重新筛。
+  const items = react.useMemo(() => progress.filter((item) => item.endedAt === undefined), [progress]);
   return { items, approvals };
 }
 
@@ -148,29 +103,5 @@ export function RunningApprovalsButton(props: { count: number }): react.JSX.Elem
     >
       {t('待审核 {count} 条', { count: props.count })}
     </button>
-  );
-}
-
-
-/**
- * 正在做的事整块列表（兼容保留）。
- * @returns 运行列表区块；全空时返回 null。
- */
-export function RunningList(): react.JSX.Element | null {
-  //M 订阅翻译函数并读取全部运行项与待审核列表，以决定是否渲染左栏运行区块。
-  const t = i18n.useT();
-  const state = useRunningState();
-
-  //G 既没有正在做的事也没有待审核时不占位。
-  if (state.items.length === 0 && state.approvals.length === 0) return null;
-
-  return (
-    <div className="jm-running">
-      <div className="jm-running-head">{t('正在做的事')}</div>
-      {state.items.map((item) => (
-        <RunningItemButton key={item.id} item={item} />
-      ))}
-      {state.approvals.length > 0 && <RunningApprovalsButton count={state.approvals.length} />}
-    </div>
   );
 }

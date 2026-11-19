@@ -15,7 +15,7 @@ import type { ChatRequest, Session } from '../../Sessions.ts';
 /** 插件名。 */
 export const name = 'assist';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.0';
+export const version = '1.1.0';
 
 /** 用到的服务：resources 存表；tools 登记工具；http 开接口。 */
 export const inject = ['resources', 'tools', 'http', 'sessions'];
@@ -31,6 +31,9 @@ interface Row {
 
 /** 待办一项的状态。 */
 const TODO_STATES = ['todo', 'doing', 'done'] as const;
+
+/** 一份待办最多几项；网页每 2 秒拉一次最近 300 份，每份的子项不能没有上限。 */
+const MAX_TODO_ITEMS = 50;
 
 /** 回话规范：前台、后台各一段。 */
 const STYLE: Record<string, string> = {
@@ -111,7 +114,7 @@ class Assist {
         name: 'todo',
         description: '写这场会话正在做的事的清单（整份替换这场和它派出的后台子会话的待办，不动别的客户或会话）。'
           + '用户在网页右栏“待办”看得到。三步以上的活先列，做完一项改一次状态。'
-          + '只要清空时把 clear 设为 true、items 留空数组（只清这一家）。',
+          + `只要清空时把 clear 设为 true、items 留空数组（只清这一家）。最多 ${String(MAX_TODO_ITEMS)} 项，多了先合并。`,
         parameters: piAi.Type.Object({
           items: piAi.Type.Array(piAi.Type.Object({
             text: piAi.Type.String({ description: '一件事，简短' }),
@@ -119,7 +122,7 @@ class Assist {
               TODO_STATES.map((state) => piAi.Type.Literal(state)),
               { description: 'todo 没开始、doing 在做、done 做完' },
             ),
-          })),
+          }), { description: `待办清单，最多 ${String(MAX_TODO_ITEMS)} 项` }),
           clear: piAi.Type.Optional(piAi.Type.Boolean({ description: 'true：先清掉这场会话和它派出的后台子会话的待办；items 为空就是只清空' })),
         }),
       },
@@ -127,6 +130,9 @@ class Assist {
       run: (args, session) => {
         //M 读取待办清单和清空标志，先查出当前会话及其子会话的 id 家族。
         const items = (args['items'] as { text: string; status: string }[] | undefined) ?? [];
+        //G 子项超过上限直接退回给模型，让它合并后重写，不悄悄截掉。
+        if (items.length > MAX_TODO_ITEMS) throw new Error(`待办最多 ${String(MAX_TODO_ITEMS)} 项，合并一下再写`);
+
         const clear = args['clear'] === true;
         const db = this.ctx.resources.db;
         const ids = this.familyIds(session);

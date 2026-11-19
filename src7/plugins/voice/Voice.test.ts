@@ -264,14 +264,18 @@ afterEach(async () => {
   }
 });
 
-function getVoice(settings?: taskModule.TaskSettings, speak?: ttsModule.Speak) {
+function getVoice(
+  settings?: taskModule.TaskSettings,
+  speak?: ttsModule.Speak,
+  bargeIn?: plugin.BargeIn,
+) {
   const ctx = new cordis.Context();
   const streams: FakeAsr[] = [];
   const voice = new plugin.Voice(ctx, '默认机器人', () => {
     const asr = new FakeAsr();
     streams.push(asr);
     return asr;
-  }, 'fake', settings, speak);
+  }, 'fake', settings, speak, undefined, bargeIn);
   cleanups.push(() => ctx.fiber.dispose());
   cleanups.push(() => voice.dispose());
   return { ctx, voice, streams };
@@ -388,9 +392,10 @@ function getTaskWorld(
   options: Partial<taskModule.TaskSettings> = {},
   speak?: ttsModule.Speak,
   device?: string,
+  bargeIn?: plugin.BargeIn,
 ) {
   const settings = { ...DEFAULT_TASKS, ...options };
-  const { ctx, voice, streams } = getVoice(settings, speak);
+  const { ctx, voice, streams } = getVoice(settings, speak, bargeIn);
   const judged: JudgeRequest[] = [];
   const messages: channel.ChannelMessage[] = [];
   const dispatched: channel.ChannelMessage[] = [];
@@ -473,6 +478,93 @@ test('停止屏幕播报组会清掉该组，但保留随后到来的普通回�
   expect(spoken).toEqual(['屏幕讲解', '普通回复']);
   world.voice.stopSpeech('screen-1');
   expect(world.socket.frames.filter((frame) => frame['type'] === 'stop-audio')).toHaveLength(1);
+});
+
+test('双工在音频发送结束后仍过滤回声，插话停播并用最终原话发起任务', async () => {
+  const spoken: string[] = [];
+  const speak: ttsModule.Speak = async (text, _signal, emit) => {
+    spoken.push(text);
+    const pcm = Buffer.alloc(48_000);
+    emit({ pcm, sampleRate: 24_000 });
+  };
+  const bargeIn = { minChars: 3, echoSimilarity: 0.75 };
+  const world = getTaskWorld(undefined, {}, speak, undefined, bargeIn);
+  //M 用同一连接送有声 PCM，手动控制识别器的部分字幕和句尾。
+  world.asr.accept = (pcm) => { world.asr.input.push([...pcm]); };
+  expect(world.socket.frames[0]).toMatchObject({ type: 'ready', bargeIn: true });
+  const reply = '请稍等，我正在整理桌面的截图。';
+  expect(world.voice.speak(reply)).toBe(true);
+  await waitForFrame(world.socket.frames, 'audio-end');
+  expect(world.voice.speak('这条排队播报也应取消')).toBe(true);
+
+  const quiet = Buffer.alloc(3200);
+  world.socket.pcm(quiet);
+  world.asr.onPartial('我正');
+  world.asr.onPartial('正在整理桌面的截土');
+  world.asr.onFinal('正在整理，桌面的截土。');
+  const pcm = Buffer.alloc(3200, 4);
+  const echoFrames = world.socket.frames.filter((frame) => {
+    const type = frame['type'];
+    return type === 'partial' || type === 'final' || type === 'stop-audio';
+  });
+  expect(echoFrames).toEqual([]);
+  expect(world.messages).toEqual([]);
+
+  world.socket.pcm(pcm);
+  world.asr.onPartial('先暂停');
+  const interruption = world.socket.frames.slice(-2);
+  expect(interruption).toEqual([{ type: 'stop-audio' }, { type: 'partial', seq: 1, text: '先暂停' }]);
+
+  const said = '先暂停，帮我打开设置页面';
+  world.socket.pcm(pcm);
+  world.asr.onFinal(said);
+  //M 连续送进 ASR 的插话最终沿用普通语音渠道，新句只产生一次任务。
+  expect(world.asr.input).toHaveLength(3);
+  expect(world.socket.frames.at(-1)).toMatchObject({ type: 'final', seq: 1, text: said });
+  await waitForCount(world.tasks, 1);
+  expect(world.messages.map((message) => message.text)).toEqual([said]);
+  expect(spoken).toEqual([reply]);
+});
+
+test('音频停播后仍过滤迟到的回声 final，下一句重复同一文本可正常提交', async () => {
+  const speak: ttsModule.Speak = async (_text, _signal, emit) => {
+    const pcm = Buffer.alloc(24_000);
+    emit({ pcm, sampleRate: 24_000 });
+  };
+  const bargeIn = { minChars: 3, echoSimilarity: 0.75 };
+  const world = getTaskWorld(undefined, {}, speak, undefined, bargeIn);
+  world.asr.accept = (pcm) => { world.asr.input.push([...pcm]); };
+  const text = '请稍等一下让我打开设置页面';
+  expect(world.voice.speak(text)).toBe(true);
+  await waitForFrame(world.socket.frames, 'audio-end');
+  const pcm = Buffer.alloc(3200, 4);
+  world.socket.pcm(pcm);
+
+  //M 模拟整句 ASR 迟到的回执，已经超过播放和回声尾音窗口。
+  world.voice.stopSpeech();
+  await Bun.sleep(200);
+  world.asr.onFinal(text);
+  expect(world.socket.frames.some((frame) => frame['type'] === 'final')).toBe(false);
+
+  world.socket.pcm(pcm);
+  world.asr.onFinal(text);
+  await waitForCount(world.tasks, 1);
+  expect(world.messages.map((message) => message.text)).toEqual([text]);
+});
+
+test('关闭双工后 ready 保持半双工，收到的字幕不会触发停播', async () => {
+  const speak: ttsModule.Speak = async (_text, _signal, emit) => {
+    const pcm = Buffer.alloc(24_000);
+    emit({ pcm, sampleRate: 24_000 });
+  };
+  const world = getTaskWorld(undefined, {}, speak);
+  expect(world.socket.frames[0]).toMatchObject({ type: 'ready', bargeIn: false });
+  expect(world.voice.speak('正在播放语音回复')).toBe(true);
+  await waitForFrame(world.socket.frames, 'audio-end');
+  const pcm = Buffer.alloc(3200, 4);
+  world.socket.pcm(pcm);
+  world.asr.onFinal('先暂停一下，我有别的问题');
+  expect(world.socket.frames.some((frame) => frame['type'] === 'stop-audio')).toBe(false);
 });
 
 async function waitForCount(data: readonly unknown[], count: number) {
@@ -907,7 +999,7 @@ test('真 Fastify 升级后验证关码、PCM、字幕和 stop', async () => {
   expect(await within(old.closed, '等待旧连接的关码')).toBe(4001);
 
   next.socket.send('{"type":"start"}');
-  await waitForFrame(next.frames, 'ready');
+  expect(await waitForFrame(next.frames, 'ready')).toMatchObject({ bargeIn: true });
   next.socket.send(Uint8Array.of(1, 0));
   expect(await waitForFrame(next.frames, 'partial')).toMatchObject({ seq: 1, text: '模拟听写' });
   next.socket.send('{"type":"stop"}');
@@ -916,4 +1008,14 @@ test('真 Fastify 升级后验证关码、PCM、字幕和 stop', async () => {
   next.socket.send('{"type":"ping"}');
   await waitForFrame(next.frames, 'pong');
   expect(next.frames.filter((frame) => frame['type'] === 'partial')).toHaveLength(1);
+});
+
+test('voice.barge_in 为 false 时，真实连接协商结果为半双工', async () => {
+  const { app } = await setupHttp({ enabled: true, asr: { provider: 'fake' }, barge_in: false });
+  const listen = app.listen({ host: '127.0.0.1', port: 0 });
+  const address = await within(listen, 'Fastify 监听');
+  const client = await connect(address);
+  client.socket.send('{"type":"start"}');
+  const ready = await waitForFrame(client.frames, 'ready');
+  expect(ready).toMatchObject({ bargeIn: false });
 });

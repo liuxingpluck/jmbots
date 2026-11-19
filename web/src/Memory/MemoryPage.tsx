@@ -5,6 +5,7 @@
  * 演示客户和记忆归属分开选。归属查询使用同一检索接口，显示时遵循现有演示打码设置。
  * 网址参数：customer、q、mode（keyword | semantic | hybrid | graph）、guide、token。
  */
+import * as antd from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import * as virtuoso from 'react-virtuoso';
 import * as privacy from '../Privacy/Mask.tsx';
@@ -24,6 +25,18 @@ const VIA: Record<string, string> = { keyword: '关键词', vector: '向量', gr
 const KNOWLEDGE = '';
 const ALL_OWNERS = '';
 const OWNER = 'owner';
+const OWNER_VIRTUAL_AFTER = 40;
+const OWNER_SELECT_THEME = {
+  algorithm: antd.theme.darkAlgorithm,
+  token: { controlHeight: 38, colorBgContainer: '#111a33', borderRadius: 8 },
+};
+
+interface OwnerOption {
+  /** 选项位置，演示打码时不放入原始标识。 */
+  value: string;
+  /** 已按当前打码状态准备好的标签。 */
+  label: string;
+}
 
 /** 记忆插件给网页的归属、显示名和段落计数。 */
 interface MemoryOwner {
@@ -337,7 +350,7 @@ export function MemoryPage() {
   }, [found]);
   const names = useMemo(() => new Map((found?.graph?.nodes ?? []).map((n) => [n.id, n.name])), [found]);
   const ownerByKey = useMemo(() => new Map(owners.map((item) => [item.key, item])), [owners]);
-  const ownerChoices = owners.filter((item) => item.kind !== 'owner');
+  const ownerChoices = useMemo(() => owners.filter((item) => item.kind !== 'owner'), [owners]);
   //M 本人的选项始终可选，列表加载后补段落数量。
   const self = ownerByKey.get(OWNER);
   let selfLabel = t('本人');
@@ -362,14 +375,67 @@ export function MemoryPage() {
     setOwnerKey(selected?.key ?? ALL_OWNERS);
   };
 
-  const ownerOptions = (kind: 'person' | 'group') => ownerChoices.map((item, index) => {
-    if (item.kind !== kind) return null;
+  const ownerOptions = useMemo(() => {
+    const people: OwnerOption[] = [];
+    const groups: OwnerOption[] = [];
+    for (const [index, item] of ownerChoices.entries()) {
+      //M 两种下拉使用同一个位置和脱敏标签，选中后再查原始归属键。
+      const label = getOwnerLabel(item.key, item, mask, t);
+      const text = t('{label}（{count} 段）', { label, count: item.count });
+      const option = { value: String(index), label: text };
+      if (item.kind === 'person') {
+        people.push(option);
+      }
+      if (item.kind === 'group') {
+        groups.push(option);
+      }
+    }
+    return { people, groups };
+  }, [ownerChoices, mask, t]);
 
-    //M 用位置作为选择值，避免在打码态的选项中放入原始客户标识。
-    const label = getOwnerLabel(item.key, item, mask, t);
-    const text = t('{label}（{count} 段）', { label, count: item.count });
-    return <option key={item.key} value={String(index)}>{text}</option>;
-  });
+  const renderOwnerSelect = () => {
+    const { people, groups } = ownerOptions;
+    const allLabel = t('全部');
+    const peopleLabel = t('个人');
+    const groupsLabel = t('群聊');
+    if (people.length + groups.length + 2 > OWNER_VIRTUAL_AFTER) {
+      const grouped = [];
+      if (people.length > 0) {
+        grouped.push({ label: peopleLabel, options: people });
+      }
+      if (groups.length > 0) {
+        grouped.push({ label: groupsLabel, options: groups });
+      }
+      const options = [{ value: ALL_OWNERS, label: allLabel }, { value: OWNER, label: selfLabel }, ...grouped];
+      //M 归属多时只渲染下拉内可见候选，搜索也只匹配屏幕要显示的标签。
+      return (
+        <antd.ConfigProvider theme={OWNER_SELECT_THEME}>
+          <antd.Select<string>
+            aria-label={t('归属')}
+            value={selectedOwner}
+            options={options}
+            disabled={busy}
+            virtual
+            showSearch={{ optionFilterProp: 'label' }}
+            style={{ width: 240, maxWidth: '100%' }}
+            styles={{ input: { padding: 0, border: 0, background: 'transparent' } }}
+            onChange={selectOwner}
+          />
+        </antd.ConfigProvider>
+      );
+    }
+
+    //M 少量归属沿用原生下拉和原有分组次序。
+    const renderOption = ({ value, label }: OwnerOption) => <option key={value} value={value}>{label}</option>;
+    return (
+      <select value={selectedOwner} disabled={busy} onChange={(event) => selectOwner(event.target.value)}>
+        <option value={ALL_OWNERS}>{allLabel}</option>
+        <option value={OWNER}>{selfLabel}</option>
+        {people.length > 0 && <optgroup label={peopleLabel}>{people.map(renderOption)}</optgroup>}
+        {groups.length > 0 && <optgroup label={groupsLabel}>{groups.map(renderOption)}</optgroup>}
+      </select>
+    );
+  };
   const graphParams = new URLSearchParams({ q: query, mode });
   if (customer) {
     graphParams.set('customer', customer);
@@ -463,16 +529,7 @@ export function MemoryPage() {
           <div className="mm-row">
             <label className="mm-ownership">
               <span>{t('归属')}</span>
-              <select value={selectedOwner} disabled={busy} onChange={(event) => selectOwner(event.target.value)}>
-                <option value={ALL_OWNERS}>{t('全部')}</option>
-                <option value={OWNER}>{selfLabel}</option>
-                {ownerChoices.some((item) => item.kind === 'person') && (
-                  <optgroup label={t('个人')}>{ownerOptions('person')}</optgroup>
-                )}
-                {ownerChoices.some((item) => item.kind === 'group') && (
-                  <optgroup label={t('群聊')}>{ownerOptions('group')}</optgroup>
-                )}
-              </select>
+              {renderOwnerSelect()}
             </label>
             <select
               data-guide="customer"

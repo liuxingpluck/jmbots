@@ -2,6 +2,8 @@
  * 右栏顶部「正在运行」：列出当前机器人正在跑的前台和后台会话。
  * 每条显示标题、客户/渠道标签、已运行时长（每秒刷新）、最新进度；点击切到那个会话。
  * 没有任务时整块不显示。数据来自 GET /api/ui/running，每 2 秒轮询。
+ * 这份是会话级的（含后台子会话），和左栏、进度条用的 /api/progress 卡片不是同一份，所以单独取。
+ * 超过 30 件只画看得见的（Shared/LongList.tsx），每秒刷新的时长也只算看得见的那几件。
  */
 import * as antd from 'antd';
 import * as react from 'react';
@@ -9,6 +11,7 @@ import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as privacy from '../Privacy/Mask.tsx';
+import * as longList from '../Shared/LongList.tsx';
 
 
 /** 任务列表多久重取一次，毫秒。 */
@@ -16,6 +19,12 @@ const POLL_MS = 2000;
 
 /** 时长显示多久刷新一次，毫秒。 */
 const TICK_MS = 1000;
+
+/** 件数多到虚拟化时，这块占多高，像素；它钉在右栏顶上，不能把下面的页签内容挤没。 */
+const LIST_HEIGHT = 240;
+
+/** 两件之间的间距，像素；和 .jm-running-tasks 的 gap 一样。 */
+const ITEM_GAP = 2;
 
 
 /**
@@ -85,48 +94,60 @@ export function RunningTasks(): react.JSX.Element | null {
     return null;
   }
 
+  /**
+   * 画一件：标题、前后台和客户标签、已跑多久、最新进度；点了切到那个会话。
+   * @param item 运行中的会话；由下面的 LongList 逐条传进来。
+   */
+  const renderItem = (item: api.RunningTask): react.ReactNode => {
+    //M 整理前后台类型、脱敏客户标签和默认标题，再渲染可点击的任务条目。
+    let kind = t('后台');
+    if (item.kind === 'front') {
+      kind = t('前台');
+    }
+    let tag = kind;
+    if (item.customerLabel !== '') {
+      tag = `${kind} · ${privacy.name(t(item.customerLabel), masked)}`;
+    }
+    let itemClass = 'jm-running-tasks-item';
+    if (item.id === current) {
+      itemClass = 'jm-running-tasks-item is-current';
+    }
+    let itemTitle = item.title;
+    if (item.title === '') {
+      itemTitle = item.id;
+    }
+    //M 渲染运行中任务条目，按演示开关脱敏标题与最新进度，并换算已运行时长。
+    return (
+      <button
+        type="button"
+        className={itemClass}
+        title={`${privacy.name(item.title, masked)} ${tag} ${privacy.text(item.action, masked)}`}
+        onClick={() => openSession(item.id)}
+      >
+        <div className="jm-running-tasks-row">
+          <span className="jm-running-tasks-title" title={item.id}>{privacy.name(itemTitle, masked)}</span>
+          <antd.Tag>{tag}</antd.Tag>
+          <span className="jm-running-tasks-time">{getElapsed(now - item.startedAt, t)}</span>
+        </div>
+        {item.action !== '' && <div className="jm-running-tasks-action">{privacy.text(item.action, masked)}</div>}
+      </button>
+    );
+  };
+
+  //M 标题带件数；不到 30 件逐条画，多了在固定高度里只画看得见的。
   return (
     <div className="jm-running-tasks" role="region" aria-label={t('正在运行')}>
       <div className="jm-running-tasks-head">
         {t('正在运行')}
         <antd.Tag color="green">{items.length}</antd.Tag>
       </div>
-      {items.map((item) => {
-        //M 整理前后台类型、脱敏客户标签和默认标题，再渲染可点击的任务条目。
-        let kind = t('后台');
-        if (item.kind === 'front') {
-          kind = t('前台');
-        }
-        let tag = kind;
-        if (item.customerLabel !== '') {
-          tag = `${kind} · ${privacy.name(t(item.customerLabel), masked)}`;
-        }
-        let itemClass = 'jm-running-tasks-item';
-        if (item.id === current) {
-          itemClass = 'jm-running-tasks-item is-current';
-        }
-        let itemTitle = item.title;
-        if (item.title === '') {
-          itemTitle = item.id;
-        }
-        //M 渲染运行中任务条目，按演示开关脱敏标题与最新进度，并换算已运行时长。
-        return (
-          <button
-            key={item.id}
-            type="button"
-            className={itemClass}
-            title={`${privacy.name(item.title, masked)} ${tag} ${privacy.text(item.action, masked)}`}
-            onClick={() => openSession(item.id)}
-          >
-            <div className="jm-running-tasks-row">
-              <span className="jm-running-tasks-title" title={item.id}>{privacy.name(itemTitle, masked)}</span>
-              <antd.Tag>{tag}</antd.Tag>
-              <span className="jm-running-tasks-time">{getElapsed(now - item.startedAt, t)}</span>
-            </div>
-            {item.action !== '' && <div className="jm-running-tasks-action">{privacy.text(item.action, masked)}</div>}
-          </button>
-        );
-      })}
+      <longList.LongList
+        items={items}
+        getKey={(item) => item.id}
+        render={renderItem}
+        gap={ITEM_GAP}
+        height={LIST_HEIGHT}
+      />
     </div>
   );
 }

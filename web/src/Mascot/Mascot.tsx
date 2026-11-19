@@ -203,13 +203,12 @@ function WorkStrip(props: { live: types.ProgressView[]; onOpen: () => void }): r
  * @param props bot 是现在看的机器人。
  */
 export function Mascot(props: { bot: string | undefined }): react.JSX.Element | null {
-  //M 订阅翻译函数、右栏工作区打开动作及已挂载插件表，按 progress 插件开关决定是否请求进度接口。
+  //M 订阅翻译函数、右栏工作区打开动作，以及 Poll.ts 写进仓库的全部进度卡片（没挂 progress 插件时是空的）。
   const t = i18n.useT();
   const openPanel = context.useUi((state) => state.openPanel);
-  const mountedPlugins = context.useUi((state) => state.mountedPlugins);
-  const progressEnabled = api.isPluginMounted(mountedPlugins, 'progress', false);
+  const progress = context.useUi((state) => state.progress);
   /** 这个机器人的进度。 */
-  const [items, setItems] = react.useState<types.ProgressView[]>([]);
+  const items = progress.filter((item) => item.bot === props.bot);
   /** 这个机器人在跑的会话（有的没有进度卡片）。 */
   const [running, setRunning] = react.useState<api.SessionBrief[]>([]);
   /** 机器人在不在等人点审核。 */
@@ -233,23 +232,15 @@ export function Mascot(props: { bot: string | undefined }): react.JSX.Element | 
     if (!props.bot) {
       return undefined;
     }
-    if (!progressEnabled) {
-      setItems([]);
-    }
     /** 停了没有。 */
     let stopped = false;
     /** 问一次。 */
     const load = (): void => {
-      //M 没挂 progress 插件时只查正在跑的会话，不去打 /api/progress 的 404。
-      if (progressEnabled) {
-        void api.progress(props.bot ?? '').then((next) => !stopped && setItems(next), () => undefined);
-      }
-
-      //M 同时拉取当前机器人运行中的会话，把没有进度卡片的续跑会话补成干活条分身。
+      //M 进度卡片从仓库读；这里只拉当前机器人运行中的会话，把没有进度卡片的续跑会话补成干活条分身。
       void api.sessions(props.bot ?? '', 'running').then((next) => !stopped && setRunning(next), () => undefined);
     };
 
-    //M 切换机器人或插件状态后立即查询一次进度与在跑会话，并开启定时轮询。
+    //M 切换机器人后立即查询一次在跑会话，并开启定时轮询。
     load();
     /** 定时器。 */
     const timer = setInterval(load, REFRESH_MS);
@@ -257,7 +248,7 @@ export function Mascot(props: { bot: string | undefined }): react.JSX.Element | 
       stopped = true;
       clearInterval(timer);
     };
-  }, [props.bot, progressEnabled]);
+  }, [props.bot]);
 
   //M 换状态时重挑样子；闲着时隔一阵换一种。
   react.useEffect(() => {

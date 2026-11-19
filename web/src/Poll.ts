@@ -1,5 +1,5 @@
 /**
- * 轮询（docs/界面/01_界面设计.md 第 5 节）：每 1.5 秒问一次机器人和待确认；页面在后台时放慢到 5 秒。后端换了版本就刷新网页。
+ * 轮询（docs/界面/01_界面设计.md 第 5 节）：每 1.5 秒问一次机器人、待确认和进度卡片；页面在后台时放慢到 5 秒。后端换了版本就刷新网页。
  * 一轮问完才排下一轮，网络慢时不会叠起来。连不上（或后端 5xx）就记成离线，左栏显示休假中。
  * 界面语言跟 config.yaml 的 ui.language 走（/api/ui/info 带回来），浏览器也记一份，下次打开不闪。
  */
@@ -18,9 +18,9 @@ export const HIDDEN_POLL_MS = 5000;
 
 
 /**
- * 问一轮：机器人和待确认。
+ * 问一轮：机器人、待确认和进度卡片。
  * @param store 状态仓库。
- * 副作用：发两个请求，结果写进仓库。
+ * 副作用：发三个请求（插件没挂的那项不发），结果写进仓库。
  */
 export async function pollOnce(store: zustand.StoreApi<storeModule.UiState>): Promise<void> {
   try {
@@ -45,7 +45,17 @@ export async function pollOnce(store: zustand.StoreApi<storeModule.UiState>): Pr
       //M 拉取当前待人工确认的命令审批卡片，供审批弹窗与右栏待审核页展示。
       approvals = await api.approvals().catch(() => []);
     }
-    store.getState().setPolled({ online: true, bots, approvals });
+
+    /** 没挂 progress 插件时不去打 /api/progress 的 404。 */
+    //G 先检查后端是否挂载了 progress 插件，确认挂载才去拉进度卡片。
+    const askProgress = api.isPluginMounted(store.getState().mountedPlugins, 'progress', false);
+    let progress: types.ProgressView[] | undefined = [];
+    if (askProgress) {
+      //M 拉取全部机器人的进度卡片：左栏、聊天区进度条、鲸鱼娘都读这一份，不再各自轮询。
+      //G 单次取数失败时交给仓库保留上一份；只有未挂载或成功读到空列表才清空。
+      progress = await api.progress().catch(() => undefined);
+    }
+    store.getState().setPolled({ online: true, bots, approvals, progress });
   } catch (error) {
     //M 连不上或后端出错 → 离线；别的错（4xx）说明后端在，只是这次没问对，不算离线。
     /** 是不是后端不在。 */
@@ -72,7 +82,10 @@ function canReload(store: zustand.StoreApi<storeModule.UiState>): boolean {
  * @returns 这一次看到的；问不到时还是原来的。
  * 副作用：发一个请求；可能刷新网页；语言变了写进仓库和浏览器。
  */
-async function checkBackendChanged(store: zustand.StoreApi<storeModule.UiState>, seen: number | undefined): Promise<number | undefined> {
+async function checkBackendChanged(
+  store: zustand.StoreApi<storeModule.UiState>,
+  seen: number | undefined,
+): Promise<number | undefined> {
   /** 后端进程信息（起来的时间、界面语言）。 */
   //M 拉取后端进程启动时间与界面语言配置，用来识别后端重启换版并同步本地语言。
   const info = await api.uiInfo().catch(() => undefined);

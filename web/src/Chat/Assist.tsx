@@ -1,20 +1,35 @@
 /**
  * 助手体验（docs/src7插件设计/助手体验对照.md）：消息下的小表情、选项卡片，右栏“待办”。
  * 数据来自 assist 插件的 GET /api/assist，ChatArea 里 usePoll 每 2 秒取一次，放在这个模块的小仓库里，各处按消息号取。
+ * 卡片、待办、待办子项超过 30 条只画看得见的（Shared/LongList.tsx）；卡片的选项后端限 2～6 个，照旧逐个画。
  */
 import * as antd from 'antd';
 import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
+import * as readingModule from '../Panel/Reading.ts';
+import * as longList from '../Shared/LongList.tsx';
+
+
+/** 一条消息下卡片多到虚拟化时占多高，像素；外面已是聊天的虚拟列表，这里自己滚。 */
+const ASKS_HEIGHT = 320;
+
+/** 一份待办子项多到虚拟化时占多高，像素。 */
+const STEPS_HEIGHT = 320;
+
+/** 两份待办之间的间距，像素；和 .jm-todo-panel 的 gap 一样。 */
+const TODO_GAP = 12;
 
 
 /** 一个表情。 */
 interface Reaction { id: number; messageId: number | null; emoji: string }
 /** 一张选项卡片。 */
 interface Ask { id: number; messageId: number | null; question: string; options: string[]; answer?: string }
+/** 待办里的一项。 */
+interface TodoStep { text: string; status: 'todo' | 'doing' | 'done' }
 /** 一场会话的待办。 */
-interface Todo { id: number; sessionId: string; root?: string; updatedAt: number; items: { text: string; status: 'todo' | 'doing' | 'done' }[] }
+interface Todo { id: number; sessionId: string; root?: string; updatedAt: number; items: TodoStep[] }
 /** GET /api/assist 的回答。 */
 interface AssistData { reactions: Reaction[]; asks: Ask[]; todos: Todo[] }
 
@@ -104,37 +119,47 @@ export function Asks(props: { bot: string; messageId: number; onSent?: () => voi
       setBusy(0);
     }
   };
+  /**
+   * 画一张卡片：问题、选项按钮、已选的答案。
+   * @param ask 选项卡片；由下面的 LongList 逐张传进来。
+   */
+  const renderAsk = (ask: Ask): react.ReactNode => {
+    let askClass = 'jm-ask';
+    if (ask.answer !== undefined) {
+      askClass = 'jm-ask jm-ask-done';
+    }
+    return (
+      <div className={askClass}>
+        <div className="jm-ask-question">{ask.question}</div>
+        <div className="jm-ask-options">
+          {ask.options.map((option) => {
+            let buttonType: 'primary' | 'default' = 'default';
+            if (ask.answer === option) {
+              buttonType = 'primary';
+            }
+            //M 点击选项后调用 choose 提交答案并发送回复，已作答或提交中禁用按钮防止重复点击。
+            return (
+              <antd.Button key={option} size="small" autoInsertSpace={false} type={buttonType}
+                disabled={ask.answer !== undefined || busy !== 0}
+                onClick={() => void choose(ask, option)}>
+                {option}
+              </antd.Button>
+            );
+          })}
+        </div>
+        {ask.answer !== undefined && <div className="jm-muted">{t('已选：{answer}', { answer: ask.answer })}</div>}
+      </div>
+    );
+  };
+
+  //M 一条消息下的卡片不到 30 张逐张画；多了在固定高度里只画看得见的。
   return (
-    <>
-      {asks.map((ask) => {
-        let askClass = 'jm-ask';
-        if (ask.answer !== undefined) {
-          askClass = 'jm-ask jm-ask-done';
-        }
-        return (
-          <div key={ask.id} className={askClass}>
-            <div className="jm-ask-question">{ask.question}</div>
-            <div className="jm-ask-options">
-              {ask.options.map((option) => {
-                let buttonType: 'primary' | 'default' = 'default';
-                if (ask.answer === option) {
-                  buttonType = 'primary';
-                }
-                //M 点击选项后调用 choose 提交答案并发送回复，已作答或提交中禁用按钮防止重复点击。
-                return (
-                  <antd.Button key={option} size="small" autoInsertSpace={false} type={buttonType}
-                    disabled={ask.answer !== undefined || busy !== 0}
-                    onClick={() => void choose(ask, option)}>
-                    {option}
-                  </antd.Button>
-                );
-              })}
-            </div>
-            {ask.answer !== undefined && <div className="jm-muted">{t('已选：{answer}', { answer: ask.answer })}</div>}
-          </div>
-        );
-      })}
-    </>
+    <longList.LongList
+      items={asks}
+      getKey={(ask) => ask.id}
+      render={renderAsk}
+      height={ASKS_HEIGHT}
+    />
   );
 }
 
@@ -161,6 +186,8 @@ export function TodoPanel(): react.JSX.Element {
   }
   const mark = { todo: '○', doing: '◐', done: '●' } as const;
   const [busy, setBusy] = react.useState(false);
+  /** 右栏的滚动容器（RightPanel 的 .jm-panel-body）；待办多时跟着它滚，不另起滚动条。 */
+  const panelScroll = react.useContext(readingModule.PanelScrollContext);
   /** 只清当前打开的会话及其派出的后台子会话。 */
   const clearCurrent = async (): Promise<void> => {
     if (!bot || !focus) return;
@@ -179,7 +206,31 @@ export function TodoPanel(): react.JSX.Element {
       setBusy(false);
     }
   };
-  //M 渲染待办工具栏（含清除按钮）、空态提示与各会话待办条目。
+  /**
+   * 画待办里的一项：状态圈和文字。
+   * @param step 一项；由内层 LongList 逐项传进来。
+   */
+  const renderStep = (step: TodoStep): react.ReactNode => (
+    <div className={`jm-todo-item jm-todo-${step.status}`}><span>{mark[step.status]}</span> {step.text}</div>
+  );
+
+  /**
+   * 画一份待办：哪场会话、几点改的，下面是各项；项多了在固定高度里只画看得见的。
+   * @param todo 一份待办；由外层 LongList 逐份传进来。
+   */
+  const renderTodo = (todo: Todo): react.ReactNode => (
+    <div className="jm-todo">
+      <div className="jm-muted">{t('会话 {id}', { id: todo.sessionId })} · {new Date(todo.updatedAt).toLocaleTimeString()}</div>
+      <longList.LongList
+        items={todo.items}
+        getKey={(_step, index) => index}
+        render={renderStep}
+        height={STEPS_HEIGHT}
+      />
+    </div>
+  );
+
+  //M 渲染待办工具栏（含清除按钮）、空态提示与各会话待办条目；份数多了跟着右栏滚动只画看得见的。
   return (
     <div className="jm-todo-panel">
       {todos.length > 0 && (
@@ -188,14 +239,13 @@ export function TodoPanel(): react.JSX.Element {
         </div>
       )}
       {todos.length === 0 && <div className="jm-empty">{t('还没有待办：机器人干三步以上的活时会列在这里')}</div>}
-      {todos.map((todo) => (
-        <div key={todo.id} className="jm-todo">
-          <div className="jm-muted">{t('会话 {id}', { id: todo.sessionId })} · {new Date(todo.updatedAt).toLocaleTimeString()}</div>
-          {todo.items.map((item, index) => (
-            <div key={index} className={`jm-todo-item jm-todo-${item.status}`}><span>{mark[item.status]}</span> {item.text}</div>
-          ))}
-        </div>
-      ))}
+      <longList.LongList
+        items={todos}
+        getKey={(todo) => todo.id}
+        render={renderTodo}
+        gap={TODO_GAP}
+        scrollParent={panelScroll}
+      />
     </div>
   );
 }

@@ -12,7 +12,7 @@
  * builder 的命令审核照“只能在他的目录里动”把关，审不过直接拒、不问用户。
  * 自己核对说话人：只接受发起该项的同一人（登记时记下的 actor），或用户本人（回话地址里的 owner）；飞书群里说的、群里提的只认本人；
  * “待确认有哪些”只列当事人自己的项；其他人的同样文字当普通消息交给前台。正确性不依赖监听顺序。
- * 接口：GET /api/approvals、POST /api/approvals/:id（有 http 才开）。
+ * 接口：GET /api/approvals、GET /api/approvals/overflow、POST /api/approvals/:id（有 http 才开）。
  * 不挡别的消息：review 只在提问的那场会话的工具里 await，别的会话、别的消息照常走；问用户时不等，马上交回“已经去问了”。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
@@ -34,7 +34,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.0';
+export const version = '1.2.1';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -264,6 +264,8 @@ const REVIEW_KIND = 'exec-review';
 
 /** 定了的长跑提醒卡片在网页上留多久（变灰）。 */
 const RECENT_MS = 10 * 60_000;
+/** 网页每轮最多带回这么多条待审核。 */
+const WEB_WAITING_LIMIT = 200;
 
 /** 状态的人话。 */
 const STATE_TEXT: Record<Pending['state'], string> = { waiting: '在等', approved: '已同意', rejected: '已拒绝' };
@@ -729,11 +731,19 @@ export class Approval extends cordis.Service {
     return piAi.contentText(said.content).slice(0, 200);
   }
 
-  /** @returns 还在等的待确认，号从小到大。 */
-  list(): Pending[] {
+  /** 按号读取待确认。网页传上限，内部批量处理沿用 SQLite 的 -1 读取全部。 */
+  list(limit = -1): Pending[] {
     //M 查还在等的，转成 Pending，号从小到大。
-    const rows = this.ctx.resources.db.query("SELECT * FROM approval_pending WHERE state = 'waiting' ORDER BY id").all() as Row[];
+    const sql = "SELECT * FROM approval_pending WHERE state = 'waiting' ORDER BY id LIMIT ?";
+    const rows = this.ctx.resources.db.query(sql).all(limit) as Row[];
     return rows.map(getPending);
+  }
+
+  /** 网页上限之外仍有几条待确认，只读取数量。 */
+  getWebOverflow(): number {
+    const sql = "SELECT COUNT(*) AS total FROM approval_pending WHERE state = 'waiting'";
+    const row = this.ctx.resources.db.query(sql).get() as { total: number };
+    return Math.max(0, row.total - WEB_WAITING_LIMIT);
   }
 
   /**
@@ -1358,13 +1368,24 @@ function view(pending: Pending): Record<string, unknown> {
 
 
 /**
- * 登记两条接口。
+ * 登记网页待审核列表、数量与决定接口。
  * @param app http 的 Fastify 实例。
  * @param approval 服务。
  */
 function routes(app: fastify.FastifyInstance, approval: Approval): void {
-  //M 还在等的，加上最近定了的长跑提醒（卡片变灰）。网页照 card 画，card.state 不是 waiting 的不给按钮。
-  app.get('/api/approvals', async () => [...approval.list(), ...approval.recent()].map(view));
+  //M 网页只拉最早一批待审核。最近已定的长跑提醒仍照原样附在数组里。
+  app.get('/api/approvals', async () => {
+    const waiting = approval.list(WEB_WAITING_LIMIT);
+    const recent = approval.recent();
+    return [...waiting, ...recent].map(view);
+  });
+
+  //M 待审核页满一批时补查省略的条数，普通轮询继续沿用数组接口。
+  app.get('/api/approvals/overflow', async () => {
+    //M 只返回网页一批以外仍待处理的项数。
+    const count = approval.getWebOverflow();
+    return { count };
+  });
 
   //M POST /api/approvals/:id：网页点同意、拒绝，body 里 approve 要是布尔值，不是的当场回 400。
   app.post<{ Params: { id: string }; Body: unknown }>('/api/approvals/:id', async (request, reply) => {

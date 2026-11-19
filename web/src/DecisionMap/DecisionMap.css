@@ -319,7 +319,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 
 /* 侧栏里写过的话和输入框 */
 .decision-notes h3, .decision-write label { display: block; margin: 16px 0 8px; font-size: 14px; font-weight: 660; }
-.decision-notes ol { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+/* 不到 30 条时 gap 生效；多了交给 Virtuoso，间距由 LongList 补成每条的下内边距。 */
+.decision-notes__list { display: grid; gap: 8px; }
 .decision-note { padding: 9px 11px; border: 1px solid #3c4960; border-radius: 9px; background: #232e3f; }
 .decision-note[data-author="central"] { border-color: #4f9276; background: #20372f; }
 .decision-note p { margin: 0; }

@@ -1,6 +1,7 @@
 /** 查看节点结论、提交选项、写话给中控的侧栏，放射、思维导图、表格、清单共用这一个。 */
 import * as react from 'react';
 import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import * as longList from '../Shared/LongList.tsx';
 import * as words from './Words.ts';
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
@@ -34,8 +35,19 @@ export function getTime(at: number): string {
   return date.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false });
 }
 
-/** 按时间列出这个节点上用户和中控写过的话。 */
-function NoteList({ node }: { node: types.DecisionNode }) {
+/** 两条话之间的间距，像素；和 .decision-notes__list 的 gap 一样。 */
+const NOTE_GAP = 8;
+
+/** 留言列表的参数。 */
+interface NoteListProps {
+  /** 正在查看的节点。 */
+  node: types.DecisionNode;
+  /** 侧栏自己的滚动容器；话多了跟着它滚，只画看得见的。 */
+  scrollParent: HTMLElement | null;
+}
+
+/** 按时间列出这个节点上用户和中控写过的话；超过 30 条只画看得见的。 */
+function NoteList({ node, scrollParent }: NoteListProps) {
   const notes = node.notes ?? [];
   if (notes.length === 0) return null;
 
@@ -47,33 +59,42 @@ function NoteList({ node }: { node: types.DecisionNode }) {
     return found.text;
   };
 
-  //M 每条写清谁、何时、内容；用户的话标出中控回没回。
+  /** 一条话一块：谁、何时、选了什么、内容；用户的话标出中控回没回。 */
+  const renderNote = (note: types.DecisionNote) => {
+    let who = t('你');
+    if (note.author === 'central') who = t('中控');
+    let state = '';
+    if (note.author === 'user' && note.repliedAt === undefined) state = t('等中控回');
+    if (note.author === 'user' && note.repliedAt !== undefined) state = t('中控已回');
+
+    //M 谁、何时一行，选了什么一行，再是内容。
+    return (
+      <div role="listitem" className="decision-note" data-author={note.author}>
+        <p className="decision-note__meta">
+          <strong>{who}</strong> · {getTime(note.at)}
+          {state !== '' && <span className="decision-note__state">{state}</span>}
+        </p>
+        {note.option !== undefined && (
+          <p className="decision-note__option">{t('选了')}「{getOptionText(note.option)}」</p>
+        )}
+        <p className="decision-note__text">{note.text}</p>
+      </div>
+    );
+  };
+
+  //M 不到 30 条逐条画；多了跟着侧栏滚动只画看得见的。
   return (
     <section className="decision-notes" aria-label={t('写过的话')}>
       <h3>{t('写过的话')}</h3>
-      <ol>
-        {notes.map((note) => {
-          let who = t('你');
-          if (note.author === 'central') who = t('中控');
-          let state = '';
-          if (note.author === 'user' && note.repliedAt === undefined) state = t('等中控回');
-          if (note.author === 'user' && note.repliedAt !== undefined) state = t('中控已回');
-
-          //M 一条话一块：谁、何时、选了什么、内容。
-          return (
-            <li key={note.id} className="decision-note" data-author={note.author}>
-              <p className="decision-note__meta">
-                <strong>{who}</strong> · {getTime(note.at)}
-                {state !== '' && <span className="decision-note__state">{state}</span>}
-              </p>
-              {note.option !== undefined && (
-                <p className="decision-note__option">{t('选了')}「{getOptionText(note.option)}」</p>
-              )}
-              <p className="decision-note__text">{note.text}</p>
-            </li>
-          );
-        })}
-      </ol>
+      <div role="list" className="decision-notes__list">
+        <longList.LongList
+          items={notes}
+          getKey={(note) => note.id}
+          render={renderNote}
+          gap={NOTE_GAP}
+          scrollParent={scrollParent}
+        />
+      </div>
     </section>
   );
 }
@@ -122,6 +143,8 @@ function DecisionHistory({ node }: { node: types.DecisionNode }) {
 /** 待定时显示点击即可提交的选项，已定时显示中控接收状态。 */
 export function Drawer({ node, saving, error, close, choose, sending, noteError, send }: DrawerProps) {
   const [draft, setDraft] = react.useState('');
+  /** 侧栏本身（.decision-drawer 会滚动），交给留言列表当滚动容器。 */
+  const [scroller, setScroller] = react.useState<HTMLElement | null>(null);
   const isPending = node.kind === 'pending' && node.status === 'open';
   const isConfirmed = node.acknowledgedAt !== undefined;
   const isDecided = node.kind === 'decided' || node.status === 'decided';
@@ -169,7 +192,7 @@ export function Drawer({ node, saving, error, close, choose, sending, noteError,
 
   //M 点节点时先看结论和选择，已到手的决定单独标明中控确认。
   return (
-    <aside className="decision-drawer" aria-labelledby="decision-drawer-title">
+    <aside className="decision-drawer" aria-labelledby="decision-drawer-title" ref={setScroller}>
       <div className="decision-drawer__head">
         <span className="decision-drawer__state">{stateText}</span>
         <button type="button" onClick={close} className="decision-close" aria-label="关闭详情">×</button>
@@ -205,7 +228,7 @@ export function Drawer({ node, saving, error, close, choose, sending, noteError,
         </div>
       )}
       {error && <p className="decision-error" role="alert">{error}</p>}
-      <NoteList node={node} />
+      <NoteList node={node} scrollParent={scroller} />
       <form className="decision-write" onSubmit={submit}>
         <label htmlFor="decision-write-text">{t('写一句给中控')}</label>
         <textarea
