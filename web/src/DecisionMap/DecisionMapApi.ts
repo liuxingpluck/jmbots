@@ -93,3 +93,15 @@ export function setStatus(id: string, status: types.DecisionStatus): Promise<{ n
   //M 网页入口会把状态变化通知中控。
   return request('/status', options);
 }
+
+/** 手动调整节点的四象限归类，传 null 清除手动覆盖恢复自动规则。 */
+export function setQuadrant(
+  id: string,
+  quadrant: types.DecisionQuadrant | null,
+): Promise<{ node: types.DecisionNode }> {
+  const body = JSON.stringify({ id, quadrant });
+  const options = { method: 'POST', headers: { 'content-type': 'application/json' }, body };
+
+  //M 点击象限胶囊后即时入库，返回更新后的节点。
+  return request('/quadrant', options);
+}

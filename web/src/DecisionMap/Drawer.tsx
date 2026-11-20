@@ -5,6 +5,7 @@ import * as longList from '../Shared/LongList.tsx';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as api from './DecisionMapApi.ts';
 import * as drafts from './Drafts.ts';
+import * as quadrants from './Quadrants.ts';
 import * as words from './Words.ts';
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
@@ -200,6 +201,12 @@ export function TaskActions({
       setAdding(false);
     });
   };
+  const effectiveQuad = quadrants.resolveNodeQuadrant(node);
+  const pickQuadrant = (target: types.DecisionQuadrant | null): void => {
+    void save(async () => {
+      await api.setQuadrant(node.id, target);
+    });
+  };
 
   return (
     <div className="decision-task-actions">
@@ -222,6 +229,37 @@ export function TaskActions({
           {t('加子项')}
         </button>
       </div>
+      {node.parent !== null && (
+        <div className="decision-quad-picker" role="group" aria-label={t('归属象限')}>
+          <span className="decision-quad-picker__label">{t('象限')}</span>
+          <div className="decision-quad-picker__pills">
+            {quadrants.QUADRANT_SPECS.map((spec) => (
+              <button
+                key={spec.key}
+                type="button"
+                className="decision-quad-picker__btn"
+                data-quad={spec.key}
+                data-quad-pick={spec.key}
+                aria-pressed={effectiveQuad === spec.key}
+                disabled={busy}
+                onClick={() => pickQuadrant(spec.key)}
+              >
+                <b>{spec.code}</b> {t(spec.shortLabel)}
+              </button>
+            ))}
+            {node.quadrant !== undefined && (
+              <button
+                type="button"
+                className="decision-quad-picker__reset"
+                disabled={busy}
+                onClick={() => pickQuadrant(null)}
+              >
+                {t('自动')}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {adding && (
         <form className="decision-task-actions__row" onSubmit={add}>
           <label htmlFor="decision-child-title">{t('子项标题')}</label>

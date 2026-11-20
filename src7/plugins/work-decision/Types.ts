@@ -2,9 +2,11 @@
 
 export const KINDS = ['goal', 'fork', 'feature', 'pending', 'decided', 'work'] as const;
 export const STATUSES = ['open', 'decided', 'working', 'done', 'dropped'] as const;
+export const QUADRANTS = ['q1', 'q2', 'q3', 'q4'] as const;
 
 export type DecisionKind = typeof KINDS[number];
 export type DecisionStatus = typeof STATUSES[number];
+export type DecisionQuadrant = typeof QUADRANTS[number];
 
 /** 用户可以选择的一项。 */
 export interface DecisionOption {
@@ -95,6 +97,8 @@ export interface DecisionNode {
   links?: string[];
   /** 节点是否在主线上。 */
   main?: boolean;
+  /** 四象限手动归类：q1 重要且紧急、q2 重要不紧急、q3 紧急不重要、q4 不紧急不重要。 */
+  quadrant?: DecisionQuadrant;
   /** 跨枝依赖的节点号。 */
   needs?: string[];
   /** 用户和中控在这个节点上写的话，按时间先后。 */
@@ -160,11 +164,13 @@ export interface DecisionChange {
   /** 改动发起者。 */
   actor: 'central' | 'user' | 'plugin';
   /** 操作名称。 */
-  action: 'put' | 'status' | 'choose' | 'ack' | 'note' | 'reply';
+  action: 'put' | 'status' | 'quadrant' | 'choose' | 'ack' | 'note' | 'reply';
   /** 受影响的节点号。 */
   nodes: readonly string[];
   /** 新建及状态变化详情，relay 不可用时可按变更接口读取。 */
   tasks?: readonly DecisionTaskChange[];
+  /** 手动调整后的象限键值；清除手动归类恢复自动时为 null。 */
+  quadrant?: DecisionQuadrant | null;
   /** 用户选择时的选项号。 */
   option?: string;
   /** 用户选择时的节点标题。 */

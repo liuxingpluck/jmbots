@@ -19,6 +19,7 @@ const SCHEMA = `
     chosen TEXT,
     asker TEXT,
     main TEXT,
+    quadrant TEXT,
     needs TEXT,
     sources TEXT,
     links TEXT,
@@ -56,19 +57,20 @@ const SCHEMA = `
 const PUT_NODE = `
   INSERT INTO decisions (
     id, workspace_id, bot, parent, kind, status, title, summary, body, options, chosen, asker,
-    main, needs, sources, links, detail_path, created_at, decided_at, decided_by, acknowledged_at, note
+    main, quadrant, needs, sources, links, detail_path, created_at, decided_at, decided_by, acknowledged_at, note
   ) VALUES (
     $node ->> '$.id', $node ->> '$.workspaceId', $node ->> '$.bot', $node ->> '$.parent',
     $node ->> '$.kind', $node ->> '$.status', $node ->> '$.title', $node ->> '$.summary',
     $node ->> '$.body', $node -> '$.options', $node ->> '$.chosen', $node -> '$.asker',
-    $node -> '$.main', $node -> '$.needs', $node -> '$.sources', $node -> '$.links',
+    $node -> '$.main', $node ->> '$.quadrant', $node -> '$.needs', $node -> '$.sources', $node -> '$.links',
     $node ->> '$.detailPath', $node ->> '$.createdAt', $node ->> '$.decidedAt',
     $node ->> '$.decidedBy', $node ->> '$.acknowledgedAt', $node ->> '$.note'
   ) ON CONFLICT (id) DO UPDATE SET
     workspace_id = excluded.workspace_id, bot = excluded.bot, parent = excluded.parent,
     kind = excluded.kind, status = excluded.status, title = excluded.title, summary = excluded.summary,
     body = excluded.body, options = excluded.options, chosen = excluded.chosen, asker = excluded.asker,
-    main = excluded.main, needs = excluded.needs, sources = excluded.sources, links = excluded.links,
+    main = excluded.main, quadrant = excluded.quadrant, needs = excluded.needs,
+    sources = excluded.sources, links = excluded.links,
     detail_path = excluded.detail_path, decided_at = excluded.decided_at, decided_by = excluded.decided_by,
     acknowledged_at = excluded.acknowledged_at, note = excluded.note
 `;
@@ -78,7 +80,7 @@ const SELECT_NODES = `
   SELECT json_patch(json_object('parent', parent), json_object(
     'id', id, 'workspaceId', workspace_id, 'bot', bot, 'kind', kind, 'status', status, 'title', title,
     'summary', summary, 'body', body, 'options', json(options), 'chosen', chosen, 'asker', json(asker),
-    'main', json(main), 'needs', json(needs), 'sources', json(sources), 'links', json(links),
+    'main', json(main), 'quadrant', quadrant, 'needs', json(needs), 'sources', json(sources), 'links', json(links),
     'detailPath', detail_path, 'createdAt', created_at, 'decidedAt', decided_at, 'decidedBy', decided_by,
     'acknowledgedAt', acknowledged_at, 'note', note
   )) AS value FROM decisions ORDER BY rowid
@@ -127,8 +129,12 @@ export interface WorkspaceProject extends LegacyProject {
 export class Sqlite {
   /** @param db 由 resources 管理连接。副作用：初始化工作决策表。 */
   constructor(private readonly db: Database) {
-    //M 工作决策表随插件挂载初始化。
+    //M 工作决策表随插件挂载初始化，已存在的旧库自动平滑补齐 quadrant 列。
     db.exec(SCHEMA);
+    const cols = db.query<{ name: string }, []>('PRAGMA table_info(decisions)').all();
+    if (!cols.some((col) => col.name === 'quadrant')) {
+      db.exec('ALTER TABLE decisions ADD COLUMN quadrant TEXT');
+    }
   }
 
   /** 读取客户端版本，包括旧快照的历史已被清理时保留的版本。 */

@@ -489,3 +489,103 @@ test('前端按节点持久化输入草稿，切换与空白清理不互串', as
   expect(drafts.readDraft('topic-aobb')).toBe('');
   expect(drafts.hasAnyDraft()).toBe(false);
 });
+
+test('节点四象限可选字段读写、平滑补列、POST/PUT 调整及 null 清空恢复自动', async () => {
+  //M 模拟尚未包含 quadrant 列的旧库表结构，验证挂载时自动补列且不丢历史行。
+  const legacyDb = new Database(':memory:');
+  cleanups.push(() => legacyDb.close());
+  legacyDb.exec(`
+    CREATE TABLE decisions (
+      id TEXT PRIMARY KEY NOT NULL, workspace_id TEXT, bot TEXT, parent TEXT,
+      kind TEXT NOT NULL, status TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL,
+      body TEXT, options TEXT, chosen TEXT, asker TEXT, main TEXT, needs TEXT,
+      sources TEXT, links TEXT, detail_path TEXT, created_at INTEGER NOT NULL,
+      decided_at INTEGER, decided_by TEXT, acknowledged_at INTEGER, note TEXT
+    );
+    INSERT INTO decisions (id, parent, kind, status, title, summary, created_at)
+    VALUES ('goal', NULL, 'goal', 'working', '旧库根目标', '', 1700000000000);
+  `);
+  const migratedStore = new storeModule.Store(legacyDb, path.join(import.meta.dir, '.non-existent'));
+  expect(migratedStore.getGraph().nodes[0]?.id).toBe('goal');
+  expect(migratedStore.getGraph().nodes[0]?.quadrant).toBeUndefined();
+
+  const { app } = await setup();
+  const initial = await app.inject({
+    method: 'PUT',
+    url: `${PREFIX}/nodes`,
+    payload: [entries[0], { ...entries[1], quadrant: 'q1' }],
+  });
+  expect(initial.statusCode).toBe(200);
+  const loaded = (await app.inject(`${PREFIX}/graph`)).json<types.DecisionGraph>();
+  expect(loaded.nodes.find((node) => node.id === 'release')?.quadrant).toBe('q1');
+
+  //M 非法象限值拒绝入库，保持原值不变。
+  const bad = await app.inject({
+    method: 'POST',
+    url: `${PREFIX}/quadrant`,
+    payload: { id: 'release', quadrant: 'q9' },
+  });
+  expect(bad.statusCode).toBe(400);
+
+  //M 网页手动切到 q3 落盘并写入变化流水。
+  const moved = await app.inject({
+    method: 'POST',
+    url: `${PREFIX}/quadrant`,
+    payload: { id: 'release', quadrant: 'q3' },
+  });
+  expect(moved.statusCode).toBe(200);
+  expect(moved.json<{ node: types.DecisionNode }>().node.quadrant).toBe('q3');
+
+  //M 传 null 清除手动覆盖，公开快照省略 quadrant 字段，不破坏节点其余内容。
+  const cleared = await app.inject({
+    method: 'PUT',
+    url: `${PREFIX}/quadrant`,
+    payload: { id: 'release', quadrant: null },
+  });
+  expect(cleared.statusCode).toBe(200);
+  const afterClear = (await app.inject(`${PREFIX}/graph`)).json<types.DecisionGraph>();
+  const finalNode = afterClear.nodes.find((node) => node.id === 'release');
+  expect(finalNode?.quadrant).toBeUndefined();
+  expect(finalNode?.title).toBe('今天发吗');
+});
+
+test('前端四象限自动归类与手动覆盖规则合理分布于 Q1~Q4 且过滤目录壳', async () => {
+  const quadrants = await import('../../../web/src/DecisionMap/Quadrants.ts');
+  const sample: types.DecisionNode[] = [
+    { id: 'goal', parent: null, kind: 'goal', status: 'working', title: '总目标', summary: '', createdAt: 1 },
+    { id: 'topic-a', parent: 'goal', kind: 'fork', status: 'working', title: '渠道专题', summary: '', createdAt: 2 },
+    {
+      id: 'p-core', parent: 'topic-a', kind: 'pending', status: 'open',
+      title: 'AOBB 默认定法何时开工', summary: '核心架构拍板', createdAt: 3,
+      options: [{ id: 'a', text: '开工' }],
+    },
+    {
+      id: 'p-clean', parent: 'topic-a', kind: 'pending', status: 'open',
+      title: '删掉废弃的 Go 目录吗', summary: '无人使用', createdAt: 4,
+      options: [{ id: 'a', text: '删' }],
+    },
+    {
+      id: 'w-core', parent: 'topic-a', kind: 'feature', status: 'working',
+      title: '统一记忆搜索推进', summary: '', createdAt: 5,
+    },
+    {
+      id: 'w-done', parent: 'topic-a', kind: 'work', status: 'done',
+      title: '历史收尾项', summary: '', createdAt: 6,
+    },
+    {
+      id: 'w-manual', parent: 'topic-a', kind: 'work', status: 'done', quadrant: 'q2',
+      title: '手动钉在 Q2 的事项', summary: '', createdAt: 7,
+    },
+  ];
+  const built = quadrants.buildQuadrantEntries(sample);
+  //M 根目标 goal 与带子项的纯目录壳 topic-a 不重复作为卡片混入四象限。
+  expect(built.map((item) => item.node.id)).toEqual(['p-core', 'p-clean', 'w-core', 'w-done', 'w-manual']);
+  expect(built.find((item) => item.node.id === 'p-core')?.quadrant).toBe('q1');
+  expect(built.find((item) => item.node.id === 'p-clean')?.quadrant).toBe('q3');
+  expect(built.find((item) => item.node.id === 'w-core')?.quadrant).toBe('q2');
+  expect(built.find((item) => item.node.id === 'w-done')?.quadrant).toBe('q4');
+  expect(built.find((item) => item.node.id === 'w-manual')?.quadrant).toBe('q2');
+
+  const activeOnly = quadrants.filterQuadrantEntries(built, 'active');
+  expect(activeOnly.map((item) => item.node.id)).toEqual(['p-core', 'p-clean', 'w-core']);
+});

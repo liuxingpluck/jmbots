@@ -11,6 +11,7 @@ import * as drafts from './Drafts.ts';
 import * as drawer from './Drawer.tsx';
 import * as layout from './Layout.ts';
 import * as nodes from './Nodes.tsx';
+import * as quadrantView from './QuadrantView.tsx';
 import * as topicView from './TopicView.tsx';
 import * as views from './Views.tsx';
 import * as words from './Words.ts';
@@ -18,8 +19,8 @@ import * as words from './Words.ts';
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
 
-/** 六种看法：专题目录、思维导图、按日期、放射图、表格、清单。 */
-type Look = 'topic' | 'mind' | 'date' | 'radial' | 'table' | 'list';
+/** 七种看法：专题目录、四象限、思维导图、按日期、放射图、表格、清单。 */
+type Look = 'topic' | 'quadrant' | 'mind' | 'date' | 'radial' | 'table' | 'list';
 
 const NODE_TYPES = { decision: nodes.DecisionNode, day: nodes.DayNode };
 const ORIGIN: xyflow.NodeOrigin = [0.5, 0.5];
@@ -41,6 +42,7 @@ const DIRECTION_KEY = 'jmbots.decision-map.direction';
 /** 看法切换按钮，顺序即显示顺序。 */
 const LOOKS: { key: Look; label: string }[] = [
   { key: 'topic', label: t('专题目录') },
+  { key: 'quadrant', label: t('四象限') },
   { key: 'mind', label: t('思维导图') },
   { key: 'list', label: t('清单') },
   { key: 'table', label: t('表格') },
@@ -357,7 +359,7 @@ export function DecisionMapPage() {
     (node) => node.kind === 'pending' && node.status === 'open',
   );
   let activePendingSource = scope.nodes;
-  if (look === 'topic') {
+  if (look === 'topic' || look === 'quadrant') {
     activePendingSource = projectScope.nodes;
   }
   const pending = activePendingSource.filter((node) => node.kind === 'pending' && node.status === 'open');
@@ -573,6 +575,10 @@ export function DecisionMapPage() {
       }
     }
   }
+  if (look === 'quadrant') {
+    mobileHeaderTitle = t('四象限');
+    mobileSwitcherLabel = t('四象限');
+  }
   if (look === 'mind') {
     mobileHeaderTitle = t('思维导图');
     mobileSwitcherLabel = t('思维导图');
@@ -581,7 +587,7 @@ export function DecisionMapPage() {
     mobileHeaderTitle = t('极简清单');
     mobileSwitcherLabel = t('极简清单');
   }
-  if (look !== 'topic' && look !== 'mind' && look !== 'list') {
+  if (look !== 'topic' && look !== 'quadrant' && look !== 'mind' && look !== 'list') {
     const foundLook = LOOKS.find((item) => item.key === look);
     if (foundLook !== undefined) {
       mobileHeaderTitle = foundLook.label;
@@ -775,6 +781,21 @@ export function DecisionMapPage() {
               <button
                 type="button"
                 className="decision-m-switcher-card"
+                data-switch-view="quadrant"
+                aria-pressed={look === 'quadrant'}
+                onClick={() => changeLook('quadrant')}
+              >
+                <span className="decision-m-switcher-card__top">
+                  <span className="decision-m-switcher-card__icon">◫</span>
+                  <strong>{t('四象限')}</strong>
+                </span>
+                <span className="decision-m-switcher-card__sub">
+                  {t('轻重缓急 · 点块放大拍板')}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="decision-m-switcher-card"
                 data-switch-view="mind"
                 aria-pressed={look === 'mind'}
                 onClick={() => {
@@ -814,25 +835,17 @@ export function DecisionMapPage() {
                   {t('集中单手拍板待定项')}
                 </span>
               </button>
-              <button
-                type="button"
-                className="decision-m-switcher-card"
-                data-switch-view="list"
-                aria-pressed={look === 'list'}
-                onClick={() => changeLook('list')}
-              >
-                <span className="decision-m-switcher-card__top">
-                  <span className="decision-m-switcher-card__icon">≡</span>
-                  <strong>{t('极简清单')}</strong>
-                </span>
-                <span className="decision-m-switcher-card__sub">
-                  {t('平铺圆角卡片速览全局')}
-                </span>
-              </button>
             </div>
             <div className="decision-m-switcher-more">
               <span className="decision-m-switcher-more__label">{t('更多看法')}</span>
               <div className="decision-m-switcher-more__pills">
+                <button
+                  type="button"
+                  aria-pressed={look === 'list'}
+                  onClick={() => changeLook('list')}
+                >
+                  {t('极简清单')}
+                </button>
                 <button
                   type="button"
                   aria-pressed={look === 'date'}
@@ -1041,7 +1054,7 @@ export function DecisionMapPage() {
         </form>
       )}
 
-      {look !== 'topic' && scope.path.length > 0 && (
+      {look !== 'topic' && look !== 'quadrant' && scope.path.length > 0 && (
         <nav className="decision-breadcrumb" aria-label={t('任务树路径')}>
           <button type="button" data-tree-root onClick={() => focusTree()}>{t('全部节点')}</button>
           {scope.path.map((entry) => {
@@ -1097,7 +1110,34 @@ export function DecisionMapPage() {
           </section>
         )}
 
-        {look !== 'topic' && (
+        {look === 'quadrant' && (
+          <section className="decision-canvas decision-canvas--quadrant" aria-label={canvasLabel} data-look={look}>
+            {graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
+            {graph !== undefined && (
+              <quadrantView.QuadrantView
+                nodes={projectScope.nodes}
+                isMobile={isMobile}
+                selectedNodeId={nodeId}
+                onSelectNode={setNodeId}
+                onChooseOption={chooseOptionForNode}
+                onSendNote={sendNoteForNode}
+                savingKey={savingKey}
+                actionError={chooseError}
+                sending={sending}
+                noteError={noteError}
+                onRefresh={() => refresh()}
+                onExpand={(id) => open(id, true)}
+                onFocusTree={(id) => {
+                  focusTree(id);
+                  changeLook('mind');
+                }}
+                onOpenNodeTopic={openNodeTopic}
+              />
+            )}
+          </section>
+        )}
+
+        {look !== 'topic' && look !== 'quadrant' && (
           <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
             {isMobile && look === 'mind' && diagram.nodes.length > 0 && (
               <div className="decision-m-mind-bar" role="toolbar" aria-label={t('导图操控')}>

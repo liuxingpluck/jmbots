@@ -345,6 +345,23 @@ export function mount(
         return { node: changed.node, delivery };
       },
     });
+    //M 网页和中控均可调整节点的四象限归类（传 null 恢复默认自动归类）。
+    scope.route<{ Body: unknown }>({
+      method: ['POST', 'PUT'],
+      url: `${PREFIX}/quadrant`,
+      handler(request) {
+        const body = storeModule.readObject(request.body);
+        const id = storeModule.readText(body['id'], 'id');
+        const quadrant = storeModule.readQuadrant(body['quadrant']);
+        if (quadrant === undefined) {
+          throw new failureModule.Failure(400, 'quadrant 必填（q1~q4 或 null）');
+        }
+        if (request.method === 'PUT') return store.setQuadrant(id, quadrant, 'central');
+
+        //M 网页点击象限胶囊即时落库并返回最新节点。
+        return store.setQuadrant(id, quadrant, 'user');
+      },
+    });
     //M 允许中控按版本只提取尚未处理的变化。
     scope.get<{ Querystring: { since?: string } }>(`${PREFIX}/changes`, (request) => {
       const raw = request.query.since ?? '0';

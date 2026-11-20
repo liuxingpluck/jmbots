@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.80",
+    "date": "2026-11-20",
+    "changes": [
+      "教程页新增组块阅读第 11 块《一条最简单的网页消息从头到尾》并登记至总览：以真实 596 号消息轨迹（/tutorial/?canvas=596）为线索，完整串通浏览器 POST → web-api → channels → bots → Sessions 主循环与关口一（model-catalog 代调）→ autoFinal 零次回复兜底 → 浏览器 1.5 秒增量轮询全部源码链路（Check_Lines 全仓 0 问题）",
+      "工作决策工作台（/work-decision/）新增「艾森豪威尔四象限」视图与后端持久化（work-decision 1.3.11）：新增可选 quadrant 字段与 SQLite 无损自动补列及 POST/PUT /api/work-decision/quadrant 接口，支持存量节点自动归类与详情面板一键改象限；PC 端铺开 2×2 独立滚动四象限矩阵与右侧即时拍板，手机端默认一屏四块总览、轻点单块全屏放大查看并附 Q1–Q4 横切胶囊"
+    ]
+  },
+  {
     "version": "0.7.79",
     "date": "2026-11-20",
     "changes": [

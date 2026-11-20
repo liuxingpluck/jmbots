@@ -36,6 +36,18 @@ export function readStatus(value: unknown): types.DecisionStatus {
   return status;
 }
 
+/** 校验入口传来的四象限键值；传 null 或空串清除手动覆盖恢复自动归类。 */
+export function readQuadrant(value: unknown): types.DecisionQuadrant | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+
+  const quadrant = value as types.DecisionQuadrant;
+  //G 仅允许 q1~q4 四种象限标识进入数据库。
+  if (!types.QUADRANTS.includes(quadrant)) return invalid('quadrant 要是 q1、q2、q3 或 q4');
+
+  return quadrant;
+}
+
 /** 校验可省略的字符串字段。 */
 function readOptional(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
@@ -146,6 +158,12 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
   //G 主线标记交给布局直接使用，入口保证是布尔值。
   if (main !== undefined && typeof main !== 'boolean') return invalid(`${id} 的 main 要是布尔值`);
 
+  //M 校验可选的四象限手动归类，支持传 null 清空恢复自动规则。
+  const rawQuadrant = readQuadrant(raw['quadrant']);
+  let quadrant = before?.quadrant;
+  if (rawQuadrant === null) quadrant = undefined;
+  if (rawQuadrant !== undefined && rawQuadrant !== null) quadrant = rawQuadrant;
+
   //M 详情材料、依赖和既有确认随快照一起保存。
   const detailPath = readOptional(item['detailPath'], 'detailPath');
   const body = item['body'];
@@ -185,12 +203,16 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
   const asker = before?.asker ?? readAsker(item['asker']);
   const bot = readOptional(item['bot'], 'bot');
   const workspaceId = readOptional(item['workspaceId'], 'workspaceId');
-  return {
+  const built: types.DecisionNode = {
     id, kind, title, summary, parent, status, options, chosen, detailPath, body, sources, links, main, needs,
     bot, workspaceId, asker,
     createdAt: before?.createdAt ?? createdAt, decidedAt, decidedBy,
     acknowledgedAt: before?.acknowledgedAt, note: before?.note, notes: before?.notes,
-  } satisfies types.DecisionNode;
+  };
+  if (quadrant !== undefined) {
+    built.quadrant = quadrant;
+  }
+  return built;
 }
 
 /** 工作区是项目标识，缺少工作区的决策按机器人分别归类。 */
@@ -439,6 +461,26 @@ export class Store {
     //M 状态和可补查的通知内容一起提交。
     this.replace(updated, change);
     return { node: updated, tasks };
+  }
+
+  /** 手动调整节点的四象限归属；传 null 清除手动覆盖恢复自动归类。 */
+  setQuadrant(id: string, quadrant: types.DecisionQuadrant | null, actor: types.DecisionChange['actor']) {
+    //M 找到现有节点，只更新四象限归属，保留所有其他字段与留言。
+    const node = this.getNode(id);
+    const nextQuadrant = quadrant ?? undefined;
+    if (node.quadrant === nextQuadrant) return { node, changed: false };
+
+    const updated: types.DecisionNode = { ...node };
+    if (nextQuadrant === undefined) {
+      delete updated.quadrant;
+    }
+    if (nextQuadrant !== undefined) {
+      updated.quadrant = nextQuadrant;
+    }
+    const change = { action: 'quadrant', actor, nodes: [id], quadrant } as const;
+    //M 象限调整与历史流水同事务落盘。
+    this.replace(updated, change);
+    return { node: updated, changed: true };
   }
 
   /** 校验选项并定稿。同一选择重试时返回原节点。 */
