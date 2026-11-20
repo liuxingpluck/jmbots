@@ -1,4 +1,4 @@
-/** 常驻直达中控输入框与专题往来留言流（PC 右侧常驻栏 / 手机底部悬浮条）。 */
+/** 常驻直达中控输入框与专题往来留言流（PC 右侧常驻栏 / 手机底部 48px 极简胶囊条可展开）。 */
 import * as react from 'react';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as drafts from './Drafts.ts';
@@ -7,6 +7,16 @@ import * as words from './Words.ts';
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
+
+/** 通知底部折叠胶囊展开并聚焦输入框的自定义事件名。 */
+const OPEN_COMPOSER_EVENT = 'jmbots:open-composer';
+
+/** 触发常驻输入框展开并自动聚焦（供“追问/发话”按钮调用）。 */
+export function requestOpenComposer(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(OPEN_COMPOSER_EVENT));
+  }
+}
 
 /** 带所属节点信息的单条留言，供专题或总览汇总时间线展示。 */
 export interface ScopedNoteItem {
@@ -53,7 +63,7 @@ export function ScopeNoteFeed({ nodes, scopeRootId, targetNodeId, onSelectNode }
       <section className="decision-notes decision-notes--empty" aria-label={t('往来留言与中控回复')}>
         <h3>{t('往来留言与中控回复')}</h3>
         <p className="decision-notes__placeholder">
-          {t('还没有留言。在下方输入框写一句即可直达中控（经 relay 收发，中控回复自动回显在这里）。')}
+          {t('还没有留言。点下方输入条写一句即可直达中控（经 relay 收发，中控回复自动回显在这里）。')}
         </p>
       </section>
     );
@@ -94,7 +104,10 @@ export function ScopeNoteFeed({ nodes, scopeRootId, targetNodeId, onSelectNode }
                   <button
                     type="button"
                     className="decision-note__node-chip"
-                    onClick={() => onSelectNode(node.id)}
+                    onClick={() => {
+                      onSelectNode(node.id);
+                      requestOpenComposer();
+                    }}
                     title={t('点此针对该节点继续发话')}
                   >
                     @{node.title}
@@ -113,7 +126,7 @@ export function ScopeNoteFeed({ nodes, scopeRootId, targetNodeId, onSelectNode }
   );
 }
 
-/** 常驻直达中控面板（PC 右栏常驻 / 手机底部悬浮）的参数。 */
+/** 常驻直达中控面板（PC 右栏常驻 / 手机底部 48px 胶囊条）的参数。 */
 export interface CentralDockProps {
   /** 当前输入框实际挂载的目标节点（选中的子节点，或默认挂当前专题/总览根）。 */
   targetNode: types.DecisionNode;
@@ -137,7 +150,7 @@ export interface CentralDockProps {
   inputId?: string;
 }
 
-/** 常驻直达中控输入栏：带上下文胶囊、按节点 localStorage 草稿持久化与往来留言回显。 */
+/** 常驻直达中控输入栏：PC 右侧常驻，手机默认收折为 48px 单行胶囊条，点击平滑展开。 */
 export function CentralDock({
   targetNode,
   defaultNode,
@@ -151,15 +164,42 @@ export function CentralDock({
   inputId = 'decision-write-text',
 }: CentralDockProps) {
   const [draft, setDraft] = drafts.useNodeDraft(targetNode.id);
+  const [isMobile, setIsMobile] = react.useState(() => window.innerWidth < 800);
+  const [mobileExpanded, setMobileExpanded] = react.useState(false);
   const [mobileNotesOpen, setMobileNotesOpen] = react.useState(false);
+  const textareaRef = react.useRef<HTMLTextAreaElement | null>(null);
+
   const written = draft.trim();
   const isCustomTarget = targetNode.id !== defaultNode.id;
   const isPending = targetNode.kind === 'pending' && targetNode.status === 'open';
   const noteCount = react.useMemo(() => collectScopedNotes(scopeNodes).length, [scopeNodes]);
 
-  let hint = t('直达中控：追问、改主意、派新要求都可以写（草稿自动保存）');
+  react.useEffect(() => {
+    const onResize = (): void => {
+      setIsMobile(window.innerWidth < 800);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const expandAndFocus = react.useCallback((): void => {
+    setMobileExpanded(true);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }, []);
+
+  react.useEffect(() => {
+    const onOpen = (): void => {
+      expandAndFocus();
+    };
+    window.addEventListener(OPEN_COMPOSER_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_COMPOSER_EVENT, onOpen);
+  }, [expandAndFocus]);
+
+  let hint = t('直达哈基米：追问、改主意、派新要求都可以写（草稿自动保存）');
   if (isPending) {
-    hint = t('针对这道待拍板项发话给中控；也可写完直接点左侧选项一并发出');
+    hint = t('针对这道待拍板项发话；也可写完直接点选项一并发出');
   }
 
   /** 提交当前节点的草稿到中控 relay 收件箱。 */
@@ -167,9 +207,12 @@ export function CentralDock({
     event.preventDefault();
     if (written === '' || sending) return;
 
-    //M 发送成功才清空该节点草稿，失败保留原字方便重试。
+    //M 发送成功才清空该节点草稿并收起手机弹层，失败保留原字方便重试。
     void onSendNote(targetNode.id, written).then((ok) => {
-      if (ok) setDraft('');
+      if (ok) {
+        setDraft('');
+        setMobileExpanded(false);
+      }
     });
   };
 
@@ -181,19 +224,115 @@ export function CentralDock({
       if (written === '' || sending) return;
 
       void onSendNote(targetNode.id, written).then((ok) => {
-        if (ok) setDraft('');
+        if (ok) {
+          setDraft('');
+          setMobileExpanded(false);
+        }
       });
     }
   };
 
-  let mobileToggleText = `${t('留言')} (${String(noteCount)})`;
-  if (mobileNotesOpen) {
-    mobileToggleText = t('收起留言');
+  //M 手机竖屏未展开时：只渲染 48px 极简圆角胶囊条，把 82%+ 视口留给正文与拍板卡片。
+  if (isMobile && !mobileExpanded) {
+    let pillLead = `💬 ${t('给哈基米发话…')}`;
+    if (written !== '') {
+      pillLead = `✏️ ${written}`;
+    }
+    return (
+      <aside className="decision-m-composer-bar" aria-label={t('直达中控')}>
+        <button
+          type="button"
+          className="decision-m-composer-pill"
+          data-open-composer
+          onClick={expandAndFocus}
+        >
+          <span className="decision-m-composer-pill__lead">{pillLead}</span>
+          <span className="decision-m-composer-pill__ctx">{targetNode.title}</span>
+        </button>
+      </aside>
+    );
+  }
+
+  //M 手机竖屏展开态：底部柔和上浮面板，带遮罩轻点收起（草稿留在 localStorage 绝不丢失）。
+  if (isMobile && mobileExpanded) {
+    return (
+      <>
+        <div
+          className="decision-m-composer-mask"
+          aria-hidden="true"
+          onClick={() => setMobileExpanded(false)}
+        />
+        <aside className="decision-m-composer-sheet" aria-label={t('直达中控')}>
+          {!inlineMobileNotes && mobileNotesOpen && (
+            <div className="decision-m-composer-notes">
+              <ScopeNoteFeed
+                nodes={scopeNodes}
+                scopeRootId={defaultNode.id}
+                targetNodeId={targetNode.id}
+                onSelectNode={onSelectNode}
+              />
+            </div>
+          )}
+          <form className="decision-write decision-m-composer-form" onSubmit={submit}>
+            <div className="decision-dock__capsule-row">
+              <label className="decision-capsule" htmlFor={inputId} title={targetNode.title}>
+                <span className="decision-capsule__prefix">{t('发往')}</span>
+                <span className="decision-capsule__title">{targetNode.title}</span>
+              </label>
+              <div className="decision-dock__capsule-actions">
+                {isCustomTarget && (
+                  <button
+                    type="button"
+                    className="decision-capsule__reset"
+                    onClick={onResetTarget}
+                  >
+                    × {t('回本专题')}
+                  </button>
+                )}
+                {!inlineMobileNotes && noteCount > 0 && (
+                  <button
+                    type="button"
+                    className="decision-capsule__reset"
+                    onClick={() => setMobileNotesOpen(!mobileNotesOpen)}
+                  >
+                    {t('留言')} {String(noteCount)}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="decision-capsule__reset"
+                  onClick={() => setMobileExpanded(false)}
+                >
+                  {t('收起')} ▾
+                </button>
+              </div>
+            </div>
+            <textarea
+              ref={textareaRef}
+              id={inputId}
+              value={draft}
+              maxLength={2000}
+              rows={3}
+              placeholder={hint}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleKeyDown}
+            />
+            <button type="submit" className="decision-m-composer-submit" disabled={written === '' || sending}>
+              {sending && t('发送中…')}
+              {!sending && t('发送给哈基米')}
+            </button>
+            {noteError !== undefined && noteError !== '' && (
+              <p className="decision-error" role="alert">{noteError}</p>
+            )}
+          </form>
+        </aside>
+      </>
+    );
   }
 
   return (
     <aside className="decision-dock" aria-label={t('直达中控')}>
-      <div className="decision-dock__notes" data-mobile-open={mobileNotesOpen && !inlineMobileNotes}>
+      <div className="decision-dock__notes">
         <ScopeNoteFeed
           nodes={scopeNodes}
           scopeRootId={defaultNode.id}
@@ -218,19 +357,11 @@ export function CentralDock({
                 × {t('回本专题')}
               </button>
             )}
-            {!inlineMobileNotes && (
-              <button
-                type="button"
-                className="decision-dock__mobile-notes-btn"
-                onClick={() => setMobileNotesOpen(!mobileNotesOpen)}
-              >
-                {mobileToggleText}
-              </button>
-            )}
           </div>
         </div>
         <div className="decision-dock__input-row">
           <textarea
+            ref={textareaRef}
             id={inputId}
             value={draft}
             maxLength={2000}

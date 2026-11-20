@@ -223,11 +223,7 @@
 
 @media (max-width: 799px) {
   .jm-auth-logout-tab {
-    left: auto;
-    right: 10px;
-    transform: none;
-    padding: 1px 8px 2px;
-    font-size: 10px;
+    display: none;
   }
 }
 

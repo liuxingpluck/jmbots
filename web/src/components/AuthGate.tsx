@@ -75,6 +75,28 @@ export async function logoutWebAuth(): Promise<void> {
 }
 
 
+/** 外网登录上下文值，供手机端抽屉菜单读取当前登录用户与退出动作。 */
+export interface WebAuthInfo {
+  /** 是否处于外网鉴权模式。 */
+  required: boolean;
+  /** 当前已登录用户名。 */
+  username: string;
+  /** 退出登录回调。 */
+  logout: () => Promise<void>;
+}
+
+const WebAuthContext = react.createContext<WebAuthInfo>({
+  required: false,
+  username: '',
+  logout: logoutWebAuth,
+});
+
+/** 读取当前外网登录信息与退出函数。 */
+export function useWebAuth(): WebAuthInfo {
+  return react.useContext(WebAuthContext);
+}
+
+
 //==========================================================
 //M 登录门禁组件
 //==========================================================
@@ -193,6 +215,12 @@ export function AuthGate(props: { children: react.ReactNode }): react.JSX.Elemen
     }
   };
 
+  const authInfo = react.useMemo<WebAuthInfo>(() => ({
+    required,
+    username: currentUser,
+    logout: logoutWebAuth,
+  }), [required, currentUser]);
+
   //G 公网首屏等待 /api/auth/status 的十几毫秒内保持同色深底，不闪白、不误发未授权请求。
   if (phase === 'checking') {
     return <div className="jm-auth-backdrop" aria-busy="true" />;
@@ -285,7 +313,7 @@ export function AuthGate(props: { children: react.ReactNode }): react.JSX.Elemen
 
   //M 本地/内网访问（required 为 false）只原样返回子组件，不渲染任何额外节点。
   if (!required) {
-    return <>{props.children}</>;
+    return <WebAuthContext.Provider value={authInfo}>{props.children}</WebAuthContext.Provider>;
   }
 
   let logoutTitle = '退出外网登录';
@@ -296,7 +324,7 @@ export function AuthGate(props: { children: react.ReactNode }): react.JSX.Elemen
   }
 
   return (
-    <>
+    <WebAuthContext.Provider value={authInfo}>
       {props.children}
       <button
         type="button"
@@ -306,6 +334,6 @@ export function AuthGate(props: { children: react.ReactNode }): react.JSX.Elemen
       >
         {logoutText}
       </button>
-    </>
+    </WebAuthContext.Provider>
   );
 }

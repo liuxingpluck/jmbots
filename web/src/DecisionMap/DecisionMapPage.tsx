@@ -1,7 +1,8 @@
-/** 工作决策工作台：专题目录与总览导图双视图、常驻直达中控输入框、每 30 秒轻量版本自动刷新。 */
+/** 工作决策工作台：PC 三栏总览与专题双视图 + 手机竖屏 48px 单行顶栏/底栏原生级极简体验。 */
 import * as react from 'react';
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
+import * as authGate from '../components/AuthGate.tsx';
 import * as token from '../Token.ts';
 import * as api from './DecisionMapApi.ts';
 import * as composer from './Composer.tsx';
@@ -27,30 +28,28 @@ const FIT: xyflow.FitViewOptions = {
   maxZoom: 1,
 };
 const FIT_MOBILE: xyflow.FitViewOptions = {
-  padding: { top: '14px', bottom: '124px', left: '10px', right: '10px' },
-  minZoom: 0.52,
+  padding: { top: '14px', bottom: '68px', left: '10px', right: '10px' },
+  minZoom: 0.54,
   maxZoom: 1,
 };
 /** 每 30 秒发一次轻量 GET /api/work-decision/version（严禁使用 SSE 或 WebSocket）。 */
 const VERSION_POLL_MS = 30_000;
-const MOBILE_WIDTH = 670;
+const MOBILE_BREAKPOINT = 800;
 /** 浏览器里记看法和思维导图方向的键。 */
 const LOOK_KEY = 'jmbots.decision-map.look';
 const DIRECTION_KEY = 'jmbots.decision-map.direction';
 /** 看法切换按钮，顺序即显示顺序。 */
 const LOOKS: { key: Look; label: string }[] = [
-  //M 专题目录与思维导图排在最前，手机与桌面都可一键切换。
   { key: 'topic', label: t('专题目录') },
   { key: 'mind', label: t('思维导图') },
+  { key: 'list', label: t('清单') },
+  { key: 'table', label: t('表格') },
   { key: 'date', label: t('按日期') },
   { key: 'radial', label: t('放射') },
-  { key: 'table', label: t('表格') },
-  { key: 'list', label: t('清单') },
 ];
 
 /** 读浏览器里记着的一项；隐私模式等读不了时是 null。 */
 function readStored(key: string): string | null {
-  //G 本地存储可能被浏览器禁用，读不到就当没记过。
   try {
     return window.localStorage.getItem(key);
   } catch {
@@ -60,7 +59,6 @@ function readStored(key: string): string | null {
 
 /** 记下一项；写不了就算了，下次打开用默认看法。 */
 function writeStored(key: string, value: string): void {
-  //G 本地存储写满或被禁用时不影响切换本身。
   try {
     window.localStorage.setItem(key, value);
   } catch {
@@ -74,7 +72,9 @@ function getStartLook(): Look {
   const matchedUrl = LOOKS.find((item) => item.key === fromUrl);
   if (matchedUrl !== undefined) return matchedUrl.key;
 
-  //M 再看浏览器记着的看法，认得出才用。
+  //M 手机竖屏未显式传 ?look= 时默认进最适合单手阅读拍板的专题目录。
+  if (window.innerWidth < MOBILE_BREAKPOINT) return 'topic';
+
   const stored = readStored(LOOK_KEY);
   const known = LOOKS.find((item) => item.key === stored);
   if (known !== undefined) return known.key;
@@ -84,7 +84,6 @@ function getStartLook(): Look {
 
 /** 思维导图方向：记着“上下”就上下，默认左右。 */
 function getStartDirection(): layout.MindDirection {
-  //M 只有记着“上下”时才竖排。
   const stored = readStored(DIRECTION_KEY);
   if (stored === 'down') return 'down';
 
@@ -105,12 +104,14 @@ function isUserBusyWithInput(): boolean {
 
 /** 工作台主入口。专题目录与总览画布共用同一份服务端快照与中控留言通道。 */
 export function DecisionMapPage() {
+  const webAuth = authGate.useWebAuth();
   const [graph, setGraph] = react.useState<types.DecisionGraph>();
   const [loadingError, setLoadingError] = react.useState<string>();
   const focusLink = new URLSearchParams(window.location.search).get('focus') ?? undefined;
   const [nodeId, setNodeId] = react.useState<string | undefined>(focusLink);
   const [projectRoot, setProjectRoot] = react.useState<string>();
   const [topicId, setTopicId] = react.useState<string>();
+  const [lastNormalTopicId, setLastNormalTopicId] = react.useState<string>();
   const [savingKey, setSavingKey] = react.useState<string>();
   const [chooseError, setChooseError] = react.useState<string>();
   const [mode, setMode] = react.useState<layout.ViewMode>('main');
@@ -125,6 +126,8 @@ export function DecisionMapPage() {
   const [refreshing, setRefreshing] = react.useState(false);
   const [needToken, setNeedToken] = react.useState(false);
   const [tokenInput, setTokenInput] = react.useState('');
+  const [isMobile, setIsMobile] = react.useState(() => window.innerWidth < MOBILE_BREAKPOINT);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = react.useState(false);
 
   const canvas = react.useRef<HTMLElement>(null);
   const flow = react.useRef<xyflow.ReactFlowInstance<layout.FlowNode> | undefined>(undefined);
@@ -133,10 +136,17 @@ export function DecisionMapPage() {
   const dataRevRef = react.useRef<number | undefined>(undefined);
   const checkingRef = react.useRef(false);
   const [size, setSize] = react.useState({ width: 0, height: 0 });
-  const portrait = size.width <= MOBILE_WIDTH;
+  const portrait = size.width <= 670 || isMobile;
 
   react.useEffect(() => {
-    //M 外网或手机未带令牌回 401 时显示轻量令牌输入条，保存后刷新即可进入。
+    const onResize = (): void => {
+      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  react.useEffect(() => {
     const onUnauthorized = (): void => {
       setNeedToken(true);
     };
@@ -148,7 +158,6 @@ export function DecisionMapPage() {
     const element = canvas.current;
     if (element === null) return;
 
-    //M 用画布的实际尺寸排图，顶栏换行和手机竖屏都计入可用空间。
     const measure = () => {
       const width = element.clientWidth;
       const height = element.clientHeight;
@@ -199,7 +208,6 @@ export function DecisionMapPage() {
         appStartedAtRef.current = ver.appStartedAt;
       }
       if (prevStarted !== undefined && ver.appStartedAt !== prevStarted) {
-        //G 后端换了新版本：空闲且无草稿时直接刷新；正在输入或有草稿时只挂温和横幅，绝不丢字。
         if (!isUserBusyWithInput()) {
           window.location.reload();
           return;
@@ -212,7 +220,6 @@ export function DecisionMapPage() {
     } catch (error) {
       if (signal?.aborted === true) return;
 
-      //G 首次还没拉到图时把错误透出到空状态，后续静默轮询偶发断网不打断正在看的内容。
       if (dataRevRef.current === undefined || manual) {
         let message = String(error);
         if (error instanceof Error) message = error.message;
@@ -227,7 +234,6 @@ export function DecisionMapPage() {
   react.useEffect(() => {
     const control = new AbortController();
 
-    //M 首次进入拉一次版本与全图，随后每 30 秒及切回前台时做轻量 GET 检查。
     void checkVersion(true, control.signal);
     const timer = window.setInterval(() => {
       if (!document.hidden) {
@@ -249,7 +255,6 @@ export function DecisionMapPage() {
 
   const open = react.useCallback((id: string, expand?: boolean) => {
     if (expand !== undefined) {
-      //M 按节点编号保存开关，切换视图和轮询后仍可继续读同一分支。
       setFolds((current) => new Map(current).set(id, expand));
       return;
     }
@@ -266,7 +271,10 @@ export function DecisionMapPage() {
 
   react.useEffect(() => {
     const escape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') close();
+      if (event.key === 'Escape') {
+        setMobileDrawerOpen(false);
+        close();
+      }
     };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
@@ -276,14 +284,12 @@ export function DecisionMapPage() {
   const linkedNode = graph?.nodes.find((node) => node.id === focusLink);
   let root = projectRoot ?? projects[0]?.root;
   if (projectRoot === undefined && linkedNode !== undefined) {
-    //M 分享的链接直接打开对应项目，未指定节点时使用第一个项目。
     const linkedRoot = graph?.nodes.find((node) => {
       return node.parent === null && node.bot === linkedNode.bot && node.workspaceId === linkedNode.workspaceId;
     });
     root = linkedRoot?.id ?? root;
   }
 
-  //M 当前项目完整树供专题目录使用，子树聚焦供导图/表格/清单使用。
   const projectScope = react.useMemo(() => {
     const entries = graph?.nodes ?? [];
     return views.getScope(entries, root);
@@ -293,7 +299,12 @@ export function DecisionMapPage() {
     return views.getScope(projectScope.nodes, focused);
   }, [projectScope.nodes, focused]);
 
-  //M 带着 ?focus= 打开时，把专题自动对齐到该节点所属的顶层子主题。
+  const topicSummaries = react.useMemo(
+    () => topicView.getTopicSummaryItems(projectScope.nodes),
+    [projectScope.nodes],
+  );
+  const resolvedTopicId = topicView.resolveActiveTopicId(topicSummaries, topicId);
+
   react.useEffect(() => {
     if (topicId !== undefined || focusLink === undefined || root === undefined) return;
     if (projectScope.nodes.length === 0) return;
@@ -302,23 +313,28 @@ export function DecisionMapPage() {
     setTopicId(matched);
   }, [topicId, focusLink, root, projectScope.nodes]);
 
-  /** 进子树或回上层。聚焦根至少展开一层。 */
+  function selectTopic(nextId: string): void {
+    if (nextId !== topicView.ALL_PENDING_TOPIC) {
+      setLastNormalTopicId(nextId);
+    }
+    setTopicId(nextId);
+  }
+
   function focusTree(id?: string): void {
     close();
     setFocused(id);
     if (id !== undefined) open(id, true);
   }
 
-  /** 选择项目后关闭上一个项目的详情、子树焦点和旧专题编号。 */
   function selectProject(id: string): void {
     if (id === root) return;
 
     focusTree();
     setTopicId(undefined);
     setProjectRoot(id);
+    setMobileDrawerOpen(false);
   }
 
-  //M 视图变化后重新布置节点，静默轮询维持画布位置。
   const diagram = react.useMemo(() => {
     if (size.width === 0 || size.height === 0) return { nodes: [], edges: [] };
 
@@ -332,6 +348,9 @@ export function DecisionMapPage() {
   }, [scope, mode, folds, portrait, size, open, look, direction, onlyAsk]);
 
   const isCanvas = look === 'date' || look === 'mind' || look === 'radial';
+  const totalProjectPending = projectScope.nodes.filter(
+    (node) => node.kind === 'pending' && node.status === 'open',
+  );
   let activePendingSource = scope.nodes;
   if (look === 'topic') {
     activePendingSource = projectScope.nodes;
@@ -344,7 +363,6 @@ export function DecisionMapPage() {
     fit = FIT_MOBILE;
   }
 
-  /** 切换到明确选中的画布过滤范围。 */
   function changeMode(next: layout.ViewMode): void {
     if (mode === next) return;
 
@@ -352,25 +370,23 @@ export function DecisionMapPage() {
     setMode(next);
   }
 
-  /** 切换看法并记在浏览器里，下次打开还是这个。 */
   function changeLook(next: Look): void {
+    setMobileDrawerOpen(false);
     if (look === next) return;
 
     writeStored(LOOK_KEY, next);
     setLook(next);
   }
 
-  /** 从任意节点切进它所属的专题目录。 */
   function openNodeTopic(targetId: string): void {
     if (root !== undefined) {
       const belongTopic = topicView.findTopicIdForNode(projectScope.nodes, root, targetId);
-      setTopicId(belongTopic);
+      selectTopic(belongTopic);
     }
     setNodeId(targetId);
     changeLook('topic');
   }
 
-  /** 从专题切到思维导图并聚焦该专题子树。 */
   function openTopicInMind(targetId: string): void {
     if (targetId === root) {
       focusTree(undefined);
@@ -381,7 +397,6 @@ export function DecisionMapPage() {
     changeLook('mind');
   }
 
-  /** 思维导图在左右和上下之间切换，同样记在浏览器里。 */
   function changeDirection(next: layout.MindDirection): void {
     if (direction === next) return;
 
@@ -389,7 +404,26 @@ export function DecisionMapPage() {
     setDirection(next);
   }
 
-  /** 从顶栏依次定位下一件待拍板事项（专题目录跳对应专题，画布飞到对应卡片）。 */
+  /** 手机顶栏点击暖色「待拍板 N」胶囊：一键只看全部待拍板卡片，再点回到原专题。 */
+  function toggleMobileAllPending(): void {
+    setMobileDrawerOpen(false);
+    if (look === 'topic' && resolvedTopicId === topicView.ALL_PENDING_TOPIC) {
+      const fallback = lastNormalTopicId ?? topicSummaries.find((item) => !item.isOverview)?.node.id ?? root;
+      if (fallback !== undefined) {
+        setTopicId(fallback);
+      }
+      return;
+    }
+    if (resolvedTopicId !== topicView.ALL_PENDING_TOPIC && resolvedTopicId !== '') {
+      setLastNormalTopicId(resolvedTopicId);
+    }
+    setTopicId(topicView.ALL_PENDING_TOPIC);
+    setNodeId(undefined);
+    if (look !== 'topic') {
+      changeLook('topic');
+    }
+  }
+
   function openPending(): void {
     if (pending.length === 0) return;
 
@@ -400,7 +434,7 @@ export function DecisionMapPage() {
 
     if (look === 'topic' && root !== undefined) {
       const belong = topicView.findTopicIdForNode(projectScope.nodes, root, next.id);
-      setTopicId(belong);
+      selectTopic(belong);
       window.requestAnimationFrame(() => {
         const selector = `[data-node-id="${CSS.escape(next.id)}"]`;
         document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -425,7 +459,6 @@ export function DecisionMapPage() {
     flow.current = map;
   }, []);
 
-  /** 把指定节点的选项持久化，成功后用回执立刻更新这个节点。 */
   async function chooseOptionForNode(targetId: string, option: string): Promise<void> {
     if (savingKey !== undefined) return;
 
@@ -454,7 +487,6 @@ export function DecisionMapPage() {
     }
   }
 
-  /** 把用户写的话发给中控（POST /api/work-decision/note），可一并带上选项。 */
   async function sendNoteForNode(targetId: string, text: string, option?: string): Promise<boolean> {
     if (sending) return false;
 
@@ -475,7 +507,6 @@ export function DecisionMapPage() {
     }
   }
 
-  /** 保存访问令牌到浏览器并刷新。 */
   const saveToken = (event: react.FormEvent): void => {
     event.preventDefault();
     const cleaned = tokenInput.trim();
@@ -496,96 +527,344 @@ export function DecisionMapPage() {
 
   const canvasLabel = t('工作决策');
 
+  //M 计算手机 48px 单行顶栏中央显示的短标题。
+  let mobileHeaderTitle = canvasLabel;
+  if (look === 'topic') {
+    if (resolvedTopicId === topicView.ALL_PENDING_TOPIC) {
+      mobileHeaderTitle = t('全部待拍板');
+    }
+    if (resolvedTopicId !== topicView.ALL_PENDING_TOPIC) {
+      const found = topicSummaries.find((item) => item.node.id === resolvedTopicId);
+      if (found !== undefined) {
+        mobileHeaderTitle = found.node.title;
+        if (found.isOverview && topicSummaries.length > 1) {
+          mobileHeaderTitle = t('项目总览');
+        }
+      }
+    }
+  }
+  if (look !== 'topic') {
+    const foundLook = LOOKS.find((item) => item.key === look);
+    if (foundLook !== undefined) {
+      mobileHeaderTitle = foundLook.label;
+    }
+  }
+
+  const isAllPendingActive = look === 'topic' && resolvedTopicId === topicView.ALL_PENDING_TOPIC;
+  const activeProject = projects.find((project) => project.root === root);
+
   return (
     <main className="decision-page">
-      <header className="decision-bar">
-        <div className="decision-bar__title">
-          <a href={token.withToken('/', token.TOKEN)} className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
-          <h1>{canvasLabel}</h1>
-        </div>
-        {(look === 'mind' || look === 'radial') && scope.path.length === 0 && (
-          <div className="decision-filters" role="group" aria-label="画布显示范围">
-            <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
-            <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
-            <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>全部分支</button>
+      {/* PC 宽屏（>= 800px）完整顶栏 */}
+      {!isMobile && (
+        <header className="decision-bar">
+          <div className="decision-bar__title">
+            <a href={token.withToken('/', token.TOKEN)} className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
+            <h1>{canvasLabel}</h1>
           </div>
-        )}
-        {look === 'date' && (
-          <div className="decision-filters" role="group" aria-label={t('筛选')}>
-            <button type="button" data-only-ask aria-pressed={onlyAsk} onClick={() => setOnlyAsk(!onlyAsk)}>
-              {t('只看等用户定')}
-            </button>
-          </div>
-        )}
-        <div className="decision-looks">
-          <div className="decision-filters" role="group" aria-label={t('看法')}>
-            <span className="decision-looks__label">{t('看法')}</span>
-            {LOOKS.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                data-look={item.key}
-                aria-pressed={look === item.key}
-                onClick={() => changeLook(item.key)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          {look === 'mind' && (
-            <div className="decision-filters" role="group" aria-label={t('思维导图方向')}>
-              <button
-                type="button"
-                data-dir="lr"
-                aria-pressed={direction === 'sides'}
-                onClick={() => changeDirection('sides')}
-              >
-                {t('左右')}
-              </button>
-              <button
-                type="button"
-                data-dir="tb"
-                aria-pressed={direction === 'down'}
-                onClick={() => changeDirection('down')}
-              >
-                {t('上下')}
+          {(look === 'mind' || look === 'radial') && scope.path.length === 0 && (
+            <div className="decision-filters" role="group" aria-label="画布显示范围">
+              <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
+              <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
+              <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>全部分支</button>
+            </div>
+          )}
+          {look === 'date' && (
+            <div className="decision-filters" role="group" aria-label={t('筛选')}>
+              <button type="button" data-only-ask aria-pressed={onlyAsk} onClick={() => setOnlyAsk(!onlyAsk)}>
+                {t('只看等用户定')}
               </button>
             </div>
           )}
-        </div>
-        <div className="decision-bar__right">
+          <div className="decision-looks">
+            <div className="decision-filters" role="group" aria-label={t('看法')}>
+              <span className="decision-looks__label">{t('看法')}</span>
+              {LOOKS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  data-look={item.key}
+                  aria-pressed={look === item.key}
+                  onClick={() => changeLook(item.key)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {look === 'mind' && (
+              <div className="decision-filters" role="group" aria-label={t('思维导图方向')}>
+                <button
+                  type="button"
+                  data-dir="lr"
+                  aria-pressed={direction === 'sides'}
+                  onClick={() => changeDirection('sides')}
+                >
+                  {t('左右')}
+                </button>
+                <button
+                  type="button"
+                  data-dir="tb"
+                  aria-pressed={direction === 'down'}
+                  onClick={() => changeDirection('down')}
+                >
+                  {t('上下')}
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="decision-bar__right">
+            {newVersionReady && (
+              <button
+                type="button"
+                className="decision-upgrade-banner"
+                onClick={() => window.location.reload()}
+              >
+                {t('有新版本，发完点此刷新')}
+              </button>
+            )}
+            {pending.length > 0 && (
+              <button type="button" className="decision-pending" onClick={openPending}>
+                <span aria-hidden="true">★</span> {pending.length} 件待你决定
+              </button>
+            )}
+            {pending.length === 0 && graph !== undefined && (
+              <span className="decision-all-clear">当前无待定项</span>
+            )}
+            <button
+              type="button"
+              className="decision-refresh"
+              disabled={refreshing}
+              onClick={() => void checkVersion(true)}
+            >
+              {refreshing && t('刷新中')}
+              {!refreshing && t('刷新')}
+            </button>
+          </div>
+        </header>
+      )}
+
+      {/* 手机竖屏（< 800px）唯一 1 行 48px 原生极简顶栏 */}
+      {isMobile && (
+        <header className="decision-m-header">
+          <button
+            type="button"
+            className="decision-m-icon-btn"
+            data-wd-drawer
+            aria-label={t('打开菜单')}
+            aria-expanded={mobileDrawerOpen}
+            onClick={() => setMobileDrawerOpen((prev) => !prev)}
+          >
+            ☰
+          </button>
+          <div className="decision-m-header__center">
+            <h1 className="decision-m-header__title" title={mobileHeaderTitle}>{mobileHeaderTitle}</h1>
+            {totalProjectPending.length > 0 && (
+              <button
+                type="button"
+                className="decision-m-pending-pill"
+                data-wd-pending-pill
+                aria-pressed={isAllPendingActive}
+                onClick={toggleMobileAllPending}
+              >
+                {t('待拍板')} {String(totalProjectPending.length)}
+              </button>
+            )}
+          </div>
           {newVersionReady && (
             <button
               type="button"
-              className="decision-upgrade-banner"
+              className="decision-m-upgrade-pill"
               onClick={() => window.location.reload()}
             >
-              {t('有新版本，发完点此刷新')}
+              {t('新版')} ↻
             </button>
           )}
-          {pending.length > 0 && (
-            <button type="button" className="decision-pending" onClick={openPending}>
-              <span aria-hidden="true">★</span> {pending.length} 件待你决定
+          {!newVersionReady && (
+            <button
+              type="button"
+              className="decision-m-icon-btn"
+              data-spinning={refreshing}
+              disabled={refreshing}
+              aria-label={t('刷新')}
+              onClick={() => void checkVersion(true)}
+            >
+              ↻
             </button>
           )}
-          {pending.length === 0 && graph !== undefined && (
-            <span className="decision-all-clear">当前无待定项</span>
-          )}
-          <button
-            type="button"
-            className="decision-refresh"
-            disabled={refreshing}
-            onClick={() => void checkVersion(true)}
-          >
-            {refreshing && t('刷新中')}
-            {!refreshing && t('刷新')}
-          </button>
-        </div>
-      </header>
+        </header>
+      )}
+
+      {/* 手机端 ☰ 侧滑菜单抽屉 */}
+      {isMobile && mobileDrawerOpen && (
+        <>
+          <div
+            className="decision-m-drawer-mask"
+            aria-hidden="true"
+            onClick={() => setMobileDrawerOpen(false)}
+          />
+          <aside className="decision-m-drawer" aria-label={t('工作台导航')}>
+            <div className="decision-m-drawer__head">
+              <div>
+                <strong>{canvasLabel}</strong>
+                {activeProject !== undefined && (
+                  <p className="decision-m-drawer__goal">{activeProject.name}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                className="decision-m-icon-btn"
+                aria-label={t('关闭菜单')}
+                onClick={() => setMobileDrawerOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="decision-m-drawer__body">
+              {totalProjectPending.length > 0 && (
+                <button
+                  type="button"
+                  className="decision-m-drawer__pending-hero"
+                  aria-pressed={isAllPendingActive}
+                  onClick={() => {
+                    selectTopic(topicView.ALL_PENDING_TOPIC);
+                    setNodeId(undefined);
+                    changeLook('topic');
+                  }}
+                >
+                  <span>★ {t('只看全部待拍板')}</span>
+                  <span className="decision-m-pending-pill">{String(totalProjectPending.length)}</span>
+                </button>
+              )}
+
+              <div className="decision-m-drawer__group">
+                <span className="decision-m-drawer__label">{t('专题目录')}</span>
+                <div className="decision-m-drawer__topics">
+                  {topicSummaries.map((item) => {
+                    const active = look === 'topic' && !isAllPendingActive && item.node.id === resolvedTopicId;
+                    let titleText = item.node.title;
+                    if (item.isOverview && topicSummaries.length > 1) {
+                      titleText = t('项目总览');
+                    }
+                    return (
+                      <button
+                        key={item.node.id}
+                        type="button"
+                        className="decision-topic-nav-btn"
+                        aria-pressed={active}
+                        onClick={() => {
+                          selectTopic(item.node.id);
+                          setNodeId(undefined);
+                          changeLook('topic');
+                        }}
+                      >
+                        <span className="decision-topic-nav-btn__row">
+                          <span className="decision-topic-nav-btn__dot" data-state={item.state.key} />
+                          <span className="decision-topic-nav-btn__title">{titleText}</span>
+                        </span>
+                        <span className="decision-topic-nav-btn__badges">
+                          {item.pendingCount > 0 && (
+                            <span className="decision-topic-badge decision-topic-badge--pending">
+                              {String(item.pendingCount)}
+                            </span>
+                          )}
+                          {item.taskCount > 0 && (
+                            <span className="decision-topic-badge">
+                              {String(item.doneCount)}/{String(item.taskCount)}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="decision-m-drawer__group">
+                <span className="decision-m-drawer__label">{t('切换视图')}</span>
+                <div className="decision-m-drawer__looks">
+                  {LOOKS.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      data-look={item.key}
+                      aria-pressed={look === item.key}
+                      onClick={() => changeLook(item.key)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                {look === 'mind' && (
+                  <div className="decision-m-drawer__looks">
+                    <button
+                      type="button"
+                      data-dir="lr"
+                      aria-pressed={direction === 'sides'}
+                      onClick={() => {
+                        changeDirection('sides');
+                        setMobileDrawerOpen(false);
+                      }}
+                    >
+                      {t('左右展开')}
+                    </button>
+                    <button
+                      type="button"
+                      data-dir="tb"
+                      aria-pressed={direction === 'down'}
+                      onClick={() => {
+                        changeDirection('down');
+                        setMobileDrawerOpen(false);
+                      }}
+                    >
+                      {t('上下展开')}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {projects.length > 1 && (
+                <div className="decision-m-drawer__group">
+                  <span className="decision-m-drawer__label">{t('切换项目')}</span>
+                  <div className="decision-m-drawer__topics">
+                    {projects.map((project) => (
+                      <button
+                        key={project.root}
+                        type="button"
+                        className="decision-topic-nav-btn"
+                        aria-pressed={project.root === root}
+                        onClick={() => selectProject(project.root)}
+                      >
+                        <span className="decision-topic-nav-btn__title">{project.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="decision-m-drawer__foot">
+              <a href={token.withToken('/tutorial/', token.TOKEN)}>📖 {t('去教程页')}</a>
+              <a href={token.withToken('/', token.TOKEN)}>💬 {t('返回聊天')}</a>
+              {webAuth.required && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileDrawerOpen(false);
+                    void webAuth.logout();
+                  }}
+                >
+                  {webAuth.username !== '' && `${webAuth.username} · `}{t('退出')}
+                </button>
+              )}
+            </div>
+          </aside>
+        </>
+      )}
 
       {needToken && (
         <form className="decision-token-bar" onSubmit={saveToken}>
-          <span>{t('外网或手机访问需填一次访问令牌（server.token）：')}</span>
+          <span>{t('请填写访问令牌（server.token）：')}</span>
           <input
             type="password"
             value={tokenInput}
@@ -612,7 +891,7 @@ export function DecisionMapPage() {
       )}
 
       <div className="decision-content">
-        {projects.length > 0 && (
+        {!isMobile && projects.length > 0 && (
           <nav className="decision-projects" aria-label={t('项目')}>
             {projects.map((project) => (
               <button
@@ -634,7 +913,7 @@ export function DecisionMapPage() {
               <topicView.TopicView
                 nodes={projectScope.nodes}
                 topicId={topicId}
-                onSelectTopic={setTopicId}
+                onSelectTopic={selectTopic}
                 selectedNodeId={nodeId}
                 onSelectNode={setNodeId}
                 onChooseOption={chooseOptionForNode}

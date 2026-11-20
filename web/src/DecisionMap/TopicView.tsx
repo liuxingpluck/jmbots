@@ -1,4 +1,4 @@
-/** 子主题专题目录视图（仿 /tutorial/ 阅读结构：左栏子主题树 + 中栏背景/待拍板置顶/4态子任务 + 常驻直达中控）。 */
+/** 子主题专题目录视图（PC 三栏 + 手机竖屏沉浸式卡片与「全部待拍板」速决流）。 */
 import * as react from 'react';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as markdown from '../Chat/Markdown.tsx';
@@ -9,6 +9,9 @@ import * as words from './Words.ts';
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
+
+/** 手机端顶栏点击「待拍板 N」胶囊时进入的全项目待拍板汇总伪专题键。 */
+export const ALL_PENDING_TOPIC = '__ALL_PENDING__';
 
 /** 子任务统一展示的四态键值。 */
 export type FourStateKey = 'pending' | 'working' | 'decided' | 'done';
@@ -113,7 +116,7 @@ function getSafeLinks(values: string[]): string[] {
 }
 
 /** 目录树里单个顶层子主题的统计摘要。 */
-interface TopicSummaryItem {
+export interface TopicSummaryItem {
   /** 子主题根节点。 */
   node: types.DecisionNode;
   /** 是否为项目总览根项。 */
@@ -128,11 +131,92 @@ interface TopicSummaryItem {
   state: FourStateInfo;
 }
 
+/**
+ * 提取项目总览及全部顶层子主题摘要（有待拍板的子主题自动排在最前，方便手机一眼先定要紧事）。
+ * @param nodes 当前项目的全部节点。
+ * @returns 专题摘要数组（首项为项目总览，其余为排序后的顶层子主题）。
+ */
+export function getTopicSummaryItems(nodes: types.DecisionNode[]): TopicSummaryItem[] {
+  const root = nodes.find((entry) => entry.parent === null);
+  if (root === undefined) return [];
+
+  const childrenMap = buildChildrenMap(nodes);
+  const topChildren = childrenMap.get(root.id) ?? [];
+  const allPending = nodes.filter((entry) => entry.kind === 'pending' && entry.status === 'open').length;
+  const allTasks = Math.max(0, nodes.length - 1);
+  const allDone = nodes.filter(
+    (entry) => entry.id !== root.id && (entry.status === 'done' || entry.status === 'dropped'),
+  ).length;
+  const overview: TopicSummaryItem = {
+    node: root,
+    isOverview: true,
+    pendingCount: allPending,
+    doneCount: allDone,
+    taskCount: allTasks,
+    state: getFourState(root),
+  };
+
+  const branches: TopicSummaryItem[] = [];
+  for (const child of topChildren) {
+    const sub = collectSubtree(child, childrenMap);
+    let pendingCount = 0;
+    let doneCount = 0;
+    for (const row of sub) {
+      if (row.node.kind === 'pending' && row.node.status === 'open') {
+        pendingCount += 1;
+      }
+      if (row.depth > 0 && (row.node.status === 'done' || row.node.status === 'dropped')) {
+        doneCount += 1;
+      }
+    }
+    let state = getFourState(child);
+    if (pendingCount > 0) {
+      state = { key: 'pending', label: t('待拍板') };
+    }
+    branches.push({
+      node: child,
+      isOverview: false,
+      pendingCount,
+      doneCount,
+      taskCount: Math.max(0, sub.length - 1),
+      state,
+    });
+  }
+
+  //M 有待拍板的专题优先置顶，相同待拍板数保持原登记顺序。
+  branches.sort((left, right) => {
+    const leftHas = left.pendingCount > 0;
+    const rightHas = right.pendingCount > 0;
+    if (leftHas && !rightHas) return -1;
+    if (!leftHas && rightHas) return 1;
+    if (leftHas && rightHas) return right.pendingCount - left.pendingCount;
+
+    return 0;
+  });
+
+  return [overview, ...branches];
+}
+
+/** 计算首次默认选中的专题编号：优先选有待拍板的第一个子主题。 */
+export function resolveActiveTopicId(topicItems: TopicSummaryItem[], topicId?: string): string {
+  if (topicId === ALL_PENDING_TOPIC) return ALL_PENDING_TOPIC;
+
+  const hasExplicit = topicItems.some((item) => item.node.id === topicId);
+  if (hasExplicit && topicId !== undefined) return topicId;
+
+  const topTopics = topicItems.filter((item) => !item.isOverview);
+  const firstPending = topTopics.find((item) => item.pendingCount > 0);
+  if (firstPending !== undefined) return firstPending.node.id;
+  if (topTopics[0] !== undefined) return topTopics[0].node.id;
+
+  return topicItems[0]?.node.id ?? '';
+}
+
 /** 专题视图的输入参数。 */
 export interface TopicViewProps {
   /** 当前项目内的全部节点。 */
   nodes: types.DecisionNode[];
-  /** 当前选中的专题编号（顶层子主题或项目根）。 */
+  /** 当前选中的专题编号（顶层子主题、项目根，或 ALL_PENDING_TOPIC）。 */
   topicId?: string;
   /** 切换专题回调。 */
   onSelectTopic: (id: string) => void;
@@ -177,89 +261,37 @@ export function TopicView({
   onExpand,
   onOpenInMind,
 }: TopicViewProps) {
-  const [mobileMenuOpen, setMobileMenuOpen] = react.useState(false);
   const [stateFilter, setStateFilter] = react.useState<'all' | FourStateKey>('all');
   const [expandedTaskId, setExpandedTaskId] = react.useState<string | undefined>(undefined);
 
   const root = nodes.find((entry) => entry.parent === null);
   const childrenMap = react.useMemo(() => buildChildrenMap(nodes), [nodes]);
+  const topicItems = react.useMemo(() => getTopicSummaryItems(nodes), [nodes]);
+  const byId = react.useMemo(() => new Map(nodes.map((entry) => [entry.id, entry])), [nodes]);
 
-  const topicItems = react.useMemo<TopicSummaryItem[]>(() => {
-    if (root === undefined) return [];
-
-    const topChildren = childrenMap.get(root.id) ?? [];
-    const allPending = nodes.filter((entry) => entry.kind === 'pending' && entry.status === 'open').length;
-    const allTasks = Math.max(0, nodes.length - 1);
-    const allDone = nodes.filter(
-      (entry) => entry.id !== root.id && (entry.status === 'done' || entry.status === 'dropped'),
-    ).length;
-    const overview: TopicSummaryItem = {
-      node: root,
-      isOverview: true,
-      pendingCount: allPending,
-      doneCount: allDone,
-      taskCount: allTasks,
-      state: getFourState(root),
-    };
-    const items: TopicSummaryItem[] = [overview];
-    for (const child of topChildren) {
-      const sub = collectSubtree(child, childrenMap);
-      let pendingCount = 0;
-      let doneCount = 0;
-      for (const row of sub) {
-        if (row.node.kind === 'pending' && row.node.status === 'open') {
-          pendingCount += 1;
-        }
-        if (row.depth > 0 && (row.node.status === 'done' || row.node.status === 'dropped')) {
-          doneCount += 1;
-        }
-      }
-      let state = getFourState(child);
-      if (pendingCount > 0) {
-        state = { key: 'pending', label: t('待拍板') };
-      }
-      items.push({
-        node: child,
-        isOverview: false,
-        pendingCount,
-        doneCount,
-        taskCount: Math.max(0, sub.length - 1),
-        state,
-      });
-    }
-    return items;
-  }, [nodes, root, childrenMap]);
-
-  if (root === undefined) {
+  if (root === undefined || topicItems.length === 0) {
     return <div className="decision-empty">{t('还没有工作决策节点')}</div>;
   }
 
-  //M 解析当前激活的专题：优先用外部传入的合法 topicId，否则优先有待拍板的第一个子主题。
   const topTopics = topicItems.filter((item) => !item.isOverview);
-  let resolvedTopicId = topicId;
-  const hasExplicit = topicItems.some((item) => item.node.id === resolvedTopicId);
-  if (!hasExplicit) {
-    const firstPending = topTopics.find((item) => item.pendingCount > 0);
-    resolvedTopicId = firstPending?.node.id ?? topTopics[0]?.node.id ?? root.id;
-  }
-  const activeSummary = topicItems.find((item) => item.node.id === resolvedTopicId) ?? topicItems[0]!;
+  const resolvedId = resolveActiveTopicId(topicItems, topicId);
+  const isAllPendingMode = resolvedId === ALL_PENDING_TOPIC;
+  const activeSummary = topicItems.find((item) => item.node.id === resolvedId) ?? topicItems[0]!;
   const activeTopic = activeSummary.node;
-  const isOverview = activeSummary.isOverview && topTopics.length > 0;
+  const isOverview = !isAllPendingMode && activeSummary.isOverview && topTopics.length > 0;
 
-  //M 当前专题覆盖的子树（项目总览含整棵树，具体子主题含该分支全部后代）。
   let subtreeRows = collectSubtree(activeTopic, childrenMap);
-  if (isOverview) {
+  if (isOverview || isAllPendingMode) {
     subtreeRows = collectSubtree(root, childrenMap);
   }
   const scopeNodes = subtreeRows.map((row) => row.node);
   const scopeById = new Map(scopeNodes.map((entry) => [entry.id, entry]));
 
-  //M 待拍板置顶区：收集本专题范围内所有尚未拍板的节点。
   const pendingNodes = scopeNodes.filter((entry) => entry.kind === 'pending' && entry.status === 'open');
+  const totalProjectPending = topicItems[0]?.pendingCount ?? 0;
 
-  //M 子任务清单：具体专题下展示专题根之下的全部子项；若专题自身无子项则展示自身，不留空页。
   let taskRows = subtreeRows.filter((row) => row.depth > 0);
-  if (!isOverview && taskRows.length === 0) {
+  if (!isOverview && !isAllPendingMode && taskRows.length === 0) {
     taskRows = subtreeRows;
   }
 
@@ -274,8 +306,11 @@ export function TopicView({
     return getFourState(row.node).key === stateFilter;
   });
 
-  //M 计算常驻输入框实际锁定的目标节点：已选且在本专题内则用它，否则默认挂本专题根节点。
-  let targetNode = activeTopic;
+  let defaultDockNode = activeTopic;
+  if (isAllPendingMode) {
+    defaultDockNode = root;
+  }
+  let targetNode = defaultDockNode;
   if (selectedNodeId !== undefined) {
     const picked = scopeById.get(selectedNodeId);
     if (picked !== undefined) {
@@ -283,12 +318,11 @@ export function TopicView({
     }
   }
 
-  /** 切换专题并收起手机抽屉菜单。 */
+  /** 切换专题并重置筛选。 */
   const chooseTopic = (id: string): void => {
     onSelectTopic(id);
     onSelectNode(undefined);
     setStateFilter('all');
-    setMobileMenuOpen(false);
   };
 
   /** 点击待拍板卡片的选项：若该节点已有未发草稿则连话带选项一并发，否则直接提交选项。 */
@@ -303,9 +337,10 @@ export function TopicView({
     });
   };
 
-  /** 点“追问此项”锁定输入框上下文并聚焦到输入框。 */
+  /** 点“追问/发话”锁定输入框上下文，手机端同时展开底部输入面板并聚焦。 */
   const focusComposerOn = (id: string): void => {
     onSelectNode(id);
+    composer.requestOpenComposer();
     window.requestAnimationFrame(() => {
       document.getElementById('decision-write-text')?.focus();
     });
@@ -318,25 +353,106 @@ export function TopicView({
   const links = getSafeLinks(activeTopic.links ?? []);
   const busy = savingKey !== undefined || sending;
 
-  let mobileDrawerLabel = `${t('切换专题')} (${String(topicItems.length)}) ▾`;
-  if (mobileMenuOpen) {
-    mobileDrawerLabel = `${t('收起目录')} ▴`;
-  }
+  /** 渲染单张高呼吸感待拍板卡片（大触控圆角按钮 + 推荐微光高亮）。 */
+  const renderPendingCard = (item: types.DecisionNode, showTopicEyebrow: boolean) => {
+    const isTargeted = targetNode.id === item.id;
+    const belongId = findTopicIdForNode(nodes, root.id, item.id);
+    const belongNode = byId.get(belongId);
+    return (
+      <div
+        key={item.id}
+        className="decision-topic-pending-card"
+        data-node-id={item.id}
+        data-targeted={isTargeted}
+      >
+        {showTopicEyebrow && belongNode !== undefined && belongNode.id !== root.id && (
+          <button
+            type="button"
+            className="decision-pending-eyebrow"
+            onClick={() => chooseTopic(belongNode.id)}
+          >
+            {belongNode.title} ›
+          </button>
+        )}
+        <div className="decision-topic-pending-card__head">
+          <strong className="decision-topic-pending-card__title">{item.title}</strong>
+          <button
+            type="button"
+            className="decision-ghost-chip"
+            onClick={() => focusComposerOn(item.id)}
+          >
+            💬 {t('追问')}
+          </button>
+        </div>
+        {item.summary !== '' && (
+          <p className="decision-topic-pending-card__summary">{item.summary}</p>
+        )}
+        {item.body !== undefined && item.body !== '' && (
+          <div className="decision-drawer__body decision-topic-pending-card__body">
+            <markdown.Markdown text={item.body} onOpen={() => undefined} />
+          </div>
+        )}
+        <div className="decision-options" aria-label={t('可选决定')}>
+          {item.options?.map((option) => {
+            const thisSaving = savingKey === `${item.id}:${option.id}`;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="decision-option"
+                data-option-id={option.id}
+                data-recommended={option.recommended === true}
+                disabled={busy}
+                onClick={() => handlePickOption(item, option.id)}
+              >
+                <span className="decision-option__title">
+                  <span>{option.text}</span>
+                  {option.recommended === true && (
+                    <span className="decision-option__recommended">{t('推荐')}</span>
+                  )}
+                </span>
+                {option.cost !== undefined && option.cost !== '' && (
+                  <span className="decision-option__cost">{option.cost}</span>
+                )}
+                {thisSaving && <span className="decision-option__cost">{t('正在保存…')}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="decision-topic-shell">
-      {/* PC 左栏：顶层子主题目录树；手机竖屏收起为顶部抽屉菜单。 */}
+      {/* PC 左栏：全部待拍板速决入口 + 顶层子主题目录树（手机端统一收进顶栏 ☰ 抽屉）。 */}
       <nav className="decision-topic-sidebar" aria-label={t('专题目录')}>
         <div className="decision-topic-sidebar__head">
           <span>{t('专题目录')}</span>
           <span className="decision-topic-sidebar__count">{String(topTopics.length)}</span>
         </div>
         <div className="decision-topic-sidebar__list">
+          {totalProjectPending > 0 && (
+            <button
+              type="button"
+              className="decision-topic-nav-btn decision-topic-nav-btn--all-pending"
+              aria-pressed={isAllPendingMode}
+              onClick={() => chooseTopic(ALL_PENDING_TOPIC)}
+            >
+              <span className="decision-topic-nav-btn__row">
+                <span className="decision-topic-nav-btn__dot" data-state="pending" />
+                <span className="decision-topic-nav-btn__title">{t('全部待拍板')}</span>
+              </span>
+              <span className="decision-topic-badge decision-topic-badge--pending">
+                {String(totalProjectPending)}
+              </span>
+            </button>
+          )}
           {topicItems.map((item) => {
-            const active = item.node.id === activeTopic.id;
+            const active = !isAllPendingMode && item.node.id === activeTopic.id;
             let titleText = item.node.title;
             if (item.isOverview && topTopics.length > 0) {
-              titleText = `${t('项目总览')} · ${item.node.title}`;
+              titleText = t('项目总览');
             }
             return (
               <button
@@ -355,7 +471,7 @@ export function TopicView({
                 <span className="decision-topic-nav-btn__badges">
                   {item.pendingCount > 0 && (
                     <span className="decision-topic-badge decision-topic-badge--pending">
-                      ★ {String(item.pendingCount)}
+                      {String(item.pendingCount)}
                     </span>
                   )}
                   {item.taskCount > 0 && (
@@ -370,391 +486,283 @@ export function TopicView({
         </div>
       </nav>
 
-      {/* 中间专题阅读区：手机竖屏自带顶部专题切换条与单栏顺畅排版。 */}
+      {/* 中间沉浸阅读区 */}
       <div className="decision-topic-main">
-        <div className="decision-topic-mobile-bar">
-          <div className="decision-topic-mobile-bar__top">
-            <div className="decision-topic-mobile-bar__current">
-              <span className="decision-state-pill" data-state={activeSummary.state.key}>
-                {activeSummary.state.label}
-              </span>
-              <strong>{activeTopic.title}</strong>
-            </div>
-            <button
-              type="button"
-              className="decision-task-button"
-              data-topic-drawer-toggle
-              aria-expanded={mobileMenuOpen}
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            >
-              {mobileDrawerLabel}
-            </button>
-          </div>
-          {topTopics.length > 0 && (
-            <div className="decision-topic-mobile-chips" role="tablist" aria-label={t('快速切换子主题')}>
-              {topicItems.map((item) => {
-                const active = item.node.id === activeTopic.id;
-                let chipTitle = item.node.title;
-                if (item.isOverview) {
-                  chipTitle = t('总览');
-                }
-                return (
-                  <button
-                    key={item.node.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    className="decision-topic-chip"
-                    data-state={item.state.key}
-                    onClick={() => chooseTopic(item.node.id)}
-                  >
-                    {item.pendingCount > 0 && <span className="decision-topic-chip__star">★{item.pendingCount} </span>}
-                    {chipTitle}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {mobileMenuOpen && (
-            <div className="decision-topic-mobile-drawer" role="menu">
-              {topicItems.map((item) => {
-                const active = item.node.id === activeTopic.id;
-                let titleText = item.node.title;
-                if (item.isOverview && topTopics.length > 0) {
-                  titleText = `${t('项目总览')} · ${item.node.title}`;
-                }
-                return (
-                  <button
-                    key={item.node.id}
-                    type="button"
-                    role="menuitem"
-                    className="decision-topic-nav-btn"
-                    aria-pressed={active}
-                    onClick={() => chooseTopic(item.node.id)}
-                  >
-                    <span className="decision-topic-nav-btn__row">
-                      <span className="decision-topic-nav-btn__dot" data-state={item.state.key} />
-                      <span className="decision-topic-nav-btn__title">{titleText}</span>
-                    </span>
-                    <span className="decision-topic-nav-btn__badges">
-                      {item.pendingCount > 0 && (
-                        <span className="decision-topic-badge decision-topic-badge--pending">
-                          ★ {String(item.pendingCount)}
-                        </span>
-                      )}
-                      <span className="decision-topic-badge">{item.state.label}</span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
         <div className="decision-topic-scroll">
-          {/* 1. 专题背景说明卡片 */}
-          <article className="decision-topic-card decision-topic-hero" data-node-id={activeTopic.id}>
-            <div className="decision-topic-hero__head">
-              <div className="decision-topic-hero__badges">
-                <span className="decision-state-pill" data-state={activeSummary.state.key}>
-                  {activeSummary.state.label}
-                </span>
-                {activeSummary.pendingCount > 0 && (
-                  <span className="decision-state-pill" data-state="pending">
-                    ★ {String(activeSummary.pendingCount)} {t('项待拍板')}
-                  </span>
-                )}
+          {/* 模式 A：只看全部待拍板卡片流 */}
+          {isAllPendingMode && (
+            <section className="decision-topic-pinned-stream" aria-label={t('全部待拍板')}>
+              <div className="decision-stream-intro">
+                <h2>{t('全部待拍板')}（{String(pendingNodes.length)}）</h2>
+                <p>{t('单手点选即可拍板；想补充要求可点卡片右上「追问」，写完再点选项会一并发给哈基米。')}</p>
               </div>
-              <div className="decision-topic-hero__actions">
-                <button
-                  type="button"
-                  className="decision-task-button"
-                  onClick={() => focusComposerOn(activeTopic.id)}
-                >
-                  {t('对本专题发话')}
-                </button>
-                <button
-                  type="button"
-                  className="decision-task-button"
-                  onClick={() => onOpenInMind(activeTopic.id)}
-                >
-                  {t('在导图中看')}
-                </button>
-              </div>
-            </div>
-            <h2 className="decision-topic-hero__title">{activeTopic.title}</h2>
-            {activeTopic.summary !== '' && (
-              <p className="decision-topic-hero__summary">{activeTopic.summary}</p>
-            )}
-            {activeTopic.body !== undefined && activeTopic.body !== '' && (
-              <div className="decision-drawer__body decision-topic-hero__body">
-                <markdown.Markdown text={activeTopic.body} onOpen={() => undefined} />
-              </div>
-            )}
-            {(sources.size > 0 || links.length > 0) && (
-              <div className="decision-topic-hero__refs">
-                {[...sources].map((src) => <span key={src} className="decision-ref-tag">{src}</span>)}
-                {links.map((href) => (
-                  <a key={href} href={href} target="_blank" rel="noreferrer" className="decision-ref-link">
-                    {href}
-                  </a>
-                ))}
-              </div>
-            )}
-          </article>
-
-          {/* 项目总览模式下展示各顶层子主题进度卡片，点一下直达该子主题 */}
-          {isOverview && topTopics.length > 0 && (
-            <section className="decision-topic-section" aria-label={t('子主题总览')}>
-              <h3 className="decision-topic-section__title">{t('分主题进度')}（{String(topTopics.length)}）</h3>
-              <div className="decision-topic-overview-grid">
-                {topTopics.map((item) => (
-                  <button
-                    key={item.node.id}
-                    type="button"
-                    className="decision-topic-overview-card"
-                    data-state={item.state.key}
-                    onClick={() => chooseTopic(item.node.id)}
-                  >
-                    <div className="decision-topic-overview-card__head">
-                      <span className="decision-state-pill" data-state={item.state.key}>{item.state.label}</span>
-                      {item.pendingCount > 0 && (
-                        <span className="decision-topic-badge decision-topic-badge--pending">
-                          ★ {String(item.pendingCount)} {t('待拍板')}
-                        </span>
-                      )}
-                    </div>
-                    <strong className="decision-topic-overview-card__title">{item.node.title}</strong>
-                    {item.node.summary !== '' && (
-                      <span className="decision-topic-overview-card__summary">{item.node.summary}</span>
-                    )}
-                    <span className="decision-topic-overview-card__meta">
-                      {t('已完成')} {String(item.doneCount)} / {String(item.taskCount)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* 2. 待拍板置顶区 */}
-          {pendingNodes.length > 0 && (
-            <section className="decision-topic-section decision-topic-pinned" aria-label={t('待拍板置顶区')}>
-              <h3 className="decision-topic-section__title decision-topic-section__title--pending">
-                ★ {t('待拍板置顶区')}（{String(pendingNodes.length)}）
-              </h3>
               {actionError !== undefined && actionError !== '' && (
                 <p className="decision-error" role="alert">{actionError}</p>
               )}
-              <div className="decision-topic-pinned__list">
-                {pendingNodes.map((item) => {
-                  const isTargeted = targetNode.id === item.id;
-                  return (
-                    <div
-                      key={item.id}
-                      className="decision-topic-pending-card"
-                      data-node-id={item.id}
-                      data-targeted={isTargeted}
-                    >
-                      <div className="decision-topic-pending-card__head">
-                        <strong>{item.title}</strong>
-                        <button
-                          type="button"
-                          className="decision-task-button"
-                          onClick={() => focusComposerOn(item.id)}
-                        >
-                          {t('追问/备注')}
-                        </button>
-                      </div>
-                      {item.summary !== '' && (
-                        <p className="decision-topic-pending-card__summary">{item.summary}</p>
-                      )}
-                      {item.body !== undefined && item.body !== '' && (
-                        <div className="decision-drawer__body">
-                          <markdown.Markdown text={item.body} onOpen={() => undefined} />
-                        </div>
-                      )}
-                      <div className="decision-options" aria-label={t('可选决定')}>
-                        {item.options?.map((option) => {
-                          const thisSaving = savingKey === `${item.id}:${option.id}`;
-                          return (
-                            <button
-                              key={option.id}
-                              type="button"
-                              className="decision-option"
-                              data-option-id={option.id}
-                              disabled={busy}
-                              onClick={() => handlePickOption(item, option.id)}
-                            >
-                              <span className="decision-option__title">
-                                {option.text}
-                                {option.recommended === true && (
-                                  <span className="decision-option__recommended">{t('推荐')}</span>
-                                )}
-                              </span>
-                              {option.cost !== undefined && option.cost !== '' && (
-                                <span className="decision-option__cost">{option.cost}</span>
-                              )}
-                              {thisSaving && <span className="decision-option__cost">{t('正在保存')}</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              {pendingNodes.length === 0 && (
+                <div className="decision-topic-card">
+                  <p className="decision-view__empty">{t('太棒了，当前所有事项都已拍板！')}</p>
+                </div>
+              )}
+              {pendingNodes.length > 0 && (
+                <div className="decision-topic-pinned__list">
+                  {pendingNodes.map((item) => renderPendingCard(item, true))}
+                </div>
+              )}
             </section>
           )}
 
-          {/* 3. 子任务清单（4 态：待拍板 / 进行中 / 已定 / 已完成） */}
-          <section className="decision-topic-section" aria-label={t('子任务清单')}>
-            <div className="decision-topic-tasks__head">
-              <h3 className="decision-topic-section__title">{t('子任务清单')}（{String(taskRows.length)}）</h3>
-              <div className="decision-topic-filters" role="group" aria-label={t('按四态筛选')}>
-                <button
-                  type="button"
-                  aria-pressed={stateFilter === 'all'}
-                  onClick={() => setStateFilter('all')}
-                >
-                  {t('全部')} {String(taskRows.length)}
-                </button>
-                <button
-                  type="button"
-                  data-state-filter="pending"
-                  aria-pressed={stateFilter === 'pending'}
-                  onClick={() => setStateFilter('pending')}
-                >
-                  {t('待拍板')} {String(counts.pending)}
-                </button>
-                <button
-                  type="button"
-                  data-state-filter="working"
-                  aria-pressed={stateFilter === 'working'}
-                  onClick={() => setStateFilter('working')}
-                >
-                  {t('进行中')} {String(counts.working)}
-                </button>
-                <button
-                  type="button"
-                  data-state-filter="decided"
-                  aria-pressed={stateFilter === 'decided'}
-                  onClick={() => setStateFilter('decided')}
-                >
-                  {t('已定')} {String(counts.decided)}
-                </button>
-                <button
-                  type="button"
-                  data-state-filter="done"
-                  aria-pressed={stateFilter === 'done'}
-                  onClick={() => setStateFilter('done')}
-                >
-                  {t('已完成')} {String(counts.done)}
-                </button>
-              </div>
-            </div>
-
-            {filteredRows.length === 0 && (
-              <p className="decision-view__empty">{t('当前筛选下没有子任务')}</p>
-            )}
-            {filteredRows.length > 0 && (
-              <div role="list" className="decision-topic-task-list">
-                {filteredRows.map(({ node: item, depth }) => {
-                  const st = getFourState(item);
-                  const isExpanded = expandedTaskId === item.id;
-                  const isTargeted = targetNode.id === item.id;
-                  const chosenOpt = item.options?.find((opt) => opt.id === item.chosen);
-                  const noteLen = item.notes?.length ?? 0;
-                  const padLeft = Math.min(Math.max(0, depth - 1) * 16, 48);
-                  const toggleRow = (): void => {
-                    onSelectNode(item.id);
-                    if (isExpanded) {
-                      setExpandedTaskId(undefined);
-                      return;
-                    }
-                    setExpandedTaskId(item.id);
-                  };
-                  return (
-                    <div
-                      key={item.id}
-                      role="listitem"
-                      className="decision-topic-task"
-                      data-node-id={item.id}
-                      data-state={st.key}
-                      data-targeted={isTargeted}
-                      style={{ marginLeft: `${String(padLeft)}px` }}
+          {/* 模式 B：具体专题或项目总览 */}
+          {!isAllPendingMode && (
+            <>
+              <article className="decision-topic-card decision-topic-hero" data-node-id={activeTopic.id}>
+                <div className="decision-topic-hero__head">
+                  <div className="decision-topic-hero__badges">
+                    <span className="decision-state-pill" data-state={activeSummary.state.key}>
+                      {activeSummary.state.label}
+                    </span>
+                    {activeSummary.taskCount > 0 && (
+                      <span className="decision-hero-progress">
+                        {t('进度')} {String(activeSummary.doneCount)}/{String(activeSummary.taskCount)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="decision-topic-hero__actions">
+                    <button
+                      type="button"
+                      className="decision-ghost-chip"
+                      onClick={() => focusComposerOn(activeTopic.id)}
                     >
+                      💬 {t('发话')}
+                    </button>
+                    <button
+                      type="button"
+                      className="decision-ghost-chip"
+                      onClick={() => onOpenInMind(activeTopic.id)}
+                    >
+                      {t('导图')} ›
+                    </button>
+                  </div>
+                </div>
+                <h2 className="decision-topic-hero__title">{activeTopic.title}</h2>
+                {activeTopic.summary !== '' && (
+                  <p className="decision-topic-hero__summary">{activeTopic.summary}</p>
+                )}
+                {activeTopic.body !== undefined && activeTopic.body !== '' && (
+                  <div className="decision-drawer__body decision-topic-hero__body">
+                    <markdown.Markdown text={activeTopic.body} onOpen={() => undefined} />
+                  </div>
+                )}
+                {(sources.size > 0 || links.length > 0) && (
+                  <div className="decision-topic-hero__refs">
+                    {[...sources].map((src) => <span key={src} className="decision-ref-tag">{src}</span>)}
+                    {links.map((href) => (
+                      <a key={href} href={href} target="_blank" rel="noreferrer" className="decision-ref-link">
+                        {href}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </article>
+
+              {isOverview && topTopics.length > 0 && (
+                <section className="decision-topic-section" aria-label={t('子主题总览')}>
+                  <h3 className="decision-topic-section__title">{t('分主题进度')}（{String(topTopics.length)}）</h3>
+                  <div className="decision-topic-overview-grid">
+                    {topTopics.map((item) => (
                       <button
+                        key={item.node.id}
                         type="button"
-                        className="decision-topic-task__row"
-                        aria-expanded={isExpanded}
-                        onClick={toggleRow}
+                        className="decision-topic-overview-card"
+                        data-state={item.state.key}
+                        onClick={() => chooseTopic(item.node.id)}
                       >
-                        <span className="decision-state-pill" data-state={st.key}>{st.label}</span>
-                        <span className="decision-topic-task__title">{item.title}</span>
-                        <span className="decision-topic-task__right">
-                          {chosenOpt !== undefined && (
-                            <span className="decision-topic-task__chosen">✓ {chosenOpt.text}</span>
+                        <div className="decision-topic-overview-card__head">
+                          <span className="decision-state-pill" data-state={item.state.key}>{item.state.label}</span>
+                          {item.pendingCount > 0 && (
+                            <span className="decision-topic-badge decision-topic-badge--pending">
+                              {t('待拍板')} {String(item.pendingCount)}
+                            </span>
                           )}
-                          {noteLen > 0 && (
-                            <span className="decision-topic-task__notes">💬 {String(noteLen)}</span>
-                          )}
+                        </div>
+                        <strong className="decision-topic-overview-card__title">{item.node.title}</strong>
+                        {item.node.summary !== '' && (
+                          <span className="decision-topic-overview-card__summary">{item.node.summary}</span>
+                        )}
+                        <span className="decision-topic-overview-card__meta">
+                          {t('已完成')} {String(item.doneCount)} / {String(item.taskCount)}
                         </span>
                       </button>
-                      {isExpanded && (
-                        <div className="decision-topic-task__detail">
-                          {item.summary !== '' && (
-                            <p className="decision-drawer__summary">{item.summary}</p>
-                          )}
-                          {item.body !== undefined && item.body !== '' && (
-                            <div className="decision-drawer__body">
-                              <markdown.Markdown text={item.body} onOpen={() => undefined} />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {pendingNodes.length > 0 && (
+                <section className="decision-topic-pinned-group" aria-label={t('待拍板置顶区')}>
+                  <div className="decision-section-heading">
+                    <span className="decision-section-heading__dot" />
+                    <h3>{t('待你拍板')}（{String(pendingNodes.length)}）</h3>
+                  </div>
+                  {actionError !== undefined && actionError !== '' && (
+                    <p className="decision-error" role="alert">{actionError}</p>
+                  )}
+                  <div className="decision-topic-pinned__list">
+                    {pendingNodes.map((item) => renderPendingCard(item, isOverview))}
+                  </div>
+                </section>
+              )}
+
+              <section className="decision-topic-section decision-topic-checklist" aria-label={t('子任务清单')}>
+                <div className="decision-topic-tasks__head">
+                  <h3 className="decision-topic-section__title">{t('子任务')}（{String(taskRows.length)}）</h3>
+                  <div className="decision-topic-filters" role="group" aria-label={t('按四态筛选')}>
+                    <button
+                      type="button"
+                      aria-pressed={stateFilter === 'all'}
+                      onClick={() => setStateFilter('all')}
+                    >
+                      {t('全部')} {String(taskRows.length)}
+                    </button>
+                    {counts.pending > 0 && (
+                      <button
+                        type="button"
+                        data-state-filter="pending"
+                        aria-pressed={stateFilter === 'pending'}
+                        onClick={() => setStateFilter('pending')}
+                      >
+                        {t('待拍板')} {String(counts.pending)}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      data-state-filter="working"
+                      aria-pressed={stateFilter === 'working'}
+                      onClick={() => setStateFilter('working')}
+                    >
+                      {t('进行中')} {String(counts.working)}
+                    </button>
+                    <button
+                      type="button"
+                      data-state-filter="decided"
+                      aria-pressed={stateFilter === 'decided'}
+                      onClick={() => setStateFilter('decided')}
+                    >
+                      {t('已定')} {String(counts.decided)}
+                    </button>
+                    <button
+                      type="button"
+                      data-state-filter="done"
+                      aria-pressed={stateFilter === 'done'}
+                      onClick={() => setStateFilter('done')}
+                    >
+                      {t('已完成')} {String(counts.done)}
+                    </button>
+                  </div>
+                </div>
+
+                {filteredRows.length === 0 && (
+                  <p className="decision-view__empty">{t('当前筛选下没有子任务')}</p>
+                )}
+                {filteredRows.length > 0 && (
+                  <div role="list" className="decision-topic-task-list">
+                    {filteredRows.map(({ node: item, depth }) => {
+                      const st = getFourState(item);
+                      const isExpanded = expandedTaskId === item.id;
+                      const isTargeted = targetNode.id === item.id;
+                      const chosenOpt = item.options?.find((opt) => opt.id === item.chosen);
+                      const noteLen = item.notes?.length ?? 0;
+                      const padLeft = Math.min(Math.max(0, depth - 1) * 14, 42);
+                      const toggleRow = (): void => {
+                        onSelectNode(item.id);
+                        if (isExpanded) {
+                          setExpandedTaskId(undefined);
+                          return;
+                        }
+                        setExpandedTaskId(item.id);
+                      };
+                      return (
+                        <div
+                          key={item.id}
+                          role="listitem"
+                          className="decision-topic-task"
+                          data-node-id={item.id}
+                          data-state={st.key}
+                          data-targeted={isTargeted}
+                          style={{ paddingLeft: `${String(padLeft)}px` }}
+                        >
+                          <button
+                            type="button"
+                            className="decision-topic-task__row"
+                            aria-expanded={isExpanded}
+                            onClick={toggleRow}
+                          >
+                            <span className="decision-state-pill" data-state={st.key}>{st.label}</span>
+                            <span className="decision-topic-task__title">{item.title}</span>
+                            <span className="decision-topic-task__right">
+                              {chosenOpt !== undefined && (
+                                <span className="decision-topic-task__chosen">✓ {chosenOpt.text}</span>
+                              )}
+                              {noteLen > 0 && (
+                                <span className="decision-topic-task__notes">💬 {String(noteLen)}</span>
+                              )}
+                            </span>
+                          </button>
+                          {isExpanded && (
+                            <div className="decision-topic-task__detail">
+                              {item.summary !== '' && (
+                                <p className="decision-drawer__summary">{item.summary}</p>
+                              )}
+                              {item.body !== undefined && item.body !== '' && (
+                                <div className="decision-drawer__body">
+                                  <markdown.Markdown text={item.body} onOpen={() => undefined} />
+                                </div>
+                              )}
+                              {(item.kind === 'decided' || item.status === 'decided') && (
+                                <drawer.DecisionHistory node={item} />
+                              )}
+                              <drawer.TaskActions
+                                node={item}
+                                focus={() => onOpenInMind(item.id)}
+                                refresh={onRefresh}
+                                expand={onExpand}
+                              />
+                              <div className="decision-topic-task__quick">
+                                <button
+                                  type="button"
+                                  className="decision-ghost-chip"
+                                  onClick={() => focusComposerOn(item.id)}
+                                >
+                                  💬 {t('针对此项给哈基米发话')}
+                                </button>
+                              </div>
                             </div>
                           )}
-                          {(item.kind === 'decided' || item.status === 'decided') && (
-                            <drawer.DecisionHistory node={item} />
-                          )}
-                          <drawer.TaskActions
-                            node={item}
-                            focus={() => onOpenInMind(item.id)}
-                            refresh={onRefresh}
-                            expand={onExpand}
-                          />
-                          <div className="decision-topic-task__quick">
-                            <button
-                              type="button"
-                              className="decision-task-button"
-                              onClick={() => focusComposerOn(item.id)}
-                            >
-                              {t('针对此项给中控发话')}
-                            </button>
-                          </div>
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                      );
+                    })}
+                  </div>
+                )}
 
-            {/* 未展开具体子项时，在当前专题根下展示状态与快捷加子项入口 */}
-            {expandedTaskId === undefined && (
-              <div className="decision-topic-add-wrap">
-                <drawer.TaskActions
-                  node={activeTopic}
-                  focus={() => onOpenInMind(activeTopic.id)}
-                  refresh={onRefresh}
-                  expand={onExpand}
-                />
-              </div>
-            )}
-          </section>
+                {expandedTaskId === undefined && (
+                  <div className="decision-topic-add-wrap">
+                    <drawer.TaskActions
+                      node={activeTopic}
+                      focus={() => onOpenInMind(activeTopic.id)}
+                      refresh={onRefresh}
+                      expand={onExpand}
+                    />
+                  </div>
+                )}
+              </section>
+            </>
+          )}
 
-          {/* 4. 手机单栏内嵌往来留言与中控回复（PC 端在右侧常驻栏展示） */}
+          {/* 手机单栏内嵌往来留言与中控回复（PC 端在右侧常驻栏展示） */}
           <div className="decision-topic-mobile-notes">
             <composer.ScopeNoteFeed
               nodes={scopeNodes}
-              scopeRootId={activeTopic.id}
+              scopeRootId={defaultDockNode.id}
               targetNodeId={targetNode.id}
               onSelectNode={(id) => focusComposerOn(id)}
             />
@@ -762,10 +770,10 @@ export function TopicView({
         </div>
       </div>
 
-      {/* PC 右侧常驻栏 / 手机底部悬浮输入框 */}
+      {/* PC 右侧常驻栏 / 手机底部 48px 极简胶囊输入条 */}
       <composer.CentralDock
         targetNode={targetNode}
-        defaultNode={activeTopic}
+        defaultNode={defaultDockNode}
         scopeNodes={scopeNodes}
         onResetTarget={() => onSelectNode(undefined)}
         onSelectNode={onSelectNode}

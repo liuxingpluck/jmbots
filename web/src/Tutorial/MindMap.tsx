@@ -40,10 +40,17 @@ function saveChoice(key: string, value: string): void {
   }
 }
 
-/** 在原画布和思维导图之间保留上次使用的选择。 */
+/** 在原画布和思维导图之间保留上次使用的选择；地址带 ?view= 时优先，手机直开 ?canvas= 默认进步骤流。 */
 export function useTutorialView() {
-  //M 首次打开保留旧画布入口，再恢复用户后来选的视图。
-  const [view, setView] = react.useState(() => getChoice(VIEW_KEY, 'canvas', VIEWS));
+  //M 优先读地址栏显式指定的视图；手机竖屏点开具体消息画布时默认进纵向步骤卡片而非上次残留的导图。
+  const [view, setView] = react.useState<'canvas' | 'mind'>(() => {
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get('view');
+    if (requested === 'canvas' || requested === 'mind') return requested;
+    if (window.innerWidth < 800 && query.get('canvas') !== null) return 'canvas';
+
+    return getChoice(VIEW_KEY, 'canvas', VIEWS);
+  });
   const select = (next: 'canvas' | 'mind'): void => {
     //M 控件马上切换，同时为下次打开记住选择。
     setView(next);

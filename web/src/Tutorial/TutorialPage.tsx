@@ -18,6 +18,8 @@ import * as virtuoso from 'react-virtuoso';
 import * as i18n from '../I18n.ts';
 import * as theme from '../Theme.ts';
 import { TOKEN, withToken } from '../Token.ts';
+import * as authGate from '../components/AuthGate.tsx';
+import * as traceText from '../locales/Trace.ts';
 import { JsonBlock, TutorialScrollContext, TutorialWorkspaceContext, VIRTUAL_THRESHOLD } from './Code.tsx';
 import { SeqChart, RouteStopItem, FEISHU_ROUTE, getSeqLayout } from './SeqChart.tsx';
 import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
@@ -26,7 +28,21 @@ import { buildReadmeTabItems, MarkdownContent } from './ReadmeTabs.tsx';
 import * as mind from './MindMap.tsx';
 import * as programView from './ProgramView.tsx';
 import type * as mindData from './MindData.ts';
-import { TutorialApi, type Canvas, type CanvasList, type MessageCanvasItem, type PluginItem, type PluginList, type ProgramItem, type StateGroup, type Trail } from './TutorialApi.ts';
+import {
+  TutorialApi,
+  type Canvas,
+  type CanvasList,
+  type MessageCanvasItem,
+  type PluginItem,
+  type PluginList,
+  type ProgramItem,
+  type StateGroup,
+  type Trail,
+  type TrailStep,
+} from './TutorialApi.ts';
+
+/** 窄屏轨迹看法：默认纵向步骤流，保留泳道全景与顺序图一键切换。 */
+type NarrowTraceMode = 'steps' | 'lanes' | 'seq';
 
 
 /** 地址栏里记住的当前位置。 */
@@ -749,9 +765,59 @@ function PluginView(props: {
 }
 
 
+/** 把轨迹一步的标题还原为当前语言的自然短句，避免把原始 trace 键名摆上卡片。 */
+function getStepDisplayTitle(step: TrailStep, tr: i18n.Translate): string {
+  let text = step.title;
+  if (traceText.isTraceText(text) || text === '') {
+    text = traceText.getTraceStepTitle(step.rows, (id, params) => i18n.renderTrace(tr, id, params));
+  }
+  if (text === '') return step.node;
+
+  return text;
+}
+
+
+/** 提取一步里发出的不重复事件名（最多 3 个），供窄屏步骤卡片速览。 */
+function getStepEvents(step: TrailStep): string[] {
+  const names: string[] = [];
+  for (const row of step.rows) {
+    if (row.kind !== '事件') continue;
+    if (names.includes(row.name)) continue;
+    names.push(row.name);
+    if (names.length >= 3) break;
+  }
+  return names;
+}
+
+
+/** 格式化一步耗时文本，慢操作（>= 500ms）转秒显示更直观。 */
+function formatStepDuration(ms: number): string {
+  if (ms <= 0) return '<1ms';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${String(ms)}ms`;
+}
+
+
+/** 把轨迹状态英文转成直观中文短标签。 */
+function getTrailStateLabel(state: string): string {
+  if (state === 'done') return '已完成';
+  if (state === 'running') return '处理中';
+  if (state === 'failed') return '出错';
+  if (state === 'stopped') return '已停止';
+  return state;
+}
+
+
+/** 把组块阅读文件名格式化成紧凑的手机顶栏标题（如 09_渠道插件全家桶.md -> 09 · 渠道插件全家桶）。 */
+function formatReadingTitle(name: string): string {
+  const bare = name.replace(/^cordis\//u, '').replace(/\.md$/u, '');
+  return bare.replace(/^(\d{2})_/u, '$1 · ');
+}
+
+
 /**
  * 底层全视口泳道图舞台：桌面模式下铺满底部、支持拖拽平移与滚轮缩放、自带左上角单行 HUD 与左下角「适应窗口 / 100%」，
- * 窄屏（< 800px）自动退化成自然流排布。
+ * 窄屏（< 800px）默认使用纵向时间线步骤卡片并支持原地展开详情，同时保留泳道全景与顺序图切换。
  * @param props.name 画布名：boot 或消息号。
  * @param props.step 选中的第几步；0 是没选。
  * @param props.onPick 点了一步。
@@ -761,13 +827,17 @@ function PluginView(props: {
  * @param props.activePlugin 右侧正展示的插件名。
  * @param props.highlightEvent 当前高亮的事件名。
  * @param props.onSelectPlugin 打开指定插件并切右栏页签。
+ * @param props.onSelectEvent 点事件名高亮命中步。
  * @param props.onClearEvent 清除事件高亮。
  * @param props.onTrailLoaded 画布加载完交回轨迹供右栏步骤详情使用。
+ * @param props.workspace 源码根目录。
  * @param props.leftOpen 左浮栏是否展开。
  * @param props.leftWidth 左浮栏宽度。
  * @param props.rightOpen 右浮栏是否展开。
  * @param props.rightWidth 右浮栏宽度。
- * @param props.isNarrow 是否窄屏退化模式。
+ * @param props.isNarrow 是否窄屏模式。
+ * @param props.narrowMode 窄屏当前轨迹看法。
+ * @param props.onNarrowModeChange 切换窄屏轨迹看法。
  */
 function CanvasStage(props: {
   name: string;
@@ -780,19 +850,23 @@ function CanvasStage(props: {
   activePlugin: string;
   highlightEvent: string;
   onSelectPlugin: (name: string, ptab?: string) => void;
+  onSelectEvent: (eventName: string) => void;
   onClearEvent: () => void;
   onTrailLoaded: (canvasName: string, trail: Trail | null) => void;
+  workspace: string;
   leftOpen: boolean;
   leftWidth: number;
   rightOpen: boolean;
   rightWidth: number;
   isNarrow: boolean;
+  narrowMode: NarrowTraceMode;
+  onNarrowModeChange: (mode: NarrowTraceMode) => void;
 }): JSX.Element {
   const [canvas, setCanvas] = useState<Canvas | null>(null);
-  //M 画布两种看法：表格（泳道）、顺序图。
+  //M 桌面画布两种看法：表格（泳道）、顺序图。
   const [look, setLook] = useState<'table' | 'seq'>('table');
-  const [mobileFit, setMobileFit] = useState(false);
-  const [narrowWidth, setNarrowWidth] = useState(() => Math.max(300, window.innerWidth - 36));
+  const [mobileFit, setMobileFit] = useState(true);
+  const [narrowWidth, setNarrowWidth] = useState(() => Math.max(300, window.innerWidth - 28));
   const tr = i18n.useT();
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -837,11 +911,12 @@ function CanvasStage(props: {
   const layout = useMemo(() => {
     if (canvas === null) return null;
 
-    //M 预计算当前看法的尺寸及每步包围盒缓存，供视图居中与 HUD 对齐复用。
-    if (look === 'seq') return seqLayout;
+    //M 预计算当前看法的尺寸及每步包围盒缓存，供视图居中与窄屏缩宽复用。
+    if (props.isNarrow && props.narrowMode === 'seq') return seqLayout;
+    if (!props.isNarrow && look === 'seq') return seqLayout;
 
     return getCanvasLayout(canvas.lanes);
-  }, [canvas, look, seqLayout]);
+  }, [canvas, look, props.isNarrow, props.narrowMode, seqLayout]);
 
   //M 计算此刻不被左右两浮栏挡住的中间区域。
   const getLiveSafe = useCallback((): SafeViewport => {
@@ -1061,56 +1136,153 @@ function CanvasStage(props: {
 
   const zoomPercent = String(Math.round(transform.scale * 100));
 
+  let mobileChannelLabel = '';
+  if (trail !== null && trail.channel !== '') {
+    mobileChannelLabel = getChannelLabel(trail.channel);
+  }
+  let mobileStateClass = 'tu-m-state-pill';
+  if (trail !== null && trail.state === 'done') mobileStateClass += ' done';
+  if (trail !== null && (trail.state === 'failed' || trail.error)) mobileStateClass += ' error';
+
   return (
     <div ref={stageRef} className={stageClass} onPointerDown={onStagePointerDown}>
-      {/* 右栏之外贴靠在左栏右边的一行摘要 HUD，不吃大片垂直空间。 */}
-      <div
-        className="tu-stage-hud"
-        style={{ left: hudLeft, maxWidth: hudMaxWidth }}
-        title={hudTitleTip}
-      >
-        <span className="tu-hud-title">{title}</span>
-        {trail !== null && trail.preview !== '' && (
-          <span className="tu-hud-preview">{trail.preview}</span>
-        )}
-        {metaParts.length > 0 && (
-          <span className="tu-hud-meta">{metaParts.join(' · ')}</span>
-        )}
-        {trail !== null && trail.error && (
-          <span className="tu-hud-err">有出错步</span>
-        )}
-        {props.name !== 'boot' && props.hasSnapshot === true && (
-          <span className="tu-shot-badge">含快照</span>
-        )}
-        {props.name !== 'boot' && props.hasSnapshot === false && (
-          <span className="tu-hud-tag">无快照</span>
-        )}
-        {props.highlightEvent !== '' && matchedList.length > 0 && (
-          <span className="tu-hud-events">
-            <span className="tu-hud-ev-name">{props.highlightEvent}</span>
-            {matchedList.map((no) => {
-              let hitClass = 'tu-event-hit-btn';
-              if (props.step === no) {
-                hitClass = 'tu-event-hit-btn active';
-              }
-              return (
-                <button
-                  key={no}
-                  type="button"
-                  className={hitClass}
-                  onClick={
-                    //M 点击事件命中步骤徽章直接跳转到画布对应步骤。
-                    () => props.onPick(no)
-                  }
-                >
-                  #{String(no)}
-                </button>
-              );
-            })}
-            <button type="button" className="tu-link" onClick={props.onClearEvent}>清除</button>
-          </span>
-        )}
-      </div>
+      {/* 桌面端：右栏之外贴靠在左栏右边的一行摘要 HUD，不吃大片垂直空间。 */}
+      {!props.isNarrow && (
+        <div
+          className="tu-stage-hud"
+          style={{ left: hudLeft, maxWidth: hudMaxWidth }}
+          title={hudTitleTip}
+        >
+          <span className="tu-hud-title">{title}</span>
+          {trail !== null && trail.preview !== '' && (
+            <span className="tu-hud-preview">{trail.preview}</span>
+          )}
+          {metaParts.length > 0 && (
+            <span className="tu-hud-meta">{metaParts.join(' · ')}</span>
+          )}
+          {trail !== null && trail.error && (
+            <span className="tu-hud-err">有出错步</span>
+          )}
+          {props.name !== 'boot' && props.hasSnapshot === true && (
+            <span className="tu-shot-badge">含快照</span>
+          )}
+          {props.name !== 'boot' && props.hasSnapshot === false && (
+            <span className="tu-hud-tag">无快照</span>
+          )}
+          {props.highlightEvent !== '' && matchedList.length > 0 && (
+            <span className="tu-hud-events">
+              <span className="tu-hud-ev-name">{props.highlightEvent}</span>
+              {matchedList.map((no) => {
+                let hitClass = 'tu-event-hit-btn';
+                if (props.step === no) {
+                  hitClass = 'tu-event-hit-btn active';
+                }
+                return (
+                  <button
+                    key={no}
+                    type="button"
+                    className={hitClass}
+                    onClick={
+                      //M 点击事件命中步骤徽章直接跳转到画布对应步骤。
+                      () => props.onPick(no)
+                    }
+                  >
+                    #{String(no)}
+                  </button>
+                );
+              })}
+              <button type="button" className="tu-link" onClick={props.onClearEvent}>清除</button>
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* 手机端：原生感消息摘要卡片 + 看法分段胶囊条。 */}
+      {props.isNarrow && trail !== null && (
+        <section className="tu-m-trace-card">
+          <div className="tu-m-trace-meta">
+            {mobileChannelLabel !== '' && (
+              <span className={`tu-ch-badge ${trail.channel}`}>{mobileChannelLabel}</span>
+            )}
+            {trail.bot !== '' && <span className="tu-m-bot-pill">{trail.bot}</span>}
+            <span className={mobileStateClass}>{getTrailStateLabel(trail.state)}</span>
+            <span className="tu-m-trace-stat">
+              {String(trail.steps.length)} 步 · {formatStepDuration(trail.ms)}
+            </span>
+            {props.name !== 'boot' && props.hasSnapshot === true && (
+              <span className="tu-shot-badge">含快照</span>
+            )}
+          </div>
+          {trail.preview !== '' && (
+            <p className="tu-m-trace-preview">{trail.preview}</p>
+          )}
+          {props.highlightEvent !== '' && matchedList.length > 0 && (
+            <div className="tu-m-event-filter">
+              <span className="tu-hud-ev-name">⚡ {props.highlightEvent}</span>
+              <div className="tu-m-event-hits">
+                {matchedList.map((no) => {
+                  let hitClass = 'tu-event-hit-btn';
+                  if (props.step === no) hitClass += ' active';
+                  return (
+                    <button
+                      key={no}
+                      type="button"
+                      className={hitClass}
+                      onClick={() => props.onPick(no)}
+                    >
+                      #{String(no)}
+                    </button>
+                  );
+                })}
+                <button type="button" className="tu-link" onClick={props.onClearEvent}>清除</button>
+              </div>
+            </div>
+          )}
+          <div className="tu-m-trace-bar">
+            <div className="tu-m-seg" role="tablist" aria-label="轨迹展示方式">
+              <button
+                type="button"
+                className="tu-m-seg-btn"
+                data-narrow-mode="steps"
+                aria-pressed={props.narrowMode === 'steps'}
+                onClick={() => props.onNarrowModeChange('steps')}
+              >
+                步骤流
+              </button>
+              <button
+                type="button"
+                className="tu-m-seg-btn"
+                data-narrow-mode="lanes"
+                aria-pressed={props.narrowMode === 'lanes'}
+                onClick={() => props.onNarrowModeChange('lanes')}
+              >
+                泳道全景
+              </button>
+              <button
+                type="button"
+                className="tu-m-seg-btn"
+                data-narrow-mode="seq"
+                aria-pressed={props.narrowMode === 'seq'}
+                onClick={() => props.onNarrowModeChange('seq')}
+              >
+                顺序图
+              </button>
+            </div>
+            {props.narrowMode !== 'steps' && (
+              <button
+                type="button"
+                className="tu-m-fit-toggle"
+                data-stage-fit
+                aria-pressed={mobileFit}
+                onClick={() => setMobileFit((prev) => !prev)}
+              >
+                {mobileFit && '适应屏宽'}
+                {!mobileFit && '原大横滑'}
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* 加载态或报错居中提示（躲在浮栏中间可见区）。 */}
       {error !== '' && (
@@ -1124,7 +1296,7 @@ function CanvasStage(props: {
         </div>
       )}
 
-      {/* 泳道图本体：桌面模式下包在平移缩放层内铺满整个视口；窄屏自动退化为普通横滚框。 */}
+      {/* 泳道图本体：桌面模式下包在平移缩放层内铺满整个视口。 */}
       {canvas !== null && !props.isNarrow && (
         <div
           className="tu-stage-world"
@@ -1160,48 +1332,80 @@ function CanvasStage(props: {
           )}
         </div>
       )}
-      {canvas !== null && props.isNarrow && (
-        <>
-          <div className="tu-stage-tools-narrow">
-            <div className="tu-stage-tools-group">
-              <button
-                type="button"
-                className="tu-tool-btn"
-                aria-pressed={look === 'table'}
-                onClick={() => setLook('table')}
-              >
-                表格
-              </button>
-              <button
-                type="button"
-                className="tu-tool-btn"
-                aria-pressed={look === 'seq'}
-                onClick={() => setLook('seq')}
-              >
-                顺序图
-              </button>
-            </div>
-            <div className="tu-stage-tools-group">
-              <button
-                type="button"
-                className="tu-tool-btn"
-                data-stage-fit
-                aria-pressed={mobileFit}
-                onClick={() => setMobileFit(true)}
-              >
-                适应屏宽
-              </button>
-              <button
-                type="button"
-                className="tu-tool-btn"
-                aria-pressed={!mobileFit}
-                onClick={() => setMobileFit(false)}
-              >
-                100% 原大
-              </button>
-            </div>
-          </div>
-          {!mobileFit && look === 'table' && (
+
+      {/* 手机端默认：纵向时间线步骤卡片，点一步直接在当前卡片内就地展开函数、源码位置与变量快照。 */}
+      {canvas !== null && props.isNarrow && props.narrowMode === 'steps' && (
+        <div className="tu-m-steps">
+          {canvas.trail.steps.map((stepItem) => {
+            const picked = props.step === stepItem.no;
+            const hit = matchedSet.has(stepItem.no);
+            const stepTitle = getStepDisplayTitle(stepItem, tr);
+            const stepEvents = getStepEvents(stepItem);
+            let cardClass = 'tu-m-step-card';
+            if (picked) cardClass += ' picked';
+            if (stepItem.error) cardClass += ' error';
+            if (hit) cardClass += ' event-hit';
+            let msClass = 'tu-m-step-ms';
+            if (stepItem.ms >= 500) msClass += ' slow';
+            let chevron = '▾';
+            if (picked) chevron = '▴';
+            const onToggleStep = (): void => {
+              if (picked) {
+                props.onPick(0);
+                return;
+              }
+              props.onPick(stepItem.no);
+            };
+            return (
+              <div key={stepItem.no} className={cardClass}>
+                <button
+                  type="button"
+                  className="tu-m-step-btn"
+                  data-step-card={stepItem.no}
+                  aria-expanded={picked}
+                  onClick={onToggleStep}
+                >
+                  <div className="tu-m-step-top">
+                    <span className="tu-m-step-no">#{String(stepItem.no)}</span>
+                    <span className="tu-m-step-node">{stepItem.node}</span>
+                    {stepItem.error && <span className="tu-m-step-err">报错</span>}
+                    <span className={msClass}>{formatStepDuration(stepItem.ms)}</span>
+                    <span className="tu-m-step-chev" aria-hidden="true">{chevron}</span>
+                  </div>
+                  <div className="tu-m-step-title">{stepTitle}</div>
+                  {stepEvents.length > 0 && (
+                    <div className="tu-m-step-events">
+                      {stepEvents.map((evName) => (
+                        <span key={evName} className="tu-m-step-ev">⚡ {evName}</span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+                {picked && (
+                  <div className="tu-m-step-detail">
+                    <StepDetail
+                      canvas={props.name}
+                      trail={canvas.trail}
+                      step={stepItem}
+                      workspace={props.workspace}
+                      keyword={props.keyword}
+                      pluginNames={props.pluginNames}
+                      highlightEvent={props.highlightEvent}
+                      onSelectPlugin={props.onSelectPlugin}
+                      onSelectEvent={props.onSelectEvent}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 手机端切到泳道全景或顺序图时：支持一键适应屏宽或原尺寸横滑。 */}
+      {canvas !== null && props.isNarrow && props.narrowMode !== 'steps' && (
+        <div className="tu-m-chart-shell">
+          {!mobileFit && props.narrowMode === 'lanes' && (
             <LaneChart
               canvas={canvas}
               picked={props.step}
@@ -1213,7 +1417,7 @@ function CanvasStage(props: {
               panZoom={false}
             />
           )}
-          {!mobileFit && look === 'seq' && seqLayout !== null && (
+          {!mobileFit && props.narrowMode === 'seq' && seqLayout !== null && (
             <div className="tu-lanes-scroll">
               <SeqChart
                 canvas={canvas}
@@ -1229,7 +1433,7 @@ function CanvasStage(props: {
             </div>
           )}
           {mobileFit && layout !== null && (() => {
-            const fitScale = clamp((narrowWidth - 18) / Math.max(1, layout.width), 0.34, 1);
+            const fitScale = clamp((narrowWidth - 16) / Math.max(1, layout.width), 0.34, 1);
             const scaledHeight = Math.ceil(layout.total * fitScale) + 12;
             return (
               <div className="tu-lanes-fit" style={{ height: `${String(scaledHeight)}px` }}>
@@ -1240,7 +1444,7 @@ function CanvasStage(props: {
                     transformOrigin: '0 0',
                   }}
                 >
-                  {look === 'table' && (
+                  {props.narrowMode === 'lanes' && (
                     <LaneChart
                       canvas={canvas}
                       picked={props.step}
@@ -1252,7 +1456,7 @@ function CanvasStage(props: {
                       panZoom
                     />
                   )}
-                  {look === 'seq' && seqLayout !== null && (
+                  {props.narrowMode === 'seq' && seqLayout !== null && (
                     <SeqChart
                       canvas={canvas}
                       layout={seqLayout}
@@ -1269,7 +1473,7 @@ function CanvasStage(props: {
               </div>
             );
           })()}
-        </>
+        </div>
       )}
 
       {/* 画布左下角控件：适应窗口、100%、当前比例、交互说明。 */}
@@ -1329,6 +1533,8 @@ export function TutorialPage(): JSX.Element {
   const [resizing, setResizing] = useState(false);
   const [isNarrow, setIsNarrow] = useState<boolean>(() => window.innerWidth < NARROW_BREAKPOINT);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [narrowMode, setNarrowMode] = useState<NarrowTraceMode>('steps');
+  const webAuth = authGate.useWebAuth();
 
   //M 右栏详情/代码/状态列表共用的外层滚动容器 state。
   const [rightScrollParent, setRightScrollParent] = useState<HTMLDivElement | null>(null);
@@ -1881,119 +2087,146 @@ export function TutorialPage(): JSX.Element {
     bootItemClass = 'tu-nav-item active';
   }
 
-  //M 左栏顺序：骨架（含项目结构）→ 骨架工具 → 启动流程 → 最近消息 → 组块阅读 → 插件 → 进程插件，共用一个虚拟列表。
+  //M 左栏顺序：桌面按骨架到底层展开；手机把最常看的「组块阅读」与「最近消息」提置最顶，打开目录立即可点。
   const leftRows = useMemo<LeftNavRow[]>(() => {
-    const rows: LeftNavRow[] = [
-      {
+    const rows: LeftNavRow[] = [];
+    const pushDiv = (id: string): void => {
+      if (rows.length === 0) return;
+      rows.push({ key: `div:${id}`, kind: 'divider' });
+    };
+    const pushSkeleton = (): void => {
+      pushDiv('skeleton');
+      rows.push({
         key: 'head:skeleton', kind: 'group-head', groupKey: 'skeleton', title: '骨架',
         count: filteredSkeletons.length + 1, expanded: skeletonExpanded,
-      },
-    ];
-    if (skeletonExpanded) {
-      //M 原来顶上的「项目结构」放在骨架组第一行。
+      });
+      if (!skeletonExpanded) return;
       rows.push({ key: 'skeleton:project', kind: 'project' });
       for (const item of filteredSkeletons) {
         rows.push({ key: `skeleton:${item.name}`, kind: 'plugin', plugin: item });
       }
-    }
-    //M 骨架工具紧跟骨架，一个 src7/utils/ 文件一行。
-    rows.push({ key: 'div:skeleton-utils', kind: 'divider' });
-    //M 组头数量是现有工具文件数，搜索时强制展开。
-    rows.push({
-      key: 'head:utils', kind: 'group-head', groupKey: 'utils', title: utilsLabel,
-      count: filteredUtils.length, expanded: utilsExpanded,
-    });
-    if (utilsExpanded) {
+    };
+    const pushUtils = (): void => {
+      pushDiv('utils');
+      rows.push({
+        key: 'head:utils', kind: 'group-head', groupKey: 'utils', title: utilsLabel,
+        count: filteredUtils.length, expanded: utilsExpanded,
+      });
+      if (!utilsExpanded) return;
       if (filteredUtils.length === 0) rows.push({ key: 'empty:utils', kind: 'empty', text: utilStatus });
       for (const name of filteredUtils) {
         rows.push({ key: `util:${name}`, kind: 'util', name });
       }
-    }
-    //M Cordis 放在骨架工具后：五份文档两栏阅读，动态图进三栏画布。
-    rows.push({ key: 'div:utils-cordis', kind: 'divider' });
-    rows.push({
-      key: 'head:cordis', kind: 'group-head', groupKey: 'cordis', title: 'Cordis 用法',
-      count: filteredCordis.length + 1, expanded: openGroups.cordis || hasSearch,
-    });
-    if (openGroups.cordis || hasSearch) {
-      //M 图在组内第一行，文档按文件名排序。
+    };
+    const pushCordis = (): void => {
+      pushDiv('cordis');
+      const expanded = openGroups.cordis || hasSearch;
+      rows.push({
+        key: 'head:cordis', kind: 'group-head', groupKey: 'cordis', title: 'Cordis 用法',
+        count: filteredCordis.length + 1, expanded,
+      });
+      if (!expanded) return;
       rows.push({ key: 'cordis:map', kind: 'cordis-map' });
       if (filteredCordis.length === 0) rows.push({ key: 'empty:cordis', kind: 'empty', text: cordisStatus });
       for (const name of filteredCordis) {
-        //M 复用组块文档路由，前缀区分文档目录。
         rows.push({ key: `cordis:${name}`, kind: 'reading', name: `cordis/${name}` });
       }
-    }
-    //M Cordis 组和启动流程之间的分隔线。
-    rows.push({ key: 'div:cordis-boot', kind: 'divider' });
-
-    rows.push({ key: 'head:boot', kind: 'group-head', groupKey: 'boot', title: '启动流程', count: showBootGroupCount, expanded: bootExpanded });
-    if (bootExpanded && showBoot) {
-      rows.push({ key: 'item:boot', kind: 'boot' });
-    }
-    rows.push({ key: 'div:boot-messages', kind: 'divider' });
-
-    //M 静态的“一条飞书消息”路线，没跑过消息也能看，搜索时不参与。
-    rows.push({ key: 'head:route', kind: 'group-head', groupKey: 'route', title: '一条飞书消息的路线', count: FEISHU_ROUTE.length, expanded: openGroups.route });
-    if (openGroups.route) {
+    };
+    const pushBoot = (): void => {
+      pushDiv('boot');
+      rows.push({
+        key: 'head:boot', kind: 'group-head', groupKey: 'boot', title: '启动流程',
+        count: showBootGroupCount, expanded: bootExpanded,
+      });
+      if (bootExpanded && showBoot) rows.push({ key: 'item:boot', kind: 'boot' });
+    };
+    const pushRoute = (): void => {
+      pushDiv('route');
+      rows.push({
+        key: 'head:route', kind: 'group-head', groupKey: 'route', title: '一条飞书消息的路线',
+        count: FEISHU_ROUTE.length, expanded: openGroups.route,
+      });
+      if (!openGroups.route) return;
       FEISHU_ROUTE.forEach((_stop, index) => rows.push({ key: `route:${String(index)}`, kind: 'route', index }));
-    }
-    rows.push({ key: 'div:route-messages', kind: 'divider' });
-
-    rows.push({ key: 'head:messages', kind: 'group-head', groupKey: 'messages', title: '最近消息', count: filteredMessages.length, expanded: messagesExpanded });
-    if (messagesExpanded) {
+    };
+    const pushMessages = (): void => {
+      pushDiv('messages');
+      rows.push({
+        key: 'head:messages', kind: 'group-head', groupKey: 'messages', title: '最近消息',
+        count: filteredMessages.length, expanded: messagesExpanded,
+      });
+      if (!messagesExpanded) return;
       if (filteredMessages.length === 0) {
         rows.push({ key: 'empty:messages', kind: 'empty', text: '没有匹配的消息' });
       }
       for (const item of filteredMessages) {
         rows.push({ key: `msg:${item.name}`, kind: 'message', message: item });
       }
-    }
-    rows.push({ key: 'div:messages-reading', kind: 'divider' });
-
-    rows.push({
-      key: 'head:reading',
-      kind: 'group-head',
-      groupKey: 'reading',
-      title: readingLabel,
-      count: filteredReadings.length,
-      expanded: readingsExpanded,
-    });
-    if (readingsExpanded) {
+    };
+    const pushReading = (): void => {
+      pushDiv('reading');
+      rows.push({
+        key: 'head:reading', kind: 'group-head', groupKey: 'reading', title: readingLabel,
+        count: filteredReadings.length, expanded: readingsExpanded,
+      });
+      if (!readingsExpanded) return;
       if (filteredReadings.length === 0) {
         rows.push({ key: 'empty:reading', kind: 'empty', text: readingStatus });
       }
       for (const name of filteredReadings) {
         rows.push({ key: `reading:${name}`, kind: 'reading', name });
       }
-    }
-    rows.push({ key: 'div:reading-plugins', kind: 'divider' });
-
-    rows.push({ key: 'head:plugins', kind: 'group-head', groupKey: 'plugins', title: '插件', count: filteredRegularPlugins.length, expanded: pluginsExpanded });
-    if (pluginsExpanded) {
+    };
+    const pushPlugins = (): void => {
+      pushDiv('plugins');
+      rows.push({
+        key: 'head:plugins', kind: 'group-head', groupKey: 'plugins', title: '插件',
+        count: filteredRegularPlugins.length, expanded: pluginsExpanded,
+      });
+      if (!pluginsExpanded) return;
       if (filteredRegularPlugins.length === 0) {
         rows.push({ key: 'empty:plugins', kind: 'empty', text: '没有匹配的插件' });
       }
       for (const item of filteredRegularPlugins) {
         rows.push({ key: `plugin:${item.name}`, kind: 'plugin', plugin: item });
       }
-    }
-    //M 进程插件也是插件，排在插件组后面：先三方握手图，再 config 里登记的每个程序。
-    rows.push({ key: 'div:plugins-programs', kind: 'divider' });
-    rows.push({
-      key: 'head:programs', kind: 'group-head', groupKey: 'programs', title: '进程插件',
-      count: programs.length + 1, expanded: openGroups.programs || hasSearch,
-    });
-    if (openGroups.programs || hasSearch) {
-      //M 握手图固定第一行，不参与搜索过滤。
+    };
+    const pushPrograms = (): void => {
+      pushDiv('programs');
+      const expanded = openGroups.programs || hasSearch;
+      rows.push({
+        key: 'head:programs', kind: 'group-head', groupKey: 'programs', title: '进程插件',
+        count: programs.length + 1, expanded,
+      });
+      if (!expanded) return;
       rows.push({ key: 'programs:handshake', kind: 'handshake' });
       for (const program of programs) {
         if (hasSearch && !`${program.name} ${program.title}`.toLowerCase().includes(query)) continue;
-
-        //M 一个程序一行，状态和版本取自 /api/programs。
         rows.push({ key: `program:${program.name}`, kind: 'program', program });
       }
+    };
+
+    if (isNarrow) {
+      pushReading();
+      pushMessages();
+      pushPlugins();
+      pushBoot();
+      pushSkeleton();
+      pushCordis();
+      pushUtils();
+      pushRoute();
+      pushPrograms();
+      return rows;
     }
+    pushSkeleton();
+    pushUtils();
+    pushCordis();
+    pushBoot();
+    pushRoute();
+    pushMessages();
+    pushReading();
+    pushPlugins();
+    pushPrograms();
     return rows;
   }, [
     bootExpanded,
@@ -2002,7 +2235,9 @@ export function TutorialPage(): JSX.Element {
     filteredRegularPlugins,
     filteredSkeletons,
     filteredUtils,
+    isNarrow,
     messagesExpanded,
+    openGroups.route,
     pluginsExpanded,
     readingLabel,
     readingsExpanded,
@@ -2294,9 +2529,50 @@ export function TutorialPage(): JSX.Element {
 
   let mobileNavLabel = '☰ 目录';
   if (mobileNavOpen) {
-    mobileNavLabel = '✕ 目录';
+    mobileNavLabel = '✕ 收起';
   }
   const showLeftPane = (!isNarrow && !leftCollapsed) || (isNarrow && mobileNavOpen);
+
+  let mobileTitle = 'jmbots 教程';
+  if (!contentOnly && route.canvas === 'boot') mobileTitle = '启动流程';
+  if (!contentOnly && route.canvas !== '' && route.canvas !== SENTINEL_AUTO && route.canvas !== 'boot') {
+    mobileTitle = `消息 #${route.canvas}`;
+  }
+  if (!contentOnly && showMind && mindTree.mode === 'project') mobileTitle = t('项目结构');
+  if (!contentOnly && showMind && mindTree.mode === 'lines' && hasPluginName) {
+    mobileTitle = `逐行 · ${resolvedPluginName}`;
+  }
+  if (contentOnly && route.rtab === 'reading' && route.reading !== '') {
+    mobileTitle = formatReadingTitle(route.reading);
+  }
+  if (contentOnly && route.rtab === 'util' && route.util !== '') {
+    mobileTitle = `工具 · ${route.util.replace(/\.ts$/u, '')}`;
+  }
+  if (contentOnly && route.rtab === 'plugin' && hasPluginName) {
+    mobileTitle = `插件 · ${resolvedPluginName}`;
+  }
+
+  let showRightPane = contentOnly || !rightCollapsed;
+  if (isNarrow) {
+    showRightPane = contentOnly;
+    if (!contentOnly && route.rtab === 'plugin') showRightPane = true;
+    if (!contentOnly && route.rtab === 'step' && showMind && mindTree.mode === 'lines') {
+      showRightPane = true;
+    }
+    const needSheetStep = showMind || narrowMode !== 'steps';
+    const hasStepReady = pickedStep !== undefined && activeTrail !== null && hasRealCanvas;
+    if (!contentOnly && route.rtab === 'step' && needSheetStep && hasStepReady) {
+      showRightPane = true;
+    }
+  }
+  if (isNarrow && showMind && !contentOnly && !showRightPane) {
+    bodyClass += ' tu-mind-solo';
+  }
+  let pageClass = 'tu-page';
+  if (isNarrow && mobileNavOpen) {
+    pageClass = 'tu-page tu-m-drawer-open';
+  }
+  const hideMobilePaneBar = isNarrow && (route.rtab === 'reading' || route.rtab === 'util');
 
   return (
     <antd.ConfigProvider
@@ -2308,68 +2584,104 @@ export function TutorialPage(): JSX.Element {
     >
       <TutorialWorkspaceContext.Provider value={workspace}>
         {contextHolder}
-        <div className="tu-page">
-          <header className="tu-top">
-            <div className="tu-top-left">
-              {isNarrow && (
-                <button
-                  type="button"
-                  className="tu-mobile-nav-btn"
-                  data-mobile-nav
-                  aria-expanded={mobileNavOpen}
-                  onClick={() => setMobileNavOpen((prev) => !prev)}
-                >
-                  {mobileNavLabel}
-                </button>
-              )}
-              <span className="tu-brand">jmbots 教程</span>
-              {topSummary !== '' && <span className="tu-top-summary">{topSummary}</span>}
-            </div>
-            <div className="tu-top-right">
-              <div className="tu-view-choice" role="group" aria-label={viewLabel}>
-                <button type="button" data-look="lane" aria-pressed={!showMind}
-                  onClick={() => tutorialView.select('canvas')}>{canvasLabel}</button>
-                <button type="button" data-look="mind" aria-pressed={showMind}
-                  onClick={() => tutorialView.select('mind')}>{mindLabel}</button>
+        <div className={pageClass}>
+          {!isNarrow && (
+            <header className="tu-top">
+              <div className="tu-top-left">
+                <span className="tu-brand">jmbots 教程</span>
+                {topSummary !== '' && <span className="tu-top-summary">{topSummary}</span>}
               </div>
-              {route.event !== '' && (
+              <div className="tu-top-right">
+                <div className="tu-view-choice" role="group" aria-label={viewLabel}>
+                  <button type="button" data-look="lane" aria-pressed={!showMind}
+                    onClick={() => tutorialView.select('canvas')}>{canvasLabel}</button>
+                  <button type="button" data-look="mind" aria-pressed={showMind}
+                    onClick={() => tutorialView.select('mind')}>{mindLabel}</button>
+                </div>
+                {route.event !== '' && (
+                  <button
+                    type="button"
+                    className="tu-event-pill active"
+                    title="点击清除画布事件高亮"
+                    onClick={() => navigate({ ...route, event: '' })}
+                  >
+                    高亮：{route.event} ×
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="tu-event-pill active"
-                  title="点击清除画布事件高亮"
-                  onClick={() => navigate({ ...route, event: '' })}
+                  className="tu-link"
+                  data-doc-guide
+                  onClick={() => onSelectReading('08_工作决策工作台.md')}
                 >
-                  高亮：{route.event} ×
+                  工作台用法
                 </button>
-              )}
+                <a
+                  className="tu-link"
+                  href={withToken('/work-decision/', TOKEN)}
+                  style={{ textDecoration: 'none' }}
+                >
+                  工作决策
+                </a>
+                <a
+                  className="tu-link"
+                  href={
+                    //M 为返回聊天主页的链接附带统一鉴权令牌。
+                    withToken('/', TOKEN)
+                  }
+                  style={{ textDecoration: 'none' }}
+                >
+                  返回聊天
+                </a>
+                <button type="button" className="tu-link" onClick={load}>刷新</button>
+              </div>
+            </header>
+          )}
+          {isNarrow && (
+            <header className="tu-m-top">
               <button
                 type="button"
-                className="tu-link"
-                data-doc-guide
-                onClick={() => onSelectReading('08_工作决策工作台.md')}
+                className="tu-m-nav-btn"
+                data-mobile-nav
+                aria-expanded={mobileNavOpen}
+                onClick={() => setMobileNavOpen((prev) => !prev)}
               >
-                工作台用法
+                {mobileNavLabel}
               </button>
-              <a
-                className="tu-link"
-                href={withToken('/work-decision/', TOKEN)}
-                style={{ textDecoration: 'none' }}
-              >
-                工作决策
-              </a>
-              <a
-                className="tu-link"
-                href={
-                  //M 为返回聊天主页的链接附带统一鉴权令牌。
-                  withToken('/', TOKEN)
-                }
-                style={{ textDecoration: 'none' }}
-              >
-                返回聊天
-              </a>
-              <button type="button" className="tu-link" onClick={load}>刷新</button>
-            </div>
-          </header>
+              <div className="tu-m-title" title={mobileTitle}>{mobileTitle}</div>
+              {!contentOnly && !showMind && (
+                <button
+                  type="button"
+                  className="tu-m-action"
+                  data-look="mind"
+                  onClick={() => tutorialView.select('mind')}
+                >
+                  导图
+                </button>
+              )}
+              {!contentOnly && showMind && (
+                <button
+                  type="button"
+                  className="tu-m-action active"
+                  data-look="lane"
+                  onClick={() => tutorialView.select('canvas')}
+                >
+                  步骤
+                </button>
+              )}
+              {contentOnly && (
+                <button
+                  type="button"
+                  className="tu-m-icon-btn"
+                  aria-label="刷新"
+                  title="刷新"
+                  onClick={load}
+                >
+                  ↻
+                </button>
+              )}
+            </header>
+          )}
 
           <div className={bodyClass}>
             {/* 最底层：全视口泳道画布舞台，在左右两浮栏后面全幅铺开。 */}
@@ -2393,13 +2705,17 @@ export function TutorialPage(): JSX.Element {
                   //M 泳道上点插件名留在三栏，右侧看说明。
                   (name) => onSelectPlugin(name, undefined, true)
                 }
+                onSelectEvent={onSelectEvent}
                 onClearEvent={() => navigate({ ...route, event: '' })}
                 onTrailLoaded={handleTrailLoaded}
+                workspace={workspace}
                 leftOpen={!leftCollapsed}
                 leftWidth={clampedLeftWidth}
                 rightOpen={!rightCollapsed}
                 rightWidth={clampedRightWidth}
                 isNarrow={isNarrow}
+                narrowMode={narrowMode}
+                onNarrowModeChange={setNarrowMode}
               />
             )}
             {!contentOnly && !hasRealCanvas && canvasesLoaded && route.canvas !== SENTINEL_AUTO && (
@@ -2450,7 +2766,7 @@ export function TutorialPage(): JSX.Element {
                     <antd.Input
                       size="small"
                       allowClear
-                      placeholder="搜索插件、消息、飞书/网页…"
+                      placeholder="搜索组块、消息、插件…"
                       value={searchText}
                       onChange={(event) => setSearchText(event.target.value)}
                     />
@@ -2461,7 +2777,7 @@ export function TutorialPage(): JSX.Element {
                       className="tu-collapse-btn"
                       onClick={() => setMobileNavOpen(false)}
                     >
-                      收起 ▲
+                      完成
                     </button>
                   )}
                   {!isNarrow && (
@@ -2493,6 +2809,42 @@ export function TutorialPage(): JSX.Element {
                   }
                 />
 
+                {isNarrow && (
+                  <div className="tu-m-drawer-foot">
+                    <a
+                      className="tu-m-foot-link"
+                      href={withToken('/work-decision/', TOKEN)}
+                    >
+                      📋 工作决策
+                    </a>
+                    <a
+                      className="tu-m-foot-link"
+                      href={withToken('/', TOKEN)}
+                    >
+                      💬 返回聊天
+                    </a>
+                    <button
+                      type="button"
+                      className="tu-m-foot-btn"
+                      onClick={() => {
+                        load();
+                        setMobileNavOpen(false);
+                      }}
+                    >
+                      ↻ 刷新
+                    </button>
+                    {webAuth.required && (
+                      <button
+                        type="button"
+                        className="tu-m-foot-btn danger"
+                        onClick={() => void webAuth.logout()}
+                      >
+                        退出
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {!isNarrow && (
                   <div
                     className="tu-resizer tu-resizer-right"
@@ -2519,7 +2871,7 @@ export function TutorialPage(): JSX.Element {
                 ◀ 详情
               </button>
             )}
-            {(isNarrow || contentOnly || !rightCollapsed) && (
+            {showRightPane && (
               <aside className="tu-plugin-pane tu-float-right" style={rightStyle}>
                 {!isNarrow && !contentOnly && (
                   <div
@@ -2531,57 +2883,86 @@ export function TutorialPage(): JSX.Element {
                   />
                 )}
                 <div className="tu-pane-inner">
-                  <div className="tu-pane-bar">
-                    <div className="tu-rtabs" role="tablist">
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-selected={route.rtab === 'step'}
-                        className={stepTabClass}
-                        onClick={() => navigate({ ...route, rtab: 'step', doc: false })}
-                      >
-                        这一步
-                        {route.step > 0 && <span className="tu-rtab-badge">#{String(route.step)}</span>}
-                      </button>
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-selected={route.rtab === 'plugin'}
-                        className={pluginTabClass}
-                        onClick={() => navigate({ ...route, rtab: 'plugin' })}
-                      >
-                        插件
-                        {hasPluginName && <span className="tu-rtab-badge">{resolvedPluginName}</span>}
-                      </button>
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-selected={route.rtab === 'reading'}
-                        className={readingTabClass}
-                        onClick={
-                          //M 回到先前在右栏阅读的组块。
-                          () => navigate({ ...route, rtab: 'reading' })
-                        }
-                      >
-                        {readingLabel}
-                      </button>
-                    </div>
-                    <div className="tu-pane-bar-actions">
-                      {!isNarrow && !contentOnly && (
+                  {!hideMobilePaneBar && (
+                    <div className="tu-pane-bar">
+                      <div className="tu-rtabs" role="tablist">
                         <button
                           type="button"
-                          className="tu-collapse-btn"
-                          title="收起右栏，让画布更大"
+                          role="tab"
+                          aria-selected={route.rtab === 'step'}
+                          className={stepTabClass}
+                          onClick={() => navigate({ ...route, rtab: 'step', doc: false })}
+                        >
+                          这一步
+                          {route.step > 0 && <span className="tu-rtab-badge">#{String(route.step)}</span>}
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={route.rtab === 'plugin'}
+                          className={pluginTabClass}
+                          onClick={() => navigate({ ...route, rtab: 'plugin' })}
+                        >
+                          插件
+                          {hasPluginName && <span className="tu-rtab-badge">{resolvedPluginName}</span>}
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={route.rtab === 'reading'}
+                          className={readingTabClass}
                           onClick={
-                            //M 收起右侧浮栏并记住开关，腾出更多画布空间。
-                            () => toggleRightCollapsed(true)
+                            //M 回到先前在右栏阅读的组块。
+                            () => navigate({ ...route, rtab: 'reading' })
                           }
                         >
-                          收起 ▶
+                          {readingLabel}
                         </button>
-                      )}
+                      </div>
+                      <div className="tu-pane-bar-actions">
+                        {isNarrow && contentOnly && hasRealCanvas && (
+                          <button
+                            type="button"
+                            className="tu-collapse-btn"
+                            onClick={() => navigate({ ...route, rtab: 'step', doc: false })}
+                          >
+                            ← 返回轨迹
+                          </button>
+                        )}
+                        {isNarrow && !contentOnly && route.rtab === 'plugin' && (
+                          <button
+                            type="button"
+                            className="tu-collapse-btn"
+                            onClick={() => navigate({ ...route, rtab: 'step' })}
+                          >
+                            关闭 ✕
+                          </button>
+                        )}
+                        {isNarrow && !contentOnly && route.rtab === 'step' && pickedStep !== undefined && (
+                          <button
+                            type="button"
+                            className="tu-collapse-btn"
+                            onClick={() => onPickStep(0)}
+                          >
+                            收起 ✕
+                          </button>
+                        )}
+                        {!isNarrow && !contentOnly && (
+                          <button
+                            type="button"
+                            className="tu-collapse-btn"
+                            title="收起右栏，让画布更大"
+                            onClick={
+                              //M 收起右侧浮栏并记住开关，腾出更多画布空间。
+                              () => toggleRightCollapsed(true)
+                            }
+                          >
+                            收起 ▶
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="tu-pane-body" ref={attachRightScroll}>
                     <TutorialScrollContext.Provider value={rightScrollParent}>

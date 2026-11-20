@@ -106,19 +106,28 @@
     position: relative;
     inset: auto !important;
     width: 100%;
-    height: 64vh;
+    height: 60dvh;
     min-height: 380px;
+    border-radius: 14px;
     order: 2;
+  }
+  .tu-mind-solo > .tu-mind {
+    height: calc(100dvh - 76px);
+    min-height: 480px;
   }
   .tu-mind-head {
     position: static;
-    padding: 7px 8px;
-    border-bottom: 1px solid var(--jm-border);
+    padding: 8px 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--jm-border) 75%, transparent);
     background: var(--jm-panel);
     pointer-events: auto;
   }
-  .tu-top:has(.tu-view-choice) { height: auto; min-height: 50px; flex-wrap: wrap; gap: 4px; padding-block: 6px; }
-  .tu-top:has(.tu-view-choice) .tu-top-right { flex-wrap: wrap; }
+  .tu-mind .tu-mind-modes button,
+  .tu-mind .tu-mind-direction button {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
 }
 .tu-lines { flex: 1; min-height: 0; display: flex; flex-direction: column; container: tu-lines / inline-size; }
 .tu-lines-bar { flex: none; display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--jm-border); }
