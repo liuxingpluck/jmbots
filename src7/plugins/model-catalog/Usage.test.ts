@@ -21,10 +21,6 @@ afterEach(async () => {
 });
 
 const query = { sessions: ['session-1'], from: 0, to: Number.MAX_SAFE_INTEGER, limit: 10 };
-const eventOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason) => ({ requestId: reason, rows: [], truncated: false }),
-};
 
 /** 测试只用内存库，不依赖运行实例。 */
 class FakeResources extends cordis.Service {
@@ -46,7 +42,7 @@ class FakeResources extends cordis.Service {
 }
 
 
-test('用量事件返回按模型价格入账的调用，目录缺席时按零计费', async () => {
+test('用量事件返回按模型价格入账的调用，目录缺席或异常时按零计费', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   await ctx.plugin(FakeResources);
@@ -92,21 +88,36 @@ test('用量事件返回按模型价格入账的调用，目录缺席时按零�
   await Bun.sleep(0);
 
   const firstPage = { ...query, limit: 2 };
-  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', firstPage, eventOptions);
-  expect(result.requestId).toStartWith('req_');
-  expect(result.rows.map((row) => row.cost)).toEqual([2.3, 0]);
-  expect(result.truncated).toBe(true);
+  //M 首屏回执给出计费和截断信息。
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', firstPage);
+  expect(result.reply?.requestId).toStartWith('req_');
+  expect(result.reply?.rows.map((row) => row.cost)).toEqual([2.3, 0]);
+  expect(result.reply?.truncated).toBe(true);
 
-  const all = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
-  expect(all.rows[2]).toMatchObject({ ok: false, input: 0, cost: 0, ms: 4, error: '测试连接失败' });
-  expect(all.truncated).toBe(false);
+  //M 完整回执包含失败调用的记录。
+  const all = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
+  expect(all.reply?.rows[2]).toMatchObject({ ok: false, input: 0, cost: 0, ms: 4, error: '测试连接失败' });
+  expect(all.reply?.truncated).toBe(false);
+
+  //M 目录接单后抛错时，仍需记录这一次成功调用。
+  events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', () => {
+    throw new Error('模拟价格读取失败');
+  });
+  //M 发送一条实际用量非零的成功记录。
+  ctx.emit('session/new-message', session, message);
+  await Bun.sleep(0);
+  //G 价格查询失败后，入账仍保留用量并将费用记为零。
+  const afterError = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
+  expect(afterError.reply?.rows).toHaveLength(4);
+  expect(afterError.reply?.rows[3]).toMatchObject({ ok: true, input: usage.input, cost: 0 });
 });
 
-test('用量插件未挂载时查询退回空列表', async () => {
+test('用量插件未挂载时返回未处理原因', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
-  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
-  expect(result).toEqual({ requestId: 'unhandled', rows: [], truncated: false, fallback: 'unhandled' });
+  //G 未挂载用量时，由事件工具报告无人接单。
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
+  expect(result).toEqual({ why: 'unhandled' });
 });
 
 
@@ -170,17 +181,19 @@ test('model-catalog自动挂用量，晚到的HTTP保持路径，卸载撤掉服
   const model = `${message.provider}/${message.model}`;
   ctx.emit('session/model-failed', { session, model, ms: 1, error: '离线测试' });
   await Bun.sleep(0);
-  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
-  expect(result.rows).toHaveLength(2);
-  expect(result.rows.map((row) => row.ok)).toEqual([true, false]);
-  expect(result.rows.map((row) => row.cost)).toEqual([0, 0]);
+  //M 经宿主的查询事件读回两次入账。
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
+  expect(result.reply?.rows).toHaveLength(2);
+  expect(result.reply?.rows.map((row) => row.ok)).toEqual([true, false]);
+  expect(result.reply?.rows.map((row) => row.cost)).toEqual([0, 0]);
 
   //M 只卸载模型插件作用域，确认服务、查询响应器与计量监听都撤销。
   expect(scope).toBeDefined();
   await scope!.fiber.dispose();
   expect(ctx.get('usage')).toBeUndefined();
-  const gone = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
-  expect(gone.requestId).toBe('unhandled');
+  //G 卸载后查询事件不再有人处理。
+  const gone = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
+  expect(gone).toEqual({ why: 'unhandled' });
   ctx.emit('session/new-message', session, message);
   await Bun.sleep(0);
   const count = ctx.resources.db.query('SELECT COUNT(*) AS n FROM model_usage').get();

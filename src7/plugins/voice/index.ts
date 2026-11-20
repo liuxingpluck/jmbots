@@ -1,4 +1,8 @@
-/** voice：接入浏览器麦克风，让当前连接查看字幕，并把判断通过的语音交给机器人。 */
+/**
+ * voice：接入浏览器麦克风，让当前连接查看字幕，并把判断通过的语音交给机器人。
+ * 文件：本文件（连接、Voice、apply 装配和登记）、Config.ts（配置校验）、Lines.ts（转写、合成主备线路装配）、
+ * Asr.ts、CloudAsr.ts、RoutedAsr.ts（转写）、Tts.ts（合成）、Tasks.ts、Turn.ts、Models.ts（任务判断、断句）、Replies.ts（回话）。
+ */
 
 import * as path from 'node:path';
 import * as timers from 'node:timers/promises';
@@ -8,60 +12,27 @@ import * as channel from '../channels/index.ts';
 import * as requests from '../../utils/RequestEvent.ts';
 import * as asrModule from './Asr.ts';
 import * as cloudAsr from './CloudAsr.ts';
+import * as configModule from './Config.ts';
+import * as linesModule from './Lines.ts';
 import * as models from './Models.ts';
 import * as replyModule from './Replies.ts';
-import * as routedAsr from './RoutedAsr.ts';
 import * as routes from './Routes.ts';
 import * as taskModule from './Tasks.ts';
 import * as ttsModule from './Tts.ts';
 import * as turnModule from './Turn.ts';
-import * as turnModel from './TurnModel.ts';
 
 export const name = 'voice';
 //M 0.6.3：voice/dispatch 并进 channel/direct（半句带 routing.partial）；只入档的整句发 channel/listen（targetBots 空）；
 //M   voice/record 加 waiting 顶替 routing.recordOnly。
-export const version = '0.6.3';
+//M 0.6.5：getSettings 改用 Checks.ts 的 checkNumber、checkFlag、checkModelRef 等公共校验；模型线路的供应商要在 providers 里。
+//M 0.6.6：配置校验搬进 Config.ts，转写、合成线路装配搬进 Lines.ts（云端20 第 3 条），apply 只装配、登记路由和事件。
+export const version = '0.6.6';
 export const inject = ['resources', 'http', 'sessions'];
 
-type Provider = 'fake' | 'sherpa' | 'bailian' | 'xiaomi';
-type TtsProvider = 'xiaomi' | 'local';
 type State = 'idle' | 'listening' | 'error';
 
-export interface BargeIn {
-  /** 连续转写达到多少个有效字符才有足够证据停播。 */
-  minChars: number;
-  /** 当前字幕与播报片段足够相似时，将它当成回声。 */
-  echoSimilarity: number;
-}
-
-interface Settings {
-  /** 是否允许开始听。 */
-  enabled: boolean;
-  /** 页面没有指定时的机器人。 */
-  bot: string;
-  /** 受 HTTP 鉴权保护的升级路径。 */
-  wsPath: string;
-  /** 用户明确配置的识别后端。 */
-  provider: Provider;
-  /** 可在主选失效时重放本句的另一端。 */
-  asrFallback?: Exclude<Provider, 'fake'>;
-  /** 百炼实时与小米整句模型标识。 */
-  asrModels: Record<'bailian' | 'xiaomi', string>;
-  /** 句尾静音长度。 */
-  silenceMs: number;
-  /** 单句话最长时间。 */
-  maxUtteranceMs: number;
-  /** 转写通过后使用的派发策略。 */
-  tasks: taskModule.TaskSettings;
-  /** 语音专用任务理解配置；缺席沿用 decision/judge。 */
-  understanding?: models.ModelSettings;
-  /** 半句判断与停顿参数；关闭时仅使用 ASR 的端点规则。 */
-  turn?: { models: models.ModelSettings; pauseMs: number; maxPerMinute: number };
-  /** 开启双工时的插话判断；缺席时沿用半双工。 */
-  bargeIn?: BargeIn;
-  /** 要优先使用的合成后端与音色。 */
-  tts: { provider: TtsProvider; fallback?: TtsProvider; voice: string };
-}
+/** 双工时的插话判断（Config.ts）；测试经 plugin.BargeIn 取。 */
+export type BargeIn = configModule.BargeIn;
 
 /** 插件已准备好的判断服务，连接只保留本轮断句状态。 */
 interface Judging {
@@ -121,12 +92,8 @@ declare module 'cordis' {
   }
 }
 
-interface Notice {
-  /** 客户端可本地化的固定错误码。 */
-  code: string;
-  /** 默认中文提示。 */
-  message: string;
-}
+/** 给客户端的固定提示（Lines.ts）。 */
+type Notice = linesModule.Notice;
 
 interface Status {
   /** 用户是否启用插件。 */
@@ -156,14 +123,11 @@ export interface VoiceSocket {
 }
 
 const DISABLED: Notice = { code: 'voice-disabled', message: '语音听写未启用' };
-const NO_ASR: Notice = { code: 'asr-model-missing', message: '本地转写还没装好' };
 const NO_WS: Notice = { code: 'websocket-missing', message: '语音服务缺少 WebSocket 依赖' };
 const BAD_FRAME: Notice = { code: 'invalid-frame', message: '语音帧无效，第一帧必须是 start' };
 const ASR_FAILED: Notice = { code: 'asr-failed', message: '语音转写失败' };
 const NO_BOT: Notice = { code: 'voice-no-bot', message: '没有选定接收语音任务的机器人' };
 const TASK_FAILED: Notice = { code: 'voice-task-failed', message: '机器人没有接收这条语音任务' };
-const DEFAULT_WS = '/api/voice/ws';
-const STATUS_PATH = '/api/voice/status';
 const OPEN = 1;
 const PLAYBACK_MARGIN_MS = 100;
 const ECHO_TAIL_MS = 150;
@@ -183,223 +147,6 @@ interface Speech {
   controller: AbortController;
   /** 按已发 PCM 样本数估计的播放结束时刻。 */
   audibleUntil: number;
-}
-
-/** 读取配置对象；只在调用入口补默认值。 */
-function getObject(value: unknown, key: string): Record<string, unknown> {
-  if (value === undefined) return {};
-
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  throw new Error(key + ' 要是对象');
-}
-
-/** 在语音配置入口读取供应商模型 ID 或默认值。 */
-function getModelId(raw: unknown, key: string, fallback: string): string {
-  if (raw === undefined) return fallback;
-
-  if (typeof raw !== 'string' || raw.trim() === '') throw new Error(key + ' 要是非空字符串');
-
-  return raw.trim();
-}
-
-/** 在插件入口校验语音配置，默认关闭。 */
-function getSettings(raw: unknown): Settings {
-  //G 把读取与验证集中在插件入口，错误仅指出配置键。
-  const voice = getObject(raw, 'voice');
-  const asr = getObject(voice['asr'], 'voice.asr');
-  const turn = getObject(voice['turn'], 'voice.turn');
-  const judge = getObject(voice['judge'], 'voice.judge');
-  const tts = getObject(voice['tts'], 'voice.tts');
-
-  function number(value: unknown, key: string, fallback: number): number {
-    if (value === undefined) return fallback;
-
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-      throw new Error('voice.' + key + ' 要是正整数');
-    }
-    return value;
-  }
-
-  function probability(key: string, fallback: number): number {
-    const value = judge[key];
-    if (value === undefined) return fallback;
-
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
-      throw new Error('voice.judge.' + key + ' 要是 0 到 1 之间的数');
-    }
-    return value;
-  }
-
-  /** 校验语音模型的主备写法，不替使用者隐式启用外部供应商。 */
-  function getModels(
-    written: unknown,
-    key: string,
-    builtin?: string,
-  ): models.ModelSettings | undefined {
-    if (written === false || (written === undefined && builtin === undefined)) return undefined;
-
-    const prefix = 'voice.' + key;
-    //G 单独配置语音模型时必须先满足主备对象的结构。
-    const input = getObject(written, prefix);
-    let local = input['local_model'];
-    const cloud = input['cloud_model'];
-    if (written === undefined) {
-      local = builtin;
-    }
-    const modelRef = /^[\w.-]+\/[^\s/][^\s]*$/u;
-    if (local !== undefined && (typeof local !== 'string' || (local !== builtin && !modelRef.test(local)))) {
-      throw new Error(prefix + '.local_model 要写成供应商名/模型 ID 或本插件内置断句模型');
-    }
-    if (cloud !== undefined && (typeof cloud !== 'string' || !modelRef.test(cloud))) {
-      throw new Error(prefix + '.cloud_model 要写成供应商名/模型 ID');
-    }
-    if (local === undefined && cloud === undefined) {
-      throw new Error(prefix + ' 至少配置一条模型线路');
-    }
-    if (local !== undefined && local === cloud) throw new Error(prefix + ' 的本地和云端模型要不同');
-
-    const prefer = input['prefer'] ?? 'local';
-    if (prefer !== 'local' && prefer !== 'cloud') {
-      throw new Error(prefix + '.prefer 只支持 local 或 cloud');
-    }
-    //M 每条模型各有期限，断句失败还可及时沿用静音规则。
-    const timeoutKey = key + '.timeout_ms';
-    let fallback = 400;
-    if (builtin === undefined) {
-      fallback = 2500;
-    }
-    //G 只接收正整数毫秒，模型等待有显式的上限。
-    const timeoutMs = number(input['timeout_ms'], timeoutKey, fallback);
-    return { local, cloud, prefer, timeoutMs };
-  }
-
-  let enabled = voice['enabled'];
-  if (enabled === undefined) {
-    enabled = false;
-  }
-  if (typeof enabled !== 'boolean') {
-    throw new Error('voice.enabled 要是布尔值');
-  }
-
-  //G 听写的开关和回声阈值只在读取配置时校验。
-  const interrupt = voice['barge_in'];
-  if (interrupt !== undefined && typeof interrupt !== 'boolean') {
-    throw new Error('voice.barge_in 要是布尔值');
-  }
-
-  const minChars = number(voice['barge_in_min_chars'], 'barge_in_min_chars', 3);
-  let echoSimilarity = voice['barge_in_echo_similarity'];
-  if (echoSimilarity === undefined) {
-    echoSimilarity = 0.75;
-  }
-  if (typeof echoSimilarity !== 'number' || !Number.isFinite(echoSimilarity)
-    || echoSimilarity <= 0 || echoSimilarity > 1) {
-    throw new Error('voice.barge_in_echo_similarity 要大于 0 且不大于 1');
-  }
-  let bargeIn: BargeIn | undefined;
-  if (interrupt !== false) {
-    bargeIn = { minChars, echoSimilarity };
-  }
-
-  let bot = voice['bot'];
-  if (bot === undefined) {
-    bot = '';
-  }
-  if (typeof bot !== 'string') {
-    throw new Error('voice.bot 要是字符串');
-  }
-  let wsPath = voice['ws_path'];
-  if (wsPath === undefined) {
-    wsPath = DEFAULT_WS;
-  }
-  if (typeof wsPath !== 'string' || !/^\/api\/[A-Za-z0-9_/-]+$/u.test(wsPath)
-    || wsPath.includes('//') || wsPath === STATUS_PATH) {
-    throw new Error('voice.ws_path 要是 /api/ 下的静态路径');
-  }
-  const sampleRate = voice['sample_rate'];
-  if (sampleRate !== undefined && sampleRate !== asrModule.SAMPLE_RATE) {
-    throw new Error('voice.sample_rate 只支持 16000');
-  }
-  let provider = asr['provider'];
-  if (provider === undefined) {
-    provider = 'sherpa';
-  }
-  if (provider !== 'fake' && provider !== 'sherpa' && provider !== 'bailian' && provider !== 'xiaomi') {
-    throw new Error('voice.asr.provider 只支持 sherpa、bailian、xiaomi 或 fake');
-  }
-  const asrFallback = asr['fallback'];
-  if (asrFallback !== undefined && asrFallback !== 'sherpa'
-    && asrFallback !== 'bailian' && asrFallback !== 'xiaomi') {
-    throw new Error('voice.asr.fallback 只支持 sherpa、bailian 或 xiaomi');
-  }
-  if (asrFallback !== undefined && (provider === 'fake' || (provider === 'sherpa') === (asrFallback === 'sherpa'))) {
-    throw new Error('voice.asr.fallback 要与 asr.provider 分别位于本地和云端');
-  }
-
-  //M 云端不同协议各自保留已验证的默认模型。
-  const bailian = getModelId(asr['bailian_model'], 'voice.asr.bailian_model', 'fun-asr-realtime');
-  const xiaomi = getModelId(asr['xiaomi_model'], 'voice.asr.xiaomi_model', 'mimo-v2.5-asr');
-  const asrModels = { bailian, xiaomi };
-  const speaker = tts['provider'] ?? 'xiaomi';
-  if (speaker !== 'xiaomi' && speaker !== 'local') {
-    throw new Error('voice.tts.provider 只支持 xiaomi 或 local');
-  }
-  const preferredFallback = tts['fallback'];
-  if (preferredFallback !== undefined && preferredFallback !== 'none'
-    && preferredFallback !== 'xiaomi' && preferredFallback !== 'local') {
-    throw new Error('voice.tts.fallback 只支持 local、xiaomi 或 none');
-  }
-  if (preferredFallback === speaker) throw new Error('voice.tts.fallback 要与 tts.provider 不同');
-
-  let ttsFallback: TtsProvider | undefined;
-  if (preferredFallback === 'local' || preferredFallback === 'xiaomi') {
-    ttsFallback = preferredFallback;
-  }
-  if (preferredFallback === undefined && speaker === 'xiaomi') {
-    ttsFallback = 'local';
-  }
-  const preset = tts['voice'] ?? 'mimo_default';
-  if (typeof preset !== 'string' || preset.trim() === '') {
-    throw new Error('voice.tts.voice 要是非空字符串');
-  }
-
-  //G 判断阈值只允许合法区间，拒绝颠倒的通过和拒绝线。
-  const allowAt = probability('allow_at', 0.8);
-  const denyAt = probability('deny_at', 0.3);
-  if (allowAt < denyAt) {
-    throw new Error('voice.judge.allow_at 不能小于 deny_at');
-  }
-
-  //M 只把已验证的字段交给连接、转写和派发实现。
-  const silenceMs = number(turn['silence_ms'], 'turn.silence_ms', 1200);
-  const maxUtteranceMs = number(turn['max_utterance_ms'], 'turn.max_utterance_ms', 60_000);
-  const tasks: taskModule.TaskSettings = {
-    minChars: number(judge['min_chars'], 'judge.min_chars', 6),
-    stepChars: number(judge['step_chars'], 'judge.step_chars', 12),
-    stepMs: number(judge['step_ms'], 'judge.step_ms', 1000),
-    allowAt,
-    denyAt,
-    timeoutMs: number(judge['timeout_ms'], 'judge.timeout_ms', 12_000),
-    maxPerMinute: number(judge['max_per_minute'], 'judge.max_per_minute', 30),
-    mergeWindowMs: number(turn['merge_window_ms'], 'turn.merge_window_ms', 30_000),
-  };
-  const synthesis = { provider: speaker, fallback: ttsFallback, voice: preset.trim() } as const;
-  //M 理解与断句单独选模型，使用者可只改其中一项。
-  const understanding = getModels(judge['models'], 'judge.models');
-  //M 断句优先用内置的轻量中文模型。
-  const detector = getModels(turn['detector'], 'turn.detector', turnModel.LOCAL_TURN_MODEL);
-  let boundary: Settings['turn'];
-  if (detector !== undefined) {
-    const pauseMs = number(turn['pause_ms'], 'turn.pause_ms', 300);
-    const maxPerMinute = number(turn['max_per_minute'], 'turn.max_per_minute', 30);
-    boundary = { models: detector, pauseMs, maxPerMinute };
-  }
-  return {
-    enabled, bot, wsPath, provider, asrFallback, asrModels, silenceMs, maxUtteranceMs,
-    tasks, understanding, turn: boundary, tts: synthesis, bargeIn,
-  };
 }
 
 /** 把 ws 原始数据整理为可读 PCM 或 UTF-8 文本的连续内存。 */
@@ -473,7 +220,7 @@ class VoiceConnection {
     private readonly socket: VoiceSocket,
     private readonly defaultBot: string,
     private readonly createAsr?: asrModule.AsrFactory,
-    private readonly provider: Provider = 'fake',
+    private readonly provider: configModule.Provider = 'fake',
     private readonly taskSettings?: taskModule.TaskSettings,
     private readonly speak?: ttsModule.Speak,
     private readonly models?: Judging,
@@ -810,7 +557,7 @@ class VoiceConnection {
 
     //G 未部署真实转写时提供明确状态，不切到假后端。
     if (this.createAsr === undefined) {
-      this.fail(NO_ASR, 4500);
+      this.fail(linesModule.NO_ASR, 4500);
       return;
     }
 
@@ -1091,7 +838,7 @@ export class Voice {
     private readonly ctx: cordis.Context,
     private readonly defaultBot: string,
     private readonly createAsr?: asrModule.AsrFactory,
-    private readonly provider: Provider = 'fake',
+    private readonly provider: configModule.Provider = 'fake',
     private readonly taskSettings?: taskModule.TaskSettings,
     private readonly synthesizer?: ttsModule.Speak,
     private readonly judging?: Judging,
@@ -1231,201 +978,57 @@ export async function loadWebSocket(): Promise<fastify.FastifyPluginCallback | u
   }
 }
 
-/** 从既有供应商配置取认证和语音端点；找不到时留给线路选择报告。 */
-function getCloud(ctx: cordis.Context, name: 'bailian' | 'xiaomi'): { url: URL; apiKey: string } | undefined {
-  const provider = ctx.resources.config.providers?.[name];
-  if (provider === undefined || provider.apiKey.trim() === '') return undefined;
-
-  try {
-    const url = new URL(provider.baseUrl);
-    if (name === 'bailian') {
-      if (url.protocol === 'https:') {
-        url.protocol = 'wss:';
-      }
-      if (url.protocol !== 'wss:') return undefined;
-
-      if (url.pathname === '/') {
-        url.pathname = '/api-ws/v1/inference';
-      }
-      return { url, apiKey: provider.apiKey };
-    }
-    if (url.protocol !== 'https:') return undefined;
-
-    //M 小米沿用供应商地址的版本或套餐前缀。
-    url.pathname = url.pathname.replace(/\/$/u, '') + '/chat/completions';
-    return { url, apiKey: provider.apiKey };
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * 注册语音插件。启用且有 transport 时加 WS；状态查询可报告配置或依赖缺失。
+ * 配置在 Config.ts 校验，转写、合成线路在 Lines.ts 装；这里只把它们交给 Voice，再登记路由和事件。
  * @param ctx Cordis 插件上下文。
  * 副作用：在现有 HTTP 上登记路由，接入一个浏览器转写连接。
  */
 export async function apply(ctx: cordis.Context): Promise<void> {
-  //M 配置解析一次。只在用户明确选 fake 时启动模拟流。
+  //==========================================================
+  //M 配置解析一次，按配置装好转写、合成和判断线路
+  //==========================================================
   const raw = ctx.resources.raw['voice'];
-  const settings = getSettings(raw);
+  const settings = configModule.getSettings(raw, ctx.resources.config.providers);
   const lifetime = new AbortController();
   const root = ctx.resources.root;
   const nativeDir = path.resolve(root, 'program', 'sherpa-onnx');
   const modelsDir = path.resolve(root, 'program', 'voice-models');
-  const maxSamples = settings.maxUtteranceMs * asrModule.SAMPLE_RATE / 1000;
   const locations = {
     nativeDir,
     modelsDir,
     silenceMs: settings.silenceMs,
     maxUtteranceMs: settings.maxUtteranceMs,
   };
+  //M 真实线路只在启用且不是 fake 时装：fake 只出模拟字幕，不播报、不判断。
+  const realLines = settings.enabled && settings.provider !== 'fake';
+
   let createAsr: asrModule.AsrFactory | undefined;
-  let unavailable = NO_ASR;
+  let unavailable = linesModule.NO_ASR;
   if (settings.enabled && settings.provider === 'fake') {
+    //M 只在用户明确选 fake 时启动模拟流。
     const { silenceMs, maxUtteranceMs } = settings;
     createAsr = () => new asrModule.FakeAsr(silenceMs, maxUtteranceMs);
   }
-  if (settings.enabled && settings.provider !== 'fake') {
-    //M 没缺文件才准备本地备选，实际加载推迟到资源守卫已可回执时。
-    const sherpaReady = asrModule.hasSherpa(locations);
-    let sherpa: asrModule.AsrFactory | undefined;
-    let warming: Promise<asrModule.AsrFactory | undefined> | undefined;
-    const getSherpa = async (): Promise<asrModule.AsrFactory | undefined> => {
-      if (sherpa !== undefined) return sherpa;
-
-      if (warming === undefined) {
-        //M 并发的预热与听写连接共用一次模型加载。
-        warming = asrModule.loadSherpa(locations).then((factory) => {
-          sherpa = factory;
-          return factory;
-        }).finally(() => {
-          warming = undefined;
-        });
-      }
-      return warming;
-    };
-    const openLocal = async (signal: AbortSignal): Promise<asrModule.Asr> => {
-      //G 缺文件时保留明确的失败原因供备用线路记录。
-      if (!sherpaReady) throw new routes.RouteFailure(NO_ASR.message);
-
-      //G 每条本地识别流都会加载独享的 VAD，需要先检查当前资源。
-      await routes.allowLocal(ctx, signal);
-      signal.throwIfAborted();
-      //M 在进程中复用已加载的本地转写模型。
-      const factory = await getSherpa();
-      signal.throwIfAborted();
-      if (factory === undefined) throw new routes.RouteFailure('本地转写模型加载失败');
-
-      return factory();
-    };
-    if (sherpaReady && settings.provider === 'sherpa') {
-      //M 守卫可以回执后预热首选模型，避免首次接麦才加载。
-      ctx.on('ready', () => {
-        const signal = lifetime.signal;
-        void routes.allowLocal(ctx, signal).then(() => {
-          signal.throwIfAborted();
-          return getSherpa();
-        }).catch(() => {});
-      });
-    }
-    let canStart = false;
-    const choices: routedAsr.AsrRoute[] = [];
-    const selected = [settings.provider, settings.asrFallback];
-    for (const id of selected) {
-      if (id === undefined) continue;
-
-      if (id === 'sherpa') {
-        if (sherpaReady) {
-          canStart = true;
-        }
-        //M 始终保留所选主备次序，缺文件也能明确记录退出理由。
-        choices.push({ place: 'local', open: openLocal });
-        continue;
-      }
-
-      //M 只为已配置的转写线路准备该供应商端点。
-      const auth = getCloud(ctx, id);
-      const missing = '语音转写选了 ' + id + '，请配置 providers.' + id + ' 的地址和密钥';
-      if (auth !== undefined) {
-        canStart = true;
-      }
-      if (id === settings.provider) {
-        unavailable = { code: 'asr-cloud-unconfigured', message: missing };
-      }
-      const open = (): asrModule.Asr => {
-        //G 未配置当前云端时才启用允许的后备线路。
-        if (auth === undefined) throw new routes.RouteFailure(missing);
-
-        const model = settings.asrModels[id];
-        const options = { ...auth, model, silenceMs: settings.silenceMs, maxSamples };
-        //M 小米整句提交，使用配置的静音和时长分句。
-        if (id === 'xiaomi') return new cloudAsr.XiaomiAsr(options);
-
-        //M 百炼用实时双向 WebSocket 逐帧识别。
-        return new cloudAsr.BailianAsr(options);
-      };
-      //M 与其它实现按相同方式交给单连接换线入口。
-      choices.push({ place: 'cloud', open });
-    }
-    if (canStart) {
-      const limit = maxSamples * 2;
-      //M 连接持有独立的未确认 PCM 与主备线路，不共享用户音频。
-      createAsr = () => new routedAsr.RoutedAsr(choices, limit);
+  if (realLines) {
+    const asr = linesModule.getAsrLines(ctx, settings, locations, lifetime.signal);
+    createAsr = asr.createAsr;
+    unavailable = asr.unavailable;
+    //M 守卫可以回执后预热首选的本地转写模型，避免首次接麦才加载。
+    const prewarmAsr = asr.prewarm;
+    if (prewarmAsr !== undefined) {
+      ctx.on('ready', () => prewarmAsr());
     }
   }
 
-  let local: ttsModule.LocalTts | undefined;
-  let speak: ttsModule.Speak | undefined;
-  if (settings.enabled && settings.provider !== 'fake') {
-    const lines: ttsModule.SynthesisRoute[] = [];
-    const wanted = [settings.tts.provider, settings.tts.fallback];
-    let warming: Promise<ttsModule.LocalTts> | undefined;
-    const getLocal = async (): Promise<ttsModule.LocalTts> => {
-      if (local !== undefined) return local;
-
-      if (warming === undefined) {
-        const signal = lifetime.signal;
-        //G 预热和首轮播报共用同一次资源申请。
-        warming = routes.allowLocal(ctx, signal).then(() => {
-          signal.throwIfAborted();
-          local = new ttsModule.LocalTts(nativeDir, modelsDir);
-          return local;
-        }).finally(() => {
-          warming = undefined;
-        });
-      }
-      return warming;
-    };
-    for (const id of wanted) {
-      if (id === undefined) continue;
-
-      if (id === 'local') {
-        const produce: ttsModule.SynthesisRoute['produce'] = async (text, signal, emit) => {
-          //M 唤醒已准入的本地合成器，首句也复用预热工作。
-          const engine = await getLocal();
-          //G 停止播报后即使预热成功也不再生成旧音频。
-          signal.throwIfAborted();
-          const chunk = await engine.generate(text, signal);
-          emit(chunk);
-        };
-        //M MeloTTS 的整句 PCM 也经同一播放入口发回。
-        lines.push({ place: 'local', produce });
-        //M 资源守卫已注册后尝试预热，临时拒绝可在真正播报时重试。
-        ctx.on('ready', () => { void getLocal().catch(() => {}); });
-        continue;
-      }
-      //M 小米沿用运行时供应商的兼容 API 和音色。
-      const auth = getCloud(ctx, 'xiaomi');
-      let xiaomi: ttsModule.Xiaomi | undefined;
-      if (auth !== undefined) {
-        xiaomi = { ...auth, voice: settings.tts.voice };
-      }
-      //M 云端配置不可用也保留该线路的固定失败原因供 trace 记录。
-      const route = ttsModule.getXiaomiRoute(xiaomi);
-      lines.push(route);
+  let speaker: linesModule.Speaker | undefined;
+  if (realLines) {
+    speaker = linesModule.getSpeaker(ctx, settings, nativeDir, modelsDir, lifetime.signal);
+    //M 资源守卫已注册后尝试预热本地合成，临时拒绝可在真正播报时重试。
+    const prewarmTts = speaker.prewarm;
+    if (prewarmTts !== undefined) {
+      ctx.on('ready', () => prewarmTts());
     }
-    //M 播放入口只需要一份按优先级排列的线路。
-    speak = ttsModule.createSpeaker(lines);
   }
 
   //M 从资源配置取缺省目标，网页选择和 voice.bot 仍优先。
@@ -1443,7 +1046,7 @@ export async function apply(ctx: cordis.Context): Promise<void> {
   }
 
   const judging: Judging = {};
-  if (settings.enabled && settings.provider !== 'fake') {
+  if (realLines) {
     const signal = lifetime.signal;
     if (settings.understanding !== undefined) {
       //M 语音自选理解线路接入既有快照和任务认领流程。
@@ -1460,7 +1063,11 @@ export async function apply(ctx: cordis.Context): Promise<void> {
     }
   }
 
+  //==========================================================
+  //M 建 Voice，登记 WS 升级入口和状态接口
+  //==========================================================
   //M 用已确定的默认机器人和转写工厂管理语音接收。
+  const speak = speaker?.speak;
   const voice = new Voice(ctx, bot, createAsr, settings.provider, taskSettings, speak, judging, settings.bargeIn);
   const status: Status = {
     enabled: settings.enabled,
@@ -1501,7 +1108,7 @@ export async function apply(ctx: cordis.Context): Promise<void> {
     }
 
     //M 给网页提供同源路径及当前不可用原因。
-    scope.get(STATUS_PATH, async () => status);
+    scope.get(configModule.STATUS_PATH, async () => status);
   });
 
   if (settings.enabled) {
@@ -1571,6 +1178,6 @@ export async function apply(ctx: cordis.Context): Promise<void> {
   ctx.effect(() => () => {
     lifetime.abort();
     voice.dispose();
-    local?.dispose();
+    speaker?.dispose();
   });
 }

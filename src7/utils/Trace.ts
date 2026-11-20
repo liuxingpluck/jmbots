@@ -60,13 +60,14 @@ declare module 'cordis' {
      *   src7/plugins/people/index.ts 的 People.resolve
      *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.dispatch
      *   src7/plugins/progress/Review.ts 的 Review.check、Review.constructor、Review.skip
-     *   src7/plugins/progress/index.ts 的 Progress.close、Progress.constructor、Progress.onDeadline、Progress.sendCard、Progress.setLimit
+     *   src7/plugins/progress/index.ts 的 Progress.close、Progress.onDeadline、Progress.onDecided、Progress.sendCard、Progress.setLimit
      *   src7/plugins/relay/AgentTasks.ts 的 AgentTasks.finishTask、AgentTasks.send、AgentTasks.take
      *   src7/plugins/relay/index.ts 的 Relay.accept、Relay.checkLate、Relay.onRequest、Relay.push、Relay.queueReply、Relay.register、Relay.sendFile
      *   src7/plugins/settings/index.ts 的 Settings.constructor、Settings.createBot、Settings.exitSoon、Settings.restart
      *   src7/plugins/voice/index.ts 的 VoiceConnection.reportRoute
      *   src7/plugins/web-api/Timeline.ts 的 Timeline.bindSession、Timeline.insert、Timeline.reply
-     *   src7/plugins/web-api/index.ts 的 WebApi.accept、WebApi.setModel
+     *   src7/plugins/web-api/Views.ts 的 Views.setModel
+     *   src7/plugins/web-api/index.ts 的 WebApi.accept
      *   src7/plugins/web-search/index.ts 的 WebSearch.trace
      *   src7/plugins/wechat/index.ts 的 Wechat.deliver、Wechat.store
      *   src7/plugins/workspaces/index.ts 的 Workspaces.emitChanged、Workspaces.getResolved

@@ -182,36 +182,31 @@ export function getPayloadHash(value: unknown): string {
 }
 
 
+/** 等渠道回执这么久还没来就报警；不掐表，走网络的渠道（飞书）自己限时、到点回 uncertain。 */
+const REPLY_WARN_MS = 30_000;
+
+
 /**
  * 从不可变 SourceSnapshot 或已知标准消息字段构建标准前缀请求，发出 channel/reply 并按 requestId 等待 channel/replied。
- * 没有渠道插件接单（handled !== true）时立即返回 rejected（channel_unavailable）；超时返回 uncertain，绝不伪造 sent。
+ * 没有渠道插件接单（handled !== true）时立即返回 rejected（channel_unavailable）；渠道接单后出错返回 uncertain，绝不伪造 sent。
  * @param ctx Cordis 上下文。
  * @param req 回复请求。
- * @param timeoutMs 最长等待毫秒数。
  * @returns v2 发送回执。
  */
 export async function requestChannelReply(
   ctx: cordis.Context,
   req: Omit<ChannelReplyRequest, 'requestId'>,
-  timeoutMs = 30_000,
 ): Promise<ReplyReceipt> {
-  //M 没人接单能确认没发，超时或异常时无法确认投递。
-  const onFallback = (cause: requestEvents.FallbackReason, detail?: string): ChannelRepliedEvent => {
-    let status: ReplyStatus = 'uncertain';
-    let reason = detail ?? '等待渠道发送回执超时';
-    if (cause === 'unhandled') {
-      status = 'rejected';
-      reason = `channel_unavailable：渠道 ${req.channel} 没挂`;
-    }
-    const receipt = getReceipt(req, status, reason);
-    const request = { ...req, requestId: '' };
-    return { requestId: '', replyRoundKey: req.replyRoundKey, receipt, request };
-  };
-
-  const options = { prefix: 'rep', timeoutMs, keepAlive: true, onFallback };
+  const options = { prefix: 'rep', warnAfterMs: REPLY_WARN_MS };
   //M 交给公共请求工具配对回执，只向上层交回渠道处理结果。
-  const result = await requestEvents.requestEvent(ctx, 'channel/reply', 'channel/replied', req, options);
-  return result.receipt;
+  const asked = await requestEvents.requestEvent(ctx, 'channel/reply', 'channel/replied', req, options);
+  if (asked.why === undefined) return asked.reply.receipt;
+
+  //G 没人接单：能确认没发。
+  if (asked.why === 'unhandled') return getReceipt(req, 'rejected', `channel_unavailable：渠道 ${req.channel} 没挂`);
+
+  //G 渠道接单后出错：发没发到不确定。
+  return getReceipt(req, 'uncertain', asked.detail ?? '渠道处理回复时出错');
 }
 
 

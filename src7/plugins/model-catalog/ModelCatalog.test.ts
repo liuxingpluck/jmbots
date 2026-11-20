@@ -26,10 +26,6 @@ import * as catalogPlugin from './index.ts';
 
 
 const closers: (() => Promise<unknown> | void)[] = [];
-const catalogOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason) => ({ requestId: reason }),
-};
 
 const routeMissing = 'HTTP 400 {"error":{"message":"hy4free 服务信息找不到"}}';
 
@@ -145,22 +141,25 @@ test('1. ModelCatalog 清单合并与 model-catalog/cooldown 维护 limitedUntil
 test('模型查询事件返回清单项，查不到模型时仍回执', async () => {
   const { ctx } = await setupWorld();
   const known = { action: 'find', model: 'mock/primary' } as const;
-  const found = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', known, catalogOptions);
-  expect(found.info).toEqual(ctx.modelCatalog.find(known.model));
-  expect(found.info?.contextWindow).toBe(128000);
+  //M 已登记的模型由真实回执交回窗口信息。
+  const found = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', known);
+  expect(found.reply?.info).toEqual(ctx.modelCatalog.find(known.model));
+  expect(found.reply?.info?.contextWindow).toBe(128000);
 
   const unknown = { action: 'find', model: 'mock/missing' } as const;
-  const missing = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', unknown, catalogOptions);
-  expect(missing.requestId).toStartWith('req_');
-  expect(missing.info).toBeUndefined();
+  //M 确认查无模型时仍有真实回执。
+  const missing = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', unknown);
+  expect(missing.reply?.requestId).toStartWith('req_');
+  expect(missing.reply?.info).toBeUndefined();
 });
 
 test('模型清单未挂载时查询立即走无人接单退路', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   const lookup = { action: 'find', model: 'mock/primary' } as const;
-  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', lookup, catalogOptions);
-  expect(result).toEqual({ requestId: 'unhandled', fallback: 'unhandled' });
+  //G 目录缺席时交回未处理原因。
+  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', lookup);
+  expect(result).toEqual({ why: 'unhandled' });
 });
 
 test('prompt 事件：交回模型介绍评价和清单里有的模型的思考档；没有介绍时两段都是空串', async () => {
@@ -170,28 +169,31 @@ test('prompt 事件：交回模型介绍评价和清单里有的模型的思考�
   };
   const { ctx } = await setupWorld({ notes });
   const ask = { action: 'prompt' } as const;
-  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ask, catalogOptions);
-  expect(result.prompt).toContain('- mock/primary：主力模型。');
-  expect(result.prompt).toContain('- other/model：清单里没有。');
+  //M 摘要回执同时给出模型说明和可用思考档。
+  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ask);
+  expect(result.reply?.prompt).toContain('- mock/primary：主力模型。');
+  expect(result.reply?.prompt).toContain('- other/model：清单里没有。');
 
   //M 思考档只写清单里查得到的模型。
   const levels = ctx.modelCatalog.find('mock/primary')?.thinking.join('、') ?? '';
-  expect(result.levelsText).toBe(`能用的思考档（写 thinking 只能从里面挑）：\n- mock/primary：${levels}`);
+  expect(result.reply?.levelsText).toBe(`能用的思考档（写 thinking 只能从里面挑）：\n- mock/primary：${levels}`);
 
   const empty = await setupWorld();
-  const none = await events.requestEvent(empty.ctx, 'model-catalog/request', 'model-catalog/result', ask, catalogOptions);
-  expect(none).toMatchObject({ prompt: '', levelsText: '' });
+  //M 模型说明为空时也交回两个字段。
+  const none = await events.requestEvent(empty.ctx, 'model-catalog/request', 'model-catalog/result', ask);
+  expect(none.reply).toMatchObject({ prompt: '', levelsText: '' });
 });
 
 test('prompt 事件：读介绍出错时回空回执，调用方当没有介绍', async () => {
   const { ctx } = await setupWorld();
-  //M 删掉 models/：getList 读目录抛错，onError 打日志、回不带 prompt 的回执，不等超时。
+  //M 删掉 models/，使 getList 读目录失败。
   fs.rmSync(path.join(ctx.resources.root, 'models'), { recursive: true, force: true });
   const ask = { action: 'prompt' } as const;
-  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ask, catalogOptions);
-  expect(result.requestId).toStartWith('req_');
-  expect(result.prompt).toBeUndefined();
-  expect(result.levelsText).toBeUndefined();
+  //G 处理方记录读取异常并发出不含说明的回执。
+  const result = await events.requestEvent(ctx, 'model-catalog/request', 'model-catalog/result', ask);
+  expect(result.reply?.requestId).toStartWith('req_');
+  expect(result.reply?.prompt).toBeUndefined();
+  expect(result.reply?.levelsText).toBeUndefined();
 });
 
 

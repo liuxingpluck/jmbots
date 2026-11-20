@@ -70,7 +70,9 @@ export const name = 'bots';
 //M 1.6.4：是不是本人改问 channels 的 isOwnerTurn（删 isNonOwnerSpeaker）；SessionRow.customer 只在这里声明。
 //M 1.6.5：自动回话模式与按地址发送的回执改名，保留会话存值和持久化回执键。
 //M 1.6.6：ready 时看 memory 开工没有，改读挂载结果的 state。
-export const version = '1.6.6';
+//M 1.6.7：requestEvent 改新写法（云端 19 第 1、2 条）：查前台归档、取模型介绍不掐表；群攒批问决策模型只报警（decision 自己限时）。
+//M 1.6.8：群攒批判定要接话时，地址带 judgeHelper（飞书群登记的 judge_helper）的这一批记成背景、经 bot/receive 转给该外部助手（DispatchClaim.relayBatch，#318）。
+export const version = '1.6.8';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -90,7 +92,9 @@ declare module 'cordis' {
      * 要认领的插件把 event.session 填上；前面已经有人填了，后面的不要再填。监听的函数不许有返回值。
      * 插件（比如 approval 认出“同意 3”）可以写 event.handled = true：这条已经处理掉，不进任何会话。
      * 问完没人认领的，本插件的前台接（FrontDesk.onReceive）。
-     * 谁发：src7/plugins/bots/index.ts 的 Bot.receive、Bots.onChannelMessage
+     * 谁发：
+     *   src7/plugins/bots/DispatchClaim.ts 的 DispatchClaim.relayBatch
+     *   src7/plugins/bots/index.ts 的 Bot.receive、Bots.onChannelMessage
      * 谁接：
      *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/relay/index.ts 的 Relay.constructor
@@ -1168,6 +1172,6 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
     registerReplyTool(ctx);
   }
 
-  //M 2026-11-18：不再 inject memory。前台记往来、搜聊天记录、算向量改发请求事件 memory/request（FrontDesk.ts 的 askMemory），
+  //M 2026-11-18：不再 inject memory。前台查归档改发请求事件 memory/request（FrontDesk.ts 的 readFront），
   //M   “先查记忆”的提示由 memory 自己在 session/before-model 里加；没挂 memory 前台照常答话。
 }

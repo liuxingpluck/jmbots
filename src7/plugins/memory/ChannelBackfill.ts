@@ -291,18 +291,21 @@ export class ChannelBackfill {
     const request = { action: 'can-start' as const, heavy: true, who: 'memory-backfill' };
     const options = {
       prefix: 'memory-backfill',
-      timeoutMs: 3000,
       signal: this.lifecycle.signal,
-      onFallback: (reason: string) => ({ requestId: '', ok: false, reason: `资源守卫未放行（${reason}）` }),
     };
-    //M 守卫无人监听或超时也按拒绝处理，下个间隔再问。
-    const access = await requestEvent.requestEvent(this.ctx, 'programs/resource-request', 'programs/resource-result', request, options);
+    //M 问资源守卫能不能开工；守卫在本机读数、读数自己限时，这里不掐表。
+    const asked = await requestEvent.requestEvent(this.ctx, 'programs/resource-request', 'programs/resource-result', request, options);
 
     //G 等准入期间可能收到 high 或手动暂停。即便准入返回 ok，也要重新验。
     if (!this.canRun()) return;
 
-    if (!access.ok) {
-      this.reason = access.reason;
+    //G 守卫没挂、出错、回填被停，都按不放行，下个间隔再问。
+    if (asked.why !== undefined) {
+      this.reason = `资源守卫未放行（${asked.why}）`;
+      return;
+    }
+    if (!asked.reply.ok) {
+      this.reason = asked.reply.reason;
       return;
     }
     this.reason = '';

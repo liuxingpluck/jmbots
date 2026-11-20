@@ -25,6 +25,7 @@ import { Dispatch } from '../bots/Dispatch.ts';
 import { FrontDesk } from '../bots/FrontDesk.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
 import type * as protocol from '../channels/index.ts';
+import * as dbModule from '../db/index.ts';
 import * as relayModule from '../relay/index.ts';
 import type { FeishuChatLogEntry } from './ChatLog.ts';
 import * as feishuModule from './index.ts';
@@ -49,7 +50,7 @@ const PLAIN = 'oc_plain';
 const OWNER = 'ou_owner';
 const FRIEND = 'ou_friend';
 const STRANGER = 'ou_stranger_abcdef';
-/** 登记了 listen: judge、judge_threshold: 0.8 的群。 */
+/** 登记了 listen: judge、judge_threshold: 0.8、judge_helper: Claude 的群。 */
 const JUDGED = 'oc_judged';
 
 const BUILDER = 'ou_builder';
@@ -65,7 +66,9 @@ const PEOPLE = new Map<string, feishuModule.FeishuPerson>([
 ]);
 const GROUPS = new Map<string, feishuModule.FeishuGroup>([
   [LISTENED, { chatId: LISTENED, name: '周-论文实现', listen: 'all', relay: 'model', trusted: false }],
-  [JUDGED, { chatId: JUDGED, name: '判断群', listen: 'judge', relay: 'direct', trusted: false, judgeThreshold: 0.8 }],
+  [JUDGED, {
+    chatId: JUDGED, name: '判断群', listen: 'judge', relay: 'direct', trusted: false, judgeThreshold: 0.8, judgeHelper: 'Claude',
+  }],
 ]);
 
 /** 挂真实文件投递事件，不触发 ready；各测试用模拟 SDK 完成文件操作。 */
@@ -195,7 +198,10 @@ function world(decision?: FakeDecision, extraBots: string[] = []): World {
   }
   /** 前台派后台（真的 Dispatch）：下面建好前台再填；假 bots.receive 问完 bot/receive 交给它。 */
   let dispatch: Dispatch | undefined;
+  //M relay 的表经 db 插件的迁移账本建（ctx.db.migrate），照 Relay.test.ts 挂一个真的 Db 服务。
+  const dbService = new dbModule.Db(new cordis.Context(), db);
   const fake = {
+    db: dbService,
     resources: {
       db,
       root: dir,
@@ -679,6 +685,8 @@ describe('listen: judge 的群', () => {
     expect(made.emitted.map((one) => one.event)).toEqual(['channel/listen']);
     expect(made.emitted[0]?.address['judge']).toBe(true);
     expect(made.emitted[0]?.address['judgeThreshold']).toBe(0.8);
+    //M 登记了 judge_helper：地址带 judgeHelper，群攒批判定要接话时转给它。
+    expect(made.emitted[0]?.address['judgeHelper']).toBe('Claude');
 
     //M 旧路的前台：只记进群的前台会话当背景，不问决策模型、不交给会话跑，流水写“只记”。
     expect(made.delivered).toEqual([]);
@@ -788,5 +796,12 @@ describe('checkConfig 认 judge', () => {
     expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_threshold: 1.5 }] })).toThrow('judge_threshold');
     expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_threshold: '高' }] })).toThrow('judge_threshold');
     expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judging' }] })).toThrow('listen');
+  });
+
+  test('judge_helper 收下；不写就没有；写成空的抛错', () => {
+    const config = getConfig({ groups: [{ chat_id: JUDGED, listen: 'judge', judge_helper: 'Claude' }, { chat_id: PLAIN, listen: 'judge' }] });
+    expect(config.groups.get(JUDGED)?.judgeHelper).toBe('Claude');
+    expect(config.groups.get(PLAIN)?.judgeHelper).toBeUndefined();
+    expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_helper: '' }] })).toThrow('judge_helper');
   });
 });

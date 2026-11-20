@@ -1,0 +1,29 @@
+CREATE TABLE IF NOT EXISTS relay_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot TEXT NOT NULL,
+  helper TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  address TEXT NOT NULL,
+  owner INTEGER NOT NULL DEFAULT 0,
+  sender TEXT NOT NULL DEFAULT '',
+  chat TEXT NOT NULL DEFAULT 'p2p',
+  chat_name TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  last_msg_at INTEGER,
+  state TEXT NOT NULL DEFAULT 'pending',
+  reminded INTEGER NOT NULL DEFAULT 0,
+  replied_at INTEGER
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS relay_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  done INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  via TEXT NOT NULL
+);

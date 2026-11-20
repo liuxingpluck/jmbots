@@ -76,7 +76,7 @@ export interface PluginEntry {
 export type PluginState = 'mounting' | 'waiting' | 'ok' | 'failed';
 
 
-/** 一个插件这次启动的挂载结果。Main.ts 写，健康检查、教程、bots 读。没尝试挂的不在里面。 */
+/** 一个插件这次启动的挂载结果。Main.ts 写，健康检查（http 插件的 getPluginProblems）、教程、bots 读。没尝试挂的不在里面。 */
 export interface PluginStatus {
   /** 配置里的插件名。 */
   name: string;
@@ -86,31 +86,6 @@ export interface PluginStatus {
   error: string;
   /** 它声明要的服务。 */
   inject: string[];
-}
-
-
-/**
- * 没挂上、没开工的说明，给 /api/health 的 problems。基地换版靠它判断新版能不能用。
- * @param status 这次启动实际尝试挂过的插件。
- * @returns 不是 ok 的插件各一句；全开工了是空数组。
- */
-export function getPluginProblems(status: PluginStatus[]): string[] {
-  const problems: string[] = [];
-  for (const item of status) {
-    //M 开工了的不算问题。
-    if (item.state === 'ok') continue;
-
-    //M 等服务的叫没开工，还在起、失败的叫没挂上；有说明就带上。
-    let problem = `插件 ${item.name} 没挂上`;
-    if (item.state === 'waiting') {
-      problem = `插件 ${item.name} 没开工`;
-    }
-    if (item.error !== '') {
-      problem += `：${item.error}`;
-    }
-    problems.push(problem);
-  }
-  return problems;
 }
 
 

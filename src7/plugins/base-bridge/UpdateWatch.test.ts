@@ -115,12 +115,27 @@ test('没挂 approval：当没有在等的，新版本登记不上就记一行�
     await ctx.plugin(FakeBase);
     const watch = new bridge.UpdateWatch(ctx, 60_000);
 
-    //M 直接问一轮：list、ask 都没人答，当场退回，不卡 3 秒、5 秒。
+    //M list、ask 都没人答时，当轮即结束。
     const began = Date.now();
     await watch.check();
     expect(Date.now() - began).toBeLessThan(1000);
     expect(errors).toHaveBeenCalledTimes(1);
     expect(String(errors.mock.calls[0]?.[0])).toContain('没登记上待确认');
+
+    let attempts = 0;
+    //M 下一轮可重试登记，监听抛错后保留版本占用。
+    requestEvents.onRequestEvent(ctx, 'approval/request', 'approval/result', (request) => {
+      if (request.action !== 'ask') return { items: [] };
+
+      attempts += 1;
+      throw new Error('模拟登记中断');
+    });
+    //M 下一轮遇到中断时记录送审结果不确定。
+    await watch.check();
+    expect(errors.mock.calls.some(([message]) => String(message).includes('更新送审结果不确定'))).toBe(true);
+    //G 再检查同版本时，检查仍可跑完但只登记过一次。
+    await watch.check();
+    expect(attempts).toBe(1);
   } finally {
     await ctx.fiber.dispose();
     errors.mockRestore();

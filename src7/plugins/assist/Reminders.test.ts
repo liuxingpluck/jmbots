@@ -14,6 +14,7 @@ import * as rules from '../approval/Rules.ts';
 import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as timeModule from './ReminderTime.ts';
 import * as reminderModule from './Reminders.ts';
+import * as assist from './index.ts';
 
 const NOW = Date.parse('2026-11-19T15:00:00Z');
 const SATURDAY = Date.parse('2026-11-21T14:00:00Z');
@@ -105,6 +106,13 @@ function session(options: Partial<SourceSnapshot> = {}): Session {
   };
   const row = { bot: '合成助手', id: '合成会话', activeSourceSnapshot: snapshot };
   return { row } as unknown as Session;
+}
+
+/** 像 assist.apply 的定时回调一样发请求，用生产回执转换。 */
+async function sendReminder(ctx: cordis.Context, reminderId: number): Promise<ProviderReceipt> {
+  const payload = { reminderId };
+  const asked = await events.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload);
+  return assist.getReminderReceipt(asked);
 }
 
 function setup() {
@@ -265,15 +273,7 @@ test.each(['未交接', '已发', '在途'])('重启按原提醒号和正文查�
     return { status: 'sent' };
   });
 
-  const send = async (message: reminderModule.Delivery): Promise<ProviderReceipt> => {
-    const payload = { reminderId: message.id };
-    const options = {
-      timeoutMs: 1000,
-      onFallback: () => ({ requestId: '', receipt: { status: 'failed', reason: '未获模拟回执' } as ProviderReceipt }),
-    };
-    const result = await events.requestEvent(world.ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
-    return result.receipt;
-  };
+  const send = (message: reminderModule.Delivery) => sendReminder(world.ctx, message.id);
 
   //M 中断上次 assist 对回执的保存，留下三种可能的发件账状态。
   original.start(async (message) => {
@@ -333,24 +333,29 @@ test('重启后读回已持久确认的卡片，并补发原定时间已过的�
   expect(restarted.listForBot('合成助手')).toMatchObject([{ state: 'sent' }]);
 });
 
+test('定时提醒区分审批无人接单和接单后抛错', async () => {
+  const ctx = new cordis.Context();
+  cleanups.push(() => ctx.fiber.dispose());
+
+  //M 无人接单能确定没发件；接单后抛错时保留待核对状态。
+  const unhandled = await sendReminder(ctx, 1);
+  expect(unhandled).toEqual({ status: 'failed', reason: '定时发送审核未挂载' });
+
+  events.onRequestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', () => {
+    throw new Error('模拟发件审核异常');
+  });
+  const uncertain = await sendReminder(ctx, 1);
+  expect(uncertain).toEqual({ status: 'uncertain', reason: '发送结果待核对，未自动重发' });
+});
+
 test.each(['feishu', 'http'])('%s 定时发送只凭提醒记录号，经 Outbound 照批准的确切地址发 channel/reply', async (channel) => {
   const world = setup();
   const reminders = world.make();
   const calls: SentCall[] = [];
   new outbound.Outbound(world.ctx);
   mountChannels(world.ctx, calls, () => ({ status: 'sent' }));
-  const send = (reminderId: number) => {
-    const payload = { reminderId };
-    const options = {
-      timeoutMs: 100,
-      onFallback: () => ({ requestId: '', receipt: { status: 'failed', reason: '未获模拟回执' } as ProviderReceipt }),
-    };
-    return events.requestEvent(world.ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
-  };
-  reminders.start(async (message) => {
-    const result = await send(message.id);
-    return result.receipt;
-  });
+  const send = (reminderId: number) => sendReminder(world.ctx, reminderId);
+  reminders.start((message) => send(message.id));
   const args = { at: '2026-11-21', text: CONTENT };
   let owner = session({ chatType: 'p2p', role: 'owner' });
   if (channel === 'http') {
@@ -362,7 +367,7 @@ test.each(['feishu', 'http'])('%s 定时发送只凭提醒记录号，经 Outbou
     owner = session({ ...source, origin: { channel, address: { verifiedOwner: true } } });
   }
   await world.call('remind_add', args, owner);
-  expect((await send(1)).receipt.status).toBe('failed');
+  expect((await send(1)).status).toBe('failed');
   expect(calls).toEqual([]);
   await world.clock.advance(SATURDAY);
   expect(calls).toHaveLength(1);
@@ -376,6 +381,6 @@ test.each(['feishu', 'http'])('%s 定时发送只凭提醒记录号，经 Outbou
     expect(calls[0]).toMatchObject({ bot: '合成助手' });
   }
   expect(reminders.listForBot('合成助手')).toMatchObject([{ state: 'sent' }]);
-  expect((await send(1)).receipt.status).toBe('failed');
+  expect((await send(1)).status).toBe('failed');
   expect(calls).toHaveLength(1);
 });

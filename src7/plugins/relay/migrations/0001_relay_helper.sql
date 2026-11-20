@@ -1,0 +1,1 @@
+ALTER TABLE relay_items ADD COLUMN helper TEXT NOT NULL DEFAULT '';

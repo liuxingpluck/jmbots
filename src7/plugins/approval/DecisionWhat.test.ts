@@ -31,11 +31,12 @@ const model: { reply: string; asked: number; wait?: () => Promise<FakeAnswer> } 
   asked: 0,
 };
 
-/** 假决策模型回什么：结论和顺带写的执行结果（空串当没写）；wants 记下每次请求带的 want。 */
+/** 假决策模型回什么：结论和顺带写的执行结果（空串当没写）；wants 记下每次请求带的 want；fail 为 true 时接单后抛错。 */
 const fakeDecision = {
   verdict: 'unsure' as 'allow' | 'deny' | 'unsure',
   what: '',
   wants: [] as unknown[],
+  fail: false,
 };
 
 
@@ -102,6 +103,8 @@ const options = { prefix: 'apr', timeoutMs: 5000, onFallback: getMissing };
  */
 function answerJudge(request: requestEvents.EventArg<'decision/judge'>): JudgeBody {
   fakeDecision.wants.push(request.want);
+  if (fakeDecision.fail) throw new Error('假决策模型挂了');
+
   const body: JudgeBody = { verdict: fakeDecision.verdict, reason: '假决策模型' };
   if (fakeDecision.what !== '') {
     body.what = fakeDecision.what;
@@ -185,6 +188,26 @@ describe('卡片“要做什么”：审核小会话 → 决策模型 → 说不
 
     const line = await getWhatLine('a3.txt');
     expect(line).toContain('要做什么：说不清会做成什么（命令：copy a.txt');
+  });
+
+  test('决策模型接单后出错：当没问过，不用它的 what、不记成这一档的原因，照常问审核小会话', async () => {
+    fakeDecision.verdict = 'unsure';
+    fakeDecision.what = '不该用上';
+    fakeDecision.fail = true;
+    model.reply = '{"safe": false, "risk": "出了目录"}';
+    model.asked = 0;
+
+    try {
+      const verdict = await review('a3b.txt');
+      if (verdict?.result !== 'asked') throw new Error(`应该去问用户，实际是 ${JSON.stringify(verdict)}`);
+
+      const pending = app.approval.list().find((item) => item.id === verdict.id);
+      expect(pending?.card.reason).toContain('要做什么：说不清会做成什么');
+      expect(pending?.card.reason).not.toContain('决策模型拿不准');
+      expect(model.asked).toBe(1);
+    } finally {
+      fakeDecision.fail = false;
+    }
   });
 });
 

@@ -348,18 +348,13 @@ export class VoiceTasks {
       allowAt: this.settings.allowAt,
       denyAt: this.settings.denyAt,
     };
-    const options = {
-      prefix: 'voice',
-      timeoutMs: this.settings.timeoutMs,
-      signal: this.controller.signal,
-      onFallback: () => ({ requestId: '', verdict: 'unsure' as const, reason: '没有决策插件或超时' }),
-    };
+    const signal = this.controller.signal;
 
     //M 配置专用理解模型时只判断这次字幕；原有部署继续使用决策事件。
     let verdict: 'allow' | 'deny' | 'unsure' = 'unsure';
     if (this.understand !== undefined) {
       const input = JSON.stringify(payload.state);
-      const answer = await this.understand(question.instructions, input, options.signal, this.report);
+      const answer = await this.understand(question.instructions, input, signal, this.report);
       if (answer === true) {
         verdict = 'allow';
       }
@@ -368,9 +363,11 @@ export class VoiceTasks {
       }
     }
     if (this.understand === undefined) {
-      //M 保持原有 decision 插件的置信度阈值和回执协议。
+      const options = { prefix: 'voice', warnAfterMs: this.settings.timeoutMs, signal };
+
+      //M 由 decision 给模型调用限时并交回结论，语音只对等待较久的请求告警。
       const result = await requests.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', payload, options);
-      verdict = result.verdict;
+      verdict = result.reply?.verdict ?? 'unsure';
     }
     if (this.controller.signal.aborted) return;
 

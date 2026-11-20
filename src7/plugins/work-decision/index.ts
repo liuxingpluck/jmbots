@@ -9,7 +9,9 @@ import * as toolsModule from './Tools.ts';
 export const name = 'work-decision';
 //M 1.3.6：ask_owner 认本人改问 channels 的 isOwnerTurn（从 utils/Workspace.ts 挪过去的），判断不变。
 //M 1.3.7：选择回送按请求号等原会话或 relay 的回执。
-export const version = '1.3.7';
+//M 1.3.8：问 relay 收件、归档不再掐表、不再编假回执，按 reply 或 why 判。
+//M 1.3.9：旧 data/decision-map JSON 导入过渡代码标明 //退场：条件。
+export const version = '1.3.9';
 export const inject = ['resources', 'http', 'tools'];
 
 /** 读取配置文本，未设置时保持缺省。 */
@@ -54,6 +56,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 配置在挂载时读一次，之后入口使用已经解析过的字段。
   const settings = storeModule.readObject(config ?? {});
   const helper = getOptionalText(settings, 'relay_helper');
+  //退场：所有运行时的旧 data/decision-map/graph.json 都导入 SQLite 以后，连同 legacy_workspace_id 与 importLegacy 一起删
   const legacyWorkspaceId = getOptionalText(settings, 'legacy_workspace_id');
   const notice = getNotice(settings);
 

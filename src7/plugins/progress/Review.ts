@@ -203,15 +203,14 @@ export class Review {
     if (progress.some((item) => item.endedAt === undefined)) return this.skip('有进度在转');
 
     const list = { action: 'list', kind: 'review' } as const;
-    const listOptions = { timeoutMs: 3000, onFallback: () => ({ requestId: '', items: [] }) };
-
     //M 查询仍待确认的复盘，审核插件无人应答时按空列表继续。
     const listed = await requestEventModule.requestEvent(
-      this.ctx, 'approval/request', 'approval/result', list, listOptions,
+      this.ctx, 'approval/request', 'approval/result', list,
     );
 
     //G 已有待用户确认的复盘卡片时不重复打扰。
-    if (listed.items !== undefined && listed.items.length > 0) return this.skip('有复盘在等用户');
+    const pendingReviews = listed.reply?.items ?? [];
+    if (pendingReviews.length > 0) return this.skip('有复盘在等用户');
 
     //G 尚未产生 overtime.jsonl 超时登记文件时说明无可复盘记录，直接跳过。
     const file = path.join(this.ctx.resources.ensureRuntimeDir('data'), 'overtime.jsonl');
@@ -255,22 +254,17 @@ export class Review {
     this.ctx.emit('trace', 'Review.check', 'trace.review.select', 'sessions.open(entry.sessionId)', checkVars);
 
     const request = { action: 'mirror-dir', bot: session.row.bot, sessionId: session.id } as const;
-    const options = {
-      timeoutMs: 3000,
-      onFallback: () => ({ requestId: '' }),
-    };
-
     //M 向流水插件询问镜像路径，没有回应就按没有记录继续复盘。
     const mirror = await requestEventModule.requestEvent(
       this.ctx,
       'journal/request',
       'journal/result',
       request,
-      options,
     );
     let log = '（没有记录：未获取到镜像）';
-    if (mirror.dir !== undefined) {
-      const md = path.join(mirror.dir, '对话.md');
+    const mirrorDir = mirror.reply?.dir;
+    if (mirrorDir !== undefined) {
+      const md = path.join(mirrorDir, '对话.md');
       if (fs.existsSync(md)) {
         const content = fs.readFileSync(md, 'utf8');
         log = content.slice(-LOG_CHARS);
@@ -328,12 +322,7 @@ export class Review {
     };
     const ask = { action: 'ask', input: askParams } as const;
     const uncertain = '复盘送审结果不确定';
-    const askOptions = {
-      timeoutMs: 5000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', error: detail ?? `审核未获回执（${reason}）` };
-      },
-    };
+    const askOptions = { warnAfterMs: 5000 };
 
     //M 送审成功仍需等待用户批准，才由 approval/decided 写入公共记忆。
     const asked = await requestEventModule.requestEvent(
@@ -341,17 +330,22 @@ export class Review {
     );
 
     //G 未确认登记时保留已复盘标记，避免再次发卡或写入。
-    if (requestEventModule.isUnsure(asked)) return this.skip(uncertain);
+    if (asked.why !== undefined && asked.why !== 'unhandled') return this.skip(uncertain);
 
     //G 无人接单或明确登记失败，记录原因供排查。
-    if (asked.pending === undefined || asked.error !== undefined) {
-      const rejected = `审核未确认登记，复盘按拒绝处理：${asked.error ?? '未返回待确认项'}`;
+    const pending = asked.reply?.pending;
+    let error = asked.reply?.error;
+    if (asked.why === 'unhandled') {
+      error = asked.detail ?? `审核未获回执（${asked.why}）`;
+    }
+    if (pending === undefined || error !== undefined) {
+      const rejected = `审核未确认登记，复盘按拒绝处理：${error ?? '未返回待确认项'}`;
       this.skip(rejected);
       return;
     }
 
     //M 记住确认登记的卡片号，只有这一项获批时可以把建议写入公共记忆。
-    session.row.reviewApprovalId = asked.pending.id;
+    session.row.reviewApprovalId = pending.id;
     session.save();
   }
 

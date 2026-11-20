@@ -3,11 +3,8 @@
  * 运行：bun src7/Main.ts [--data|--runtime 运行时目录] [给命令行渠道的其余参数]
  *   编译版还认：version（打印 JSON 后退出）、serve [--runtime 目录] [--port 端口] [--mode candidate]
  */
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as process from 'node:process';
 import * as timers from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
 import * as cordis from 'cordis';
 import * as pluginIndex from './plugins/Index.ts';
 import * as resourcesModule from './Resources.ts';
@@ -71,14 +68,8 @@ async function main(argv: string[]): Promise<void> {
   //M 在挂骨架和插件之前统一标记报错，也覆盖配置与挂载失败。
   backendLog.installBackendErrorLogger();
 
-  //M serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。
-  let flags = argv;
-  if (argv[0] === 'serve') {
-    flags = argv.slice(1);
-  }
-
-  //M 校验命令行参数并整理出运行时目录与透传参数。
-  const args = checks.checkArgs(flags);
+  //M 校验命令行参数并整理出运行时目录与透传参数（serve 子命令在 checkArgs 里去掉）。
+  const args = checks.checkArgs(argv);
   const app = new cordis.Context();
 
   //M 骨架三个，挂一个等一个，先后不能换。
@@ -143,21 +134,16 @@ async function main(argv: string[]): Promise<void> {
   //M 按配置顺序发起挂载并限时等待
   //==========================================================
   for (const entry of entries) {
-    //M 先按配置名找内置插件，也为加载失败的状态记录注入声明。
-    const builtIn = pluginIndex.BUILT_IN[entry.name];
+    //M 每个插件一行状态；它要的服务等模块找到后再记。
     const row: resourcesModule.PluginStatus = {
       name: entry.name,
       state: 'mounting',
       error: '',
-      inject: builtIn?.inject ?? [],
+      inject: [],
     };
     try {
-      let plugin = builtIn;
-      if (plugin === undefined) {
-        //M 内置表查不到才从外部插件文件夹加载入口。
-        const root = app.resources.root;
-        plugin = await loadExternalPlugin(entry.name, root);
-      }
+      //M 先查自带名单，查不到再从外部插件文件夹加载入口（plugins/Index.ts 的 loadPlugin）。
+      const plugin = await pluginIndex.loadPlugin(entry.name, app.resources.root);
 
       //M 等待 Cordis apply。状态监听使用 thenable 后面的原 fiber。
       row.inject = plugin.inject ?? [];
@@ -222,31 +208,6 @@ async function main(argv: string[]): Promise<void> {
   for (const row of app.sessions.find({ state: 'running' })) {
     void app.sessions.open(row.id).run();
   }
-}
-
-
-/**
- * 从外部插件文件夹加载入口，优先使用 index.ts，再找 index.js。
- * @param name 外部插件的文件夹路径，相对路径从运行时目录算。
- * @param root 配置所在的运行时目录。
- * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。
- */
-async function loadExternalPlugin(name: string, root: string): Promise<pluginIndex.PluginModule> {
-  //M 按运行时目录解析外部路径，保留已有的入口优先级。
-  const dir = path.resolve(root, name);
-  let entry = path.join(dir, 'index.ts');
-  if (!fs.existsSync(entry)) {
-    entry = path.join(dir, 'index.js');
-  }
-
-  //M 动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。
-  const entryUrl = pathToFileURL(entry).href;
-  const loaded = await import(entryUrl) as pluginIndex.PluginModule & {
-    default?: pluginIndex.PluginModule;
-  };
-
-  //M 模块有 default 导出就用 default（DSH 的加载器也是这么做的）。
-  return loaded.default ?? loaded;
 }
 
 

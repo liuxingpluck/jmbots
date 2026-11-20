@@ -101,9 +101,6 @@ interface CatalogPrice {
   cacheWrite?: number;
 }
 
-/** 模型目录查询最多等三秒。 */
-const CATALOG_WAIT_MS = 3000;
-
 /** 时间段 → SQLite strftime 的格式。 */
 const FORMATS: Record<string, string> = { hour: '%Y-%m-%d %H:00', day: '%Y-%m-%d', week: '%Y-W%W', month: '%Y-%m' };
 
@@ -241,20 +238,14 @@ export class Usage extends cordis.Service {
     const provider = model.slice(0, slash);
 
     const lookup = { action: 'find', model } as const;
-    const options = {
-      timeoutMs: CATALOG_WAIT_MS,
-      onFallback: () => ({ requestId: '' }),
-    };
-
     //M 通过事件查价格，清单未响应或查无模型时按零计费。
     const result = await requestEventModule.requestEvent(
       this.ctx,
       'model-catalog/request',
       'model-catalog/result',
       lookup,
-      options,
     );
-    const price: CatalogPrice | undefined = result.info?.price;
+    const price: CatalogPrice | undefined = result.reply?.info?.price;
     let cost = 0;
     if (price !== undefined) {
       cost = ((usage.input * price.input) + (usage.output * price.output)

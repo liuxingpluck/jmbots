@@ -36,7 +36,8 @@ export * from './TextReply.ts';
 //M 1.7.0：聊天归档也听 channel/history，拉回的群历史写进聊天 MD。
 //M 1.8.0：说话的是谁（isOwnerTurn、getSpeakerRole、isGroup）从 utils/Workspace.ts 挪进 Message.ts；删 resolveLegacyRole。
 //M 1.8.1：明确按地址发的渠道协议用语。
-export const version = '1.8.2';
+//M 1.8.3：requestChannelReply 不再掐表（删 timeoutMs 参数），等 30 秒只报警；走网络的渠道自己限时（飞书 60 秒），云端 19 第 1、2 条。
+export const version = '1.8.3';
 
 
 declare module 'cordis' {

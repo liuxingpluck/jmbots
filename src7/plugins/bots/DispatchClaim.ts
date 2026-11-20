@@ -6,7 +6,7 @@ import * as utils from '../../utils/index.ts';
 import type { DispatchResults, QueueItem, ReplyControl } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import * as groupBatchModule from './GroupBatch.ts';
-import type { Bot } from './index.ts';
+import type { Bot, IncomingMessage, ReceiveEvent } from './index.ts';
 
 /** 定下前台会话，保存来源快照，然后交给现有队列处理。 */
 export class DispatchClaim {
@@ -257,5 +257,47 @@ export class DispatchClaim {
     if (front.row.state !== 'running' && front.row.activeKey === undefined) {
       this.queue.drain(front);
     }
+  }
+
+  /**
+   * 群攒批判断要接话、这个群登记了 judge_helper：这一批不排进前台自答，转给外部助手。
+   * 照 bots 的认领关口发一次 bot/receive（地址副本去掉 listenOnly、写上 relayHelper）；
+   * relay 认领了（填了 session）就把这一批交给那场会话，一轮结束回原渠道。
+   * GroupBatch.look 调，调之前已把这一批记成前台背景。
+   * @param front 这个机器人在这个群的前台。
+   * @param last 这一批最后一句。
+   * @param text 这一批的话。
+   * @param helper 转给哪个外部助手（relay 的 helpers 里的名字）。
+   */
+  async relayBatch(front: Session, last: groupBatchModule.Heard, text: string, helper: string): Promise<void> {
+    //G 机器人名单里没有了（配置改过）：不转。
+    const bot = this.home.bots.get(front.row.bot);
+    if (bot === undefined) return;
+
+    //M 地址副本去掉只听的标记、写上转给谁：这一批要有人回，relay 读 relayHelper。
+    const address = structuredClone(last.botOrigin.address);
+    delete address['listenOnly'];
+    address['relayHelper'] = helper;
+
+    //M 照这一批最后一句拼一条收件，经认领关口问一遍。
+    const message = last.message;
+    const incoming: IncomingMessage = {
+      channel: message.channel,
+      bot: bot.name,
+      text,
+      time: message.createdAt,
+      address,
+      sourceId: message.messageId,
+    };
+    const receiveEvent: ReceiveEvent = { bot, message: incoming };
+    await this.home.serial('bot/receive', receiveEvent);
+
+    //G 没人认领（没挂 relay、它不认）或被处理掉了：不转，这一批已经是前台背景。
+    const claimed = receiveEvent.session;
+    if (receiveEvent.handled === true || claimed === undefined) return;
+
+    //M 交给认领的那场会话（relay 的外部助手会话），记下回话往哪送。
+    const origin = { channel: last.botOrigin.channel, address };
+    bot.deliver(claimed, incoming.text, origin);
   }
 }

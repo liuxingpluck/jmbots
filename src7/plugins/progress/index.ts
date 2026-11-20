@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type { AskInput, Session, Thinking } from '../../Sessions.ts';
+import type { AskInput, ChatRequest, Session, Thinking } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as cardUtils from '../../utils/Card.ts';
@@ -37,7 +37,10 @@ export const name = 'progress';
 //M 1.1.7：限时与收尾配置迁入插件 config；顶层旧 engine 段由骨架入口报错拒绝。
 //M 1.1.13：群日报改发 bot/request（hand 带 replyTo），不再拼假的群消息发渠道事件。
 //M 1.1.14：群日报的 session/before-tool 先看 gate.deny，前面的关口已经拒了就不覆盖。
-export const version = '1.1.14';
+//M 1.1.15：插件间请求直接用 reply 或 why，等待慢时报警，由决策插件负责模型限时。
+//M 1.1.16：用户点终止也清报时、到点、长跑提醒定时器（云端20 第 4 条），和限时叫停 stop 同一处 clearTimers。
+//M 1.1.17：构造函数只做登记，事件处理挪成 onChange、onBeforeModel、onDecided、onRequest、onRequestError 方法（云端20 第 2 条）。
+export const version = '1.1.17';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'sessions'];
@@ -142,14 +145,14 @@ declare module 'cordis' {
     'progress/update'(item: ProgressItem): void;
     /**
      * 查询或操作会话进度。
-     * 谁发：src7/plugins/feishu/cards/Cards.ts 的 onAction；src7/plugins/web-api/index.ts 的 WebApi.runningList
+     * 谁发：src7/plugins/feishu/cards/Cards.ts 的 onAction；src7/plugins/web-api/Views.ts 的 Views.runningList
      * 谁接：src7/plugins/progress/index.ts 的 Progress.constructor
      */
     'progress/request'(request: ProgressRequest): void | Promise<void>;
     /**
      * 返回进度列表或进度操作的反馈。
      * 谁发：src7/plugins/progress/index.ts 的 Progress.constructor
-     * 谁接：src7/plugins/feishu/cards/Cards.ts 的 onAction；src7/plugins/web-api/index.ts 的 WebApi.runningList
+     * 谁接：src7/plugins/feishu/cards/Cards.ts 的 onAction；src7/plugins/web-api/Views.ts 的 Views.runningList
      */
     'progress/result'(result: ProgressResult): void;
   }
@@ -243,9 +246,6 @@ const LONG_RUN_KIND = 'long-run';
 const MINUTE = 60_000;
 /** 思考档从低到高。 */
 const LEVELS: Thinking[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-/** 模型目录查询最多等三秒。 */
-const CATALOG_TIMEOUT_MS = 3000;
-
 /** 原进度项已经结束或查不到时，操作沿用这句反馈。 */
 const ENDED_TEXT = '这件事已经结束了';
 
@@ -256,7 +256,8 @@ export class Progress extends cordis.Service {
   private nextId = 1;
 
   /**
-   * 登记 progress 插件：把 Progress 作为服务挂到 Cordis 上（以后用 ctx.progress 取）；再听会话的三个事件。
+   * 登记 progress 插件：把 Progress 作为服务挂到 Cordis 上（以后用 ctx.progress 取）；再听会话、长跑卡片和进度请求事件。
+   * 构造函数只做登记，每个事件的处理写成下面的方法。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param settings 校验后的配置。
    * 副作用：监听会话、长跑提醒与进度请求，并在插件卸载时清理定时器。
@@ -264,90 +265,34 @@ export class Progress extends cordis.Service {
   constructor(ctx: cordis.Context, private readonly settings: Settings) {
     super(ctx, 'progress');
 
-    //M session/change（通知）：变成 running 就开一项；done、stopped、failed 就收尾。没有渠道（小会话）或有 parent 的不管，
-    //M   但前台交出去的后台会话（kind work）要管：11-14 “分会话”起后台会话的 parent 记成交出它的前台对话，
-    //M   原来的“有 parent 不管”就把它们漏了，长跑提醒、限时都不再发（Cards_Test 抓到的，2026-11-14 17:35 EST 修）。
+    //M session/change（通知）：变成 running 就开一项；done、stopped、failed 就收尾。
     ctx.on('session/change', (session) => {
-      const row = session.row;
-      if (row.channel === undefined || (row.parent !== undefined && row.kind !== 'work')) return;
-
-      if (row.state === 'running') {
-        //M 会话进入运行态时初始化或续接本轮进度项与定时器。
-        this.start(session);
-        return;
-      }
-      //M 会话结束或出错时异步触发收尾总结与超时登记，兜底记录错误防止未捕获异常。
-      void this.end(session).catch((error: unknown) => console.error(`进度收尾出错：${textModule.getErrorMessage(error)}`));
+      this.onChange(session);
     });
 
     //M session/new-message（通知）：对话里新接了一条 → 记步数、用时、在做什么、工作过程。
     ctx.on('session/new-message', (session, message) => this.onMessage(session, message));
 
-    //M session/before-model（挨个问）：过了报时点就在这一步发给模型的对话末尾加一句报时。只改这一步的副本，不进对话。
+    //M session/before-model（挨个问）：过了报时点就在这一步发给模型的对话末尾加一句报时。
     //M   要在 plugins 里写在 bots（前台）、compress 后面：它们会整个换掉 request.messages。
     ctx.on('session/before-model', (request) => {
-      const item = this.items.get(request.session.id);
-      if (item === undefined || item.endedAt !== undefined || item.remindAt === undefined) return;
-      if (Date.now() < item.remindAt) return;
-      const content = `（系统）这件事已经干了 ${textModule.formatDuration(Date.now() - item.startedAt)}，${this.limitText(item)}。`
-        + '回复用户时说清干了多久、做到哪了；快到点了就抓紧收尾，做不完就写清做到哪了、还剩什么。';
-      request.messages.push({ role: 'user', content, timestamp: Date.now() });
+      this.onBeforeModel(request);
     });
 
-    //M approval/decided（通知）：长跑提醒卡片定了。同意 = 终止；拒绝 = 继续（记一笔，什么都不改）；ended 是会话结束时自己作废的，不管。
+    //M approval/decided（通知）：长跑提醒卡片定了。
     ctx.on('approval/decided', (pending: DecidedLike) => {
-      if (pending.kind !== LONG_RUN_KIND || pending.card?.state === 'ended') return;
-      const sessionId = (pending.payload as { sessionId?: unknown } | null)?.sessionId;
-      if (typeof sessionId !== 'string') return;
-
-      //G 只有本轮确认登记的卡片可以控制会话，忽略超时后才出现的卡片。
-      const item = this.items.get(sessionId);
-      if (item === undefined || item.endedAt !== undefined || item.cardId !== pending.id) return;
-
-      if (pending.state === 'approved') {
-        //M 用户从本轮长跑卡片点了终止。
-        this.act(sessionId, 'stop');
-        return;
-      }
-
-      //M 用户选择继续，工作过程只记一条日志。
-      this.note(item, '长跑提醒：用户点了继续');
-
-      //T 跟踪：用户点了继续。
-      const continueVars = { session: sessionId, cardId: pending.id };
-      this.ctx.emit('trace', 'Progress.continue', 'trace.progress.continue', "ctx.on('approval/decided')", continueVars);
+      this.onDecided(pending);
     });
 
+    //M 两种进度请求：list 查进度，act 终止或改限时；处理出错时把原因回给调用方。
     const requestOptions = {
-      onError: (error: unknown, request: ProgressRequest) => {
-        if (request.action === 'list') return { items: [] };
-
-        //G 操作没做成时把错误说明回给卡片调用方。
-        const text = textModule.getErrorMessage(error);
-        return { ok: false, text };
-      },
+      onError: (error: unknown, request: ProgressRequest) => this.onRequestError(error, request),
     };
-
-    //M 两种进度请求沿用原服务的查询和控制逻辑。
     requestEventModule.onRequestEvent(
       ctx,
       'progress/request',
       'progress/result',
-      (request) => {
-        if (request.action === 'list') {
-          //M 按机器人筛选并返回进度项副本。
-          const items = this.list(request.bot);
-          return { items };
-        }
-
-        //G 用当前进度项状态判断操作能否执行。
-        const active = this.getActiveItem(request.sessionId);
-        if (active === undefined) return { ok: false, text: ENDED_TEXT };
-
-        //M 用原方法执行操作，保留给用户看的反馈。
-        const text = this.act(request.sessionId, request.op, request.minutes);
-        return { ok: true, text };
-      },
+      (request) => this.onRequest(request),
       requestOptions,
     );
 
@@ -355,6 +300,102 @@ export class Progress extends cordis.Service {
     ctx.effect(() => () => {
       for (const item of this.items.values()) this.clearTimers(item, true);
     });
+  }
+
+  /**
+   * session/change：变成 running 就开一项；done、stopped、failed 就收尾。没有渠道（小会话）或有 parent 的不管，
+   * 但前台交出去的后台会话（kind work）要管：11-14 “分会话”起后台会话的 parent 记成交出它的前台对话，
+   * 原来的“有 parent 不管”就把它们漏了，长跑提醒、限时都不再发（Cards_Test 抓到的，2026-11-14 17:35 EST 修）。
+   * @param session 状态变了的会话。
+   */
+  private onChange(session: Session): void {
+    const row = session.row;
+    if (row.channel === undefined || (row.parent !== undefined && row.kind !== 'work')) return;
+
+    if (row.state === 'running') {
+      //M 会话进入运行态时初始化或续接本轮进度项与定时器。
+      this.start(session);
+      return;
+    }
+    //M 会话结束或出错时异步触发收尾总结与超时登记，兜底记录错误防止未捕获异常。
+    void this.end(session).catch((error: unknown) => console.error(`进度收尾出错：${textModule.getErrorMessage(error)}`));
+  }
+
+  /**
+   * session/before-model：过了报时点就在这一步发给模型的对话末尾加一句报时。只改这一步的副本，不进对话。
+   * @param request 这一步要发给模型的请求（骨架交来的副本）。
+   */
+  private onBeforeModel(request: ChatRequest): void {
+    const item = this.items.get(request.session.id);
+    if (item === undefined || item.endedAt !== undefined || item.remindAt === undefined) return;
+    if (Date.now() < item.remindAt) return;
+
+    //M 报时一句：干了多久、限时多少，提醒模型收尾时说清做到哪了。
+    const elapsed = textModule.formatDuration(Date.now() - item.startedAt);
+    const content = `（系统）这件事已经干了 ${elapsed}，${this.limitText(item)}。`
+      + '回复用户时说清干了多久、做到哪了；快到点了就抓紧收尾，做不完就写清做到哪了、还剩什么。';
+    request.messages.push({ role: 'user', content, timestamp: Date.now() });
+  }
+
+  /**
+   * approval/decided：长跑提醒卡片定了。同意 = 终止；拒绝 = 继续（记一笔，什么都不改）；ended 是会话结束时自己作废的，不管。
+   * @param pending 定了的待确认项。
+   */
+  private onDecided(pending: DecidedLike): void {
+    if (pending.kind !== LONG_RUN_KIND || pending.card?.state === 'ended') return;
+    const sessionId = (pending.payload as { sessionId?: unknown } | null)?.sessionId;
+    if (typeof sessionId !== 'string') return;
+
+    //G 只有本轮确认登记的卡片可以控制会话，忽略超时后才出现的卡片。
+    const item = this.items.get(sessionId);
+    if (item === undefined || item.endedAt !== undefined || item.cardId !== pending.id) return;
+
+    if (pending.state === 'approved') {
+      //M 用户从本轮长跑卡片点了终止。
+      this.act(sessionId, 'stop');
+      return;
+    }
+
+    //M 用户选择继续，工作过程只记一条日志。
+    this.note(item, '长跑提醒：用户点了继续');
+
+    //T 跟踪：用户点了继续。
+    const continueVars = { session: sessionId, cardId: pending.id };
+    this.ctx.emit('trace', 'Progress.continue', 'trace.progress.continue', "ctx.on('approval/decided')", continueVars);
+  }
+
+  /**
+   * progress/request：list 按机器人交回进度项副本；act 对仍在跑的项终止或改限时。
+   * @param request 进度请求。
+   * @returns 回执正文：list 是 items；act 是做没做成和给用户看的一句话。
+   */
+  private onRequest(request: ProgressRequest): requestEventModule.StripResultId<ProgressResult> {
+    if (request.action === 'list') {
+      //M 按机器人筛选并返回进度项副本。
+      const items = this.list(request.bot);
+      return { items };
+    }
+
+    //G 用当前进度项状态判断操作能否执行。
+    const active = this.getActiveItem(request.sessionId);
+    if (active === undefined) return { ok: false, text: ENDED_TEXT };
+
+    //M 用原方法执行操作，保留给用户看的反馈。
+    const text = this.act(request.sessionId, request.op, request.minutes);
+    return { ok: true, text };
+  }
+
+  /**
+   * progress/request 处理抛错时的回执：list 交回空列表，act 把错误说明回给卡片调用方。
+   * @param error 抛出的错。
+   * @param request 出错的那个请求。
+   */
+  private onRequestError(error: unknown, request: ProgressRequest): requestEventModule.StripResultId<ProgressResult> {
+    if (request.action === 'list') return { items: [] };
+
+    //G 操作没做成时把错误说明回给卡片调用方。
+    const text = textModule.getErrorMessage(error);
+    return { ok: false, text };
   }
 
   /**
@@ -397,6 +438,8 @@ export class Progress extends cordis.Service {
     if (item === undefined) return ENDED_TEXT;
 
     if (action === 'stop') {
+      //M 用户点了终止：先清报时、到点、长跑提醒定时器，免得会话停下前还报一次时。
+      this.clearTimers(item, false);
       item.stopAsked = 'stop';
       item.action = '正在停下';
       //M 记录用户主动终止日志并立即下发停止指令，随后强制推送最新进度。
@@ -548,25 +591,24 @@ export class Progress extends cordis.Service {
     };
     const request = { action: 'ask', input } as const;
     const uncertain = '长跑提醒登记结果不确定';
-    const options = {
-      timeoutMs: 5000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', error: detail ?? reason };
-      },
-    };
+    const options = { warnAfterMs: 5000 };
 
     //M 等待审核插件确认登记。明确未接单或登记失败才走文字退路。
-    const reply = await requestEventModule.requestEvent(
+    const asked = await requestEventModule.requestEvent(
       this.ctx, 'approval/request', 'approval/result', request, options,
     );
 
     //T 跟踪：记录卡片是否登记成功。
-    const pending = reply.pending;
-    const cardVars = { session: item.sessionId, elapsed: elapsed, cardId: pending?.id, error: reply.error };
+    const pending = asked.reply?.pending;
+    let error = asked.reply?.error;
+    if (asked.why !== undefined) {
+      error = asked.detail ?? asked.why;
+    }
+    const cardVars = { session: item.sessionId, elapsed, cardId: pending?.id, error };
     this.ctx.emit('trace', 'Progress.sendCard', 'trace.progress.requestCard', 'approval/request ask', cardVars);
 
     //G 未获回执时可能已经登记，等待原卡或保留待核对状态。
-    if (requestEventModule.isUnsure(reply)) {
+    if (asked.why !== undefined && asked.why !== 'unhandled') {
       item.cardId = 0;
       this.note(item, uncertain);
       return;
@@ -581,7 +623,7 @@ export class Progress extends cordis.Service {
     }
 
     //G 审核请求未获确认时只提醒用户，停止操作仍由用户决定。
-    if (pending === undefined || reply.error !== undefined) {
+    if (pending === undefined || error !== undefined) {
       if (item.stopAsked !== undefined) return;
 
       item.cardId = 0;
@@ -784,17 +826,18 @@ export class Progress extends cordis.Service {
       用户的话: item.text, 已经干了: textModule.formatDuration(Date.now() - item.startedAt), 限时: this.limitText(item),
       最近的工作过程: item.log.slice(-JUDGE_LOG_LINES).join('\n'),
     };
-    const options = {
-      timeoutMs: 20_000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string): JudgeReply => ({
-        requestId: '', verdict: 'unsure', reason: detail ?? `决策请求未获回复（${reason}）`,
-      }),
-    };
-    const ask = (question: JudgeQuestion): Promise<JudgeReply> => {
+    const options = { warnAfterMs: 20_000 };
+    /** 取一题的分数与理由，未获回执时只交回原因。 */
+    const ask = async (question: JudgeQuestion): Promise<Pick<JudgeReply, 'score' | 'reason'>> => {
       const request = { kind: 'progress-limit', question, state, bot: item.bot, allowAt: JUDGE_PASS };
 
-      //M 三道判断题使用相同的会话快照和评分门槛。
-      return requestEventModule.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', request, options);
+      //M 决策插件负责模型限时，进度照回执取分或报告为何拿不到分。
+      const asked = await requestEventModule.requestEvent(
+        this.ctx, 'decision/judge', 'decision/judge-result', request, options,
+      );
+      if (asked.why !== undefined) return { reason: asked.detail ?? `决策请求未获回复（${asked.why}）` };
+
+      return asked.reply;
     };
 
     //M 并发收集三个分数，齐全时才考虑延长。
@@ -866,11 +909,11 @@ export class Progress extends cordis.Service {
     this.stop(item, verdict.why);
   }
 
-  /** 叫停：记下是限时停的，session.stop，马上推。 */
+  /** 叫停：清定时器，记下是限时停的，session.stop，马上推。和用户点终止（act 的 stop）清的是同一批定时器。 */
   private stop(item: Item, why: string): void {
     if (item.endedAt !== undefined) return;
-    clearTimeout(item.timers.remind);
-    clearTimeout(item.timers.limit);
+
+    this.clearTimers(item, false);
     item.stopAsked = 'timeout';
     item.action = '时间到了，正在停下';
     //M 把带限时信息的停止原因写入日志，立即停止会话并推送前端。
@@ -985,18 +1028,13 @@ export class Progress extends cordis.Service {
     const origin = { channel: row.channel, address: row.address };
     const request = { action: 'hand', bot: row.bot, text, origin, sessionId: freshId } as const;
     const uncertain = '转交结果不确定，请核对接手会话。';
-    const options = {
-      timeoutMs: 10_000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', ok: false, error: detail ?? `转交未获回执（${reason}）` };
-      },
-    };
+    const options = { warnAfterMs: 10_000 };
 
     //M 把交接内容发给机器人，凭回执定位实际接手的会话。
-    const reply = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
+    const asked = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
 
     //G 老会话已经停止。未确认转交时保留新旧关联，避免旧会话交回或再转。
-    if (requestEventModule.isUnsure(reply)) {
+    if (asked.why !== undefined && asked.why !== 'unhandled') {
       this.note(item, uncertain);
       this.close(item, 'stopped', uncertain);
       this.ctx.emit('bot/say', item.session, uncertain);
@@ -1004,11 +1042,16 @@ export class Progress extends cordis.Service {
     }
 
     //G 明确转交失败时撤掉老会话的转交标记。
-    if (!reply.ok || reply.sessionId === undefined) {
+    const reply = asked.reply;
+    if (reply?.ok !== true || reply.sessionId === undefined) {
       if (task !== undefined && task.handedTo === freshId) {
         delete task.handedTo;
       }
-      const failure = `想转新会话，但没有接手成功：${reply.error ?? '回执没有会话号'}`;
+      let reason = reply?.error ?? '回执没有会话号';
+      if (asked.why === 'unhandled') {
+        reason = asked.detail ?? `转交未获回执（${asked.why}）`;
+      }
+      const failure = `想转新会话，但没有接手成功：${reason}`;
 
       //M 将失败原因写入进度和日志，告知原会话的用户。
       this.note(item, failure);
@@ -1235,20 +1278,14 @@ export class Progress extends cordis.Service {
    */
   async getThinking(model: string, want: 'low' | 'high'): Promise<Thinking> {
     const request = { action: 'find', model } as const;
-    const options = {
-      timeoutMs: CATALOG_TIMEOUT_MS,
-      onFallback: () => ({ requestId: '' }),
-    };
-
     //M 通过事件取模型支持的思考档，供同插件的三种小会话选择。
     const result = await requestEventModule.requestEvent(
       this.ctx,
       'model-catalog/request',
       'model-catalog/result',
       request,
-      options,
     );
-    const infoLevels = result.info?.thinking ?? [];
+    const infoLevels = result.reply?.info?.thinking ?? [];
     const levels = infoLevels.filter((level): level is Thinking => LEVELS.includes(level as Thinking));
     if (levels.length === 0) {
       if (want === 'low') return 'minimal';

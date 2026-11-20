@@ -546,34 +546,15 @@ export class FrontDesk {
     if (!access.full) return [];
 
     const request = { action: 'front-history' as const, query };
-    //M 向记忆插件查询，保留查询失败和成功但无记录的区别。
-    const result = await this.askMemory(request, 1500);
-    if (!result.ok) return undefined;
+    const options = { prefix: 'mem' };
+    //M 发 memory/request（契约 3.2 第 6 条）向记忆插件查询；memory 读本机索引，不掐表。
+    const asked = await requestEventModule.requestEvent(this.ctx, 'memory/request', 'memory/result', request, options);
 
-    return result.frontEntries ?? [];
-  }
+    //G 没挂 memory、memory 出错、回执 ok: false 都算查询失败，和“成功但没有记录”分开。
+    if (asked.why !== undefined) return undefined;
+    if (!asked.reply.ok) return undefined;
 
-  /**
-   * 发请求事件 memory/request 请 memory 插件办一件事（契约 3.2 第 6 条），等 memory/result。
-   * @param payload 要查询的前台归档条件。
-   * @param timeoutMs 最多等多久：记往来 20 秒、搜 10 秒、算向量 30 秒。
-   * @returns memory 的回执；没挂 memory、超时、出错都是 ok: false（不带 hits、vectors），不抛。
-   */
-  private askMemory(
-    payload: requestEventModule.StripEnvelope<requestEventModule.EventArg<'memory/request'>>,
-    timeoutMs: number,
-  ): Promise<requestEventModule.EventArg<'memory/result'>> {
-    const options = {
-      prefix: 'mem',
-      timeoutMs,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        const error = detail ?? reason;
-        return { requestId: '', ok: false, error };
-      },
-    };
-
-    //M 发 memory/request 事件、等配对的 memory/result；等不到（没挂 memory、超时）由 onFallback 转成 ok: false 的回执。
-    return requestEventModule.requestEvent(this.ctx, 'memory/request', 'memory/result', payload, options);
+    return asked.reply.frontEntries ?? [];
   }
 
   /** 读取本轮前的近期归档，再按时间从早到晚交给模型。 */

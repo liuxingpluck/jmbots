@@ -26,6 +26,7 @@ import * as path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
+import * as checks from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -73,7 +74,10 @@ export const name = 'feishu';
 //M 1.3.2：是不是群、点卡片的是不是本人改问 channels 的 isGroup、getSpeakerRole（从 utils/Workspace.ts 挪过去的），判断不变。
 //M 1.3.3：新工具 feishu_recall（Recall.ts）撤回机器人自己发的消息；feishu_doc 群里建文档后给这个群阅读权限；提示里加“群里要文件优先发 Word”。
 //M 1.3.4：发送文字和内联附件的返回类型改名为 SendTextReceipt。
-export const version = '1.3.4';
+//M 1.3.5：飞书开放接口每个请求自己限时 60 秒（HTTP_TIMEOUT_MS，axios timeout），到点算不确定；
+//M   点卡片交给 approval、progress 改 requestEvent 新写法，本机的一问一答不掐表（云端 19 第 1、2 条）。
+//M 1.3.6：groups 每项可写 judge_helper（#318）：listen: judge 的群判定要接话时，地址带 judgeHelper，bots 把这批话转给该外部助手。
+export const version = '1.3.6';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -149,6 +153,8 @@ export interface FeishuAddress {
   judgeThreshold?: number;
   /** 前台判断完写回来的流水结果（judge:回 / judge:不回(0.32)）：onMessage 收尾记进来往流水那一行。 */
   judged?: string;
+  /** 这个群登记的 judge_helper：群攒批判定要接话时，这批话转给这个外部助手（relay 的 helpers 里的名字），不由机器人自答（bots/GroupBatch.ts 读）；没登记不写。 */
+  judgeHelper?: string;
   /** 这个群登记的 relay：model 时 @ 机器人的话由模型判断要不要转外部助手（relay 读）；没登记不写。 */
   relay?: 'direct' | 'model';
   /** 这个群登记的 trusted：true 时本人在群里说话照旧带私人记忆（memory/MemoryKey.ts 的 canReadAll 读）；没登记、私聊不写，当 false。 */
@@ -222,6 +228,8 @@ export interface FeishuGroup {
   listen: 'mention' | 'all' | 'judge';
   /** listen: judge 时决策模型的把握 ≥ 它才接话；不写用 decision 插件默认（allow_at）。 */
   judgeThreshold?: number;
+  /** listen: judge 时判定要接话就转给这个外部助手（relay 的 helpers 里的名字）；不写由机器人自己接话。 */
+  judgeHelper?: string;
   /** direct 只认外部助手前缀（默认，和没登记一样）；model 时 @ 机器人的话由模型判断要不要转。 */
   relay: 'direct' | 'model';
   /** 受不受信：true 时本人在这个群里说话照旧带私人记忆；不写是 false（群里的回复大家都看得到）。 */
@@ -293,6 +301,13 @@ const APP_ID_PATTERN = /^cli_[0-9a-fA-F]{16}$/u;
 
 /** 长连接握手最多等多久，毫秒。 */
 const HANDSHAKE_TIMEOUT_MS = 20_000;
+
+/**
+ * 每个飞书开放接口请求最多等多久，毫秒（发消息、上传文件、拉历史都算；上传大文件也够）。
+ * 飞书是真走网络的那一层，自己限时：到点 axios 断开，Api.call 抛普通错，回执照旧记“发没发到不确定”；
+ * 等飞书的插件（channels 回话、relay 发文件）不再自己掐表。
+ */
+const HTTP_TIMEOUT_MS = 60_000;
 
 /** 群名、群成员名字查过以后记多久，毫秒；过了再查（有人改名、新进群）。 */
 const CHAT_NAMES_MS = 10 * 60 * 1000;
@@ -416,7 +431,9 @@ export class Feishu {
 
     //M Bun 的 node:http 上传仍会走环境代理；仅 multipart 改用原生 fetch，并显式直连。
     //M 不改进程环境或 SDK 共享实例；普通接口、流式下载仍走 SDK 默认传输。
-    const httpInstance = lark.defaultHttpInstance.create();
+    //M 每个请求自己限时（HTTP_TIMEOUT_MS），挂住的请求到点断开、算不确定，不让等它的会话一直等。
+    const httpOptions = { timeout: HTTP_TIMEOUT_MS };
+    const httpInstance = lark.defaultHttpInstance.create(httpOptions);
     httpInstance.interceptors.request.use((request) => {
       if (String(request.headers.get('Content-Type')).startsWith('multipart/form-data')) {
         request.adapter = 'fetch';
@@ -1143,7 +1160,7 @@ function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<strin
 
 /**
  * 专门设过的群：groups 每项 chat_id（必写）、name、listen（mention / all / judge，默认 mention）、
- * judge_threshold（0 到 1，可不写）、relay（direct / model，默认 direct）、
+ * judge_threshold（0 到 1，可不写）、judge_helper（非空文字，可不写：判定要接话时转给这个外部助手）、relay（direct / model，默认 direct）、
  * trusted（true / false，默认 false：本人在 trusted 群里说话才带私人记忆）。
  * @param own feishu 插件的配置。
  * @returns chat_id → 群。
@@ -1182,6 +1199,11 @@ function getGroups(own: Record<string, unknown>, apps: FeishuApp[]): Map<string,
     const groupEntry: FeishuGroup = { chatId, name, listen, relay, trusted };
     if (threshold !== undefined) {
       groupEntry.judgeThreshold = threshold;
+    }
+    //M judge_helper：可选；写了要是非空文字。
+    if (item['judge_helper'] !== undefined) {
+      const helperLabel = `feishu 插件 groups 里 ${chatId} 的 judge_helper`;
+      groupEntry.judgeHelper = checks.checkNonEmptyText(item['judge_helper'], helperLabel);
     }
     if (daily !== undefined) {
       groupEntry.daily = daily;

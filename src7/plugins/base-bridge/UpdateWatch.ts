@@ -19,9 +19,6 @@ import * as textModule from '../../utils/Text.ts';
 /** 一件待确认：照 approval 声明的 approval/decided 事件取，不 import approval 目录。 */
 type Pending = requestEventModule.EventArg<'approval/decided'>;
 
-/** approval/result 回执：照 approval 声明的事件取。 */
-type ApprovalReply = requestEventModule.EventArg<'approval/result'>;
-
 
 /** `plugins[base-bridge].config.update_watch` 校验后配置。 */
 export interface UpdateWatchSettings {
@@ -54,10 +51,8 @@ const FIRST_MS = 10_000;
 const EVERY_MS = 60_000;
 const TIMEOUT_MS = 5_000;
 const CHANGES_MAX = 600;
-/** 问 approval 还有哪些在等最多等多久（契约 3.1：list 3 秒）。 */
-const LIST_WAIT_MS = 3_000;
-/** 请 approval 登记一条最多等多久（契约 3.1：ask 5 秒）。 */
-const ASK_WAIT_MS = 5_000;
+/** 等待 approval 登记时的告警阈值。 */
+const ASK_WARN_MS = 5_000;
 /** 自己拒掉旧条目时写的两句：听到这两句的拒绝不记成用户拒的。 */
 const NEWER = '有更新的版本了';
 const GONE = '新版本已经换上或撤掉了';
@@ -217,12 +212,12 @@ export class UpdateWatch {
     }
 
     //M 问 approval 还在等的更新条目（approval/request，action: list），用于清理过期版本或防止重复弹出。
-    //M   没挂 approval、超时都当没有在等的（契约 3.1：查询类退回空清单）。
+    //M   未收到回执时按空清单处理。
     const available = status.available ?? undefined;
     const listRequest = { action: 'list', kind: 'update' } as const;
-    const listOptions = { prefix: 'apr', timeoutMs: LIST_WAIT_MS, onFallback: getEmptyReply };
+    const listOptions = { prefix: 'apr' };
     const listed = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', listRequest, listOptions);
-    const waiting = listed.items ?? [];
+    const waiting = listed.reply?.items ?? [];
 
     let expireReason = NEWER;
     if (available === undefined) {
@@ -259,26 +254,31 @@ export class UpdateWatch {
     };
     const askRequest = { action: 'ask', input } as const;
     const uncertain = '更新送审结果不确定';
-    const askOptions = { prefix: 'apr', timeoutMs: ASK_WAIT_MS, onFallback: getEmptyReply };
+    const askOptions = { prefix: 'apr', warnAfterMs: ASK_WARN_MS };
 
     //M 发 approval/request（action: ask）：登记一条没有会话的待确认，approval 发 approval/asked，网页和飞书卡片去推。
     const asked = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', askRequest, askOptions);
 
     //G 未获回执时可能已经登记，保留同版本的占用并让中控核对。
-    if (requestEventModule.isUnsure(asked)) {
+    if (asked.why !== undefined && asked.why !== 'unhandled') {
       this.uncertainApproval = available.version;
       console.error(`盯更新：新版本 ${available.version} 的${uncertain}`);
       return;
     }
 
     //G 没接单或明确登记失败时，记录原因并等下一轮。
-    if (asked.pending === undefined) {
-      console.error(`盯更新：新版本 ${available.version} 没登记上待确认（${asked.error ?? '审核插件没回'}），下一轮再试`);
+    const pending = asked.reply?.pending;
+    if (pending === undefined) {
+      let reason = asked.reply?.error ?? '审核插件没回';
+      if (asked.why === 'unhandled') {
+        reason = '审核插件没回（unhandled）';
+      }
+      console.error(`盯更新：新版本 ${available.version} 没登记上待确认（${reason}），下一轮再试`);
       return;
     }
 
     //T 跟踪：登记新版本。
-    this.ctx.emit('trace', 'UpdateWatch.check', 'trace.base.registerUpdate', "requestEvent('approval/request', ask)", { version: available.version, approvalId: asked.pending.id });
+    this.ctx.emit('trace', 'UpdateWatch.check', 'trace.base.registerUpdate', "requestEvent('approval/request', ask)", { version: available.version, approvalId: pending.id });
   }
 
   /**
@@ -414,19 +414,6 @@ export class UpdateWatch {
 }
 
 
-/**
- * 问 approval 没回（没挂、超时、出错）时的退回：没有在等的、也没登记上。requestId 留空。
- * 写明返回类型，交给 requestEvent 的 onFallback。
- * @param reason requestEvent 给的退回原因。
- * @param detail 出错时的原话。
- */
-function getEmptyReply(reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply {
-  let error = `审核插件没回（${reason}）`;
-  if (detail !== undefined) {
-    error = `审核插件出错：${detail}`;
-  }
-  return { requestId: '', items: [], error };
-}
 
 
 /**

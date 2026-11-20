@@ -14,7 +14,7 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as routesModule from './Routes.ts';
 import * as staticModule from './Static.ts';
 import * as tokensModule from './Tokens.ts';
-import { getPluginProblems } from '../../Resources.ts';
+import type { PluginStatus } from '../../Resources.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 
@@ -23,7 +23,8 @@ import * as textModule from '../../utils/Text.ts';
 export const name = 'http';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.3.0：并入原 web 插件（Static.ts 托管网页，Files.ts 文件接口），config.yaml 里不再单列 web。
-export const version = '1.3.0';
+//M 1.3.1：/api/health 的 getPluginProblems 从骨架 Resources.ts 搬进本插件（骨架瘦身）。
+export const version = '1.3.1';
 
 /** 用到的服务。 */
 export const inject = ['resources'];
@@ -148,6 +149,31 @@ export function registerHttpErrorHandler(app: fastify.FastifyInstance): void {
     reply.code(status);
     return reply.send(body);
   });
+}
+
+
+/**
+ * 没挂上、没开工的说明，给 /api/health 的 problems。基地换版靠它判断新版能不能用。
+ * @param status 这次启动实际尝试挂过的插件。
+ * @returns 不是 ok 的插件各一句；全开工了是空数组。
+ */
+export function getPluginProblems(status: PluginStatus[]): string[] {
+  const problems: string[] = [];
+  for (const item of status) {
+    //M 开工了的不算问题。
+    if (item.state === 'ok') continue;
+
+    //M 等服务的叫没开工，还在起、失败的叫没挂上；有说明就带上。
+    let problem = `插件 ${item.name} 没挂上`;
+    if (item.state === 'waiting') {
+      problem = `插件 ${item.name} 没开工`;
+    }
+    if (item.error !== '') {
+      problem += `：${item.error}`;
+    }
+    problems.push(problem);
+  }
+  return problems;
 }
 
 

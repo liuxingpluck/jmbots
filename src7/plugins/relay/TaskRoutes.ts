@@ -134,6 +134,7 @@ function getFinishInput(body: Record<string, unknown>): FinishInput {
     }
   }
 
+  //退场：所有运行时的 agent_tasks 表里没有 protocol IS NULL 的未结束旧任务以后
   //M 旧格式：{ ok?: true/false, text?: 字符串 }。
   const ok = body['ok'] ?? true;
   const text = body['text'] ?? '';

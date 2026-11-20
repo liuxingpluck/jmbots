@@ -1,7 +1,8 @@
 /**
  * 校验：外面进来的东西只在这里查，一处一次。查过以后，骨架里面直接用，不再查、不再补默认值。
  * 骨架有两样外面进来的东西：命令行参数、config.yaml 里骨架自己用到的那几项。
- * 几个插件共用的校验也放这里（checkCount：网址里的非负整数；checkDirs、checkGrants：approval 的可信目录配置、POST /api/message 的授权目录；
+ * 几个插件共用的校验也放这里（checkNumber、checkFlag、checkModelRef：插件配置里的数、开关、“供应商名/模型 ID”；
+ * checkCount：网址里的非负整数；checkDirs、checkGrants：approval 的可信目录配置、POST /api/message 的授权目录；
  * checkGrantDir：本人按人、按群设的授权目录，approval 的 dir_grant 工具和 POST /api/grants）；
  * 只有一个插件用的校验在那个插件里（relay/Checks.ts：外部 AI 打招呼、交回结果；model-catalog/Checks.ts：会话打分），
  * 它们借这里的 record、list、text、texts、oneOf 查字段。
@@ -82,14 +83,19 @@ function checkThinkingMap(value: unknown, label: string): piAi.ThinkingLevelMap 
 
 
 /**
- * 解析并校验命令行。Main.ts 调。已经去掉了 version / serve 子命令。
- * @param argv 去掉 bun、脚本路径、以及 version/serve 之后的参数。
+ * 解析并校验命令行。Main.ts 调；version 子命令 Main.ts 已先处理。
+ * serve 子命令（基地这样起编译版）和不写子命令是同一回事：去掉 serve 这个词，剩下的参数一样认。
+ * @param argv 去掉 bun、脚本路径之后的参数，可能以 serve 开头。
  * @returns 运行时目录、是不是试运行，和剩下的参数（里面还可以有 --port）。
  * @throws --data / --runtime 后面没有值，或 --mode 不是 candidate 时抛错。
  */
 export function checkArgs(argv: string[]): MainArgs {
   /** 剩下的参数。 */
   const rest = [...argv];
+  //M serve 子命令：去掉这个词，剩下的照常认。
+  if (rest[0] === 'serve') {
+    rest.shift();
+  }
   /** 运行时目录；先看参数，没有再用默认。 */
   let dataDir: string | undefined;
   /** 是不是试运行。 */
@@ -200,8 +206,8 @@ export function checkConfig(raw: unknown): JmbotsConfig {
 
       //M 校验上下文窗与输出上限均为正整数，连同推理与图片能力登记进该供应商模型表。
       const parsed: ProviderConfig['models'][string] = {
-        contextWindow: int(contextWindow, `${label} 的 context_window`),
-        maxTokens: int(maxTokens, `${label} 的 max_output_tokens`),
+        contextWindow: checkNumber(contextWindow, `${label} 的 context_window`, POSITIVE_INT),
+        maxTokens: checkNumber(maxTokens, `${label} 的 max_output_tokens`, POSITIVE_INT),
         reasoning,
         input,
       };
@@ -235,11 +241,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
   });
 
   //M default_model：写成“供应商名/模型 ID”，供应商要在 providers 里。
-  const defaultModel = checkNonEmptyText(root['default_model'], 'default_model');
-  const providerName = defaultModel.slice(0, defaultModel.indexOf('/'));
-  if (providers[providerName] === undefined) {
-    throw new Error('default_model 要写成“供应商名/模型 ID”，供应商要在 providers 里');
-  }
+  const defaultModel = checkModelRef(root['default_model'], 'default_model', providers);
 
   //M plugins：一张清单，每项 { name, config?, disabled? }；disabled 是 true 的去掉。整段不写就挂默认的那几个。
   const plugins: PluginEntry[] = [];
@@ -256,14 +258,14 @@ export function checkConfig(raw: unknown): JmbotsConfig {
 
   //M 每个插件有自己的启动等待上限，超过计时器可表示的范围会提前触发。
   const mountTimeoutWritten = root['plugin_mount_timeout_ms'] ?? 15_000;
-  const pluginMountTimeoutMs = int(mountTimeoutWritten, 'plugin_mount_timeout_ms');
+  const pluginMountTimeoutMs = checkNumber(mountTimeoutWritten, 'plugin_mount_timeout_ms', POSITIVE_INT);
   if (pluginMountTimeoutMs > 2_147_483_647) {
     throw new Error('plugin_mount_timeout_ms 不能超过 2147483647');
   }
 
   //M 内存里最多留几场打开过的会话，超了挪出最久没用、闲着的（Sessions.remember）。
   const sessionCacheWritten = root['session_cache_max'] ?? 500;
-  const sessionCacheMax = int(sessionCacheWritten, 'session_cache_max');
+  const sessionCacheMax = checkNumber(sessionCacheWritten, 'session_cache_max', POSITIVE_INT);
 
   //M 骨架在插件启动前就可开会话，共用的思考档和重试放在现有 models 段。
   const modelSettings = checkRecord(root['models'] ?? {}, 'models');
@@ -283,9 +285,9 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     sessionCacheMax,
     thinking,
     retry: {
-      times: int(times, 'models.retry.times'),
-      waitMs: int(waitMs, 'models.retry.wait_ms'),
-      timeoutMs: int(timeoutMs, 'models.retry.timeout_ms'),
+      times: checkNumber(times, 'models.retry.times', POSITIVE_INT),
+      waitMs: checkNumber(waitMs, 'models.retry.wait_ms', POSITIVE_INT),
+      timeoutMs: checkNumber(timeoutMs, 'models.retry.timeout_ms', POSITIVE_INT),
     },
   };
 }
@@ -342,16 +344,118 @@ export function checkNonEmptyTextList(value: unknown, label: string): string[] {
 }
 
 
+/** checkNumber 的取值范围；不写的那一头不限。 */
+export interface NumberRule {
+  /** 要不要是整数（安全整数范围内）。 */
+  integer?: boolean;
+  /** 最小值，等于也行。 */
+  min?: number;
+  /** 要比它大，等于不行；和 min 只写一个。 */
+  above?: number;
+  /** 最大值，等于也行。 */
+  max?: number;
+}
+
+
+/** 最常用的范围：正整数（个数、毫秒、字数）。 */
+export const POSITIVE_INT: NumberRule = { integer: true, min: 1 };
+
+
 /**
- * 要正整数。
+ * 要一个数，在给定范围里。插件配置里的个数、毫秒、0 到 1 的阈值这类都用它查。
+ * 没写时的默认值由调用方先用 ?? 补上再交进来。
  * @param value 原始值。
  * @param label 是配置里的哪一项，写进错误信息。
+ * @param rule 要整数、上下限；不写就是任意有限的数。
+ * @returns 原样交回那个数。
+ * @throws 不是有限的数、不是整数（要整数时）或超出范围时抛错，说明该写成什么样。
  */
-function int(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new Error(`${label} 要写成正整数`);
-  }
+export function checkNumber(value: unknown, label: string, rule: NumberRule = {}): number {
+  //M 报错说法按范围拼一次，下面几道关口共用。
+  const failure = `${label} 要写成${getNumberKind(rule)}`;
+
+  //G 先要是有限的数，要整数的还得是安全整数。
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(failure);
+  if (rule.integer === true && !Number.isSafeInteger(value)) throw new Error(failure);
+
+  //G 再看上下限。
+  if (rule.min !== undefined && value < rule.min) throw new Error(failure);
+  if (rule.above !== undefined && value <= rule.above) throw new Error(failure);
+  if (rule.max !== undefined && value > rule.max) throw new Error(failure);
+
   return value;
+}
+
+
+/**
+ * 把 checkNumber 的范围说成一句话，写进报错：如“正整数”“不小于 0 且不大于 1 的数”。
+ * @param rule 取值范围。
+ * @returns 该写成什么样。
+ */
+function getNumberKind(rule: NumberRule): string {
+  //M 从 1 起、不设上限的整数就叫正整数，和各处原来的说法一致。
+  if (rule.integer === true && rule.min === 1 && rule.max === undefined) return '正整数';
+
+  //M 其余按下限、上限逐段拼。
+  const parts: string[] = [];
+  if (rule.min !== undefined) {
+    parts.push(`不小于 ${String(rule.min)} `);
+  }
+  if (rule.above !== undefined) {
+    parts.push(`大于 ${String(rule.above)} `);
+  }
+  if (rule.max !== undefined) {
+    parts.push(`不大于 ${String(rule.max)} `);
+  }
+
+  //M 整数、数两种叫法，前面接上范围。
+  let unit = '数';
+  if (rule.integer === true) {
+    unit = '整数';
+  }
+  if (parts.length === 0) return unit;
+
+  return `${parts.join('且')}的${unit}`;
+}
+
+
+/**
+ * 要一个开关：true 或 false。没写时的默认值由调用方先用 ?? 补上再交进来。
+ * @param value 原始值。
+ * @param label 是配置里的哪一项，写进错误信息。
+ * @returns 原样交回。
+ * @throws 不是 true 或 false 时抛错。
+ */
+export function checkFlag(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${label} 要写成 true 或 false`);
+
+  return value;
+}
+
+
+/**
+ * 要一个“供应商名/模型 ID”，供应商要在 config.yaml 的 providers 里。
+ * 骨架的 default_model、插件配置里选模型的项（voice 的 local_model、cloud_model 等）都用它，写错了启动时就报。
+ * @param value 原始值。
+ * @param label 是配置里的哪一项，写进错误信息。
+ * @param providers 校验过的供应商表（ctx.resources.config.providers；骨架自己查时是正在拼的那张）。
+ * @returns 原样交回。
+ * @throws 不是非空文字、没有斜杠或斜杠后没写模型、供应商不在 providers 里时抛错。
+ */
+export function checkModelRef(value: unknown, label: string, providers: Record<string, ProviderConfig>): string {
+  //M 先要非空文字，再按第一个斜杠拆成供应商和模型 ID。
+  const ref = checkNonEmptyText(value, label);
+  const slash = ref.indexOf('/');
+  const provider = ref.slice(0, slash);
+  const model = ref.slice(slash + 1);
+
+  //G 没有斜杠、斜杠后没写模型：写法不对。
+  if (slash < 0 || model === '') throw new Error(`${label} 要写成“供应商名/模型 ID”`);
+
+  //G 供应商没配：连不上，启动时就说。
+  if (providers[provider] === undefined) throw new Error(`${label} 的供应商不在 providers 里：${ref}`);
+
+  return ref;
 }
 
 

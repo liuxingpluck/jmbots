@@ -3,6 +3,7 @@
  *   - 触发一：这一批最后一句之后，群里安静满 quiet_seconds 秒；触发二：攒满 max_lines 句。到点时前台正在转，等这一轮停下再看。
  *   - 每群每天最多看 daily_limit 次（0 不限）：按群算，同群几个机器人共用，本地日期换天清零；看满了不问，话记成背景。
  *   - 问决策模型发请求事件 decision/judge；接话就照最后一句排进前台的单队列（DispatchClaim.enqueueBatch），这一批当这一轮的话；
+ *     群登记了 judge_helper（地址带 judgeHelper）的，接话时这一批记成前台背景，再转给那个外部助手（DispatchClaim.relayBatch）；
  *     不接就把这一批记进前台对话当背景（FrontDesk.listen）。一批发一次 bot/judged（飞书补记一行来往流水）。
  *   - 有人叫了机器人（私聊、@、引用）：DispatchClaim 认领时调 take 拿走这一批，拼在叫它的那句前面，缓冲清空。
  *   - 渠道撤回（DispatchRecall 调 cancelRecall）：本人或原发信人撤回的话从缓冲里拿掉。
@@ -20,8 +21,8 @@ import type { DispatchClaim } from './DispatchClaim.ts';
 import * as frontDeskModule from './FrontDesk.ts';
 
 
-/** 问决策模型最多等多久；超时按不接。 */
-const JUDGE_WAIT_MS = 60_000;
+/** 问决策模型等这么久还没回就报警（decision 每个模型自己限时，到点回拿不准）。 */
+const JUDGE_WARN_MS = 60_000;
 
 /** 没等到决策模型回执的原因，写进 bot/judged 的结果。 */
 const FALLBACK_TEXT: Record<requestEventModule.FallbackReason, string> = {
@@ -140,7 +141,7 @@ export class GroupBatch {
    * 听 session/change（前台停下，看等着的那一批）；拔插件时清掉安静计时器。
    * @param ctx bots 插件的 ctx。
    * @param desk 前台：不接的一批记成背景（FrontDesk.listen）。
-   * @param claims 认领：接话的一批排进前台（DispatchClaim.enqueueBatch）。
+   * @param claims 认领：接话的一批排进前台（DispatchClaim.enqueueBatch），或转给外部助手（DispatchClaim.relayBatch）。
    * @param config 入口校验过的 group_batch；undefined 是没开攒批。
    */
   constructor(
@@ -328,6 +329,15 @@ export class GroupBatch {
     //M 用剩余消息重新组成接话正文。
     const remaining = getLines(batch.heard);
     const replyText = remaining.join('\n');
+
+    //M 群登记了 judge_helper：这一批记进前台当背景，再转给那个外部助手，不由机器人自答。
+    const judgeHelper = utils.getStringField(source.botOrigin.address, 'judgeHelper');
+    if (judgeHelper !== '') {
+      this.keep(front, batch.heard);
+      await this.claims.relayBatch(front, source, replyText, judgeHelper);
+      return;
+    }
+
     //M 其余消息仍以整批排入前台。
     this.claims.enqueueBatch(front, source, replyText);
   }
@@ -402,19 +412,17 @@ export class GroupBatch {
     const vars = { session: front.id, lineCount: lines.length };
     this.ctx.emit('trace', 'GroupBatch.judge', 'trace.bots.judgeGroupReply', "requestEvent('decision/judge')", vars);
 
-    //M 发 decision/judge 等回执；没人接、超时都退回 unsure。
+    //M 发 decision/judge 等回执，不掐表：decision 自己限时。
     const options = {
       prefix: 'group-batch',
-      timeoutMs: JUDGE_WAIT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason) => {
-        return { requestId: '', verdict: 'unsure' as const, reason: FALLBACK_TEXT[reason] };
-      },
+      warnAfterMs: JUDGE_WARN_MS,
     };
-    const result = await requestEventModule.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', input, options);
+    const asked = await requestEventModule.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', input, options);
 
-    //G 没等到回执：不接，结果写明原因。
-    if (result.fallback !== undefined) return { reply: false, outcome: `judge:不回(${FALLBACK_TEXT[result.fallback]})` };
+    //G 没等到回执（没挂 decision、出错）：不接，结果写明原因。
+    if (asked.why !== undefined) return { reply: false, outcome: `judge:不回(${FALLBACK_TEXT[asked.why]})` };
 
+    const result = asked.reply;
     if (result.verdict === 'allow') return { reply: true, outcome: 'judge:回' };
 
     if (result.score === undefined) return { reply: false, outcome: 'judge:不回' };

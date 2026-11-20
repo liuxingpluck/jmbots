@@ -252,20 +252,21 @@ test('审批卡片无人应答或明确失败时提示没办成', async () => {
 });
 
 
-test('审批回执超时提示结果不确定，同一审批号的重复点击只提交一次', async () => {
+test('审批接单后出错提示结果不确定，同一审批号的重复点击只提交一次', async () => {
   const world = cardWorld([OWNER_ROW], undefined);
   const insert = "INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, 'approval', '1', 0, 0)";
   world.db.query(insert).run('om_a');
   world.db.query(insert).run('om_duplicate');
   const warning = spyOn(console, 'warn').mockImplementation(() => undefined);
   try {
-    //M 模拟审批已接单但未在五秒内返回回执。
+    //M 模拟审批已接单、处理中途出错，没有回执（不掐表，不等时钟）。
     world.actionCtx.on('approval/request', async (request) => {
       request.handled = true;
       if (request.action !== 'decide') return;
 
       world.calls.push(String(request.approve));
-      await Bun.sleep(5100);
+      await Bun.sleep(10);
+      throw new Error('写表中断');
     });
     const approve = { action: 'approve' };
     const reject = { action: 'reject' };
@@ -275,9 +276,9 @@ test('审批回执超时提示结果不确定，同一审批号的重复点击�
     expect(concurrent).toEqual(expected);
     expect(await pending).toEqual(expected);
     expect(warning).toHaveBeenCalledTimes(1);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_a（approval 1），提交审批决定 approve=true 未获回执（timeout），结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_a（approval 1），提交审批决定 approve=true 未获回执（error），结果不确定'));
 
-    //M 超时后连后来登记的同号卡片也不能再次发决定。
+    //M 出错后连后来登记的同号卡片也不能再次发决定。
     world.db.query(insert).run('om_later');
     const repeated = await cards.onAction(world.feishu, world.actionCtx, OWNER_P2P, 'om_later', reject);
     expect(repeated).toEqual(expected);
@@ -295,7 +296,7 @@ test('审批回执超时提示结果不确定，同一审批号的重复点击�
     await world.actionCtx.fiber.dispose();
     world.db.close();
   }
-}, 9000);
+});
 
 
 test('进度卡片通过请求改限时，进度失败或无人应答给出提示', async () => {
@@ -315,20 +316,21 @@ test('进度卡片通过请求改限时，进度失败或无人应答给出提�
 });
 
 
-test('终止和限时等不到回执时提示结果不确定，并按会话和动作记日志', async () => {
+test('终止和限时接单后出错时提示结果不确定，并按会话和动作记日志', async () => {
   const world = cardWorld([OWNER_ROW], undefined);
   const insert = "INSERT INTO feishu_cards (card_id, kind, ref, ended, at) VALUES (?, 'progress', ?, 0, 0)";
   world.db.query(insert).run('om_stop', 'p1');
   world.db.query(insert).run('om_limit', 'p2');
   const warning = spyOn(console, 'warn').mockImplementation(() => undefined);
   try {
-    //M 两种进度操作都模拟接单后未返回，验证每种只发一次请求。
+    //M 两种进度操作都模拟接单后出错、没有回执，验证每种只发一次请求。
     world.actionCtx.on('progress/request', async (request) => {
       request.handled = true;
       if (request.action !== 'act') return;
 
       world.calls.push(request.op);
-      await Bun.sleep(5100);
+      await Bun.sleep(10);
+      throw new Error('进度表中断');
     });
     const stopValue = { action: 'stop' };
     const limitValue = { action: 'limit', minutes: 15 };
@@ -338,14 +340,14 @@ test('终止和限时等不到回执时提示结果不确定，并按会话和�
     expect(await Promise.all([stopped, limited])).toEqual([expected, expected]);
     expect(world.calls).toEqual(['stop', 'limit']);
     expect(warning).toHaveBeenCalledTimes(2);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_stop（progress p1），stop 未获回执（timeout），结果不确定'));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_limit（progress p2），limit 未获回执（timeout），结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_stop（progress p1），stop 未获回执（error），结果不确定'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('卡片 om_limit（progress p2），limit 未获回执（error），结果不确定'));
   } finally {
     warning.mockRestore();
     await world.actionCtx.fiber.dispose();
     world.db.close();
   }
-}, 9000);
+});
 
 
 /** 临时运行时目录。 */

@@ -4,9 +4,11 @@ import * as cordis from 'cordis';
 import type { Session, SessionState } from '../../Sessions.ts';
 import * as protocol from '../channels/index.ts';
 import type * as decision from '../decision/index.ts';
-import type { DispatchClaim } from './DispatchClaim.ts';
+import { DispatchClaim } from './DispatchClaim.ts';
+import type { DispatchResults } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import * as batches from './GroupBatch.ts';
+import type { Bot, ReceiveEvent } from './index.ts';
 
 const CONFIG = { quiet_seconds: 1, max_lines: 3, daily_limit: 0 };
 const GROUP = '群一';
@@ -33,9 +35,9 @@ afterEach(async () => {
 });
 
 /** 创建有稳定消息号、群范围和说话人名字的一句只听消息。 */
-function getHeard(text: string, chatId = GROUP): batches.Heard {
+function getHeard(text: string, chatId = GROUP, extra: Record<string, unknown> = {}): batches.Heard {
   const now = Date.now();
-  const address = { chatId, senderName: '小明', judge: true, judgeThreshold: 0.8 };
+  const address = { chatId, senderName: '小明', judge: true, judgeThreshold: 0.8, ...extra };
   const botOrigin = { channel: 'feishu', address };
   const nativeId = `${chatId}-${text}`;
   const messageId = protocol.makeChannelMessageId('feishu', ACCOUNT, nativeId);
@@ -84,6 +86,7 @@ function setup(config?: batches.GroupBatchConfig) {
   const fronts = new Map<string, Session>();
   const requests: decision.DecisionJudgeRequest[] = [];
   const queued: { frontId: string; last: batches.Heard; text: string }[] = [];
+  const relayed: { frontId: string; last: batches.Heard; text: string; helper: string }[] = [];
   const kept: { frontId: string; text: string }[] = [];
   const outcomes: string[] = [];
   const sessions = {
@@ -98,9 +101,13 @@ function setup(config?: batches.GroupBatchConfig) {
       kept.push({ frontId: front.id, text });
     },
   };
-  const claims: Pick<DispatchClaim, 'enqueueBatch'> = {
+  const claims: Pick<DispatchClaim, 'enqueueBatch' | 'relayBatch'> = {
     enqueueBatch(front, last, text) {
       queued.push({ frontId: front.id, last, text });
+    },
+    relayBatch(front, last, text, helper) {
+      relayed.push({ frontId: front.id, last, text, helper });
+      return Promise.resolve();
     },
   };
 
@@ -140,7 +147,7 @@ function setup(config?: batches.GroupBatchConfig) {
     return seen.promise;
   }
 
-  return { ctx, batch, createFront, attachDecision, reply, nextOutcome, requests, kept, queued, outcomes };
+  return { ctx, batch, createFront, attachDecision, reply, nextOutcome, requests, kept, queued, relayed, outcomes };
 }
 
 test('安静从最后一句开始计时，到边界只判断一次', async () => {
@@ -339,20 +346,20 @@ test('无人接决策请求时立即按不接处理', async () => {
   expect(world.queued).toEqual([]);
 });
 
-test('决策接单未回执时，在虚拟时钟到期后按不接处理', async () => {
+test('决策接单后出错按不接处理，不掐表', async () => {
   const config = { ...CONFIG, max_lines: 1 };
   const world = setup(config);
   const front = world.createFront();
-  world.attachDecision();
-  const heard = getHeard('等待判断');
+  //M 决策接了单却抛错：不等时钟，直接按不接。
+  world.ctx.on('decision/judge', (request) => {
+    request.handled = true;
+    throw new Error('模型挂了');
+  });
+  const heard = getHeard('判断出错');
   const judged = world.nextOutcome();
   world.batch.add(front, heard);
-  expect(world.requests).toHaveLength(1);
-  vi.advanceTimersByTime(59_999);
-  expect(world.outcomes).toEqual([]);
-  vi.advanceTimersByTime(1);
   await judged;
-  expect(world.outcomes).toEqual(['judge:不回(决策模型超时)']);
+  expect(world.outcomes).toEqual(['judge:不回(决策模型出错)']);
   expect(world.kept).toEqual([{ frontId: front.id, text: heard.text }]);
   expect(world.queued).toEqual([]);
 });
@@ -372,4 +379,61 @@ test('入口缺键不开攒批，三种数值写错都报出键名', () => {
   const front = world.createFront();
   expect(world.batch.add(front, getHeard('按原方式记背景'))).toBe(false);
   expect(world.batch.take(front.id)).toEqual([]);
+});
+
+test('群登记了 judge_helper：判定要接话时这一批记成背景，转给外部助手，不排进前台', async () => {
+  const world = setup({ ...CONFIG, max_lines: 2 });
+  const front = world.createFront();
+  world.attachDecision('allow');
+  const first = getHeard('帮忙看看', GROUP, { judgeHelper: 'Claude' });
+  const last = getHeard('这个报错', GROUP, { judgeHelper: 'Claude' });
+
+  //M 攒满两句立即判断，判定要接。
+  world.batch.add(front, first);
+  const judged = world.nextOutcome();
+  world.batch.add(front, last);
+  await judged;
+  await Promise.resolve();
+
+  //M 两句都进了前台背景，这一批转给 Claude，前台没有排队。
+  expect(world.kept).toEqual([
+    { frontId: front.id, text: '帮忙看看' },
+    { frontId: front.id, text: '这个报错' },
+  ]);
+  expect(world.relayed).toEqual([{ frontId: front.id, last, text: '小明：帮忙看看\n小明：这个报错', helper: 'Claude' }]);
+  expect(world.queued).toEqual([]);
+});
+
+test('relayBatch 经 bot/receive 发出去：地址去掉 listenOnly、带 relayHelper，认领了就交给那场会话', async () => {
+  const ctx = new cordis.Context();
+  contexts.push(ctx);
+  const delivered: { session: Session; text: string; origin: unknown }[] = [];
+  const bot = {
+    name: '助手',
+    deliver(session: Session, text: string, origin: unknown) {
+      delivered.push({ session, text, origin });
+    },
+  } as unknown as Bot;
+  const relaySession = { id: '转话一', row: { id: '转话一', kind: 'relay' } } as Session;
+  const received: ReceiveEvent[] = [];
+  ctx.provide('bots', { get: (name: string) => (name === bot.name ? bot : undefined) });
+  ctx.on('bot/receive', (event) => {
+    received.push(event);
+    event.session = relaySession;
+  });
+  const claim = new DispatchClaim(ctx, {} as FrontDesk, {} as DispatchResults, undefined);
+  const front = { id: '前台一', row: { id: '前台一', bot: bot.name, kind: 'front' } } as Session;
+  const last = getHeard('这个报错', GROUP, { judgeHelper: 'Claude', listenOnly: true });
+
+  await claim.relayBatch(front, last, '小明：这个报错', 'Claude');
+
+  //M 收件地址去掉只听标记、写上转给谁；原句的地址不动。
+  const address = received[0]?.message.address as Record<string, unknown>;
+  expect(address['relayHelper']).toBe('Claude');
+  expect(address['listenOnly']).toBeUndefined();
+  expect(last.botOrigin.address['listenOnly']).toBe(true);
+  expect(received[0]?.message).toMatchObject({ channel: 'feishu', bot: '助手', text: '小明：这个报错', sourceId: last.message.messageId });
+
+  //M relay 认领了：这一批交给那场会话，回话照这个地址回群里。
+  expect(delivered).toEqual([{ session: relaySession, text: '小明：这个报错', origin: { channel: 'feishu', address } }]);
 });

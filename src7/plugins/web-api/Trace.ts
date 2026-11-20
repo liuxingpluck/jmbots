@@ -42,10 +42,6 @@ export interface SessionStep {
 }
 
 
-/** 流水和用量查询共用事件契约里的 5 秒等待上限。 */
-const TRACE_QUERY_TIMEOUT_MS = 5_000;
-
-
 /** 追溯里事件最多几条、用量最多几行。 */
 const EVENT_LIMIT = 500;
 const USAGE_LIMIT = 200;
@@ -237,15 +233,7 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   journalSessions.delete('');
   const linkedSessions = [...journalSessions];
   const journalQuery = { action: 'reply-lines', message: message.id, maxLines: EVENT_LIMIT, sessions: linkedSessions, to } as const;
-  const journalOptions = {
-    timeoutMs: TRACE_QUERY_TIMEOUT_MS,
-    onFallback: () => ({ requestId: '', events: undefined }),
-  };
   const usageQuery = { sessions, from, to, limit: USAGE_LIMIT };
-  const usageOptions = {
-    timeoutMs: TRACE_QUERY_TIMEOUT_MS,
-    onFallback: () => ({ requestId: '', rows: [], truncated: false }),
-  };
 
   //M 两份明细可以并行查询。流水按消息及相关会话取，用量按会话和时段取。
   const pendingJournal = requestEventModule.requestEvent(
@@ -253,34 +241,36 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
     'journal/request',
     'journal/result',
     journalQuery,
-    journalOptions,
   );
   const pendingUsage = requestEventModule.requestEvent(
     ctx,
     'model-catalog/usage',
     'model-catalog/usage-result',
     usageQuery,
-    usageOptions,
   );
-  const [journal, used] = await Promise.all([pendingJournal, pendingUsage]);
+  const requests = [pendingJournal, pendingUsage] as const;
+  const [journalResult, usageResult] = await Promise.all(requests);
 
   //M journal 返回截至本句回话的匹配行，已换成网页的事件外壳；cut 表示还有匹配行因上限未返回。
-  const events = journal.events ?? [];
-  const cut = journal.cut ?? false;
+  const journal = journalResult.reply;
+  const used = usageResult.reply;
+  const events = journal?.events ?? [];
+  const cut = journal?.cut ?? false;
+  const usageTruncated = used?.truncated ?? false;
 
   //M 缺流水时仅展示消息本身，缺用量时保留已有事件。
   let scope = 'exact';
-  if (journal.events === undefined) {
+  if (journal?.events === undefined) {
     scope = 'message-only';
     notes.push('没有流水明细或查询超时');
   }
-  if (used.requestId === '') {
+  if (used === undefined) {
     notes.push('没有用量或查询超时');
   }
   if (cut) {
     notes.push(`事件超过 ${String(EVENT_LIMIT)} 条，只给前 ${String(EVENT_LIMIT)} 条`);
   }
-  if (used.truncated) {
+  if (usageTruncated) {
     notes.push(`用量超过 ${String(USAGE_LIMIT)} 行，只给前 ${String(USAGE_LIMIT)} 行`);
   }
 
@@ -321,9 +311,9 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
     }],
     events,
     dispatches: [],
-    usage: used.rows,
+    usage: used?.rows ?? [],
     usageScope: 'session-window',
-    truncated: cut || used.truncated,
+    truncated: cut || usageTruncated,
     startedAt: from,
     endedAt: to,
     endSource: 'reply-record',

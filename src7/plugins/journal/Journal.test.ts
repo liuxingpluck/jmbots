@@ -12,6 +12,7 @@ import * as cordis from 'cordis';
 import type { ChannelMessage } from '../channels/index.ts';
 import type { Session, SessionRow } from '../../Sessions.ts';
 import * as requestEvents from '../../utils/RequestEvent.ts';
+import * as dbModule from '../db/index.ts';
 import * as journalModule from './index.ts';
 import { getTraceEvent } from './Trace.ts';
 
@@ -93,6 +94,7 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
   closers.push(() => ctx.fiber.dispose());
 
   await ctx.plugin(FakeResources, { root, events: eventsConfig });
+  await ctx.plugin(dbModule);
   await ctx.plugin(journalModule, config);
   return { ctx, root };
 }
@@ -109,7 +111,7 @@ async function queryJournal(ctx: cordis.Context, params: Record<string, string>)
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认只登记 ctx.filesMirror，流水走事件，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.3.3');
+    expect(journalModule.version).toBe('1.3.4');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeUndefined();
@@ -121,6 +123,7 @@ describe('journal（含 FilesMirror 并入）', () => {
     const rootBad = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-journal-bad-'));
     closers.push(() => fs.rmSync(rootBad, { recursive: true, force: true }));
     await badMirror.plugin(FakeResources, { root: rootBad });
+    await badMirror.plugin(dbModule);
     let thrown = '';
     try {
       await badMirror.plugin(journalModule, { mirror: 'yes' });
@@ -260,12 +263,13 @@ describe('journal（含 FilesMirror 并入）', () => {
     expect(sourceNames).not.toContain('Bots.say');
   });
 
-  test('1.2.2 以前建的 journal_lines 没有 source_id 列：启动时补上，旧行照常读', async () => {
+  test('1.2.2 以前建的 journal_lines 没有 source_id 列：经 db 迁移补上并记入账本，旧行照常读', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-journal-old-'));
     closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const ctx = new cordis.Context();
     closers.push(() => ctx.fiber.dispose());
     await ctx.plugin(FakeResources, { root });
+    await ctx.plugin(dbModule);
     const db = ctx.resources.db;
     db.exec('CREATE TABLE journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL,'
       + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL,'
@@ -281,6 +285,30 @@ describe('journal（含 FilesMirror 并入）', () => {
     const result = await queryJournal(ctx, {});
     const lines = result.lines?.filter((line) => line.name !== 'Journal.record');
     expect(lines?.map((line) => [line.name, line.sourceId])).toEqual([['旧行', null], ['新行', '["feishu","a","b"]']]);
+    const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'journal' ORDER BY version").all() as { version: number }[];
+    expect(versions.map((row) => row.version)).toEqual([1, 2]);
+  });
+
+  test('已有 source_id 列的旧库（尚未登记迁移账本）：adoptColumn 直接接管并补记版本', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-journal-adopted-'));
+    closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    await ctx.plugin(FakeResources, { root });
+    const db = ctx.resources.db;
+    db.exec('CREATE TABLE journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, kind TEXT NOT NULL,'
+      + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL,'
+      + ' site TEXT NOT NULL, bot TEXT, session_id TEXT, message_id INTEGER, source_id TEXT, vars TEXT NOT NULL)');
+    db.query("INSERT INTO journal_lines (at, kind, name, mode, listeners, text, code, site, source_id, vars) VALUES (?, '函数', '存量行', '', '[]', '', '', 'x', '[\"cli\",\"local\",\"1\"]', '{}')")
+      .run(Date.now());
+
+    await ctx.plugin(dbModule);
+    await ctx.plugin(journalModule);
+
+    const result = await queryJournal(ctx, { name: '存量行' });
+    expect(result.lines?.map((line) => [line.name, line.sourceId])).toEqual([['存量行', '["cli","local","1"]']]);
+    const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'journal' ORDER BY version").all() as { version: number }[];
+    expect(versions.map((row) => row.version)).toEqual([1, 2]);
   });
 
   test('流水事件回传筛选结果、错误及会话镜像目录', async () => {

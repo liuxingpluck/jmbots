@@ -31,7 +31,11 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import type { Origin, ReceiveEvent } from '../bots/index.ts';
 import * as channels from '../channels/index.ts';
+import type * as dbModule from '../db/index.ts';
 import * as agentTasksModule from './AgentTasks.ts';
+import tablesSql from './migrations/0000_relay_tables.sql' with { type: 'text' };
+import helperSql from './migrations/0001_relay_helper.sql' with { type: 'text' };
+import speakerSql from './migrations/0002_relay_speaker.sql' with { type: 'text' };
 import * as routesModule from './Routes.ts';
 import * as failureModule from '../../utils/Failure.ts';
 
@@ -49,17 +53,20 @@ export const name = 'relay';
 //  1.4.7：不再改会话的回话地址（删三处 bots.route）：direct 会话标 quiet，回答、超时提醒都由 relay 照收件地址发 channel/reply。
 //M 1.4.9：决策回信只用收件保存的精确目标，拒绝旧的本人身份配置键。
 //M 1.5.1：已定选项的收件结果按请求号回发。
-export const version = '1.5.1';
+//M 1.5.2：结果投递、决策图回信、发文件使用 reply 或 why；本机请求等回执，飞书发文件暂用原等待上限。
+//M 1.5.3：收件与回信表改走 db 迁移账本（adoptColumn 接管旧列），旧行补值标 //退场：；Relay 构造函数瘦身为纯登记。
+//M 1.5.4：helpers 支持可选展示名 title（内部名 name 不变）；预留 address.relayHelper 群攒批静默转交入口。
+export const version = '1.5.4';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'work-decision';
 const LEGACY_DECISION_CHANNEL = 'decision-map';
 
 /**
- * 用到的服务。http 是可选的：用到时 ctx.get 现取。发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。
- * 任务通道等 http 就绪；投递结果经 bot/request，须收到成功回执。
+ * 用到的服务。db 负责收件与回信表的版本迁移和事务；http 是可选的：用到时 ctx.get 现取。
+ * 发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。任务通道等 http 就绪；投递结果经 bot/request，须收到成功回执。
  */
-export const inject = ['resources', 'tools', 'sessions', 'bots'];
+export const inject = ['resources', 'tools', 'sessions', 'bots', 'db'];
 
 
 /**
@@ -90,8 +97,10 @@ export type ChatKind = 'p2p' | 'group';
 
 /** 一个外部助手。 */
 export interface Helper {
-  /** 话里怎么称呼它；收件里记的也是这个名字。 */
+  /** 内部标识：收件表 helper 列、查询筛选与回信核对都用它。 */
   name: string;
+  /** 给用户和模型看的展示名；没写配置时等于 name。 */
+  title: string;
   /** 任何机器人里以这些开头的话转给它，进这个机器人的 relay 会话（kind relay），不交给模型。不分大小写，规则见 prefixed。 */
   prefixes: string[];
   /** 转出时 POST 到这里（它的 webhook）；空串不推，它自己来读收件箱。 */
@@ -196,14 +205,23 @@ interface ReplyRow {
 /** 查超时隔多久查一次，毫秒。 */
 const CHECK_MS = 30_000;
 
-/** relay_items 建表以后加的栏：老库启动时补上（见构造函数），新库也走这一条，建表语句里不再写。 */
-const ADDED_COLUMNS = [
-  { name: 'helper', type: "TEXT NOT NULL DEFAULT ''" },
-  { name: 'owner', type: 'INTEGER NOT NULL DEFAULT 0' },
-  { name: 'sender', type: "TEXT NOT NULL DEFAULT ''" },
-  { name: 'chat', type: "TEXT NOT NULL DEFAULT 'p2p'" },
-  { name: 'chat_name', type: "TEXT NOT NULL DEFAULT ''" },
-];
+/** relay 收件与回信表的迁移计划：接管旧代码已补过的 helper 与说话人列。 */
+const relayMigrations: dbModule.MigrationPlan = {
+  plugin: name,
+  migrations: [
+    { version: 1, sql: tablesSql },
+    {
+      version: 2,
+      sql: helperSql,
+      adoptColumn: { table: 'relay_items', name: 'helper' },
+    },
+    {
+      version: 3,
+      sql: speakerSql,
+      adoptColumn: { table: 'relay_items', name: 'sender' },
+    },
+  ],
+};
 
 /** 收件里“谁、在哪说的”那几项。 */
 type Speaker = Pick<InboxItem, 'owner' | 'role' | 'workspace' | 'sender' | 'chat' | 'chatName'>;
@@ -271,130 +289,88 @@ export class Relay {
    * 副作用：建表、建目录、登记接口和工具。
    */
   constructor(private readonly ctx: cordis.Context, readonly config: RelayConfig) {
-    const db = this.ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS relay_items (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
-      + ' session_id TEXT NOT NULL, channel TEXT NOT NULL, address TEXT NOT NULL, text TEXT NOT NULL,'
-      + ' at INTEGER NOT NULL,'
-      + " last_msg_at INTEGER, state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0,"
-      + ' replied_at INTEGER)');
-    db.exec('CREATE TABLE IF NOT EXISTS relay_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL,'
-      + ' session_id TEXT NOT NULL, text TEXT NOT NULL, done INTEGER NOT NULL, at INTEGER NOT NULL,'
-      + ' delivered INTEGER NOT NULL DEFAULT 0, via TEXT NOT NULL)');
-
-    //M 缺的栏补上（ADDED_COLUMNS）。旧收件：helper 都算默认助手的；谁、在哪说的照它记的回话地址补。
-    //  加栏和填值放进一个事务：中途断了就一起作废，下次启动还会再补，不会留下没填的收件。
-    const tableInfo = db.query('PRAGMA table_info(relay_items)').all() as { name: string }[];
-    const columns = new Set(tableInfo.map((column) => column.name));
-    const missing = ADDED_COLUMNS.filter((column) => !columns.has(column.name));
-    if (missing.length > 0) {
-      const addColumns = db.transaction(() => {
-        for (const column of missing) {
-          db.exec(`ALTER TABLE relay_items ADD COLUMN ${column.name} ${column.type}`);
-        }
-        //M 给迁移前的转发条目补上默认助手，以便继续按助手查询。
-        if (!columns.has('helper')) db.query('UPDATE relay_items SET helper = ?').run(this.config.helpers[0].name);
-
-        //M 旧表缺发送方列时，从原回话地址恢复发送人和群信息。
-        if (!columns.has('sender')) this.fillSpeakers();
-      });
-      addColumns();
-    }
+    //M 建收件表和回信表，旧库缺栏由迁移账本接管，未填过的旧行补齐默认助手与说话人。
+    this.ctx.db.migrate(relayMigrations);
+    this.migrateOldItems();
 
     //M 先把文件夹和两个文件建好，外部助手一看就知道往哪写。
     for (const bot of botUtils.getBotConfigs(this.ctx.resources.raw)) {
-      if (this.getMode(bot.name) !== undefined) this.getDir(bot.name);
+      if (this.getMode(bot.name) !== undefined) {
+        this.getDir(bot.name);
+      }
     }
 
-    //M 三个监听。ctx.on 挂在本插件的 ctx 上：插件被拔掉时 Cordis 自动撤掉。
-    //M   bot/receive、session/before-model 是“挨个问”（serial），先后照 config.yaml 里 plugins 写的先后。
-    this.ctx.on('bot/receive', (event) => {
-      this.onReceive(event);
-    });
+    //M 三个会话监听：bot/receive、session/before-model 按 plugins 顺序挨个问，session/change 检查积压回信。
+    this.ctx.on('bot/receive', (event) => this.onReceive(event));
+    this.ctx.on('session/before-model', (request) => this.onRequest(request));
+    this.ctx.on('session/change', (session) => this.onChange(session));
 
-    //M 在模型请求入口决定本轮是直转还是开放转话工具。
-    this.ctx.on('session/before-model', (request) => {
-      this.onRequest(request);
-    });
-
-    //M 在会话状态变化后检查积压回信是否可以送出。
-    this.ctx.on('session/change', (session) => {
-      this.onChange(session);
-    });
-
-    //M http 是可选的：挂了（要写在 relay 前面）才登记两条接口；没挂就只有文件这条回信路。
+    //M http、flow 是可选的：有 http 就登记两条接口，有 flow 就暴露运行时计数。
     const http = this.ctx.get('http');
-    if (http !== undefined) routesModule.routes(http, this);
-
-    //M flow 是可选的：挂了就给 /flow/ 的「运行时变量」露几个数（不带用户的话、地址），flow 前后挂都接得上。
+    if (http !== undefined) {
+      routesModule.routes(http, this);
+    }
     void this.ctx.inject(['flow'], (sub) => {
       sub.effect(() => sub.flow.state('relay', () => this.stateForFlow(), FLOW_NOTES));
     });
 
-    //M relay_send 一直登记：哪场会话能用要到每一步才知道（机器人写了 relay: model，或者飞书群登记了 relay: model），
-    //M   不能用的由 offerTool 每一步从工具里拿掉，run 里再查一次。
+    //M 登记工具 relay_send（哪场会话能用由 offerTool 每一步筛选，run 里再查一次）。
     this.registerTool();
 
-    //M 工作决策的选择交回提问方，只有外部助手的选择进入 relay 收件。
+    //M 工作决策的选择与留言：只接外部助手的选择和非回写类留言。
     const decisionOptions = {
       filter: (decision: requestEventModule.EventArg<'work-decision/decided'>) => decision.asker.kind === 'helper',
     };
-    requestEventModule.onRequestEvent(this.ctx, 'work-decision/decided', 'work-decision/decided-result', (decision) => {
-      if (decision.asker.kind !== 'helper') return { ok: false };
-
-      const target = { node: decision.node, note: decision.note };
-      const request = {
-        action: 'deliver' as const, node: decision.key, helper: decision.asker.name, text: decision.text, target,
-      };
-      return this.receiveDecision(request);
-    }, decisionOptions);
-
-    //M 收取工作决策的留言、任务变化与归档，relay 回写留言由工作决策插件接收。
+    requestEventModule.onRequestEvent(
+      this.ctx,
+      'work-decision/decided',
+      'work-decision/decided-result',
+      (decision) => this.onDecisionChosen(decision),
+      decisionOptions,
+    );
     const noteOptions = {
-      filter: (request: Parameters<cordis.Events['work-decision/note']>[0]) => request.action !== 'reply',
+      filter: (request: requestEventModule.EventArg<'work-decision/note'>) => request.action !== 'reply',
     };
-    requestEventModule.onRequestEvent(this.ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
-      if (request.action === 'reply') return { ok: false };
+    requestEventModule.onRequestEvent(
+      this.ctx,
+      'work-decision/note',
+      'work-decision/note-result',
+      (request) => this.receiveDecision(request),
+      noteOptions,
+    );
 
-      return this.receiveDecision(request);
-    }, noteOptions);
+    //M 拔掉插件时关掉轮询回信文件与超时检查两个定时器；全部挂完后补送未送回信并首读回信文件。
+    this.ctx.effect(() => this.startTimers());
+    this.ctx.on('ready', () => this.onReady());
+  }
 
-    //M 两个定时器。ctx.effect 登记“开了什么、拔掉时怎么关”：Cordis 拔这个插件时调返回的函数。
-    this.ctx.effect(() => {
-      const poll = setInterval(() => {
-        this.pollFile();
-      }, this.config.pollSeconds * 1000);
-      const late = setInterval(() => {
-        this.checkLate();
-      }, CHECK_MS);
-      return () => {
-        clearInterval(poll);
-        clearInterval(late);
-      };
-    });
+  //退场：所有运行时的 relay_items 旧行都补完 helper 和 chat 以后
+  /**
+   * 给刚由迁移补上列的旧收件填上默认助手与说话人信息，已有正常值的行不动。
+   * 副作用：同一事务内改库。
+   */
+  private migrateOldItems(): void {
+    this.ctx.db.transaction(() => {
+      //M 缺助手名的旧收件统一归到默认助手名下。
+      const defaultHelper = this.config.helpers[0].name;
+      this.run("UPDATE relay_items SET helper = ? WHERE helper = ''", [defaultHelper]);
 
-    //M 都挂完了（ready）：上次没送出的回信送一遍，文件里积着的回信读一遍。
-    this.ctx.on('ready', () => {
-      const sql = 'SELECT DISTINCT r.session_id, i.channel FROM relay_replies r'
-        + ' JOIN relay_items i ON i.id = r.item_id WHERE r.delivered = 0';
-      const rows = this.query<{ session_id: string; channel: string }>(sql, []);
-      for (const row of rows) {
-        //M 启动补送也按收件的来源区分，不尝试打开决策图的伪会话。
-        void this.deliverSoon(row.session_id, row.channel);
-      }
-
-      //M 启动时先读一遍文件回信，避免等待首个定时间隔。
-      this.pollFile();
+      //M 缺聊天种类的旧收件按保存的回话地址回填说话人和群信息。
+      this.fillSpeakers();
     });
   }
 
+  //退场：所有运行时的 relay_items 旧行都补完 helper 和 chat 以后
   /**
-   * 老库补栏时，照每条收件记的回话地址补上谁、在哪说的（构造函数的事务里调）。
+   * 老库补栏时，照每条尚未填 chat 的收件记的回话地址补上谁、在哪说的。
    * 副作用：改库。
    */
   private fillSpeakers(): void {
-    //M 扫描旧转发条目，用保存的回话地址提取发言人信息。
-    for (const row of this.query<{ id: number; address: string }>('SELECT id, address FROM relay_items', [])) {
-      const speaker = this.getSpeaker(JSON.parse(row.address) as unknown);
+    //M 只扫描刚补栏尚未填入 chat 的旧转发条目，已有行保持原样。
+    const rows = this.query<{ id: number; address: string }>("SELECT id, address FROM relay_items WHERE chat = ''", []);
+    for (const row of rows) {
+      const parsed: unknown = JSON.parse(row.address);
+      const speaker = this.getSpeaker(parsed);
       let ownerFlag = 0;
       if (speaker.owner) {
         ownerFlag = 1;
@@ -404,6 +380,58 @@ export class Relay {
       //M 回填发言者和会话类型字段，供后续回信和状态查询使用。
       this.run('UPDATE relay_items SET owner = ?, sender = ?, chat = ?, chat_name = ? WHERE id = ?', values);
     }
+  }
+
+  /**
+   * 把工作决策里属于外部助手的用户选择收进 relay 收件箱。
+   * @param decision 工作决策的选择事件载荷。
+   * @returns 收件结果。
+   */
+  private onDecisionChosen(decision: requestEventModule.EventArg<'work-decision/decided'>) {
+    if (decision.asker.kind !== 'helper') return { ok: false };
+
+    const target = { node: decision.node, note: decision.note };
+    const request = {
+      action: 'deliver' as const,
+      node: decision.key,
+      helper: decision.asker.name,
+      text: decision.text,
+      target,
+    };
+    return this.receiveDecision(request);
+  }
+
+  /**
+   * 启动轮询回信文件与超时检查两个定时器，返回拔插件时的清理函数。
+   */
+  private startTimers(): () => void {
+    const pollMs = this.config.pollSeconds * 1000;
+    const poll = setInterval(() => {
+      this.pollFile();
+    }, pollMs);
+    const late = setInterval(() => {
+      this.checkLate();
+    }, CHECK_MS);
+    return () => {
+      clearInterval(poll);
+      clearInterval(late);
+    };
+  }
+
+  /**
+   * 插件全部挂完后，把上次没送出的回信补送一遍，并首读一次回信文件。
+   */
+  private onReady(): void {
+    const sql = 'SELECT DISTINCT r.session_id, i.channel FROM relay_replies r'
+      + ' JOIN relay_items i ON i.id = r.item_id WHERE r.delivered = 0';
+    const rows = this.query<{ session_id: string; channel: string }>(sql, []);
+    for (const row of rows) {
+      //M 启动补送也按收件的来源区分，不尝试打开决策图的伪会话。
+      void this.deliverSoon(row.session_id, row.channel);
+    }
+
+    //M 启动时先读一遍文件回信，避免等待首个定时间隔。
+    this.pollFile();
   }
 
   /**
@@ -453,6 +481,16 @@ export class Relay {
       })),
       bots: this.config.bots,
     };
+  }
+
+  /**
+   * 取外部助手面向用户与模型的展示名；找不到登记项（如旧收件里的已删助手）时回退内部名。
+   * @param name 助手内部标识。
+   * @returns 展示名。
+   */
+  private getTitle(name: string): string {
+    const found = this.config.helpers.find((one) => one.name === name);
+    return found?.title ?? name;
   }
 
   /**
@@ -672,7 +710,14 @@ export class Relay {
     }
 
     //T 跟踪：收到一条回信。
-    const vars = { helper: item.helper, inboxId: itemId, session: item.session_id, deliverySource: via, complete: done, length: text.length };
+    const vars = {
+      helper: item.helper,
+      inboxId: itemId,
+      session: item.session_id,
+      deliverySource: via,
+      complete: done,
+      length: text.length,
+    };
     this.ctx.emit('trace', 'Relay.accept', 'trace.relay.accept', 'INSERT INTO relay_replies', vars);
 
     //M 按收件来源回到真实会话或决策图节点。
@@ -701,11 +746,16 @@ export class Relay {
     const address = event.message.address;
     //M 取渠道里的客户标识，使转发会话按客户隔离。
     const customer = utils.getStringField(address, 'customer');
-    //M direct 进前台会话；只听的话不整句转，和别的一样要以某个助手的前缀开头才进 relay 会话。都按客户分。
+    const relayHelper = utils.getStringField(address, 'relayHelper').trim();
+    //M 带 relayHelper 的群攒批转交直接进 relay 会话；direct 机器人进前台会话；其余和只听的须以助手前缀开头才进 relay 会话。
     const listenOnly = utils.getField(address, 'listenOnly') === true;
     let kind: 'front' | 'relay' = 'front';
-    if (listenOnly || this.getMode(bot) !== 'direct') {
+    if (relayHelper !== '') {
+      kind = 'relay';
+    }
+    if (relayHelper === '' && (listenOnly || this.getMode(bot) !== 'direct')) {
       if (this.prefixed(event.message.text) === undefined) return;
+
       kind = 'relay';
     }
 
@@ -759,10 +809,18 @@ export class Relay {
         'SELECT id, helper FROM relay_items WHERE session_id = ? AND last_msg_at = ?',
         [session.id, lastUser.timestamp])[0];
       const text = fresh.map((message) => piAi.contentText(message.content)).join('\n\n');
-      //M 以哪个助手的前缀开头就转给哪个；direct 机器人的平常话转给默认助手。
-      const helper = this.prefixed(text) ?? this.config.helpers[0];
+      const relayHelper = utils.getStringField(row.address, 'relayHelper').trim();
+      const explicitHelper = this.config.helpers.find((one) => one.name === relayHelper);
+      //M 先按前缀认助手，其次看群攒批指定的 relayHelper，其余转给默认助手。
+      const helper = this.prefixed(text) ?? explicitHelper ?? this.config.helpers[0];
       const id = known?.id ?? this.register(session, helper, text, lastUser.timestamp);
-      request.answer = this.said(row.bot, `已转给 ${known?.helper ?? helper.name}（#${String(id)}），等回复。`);
+      if (relayHelper !== '') {
+        //M 群攒批自动转交静默入收件箱，不在群里刷转交回执，等外部助手回信再发声。
+        request.answer = this.said(row.bot, '');
+        return;
+      }
+      const shownHelper = this.getTitle(known?.helper ?? helper.name);
+      request.answer = this.said(row.bot, `已转给 ${shownHelper}（#${String(id)}），等回复。`);
       return;
     }
 
@@ -779,7 +837,8 @@ export class Relay {
 
       //M 这里不标已送：回答带着回信号，骨架写进对话、存盘以后，session/change 时才标（onChange、markWritten）。
       const helper = item?.helper ?? this.config.helpers[0].name;
-      request.answer = this.said(row.bot, `${helper}：${reply.text}`, reply.id);
+      const shownHelper = this.getTitle(helper);
+      request.answer = this.said(row.bot, `${shownHelper}：${reply.text}`, reply.id);
       this.answering.set(session.id, reply.id);
 
       //T 跟踪：送出一条回信。
@@ -822,7 +881,7 @@ export class Relay {
    * @returns 一段话。
    */
   private whenToRelay(): string {
-    const helper = this.config.helpers[0].name;
+    const helper = this.getTitle(this.config.helpers[0].name);
     //M 前缀照配置写（去掉两头空白、去重），代码里不写死 cc。
     const heads = [...new Set(this.config.helpers.flatMap((one) => one.prefixes.map((prefix) => prefix.trim())))];
     let skip = '';
@@ -1005,7 +1064,8 @@ export class Relay {
   }
 
   /** 把一条工作决策或留言写给外部助手，旧收件也用同一节点键去重和归档。 */
-  private receiveDecision(request: import('../work-decision/Routes.ts').DecisionRelayRequest) {
+  private receiveDecision(request: requestEventModule.EventArg<'work-decision/note'>) {
+    if (request.action === 'reply') return { ok: false };
     const helper = this.config.helpers.find((item) => item.name === request.helper);
     if (helper === undefined) return { ok: false, error: 'relay 没有该外部助手' };
 
@@ -1063,17 +1123,20 @@ export class Relay {
     const requestName = 'work-decision/note';
     const resultName = 'work-decision/note-result';
     const payload = { action: 'reply' as const, id: reply.id, target, text: reply.text };
-    const uncertain = '决策图回信写入结果不确定';
-    const onFallback = () => ({ requestId: '', ok: false });
-    const options = { timeoutMs: 3000, onFallback };
 
-    //M 给写图端持久回信号。晚到或再次核对按同一编号去重。
-    const result = await requestEventModule.requestEvent(this.ctx, requestName, resultName, payload, options);
-    if (requestEventModule.isUnsure(result)) {
-      console.error(`relay：回信 #${String(reply.id)} 的${uncertain}，保留原回信号待对账`);
+    //M 给写图端持久回信号。晚到或再次核对按同一编号去重。work-decision 在本进程里写图，不掐表。
+    const asked = await requestEventModule.requestEvent(this.ctx, requestName, resultName, payload);
+
+    //G 没挂 work-decision：保留待送，下次再送。
+    if (asked.why === 'unhandled') return;
+
+    //G 写图时抛错：可能已经写上，保留原回信号待对账。
+    if (asked.why !== undefined) {
+      console.error(`relay：回信 #${String(reply.id)} 的决策图回信写入结果不确定，保留原回信号待对账`);
       return;
     }
 
+    const result = asked.reply;
     if (!result.ok) {
       if (result.error !== undefined) console.error(`relay：决策图回信写入失败：${result.error}`);
       return;
@@ -1111,14 +1174,15 @@ export class Relay {
     //M 找到回信对应的转发条目，用其中的助手名标注回传来源。
     const item = this.getItem(reply.item_id);
     const helper = item?.helper ?? this.config.helpers[0].name;
+    const shownHelper = this.getTitle(helper);
 
-    //M 结果：键 relay:<回信号>，同一条重排是 duplicate；来源 relay、id 写助手名（前台看到“外部助手 <名字> 的回信”）；回话地址是那条收件当时记的。
+    //M 结果：键 relay:<回信号>，同一条重排是 duplicate；来源 id 保留助手内部名，正文展示名用 getTitle；回话地址取收件当时记的。
     const key = `relay:${String(reply.id)}`;
     const input: dispatchModule.ResultInput = {
       key,
       sessionId,
       source: { type: 'relay', id: helper },
-      payload: { text: `${helper} 回复（#${String(reply.item_id)}）：${reply.text}`, files: [] },
+      payload: { text: `${shownHelper} 回复（#${String(reply.item_id)}）：${reply.text}`, files: [] },
     };
     if (item !== undefined) {
       input.origin = this.getOrigin(item);
@@ -1177,7 +1241,15 @@ export class Relay {
     void this.push(item, helper, session.row.address);
 
     //T 跟踪：转出一条。
-    const vars = { helper: helper.name, inboxId: item.id, session: session.id, channel: item.channel, sender: item.sender, chat: item.chat, length: text.length };
+    const vars = {
+      helper: helper.name,
+      inboxId: item.id,
+      session: session.id,
+      channel: item.channel,
+      sender: item.sender,
+      chat: item.chat,
+      length: text.length,
+    };
     this.ctx.emit('trace', 'Relay.register', 'trace.relay.register', 'fs.appendFileSync(inbox.jsonl)', vars);
     return item.id;
   }
@@ -1318,13 +1390,14 @@ export class Relay {
       //G 会话正在转 → 下一次再说，免得插到这一轮中间。
       if (session.row.state === 'running') continue;
 
+      const shownHelper = this.getTitle(item.helper);
       const shown = String(Math.floor(minutes));
-      let text = `${item.helper} 还没回复（#${String(item.id)}，已 ${shown} 分钟），话还在它的收件箱里，回了会接着发给你。`;
+      let text = `${shownHelper} 还没回复（#${String(item.id)}，已 ${shown} 分钟），话还在它的收件箱里，回了会接着发给你。`;
       let traceSummary = 'trace.relay.remind';
       if (expire) {
         //M 达到超时上限时结束等待，并记录已提醒。
         this.run("UPDATE relay_items SET state = 'expired', reminded = 1 WHERE id = ?", [item.id]);
-        text = `${item.helper} ${shown} 分钟没回（#${String(item.id)}），这条先放下；之后回了还会发给你。`;
+        text = `${shownHelper} ${shown} 分钟没回（#${String(item.id)}），这条先放下；之后回了还会发给你。`;
         traceSummary = 'trace.relay.expire';
       }
       if (!expire) {
@@ -1502,36 +1575,37 @@ export class Relay {
         appId: where.appId,
         messageId: where.messageId,
       };
-      const reasons: Record<requestEventModule.FallbackReason, string> = {
-        unhandled: '飞书插件没挂，没人接发文件的请求',
-        timeout: '等了 30 秒飞书没回',
-        aborted: '请求被中止',
-        error: '飞书处理时出错',
-      };
-      const onFallback = (reason: requestEventModule.FallbackReason, detail?: string) => {
-        const error = `${reasons[reason]} ${detail ?? ''}`.trim();
-        return { requestId: '', ok: false, error };
-      };
+      //M 飞书处理端还没给上传、发送设时限，暂保留原等待上限；到点只记结果不确定。
       const options = {
         prefix: 'sf',
         timeoutMs: 30_000,
-        onFallback,
       };
 
-      //M 等飞书回执。超时可能已经发送，只记录结果不确定。
-      const received = await requestEventModule.requestEvent(
+      //M 等飞书回执。这里不挡别的事（调用处 void），只把结果记进 trace。
+      const asked = await requestEventModule.requestEvent(
         this.ctx,
         'feishu/send-file',
         'feishu/send-file-result',
         request,
         options,
       );
-      result = `没发出去：${received.error ?? '原因不明'}`;
-      if (requestEventModule.isUnsure(received)) {
-        result = `飞书文件发送结果不确定：${received.error ?? '未获回执'}`;
+
+      //M 飞书回了：发成了记消息号，没发成记原因。
+      result = `没发出去：${asked.reply?.error ?? '原因不明'}`;
+      if (asked.reply?.ok === true) {
+        result = `已发 ${asked.reply.messageId ?? ''}`;
       }
-      if (received.ok) {
-        result = `已发 ${received.messageId ?? ''}`;
+      //G 没挂飞书：确定没发。
+      if (asked.why === 'unhandled') {
+        result = '没发出去：飞书插件没挂，没人接发文件的请求';
+      }
+      //G 发文件超过等待上限时，仍有可能已经送到。
+      if (asked.why === 'timeout') {
+        result = '飞书文件发送结果不确定：等待回执超时';
+      }
+      //G 飞书处理时抛错：可能已经发了，只记不确定。
+      if (asked.why === 'error') {
+        result = `飞书文件发送结果不确定：飞书处理时出错 ${asked.detail ?? ''}`.trim();
       }
     }
 
@@ -1545,7 +1619,7 @@ export class Relay {
   /** 登记工具 relay_send：开了 model 的那种聊天里，模型用它把话转给默认助手（helpers 的第一个）。 */
   private registerTool(): void {
     const main = this.config.helpers[0];
-    const helper = main.name;
+    const helper = this.getTitle(main.name);
     //M 用默认助手注册模型侧转话工具，供允许转发的会话使用。
     this.ctx.tools.register({
       definition: {
@@ -1833,8 +1907,10 @@ function applyRelay(ctx: cordis.Context, written: RelayWritten): void {
     const prefixes = list(one['prefixes'], [], `${name} 的 prefixes`);
     //G 空前缀会把所有的话都截走。
     if (prefixes.some((prefix) => prefix.trim() === '')) throw new Error(`relay 里 ${name} 的 prefixes 不能有空串`);
+    const title = str(one['title'], `${name} 的 title`) || name;
     helpers.push({
       name,
+      title,
       prefixes,
       webhookUrl: str(one['webhook_url'], `${name} 的 webhook_url`),
       webhookHeader: str(one['webhook_header'], `${name} 的 webhook_header`),

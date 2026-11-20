@@ -315,12 +315,15 @@ export class Reminders {
   /** 请审批服务读取它持久保存的提醒卡。 */
   private async getCard(row: Row): Promise<Pending | undefined> {
     const payload = { action: 'reminder-card' as const, reminderId: row.id, bot: row.bot };
-    const options = { timeoutMs: 5000, onFallback: () => ({ requestId: '', error: '确认卡读取暂不可用' }) };
-    //M 先读持久审批卡，重放时可沿用已经确认的结果。
-    const result = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', payload, options);
-    if (result.error !== undefined) throw new Error(result.error);
+    //M 先读持久审批卡，重放时可沿用已经确认的结果。审批服务在本进程里读表，不掐表。
+    const asked = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', payload);
 
-    return result.pending;
+    //G 没挂审批、审批处理时抛错：读不到卡。
+    if (asked.why !== undefined) throw new Error('确认卡读取暂不可用');
+
+    if (asked.reply.error !== undefined) throw new Error(asked.reply.error);
+
+    return asked.reply.pending;
   }
 
   /** 读已存在的提醒，返回最新状态给同一次工具调用。 */
@@ -358,19 +361,18 @@ export class Reminders {
         payload, bot: row.bot, session: row.session_id,
       };
       const request = { action: 'ask' as const, input };
-      const onFallback = () => ({ requestId: '', error: '确认卡登记暂不可用' });
-      const options = { timeoutMs: 5000, onFallback };
-      //M 复用本人审批卡，不因到点再次询问。
-      const reply = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
+      //M 复用本人审批卡，不因到点再次询问。审批服务在本进程里登记，不掐表。
+      const asked = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request);
       if (this.send === undefined) return;
 
-      const card = reply.pending;
       //M 请求卡片期间可能已有取消操作，按最新状态决定是否作废卡片。
       const current = this.getById(row.id);
-      //G 登记结果不确定时沿用持久待核对原因，下次核对原卡。
-      if (events.isUnsure(reply)) throw new Error(CARD_UNCERTAIN);
+      //G 审批处理时抛错：登记结果不确定，沿用持久待核对原因，下次核对原卡。
+      if (asked.why !== undefined && asked.why !== 'unhandled') throw new Error(CARD_UNCERTAIN);
 
-      if (card === undefined) throw new Error(reply.error ?? '确认卡登记暂不可用');
+      //G 没挂审批、审批回了错：这次没登记上。
+      const card = asked.reply?.pending;
+      if (card === undefined) throw new Error(asked.reply?.error ?? '确认卡登记暂不可用');
 
       if (current.state === 'cancelled') {
         //M 提醒已取消，关闭新建的卡片以免用户继续确认。
@@ -402,15 +404,17 @@ export class Reminders {
   private async closeCard(id: number): Promise<string | undefined> {
     const request = { action: 'close' as const, id, note: '提醒已取消' };
     const uncertain = '确认卡作废结果不确定';
-    const onFallback = () => ({ requestId: '' });
-    const options = { timeoutMs: 5000, onFallback };
 
-    //M 已保存的取消状态继续有效，卡片结果单独记录。
-    const result = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request, options);
-    if (!events.isUnsure(result)) return undefined;
+    //M 已保存的取消状态继续有效，卡片结果单独记录。审批服务在本进程里改表，不掐表。
+    const asked = await events.requestEvent(this.ctx, 'approval/request', 'approval/result', request);
+
+    //G 审批回了（含作废不了的 error）或没挂审批：没有不确定的事。
+    if (asked.why === undefined || asked.why === 'unhandled') return undefined;
 
     const vars = { cardId: id };
-    this.ctx.emit('trace', 'Reminders.closeCard', 'trace.assist.closeReminderCardUncertain', 'approval/request close', vars);
+    const point = 'trace.assist.closeReminderCardUncertain';
+    //T 记录仍需要核对的确认卡编号。
+    this.ctx.emit('trace', 'Reminders.closeCard', point, 'approval/request close', vars);
     return uncertain;
   }
 

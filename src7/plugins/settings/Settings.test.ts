@@ -239,6 +239,25 @@ test('新建机器人无人应答时返回 503，并保留已保存的配置', a
   expect(saved.json().config.bots).toEqual([payload]);
 });
 
+test('登记监听抛错时返回 504，并保留已保存的配置', async () => {
+  const { ctx, app } = await setup(false);
+  //M 模拟已接单但异常退出，路由应提示核对登记结果。
+  events.onRequestEvent(ctx, 'bot/request', 'bot/result', () => {
+    throw new Error('模拟登记中断');
+  });
+  const payload = { name: '登记待核对', language: 'zh' };
+  const input = { method: 'POST', url: '/api/bots', payload } as const;
+  //M 通过真实路由先写配置再请求登记。
+  const response = await app.inject(input);
+  expect(response.statusCode).toBe(504);
+  expect(response.json().error).toContain('配置已保存，实时登记结果不确定');
+
+  const url = '/api/settings';
+  //G 写入的机器人配置仍可由设置接口读取。
+  const saved = await app.inject(url);
+  expect(saved.json().config.bots).toEqual([payload]);
+});
+
 test('基地重启无人应答或拒绝时返回错误，收到成功回执才报告重启', async () => {
   const { ctx, app } = await setup();
   const order: string[] = [];

@@ -107,16 +107,12 @@ export async function dispatchReport(ctx: cordis.Context, group: GroupReport, sc
     sender: { id: scheduled, name: '群进度定时任务' },
   };
   const request = { action: 'hand', bot, text, origin: {}, sessionId, replyTo } as const;
-  const options = {
-    timeoutMs: 10_000,
-    onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-      return { requestId: '', ok: false, error: detail ?? `群日报没交给机器人（${reason}）` };
-    },
-  };
+  const options = { warnAfterMs: 10_000 };
 
   //M 请机器人干活：bots 排进这场前台，模型用 channel_reply 回到本群；没交成就抛错，由定时器记日志。
   const result = await requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
-  if (!result.ok) throw new Error(result.error ?? '群日报没交给机器人');
+  if (result.why !== undefined) throw new Error(result.detail ?? `群日报没交给机器人（${result.why}）`);
+  if (!result.reply.ok) throw new Error(result.reply.error ?? '群日报没交给机器人');
 }
 
 

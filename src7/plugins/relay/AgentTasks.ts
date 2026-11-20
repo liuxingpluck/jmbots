@@ -32,26 +32,34 @@ import { registerRoutes } from './TaskRoutes.ts';
 /** 任务通道要的服务：resources 存表和文件夹；tools 登记工具；http 开接口。 */
 export const TASKS_INJECT = ['resources', 'tools', 'http'];
 
+/** 结果是否确认入队，以及明确回执中的凭据和原因。 */
+type ResultDelivery = Pick<requestEventModule.EventArg<'bot/result'>, 'ok' | 'receipt' | 'error'> & {
+  /** 无法确定结果是否已经入队。 */
+  uncertain: boolean;
+};
+
 /**
  * 把外部任务结果或转话回信交给派活会话的结果队列。
  * @param ctx 调用方的 Cordis 上下文。
  * @param input 含稳定结果键的投递内容。
  * @returns 机器人投递回执和结果是否不确定。
  */
-export async function requestResultDelivery(ctx: cordis.Context, input: dispatchModule.ResultInput) {
+export async function requestResultDelivery(
+  ctx: cordis.Context,
+  input: dispatchModule.ResultInput,
+): Promise<ResultDelivery> {
   const request = { action: 'accept-result', input } as const;
-  const options = {
-    timeoutMs: 5000,
-    onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-      return { requestId: '', ok: false, error: detail ?? `结果投递未获回执（${reason}）` };
-    },
-  };
 
-  //M 两个入口都以稳定键提交，只有确定收到入队回执才能标为已送。
-  const result = await requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
-  if (requestEventModule.isUnsure(result)) return { ...result, uncertain: true, error: '结果投递状态不确定' };
+  //M 两个入口都以稳定键提交，只有确定收到入队回执才能标为已送。bots 在本进程里写结果队列，不掐表。
+  const asked = await requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request);
 
-  return { ...result, uncertain: false };
+  //G 没挂 bots：确定没排进去，调用方照常重试。
+  if (asked.why === 'unhandled') return { ok: false, error: '结果投递未获回执（unhandled）', uncertain: false };
+
+  //G bots 处理时抛错：可能已经入队，调用方按原结果键核对。
+  if (asked.why !== undefined) return { ok: false, error: '结果投递状态不确定', uncertain: true };
+
+  return { ...asked.reply, uncertain: false };
 }
 
 
@@ -132,6 +140,7 @@ export interface SendInput extends protocolModule.ExecutionInput {
 
 /** finish 收的：交回的内容。 */
 export interface FinishInput {
+  //退场：所有运行时的 agent_tasks 表里没有 protocol IS NULL 的未结束旧任务以后
   /** 旧格式：做成了没有，不写当做成了。新协议不看它，照 result.status。 */
   ok?: boolean;
   /** 旧格式：做了什么、文件是什么。新协议不看它，照 result.summary。 */
@@ -493,6 +502,7 @@ export class AgentTasks {
     //G 单向任务只认领，任何结果均不写文件、不入会话队列。
     if (task.reply === false) throw new failureModule.Failure(409, '这件任务领取即送达，无需交回');
 
+    //退场：所有运行时的 agent_tasks 表里没有 protocol IS NULL 的未结束旧任务以后
     //G 新旧对上：新协议的任务要交结果（protocolResult 或 result.json），旧任务只收 { ok, text, uploads }。
     const protocol = task.protocol;
     const result = input.result;
@@ -586,7 +596,7 @@ export class AgentTasks {
     //M 等机器人确认稳定结果键已入队，才能登记本地任务结果。
     const delivered = await requestResultDelivery(this.ctx, resultInput);
 
-    //G 超时保留任务状态和上传原件，按同一结果键核对是否已入队。
+    //G 投递结果不确定（bots 处理时抛错）：保留任务状态和上传原件，按同一结果键核对是否已入队。
     if (delivered.uncertain) {
       const reason = `任务 #${task.id} 的结果投递状态不确定，请按原任务号核对`;
       throw new failureModule.Failure(504, reason);

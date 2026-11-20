@@ -57,9 +57,8 @@ export async function analyze(ctx: cordis.Context, cues: Cues, signal: AbortSign
   const state = { 应用线索: cues.application, 窗口线索: cues.window, 控件线索: cues.control, 候选用途: candidate };
   const options = {
     prefix: 'screen',
-    timeoutMs: 1800,
+    warnAfterMs: 1800,
     signal,
-    onFallback: () => ({ requestId: '', verdict: 'unsure' as const, reason: '决策不可用' }),
   };
   const detail = {
     kind: 'screen-detail',
@@ -86,11 +85,12 @@ export async function analyze(ctx: cordis.Context, cues: Cues, signal: AbortSign
     };
     //M 用独立二元问题确认用途，两项裁定并行。
     const matched = await requests.requestEvent(ctx, 'decision/judge', 'decision/judge-result', usage, options);
-    if (matched.verdict === 'allow') {
+    if (matched.reply?.verdict === 'allow') {
       activity = candidate;
     }
   }
   const result = await detailed;
   const decisionMs = Math.round(performance.now() - started);
-  return { activity, verdict: result.verdict, decisionMs };
+  const verdict = result.reply?.verdict ?? 'unsure';
+  return { activity, verdict, decisionMs };
 }

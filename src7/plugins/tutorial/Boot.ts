@@ -95,6 +95,8 @@ const MAIN = `${ROOT}Main.ts`;
 
 /** 检查函数的文件。 */
 const CHECKS = `${ROOT}utils/Checks.ts`;
+/** 插件名单和加载入口 loadPlugin 所在的文件。 */
+const PLUGIN_INDEX = `${ROOT}plugins/Index.ts`;
 
 /** 内嵌文件表（认编译版）。 */
 const EMBEDDED = `${ROOT}utils/Embedded.ts`;
@@ -427,7 +429,7 @@ export class BootTrail {
   }
 
   /**
-   * 一个插件那一步。第一个插件步骤附上 Main.ts 加载外部入口的函数说明。
+   * 一个插件那一步。第一个插件步骤附上 plugins/Index.ts 找插件模块（loadPlugin）的函数说明。
    * @param plugin config.yaml 里写的名字。
    * @param at 开始挂的时刻。
    */
@@ -445,9 +447,9 @@ export class BootTrail {
     const file = `${ROOT}plugins/${getFolder(plugin)}/index.ts`;
     const docs = [fn(file, 'function apply(', `${plugin}.apply`, true)];
     if (this.plugins.length === 0) {
-      const declaration = 'async function loadExternalPlugin(';
-      //M 首个插件步骤附上外部入口的加载说明，和 Main.ts 的函数名对齐。
-      const loader = fn(MAIN, declaration, 'loadExternalPlugin', true);
+      const declaration = 'export async function loadPlugin(';
+      //M 首个插件步骤附上找插件模块的说明（先查自带名单，再加载外部入口），和 plugins/Index.ts 的函数名对齐。
+      const loader = fn(PLUGIN_INDEX, declaration, 'loadPlugin', true);
       docs.unshift(loader);
     }
     return {

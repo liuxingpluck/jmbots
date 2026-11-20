@@ -337,6 +337,31 @@ test('写话入口校验一次，只写话不改待定，带选项照点选落�
   expect(actions).toEqual(['note', 'note', 'choose', 'note', 'reply', 'put']);
 });
 
+test('留言在 relay 无人接单或处理抛错时仍存盘并返回轮询入口', async () => {
+  const { app, ctx } = await setup('中控');
+  await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: entries });
+  const url = `${PREFIX}/note`;
+  const retry = { method: 'GET', path: `${PREFIX}/changes` };
+
+  //M relay 无人接单时保留已写入的留言，可从变化接口补查。
+  const absent = { node: 'release', text: '没人接时留下的话' };
+  const unhandled = await app.inject({ method: 'POST', url, payload: absent });
+  expect(unhandled.statusCode).toBe(200);
+  expect(unhandled.json()).toMatchObject({ note: { id: 'n1', text: absent.text }, delivery: retry });
+
+  //M 接单后出错仍返回保存的留言，并说明收件是否成功未知。
+  events.onRequestEvent(ctx, 'work-decision/note', 'work-decision/note-result', () => {
+    throw new Error('模拟收件抛错');
+  });
+  const failed = { node: 'release', text: '接单抛错时留下的话' };
+  const error = await app.inject({ method: 'POST', url, payload: failed });
+  expect(error.statusCode).toBe(200);
+  expect(error.json()).toMatchObject({
+    node: { notes: [{ id: 'n1', text: absent.text }, { id: 'n2', text: failed.text }] },
+    delivery: { ...retry, error: '中控收件操作结果不确定' },
+  });
+});
+
 test('ask_owner 按会话工作区分组，重复调用不加节点，点选后只唤醒原会话一次', async () => {
   const { app, ctx, db, tools } = await setup();
   db.exec("CREATE TABLE workspaces (id, bot, name, scope_key); INSERT INTO workspaces VALUES ('ws-a', '开发', '仓库 A', 'private')");

@@ -31,7 +31,7 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.8';
+export const version = '1.3.9';
 
 /** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
@@ -97,7 +97,7 @@ declare module 'cordis' {
      *   src7/plugins/model-catalog/Usage.ts 的 Usage.add
      *   src7/plugins/progress/index.ts 的 Progress.getThinking
      *   src7/plugins/settings/index.ts 的 Settings.checkModel
-     *   src7/plugins/web-api/index.ts 的 WebApi.setModel
+     *   src7/plugins/web-api/Views.ts 的 Views.setModel
      * 谁接：src7/plugins/model-catalog/index.ts 的 ModelCatalog.constructor
      */
     'model-catalog/request'(request: CatalogRequest): void | Promise<void>;
@@ -110,7 +110,7 @@ declare module 'cordis' {
      *   src7/plugins/model-catalog/Usage.ts 的 Usage.add
      *   src7/plugins/progress/index.ts 的 Progress.getThinking
      *   src7/plugins/settings/index.ts 的 Settings.checkModel
-     *   src7/plugins/web-api/index.ts 的 WebApi.setModel
+     *   src7/plugins/web-api/Views.ts 的 Views.setModel
      */
     'model-catalog/result'(result: CatalogResult): void;
   }

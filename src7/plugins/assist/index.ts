@@ -12,7 +12,6 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as events from '../../utils/RequestEvent.ts';
-import * as outbound from '../approval/Outbound.ts';
 import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as remindersModule from './Reminders.ts';
 
@@ -20,7 +19,7 @@ import * as remindersModule from './Reminders.ts';
 /** 插件名。 */
 export const name = 'assist';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.3';
+export const version = '1.2.4';
 
 /** 用到的服务：resources 存表；tools 登记工具；http 开接口。 */
 export const inject = ['resources', 'tools', 'http', 'sessions'];
@@ -288,6 +287,24 @@ class Assist {
 
 
 /**
+ * 将审批回执或缺回执原因转换成到期提醒的发送状态。
+ * @param asked 本次提醒发送请求的结果。
+ * @returns 渠道回执；没挂审批是 failed，审批处理时抛错是 uncertain。
+ */
+export function getReminderReceipt(
+  asked: events.Asked<events.EventArg<'approval/reminder-sent'>>,
+): ProviderReceipt {
+  //G 没挂审批：确定没发。
+  if (asked.why === 'unhandled') return { status: 'failed', reason: '定时发送审核未挂载' };
+
+  //G 审批处理时抛错：可能已提交原发送号，保留待核对状态。
+  if (asked.why !== undefined) return { status: 'uncertain', reason: '发送结果待核对，未自动重发' };
+
+  return asked.reply.receipt;
+}
+
+
+/**
  * 挂上助手体验。
  * apply 是 Cordis 插件的入口：inject 里的服务都就绪后调一次。
  * @param ctx Cordis 给这个插件的 ctx。
@@ -297,24 +314,22 @@ export function apply(ctx: cordis.Context, config?: Config): void {
   //M 同一插件的提醒和待办共用工具入口、网页轮询与资源数据库。
   const reminders = new remindersModule.Reminders(ctx, config?.reminders);
   ctx.effect(() => () => reminders.stop());
-  //M 等审批服务就绪后启动调度；定时入口只发送持久记录号。
+  //M 等审批服务就绪后启动调度；到期的提醒按记录号交审批服务发。
   void ctx.inject(['approval'], (sub) => {
     const send = async (message: remindersModule.Delivery): Promise<ProviderReceipt> => {
       const payload = { reminderId: message.id };
-      const options = {
-        timeoutMs: outbound.REMINDER_WAIT_MS,
-        onFallback: () => {
-          const receipt: ProviderReceipt = { status: 'failed', reason: '定时发送审核未挂载' };
-          return { requestId: '', receipt };
-        },
-      };
-      const result = await events.requestEvent(sub, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
-      //G 可能已提交原发送号，保留待核对状态。
-      if (events.isUnsure(result)) return { status: 'uncertain', reason: '发送结果待核对，未自动重发' };
 
-      return result.receipt;
+      //M 发件由审批接力到渠道时限，定时入口等待真实回执。
+      const asked = await events.requestEvent(sub, 'approval/reminder-send', 'approval/reminder-sent', payload);
+
+      //M 交回提醒调度所需的发送状态。
+      return getReminderReceipt(asked);
     };
+
+    //M 审批就绪后才启动已到期提醒的调度。
     sub.on('ready', () => reminders.start(send));
+
+    //M 审批卸载时暂停调度，等服务恢复再继续。
     sub.effect(() => () => reminders.stop());
   });
   //M 实例化 Assist，完成建表、事件订阅、工具登记和 HTTP 接口注册。

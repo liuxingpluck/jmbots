@@ -13,17 +13,13 @@ export class RouteFailure extends Error {}
 /** 输入仅用于本地资源准入，未收到回执时不启动模型。 */
 export async function allowLocal(ctx: cordis.Context, signal?: AbortSignal, heavy = true): Promise<void> {
   const request = { action: 'can-start', who: 'voice', heavy } as const;
-  const options = {
-    signal,
-    timeoutMs: 2000,
-    onFallback: () => ({ requestId: '', ok: false, reason: '资源守卫未放行' }),
-  };
+  const options = { signal };
   //G 本地模型加载先取得 programs 的实时资源回执。
   const checked = await events.requestEvent(ctx, 'programs/resource-request', 'programs/resource-result', request, options);
-  if (!checked.ok) {
-    const reason = checked.reason;
-    throw new RouteFailure(reason);
-  }
+  if (checked.reply?.ok === true) return;
+
+  const reason = checked.reply?.reason ?? '资源守卫未放行';
+  throw new RouteFailure(reason);
 }
 
 /** 把鉴权、超时等上游失败归一为可记录的语音切换原因。 */

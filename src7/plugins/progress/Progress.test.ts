@@ -18,10 +18,6 @@ import * as words from './Words.ts';
 
 
 const closers: (() => Promise<unknown> | void)[] = [];
-const eventOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason) => ({ requestId: '', ok: false, text: reason }),
-};
 
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) {
@@ -303,29 +299,48 @@ test('进度事件可按机器人查询、限时和终止会话', async () => {
   ctx.emit('session/change', session);
 
   const list = { action: 'list', bot: session.row.bot } as const;
-  const current = await events.requestEvent(ctx, 'progress/request', 'progress/result', list, eventOptions);
-  expect(current.items).toMatchObject([{ sessionId: session.id, stage: 'running' }]);
+  const current = await events.requestEvent(ctx, 'progress/request', 'progress/result', list);
+  expect(current.reply?.items).toMatchObject([{ sessionId: session.id, stage: 'running' }]);
 
   const limit = { action: 'act', sessionId: session.id, op: 'limit', minutes: 15 } as const;
-  const limited = await events.requestEvent(ctx, 'progress/request', 'progress/result', limit, eventOptions);
-  expect(limited).toMatchObject({ ok: true, text: expect.stringContaining('最多做 15 分钟') });
+  const limited = await events.requestEvent(ctx, 'progress/request', 'progress/result', limit);
+  expect(limited.reply).toMatchObject({ ok: true, text: expect.stringContaining('最多做 15 分钟') });
   expect(session.row.progress?.limitMinutes).toBe(15);
 
   const stop = { action: 'act', sessionId: session.id, op: 'stop' } as const;
-  const stopped = await events.requestEvent(ctx, 'progress/request', 'progress/result', stop, eventOptions);
-  expect(stopped).toMatchObject({ ok: true, text: '收到，马上停' });
+  const stopped = await events.requestEvent(ctx, 'progress/request', 'progress/result', stop);
+  expect(stopped.reply).toMatchObject({ ok: true, text: '收到，马上停' });
   expect(session.row).toMatchObject({ state: 'stopped' });
 
-  const repeated = await events.requestEvent(ctx, 'progress/request', 'progress/result', stop, eventOptions);
-  expect(repeated).toMatchObject({ ok: false, text: '这件事已经结束了' });
+  const repeated = await events.requestEvent(ctx, 'progress/request', 'progress/result', stop);
+  expect(repeated.reply).toMatchObject({ ok: false, text: '这件事已经结束了' });
+});
+
+test('用户点终止就清报时和到点定时器，会话停下前不再报时', async () => {
+  const world = await setupWorld({ pluginConfig: { review: false } });
+  //M 真会话停下要一会儿：这里 stop 什么都不做，进度项一直没定格，只看定时器有没有被清掉。
+  world.session.stop = () => undefined;
+  world.session.row.state = 'running';
+  world.ctx.emit('session/change', world.session);
+
+  //M 限时 0.005 分钟：报时点已过、立刻会报，300 毫秒后到点；紧接着点终止。
+  world.ctx.progress.act(world.session.id, 'limit', 0.005);
+  const reply = world.ctx.progress.act(world.session.id, 'stop');
+  expect(reply).toBe('收到，马上停');
+  await Bun.sleep(400);
+
+  //M 报时、到点停下都没发生，进度项还在等会话停下。
+  expect(world.sayLogs.filter((text) => text.includes('到点会先停下'))).toEqual([]);
+  expect(world.sayLogs.filter((text) => text.includes('先停在这里'))).toEqual([]);
+  expect(world.ctx.progress.list('周小灵')[0]?.endedAt).toBeUndefined();
 });
 
 test('进度操作在会话不存在或停止出错时回失败', async () => {
   const { ctx, session } = await setupWorld();
   const missing = { action: 'act', sessionId: 'missing', op: 'stop' } as const;
-  const gone = await events.requestEvent(ctx, 'progress/request', 'progress/result', missing, eventOptions);
-  expect(gone).toMatchObject({ ok: false, text: '这件事已经结束了' });
-  expect(gone.requestId).toStartWith('req_');
+  const gone = await events.requestEvent(ctx, 'progress/request', 'progress/result', missing);
+  expect(gone.reply).toMatchObject({ ok: false, text: '这件事已经结束了' });
+  expect(gone.reply?.requestId).toStartWith('req_');
 
   session.row.state = 'running';
   session.stop = () => {
@@ -334,9 +349,9 @@ test('进度操作在会话不存在或停止出错时回失败', async () => {
   ctx.emit('session/change', session);
 
   const stop = { action: 'act', sessionId: session.id, op: 'stop' } as const;
-  const rejected = await events.requestEvent(ctx, 'progress/request', 'progress/result', stop, eventOptions);
-  expect(rejected).toMatchObject({ ok: false, text: '测试停止失败' });
-  expect(rejected.requestId).toStartWith('req_');
+  const rejected = await events.requestEvent(ctx, 'progress/request', 'progress/result', stop);
+  expect(rejected.reply).toMatchObject({ ok: false, text: '测试停止失败' });
+  expect(rejected.reply?.requestId).toStartWith('req_');
 });
 
 
@@ -422,7 +437,8 @@ test('查到一张待确认的复盘卡片时不再生成复盘', async () => {
   const ask = { action: 'ask', input } as const;
 
   //M 先经审批事件登记一张复盘卡片，再产生可复盘的超时记录。
-  await events.requestEvent(world.ctx, 'approval/request', 'approval/result', ask, eventOptions);
+  const approved = await events.requestEvent(world.ctx, 'approval/request', 'approval/result', ask);
+  expect(approved.reply?.pending).toBeDefined();
   world.session.row.state = 'running';
   world.ctx.emit('session/change', world.session);
   world.ctx.progress.act(world.session.id, 'stop');

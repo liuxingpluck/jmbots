@@ -282,6 +282,7 @@ export class Store {
   constructor(db: Database, legacyDir: string, legacyWorkspaceId?: string) {
     //M 已导入的库直接读三张表，旧文件保留。
     this.storage = new sql.Sqlite(db);
+    //退场：所有运行时的旧 data/decision-map/graph.json 都导入 SQLite 以后
     let project: sql.WorkspaceProject | undefined;
     if (legacyWorkspaceId !== undefined) {
       project = this.storage.getWorkspace(legacyWorkspaceId);

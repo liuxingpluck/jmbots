@@ -600,7 +600,7 @@ export class DispatchTools {
   /**
    * 响应 session/before-model：暂停的受管后台不调模型；前台整理结果那一轮拿掉派活工具；普通前台轮加上派活和选模型的说明。
    * @param request 这一步的请求。
-   * 副作用：本人的前台轮发请求事件 model-catalog/request（action: prompt），最多等 3 秒；没挂 model-catalog 立刻退回、不加模型介绍。
+   * 副作用：本人的前台轮发请求事件 model-catalog/request（action: prompt），本机拼、不掐表；没挂 model-catalog 立刻退回、不加模型介绍。
    */
   private async onRequest(request: ChatRequest): Promise<void> {
     const session = request.session;
@@ -632,16 +632,12 @@ export class DispatchTools {
     if (!protocol.isOwnerTurn(row.channel, row.address)) return;
 
     //M 本人才能挑模型：发请求事件 model-catalog/request（action: prompt，契约 3.2 第 7 条），一次拿齐模型介绍评价和能用的思考档。
-    //M   没挂 model-catalog、超时、出错都退回两段空串，这一轮只带派活说明。
+    //M   model-catalog 在本机拼，不掐表。
     const payload = { action: 'prompt' } as const;
-    const options = {
-      prefix: 'cat',
-      timeoutMs: 3000,
-      onFallback: () => ({ requestId: '', prompt: '', levelsText: '' }),
-    };
+    const options = { prefix: 'cat' };
 
-    //M 发 model-catalog/request 事件、等配对的 model-catalog/result；等不到（没挂、超时）由 onFallback 退回两段空串。
-    const result = await requestEventModule.requestEvent(
+    //M 发 model-catalog/request 事件、等配对的 model-catalog/result。
+    const asked = await requestEventModule.requestEvent(
       this.home,
       'model-catalog/request',
       'model-catalog/result',
@@ -649,7 +645,11 @@ export class DispatchTools {
       options,
     );
 
+    //G 没挂 model-catalog、出错：这一轮只带派活说明。
+    if (asked.why !== undefined) return;
+
     //G 没有模型介绍：不加，思考档那段也不加。
+    const result = asked.reply;
     const prompt = result.prompt ?? '';
     if (prompt === '') return;
 

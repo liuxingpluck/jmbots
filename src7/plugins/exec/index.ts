@@ -29,7 +29,8 @@ export const name = 'exec';
 //M 1.1.4：只有外人让跑的命令才限在工作目录（confined）；本人在别的工作区、授权目录里跑照本人的规则审（用户 #301）。
 //M 1.1.5：按本轮机器人和回话地址取工作目录。
 //M 1.1.6：是不是本人改问 channels 的 isOwnerTurn（从 utils/Workspace.ts 挪过去的），判断不变。
-export const version = '1.1.6';
+//M 1.1.7：审命令不再交 onFallback；65 秒期限做成信号同时交给审批方和这次等待，到期审批方停下、这边拒绝。
+export const version = '1.1.7';
 
 /**
  * 用到的服务：resources、tools、bots、sessions。审核不写在这里，走 approval/request 事件：没挂 approval 时一律拒绝（没有审核就不让跑命令）；

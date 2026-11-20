@@ -183,7 +183,7 @@ test('日报请求交给指定机器人、回话发回原群，日报工具只�
   }
 });
 
-test('机器人回执没交成或没人接单时，日报抛错并带上原因', async () => {
+test('机器人无人接单、抛错或回执失败时，日报抛错并带上原因', async () => {
   const ctx = new cordis.Context();
   try {
     ctx.provide('sessions', { find: () => [], create: () => ({ id: 'synthetic-report-session' }) });
@@ -192,6 +192,13 @@ test('机器人回执没交成或没人接单时，日报抛错并带上原因',
 
     //M 没有任何监听者接 bot/request：requestEvent 立即按 unhandled 退回，日报抛错。
     await expect(daily.dispatchReport(ctx, group, at)).rejects.toThrow('unhandled');
+
+    //M 请求已接单但处理抛错，保留真实异常原因给定时日志。
+    const detach = requests.onRequestEvent(ctx, 'bot/request', 'bot/result', () => {
+      throw new Error('模拟交办抛错');
+    });
+    await expect(daily.dispatchReport(ctx, group, at)).rejects.toThrow('模拟交办抛错');
+    detach();
 
     //M bots 回执 { ok: false, error }（没有这个机器人、前台没定下）：抛的就是回执里的原因。
     requests.onRequestEvent(ctx, 'bot/request', 'bot/result', () => {

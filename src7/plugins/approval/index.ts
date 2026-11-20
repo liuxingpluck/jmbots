@@ -49,13 +49,15 @@ export const name = 'approval';
 //M 1.2.14：工具档位说明里写明 feishu_recall（撤回机器人自己的消息）只有本人那一轮能用，两张外人表不加它；程序不变。
 //M 1.2.15：每个入站事件只挂一个监听（先认批复、再过目录授权，先后写在代码里）；Grants 不再自己听；
 //M   外人地址里原有的 grants 先删再查库，查库出错只打日志、这一轮当没有授权，不再挡 bots 认领（云端 19 第 3 条）。
-export const version = '1.2.15';
+//M 1.2.16：requestEvent 改新写法（云端 19 第 1、2 条）：本机的一问一答不掐表，问决策模型只报警（decision 自己限时）；
+//M   Outbound 删掉一层层相加的等待常量，只留 programs 发 HTTP 用的两个。
+export const version = '1.2.16';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
 
-/** 问决策模型最多等多久（契约 3.1：decision/judge 20 秒）；没回当拿不准，往下一档。 */
-const DECISION_WAIT_MS = 20_000;
+/** 问决策模型等这么久还没回就报警（decision 每个模型自己限时，到点回拿不准）。 */
+const DECISION_WARN_MS = 20_000;
 
 /** 用到的服务：resources 提供默认机器人，sessions 开审核小会话、找会话。decision 走事件、http 用 ctx.inject，都不写在这里（写进 inject 就成了“必须有”）。 */
 export const inject = ['resources', 'sessions'];
@@ -96,7 +98,7 @@ declare module 'cordis' {
      *   src7/plugins/feishu/cards/Cards.ts 的 onAction
      *   src7/plugins/progress/Review.ts 的 Review.check
      *   src7/plugins/progress/index.ts 的 Progress.closeCard、Progress.sendCard
-     *   src7/plugins/web-api/index.ts 的 WebApi.botList
+     *   src7/plugins/web-api/Views.ts 的 Views.botList
      * 谁接：src7/plugins/approval/index.ts 的 Approval.constructor
      */
     'approval/request'(request: ApprovalRequest): void | Promise<void>;
@@ -110,7 +112,7 @@ declare module 'cordis' {
      *   src7/plugins/feishu/cards/Cards.ts 的 onAction
      *   src7/plugins/progress/Review.ts 的 Review.check
      *   src7/plugins/progress/index.ts 的 Progress.sendCard
-     *   src7/plugins/web-api/index.ts 的 WebApi.botList
+     *   src7/plugins/web-api/Views.ts 的 Views.botList
      */
     'approval/result'(result: ApprovalResult): void;
   }
@@ -596,20 +598,19 @@ export class Approval extends cordis.Service {
 
     //M 第二档：决策模型（只用来放行只读、低风险的）。必须人审的那一小块不问它。
     if (danger === undefined) {
-      const judged = await this.askDecision(input, bot, state);
+      const asked = await this.askDecision(input, bot, state);
       //G 结束等待后不采用决策回执，也不再启动审核小会话。
       const afterDecision = getStoppedReview(input.signal);
       if (afterDecision !== undefined) return this.traced(input, afterDecision);
 
-      if (judged.verdict === 'allow') return this.traced(input, { result: 'pass', by: 'decision', reason: `决策模型认为安全：${judged.reason}` });
-      if (judged.verdict === 'deny') return this.traced(input, { result: 'reject', by: 'decision', reason: judged.reason });
+      //M 决策模型真答过才看结论；没挂、出错都当没问过，保留“规则定不了”往下一档。
+      const judged = asked.reply;
+      if (judged?.verdict === 'allow') return this.traced(input, { result: 'pass', by: 'decision', reason: `决策模型认为安全：${judged.reason}` });
+      if (judged?.verdict === 'deny') return this.traced(input, { result: 'reject', by: 'decision', reason: judged.reason });
 
-      //M 拿不准时记下决策模型顺带写的执行结果，只给卡片显示，不改上面的放行判断。
-      if (judged.what !== undefined) {
-        decisionWhat = judged.what;
-      }
-      //M 拿不准：决策模型真答过（不是没挂、超时、出错的退回）才记成这一档的原因，否则保留“规则定不了”。
-      if (judged.requestId !== '') {
+      //M 拿不准：记下决策模型的原因，和它顺带写的执行结果（只给卡片显示，不改上面的放行判断）。
+      if (judged !== undefined) {
+        decisionWhat = judged.what ?? '';
         last = { by: 'decision', reason: judged.reason };
         asks.push(`决策模型拿不准：${judged.reason}`);
       }
@@ -666,13 +667,13 @@ export class Approval extends cordis.Service {
 
   /**
    * 第二档：问决策模型这条命令安不安全。发请求事件 decision/judge（契约 3.2 第 2 条），等 decision/judge-result。
-   * 没挂 decision、超过 20 秒、提问的会话喊停、decision 出错，都退回拿不准（getUnsure，requestId 是空串），往下一档。
+   * 不掐表：decision 每个模型自己限时、到点回拿不准；等了 20 秒还没回只报警。
    * @param input 审核的输入（kind、停止信号）。
    * @param bot 对话模型的小会话记在哪个机器人名下。
    * @param state 给模型看的现状：命令、目录、脚本、会话、约束。
-   * @returns 决策模型的结论；退回的 requestId 是空串。
+   * @returns reply 是决策模型的结论；没挂 decision、出错、提问的会话喊停时是 why。
    */
-  private async askDecision(input: ReviewInput, bot: string, state: Record<string, unknown>): Promise<DecisionReply> {
+  private async askDecision(input: ReviewInput, bot: string, state: Record<string, unknown>): Promise<requestEventModule.Asked<DecisionReply>> {
     //M 顺带要一句“执行完会做成什么”（同一次调用，不多调模型），只给卡片的“要做什么”用。
     const want = ['what'] as const;
     const judgeInput = {
@@ -685,9 +686,8 @@ export class Approval extends cordis.Service {
     };
     const options = {
       prefix: 'dec',
-      timeoutMs: DECISION_WAIT_MS,
+      warnAfterMs: DECISION_WARN_MS,
       signal: input.signal,
-      onFallback: getUnsure,
     };
 
     //M 发 decision/judge 等回执；提问的会话被喊停，这次等待跟着结束。
@@ -1268,20 +1268,6 @@ function getStoppedReview(signal: AbortSignal | undefined): Extract<Verdict, { r
   return { result: 'reject', by: 'rule', reason };
 }
 
-
-/**
- * 问决策模型没回（没挂 decision、超时、停了、出错）时的退回：当拿不准，requestId 留空串让 review 认出是退回的。
- * 写明返回类型，交给 requestEvent 的 onFallback。
- * @param reason requestEvent 给的退回原因。
- * @param detail 出错时的原话。
- */
-function getUnsure(reason: requestEventModule.FallbackReason, detail?: string): DecisionReply {
-  let text = `决策模型没回（${reason}）`;
-  if (detail !== undefined) {
-    text = `决策模型出错：${detail}`;
-  }
-  return { requestId: '', verdict: 'unsure', reason: text };
-}
 
 /** 卡片上某个按钮的字，结果里用（“终止了”“同意执行”）。 */
 function cardLabel(card: cardUtils.CardData, action: 'approve' | 'reject'): string {

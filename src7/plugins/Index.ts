@@ -2,8 +2,11 @@
  * 插件：约定，和自带插件的名单。
  * 一个插件就是一个文件夹，入口是它里面的 index.ts，导出 name、inject（可以没有）、apply。自带的和别人写的都一样。
  * 自带的放在本目录，名字就是文件夹名。发版是编译成单文件，磁盘上没有这些文件夹，所以自带的要在下面静态 import 一次。
- * 别人写的不用改这里：在 config.yaml 的 plugins 段写它的文件夹路径，Main.ts 照路径现加载它的入口。
+ * 别人写的不用改这里：在 config.yaml 的 plugins 段写它的文件夹路径，loadPlugin 照路径现加载它的入口（Main.ts 挂插件时调）。
  */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as url from 'node:url';
 import type * as cordis from 'cordis';
 import * as checksModule from '../utils/Checks.ts';
 import * as utils from '../utils/index.ts';
@@ -114,3 +117,34 @@ utils.eachEntry(BUILT_IN, (pluginName, plugin) => {
 });
 
 //M 每个内置插件一个目录。增加插件时，在上方登记入口；设计见 docs/src7插件设计/00_总览.md。
+
+
+/**
+ * 按 config.yaml 里写的名字找插件模块：先查自带名单，查不到再照路径加载别人写的插件入口，优先 index.ts，再找 index.js。
+ * Main.ts 挂插件时调。
+ * @param name 自带插件名，或外部插件的文件夹路径（相对路径从运行时目录算）。
+ * @param root 配置所在的运行时目录。
+ * @returns 这个插件的模块（导出 name、inject、apply）。导出得不对，Cordis 挂它的时候会报错。
+ * @throws 外部入口加载不了（文件不在等）时抛错，Main.ts 记成没挂上。
+ */
+export async function loadPlugin(name: string, root: string): Promise<PluginModule> {
+  //M 自带的直接用。
+  const builtIn = BUILT_IN[name];
+  if (builtIn !== undefined) return builtIn;
+
+  //M 按运行时目录解析外部路径，保留已有的入口优先级。
+  const dir = path.resolve(root, name);
+  let entry = path.join(dir, 'index.ts');
+  if (!fs.existsSync(entry)) {
+    entry = path.join(dir, 'index.js');
+  }
+
+  //M 动态 import 认的是网址：路径先转成 file:// 网址，Windows 的盘符路径才不会被当成别的协议。
+  const entryUrl = url.pathToFileURL(entry).href;
+  const loaded = await import(entryUrl) as PluginModule & {
+    default?: PluginModule;
+  };
+
+  //M 模块有 default 导出就用 default（DSH 的加载器也是这么做的）。
+  return loaded.default ?? loaded;
+}

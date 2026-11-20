@@ -108,7 +108,7 @@ channels:
 #   watch_rag_repeat: 3           # 同一句搜几次算反复
 
 # —— 以下是 src7 骨架用的 plugins 段样例（0.6 的程序暂时不读这一段）——
-# 不写 plugins 段沿用内置清单。启用 context-fit 的总结、压缩和裁剪时，按下方样例在它之前显式挂 db。
+# 不写 plugins 段沿用内置清单。启用 journal、relay、context-fit 等走迁移账本的插件时，按下方样例在它们之前显式挂 db。
 # 机器人名单读的是上面顶层的 bots 段（插件 bots 读），不写就是一个叫“助手”的机器人。
 # 骨架的默认思考档与同模型重试配置见上面的 models 段。
 # plugins:
@@ -120,6 +120,7 @@ channels:
 #       trace_console: false       # 控制台打印执行路径（原 trace 插件）：想看一条消息走过的路时改成 true
 #       trace_file: false          # 执行路径同时写到运行时目录 trace/ 下当天的文件
 #       trace_var_limit: 200       # 打印时一个值最多几个字
+#   - name: db                     # 数据库迁移和事务（默认 SQLite，沿用 Resources 的原连接；写在 journal、relay、memory、context-fit 前面）
 #   - name: workspaces            # 工作区：一个机器人可以有多个（按 ID 认，名字可重复）；workspace 工具管、hand_session 写 workspaceId 选。bots 依赖它，要写在 bots 前面；没有配置
 #   - name: bots                  # 机器人和前台：要写在用它的插件前面。消息没被别的插件认领的进前台，简单的前台自己答，复杂的派给后台会话
 #     config:
@@ -148,7 +149,8 @@ channels:
 #     config:
 #       tasks: { scan_ms: 10000 }  # 任务通道：多久扫一次 file 交回的 result/result.json，毫秒，不少于 1000；不写 10 秒
 #       helpers:                   # 接哪些外部助手；不写就不转话（任务通道、留言照常）；写了至少一个，第一个是默认的（relay 机器人的平常话、relay_send 都转给它）
-#         - name: 助手甲           # 话里怎么称呼它，回信前面也署这个名
+#         - name: 助手甲           # 内部标识（收件查询 helper=助手甲、回信核对都用它）
+#           # title: Antigravity   # 可选对外展示名：回执“已转给 …”、回信署名、超时提醒都显示它；不写就显示 name
 #           prefixes: ['甲 ']      # 任何机器人里以这些开头的话转给它
 #           webhook_url: ''        # 转出时 POST 到这里；不写就不推，它自己来 GET /api/relay/inbox?helper=助手甲 看
 #           webhook_header: ''     # POST 带的鉴权头，比如 'Authorization: Bearer xxx'
@@ -187,6 +189,7 @@ channels:
 #           listen: all            # all：不 @ 也收，只记进群的前台会话当上下文、不回（cc 开头的照转）；mention：只收 @（默认）
 #                                  # judge：不 @ 也收，攒一批（bots 的 group_batch）再问决策模型（要挂 decision 插件）要不要主动接话，allow 才回，否则只记；群里回话开头会 @ 最后说话的人
 #           judge_threshold: 0.8   # listen: judge 时用：决策模型的把握 ≥ 它才接话；不写用 decision 插件的 allow_at
+#           judge_helper: Claude   # listen: judge 时可选：判定要接话就把这一批转给这个外部助手（relay 的 helpers 里的 name），不写由机器人自己接话
 #           relay: model           # model：@ 机器人时它判断要不要转外部助手；direct：只认 cc 前缀（默认）
 #           trusted: false         # true：本人在这个群里说话照旧带私人记忆；false（默认）：群里谁说话都不带（回复群里人人看得到）
 #           daily:                 # 可省略。启用 progress 和 memory 后按服务器本地时间发群日报，重启错过的当天不补
@@ -212,7 +215,6 @@ channels:
 #     # service_url: http://127.0.0.1:30087  # 不写就是这个；记忆服务换了地址或端口才写
 #     # backend_url: memory      # 写了会话备份也发给 Rust（默认只进本地 SQLite）；旧写法是 Rust 地址时也当 service_url 用
 #     # backend_token、backend_timeout_ms 可配置外部 Rust 的认证和写入超时。
-#   - name: db                     # 数据库迁移和事务。默认 SQLite，沿用 Resources 的原连接。
 #   - name: context-fit            # 会话上下文总结、压缩与裁剪。compress 默认开启，上一轮用量达到登记窗口的 compress.ratio 就压缩。
 #     config: { keep: 6, ratio: 0.9, compress: { ratio: 0.8, keep: 6 }, summary: true }
 #   - name: progress               # 进度、限时与超时复盘（已并入原 review）：GET /api/progress、POST /api/progress/:id；写在 bots、compress 后面

@@ -11,7 +11,7 @@ const CACHE_MS = 10_000;
 const RETAIN_CLIENT_MS = 30_000;
 const CACHE_MAX = 64;
 const MAX_MODELS = 2;
-const VOICE_WAIT_MS = 500;
+const VOICE_WARN_MS = 500;
 
 const CLICK_PROMPT = '你是桌面界面的中文讲解员。输入是鼠标点击的控件信息及局部截图。用一两句话说明用户点到的是什么、通常用来做什么。';
 const STREAM_PROMPT = [
@@ -172,24 +172,6 @@ export interface SpeechResult {
   /** 回执已失效的固定原因。 */
   errorCode?: protocol.ErrorCode;
 }
-
-type VoicePayload =
-  | { action: 'speak'; text: string; interrupt: boolean; group: string }
-  | { action: 'stop'; group: string };
-
-interface VoiceResult extends requests.ResultEnvelope {
-  /** voice 是否接受这次组内操作。 */
-  ok: boolean;
-}
-
-//M voice 可独立安装；在此次可选边界使用已约定的事件形状，不与另一插件重复声明事件。
-const requestVoice = requests.requestEvent as unknown as (
-  ctx: cordis.Context,
-  event: 'voice/request',
-  result: 'voice/result',
-  payload: VoicePayload,
-  options: requests.RequestEventOptions<VoiceResult>,
-) => Promise<VoiceResult & requests.RequestFallback>;
 
 /** 按现有信号安全识别业务错误，不把未知异常原文传给客户端。 */
 function getError(error: unknown): protocol.ScreenError {
@@ -659,15 +641,14 @@ export class Screen {
     const group = this.getVoiceGroup(state);
     const interrupt = segment === 1;
     const request = { action: 'speak', text, group, interrupt } as const;
-    const options = {
-      timeoutMs: VOICE_WAIT_MS,
-      onFallback: () => ({ requestId: '', ok: false }),
-    };
+    const options = { warnAfterMs: VOICE_WARN_MS };
 
     //M 同一片段只发一次，等待原语音回执。
-    const answer = await requestVoice(this.ctx, 'voice/request', 'voice/result', request, options);
-    if (answer.ok) return { ok: true, speech: 'accepted' };
-    if (requests.isUnsure(answer)) return { ok: true, speech: 'uncertain', reason: '播报结果不确定' };
+    const answer = await requests.requestEvent(this.ctx, 'voice/request', 'voice/result', request, options);
+    if (answer.reply?.ok === true) return { ok: true, speech: 'accepted' };
+    if (answer.why !== undefined && answer.why !== 'unhandled') {
+      return { ok: true, speech: 'uncertain', reason: '播报结果不确定' };
+    }
 
     return { ok: true, speech: 'unavailable' };
   }

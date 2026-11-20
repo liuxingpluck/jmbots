@@ -5,20 +5,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
-import { requestEvent, type FallbackReason } from '../../utils/RequestEvent.ts';
+import { requestEvent } from '../../utils/RequestEvent.ts';
 import * as bridge from './index.ts';
 
-
-/**
- * base/request 没回时的退回：ok 是 false，原因写退回的理由。写明返回类型，交给 requestEvent。
- * @param reason requestEvent 给的退回原因。
- */
-function getOffline(reason: FallbackReason): bridge.BaseResult {
-  return { requestId: '', ok: false, error: reason };
-}
-
-/** base/request 的等待设置：比基地自己的超时多 1 秒（契约 3.2 第 10 条）。 */
-const baseOptions = { prefix: 'base', timeoutMs: 2000, onFallback: getOffline };
 
 //M 每个用例关闭自己的插件和临时 HTTP 服务，不改全局 fetch。
 const closers: (() => Promise<unknown>)[] = [];
@@ -206,33 +195,36 @@ describe('base-bridge 基地服务', () => {
     const { ctx } = await world(address, false);
 
     const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
-    const got = await requestEvent(ctx, 'base/request', 'base/result', get, baseOptions);
-    expect(got).toMatchObject({ ok: true, status: 200, body: { version: 'test-shell' } });
+    //M GET 通过桥接返回基地的响应体。
+    const got = await requestEvent(ctx, 'base/request', 'base/result', get);
+    expect(got.reply).toMatchObject({ ok: true, status: 200, body: { version: 'test-shell' } });
 
     const post = { method: 'POST', route: '/ingest', timeoutMs: 1000, body: { lib: 'x' } } as const;
-    const posted = await requestEvent(ctx, 'base/request', 'base/result', post, baseOptions);
-    expect(posted).toMatchObject({ ok: true, status: 409, body: { received: { lib: 'x' } } });
+    //M POST 通过桥接保留基地的错误状态和响应体。
+    const posted = await requestEvent(ctx, 'base/request', 'base/result', post);
+    expect(posted.reply).toMatchObject({ ok: true, status: 409, body: { received: { lib: 'x' } } });
   });
 
   //M 没配地址、连不上：接了单但办不成，回 { ok: false, error }，不让发的一方干等。
   test('base/request 没配地址：回 ok: false 和原因', async () => {
     const { ctx } = await world();
     const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
-    const result = await requestEvent(ctx, 'base/request', 'base/result', get, baseOptions);
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe('没配 plugins[base-bridge].config.index_url');
-    expect(result.requestId).not.toBe('');
+    //M 已挂载的基地桥会用真实回执说明地址缺失。
+    const result = await requestEvent(ctx, 'base/request', 'base/result', get);
+    expect(result.reply?.ok).toBe(false);
+    expect(result.reply?.error).toBe('没配 plugins[base-bridge].config.index_url');
+    expect(result.reply?.requestId).toStartWith('req_');
   });
 
   //M 没挂 base-bridge：当场退回，不等超时。
-  test('base/request 没人答：当场退回 ok: false', async () => {
+  test('base/request 没人答：当场退回未处理原因', async () => {
     const ctx = new cordis.Context();
     closers.push(() => ctx.fiber.dispose());
     const get = { method: 'GET', route: '/version', timeoutMs: 1000 } as const;
-    const options = { ...baseOptions, timeoutMs: 60_000 };
     const began = Date.now();
-    const result = await requestEvent(ctx, 'base/request', 'base/result', get, options);
-    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled', fallback: 'unhandled' });
+    //G 基地桥未挂载时，请求立即报告没人接单。
+    const result = await requestEvent(ctx, 'base/request', 'base/result', get);
+    expect(result).toEqual({ why: 'unhandled' });
     expect(Date.now() - began).toBeLessThan(1000);
   });
 

@@ -155,7 +155,7 @@ describe('录下这次启动', () => {
     expect(byName('main').text).toBe('启动');
 
     //M 第一条插件步骤带外部入口说明，插件注释来自真实源码。
-    expect(byName('tutorial').docs.map((doc) => doc.name)).toEqual(['tutorial', 'loadExternalPlugin', 'tutorial.apply']);
+    expect(byName('tutorial').docs.map((doc) => doc.name)).toEqual(['tutorial', 'loadPlugin', 'tutorial.apply']);
     expect(byName('tutorial').docs.map((doc) => doc.missing)).toEqual(['', '', '']);
     expect(byName('tutorial').docs[2]?.summary).toContain('挂上教程插件');
 

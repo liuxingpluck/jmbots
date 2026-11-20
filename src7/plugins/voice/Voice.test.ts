@@ -659,8 +659,14 @@ test('unsure 仅在句尾放行，句尾 deny 不进入下一次判断，只入�
   expect(records.map((item) => item.waiting)).toEqual([true, false, true]);
 });
 
-test('缺 decision 时停麦强制完成当前一句，先发任务帧再发 idle', async () => {
-  const { socket, asr, tasks } = getTaskWorld();
+test.each([false, true])('decision 无回执时停麦完成当前一句，先发任务帧再发 idle（监听抛错：%s）', async (throws) => {
+  const { ctx, socket, asr, tasks } = getTaskWorld();
+  if (throws) {
+    //M 模拟处理方异常退出，验证与缺席时一样走句尾放行。
+    requests.onRequestEvent(ctx, 'decision/judge', 'decision/judge-result', () => {
+      throw new Error('模拟判断失败');
+    });
+  }
   asr.onPartial('请帮我查天气');
   expect(tasks).toHaveLength(0);
   socket.write({ type: 'stop' });
@@ -922,13 +928,13 @@ test('替换连接取消旧判断的等待，迟到的 allow 不派发', async (
   expect(next.frames).toEqual([]);
 });
 
-async function setupHttp(config?: Record<string, unknown>) {
+async function setupHttp(config?: Record<string, unknown>, providers: Record<string, unknown> = {}) {
   const ctx = new cordis.Context();
   const app = fastify.default({ logger: false, forceCloseConnections: true });
   class Resources extends cordis.Service {
     readonly raw = { voice: config };
     readonly root = process.cwd();
-    readonly config = { providers: {} };
+    readonly config = { providers };
     constructor(local: cordis.Context) {
       super(local, 'resources');
     }
@@ -971,12 +977,10 @@ test('状态报告默认关闭，sherpa 模型缺失时保持 HTTP 正常并报�
     available: false, enabled: true, wsPath: '/api/listen',
     error: { code: 'asr-model-missing', message: '本地转写还没装好' },
   });
-  const options = {
-    timeoutMs: 500,
-    onFallback: () => ({ requestId: '', ok: false, clients: 0, listening: false }),
-  };
-  const status = await requests.requestEvent(ctx, 'voice/request', 'voice/result', { action: 'status' }, options);
-  expect(status).toMatchObject({ ok: false, clients: 0, listening: false, error: '本地转写还没装好' });
+  const query = { action: 'status' } as const;
+  //M 语音虽未就绪，状态事件仍回具体原因。
+  const status = await requests.requestEvent(ctx, 'voice/request', 'voice/result', query);
+  expect(status.reply).toMatchObject({ ok: false, clients: 0, listening: false, error: '本地转写还没装好' });
 });
 
 test('fake 开启时按实际 WebSocket 依赖报告就绪', async () => {
@@ -1072,4 +1076,35 @@ test('voice.barge_in 为 false 时，真实连接协商结果为半双工', asyn
   client.socket.send('{"type":"start"}');
   const ready = await waitForFrame(client.frames, 'ready');
   expect(ready).toMatchObject({ bargeIn: false });
+});
+
+test('配置入口：模型线路的供应商要在 providers 里，数和开关照公共校验报错', async () => {
+  //M 只看入口校验：apply 第一步就查配置，写错就拒，不往下挂路由。
+  const providers = { known: {} };
+  const load = (voice: Record<string, unknown>): Promise<void> => {
+    const resources = { raw: { voice }, config: { providers } };
+    return plugin.apply({ resources } as unknown as cordis.Context);
+  };
+
+  //M 模型线路：供应商没配、没写斜杠都拒；内置断句模型照收（默认配置能挂上见上面的状态用例）。
+  const missingProvider = load({ judge: { models: { cloud_model: 'missing/small' } } });
+  await expect(missingProvider).rejects.toThrow('voice.judge.models.cloud_model 的供应商不在 providers 里：missing/small');
+  const noSlash = load({ turn: { detector: { local_model: 'known' } } });
+  await expect(noSlash).rejects.toThrow('voice.turn.detector.local_model 要写成“供应商名/模型 ID”');
+
+  //M 开关、正整数、阈值：报错说清该写成什么样。
+  await expect(load({ enabled: 'yes' })).rejects.toThrow('voice.enabled 要写成 true 或 false');
+  await expect(load({ turn: { silence_ms: 0 } })).rejects.toThrow('voice.turn.silence_ms 要写成正整数');
+  const echo = load({ barge_in_echo_similarity: 0 });
+  await expect(echo).rejects.toThrow('voice.barge_in_echo_similarity 要写成大于 0 且不大于 1 的数');
+  const allowAt = load({ judge: { allow_at: 1.5 } });
+  await expect(allowAt).rejects.toThrow('voice.judge.allow_at 要写成不小于 0 且不大于 1 的数');
+  await expect(load({ asr: { provider: 'other' } })).rejects.toThrow('voice.asr.provider 只能是 sherpa、bailian、xiaomi、fake');
+});
+
+test('配置入口：供应商在 providers 里的模型线路照收，插件正常挂上', async () => {
+  const voice = { judge: { models: { cloud_model: 'known/small', local_model: 'known/tiny' } } };
+  const { app } = await setupHttp(voice, { known: {} });
+  const res = await app.inject('/api/voice/status');
+  expect(res.json()).toMatchObject({ enabled: false, error: { code: 'voice-disabled' } });
 });

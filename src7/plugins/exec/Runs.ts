@@ -82,55 +82,45 @@ class BadInput extends Error {}
  * @returns 放行、拒绝，或已经去问用户了。
  */
 export async function requestReview(ctx: cordis.Context, input: ReviewInput): Promise<ReviewVerdict> {
-  //M 审批方同时响应会话停止和本次等待退回；调用方仍由原信号和 requestEvent 的时限结算。
+  //M 审核小会话（调模型）自己不限时：exec 给审批方一个期限信号，到期那一刻审批方停下、这边也结束等待。
   const review = new AbortController();
+  const timeout = new DOMException(REVIEW_TIMEOUT_MESSAGE, 'TimeoutError');
+  const timer = setTimeout(() => {
+    review.abort(timeout);
+  }, REVIEW_WAIT_MS);
+  timer.unref?.();
+
+  //M 提问的会话喊停或到期，任一个都让审批方停下、这次等待结束。
   let signal = review.signal;
   if (input.signal !== undefined) {
     const signals = [input.signal, review.signal];
     signal = AbortSignal.any(signals);
   }
   const request = { action: 'review', input: { ...input, signal } } as const;
-  const options = {
-    prefix: 'apr',
-    timeoutMs: REVIEW_WAIT_MS,
-    signal: input.signal,
-    onFallback: (reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply => {
-      let cause: DOMException | undefined;
-      if (reason === 'timeout') {
-        cause = new DOMException(REVIEW_TIMEOUT_MESSAGE, 'TimeoutError');
-      }
-      //M 在等待结算时立即告诉审批方，迟到的结果不能再登记待确认。
-      review.abort(cause);
-      return getRejected(reason, detail);
-    },
-  };
+  const options = { prefix: 'apr', signal };
 
-  //M 发 approval/request 等审核结论；提问的会话喊停，这次等待跟着结束（退回拒绝）。
-  const result = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', request, options);
+  //M 发 approval/request 等审核结论。
+  const asked = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', request, options);
+  clearTimeout(timer);
+
+  //G 没拿到结论（到期、没挂 approval、会话喊停、出错）：让审批方停下，迟到的结果不再登记待确认；一律拒绝。
+  if (asked.why !== undefined) {
+    const timedOut = review.signal.reason === timeout;
+    review.abort();
+    if (timedOut) return { result: 'reject', by: 'rule', reason: REVIEW_TIMEOUT_MESSAGE };
+
+    let text = `审核未就绪或超时（${asked.why}），没有审核就不跑命令`;
+    if (asked.detail !== undefined) {
+      text = `审核出错：${asked.detail}，没有审核就不跑命令`;
+    }
+    return { result: 'reject', by: 'rule', reason: text };
+  }
 
   //G 审核接了单但没给结论（办的时候出错，只回了 error）：也当拒绝。
-  if (result.verdict === undefined) return { result: 'reject', by: 'rule', reason: `审核出错：${result.error ?? '没给结论'}` };
+  const verdict = asked.reply.verdict;
+  if (verdict === undefined) return { result: 'reject', by: 'rule', reason: `审核出错：${asked.reply.error ?? '没给结论'}` };
 
-  return result.verdict;
-}
-
-
-/**
- * 审核没回（没挂 approval、超时、停了、出错）时的退回：拒绝，requestId 留空。
- * 写明返回类型，verdict 里的 'reject'、'rule' 才是字面量；交给 requestEvent 的 onFallback。
- * @param reason requestEvent 给的退回原因。
- * @param detail 出错时的原话。
- */
-function getRejected(reason: requestEventModule.FallbackReason, detail?: string): ApprovalReply {
-  if (reason === 'timeout') {
-    return { requestId: '', verdict: { result: 'reject', by: 'rule', reason: REVIEW_TIMEOUT_MESSAGE } };
-  }
-
-  let text = `审核未就绪或超时（${reason}），没有审核就不跑命令`;
-  if (detail !== undefined) {
-    text = `审核出错：${detail}，没有审核就不跑命令`;
-  }
-  return { requestId: '', verdict: { result: 'reject', by: 'rule', reason: text } };
+  return verdict;
 }
 
 

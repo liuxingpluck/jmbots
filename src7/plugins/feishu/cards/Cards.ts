@@ -16,10 +16,6 @@ import type { FeishuAddress, Feishu, FeishuPerson, Toast } from '../index.ts';
 import * as render from './Render.ts';
 
 
-/** 审批卡片按钮最多等五秒。 */
-const APPROVAL_TIMEOUT_MS = 5000;
-/** 进度卡片按钮最多等五秒。 */
-const PROGRESS_TIMEOUT_MS = 5000;
 /** 写操作没等到回执时请点击者回看卡片状态。 */
 const UNCERTAIN_ACTION = '操作结果不确定，请稍后刷新卡片核对';
 
@@ -329,10 +325,10 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
 
 
 /**
- * 记录卡片写操作超时并返回给点击者的提示。
+ * 记录卡片写操作没拿到回执（业务插件接了单却出错）并返回给点击者的提示。
  * @param row 触发操作的卡片。
  * @param action 发给业务插件的动作。
- * @param timeoutMs 等待回执的上限。
+ * @param reason requestEvent 交回的 why。
  * @returns 可直接回给飞书卡片的警告提示。
  */
 function reportActionUncertain(row: CardRow, action: string, reason: requestEventModule.FallbackReason): Toast {
@@ -382,27 +378,26 @@ export async function onAction(
     const id = Number(row.ref);
     const by = `飞书卡片 ${address.openId}`;
     const input = { action: 'decide', id, approve, by } as const;
-    const options = {
-      timeoutMs: APPROVAL_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', error: detail ?? `审批未获回执（${reason}）` };
-      },
-    };
 
-    //M 交给审核插件处理，只有明确完成才回成功提示。
-    const result = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', input, options);
+    //M 交给审核插件处理（本机写表，不掐表），只有明确完成才回成功提示。
+    const asked = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', input);
 
-    //G 回执缺失时保留占用，迟到的决定仍可刷新整件审批的终态。
-    if (requestEventModule.isUnsure(result)) {
+    //G 接了单却出错：可能已经定了，保留占用，迟到的决定仍可刷新整件审批的终态。
+    if (asked.why !== undefined && asked.why !== 'unhandled') {
       const action = `提交审批决定 approve=${String(approve)}`;
-      return reportActionUncertain(row, action, result.fallback);
+      return reportActionUncertain(row, action, asked.why);
     }
 
     //G 无人接单或明确失败时释放占用，已收到的终态不会被改回可提交。
-    if (result.settled === undefined || result.error !== undefined) {
+    const result = asked.reply;
+    if (result?.settled === undefined || result.error !== undefined) {
       const releaseSql = "UPDATE feishu_cards SET ended = 0 WHERE kind = 'approval' AND ref = ? AND ended = 2";
       feishu.db.query(releaseSql).run(row.ref);
-      const reason = result.error ?? '未返回审批结果';
+      //M 没人接单说审批插件没挂；有回执的照它的原因。
+      let reason = '审批插件没挂，没人接';
+      if (result !== undefined) {
+        reason = result.error ?? '未返回审批结果';
+      }
       return { type: 'warning', content: `待确认 #${row.ref} 没办成：${reason}` };
     }
 
@@ -425,17 +420,17 @@ export async function onAction(
       minutes = Number(value['minutes'] ?? 0);
     }
     const input = { action: 'act', sessionId: row.ref, op: action, minutes } as const;
-    const options = {
-      timeoutMs: PROGRESS_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', ok: false, text: detail ?? `进度控制暂不可用（${reason}）` };
-      },
-    };
 
-    //M 把终止或限时交给进度插件，用回执生成卡片提示。
-    const result = await requestEventModule.requestEvent(ctx, 'progress/request', 'progress/result', input, options);
-    if (requestEventModule.isUnsure(result)) return reportActionUncertain(row, action, result.fallback);
+    //M 把终止或限时交给进度插件（本机，不掐表），用回执生成卡片提示。
+    const asked = await requestEventModule.requestEvent(ctx, 'progress/request', 'progress/result', input);
 
+    //G 没人接单：进度插件没挂，什么都没动。
+    if (asked.why === 'unhandled') return { type: 'warning', content: '进度控制暂不可用（进度插件没挂）' };
+
+    //G 接了单却出错：可能已经停了或改了，请点击者回看。
+    if (asked.why !== undefined) return reportActionUncertain(row, action, asked.why);
+
+    const result = asked.reply;
     if (result.ok !== true) return { type: 'warning', content: result.text ?? '进度控制失败' };
 
     return { type: 'info', content: result.text ?? '已处理' };

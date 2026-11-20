@@ -23,7 +23,7 @@ export { readSummaryEnabled } from './Summary.ts';
 /** 插件名。 */
 export const name = 'context-fit';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.3';
+export const version = '1.1.4';
 
 /** Resources 读模型上限，Sessions 开小会话，db 管压缩表。 */
 export const inject = ['resources', 'sessions', 'db'];
@@ -59,9 +59,6 @@ interface ModelWindow {
   /** 裁剪允许使用既有的估算窗口。 */
   fit: number;
 }
-
-/** 模型目录查询最多等三秒。 */
-const CATALOG_WAIT_MS = 3000;
 
 /**
  * 估 token：JSON 以后的 UTF-8 字节数 ÷ 3（中文一个字约 1 token、3 字节；英文估偏多，宁可多留余量）。
@@ -192,11 +189,7 @@ function readConfig(config: Record<string, unknown> | undefined): Config {
  */
 async function readModelWindow(ctx: cordis.Context, modelName: string, signal?: AbortSignal): Promise<ModelWindow> {
   const lookup = { action: 'find', model: modelName } as const;
-  const options = {
-    timeoutMs: CATALOG_WAIT_MS,
-    signal,
-    onFallback: () => ({ requestId: '' }),
-  };
+  const options = { signal };
   //M 两个处理阶段共用这次目录查询。会话取消时结束等待。
   const result = await requestEventModule.requestEvent(
     ctx,
@@ -205,7 +198,7 @@ async function readModelWindow(ctx: cordis.Context, modelName: string, signal?: 
     lookup,
     options,
   );
-  const info = result.info;
+  const info = result.reply?.info;
   const listed = info?.contextWindow ?? 0;
   if (listed > 0 && info?.contextWindowEstimated !== true) return { registered: listed, fit: listed };
 

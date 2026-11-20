@@ -444,6 +444,45 @@ test('语音只在呈现确认后按组请求一次，隐私暂停取消旧组',
   expect(stale.json()).toMatchObject({ ok: false, errorCode: 'stale_epoch' });
 });
 
+test('语音无人接单时报告不可用，监听异常时保留播报片段序号', async () => {
+  const { ctx, app } = await setup({ speak: true });
+  let attempts = 0;
+  //M 第一次不接单，第二次在进入语音处理后抛错。
+  ctx.events.on('voice/request', (request) => {
+    if (request.action !== 'speak') return;
+
+    attempts += 1;
+    if (attempts === 1) return;
+
+    request.handled = true;
+    throw new Error('模拟语音监听中断');
+  });
+  const activate = { method: 'POST', url: STATE, payload: start } as const;
+  //M 先开启会话，点击后才能确认呈现讲解。
+  await app.inject(activate);
+  const first = getClick();
+  const firstClick = { method: 'POST', url: CLICK, payload: first } as const;
+  //M 第一条讲解生成成功后确认呈现。
+  await app.inject(firstClick);
+  const firstPresented = { method: 'POST', url: PRESENTED, payload: { ...identity, clickId: first.clickId } } as const;
+  //G 监听存在但无人接单时按语音不可用处理。
+  const unavailable = await app.inject(firstPresented);
+  expect(unavailable.json()).toMatchObject({ ok: true, speech: 'unavailable' });
+
+  const second = getClick(2);
+  const secondClick = { method: 'POST', url: CLICK, payload: second } as const;
+  //M 用新点击生成独立的一条讲解。
+  await app.inject(secondClick);
+  const secondPresented = { method: 'POST', url: PRESENTED, payload: { ...identity, clickId: second.clickId } } as const;
+  //G 接单后异常时播报结果不确定，重复确认不再播报。
+  const failed = await app.inject(secondPresented);
+  expect(failed.json()).toMatchObject({ ok: true, speech: 'uncertain' });
+  //G 原片段序号保留，重试只返回已请求状态。
+  const duplicate = await app.inject(secondPresented);
+  expect(duplicate.json()).toMatchObject({ ok: true, speech: 'already_requested' });
+  expect(attempts).toBe(2);
+});
+
 test('首句在模型结束前可以显示和确认，尾句排在当前组后面', async () => {
   const source = piAi.createAssistantMessageEventStream();
   const first = '这是保存按钮。';

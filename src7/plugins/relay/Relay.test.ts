@@ -9,7 +9,7 @@
  * 0.7.16：收件的 owner、sender、chat、chatName（入库、接口、jsonl、webhook、老库补栏；都读飞书写进地址的），
  * 飞书群登记了 relay: model 的会话才有 relay_send，机器人写的 relay 照旧，旧的按聊天种类写法抛错。
  */
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test, vi } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -19,6 +19,7 @@ import fastify from 'fastify';
 import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import * as channels from '../channels/index.ts';
+import * as dbModule from '../db/index.ts';
 import * as decisionModule from '../work-decision/index.ts';
 import type * as decisionTypes from '../work-decision/Types.ts';
 import * as relayModule from './index.ts';
@@ -176,7 +177,9 @@ function world(db = new Database(':memory:')): World {
 
   const bot = { name: BOT, config: {} as Record<string, unknown>, hand: () => undefined };
   const tools: World['tools'] = [];
+  const dbService = new dbModule.Db(new cordis.Context(), db);
   const fake = {
+    db: dbService,
     http: { app },
     resources: {
       db,
@@ -474,7 +477,7 @@ describe('relay 接两个助手', () => {
     expect(count()).toBe(1);
   }, SLOW);
 
-  test('回信带文件发给飞书：飞书回 ok: true，trace 写“已发”；没人答，trace 写“没发出去”', async () => {
+  test('回信带文件发给飞书，分别记录发送成功、无人接单和执行结果不确定', async () => {
     const made = await ready();
     expect(await made.say('a 发个文件', { chatId: 'oc_send', openId: 'ou_test' })).toBe('已转给 A（#1），等回复。');
     const inside = path.join(root, 'integrations', 'relay', BOT, 'send.txt');
@@ -492,8 +495,35 @@ describe('relay 接两个助手', () => {
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toContain('没发出去');
 
-    //M 假飞书接单并回 ok: true：trace 写已发和新消息号。
     const handlers = made.handlers;
+    //M 飞书接单后未回执就抛错，trace 只记录结果不确定。
+    handlers.set('feishu/send-file', [(request: unknown) => {
+      const asked = request as { handled?: boolean };
+      asked.handled = true;
+      throw new Error('模拟飞书处理抛错');
+    }]);
+    const uncertain = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload });
+    expect(uncertain.statusCode).toBe(200);
+    await settle();
+    expect(sent()[1]).toBe('飞书文件发送结果不确定：飞书处理时出错 模拟飞书处理抛错');
+
+    //M 飞书接单后一直没回，等待到第 30 秒时也只记录结果不确定。
+    handlers.set('feishu/send-file', [(request: unknown) => {
+      const asked = request as { handled?: boolean };
+      asked.handled = true;
+    }]);
+    vi.useFakeTimers();
+    try {
+      const waiting = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload });
+      expect(waiting.statusCode).toBe(200);
+      vi.advanceTimersByTime(30_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(sent()[2]).toBe('飞书文件发送结果不确定：等待回执超时');
+
+    //M 假飞书接单并回 ok: true：trace 写已发和新消息号。
     handlers.set('feishu/send-file', [(request: unknown) => {
       const asked = request as { requestId: string; handled?: boolean };
       asked.handled = true;
@@ -502,8 +532,8 @@ describe('relay 接两个助手', () => {
     const answered = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload });
     expect(answered.statusCode).toBe(200);
     await settle();
-    expect(sent()).toHaveLength(2);
-    expect(sent()[1]).toBe('已发 om_sent');
+    expect(sent()).toHaveLength(4);
+    expect(sent()[3]).toBe('已发 om_sent');
   }, SLOW);
 
   test('带附件的话转出去：inbox.jsonl、GET /api/relay/inbox、webhook 都带 files（相对运行时目录）', async () => {
@@ -740,6 +770,26 @@ describe('relay 旧库和配置', () => {
     relayModule.apply(world(db).ctx, { helpers: HELPERS });
 
     expect(db.query('SELECT helper, chat FROM relay_items').all()).toEqual([{ helper: 'B', chat: 'p2p' }]);
+    const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'relay' ORDER BY version").all() as { version: number }[];
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+  });
+
+  test('已有全部新栏的存量库（尚未登记迁移账本）：adoptColumn 直接接管，已有字段保持原样', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE relay_items (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL,'
+      + " helper TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL, channel TEXT NOT NULL, address TEXT NOT NULL,"
+      + " owner INTEGER NOT NULL DEFAULT 0, sender TEXT NOT NULL DEFAULT '', chat TEXT NOT NULL DEFAULT 'p2p',"
+      + " chat_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, at INTEGER NOT NULL, last_msg_at INTEGER,"
+      + " state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0, replied_at INTEGER)");
+    db.query("INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at) VALUES (?, 'B', 's1', 'http', 'null', 1, '', 'p2p', '', '存量网页收件', 1)")
+      .run(BOT);
+    relayModule.apply(world(db).ctx, { helpers: HELPERS });
+
+    expect(db.query('SELECT helper, owner, sender, chat, chat_name FROM relay_items').all()).toEqual([
+      { helper: 'B', owner: 1, sender: '', chat: 'p2p', chat_name: '' },
+    ]);
+    const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'relay' ORDER BY version").all() as { version: number }[];
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
   });
 
   test('helpers 写了但是空的、名字重复、前缀有空串：apply 抛错', () => {
@@ -978,5 +1028,91 @@ describe('回信送进会话：先写进对话再标已送，走模型的会话�
     await settle();
     expect(made.resultQueue.accepted.length).toBe(1);
     expect(delivered(made, replyId)).toBe(1);
+  }, SLOW);
+
+  test('helpers 配置 title 时：对外展示名用 title，收件表与 API 查询核对仍用内部 name', async () => {
+    const made = await ready([{ name: 'Claude', title: 'Antigravity', prefixes: ['cc '] }], { relay: 'model' });
+    made.resultQueue.listen();
+
+    //M 前缀直转：回执显示 Antigravity，但库和接口筛选仍是 Claude。
+    expect(await made.say('cc 看一下')).toBe('已转给 Antigravity（#1），等回复。');
+    const byName = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Claude' });
+    const nameItems = (byName.json() as { items: { id: number; helper: string }[] }).items;
+    expect(nameItems.map((one) => [one.id, one.helper])).toEqual([[1, 'Claude']]);
+    const byTitle = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Antigravity' });
+    expect((byTitle.json() as { items: unknown[] }).items).toEqual([]);
+
+    //M 直转回信署名显示 Antigravity，回信校验仍认 helper: Claude。
+    const replied = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 1, helper: 'Claude', text: '修好了' },
+    });
+    expect(replied.statusCode).toBe(200);
+    await settle();
+    expect(made.answers.at(-1)).toBe('Antigravity：修好了');
+
+    //M model 模式工具描述、系统提示词和结果入队正文都显示 Antigravity，source.id 仍留 Claude。
+    const front = made.open({ bot: BOT, kind: 'front', customer: 'feishu:ou_x' });
+    front.row.channel = 'feishu';
+    front.row.address = { chatId: 'oc_m', openId: 'ou_x' };
+    const asked = made.ask(front);
+    expect(asked.system[0]).toContain('Antigravity');
+    expect(made.tools[0]?.definition.description).toContain('Antigravity');
+    expect(made.tools[0]?.run({ text: '再查一下' }, front)).toMatch(/^已转给 Antigravity（#2）/u);
+
+    await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 2, text: '查完了' } });
+    await settle();
+    expect(made.resultQueue.accepted[0]).toMatchObject({
+      source: { type: 'relay', id: 'Claude' },
+      payload: { text: 'Antigravity 回复（#2）：查完了' },
+    });
+  }, SLOW);
+
+  test('address.relayHelper 群攒批转交：无前缀也认领进群 relay 会话并静默入箱，回信时才往群里发声', async () => {
+    const made = await ready([
+      { name: 'jm开发', prefixes: ['jm '] },
+      { name: 'Claude', title: 'Antigravity', prefixes: ['cc '] },
+    ]);
+    const channelReplies: channels.ChannelReplyRequest[] = [];
+    made.ctx.on('channel/reply', (request: channels.ChannelReplyRequest) => {
+      request.handled = true;
+      channelReplies.push(request);
+      channels.emitReplied(made.ctx, request, channels.getReceipt(request, 'sent'));
+    });
+
+    const groupAddr = {
+      chatId: 'oc_paper',
+      openId: 'ou_member',
+      customer: 'feishu:group:oc_paper',
+      relayHelper: 'Claude',
+    };
+    //M 自动转交：当轮回答为空串，不发任何 channel/reply，收件落到排第二位的 Claude 名下。
+    expect(await made.say('Game 1 的归约损失怎么算', groupAddr)).toBe('');
+    await settle();
+    expect(channelReplies).toEqual([]);
+
+    const inbox = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Claude' });
+    const claudeItems = (inbox.json() as { items: { id: number; helper: string; chat: string; text: string }[] }).items;
+    expect(claudeItems).toMatchObject([{ id: 1, helper: 'Claude', chat: 'group', text: 'Game 1 的归约损失怎么算' }]);
+
+    //M 中控回信后才向原群发出带展示名署名的最终回复。
+    const post = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 1, helper: 'Claude', text: '限定 G=O(1) 即可多项式归约' },
+    });
+    expect(post.statusCode).toBe(200);
+    await settle();
+    expect(made.answers.at(-1)).toBe('Antigravity：限定 G=O(1) 即可多项式归约');
+    expect(channelReplies).toHaveLength(1);
+    expect(channelReplies[0]?.parts[0]?.text).toBe('Antigravity：限定 G=O(1) 即可多项式归约');
+    expect(channelReplies[0]?.target).toMatchObject({ channel: 'feishu', chat: 'oc_paper' });
+
+    //M 话里显式带了别的助手前缀时，前缀优先于 relayHelper。
+    expect(await made.say('jm 顺手跑下脚本', groupAddr)).toBe('');
+    const jmInbox = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=jm%E5%BC%80%E5%8F%91' });
+    const jmItems = (jmInbox.json() as { items: { id: number; helper: string }[] }).items;
+    expect(jmItems.map((one) => [one.id, one.helper])).toEqual([[2, 'jm开发']]);
   }, SLOW);
 });

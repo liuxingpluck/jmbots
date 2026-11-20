@@ -548,6 +548,10 @@ export class FeishuInbound {
     if (listen && registered?.listen === 'judge' && registered.judgeThreshold !== undefined) {
       address.judgeThreshold = registered.judgeThreshold;
     }
+    //M 登记了 judge_helper 的 judge 群：标上转给哪个外部助手，群攒批判定要接话时转给它。
+    if (listen && registered?.listen === 'judge' && registered.judgeHelper !== undefined) {
+      address.judgeHelper = registered.judgeHelper;
+    }
     if (registered !== undefined) address.relay = registered.relay;
     if (registered !== undefined) address.trusted = registered.trusted;
     return address;

@@ -279,7 +279,7 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     expect(request.messages.at(-1)).toBe(current);
   });
 
-  test('裁剪等待目录窗口，目录无响应时使用手写窗口', async () => {
+  test('裁剪等待目录窗口，目录缺席或异常时使用手写窗口', async () => {
     const ctx = new cordis.Context();
     closers.push(() => ctx.fiber.dispose());
     await ctx.plugin(makeResources(5000));
@@ -316,6 +316,15 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
 
     stop();
     request.messages = messages;
+    await ctx.serial('session/before-model', request);
+    expect(request.messages).toBe(messages);
+
+    //M 目录监听异常时仍按手写窗口裁剪。
+    events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', () => {
+      throw new Error('模拟目录读取失败');
+    });
+    request.messages = messages;
+    //G 用手写窗口时，这两条消息仍能保留。
     await ctx.serial('session/before-model', request);
     expect(request.messages).toBe(messages);
   });

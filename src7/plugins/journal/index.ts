@@ -17,8 +17,11 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
 import type * as trailTypes from '../../utils/Trail.ts';
+import type * as dbModule from '../db/index.ts';
 import { FilesMirror } from './FilesMirror.ts';
 import * as markdown from './Markdown.ts';
+import initialSql from './migrations/0000_journal_lines.sql' with { type: 'text' };
+import sourceIdSql from './migrations/0001_journal_source_id.sql' with { type: 'text' };
 import * as traceModule from './Trace.ts';
 import * as trailModule from './Trail.ts';
 
@@ -37,10 +40,24 @@ export const name = 'journal';
 //M   trail、reply-lines 按它把渠道那几行（飞书 WebSocket 收到、去重、认 @、channel/message）串在收件行前面，
 //M   轨迹第一格不再是“收件表记下”；/api/events 加 source 参数。
 //M 1.3.3：事件人话认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
-export const version = '1.3.3';
+//M 1.3.4：journal_lines 建表与 source_id 补列交 db 插件迁移账本管理（adoptColumn 接管已有列），删手写查表与 ALTER。
+export const version = '1.3.4';
 
-/** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
-export const inject = ['resources'];
+/** 用到的服务：resources 拿数据库、运行时目录，db 按版本迁移流水表。http 是可选的，有就开接口（见 apply）。 */
+export const inject = ['resources', 'db'];
+
+/** 流水表与标准消息号补列的迁移计划。 */
+const journalMigrations: dbModule.MigrationPlan = {
+  plugin: name,
+  migrations: [
+    { version: 1, sql: initialSql },
+    {
+      version: 2,
+      sql: sourceIdSql,
+      adoptColumn: { table: 'journal_lines', name: 'source_id' },
+    },
+  ],
+};
 
 
 declare module 'cordis' {
@@ -194,17 +211,9 @@ class Journal {
    * @param keepDays 事件留几天，apply 里校验过。
    */
   constructor(private readonly ctx: cordis.Context, private readonly keepDays: number) {
+    //M 流水表与 source_id 补列交给 db 按版本迁移，已有列直接接管登记。
+    ctx.db.migrate(journalMigrations);
     const db = ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,'
-      + ' kind TEXT NOT NULL,'
-      + ' name TEXT NOT NULL, mode TEXT NOT NULL, listeners TEXT NOT NULL, text TEXT NOT NULL, code TEXT NOT NULL,'
-      + ' site TEXT NOT NULL,'
-      + ' bot TEXT, session_id TEXT, message_id INTEGER, source_id TEXT, vars TEXT NOT NULL)');
-    //M 1.3.0 以前建的表没有 source_id 列：补一列（旧行是空）。
-    const columns = db.query('PRAGMA table_info(journal_lines)').all() as { name: string }[];
-    if (!columns.some((column) => column.name === 'source_id')) {
-      db.exec('ALTER TABLE journal_lines ADD COLUMN source_id TEXT');
-    }
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_name ON journal_lines (name, at)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_session ON journal_lines (session_id, at)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_message ON journal_lines (message_id)');

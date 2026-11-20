@@ -122,7 +122,8 @@ export const name = 'tutorial';
 //M 1.1.19：消息轨迹「分给机器人」列认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
 //M 1.1.20：跟踪打印直接读当前界面语言。
 //M 1.1.21：挂载结果合成 state 加 error，左栏和启动录像照它原样给，不再自己拼。
-export const version = '1.1.21';
+//M 1.1.23：启动录像第一个插件步骤的加载说明改取 plugins/Index.ts 的 loadPlugin（原 Main.ts 的 loadExternalPlugin 搬过去了）。
+export const version = '1.1.23';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -839,14 +840,9 @@ class Tutorial {
     const rowLimit = Math.min(this.settings.recentMessages * 2, 1000);
     const limit = String(rowLimit);
     const request = { action: 'query', params: { name: 'web-api/received', limit } } as const;
-    const options = {
-      timeoutMs: 5000,
-      onFallback: () => ({ requestId: '', ok: false, lines: [] }),
-    };
-
     //M 通过事件取最近的收件行。流水缺席时继续用磁盘快照。
-    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
-    const received = result.lines ?? [];
+    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request);
+    const received = result.reply?.lines ?? [];
     const entries = new Map<string, Promise<MessageCanvasItem>>();
 
     //M 倒序取最近 N 条不同的消息，同时查询缺少的预览，避免逐条累积等待。

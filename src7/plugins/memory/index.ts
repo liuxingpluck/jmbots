@@ -46,7 +46,8 @@ export const name = 'memory';
 //M 1.11.0：听 channel/history（飞书拉回的群历史）进历史回填队列，并请回填开跑；ChannelBackfill 加 resume。
 //M 1.11.1：客户号只读渠道写的（删 customerFrom）；私人记忆判断并进 MemoryKey.canReadAll，本人、群改问 channels。
 //M 1.11.2：渠道索引按归档路径记附件、按撤回事件记时刻，表结构交 db 管版本。
-export const version = '1.11.2';
+//M 1.11.3：旧档回填问资源守卫改 requestEvent 新写法，不掐表（守卫读数自己限时），云端 19 第 1、2 条。
+export const version = '1.11.3';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];
@@ -467,21 +468,21 @@ declare module 'cordis' {
   interface Events {
     /**
      * 别的插件请记忆库办事（serial 发、等 memory/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听（MemoryService.onRequest）。
-     * 谁发：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.askMemory
+     * 谁发：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.readFront
      * 谁接：src7/plugins/memory/index.ts 的 MemoryService.constructor
      */
     'memory/request'(request: MemoryRequest): void | Promise<void>;
     /**
      * memory/request 的回执（emit），按 requestId 配对。
      * 谁发：src7/plugins/memory/index.ts 的 MemoryService.constructor
-     * 谁接：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.askMemory
+     * 谁接：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.readFront
      */
     'memory/result'(result: MemoryResult): void;
   }
 }
 
 
-/** 事件 memory/request 的数据。bots 的前台（FrontDesk.ts 的 askMemory）等插件发。 */
+/** 事件 memory/request 的数据。bots 的前台（FrontDesk.ts 的 readFront）等插件发。 */
 export type MemoryRequest = requestEventModule.RequestEnvelope & ({
   /** 记一段往来（同 recordHistory）：同一 source 先删后收。 */
   action: 'record-history';

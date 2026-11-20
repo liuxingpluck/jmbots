@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.7.74",
+    "date": "2026-11-20",
+    "changes": [
+      "全部插件一问一答（requestEvent）迁移完成：不再编假回执，只有真走网络的处理方自己限时（飞书开放接口统一设 60 秒超时），清理 approval/Outbound 层层叠加的 6 个等待常量",
+      "转交助手支持对外展示名（如显示“已转给 Antigravity”与“Antigravity：”署名，内部保留原助手标识不断历史收件和 cc 前缀）",
+      "群攒批判定需要插话时支持按群配置 judge_helper 静默转给指定中控助手处理（先留前台背景、不在群里刷提示，回复时再在群里发言）",
+      "骨架主线从 843 行压回 804 行（进 820 预算内）：插件加载挪进 plugins/Index、健康问题汇总挪进 http、serve 解析归口 Checks",
+      "journal 与 relay 建表补列迁入 db 插件版本迁移账本并补 //退场 标记；web-api 拆出 Views.ts、voice 拆出 Config.ts 与 Lines.ts、progress 与 relay 构造函数瘦身并补齐用户终止清定时器",
+      "Checks 新增公共数值/开关/模型校验并精简 voice 配置校验"
+    ]
+  },
+  {
     "version": "0.7.73",
     "date": "2026-11-20",
     "changes": [

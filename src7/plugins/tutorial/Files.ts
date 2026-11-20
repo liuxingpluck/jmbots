@@ -18,9 +18,6 @@ import type * as stateModule from './State.ts';
 import type * as trailModule from '../../utils/Trail.ts';
 
 
-/** 流水查询最多等五秒。 */
-const JOURNAL_TIMEOUT_MS = 5000;
-
 /** 向 journal 要一条消息的轨迹时，筛完消息和相关会话后最多取几行。 */
 export const TRAIL_MAX_LINES = 800;
 
@@ -249,17 +246,12 @@ export class FlowFiles {
     maxLines: number,
   ): Promise<{ trail: trailModule.Trail; picked: trailModule.TrailLine[] } | undefined> {
     const request = { action: 'trail', message, maxLines } as const;
-    const options = {
-      timeoutMs: JOURNAL_TIMEOUT_MS,
-      onFallback: () => ({ requestId: '' }),
-    };
+    //M 通过事件请求轨迹，未收到轨迹时继续用磁盘或空摘要。
+    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request);
+    const reply = result.reply;
+    if (reply?.trail === undefined || reply.picked === undefined) return undefined;
 
-    //M 通过事件请求轨迹，插件未挂或超时就让调用方继续用磁盘或空摘要。
-    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
-    //G journal 没挂、超时，或跟踪行里没有这条消息：交 undefined。
-    if (result.trail === undefined || result.picked === undefined) return undefined;
-
-    return { trail: result.trail, picked: result.picked };
+    return { trail: reply.trail, picked: reply.picked };
   }
 
   /**
@@ -267,20 +259,16 @@ export class FlowFiles {
    * @param lines 启动录下的行（boot.getLines()）。
    * @param notes 关键变量的说明表（boot.notes）。
    * @returns 启动轨迹。
-   * @throws journal 没挂、超时或没回轨迹时抛：启动文件、启动画布都靠它，没有就是出错。
+   * @throws journal 没有交回启动轨迹时抛。
    */
   async getBootTrail(lines: trailModule.TrailLine[], notes: Record<string, string>): Promise<trailModule.Trail> {
     const request = { action: 'boot-trail', lines, notes } as const;
-    const options = {
-      timeoutMs: JOURNAL_TIMEOUT_MS,
-      onFallback: () => ({ requestId: '' }),
-    };
+    //M 启动文件和画布都用 journal 整理好的轨迹。
+    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request);
+    const trail = result.reply?.trail;
+    if (trail === undefined) throw new Error('journal 没有交回启动轨迹');
 
-    //M 通过事件请求启动轨迹；回执里没有 trail 就是 journal 没挂或超时。
-    const result = await requestEventModule.requestEvent(this.ctx, 'journal/request', 'journal/result', request, options);
-    if (result.trail === undefined) throw new Error('journal 没有交回启动轨迹（没挂或超时）');
-
-    return result.trail;
+    return trail;
   }
 
   /**

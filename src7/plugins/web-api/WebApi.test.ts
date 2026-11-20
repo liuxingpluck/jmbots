@@ -25,7 +25,6 @@ import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as approvalModule from '../approval/index.ts';
-import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as botsPlugin from '../bots/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 import * as webApiModule from './index.ts';
@@ -292,12 +291,11 @@ test('网页来源标记由 HTTP 钩子生成，已批准的定时提醒只写�
     return { row };
   });
   const payload = { reminderId: row.id };
-  const options = { timeoutMs: 500, onFallback: () => ({ requestId: '', receipt: { status: 'failed' } as ProviderReceipt }) };
   const before = world.steps();
-  const first = await requestEventModule.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
-  const repeated = await requestEventModule.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload, options);
-  expect(first.receipt.status).toBe('sent');
-  expect(repeated.receipt.status).toBe('sent');
+  const first = await requestEventModule.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload);
+  const repeated = await requestEventModule.requestEvent(ctx, 'approval/reminder-send', 'approval/reminder-sent', payload);
+  expect(first.reply?.receipt.status).toBe('sent');
+  expect(repeated.reply?.receipt.status).toBe('sent');
   expect(world.steps()).toBe(before);
   const sql = "SELECT id FROM web_messages WHERE bot = ? AND source = 'reminder' ORDER BY id";
   const reminders = ctx.resources.db.query<{ id: number }, [string]>(sql).all('助手');
@@ -437,9 +435,18 @@ test('机器人确认保存附件后，网页消息引用实际路径并消费�
   expect(emitted[0]?.message.text).toContain(saved);
 });
 
-test('保存附件无人应答时回 503 并保留上传，不提交消息', async () => {
+test.each([
+  { failure: '无人应答', throws: false, status: 503, error: '附件存不下：保存附件未获回执（unhandled）' },
+  { failure: '处理方抛错', throws: true, status: 504, error: '附件保存结果不确定，请核对工作区后再提交。' },
+])('保存附件遇到 $failure 时回 $status 并保留上传，不提交消息', async ({ throws, status, error }) => {
   const options = { withApproval: false, withBotEvents: false };
   const { ctx, emitted } = await makeWeb(() => piAi.fauxAssistantMessage('好'), options);
+  if (throws) {
+    //M 模拟机器人接单后抛错，调用方无法确定文件是否已经落盘。
+    requestEventModule.onRequestEvent(ctx, 'bot/request', 'bot/result', () => {
+      throw new Error('模拟保存抛错');
+    });
+  }
   const upload = '20261118065001001001';
   const dir = ctx.resources.ensureRuntimeDir('data', 'tmp', 'uploads');
   const file = path.join(dir, `${upload}_笔记.txt`);
@@ -448,8 +455,8 @@ test('保存附件无人应答时回 503 并保留上传，不提交消息', asy
   const payload = { bot: '助手', text: '查这份附件', uploads: [upload] };
   const input = { method: 'POST', url: '/api/message', payload } as const;
   const response = await ctx.http.app.inject(input);
-  expect(response.statusCode).toBe(503);
-  expect(response.json<{ error: string }>().error).toContain('附件存不下');
+  expect(response.statusCode).toBe(status);
+  expect(response.json<{ error: string }>().error).toBe(error);
   expect(fs.readFileSync(file, 'utf8')).toBe('原始附件');
   expect(emitted).toEqual([]);
 });

@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
+import * as httpModule from '../plugins/http/index.ts';
 import * as resourcesModule from '../Resources.ts';
 import * as sessionsModule from '../Sessions.ts';
 import * as toolsModule from '../Tools.ts';
@@ -427,7 +428,7 @@ test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起�
     expect(ready[1]).toMatchObject({ name: next, state: 'ok', error: '' });
 
     //M 还在起的算没挂上，health 的 problems 里照样有它。
-    const readyProblems = resourcesModule.getPluginProblems(ready);
+    const readyProblems = httpModule.getPluginProblems(ready);
     expect(readyProblems).toEqual([`插件 ${slow} 没挂上：${String(ready[0]?.error)}`]);
 
     //M ready 已发后才放行，证明慢插件没有被卸载，也没有阻塞后续。
@@ -440,7 +441,7 @@ test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起�
     expect(settled[1]).toEqual(ready[1]);
 
     //M 全挂上了，health 的 problems 为空。
-    const settledProblems = resourcesModule.getPluginProblems(settled);
+    const settledProblems = httpModule.getPluginProblems(settled);
     expect(settledProblems).toEqual([]);
   });
   expect(logs).toContain('插件 slow-fixture 启动超过 0.06 秒，先挂后面的，它继续在后台起');
@@ -494,7 +495,7 @@ test('插件 apply 抛错：Cordis 发 FAILED，Main 记成 failed；等服务�
       { name: boom, state: 'failed', error: '开机就抛错', inject: [] },
       { name: late, state: 'waiting', error: '它要用的 late-service 没人提供', inject: ['late-service'] },
     ]);
-    const readyProblems = resourcesModule.getPluginProblems(ready);
+    const readyProblems = httpModule.getPluginProblems(ready);
     expect(readyProblems).toEqual([
       `插件 ${boom} 没挂上：开机就抛错`,
       `插件 ${late} 没开工：它要用的 late-service 没人提供`,
@@ -504,7 +505,7 @@ test('插件 apply 抛错：Cordis 发 FAILED，Main 记成 failed；等服务�
     const failedFile = path.join(runtime, 'failed-2.json');
     const failed = await readMountStatuses(failedFile, child);
     expect(failed[2]).toEqual({ name: late, state: 'failed', error: '服务来了才抛错', inject: ['late-service'] });
-    const failedProblems = resourcesModule.getPluginProblems(failed);
+    const failedProblems = httpModule.getPluginProblems(failed);
     expect(failedProblems).toEqual([
       `插件 ${boom} 没挂上：开机就抛错`,
       `插件 ${late} 没挂上：服务来了才抛错`,

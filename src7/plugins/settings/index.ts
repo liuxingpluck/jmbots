@@ -22,7 +22,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.0.9：关闭 HTTP 按回执和等待结果处理。
-export const version = '1.0.9';
+export const version = '1.0.10';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http'];
@@ -30,14 +30,10 @@ export const inject = ['resources', 'http'];
 
 /** 退出前等多久，让回应先发出去。 */
 const EXIT_DELAY_MS = 300;
-/** 源码模式重启时最多等 HTTP 关多久（毫秒）；在途的请求（比如网页长轮询）不等它们。 */
-const HTTP_CLOSE_TIMEOUT_MS = 10_000;
-/** 探活读取当前服务启动时间的最长等待。 */
-const HTTP_INJECT_TIMEOUT_MS = 5000;
-/** 校验模型目录的最长等待。 */
-const CATALOG_TIMEOUT_MS = 3000;
-/** 等待机器人登记回执。 */
-const BOT_ADD_TIMEOUT_MS = 5000;
+/** 源码模式等 HTTP 关闭时的告警阈值。 */
+const HTTP_CLOSE_WARN_MS = 10_000;
+/** 等待机器人登记时的告警阈值。 */
+const BOT_ADD_WARN_MS = 5000;
 
 /** 请基地重启最多等多久。 */
 const BASE_TIMEOUT_MS = 15_000;
@@ -159,23 +155,20 @@ class Settings {
     const config = { name: botName, language };
     const request = { action: 'add', config } as const;
     const uncertain = `机器人「${botName}」的配置已保存，实时登记结果不确定。请核对机器人列表后再操作。`;
-    const options = {
-      timeoutMs: BOT_ADD_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', ok: false, error: detail ?? `机器人登记未获回执（${reason}）` };
-      },
-    };
+    const options = { warnAfterMs: BOT_ADD_WARN_MS };
 
     //M 让机器人插件按已保存的配置实时登记，并返回它分配的记忆目录。
     const added = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
-    const bot = added.bot;
-
     //G 失去回执时可能已登记，保留配置并提示核对。
-    if (requestEventModule.isUnsure(added)) throw new failureModule.Failure(504, uncertain);
+    if (added.why !== undefined && added.why !== 'unhandled') throw new failureModule.Failure(504, uncertain);
 
     //G 确定未登记时告诉调用者配置已保存，可重启生效。
-    if (!added.ok || bot === undefined) {
-      const reason = added.error ?? '未返回机器人信息';
+    const bot = added.reply?.bot;
+    if (added.reply?.ok !== true || bot === undefined) {
+      let reason = added.reply?.error ?? '未返回机器人信息';
+      if (added.why === 'unhandled') {
+        reason = '机器人登记未获回执（unhandled）';
+      }
       const error = `机器人「${botName}」的配置已保存，实时登记没办成：${reason}。请重启后生效。`;
       throw new failureModule.Failure(503, error);
     }
@@ -212,23 +205,17 @@ class Settings {
       throw new failureModule.Failure(400, `模型 ${model} 的供应商不在 providers 里`);
     }
     const lookup = { action: 'find', model } as const;
-    const options = {
-      timeoutMs: CATALOG_TIMEOUT_MS,
-      onFallback: () => ({ requestId: '' }),
-    };
-
     //M 通过事件核对模型。没有应答时沿用只查供应商的行为。
-    const result = await requestEventModule.requestEvent(
+    const checked = await requestEventModule.requestEvent(
       this.ctx,
       'model-catalog/request',
       'model-catalog/result',
       lookup,
-      options,
     );
-    if (result.requestId === '') return;
+    if (checked.reply === undefined) return;
 
     //G 收到明确回执时，未找到的模型仍回 400。
-    if (result.info === undefined) throw new failureModule.Failure(400, `模型清单里没有 ${model}`);
+    if (checked.reply.info === undefined) throw new failureModule.Failure(400, `模型清单里没有 ${model}`);
   }
 
   /**
@@ -308,28 +295,26 @@ class Settings {
    */
   private async closeHttp(): Promise<void> {
     const request = { action: 'close' } as const;
-    const options = {
-      timeoutMs: HTTP_CLOSE_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', ok: false, error: detail ?? reason };
-      },
-    };
+    const options = { warnAfterMs: HTTP_CLOSE_WARN_MS };
 
-    //M 只发一次关闭请求。十秒内未确认时，保留尚在关闭的原进程。
-    const result = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
-    if (result.ok) return;
+    //M 等 HTTP 自己确认关完。等待较久只告警，进程继续保留。
+    const closed = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
+    if (closed.reply?.ok === true) return;
 
     //G 未开始关闭，允许 HTTP 插件恢复后重新申请。
-    if (result.fallback === 'unhandled') {
+    if (closed.why === 'unhandled') {
       this.restarting = false;
       throw new Error('无人处理 HTTP 关闭请求');
     }
 
     //G 接单状态未知时保留停止占用，并报告事件失败原因。
-    if (requestEventModule.isUnsure(result)) throw new Error(`HTTP 关闭结果不确定（${result.error}）`);
+    if (closed.why !== undefined) {
+      const reason = closed.detail ?? closed.why;
+      throw new Error(`HTTP 关闭结果不确定（${reason}）`);
+    }
 
     //G HTTP 没有确认释放端口时，不启动替代进程。
-    throw new Error(result.error ?? 'HTTP 未确认关闭');
+    throw new Error(closed.reply.error ?? 'HTTP 未确认关闭');
   }
 
   /**
@@ -340,22 +325,23 @@ class Settings {
   private async askBase(): Promise<void> {
     const request = { method: 'POST', route: '/restart', body: {}, timeoutMs: BASE_TIMEOUT_MS } as const;
     const uncertain = '基地重启结果不确定。请核对服务的启动时间后再操作。';
-    const options = {
-      timeoutMs: BASE_TIMEOUT_MS + 1000,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
-        return { requestId: '', ok: false, error: detail ?? `基地重启未获回执（${reason}）` };
-      },
-    };
+    const options = { warnAfterMs: BASE_TIMEOUT_MS + 1000 };
 
-    //M 等待基地完成请求，预留一秒用于返回连接错误。
-    const response = await requestEventModule.requestEvent(this.ctx, 'base/request', 'base/result', request, options);
+    //M 基地桥接限制外部请求的时长，设置等桥接交回结果。
+    const asked = await requestEventModule.requestEvent(this.ctx, 'base/request', 'base/result', request, options);
+
+    //G 无人接单意味着没发给基地，修复后可以重试。
+    if (asked.why === 'unhandled') {
+      throw new failureModule.Failure(503, '基地重启未获回执（unhandled）');
+    }
 
     //G 基地可能已收到请求，超时或响应中断时保留占用。
-    if (requestEventModule.isUnsure(response) || response.error === '基地没响应') {
+    if (asked.why !== undefined || asked.reply.error === '基地没响应') {
       throw new failureModule.Failure(504, uncertain);
     }
 
-    //G 无人接单或本地明确失败时结束请求，允许修复后重试。
+    //G 本地明确失败时结束请求，允许修复后重试。
+    const response = asked.reply;
     if (!response.ok || response.status === undefined) {
       throw new failureModule.Failure(503, response.error ?? '基地未返回重启结果');
     }
@@ -396,17 +382,14 @@ class Settings {
    */
   private async startedAt(): Promise<number> {
     const request = { action: 'inject', method: 'GET', url: '/api/ui/info' } as const;
-    const options = {
-      timeoutMs: HTTP_INJECT_TIMEOUT_MS,
-      onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => ({
-        requestId: '',
-        ok: false,
-        error: detail ?? `读取服务启动时间失败（${reason}）`,
-      }),
-    };
-
     //M 通过 HTTP 插件读取用于判断重启是否完成的启动时间。
-    const response = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request, options);
+    const asked = await requestEventModule.requestEvent(this.ctx, 'http/request', 'http/result', request);
+    if (asked.why !== undefined) {
+      const reason = asked.detail ?? `读取服务启动时间失败（${asked.why}）`;
+      throw new failureModule.Failure(503, reason);
+    }
+
+    const response = asked.reply;
     if (!response.ok) throw new failureModule.Failure(503, response.error ?? '读取服务启动时间失败');
     if (response.statusCode !== 200 || response.body === undefined) return 0;
 

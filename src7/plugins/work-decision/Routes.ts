@@ -427,11 +427,16 @@ export function mount(
       const relay = { action: 'ack', node: key, helper: recipient.name } as const;
 
       //M 归档这条留言的收件，Wait_Relay 下次只唤醒新的话。
-      const result = await requestRelay(ctx, relay);
-      if (events.isUnsure(result)) {
+      const asked = await requestRelay(ctx, relay);
+
+      //G relay 处理时抛错：归档结果不确定。
+      if (asked.why !== undefined && asked.why !== 'unhandled') {
         return { node: replied.node, note: replied.note, notification: RELAY_UNCERTAIN };
       }
-      return { node: replied.node, note: replied.note, notified: result.ok };
+
+      //M 没挂 relay 算没通知到。
+      const notified = asked.reply?.ok === true;
+      return { node: replied.node, note: replied.note, notified };
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/ack`, async (request) => {
       //G 确认入口只取节点号与可选附言。
@@ -450,10 +455,14 @@ export function mount(
       const relay = { action: 'ack', node: id, helper: recipient.name } as const;
 
       //M 归档对应收件，让 Wait_Relay 下次只唤醒新的决定。
-      const result = await requestRelay(ctx, relay);
-      if (events.isUnsure(result)) return { node, notification: RELAY_UNCERTAIN };
+      const asked = await requestRelay(ctx, relay);
 
-      return { node, notified: result.ok };
+      //G relay 处理时抛错：归档结果不确定。
+      if (asked.why !== undefined && asked.why !== 'unhandled') return { node, notification: RELAY_UNCERTAIN };
+
+      //M 没挂 relay 算没通知到。
+      const notified = asked.reply?.ok === true;
+      return { node, notified };
     });
   });
 }
@@ -513,19 +522,20 @@ async function deliverDecision(
 }
 
 /** 只在收到确切收件号时标为投递成功。未确认时可从变化接口只读查询。 */
-function getDelivery(result: DecisionRelayResult & events.RequestFallback) {
-  if (result.ok && result.id !== undefined) return { relayId: result.id };
-  //G 无法确定是否已送时向页面保留这个状态。
-  if (events.isUnsure(result)) return { ...RETRY, error: RELAY_UNCERTAIN };
+function getDelivery(asked: events.Asked<DecisionRelayResult>) {
+  //G 没挂 relay：留给中控轮询。
+  if (asked.why === 'unhandled') return RETRY;
+
+  //G relay 处理时抛错，无法确定是否已送时向页面保留这个状态。
+  if (asked.why !== undefined) return { ...RETRY, error: RELAY_UNCERTAIN };
+
+  if (asked.reply.ok && asked.reply.id !== undefined) return { relayId: asked.reply.id };
 
   return RETRY;
 }
 
 /** 向 relay 发并等待一次配对回执，无监听时保留轮询路径。 */
 function requestRelay(ctx: cordis.Context, request: events.StripEnvelope<DecisionRelayRequest>) {
-  const onFallback = () => ({ requestId: '', ok: false });
-  const options = { timeoutMs: 3000, onFallback };
-
-  //M 检查 relay 是否确认了对应的收件，缺席时 RequestEvent 会立即返回。
-  return events.requestEvent(ctx, 'work-decision/note', 'work-decision/note-result', request, options);
+  //M 检查 relay 是否确认了对应的收件，缺席时 RequestEvent 会立即返回。relay 在本进程里写收件表，不掐表。
+  return events.requestEvent(ctx, 'work-decision/note', 'work-decision/note-result', request);
 }

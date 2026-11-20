@@ -504,6 +504,18 @@ describe('运行时变量', () => {
     expect((await offline.inject({ method: 'GET', url: '/api/tutorial/canvas?name=99' })).statusCode).toBe(404);
     expect((await offline.inject({ method: 'GET', url: '/api/tutorial/snapshot?name=99&step=1' })).statusCode).toBe(404);
 
+    const journal = {
+      ...getJournal([]),
+      request: () => { throw new Error('模拟流水读取失败'); },
+    };
+    //M 流水监听抛错时，仍能读已有快照，缺失的画布保持 404。
+    const { app: failed } = await serve(journal);
+    const savedCanvas = '/api/tutorial/canvas?name=23';
+    const missingCanvas = '/api/tutorial/canvas?name=99';
+    //G 验证失败的流水读取不会改变两种画布的 HTTP 响应。
+    expect((await failed.inject(savedCanvas)).statusCode).toBe(200);
+    expect((await failed.inject(missingCanvas)).statusCode).toBe(404);
+
     //M 无流水回执时无法写新快照，已有快照文件仍保留。
     offlineHandlers['internal/dispatch']?.('emit', 'web-api/received', [{ id: 99, text: '离线消息 #调试' }]);
     offlineHandlers['internal/dispatch']?.('emit', 'web-api/replied', [{ messageId: 99, session, text: '好' }]);

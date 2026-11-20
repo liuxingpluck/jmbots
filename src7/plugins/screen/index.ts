@@ -7,7 +7,7 @@ import * as protocol from './Protocol.ts';
 import * as runtime from './Screen.ts';
 
 export const name = 'screen';
-export const version = '0.3.3';
+export const version = '0.3.4';
 export const inject = ['resources', 'http'];
 
 /** 把 Fastify 的解析和容量错误转成固定码；禁止回显原请求或异常。 */

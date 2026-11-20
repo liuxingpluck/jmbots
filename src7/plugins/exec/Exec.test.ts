@@ -15,6 +15,7 @@ import fastify, { type FastifyInstance } from 'fastify';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import { isProjectCheck } from '../approval/Rules.ts';
 import * as execPlugin from './index.ts';
+import * as runsModule from './Runs.ts';
 
 
 const closers: (() => Promise<unknown> | void)[] = [];
@@ -162,6 +163,24 @@ describe('exec 与 Runs 命令窗口合并回归', () => {
       expect(record.review.reason).toContain('审核未就绪或超时');
     }
     expect(ran).toBe(0);
+  });
+
+  test('审核处理方抛错时拒绝命令并中止审核信号', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    let signal: AbortSignal | undefined;
+    requestEvents.onRequestEvent(ctx, 'approval/request', 'approval/result', (request) => {
+      if (request.action !== 'review') return {};
+
+      signal = request.input.signal;
+      throw new Error('模拟审核抛错');
+    });
+    const input = { command: 'echo test', cwd: os.tmpdir(), kind: 'test', payload: null };
+
+    //M 审核失败应拒绝，已经交给处理方的信号也应结束。
+    const verdict = await runsModule.requestReview(ctx, input);
+    expect(verdict).toMatchObject({ result: 'reject', by: 'rule', reason: expect.stringContaining('模拟审核抛错') });
+    expect(signal?.aborted).toBe(true);
   });
 
   test('Exec.run、report 与 readRunsEnabled 正常且无 http、无 approval 也能挂 exec', async () => {

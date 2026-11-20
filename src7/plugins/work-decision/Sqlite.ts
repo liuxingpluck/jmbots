@@ -208,6 +208,7 @@ export class Sqlite {
     return write.immediate();
   }
 
+  //退场：所有运行时的旧 data/decision-map/graph.json 都导入 SQLite 以后
   /** 从项目配置指定的工作区导入快照、留言和历史，原文件留作备份。 */
   importLegacy(dir: string, project?: LegacyProject): void {
     const graphPath = path.join(dir, 'graph.json');
