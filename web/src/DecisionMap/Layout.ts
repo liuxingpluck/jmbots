@@ -83,6 +83,8 @@ interface View {
   height: number;
   /** 窄屏用双列容纳同一棵放射树。 */
   portrait: boolean;
+  /** 手机思维导图首屏默认把一级专题的子项收进 +N 角标，保证节点字迹清晰可点不缩成蚂蚁。 */
+  compactMind?: boolean;
 }
 
 /** 卡片的碰撞边界。 */
@@ -149,8 +151,12 @@ export function getLayout(entries: types.DecisionNode[], view: View, open: Visua
 export function getMindLayout(
   entries: types.DecisionNode[], view: View, open: VisualData['open'], direction: MindDirection,
 ) {
-  //M 折叠、聚焦规则和放射看法共用同一棵可见树。
-  const rootBranch = getVisible(entries, view);
+  //M 手机竖屏总览思维导图首屏把二级以下子项默认收进 +N，避免横向铺五列缩成蚂蚁字。
+  let mindView = view;
+  if (view.portrait && view.mode === 'main' && entries.length > 16) {
+    mindView = { ...view, compactMind: true };
+  }
+  const rootBranch = getVisible(entries, mindView);
   if (rootBranch === undefined) return { nodes: [], edges: [] };
 
   //M 同一层之间、相邻两层之间的间距，按卡片尺寸留出连线的空间。
@@ -160,9 +166,13 @@ export function getMindLayout(
     breadth = 240;
     depth = 150;
   }
-  if (view.portrait) {
-    breadth = breadth * 0.8;
-    depth = depth * 0.72;
+  if (view.portrait && direction === 'sides') {
+    breadth = 82;
+    depth = 176;
+  }
+  if (view.portrait && direction === 'down') {
+    breadth = 172;
+    depth = 118;
   }
 
   //M 共享同一套坐标算法，维持原先的分侧顺序、间距与卡片位置。
@@ -484,6 +494,9 @@ function getFolded(entry: types.DecisionNode, branches: Branch[], included: Set<
   const count = visible.reduce((sum, child) => sum + child.size, 0);
   const fold = { id, count, expanded: true };
   if (choice === false) return { entry, children: [], size, complete, fold: { ...fold, expanded: false } };
+  if (view.compactMind === true && entry.parent !== null && choice === undefined) {
+    return { entry, children: [], size, complete, fold: { ...fold, expanded: false } };
+  }
   if (choice === true || complete || view.mode === 'pending') {
     return { entry, children: visible, size, complete, fold };
   }

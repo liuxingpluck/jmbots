@@ -197,12 +197,17 @@ export function getTopicSummaryItems(nodes: types.DecisionNode[]): TopicSummaryI
   return [overview, ...branches];
 }
 
-/** 计算首次默认选中的专题编号：优先选有待拍板的第一个子主题。 */
-export function resolveActiveTopicId(topicItems: TopicSummaryItem[], topicId?: string): string {
+/** 计算首次默认选中的专题编号：手机首屏进 2 列专题方块总览，桌面优先进有待拍板的第一个子主题。 */
+export function resolveActiveTopicId(
+  topicItems: TopicSummaryItem[],
+  topicId?: string,
+  preferOverview = false,
+): string {
   if (topicId === ALL_PENDING_TOPIC) return ALL_PENDING_TOPIC;
 
   const hasExplicit = topicItems.some((item) => item.node.id === topicId);
   if (hasExplicit && topicId !== undefined) return topicId;
+  if (preferOverview) return topicItems[0]?.node.id ?? '';
 
   const topTopics = topicItems.filter((item) => !item.isOverview);
   const firstPending = topTopics.find((item) => item.pendingCount > 0);
@@ -216,6 +221,8 @@ export function resolveActiveTopicId(topicItems: TopicSummaryItem[], topicId?: s
 export interface TopicViewProps {
   /** 当前项目内的全部节点。 */
   nodes: types.DecisionNode[];
+  /** 是否处于手机竖屏模式（< 800px）。 */
+  isMobile?: boolean;
   /** 当前选中的专题编号（顶层子主题、项目根，或 ALL_PENDING_TOPIC）。 */
   topicId?: string;
   /** 切换专题回调。 */
@@ -247,6 +254,7 @@ export interface TopicViewProps {
 /** 子主题专题目录视图主体。 */
 export function TopicView({
   nodes,
+  isMobile = false,
   topicId,
   onSelectTopic,
   selectedNodeId,
@@ -274,7 +282,7 @@ export function TopicView({
   }
 
   const topTopics = topicItems.filter((item) => !item.isOverview);
-  const resolvedId = resolveActiveTopicId(topicItems, topicId);
+  const resolvedId = resolveActiveTopicId(topicItems, topicId, isMobile);
   const isAllPendingMode = resolvedId === ALL_PENDING_TOPIC;
   const activeSummary = topicItems.find((item) => item.node.id === resolvedId) ?? topicItems[0]!;
   const activeTopic = activeSummary.node;
@@ -492,6 +500,16 @@ export function TopicView({
           {/* 模式 A：只看全部待拍板卡片流 */}
           {isAllPendingMode && (
             <section className="decision-topic-pinned-stream" aria-label={t('全部待拍板')}>
+              {isMobile && topTopics.length > 0 && (
+                <button
+                  type="button"
+                  className="decision-m-back-tiles"
+                  data-back-tiles
+                  onClick={() => chooseTopic(root.id)}
+                >
+                  ‹ {t('返回全部专题方块')}（{String(topTopics.length)}）
+                </button>
+              )}
               <div className="decision-stream-intro">
                 <h2>{t('全部待拍板')}（{String(pendingNodes.length)}）</h2>
                 <p>{t('单手点选即可拍板；想补充要求可点卡片右上「追问」，写完再点选项会一并发给哈基米。')}</p>
@@ -512,9 +530,79 @@ export function TopicView({
             </section>
           )}
 
-          {/* 模式 B：具体专题或项目总览 */}
-          {!isAllPendingMode && (
+          {/* 模式 B1：手机竖屏 2 列专题方块网格一屏总览 */}
+          {!isAllPendingMode && isMobile && isOverview && (
+            <section className="decision-m-grid-view" aria-label={t('专题方块总览')}>
+              <div className="decision-m-grid-banner">
+                <span className="decision-m-grid-stat">
+                  {t('共')} {String(topTopics.length)} {t('个专题')} · {t('总进度')}{' '}
+                  {String(activeSummary.doneCount)}/{String(activeSummary.taskCount)}
+                </span>
+                {totalProjectPending > 0 && (
+                  <button
+                    type="button"
+                    className="decision-m-grid-pending-btn"
+                    onClick={() => chooseTopic(ALL_PENDING_TOPIC)}
+                  >
+                    ★ {String(totalProjectPending)} {t('件待拍板')} ›
+                  </button>
+                )}
+              </div>
+              <div className="decision-m-tile-grid">
+                {topTopics.map((item) => {
+                  let progressPct = 0;
+                  if (item.taskCount > 0) {
+                    progressPct = Math.round((item.doneCount / item.taskCount) * 100);
+                  }
+                  return (
+                    <button
+                      key={item.node.id}
+                      type="button"
+                      className="decision-m-tile"
+                      data-state={item.state.key}
+                      data-topic-tile={item.node.id}
+                      onClick={() => chooseTopic(item.node.id)}
+                    >
+                      <span className="decision-m-tile__head">
+                        <span className="decision-m-tile__state">
+                          <i className="decision-m-tile__dot" data-state={item.state.key} />
+                          {item.state.label}
+                        </span>
+                        {item.pendingCount > 0 && (
+                          <span className="decision-m-tile__pending">
+                            {String(item.pendingCount)} {t('待拍板')}
+                          </span>
+                        )}
+                      </span>
+                      <strong className="decision-m-tile__title">{item.node.title}</strong>
+                      <span className="decision-m-tile__foot">
+                        <span className="decision-m-tile__bar">
+                          <i data-state={item.state.key} style={{ width: `${String(progressPct)}%` }} />
+                        </span>
+                        <span className="decision-m-tile__count">
+                          {String(item.doneCount)}/{String(item.taskCount)}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* 模式 B2：具体专题页（或 PC 项目总览） */}
+          {!isAllPendingMode && !(isMobile && isOverview) && (
             <>
+              {isMobile && topTopics.length > 0 && (
+                <button
+                  type="button"
+                  className="decision-m-back-tiles"
+                  data-back-tiles
+                  onClick={() => chooseTopic(root.id)}
+                >
+                  ‹ {t('返回全部专题方块')}（{String(topTopics.length)}）
+                </button>
+              )}
               <article className="decision-topic-card decision-topic-hero" data-node-id={activeTopic.id}>
                 <div className="decision-topic-hero__head">
                   <div className="decision-topic-hero__badges">
@@ -672,7 +760,14 @@ export function TopicView({
                       const isTargeted = targetNode.id === item.id;
                       const chosenOpt = item.options?.find((opt) => opt.id === item.chosen);
                       const noteLen = item.notes?.length ?? 0;
-                      const padLeft = Math.min(Math.max(0, depth - 1) * 14, 42);
+                      let padLeft = Math.min(Math.max(0, depth - 1) * 14, 42);
+                      if (isMobile) {
+                        padLeft = 0;
+                      }
+                      let parentHint = '';
+                      if (isMobile && depth > 1 && item.parent !== null && item.parent !== activeTopic.id) {
+                        parentHint = byId.get(item.parent)?.title ?? '';
+                      }
                       const toggleRow = (): void => {
                         onSelectNode(item.id);
                         if (isExpanded) {
@@ -698,7 +793,12 @@ export function TopicView({
                             onClick={toggleRow}
                           >
                             <span className="decision-state-pill" data-state={st.key}>{st.label}</span>
-                            <span className="decision-topic-task__title">{item.title}</span>
+                            <span className="decision-topic-task__main">
+                              <span className="decision-topic-task__title">{item.title}</span>
+                              {parentHint !== '' && (
+                                <span className="decision-topic-task__parent">↳ {parentHint}</span>
+                              )}
+                            </span>
                             <span className="decision-topic-task__right">
                               {chosenOpt !== undefined && (
                                 <span className="decision-topic-task__chosen">✓ {chosenOpt.text}</span>
@@ -758,15 +858,17 @@ export function TopicView({
             </>
           )}
 
-          {/* 手机单栏内嵌往来留言与中控回复（PC 端在右侧常驻栏展示） */}
-          <div className="decision-topic-mobile-notes">
-            <composer.ScopeNoteFeed
-              nodes={scopeNodes}
-              scopeRootId={defaultDockNode.id}
-              targetNodeId={targetNode.id}
-              onSelectNode={(id) => focusComposerOn(id)}
-            />
-          </div>
+          {/* 手机单栏内嵌往来留言与中控回复（总览方块网格首屏保持清爽不堆在底下） */}
+          {!(isMobile && isOverview) && (
+            <div className="decision-topic-mobile-notes">
+              <composer.ScopeNoteFeed
+                nodes={scopeNodes}
+                scopeRootId={defaultDockNode.id}
+                targetNodeId={targetNode.id}
+                onSelectNode={(id) => focusComposerOn(id)}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -780,7 +882,7 @@ export function TopicView({
         onSendNote={(id, text) => onSendNote(id, text)}
         sending={sending}
         noteError={noteError}
-        inlineMobileNotes
+        inlineMobileNotes={!(isMobile && isOverview)}
       />
     </div>
   );
