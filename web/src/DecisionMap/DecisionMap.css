@@ -636,9 +636,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-write__head label { margin: 0; }
 .decision-capsule {
   display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   align-items: center;
   gap: 5px;
-  max-width: 100%;
   padding: 3px 9px;
   border: 1px solid #455675;
   border-radius: 999px;
@@ -649,10 +652,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 }
 .decision-capsule__prefix { color: var(--decision-blue); font-weight: 650; flex: none; }
 .decision-capsule__title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 210px;
   font-weight: 600;
 }
 .decision-note--active { border-color: #5b7db1; }
@@ -743,6 +747,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
+}
+.decision-dock__capsule-row .decision-capsule {
+  flex: 1 1 0;
+  min-width: 0;
 }
 .decision-dock__capsule-actions {
   display: flex;
@@ -1165,7 +1174,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
     gap: 6px;
     overflow-x: auto;
     padding-bottom: 2px;
+    scrollbar-width: none;
   }
+  .decision-topic-mobile-chips::-webkit-scrollbar { display: none; }
   .decision-topic-chip {
     flex: none;
     min-height: 32px;
@@ -1228,6 +1239,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 }
 
 @media (max-width: 670px) {
+  .decision-projects {
+    scrollbar-width: none;
+  }
+  .decision-projects button {
+    max-width: 86vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .decision-bar__right {
     grid-column: 1 / -1;
     justify-content: space-between;
@@ -1245,5 +1265,5 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
   .decision-overview-dock .decision-dock__form {
     padding: 8px 10px;
   }
-  .decision-capsule__title { max-width: 145px; }
+  .decision-dock__capsule-row { min-width: 0; }
 }

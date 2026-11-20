@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.7.77",
+    "date": "2026-11-20",
+    "changes": [
+      "修复 /tutorial/?canvas= 独立页因 useT() 依赖主界面 UiContext 导致的黑屏崩溃，I18n.useT 改为兼容独立入口自动读取语言偏好",
+      "全面优化 /tutorial/ 与 /work-decision/ 手机竖屏（390px）与 PC 宽屏实机视觉体验：教程窄屏左栏默认收起为顶栏「☰ 目录」抽屉、补齐表格/顺序图与适应屏宽/100% 原大切换、修复思维导图窄屏高度塌陷与可读缩放、AuthGate 退出标签零遮挡（AOBB 双端截屏验收）",
+      "新增手机友好组块阅读第九块《渠道插件全家桶（channels/feishu/wechat/relay）》与第十块《机器人插件 bots》，并登记至总览",
+      "外网网页登录账号校验改为不区分大小写（Leon/leon 全认，密码仍严格区分）"
+    ]
+  },
+  {
     "version": "0.7.76",
     "date": "2026-11-20",
     "changes": [

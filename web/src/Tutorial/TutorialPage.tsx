@@ -791,6 +791,8 @@ function CanvasStage(props: {
   const [canvas, setCanvas] = useState<Canvas | null>(null);
   //M 画布两种看法：表格（泳道）、顺序图。
   const [look, setLook] = useState<'table' | 'seq'>('table');
+  const [mobileFit, setMobileFit] = useState(false);
+  const [narrowWidth, setNarrowWidth] = useState(() => Math.max(300, window.innerWidth - 36));
   const tr = i18n.useT();
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -954,6 +956,24 @@ function CanvasStage(props: {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
+  }, [props.isNarrow]);
+
+  //M 窄屏模式下实时测量舞台宽度，供「适应屏宽」按真实容器宽度缩放整张泳道图或顺序图。
+  useEffect(() => {
+    if (!props.isNarrow) return undefined;
+
+    const el = stageRef.current;
+    if (el === null) return undefined;
+
+    const measure = (): void => {
+      if (el.clientWidth > 0) {
+        setNarrowWidth(el.clientWidth);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [props.isNarrow]);
 
   //M 按住空白区域拖动平移画布（按钮、链接、输入控件上的点击照常响应）。
@@ -1140,17 +1160,116 @@ function CanvasStage(props: {
           )}
         </div>
       )}
-      {canvas !== null && props.isNarrow && look === 'table' && (
-        <LaneChart
-          canvas={canvas}
-          picked={props.step}
-          onPick={props.onPick}
-          pluginNames={props.pluginNames}
-          activePlugin={props.activePlugin}
-          matchedSteps={matchedSet}
-          onSelectPlugin={props.onSelectPlugin}
-          panZoom={false}
-        />
+      {canvas !== null && props.isNarrow && (
+        <>
+          <div className="tu-stage-tools-narrow">
+            <div className="tu-stage-tools-group">
+              <button
+                type="button"
+                className="tu-tool-btn"
+                aria-pressed={look === 'table'}
+                onClick={() => setLook('table')}
+              >
+                表格
+              </button>
+              <button
+                type="button"
+                className="tu-tool-btn"
+                aria-pressed={look === 'seq'}
+                onClick={() => setLook('seq')}
+              >
+                顺序图
+              </button>
+            </div>
+            <div className="tu-stage-tools-group">
+              <button
+                type="button"
+                className="tu-tool-btn"
+                data-stage-fit
+                aria-pressed={mobileFit}
+                onClick={() => setMobileFit(true)}
+              >
+                适应屏宽
+              </button>
+              <button
+                type="button"
+                className="tu-tool-btn"
+                aria-pressed={!mobileFit}
+                onClick={() => setMobileFit(false)}
+              >
+                100% 原大
+              </button>
+            </div>
+          </div>
+          {!mobileFit && look === 'table' && (
+            <LaneChart
+              canvas={canvas}
+              picked={props.step}
+              onPick={props.onPick}
+              pluginNames={props.pluginNames}
+              activePlugin={props.activePlugin}
+              matchedSteps={matchedSet}
+              onSelectPlugin={props.onSelectPlugin}
+              panZoom={false}
+            />
+          )}
+          {!mobileFit && look === 'seq' && seqLayout !== null && (
+            <div className="tu-lanes-scroll">
+              <SeqChart
+                canvas={canvas}
+                layout={seqLayout}
+                picked={props.step}
+                event={props.highlightEvent}
+                onPick={props.onPick}
+                onPickArrow={props.onPickArrow}
+                pluginNames={props.pluginNames}
+                activePlugin={props.activePlugin}
+                onSelectPlugin={props.onSelectPlugin}
+              />
+            </div>
+          )}
+          {mobileFit && layout !== null && (() => {
+            const fitScale = clamp((narrowWidth - 18) / Math.max(1, layout.width), 0.34, 1);
+            const scaledHeight = Math.ceil(layout.total * fitScale) + 12;
+            return (
+              <div className="tu-lanes-fit" style={{ height: `${String(scaledHeight)}px` }}>
+                <div
+                  style={{
+                    width: `${String(layout.width)}px`,
+                    transform: `scale(${String(fitScale)})`,
+                    transformOrigin: '0 0',
+                  }}
+                >
+                  {look === 'table' && (
+                    <LaneChart
+                      canvas={canvas}
+                      picked={props.step}
+                      onPick={props.onPick}
+                      pluginNames={props.pluginNames}
+                      activePlugin={props.activePlugin}
+                      matchedSteps={matchedSet}
+                      onSelectPlugin={props.onSelectPlugin}
+                      panZoom
+                    />
+                  )}
+                  {look === 'seq' && seqLayout !== null && (
+                    <SeqChart
+                      canvas={canvas}
+                      layout={seqLayout}
+                      picked={props.step}
+                      event={props.highlightEvent}
+                      onPick={props.onPick}
+                      onPickArrow={props.onPickArrow}
+                      pluginNames={props.pluginNames}
+                      activePlugin={props.activePlugin}
+                      onSelectPlugin={props.onSelectPlugin}
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </>
       )}
 
       {/* 画布左下角控件：适应窗口、100%、当前比例、交互说明。 */}
@@ -1209,6 +1328,7 @@ export function TutorialPage(): JSX.Element {
   const [lineDetailHost, setLineDetailHost] = useState<HTMLDivElement | null>(null);
   const [resizing, setResizing] = useState(false);
   const [isNarrow, setIsNarrow] = useState<boolean>(() => window.innerWidth < NARROW_BREAKPOINT);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   //M 右栏详情/代码/状态列表共用的外层滚动容器 state。
   const [rightScrollParent, setRightScrollParent] = useState<HTMLDivElement | null>(null);
@@ -1310,13 +1430,21 @@ export function TutorialPage(): JSX.Element {
     rightScrollParent.scrollTop = 0;
   }, [rightScrollParent, route.reading, route.rtab]);
 
-  //M 地址里直接带三方握手图时，打开骨架逐行那棵树。
+  //M 地址里直接带三方握手图时，打开骨架逐行那棵树；显式带 ?canvas= 打开时导图对齐到消息轨迹。
   useEffect(() => {
-    if (route.plugin !== programView.HANDSHAKE && route.plugin !== 'cordis') return;
-
-    //M 切到骨架逐行，由它按模块名打开 进程插件.json。
-    mindTree.select('lines');
+    if (route.plugin === programView.HANDSHAKE || route.plugin === 'cordis') {
+      //M 切到骨架逐行，由它按模块名打开 进程插件.json。
+      mindTree.select('lines');
+    }
   }, [route.plugin, mindTree.select]);
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const hasExplicitCanvas = query.get('canvas') !== null && query.get('plugin') === null;
+    if (hasExplicitCanvas) {
+      mindTree.select('trace');
+    }
+  }, [mindTree.select]);
 
   //M 拉插件、组块和最近消息画布列表。
   const load = useCallback(() => {
@@ -1529,7 +1657,8 @@ export function TutorialPage(): JSX.Element {
 
   //M 点左栏「启动流程」或「最近消息」：切画布、清无效步号；当前若在「这一步」页签留在原地看新画布。
   const onSelectCanvas = (canvasName: string): void => {
-    //M 思维导图里看这条消息（或这次启动）走过的路，泳道画布照旧；右侧详情展开。
+    //M 思维导图里看这条消息（或这次启动）走过的路，泳道画布照旧；右侧详情展开，手机自动收起目录抽屉。
+    setMobileNavOpen(false);
     toggleRightCollapsed(false);
     mindTree.select('trace');
     let rtab = route.rtab;
@@ -1539,12 +1668,14 @@ export function TutorialPage(): JSX.Element {
 
   //M 点左栏组块时展开右栏，并把完整文件名写入地址以便刷新恢复。
   const onSelectReading = (name: string): void => {
+    setMobileNavOpen(false);
     toggleRightCollapsed(false);
     navigate({ ...route, reading: name, rtab: 'reading', doc: true });
   };
 
   const onSelectUtil = (name: string): void => {
     //M 工具说明没有思维导图，左栏之外整个区域都是正文。
+    setMobileNavOpen(false);
     toggleRightCollapsed(false);
     navigate({ ...route, util: name, rtab: 'util', doc: true });
   };
@@ -1552,6 +1683,8 @@ export function TutorialPage(): JSX.Element {
   //M 点左栏插件、画布道名、步骤详情“查看 xxx 插件”或监听标签：展开右栏并切到「插件」页签。
   const onSelectPlugin = (pluginName: string, nextPtab?: string, keepCanvas = false): void => {
     if (pluginName === '') return;
+
+    setMobileNavOpen(false);
 
     let resolvedPtab = nextPtab ?? 'overview';
     if (nextPtab === undefined && route.plugin === pluginName) {
@@ -1707,6 +1840,7 @@ export function TutorialPage(): JSX.Element {
   };
   const onOpenProject = (): void => {
     //M 左栏「项目结构」恢复三栏画布，不沿用旧页签上的组块或工具说明。
+    setMobileNavOpen(false);
     tutorialView.select('mind');
     mindTree.select('project');
     toggleRightCollapsed(false);
@@ -2158,6 +2292,12 @@ export function TutorialPage(): JSX.Element {
     if (contentOnly) rightStyle = { left: mindLeft, width: 'auto', maxWidth: 'none' };
   }
 
+  let mobileNavLabel = '☰ 目录';
+  if (mobileNavOpen) {
+    mobileNavLabel = '✕ 目录';
+  }
+  const showLeftPane = (!isNarrow && !leftCollapsed) || (isNarrow && mobileNavOpen);
+
   return (
     <antd.ConfigProvider
       theme={
@@ -2171,6 +2311,17 @@ export function TutorialPage(): JSX.Element {
         <div className="tu-page">
           <header className="tu-top">
             <div className="tu-top-left">
+              {isNarrow && (
+                <button
+                  type="button"
+                  className="tu-mobile-nav-btn"
+                  data-mobile-nav
+                  aria-expanded={mobileNavOpen}
+                  onClick={() => setMobileNavOpen((prev) => !prev)}
+                >
+                  {mobileNavLabel}
+                </button>
+              )}
               <span className="tu-brand">jmbots 教程</span>
               {topSummary !== '' && <span className="tu-top-summary">{topSummary}</span>}
             </div>
@@ -2194,6 +2345,7 @@ export function TutorialPage(): JSX.Element {
               <button
                 type="button"
                 className="tu-link"
+                data-doc-guide
                 onClick={() => onSelectReading('08_工作决策工作台.md')}
               >
                 工作台用法
@@ -2271,12 +2423,13 @@ export function TutorialPage(): JSX.Element {
                 onSelectPlugin={onLinesPlugin}
                 programs={programs}
                 mode={mindTree.mode}
+                onSelectMode={mindTree.select}
                 detailHost={lineDetailHost}
                 onLineDetail={onLineDetail}
               />
             )}
 
-            {/* 悬浮左栏：展开时是带阴影的卡片，收起时退成边缘一条按钮。 */}
+            {/* 悬浮左栏：展开时是带阴影的卡片，收起时退成边缘一条按钮；手机窄屏默认收进顶栏目录抽屉。 */}
             {!isNarrow && leftCollapsed && (
               <button
                 type="button"
@@ -2290,7 +2443,7 @@ export function TutorialPage(): JSX.Element {
                 ▶ 导航
               </button>
             )}
-            {(isNarrow || !leftCollapsed) && (
+            {showLeftPane && (
               <aside className="tu-side tu-float-left" style={leftStyle}>
                 <div className="tu-side-top">
                   <div className="tu-side-search">
@@ -2302,6 +2455,15 @@ export function TutorialPage(): JSX.Element {
                       onChange={(event) => setSearchText(event.target.value)}
                     />
                   </div>
+                  {isNarrow && (
+                    <button
+                      type="button"
+                      className="tu-collapse-btn"
+                      onClick={() => setMobileNavOpen(false)}
+                    >
+                      收起 ▲
+                    </button>
+                  )}
                   {!isNarrow && (
                     <button
                       type="button"

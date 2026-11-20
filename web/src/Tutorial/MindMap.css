@@ -20,9 +20,39 @@
 .tu-mind-toolbar { flex: none; padding: 8px; background: var(--jm-panel); border-bottom: 1px solid var(--jm-border); }
 /* 三栏时骨架逐行的块详情放在右侧详情里，去掉画布旁的边框和定宽。 */
 .tu-line-detail-host .tu-lines-detail { width: auto; padding: 0; border: 0; background: none; overflow: visible; }
-/* 左右、上下展开是画布右上角的小切换，不占一整排。 */
-.tu-mind-direction { position: absolute; top: 6px; right: 8px; z-index: 6; display: flex; gap: 4px; }
-.tu-mind .tu-mind-direction button { padding: 1px 6px; font-size: 12px; background: color-mix(in srgb, var(--jm-panel) 90%, transparent); }
+/* 导图顶角：左侧可快捷切换三棵树，右侧切换展开方向。 */
+.tu-mind-head {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  pointer-events: none;
+}
+.tu-mind-modes,
+.tu-mind-direction {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  pointer-events: auto;
+}
+.tu-mind-direction { margin-left: auto; }
+.tu-mind .tu-mind-modes button,
+.tu-mind .tu-mind-direction button {
+  padding: 2px 7px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--jm-panel) 90%, transparent);
+}
+.tu-mind-modes button[aria-pressed="true"] {
+  color: var(--jm-accent);
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
 .tu-view-choice button,
 .tu-mind button {
   border: 1px solid var(--jm-border);
@@ -72,7 +102,21 @@
 .tu-mind-event dt { color: var(--jm-muted); margin-top: 8px; }
 @media (max-width: 799px) {
   .tu-mind-active > .tu-stage { display: none; }
-  .tu-mind { position: relative; inset: auto !important; min-height: 60vh; order: 2; }
+  .tu-mind {
+    position: relative;
+    inset: auto !important;
+    width: 100%;
+    height: 64vh;
+    min-height: 380px;
+    order: 2;
+  }
+  .tu-mind-head {
+    position: static;
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--jm-border);
+    background: var(--jm-panel);
+    pointer-events: auto;
+  }
   .tu-top:has(.tu-view-choice) { height: auto; min-height: 50px; flex-wrap: wrap; gap: 4px; padding-block: 6px; }
   .tu-top:has(.tu-view-choice) .tu-top-right { flex-wrap: wrap; }
 }

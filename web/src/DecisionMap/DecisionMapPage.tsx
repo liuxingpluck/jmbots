@@ -27,7 +27,8 @@ const FIT: xyflow.FitViewOptions = {
   maxZoom: 1,
 };
 const FIT_MOBILE: xyflow.FitViewOptions = {
-  padding: { top: '12px', bottom: '44px', left: '8px', right: '8px' },
+  padding: { top: '14px', bottom: '124px', left: '10px', right: '10px' },
+  minZoom: 0.52,
   maxZoom: 1,
 };
 /** 每 30 秒发一次轻量 GET /api/work-decision/version（严禁使用 SSE 或 WebSocket）。 */

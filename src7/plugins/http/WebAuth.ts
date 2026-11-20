@@ -401,9 +401,9 @@ export class WebAuth {
         password = body['password'];
       }
 
-      //G 账号与密码均需匹配（先做定长密码摘要核验再汇总，避免泄露账号是否存在）。
+      //G 账号不区分大小写、密码严格区分（先做定长密码摘要核验再汇总，避免泄露账号是否存在）。
       const passwordOk = password !== '' && verifyPassword(password, this.spec.verifier);
-      const userOk = username === this.spec.username;
+      const userOk = username.toLowerCase() === this.spec.username.toLowerCase();
       if (!userOk || !passwordOk) {
         this.recordFailure(ipKey, now);
         return reply.code(401).send({ error: '账号或密码不对' });

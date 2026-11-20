@@ -114,6 +114,8 @@ function MindCard({ data: card }: xy.NodeProps<Card>): react.JSX.Element {
 const TYPES = { mindCard: MindCard };
 const ORIGIN: xy.NodeOrigin = [0.5, 0.5];
 const FIT = { padding: 0.14, maxZoom: 1.6, minZoom: 0.2 };
+const FIT_NARROW = { padding: 0.08, maxZoom: 1.3, minZoom: 0.68 };
+const FIT_CONTROLS = { padding: 0.1, maxZoom: 1.6, minZoom: 0.2 };
 
 /** 把共享布局给出的中心点转成课程卡片和连接线。 */
 function getChart(
@@ -246,6 +248,8 @@ interface Props {
   programs: readonly api.ProgramItem[];
   /** 显示哪棵树，左栏点「项目结构」、消息、骨架模块时切换。 */
   mode: TreeView;
+  /** 切换导图树模式（供顶栏快捷胶囊在窄屏收起左栏时直接切换）。 */
+  onSelectMode?: (mode: TreeView) => void;
   /** 骨架逐行的块详情放进右侧详情的位置。 */
   detailHost: HTMLElement | null;
   /** 点了骨架逐行的一块。 */
@@ -255,7 +259,7 @@ interface Props {
 /** 三棵树共用一片画布，方向是画布角上的小切换，节点操作打开相应内容。 */
 export function TutorialMindMap(props: Props): react.JSX.Element {
   const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin, programs, mode } = props;
-  const { detailHost, onLineDetail } = props;
+  const { onSelectMode, detailHost, onLineDetail } = props;
   //M 记住上次的方向，第一次使用左右排布。
   const [direction, setDirection] = react.useState(() => getChoice(DIRECTION_KEY, 'sides', DIRECTIONS));
   const [expanded, setExpanded] = react.useState<ReadonlySet<string>>(() => new Set(['skeleton']));
@@ -317,19 +321,50 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
   let chart: ReturnType<typeof getChart> | undefined;
   if (tree !== undefined) chart = getChart(tree, direction, pick, expanded);
 
-  //M 展开内容后重新适应可见区域，避免新增的末端节点落在栏外。
+  //M 展开内容后重新适应可见区域，避免新增的末端节点落在栏外；手机竖屏保持字号可读的初始缩放下限。
   const nodeCount = chart?.nodes.length ?? 0;
   const frame = `${mode}:${direction}:${canvas}:${nodeCount}`;
+  let initialFit = FIT;
+  if (typeof window !== 'undefined' && window.innerWidth < 800) {
+    initialFit = FIT_NARROW;
+  }
 
   return (
     <section className="tu-mind" style={{ left, right }} aria-label={title}>
-      <div className="tu-mind-direction" role="group" aria-label={directionLabel}>
-        <button type="button" data-look="mind-lr" aria-pressed={direction === 'sides'} onClick={showSides}>
-          {sidesLabel}
-        </button>
-        <button type="button" data-look="mind-tb" aria-pressed={direction === 'down'} onClick={showDown}>
-          {downLabel}
-        </button>
+      <div className="tu-mind-head">
+        {onSelectMode !== undefined && (
+          <div className="tu-mind-modes" role="group" aria-label={t('导图内容')}>
+            <button
+              type="button"
+              aria-pressed={mode === 'trace'}
+              onClick={() => onSelectMode('trace')}
+            >
+              {t('消息轨迹')}
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === 'project'}
+              onClick={() => onSelectMode('project')}
+            >
+              {t('项目结构')}
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === 'lines'}
+              onClick={() => onSelectMode('lines')}
+            >
+              {t('骨架逐行')}
+            </button>
+          </div>
+        )}
+        <div className="tu-mind-direction" role="group" aria-label={directionLabel}>
+          <button type="button" data-look="mind-lr" aria-pressed={direction === 'sides'} onClick={showSides}>
+            {sidesLabel}
+          </button>
+          <button type="button" data-look="mind-tb" aria-pressed={direction === 'down'} onClick={showDown}>
+            {downLabel}
+          </button>
+        </div>
       </div>
       {mode === 'lines' && (
         <lines.LinesView
@@ -353,11 +388,11 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
           nodesConnectable={false}
           className="dark"
           fitView
-          fitViewOptions={FIT}
-          minZoom={0.2}
+          fitViewOptions={initialFit}
+          minZoom={0.18}
         >
           <xy.Background />
-          <xy.Controls showInteractive={false} />
+          <xy.Controls showInteractive={false} fitViewOptions={FIT_CONTROLS} />
         </xy.ReactFlow>
       )}
       {event && <EventDetail name={event} docs={docs} t={t} close={() => setEvent('')} />}

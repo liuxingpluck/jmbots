@@ -123,14 +123,49 @@ export function renderTrace(t: Translate, text: string, params?: traceText.Trace
 export const source: Translate = (text, params) => translate('zh-CN', text, params);
 
 
+/** 独立子页无全局状态仓库时的空订阅函数。 */
+function subscribeStandalone(): () => void {
+  return () => undefined;
+}
+
+
 /**
- * 组件里用的翻译函数：语言变了组件跟着重画。
+ * 读取独立子页（如 /tutorial/、/work-decision/）的当前语言偏好：网址 ?lang= 优先，其次本地存储，默认简体中文。
+ * @returns 语言代码。
+ */
+function getStandaloneLanguage(): Language {
+  if (typeof window === 'undefined') return 'zh-CN';
+
+  const params = new URLSearchParams(window.location.search);
+  const asked = matchLanguage(params.get('lang'));
+  if (asked !== undefined) return asked;
+
+  try {
+    return loadLanguage(window.localStorage);
+  } catch {
+    return 'zh-CN';
+  }
+}
+
+
+/**
+ * 组件里用的翻译函数：主页面订阅状态仓库实时切换，独立子页（无 UiContext）直接读取浏览器语言偏好。
  * @returns t。
  */
 export function useT(): Translate {
-  /** 现在的语言。 */
-  //M 订阅全局语言状态，语言变化时让调用 useT 的组件自动按新语言重渲染。
-  const language = context.useUi((state) => state.language);
+  const store = react.useContext(context.UiContext);
+  let subscribe: (onStoreChange: () => void) => () => void = subscribeStandalone;
+  if (store !== null) {
+    subscribe = store.subscribe;
+  }
+  const getSnapshot = (): Language => {
+    if (store !== null) {
+      return matchLanguage(store.getState().language) ?? 'zh-CN';
+    }
+    return getStandaloneLanguage();
+  };
+  //M 统一经 useSyncExternalStore 取语言，保证主界面实时响应且独立入口不因缺 UiContext 崩溃。
+  const language = react.useSyncExternalStore<Language>(subscribe, getSnapshot, () => 'zh-CN');
   //M 缓存绑定当前语言的 t 函数，避免每次渲染生成新引用导致下游 effect 重复执行。
   return react.useCallback((text, params) => translate(language, text, params), [language]);
 }

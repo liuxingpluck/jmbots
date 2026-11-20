@@ -274,13 +274,13 @@ describe('外网反向代理 Cookie 鉴权', () => {
       expect(normalLogin.statusCode).toBe(200);
       savedCookie = extractCookiePair(normalLogin.headers['set-cookie']);
 
-      //M 60 秒冷却过后，原 IP 恢复可正常登录。
+      //M 60 秒冷却过后，原 IP 恢复可正常登录，且账号校验不区分大小写。
       clock += 60_001;
       const recovered = await ctx1.http.app.inject({
         method: 'POST',
         url: '/api/auth/login',
         headers: attackerHeaders,
-        payload: { username: 'ops', password: 'first-synthetic-password' },
+        payload: { username: 'OPS', password: 'first-synthetic-password' },
       });
       expect(recovered.statusCode).toBe(200);
     } finally {
