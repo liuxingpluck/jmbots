@@ -1,8 +1,8 @@
 /** 读取签入的图和提交用户选择，沿用 jmbots 的页面令牌。 */
-import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as token from '../Token.ts';
 
-const BASE = '/api/decision-map';
+const BASE = '/api/work-decision';
 
 /** 请求并读取决策图接口的 JSON 返回。 */
 async function request<T>(route: string, options?: RequestInit): Promise<T> {

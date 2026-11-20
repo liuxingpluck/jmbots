@@ -2,7 +2,7 @@
 import * as antd from 'antd';
 import * as react from 'react';
 import * as virtuoso from 'react-virtuoso';
-import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as drawer from './Drawer.tsx';
 import * as words from './Words.ts';
 

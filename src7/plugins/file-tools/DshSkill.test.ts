@@ -2,7 +2,7 @@
  * dsh-control 技能的脚本（dsh-control/scripts/dsh.mjs）：用假的 DSH 客户端跑，不连真 DSH。
  * 查这几样：只认登记的工作区；头一回取次高档、建会话、发；发出错说不清时重发沿用 requestId；
  * 建会话说不清时不再建，客户端记下了会话号就找回来；做完从回复里取 dsh-result 和实际模型；接着发不能换模型。
- * 跑法：bun test ./src7/plugins/skills
+ * 跑法：bun test ./src7/plugins/file-tools/DshSkill.test.ts
  */
 import { afterEach, expect, test } from 'bun:test';
 import * as childProcess from 'node:child_process';

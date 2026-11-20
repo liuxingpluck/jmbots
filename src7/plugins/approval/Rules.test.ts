@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
-import type { ChannelMessage } from '../../Channels.ts';
+import type { ChannelMessage } from '../channels/index.ts';
 import type { Session } from '../../Sessions.ts';
 import * as channel from '../memory/ChannelIndex.ts';
 import * as searchModule from '../memory/Search.ts';

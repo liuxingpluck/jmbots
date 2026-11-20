@@ -95,7 +95,6 @@ export const SKELETON_SPECS: readonly SkeletonSpec[] = [
   { name: 'resources', file: `${ROOT}Resources.ts`, inject: [], includeUtils: false },
   { name: 'tools', file: `${ROOT}Tools.ts`, inject: [], includeUtils: false },
   { name: 'sessions', file: `${ROOT}Sessions.ts`, inject: ['resources', 'tools'], includeUtils: false },
-  { name: 'channels', file: `${ROOT}Channels.ts`, inject: [], includeUtils: false },
 ];
 
 /** 快速查询表：模块名 → 骨架规格。 */

@@ -887,7 +887,7 @@ export function reconnectModels(provider?: string): Promise<{ results: types.Rec
 }
 
 
-/** 开机自启开着没有（基地没开、是老版本时报错）。 */
+/** 读取基地的开机自启状态；查询失败交给调用方处理。 */
 export function autostart(): Promise<{ enabled: boolean }> {
   //M 经后端转发查询基地上的开机自启配置状态，供设置页初始化开关状态。
   return getJson('/api/autostart');
@@ -932,7 +932,7 @@ export function applySettings(): Promise<{ ok: boolean; startedAt: number }> {
 }
 
 
-/** 重启服务（设置“重连”用）：基地停掉后端再拉起，马上返回；老版本基地、源码模式和重启生效一样。 */
+/** 请求重启后端并立即返回重启前的启动时刻，供页面轮询恢复。 */
 export function restartService(): Promise<{ ok: boolean; startedAt: number }> {
   //M 请求由基地守护拉起或源码重启后端服务，拿回旧进程 startedAt 供前端轮询恢复。
   return sendJson('/api/service/restart', 'POST', {});

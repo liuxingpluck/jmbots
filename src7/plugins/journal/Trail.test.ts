@@ -5,11 +5,19 @@
 import { describe, expect, test } from 'bun:test';
 import { LINES, SESSION as S } from './tests/Lines.ts';
 import type { TrailLine } from '../../utils/Trail.ts';
-import { getNode, getTrail } from './Trail.ts';
+import { getNode, getSteps, getTrail } from './Trail.ts';
 import * as traceText from '../../../web/src/locales/Trace.ts';
 
 
 describe('Trail', () => {
+  test('旧流水的模型失败事件用新名字显示并仍标为错误', () => {
+    const original = LINES[0]!;
+    const failure: TrailLine = { ...original, kind: '事件', name: 'model/failed', vars: {} };
+    const { steps } = getSteps([failure]);
+    expect(steps[0]?.error).toBe(true);
+    expect(steps[0]?.rows[0]).toMatchObject({ name: 'session/model-failed', error: true });
+  });
+
   test('文件归到泳道图的道', () => {
     expect(getNode('src7/plugins/wechat/index.ts:1')).toBe('wechat-kefu');
     expect(getNode('src7/plugins/memory/index.ts:1')).toBe('memory');

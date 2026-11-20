@@ -1,7 +1,7 @@
 /** 决策图整页，保持快照最新，提交用户的点选和写的话，可在放射、思维导图、表格、清单四种看法间切换。 */
 import * as react from 'react';
 import * as xyflow from '@xyflow/react';
-import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as api from './DecisionMapApi.ts';
 import * as drawer from './Drawer.tsx';
 import * as layout from './Layout.ts';
@@ -83,7 +83,9 @@ function getStartDirection(): layout.MindDirection {
 export function DecisionMapPage() {
   const [graph, setGraph] = react.useState<types.DecisionGraph>();
   const [loadingError, setLoadingError] = react.useState<string>();
-  const [nodeId, setNodeId] = react.useState<string>();
+  const focusLink = new URLSearchParams(window.location.search).get('focus') ?? undefined;
+  const [nodeId, setNodeId] = react.useState<string | undefined>(focusLink);
+  const [projectRoot, setProjectRoot] = react.useState<string>();
   const [saving, setSaving] = react.useState<string>();
   const [chooseError, setChooseError] = react.useState<string>();
   const [mode, setMode] = react.useState<layout.ViewMode>('main');
@@ -126,6 +128,12 @@ export function DecisionMapPage() {
       const next = await api.getGraph(signal);
       setGraph((current) => {
         if (current === undefined || next.revision > current.revision) return next;
+        if (next.revision < current.revision) return current;
+
+        //M 工作区改名不写新的决策流水，同版本也更新项目栏。
+        if (JSON.stringify(next.projects) !== JSON.stringify(current.projects)) {
+          return { ...current, projects: next.projects };
+        }
 
         return current;
       });
@@ -173,14 +181,36 @@ export function DecisionMapPage() {
     return () => window.removeEventListener('keydown', escape);
   }, [close]);
 
-  //M 聚焦后只布置目标节点和它的后代，祖先作为面包屑保留。
-  const scope = react.useMemo(() => views.getScope(graph?.nodes ?? [], focused), [graph, focused]);
+  const projects = graph?.projects ?? [];
+  const linkedNode = graph?.nodes.find((node) => node.id === focusLink);
+  let root = projectRoot ?? projects[0]?.root;
+  if (projectRoot === undefined && linkedNode !== undefined) {
+    //M 分享的链接直接打开对应项目，未指定节点时使用第一个项目。
+    const linkedRoot = graph?.nodes.find((node) => {
+      return node.parent === null && node.bot === linkedNode.bot && node.workspaceId === linkedNode.workspaceId;
+    });
+    root = linkedRoot?.id ?? root;
+  }
+  //M 先按项目筛节点，再按选择的子树聚焦，四种看法共享范围。
+  const scope = react.useMemo(() => {
+    const entries = graph?.nodes ?? [];
+    const project = views.getScope(entries, root);
+    return views.getScope(project.nodes, focused);
+  }, [graph, root, focused]);
 
   /** 进子树或回上层。聚焦根至少展开一层。 */
   function focusTree(id?: string): void {
     close();
     setFocused(id);
     if (id !== undefined) open(id, true);
+  }
+
+  /** 选择项目后关闭上一个项目的详情和子树焦点。 */
+  function selectProject(id: string): void {
+    if (id === root) return;
+
+    focusTree();
+    setProjectRoot(id);
   }
 
   //M 视图变化后重新布置节点，普通的轮询维持画布位置。
@@ -324,7 +354,7 @@ export function DecisionMapPage() {
   if (loadingError !== undefined) empty = loadingError;
 
   //M 画布区域的读屏名称跟着语言包走。
-  const canvasLabel = t('决策图');
+  const canvasLabel = t('工作决策');
 
   //M 画布保留缩放和拖动，选项栏仅在用户选中节点时打开。
   return (
@@ -332,7 +362,7 @@ export function DecisionMapPage() {
       <header className="decision-bar">
         <div className="decision-bar__title">
           <a href="/" className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
-          <h1>决策图</h1>
+          <h1>{canvasLabel}</h1>
         </div>
         {isCanvas && scope.path.length === 0 && (
           <div className="decision-filters" role="group" aria-label="画布显示范围">
@@ -399,62 +429,78 @@ export function DecisionMapPage() {
         </nav>
       )}
 
-      <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
-        {isCanvas && diagram.nodes.length > 0 && (
-          <xyflow.ReactFlow<layout.FlowNode>
-            key={`${look}-${direction}-${mode}-${size.width}x${size.height}-${focused ?? ''}`}
-            nodes={diagram.nodes}
-            edges={diagram.edges}
-            nodeTypes={NODE_TYPES}
-            nodeOrigin={ORIGIN}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            edgesFocusable={false}
-            fitView
-            fitViewOptions={fit}
-            minZoom={0.08}
-            maxZoom={2}
-            className="dark"
-            onInit={connect}
-            onPaneClick={close}
-          >
-            <xyflow.Background gap={26} size={1.2} color="#303a50" />
-            <xyflow.Controls position="bottom-right" showInteractive={false} fitViewOptions={fit} />
-          </xyflow.ReactFlow>
+      <div className="decision-content">
+        {projects.length > 0 && (
+          <nav className="decision-projects" aria-label={t('项目')}>
+            {projects.map((project) => (
+              <button
+                key={project.root}
+                type="button"
+                aria-pressed={project.root === root}
+                onClick={() => selectProject(project.root)}
+              >
+                {project.name}
+              </button>
+            ))}
+          </nav>
         )}
-        {isCanvas && diagram.nodes.length === 0 && <div className="decision-empty" role="status">{empty}</div>}
-        {!isCanvas && graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
-        {look === 'table' && graph !== undefined && (
-          <views.TableView nodes={scope.nodes} selected={nodeId} open={open} />
-        )}
-        {look === 'list' && graph !== undefined && (
-          <views.ListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
-        )}
-        {isCanvas && diagram.nodes.length > 0 && (
-          <ul className="decision-legend" aria-label="图例">
-            <li><i data-tone="main" />主线</li>
-            <li><i data-tone="pending" />待定</li>
-            <li><i data-tone="working" />进行中</li>
-            <li><i data-tone="confirmed" />中控已确认</li>
-          </ul>
-        )}
-        {selected !== undefined && (
-          <drawer.Drawer
-            key={selected.id}
-            node={selected}
-            saving={saving}
-            error={chooseError}
-            close={close}
-            choose={submit}
-            sending={sending}
-            noteError={noteError}
-            send={sendNote}
-            focus={() => focusTree(selected.id)}
-            refresh={refresh}
-            expand={(id) => open(id, true)}
-          />
-        )}
-      </section>
+        <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
+          {isCanvas && diagram.nodes.length > 0 && (
+            <xyflow.ReactFlow<layout.FlowNode>
+              key={`${root ?? ''}-${look}-${direction}-${mode}-${size.width}x${size.height}-${focused ?? ''}`}
+              nodes={diagram.nodes}
+              edges={diagram.edges}
+              nodeTypes={NODE_TYPES}
+              nodeOrigin={ORIGIN}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              edgesFocusable={false}
+              fitView
+              fitViewOptions={fit}
+              minZoom={0.08}
+              maxZoom={2}
+              className="dark"
+              onInit={connect}
+              onPaneClick={close}
+            >
+              <xyflow.Background gap={26} size={1.2} color="#303a50" />
+              <xyflow.Controls position="bottom-right" showInteractive={false} fitViewOptions={fit} />
+            </xyflow.ReactFlow>
+          )}
+          {isCanvas && diagram.nodes.length === 0 && <div className="decision-empty" role="status">{empty}</div>}
+          {!isCanvas && graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
+          {look === 'table' && graph !== undefined && (
+            <views.TableView nodes={scope.nodes} selected={nodeId} open={open} />
+          )}
+          {look === 'list' && graph !== undefined && (
+            <views.ListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
+          )}
+          {isCanvas && diagram.nodes.length > 0 && (
+            <ul className="decision-legend" aria-label="图例">
+              <li><i data-tone="main" />主线</li>
+              <li><i data-tone="pending" />待定</li>
+              <li><i data-tone="working" />进行中</li>
+              <li><i data-tone="confirmed" />中控已确认</li>
+            </ul>
+          )}
+          {selected !== undefined && (
+            <drawer.Drawer
+              key={selected.id}
+              node={selected}
+              saving={saving}
+              error={chooseError}
+              close={close}
+              choose={submit}
+              sending={sending}
+              noteError={noteError}
+              send={sendNote}
+              focus={() => focusTree(selected.id)}
+              refresh={refresh}
+              expand={(id) => open(id, true)}
+            />
+          )}
+        </section>
+      </div>
     </main>
   );
 }

@@ -4,7 +4,7 @@
  *   遮：只给白名单里的顶层段；键名是密钥的字符串换成代号 ‹已设置:8位›，代号 → 原文只记在内存里。
  *   改：网页发来一串 { path, value } / { path, delete }，代号换回原文，setIn / deleteIn，整份过一遍骨架的校验，先写 .tmp 再改名。
  * 整个读改写都用同步的 fs：一个请求从读到改名中间不让出，两个请求不会互相覆盖。
- * 决策模型：网页设置页写的是 0.4 的 models.decision.model，src7 的 decision 插件读 decision.models（总管 11-14 定）：
+ * 决策模型：网页设置接口使用 models.decision.model，决策插件使用配置里的 decision.models：
  *   读的时候把 decision.models 的第一个放进 models.decision.model 给网页看；改的时候把它换成改 decision.models 的第一个。
  */
 import * as crypto from 'node:crypto';

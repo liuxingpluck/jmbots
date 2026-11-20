@@ -426,7 +426,7 @@ function getTrimmed(raw: unknown): string {
 
 
 /**
- * 新机器人的记忆概要（照 0.4 的 src/capabilities/Files.ts:166-169）。
+ * 新机器人的记忆概要。
  * @param botName 机器人名。
  * @param language zh 或 en。
  * @param identity 填的身份，可以是空。

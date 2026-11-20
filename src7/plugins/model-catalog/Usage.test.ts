@@ -88,16 +88,16 @@ test('用量事件返回按模型价格入账的调用，目录缺席时按零�
 
   //M 同样的非零用量没有价格时要留下记录，失败尝试也单独记一行。
   ctx.emit('session/new-message', session, message);
-  ctx.emit('model/failed', { session, model, ms: 4, error: '测试连接失败' });
+  ctx.emit('session/model-failed', { session, model, ms: 4, error: '测试连接失败' });
   await Bun.sleep(0);
 
   const firstPage = { ...query, limit: 2 };
-  const result = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', firstPage, eventOptions);
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', firstPage, eventOptions);
   expect(result.requestId).toStartWith('req_');
   expect(result.rows.map((row) => row.cost)).toEqual([2.3, 0]);
   expect(result.truncated).toBe(true);
 
-  const all = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', query, eventOptions);
+  const all = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
   expect(all.rows[2]).toMatchObject({ ok: false, input: 0, cost: 0, ms: 4, error: '测试连接失败' });
   expect(all.truncated).toBe(false);
 });
@@ -105,7 +105,7 @@ test('用量事件返回按模型价格入账的调用，目录缺席时按零�
 test('用量插件未挂载时查询退回空列表', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
-  const result = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', query, eventOptions);
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
   expect(result).toEqual({ requestId: 'unhandled', rows: [], truncated: false, fallback: 'unhandled' });
 });
 
@@ -168,9 +168,9 @@ test('model-catalog自动挂用量，晚到的HTTP保持路径，卸载撤掉服
   const message = piAi.fauxAssistantMessage('宿主记账');
   ctx.emit('session/new-message', session, message);
   const model = `${message.provider}/${message.model}`;
-  ctx.emit('model/failed', { session, model, ms: 1, error: '离线测试' });
+  ctx.emit('session/model-failed', { session, model, ms: 1, error: '离线测试' });
   await Bun.sleep(0);
-  const result = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', query, eventOptions);
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
   expect(result.rows).toHaveLength(2);
   expect(result.rows.map((row) => row.ok)).toEqual([true, false]);
   expect(result.rows.map((row) => row.cost)).toEqual([0, 0]);
@@ -179,7 +179,7 @@ test('model-catalog自动挂用量，晚到的HTTP保持路径，卸载撤掉服
   expect(scope).toBeDefined();
   await scope!.fiber.dispose();
   expect(ctx.get('usage')).toBeUndefined();
-  const gone = await events.requestEvent(ctx, 'usage/list', 'usage/list-result', query, eventOptions);
+  const gone = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query, eventOptions);
   expect(gone.requestId).toBe('unhandled');
   ctx.emit('session/new-message', session, message);
   await Bun.sleep(0);

@@ -9,7 +9,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as sqlite from 'bun:sqlite';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
-import * as channelsModule from '../../Channels.ts';
+import * as channelsModule from '../channels/index.ts';
 import * as checks from '../../utils/Checks.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
@@ -375,7 +375,7 @@ export class ChannelBridge {
    * @param host 登记这个渠道的程序。
    * @param text 合好的正文。
    * @param request 原 channel/reply 请求。
-   * @param target 跨聊天时 getTargetAddress 认出的地址；没有就回这一轮的来源。
+   * @param target 确切地址（旧路是会话记的地址）或跨聊天时 getTargetAddress 认出的地址；没有就回这一轮的来源。
    * @returns 已发、已存草稿、失败或不确定；程序没在线是失败。
    */
   private async reply(
@@ -384,8 +384,8 @@ export class ChannelBridge {
     request: channelsModule.ChannelReplyRequest,
     target?: Record<string, unknown>,
   ): Promise<channelsModule.TextReplyOutcome> {
-    //M 跨聊天回目标地址，否则回这一轮的来源地址。
-    const address = target ?? request.sourceSnapshot.origin.address;
+    //M 有目标地址回目标地址，否则回这一轮的来源地址。
+    const address = target ?? request.sourceSnapshot?.origin.address;
     const chat = utils.getStringField(address, 'chat');
 
     //G 地址里没有聊天号、正文是空的，都明确拒收，不交给程序。

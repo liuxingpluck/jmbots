@@ -1,7 +1,7 @@
 /** 服务 ctx.frontDesk 的入口，组装派活、认领、结果队列和撤回。 */
 import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
-import type * as protocol from '../../Channels.ts';
+import type * as protocol from '../channels/index.ts';
 import * as claimModule from './DispatchClaim.ts';
 import * as recallModule from './DispatchRecall.ts';
 import * as resultsModule from './DispatchResults.ts';

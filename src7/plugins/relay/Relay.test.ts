@@ -18,8 +18,9 @@ import type * as cordis from 'cordis';
 import fastify from 'fastify';
 import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
-import * as decisionModule from '../decision-map/index.ts';
-import type * as decisionTypes from '../decision-map/Types.ts';
+import * as channels from '../channels/index.ts';
+import * as decisionModule from '../work-decision/index.ts';
+import type * as decisionTypes from '../work-decision/Types.ts';
 import * as relayModule from './index.ts';
 
 /** 临时运行时目录。 */
@@ -58,6 +59,10 @@ interface FakeSession {
   row: {
     id: string; bot: string; kind: string; parent?: string; state: string; channel?: string; address?: unknown;
     customer?: string; messages: { role: string; content: unknown; timestamp: number; [key: string]: unknown }[];
+    /** 这一轮最后的话（骨架一轮结束时写）。 */
+    reply?: string;
+    /** relay 标了它，bots 就不替它自动发。 */
+    quiet?: boolean;
   };
   run: () => Promise<void>;
 }
@@ -150,6 +155,8 @@ function world(db = new Database(':memory:')): World {
       return;
     }
 
+    //M 照骨架：一轮结束写下最后的话，再改状态、发 session/change。
+    session.row.reply = said;
     session.row.state = 'done';
     for (const handler of handlers.get('session/change') ?? []) handler(session);
     await Promise.resolve();
@@ -218,9 +225,13 @@ function world(db = new Database(':memory:')): World {
       emitted.push({ name, args });
       for (const handler of handlers.get(name) ?? []) handler(...args);
     },
-    //M 串行派发：发文件请求靠它找到假飞书的监听。
+  //M 串行派发：非空回执结束派发，模拟 Cordis 交给一个接收方。
     serial: async (name: string, ...args: unknown[]) => {
-      for (const handler of handlers.get(name) ?? []) await handler(...args);
+      for (const handler of handlers.get(name) ?? []) {
+        const result: unknown = await handler(...args);
+        if (result !== undefined && result !== null && result !== false) return result;
+      }
+      return undefined;
     },
     effect: (open: () => () => void) => {
       closers.push(open());
@@ -378,6 +389,43 @@ describe('relay 接两个助手', () => {
     //M helper 写了不认识的名字：400。
     const wrong = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { chat: 'oc_both', helper: 'C', text: 'x' } });
     expect(wrong.statusCode).toBe(400);
+  }, SLOW);
+
+  test('回答由 relay 自己发 channel/reply：“已转给”发到会话现在的地址，回信发到收件当时的地址，不改会话记的地址', async () => {
+    const made = await ready();
+    const first = { chatId: 'oc_first', openId: 'ou_test' };
+    const second = { chatId: 'oc_second', openId: 'ou_test' };
+
+    //M 假飞书渠道：接 channel/reply，记下正文、确切地址和会话号，回 sent。
+    const sent: { text: string; address: unknown; sessionId: string | undefined; kind: string }[] = [];
+    made.handlers.set('channel/reply', [(...args: unknown[]) => {
+      const request = args[0] as channels.ChannelReplyRequest;
+      if (request.channel !== 'feishu') return;
+
+      request.handled = true;
+      const text = request.parts.map((part) => part.text ?? '').join('');
+      sent.push({ text, address: request.target?.address, sessionId: request.sessionId, kind: request.kind });
+      const receipt = channels.getReceipt(request, 'sent');
+      channels.emitReplied(made.ctx, request, receipt);
+    }]);
+
+    //M 两个聊天各转一句：同一场 relay 会话，会话记的地址最后停在第二个聊天。
+    expect(await made.say('a 第一句', first)).toBe('已转给 A（#1），等回复。');
+    expect(await made.say('b 第二句', second)).toBe('已转给 B（#2），等回复。');
+    await settle();
+    expect(sent.map((one) => [one.text, one.address])).toEqual([
+      ['已转给 A（#1），等回复。', first],
+      ['已转给 B（#2），等回复。', second],
+    ]);
+    const session = [...made.sessions.values()].find((one) => one.row.kind === 'relay');
+    expect(session?.row.quiet).toBe(true);
+
+    //M A 回 #1：回信发到第一个聊天（收件当时的地址），会话记的地址还是第二个聊天。
+    const replied = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload: { id: 1, text: '收到' } });
+    expect(replied.statusCode).toBe(200);
+    await settle();
+    expect(sent.at(-1)).toMatchObject({ text: 'A：收到', address: first, sessionId: session?.id, kind: 'final' });
+    expect(session?.row.address).toEqual(second);
   }, SLOW);
 
   test('按 chat 回信只认一字不差的聊天号：相似的、open_id、只在 web_messages 里见过的都 404，不留半截收件', async () => {
@@ -728,7 +776,7 @@ describe('relay 旧库和配置', () => {
 test('决策图留话经 relay 回到原留言，重启补送旧回信且不打开会话', async () => {
   const made = world();
   const helper = { name: 'A', prefixes: ['a '] };
-  const prefix = '/api/decision-map';
+  const prefix = '/api/work-decision';
   //M 用实际的两个插件和 Fastify 接口穿过整条链。
   relayModule.apply(made.ctx, { helpers: [helper] });
   decisionModule.apply(made.ctx, { relay_helper: helper.name });
@@ -751,7 +799,7 @@ test('决策图留话经 relay 回到原留言，重启补送旧回信且不打�
   expect(posted.statusCode).toBe(200);
   const added = posted.json() as { delivery: { relayId: number }; note: { id: string } };
   const inbox = await made.app.inject('/api/relay/inbox?helper=A&state=pending');
-  expect(inbox.json().items).toMatchObject([{ id: added.delivery.relayId, channel: 'decision-map' }]);
+  expect(inbox.json().items).toMatchObject([{ id: added.delivery.relayId, channel: 'work-decision' }]);
 
   const replyDraft = { id: added.delivery.relayId, text: '验证通过' };
   const replyInput = { method: 'POST', url: '/api/relay/reply', payload: replyDraft } as const;
@@ -769,7 +817,7 @@ test('决策图留话经 relay 回到原留言，重启补送旧回信且不打�
   const deliverySql = 'SELECT delivered FROM relay_replies ORDER BY id';
   expect(made.db.query(deliverySql).all()).toEqual([{ delivered: 1 }]);
 
-  //M 模拟图已存盘而 relay 尚未写回执，并留一条旧版的点选回信等待启动补送。
+  //M 模拟图已存盘而 relay 尚未写回执，并留一条缺少回信目标的点选记录供启动补送。
   made.db.exec('UPDATE relay_replies SET delivered = 0');
   const choose = { method: 'POST', url: prefix + '/choose', payload: { node, option: 'yes' } } as const;
   const picked = (await made.app.inject(choose)).json() as { delivery: { relayId: number } };
@@ -778,6 +826,8 @@ test('决策图留话经 relay 回到原留言，重启补送旧回信且不打�
   clearTarget.run(legacyAddress, added.delivery.relayId, picked.delivery.relayId);
   const insert = 'INSERT INTO relay_replies (item_id, session_id, text, done, at, via) VALUES (?, ?, ?, 1, ?, ?)';
   const oldKey = `decision-map:${node}`;
+  made.db.query("UPDATE relay_items SET channel = 'decision-map', session_id = ? WHERE id = ?")
+    .run(oldKey, picked.delivery.relayId);
   made.db.query(insert).run(picked.delivery.relayId, oldKey, '收到你的选择', Date.now(), 'http');
   made.restart();
   await settle();

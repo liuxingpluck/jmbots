@@ -9,7 +9,7 @@ import { Database } from 'bun:sqlite';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
-import type * as protocolModule from '../../Channels.ts';
+import type * as protocolModule from '../channels/index.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
 import * as archiveModule from './FrontArchive.ts';
 import * as searchModule from './Search.ts';
@@ -121,7 +121,7 @@ async function search(bench: Bench, args: Record<string, unknown>, session: Sess
 }
 
 
-test('听 channel/message、channel/reply 记进表，同一条不重复；按渠道、聊天、时间、关键词查，新的在前', () => {
+test('听 channel/message、channel/replied 记进表，同一条不重复；按渠道、聊天、时间、关键词查，新的在前', () => {
   const bench = makeBench();
 
   //M 两个聊天各几句；同一条发两次只记一次；空话不记。
@@ -131,15 +131,21 @@ test('听 channel/message、channel/reply 记进表，同一条不重复；按�
   bench.emit('channel/message', getMessage('m3', 'oc_2', '另一个群也说预算', '2026-11-17T10:00:00'));
   bench.emit('channel/message', getMessage('m4', 'oc_1', '   ', '2026-11-17T11:00:00'));
 
-  //M 机器人的回复：文字片段连起来，聊天照来源快照。
+  //M 机器人的回复：渠道回执说发成了才记，正文和聊天照回执带的请求（来源快照）；同键重放只记一次。
   const reply = {
     bot: '助手',
     replyRequestKey: 'reply-1',
     parts: [{ partId: 'p1', kind: 'text', text: '好的，预算我记下了' }],
     sourceSnapshot: { channel: 'feishu', accountId: 'cli_a', chatId: 'oc_1', chatType: 'p2p' },
   };
-  bench.emit('channel/reply', reply);
-  bench.emit('channel/reply', reply);
+  const replied = { requestId: 'rep_1', replyRoundKey: 'round-1', receipt: { status: 'sent' }, request: reply };
+  bench.emit('channel/replied', replied);
+  bench.emit('channel/replied', replied);
+
+  //G 没发成的（rejected）不记。
+  const failedReply = { ...reply, replyRequestKey: 'reply-2', parts: [{ partId: 'p1', kind: 'text', text: '没发出去的话' }] };
+  const failed = { requestId: 'rep_2', replyRoundKey: 'round-1', receipt: { status: 'rejected' }, request: failedReply };
+  bench.emit('channel/replied', failed);
 
   //M 全部：4 条（m1 一次、m2、m3、回复一次；空话没记），新的在前。
   const all = bench.index.search({ words: [], limit: 50 });

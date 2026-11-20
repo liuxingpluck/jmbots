@@ -405,7 +405,7 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
       { role: 'user', content: '摘要后的新消息', timestamp: 2 },
     ];
 
-    //M 先按旧版建表方式存一条跨启动的摘要，再挂新版两个插件。
+    //M 先在会话会读取的摘要表中写入一条持久摘要，再挂压缩和摘要插件验证读取。
     const client = ctx.resources.db;
     const legacy = 'CREATE TABLE compress_log (session TEXT PRIMARY KEY, upto INTEGER NOT NULL, summary TEXT NOT NULL)';
     client.exec(legacy);

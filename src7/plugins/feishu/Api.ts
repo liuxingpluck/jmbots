@@ -1,7 +1,7 @@
 /**
  * 飞书开放接口的统一调用：本插件所有开放接口（发消息、下载、云文档……）都过 call。
  * 它管三件事：HTTP 429 限流（和复用的连接刚被断掉）时退让重试；飞书交回的错误码换成看得懂的中文；权限不够时补一句该开什么权限。
- * 照 0.4 的 src/channels/FeishuMedia.ts（429 等 500·2ⁿ 毫秒，最多 5 次）和 FeishuSdk.ts（错误换成“错误码、说明”）。
+ * 遇到 429 按 500·2ⁿ 毫秒等待，最多 5 次。错误消息包括错误码和说明。
  *
  * SDK 出错有两种样子（node_modules/@larksuiteoapi/node-sdk/lib/index.js）：
  *   HTTP 不是 2xx（429、400……）：SDK 原样抛 axios 的错，e.response.status 是 HTTP 状态，e.response.data 里有飞书的 code、msg。

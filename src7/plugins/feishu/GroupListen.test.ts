@@ -20,7 +20,7 @@ import * as events from '../../utils/RequestEvent.ts';
 import { Dispatch } from '../bots/Dispatch.ts';
 import { FrontDesk } from '../bots/FrontDesk.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
-import type * as protocol from '../../Channels.ts';
+import type * as protocol from '../channels/index.ts';
 import * as relayModule from '../relay/index.ts';
 import * as feishuModule from './index.ts';
 
@@ -642,8 +642,29 @@ describe('群里发的话 @ 人', () => {
     const front = (address: feishuModule.FeishuAddress): FakeSession => ({
       id: 'sx', row: { id: 'sx', bot: BOT, kind: 'front', state: 'done', messages: [], address }, save: () => undefined,
     });
-    const sender = made.feishu as unknown as { send: (reply: string, session: FakeSession) => Promise<void> };
-    const send = (session: FakeSession, reply = '好的，已经查了'): Promise<void> => sender.send(reply, session);
+    //M 会话一轮结束的旧路回话：照 Bots.send 的样子发 channel/reply（没有来源快照，target 带会话记的地址，开 atFiles），直接交飞书的回复处理。
+    const replier = made.feishu.reply as unknown as { onChannelReply: (request: protocol.ChannelReplyRequest) => Promise<void> };
+    let callNo = 0;
+    const send = (session: FakeSession, reply = '好的，已经查了'): Promise<void> => {
+      callNo += 1;
+      const address = session.row.address as Record<string, unknown>;
+      const request: protocol.ChannelReplyRequest = {
+        requestId: `rep_${String(callNo)}`,
+        channel: 'feishu',
+        bot: BOT,
+        replyRequestKey: `legacy-${String(callNo)}`,
+        replyRoundKey: 'legacy-round',
+        replyIndex: 0,
+        kind: 'final',
+        mode: 'text',
+        payloadHash: `hash-${String(callNo)}`,
+        parts: [{ partId: 'text:0', kind: 'text', text: reply }],
+        target: { channel: 'feishu', chat: '', address },
+        sessionId: session.id,
+        atFiles: true,
+      };
+      return replier.onChannelReply(request);
+    };
 
     await send(front(getAddress(PLAIN, FRIEND)));
     await send(front(getAddress(PLAIN, OWNER)));

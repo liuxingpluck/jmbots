@@ -1,9 +1,9 @@
 /** 将语音后台和标准回话合并到同一个渠道出口，文字回执独立于浏览器播报。 */
 
+import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
-import * as channel from '../../Channels.ts';
-import type * as sessions from '../../Sessions.ts';
-import type * as bots from '../bots/index.ts';
+import * as utils from '../../utils/index.ts';
+import * as channel from '../channels/index.ts';
 
 /** 浏览器确认至少有一段语音实际经过播放。 */
 interface VoiceReceipt extends channel.ReplyReceipt {
@@ -46,37 +46,43 @@ export class VoiceReplies {
     gate?.resolve(keep);
   }
 
-  /** bots.channel 注册的语音出口，将旧后台结果转换为唯一的标准回复。 */
-  async fromWork(text: string, session: sessions.Session, origin?: bots.Origin): Promise<bots.SendReceipt> {
-    const address = origin?.address ?? session.row.address;
-    if (address === null || typeof address !== 'object' || !('voiceMessageId' in address)
-      || typeof address.voiceMessageId !== 'string') {
-      return { status: 'rejected', reason: '语音来源地址无效' };
-    }
+  /**
+   * 旧路的回话（会话一轮结束、前台送后台结果，没有来源快照，target.address 是会话记的语音地址）：
+   * 补一份来源快照，换成按后台会话分轮的回复键，再和标准回复走同一条路（记忆、时间线、播报共用）。
+   * 这条回复可能来得比最终字幕早：先等整句入档，取消听写时不留孤立的回复。
+   * @param request 回复请求；补上后带来源快照、去掉 target，会话没做完的改成 progress。
+   * @returns 补不上时的原因；补上了是 undefined。
+   */
+  private async adopt(request: channel.ChannelReplyRequest): Promise<string | undefined> {
+    const address = utils.getRecord(request.target?.address);
+    const messageId = utils.getStringField(address, 'voiceMessageId');
+    if (messageId === '') return '语音来源地址无效';
 
-    const messageId = address.voiceMessageId;
-    const running = session.row.state === 'running';
+    const sessionId = request.sessionId;
+    if (sessionId === undefined) return '语音旧路回话没有会话号';
+
     //G 这条回复可能来得比最终字幕早。
     const gate = this.unfinished.get(messageId);
     if (gate !== undefined) {
       //G 提前结束的后台等待整句入档，取消听写时不会留一条孤立的回复。
       const committed = await gate.promise;
-      if (!committed) return { status: 'rejected', reason: '语音未确认最终字幕' };
+      if (!committed) return '语音未确认最终字幕';
     }
-    const botName = session.row.bot;
-    let chatId = 'local';
-    if ('chatId' in address && typeof address.chatId === 'string') {
-      chatId = address.chatId;
+
+    const botName = request.bot;
+    let chatId = utils.getStringField(address, 'chatId');
+    if (chatId === '') {
+      chatId = 'local';
     }
-    let customer = 'voice:本机';
-    if ('customer' in address && typeof address.customer === 'string') {
-      customer = address.customer;
+    let customer = utils.getStringField(address, 'customer');
+    if (customer === '') {
+      customer = 'voice:本机';
     }
     //M 让标准回执关联到既有的消息认领。
     const claimKey = channel.getClaimKey(messageId, botName);
     //M 按后台会话区分同一条消息的回复轮次。
-    const replyRoundKey = channel.getReplyRoundKey(messageId, botName, session.id);
-    const sourceSnapshot: channel.SourceSnapshot = {
+    const replyRoundKey = channel.getReplyRoundKey(messageId, botName, sessionId);
+    request.sourceSnapshot = {
       messageId,
       nativeId: null,
       channel: 'voice',
@@ -88,26 +94,25 @@ export class VoiceReplies {
       role: 'owner',
       targetBots: [botName],
       mentions: [],
-      origin: { channel: 'voice', address: { ...address, voiceSessionId: session.id } },
+      origin: { channel: 'voice', address: { ...address, voiceSessionId: sessionId } },
       visibility: { scope: customer, trusted: true, publicSourceIds: [] },
       botName,
       claimKey,
       replyRoundKey,
     };
-    let kind: channel.ReplyKind = 'final';
-    let callId = 'voice-final';
-    if (running) {
-      kind = 'progress';
-      callId = crypto.randomUUID();
-    }
-    //M 后台最终回话沿用固定调用号，多次转发仍可合并为一条。
-    const replyRequestKey = channel.getReplyRequestKey(replyRoundKey, callId);
-    const options = { replyRequestKey, replyIndex: 0, kind };
-    //M 记忆、时间线和语音播放共用这次标准回复。
-    const receipt = await channel.requestTextReply(this.ctx, sourceSnapshot, text, options);
-    if (receipt.ok) return { status: 'accepted', reason: '' };
+    delete request.target;
 
-    return { status: 'rejected', reason: receipt.reason ?? '语音回复未提交' };
+    //M 会话做完了是最终回话，沿用固定调用号，多次转发仍可合并为一条；还在转的是中途一句，各用各的号。
+    const running = this.ctx.sessions.open(sessionId).row.state === 'running';
+    let callId = 'voice-final';
+    request.kind = 'final';
+    if (running) {
+      callId = crypto.randomUUID();
+      request.kind = 'progress';
+    }
+    request.replyRoundKey = replyRoundKey;
+    request.replyRequestKey = channel.getReplyRequestKey(replyRoundKey, callId);
+    return undefined;
   }
 
   /** 同一回复请求重放回执，不重复写入或播报。 */
@@ -115,6 +120,17 @@ export class VoiceReplies {
     if (request.channel !== 'voice' || request.handled === true) return;
 
     request.handled = true;
+
+    //M 旧路的回话没有来源快照：照会话记的语音地址补上，补不上就拒收。
+    if (request.sourceSnapshot === undefined) {
+      const failed = await this.adopt(request);
+      if (failed !== undefined) {
+        const rejected = this.getReceipt(request, false, failed);
+        channel.emitReplied(this.ctx, request, rejected);
+        return;
+      }
+    }
+
     const key = request.replyRequestKey;
     //G 复用同一请求已经开始或完成的播报。
     const existing = this.receipts.get(key);
@@ -144,7 +160,7 @@ export class VoiceReplies {
 
   /** 验证回复形状，只有原聊天的文字可以进入这条语音回路。 */
   private async deliver(request: channel.ChannelReplyRequest): Promise<VoiceReceipt> {
-    if (request.sourceSnapshot.channel !== 'voice' || request.target !== undefined || request.mode !== 'text') {
+    if (request.sourceSnapshot?.channel !== 'voice' || request.target !== undefined || request.mode !== 'text') {
       const reason = '语音渠道只支持原聊天的文字回复';
       //G 这类回复没有可投递的原聊天文字。
       return this.getReceipt(request, false, reason);

@@ -7,15 +7,16 @@
  * 没人认领的，进这个机器人对这个客户的前台对话（FrontDesk.ts）：简单的前台自己答，要干活就派后台（Dispatch.ts），
  * 后台的结果先回前台整理，再发回原渠道。前台整理结果时用户的新话先排着（DispatchResults.hold）。
  * 想换一种分派办法：写一个插件听 bot/receive，把 event.session 填上，前台就不接这条了。
- * 渠道（命令行、HTTP、飞书、微信）向本服务登记发送函数：ctx.bots.channel(name, send)；收话调 ctx.bots.receive，附件调 ctx.bots.saveFile。
- * 会话跑到一半要先跟用户说一句，调 ctx.bots.say(session, text)：发通知 bot/say，本服务按会话的渠道名找到登记的 send 发出去。
- * 要等发完、拿回执的（前台送后台结果），调 ctx.bots.send(session, text)；会话标了 quiet 的，本服务不自动发它的话。
+ * 渠道（命令行、HTTP、飞书、微信、语音）向本服务登记渠道名：ctx.bots.channel(name)（网页的渠道清单用）；收话调 ctx.bots.receive，附件调 ctx.bots.saveFile。
+ * 所有发出去的话都走 channel/reply → channel/replied：会话跑到一半先说一句调 ctx.bots.say（通知 bot/say），
+ *   要等发完、拿回执的（一轮结束自动回话、前台送后台结果）由 Bots.send 照会话记的渠道和地址发 channel/reply；会话标了 quiet 的，本服务不自动发它的话。
  * 2026-11-17 插件 bot-front-desk 并进来（用户 #114、#115）：前台的配置写在本插件 config 的 front 一节。
  * 2026-11-17 插件 prompt（Prompt.ts，系统提示词）、reply-tool（ReplyTool.ts，工具 reply）并进来：开关写在 config 的 prompt、reply_tool。
  * 标准渠道事件 channel/message（飞书、网页、命令行、微信都走它，onChannelMessage）：问完 bot/receive 没人认领的进前台单队列，
  *   模型一轮里用 channel_reply 想发几条发几条；一对一的渠道（routing.autoFinal）一次没调就把最后的话发出去，飞书跑一次修复轮。
  *   消息带 routing.sessionId（网页指定会话、引用别的渠道的消息）：只投给那场会话的机器人；是前台就排进那场前台，别的会话照旧交过去、一轮结束自动回。
  */
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
@@ -28,7 +29,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import { ChannelTools } from './ChannelTools.ts';
 import { Dispatch, type AcceptReceipt, type ResultInput } from './Dispatch.ts';
 import { FrontDesk, type FrontDeskConfig } from './FrontDesk.ts';
@@ -44,7 +45,7 @@ export const name = 'bots';
 //M 1.3.0：工作区交给 workspaces 插件——建机器人时原地登记默认工作区和配置里的目录，hand_session 可写 workspaceId，后台绑定工作区 ID。
 //M 1.4.0：并进 prompt（Prompt.ts，默认开）、reply-tool（ReplyTool.ts，默认关）；legacy_auto 渠道的 channel/message 在这里交前台，去掉渠道里的过渡监听。
 //M 1.4.1：渠道统一第 3、4 步——routing.sessionId 指定会话；网页、命令行、微信也走 channel_tool（去掉 deliveryMode）；
-//M   routing.autoFinal 零次回复直接发最后的话；一轮收尾发 channel/settled。
+//M   routing.autoFinal 零次回复直接发最后的话；一轮收尾发 bot/settled。
 //M 1.4.2：结果队列的来源加 relay（外部助手的回信），前台看到“外部助手 <名字> 的回信”。
 //M 1.4.3：监听 channel/recall，消息被撤回时移除排队项、喊停正在跑的会话及派出的后台会话，且不再回发“已停止”。
 //M 1.4.4：channel_reply 支持非群聊本人（canReplyAcrossChats）指定 channel、chat 往别的渠道或聊天发话。
@@ -54,7 +55,9 @@ export const name = 'bots';
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
-export const version = '1.5.9';
+//M 1.5.11：旧路收掉——Bots.send 一律发 channel/reply（target 带会话记的地址），渠道只登记名字；删 bot/route；
+//M   前台只听 channel/replied 记往来（回执带请求正文），不再暂存 channel/reply 的正文。
+export const version = '1.5.12';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -90,14 +93,21 @@ declare module 'cordis' {
      *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.tell
      *   src7/plugins/bots/index.ts 的 Bots.say
      *   src7/plugins/progress/index.ts 的 Progress.end、Progress.handOff、Progress.sendCard、Progress.setLimit
-     *   src7/plugins/relay/index.ts 的 Relay.checkLate
      * 谁接：
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/journal/index.ts 的 Journal.listen
-     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
      */
     'bot/say'(session: Session, text: string): void;
+    /**
+     * 通知一轮 channel_tool 已收尾，网页标记回复完成，命令行记录失败的退出码。
+     * 谁发：src7/plugins/bots/DispatchResults.ts 的 DispatchResults.emitSettled
+     * 谁接：
+     *   src7/plugins/cli/index.ts 的 Cli.constructor
+     *   src7/plugins/voice/index.ts 的 apply
+     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
+     */
+    'bot/settled'(event: protocol.ChannelSettledEvent): void;
     /**
      * 前台（FrontDesk.ts）对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。
      * 谁发：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.followUp
@@ -111,6 +121,7 @@ declare module 'cordis' {
      *   src7/plugins/relay/AgentTasks.ts 的 requestResultDelivery
      *   src7/plugins/settings/index.ts 的 Settings.createBot
      *   src7/plugins/web-api/index.ts 的 WebApi.saveAttachments
+     *   src7/plugins/work-decision/Routes.ts 的 mount
      * 谁接：src7/plugins/bots/index.ts 的 Bots.constructor
      */
     'bot/request'(request: BotRequest): void | Promise<void>;
@@ -122,14 +133,9 @@ declare module 'cordis' {
      *   src7/plugins/relay/AgentTasks.ts 的 requestResultDelivery
      *   src7/plugins/settings/index.ts 的 Settings.createBot
      *   src7/plugins/web-api/index.ts 的 WebApi.saveAttachments
+     *   src7/plugins/work-decision/Routes.ts 的 mount
      */
     'bot/result'(result: BotResult): void;
-    /**
-     * 通知：改一场会话的回话往哪送（同 Bots.route），发了不等。本插件听。
-     * 谁发：暂无
-     * 谁接：src7/plugins/bots/index.ts 的 Bots.constructor
-     */
-    'bot/route'(notice: BotRouteNotice): void;
   }
 }
 
@@ -155,18 +161,18 @@ declare module '../../Sessions.ts' {
     sourceScope?: { channel: string; accountId: string; chatId: string };
     /** 当前正在处理的活动轮不可变来源快照（legacy_auto 会话没有）。 */
     activeSourceSnapshot?: protocol.SourceSnapshot;
-    /** 旧版撤回停跑的兼容标记，收尾时清掉。 */
+    /** 持久会话中的撤回停跑标记，收尾时清掉。 */
     recalledStop?: boolean;
   }
 }
 
 
 /**
- * 渠道发完交回的回执。
- *   accepted  渠道明确收下了全部内容（文字和附件）；不代表用户已读
+ * Bots.send 交回的回执（从渠道的 channel/replied 回执折过来）。
+ *   accepted  渠道明确收下了全部内容（sent，或排队、存成草稿）；不代表用户已读
  *   partial   收下了一部分（比如文字发了、某个附件没发出去）
- *   uncertain 不知道发没发到：超时、网络断了、渠道没给回执
- *   rejected  渠道明确没收（地址不对、接口报错）
+ *   uncertain 不知道发没发到：超时、网络断了
+ *   rejected  渠道明确没收（地址不对、接口报错、渠道没挂）
  */
 export interface SendReceipt {
   /** 发到没有，见上。 */
@@ -174,18 +180,6 @@ export interface SendReceipt {
   /** 原因，人看的；accepted 时是空串。 */
   reason: string;
 }
-
-
-/**
- * 渠道把机器人的话交给用户。登记在 ctx.bots.channel(name, send)。
- * 交回回执的渠道（飞书）发完交 SendReceipt；老渠道不交（void），bots.send 记成 uncertain。
- * origin 给了就发到它的地址，不看会话现在记的（前台送后台结果时，会话的地址可能已经被新来的话换掉）；飞书认它，老渠道不认。
- */
-export type ChannelSend = (
-  reply: string,
-  session: Session,
-  origin?: Origin,
-) => void | SendReceipt | Promise<void | SendReceipt>;
 
 
 export type { BotConfig } from '../../utils/Bots.ts';
@@ -283,15 +277,6 @@ export interface BotResult extends requestEventModule.ResultEnvelope {
 }
 
 
-/** 事件 bot/route 的数据：哪场会话、回话改往哪送。 */
-export interface BotRouteNotice {
-  /** 会话号。 */
-  sessionId: string;
-  /** 渠道和回话地址；不给渠道就什么也不改。 */
-  origin: Origin;
-}
-
-
 /** 校验以后给机器人服务的东西。 */
 export interface BotsConfig {
   /** 机器人名单，照 config.yaml 里 bots 写的先后。 */
@@ -309,8 +294,8 @@ export class Bots extends cordis.Service {
   /** 后台会话用哪个思考档；运行中新加的机器人也用它。 */
   private readonly thinking: Thinking;
 
-  /** 渠道名 → 发送函数。渠道插件挂上时登记，拔掉时撤掉。 */
-  private readonly sends = new Map<string, ChannelSend>();
+  /** 挂着的渠道名，照登记的先后。渠道插件挂上时登记，拔掉时撤掉；网页的渠道清单用。 */
+  private readonly channels = new Set<string>();
 
   /**
    * bots 插件自己的 ctx，交给每个 Bot。别的插件调 ctx.bots.add 时（设置页新建机器人），this.ctx 是调用方的 ctx（Cordis 服务的规矩），
@@ -363,7 +348,7 @@ export class Bots extends cordis.Service {
       void this.send(session, row.reply);
     });
 
-    //M 会话中途先说一句（bots.say 发的通知 bot/say）：channel_tool 会话经 channel/reply 发，旧会话走登记的 send。
+    //M 会话中途先说一句（bots.say 发的通知 bot/say）：channel_tool 会话照本轮来源快照发，旧会话照会话记的地址发，都经 channel/reply。
     this.ctx.on('bot/say', (session, text) => {
       if (session.row.channel === undefined) return;
 
@@ -377,7 +362,7 @@ export class Bots extends cordis.Service {
         return;
       }
 
-      //M 没有来源快照的旧会话：按会话记的渠道名找登记的 send，发了不等回执。
+      //M 没有来源快照的旧会话：照会话记的渠道和地址发，发了不等回执。
       void this.send(session, text);
     });
 
@@ -404,15 +389,6 @@ export class Bots extends cordis.Service {
       (request) => this.onRequest(request),
       requestOptions,
     );
-
-    //M 通知 bot/route：别的插件（relay 送回信前）改一场会话的回话往哪送，照 route 改；发了不等。
-    this.ctx.on('bot/route', (notice) => {
-      //M sessions.open 拿到的是内存里那场会话的同一个对象，改了发通知的一方马上看得到。
-      const session = this.home.sessions.open(notice.sessionId);
-
-      //M 把会话的渠道和回话地址换成通知里的（换了渠道旧地址作废），并存库。
-      this.route(session, notice.origin);
-    });
   }
 
   /**
@@ -657,55 +633,67 @@ export class Bots extends cordis.Service {
   }
 
   /**
-   * 把一段话发出去，等渠道发完。自动回话、中途先说一句、前台送后台结果都走它。
-   * @param session 哪场会话：渠道从 row.channel 找登记的 send，send 再从 row.address 认出发到哪。
+   * 把没有来源快照的一段话发出去，等渠道发完：一轮结束自动回话、旧会话中途先说一句、前台送后台结果（legacy_auto）都走它。
+   * 照会话记的（或 origin 给的）渠道和地址发 channel/reply（target.address），正文里的 @路径 当文件发（atFiles，和原来一样）。
+   * @param session 哪场会话：渠道、地址从 row.channel、row.address 取；会话号带进请求，渠道照它定细节。
    * @param text 要发的话。
    * @param origin 发到哪：给了就用它的渠道和地址，不看会话现在记的（前台送后台结果用）。
-   * @returns 回执。没有渠道、渠道没登记是 rejected；渠道不交回执是 uncertain；渠道抛错是 uncertain（不知道发到一半没有）。
-   * 副作用：发消息。不抛错。
+   * @returns 回执：照渠道的 channel/replied 折过来；没有渠道、渠道没挂是 rejected，超时是 uncertain。
+   * 副作用：发 channel/reply。不抛错。
    */
   async send(session: Session, text: string, origin?: Origin): Promise<SendReceipt> {
     const name = origin?.channel ?? session.row.channel;
     if (name === undefined) return { status: 'rejected', reason: '这场会话没有渠道' };
 
-    const send = this.sends.get(name);
-    if (send === undefined) return { status: 'rejected', reason: `渠道 ${name} 没有登记发送` };
+    //M 地址：给了 origin 的地址用它，没给用会话现在记的（和原来渠道的 send 取法一样）。
+    const rawAddress = origin?.address ?? session.row.address;
+    const address = utils.getRecord(rawAddress);
+    const target = { channel: name, chat: '', address };
 
-    try {
-      //M 交给渠道登记的发送函数，等它发完拿回执（飞书交 SendReceipt，老渠道不交）。
-      const receipt = await send(text, session, origin);
-
-      //M 老渠道不交回执：不能当成发到了。
-      if (receipt === undefined) return { status: 'uncertain', reason: `渠道 ${name} 没给回执` };
-
-      return receipt;
-    } catch (error) {
-      //G 渠道抛错：不知道发到一半没有，取出原因记成 uncertain，不往外抛。
-      const reason = textModule.getErrorMessage(error);
-      return { status: 'uncertain', reason };
+    //M 一轮结束的自动回话是 final（飞书照它撤“敲键盘”表情）；转着时说的一句、前台送后台结果是 progress。
+    let kind: protocol.ReplyKind = 'progress';
+    if (origin === undefined && session.row.state !== 'running') {
+      kind = 'final';
     }
+
+    //M 轮键借标准写法，消息号的位置放会话号：旧路的话不挂在哪条消息下；每次发一个新的请求键。
+    const replyRoundKey = protocol.getReplyRoundKey(session.id, session.row.bot, 'legacy');
+    const replyRequestKey = protocol.getReplyRequestKey(replyRoundKey, crypto.randomUUID());
+    const from = { bot: session.row.bot, replyRoundKey, target, sessionId: session.id };
+    const options = { replyRequestKey, replyIndex: 0, kind, atFiles: true };
+
+    //M 交渠道协议发出，等渠道回执。
+    const receipt = await protocol.requestTextReply(this.home, from, text, options);
+    const reason = receipt.reason ?? '';
+
+    //M 回执折回 SendReceipt：发了、排队、存草稿都算收下。
+    if (receipt.ok) return { status: 'accepted', reason: '' };
+    if (receipt.status === 'partial') return { status: 'partial', reason };
+    if (receipt.status === 'rejected') return { status: 'rejected', reason };
+
+    return { status: 'uncertain', reason };
   }
 
   /**
-   * 登记一个渠道的发送函数。渠道插件被拔掉时，把返回的函数交给 ctx.effect 就会自动撤掉。
-   * @param name 渠道名：cli、http、feishu、wechat……
-   * @param send 把机器人的话交给用户。
+   * 登记一个渠道名。渠道插件被拔掉时，把返回的函数交给 ctx.effect 就会自动撤掉。
+   * 发话不靠它（一律走 channel/reply），只给网页列“现在挂着哪些渠道”。
+   * @param name 渠道名：cli、http、feishu、wechat、voice……
    * @returns 撤掉这次登记的函数。
-   * 副作用：写入 sends；同名再登记会换掉旧的。
+   * 副作用：写入 channels；同名再登记不重复。
    */
-  channel(name: string, send: ChannelSend): () => void {
-    this.sends.set(name, send);
+  channel(name: string): () => void {
+    this.channels.add(name);
     return () => {
-      if (this.sends.get(name) === send) this.sends.delete(name);
+      this.channels.delete(name);
     };
   }
 
   /**
-   * 现在挂着的渠道：登记过发送函数的渠道名，照登记的先后。web-api 的 GET /api/channels、POST /api/message 的 view 校验用。
+   * 现在挂着的渠道：登记过的渠道名，照登记的先后。web-api 的 GET /api/channels、POST /api/message 的 view 校验用。
    * @returns 渠道名，比如 ['http', 'feishu', 'wechat']。
    */
   channelNames(): string[] {
-    return [...this.sends.keys()];
+    return [...this.channels];
   }
 
   /**
@@ -827,7 +815,7 @@ export class Bots extends cordis.Service {
 
   /**
    * 改一场会话的回话往哪送：渠道和地址一起换（换了渠道，旧地址就作废；没给地址就清掉）。
-   * 机器人收消息、交办时走它；别的插件（比如 relay 送回信前）也调它，不直接改 row.channel、row.address。
+   * 机器人收消息、交办、前台排队开跑时走它；别的插件要发到别处，发 channel/reply 带 target.address，不改会话记的地址。
    * @param session 哪场会话。
    * @param origin 渠道和回话地址；不给渠道就什么也不改。
    * 副作用：改会话记录并存库。

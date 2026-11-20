@@ -27,7 +27,7 @@ const result = await Bun.build({
     path.join(root, 'web', 'wechat-kefu.html'),
     path.join(root, 'web', 'tutorial.html'),
     path.join(root, 'web', 'model-notes.html'),
-    path.join(root, 'web', 'decision-map.html'),
+    path.join(root, 'web', 'work-decision.html'),
   ],
   outdir: outDir,
   target: 'browser',

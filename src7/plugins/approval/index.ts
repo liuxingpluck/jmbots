@@ -1,6 +1,6 @@
 /**
  * 审核和待确认。
- *   review：审一条命令，照 0.4 的顺序一档一档来：程序规则 → 决策模型（发 decision/judge，没挂 decision 当拿不准）→ 审核小会话（让模型看一眼）→ 问用户。
+ *   review：审一条命令，按顺序检查：程序规则 → 决策模型（发 decision/judge，没挂 decision 当拿不准）→ 审核小会话（让模型看一眼）→ 问用户。
  *     程序规则里有可信目录（用户 11-18 #169）：执行目录和命令里写的路径都在 trusted_dirs 或这场会话的授权目录（回话地址的 grants.dirs）里，
  *     又不是删系统、删注册表、删数据、格式化（Rules.ts mustAsk）的，直接放行。
  *   ask：登记一件要用户点头的事（谁都能提），存表，发 approval/asked，有会话就发 bot/say 告诉用户怎么回。
@@ -22,7 +22,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as fastify from 'fastify';
 import type { AskInput as SessionAskInput, Session, Thinking } from '../../Sessions.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import * as rules from './Rules.ts';
 import * as outboundModule from './Outbound.ts';
 import * as channelSend from './ChannelSend.ts';
@@ -37,7 +37,9 @@ import * as workspaceModule from '../../utils/Workspace.ts';
 /** 插件名。 */
 export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.9';
+//M 1.2.10：本人批准的主动发件改走 channel/reply（target 带确切地址：飞书应用号和聊天号，网页提醒带意图号），
+//M   删 channel/send、channel/sent 和一次性批准凭证 takeChannelSendApproval；只给外置程序的发件补 channel/replied。
+export const version = '1.2.10';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -274,7 +276,7 @@ interface ApprovalConfig {
 }
 
 
-/** 问决策模型的是非题，照 0.4 原文（src/executors/ExecReview.ts:77-83）。 */
+/** 供决策模型判断命令风险的是非题。 */
 const SAFE = {
   instructions: '要执行这条命令。它安全吗——不会删改重要的文件、不会泄露密钥、不会影响系统和别的程序？可以直接执行，回答‘是’。',
   yes: '安全，可以直接执行',
@@ -576,7 +578,7 @@ export class Approval extends cordis.Service {
       asks.push(`审核小会话：${reviewReason}`);
     }
 
-    //G 调用方说了不问用户 → 直接拒绝（0.4 原话：ExecReview.ts:279）。
+    //G 调用方说了不问用户 → 直接拒绝。
     if (input.ask === false) {
       return this.traced(input, { result: 'reject', by: last.by, reason: `没放行：${last.reason}。要用户拍板就带上 ask_user 再发一次。` });
     }
@@ -722,7 +724,7 @@ export class Approval extends cordis.Service {
     //G 群聊会话不在群内发确认口令，直接返回登记结果。
     if (workspaceModule.isGroup(where) || pending.kind === outboundModule.REMINDER_APPROVAL_KIND) return pending;
 
-    //M 有会话就跟用户说一句怎么回（照 0.4：src/executors/ExecReview.ts:452-458）。
+    //M 有会话就跟用户说一句怎么回。
     if (pending.session !== undefined) {
       const id = String(pending.id);
       let how = `回复“同意 ${id}”或“拒绝 ${id}”。`;
@@ -1446,7 +1448,7 @@ function getPending(row: Row): Pending {
 
 
 /**
- * 转成网页要的形状（照 0.4 的 PendingApproval，web/src/Types.ts:73-90）。
+ * 转换为网页使用的审批项结构 PendingApproval。
  * @param pending 一件待确认。
  */
 function view(pending: Pending): Record<string, unknown> {

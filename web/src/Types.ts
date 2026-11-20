@@ -1,5 +1,5 @@
 /**
- * 后端接口给的东西长什么样（和 src/channels/Http.ts、src/channels/HttpUi.ts 一一对应；那边改了这边跟着改）。
+ * 网页调用后端接口时使用的请求和返回结构。
  * 网页只用相对地址和后端说话，不认识任何地址和端口。
  */
 
@@ -26,7 +26,7 @@ export interface BotView {
 
 
 /** GET /api/approvals 的一项：还在等用户点的命令。 */
-/** 一件正在做（或刚做完）的事的进度（后端 src/capabilities/Progress.ts 的 ProgressView）。 */
+/** 一件正在做（或刚做完）的事的进度。 */
 export interface ProgressView {
   /** 卡片号。 */
   id: number;
@@ -57,7 +57,7 @@ export interface ProgressView {
 }
 
 
-/** 重新连接一家供应商的结果（POST /api/models/reconnect；后端是 src/capabilities/Model.ts 的 ReconnectResult）。 */
+/** 重新连接一家供应商的结果（POST /api/models/reconnect）。 */
 export interface ReconnectResult {
   /** 供应商名（config.yaml 的 providers 下的键）。 */
   provider: string;
@@ -590,7 +590,7 @@ export interface UsageReport {
 }
 
 
-/** 一个会话的详情（GET /api/sessions/:id 的返回，src6/channels/HttpSessions.ts 的 getSession）。 */
+/** 一个会话的详情（GET /api/sessions/:id）。 */
 export interface SessionDetail {
   /** 会话号。 */
   id: string;
@@ -623,7 +623,7 @@ export interface SessionDetail {
 }
 
 
-/** 会话详情里的一次运行（src6/services/SessionTypes.ts 的 SessionRun）。 */
+/** 会话详情里的一次运行。 */
 export interface SessionRunView {
   /** 第几次，从 1 数。 */
   n: number;
@@ -638,7 +638,7 @@ export interface SessionRunView {
 }
 
 
-/** 会话步骤的一项（GET /api/sessions/:id/steps，src6/services/SessionTypes.ts 的 StepRow）。 */
+/** 会话步骤的一项（GET /api/sessions/:id/steps）。 */
 export interface SessionStep {
   /** 这个块里的第几步，从 1 数；顶层分派记录也占一个号。 */
   seq: number;
@@ -654,7 +654,7 @@ export interface SessionStep {
   stateBefore: string;
   /** 处理后会话的状态。 */
   stateAfter: string;
-  /** 存了什么；分派步是整份分派记录（src6/services/Dispatch.ts 的 DispatchRecord）。 */
+  /** 存了什么；分派步是整份分派记录。 */
   stored: Record<string, unknown>;
   /** 触发了什么。 */
   triggered: Record<string, unknown>;

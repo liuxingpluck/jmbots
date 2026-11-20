@@ -24,7 +24,7 @@ import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import type { Approval, Pending } from '../approval/index.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import * as page from './page/Routes.ts';
 import { Reader } from './read/Reader.ts';
 import type { ChatItem, RawMessage } from './read/Reader.ts';
@@ -43,7 +43,8 @@ export const name = 'wechat-kefu';
 //M 1.1.4：registerTextReply 接入 getTargetAddress 从微信自有会话表认聊天，承接跨渠道 channel/reply，不加微信新功能。
 //M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
 //M 1.2.4：跨聊天发话认目标时，拆目标串（去“微信·”、拆“账号:聊天”）改用骨架的 parseChatTarget；查表规则不变。
-export const version = '1.2.10';
+//M 1.2.11：旧路自动回话也经 channel/reply 来（target 带会话记的地址、带会话号），删渠道自己的 send；带会话号的只发做完的一轮。
+export const version = '1.2.11';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http'];
@@ -197,8 +198,8 @@ export class Wechat {
    * @param config 校验过的配置。
    */
   constructor(private readonly ctx: cordis.Context, readonly config: WechatConfig) {
-    //M 接管会话在微信渠道的回复出口，拔除插件时随生命周期撤销。
-    this.ctx.effect(() => this.ctx.bots.channel(this.name, (reply, session) => this.send(reply, session)));
+    //M 向 bots 登记渠道名（网页的渠道清单用），拔除插件时随生命周期撤销。
+    this.ctx.effect(() => this.ctx.bots.channel(this.name));
 
     //M 读端运行只读引擎，供会话轮询、历史和媒体查询使用。
     this.reader = new Reader(config.root, config.python, config.atNames);
@@ -228,13 +229,17 @@ export class Wechat {
       list.push({ name: 'wechat', bot: config.bot, connected: this.status.lastError === '', detail });
     });
 
-    //M 统一渠道回执出口：模型一轮里每调一次 channel_reply、零次兜底、审批直回，都经 channel/reply 到这里，逐条进发件表。
+    //M 统一渠道回执出口：模型一轮里每调一次 channel_reply、零次兜底、审批直回、旧路自动回话，都经 channel/reply 到这里，逐条进发件表。
     //M   模型的话照旧要本人点头才发（没开自动发时）；审批直回（轮名 approval）不再套娃问。
     protocol.registerTextReply(this.ctx, {
       channel: this.name,
       getTargetAddress: (chat) => this.getReplyTargetAddress(chat),
       sendDirectText: (text, request, targetAddress) => {
-        const raw = targetAddress ?? request.sourceSnapshot.origin.address;
+        //G 旧路（带会话号）只发做完的一轮：出错、停下的原因和转着时的中途一句不发给客户（原来渠道 send 的规矩）。
+        const refused = this.refuseUnfinished(request);
+        if (refused !== undefined) return refused;
+
+        const raw = targetAddress ?? request.sourceSnapshot?.origin.address;
         const account = utils.getStringField(raw, 'account');
         const chat = utils.getStringField(raw, 'chat');
         const chatName = utils.getStringField(raw, 'name');
@@ -675,15 +680,19 @@ export class Wechat {
   }
 
   /**
-   * 回话：只有做完的一轮才发给客户（出错、停下的原因不发给客户）。
-   * 自动发的直接发；别的问 approval（动态卡片），没有 approval 留草稿。
+   * 旧路的回话（带会话号）只发做完的一轮：出错、停下的原因和转着时的中途一句不发给客户。
+   * @param request 回复请求；模型一轮里的回复不带会话号，不拦。
+   * @returns 要拦下时的 rejected；放行是 undefined。
    */
-  protected send(reply: string, session: Session): void {
-    const address = session.row.address as WechatAddress | undefined;
-    if (session.row.state !== 'done' || reply.trim() === '' || address === undefined) return;
+  private refuseUnfinished(request: protocol.ChannelReplyRequest): protocol.TextReplyOutcome | undefined {
+    const sessionId = request.sessionId;
+    if (sessionId === undefined) return undefined;
 
-    //M 将成功会话的正式回复交给统一的发件与审批流程。
-    this.deliverOrDraft(address, session.row.bot, reply, true);
+    //M 照说话的会话现在的状态看：做完的才发。
+    const session = this.ctx.sessions.open(sessionId);
+    if (session.row.state === 'done') return undefined;
+
+    return { status: 'rejected', reason: 'unfinished：这一轮没做完（出错、停下或还在转），不发给微信客户' };
   }
 
   /**

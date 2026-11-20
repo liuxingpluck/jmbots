@@ -1,8 +1,8 @@
 /**
  * model-catalog（含并入的 Fallback / Queue）单元测试：
- *   1. 清单合并（手写 + list_models: false）与 model/cooldown 维护 limitedUntil（过期自动清除）；
+ *   1. 清单合并（手写 + list_models: false）与 model-catalog/cooldown 维护 limitedUntil（过期自动清除）；
  *   2. 真实 Sessions.run() 链路下：挂在前方的 session/before-model 插件先写 system，排在后面的 ModelFallback 接管调用 chat()；
- *      429 限流连续触发两次 model/failed 即掐断、发 model/cooldown（同步进 ModelCatalog）与 model/fallback，切备选成功；再次请求直接走 cooldown；
+ *      429 限流连续触发两次 session/model-failed 即掐断、发 model-catalog/cooldown（同步进 ModelCatalog）与 model-catalog/fallback，切备选成功；再次请求直接走 cooldown；
  *   3. 上下文超长（context-overflow）：按 ModelCatalog 窗口降序挑更大上下文候选；
  *   4. Queue 并发排队与取消信号，以及 config.fallback 入口校验和 fallback: false 关闭开关。
  */
@@ -104,8 +104,8 @@ async function setupWorld(options: {
 
   const fallbackEvents: FallbackInfo[] = [];
   const cooldownEvents: catalogPlugin.CooldownInfo[] = [];
-  ctx.on('model/fallback', (info) => fallbackEvents.push(info));
-  ctx.on('model/cooldown', (info) => cooldownEvents.push(info));
+  ctx.on('model-catalog/fallback', (info) => fallbackEvents.push(info));
+  ctx.on('model-catalog/cooldown', (info) => cooldownEvents.push(info));
 
   await ctx.plugin(MockResources);
   await ctx.plugin(toolsModule.Tools);
@@ -124,18 +124,18 @@ async function setupWorld(options: {
 }
 
 
-test('1. ModelCatalog 清单合并与 model/cooldown 维护 limitedUntil', async () => {
+test('1. ModelCatalog 清单合并与 model-catalog/cooldown 维护 limitedUntil', async () => {
   const world = await setupWorld();
   const list = world.ctx.modelCatalog.list();
   expect(list.map((item) => item.id)).toEqual(['mock/primary', 'mock/small', 'mock/medium', 'mock/huge']);
   expect(world.ctx.modelCatalog.find('mock/primary')?.limitedUntil).toBeUndefined();
 
   const future = Date.now() + 60_000;
-  world.ctx.emit('model/cooldown', { model: 'mock/primary', until: future, reason: '429 rate limit' });
+  world.ctx.emit('model-catalog/cooldown', { model: 'mock/primary', until: future, reason: '429 rate limit' });
   expect(world.ctx.modelCatalog.find('mock/primary')?.limitedUntil).toBe(future);
 
   const expired = Date.now() - 1000;
-  world.ctx.emit('model/cooldown', { model: 'mock/small', until: expired, reason: '429 expired' });
+  world.ctx.emit('model-catalog/cooldown', { model: 'mock/small', until: expired, reason: '429 expired' });
   expect(world.ctx.modelCatalog.find('mock/small')?.limitedUntil).toBeUndefined();
 });
 
@@ -210,8 +210,8 @@ test('2. 限流回退：前置插件先改 system，429 重试超 1 次掐断、
     seenSystems.push([...request.system]);
     if (request.model === 'mock/primary') {
       //M 模拟底层 pi 重试 2 次（> RATE_LIMIT_RETRIES = 1）后由 ModelFallback 主动 abort 切换。
-      world.ctx.emit('model/failed', { session: request.session, model: 'mock/primary', error: 'HTTP 429 rate limit retry after 30s', ms: 10 });
-      world.ctx.emit('model/failed', { session: request.session, model: 'mock/primary', error: 'HTTP 429 rate limit retry after 30s', ms: 10 });
+      world.ctx.emit('session/model-failed', { session: request.session, model: 'mock/primary', error: 'HTTP 429 rate limit retry after 30s', ms: 10 });
+      world.ctx.emit('session/model-failed', { session: request.session, model: 'mock/primary', error: 'HTTP 429 rate limit retry after 30s', ms: 10 });
       throw new Error('aborted');
     }
     return piAi.fauxAssistantMessage(`由 ${request.model} 回复`);

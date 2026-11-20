@@ -91,14 +91,14 @@ async function setup(): Promise<{ ctx: cordis.Context; workspace: string; root: 
 
 
 describe('file-tools（含 BaseTools 并入）', () => {
-  test('版本为 1.1.2，front 与 work 的工具集合与预期一致', async () => {
-    expect(fileToolsModule.version).toBe('1.1.2');
+  test('版本为 1.2.0，front 与 work 的工具集合与预期一致', async () => {
+    expect(fileToolsModule.version).toBe('1.2.0');
     const { ctx } = await setup();
     const frontNames = ctx.tools.listToolsForSessionKind('front').map((tool) => tool.name);
     const workNames = ctx.tools.listToolsForSessionKind('work').map((tool) => tool.name);
 
     expect(frontNames).toEqual(['time', 'read', 'list_dir', 'find']);
-    expect(workNames).toEqual(['time', 'read', 'list_dir', 'write', 'edit', 'find']);
+    expect(workNames).toEqual(['time', 'read', 'list_dir', 'write', 'edit', 'find', 'skill']);
   });
 
   test('time、write、read（文本行号/范围与图片块）、list_dir 正常工作', async () => {

@@ -200,7 +200,7 @@ function ObjectListField(
 }
 
 
-/** 新手写一个模型时的参数（和后端没写时的保守值一样：src/capabilities/Model.ts）。 */
+/** 新手写一个模型时的参数（与后端未配置时的默认值一致）。 */
 const BLANK_MODEL = { context_window: 128_000, max_output_tokens: 8192, vision: false };
 
 /** 设置页虚拟滚动上下预渲染像素缓冲，减少快速滚动露白。 */
@@ -945,13 +945,13 @@ export function Concurrency(props: SectionProps): react.JSX.Element {
 
 
 /**
- * 服务：后端端口、旧版单 token 与多访问令牌管理。
+ * 服务：后端端口、server.token 与多访问令牌管理。
  * @param props 草稿、改动回调与全部模型清单。
  */
 export function Http(props: SectionProps): react.JSX.Element {
-  //M 取当前界面语言的翻译函数，用于服务端口与旧版 token 字段文案。
+  //M 取当前界面语言的翻译函数，用于服务端口与 server.token 字段文案。
   const t = i18n.useT();
-  //M 渲染服务配置表单：绑定 server.port 与兼容旧版 server.token，并挂载动态访问令牌管理。
+  //M 渲染服务配置表单：绑定 server.port 与单令牌字段 server.token，并挂载动态访问令牌管理。
   return (
     <div className="jm-section">
       <fields.NumberField label={t('端口 server.port')} hint={t('一律监听 0.0.0.0（换版本时的试运行也一样）')} min={1} max={65535} draft={props.draft} path={['server', 'port']} onEdit={props.onEdit} />
@@ -1090,7 +1090,7 @@ function TokenManager(): react.JSX.Element {
 }
 
 
-/** 开机自启的开关：拨一下马上生效，不写进 config.yaml（基地在“启动”文件夹放一个快捷方式）。基地没开、是老版本时不显示。 */
+/** 开机自启的开关：拨一下马上生效，不写进 config.yaml（基地在“启动”文件夹放一个快捷方式）。无法读取自启状态时隐藏开关。 */
 function AutostartSwitch(): react.JSX.Element | null {
   //M 取当前界面语言的翻译函数，用于开机自启开关名称和默认提示。
   const t = i18n.useT();
@@ -1102,7 +1102,7 @@ function AutostartSwitch(): react.JSX.Element | null {
   const [error, setError] = react.useState('');
 
   react.useEffect(() => {
-    //M 挂载时查询后端当前开机自启状态；未连接基地或老版本时保持 null 隐藏开关。
+    //M 挂载时查询后端当前开机自启状态；请求失败时保持 null 并隐藏开关。
     void api.autostart().then((info) => setEnabled(info.enabled), () => setEnabled(null));
   }, []);
 

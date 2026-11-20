@@ -15,6 +15,7 @@ import * as cordis from 'cordis';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as botsPlugin from '../bots/index.ts';
+import * as channels from '../channels/index.ts';
 import * as workspacesPlugin from './index.ts';
 
 
@@ -112,10 +113,14 @@ async function world(root?: string): Promise<{ ctx: cordis.Context; root: string
   await ctx.plugin(botsPlugin, {});
   ctx.on('session/before-model', fakeAnswer);
 
+  //M 渠道 test：登记渠道名，发到它的话（都经 channel/reply）记进 sent。
   const sent: string[] = [];
-  ctx.bots.channel('test', (reply) => {
-    sent.push(reply);
-    return { status: 'accepted', reason: '' };
+  ctx.bots.channel('test');
+  channels.registerTextReply(ctx, {
+    channel: 'test',
+    sendDirectText: (text) => {
+      sent.push(text);
+    },
   });
   return { ctx, root: dir, sent };
 }

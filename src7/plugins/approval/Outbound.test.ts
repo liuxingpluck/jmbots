@@ -2,7 +2,7 @@
 import * as sqlite from 'bun:sqlite';
 import * as cordis from 'cordis';
 import { afterEach, expect, test } from 'bun:test';
-import type { ChannelRepliedEvent } from '../../Channels.ts';
+import type { ChannelRepliedEvent } from '../channels/index.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type { ApprovedCall, ProgramDraft, ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as outbound from './Outbound.ts';

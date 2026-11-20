@@ -41,14 +41,17 @@ interface LineCardData {
 const ORIGIN: xy.NodeOrigin = [0.5, 0.5];
 const FIT = { padding: 0.14, maxZoom: 1.2, minZoom: 0.1 };
 const FILES = [
-  'Main.json', 'Resources.json', 'Tools.json', 'Sessions.json', 'Channels.json', '进程插件.json', 'Cordis.json',
+  'Main.json', 'Resources.json', 'Tools.json', 'Sessions.json', 'channels插件.json', '进程插件.json', 'Cordis.json',
 ];
 /** 进程插件那张不是逐行，是主程序、programs、二进制三方的握手流程。 */
 const HANDSHAKE_FILE = '进程插件.json';
+/** channels 是 plugins/channels/ 里五个文件的讲解，不是骨架单个文件。 */
+const CHANNELS_FILE = 'channels插件.json';
 
 /** 下拉和引导句里显示的名字：骨架文件显示成 .ts，握手图单独起名。 */
 function getFileLabel(file: string): string {
   if (file === HANDSHAKE_FILE) return '进程插件（三方握手）';
+  if (file === CHANNELS_FILE) return 'channels 插件（渠道协议）';
   if (file === 'Cordis.json') return 'Cordis 插件生命周期';
 
   return file.replace(/\.json$/u, '.ts');
@@ -369,6 +372,7 @@ export function LinesView(props: ViewProps): react.JSX.Element {
   const introParams = { file: `src7/${sourceName}` };
   let introLabel = t('这是 {file} 的逐行图，点块看每段代码', introParams);
   if (name === HANDSHAKE_FILE) introLabel = t('这是进程插件三方握手的流程图，点块看每一步');
+  if (name === CHANNELS_FILE) introLabel = t('这是 plugins/channels/ 五个文件的讲解，点块看每段代码');
   if (name === 'Cordis.json') introLabel = '这是插件从挂上到卸下的示意图，按编号读；不是本次运行的录屏。';
   //M 下拉里按源文件名显示，值仍是 JSON 文件名。
   const fileOptions = files.map((file) => ({ value: file, label: getFileLabel(file) }));

@@ -15,7 +15,7 @@ import * as guardModule from './ResourceGuard.ts';
 
 /** 插件名和版本。 */
 export const name = 'programs';
-export const version = '1.7.3';
+export const version = '1.7.4';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 
@@ -42,7 +42,7 @@ declare module 'cordis' {
      * 谁发：src7/plugins/programs/Host.ts 的 Host.publishState
      * 谁接：暂无
      */
-    'program/state'(state: ProgramState): void;
+    'programs/state'(state: ProgramState): void;
   }
   interface Context {
     /** 外部程序的状态和已就绪地址。 */
@@ -113,7 +113,7 @@ class Programs extends cordis.Service {
     }
   }
 
-  /** 返回资源最新副本，数值单位与resource/pressure相同。 */
+  /** 返回资源最新副本，数值单位与programs/pressure相同。 */
   resources() {
     //M 向查询方返回独立快照，不能修改守卫内部状态。
     return this.guard.resources();
@@ -365,14 +365,14 @@ async function forward(
   }
 
   const endpoint = managed.replace(/\/+$/u, '');
-  //G 外置客服转交的只能是本人双阶段操作；旧版单步请求不能继续发送。
+  //G 外置客服转交的只能是本人双阶段操作；单步请求不能继续发送。
   const legacy = sendModule.isLegacySend(endpoint);
   let payload = request.body;
   if (legacy) {
     if (!ui) return reply.code(403).send({ error: '发送确认只允许本人操作' });
 
     const method = request.method;
-    //G 只重建校验过的操作，旧版外置即使在运行也不会收到 id。
+    //G 只重建校验过的操作，外置渠道收到的操作里不带本地发件 id。
     const action = sendModule.getProxyApproval(endpoint, method, payload);
     if (action === undefined) return reply.code(409).send({ error: '发送请使用主站的草稿确认入口' });
 

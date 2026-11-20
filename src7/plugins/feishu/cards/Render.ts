@@ -1,6 +1,6 @@
 /**
  * 拼飞书卡片的 JSON：待确认卡片、进度卡片。纯函数，不碰网络、不碰库，离线测试直接 import。
- * 照 0.4 的 src/channels/Feishu.ts（buildCard、审核卡片、进度卡片）。
+ * 生成通用飞书卡片，以及审批和进度卡片。
  * Pending、ProgressItem 的形状照 approval.md、progress.md 第 2 节，这里只取卡片用到的几项。
  * 待确认卡片照 Pending.card（utils/Card.ts 的卡片数据，网页审批面板画的是同一份）拼；老数据没有 card 时照 detail 拼。
  */
@@ -71,7 +71,7 @@ export interface CardSpec {
 }
 
 
-/** 进度卡片限时的选项，分钟（0.4 src/capabilities/Progress.ts:31）。 */
+/** 进度卡片限时的选项，分钟。 */
 export const LIMIT_CHOICES = [15, 20];
 
 /** 待确认的细节最多放多少字。 */
@@ -94,7 +94,7 @@ const STAGES: Record<ProgressItemLike['stage'], { color: string; icon: string; t
 
 
 /**
- * 拼一张卡片（0.4 buildCard）：标题栏、每段正文一个 markdown、一排按钮、灰色小字。
+ * 拼一张卡片：标题栏、每段正文一个 markdown、一排按钮、灰色小字。
  * update_multi：卡片能被原地改（message.patch），所有人看到的都跟着变。
  * @param spec 颜色、标题、正文、按钮、小字。
  * @returns 飞书卡片 JSON。

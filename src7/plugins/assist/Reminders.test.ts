@@ -2,10 +2,12 @@
 import * as sqlite from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
-import type { SourceSnapshot } from '../../Channels.ts';
+import * as channels from '../channels/index.ts';
+import type { SourceSnapshot } from '../channels/index.ts';
 import type { Session } from '../../Sessions.ts';
 import type { ToolSpec } from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
+import * as utils from '../../utils/index.ts';
 import * as approval from '../approval/index.ts';
 import * as outbound from '../approval/Outbound.ts';
 import * as rules from '../approval/Rules.ts';
@@ -24,6 +26,46 @@ afterEach(async () => {
     await cleanup();
   }
 });
+
+/** 假渠道收到的一次发件：渠道、机器人、确切地址里的账号、聊天、提醒号，正文。 */
+interface SentCall {
+  channel: string;
+  bot: string;
+  account: string;
+  chat: string;
+  reminder: string;
+  text: string;
+}
+
+/**
+ * 挂飞书和网页两个假渠道：批准后的发件经 channel/reply 带确切地址来，记进 calls，回执照 answer 定。
+ * @param ctx 测试的 Cordis 上下文。
+ * @param calls 收到的发件记在这里。
+ * @param answer 渠道交回的结果。
+ */
+function mountChannels(
+  ctx: cordis.Context,
+  calls: SentCall[],
+  answer: () => channels.TextReplyOutcome | Promise<channels.TextReplyOutcome>,
+): void {
+  for (const channel of ['feishu', 'http']) {
+    channels.registerTextReply(ctx, {
+      channel,
+      sendDirectText: (text, request, targetAddress) => {
+        const call = {
+          channel: request.channel,
+          bot: request.bot,
+          account: utils.getStringField(targetAddress, 'appId'),
+          chat: utils.getStringField(targetAddress, 'chatId'),
+          reminder: utils.getStringField(targetAddress, 'reminder'),
+          text,
+        };
+        calls.push(call);
+        return answer();
+      },
+    });
+  }
+}
 
 class Clock implements reminderModule.Clock {
   private task?: { time: number; invoke: () => void };
@@ -209,21 +251,18 @@ test('重启后错过的待发提醒只补发一次，并标明原定时刻', as
 test.each(['未交接', '已发', '在途'])('重启按原提醒号和正文查发件账：%s', async (phase) => {
   const world = setup();
   const original = world.make();
-  const calls: outbound.ApprovedChannelSend[] = [];
+  const calls: SentCall[] = [];
   const sent: ProviderReceipt = { status: 'sent' };
   const originalReceipt = Promise.withResolvers<ProviderReceipt>();
   const channelReceipt = Promise.withResolvers<ProviderReceipt>();
   new outbound.Outbound(world.ctx);
 
   //M 只用合成渠道。悬住“在途”回执以保留发件账已经占位的状态。
-  events.onRequestEvent(world.ctx, 'channel/send', 'channel/sent', async (request) => {
-    expect(outbound.takeChannelSendApproval(request.call)).toBe(true);
-    calls.push(request.call);
+  mountChannels(world.ctx, calls, async () => {
     if (phase === '在途') {
-      const receipt = await channelReceipt.promise;
-      return { receipt };
+      await channelReceipt.promise;
     }
-    return { receipt: sent };
+    return { status: 'sent' };
   });
 
   const send = async (message: reminderModule.Delivery): Promise<ProviderReceipt> => {
@@ -294,17 +333,12 @@ test('重启后读回已持久确认的卡片，并补发原定时间已过的�
   expect(restarted.listForBot('合成助手')).toMatchObject([{ state: 'sent' }]);
 });
 
-test.each(['feishu', 'http'])('%s 定时发送只凭提醒记录号，经 Outbound 取得一次性渠道凭证', async (channel) => {
+test.each(['feishu', 'http'])('%s 定时发送只凭提醒记录号，经 Outbound 照批准的确切地址发 channel/reply', async (channel) => {
   const world = setup();
   const reminders = world.make();
-  const calls: outbound.ApprovedChannelSend[] = [];
+  const calls: SentCall[] = [];
   new outbound.Outbound(world.ctx);
-  events.onRequestEvent(world.ctx, 'channel/send', 'channel/sent', (request) => {
-    expect(outbound.takeChannelSendApproval(request.call)).toBe(true);
-    calls.push(request.call);
-    const receipt: ProviderReceipt = { status: 'sent' };
-    return { receipt };
-  });
+  mountChannels(world.ctx, calls, () => ({ status: 'sent' }));
   const send = (reminderId: number) => {
     const payload = { reminderId };
     const options = {
@@ -332,12 +366,14 @@ test.each(['feishu', 'http'])('%s 定时发送只凭提醒记录号，经 Outbou
   expect(calls).toEqual([]);
   await world.clock.advance(SATURDAY);
   expect(calls).toHaveLength(1);
-  expect(calls[0]).toMatchObject({ channel, from: 'reminder', text: `提醒：${CONTENT}` });
+  expect(calls[0]).toMatchObject({ channel, text: `提醒：${CONTENT}` });
   if (channel === 'feishu') {
     expect(calls[0]).toMatchObject({ account: '合成账号', chat: '合成群' });
   }
+  //M 网页提醒的地址只带意图号，网页按它写一条系统提示；机器人是原提醒的。
   if (channel === 'http') {
-    expect(calls[0]).toMatchObject({ account: 'local', chat: 'http:本机', targetBot: '合成助手' });
+    expect(calls[0]?.reminder).not.toBe('');
+    expect(calls[0]).toMatchObject({ bot: '合成助手' });
   }
   expect(reminders.listForBot('合成助手')).toMatchObject([{ state: 'sent' }]);
   expect((await send(1)).receipt.status).toBe('failed');

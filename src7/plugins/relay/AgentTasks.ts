@@ -1,5 +1,5 @@
 /**
- * 外部 AI 任务通道：Claude、Codex、Grok、DSH 这类外部 AI 自己来打招呼、领活、下载附件、交回结果；jmbots 不去操控它们（照 0.4）。
+ * 外部 AI 任务通道：Claude、Codex、Grok、DSH 这类外部 AI 自己来打招呼、领活、下载附件、交回结果；jmbots 不去操控它们。
  * 工具 agent_task（前台、后台会话；外人的会话由 approval 拿掉）：list 看接上了谁、会用哪些模型；send 交一件活；status 看一件到哪了。
  * 新协议 v1（11-17，TaskProtocol.ts）：
  *   - send 的每件都写明开不开子代理、用什么模型、执行端的次高思考档、交回物；模型和思考档照执行端打招呼时登记的能力定，
@@ -10,7 +10,7 @@
  *   - reply:false 的交办无需模型配置。领取时归档，只记送达，不走结果投递。
  * 交回的结果经 bot/request 排进派活会话的结果队列，收到成功回执后再改任务状态：
  *   前台整理后回原渠道，后台看一轮接着做。protocol 是 NULL 的旧任务照旧格式 { ok, text, uploads } 收。
- * 照 0.4 src/capabilities/AgentTasks.ts。设计见同目录 说明.md 的「设计要点」一节（外部任务协议 v1）。
+ * 设计见同目录 说明.md 的「设计要点」一节（外部任务协议 v1）。
  * relay 的 apply 调 getScanMs 查配置，http 就绪后调 applyAgentTasks 挂上。
  */
 import * as crypto from 'node:crypto';
@@ -59,7 +59,7 @@ export async function requestResultDelivery(ctx: cordis.Context, input: dispatch
 export const STATUSES = ['new', 'taken', 'done', 'failed'] as const;
 export type TaskStatus = typeof STATUSES[number];
 
-/** 外部 AI 的名字规则（照 0.4）。 */
+/** 外部 AI 的名字规则。 */
 export const NAME = /^[A-Za-z0-9_-]{1,40}$/u;
 
 
@@ -78,7 +78,7 @@ export interface AgentInfo {
 }
 
 
-/** 一件活（JSON 形状照 0.4，id 写成字符串）。 */
+/** 一件外部任务；回执里的 id 是字符串。 */
 export interface Task {
   /** 任务号。 */
   id: string;

@@ -50,9 +50,10 @@ function fake() {
       }
     },
     bots: { channel: () => () => undefined, receive: async (_c: string, _b: string, text: string, address: unknown) => { received.push({ text, address }); } },
-    sessions: {},
+    //M 旧路回话带会话号：微信照会话现在的状态看做完没有，这里一律当做完了。
+    sessions: { open: () => ({ row: { state: 'done' } }) },
   };
-  const config: WechatConfig = { bot: '助手', root: '.', python: 'x', ocrPython: 'x', aobwUrl: 'http://127.0.0.1:1', lockFile: 'x', intervalMs: 0, atNames: '', chatLimit: 1000, send: false };
+  const config: WechatConfig ={ bot: '助手', root: '.', python: 'x', ocrPython: 'x', aobwUrl: 'http://127.0.0.1:1', lockFile: 'x', intervalMs: 0, atNames: '', chatLimit: 1000, send: false };
   const wechat = new Wechat(ctx as never, config);
   wechat.reader.backfill = async (_a, chat): Promise<SyncResult> => ({ chat, missing: false, messages: [] });
   return { wechat, ctx, received, handlers };
@@ -169,12 +170,31 @@ describe('微信后台全量监听、只听不发', () => {
   });
 
   test('回复只成草稿；deliver 也不发', async () => {
-    const { wechat, ctx } = fake();
+    const { wechat, ctx, handlers } = fake();
     let sent = 0;
     wechat.sender.send = async () => { sent += 1; return {}; };
     const address = { account: 'acc1', chat: 'wxid_a', name: '甲', customer: 'wechat:wxid_a' };
     ctx.resources.db.query('INSERT INTO wechat_watch VALUES (?, ?, ?, 1, 0)').run('acc1', 'wxid_a', '甲');
-    wechat['send']('好的，马上处理', { row: { state: 'done', address, bot: '助手' } } as never);
+
+    //M 会话做完一轮的旧路回话：照 Bots.send 的样子发 channel/reply（target 带会话记的地址、带会话号），交给微信登记的回复处理。
+    const request = {
+      requestId: 'rep_1',
+      channel: 'wechat',
+      bot: '助手',
+      replyRequestKey: 'legacy-1',
+      replyRoundKey: JSON.stringify(['s1', '助手', 'legacy']),
+      replyIndex: 0,
+      kind: 'final',
+      mode: 'text',
+      payloadHash: 'hash-1',
+      parts: [{ partId: 'text:0', kind: 'text', text: '好的，马上处理' }],
+      target: { channel: 'wechat', chat: 'wxid_a', address },
+      sessionId: 's1',
+      atFiles: true,
+    };
+    for (const handler of handlers.get('channel/reply') ?? []) {
+      await handler(request);
+    }
     const row = ctx.resources.db.query('SELECT id, state FROM wechat_outbox').get() as { id: number; state: string };
     expect(row.state).toBe('draft');
     await wechat.deliver(row.id);

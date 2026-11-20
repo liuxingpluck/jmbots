@@ -16,7 +16,7 @@ import type { ModelCatalog } from './index.ts';
 import * as queueModule from './Queue.ts';
 
 
-/** model/fallback 的参数（总览第 3 节待补约定第 9 条）。reason 四种：rate-limit、cooldown、context-overflow、no-available-fallback。 */
+/** model-catalog/fallback 的参数（总览第 3 节待补约定第 9 条）。reason 四种：rate-limit、cooldown、context-overflow、no-available-fallback。 */
 export interface FallbackInfo {
   /** 发生切换的会话实例。 */
   session: Session;
@@ -72,7 +72,7 @@ declare module 'cordis' {
      * 谁发：src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.onRequest
      * 谁接：暂无
      */
-    'model/fallback'(info: FallbackInfo): void;
+    'model-catalog/fallback'(info: FallbackInfo): void;
   }
 }
 
@@ -85,7 +85,7 @@ const COOLDOWN_MAX_MS = 24 * 60 * 60 * 1000;
 
 
 /**
- * 判断报错是不是限流、额度用完（照 0.4 Model.ts:586-588）。
+ * 判断报错是不是限流、额度用完。
  * @param error 报错原文。
  * @returns 属于限流或额度耗尽错误时返回 true，否则返回 false。
  */
@@ -94,7 +94,7 @@ export function isRateLimited(error: string): boolean {
 }
 
 /**
- * 判断报错是不是上下文超长（照 0.4 Model.ts:552-554）。
+ * 判断报错是不是上下文超长。
  * @param error 报错原文。
  * @returns 属于上下文超限错误时返回 true，否则返回 false。
  */
@@ -140,9 +140,9 @@ export function getResetTime(error: string, now: number): number | undefined {
 }
 
 
-/** 换模型处理器：挂载 session/before-model，失败时监听 model/failed 并按冷却/大窗口切换备选。 */
+/** 换模型处理器：挂载 session/before-model，失败时监听 session/model-failed 并按冷却/大窗口切换备选。 */
 export class ModelFallback {
-  /** 冷却表：模型 → 冷却到几点、那次的错。只在内存，重启就清（同 0.4）。 */
+  /** 冷却表：模型 → 冷却到几点、那次的错。只在内存，重启就清。 */
   private readonly cooldowns = new Map<string, { until: number; error: string }>();
 
   private readonly queue: queueModule.Queue;
@@ -213,7 +213,7 @@ export class ModelFallback {
     }
 
     for (const model of order) {
-      this.ctx.emit('model/fallback', { session: request.session, from: asked, to: model, reason });
+      this.ctx.emit('model-catalog/fallback', { session: request.session, from: asked, to: model, reason });
       try {
         //M 依次尝试排序后的备选模型，拿到结果立即回填 request.answer 并结束本轮。
         request.answer = await this.attempt(request, model);
@@ -229,7 +229,7 @@ export class ModelFallback {
 
     //M 要的在冷却、备选一个都没有：还是调它（冷却记错了也不至于一个不用）。
     if (tried.length === 0) {
-      this.ctx.emit('model/fallback', { session: request.session, from: asked, to: asked, reason: 'no-available-fallback' });
+      this.ctx.emit('model-catalog/fallback', { session: request.session, from: asked, to: asked, reason: 'no-available-fallback' });
       request.answer = await this.attempt(request, asked);
       return;
     }
@@ -244,14 +244,14 @@ export class ModelFallback {
    * @returns 重发后得到的 AssistantMessage，content 是回答内容块，usage 是用量，stopReason 说明如何结束。
    */
   private async attempt(request: ChatRequest, model: string): Promise<piAi.AssistantMessage> {
-    //M 限流时 pi 的重试只留 RATE_LIMIT_RETRIES 次（用户 11-14：429 最多再试 1 次就换下一个）：听 model/failed 数这一次的限流，
+    //M 限流时 pi 的重试只留 RATE_LIMIT_RETRIES 次（用户 11-14：429 最多再试 1 次就换下一个）：听 session/model-failed 数这一次的限流，
     //M   数够了就掐断自己这次（另起的取消信号，跟着会话的一起断），按限流的错往外抛，onRequest 就去试下一个。别的错照 models.retry 重试。
     const controller = new AbortController();
     const follow = (): void => controller.abort();
     request.signal.addEventListener('abort', follow, { once: true });
     let limited = 0;
     let limitError = '';
-    const stopListening = this.ctx.on('model/failed', (info) => {
+    const stopListening = this.ctx.on('session/model-failed', (info) => {
       if (info.session !== request.session || info.model !== model || !isRateLimited(info.error)) return;
 
       limited += 1;
@@ -262,7 +262,7 @@ export class ModelFallback {
     });
 
     try {
-      //M 调模型只有这一种写法：骨架的 ctx.sessions.chat(请求)，换模型只换 model 和取消信号，别的照原样（pi 的重试、model/failed 通知都在里面）。
+      //M 调模型只有这一种写法：骨架的 ctx.sessions.chat(请求)，换模型只换 model 和取消信号，别的照原样（pi 的重试、session/model-failed 通知都在里面）。
       const asked: ChatRequest = {
         ...request,
         model,
@@ -304,7 +304,7 @@ export class ModelFallback {
     return undefined;
   }
 
-  /** 是限流才记冷却；原来不在冷却就发 model/cooldown（ModelCatalog、journal 听）。 */
+  /** 是限流才记冷却；原来不在冷却就发 model-catalog/cooldown（ModelCatalog、journal 听）。 */
   private noteLimit(model: string, error: string): void {
     //G 仅限流或额度耗尽错误才记入冷却，其余异常直接跳过。
     if (!isRateLimited(error)) return;
@@ -322,7 +322,7 @@ export class ModelFallback {
     this.cooldowns.set(model, { until, error });
     if (wasCooling) return;
 
-    this.ctx.emit('model/cooldown', { model, until, reason: error.slice(0, 200) });
+    this.ctx.emit('model-catalog/cooldown', { model, until, reason: error.slice(0, 200) });
     //T 跟踪：记了冷却。
     const traceVars = { model: model, until: new Date(until).toLocaleString() };
     this.ctx.emit('trace', 'ModelFallback.noteLimit', 'trace.modelCatalog.rateLimited', 'cooldowns.set(model, until)', traceVars);
@@ -370,7 +370,7 @@ export class ModelFallback {
       .slice(0, Math.max(0, maxTries));
   }
 
-  /** 全都不行的人话（照抄 0.4 原文，Model.ts:1661-1665、:1765-1786）。 */
+  /** 把所有候选模型均调用失败的原因写成提示。 */
   private giveUp(asked: string, list: string[], tried: { model: string; error: string }[], bigger: boolean): string {
     const names = tried.map((item) => item.model).join('、');
     if (bigger) {

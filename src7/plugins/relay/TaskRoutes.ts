@@ -1,5 +1,5 @@
 /**
- * 任务通道的 7 个接口和接入说明 GUIDE（照 0.4 src/channels/Http.ts:372-531、src/capabilities/AgentTasks.ts:70-95，11-17 加新协议 v1）。
+ * 任务通道的 7 个接口和接入说明 GUIDE（含外部任务协议 v1）。
  * 11-17 由原 agent-tasks/Routes.ts 挪进 relay（relay 自己转话的两条接口在 Routes.ts）。
  * 除了说明页都要令牌（本机来的不查，http 插件统一查）；错误由 HTTP 插件统一返回。
  */
@@ -13,7 +13,7 @@ import { type AgentTasks, type FinishInput, NAME, STATUSES, type Task, type Task
 import type * as protocolModule from './TaskProtocol.ts';
 
 
-/** 接入说明：GET /api/agents/guide 原样给外部 AI 看（照 0.4 原文，改了地址、任务号、上传要 files-api 三处；11-17 加第三节新协议）。 */
+/** 接入说明：GET /api/agents/guide 原样给外部 AI 看，并附外部任务协议 v1。 */
 export const GUIDE = `# jmbots 接入说明（给别的 AI 看）
 
 <地址> 是 jmbots 后端，局域网里是 http://<那台电脑的局域网 IP>:<端口> 这类（问用户）。

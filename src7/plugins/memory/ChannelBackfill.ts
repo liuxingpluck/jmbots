@@ -124,7 +124,7 @@ export class ChannelBackfill {
     this.state = this.getCheckpoint();
 
     //M high 直到收到 ok 才解除。busy 时仍由每个批次的准入回执决定。
-    ctx.on('resource/pressure', (event) => {
+    ctx.on('programs/pressure', (event) => {
       if (event.level === 'high') {
         this.pressure = event.reason || '资源占用过高';
         return;
@@ -282,7 +282,7 @@ export class ChannelBackfill {
       onFallback: (reason: string) => ({ requestId: '', ok: false, reason: `资源守卫未放行（${reason}）` }),
     };
     //M 守卫无人监听或超时也按拒绝处理，下个间隔再问。
-    const access = await requestEvent.requestEvent(this.ctx, 'resource/request', 'resource/result', request, options);
+    const access = await requestEvent.requestEvent(this.ctx, 'programs/resource-request', 'programs/resource-result', request, options);
 
     //G 等准入期间可能收到 high 或手动暂停。即便准入返回 ok，也要重新验。
     if (!this.canRun()) return;

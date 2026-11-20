@@ -1,15 +1,9 @@
-/** 校验并持久化整张决策图，记录单调递增的改动历史。 */
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+/** 校验工作决策树及节点变更，通过 SQLite 将节点、留言和流水一并保存。 */
+import * as crypto from 'node:crypto';
+import type { Database } from 'bun:sqlite';
 import * as failureModule from '../../utils/Failure.ts';
-import * as filesModule from '../../utils/Files.ts';
+import * as sql from './Sqlite.ts';
 import * as types from './Types.ts';
-
-/** 原子保存的快照含最近的改动，重启时可补上最后一条历史。 */
-interface SavedGraph extends types.DecisionGraph {
-  /** 已提交给快照、可能还未追加到历史的记录。 */
-  head?: types.DecisionChange;
-}
 
 /** 对外的 API 输入错误，交由 HTTP 层返回 400。 */
 function invalid(message: string): never {
@@ -101,6 +95,24 @@ function readOptions(value: unknown): types.DecisionOption[] | undefined {
   });
 }
 
+/** 只接受已约定的两类收件人。 */
+function readAsker(value: unknown): types.DecisionAsker | undefined {
+  if (value === undefined) return;
+
+  //G 新节点的收件人按种类校验来源标识。
+  const item = readObject(value);
+  if (item['kind'] === 'session') {
+    const sessionId = readText(item['sessionId'], 'asker.sessionId');
+    return { kind: 'session', sessionId };
+  }
+  if (item['kind'] === 'helper') {
+    const name = readText(item['name'], 'asker.name');
+    return { kind: 'helper', name };
+  }
+  //G 未知提问方不进入持久队列。
+  return invalid('asker.kind 要是 session 或 helper');
+}
+
 /** 批量写入中的一项，继承已有节点未指定的字段。 */
 function readNode(id: string, raw: Record<string, unknown>, before: types.DecisionNode | undefined, now: number) {
   const item = { ...before, ...raw };
@@ -169,38 +181,66 @@ function readNode(id: string, raw: Record<string, unknown>, before: types.Decisi
     }
   }
 
+  //M 已登记的收件人不会被节点补丁改写，避免点选重试发给另一方。
+  const asker = before?.asker ?? readAsker(item['asker']);
+  const bot = readOptional(item['bot'], 'bot');
+  const workspaceId = readOptional(item['workspaceId'], 'workspaceId');
   return {
     id, kind, title, summary, parent, status, options, chosen, detailPath, body, sources, links, main, needs,
+    bot, workspaceId, asker,
     createdAt: before?.createdAt ?? createdAt, decidedAt, decidedBy,
     acknowledgedAt: before?.acknowledgedAt, note: before?.note, notes: before?.notes,
   } satisfies types.DecisionNode;
 }
 
-/** 校验批量应用后的树、主线与跨枝依赖。 */
-function checkGraph(nodes: Map<string, types.DecisionNode>): void {
+/** 工作区是项目标识，缺少工作区的决策按机器人分别归类。 */
+export function getProjectKey(node: Pick<types.DecisionNode, 'bot' | 'workspaceId'>): string {
+  return JSON.stringify([node.bot ?? null, node.workspaceId ?? null]);
+}
+
+/** 校验父链、主线和跨枝依赖，并把子节点归入项目。 */
+function checkGraph(nodes: Map<string, types.DecisionNode>, changed: Set<string>): void {
   if (nodes.size === 0) return;
 
-  const roots = [...nodes.values()].filter((node) => node.parent === null);
-  const root = roots[0];
-
-  //G 放射布局从唯一的中心目标展开。
-  if (roots.length !== 1 || root?.kind !== 'goal') return invalid('决策图需要一个中心目标');
-
-  const mainParents = new Set<string>();
-  const checked = new Set([root.id]);
+  //G 每个项目需要一个唯一的中心目标，四种画法复用同一棵树。
+  const roots = new Set<string>();
+  const checked = new Map<string, types.DecisionNode>();
   for (const node of nodes.values()) {
-    //G 每个节点都应沿 parent 回到中心，否则父节点缺失或构成循环。
-    let next = node.parent;
-    const visited = new Set([node.id]);
-    while (next !== null && !checked.has(next)) {
-      const parent = nodes.get(next);
-      if (parent === undefined || visited.has(next)) return invalid(`${node.id} 的父节点缺失或成环`);
+    if (node.parent !== null) continue;
 
-      visited.add(next);
-      next = parent.parent;
+    //M 用同一组机器人和工作区找唯一根节点。
+    const key = getProjectKey(node);
+    //G 每个项目只允许一个目标根。
+    if (node.kind !== 'goal' || roots.has(key)) return invalid('每个工作决策项目需要一个中心目标');
+    roots.add(key);
+    checked.set(node.id, node);
+  }
+  const mainParents = new Set<string>();
+  for (const node of nodes.values()) {
+    //M 沿父链找到项目根，记住已核对的路径，避免为同一棵子树反复遍历。
+    let current = node;
+    const visited = new Map<string, types.DecisionNode>();
+    while (!checked.has(current.id)) {
+      const parent = nodes.get(current.parent ?? '');
+      if (parent === undefined || visited.has(current.id)) return invalid(`${node.id} 的父节点缺失或成环`);
+
+      visited.set(current.id, current);
+      current = parent;
     }
-    for (const id of visited) {
-      checked.add(id);
+    const root = checked.get(current.id)!;
+    for (const member of visited.values()) {
+      //G 项目由根确定，补丁不能把一个子项归到与父项不同的项目。
+      if (member.bot !== undefined && member.bot !== root.bot) return invalid(`${member.id} 的机器人应与项目一致`);
+      if (member.workspaceId !== undefined && member.workspaceId !== root.workspaceId) {
+        return invalid(`${member.id} 的工作区应与项目一致`);
+      }
+      checked.set(member.id, root);
+      if (member.bot === root.bot && member.workspaceId === root.workspaceId) continue;
+
+      const updated = { ...member, bot: root.bot, workspaceId: root.workspaceId };
+      nodes.set(member.id, updated);
+      //M 派生归属有变化时随批次入库。
+      changed.add(member.id);
     }
 
     //G 主线从中心向外单独延伸，不能从中间跳过节点或再分成两支。
@@ -229,59 +269,106 @@ export interface ReplyTarget {
 
 /** 单个运行时目录对应一张图。写入同步完成，选择和提交之间不会被另一请求抢占。 */
 export class Store {
-  private readonly current: string;
-  private readonly history: string;
-  private saved: SavedGraph = { revision: 0, nodes: [] };
-  private changes: types.DecisionChange[] = [];
-  private historyNeedsBreak = false;
+  private readonly storage: sql.Sqlite;
+  private saved: types.DecisionGraph;
 
   /**
-   * 从运行时目录恢复图和历史。
-   * @param dir data/decision-map 目录。
-   * 副作用：补上上一次快照已提交的历史记录。
+   * 打开工作决策表，并从旧目录恢复尚未入库的节点和历史。
+   * @param db resources 打开的应用数据库。
+   * @param legacyDir 旧应用的 data/decision-map 目录。
+   * @param legacyWorkspaceId 导入旧图时使用的已有工作区，可省略。
+   * 副作用：首次创建表并导入已有数据。
    */
-  constructor(dir: string) {
-    this.current = path.join(dir, 'graph.json');
-    this.history = path.join(dir, 'history.jsonl');
-    if (fs.existsSync(this.current)) {
-      const encoded = fs.readFileSync(this.current, 'utf8');
-      this.saved = JSON.parse(encoded) as SavedGraph;
+  constructor(db: Database, legacyDir: string, legacyWorkspaceId?: string) {
+    //M 已导入的库直接读三张表，旧文件保留。
+    this.storage = new sql.Sqlite(db);
+    let project: sql.WorkspaceProject | undefined;
+    if (legacyWorkspaceId !== undefined) {
+      project = this.storage.getWorkspace(legacyWorkspaceId);
+      if (project === undefined) throw new Error('legacy_workspace_id 没有指向已登记的本人工作区');
     }
-    if (fs.existsSync(this.history)) {
-      const encoded = fs.readFileSync(this.history, 'utf8');
-      this.historyNeedsBreak = encoded !== '' && !encoded.endsWith('\n');
-      const rows = encoded.split('\n');
-      for (const row of rows) {
-        if (row.trim() === '') continue;
-
-        //M 正常逐行恢复历史。进程中断留下的末行由快照的 head 补齐。
-        try {
-          const change = JSON.parse(row) as types.DecisionChange;
-          this.changes.push(change);
-        } catch {
-          continue;
-        }
-      }
-    }
-    //M 恢复快照后补上中断时来不及追加的最后一条。
-    this.recoverHistory();
+    //M 恢复旧快照、历史和留言，导入标记保证只处理一次。
+    this.storage.importLegacy(legacyDir, project);
+    //M 从库中取出最新工单树作为读图快照。
+    this.saved = this.storage.getGraph();
   }
 
-  /** 读图时只给网页公开节点和版本。 */
+  /** 按已绑定 ID 找到工作区项目。 */
+  getWorkspace(id: string): sql.WorkspaceProject | undefined {
+    //M 复用工作区的标识和最新名称。
+    return this.storage.getWorkspace(id);
+  }
+
+  /** 检查库版本，复用尚未变化的快照。 */
   getGraph(): types.DecisionGraph {
-    return { revision: this.saved.revision, nodes: this.saved.nodes };
+    //M 另一个连接提交了变化时重新读库。
+    const revision = this.storage.getRevision();
+    if (revision !== this.saved.revision) this.saved = this.storage.getGraph();
+    return this.saved;
+  }
+
+  /** 显示时从工作区取当前名字，工作区改名不改变决策版本。 */
+  getPublicGraph(): types.DecisionGraph {
+    //M 公开快照继续用现有版本和节点。
+    const graph = this.getGraph();
+    //M 每个项目的目标根用于网页切换。
+    const roots = graph.nodes.filter((node) => node.parent === null);
+    const projects = roots.map((root) => {
+      let name = root.title;
+      if (root.workspaceId !== undefined) {
+        //M 工作区名称直接取当前登记值。
+        name = this.getWorkspace(root.workspaceId)?.name ?? name;
+      }
+      return { root: root.id, name };
+    });
+    return { ...graph, projects };
   }
 
   /** 从给定序号之后轮询改动，包含可靠的用户选择。 */
   getChanges(since: number) {
-    //M 轮询只返回客户端最后看过的序号之后的变化。
-    const changes = this.changes.filter((record) => record.seq > since);
-    const head = this.saved.head;
-    if (head !== undefined && head.seq > since && changes.at(-1)?.seq !== head.seq) {
-      //M 已提交快照但尚未追加的决定仍可立即轮询。
-      changes.push(head);
+    //M 让 SQL 按序号过滤新增历史。
+    return this.storage.getChanges(since);
+  }
+
+  /** 创建待定事项，返回节点和写入结果。相同的提问编号重试不创建第二件。 */
+  ask(input: types.DecisionAsk) {
+    //M 使用最新版本找同一编号已经登记的事项。
+    const graph = this.getGraph();
+    //M 工具调用和外部助手补交时可复用原节点。
+    const before = graph.nodes.find((node) => node.id === input.id);
+    if (before !== undefined) {
+      //G 重试允许当前提问方取回原节点，别的请求不能抢用这个编号。
+      const requestedBy = JSON.stringify(input.asker);
+      const openedBy = JSON.stringify(before.asker);
+      if (before.bot !== input.bot || before.workspaceId !== input.workspaceId || requestedBy !== openedBy) {
+        throw new failureModule.Failure(409, '已有另一件工作决策使用这个编号');
+      }
+      return { node: before, graph, tasks: [] };
     }
-    return { last: this.saved.revision, changes };
+
+    //M 由已绑定的归属查对应项目。
+    const key = getProjectKey(input);
+    //M 已建项目沿用现有根节点。
+    const root = graph.nodes.find((node) => node.parent === null && getProjectKey(node) === key);
+    const parent = root?.id ?? crypto.randomUUID();
+    const node = { ...input, parent, kind: 'pending', status: 'open' } as const;
+    const batch: unknown[] = [node];
+    if (root === undefined) {
+      //M 新项目第一次提问时建一个根，继续沿用现有任务树和布局。
+      let title = `${input.bot} · 未归类`;
+      if (input.workspaceId !== undefined) {
+        const workspace = this.getWorkspace(input.workspaceId);
+        title = workspace?.name ?? title;
+      }
+      batch.unshift({
+        id: parent, kind: 'goal', status: 'working', title, bot: input.bot, workspaceId: input.workspaceId,
+      });
+    }
+
+    //M 项目根和待定事项同批保存，结果使用实际写入的节点。
+    const saved = this.put(batch, 'plugin');
+    const inserted = saved.graph.nodes.find((entry) => entry.id === input.id)!;
+    return { ...saved, node: inserted };
   }
 
   /** 校验整批节点，成功后一次提交。 */
@@ -289,7 +376,9 @@ export class Store {
     //G 只对具体的节点变更提交版本。
     if (!Array.isArray(raw) || raw.length === 0) return invalid('nodes 要是非空列表');
 
-    const nodes = new Map(this.saved.nodes.map((node) => [node.id, node]));
+    //M 批量打补丁前取最新快照。
+    const current = this.getGraph();
+    const nodes = new Map(current.nodes.map((node) => [node.id, node]));
     const ids = new Set<string>();
     const tasks: types.DecisionTaskChange[] = [];
     const now = Date.now();
@@ -301,8 +390,17 @@ export class Store {
 
       //M 先在草稿里合并节点，失败时不改变当前图。
       const before = nodes.get(id);
-      const node = readNode(id, input, before, now);
+      let node = readNode(id, input, before, now);
+      if (node.parent === null && node.workspaceId !== undefined) {
+        //G 根的项目从已登记工作区取归属，拒绝指向外部工作区。
+        const project = this.getWorkspace(node.workspaceId);
+        if (project === undefined || (node.bot !== undefined && project.bot !== node.bot)) {
+          return invalid(`${id} 的工作区不属于这个机器人`);
+        }
+        node = { ...node, bot: project.bot };
+      }
       if (before?.status !== node.status) {
+        //M 新增或变更状态才能触发任务变化通知。
         tasks.push({ node: id, title: node.title, status: node.status, previousStatus: before?.status });
       }
       ids.add(id);
@@ -310,9 +408,10 @@ export class Store {
     }
 
     //M 合并后再检查关系，允许同一批里先加子节点后加父节点。
-    checkGraph(nodes);
+    checkGraph(nodes, ids);
     const change = { action: 'put', actor, nodes: [...ids], tasks } as const;
-    this.commit([...nodes.values()], change);
+    const changed = change.nodes.map((id) => nodes.get(id)!);
+    this.commit([...nodes.values()], changed, change);
     return { graph: this.getGraph(), tasks };
   }
 
@@ -378,7 +477,7 @@ export class Store {
    * @param text 用户写的话，入口已校验非空和长度。
    * @param option 同时选的选项号，入口已先用 choose 落盘。
    * @returns 更新后的节点和新留言。
-   * 副作用：快照和历史各记一条 note。
+   * 副作用：留言和变化在同一事务中写入数据库。
    */
   addNote(id: string, text: string, option?: string) {
     //M 留言号按节点内条数递增，relay 用它区分同一节点的多条收件。
@@ -405,7 +504,8 @@ export class Store {
     }
 
     //M 旧收件的键是完整节点号，或在末尾附加 #留言号。
-    const isNode = this.saved.nodes.some((node) => node.id === key);
+    const graph = this.getGraph();
+    const isNode = graph.nodes.some((node) => node.id === key);
     const separator = key.lastIndexOf('#');
     if (isNode || separator < 0) {
       this.reply(key, undefined, text, relayReplyId);
@@ -425,7 +525,7 @@ export class Store {
    * @param text 中控的回话。
    * @param relayReplyId relay 持久回信号，直达回话省略。
    * @returns 更新后的节点和中控这条留言。
-   * 副作用：被回的留言补上 repliedAt，快照和历史各记一条 reply。
+   * 副作用：被回的留言补上 repliedAt，回话和变化一并写入数据库。
    */
   reply(id: string, replyTo: string | undefined, text: string, relayReplyId?: number) {
     //G 带留言号的回话只能指向这个节点上用户写过的那条。
@@ -436,13 +536,10 @@ export class Store {
       throw new failureModule.Failure(404, `节点 ${id} 没有用户留言 ${replyTo}`);
     }
 
-    //G 已写图但 relay 还没标已送时，仅补齐历史并确认，避免重复追加。
+    //G 已写图但 relay 还没标已送时只确认已有记录，避免重复追加。
     if (relayReplyId !== undefined) {
       const existing = notes.find((note) => note.relayReplyId === relayReplyId);
-      if (existing !== undefined) {
-        this.recoverHistory();
-        return { node, note: existing };
-      }
+      if (existing !== undefined) return { node, note: existing };
     }
 
     //M 回话也排进同一列表，网页按时间一起列出。
@@ -468,7 +565,8 @@ export class Store {
   /** 按完整编号读单个节点，找不到给 404。 */
   private getNode(id: string): types.DecisionNode {
     //G 只按完整编号操作，未知节点直接报 404。
-    const node = this.saved.nodes.find((item) => item.id === id);
+    const graph = this.getGraph();
+    const node = graph.nodes.find((item) => item.id === id);
     if (node === undefined) throw new failureModule.Failure(404, `找不到节点 ${id}`);
 
     return node;
@@ -483,42 +581,21 @@ export class Store {
     });
 
     //M 只有完整图通过持久化后才更新已发布的版本。
-    this.commit(nodes, change);
+    this.commit(nodes, [node], change);
   }
 
-  /** 原子更新快照后追加历史。 */
-  private commit(nodes: types.DecisionNode[], change: Omit<types.DecisionChange, 'seq' | 'at'>): void {
-    //M 上次快照里的历史必须先记上，才可以提交新的版本。
-    this.recoverHistory();
+  /** 节点、关联留言和流水同一次提交，成功后更新读图快照。 */
+  private commit(
+    nodes: types.DecisionNode[],
+    changed: types.DecisionNode[],
+    change: Omit<types.DecisionChange, 'seq' | 'at'>,
+  ): void {
     const revision = this.saved.revision + 1;
-    const head = { ...change, seq: revision, at: Date.now() };
-    const saved = { revision, nodes, head };
-    const text = JSON.stringify(saved, null, 2);
+    const row = { ...change, seq: revision, at: Date.now() };
 
-    //M 快照同目录改名是提交点，历史可随后根据 head 补记。
-    filesModule.writeTextAtomic(this.current, text);
-    this.saved = saved;
-    this.recoverHistory();
-  }
-
-  /** 只追加尚未写入的最新记录，重启也可沿同一序号去重。 */
-  private recoverHistory(): void {
-    const head = this.saved.head;
-    if (head === undefined || this.changes.at(-1)?.seq === head.seq) return;
-
-    //M 如果进程中断留了半行，追加换行后再补记，保留原历史。
-    const encoded = JSON.stringify(head);
-    let line = `${encoded}\n`;
-    if (this.historyNeedsBreak) line = `\n${line}`;
-    try {
-      fs.appendFileSync(this.history, line, 'utf8');
-    } catch (error) {
-      this.historyNeedsBreak = true;
-      throw error;
-    }
-    this.historyNeedsBreak = false;
-
-    //M 文件确认写入后，轮询直接使用同一条内存记录。
-    this.changes.push(head);
+    //G 事务里比对版本，避免旧草稿覆盖其他连接刚提交的新决定。
+    const saved = this.storage.save(changed, row);
+    if (!saved) throw new failureModule.Failure(409, '工作决策已更新，请刷新后重试');
+    this.saved = { revision, nodes };
   }
 }

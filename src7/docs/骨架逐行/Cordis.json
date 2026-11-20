@@ -6,11 +6,11 @@
     "summary": "按时间顺序走一遍 cordis 4.0.0-rc.12 怎么挂插件、等依赖、运行、卸下清理；每步对照 Cordis 源码和我们的调用位置。",
     "body": "## 看什么\n\n- Cordis 源码：`node_modules/cordis/lib/index.js`，版本 **4.0.0-rc.12**（单文件，下面的行号都指它）；\n- 我们的调用：`src7/` 里真实的“文件:行号”，点了能在 VS Code 打开。\n\n## 按时间分 4 组\n\n- 挂上：建档：根 ctx 先建好；每次 ctx.plugin 给插件开一份 Fiber 档案、一张自己的 ctx，并登记到父插件名下。\n- 等依赖、开诊：inject 的服务到齐才跑 apply 或构造；服务类在构造里 provide；状态一变发 internal/status。\n- 运行中：开诊后登记监听、发事件、取服务、登记要撤的事；它们都记在当前插件名下。\n- 卸下：清理：dispose 或依赖的服务撤了 → 先等依赖自己的插件放手，再按档案撤掉名下所有 effect。\n\n这是示意图，不是本次运行录下来的轨迹。逐个概念的讲解在左栏「Cordis 用法」的 00～04 文档。",
     "sources": [
-      "src7/Channels.ts",
       "src7/Main.ts",
       "src7/Resources.ts",
       "src7/Sessions.ts",
       "src7/Tools.ts",
+      "src7/plugins/channels/index.ts",
       "src7/plugins/feishu/index.ts",
       "src7/plugins/memory/index.ts",
       "src7/plugins/tutorial/Boot.ts",
@@ -150,7 +150,7 @@
     "parent": "r-cordis-g3",
     "title": "ctx.on 登记监听",
     "summary": "L806：插件已卸下就不能再登记。",
-    "body": "**行号：index.js L802–L811、L784–L791**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 802    on(name, listener, options) {\n 803      if (typeof options !== \"object\") {\n 804        options = { prepend: options };\n 805      }\n 806      this.ctx.fiber.assertActive();\n 807      listener = this.ctx.reflect.bind(listener);\n 808      const result = this.bail(this.ctx, \"internal/listener\", name, listener, options);\n 809      if (result) return result;\n 810      const label = `ctx.on(${typeof name === \"string\" ? JSON.stringify(name) : name.toString()})`;\n 811      return this.register(label, name, listener, options);\n 784    register(label, name, callback, options) {\n 785      const method = options.prepend ? \"unshift\" : \"push\";\n 786      return this.ctx.fiber.effect(() => {\n 787        const hooks = this._hooks[name] ??= [];\n 788        hooks[method]({ ctx: this.ctx, callback, ...options });\n 789        return () => this.unregister(name, callback);\n 790      }, label);\n 791    }\n```\n\n### 解释\n- L806：插件已卸下就不能再登记。\n- L785：默认 push，排在名单末尾；`prepend` 才插到最前。\n- L786–L789：登记包在 `ctx.fiber.effect` 里，撤销就是 unregister。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:413` 听 flow/state：`ctx.on('flow/state', (notice) => this.onFlowState(notice));`\n- `src7/Main.ts:116` 听 internal/status：`app.on('internal/status', (fiber) => {`",
+    "body": "**行号：index.js L802–L811、L784–L791**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 802    on(name, listener, options) {\n 803      if (typeof options !== \"object\") {\n 804        options = { prepend: options };\n 805      }\n 806      this.ctx.fiber.assertActive();\n 807      listener = this.ctx.reflect.bind(listener);\n 808      const result = this.bail(this.ctx, \"internal/listener\", name, listener, options);\n 809      if (result) return result;\n 810      const label = `ctx.on(${typeof name === \"string\" ? JSON.stringify(name) : name.toString()})`;\n 811      return this.register(label, name, listener, options);\n 784    register(label, name, callback, options) {\n 785      const method = options.prepend ? \"unshift\" : \"push\";\n 786      return this.ctx.fiber.effect(() => {\n 787        const hooks = this._hooks[name] ??= [];\n 788        hooks[method]({ ctx: this.ctx, callback, ...options });\n 789        return () => this.unregister(name, callback);\n 790      }, label);\n 791    }\n```\n\n### 解释\n- L806：插件已卸下就不能再登记。\n- L785：默认 push，排在名单末尾；`prepend` 才插到最前。\n- L786–L789：登记包在 `ctx.fiber.effect` 里，撤销就是 unregister。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:413` 听 tutorial/state：`ctx.on('tutorial/state', (notice) => this.onFlowState(notice));`\n- `src7/Main.ts:116` 听 internal/status：`app.on('internal/status', (fiber) => {`",
     "sources": [
       "src7/Main.ts",
       "src7/plugins/tutorial/index.ts"
@@ -161,11 +161,11 @@
     "parent": "r-cordis-g3",
     "title": "emit 通知，serial 挨个问",
     "summary": "emit：同步挨个调，不等、不看返回值。",
-    "body": "**行号：index.js L750–L760**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 750    emit(...args) {\n 751      const [thisArg, callbacks] = this._resolve(\"emit\", args);\n 752      for (const callback of callbacks) Reflect.apply(callback, thisArg, args);\n 753    }\n 754    async serial(...args) {\n 755      const [thisArg, callbacks] = this._resolve(\"serial\", args);\n 756      for (const callback of callbacks) {\n 757        const result = await Reflect.apply(callback, thisArg, args);\n 758        if (isBailed(result)) return result;\n 759      }\n 760    }\n```\n\n### 解释\n- emit：同步挨个调，不等、不看返回值。\n- serial：一个个 await；返回截停值（L758）就不再往下问。\n- 名单顺序 = 登记顺序 = 插件挂上的先后。\n\n### 我们的调用\n- `src7/Main.ts:212` 通知 ready：`app.emit('ready', args.rest);`\n- `src7/Tools.ts:147` 工具执行前挨个问：`await this.ctx.serial('session/before-tool', gate);`\n- `src7/Channels.ts:852` 挨个问渠道插件投递：`void ctx.serial('channel/reply', fullRequest).then(() => {`",
+    "body": "**行号：index.js L750–L760**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 750    emit(...args) {\n 751      const [thisArg, callbacks] = this._resolve(\"emit\", args);\n 752      for (const callback of callbacks) Reflect.apply(callback, thisArg, args);\n 753    }\n 754    async serial(...args) {\n 755      const [thisArg, callbacks] = this._resolve(\"serial\", args);\n 756      for (const callback of callbacks) {\n 757        const result = await Reflect.apply(callback, thisArg, args);\n 758        if (isBailed(result)) return result;\n 759      }\n 760    }\n```\n\n### 解释\n- emit：同步挨个调，不等、不看返回值。\n- serial：一个个 await；返回截停值（L758）就不再往下问。\n- 名单顺序 = 登记顺序 = 插件挂上的先后。\n\n### 我们的调用\n- `src7/Main.ts:212` 通知 ready：`app.emit('ready', args.rest);`\n- `src7/Tools.ts:147` 工具执行前挨个问：`await this.ctx.serial('session/before-tool', gate);`\n- `src7/plugins/channels/Reply.ts:213` 发渠道回复请求、等渠道回执：`const result = await requestEvents.requestEvent(ctx, 'channel/reply', 'channel/replied', req, options);`",
     "sources": [
-      "src7/Channels.ts",
       "src7/Main.ts",
-      "src7/Tools.ts"
+      "src7/Tools.ts",
+      "src7/plugins/channels/index.ts"
     ]
   },
   {
@@ -236,7 +236,7 @@
     "parent": "r-cordis-g4",
     "title": "撤监听、撤服务",
     "summary": "unregister：从名单里删掉这个回调，名单空了连事件名一起删。",
-    "body": "**行号：index.js L792–L801、L980–L989**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 792    unregister(name, callback) {\n 793      const hooks = this._hooks[name];\n 794      if (!hooks) return;\n 795      const index = hooks.findIndex((hook) => hook.callback === callback);\n 796      if (index >= 0) {\n 797        hooks.splice(index, 1);\n 798        if (!hooks.length) delete this._hooks[name];\n 799        return true;\n 800      }\n 801    }\n   …\n 980        return async () => {\n 981          if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];\n 982          this.ctx.isolate(name, impl.isolate).reflect.notify([name]);\n 983          await new Promise((resolve) => {\n 984            impl.release = resolve;\n 985            if (!impl.dependents.size) resolve();\n 986          });\n 987          impl.release = void 0;\n 988          this.ctx.fiber.provisions.delete(impl);\n 989        };\n```\n\n### 解释\n- unregister：从名单里删掉这个回调，名单空了连事件名一起删。\n- provide 的撤销：从服务表删掉，通知等它的插件（它们会转入不开诊），再等依赖方放手。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:413` tutorial 卸下后 flow/state 不再进来：`ctx.on('flow/state', (notice) => this.onFlowState(notice));`\n- `src7/plugins/feishu/index.ts:1240` 飞书卸下后 ctx.get('feishu') 变 undefined：`ctx.provide('feishu', feishu);`",
+    "body": "**行号：index.js L792–L801、L980–L989**\n\n### 代码原文\n```js\n// node_modules/cordis/lib/index.js（cordis 4.0.0-rc.12）\n 792    unregister(name, callback) {\n 793      const hooks = this._hooks[name];\n 794      if (!hooks) return;\n 795      const index = hooks.findIndex((hook) => hook.callback === callback);\n 796      if (index >= 0) {\n 797        hooks.splice(index, 1);\n 798        if (!hooks.length) delete this._hooks[name];\n 799        return true;\n 800      }\n 801    }\n   …\n 980        return async () => {\n 981          if (this.store[impl.isolate] === impl) delete this.store[impl.isolate];\n 982          this.ctx.isolate(name, impl.isolate).reflect.notify([name]);\n 983          await new Promise((resolve) => {\n 984            impl.release = resolve;\n 985            if (!impl.dependents.size) resolve();\n 986          });\n 987          impl.release = void 0;\n 988          this.ctx.fiber.provisions.delete(impl);\n 989        };\n```\n\n### 解释\n- unregister：从名单里删掉这个回调，名单空了连事件名一起删。\n- provide 的撤销：从服务表删掉，通知等它的插件（它们会转入不开诊），再等依赖方放手。\n\n### 我们的调用\n- `src7/plugins/tutorial/index.ts:413` tutorial 卸下后 tutorial/state 不再进来：`ctx.on('tutorial/state', (notice) => this.onFlowState(notice));`\n- `src7/plugins/feishu/index.ts:1240` 飞书卸下后 ctx.get('feishu') 变 undefined：`ctx.provide('feishu', feishu);`",
     "sources": [
       "src7/plugins/feishu/index.ts",
       "src7/plugins/tutorial/index.ts"

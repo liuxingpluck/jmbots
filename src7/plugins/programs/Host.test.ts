@@ -460,7 +460,7 @@ test('已核实的假程序才有UI；过期仍ready，健康刷新不重复广�
   const ctx = new cordis.Context();
   cleanups.push(async () => { await ctx.fiber.dispose(); });
   const events: programs.ProgramState[] = [];
-  ctx.on('program/state', (event) => { events.push({ ...event }); });
+  ctx.on('programs/state', (event) => { events.push({ ...event }); });
   const timing = { watchMs: 30 };
   const { host } = getHost(['--license', 'expired'], timing, ctx);
   expect(host.status()).toMatchObject({ ui: null, licenseLabel: '未知' });
@@ -502,7 +502,7 @@ test('未启动实例本来就是stopped，反复停止不虚构状态变化事�
   const ctx = new cordis.Context();
   cleanups.push(async () => { await ctx.fiber.dispose(); });
   const events: programs.ProgramState[] = [];
-  ctx.on('program/state', (event) => { events.push(event); });
+  ctx.on('programs/state', (event) => { events.push(event); });
   const { host } = getHost([], undefined, ctx);
   await host.stop();
   await host.stop();

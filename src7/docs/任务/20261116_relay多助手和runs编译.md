@@ -41,7 +41,7 @@
 
 5. **Windows 上编译**（DSH）：`bun run typecheck:src7`、`bun run test:src7` 退出码都是 0，再 `bun scripts/Build_Src7.ts --out <你平常放测试包的目录>` 出包。
 
-6. **在飞书上问用户能不能换版，他点头才换。** 配置和 exe 一起换：先备份正式 `jmbotsData\config.yaml`，改完配置立刻换 exe。只改配置、不换 exe 的话，旧版一重启就会把 webhook 丢掉。要退回旧版时，配置也一起退回备份。
+6. **在飞书上问用户能不能换版，他点头才换。** 配置和 exe 一起换：先备份正式 `jmbotsData\config.yaml`，改完配置立刻换 exe。只改配置、不换 exe 的话，上一版一重启就会把 webhook 丢掉。要退回换版前的程序时，配置也一起退回备份。
    - 配置改两处（内容别贴出来，token 不外露）：
      - relay 段：Claude 11-16 读过线上配置，现在写的是 `bots: ['leon 的dsh']`、`prefixes: ['jm ', 'jm开发']`、`webhook_url`、`webhook_header`、`owner_open_ids`，没写 `helper`（靠的是写死的默认值 jm开发）。改成：
        ```yaml

@@ -100,15 +100,15 @@ interface RawRow {
 }
 
 
-/** 时间线默认几条、最多几条（同 0.4：src/channels/HttpUi.ts:171）。 */
+/** 时间线默认几条、最多几条。 */
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
-/** 搜索每组默认几条、最多几条（同 0.4：HttpUi.ts:241-244）。 */
+/** 搜索每组默认几条、最多几条。 */
 const SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 50;
 
-/** 搜索片段：命中处前后各几个字（同 0.4：HttpUi.ts:247）。 */
+/** 搜索片段：命中处前后各几个字。 */
 const SNIPPET_AROUND = 40;
 
 /** 网页发的话 source 是它（web/src/Api.ts:325 的 from）。 */
@@ -166,7 +166,7 @@ export function title(meta: SessionMeta): string {
 
 
 /**
- * 会话状态换成网页认的三种（同 src6/utils/Views.ts:46-51）：running → running，done/stopped → idle，failed → error。
+ * 会话状态换成网页认的三种：running → running，done/stopped → idle，failed → error。
  * @param state 骨架的状态。
  */
 export function getStatus(state: SessionState): 'running' | 'idle' | 'error' {
@@ -202,7 +202,7 @@ export function sessionFiles(root: string, meta: SessionMeta): { md: string; jso
 
 
 /**
- * 认出文字里的附件：@绝对路径（带空格时是 @"路径"），查大小（同 0.4：HttpUi.ts:336-349、:376-391）。
+ * 认出文字里的附件：@绝对路径（带空格时是 @"路径"），查大小。
  * @param text 原话或回话。
  * @returns 附件；文件不在了 size 是 null。同一个路径只算一次。
  */
@@ -221,7 +221,7 @@ export async function attachments(text: string): Promise<{ path: string; name: s
 
 
 /**
- * 搜索结果的片段：命中处前后各 40 字，截掉的一头加“…”，换行压成空格；没命中给开头一段（同 0.4：HttpUi.ts:290-299）。
+ * 搜索结果的片段：命中处前后各 40 字，截掉的一头加“…”，换行压成空格；没命中给开头一段。
  * @param text 文字。
  * @param keyword 关键字。
  */
@@ -565,7 +565,7 @@ export class Timeline {
   }
 
   /**
-   * 回话的来源：只有它追加在的这条消息（照 src6/channels/HttpMessageView.ts:160-171 的后一种）。
+   * 回话的来源：只有它追加在的这条消息。
    * @param id 消息号。
    */
   association(id: number): { messageIds: number[]; scope: 'target'; source: string } {
@@ -602,7 +602,7 @@ export class Timeline {
 
   /**
    * GET /api/messages：时间线。不写 after 是往前翻（before 之前的 limit 条，多取一条看还有没有更早的）；
-   * 写了 after 是取变化（updatedAt 不早于它的全给）。同 0.4：HttpUi.ts:1014-1055。
+   * 写了 after 是取变化（updatedAt 不早于它的全给）。
    * @param query bot、before、after、limit、origin。
    */
   private async list(query: Record<string, string | undefined>): Promise<Record<string, unknown>> {
@@ -610,7 +610,7 @@ export class Timeline {
     const bot = this.getBot(query['bot']);
     if (bot === undefined) return { messages: [], hasMore: false, cursor: 0 };
 
-    //M 整数参数在入口查一次（utils/Checks.ts 的 checkCount，同 0.4 的 optionalCount），写错了回 400；limit 没写按默认，超了按上限。
+    //M 整数参数在入口查一次（由 utils/Checks.ts 的 checkCount 校验），写错了回 400；limit 没写按默认，超了按上限。
     const before = checks.checkCount(query['before'], 'before');
     const after = checks.checkCount(query['after'], 'after');
     const wantedLimit = checks.checkCount(query['limit'], 'limit') ?? DEFAULT_LIMIT;
@@ -688,7 +688,7 @@ export class Timeline {
   }
 
   /**
-   * GET /api/messages/resolve：按号补取（同 0.4：HttpUi.ts:1058-1092）。
+   * GET /api/messages/resolve：按号补取。
    * @param query bot（必填）、ids（逗号分隔，最多 100 个正整数）。
    */
   private async resolve(query: Record<string, string | undefined>): Promise<Record<string, unknown>> {
@@ -719,7 +719,7 @@ export class Timeline {
   }
 
   /**
-   * GET /api/search：搜消息原话和回话、会话标题和总结（同 0.4：HttpUi.ts:1100-1153）。
+   * GET /api/search：搜消息原话和回话、会话标题和总结。
    * @param query q（必填）、bot（不写搜全部）、limit（每组几条）。
    */
   private search(query: Record<string, string | undefined>): Record<string, unknown> {

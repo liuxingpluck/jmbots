@@ -1,11 +1,11 @@
 /**
  * Markdown 换成飞书云文档（docx）的块。纯函数，离线测试直接 import。
- * 照 0.4 的 src/channels/FeishuDoc.ts（parseMarkdown、toBlocks、textRuns）。
+ * 把 Markdown 解析为飞书文档块，保留行内样式。
  * 不做嵌套列表（缩进的子项按平级），不认 Markdown 里的图片语法（图片走工具的 images 参数）。
  */
 
 
-/** 块类型号（0.4 FeishuDoc.ts:26）：字 2、标题 3 起（1 到 9 级）、无序 12、有序 13、代码 14、引用 15、图片 27、表格 31。 */
+/** 块类型号：字 2、标题 3 起（1 到 9 级）、无序 12、有序 13、代码 14、引用 15、图片 27、表格 31。 */
 export const BLOCK = {
   text: 2,
   heading: 3,

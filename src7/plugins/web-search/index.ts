@@ -3,7 +3,7 @@
  * 两种搜索：magpie（Magpie 网关的 POST <base_url>/alpha/search）、zhipu_mcp（智谱 MCP 搜索，Streamable HTTP）。
  * 慢工具：停止信号（Tools.ts 给的 signal）交给每个 fetch，点了停止马上断开，后面几家也不再试。
  * 密钥只放在请求头里：不进跟踪、不进给模型的话、不进报错。
- * 设计见同目录 说明.md 的「设计要点」一节；照 0.4 的 src/capabilities/tools/WebSearch.ts。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
@@ -55,7 +55,7 @@ const ERROR_CHARS = 300;
 /** 网页搜索。 */
 class WebSearch {
   /**
-   * 登记 web_search。说明、参数照 0.4（src/capabilities/tools/Tools.ts:531-537）。
+   * 登记 web_search，声明搜索工具的说明和参数。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param providers 校验好的搜索列表，先后就是优先级。
    */
@@ -148,7 +148,7 @@ class WebSearch {
 
   /**
    * Magpie 网关的 /alpha/search：网关搜不了时也回 200，output 以 “magpie couldn't search” 开头。
-   * 请求体照 Codex 自己发的 SearchRequest 写全（少了 id 会报 400，0.4 11-02 实测）。
+   * 请求体照 Codex 自己发的 SearchRequest 写全（缺 id 会收到 400）。
    * @param provider 哪一家。
    * @param query 搜什么。
    * @param signal 停止信号。
@@ -288,7 +288,7 @@ async function post(
 
 
 /**
- * 读 search 段，校验一次（外面进来的）。0.4 搜的时候才查的（缺 model、缺 api_key、provider 不在）都提到这里。
+ * 读 search 段时校验模型、密钥和供应商。
  * @param raw config.yaml 里的 search。
  * @param providers 骨架校验过的供应商：magpie 写了 provider 的，地址和密钥借它的。
  * @returns 校验好的列表；没写是空列表。

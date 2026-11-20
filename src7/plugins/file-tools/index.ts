@@ -13,6 +13,7 @@ import * as cut from '../../utils/Cut.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import { BaseTools } from './BaseTools.ts';
 import * as editMatch from './EditMatch.ts';
+import * as skillModule from './Skill.ts';
 
 export { BaseTools } from './BaseTools.ts';
 
@@ -22,7 +23,8 @@ export const name = 'file-tools';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/before-model 监听）。
 //M 1.1.1：读图片文件的 getImageBlock 从骨架 utils/Image.ts 挪进 BaseTools.ts，只有这里用。
-export const version = '1.1.2';
+//M 1.2.0：并入原 skills 插件（Skill.ts：技能清单注入 work 会话、skill 工具；技能默认可用，config.yaml 不再单列 skills）。
+export const version = '1.2.0';
 
 /** 用到的服务：resources 查模型是否收图；tools 登记六个工具；bots 找机器人的工作区。 */
 export const inject = ['resources', 'tools'];
@@ -31,7 +33,7 @@ export const inject = ['resources', 'tools'];
 /** find 默认最多几条。 */
 const FIND_DEFAULT = 200;
 
-/** find 找内容时跳过多大的文件（2MB，同 0.4）。 */
+/** find 找内容时跳过多大的文件（2 MB）。 */
 const FIND_MAX_BYTES = 2 * 1024 * 1024;
 
 /** find 一行最多给几个字。 */
@@ -51,7 +53,7 @@ export class FileTools {
    * @param ctx Cordis 给这个插件的 ctx。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M edit：会改东西，只给干活的会话（和 write 一样）。说明照 0.4 原文。
+    //M edit：会改东西，只给干活的会话（和 write 一样）。
     ctx.tools.register({
       definition: {
         name: 'edit',
@@ -237,4 +239,6 @@ export function apply(ctx: cordis.Context): void {
   //M 一起登记基础文件工具和编辑、搜索工具，组成同一个插件入口。
   new BaseTools(ctx);
   new FileTools(ctx);
+  //M 技能默认可用：原 skills 插件并进来，行为不变。
+  skillModule.applySkills(ctx);
 }

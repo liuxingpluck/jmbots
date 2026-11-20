@@ -2,7 +2,7 @@
 import * as piAi from '@earendil-works/pi-ai';
 import type * as sqlite from 'bun:sqlite';
 import type * as cordis from 'cordis';
-import type { SourceSnapshot } from '../../Channels.ts';
+import type { SourceSnapshot } from '../channels/index.ts';
 import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type { Pending } from '../approval/index.ts';

@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type * as channels from '../../Channels.ts';
+import type * as channels from '../channels/index.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';

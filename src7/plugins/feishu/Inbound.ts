@@ -12,7 +12,7 @@ import type * as cordis from 'cordis';
 import type { SessionMeta } from '../../Sessions.ts';
 import * as namesModule from '../../utils/Names.ts';
 import * as textModule from '../../utils/Text.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
 import type { Contact } from './Contacts.ts';
@@ -927,7 +927,7 @@ export class FeishuInbound {
   /**
    * 点卡片按钮：认出是哪张卡片、谁点的、按钮值，交给 cards/ 处理，回给飞书一个小提示。
    * @param appId 哪个应用收的。
-   * @param data 飞书的 card.action.trigger 事件（新版回调）；旧版字段也认。
+   * @param data 飞书卡片操作回调。操作者和消息位置可写在 operator、context 对象中，也接受平铺字段。
    * @returns { toast }：SDK 把它当回调的回应带回飞书。
    */
   async onCard(appId: string, data: unknown): Promise<{ toast: Toast }> {

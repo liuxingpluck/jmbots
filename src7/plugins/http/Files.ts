@@ -1,10 +1,10 @@
 /**
- * 文件接口：上传、看文件、列目录。四个接口都登记在 ctx.http.app 上；令牌由 http 统一查（本机不查，别的机器要带）。
+ * 文件接口：上传、看文件、列目录。四个接口都登记在 http 的 app 上；令牌由 http 统一查（本机不查，别的机器要带）。
  * 能看的只有运行时目录下的 bots/、skills/、memory/、knowledge/（机器人的工作区在 bots/<机器人>/workspace/，也在里面）；
  * 文件名是 config.yaml、secrets.yaml、.env* 的永远不给，列目录时也不列。
  * 上传先放 data/tmp/uploads/<上传号>_<文件名>；web-api 发话时按上传号找到它、搬进机器人工作区。
  * 两个插件不互相调用，只共用这个目录。
- * web 内的文件接口子模块，由 web.apply 在 HTTP 就绪后创建，不另登记插件或服务。
+ * http 内的文件接口子模块（原 web 插件的 Files.ts），由 Static.registerStatic 在 ready 里创建，不另登记插件或服务。
  */
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -42,13 +42,13 @@ export class FilesApi {
 
   /**
    * 登记四个接口。http 等 ready 才开始监听，这时已经登记好了。
-   * @param ctx Cordis 给这个插件的 ctx。
-   * 副作用：在 ctx.http.app 上登记 PUT /api/uploads/:name、GET /api/files、GET /files/*、GET /api/files/list。
+   * @param ctx Cordis 给 http 插件的 ctx。
+   * @param app http 的 Fastify 实例。
+   * 副作用：在 app 上登记 PUT /api/uploads/:name、GET /api/files、GET /files/*、GET /api/files/list。
    */
-  constructor(private readonly ctx: cordis.Context) {
+  constructor(private readonly ctx: cordis.Context, app: fastify.FastifyInstance) {
     this.root = ctx.resources.root;
     this.roots = ROOT_NAMES.map((dir) => path.join(this.root, dir));
-    const app = ctx.http.app;
 
     //M 上传单独一个 Fastify 作用域（register 开出来的子作用域，里面的设置不影响外面）：
     //M 先去掉继承来的 JSON、纯文字解析器，再让任何类型的请求体都原样是流，边收边写盘，大文件不进内存。
@@ -93,7 +93,7 @@ export class FilesApi {
     raw: string,
     body: NodeJS.ReadableStream | undefined,
   ): Promise<{ id: string; name: string; size: number; kind: mime.FileKind }> {
-    //M 文件名整理成能落盘的样子（同 0.4）：超过 10 个字的不算扩展名，扩展名只留 [.\w-]；
+    //M 文件名整理成能落盘的样子：超过 10 个字的不算扩展名，扩展名只留 [.\w-]；
     //M 主体去掉控制字符和 \/:*?"<>|，空白换成 _，截 60 字，去掉结尾的 . 和 _，空了叫“未命名”。
     const extension = path.extname(raw);
     let kept = '';

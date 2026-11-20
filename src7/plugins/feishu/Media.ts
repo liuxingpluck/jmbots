@@ -1,7 +1,7 @@
 /**
  * 飞书消息的内容和资源：各类型消息换成给机器人的文字、取引用和合并转发、下载图片文件、上传并发出文件。
  * 都是函数，不建 class；要用 SDK 客户端时从 feishu.client(应用号) 取。
- * 照 0.4 的 src/channels/Feishu.ts（describeContent、fetchRelated、send）、FeishuSdk.ts（postText）、FeishuMedia.ts（上传前查大小格式）。
+ * 下载关联资源、解释内容和发送附件，上传前校验文件大小和格式。
  */
 import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
@@ -51,7 +51,7 @@ interface MessageItem {
 }
 
 
-/** 认不出的消息类型的中文名（0.4 同）。 */
+/** 认不出的消息类型的中文名。 */
 const TYPE_NAMES: Record<string, string> = {
   interactive: '卡片',
   hongbao: '红包',

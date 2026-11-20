@@ -49,7 +49,7 @@ interface WatchState {
 }
 
 
-/** 照 0.4：启动后第一次、以后每次、超时、更新内容最多几个字。 */
+/** 启动后首次检查间隔、后续间隔、请求超时和更新说明的长度上限。 */
 const FIRST_MS = 10_000;
 const EVERY_MS = 60_000;
 const TIMEOUT_MS = 5_000;

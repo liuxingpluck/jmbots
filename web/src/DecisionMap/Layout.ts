@@ -1,7 +1,7 @@
 /** 把决策树布置到 React Flow 画布里：放射看法按叶子数分扇区，思维导图看法按层左右或上下展开。 */
 import * as d3 from 'd3-hierarchy';
 import * as xyflow from '@xyflow/react';
-import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as mind from '../Shared/MindMap.ts';
 
 export type ViewMode = 'all' | 'main' | 'pending';

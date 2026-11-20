@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   check('journal：发“现在几点了”前台答完', front !== undefined, front ? textOf(front.messages.at(-1)) : sent.text);
   await sleep(500);
   const d1 = db(s);
-  // 2026-11-14 17:30：journal 改成 journal_lines（kind 函数/事件、name 全名），0.4 的 journal_events 和 run.started… 那套事件名不再有；按新表验。
+  //M 按 journal_lines 的 kind 和 name 核对记录，函数名、事件名都用全名。
   const lines = d1.query('SELECT kind, name FROM journal_lines WHERE session_id = ? ORDER BY id').all(front?.id ?? '') as { kind: string; name: string }[];
   const byMessage = d1.query('SELECT kind, name, message_id FROM journal_lines WHERE message_id = ?').all(messageId ?? -1) as any[];
   d1.close();

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as timers from 'node:timers/promises';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
-import * as channel from '../../Channels.ts';
+import * as channel from '../channels/index.ts';
 import * as requests from '../../utils/RequestEvent.ts';
 import * as asrModule from './Asr.ts';
 import * as cloudAsr from './CloudAsr.ts';
@@ -18,7 +18,7 @@ import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
 
 export const name = 'voice';
-export const version = '0.6.1';
+export const version = '0.6.2';
 export const inject = ['resources', 'http', 'sessions'];
 
 type Provider = 'fake' | 'sherpa' | 'bailian' | 'xiaomi';
@@ -1161,7 +1161,8 @@ export class Voice {
     const connection = this.current;
     if (connection === undefined) return false;
 
-    const messageId = request.sourceSnapshot.messageId;
+    //M 走到这里的都带来源快照（VoiceReplies.deliver 查过，旧路的已补上）。
+    const messageId = request.sourceSnapshot?.messageId ?? '';
     if (request.kind !== 'final') {
       //M 进度回复只送文字。
       connection.reply(text, messageId, request.kind);
@@ -1502,16 +1503,12 @@ export async function apply(ctx: cordis.Context): Promise<void> {
   });
 
   if (settings.enabled) {
-    //M 标准回执和后台完成都进同一个语音回复出口。
+    //M 标准回复和后台完成（旧路经 channel/reply 带会话号来）都进同一个语音回复出口。
     const play = (text: string, request: channel.ChannelReplyRequest) => voice.playReply(text, request);
-    const replies = new replyModule.VoiceReplies(ctx, play);
+    new replyModule.VoiceReplies(ctx, play);
     void ctx.inject(['bots'], (sub) => {
-      const send: Parameters<typeof sub.bots.channel>[1] = (text, session, origin) => {
-        //M 后台到这里后只发标准回复，网页根据回执记一次文字。
-        return replies.fromWork(text, session, origin);
-      };
-      //M 卸载时撤掉语音发送入口及渠道登记。
-      sub.effect(() => sub.bots.channel(name, send));
+      //M 卸载时撤掉渠道名登记（网页的渠道清单用）。
+      sub.effect(() => sub.bots.channel(name));
     });
 
     //M 首次语音任务在已有接收关口认领后台会话，继续遵守渠道的发消息协议。
@@ -1533,7 +1530,7 @@ export async function apply(ctx: cordis.Context): Promise<void> {
     });
 
     //M 标准渠道收尾和旧式后台的会话收尾都能关闭合并窗口。
-    ctx.on('channel/settled', (event) => {
+    ctx.on('bot/settled', (event) => {
       const source = event.sourceSnapshot;
       if (source.channel !== name || event.stage === 'sending') return;
 

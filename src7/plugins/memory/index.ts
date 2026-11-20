@@ -41,7 +41,7 @@ export const name = 'memory';
 //M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
-export const version = '1.10.7';
+export const version = '1.10.8';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];
@@ -121,7 +121,7 @@ export class Memory {
     readonly store: storeModule.Store,
     private readonly settings: Settings,
   ) {
-    //M 工具说明照 0.4 原文（src/capabilities/tools/Tools.ts:539-562）。前台也给，但只许 list、search、read（run 里查）。
+    //M 前台也登记记忆工具，执行时只允许 list、search、read。
     ctx.tools.register({
       definition: {
         name: 'memory',

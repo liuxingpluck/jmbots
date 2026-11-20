@@ -1,61 +1,14 @@
-/** 插件入口：注册 screen 的 HTTP 路由和安全事件，使用已有 HTTP 鉴权。 */
+/** 插件入口：注册 screen 的 HTTP 路由，使用已有 HTTP 鉴权。 */
 
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as streams from 'node:stream';
-import * as requests from '../../utils/RequestEvent.ts';
 import * as protocol from './Protocol.ts';
 import * as runtime from './Screen.ts';
 
 export const name = 'screen';
-export const version = '0.3.2';
+export const version = '0.3.3';
 export const inject = ['resources', 'http'];
-
-interface StatusRequest extends requests.RequestEnvelope {
-  /** 基地进程标识；缺省时只查可用性。 */
-  clientId?: string;
-}
-
-declare module 'cordis' {
-  interface Events {
-    /**
-     * 内部只读查询。
-     * 谁发：暂无
-     * 谁接：src7/plugins/screen/index.ts 的 apply
-     */
-    'screen/status'(request: StatusRequest): void | Promise<void>;
-    /**
-     * 可用性和租约摘要。
-     * 谁发：src7/plugins/screen/index.ts 的 apply
-     * 谁接：暂无
-     */
-    'screen/status-result'(result: runtime.StatusResult & requests.ResultEnvelope): void;
-    /**
-     * 内部状态更新。
-     * 谁发：暂无
-     * 谁接：src7/plugins/screen/index.ts 的 apply
-     */
-    'screen/control'(request: protocol.StateInput & requests.RequestEnvelope): void | Promise<void>;
-    /**
-     * 回传状态动作是否生效。
-     * 谁发：src7/plugins/screen/index.ts 的 apply
-     * 谁接：暂无
-     */
-    'screen/control-result'(result: runtime.StateResult & requests.ResultEnvelope): void;
-    /**
-     * 告知基地已经显示了当前点击的讲解。
-     * 谁发：暂无
-     * 谁接：src7/plugins/screen/index.ts 的 apply
-     */
-    'screen/presented'(request: protocol.PresentedInput & requests.RequestEnvelope): void | Promise<void>;
-    /**
-     * 回传呈现确认和播报状态，不带讲解文本。
-     * 谁发：src7/plugins/screen/index.ts 的 apply
-     * 谁接：暂无
-     */
-    'screen/presented-result'(result: runtime.SpeechResult & requests.ResultEnvelope): void;
-  }
-}
 
 /** 把 Fastify 的解析和容量错误转成固定码；禁止回显原请求或异常。 */
 function getFault(error: unknown): protocol.ScreenError {
@@ -215,11 +168,11 @@ function registerRoutes(scope: fastify.FastifyInstance, screen: runtime.Screen, 
 }
 
 /**
- * 加载已授权配置，安装 HTTP 入口及内部事件。注销会释放临时内存并取消模型。
+ * 加载已授权配置，安装基地使用的 HTTP 入口。注销会释放临时内存并取消模型。
  * @param ctx 当前插件的 Cordis 上下文。
  */
 export function apply(ctx: cordis.Context): void {
-  //M 应用启用与默认值配置，创建仅路由和事件闭包能访问的运行时实例。
+  //M 应用启用与默认值配置，创建 HTTP 路由使用的运行时实例。
   const raw = ctx.resources.raw['screen'];
   const config = protocol.getConfig(raw);
   const screen = new runtime.Screen(ctx, config);
@@ -227,38 +180,6 @@ export function apply(ctx: cordis.Context): void {
   //M 一个 Fastify 子作用域只给 screen 的入口应用解析错误格式。
   ctx.http.app.register(async (scope) => {
     registerRoutes(scope, screen, config);
-  });
-
-  //M 内部只读状态查询与 HTTP 共用同一个 lease 状态。
-  requests.onRequestEvent(ctx, 'screen/status', 'screen/status-result', (request) => {
-    return screen.getStatus(request.clientId);
-  });
-
-  //M 控制事件不包含任何点击正文，沿用状态入口的 lease 行为。
-  requests.onRequestEvent(ctx, 'screen/control', 'screen/control-result', (request) => {
-    try {
-      return screen.setState(request);
-    } catch (error) {
-      const issue = getFault(error);
-      return {
-        ok: false,
-        sessionId: request.sessionId,
-        epoch: request.epoch,
-        active: false,
-        leaseMs: protocol.LEASE_MS,
-        errorCode: issue.code,
-      };
-    }
-  });
-
-  //M 呈现确认只接点击身份；讲话文本只能从当前短期回执取。
-  requests.onRequestEvent(ctx, 'screen/presented', 'screen/presented-result', async (request) => {
-    try {
-      return await screen.presented(request);
-    } catch (error) {
-      const issue = getFault(error);
-      return { ok: false, errorCode: issue.code };
-    }
   });
 
   //M 插件卸载时取消模型请求和清掉短时回执。

@@ -2,7 +2,7 @@
 import * as crypto from 'node:crypto';
 import type * as sqlite from 'bun:sqlite';
 import type * as cordis from 'cordis';
-import * as channels from '../../Channels.ts';
+import * as channels from '../channels/index.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import type { FeishuAddress } from '../feishu/index.ts';
 import type { ApprovedCall, ChannelSendResult, ProgramDraft, ProviderReceipt } from '../programs/ChannelSend.ts';
@@ -48,26 +48,6 @@ export interface ChannelSendMessage {
   targetBot?: string;
 }
 
-/** 持久确认后交给渠道的一次性发送载荷。 */
-export type ApprovedChannelSend = Readonly<ChannelSendMessage & {
-  /** 意图 UUID，渠道可用来给供应方去重。 */
-  intentId: string;
-  /** 持久业务发送号，和事件等待用的 requestId 不同。 */
-  sendId: string;
-  /** 已批准请求的截止时间，UTC 毫秒。 */
-  expiresAt: number;
-}>;
-
-const approvedChannelSends = new WeakSet<ApprovedChannelSend>();
-
-/** 渠道在实际发送前消费本进程签发的载荷，同一个载荷只能用一次。 */
-export function takeChannelSendApproval(call: ApprovedChannelSend): boolean {
-  //G 普通对象、复制的对象和已经消费的批准都没有发送资格。
-  if (!approvedChannelSends.delete(call)) return false;
-
-  return call.expiresAt > Date.now();
-}
-
 /** 程序界面经主站鉴权后可以执行的明确操作。 */
 export type OutboundAction =
   | { action: 'prepare'; draftId: number }
@@ -111,18 +91,6 @@ declare module 'cordis' {
      * 谁接：src7/plugins/assist/index.ts 的 apply
      */
     'approval/reminder-sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
-    /**
-     * Outbound 已占位并批准的主动纯文本发送，由对应渠道处理。
-     * 谁发：src7/plugins/approval/Outbound.ts 的 Outbound.submitChannel
-     * 谁接：src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor；src7/plugins/web-api/index.ts 的 WebApi.constructor
-     */
-    'channel/send'(request: events.RequestEnvelope & { call: ApprovedChannelSend }): void | Promise<void>;
-    /**
-     * 主动消息运输的回执，先由 Outbound 保存再通知通用订阅者。
-     * 谁发：src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor；src7/plugins/web-api/index.ts 的 WebApi.constructor
-     * 谁接：src7/plugins/approval/Outbound.ts 的 Outbound.submitChannel
-     */
-    'channel/sent'(result: events.ResultEnvelope & { receipt: ProviderReceipt }): void;
   }
 }
 
@@ -558,37 +526,39 @@ export class Outbound {
     return { receipt: UNKNOWN, invalidated: false };
   }
 
-  /** 把已经批准的原目标和正文发送给内置渠道。 */
+  /**
+   * 把已经批准的原目标和正文交给内置渠道：发 channel/reply，target 带渠道自己的确切地址（飞书照账号和聊天号直发，网页写提醒）。
+   * 轮键、请求键都由业务发送号算出，同一笔重试时渠道按请求键去重。
+   * @param row 已占住发送位置的意图。
+   * @returns 渠道回执折成的外置回执：发了是 sent，明确没发（含渠道没挂）是 failed，超时这类是 uncertain。
+   */
   private async submitChannel(row: IntentRow): Promise<ProviderReceipt> {
-    const target: ChannelSendMessage = {
-      channel: row.channel, account: row.account, chat: row.chat, text: row.text,
-      from: row.generation,
+    //M 渠道自己认得的确切地址：网页提醒带意图号（网页按它去重写一条提醒），飞书是应用号和聊天号。
+    let address: Record<string, unknown> = {
+      appId: row.account,
+      chatId: row.chat,
+      messageId: '',
+      openId: '',
+      chatType: '',
     };
-    if (row.target_bot !== null) {
-      target.targetBot = row.target_bot;
+    if (row.channel === 'http') {
+      address = { reminder: row.id };
     }
-    const message = { ...target, intentId: row.id, sendId: row.send_id, expiresAt: row.expires_at };
-    const call = Object.freeze(message);
-    const payload = { call };
-    const options = {
-      timeoutMs: CHANNEL_WAIT_MS,
-      onFallback: () => {
-        const receipt: ProviderReceipt = { status: 'failed', reason: '对应的渠道发送能力未挂载' };
-        return { requestId: '', receipt };
-      },
-    };
+    const target = { channel: row.channel, chat: row.chat, address };
 
-    //M 此次事件才能消费原对象，超时或结束后撤销尚未领取的资格。
-    approvedChannelSends.add(call);
-    try {
-      const result = await events.requestEvent(this.ctx, 'channel/send', 'channel/sent', payload, options);
-      //G 有人可能已经领走凭证，保留原发送号并等核对。
-      if (events.isUnsure(result)) return UNKNOWN;
+    const replyRoundKey = 'approved-send:' + row.send_id;
+    const replyRequestKey = channels.getReplyRequestKey(replyRoundKey, row.send_id);
+    const from = { bot: row.target_bot ?? '', replyRoundKey, target };
+    const options = { replyRequestKey, replyIndex: 0, kind: 'final' as const };
 
-      return result.receipt;
-    } finally {
-      approvedChannelSends.delete(call);
-    }
+    //M 交渠道协议发出，等渠道回执。
+    const receipt = await channels.requestTextReply(this.ctx, from, row.text, options);
+
+    //M 折成外置回执：渠道收下是 sent，明确没发（含渠道没挂）是 failed，别的不确定，保留原发送号等核对。
+    if (receipt.ok) return { status: 'sent' };
+    if (receipt.status === 'rejected') return { status: 'failed', reason: receipt.reason ?? '渠道拒发' };
+
+    return { status: 'uncertain', reason: receipt.reason ?? UNKNOWN.reason };
   }
 
   /** 先归档再发通用事件；重启恢复或重复回执无法覆盖已有结果。 */
@@ -606,9 +576,12 @@ export class Outbound {
     //G 已被恢复流程结算的行交回已存状态。
     if (changed === null) return this.get(row.program, id) ?? row;
 
-    //M 已持久化的事件不会启动第二次发送；不确定同时提示本人核对。
+    //G 主站主动发件走的是 channel/reply，渠道自己已经发过 channel/replied，不再补。
+    if (row.program === DIRECT_PROGRAM) return changed;
+
+    //M 外置程序的发件补一条通用回执；已持久化的事件不会启动第二次发送；不确定同时提示本人核对。
     this.publish(changed, receipt);
-    if (receipt.status === 'uncertain' && row.program !== DIRECT_PROGRAM) void this.notify(changed);
+    if (receipt.status === 'uncertain') void this.notify(changed);
     return changed;
   }
 
@@ -627,28 +600,41 @@ export class Outbound {
     return { intent: getView(saved) };
   }
 
-  /** 沿用通用 channel/replied；P2 failed 在标准事件中是 rejected。 */
+  /**
+   * 外置程序的发件不经 channel/reply，补一条通用 channel/replied（带拼出来的请求：渠道、聊天、正文），订阅者照它记；P2 failed 在标准事件中是 rejected。
+   * @param row 已落库终态的意图。
+   * @param receipt 外置回执。
+   */
   private publish(row: IntentRow, receipt: ProviderReceipt): void {
     let status: channels.ReplyStatus = 'rejected';
     if (receipt.status !== 'failed') {
       status = receipt.status;
     }
     const round = 'approved-send:' + row.send_id;
-    const key = JSON.stringify([round, row.send_id]);
-    const source: channels.ReceiptSource = {
+    const key = channels.getReplyRequestKey(round, row.send_id);
+    const parts: channels.ReplyPartInput[] = [{ partId: 'text', kind: 'text', text: row.text }];
+    const target = { channel: row.channel, chat: row.chat };
+    const hashInput = { kind: 'final', mode: 'text', parts, target };
+    //M 拼出这笔发件对应的请求，回执带着它（没有来源快照，target 是外置程序的渠道和聊天号）。
+    const request: channels.ChannelReplyRequest = {
+      requestId: row.send_id,
+      channel: row.channel,
+      bot: row.target_bot ?? '',
       replyRequestKey: key,
       replyRoundKey: round,
       replyIndex: 0,
       kind: 'final',
-      parts: [{ partId: 'text', kind: 'text' }],
+      mode: 'text',
+      payloadHash: channels.getPayloadHash(hashInput),
+      parts,
+      target,
     };
     //M 标准回执沿用发送意图使用的注入时钟。
-    const result = channels.getReceipt(source, status, receipt.reason);
+    const result = channels.getReceipt(request, status, receipt.reason);
     result.at = this.now();
-    const notice = { requestId: row.send_id, replyRoundKey: round };
     try {
       //M 回执已经落库，订阅者出错也不影响后续核对。
-      channels.emitReplied(this.ctx, notice, result);
+      channels.emitReplied(this.ctx, request, result);
     } catch {
       console.error('外部渠道发送回执通知失败');
     }

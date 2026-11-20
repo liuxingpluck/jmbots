@@ -6,7 +6,7 @@
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session } from '../../Sessions.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import type { QueueItem, ResultInput } from './Dispatch.ts';
 
 

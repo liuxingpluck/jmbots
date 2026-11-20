@@ -16,7 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import * as channels from '../../Channels.ts';
+import * as channels from '../channels/index.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as approvalModule from '../approval/index.ts';
@@ -203,10 +203,14 @@ test('1. legacy_auto 兼容与回执语义隔离：bots.receive 照常自动发 
     request.answer = piAi.fauxAssistantMessage(`自动回复：${said}`);
   });
 
+  //M 老渠道 legacy：登记渠道名，旧路自动回话也经 channel/reply 到它，记进 sent。
   const sent: string[] = [];
-  ctx.bots.channel('legacy', (reply) => {
-    sent.push(reply);
-    return { status: 'accepted', reason: '' };
+  ctx.bots.channel('legacy');
+  channels.registerTextReply(ctx, {
+    channel: 'legacy',
+    sendDirectText: (text) => {
+      sent.push(text);
+    },
   });
 
   await ctx.bots.receive('legacy', '助手', '你好老渠道', { customer: 'legacy:u1' });

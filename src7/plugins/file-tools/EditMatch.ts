@@ -6,8 +6,8 @@
  *   4. 文件开头的 BOM 和换行符（\r\n 还是 \n）改完照原样还回去。
  *
  * 来源：Pi（packages\coding-agent\src\core\tools\edit-diff.ts 和 edit.ts，2026-10-22 的 8c03fef），
- * 只留了匹配和替换，没要差异预览。从 0.4 的 src/capabilities/tools/EditMatch.ts 原样搬来（file-tools.md 第 4 节）；
- * 参数已经由骨架照工具定义校验过，0.4 认各种写法的 readEdits 不要了。
+ * 只负责定位匹配并替换文本。
+ * 使用骨架按工具定义校验过的参数。
  */
 
 

@@ -257,8 +257,8 @@ export async function trace(ctx: cordis.Context, input: TraceInput): Promise<Rec
   );
   const pendingUsage = requestEventModule.requestEvent(
     ctx,
-    'usage/list',
-    'usage/list-result',
+    'model-catalog/usage',
+    'model-catalog/usage-result',
     usageQuery,
     usageOptions,
   );

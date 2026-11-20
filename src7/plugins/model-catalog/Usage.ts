@@ -1,7 +1,7 @@
 /**
- * 用量：模型每调用一次记一行（表 model_usage，列照 0.4），给网页的用量页按时间段、分组合计（GET /api/usage），
- * 也给回话追溯按会话、时间窗取（事件 usage/list，兼容服务 usage.list）。
- * 成功的听 session/new-message（接进对话的模型回答）；失败的听骨架的 model/failed（重试的每一次都算）。
+ * 用量：模型每调用一次记一行（表 model_usage），给网页的用量页按时间段、分组合计（GET /api/usage），
+ * 也给回话追溯按会话、时间窗取（事件 model-catalog/usage，兼容服务 usage.list）。
+ * 成功的听 session/new-message（接进对话的模型回答）；失败的听骨架的 session/model-failed（重试的每一次都算）。
  * 钱：按模型清单事件给的价格算（美元每百万 token），查询未响应或没价格时记 0。
  * model-catalog 内的用量子模块，保留 usage 服务名与原事件、统计接口。
  */
@@ -24,13 +24,13 @@ declare module 'cordis' {
      * 谁发：src7/plugins/web-api/Trace.ts 的 trace
      * 谁接：src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
      */
-    'usage/list'(request: UsageQuery & requestEventModule.RequestEnvelope): void | Promise<void>;
+    'model-catalog/usage'(request: UsageQuery & requestEventModule.RequestEnvelope): void | Promise<void>;
     /**
      * 返回记录和截断标记。
      * 谁发：src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
      * 谁接：src7/plugins/web-api/Trace.ts 的 trace
      */
-    'usage/list-result'(result: UsageList & requestEventModule.ResultEnvelope): void;
+    'model-catalog/usage-result'(result: UsageList & requestEventModule.ResultEnvelope): void;
   }
 }
 
@@ -104,7 +104,7 @@ interface CatalogPrice {
 /** 模型目录查询最多等三秒。 */
 const CATALOG_WAIT_MS = 3000;
 
-/** 时间段 → SQLite strftime 的格式（同 0.4：src/capabilities/Store.ts:353-367）。 */
+/** 时间段 → SQLite strftime 的格式。 */
 const FORMATS: Record<string, string> = { hour: '%Y-%m-%d %H:00', day: '%Y-%m-%d', week: '%Y-W%W', month: '%Y-%m' };
 
 /** 分组 → 列（只许这几个，免得拼 SQL 出事）。 */
@@ -180,7 +180,7 @@ export class Usage extends cordis.Service {
     });
 
     //M 一次没成的调用 → 记一行失败的；重试的每一次都会来一次。
-    ctx.on('model/failed', (info) => {
+    ctx.on('session/model-failed', (info) => {
       //M Usage 是调用用量，input 和 output 记输入、输出 token，cacheRead 等字段单列缓存用量。
       const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as piAi.Usage;
       const error = info.error.slice(0, ERROR_MAX_CHARS);
@@ -190,7 +190,7 @@ export class Usage extends cordis.Service {
     });
 
     //M 供其他插件通过事件查询已入账的模型调用。
-    requestEventModule.onRequestEvent(ctx, 'usage/list', 'usage/list-result', (request) => {
+    requestEventModule.onRequestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', (request) => {
       //M 沿用 list 的排序和截断规则。
       return this.list(request);
     });
@@ -282,7 +282,7 @@ export class Usage extends cordis.Service {
   }
 
   /**
-   * 服务方法：同会话、同时间窗的调用，给回话追溯用（0.4 的 listUsage）。调用方是插件，可信。
+   * 服务方法：同会话、同时间窗的调用，给回话追溯用。调用方是插件，可信。
    * @param query 会话、时间窗（两头都含）、最多几条。
    * @returns 按时间先后；多于 limit 条时 truncated 是 true。
    */

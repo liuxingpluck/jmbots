@@ -1,6 +1,6 @@
 /**
  * 渠道消息索引（C 块，11-18，用户 #130）：各渠道的消息按聊天记进一张表，能按“渠道 + 聊天 + 时间范围 + 关键词”查。
- * 增量：听 channel/message（用户的话；飞书、微信、网页、命令行都是先落盘再发）、channel/reply（机器人的话，带来源快照和正文），
+ * 增量：听 channel/message（用户的话；飞书、微信、网页、命令行都是先落盘再发）、channel/replied（机器人的话发成了才记，回执带请求的来源快照和正文），
  *   键分别是 messageId、replyRequestKey，INSERT OR IGNORE 幂等。
  * 查：工具 memory_search、memory_get 和 GET /api/memory/channel。受限会话只查本轮来源聊天。
  * 补旧：ztools/memory/Backfill_Channel_Index.ts 用这里的 ChannelIndex 写。
@@ -14,7 +14,7 @@ import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
-import * as protocolModule from '../../Channels.ts';
+import * as protocolModule from '../channels/index.ts';
 import type { ChannelBackfill } from './ChannelBackfill.ts';
 import * as memoryKeyModule from './MemoryKey.ts';
 
@@ -447,17 +447,20 @@ export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRo
 
 
 /**
- * 机器人的一条回复（channel/reply）→ 一行：文字片段连起来，聊天照来源快照。
+ * 机器人的一条回复（channel/replied 带的请求）→ 一行：文字片段连起来，聊天照来源快照。
  * @param request 回复请求。
- * @returns 一行；只有附件没有文字是 undefined。
+ * @returns 一行；只有附件没有文字、没有来源快照（旧路自动回话、relay 回信、主动发件，聊天认不全）是 undefined。
  */
 export function getReplyRow(request: protocolModule.ChannelReplyRequest): ChannelRow | undefined {
   const texts = request.parts.filter((part) => part.kind === 'text').map((part) => part.text ?? '');
   const text = texts.join('\n').trim();
   if (text === '') return undefined;
 
-  //M 归属键：私聊对面的人是这条回复回给的那个人（来源快照里的发话人）。
+  //G 没有来源快照的发话只有渠道自己的地址，账号、聊天、聊天种类认不全，先不记（和原来一样）。
   const snapshot = request.sourceSnapshot;
+  if (snapshot === undefined) return undefined;
+
+  //M 归属键：私聊对面的人是这条回复回给的那个人（来源快照里的发话人）。
   const keySource = {
     channel: snapshot.channel,
     chatType: snapshot.chatType,
@@ -612,20 +615,23 @@ export function applyChannelIndex(
     }
   }, { prepend: true });
 
-  //M 机器人的话：回复工具发出时（channel/reply）记，同一个 replyRequestKey 重试不重复。
-  ctx.on('channel/reply', (request) => {
+  //M 机器人的话：渠道回执说发成了（channel/replied 的 sent、partial）才记，正文取回执带的请求；同一个 replyRequestKey 重放不重复。
+  ctx.on('channel/replied', (event) => {
+    const status = event.receipt.status;
+    if (status !== 'sent' && status !== 'partial') return;
+
     try {
-      const row = getReplyRow(request);
+      const row = getReplyRow(event.request);
       if (row === undefined) return;
 
       //M 与入站共用持久化队列，重复回复沿用首次记下的正文和时间。
       index.add(row, true);
       rust?.wake();
     } catch (error) {
-      //G 记不进索引只打日志，不往外抛，别挡回复发出去。
+      //G 记不进索引只打日志，不往外抛，别挡别人收回执。
       console.error(`memory：机器人的回复记不进索引：${textModule.getErrorMessage(error)}`);
     }
-  }, { prepend: true });
+  });
 
   //M 接口：令牌由 http 统一查（本机来的不查），这里按本人全量查。
   void ctx.inject(['http'], (sub) => {

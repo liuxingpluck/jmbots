@@ -38,6 +38,19 @@ export interface DecisionNote {
   relayReplyId?: number;
 }
 
+/** 主人定完以后接收结果的一方。 */
+export type DecisionAsker = {
+  /** 把结果送回提问的会话。 */
+  kind: 'session';
+  /** 提问时正在运行的持久会话号。 */
+  sessionId: string;
+} | {
+  /** 把结果送到外部助手的 relay 收件。 */
+  kind: 'helper';
+  /** relay 配置中的助手名。 */
+  name: string;
+};
+
 /** 当前图中的一个节点。 */
 export interface DecisionNode {
   /** 图中唯一的节点号。 */
@@ -50,6 +63,12 @@ export interface DecisionNode {
   summary: string;
   /** 上一级节点号，中心目标是 null。 */
   parent: string | null;
+  /** 归属的机器人；旧决策尚无归属时省略。 */
+  bot?: string;
+  /** 归属的工作区；缺省时列在该机器人名下的未归类决策。 */
+  workspaceId?: string;
+  /** 用户定完以后该把结果送给谁。 */
+  asker?: DecisionAsker;
   /** 节点当前状态。 */
   status: DecisionStatus;
   /** 节点首次写入的毫秒时间戳。 */
@@ -88,6 +107,36 @@ export interface DecisionGraph {
   revision: number;
   /** 供前端布局的节点。 */
   nodes: DecisionNode[];
+  /** 公开接口附上各项目的根节点和显示名。 */
+  projects?: DecisionProject[];
+}
+
+/** 工作决策页面可选择的一组节点。 */
+export interface DecisionProject {
+  /** 这一组节点的任务树根节点号。 */
+  root: string;
+  /** 工作区当前名称或未归类的显示名称。 */
+  name: string;
+}
+
+/** 待主人定的事项，调用方附上提问方和项目归属。 */
+export interface DecisionAsk {
+  /** 调用方提供的去重键或节点编号。 */
+  id: string;
+  /** 简短标题。 */
+  title: string;
+  /** 一句话交代决策背景。 */
+  summary: string;
+  /** 可直接点选的项目。 */
+  options: DecisionOption[];
+  /** 可选 Markdown 正文。 */
+  body?: string;
+  /** 提问所在的机器人。 */
+  bot: string;
+  /** 提问所在的工作区，没有绑定时归到该机器人名下。 */
+  workspaceId?: string;
+  /** 决定送回的会话或外部助手。 */
+  asker: DecisionAsker;
 }
 
 /** 一项值得通知中控的任务变化。 */

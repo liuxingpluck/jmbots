@@ -1,11 +1,11 @@
-/** web合并文件接口后的离线回归：路由、流式上传、范围读取、敏感路径与配置边界。 */
+/** http 并入网页与文件接口（Static.ts、Files.ts）后的离线回归：路由、流式上传、范围读取、敏感路径与配置边界。 */
 import { afterEach, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
-import * as webPlugin from './index.ts';
+import * as staticModule from './Static.ts';
 
 
 /** 每项清理都只作用于该测试自建上下文、Fastify与临时目录。 */
@@ -27,12 +27,11 @@ interface World {
 
 
 /**
- * 挂真实web入口，文件接口必须自动出现，不再单挂files-api。
- * @param config web插件配置，缺省也要提供原四个文件接口。
+ * 挂真实 registerStatic，文件接口必须自动出现，不再单挂files-api。
  * @returns 测试自己的目录与内存HTTP实例。
  * 副作用：创建临时目录与未监听的Fastify，并登记清理。
  */
-async function setup(config?: webPlugin.WebConfig): Promise<World> {
+async function setup(): Promise<World> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'web-files-'));
   const app = fastify.default();
   const ctx = new cordis.Context();
@@ -78,14 +77,13 @@ async function setup(config?: webPlugin.WebConfig): Promise<World> {
   app.post('/api/json-probe', (request) => request.body);
   await ctx.plugin(TestResources);
   await ctx.plugin(TestHttp);
-  await ctx.plugin(webPlugin, config);
+  await staticModule.registerStatic(ctx, app);
   await app.ready();
   return { root, app };
 }
 
 
-test('web默认挂文件接口，原路径完整读取、Range与目录过滤保持一致', async () => {
-  //M 缺省嵌套files配置也必须挂载，避免老web配置悄悄少了文件功能。
+test('http默认挂文件接口，原路径完整读取、Range与目录过滤保持一致', async () => {
   const { root, app } = await setup();
   const workspace = path.join(root, 'bots', '测试', 'workspace');
   fs.mkdirSync(path.join(workspace, 'folder'), { recursive: true });
@@ -123,10 +121,8 @@ test('web默认挂文件接口，原路径完整读取、Range与目录过滤保
 });
 
 
-test('web空files配置保持原流式上传，上传解析器不污染JSON接口', async () => {
-  const config: webPlugin.WebConfig = { files: {} };
-  //M 显式空配置是迁移原files-api配置的写法。
-  const { root, app } = await setup(config);
+test('流式上传保持原样，上传解析器不污染JSON接口', async () => {
+  const { root, app } = await setup();
   const uploaded = await app.inject({
     method: 'PUT',
     url: '/api/uploads/demo.txt',
@@ -166,14 +162,3 @@ test('文件接口仍拒绝敏感文件、相对path与越界路径，未知API�
   expect(unknown.json()).toHaveProperty('error');
 });
 
-
-test('files配置入口拒绝非法类型与未知字段，先于HTTP或文件副作用', async () => {
-  const values = [null, false, [], { unknown: true }];
-  for (const value of values) {
-    const config = { files: value } as unknown as webPlugin.WebConfig;
-    const ctx = {} as cordis.Context;
-    //G 必须先报files配置错误，不能访问尚未提供的HTTP/resources。
-    const applied = webPlugin.apply(ctx, config);
-    await expect(applied).rejects.toThrow('web.config.files');
-  }
-});

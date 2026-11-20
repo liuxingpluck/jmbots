@@ -5,7 +5,7 @@
  * 渠道索引的 memory_key 列存它，送 Rust 时放进 customer 一维；统一检索的 person、group 参数就是它。
  * 召回怎么用这个键（谁能看谁的）不在这里定，见 docs/开发进度/按人分记忆_一页_20261118.md。
  */
-import type * as channelProtocol from '../../Channels.ts';
+import type * as channelProtocol from '../channels/index.ts';
 import type { SessionMeta } from '../../Sessions.ts';
 import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';

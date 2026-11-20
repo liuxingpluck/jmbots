@@ -3,8 +3,8 @@ import { Database } from 'bun:sqlite';
 import { expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
-import * as channel from '../../Channels.ts';
-import type { ChannelMessage, SourceSnapshot } from '../../Channels.ts';
+import * as channel from '../channels/index.ts';
+import type { ChannelMessage, SourceSnapshot } from '../channels/index.ts';
 import { Sessions, type ChatRequest, type Session } from '../../Sessions.ts';
 import { Tools, type ToolGate } from '../../Tools.ts';
 import * as botsPlugin from '../bots/index.ts';
@@ -146,7 +146,7 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
     const sent: { chat: string; text: string }[] = [];
     channel.registerTextReply(ctx, {
       channel: 'feishu',
-      sendDirectText: (text, request) => { sent.push({ chat: request.sourceSnapshot.chatId, text }); },
+      sendDirectText: (text, request) => { sent.push({ chat: request.sourceSnapshot?.chatId ?? '', text }); },
     });
     ctx.on('session/before-model', (request) => {
       const last = request.messages.at(-1);
@@ -160,7 +160,7 @@ test('日报经真实机器人认领与回复流程，只向合成群发一条�
       request.answer = piAi.fauxAssistantMessage([call], { stopReason: 'toolUse' });
     });
     const ended = Promise.withResolvers<void>();
-    ctx.on('channel/settled', (event) => {
+    ctx.on('bot/settled', (event) => {
       if (event.sourceSnapshot.chatId === GROUP) ended.resolve();
     });
     const slot = new Date(2026, 10, 19, 17, 30);

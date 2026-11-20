@@ -1,6 +1,6 @@
 /** 按飞书群配置在本地时间派发每日进度，借用标准渠道回话与群记忆。 */
 import type * as cordis from 'cordis';
-import * as channel from '../../Channels.ts';
+import * as channel from '../channels/index.ts';
 import type { SessionMeta } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { FeishuGroup } from '../feishu/index.ts';

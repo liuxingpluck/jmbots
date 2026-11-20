@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as namesModule from '../../utils/Names.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 
 
 /** 飞书聊天本地原始日志的一行（存于 channels/feishu/chats/<appId>/<chatId>.jsonl）。 */

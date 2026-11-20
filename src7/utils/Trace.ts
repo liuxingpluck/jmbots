@@ -45,7 +45,9 @@ declare module 'cordis' {
      *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
      *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.attachImages
      *   src7/plugins/file-tools/index.ts 的 FileTools.edit、FileTools.find
+     *   src7/plugins/http/Files.ts 的 FilesApi.upload
      *   src7/plugins/http/index.ts 的 Http.listen
+     *   src7/plugins/http/Static.ts 的 registerStatic
      *   src7/plugins/image-gen/index.ts 的 ImageGen.generate
      *   src7/plugins/journal/index.ts 的 Journal.record
      *   src7/plugins/memory/index.ts 的 Memory.onRequest
@@ -63,8 +65,6 @@ declare module 'cordis' {
      *   src7/plugins/web-api/Timeline.ts 的 Timeline.bindSession、Timeline.insert、Timeline.reply
      *   src7/plugins/web-api/index.ts 的 WebApi.accept、WebApi.setModel
      *   src7/plugins/web-search/index.ts 的 WebSearch.trace
-     *   src7/plugins/web/Files.ts 的 FilesApi.upload
-     *   src7/plugins/web/index.ts 的 apply
      *   src7/plugins/wechat/index.ts 的 Wechat.deliver、Wechat.store
      *   src7/plugins/workspaces/index.ts 的 Workspaces.emitChanged、Workspaces.getResolved
      * 谁接：
@@ -157,7 +157,7 @@ export function getSourceId(value: unknown): string | undefined {
 
 /**
  * 拼一个事件行：Cordis 每发一个事件先发 internal/dispatch（发法、事件名、参数），trace、journal 都听它。
- * 会话从参数里找：参数本身是会话、带 session（ChatRequest、model/failed 的 info）、带 sessionId 或 session 号（待确认、进度）。
+ * 会话从参数里找：参数本身是会话、带 session（ChatRequest、session/model-failed 的 info）、带 sessionId 或 session 号（待确认、进度）。
  * @param ctx 听的那个插件的 ctx（用来查这个事件登记着哪些监听）。
  * @param mode Cordis 的发法。
  * @param event 事件名。

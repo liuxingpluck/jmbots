@@ -1,7 +1,7 @@
 /** 渠道消息的前台认领与延迟判断接话。 */
 import type * as cordis from 'cordis';
 import type { Session, SessionMeta } from '../../Sessions.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import * as utils from '../../utils/index.ts';
 import type { DispatchResults, QueueItem, ReplyControl } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';

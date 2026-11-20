@@ -1,6 +1,6 @@
 /** 处理渠道撤回，清掉待办原消息并通知正在处理它的会话。 */
 import type * as cordis from 'cordis';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 import type { Session } from '../../Sessions.ts';
 import * as utils from '../../utils/index.ts';
 import * as dispatch from './DispatchResults.ts';

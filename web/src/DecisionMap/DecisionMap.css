@@ -96,8 +96,39 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-pending:hover { border-color: var(--decision-red); }
 .decision-all-clear { color: var(--decision-muted); font-size: 13px; }
 
+.decision-content { display: flex; min-height: 0; min-width: 0; }
+.decision-projects {
+  display: flex;
+  flex: 0 0 208px;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  padding: 14px 12px;
+  border-right: 1px solid var(--decision-border);
+  background: #141a24;
+}
+.decision-projects button {
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #cbd3e2;
+  background: transparent;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.decision-projects button:hover { background: #1b2230; }
+.decision-projects button[aria-pressed="true"] {
+  border-color: #956e38;
+  color: #f7d798;
+  background: #3a3026;
+}
+
 .decision-canvas {
   position: relative;
+  flex: 1;
+  min-width: 0;
   isolation: isolate;
   min-height: 0;
   overflow: hidden;
@@ -466,6 +497,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-list__item[data-state="decided"] .decision-list__state { color: var(--decision-green); }
 
 @media (max-width: 670px) {
+  .decision-content { flex-direction: column; }
+  .decision-projects {
+    flex: 0 0 auto;
+    flex-direction: row;
+    padding: 7px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--decision-border);
+  }
+  .decision-projects button { flex-shrink: 0; }
   .decision-looks { grid-column: 1 / -1; }
   .decision-looks button { min-height: 40px; }
   .decision-view { padding: 12px 10px 24px; }

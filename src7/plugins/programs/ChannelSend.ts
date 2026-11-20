@@ -269,7 +269,7 @@ async function handleOutbound(
   return { intent: result.intent };
 }
 
-/** 代理外置旧路径时仅允许双阶段操作，移除旧版能用来本地发件的 id。 */
+/** 代理外置渠道时只允许准备和确认两阶段操作，移除可用于本地发件的 id。 */
 export function getProxyApproval(path: string, method: string, body: unknown): OutboundAction | undefined {
   if (path !== '/api/wechat-kefu/outbox/send' || method !== 'POST') return undefined;
   if (!(body instanceof Uint8Array) || body.length > 4096) return undefined;

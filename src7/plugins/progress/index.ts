@@ -2,14 +2,14 @@
  * 进度和限时：有用户的会话（记录上有 channel、没有 parent；前台交出去的后台会话 kind work 有 parent 也算）每转一轮就有一项进度：开始时间、第几步、在调哪个工具、各工具用时、限时、阶段、结果。
  * 长跑提醒（用户 11-14 定的）：一轮跑满 15 分钟（progress.long_run_card_minutes）发一张卡片问要不要终止（approval 的待确认，网页、飞书同一份卡片数据）。
  *   点“终止”才停；点“继续”或一直不点都一直做下去。一轮只发一张；会话结束时还没点的卡片变灰写“会话已结束”。
- * 限时：默认不限时（progress.limit_default_minutes 默认 0，不能“不点就自动停”）；配了正数才照 0.4：到点前报时、到点判断。
+ * 限时：默认不限时（progress.limit_default_minutes 默认 0，不能“不点就自动停”）；设置正数后，到点前报时，到点时判断是否继续。
  *   网页、卡片上能选 15/20 分钟（提前 5 分钟报时）或不限时，都从开始算；随时能终止。
  * 报时：每一步发给模型的对话末尾加一句“已经干了多久”（不存进对话），同时跟用户说一次。
  * 到点：用户选的直接停；默认的问 decision 三道题（在推进、5 分钟能做完、没在打转），都过就延 5 分钟，最多两次；
  *   延够了开一场审核小会话：离谱就停下说清哪里离谱，建议转就开一场新的后台会话带交接说明接着做（一件事只转一次），不然停下。
  * 停下以后开一场收尾小会话写“做到哪了、卡在哪、还剩什么”发给用户；做太久或被限时、终止的，记一行 data/overtime.jsonl，空闲时由 Review.ts 挑一件写复盘。
  * 每次变化发 progress/update（一场一秒最多一次，结束马上发）：feishu 画卡片、journal 记流水、网页 GET /api/progress 轮询。
- * 照 0.4 src/capabilities/Progress.ts、Review.ts。设计见同目录 说明.md 的「设计要点」一节（含复盘）。
+ * 设计见同目录 说明.md 的「设计要点」一节（含复盘）。
  */
 import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
@@ -94,7 +94,7 @@ export interface ProgressItem {
   timings: words.Timings;
   /** 结束时的结果或收尾总结，截 240 字。 */
   result?: string;
-  /** 网页的 ProgressView 带这一项（0.4 的消息号）；src7 一轮一项，给空的。 */
+  /** 网页 ProgressView 接受消息号；进度按会话轮次记录，这一项填空。 */
   messageIds: number[];
 }
 

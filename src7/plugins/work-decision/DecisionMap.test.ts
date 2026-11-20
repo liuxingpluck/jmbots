@@ -3,14 +3,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
+import { Database } from 'bun:sqlite';
 import { afterEach, expect, test } from 'bun:test';
+import type { Session } from '../../Sessions.ts';
+import type { ToolSpec } from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
+import * as channel from '../channels/Reply.ts';
 import * as plugin from './index.ts';
 import type * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
 
-const PREFIX = '/api/decision-map';
+const PREFIX = '/api/work-decision';
 const cleanups: (() => void | Promise<void>)[] = [];
 const entries = [
   { id: 'goal', kind: 'goal', title: '上线目标', status: 'working' },
@@ -27,23 +31,21 @@ afterEach(async () => {
 });
 
 /** 网络接口用 Fastify 注入，运行时目录只包含本用例的数据。 */
-async function setup(helper?: string) {
+async function setup(helper?: string, config: Record<string, unknown> = {}) {
   const root = fs.mkdtempSync(path.join(import.meta.dir, '.map-test-'));
   const ctx = new cordis.Context();
   const app = fastify.default();
+  const db = new Database(':memory:');
+  const tools = new Map<string, ToolSpec>();
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  cleanups.push(() => db.close());
   cleanups.push(async () => { await app.close(); }, async () => { await ctx.fiber.dispose(); });
   ctx.provide('http', { app });
-  ctx.provide('resources', {
-    ensureRuntimeDir(...parts: string[]) {
-      const dir = path.join(root, ...parts);
-      fs.mkdirSync(dir, { recursive: true });
-      return dir;
-    },
-  });
-  await ctx.plugin(plugin, { relay_helper: helper });
+  ctx.provide('resources', { db, root, raw: {} });
+  ctx.provide('tools', { register: (tool: ToolSpec) => tools.set(tool.definition.name, tool) });
+  await ctx.plugin(plugin, { ...config, relay_helper: helper });
   const dir = path.join(root, 'data', 'decision-map');
-  return { app, ctx, dir };
+  return { app, ctx, db, dir, tools };
 }
 
 test('批量发布和局部更新，非法结构不修改图或序号', async () => {
@@ -100,7 +102,9 @@ test('只带 id 和 parent 的补丁重挂旧节点并保留其他字段', async
 test('任务正文、网页子项和插件状态保存后才进中控收件，中控改动保持静默', async () => {
   const { app, ctx } = await setup('中控');
   const inbox: routesModule.DecisionRelayRequest[] = [];
-  events.onRequestEvent(ctx, 'decision-map/relay', 'decision-map/relay-result', async (request) => {
+  events.onRequestEvent(ctx, 'work-decision/note', 'work-decision/note-result', async (request) => {
+    if (request.action === 'reply') return { ok: false };
+
     const stored = await app.inject(`${PREFIX}/graph`);
     const nodes = stored.json<types.DecisionGraph>().nodes;
     expect(nodes.some((node) => node.id === request.target?.node)).toBe(true);
@@ -127,12 +131,12 @@ test('任务正文、网页子项和插件状态保存后才进中控收件，�
 
   //M 重复更新和只补正文都不再发送状态通知。
   await app.inject({ method: 'POST', url: `${PREFIX}/status`, payload: update });
-  await ctx.serial('decision-map/upsert', { id, body: '**附件已核对**' });
+  await ctx.serial('work-decision/ask', { nodes: [{ id, body: '**附件已核对**' }] });
   expect(inbox).toHaveLength(2);
 
   const nested = { id: 'subtask', parent: id, title: '核对附件首页', kind: 'work', status: 'open' } as const;
-  await ctx.serial('decision-map/upsert', [nested]);
-  await ctx.serial('decision-map/status', { id, status: 'done' });
+  await ctx.serial('work-decision/ask', { nodes: [nested] });
+  await ctx.serial('work-decision/ask', { nodes: [{ id, status: 'done' }] });
   expect(inbox).toHaveLength(4);
   expect(inbox[2]?.target?.node).toBe(nested.id);
   expect(inbox[3]?.text).toContain('状态从 working 改为 done');
@@ -149,7 +153,7 @@ test('任务正文、网页子项和插件状态保存后才进中控收件，�
   expect(inbox).toHaveLength(4);
   const history = await app.inject(`${PREFIX}/changes?since=0`);
   expect(history.json().changes).toContainEqual(expect.objectContaining({
-    action: 'status', actor: 'plugin', tasks: [{ node: id, title: child.title, status: 'done', previousStatus: 'working' }],
+    action: 'put', actor: 'plugin', tasks: [{ node: id, title: child.title, status: 'done', previousStatus: 'working' }],
   }));
 });
 
@@ -157,8 +161,16 @@ test('选项先落盘，relay 可重复投递但确认状态只记一次', async
   const { app, ctx } = await setup('中控');
   const calls: string[] = [];
   const notices: string[] = [];
-  ctx.on('decision-map/chosen', (notice) => { notices.push(notice.option); });
-  events.onRequestEvent(ctx, 'decision-map/relay', 'decision-map/relay-result', (request) => {
+  ctx.on('work-decision/decided', (notice) => {
+    expect(notice.asker).toEqual({ kind: 'helper', name: '中控' });
+    expect(notice.key).toBe('release');
+    notices.push(notice.option);
+    calls.push('deliver');
+    return { ok: true, id: 18 };
+  });
+  events.onRequestEvent(ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
+    if (request.action === 'reply') return { ok: false };
+
     calls.push(request.action);
     expect(request).toMatchObject({ helper: '中控', node: 'release' });
     return { ok: true, id: 18 };
@@ -177,7 +189,7 @@ test('选项先落盘，relay 可重复投递但确认状态只记一次', async
   expect(repeated.statusCode).toBe(200);
   const conflict = await app.inject({ method: 'POST', url, payload: { ...payload, option: 'b' } });
   expect(conflict.statusCode).toBe(409);
-  expect(notices).toEqual(['a']);
+  expect(notices).toEqual(['a', 'a']);
 
   const ack = await app.inject({ method: 'POST', url: `${PREFIX}/ack`, payload: { node: 'release', note: '已安排' } });
   expect(ack.json()).toMatchObject({ node: { chosen: 'a', acknowledgedAt: expect.any(Number), note: '已安排' } });
@@ -186,26 +198,49 @@ test('选项先落盘，relay 可重复投递但确认状态只记一次', async
   expect(changes.json()).toMatchObject({ last: 3, changes: [{ seq: 2, action: 'choose' }, { seq: 3, action: 'ack' }] });
 });
 
-test('relay 缺席仍能轮询用户选择，启动时补记快照里未追加的历史', async () => {
-  const { app, dir } = await setup('中控');
+test('relay 缺席仍能通过变化接口轮询用户选择', async () => {
+  const { app } = await setup('中控');
   await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: entries });
   const url = `${PREFIX}/choose`;
   const unknown = await app.inject({ method: 'POST', url, payload: { node: 'release', option: '无效' } });
   expect(unknown.statusCode).toBe(400);
   const picked = await app.inject({ method: 'POST', url, payload: { node: 'release', option: 'a' } });
   expect(picked.json()).toMatchObject({ delivery: { method: 'GET', path: `${PREFIX}/changes` } });
+  const changes = await app.inject(`${PREFIX}/changes?since=1`);
+  expect(changes.json()).toMatchObject({ last: 2, changes: [{ seq: 2, action: 'choose', option: 'a' }] });
+});
 
+test('旧图和留言只导入一次，快照补齐残缺的历史并保留版本', async () => {
+  const { dir } = await setup();
+  fs.mkdirSync(dir, { recursive: true });
+  const decision = {
+    ...entries[1], kind: 'decided', status: 'decided', chosen: 'a', decidedBy: 'user',
+    createdAt: 100, summary: '', notes: [{ id: 'n1', author: 'user', at: 200, text: '看日志' }],
+  };
+  const goal = { ...entries[0], parent: null, createdAt: 50, summary: '' };
+  const head = { seq: 2, at: 200, actor: 'user', action: 'choose', nodes: ['release'], option: 'a' };
+  const encoded = JSON.stringify({ revision: 2, nodes: [goal, decision], head });
+  const graph = path.join(dir, 'graph.json');
   const history = path.join(dir, 'history.jsonl');
-  const data = fs.readFileSync(history, 'utf8');
-  const first = data.trim().split('\n')[0]!;
+  const first = JSON.stringify({ seq: 1, at: 100, actor: 'central', action: 'put', nodes: ['goal', 'release'] });
+  fs.writeFileSync(graph, encoded);
   fs.writeFileSync(history, `${first}\n{"seq":`, 'utf8');
-  const restored = new storeModule.Store(dir);
-  //M 快照恢复时读回选择当时保存的作者。
+  const db = new Database(':memory:');
+  cleanups.push(() => db.close());
+  const project = { bot: '开发', workspaceId: 'repo' };
+  db.exec("CREATE TABLE workspaces (id, bot, name, scope_key); INSERT INTO workspaces VALUES ('repo', '开发', '仓库', 'private')");
+  const restored = new storeModule.Store(db, dir, project.workspaceId);
+  //M 选择、作者、留言和版本一起恢复，后续写入从原序号继续。
   const restoredGraph = restored.getGraph();
   const restoredNode = restoredGraph.nodes.find((node) => node.id === 'release');
   expect(restoredGraph.revision).toBe(2);
-  expect(restoredNode).toMatchObject({ chosen: 'a', decidedBy: 'user' });
+  expect(restoredNode).toMatchObject({ ...project, chosen: 'a', decidedBy: 'user', notes: decision.notes });
   expect(restored.getChanges(1)).toMatchObject({ changes: [{ seq: 2, action: 'choose', option: 'a' }] });
+  restored.ack('release');
+  const reopened = new storeModule.Store(db, dir, project.workspaceId);
+  expect(reopened.getGraph().revision).toBe(3);
+  expect(reopened.getChanges(0).changes.map((change) => change.seq)).toEqual([1, 2, 3]);
+  expect(fs.readFileSync(graph, 'utf8')).toBe(encoded);
 });
 
 test('导入已定节点保留作者、时间和出处，重发数据不会替换当时的选项', async () => {
@@ -242,8 +277,14 @@ test('写话入口校验一次，只写话不改待定，带选项照点选落�
   const { app, ctx } = await setup('中控');
   const calls: events.StripEnvelope<routesModule.DecisionRelayRequest>[] = [];
   const notices: string[] = [];
-  ctx.on('decision-map/chosen', (notice) => { notices.push(notice.option); });
-  events.onRequestEvent(ctx, 'decision-map/relay', 'decision-map/relay-result', (request) => {
+  ctx.on('work-decision/decided', (notice) => {
+    notices.push(notice.option);
+    calls.push({ action: 'deliver', helper: '中控', node: notice.key, text: notice.text });
+    return { ok: true, id: 30 + calls.length };
+  });
+  events.onRequestEvent(ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
+    if (request.action === 'reply') return { ok: false };
+
     calls.push({ action: request.action, helper: request.helper, node: request.node, text: request.text });
     return { ok: true, id: 30 + calls.length };
   });
@@ -265,7 +306,7 @@ test('写话入口校验一次，只写话不改待定，带选项照点选落�
     delivery: { relayId: 31 },
   });
   expect(calls[0]).toMatchObject({ action: 'deliver', helper: '中控', node: 'release#n1' });
-  expect(calls[0]?.text).toContain('决策图「今天发吗」节点 release：用户写了：等我看完日志再说');
+  expect(calls[0]?.text).toContain('工作决策「今天发吗」节点 release：用户写了：等我看完日志再说');
 
   const working = await app.inject({ method: 'POST', url, payload: { node: 'scope', text: '先做手机上的' } });
   expect(working.json()).toMatchObject({ node: { status: 'working', notes: [{ id: 'n1' }] } });
@@ -276,7 +317,8 @@ test('写话入口校验一次，只写话不改待定，带选项照点选落�
   });
   expect(notices).toEqual(['b']);
   expect(calls[2]?.node).toBe('release#n2');
-  expect(calls[2]?.text).toContain('同时选了「明天发」（选项 b）');
+  expect(calls[2]?.text).toContain('主人选了「明天发」（b）');
+  expect(calls[2]?.text).toContain('备注：周五别发');
 
   const wrong = await app.inject({ method: 'POST', url: `${PREFIX}/reply`, payload: { node: 'release', note: 'n9', text: '收到' } });
   expect(wrong.statusCode).toBe(404);
@@ -293,4 +335,79 @@ test('写话入口校验一次，只写话不改待定，带选项照点选落�
   const changes = await app.inject(`${PREFIX}/changes?since=1`);
   const actions = changes.json<{ changes: types.DecisionChange[] }>().changes.map((change) => change.action);
   expect(actions).toEqual(['note', 'note', 'choose', 'note', 'reply', 'put']);
+});
+
+test('ask_owner 按会话工作区分组，重复调用不加节点，点选后只唤醒原会话一次', async () => {
+  const { app, ctx, db, tools } = await setup();
+  db.exec("CREATE TABLE workspaces (id, bot, name, scope_key); INSERT INTO workspaces VALUES ('ws-a', '开发', '仓库 A', 'private')");
+  const tool = tools.get('ask_owner')!;
+  expect(tool.sessionKinds).toEqual(['work']);
+  const row = { id: 'work-1', bot: '开发', kind: 'work', workspaceId: 'ws-a' };
+  const session = { row } as Session;
+  const signal = new AbortController().signal;
+  const args = { title: '何时发布', summary: '发布窗口', options: entries[1]!.options };
+  const first = await tool.run(args, session, signal, 'same-call');
+  const repeated = await tool.run(args, session, signal, 'same-call');
+  expect(repeated).toBe(first);
+  const receipt = JSON.parse(String(first)) as { id: string; url: string };
+  expect(receipt.url).toBe(`/work-decision/?focus=${receipt.id}`);
+  const graph = await app.inject(`${PREFIX}/graph`);
+  expect(graph.json()).toMatchObject({
+    projects: [{ name: '仓库 A' }],
+    nodes: [{ workspaceId: 'ws-a', kind: 'goal' }, { id: receipt.id, workspaceId: 'ws-a', kind: 'pending' }],
+  });
+
+  const deliveries: string[] = [];
+  events.onRequestEvent(ctx, 'bot/request', 'bot/result', (request) => {
+    if (request.action !== 'accept-result') return { ok: false };
+
+    expect(request.input.sessionId).toBe(row.id);
+    deliveries.push(request.input.payload.text);
+    return { ok: true, receipt: { status: 'queued', key: request.input.key } } as const;
+  });
+  const payload = { node: receipt.id, option: 'a' };
+  const choose = { method: 'POST', url: `${PREFIX}/choose`, payload } as const;
+  expect((await app.inject(choose)).json()).toMatchObject({ delivery: { queued: true } });
+  expect((await app.inject(choose)).json()).toMatchObject({ delivery: { queued: true } });
+  expect(deliveries).toEqual([expect.stringContaining('主人选了「今天发」')]);
+
+  const old = await app.inject('/decision-map/?focus=release&lang=fr');
+  expect(old.statusCode).toBe(301);
+  expect(old.headers.location).toBe('/work-decision/?focus=release&lang=fr');
+});
+
+test('外部助手提问通知配置中的主人，选择不发给默认中控', async () => {
+  const config = {
+    public_url: 'http://127.0.0.1:30086/work-decision/',
+    owner_target: { bot: '开发', channel: 'feishu', chat: 'ou_owner' },
+  };
+  const { app, ctx } = await setup('中控', config);
+  const notices: channel.ChannelReplyRequest[] = [];
+  ctx.on('channel/reply', (request) => {
+    request.handled = true;
+    notices.push(request);
+    const receipt = channel.getReceipt(request, 'sent', '');
+    channel.emitReplied(ctx, request, receipt);
+  });
+  const decisions: string[] = [];
+  ctx.on('work-decision/decided', (notice) => {
+    if (notice.asker.kind !== 'helper') return;
+
+    decisions.push(notice.asker.name);
+    return { ok: true, id: 21 };
+  });
+  const payload = { id: 'external-ask', bot: '开发', helper: '外部助手', title: '什么时候上线',
+    summary: '决定发布时间', options: entries[1]!.options };
+  const ask = { method: 'POST', url: `${PREFIX}/ask`, payload } as const;
+  const created = await app.inject(ask);
+  const ticket = created.json<{ id: string; url: string }>();
+  expect(ticket).toEqual({ id: payload.id, url: `/work-decision/?focus=${payload.id}` });
+  await app.inject(ask);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ bot: '开发', target: { channel: 'feishu', chat: 'ou_owner' } });
+  expect(notices[0]?.parts[0]).toMatchObject({ text: expect.stringContaining('工作决策有 1 件等你定') });
+  const body = { node: payload.id, option: 'b' };
+  const selected = await app.inject({ method: 'POST', url: `${PREFIX}/choose`, payload: body });
+  expect(selected.json()).toMatchObject({ delivery: { relayId: 21 } });
+  expect(decisions).toEqual(['外部助手']);
 });

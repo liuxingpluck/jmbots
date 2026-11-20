@@ -146,10 +146,10 @@ describe('getWorkspace：从运行时目录找源码根', () => {
 
 
 describe('Skeleton：系统骨架左栏与代码提取', () => {
-  test('五个骨架模块带 VERSION 与 kind: skeleton', () => {
-    //M 读取骨架左栏元数据清单，校验五项与主程序版本号一致。
+  test('四个骨架模块带 VERSION 与 kind: skeleton', () => {
+    //M 读取骨架左栏元数据清单，校验四项与主程序版本号一致。
     const items = skeletonModule.getSkeletonItems();
-    expect(items.map((item) => item.name)).toEqual(['main', 'resources', 'tools', 'sessions', 'channels']);
+    expect(items.map((item) => item.name)).toEqual(['main', 'resources', 'tools', 'sessions']);
     for (const item of items) {
       expect(item.kind).toBe('skeleton');
       expect(item.version).toBe(versionsModule.VERSION);

@@ -18,6 +18,21 @@ export function getField(value: unknown, key: string): unknown {
 
 
 /**
+ * 把形状不知道的值当成“名字: 值”的对象用（会话记的回话地址、库里读回的地址这类）。
+ * @param value 待转换的值，null、数组和非对象值视为空对象。
+ * @returns 是对象就是它本身（不复制）；不是对象时是新的空对象。
+ */
+export function getRecord(value: unknown): Record<string, unknown> {
+  //G 只认非空、非数组的对象。
+  if (typeof value !== 'object') return {};
+  if (value === null) return {};
+  if (Array.isArray(value)) return {};
+
+  return value as Record<string, unknown>;
+}
+
+
+/**
  * 读取对象的字符串字段。
  * @param value 同 getField。
  * @param key 哪一项。

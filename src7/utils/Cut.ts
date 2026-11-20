@@ -1,5 +1,5 @@
 /**
- * 截断：工具输出、事件数据太长时只留一段。exec、file-tools、web-search、journal 共用（照 0.4 的 src/capabilities/tools/Truncate.ts）。
+ * 截断：工具输出、事件数据太长时只留一段。exec、file-tools、web-search、journal 共用。
  * 都是纯函数，没有状态。
  */
 

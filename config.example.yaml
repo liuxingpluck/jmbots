@@ -134,7 +134,6 @@ channels:
 #   - name: fake-model             # 假模型，离线跑通链路用：只管模型名以 fake/ 开头的会话，别的照常发给真模型。
 #                                  # 要用它：providers 里加一家叫 fake 的（base_url 随便写），default_model 写成 fake/fake
 #   - name: http                   # HTTP 服务：端口读顶层 server.port（不写就报错），本机免令牌
-#   - name: web                    # 网页与文件上传/读取/列目录（已并入原 files-api），写在 http 后面
 #     config:
 #       files: {}                  # 原 files-api 插件的配置；当前无子配置项，可省略
 #   - name: web-api                # 网页要的接口：机器人、会话、发话、停止、换模型、追溯
@@ -209,7 +208,6 @@ channels:
 #     # service_url: http://127.0.0.1:30087  # 不写就是这个；记忆服务换了地址或端口才写
 #     # backend_url: memory      # 写了会话备份也发给 Rust（默认只进本地 SQLite）；旧写法是 Rust 地址时也当 service_url 用
 #     # backend_token、backend_timeout_ms 可配置外部 Rust 的认证和写入超时。
-#   - name: skills                 # 技能清单放进后台会话的系统提示词，skill 工具只读技能文件；写在 bots 后面
 #   - name: db                     # 数据库迁移和事务。默认 SQLite，沿用 Resources 的原连接。
 #   - name: context-fit            # 会话上下文总结、压缩与裁剪。compress 默认开启，上一轮用量达到登记窗口的 compress.ratio 就压缩。
 #     config: { keep: 6, ratio: 0.9, compress: { ratio: 0.8, keep: 6 }, summary: true }
@@ -227,10 +225,12 @@ channels:
 #   - name: decision               # 决策模型打分（approval、progress 可选地用）；配置在顶层 decision 段，见下面
 #   - name: image-gen              # image_generate 工具
 #     config: { image_model: 供应商名/生图模型 ID }
-#   - name: decision-map           # 决策图 /decision-map/，中控发布节点，网页点选即保存
+#   - name: work-decision          # 工作决策 /work-decision/，按工作区分组，挂在 http、workspaces、bots 后面
 #     config:
-#       relay_helper: Claude        # 填 relay.helpers 中的中控助手名。不填时用 /api/decision-map/changes 读选择
-#       public_url: http://192.168.200.1:30086/decision-map/  # notify 发给飞书的完整页面地址，按手机能访问的地址填写
+#       relay_helper: Claude        # 旧节点的选择和任务变化交给这个 relay 助手
+#       legacy_workspace_id: ''    # 首次导入旧图要归入的已有工作区 ID。不归类时省略此项
+#       public_url: http://192.168.200.1:30086/work-decision/  # 主人手机能打开的页面地址
+#       owner_target: { bot: 助手, channel: feishu, chat: 'ou_主人私聊标识' }  # 留空时不发提醒
 #   - name: programs               # 托管独立程序。每项文件由用户提供，程序在 stdout 报实际端口
 #                                  # 程序 info 报了 ui 就在 /programs/<name>/ 打开，网页顶栏自动出入口；一个程序都不写时资源守卫照样工作
 #     config:

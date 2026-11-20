@@ -1,6 +1,6 @@
 /** 决策图节点的标题、当前状态和交互入口。 */
 import * as xyflow from '@xyflow/react';
-import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import type * as layout from './Layout.ts';
 import * as words from './Words.ts';
 

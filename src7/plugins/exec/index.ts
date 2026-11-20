@@ -82,10 +82,10 @@ interface ExecPayload {
 }
 
 
-/** 工具的超时默认几秒（0.4 也是常量：src/capabilities/tools/Tools.ts:126-127）。 */
+/** 工具的超时默认几秒。 */
 const DEFAULT_TIMEOUT_SECONDS = 120;
 
-/** 命令退出以后，最多再等几毫秒管道关上（后台子进程会一直拿着输出管道；0.4 卡过一个半小时）。 */
+/** 命令退出以后，最多再等几毫秒管道关上（后台子进程可能一直持有输出管道）。 */
 const CLOSE_GRACE_MS = 2000;
 
 /** 是不是 Windows。 */
@@ -333,7 +333,7 @@ export class Exec extends cordis.Service {
 
 
 /**
- * 结果写成给模型看的话：头一行退出码、用时（照 src/capabilities/tools/Tools.ts:1163-1166），再接输出，太长只留结尾。
+ * 结果写成给模型看的话：头一行退出码、用时，再接输出，太长只留结尾。
  * @param result exec.run 的结果。
  * @returns 给模型看的文字：头一行是退出码、用时，后面是输出（太长只留结尾）；没有输出就写“（没有输出）”。
  */

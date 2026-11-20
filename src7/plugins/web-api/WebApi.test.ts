@@ -20,7 +20,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import { registerHttpErrorHandler } from '../http/index.ts';
-import * as channels from '../../Channels.ts';
+import * as channels from '../channels/index.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -572,7 +572,7 @@ test('回话追溯查询流水和用量，无应答时保留消息与缺项说�
       }],
     };
   });
-  const stopUsage = requestEventModule.onRequestEvent(ctx, 'usage/list', 'usage/list-result', (query) => {
+  const stopUsage = requestEventModule.onRequestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', (query) => {
     expect(query).toMatchObject({ sessions: [sessionId], limit: 200 });
     expect(query.from).toBeGreaterThan(0);
     expect(query.to).toBeGreaterThanOrEqual(query.from);
@@ -776,8 +776,8 @@ test('A 块：GET /api/channels 列挂着的渠道和聊天；时间线按 chann
     systems.push([...request.system]);
   });
 
-  //M 挂一个假的飞书渠道（只登记发送函数），收件表里放两个群各一条。
-  ctx.bots.channel('feishu', () => ({ status: 'accepted', reason: '' }));
+  //M 挂一个假的飞书渠道（只登记渠道名），收件表里放两个群各一条。
+  ctx.bots.channel('feishu');
   const insert = 'INSERT INTO web_messages (bot, channel, source, address, text, session_id, status, replies, created_at, updated_at)'
     + " VALUES ('助手', 'feishu', 'feishu', ?, ?, NULL, 'replied', '[]', ?, ?)";
   const groupA = JSON.stringify({ chatId: 'oc_a', chatType: 'group', chatName: '甲群' });

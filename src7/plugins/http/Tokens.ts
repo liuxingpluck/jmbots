@@ -1,7 +1,7 @@
 /**
  * 访问令牌：别的机器来的 /api/、/files/ 请求要带一个有效的令牌。
  * 两种来源：config.yaml 的 server.token（固定的主令牌，不列出来、不能在这里删），
- * 加上存在运行时 data/tokens.json 里的多个令牌（每个有名字，永久或临时几分钟）。和 0.4 同一个文件、同一种格式。
+ * 加上存在运行时 data/tokens.json 里的多个令牌（每个有名字，永久或临时几分钟）。
  * 管令牌的四个接口也在这里，只许本机：局域网带着令牌也不行，免得临时令牌给自己换出永久的。
  */
 import * as crypto from 'node:crypto';
@@ -48,7 +48,7 @@ export class Tokens {
     private readonly file: string,
     private readonly fixed: string,
   ) {
-    //M 文件是外面进来的：读不出来（没有、坏了）就当空表，和 0.4 一样。
+    //M 文件是外面进来的：读不出来（没有、坏了）就当空表
     try {
       this.list = JSON.parse(fs.readFileSync(file, 'utf8')) as TokenInfo[];
     } catch {

@@ -326,9 +326,9 @@ describe('运行时变量', () => {
     expect(again.groups.some((item) => item.name === 'relay')).toBe(false);
   });
 
-  test('flow/state 通知：带 read 登记一组（同 ctx.flow.state），不带 read 注销；注销没登记过的组不出错', async () => {
+  test('tutorial/state 通知：带 read 登记一组（同 ctx.flow.state），不带 read 注销；注销没登记过的组不出错', async () => {
     const { app, handlers } = await serve();
-    const notify = handlers['flow/state'];
+    const notify = handlers['tutorial/state'];
     expect(notify).toBeDefined();
 
     //M 登记：「状态」标签按组名归到 relay 下面，值和解释原样。

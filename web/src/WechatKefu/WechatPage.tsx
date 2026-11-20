@@ -210,7 +210,7 @@ function ExternalKefuLink() {
           const row = programs.find((program) => program.name === entry.name);
           if (Array.isArray(row?.channels)) return row.channels.some(isWechatTrialChannel);
 
-          //M 旧版 programs 状态不带渠道名，通过同源外置客服接口核对本程序实际登记的渠道。
+          //M programs 状态未带渠道名时，通过同源接口核对程序登记的渠道。
           const name = encodeURIComponent(entry.name);
           const capability = `/programs/${name}/api/wechat-kefu/capabilities`;
           try {

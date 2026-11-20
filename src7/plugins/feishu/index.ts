@@ -2,7 +2,7 @@
  * 飞书：一个插件管飞书的全部——渠道收发、确认卡片和进度卡片（cards/）、飞书云文档工具（doc/）、发件箱（outbox/）。
  * 用户定了：平台型插件放在一个插件里，用子文件夹分管功能。设计见同目录 说明.md 的「设计要点」一节。
  * 渠道收发按职责分文件：这个文件是入口（类型、配置校验、长连接、别的插件调的发送口、apply）；
- * 收消息、撤回、点卡片在 Inbound.ts，channel/reply、channel/send 在 Reply.ts，聊天日志在 ChatLog.ts，
+ * 收消息、撤回、点卡片在 Inbound.ts，channel/reply 在 Reply.ts（所有发出去的话都经它），聊天日志在 ChatLog.ts，
  * 来往流水在 Contacts.ts。拆出去的几个类由 Feishu 构造时建好，挂在 feishu.inbound / reply / history / contacts 上。
  *
  * 渠道：照 config.yaml 的 channels.feishu 名单，一个飞书应用一个 SDK 客户端、一条长连接（WebSocket），等 ready 才连。
@@ -25,7 +25,6 @@ import * as path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
-import type { Session } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -42,17 +41,10 @@ import * as media from './Media.ts';
 import * as outbox from './outbox/Outbox.ts';
 import { FeishuReply } from './Reply.ts';
 
-/** 旧路 bots.channel 回调发送回执（结构对齐 bots 服务约定）。 */
+/** sendText 交回的回执：accepted 文字和文件都发了，partial 有文件没发出去（reason 写哪几个）。 */
 interface LegacySendReceipt {
   status: 'accepted' | 'partial' | 'uncertain' | 'rejected';
   reason: string;
-}
-
-
-/** 旧路 bots.channel 回调来源地址（结构对齐 bots 服务约定）。 */
-interface LegacyOrigin {
-  channel?: string;
-  address?: unknown;
 }
 
 
@@ -65,7 +57,7 @@ export const name = 'feishu';
 //M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、findChatByIdOrName：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
 //M 1.1.18：长连接收到消息先发一个跟踪点 Feishu.start，入站的几个跟踪点都带 messageId（标准消息号），教程轨迹第一格就是飞书收到。
-export const version = '1.1.21';
+export const version = '1.1.22';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -90,12 +82,6 @@ declare module 'cordis' {
     feishu: Feishu;
   }
   interface Events {
-    /**
-     * web-api 每来一次 GET /api/ui/status 挨个问一遍：各渠道往 list 里 push 自己的连接状态。这里每个飞书应用 push 一项。
-     * 谁发：src7/plugins/web-api/index.ts 的 WebApi.routes
-     * 谁接：src7/plugins/feishu/index.ts 的 Feishu.constructor；src7/plugins/wechat/index.ts 的 Wechat.constructor
-     */
-    'web-api/status'(list: ChannelStatus[]): void | Promise<void>;
     /**
      * 通过指定机器人向飞书聊天发送本地文件。
      * 谁发：src7/plugins/relay/index.ts 的 Relay.sendFile
@@ -282,7 +268,7 @@ const SEEN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 /** 飞书应用号的样子：SDK 长连接只认这种（lib/index.js WSClient.start）。 */
 const APP_ID_PATTERN = /^cli_[0-9a-fA-F]{16}$/u;
 
-/** 长连接握手最多等多久，毫秒（0.4 同）。 */
+/** 长连接握手最多等多久，毫秒。 */
 const HANDSHAKE_TIMEOUT_MS = 20_000;
 
 /** 群名、群成员名字查过以后记多久，毫秒；过了再查（有人改名、新进群）。 */
@@ -382,21 +368,18 @@ export class Feishu {
   /** 来往流水：记、读 data/logs/feishu-contacts.jsonl，听 bot/judged 补记（Contacts.ts）。 */
   readonly contacts: FeishuContacts;
 
-  /** 回话：响应 channel/reply、channel/send（Reply.ts）。 */
+  /** 回话：响应 channel/reply（Reply.ts）。 */
   readonly reply: FeishuReply;
 
   /**
    * 建表、给每个应用建 SDK 客户端；ready 时连长连接；被拔掉时关长连接。
-   * 向 bots 登记本渠道的发送函数；一轮结束回话和中途先说一句由 bots 按渠道名调用。
+   * 向 bots 登记本渠道名（网页的渠道清单用）；所有回话都经 channel/reply 到 Reply.ts。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验过的配置。
    */
   constructor(private readonly ctx: cordis.Context, readonly config: FeishuConfig) {
-    //M 向 bots 服务注册飞书回话投递函数，随本插件卸载由 Cordis 自动撤销。
-    this.ctx.effect(() => this.ctx.bots.channel(
-      this.name,
-      (reply, session, origin) => this.send(reply, session, origin),
-    ));
+    //M 向 bots 登记渠道名，随本插件卸载由 Cordis 自动撤销。
+    this.ctx.effect(() => this.ctx.bots.channel(this.name));
     const db = this.ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS feishu_seen (message_id TEXT PRIMARY KEY, app_id TEXT, kind TEXT, at INTEGER)');
     db.exec('CREATE TABLE IF NOT EXISTS feishu_p2p'
@@ -588,7 +571,7 @@ export class Feishu {
       return;
     }
 
-    //M 分发器：收消息、点卡片两个事件干活；已读、表情、进私聊几个登记空处理，免得 SDK 打“没有处理”的警告（0.4 同）。
+    //M 分发器：收消息、点卡片两个事件干活；已读、表情、进私聊几个登记空处理，免得 SDK 打“没有处理”的警告。
     //M   收消息不等它处理完就交回：下载大文件可能很久，飞书等不到确认会重推（重推的有去重挡着）。
     //M   点卡片要等：交回的 { toast } 就是给飞书的回应，SDK 把它带回去（lib/index.js handleEventData）。
     const dispatcher = new lark.EventDispatcher({ loggerLevel: lark.LoggerLevel.warn, logger: SDK_LOGGER }).register({
@@ -735,40 +718,6 @@ export class Feishu {
     }
     this.chats.set(chatId, found);
     return found;
-  }
-
-  /**
-   * 登记给 bots 的发送：把会话的话发回飞书；这一轮结束了再撤“敲键盘”表情。
-   * 出错打日志、写进回执，不往外抛；不自动重发。
-   * @param reply 要说的话。
-   * @param session 哪场会话。
-   * @param origin 发到哪：给了就用它的地址（前台送后台结果），没给用会话现在记的。
-   * @returns 回执：全发了 accepted，文件有没发出去的 partial，飞书明确拒了 rejected，断网超时这类不知道的 uncertain。
-   */
-  protected async send(reply: string, session: Session, origin?: LegacyOrigin): Promise<LegacySendReceipt> {
-    const address = (origin?.address ?? session.row.address) as FeishuAddress | undefined;
-    /** 发完的回执；出错时下面改掉。 */
-    let receipt: LegacySendReceipt;
-    try {
-      //M 群聊回复前自动补 @ 说话人，再经统一文本+附件发送通道投递飞书。
-      receipt = await this.sendText(address, this.withAt(address, reply));
-    } catch (error) {
-      //M 提取异常说明并带时间戳输出发送失败日志，再按 NotSent 区分回执状态。
-      const reason = textModule.getErrorMessage(error);
-      const logTime = textModule.formatLocalTime(Date.now(), 'date');
-      console.error(`${logTime} 飞书：会话 ${session.id} 的回话没发出去：${reason}`);
-
-      //M 飞书明确拒了是 rejected；别的（断网、超时）不知道收没收，是 uncertain。
-      receipt = { status: 'uncertain', reason };
-      if (error instanceof api.NotSent) {
-        receipt = { status: 'rejected', reason };
-      }
-    }
-    //M 这一轮结束了，撤“敲键盘”表情。给了 origin 的（前台送后台结果）是早先那句话的地址，表情那时已经撤过。
-    if (origin === undefined && session.row.state !== 'running' && address?.typingReaction !== undefined) {
-      await this.untype(address);
-    }
-    return receipt;
   }
 
   /**

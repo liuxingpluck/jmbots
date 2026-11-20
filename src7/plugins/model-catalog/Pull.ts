@@ -1,6 +1,6 @@
 /**
  * 拉一家供应商的模型清单（GET <base_url>/models），和 config.yaml 里手写的合成一张表。
- * 只有函数，不建 class；index.ts 调它们。规则照 0.4 src/capabilities/Model.ts:320-454。
+ * 只有函数，不建 class；index.ts 调它们。
  * 密钥只放进请求头，不进返回、不进报错。
  */
 
@@ -67,14 +67,14 @@ const LIST_TIMEOUT_MS = 15_000;
 const UNKNOWN_CONTEXT_WINDOW = 128_000;
 const UNKNOWN_MAX_OUTPUT = 8192;
 
-/** 只给 ID 的清单里，名字像这些的不是对话模型，不收（同 0.4 Model.ts:299）。 */
+/** 只给 ID 的清单里，名字像这些的不是对话模型，不收。 */
 const NON_CHAT_MODEL = /embed|whisper|tts|transcri|dall-e|moderation|rerank|image/iu;
 
 
 /**
  * GET <baseUrl>/models，交回 data 数组。
  * @param baseUrl 地址，末尾不带斜杠。
- * @param apiKey 密钥；空串时请求头写 no-key（同 0.4）。
+ * @param apiKey 密钥；空串时请求头写 no-key。
  * @returns 清单里的每一项（没有 id 的丢掉）。
  * @throws 不是 200 抛 `HTTP <码>`；超时、连不上抛网络错误（不带请求头）；回的不是清单形状也抛。
  * 副作用：发一个请求。
@@ -84,7 +84,7 @@ export async function fetchList(baseUrl: string, apiKey: string): Promise<ListEn
   if (key === '') {
     key = 'no-key';
   }
-  //M x-magpie-deciders 是 magpie 列出决策模型用的，别家不认会忽略（同 0.4 Model.ts:345-349）。
+  //M x-magpie-deciders 是 magpie 列出决策模型用的，别家不认会忽略。
   const headers = { authorization: `Bearer ${key}`, 'x-api-key': key, 'x-magpie-deciders': '1' };
   const response = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(LIST_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);

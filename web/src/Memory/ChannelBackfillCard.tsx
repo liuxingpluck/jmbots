@@ -44,7 +44,7 @@ export function ChannelBackfillCard() {
       }).catch((failure: unknown) => {
         if (request.signal.aborted) return;
 
-        //G 旧版运行时或关闭渠道索引时没有这条接口，隐藏卡片。
+        //G 回填接口返回 404 时隐藏卡片。
         if (failure instanceof api.ApiError && failure.status === 404) {
           setStatus(undefined);
           return;

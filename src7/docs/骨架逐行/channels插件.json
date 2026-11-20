@@ -1,0 +1,446 @@
+[
+  {
+    "id": "r-ch",
+    "parent": null,
+    "title": "plugins/channels/：渠道协议插件（五个文件）",
+    "summary": "渠道和机器人之间说话用的一套事件和数据结构（接口 A）：依赖型插件，不挂服务、不存状态，渠道和 bots 等插件直接 import。",
+    "body": "## plugins/channels/ 分块目录\n\n依赖型协议插件：不在 `plugins/Index.ts` 的自带名单里，不挂服务；渠道（feishu、wechat、cli、web-api、voice、programs）和 bots、approval 等直接 import。四个事件：`channel/message`、`channel/reply`、`channel/replied`、`channel/recall`。按文件分五组：\n\n- index.ts：事件声明和汇总导出（共 79 行）：channels 的入口：版本号、汇总导出和四个事件的声明。\n- Message.ts：进来的一条消息（共 334 行）：渠道标准消息、提及、附件、来源、可见域、路由、认领、撤回，以及消息号、认领键、来源快照、旧地址角色这几个小函数。\n- Reply.ts：回复请求、回执和回复键（共 372 行）：回复请求与回执的数据、三个键、requestChannelReply 发请求等回执、requestTextReply 发一段纯文字、getReceipt 和 emitReplied。\n- TextReply.ts：纯文字渠道共用的响应器（共 138 行）：只发纯文字的渠道交一个适配器，由 registerTextReply 管认领、同键重放、认目标聊天和回发回执。\n- Target.ts：跨渠道、跨聊天发话（共 132 行）：目标描述、能不能跨、目标串怎么拆、候选聊天怎么认、认不出怎么说。\n\n插件说明见同目录 说明.md。",
+    "sources": [
+      "src7/plugins/channels/index.ts",
+      "src7/plugins/channels/Message.ts",
+      "src7/plugins/channels/Reply.ts",
+      "src7/plugins/channels/TextReply.ts",
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-g1",
+    "parent": "r-ch",
+    "title": "index.ts：事件声明和汇总导出",
+    "summary": "channels 的入口：版本号、汇总导出和四个事件的声明。",
+    "body": "## index.ts：事件声明和汇总导出\n\nchannels 的入口：版本号、汇总导出和四个事件的声明。\n\n- index.ts L1–L23 文件头和汇总导出\n- index.ts L24–L28 版本号\n- index.ts L29–L50 channel/message 事件\n- index.ts L51–L60 channel/reply 事件\n- index.ts L61–L71 channel/replied 事件\n- index.ts L72–L79 channel/recall 事件",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-01",
+    "parent": "r-ch-g1",
+    "title": "index.ts L1–L23 文件头和汇总导出",
+    "summary": "说明 channels 是依赖型插件，把四个文件的类型和函数汇总导出。",
+    "body": "**行号：index.ts L1–L23**\n\n### 代码原文\n```ts\n// src7/plugins/channels/index.ts\n   1  /**\n   2   * 渠道协议插件 channels：渠道和机器人之间共用的事件、标准数据结构和无状态小函数（接口 A）。\n   3   * 依赖型插件：不挂服务、不进 plugins/Index.ts 的自带名单，渠道和 bots 等插件直接 import 本文件。\n   4   * 这里只做事件声明和汇总导出，类型和函数按主题放在同目录：\n   5   *   - Message.ts：进来的一条消息（渠道消息、提及、附件、来源、可见性、路由、认领、撤回）；\n   6   *   - Reply.ts：回复请求、回执、回执拼法、回复键；\n   7   *   - TextReply.ts：只发纯文字的渠道共用的 channel/reply 响应器；\n   8   *   - Target.ts：跨渠道、跨聊天发话（能不能跨、目标串怎么拆、候选聊天怎么认）。\n   9   * 事件：\n  10   *   - channel/message(message, control)：渠道收到原始消息并落盘后发出；approval 消息级指令先消费一次，bots 按 targetBots 逐个独立认领；\n  11   *   - channel/reply(request) ↔ channel/replied(event)：所有发出去的话都走它（回复工具、零次兜底、审批直回、旧路自动回话、relay 回信、\n  12   *     本人批准的主动发件），匹配的渠道发完回发回执，回执带着请求本身；\n  13   *   - channel/recall(event)：渠道确认原消息撤回后发出，bots 移除排队消息并通知正在处理它的会话。\n  14   */\n  15  import type * as messageModule from './Message.ts';\n  16  import type * as replyModule from './Reply.ts';\n  17\n  18  export * from './Message.ts';\n  19  export * from './Reply.ts';\n  20  export * from './Target.ts';\n  21  export * from './TextReply.ts';\n  22\n  23\n```\n\n### 解释\n- L1：文件头：依赖型插件，不挂服务、不进 `plugins/Index.ts` 的自带名单；渠道和 bots 等插件直接 import 本文件。\n- L9：三组事件的说明：`channel/reply` ↔ `channel/replied` 承担所有发出去的话（回复工具、零次兜底、审批直回、旧路自动回话、relay 回信、本人批准的主动发件），回执带着请求本身。\n- L18：四个文件各管一类（Message 进来的消息、Reply 回复、TextReply 纯文字渠道共用响应器、Target 跨聊天发话），这里只汇总导出。\n\n### 谁用它\n- approval、assist、bots、cli、feishu、memory、programs、progress、voice、web-api、wechat 都 import 它。",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-02",
+    "parent": "r-ch-g1",
+    "title": "index.ts L24–L28 版本号",
+    "summary": "插件版本号，写成 x.y.z。",
+    "body": "**行号：index.ts L24–L28**\n\n### 代码原文\n```ts\n// src7/plugins/channels/index.ts\n  24  //M 插件版本号，写成 x.y.z；不进自带名单，由 说明.md 开头和插件地图展示。\n  25  //M 1.1.0：回执带请求本身；来源快照可选，target 可带确切地址；channel/send 并进 channel/reply（主路线 2）。\n  26  export const version = '1.1.0';\n  27\n  28\n```\n\n### 解释\n- L25：版本说明：1.1.0 起回执带请求本身，来源快照可选，target 可带确切地址，`channel/send` 并进 `channel/reply`（主路线 2）。\n- L26：不进自带名单，由 说明.md 开头、插件地图和教程插件的列表展示。\n\n### 谁用它\n- tutorial 的左栏插件列表读它。",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-03",
+    "parent": "r-ch-g1",
+    "title": "index.ts L29–L50 channel/message 事件",
+    "summary": "声明渠道收到消息之后发的事件。",
+    "body": "**行号：index.ts L29–L50**\n\n### 代码原文\n```ts\n// src7/plugins/channels/index.ts\n  29  declare module 'cordis' {\n  30    interface Events {\n  31      /**\n  32       * 渠道收到消息并存下原件后发出：approval 消息级命令先看，随后 bots 按 targetBots 逐个独立认领。\n  33       * 谁发：\n  34       *   src7/plugins/cli/index.ts 的 Cli.submitLine\n  35       *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.deliver\n  36       *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.dispatch\n  37       *   src7/plugins/progress/GroupDaily.ts 的 dispatchReport\n  38       *   src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch、VoiceTasks.record\n  39       *   src7/plugins/web-api/index.ts 的 WebApi.emitChannelMessage\n  40       *   src7/plugins/wechat/index.ts 的 Wechat.store\n  41       * 谁接：\n  42       *   src7/plugins/approval/index.ts 的 Approval.constructor\n  43       *   src7/plugins/bots/index.ts 的 Bots.constructor\n  44       *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex\n  45       *   src7/plugins/web-api/index.ts 的 WebApi.constructor\n  46       */\n  47      'channel/message'(\n  48        message: messageModule.ChannelMessage,\n  49        control?: messageModule.ChannelMessageControl,\n  50      ): void | Promise<void>;\n```\n\n### 解释\n- L29：给 Cordis 的 `Events` 加四个事件。\n- L47：渠道存下原件后发：approval 的消息级命令先看，随后 bots 按 `targetBots` 逐个独立认领；第二个参数 `control` 收认领结果。\n\n### 谁用它\n- 发：cli、feishu、programs、progress、voice、web-api、wechat；接：approval、bots、memory、web-api。",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-04",
+    "parent": "r-ch-g1",
+    "title": "index.ts L51–L60 channel/reply 事件",
+    "summary": "回复请求：所有发出去的话都走它，匹配 channel 的渠道插件发完后回发 channel/replied。",
+    "body": "**行号：index.ts L51–L60**\n\n### 代码原文\n```ts\n// src7/plugins/channels/index.ts\n  51      /**\n  52       * 请渠道发一条（所有发出去的话都走它）：回来源快照的原消息，带 target.chat 跨聊天认目标，带 target.address 照确切地址发。\n  53       * 匹配 channel 的渠道插件置 handled、发完回发 channel/replied；没人接单立刻回 rejected。\n  54       * 谁发：src7/plugins/channels/Reply.ts 的 requestChannelReply\n  55       * 谁接：\n  56       *   src7/plugins/channels/TextReply.ts 的 registerTextReply\n  57       *   src7/plugins/feishu/Reply.ts 的 FeishuReply.constructor\n  58       *   src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor\n  59       */\n  60      'channel/reply'(request: replyModule.ChannelReplyRequest): void | Promise<void>;\n```\n\n### 解释\n- L60：载荷是 `ChannelReplyRequest`（可带来源快照、`target.chat`、`target.address`、`sessionId`、`atFiles`）；谁发是 `requestChannelReply`（Reply.ts），谁接是纯文字渠道的 `registerTextReply`、feishu 的 `FeishuReply`、voice 的 `VoiceReplies`。没人接单立刻回 rejected。\n\n### 谁用它\n- 纯文字渠道用 `registerTextReply` 接；feishu、voice 自己接。",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-05",
+    "parent": "r-ch-g1",
+    "title": "index.ts L61–L71 channel/replied 事件",
+    "summary": "回执：渠道发完（或拒绝）后经 emitReplied 回传，回执带着请求本身。",
+    "body": "**行号：index.ts L61–L71**\n\n### 代码原文\n```ts\n// src7/plugins/channels/index.ts\n  61      /**\n  62       * 发成了没有：渠道发完（或确认失败）经 emitReplied 回传回执，回执带着请求本身（正文、来源快照、目标）；\n  63       * 外置程序的主动发件由 approval 补一条。记往来、记忆、网页挂回都只听它。\n  64       * 谁发：src7/plugins/channels/Reply.ts 的 emitReplied\n  65       * 谁接：\n  66       *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor\n  67       *   src7/plugins/channels/Reply.ts 的 requestChannelReply\n  68       *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex\n  69       *   src7/plugins/web-api/index.ts 的 WebApi.constructor\n  70       */\n  71      'channel/replied'(event: replyModule.ChannelRepliedEvent): void;\n```\n\n### 解释\n- L71：载荷是 `ChannelRepliedEvent`，带着请求本身（正文、来源快照、目标）；`requestChannelReply` 按请求号配对，bots 的 FrontDesk、memory 的 ChannelIndex、web-api 也听。",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-06",
+    "parent": "r-ch-g1",
+    "title": "index.ts L72–L79 channel/recall 事件",
+    "summary": "渠道确认原消息被撤回后发出。",
+    "body": "**行号：index.ts L72–L79**\n\n### 代码原文\n```ts\n// src7/plugins/channels/index.ts\n  72      /**\n  73       * 渠道确认本人或原发信人撤回消息后发出。bots 清理排队原消息，通知正在处理它的会话。\n  74       * 谁发：src7/plugins/feishu/Inbound.ts 的 FeishuInbound.onRecall\n  75       * 谁接：src7/plugins/bots/DispatchRecall.ts 的 DispatchRecall.listen\n  76       */\n  77      'channel/recall'(event: messageModule.ChannelRecallEvent): void | Promise<void>;\n  78    }\n  79  }\n```\n\n### 解释\n- L77：载荷是 `ChannelRecallEvent`；feishu 发，bots 的 DispatchRecall 接，清理排队的原消息并通知正在处理它的会话。",
+    "sources": [
+      "src7/plugins/channels/index.ts"
+    ]
+  },
+  {
+    "id": "r-ch-g2",
+    "parent": "r-ch",
+    "title": "Message.ts：进来的一条消息",
+    "summary": "渠道标准消息、提及、附件、来源、可见域、路由、认领、撤回，以及消息号、认领键、来源快照、旧地址角色这几个小函数。",
+    "body": "## Message.ts：进来的一条消息\n\n渠道标准消息、提及、附件、来源、可见域、路由、认领、撤回，以及消息号、认领键、来源快照、旧地址角色这几个小函数。\n\n- Message.ts L1–L14 文件头、角色和聊天种类\n- Message.ts L15–L55 提及、附件、引用\n- Message.ts L56–L101 来源、可见域、路由建议\n- Message.ts L102–L112 网页当前查看的上下文\n- Message.ts L113–L161 标准消息 ChannelMessage\n- Message.ts L162–L187 认领记录和协调对象\n- Message.ts L188–L226 每轮来源快照 SourceSnapshot\n- Message.ts L227–L254 撤回事件 ChannelRecallEvent\n- Message.ts L255–L265 getClaimKey：认领去重键\n- Message.ts L266–L306 getSourceSnapshot：做来源快照\n- Message.ts L307–L318 makeChannelMessageId：标准消息号\n- Message.ts L319–L334 resolveLegacyRole：旧地址推角色",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-07",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L1–L14 文件头、角色和聊天种类",
+    "summary": "说明这个文件只放类型和无状态小函数；定角色档位和聊天种类两个字面量类型。",
+    "body": "**行号：Message.ts L1–L14**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n   1  /**\n   2   * 渠道协议：进来的一条消息（渠道消息、提及、附件、来源、可见性、路由、认领、撤回）。\n   3   * 只放类型和无状态小函数：消息号、认领键、来源快照、旧地址的身份档位。事件声明在同目录 index.ts。\n   4   */\n   5  import * as utils from '../../utils/index.ts';\n   6\n   7\n   8  /** 渠道标准角色档位；身份证明缺失时一律回退 guest。 */\n   9  export type ChannelRole = 'owner' | 'guest' | 'builder';\n  10\n  11  /** 聊天种类。 */\n  12  export type ChannelChatType = 'p2p' | 'group' | 'local';\n  13\n  14\n```\n\n### 解释\n- L1：文件头：只放类型和无状态小函数（消息号、认领键、来源快照、旧地址的身份档位）；事件声明在同目录 index.ts。\n- L9：角色档位三档：owner 本人、guest 外人、builder 开发者；身份证明缺失一律回退 guest。\n- L12：聊天种类：p2p 私聊、group 群、local 本机（网页、命令行）。\n\n### 谁用它\n- approval、bots、feishu、wechat 等所有渠道和机器人插件 import 这两个类型。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-08",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L15–L55 提及、附件、引用",
+    "summary": "消息里的三个小结构：@ 提及、渠道收到的附件、被引用的原消息。",
+    "body": "**行号：Message.ts L15–L55**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n  15  /** 消息里的 @ 提及。 */\n  16  export interface ChannelMention {\n  17    /** 原始文本占位符（例如 @_user_1）。 */\n  18    token?: string;\n  19    /** 平台原始被 @ 用户 ID。 */\n  20    id: string;\n  21    /** 平台或配置解析出来的名字。 */\n  22    name?: string;\n  23    /** 经可信配置映射到的目标机器人名列表。 */\n  24    botNames: string[];\n  25  }\n  26\n  27\n  28  /** 渠道收到的原始附件描述（落在渠道目录，不直接指向任意本机路径）。 */\n  29  export interface ChannelAttachment {\n  30    /** 附件稳定标识。 */\n  31    id: string;\n  32    /** 原始或清洗前的展示文件名。 */\n  33    name: string;\n  34    /** MIME 类型（可用时）。 */\n  35    mime?: string;\n  36    /** 字节大小（可用时）。 */\n  37    size?: number;\n  38    /** 渠道侧落盘引用路径（内部物化使用，历史工具不对外暴露本机路径）。 */\n  39    sourceRef: string;\n  40    /** 渠道下载是否成功。 */\n  41    state: 'available' | 'unavailable';\n  42    /** 下载失败原因。 */\n  43    reason?: string;\n  44  }\n  45\n  46\n  47  /** 原始引用消息指向。 */\n  48  export interface ChannelReplyTo {\n  49    /** 标准 messageId（可用时）。 */\n  50    messageId?: string;\n  51    /** 平台原始消息 ID。 */\n  52    nativeId?: string;\n  53  }\n  54\n  55\n```\n\n### 解释\n- L16：`ChannelMention`：平台原始被 @ 的人，加经可信配置映射到的目标机器人名 `botNames`。\n- L29：`ChannelAttachment`：附件落在渠道目录，`sourceRef` 只给内部物化用，历史工具不对外暴露本机路径；`state` 记下载成没成。\n- L48：`ChannelReplyTo`：引用的是哪条，标准号和平台原始号都可以没有。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-09",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L56–L101 来源、可见域、路由建议",
+    "summary": "消息从哪来（来源地址）、能被谁看（可见域）、机器人怎么接（路由建议和每个机器人的覆盖项）。",
+    "body": "**行号：Message.ts L56–L101**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n  56  /** 不可变的来源兼容地址。 */\n  57  export interface ChannelOrigin {\n  58    /** 渠道名（feishu / wechat / http / cli）。 */\n  59    channel: string;\n  60    /** 深拷贝的原渠道地址对象。 */\n  61    address: Record<string, unknown>;\n  62  }\n  63\n  64\n  65  /** 来源可见域与授权范围。 */\n  66  export interface ChannelVisibility {\n  67    /** 作用域字符串描述。 */\n  68    scope: string;\n  69    /** 是否受信任作用域（如私聊或 trusted 群）。 */\n  70    trusted: boolean;\n  71    /** 显式配置的公共源白名单。 */\n  72    publicSourceIds: string[];\n  73  }\n  74\n  75\n  76  /** 单机器人路由附带信息。 */\n  77  export interface BotRoutingHint {\n  78    /** 该机器人在这条消息上是否仅监听当背景。 */\n  79    listenOnly: boolean;\n  80    /** 是否由决策模型判断是否接话。 */\n  81    judge?: boolean;\n  82  }\n  83\n  84\n  85  /** 渠道路由建议。 */\n  86  export interface ChannelRouting {\n  87    /** 默认是否仅监听当背景。 */\n  88    listenOnly: boolean;\n  89    /** 默认是否由决策模型判断。 */\n  90    judge?: boolean;\n  91    /** 服务端校验过的指定会话号：bots 只投给这场会话的机器人、进这场会话（网页“发给哪个会话”、引用别的渠道的消息）。 */\n  92    sessionId?: string;\n  93    /** 引用别的渠道的消息时，被引那条的原渠道、原机器人、原会话（入口校验过）；只作记录，回话照旧回本条来源。 */\n  94    replyOrigin?: { source: string; bot: string; sessionId: string };\n  95    /** 一轮一次 channel_reply 都没调时，把最后的话当 final 直接发出去（一对一的渠道：网页、命令行、微信）；不写走修复轮。 */\n  96    autoFinal?: boolean;\n  97    /** 多机器人场景下每个机器人各自的监听/判断覆盖项。 */\n  98    byBot?: Record<string, BotRoutingHint>;\n  99  }\n 100\n 101\n```\n\n### 解释\n- L57：`ChannelOrigin`：渠道名加深拷贝的原渠道地址；地址形状归各渠道，回话时照它发。\n- L66：`ChannelVisibility`：作用域、是否受信任、公共源白名单；外人看不到私人数据靠它判断。\n- L77：`BotRoutingHint`：某个机器人在这条消息上是只当背景听（`listenOnly`），还是让决策模型判断接不接话（`judge`）。\n- L86：`ChannelRouting`：默认的监听、判断；`sessionId` 是服务端校验过的指定会话；`replyOrigin` 只作记录，回话照旧回本条来源；`autoFinal` 让一对一渠道把最后的话直接发出去；`byBot` 是每个机器人各自的覆盖。\n\n### 谁用它\n- bots 的认领按 routing 决定是监听、判断还是直接接。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-10",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L102–L112 网页当前查看的上下文",
+    "summary": "网页发话时带的“正在看哪个渠道、哪个聊天”。",
+    "body": "**行号：Message.ts L102–L112**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 102  /** 网页发话时附带的当前查看上下文（供 131 接入 POST /api/message 的 view 后填入）。 */\n 103  export interface ChannelView {\n 104    /** 网页当前正在查看的渠道名（feishu / wechat / http / cli）。 */\n 105    channel: string;\n 106    /** 网页当前正在查看的聊天标识；看的是整个渠道时是 ''。 */\n 107    chat: string;\n 108    /** 给人看的名字（web-api 照 /api/channels 的清单填）：“飞书·群·测试群”“飞书·全部聊天”；前台这一轮的提示里用它。 */\n 109    label?: string;\n 110  }\n 111\n 112\n```\n\n### 解释\n- L103：`ChannelView`：渠道名、聊天标识（看整个渠道时是空串）和给人看的名字 `label`。\n- web-api 照 /api/channels 的清单填；前台这一轮的提示里会说“用户正在看哪儿”，本人查历史没传参时默认取它。\n\n### 谁用它\n- web-api 填；bots 的 ChannelTools 在提示里用它。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-11",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L113–L161 标准消息 ChannelMessage",
+    "summary": "渠道收到消息、存下原件以后发出去的统一形状：谁、在哪、说了什么、给谁、能看到什么。",
+    "body": "**行号：Message.ts L113–L161**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 113  /** 渠道发出的标准消息（v: 1）。 */\n 114  export interface ChannelMessage {\n 115    /** 协议版本。 */\n 116    v: 1;\n 117    /** 渠道范围稳定 ID：推荐 JSON.stringify([channel, accountId, nativeId])。 */\n 118    messageId: string;\n 119    /** 平台原始消息 ID；无原生 ID 时首次生成 UUID 持久复用。 */\n 120    nativeId: string | null;\n 121    /** 渠道名：feishu / wechat / http / cli。 */\n 122    channel: string;\n 123    /** 平台账号 ID：飞书 appId、微信 account 等。 */\n 124    accountId: string;\n 125    /** 聊天稳定 ID。 */\n 126    chatId: string;\n 127    /** 聊天种类。 */\n 128    chatType: ChannelChatType;\n 129    /** 发送者渠道原始 ID 和展示名。 */\n 130    sender: { id: string; name?: string };\n 131    /** 身份档位：由平台可信配置算得，缺证明时为 guest。 */\n 132    role: ChannelRole;\n 133    /** 经可信配置和 @ 映射规范化去重后的目标机器人名单。 */\n 134    targetBots: string[];\n 135    /** @ 提及列表。 */\n 136    mentions: ChannelMention[];\n 137    /** 保留原始可读文本。 */\n 138    rawText: string;\n 139    /** 面向模型的规范化文本（不再用 @本机路径 触发外发附件）。 */\n 140    text: string;\n 141    /** 渠道保存的附件列表。 */\n 142    attachments: ChannelAttachment[];\n 143    /** 平台原始创建时间（UTC 毫秒）；缺失时用 receivedAt。 */\n 144    createdAt: number;\n 145    /** 本机收到时间（UTC 毫秒）。 */\n 146    receivedAt: number;\n 147    /** createdAt 的来源。 */\n 148    timeSource: 'provider' | 'received';\n 149    /** 引用原消息（没有为 null）。 */\n 150    replyTo: ChannelReplyTo | null;\n 151    /** 不可变深拷贝的原渠道兼容地址。 */\n 152    origin: ChannelOrigin;\n 153    /** 渠道与权限插件计算出的授权范围。 */\n 154    visibility: ChannelVisibility;\n 155    /** 群监听与路由线索。 */\n 156    routing: ChannelRouting;\n 157    /** 网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。 */\n 158    view?: ChannelView;\n 159  }\n 160\n 161\n```\n\n### 解释\n- L113：协议版本固定 1；L118：消息号是渠道范围内稳定的，推荐 `makeChannelMessageId` 生成。\n- L132：身份档位由平台可信配置算出；L134：目标机器人名单经可信配置和 @ 映射去重。\n- L138：`rawText` 留原话，`text` 是给模型的规范化文本（不再用 @本机路径 触发外发附件）。\n- L144、L146、L148：平台时间和本机收到时间，缺平台时间时用收到时间并记 `timeSource`。\n- L152、L154、L156：来源、可见域、路由；L158：网页带来的查看上下文。\n\n### 谁用它\n- 渠道插件（feishu、wechat、cli、web-api、programs）拼出它，经 `channel/message` 发出；approval、bots、memory、web-api 接。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-12",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L162–L187 认领记录和协调对象",
+    "summary": "每个机器人各记一条认领结果；随 channel/message 传一个可变的协调对象。",
+    "body": "**行号：Message.ts L162–L187**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 162  /** 单机器人在 channel/message 里的认领记录（供渠道流水与测试核对，不混用全局 handled）。 */\n 163  export interface ChannelClaimRecord {\n 164    /** 机器人名。 */\n 165    bot: string;\n 166    /** 认领幂等键 JSON.stringify([messageId, bot])。 */\n 167    claimKey: string;\n 168    /** 认领结论。 */\n 169    status: 'claimed' | 'duplicate' | 'listen' | 'handled' | 'relay';\n 170    /** 接入的会话种类（可用时）。 */\n 171    sessionKind?: string;\n 172    /** 接入的会话号（可用时）。 */\n 173    sessionId?: string;\n 174    /** judge 结论（如 judge:回 / judge:不回）。 */\n 175    judged?: string;\n 176  }\n 177\n 178\n 179  /** 随 channel/message 传递的可变协调对象。 */\n 180  export interface ChannelMessageControl {\n 181    /** approval 消息级命令（如“同意 3”）已消费整条消息，不再进任何机器人会话。 */\n 182    approvalHandled?: boolean;\n 183    /** 每个机器人独立认领写入的结果列表。 */\n 184    claims: ChannelClaimRecord[];\n 185  }\n 186\n 187\n```\n\n### 解释\n- L163：`ChannelClaimRecord`：哪个机器人、认领幂等键、结论（claimed 接了、duplicate 重复、listen 只听、handled 已处理、relay 转话），接进哪场会话，judge 的结论。\n- L180：`ChannelMessageControl`：approval 消息级命令（如“同意 3”）消费了整条就置 `approvalHandled`；`claims` 由 bots 逐个机器人写入。\n- 渠道发完 `channel/message` 后看 `claims` 就知道有没有人接、是不是重复。\n\n### 谁用它\n- programs 的 ChannelBridge.dispatch 靠它回“accepted / duplicate / 没有机器人认领”。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-13",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L188–L226 每轮来源快照 SourceSnapshot",
+    "summary": "一个机器人认领一条消息、开始一轮时，固定下来的来源副本，回复靠它定位。",
+    "body": "**行号：Message.ts L188–L226**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 188  /** 不可变的每轮来源绑定快照。 */\n 189  export interface SourceSnapshot {\n 190    /** 标准消息 ID。 */\n 191    messageId: string;\n 192    /** 平台原始消息 ID。 */\n 193    nativeId: string | null;\n 194    /** 渠道名。 */\n 195    channel: string;\n 196    /** 账号 ID。 */\n 197    accountId: string;\n 198    /** 聊天 ID。 */\n 199    chatId: string;\n 200    /** 聊天种类。 */\n 201    chatType: ChannelChatType;\n 202    /** 发送者原始 ID。 */\n 203    senderId: string;\n 204    /** 发送者名字（可用时）。 */\n 205    senderName?: string;\n 206    /** 身份档位。 */\n 207    role: ChannelRole;\n 208    /** 原消息的目标机器人清单。 */\n 209    targetBots: string[];\n 210    /** 原消息的 @ 提及清单。 */\n 211    mentions: ChannelMention[];\n 212    /** 不可变深拷贝原渠道地址快照。 */\n 213    origin: ChannelOrigin;\n 214    /** 来源可见域快照。 */\n 215    visibility: ChannelVisibility;\n 216    /** 当前认领并执行这轮的机器人名。 */\n 217    botName: string;\n 218    /** 认领键 JSON.stringify([messageId, botName])。 */\n 219    claimKey: string;\n 220    /** 当前轮回复键 JSON.stringify([messageId, botName, roundId])。 */\n 221    replyRoundKey: string;\n 222    /** 网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。 */\n 223    view?: ChannelView;\n 224  }\n 225\n 226\n```\n\n### 解释\n- L189：`SourceSnapshot`：消息号、渠道、账号、聊天、发送者、角色、目标机器人、提及、来源地址、可见域的深拷贝。\n- L217、L219、L221：这一轮是谁在跑、认领键、回复轮键。\n- L223：网页查看上下文也一并固定。\n\n### 谁用它\n- bots 认领时用 `getSourceSnapshot` 做出来；回复工具、`requestTextReply`、渠道的 channel/reply 响应器都读它。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-14",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L227–L254 撤回事件 ChannelRecallEvent",
+    "summary": "渠道确认原消息被撤回之后发 channel/recall 带的东西。",
+    "body": "**行号：Message.ts L227–L254**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 227  /** 事件 channel/recall 载荷：渠道确认原消息被撤回后发出。 */\n 228  export interface ChannelRecallEvent {\n 229    /** 渠道名（feishu / wechat / http / cli）。 */\n 230    channel: string;\n 231    /** 平台账号 ID（如飞书 appId）。 */\n 232    accountId: string;\n 233    /** 聊天稳定 ID。 */\n 234    chatId: string;\n 235    /** 被撤回的原消息标准 ID：makeChannelMessageId(channel, accountId, nativeId)。 */\n 236    messageId: string;\n 237    /** 平台原始消息 ID（可用时）。 */\n 238    nativeId?: string;\n 239    /** 撤回时刻，Unix 毫秒。 */\n 240    recalledAt: number;\n 241    /** 渠道日志里的原话，日志未写入时为空。 */\n 242    originalText: string;\n 243    /** 谁撤回的：由渠道根据可信身份配置与本地聊天日志核定。 */\n 244    recalledBy: {\n 245      /** 撤回人渠道原始 ID（平台仅返回 message_owner 且本地尚未落盘时为空串）。 */\n 246      id: string;\n 247      /** 撤回身份类别：sender 原发消息人自撤，owner 本人撤回。 */\n 248      kind: 'sender' | 'owner';\n 249      /** 撤回人是否为系统登记的本人（owner）。 */\n 250      isOwner: boolean;\n 251    };\n 252  }\n 253\n 254\n```\n\n### 解释\n- L228：渠道、账号、聊天、被撤回消息的标准号、撤回时刻、日志里的原话。\n- L244：谁撤的：`sender` 原发信人自撤，`owner` 本人撤回，`isOwner` 是不是系统登记的本人。\n\n### 谁用它\n- feishu 的 FeishuInbound.onRecall 发；bots 的 DispatchRecall 接，移除排队消息并通知正在处理它的会话。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-15",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L255–L265 getClaimKey：认领去重键",
+    "summary": "把消息号和机器人名编成 JSON 数组串，同一条消息同一个机器人只认领一次。",
+    "body": "**行号：Message.ts L255–L265**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 255  /**\n 256   * 计算消息认领去重键。\n 257   * @param messageId 标准消息 ID。\n 258   * @param botName 机器人名。\n 259   * @returns JSON 编码的去重键。\n 260   */\n 261  export function getClaimKey(messageId: string, botName: string): string {\n 262    return JSON.stringify([messageId, botName]);\n 263  }\n 264\n 265\n```\n\n### 解释\n- L262：键就是 `JSON.stringify([messageId, botName])`，主程序重启后程序重发旧消息，靠它认出重复。\n\n### 谁用它\n- bots 认领时算；programs 的 ChannelBridge 看 `claims` 里是不是都是 duplicate。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-16",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L266–L306 getSourceSnapshot：做来源快照",
+    "summary": "把一条消息的来源信息深拷贝成一份快照，执行期间渠道改地址也不影响这一轮。",
+    "body": "**行号：Message.ts L266–L306**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 266  /**\n 267   * 复制一条渠道消息的固定来源，供队列和回复定位当前轮。\n 268   * @param message 渠道接入时规范化的消息。\n 269   * @param botName 当前认领或回复的机器人。\n 270   * @param origin 供当前机器人使用的渠道地址。\n 271   * @param claimKey 此次消息认领键。\n 272   * @param replyRoundKey 此次回复轮键。\n 273   * @returns 隔离于原消息变更的来源快照。\n 274   */\n 275  export function getSourceSnapshot(\n 276    message: ChannelMessage,\n 277    botName: string,\n 278    origin: ChannelOrigin,\n 279    claimKey: string,\n 280    replyRoundKey: string,\n 281  ): SourceSnapshot {\n 282    //M 执行期间渠道可能更新地址及可见范围，快照保留本轮开始时的数据。\n 283    const snapshot: SourceSnapshot = {\n 284      messageId: message.messageId,\n 285      nativeId: message.nativeId,\n 286      channel: message.channel,\n 287      accountId: message.accountId,\n 288      chatId: message.chatId,\n 289      chatType: message.chatType,\n 290      senderId: message.sender.id,\n 291      role: message.role,\n 292      targetBots: [...message.targetBots],\n 293      mentions: structuredClone(message.mentions),\n 294      origin: { channel: origin.channel, address: structuredClone(origin.address) },\n 295      visibility: structuredClone(message.visibility),\n 296      botName,\n 297      claimKey,\n 298      replyRoundKey,\n 299    };\n 300    if (message.sender.name !== undefined) {\n 301      snapshot.senderName = message.sender.name;\n 302    }\n 303    return snapshot;\n 304  }\n 305\n 306\n```\n\n### 解释\n- L282：快照保留本轮开始时的数据。\n- L292、L293、L294、L295：数组和对象都拷一份，不共用原消息的。\n- L300：发送者有名字才写 `senderName`。\n\n### 谁用它\n- bots 认领一条消息开一轮时调。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-17",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L307–L318 makeChannelMessageId：标准消息号",
+    "summary": "渠道名、账号、平台原始号编成 JSON 数组串，作为跨插件统一的消息号。",
+    "body": "**行号：Message.ts L307–L318**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 307  /**\n 308   * 生成跨插件统一的渠道消息 ID：JSON.stringify([channel, accountId, nativeId])。\n 309   * @param channel 渠道名。\n 310   * @param accountId 平台账号 ID（本地入口固定 'local'）。\n 311   * @param nativeId 平台原始消息 ID 或本进程持久/递增序号。\n 312   * @returns 标准 messageId 字符串。\n 313   */\n 314  export function makeChannelMessageId(channel: string, accountId: string, nativeId: string): string {\n 315    return JSON.stringify([channel, accountId, nativeId]);\n 316  }\n 317\n 318\n```\n\n### 解释\n- L315：本地入口账号固定写 `local`；没有平台原始号时用本进程持久或递增的序号。\n\n### 谁用它\n- feishu、wechat、cli、web-api、voice、programs 拼 `ChannelMessage` 时用；撤回事件的 `messageId` 也是它。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-18",
+    "parent": "r-ch-g2",
+    "title": "Message.ts L319–L334 resolveLegacyRole：旧地址推角色",
+    "summary": "没有标准角色的旧地址，按里面写的 owner、role 推出角色档位，只读不回写。",
+    "body": "**行号：Message.ts L319–L334**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Message.ts\n 319  /**\n 320   * 按旧渠道地址里的 owner / role 推导标准渠道角色档位（绝不把 role 写回原兼容地址，以免改变 Workspace 权限）。\n 321   * @param address 原渠道地址对象。\n 322   * @returns 标准角色档位。\n 323   */\n 324  export function resolveLegacyRole(address: Record<string, unknown>): ChannelRole {\n 325    //M 先看地址里是否明确标了本人（owner: true 或 role === 'owner'）。\n 326    if (utils.getField(address, 'owner') === true || utils.getStringField(address, 'role') === 'owner') {\n 327      return 'owner';\n 328    }\n 329    //M 其次识别 builder 角色档位。\n 330    if (utils.getStringField(address, 'role') === 'builder') {\n 331      return 'builder';\n 332    }\n 333    return 'guest';\n 334  }\n```\n\n### 解释\n- L326：地址明确标了本人（`owner: true` 或 `role === 'owner'`）就是 owner。\n- L330：role 写 builder 就是 builder。\n- L333：其余一律 guest；绝不把 role 写回原地址，免得改变 Workspace 的权限判断。\n\n### 谁用它\n- 渠道和 bots 里还拿着旧地址、没有标准角色的地方用。",
+    "sources": [
+      "src7/plugins/channels/Message.ts"
+    ]
+  },
+  {
+    "id": "r-ch-g3",
+    "parent": "r-ch",
+    "title": "Reply.ts：回复请求、回执和回复键",
+    "summary": "回复请求与回执的数据、三个键、requestChannelReply 发请求等回执、requestTextReply 发一段纯文字、getReceipt 和 emitReplied。",
+    "body": "## Reply.ts：回复请求、回执和回复键\n\n回复请求与回执的数据、三个键、requestChannelReply 发请求等回执、requestTextReply 发一段纯文字、getReceipt 和 emitReplied。\n\n- Reply.ts L1–L19 文件头、回复类别和状态\n- Reply.ts L20–L76 回复片段和回执 ReplyReceipt\n- Reply.ts L77–L114 回复请求 ChannelReplyRequest\n- Reply.ts L115–L151 回执事件、发话来源、收尾通知\n- Reply.ts L152–L184 三个键和摘要函数\n- Reply.ts L185–L217 requestChannelReply：发请求等回执\n- Reply.ts L218–L234 TextReplyOptions：纯文字回复的选项\n- Reply.ts L235–L310 requestTextReply：发一段纯文字\n- Reply.ts L311–L352 getReceipt：拼回执\n- Reply.ts L353–L372 emitReplied：回发回执的唯一出口",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-19",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L1–L19 文件头、回复类别和状态",
+    "summary": "说明所有发出去的话都走这个文件；定回复类别 progress/final 和六种发送状态。",
+    "body": "**行号：Reply.ts L1–L19**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n   1  /**\n   2   * 渠道协议：回复（回复请求、回执、回执拼法、回复键）。\n   3   * 所有发出去的话都走这里：模型的 channel_reply、零次兜底、审批直回、旧路自动回话、relay 回信、本人批准的主动发件。\n   4   * requestChannelReply 发 channel/reply 并等 channel/replied；emitReplied 是渠道回发回执的唯一出口，回执带着请求本身。\n   5   */\n   6  import * as crypto from 'node:crypto';\n   7  import type * as cordis from 'cordis';\n   8  import * as requestEvents from '../../utils/RequestEvent.ts';\n   9  import type * as messageModule from './Message.ts';\n  10  import type * as targetModule from './Target.ts';\n  11\n  12\n  13  /** 回复轮里的回复类别。 */\n  14  export type ReplyKind = 'progress' | 'final';\n  15\n  16  /** v2 渠道发送回执状态；与 acceptResult 的 queued / duplicate 严格区分。 */\n  17  export type ReplyStatus = 'queued' | 'sent' | 'draft' | 'partial' | 'uncertain' | 'rejected';\n  18\n  19\n```\n\n### 解释\n- L1：文件头：模型的 channel_reply、零次兜底、审批直回、旧路自动回话、relay 回信、本人批准的主动发件，全都走这里。\n- L14：类别：`progress` 中途进度，`final` 最终答复。\n- L17：状态：queued 排队、sent 已发、draft 存了草稿、partial 只发了一部分、uncertain 不知道发没发到、rejected 明确没发；queued 和 acceptResult 的 queued/duplicate 不是一回事。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-20",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L20–L76 回复片段和回执 ReplyReceipt",
+    "summary": "一条回复拆成片段（文字或附件）；回执逐片段记状态，整体带幂等键和序号。",
+    "body": "**行号：Reply.ts L20–L76**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n  20  /** 回复内容片段。 */\n  21  export interface ReplyPartInput {\n  22    /** 片段 ID。 */\n  23    partId: string;\n  24    /** 片段种类。 */\n  25    kind: 'text' | 'attachment';\n  26    /** 纯文本正文。 */\n  27    text?: string;\n  28    /** 已授权附件 ID。 */\n  29    artifactId?: string;\n  30  }\n  31\n  32\n  33  /** 回复回执里单个片段的发送状态。 */\n  34  export interface ReplyReceiptPart {\n  35    /** 片段 ID。 */\n  36    partId: string;\n  37    /** 片段种类。 */\n  38    kind: 'text' | 'attachment';\n  39    /** 片段回执状态。 */\n  40    status: ReplyStatus;\n  41    /** 平台返回的消息号。 */\n  42    providerId?: string;\n  43    /** 失败或说明原因。 */\n  44    reason?: string;\n  45  }\n  46\n  47\n  48  /** 标准渠道回复回执（v: 2）。 */\n  49  export interface ReplyReceipt {\n  50    /** 协议版本。 */\n  51    v: 2;\n  52    /** 渠道已接收回复时为 true，对应 sent、queued、draft。 */\n  53    ok: boolean;\n  54    /** 细粒度回执状态。 */\n  55    status: ReplyStatus;\n  56    /** 回复请求幂等键 JSON.stringify([replyRoundKey, callId])。 */\n  57    replyRequestKey: string;\n  58    /** 所属轮回复键。 */\n  59    replyRoundKey: string;\n  60    /** 本轮从 0 起的回复序号；同键重试不递增。 */\n  61    replyIndex: number;\n  62    /** 中途进度还是最终答复。 */\n  63    kind: ReplyKind;\n  64    /** 各片段状态明细。 */\n  65    parts: ReplyReceiptPart[];\n  66    /** 平台消息号列表（sent 时返回）。 */\n  67    messageIds?: string[];\n  68    /** 渠道侧排队凭证（queued 时返回）。 */\n  69    receiptId?: string;\n  70    /** 说明或失败原因。 */\n  71    reason?: string;\n  72    /** 完成时间戳（UTC 毫秒）。 */\n  73    at: number;\n  74  }\n  75\n  76\n```\n\n### 解释\n- L21：`ReplyPartInput`：片段号、种类（text/attachment）、正文或已授权的附件号。\n- L34：`ReplyReceiptPart`：每个片段的状态、平台消息号、原因。\n- L34：`ReplyReceipt`（v: 2）：`ok` 对应 sent、queued、draft；`replyRequestKey` 是这次请求的幂等键，`replyRoundKey` 是所属轮，`replyIndex` 是本轮从 0 起的序号，同键重试不递增。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-21",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L77–L114 回复请求 ChannelReplyRequest",
+    "summary": "channel/reply 事件带的请求：谁说的、往哪发、发什么、怎么去重。",
+    "body": "**行号：Reply.ts L77–L114**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n  77  /** 事件 channel/reply 请求载荷。 */\n  78  export interface ChannelReplyRequest {\n  79    /** 单次事件往返局部关联 ID。 */\n  80    requestId: string;\n  81    /** 渠道名（feishu / wechat / http / cli）。 */\n  82    channel: string;\n  83    /** 当前机器人名。 */\n  84    bot: string;\n  85    /** 回复请求幂等键。 */\n  86    replyRequestKey: string;\n  87    /** 回复轮键。 */\n  88    replyRoundKey: string;\n  89    /** 本轮内序号。 */\n  90    replyIndex: number;\n  91    /** 回复类别：progress | final。 */\n  92    kind: ReplyKind;\n  93    /** 发送模式：纯文字或附件。 */\n  94    mode: 'text' | 'attachment';\n  95    /**\n  96     * 不可变来源快照：回某条消息时有。\n  97     * 没有的（旧路自动回话、relay 回信、本人批准的主动发件）一定带 target.address，照它发。\n  98     */\n  99    sourceSnapshot?: messageModule.SourceSnapshot;\n 100    /** 请求正文摘要，用于同键冲突校验。 */\n 101    payloadHash: string;\n 102    /** 发送片段列表。 */\n 103    parts: ReplyPartInput[];\n 104    /** 跨渠道或跨聊天发送目标；未指定别处时为 undefined，沿用 sourceSnapshot。 */\n 105    target?: targetModule.ChannelReplyTarget;\n 106    /** 哪场会话说的：旧路自动回话、relay 回信带上，渠道照会话定细节（命令行出错标红，微信只发做完的一轮，网页挂回会话认领的那条）。 */\n 107    sessionId?: string;\n 108    /** 正文里的 @路径（存在的本机文件）当文件一起发：只有旧路自动回话、relay 回信开，模型的 channel_reply 不开；只有飞书认，别的渠道照纯文字发。 */\n 109    atFiles?: boolean;\n 110    /** 负责处理的渠道插件置 true，区分“无人监听该渠道”。 */\n 111    handled?: boolean;\n 112  }\n 113\n 114\n```\n\n### 解释\n- L80：`requestId` 是一次事件往返的局部关联号；L86、L88、L90：幂等键、轮键、轮内序号。\n- L94：发送模式；L99：回某条消息时带来源快照，没有的（旧路自动回话、relay 回信、本人批准的主动发件）一定带 `target.address`。\n- L101：正文摘要，同键冲突校验用；L103：发送片段。\n- L105：跨渠道、跨聊天的目标；L107：哪场会话说的；L109：正文里的 @路径 当文件发（只有飞书认）。\n- L111：负责的渠道插件置 true，用来区分“没人监听这个渠道”。\n\n### 谁用它\n- bots 的回复工具发；各渠道（feishu、cli、web-api、wechat、voice、programs）接。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-22",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L115–L151 回执事件、发话来源、收尾通知",
+    "summary": "channel/replied 带的东西；没有来源快照时的发话来源 ReplyFrom；一轮收尾通知。",
+    "body": "**行号：Reply.ts L115–L151**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 115  /** 事件 channel/replied 响应载荷。 */\n 116  export interface ChannelRepliedEvent {\n 117    /** 对应请求的 requestId。 */\n 118    requestId: string;\n 119    /** 对应回复轮键。 */\n 120    replyRoundKey: string;\n 121    /** 发送回执。 */\n 122    receipt: ReplyReceipt;\n 123    /** 回执对应的请求本身（含正文、来源快照、目标）：记往来、记忆、网页挂回都照它，不用先在 channel/reply 暂存。 */\n 124    request: ChannelReplyRequest;\n 125  }\n 126\n 127\n 128  /** 没有来源快照时以谁的名义、发到哪（旧路自动回话、relay 回信、本人批准的主动发件），给 requestTextReply。 */\n 129  export interface ReplyFrom {\n 130    /** 机器人名。 */\n 131    bot: string;\n 132    /** 回复轮键：调用方自己定，同一轮的几条共用。 */\n 133    replyRoundKey: string;\n 134    /** 发到哪：目标渠道和确切地址（target.address）。 */\n 135    target: targetModule.ChannelReplyTarget;\n 136    /** 哪场会话说的；没有会话的（本人批准的主动发件）不写。 */\n 137    sessionId?: string;\n 138  }\n 139\n 140\n 141  /** 一轮 channel_tool 收尾的通知（bot/settled）。 */\n 142  export interface ChannelSettledEvent {\n 143    /** 这一轮的来源快照：渠道照 channel、origin.address 认出是自己哪条消息。 */\n 144    sourceSnapshot: messageModule.SourceSnapshot;\n 145    /** 收尾结果：sent 发完（或本来就不用发）；partial、uncertain、rejected 没发成；sending 渠道排队或草稿。 */\n 146    stage: 'sent' | 'partial' | 'uncertain' | 'rejected' | 'sending';\n 147    /** 原因；没有是空串。 */\n 148    note: string;\n 149  }\n 150\n 151\n```\n\n### 解释\n- L116：`ChannelRepliedEvent`：请求号、轮键、回执，加上回执对应的请求本身——记往来、记忆、网页挂回都照它，不用先在 channel/reply 暂存。\n- L129：`ReplyFrom`：没有来源快照时给 `requestTextReply` 的“以谁的名义、发到哪”：机器人、轮键、`target.address`、会话号。\n- L142：`ChannelSettledEvent`：一轮 channel_tool 收尾的通知，`stage` 是 sent、partial、uncertain、rejected 或 sending（渠道排队或草稿）。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-23",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L152–L184 三个键和摘要函数",
+    "summary": "回复轮键、回复请求幂等键、正文摘要，都是无状态小函数。",
+    "body": "**行号：Reply.ts L152–L184**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 152  /**\n 153   * 计算某一轮回复键。\n 154   * @param messageId 标准消息 ID。\n 155   * @param botName 机器人名。\n 156   * @param roundId 轮标识（初始用户输入为 'receive'，交回结果为结果键）。\n 157   * @returns JSON 编码的回复轮键。\n 158   */\n 159  export function getReplyRoundKey(messageId: string, botName: string, roundId: string): string {\n 160    return JSON.stringify([messageId, botName, roundId]);\n 161  }\n 162\n 163\n 164  /**\n 165   * 计算单次回复工具调用的幂等键。\n 166   * @param replyRoundKey 回复轮键。\n 167   * @param callId 工具调用 ID 或持久业务键。\n 168   * @returns JSON 编码的回复请求幂等键。\n 169   */\n 170  export function getReplyRequestKey(replyRoundKey: string, callId: string): string {\n 171    return JSON.stringify([replyRoundKey, callId]);\n 172  }\n 173\n 174\n 175  /**\n 176   * 计算发送请求正文摘要，用于同键防篡改/防冲突核对。\n 177   * @param value 任意结构化载荷。\n 178   * @returns 16 位十六进制 sha256 摘要。\n 179   */\n 180  export function getPayloadHash(value: unknown): string {\n 181    return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);\n 182  }\n 183\n 184\n```\n\n### 解释\n- L159：轮键 `JSON.stringify([messageId, botName, roundId])`，初始用户输入的 roundId 是 `receive`，交回结果时是结果键。\n- L170：请求幂等键 `JSON.stringify([replyRoundKey, callId])`，callId 是工具调用号或持久业务键。\n- L180：正文摘要：整个载荷转 JSON 取 sha256 前 16 位十六进制，同键重试时核对内容有没有变。\n\n### 谁用它\n- bots 的回复工具、approval、relay 等发话方算键；渠道的响应器比摘要。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-24",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L185–L217 requestChannelReply：发请求等回执",
+    "summary": "发 channel/reply，按请求号等 channel/replied；没人接单立刻 rejected，超时 uncertain，绝不伪造 sent。",
+    "body": "**行号：Reply.ts L185–L217**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 185  /**\n 186   * 从不可变 SourceSnapshot 或已知标准消息字段构建标准前缀请求，发出 channel/reply 并按 requestId 等待 channel/replied。\n 187   * 没有渠道插件接单（handled !== true）时立即返回 rejected（channel_unavailable）；超时返回 uncertain，绝不伪造 sent。\n 188   * @param ctx Cordis 上下文。\n 189   * @param req 回复请求。\n 190   * @param timeoutMs 最长等待毫秒数。\n 191   * @returns v2 发送回执。\n 192   */\n 193  export async function requestChannelReply(\n 194    ctx: cordis.Context,\n 195    req: Omit<ChannelReplyRequest, 'requestId'>,\n 196    timeoutMs = 30_000,\n 197  ): Promise<ReplyReceipt> {\n 198    //M 没人接单能确认没发，超时或异常时无法确认投递。\n 199    const onFallback = (cause: requestEvents.FallbackReason, detail?: string): ChannelRepliedEvent => {\n 200      let status: ReplyStatus = 'uncertain';\n 201      let reason = detail ?? '等待渠道发送回执超时';\n 202      if (cause === 'unhandled') {\n 203        status = 'rejected';\n 204        reason = `channel_unavailable：渠道 ${req.channel} 没挂`;\n 205      }\n 206      const receipt = getReceipt(req, status, reason);\n 207      const request = { ...req, requestId: '' };\n 208      return { requestId: '', replyRoundKey: req.replyRoundKey, receipt, request };\n 209    };\n 210\n 211    const options = { prefix: 'rep', timeoutMs, keepAlive: true, onFallback };\n 212    //M 交给公共请求工具配对回执，只向上层交回渠道处理结果。\n 213    const result = await requestEvents.requestEvent(ctx, 'channel/reply', 'channel/replied', req, options);\n 214    return result.receipt;\n 215  }\n 216\n 217\n```\n\n### 解释\n- L199：兜底：没人接单（`unhandled`）回 rejected，写 `channel_unavailable`；其余（超时、异常）回 uncertain，因为无法确认投递。\n- L211：交给公共请求工具 `requestEvent`：前缀 rep、默认等 30 秒、`keepAlive`。\n- L213：发 `channel/reply`、等 `channel/replied`，只向上交回回执。\n\n### 谁用它\n- requestTextReply 调它；bots 的回复工具、approval、relay 等直接调。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-25",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L218–L234 TextReplyOptions：纯文字回复的选项",
+    "summary": "发一段纯文字时除正文外要给的几项。",
+    "body": "**行号：Reply.ts L218–L234**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 218  /** 单段文字回复的发送选项。 */\n 219  interface TextReplyOptions {\n 220    /** 本次回复的幂等键。 */\n 221    replyRequestKey: string;\n 222    /** 按本轮队列号发送时由队列提供，通常沿用来源快照的轮键（没有来源快照时用 ReplyFrom 的）。 */\n 223    replyRoundKey?: string;\n 224    /** 本轮的发送序号。 */\n 225    replyIndex: number;\n 226    /** 中途说明或最终回复。 */\n 227    kind: ReplyKind;\n 228    /** 显式跨聊天时由目标渠道核对和识别（没有来源快照时用 ReplyFrom 的）。 */\n 229    target?: targetModule.ChannelReplyTarget;\n 230    /** 正文里的 @路径 当文件发（旧路自动回话、relay 回信）。 */\n 231    atFiles?: boolean;\n 232  }\n 233\n 234\n```\n\n### 解释\n- L219：幂等键、轮键（没给就用来源快照的）、序号、类别、可选的跨聊天目标、是否把 @路径 当文件发。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-26",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L235–L310 requestTextReply：发一段纯文字",
+    "summary": "把一段文字包成回复请求发出去：有来源快照照快照，没有的照调用方给的机器人、轮键和地址。",
+    "body": "**行号：Reply.ts L235–L310**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 235  /**\n 236   * 通过标准渠道请求发送一段纯文字并等待回执。\n 237   * @param ctx 发起请求的 Cordis 上下文。\n 238   * @param from 本轮的固定渠道来源；没有来源快照的给 ReplyFrom（机器人、轮键、确切地址、会话号）。\n 239   * @param text 要发出的纯文字。\n 240   * @param options 幂等键、回复类型和可选目标。\n 241   * @returns 渠道返回的回执。\n 242   */\n 243  export async function requestTextReply(\n 244    ctx: cordis.Context,\n 245    from: messageModule.SourceSnapshot | ReplyFrom,\n 246    text: string,\n 247    options: TextReplyOptions,\n 248  ): Promise<ReplyReceipt> {\n 249    const kind = options.kind;\n 250    const mode = 'text';\n 251    const parts: ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];\n 252\n 253    //==========================================================\n 254    //M 没有来源快照（旧路自动回话、relay 回信、本人批准的主动发件）：照调用方给的机器人、轮键和地址发\n 255    //==========================================================\n 256    if ('target' in from) {\n 257      const fromTarget = from.target;\n 258      const fromHashInput = { kind, mode, parts, target: fromTarget };\n 259      const fromHash = getPayloadHash(fromHashInput);\n 260      const direct: Omit<ChannelReplyRequest, 'requestId'> = {\n 261        channel: fromTarget.channel,\n 262        bot: from.bot,\n 263        replyRequestKey: options.replyRequestKey,\n 264        replyRoundKey: from.replyRoundKey,\n 265        replyIndex: options.replyIndex,\n 266        kind,\n 267        mode,\n 268        payloadHash: fromHash,\n 269        parts,\n 270        target: fromTarget,\n 271      };\n 272      if (from.sessionId !== undefined) {\n 273        direct.sessionId = from.sessionId;\n 274      }\n 275      if (options.atFiles === true) {\n 276        direct.atFiles = true;\n 277      }\n 278\n 279      //M 目标渠道照 target.address 发出并回执，调用方只提供正文和地址。\n 280      return requestChannelReply(ctx, direct);\n 281    }\n 282\n 283    //==========================================================\n 284    //M 有来源快照：渠道、机器人、轮键照快照，跨聊天时 options.target 指别处\n 285    //==========================================================\n 286    const snapshot = from;\n 287    const target = options.target;\n 288    //M 保留原有字段顺序和目标范围，已落盘的哈希在同键重试时仍可匹配。\n 289    const hashInput = { kind, mode, parts, target };\n 290    const payloadHash = getPayloadHash(hashInput);\n 291    const reply: Omit<ChannelReplyRequest, 'requestId'> = {\n 292      channel: target?.channel ?? snapshot.channel,\n 293      bot: snapshot.botName,\n 294      replyRequestKey: options.replyRequestKey,\n 295      replyRoundKey: options.replyRoundKey ?? snapshot.replyRoundKey,\n 296      replyIndex: options.replyIndex,\n 297      kind,\n 298      mode,\n 299      sourceSnapshot: structuredClone(snapshot),\n 300      payloadHash,\n 301      parts,\n 302    };\n 303    if (target !== undefined) {\n 304      reply.target = target;\n 305    }\n 306    //M 渠道识别目标并发回发送结果，调用方只提供正文和来源。\n 307    return requestChannelReply(ctx, reply);\n 308  }\n 309\n 310\n```\n\n### 解释\n- L251：只有一个文字片段 `text:0`。\n- L256：没有来源快照（旧路自动回话、relay 回信、本人批准的主动发件）：渠道、机器人、轮键、地址都取调用方给的 `ReplyFrom`，会话号、`atFiles` 有就带上。\n- L286：有来源快照：渠道、机器人、轮键照快照（深拷贝一份），`options.target` 指别处时渠道换成目标渠道。\n- L289：摘要的字段顺序保持不变，已落盘的哈希同键重试时才对得上。\n- 两条路最后都调 `requestChannelReply`，调用方只提供正文和来源（或地址）。\n\n### 谁用它\n- bots 的回复工具、零次兜底；approval 的直回；relay 回信；本人批准的主动发件。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-27",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L311–L352 getReceipt：拼回执",
+    "summary": "按请求和渠道结果，逐片段带上状态和可选原因，拼出标准回执。",
+    "body": "**行号：Reply.ts L311–L352**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 311  /** 生成回执只需要回复键、类别和每段的标识。 */\n 312  export type ReceiptSource = Pick<ChannelReplyRequest, 'replyRequestKey' | 'replyRoundKey' | 'replyIndex' | 'kind'> & {\n 313    /** 原回复的段号和种类，按发送顺序排列。 */\n 314    parts: ReadonlyArray<Pick<ReplyPartInput, 'partId' | 'kind'>>;\n 315  };\n 316\n 317\n 318  /**\n 319   * 按请求和渠道结果生成回执，逐段带上状态和可选原因。\n 320   * @param request 原请求的回复元数据。\n 321   * @param status 渠道处理结果。\n 322   * @param reason 处理结果的说明。\n 323   * @returns 包含回复键、逐段状态和生成时间的回执。\n 324   */\n 325  export function getReceipt(request: ReceiptSource, status: ReplyStatus, reason?: string): ReplyReceipt {\n 326    //M 保留每段标识，发送方可以用段号对上原请求。\n 327    const parts = request.parts.map((part) => {\n 328      const result: ReplyReceiptPart = { partId: part.partId, kind: part.kind, status };\n 329      if (reason !== undefined) {\n 330        result.reason = reason;\n 331      }\n 332      return result;\n 333    });\n 334\n 335    const receipt: ReplyReceipt = {\n 336      v: 2,\n 337      ok: status === 'sent' || status === 'queued' || status === 'draft',\n 338      status,\n 339      replyRequestKey: request.replyRequestKey,\n 340      replyRoundKey: request.replyRoundKey,\n 341      replyIndex: request.replyIndex,\n 342      kind: request.kind,\n 343      parts,\n 344      at: Date.now(),\n 345    };\n 346    if (reason !== undefined) {\n 347      receipt.reason = reason;\n 348    }\n 349    return receipt;\n 350  }\n 351\n 352\n```\n\n### 解释\n- L312：`ReceiptSource`：只要回复键、类别、序号和每段的号、种类，不用整个请求。\n- L327：每段都带 `partId`，发送方用段号对上原请求。\n- L337：`ok` 只有 sent、queued、draft 为 true。\n\n### 谁用它\n- 渠道的响应器（registerTextReply、feishu、voice 等）拼回执；requestChannelReply 的兜底也用。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-28",
+    "parent": "r-ch-g3",
+    "title": "Reply.ts L353–L372 emitReplied：回发回执的唯一出口",
+    "summary": "渠道回发 channel/replied 只走这里，回执连同请求本身一起发。",
+    "body": "**行号：Reply.ts L353–L372**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Reply.ts\n 353  /**\n 354   * 把渠道回复回执交回发起请求的一方，回执带着请求本身。\n 355   * @param ctx 发出回执事件的渠道上下文。\n 356   * @param request 原请求：请求号和轮次关联等待方，正文、来源给记往来、记忆、网页挂回用。\n 357   * @param receipt 渠道构造的标准回执。\n 358   */\n 359  export function emitReplied(\n 360    ctx: cordis.Context,\n 361    request: ChannelReplyRequest,\n 362    receipt: ReplyReceipt,\n 363  ): void {\n 364    const event: ChannelRepliedEvent = {\n 365      requestId: request.requestId,\n 366      replyRoundKey: request.replyRoundKey,\n 367      receipt,\n 368      request,\n 369    };\n 370    //M 用请求号通知等待本次渠道回复的调用方。\n 371    ctx.emit('channel/replied', event);\n 372  }\n```\n\n### 解释\n- L364：事件里放请求号、轮键、回执和请求本身。\n- L371：用 `ctx.emit` 通知等着的调用方（requestChannelReply 按请求号配对）。\n\n### 谁用它\n- 所有渠道响应器发完或拒绝后调。",
+    "sources": [
+      "src7/plugins/channels/Reply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-g4",
+    "parent": "r-ch",
+    "title": "TextReply.ts：纯文字渠道共用的响应器",
+    "summary": "只发纯文字的渠道交一个适配器，由 registerTextReply 管认领、同键重放、认目标聊天和回发回执。",
+    "body": "## TextReply.ts：纯文字渠道共用的响应器\n\n只发纯文字的渠道交一个适配器，由 registerTextReply 管认领、同键重放、认目标聊天和回发回执。\n\n- TextReply.ts L1–L42 文件头、直发结果和适配器\n- TextReply.ts L43–L83 registerTextReply 前半：认领、重放、拒不支持\n- TextReply.ts L84–L110 registerTextReply 中段：认目标聊天\n- TextReply.ts L111–L138 registerTextReply 后半：直发、记回执、回发",
+    "sources": [
+      "src7/plugins/channels/TextReply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-29",
+    "parent": "r-ch-g4",
+    "title": "TextReply.ts L1–L42 文件头、直发结果和适配器",
+    "summary": "只发纯文字的渠道交一个适配器；适配器直发后可交回结果。",
+    "body": "**行号：TextReply.ts L1–L42**\n\n### 代码原文\n```ts\n// src7/plugins/channels/TextReply.ts\n   1  /**\n   2   * 渠道协议：只发纯文字的渠道（命令行、网页、微信、programs 转出去的）接 channel/reply 的共用响应器。\n   3   * 渠道调 registerTextReply 交一个适配器，这里管认领、同键重放、认目标聊天和回发回执。\n   4   */\n   5  import type * as cordis from 'cordis';\n   6  import * as textModule from '../../utils/Text.ts';\n   7  import * as replyModule from './Reply.ts';\n   8  import * as targetModule from './Target.ts';\n   9\n  10\n  11  /** 渠道直发后交回的结果；不交回的（命令行、网页、内置微信）算已发。外部程序（programs 转过去的）会回草稿、失败或不确定。 */\n  12  export interface TextReplyOutcome {\n  13    /** sent 已发、draft 已存草稿、rejected 明确没发、uncertain 不知道发没发到。 */\n  14    status: 'sent' | 'draft' | 'rejected' | 'uncertain';\n  15    /** 原因或说明；已发时可以没有。 */\n  16    reason?: string;\n  17  }\n  18\n  19\n  20  /** 只发纯文字的渠道（命令行、网页、微信）接 channel/reply 用的适配器：模型的 channel_reply、零次兜底、approval 的直回都从这里出去。 */\n  21  export interface TextReplyAdapter {\n  22    /** 渠道名（cli / wechat / http）。 */\n  23    channel: string;\n  24    /**\n  25     * 可选的跨渠道/跨聊天“认聊天”回调：当 request.target 存在时调用。\n  26     * 认出聊天时交回解析后的渠道地址对象；认不出时交回 undefined，由 registerTextReply 统一回 rejected（“没有叫 X 的聊天”）。\n  27     */\n  28    getTargetAddress?: (chat: string, request: replyModule.ChannelReplyRequest) => Record<string, unknown> | undefined;\n  29    /**\n  30     * 把纯文字直接送回原渠道，不能再触发模型或重复回环。\n  31     * targetAddress：请求带 target.address 时就是它（旧路自动回话、relay 回信、本人批准的主动发件，这时没有来源快照），\n  32     * 只带 target.chat 时是 getTargetAddress 认出的地址，都没有时是 undefined（回来源快照的原聊天）。\n  33     * 交回 TextReplyOutcome 时照它写回执；不交回算已发。\n  34     */\n  35    sendDirectText: (\n  36      text: string,\n  37      request: replyModule.ChannelReplyRequest,\n  38      targetAddress?: Record<string, unknown>,\n  39    ) => void | TextReplyOutcome | Promise<void | TextReplyOutcome>;\n  40  }\n  41\n  42\n```\n\n### 解释\n- L12：`TextReplyOutcome`：sent 已发、draft 已存草稿、rejected 明确没发、uncertain 不知道；命令行、网页、内置微信不交回，算已发；programs 转给外部程序的会回草稿、失败或不确定。\n- L21：`TextReplyAdapter`：渠道名，加两个回调。\n- L28：可选的“认聊天”：请求带 `target.chat` 时调，认出交回地址，认不出交回 undefined，由响应器统一回 rejected。\n- L35：把纯文字直接送回原渠道，不能再触发模型或重复回环；`targetAddress` 是请求带的地址、或认出的地址，都没有是 undefined（回来源的原聊天）。\n\n### 谁用它\n- cli、web-api、wechat、programs 的 ChannelBridge 各交一个适配器。",
+    "sources": [
+      "src7/plugins/channels/TextReply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-30",
+    "parent": "r-ch-g4",
+    "title": "TextReply.ts L43–L83 registerTextReply 前半：认领、重放、拒不支持",
+    "summary": "挂 channel/reply 监听，只认本渠道、没人接过的请求；同键重放或拒冲突；非纯文字直接拒。",
+    "body": "**行号：TextReply.ts L43–L83**\n\n### 代码原文\n```ts\n// src7/plugins/channels/TextReply.ts\n  43  /**\n  44   * 登记只发纯文字的渠道的 channel/reply 响应器：模型一轮里调几次 channel_reply 就发几条，零次兜底、approval 直回也走这里。\n  45   * 带按 replyRequestKey 的幂等重放与同键冲突拦截，并回发标准 channel/replied 事件。\n  46   * @param ctx 渠道插件的 Cordis 上下文（挂在上面的监听随插件卸载自动撤销）。\n  47   * @param adapter 渠道直发回调与渠道名。\n  48   */\n  49  export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter): void {\n  50    const sent = new Map<string, { payloadHash: string; receipt: replyModule.ReplyReceipt }>();\n  51\n  52    //M 挂载当前纯文字渠道的 channel/reply 响应监听器，随插件上下文生命周期自动撤销。\n  53    ctx.on('channel/reply', async (request) => {\n  54      //==========================================================\n  55      //M 认领本渠道请求并核对重试与发送方式\n  56      //==========================================================\n  57      if (request.channel !== adapter.channel || request.handled === true) return;\n  58\n  59      request.handled = true;\n  60\n  61      //G 同一 replyRequestKey 重试：正文摘要一致重放旧回执，不一致则拒绝。\n  62      const existing = sent.get(request.replyRequestKey);\n  63      if (existing !== undefined) {\n  64        if (existing.payloadHash === request.payloadHash) {\n  65          //M 同键同摘要视为重放：原样回传上次已记录的回执。\n  66          replyModule.emitReplied(ctx, request, existing.receipt);\n  67          return;\n  68        }\n  69        //G 同键但正文摘要不同：拦截潜在串包或篡改，回发 rejected 回执。\n  70        const reason = 'reply_conflict：同一 replyRequestKey 的发送内容不一致';\n  71        const receipt = replyModule.getReceipt(request, 'rejected', reason);\n  72        replyModule.emitReplied(ctx, request, receipt);\n  73        return;\n  74      }\n  75\n  76      if (request.mode !== 'text') {\n  77        //G 纯文字适配器不支持非 text 模式（如附件），明确拒收。\n  78        const reason = `capability_unsupported：渠道 ${adapter.channel} 当前只支持纯文字直回`;\n  79        const receipt = replyModule.getReceipt(request, 'rejected', reason);\n  80        replyModule.emitReplied(ctx, request, receipt);\n  81        return;\n  82      }\n  83\n```\n\n### 解释\n- L50：`sent` 记已发和已存草稿的回执，给同键重放用。\n- L53：挂在渠道插件的 ctx 上，随插件卸载自动撤销。\n- L57：不是本渠道、或别人已经接了（`handled`）就不管；L59：接单。\n- L62：同一 `replyRequestKey` 重试：摘要一致原样重放旧回执，不一致回 rejected（`reply_conflict`）。\n- L76：不是纯文字（如附件）回 rejected（`capability_unsupported`）。",
+    "sources": [
+      "src7/plugins/channels/TextReply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-31",
+    "parent": "r-ch-g4",
+    "title": "TextReply.ts L84–L110 registerTextReply 中段：认目标聊天",
+    "summary": "请求指定了别的聊天时，拿到确切地址，认不出就拒。",
+    "body": "**行号：TextReply.ts L84–L110**\n\n### 代码原文\n```ts\n// src7/plugins/channels/TextReply.ts\n  84      //==========================================================\n  85      //M 解析指定聊天的发送地址\n  86      //==========================================================\n  87      //M 调用方已经拿着确切地址（旧路自动回话、relay 回信、本人批准的主动发件）：照它发，不再认聊天。\n  88      let targetAddress = request.target?.address;\n  89\n  90      //M 只给了聊天名或号的跨渠道/跨聊天目标：调用本渠道自带的“认聊天”回调核实目标地址。\n  91      if (request.target !== undefined && targetAddress === undefined) {\n  92        if (adapter.getTargetAddress === undefined) {\n  93          //G 渠道未实现目标识别能力时明确拒绝，避免误发回原聊天。\n  94          const reason = `capability_unsupported：渠道 ${adapter.channel} 不支持指定目标聊天`;\n  95          const receipt = replyModule.getReceipt(request, 'rejected', reason);\n  96          replyModule.emitReplied(ctx, request, receipt);\n  97          return;\n  98        }\n  99\n 100        //M 调用渠道自带认聊天回调解析目标地址。\n 101        targetAddress = adapter.getTargetAddress(request.target.chat, request);\n 102        if (targetAddress === undefined) {\n 103          //G 目标聊天不在本渠道自己的清单/会话表里时回传 rejected。\n 104          const notFoundReason = targetModule.getChatNotFoundMessage(request.target.chat);\n 105          const receipt = replyModule.getReceipt(request, 'rejected', notFoundReason);\n 106          replyModule.emitReplied(ctx, request, receipt);\n 107          return;\n 108        }\n 109      }\n 110\n```\n\n### 解释\n- L88：调用方已经带着确切地址（旧路自动回话、relay 回信、本人批准的主动发件）就照它发，不再认聊天。\n- L91：只给了聊天名或号，要认。\n- L92：渠道没实现认聊天，明确拒绝（`capability_unsupported`），免得误发回原聊天。\n- L101：调适配器认聊天；L102：认不出回 rejected，原因用 `getChatNotFoundMessage`。",
+    "sources": [
+      "src7/plugins/channels/TextReply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-32",
+    "parent": "r-ch-g4",
+    "title": "TextReply.ts L111–L138 registerTextReply 后半：直发、记回执、回发",
+    "summary": "把正文交给适配器直发，照结果拼回执；已发、草稿的记下来给重放，再回发 channel/replied。",
+    "body": "**行号：TextReply.ts L111–L138**\n\n### 代码原文\n```ts\n// src7/plugins/channels/TextReply.ts\n 111      //==========================================================\n 112      //M 发送正文，保存可重放的回执并通知调用方\n 113      //==========================================================\n 114      const body = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\\n');\n 115      try {\n 116        //M 将正文与可选跨渠道解析地址交由渠道适配器的直发逻辑写出；不交回结果的渠道照旧算已发。\n 117        const returned = await adapter.sendDirectText(body, request, targetAddress);\n 118        let outcome: TextReplyOutcome = { status: 'sent' };\n 119        if (returned !== undefined) {\n 120          outcome = returned;\n 121        }\n 122        //M 用渠道实际交回的状态为请求各段生成回执。\n 123        const receipt = replyModule.getReceipt(request, outcome.status, outcome.reason);\n 124\n 125        //G 只记已发、已存草稿的回执给同键重放；失败、不确定的，同键再来照样交给渠道再试。\n 126        if (receipt.status === 'sent' || receipt.status === 'draft') {\n 127          sent.set(request.replyRequestKey, { payloadHash: request.payloadHash, receipt });\n 128        }\n 129        //M 发出渠道交回的回执（不交回的就是 sent）。\n 130        replyModule.emitReplied(ctx, request, receipt);\n 131      } catch (error) {\n 132        //G 直发过程抛出异常时，读取简洁错误说明并以 uncertain 状态回报。\n 133        const reason = textModule.getErrorMessage(error);\n 134        const receipt = replyModule.getReceipt(request, 'uncertain', reason);\n 135        replyModule.emitReplied(ctx, request, receipt);\n 136      }\n 137    });\n 138  }\n```\n\n### 解释\n- L114：正文是各片段文字用换行连起来。\n- L117：交给适配器直发；L118：不交回结果算已发。\n- L123：照渠道实际状态拼回执。\n- L126：只记已发、草稿给同键重放；失败、不确定的同键再来还是交给渠道再试。\n- L131：直发抛异常就回 uncertain，不当发了。",
+    "sources": [
+      "src7/plugins/channels/TextReply.ts"
+    ]
+  },
+  {
+    "id": "r-ch-g5",
+    "parent": "r-ch",
+    "title": "Target.ts：跨渠道、跨聊天发话",
+    "summary": "目标描述、能不能跨、目标串怎么拆、候选聊天怎么认、认不出怎么说。",
+    "body": "## Target.ts：跨渠道、跨聊天发话\n\n目标描述、能不能跨、目标串怎么拆、候选聊天怎么认、认不出怎么说。\n\n- Target.ts L1–L22 文件头和目标描述 ChannelReplyTarget\n- Target.ts L23–L46 拆好的目标串和候选聊天\n- Target.ts L47–L70 canReplyAcrossChats：能不能跨聊天发\n- Target.ts L71–L99 parseChatTarget：拆目标串\n- Target.ts L100–L120 findChatByIdOrName：在候选里认聊天\n- Target.ts L121–L132 getChatNotFoundMessage：认不出的原因",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-33",
+    "parent": "r-ch-g5",
+    "title": "Target.ts L1–L22 文件头和目标描述 ChannelReplyTarget",
+    "summary": "跨渠道、跨聊天发话时，调用方给出的目标：渠道、聊天名或号、可选的确切地址。",
+    "body": "**行号：Target.ts L1–L22**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Target.ts\n   1  /**\n   2   * 渠道协议：跨渠道、跨聊天发话（目标描述、能不能跨、目标串怎么拆、候选聊天怎么认、认不出怎么说）。\n   3   * 只放类型和无状态小函数；真正认聊天的是各渠道自己。\n   4   */\n   5  import * as workspaceModule from '../../utils/Workspace.ts';\n   6  import type * as messageModule from './Message.ts';\n   7\n   8\n   9  /** 跨渠道或跨聊天发话时附带的目标描述（由目标渠道自行识别聊天）。 */\n  10  export interface ChannelReplyTarget {\n  11    /** 规范化后的目标渠道名（feishu / wechat / http / cli）。 */\n  12    channel: string;\n  13    /** 调用方给出的原始聊天标识或名称（如群号、群名、本机等），由目标渠道自己认；带 address 时只作展示。 */\n  14    chat: string;\n  15    /**\n  16     * 渠道自己的确切地址（会话记着的回话地址、relay 收件记下的地址、本人批准过的账号和聊天），形状归各渠道。\n  17     * 给了就照它发，渠道不再按 chat 认聊天；只有 bots、relay、approval 这些已经拿着地址的插件填。\n  18     */\n  19    address?: Record<string, unknown>;\n  20  }\n  21\n  22\n```\n\n### 解释\n- L1：文件头：只放类型和无状态小函数，真正认聊天的是各渠道自己。\n- L10：`ChannelReplyTarget`：`chat` 是调用方给的聊天号或名称，由目标渠道自己认；`address` 是渠道自己的确切地址，给了就照它发，不再按 `chat` 认聊天。\n- 只有 bots、relay、approval 这些已经拿着地址的插件才填 `address`。",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-34",
+    "parent": "r-ch-g5",
+    "title": "Target.ts L23–L46 拆好的目标串和候选聊天",
+    "summary": "两个给“认聊天”用的类型：拆好的目标串 ChatTarget，渠道拼出的候选 ChatCandidate。",
+    "body": "**行号：Target.ts L23–L46**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Target.ts\n  23  /** 渠道认跨渠道发话的目标聊天时，拆好的目标串（parseChatTarget 交回）。 */\n  24  export interface ChatTarget {\n  25    /** trim 后的整串。 */\n  26    exact: string;\n  27    /** 去掉展示前缀（如“微信·”）的整串，按名字认聊天用；拆出“前缀:聊天”后要不要换成 chat 由渠道定。 */\n  28    label: string;\n  29    /** “前缀:聊天”写法冒号左边（trim 后）；不是这种写法是空串。前缀代表应用号、账号还是渠道名，由渠道自己认。 */\n  30    prefix: string;\n  31    /** “前缀:聊天”写法冒号右边（trim 后）；不是这种写法是空串。 */\n  32    chat: string;\n  33  }\n  34\n  35\n  36  /** 一个候选聊天：渠道从自己的数据里拼出来，交给 findChatByIdOrName 认。 */\n  37  export interface ChatCandidate<T> {\n  38    /** 能认出它的号（群号、聊天号、open_id 等）。 */\n  39    ids: string[];\n  40    /** 能认出它的名字（群名、人名）；空串不参与比对。 */\n  41    names: string[];\n  42    /** 认中后交回的东西（渠道自己的地址片段）。 */\n  43    value: T;\n  44  }\n  45\n  46\n```\n\n### 解释\n- L24：`ChatTarget`：`exact` 整串，`label` 去掉展示前缀的整串（按名字认），`prefix`、`chat` 是“前缀:聊天”写法冒号两边（不是这种写法就是空串）。\n- L37：`ChatCandidate<T>`：能认出它的号 `ids`、名字 `names`（空串不参与），认中后交回的 `value`（渠道自己的地址片段）。",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-35",
+    "parent": "r-ch-g5",
+    "title": "Target.ts L47–L70 canReplyAcrossChats：能不能跨聊天发",
+    "summary": "判断这一轮有没有权限往别的渠道、别的聊天发话。",
+    "body": "**行号：Target.ts L47–L70**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Target.ts\n  47  /**\n  48   * 统一判定当前来源快照是否拥有本人（owner）跨渠道、跨聊天发话的权限。\n  49   * 外人（isOwnerTurn 判：地址含 guest / builder、owner: false，或渠道不是网页、命令行又没写 owner）一律拒绝；飞书 owner 放行；本机网页和命令行默认视为本人。\n  50   * @param snapshot 不可变来源快照。\n  51   * @returns 是本人返回 true，外人返回 false。\n  52   */\n  53  export function canReplyAcrossChats(snapshot: messageModule.SourceSnapshot): boolean {\n  54    //G 这一轮不是本人（地址标了 guest、builder、owner: false，或非网页、命令行的渠道没写 owner）一律禁止越界。\n  55    if (!workspaceModule.isOwnerTurn(snapshot.channel, snapshot.origin.address)) return false;\n  56\n  57    //G 群聊里本人说话也不跨：当前群聊调用不能切换到别的聊天（11-18 中控补）。\n  58    if (snapshot.chatType === 'group') return false;\n  59\n  60    //M 飞书等渠道已验证为 owner 档位时允许跨渠道、跨聊天发送。\n  61    if (snapshot.role === 'owner') return true;\n  62\n  63    //M 本机网页与命令行入口未标记为外人时默认视为本人操作。\n  64    const isLocalChannel = snapshot.channel === 'http' || snapshot.channel === 'cli';\n  65    if (isLocalChannel && snapshot.chatType === 'local' && snapshot.role !== 'builder') return true;\n  66\n  67    return false;\n  68  }\n  69\n  70\n```\n\n### 解释\n- L55：这一轮不是本人（地址标 guest、builder、owner: false，或非网页、命令行的渠道没写 owner）一律不许。\n- L58：群聊里本人说话也不跨，当前群聊调用不能切到别的聊天（11-18 中控补）。\n- L61：飞书等渠道验证为 owner 档位就放行。\n- L64：本机网页（http）和命令行（cli）的 local 聊天，只要不是 builder 就默认是本人操作。\n\n### 谁用它\n- bots 的 ChannelTools 判断要不要给模型开跨聊天的 channel_reply 参数。",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-36",
+    "parent": "r-ch-g5",
+    "title": "Target.ts L71–L99 parseChatTarget：拆目标串",
+    "summary": "trim、去掉网页展示的渠道前缀、拆出“前缀:聊天”。",
+    "body": "**行号：Target.ts L71–L99**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Target.ts\n  71  /**\n  72   * 拆跨渠道发话的目标串：trim、去掉网页展示的渠道前缀、拆出“前缀:聊天”。\n  73   * @param raw 调用方给的原始聊天串。\n  74   * @param labelPrefixes 渠道的展示前缀（如“飞书·群·”“微信·”），命中第一个就去掉。\n  75   * @returns 拆好的目标串。\n  76   */\n  77  export function parseChatTarget(raw: string, labelPrefixes: string[]): ChatTarget {\n  78    const exact = raw.trim();\n  79\n  80    //M 去掉网页展示名前面带的渠道前缀，剩下的按名字认。\n  81    let label = exact;\n  82    const labelPrefix = labelPrefixes.find((one) => exact.startsWith(one));\n  83    if (labelPrefix !== undefined) {\n  84      label = exact.slice(labelPrefix.length);\n  85    }\n  86\n  87    //M “前缀:聊天”写法：冒号不在开头、两边去空白后都不空才算。\n  88    const plain = { exact, label, prefix: '', chat: '' };\n  89    const sep = exact.indexOf(':');\n  90    if (sep <= 0) return plain;\n  91\n  92    const prefix = exact.slice(0, sep).trim();\n  93    const chat = exact.slice(sep + 1).trim();\n  94    if (prefix === '' || chat === '') return plain;\n  95\n  96    return { exact, label, prefix, chat };\n  97  }\n  98\n  99\n```\n\n### 解释\n- L82：命中第一个展示前缀（如“飞书·群·”“微信·”）就去掉，剩下的按名字认。\n- L89：“前缀:聊天”写法要求冒号不在开头，两边去空白后都不空；不符合就交回只有 `exact`、`label` 的普通结果。\n\n### 谁用它\n- 各渠道认聊天时先拆。",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-37",
+    "parent": "r-ch-g5",
+    "title": "Target.ts L100–L120 findChatByIdOrName：在候选里认聊天",
+    "summary": "按先后看候选，号对上或名字（不空）对上的第一个就是。",
+    "body": "**行号：Target.ts L100–L120**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Target.ts\n 100  /**\n 101   * 在候选清单里认聊天：按先后看，号对上、或名字（不空）对上的第一个就是。\n 102   * 候选可以边认边拼（生成器）：认到就停，排在后面的来源不再读。\n 103   * @param candidates 渠道拼出的候选，排在前面的优先。\n 104   * @param id 要找的号。\n 105   * @param name 要找的名字。\n 106   * @returns 认中的那个候选带的 value；都没对上是 undefined。\n 107   */\n 108  export function findChatByIdOrName<T>(candidates: Iterable<ChatCandidate<T>>, id: string, name: string): T | undefined {\n 109    for (const candidate of candidates) {\n 110      //M 号对上就是它。\n 111      if (candidate.ids.includes(id)) return candidate.value;\n 112\n 113      //M 名字对上也算；空名字不算，免得空串认错。\n 114      const sameName = candidate.names.some((one) => one !== '' && one === name);\n 115      if (sameName) return candidate.value;\n 116    }\n 117    return undefined;\n 118  }\n 119\n 120\n```\n\n### 解释\n- L109：候选可以边认边拼（生成器），认到就停，排在后面的来源不再读。\n- L111：号对上就是它；L114：名字对上也算，空名字不算，免得空串认错。\n\n### 谁用它\n- feishu、wechat 等渠道认目标聊天。",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  },
+  {
+    "id": "r-ch-38",
+    "parent": "r-ch-g5",
+    "title": "Target.ts L121–L132 getChatNotFoundMessage：认不出的原因",
+    "summary": "认不出目标聊天时统一的一句话。",
+    "body": "**行号：Target.ts L121–L132**\n\n### 代码原文\n```ts\n// src7/plugins/channels/Target.ts\n 121  /**\n 122   * 认不出目标聊天时的原因文字（registerTextReply 和自己认聊天的飞书共用）。\n 123   * @param chat 调用方给的原始聊天串。\n 124   * @returns “chat_not_found：没有叫 X 的聊天”，X 是 trim 后的串，空串写成（空）。\n 125   */\n 126  export function getChatNotFoundMessage(chat: string): string {\n 127    let label = chat.trim();\n 128    if (label === '') {\n 129      label = '（空）';\n 130    }\n 131    return `chat_not_found：没有叫 ${label} 的聊天`;\n 132  }\n```\n\n### 解释\n- L131：交回“chat_not_found：没有叫 X 的聊天”，X 是 trim 后的串，空串写成“（空）”。registerTextReply 和自己认聊天的飞书共用。",
+    "sources": [
+      "src7/plugins/channels/Target.ts"
+    ]
+  }
+]

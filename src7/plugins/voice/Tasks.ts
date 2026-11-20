@@ -2,7 +2,7 @@
 
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
-import * as channel from '../../Channels.ts';
+import * as channel from '../channels/index.ts';
 import * as requests from '../../utils/RequestEvent.ts';
 import type * as models from './Models.ts';
 import type * as routes from './Routes.ts';
@@ -151,7 +151,7 @@ export class VoiceTasks {
   private calls = 0;
   private sending?: Flight;
   private previous?: Recent;
-  /** 网页浏览器对应的语音客户号；旧版客户端保留本机值。 */
+  /** 网页浏览器对应的语音客户号；客户端未提供设备号时使用本机客户号。 */
   readonly customer: string;
 
   /**

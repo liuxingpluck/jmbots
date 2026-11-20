@@ -1,7 +1,7 @@
 /**
  * web-api：HTTP 渠道，加上网页要的全部核心接口。
  * 它是一个渠道（渠道名 http）：POST /api/message 收话，记进自己的收件表 web_messages，用消息号当回话地址发 channel/message；
- * 模型一轮里每调一次 channel_reply（还有零次兜底、审批直回）都经 channel/reply 追加到那条消息的回话清单，一轮收尾（channel/settled）标成回完。
+ * 模型一轮里每调一次 channel_reply（还有零次兜底、审批直回）都经 channel/reply 追加到那条消息的回话清单，一轮收尾（bot/settled）标成回完。
  * HTTP 不主动推：网页轮询 GET /api/messages。
  * 别的渠道（飞书、命令行、微信）的消息也记一份（带标准消息号），回话按“消息号 + 机器人”挂回，网页右栏“消息”靠它。
  * 另外接网页的会话列表和详情、步骤、换模型、喊停、正在跑的任务、回话追溯、机器人、界面信息、渠道状态。
@@ -24,16 +24,14 @@ import * as traceModule from './Trace.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as checksModule from '../../utils/Checks.ts';
-import * as protocol from '../../Channels.ts';
-import * as outbound from '../approval/Outbound.ts';
-import type { ProviderReceipt } from '../programs/ChannelSend.ts';
+import * as protocol from '../channels/index.ts';
 
 
 /** 插件名。 */
 export const name = 'web-api';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.3：指定会话、引用别的渠道的消息也走 channel/message（routing.sessionId、replyOrigin），去掉 bot.hand 旁路；
-//M   网页改成 channel_tool：一轮里 channel_reply 几次就追加几条，收尾（channel/settled）才标回完；role 写 owner；
+//M   网页改成 channel_tool：一轮里 channel_reply 几次就追加几条，收尾（bot/settled）才标回完；role 写 owner；
 //M   别的渠道的回话按“标准消息号 + 机器人”精确挂回（source_id 列），不再按地址找最新一行。
 //M 1.1.4：网页入站地址带 owner: true（“同意 N”可批所有待确认）；replyDirect 支持跨渠道发往网页的回复落入时间线。
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
@@ -41,7 +39,7 @@ export const name = 'web-api';
 //M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
 //M 1.1.16：Timeline.insert 的跟踪点带 sourceId（标准消息号），journal 按它把渠道那几行串在收件行前面。
 //M 1.1.19：回话追溯不再 import journal/Trail.ts：reply-lines 回的已是网页事件外壳 events，流水行换壳那段并进 journal/Trace.ts。
-export const version = '1.1.19';
+export const version = '1.1.20';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -112,7 +110,7 @@ interface MessageBody {
 }
 
 
-/** 步骤默认几步、最多几步（同 src6/channels/HttpSessions.ts:432-444）。 */
+/** 步骤默认几步、最多几步。 */
 const STEPS_DEFAULT = 100;
 const STEPS_MAX = 500;
 
@@ -134,44 +132,27 @@ class WebApi {
   /** 单调时间戳游标，防止同一毫秒连发多条 HTTP 消息时间戳撞车。 */
   private lastAt = 0;
 
-  /** 别的渠道发出去、还没等到回执的回话（replyRequestKey → 正文和请求）：回执说发到了才挂进时间线。 */
-  private readonly otherReplies = new Map<string, { text: string; request: protocol.ChannelReplyRequest }>();
   /** 正在等待保存回执的上传暂存文件，避免并发消息消费同一上传号。 */
   private readonly savingUploads = new Set<string>();
 
   /**
    * 建收件表；听别的渠道的消息和回话；在一个 Fastify 作用域里登记全部接口。
-   * 向 bots 登记本渠道的发送函数；一轮结束回话和中途先说一句由 bots 按渠道名调用，只管 channel 是 http 的会话。
+   * 向 bots 登记本渠道名；所有发到网页的话（模型的 channel_reply、旧路自动回话、审批直回、本人批准的提醒）都经 channel/reply 到 replyDirect。
    * @param ctx Cordis 给这个插件的 ctx：在它上面 ctx.on 听的事件，插件被拔掉时 Cordis 自动撤掉。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M 旧路回话（指定了后台会话、一轮结束自动回一条）：bots 按渠道名调这里登记的 send。
-    this.ctx.effect(() => this.ctx.bots.channel(this.name, (reply, session) => this.send(reply, session)));
+    //M 向 bots 登记渠道名（网页的渠道清单用），随本插件卸载自动撤销。
+    this.ctx.effect(() => this.ctx.bots.channel(this.name));
 
-    //M 模型一轮里每调一次 channel_reply、零次兜底、审批直回，都经 channel/reply 到这里，追加进那条消息的回话清单。
+    //M 发到网页的话都经 channel/reply 到这里，追加进那条消息的回话清单（提醒写一条系统提示）。
     protocol.registerTextReply(this.ctx, {
       channel: this.name,
       getTargetAddress: (chat) => this.getReplyTargetAddress(chat),
-      sendDirectText: (text, request) => {
-        this.replyDirect(text, request);
-      },
+      sendDirectText: (text, request, targetAddress) => this.replyDirect(text, request, targetAddress),
     });
 
     //M 初始化收件表和时间线，让网页查询与历史监听共享已建好的记录。
     this.timeline = new timelineModule.Timeline(ctx);
-
-    //M 已确认的网页提醒直接写原机器人的时间线，避免启动新的模型轮。
-    const remind = (request: requestEventModule.EventArg<'channel/send'>) => {
-      const receipt = this.sendApprovedReminder(request.call);
-      return { receipt };
-    };
-    const outboundOptions = {
-      filter: (request: requestEventModule.EventArg<'channel/send'>) => request.call.channel === this.name,
-      onError: () => ({ receipt: { status: 'failed', reason: '写入网页提醒失败' } satisfies ProviderReceipt }),
-    };
-    requestEventModule.onRequestEvent(ctx, 'channel/send', 'channel/sent', remind, outboundOptions);
-
-    //M 登记网页历史监听，为渠道历史工具提供分页结果。
 
     //M 语音只在 ASR 确认整句后写入时间线，使用与半句任务相同的标准来源号。
     ctx.on('voice/record', (message, sessionId) => {
@@ -206,8 +187,8 @@ class WebApi {
       }
     });
 
-    //M 一轮收尾（bots 发 channel/settled）：网页的那条标成回完；没回成又一句没回过的，补一句原因。
-    ctx.on('channel/settled', (event) => {
+    //M 一轮收尾（bots 发 bot/settled）：网页的那条标成回完；没回成又一句没回过的，补一句原因。
+    ctx.on('bot/settled', (event) => {
       this.onSettled(event);
     });
 
@@ -248,26 +229,9 @@ class WebApi {
       }
     });
 
-    //M 别的渠道 channel_tool 的回话：发出时先记下正文，渠道回执说发到了，再按“消息号 + 机器人”挂回那一行；跨聊天发出的（带 target）不挂回原入站行。
-    ctx.on('channel/reply', (request) => {
-      if (request.channel === this.name || request.mode !== 'text' || request.target !== undefined) return;
-
-      const text = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\n');
-      if (text === '') return;
-
-      this.otherReplies.set(request.replyRequestKey, { text, request });
-    }, { prepend: true });
+    //M 别的渠道发成了的回话（channel/replied 带着请求正文）：按“消息号 + 机器人”或旧路会话最近认领的那条挂回网页那一行。
     ctx.on('channel/replied', (event) => {
-      //M 收到实际交付回执后尝试把对应回话挂回原消息。
       this.recordOtherReply(event);
-    });
-
-    //M 别的渠道旧路的回话（relay 这类认领了会话、一轮结束自动回的）：按会话最近认领的消息号挂回；channel_tool 的不在这里记。
-    ctx.on('bot/say', (session, text) => {
-      this.recordOther(session, text);
-    });
-    ctx.on('session/change', (session) => {
-      if (session.row.state !== 'running') this.recordOther(session, session.row.reply);
     });
 
     //M Fastify 在 http 开始监听时才执行这个函数，那时别的插件的路径都登记好了，hasRoute 查得到。
@@ -641,13 +605,28 @@ class WebApi {
   }
 
   /**
-   * 网页渠道接 channel/reply：模型的 channel_reply、零次兜底、审批直回，都追加进那条消息的回话清单。
-   * 会话用这一行记的（认领时记下的）；审批直回没有会话，用这个机器人网页的前台，并马上标成回完（没有模型轮，不会再有 channel/settled）。
+   * 网页渠道接 channel/reply：模型的 channel_reply、零次兜底、审批直回、旧路自动回话，都追加进那条消息的回话清单。
+   * 会话用这一行记的（认领时记下的）；审批直回没有会话，用这个机器人网页的前台，并马上标成回完（没有模型轮，不会再有 bot/settled）。
+   * 旧路（没有来源快照、带会话号）挂在说话的会话上；本人批准的提醒写一条系统提示。
    * @param text 要追加进 replies 的正文。
    * @param request 标准回复请求（来源地址里的 messageId 就是网页的消息号）。
+   * @param targetAddress 确切地址（旧路是会话记的 { messageId }，提醒是 { reminder: 意图号 }）或跨聊天认出的地址；回原消息时没有。
+   * @returns 旧路地址里没有原消息号、提醒的机器人不在时是 rejected；别的算已发。
    */
-  private replyDirect(text: string, request: protocol.ChannelReplyRequest): void {
-    const messageId = request.sourceSnapshot.origin.address['messageId'];
+  private replyDirect(
+    text: string,
+    request: protocol.ChannelReplyRequest,
+    targetAddress?: Record<string, unknown>,
+  ): protocol.TextReplyOutcome | void {
+    //M 本人批准过的提醒（approval 的主动发件）：写原机器人网页时间线的一条系统提示，不开模型轮。
+    const reminder = utils.getStringField(targetAddress, 'reminder');
+    if (reminder !== '') return this.writeReminder(request.bot, reminder, text);
+
+    //M 旧路（会话一轮结束、中途一句，没有来源快照）：地址是会话记的 { messageId }，挂在说话的会话上（原来渠道 send 的做法）。
+    const snapshot = request.sourceSnapshot;
+    if (snapshot === undefined) return this.replyLegacy(text, request, targetAddress);
+
+    const messageId = snapshot.origin.address['messageId'];
     //G 跨渠道发到网页或没有原网页消息号：新建跨渠道网页记录并挂回回话，不回挂原渠道消息。
     if (request.target !== undefined || typeof messageId !== 'number') {
       //M 定位或新建该机器人的网页前台会话，在收件表补记跨渠道发话行后追加回话并标回完。
@@ -693,26 +672,49 @@ class WebApi {
     return { customer: 'http:本机', owner: true };
   }
 
-  /** 把一次性批准的提醒写到原机器人在本机网页的时间线。 */
-  private sendApprovedReminder(call: outbound.ApprovedChannelSend): ProviderReceipt {
-    const bot = call.targetBot;
-    if (call.from !== 'reminder' || call.account !== 'local' || call.chat !== 'http:本机' || bot === undefined) {
-      return { status: 'failed', reason: '网页主动接收仅支持已确认的本机提醒' };
-    }
-    if (!outbound.takeChannelSendApproval(call)) {
-      return { status: 'failed', reason: '没有有效的一次性发送批准' };
-    }
-    if (botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) return { status: 'failed', reason: '原机器人已不存在' };
+  /**
+   * 旧路的回话（没有来源快照：会话一轮结束自动回、旧会话中途一句）：追加到会话记的那条网页消息，挂在说话的会话上。
+   * @param text 要追加的正文。
+   * @param request 回复请求（带 sessionId）。
+   * @param targetAddress 会话记的回话地址 { messageId }。
+   * @returns 地址里没有原消息号、没有会话号时是 rejected（不猜发到哪）；挂上了算已发。
+   */
+  private replyLegacy(
+    text: string,
+    request: protocol.ChannelReplyRequest,
+    targetAddress?: Record<string, unknown>,
+  ): protocol.TextReplyOutcome | void {
+    const messageId = utils.getField(targetAddress, 'messageId');
+    if (typeof messageId !== 'number') return { status: 'rejected', reason: 'no_message：网页回话地址里没有原消息号' };
 
-    const sourceId = `reminder:${call.intentId}`;
+    const sessionId = request.sessionId;
+    if (sessionId === undefined) return { status: 'rejected', reason: 'no_session：网页旧路回话没有会话号' };
+
+    //M 把旧路送回的机器回复追加到对应收件记录，供网页轮询显示。
+    const session = this.ctx.sessions.open(sessionId);
+    this.timeline.reply(messageId, session, text);
+  }
+
+  /**
+   * 把本人批准过的提醒写到原机器人在本机网页的时间线（同一意图只写一条）。
+   * @param bot 原机器人（approval 照提醒记录填的）。
+   * @param intentId 发件意图号，拼成来源号去重。
+   * @param text 提醒正文。
+   * @returns 机器人不在是 rejected；写了（或早写过）算已发。
+   */
+  private writeReminder(bot: string, intentId: string, text: string): protocol.TextReplyOutcome {
+    if (bot === '') return { status: 'rejected', reason: '网页提醒没有目标机器人' };
+    if (botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) return { status: 'rejected', reason: '原机器人已不存在' };
+
+    const sourceId = `reminder:${intentId}`;
     const session = this.getOrCreateWebFront(bot);
     const write = this.ctx.resources.db.transaction(() => {
       const existing = this.timeline.findBySource(bot, sourceId);
       if (existing !== undefined) return;
 
       //M 复用网页的系统提示行，展示一个提醒条目。
-      const text = `（系统）${call.text}`;
-      const item = { bot, channel: this.name, source: 'reminder', text, address: null, source_id: sourceId };
+      const shown = `（系统）${text}`;
+      const item = { bot, channel: this.name, source: 'reminder', text: shown, address: null, source_id: sourceId };
       const id = this.timeline.insert(item);
       this.timeline.bindSession(id, session.id);
       this.timeline.markReplied(id);
@@ -736,7 +738,7 @@ class WebApi {
   }
 
   /**
-   * 一轮收尾（channel/settled）：网页自己的那条标成回完；没回成、一句也没回过的，补一句原因（原来一轮结束会把出错的话回过来）。
+   * 一轮收尾（bot/settled）：网页自己的那条标成回完；没回成、一句也没回过的，补一句原因（原来一轮结束会把出错的话回过来）。
    * @param event 收尾通知：来源快照、stage、原因。
    */
   private onSettled(event: protocol.ChannelSettledEvent): void {
@@ -891,32 +893,21 @@ class WebApi {
   }
 
   /**
-   * 渠道基类要的：把机器人的话交给用户。HTTP 不主动推，就是追加到那条消息的回话清单里，网页轮询时看到。
-   * @param reply 要说的话。
-   * @param session 哪场会话说的；回话地址从 session.row.address 取（收话时记的 { messageId }，直接信，不再校验）。
-   */
-  protected send(reply: string, session: Session): void {
-    const address = session.row.address as { messageId?: unknown } | undefined;
-    if (typeof address?.messageId !== 'number') return;
-
-    //M 把旧路径送回的机器回复追加到对应收件记录，供网页轮询显示。
-    this.timeline.reply(address.messageId, session, reply);
-  }
-
-  /**
-   * 别的渠道旧路的会话回话（relay 这类认领了会话、一轮结束自动回的；中途 bot/say 的）：
-   * 按这场会话最近认领的那条（sourceClaims 最后一项，里面是标准消息号和机器人）精确挂回。
-   * channel_tool 的轮不在这里记（发出去的经 channel/replied 记，row.reply 只是草稿）；认不出是哪条的不记，不按地址猜。
-   * @param session 哪场会话。
+   * 别的渠道旧路发成了的回话（relay 回信、一轮结束自动回的、中途一句，没有来源快照，带会话号）：
+   * 按这场会话最近认领的那条（sourceClaims 最后一项，里面是标准消息号和机器人）精确挂回；认不出是哪条的不记，不按地址猜。
+   * @param sessionId 哪场会话说的；没有会话的（本人批准的主动发件、外置程序发件）不记。
    * @param text 说的话。
    */
-  private recordOther(session: Session, text: string): void {
-    const row = session.row;
-    //G 语音后台统一回 channel/replied，此处补写会重复一条。
-    if (row.channel === undefined || row.channel === this.name || row.channel === 'voice' || text === '') return;
+  private recordOther(sessionId: string | undefined, text: string): void {
+    if (sessionId === undefined) return;
 
-    //G 正在跑 channel_tool 的轮（bots 不自动发它的话）→ 不记。
-    if (row.quiet === true || row.activeSourceSnapshot !== undefined) return;
+    //G 会话不在了 → 认不出是哪条，不记。
+    if (this.ctx.sessions.find({ id: sessionId })[0] === undefined) return;
+
+    const session = this.ctx.sessions.open(sessionId);
+    const row = session.row;
+    //G 正在跑 channel_tool 的轮：它的话照来源快照记，不在这里记。
+    if (row.activeSourceSnapshot !== undefined) return;
 
     //G 没认领过标准消息（旧路 bots.receive 进来的，比如微信起草）→ 认不出是哪条，不记。
     const claimKey = row.sourceClaims?.at(-1);
@@ -939,22 +930,33 @@ class WebApi {
   }
 
   /**
-   * 别的渠道 channel_tool 的回话发到了（channel/replied）：照发出时记下的来源快照，按“标准消息号 + 机器人”挂回那一行。
-   * 会话用那一行认领时记下的；还没记会话的不挂（Timeline.reply 要会话算生成依据）。
+   * 别的渠道的回话发到了（channel/replied，带着请求正文）：有来源快照的按“标准消息号 + 机器人”挂回那一行，旧路的按会话挂回。
+   * 会话用那一行认领时记下的；还没记会话的不挂（Timeline.reply 要会话算生成依据）。跨聊天发出的（只带 target.chat）不挂回原入站行。
    * @param event 渠道回执。
    */
   private recordOtherReply(event: protocol.ChannelRepliedEvent): void {
-    //G 用回执的请求号反查待确认正文，只处理本插件之前记过的请求。
-    const key = event.receipt.replyRequestKey;
-    const pending = this.otherReplies.get(key);
-    if (pending === undefined) return;
+    //G 网页自己的回话在 replyDirect 里挂过；只记别的渠道发成了的文字回复。
+    const request = event.request;
+    if (request.channel === this.name || request.mode !== 'text') return;
 
-    this.otherReplies.delete(key);
     const status = event.receipt.status;
     if (status !== 'sent' && status !== 'partial') return;
 
+    const text = request.parts.map((part) => part.text ?? '').filter((part) => part !== '').join('\n');
+    if (text === '') return;
+
+    //M 旧路（没有来源快照）：按说话的会话最近认领的那条挂回。
+    const snapshot = request.sourceSnapshot;
+    if (snapshot === undefined) {
+      this.recordOther(request.sessionId, text);
+      return;
+    }
+
+    //G 带 target 的是发到别处的，不挂回原入站行。
+    if (request.target !== undefined) return;
+
     //M 找回原话那一行，和它记下的会话。
-    const snapshot = pending.request.sourceSnapshot;
+    const key = event.receipt.replyRequestKey;
     const id = this.timeline.findBySource(snapshot.botName, snapshot.messageId);
     if (id === undefined) return;
 
@@ -975,14 +977,14 @@ class WebApi {
       const spoken = 'spoken' in event.receipt && event.receipt.spoken === true;
       const delivery = { key, spoken };
       //M 回复幂等键和实际播放状态与文字一起落盘。
-      this.timeline.reply(id, session, pending.text, delivery);
+      this.timeline.reply(id, session, text, delivery);
       return;
     }
     if (record.sessionId === null) return;
 
     //M 用原会话恢复回话的生成依据，随正文一起挂回对应收件记录。
     const session = this.ctx.sessions.open(record.sessionId);
-    this.timeline.reply(id, session, pending.text);
+    this.timeline.reply(id, session, text);
   }
 
   /**
@@ -1212,7 +1214,7 @@ class WebApi {
     return { ...result, reason: '会话记录是在转，但这个进程里没有在跑的循环' };
   }
 
-  /** GET /api/bots：机器人列表，状态按“等确认 → 干活 → 闲着”（同 0.4：HttpUi.ts:400-418；src7 不排队，queued 是 0）。 */
+  /** GET /api/bots：机器人列表，状态按“等确认 → 干活 → 闲着”；queued 固定为 0。 */
   private async botList(): Promise<Record<string, unknown>[]> {
     const request = { action: 'list' } as const;
     const options = { timeoutMs: 3000, onFallback: () => ({ requestId: '', items: [] }) };

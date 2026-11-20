@@ -1,15 +1,18 @@
 /** 主动发件通过已核验的本机 HTTP 和模拟渠道，测试只写内存账。 */
 import * as sqlite from 'bun:sqlite';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import { afterEach, expect, spyOn, test } from 'bun:test';
-import type { SourceSnapshot } from '../../Channels.ts';
+import * as channels from '../channels/index.ts';
+import type { SourceSnapshot } from '../channels/index.ts';
 import type { Session } from '../../Sessions.ts';
 import type { ToolSpec } from '../../Tools.ts';
-import * as events from '../../utils/RequestEvent.ts';
+import * as utils from '../../utils/index.ts';
 import * as feishuModule from '../feishu/index.ts';
 import * as httpModule from '../http/index.ts';
-import type { ProviderReceipt } from '../programs/ChannelSend.ts';
 import * as approval from './index.ts';
 import * as routes from './ChannelSend.ts';
 import * as outbound from './Outbound.ts';
@@ -26,6 +29,15 @@ const group = {
   text: ' 合成正文\n ',
 };
 
+/** 假渠道收到的一次发件：渠道、确切地址里的账号和聊天、正文、请求键。 */
+interface SentCall {
+  channel: string;
+  account: string;
+  chat: string;
+  text: string;
+  replyRequestKey: string;
+}
+
 /** 模拟经过 HTTP 钩子核验的请求、模型工具仓库和飞书事件。 */
 function getWorld() {
   const ctx = new cordis.Context();
@@ -37,22 +49,26 @@ function getWorld() {
     async () => { await app.close(); },
   );
   const state = { verified: true, now: Date.now(), uncertain: false };
-  const calls: outbound.ApprovedChannelSend[] = [];
+  const calls: SentCall[] = [];
   const tools = new Map<string, ToolSpec>();
   ctx.provide('resources', { db });
   ctx.provide('tools', { register: (spec: ToolSpec) => { tools.set(spec.definition.name, spec); } });
   new outbound.Outbound(ctx, () => state.now);
   routes.mountChannelSend(ctx, { app, isVerified: () => state.verified });
   routes.registerChannelSendTool(ctx);
-  events.onRequestEvent(ctx, 'channel/send', 'channel/sent', async (request): Promise<{ receipt: ProviderReceipt }> => {
-    if (!outbound.takeChannelSendApproval(request.call)) {
-      return { receipt: { status: 'failed', reason: '没有有效的一次性批准' } };
-    }
-    calls.push(request.call);
-    await Bun.sleep(5);
-    if (state.uncertain) return { receipt: { status: 'uncertain' } };
 
-    return { receipt: { status: 'sent' } };
+  //M 假飞书渠道：批准后的发件经 channel/reply 带确切地址来，记下渠道、账号、聊天和正文。
+  channels.registerTextReply(ctx, {
+    channel: 'feishu',
+    sendDirectText: async (text, request, targetAddress): Promise<channels.TextReplyOutcome> => {
+      const account = utils.getStringField(targetAddress, 'appId');
+      const chat = utils.getStringField(targetAddress, 'chatId');
+      calls.push({ channel: request.channel, account, chat, text, replyRequestKey: request.replyRequestKey });
+      await Bun.sleep(5);
+      if (state.uncertain) return { status: 'uncertain' };
+
+      return { status: 'sent' };
+    },
   });
   const post = (payload: Record<string, unknown>) => {
     return app.inject({ method: 'POST', url: '/api/channel/send', payload });
@@ -94,10 +110,9 @@ test('确认只发保持原样的已展示意图，并发及重试最多出站�
   const status = await world.post({ action: 'status', intentId: intent.intentId });
   expect(status.json().intent).toMatchObject({ status: 'sent', ...group });
   expect(world.calls).toHaveLength(1);
-  expect(world.calls[0]).toMatchObject({ ...group, from: 'http' });
-  const used = world.calls[0]!;
-  expect(outbound.takeChannelSendApproval(used)).toBe(false);
-  expect(outbound.takeChannelSendApproval({ ...used })).toBe(false);
+  expect(world.calls[0]).toMatchObject(group);
+  //M 请求键由业务发送号算出：同一笔重试时渠道按它去重。
+  expect(world.calls[0]?.replyRequestKey).toContain('approved-send:');
 });
 
 test('旧意图过期拒发，未知回执仍沿用同一业务号', async () => {
@@ -149,20 +164,24 @@ test('模型工具固定本轮目标，同调用只建一条意图，缺少快�
   expect(status.json().intent).toMatchObject(group);
 });
 
-test('插件入口经真实 HTTP 核验，并用批准目标和固定 UUID 调飞书 SDK', async () => {
+test('插件入口经真实 HTTP 核验，批准后经 channel/reply 照批准目标调飞书 SDK，历史写不进只打日志', async () => {
   const ctx = new cordis.Context();
   const db = new sqlite.Database(':memory:');
+  const replyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-send-'));
   cleanups.push(
     () => db.close(),
     async () => { await ctx.fiber.dispose(); },
+    () => fs.rmSync(replyDir, { recursive: true, force: true }),
   );
   const ip = '192.0.2.12';
   const token = 'fixture-token';
   ctx.provide('resources', {
     db,
     raw: { server: { port: 1, token, trusted_ips: [ip] } },
-    ensureRuntimeDir: (name: string) => {
-      if (name === 'channels') throw new Error('合成历史写入失败');
+    ensureRuntimeDir: (...parts: string[]) => {
+      //M 聊天历史目录故意写不进去；回复去重记录放临时目录。
+      if (parts.includes('chats')) throw new Error('合成历史写入失败');
+      if (parts.includes('replies')) return replyDir;
 
       return 'src7/plugins/http/fixtures-no-tokens';
     },
@@ -206,7 +225,7 @@ test('插件入口经真实 HTTP 核验，并用批准目标和固定 UUID 调�
   expect(send).toHaveBeenCalledTimes(1);
   expect(send).toHaveBeenCalledWith({
     params: { receive_id_type: 'chat_id' },
-    data: { receive_id: group.chat, msg_type: 'text', content: JSON.stringify({ text: payload.text }), uuid: intent.intentId },
+    data: { receive_id: group.chat, msg_type: 'text', content: JSON.stringify({ text: payload.text }) },
   });
   expect(historyError).toHaveBeenCalledWith(expect.stringContaining('合成历史写入失败'));
 });

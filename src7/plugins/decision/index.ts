@@ -1,10 +1,10 @@
 /**
  * 决策模型：一道是非题加一份现状，交给配置里的一个或几个模型同时打分（“答案是‘是’”的把握，0～1），合成一个分，照阈值交回
  * allow / deny / unsure。两种模型都认：对话模型（开一场 kind: 'decision' 的小会话，让它回一段带 probability 的 JSON）；
- * 0.4 用的分类器（typesafe-system-one，直接给概率）。不拦事件、不出题、不记表。
+ * 用 typesafe-system-one 分类，交回各选项的概率。不拦事件、不出题、不记表。
  * 谁要判断谁发请求事件 decision/judge（approval、bots 前台、progress 可选地用），本插件回 decision/judge-result；没挂本插件时发的一方当场退回拿不准。
  * 请求带 want: ['what'] 时，对话模型在同一次回答里顺带写一句“执行完会做成什么”，回执带回 what（只用来显示，不进合分）；分类器给不出文字，不带 what。
- * 照 0.4 src/capabilities/Model.ts:382-390、446-453、727-744。设计见同目录 说明.md 的「设计要点」一节。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as botUtils from '../../utils/Bots.ts';
 import * as piAi from '@earendil-works/pi-ai';
@@ -63,7 +63,7 @@ export type JudgeWant = 'what';
 export interface JudgeInput {
   /** 为什么问：exec、run、progress……只进跟踪。 */
   kind: string;
-  /** 是非题，照 0.4 的 ClassifierBoolQuestion。 */
+  /** 只有是、否两个选项的问题。 */
   question: { instructions: string; yes: string; no: string };
   /** 给模型看的现状；第一项放最要紧的。 */
   state: Record<string, unknown>;
@@ -180,7 +180,7 @@ export class Decision extends cordis.Service {
   private readonly classifiers: piAi.MutableModels | undefined;
 
   /**
-   * 登记 decision 插件：把 Decision 作为服务挂到 Cordis 上（super(ctx, 'decision') 做的；以后用 ctx.decision 取）；有分类器就照 0.4 建一份只放分类器的集合。
+   * 登记 decision 插件：把 Decision 作为服务挂到 Cordis 上（super(ctx, 'decision') 做的；以后用 ctx.decision 取）；有分类器时单独建模，不与对话模型共用集合。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
    * 副作用：把 Decision 服务挂到 ctx.decision；存在分类器时单独建一份分类器模型集合。

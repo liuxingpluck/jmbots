@@ -231,12 +231,12 @@ test('CPU忙不满1分钟就降下来，不通知；再忙从头算', async () =
   expect(h.notices.filter((n) => n.key === 'cpu-busy')).toHaveLength(1);
 });
 
-test('插件一个程序都不配也挂守卫：ready后采样，发resource/pressure和内存通知', async () => {
+test('插件一个程序都不配也挂守卫：ready后采样，发programs/pressure和内存通知', async () => {
   const ctx = new cordis.Context();
   contexts.push(ctx);
   ctx.provide('resources', { root: 'never-written', config: { plugins: [] } });
   const events: guardModule.ResourcePressure[] = [];
-  ctx.on('resource/pressure', (event) => { events.push(event); });
+  ctx.on('programs/pressure', (event) => { events.push(event); });
   const keys: string[] = [];
   const dependencies = {
     read: async () => ({ at: Date.now(), cpu: 10, memory: 61 * GIB, totalMemory: 64 * GIB, gpus: null }),
@@ -371,7 +371,7 @@ test('显存硬线与压力事件迟滞；连崩放弃和授权过期分别限�
   host.gaveUp = true;
   host.license = 'expired';
   const events: guardModule.ResourcePressure[] = [];
-  h.ctx.on('resource/pressure', (event) => { events.push(event); });
+  h.ctx.on('programs/pressure', (event) => { events.push(event); });
   h.env.sample.gpus = [{ index: 0, used: 15.9 * GIB, total: 16 * GIB }];
   await h.guard.tick();
   await h.guard.tick();
@@ -391,14 +391,14 @@ test('显存硬线与压力事件迟滞；连崩放弃和授权过期分别限�
 test('请求同步接单并按requestId回执，非法参数也明确拒绝；dispose后拒开', async () => {
   const h = getHarness();
   const results: guardModule.ResourceResult[] = [];
-  h.ctx.on('resource/result', (result) => { results.push(result); });
+  h.ctx.on('programs/resource-result', (result) => { results.push(result); });
   const request = { action: 'can-start' as const, requestId: 'valid' };
-  const handled = h.ctx.serial('resource/request', request);
+  const handled = h.ctx.serial('programs/resource-request', request);
   expect((request as guardModule.ResourceRequest).handled).toBe(true);
   await handled;
   expect(results[0]).toMatchObject({ requestId: 'valid', ok: true });
   const invalid = { action: 'can-start' as const, requestId: 'invalid', vram_mb: -1 };
-  await h.ctx.serial('resource/request', invalid);
+  await h.ctx.serial('programs/resource-request', invalid);
   expect(results[1]).toMatchObject({ requestId: 'invalid', ok: false });
   await h.guard.dispose();
   expect((await h.guard.request(request)).ok).toBe(false);

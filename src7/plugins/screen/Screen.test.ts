@@ -11,6 +11,7 @@ const STATUS = '/api/screen/status?clientId=base-one';
 const STATE = '/api/screen/state';
 const CLICK = '/api/screen/click';
 const OBSERVE = '/api/screen/observe';
+const PRESENTED = '/api/screen/presented';
 const TEXT = '你点的是保存按钮，它通常用于保存当前文档。';
 const rect = { x: -100, y: 0, width: 100, height: 100 };
 const identity = { protocolVersion: 1, clientId: 'base-one', sessionId: 'screen-one', epoch: 1 };
@@ -303,13 +304,9 @@ test('成功回执含完整身份，私有模型只收到必要字段，十秒�
   }
 
   //M 语音启用但缺席时，确认呈现照常成功并返回 unavailable。
-  const presented = { ...identity, clickId: 'click-1' };
-  const eventOptions = {
-    timeoutMs: 500,
-    onFallback: () => ({ requestId: '', ok: false }),
-  };
-  const speech = await requests.requestEvent(ctx, 'screen/presented', 'screen/presented-result', presented, eventOptions);
-  expect(speech).toMatchObject({ ok: true, speech: 'unavailable' });
+  const presented = { method: 'POST', url: PRESENTED, payload: { ...identity, clickId: 'click-1' } } as const;
+  const speech = await app.inject(presented);
+  expect(speech.json()).toMatchObject({ ok: true, speech: 'unavailable' });
 
   //M 心跳延长 lease，但不延长已经生成的讲解缓存。
   now.mockReturnValue(5100);
@@ -451,12 +448,11 @@ test('语音只在呈现确认后按组请求一次，隐私暂停取消旧组',
   expect(result.json()).toMatchObject({ ok: true, speakEligible: true });
   expect(voices).toHaveLength(0);
 
-  const request = { ...identity, clickId: 'click-1' };
-  const options = { timeoutMs: 500, onFallback: () => ({ requestId: '', ok: false }) };
-  const speech = await requests.requestEvent(ctx, 'screen/presented', 'screen/presented-result', request, options);
-  expect(speech).toMatchObject({ ok: true, speech: 'accepted' });
-  const same = await requests.requestEvent(ctx, 'screen/presented', 'screen/presented-result', request, options);
-  expect(same).toMatchObject({ ok: true, speech: 'already_requested' });
+  const request = { method: 'POST', url: PRESENTED, payload: { ...identity, clickId: 'click-1' } } as const;
+  const speech = await app.inject(request);
+  expect(speech.json()).toMatchObject({ ok: true, speech: 'accepted' });
+  const same = await app.inject(request);
+  expect(same.json()).toMatchObject({ ok: true, speech: 'already_requested' });
 
   const pause = { ...identity, epoch: 2, active: false, reasonCode: 'privacy_pause' };
   const inactive = await app.inject({ method: 'POST', url: STATE, payload: pause });
@@ -465,8 +461,9 @@ test('语音只在呈现确认后按组请求一次，隐私暂停取消旧组',
     { action: 'speak', group: 'screen-one_1', text: TEXT },
     { action: 'stop', group: 'screen-one_1', text: undefined },
   ]);
-  const stale = await requests.requestEvent(ctx, 'screen/presented', 'screen/presented-result', request, options);
-  expect(stale).toMatchObject({ ok: false, errorCode: 'stale_epoch' });
+  const stale = await app.inject(request);
+  expect(stale.statusCode).toBe(409);
+  expect(stale.json()).toMatchObject({ ok: false, errorCode: 'stale_epoch' });
 });
 
 test('首句在模型结束前可以显示和确认，尾句排在当前组后面', async () => {

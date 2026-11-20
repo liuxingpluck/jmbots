@@ -1,5 +1,5 @@
 /**
- * 提示词：每一步给请求加上系统提示词。顺序（旧版 prompts/README.md 的设计，用户 11-14 再次要求）：
+ * 提示词：每一步给请求加上系统提示词。顺序：
  *   1. 运行时目录 prompts/00_base_dsh.md：DSH 里 DeepSeek 的默认系统提示词原文，所有会话、所有语言共用，永远第一段、一个字不改
  *      （伪装成 DSH，也让前缀缓存命中）。没有就从仓库 prompts/ 复制一份出厂的（已有的不覆盖）。
  *   2. jmbots 的功能声明：prompts/10_jmbots.<语言>.md，没有用下面内置的。说明上一段只是底座说明，真正身份和能力以这里和工具列表为准。
@@ -21,7 +21,7 @@ import * as filesModule from '../../utils/Files.ts';
 import * as memoryKeyModule from '../memory/MemoryKey.ts';
 
 
-/** 第一段的文件名（旧版起就是这个名字）。 */
+/** 第一段底座提示词的文件名。 */
 const BASE_FILE = '00_base_dsh.md';
 
 /** 仓库里的出厂提示词目录（本文件在 src7/plugins/bots/ 下，往上三层是仓库根）。 */

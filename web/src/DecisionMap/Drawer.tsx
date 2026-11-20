@@ -1,6 +1,6 @@
 /** 查看节点结论、提交选项、写话给中控的侧栏，放射、思维导图、表格、清单共用这一个。 */
 import * as react from 'react';
-import type * as types from '../../../src7/plugins/decision-map/Types.ts';
+import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as longList from '../Shared/LongList.tsx';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as api from './DecisionMapApi.ts';

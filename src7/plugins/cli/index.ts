@@ -11,23 +11,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
 import type * as cordis from 'cordis';
-import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 
-
-/** 旧路 bots.channel 回调发送回执（结构对齐 bots 服务约定）。 */
-interface LegacySendReceipt {
-  status: 'accepted' | 'partial' | 'uncertain' | 'rejected';
-  reason: string;
-}
 
 /** 插件名。 */
 export const name = 'cli';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.3：改成 channel_tool：一轮里能连发多条、逐条打印；零次回复打最后的话；收尾没回成红字、退出码 1；role 写 owner。
 //M 1.1.4：registerTextReply 接入 getTargetAddress 自行识别命令行跨渠道发话目标（本机 / cli:本机 / 命令行）。
-export const version = '1.1.6';
+export const version = '1.1.7';
 
 /** 命令行跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const CLI_TARGET_CHATS = new Set(['', '本机', 'cli:本机', '命令行', 'local']);
@@ -85,22 +78,22 @@ export class Cli {
       console.log(line);
     });
 
-    //M 旧路回话（relay 这类认领了会话、一轮结束自动回的）：bots 按渠道名调这里登记的 send。
-    this.ctx.effect(() => this.ctx.bots.channel(this.name, (reply, session) => this.send(reply, session)));
+    //M 向 bots 登记渠道名（网页的渠道清单用），随本插件卸载自动撤销。
+    this.ctx.effect(() => this.ctx.bots.channel(this.name));
 
-    //M 模型一轮里每调一次 channel_reply、零次兜底、审批直回，都经 channel/reply 到这里，逐条打出来。
+    //M 发到命令行的话（模型的 channel_reply、零次兜底、审批直回、旧路自动回话）都经 channel/reply 到这里，逐条打出来。
     protocol.registerTextReply(this.ctx, {
       channel: this.name,
       getTargetAddress: (chat) => this.getReplyTargetAddress(chat),
       sendDirectText: (text, request) => {
-        this.writeFn(`[${request.bot}] ${text}`);
+        this.print(text, request);
       },
     });
 
     //M 挂上命令行历史监听，让其他渠道能按约定查本机记录。
 
     //M 一轮收尾没回成（模型出错、停下）：红字打出原因，退出码记 1。
-    this.ctx.on('channel/settled', (event) => {
+    this.ctx.on('bot/settled', (event) => {
       if (event.sourceSnapshot.channel !== this.name) return;
 
       if (event.stage === 'sent' || event.stage === 'sending') return;
@@ -238,23 +231,30 @@ export class Cli {
   }
 
   /**
-   * 把机器人的话打出来：[机器人名 会话号] 话。出错的用红色。
-   * @param reply 要说的话。
-   * @param session 是哪场会话的结果。
-   * @returns 渠道发送回执（accepted）。
+   * 把机器人的话打出来：模型的回复打 [机器人名] 话；旧路（带会话号）打 [机器人名 会话号] 话，那场会话出错了用红色、退出码记 1。
+   * @param text 要说的话。
+   * @param request 回复请求：机器人名、旧路的会话号。
    */
-  protected send(reply: string, session: Session): LegacySendReceipt {
-    const line = `[${session.row.bot} ${session.id}] ${reply}`;
-    //G 会话失败时仍交付回执，并用红字和退出码反映异常。
+  private print(text: string, request: protocol.ChannelReplyRequest): void {
+    //M 模型一轮里的回复：只带机器人名。
+    const sessionId = request.sessionId;
+    if (sessionId === undefined) {
+      this.writeFn(`[${request.bot}] ${text}`);
+      return;
+    }
+
+    //M 旧路自动回话：带会话号，照会话现在的状态看是不是出错的话。
+    const line = `[${request.bot} ${sessionId}] ${text}`;
+    const session = this.ctx.sessions.open(sessionId);
     if (session.row.state === 'failed') {
+      //G 会话失败时仍打出来，用红字和退出码反映异常。
       this.exitCode = 1;
       this.writeFn(`\x1b[31m${line}\x1b[0m`);
-      return { status: 'accepted', reason: '' };
+      return;
     }
 
     //M 把正常会话的回复交给终端显示。
     this.writeFn(line);
-    return { status: 'accepted', reason: '' };
   }
 
   /**

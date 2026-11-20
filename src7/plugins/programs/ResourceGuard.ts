@@ -79,19 +79,19 @@ declare module 'cordis' {
      * 谁发：src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.updatePressure
      * 谁接：src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.constructor
      */
-    'resource/pressure'(pressure: ResourcePressure): void;
+    'programs/pressure'(pressure: ResourcePressure): void;
     /**
      * 开重活/加载模型前询问，监听器同步标handled。
      * 谁发：src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.backfill；src7/plugins/voice/Routes.ts 的 allowLocal
      * 谁接：src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor
      */
-    'resource/request'(request: ResourceRequest): void | Promise<void>;
+    'programs/resource-request'(request: ResourceRequest): void | Promise<void>;
     /**
      * 使用同一requestId返回明确准入或拒绝。
      * 谁发：src7/plugins/programs/ResourceGuard.ts 的 ResourceGuard.constructor
      * 谁接：src7/plugins/memory/ChannelBackfill.ts 的 ChannelBackfill.backfill；src7/plugins/voice/Routes.ts 的 allowLocal
      */
-    'resource/result'(result: ResourceResult): void;
+    'programs/resource-result'(result: ResourceResult): void;
   }
 }
 
@@ -160,7 +160,7 @@ export class ResourceGuard {
     const onRequest = (request: ResourceRequest) => this.request(request);
     const options = { onError: () => ({ ok: false, reason: '资源守卫暂时无法核实，未放行' }) };
     //M 配对回执工具先同步标handled；异常也明确拒绝，避免调用方一直等待。
-    requestModule.onRequestEvent(ctx, 'resource/request', 'resource/result', onRequest, options);
+    requestModule.onRequestEvent(ctx, 'programs/resource-request', 'programs/resource-result', onRequest, options);
     ctx.on('ready', () => this.start());
     ctx.effect(() => () => this.dispose());
   }
@@ -405,7 +405,7 @@ export class ResourceGuard {
     this.signature = signature;
     const pressure = { level, reason, cpuBusy: this.cpuBusy, memoryHigh: this.memoryHigh, vramHigh, sample };
     //M 只在档位变化时广播；具体数值仍随最新快照更新，不每五秒刷事件。
-    this.ctx.emit('resource/pressure', structuredClone(pressure));
+    this.ctx.emit('programs/pressure', structuredClone(pressure));
   }
 
   /** 一轮动作只处理本插件宿主，并在每个await后核对卸载状态。 */

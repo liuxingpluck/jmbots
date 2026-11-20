@@ -17,7 +17,7 @@ export interface StepItem {
   seq: number;
   /** 行号：分派、E1…E12、恢复。 */
   row: string;
-  /** 事件名（原样，不翻译成 0.4 名——这是会话页，不是 trace）。 */
+  /** 会话步骤的事件名，按接口返回值显示。 */
   eventType: string;
   /** 时间，格式化后的 HH:MM:SS。 */
   time: string;
@@ -342,7 +342,7 @@ export class StepsPresenter {
 
   /**
    * 一份分派记录（DispatchRecord）投影成卡片：谁分的、什么情况、模型+思考档、为什么、谁定的、去向。
-   * 0.6.0 的旧记录形状不一样（workspaces 是字符串数组、有 lastSession），读不出就显示未记录，不崩。
+   * 记录若只有 workspaces 列表或 lastSession，缺失的字段显示为未记录。
    * @param stored 分派步的 stored（整份分派记录；键缺了显示“未记录”）。
    */
   private getDispatchCard(stored: Record<string, unknown>): DispatchCardView {

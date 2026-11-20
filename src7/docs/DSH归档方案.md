@@ -74,7 +74,7 @@ F:\aidata\AIJMBots\jmbotsData\dsh-archive  ⇒  F:\aidata\AIJMBots\DSH归档
 ```
 
 - **为什么用 junction、不用 symlink**：junction 不需要管理员或开发者模式，同盘就能用（都在 F 盘）。symlink（`mklink /D`）要提权，可能触发 UAC 或 360 提示。
-- **删运行目录时**：资源管理器、`rmdir /s`、Node 的 `fs.rm` 删到 junction 都只删链接本身，不会进去删目标。**有一个坑**：老版 Windows PowerShell 5.1 的 `Remove-Item -Recurse` 对 junction 有过会删到目标内容的问题。所以建议再加两道保险：
+- **删运行目录时**：资源管理器、`rmdir /s`、Node 的 `fs.rm` 删到 junction 都只删链接本身，不会进去删目标。**有一个坑**：Windows PowerShell 5.1 的 `Remove-Item -Recurse` 对 junction 有过会删到目标内容的问题。所以建议再加两道保险：
   1. 归档完成后给 `DSH归档` 设只读 ACL（只允许读，删除和写入要单独放开），或者干脆每次只读挂载；
   2. 另外再存一份冷备（另一块盘、NAS，或者打成 7z），见“待你决定”第 2 条。
 - **360**：mklink 是系统命令，一般不会拦，但可能会提示。按规定我们不改 360 信任区，提示了由你点。
@@ -188,7 +188,7 @@ F:\aidata\AIJMBots\DSH归档\
 - 归档里**原样保留**了对话里出现过的 token 和密钥。目录不要共享，也不要进 git；只有 kb 版是脱敏的。
 - 体积约 4–4.5 GB。vmhgfs 读写慢，全量导出估计 10–30 分钟（只读扫描一遍 27 秒，写入会慢很多）。
 - 知识库一次灌 2–3.5 万段：嵌入要跑几个小时 CPU；如果全开三元组，minimax 调用数会到几万次。所以分批，默认 `--no-graph`。
-- junction 碰上老版 PowerShell 的递归删除，有误删目标的历史问题，所以要加只读 ACL 和冷备。
+- junction 碰上Windows PowerShell 5.1 的递归删除，有误删目标的历史问题，所以要加只读 ACL 和冷备。
 
 ## 八、要做的事（审核通过后）
 

@@ -194,11 +194,11 @@ export class Host {
     this.lastState = signature;
     try {
       //M 其它插件订阅业务事件，不调用programs服务或依赖Host内部对象。
-      this.ctx.emit('program/state', event);
+      this.ctx.emit('programs/state', event);
     } catch (error) {
       //G 订阅方错误不能把本来健康的自有程序变成一次崩溃重启。
       const detail = textModule.getErrorMessage(error);
-      console.error(`program/state订阅方失败：${detail}`);
+      console.error(`programs/state订阅方失败：${detail}`);
     }
   }
 

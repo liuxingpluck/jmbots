@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type { ChannelMessage } from '../../Channels.ts';
+import type { ChannelMessage } from '../channels/index.ts';
 import type { Session, SessionRow } from '../../Sessions.ts';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as journalModule from './index.ts';
@@ -100,7 +100,7 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认同时提供 ctx.journal 和 ctx.filesMirror，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.3.0');
+    expect(journalModule.version).toBe('1.3.1');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeDefined();
@@ -179,9 +179,9 @@ describe('journal（含 FilesMirror 并入）', () => {
     expect(short.cut).toBe(true);
 
     const usageQuery = { sessions: ['s_req_1'], from: 0, to, limit: 10 };
-    await ctx.serial('usage/list', usageQuery);
+    await ctx.serial('model-catalog/usage', usageQuery);
     const usageResult = { requestId: 'usage-test', rows: [], truncated: false };
-    ctx.emit('usage/list-result', usageResult);
+    ctx.emit('model-catalog/usage-result', usageResult);
     expect(ctx.journal.query({})).toHaveLength(before);
 
     const missing = { action: 'trail', message: 9999, maxLines: 10 } as const;

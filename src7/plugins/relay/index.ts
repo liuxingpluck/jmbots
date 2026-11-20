@@ -17,6 +17,7 @@
  * 转话这一块要配置 helpers 才挂；只用任务通道的可以不写 helpers。
  */
 import * as botUtils from '../../utils/Bots.ts';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
@@ -29,6 +30,7 @@ import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
 import type { Origin, ReceiveEvent } from '../bots/index.ts';
+import * as channels from '../channels/index.ts';
 import * as agentTasksModule from './AgentTasks.ts';
 import * as routesModule from './Routes.ts';
 import * as failureModule from '../../utils/Failure.ts';
@@ -44,10 +46,12 @@ export const name = 'relay';
 //  1.3.3：外部 AI 打招呼、交回结果的校验（checkAgentHello、checkTaskResult）从骨架 utils/Checks.ts 挪进 relay/Checks.ts，只有 relay 用。
 //  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
-export const version = '1.4.6';
+//  1.4.7：不再改会话的回话地址（删三处 bots.route）：direct 会话标 quiet，回答、超时提醒都由 relay 照收件地址发 channel/reply。
+export const version = '1.4.8';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
-const DECISION_CHANNEL = 'decision-map';
+const DECISION_CHANNEL = 'work-decision';
+const LEGACY_DECISION_CHANNEL = 'decision-map';
 
 /**
  * 用到的服务。http 是可选的：用到时 ctx.get 现取。发飞书文件走 feishu/send-file 事件，没人答就记“没发出去”。
@@ -249,6 +253,11 @@ export class Relay {
    * 只在内存里，断电就没了，那时靠 markWritten 按 relayReplyId 对账。
    */
   private readonly answering = new Map<string, number>();
+  /**
+   * direct 会话这一轮的回答发到哪：会话号 → 渠道和地址（onRequest 送回信时记收件当时的；没记的发到会话现在记的）。
+   * 这一轮结束（session/change）时 sendAnswer 照它发 channel/reply；只在内存里，断电那一轮照会话记的地址发。
+   */
+  private readonly answerTo = new Map<string, Origin>();
   /** 正在向结果队列投递的会话，按每场会话的回信顺序排队。 */
   private readonly delivering = new Set<string>();
 
@@ -323,43 +332,26 @@ export class Relay {
     //M   不能用的由 offerTool 每一步从工具里拿掉，run 里再查一次。
     this.registerTool();
 
-    //M 决策图也用中控已有的收件轮询。此入口只记通知，不创建或推进机器人会话。
-    requestEventModule.onRequestEvent(this.ctx, 'decision-map/relay', 'decision-map/relay-result', (request) => {
-      const helper = this.config.helpers.find((item) => item.name === request.helper);
-      if (helper === undefined) return { ok: false, error: 'relay 没有该中控助手' };
+    //M 工作决策的选择交回提问方，只有外部助手的选择进入 relay 收件。
+    this.ctx.on('work-decision/decided', (decision) => {
+      if (decision.asker.kind !== 'helper') return;
 
-      const channel = DECISION_CHANNEL;
-      const key = `${channel}:${request.node}`;
-      const params = [helper.name, channel, key];
-      const condition = 'helper = ? AND channel = ? AND session_id = ?';
-      if (request.action === 'ack') {
-        const sql = `UPDATE relay_items SET state = 'replied', replied_at = ? WHERE ${condition} AND state = 'pending'`;
-        const values = [Date.now(), ...params];
-
-        //M 确认图上决定后清除待收状态，中控的下次轮询能等到新决定。
-        this.run(sql, values);
-        return { ok: true };
-      }
-
-      //G 以节点号识别补投，同一决定只进收件箱一次。
-      const sql = `SELECT id FROM relay_items WHERE ${condition} LIMIT 1`;
-      const [previous] = this.query<{ id: number }>(sql, params);
-      if (previous !== undefined) return { ok: true, id: previous.id };
-
-      //M 收件列表需要机器人标识，取运行时名单中第一个。
-      const bot = botUtils.getDefaultBot(this.ctx.resources.raw);
-      if (bot === undefined || request.text === undefined) return { ok: false, error: '缺少收件内容或机器人' };
-
-      const sender = '决策图';
-      const address = { owner: true, role: 'owner', senderName: sender, decisionTarget: request.target };
-      const insert = 'INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat,'
-        + ' chat_name, text, at, reminded) VALUES (?, ?, ?, ?, ?, 1, ?, \'p2p\', \'\', ?, ?, 1)';
-      const values = [bot, helper.name, key, channel, JSON.stringify(address), sender, request.text, Date.now()];
-
-      //M 仅写供 Wait_Relay 读取的中控收件，回执给决定页用于反馈投递结果。
-      const created = this.run(insert, values);
-      return { ok: true, id: Number(created.lastInsertRowid) };
+      const target = { node: decision.node, note: decision.note };
+      const request = {
+        action: 'deliver' as const, node: decision.key, helper: decision.asker.name, text: decision.text, target,
+      };
+      return this.receiveDecision(request);
     });
+
+    //M 收取工作决策的留言、任务变化与归档，relay 回写留言由工作决策插件接收。
+    const noteOptions = {
+      filter: (request: Parameters<cordis.Events['work-decision/note']>[0]) => request.action !== 'reply',
+    };
+    requestEventModule.onRequestEvent(this.ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
+      if (request.action === 'reply') return { ok: false };
+
+      return this.receiveDecision(request);
+    }, noteOptions);
 
     //M 两个定时器。ctx.effect 登记“开了什么、拔掉时怎么关”：Cordis 拔这个插件时调返回的函数。
     this.ctx.effect(() => {
@@ -747,6 +739,10 @@ export class Relay {
 
     //M 这一轮还没送回信：清掉上一轮留下的（上一轮失败了没走到 onChange），免得这一轮结束时把没送的标成已送。
     this.answering.delete(session.id);
+    this.answerTo.delete(session.id);
+
+    //M 这一轮的回答由 relay 自己发（sendAnswer）：标 quiet，bots 不再替它照会话记的地址自动发一遍。
+    row.quiet = true;
 
     //M 新话：最后一条 assistant 之后的用户话。这一轮新来的几句合成一条收件（同一步排着的几句才会合，平时一句一条）。
     const lastAnswer = row.messages.findLastIndex((message) => message.role === 'assistant');
@@ -770,9 +766,11 @@ export class Relay {
     const reply = this.query<ReplyRow>(
       'SELECT * FROM relay_replies WHERE session_id = ? AND delivered = 0 ORDER BY id LIMIT 1', [session.id])[0];
     if (reply !== undefined) {
-      //M 回话先换成那条收件当时的渠道和地址，再把回信当回答。
+      //M 这一轮的回答发到那条收件当时的渠道和地址（sendAnswer 照它发，不改会话记的地址），再把回信当回答。
       const item = this.getItem(reply.item_id);
-      if (item !== undefined) this.ctx.bots.route(session, this.getOrigin(item));
+      if (item !== undefined) {
+        this.answerTo.set(session.id, this.getOrigin(item));
+      }
 
       //M 这里不标已送：回答带着回信号，骨架写进对话、存盘以后，session/change 时才标（onChange、markWritten）。
       const helper = item?.helper ?? this.config.helpers[0].name;
@@ -831,14 +829,20 @@ export class Relay {
   }
 
   /**
-   * 响应 session/change：direct 会话一轮正常结束 → 这一轮送的那条回信标已送（回答已经接进对话、存了盘），
-   * 再交给 deliverSoon（它先对账，还有没送的再推一次）。
+   * 响应 session/change：direct 会话一轮结束 → 先把这一轮的回答发出去（sendAnswer）；
+   * 正常结束的，这一轮送的那条回信标已送（回答已经接进对话、存了盘），再交给 deliverSoon（它先对账，还有没送的再推一次）。
    * @param session 状态刚变的会话。
-   * 副作用：改 relay_replies.delivered；可能再推会话。
+   * 副作用：发 channel/reply；改 relay_replies.delivered；可能再推会话。
    */
   private onChange(session: Session): void {
-    //G 失败了不再推，免得一直重跑；不是 direct 的不归这里推。
-    if (session.row.state !== 'done' || !this.direct(session)) return;
+    //G 还在转、不是 direct 的不归这里。
+    if (session.row.state === 'running' || !this.direct(session)) return;
+
+    //M 这一轮的回答 relay 自己发（出错、停下的原因也照原来发给用户）。
+    this.sendAnswer(session);
+
+    //G 失败了、停下了不再推，免得一直重跑。
+    if (session.row.state !== 'done') return;
 
     //M 这一轮送的那条：标已送。
     const replyId = this.answering.get(session.id);
@@ -852,6 +856,70 @@ export class Relay {
   }
 
   /**
+   * 把 direct 会话这一轮的回答（row.reply）发出去：回信发到收件当时的地址（answerTo），别的（“已转给”“没有新消息”、
+   * 出错停下的原因）发到会话现在记的地址。发了不等回执。
+   * @param session 刚结束一轮的 direct 会话。
+   * 副作用：发 channel/reply。
+   */
+  private sendAnswer(session: Session): void {
+    const row = session.row;
+    //G 没标 quiet 的（升级前的旧会话这一轮没经过 onRequest）还由 bots 照会话记的地址发，这里不发第二遍。
+    if (row.quiet !== true) return;
+
+    //M 发到哪：这一轮记了收件地址的用它，没记的用会话现在记的。
+    let origin: Origin = { channel: row.channel, address: row.address };
+    const recorded = this.answerTo.get(session.id);
+    this.answerTo.delete(session.id);
+    if (recorded?.channel !== undefined) {
+      origin = recorded;
+    }
+
+    //G 没有正文就不发。
+    if (row.reply === '') return;
+
+    void this.sendTo(row.bot, origin, row.reply, 'final', session.id);
+  }
+
+  /**
+   * 照确切地址发一句话：发 channel/reply（target.address），正文里的 @路径 照原来当文件发；没发成只打日志。
+   * @param bot 机器人名。
+   * @param origin 发到哪：收件或会话记的渠道和地址；没有渠道就不发。
+   * @param text 要说的话。
+   * @param kind 一轮的回答是 final，超时提醒是 progress。
+   * @param sessionId 哪场会话说的：渠道照它定细节，网页照它挂回。
+   * 副作用：发 channel/reply。
+   */
+  private async sendTo(
+    bot: string,
+    origin: Origin,
+    text: string,
+    kind: channels.ReplyKind,
+    sessionId: string,
+  ): Promise<void> {
+    const channel = origin.channel;
+    if (channel === undefined) return;
+
+    //M 聊天号只作展示：飞书写 chatId，微信写 chat（同 push）。
+    const address = utils.getRecord(origin.address);
+    const chat = utils.getStringField(address, 'chatId') || utils.getStringField(address, 'chat');
+    const target = { channel, chat, address };
+
+    //M 轮键用会话号，每次一个新请求键。
+    const replyRoundKey = channels.getReplyRoundKey(sessionId, bot, 'relay');
+    const replyRequestKey = channels.getReplyRequestKey(replyRoundKey, crypto.randomUUID());
+    const from = { bot, replyRoundKey, target, sessionId };
+    const options = { replyRequestKey, replyIndex: 0, kind, atFiles: true };
+
+    //M 交渠道协议发出，等渠道回执。
+    const receipt = await channels.requestTextReply(this.ctx, from, text, options);
+
+    //G 没发成只打日志：回信已写进对话，收件状态不跟着改（和原来一样）。
+    if (!receipt.ok) {
+      console.error(`relay：会话 ${sessionId} 的话没发出去：${receipt.reason ?? receipt.status}`);
+    }
+  }
+
+  /**
    * 把一场会话没送的回信送出去。
    * direct（relay 会话、direct 机器人的前台）：先对账（markWritten），还有没送的就推那场会话，由 onRequest 程序回答
    *   （setTimeout 隔开：这时候会话可能正在收尾，马上调 run 会直接返回；在转的，转完 session/change 会再来）。
@@ -862,7 +930,7 @@ export class Relay {
    * 副作用：改 relay_replies.delivered；写节点、推会话或排进结果队列。
    */
   private async deliverSoon(sessionId: string, channel?: string): Promise<void> {
-    if (channel === DECISION_CHANNEL) {
+    if (channel === DECISION_CHANNEL || channel === LEGACY_DECISION_CHANNEL) {
       //M 决策图由它自己的插件接收回复，不经过会话层。
       const deliver = (reply: ReplyRow) => this.queueDecisionReply(reply);
       await this.deliverPending(sessionId, deliver);
@@ -931,6 +999,43 @@ export class Relay {
     }
   }
 
+  /** 把一条工作决策或留言写给外部助手，旧收件也用同一节点键去重和归档。 */
+  private receiveDecision(request: import('../work-decision/Routes.ts').DecisionRelayRequest) {
+    const helper = this.config.helpers.find((item) => item.name === request.helper);
+    if (helper === undefined) return { ok: false, error: 'relay 没有该外部助手' };
+
+    const key = `${DECISION_CHANNEL}:${request.node}`;
+    const oldKey = `${LEGACY_DECISION_CHANNEL}:${request.node}`;
+    const params = [helper.name, DECISION_CHANNEL, LEGACY_DECISION_CHANNEL, key, oldKey];
+    const condition = 'helper = ? AND channel IN (?, ?) AND session_id IN (?, ?)';
+    if (request.action === 'ack') {
+      const sql = `UPDATE relay_items SET state = 'replied', replied_at = ? WHERE ${condition} AND state = 'pending'`;
+      const values = [Date.now(), ...params];
+
+      //M 确认后归档收件，下次只等新的决定或留言。
+      this.run(sql, values);
+      return { ok: true };
+    }
+
+    //G 同一件决定的补投仍指向原收件号。
+    const sql = `SELECT id FROM relay_items WHERE ${condition} ORDER BY id LIMIT 1`;
+    const [previous] = this.query<{ id: number }>(sql, params);
+    if (previous !== undefined) return { ok: true, id: previous.id };
+
+    const bot = botUtils.getDefaultBot(this.ctx.resources.raw);
+    if (bot === undefined || request.text === undefined) return { ok: false, error: '缺少收件内容或机器人' };
+
+    const sender = '工作决策';
+    const address = { owner: true, role: 'owner', senderName: sender, decisionTarget: request.target };
+    const insert = 'INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat,'
+      + ' chat_name, text, at, reminded) VALUES (?, ?, ?, ?, ?, 1, ?, \'p2p\', \'\', ?, ?, 1)';
+    const values = [bot, helper.name, key, DECISION_CHANNEL, JSON.stringify(address), sender, request.text, Date.now()];
+
+    //M Wait_Relay 轮询现有收件表，决定页用编号显示已投递。
+    const created = this.run(insert, values);
+    return { ok: true, id: Number(created.lastInsertRowid) };
+  }
+
   /** 决策图确认回信已写入节点后，才把待送记录标成已送。 */
   private async queueDecisionReply(reply: ReplyRow): Promise<void> {
     //G 找不到原收件就保留待送记录，避免错投到同名节点。
@@ -938,7 +1043,7 @@ export class Relay {
     if (item === undefined) return;
 
     //M 新收件带精确地址；旧收件把原收件键交给决策图解释。
-    const prefixLength = DECISION_CHANNEL.length + 1;
+    const prefixLength = item.channel.length + 1;
     const key = reply.session_id.slice(prefixLength);
     const origin = this.getOrigin(item);
     const stored = utils.getField(origin.address, 'decisionTarget');
@@ -947,9 +1052,9 @@ export class Relay {
     let target: { node: string; note?: string } | undefined;
     if (node !== '') target = { node, note };
 
-    const requestName = 'decision-map/relay-reply';
-    const resultName = 'decision-map/relay-replied';
-    const payload = { id: reply.id, key, target, text: reply.text };
+    const requestName = 'work-decision/note';
+    const resultName = 'work-decision/note-result';
+    const payload = { action: 'reply' as const, id: reply.id, key, target, text: reply.text };
     const uncertain = '决策图回信写入结果不确定';
     const onFallback = () => ({ requestId: '', ok: false });
     const options = { timeoutMs: 3000, onFallback };
@@ -1070,26 +1175,41 @@ export class Relay {
   }
 
   /**
-   * 插一条收件进表：渠道、地址、谁在哪说的都取会话现在记的。register 和主动发（startProactive）共用。
+   * 插一条收件进表：渠道、地址、谁在哪说的默认取会话现在记的。register 和主动发（startProactive）共用。
    * @param session 哪场会话。
    * @param helper 转给哪个外部助手（名字）。
    * @param text 要转的话。
    * @param lastMsgAt 这一轮最后一句用户话的时间；relay_send 转的、主动发的给 null。
+   * @param origin 渠道和地址：主动发借别的收件的；不给用会话现在记的。
    * @returns 插进去的那条（对外的样子）。
    * 副作用：写库。
    */
-  private insert(session: Session, helper: string, text: string, lastMsgAt: number | null): InboxItem {
+  private insert(
+    session: Session,
+    helper: string,
+    text: string,
+    lastMsgAt: number | null,
+    origin?: Origin,
+  ): InboxItem {
     const row = session.row;
     const now = Date.now();
-    const channel = row.channel ?? '';
+
+    //M 渠道和地址：给了 origin 用它（回信照它发），没给用会话现在记的。
+    let channel = row.channel ?? '';
+    let address = row.address;
+    if (origin !== undefined) {
+      channel = origin.channel ?? '';
+      address = origin.address;
+    }
+
     //M 用原渠道地址补齐发言者和会话类型，随转发条目保存。
-    const speaker = this.getSpeaker(row.address);
+    const speaker = this.getSpeaker(address);
     let ownerFlag = 0;
     if (speaker.owner) {
       ownerFlag = 1;
     }
     const values = [
-      row.bot, helper, session.id, channel, JSON.stringify(row.address ?? null),
+      row.bot, helper, session.id, channel, JSON.stringify(address ?? null),
       ownerFlag, speaker.sender, speaker.chat, speaker.chatName, text, now, lastMsgAt,
     ];
     //M 把转发与原会话绑定存库，并取得后续对账使用的编号。
@@ -1169,7 +1289,7 @@ export class Relay {
 
   /**
    * 查超时：pending 的收件，过 remind_minutes 没提醒过就提醒一次；过 expire_minutes 改成 expired，说“先放下”。
-   * 话照那条收件当时的渠道地址发（bots.say）。会话正在转就下一次再说。
+   * 话照那条收件当时的渠道地址发（channel/reply 带确切地址）。会话正在转就下一次再说。
    * 副作用：写库、发话。
    */
   private checkLate(): void {
@@ -1204,13 +1324,13 @@ export class Relay {
         this.run('UPDATE relay_items SET reminded = 1 WHERE id = ?', [item.id]);
       }
 
-      //M 按转发时保存的地址把提醒发回给用户；说话是通知，发出即走（bot/say）。
-      this.ctx.bots.route(session, this.getOrigin(item));
-      this.ctx.emit('bot/say', session, text);
+      //M 按转发时保存的地址把提醒发回给用户（channel/reply 带确切地址，不改会话记的地址），发了不等。
+      const origin = this.getOrigin(item);
+      void this.sendTo(item.bot, origin, text, 'progress', session.id);
 
       //T 跟踪：提醒或放下。
       const vars = { inboxId: item.id, session: item.session_id, minutes: shown };
-      this.ctx.emit('trace', 'Relay.checkLate', traceSummary, "ctx.emit('bot/say', session, text)", vars);
+      this.ctx.emit('trace', 'Relay.checkLate', traceSummary, "ctx.serial('channel/reply')", vars);
     }
   }
 
@@ -1288,25 +1408,24 @@ export class Relay {
   }
 
   /**
-   * 主动发：开（或找回）这个机器人的 relay 会话，照那条收件记的渠道和地址 route，再登记一条“主动发”的收件。
+   * 主动发：开（或找回）这个机器人的 relay 会话，登记一条“主动发”的收件，渠道和地址照那条收件记的（回信照它发，不改会话记的地址）。
    * @param from findForChat 找到的、同一个聊天里别的助手的收件。
    * @param helper 主动发的助手。
    * @returns 新登记的收件。
-   * 副作用：可能新开会话；改会话的回话地址；写一条收件。
+   * 副作用：可能新开会话；写一条收件。
    */
   private startProactive(from: ItemRow, helper: string): ItemRow {
-    //G 那条收件没记渠道：route 改不了地址，会话还停在别的聊天上，登记下去会发错人。
+    //G 那条收件没记渠道：借不到地址，登记下去回信不知道发到哪。
     if (from.channel === '') {
       throw new failureModule.Failure(404, `收件 #${String(from.id)} 没记渠道，借不了它的地址主动发；用收件号 id 回`);
     }
 
-    //M 复用或创建转发会话，并接回原条目的渠道地址。
+    //M 复用或创建转发会话；收件的渠道和地址借原条目的。
     const session = this.openOrCreateSession(from.bot, 'relay');
     const origin = this.getOrigin(from);
-    this.ctx.bots.route(session, origin);
 
     //M 生成主动回信对应的转发记录，返回后续投递所需的数据库行。
-    const inserted = this.insert(session, helper, `（${helper} 主动发）`, null);
+    const inserted = this.insert(session, helper, `（${helper} 主动发）`, null, origin);
     return this.getItem(inserted.id)!;
   }
 
@@ -1495,7 +1614,7 @@ export class Relay {
   /**
    * 收件当时记的渠道和地址。
    * @param item 收件。
-   * @returns 给 bots.route、bot.hand 的 origin；当时没有渠道就是空的（不改会话原来记的）。
+   * @returns 回信、提醒发到哪（sendTo）和结果队列回到哪的 origin；当时没有渠道就是空的。
    */
   private getOrigin(item: ItemRow): Origin {
     if (item.channel === '') return {};

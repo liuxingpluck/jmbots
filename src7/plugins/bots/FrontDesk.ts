@@ -25,7 +25,7 @@ import * as frontArchive from '../memory/FrontArchive.ts';
 import type { FrontEntry as BotLogEntry, FrontMessage, FrontQuery } from '../memory/FrontArchive.ts';
 import * as memoryKeyModule from '../memory/MemoryKey.ts';
 import type { ReceiveEvent } from './index.ts';
-import * as protocol from '../../Channels.ts';
+import * as protocol from '../channels/index.ts';
 
 
 /** 归档读取失败时给模型的提示，和查询成功但没有匹配项区分。 */
@@ -74,7 +74,7 @@ export class FrontDesk {
   /** 会话正在转时来的、要判断的话：前台会话号 → 最后一句；这一轮结束记完排着的话，再对它问一次决策模型（session/change）。 */
   private readonly judgeLater = new Map<string, JudgeLater>();
   /**
-   * 监听 session/before-model、session/new-message、session/change、bot/say、channel/replied、channel/reply。
+   * 监听 session/before-model、session/new-message、session/change、bot/say、channel/replied。
    * @param ctx Cordis 给的 ctx。
    * @param config 带多少条往来。
    */
@@ -104,19 +104,11 @@ export class FrontDesk {
       this.logBot(session, text);
     });
 
-    //M 渠道回报发出去了（channel/replied）：onReplied 把发成功的那句话记成机器人往来，发失败的不记。
+    //M 渠道回报发出去了（channel/replied，带着请求正文）：onReplied 把发成功的那句话记成机器人往来，发失败的不记。
     this.ctx.on('channel/replied', (event) => {
       this.onReplied(event);
     });
-
-    //M 渠道要发一条文字回复（channel/reply）：onReply 先把正文暂存，等 channel/replied 确认发出去了再记往来。
-    this.ctx.on('channel/reply', (request) => {
-      this.onReply(request);
-    });
   }
-
-  /** 暂存发送请求正文，等 channel/replied 确认后才归档实际回复。 */
-  private readonly sentReplyTexts = new Map<string, { text: string }>();
 
   /**
    * 收 session/change：一轮结束时记机器人这一句、清查历史次数、存转的时候排着的话，再对排着要判断的那句问一次决策模型。
@@ -153,17 +145,19 @@ export class FrontDesk {
   }
 
   /**
-   * 收 channel/replied：发成功（sent、partial）的才把 onReply 暂存的那句话记成这个客户的机器人往来。
-   * @param event 渠道回执。
+   * 收 channel/replied：发成功（sent、partial）的文字回复，才把回执带的请求正文记成这个客户的机器人往来。
+   * @param event 渠道回执（带请求本身）。
    */
   private onReplied(event: protocol.ChannelRepliedEvent): void {
     const receipt = event.receipt;
     if (receipt.status !== 'sent' && receipt.status !== 'partial') return;
 
-    //M 用回执的请求号对上此前暂存的正文，实发后才记进往来。
-    const sentTexts = this.sentReplyTexts.get(receipt.replyRequestKey);
-    this.sentReplyTexts.delete(receipt.replyRequestKey);
-    if (sentTexts === undefined) return;
+    //M 正文从回执带的请求里取：只记文字回复，没有文字的不记。
+    const request = event.request;
+    if (request.mode !== 'text') return;
+
+    const text = request.parts.map((part) => part.text ?? '').filter((one) => one !== '').join('\n');
+    if (text === '') return;
 
     //M 通过不可变回复轮键查到这条回复所属的前台。
     const front = this.findSessionByRoundKey(event.replyRoundKey);
@@ -176,23 +170,10 @@ export class FrontDesk {
       channel: row.channel ?? '',
       who: 'bot',
       sessionId: row.id,
-      text: sentTexts.text,
+      text,
       time: Date.now(),
       sourceKey: receipt.replyRequestKey,
     });
-  }
-
-  /**
-   * 收 channel/reply：文字回复先把正文暂存进 sentReplyTexts，等 onReplied 确认发出去了再记往来。
-   * @param request 渠道回复请求。
-   */
-  private onReply(request: protocol.ChannelReplyRequest): void {
-    if (request.mode !== 'text') return;
-
-    const text = request.parts.map((part) => part.text ?? '').filter((one) => one !== '').join('\n');
-    if (text === '') return;
-
-    this.sentReplyTexts.set(request.replyRequestKey, { text });
   }
 
   /** 延迟判断结果确认需要补入 channel_tool 队列时的回调（由 Dispatch 注入，避免循环引用）。 */

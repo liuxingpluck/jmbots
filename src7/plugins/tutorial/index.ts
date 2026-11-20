@@ -36,6 +36,7 @@ import type * as fastify from 'fastify';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
+import * as channelsModule from '../channels/index.ts';
 import * as embedded from '../../utils/Embedded.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as sourceDirModule from '../../utils/SourceDir.ts';
@@ -66,12 +67,12 @@ declare module 'cordis' {
      * 谁发：暂无
      * 谁接：src7/plugins/tutorial/index.ts 的 Tutorial.constructor
      */
-    'flow/state'(notice: FlowStateNotice): void;
+    'tutorial/state'(notice: FlowStateNotice): void;
   }
 }
 
 
-/** 事件 flow/state 的数据。 */
+/** 事件 tutorial/state 的数据。 */
 export interface FlowStateNotice {
   /** 组名，写插件名：「状态」标签按它归到那个插件下面。 */
   name: string;
@@ -117,7 +118,16 @@ export const name = 'tutorial';
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
 //M 1.1.14：加 GET /api/tutorial/events 读事件目录 src7/docs/事件目录.json；消息轨迹按标准消息号串，第一格是飞书收到（journal 做）。1.1.15：教程页画布加顺序图、点箭头看事件详情、左栏加静态路线，只改网页。
 //M 1.1.16：不再 import journal：轨迹形状和 NOISE、FOLDERS 改读 utils/Trail.ts，启动轨迹发 journal/request 的 boot-trail 要；TRAIL_MAX_LINES 归 Files.ts。
-export const version = '1.1.16';
+//M 1.1.18：channels 搬出骨架成了依赖型协议插件（不在自带名单里），左栏插件列表单独列它，/api/tutorial/readme?name=channels 读它的 说明.md。
+export const version = '1.1.18';
+
+/**
+ * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
+ * 版本号取插件 index.ts 导出的 version。
+ */
+const DEPENDENCY_PLUGINS = [
+  { name: 'channels', version: channelsModule.version },
+];
 
 /** 用到的服务：都是骨架的，tutorial 排第一个挂时已经有了。http、journal 是可选的，用到时现取。 */
 export const inject = ['resources', 'sessions'];
@@ -433,8 +443,8 @@ class Tutorial {
     };
     ctx.provide('flow', flow);
 
-    //M 通知 flow/state（契约 3.2 第 12 条）：和 ctx.flow.state 并存，插件不用 inject flow 也能露变量；不带 read 是注销那一组。
-    ctx.on('flow/state', (notice) => this.onFlowState(notice));
+    //M 通知 tutorial/state（契约 3.2 第 12 条）：和 ctx.flow.state 并存，插件不用 inject flow 也能露变量；不带 read 是注销那一组。
+    ctx.on('tutorial/state', (notice) => this.onFlowState(notice));
 
     //M 接口：http 插件挂上（排在 tutorial 后面）以后再登记。
     void ctx.inject(['http'], (sub) => {
@@ -462,7 +472,7 @@ class Tutorial {
   }
 
   /**
-   * 响应通知 flow/state：带 read 登记一组（同 addState，同名换掉旧的），不带 read 注销那一组。
+   * 响应通知 tutorial/state：带 read 登记一组（同 addState，同名换掉旧的），不带 read 注销那一组。
    * @param notice 组名、取值函数、键的解释。
    */
   private onFlowState(notice: FlowStateNotice): void {
@@ -739,6 +749,12 @@ class Tutorial {
       const hasReadme = await this.hasReadme(pluginName);
       const inject = plugin.inject ?? [];
       items.push({ name: pluginName, version: getVersion(plugin), state: 'idle', error: '', inject, hasReadme, kind: 'plugin' });
+    }
+
+    //M 依赖型协议插件：谁 import 它谁就在用，没有挂载状态，固定 ok；不依赖服务。
+    for (const dependency of DEPENDENCY_PLUGINS) {
+      const hasReadme = await this.hasReadme(dependency.name);
+      items.push({ name: dependency.name, version: dependency.version, state: 'ok', error: '', inject: [], hasReadme, kind: 'plugin' });
     }
     return items;
   }

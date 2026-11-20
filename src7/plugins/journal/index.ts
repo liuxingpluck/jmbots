@@ -3,7 +3,7 @@
  * 两种行（和控制台上 trace 打的一样，拼法在 utils/Trace.ts，两边共用）：
  *   函数行：骨架和插件发的跟踪点 trace（模块.函数、人话、代码、变量），带“文件:行号”；
  *   事件行：Cordis 每发一个事件先发 internal/dispatch，这里听它：事件名、挨个问还是通知、听的人、会话、文件:行号。
- * 0.4 的“run.started / step.after / tool.after……”那套事件名不再用：插件模式下事件就是 Cordis 的事件本身，谁发、谁听一目了然。
+ * 事件行记录 Cordis 的事件名、发送处和监听插件。
  * 另外会同步挂上完整会话文件镜像 FilesMirror（原 files-mirror 已并入 ./FilesMirror.ts，保留 ctx.filesMirror）；
  * 若关闭 mirror: false，才回退由 Markdown.ts 写简版 对话.md。另提供流水与镜像路径的查询事件。
  * 按消息或关联会话查询流水。教程轨迹由 Trail.ts 收成步骤，回话追溯直接返回截止到该句的行。
@@ -36,7 +36,7 @@ export const name = 'journal';
 //M 1.2.2：journal_lines 加 source_id 列（标准消息号，渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])）；
 //M   trail、reply-lines 按它把渠道那几行（飞书 WebSocket 收到、去重、认 @、channel/message）串在收件行前面，
 //M   轨迹第一格不再是“收件表记下”；/api/events 加 source 参数。
-export const version = '1.3.0';
+export const version = '1.3.1';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
@@ -70,7 +70,7 @@ declare module 'cordis' {
     'journal/result'(result: JournalResult): void;
   }
 }
-//M model/fallback（换了备选模型）声明在 src7/plugins/model-catalog/Fallback.ts。
+//M model-catalog/fallback（换了备选模型）声明在 src7/plugins/model-catalog/Fallback.ts。
 
 /** 流水服务支持的查询。 */
 type JournalRequest = requestEventModule.RequestEnvelope & ({
@@ -182,7 +182,7 @@ const LIST_DEFAULT = 200;
 const LIST_MAX = 1000;
 
 /** 只取数的事件。混合读写的请求和回执继续记入流水。 */
-const READ_EVENTS = ['journal/request', 'journal/result', 'usage/list', 'usage/list-result'] as const;
+const READ_EVENTS = ['journal/request', 'journal/result', 'model-catalog/usage', 'model-catalog/usage-result'] as const;
 const READ_EVENT_NAMES: ReadonlySet<string> = new Set(READ_EVENTS);
 
 
@@ -214,7 +214,7 @@ export class Journal extends cordis.Service {
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_session ON journal_lines (session_id, at)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_message ON journal_lines (message_id)');
     db.exec('CREATE INDEX IF NOT EXISTS journal_lines_source ON journal_lines (source_id)');
-    //M 0.4 格式的旧表（第一批时建的）不再写，也不再读，留着不删。
+    //M 只读写当前的 journal_lines，保留数据库中其他流水表。
     this.listen();
   }
 
@@ -454,7 +454,7 @@ function getEvent(row: Row): JournalEvent {
 
 
 /**
- * 截短再转成 JSON（照 0.4 的 src/capabilities/Events.ts:293-329）：每个字符串最多 TEXT_MAX_CHARS 字，整条最多 DATA_MAX_CHARS 字。
+ * 截短再转成 JSON：每个字符串最多 TEXT_MAX_CHARS 字，整条最多 DATA_MAX_CHARS 字。
  * @param data 数据。
  * @returns 进库的 JSON。
  */

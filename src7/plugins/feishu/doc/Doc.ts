@@ -1,6 +1,6 @@
 /**
  * 飞书云文档工具：feishu_doc 把工作区里的 Markdown 连同几张图发成飞书 docx，编辑权限给聊天里的用户，交回链接；
- * feishu_doc_delete 把文档放进回收站。照 0.4 的 src/channels/FeishuDoc.ts 和 src/capabilities/tools/Tools.ts。
+ * feishu_doc_delete 把文档放进回收站。
  * 每个开放接口调用都过 Api.call（429 退让重试、错误码换中文）。这两个工具都很快结束，不用骨架的停止信号。
  */
 import * as botUtils from '../../../utils/Bots.ts';
@@ -16,7 +16,7 @@ import type { Feishu, FeishuAddress } from '../index.ts';
 import * as blocks from './Blocks.ts';
 
 
-/** 一批最多插多少块（0.4 FeishuDoc.ts:262-268）。 */
+/** 一批最多插多少块。 */
 const BATCH = 40;
 
 /** 两批之间等多久，毫秒：飞书写接口有频率限制。 */

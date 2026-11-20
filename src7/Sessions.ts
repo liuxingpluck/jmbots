@@ -15,7 +15,7 @@
  * 另外三个只是通知，也声明在本文件：
  *   session/new-message  对话里新接了一条；
  *   session/change   状态变了；
- *   model/failed     模型调用失败了一次。
+ *   session/model-failed     模型调用失败了一次。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
@@ -47,13 +47,13 @@ declare module 'cordis' {
      *   src7/plugins/context-fit/index.ts 的 apply
      *   src7/plugins/fake-model/index.ts 的 apply
      *   src7/plugins/file-tools/BaseTools.ts 的 BaseTools.constructor
+     *   src7/plugins/file-tools/Skill.ts 的 applySkills
      *   src7/plugins/memory/GraphRoutes.ts 的 GraphRoutes.constructor
      *   src7/plugins/memory/index.ts 的 Memory.constructor
      *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.constructor
      *   src7/plugins/progress/GroupDaily.ts 的 bindReportTools
      *   src7/plugins/progress/index.ts 的 Progress.constructor
      *   src7/plugins/relay/index.ts 的 Relay.constructor
-     *   src7/plugins/skills/index.ts 的 apply
      *   src7/plugins/wechat/index.ts 的 Wechat.constructor
      */
     'session/before-model'(request: ChatRequest): void | Promise<void>;
@@ -107,7 +107,6 @@ declare module 'cordis' {
      *   src7/plugins/progress/index.ts 的 Progress.constructor
      *   src7/plugins/relay/index.ts 的 Relay.constructor
      *   src7/plugins/voice/index.ts 的 apply
-     *   src7/plugins/web-api/index.ts 的 WebApi.constructor
      */
     'session/change'(session: Session): void;
     /**
@@ -117,12 +116,12 @@ declare module 'cordis' {
      *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.attempt
      *   src7/plugins/model-catalog/Usage.ts 的 Usage.constructor
      */
-    'model/failed'(info: ModelFailed): void;
+    'session/model-failed'(info: ModelFailed): void;
   }
 }
 
 
-/** 事件 model/failed 带的东西。 */
+/** 事件 session/model-failed 带的东西。 */
 export interface ModelFailed {
   /** 是哪场会话的请求。 */
   session: Session;
@@ -334,7 +333,7 @@ export class Sessions extends cordis.Service {
   /**
    * 新开一场。
    * 会话号由 createTimestampId() 生成：本机本地时间的年月日时分秒毫秒（17 位）加 3 位随机数字，共 20 位纯数字，
-   * 和 0.4 src/utils/Utils.ts 的 createSessionId 一样（用 getHours 等本地时区，不用 UTC）。
+   * 时刻部分使用本机时区。
    * 所有新会话（前台、后台、小会话）都走这里，不另写一套号。
    * 旧的 8 位十六进制会话号仍能打开、继续用，不迁移已有数据。
    * @param input 种类、嵌在哪场里、模型、思考档，加上插件给记录加的那些项；原样带进记录。
@@ -508,7 +507,7 @@ export class Sessions extends cordis.Service {
    * @param request 模型、思考档、提示词、对话、工具、取消信号。
    * @returns 模型回的整条 `AssistantMessage`，字段见本文件 L216。
    * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。
-   * 副作用：发 HTTP 请求；每失败一次发一次 model/failed。
+   * 副作用：发 HTTP 请求；每失败一次发一次 session/model-failed。
    */
   async chat(request: ChatRequest): Promise<piAi.AssistantMessage> {
     //==========================================================
@@ -575,7 +574,7 @@ export class Sessions extends cordis.Service {
       baseDelayMs: retry.waitMs,
     };
 
-    //M 发一次：每次失败（stopReason 是 error）发一次通知 model/failed，重试的那几次插件也看得到；被喊停的 aborted 不发。
+    //M 发一次：每次失败（stopReason 是 error）发一次通知 session/model-failed，重试的那几次插件也看得到；被喊停的 aborted 不发。
     /** @returns 单次请求的 `AssistantMessage`，见本文件 L216。 */
     const send = async (): Promise<piAi.AssistantMessage> => {
       const start = Date.now();
@@ -588,7 +587,7 @@ export class Sessions extends cordis.Service {
         error: answer.errorMessage ?? '',
         ms: Date.now() - start,
       };
-      this.ctx.emit('model/failed', failed);
+      this.ctx.emit('session/model-failed', failed);
       return answer;
     };
 

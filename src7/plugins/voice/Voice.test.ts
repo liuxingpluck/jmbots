@@ -16,8 +16,7 @@ import type * as taskModule from './Tasks.ts';
 import * as ttsModule from './Tts.ts';
 import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
-import * as channel from '../../Channels.ts';
-import type { Session } from '../../Sessions.ts';
+import * as channel from '../channels/index.ts';
 import * as memoryIndex from '../memory/ChannelIndex.ts';
 import * as webApi from '../web-api/index.ts';
 import * as plugin from './index.ts';
@@ -751,23 +750,26 @@ test('最终语音与未播报的回复各入档一次，网页和渠道可按�
   //M 内存数据库和 Fastify 注入覆盖真实投影，假后台和静音播放器隔离外部服务。
   cleanups.push(() => db.close());
   cleanups.push(() => app.close());
-  ctx.provide('resources', { db });
+  const raw = { bots: [bot] };
+  ctx.provide('resources', { db, raw });
   ctx.provide('http', { app });
   ctx.provide('bots', { channel: () => () => undefined, channelNames: () => ['voice', 'http'], list: () => [bot], get: () => bot });
-  ctx.provide('sessions', { open: () => undefined, find: () => [] });
+  //M 假会话：语音补快照时看会话做完没有（做完了），网页挂回时按会话号取它。
+  const sessionRow = { bot: bot.name, kind: 'work', state: 'done', messages: [] };
+  ctx.provide('sessions', { open: (id: string) => ({ id, row: sessionRow }), find: () => [] });
   webApi.apply(ctx);
   await app.ready();
 
   const index = new memoryIndex.ChannelIndex(db);
-  //M 用 memory 的标准消息转换和去重写入，核对入站和回复都归本人。
+  //M 用 memory 的标准消息转换和去重写入，核对入站和回复都归本人；回复照 memory 的做法，发成了才记回执带的请求。
   ctx.on('channel/message', (message) => {
     const row = memoryIndex.getMessageRow(message);
     if (row !== undefined) index.add(row);
   });
-  let source: channel.SourceSnapshot | undefined;
-  ctx.on('channel/reply', (request) => {
-    source = request.sourceSnapshot;
-    const row = memoryIndex.getReplyRow(request);
+  ctx.on('channel/replied', (event) => {
+    if (event.receipt.status !== 'sent') return;
+
+    const row = memoryIndex.getReplyRow(event.request);
     if (row !== undefined) index.add(row);
   });
   let plays = 0;
@@ -775,7 +777,7 @@ test('最终语音与未播报的回复各入档一次，网页和渠道可按�
     plays += 1;
     return false;
   };
-  const replies = new replyModule.VoiceReplies(ctx, unplayed);
+  new replyModule.VoiceReplies(ctx, unplayed);
 
   //M 半句已开工，后台可以先结束，回话须等最终字幕入档。
   world.asr.onPartial(DESKTOP);
@@ -783,9 +785,18 @@ test('最终语音与未播报的回复各入档一次，网页和渠道可按�
   const task = world.tasks[0]!;
   const message = world.dispatched[0]!;
   const address = message.origin.address;
-  const session = { id: task.sessionId, row: { bot: bot.name, address, state: 'done' } } as Session;
   const text = '已按日期整理。';
-  const first = replies.fromWork(text, session);
+
+  //M 后台做完的旧路回话（Bots.send 的做法）：没有来源快照，target 带会话记的语音地址，带会话号，经 channel/reply 发。
+  const sendLegacy = (callId: string): Promise<channel.ReplyReceipt> => {
+    const replyRoundKey = channel.getReplyRoundKey(task.sessionId, bot.name, 'legacy');
+    const replyRequestKey = channel.getReplyRequestKey(replyRoundKey, callId);
+    const target = { channel: 'voice', chat: '', address };
+    const from = { bot: bot.name, replyRoundKey, target, sessionId: task.sessionId };
+    const options = { replyRequestKey, replyIndex: 0, kind: 'final' as const, atFiles: true };
+    return channel.requestTextReply(ctx, from, text, options);
+  };
+  const first = sendLegacy('call-1');
   expect(plays).toBe(0);
   const pending = await app.inject('/api/messages');
   expect(pending.json()).toMatchObject({ messages: [] });
@@ -793,8 +804,9 @@ test('最终语音与未播报的回复各入档一次，网页和渠道可按�
 
   const corrected = '请把我桌面的所有截图按日期整理好';
   world.asr.onFinal(corrected);
-  expect(await within(first, '整句入档后发送回复')).toMatchObject({ status: 'accepted' });
-  expect(await replies.fromWork(text, session)).toMatchObject({ status: 'accepted' });
+  expect(await within(first, '整句入档后发送回复')).toMatchObject({ ok: true, status: 'sent' });
+  //M 同一场会话做完的回话再来一次：语音按固定的最终回复号合并，不再播报。
+  expect(await sendLegacy('call-2')).toMatchObject({ ok: true, status: 'sent' });
   ctx.emit('voice/record', world.messages[0]!, task.sessionId);
   expect(plays).toBe(1);
 

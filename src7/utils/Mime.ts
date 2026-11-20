@@ -1,6 +1,6 @@
 /**
  * 文件类型：按扩展名认出一个文件是哪一类附件、回给浏览器时用什么 Content-Type。
- * 插件 web（托管网页）和 files-api（上传、看文件）共用这一张表，表照 0.4 的 src/channels/HttpUi.ts 抄来。
+ * 插件 web（托管网页）和 files-api（上传、看文件）共用这一张表。
  * 没有状态的纯函数，所以放骨架的 utils/（用户 11-14 同意公用小函数放这里）。
  */
 import * as path from 'node:path';

@@ -1,8 +1,7 @@
 /**
  * bots 改事件第一阶段（11-18，契约 3.2 第 4、7 条）：
  *   1. 请求事件 bot/request 的 hand、save-file、add、accept-result 有人答，回 bot/result；现有方法抛错时回 { ok: false, error }，不等超时；
- *   2. 通知 bot/route 照 Bots.route 改会话的渠道、地址、客户号；
- *   3. 前台派活轮发 model-catalog/request（prompt）：有人答就把两段加进系统提示词，没人答立刻退回、不加。
+ *   2. 前台派活轮发 model-catalog/request（prompt）：有人答就把两段加进系统提示词，没人答立刻退回、不加。
  * 真实 Cordis + 骨架 Sessions、Tools + workspaces、bots 插件；模型是测试里的假回答，库是内存库，数据放临时目录。
  * 跑法：bun test ./src7/plugins/bots
  */
@@ -18,6 +17,7 @@ import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as botUtils from '../../utils/Bots.ts';
 import * as botsPlugin from './index.ts';
+import * as channels from '../channels/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 
 
@@ -95,10 +95,14 @@ async function world(): Promise<{ ctx: cordis.Context; sent: string[]; systems: 
     request.answer = piAi.fauxAssistantMessage(`做完了：${said}`);
   });
 
+  //M 渠道 test：登记渠道名，发到它的话（都经 channel/reply）记进 sent。
   const sent: string[] = [];
-  ctx.bots.channel('test', (reply) => {
-    sent.push(reply);
-    return { status: 'accepted', reason: '' };
+  ctx.bots.channel('test');
+  channels.registerTextReply(ctx, {
+    channel: 'test',
+    sendDirectText: (text) => {
+      sent.push(text);
+    },
   });
   return { ctx, sent, systems };
 }
@@ -230,20 +234,6 @@ test('没挂 bots：bot/request 立刻走无人接单退路', async () => {
   const add = { action: 'add' as const, config: { name: '甲' } };
   const result = await events.requestEvent(ctx, 'bot/request', 'bot/result', add, botOptions);
   expect(result).toEqual({ requestId: 'unhandled', ok: false, error: 'unhandled', fallback: 'unhandled' });
-});
-
-
-test('bot/route 通知：照 route 改会话的渠道、地址、客户号；不给渠道什么也不改', async () => {
-  const { ctx } = await world();
-  const session = ctx.sessions.create({ kind: 'work', bot: '助手' });
-
-  ctx.emit('bot/route', { sessionId: session.id, origin: { channel: 'test', address: { customer: 'test:u9' } } });
-  expect(session.row.channel).toBe('test');
-  expect(session.row.address).toEqual({ customer: 'test:u9' });
-  expect(session.row.customer).toBe('test:u9');
-
-  ctx.emit('bot/route', { sessionId: session.id, origin: {} });
-  expect(session.row.channel).toBe('test');
 });
 
 

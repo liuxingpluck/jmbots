@@ -60,6 +60,17 @@ const STATE_TEXT: Record<string, string> = {
 const TRAIL_EVENT_NAMES = new Map([
   ['session/request', 'session/before-model'],
   ['session/message', 'session/new-message'],
+  ['model/failed', 'session/model-failed'],
+  ['channel/settled', 'bot/settled'],
+  ['model/cooldown', 'model-catalog/cooldown'],
+  ['model/fallback', 'model-catalog/fallback'],
+  ['usage/list', 'model-catalog/usage'],
+  ['usage/list-result', 'model-catalog/usage-result'],
+  ['program/state', 'programs/state'],
+  ['resource/pressure', 'programs/pressure'],
+  ['resource/request', 'programs/resource-request'],
+  ['resource/result', 'programs/resource-result'],
+  ['flow/state', 'tutorial/state'],
 ]);
 
 /** 事件名 → 一句人话（session/change、session/new-message 要看变量，另外配）。 */
@@ -75,7 +86,7 @@ const EVENT_TEXT: Record<string, string> = {
   'session/after-model': 'trace.event.sessionAfterModel',
   'session/before-tool': 'trace.event.sessionBeforeTool',
   'session/after-tool': 'trace.event.sessionAfterTool',
-  'model/failed': 'trace.event.modelFailed',
+  'session/model-failed': 'trace.event.modelFailed',
 };
 
 /** 会话收尾后，再收几毫秒内的同会话行（回话写回收件表那几行）。 */
@@ -111,7 +122,9 @@ export function getNode(site: string): string {
  * @param line 跟踪行。
  */
 export function isLineError(line: TrailLine): boolean {
-  if (line.name === 'model/failed') return true;
+  //M 旧流水与现行事件用同一个名字判断模型失败。
+  const name = TRAIL_EVENT_NAMES.get(line.name) ?? line.name;
+  if (name === 'session/model-failed') return true;
 
   //M 优先读取稳定键，旧流水原字段仍可定位错误。
   const failed = line.vars['failed'] ?? line.vars['出错'];

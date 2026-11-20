@@ -79,7 +79,7 @@ export function clipText(text: string, max: number): string {
 
 
 /**
- * 字节数写成 12 B、3.4 KB、1.2 MB（照 0.4 formatSize）。生图、写记忆交回给模型的话里用。
+ * 字节数写成 12 B、3.4 KB、1.2 MB。生图、写记忆交回给模型的话里用。
  * @param bytes 字节数。
  * @returns 一段字。
  */

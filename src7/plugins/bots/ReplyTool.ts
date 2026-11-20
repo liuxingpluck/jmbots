@@ -2,7 +2,7 @@
  * 工具 reply：干活的会话（work）做到一半先回用户一句。执行就是 bots.say(会话, 话)（发通知 bot/say，渠道收到自己发、自己认 @路径）。
  * 这场会话没有渠道（没人等它的话）时抛错，模型知道发不出去。前台不给（前台自己的回答就是回话）。
  * 原插件 reply-tool，2026-11-17 并进 bots（docs/协作/任务板/合并做法.md）：bots 的配置写了 reply_tool: true 才登记，不写不登记。
- * 照 0.4 src/capabilities/tools/Tools.ts:595-599、1475-1532。设计：docs/src7插件设计/reply-tool.md。
+ * 设计：docs/src7插件设计/reply-tool.md。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';

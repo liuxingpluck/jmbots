@@ -335,7 +335,7 @@ function getRouteFromUrl(search: string): RouteState {
     step = rawStep;
   }
 
-  //M 提取插件子页签、事件高亮、插件名、画布标识与旧版 ?tab=/?rtab= 兼容参数。
+  //M 提取插件子页签、事件高亮、插件名、画布标识与书签兼容参数 ?tab= / ?rtab=。
   const ptab = params.get('ptab') ?? 'overview';
   const event = params.get('event') ?? '';
   const plugin = params.get('plugin') ?? '';
@@ -1363,7 +1363,7 @@ export function TutorialPage(): JSX.Element {
       const firstPlugin = plugins.list[0]?.name ?? '';
       const settled = { ...route, plugin: firstPlugin };
       setRoute(settled);
-      //M 将旧版 ?tab=plugins 对应的 __FIRST__ 哨兵静态替换为首个插件名并定稿地址栏。
+      //M 将 ?tab=plugins 对应的 __FIRST__ 标记换成首个插件名并同步到地址栏。
       window.history.replaceState(window.history.state, '', buildRouteUrl(settled));
     }
   }, [canvasesLoaded, messages, plugins, route]);

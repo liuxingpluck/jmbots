@@ -19,7 +19,7 @@ export async function allowLocal(ctx: cordis.Context, signal?: AbortSignal, heav
     onFallback: () => ({ requestId: '', ok: false, reason: '资源守卫未放行' }),
   };
   //G 本地模型加载先取得 programs 的实时资源回执。
-  const checked = await events.requestEvent(ctx, 'resource/request', 'resource/result', request, options);
+  const checked = await events.requestEvent(ctx, 'programs/resource-request', 'programs/resource-result', request, options);
   if (!checked.ok) {
     const reason = checked.reason;
     throw new RouteFailure(reason);

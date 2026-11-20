@@ -1,18 +1,18 @@
 /**
- * progress 用的话和小函数：各段耗时、参数摘要、限时写法、读审核结论、几段提示词。都是纯函数，照 0.4 src/capabilities/Progress.ts。
+ * progress 用的话和小函数：各段耗时、参数摘要、限时写法、读审核结论、几段提示词。都是纯函数。
  * 时长写法、截字在 utils/Text.ts（duration、clip）。
  */
 import * as textModule from '../../utils/Text.ts';
 
 
-/** 到点问 decision 的三道是非题（照 0.4 :43-59）：推进、5 分钟能做完、在打转。 */
+/** 到点问 decision 的三道是非题：推进、5 分钟能做完、在打转。 */
 export const QUESTIONS = {
   progressing: { instructions: '这件事还在往前推进吗？最近几步在做新的事、有进展，算“是”；原地踏步、重复同样的操作，算“否”。', yes: '在推进', no: '没在推进' },
   nearlyDone: { instructions: '照现在的进度，再给 5 分钟能把用户要的做完吗？', yes: '5 分钟内能做完', no: '5 分钟做不完' },
   looping: { instructions: '有没有在打转：同一条命令反复失败、反复做同样的事、绕圈子、偏离了用户要的？', yes: '在打转', no: '没在打转' },
 };
 
-/** 收尾总结怎么写（照 0.4 :74-77）。 */
+/** 收尾总结怎么写。 */
 export const WRAPUP_PROMPT: Record<string, string> = {
   zh: '用户给这件事设了时间上限，现在到点了，工作已经停下。照下面的工作过程写一段收尾总结，三小段，每段一两句：做到哪了；卡在哪、为什么慢；还剩什么、接着做先干什么。只写工作过程里有的，不要编。',
   en: 'The user set a time limit for this task and it has been reached; the work has stopped. '
@@ -21,7 +21,7 @@ export const WRAPUP_PROMPT: Record<string, string> = {
     + 'Only state what is in the log.',
 };
 
-/** 延够了以后审核怎么看（照 0.4 :80-95）：离谱不离谱、要不要转新会话，只回一个 JSON。 */
+/** 延够了以后审核怎么看：离谱不离谱、要不要转新会话，只回一个 JSON。 */
 export const REVIEW_PROMPT: Record<string, string> = {
   zh: [
     '用户给这件事设了时间上限，已经延长过两次，还没做完。你是审核：读下面的用户原话和工作过程，判断两件事，只回一个 JSON，不要别的字：',

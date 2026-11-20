@@ -5,7 +5,7 @@
  * 2. 回退（Fallback.ts / Queue.ts）：在 session/before-model 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
  * 3. 模型介绍和评价（Notes.ts，11-18 并进原 model-notes）：运行时目录 models/ 下一个模型一份 MD；接口 /api/model-notes* 路径照旧；
  *    事件 model-catalog/request 的 action: 'prompt' 一次交回模型介绍评价和能用的思考档，前台派活时带上。
- * 4. 用量（Usage.ts，11-18 并进原 usage）：保留 usage 服务、usage/list 事件和 GET /api/usage。
+ * 4. 用量（Usage.ts，11-18 并进原 usage）：保留 usage 服务、model-catalog/usage 事件和 GET /api/usage。
  * 只是一张表加回退层：正常调模型仍走骨架的 ctx.resources.getModel。
  * 设计：docs/src7插件设计/model-catalog.md、docs/src7插件设计/model-fallback.md。
  */
@@ -31,7 +31,7 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.6';
+export const version = '1.3.7';
 
 /** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
@@ -66,7 +66,7 @@ export interface ProbeInput {
   api: string;
 }
 
-/** model/cooldown 的参数：model-fallback 发（总览第 3 节待补约定）。 */
+/** model-catalog/cooldown 的参数：model-fallback 发（总览第 3 节待补约定）。 */
 export interface CooldownInfo {
   /** 供应商名/模型 ID。 */
   model: string;
@@ -88,7 +88,7 @@ declare module 'cordis' {
      * 谁发：src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.noteLimit
      * 谁接：src7/plugins/model-catalog/index.ts 的 ModelCatalog.constructor
      */
-    'model/cooldown'(info: CooldownInfo): void;
+    'model-catalog/cooldown'(info: CooldownInfo): void;
     /**
      * 问模型清单（serial 发、等 model-catalog/result）：find 查一个模型，prompt 取派活用的模型介绍评价和思考档。本插件听。
      * 谁发：
@@ -148,7 +148,7 @@ interface ProviderPlan {
 /** 认得的协议，和骨架 utils/Checks.ts 的一样。 */
 const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'];
 
-/** 没连上的隔多久再试，毫秒（同 0.4 Model.ts:1021-1052）。 */
+/** 没连上的隔多久再试，毫秒。 */
 const RETRY_MS = 60_000;
 
 
@@ -163,7 +163,7 @@ export class ModelCatalog extends cordis.Service {
   /** 第一次失败已经打过日志的，免得每分钟刷一行。 */
   private readonly warned = new Set<string>();
 
-  /** model/cooldown 记下的：模型 → 冷却到几点。 */
+  /** model-catalog/cooldown 记下的：模型 → 冷却到几点。 */
   private readonly cooling = new Map<string, number>();
 
   /**
@@ -189,9 +189,9 @@ export class ModelCatalog extends cordis.Service {
       }
     });
 
-    //M ctx.on 听一个事件：Fallback 每新记一次冷却就 ctx.emit('model/cooldown', …)，这里记下来。
+    //M ctx.on 听一个事件：Fallback 每新记一次冷却就 ctx.emit('model-catalog/cooldown', …)，这里记下来。
     //M 用 ctx.on 登记的监听，插件被拔掉时 Cordis 自己撤掉。
-    this.ctx.on('model/cooldown', (info) => {
+    this.ctx.on('model-catalog/cooldown', (info) => {
       this.cooling.set(info.model, info.until);
     });
 
@@ -401,7 +401,7 @@ export class ModelCatalog extends cordis.Service {
         if (body.provider !== undefined && typeof body.provider !== 'string') {
           throw new Error('provider 要是字符串');
         }
-        //M 空串当没给，重连每一家（同 0.4 HttpUi.ts:1395-1412）。
+        //M 空串当没给，重连每一家。
         let provider = body.provider;
         if (provider === '') {
           provider = undefined;

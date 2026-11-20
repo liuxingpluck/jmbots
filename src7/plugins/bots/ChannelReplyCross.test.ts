@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import * as fastify from 'fastify';
-import * as channels from '../../Channels.ts';
+import * as channels from '../channels/index.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as approvalModule from '../approval/index.ts';
@@ -369,7 +369,7 @@ test('1. 网页本人让 AI 往飞书群发话：飞书收到 channel/reply 且�
   expect(replyEvents).toHaveLength(1);
   expect(replyEvents[0]?.channel).toBe('feishu');
   expect(replyEvents[0]?.target).toEqual({ channel: 'feishu', chat: 'oc_group_1' });
-  expect(replyEvents[0]?.sourceSnapshot.channel).toBe('http');
+  expect(replyEvents[0]?.sourceSnapshot?.channel).toBe('http');
   expect(feishuStub.sent).toHaveLength(1);
   expect(feishuStub.sent[0]?.kind).toBe('create');
   expect(feishuStub.sent[0]?.receiveId).toBe('oc_group_1');
@@ -593,7 +593,7 @@ test('3. 外人（guest / builder / 微信客户）与群聊里的本人（含 t
   //M 记录所有成功穿到目标渠道的 channel/reply 事件：以下 5 次越权调用都不该落到目标渠道。
   const reachedTargetChannels: string[] = [];
   ctx.on('channel/reply', (request) => {
-    reachedTargetChannels.push(`${request.channel}:${request.sourceSnapshot.chatId}`);
+    reachedTargetChannels.push(`${request.channel}:${request.sourceSnapshot?.chatId ?? ''}`);
   });
 
   //G 1) 飞书群 guest 指定往网页发话 → 拒绝并写明原因。

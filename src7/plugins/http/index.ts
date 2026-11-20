@@ -1,6 +1,6 @@
 /**
- * HTTP 服务：整个程序只起这一个 Fastify，监听 0.0.0.0。自己不带页面，只有健康检查和管令牌的接口。
- * 别的插件（网页、接口）在自己挂上的时候往 ctx.http.app 上登记路径；等事件 ready（全部插件挂完）才开始监听，
+ * HTTP 服务：整个程序只起这一个 Fastify，监听 0.0.0.0。带健康检查、管令牌的接口，以及原 web 插件并进来的网页托管（Static.ts）和文件接口（Files.ts）。
+ * 别的插件（接口）在自己挂上的时候往 ctx.http.app 上登记路径；等事件 ready（全部插件挂完）才开始监听，
  * 因为 Fastify 开始监听以后就不能再加路径了。
  * 令牌只在这里查一次：本机来的不查；别的机器来的 /api/、/files/、/programs/ 要带令牌。令牌表在同一个文件夹的 Tokens.ts。
  * 设计见同目录 说明.md 的「设计要点」一节。
@@ -12,6 +12,7 @@ import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import * as failureModule from '../../utils/Failure.ts';
 import * as routesModule from './Routes.ts';
+import * as staticModule from './Static.ts';
 import * as tokensModule from './Tokens.ts';
 import { getPluginProblems } from '../../Resources.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -21,7 +22,8 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'http';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.2.0';
+//M 1.3.0：并入原 web 插件（Static.ts 托管网页，Files.ts 文件接口），config.yaml 里不再单列 web。
+export const version = '1.3.0';
 
 /** 用到的服务。 */
 export const inject = ['resources'];
@@ -117,10 +119,10 @@ function hasGuardedPrefix(route: string): boolean {
 }
 
 
-/** 请求体上限：50MB，和 0.4 一样。 */
+/** 请求体上限：50 MB。 */
 const BODY_LIMIT = 50 * 1024 * 1024;
 
-/** 端口被占着时最多等多久，毫秒：换版本时旧进程可能还拿着端口，基地给新版本 90 秒（和 0.4 一样）。 */
+/** 端口被占着时最多等多久，毫秒：换版本时旧进程可能还拿着端口，基地给新版本 90 秒。 */
 const LISTEN_WAIT_MS = 80_000;
 
 /** 端口被占着时隔多久再试，毫秒。 */
@@ -190,7 +192,7 @@ export class Http extends cordis.Service {
     //M 先挂登记簿的钩子，后面登记的每条路径（含下面的健康检查）都记下来。
     routesModule.watchRoutes(this.app, this.routes);
 
-    //M 每个请求先查令牌。用 async 钩子：Bun 上同步钩子返回 undefined 会把请求卡住（src6 11-11 复现）。
+    //M 每个请求先查令牌。用 async 钩子：Bun 上同步钩子返回 undefined 会把请求卡住。
     this.app.addHook('onRequest', (request, reply) => this.check(request, reply));
     //M 2026-11-16：problems 报插件没挂上/没开工；ok 仍表示 HTTP 服务本身活着（换版、看门狗只认 ok，插件问题不能把服务判死）。
     this.app.get('/api/health', () => ({ ok: true, problems: getPluginProblems(this.ctx.resources.pluginStatus) }));
@@ -226,8 +228,9 @@ export class Http extends cordis.Service {
     this.tokens = new tokensModule.Tokens(this, file, config.token);
 
     //M 都挂完了才监听：这时候别的插件的路径都登记好了。
+    //M 并入原 web 插件：监听之前先登记文件接口、插件页面和网页兜底路由（Static.ts）。
     this.ctx.on('ready', (argv) => {
-      void this.listen(argv);
+      void staticModule.registerStatic(this.ctx, this.app).then(() => this.listen(argv));
     });
 
     const options = {
@@ -382,7 +385,7 @@ export class Http extends cordis.Service {
     const trusted = trustedIp(request.ip, this.config.trustedIps);
     if (trusted) return undefined;
 
-    //G 先 await 掉 send 再 return reply，Fastify 才停下（0.4 在 Windows 的 Bun 1.3.14 上实测，只 return 拦不住）。
+    //G 先 await 掉 send 再 return reply，Fastify 才停下。只返回 reply 无法结束请求。
     await reply.code(401).send({ error: '要带 token：网址后面加 ?token=…，或请求头 Authorization: Bearer …' });
     return reply;
   }

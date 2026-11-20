@@ -2,7 +2,7 @@
  * 通用请求-回执事件工具（#113 插件解耦底座）：
  *   1. requestEvent：先挂回执监听与超时/中止守卫，再 serial 派发请求；没人接单（handled !== true）立即退回，不傻等超时；
  *   2. onRequestEvent：统一在进入异步逻辑前标 handled = true，完成后仅当存在 requestId 时回发配对回执。
- * 说明：供插件之间一问一答，复用请求与回执的等待逻辑。渠道协议见 src7/Channels.ts。
+ * 说明：供插件之间一问一答，复用请求与回执的等待逻辑。渠道协议见 src7/plugins/channels/。
  */
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';

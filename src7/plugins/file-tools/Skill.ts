@@ -1,8 +1,8 @@
 /**
- * 技能：干活的会话每一步调模型前，扫全局 skills/ 和机器人自己的 bots/<机器人>/skills/，
+ * 技能（原 skills 插件，2026-11-19 并进 file-tools，技能默认可用）：干活的会话每一步调模型前，扫全局 skills/ 和机器人自己的 bots/<机器人>/skills/，
  * 每个技能一行“名字：一句说明（@SKILL.md 的路径）”拼进系统提示词；再登记一个只读工具 skill，按名字交回那份 SKILL.md 全文。
  * 为什么另加 skill 工具：技能文件在工作区外面，base-tools 的 read 只许读工作区，模型读不到（skills.md 第 10 节第 1 条，总管 11-14 定了甲案）。
- * 照 0.4 src/capabilities/Files.ts:1132-1183。设计见同目录 说明.md 的「设计要点」一节。
+ * 设计见同目录 说明.md 的「技能」一节。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -11,19 +11,10 @@ import type * as cordis from 'cordis';
 import * as yaml from 'yaml';
 
 
-/** 插件名。 */
-export const name = 'skills';
-//M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.1';
-
-/** 用到的服务：resources 拿目录；tools 登记 skill 工具。 */
-export const inject = ['resources', 'tools'];
-
-
 /** 说明最多几个字。 */
 const DESCRIPTION_MAX = 200;
 
-/** 技能清单那段的标题和说明（照 0.4 AgentLoop.ts:152-155，读的那句改成用 skill 工具）。 */
+/** 技能清单的标题和用法，提示模型通过 skill 工具读取。 */
 const HEAD = '# 技能\n\nskills/ 下的技能。要做的事对得上哪个，先用 skill 工具读它的 SKILL.md 再照着做：';
 
 
@@ -91,18 +82,17 @@ export function list(roots: string[]): Skill[] {
 
 
 /**
- * 挂上技能。
- * apply 是 Cordis 插件的入口：inject 里的服务就绪后 Cordis 调一次。没有配置。
- * @param ctx Cordis 给这个插件的 ctx。
+ * 挂上技能。由 file-tools 的 apply 调一次，没有配置。
+ * @param ctx Cordis 给这个插件的 ctx（要有 resources、tools）。
  * 副作用：监听 session/before-model 往干活会话系统提示词注入技能清单，并登记只读工具 skill。
  */
-export function apply(ctx: cordis.Context): void {
+export function applySkills(ctx: cordis.Context): void {
   /** 这个机器人能用的技能：先全局后个人。每次现扫，不缓存（改了马上生效）。 */
   const getSkills = (bot: string): Skill[] => list([
     ctx.resources.ensureRuntimeDir('skills'), ctx.resources.ensureRuntimeDir('bots', bot, 'skills'),
   ]);
 
-  //M 听 session/before-model：只给干活的会话加技能清单（前台、小会话不带，同 0.4）。
+  //M 听 session/before-model：只给干活的会话加技能清单（前台和小会话不带）。
   ctx.on('session/before-model', (request) => {
     //G 非 work 会话不需要注入技能清单，直接跳过。
     const row = request.session.row;

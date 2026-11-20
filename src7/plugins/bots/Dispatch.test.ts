@@ -13,6 +13,7 @@ import * as cordis from 'cordis';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as botsPlugin from './index.ts';
+import * as channels from '../channels/index.ts';
 import * as workspacesPlugin from '../workspaces/index.ts';
 
 
@@ -92,7 +93,7 @@ function fakeAnswer(request: sessionsModule.ChatRequest): void {
 
 
 /**
- * 挂上骨架和真插件，登记渠道 test（发的话记进 sent，回执 accepted）。
+ * 挂上骨架和真插件，登记渠道 test（发的话记进 sent，回执 sent）。
  * @returns ctx 和渠道发出去的话。
  */
 async function world(): Promise<{ ctx: cordis.Context; sent: Sent[] }> {
@@ -107,10 +108,15 @@ async function world(): Promise<{ ctx: cordis.Context; sent: Sent[] }> {
   await ctx.plugin(botsPlugin, {});
   ctx.on('session/before-model', fakeAnswer);
 
+  //M 渠道 test：登记渠道名，发到它的话（都经 channel/reply）连同发到的渠道和地址记进 sent。
   const sent: Sent[] = [];
-  ctx.bots.channel('test', (reply, _session, origin) => {
-    sent.push({ reply, origin });
-    return { status: 'accepted', reason: '' };
+  ctx.bots.channel('test');
+  channels.registerTextReply(ctx, {
+    channel: 'test',
+    sendDirectText: (text, request, targetAddress) => {
+      const origin = { channel: request.channel, address: targetAddress };
+      sent.push({ reply: text, origin });
+    },
   });
   return { ctx, sent };
 }
@@ -163,6 +169,7 @@ test('派活：后台做完结果先回前台，前台整理后发回原渠道�
   expect(sent.some((item) => item.reply.startsWith('做完了：做事'))).toBe(false);
   const relayed = sent.find((item) => item.reply === '整理好了：后台做完了');
   expect(relayed?.origin?.channel).toBe('test');
+  expect(relayed?.origin?.address).toMatchObject(address);
 });
 
 
