@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
+import * as protocol from '../../channels/index.ts';
 import type { Session } from '../../../Sessions.ts';
 import * as textModule from '../../../utils/Text.ts';
 import * as api from '../Api.ts';
@@ -43,6 +44,8 @@ interface Target {
   client: lark.Client;
   /** 给谁编辑权限；没人就改成组织内可编辑。 */
   openId?: string;
+  /** 群聊的聊天号：群里做的文档再给这个群开阅读权限；私聊不写。 */
+  groupChatId?: string;
 }
 
 
@@ -57,7 +60,8 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
     definition: {
       name: 'feishu_doc',
       description: '把工作区里的一个 Markdown 文件发布成飞书云文档（支持标题、段落、列表、引用、代码块、表格），'
-        + '可以带几张图片放在最前面。发布后可编辑权限给聊天里的用户，交回文档链接。',
+        + '可以带几张图片放在最前面。发布后可编辑权限给聊天里的用户（群里做的再给这个群阅读权限），交回文档链接。'
+        + '群里有人要文件的，优先生成 Word（.docx）用 feishu_send_file 发进群，不必建云文档。',
       parameters: piAi.Type.Object({
         title: piAi.Type.String({ description: '文档标题' }),
         markdown: piAi.Type.String({ description: 'Markdown 文件路径，相对工作区' }),
@@ -99,7 +103,13 @@ export function getTarget(feishu: Feishu, session: Session): Target {
   const address = row.address as FeishuAddress | undefined;
   if (row.channel === 'feishu' && address !== undefined && typeof address.appId === 'string') {
     //M 当前会话来自飞书渠道时，沿用收信应用对应的 SDK 客户端并将文档权限授给发信本人。
-    return { appId: address.appId, client: feishu.client(address.appId), openId: address.openId || undefined };
+    //M 群聊里把聊天号带上，建好文档后给整个群开阅读权限。
+    let groupChatId: string | undefined;
+    if (protocol.isGroup(address)) {
+      groupChatId = address.chatId;
+    }
+    const clientOfApp = feishu.client(address.appId);
+    return { appId: address.appId, client: clientOfApp, openId: address.openId || undefined, groupChatId };
   }
   //M 非飞书会话（如网页或定时器）改取该机器人名下第一个飞书应用，并找最近私聊者授权。
   const appId = feishu.getApps(row.bot)[0];
@@ -121,8 +131,9 @@ export function getTarget(feishu: Feishu, session: Session): Target {
  */
 export function getFile(ctx: cordis.Context, session: Session, value: string): string {
   const cleaned = value.trim().replace(/^@/u, '').replace(/^["']|["']$/gu, '');
+  const { bot, address } = session.row;
   //M 相对路径按本轮工作区解析。
-  const workspace = botUtils.getSessionWorkspace(ctx.resources, session);
+  const workspace = botUtils.getSessionWorkspace(ctx.resources, bot, address);
   const full = path.resolve(workspace, cleaned);
   if (full === path.join(ctx.resources.root, 'config.yaml')) {
     throw new Error('不能读 config.yaml');
@@ -151,7 +162,7 @@ export async function publish(
     throw new Error('标题不能是空的');
   }
   //M 解析目标飞书客户端并换算会话对应的授权用户 openId。
-  const { client, openId } = getTarget(feishu, session);
+  const { client, openId, groupChatId } = getTarget(feishu, session);
   //M 解析工作区 Markdown 路径并读取正文内容。
   const markdownPath = getFile(ctx, session, args.markdown);
   const text = fs.readFileSync(markdownPath, 'utf8');
@@ -215,7 +226,35 @@ export async function publish(
   } catch (error) {
     granted = `权限没给成：${textModule.getErrorMessage(error)}`;
   }
+
+  //M 群里做的文档，再给这个群开阅读权限（群成员点链接就能看）；没给成同样写进结果，不算失败。
+  if (groupChatId !== undefined) {
+    try {
+      granted += `；${await grantGroup(client, docId, groupChatId)}`;
+    } catch (error) {
+      granted += `；群阅读权限没给成：${textModule.getErrorMessage(error)}`;
+    }
+  }
   return `已发布飞书文档《${title}》：${DOC_URL}${docId}（${granted}）`;
+}
+
+
+/**
+ * 给这个群开云文档的阅读权限：群作为协作者加进去，权限 view。
+ * @param client SDK 客户端。
+ * @param docId 文档号。
+ * @param chatId 群的聊天号（oc_ 开头）。
+ * @returns 给模型看的权限结果说明。
+ * @throws 接口出错（权限不够时错误里写明缺哪个权限，见 Api.ts 的 getExplain）。
+ */
+async function grantGroup(client: lark.Client, docId: string, chatId: string): Promise<string> {
+  //M 群当协作者（member_type openchat），只给阅读；机器人要在这个群里。
+  await api.call('云文档给群权限', () => client.drive.v1.permissionMember.create({
+    params: { type: 'docx', need_notification: false },
+    path: { token: docId },
+    data: { member_type: 'openchat', member_id: chatId, perm: 'view' },
+  }));
+  return '阅读权限已给这个群';
 }
 
 

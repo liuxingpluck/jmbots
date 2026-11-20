@@ -13,7 +13,6 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import type * as piAi from '@earendil-works/pi-ai';
 import type { JmbotsConfig, PluginEntry, ProviderConfig } from '../Resources.ts';
-import * as traceText from '../../web/src/locales/Trace.ts';
 import * as embedded from './Embedded.ts';
 import * as utils from './index.ts';
 import * as workspaceModule from './Workspace.ts';
@@ -162,6 +161,16 @@ export function checkConfig(raw: unknown): JmbotsConfig {
   //M 先校验顶层配置对象，再解析供应商、默认模型、插件与模型运行设置。
   const root = checkRecord(raw, 'config.yaml');
 
+  //G 旧的顶层 engine 段已经拆散，写着也没人读；直接报错，说清每一项挪到哪。
+  if (root['engine'] !== undefined) {
+    throw new Error('config.yaml 的顶层 engine 段已取消，请删掉并把设置挪走：'
+      + 'wrapup_model、限时类的键 → plugins 里 progress 的 config；'
+      + 'index_url → base-bridge 的 config；image_model → image-gen 的 config；'
+      + 'fallback_chain、fallback_max_tries、fallback_include_siblings → model-catalog 的 config.fallback（chain、max_tries、include_siblings）；'
+      + 'vision_model → bots 的 config.front.vision_model；retry_delays_ms → models.retry；'
+      + 'poll_ms、compress_at、exec_pass、memory_libs 已不再使用，直接删掉');
+  }
+
   //M providers：每家要有 base_url；api_key 不写是空的（本地服务不要密钥）；api 不写是 openai-completions。
   //M   models 是手写的模型：上下文多长、最多输出多少、thinking 里有 off 以外的档就是会思考、vision: true 就收图片。
   //M   compat、model_compat 是发请求时的兼容设置，原样交给 pi（不认的项 pi 不管）。
@@ -266,11 +275,7 @@ export function checkConfig(raw: unknown): JmbotsConfig {
   const times = retry['times'] ?? 5;
   const waitMs = retry['wait_ms'] ?? 3000;
   const timeoutMs = retry['timeout_ms'] ?? 120000;
-  //M 复用界面语言设置，供后端打印使用；未设置时默认简体中文。
-  const language = utils.getField(root['ui'], 'language');
-  const traceLanguage = traceText.getTraceLanguage(language);
   return {
-    traceLanguage,
     defaultModel,
     providers,
     plugins,

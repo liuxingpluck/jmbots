@@ -6,7 +6,6 @@
 !/CLAUDE.md
 !/package.json
 !/tsconfig.json
-!/tsconfig.check.json
 !/eslint.config.mjs
 !/.editorconfig
 !/.prettierrc.json
@@ -29,25 +28,8 @@
 !/shell/README.md
 /shell/**/*.exe
 
-# zbots 只要代码（jmbots 还借用它的飞书 SDK 封装），不要它的文档和配置。
-!/zbots/
-/zbots/*
-!/zbots/src/
-!/zbots/tests/
-!/zbots/package.json
-!/zbots/tsconfig.json
-
-# 入门 Agent Loop：代码进仓库；config.yaml（可能含密钥）和运行时数据不进。
-# 全局规则已经忽略所有 config.yaml；这里把目录放进白名单，并挡掉运行时子目录。
-!/learn/
-/learn/*
-!/learn/Agent.ts
-!/learn/Cli.ts
-!/learn/config.example.yaml
-
-# 第 7 版骨架。单独的 tsconfig.src7.json 只检查 src7，不和 src6 的 cordis 类型声明混在一起。
+# 第 7 版骨架。
 !/src7/
-!/tsconfig.src7.json
 
 # 行号检查进 git（决策图 q-doc-lines）：ztools 里有令牌文件，只放开 check-lines，别的一律不进。
 !/ztools/

@@ -240,7 +240,8 @@ test('外部助手的回信（来源 relay）进前台：前台看到“外部�
 
 test('暂停：stop_session 记暂停，外部结果只排着不跑；append 接着做，交回前台', async () => {
   const { ctx, sent } = await world();
-  const address = { customer: 'test:u1' };
+  //M 本人：测试渠道 test 不是本机渠道，写明 owner: true 才算本人（外人只能停自己派的）。
+  const address = { customer: 'test:u1', owner: true };
   await ctx.bots.receive('test', '助手', '调用 hand_session {"text":"做事"}', address);
   await waitFor(() => sent.some((item) => item.reply === '整理好了：后台做完了'));
   const workId = getRows(ctx).works[0]?.id ?? '';

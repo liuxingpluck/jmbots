@@ -61,6 +61,14 @@ export function getExplain(action: string, code: number, msg: unknown): string {
     if (action.startsWith('云文档')) {
       need = 'docx:document、drive:drive';
     }
+    //M 云文档给权限：把人、群加成协作者要 docs:permission.member:create（分享云文档），再加 drive:drive。
+    if (action.startsWith('云文档给')) {
+      need = 'docs:permission.member:create（分享云文档）、docx:document、drive:drive';
+    }
+    //M 撤回消息：im:message、im:message:recall、im:message:send_as_bot 三个开一个就行；撤自己发的不用别的。
+    if (action.startsWith('撤回')) {
+      need = 'im:message:recall（撤回消息；开 im:message 或 im:message:send_as_bot 也行）';
+    }
     //M 拉群历史要读群里所有消息：im:message.group_msg 是“获取群组中所有消息”，im:message:readonly 是读消息；机器人还得在群里。
     if (action.startsWith('拉群历史')) {
       need = 'im:message.group_msg（获取群组中所有消息）、im:message:readonly（获取单聊、群组消息）';

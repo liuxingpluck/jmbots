@@ -127,7 +127,7 @@ const FACT_NOTES: Record<string, string> = {
   state: '状态',
   ms: '挂了几毫秒',
   failed: '出错',
-  error: '没挂上的原因',
+  error: '没挂上、没开工的原因',
   external: '外部插件（名字是文件夹路径）',
   inject: '要用的服务',
   newServices: '这步多出的服务',
@@ -554,14 +554,15 @@ export class BootTrail {
         inject = '（不用别的服务）';
       }
       step.facts['inject'] = inject;
-      if (!row.mounted) {
+
+      //M 不是 ok 的标出错：等服务的叫没开工，还在起、失败的叫没挂上；说明是 Main.ts 写好的，原样带上。
+      if (row.state !== 'ok') {
         step.facts['state'] = '没挂上';
         step.facts['error'] = row.error;
         step.facts['failed'] = true;
       }
-      if (row.mounted && !row.started) {
-        step.facts['state'] = `没开工，缺 ${row.missing.join('、')}`;
-        step.facts['failed'] = true;
+      if (row.state === 'waiting') {
+        step.facts['state'] = '没开工';
       }
       step.snapshot ??= shot;
       ordered.push(step);
@@ -570,8 +571,10 @@ export class BootTrail {
     this.current = undefined;
 
     //M ready：Main.ts 发给大家“开工”。
-    const failed = status.filter((row) => !row.mounted).map((row) => row.name);
-    const waiting = status.filter((row) => row.mounted && !row.started).map((row) => row.name);
+    const failed = status
+      .filter((row) => row.state === 'failed' || row.state === 'mounting')
+      .map((row) => row.name);
+    const waiting = status.filter((row) => row.state === 'waiting').map((row) => row.name);
     let notMounted = failed.join('、');
     if (notMounted === '') {
       notMounted = '（没有）';

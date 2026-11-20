@@ -216,7 +216,8 @@ export class BaseTools {
    * @throws 没有这个机器人、路径跑到工作区和授权目录外面时抛错。
    */
   private getFile(session: Session, relative: string): string {
+    const { bot, address } = session.row;
     //M 按本轮来源选择目录，再校验目标的实际位置（utils/Bots.ts 的 resolveSessionPath）。
-    return botUtils.resolveSessionPath(this.ctx.resources, session, relative);
+    return botUtils.resolveSessionPath(this.ctx.resources, bot, address, relative);
   }
 }

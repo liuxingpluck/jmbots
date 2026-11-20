@@ -18,7 +18,7 @@ import * as workspaceModule from '../../utils/Workspace.ts';
  * guest（飞书上没登记、或登记成 guest 的人，比如群里用户的朋友）说的那一轮只能用的工具：查、读、搜、答。
  * 不在表里的一律不给，新插件登记的工具默认算动手，要放给别人用得在这里加。每个工具做什么、为什么这么分，
  * 见 docs/开发进度/131_群聊转话_20261117.md。
- * 不给的：exec、write、edit、feishu_send_file、feishu_doc、feishu_doc_delete、image_generate、memory（会写记忆）、
+ * 不给的：exec、write、edit、feishu_send_file、feishu_doc、feishu_doc_delete、feishu_recall（撤回机器人自己发的消息）、image_generate、memory（会写记忆）、
  * reply（话里 @路径 会把本机文件发出去）、notify_user、agent_task、stop_session。
  * 也不给 list_sessions（可能列出没有客户归属的旧后台会话）。
  * memory_search、memory_get 给，检索和原文查询都限于本轮已授权的渠道归属。
@@ -42,7 +42,7 @@ export const OTHERS_WORKSPACE_ACTIONS = new Set(['list', 'get']);
 /**
  * builder（登记了能让机器人写代码、跑程序的人）说的那一轮能用的：只读的那些，加上在他自己目录里动手的
  * exec、write、edit、feishu_send_file。目录由飞书写进回话地址的 workspace，这几个工具照它落路径（utils/Workspace.ts 的 of）。
- * 别的动手的（memory、reply、notify_user、agent_task、stop_session、image_generate、feishu_doc）照样不给。
+ * 别的动手的（memory、reply、notify_user、agent_task、stop_session、image_generate、feishu_doc、feishu_recall）照样不给。
  */
 export const BUILDER_TOOLS = new Set([...READ_ONLY_TOOLS, 'exec', 'write', 'edit', 'feishu_send_file']);
 

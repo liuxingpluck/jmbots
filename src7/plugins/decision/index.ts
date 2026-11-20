@@ -17,7 +17,7 @@ import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../..
 /** 插件名。 */
 export const name = 'decision';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.1';
+export const version = '1.1.2';
 
 /** 默认的决策模型：Magpie 里的 jev-1.14 分类器（jev-router 在这个地区用不了）。 */
 const DEFAULT_MODELS = [{ model: 'magpie/openrouter/typesafe/jev-1.14', type: 'classifier' }];
@@ -222,7 +222,7 @@ export class Decision extends cordis.Service {
       this.classifiers.setProvider(piAi.createProvider({
         id: provider,
         baseUrl: written.baseUrl,
-        auth: ctx.resources.getProviderAuth(written),
+        auth: ctx.resources.getProviderAuth(provider),
         //M ClassifierModel 描述分类器的 id、type 和 api。ClassifierApi 是分类适配器标识，例如 typesafe-system-one。
         models: ids.map((id): piAi.ClassifierModel<piAi.ClassifierApi> => ({
           id, name: id, provider, baseUrl: written.baseUrl, type: 'classifier', api: 'typesafe-system-one',

@@ -8,7 +8,7 @@
 //!   server   壳子的 HTTP 接口：更新、重启、托管服务、自启、本机通知、版本
 //!   notify   Windows 右下角 toast：POST /notify，以及服务挂掉/重启/更新时由壳子自己弹
 //!   services 另外托管的服务（默认记忆服务 jmbots-memory）：守护、重启、日志
-//!   （2026-11-14：memory、rag 两个模块和 memorycli、tantivy 依赖搬进独立的记忆服务 memsvc/，基地只承载）
+//!   记忆搜索和 RAG 在独立的记忆服务 memsvc/（jmbots-memory），基地只托管它，自己不打开记忆库
 //!   window   窗口和托盘：先开自带的一页，连上后端就切到后端托管的网页
 //!   supervisor  守护后端、扫描新版本、换版本（先试运行，失败退回）
 //!   log      窗口模式的日志（运行时 data/local.log）

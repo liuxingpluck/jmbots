@@ -7,7 +7,8 @@ import * as storeModule from './Store.ts';
 import * as toolsModule from './Tools.ts';
 
 export const name = 'work-decision';
-export const version = '1.3.5';
+//M 1.3.6：ask_owner 认本人改问 channels 的 isOwnerTurn（从 utils/Workspace.ts 挪过去的），判断不变。
+export const version = '1.3.6';
 export const inject = ['resources', 'http', 'tools'];
 
 /** 读取配置文本，未设置时保持缺省。 */

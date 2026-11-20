@@ -1,6 +1,6 @@
 /**
  * 渠道协议：回复（回复请求、回执、回执拼法、回复键）。
- * 所有发出去的话都走这里：模型的 channel_reply、零次兜底、审批直回、旧路自动回话、relay 回信、本人批准的主动发件。
+ * 所有发出去的话都走这里：模型的 channel_reply、零次兜底、审批直回、按地址发的自动回话、relay 回信、本人批准的主动发件。
  * requestChannelReply 发 channel/reply 并等 channel/replied；emitReplied 是渠道回发回执的唯一出口，回执带着请求本身。
  */
 import * as crypto from 'node:crypto';
@@ -94,7 +94,7 @@ export interface ChannelReplyRequest {
   mode: 'text' | 'attachment';
   /**
    * 不可变来源快照：回某条消息时有。
-   * 没有的（旧路自动回话、relay 回信、本人批准的主动发件）一定带 target.address，照它发。
+   * 没有来源快照的（自动回话、relay 回信、本人批准的主动发件）一定带 target.address，按地址发。
    */
   sourceSnapshot?: messageModule.SourceSnapshot;
   /** 请求正文摘要，用于同键冲突校验。 */
@@ -103,9 +103,9 @@ export interface ChannelReplyRequest {
   parts: ReplyPartInput[];
   /** 跨渠道或跨聊天发送目标；未指定别处时为 undefined，沿用 sourceSnapshot。 */
   target?: targetModule.ChannelReplyTarget;
-  /** 哪场会话说的：旧路自动回话、relay 回信带上，渠道照会话定细节（命令行出错标红，微信只发做完的一轮，网页挂回会话认领的那条）。 */
+  /** 哪场会话说的：按地址发的自动回话和 relay 回信带上，渠道照会话定细节（命令行出错标红，微信只发做完的一轮，网页挂回会话认领的那条）。 */
   sessionId?: string;
-  /** 正文里的 @路径（存在的本机文件）当文件一起发：只有旧路自动回话、relay 回信开，模型的 channel_reply 不开；只有飞书认，别的渠道照纯文字发。 */
+  /** 正文里的 @路径（存在的本机文件）当文件一起发：按地址发的自动回话和 relay 回信开启；只有飞书认，别的渠道照纯文字发。 */
   atFiles?: boolean;
   /** 负责处理的渠道插件置 true，区分“无人监听该渠道”。 */
   handled?: boolean;
@@ -125,7 +125,7 @@ export interface ChannelRepliedEvent {
 }
 
 
-/** 没有来源快照时以谁的名义、发到哪（旧路自动回话、relay 回信、本人批准的主动发件），给 requestTextReply。 */
+/** 按地址发时以谁的名义、发到哪（自动回话、relay 回信、本人批准的主动发件），给 requestTextReply。 */
 export interface ReplyFrom {
   /** 机器人名。 */
   bot: string;
@@ -227,7 +227,7 @@ interface TextReplyOptions {
   kind: ReplyKind;
   /** 显式跨聊天时由目标渠道核对和识别（没有来源快照时用 ReplyFrom 的）。 */
   target?: targetModule.ChannelReplyTarget;
-  /** 正文里的 @路径 当文件发（旧路自动回话、relay 回信）。 */
+  /** 正文里的 @路径 当文件发（按地址发的自动回话、relay 回信）。 */
   atFiles?: boolean;
 }
 
@@ -251,7 +251,7 @@ export async function requestTextReply(
   const parts: ReplyPartInput[] = [{ partId: 'text:0', kind: 'text', text }];
 
   //==========================================================
-  //M 没有来源快照（旧路自动回话、relay 回信、本人批准的主动发件）：照调用方给的机器人、轮键和地址发
+  //M 按地址发（自动回话、relay 回信、本人批准的主动发件）：照调用方给的机器人、轮键和地址发。
   //==========================================================
   if ('target' in from) {
     const fromTarget = from.target;

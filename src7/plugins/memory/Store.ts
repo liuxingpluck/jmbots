@@ -3,9 +3,9 @@
  * - 聊天记录：有渠道、没有 parent 的会话（用户看得到的），用户的话和机器人回的文字，一条消息一段（长的切开）。
  * - 知识库：运行时目录 knowledge/（公共）和 bots/<机器人>/knowledge/（自己的）下的 .md、.txt，按段切，记行号；
  *   文件改了、删了，下次搜之前（最多 30 秒一次）或 POST /api/memory/knowledge 之后重建那个文件的片段。
- * - 客户：渠道:用户（customerFrom / getCustomer）。飞书私聊是 feishu:<open_id>，飞书群是 feishu:group:<chat_id>（按群一场，不按发言人）；
- *   微信是 wechat:<会话 username>（也是按聊天一场）；网页（渠道名 http）没有登录是 http:本机。
- *   address 里有 customer 就用；否则再看 userId、openId、user。插件也可以直接在会话记录上写 customer（账号合并时写成合并后的主号）。
+ * - 客户：渠道:用户（getCustomer），由渠道写在回话地址的 customer 上，memory 不自己推。飞书私聊是 feishu:<open_id>，
+ *   飞书群是 feishu:group:<chat_id>（按群一场，不按发言人）；微信是 wechat:<会话 username>（也是按聊天一场）；网页是 http:本机。
+ *   会话记录上写了 customer 的优先（bots 收话时抄的，账号合并时写成合并后的主号）。
  * 设计：docs/src7插件设计/memory.md 第 11 节。
  */
 import * as fs from 'node:fs';
@@ -16,12 +16,11 @@ import type { SessionRow } from '../../Sessions.ts';
 import * as backendModule from './Backend.ts';
 import * as graphPolicy from './GraphPolicy.ts';
 import * as filesModule from '../../utils/Files.ts';
+import * as utils from '../../utils/index.ts';
 
 
 declare module '../../Sessions.ts' {
   interface SessionRow {
-    /** 客户：渠道:用户。不写就照渠道和 address 推（getCustomer）。 */
-    customer?: string;
     /** 记忆库已经收到第几条消息（不含）：重启、续聊不重复收。 */
     memoryIndexed?: number;
   }
@@ -216,41 +215,17 @@ export class Store {
 
 
 /**
- * 从渠道和回话地址推出客户号：渠道:用户。
- * 飞书私聊 feishu:<open_id>；飞书群 feishu:group:<chat_id>（按群，不按发言人；群和私聊不共用一场，免得回话地址被冲掉）。
- * 微信、网页等：address.customer 优先，否则 userId / openId / user，都没有就是 渠道:本机。
- * @param channel 渠道名。
- * @param address 渠道的回话地址。
- * @returns 没有渠道是 ''。
- */
-export function customerFrom(channel: string | undefined, address: unknown): string {
-  if (channel === undefined || channel === '') return '';
-  const where = (typeof address === 'object' && address !== null && !Array.isArray(address) ? address : {}) as Record<string, unknown>;
-  if (typeof where['customer'] === 'string' && where['customer'] !== '') return where['customer'];
-  if (channel === 'feishu') {
-    const chatType = String(where['chatType'] ?? where['chat_type'] ?? '');
-    const chatId = String(where['chatId'] ?? where['chat_id'] ?? '');
-    const openId = String(where['openId'] ?? where['open_id'] ?? '');
-    if (chatType === 'group' && chatId !== '') return `feishu:group:${chatId}`;
-    if (openId !== '') return `feishu:${openId}`;
-    if (chatId !== '') return `feishu:group:${chatId}`;
-  }
-  const who = ['userId', 'openId', 'user'].map((key) => where[key]).find((value) => typeof value === 'string' && value !== '');
-  return `${channel}:${typeof who === 'string' ? who : '本机'}`;
-}
-
-
-/**
- * 会话的客户：记录上写了 customer 就用；不然照渠道和 address 推（customerFrom）。
+ * 会话的客户号：客户号只由渠道写在回话地址的 customer 上（飞书 feishuCustomer、微信、网页、命令行各自写），memory 不自己推。
+ * 记录上写了 customer（bots 收话时从地址抄的，或账号合并时写的主号）就用它；还没抄的读地址上的。
  * @param row 会话记录。
- * @returns 没有渠道是 ''。
+ * @returns 两处都没写是 ''。
  */
 export function getCustomer(row: SessionRow): string {
-  if (typeof row.customer === 'string' && row.customer !== '') return row.customer;
-  const meta = row as SessionRow & { channel?: string; address?: unknown };
+  //M 记录上的优先：账号合并时会写成合并后的主号。
+  if (row.customer !== undefined && row.customer !== '') return row.customer;
 
-  //M 记录上没写客户号，就照渠道和回话地址推（飞书私聊、飞书群、微信、网页各有各的算法）。
-  return customerFrom(meta.channel, meta.address);
+  //M 还没抄到记录上：读渠道写在回话地址上的。
+  return utils.getStringField(row.address, 'customer');
 }
 
 /**

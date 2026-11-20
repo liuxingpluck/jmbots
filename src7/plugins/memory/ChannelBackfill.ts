@@ -29,6 +29,8 @@ export function getChannelDoc(row: ChannelRow) {
     session = customer;
   }
 
+  //M 渠道副本也显示撤回与附件，仍保留原文和相同的稳定来源键。
+  const text = channel.getChannelText(row);
   //M 同一渠道键重试时保持 Rust 唯一键一致。渠道不触发客服关系图抽取。
   return {
     source: `${channel.CHANNEL_PARTITION}${row.key}`,
@@ -37,7 +39,7 @@ export function getChannelDoc(row: ChannelRow) {
     session,
     bot: row.bot,
     title: row.senderName || row.senderId,
-    text: row.text,
+    text,
     at: row.at,
     start: 0,
     end: 0,

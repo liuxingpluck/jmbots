@@ -20,12 +20,14 @@ import * as textModule from '../../utils/Text.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
+import * as protocol from '../channels/index.ts';
 
 
 /** 插件名。 */
 export const name = 'workspaces';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.0';
+//M 1.1.0：getAccess 多收渠道名，是不是本人改问 channels 的 isOwnerTurn（删 isNonOwnerSpeaker），判断不变。
+export const version = '1.1.0';
 
 /** 用到的服务：resources 建表、算目录；tools 登记工具 workspace。 */
 export const inject = ['resources', 'tools'];
@@ -74,7 +76,7 @@ export interface Workspace {
 export interface WorkspaceAccess {
   /** 哪个机器人。 */
   bot: string;
-  /** 是不是本人：不是 builder、guest（utils/Workspace.ts 的 isOther）。 */
+  /** 是不是本人（channels 的 isOwnerTurn）。 */
   owner: boolean;
   /** 范围键：本人是 private；外人是 dir:<他的根目录>。 */
   scopeKey: string;
@@ -220,15 +222,16 @@ export class Workspaces extends cordis.Service {
   }
 
   /**
-   * 谁在用：从回话地址算机器人、是不是本人、范围键、范围的根目录。
+   * 谁在用：从渠道和回话地址算机器人、是不是本人、范围键、范围的根目录。
    * @param bot 机器人名（会话的 row.bot）。
-   * @param address 回话地址（会话的 row.address）；没有（命令行、网页没写 role）当本人。
+   * @param channel 渠道名（会话的 row.channel）；没有渠道（建机器人时登记、内部会话）当本人。
+   * @param address 回话地址（会话的 row.address）。是不是本人照 channels 的 isOwnerTurn 判。
    * @returns 访问身份；交给本服务别的方法。
    */
-  getAccess(bot: string, address: unknown): WorkspaceAccess {
+  getAccess(bot: string, channel: string | undefined, address: unknown): WorkspaceAccess {
     //M 本人：范围 private，根是机器人的默认工作区。
     const home = this.getHome(bot);
-    const owner = !workspaceModule.isNonOwnerSpeaker(address);
+    const owner = protocol.isOwnerTurn(channel, address);
     if (owner) return { bot, owner, scopeKey: PRIVATE, root: home };
 
     //M 外人：根是地址里写的他自己的目录（飞书给 builder、guest 写的；没写落回默认工作区，和现在一样），范围就是这个根。
@@ -434,7 +437,7 @@ export class Workspaces extends cordis.Service {
    */
   private run(args: Record<string, unknown>, session: Session): string {
     //M 从会话身份和工具参数整理出动作、目标及访问范围。
-    const access = this.getAccess(session.row.bot, session.row.address);
+    const access = this.getAccess(session.row.bot, session.row.channel, session.row.address);
     const action = utils.getStringField(args, 'action');
     const id = utils.getStringField(args, 'id');
     const workspaceName = utils.getStringField(args, 'name');

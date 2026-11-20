@@ -255,7 +255,7 @@ export class Base extends cordis.Service {
  * @param ctx Cordis 给本插件的上下文（依赖 resources）。
  * @param config `plugins[base-bridge].config`（可选，可含 `index_url`、`notify`、`update_watch`）。
  * @throws `config` 类型非法或 `index_url` 格式不合法时抛错。
- * 副作用：注册 `ctx.base` 服务；通过 `ctx.inject` 按需挂载 8 条转发路由、通知工具与更新监听。
+ * 副作用：注册 `ctx.base` 服务；通过 `ctx.inject` 按需挂载 4 条转发路由、通知工具与更新监听。
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   if (config !== undefined && (typeof config !== 'object' || config === null || Array.isArray(config))) {

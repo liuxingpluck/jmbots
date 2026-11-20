@@ -11,7 +11,7 @@ import type { FrontDesk } from './FrontDesk.ts';
 import type { GroupBatchConfig } from './GroupBatch.ts';
 import type { Bot, ReceiveEvent } from './index.ts';
 
-export { normalizeLegacyReceipt } from './DispatchResults.ts';
+export { normalizeAutoReplyReceipt } from './DispatchResults.ts';
 export type {
   AcceptReceipt, FrontTask, QueueItem, ReplyControl, ReplyPolicy, ResultInput, ResultPayload, Stage,
 } from './DispatchResults.ts';

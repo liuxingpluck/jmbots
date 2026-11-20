@@ -3,16 +3,62 @@
  * 网页、出厂提示词和 src7 源码原文（给 /flow/“看启动”取注释）打进程序里。必须用 --out 指定输出目录。
  * --out 可以是运行时的 updates/：只放带版本号的那一个，基地扫到后由 POST :30085/update/apply 换版；
  * 运行时目录本身、jmbotsDataS4（旧正式版）、dist/release* 不许写。
+ * 默认先做类型检查，显式传 --skip_checks yes 可跳过。
  *
  * 运行：bun scripts/Build_Src7.ts --out <输出目录> [--skip_checks yes]
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as serveProcess from './Serve_Process.ts';
 
+
+/** jmbots 代码目录（本文件在 scripts/ 下）。 */
+const ROOT = path.resolve(import.meta.dir, '..');
 
 /** 这个平台可执行文件的后缀。 */
 const EXE = process.platform === 'win32' ? '.exe' : '';
+
+/**
+ * 取命令行上的 --名字 值。
+ * @param name 参数名。
+ * @param fallback 没给时的值。
+ * @returns 参数值。
+ * @throws --名字 后面缺值时抛错。
+ */
+function getOption(name: string, fallback: string): string {
+  //M 命令行参数：去掉前两项（运行时和脚本路径）。
+  const args = process.argv.slice(2);
+  const flag = '--' + name;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    //M 写成 --名字 值：值是下一项，缺了或下一项又是 -- 开头就报错。
+    if (argument === flag) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(flag + ' 后面需要参数值');
+      }
+      return value;
+    }
+    //M 写成 --名字=值：取等号后面的。
+    if (argument?.startsWith(flag + '=')) {
+      return argument.slice(flag.length + 1);
+    }
+  }
+  return fallback;
+}
+
+/**
+ * 北京时间的 20 位 ID：17 位 `yyyyMMddHHmmssSSS` 加 3 位随机数字（和 utils/Time.ts 的 sessionId 同一套写法）。
+ * 用在产物文件名上。
+ * @returns 20 位数字串。
+ */
+function timeId(): string {
+  const now = new Date();
+  //M 北京时间的 `yyyy-MM-dd HH:mm:ss`，只取数字。
+  const digits = now.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/\D/g, '');
+  const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
+  const randomSuffix = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  return `${digits}${milliseconds}${randomSuffix}`;
+}
 
 /**
  * 从某个时刻到现在过了几秒，留一位小数。
@@ -35,7 +81,7 @@ function step(name: string, args: string[], env?: Record<string, string>): void 
   const startedAt = Date.now();
   const command = [process.execPath, ...args];
   const options = {
-    cwd: serveProcess.ROOT,
+    cwd: ROOT,
     env: env === undefined ? undefined : { ...process.env, ...env },
     stdout: 'inherit' as const,
     stderr: 'inherit' as const,
@@ -86,7 +132,7 @@ function writeEntry(workDir: string, webDir: string): string {
   const readingDir = 'docs/组块阅读';
   const linesDir = 'docs/骨架逐行';
   const cordisDir = 'docs/Cordis用法';
-  const sources = walk(path.join(serveProcess.ROOT, 'src7'))
+  const sources = walk(path.join(ROOT, 'src7'))
     .filter((item) => {
       const source = item.endsWith('.ts') && !item.endsWith('.test.ts');
       const readme = item.endsWith('说明.md');
@@ -100,26 +146,26 @@ function writeEntry(workDir: string, webDir: string): string {
     .map((item): [string, string] => {
       const copy = path.join(textDir, `${item}.txt`);
       fs.mkdirSync(path.dirname(copy), { recursive: true });
-      fs.copyFileSync(path.join(serveProcess.ROOT, 'src7', item), copy);
+      fs.copyFileSync(path.join(ROOT, 'src7', item), copy);
       return [`src7/${item}`, copy];
     });
   const files: [string, string][] = [
     ...walk(webDir).map((item): [string, string] => [`web/${item}`, path.join(webDir, item)]),
-    ...walk(path.join(serveProcess.ROOT, 'prompts'))
+    ...walk(path.join(ROOT, 'prompts'))
       .filter((item) => item.endsWith('.md') && path.basename(item) !== 'README.md')
-      .map((item): [string, string] => [`prompts/${item}`, path.join(serveProcess.ROOT, 'prompts', item)]),
+      .map((item): [string, string] => [`prompts/${item}`, path.join(ROOT, 'prompts', item)]),
     ...sources,
   ];
   const registrations = files.map(([name], index) => `  ${JSON.stringify(name)}: f${String(index)},`);
   const register = [
-    `import * as embedded from ${importPath(path.join(serveProcess.ROOT, 'src7', 'utils', 'Embedded.ts'))};`,
+    `import * as embedded from ${importPath(path.join(ROOT, 'src7', 'utils', 'Embedded.ts'))};`,
     ...files.map(([, file], index) => `import f${String(index)} from ${importPath(file)} with { type: 'file' };`),
     `embedded.registerEmbeddedFiles({\n${registrations.join('\n')}\n}, ${String(Date.now())});`,
     '',
   ].join('\n');
   fs.writeFileSync(path.join(workDir, 'Register.ts'), register);
   const entry = path.join(workDir, 'Entry.ts');
-  fs.writeFileSync(entry, `import './Register.ts';\nimport ${importPath(path.join(serveProcess.ROOT, 'src7', 'Main.ts'))};\n`);
+  fs.writeFileSync(entry, `import './Register.ts';\nimport ${importPath(path.join(ROOT, 'src7', 'Main.ts'))};\n`);
   return entry;
 }
 
@@ -132,7 +178,7 @@ async function compile(entry: string, output: string): Promise<void> {
   const startedAt = Date.now();
 
   //M silk-wasm 3.7.1 的 Module 支持 locateFile，公开 decode 未暴露这个参数。
-  const library = path.join(serveProcess.ROOT, 'node_modules', 'silk-wasm', 'lib', 'index.mjs');
+  const library = path.join(ROOT, 'node_modules', 'silk-wasm', 'lib', 'index.mjs');
   const original = fs.readFileSync(library, 'utf8');
   const marker = 'silk_default=Module;';
   if (original.split(marker).length !== 2) throw new Error('SILK 加载入口已变，请核对 WASM 嵌入方式');
@@ -162,7 +208,7 @@ async function compile(entry: string, output: string): Promise<void> {
  * @returns 禁止的话给出原因。
  */
 function forbiddenReason(outDir: string): string | undefined {
-  const root = path.resolve(serveProcess.ROOT);
+  const root = path.resolve(ROOT);
   const aidata = path.resolve(root, '..', '..');
   /** 正在用的运行时目录：它们的 updates/ 可以写，别处不许写。 */
   const runtimes = [path.join(aidata, 'AIJMBots', 'jmbotsData'), path.join(root, 'jmbotsData')];
@@ -188,7 +234,7 @@ function forbiddenReason(outDir: string): string | undefined {
  * 副作用：写中间产物和 --out 目录。
  */
 async function main(): Promise<void> {
-  const outOption = serveProcess.option('out', '');
+  const outOption = getOption('out', '');
   if (outOption === '') {
     console.error('必须写 --out <输出目录>：测试写到 cache/ 下，换版写到 <运行时>/updates');
     process.exit(1);
@@ -201,17 +247,18 @@ async function main(): Promise<void> {
     console.error(blocked);
     process.exit(1);
   }
-  if (serveProcess.option('skip_checks', 'yes') !== 'yes') {
+  const skipChecks = getOption('skip_checks', 'no');
+  if (skipChecks !== 'yes') {
     const startedAt = Date.now();
-    step('类型检查', ['x', 'tsc', '-p', 'tsconfig.src7.json']);
+    step('类型检查', ['x', 'tsc', '-p', 'tsconfig.json']);
     console.log(`检查一共 ${seconds(startedAt)} 秒`);
   }
   //M 中间产物放项目自己的 cache/，不落在 --out 里，免得基地扫 updates/ 时看到。
-  const workDir = path.join(serveProcess.ROOT, 'cache', 'build-src7-work');
+  const workDir = path.join(ROOT, 'cache', 'build-src7-work');
   fs.rmSync(workDir, { recursive: true, force: true });
   fs.mkdirSync(workDir, { recursive: true });
   const webDir = path.join(workDir, 'web');
-  step('打包网页', [path.join(serveProcess.ROOT, 'web', 'Build.ts')], { JMBOTS_WEB_OUT: webDir });
+  step('打包网页', [path.join(ROOT, 'web', 'Build.ts')], { JMBOTS_WEB_OUT: webDir });
   const built = path.join(workDir, `jmbots-server${EXE}`);
   const entryFile = writeEntry(workDir, webDir);
   // 2026-11-14 19:30（Claude 4.5）：--sourcemap 把源码映射编进 exe，trace 打的“文件:行”才对得上 plugins/xxx/index.ts。
@@ -225,7 +272,7 @@ async function main(): Promise<void> {
   const printed = check.stdout.toString();
   const { version } = JSON.parse(printed) as { version: string };
   fs.mkdirSync(outDir, { recursive: true });
-  const stamped = path.join(outDir, `jmbots-server-${version}-${serveProcess.timeId()}${EXE}`);
+  const stamped = path.join(outDir, `jmbots-server-${version}-${timeId()}${EXE}`);
   //M 先写 .tmp 再改名，基地扫 updates/ 时跳过 .tmp，拿不到写了一半的文件。
   fs.copyFileSync(built, `${stamped}.tmp`);
   fs.renameSync(`${stamped}.tmp`, stamped);

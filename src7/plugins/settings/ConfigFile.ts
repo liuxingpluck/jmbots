@@ -20,7 +20,7 @@ export type Edit = { path: (string | number)[]; value?: unknown; delete?: boolea
 
 
 /** 网页能看能改的顶层段（照网页设置页 web/src/Settings/Settings.tsx:23-34 读写的段，加上 src7 的 decision）。 */
-const SECTIONS = new Set(['providers', 'default_model', 'models', 'bots', 'channels', 'search', 'engine', 'concurrency',
+const SECTIONS = new Set(['providers', 'default_model', 'models', 'bots', 'channels', 'search', 'concurrency',
   'server', 'http', 'local', 'ui', 'decision']);
 
 /** 一个允许从设置页改的插件字段。 */
@@ -39,6 +39,8 @@ interface PluginField {
 const PLUGIN_FIELDS: readonly PluginField[] = [
   { plugin: 'base-bridge', key: 'index_url', kind: 'text' },
   { plugin: 'image-gen', key: 'image_model', kind: 'text' },
+  { plugin: 'bots', group: 'front', key: 'vision_model', kind: 'text' },
+  { plugin: 'progress', key: 'wrapup_model', kind: 'text' },
   { plugin: 'model-catalog', group: 'fallback', key: 'chain', kind: 'list' },
   { plugin: 'model-catalog', group: 'fallback', key: 'max_tries', kind: 'count' },
   { plugin: 'model-catalog', group: 'fallback', key: 'include_siblings', kind: 'flag' },

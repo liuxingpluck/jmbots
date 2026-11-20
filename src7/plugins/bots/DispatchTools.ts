@@ -10,8 +10,8 @@ import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import type * as modelCatalogPlugin from '../model-catalog/index.ts';
 import type * as workspacesPlugin from '../workspaces/index.ts';
-import type * as protocol from '../channels/index.ts';
-import type { FrontTask, Stage } from './DispatchResults.ts';
+import * as protocol from '../channels/index.ts';
+import type { DeliveryMode, FrontTask, Stage } from './DispatchResults.ts';
 import * as dispatch from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import type { Bot, Origin } from './index.ts';
@@ -147,8 +147,9 @@ export class DispatchTools {
       action = 'append';
     }
 
-    //G 非本人（builder、guest）不能挑模型、思考档，用前台的。
-    if (workspaceModule.isNonOwnerSpeaker(front.row.address) && (model !== '' || thinking !== '')) {
+    //G 不是本人（builder、guest、没写身份的外部渠道）不能挑模型、思考档，用前台的。
+    const owner = protocol.isOwnerTurn(front.row.channel, front.row.address);
+    if (!owner && (model !== '' || thinking !== '')) {
       throw new Error('只有本人能指定模型和思考档；不写就用前台的');
     }
 
@@ -195,7 +196,7 @@ export class DispatchTools {
       channel: originSnapshot.channel,
       address: structuredClone(originSnapshot.address),
     };
-    let deliveryMode: 'channel_tool' | 'legacy_auto' = 'legacy_auto';
+    let deliveryMode: DeliveryMode = dispatch.AUTO_REPLY_MODE;
     if (activeFrontItem?.deliveryMode === 'channel_tool' || activeSnapshot !== undefined) {
       deliveryMode = 'channel_tool';
     }
@@ -212,7 +213,7 @@ export class DispatchTools {
    */
   private create(front: Session, bot: Bot, plan: HandPlan & { pick: WorkspacePick }): string {
     //M 工作区：在说话人能用的范围里定下（出界、没权限、已归档抛错），拿到 ID 和目录。
-    const resolved = this.getWorkspace(bot, plan.origin.address, plan.pick);
+    const resolved = this.getWorkspace(bot, plan.origin, plan.pick);
 
     //M 模型和思考档：没写沿用前台的；写了照模型清单校验。
     const picked = this.getModel(front.row.model, front.row.thinking, plan);
@@ -305,7 +306,7 @@ export class DispatchTools {
       allowArchived: true,
     };
     //M 沿用已绑定的目录并复核权限，模型按本次派活及图片需要更新。
-    const resolved = this.getWorkspace(bot, plan.origin.address, pick);
+    const resolved = this.getWorkspace(bot, plan.origin, pick);
     const picked = this.getModel(work.row.model, work.row.thinking, plan);
     work.row.model = picked.model;
     work.row.thinking = picked.thinking;
@@ -414,7 +415,7 @@ export class DispatchTools {
 
     //M 工作区的名字：只要这一次说话人看得到的（外人看不到别人工作区的名字）。
     const workspaces = this.home.workspaces;
-    const access = workspaces.getAccess(front.row.bot, front.row.address);
+    const access = workspaces.getAccess(front.row.bot, front.row.channel, front.row.address);
     const visible = workspaces.list(access, { includeArchived: true });
     const pairs = visible.map((item): [string, string] => [item.id, item.name]);
     const names = new Map(pairs);
@@ -474,8 +475,8 @@ export class DispatchTools {
       return `session_not_owned：会话 ${work.id} 不是这个客户的`;
     }
 
-    //M 非本人：派活时的说话人要是他。
-    if (workspaceModule.isNonOwnerSpeaker(front.row.address)) {
+    //M 不是本人：派活时的说话人要是他。
+    if (!protocol.isOwnerTurn(front.row.channel, front.row.address)) {
       const speaker = utils.getStringField(front.row.address, 'openId');
       const owner = utils.getStringField(work.row.frontTask?.origin.address, 'openId');
       if (speaker === '' || speaker !== owner) return `session_not_owned：会话 ${work.id} 不是你派的`;
@@ -487,16 +488,17 @@ export class DispatchTools {
    * 后台在哪个工作区干：在说话人能用的范围（builder、guest 是地址里他自己的目录，本人是这个机器人的全部工作区）里定下，
    * 交给 workspaces 插件的 resolve 查归属、范围、归档，旧写法的目录第一次用到时原地登记。
    * @param bot 这个机器人。
-   * @param address 派活时（append 是这一次）说话人的地址：照它算谁在用（workspaces.getAccess）。
+   * @param origin 派活时（append 是这一次）说话人的渠道和地址：照它算谁在用（workspaces.getAccess）。
    * @param pick 选哪个：workspaceId；没写看旧写法 workspace（'.' 是范围本身；机器人配置 workspaces 里登记的名字只给本人；
    *   别的当相对路径，目录不在就建）。
    * @returns 工作区和绝对目录。
    * @throws workspace_outside_scope（出了范围、非本人用登记的名字）、workspace_not_found、workspace_forbidden、workspace_archived。
    */
-  private getWorkspace(bot: Bot, address: unknown, pick: WorkspacePick): workspacesPlugin.ResolvedWorkspace {
-    //M 先按说话人的地址算他是本人还是外人、能用哪个目录范围，下面的选法都在这个范围里。
+  private getWorkspace(bot: Bot, origin: Origin, pick: WorkspacePick): workspacesPlugin.ResolvedWorkspace {
+    //M 先按说话人的渠道和地址算他是本人还是外人、能用哪个目录范围，下面的选法都在这个范围里。
+    const address = origin.address;
     const workspaces = this.home.workspaces;
-    const access = workspaces.getAccess(bot.name, address);
+    const access = workspaces.getAccess(bot.name, origin.channel, address);
 
     //M 按 ID 选（新派的写了 workspaceId、绑定过的后台）。
     if (pick.workspaceId !== '') {
@@ -626,8 +628,8 @@ export class DispatchTools {
     //M 工具仍可用才把如何派活告诉模型。
     request.system.push(HAND_HINT);
 
-    //G 非本人（builder、guest）不挑模型：不带模型介绍。
-    if (workspaceModule.isNonOwnerSpeaker(row.address)) return;
+    //G 不是本人（builder、guest、没写身份的外部渠道）不挑模型：不带模型介绍。
+    if (!protocol.isOwnerTurn(row.channel, row.address)) return;
 
     //M 本人才能挑模型：发请求事件 model-catalog/request（action: prompt，契约 3.2 第 7 条），一次拿齐模型介绍评价和能用的思考档。
     //M   没挂 model-catalog、超时、出错都退回两段空串，这一轮只带派活说明。
@@ -675,7 +677,7 @@ interface HandPlan {
   /** 派活这一刻的渠道和地址（深拷贝）。 */
   origin: Origin;
   /** 派活时的回复策略。 */
-  deliveryMode: 'channel_tool' | 'legacy_auto';
+  deliveryMode: DeliveryMode;
   /** 派活时不可变来源快照。 */
   sourceSnapshot?: protocol.SourceSnapshot;
 }

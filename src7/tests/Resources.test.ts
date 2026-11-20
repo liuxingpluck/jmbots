@@ -55,11 +55,15 @@ async function start() {
   return { ctx, config, file, endpoint, requests, reasoningEfforts };
 }
 
-/** 在原子保存之前登记通知，等新快照实际生效。 */
-function nextChange(ctx: cordis.Context): Promise<string[]> {
-  return new Promise((resolve) => {
-    ctx.once('config/changed', resolve);
-  });
+/** 用资源服务公开的快照核对热更新，保留文件监听的真实路径。 */
+async function waitForReload(resources: resourcesModule.Resources, previous: resourcesModule.JmbotsConfig): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (resources.config !== previous) return;
+
+    await Bun.sleep(10);
+  }
+  throw new Error('等不到新的资源配置快照');
 }
 
 test.test('手写档位映射把 max 原样发给接口，缺少配置的模型没有映射', async () => {
@@ -69,10 +73,10 @@ test.test('手写档位映射把 max 原样发给接口，缺少配置的模型�
     models: { 'test-model': { thinking: ['off', 'low', 'high', 'max'] } },
   };
   const updated = { ...config, providers: { ...config.providers, first } };
-  const changed = nextChange(ctx);
+  const previous = ctx.resources.config;
   const source = yaml.stringify(updated);
   filesModule.writeTextAtomic(file, source);
-  await changed;
+  await waitForReload(ctx.resources, previous);
 
   const resources = ctx.resources;
   const model = resources.getModel('first/test-model');
@@ -97,12 +101,12 @@ test.test('对象配置覆盖供应商值，省略配置时保留 pi 内置模�
     },
   };
   const providers = { ...config.providers, 'qwen-token-plan': qwen };
-  const changed = nextChange(ctx);
+  const previous = ctx.resources.config;
   const updated = { ...config, providers };
   //M 两个千问模型共用同一供应商，分别覆盖映射和沿用 pi 的内置映射。
   const source = yaml.stringify(updated);
   filesModule.writeTextAtomic(file, source);
-  await changed;
+  await waitForReload(ctx.resources, previous);
 
   const mapped = ctx.resources.getModel('qwen-token-plan/qwen3.8-flash');
   test.expect(mapped.thinkingLevelMap).toMatchObject({ off: null, high: 'deep', xhigh: null, max: 'very-deep' });
@@ -133,11 +137,11 @@ test.test('原子保存密钥后，下一次 pi 请求使用新密钥且保留�
   const before = await resources.models.completeSimple(model, input);
   test.expect(before.stopReason).toBe('stop');
 
-  const changed = nextChange(ctx);
+  const previous = resources.config;
   config.providers.first.api_key = 'fixture-new-key';
   const updated = yaml.stringify(config);
   filesModule.writeTextAtomic(file, updated);
-  test.expect(await changed).toEqual(['providers']);
+  await waitForReload(resources, previous);
   test.expect(resources.models.getProvider('first')).toBe(provider);
 
   const after = await resources.models.completeSimple(model, input);
@@ -158,8 +162,6 @@ test.test('非法配置打印原因且保留旧快照，之后仍能应用修正
     logged.resolve(message);
   });
   cleanups.push(() => fail.mockRestore());
-  const changes: string[][] = [];
-  ctx.on('config/changed', (keys) => { changes.push(keys); });
   const invalid = { ...config, default_model: 'missing/test-model' };
   const written = yaml.stringify(invalid);
   fs.writeFileSync(file, written);
@@ -167,15 +169,13 @@ test.test('非法配置打印原因且保留旧快照，之后仍能应用修正
   test.expect(await logged.promise).toContain('default_model');
   test.expect(resources.config).toBe(original);
   test.expect(resources.raw).toBe(raw);
-  test.expect(changes).toEqual([]);
   const stillConfigured = await resources.models.getAuth('first');
   test.expect(stillConfigured?.auth.apiKey).toBe(config.providers.first.api_key);
 
-  const changed = nextChange(ctx);
   const valid = { ...config, models: { thinking: 'off' } };
   const repaired = yaml.stringify(valid);
   filesModule.writeTextAtomic(file, repaired);
-  test.expect(await changed).toEqual(['models']);
+  await waitForReload(resources, original);
   test.expect(resources.config.thinking).toBe('off');
 });
 
@@ -191,10 +191,10 @@ test.test('供应商新增、删除及换地址后，pi 使用最新登记和凭
       next: { base_url: `${endpoint}/next`, api_key: 'fixture-added-key' },
     },
   };
-  const changed = nextChange(ctx);
+  const previous = resources.config;
   const updated = yaml.stringify(added);
   filesModule.writeTextAtomic(file, updated);
-  test.expect(await changed).toEqual(['providers']);
+  await waitForReload(resources, previous);
   test.expect(resources.models.getProvider('first')).not.toBe(before);
   test.expect(resources.models.getProvider('spare')).toBeUndefined();
   const first = resources.models.getProvider('first');

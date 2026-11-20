@@ -253,7 +253,7 @@ export class FrontDesk {
     }
 
     //M 标了只听（channel/listen 来的，飞书群里没 @ 机器人的话）：记进这场前台对话当背景，不推它往下走、不回；这条就算处理掉了。
-    //M   要不要接话不在这条旧路上判断：群攒批只接渠道事件那条路（DispatchClaim.ts → GroupBatch.ts）。
+    //M   群攒批判断只接渠道事件（DispatchClaim.ts → GroupBatch.ts），直接收话的入口只记背景。
     if (utils.getField(address, 'listenOnly') === true) {
       this.listen(session, event.message.text, address);
       event.handled = true;
@@ -266,7 +266,7 @@ export class FrontDesk {
    * 只听的一句记进前台对话：前面带说话人（飞书查到的名字，没查到用 open_id 后 6 位），当成一句用户话存进对话，不调模型。
    * 记下的往来进记忆的前台归档，前台下一轮“最近往来”的背景里看得到（本人的前台）。
    * 会话正在转就先排在 heard 里，这一轮结束（session/change）再记：免得插进工具调用和结果中间，也免得又引出一轮回答。
-   * DispatchClaim（只听的话、没开群攒批）、GroupBatch（一批判完不接、今天看满了）、onReceive（旧路）调。
+   * DispatchClaim（只听的话、没开群攒批）、GroupBatch（一批判完不接、今天看满了）、onReceive（直接收话）调。
    * @param session 这个群的前台对话。
    * @param text 说的话。
    * @param address 回话地址：读 senderName、openId。

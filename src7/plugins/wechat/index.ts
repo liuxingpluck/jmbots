@@ -45,7 +45,8 @@ export const name = 'wechat-kefu';
 //M 1.2.4：跨聊天发话认目标时，拆目标串（去“微信·”、拆“账号:聊天”）改用骨架的 parseChatTarget；查表规则不变。
 //M 1.2.11：旧路自动回话也经 channel/reply 来（target 带会话记的地址、带会话号），删渠道自己的 send；带会话号的只发做完的一轮。
 //M 1.2.12：channel/message 拆了，交给机器人的经 emitInbound 发：私聊 channel/direct、群里 @我 channel/mention。
-export const version = '1.2.12';
+//M 1.2.13：标准消息的 role 直接写 guest（微信一律外人，删 resolveLegacyRole）；SessionRow.customer 不再在这里声明（bots 一处）。
+export const version = '1.2.13';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http'];
@@ -81,14 +82,6 @@ export function getRoundId(replyRoundKey: string): string {
     return roundId;
   } catch {
     return '';
-  }
-}
-
-
-declare module '../../Sessions.ts' {
-  interface SessionRow {
-    /** 客户号：渠道:渠道内用户号（wechat:wxid_xxx）。memory 按它分客户检索。 */
-    customer?: string;
   }
 }
 
@@ -453,8 +446,8 @@ export class Wechat {
         chatId: row.chat,
         chatType,
         sender,
-        //M 将旧地址里的权限信息映射成标准渠道消息的发言人角色。
-        role: protocol.resolveLegacyRole(address as unknown as Record<string, unknown>),
+        //M 微信说话的一律是外人（地址 owner: false，channels 的 isOwnerTurn 也这么判）。
+        role: 'guest',
         targetBots: [this.config.bot],
         mentions,
         rawText: text,

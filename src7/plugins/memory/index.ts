@@ -18,8 +18,8 @@ import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import * as archiveListenModule from '../channels/ArchiveListen.ts';
+import * as chatArchiveModule from '../channels/Archive.ts';
 import * as backendModule from './Backend.ts';
 import * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
@@ -44,7 +44,9 @@ export const name = 'memory';
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
 //M 1.10.9：用户的话改听 channel/direct、channel/mention、channel/listen（只听的、没登记的群也记）；语音半句（routing.partial）不记。
 //M 1.11.0：听 channel/history（飞书拉回的群历史）进历史回填队列，并请回填开跑；ChannelBackfill 加 resume。
-export const version = '1.11.0';
+//M 1.11.1：客户号只读渠道写的（删 customerFrom）；私人记忆判断并进 MemoryKey.canReadAll，本人、群改问 channels。
+//M 1.11.2：渠道索引按归档路径记附件、按撤回事件记时刻，表结构交 db 管版本。
+export const version = '1.11.2';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];
@@ -793,7 +795,9 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   //M 给统一检索和渠道监听共用的索引；channel_index 不写是开。
   const channelIndexOn = channelIndexModule.readEnabled(own['channel_index']);
   const db = ctx.resources.db;
-  const archiveIndex = new channelIndexModule.ChannelIndex(db);
+  //M db 已挂就复用它的服务，旧插件顺序也在同一主库按迁移账本升级。
+  const migrations = ctx.get('db');
+  const archiveIndex = new channelIndexModule.ChannelIndex(db, migrations);
   const frontArchive = new frontArchiveModule.FrontArchive(db, archiveIndex);
   let channelIndex: channelIndexModule.ChannelIndex | undefined;
   if (channelIndexOn) {
@@ -815,14 +819,17 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   new Memory(ctx, store, settings);
   const unified = memoryService.unified;
   unified.registerTools();
+  //M 索引和 Markdown 共用聊天目录，确保搜索里的附件路径指向归档文件。
+  const root = ctx.resources.root;
+  const chats = new chatArchiveModule.ChatArchive(root);
+  const archive = { root, chats };
   if (channelIndex !== undefined) {
     //M 实时队列始终接新事件，历史回填由资源守卫和手动开关控制。
     const backfill = new channelBackfillModule.ChannelBackfill(ctx, channelIndex, memoryService, backfillSettings);
-    channelIndexModule.applyChannelIndex(ctx, channelIndex, backfill);
+    channelIndexModule.applyChannelIndex(ctx, channelIndex, backfill, archive);
   }
-
-  //M 聊天记全写 MD：五个渠道事件落到 chats/ 目录，与渠道索引开关无关。
-  archiveListenModule.applyChatArchive(ctx, ctx.resources.root);
+  //M prepend 后登记先执行。先复制 Markdown 附件，再写索引，接着交给机器人认领。
+  archiveListenModule.applyChatArchive(ctx, root, chats);
 
   //M 关系图路由（GraphRoutes）和记忆库的 HTTP 接口（routes）：http 插件在才真正登记。
   const graphRoutes = new graphRoutesModule.GraphRoutes(

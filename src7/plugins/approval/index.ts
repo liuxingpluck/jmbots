@@ -45,7 +45,9 @@ export const name = 'approval';
 //M 1.2.11：认批复改听 channel/direct、channel/mention（channel/message 拆了；只听的 channel/listen 不看）；语音半句不认。
 //M 1.2.12：目录授权向下延伸（Grants.ts，用户 #301）：按人、按群的授权目录，外人升 builder，本人说的当轮生效，工具 dir_grant、/api/grants；
 //M   带授权目录的外人，命令出了执行目录和授权目录规则直接拒。
-export const version = '1.2.12';
+//M 1.2.13：本人、档位、群改问 channels 的 isOwnerTurn、getSpeakerRole、isGroup；isOwner 改名 isMarkedOwner（有意更严，判断不变）。
+//M 1.2.14：工具档位说明里写明 feishu_recall（撤回机器人自己的消息）只有本人那一轮能用，两张外人表不加它；程序不变。
+export const version = '1.2.14';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;

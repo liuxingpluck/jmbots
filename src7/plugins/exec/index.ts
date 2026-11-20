@@ -16,7 +16,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as cut from '../../utils/Cut.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
+import * as protocol from '../channels/index.ts';
 import * as runsModule from './Runs.ts';
 
 
@@ -27,7 +27,9 @@ export { mountRunsRoutes, readRunsEnabled, Runs, type RunRecord } from './Runs.t
 export const name = 'exec';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.4：只有外人让跑的命令才限在工作目录（confined）；本人在别的工作区、授权目录里跑照本人的规则审（用户 #301）。
-export const version = '1.1.4';
+//M 1.1.5：按本轮机器人和回话地址取工作目录。
+//M 1.1.6：是不是本人改问 channels 的 isOwnerTurn（从 utils/Workspace.ts 挪过去的），判断不变。
+export const version = '1.1.6';
 
 /**
  * 用到的服务：resources、tools、bots、sessions。审核不写在这里，走 approval/request 事件：没挂 approval 时一律拒绝（没有审核就不让跑命令）；
@@ -262,14 +264,14 @@ export class Exec extends cordis.Service {
    */
   private async onTool(args: Record<string, unknown>, session: Session, signal: AbortSignal): Promise<string> {
     const command = args['command'] as string;
+    const { bot: botName, address } = session.row;
     //M 工作目录以本轮来源为准：外人是他（或群绑）的目录，本人是机器人的或后台选的工作区。
-    const cwd = botUtils.getSessionWorkspace(this.ctx.resources, session);
-    const botName = session.row.bot;
+    const cwd = botUtils.getSessionWorkspace(this.ctx.resources, botName, address);
 
     //M 外人（builder、按授权升成 builder 的人）让跑的才限在工作目录里（审核照目录约束、只认授权目录、审不过直接拒）；
     //M   本人不限：后台在别的工作区、授权目录里干活，照本人的规则审，要问就出卡片（用户 #301）。
     let confined: string | undefined;
-    if (!workspaceModule.isOwnerTurn(session.row.channel ?? '', session.row.address)) {
+    if (!protocol.isOwnerTurn(session.row.channel, session.row.address)) {
       confined = cwd;
     }
     const timeoutMs = ((args['timeout'] as number | undefined) ?? DEFAULT_TIMEOUT_SECONDS) * 1000;

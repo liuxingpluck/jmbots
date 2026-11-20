@@ -14,7 +14,7 @@ import ledgerSql from './migrations/0000_db_migrations.sql' with { type: 'text' 
 
 /** 自带插件名及版本。 */
 export const name = 'db';
-export const version = '1.0.0';
+export const version = '1.0.1';
 
 /** Resources 持有原生连接，db 随它启动。 */
 export const inject = ['resources'];
@@ -33,6 +33,13 @@ export interface Migration {
   version: number;
   /** 由表定义生成的迁移文件内容。 */
   sql: string;
+  /** 接管已用旧代码加过的一列；列已存在时只登记该版本。SQL 只包含对应的加列语句。 */
+  adoptColumn?: {
+    /** 旧表名。 */
+    table: string;
+    /** 可以接管的现有列名。 */
+    name: string;
+  };
 }
 
 /** 同一个业务插件按版本提交的方言迁移。 */
@@ -110,7 +117,12 @@ export class Db extends cordis.Service implements DbEngine<SqliteOrm, SqliteTx> 
 
         //M 换行符跨平台归一化，避免同一份 SQL 在 Windows 上改变摘要。
         const source = migration.sql.replaceAll('\r\n', '\n');
-        const hash = crypto.createHash('sha256').update(source).digest('hex');
+        const column = migration.adoptColumn;
+        let fingerprint = source;
+        if (column !== undefined) {
+          fingerprint = JSON.stringify([source, column.table, column.name]);
+        }
+        const hash = crypto.createHash('sha256').update(fingerprint).digest('hex');
         const known = applied[index];
         if (known !== undefined) {
           if (known.version !== version || known.hash !== hash) {
@@ -119,17 +131,28 @@ export class Db extends cordis.Service implements DbEngine<SqliteOrm, SqliteTx> 
           continue;
         }
 
-        //M Drizzle Kit 以此注释分隔语句，每条在同一事务连接执行。
-        const statements = source.split('--> statement-breakpoint');
-        for (const part of statements) {
-          const text = part.trim();
-          if (text === '') continue;
-
-          const statement = drizzle.sql.raw(text);
-          tx.run(statement);
+        //M 接管旧版已经加过的列，避免在已有数据上重复加列。
+        let adopted = false;
+        if (column !== undefined) {
+          const existing = drizzle.sql`SELECT name FROM pragma_table_info(${column.table}) WHERE name = ${column.name}`;
+          adopted = tx.get(existing) !== undefined;
         }
 
-        //M 只有迁移执行成功才登记版本，重启可以安全重跑。
+        if (!adopted) {
+          //M Drizzle Kit 以此注释分隔语句，每条在同一事务连接执行。
+          const statements = source.split('--> statement-breakpoint');
+          for (const part of statements) {
+            const text = part.trim();
+            if (text === '') {
+              continue;
+            }
+
+            const statement = drizzle.sql.raw(text);
+            tx.run(statement);
+          }
+        }
+
+        //M 只有迁移完成或接管已存在的列才登记版本，重启只核对摘要。
         const entry = { plugin, version, hash, appliedAt: Date.now() };
         tx.insert(table).values(entry).run();
       }

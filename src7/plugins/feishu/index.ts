@@ -30,7 +30,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
+import * as protocol from '../channels/index.ts';
 import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
 import { FeishuContacts } from './Contacts.ts';
@@ -41,11 +41,14 @@ import { FeishuInbound } from './Inbound.ts';
 import type { RecallData, ReceiveData } from './Inbound.ts';
 import * as media from './Media.ts';
 import * as outbox from './outbox/Outbox.ts';
+import * as recall from './Recall.ts';
 import { FeishuReply } from './Reply.ts';
 
 /** sendText 交回的回执：accepted 文字和文件都发了，partial 有文件没发出去（reason 写哪几个）。 */
-interface LegacySendReceipt {
+interface SendTextReceipt {
+  /** 文字和附件的发送状态。 */
   status: 'accepted' | 'partial' | 'uncertain' | 'rejected';
+  /** 发送失败时的原因。 */
   reason: string;
 }
 
@@ -66,7 +69,11 @@ export const name = 'feishu';
 //M 1.2.3：群里回话隐去本机绝对路径（mentioned 里 hideLocalPaths）；feishu_send_file 认这一轮的授权目录（用户 #301）。
 //M 1.2.4：拼标准消息时带上 accountName（应用配置的 bot 名），聊天归档的账号目录用它。
 //M 1.3.0：拉群聊历史（HistoryPull.ts）：POST /api/feishu/history、机器人新进群自动拉最近 history_on_join 条，发 channel/history 给 memory 补记；不触发会话。
-export const version = '1.3.0';
+//M 1.3.1：收发文档路径按机器人和回话地址定位工作区。
+//M 1.3.2：是不是群、点卡片的是不是本人改问 channels 的 isGroup、getSpeakerRole（从 utils/Workspace.ts 挪过去的），判断不变。
+//M 1.3.3：新工具 feishu_recall（Recall.ts）撤回机器人自己发的消息；feishu_doc 群里建文档后给这个群阅读权限；提示里加“群里要文件优先发 Word”。
+//M 1.3.4：发送文字和内联附件的返回类型改名为 SendTextReceipt。
+export const version = '1.3.4';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -144,7 +151,7 @@ export interface FeishuAddress {
   judged?: string;
   /** 这个群登记的 relay：model 时 @ 机器人的话由模型判断要不要转外部助手（relay 读）；没登记不写。 */
   relay?: 'direct' | 'model';
-  /** 这个群登记的 trusted：true 时本人在群里说话照旧带私人记忆（utils/Workspace.ts 的 isPrivateMemoryAllowed 读）；没登记、私聊不写，当 false。 */
+  /** 这个群登记的 trusted：true 时本人在群里说话照旧带私人记忆（memory/MemoryKey.ts 的 canReadAll 读）；没登记、私聊不写，当 false。 */
   trusted?: boolean;
 }
 
@@ -755,7 +762,7 @@ export class Feishu {
    * @returns 回执：都发了 accepted；有文件没发出去是 partial（原因写哪几个）。
    * @throws 地址没有 chatId（api.NotSent）、文字发不出去时抛错；某个文件发不出去时补发一句说明，不抛。
    */
-  async sendText(address: FeishuAddress | undefined, text: string): Promise<LegacySendReceipt> {
+  async sendText(address: FeishuAddress | undefined, text: string): Promise<SendTextReceipt> {
     if (address === undefined || typeof address.chatId !== 'string' || address.chatId === '') {
       //M 回话地址缺失 chatId 属于明确无法投递的目标错误，抛出 NotSent。
       throw new api.NotSent('飞书回话地址里没有 chatId，不知道发到哪');
@@ -836,7 +843,7 @@ export class Feishu {
    */
   mentioned(address: FeishuAddress, text: string): string {
     //G 私聊原样返回。
-    if (!workspaceModule.isGroup(address)) return text;
+    if (!protocol.isGroup(address)) return text;
 
     //M 群里所有人都看得到：本机绝对路径只留最后一段（utils/Text.ts 的 hideLocalPaths）。
     const hidden = textModule.hideLocalPaths(text);
@@ -862,7 +869,7 @@ export class Feishu {
    */
   withAt(address: FeishuAddress | undefined, reply: string): string {
     //G 私聊、无目标发言人 openId 或空回复不额外前置 @ 标签。
-    if (address === undefined || !workspaceModule.isGroup(address)) return reply;
+    if (address === undefined || !protocol.isGroup(address)) return reply;
     if (address.openId === '' || reply.trim() === '') return reply;
 
     //M 话里已经 @ 了他（周小灵自己写的 @名字 也算）：不再加。
@@ -1268,6 +1275,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   //M 依次挂载飞书文件发送工具、云文档工具与定时发件箱监听，随插件同生命周期撤销。
   media.setup(feishu, ctx);
   doc.setup(feishu, ctx);
+  recall.setup(feishu, ctx);
   outbox.setup(feishu, ctx);
 
   //M 直接订阅审批和进度通知，相关插件迟挂时也能收到更新。

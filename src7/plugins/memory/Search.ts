@@ -765,8 +765,11 @@ export class Search {
       const hits = rows.map((row): SearchHit => {
         const params = new URLSearchParams({ channel: row.channel, chat: row.chat, id: row.key });
         const customer = row.memoryKey ?? '';
+        //M 撤回不抹去出处，检索摘要显式标记并列出已归档附件。
+        const text = channel.getChannelText(row);
+        const snippet = text.slice(0, 300);
         return {
-          source, id: row.key, title: row.senderName || row.senderId, snippet: row.text.slice(0, 300), score: 0,
+          source, id: row.key, title: row.senderName || row.senderId, snippet, score: 0,
           at: row.at, ref: `${CHANNEL_ROUTE}?${params.toString()}`, via: ['keyword'], customer, bot: row.bot,
         };
       });

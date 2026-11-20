@@ -68,7 +68,7 @@ export interface NewMessage {
   text: string;
   address: string | null;
   reply_to?: number;
-  /** 别的渠道的标准消息号（进来的渠道事件的 messageId）；网页自己的、旧路进来的不写。 */
+  /** 别的渠道的标准消息号（进来的渠道事件的 messageId）；网页自己的、直接经 bots.receive 入站的不写。 */
   source_id?: string;
   /** 语音首个字幕的时间，其他入口默认取写入时间。 */
   createdAt?: number;
@@ -336,7 +336,7 @@ export class Timeline {
    * 按标准消息号和机器人找那一行：别的渠道的回话照它精确挂回原话（同一条消息给几个机器人时各一行）。
    * @param bot 机器人。
    * @param sourceId 标准消息号（进来的渠道事件的 messageId）。
-   * @returns 消息号；找不到是 undefined（插件挂上之前收的、旧路进来没记消息号的）。
+   * @returns 消息号；找不到是 undefined（插件挂上之前收的、直接入站而未记标准消息号的）。
    */
   findBySource(bot: string, sourceId: string): number | undefined {
     //M 用标准消息号和目标机器人反查收件编号，给跨渠道回话定位原件。

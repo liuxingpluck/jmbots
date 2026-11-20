@@ -4,7 +4,7 @@
       "name": "approval/asked",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/approval/index.ts:71",
+      "declaredAt": "src7/plugins/approval/index.ts:73",
       "signature": "(pending: Pending) => void",
       "doc": "存完一件待确认的事（通知）。journal、feishu 听。",
       "params": [
@@ -19,7 +19,7 @@
         {
           "name": "Pending",
           "kind": "interface",
-          "site": "src7/plugins/approval/index.ts:117",
+          "site": "src7/plugins/approval/index.ts:119",
           "doc": "一件待确认的事。",
           "definition": "",
           "fields": [
@@ -28,98 +28,98 @@
               "optional": false,
               "type": "number",
               "doc": "号：从 1 往上，不复用，重启接着数。",
-              "site": "src7/plugins/approval/index.ts:119"
+              "site": "src7/plugins/approval/index.ts:121"
             },
             {
               "name": "kind",
               "optional": false,
               "type": "string",
               "doc": "谁提的：exec、run、update、review……",
-              "site": "src7/plugins/approval/index.ts:121"
+              "site": "src7/plugins/approval/index.ts:123"
             },
             {
               "name": "title",
               "optional": false,
               "type": "string",
               "doc": "一句话：要确认什么。",
-              "site": "src7/plugins/approval/index.ts:123"
+              "site": "src7/plugins/approval/index.ts:125"
             },
             {
               "name": "detail",
               "optional": false,
               "type": "string",
               "doc": "给用户看的细节，多行。",
-              "site": "src7/plugins/approval/index.ts:125"
+              "site": "src7/plugins/approval/index.ts:127"
             },
             {
               "name": "payload",
               "optional": false,
               "type": "unknown",
               "doc": "提的人自己放的，原样存成 JSON，决定后原样还给他。",
-              "site": "src7/plugins/approval/index.ts:127"
+              "site": "src7/plugins/approval/index.ts:129"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "哪个机器人的。",
-              "site": "src7/plugins/approval/index.ts:129"
+              "site": "src7/plugins/approval/index.ts:131"
             },
             {
               "name": "session",
               "optional": true,
               "type": "string",
               "doc": "哪场会话提的；命令窗口、更新提醒没有。",
-              "site": "src7/plugins/approval/index.ts:131"
+              "site": "src7/plugins/approval/index.ts:133"
             },
             {
               "name": "customer",
               "optional": true,
               "type": "string",
               "doc": "发起该项的客户号（会话上的 customer），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:133"
+              "site": "src7/plugins/approval/index.ts:135"
             },
             {
               "name": "actor",
               "optional": true,
               "type": "string",
               "doc": "发起人的个人身份（如飞书按人、微信按聊天），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:135"
+              "site": "src7/plugins/approval/index.ts:137"
             },
             {
               "name": "state",
               "optional": false,
               "type": "'waiting' | 'approved' | 'rejected'",
               "doc": "在等、同意了、拒绝了。",
-              "site": "src7/plugins/approval/index.ts:137"
+              "site": "src7/plugins/approval/index.ts:139"
             },
             {
               "name": "by",
               "optional": true,
               "type": "string",
               "doc": "谁定的：“HTTP”“cli 文字回复”“飞书卡片 ou_x”……",
-              "site": "src7/plugins/approval/index.ts:139"
+              "site": "src7/plugins/approval/index.ts:141"
             },
             {
               "name": "askedAt",
               "optional": false,
               "type": "number",
               "doc": "提的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:141"
+              "site": "src7/plugins/approval/index.ts:143"
             },
             {
               "name": "decidedAt",
               "optional": true,
               "type": "number",
               "doc": "定的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:143"
+              "site": "src7/plugins/approval/index.ts:145"
             },
             {
               "name": "card",
               "optional": false,
               "type": "cardUtils.CardData",
               "doc": "给用户点的卡片（utils/Card.ts）：网页审批面板、飞书卡片都照它画。",
-              "site": "src7/plugins/approval/index.ts:145"
+              "site": "src7/plugins/approval/index.ts:147"
             }
           ]
         }
@@ -128,7 +128,7 @@
         {
           "plugin": "approval",
           "function": "Approval.ask",
-          "site": "src7/plugins/approval/index.ts:760"
+          "site": "src7/plugins/approval/index.ts:762"
         }
       ],
       "listeners": [
@@ -148,7 +148,7 @@
       "name": "approval/decided",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/approval/index.ts:85",
+      "declaredAt": "src7/plugins/approval/index.ts:87",
       "signature": "(pending: Pending) => void",
       "doc": "定完一件事（通知），state 已是 approved / rejected。提的人（exec……）听它去做，journal、feishu 也听。",
       "params": [
@@ -163,7 +163,7 @@
         {
           "name": "Pending",
           "kind": "interface",
-          "site": "src7/plugins/approval/index.ts:117",
+          "site": "src7/plugins/approval/index.ts:119",
           "doc": "一件待确认的事。",
           "definition": "",
           "fields": [
@@ -172,98 +172,98 @@
               "optional": false,
               "type": "number",
               "doc": "号：从 1 往上，不复用，重启接着数。",
-              "site": "src7/plugins/approval/index.ts:119"
+              "site": "src7/plugins/approval/index.ts:121"
             },
             {
               "name": "kind",
               "optional": false,
               "type": "string",
               "doc": "谁提的：exec、run、update、review……",
-              "site": "src7/plugins/approval/index.ts:121"
+              "site": "src7/plugins/approval/index.ts:123"
             },
             {
               "name": "title",
               "optional": false,
               "type": "string",
               "doc": "一句话：要确认什么。",
-              "site": "src7/plugins/approval/index.ts:123"
+              "site": "src7/plugins/approval/index.ts:125"
             },
             {
               "name": "detail",
               "optional": false,
               "type": "string",
               "doc": "给用户看的细节，多行。",
-              "site": "src7/plugins/approval/index.ts:125"
+              "site": "src7/plugins/approval/index.ts:127"
             },
             {
               "name": "payload",
               "optional": false,
               "type": "unknown",
               "doc": "提的人自己放的，原样存成 JSON，决定后原样还给他。",
-              "site": "src7/plugins/approval/index.ts:127"
+              "site": "src7/plugins/approval/index.ts:129"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "哪个机器人的。",
-              "site": "src7/plugins/approval/index.ts:129"
+              "site": "src7/plugins/approval/index.ts:131"
             },
             {
               "name": "session",
               "optional": true,
               "type": "string",
               "doc": "哪场会话提的；命令窗口、更新提醒没有。",
-              "site": "src7/plugins/approval/index.ts:131"
+              "site": "src7/plugins/approval/index.ts:133"
             },
             {
               "name": "customer",
               "optional": true,
               "type": "string",
               "doc": "发起该项的客户号（会话上的 customer），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:133"
+              "site": "src7/plugins/approval/index.ts:135"
             },
             {
               "name": "actor",
               "optional": true,
               "type": "string",
               "doc": "发起人的个人身份（如飞书按人、微信按聊天），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:135"
+              "site": "src7/plugins/approval/index.ts:137"
             },
             {
               "name": "state",
               "optional": false,
               "type": "'waiting' | 'approved' | 'rejected'",
               "doc": "在等、同意了、拒绝了。",
-              "site": "src7/plugins/approval/index.ts:137"
+              "site": "src7/plugins/approval/index.ts:139"
             },
             {
               "name": "by",
               "optional": true,
               "type": "string",
               "doc": "谁定的：“HTTP”“cli 文字回复”“飞书卡片 ou_x”……",
-              "site": "src7/plugins/approval/index.ts:139"
+              "site": "src7/plugins/approval/index.ts:141"
             },
             {
               "name": "askedAt",
               "optional": false,
               "type": "number",
               "doc": "提的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:141"
+              "site": "src7/plugins/approval/index.ts:143"
             },
             {
               "name": "decidedAt",
               "optional": true,
               "type": "number",
               "doc": "定的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:143"
+              "site": "src7/plugins/approval/index.ts:145"
             },
             {
               "name": "card",
               "optional": false,
               "type": "cardUtils.CardData",
               "doc": "给用户点的卡片（utils/Card.ts）：网页审批面板、飞书卡片都照它画。",
-              "site": "src7/plugins/approval/index.ts:145"
+              "site": "src7/plugins/approval/index.ts:147"
             }
           ]
         }
@@ -272,7 +272,7 @@
         {
           "plugin": "approval",
           "function": "Approval.settle",
-          "site": "src7/plugins/approval/index.ts:854"
+          "site": "src7/plugins/approval/index.ts:856"
         }
       ],
       "listeners": [
@@ -289,7 +289,7 @@
         {
           "plugin": "exec",
           "function": "Exec.constructor",
-          "site": "src7/plugins/exec/index.ts:125"
+          "site": "src7/plugins/exec/index.ts:127"
         },
         {
           "plugin": "exec",
@@ -314,7 +314,7 @@
         {
           "plugin": "wechat",
           "function": "apply",
-          "site": "src7/plugins/wechat/index.ts:999"
+          "site": "src7/plugins/wechat/index.ts:992"
         }
       ]
     },
@@ -684,7 +684,7 @@
       "name": "approval/request",
       "mode": "请求-回执、挨个问",
       "pair": "approval/result",
-      "declaredAt": "src7/plugins/approval/index.ts:98",
+      "declaredAt": "src7/plugins/approval/index.ts:100",
       "signature": "(request: ApprovalRequest) => void | Promise<void>",
       "doc": "别的插件请审核办事（serial 发、等 approval/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。",
       "params": [
@@ -699,7 +699,7 @@
         {
           "name": "ApprovalRequest",
           "kind": "type",
-          "site": "src7/plugins/approval/index.ts:205",
+          "site": "src7/plugins/approval/index.ts:207",
           "doc": "approval/request 的请求（契约 3.2 第 1 条）：按 action 分五种，各对应本服务一个现有方法。 review 要等审核小会话，input.signal 带会话停止和 exec 的等待时限。",
           "definition": "requestEventModule.RequestEnvelope & ( | { /** 审一条命令（review）。 */ action: 'review'; /** 命令、目录、机器人、会话、提的人、payload、问不问用户、停止信号。 */ input: ReviewInput; } | { /** 登记一件要用户点头的事（ask）。 */ action: 'ask'; /** 谁提的、标题、细节、payload、机器人、会话、卡片。 */ input: AskInput; } | { /** 定一件事（decide）。 */ action: 'decide'; /** 待确认的号。 */ id: number; /** true 同意，false 拒绝。 */ approve: boolean; /** 谁定的：“飞书卡片 ou_x”“命令窗口：发命令的停下了”…… */ by: string; } | { /** 作废一件还在等的事（close）。 */ action: 'close'; /** 待确认的号。 */ id: number; /** 一句原因，如“会话已结束”。 */ note: string; } | { /** 列还在等的（list）。 */ action: 'list'; /** 只要这一种（exec、update、review……）；不给是全部。 */ kind?: string; /** 只要这个机器人的；不给是全部。 */ bot?: string; } | { /** 查已有的定时提醒确认卡，供持久调度恢复。 */ action: 'reminder-card'; /** assist 的提醒记录号。 */ reminderId: number; /** 该提醒的机器人。 */ bot: string; } )",
           "fields": [
@@ -708,119 +708,119 @@
               "optional": false,
               "type": "'review'",
               "doc": "审一条命令（review）。",
-              "site": "src7/plugins/approval/index.ts:208"
+              "site": "src7/plugins/approval/index.ts:210"
             },
             {
               "name": "input",
               "optional": false,
               "type": "ReviewInput",
               "doc": "命令、目录、机器人、会话、提的人、payload、问不问用户、停止信号。",
-              "site": "src7/plugins/approval/index.ts:210"
+              "site": "src7/plugins/approval/index.ts:212"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'ask'",
               "doc": "登记一件要用户点头的事（ask）。",
-              "site": "src7/plugins/approval/index.ts:214"
+              "site": "src7/plugins/approval/index.ts:216"
             },
             {
               "name": "input",
               "optional": false,
               "type": "AskInput",
               "doc": "谁提的、标题、细节、payload、机器人、会话、卡片。",
-              "site": "src7/plugins/approval/index.ts:216"
+              "site": "src7/plugins/approval/index.ts:218"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'decide'",
               "doc": "定一件事（decide）。",
-              "site": "src7/plugins/approval/index.ts:220"
+              "site": "src7/plugins/approval/index.ts:222"
             },
             {
               "name": "id",
               "optional": false,
               "type": "number",
               "doc": "待确认的号。",
-              "site": "src7/plugins/approval/index.ts:222"
+              "site": "src7/plugins/approval/index.ts:224"
             },
             {
               "name": "approve",
               "optional": false,
               "type": "boolean",
               "doc": "true 同意，false 拒绝。",
-              "site": "src7/plugins/approval/index.ts:224"
+              "site": "src7/plugins/approval/index.ts:226"
             },
             {
               "name": "by",
               "optional": false,
               "type": "string",
               "doc": "谁定的：“飞书卡片 ou_x”“命令窗口：发命令的停下了”……",
-              "site": "src7/plugins/approval/index.ts:226"
+              "site": "src7/plugins/approval/index.ts:228"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'close'",
               "doc": "作废一件还在等的事（close）。",
-              "site": "src7/plugins/approval/index.ts:230"
+              "site": "src7/plugins/approval/index.ts:232"
             },
             {
               "name": "id",
               "optional": false,
               "type": "number",
               "doc": "待确认的号。",
-              "site": "src7/plugins/approval/index.ts:232"
+              "site": "src7/plugins/approval/index.ts:234"
             },
             {
               "name": "note",
               "optional": false,
               "type": "string",
               "doc": "一句原因，如“会话已结束”。",
-              "site": "src7/plugins/approval/index.ts:234"
+              "site": "src7/plugins/approval/index.ts:236"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'list'",
               "doc": "列还在等的（list）。",
-              "site": "src7/plugins/approval/index.ts:238"
+              "site": "src7/plugins/approval/index.ts:240"
             },
             {
               "name": "kind",
               "optional": true,
               "type": "string",
               "doc": "只要这一种（exec、update、review……）；不给是全部。",
-              "site": "src7/plugins/approval/index.ts:240"
+              "site": "src7/plugins/approval/index.ts:242"
             },
             {
               "name": "bot",
               "optional": true,
               "type": "string",
               "doc": "只要这个机器人的；不给是全部。",
-              "site": "src7/plugins/approval/index.ts:242"
+              "site": "src7/plugins/approval/index.ts:244"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'reminder-card'",
               "doc": "查已有的定时提醒确认卡，供持久调度恢复。",
-              "site": "src7/plugins/approval/index.ts:246"
+              "site": "src7/plugins/approval/index.ts:248"
             },
             {
               "name": "reminderId",
               "optional": false,
               "type": "number",
               "doc": "assist 的提醒记录号。",
-              "site": "src7/plugins/approval/index.ts:248"
+              "site": "src7/plugins/approval/index.ts:250"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "该提醒的机器人。",
-              "site": "src7/plugins/approval/index.ts:250"
+              "site": "src7/plugins/approval/index.ts:252"
             }
           ]
         }
@@ -894,14 +894,14 @@
         {
           "plugin": "web-api",
           "function": "WebApi.botList",
-          "site": "src7/plugins/web-api/index.ts:1228"
+          "site": "src7/plugins/web-api/index.ts:1229"
         }
       ],
       "listeners": [
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:436"
+          "site": "src7/plugins/approval/index.ts:438"
         }
       ]
     },
@@ -909,7 +909,7 @@
       "name": "approval/result",
       "mode": "请求-回执",
       "pair": "approval/request",
-      "declaredAt": "src7/plugins/approval/index.ts:111",
+      "declaredAt": "src7/plugins/approval/index.ts:113",
       "signature": "(result: ApprovalResult) => void",
       "doc": "approval/request 的回执（emit），按 requestId 配对。",
       "params": [
@@ -924,7 +924,7 @@
         {
           "name": "ApprovalResult",
           "kind": "interface",
-          "site": "src7/plugins/approval/index.ts:255",
+          "site": "src7/plugins/approval/index.ts:257",
           "doc": "approval/result 的回执：按请求的 action 带回对应的一项，没办成的写 error。",
           "definition": "",
           "fields": [
@@ -933,35 +933,35 @@
               "optional": true,
               "type": "Verdict",
               "doc": "review：审的结论。",
-              "site": "src7/plugins/approval/index.ts:257"
+              "site": "src7/plugins/approval/index.ts:259"
             },
             {
               "name": "pending",
               "optional": true,
               "type": "Pending",
               "doc": "ask：新登记的待确认。",
-              "site": "src7/plugins/approval/index.ts:259"
+              "site": "src7/plugins/approval/index.ts:261"
             },
             {
               "name": "settled",
               "optional": true,
               "type": "Pending",
               "doc": "decide、close：定好的那件。",
-              "site": "src7/plugins/approval/index.ts:261"
+              "site": "src7/plugins/approval/index.ts:263"
             },
             {
               "name": "items",
               "optional": true,
               "type": "Pending[]",
               "doc": "list：还在等的，号从小到大。",
-              "site": "src7/plugins/approval/index.ts:263"
+              "site": "src7/plugins/approval/index.ts:265"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "decide、close 找不到、已经定过的原因；办的时候出错的原话。",
-              "site": "src7/plugins/approval/index.ts:265"
+              "site": "src7/plugins/approval/index.ts:267"
             }
           ]
         }
@@ -970,7 +970,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:436"
+          "site": "src7/plugins/approval/index.ts:438"
         }
       ],
       "listeners": [
@@ -1027,7 +1027,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.botList",
-          "site": "src7/plugins/web-api/index.ts:1228"
+          "site": "src7/plugins/web-api/index.ts:1229"
         }
       ]
     },
@@ -1250,12 +1250,12 @@
         {
           "plugin": "settings",
           "function": "Settings.askBase",
-          "site": "src7/plugins/settings/index.ts:348"
+          "site": "src7/plugins/settings/index.ts:353"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.shellVersion",
-          "site": "src7/plugins/web-api/index.ts:329"
+          "site": "src7/plugins/web-api/index.ts:330"
         }
       ],
       "listeners": [
@@ -1338,12 +1338,12 @@
         {
           "plugin": "settings",
           "function": "Settings.askBase",
-          "site": "src7/plugins/settings/index.ts:348"
+          "site": "src7/plugins/settings/index.ts:353"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.shellVersion",
-          "site": "src7/plugins/web-api/index.ts:329"
+          "site": "src7/plugins/web-api/index.ts:330"
         }
       ]
     },
@@ -1351,7 +1351,7 @@
       "name": "bot/judged",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/bots/index.ts:127",
+      "declaredAt": "src7/plugins/bots/index.ts:130",
       "signature": "(address: unknown, text: string, outcome: string) => void",
       "doc": "群攒批（GroupBatch.ts）看完一批群里没叫机器人的话（listen: judge）：接不接、今天看满了没。一批发一次，晚于收话那一刻，渠道听它补记一行流水。 address 是这一批最后一句的地址，text 是这一批（一行一句“说话人：话”），outcome 是 judge:回 / judge:不回(0.32) / judge:不看(今天看满 N 次) 这类。",
       "params": [
@@ -1379,12 +1379,12 @@
         {
           "plugin": "bots",
           "function": "GroupBatch.look",
-          "site": "src7/plugins/bots/GroupBatch.ts:284"
+          "site": "src7/plugins/bots/GroupBatch.ts:294"
         },
         {
           "plugin": "bots",
           "function": "GroupBatch.look",
-          "site": "src7/plugins/bots/GroupBatch.ts:293"
+          "site": "src7/plugins/bots/GroupBatch.ts:308"
         }
       ],
       "listeners": [
@@ -1399,7 +1399,7 @@
       "name": "bot/receive",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/bots/index.ts:98",
+      "declaredAt": "src7/plugins/bots/index.ts:101",
       "signature": "(event: ReceiveEvent) => void | Promise<void>",
       "doc": "机器人收到一条消息，先问一圈：谁要认领。照插件挂上去的先后一个个 await。 要认领的插件把 event.session 填上；前面已经有人填了，后面的不要再填。监听的函数不许有返回值。 插件（比如 approval 认出“同意 3”）可以写 event.handled = true：这条已经处理掉，不进任何会话。 问完没人认领的，本插件的前台接（FrontDesk.onReceive）。",
       "params": [
@@ -1414,7 +1414,7 @@
         {
           "name": "ReceiveEvent",
           "kind": "interface",
-          "site": "src7/plugins/bots/index.ts:228",
+          "site": "src7/plugins/bots/index.ts:234",
           "doc": "事件 bot/receive 的数据。",
           "definition": "",
           "fields": [
@@ -1423,35 +1423,35 @@
               "optional": false,
               "type": "Bot",
               "doc": "是哪个机器人收到的。",
-              "site": "src7/plugins/bots/index.ts:230"
+              "site": "src7/plugins/bots/index.ts:236"
             },
             {
               "name": "message",
               "optional": false,
               "type": "IncomingMessage",
               "doc": "收到的那条消息。",
-              "site": "src7/plugins/bots/index.ts:232"
+              "site": "src7/plugins/bots/index.ts:238"
             },
             {
               "name": "session",
               "optional": true,
               "type": "Session",
               "doc": "这条消息进哪场会话；认领的插件填，没人认领由前台填。",
-              "site": "src7/plugins/bots/index.ts:234"
+              "site": "src7/plugins/bots/index.ts:240"
             },
             {
               "name": "handled",
               "optional": true,
               "type": "boolean",
               "doc": "前面的插件已经把这条处理掉了：写了 true，这条就不进任何会话。",
-              "site": "src7/plugins/bots/index.ts:236"
+              "site": "src7/plugins/bots/index.ts:242"
             },
             {
               "name": "fromChannelEvent",
               "optional": true,
               "type": "boolean",
               "doc": "由进来的三个渠道事件转入每机器人分派（approval 已在消息级处理过一次，不再重复消耗）。",
-              "site": "src7/plugins/bots/index.ts:238"
+              "site": "src7/plugins/bots/index.ts:244"
             }
           ]
         }
@@ -1460,19 +1460,19 @@
         {
           "plugin": "bots",
           "function": "Bots.onChannelMessage",
-          "site": "src7/plugins/bots/index.ts:617"
+          "site": "src7/plugins/bots/index.ts:623"
         },
         {
           "plugin": "bots",
           "function": "Bot.receive",
-          "site": "src7/plugins/bots/index.ts:1018"
+          "site": "src7/plugins/bots/index.ts:1025"
         }
       ],
       "listeners": [
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:449"
+          "site": "src7/plugins/approval/index.ts:451"
         },
         {
           "plugin": "relay",
@@ -1492,7 +1492,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:199"
+          "site": "src7/plugins/web-api/index.ts:200"
         }
       ]
     },
@@ -1500,7 +1500,7 @@
       "name": "bot/request",
       "mode": "请求-回执",
       "pair": "bot/result",
-      "declaredAt": "src7/plugins/bots/index.ts:139",
+      "declaredAt": "src7/plugins/bots/index.ts:142",
       "signature": "(request: BotRequest) => void | Promise<void>",
       "doc": "别的插件请机器人办事（serial 发、等 bot/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。",
       "params": [
@@ -1515,7 +1515,7 @@
         {
           "name": "BotRequest",
           "kind": "type",
-          "site": "src7/plugins/bots/index.ts:265",
+          "site": "src7/plugins/bots/index.ts:271",
           "doc": "事件 bot/request 的数据：action 分四种（契约 3.2 第 4 条）。",
           "definition": "requestEventModule.RequestEnvelope & ({ /** * 把一件事交给这个机器人的一场后台（同 Bot.hand）。progress 转新会话时发。 * 带 replyTo 的不开后台：排进 sessionId 那场前台（没给按 replyTo 的聊天找前台），回话照 replyTo 发。progress 群日报发。 */ action: 'hand'; /** 交给哪个机器人。 */ bot: string; /** 要办的事。 */ text: string; /** 办完回话往哪送；不给渠道就不改那场会话原来记的。带 replyTo 时不用它。 */ origin: Origin; /** 接着哪一场；不给新开一场。 */ sessionId?: string; /** 回话像回一条消息那样发到哪个聊天；不给照旧交后台。 */ replyTo?: ReplyTo; } | { /** 渠道收到的图片、文件存进机器人的工作区（同 Bots.saveFile）。web-api 上传时发。 */ action: 'save-file'; /** 给哪个机器人。 */ bot: string; /** 原来的文件名。 */ name: string; /** 文件内容。 */ data: Uint8Array; } | { /** 运行中新建一个机器人（同 Bots.add）。settings 新建机器人时发。 */ action: 'add'; /** 名单里的一项：要有非空的 name，别的项（language 等）原样留着。 */ config: BotConfig; } | { /** 一份结果排进会话的结果队列（同 Dispatch.acceptResult，不带收尾回调）。relay 交回结果时发，收到回执后自己改它的表。 */ action: 'accept-result'; /** 结果键、交给哪场、从哪来、回到哪、正文和文件。 */ input: ResultInput; })",
           "fields": [
@@ -1524,98 +1524,98 @@
               "optional": false,
               "type": "'hand'",
               "doc": "把一件事交给这个机器人的一场后台（同 Bot.hand）。progress 转新会话时发。 带 replyTo 的不开后台：排进 sessionId 那场前台（没给按 replyTo 的聊天找前台），回话照 replyTo 发。progress 群日报发。",
-              "site": "src7/plugins/bots/index.ts:270"
+              "site": "src7/plugins/bots/index.ts:276"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "交给哪个机器人。",
-              "site": "src7/plugins/bots/index.ts:272"
+              "site": "src7/plugins/bots/index.ts:278"
             },
             {
               "name": "text",
               "optional": false,
               "type": "string",
               "doc": "要办的事。",
-              "site": "src7/plugins/bots/index.ts:274"
+              "site": "src7/plugins/bots/index.ts:280"
             },
             {
               "name": "origin",
               "optional": false,
               "type": "Origin",
               "doc": "办完回话往哪送；不给渠道就不改那场会话原来记的。带 replyTo 时不用它。",
-              "site": "src7/plugins/bots/index.ts:276"
+              "site": "src7/plugins/bots/index.ts:282"
             },
             {
               "name": "sessionId",
               "optional": true,
               "type": "string",
               "doc": "接着哪一场；不给新开一场。",
-              "site": "src7/plugins/bots/index.ts:278"
+              "site": "src7/plugins/bots/index.ts:284"
             },
             {
               "name": "replyTo",
               "optional": true,
               "type": "ReplyTo",
               "doc": "回话像回一条消息那样发到哪个聊天；不给照旧交后台。",
-              "site": "src7/plugins/bots/index.ts:280"
+              "site": "src7/plugins/bots/index.ts:286"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'save-file'",
               "doc": "渠道收到的图片、文件存进机器人的工作区（同 Bots.saveFile）。web-api 上传时发。",
-              "site": "src7/plugins/bots/index.ts:283"
+              "site": "src7/plugins/bots/index.ts:289"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "给哪个机器人。",
-              "site": "src7/plugins/bots/index.ts:285"
+              "site": "src7/plugins/bots/index.ts:291"
             },
             {
               "name": "name",
               "optional": false,
               "type": "string",
               "doc": "原来的文件名。",
-              "site": "src7/plugins/bots/index.ts:287"
+              "site": "src7/plugins/bots/index.ts:293"
             },
             {
               "name": "data",
               "optional": false,
               "type": "Uint8Array",
               "doc": "文件内容。",
-              "site": "src7/plugins/bots/index.ts:289"
+              "site": "src7/plugins/bots/index.ts:295"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'add'",
               "doc": "运行中新建一个机器人（同 Bots.add）。settings 新建机器人时发。",
-              "site": "src7/plugins/bots/index.ts:292"
+              "site": "src7/plugins/bots/index.ts:298"
             },
             {
               "name": "config",
               "optional": false,
               "type": "BotConfig",
               "doc": "名单里的一项：要有非空的 name，别的项（language 等）原样留着。",
-              "site": "src7/plugins/bots/index.ts:294"
+              "site": "src7/plugins/bots/index.ts:300"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'accept-result'",
               "doc": "一份结果排进会话的结果队列（同 Dispatch.acceptResult，不带收尾回调）。relay 交回结果时发，收到回执后自己改它的表。",
-              "site": "src7/plugins/bots/index.ts:297"
+              "site": "src7/plugins/bots/index.ts:303"
             },
             {
               "name": "input",
               "optional": false,
               "type": "ResultInput",
               "doc": "结果键、交给哪场、从哪来、回到哪、正文和文件。",
-              "site": "src7/plugins/bots/index.ts:299"
+              "site": "src7/plugins/bots/index.ts:305"
             }
           ]
         }
@@ -1639,12 +1639,12 @@
         {
           "plugin": "settings",
           "function": "Settings.createBot",
-          "site": "src7/plugins/settings/index.ts:164"
+          "site": "src7/plugins/settings/index.ts:169"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.saveAttachments",
-          "site": "src7/plugins/web-api/index.ts:866"
+          "site": "src7/plugins/web-api/index.ts:867"
         },
         {
           "plugin": "work-decision",
@@ -1656,7 +1656,7 @@
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:427"
+          "site": "src7/plugins/bots/index.ts:433"
         }
       ]
     },
@@ -1664,7 +1664,7 @@
       "name": "bot/result",
       "mode": "请求-回执",
       "pair": "bot/request",
-      "declaredAt": "src7/plugins/bots/index.ts:151",
+      "declaredAt": "src7/plugins/bots/index.ts:154",
       "signature": "(result: BotResult) => void",
       "doc": "bot/request 的回执（emit），按 requestId 配对。",
       "params": [
@@ -1679,7 +1679,7 @@
         {
           "name": "BotResult",
           "kind": "interface",
-          "site": "src7/plugins/bots/index.ts:304",
+          "site": "src7/plugins/bots/index.ts:310",
           "doc": "事件 bot/result 的数据：bot/request 的回执，每种 action 只带自己那一项。",
           "definition": "",
           "fields": [
@@ -1688,42 +1688,42 @@
               "optional": false,
               "type": "boolean",
               "doc": "办成没有。",
-              "site": "src7/plugins/bots/index.ts:306"
+              "site": "src7/plugins/bots/index.ts:312"
             },
             {
               "name": "sessionId",
               "optional": true,
               "type": "string",
               "doc": "hand：交给了哪一场。",
-              "site": "src7/plugins/bots/index.ts:308"
+              "site": "src7/plugins/bots/index.ts:314"
             },
             {
               "name": "path",
               "optional": true,
               "type": "string",
               "doc": "save-file：存下的绝对路径。",
-              "site": "src7/plugins/bots/index.ts:310"
+              "site": "src7/plugins/bots/index.ts:316"
             },
             {
               "name": "bot",
               "optional": true,
               "type": "{ name: string; workspace: string; memory: string }",
               "doc": "add：建好的机器人名、工作区、记忆目录。",
-              "site": "src7/plugins/bots/index.ts:312"
+              "site": "src7/plugins/bots/index.ts:318"
             },
             {
               "name": "receipt",
               "optional": true,
               "type": "AcceptReceipt",
               "doc": "accept-result：queued 新排进去，duplicate 同键同内容收过；带结果键。",
-              "site": "src7/plugins/bots/index.ts:314"
+              "site": "src7/plugins/bots/index.ts:320"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "没办成的原因。",
-              "site": "src7/plugins/bots/index.ts:316"
+              "site": "src7/plugins/bots/index.ts:322"
             }
           ]
         }
@@ -1732,7 +1732,7 @@
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:427"
+          "site": "src7/plugins/bots/index.ts:433"
         }
       ],
       "listeners": [
@@ -1754,12 +1754,12 @@
         {
           "plugin": "settings",
           "function": "Settings.createBot",
-          "site": "src7/plugins/settings/index.ts:164"
+          "site": "src7/plugins/settings/index.ts:169"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.saveAttachments",
-          "site": "src7/plugins/web-api/index.ts:866"
+          "site": "src7/plugins/web-api/index.ts:867"
         },
         {
           "plugin": "work-decision",
@@ -1772,7 +1772,7 @@
       "name": "bot/say",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/bots/index.ts:111",
+      "declaredAt": "src7/plugins/bots/index.ts:114",
       "signature": "(session: Session, text: string) => void",
       "doc": "会话跑到一半先跟用户说一句（通知）。本插件听它：按会话的渠道发出去，前台再记一条往来。",
       "params": [
@@ -1794,12 +1794,12 @@
         {
           "plugin": "approval",
           "function": "Approval.ask",
-          "site": "src7/plugins/approval/index.ts:782"
+          "site": "src7/plugins/approval/index.ts:784"
         },
         {
           "plugin": "approval",
           "function": "Approval.answer",
-          "site": "src7/plugins/approval/index.ts:1190"
+          "site": "src7/plugins/approval/index.ts:1192"
         },
         {
           "plugin": "base-bridge",
@@ -1809,7 +1809,7 @@
         {
           "plugin": "bots",
           "function": "Bots.say",
-          "site": "src7/plugins/bots/index.ts:952"
+          "site": "src7/plugins/bots/index.ts:959"
         },
         {
           "plugin": "progress",
@@ -1851,7 +1851,7 @@
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:392"
+          "site": "src7/plugins/bots/index.ts:398"
         },
         {
           "plugin": "journal",
@@ -1864,7 +1864,7 @@
       "name": "bot/settled",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/bots/index.ts:120",
+      "declaredAt": "src7/plugins/bots/index.ts:123",
       "signature": "(event: protocol.ChannelSettledEvent) => void",
       "doc": "通知一轮 channel_tool 已收尾，网页标记回复完成，命令行记录失败的退出码。",
       "params": [
@@ -1911,7 +1911,7 @@
         {
           "plugin": "bots",
           "function": "DispatchResults.emitSettled",
-          "site": "src7/plugins/bots/DispatchResults.ts:747"
+          "site": "src7/plugins/bots/DispatchResults.ts:757"
         }
       ],
       "listeners": [
@@ -1928,7 +1928,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:193"
+          "site": "src7/plugins/web-api/index.ts:194"
         }
       ]
     },
@@ -1936,7 +1936,7 @@
       "name": "channel/direct",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:53",
+      "declaredAt": "src7/plugins/channels/index.ts:56",
       "signature": "(message: messageModule.ChannelMessage, control?: messageModule.ChannelMessageControl) => void | Promise<void>",
       "doc": "私聊机器人（飞书 p2p、微信、网页、命令行、语音；语音半句提前开工的带 routing.partial）。渠道存下原件后发，挨个问： approval 先看是不是“同意 3”这类批复，bots 再按 targetBots 逐个机器人认领。 各渠道（cli、feishu、programs、voice、web-api、wechat）都经 emitInbound 发。",
       "params": [
@@ -2164,22 +2164,22 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:445"
+          "site": "src7/plugins/approval/index.ts:447"
         },
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:411"
+          "site": "src7/plugins/bots/index.ts:417"
         },
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:44"
+          "site": "src7/plugins/channels/ArchiveListen.ts:47"
         },
         {
           "plugin": "memory",
           "function": "applyChannelIndex",
-          "site": "src7/plugins/memory/ChannelIndex.ts:621"
+          "site": "src7/plugins/memory/ChannelIndex.ts:653"
         },
         {
           "plugin": "voice",
@@ -2189,7 +2189,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:234"
+          "site": "src7/plugins/web-api/index.ts:235"
         }
       ]
     },
@@ -2197,7 +2197,7 @@
       "name": "channel/history",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:97",
+      "declaredAt": "src7/plugins/channels/index.ts:100",
       "signature": "(messages: messageModule.ChannelMessage[]) => void | Promise<void>",
       "doc": "渠道拉回来的一批历史消息（飞书 im/v1/messages 拉群历史：机器人进群以前、服务停着时的话），按时间从旧到新。 不是新来的话：不触发会话、不回话、不问 approval，bots 不听；只给记录类插件补记（memory 入历史回填队列，按消息号去重）。",
       "params": [
@@ -2396,12 +2396,12 @@
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:49"
+          "site": "src7/plugins/channels/ArchiveListen.ts:52"
         },
         {
           "plugin": "memory",
           "function": "applyChannelIndex",
-          "site": "src7/plugins/memory/ChannelIndex.ts:627"
+          "site": "src7/plugins/memory/ChannelIndex.ts:659"
         }
       ]
     },
@@ -2409,7 +2409,7 @@
       "name": "channel/listen",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:85",
+      "declaredAt": "src7/plugins/channels/index.ts:88",
       "signature": "(message: messageModule.ChannelMessage, control?: messageModule.ChannelMessageControl) => void | Promise<void>",
       "doc": "只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不审批它，只由 Grants 给地址写上授权目录。 bots 把 targetBots 里的机器人记进前台当背景或判断要不要接（targetBots 空的谁都不进）；memory、网页照记。 各渠道（feishu、programs、voice）经 emitInbound 发。",
       "params": [
@@ -2637,22 +2637,22 @@
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:415"
+          "site": "src7/plugins/bots/index.ts:421"
         },
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:46"
+          "site": "src7/plugins/channels/ArchiveListen.ts:49"
         },
         {
           "plugin": "memory",
           "function": "applyChannelIndex",
-          "site": "src7/plugins/memory/ChannelIndex.ts:623"
+          "site": "src7/plugins/memory/ChannelIndex.ts:655"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:236"
+          "site": "src7/plugins/web-api/index.ts:237"
         }
       ]
     },
@@ -2660,7 +2660,7 @@
       "name": "channel/mention",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:69",
+      "declaredAt": "src7/plugins/channels/index.ts:72",
       "signature": "(message: messageModule.ChannelMessage, control?: messageModule.ChannelMessageControl) => void | Promise<void>",
       "doc": "群里叫了机器人：@ 了它，或引用了它的话。和 channel/direct 一样挨个问：approval 先看批复，bots 认领 targetBots 里被叫到的机器人。 各渠道（feishu、programs、wechat）经 emitInbound 发。",
       "params": [
@@ -2888,27 +2888,27 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:446"
+          "site": "src7/plugins/approval/index.ts:448"
         },
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:412"
+          "site": "src7/plugins/bots/index.ts:418"
         },
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:45"
+          "site": "src7/plugins/channels/ArchiveListen.ts:48"
         },
         {
           "plugin": "memory",
           "function": "applyChannelIndex",
-          "site": "src7/plugins/memory/ChannelIndex.ts:622"
+          "site": "src7/plugins/memory/ChannelIndex.ts:654"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:235"
+          "site": "src7/plugins/web-api/index.ts:236"
         }
       ]
     },
@@ -2916,7 +2916,7 @@
       "name": "channel/recall",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:127",
+      "declaredAt": "src7/plugins/channels/index.ts:131",
       "signature": "(event: messageModule.ChannelRecallEvent) => void | Promise<void>",
       "doc": "渠道确认本人或原发信人撤回消息后发出。bots 清理排队原消息，通知正在处理它的会话。",
       "params": [
@@ -3010,7 +3010,12 @@
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:80"
+          "site": "src7/plugins/channels/ArchiveListen.ts:83"
+        },
+        {
+          "plugin": "memory",
+          "function": "applyChannelIndex",
+          "site": "src7/plugins/memory/ChannelIndex.ts:705"
         }
       ]
     },
@@ -3018,7 +3023,7 @@
       "name": "channel/replied",
       "mode": "通知",
       "pair": "channel/reply",
-      "declaredAt": "src7/plugins/channels/index.ts:119",
+      "declaredAt": "src7/plugins/channels/index.ts:122",
       "signature": "(event: replyModule.ChannelRepliedEvent) => void",
       "doc": "发成了没有：渠道发完（或确认失败）经 emitReplied 回传回执，回执带着请求本身（正文、来源快照、目标）； 外置程序的主动发件由 approval 补一条。记往来、记忆、网页挂回都只听它。",
       "params": [
@@ -3084,7 +3089,7 @@
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:56"
+          "site": "src7/plugins/channels/ArchiveListen.ts:59"
         },
         {
           "plugin": "channels",
@@ -3094,12 +3099,12 @@
         {
           "plugin": "memory",
           "function": "applyChannelIndex",
-          "site": "src7/plugins/memory/ChannelIndex.ts:650"
+          "site": "src7/plugins/memory/ChannelIndex.ts:684"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:239"
+          "site": "src7/plugins/web-api/index.ts:240"
         }
       ]
     },
@@ -3107,7 +3112,7 @@
       "name": "channel/reply",
       "mode": "请求-回执",
       "pair": "channel/replied",
-      "declaredAt": "src7/plugins/channels/index.ts:107",
+      "declaredAt": "src7/plugins/channels/index.ts:110",
       "signature": "(request: replyModule.ChannelReplyRequest) => void | Promise<void>",
       "doc": "请渠道发一条（所有发出去的话都走它）：回来源快照的原消息，带 target.chat 跨聊天认目标，带 target.address 照确切地址发。 匹配 channel 的渠道插件置 handled、发完回发 channel/replied；没人接单立刻回 rejected。",
       "params": [
@@ -3186,7 +3191,7 @@
               "name": "sourceSnapshot",
               "optional": true,
               "type": "messageModule.SourceSnapshot",
-              "doc": "不可变来源快照：回某条消息时有。 没有的（旧路自动回话、relay 回信、本人批准的主动发件）一定带 target.address，照它发。",
+              "doc": "不可变来源快照：回某条消息时有。 没有来源快照的（自动回话、relay 回信、本人批准的主动发件）一定带 target.address，按地址发。",
               "site": "src7/plugins/channels/Reply.ts:99"
             },
             {
@@ -3214,14 +3219,14 @@
               "name": "sessionId",
               "optional": true,
               "type": "string",
-              "doc": "哪场会话说的：旧路自动回话、relay 回信带上，渠道照会话定细节（命令行出错标红，微信只发做完的一轮，网页挂回会话认领的那条）。",
+              "doc": "哪场会话说的：按地址发的自动回话和 relay 回信带上，渠道照会话定细节（命令行出错标红，微信只发做完的一轮，网页挂回会话认领的那条）。",
               "site": "src7/plugins/channels/Reply.ts:107"
             },
             {
               "name": "atFiles",
               "optional": true,
               "type": "boolean",
-              "doc": "正文里的 @路径（存在的本机文件）当文件一起发：只有旧路自动回话、relay 回信开，模型的 channel_reply 不开；只有飞书认，别的渠道照纯文字发。",
+              "doc": "正文里的 @路径（存在的本机文件）当文件一起发：按地址发的自动回话和 relay 回信开启；只有飞书认，别的渠道照纯文字发。",
               "site": "src7/plugins/channels/Reply.ts:109"
             },
             {
@@ -3258,31 +3263,6 @@
           "site": "src7/plugins/voice/Replies.ts:38"
         }
       ]
-    },
-    {
-      "name": "config/changed",
-      "mode": "通知",
-      "pair": "",
-      "declaredAt": "src7/Resources.ts:37",
-      "signature": "(keys: string[]) => void",
-      "doc": "Resources 成功应用 config.yaml 更新后发出。当前无内置监听者。",
-      "params": [
-        {
-          "name": "keys",
-          "optional": false,
-          "type": "string[]",
-          "doc": "新增、删除或内容有变化的顶层键名。"
-        }
-      ],
-      "types": [],
-      "senders": [
-        {
-          "plugin": "skeleton",
-          "function": "Resources.reloadConfig",
-          "site": "src7/Resources.ts:350"
-        }
-      ],
-      "listeners": []
     },
     {
       "name": "decision/judge",
@@ -3377,12 +3357,12 @@
         {
           "plugin": "approval",
           "function": "Approval.askDecision",
-          "site": "src7/plugins/approval/index.ts:675"
+          "site": "src7/plugins/approval/index.ts:677"
         },
         {
           "plugin": "bots",
           "function": "GroupBatch.judge",
-          "site": "src7/plugins/bots/GroupBatch.ts:388"
+          "site": "src7/plugins/bots/GroupBatch.ts:413"
         },
         {
           "plugin": "progress",
@@ -3485,12 +3465,12 @@
         {
           "plugin": "approval",
           "function": "Approval.askDecision",
-          "site": "src7/plugins/approval/index.ts:675"
+          "site": "src7/plugins/approval/index.ts:677"
         },
         {
           "plugin": "bots",
           "function": "GroupBatch.judge",
-          "site": "src7/plugins/bots/GroupBatch.ts:388"
+          "site": "src7/plugins/bots/GroupBatch.ts:413"
         },
         {
           "plugin": "progress",
@@ -3518,7 +3498,7 @@
       "name": "feishu/send-file",
       "mode": "请求-回执",
       "pair": "feishu/send-file-result",
-      "declaredAt": "src7/plugins/feishu/index.ts:99",
+      "declaredAt": "src7/plugins/feishu/index.ts:106",
       "signature": "(request: SendFileRequest) => void | Promise<void>",
       "doc": "通过指定机器人向飞书聊天发送本地文件。",
       "params": [
@@ -3533,7 +3513,7 @@
         {
           "name": "SendFileRequest",
           "kind": "interface",
-          "site": "src7/plugins/feishu/index.ts:346",
+          "site": "src7/plugins/feishu/index.ts:353",
           "doc": "其他插件提交的文件投递请求。",
           "definition": "",
           "fields": [
@@ -3542,28 +3522,28 @@
               "optional": false,
               "type": "string",
               "doc": "发送文件的机器人名。",
-              "site": "src7/plugins/feishu/index.ts:348"
+              "site": "src7/plugins/feishu/index.ts:355"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "目标飞书聊天号。",
-              "site": "src7/plugins/feishu/index.ts:350"
+              "site": "src7/plugins/feishu/index.ts:357"
             },
             {
               "name": "filePath",
               "optional": false,
               "type": "string",
               "doc": "本地文件绝对路径。",
-              "site": "src7/plugins/feishu/index.ts:352"
+              "site": "src7/plugins/feishu/index.ts:359"
             },
             {
               "name": "kind",
               "optional": true,
               "type": "'image' | 'file'",
               "doc": "显式指定图片或附件；省略时按扩展名识别。",
-              "site": "src7/plugins/feishu/index.ts:354"
+              "site": "src7/plugins/feishu/index.ts:361"
             }
           ]
         }
@@ -3579,7 +3559,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:475"
+          "site": "src7/plugins/feishu/index.ts:482"
         }
       ]
     },
@@ -3587,7 +3567,7 @@
       "name": "feishu/send-file-result",
       "mode": "请求-回执",
       "pair": "feishu/send-file",
-      "declaredAt": "src7/plugins/feishu/index.ts:105",
+      "declaredAt": "src7/plugins/feishu/index.ts:112",
       "signature": "(result: SendFileResult) => void",
       "doc": "返回发送结果，失败时带原因。",
       "params": [
@@ -3602,7 +3582,7 @@
         {
           "name": "SendFileResult",
           "kind": "interface",
-          "site": "src7/plugins/feishu/index.ts:358",
+          "site": "src7/plugins/feishu/index.ts:365",
           "doc": "文件投递回执。",
           "definition": "",
           "fields": [
@@ -3611,21 +3591,21 @@
               "optional": false,
               "type": "boolean",
               "doc": "飞书发送是否成功。",
-              "site": "src7/plugins/feishu/index.ts:360"
+              "site": "src7/plugins/feishu/index.ts:367"
             },
             {
               "name": "messageId",
               "optional": true,
               "type": "string",
               "doc": "飞书返回的新消息号。",
-              "site": "src7/plugins/feishu/index.ts:362"
+              "site": "src7/plugins/feishu/index.ts:369"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "发送失败原因。",
-              "site": "src7/plugins/feishu/index.ts:364"
+              "site": "src7/plugins/feishu/index.ts:371"
             }
           ]
         }
@@ -3634,7 +3614,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:475"
+          "site": "src7/plugins/feishu/index.ts:482"
         }
       ],
       "listeners": [
@@ -3710,12 +3690,12 @@
         {
           "plugin": "settings",
           "function": "Settings.closeHttp",
-          "site": "src7/plugins/settings/index.ts:313"
+          "site": "src7/plugins/settings/index.ts:318"
         },
         {
           "plugin": "settings",
           "function": "Settings.startedAt",
-          "site": "src7/plugins/settings/index.ts:406"
+          "site": "src7/plugins/settings/index.ts:411"
         }
       ],
       "listeners": [
@@ -3791,12 +3771,12 @@
         {
           "plugin": "settings",
           "function": "Settings.closeHttp",
-          "site": "src7/plugins/settings/index.ts:313"
+          "site": "src7/plugins/settings/index.ts:318"
         },
         {
           "plugin": "settings",
           "function": "Settings.startedAt",
-          "site": "src7/plugins/settings/index.ts:406"
+          "site": "src7/plugins/settings/index.ts:411"
         }
       ]
     },
@@ -4176,7 +4156,7 @@
         {
           "plugin": "memory",
           "function": "apply",
-          "site": "src7/plugins/memory/index.ts:804"
+          "site": "src7/plugins/memory/index.ts:808"
         }
       ]
     },
@@ -4184,7 +4164,7 @@
       "name": "memory/request",
       "mode": "请求-回执",
       "pair": "memory/result",
-      "declaredAt": "src7/plugins/memory/index.ts:471",
+      "declaredAt": "src7/plugins/memory/index.ts:473",
       "signature": "(request: MemoryRequest) => void | Promise<void>",
       "doc": "别的插件请记忆库办事（serial 发、等 memory/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听（MemoryService.onRequest）。",
       "params": [
@@ -4199,7 +4179,7 @@
         {
           "name": "MemoryRequest",
           "kind": "type",
-          "site": "src7/plugins/memory/index.ts:483",
+          "site": "src7/plugins/memory/index.ts:485",
           "doc": "事件 memory/request 的数据。bots 的前台（FrontDesk.ts 的 askMemory）等插件发。",
           "definition": "requestEventModule.RequestEnvelope & ({ /** 记一段往来（同 recordHistory）：同一 source 先删后收。 */ action: 'record-history'; /** 来源，比如 bot-log:<会话号>。 */ source: string; /** 要收的段；没有客户号的不收。 */ docs: HistoryDoc[]; } | { /** 搜这个客户的聊天记录（同 searchHistory）。 */ action: 'search-history'; /** 要找什么。 */ query: string; /** 哪个机器人。 */ bot: string; /** 客户号；空串不搜。 */ customer: string; /** 最多几条。 */ limit: number; } | { /** 读取可信前台会话范围内的归档。 */ action: 'front-history'; /** 会话范围、分页和关键词等过滤条件。 */ query: frontArchiveModule.FrontQuery; } | { /** 按统一接口搜所有来源。 */ action: 'search'; /** 与 GET /api/memory/search 相同，支持 person 或 group；调用插件负责确认用户权限。 */ query: Record<string, unknown>; } | { /** 用记忆服务的本地嵌入模型算向量（同 embed）。 */ action: 'embed'; /** 要嵌入的文字。 */ texts: string[]; })",
           "fields": [
@@ -4208,98 +4188,98 @@
               "optional": false,
               "type": "'record-history'",
               "doc": "记一段往来（同 recordHistory）：同一 source 先删后收。",
-              "site": "src7/plugins/memory/index.ts:485"
+              "site": "src7/plugins/memory/index.ts:487"
             },
             {
               "name": "source",
               "optional": false,
               "type": "string",
               "doc": "来源，比如 bot-log:<会话号>。",
-              "site": "src7/plugins/memory/index.ts:487"
+              "site": "src7/plugins/memory/index.ts:489"
             },
             {
               "name": "docs",
               "optional": false,
               "type": "HistoryDoc[]",
               "doc": "要收的段；没有客户号的不收。",
-              "site": "src7/plugins/memory/index.ts:489"
+              "site": "src7/plugins/memory/index.ts:491"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'search-history'",
               "doc": "搜这个客户的聊天记录（同 searchHistory）。",
-              "site": "src7/plugins/memory/index.ts:492"
+              "site": "src7/plugins/memory/index.ts:494"
             },
             {
               "name": "query",
               "optional": false,
               "type": "string",
               "doc": "要找什么。",
-              "site": "src7/plugins/memory/index.ts:494"
+              "site": "src7/plugins/memory/index.ts:496"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "哪个机器人。",
-              "site": "src7/plugins/memory/index.ts:496"
+              "site": "src7/plugins/memory/index.ts:498"
             },
             {
               "name": "customer",
               "optional": false,
               "type": "string",
               "doc": "客户号；空串不搜。",
-              "site": "src7/plugins/memory/index.ts:498"
+              "site": "src7/plugins/memory/index.ts:500"
             },
             {
               "name": "limit",
               "optional": false,
               "type": "number",
               "doc": "最多几条。",
-              "site": "src7/plugins/memory/index.ts:500"
+              "site": "src7/plugins/memory/index.ts:502"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'front-history'",
               "doc": "读取可信前台会话范围内的归档。",
-              "site": "src7/plugins/memory/index.ts:503"
+              "site": "src7/plugins/memory/index.ts:505"
             },
             {
               "name": "query",
               "optional": false,
               "type": "frontArchiveModule.FrontQuery",
               "doc": "会话范围、分页和关键词等过滤条件。",
-              "site": "src7/plugins/memory/index.ts:505"
+              "site": "src7/plugins/memory/index.ts:507"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'search'",
               "doc": "按统一接口搜所有来源。",
-              "site": "src7/plugins/memory/index.ts:508"
+              "site": "src7/plugins/memory/index.ts:510"
             },
             {
               "name": "query",
               "optional": false,
               "type": "Record<string, unknown>",
               "doc": "与 GET /api/memory/search 相同，支持 person 或 group；调用插件负责确认用户权限。",
-              "site": "src7/plugins/memory/index.ts:510"
+              "site": "src7/plugins/memory/index.ts:512"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'embed'",
               "doc": "用记忆服务的本地嵌入模型算向量（同 embed）。",
-              "site": "src7/plugins/memory/index.ts:513"
+              "site": "src7/plugins/memory/index.ts:515"
             },
             {
               "name": "texts",
               "optional": false,
               "type": "string[]",
               "doc": "要嵌入的文字。",
-              "site": "src7/plugins/memory/index.ts:515"
+              "site": "src7/plugins/memory/index.ts:517"
             }
           ]
         }
@@ -4315,7 +4295,7 @@
         {
           "plugin": "memory",
           "function": "MemoryService.constructor",
-          "site": "src7/plugins/memory/index.ts:581"
+          "site": "src7/plugins/memory/index.ts:583"
         }
       ]
     },
@@ -4323,7 +4303,7 @@
       "name": "memory/result",
       "mode": "请求-回执",
       "pair": "memory/request",
-      "declaredAt": "src7/plugins/memory/index.ts:477",
+      "declaredAt": "src7/plugins/memory/index.ts:479",
       "signature": "(result: MemoryResult) => void",
       "doc": "memory/request 的回执（emit），按 requestId 配对。",
       "params": [
@@ -4338,7 +4318,7 @@
         {
           "name": "MemoryResult",
           "kind": "interface",
-          "site": "src7/plugins/memory/index.ts:520",
+          "site": "src7/plugins/memory/index.ts:522",
           "doc": "事件 memory/result 的数据：memory/request 的回执，每种 action 只带自己那一项。",
           "definition": "",
           "fields": [
@@ -4347,42 +4327,42 @@
               "optional": false,
               "type": "boolean",
               "doc": "办成没有：记忆服务没在线、记不成、搜不成都是 false，原因在 error。",
-              "site": "src7/plugins/memory/index.ts:522"
+              "site": "src7/plugins/memory/index.ts:524"
             },
             {
               "name": "hits",
               "optional": true,
               "type": "Array<{ start?: unknown; score?: unknown; text?: unknown }>",
               "doc": "search-history：命中原样（start 是来源里的编号）；没有客户号是 []。",
-              "site": "src7/plugins/memory/index.ts:524"
+              "site": "src7/plugins/memory/index.ts:526"
             },
             {
               "name": "search",
               "optional": true,
               "type": "searchModule.SearchResult",
               "doc": "search：统一检索回执；某一路没响应写在它的 unavailable、warnings 里。",
-              "site": "src7/plugins/memory/index.ts:526"
+              "site": "src7/plugins/memory/index.ts:528"
             },
             {
               "name": "frontEntries",
               "optional": true,
               "type": "frontArchiveModule.FrontEntry[]",
               "doc": "front-history：按机器人和会话范围过滤后的往来。",
-              "site": "src7/plugins/memory/index.ts:528"
+              "site": "src7/plugins/memory/index.ts:530"
             },
             {
               "name": "vectors",
               "optional": true,
               "type": "number[][]",
               "doc": "embed：每段一个向量；服务在线但模型没就绪是空。",
-              "site": "src7/plugins/memory/index.ts:530"
+              "site": "src7/plugins/memory/index.ts:532"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "没办成的原因，如“记忆服务没在线（http://127.0.0.1:30087）：…”。",
-              "site": "src7/plugins/memory/index.ts:532"
+              "site": "src7/plugins/memory/index.ts:534"
             }
           ]
         }
@@ -4391,7 +4371,7 @@
         {
           "plugin": "memory",
           "function": "MemoryService.constructor",
-          "site": "src7/plugins/memory/index.ts:581"
+          "site": "src7/plugins/memory/index.ts:583"
         }
       ],
       "listeners": [
@@ -4583,7 +4563,7 @@
         {
           "plugin": "bots",
           "function": "DispatchTools.onRequest",
-          "site": "src7/plugins/bots/DispatchTools.ts:642"
+          "site": "src7/plugins/bots/DispatchTools.ts:644"
         },
         {
           "plugin": "context-fit",
@@ -4603,12 +4583,12 @@
         {
           "plugin": "settings",
           "function": "Settings.checkModel",
-          "site": "src7/plugins/settings/index.ts:215"
+          "site": "src7/plugins/settings/index.ts:220"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.setModel",
-          "site": "src7/plugins/web-api/index.ts:1162"
+          "site": "src7/plugins/web-api/index.ts:1163"
         }
       ],
       "listeners": [
@@ -4677,7 +4657,7 @@
         {
           "plugin": "bots",
           "function": "DispatchTools.onRequest",
-          "site": "src7/plugins/bots/DispatchTools.ts:642"
+          "site": "src7/plugins/bots/DispatchTools.ts:644"
         },
         {
           "plugin": "context-fit",
@@ -4697,12 +4677,12 @@
         {
           "plugin": "settings",
           "function": "Settings.checkModel",
-          "site": "src7/plugins/settings/index.ts:215"
+          "site": "src7/plugins/settings/index.ts:220"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.setModel",
-          "site": "src7/plugins/web-api/index.ts:1162"
+          "site": "src7/plugins/web-api/index.ts:1163"
         }
       ]
     },
@@ -5241,7 +5221,7 @@
         {
           "plugin": "memory",
           "function": "ChannelBackfill.constructor",
-          "site": "src7/plugins/memory/ChannelBackfill.ts:127"
+          "site": "src7/plugins/memory/ChannelBackfill.ts:129"
         }
       ]
     },
@@ -5317,7 +5297,7 @@
         {
           "plugin": "memory",
           "function": "ChannelBackfill.backfill",
-          "site": "src7/plugins/memory/ChannelBackfill.ts:297"
+          "site": "src7/plugins/memory/ChannelBackfill.ts:299"
         },
         {
           "plugin": "voice",
@@ -5384,7 +5364,7 @@
         {
           "plugin": "memory",
           "function": "ChannelBackfill.backfill",
-          "site": "src7/plugins/memory/ChannelBackfill.ts:297"
+          "site": "src7/plugins/memory/ChannelBackfill.ts:299"
         },
         {
           "plugin": "voice",
@@ -5547,7 +5527,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.runningList",
-          "site": "src7/plugins/web-api/index.ts:1059"
+          "site": "src7/plugins/web-api/index.ts:1060"
         }
       ],
       "listeners": [
@@ -5621,7 +5601,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.runningList",
-          "site": "src7/plugins/web-api/index.ts:1059"
+          "site": "src7/plugins/web-api/index.ts:1060"
         }
       ]
     },
@@ -5817,7 +5797,7 @@
         {
           "plugin": "skeleton",
           "function": "main",
-          "site": "src7/Main.ts:226"
+          "site": "src7/Main.ts:219"
         }
       ],
       "listeners": [
@@ -5839,12 +5819,12 @@
         {
           "plugin": "bots",
           "function": "DispatchResults.listen",
-          "site": "src7/plugins/bots/DispatchResults.ts:193"
+          "site": "src7/plugins/bots/DispatchResults.ts:199"
         },
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:364"
+          "site": "src7/plugins/bots/index.ts:370"
         },
         {
           "plugin": "cli",
@@ -5859,7 +5839,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:445"
+          "site": "src7/plugins/feishu/index.ts:452"
         },
         {
           "plugin": "feishu",
@@ -5874,12 +5854,12 @@
         {
           "plugin": "memory",
           "function": "ChannelBackfill.constructor",
-          "site": "src7/plugins/memory/ChannelBackfill.ts:141"
+          "site": "src7/plugins/memory/ChannelBackfill.ts:143"
         },
         {
           "plugin": "memory",
           "function": "apply",
-          "site": "src7/plugins/memory/index.ts:834"
+          "site": "src7/plugins/memory/index.ts:841"
         },
         {
           "plugin": "programs",
@@ -5919,233 +5899,9 @@
         {
           "plugin": "wechat",
           "function": "Wechat.constructor",
-          "site": "src7/plugins/wechat/index.ts:270"
+          "site": "src7/plugins/wechat/index.ts:263"
         }
       ]
-    },
-    {
-      "name": "screen/after-model",
-      "mode": "挨个问",
-      "pair": "",
-      "declaredAt": "src7/plugins/screen/Screen.ts:222",
-      "signature": "(gate: Gate) => void | Promise<void>",
-      "doc": "呈现前的私有关口，仍不携带模型原文。",
-      "params": [
-        {
-          "name": "gate",
-          "optional": false,
-          "type": "Gate",
-          "doc": ""
-        }
-      ],
-      "types": [
-        {
-          "name": "Gate",
-          "kind": "interface",
-          "site": "src7/plugins/screen/Screen.ts:177",
-          "doc": "",
-          "definition": "",
-          "fields": [
-            {
-              "name": "requestId",
-              "optional": false,
-              "type": "string",
-              "doc": "单次讲解流水标识。",
-              "site": "src7/plugins/screen/Screen.ts:179"
-            },
-            {
-              "name": "model",
-              "optional": false,
-              "type": "string",
-              "doc": "配置的多模态模型。",
-              "site": "src7/plugins/screen/Screen.ts:181"
-            },
-            {
-              "name": "hasImage",
-              "optional": false,
-              "type": "boolean",
-              "doc": "是否提供了裁图，不携带图片。",
-              "site": "src7/plugins/screen/Screen.ts:183"
-            },
-            {
-              "name": "stop",
-              "optional": false,
-              "type": "boolean",
-              "doc": "监听方置 true 时阻止向下执行。",
-              "site": "src7/plugins/screen/Screen.ts:185"
-            }
-          ]
-        }
-      ],
-      "senders": [
-        {
-          "plugin": "screen",
-          "function": "Screen.getModelAnswer",
-          "site": "src7/plugins/screen/Screen.ts:954"
-        }
-      ],
-      "listeners": []
-    },
-    {
-      "name": "screen/before-model",
-      "mode": "挨个问",
-      "pair": "",
-      "declaredAt": "src7/plugins/screen/Screen.ts:216",
-      "signature": "(gate: Gate) => void | Promise<void>",
-      "doc": "私有关口，只暴露身份及模型摘要。",
-      "params": [
-        {
-          "name": "gate",
-          "optional": false,
-          "type": "Gate",
-          "doc": ""
-        }
-      ],
-      "types": [
-        {
-          "name": "Gate",
-          "kind": "interface",
-          "site": "src7/plugins/screen/Screen.ts:177",
-          "doc": "",
-          "definition": "",
-          "fields": [
-            {
-              "name": "requestId",
-              "optional": false,
-              "type": "string",
-              "doc": "单次讲解流水标识。",
-              "site": "src7/plugins/screen/Screen.ts:179"
-            },
-            {
-              "name": "model",
-              "optional": false,
-              "type": "string",
-              "doc": "配置的多模态模型。",
-              "site": "src7/plugins/screen/Screen.ts:181"
-            },
-            {
-              "name": "hasImage",
-              "optional": false,
-              "type": "boolean",
-              "doc": "是否提供了裁图，不携带图片。",
-              "site": "src7/plugins/screen/Screen.ts:183"
-            },
-            {
-              "name": "stop",
-              "optional": false,
-              "type": "boolean",
-              "doc": "监听方置 true 时阻止向下执行。",
-              "site": "src7/plugins/screen/Screen.ts:185"
-            }
-          ]
-        }
-      ],
-      "senders": [
-        {
-          "plugin": "screen",
-          "function": "Screen.getModelAnswer",
-          "site": "src7/plugins/screen/Screen.ts:903"
-        }
-      ],
-      "listeners": []
-    },
-    {
-      "name": "screen/model-usage",
-      "mode": "通知",
-      "pair": "",
-      "declaredAt": "src7/plugins/screen/Screen.ts:228",
-      "signature": "(usage: UsageSummary) => void",
-      "doc": "单次模型请求计量，无图、界面文字或模型原文。",
-      "params": [
-        {
-          "name": "usage",
-          "optional": false,
-          "type": "UsageSummary",
-          "doc": ""
-        }
-      ],
-      "types": [
-        {
-          "name": "UsageSummary",
-          "kind": "interface",
-          "site": "src7/plugins/screen/Screen.ts:188",
-          "doc": "",
-          "definition": "",
-          "fields": [
-            {
-              "name": "requestId",
-              "optional": false,
-              "type": "string",
-              "doc": "关联模型关口的请求号。",
-              "site": "src7/plugins/screen/Screen.ts:190"
-            },
-            {
-              "name": "model",
-              "optional": false,
-              "type": "string",
-              "doc": "实际尝试的模型。",
-              "site": "src7/plugins/screen/Screen.ts:192"
-            },
-            {
-              "name": "input",
-              "optional": true,
-              "type": "number",
-              "doc": "实际模型调用返回的输入 token。",
-              "site": "src7/plugins/screen/Screen.ts:194"
-            },
-            {
-              "name": "output",
-              "optional": true,
-              "type": "number",
-              "doc": "实际模型调用返回的输出 token。",
-              "site": "src7/plugins/screen/Screen.ts:196"
-            },
-            {
-              "name": "cacheRead",
-              "optional": true,
-              "type": "number",
-              "doc": "实际模型调用返回的缓存读 token。",
-              "site": "src7/plugins/screen/Screen.ts:198"
-            },
-            {
-              "name": "cacheWrite",
-              "optional": true,
-              "type": "number",
-              "doc": "实际模型调用返回的缓存写 token。",
-              "site": "src7/plugins/screen/Screen.ts:200"
-            },
-            {
-              "name": "ms",
-              "optional": false,
-              "type": "number",
-              "doc": "从发起模型调用到结束等待的时间。",
-              "site": "src7/plugins/screen/Screen.ts:202"
-            },
-            {
-              "name": "ok",
-              "optional": false,
-              "type": "boolean",
-              "doc": "模型阶段是否返回可用讲解。",
-              "site": "src7/plugins/screen/Screen.ts:204"
-            },
-            {
-              "name": "errorCode",
-              "optional": true,
-              "type": "protocol.ErrorCode",
-              "doc": "失败时的固定错误码。",
-              "site": "src7/plugins/screen/Screen.ts:206"
-            }
-          ]
-        }
-      ],
-      "senders": [
-        {
-          "plugin": "screen",
-          "function": "Screen.getModelAnswer",
-          "site": "src7/plugins/screen/Screen.ts:1038"
-        }
-      ],
-      "listeners": []
     },
     {
       "name": "session/after-model",
@@ -6400,7 +6156,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:456"
+          "site": "src7/plugins/approval/index.ts:458"
         },
         {
           "plugin": "assist",
@@ -6455,7 +6211,7 @@
         {
           "plugin": "memory",
           "function": "Memory.constructor",
-          "site": "src7/plugins/memory/index.ts:149"
+          "site": "src7/plugins/memory/index.ts:151"
         },
         {
           "plugin": "model-catalog",
@@ -6480,7 +6236,7 @@
         {
           "plugin": "wechat",
           "function": "Wechat.constructor",
-          "site": "src7/plugins/wechat/index.ts:220"
+          "site": "src7/plugins/wechat/index.ts:213"
         }
       ]
     },
@@ -6549,7 +6305,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:484"
+          "site": "src7/plugins/approval/index.ts:486"
         },
         {
           "plugin": "bots",
@@ -6590,7 +6346,7 @@
         {
           "plugin": "bots",
           "function": "DispatchResults.listen",
-          "site": "src7/plugins/bots/DispatchResults.ts:188"
+          "site": "src7/plugins/bots/DispatchResults.ts:194"
         },
         {
           "plugin": "bots",
@@ -6600,12 +6356,12 @@
         {
           "plugin": "bots",
           "function": "GroupBatch.constructor",
-          "site": "src7/plugins/bots/GroupBatch.ts:155"
+          "site": "src7/plugins/bots/GroupBatch.ts:153"
         },
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:373"
+          "site": "src7/plugins/bots/index.ts:379"
         },
         {
           "plugin": "cli",
@@ -6766,7 +6522,7 @@
         {
           "plugin": "memory",
           "function": "Memory.constructor",
-          "site": "src7/plugins/memory/index.ts:153"
+          "site": "src7/plugins/memory/index.ts:155"
         },
         {
           "plugin": "model-catalog",
@@ -6833,27 +6589,27 @@
         {
           "plugin": "approval",
           "function": "Approval.traced",
-          "site": "src7/plugins/approval/index.ts:737"
+          "site": "src7/plugins/approval/index.ts:739"
         },
         {
           "plugin": "approval",
           "function": "Approval.ask",
-          "site": "src7/plugins/approval/index.ts:759"
+          "site": "src7/plugins/approval/index.ts:761"
         },
         {
           "plugin": "approval",
           "function": "Approval.settle",
-          "site": "src7/plugins/approval/index.ts:853"
+          "site": "src7/plugins/approval/index.ts:855"
         },
         {
           "plugin": "approval",
           "function": "Approval.onRequest",
-          "site": "src7/plugins/approval/index.ts:912"
+          "site": "src7/plugins/approval/index.ts:914"
         },
         {
           "plugin": "approval",
           "function": "Approval.answer",
-          "site": "src7/plugins/approval/index.ts:1194"
+          "site": "src7/plugins/approval/index.ts:1196"
         },
         {
           "plugin": "assist",
@@ -6923,27 +6679,27 @@
         {
           "plugin": "bots",
           "function": "DispatchResults.acceptResult",
-          "site": "src7/plugins/bots/DispatchResults.ts:264"
+          "site": "src7/plugins/bots/DispatchResults.ts:270"
         },
         {
           "plugin": "bots",
           "function": "DispatchResults.hold",
-          "site": "src7/plugins/bots/DispatchResults.ts:359"
+          "site": "src7/plugins/bots/DispatchResults.ts:365"
         },
         {
           "plugin": "bots",
           "function": "DispatchResults.finishFront",
-          "site": "src7/plugins/bots/DispatchResults.ts:553"
+          "site": "src7/plugins/bots/DispatchResults.ts:563"
         },
         {
           "plugin": "bots",
           "function": "DispatchResults.sendLastWords",
-          "site": "src7/plugins/bots/DispatchResults.ts:706"
+          "site": "src7/plugins/bots/DispatchResults.ts:716"
         },
         {
           "plugin": "bots",
           "function": "DispatchResults.drain",
-          "site": "src7/plugins/bots/DispatchResults.ts:894"
+          "site": "src7/plugins/bots/DispatchResults.ts:904"
         },
         {
           "plugin": "bots",
@@ -6958,37 +6714,37 @@
         {
           "plugin": "bots",
           "function": "GroupBatch.judge",
-          "site": "src7/plugins/bots/GroupBatch.ts:378"
+          "site": "src7/plugins/bots/GroupBatch.ts:403"
         },
         {
           "plugin": "bots",
           "function": "Bots.constructor",
-          "site": "src7/plugins/bots/index.ts:387"
+          "site": "src7/plugins/bots/index.ts:393"
         },
         {
           "plugin": "bots",
           "function": "Bots.onRequest",
-          "site": "src7/plugins/bots/index.ts:447"
+          "site": "src7/plugins/bots/index.ts:453"
         },
         {
           "plugin": "bots",
           "function": "Bots.receive",
-          "site": "src7/plugins/bots/index.ts:820"
+          "site": "src7/plugins/bots/index.ts:827"
         },
         {
           "plugin": "bots",
           "function": "Bots.say",
-          "site": "src7/plugins/bots/index.ts:949"
+          "site": "src7/plugins/bots/index.ts:956"
         },
         {
           "plugin": "bots",
           "function": "Bot.receive",
-          "site": "src7/plugins/bots/index.ts:1027"
+          "site": "src7/plugins/bots/index.ts:1034"
         },
         {
           "plugin": "bots",
           "function": "Bot.receive",
-          "site": "src7/plugins/bots/index.ts:1039"
+          "site": "src7/plugins/bots/index.ts:1046"
         },
         {
           "plugin": "bots",
@@ -7023,22 +6779,22 @@
         {
           "plugin": "exec",
           "function": "Exec.run",
-          "site": "src7/plugins/exec/index.ts:147"
+          "site": "src7/plugins/exec/index.ts:149"
         },
         {
           "plugin": "exec",
           "function": "Exec.onTool",
-          "site": "src7/plugins/exec/index.ts:293"
+          "site": "src7/plugins/exec/index.ts:295"
         },
         {
           "plugin": "exec",
           "function": "Exec.onDecided",
-          "site": "src7/plugins/exec/index.ts:330"
+          "site": "src7/plugins/exec/index.ts:332"
         },
         {
           "plugin": "feishu",
           "function": "publish",
-          "site": "src7/plugins/feishu/doc/Doc.ts:169"
+          "site": "src7/plugins/feishu/doc/Doc.ts:180"
         },
         {
           "plugin": "feishu",
@@ -7063,12 +6819,12 @@
         {
           "plugin": "feishu",
           "function": "Feishu.start",
-          "site": "src7/plugins/feishu/index.ts:608"
+          "site": "src7/plugins/feishu/index.ts:615"
         },
         {
           "plugin": "feishu",
           "function": "Feishu.mark",
-          "site": "src7/plugins/feishu/index.ts:686"
+          "site": "src7/plugins/feishu/index.ts:693"
         },
         {
           "plugin": "feishu",
@@ -7083,12 +6839,12 @@
         {
           "plugin": "file-tools",
           "function": "FileTools.edit",
-          "site": "src7/plugins/file-tools/index.ts:115"
+          "site": "src7/plugins/file-tools/index.ts:116"
         },
         {
           "plugin": "file-tools",
           "function": "FileTools.find",
-          "site": "src7/plugins/file-tools/index.ts:163"
+          "site": "src7/plugins/file-tools/index.ts:164"
         },
         {
           "plugin": "http",
@@ -7108,12 +6864,12 @@
         {
           "plugin": "image-gen",
           "function": "ImageGen.generate",
-          "site": "src7/plugins/image-gen/index.ts:120"
+          "site": "src7/plugins/image-gen/index.ts:122"
         },
         {
           "plugin": "image-gen",
           "function": "ImageGen.generate",
-          "site": "src7/plugins/image-gen/index.ts:161"
+          "site": "src7/plugins/image-gen/index.ts:163"
         },
         {
           "plugin": "journal",
@@ -7123,7 +6879,7 @@
         {
           "plugin": "memory",
           "function": "Memory.onRequest",
-          "site": "src7/plugins/memory/index.ts:256"
+          "site": "src7/plugins/memory/index.ts:258"
         },
         {
           "plugin": "model-catalog",
@@ -7263,27 +7019,27 @@
         {
           "plugin": "settings",
           "function": "Settings.constructor",
-          "site": "src7/plugins/settings/index.ts:74"
+          "site": "src7/plugins/settings/index.ts:75"
         },
         {
           "plugin": "settings",
           "function": "Settings.createBot",
-          "site": "src7/plugins/settings/index.ts:190"
+          "site": "src7/plugins/settings/index.ts:195"
         },
         {
           "plugin": "settings",
           "function": "Settings.restart",
-          "site": "src7/plugins/settings/index.ts:284"
+          "site": "src7/plugins/settings/index.ts:289"
         },
         {
           "plugin": "settings",
           "function": "Settings.exitSoon",
-          "site": "src7/plugins/settings/index.ts:378"
+          "site": "src7/plugins/settings/index.ts:383"
         },
         {
           "plugin": "settings",
           "function": "Settings.exitSoon",
-          "site": "src7/plugins/settings/index.ts:385"
+          "site": "src7/plugins/settings/index.ts:390"
         },
         {
           "plugin": "voice",
@@ -7293,12 +7049,12 @@
         {
           "plugin": "web-api",
           "function": "WebApi.accept",
-          "site": "src7/plugins/web-api/index.ts:481"
+          "site": "src7/plugins/web-api/index.ts:482"
         },
         {
           "plugin": "web-api",
           "function": "WebApi.setModel",
-          "site": "src7/plugins/web-api/index.ts:1191"
+          "site": "src7/plugins/web-api/index.ts:1192"
         },
         {
           "plugin": "web-api",
@@ -7323,22 +7079,22 @@
         {
           "plugin": "wechat",
           "function": "Wechat.store",
-          "site": "src7/plugins/wechat/index.ts:445"
+          "site": "src7/plugins/wechat/index.ts:438"
         },
         {
           "plugin": "wechat",
           "function": "Wechat.deliver",
-          "site": "src7/plugins/wechat/index.ts:893"
+          "site": "src7/plugins/wechat/index.ts:886"
         },
         {
           "plugin": "workspaces",
           "function": "Workspaces.getResolved",
-          "site": "src7/plugins/workspaces/index.ts:610"
+          "site": "src7/plugins/workspaces/index.ts:613"
         },
         {
           "plugin": "workspaces",
           "function": "Workspaces.emitChanged",
-          "site": "src7/plugins/workspaces/index.ts:624"
+          "site": "src7/plugins/workspaces/index.ts:627"
         },
         {
           "plugin": "skeleton",
@@ -7365,7 +7121,7 @@
         {
           "plugin": "tutorial",
           "function": "Printer.constructor",
-          "site": "src7/plugins/tutorial/Print.ts:51"
+          "site": "src7/plugins/tutorial/Print.ts:55"
         },
         {
           "plugin": "tutorial",
@@ -7426,7 +7182,7 @@
         {
           "plugin": "tutorial",
           "function": "Tutorial.constructor",
-          "site": "src7/plugins/tutorial/index.ts:448"
+          "site": "src7/plugins/tutorial/index.ts:450"
         }
       ]
     },
@@ -7681,7 +7437,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.constructor",
-          "site": "src7/plugins/web-api/index.ts:160"
+          "site": "src7/plugins/web-api/index.ts:161"
         }
       ]
     },
@@ -7764,12 +7520,12 @@
         {
           "plugin": "screen",
           "function": "Screen.presented",
-          "site": "src7/plugins/screen/Screen.ts:724"
+          "site": "src7/plugins/screen/Screen.ts:668"
         },
         {
           "plugin": "screen",
           "function": "Screen.stopVoice",
-          "site": "src7/plugins/screen/Screen.ts:855"
+          "site": "src7/plugins/screen/Screen.ts:799"
         }
       ],
       "listeners": [
@@ -7852,7 +7608,7 @@
         {
           "plugin": "screen",
           "function": "Screen.presented",
-          "site": "src7/plugins/screen/Screen.ts:724"
+          "site": "src7/plugins/screen/Screen.ts:668"
         }
       ]
     },
@@ -8032,7 +7788,7 @@
       "name": "web-api/model",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/web-api/index.ts:94",
+      "declaredAt": "src7/plugins/web-api/index.ts:95",
       "signature": "(change: { session: Session; from: string; to: string; thinkingFrom: string; thinkingTo: string; by: 'HTTP' }) => void",
       "doc": "网页换了会话的模型。journal 通过 internal/dispatch 记录。",
       "params": [
@@ -8048,7 +7804,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.setModel",
-          "site": "src7/plugins/web-api/index.ts:1192"
+          "site": "src7/plugins/web-api/index.ts:1193"
         }
       ],
       "listeners": []
@@ -8057,7 +7813,7 @@
       "name": "web-api/received",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/web-api/index.ts:82",
+      "declaredAt": "src7/plugins/web-api/index.ts:83",
       "signature": "(message: { id: number; bot: string; channel: string; source: string; text: string; at: number }) => void",
       "doc": "收件表记下一条（HTTP 的、别的渠道的都算）。journal 和 tutorial 通过 internal/dispatch 记录。",
       "params": [
@@ -8082,7 +7838,7 @@
       "name": "web-api/replied",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/web-api/index.ts:88",
+      "declaredAt": "src7/plugins/web-api/index.ts:89",
       "signature": "(reply: { messageId: number; replyIndex: number; session: Session; text: string; at: number }) => void",
       "doc": "一句回话追加进收件表，replyIndex 是它在 replies 里的下标。journal 和 tutorial 通过 internal/dispatch 记录。",
       "params": [
@@ -8107,7 +7863,7 @@
       "name": "web-api/status",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/web-api/index.ts:76",
+      "declaredAt": "src7/plugins/web-api/index.ts:77",
       "signature": "(list: ChannelStatus[]) => void | Promise<void>",
       "doc": "GET /api/ui/status 每来一次就挨个问（ctx.serial）：每个渠道往 list 里 push 自己的一项或几项。监听的函数不许有返回值。",
       "params": [
@@ -8122,7 +7878,7 @@
         {
           "name": "ChannelStatus",
           "kind": "interface",
-          "site": "src7/plugins/web-api/index.ts:57",
+          "site": "src7/plugins/web-api/index.ts:58",
           "doc": "一个渠道连接的状态，给网页左下角的圆点（web/src/Bots/Connections.tsx:41-46 只认 feishu 开头的 name）。",
           "definition": "",
           "fields": [
@@ -8131,28 +7887,28 @@
               "optional": false,
               "type": "string",
               "doc": "'feishu:<应用号>' 这样；网页按 name 开头认渠道。",
-              "site": "src7/plugins/web-api/index.ts:59"
+              "site": "src7/plugins/web-api/index.ts:60"
             },
             {
               "name": "bot",
               "optional": true,
               "type": "string",
               "doc": "这条连接属于哪个机器人。",
-              "site": "src7/plugins/web-api/index.ts:61"
+              "site": "src7/plugins/web-api/index.ts:62"
             },
             {
               "name": "connected",
               "optional": false,
               "type": "boolean",
               "doc": "通不通。",
-              "site": "src7/plugins/web-api/index.ts:63"
+              "site": "src7/plugins/web-api/index.ts:64"
             },
             {
               "name": "detail",
               "optional": false,
               "type": "string",
               "doc": "鼠标放上去的一句话，如“长连接已连上”“断了：原因”。",
-              "site": "src7/plugins/web-api/index.ts:65"
+              "site": "src7/plugins/web-api/index.ts:66"
             }
           ]
         }
@@ -8161,19 +7917,19 @@
         {
           "plugin": "web-api",
           "function": "WebApi.routes",
-          "site": "src7/plugins/web-api/index.ts:295"
+          "site": "src7/plugins/web-api/index.ts:296"
         }
       ],
       "listeners": [
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:453"
+          "site": "src7/plugins/feishu/index.ts:460"
         },
         {
           "plugin": "wechat",
           "function": "Wechat.constructor",
-          "site": "src7/plugins/wechat/index.ts:224"
+          "site": "src7/plugins/wechat/index.ts:217"
         }
       ]
     },
@@ -8569,7 +8325,7 @@
       "name": "workspaces/changed",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/workspaces/index.ts:45",
+      "declaredAt": "src7/plugins/workspaces/index.ts:47",
       "signature": "(change: WorkspaceChange) => void",
       "doc": "工作区新建、改名、归档了（存库以后发）。重复登记、改成同名、再归档一次不发。",
       "params": [
@@ -8584,7 +8340,7 @@
         {
           "name": "WorkspaceChange",
           "kind": "interface",
-          "site": "src7/plugins/workspaces/index.ts:109",
+          "site": "src7/plugins/workspaces/index.ts:111",
           "doc": "事件 workspaces/changed 的数据：不带目录。",
           "definition": "",
           "fields": [
@@ -8593,21 +8349,21 @@
               "optional": false,
               "type": "string",
               "doc": "哪个工作区。",
-              "site": "src7/plugins/workspaces/index.ts:111"
+              "site": "src7/plugins/workspaces/index.ts:113"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "归属哪个机器人。",
-              "site": "src7/plugins/workspaces/index.ts:113"
+              "site": "src7/plugins/workspaces/index.ts:115"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'created' | 'renamed' | 'archived'",
               "doc": "新建（含旧目录第一次登记）、改名、归档。",
-              "site": "src7/plugins/workspaces/index.ts:115"
+              "site": "src7/plugins/workspaces/index.ts:117"
             }
           ]
         }
@@ -8616,7 +8372,7 @@
         {
           "plugin": "workspaces",
           "function": "Workspaces.emitChanged",
-          "site": "src7/plugins/workspaces/index.ts:625"
+          "site": "src7/plugins/workspaces/index.ts:628"
         }
       ],
       "listeners": []

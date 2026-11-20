@@ -1,6 +1,6 @@
 /**
  * 渠道与机器人解耦第 1 步（`channel/message` 统一事件、接口 A）的端到端离线验证：
- *   1. `legacy_auto` 模式兼容（原 `ctx.bots.receive` 自动发送 `row.reply`，`acceptResult` `queued`/`duplicate` 与渠道 `sent` 不混淆）；
+ *   1. 自动回话（`ctx.bots.receive` 自动发送 `row.reply`，`acceptResult` 的 `queued`/`duplicate` 与渠道 `sent` 分开）；
  *   2. 飞书单应用 + 单机器人 `channel/message` → `claimKey` 去重 → `channel_reply` 纯文字发送（绝不把 `@/abs/file` 当文件上传，同键幂等、同键不同正文报错、`row.reply` 不自动发）；
  *   3. 同一条 `channel/message` N 机器人独立认领 + `approval` 消息级“同意 1”只消费一次；
  *   4. 统一记忆的渠道归档（可配默认条数、签名游标翻页、受限来源隔离、`identity_unresolved` 报错）；
@@ -177,7 +177,7 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 
-test('1. legacy_auto 兼容与回执语义隔离：bots.receive 照常自动发 row.reply，v1 accepted 不混 acceptResult', async () => {
+test('1. 自动回话与回执转换：bots.receive 按地址发 row.reply，发送与结果入队的回执分开', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-legacy-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = new cordis.Context();
@@ -203,7 +203,7 @@ test('1. legacy_auto 兼容与回执语义隔离：bots.receive 照常自动发 
     request.answer = piAi.fauxAssistantMessage(`自动回复：${said}`);
   });
 
-  //M 老渠道 legacy：登记渠道名，旧路自动回话也经 channel/reply 到它，记进 sent。
+  //M 登记测试渠道，记录自动回话经 channel/reply 按地址发来的正文。
   const sent: string[] = [];
   ctx.bots.channel('legacy');
   channels.registerTextReply(ctx, {
@@ -227,7 +227,7 @@ test('1. legacy_auto 兼容与回执语义隔离：bots.receive 照常自动发 
   }, () => undefined);
   expect(receipt.status).toBe('queued');
   await waitFor(() => sent.some((item) => item.includes('后台报告')));
-  const normalized = botsPlugin.normalizeLegacyReceipt('accepted', '', {
+  const normalized = botsPlugin.normalizeAutoReplyReceipt('accepted', '', {
     replyRequestKey: 'rk',
     replyRoundKey: 'rrk',
     replyIndex: 0,

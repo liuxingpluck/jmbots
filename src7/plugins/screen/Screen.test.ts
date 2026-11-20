@@ -265,11 +265,13 @@ test('成功回执含完整身份，私有模型只收到必要字段，十秒�
   now.mockReturnValue(100);
   closers.push(() => now.mockRestore());
   const { ctx, app, calls } = await setup({ speak: true, thinking: 'low' });
-  const gateEvents: unknown[] = [];
-  const usages: unknown[] = [];
-  ctx.on('screen/before-model', (gate) => { gateEvents.push({ ...gate }); });
-  ctx.on('screen/after-model', (gate) => { gateEvents.push({ ...gate }); });
-  ctx.on('screen/model-usage', (usage) => { usages.push(usage); });
+  const broadcasts: string[] = [];
+  ctx.on('internal/dispatch', (_mode, event) => {
+    const name = String(event);
+    if (name.startsWith('screen/') || name.startsWith('session/')) {
+      broadcasts.push(name);
+    }
+  });
   const enabled = await app.inject({ method: 'POST', url: STATE, payload: start });
   expect(enabled.statusCode).toBe(200);
   expect(enabled.json<{ ok: boolean }>()).toMatchObject({ ok: true, sessionId: identity.sessionId, epoch: 1, active: true, leaseMs: 10000 });
@@ -296,12 +298,7 @@ test('成功回执含完整身份，私有模型只收到必要字段，十秒�
   expect(context).not.toContain('handle-test');
   expect(context).not.toContain('monitor-test');
   expect(context).not.toContain('control-test');
-  expect(gateEvents).toHaveLength(2);
-  expect(usages).toHaveLength(1);
-  const broadcasts = JSON.stringify([gateEvents, usages]);
-  for (const sensitive of [jpeg, '测试文档', '保存', TEXT]) {
-    expect(broadcasts).not.toContain(sensitive);
-  }
+  expect(broadcasts).toEqual([]);
 
   //M 语音启用但缺席时，确认呈现照常成功并返回 unavailable。
   const presented = { method: 'POST', url: PRESENTED, payload: { ...identity, clickId: 'click-1' } } as const;
@@ -378,58 +375,39 @@ test('失联不接受旧心跳，新一代主动开启才可继续', async () =>
   expect(reopened.json()).toMatchObject({ ok: true, active: true, sessionId: 'screen-two', epoch: 2 });
 });
 
-test('两个模型关口可拒绝继续，坏 JSON 和超长讲解返回 422', async () => {
+test('坏 JSON 和超长讲解返回 422', async () => {
   let output = '外层有额外文字 {"text":"好","uncertain":false}';
-  const { ctx, app, calls } = await setup({}, () => piAi.fauxAssistantMessage(output));
-  const pre = ctx.on('screen/before-model', (gate) => { gate.stop = true; });
+  const { app } = await setup({}, () => piAi.fauxAssistantMessage(output));
   await app.inject({ method: 'POST', url: STATE, payload: start });
-  const blocked = await app.inject({ method: 'POST', url: CLICK, payload: getClick() });
-  expect(blocked.statusCode).toBe(422);
-  expect(blocked.json()).toMatchObject({ errorCode: 'privacy_blocked' });
-  expect(calls).toHaveLength(0);
-  pre();
 
-  const malformed = await app.inject({ method: 'POST', url: CLICK, payload: getClick(2) });
+  const malformed = await app.inject({ method: 'POST', url: CLICK, payload: getClick() });
   expect(malformed.statusCode).toBe(422);
   expect(malformed.json()).toMatchObject({ errorCode: 'invalid_model_output' });
   output = JSON.stringify({ text: '长'.repeat(161), uncertain: false });
-  const tooLong = await app.inject({ method: 'POST', url: CLICK, payload: getClick(3) });
+  const tooLong = await app.inject({ method: 'POST', url: CLICK, payload: getClick(2) });
   expect(tooLong.statusCode).toBe(422);
-
-  output = JSON.stringify({ text: TEXT, uncertain: false });
-  ctx.on('screen/after-model', (gate) => { gate.stop = true; });
-  const denied = await app.inject({ method: 'POST', url: CLICK, payload: getClick(4) });
-  expect(denied.statusCode).toBe(422);
-  expect(denied.json()).toMatchObject({ errorCode: 'privacy_blocked' });
-  expect(denied.body).not.toContain(TEXT);
+  expect(tooLong.json()).toMatchObject({ errorCode: 'invalid_model_output' });
 });
 
-test('模型忽略取消时，期限到达仍回 504 并记录这次调用', async () => {
+test('模型忽略取消时，期限到达仍回 504', async () => {
   const upstream = Promise.withResolvers<piAi.AssistantMessage>();
   closers.push(() => upstream.resolve(answer()));
-  const { ctx, app, calls } = await setup({ model_timeout_ms: 1000 }, () => upstream.promise);
-  const records: unknown[] = [];
-  ctx.on('screen/model-usage', (usage) => { records.push(usage); });
+  const { app, calls } = await setup({ model_timeout_ms: 1000 }, () => upstream.promise);
   await app.inject({ method: 'POST', url: STATE, payload: start });
   const timed = await app.inject({ method: 'POST', url: CLICK, payload: getClick() });
   expect(timed.statusCode).toBe(504);
   expect(timed.json()).toMatchObject({ ok: false, errorCode: 'model_timeout', clickId: 'click-1' });
   expect(calls[0]?.options.signal?.aborted).toBe(true);
-  expect(records).toMatchObject([{ ok: false, errorCode: 'model_timeout' }]);
 });
 
-test('供应商异常只给固定 502 和计量错误码', async () => {
+test('供应商异常只给固定 502 和错误码', async () => {
   const sensitive = '供应商异常可能回显测试文档和图像';
-  const { ctx, app } = await setup({}, () => { throw new Error(sensitive); });
-  const records: unknown[] = [];
-  ctx.on('screen/model-usage', (usage) => { records.push(usage); });
+  const { app } = await setup({}, () => { throw new Error(sensitive); });
   await app.inject({ method: 'POST', url: STATE, payload: start });
   const failed = await app.inject({ method: 'POST', url: CLICK, payload: getClick() });
   expect(failed.statusCode).toBe(502);
   expect(failed.json()).toMatchObject({ ok: false, errorCode: 'model_failed' });
   expect(failed.body).not.toContain(sensitive);
-  expect(records).toMatchObject([{ ok: false, errorCode: 'model_failed' }]);
-  expect(JSON.stringify(records)).not.toContain(sensitive);
 });
 
 test('语音只在呈现确认后按组请求一次，隐私暂停取消旧组', async () => {
@@ -528,19 +506,31 @@ test('首句在模型结束前可以显示和确认，尾句排在当前组后�
   }
 });
 
-test('流式预览也要通过呈现关口，拒绝时不泄露片段', async () => {
+test('隐私暂停后上游首句到达，基地只收到取消帧', async () => {
+  const source = piAi.createAssistantMessageEventStream();
+  const started = Promise.withResolvers<void>();
   const first = '{"text":"这是保存按钮。';
   const stream = () => {
-    const source = piAi.createAssistantMessageEventStream();
-    const partial = piAi.fauxAssistantMessage(first);
-    source.push({ type: 'text_delta', contentIndex: 0, delta: first, partial });
-    source.end(answer());
+    started.resolve();
     return source;
   };
-  const { ctx, app } = await setup({}, answer, ['text', 'image'], stream);
-  ctx.on('screen/after-model', (gate) => { gate.stop = true; });
+  const { app, calls } = await setup({}, answer, ['text', 'image'], stream);
   await app.inject({ method: 'POST', url: STATE, payload: start });
-  const response = await app.inject({ method: 'POST', url: CLICK + '/stream', payload: getClick() });
-  expect(JSON.parse(response.body)).toMatchObject({ phase: 'error', errorCode: 'privacy_blocked' });
-  expect(response.body).not.toContain('保存按钮');
+  const payload = getClick();
+  const pending = app.inject({ method: 'POST', url: CLICK + '/stream', payload }).then((response) => response);
+  try {
+    await started.promise;
+    const pause = { ...identity, epoch: 2, active: false, reasonCode: 'privacy_pause' };
+    const paused = await app.inject({ method: 'POST', url: STATE, payload: pause });
+    expect(paused.statusCode).toBe(200);
+    expect(calls[0]?.options.signal?.aborted).toBe(true);
+
+    const partial = piAi.fauxAssistantMessage(first);
+    source.push({ type: 'text_delta', contentIndex: 0, delta: first, partial });
+    const response = await pending;
+    expect(JSON.parse(response.body)).toMatchObject({ phase: 'error', errorCode: 'cancelled' });
+    expect(response.body).not.toContain('保存按钮');
+  } finally {
+    source.end(answer());
+  }
 });

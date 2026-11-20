@@ -158,8 +158,8 @@ async function callTool(ctx: cordis.Context, address: unknown, args: Record<stri
 }
 
 
-/** 本人的回话地址（网页、命令行这类不写 role 的都当本人）。 */
-const OWNER_ADDRESS = { customer: 'test:u1' };
+/** 本人的回话地址：测试渠道 test 不是本机渠道，要像网页、语音一样写明 owner: true，channels 的 isOwnerTurn 才当本人。 */
+const OWNER_ADDRESS = { customer: 'test:u1', owner: true };
 
 
 test('同名两个工作区：ID、目录都不同，list 都列出来；改名只改名字', async () => {
@@ -168,7 +168,7 @@ test('同名两个工作区：ID、目录都不同，list 都列出来；改名�
   ctx.on('workspaces/changed', (change) => {
     changes.push(change);
   });
-  const owner = ctx.workspaces.getAccess('助手', OWNER_ADDRESS);
+  const owner = ctx.workspaces.getAccess('助手', 'cli', OWNER_ADDRESS);
 
   //M 两个都叫“项目”（第二个带空白，存的时候去掉）。
   const first = ctx.workspaces.create({ name: '项目' }, owner);
@@ -205,7 +205,7 @@ test('同名两个工作区：ID、目录都不同，list 都列出来；改名�
 test('旧默认目录：登记前后是同一个目录，重复登记、重启都不出第二条；旧写法相对路径两次落到同一个 ID', async () => {
   const { ctx, root, sent } = await world();
   const botWorkspace = ctx.bots.get('助手')?.workspace ?? '';
-  const owner = ctx.workspaces.getAccess('助手', OWNER_ADDRESS);
+  const owner = ctx.workspaces.getAccess('助手', 'cli', OWNER_ADDRESS);
 
   //M 默认工作区就是原来的 bots/助手/workspace/（Bot.workspace），建机器人时已经登记。
   const resolved = ctx.workspaces.resolve(owner);
@@ -248,8 +248,8 @@ test('外人：拿本人的工作区 ID 被拒，工具不说名字；只看得�
   const guestDir = path.join(root, 'guests', '_guest');
   fs.mkdirSync(guestDir, { recursive: true });
   const guestAddress = { customer: 'test:g1', role: 'guest', workspace: guestDir };
-  const owner = ctx.workspaces.getAccess('助手', OWNER_ADDRESS);
-  const guest = ctx.workspaces.getAccess('助手', guestAddress);
+  const owner = ctx.workspaces.getAccess('助手', 'cli', OWNER_ADDRESS);
+  const guest = ctx.workspaces.getAccess('助手', 'feishu', guestAddress);
   const mine = ctx.workspaces.create({ name: '私事' }, owner);
 
   //M 本人的 ID：取、派活都被拒；外人也不能新建、改名、归档。
@@ -280,7 +280,7 @@ test('外人：拿本人的工作区 ID 被拒，工具不说名字；只看得�
 
 test('归档：不能新派（hand_session 报 workspace_archived、不开后台），绑定过的照样能取；默认的不能归档', async () => {
   const { ctx, sent } = await world();
-  const owner = ctx.workspaces.getAccess('助手', OWNER_ADDRESS);
+  const owner = ctx.workspaces.getAccess('助手', 'cli', OWNER_ADDRESS);
   const temp = ctx.workspaces.create({ name: '临时' }, owner);
 
   //M 归档：再归档一次原样交回。
@@ -308,7 +308,7 @@ test('归档：不能新派（hand_session 报 workspace_archived、不开后台
 
 test('hand_session：workspaceId 和 workspace 同时给报冲突；按 ID 派的后台绑定工作区，append 不换', async () => {
   const { ctx, sent } = await world();
-  const owner = ctx.workspaces.getAccess('助手', OWNER_ADDRESS);
+  const owner = ctx.workspaces.getAccess('助手', 'cli', OWNER_ADDRESS);
   const project = ctx.workspaces.create({ name: '项目' }, owner);
 
   //M 两个都写：报 workspace_selection_conflict，不开后台。

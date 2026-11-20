@@ -1,11 +1,11 @@
 /**
  * 设置页的接口：看和改 config.yaml、新建机器人、重启。五条路径都登记在 ctx.http.app 上；令牌由 http 统一查。
  *   GET  /api/settings          白名单里的段，密钥换成代号
- *   PUT  /api/settings          照网页发来的改动改 config.yaml（注释、顺序都留着），重启后生效
+ *   PUT  /api/settings          保存配置，回报哪些设置会重读、哪些要等重启
  *   POST /api/bots              新建机器人：写进 bots 段（填了飞书再写 channels.feishu），建目录和记忆概要，当场加进名单
  *   POST /api/settings/apply    立即重启
  *   POST /api/service/restart   请基地重启（不是基地拉起的，同“立即重启”）
- * 骨架的 resources.raw 是启动时读的、只读，这里改的文件要重启才生效。
+ * Resources 重新读取配置快照。启动时挂载的插件和机器人实例仍要重启才能重建。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as botUtils from '../../utils/Bots.ts';
@@ -21,7 +21,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.7';
+export const version = '1.0.8';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http'];
@@ -71,9 +71,14 @@ class Settings {
       }
 
       //T 跟踪：存了配置（只带改了哪些段，不带值）。
+      const sections = changed.join('、');
       this.ctx.emit('trace', 'Settings.save', 'trace.settings.save', 'configFile.edit(edits)',
-        { sections: changed.join('、'), stepCount: count });
-      return { ok: true, changed: count, note: `改了 ${changed.join('、')}：config.yaml 是启动时读的，重启后生效` };
+        { sections, stepCount: count });
+
+      //M 保存完成后说明接下来何时应用，文件监听尚未交回结果。
+      const note = `已保存 ${sections}。供应商连接、密钥、默认模型、思考档、重试和机器人名单会自动重读。`
+        + '插件名单、插件的启动配置和已有机器人实例要重启才更新。';
+      return { ok: true, changed: count, note };
     });
     //M 登记新建机器人和重启接口，业务错误由 HTTP 插件统一返回。
     app.post<{ Body: unknown }>('/api/bots',

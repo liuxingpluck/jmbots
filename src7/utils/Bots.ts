@@ -1,7 +1,6 @@
 /** 从资源快照取机器人配置与目录。 */
 import * as path from 'node:path';
 import type { Resources } from '../Resources.ts';
-import type { Session } from '../Sessions.ts';
 import * as workspace from './Workspace.ts';
 
 /** 机器人名及插件各自读取的配置项。 */
@@ -51,15 +50,23 @@ export function getBotDir(
   return path.join(resources.root, 'bots', name, kind);
 }
 
-/** 使用这一轮的回话地址选择工作区，未指定时用机器人工作区。 */
-export function getSessionWorkspace(resources: Pick<Resources, 'root' | 'raw'>, session: Session): string {
-  const row = session.row;
+/**
+ * 使用这一轮的回话地址选择工作区，未指定时用机器人工作区。
+ * @param resources 运行时目录、机器人名单。
+ * @param bot 这一轮的机器人名字。
+ * @param address 这一轮的回话地址。
+ * @returns 这一轮可用的工作区目录。
+ */
+export function getSessionWorkspace(resources: Pick<Resources, 'root' | 'raw'>, bot: string, address: unknown): string {
   //G 历史会话所属机器人已移除时，保持工具的原错误。
-  if (getBotConfig(resources.raw, row.bot) === undefined) throw new Error(`没有这个机器人：${row.bot}`);
+  const configured = getBotConfig(resources.raw, bot);
+  if (configured === undefined) {
+    throw new Error(`没有这个机器人：${bot}`);
+  }
 
-  const base = getBotDir(resources, row.bot, 'workspace');
   //M 地址上的工作区保留 Builder、Guest 和派出的会话各自的目录。
-  return workspace.getWorkspace(base, row.address);
+  const base = getBotDir(resources, bot, 'workspace');
+  return workspace.getWorkspace(base, address);
 }
 
 
@@ -67,19 +74,21 @@ export function getSessionWorkspace(resources: Pick<Resources, 'root' | 'raw'>, 
  * 这一轮工具给的路径落成绝对路径：相对的照这一轮的工作区解开，只许落在工作区或这一轮的授权目录里（用户 #301）。
  * file-tools 的读写、飞书发文件共用。
  * @param resources 运行时目录、机器人名单。
- * @param session 哪场会话：工作区、授权目录都看它现在记的回话地址。
+ * @param bot 这一轮的机器人名字。
+ * @param address 这一轮的回话地址，决定工作区和授权目录。
  * @param relative 模型给的路径。
  * @returns 解开符号链接后的绝对路径。
  * @throws 没有这个机器人、出了工作区和授权目录时抛错。
  */
 export function resolveSessionPath(
   resources: Pick<Resources, 'root' | 'raw'>,
-  session: Session,
+  bot: string,
+  address: unknown,
   relative: string,
 ): string {
   //M 先定这一轮的工作区，再取地址里的授权目录。
-  const workspaceDir = getSessionWorkspace(resources, session);
-  const grantDirs = workspace.getGrantDirs(session.row.address);
+  const workspaceDir = getSessionWorkspace(resources, bot, address);
+  const grantDirs = workspace.getGrantDirs(address);
 
   //M 照工作区解开路径，落在工作区或授权目录里才交回。
   return workspace.resolveWorkspacePath(workspaceDir, relative, grantDirs);

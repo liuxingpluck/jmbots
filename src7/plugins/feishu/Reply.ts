@@ -1,7 +1,7 @@
 /**
  * 飞书回话：响应标准事件 channel/reply，按 replyRequestKey 去重，发出去的写进聊天日志（ChatLog.ts）。
- * 发到哪：回来源快照的原消息；带 target.chat 时跨聊天认目标；带 target.address（旧路自动回话、relay 回信、本人批准的主动发件）照它直发。
- * 带 atFiles 的（旧路）正文里的 @路径 当文件一起发，走 index.ts 的 Feishu.sendText。
+ * 发到哪：回来源快照的原消息；带 target.chat 时跨聊天认目标；带 target.address 时按地址发（自动回话、relay 回信、本人批准的主动发件）。
+ * 带 atFiles 时用 Feishu.sendText 把正文里的 @路径 当文件一起发。
  * 回复去重记录存 channels/feishu/replies/<应用>.jsonl。
  */
 import * as fs from 'node:fs';
@@ -67,7 +67,7 @@ export class FeishuReply {
 
   /**
    * 响应 channel/reply（接口 A）：仅接受本渠道且 mode === 'text' 的纯文字发送。
-   * 不带 atFiles 的绝不把 @/abs/path 解释为附件；带 atFiles 的（旧路自动回话、relay 回信）照原来的 sendText 连文件一起发。
+   * 自动回话、relay 回信带 atFiles 时，用 sendText 识别正文里的 @路径 并发送附件。其余请求按纯文字发。
    * 支持按 replyRequestKey 幂等与同键冲突拒绝；发送完写入渠道回执日志、聊天历史并 emit channel/replied。
    * @param request 回复请求。
    */
@@ -129,7 +129,7 @@ export class FeishuReply {
       let providerId = '';
       receipt = protocol.getReceipt(request, 'sent');
 
-      //M 旧路（atFiles）：照原来的 sendText 发，正文里的 @路径 当文件一起发，有文件没发出去是 partial。
+      //M atFiles 启用时，把正文里的 @路径 当文件一起发，有文件没发出去是 partial。
       if (request.atFiles === true) {
         const sent = await this.feishu.sendText(address, atText);
         if (sent.status === 'partial') {

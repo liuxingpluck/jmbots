@@ -239,9 +239,11 @@ test('没挂 bots：bot/request 立刻走无人接单退路', async () => {
 
 test('前台派活轮发 model-catalog/request（prompt）：有人答加两段，没人答不加', async () => {
   const { ctx, sent, systems } = await world();
+  //M 本人：测试渠道 test 不是本机渠道，写明 owner: true 才算本人，才挑模型。
+  const owner = { customer: 'test:u5', owner: true };
 
   //M 没挂 model-catalog：立刻退回，只带派活说明。
-  await ctx.bots.receive('test', '助手', '你好', { customer: 'test:u5' });
+  await ctx.bots.receive('test', '助手', '你好', owner);
   await waitFor(() => sent.includes('做完了：你好'));
   const plain = systems.at(-1) ?? [];
   expect(plain.every((part) => typeof part === 'string')).toBe(true);
@@ -258,7 +260,7 @@ test('前台派活轮发 model-catalog/request（prompt）：有人答加两段�
 
     return {};
   });
-  await ctx.bots.receive('test', '助手', '再来', { customer: 'test:u5' });
+  await ctx.bots.receive('test', '助手', '再来', owner);
   await waitFor(() => sent.includes('做完了：再来'));
   const withNotes = systems.at(-1) ?? [];
   const introAt = withNotes.indexOf('# 模型介绍X');

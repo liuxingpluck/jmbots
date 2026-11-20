@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
 import * as bootModule from './Boot.ts';
 import type * as filesModule from './Files.ts';
+import type { PluginStatus } from '../../Resources.ts';
 import * as sourceModule from './Source.ts';
 
 
@@ -33,7 +34,7 @@ class FakeResources extends cordis.Service {
     thinking: 'low',
     retry: { times: 0, waitMs: 0, timeoutMs: 0 },
   };
-  pluginStatus: { name: string; mounted: boolean; started: boolean; missing: string[]; error: string; inject: string[] }[] = [];
+  pluginStatus: PluginStatus[] = [];
   constructor(ctx: cordis.Context) {
     super(ctx, 'resources');
   }
@@ -92,11 +93,11 @@ describe('录下这次启动', () => {
     for (const entry of resources.config.plugins) {
       const plugin = PLUGINS[entry.name];
       if (plugin === undefined) {
-        resources.pluginStatus.push({ name: entry.name, mounted: false, started: false, missing: [], error: '找不到这个插件', inject: [] });
+        resources.pluginStatus.push({ name: entry.name, state: 'failed', error: '找不到这个插件', inject: [] });
         continue;
       }
       await app.plugin(plugin);
-      resources.pluginStatus.push({ name: entry.name, mounted: true, started: true, missing: [], error: '', inject: plugin.inject });
+      resources.pluginStatus.push({ name: entry.name, state: 'ok', error: '', inject: plugin.inject });
     }
     app.emit('ready', []);
     app.emit('trace', 'Http.listen', 'HTTP 服务开始监听', 'app.listen({ host, port })', { 地址: '0.0.0.0', 端口: 30086, 有令牌: true });

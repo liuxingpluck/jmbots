@@ -1,5 +1,6 @@
 /**
- * 免令牌来源地址的单元测试（2026-11-14 23:50 EST，用户：本机和网关 192.168.200.1 访问不用令牌，别的局域网、外网地址要令牌）。
+ * 免令牌来源地址的单元测试（2026-11-14 23:50 EST，用户：本机和网关 192.168.200.1 访问不用令牌，别的局域网、外网地址要令牌）；
+ * 另测 /api/health 的 problems 照插件挂载状态报。
  * 跑法：bun test src7/plugins/http/Trusted.test.ts
  */
 import { describe, expect, test } from 'bun:test';
@@ -42,6 +43,31 @@ describe('免令牌的来源地址', () => {
     for (const ip of ['192.168.200.130', '192.168.1.5', '8.8.8.8', '10.0.0.1']) expect(trustedIp(ip, trusted)).toBe(false);
     expect(trustedIp('192.168.200.1', ['127.0.0.1', '::1'])).toBe(false);
   });
+});
+
+test('/api/health：插件没挂上、没开工时 problems 里有它，全开工了 problems 为空', async () => {
+  const ctx = new cordis.Context();
+  try {
+    await ctx.plugin(FakeResources);
+    await ctx.plugin(httpPlugin);
+    const status = ctx.resources.pluginStatus;
+
+    //M 全开工了：problems 为空。基地换版靠它判断新版能不能用。
+    status.push({ name: 'relay', state: 'ok', error: '', inject: [] });
+    const healthy = await ctx.http.app.inject('/api/health');
+    const healthyBody: unknown = healthy.json();
+    expect(healthyBody).toEqual({ ok: true, problems: [] });
+
+    //M 一个失败、一个等服务：两个都在 problems 里；ok 照旧是 true（服务本身活着）。
+    status.push({ name: 'broken', state: 'failed', error: '开机就抛错', inject: [] });
+    status.push({ name: 'late', state: 'waiting', error: '它要用的 memory 没人提供', inject: ['memory'] });
+    const sick = await ctx.http.app.inject('/api/health');
+    const problems = ['插件 broken 没挂上：开机就抛错', '插件 late 没开工：它要用的 memory 没人提供'];
+    const sickBody: unknown = sick.json();
+    expect(sickBody).toEqual({ ok: true, problems });
+  } finally {
+    await ctx.fiber.dispose();
+  }
 });
 
 /** 带主令牌的测试配置，核对要令牌的前缀。 */

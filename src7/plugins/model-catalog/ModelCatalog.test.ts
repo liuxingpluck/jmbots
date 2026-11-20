@@ -469,19 +469,22 @@ test('回退忽略旧 engine，插件配置支持显式的链、0 和 false', as
   expect(settings.cooldownMs).toBe(0);
 });
 
-test('骨架从 models 读取思考档和重试，旧 engine 不生效', () => {
+test('骨架从 models 读取思考档和重试，拒绝已退役的 engine', () => {
   const shared = { providers: { mock: { base_url: 'http://127.0.0.1:9' } }, default_model: 'mock/primary' };
   const engine = { thinking: 'medium', retry: { times: 2, wait_ms: 25, timeout_ms: 6000 } };
 
-  //M 只填旧键时使用默认值。
+  //G 顶层 engine 已退役，入口提示迁移。
   const oldConfig = { ...shared, engine };
-  const defaults = checks.checkConfig(oldConfig);
+  expect(() => checks.checkConfig(oldConfig)).toThrow('顶层 engine 段已取消');
+
+  //M 缺省 models 时沿用思考档与重试的默认值。
+  const defaults = checks.checkConfig(shared);
   expect(defaults.thinking).toBe('low');
   expect(defaults.retry).toEqual({ times: 5, waitMs: 3000, timeoutMs: 120_000 });
 
   //M 新配置缺项时各自使用默认值。
   const models = { thinking: 'high', retry: { times: 4 } };
-  const currentConfig = { ...shared, engine, models };
+  const currentConfig = { ...shared, models };
   const current = checks.checkConfig(currentConfig);
   expect(current.thinking).toBe('high');
   expect(current.retry).toEqual({ times: 4, waitMs: 3000, timeoutMs: 120_000 });

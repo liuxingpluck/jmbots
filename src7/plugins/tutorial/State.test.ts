@@ -101,8 +101,8 @@ const resources = {
     plugins: [{ name: 'relay', config: relayConfig }],
   },
   pluginStatus: [
-    { name: 'relay', mounted: true, started: true, missing: [], error: '', inject: [] },
-    { name: 'broken', mounted: false, started: false, missing: [], error: '读不到 C:\\Users\\leon\\x.yaml', inject: [] },
+    { name: 'relay', state: 'ok', error: '', inject: [] },
+    { name: 'broken', state: 'failed', error: '读不到 C:\\Users\\leon\\x.yaml', inject: [] },
   ],
 };
 

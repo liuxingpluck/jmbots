@@ -14,10 +14,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type * as channels from '../channels/index.ts';
+import * as channels from '../channels/index.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import * as approvalModule from '../approval/index.ts';
 import * as rules from '../approval/Rules.ts';
 import * as botsPlugin from '../bots/index.ts';
@@ -180,8 +179,8 @@ test('wechat 监听新消息：先存表再发 1 次 channel/message、认领 1 
   //G 微信联系人起的会话按外人算：说话人档位是 guest，工具清单里只剩只读白名单的工具。
   const guestFront = ctx.sessions.find({ bot: '助手', kind: 'front', customer: 'wechat:wxid_c1' })[0];
   expect(guestFront?.address).toMatchObject({ chat: 'wxid_c1', owner: false });
-  expect(workspaceModule.getSpeakerRole(guestFront?.address)).toBe('guest');
-  expect(workspaceModule.isOwnerTurn('wechat', guestFront?.address)).toBe(false);
+  expect(channels.getSpeakerRole(guestFront?.address)).toBe('guest');
+  expect(channels.isOwnerTurn('wechat', guestFront?.address)).toBe(false);
   expect(toolNames.length).toBeGreaterThan(0);
   expect(toolNames.filter((name) => !rules.READ_ONLY_TOOLS.has(name))).toEqual([]);
 

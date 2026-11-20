@@ -157,7 +157,7 @@ pub fn serve(settings: &Settings) -> Result<()> {
 /// 输入：算好的配置、主后端的守护、托管服务表。输出、副作用同 serve。不打开任何记忆库。
 pub fn serve_with(settings: &Settings, supervisor: Option<Arc<Supervisor>>, services: Option<Arc<Services>>) -> Result<()> {
     let server = tiny_http::Server::http((settings.listen_host.as_str(), settings.listen_port))
-        .map_err(|error| anyhow!("监听 {}:{} 失败（是不是老的 memorycli 服务或老基地还占着这个端口？）：{error}", settings.listen_host, settings.listen_port))?;
+        .map_err(|error| anyhow!("监听 {}:{} 失败（是不是另一个基地还占着这个端口？）：{error}", settings.listen_host, settings.listen_port))?;
     eprintln!("jmbots 基地的接口：http://{}:{}", settings.listen_host, settings.listen_port);
     for request in server.incoming_requests() {
         //M 停服需要等待主站退出；背景处理使 /update 仍能看到守护状态。

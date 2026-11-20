@@ -20,6 +20,8 @@ export interface FeishuChatLogEntry {
   direction: 'user' | 'bot';
   /** UTC 毫秒时间戳。 */
   createdAt: number;
+  /** 机器人自己发的这条已经撤回（feishu_recall 撤成功后写 true）；没写就是还在。 */
+  recalled?: boolean;
   /** 发送者信息。 */
   sender: { id: string; name?: string };
   /** 展示文本。 */
@@ -91,5 +93,25 @@ export class FeishuChatLog {
       }
     }
     return items;
+  }
+
+  /**
+   * 把一条记录标成已撤回（整个日志文件重写一遍）。feishu_recall 撤成功后调，下次“最近 N 条”就不再数它。
+   * @param appId 应用号。
+   * @param chatId 聊天号。
+   * @param messageId 要标的那条的标准消息号（entry.messageId）。
+   */
+  markRecalled(appId: string, chatId: string, messageId: string): void {
+    //M 读出全部记录，目标那条写上 recalled，整份写回。
+    const file = this.chatLogFile(appId, chatId);
+    const items = this.readChatLog(appId, chatId);
+    const lines: string[] = [];
+    for (const item of items) {
+      if (item.messageId === messageId) {
+        item.recalled = true;
+      }
+      lines.push(JSON.stringify(item));
+    }
+    fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
   }
 }

@@ -648,7 +648,7 @@ export function Models(props: SectionProps): react.JSX.Element {
       <fields.ModelField label={t('默认模型 default_model')} hint={t('新开会话和 exec 审核的小循环用它。写成“供应商/模型 ID”。会话要换模型在会话页换')} models={props.models} kind="chat" draft={props.draft} path={['default_model']} onEdit={props.onEdit} />
       <fields.ModelField label={t('决策模型 models.decision')} hint={t('分派、压缩、exec 审核先问它（只回每个选项的概率）；可以不配')} models={props.models} kind="decision" draft={props.draft} path={['models', 'decision', 'model']} onEdit={props.onEdit} />
       <fields.ModelListField
-        label={t('备用链 engine.fallback_chain')}
+        label={t('备用链 fallback.chain')}
         hint={t('模型被限流时依次换着试（能调顺序）')}
         models={props.models}
         draft={props.draft}
@@ -656,14 +656,14 @@ export function Models(props: SectionProps): react.JSX.Element {
         onEdit={props.onEdit}
       />
       <fields.NumberField
-        label={t('最多再试几个 engine.fallback_max_tries')}
+        label={t('最多再试几个 fallback.max_tries')}
         hint={t('被限流后最多再试几个模型（默认 5）')}
         min={0}
         draft={props.draft}
         path={editsModule.PLUGIN_PATHS.fallbackMaxTries}
         onEdit={props.onEdit}
       />
-      <fields.ModelField label={t('看图的模型 engine.vision_model')} hint={t('看不了图的模型读到图片时，先交给它转成文字；不写就不转')} models={props.models} needVision kind="chat" draft={props.draft} path={['engine', 'vision_model']} onEdit={props.onEdit} />
+      <fields.ModelField label={t('看图的模型 vision_model')} hint={t('看不了图的模型读到图片时，先交给它转成文字；不写就不转')} models={props.models} needVision kind="chat" draft={props.draft} path={editsModule.PLUGIN_PATHS.visionModel} onEdit={props.onEdit} />
     </div>
   );
 }
@@ -882,21 +882,18 @@ export function Search(props: SectionProps): react.JSX.Element {
 
 
 /**
- * 引擎：轮询、压缩、审核门槛、记忆搜索、生图、收尾与重试配置。
+ * 引擎：记忆搜索、生图、收尾与重试配置。
  * @param props 草稿、改动回调与全部模型清单。
  */
 export function Engine(props: SectionProps): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于引擎各参数字段的标签、说明和占位文字。
   const t = i18n.useT();
-  //M 渲染引擎参数表单：集中绑定轮询间隔、压缩阈值、审核门槛、生图、收尾与重试配置。
+  //M 渲染引擎参数表单：集中绑定记忆搜索、生图、收尾与重试配置。
   return (
     <div className="jm-section">
-      <fields.NumberField label={t('轮询 poll_ms')} hint={t('机器人循环多久看一次新消息（毫秒，默认 300）')} min={10} draft={props.draft} path={['engine', 'poll_ms']} onEdit={props.onEdit} />
-      <fields.NumberField label={t('压缩 compress_at')} hint={t('上下文到多少 token 就考虑压缩（模型上限不到 250K 时用上限的 80%，默认 200000）')} min={1000} step={1000} draft={props.draft} path={['engine', 'compress_at']} onEdit={props.onEdit} />
-      <fields.NumberField label={t('审核门槛 exec_pass')} hint={t('exec 审核：决策模型给的“安全”概率不低于它就直接执行（默认 0.2）')} min={0} max={1} step={0.05} draft={props.draft} path={['engine', 'exec_pass']} onEdit={props.onEdit} />
       <fields.TextField
         label={t('记忆搜索 index_url')}
-        hint={t('基地（取代 memorycli 服务）的地址，记忆搜索用；不写就只按关键字找')}
+        hint={t('基地的地址，记忆搜索用；不写就只按关键字找')}
         placeholder={t('如 http://127.0.0.1:30090')}
         draft={props.draft}
         path={editsModule.PLUGIN_PATHS.indexUrl}
@@ -910,9 +907,8 @@ export function Engine(props: SectionProps): react.JSX.Element {
         path={editsModule.PLUGIN_PATHS.imageModel}
         onEdit={props.onEdit}
       />
-      <fields.TextField label={t('收尾模型 wrapup_model')} hint={t('限时到点时写收尾总结的模型，不带工具、最低思考档；不写就用会话自己的模型')} placeholder={t('供应商/模型 ID')} draft={props.draft} path={['engine', 'wrapup_model']} onEdit={props.onEdit} />
-      <fields.TextField label={t('记忆库 memory_libs')} hint={t('memory 工具还搜基地里的哪些库，逗号连着写；不写就不搜')} placeholder={t('如 memory,aiskills')} draft={props.draft} path={['engine', 'memory_libs']} onEdit={props.onEdit} />
-      <fields.NumberListField label={t('重试间隔 retry_delays_ms')} hint={t('连接出错时同一个模型隔多久重试（毫秒，默认 2000, 5000）')} draft={props.draft} path={['engine', 'retry_delays_ms']} onEdit={props.onEdit} />
+      <fields.TextField label={t('收尾模型 wrapup_model')} hint={t('限时到点时写收尾总结的模型，不带工具、最低思考档；不写就用会话自己的模型')} placeholder={t('供应商/模型 ID')} draft={props.draft} path={editsModule.PLUGIN_PATHS.wrapupModel} onEdit={props.onEdit} />
+      <fields.NumberField label={t('重试等待 models.retry.wait_ms')} hint={t('连接出错时同一个模型首次重试前等多久（毫秒，默认 3000）')} min={0} draft={props.draft} path={['models', 'retry', 'wait_ms']} onEdit={props.onEdit} />
       <fields.BoolField
         label={t('试同家别的模型 fallback_include_siblings')}
         hint={t('备用链用完后，要不要接着试同一个供应商里不收费的其他模型（默认要）')}
@@ -1147,7 +1143,7 @@ export function Local(props: SectionProps): react.JSX.Element {
   return (
     <div className="jm-section">
       <AutostartSwitch />
-      <fields.NumberField label={t('基地的端口 local.port')} hint={t('基地的 HTTP 接口（记忆搜索、RAG），一律监听 0.0.0.0；后端的 engine.index_url 指到这里（默认 30090）')} min={1} max={65535} draft={props.draft} path={['local', 'port']} onEdit={props.onEdit} />
+      <fields.NumberField label={t('基地的端口 local.port')} hint={t('基地的 HTTP 接口（记忆搜索、RAG），一律监听 0.0.0.0；后端 base-bridge 插件的 index_url 指到这里（默认 30090）')} min={1} max={65535} draft={props.draft} path={['local', 'port']} onEdit={props.onEdit} />
       <fields.TextField label={t('窗口打开哪个后端 local.server')} hint={t('不写就是本机的 http.port；后端在别的机器上时填它的地址')} placeholder={t('如 http://192.168.1.5:30086')} draft={props.draft} path={['local', 'server']} onEdit={props.onEdit} />
       <fields.TextField label={t('记忆库目录 local.libs')} hint={t('相对运行时目录；下面每个子目录一个 index.db，子目录名是库名（默认 data/index/libs）')} draft={props.draft} path={['local', 'libs']} onEdit={props.onEdit} />
       <fields.TextField label={t('RAG 目录 local.rag')} hint={t('RAG 索引放哪，相对运行时目录（默认 data/index/rag）')} draft={props.draft} path={['local', 'rag']} onEdit={props.onEdit} />

@@ -2,7 +2,7 @@
 name = "jmbots-local"
 version = "0.1.5"
 edition = "2024"
-# tauri 2.12 要较新的 Rust；Windows 上用 cargo +1.99.1。（2026-11-14 memorycli 搬进记忆服务 memsvc/）
+# tauri 2.12 要较新的 Rust；Windows 上用 cargo +1.99.1。记忆搜索和 RAG 在独立的记忆服务 memsvc/（jmbots-memory），基地只托管它。
 rust-version = "1.90"
 description = "jmbots 的本地壳子（基地，只承载）：双击开窗口装载后端网页、托盘、命令行；守护后端和托管服务（记忆服务 jmbots-memory 等）、更新、重启"
 publish = false

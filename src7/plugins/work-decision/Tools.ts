@@ -2,7 +2,7 @@
 import * as crypto from 'node:crypto';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
-import * as workspace from '../../utils/Workspace.ts';
+import * as protocol from '../channels/index.ts';
 import * as notifications from './Notify.ts';
 import type * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
@@ -34,9 +34,8 @@ export function registerAskOwner(
     sessionKinds: ['work'],
     run(args, session, _signal, callId) {
       const row = session.row;
-      const channel = row.channel ?? '';
       //G 工作决策可通知主人并写入本人项目，工具须确认会话属于本人。
-      const isOwner = workspace.isOwnerTurn(channel, row.address);
+      const isOwner = protocol.isOwnerTurn(row.channel, row.address);
       if (!isOwner) throw new Error('只有本人会话可以登记工作决策');
 
       //M 工具从已绑定会话取项目和回执去向，并用工具调用号识别重试。

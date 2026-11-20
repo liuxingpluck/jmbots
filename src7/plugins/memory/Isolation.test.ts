@@ -9,6 +9,7 @@ import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { SessionRow } from '../../Sessions.ts';
 import * as backendModule from './Backend.ts';
 import * as storeModule from './Store.ts';
 
@@ -88,10 +89,14 @@ describe('记忆检索客户隔离', () => {
     }
   });
 
-  test('客户号格式：飞书私聊、飞书群、网页', () => {
-    expect(storeModule.customerFrom('feishu', { openId: 'ou_x', chatType: 'p2p' })).toBe('feishu:ou_x');
-    expect(storeModule.customerFrom('feishu', { chatId: 'oc_g', chatType: 'group', openId: 'ou_x' })).toBe('feishu:group:oc_g');
-    expect(storeModule.customerFrom('http', { messageId: 2 })).toBe('http:本机');
-    expect(storeModule.customerFrom(undefined, {})).toBe('');
+  test('客户号只读渠道写的：记录上的优先，没抄的读地址上的，memory 不自己推', () => {
+    const merged = { customer: 'feishu:ou_main', address: { customer: 'feishu:ou_x' } } as unknown as SessionRow;
+    expect(storeModule.getCustomer(merged)).toBe('feishu:ou_main');
+
+    const fresh = { address: { customer: 'feishu:group:oc_g', chatType: 'group' } } as unknown as SessionRow;
+    expect(storeModule.getCustomer(fresh)).toBe('feishu:group:oc_g');
+
+    const unknown = { channel: 'feishu', address: { openId: 'ou_x', chatType: 'p2p' } } as unknown as SessionRow;
+    expect(storeModule.getCustomer(unknown)).toBe('');
   });
 });

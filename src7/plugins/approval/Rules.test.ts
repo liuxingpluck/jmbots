@@ -93,6 +93,10 @@ describe('isProjectCheck', () => {
 });
 
 for (const role of ['guest', 'builder'] as const) {
+  test(`${role} 的工具表里没有撤回机器人消息的 feishu_recall`, () => {
+    expect(toolsFor(role)?.has('feishu_recall')).toBe(false);
+  });
+
   test(`${role} 能用统一记忆工具，只搜到当前账号和聊天`, async () => {
     const allowed = toolsFor(role);
     expect(allowed?.has('memory_search')).toBe(true);

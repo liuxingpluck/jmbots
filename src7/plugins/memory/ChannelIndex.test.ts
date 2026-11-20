@@ -1,17 +1,22 @@
 /**
- * 渠道消息索引（ChannelIndex.ts）：听 channel/message、channel/reply 记进表（同键不重复）；按渠道、聊天、时间、关键词查；
+ * 渠道消息索引（ChannelIndex.ts）：收件、发件回执及撤回入表；按渠道、聊天、时间、关键词查；
  * 本人能查别的聊天，外人、群里的本人只查得到这一轮这个聊天，写了别的被拒。
  * 假 ctx：内存库、记下监听和工具；不起 Cordis、不起 HTTP。
  * 跑法：bun test ./src7/plugins/memory/ChannelIndex.test.ts
  */
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
 import type * as protocolModule from '../channels/index.ts';
+import * as chatArchiveModule from '../channels/Archive.ts';
+import * as archiveListenModule from '../channels/ArchiveListen.ts';
 import type * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
+import * as schemaModule from './ChannelSchema.ts';
 import * as archiveModule from './FrontArchive.ts';
 import * as searchModule from './Search.ts';
 import type { MemoryService } from './index.ts';
@@ -30,12 +35,17 @@ interface Bench {
 
 
 /** 摆一个用例：内存库、假 ctx（记下监听和工具），挂上索引。 */
-function makeBench(rust?: channelBackfillModule.ChannelBackfill): Bench {
+function makeBench(rust?: channelBackfillModule.ChannelBackfill, root?: string): Bench {
   const handlers = new Map<string, ((payload: unknown) => void)[]>();
   const tools: toolsModule.ToolSpec[] = [];
   const ctx = {
-    on: (name: string, handler: (payload: unknown) => void) => {
-      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+    on: (name: string, handler: (payload: unknown) => void, options?: { prepend: boolean }) => {
+      const listeners = handlers.get(name) ?? [];
+      if (options?.prepend === true) {
+        handlers.set(name, [handler, ...listeners]);
+        return;
+      }
+      handlers.set(name, [...listeners, handler]);
     },
     emit: () => undefined,
     sessions: { find: () => [] },
@@ -52,7 +62,15 @@ function makeBench(rust?: channelBackfillModule.ChannelBackfill): Bench {
   const archive = new archiveModule.FrontArchive(db, index);
   const unified = new searchModule.Search(ctx, {} as MemoryService, index, undefined, undefined, archive);
   unified.registerTools();
-  channelIndexModule.applyChannelIndex(ctx, index, rust);
+  let chatArchive: Parameters<typeof channelIndexModule.applyChannelIndex>[3];
+  if (root !== undefined) {
+    const chats = new chatArchiveModule.ChatArchive(root);
+    chatArchive = { root, chats };
+  }
+  channelIndexModule.applyChannelIndex(ctx, index, rust, chatArchive);
+  if (chatArchive !== undefined) {
+    archiveListenModule.applyChatArchive(ctx, chatArchive.root, chatArchive.chats);
+  }
   const emit = (name: string, payload: unknown): void => {
     for (const handler of handlers.get(name) ?? []) {
       handler(payload);
@@ -280,4 +298,119 @@ test('channel/history：历史进历史队列，已有的消息号跳过，有�
   //M 同一批再来一遍：没有新增，不再请回填。
   bench.emit('channel/history', [older, dup]);
   expect(resumed).toBe(1);
+});
+
+
+test('实时和历史消息索引聊天 Markdown 实际归档的附件，纯附件也能查', async () => {
+  const prefix = path.join(import.meta.dirname, '.channel-index-test-');
+  const root = fs.mkdtempSync(prefix);
+  try {
+    const bench = makeBench(undefined, root);
+    const source = path.join(root, 'download_原稿.txt');
+    fs.writeFileSync(source, '附件内容', 'utf8');
+    const available: protocolModule.ChannelAttachment = {
+      id: 'file-1', name: '原稿.txt', sourceRef: source, state: 'available',
+    };
+    const failed: protocolModule.ChannelAttachment = {
+      id: 'file-2', name: '未下载.txt', sourceRef: '', state: 'unavailable',
+    };
+
+    //M 用真正的聊天归档监听复制附件；文件名取源文件名，目录取账号名与聊天名。
+    const at = '2026-11-20T05:00:00Z';
+    const message = getMessage('om_attachment', 'oc_archive', '', at);
+    message.accountName = '小灵';
+    message.chatType = 'group';
+    message.origin = { channel: 'feishu', address: { chatName: '项目群' } };
+    message.attachments = [available, failed];
+    bench.emit('channel/listen', message);
+    const older = { ...message, messageId: 'om_history', text: '群里的历史附件' };
+    bench.emit('channel/history', [older]);
+
+    const relative = 'channels/feishu/小灵_cli_a/群聊/项目群_oc_archive/附件/download_原稿.txt';
+    const archived = path.join(root, relative);
+    expect(fs.readFileSync(archived, 'utf8')).toBe('附件内容');
+    const rows = bench.index.search({ chat: 'oc_archive', words: [], limit: 10 });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.attachments)).toEqual([[relative], [relative]]);
+    const owner = getSession('oc_archive', 'owner', 'p2p');
+    const result = await search(bench, { chat: 'oc_archive' }, owner);
+    expect(result).toContain(relative);
+    expect(result).not.toContain(root);
+    expect(result).not.toContain('未下载.txt');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('撤回只标记同账号同聊天的原行，搜索保留原文且旧同步回执不清掉待同步标记', async () => {
+  const bench = makeBench();
+  const message = getMessage('om_recall', 'oc_1', '原话仍可查到', '2026-11-20T05:00:00Z');
+  bench.emit('channel/direct', message);
+  const queued = bench.index.getRustBatch(true, 10);
+  const recalledAt = Date.parse('2026-11-20T05:10:00Z');
+  const recall: protocolModule.ChannelRecallEvent = {
+    channel: 'feishu', accountId: 'cli_a', chatId: 'oc_1', messageId: message.messageId,
+    recalledAt, originalText: message.text, recalledBy: { id: 'ou_1', kind: 'sender', isOwner: false },
+  };
+  const words = ['原话'];
+  const query = { chat: 'oc_1', words, limit: 10 };
+  bench.emit('channel/recall', { ...recall, accountId: 'cli_b' });
+  bench.emit('channel/recall', { ...recall, chatId: 'oc_2' });
+  expect(bench.index.search(query)[0]?.recalledAt).toBeUndefined();
+
+  bench.emit('channel/recall', recall);
+  bench.emit('channel/recall', { ...recall, recalledAt: recalledAt + 1000 });
+  bench.index.confirmRustBatch(queued);
+  expect(bench.index.getRustBatch(true, 10)).toMatchObject([{ recalledAt }]);
+  expect(bench.index.search(query)[0]).toMatchObject({ text: message.text, recalledAt });
+
+  const owner = getSession('oc_1', 'owner', 'p2p');
+  const result = await search(bench, { q: '原话' }, owner);
+  expect(result).toContain('已撤回');
+  expect(result).toContain(message.text);
+
+  //M 机器人回执用平台消息号定位同一条回复，保留本来的回执键。
+  const request = {
+    bot: '助手', replyRequestKey: 'reply-recall',
+    parts: [{ kind: 'text', text: '助手的原话' }],
+    sourceSnapshot: { channel: 'feishu', accountId: 'cli_a', chatId: 'oc_1', chatType: 'p2p', senderId: 'ou_1' },
+  };
+  bench.emit('channel/replied', { request, receipt: { status: 'sent', messageIds: ['om_reply'] } });
+  const platformKey = JSON.stringify(['feishu', 'cli_a', 'om_reply']);
+  bench.emit('channel/recall', { ...recall, messageId: platformKey });
+  expect(bench.index.search(query)).toContainEqual(expect.objectContaining({ key: 'reply-recall', recalledAt }));
+});
+
+
+test('两种旧渠道表升级均保留原话和前台可见性，同一迁移账本可重跑', () => {
+  for (const hasFrontOnly of [false, true]) {
+    const db = new Database(':memory:');
+    try {
+      const initial = schemaModule.channelMigrations.migrations[0]!;
+      db.exec(initial.sql);
+      if (!hasFrontOnly) {
+        db.exec('ALTER TABLE memory_channel_messages DROP COLUMN front_only');
+      }
+      const seed = "INSERT INTO memory_channel_messages (msg_key, channel, account, chat, chat_type, direction,"
+        + " sender_id, sender_name, bot, text, at) VALUES ('old', 'feishu', 'cli_a', 'oc_1', 'p2p', 'user',"
+        + " 'ou_1', '小王', '助手', '旧消息', 1)";
+      db.exec(seed);
+      if (hasFrontOnly) {
+        db.exec("UPDATE memory_channel_messages SET front_only = 1 WHERE msg_key = 'old'");
+      }
+
+      new channelIndexModule.ChannelIndex(db);
+      new channelIndexModule.ChannelIndex(db);
+      const row = db.query("SELECT text, attachments, recalled_at, platform_keys, front_only"
+        + " FROM memory_channel_messages WHERE msg_key = 'old'").get();
+      expect(row).toEqual({
+        text: '旧消息', attachments: '[]', recalled_at: null, platform_keys: '[]', front_only: Number(hasFrontOnly),
+      });
+      const ledger = db.query("SELECT version FROM db_migrations WHERE plugin = 'memory-channel' ORDER BY version").all();
+      expect(ledger).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    } finally {
+      db.close();
+    }
+  }
 });

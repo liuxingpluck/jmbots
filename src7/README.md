@@ -28,7 +28,7 @@ src7/
   utils/             通用的纯函数，和业务无关、几处共用
     Checks.ts        校验：命令行参数、config.yaml
     Bots.ts          从资源快照读机器人名单、每个机器人的配置和目录
-    Workspace.ts     工作区路径（相对路径落成绝对路径，不许出工作区）；这一轮说话人是哪一档、是不是本人、能不能带私人记忆、是不是群
+    Workspace.ts     工作区路径（相对路径落成绝对路径，不许出工作区）、这一轮用哪个工作区、授权目录；说话的是谁由 plugins/channels/Message.ts 判
     index.ts         对象、数组的遍历和取字段（eachEntry、getField 这类）
     Text.ts          把抛出来的错收成一句话、格式化时间
     Trace.ts         跟踪点长什么样
@@ -112,7 +112,6 @@ src7/
 | `session/change` | 通知 | 状态变了 | 渠道回话；记往来；写总结 |
 | `session/model-failed` | 通知 | 模型请求失败了一次（重试的每一次都算） | model-catalog 记用量、限流时换模型；journal 记进流水 |
 | `ready` | 通知 | 骨架已挂好，配置的插件已逐一尝试挂载 | 命令行渠道发出命令行里带的消息，bots 检查归档服务 |
-| `config/changed` | 通知 | 资源服务成功应用配置更新 | 携带新增、删除或变化的顶层键名 |
 | `trace` | 通知 | 骨架和插件走到关键的地方 | journal 记进流水；tutorial 开了 `trace_console` 就打印一行 |
 
 插件 `bots` 发的（不是骨架的事件）：

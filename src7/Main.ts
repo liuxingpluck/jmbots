@@ -110,9 +110,7 @@ async function main(argv: string[]): Promise<void> {
     //G 启动真的失败才记为失败，错误原文给标准错误排查。
     const text = textModule.getErrorMessage(error);
     console.error(`插件 ${row.name} 没挂上：${text}`);
-    row.mounted = false;
-    row.started = false;
-    row.missing = [];
+    row.state = 'failed';
     row.error = text;
     if (/Cannot find module/iu.test(text)) {
       //G health 和教程只给出找不到入口的原因，不带模块系统的绝对路径。
@@ -127,9 +125,7 @@ async function main(argv: string[]): Promise<void> {
 
     if (fiber.state === cordis.FiberState.ACTIVE) {
       starting.delete(fiber);
-      row.mounted = true;
-      row.started = true;
-      row.missing = [];
+      row.state = 'ok';
       row.error = '';
       return;
     }
@@ -151,9 +147,7 @@ async function main(argv: string[]): Promise<void> {
     const builtIn = pluginIndex.BUILT_IN[entry.name];
     const row: resourcesModule.PluginStatus = {
       name: entry.name,
-      mounted: false,
-      started: false,
-      missing: [],
+      state: 'mounting',
       error: '',
       inject: builtIn?.inject ?? [],
     };
@@ -171,10 +165,10 @@ async function main(argv: string[]): Promise<void> {
       const fiber = mounted.ctx.fiber;
       starting.set(fiber, row);
 
-      //M 首次等待结束时也可能在等注入。异步失败即使发生在超时之后也照常记账。
+      //M 首次等待结束时也可能在等注入，记成等服务。异步失败即使发生在超时之后也照常记账。
       const finished = fiber.await().then(() => {
         if (fiber.state === cordis.FiberState.PENDING && row.error === '') {
-          row.mounted = true;
+          row.state = 'waiting';
         }
         return true;
       }, (error: unknown) => {
@@ -191,9 +185,8 @@ async function main(argv: string[]): Promise<void> {
       try {
         const inTime = await Promise.race(waiting);
         if (!inTime && starting.has(fiber)) {
-          //G 到点只结束本次等待。保留 fiber，让它完成后还能发状态和服务通知。
+          //G 到点只结束本次等待，状态还是 mounting。保留 fiber，让它完成后还能发状态和服务通知。
           const seconds = pluginMountTimeoutMs / 1000;
-          row.mounted = false;
           row.error = `启动超过 ${String(seconds)} 秒，先挂后面的，它继续在后台起`;
           console.error(`插件 ${row.name} ${row.error}`);
         }
@@ -210,16 +203,16 @@ async function main(argv: string[]): Promise<void> {
   //==========================================================
   //M 记录缺失依赖，通知开工并续跑会话
   //==========================================================
-  //G 缺注入的插件会等服务出现，保留原有的缺服务说明。
+  //G 缺注入的插件会等服务出现，把缺哪些服务写进说明。
   for (const row of app.resources.pluginStatus) {
-    if (!row.mounted || row.started) continue;
+    if (row.state !== 'waiting') continue;
 
     const missing = row.inject.filter((service) => app.get(service) === undefined);
     if (missing.length === 0) continue;
 
     const names = missing.join('、');
     console.error(`插件 ${row.name} 没开工：它要用的 ${names} 没人提供，看看 plugins 里是不是少挂了`);
-    row.missing = missing;
+    row.error = `它要用的 ${names} 没人提供`;
   }
 
   //M 配置的插件都已发起挂载，告诉大家开工，带上命令行里剩下的参数。

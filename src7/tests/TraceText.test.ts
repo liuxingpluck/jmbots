@@ -32,7 +32,7 @@ test.test('网页翻译新文案，只插入声明的变量，旧文字原样显
 
 test.test('控制台按配置语言打印新跟踪点，保留代码提示和旧文字', async () => {
   const ctx = new cordis.Context();
-  ctx.provide('resources', { config: { traceLanguage: 'en' } });
+  ctx.provide('resources', { raw: { ui: { language: 'en' } } });
   const config = { console: true, file: false, varLimit: 80 };
   new printModule.Printer(ctx, config);
   const consoleLog = test.spyOn(console, 'log').mockImplementation(() => {});

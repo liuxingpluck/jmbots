@@ -5,10 +5,9 @@
  * 渠道索引的 memory_key 列存它，送 Rust 时放进 customer 一维；统一检索的 person、group 参数就是它。
  * 召回怎么用这个键（谁能看谁的）不在这里定，见 docs/开发进度/按人分记忆_一页_20261118.md。
  */
-import type * as channelProtocol from '../channels/index.ts';
+import * as channelProtocol from '../channels/index.ts';
 import type { SessionMeta } from '../../Sessions.ts';
 import * as utils from '../../utils/index.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import type { ChannelRow } from './ChannelIndex.ts';
 
 
@@ -77,7 +76,7 @@ export function getOriginSource(channel: string, address: unknown): KeySource {
   }
 
   //G 旧地址若写明是群，不能用其中最后一位发言人推断个人归属。
-  if (workspaceModule.isGroup(address)) {
+  if (channelProtocol.isGroup(address)) {
     chatType = 'group';
     const customer = utils.getStringField(address, 'customer');
     const prefix = 'feishu:group:';
@@ -119,14 +118,22 @@ function getSnapshotSource(snapshot: channelProtocol.SourceSnapshot): KeySource 
 }
 
 
-/** 本人的私人记忆可进入非群聊和明确登记的受信群。 */
+/**
+ * 这一轮能不能带用户的私人记忆：本人、且不在不受信的群里才 true。
+ * 群里机器人的回复所有人都看得到，所以群聊默认不带；飞书 groups 里登记了 trusted: true 的群（地址带 trusted）本人说话才带。
+ * @param owner 这一轮是不是本人（channels 的 isOwnerTurn 判过）。
+ * @param address 这一轮的回话地址。
+ * @param chatType 来源记的聊天种类。
+ */
 function canReadAll(owner: boolean, address: unknown, chatType: string): boolean {
-  //G 以本轮身份和渠道设置为准；来源标为群时仍须有明确的 trusted 字段。
-  if (!owner || !workspaceModule.isPrivateMemoryAllowed(address)) return false;
+  //G 不是本人不带。
+  if (!owner) return false;
 
-  if (chatType !== 'group') return true;
+  //M 不是群（来源没标群、地址也认不出是群）照旧带。
+  const group = chatType === 'group' || channelProtocol.isGroup(address);
+  if (!group) return true;
 
-  //G 普通群的地址可能没写聊天类型，仍要求受信标记是明确的布尔真值。
+  //G 群里只有登记了 trusted: true 的才带，要明确的布尔真值。
   return utils.getField(address, 'trusted') === true;
 }
 
@@ -139,7 +146,7 @@ export function getMemoryAccess(row: SessionMeta): MemoryAccess {
     const source = getSnapshotSource(snapshot);
     //G 渠道档位决定本人身份，受信群的标记从同一份来源快照里取。
     const address = snapshot.origin.address;
-    const owner = snapshot.role === 'owner' && workspaceModule.isOwnerTurn(snapshot.channel, address);
+    const owner = snapshot.role === 'owner' && channelProtocol.isOwnerTurn(snapshot.channel, address);
     const full = canReadAll(owner, address, source.chatType);
     const scope = { full, channel: snapshot.channel, chat: snapshot.chatId, account: snapshot.accountId };
     if (full) return scope;
@@ -158,7 +165,7 @@ export function getMemoryAccess(row: SessionMeta): MemoryAccess {
   const address = origin?.address ?? row.address;
   const source = getOriginSource(channel, address);
   //G 是不是本人只问 isOwnerTurn：地址没写档位时，只有网页、命令行、内部会话算本人；群里能不能读由 canReadAll 再管。
-  const owner = workspaceModule.isOwnerTurn(channel, address);
+  const owner = channelProtocol.isOwnerTurn(channel, address);
   const full = canReadAll(owner, address, source.chatType);
   let account = utils.getStringField(address, 'accountId')
     || utils.getStringField(address, 'appId')

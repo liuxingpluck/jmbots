@@ -24,7 +24,8 @@ export const name = 'file-tools';
 //M 1.1.1：读图片文件的 getImageBlock 从骨架 utils/Image.ts 挪进 BaseTools.ts，只有这里用。
 //M 1.2.0：并入原 skills 插件（Skill.ts：技能清单注入 work 会话、skill 工具；技能默认可用，config.yaml 不再单列 skills）。
 //M 1.2.1：读写的路径除了工作区，这一轮的授权目录（回话地址 grants.dirs）里的也行（utils/Bots.ts 的 resolveSessionPath，用户 #301）。
-export const version = '1.2.1';
+//M 1.2.2：路径解析直接接收机器人和回话地址。
+export const version = '1.2.2';
 
 /** 用到的服务：resources 查模型是否收图；tools 登记六个工具；bots 找机器人的工作区。 */
 export const inject = ['resources', 'tools'];
@@ -192,8 +193,9 @@ export class FileTools {
    * @throws 没有这个机器人、出了工作区和授权目录时抛错。
    */
   private getFile(session: Session, relative: string): string {
+    const { bot, address } = session.row;
     //M 按本轮来源选择目录，把目标路径限制在工作区和授权目录里（utils/Bots.ts 的 resolveSessionPath）。
-    return botUtils.resolveSessionPath(this.ctx.resources, session, relative);
+    return botUtils.resolveSessionPath(this.ctx.resources, bot, address, relative);
   }
 }
 

@@ -15,6 +15,8 @@ export const PLUGIN_PATHS = {
   fallbackChain: ['plugins', 'model-catalog', 'config', 'fallback', 'chain'],
   fallbackMaxTries: ['plugins', 'model-catalog', 'config', 'fallback', 'max_tries'],
   fallbackSiblings: ['plugins', 'model-catalog', 'config', 'fallback', 'include_siblings'],
+  visionModel: ['plugins', 'bots', 'config', 'front', 'vision_model'],
+  wrapupModel: ['plugins', 'progress', 'config', 'wrapup_model'],
 } satisfies Record<string, Path>;
 
 
@@ -138,20 +140,4 @@ export function getDraft(config: unknown, edits: Edit[]): unknown {
 export function changedAt(config: unknown, draft: unknown, path: Path): boolean {
   //M 分别取出原配置与草稿在该路径的值做序列化对比，用来判定字段是否仍处于已修改状态。
   return JSON.stringify(getAt(config, path)) !== JSON.stringify(getAt(draft, path));
-}
-
-
-/**
- * 逗号隔开的数字（如 retry_delays_ms：2000, 5000）。
- * @param text 输入的文字。
- * @returns 数字列表；有不是数字的就是 undefined。
- */
-export function parseNumberList(text: string): number[] | undefined {
-  /** 一个一个。 */
-  const parts = text.split(/[,，\s]+/).filter(Boolean);
-  /** 换成数字。 */
-  const numbers = parts.map(Number);
-  if (numbers.every((number) => Number.isFinite(number))) return numbers;
-
-  return undefined;
 }

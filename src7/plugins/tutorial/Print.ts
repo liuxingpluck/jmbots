@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as traceText from '../../../web/src/locales/Trace.ts';
+import * as utils from '../../utils/index.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
 
@@ -35,7 +36,10 @@ const COLORS = { function: '36', event: '33' };
 export class Printer {
   /** 每次显示取当前配置语言，设置页保存后跟随最新配置。 */
   private get language(): traceText.TraceLanguage {
-    return this.ctx.resources.config.traceLanguage;
+    const ui = this.ctx.resources.raw['ui'];
+    //M 打印时读当前的界面语言，设置保存后随配置快照更新。
+    const language = utils.getField(ui, 'language');
+    return traceText.getTraceLanguage(language);
   }
 
   /**

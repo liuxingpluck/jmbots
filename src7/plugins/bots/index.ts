@@ -41,14 +41,14 @@ import * as groupBatchModule from './GroupBatch.ts';
 import { Prompt } from './Prompt.ts';
 import { registerReplyTool } from './ReplyTool.ts';
 
-export { normalizeLegacyReceipt, type ReplyControl, type ReplyPolicy } from './Dispatch.ts';
+export { normalizeAutoReplyReceipt, type ReplyControl, type ReplyPolicy } from './Dispatch.ts';
 
 /** 插件名。 */
 export const name = 'bots';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.1：渠道和机器人解耦第 1 步——听 channel/message 按机器人独立认领、channel_reply/history 工具与零次回复兜底。
 //M 1.3.0：工作区交给 workspaces 插件——建机器人时原地登记默认工作区和配置里的目录，hand_session 可写 workspaceId，后台绑定工作区 ID。
-//M 1.4.0：并进 prompt（Prompt.ts，默认开）、reply-tool（ReplyTool.ts，默认关）；legacy_auto 渠道的 channel/message 在这里交前台，去掉渠道里的过渡监听。
+//M 1.4.0：并进 prompt（Prompt.ts，默认开）、reply-tool（ReplyTool.ts，默认关）；自动回话渠道的消息在这里交前台。
 //M 1.4.1：渠道统一第 3、4 步——routing.sessionId 指定会话；网页、命令行、微信也走 channel_tool（去掉 deliveryMode）；
 //M   routing.autoFinal 零次回复直接发最后的话；一轮收尾发 bot/settled。
 //M 1.4.2：结果队列的来源加 relay（外部助手的回信），前台看到“外部助手 <名字> 的回信”。
@@ -60,14 +60,17 @@ export const name = 'bots';
 //M 1.4.9：写出内嵌出厂提示词的 exportFile 从骨架 utils/Embedded.ts 挪进 bots/Prompt.ts，只有这里用。
 //M 1.5.0：本人才能在提示中加载私人记忆文件；其他人按来源归属召回聊天记录。
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
-//M 1.5.11：旧路收掉——Bots.send 一律发 channel/reply（target 带会话记的地址），渠道只登记名字；删 bot/route；
+//M 1.5.11：Bots.send 按地址发 channel/reply（target 带会话记的地址），渠道只登记名字；删 bot/route；
 //M   前台只听 channel/replied 记往来（回执带请求正文），不再暂存 channel/reply 的正文。
 //M 1.6.0：channel/message 拆成 direct、mention、listen 三个监听（listen 由 bots 自己在地址副本上标 listenOnly）；
 //M   voice/dispatch 并进 channel/direct；bot/request 的 hand 加 replyTo（群日报改走它，不再拼假的群消息）。
 //M 1.6.1：受管后台同轮 final 持久交回一次，progress 与失败回执独立保留。
 //M 1.6.2：群攒批（GroupBatch.ts）：listen: judge 的群攒一批（安静 N 秒或满 M 句）再问决策模型，每群每天上限；
 //M   数从 config 的 group_batch 读，缺键不开；判断改发 decision/judge；bot/judged 一批一次；有人叫机器人时攒着的话一起带上。
-export const version = '1.6.3';
+//M 1.6.4：是不是本人改问 channels 的 isOwnerTurn（删 isNonOwnerSpeaker）；SessionRow.customer 只在这里声明。
+//M 1.6.5：自动回话模式与按地址发送的回执改名，保留会话存值和持久化回执键。
+//M 1.6.6：ready 时看 memory 开工没有，改读挂载结果的 state。
+export const version = '1.6.6';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -161,7 +164,10 @@ declare module '../../Sessions.ts' {
     channel?: string;
     /** 渠道自己认得的回话地址，和 channel 一起记。形状归各渠道（HTTP 是 { messageId }，飞书是哪个应用、哪个聊天）。 */
     address?: unknown;
-    /** 客户号：渠道在回话地址里写的 address.customer，收消息时由 bots.route 抄到这里。别的插件只读，不要自己推。 */
+    /**
+     * 客户号：渠道在回话地址里写的 address.customer，换回话地址时由 Bots.route 抄到这里（也可在建会话时直接给）。
+     * 只在这里声明一次；别的插件（memory、wechat……）只读，不要自己推。
+     */
     customer?: string;
     /**
      * 这一轮结束的回话不由 bots 自动发，由设它的插件自己送（中途先说的一句 bot/say 照发）。
@@ -172,7 +178,7 @@ declare module '../../Sessions.ts' {
     sourceClaims?: string[];
     /** 当前前台会话绑定的稳定来源域。 */
     sourceScope?: { channel: string; accountId: string; chatId: string };
-    /** 当前正在处理的活动轮不可变来源快照（legacy_auto 会话没有）。 */
+    /** 当前正在处理的活动轮不可变来源快照（自动回话轮没有）。 */
     activeSourceSnapshot?: protocol.SourceSnapshot;
     /** 持久会话中的撤回停跑标记，收尾时清掉。 */
     recalledStop?: boolean;
@@ -364,7 +370,7 @@ export class Bots extends cordis.Service {
     this.ctx.once('ready', () => {
       const status = this.ctx.resources.pluginStatus;
       const memory = status.find((item) => item.name === 'memory');
-      if (memory?.started === true) return;
+      if (memory?.state === 'ok') return;
 
       console.warn('bots：memory 插件未启动，前台往来不会保存，历史往来暂时无法读取。');
     });
@@ -735,7 +741,7 @@ export class Bots extends cordis.Service {
   }
 
   /**
-   * 把没有来源快照的一段话发出去，等渠道发完：一轮结束自动回话、旧会话中途先说一句、前台送后台结果（legacy_auto）都走它。
+   * 按地址发送没有来源快照的话，等渠道发完。会话自动回话、中途发进度、前台送后台结果都走它。
    * 照会话记的（或 origin 给的）渠道和地址发 channel/reply（target.address），正文里的 @路径 当文件发（atFiles，和原来一样）。
    * @param session 哪场会话：渠道、地址从 row.channel、row.address 取；会话号带进请求，渠道照它定细节。
    * @param text 要发的话。
@@ -758,8 +764,9 @@ export class Bots extends cordis.Service {
       kind = 'final';
     }
 
-    //M 轮键借标准写法，消息号的位置放会话号：旧路的话不挂在哪条消息下；每次发一个新的请求键。
+    //M 按地址发送用会话号算轮键。飞书重启会读回流水中的幂等键，保留其中的 'legacy' 后缀。
     const replyRoundKey = protocol.getReplyRoundKey(session.id, session.row.bot, 'legacy');
+    //M 同一轮每次独立发话都生成一个新请求键。
     const replyRequestKey = protocol.getReplyRequestKey(replyRoundKey, crypto.randomUUID());
     const from = { bot: session.row.bot, replyRoundKey, target, sessionId: session.id };
     const options = { replyRequestKey, replyIndex: 0, kind, atFiles: true };
@@ -994,7 +1001,7 @@ export class Bot {
 
     //M 配置 workspaces 里登记的目录（比如源码仓库）：登记成 private，只给本人；相对路径照运行时目录算。
     //M   第一次登记用配置里的名字，以后改了名不会被配置盖回去；本人归档了的照样认出来（派新活时才挡）。
-    const owner = workspaces.getAccess(this.name, undefined);
+    const owner = workspaces.getAccess(this.name, undefined, undefined);
     const written = (config['workspaces'] ?? {}) as Record<string, string>;
     utils.eachEntry(written, (label, directory) => {
       const legacyDirectory = path.resolve(this.ctx.resources.root, directory);

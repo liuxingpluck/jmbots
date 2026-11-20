@@ -9,6 +9,12 @@ import * as textModule from '../../utils/Text.ts';
 import * as protocol from '../channels/index.ts';
 import type { Origin, ReceiveEvent } from './index.ts';
 
+/** 自动回话模式。会话 meta 已存有这个值，继续用同一字面量读写。 */
+export const AUTO_REPLY_MODE = 'legacy_auto';
+
+/** 派活和结果入队时记下的投递模式。 */
+export type DeliveryMode = 'channel_tool' | typeof AUTO_REPLY_MODE;
+
 /** 前台派的后台记在会话上的。 */
 export interface FrontTask {
   /** 原前台会话号：结果交回这里。 */
@@ -25,7 +31,7 @@ export interface FrontTask {
   /** 派活时（append 时换成那一次）的渠道和地址，深拷贝：结果回到这里。 */
   origin: Origin;
   /** 派活时的回复策略（channel_tool 时受管后台必须经前台转达，不直发渠道）。 */
-  deliveryMode?: 'channel_tool' | 'legacy_auto';
+  deliveryMode?: DeliveryMode;
   /** 派活时不可变来源快照。 */
   sourceSnapshot?: protocol.SourceSnapshot;
   /** 前台喊了暂停：不往下跑、不交回，等前台 append 再接着。 */
@@ -36,14 +42,14 @@ export interface FrontTask {
 
 
 /** 回复模式策略（仅 bots 前台队列使用）。 */
-export type ReplyPolicy = 'channel_tool' | 'legacy_auto' | 'managed_return';
+export type ReplyPolicy = DeliveryMode | 'managed_return';
 
 
 /** 活动项 `frontInbox[].replyControl`：本轮回复调用与零次兜底提醒的唯一持久控制状态。 */
 export interface ReplyControl {
   /** 稳定回复轮键 replyRoundKey。 */
   roundKey: string;
-  /** 本轮策略：channel_tool / legacy_auto / managed_return。 */
+  /** 本轮策略：渠道工具、自动回话或受管后台交回。 */
   policy: ReplyPolicy;
   /** 本轮真实用户输入/结果在 session.messages 里的起点下标；修复轮保留该起点以防被 lastDone 截空。 */
   startMessageIndex: number;
@@ -96,8 +102,8 @@ export interface QueueItem {
   note: string;
   /** 排进来的时间，毫秒。 */
   at: number;
-  /** 本项固定回复模式；缺省走 legacy_auto。 */
-  deliveryMode?: 'channel_tool' | 'legacy_auto';
+  /** 本项固定回复模式；缺省时自动回话。 */
+  deliveryMode?: DeliveryMode;
   /** 入队认领键（channel_tool 项使用）。 */
   claimKey?: string;
   /** listen: judge 延迟判回时原话已记进 messages，drain 时不再 session.queueUserMessage 一遍。 */
@@ -133,7 +139,7 @@ export interface ResultInput {
   /** 不可变来源快照（可选，channel_tool 派发的结果携带）。 */
   sourceSnapshot?: protocol.SourceSnapshot;
   /** 本项回复模式（可选）。 */
-  deliveryMode?: 'channel_tool' | 'legacy_auto';
+  deliveryMode?: DeliveryMode;
   /** 正文和交回文件的绝对路径。 */
   payload: ResultPayload;
 }
@@ -279,7 +285,7 @@ export class DispatchResults {
     const current: Origin = { channel: target.row.channel, address: target.row.address };
 
     //M 本项的回复模式：有来源快照的走 channel_tool，活动项、调用方指定了的以它们为准，后指定的盖前面的。
-    let deliveryMode: 'channel_tool' | 'legacy_auto' = 'legacy_auto';
+    let deliveryMode: DeliveryMode = AUTO_REPLY_MODE;
     if (inheritedSnapshot !== undefined) {
       deliveryMode = 'channel_tool';
     }
@@ -478,8 +484,8 @@ export class DispatchResults {
 
   /**
    * 前台整理完一项：
-   *   - channel_tool 项绝不走旧 bots.send；先查零次回复兜底，再依 deliveryReceipt 收尾；
-   *   - legacy_auto 项沿原路径发回原渠道并记回执（同时归一化 v2 deliveryReceipt）。
+   *   - channel_tool 项先查零次回复兜底，再依 deliveryReceipt 收尾；
+   *   - 自动回话项按原渠道地址发出，并把发送结果存为 v2 deliveryReceipt。
    * @param front 前台对话；这一轮刚结束。
    */
   private async finishFront(front: Session): Promise<void> {
@@ -512,7 +518,7 @@ export class DispatchResults {
       return;
     }
 
-    //M legacy_auto 兼容路径：要发的话 = 整理好的回话；没整理成就是原文。@ 的文件只留结果里有的。
+    //M 自动回话发送整理好的正文，整理失败时用原文。@ 的文件只留结果里有的。
     let text = getAllowedText(row.reply, item.payload);
     if (row.state !== 'done' || text.trim() === '') {
       text = `（前台没整理成，原样转过来）\n${item.payload.text}`;
@@ -533,13 +539,17 @@ export class DispatchResults {
       item.stage = receipt.status;
     }
     const roundKey = item.replyControl?.roundKey ?? item.key;
-    //M 将旧 SendReceipt 归一化为 v2 ReplyReceipt 存进队列项。
-    item.deliveryReceipt = normalizeLegacyReceipt(receipt.status, receipt.reason, {
-      replyRequestKey: protocol.getReplyRequestKey(roundKey, 'legacy_auto'),
+    //M 保留存入会话队列的回执请求键后缀，重启读回时能对上已有回执。
+    const replyRequestKey = protocol.getReplyRequestKey(roundKey, 'legacy_auto');
+    const receiptMeta = {
+      replyRequestKey,
       replyRoundKey: roundKey,
       replyIndex: 0,
       kind: 'final',
-    });
+    } as const;
+
+    //M 把按地址发送的结果转成标准回执，存进队列项。
+    item.deliveryReceipt = normalizeAutoReplyReceipt(receipt.status, receipt.reason, receiptMeta);
 
     //M 收尾：清掉“正在处理”的标记，队列只留最近的几项（处理完的留键去重），存库。
     this.clearActive(row);
@@ -839,7 +849,7 @@ export class DispatchResults {
 
     const queue = row.resultQueue ?? [];
 
-    //M 用户排着的话：旧路径取出直跑；channel_tool 项留在队列并占有 activeKey 与快照后直接启动。
+    //M 用户排着的话：自动回话项取出直跑；channel_tool 项留在队列并占有 activeKey 与快照后直接启动。
     const said = queue.find((item) => item.kind === 'user' && item.stage === 'queued');
     if (said !== undefined) {
       //M 优先接排着的用户话，沿用它原先的渠道模式。
@@ -924,7 +934,7 @@ export class DispatchResults {
       return;
     }
 
-    //M 旧路径：这一句从队列取出来，回话地址换成它的来源，话进对话，推会话跑一轮。
+    //M 自动回话项出队，回话地址换成这句的来源，原话进对话后推会话跑一轮。
     row.resultQueue = queue.filter((item) => item !== said);
     this.home.bots.route(session, said.origin);
     session.queueUserMessage(said.payload.text);
@@ -1112,13 +1122,13 @@ function getResultText(item: QueueItem, kind: string): string {
     lines.push(`交回的文件：${item.payload.files.map((file) => `@${file}`).join(' ')}`);
   }
 
-  //M 前台：整理成给用户的话；channel_tool 要求显式调用 channel_reply；legacy_auto 允许 @路径。
+  //M 前台整理给用户的话。channel_tool 用 channel_reply，自动回话可写 @路径。
   if (kind === 'front') {
     if (item.deliveryMode === 'channel_tool') {
       lines.push('请把它整理成给用户的回复，调用 channel_reply 工具发给用户：先说结论，简短；纯文字不会自动发文件。这一轮不要再派活。');
       return lines.join('\n');
     }
-    //M 兼容自动回话允许用已知文件路径，由渠道解释附件。
+    //M 自动回话可写已知文件路径，由渠道解释附件。
     lines.push('请把它整理成给用户的回复：先说结论，简短；要把文件发给用户就原样写 @路径（只能写上面出现过的）。这一轮不要再派活。');
     return lines.join('\n');
   }
@@ -1146,33 +1156,33 @@ function getAllowedText(reply: string, payload: ResultPayload): string {
 
 
 /**
- * 按旧 SendReceipt 归一化成 v2 ReplyReceipt（兼容未迁移渠道）。
+ * 将 Bots.send 返回的按地址发送状态转成标准 ReplyReceipt。
  * accepted 映射为 sent；acceptResult 的 queued / duplicate 不走此函数，不得混淆。
- * @param v1Status 旧 SendReceipt 状态。
+ * @param sendStatus 按地址发送返回的状态。
  * @param reason 说明原因。
  * @param meta 请求元数据。
  * @returns v2 规范化回执。
  */
-export function normalizeLegacyReceipt(
-  v1Status: 'accepted' | 'partial' | 'uncertain' | 'rejected',
+export function normalizeAutoReplyReceipt(
+  sendStatus: 'accepted' | 'partial' | 'uncertain' | 'rejected',
   reason: string,
   meta: { replyRequestKey: string; replyRoundKey: string; replyIndex: number; kind: protocol.ReplyKind },
 ): protocol.ReplyReceipt {
   let status: protocol.ReplyStatus = 'uncertain';
-  if (v1Status === 'accepted') {
+  if (sendStatus === 'accepted') {
     status = 'sent';
   }
-  if (v1Status === 'partial') {
+  if (sendStatus === 'partial') {
     status = 'partial';
   }
-  if (v1Status === 'rejected') {
+  if (sendStatus === 'rejected') {
     status = 'rejected';
   }
   const source: protocol.ReceiptSource = {
     ...meta,
     parts: [{ partId: 'text:0', kind: 'text' }],
   };
-  //M 沿用旧渠道的空原因约定，转成标准回执。
+  //M 发送没给原因时，让标准回执补默认说明。
   if (reason === '') return protocol.getReceipt(source, status);
 
   //M 保留原渠道明确给出的失败或降级原因。

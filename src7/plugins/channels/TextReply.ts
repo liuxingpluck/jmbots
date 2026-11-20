@@ -28,7 +28,7 @@ export interface TextReplyAdapter {
   getTargetAddress?: (chat: string, request: replyModule.ChannelReplyRequest) => Record<string, unknown> | undefined;
   /**
    * 把纯文字直接送回原渠道，不能再触发模型或重复回环。
-   * targetAddress：请求带 target.address 时就是它（旧路自动回话、relay 回信、本人批准的主动发件，这时没有来源快照），
+   * targetAddress：请求带 target.address 时按这个地址发（如自动回话、relay 回信、本人批准的主动发件），
    * 只带 target.chat 时是 getTargetAddress 认出的地址，都没有时是 undefined（回来源快照的原聊天）。
    * 交回 TextReplyOutcome 时照它写回执；不交回算已发。
    */
@@ -84,7 +84,7 @@ export function registerTextReply(ctx: cordis.Context, adapter: TextReplyAdapter
     //==========================================================
     //M 解析指定聊天的发送地址
     //==========================================================
-    //M 调用方已经拿着确切地址（旧路自动回话、relay 回信、本人批准的主动发件）：照它发，不再认聊天。
+    //M 调用方已给出确切地址（如自动回话、relay 回信、本人批准的主动发件）：按地址发。
     let targetAddress = request.target?.address;
 
     //M 只给了聊天名或号的跨渠道/跨聊天目标：调用本渠道自带的“认聊天”回调核实目标地址。

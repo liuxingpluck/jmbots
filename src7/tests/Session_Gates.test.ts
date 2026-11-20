@@ -3,7 +3,7 @@
  * session/after-tool 上写 stop 就停下；after-tool 能改结果；不按步数限制，工具连着要几十轮也走到底；
  * 步数 row.steps 跨 run 累计；打开过的会话表有上限，超了挪出闲着的。
  * 真实 Cordis + 骨架 Sessions、Tools；模型是假回答（session/before-model 里填 answer），库是内存库。
- * 另从 Main.ts 启动独立进程，验证插件挂载超时与最终状态。
+ * 另从 Main.ts 启动独立进程，验证插件挂载超时、apply 抛错时记下的状态，以及 /api/health 的 problems 照这些状态报。
  * 跑法：bun test ./src7/tests/Session_Gates.test.ts
  */
 import { afterEach, expect, test } from 'bun:test';
@@ -12,9 +12,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
-import type { PluginStatus } from '../Resources.ts';
+import * as resourcesModule from '../Resources.ts';
 import * as sessionsModule from '../Sessions.ts';
 import * as toolsModule from '../Tools.ts';
+import * as utils from '../utils/index.ts';
 import * as textModule from '../utils/Text.ts';
 
 
@@ -294,12 +295,15 @@ test('打开过的会话有上限：超了挪出最久没用、闲着的，再 o
 
 
 /** 等测试插件原子写出的启动状态。 */
-async function readMountStatuses(file: string, child: { readonly exitCode: number | null }): Promise<PluginStatus[]> {
+async function readMountStatuses(
+  file: string,
+  child: { readonly exitCode: number | null },
+): Promise<resourcesModule.PluginStatus[]> {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     if (fs.existsSync(file)) {
       const snapshot = fs.readFileSync(file, 'utf8');
-      return JSON.parse(snapshot) as PluginStatus[];
+      return JSON.parse(snapshot) as resourcesModule.PluginStatus[];
     }
     if (child.exitCode !== null) {
       throw new Error(`测试进程提前退出，退出码 ${String(child.exitCode)}`);
@@ -310,58 +314,43 @@ async function readMountStatuses(file: string, child: { readonly exitCode: numbe
 }
 
 
-test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起好后更新原状态', async () => {
+/**
+ * 照正常入口起一个 Main.ts 独立进程：在项目 cache 下建临时运行时目录，写好外部插件和 config.yaml，再交给 check 断言。
+ * @param prefix 临时目录名的前缀。
+ * @param plugins 外部插件：文件夹名 → index.js 的源码；照写的先后挂。
+ * @param timeoutMs 单个插件挂载的等待上限（plugin_mount_timeout_ms）。
+ * @param check 断言；拿到运行时目录和子进程。
+ * @returns 子进程的标准错误，给调用方查日志。
+ * 副作用：断言失败时连同标准错误一起抛出；最后关掉子进程、删掉临时目录。
+ */
+async function runMain(
+  prefix: string,
+  plugins: Record<string, string>,
+  timeoutMs: number,
+  check: (runtime: string, child: { readonly exitCode: number | null }) => Promise<void>,
+): Promise<string> {
   const project = fs.realpathSync(path.resolve(import.meta.dir, '../..'));
   const cache = path.join(project, 'cache');
   fs.mkdirSync(cache, { recursive: true });
   if (fs.realpathSync(cache) !== cache) {
     throw new Error('测试缓存必须位于项目下');
   }
-  const prefix = path.join(cache, 'mount-timeout-');
-  const runtime = fs.mkdtempSync(prefix);
-  const slow = 'slow-fixture';
-  const next = 'next-fixture';
-  const slowDir = path.join(runtime, slow);
-  const nextDir = path.join(runtime, next);
+  const runtime = fs.mkdtempSync(path.join(cache, prefix));
 
   try {
-    //M 慢插件一直等测试释放，再提供服务。后面的插件记录 ready 和服务可用时的状态。
-    const slowCode = `
-      import * as fs from 'node:fs';
-      export async function apply(ctx) {
-        const release = new URL('../release', import.meta.url);
-        while (!fs.existsSync(release)) {
-          await Bun.sleep(10);
-        }
-        ctx.provide('mount-test-ready', true);
-      }
-    `;
-    const nextCode = `
-      import * as fs from 'node:fs';
-      export const inject = ['resources'];
-      export function apply(ctx) {
-        const save = (name) => {
-          const temp = new URL('../' + name + '.tmp', import.meta.url);
-          const dest = new URL('../' + name + '.json', import.meta.url);
-          const status = JSON.stringify(ctx.resources.pluginStatus);
-          fs.writeFileSync(temp, status);
-          fs.renameSync(temp, dest);
-        };
-        ctx.on('ready', () => save('ready'));
-        ctx.inject(['mount-test-ready'], () => save('settled'));
-      }
-    `;
-    fs.mkdirSync(slowDir);
-    fs.mkdirSync(nextDir);
-    const slowFile = path.join(slowDir, 'index.js');
-    const nextFile = path.join(nextDir, 'index.js');
-    fs.writeFileSync(slowFile, slowCode);
-    fs.writeFileSync(nextFile, nextCode);
+    //M 每个外部插件一个文件夹、一个 index.js；config.yaml 照同样的先后挂它们。
+    utils.eachEntry(plugins, (name, code) => {
+      const dir = path.join(runtime, name);
+      fs.mkdirSync(dir);
+      const file = path.join(dir, 'index.js');
+      fs.writeFileSync(file, code);
+    });
+    const names = Object.keys(plugins);
     const config = {
       default_model: 'fake/fake',
       providers: { fake: { base_url: 'http://127.0.0.1:9' } },
-      plugin_mount_timeout_ms: 60,
-      plugins: [{ name: slow }, { name: next }],
+      plugin_mount_timeout_ms: timeoutMs,
+      plugins: names.map((name) => ({ name })),
     };
     const configFile = path.join(runtime, 'config.yaml');
     const contents = JSON.stringify(config);
@@ -374,21 +363,7 @@ test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起�
     const stderr = new Response(child.stderr).text();
     let failure: { cause: unknown } | undefined;
     try {
-      const readyFile = path.join(runtime, 'ready.json');
-      const ready = await readMountStatuses(readyFile, child);
-      expect(ready).toHaveLength(2);
-      expect(ready[0]).toMatchObject({ name: slow, mounted: false, started: false });
-      expect(ready[0]?.error).toContain('启动超过 0.06 秒');
-      expect(ready[1]).toMatchObject({ name: next, mounted: true, started: true, error: '' });
-
-      //M ready 已发后才放行，证明慢插件没有被卸载，也没有阻塞后续。
-      const release = path.join(runtime, 'release');
-      fs.writeFileSync(release, '');
-      const settledFile = path.join(runtime, 'settled.json');
-      const settled = await readMountStatuses(settledFile, child);
-      expect(settled).toHaveLength(2);
-      expect(settled[0]).toMatchObject({ name: slow, mounted: true, started: true, error: '', missing: [] });
-      expect(settled[1]).toEqual(ready[1]);
+      await check(runtime, child);
     } catch (error) {
       //G 保留原断言和启动日志，区分启动慢与入口异常退出。
       failure = { cause: error };
@@ -404,8 +379,136 @@ test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起�
       const message = textModule.getErrorMessage(failure.cause);
       throw new Error(`${message}\n${logs}`, failure);
     }
-    expect(logs).toContain('插件 slow-fixture 启动超过 0.06 秒，先挂后面的，它继续在后台起');
+    return logs;
   } finally {
     fs.rmSync(runtime, { recursive: true, force: true });
   }
+}
+
+
+test('插件挂载超时后继续挂后面的插件并发 ready，慢插件起好后更新原状态', async () => {
+  const slow = 'slow-fixture';
+  const next = 'next-fixture';
+
+  //M 慢插件一直等测试释放，再提供服务。后面的插件记录 ready 和服务可用时的状态。
+  const slowCode = `
+    import * as fs from 'node:fs';
+    export async function apply(ctx) {
+      const release = new URL('../release', import.meta.url);
+      while (!fs.existsSync(release)) {
+        await Bun.sleep(10);
+      }
+      ctx.provide('mount-test-ready', true);
+    }
+  `;
+  const nextCode = `
+    import * as fs from 'node:fs';
+    export const inject = ['resources'];
+    export function apply(ctx) {
+      const save = (name) => {
+        const temp = new URL('../' + name + '.tmp', import.meta.url);
+        const dest = new URL('../' + name + '.json', import.meta.url);
+        const status = JSON.stringify(ctx.resources.pluginStatus);
+        fs.writeFileSync(temp, status);
+        fs.renameSync(temp, dest);
+      };
+      ctx.on('ready', () => save('ready'));
+      ctx.inject(['mount-test-ready'], () => save('settled'));
+    }
+  `;
+  const plugins = { [slow]: slowCode, [next]: nextCode };
+
+  const logs = await runMain('mount-timeout-', plugins, 60, async (runtime, child) => {
+    const readyFile = path.join(runtime, 'ready.json');
+    const ready = await readMountStatuses(readyFile, child);
+    expect(ready).toHaveLength(2);
+    expect(ready[0]).toMatchObject({ name: slow, state: 'mounting' });
+    expect(ready[0]?.error).toContain('启动超过 0.06 秒');
+    expect(ready[1]).toMatchObject({ name: next, state: 'ok', error: '' });
+
+    //M 还在起的算没挂上，health 的 problems 里照样有它。
+    const readyProblems = resourcesModule.getPluginProblems(ready);
+    expect(readyProblems).toEqual([`插件 ${slow} 没挂上：${String(ready[0]?.error)}`]);
+
+    //M ready 已发后才放行，证明慢插件没有被卸载，也没有阻塞后续。
+    const release = path.join(runtime, 'release');
+    fs.writeFileSync(release, '');
+    const settledFile = path.join(runtime, 'settled.json');
+    const settled = await readMountStatuses(settledFile, child);
+    expect(settled).toHaveLength(2);
+    expect(settled[0]).toMatchObject({ name: slow, state: 'ok', error: '' });
+    expect(settled[1]).toEqual(ready[1]);
+
+    //M 全挂上了，health 的 problems 为空。
+    const settledProblems = resourcesModule.getPluginProblems(settled);
+    expect(settledProblems).toEqual([]);
+  });
+  expect(logs).toContain('插件 slow-fixture 启动超过 0.06 秒，先挂后面的，它继续在后台起');
+}, 35_000);
+
+
+test('插件 apply 抛错：Cordis 发 FAILED，Main 记成 failed；等服务的插件服务来了才抛错也记得到', async () => {
+  const probe = 'probe-fixture';
+  const boom = 'boom-fixture';
+  const late = 'late-fixture';
+
+  //M 探针最先挂：每见一次 internal/status 带 FAILED（3），等 Main 记完再存一份挂载状态；ready 时存一份，再提供 late 等的服务。
+  const probeCode = `
+    import * as fs from 'node:fs';
+    export const inject = ['resources'];
+    export function apply(ctx) {
+      const save = (name) => {
+        const temp = new URL('../' + name + '.tmp', import.meta.url);
+        const dest = new URL('../' + name + '.json', import.meta.url);
+        const status = JSON.stringify(ctx.resources.pluginStatus);
+        fs.writeFileSync(temp, status);
+        fs.renameSync(temp, dest);
+      };
+      let failures = 0;
+      ctx.on('internal/status', (fiber) => {
+        if (fiber.state !== 3) return;
+        failures += 1;
+        const name = 'failed-' + failures;
+        setTimeout(() => save(name), 0);
+      });
+      ctx.on('ready', () => {
+        save('ready');
+        ctx.provide('late-service', true);
+      });
+    }
+  `;
+  //M boom 一挂就抛错。late 等 late-service，服务来了 apply 才抛错：这时挂载循环那次等待早已返回，只有状态监听能记到。
+  const boomCode = `export function apply() { throw new Error('开机就抛错'); }`;
+  const lateCode = `
+    export const inject = ['late-service'];
+    export function apply() { throw new Error('服务来了才抛错'); }
+  `;
+  const plugins = { [probe]: probeCode, [boom]: boomCode, [late]: lateCode };
+
+  const logs = await runMain('mount-failed-', plugins, 5000, async (runtime, child) => {
+    //M ready 时：boom 已记成失败，late 在等服务。
+    const readyFile = path.join(runtime, 'ready.json');
+    const ready = await readMountStatuses(readyFile, child);
+    expect(ready).toEqual([
+      { name: probe, state: 'ok', error: '', inject: ['resources'] },
+      { name: boom, state: 'failed', error: '开机就抛错', inject: [] },
+      { name: late, state: 'waiting', error: '它要用的 late-service 没人提供', inject: ['late-service'] },
+    ]);
+    const readyProblems = resourcesModule.getPluginProblems(ready);
+    expect(readyProblems).toEqual([
+      `插件 ${boom} 没挂上：开机就抛错`,
+      `插件 ${late} 没开工：它要用的 late-service 没人提供`,
+    ]);
+
+    //M 探针见到第二次 FAILED：Cordis 给 late 发了；Main 的状态监听把它记成 failed，health 照样报它。
+    const failedFile = path.join(runtime, 'failed-2.json');
+    const failed = await readMountStatuses(failedFile, child);
+    expect(failed[2]).toEqual({ name: late, state: 'failed', error: '服务来了才抛错', inject: ['late-service'] });
+    const failedProblems = resourcesModule.getPluginProblems(failed);
+    expect(failedProblems).toEqual([
+      `插件 ${boom} 没挂上：开机就抛错`,
+      `插件 ${late} 没挂上：服务来了才抛错`,
+    ]);
+  });
+  expect(logs).toContain(`插件 ${late} 没挂上：服务来了才抛错`);
 }, 35_000);

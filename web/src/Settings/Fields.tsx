@@ -481,58 +481,6 @@ export function ModelListField(
 
 
 /**
- * 逗号隔开的一串数字（如 engine.retry_delays_ms）。
- * @param props 公共属性。
- */
-export function NumberListField(props: FieldProps): react.JSX.Element {
-  //M 取当前界面语言的翻译函数，用于逗号分隔数字输入框的占位示例。
-  const t = i18n.useT();
-  /** 现在的值。 */
-  //M 从设置草稿取出数字数组，格式化成逗号分隔字符串初始化本地输入状态。
-  const value = editsModule.getAt(props.draft, props.path);
-  /** 输入框里的字（打到一半的也留着）。 */
-  let initialText = '';
-  if (Array.isArray(value)) {
-    initialText = value.join(', ');
-  }
-  const [text, setText] = react.useState(initialText);
-  /** 打的字对不对。 */
-  //M 按当前输入文本实时尝试解析数字列表，用于判定输入框是否显示错误状态。
-  const parsed = editsModule.parseNumberList(text);
-  let inputStatus: 'error' | undefined;
-  if (text && !parsed) {
-    inputStatus = 'error';
-  }
-
-  //M 渲染逗号分隔数字输入框，允许用户自由输入半成品并在合法或清空时同步草稿。
-  return (
-    <Row label={props.label} hint={props.hint} path={props.path}>
-      <antd.Input
-        value={text}
-        status={inputStatus}
-        placeholder={t('用默认值，如 2000, 5000')}
-        onChange={(event) => {
-          setText(event.target.value);
-          /** 换成数字。 */
-          //M 即时尝试解析当前输入，避免半成品内容在合法前污染草稿。
-          const numbers = editsModule.parseNumberList(event.target.value);
-          if (event.target.value.trim() === '') {
-            //G 输入内容清空时提交删除改动，回退后端默认值。
-            props.onEdit({ path: props.path, delete: true });
-            return;
-          }
-          if (numbers) {
-            //M 全部数字解析合法时把新数组写入草稿。
-            props.onEdit({ path: props.path, value: numbers });
-          }
-        }}
-      />
-    </Row>
-  );
-}
-
-
-/**
  * 名字 → 数字的表（如 concurrency.models）。
  * @param props 公共属性、键的占位文字。
  */

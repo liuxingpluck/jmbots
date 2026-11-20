@@ -3,9 +3,6 @@
  * journal（Trail.ts 收轨迹）和 tutorial（画泳道图、拍快照）各自按这些形状读写，彼此不 import；
  * 要对方的数据就发 journal/request、等 journal/result。
  */
-import type * as traceText from '../../web/src/locales/Trace.ts';
-
-
 /** 一段函数注释：启动轨迹由 tutorial/Source.ts 从源码取（CodeDoc，字段更多），这里只认名字，别的原样带给页面。 */
 export interface TrailDoc {
   /** 函数名或文件名。 */
@@ -51,7 +48,7 @@ export interface TrailRow {
   /** 文案编号或旧行原文。 */
   text: string;
   /** 当前文案需要的插值。旧行没有。 */
-  params?: traceText.TraceParams;
+  params?: Record<string, string | number>;
   /** 事件行：听的人（去掉只记账的 journal、tutorial、usage）。 */
   listeners: string[];
   /** 文件:行号。 */

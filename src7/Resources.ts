@@ -6,7 +6,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as util from 'node:util';
-import type { TraceLanguage } from '../web/src/locales/Trace.ts';
 import { Database } from 'bun:sqlite';
 import * as piAi from '@earendil-works/pi-ai';
 import * as piAnthropic from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
@@ -26,15 +25,6 @@ declare module 'cordis' {
   interface Context {
     /** 资源服务，实现在 src7/Resources.ts。 */
     resources: Resources;
-  }
-  interface Events {
-    /**
-     * Resources 成功应用 config.yaml 更新后发出。当前无内置监听者。
-     * 谁发：src7/Resources.ts 的 Resources.reloadConfig
-     * 谁接：暂无
-     * @param keys 新增、删除或内容有变化的顶层键名。
-     */
-    'config/changed'(keys: string[]): void;
   }
 }
 
@@ -78,17 +68,21 @@ export interface PluginEntry {
 }
 
 
-/** 一个插件这次启动的挂载结果。Main.ts 写，健康检查和 /flow/ 读。没尝试挂的不在里面。 */
+/**
+ * 插件挂到哪一步，Main.ts 照 Cordis 的 fiber 状态写：
+ * mounting 还在起（超过等待上限的也是，它在后台接着起），waiting 在等没人提供的服务、没开工，
+ * ok 开工了，failed 没挂上（apply 抛错、找不到入口）。
+ */
+export type PluginState = 'mounting' | 'waiting' | 'ok' | 'failed';
+
+
+/** 一个插件这次启动的挂载结果。Main.ts 写，健康检查、教程、bots 读。没尝试挂的不在里面。 */
 export interface PluginStatus {
   /** 配置里的插件名。 */
   name: string;
-  /** apply 有没有成功跑完。 */
-  mounted: boolean;
-  /** inject 的服务是不是都有了（没人提供就会一直等着，等于没开工）。 */
-  started: boolean;
-  /** 还缺哪些服务。 */
-  missing: string[];
-  /** 没挂上时的原因；挂上了是空串。 */
+  /** 挂到哪一步。 */
+  state: PluginState;
+  /** 不是 ok 时的说明，读的地方原样显示：failed 是原因，waiting 是缺哪些服务，mounting 超时是超时说明；ok 是空串。 */
   error: string;
   /** 它声明要的服务。 */
   inject: string[];
@@ -96,27 +90,25 @@ export interface PluginStatus {
 
 
 /**
- * 没挂上、没开工的说明，给 /api/health 的 problems。
+ * 没挂上、没开工的说明，给 /api/health 的 problems。基地换版靠它判断新版能不能用。
  * @param status 这次启动实际尝试挂过的插件。
+ * @returns 不是 ok 的插件各一句；全开工了是空数组。
  */
 export function getPluginProblems(status: PluginStatus[]): string[] {
   const problems: string[] = [];
   for (const item of status) {
-    //M 没挂上：有原因就带上原因。
-    if (!item.mounted) {
-      let problem = `插件 ${item.name} 没挂上`;
-      if (item.error !== '') {
-        problem += `：${item.error}`;
-      }
-      problems.push(problem);
-      continue;
-    }
+    //M 开工了的不算问题。
+    if (item.state === 'ok') continue;
 
-    //M 挂上了却没开工：写明缺哪些服务。
-    if (!item.started) {
-      const names = item.missing.join('、');
-      problems.push(`插件 ${item.name} 没开工：它要用的 ${names} 没人提供`);
+    //M 等服务的叫没开工，还在起、失败的叫没挂上；有说明就带上。
+    let problem = `插件 ${item.name} 没挂上`;
+    if (item.state === 'waiting') {
+      problem = `插件 ${item.name} 没开工`;
     }
+    if (item.error !== '') {
+      problem += `：${item.error}`;
+    }
+    problems.push(problem);
   }
   return problems;
 }
@@ -124,8 +116,6 @@ export function getPluginProblems(status: PluginStatus[]): string[] {
 
 /** config.yaml 里骨架用到的那几项，校验后。由 utils/Checks.ts 的 checkConfig 交回。 */
 export interface JmbotsConfig {
-  /** 控制台及文件跟踪点使用的语言。 */
-  traceLanguage: TraceLanguage;
   /** 新会话默认用的模型，供应商名/模型 ID。 */
   defaultModel: string;
   /** 各家供应商：名字 → 地址、密钥、协议、模型。 */
@@ -150,7 +140,7 @@ export interface JmbotsConfig {
 }
 
 
-/** 三种协议对应的 pi 实现，和 learn/Agent.ts 同一套懒加载入口。 */
+/** 三种协议对应的 pi 实现。 */
 const CHAT_APIS: Record<ProviderConfig['api'], () => ReturnType<typeof piCompletions.openAICompletionsApi>> = {
   'openai-completions': piCompletions.openAICompletionsApi,
   'openai-responses': piResponses.openAIResponsesApi,
@@ -203,7 +193,7 @@ export class Resources extends cordis.Service {
     return this.current.config;
   }
 
-  /** 整份 config.yaml 的对象，插件读自己那一段并校验。包含密钥。 */
+  /** 当前 config.yaml 快照，包含密钥；新建机器人时 bots 会实时追加名单。 */
   get raw(): Record<string, unknown> {
     return this.current.raw;
   }
@@ -284,7 +274,7 @@ export class Resources extends cordis.Service {
       //M 先建好新增或连接参数变动的供应商，再更新现有集合。
       const getApi = CHAT_APIS[provider.api];
       const api = getApi();
-      const auth = this.getProviderAuth(provider, name);
+      const auth = this.getProviderAuth(name);
       const options = {
         id: name, baseUrl: provider.baseUrl, auth, models: [], api,
       };
@@ -330,45 +320,36 @@ export class Resources extends cordis.Service {
 
   /** 校验并应用新快照，失败时继续使用原配置。 */
   private reloadConfig(file: string): void {
-    let changed: string[];
     try {
       const next = readConfig(file);
-      const names = new Set([...Object.keys(this.raw), ...Object.keys(next.raw)]);
-      changed = Array.from(names).filter((name) => !util.isDeepStrictEqual(this.raw[name], next.raw[name]));
-      if (changed.length === 0) return;
+      //G 一次保存可能产生多次文件通知，内容相同就沿用当前快照。
+      if (util.isDeepStrictEqual(this.raw, next.raw)) return;
 
-      //M 同步更新 pi 集合与配置快照，再向监听者通知新状态。
+      //M 先更新 pi 的供应商，再让下次读取拿到新快照。
       this.updateProviders(next.config.providers, this.config.providers);
       this.current = next;
     } catch (error) {
       const reason = textModule.getErrorMessage(error);
       console.error(`config.yaml 重读失败，继续使用原配置：${reason}`);
-      return;
     }
-
-    //M 只通知变动的顶层键，供需要刷新配置的插件监听。
-    this.ctx.emit('config/changed', changed);
   }
 
   /**
    * 交给 pi 的供应商鉴权。对话模型和 decision 的分类器都用它。
-   * @param provider 配置中的供应商对象，用于兼容调用方按对象登记。
-   * @param name 调用方已知道的供应商名。
+   * @param providerName 配置中的供应商名。
    * @returns pi-ai 的 `ProviderAuth`，描述供应商可用的鉴权方式。
    * - `apiKey` 可选，通过 `resolve()` 提供请求凭据。这里每次从当前配置取密钥和地址。
    * - `oauth` 可选，定义 `login()`、`refresh()` 和 `toAuth()` 等登录与令牌处理能力。
    * 全部字段见 node_modules/@earendil-works/pi-ai/dist/auth/types.d.ts:241。
    */
-  getProviderAuth(provider: ProviderConfig, name?: string): piAi.ProviderAuth {
-    const providers = this.config.providers;
-    const providerName = name ?? Object.keys(providers).find((key) => providers[key] === provider);
+  getProviderAuth(providerName: string): piAi.ProviderAuth {
     return {
       apiKey: {
         name: '配置里的密钥',
         resolve: async () => {
           const providers = this.config.providers;
           //G 删除供应商后，旧的鉴权回调不再交回密钥。
-          if (providerName === undefined || !Object.hasOwn(providers, providerName)) return undefined;
+          if (!Object.hasOwn(providers, providerName)) return undefined;
 
           //M 在同一快照取地址和密钥，缓存过模型的调用方也会向当前地址请求。
           const current = providers[providerName]!;

@@ -18,7 +18,8 @@ import * as textModule from '../../utils/Text.ts';
 /** 插件名。 */
 export const name = 'image-gen';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.4';
+//M 1.0.5：按本轮机器人和回话地址取图片保存目录。
+export const version = '1.0.5';
 
 /** 用到的服务：resources 拿配置；tools 登记工具；bots 找工作区。 */
 export const inject = ['resources', 'tools'];
@@ -109,8 +110,9 @@ class ImageGen {
     const model = this.model;
     if (model === undefined) throw new Error(`没配生图模型 ${IMAGE_MODEL_PATH}，请填“供应商/模型 ID”`);
 
+    const { bot, address } = session.row;
     //M 生成的图片保存到当前会话的工作区。
-    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, session);
+    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, bot, address);
     const prompt = String(args['prompt']);
     const body = {
       model: model.model, prompt, n: 1, size: (args['size'] as string | undefined) ?? '1024x1024',

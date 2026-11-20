@@ -1,6 +1,5 @@
 /** screen 的私有运行时：租约、取消、短期回执和单轮模型请求。 */
 
-import * as crypto from 'node:crypto';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import * as requests from '../../utils/RequestEvent.ts';
@@ -172,61 +171,6 @@ export interface SpeechResult {
   reason?: string;
   /** 回执已失效的固定原因。 */
   errorCode?: protocol.ErrorCode;
-}
-
-interface Gate extends protocol.PresentedInput {
-  /** 单次讲解流水标识。 */
-  requestId: string;
-  /** 配置的多模态模型。 */
-  model: string;
-  /** 是否提供了裁图，不携带图片。 */
-  hasImage: boolean;
-  /** 监听方置 true 时阻止向下执行。 */
-  stop: boolean;
-}
-
-interface UsageSummary {
-  /** 关联模型关口的请求号。 */
-  requestId: string;
-  /** 实际尝试的模型。 */
-  model: string;
-  /** 实际模型调用返回的输入 token。 */
-  input?: number;
-  /** 实际模型调用返回的输出 token。 */
-  output?: number;
-  /** 实际模型调用返回的缓存读 token。 */
-  cacheRead?: number;
-  /** 实际模型调用返回的缓存写 token。 */
-  cacheWrite?: number;
-  /** 从发起模型调用到结束等待的时间。 */
-  ms: number;
-  /** 模型阶段是否返回可用讲解。 */
-  ok: boolean;
-  /** 失败时的固定错误码。 */
-  errorCode?: protocol.ErrorCode;
-}
-
-declare module 'cordis' {
-  interface Events {
-    /**
-     * 私有关口，只暴露身份及模型摘要。
-     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.getModelAnswer
-     * 谁接：暂无
-     */
-    'screen/before-model'(gate: Gate): void | Promise<void>;
-    /**
-     * 呈现前的私有关口，仍不携带模型原文。
-     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.getModelAnswer
-     * 谁接：暂无
-     */
-    'screen/after-model'(gate: Gate): void | Promise<void>;
-    /**
-     * 单次模型请求计量，无图、界面文字或模型原文。
-     * 谁发：src7/plugins/screen/Screen.ts 的 Screen.getModelAnswer
-     * 谁接：暂无
-     */
-    'screen/model-usage'(usage: UsageSummary): void;
-  }
 }
 
 type VoicePayload =
@@ -878,7 +822,7 @@ export class Screen {
     }
   }
 
-  /** 两个关口夹住私有单轮请求；计量只发布实际 token 计数和固定错误。 */
+  /** 私有单轮请求，保留并发限制、取消和首句流式返回。 */
   private async getModelAnswer(
     model: piAi.Model<piAi.Api>,
     click: protocol.ClickInput,
@@ -887,24 +831,8 @@ export class Screen {
     observation = false,
     onPhrase?: (text: string) => void,
   ): Promise<Explanation> {
-    const requestId = crypto.randomUUID();
-    const gate: Gate = {
-      requestId,
-      clientId: click.clientId,
-      sessionId: click.sessionId,
-      epoch: click.epoch,
-      clickId: click.clickId,
-      model: this.config.model,
-      hasImage: click.image !== null,
-      stop: false,
-    };
-
-    //G 先让监听者用安全摘要决定是否允许请求，取消后不会发送图片。
-    const before = this.ctx.serial('screen/before-model', gate);
-    await Promise.race([before, cancelled]);
-
-    //G 关口挂起至超时或取消后，不会再向模型发送内容。
-    this.checkGate(gate, signal);
+    //G 点击已取消时不把私有图文交给模型。
+    this.checkCancelled(signal);
     let limit = MAX_MODELS;
     if (observation) {
       limit -= 1;
@@ -944,17 +872,7 @@ export class Screen {
       options.reasoning = 'low';
     }
 
-    const started = performance.now();
-    //M Usage 记模型调用的 token 与费用，input、output 是输入输出用量，totalTokens 给总数。
-    let usage: piAi.Usage | undefined;
-    let errorCode: protocol.ErrorCode | undefined;
     let previewed = false;
-    const checkPresentation = async (): Promise<void> => {
-      //G 先让既有呈现关口检查，再确认期间没有发生取消。
-      const after = this.ctx.serial('screen/after-model', gate);
-      await Promise.race([after, cancelled]);
-      this.checkGate(gate, signal);
-    };
     const send = async (): Promise<piAi.AssistantMessage> => {
       //M 真实调用计入并发槽，供应商尚未结束时不提前放行额外请求。
       this.modelsRunning += 1;
@@ -970,7 +888,7 @@ export class Screen {
         const release = (): void => {
           this.modelsRunning -= 1;
         };
-        //M 预览拒绝后本地可先返回，模型槽仍等上游结束再释放。
+        //M 本地取消可先返回，模型槽仍等上游结束再释放。
         void settled.then(release, release);
         releaseOnCompletion = true;
         let prefix = '';
@@ -982,8 +900,8 @@ export class Screen {
           const phrase = modelText.getFirstPhrase(prefix);
           if (phrase === undefined) continue;
 
-          //G 提前呈现同样要通过模型后的隐私关口。
-          await checkPresentation();
+          //G 点击已失效时停止返回首句。
+          this.checkCancelled(signal);
           onPhrase(phrase);
           previewed = true;
         }
@@ -995,59 +913,29 @@ export class Screen {
       }
     };
     try {
-      //M 本地取消后马上结束等待和计量，实际请求结束后才释放并发槽。
+      //M 本地取消后马上结束等待，实际请求结束后才释放并发槽。
       const pending = send();
       const answer = await Promise.race([pending, cancelled]);
-      usage = answer.usage;
 
       //G 取消或上游失败时不再处理返回值。
-      this.checkGate(gate, signal);
+      this.checkCancelled(signal);
       if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {
         throw new protocol.ScreenError('model_failed');
       }
 
       //G 提取符合协议的模型正文，拒绝零散输出和工具请求。
-      const explanation = getExplanation(answer);
-
-      if (!previewed) {
-        //G 上游只给最终帧时同样验证呈现资格。
-        await checkPresentation();
-      }
-
-      //G 在返回讲解前再核对中止信号。
-      this.checkGate(gate, signal);
-      return explanation;
+      return getExplanation(answer);
     } catch (error) {
       //G 统一固定错误码，供应商异常不离开私有请求。
-      const failed = getError(error);
-      errorCode = failed.code;
-      throw failed;
-    } finally {
-      //M 只公开调用计数与实际用量字段，不公开输入、输出或错误原文。
-      const recorded: UsageSummary = {
-        requestId,
-        model: this.config.model,
-        input: usage?.input,
-        output: usage?.output,
-        cacheRead: usage?.cacheRead,
-        cacheWrite: usage?.cacheWrite,
-        ms: Math.round(performance.now() - started),
-        ok: errorCode === undefined,
-        errorCode,
-      };
-      this.ctx.emit('screen/model-usage', recorded);
+      throw getError(error);
     }
   }
 
-  /** 检查信号及关口的固定中止标记。 */
-  private checkGate(gate: Gate, signal: AbortSignal): void {
-    if (signal.aborted) {
-      //G 取消时保留超时或失效的固定原因，避免返回上游原文。
-      throw new protocol.ScreenError(signal.reason as protocol.ErrorCode);
-    }
-    if (gate.stop) {
-      //G 任一关口拒绝后停止模型请求或讲解展示。
-      throw new protocol.ScreenError('privacy_blocked');
-    }
+  /** 保留本地超时或失效的固定原因。 */
+  private checkCancelled(signal: AbortSignal): void {
+    if (!signal.aborted) return;
+
+    //G 取消来自本地，回给基地的原因沿用协议错误码。
+    throw new protocol.ScreenError(signal.reason as protocol.ErrorCode);
   }
 }

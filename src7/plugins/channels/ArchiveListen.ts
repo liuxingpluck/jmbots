@@ -17,11 +17,14 @@ const ATTACHMENT_DIR = '附件';
  * 写不进只打日志，不往外抛，别挡别人认领和收回执。
  * @param ctx 调用方插件的 ctx，监听随它卸载。
  * @param root 运行时根目录，聊天落在 root/channels/渠道/机器人名_ID/私聊或群聊/名字_ID。
+ * @param archive 调用方已准备的归档实例，供同一事件的索引监听共用。
  * @returns 归档对象。
  */
-export function applyChatArchive(ctx: cordis.Context, root: string): archiveModule.ChatArchive {
-  const archive = new archiveModule.ChatArchive(root);
-
+export function applyChatArchive(
+  ctx: cordis.Context,
+  root: string,
+  archive = new archiveModule.ChatArchive(root),
+): archiveModule.ChatArchive {
   //M 用户的话：渠道先落盘再发；语音半句等整句再记。
   const onInbound = (message: messageModule.ChannelMessage): void => {
     if (message.routing.partial === true) return;
@@ -50,7 +53,7 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
     for (const message of messages) {
       onInbound(message);
     }
-  });
+  }, { prepend: true });
 
   //M 机器人的话：回执说发成了才记；没有来源快照的发话认不全聊天，先不记。
   ctx.on('channel/replied', (event) => {

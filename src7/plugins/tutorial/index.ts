@@ -120,7 +120,9 @@ export const name = 'tutorial';
 //M 1.1.16：不再 import journal：轨迹形状和 NOISE、FOLDERS 改读 utils/Trail.ts，启动轨迹发 journal/request 的 boot-trail 要；TRAIL_MAX_LINES 归 Files.ts。
 //M 1.1.18：channels 搬出骨架成了依赖型协议插件（不在自带名单里），左栏插件列表单独列它，/api/tutorial/readme?name=channels 读它的 说明.md。
 //M 1.1.19：消息轨迹「分给机器人」列认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
-export const version = '1.1.19';
+//M 1.1.20：跟踪打印直接读当前界面语言。
+//M 1.1.21：挂载结果合成 state 加 error，左栏和启动录像照它原样给，不再自己拼。
+export const version = '1.1.21';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -195,9 +197,9 @@ interface PluginItem {
   name: string;
   /** 插件 index.ts 导出的 version；外部插件、还没写的是空串。 */
   version: string;
-  /** ok 挂上开工了，failed 没挂上，waiting 挂了但缺服务没开工，idle 配置里没挂。 */
+  /** 挂过的照 Resources.ts 的 PluginState（ok、failed、waiting、mounting）；idle 是配置里没挂。 */
   state: string;
-  /** 没挂上的原因；缺服务时写缺谁。 */
+  /** 不是 ok 时的说明：没挂上的原因、缺哪些服务、启动超时。 */
   error: string;
   /** 它声明要的服务。 */
   inject: string[];
@@ -725,20 +727,18 @@ class Tutorial {
         seen.add(plugin);
       }
 
-      //M 状态：没挂上、缺服务、开工了。
-      let state = 'ok';
-      let error = row.error;
-      if (!row.mounted) {
-        state = 'failed';
-      }
-      if (row.mounted && !row.started) {
-        state = 'waiting';
-        error = `缺 ${row.missing.join('、')}`;
-      }
-
-      //M 检查插件是否自带 说明.md，汇总版本号与状态后加入左栏条目。
+      //M 检查插件是否自带 说明.md；状态和说明照挂载结果原样放进左栏条目。
       const hasReadme = await this.hasReadme(row.name);
-      items.push({ name: row.name, version: getVersion(plugin), state, error, inject: row.inject, hasReadme, kind: 'plugin' });
+      const item: PluginItem = {
+        name: row.name,
+        version: getVersion(plugin),
+        state: row.state,
+        error: row.error,
+        inject: row.inject,
+        hasReadme,
+        kind: 'plugin',
+      };
+      items.push(item);
     }
 
     //M 自带名单里没挂的。

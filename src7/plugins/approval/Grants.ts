@@ -189,7 +189,7 @@ export class Grants {
     if (dirs === undefined) return [];
 
     //G 当轮授权是本人说的：地址已经换成外人的（群里别人插话），不算。
-    if (!workspaceModule.isOwnerTurn(row.channel ?? '', row.address)) return [];
+    if (!protocol.isOwnerTurn(row.channel, row.address)) return [];
 
     return dirs;
   }
@@ -346,7 +346,7 @@ export class Grants {
   private runTool(args: Record<string, unknown>, session: Session): Record<string, unknown> {
     //G 只有本人那一轮能设：外人不能给自己放权限。
     const row = session.row;
-    if (!workspaceModule.isOwnerTurn(row.channel ?? '', row.address)) {
+    if (!protocol.isOwnerTurn(row.channel, row.address)) {
       throw new Error('只有用户本人那一轮能设目录授权');
     }
     const action = args['action'];
@@ -448,7 +448,7 @@ export class Grants {
     const at = Date.now();
 
     //M 群：名字用群名，没有就用群号。
-    if (workspaceModule.isGroup(address) && speaker.customer !== '') {
+    if (protocol.isGroup(address) && speaker.customer !== '') {
       const label = utils.getStringField(address, 'chatName') || speaker.customer;
       this.see({ subject: speaker.customer, label, group: true, chat: speaker.customer, at });
     }
@@ -528,7 +528,7 @@ function setGrantDirs(address: Record<string, unknown>, dirs: string[]): void {
  */
 function getGrant(row: GrantRow): Grant {
   //M 是不是群照 subject 认（feishu:group: 开头）。
-  const group = workspaceModule.isGroup({ customer: row.subject });
+  const group = protocol.isGroup({ customer: row.subject });
   return {
     id: row.id,
     subject: row.subject,

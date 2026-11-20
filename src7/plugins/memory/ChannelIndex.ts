@@ -12,6 +12,9 @@
 import type { Database } from 'bun:sqlite';
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
+import type * as dbModule from '../db/index.ts';
+import * as attachmentModule from './ChannelAttachments.ts';
+import * as channelSchema from './ChannelSchema.ts';
 import type { Session } from '../../Sessions.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
@@ -49,6 +52,12 @@ export interface ChannelRow {
   mentionedBots?: string[];
   /** 记忆归属键（MemoryKey.ts 算）：私聊 person:…、群 group:…、本机 owner；打标以前的旧行、算不出的是空串，不写也当空串。 */
   memoryKey?: string;
+  /** 已归档附件相对运行时根的路径，旧行默认空数组。 */
+  attachments?: string[];
+  /** 首次确认撤回的 Unix 毫秒时间；原文保留。 */
+  recalledAt?: number;
+  /** 回执平台消息的标准键，用于定位机器人发言的撤回。 */
+  platformKeys?: string[];
   /** 时间，毫秒。 */
   at: number;
 }
@@ -114,20 +123,9 @@ export class ChannelIndex {
    * @param db 库（resources.db；补旧脚本自己开的同一个库）。
    * 副作用：建表。
    */
-  constructor(private readonly db: Database) {
-    db.exec('CREATE TABLE IF NOT EXISTS memory_channel_messages'
-      + ' (id INTEGER PRIMARY KEY AUTOINCREMENT, msg_key TEXT NOT NULL UNIQUE,'
-      + ' channel TEXT NOT NULL, account TEXT NOT NULL, chat TEXT NOT NULL,'
-      + ' chat_type TEXT NOT NULL, direction TEXT NOT NULL, sender_id TEXT NOT NULL,'
-      + ' sender_name TEXT NOT NULL, bot TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL,'
-      + " mentioned_bots TEXT NOT NULL DEFAULT '[]', rust_state INTEGER NOT NULL DEFAULT 0,"
-      + " memory_key TEXT NOT NULL DEFAULT '', front_only INTEGER NOT NULL DEFAULT 0)");
-
-    //M 已有索引行沿用渠道可见性，只有待迁的前台原文会显式标记为前台归档。
-    const columns = db.query<{ name: string }, []>('PRAGMA table_info(memory_channel_messages)').all();
-    if (!columns.some((column) => column.name === 'front_only')) {
-      db.exec('ALTER TABLE memory_channel_messages ADD COLUMN front_only INTEGER NOT NULL DEFAULT 0');
-    }
+  constructor(private readonly db: Database, service?: dbModule.Db) {
+    //M 首次建表和后续加列都登记 db 版本，失败整批回滚。
+    channelSchema.migrateChannelIndex(db, service);
 
     //M 按聊天看一段时间（最常用）、不分聊天按时间看。
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_chat ON memory_channel_messages (channel, chat, at)');
@@ -168,13 +166,17 @@ export class ChannelIndex {
   add(row: ChannelRow, live = false, frontOnly = false): boolean {
     const sql = 'INSERT OR IGNORE INTO memory_channel_messages'
       + ' (msg_key, channel, account, chat, chat_type, direction, sender_id, sender_name, bot, text, at,'
-      + ' mentioned_bots, rust_state, memory_key, front_only)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      + ' mentioned_bots, rust_state, memory_key, front_only, attachments, recalled_at, platform_keys)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     const mentions = JSON.stringify(row.mentionedBots ?? []);
     const state = Number(live);
     const memoryKey = row.memoryKey ?? '';
+    const attachments = JSON.stringify(row.attachments ?? []);
+    const platformKeys = JSON.stringify(row.platformKeys ?? []);
+    const recalledAt = row.recalledAt ?? null;
     const values = [row.key, row.channel, row.account, row.chat, row.chatType, row.direction,
-        row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state, memoryKey, Number(frontOnly)];
+        row.senderId, row.senderName, row.bot, row.text, row.at, mentions, state, memoryKey,
+        Number(frontOnly), attachments, recalledAt, platformKeys];
     //M 幂等写入，按 SQLite 的影响行数区分新消息和重复消息。
     const changes = this.db.query(sql).run(...values).changes;
     if (changes === 0 && live) {
@@ -183,6 +185,22 @@ export class ChannelIndex {
       this.db.query(promote).run(row.key);
     }
     return changes === 1;
+  }
+
+  /**
+   * 在原行记撤回时刻，账号和聊天必须吻合；原话、附件及权限不变。
+   * @param event 渠道确认的撤回事件。
+   * @returns 是否首次标记到原消息；未索引的消息不伪造原文。
+   */
+  recall(event: protocolModule.ChannelRecallEvent): boolean {
+    const sql = 'UPDATE memory_channel_messages SET recalled_at = ?, rust_state = 1'
+      + ' WHERE recalled_at IS NULL AND channel = ? AND account = ? AND chat = ?'
+      + ' AND (msg_key = ? OR EXISTS (SELECT 1 FROM json_each(platform_keys) WHERE value = ?))';
+    const values = [event.recalledAt, event.channel, event.accountId,
+      event.chatId, event.messageId, event.messageId];
+    //M 重复撤回不重写时间；旧 Rust 副本通过现有队列更新同一来源键。
+    const changes = this.db.query(sql).run(...values).changes;
+    return changes > 0;
   }
 
   /** 按持久化队列取一批未确认记录。实时和历史各有一条队列。 */
@@ -197,13 +215,16 @@ export class ChannelIndex {
 
   /** Rust 确认整批写入后，在同一事务内推进进度。 */
   confirmRustBatch(rows: ChannelRow[]): void {
-    const sql = 'UPDATE memory_channel_messages SET rust_state = 2 WHERE msg_key = ?';
+    const sql = 'UPDATE memory_channel_messages SET rust_state = 2 WHERE msg_key = ?'
+      + ' AND recalled_at IS ?';
     //M 整批复用一个更新语句，事务中按消息键逐行确认。
     const statement = this.db.query(sql);
     const commit = this.db.transaction(() => {
       //M 整批确认以保留重启前的断点。
       for (const row of rows) {
-        statement.run(row.key);
+        //G 旧批次在途时发生撤回，不得用旧回执覆盖待同步的新状态。
+        const recalledAt = row.recalledAt ?? null;
+        statement.run(row.key, recalledAt);
       }
     });
     commit();
@@ -403,6 +424,9 @@ function getRow(row: Record<string, unknown>): ChannelRow {
     senderName: row['sender_name'] as string,
     bot: row['bot'] as string,
     text: row['text'] as string,
+    attachments: JSON.parse(row['attachments'] as string) as string[],
+    recalledAt: (row['recalled_at'] as number | null) ?? undefined,
+    platformKeys: JSON.parse(row['platform_keys'] as string) as string[],
     memoryKey: row['memory_key'] as string,
     at: row['at'] as number,
   };
@@ -412,10 +436,13 @@ function getRow(row: Record<string, unknown>): ChannelRow {
 /**
  * 用户的一条话（channel/direct、channel/mention、channel/listen）→ 一行。
  * @param message 渠道发的标准消息。
- * @returns 一行；没有正文（纯附件、空话）、语音半句（routing.partial，等整句再记）是 undefined。
+ * @param attachments 已确认归档的相对运行时根路径。
+ * @returns 一行；没有正文和已归档附件（空话）、语音半句（routing.partial，等整句再记）是 undefined。
  */
-export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRow | undefined {
-  if (message.text.trim() === '') return undefined;
+export function getMessageRow(
+  message: protocolModule.ChannelMessage, attachments: string[] = [],
+): ChannelRow | undefined {
+  if (message.text.trim() === '' && attachments.length === 0) return undefined;
 
   //G 半句：话还没说完先交机器人开工的，键和整句一样；先记了半句，整句就被 INSERT OR IGNORE 挡掉了。
   if (message.routing.partial === true) return undefined;
@@ -444,6 +471,7 @@ export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRo
     bot: message.targetBots.join(','),
     mentionedBots: [...new Set(message.mentions.flatMap((mention) => mention.botNames))],
     text: message.text,
+    attachments,
     memoryKey,
     at: message.createdAt,
   };
@@ -599,15 +627,19 @@ export function readEnabled(raw: unknown): boolean {
  * @param ctx memory 插件的 ctx。
  * @param index 索引。
  * @param rust 渠道同步任务，缺省时只写本地索引。
+ * @param archive 先于索引运行的 Markdown 归档定位信息。
  * 副作用：登记监听、工具、接口。
  */
 export function applyChannelIndex(
   ctx: cordis.Context, index: ChannelIndex, rust?: ChannelBackfill,
+  archive?: attachmentModule.IndexArchive,
 ): void {
   //M 用户的话：渠道先落盘再发；记不上只打日志，不挡别人认领。私聊、群里叫了机器人、只听的三个事件同一个处理。
   const onInbound = (message: protocolModule.ChannelMessage): void => {
     try {
-      const row = getMessageRow(message);
+      const attachments = attachmentModule.getAttachments(message, archive);
+      //M 原文和已落盘的附件路径共同入索引。
+      const row = getMessageRow(message, attachments);
       if (row === undefined) return;
 
       //M 先持久化消息，再通知后台同步。Rust 慢或离线时不阻塞渠道。
@@ -628,7 +660,9 @@ export function applyChannelIndex(
     let added = 0;
     for (const message of messages) {
       try {
-        const row = getMessageRow(message);
+        const attachments = attachmentModule.getAttachments(message, archive);
+        //M 历史消息复用相同归档路径解析，不另复制附件。
+        const row = getMessageRow(message, attachments);
         if (row === undefined) continue;
 
         //M 历史行不当实时：live 给 false，由回填按批、按资源守卫放行再发 Rust。
@@ -655,12 +689,30 @@ export function applyChannelIndex(
       const row = getReplyRow(event.request);
       if (row === undefined) return;
 
+      //M 平台消息号转标准键，撤回回执可定位同一条机器人回复。
+      const ids = event.receipt.messageIds ?? [];
+      row.platformKeys = ids.map((id) => protocolModule.makeChannelMessageId(row.channel, row.account, id));
       //M 与入站共用持久化队列，重复回复沿用首次记下的正文和时间。
       index.add(row, true);
       rust?.wake();
     } catch (error) {
       //G 记不进索引只打日志，不往外抛，别挡别人收回执。
       console.error(`memory：机器人的回复记不进索引：${textModule.getErrorMessage(error)}`);
+    }
+  });
+
+  //M 渠道确认撤回后只标原行，原文与附件不删，重复事件幂等。
+  ctx.on('channel/recall', (event) => {
+    try {
+      const changed = index.recall(event);
+      if (!changed) return;
+
+      //M 唤醒现有同步队列，把撤回标记更新进 Rust 渠道副本。
+      rust?.wake();
+    } catch (error) {
+      //G 索引失败不挡渠道的其余撤回监听。
+      const reason = textModule.getErrorMessage(error);
+      console.error(`memory：渠道撤回记不进索引：${reason}`);
     }
   });
 
@@ -686,4 +738,23 @@ export function applyChannelIndex(
       }
     });
   });
+}
+
+
+/**
+ * 检索摘要和 Rust 副本共用的可读内容，不改数据库原文。
+ * @param row 已经经过权限过滤的渠道消息。
+ * @returns 撤回标记、原文及附件相对路径。
+ */
+export function getChannelText(row: ChannelRow): string {
+  const lines: string[] = [];
+  if (row.recalledAt !== undefined) {
+    const at = new Date(row.recalledAt).toISOString();
+    lines.push(`【已撤回 ${at}】`);
+  }
+  lines.push(row.text);
+  for (const attachment of row.attachments ?? []) {
+    lines.push(`[附件] ${attachment}`);
+  }
+  return lines.join('\n');
 }

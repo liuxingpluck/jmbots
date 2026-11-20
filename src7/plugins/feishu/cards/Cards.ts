@@ -10,7 +10,7 @@ import type { SessionMeta } from '../../../Sessions.ts';
 import * as outbound from '../../approval/Outbound.ts';
 import * as requestEventModule from '../../../utils/RequestEvent.ts';
 import * as textModule from '../../../utils/Text.ts';
-import * as workspaceModule from '../../../utils/Workspace.ts';
+import * as protocol from '../../channels/index.ts';
 import { feishuCustomer } from '../index.ts';
 import type { FeishuAddress, Feishu, FeishuPerson, Toast } from '../index.ts';
 import * as render from './Render.ts';
@@ -176,7 +176,7 @@ export function targets(feishu: Feishu, ctx: cordis.Context, pending: render.Pen
   }
   //G 群里的会话：卡片换成发本人私聊。
   let first = own;
-  if (own !== undefined && workspaceModule.isGroup(own)) {
+  if (own !== undefined && protocol.isGroup(own)) {
     //M 群会话改查本人在同一应用下的私聊回话地址。
     first = ownerChat(feishu, ctx, own.appId).address;
   }
@@ -243,7 +243,7 @@ async function groupNote(feishu: Feishu, ctx: cordis.Context, pending: render.Pe
 
   //M 取该会话所属的飞书回话地址，仅当请求确实源自群聊时才在群里发文字提醒。
   const own = getAddress(ctx, pending.session);
-  if (own === undefined || !workspaceModule.isGroup(own)) return;
+  if (own === undefined || !protocol.isGroup(own)) return;
 
   //M 本人的私聊找到了说“已发到他私聊”，没人私聊过就说发不过去。
   const owner = ownerChat(feishu, ctx, own.appId);
@@ -298,7 +298,7 @@ async function onProgress(feishu: Feishu, ctx: cordis.Context, item: render.Prog
   if (address === undefined) return;
 
   //G 群里的会话不发进度卡片。
-  if (workspaceModule.isGroup(address)) return;
+  if (protocol.isGroup(address)) return;
   try {
     const sql = "SELECT card_id, kind, ref, ended FROM feishu_cards WHERE kind = 'progress' AND ref = ? AND ended = 0";
     const row = feishu.db.query(sql).get(item.sessionId) as CardRow | null;
@@ -361,7 +361,7 @@ export async function onAction(
   value: Record<string, unknown>,
 ): Promise<Toast | undefined> {
   //G 不是本人点的：只回提示，什么都不动。
-  if (workspaceModule.getSpeakerRole(address) !== 'owner') return { type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` };
+  if (protocol.getSpeakerRole(address) !== 'owner') return { type: 'warning', content: `只有 ${ownerName(feishu)} 能处理` };
 
   //M 反查该卡片对应的业务类型与审批/会话编号，库里找不到则忽略。
   const cardQuery = feishu.db.query('SELECT card_id, kind, ref, ended FROM feishu_cards WHERE card_id = ?');

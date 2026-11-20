@@ -131,12 +131,10 @@ function getLines(heard: Heard[]): string[] {
 export class GroupBatch {
   /** 前台会话号 → 这个（机器人，群）正攒着的一批。 */
   private readonly batches = new Map<string, Batch>();
-  /** 前台会话号 → 正在问决策模型的那一次的号：判断期间有人叫了机器人（take 删掉），判完就不再排队。 */
-  private readonly looking = new Map<string, number>();
+  /** 前台会话号 → 正在判断的各批原话：被叫到时一起带进当前轮，并使迟到的回执失效。 */
+  private readonly looking = new Map<string, Set<Batch>>();
   /** 群（渠道:账号:聊天）→ 今天看了几次。 */
   private readonly looks = new Map<string, Looks>();
-  /** 给每一次看编号。 */
-  private lookNo = 0;
 
   /**
    * 听 session/change（前台停下，看等着的那一批）；拔插件时清掉安静计时器。
@@ -202,22 +200,27 @@ export class GroupBatch {
   }
 
   /**
-   * 有人叫了机器人（私聊、@、引用）：拿走这个前台攒着的一批（写成几行“说话人：话”），缓冲清空；
-   * 正在判断的那一批判完不再排队（叫它的这一轮会回）。
+   * 有人叫了机器人（私聊、@、引用）：拿走这个前台仍在判断及攒着的话，按先后拼成“说话人：话”。
+   * 已交给当前轮的批次收到判断回执时只记流水。
    * @param frontId 前台会话号。
    * @returns 攒着的几行；没有是空数组。
    */
   take(frontId: string): string[] {
-    //M 正在判断的那一次作废。
+    //M 带上正在判断的各批原话，并让这几批的迟到回执只记流水。
+    const pending = this.looking.get(frontId) ?? [];
     this.looking.delete(frontId);
+    const pendingBatches = Array.from(pending);
+    const lines = pendingBatches.flatMap((one) => getLines(one.heard));
 
+    //M 把仍在攒着的话接在判断中的原话后面。
     const batch = this.batches.get(frontId);
-    if (batch === undefined) return [];
+    if (batch === undefined) return lines;
 
     //M 停掉计时器，缓冲清空，话交给叫它的这一轮。
     clearTimeout(batch.timer);
     this.batches.delete(frontId);
-    return getLines(batch.heard);
+    const buffered = getLines(batch.heard);
+    return [...lines, ...buffered];
   }
 
   /**
@@ -225,6 +228,13 @@ export class GroupBatch {
    * @param event 渠道撤回事件。
    */
   cancelRecall(event: protocol.ChannelRecallEvent): void {
+    //M 等回执的批次仍可能被当前轮取走，先去掉已撤回的消息。
+    for (const pending of this.looking.values()) {
+      for (const batch of pending) {
+        batch.heard = batch.heard.filter((one) => !canRecall(event, one.message));
+      }
+    }
+
     for (const [frontId, batch] of this.batches.entries()) {
       //M 留下不是这条的、或撤回的人没权撤的。
       const kept = batch.heard.filter((one) => !canRecall(event, one.message));
@@ -285,17 +295,25 @@ export class GroupBatch {
       return;
     }
 
-    //M 问决策模型；给这一次编号，判断期间有人叫了机器人（take 删了号）就不再排队。
-    this.lookNo += 1;
-    const no = this.lookNo;
-    this.looking.set(frontId, no);
+    //M 等候回执时仍留住原话，以便被叫到时按先后交给当前这轮。
+    let pending = this.looking.get(frontId);
+    if (pending === undefined) {
+      pending = new Set();
+      this.looking.set(frontId, pending);
+    }
+    pending.add(batch);
+
+    //M 登记批次后再发决策请求，等待期间被叫到也能取到原话。
     const judged = await this.judge(front, lines, address);
     this.ctx.emit('bot/judged', address, text, judged.outcome);
 
-    //G 判断期间有人叫了机器人：这一批已经拼进叫它的那一轮了。
-    if (this.looking.get(frontId) !== no) return;
+    //G 被叫到后这批已交给当前轮。迟到的回执不再排队或记背景。
+    const current = this.looking.get(frontId);
+    if (current?.delete(batch) !== true) return;
 
-    this.looking.delete(frontId);
+    if (current.size === 0) {
+      this.looking.delete(frontId);
+    }
 
     //M 不接：这一批记进前台对话当背景。
     if (!judged.reply) {
@@ -303,8 +321,15 @@ export class GroupBatch {
       return;
     }
 
-    //M 接话：照最后一句排进前台的单队列，这一批当这一轮的话，回到这个群。
-    this.claims.enqueueBatch(front, last, text);
+    //G 等判断时可能有撤回，接话只使用仍有效的话和最后一句的来源。
+    const source = batch.heard.at(-1);
+    if (source === undefined) return;
+
+    //M 用剩余消息重新组成接话正文。
+    const remaining = getLines(batch.heard);
+    const replyText = remaining.join('\n');
+    //M 其余消息仍以整批排入前台。
+    this.claims.enqueueBatch(front, source, replyText);
   }
 
   /**

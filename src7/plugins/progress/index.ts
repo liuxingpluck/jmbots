@@ -34,7 +34,7 @@ export const name = 'progress';
 //M 1.1.4：说话改发 bot/say，取思考档发 model-catalog/request，读对话记录发 journal/request，不再直接调别的插件。
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
 //M 1.1.6：接入已登记飞书群的每日进度调度。
-//M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
+//M 1.1.7：限时与收尾配置迁入插件 config；顶层旧 engine 段由骨架入口报错拒绝。
 //M 1.1.13：群日报改发 bot/request（hand 带 replyTo），不再拼假的群消息发渠道事件。
 export const version = '1.1.13';
 
