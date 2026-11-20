@@ -109,7 +109,7 @@ declare module 'cordis' {
      *   src7/plugins/relay/index.ts 的 Relay.constructor
      *   src7/plugins/voice/index.ts 的 apply
      */
-    'session/change'(session: Session): void;
+    'session/change'(session: Session, stateBefore?: SessionState): void;
     /**
      * 模型调用失败了一次（含会重试的那几次；被喊停的不算）。通知，用量、追溯这类插件听它。
      * 谁发：src7/Sessions.ts 的 Sessions.chat
@@ -809,6 +809,7 @@ export class Session {
     if (signal.aborted) return;
 
     try {
+      const systemBefore = request.system.length;
       //M 关口一：插件在这里修改请求，也可以提供现成回答。
       await this.ctx.serial('session/before-model', request);
       if (signal.aborted) return;
@@ -820,11 +821,15 @@ export class Session {
       }
 
       //T 跟踪：调模型；插件已经给了回答就写明没有调。
+      let answeredBy = '';
+      if (request.answer !== undefined) {
+        answeredBy = `${request.answer.provider}/${request.answer.model}`;
+      }
       const vars = {
-        session: this.id,
-        step: this.row.steps,
-        model: request.model,
-        messageCount: request.messages.length,
+        session: this.id, sessionKind: this.row.kind, step: this.row.steps,
+        model: request.model, thinking: request.thinking, systemBefore,
+        systemAfter: request.system.length, toolsCount: request.tools.length,
+        messageCount: request.messages.length, answeredByPlugin: request.answer !== undefined, answeredBy,
       };
       let doing = 'trace.sessions.callModel';
       if (request.answer !== undefined) {
@@ -913,10 +918,11 @@ export class Session {
    * @param reply 这一轮的结果，要回给用户的话；刚开始转时是空的。
    */
   private change(state: SessionState, reply: string): void {
-    //M 同步更新状态与结果正文并落库，再通知监听状态变更的插件。
+    //M 同步更新状态与结果正文并落库，再连同原状态通知监听状态变更的插件。
+    const stateBefore = this.row.state;
     this.row.state = state;
     this.row.reply = reply;
     this.save();
-    this.ctx.emit('session/change', this);
+    this.ctx.emit('session/change', this, stateBefore);
   }
 }

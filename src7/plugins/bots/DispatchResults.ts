@@ -710,7 +710,10 @@ export class DispatchResults {
     front.save();
 
     //T 跟踪：零次回复，直接把最后的话发出去。
-    const vars = { session: front.id, channel: snapshot.channel, length: text.length };
+    const vars = {
+      session: front.id, channel: snapshot.channel,
+      autoFinal: true, replyLength: text.length, length: text.length,
+    };
     this.home.emit('trace', 'Dispatch.sendLastWords', 'trace.bots.sendLastWords', "ctx.serial('channel/reply')", vars);
 
     //M 发 channel/reply 请求，等渠道交回回执（发到了、发了一部分、没收）。

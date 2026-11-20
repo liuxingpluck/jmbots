@@ -1649,7 +1649,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.saveAttachments",
-          "site": "src7/plugins/web-api/index.ts:886"
+          "site": "src7/plugins/web-api/index.ts:889"
         },
         {
           "plugin": "work-decision",
@@ -1764,7 +1764,7 @@
         {
           "plugin": "web-api",
           "function": "WebApi.saveAttachments",
-          "site": "src7/plugins/web-api/index.ts:886"
+          "site": "src7/plugins/web-api/index.ts:889"
         },
         {
           "plugin": "work-decision",
@@ -1916,7 +1916,7 @@
         {
           "plugin": "bots",
           "function": "DispatchResults.emitSettled",
-          "site": "src7/plugins/bots/DispatchResults.ts:755"
+          "site": "src7/plugins/bots/DispatchResults.ts:758"
         }
       ],
       "listeners": [
@@ -3932,7 +3932,7 @@
         {
           "plugin": "tutorial",
           "function": "Tutorial.getRecentMessages",
-          "site": "src7/plugins/tutorial/index.ts:844"
+          "site": "src7/plugins/tutorial/index.ts:847"
         },
         {
           "plugin": "web-api",
@@ -4056,7 +4056,7 @@
         {
           "plugin": "tutorial",
           "function": "Tutorial.getRecentMessages",
-          "site": "src7/plugins/tutorial/index.ts:844"
+          "site": "src7/plugins/tutorial/index.ts:847"
         },
         {
           "plugin": "web-api",
@@ -5998,7 +5998,7 @@
         {
           "plugin": "skeleton",
           "function": "Session.getStepAnswer",
-          "site": "src7/Sessions.ts:844"
+          "site": "src7/Sessions.ts:849"
         }
       ],
       "listeners": []
@@ -6144,7 +6144,7 @@
         {
           "plugin": "skeleton",
           "function": "Session.getStepAnswer",
-          "site": "src7/Sessions.ts:813"
+          "site": "src7/Sessions.ts:814"
         }
       ],
       "listeners": [
@@ -6319,7 +6319,7 @@
       "mode": "通知",
       "pair": "",
       "declaredAt": "src7/Sessions.ts:112",
-      "signature": "(session: Session) => void",
+      "signature": "(session: Session, stateBefore?: SessionState) => void",
       "doc": "状态变了：开始转了，或者这一轮结束了（session.row.reply 是要回给用户的话）。只是通知。",
       "params": [
         {
@@ -6327,14 +6327,29 @@
           "optional": false,
           "type": "Session",
           "doc": ""
+        },
+        {
+          "name": "stateBefore",
+          "optional": true,
+          "type": "SessionState",
+          "doc": ""
         }
       ],
-      "types": [],
+      "types": [
+        {
+          "name": "SessionState",
+          "kind": "type",
+          "site": "src7/Sessions.ts:233",
+          "doc": "会话的状态。 running 正在转：在等模型回答，或者在执行工具 done 做完了。新开的、还没用过的会话也是它 stopped 停下了：有人喊停（stop_session、界面按钮），或者某个关口上有插件写了 stop failed 出错了",
+          "definition": "'running' | 'done' | 'stopped' | 'failed'",
+          "fields": []
+        }
+      ],
       "senders": [
         {
           "plugin": "skeleton",
           "function": "Session.change",
-          "site": "src7/Sessions.ts:920"
+          "site": "src7/Sessions.ts:926"
         }
       ],
       "listeners": [
@@ -6495,7 +6510,7 @@
         {
           "plugin": "skeleton",
           "function": "Session.append",
-          "site": "src7/Sessions.ts:907"
+          "site": "src7/Sessions.ts:912"
         }
       ],
       "listeners": [
@@ -6689,12 +6704,12 @@
         {
           "plugin": "bots",
           "function": "DispatchResults.sendLastWords",
-          "site": "src7/plugins/bots/DispatchResults.ts:714"
+          "site": "src7/plugins/bots/DispatchResults.ts:717"
         },
         {
           "plugin": "bots",
           "function": "DispatchResults.drain",
-          "site": "src7/plugins/bots/DispatchResults.ts:900"
+          "site": "src7/plugins/bots/DispatchResults.ts:903"
         },
         {
           "plugin": "bots",
@@ -7044,22 +7059,22 @@
         {
           "plugin": "web-api",
           "function": "WebApi.accept",
-          "site": "src7/plugins/web-api/index.ts:506"
+          "site": "src7/plugins/web-api/index.ts:509"
         },
         {
           "plugin": "web-api",
           "function": "Timeline.insert",
-          "site": "src7/plugins/web-api/Timeline.ts:305"
+          "site": "src7/plugins/web-api/Timeline.ts:308"
         },
         {
           "plugin": "web-api",
           "function": "Timeline.bindSession",
-          "site": "src7/plugins/web-api/Timeline.ts:372"
+          "site": "src7/plugins/web-api/Timeline.ts:375"
         },
         {
           "plugin": "web-api",
           "function": "Timeline.reply",
-          "site": "src7/plugins/web-api/Timeline.ts:431"
+          "site": "src7/plugins/web-api/Timeline.ts:437"
         },
         {
           "plugin": "web-api",
@@ -7094,7 +7109,7 @@
         {
           "plugin": "skeleton",
           "function": "Session.getStepAnswer",
-          "site": "src7/Sessions.ts:833"
+          "site": "src7/Sessions.ts:838"
         },
         {
           "plugin": "skeleton",
@@ -7129,7 +7144,7 @@
       "name": "tutorial/state",
       "mode": "没人发",
       "pair": "",
-      "declaredAt": "src7/plugins/tutorial/index.ts:70",
+      "declaredAt": "src7/plugins/tutorial/index.ts:71",
       "signature": "(notice: FlowStateNotice) => void",
       "doc": "通知：插件露自己的运行时变量（和 ctx.flow.state 一样，只是不用 inject flow；契约 3.2 第 12 条）。本插件听，没挂 tutorial 就没人听、什么也不发生。 带 read 是登记（同名再登记换掉旧的）；不带 read 是注销那一组（插件被拔掉时在 ctx.effect 里发）。",
       "params": [
@@ -7144,7 +7159,7 @@
         {
           "name": "FlowStateNotice",
           "kind": "interface",
-          "site": "src7/plugins/tutorial/index.ts:76",
+          "site": "src7/plugins/tutorial/index.ts:77",
           "doc": "事件 tutorial/state 的数据。",
           "definition": "",
           "fields": [
@@ -7153,21 +7168,21 @@
               "optional": false,
               "type": "string",
               "doc": "组名，写插件名：「状态」标签按它归到那个插件下面。",
-              "site": "src7/plugins/tutorial/index.ts:78"
+              "site": "src7/plugins/tutorial/index.ts:79"
             },
             {
               "name": "read",
               "optional": true,
               "type": "() => Record<string, unknown>",
               "doc": "交回这一刻的状态；不给就是注销这一组。",
-              "site": "src7/plugins/tutorial/index.ts:80"
+              "site": "src7/plugins/tutorial/index.ts:81"
             },
             {
               "name": "notes",
               "optional": true,
               "type": "Record<string, string>",
               "doc": "键的中文解释：英文键 → 解释。",
-              "site": "src7/plugins/tutorial/index.ts:82"
+              "site": "src7/plugins/tutorial/index.ts:83"
             }
           ]
         }
@@ -7177,7 +7192,7 @@
         {
           "plugin": "tutorial",
           "function": "Tutorial.constructor",
-          "site": "src7/plugins/tutorial/index.ts:451"
+          "site": "src7/plugins/tutorial/index.ts:453"
         }
       ]
     },
@@ -7824,7 +7839,7 @@
         {
           "plugin": "web-api",
           "function": "Timeline.insert",
-          "site": "src7/plugins/web-api/Timeline.ts:308"
+          "site": "src7/plugins/web-api/Timeline.ts:311"
         }
       ],
       "listeners": []
@@ -7849,7 +7864,7 @@
         {
           "plugin": "web-api",
           "function": "Timeline.reply",
-          "site": "src7/plugins/web-api/Timeline.ts:435"
+          "site": "src7/plugins/web-api/Timeline.ts:441"
         }
       ],
       "listeners": []
@@ -8105,7 +8120,7 @@
         {
           "plugin": "work-decision",
           "function": "deliverDecision",
-          "site": "src7/plugins/work-decision/Routes.ts:511"
+          "site": "src7/plugins/work-decision/Routes.ts:528"
         }
       ],
       "listeners": [
@@ -8191,7 +8206,7 @@
         {
           "plugin": "work-decision",
           "function": "deliverDecision",
-          "site": "src7/plugins/work-decision/Routes.ts:511"
+          "site": "src7/plugins/work-decision/Routes.ts:528"
         }
       ]
     },
@@ -8302,7 +8317,7 @@
         {
           "plugin": "work-decision",
           "function": "requestRelay",
-          "site": "src7/plugins/work-decision/Routes.ts:544"
+          "site": "src7/plugins/work-decision/Routes.ts:561"
         }
       ],
       "listeners": [
@@ -8386,7 +8401,7 @@
         {
           "plugin": "work-decision",
           "function": "requestRelay",
-          "site": "src7/plugins/work-decision/Routes.ts:544"
+          "site": "src7/plugins/work-decision/Routes.ts:561"
         }
       ]
     },

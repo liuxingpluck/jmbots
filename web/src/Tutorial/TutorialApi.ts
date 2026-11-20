@@ -216,12 +216,82 @@ export interface Lanes {
 }
 
 
+/** 一步数据流转里的单个输入字段（实测值或结构契约）。 */
+export interface DataField {
+  /** 字段英文键名。 */
+  key: string;
+  /** 字段值摘要。 */
+  value: string;
+  /** 中文说明。 */
+  note: string;
+  /** 数据来源：real 实测采样，schema 契约结构。 */
+  source: 'real' | 'schema';
+}
+
+
+/** 一步引起的一处数据表或内存对象字段变化（前 → 后）。 */
+export interface DataChange {
+  /** 目标表名或内存对象名（如 Session.row、ChatRequest、web_messages）。 */
+  target: string;
+  /** 变化的字段名。 */
+  field: string;
+  /** 变化前的值。 */
+  before: string;
+  /** 变化后的值。 */
+  after: string;
+  /** 一句人话注释。 */
+  note: string;
+  /** 数据来源：real 实测采样，schema 契约结构。 */
+  source: 'real' | 'schema';
+}
+
+
+/** 单步端到端数据流转与状态变化描述。 */
+export interface StepDataFlow {
+  /** 第几步，从 1 起。 */
+  step: number;
+  /** 所属骨架或插件名。 */
+  node: string;
+  /** 架构层级：skeleton 骨架，plugin 插件。 */
+  layer: 'skeleton' | 'plugin';
+  /** 当前所处阶段短名。 */
+  stage: string;
+  /** 关键入口函数名。 */
+  fnName: string;
+  /** 函数源码位置（文件:行号）。 */
+  fnSite: string;
+  /** 骨架模块对应的逐行图文件名（如 Sessions / Tools / Resources / Main）；插件步为空串。 */
+  skeletonFile: string;
+  /** 节点底部展示的一句话核心状态变化摘要。 */
+  summary: string;
+  /** 入站数据来源。 */
+  incoming: { fromStep: number | null; via: string; dataType: string };
+  /** 本步收到的关键输入字段。 */
+  inputs: DataField[];
+  /** 本步造成的数据与状态变化列表。 */
+  changes: DataChange[];
+  /** 出站数据去向。 */
+  outgoing: { toStep: number | null; toNode: string; via: string; dataType: string; label: string };
+}
+
+
+/** 整条轨迹的数据流转链路与涉及的核心对象清单。 */
+export interface TrailDataFlow {
+  /** 按步骤顺序排列的数据流转项。 */
+  steps: StepDataFlow[];
+  /** 本条轨迹读写或流经的数据表、内存对象与事件通道。 */
+  objects: { name: string; kind: 'table' | 'memory' | 'event'; role: string }[];
+}
+
+
 /** GET /api/tutorial/canvas 交的。 */
 export interface Canvas {
   /** 轨迹。 */
   trail: Trail;
   /** 泳道图。 */
   lanes: Lanes;
+  /** 端到端数据流转与状态变化（旧快照或未生成时可选）。 */
+  dataFlow?: TrailDataFlow;
 }
 
 

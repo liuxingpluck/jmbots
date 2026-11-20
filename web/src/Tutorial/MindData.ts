@@ -1,8 +1,9 @@
-/** 用教程现有的插件说明和消息轨迹生成两棵导图。 */
+/** 用教程现有的插件说明、消息轨迹与数据流转生成项目结构树、插件归组树及端到端数据流转图。 */
 import type * as api from './TutorialApi.ts';
 import type * as i18n from '../I18n.ts';
 import type * as readme from './ReadmeTabs.tsx';
 import * as programView from './ProgramView.tsx';
+import { formatShortSite, resolveStepTitle } from './StepDataFlow.tsx';
 
 export type PluginDoc = ReturnType<typeof readme.getMindReadme>;
 export type Pick =
@@ -16,6 +17,33 @@ export interface Branch {
   children: Branch[];
   pick?: Pick;
   expand?: string;
+}
+
+/** 端到端数据流转图单个步骤卡片的数据规格。 */
+export interface FlowNodeSpec {
+  id: string;
+  step: number;
+  node: string;
+  layer: 'skeleton' | 'plugin';
+  ms: number;
+  error: boolean;
+  title: string;
+  fnText: string;
+  summary: string;
+  hasChanges: boolean;
+  position: { x: number; y: number };
+}
+
+/** 端到端数据流转图有向连接边的数据规格。 */
+export interface FlowEdgeSpec {
+  id: string;
+  fromStep: number;
+  toStep: number;
+  source: string;
+  target: string;
+  sourceHandle: 'left' | 'right' | 'bottom';
+  targetHandle: 'left' | 'right' | 'top';
+  label: string;
 }
 
 /** 未展开的节点不建子树，展开状态用稳定的键记录。 */
@@ -105,9 +133,10 @@ export function getTrailTree(trail: api.Trail, t: i18n.Translate): Branch {
     }
     //M 步骤号同时用于显示和定位原画布里的同一步。
     const number = String(step.no);
+    const stepTitle = resolveStepTitle(step, t);
     const item: Branch = {
       id: `step:${number}`,
-      label: `#${number} ${step.title}`,
+      label: `#${number} ${stepTitle}`,
       children: [],
       pick: { kind: 'step', no: step.no },
     };
@@ -115,4 +144,144 @@ export function getTrailTree(trail: api.Trail, t: i18n.Translate): Branch {
     stage.children.push(item);
   }
   return root;
+}
+
+/** 提炼精简的有向边短标签（不超过 20 字，优先用事件或动作短名，绝不撞上相邻卡片）。 */
+function formatCompactEdgeLabel(outgoing: api.StepDataFlow['outgoing']): string {
+  //M 优先取简洁 via（如 channel/direct、before-model），超长时剥去尾随类型后缀并截断到 20 字内。
+  let text = outgoing.via.trim();
+  if (text === '' && outgoing.label.trim() !== '') {
+    text = outgoing.label.split('·')[0]?.trim() ?? '';
+  }
+  if (text === '') text = outgoing.dataType.trim();
+  if (text === '') text = '顺次接力';
+
+  if ([...text].length > 18 && text.includes('·')) {
+    text = text.split('·')[0]?.trim() ?? text;
+  }
+  const chars = [...text];
+  if (chars.length <= 20) return text;
+
+  return `${chars.slice(0, 19).join('')}…`;
+}
+
+/** 拼装单张数据流转卡片上的函数名与短源码位置。 */
+function formatFlowFnLine(item: api.StepDataFlow): string {
+  const shortSite = formatShortSite(item.fnSite);
+  if (item.fnName !== '' && shortSite !== '') return `${item.fnName} · ${shortSite}`;
+  if (item.fnName !== '') return item.fnName;
+  if (shortSite !== '') return shortSite;
+
+  return item.stage;
+}
+
+/** 提炼节点底部展示的一句话数据变化胶囊文案。 */
+function resolveCardSummary(item: api.StepDataFlow): string {
+  if (item.summary !== '') return item.summary;
+
+  const first = item.changes[0];
+  if (first !== undefined) {
+    let key = first.target;
+    if (first.field !== '') key = `${first.target}.${first.field}`;
+    return `${key}: ${first.before || '空'} → ${first.after || '空'}`;
+  }
+  const input = item.inputs[0];
+  if (input !== undefined) return `${input.key}: ${input.value}`;
+
+  return '';
+}
+
+/**
+ * 按真实时间顺序 #1 → #2 → … → #N 生成交互式数据流转图坐标与带标签有向边。
+ * 左右模式固定最多 3 列蛇形网格（列间留足 >= 188px 净空，行间 >= 106px 净空），上下模式走纵向接力链。
+ */
+export function buildDataFlowGraph(
+  trail: api.Trail,
+  dataFlow: api.TrailDataFlow,
+  direction: 'sides' | 'down',
+  t: i18n.Translate,
+): { nodes: FlowNodeSpec[]; edges: FlowEdgeSpec[] } {
+  //M 建立原始步骤速查表，取耗时、报错标记与本地化标题。
+  const rawByNo = new Map<number, api.TrailStep>();
+  for (const step of trail.steps) rawByNo.set(step.no, step);
+
+  const count = dataFlow.steps.length;
+  let cols = 3;
+  if (count <= 3) cols = Math.max(1, count);
+
+  const nodes: FlowNodeSpec[] = [];
+  const gridPos: { row: number; col: number }[] = [];
+
+  for (let index = 0; index < count; index++) {
+    const item = dataFlow.steps[index];
+    if (item === undefined) continue;
+
+    const raw = rawByNo.get(item.step);
+    let title = item.stage;
+    if (raw !== undefined) title = resolveStepTitle(raw, t);
+
+    //M 计算 3 列蛇形坐标（464px 列距，236px 行距）或上下纵向链路坐标（228px 行距）。
+    let row = index;
+    let col = 0;
+    let x = 0;
+    let y = index * 228;
+    if (direction === 'sides') {
+      row = Math.floor(index / cols);
+      const offset = index % cols;
+      col = offset;
+      if (row % 2 === 1) col = cols - 1 - offset;
+      x = col * 464;
+      y = row * 236;
+    }
+
+    gridPos.push({ row, col });
+    nodes.push({
+      id: `flow:${String(item.step)}`,
+      step: item.step,
+      node: item.node,
+      layer: item.layer,
+      ms: raw?.ms ?? 0,
+      error: raw?.error ?? false,
+      title,
+      fnText: formatFlowFnLine(item),
+      summary: resolveCardSummary(item),
+      hasChanges: item.changes.length > 0,
+      position: { x, y },
+    });
+  }
+
+  //M 相邻步骤逐跳相连，按蛇形行进方向自动挑选贴边接口并附带精简胶囊标签。
+  const edges: FlowEdgeSpec[] = [];
+  for (let index = 0; index + 1 < nodes.length; index++) {
+    const fromNode = nodes[index];
+    const toNode = nodes[index + 1];
+    const fromFlow = dataFlow.steps[index];
+    const posA = gridPos[index];
+    const posB = gridPos[index + 1];
+    if (!fromNode || !toNode || !fromFlow || !posA || !posB) continue;
+
+    let sourceHandle: 'left' | 'right' | 'bottom' = 'bottom';
+    let targetHandle: 'left' | 'right' | 'top' = 'top';
+    if (direction === 'sides' && posA.row === posB.row && posB.col > posA.col) {
+      sourceHandle = 'right';
+      targetHandle = 'left';
+    }
+    if (direction === 'sides' && posA.row === posB.row && posB.col < posA.col) {
+      sourceHandle = 'left';
+      targetHandle = 'right';
+    }
+
+    edges.push({
+      id: `flow-edge:${String(fromNode.step)}→${String(toNode.step)}`,
+      fromStep: fromNode.step,
+      toStep: toNode.step,
+      source: fromNode.id,
+      target: toNode.id,
+      sourceHandle,
+      targetHandle,
+      label: formatCompactEdgeLabel(fromFlow.outgoing),
+    });
+  }
+
+  return { nodes, edges };
 }

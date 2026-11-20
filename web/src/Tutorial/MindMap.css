@@ -1,6 +1,8 @@
 /* 只在思维导图看法中覆盖原画布，保留泳道的缩放和选中状态。 */
 .tu-view-choice, .tu-mind-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tu-view-choice button[aria-pressed="true"], .tu-mind-toolbar button[aria-pressed="true"], .tu-mind-direction button[aria-pressed="true"] {
+.tu-view-choice button[aria-pressed="true"],
+.tu-mind-toolbar button[aria-pressed="true"],
+.tu-mind-direction button[aria-pressed="true"] {
   color: var(--jm-accent);
   border-color: var(--jm-accent);
   background: var(--jm-accent-soft);
@@ -20,39 +22,36 @@
 .tu-mind-toolbar { flex: none; padding: 8px; background: var(--jm-panel); border-bottom: 1px solid var(--jm-border); }
 /* 三栏时骨架逐行的块详情放在右侧详情里，去掉画布旁的边框和定宽。 */
 .tu-line-detail-host .tu-lines-detail { width: auto; padding: 0; border: 0; background: none; overflow: visible; }
-/* 导图顶角：左侧可快捷切换三棵树，右侧切换展开方向。 */
+
+/* 导图顶栏：左侧树切换，中间消息轨迹三视图胶囊，右侧展开方向，固定占顶绝不遮挡节点与下拉。 */
 .tu-mind-head {
-  position: absolute;
-  top: 6px;
-  left: 8px;
-  right: 8px;
+  flex: none;
   z-index: 6;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  pointer-events: none;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--jm-border) 80%, transparent);
+  background: color-mix(in srgb, var(--jm-panel) 94%, transparent);
 }
 .tu-mind-modes,
 .tu-mind-direction {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  pointer-events: auto;
+}
+.tu-mind-submodes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--jm-border) 85%, transparent);
+  background: var(--jm-bg);
 }
 .tu-mind-direction { margin-left: auto; }
-.tu-mind .tu-mind-modes button,
-.tu-mind .tu-mind-direction button {
-  padding: 2px 7px;
-  font-size: 12px;
-  background: color-mix(in srgb, var(--jm-panel) 90%, transparent);
-}
-.tu-mind-modes button[aria-pressed="true"] {
-  color: var(--jm-accent);
-  border-color: var(--jm-accent);
-  background: var(--jm-accent-soft);
-}
 .tu-view-choice button,
 .tu-mind button {
   border: 1px solid var(--jm-border);
@@ -64,25 +63,419 @@
   cursor: pointer;
 }
 .tu-mind button:hover, .tu-mind button:focus-visible { border-color: var(--jm-accent); }
+.tu-mind .tu-mind-modes button,
+.tu-mind .tu-mind-direction button {
+  padding: 3px 9px;
+  font-size: 12px;
+  background: var(--jm-surface);
+}
+.tu-mind .tu-mind-submodes button {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  color: var(--jm-muted);
+}
+.tu-mind .tu-mind-submodes button:hover {
+  color: var(--jm-text);
+  border-color: transparent;
+}
+.tu-mind .tu-mind-submodes button[aria-pressed="true"] {
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+}
+.tu-mind-modes button[aria-pressed="true"] {
+  color: var(--jm-accent);
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
 .tu-mind > .react-flow { flex: 1; min-height: 0; --xy-edge-stroke-default: var(--jm-muted); }
 .tu-mind .react-flow__handle { opacity: 0; pointer-events: none; }
 .tu-mind .tu-mind-card {
   display: flex;
   justify-content: center;
   align-items: center;
-  width: 166px;
+  width: 172px;
   min-height: 38px;
-  padding: 6px;
+  padding: 6px 8px;
   overflow-wrap: anywhere;
   border: 1px solid var(--jm-border);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--jm-panel);
   color: var(--jm-text);
   text-align: center;
   font-size: 13px;
-  line-height: 1.25;
+  line-height: 1.3;
 }
-.tu-mind-card[aria-expanded="true"] { border-color: var(--jm-accent); }
+.tu-mind-card[aria-expanded="true"],
+.tu-mind-card.selected {
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
+/* 端到端数据流转自定义卡片（DataFlowCard）。 */
+.tu-mind .tu-df-flow-card {
+  width: 272px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--jm-border) 92%, #334155);
+  background: color-mix(in srgb, var(--jm-panel) 94%, #0f172a);
+  color: var(--jm-text);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+}
+.tu-mind .tu-df-flow-card:hover {
+  border-color: var(--jm-accent);
+  transform: translateY(-1px);
+}
+.tu-mind .tu-df-flow-card.skeleton {
+  border-color: rgba(245, 158, 11, 0.48);
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--jm-panel) 88%, #451a03) 0%,
+    color-mix(in srgb, var(--jm-panel) 96%, #0f172a) 100%
+  );
+}
+.tu-mind .tu-df-flow-card.selected {
+  border-color: var(--jm-accent);
+  box-shadow: 0 0 0 2px var(--jm-accent-soft), 0 10px 26px rgba(0, 0, 0, 0.42);
+}
+.tu-mind .tu-df-flow-card.skeleton.selected {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.28), 0 10px 26px rgba(0, 0, 0, 0.44);
+}
+.tu-mind .tu-df-flow-card.error {
+  border-color: var(--jm-danger);
+}
+.tu-df-node-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tu-df-node-no {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  color: var(--jm-text);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.tu-df-flow-card.selected .tu-df-node-no {
+  background: var(--jm-accent);
+  border-color: var(--jm-accent);
+  color: #fff;
+}
+.tu-df-flow-card.skeleton.selected .tu-df-node-no {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #111827;
+}
+.tu-df-node-mod {
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tu-df-node-mod.plugin {
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  color: #7dd3fc;
+}
+.tu-df-node-mod.skeleton {
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+.tu-df-node-err {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--jm-danger-soft);
+  color: var(--jm-danger);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.tu-df-node-ms {
+  margin-left: auto;
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-muted);
+}
+.tu-df-node-ms.slow {
+  color: #f59e0b;
+  font-weight: 700;
+}
+.tu-df-node-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.38;
+  color: var(--jm-text);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.tu-df-node-fn {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--jm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tu-df-node-sum {
+  margin-top: 2px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  background: var(--jm-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--jm-accent) 32%, var(--jm-border));
+  color: var(--jm-accent);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.tu-df-node-sum.changed {
+  background: rgba(16, 185, 129, 0.13);
+  border-color: rgba(16, 185, 129, 0.36);
+  color: #6ee7b7;
+}
+.tu-df-node-sum.gold {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.42);
+  color: #fde68a;
+}
+
+/* 「数据变化总表」整屏表格模式。 */
+.tu-dft-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--jm-bg);
+}
+.tu-dft-objects {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--jm-border) 78%, transparent);
+  background: color-mix(in srgb, var(--jm-panel) 72%, var(--jm-bg));
+  font-size: 11.5px;
+}
+.tu-dft-obj-lead {
+  color: var(--jm-muted);
+  font-weight: 600;
+  font-size: 11px;
+}
+.tu-dft-obj-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--jm-border);
+  background: var(--jm-surface);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: help;
+}
+.tu-dft-obj-badge b { font-weight: 700; font-size: 10px; }
+.tu-dft-obj-badge code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-text);
+}
+.tu-dft-obj-badge.table { border-color: rgba(16, 185, 129, 0.4); }
+.tu-dft-obj-badge.table b { color: #34d399; }
+.tu-dft-obj-badge.memory { border-color: rgba(245, 158, 11, 0.45); }
+.tu-dft-obj-badge.memory b { color: #fbbf24; }
+.tu-dft-obj-badge.event { border-color: rgba(56, 189, 248, 0.4); }
+.tu-dft-obj-badge.event b { color: #38bdf8; }
+
+.tu-dft-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.tu-dft-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.tu-dft-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--jm-muted);
+  background: var(--jm-panel);
+  border-bottom: 1px solid var(--jm-border);
+  white-space: nowrap;
+}
+.tu-dft-row {
+  cursor: pointer;
+  border-bottom: 1px solid color-mix(in srgb, var(--jm-border) 62%, transparent);
+  transition: background 0.12s ease;
+}
+.tu-dft-row:hover {
+  background: var(--jm-hover);
+}
+.tu-dft-row.skeleton-row {
+  background: rgba(245, 158, 11, 0.04);
+}
+.tu-dft-row.skeleton-row:hover {
+  background: rgba(245, 158, 11, 0.09);
+}
+.tu-dft-row.picked {
+  background: var(--jm-accent-soft);
+  box-shadow: inset 3px 0 0 var(--jm-accent);
+}
+.tu-dft-row.skeleton-row.picked {
+  background: rgba(245, 158, 11, 0.14);
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+.tu-dft-table td {
+  padding: 8px 10px;
+  vertical-align: top;
+}
+.tu-dft-col-no {
+  white-space: nowrap;
+  width: 68px;
+}
+.tu-dft-no-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  font-weight: 700;
+  font-size: 11px;
+}
+.tu-dft-ms {
+  display: block;
+  margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--jm-muted);
+}
+.tu-dft-col-mod {
+  white-space: nowrap;
+  width: 110px;
+}
+.tu-dft-title {
+  font-weight: 600;
+  color: var(--jm-text);
+}
+.tu-dft-site {
+  margin-top: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-muted);
+}
+.tu-dft-site code { color: var(--jm-accent); }
+.tu-dft-kv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 2px;
+  font-size: 11.5px;
+}
+.tu-dft-kv code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--jm-muted);
+}
+.tu-dft-kv span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--jm-text);
+  overflow-wrap: anywhere;
+}
+.tu-dft-diff-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.tu-dft-diff-key { color: #93c5fd; }
+.tu-dft-before {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  color: #cbd5e1;
+  text-decoration: none;
+}
+.tu-dft-arrow { color: #fbbf24; font-weight: 700; }
+.tu-dft-after {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.14);
+  color: #6ee7b7;
+  font-weight: 600;
+}
+.tu-dft-sum-chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-text);
+}
+.tu-dft-out-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tu-dft-out-step {
+  font-weight: 600;
+  color: var(--jm-text);
+  white-space: nowrap;
+}
+.tu-dft-out-box code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-accent);
+}
+.tu-dft-muted { color: var(--jm-muted); font-size: 11.5px; }
+
 .tu-mind .react-flow__controls-button { background: var(--jm-surface); color: var(--jm-text); }
 .tu-mind-empty { margin: 14px; color: var(--jm-muted); }
 .tu-mind-event {
@@ -106,8 +499,8 @@
     position: relative;
     inset: auto !important;
     width: 100%;
-    height: 60dvh;
-    min-height: 380px;
+    height: 62dvh;
+    min-height: 390px;
     border-radius: 14px;
     order: 2;
   }
@@ -116,11 +509,8 @@
     min-height: 480px;
   }
   .tu-mind-head {
-    position: static;
     padding: 8px 10px;
-    border-bottom: 1px solid color-mix(in srgb, var(--jm-border) 75%, transparent);
-    background: var(--jm-panel);
-    pointer-events: auto;
+    gap: 6px;
   }
   .tu-mind .tu-mind-modes button,
   .tu-mind .tu-mind-direction button {

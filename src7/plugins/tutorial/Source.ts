@@ -557,37 +557,47 @@ export class SourceDocs {
   }
 
   /**
-   * src7 里谁调了这个函数：每个文件每一行，去掉字符串和注释后有 name( 或 .name( 的都算一处，跳过定义行本身。
-   * 别的文件自己也定义了同名的顶层函数（插件各自的 checkConfig），那个文件里不带点的 name( 算它自己的，不列；
-   * 带点的（.name(）分不清是谁的，同名方法（不同类里都叫 read）一起列出来。
+   * src7 里谁调了这个函数：先按定义位置区分私有/文件内函数、导出顶层函数、构造函数与类方法，再精准过滤调用方：
+   *   1. private 类方法或未导出的顶层函数：只在本文件（other === file）内找调用；
+   *   2. 构造函数与导出顶层函数：跨文件仅在真实 import 了本文件（或同目录 index.ts 桶文件）的模块里找；
+   *   3. 非 private 类方法：跨文件仅保留同目录模块、import 引用了本文件的模块、或匹配的 Cordis 服务/骨架 Session 调用，
+   *      避免把 voice 的 stream.accept(pcm) 误算到 WebApi.accept 头上，也排除 SQLite query.run 对 Session.run 的干扰。
    * @param name 函数名（构造函数传类名，找 new 类名(）。
    * @param file 定义所在的文件。
    * @param defined 定义那一行的下标：这一行不算调用。
    * @returns 每处调用的位置、代码、为什么调（getWhyAbove）。
    */
   private async getCallers(name: string, file: string, defined: number): Promise<Caller[]> {
-    const escaped = name.replaceAll('$', '\\$');
+    const defLines = await this.read(file);
+    if (defLines === undefined) return [];
+
+    const scope = analyzeDefinitionScope(defLines, defined, name);
+    const escaped = escapeRegExp(name);
     const bare = new RegExp(`(?<![\\w$.])${escaped}\\s*(?:<[^<>()]*>)?\\(`, 'u');
     const dotted = new RegExp(`\\.\\s*${escaped}\\s*(?:<[^<>()]*>)?\\(`, 'u');
+    const ctor = new RegExp(`\\bnew\\s+(?:[\\w$]+\\.)?${escaped}\\s*(?:<[^<>()]*>)?\\(`, 'u');
     const callers: Caller[] = [];
-    //M 遍历全部源码文件搜索当前函数的调用点。
-    for (const other of await this.getSourceFiles()) {
+
+    //M 私有方法与未导出函数只在本文件内查找，无需遍历全仓其他源码。
+    let candidates = [file];
+    if (!scope.localOnly) {
+      candidates = await this.getSourceFiles();
+    }
+
+    for (const other of candidates) {
       const lines = await this.read(other);
       if (lines === undefined) continue;
 
-      //M 这个文件自己有没有同名的顶层函数：有就说明它里面不带点的调用是调它自己的。
-      const ownOne = other !== file && lines.some((text) => /^\s*(?:export\s+)?(?:async\s+)?function\b/u.test(text)
-        && getDefinedName(text) === name);
+      const rule = buildFileCallerRule(other, lines, file, name, scope, { bare, dotted, ctor });
+      if (rule === undefined) continue;
 
       lines.forEach((text, index) => {
         //G 定义行本身、别处同名的定义（接口里的方法签名、另一个类的同名方法）不是调用。
         if (other === file && index === defined) return;
         if (isDefinition(text) && getDefinedName(text) === name) return;
 
-        //G 去掉字符串和注释后，带点的算；不带点的，本文件有同名函数时不算。
         const code = getCodeOnly(text);
-        const called = dotted.test(code) || (!ownOne && bare.test(code));
-        if (!called) return;
+        if (!rule(code)) return;
 
         //M 提取调用处上方的 //M/G/T 原因说明一并收进返回列表。
         const site = `${other}:${String(index + 1)}`;
@@ -803,4 +813,252 @@ export async function readLines(file: string): Promise<string[] | undefined> {
   } catch {
     return undefined;
   }
+}
+
+
+//==========================================================
+//M 调用方精准归属分析（区分私有成员、导出符号与 Cordis 服务）
+//==========================================================
+
+/** 函数或方法定义的可见性与所属类信息。 */
+interface DefinitionScope {
+  /** 是否仅限定义所在文件内部可调用（private 方法或未导出的顶层函数/类）。 */
+  localOnly: boolean;
+  /** 是否为类的实例/静态方法（不含 constructor）。 */
+  isMethod: boolean;
+  /** 是否为类的 constructor。 */
+  isConstructor: boolean;
+  /** 所属类名；顶层函数为空串。 */
+  className: string;
+  /** 若所属类挂载为 Cordis 服务，对应的 ctx 服务属性名（如 resources、sessions、http）；否则空串。 */
+  serviceName: string;
+}
+
+/** 正则匹配组。 */
+interface CallPatterns {
+  bare: RegExp;
+  dotted: RegExp;
+  ctor: RegExp;
+}
+
+
+/** 转义正则特殊字符。 */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+
+/** 检查文件内是否有 `export { ... name ... }` 形式的二次具名导出。 */
+function hasNamedReExport(lines: string[], symbolName: string): boolean {
+  const pattern = new RegExp(`^\\s*export\\s*\\{[^}]*\\b${escapeRegExp(symbolName)}\\b`, 'u');
+  return lines.some((line) => pattern.test(line));
+}
+
+
+/** 定位包裹 `defined` 行的最内层 class 定义；顶层函数返回 undefined。 */
+function getEnclosingClass(
+  lines: string[],
+  defined: number,
+): { name: string; exported: boolean; start: number; end: number } | undefined {
+  for (let at = defined - 1; at >= 0; at--) {
+    const line = lines[at] ?? '';
+    const match = /^\s*(export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([\w$]+)/u.exec(line);
+    if (match !== null) {
+      const end = getBlockEnd(lines, at);
+      if (end >= defined) {
+        const name = match[2] ?? '';
+        const exported = match[1] !== undefined || hasNamedReExport(lines, name);
+        return { name, exported, start: at, end };
+      }
+    }
+    //G 先遇到外层普通函数且包住了 defined，说明是函数内部局部定义而非类成员。
+    if (isDefinition(line) && getBlockEnd(lines, at) >= defined) return undefined;
+  }
+  return undefined;
+}
+
+
+/** 从文件声明与类体中提取该类注册到 Cordis Context 的服务属性名（如 sessions、resources、http）。 */
+function getClassServiceName(lines: string[], classStart: number, classEnd: number, className: string): string {
+  const escapedClass = escapeRegExp(className);
+  const contextProp = new RegExp(`^\\s*([\\w$]+)\\s*:\\s*${escapedClass}\\s*;`, 'u');
+  for (const line of lines) {
+    const declared = contextProp.exec(line)?.[1];
+    if (declared !== undefined) return declared;
+  }
+  for (let at = classStart; at <= classEnd; at++) {
+    const line = lines[at] ?? '';
+    const fromSuper = /\bsuper\s*\(\s*[\w$]+\s*,\s*['"]([\w-]+)['"]/u.exec(line)?.[1];
+    if (fromSuper !== undefined) return fromSuper;
+
+    const fromProvide = /\.provide\s*\(\s*['"]([\w-]+)['"]/u.exec(line)?.[1];
+    if (fromProvide !== undefined) return fromProvide;
+  }
+  return '';
+}
+
+
+/** 分析定义行的作用域：区分 private 成员、未导出顶层函数、构造函数与公共类方法。 */
+function analyzeDefinitionScope(lines: string[], defined: number, resolvedName: string): DefinitionScope {
+  const defLine = lines[defined] ?? '';
+  const rawName = getDefinedName(defLine);
+  const enclosing = getEnclosingClass(lines, defined);
+
+  if (enclosing === undefined) {
+    const exported = /^\s*export\b/u.test(defLine) || hasNamedReExport(lines, resolvedName);
+    return {
+      localOnly: !exported,
+      isMethod: false,
+      isConstructor: false,
+      className: '',
+      serviceName: '',
+    };
+  }
+
+  if (rawName === 'constructor') {
+    return {
+      localOnly: !enclosing.exported,
+      isMethod: false,
+      isConstructor: true,
+      className: enclosing.name,
+      serviceName: '',
+    };
+  }
+
+  const isPrivate = /^\s*private\b/u.test(defLine) || rawName.startsWith('#');
+  const serviceName = getClassServiceName(lines, enclosing.start, enclosing.end, enclosing.name);
+  return {
+    localOnly: isPrivate,
+    isMethod: true,
+    isConstructor: false,
+    className: enclosing.name,
+    serviceName,
+  };
+}
+
+
+/** 解析 `other` 是否导入了 `targetFile`（或同目录 barrel `index.ts`），并收集命名空间别名。 */
+function collectModuleImports(
+  other: string,
+  otherLines: string[],
+  targetFile: string,
+  allowTypeOnly: boolean,
+): { matched: boolean; named: boolean; aliases: string[] } {
+  const targetDir = path.posix.dirname(targetFile);
+  const barrelFile = path.posix.join(targetDir, 'index.ts');
+  let matched = false;
+  let named = false;
+  const aliases: string[] = [];
+
+  for (const text of otherLines) {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('import ')) continue;
+    if (!allowTypeOnly && /^import\s+type\b/u.test(trimmed)) continue;
+
+    const spec = /\bfrom\s+['"](\.{1,2}\/[^'"]+)['"]/u.exec(trimmed)?.[1];
+    if (spec === undefined) continue;
+
+    const resolved = path.posix.join(path.posix.dirname(other), spec);
+    if (resolved !== targetFile && resolved !== barrelFile) continue;
+
+    matched = true;
+    const ns = /^import\s+(?:type\s+)?\*\s+as\s+([\w$]+)/u.exec(trimmed)?.[1];
+    if (ns !== undefined) {
+      aliases.push(ns);
+      continue;
+    }
+    named = true;
+  }
+  return { matched, named, aliases };
+}
+
+
+/** 过滤 SQLite / Drizzle 查询链 `.run(...)` 与带参 `spec.run(...)`，只保留真实的零参 `Session.run()`。 */
+function isSqliteStatementRun(code: string, methodName: string, className: string): boolean {
+  if (className !== 'Session' || methodName !== 'run') return false;
+
+  if (!/\.\s*run\s*\(\s*\)/u.test(code)) return true;
+  if (/^\s*\.\s*run\s*\(/u.test(code)) return true;
+  if (/\)\s*\.\s*run\s*\(\s*\)/u.test(code)) {
+    return !/\b(?:open|create)\s*\([^()]*\)\s*\.\s*run\s*\(\s*\)/u.test(code);
+  }
+  return /\b(?:query|stmt|statement|db|orm|tx)\s*\.\s*run\s*\(/u.test(code);
+}
+
+
+/** 为候选文件生成单行匹配器；不可能引用目标定义的文件直接返回 undefined 跳过。 */
+function buildFileCallerRule(
+  other: string,
+  otherLines: string[],
+  file: string,
+  name: string,
+  scope: DefinitionScope,
+  patterns: CallPatterns,
+): ((code: string) => boolean) | undefined {
+  const escaped = escapeRegExp(name);
+
+  //M 定义所在本文件内：按构造函数、类方法或普通函数匹配。
+  if (other === file) {
+    if (scope.isConstructor) return (code) => patterns.ctor.test(code);
+    if (scope.isMethod) {
+      return (code) => patterns.dotted.test(code) && !isSqliteStatementRun(code, name, scope.className);
+    }
+    return (code) => patterns.bare.test(code);
+  }
+
+  if (scope.localOnly) return undefined;
+
+  //M 跨文件查找构造函数：对方必须按值导入了定义文件（或同目录桶文件）。
+  if (scope.isConstructor) {
+    const imported = collectModuleImports(other, otherLines, file, false);
+    if (!imported.matched) return undefined;
+    return (code) => patterns.ctor.test(code);
+  }
+
+  //M 跨文件查找导出的顶层函数：仅认值导入，按具名调用或命名空间前缀匹配。
+  if (!scope.isMethod) {
+    const imported = collectModuleImports(other, otherLines, file, false);
+    if (!imported.matched) return undefined;
+
+    const ownOne = otherLines.some((text) => /^\s*(?:export\s+)?(?:async\s+)?function\b/u.test(text)
+      && getDefinedName(text) === name);
+    let aliasCall: RegExp | undefined;
+    if (imported.aliases.length > 0) {
+      const group = imported.aliases.map((item) => escapeRegExp(item)).join('|');
+      aliasCall = new RegExp(`\\b(?:${group})\\s*\\.\\s*${escaped}\\s*(?:<[^<>()]*>)?\\(`, 'u');
+    }
+    return (code) => {
+      if (imported.named && !ownOne && patterns.bare.test(code)) return true;
+      return aliasCall !== undefined && aliasCall.test(code);
+    };
+  }
+
+  //M 跨文件查找非 private 类方法：检查同目录协作、显式类型/值导入、Cordis 服务注入或骨架 Session 实例。
+  const sameDir = path.posix.dirname(other) === path.posix.dirname(file);
+  const imported = collectModuleImports(other, otherLines, file, true);
+  const joined = otherLines.join('\n');
+  const mentionsClass = scope.className !== ''
+    && new RegExp(`\\b${escapeRegExp(scope.className)}\\b`, 'u').test(joined);
+
+  if (imported.matched || (sameDir && mentionsClass)) {
+    return (code) => patterns.dotted.test(code) && !isSqliteStatementRun(code, name, scope.className);
+  }
+
+  if (scope.serviceName !== '') {
+    const svc = escapeRegExp(scope.serviceName);
+    const viaProp = new RegExp(`\\.\\s*${svc}\\s*(?:\\?\\.)?\\.\\s*${escaped}\\s*(?:<[^<>()]*>)?\\(`, 'u');
+    const viaVar = new RegExp(`(?<![\\w$.])${svc}\\s*(?:\\?\\.)?\\.\\s*${escaped}\\s*(?:<[^<>()]*>)?\\(`, 'u');
+    return (code) => viaProp.test(code) || viaVar.test(code);
+  }
+
+  if (file === 'src7/Sessions.ts' && scope.className === 'Session') {
+    if (!/sessions|session\/|bot\//u.test(joined)) return undefined;
+    const sessionCall = new RegExp(
+      `\\b(?:session|front|work|child|target|picked|claimed)\\s*(?:\\?\\.)?\\.\\s*${escaped}\\s*(?:<[^<>()]*>)?\\(`,
+      'u',
+    );
+    return (code) => sessionCall.test(code) && !isSqliteStatementRun(code, name, scope.className);
+  }
+
+  return undefined;
 }

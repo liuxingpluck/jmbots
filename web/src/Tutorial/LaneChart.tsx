@@ -11,9 +11,26 @@ import { useContext, useEffect, useState, type JSX } from 'react';
 import * as virtuoso from 'react-virtuoso';
 import * as i18n from '../I18n.ts';
 import * as traceText from '../locales/Trace.ts';
-import { CallerList, JsonBlock, PATH_SEP, SiteLink, SourceToggle, TutorialScrollContext, VIRTUAL_THRESHOLD } from './Code.tsx';
+import {
+  CallerList,
+  JsonBlock,
+  PATH_SEP,
+  SiteLink,
+  SourceToggle,
+  TutorialScrollContext,
+  VIRTUAL_THRESHOLD,
+} from './Code.tsx';
 import { EventArrowDetail } from './SeqChart.tsx';
-import { TutorialApi, type Canvas, type CodeDoc, type LaneCell, type StateGroup, type Trail, type TrailRow, type TrailStep } from './TutorialApi.ts';
+import {
+  TutorialApi,
+  type Canvas,
+  type CodeDoc,
+  type LaneCell,
+  type StateGroup,
+  type Trail,
+  type TrailRow,
+  type TrailStep,
+} from './TutorialApi.ts';
 
 const COLUMN_TEXT: Record<string, string> = {
   '加载（apply）': 'trace.column.load',
@@ -304,7 +321,15 @@ export function LaneChart(props: {
       {/* 箭头：在格子下面一层，不挡点。 */}
       <svg className="tu-lane-edges" width={width} height={total}>
         <defs>
-          <marker id="tu-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <marker
+            id="tu-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
             <path d="M 0 0 L 10 5 L 0 10 z" />
           </marker>
         </defs>
@@ -324,7 +349,8 @@ export function LaneChart(props: {
           if (fromPicked || toPicked) {
             className = 'tu-edge picked';
           }
-          return <path key={`${String(edge.from)}-${String(edge.to)}`} className={className} d={path} markerEnd="url(#tu-arrow)" />;
+          const edgeKey = `${String(edge.from)}-${String(edge.to)}`;
+          return <path key={edgeKey} className={className} d={path} markerEnd="url(#tu-arrow)" />;
         })}
       </svg>
 
@@ -345,8 +371,9 @@ export function LaneChart(props: {
         if (hasPicked) {
           className += ' picked';
         }
+        const cellStyle = { left: box.x, top: box.y, width: box.w, height: box.h };
         return (
-          <div key={`${String(cell.lane)}-${String(cell.column)}`} className={className} style={{ left: box.x, top: box.y, width: box.w, height: box.h }}>
+          <div key={`${String(cell.lane)}-${String(cell.column)}`} className={className} style={cellStyle}>
             {cell.items.map((item) => {
               let itemClass = 'tu-cell-item';
               if (props.matchedSteps.has(item.step)) {
@@ -566,7 +593,13 @@ function SnapshotGroupItem(props: { group: StateGroup; changed: Set<string> | un
   return (
     <details className={className} open={changed !== undefined}>
       <summary>{title}</summary>
-      <JsonBlock head={<span className="tu-muted">{group.note}</span>} value={group.value} empty="（空）" marks={changed} notes={group.notes} />
+      <JsonBlock
+        head={<span className="tu-muted">{group.note}</span>}
+        value={group.value}
+        empty="（空）"
+        marks={changed}
+        notes={group.notes}
+      />
     </details>
   );
 }
@@ -596,8 +629,9 @@ function StepSnapshot(props: { canvas: string; step: number; keyword: string }):
 
     let alive = true;
     const query = `name=${encodeURIComponent(props.canvas)}&step=${String(props.step)}`;
+    const path = `/api/tutorial/snapshot?${query}`;
     //M 仅当用户点开“运行时变量”折合框时按需拉取当前步骤快照及前一步变更路径。
-    const loading = TutorialApi.get<{ changed: string[][] | null; groups: StateGroup[] }>(`/api/tutorial/snapshot?${query}`);
+    const loading = TutorialApi.get<{ changed: string[][] | null; groups: StateGroup[] }>(path);
     loading.then((result) => {
       if (alive) setShot(result);
     }, (failed: unknown) => {
@@ -674,8 +708,9 @@ export function StepDetail(props: {
   highlightEvent: string;
   onSelectPlugin: (name: string, ptab?: string) => void;
   onSelectEvent: (eventName: string) => void;
+  hideHeader?: boolean;
 }): JSX.Element {
-  const { step, workspace } = props;
+  const { step, workspace, hideHeader = false } = props;
   const t = i18n.useT();
   const hasCaption = step.rows.some((row) => traceText.isTraceText(row.text));
   let title = step.title;
@@ -702,28 +737,34 @@ export function StepDetail(props: {
   const virtFunctions = functions.length >= VIRTUAL_THRESHOLD && scrollParent !== null;
   const virtEvents = events.length >= VIRTUAL_THRESHOLD && scrollParent !== null;
   const virtDocs = step.docs.length >= VIRTUAL_THRESHOLD && scrollParent !== null;
+  let detailClass = 'tu-detail';
+  if (hideHeader) detailClass += ' tu-detail-sub';
 
   return (
-    <div className="tu-detail">
-      <div className="tu-head-row">
-        <h3>
-          {t('trace.lane.stepTitle', { step: step.no, node: step.node })}
-          <span className="tu-muted"> · {t('trace.lane.ms', { ms: step.ms })}</span>
-        </h3>
-        {stepIsPlugin && (
-          <button
-            type="button"
-            className="tu-step-plugin-btn"
-            onClick={
-              //M 点击后在右侧切换到「插件」分栏并选中当前步所属插件。
-              () => props.onSelectPlugin(step.node)
-            }
-          >
-            {t('trace.lane.viewPlugin', { plugin: step.node })}
-          </button>
-        )}
-      </div>
-      <p>{title}</p>
+    <div className={detailClass}>
+      {!hideHeader && (
+        <>
+          <div className="tu-head-row">
+            <h3>
+              {t('trace.lane.stepTitle', { step: step.no, node: step.node })}
+              <span className="tu-muted"> · {t('trace.lane.ms', { ms: step.ms })}</span>
+            </h3>
+            {stepIsPlugin && (
+              <button
+                type="button"
+                className="tu-step-plugin-btn"
+                onClick={
+                  //M 点击后在右侧切换到「插件」分栏并选中当前步所属插件。
+                  () => props.onSelectPlugin(step.node)
+                }
+              >
+                {t('trace.lane.viewPlugin', { plugin: step.node })}
+              </button>
+            )}
+          </div>
+          <p>{title}</p>
+        </>
+      )}
 
       {arrowRows.length > 0 && (
         <EventArrowDetail

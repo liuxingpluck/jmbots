@@ -1,4 +1,4 @@
-/** 教程思维导图使用现有说明和轨迹，详情回到原有插件和步骤栏。 */
+/** 教程思维导图：支持消息轨迹（数据流转 #1→#N / 按插件分组 / 数据变化总表）、项目结构树与骨架逐行。 */
 import * as react from 'react';
 import * as xy from '@xyflow/react';
 import * as i18n from '../I18n.ts';
@@ -7,6 +7,7 @@ import * as api from './TutorialApi.ts';
 import * as data from './MindData.ts';
 import * as readme from './ReadmeTabs.tsx';
 import * as lines from './LinesView.tsx';
+import * as stepFlowMod from './StepDataFlow.tsx';
 import '@xyflow/react/dist/style.css';
 import './MindMap.css';
 
@@ -18,6 +19,7 @@ const DIRECTIONS = ['sides', 'down'] as const;
 const TREES = ['project', 'trace', 'lines'] as const;
 
 export type TreeView = (typeof TREES)[number];
+export type TraceSubMode = 'flow' | 'plugin' | 'table';
 
 /** 读取持久化选择，只接受给定选项，访问失败使用默认。 */
 function getChoice<T extends string>(key: string, defaults: T, allowed: readonly T[]): T {
@@ -92,11 +94,9 @@ export function useMindWords(): i18n.Translate {
   return react.useCallback((key, params) => i18n.translate(language, key, params), [language]);
 }
 
-type Card = xy.Node<{ label: string; action?: () => void; expand?: boolean }, 'mindCard'>;
-
-/** 卡片只负责显示和打开详情，缩放、移动由 React Flow 处理。 */
-function MindCard({ data: card }: xy.NodeProps<Card>): react.JSX.Element {
-  const zoomHandles = (
+/** 通用连接锚点组：支持左、右、上、下双向贴边连线。 */
+function ZoomHandles(): react.JSX.Element {
+  return (
     <>
       <xy.Handle type="source" position={xy.Position.Left} id="left" />
       <xy.Handle type="source" position={xy.Position.Right} id="right" />
@@ -106,44 +106,153 @@ function MindCard({ data: card }: xy.NodeProps<Card>): react.JSX.Element {
       <xy.Handle type="target" position={xy.Position.Top} id="top" />
     </>
   );
-  if (card.action === undefined) return <div className="tu-mind-card">{zoomHandles}{card.label}</div>;
+}
+
+type TreeCard = xy.Node<{
+  label: string;
+  action?: () => void;
+  expand?: boolean;
+  selected?: boolean;
+}, 'mindCard'>;
+
+interface DataFlowCardPayload extends Record<string, unknown> {
+  step: number;
+  node: string;
+  layer: 'skeleton' | 'plugin';
+  ms: number;
+  error: boolean;
+  title: string;
+  fnText: string;
+  summary: string;
+  hasChanges: boolean;
+  selected: boolean;
+  action: () => void;
+}
+
+type FlowCard = xy.Node<DataFlowCardPayload, 'dataFlowCard'>;
+type AnyMindNode = TreeCard | FlowCard;
+
+/** 树形导图普通卡片，只负责显示和打开详情。 */
+function MindCard({ data: card }: xy.NodeProps<TreeCard>): react.JSX.Element {
+  let cls = 'tu-mind-card';
+  if (card.selected === true) cls += ' selected';
+  if (card.action === undefined) return <div className={cls}><ZoomHandles />{card.label}</div>;
 
   return (
     <div>
-      {zoomHandles}
-      <button className="tu-mind-card nodrag" type="button" aria-expanded={card.expand} onClick={card.action}>
+      <ZoomHandles />
+      <button className={`${cls} nodrag`} type="button" aria-expanded={card.expand} onClick={card.action}>
         {card.label}
       </button>
     </div>
   );
 }
 
-const TYPES = { mindCard: MindCard };
-const ORIGIN: xy.NodeOrigin = [0.5, 0.5];
-const FIT = { padding: 0.14, maxZoom: 1.6, minZoom: 0.2 };
-const FIT_NARROW = { padding: 0.08, maxZoom: 1.3, minZoom: 0.68 };
-const FIT_CONTROLS = { padding: 0.1, maxZoom: 1.6, minZoom: 0.2 };
+/** 端到端数据流转步骤卡片：步号、骨架金色徽标/插件徽标、耗时、动作标题、函数定位与底部状态变化胶囊。 */
+function DataFlowCard({ data: card }: xy.NodeProps<FlowCard>): react.JSX.Element {
+  let cardClass = 'tu-df-flow-card nodrag';
+  if (card.layer === 'skeleton') cardClass += ' skeleton';
+  if (card.selected) cardClass += ' selected';
+  if (card.error) cardClass += ' error';
 
-/** 把共享布局给出的中心点转成课程卡片和连接线。 */
-function getChart(
+  let modClass = 'tu-df-node-mod plugin';
+  let modText = card.node;
+  if (card.layer === 'skeleton') {
+    modClass = 'tu-df-node-mod skeleton';
+    modText = `骨架 · ${card.node}`;
+  }
+
+  let msClass = 'tu-df-node-ms';
+  if (card.ms >= 500) msClass += ' slow';
+
+  let sumClass = 'tu-df-node-sum';
+  if (card.layer === 'skeleton') sumClass += ' gold';
+  if (card.layer !== 'skeleton' && card.hasChanges) sumClass += ' changed';
+
+  return (
+    <div>
+      <ZoomHandles />
+      <button
+        type="button"
+        className={cardClass}
+        data-flow-step={card.step}
+        aria-pressed={card.selected}
+        onClick={card.action}
+      >
+        <div className="tu-df-node-top">
+          <span className="tu-df-node-no">#{String(card.step)}</span>
+          <span className={modClass}>{modText}</span>
+          {card.error && <span className="tu-df-node-err">报错</span>}
+          <span className={msClass}>{stepFlowMod.formatStepMs(card.ms)}</span>
+        </div>
+        <div className="tu-df-node-title">{card.title}</div>
+        {card.fnText !== '' && (
+          <div className="tu-df-node-fn" title={card.fnText}>{card.fnText}</div>
+        )}
+        {card.summary !== '' && (
+          <div className={sumClass} title={card.summary}>{card.summary}</div>
+        )}
+      </button>
+    </div>
+  );
+}
+
+const TYPES = { mindCard: MindCard, dataFlowCard: DataFlowCard };
+const ORIGIN: xy.NodeOrigin = [0.5, 0.5];
+const FIT = { padding: 0.14, maxZoom: 1.35, minZoom: 0.2 };
+const FIT_FLOW = { padding: 0.12, maxZoom: 1.02, minZoom: 0.3 };
+const FIT_NARROW = { padding: 0.08, maxZoom: 1.15, minZoom: 0.52 };
+const FIT_CONTROLS = { padding: 0.1, maxZoom: 1.5, minZoom: 0.2 };
+
+/** 等自定义卡片完成 DOM 测量后再执行 fitView，彻底解决首帧冷开白画布问题。 */
+function AutoFit(props: { frame: string; options: xy.FitViewOptions }): null {
+  const initialized = xy.useNodesInitialized();
+  const instance = xy.useReactFlow();
+  const fittedRef = react.useRef('');
+
+  react.useEffect(() => {
+    //G 节点尚未完成首次宽高测量或当前帧已适配过时不重复触发。
+    if (!initialized || fittedRef.current === props.frame) return undefined;
+
+    fittedRef.current = props.frame;
+    //M 首帧动画帧立即居中，并在 80ms 布局稳定后再校准一次确保零偏移。
+    const raf = window.requestAnimationFrame(() => {
+      void instance.fitView(props.options);
+    });
+    const timer = window.setTimeout(() => {
+      void instance.fitView(props.options);
+    }, 80);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [initialized, instance, props.frame, props.options]);
+
+  return null;
+}
+
+/** 把共享布局给出的中心点转成树形卡片和连接线。 */
+function getTreeChart(
   root: data.Branch,
   direction: layout.MindDirection,
   pick: (item: data.Branch) => void,
   expanded: ReadonlySet<string>,
-) {
+  pickedStep: number,
+): { nodes: AnyMindNode[]; edges: xy.Edge[] } {
   //M 留出比卡片更宽的层距，坐标算法和决策图共用。
   let spacing = { breadth: 56, depth: 216 };
   if (direction === 'down') spacing = { breadth: 190, depth: 84 };
   const children = (branch: data.Branch): readonly data.Branch[] => branch.children;
   const points = layout.getMindPoints(root, children, direction, spacing);
-  const nodes: Card[] = [];
+  const nodes: AnyMindNode[] = [];
   const edges: xy.Edge[] = [];
   for (const { item, position, parent } of points) {
-    //M 有详情或能展开的节点才显示成按钮。
-    const card: Card['data'] = { label: item.label };
+    //M 有详情或能展开的节点才显示成按钮，选中步同步高亮。
+    const isStepSelected = item.pick?.kind === 'step' && item.pick.no === pickedStep && pickedStep > 0;
+    const card: TreeCard['data'] = { label: item.label, selected: isStepSelected };
     if (item.pick !== undefined || item.expand !== undefined) card.action = () => pick(item);
     if (item.expand !== undefined) card.expand = expanded.has(item.expand);
-    const node: Card = { id: item.id, type: 'mindCard', position, data: card };
+    const node: TreeCard = { id: item.id, type: 'mindCard', position, data: card };
     nodes.push(node);
     if (parent === undefined) continue;
 
@@ -158,17 +267,100 @@ function getChart(
       sourceHandle = 'bottom';
       targetHandle = 'top';
     }
-    //M 两端使用各自朝向对方的贴边接口。
-    const edge: xy.Edge = {
+    edges.push({
       id: `${parent.id}→${item.id}`,
       source: parent.id,
       target: item.id,
       sourceHandle,
       targetHandle,
-    };
-    //M 加入连接父子节点的线。
-    edges.push(edge);
+    });
   }
+  return { nodes, edges };
+}
+
+/** 把端到端数据流转规格转成自定义 DataFlowCard 节点与高亮有向边。 */
+function getDataFlowChart(
+  trail: api.Trail,
+  flow: api.TrailDataFlow,
+  direction: layout.MindDirection,
+  pickedStep: number,
+  t: i18n.Translate,
+  onPickStep: (no: number) => void,
+): { nodes: AnyMindNode[]; edges: xy.Edge[] } {
+  const graph = data.buildDataFlowGraph(trail, flow, direction, t);
+  const nodes: AnyMindNode[] = graph.nodes.map((spec): FlowCard => ({
+    id: spec.id,
+    type: 'dataFlowCard',
+    position: spec.position,
+    data: {
+      step: spec.step,
+      node: spec.node,
+      layer: spec.layer,
+      ms: spec.ms,
+      error: spec.error,
+      title: spec.title,
+      fnText: spec.fnText,
+      summary: spec.summary,
+      hasChanges: spec.hasChanges,
+      selected: pickedStep === spec.step && pickedStep > 0,
+      action: () => onPickStep(spec.step),
+    },
+  }));
+
+  //M 选中某步时自动加亮其入边（暖金）与出边（亮青），所有边标签统一衬深色圆角胶囊底色。
+  const edges: xy.Edge[] = graph.edges.map((spec): xy.Edge => {
+    const isIncoming = pickedStep > 0 && spec.toStep === pickedStep;
+    const isOutgoing = pickedStep > 0 && spec.fromStep === pickedStep;
+    const active = isIncoming || isOutgoing;
+
+    let stroke = '#64748b';
+    let strokeWidth = 1.7;
+    let labelFill = '#cbd5e1';
+    let bgStroke = 'rgba(148, 163, 184, 0.34)';
+    let zIndex = 2;
+    if (isIncoming) {
+      stroke = '#f59e0b';
+      labelFill = '#fde68a';
+    }
+    if (isOutgoing) {
+      stroke = '#38bdf8';
+      labelFill = '#bae6fd';
+    }
+    if (active) {
+      strokeWidth = 2.6;
+      bgStroke = stroke;
+      zIndex = 6;
+    }
+
+    return {
+      id: spec.id,
+      type: 'smoothstep',
+      source: spec.source,
+      target: spec.target,
+      sourceHandle: spec.sourceHandle,
+      targetHandle: spec.targetHandle,
+      label: spec.label,
+      animated: active,
+      zIndex,
+      style: { stroke, strokeWidth },
+      markerEnd: { type: xy.MarkerType.ArrowClosed, width: 15, height: 15, color: stroke },
+      labelStyle: {
+        fill: labelFill,
+        fontSize: 10.5,
+        fontWeight: 600,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      },
+      labelBgStyle: {
+        fill: '#0b101b',
+        fillOpacity: 0.94,
+        stroke: bgStroke,
+        strokeWidth: 1,
+      },
+      labelBgPadding: [6, 3],
+      labelBgBorderRadius: 6,
+    };
+  });
+
   return { nodes, edges };
 }
 
@@ -242,6 +434,8 @@ function EventDetail({ name, docs, t, close }: {
 interface Props {
   plugins: readonly api.PluginItem[];
   trail: api.Trail | null;
+  dataFlow?: api.TrailDataFlow | null;
+  pickedStep?: number;
   canvas: string;
   left: number;
   right: number;
@@ -263,15 +457,22 @@ interface Props {
   onLineDetail: () => void;
 }
 
-/** 三棵树共用一片画布，方向是画布角上的小切换，节点操作打开相应内容。 */
+/** 三棵树共用一片画布，消息轨迹默认呈现 #1→#N 端到端数据流转图，也可一键切换按插件分组或数据变化总表。 */
 export function TutorialMindMap(props: Props): react.JSX.Element {
-  const { plugins, trail, canvas, left, right, t, onPick, plugin, onSelectPlugin, programs, mode } = props;
-  const { onSelectMode, detailHost, onLineDetail } = props;
-  //M 记住上次的方向，第一次使用左右排布。
+  const { plugins, trail, dataFlow, pickedStep = 0, canvas, left, right, t, onPick } = props;
+  const { plugin, onSelectPlugin, programs, mode, onSelectMode, detailHost, onLineDetail } = props;
+  //M 记住上次的方向，消息轨迹子模式默认选中「数据流转」。
   const [direction, setDirection] = react.useState(() => getChoice(DIRECTION_KEY, 'sides', DIRECTIONS));
+  const [traceSubMode, setTraceSubMode] = react.useState<TraceSubMode>('flow');
   const [expanded, setExpanded] = react.useState<ReadonlySet<string>>(() => new Set(['skeleton']));
   const [event, setEvent] = react.useState('');
   const docs = useDocs(plugins);
+
+  const resolvedFlow = react.useMemo(() => {
+    if (trail === null) return null;
+
+    return stepFlowMod.resolveTrailDataFlow(trail, dataFlow);
+  }, [dataFlow, trail]);
 
   /** 记住视图方向，在当前树里重新安排卡片。 */
   function selectDirection(next: layout.MindDirection): void {
@@ -310,34 +511,54 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
     onPick(target);
   }
 
-  //M 把选中的树交给同一个画布和布局算法。
-  let tree: data.Branch | undefined;
-  if (mode === 'project') tree = data.getProjectTree(plugins, docs, expanded, t, programs);
-  if (mode === 'trace' && trail !== null) tree = data.getTrailTree(trail, t);
+  //M 按当前模式构建对应的 React Flow 节点与边：消息轨迹默认走 #1→#N 数据流转链。
+  let chart: { nodes: AnyMindNode[]; edges: xy.Edge[] } | undefined;
+  if (mode === 'project') {
+    const tree = data.getProjectTree(plugins, docs, expanded, t, programs);
+    chart = getTreeChart(tree, direction, pick, expanded, pickedStep);
+  }
+  if (mode === 'trace' && traceSubMode === 'plugin' && trail !== null) {
+    const tree = data.getTrailTree(trail, t);
+    chart = getTreeChart(tree, direction, pick, expanded, pickedStep);
+  }
+  if (mode === 'trace' && traceSubMode === 'flow' && trail !== null && resolvedFlow !== null) {
+    chart = getDataFlowChart(
+      trail,
+      resolvedFlow,
+      direction,
+      pickedStep,
+      t,
+      (no) => onPick({ kind: 'step', no }),
+    );
+  }
+
   const title = t('思维导图');
   const directionLabel = t('展开方向');
   const sidesLabel = t('左右展开');
   const downLabel = t('上下展开');
   const emptyLabel = t('请在左栏选择一条消息');
+  const showTable = mode === 'trace' && traceSubMode === 'table';
+  const showDirectionToggle = !showTable;
 
   //M 角上的小切换只管方向，并保留上次选择。
   const showSides = () => selectDirection('sides');
   const showDown = () => selectDirection('down');
 
-  //M 没选消息时只显示引导，不构造隐藏的项目树。
-  let chart: ReturnType<typeof getChart> | undefined;
-  if (tree !== undefined) chart = getChart(tree, direction, pick, expanded);
-
-  //M 展开内容后重新适应可见区域，避免新增的末端节点落在栏外；手机竖屏保持字号可读的初始缩放下限。
+  //M 切换树、轨迹子模式、方向或消息时重新 fitView；点选步骤只更新高亮，不重置缩放平移。
   const nodeCount = chart?.nodes.length ?? 0;
-  const frame = `${mode}:${direction}:${canvas}:${nodeCount}`;
+  const frame = `${mode}:${traceSubMode}:${direction}:${canvas}:${String(nodeCount)}`;
+  const fitFrame = `${frame}:${String(left)}:${String(right)}`;
   let initialFit = FIT;
+  if (mode === 'trace' && traceSubMode === 'flow') initialFit = FIT_FLOW;
   if (typeof window !== 'undefined' && window.innerWidth < 800) {
     initialFit = FIT_NARROW;
   }
 
+  let sectionClass = 'tu-mind';
+  if (showTable) sectionClass += ' tu-mind-table-mode';
+
   return (
-    <section className="tu-mind" style={{ left, right }} aria-label={title}>
+    <section className={sectionClass} style={{ left, right }} aria-label={title}>
       <div className="tu-mind-head">
         {onSelectMode !== undefined && (
           <div className="tu-mind-modes" role="group" aria-label={t('导图内容')}>
@@ -364,15 +585,48 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
             </button>
           </div>
         )}
-        <div className="tu-mind-direction" role="group" aria-label={directionLabel}>
-          <button type="button" data-look="mind-lr" aria-pressed={direction === 'sides'} onClick={showSides}>
-            {sidesLabel}
-          </button>
-          <button type="button" data-look="mind-tb" aria-pressed={direction === 'down'} onClick={showDown}>
-            {downLabel}
-          </button>
-        </div>
+
+        {mode === 'trace' && (
+          <div className="tu-mind-submodes" role="group" aria-label={t('消息轨迹视图')}>
+            <button
+              type="button"
+              data-trace-view="flow"
+              aria-pressed={traceSubMode === 'flow'}
+              onClick={() => setTraceSubMode('flow')}
+            >
+              {t('数据流转')}
+            </button>
+            <button
+              type="button"
+              data-trace-view="plugin"
+              aria-pressed={traceSubMode === 'plugin'}
+              onClick={() => setTraceSubMode('plugin')}
+            >
+              {t('按插件分组')}
+            </button>
+            <button
+              type="button"
+              data-trace-view="table"
+              aria-pressed={traceSubMode === 'table'}
+              onClick={() => setTraceSubMode('table')}
+            >
+              {t('数据变化总表')}
+            </button>
+          </div>
+        )}
+
+        {showDirectionToggle && (
+          <div className="tu-mind-direction" role="group" aria-label={directionLabel}>
+            <button type="button" data-look="mind-lr" aria-pressed={direction === 'sides'} onClick={showSides}>
+              {sidesLabel}
+            </button>
+            <button type="button" data-look="mind-tb" aria-pressed={direction === 'down'} onClick={showDown}>
+              {downLabel}
+            </button>
+          </div>
+        )}
       </div>
+
       {mode === 'lines' && (
         <lines.LinesView
           t={t}
@@ -383,8 +637,24 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
           onDetail={onLineDetail}
         />
       )}
-      {mode !== 'lines' && chart === undefined && <p className="tu-mind-empty">{emptyLabel}</p>}
-      {mode !== 'lines' && chart !== undefined && (
+
+      {showTable && (trail === null || resolvedFlow === null) && (
+        <p className="tu-mind-empty">{emptyLabel}</p>
+      )}
+      {showTable && trail !== null && resolvedFlow !== null && (
+        <stepFlowMod.DataFlowTable
+          trail={trail}
+          dataFlow={resolvedFlow}
+          pickedStep={pickedStep}
+          t={t}
+          onPickStep={(no) => onPick({ kind: 'step', no })}
+        />
+      )}
+
+      {mode !== 'lines' && !showTable && chart === undefined && (
+        <p className="tu-mind-empty">{emptyLabel}</p>
+      )}
+      {mode !== 'lines' && !showTable && chart !== undefined && (
         <xy.ReactFlow
           key={frame}
           nodes={chart.nodes}
@@ -398,6 +668,7 @@ export function TutorialMindMap(props: Props): react.JSX.Element {
           fitViewOptions={initialFit}
           minZoom={0.18}
         >
+          <AutoFit frame={fitFrame} options={initialFit} />
           <xy.Background />
           <xy.Controls showInteractive={false} fitViewOptions={FIT_CONTROLS} />
         </xy.ReactFlow>

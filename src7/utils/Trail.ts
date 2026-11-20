@@ -110,6 +110,84 @@ export interface Trail {
 }
 
 
+/** 单条数据字段展示项。 */
+export interface DataField {
+  /** 字段英文键或属性名。 */
+  key: string;
+  /** 展示值文本（不含隐私正文或密钥）。 */
+  value: string;
+  /** 该字段的人话说明。 */
+  note: string;
+  /** 'real' 表示来自本次真实 trace/facts 实测值；'schema' 表示按代码结构说明的数据形状。 */
+  source: 'real' | 'schema';
+}
+
+
+/** 一步内发生的一条状态/数据变化（前 → 后）。 */
+export interface DataChange {
+  /** 被改动的对象或数据表，如 "web_messages #601"、"Session.row"、"ChatRequest"、"Tools 清单"。 */
+  target: string;
+  /** 字段或属性名，如 "status"、"state"、"system[]"、"answer"、"replies"。 */
+  field: string;
+  /** 变化前状态文本。 */
+  before: string;
+  /** 变化后状态文本。 */
+  after: string;
+  /** 变化原因与作用说明。 */
+  note: string;
+  /** 'real' 表示来自本次真实实测值；'schema' 表示代码结构契约。 */
+  source: 'real' | 'schema';
+}
+
+
+/** 单步的完整数据流转视角。 */
+export interface StepDataFlow {
+  /** 第几步，从 1 起。 */
+  step: number;
+  /** 所属模块名（插件名，或骨架的 main / resources / tools / sessions）。 */
+  node: string;
+  /** 明确区分「骨架」与「插件」。 */
+  layer: 'skeleton' | 'plugin';
+  /** 阶段短名，如 "收件入库"、"渠道分拣"、"机器人认领"、"骨架启动会话" 等。 */
+  stage: string;
+  /** 这一步的主函数名与精准 file:line（没有则空串）。 */
+  fnName: string;
+  /** 主函数所在源码位置 file:line（没有则空串）。 */
+  fnSite: string;
+  /** 若属于骨架且对应骨架逐行文件，填 "Sessions" | "Tools" | "Resources" | "Main"；否则空串。 */
+  skeletonFile: string;
+  /** 一句话卡片摘要（直接画在思维导图节点里）。 */
+  summary: string;
+  /** 从上一步经什么事件/调用传来什么数据类型。 */
+  incoming: {
+    fromStep: number | null;
+    via: string;
+    dataType: string;
+  };
+  /** 进入这一步时的关键输入数据。 */
+  inputs: DataField[];
+  /** 这一步造成的数据/状态变化（前 → 后）。 */
+  changes: DataChange[];
+  /** 传给下一步的事件/调用、目标步骤与数据类型。 */
+  outgoing: {
+    toStep: number | null;
+    toNode: string;
+    via: string;
+    dataType: string;
+    label: string;
+  };
+}
+
+
+/** 整条消息轨迹的数据流转视图，随 GET /api/tutorial/canvas 返回。 */
+export interface TrailDataFlow {
+  /** 按真实执行先后排列的各步数据流转详情。 */
+  steps: StepDataFlow[];
+  /** 涉及的主要数据表与核心内存对象清单（如 web_messages、sessions、ChatRequest），供总览展示。 */
+  objects: { name: string; kind: 'table' | 'memory' | 'event'; role: string }[];
+}
+
+
 
 /** 和这条请求无关、隔一会儿就来一次的事件。journal 收轨迹、tutorial 拍快照都跳过这些。 */
 export const NOISE = new Set(['web-api/status', 'trace', 'ready']);

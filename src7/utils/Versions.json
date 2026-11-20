@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.7.81",
+    "date": "2026-11-20",
+    "changes": [
+      "教程页（/tutorial/）端到端数据流转与骨架状态可视化全面升级（tutorial 1.1.24）：「思维导图 → 消息轨迹」默认切换为按真实时序 #1→#N 串联的交互式「数据流转」图（卡片直显骨架金色徽标/插件徽标、函数位置与状态变化微胶囊，有向边标明传递事件与数据类型，选中高亮入边与出边），同时保留「按插件分组」并新增整屏「数据变化总表」",
+      "右栏「这一步」面板重构：置顶「上一步 ← 当前 #k → 下一步」步骤接力导航条与「入口数据 / 状态变化（前→后对比条）/ 去向数据」玻璃卡片，骨架步支持一键直跳「骨架逐行」对应代码块（Sessions/Tools/Resources/Main），手机竖屏卡片同步展示数据变化胶囊与状态对比",
+      "后端轻量实测数据留痕增强：在不增重快照且严守骨架 820 行预算的前提下，为 Sessions（关口一 system 前后段数、toolsCount、model-catalog 代调标记、state 前后迁移）、web-api（web_messages 表与 autoFinal/status/replyLength）、bots（sendLastWords）补齐实测留痕；同时兼容历史消息轨迹按真实代码结构推导补全",
+      "修复教程源码解析 Source.ts 的「谁调它」跨文件同名误匹配 bug：严格区分 private 方法、未导出函数、同目录/显式导入与 Cordis 服务调用，WebApi.accept 等不再误抓 voice/relay/programs 的无关 .accept() 调用"
+    ]
+  },
+  {
     "version": "0.7.80",
     "date": "2026-11-20",
     "changes": [

@@ -11,7 +11,16 @@
  *   4. 所有“文件:行号”与依赖表位置列均通过 TutorialWorkspaceContext 直接复用 Code.tsx 的 getVscodeHref 在 VS Code 打开；
  *   5. 浏览器前进/后退/刷新通过 history.pushState + popstate 保持原地（canvas / step / plugin / ptab / event / rtab / util / page）。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import * as antd from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import * as virtuoso from 'react-virtuoso';
@@ -27,6 +36,7 @@ import { CodeTab, TryTab } from './PluginTabs.tsx';
 import { buildReadmeTabItems, MarkdownContent } from './ReadmeTabs.tsx';
 import * as mind from './MindMap.tsx';
 import * as programView from './ProgramView.tsx';
+import { StepDataFlowPanel, findStepFlow, resolveTrailDataFlow } from './StepDataFlow.tsx';
 import type * as mindData from './MindData.ts';
 import {
   TutorialApi,
@@ -38,6 +48,7 @@ import {
   type ProgramItem,
   type StateGroup,
   type Trail,
+  type TrailDataFlow,
   type TrailStep,
 } from './TutorialApi.ts';
 
@@ -582,7 +593,12 @@ function PluginStateGroup(props: { group: StateGroup }): JSX.Element {
   return (
     <details className="tu-state-group" open>
       <summary>{group.name}</summary>
-      <JsonBlock head={<span className="tu-muted">{group.note}</span>} value={group.value} empty="（空）" notes={group.notes} />
+      <JsonBlock
+        head={<span className="tu-muted">{group.note}</span>}
+        value={group.value}
+        empty="（空）"
+        notes={group.notes}
+      />
     </details>
   );
 }
@@ -612,7 +628,8 @@ function PluginState(props: { name: string }): JSX.Element {
     let alive = true;
     const load = (): void => {
       //M 现拉该插件服务对象及登记状态变量快照，实现状态面板实时刷新。
-      const loading = TutorialApi.get<{ at: number; groups: StateGroup[] }>(`/api/tutorial/state?name=${encodeURIComponent(props.name)}`);
+      const url = `/api/tutorial/state?name=${encodeURIComponent(props.name)}`;
+      const loading = TutorialApi.get<{ at: number; groups: StateGroup[] }>(url);
       loading.then((result) => {
         if (!alive) return;
 
@@ -850,9 +867,10 @@ function CanvasStage(props: {
   activePlugin: string;
   highlightEvent: string;
   onSelectPlugin: (name: string, ptab?: string) => void;
+  onOpenSkeletonLines: (skeletonFile: string) => void;
   onSelectEvent: (eventName: string) => void;
   onClearEvent: () => void;
-  onTrailLoaded: (canvasName: string, trail: Trail | null) => void;
+  onTrailLoaded: (canvasName: string, trail: Trail | null, dataFlow?: TrailDataFlow | null) => void;
   workspace: string;
   leftOpen: boolean;
   leftWidth: number;
@@ -882,15 +900,16 @@ function CanvasStage(props: {
   useEffect(() => {
     setCanvas(null);
     setError('');
-    onTrailLoaded(props.name, null);
+    onTrailLoaded(props.name, null, null);
     let alive = true;
-    const loading = TutorialApi.get<Canvas>(`/api/tutorial/canvas?name=${encodeURIComponent(props.name)}`);
+    const url = `/api/tutorial/canvas?name=${encodeURIComponent(props.name)}`;
+    const loading = TutorialApi.get<Canvas>(url);
     loading.then((loaded) => {
       if (!alive) return;
 
       setCanvas(loaded);
-      //M 画布轨迹加载成功后通知顶层页面保存当前活动轨迹并联动步骤详情与事件筛选。
-      onTrailLoaded(props.name, loaded.trail);
+      //M 画布轨迹加载成功后通知顶层页面保存当前活动轨迹与数据流转，并联动右侧步骤详情。
+      onTrailLoaded(props.name, loaded.trail, loaded.dataFlow ?? null);
     }, (failed: unknown) => {
       if (alive) {
         setError((failed as Error).message);
@@ -900,6 +919,12 @@ function CanvasStage(props: {
       alive = false;
     };
   }, [props.name, onTrailLoaded]);
+
+  const resolvedDataFlow = useMemo(() => {
+    if (canvas === null) return null;
+
+    return resolveTrailDataFlow(canvas.trail, canvas.dataFlow);
+  }, [canvas]);
 
   const seqLayout = useMemo(() => {
     if (canvas === null) return null;
@@ -1056,7 +1081,8 @@ function CanvasStage(props: {
     if (props.isNarrow || event.button !== 0) return;
 
     const target = event.target;
-    if (target instanceof Element && target.closest('button, a, input, textarea, select, .tu-stage-hud, .tu-stage-tools') !== null) {
+    const interactiveSel = 'button, a, input, textarea, select, .tu-stage-hud, .tu-stage-tools';
+    if (target instanceof Element && target.closest(interactiveSel) !== null) {
       return;
     }
 
@@ -1301,7 +1327,8 @@ function CanvasStage(props: {
         <div
           className="tu-stage-world"
           style={{
-            transform: `translate(${String(transform.tx)}px, ${String(transform.ty)}px) scale(${String(transform.scale)})`,
+            transform:
+              `translate(${String(transform.tx)}px, ${String(transform.ty)}px) scale(${String(transform.scale)})`,
             transformOrigin: '0 0',
           }}
         >
@@ -1333,7 +1360,7 @@ function CanvasStage(props: {
         </div>
       )}
 
-      {/* 手机端默认：纵向时间线步骤卡片，点一步直接在当前卡片内就地展开函数、源码位置与变量快照。 */}
+      {/* 手机端默认：纵向时间线步骤卡片，点一步直接在当前卡片内就地展开状态变化、函数、源码与快照。 */}
       {canvas !== null && props.isNarrow && props.narrowMode === 'steps' && (
         <div className="tu-m-steps">
           {canvas.trail.steps.map((stepItem) => {
@@ -1341,10 +1368,25 @@ function CanvasStage(props: {
             const hit = matchedSet.has(stepItem.no);
             const stepTitle = getStepDisplayTitle(stepItem, tr);
             const stepEvents = getStepEvents(stepItem);
+            const stepFlow = findStepFlow(resolvedDataFlow, stepItem.no);
+            const isSkeleton = stepFlow?.layer === 'skeleton';
             let cardClass = 'tu-m-step-card';
+            if (isSkeleton) cardClass += ' skeleton';
             if (picked) cardClass += ' picked';
             if (stepItem.error) cardClass += ' error';
             if (hit) cardClass += ' event-hit';
+
+            let nodeClass = 'tu-m-step-node';
+            let nodeLabel = stepItem.node;
+            if (isSkeleton) {
+              nodeClass += ' skeleton';
+              nodeLabel = `骨架 · ${stepItem.node}`;
+            }
+
+            let sumClass = 'tu-m-step-summary';
+            if (isSkeleton) sumClass += ' gold';
+            if (!isSkeleton && (stepFlow?.changes.length ?? 0) > 0) sumClass += ' changed';
+
             let msClass = 'tu-m-step-ms';
             if (stepItem.ms >= 500) msClass += ' slow';
             let chevron = '▾';
@@ -1367,12 +1409,15 @@ function CanvasStage(props: {
                 >
                   <div className="tu-m-step-top">
                     <span className="tu-m-step-no">#{String(stepItem.no)}</span>
-                    <span className="tu-m-step-node">{stepItem.node}</span>
+                    <span className={nodeClass}>{nodeLabel}</span>
                     {stepItem.error && <span className="tu-m-step-err">报错</span>}
                     <span className={msClass}>{formatStepDuration(stepItem.ms)}</span>
                     <span className="tu-m-step-chev" aria-hidden="true">{chevron}</span>
                   </div>
                   <div className="tu-m-step-title">{stepTitle}</div>
+                  {stepFlow !== undefined && stepFlow.summary !== '' && (
+                    <div className={sumClass}>{stepFlow.summary}</div>
+                  )}
                   {stepEvents.length > 0 && (
                     <div className="tu-m-step-events">
                       {stepEvents.map((evName) => (
@@ -1383,6 +1428,19 @@ function CanvasStage(props: {
                 </button>
                 {picked && (
                   <div className="tu-m-step-detail">
+                    {stepFlow !== undefined && (
+                      <StepDataFlowPanel
+                        compact
+                        trail={canvas.trail}
+                        step={stepItem}
+                        stepFlow={stepFlow}
+                        workspace={props.workspace}
+                        pluginNames={props.pluginNames}
+                        onPickStep={props.onPick}
+                        onOpenSkeletonLines={props.onOpenSkeletonLines}
+                        onSelectPlugin={props.onSelectPlugin}
+                      />
+                    )}
                     <StepDetail
                       canvas={props.name}
                       trail={canvas.trail}
@@ -1391,6 +1449,7 @@ function CanvasStage(props: {
                       keyword={props.keyword}
                       pluginNames={props.pluginNames}
                       highlightEvent={props.highlightEvent}
+                      hideHeader={stepFlow !== undefined}
                       onSelectPlugin={props.onSelectPlugin}
                       onSelectEvent={props.onSelectEvent}
                     />
@@ -1479,8 +1538,22 @@ function CanvasStage(props: {
       {/* 画布左下角控件：适应窗口、100%、当前比例、交互说明。 */}
       {!props.isNarrow && canvas !== null && (
         <div className="tu-stage-tools" style={{ left: hudLeft }}>
-          <button type="button" className="tu-tool-btn" aria-pressed={look === 'table'} onClick={() => setLook('table')}>表格</button>
-          <button type="button" className="tu-tool-btn" aria-pressed={look === 'seq'} onClick={() => setLook('seq')}>顺序图</button>
+          <button
+            type="button"
+            className="tu-tool-btn"
+            aria-pressed={look === 'table'}
+            onClick={() => setLook('table')}
+          >
+            表格
+          </button>
+          <button
+            type="button"
+            className="tu-tool-btn"
+            aria-pressed={look === 'seq'}
+            onClick={() => setLook('seq')}
+          >
+            顺序图
+          </button>
           <button type="button" className="tu-tool-btn" onClick={fitToWindow}>适应窗口</button>
           <button type="button" className="tu-tool-btn" onClick={resetToHundred}>100%</button>
           <span className="tu-tool-zoom">{zoomPercent}%</span>
@@ -1524,7 +1597,9 @@ export function TutorialPage(): JSX.Element {
   });
 
   //M 左右悬浮栏宽度与收起状态，读写 localStorage 均包 try/catch。
-  const [leftWidth, setLeftWidth] = useState<number>(() => getStoredWidth(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH, MIN_LEFT_WIDTH));
+  const [leftWidth, setLeftWidth] = useState<number>(
+    () => getStoredWidth(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH, MIN_LEFT_WIDTH),
+  );
   const [paneWidth, setPaneWidth] = useState<number>(getStoredDetailWidth);
   const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => getStoredCollapsed(LEFT_COLLAPSED_KEY, false));
@@ -1540,6 +1615,7 @@ export function TutorialPage(): JSX.Element {
   const [rightScrollParent, setRightScrollParent] = useState<HTMLDivElement | null>(null);
 
   const [activeTrail, setActiveTrail] = useState<Trail | null>(null);
+  const [activeDataFlow, setActiveDataFlow] = useState<TrailDataFlow | null>(null);
   const [loadedCanvasName, setLoadedCanvasName] = useState('');
   const [messageApi, contextHolder] = antd.message.useMessage();
   //M 读回教程上次选的视图，并将新控件按当前语言显示。
@@ -1578,14 +1654,23 @@ export function TutorialPage(): JSX.Element {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  //M 画布加载完成时记下已就绪的画布名与轨迹。
-  const handleTrailLoaded = useCallback((canvasName: string, trail: Trail | null) => {
+  //M 画布加载完成时记下已就绪的画布名、轨迹与数据流转描述。
+  const handleTrailLoaded = useCallback((
+    canvasName: string,
+    trail: Trail | null,
+    dataFlow?: TrailDataFlow | null,
+  ) => {
     let nextLoaded = canvasName;
     if (trail === null) {
       nextLoaded = '';
     }
     setLoadedCanvasName(nextLoaded);
     setActiveTrail(trail);
+    if (trail === null) {
+      setActiveDataFlow(null);
+      return;
+    }
+    setActiveDataFlow(resolveTrailDataFlow(trail, dataFlow));
   }, []);
 
   useEffect(() => {
@@ -1839,7 +1924,8 @@ export function TutorialPage(): JSX.Element {
       if (!hasSearch) return true;
 
       const stateWord = (STATE_WORDS[item.state] ?? item.state).toLowerCase();
-      return item.name.toLowerCase().includes(query) || stateWord.includes(query) || '骨架模块'.includes(query) || query === 'skeleton';
+      const isCategoryHit = '骨架模块'.includes(query) || query === 'skeleton';
+      return item.name.toLowerCase().includes(query) || stateWord.includes(query) || isCategoryHit;
     });
   }, [hasSearch, pluginList, query]);
 
@@ -1971,6 +2057,7 @@ export function TutorialPage(): JSX.Element {
   const isProcess = programName !== undefined || resolvedPluginName === programView.HANDSHAKE;
   const activeMessage = messages.find((item) => item.name === route.canvas);
   const pickedStep = activeTrail?.steps.find((item) => item.no === route.step);
+  const pickedStepFlow = findStepFlow(activeDataFlow, route.step);
 
   const skeletonExpanded = openGroups.skeleton || hasSearch;
   const readingsExpanded = openGroups.reading || hasSearch;
@@ -1999,7 +2086,23 @@ export function TutorialPage(): JSX.Element {
   if (!isNarrow && !leftCollapsed) mindLeft += clampedLeftWidth + 12;
   if (!isNarrow && !rightCollapsed) mindRight += clampedRightWidth + 12;
   let mindTrail: Trail | null = null;
-  if (loadedCanvasName === route.canvas) mindTrail = activeTrail;
+  let mindDataFlow: TrailDataFlow | null = null;
+  if (loadedCanvasName === route.canvas) {
+    mindTrail = activeTrail;
+    mindDataFlow = activeDataFlow;
+  }
+
+  /** 从步骤面板直达「思维导图 → 骨架逐行」对应骨架文件。 */
+  const onOpenSkeletonLines = (skeletonFile: string): void => {
+    const clean = skeletonFile.replace(/\.(ts|json)$/iu, '').trim().toLowerCase();
+    if (clean === '') return;
+
+    setMobileNavOpen(false);
+    tutorialView.select('mind');
+    mindTree.select('lines');
+    toggleRightCollapsed(false);
+    navigate({ ...route, plugin: clean, rtab: 'step', doc: false });
+  };
 
   /** 导图点击与画布、左栏点击走同一套详情和路由。 */
   function onMindPick(target: mindData.Pick): void {
@@ -2705,6 +2808,7 @@ export function TutorialPage(): JSX.Element {
                   //M 泳道上点插件名留在三栏，右侧看说明。
                   (name) => onSelectPlugin(name, undefined, true)
                 }
+                onOpenSkeletonLines={onOpenSkeletonLines}
                 onSelectEvent={onSelectEvent}
                 onClearEvent={() => navigate({ ...route, event: '' })}
                 onTrailLoaded={handleTrailLoaded}
@@ -2730,6 +2834,8 @@ export function TutorialPage(): JSX.Element {
               <mind.TutorialMindMap
                 plugins={pluginList}
                 trail={mindTrail}
+                dataFlow={mindDataFlow}
+                pickedStep={route.step}
                 canvas={route.canvas}
                 left={mindLeft}
                 right={mindRight}
@@ -2972,36 +3078,62 @@ export function TutorialPage(): JSX.Element {
                       {route.rtab === 'step' && (!showMind || mindTree.mode !== 'lines' || contentOnly) && (
                         <>
                           {pickedStep !== undefined && activeTrail !== null && hasRealCanvas && (
-                            <StepDetail
-                              canvas={route.canvas}
-                              trail={activeTrail}
-                              step={pickedStep}
-                              workspace={workspace}
-                              keyword={keyword}
-                              pluginNames={pluginNames}
-                              highlightEvent={route.event}
-                              onSelectPlugin={
-                                //M 步骤详情里点插件名留在三栏。
-                                (name) => onSelectPlugin(name, undefined, true)
-                              }
-                              onSelectEvent={onSelectEvent}
-                            />
+                            <>
+                              {pickedStepFlow !== undefined && (
+                                <StepDataFlowPanel
+                                  trail={activeTrail}
+                                  step={pickedStep}
+                                  stepFlow={pickedStepFlow}
+                                  workspace={workspace}
+                                  pluginNames={pluginNames}
+                                  onPickStep={onPickStep}
+                                  onOpenSkeletonLines={onOpenSkeletonLines}
+                                  onSelectPlugin={(name) => onSelectPlugin(name, undefined, true)}
+                                />
+                              )}
+                              <StepDetail
+                                canvas={route.canvas}
+                                trail={activeTrail}
+                                step={pickedStep}
+                                workspace={workspace}
+                                keyword={keyword}
+                                pluginNames={pluginNames}
+                                highlightEvent={route.event}
+                                hideHeader={pickedStepFlow !== undefined}
+                                onSelectPlugin={
+                                  //M 步骤详情里点插件名留在三栏。
+                                  (name) => onSelectPlugin(name, undefined, true)
+                                }
+                                onSelectEvent={onSelectEvent}
+                              />
+                            </>
                           )}
                           {(pickedStep === undefined || activeTrail === null || !hasRealCanvas) && (
                             <div className="tu-pane-empty">
                               <p>在左侧选画布，或在画布点任意一步</p>
                               <p className="tu-muted">
-                                选中某一步后，这里会列出这一步走到的函数（支持直开 VS Code）、发出的事件、谁调它以及运行时变量快照；在这里滚动到底时，画布始终稳稳停在底层原地。
+                                选中某一步后，顶上会展示该步的输入数据、状态变化（前 → 后）与步骤接力，下方列出走到的函数（支持直开 VS Code）、发出的事件、谁调它以及运行时快照。
                               </p>
-                              {hasPluginName && (
-                                <button
-                                  type="button"
-                                  className="tu-step-plugin-btn"
-                                  onClick={() => navigate({ ...route, rtab: 'plugin' })}
-                                >
-                                  去看 {resolvedPluginName} 插件说明与代码 →
-                                </button>
-                              )}
+                              <div className="tu-pane-empty-actions">
+                                {activeTrail !== null && activeTrail.steps.length > 0 && hasRealCanvas && (
+                                  <button
+                                    type="button"
+                                    className="tu-df-next-jump-btn"
+                                    onClick={() => onPickStep(activeTrail.steps[0]?.no ?? 1)}
+                                  >
+                                    从第 #1 步开始逐跳阅读数据流转 →
+                                  </button>
+                                )}
+                                {hasPluginName && (
+                                  <button
+                                    type="button"
+                                    className="tu-step-plugin-btn"
+                                    onClick={() => navigate({ ...route, rtab: 'plugin' })}
+                                  >
+                                    去看 {resolvedPluginName} 插件说明与代码 →
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           )}
                         </>

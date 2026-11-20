@@ -502,7 +502,10 @@ class WebApi {
     if (session !== undefined) {
       sessionLabel = session.id;
     }
-    const vars = { messageId: id, bot: wanted, attachmentCount: paths.length, targetSession: sessionLabel };
+    const vars = {
+      messageId: id, bot: wanted, table: 'web_messages', autoFinal: routing.autoFinal === true,
+      attachmentCount: paths.length, targetSession: sessionLabel,
+    };
     this.ctx.emit('trace', 'WebApi.accept', 'trace.webApi.accept', 'protocol.emitInbound(ctx, msg, true, control)', vars);
 
     //M 推给机器人；回话地址就是消息号。推不进去（比如没有插件管分派）就删掉这一行，告诉调用方。

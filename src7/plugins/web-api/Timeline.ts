@@ -301,7 +301,10 @@ export class Timeline {
     const id = Number(result.lastInsertRowid);
 
     //T 跟踪：收件表记下一条。sourceId 是渠道的标准消息号（没有就不带），journal 靠它把收件号和渠道那几行接上。
-    const vars = { messageId: id, sourceId: input.source_id, bot: input.bot, channel: input.channel, length: input.text.length };
+    const vars = {
+      messageId: id, sourceId: input.source_id, bot: input.bot, channel: input.channel,
+      table: 'web_messages', status: 'taken', length: input.text.length,
+    };
     this.ctx.emit('trace', 'Timeline.insert', 'trace.timeline.insert', 'INSERT INTO web_messages', vars);
     const { bot, channel, source, text } = input;
     const received = { id, bot, channel, source, text, at: createdAt };
@@ -368,7 +371,7 @@ export class Timeline {
     const updated = this.ctx.resources.db.query(sql).run(sessionId, id);
     if (updated.changes === 0) return;
 
-    const vars = { messageId: id, session: sessionId };
+    const vars = { messageId: id, session: sessionId, table: 'web_messages' };
     this.ctx.emit('trace', 'Timeline.bindSession', 'trace.timeline.bindSession', 'UPDATE web_messages SET session_id', vars);
   }
 
@@ -427,7 +430,10 @@ export class Timeline {
     this.ctx.resources.db.query(sql).run(replies, sessionId, status, now, id);
 
     //T 跟踪：追加一句回话。
-    const vars = { messageId: id, session: sessionId, length: text.length, state: status };
+    const vars = {
+      messageId: id, session: sessionId, table: 'web_messages', status,
+      replyCount: record.replies.length, replyLength: text.length, length: text.length, state: status,
+    };
     this.ctx.emit('trace', 'Timeline.reply', 'trace.timeline.reply', 'UPDATE web_messages SET replies', vars);
     if (session !== undefined) {
       //M 依赖会话的订阅者只接收可以打开会话的回话通知。

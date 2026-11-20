@@ -45,6 +45,7 @@ import * as snapshotModule from './Snapshot.ts';
 import type * as pluginIndex from '../Index.ts';
 import * as bootModule from './Boot.ts';
 import * as codeModule from './Code.ts';
+import * as dataFlowModule from './DataFlow.ts';
 import * as filesModule from './Files.ts';
 import * as lanesModule from './Lanes.ts';
 import * as printModule from './Print.ts';
@@ -123,7 +124,8 @@ export const name = 'tutorial';
 //M 1.1.20：跟踪打印直接读当前界面语言。
 //M 1.1.21：挂载结果合成 state 加 error，左栏和启动录像照它原样给，不再自己拼。
 //M 1.1.23：启动录像第一个插件步骤的加载说明改取 plugins/Index.ts 的 loadPlugin（原 Main.ts 的 loadExternalPlugin 搬过去了）。
-export const version = '1.1.23';
+//M 1.1.24：/api/tutorial/canvas 新增端到端数据流转 dataFlow（DataFlow.ts），Source.getCallers 按作用域精准过滤调用方。
+export const version = '1.1.24';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -635,9 +637,10 @@ class Tutorial {
       const trail = await this.getTrail(canvas);
       if (trail === undefined) return reply.code(404).send({ error: `没有画布 ${canvas}：快照文件没有，跟踪行里也没有（没挂 journal，或过期删了）` });
 
-      //M 将按时间串行的步骤摆进道与阶段列生成泳道图。
+      //M 将按时间串行的步骤摆进道与阶段列生成泳道图，并同步产出端到端数据流转与状态变化视图。
       const lanes = lanesModule.getLanes(trail);
-      return { trail, lanes };
+      const dataFlow = dataFlowModule.buildTrailDataFlow(trail);
+      return { trail, lanes, dataFlow };
     });
 
     //M 登记步骤快照查询接口，读取画布上指定步骤那一刻的运行时变量。

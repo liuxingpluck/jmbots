@@ -128,6 +128,12 @@ export function formatTraceValue(value: unknown, max: number): string {
 }
 
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  return value as Record<string, unknown>;
+}
+
+
 /**
  * 像会话的东西：有 id 和 row（Session）。
  * @param value 事件的一个参数，或参数里的 session。
@@ -225,12 +231,58 @@ export function buildDispatchLine(ctx: cordis.Context, mode: string, event: stri
     }
   }
 
-  //M 会话的三个事件带着什么，这里认得，顺带记下；别的事件只记名字、听的人、会话。
-  //M session/change：记状态和回话。
+  //M 会话的几个核心事件带着什么，这里认得，顺带记下结构化数值与状态（不记隐私正文或密钥）。
+  const firstObj = asRecord(args[0]);
+  //M session/before-model：记录进入关口一时的模型、思考档、初始 system 段数、初始工具数与历史条数。
+  if (event === 'session/before-model' && firstObj !== undefined) {
+    const ses = sessionLike(firstObj['session']);
+    if (ses !== undefined) {
+      if (typeof ses.row['kind'] === 'string') line.vars['sessionKind'] = ses.row['kind'];
+      if (typeof ses.row['steps'] === 'number') line.vars['step'] = ses.row['steps'];
+    }
+    if (typeof firstObj['model'] === 'string') line.vars['model'] = firstObj['model'];
+    if (typeof firstObj['thinking'] === 'string') line.vars['thinking'] = firstObj['thinking'];
+    if (Array.isArray(firstObj['system'])) line.vars['systemBefore'] = firstObj['system'].length;
+    if (Array.isArray(firstObj['tools'])) line.vars['toolsCount'] = firstObj['tools'].length;
+    if (Array.isArray(firstObj['messages'])) line.vars['messageCount'] = firstObj['messages'].length;
+  }
+
+  //M session/after-model：记录关口二时加工后的提示词段数、工具数及回答模型来源。
+  if (event === 'session/after-model' && firstObj !== undefined) {
+    if (typeof firstObj['model'] === 'string') line.vars['model'] = firstObj['model'];
+    if (Array.isArray(firstObj['system'])) line.vars['systemAfter'] = firstObj['system'].length;
+    if (Array.isArray(firstObj['tools'])) line.vars['toolsCount'] = firstObj['tools'].length;
+    if (Array.isArray(firstObj['messages'])) line.vars['messageCount'] = firstObj['messages'].length;
+    const answer = firstObj['answer'] as piAi.AssistantMessage | undefined;
+    if (answer !== undefined && typeof answer.provider === 'string' && typeof answer.model === 'string') {
+      line.vars['answeredBy'] = `${answer.provider}/${answer.model}`;
+    }
+  }
+
+  //M session/before-tool 与 session/after-tool：记录工具名与执行成败。
+  if ((event === 'session/before-tool' || event === 'session/after-tool') && firstObj !== undefined) {
+    const call = asRecord(firstObj['call']);
+    if (call !== undefined && typeof call['name'] === 'string') {
+      line.vars['tool'] = call['name'];
+    }
+    const outcome = asRecord(firstObj['outcome']);
+    if (outcome !== undefined && typeof outcome['isError'] === 'boolean') {
+      line.vars['failed'] = outcome['isError'];
+    }
+  }
+
+  //M session/change：记前后状态、会话种类、消息条数、回话字数及截短回话。
   if (event === 'session/change') {
     const session = sessionLike(args[0]);
+    if (typeof args[1] === 'string') {
+      line.vars['stateBefore'] = args[1];
+    }
     if (session !== undefined) {
       line.vars['state'] = session.row['state'];
+      if (typeof session.row['kind'] === 'string') line.vars['sessionKind'] = session.row['kind'];
+      if (typeof session.row['steps'] === 'number') line.vars['step'] = session.row['steps'];
+      if (Array.isArray(session.row['messages'])) line.vars['messageCount'] = session.row['messages'].length;
+      if (typeof session.row['reply'] === 'string') line.vars['replyLength'] = session.row['reply'].length;
       line.vars['reply'] = formatTraceValue(session.row['reply'], max);
     }
   }
