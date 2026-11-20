@@ -122,7 +122,7 @@ export default eslintConfig.defineConfig([
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        project: ['./tsconfig.check.json'],
+        project: ['./tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -165,7 +165,7 @@ export default eslintConfig.defineConfig([
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        project: ['./tsconfig.src7.json'],
+        project: ['./tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },

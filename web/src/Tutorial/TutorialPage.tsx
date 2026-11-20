@@ -138,6 +138,8 @@ const SENTINEL_FIRST = '__FIRST__';
 
 /** 插件状态 → 一句话说明。 */
 const STATE_WORDS: Record<string, string> = {
+  missing: '找不到插件',
+  mounting: '正在挂载',
   ok: '挂上了',
   failed: '没挂上',
   waiting: '挂了但缺服务，没开工',
@@ -687,6 +689,8 @@ function PluginView(props: {
   onSelectPlugin: (name: string) => void;
 }): JSX.Element {
   const { plugin } = props;
+  //M 插件状态沿用独立教程页的语言偏好。
+  const t = mind.useMindWords();
   //M 读取选中插件的 说明.md Markdown 文本准备拆分多页签展示。
   const readme = usePluginReadme(plugin.name);
   let version = '还没写版本号';
@@ -722,7 +726,8 @@ function PluginView(props: {
     resolvedTab = 'overview';
   }
 
-  let stateText = STATE_WORDS[plugin.state] ?? plugin.state;
+  const stateWord = STATE_WORDS[plugin.state] ?? plugin.state;
+  let stateText = t(stateWord);
   if (plugin.kind === 'skeleton') {
     stateText = '骨架常驻';
   }
@@ -1509,10 +1514,14 @@ export function TutorialPage(): JSX.Element {
       if (item.kind === 'skeleton') return false;
       if (!hasSearch) return true;
 
-      const stateWord = (STATE_WORDS[item.state] ?? item.state).toLowerCase();
-      return item.name.toLowerCase().includes(query) || stateWord.includes(query);
+      //M 状态搜索保留原文，也能按当前看到的译文匹配。
+      const name = item.name.toLowerCase();
+      const stateWord = STATE_WORDS[item.state] ?? item.state;
+      const original = stateWord.toLowerCase();
+      const translated = t(stateWord).toLowerCase();
+      return name.includes(query) || original.includes(query) || translated.includes(query);
     });
-  }, [hasSearch, pluginList, query]);
+  }, [hasSearch, pluginList, query, t]);
 
   const toggleGroup = (key: keyof GroupOpenState): void => {
     setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -1949,7 +1958,8 @@ export function TutorialPage(): JSX.Element {
     if (resolvedPluginName === plugin.name) {
       itemClass = 'tu-nav-item active';
     }
-    let tip = STATE_WORDS[plugin.state] ?? plugin.state;
+    const stateWord = STATE_WORDS[plugin.state] ?? plugin.state;
+    let tip = t(stateWord);
     if (plugin.kind === 'skeleton') {
       tip = `系统骨架（${plugin.name}）`;
     }

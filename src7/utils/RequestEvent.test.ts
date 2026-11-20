@@ -6,7 +6,7 @@
  *   4. abort：等待中途中止与传入已中止信号均立即返回 'aborted'。
  * 跑法：bun test ./src7/utils/RequestEvent.test.ts
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import * as cordis from 'cordis';
 import { isUnsure, onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope } from './RequestEvent.ts';
 
@@ -54,6 +54,53 @@ function createWorld(): cordis.Context {
 
 
 describe('RequestEvent 通用请求-回执', () => {
+  test('省略 onFallback 时回 reply 或 why，处理异常附上详情', async () => {
+    const ctx = createWorld();
+    const payload = { value: 'echo' };
+    const missed = await requestEvent(ctx, 'test/req', 'test/res', payload);
+    expect(missed).toEqual({ why: 'unhandled' });
+
+    onRequestEvent(ctx, 'test/req', 'test/res', (req) => {
+      if (req.value === 'error') throw new Error('处理失败');
+
+      return { ok: true, answer: req.value };
+    });
+
+    const answered = await requestEvent(ctx, 'test/req', 'test/res', payload);
+    expect(answered).toEqual({ reply: { ok: true, answer: 'echo', requestId: expect.any(String) } });
+    const error = { value: 'error' };
+    const failed = await requestEvent(ctx, 'test/req', 'test/res', error);
+    expect(failed).toEqual({ why: 'error', detail: '处理失败' });
+  });
+
+  test('warnAfterMs 达到后只记一次警告，继续等待实际回执', async () => {
+    const ctx = createWorld();
+    const release = Promise.withResolvers<void>();
+    const warnings = spyOn(console, 'warn').mockImplementation(() => {});
+    closers.push(() => {
+      release.resolve();
+      warnings.mockRestore();
+    });
+    onRequestEvent(ctx, 'test/req', 'test/res', async (req) => {
+      await release.promise;
+      return { ok: true, answer: req.value };
+    });
+    const payload = { value: '后续回执' };
+    const options = { warnAfterMs: 5 };
+    const before = ctx.events._hooks['test/res']?.length ?? 0;
+    const pending = requestEvent(ctx, 'test/req', 'test/res', payload, options);
+    //M 报警定时器不保持进程存活，测试用自己的等待维持事件循环。
+    await Bun.sleep(25);
+    const warning = warnings.mock.calls[0]?.[0];
+    expect(warning).toContain('test/req 回执已达 5 毫秒');
+    expect(ctx.events._hooks['test/res']?.length).toBe(before + 1);
+    expect(warnings).toHaveBeenCalledTimes(1);
+    release.resolve();
+    const answered = await pending;
+    expect(answered.reply).toMatchObject({ answer: payload.value });
+    expect(ctx.events._hooks['test/res']?.length ?? 0).toBe(before);
+  });
+
   test('有人答：支持异步处理、并发多请求不串台，且完成后撤回临时监听', async () => {
     const ctx = createWorld();
     onRequestEvent(ctx, 'test/req', 'test/res', async (req) => {

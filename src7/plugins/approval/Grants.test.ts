@@ -213,6 +213,29 @@ describe('群绑目录：群里谁说话都在群的目录里有 builder 权限'
 });
 
 
+describe('查库出错：不挡 bots 认领，外人自带的授权照样删', () => {
+  test('库锁住了：后面挂的监听（假 bots）照样收到；外人地址里自带的 grants 删掉，按 guest 走', async () => {
+    //M 假 bots：和真的一样不 prepend，排在 approval 后面；收到就记下。
+    const claimed: string[] = [];
+    app.on('channel/mention', (message) => {
+      claimed.push(message.text);
+    });
+
+    //M 库锁住了：approval_grants 查不了。
+    const resources = app.get('resources') as unknown as FakeResources;
+    resources.db.query = () => {
+      throw new Error('database is locked');
+    };
+
+    const forged = await inbound({ ...GUEST, grants: { dirs: [OUTSIDE] } });
+    expect(claimed).toEqual(['帮我把论文抽成文字']);
+    expect(forged.address['grants']).toBeUndefined();
+    expect(forged.role).toBe('guest');
+    expect(forged.address['workspace']).toBe(GUEST_DIR);
+  });
+});
+
+
 describe('授权目录往下延伸：子目录放行、出目录拒绝、.. 绕不出去', () => {
   test('外人（confined）命令：授权目录和子目录里程序规则放行；出了目录、.. 跳出去照旧审（审不过直接拒）', async () => {
     const guest = (await inbound({ ...GUEST })).address;

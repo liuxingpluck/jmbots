@@ -66,7 +66,7 @@ interface RelayReplyRequest extends events.RequestEnvelope {
 }
 
 /** 已保存的选择和它的收件方，同一个投递键可以补投。 */
-interface ChosenNotice {
+interface ChosenNotice extends events.RequestEnvelope {
   /** 节点号。 */
   node: string;
   /** 选项号。 */
@@ -84,7 +84,7 @@ interface ChosenNotice {
 }
 
 /** 唯一接收方处理已定通知后交回的状态。 */
-interface DecisionDelivery {
+interface DecisionDelivery extends events.ResultEnvelope {
   /** 接收方已确认收下。 */
   ok: boolean;
   /** 外部助手的收件编号。 */
@@ -116,7 +116,15 @@ declare module 'cordis' {
      *   src7/plugins/work-decision/Routes.ts 的 mount
      *   src7/plugins/relay/index.ts 的 Relay.constructor
      */
-    'work-decision/decided'(notice: ChosenNotice): void | DecisionDelivery | Promise<void | DecisionDelivery>;
+    'work-decision/decided'(notice: ChosenNotice): void | Promise<void>;
+    /**
+     * 原会话或外部助手回送选择的投递结果，按 requestId 配对。
+     * 谁发：
+     *   src7/plugins/work-decision/Routes.ts 的 mount
+     *   src7/plugins/relay/index.ts 的 Relay.constructor
+     * 谁接：src7/plugins/work-decision/Routes.ts 的 deliverDecision
+     */
+    'work-decision/decided-result'(result: DecisionDelivery): void;
     /**
      * 留言或任务通知交给 relay，或者把 relay 已收的回话写回工作决策。
      * 谁发：
@@ -186,8 +194,11 @@ export function mount(
     return { ok: true };
   }, replyOptions);
 
-  ctx.on('work-decision/decided', async (decision) => {
-    if (decision.asker.kind !== 'session') return;
+  const sessionDecisionOptions = {
+    filter: (decision: ChosenNotice) => decision.asker.kind === 'session',
+  };
+  events.onRequestEvent(ctx, 'work-decision/decided', 'work-decision/decided-result', async (decision) => {
+    if (decision.asker.kind !== 'session') return { ok: false };
 
     //M 已定选项按稳定键排回原会话，重复入队沿用机器人结果队列的去重。
     const input: dispatch.ResultInput = {
@@ -197,16 +208,17 @@ export function mount(
       payload: { text: decision.text, files: [] },
     };
     const request = { action: 'accept-result', input } as const;
-    const options = { timeoutMs: 5000, onFallback: () => ({ requestId: '', ok: false }) };
-    //M 同一份选择排给原会话，等机器人确认入队。
+    const options = { warnAfterMs: 5000 };
+    //M 同一份选择排给原会话，等本机机器人确认入队。
     const result = await events.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
     //G 回执未确认时保留补投机会。
-    if (!result.ok || result.receipt === undefined) return { ok: false, uncertain: events.isUnsure(result) };
+    if (result.why !== undefined) return { ok: false, uncertain: result.why !== 'unhandled' };
+    if (!result.reply.ok || result.reply.receipt === undefined) return { ok: false };
 
     //M 记住已入队，后续再点也不会重复唤醒已处理的会话。
     store.ack(decision.node);
     return { ok: true, queued: true };
-  });
+  }, sessionDecisionOptions);
 
   //M 插件和网页用同一份存储。投递发生在快照和历史提交以后。
   const deliverTasks = async (tasks: readonly types.DecisionTaskChange[], revision: number) => {
@@ -483,20 +495,21 @@ async function deliverDecision(
   const decision = { node: node.id, option: option.id, title: node.title, asker, key, text, note: note?.id };
 
   //M 只有符合提问方的监听者接管本次通知，重复请求沿用同一投递键。
-  try {
-    const result = await ctx.serial('work-decision/decided', decision);
-    if (result === undefined) return RETRY;
-    if (result.ok && result.id !== undefined) return { relayId: result.id };
-    if (result.ok && result.queued === true) return { queued: true };
-    if (result.uncertain === true) return { ...RETRY, error: RELAY_UNCERTAIN };
-
-    return RETRY;
-  } catch (error) {
+  const asked = await events.requestEvent(ctx, 'work-decision/decided', 'work-decision/decided-result', decision);
+  if (asked.why === 'unhandled') return RETRY;
+  if (asked.why !== undefined) {
     //M 记录回送异常并交回变化接口供查询。
-    const message = textModule.getErrorMessage(error);
+    const message = asked.detail ?? asked.why;
     console.error(`work-decision：选择回送失败，${message}`);
     return { ...RETRY, error: RELAY_UNCERTAIN };
   }
+
+  const result = asked.reply;
+  if (result.ok && result.id !== undefined) return { relayId: result.id };
+  if (result.ok && result.queued === true) return { queued: true };
+  if (result.uncertain === true) return { ...RETRY, error: RELAY_UNCERTAIN };
+
+  return RETRY;
 }
 
 /** 只在收到确切收件号时标为投递成功。未确认时可从变化接口只读查询。 */

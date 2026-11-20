@@ -21,7 +21,8 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 /** 插件名。 */
 export const name = 'settings';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.0.8';
+//M 1.0.9：关闭 HTTP 按回执和等待结果处理。
+export const version = '1.0.9';
 
 /** 用到的服务：resources 读配置，http 登记路由，bots 查重。新建机器人和请基地重启走事件。 */
 export const inject = ['resources', 'http'];
@@ -326,9 +327,6 @@ class Settings {
 
     //G 接单状态未知时保留停止占用，并报告事件失败原因。
     if (requestEventModule.isUnsure(result)) throw new Error(`HTTP 关闭结果不确定（${result.error}）`);
-
-    //G 处理方已开始关闭但等待到期，同样无法确认监听是否已释放。
-    if (result.error === '等待 HTTP 关闭超时') throw new Error('HTTP 关闭结果不确定，请核对运行状态');
 
     //G HTTP 没有确认释放端口时，不启动替代进程。
     throw new Error(result.error ?? 'HTTP 未确认关闭');

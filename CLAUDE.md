@@ -126,7 +126,7 @@
 
 - 项目在 `F:\aidata\source\jmbots`，入口 `src7/Main.ts`，骨架和“一条消息怎么走”见 `src7/README.md`，插件见 `src7/docs/插件地图.md`。
 - 运行时目录 `F:\aidata\AIJMBots\jmbotsData`：现在是 src7 在用的数据（用户 11-14 13:37 EST：原来的 `jmbotsDataS7` 改名成 `jmbotsData`，原来的正式数据改名成 `jmbotsDataS4`，**`jmbotsDataS4` 不碰**）；基地 `jmbots.exe` 在上一层 `F:\aidata\AIJMBots`。目录里有：`bots/<机器人>/`（`message/` 一条消息一个文件夹，`workspace/`，`memory/`）、`skills/`、`memory/`（公共记忆）、`prompts/`、`integrations/`、`data/`（`data/index/libs/` 记忆库，`data/index/rag/` RAG 索引，`data/logs/` 日志）、`updates/`。给 jmbots 写的一次性脚本放这里；编译、下载用的缓存放 `F:\aidata\cache\`，不放 C 盘。
-- 界面（设计见 `docs/界面/01_界面设计.md`，方向见 `docs/界面/02_一个程序跑起来的规划.md`）：`local/` 是 Rust（Tauri）写的**基地** `jmbots.exe`，双击开窗口装载后端托管的网页，带托盘和命令行，memorycli 作为库融合进来，自己的 HTTP 接口提供记忆搜索和 RAG（取代独立的 memorycli 服务）；`web/` 是 React + antd + Tiptap 的网页，Bun 后端托管 `dist/web`（`bun run build:web`），浏览器单开也能用。
+- 界面（设计见 `docs/界面/01_界面设计.md`，方向见 `docs/界面/02_一个程序跑起来的规划.md`）：`local/` 是 Rust（Tauri）写的**基地** `jmbots.exe`，双击开窗口装载后端托管的网页，带托盘和命令行，并托管独立的记忆服务 jmbots-memory（memsvc，30087，提供记忆搜索和 RAG）；`web/` 是 React + antd + Tiptap 的网页，Bun 后端托管 `dist/web`（`bun run build:web`），浏览器单开也能用。
 
 ## 和 jmbots 一起干活
 

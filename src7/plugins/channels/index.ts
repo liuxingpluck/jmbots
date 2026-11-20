@@ -14,6 +14,8 @@
  *   - channel/reply(request) ↔ channel/replied(event)：所有发出去的话都走它（回复工具、零次兜底、审批直回、按地址发的自动回话、relay 回信、
  *     本人批准的主动发件），匹配的渠道发完回发回执，回执带着请求本身；
  *   - channel/recall(event)：渠道确认原消息撤回后发出，bots 移除排队消息并通知正在处理它的会话。
+ * “谁接”由 ztools/check-events/Check_Event_Docs.ts 按文件名排，实际监听顺序看教程页事件行的 listeners。
+ * Cordis 把 prepend 监听放在前面，私聊和群里叫到机器人时，approval 的 Grants 与 Approval 都先于 bots。
  */
 import type * as messageModule from './Message.ts';
 import type * as replyModule from './Reply.ts';
@@ -34,7 +36,7 @@ export * from './TextReply.ts';
 //M 1.7.0：聊天归档也听 channel/history，拉回的群历史写进聊天 MD。
 //M 1.8.0：说话的是谁（isOwnerTurn、getSpeakerRole、isGroup）从 utils/Workspace.ts 挪进 Message.ts；删 resolveLegacyRole。
 //M 1.8.1：明确按地址发的渠道协议用语。
-export const version = '1.8.1';
+export const version = '1.8.2';
 
 
 declare module 'cordis' {
@@ -45,7 +47,6 @@ declare module 'cordis' {
      * 各渠道（cli、feishu、programs、voice、web-api、wechat）都经 emitInbound 发。
      * 谁发：src7/plugins/channels/Message.ts 的 emitInbound
      * 谁接：
-     *   src7/plugins/approval/Grants.ts 的 Grants.constructor
      *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
@@ -62,7 +63,6 @@ declare module 'cordis' {
      * 各渠道（feishu、programs、wechat）经 emitInbound 发。
      * 谁发：src7/plugins/channels/Message.ts 的 emitInbound
      * 谁接：
-     *   src7/plugins/approval/Grants.ts 的 Grants.constructor
      *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
@@ -74,12 +74,12 @@ declare module 'cordis' {
       control?: messageModule.ChannelMessageControl,
     ): void | Promise<void>;
     /**
-     * 只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不审批它，只由 Grants 给地址写上授权目录。
+     * 只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不审批它，只给地址写上授权目录（Grants.applyMessage）。
      * bots 把 targetBots 里的机器人记进前台当背景或判断要不要接（targetBots 空的谁都不进）；memory、网页照记。
      * 各渠道（feishu、programs、voice）经 emitInbound 发。
      * 谁发：src7/plugins/channels/Message.ts 的 emitInbound
      * 谁接：
-     *   src7/plugins/approval/Grants.ts 的 Grants.constructor
+     *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
      *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex

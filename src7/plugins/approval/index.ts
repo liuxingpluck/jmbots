@@ -47,7 +47,9 @@ export const name = 'approval';
 //M   带授权目录的外人，命令出了执行目录和授权目录规则直接拒。
 //M 1.2.13：本人、档位、群改问 channels 的 isOwnerTurn、getSpeakerRole、isGroup；isOwner 改名 isMarkedOwner（有意更严，判断不变）。
 //M 1.2.14：工具档位说明里写明 feishu_recall（撤回机器人自己的消息）只有本人那一轮能用，两张外人表不加它；程序不变。
-export const version = '1.2.14';
+//M 1.2.15：每个入站事件只挂一个监听（先认批复、再过目录授权，先后写在代码里）；Grants 不再自己听；
+//M   外人地址里原有的 grants 先删再查库，查库出错只打日志、这一轮当没有授权，不再挡 bots 认领（云端 19 第 3 条）。
+export const version = '1.2.15';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -406,9 +408,10 @@ export class Approval extends cordis.Service {
 
   /**
    * 登记成 ctx.approval（cordis.Service 的构造函数做的：super(ctx, '名字') 就是“把我挂到 ctx 上叫这个名字”），
-   * 建表，听 approval/request（别的插件请审核办事）、channel/direct、channel/mention 和 bot/receive（认文字回答）、
+   * 建表，听 approval/request（别的插件请审核办事）、channel/direct、channel/mention（先认批复，再过目录授权）、
+   * channel/listen（只过目录授权）、bot/receive（认文字回答）、
    * session/before-model（给审核小会话加提示词；补当轮授权、说授权目录；guest、builder 说的这一轮只给这一档的工具）
-   * 和 session/before-tool（这一档没有的工具不让执行）。目录授权的表和进来的话由 Grants 自己听。
+   * 和 session/before-tool（这一档没有的工具不让执行）。目录授权的表由 Grants 自己建。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
    */
@@ -416,7 +419,7 @@ export class Approval extends cordis.Service {
     //M 先把本服务登记成 ctx.approval。
     super(ctx, 'approval');
 
-    //M 目录授权：建表，听进来的话（prepend，在 bots 认领前把授权目录写进地址）。
+    //M 目录授权：建表；进来的话由下面的入站监听调 applyMessage。
     this.grants = new grantsModule.Grants(ctx);
 
     //M 建待确认表（没有才建）。
@@ -443,9 +446,23 @@ export class Approval extends cordis.Service {
       requestOptions,
     );
 
-    //M 私聊、群里叫了机器人的话里认批复（“同意 3”），消息级只消费一次：N 个机器人共存时不会各自批准一遍。只听的话（channel/listen）不看。
-    ctx.on('channel/direct', (message, control) => this.onChannelMessage(message, control), { prepend: true });
-    ctx.on('channel/mention', (message, control) => this.onChannelMessage(message, control), { prepend: true });
+    //M 进来的话：每个事件只挂一个监听，先后写在这里，不靠挂载顺序（prepend：都在 bots 认领、抄地址之前）。
+    //M   私聊、群里叫了机器人：先认批复（“同意 3”，消息级只消费一次，N 个机器人共存时不会各自批准一遍），
+    //M   再过目录授权（Grants.applyMessage 改地址，bots 认领时照抄；它不往外抛）。
+    const onCalled = async (
+      message: protocol.ChannelMessage,
+      control?: protocol.ChannelMessageControl,
+    ): Promise<void> => {
+      await this.onChannelMessage(message, control);
+      this.grants.applyMessage(message);
+    };
+    ctx.on('channel/direct', onCalled, { prepend: true });
+    ctx.on('channel/mention', onCalled, { prepend: true });
+
+    //M 只听的话：没叫机器人，不认批复，只过目录授权（前台判断接了以后也照这个地址干活）。
+    ctx.on('channel/listen', (message) => {
+      this.grants.applyMessage(message);
+    }, { prepend: true });
 
     //M 仍排在前面，只是为了先认出“同意 3”这类话；批不批准由下面自己核对说话人，不靠监听顺序，也不看前面有没有分好会话。
     ctx.on('bot/receive', (event) => {

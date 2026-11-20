@@ -161,7 +161,7 @@ test('选项先落盘，relay 可重复投递但确认状态只记一次', async
   const { app, ctx } = await setup('中控');
   const calls: string[] = [];
   const notices: string[] = [];
-  ctx.on('work-decision/decided', (notice) => {
+  events.onRequestEvent(ctx, 'work-decision/decided', 'work-decision/decided-result', (notice) => {
     expect(notice.asker).toEqual({ kind: 'helper', name: '中控' });
     expect(notice.key).toBe('release');
     notices.push(notice.option);
@@ -277,7 +277,7 @@ test('写话入口校验一次，只写话不改待定，带选项照点选落�
   const { app, ctx } = await setup('中控');
   const calls: events.StripEnvelope<routesModule.DecisionRelayRequest>[] = [];
   const notices: string[] = [];
-  ctx.on('work-decision/decided', (notice) => {
+  events.onRequestEvent(ctx, 'work-decision/decided', 'work-decision/decided-result', (notice) => {
     notices.push(notice.option);
     calls.push({ action: 'deliver', helper: '中控', node: notice.key, text: notice.text });
     return { ok: true, id: 30 + calls.length };
@@ -390,8 +390,8 @@ test('外部助手提问通知配置中的主人，选择不发给默认中控',
     channel.emitReplied(ctx, request, receipt);
   });
   const decisions: string[] = [];
-  ctx.on('work-decision/decided', (notice) => {
-    if (notice.asker.kind !== 'helper') return;
+  events.onRequestEvent(ctx, 'work-decision/decided', 'work-decision/decided-result', (notice) => {
+    if (notice.asker.kind !== 'helper') return { ok: false };
 
     decisions.push(notice.asker.name);
     return { ok: true, id: 21 };

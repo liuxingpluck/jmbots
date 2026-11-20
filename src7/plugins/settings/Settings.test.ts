@@ -294,7 +294,7 @@ test('探活事件无人应答时返回错误，释放重启入口', async () =>
 test.each([
   { closeResult: { ok: true }, wants: ['inject', 'close', 'close-result', 'spawn', 'exit'] },
   { closeResult: undefined, wants: ['inject', 'close'], stopped: '无人处理 HTTP 关闭请求' },
-  { closeResult: { ok: false, error: '等待 HTTP 关闭超时' }, wants: ['inject', 'close', 'close-result'], stopped: '结果不确定' },
+  { closeResult: { ok: false, error: '关闭监听失败' }, wants: ['inject', 'close', 'close-result'], stopped: '关闭监听失败' },
 ])('只在确认关闭 HTTP 后继续重启', async ({ closeResult, wants, stopped }) => {
   const { ctx, app } = await setup();
   const order: string[] = [];

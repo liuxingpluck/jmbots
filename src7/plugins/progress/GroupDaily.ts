@@ -136,6 +136,9 @@ export function bindReportTools(ctx: cordis.Context): void {
     request.tools = request.tools.filter((tool) => DAILY_TOOLS.has(tool.name));
   });
   ctx.on('session/before-tool', (gate) => {
+    //G 前面的关口已经拒了：不覆盖它写的理由。
+    if (gate.deny !== undefined) return;
+
     //G 只拦日报轮中超出本群检索与回复用途的工具。
     if (!isReportRound(gate.session.row) || DAILY_TOOLS.has(gate.call.name)) return;
 

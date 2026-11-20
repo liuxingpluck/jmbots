@@ -12,7 +12,6 @@
 !/.prettierignore
 !/config.example.yaml
 !/prompts/
-!/memorycli/
 !/src/
 !/scripts/
 !/tests/

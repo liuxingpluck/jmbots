@@ -172,6 +172,11 @@ test('日报请求交给指定机器人、回话发回原群，日报工具只�
     const denied = { session, call: { name: 'read' } } as ToolGate;
     await ctx.serial('session/before-tool', denied);
     expect(denied.deny).toContain('本群');
+
+    //M 前面的关口已经拒了：日报不覆盖，留着先拒的那句理由。
+    const earlier = { session, call: { name: 'read' }, deny: '审核先拒了' } as ToolGate;
+    await ctx.serial('session/before-tool', earlier);
+    expect(earlier.deny).toBe('审核先拒了');
   } finally {
     await ctx.fiber.dispose();
     db.close();

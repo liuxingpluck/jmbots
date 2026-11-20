@@ -3,10 +3,11 @@
  * 这些目录和下面的子目录里读写、跑命令（命令照样过审核规则）、发文件都不用再问本人；出了这些目录照旧。
  *   存：表 approval_grants，一行是“谁 → 一个目录”。谁：人是个人身份（飞书 feishu:<open_id>，别的渠道是客户号），
  *     群是群的客户号（feishu:group:<chat_id>），都照 Rules.ts 的 getSpeaker 算。
- *   进来的话（channel/direct、channel/mention、channel/listen，prepend：在 bots 认领、抄地址之前）：
- *     按说话人、按群查表，写进 origin.address.grants.dirs（utils/Workspace.ts 的 getGrantDirs 读）。
+ *   进来的话（channel/direct、channel/mention、channel/listen；approval 的 index.ts 在它自己的入站监听里调 applyMessage，
+ *     prepend：在 bots 认领、抄地址之前）：外人地址里原有的 grants 先删（一律不认，只有本人的网页消息能带），
+ *     再按说话人、按群查表，写进 origin.address.grants.dirs（utils/Workspace.ts 的 getGrantDirs 读）；查库出错当这一轮没有授权，不往外抛。
  *     外人那一轮升成 builder（approval 照 builder 给工具），工作区换成群绑的目录（群里谁说话都在群的目录里干活），
- *     没有群绑的、原来是 guest 的用他自己的授权目录；地址里原有的 grants 外人一律不认（只有本人的网页消息能带）。
+ *     没有群绑的、原来是 guest 的用他自己的授权目录。
  *   本人这一轮设的授权当轮就生效（用户 #301：说了授权又弹卡片）：写进这场会话现在的回话地址，再按这一轮的 replyRoundKey 记下，
  *     交办出去的后台在 session/before-model（index.ts）照同一个 replyRoundKey 补上。once 的只管这一轮，不存表。
  *   设定入口：模型工具 dir_grant（只有本人那一轮能用；外人的工具档位里没有它，执行前也挡），网页 GET/POST /api/grants。
@@ -20,6 +21,7 @@ import type { Session, SessionMeta } from '../../Sessions.ts';
 import type { Tools } from '../../Tools.ts';
 import * as protocol from '../channels/index.ts';
 import * as checksModule from '../../utils/Checks.ts';
+import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as rules from './Rules.ts';
@@ -84,7 +86,7 @@ export class Grants {
   private readonly turns = new Map<string, string[]>();
 
   /**
-   * 建表，听进来的话（三种都听，prepend：在 bots 认领前把授权写进地址）。
+   * 建表。进来的话不在这里听：approval 的 index.ts 在三个入站事件上各挂一个监听，先认批复、再调 applyMessage。
    * @param ctx approval 插件的 Cordis 上下文：数据库、发 trace。
    */
   constructor(private readonly ctx: cordis.Context) {
@@ -92,24 +94,31 @@ export class Grants {
     ctx.resources.db.exec('CREATE TABLE IF NOT EXISTS approval_grants (id INTEGER PRIMARY KEY AUTOINCREMENT,'
       + ' subject TEXT NOT NULL, label TEXT NOT NULL, dir TEXT NOT NULL, by TEXT NOT NULL, created_at INTEGER NOT NULL,'
       + ' UNIQUE (subject, dir))');
-
-    //M 私聊、群里叫了机器人、只听的话都要写：只听的话前台判断接了以后也照这个地址干活。
-    ctx.on('channel/direct', (message) => this.applyMessage(message), { prepend: true });
-    ctx.on('channel/mention', (message) => this.applyMessage(message), { prepend: true });
-    ctx.on('channel/listen', (message) => this.applyMessage(message), { prepend: true });
   }
 
   /**
-   * 进来一句话：记下见过的人和群，按说话人、按群查授权目录，写进这条话的回话地址（bots 认领时照它抄给每个机器人）。
+   * 进来一句话：外人先删地址里原有的授权，再记下见过的人和群，按说话人、按群查授权目录，
+   * 写进这条话的回话地址（bots 认领时照它抄给每个机器人）。
+   * 私聊、群里叫了机器人、只听的话都要过（只听的话前台判断接了以后也照这个地址干活）：approval 的 index.ts 的入站监听调。
+   * 不往外抛：入站是挨个问（channels 的 emitInbound 用 ctx.serial），这里一抛，这条话就到不了任何机器人。
    * @param message 渠道发来的标准消息；会改它的 origin.address（grants、外人的 role、workspace）和 role。
    */
   applyMessage(message: protocol.ChannelMessage): void {
     const address = message.origin.address;
     const channel = message.origin.channel;
+    const owner = protocol.isOwnerTurn(channel, address);
+
+    //G 外人地址里原有的 grants 一律不认：只有本人的网页消息能带（web-api 入口 checkGrants）。
+    //G   先删、不碰库：后面查库出错时也不会把外人自己带的授权留下。
+    if (!owner) {
+      delete address['grants'];
+    }
+
+    //M 记下见过的人和群（只在内存里）。
     const speaker = rules.getSpeaker(channel, address);
     this.remember(speaker, address);
 
-    //M 群绑的目录：只在群里查（群号就是客户号）。
+    //M 群绑的目录：只在群里查（群号就是客户号）。查库出错 getDirs 打日志、交回空，这一轮当没有授权。
     let groupDirs: string[] = [];
     if (protocol.isGroup(address)) {
       groupDirs = this.getDirs(speaker.customer);
@@ -121,7 +130,7 @@ export class Grants {
     //==========================================================
     //M 本人：原来带的授权（网页、中控发消息时带的）加上库里的，工具、档位都不动
     //==========================================================
-    if (protocol.isOwnerTurn(channel, address)) {
+    if (owner) {
       const ownerDirs = [...workspaceModule.getGrantDirs(address), ...groupDirs, ...personDirs];
       if (ownerDirs.length === 0) return;
 
@@ -131,10 +140,8 @@ export class Grants {
     }
 
     //==========================================================
-    //M 外人：只认库里查到的；查到了就升成 builder，在授权目录里干活
+    //M 外人：只认库里查到的（原有的上面已删）；查到了就升成 builder，在授权目录里干活
     //==========================================================
-    //G 外人地址里原有的 grants 一律不认：只有本人的网页消息能带（web-api 入口 checkGrants）。
-    delete address['grants'];
     const dirs = [...groupDirs, ...personDirs];
     if (dirs.length === 0) return;
 
@@ -475,16 +482,24 @@ export class Grants {
   }
 
   /**
-   * 一个人或群绑的目录，按设的先后。
+   * 一个人或群绑的目录，按设的先后。只有 applyMessage 调：每句进来的话都过这里，所以查库出错不往外抛。
    * @param subject 人或群的身份；空串查不到。
-   * @returns 目录；没有是空数组。
+   * @returns 目录；没有、查库出错都是空数组。
+   * 副作用：查库出错时打一行日志。
    */
   private getDirs(subject: string): string[] {
     if (subject === '') return [];
 
     const sql = 'SELECT dir FROM approval_grants WHERE subject = ? ORDER BY id';
-    const rows = this.ctx.resources.db.query(sql).all(subject) as { dir: string }[];
-    return rows.map((row) => row.dir);
+    try {
+      const rows = this.ctx.resources.db.query(sql).all(subject) as { dir: string }[];
+      return rows.map((row) => row.dir);
+    } catch (error) {
+      //G 库出错（锁住、坏了）：只打日志，这一轮当没有授权；抛出去这条话就到不了机器人。
+      const reason = textModule.getErrorMessage(error);
+      console.error(`approval：目录授权查不了库（${subject}），这一轮当没有授权：${reason}`);
+      return [];
+    }
   }
 
   /**

@@ -198,7 +198,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .tu-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--jm-muted); }
 .tu-dot.ok { background: var(--jm-success); }
 .tu-dot.failed { background: var(--jm-danger); }
-.tu-dot.waiting { background: var(--jm-warning); }
+.tu-dot.waiting, .tu-dot.mounting { background: var(--jm-warning); }
 
 /* 右栏正文标题、元信息与表格。 */
 .tu-doc { max-width: 1120px; min-width: 0; }

@@ -8,7 +8,8 @@ import * as toolsModule from './Tools.ts';
 
 export const name = 'work-decision';
 //M 1.3.6：ask_owner 认本人改问 channels 的 isOwnerTurn（从 utils/Workspace.ts 挪过去的），判断不变。
-export const version = '1.3.6';
+//M 1.3.7：选择回送按请求号等原会话或 relay 的回执。
+export const version = '1.3.7';
 export const inject = ['resources', 'http', 'tools'];
 
 /** 读取配置文本，未设置时保持缺省。 */

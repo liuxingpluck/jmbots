@@ -48,7 +48,8 @@ export const name = 'relay';
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
 //  1.4.7：不再改会话的回话地址（删三处 bots.route）：direct 会话标 quiet，回答、超时提醒都由 relay 照收件地址发 channel/reply。
 //M 1.4.9：决策回信只用收件保存的精确目标，拒绝旧的本人身份配置键。
-export const version = '1.5.0';
+//M 1.5.1：已定选项的收件结果按请求号回发。
+export const version = '1.5.1';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'work-decision';
@@ -334,15 +335,18 @@ export class Relay {
     this.registerTool();
 
     //M 工作决策的选择交回提问方，只有外部助手的选择进入 relay 收件。
-    this.ctx.on('work-decision/decided', (decision) => {
-      if (decision.asker.kind !== 'helper') return;
+    const decisionOptions = {
+      filter: (decision: requestEventModule.EventArg<'work-decision/decided'>) => decision.asker.kind === 'helper',
+    };
+    requestEventModule.onRequestEvent(this.ctx, 'work-decision/decided', 'work-decision/decided-result', (decision) => {
+      if (decision.asker.kind !== 'helper') return { ok: false };
 
       const target = { node: decision.node, note: decision.note };
       const request = {
         action: 'deliver' as const, node: decision.key, helper: decision.asker.name, text: decision.text, target,
       };
       return this.receiveDecision(request);
-    });
+    }, decisionOptions);
 
     //M 收取工作决策的留言、任务变化与归档，relay 回写留言由工作决策插件接收。
     const noteOptions = {
