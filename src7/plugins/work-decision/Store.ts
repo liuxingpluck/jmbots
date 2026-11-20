@@ -300,6 +300,12 @@ export class Store {
     return this.storage.getWorkspace(id);
   }
 
+  /** 读取当前工作决策数据序号，不构造节点列表。 */
+  getRevision(): number {
+    //M 直接取库里的最新变化序号，供 30 秒轻量版本探针使用。
+    return this.storage.getRevision();
+  }
+
   /** 检查库版本，复用尚未变化的快照。 */
   getGraph(): types.DecisionGraph {
     //M 另一个连接提交了变化时重新读库。

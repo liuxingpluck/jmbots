@@ -464,6 +464,10 @@ export function mount(
       const notified = asked.reply?.ok === true;
       return { node, notified };
     });
+
+    const appStartedAt = Date.now();
+    //M 30 秒轻量探针只回启动时刻和数据序号，无变化时不拉完整图。
+    scope.get(`${PREFIX}/version`, () => ({ appStartedAt, dataRev: store.getRevision() }));
   });
 }
 

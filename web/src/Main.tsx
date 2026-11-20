@@ -10,6 +10,7 @@ import * as i18n from './I18n.ts';
 import * as poll from './Poll.ts';
 import * as storeModule from './Store.ts';
 import * as theme from './Theme.ts';
+import * as authGate from './components/AuthGate.tsx';
 import './App.css';
 
 
@@ -27,13 +28,19 @@ if (!rootElement) {
   throw new Error('index.html 里缺少 #root');
 }
 
-//M 在挂载页面前启动后台轮询，第一时间拉回机器人状态、待确认列表和后端版本信息。
-poll.startPolling(store);
-//M 把状态仓库注入 UiContext 并挂载根组件 App，让全站组件共享同一份界面状态。
+/** 通过外网门禁后再启动后台轮询并挂载主应用，本地直连首帧立即执行。 */
+function MainAppShell(): react.JSX.Element {
+  react.useEffect(() => poll.startPolling(store), []);
+  return <appModule.App />;
+}
+
+//M 把状态仓库注入 UiContext，外层套上外网登录门禁壳后挂载根组件 App。
 reactDomClient.createRoot(rootElement).render(
   <react.StrictMode>
-    <context.UiContext.Provider value={store}>
-      <appModule.App />
-    </context.UiContext.Provider>
+    <authGate.AuthGate>
+      <context.UiContext.Provider value={store}>
+        <MainAppShell />
+      </context.UiContext.Provider>
+    </authGate.AuthGate>
   </react.StrictMode>,
 );

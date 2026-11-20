@@ -341,6 +341,6 @@ export function getLicenseLabel(state: string | undefined): string {
   if (state === 'licensed') return '已授权';
   if (state === 'expired') return '过期';
   if (state === 'free') return '不需要';
-  if (state === 'none') return '不需要';
+  if (state === 'none') return '未授权';
   return '未知';
 }

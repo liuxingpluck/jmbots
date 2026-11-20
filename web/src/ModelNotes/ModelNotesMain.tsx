@@ -1,6 +1,7 @@
 /** 模型介绍和评价页的入口（web/model-notes.html，挂在 /model-notes/）。2026-11-17。 */
 import * as client from 'react-dom/client';
 import * as theme from '../Theme.ts';
+import { AuthGate } from '../components/AuthGate.tsx';
 import { ModelNotesPage } from './ModelNotesPage.tsx';
 import './ModelNotes.css';
 
@@ -9,4 +10,8 @@ const themeName = theme.loadThemeName(window.localStorage);
 const spec = theme.THEMES[themeName];
 theme.applyTheme(document.documentElement, spec);
 
-client.createRoot(document.getElementById('root')!).render(<ModelNotesPage />);
+client.createRoot(document.getElementById('root')!).render(
+  <AuthGate>
+    <ModelNotesPage />
+  </AuthGate>,
+);

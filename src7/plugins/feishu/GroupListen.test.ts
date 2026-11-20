@@ -290,7 +290,7 @@ function world(decision?: FakeDecision, extraBots: string[] = []): World {
   const ctx = fake as unknown as cordis.Context;
 
   //M relay 听 bot/receive；前台不听，由假 bots.receive 问完 bot/receive 再交给它（照 Bot.receive）。
-  relayModule.apply(ctx, { helpers: [{ name: 'Claude', prefixes: ['cc'] }] });
+  relayModule.apply(ctx, { helpers: [{ name: 'Claude', prefixes: ['cc', '哈基米'] }] });
   const desk = new FrontDesk(ctx, { recent: 50 });
   dispatch = new Dispatch(ctx, desk, undefined);
   //M 桥接渠道发的三个进来的事件到现有假环境（不启动真 Bots 服务）：三个事件挂同一个处理，照 Bots.onChannelMessage。
@@ -804,5 +804,70 @@ describe('checkConfig 认 judge', () => {
     expect(config.groups.get(JUDGED)?.judgeHelper).toBe('Claude');
     expect(config.groups.get(PLAIN)?.judgeHelper).toBeUndefined();
     expect(() => getConfig({ groups: [{ chat_id: PLAIN, listen: 'judge', judge_helper: '' }] })).toThrow('judge_helper');
+  });
+});
+
+describe('post 富文本 + 引用回复 + @提及 转 relay', () => {
+  test('post 富文本带引用和 @本机器人 + 多个空格 + cc / 哈基米，剥掉对本机器人的 @ 并稳定转入 relay', async () => {
+    const made = world();
+    const inside = made.feishu as unknown as {
+      apps: Map<string, { client: { im: { v1: { message: { get: (arg: unknown) => Promise<unknown> } } } } }>;
+      inbound: { onMessage: (appId: string, data: unknown) => Promise<void> };
+    };
+    const app = inside.apps.get(APP_ID)!;
+    app.client.im.v1.message.get = () => Promise.resolve({
+      data: { items: [{ msg_type: 'text', body: { content: JSON.stringify({ text: '上一轮讨论' }) } }] },
+    });
+
+    //M 场景 1：对方机器人发 post + 引用 + @本机器人 + 多个空格 + cc。
+    await inside.inbound.onMessage(APP_ID, {
+      sender: { sender_id: { open_id: FRIEND }, sender_type: 'app' },
+      message: {
+        message_id: 'om_post_cc',
+        parent_id: 'om_prev_1',
+        chat_id: PLAIN,
+        chat_type: 'group',
+        message_type: 'post',
+        content: JSON.stringify({
+          content: [[
+            { tag: 'at', user_id: '@_user_1', user_name: BOT },
+            { tag: 'text', text: '   cc 额度心疼，直接过招' },
+          ]],
+        }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: BOT }],
+      },
+    });
+
+    //M 场景 2：post 同时 @他人 和 @本机器人 + 引用 + 哈基米紧跟英文字母（保留 @他人，仍命中 relay）。
+    await inside.inbound.onMessage(APP_ID, {
+      sender: { sender_id: { open_id: OWNER }, sender_type: 'user' },
+      message: {
+        message_id: 'om_post_hjm',
+        parent_id: 'om_prev_2',
+        chat_id: PLAIN,
+        chat_type: 'group',
+        message_type: 'post',
+        content: JSON.stringify({
+          content: [[
+            { tag: 'at', user_id: '@_user_1', user_name: '陈先生' },
+            { tag: 'text', text: ' ' },
+            { tag: 'at', user_id: '@_user_2', user_name: BOT },
+            { tag: 'text', text: '   哈基米a OBB浏览器的那个微信公众号的标签都给它关闭掉' },
+          ]],
+        }),
+        mentions: [
+          { key: '@_user_1', id: { open_id: STRANGER }, name: '陈先生' },
+          { key: '@_user_2', id: { open_id: BOT_OPEN_ID }, name: BOT },
+        ],
+      },
+    });
+
+    //M 两条都进入 relay 会话，没有被前台会话截胡；第一条剥干净了 @周小灵，第二条保留了 @陈先生。
+    expect(made.delivered).toHaveLength(2);
+    expect(made.delivered[0]?.session.row.kind).toBe('relay');
+    expect(made.delivered[0]?.text).toBe('【回复的消息：上一轮讨论】\ncc 额度心疼，直接过招');
+    expect(made.delivered[1]?.session.row.kind).toBe('relay');
+    expect(made.delivered[1]?.text).toBe('【回复的消息：上一轮讨论】\n@陈先生    哈基米a OBB浏览器的那个微信公众号的标签都给它关闭掉');
+    expect(getFront(made, PLAIN)).toBeUndefined();
   });
 });

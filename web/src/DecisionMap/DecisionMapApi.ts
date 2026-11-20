@@ -4,6 +4,14 @@ import * as token from '../Token.ts';
 
 const BASE = '/api/work-decision';
 
+/** 轻量版本探针响应，仅包含进程启动时刻和数据修订号。 */
+export interface DecisionVersion {
+  /** 当前后端路由挂载时刻（毫秒时间戳），换版重启后改变。 */
+  appStartedAt: number;
+  /** 当前工作决策数据修订号，节点、选择、留言或回复变化后递增。 */
+  dataRev: number;
+}
+
 /** 请求并读取决策图接口的 JSON 返回。 */
 async function request<T>(route: string, options?: RequestInit): Promise<T> {
   const endpoint = `${BASE}${route}`;
@@ -12,10 +20,20 @@ async function request<T>(route: string, options?: RequestInit): Promise<T> {
   const address = token.withToken(endpoint, token.TOKEN);
   const response = await fetch(address, options);
   if (!response.ok) {
+    //G 外网或手机首次无令牌访问回 401 时广播事件，页面弹出令牌输入条。
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('jmbots:unauthorized'));
+    }
     const body = await response.json().catch(() => ({})) as { error?: string };
     throw new Error(body.error ?? `请求失败（${response.status}）`);
   }
   return response.json() as Promise<T>;
+}
+
+/** 读取轻量版本探针（约 50B），供每 30 秒无感检查使用。 */
+export function getVersion(signal?: AbortSignal): Promise<DecisionVersion> {
+  //M 只取启动时刻和数据序号，未变化时不拉完整节点图。
+  return request('/version', { signal });
 }
 
 /** 获取当前快照，含中控最近确认的状态。 */

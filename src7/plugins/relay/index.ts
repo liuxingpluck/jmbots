@@ -56,7 +56,8 @@ export const name = 'relay';
 //M 1.5.2：结果投递、决策图回信、发文件使用 reply 或 why；本机请求等回执，飞书发文件暂用原等待上限。
 //M 1.5.3：收件与回信表改走 db 迁移账本（adoptColumn 接管旧列），旧行补值标 //退场：；Relay 构造函数瘦身为纯登记。
 //M 1.5.4：helpers 支持可选展示名 title（内部名 name 不变）；预留 address.relayHelper 群攒批静默转交入口。
-export const version = '1.5.4';
+//M 1.5.5：prefixed 跳过引用及前导 @提及与空白；中文结尾前缀允许直接紧跟英文字母或数字（如“哈基米a OBB”）。
+export const version = '1.5.5';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'work-decision';
@@ -82,10 +83,14 @@ function getChat(customer: string): ChatKind {
 
 
 /**
- * 话开头连续的附件标记和空白（prefixed 认前缀前跳过）。标记照 feishu/Media.ts 的 describe 和图文消息的写法：
- * [图片]、[表情包]、[文件]、[语音…]、[视频…]；还有渠道存附件后写的 @"绝对路径"、@绝对路径（feishu/index.ts:544）。
+ * 话开头连续的附件标记、引用未取到提示、@提及和空白（prefixed 认前缀前跳过）。
+ * 涵盖 [图片]/[表情包]/[文件]/[语音…]/[视频…]/[引用的消息没取到…]、@"绝对路径"/@绝对路径，以及群聊前导的 @名字 空白。
  */
-const ATTACHMENT_MARKS = /^(?:\s|\[(?:图片|表情包|文件|语音[^\]]*|视频[^\]]*)\]|@"[^"]*"|@(?:[A-Za-z]:[\\/]|\/)\S*)*/u;
+const ATTACHMENT_MARKS = new RegExp(
+  '^(?:\\s|\\[(?:图片|表情包|文件|语音[^\\]]*|视频[^\\]]*|引用的消息没取到[^\\]]*)\\]'
+    + '|@"[^"]*"|@(?:[A-Za-z]:[\\\\/]|\\/)\\S*|@\\S+\\s+)*',
+  'u',
+);
 
 
 /** 名单项里 relay 的两种写法：direct 不调模型直接转；model 照常走模型，模型用 relay_send 转。 */
@@ -534,13 +539,17 @@ export class Relay {
     //M 先跳过引用前的附件标记和空白。
     let said = text.replace(ATTACHMENT_MARKS, '');
 
-    //M 引用里也可能有【标题】，数清配对的括号后再跳过，避免把引用中的 cc 当成正文。
-    if (said.startsWith('【回复的消息：')) {
+    //M 引用里也可能有【标题】，数清配对的括号后再跳过（含引用未取到占位），避免把引用中的 cc 当成正文。
+    if (said.startsWith('【回复的消息：') || said.startsWith('【回复的消息未取到】')) {
       let depth = 0;
       for (let index = 0; index < said.length; index += 1) {
         const mark = said[index];
-        if (mark === '【') depth += 1;
-        if (mark === '】') depth -= 1;
+        if (mark === '【') {
+          depth += 1;
+        }
+        if (mark === '】') {
+          depth -= 1;
+        }
         if (depth !== 0) continue;
 
         said = said.slice(index + 1).replace(ATTACHMENT_MARKS, '');
@@ -551,6 +560,8 @@ export class Relay {
     const hits = (prefix: string): boolean => {
       const head = prefix.trim();
       if (said.slice(0, head.length).toLowerCase() !== head.toLowerCase()) return false;
+      //M 中文前缀（如“哈基米”）没有空格分词，后面紧跟英文字母或数字也算命中；英文前缀照旧防 cc123/ccache 误判。
+      if (/\p{Script=Han}$/u.test(head)) return true;
 
       const next = said.charAt(head.length);
       return next === '' || /\p{Script=Han}/u.test(next) || !/[\p{L}\p{N}_]/u.test(next);

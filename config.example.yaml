@@ -75,6 +75,9 @@ server:
   host: 0.0.0.0
   port: 30086
   token: ''
+  # web_auth:                  # 可选：外网反向代理登录鉴权（仅对 Nginx 注入 X-External-Proxy: 1 的请求生效，本机与内网零打扰）
+  #   username: admin
+  #   password_scrypt: ''      # 推荐 scrypt$<saltHex>$<hashHex>（或写 password_sha256 / password）
 
 # 本地壳子（local/ 编出来的 jmbots.exe：只管启动 jmbots-server、自动更新、退出时带走所有子进程）。不写全用默认值。
 # 以前叫 local:，现在写 shell:（两个都写时 shell 为准）；local.services 已去掉，记忆服务和 vgr 由 memory 插件托管。

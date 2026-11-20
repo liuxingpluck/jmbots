@@ -75,7 +75,8 @@ export const name = 'feishu';
 //M   点卡片交给 approval、progress 改 requestEvent 新写法，本机的一问一答不掐表（云端 19 第 1、2 条）。
 //M 1.3.6：groups 每项可写 judge_helper（#318）：listen: judge 的群判定要接话时，地址带 judgeHelper，bots 把这批话转给该外部助手。
 //M 1.3.7：配置校验搬进 Config.ts（改用 Checks.ts 的公共校验）；构造函数只做登记，建表、建客户端、发文件、关连接挪成方法（云端20 第 2、3 条）。
-export const version = '1.3.7';
+//M 1.3.8：post 富文本入站剥除对本机器人的 @名字（保留他人 @提及），at 标签缺 user_name 时回退 user_id 且不叠双 @。
+export const version = '1.3.8';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];

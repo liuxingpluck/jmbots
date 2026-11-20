@@ -4,6 +4,7 @@ import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as longList from '../Shared/LongList.tsx';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as api from './DecisionMapApi.ts';
+import * as drafts from './Drafts.ts';
 import * as words from './Words.ts';
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
@@ -29,6 +30,8 @@ interface DrawerProps {
   send: (text: string, option?: string) => Promise<boolean>;
   /** 进入当前节点的子树。 */
   focus: () => void;
+  /** 切到该节点所属的专题目录视图。 */
+  openTopic?: () => void;
   /** 任务变更后刷新整图。 */
   refresh: () => Promise<void>;
   /** 展开新子项的父节点。 */
@@ -55,7 +58,7 @@ interface NoteListProps {
 }
 
 /** 按时间列出这个节点上用户和中控写过的话；超过 30 条只画看得见的。 */
-function NoteList({ node, scrollParent }: NoteListProps) {
+export function NoteList({ node, scrollParent }: NoteListProps) {
   const notes = node.notes ?? [];
   if (notes.length === 0) return null;
 
@@ -113,7 +116,7 @@ function getLinks(values: string[]): string[] {
 }
 
 /** 当前节点记下的决定来源和当时的选项。 */
-function DecisionHistory({ node }: { node: types.DecisionNode }) {
+export function DecisionHistory({ node }: { node: types.DecisionNode }) {
   //M 先写清谁定的、什么时候定的。
   let actor = '决定人未记录';
   if (node.decidedBy === 'central') actor = '中控定的';
@@ -149,7 +152,9 @@ function DecisionHistory({ node }: { node: types.DecisionNode }) {
 }
 
 /** 侧栏的任务操作。选项和留言继续走各自入口。 */
-function TaskActions({ node, focus, refresh, expand }: Pick<DrawerProps, 'node' | 'focus' | 'refresh' | 'expand'>) {
+export function TaskActions({
+  node, focus, openTopic, refresh, expand,
+}: Pick<DrawerProps, 'node' | 'focus' | 'openTopic' | 'refresh' | 'expand'>) {
   const [adding, setAdding] = react.useState(false);
   const [title, setTitle] = react.useState('');
   const [busy, setBusy] = react.useState(false);
@@ -210,6 +215,9 @@ function TaskActions({ node, focus, refresh, expand }: Pick<DrawerProps, 'node' 
           </select>
         </label>
         <button type="button" className="decision-task-button" data-tree-focus onClick={focus}>{t('只看这棵子树')}</button>
+        {openTopic !== undefined && (
+          <button type="button" className="decision-task-button" onClick={openTopic}>{t('进专题')}</button>
+        )}
         <button type="button" className="decision-task-button" data-task-child onClick={() => setAdding(true)} disabled={adding}>
           {t('加子项')}
         </button>
@@ -228,8 +236,10 @@ function TaskActions({ node, focus, refresh, expand }: Pick<DrawerProps, 'node' 
 }
 
 /** 待定时显示点击即可提交的选项，已定时显示中控接收状态。 */
-export function Drawer({ node, saving, error, close, choose, sending, noteError, send, focus, refresh, expand }: DrawerProps) {
-  const [draft, setDraft] = react.useState('');
+export function Drawer({
+  node, saving, error, close, choose, sending, noteError, send, focus, openTopic, refresh, expand,
+}: DrawerProps) {
+  const [draft, setDraft] = drafts.useNodeDraft(node.id);
   /** 侧栏本身（.decision-drawer 会滚动），交给留言列表当滚动容器。 */
   const [scroller, setScroller] = react.useState<HTMLElement | null>(null);
   const isPending = node.kind === 'pending' && node.status === 'open';
@@ -286,7 +296,7 @@ export function Drawer({ node, saving, error, close, choose, sending, noteError,
       </div>
       <h2 id="decision-drawer-title">{node.title}</h2>
       {node.summary !== '' && <p className="decision-drawer__summary">{node.summary}</p>}
-      <TaskActions node={node} focus={focus} refresh={refresh} expand={expand} />
+      <TaskActions node={node} focus={focus} openTopic={openTopic} refresh={refresh} expand={expand} />
       {node.body && <div className="decision-drawer__body"><markdown.Markdown text={node.body} onOpen={() => undefined} /></div>}
       {isPending && (
         <div className="decision-options" aria-label="可选决定">
@@ -319,7 +329,10 @@ export function Drawer({ node, saving, error, close, choose, sending, noteError,
       {error && <p className="decision-error" role="alert">{error}</p>}
       <NoteList node={node} scrollParent={scroller} />
       <form className="decision-write" onSubmit={submit}>
-        <label htmlFor="decision-write-text">{t('写一句给中控')}</label>
+        <div className="decision-write__head">
+          <label htmlFor="decision-write-text">{t('写一句给中控')}</label>
+          <span className="decision-capsule" title={node.title}>{t('发往')}：{node.title}</span>
+        </div>
         <textarea
           id="decision-write-text"
           value={draft}

@@ -318,11 +318,16 @@ export class FeishuInbound {
     //M 认机器人：每个 @ 认出的机器人名，算不算 @ 了本应用。
     const mentioned = this.getMentions(app, data);
 
-    //M 换成文字，去掉 @ 占位符（rawText 保留带占位符的平台可读全文，丢掉也要记流水）。
+    //M 换成文字，去掉 @ 占位符及富文本里对本应用机器人的 @名字（rawText 保留带 @ 的平台可读全文）。
     const described = media.describe(message.message_type, message.content);
     let body = described.text;
-    for (const mention of message.mentions ?? []) {
-      body = body.replaceAll(mention.key, '');
+    for (const mention of mentioned.standardMentions) {
+      if (mention.token !== undefined) {
+        body = body.replaceAll(mention.token, '');
+      }
+      if (mention.botNames.length > 0 && mention.name !== undefined) {
+        body = body.replaceAll(`@${mention.name}`, '');
+      }
     }
 
     //M 认人、认群：config 里登记的名字优先；群名、人名没登记的，群里再去飞书查。

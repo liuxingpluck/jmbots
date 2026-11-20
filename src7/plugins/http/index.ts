@@ -14,6 +14,7 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as routesModule from './Routes.ts';
 import * as staticModule from './Static.ts';
 import * as tokensModule from './Tokens.ts';
+import * as webAuthModule from './WebAuth.ts';
 import type { PluginStatus } from '../../Resources.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -24,7 +25,8 @@ export const name = 'http';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.3.0：并入原 web 插件（Static.ts 托管网页，Files.ts 文件接口），config.yaml 里不再单列 web。
 //M 1.3.1：/api/health 的 getPluginProblems 从骨架 Resources.ts 搬进本插件（骨架瘦身）。
-export const version = '1.3.1';
+//M 1.3.2：新增外网反向代理 Cookie 登录鉴权（WebAuth.ts，仅对 X-External-Proxy: 1 生效）。
+export const version = '1.3.2';
 
 /** 用到的服务。 */
 export const inject = ['resources'];
@@ -91,6 +93,10 @@ export interface HttpConfig {
    * 2026-11-14 23:50 EST 用户要求网关 192.168.200.1 也免，写在 config 里。
    */
   trustedIps: string[];
+  /** 可选的外网反向代理 Cookie 鉴权规格（仅对 X-External-Proxy: 1 生效）。 */
+  webAuth?: webAuthModule.WebAuthSpec;
+  /** 可选时钟函数，供单测验证登录限速冷却与会话过期。 */
+  now?: () => number;
 }
 
 
@@ -186,10 +192,18 @@ export class Http extends cordis.Service {
   readonly routes: routesModule.RouteInfo[] = [];
 
   /** 不用令牌的路径（整条路径，不带查询参数）；allow 往里加。 */
-  private readonly open = new Set(['/api/health']);
+  private readonly open = new Set([
+    '/api/health',
+    '/api/auth/status',
+    '/api/auth/login',
+    '/api/auth/logout',
+  ]);
 
   /** 令牌表。 */
   private readonly tokens: tokensModule.Tokens;
+
+  /** 外网反向代理会话 Cookie 鉴权器。 */
+  private readonly webAuth: webAuthModule.WebAuth;
 
   /** 仅保存钩子认过身份的请求对象，不保存令牌或客户端可提供的标记。 */
   private readonly verified = new WeakSet<fastify.FastifyRequest>();
@@ -252,6 +266,8 @@ export class Http extends cordis.Service {
     //M 初始化令牌管理器，读取 data/tokens.json 并挂载本机专属的令牌管理接口。
     const file = path.join(this.ctx.resources.ensureRuntimeDir('data'), 'tokens.json');
     this.tokens = new tokensModule.Tokens(this, file, config.token);
+    //M 挂载外网反向代理登录接口（仅当请求带 X-External-Proxy: 1 且配了 web_auth 时启用拦截）。
+    this.webAuth = new webAuthModule.WebAuth(this.app, config.webAuth, config.now);
 
     //M 都挂完了才监听：这时候别的插件的路径都登记好了。
     //M 并入原 web 插件：监听之前先登记文件接口、插件页面和网页兜底路由（Static.ts）。
@@ -346,6 +362,7 @@ export class Http extends cordis.Service {
    * @returns 本机是 true。
    */
   isLocal(request: fastify.FastifyRequest): boolean {
+    if (webAuthModule.isExternalProxyRequest(request)) return false;
     const address = request.ip.replace(/^::ffff:/iu, '');
     return address === '::1' || address.startsWith('127.');
   }
@@ -382,6 +399,19 @@ export class Http extends cordis.Service {
     request: fastify.FastifyRequest,
     reply: fastify.FastifyReply,
   ): Promise<fastify.FastifyReply | undefined> {
+    const route = request.url.split('?')[0] ?? '';
+    //M 路由模式或解码后的路径在要令牌的前缀下，就要令牌（isGuarded 说了为什么两样都查）。
+    const guarded = this.isGuarded(request, route);
+
+    //G 外网代理（X-External-Proxy: 1）且配了 web_auth 时优先走会话 Cookie 鉴权；本机与内网无此头不受影响。
+    const external = await this.webAuth.checkExternal(request, reply, route, guarded);
+    if (external === 'blocked') return reply;
+    if (external === 'pass_verified') {
+      this.verified.add(request);
+      return undefined;
+    }
+    if (external === 'pass_unverified') return undefined;
+
     //M 本机来源直接标为已核验，保持免令牌放行。
     const local = this.isLocal(request);
     if (local) {
@@ -389,9 +419,6 @@ export class Http extends cordis.Service {
       return undefined;
     }
 
-    const route = request.url.split('?')[0] ?? '';
-    //M 路由模式或解码后的路径在要令牌的前缀下，就要令牌（isGuarded 说了为什么两样都查）。
-    const guarded = this.isGuarded(request, route);
     //G 免查路径或未配置任何令牌时照常放行，远程请求没有身份标记。
     if (!guarded || this.open.has(route) || this.tokens.none()) return undefined;
 
@@ -532,10 +559,10 @@ export class Http extends cordis.Service {
  * @throws server 段写得不对时抛错。
  * 副作用：向 `ctx` 注册 `http` 服务实例，并在 `ready` 后监听端口及维护 pid 文件。
  */
-export function apply(ctx: cordis.Context): void {
+export function apply(ctx: cordis.Context, pluginConfig?: unknown): void {
   //M server 段是外面进来的（config.yaml 顶层，和基地共用），在这里校验一次；没有主令牌就当空串。
   const server = (ctx.resources.raw['server'] ?? {}) as {
-    port?: unknown; token?: unknown; host?: unknown; trusted_ips?: unknown;
+    port?: unknown; token?: unknown; host?: unknown; trusted_ips?: unknown; web_auth?: unknown;
   };
   //M 不写 server.port 就报错，不再默认 30086（那是正式运行的端口，免得测试或新目录误占）。
   if (server.port === undefined) {
@@ -559,6 +586,19 @@ export function apply(ctx: cordis.Context): void {
   if (!Array.isArray(trusted) || !trusted.every((item) => typeof item === 'string' && item.trim() !== '')) {
     throw new Error('server.trusted_ips 要写成地址字符串列表，比如 [127.0.0.1, ::1, 192.168.200.1]');
   }
+  //M 可选 web_auth：优先读 server.web_auth，也兼容 plugins[http].config.web_auth。
+  let rawWebAuth = server.web_auth;
+  let webAuthLabel = 'server.web_auth';
+  if (rawWebAuth === undefined && typeof pluginConfig === 'object' && pluginConfig !== null) {
+    rawWebAuth = (pluginConfig as Record<string, unknown>)['web_auth'];
+    webAuthLabel = 'plugins[http].config.web_auth';
+  }
+  let webAuth: webAuthModule.WebAuthSpec | undefined;
+  if (rawWebAuth !== undefined) {
+    const dataDir = ctx.resources.ensureRuntimeDir('data');
+    webAuth = webAuthModule.readWebAuthConfig(rawWebAuth, dataDir, webAuthLabel);
+  }
   //M server 配置校验通过后，实例化 Http 并作为服务挂到 ctx 上供其他插件登记路由。
-  new Http(ctx, { port: port as number, token, host, trustedIps: (trusted as string[]).map((item) => item.trim()) });
+  const trustedIps = (trusted as string[]).map((item) => item.trim());
+  new Http(ctx, { port: port as number, token, host, trustedIps, webAuth });
 }

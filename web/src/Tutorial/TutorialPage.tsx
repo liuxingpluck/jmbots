@@ -2191,6 +2191,20 @@ export function TutorialPage(): JSX.Element {
                   高亮：{route.event} ×
                 </button>
               )}
+              <button
+                type="button"
+                className="tu-link"
+                onClick={() => onSelectReading('08_工作决策工作台.md')}
+              >
+                工作台用法
+              </button>
+              <a
+                className="tu-link"
+                href={withToken('/work-decision/', TOKEN)}
+                style={{ textDecoration: 'none' }}
+              >
+                工作决策
+              </a>
               <a
                 className="tu-link"
                 href={

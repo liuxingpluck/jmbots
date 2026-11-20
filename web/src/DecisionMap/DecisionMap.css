@@ -18,12 +18,11 @@ button { font: inherit; }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue); outline-offset: 4px; }
 
 .decision-page {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: 100%;
   background: #10131a;
 }
-.decision-page:has(.decision-breadcrumb) { grid-template-rows: auto auto minmax(0, 1fr); }
 .decision-breadcrumb {
   display: flex;
   align-items: center;
@@ -96,7 +95,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-pending:hover { border-color: var(--decision-red); }
 .decision-all-clear { color: var(--decision-muted); font-size: 13px; }
 
-.decision-content { display: flex; min-height: 0; min-width: 0; }
+.decision-content { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .decision-projects {
   display: flex;
   flex: 0 0 208px;
@@ -558,4 +557,693 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
     max-height: 69%;
     overscroll-behavior: contain;
   }
+}
+
+/* 顶栏右侧：新版本温和提醒、待拍板数、手动刷新按钮 */
+.decision-bar__right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.decision-refresh {
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid #384459;
+  border-radius: 8px;
+  background: #1b2230;
+  color: #cbd3e2;
+  font-size: 13px;
+  cursor: pointer;
+}
+.decision-refresh:hover:not(:disabled) { border-color: var(--decision-blue); color: #fff; }
+.decision-refresh:disabled { opacity: 0.6; cursor: default; }
+.decision-upgrade-banner {
+  min-height: 36px;
+  padding: 7px 13px;
+  border: 1px solid #b58943;
+  border-radius: 8px;
+  background: #3d3122;
+  color: #fbe0a6;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.decision-upgrade-banner:hover { border-color: var(--decision-gold); background: #4a3b28; }
+
+/* 外网/手机 401 轻量令牌输入条 */
+.decision-token-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 22px;
+  border-bottom: 1px solid #744445;
+  background: #2b1f27;
+  color: #ffd3cf;
+  font-size: 13px;
+}
+.decision-token-bar input {
+  flex: 1 1 180px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #596883;
+  border-radius: 7px;
+  background: #161d29;
+  color: #f2f5fc;
+  font-size: 16px;
+}
+.decision-token-bar button {
+  min-height: 36px;
+  padding: 6px 14px;
+  border: 1px solid #956e38;
+  border-radius: 7px;
+  background: #3a3026;
+  color: #f7d798;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+/* 上下文胶囊与留言节点跳转标签 */
+.decision-write__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 14px;
+}
+.decision-write__head label { margin: 0; }
+.decision-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid #455675;
+  border-radius: 999px;
+  background: #1d283a;
+  color: #d7e4fb;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.decision-capsule__prefix { color: var(--decision-blue); font-weight: 650; flex: none; }
+.decision-capsule__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 210px;
+  font-weight: 600;
+}
+.decision-note--active { border-color: #5b7db1; }
+.decision-notes__placeholder {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed #344157;
+  border-radius: 9px;
+  color: var(--decision-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.decision-note__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.decision-note__node-chip {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid #3f506c;
+  border-radius: 999px;
+  background: #1a2332;
+  color: #a9c7ff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.decision-note__node-chip:hover { border-color: var(--decision-blue); color: #fff; }
+
+/* 四态徽章（待拍板 / 进行中 / 已定 / 已完成） */
+.decision-state-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #3f4b61;
+  background: #202837;
+  color: #c7d1e3;
+  font-size: 12px;
+  font-weight: 660;
+  white-space: nowrap;
+}
+.decision-state-pill[data-state="pending"] {
+  border-color: #84484b;
+  background: #3b242c;
+  color: #ffb2ae;
+}
+.decision-state-pill[data-state="working"] {
+  border-color: #456b99;
+  background: #1f334b;
+  color: #9dc5ff;
+}
+.decision-state-pill[data-state="decided"] {
+  border-color: #4b8a6f;
+  background: #1f3930;
+  color: #8ee6ba;
+}
+.decision-state-pill[data-state="done"] {
+  border-color: #394354;
+  background: #1c222d;
+  color: #95a0b5;
+}
+
+/* 常驻直达中控输入栏（PC 右栏 / 手机底部悬浮） */
+.decision-dock {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #161d29;
+}
+.decision-dock__notes {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 15px;
+}
+.decision-dock__notes .decision-notes h3 { margin-top: 2px; }
+.decision-dock__form {
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 11px 14px 14px;
+  border-top: 1px solid var(--decision-border);
+  background: #141a24;
+}
+.decision-dock__capsule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.decision-dock__capsule-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.decision-write button.decision-capsule__reset,
+.decision-write button.decision-dock__mobile-notes-btn {
+  width: auto;
+  min-height: 26px;
+  padding: 2px 8px;
+  border: 1px solid #44536d;
+  border-radius: 999px;
+  background: #1d2636;
+  color: #c8d4ea;
+  font-size: 12px;
+  font-weight: 550;
+}
+.decision-dock__mobile-notes-btn { display: none; }
+.decision-dock__input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.decision-dock__input-row textarea { min-height: 70px; }
+
+/* 总览画布模式下的常驻直达中控浮栏 */
+.decision-overview-dock {
+  position: absolute;
+  z-index: 4;
+  top: 20px;
+  right: 22px;
+  width: min(345px, calc(100% - 44px));
+  max-height: calc(100% - 71px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #46536a;
+  border-radius: 14px;
+  background: #1b2433f2;
+  box-shadow: 0 12px 48px #070b13aa;
+}
+.decision-overview-dock .decision-dock {
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+}
+
+/* 专题目录视图：PC 三栏（子主题树 | 专题阅读区 | 常驻直达中控） */
+.decision-canvas--topic { background: #11161f; }
+.decision-topic-shell {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr) 340px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.decision-topic-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--decision-border);
+  background: #141a24;
+}
+.decision-topic-sidebar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 14px 10px;
+  border-bottom: 1px solid #232c3d;
+  color: var(--decision-muted);
+  font-size: 12px;
+  font-weight: 660;
+  letter-spacing: 0.04em;
+}
+.decision-topic-sidebar__count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #1f2838;
+  color: #cbd5e8;
+}
+.decision-topic-sidebar__list {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+}
+.decision-topic-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #d4ddef;
+  text-align: left;
+  cursor: pointer;
+}
+.decision-topic-nav-btn:hover { background: #1b2332; }
+.decision-topic-nav-btn[aria-pressed="true"] {
+  border-color: #956e38;
+  background: #362d24;
+  color: #f8dba0;
+}
+.decision-topic-nav-btn__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.decision-topic-nav-btn__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #8e9ab0;
+}
+.decision-topic-nav-btn__dot[data-state="pending"] { background: var(--decision-red); }
+.decision-topic-nav-btn__dot[data-state="working"] { background: var(--decision-blue); }
+.decision-topic-nav-btn__dot[data-state="decided"] { background: var(--decision-green); }
+.decision-topic-nav-btn__dot[data-state="done"] { background: #748096; }
+.decision-topic-nav-btn__title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.decision-topic-nav-btn__badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.decision-topic-badge {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: #1f2838;
+  color: var(--decision-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.decision-topic-badge--pending {
+  background: #42252d;
+  color: #ffb2ae;
+}
+
+.decision-topic-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.decision-topic-mobile-bar { display: none; }
+.decision-topic-mobile-notes { display: none; }
+.decision-topic-shell > .decision-dock {
+  border-left: 1px solid var(--decision-border);
+}
+
+.decision-topic-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  padding: 22px 26px 40px;
+}
+.decision-topic-card,
+.decision-topic-section {
+  padding: 18px 20px;
+  border: 1px solid #2b3548;
+  border-radius: 13px;
+  background: #161e2b;
+}
+.decision-topic-hero__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.decision-topic-hero__badges,
+.decision-topic-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.decision-topic-hero__title {
+  margin: 12px 0 8px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.decision-topic-hero__summary {
+  margin: 0;
+  color: #c5d0e3;
+  font-size: 15px;
+  line-height: 1.65;
+  white-space: pre-line;
+}
+.decision-topic-hero__body { margin-top: 14px; margin-bottom: 0; }
+.decision-topic-hero__refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.decision-ref-tag {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #1f293a;
+  color: var(--decision-muted);
+  font-size: 12px;
+}
+.decision-ref-link { color: var(--decision-blue); font-size: 12px; overflow-wrap: anywhere; }
+
+/* 项目总览下的分主题进度网格 */
+.decision-topic-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.decision-topic-overview-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #323e54;
+  border-radius: 11px;
+  background: #1b2434;
+  color: #e6ecf8;
+  text-align: left;
+  cursor: pointer;
+}
+.decision-topic-overview-card:hover { border-color: var(--decision-gold); background: #212c40; }
+.decision-topic-overview-card[data-state="pending"] { border-color: #7c474b; background: #291f28; }
+.decision-topic-overview-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.decision-topic-overview-card__title { font-size: 16px; line-height: 1.35; }
+.decision-topic-overview-card__summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--decision-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.decision-topic-overview-card__meta { color: #95a4bd; font-size: 12px; }
+
+/* 待拍板置顶区 */
+.decision-topic-pinned {
+  border-color: #794548;
+  background: #231b24;
+}
+.decision-topic-section__title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 680;
+}
+.decision-topic-section__title--pending { color: #ffb2ae; }
+.decision-topic-pinned__list { display: grid; gap: 12px; }
+.decision-topic-pending-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #6b4248;
+  border-radius: 11px;
+  background: #1c1923;
+}
+.decision-topic-pending-card[data-targeted="true"] { border-color: var(--decision-gold); }
+.decision-topic-pending-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 16px;
+}
+.decision-topic-pending-card__summary {
+  margin: 0;
+  color: #cbd5e6;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+/* 四态子任务清单 */
+.decision-topic-tasks__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.decision-topic-tasks__head .decision-topic-section__title { margin: 0; }
+.decision-topic-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.decision-topic-filters button {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid #364359;
+  border-radius: 999px;
+  background: #1b2331;
+  color: #c5d0e3;
+  font-size: 12px;
+  cursor: pointer;
+}
+.decision-topic-filters button[aria-pressed="true"] {
+  border-color: #956e38;
+  background: #3a3026;
+  color: #f7d798;
+}
+.decision-topic-task-list { display: grid; gap: 6px; }
+.decision-topic-task {
+  border: 1px solid #2b364a;
+  border-radius: 10px;
+  background: #1a2332;
+}
+.decision-topic-task[data-state="pending"] { border-color: #6f4246; background: #281e27; }
+.decision-topic-task[data-targeted="true"] { border-color: #6c8ec4; }
+.decision-topic-task__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: #e8eef9;
+  text-align: left;
+  cursor: pointer;
+}
+.decision-topic-task__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.decision-topic-task__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-size: 12px;
+}
+.decision-topic-task__chosen {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--decision-green);
+}
+.decision-topic-task__notes { color: var(--decision-gold); }
+.decision-topic-task__detail {
+  padding: 4px 14px 14px;
+  border-top: 1px solid #293447;
+}
+.decision-topic-task__quick { display: flex; justify-content: flex-end; }
+.decision-topic-add-wrap {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid #273144;
+}
+
+/* 窄屏与手机竖屏自适应（<= 920px 专题目录切为单栏 + 顶部抽屉 + 底部常驻悬浮输入） */
+@media (max-width: 920px) {
+  .decision-topic-shell {
+    display: flex;
+    flex-direction: column;
+  }
+  .decision-topic-sidebar { display: none; }
+  .decision-topic-mobile-bar {
+    display: grid;
+    gap: 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--decision-border);
+    background: #141a24;
+  }
+  .decision-topic-mobile-bar__top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .decision-topic-mobile-bar__current {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-size: 15px;
+  }
+  .decision-topic-mobile-bar__current strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .decision-topic-mobile-chips {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .decision-topic-chip {
+    flex: none;
+    min-height: 32px;
+    padding: 4px 11px;
+    border: 1px solid #364359;
+    border-radius: 999px;
+    background: #1b2331;
+    color: #cbd5e8;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .decision-topic-chip[aria-selected="true"] {
+    border-color: #956e38;
+    background: #3a3026;
+    color: #f8dba0;
+  }
+  .decision-topic-chip__star { color: var(--decision-red); font-weight: 700; }
+  .decision-topic-mobile-drawer {
+    display: grid;
+    gap: 4px;
+    max-height: 46vh;
+    overflow: auto;
+    padding: 6px;
+    border: 1px solid #39465e;
+    border-radius: 10px;
+    background: #18202e;
+  }
+  .decision-topic-main { flex: 1; min-height: 0; }
+  .decision-topic-scroll { padding: 12px 12px 20px; gap: 13px; }
+  .decision-topic-card, .decision-topic-section { padding: 14px; }
+  .decision-topic-hero__title { font-size: 19px; }
+  .decision-topic-mobile-notes { display: block; }
+  .decision-topic-shell > .decision-dock {
+    flex: 0 0 auto;
+    border-left: 0;
+    border-top: 1px solid #38465e;
+  }
+  .decision-topic-shell > .decision-dock > .decision-dock__notes { display: none; }
+  .decision-dock__form {
+    padding: 8px 12px max(10px, env(safe-area-inset-bottom));
+  }
+  .decision-dock__input-row {
+    flex-direction: row;
+    align-items: flex-end;
+  }
+  .decision-dock__input-row textarea {
+    flex: 1;
+    min-height: 44px;
+    max-height: 110px;
+    padding: 9px 10px;
+    font-size: 16px;
+  }
+  .decision-write button.decision-dock__send {
+    width: auto;
+    min-height: 44px;
+    padding: 8px 14px;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 670px) {
+  .decision-bar__right {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+  }
+  .decision-overview-dock {
+    top: auto;
+    left: 10px;
+    right: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    width: auto;
+    max-height: 62%;
+  }
+  .decision-overview-dock .decision-dock__mobile-notes-btn { display: inline-flex; }
+  .decision-overview-dock .decision-dock__notes[data-mobile-open="false"] { display: none; }
+  .decision-overview-dock .decision-dock__form {
+    padding: 8px 10px;
+  }
+  .decision-capsule__title { max-width: 145px; }
 }

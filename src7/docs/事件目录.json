@@ -1482,7 +1482,7 @@
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:304"
+          "site": "src7/plugins/relay/index.ts:309"
         },
         {
           "plugin": "tutorial",
@@ -2993,7 +2993,7 @@
         {
           "plugin": "feishu",
           "function": "FeishuInbound.onRecall",
-          "site": "src7/plugins/feishu/Inbound.ts:958"
+          "site": "src7/plugins/feishu/Inbound.ts:963"
         }
       ],
       "listeners": [
@@ -3493,7 +3493,7 @@
       "name": "feishu/send-file",
       "mode": "请求-回执",
       "pair": "feishu/send-file-result",
-      "declaredAt": "src7/plugins/feishu/index.ts:108",
+      "declaredAt": "src7/plugins/feishu/index.ts:109",
       "signature": "(request: SendFileRequest) => void | Promise<void>",
       "doc": "通过指定机器人向飞书聊天发送本地文件。",
       "params": [
@@ -3508,7 +3508,7 @@
         {
           "name": "SendFileRequest",
           "kind": "interface",
-          "site": "src7/plugins/feishu/index.ts:293",
+          "site": "src7/plugins/feishu/index.ts:294",
           "doc": "其他插件提交的文件投递请求。",
           "definition": "",
           "fields": [
@@ -3517,28 +3517,28 @@
               "optional": false,
               "type": "string",
               "doc": "发送文件的机器人名。",
-              "site": "src7/plugins/feishu/index.ts:295"
+              "site": "src7/plugins/feishu/index.ts:296"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "目标飞书聊天号。",
-              "site": "src7/plugins/feishu/index.ts:297"
+              "site": "src7/plugins/feishu/index.ts:298"
             },
             {
               "name": "filePath",
               "optional": false,
               "type": "string",
               "doc": "本地文件绝对路径。",
-              "site": "src7/plugins/feishu/index.ts:299"
+              "site": "src7/plugins/feishu/index.ts:300"
             },
             {
               "name": "kind",
               "optional": true,
               "type": "'image' | 'file'",
               "doc": "显式指定图片或附件；省略时按扩展名识别。",
-              "site": "src7/plugins/feishu/index.ts:301"
+              "site": "src7/plugins/feishu/index.ts:302"
             }
           ]
         }
@@ -3547,14 +3547,14 @@
         {
           "plugin": "relay",
           "function": "Relay.sendFile",
-          "site": "src7/plugins/relay/index.ts:1585"
+          "site": "src7/plugins/relay/index.ts:1596"
         }
       ],
       "listeners": [
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:412"
+          "site": "src7/plugins/feishu/index.ts:413"
         }
       ]
     },
@@ -3562,7 +3562,7 @@
       "name": "feishu/send-file-result",
       "mode": "请求-回执",
       "pair": "feishu/send-file",
-      "declaredAt": "src7/plugins/feishu/index.ts:114",
+      "declaredAt": "src7/plugins/feishu/index.ts:115",
       "signature": "(result: SendFileResult) => void",
       "doc": "返回发送结果，失败时带原因。",
       "params": [
@@ -3577,7 +3577,7 @@
         {
           "name": "SendFileResult",
           "kind": "interface",
-          "site": "src7/plugins/feishu/index.ts:305",
+          "site": "src7/plugins/feishu/index.ts:306",
           "doc": "文件投递回执。",
           "definition": "",
           "fields": [
@@ -3586,21 +3586,21 @@
               "optional": false,
               "type": "boolean",
               "doc": "飞书发送是否成功。",
-              "site": "src7/plugins/feishu/index.ts:307"
+              "site": "src7/plugins/feishu/index.ts:308"
             },
             {
               "name": "messageId",
               "optional": true,
               "type": "string",
               "doc": "飞书返回的新消息号。",
-              "site": "src7/plugins/feishu/index.ts:309"
+              "site": "src7/plugins/feishu/index.ts:310"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "发送失败原因。",
-              "site": "src7/plugins/feishu/index.ts:311"
+              "site": "src7/plugins/feishu/index.ts:312"
             }
           ]
         }
@@ -3609,14 +3609,14 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:412"
+          "site": "src7/plugins/feishu/index.ts:413"
         }
       ],
       "listeners": [
         {
           "plugin": "relay",
           "function": "Relay.sendFile",
-          "site": "src7/plugins/relay/index.ts:1585"
+          "site": "src7/plugins/relay/index.ts:1596"
         }
       ]
     },
@@ -3624,7 +3624,7 @@
       "name": "http/request",
       "mode": "请求-回执",
       "pair": "http/result",
-      "declaredAt": "src7/plugins/http/index.ts:44",
+      "declaredAt": "src7/plugins/http/index.ts:46",
       "signature": "(request: HttpRequest) => void | Promise<void>",
       "doc": "关闭 HTTP 服务或在 Fastify 内部发起请求。",
       "params": [
@@ -3639,7 +3639,7 @@
         {
           "name": "HttpRequest",
           "kind": "type",
-          "site": "src7/plugins/http/index.ts:55",
+          "site": "src7/plugins/http/index.ts:57",
           "doc": "HTTP 服务接受的两种内部请求。",
           "definition": "requestEventModule.RequestEnvelope & ({ /** 关闭 Fastify。 */ action: 'close'; /** 最多等多久（毫秒），不传就等 Fastify 完成。 */ waitMs?: number; } | { /** 在 Fastify 内模拟一次请求。 */ action: 'inject'; /** HTTP 方法。 */ method: 'GET' | 'POST'; /** Fastify 内部路径。 */ url: string; })",
           "fields": [
@@ -3648,35 +3648,35 @@
               "optional": false,
               "type": "'close'",
               "doc": "关闭 Fastify。",
-              "site": "src7/plugins/http/index.ts:57"
+              "site": "src7/plugins/http/index.ts:59"
             },
             {
               "name": "waitMs",
               "optional": true,
               "type": "number",
               "doc": "最多等多久（毫秒），不传就等 Fastify 完成。",
-              "site": "src7/plugins/http/index.ts:59"
+              "site": "src7/plugins/http/index.ts:61"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'inject'",
               "doc": "在 Fastify 内模拟一次请求。",
-              "site": "src7/plugins/http/index.ts:62"
+              "site": "src7/plugins/http/index.ts:64"
             },
             {
               "name": "method",
               "optional": false,
               "type": "'GET' | 'POST'",
               "doc": "HTTP 方法。",
-              "site": "src7/plugins/http/index.ts:64"
+              "site": "src7/plugins/http/index.ts:66"
             },
             {
               "name": "url",
               "optional": false,
               "type": "string",
               "doc": "Fastify 内部路径。",
-              "site": "src7/plugins/http/index.ts:66"
+              "site": "src7/plugins/http/index.ts:68"
             }
           ]
         }
@@ -3697,7 +3697,7 @@
         {
           "plugin": "http",
           "function": "Http.constructor",
-          "site": "src7/plugins/http/index.ts:271"
+          "site": "src7/plugins/http/index.ts:287"
         }
       ]
     },
@@ -3705,7 +3705,7 @@
       "name": "http/result",
       "mode": "请求-回执",
       "pair": "http/request",
-      "declaredAt": "src7/plugins/http/index.ts:50",
+      "declaredAt": "src7/plugins/http/index.ts:52",
       "signature": "(result: HttpResult) => void",
       "doc": "返回关闭结果或注入请求的响应。",
       "params": [
@@ -3720,7 +3720,7 @@
         {
           "name": "HttpResult",
           "kind": "interface",
-          "site": "src7/plugins/http/index.ts:70",
+          "site": "src7/plugins/http/index.ts:72",
           "doc": "HTTP 请求回执。",
           "definition": "",
           "fields": [
@@ -3729,28 +3729,28 @@
               "optional": false,
               "type": "boolean",
               "doc": "是否完成关闭或拿到注入响应。",
-              "site": "src7/plugins/http/index.ts:72"
+              "site": "src7/plugins/http/index.ts:74"
             },
             {
               "name": "statusCode",
               "optional": true,
               "type": "number",
               "doc": "注入响应的 HTTP 状态码。",
-              "site": "src7/plugins/http/index.ts:74"
+              "site": "src7/plugins/http/index.ts:76"
             },
             {
               "name": "body",
               "optional": true,
               "type": "string",
               "doc": "注入响应的原始正文。",
-              "site": "src7/plugins/http/index.ts:76"
+              "site": "src7/plugins/http/index.ts:78"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "操作失败原因。",
-              "site": "src7/plugins/http/index.ts:78"
+              "site": "src7/plugins/http/index.ts:80"
             }
           ]
         }
@@ -3759,7 +3759,7 @@
         {
           "plugin": "http",
           "function": "Http.constructor",
-          "site": "src7/plugins/http/index.ts:271"
+          "site": "src7/plugins/http/index.ts:287"
         }
       ],
       "listeners": [
@@ -5834,7 +5834,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:387"
+          "site": "src7/plugins/feishu/index.ts:388"
         },
         {
           "plugin": "feishu",
@@ -5844,7 +5844,7 @@
         {
           "plugin": "http",
           "function": "Http.constructor",
-          "site": "src7/plugins/http/index.ts:258"
+          "site": "src7/plugins/http/index.ts:274"
         },
         {
           "plugin": "memory",
@@ -5869,7 +5869,7 @@
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:344"
+          "site": "src7/plugins/relay/index.ts:349"
         },
         {
           "plugin": "tutorial",
@@ -6226,7 +6226,7 @@
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:305"
+          "site": "src7/plugins/relay/index.ts:310"
         },
         {
           "plugin": "wechat",
@@ -6386,7 +6386,7 @@
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:306"
+          "site": "src7/plugins/relay/index.ts:311"
         },
         {
           "plugin": "voice",
@@ -6804,22 +6804,22 @@
         {
           "plugin": "feishu",
           "function": "FeishuInbound.onRecall",
-          "site": "src7/plugins/feishu/Inbound.ts:946"
+          "site": "src7/plugins/feishu/Inbound.ts:951"
         },
         {
           "plugin": "feishu",
           "function": "FeishuInbound.onCard",
-          "site": "src7/plugins/feishu/Inbound.ts:1022"
+          "site": "src7/plugins/feishu/Inbound.ts:1027"
         },
         {
           "plugin": "feishu",
           "function": "Feishu.start",
-          "site": "src7/plugins/feishu/index.ts:596"
+          "site": "src7/plugins/feishu/index.ts:597"
         },
         {
           "plugin": "feishu",
           "function": "Feishu.mark",
-          "site": "src7/plugins/feishu/index.ts:674"
+          "site": "src7/plugins/feishu/index.ts:675"
         },
         {
           "plugin": "feishu",
@@ -6849,7 +6849,7 @@
         {
           "plugin": "http",
           "function": "Http.listen",
-          "site": "src7/plugins/http/index.ts:487"
+          "site": "src7/plugins/http/index.ts:514"
         },
         {
           "plugin": "http",
@@ -6979,37 +6979,37 @@
         {
           "plugin": "relay",
           "function": "Relay.accept",
-          "site": "src7/plugins/relay/index.ts:721"
+          "site": "src7/plugins/relay/index.ts:732"
         },
         {
           "plugin": "relay",
           "function": "Relay.onRequest",
-          "site": "src7/plugins/relay/index.ts:846"
+          "site": "src7/plugins/relay/index.ts:857"
         },
         {
           "plugin": "relay",
           "function": "Relay.queueReply",
-          "site": "src7/plugins/relay/index.ts:1221"
+          "site": "src7/plugins/relay/index.ts:1232"
         },
         {
           "plugin": "relay",
           "function": "Relay.register",
-          "site": "src7/plugins/relay/index.ts:1253"
+          "site": "src7/plugins/relay/index.ts:1264"
         },
         {
           "plugin": "relay",
           "function": "Relay.checkLate",
-          "site": "src7/plugins/relay/index.ts:1414"
+          "site": "src7/plugins/relay/index.ts:1425"
         },
         {
           "plugin": "relay",
           "function": "Relay.push",
-          "site": "src7/plugins/relay/index.ts:1463"
+          "site": "src7/plugins/relay/index.ts:1474"
         },
         {
           "plugin": "relay",
           "function": "Relay.sendFile",
-          "site": "src7/plugins/relay/index.ts:1616"
+          "site": "src7/plugins/relay/index.ts:1627"
         },
         {
           "plugin": "settings",
@@ -7919,7 +7919,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:395"
+          "site": "src7/plugins/feishu/index.ts:396"
         },
         {
           "plugin": "wechat",
@@ -8105,14 +8105,14 @@
         {
           "plugin": "work-decision",
           "function": "deliverDecision",
-          "site": "src7/plugins/work-decision/Routes.ts:507"
+          "site": "src7/plugins/work-decision/Routes.ts:511"
         }
       ],
       "listeners": [
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:324"
+          "site": "src7/plugins/relay/index.ts:329"
         },
         {
           "plugin": "work-decision",
@@ -8179,7 +8179,7 @@
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:324"
+          "site": "src7/plugins/relay/index.ts:329"
         },
         {
           "plugin": "work-decision",
@@ -8191,7 +8191,7 @@
         {
           "plugin": "work-decision",
           "function": "deliverDecision",
-          "site": "src7/plugins/work-decision/Routes.ts:507"
+          "site": "src7/plugins/work-decision/Routes.ts:511"
         }
       ]
     },
@@ -8297,19 +8297,19 @@
         {
           "plugin": "relay",
           "function": "Relay.queueDecisionReply",
-          "site": "src7/plugins/relay/index.ts:1128"
+          "site": "src7/plugins/relay/index.ts:1139"
         },
         {
           "plugin": "work-decision",
           "function": "requestRelay",
-          "site": "src7/plugins/work-decision/Routes.ts:540"
+          "site": "src7/plugins/work-decision/Routes.ts:544"
         }
       ],
       "listeners": [
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:334"
+          "site": "src7/plugins/relay/index.ts:339"
         },
         {
           "plugin": "work-decision",
@@ -8369,7 +8369,7 @@
         {
           "plugin": "relay",
           "function": "Relay.constructor",
-          "site": "src7/plugins/relay/index.ts:334"
+          "site": "src7/plugins/relay/index.ts:339"
         },
         {
           "plugin": "work-decision",
@@ -8381,12 +8381,12 @@
         {
           "plugin": "relay",
           "function": "Relay.queueDecisionReply",
-          "site": "src7/plugins/relay/index.ts:1128"
+          "site": "src7/plugins/relay/index.ts:1139"
         },
         {
           "plugin": "work-decision",
           "function": "requestRelay",
-          "site": "src7/plugins/work-decision/Routes.ts:540"
+          "site": "src7/plugins/work-decision/Routes.ts:544"
         }
       ]
     },

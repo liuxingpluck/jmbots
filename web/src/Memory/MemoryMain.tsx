@@ -1,6 +1,11 @@
 /** 记忆检索页的入口（web/memory.html，挂在 /memory/）。2026-11-14 jm开发。 */
 import { createRoot } from 'react-dom/client';
+import { AuthGate } from '../components/AuthGate.tsx';
 import { MemoryPage } from './MemoryPage.tsx';
 import './Memory.css';
 
-createRoot(document.getElementById('root')!).render(<MemoryPage />);
+createRoot(document.getElementById('root')!).render(
+  <AuthGate>
+    <MemoryPage />
+  </AuthGate>,
+);

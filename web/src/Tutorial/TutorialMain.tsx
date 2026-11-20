@@ -1,6 +1,7 @@
 /** 教程页的入口（web/tutorial.html）：先把主题写进页面（默认深色，首帧不闪白），再挂载 TutorialPage。 */
 import { createRoot } from 'react-dom/client';
 import * as theme from '../Theme.ts';
+import { AuthGate } from '../components/AuthGate.tsx';
 import { TutorialPage } from './TutorialPage.tsx';
 import './Tutorial.css';
 
@@ -9,8 +10,12 @@ const themeName = theme.loadThemeName(window.localStorage);
 const spec = theme.THEMES[themeName];
 theme.applyTheme(document.documentElement, spec);
 
-//M 页面挂在 #root 上。
+//M 页面挂在 #root 上，外层套 AuthGate 承接外网登录。
 const root = document.getElementById('root');
 if (root !== null) {
-  createRoot(root).render(<TutorialPage />);
+  createRoot(root).render(
+    <AuthGate>
+      <TutorialPage />
+    </AuthGate>,
+  );
 }

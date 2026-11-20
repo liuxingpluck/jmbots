@@ -90,7 +90,7 @@
   "parent": "r-proc-g2",
   "title": "程序打印就绪行",
   "summary": "二进制程序监听上端口后，在 stdout 打一行 JSON 报名字、版本和端口。",
-  "body": "**行号：Main.ts L175–L179**\n\n### 代码原文\n```ts\n// external/wechat/Main.ts\n 175    try {\n 176      const address = await app.listen({ port: options.port, host: '127.0.0.1' });\n 177      const port = Number(new URL(address).port);\n 178      const ready = { jmbots: identity.protocol, event: 'ready', name: identity.name, version: identity.version, port };\n 179      console.log(JSON.stringify(ready));\n```\n\n### 解释\n- 外置微信监听 `127.0.0.1`，端口由系统分配。\n- L178–L179：打印就绪行 `{\"jmbots\":1,\"event\":\"ready\",\"name\":…,\"version\":…,\"port\":…}`。\n- programs 只认第一条带数字 `jmbots` 字段的 JSON 行，其余照常当日志。\n\n### 调到别处\n- 外置微信说明：external/wechat/说明.md",
+  "body": "**行号：Main.ts L389–L401**\n\n### 代码原文\n```ts\n// external/wechat/Main.ts\n 389      if (hooks?.listen === undefined) {\n 390        //M 按配置的 host（默认 127.0.0.1）与端口正式启动 HTTP 监听。\n 391        address = await app.listen({ port: options.port, host: options.host });\n 392      }\n 393      const port = Number(new URL(address!).port);\n 394      const ready = {\n 395        jmbots: PLUGIN_IDENTITY.protocol,\n 396        event: 'ready',\n 397        name: PLUGIN_IDENTITY.name,\n 398        version: PLUGIN_IDENTITY.version,\n 399        port,\n 400      };\n 401      console.log(JSON.stringify(ready));\n```\n\n### 解释\n- 外置微信默认监听 `127.0.0.1`（也可显式传 `--host`），端口可由系统分配。\n- L394–L401：打印就绪行 `{\"jmbots\":1,\"event\":\"ready\",\"name\":…,\"version\":…,\"port\":…}`。\n- programs 只认第一条带数字 `jmbots` 字段的 JSON 行，其余照常当日志。\n\n### 调到别处\n- 外置微信说明：external/wechat/说明.md",
   "sources": [
    "external/wechat/Main.ts"
   ]

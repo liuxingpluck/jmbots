@@ -635,6 +635,31 @@ describe('relay 接两个助手', () => {
     const listed = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Claude' });
     expect((listed.json() as { items: unknown[] }).items).toEqual([]);
   }, SLOW);
+
+  test('引用回复带前导 @提及与多个空格，或中文前缀紧跟英文数字，均稳定命中且不误伤英文词边界', async () => {
+    const made = await ready([{ name: 'Claude', title: 'Antigravity', prefixes: ['cc ', '哈基米'] }]);
+
+    const hits = [
+      '【回复的消息：上一条对方机器人的话】\n@_user_1   cc 额度心疼，直接聊架构',
+      '【回复的消息未取到】\n@陈先生 @周小灵   cc 再看一条',
+      '[引用的消息没取到：无权限]\n@陈先生\u2005哈基米看看这个',
+      '哈基米a OBB浏览器的那个微信公众号的标签都给它关闭掉',
+      '哈基米130 桌面看一眼',
+      '哈基米 中文空格也行',
+    ];
+    for (const text of hits) {
+      expect(await made.say(text)).toMatch(/^已转给 Antigravity（#\d+），等回复。$/u);
+    }
+
+    //M 英文前缀词边界与普通 @cc 人名都不能误触发。
+    for (const miss of ['cc123 测试', 'ccache 编译缓存', '@cc 你好', '@周小灵 普通聊天']) {
+      await expect(made.say(miss)).rejects.toThrow('relay 没接这句话');
+    }
+
+    const listed = await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Claude' });
+    const items = (listed.json() as { items: { text: string }[] }).items;
+    expect(items.map((item) => item.text)).toEqual(hits);
+  }, SLOW);
 });
 
 describe('收件记下谁、在哪说的', () => {

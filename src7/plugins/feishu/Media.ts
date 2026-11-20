@@ -158,13 +158,16 @@ export function postText(raw: string): string {
       paragraphItems = paragraph;
     }
     const parts = paragraphItems.map((item) => {
-      const element = (item ?? {}) as { tag?: string; text?: string; href?: string; user_name?: string };
+      type PostElement = { tag?: string; text?: string; href?: string; user_id?: string; user_name?: string };
+      const element = (item ?? {}) as PostElement;
       if (element.tag === 'img' || element.tag === 'media') return '[图片]';
 
       if (element.tag === 'at') {
-        if (element.user_name === undefined) return '';
+        const label = element.user_name || element.user_id || '';
+        if (label === '') return '';
+        if (label.startsWith('@')) return label;
 
-        return `@${element.user_name}`;
+        return `@${label}`;
       }
       return element.text ?? element.href ?? '';
     });

@@ -436,3 +436,56 @@ test('外部助手提问通知配置中的主人，选择不发给默认中控',
   expect(selected.json()).toMatchObject({ delivery: { relayId: 21 } });
   expect(decisions).toEqual(['外部助手']);
 });
+
+test('version 轻量探针稳定返回进程启动时刻与递增数据序号', async () => {
+  const { app } = await setup('中控');
+  const before = Date.now();
+  const v0Res = await app.inject(`${PREFIX}/version`);
+  expect(v0Res.statusCode).toBe(200);
+  const v0 = v0Res.json<{ appStartedAt: number; dataRev: number }>();
+  expect(v0.appStartedAt).toBeGreaterThanOrEqual(before - 5000);
+  expect(v0.dataRev).toBe(0);
+
+  await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: entries });
+  const v1 = (await app.inject(`${PREFIX}/version`)).json<{ appStartedAt: number; dataRev: number }>();
+  expect(v1.appStartedAt).toBe(v0.appStartedAt);
+  expect(v1.dataRev).toBe(1);
+
+  await app.inject({ method: 'POST', url: `${PREFIX}/note`, payload: { node: 'release', text: '先核一下监控' } });
+  const v2 = (await app.inject(`${PREFIX}/version`)).json<{ appStartedAt: number; dataRev: number }>();
+  expect(v2.appStartedAt).toBe(v0.appStartedAt);
+  expect(v2.dataRev).toBe(2);
+
+  await app.inject({ method: 'POST', url: `${PREFIX}/reply`, payload: { node: 'release', note: 'n1', text: '已核' } });
+  const v3 = (await app.inject(`${PREFIX}/version`)).json<{ appStartedAt: number; dataRev: number }>();
+  expect(v3.appStartedAt).toBe(v0.appStartedAt);
+  expect(v3.dataRev).toBe(3);
+});
+
+test('前端按节点持久化输入草稿，切换与空白清理不互串', async () => {
+  const store = new Map<string, string>();
+  const prevWindow = (globalThis as { window?: unknown }).window;
+  cleanups.push(() => {
+    (globalThis as { window?: unknown }).window = prevWindow;
+  });
+  (globalThis as { window?: unknown }).window = {
+    localStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, val: string) => { store.set(key, val); },
+      removeItem: (key: string) => { store.delete(key); },
+    },
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+  const drafts = await import('../../../web/src/DecisionMap/Drafts.ts');
+  expect(drafts.hasAnyDraft()).toBe(false);
+
+  drafts.writeDraft('topic-aobb', '先把手机竖屏截一张');
+  drafts.writeDraft('topic-wechat', '   ');
+  expect(drafts.readDraft('topic-aobb')).toBe('先把手机竖屏截一张');
+  expect(drafts.hasAnyDraft()).toBe(true);
+
+  drafts.writeDraft('topic-aobb', '');
+  expect(drafts.readDraft('topic-aobb')).toBe('');
+  expect(drafts.hasAnyDraft()).toBe(false);
+});

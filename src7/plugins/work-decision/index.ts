@@ -11,7 +11,8 @@ export const name = 'work-decision';
 //M 1.3.7：选择回送按请求号等原会话或 relay 的回执。
 //M 1.3.8：问 relay 收件、归档不再掐表、不再编假回执，按 reply 或 why 判。
 //M 1.3.9：旧 data/decision-map JSON 导入过渡代码标明 //退场：条件。
-export const version = '1.3.9';
+//M 1.3.10：新增 GET /api/work-decision/version 轻量版本探针，供工作台 30 秒无感自动刷新。
+export const version = '1.3.10';
 export const inject = ['resources', 'http', 'tools'];
 
 /** 读取配置文本，未设置时保持缺省。 */
