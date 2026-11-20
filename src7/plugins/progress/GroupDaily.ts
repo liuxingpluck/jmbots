@@ -1,7 +1,10 @@
-/** 按飞书群配置在本地时间派发每日进度，借用标准渠道回话与群记忆。 */
+/**
+ * 按飞书群配置在本地时间派发每日进度：发 bot/request（hand 带 replyTo）请机器人干活，
+ * 回话像回一条群消息那样用 channel_reply 发到本群；不拼假的群消息、不经渠道事件（记忆不会把这段指令当成群里的一句话）。
+ */
 import type * as cordis from 'cordis';
-import * as channel from '../channels/index.ts';
 import type { SessionMeta } from '../../Sessions.ts';
+import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { FeishuGroup } from '../feishu/index.ts';
 
@@ -40,7 +43,13 @@ function getLocalDay(at: Date): string {
 }
 
 
-/** 构造同群标准来源并触发一次派发。不会直接发送飞书 API 请求。 */
+/**
+ * 请这个群的机器人做一次日报：单开当天的前台，发 bot/request（hand 带 replyTo 指向本群）交给它。不会直接发送飞书 API 请求。
+ * @param ctx progress 插件的 ctx。
+ * @param group 配置里登记的群和定时参数。
+ * @param scheduledAt 这一次的计划时刻。
+ * @throws bots 回执说没交成（没有这个机器人、前台没定下）或没回执时抛错，由调用方记日志。
+ */
 export async function dispatchReport(ctx: cordis.Context, group: GroupReport, scheduledAt: Date): Promise<void> {
   //M 覆盖上一条定时消息发出后的汇报，夜间回复也能在第二天纳入总结。
   const yesterday = getLocalTime(scheduledAt, -1, group.hour, group.minute);
@@ -61,35 +70,53 @@ export async function dispatchReport(ctx: cordis.Context, group: GroupReport, sc
     group.prompt,
   ];
   const text = instructions.join('\n');
-  const nativeId = DAILY_SOURCE + ':' + group.chatId + ':' + day;
   const accountId = group.appId;
   const chatId = group.chatId;
-  const scope = 'feishu:' + accountId + ':' + chatId;
   const scheduled = DAILY_SOURCE;
   const customer = 'feishu:group:' + chatId + ':' + scheduled + ':' + accountId + ':' + day;
+
+  //M 回话地址：本群的飞书地址，按外人算（不受信）；scheduled 标记让 bindReportTools 认出这是日报轮、只给查和发两个工具。
   const address = {
-    appId: accountId, chatId, chatType: 'group', chatName: group.name, customer, messageId: '', openId: '',
-    owner: false, role: 'guest', trusted: false, scheduled,
+    appId: accountId,
+    chatId,
+    chatType: 'group',
+    chatName: group.name,
+    customer,
+    messageId: '',
+    openId: '',
+    owner: false,
+    role: 'guest',
+    trusted: false,
+    scheduled,
   };
-  //M 使用群级非本人来源，即使该群的普通本人来话受信，也只会查当前群归属。
-  const messageId = channel.makeChannelMessageId('feishu', accountId, nativeId);
-  const createdAt = scheduledAt.getTime();
-  const receivedAt = Date.now();
+
+  //M 单开当天的前台轮，避免沿用群聊旧会话中受信本人查询过的工具结果。
   const bot = group.bot;
   const front = { bot, kind: 'front', customer };
-  //M 单开当天的前台轮，避免沿用群聊旧会话中受信本人查询过的工具结果。
   const existing = ctx.sessions.find(front)[0];
   const sessionId = existing?.id ?? ctx.sessions.create(front).id;
-  const message: channel.ChannelMessage = {
-    v: 1, messageId, nativeId, channel: 'feishu', accountId, chatId, chatType: 'group',
-    sender: { id: scheduled, name: '群进度定时任务' }, role: 'guest', targetBots: [group.bot], mentions: [],
-    rawText: heading, text, attachments: [], createdAt, receivedAt, timeSource: 'received', replyTo: null,
-    origin: { channel: 'feishu', address }, visibility: { scope, trusted: false, publicSourceIds: [] },
-    routing: { listenOnly: false, autoFinal: true, sessionId },
+
+  //M 回话发到本群：key 是“群:日期”，同一天重发 bots 认得出来不再排一次。
+  const replyTo = {
+    channel: 'feishu',
+    accountId,
+    chatId,
+    chatType: 'group' as const,
+    address,
+    key: DAILY_SOURCE + ':' + chatId + ':' + day,
+    sender: { id: scheduled, name: '群进度定时任务' },
   };
-  const control: channel.ChannelMessageControl = { claims: [] };
-  //M 从现有渠道入口让目标机器人认领，回复沿用原群的飞书地址。
-  await ctx.serial('channel/message', message, control);
+  const request = { action: 'hand', bot, text, origin: {}, sessionId, replyTo } as const;
+  const options = {
+    timeoutMs: 10_000,
+    onFallback: (reason: requestEventModule.FallbackReason, detail?: string) => {
+      return { requestId: '', ok: false, error: detail ?? `群日报没交给机器人（${reason}）` };
+    },
+  };
+
+  //M 请机器人干活：bots 排进这场前台，模型用 channel_reply 回到本群；没交成就抛错，由定时器记日志。
+  const result = await requestEventModule.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
+  if (!result.ok) throw new Error(result.error ?? '群日报没交给机器人');
 }
 
 

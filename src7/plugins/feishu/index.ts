@@ -8,9 +8,10 @@
  * 渠道：照 config.yaml 的 channels.feishu 名单，一个飞书应用一个 SDK 客户端、一条长连接（WebSocket），等 ready 才连。
  * 渠道只有一个，名字 feishu；回话地址（FeishuAddress）里的 appId 分清是哪个应用，回话从收消息的那个应用发回去。
  * 收：什么类型都接住，图片文件下载后用基类 saveFile 存进机器人工作区，话里写 @绝对路径；按消息号去重（存表，重启也认得）。
- * 群里只回 @ 了机器人的消息；插件配置 groups 里登记了 listen: all 的群，不 @ 的也交下去，标成只听（listenOnly）：
+ * 收到的一条只发一个事件（channels 的 emitInbound）：私聊 channel/direct；群里 @ 了机器人或引用了机器人的话 channel/mention，只回被叫到的；
+ * 别的 channel/listen（没登记的群也发，记录类插件照记）。插件配置 groups 里登记了 listen: all 的群，只听的话交给本应用的机器人：
  * 以外部助手前缀开头的 relay 照转，别的前台只记进群的前台会话当背景、不回。
- * listen: judge 的群同样不 @ 也听，前台记完问决策模型要不要主动接话（0.7.19）。
+ * listen: judge 的群同样不 @ 也听，bots 的群攒批（GroupBatch.ts）攒一批再问决策模型要不要主动接话。
  * 发到群里的话：开头 @ 这一轮最后说话的人，文字里的 @名字 换成 <at user_id="…">名字</at>（名字→open_id 先查 people，再查群成员、流水里见过的）。
  * 认人认群看插件配置的 people、groups（谁是哪一档只在这里判断，写进回话地址的 owner、role、workspace）；
  * 收到的每条都记进来往流水 data/logs/feishu-contacts.jsonl。
@@ -57,7 +58,11 @@ export const name = 'feishu';
 //M 1.1.12：跨聊天发话认目标改用骨架的 parseChatTarget、findChatByIdOrName：飞书只交出候选清单（getChatCandidates）。
 //M 1.1.13：入口文件按职责拆成 Inbound、Reply、History、Contacts 四个文件，收消息拆成几步；行为不变。
 //M 1.1.18：长连接收到消息先发一个跟踪点 Feishu.start，入站的几个跟踪点都带 messageId（标准消息号），教程轨迹第一格就是飞书收到。
-export const version = '1.1.22';
+//M 1.2.0：收到的一条照 channels 的分法发 channel/direct、mention、listen 之一；没登记的群不 @ 也发 listen（不再“丢了”）；
+//M   引用了机器人的话算叫了它；地址不再写 listenOnly（bots 自己标）。
+//M 1.2.1：人员身份由 people[].role 决定，配置写旧身份键时报改法。
+//M 1.2.2：listen: judge 的群改由 bots 的群攒批判断（一批一次，来往流水的判断结果由 bot/judged 补记）；本插件只改说明。
+export const version = '1.2.2';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -114,7 +119,7 @@ export interface FeishuAddress {
   customer?: string;
   /** 挂上的“敲键盘”表情号，回话时撤。 */
   typingReaction?: string;
-  /** 是不是用户本人：people 里登记了 owner: true 的才是，没登记的不是。收消息、点卡片时写；没写的地址（发件箱这类）不当本人。 */
+  /** 是否用户本人：收消息和点卡片时，按 people 里登记的 role: owner 写入。 */
   owner?: boolean;
   /** 说话人是哪一档（people 的 role，没登记是 guest）：approval 照它收工具。和 owner 一样收消息、点卡片时写。 */
   role?: FeishuRole;
@@ -127,9 +132,7 @@ export interface FeishuAddress {
   senderName?: string;
   /** 群名：groups 里登记的，没登记用群信息查到的；都没有、私聊不写。 */
   chatName?: string;
-  /** 群里没 @ 机器人、这个群登记了 listen: all：只听。前台只记不回，relay 只认前缀开头的。 */
-  listenOnly?: boolean;
-  /** 这个群登记的 listen: judge：只听的话记完由前台问决策模型要不要接话（bots/FrontDesk.ts 读）；不是 judge 的群不写。 */
+  /** 这个群登记的 listen: judge：只听的话进 bots 的群攒批，攒一批再问决策模型要不要接话（bots/GroupBatch.ts 读）；不是 judge 的群不写。 */
   judge?: boolean;
   /** 这个群登记的 judge_threshold：决策模型的把握 ≥ 它才接话（传给 decision 的 allowAt）；没写不写，用 decision 插件默认。 */
   judgeThreshold?: number;
@@ -1031,33 +1034,30 @@ const ROLES: string[] = ['owner', 'builder', 'guest'];
 
 /**
  * 认得的人：people 每项 open_id、name（必写）、role（owner / builder / guest，默认 guest）、dir（builder 的目录）。
- * 旧写法 owner: true 当 role: owner；relay 配置里旧的 owner_open_ids 也收进来（当本人、名字空着），本人只在这里判断。
  * builder、guest 的 dir 相对运行时目录算（写绝对路径也行），不写是 guests/<名字>/；没有就建。
- * @param ctx 读运行时目录、relay 的插件配置。
+ * @param ctx 用于定位运行时目录。
  * @param own feishu 插件的配置。
  * @returns open_id → 人。
- * @throws 哪项没写 open_id、name，role 写了别的值，owner 不是布尔，dir 不是文字，builder 没写 dir 而名字当不了目录名，
- *   open_id 重了，旧 owner_open_ids 不是字符串清单时抛错。
+ * @throws 身份字段有误、用了旧 owner 配置、编号重复或工作区路径不合法时抛错。
  */
 function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<string, FeishuPerson> {
   const people = new Map<string, FeishuPerson>();
   //M 逐条解析并校验配置里登记的人员身份档案（owner / builder / guest）。
   for (const item of getEntries(own['people'], 'people')) {
+    //G 旧身份配置需要明确迁移，避免本人身份被误降为访客。
+    if (Object.hasOwn(item, 'owner')) {
+      throw new Error('feishu 的 people[].owner 已不用，本人改写 role: owner，其他人按角色填写或省略');
+    }
+
     const openId = item['open_id'];
     const name = item['name'];
-    const owner = item['owner'] ?? false;
     if (typeof openId !== 'string' || openId === '' || typeof name !== 'string' || name === '') {
       throw new Error('feishu 插件的 people 每项要写 open_id 和 name');
     }
-    if (typeof owner !== 'boolean') throw new Error(`feishu 插件 people 里 ${name} 的 owner 要写 true 或 false`);
     if (people.has(openId)) throw new Error(`feishu 插件的 people 里 ${openId} 写了两次`);
 
-    //M 哪一档：写了 role 照 role；旧写法 owner: true 是本人；都没写是 guest。
-    let defaultRole = 'guest';
-    if (owner) {
-      defaultRole = 'owner';
-    }
-    const role = item['role'] ?? defaultRole;
+    //M 未指定角色的登记人沿用访客权限。
+    const role = item['role'] ?? 'guest';
     if (typeof role !== 'string' || !ROLES.includes(role)) {
       throw new Error(`feishu 插件 people 里 ${name} 的 role 要写 owner、builder 或 guest`);
     }
@@ -1089,15 +1089,6 @@ function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<strin
     people.set(openId, { openId, name, role: role as FeishuRole, dir });
   }
 
-  //M 旧写法：relay 插件配置的 owner_open_ids。people 里登记过的照 people，没登记的补成本人。
-  const relay = ctx.resources.config.plugins.find((entry) => entry.name === 'relay');
-  const legacy = utils.getField(relay?.config, 'owner_open_ids') ?? [];
-  if (!Array.isArray(legacy) || !legacy.every((id) => typeof id === 'string')) {
-    throw new Error('relay 的 owner_open_ids 要写成字符串清单（新写法是 feishu 插件 people 里 owner: true）');
-  }
-  for (const openId of legacy as string[]) {
-    if (openId !== '' && !people.has(openId)) people.set(openId, { openId, name: '', role: 'owner', dir: '' });
-  }
   return people;
 }
 

@@ -95,9 +95,9 @@ test('cli 收到输入：channel/message 只发 1 次、目标机器人认领 1 
     write: (line) => { lines.push(line); },
   });
 
-  //M 记录 channel/message 发出次数、目标与模型被调次数。
+  //M 记录 channel/direct 发出次数、目标与模型被调次数（命令行是私聊，只发 direct）。
   const channelEvents: channels.ChannelMessage[] = [];
-  ctx.on('channel/message', (message) => {
+  ctx.on('channel/direct', (message) => {
     channelEvents.push(message);
   });
 

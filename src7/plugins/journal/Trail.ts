@@ -77,7 +77,9 @@ const TRAIL_EVENT_NAMES = new Map([
 const EVENT_TEXT: Record<string, string> = {
   'web-api/received': 'trace.event.webApiReceived',
   'web-api/replied': 'trace.event.webApiReplied',
-  'channel/message': 'trace.event.channelMessage',
+  'channel/direct': 'trace.event.channelDirect',
+  'channel/mention': 'trace.event.channelMention',
+  'channel/listen': 'trace.event.channelListen',
   'channel/reply': 'trace.event.channelReply',
   'channel/replied': 'trace.event.channelReplied',
   'bot/receive': 'trace.event.botReceive',
@@ -211,7 +213,7 @@ export function pick(
   lines: TrailLine[],
 ): { picked: TrailLine[]; session: string | null; state: string } {
   //M 会话：先找带着这个消息号又带会话的行（Timeline.reply）；没有就用开始后第一个出现的会话（Bot.receive）。
-  //M   渠道来的消息，收件行前面还有渠道那几行（飞书收到、去重、认 @、channel/message）：没有收件号和会话、只带这条的标准消息号，也算。
+  //M   渠道来的消息，收件行前面还有渠道那几行（飞书收到、去重、认 @、channel/direct 等进来的事件）：没有收件号和会话、只带这条的标准消息号，也算。
   const sourceId = lines.find((line) => line.messageId === message && typeof line.sourceId === 'string')?.sourceId ?? null;
   const carriesSource = (line: TrailLine): boolean => {
     return sourceId !== null && line.messageId === null && line.sessionId === null && line.sourceId === sourceId;

@@ -9,7 +9,7 @@
  * 按消息或关联会话查询流水。教程轨迹由 Trail.ts 收成步骤，回话追溯直接返回截止到该句的行。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
-import * as cordis from 'cordis';
+import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as checks from '../../utils/Checks.ts';
 import * as cut from '../../utils/Cut.ts';
@@ -28,7 +28,7 @@ export { FilesMirror } from './FilesMirror.ts';
 /** 插件名。 */
 export const name = 'journal';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-//M 1.1.0：并入原 files-mirror（统一提供 ctx.journal 与 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json）。
+//M 1.1.0：并入原 files-mirror，保留 ctx.filesMirror，完整镜像优先写 对话.md 与 session.json。
 //M 1.2.0：“跟踪行 → 步骤”只留一份，从 tutorial/Trail.ts 挪进 Trail.ts；
 //M   journal/request 的 message-lines 换成 trail（教程页）、reply-lines（聊天页追溯）。
 //M 1.3.0：Trail 只走 journal/request（新增 boot-trail），tutorial 不再 import Trail.ts；
@@ -36,17 +36,14 @@ export const name = 'journal';
 //M 1.2.2：journal_lines 加 source_id 列（标准消息号，渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])）；
 //M   trail、reply-lines 按它把渠道那几行（飞书 WebSocket 收到、去重、认 @、channel/message）串在收件行前面，
 //M   轨迹第一格不再是“收件表记下”；/api/events 加 source 参数。
-export const version = '1.3.1';
+//M 1.3.3：事件人话认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
+export const version = '1.3.3';
 
 /** 用到的服务：resources 拿数据库、运行时目录。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources'];
 
 
 declare module 'cordis' {
-  interface Context {
-    /** 流水服务，实现在 src7/plugins/journal/index.ts。别的插件当可选依赖，用 ctx.get('journal') 现取。 */
-    journal: Journal;
-  }
   interface Events {
     /**
      * 查消息轨迹、流水或会话镜像路径。
@@ -72,7 +69,7 @@ declare module 'cordis' {
 }
 //M model-catalog/fallback（换了备选模型）声明在 src7/plugins/model-catalog/Fallback.ts。
 
-/** 流水服务支持的查询。 */
+/** 流水请求事件支持的查询。 */
 type JournalRequest = requestEventModule.RequestEnvelope & ({
   /** 教程页：按消息号收成一步一步的轨迹。 */
   action: 'trail';
@@ -186,19 +183,17 @@ const READ_EVENTS = ['journal/request', 'journal/result', 'model-catalog/usage',
 const READ_EVENT_NAMES: ReadonlySet<string> = new Set(READ_EVENTS);
 
 
-/** 流水服务。 */
-export class Journal extends cordis.Service {
+/** 插件内部的流水记录和查询。插件间通过 journal/request 和 journal/result 取数。 */
+class Journal {
   /** 上次删过期事件的时刻；0 表示这次启动还没删过，第一条事件进来时删一次。 */
   private prunedAt = 0;
 
   /**
-   * 登记 journal 插件：把 Journal 作为服务挂到 Cordis 上（super(ctx, 'journal') 做的；以后用 ctx.journal 取）；
-   * 再建表，挂上各个通知的监听。
+   * 建流水表并在插件上下文挂监听，卸载插件时由 Cordis 撤掉监听。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param keepDays 事件留几天，apply 里校验过。
    */
-  constructor(ctx: cordis.Context, private readonly keepDays: number) {
-    super(ctx, 'journal');
+  constructor(private readonly ctx: cordis.Context, private readonly keepDays: number) {
     const db = ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS journal_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,'
       + ' kind TEXT NOT NULL,'
@@ -321,7 +316,7 @@ export class Journal extends cordis.Service {
 
   /**
    * 从这条消息的第一行起按消息号、标准消息号或明确关联的会话取流水，上限只计算匹配行。
-   * 渠道（飞书）的消息，收件行前面还有渠道那几行（收到、去重、认 @、channel/message）：它们只带标准消息号，
+   * 渠道（飞书）的消息，收件行前面还有渠道那几行（收到、去重、认 @、channel/mention）：它们只带标准消息号，
    * 靠 Timeline.insert 那一行同时带着收件号和标准号接上，从标准号第一次出现的那行起取。
    * @param message 收件表的消息号。
    * @param maxLines 最多几条（含 web-api/received 那行）。
@@ -349,7 +344,7 @@ export class Journal extends cordis.Service {
     }
 
     //M 有其他消息号的行归那条消息（同一条群消息给几个机器人，各有各的收件号）。
-    //M   无收件号、无会话、带这条标准号的行（渠道收到、channel/message）归这条；其余无收件号的行只认明确关联的会话。
+    //M   无收件号、无会话、带这条标准号的渠道行归这条；其余无收件号的行只认明确关联的会话。
     const sql = 'SELECT * FROM journal_lines WHERE id >= ? AND at <= ? AND name NOT IN (?, ?, ?, ?)'
       + ' AND (message_id = ? OR (message_id IS NULL AND session_id IS NULL AND source_id = ?) OR (message_id IS NULL AND session_id IN ('
       + ' SELECT session_id FROM journal_lines WHERE message_id = ? AND id >= ? AND at <= ? AND session_id IS NOT NULL'
@@ -523,7 +518,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 建流水表并开始记录跟踪行。
   const journal = new Journal(ctx, keepDays);
 
-  //M 用同一监听按 action 分派五种查询，复用原服务方法。
+  //M 用同一监听按 action 分派五种查询，流水查询与 HTTP 共用实现。
   requestEventModule.onRequestEvent(ctx, 'journal/request', 'journal/result', (request) => {
     if (request.action === 'trail') {
       //M 教程页：只取与入站消息和关联会话有关的流水。

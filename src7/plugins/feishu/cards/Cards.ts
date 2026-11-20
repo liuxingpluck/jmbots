@@ -81,7 +81,7 @@ export function getAddress(ctx: cordis.Context, sessionId?: string): FeishuAddre
 }
 
 
-/** 本人在 people 里没写名字时（旧写法 owner_open_ids）怎么称呼。 */
+/** 没有登记本人的名字时，卡片提示用的称呼。 */
 const OWNER_FALLBACK = '用户本人';
 
 

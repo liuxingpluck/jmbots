@@ -1,6 +1,6 @@
 /**
  * web-api：HTTP 渠道，加上网页要的全部核心接口。
- * 它是一个渠道（渠道名 http）：POST /api/message 收话，记进自己的收件表 web_messages，用消息号当回话地址发 channel/message；
+ * 它是一个渠道（渠道名 http）：POST /api/message 收话，记进自己的收件表 web_messages，用消息号当回话地址发 channel/direct（网页是私聊）；
  * 模型一轮里每调一次 channel_reply（还有零次兜底、审批直回）都经 channel/reply 追加到那条消息的回话清单，一轮收尾（bot/settled）标成回完。
  * HTTP 不主动推：网页轮询 GET /api/messages。
  * 别的渠道（飞书、命令行、微信）的消息也记一份（带标准消息号），回话按“消息号 + 机器人”挂回，网页右栏“消息”靠它。
@@ -39,7 +39,9 @@ export const name = 'web-api';
 //M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
 //M 1.1.16：Timeline.insert 的跟踪点带 sourceId（标准消息号），journal 按它把渠道那几行串在收件行前面。
 //M 1.1.19：回话追溯不再 import journal/Trail.ts：reply-lines 回的已是网页事件外壳 events，流水行换壳那段并进 journal/Trace.ts。
-export const version = '1.1.20';
+//M 1.1.21：网页发话改经 emitInbound 发 channel/direct；别的渠道的认领挂回改听 direct、mention、listen 三个；
+//M   语音入档改看 voice/record 的 waiting（不再看 routing.recordOnly）。
+export const version = '1.1.21';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -154,8 +156,8 @@ class WebApi {
     //M 初始化收件表和时间线，让网页查询与历史监听共享已建好的记录。
     this.timeline = new timelineModule.Timeline(ctx);
 
-    //M 语音只在 ASR 确认整句后写入时间线，使用与半句任务相同的标准来源号。
-    ctx.on('voice/record', (message, sessionId) => {
+    //M 语音只在 ASR 确认整句后写入时间线，使用与半句任务相同的标准来源号；waiting 是这句等不等机器人回话。
+    ctx.on('voice/record', (message, sessionId, waiting) => {
       for (const bot of message.targetBots) {
         let id = this.timeline.findBySource(bot, message.messageId);
         if (id === undefined) {
@@ -175,8 +177,8 @@ class WebApi {
           };
           //M 先存最终文本，审批回复和认领回执才有可关联的原话。
           id = this.timeline.insert(row);
-          if ('recordOnly' in message.routing && message.routing.recordOnly === true && sessionId === undefined) {
-            //M 只入档且没有后台任务的语音句无需等待回复。
+          //M 只入档、没有后台任务的语音句不等回话，直接标成回完。
+          if (!waiting) {
             this.timeline.markReplied(id);
           }
         }
@@ -216,8 +218,9 @@ class WebApi {
       }
     });
 
-    //M 别的渠道的消息认领完了（channel/message 里 bots 排在前面，claims 已填好）：记下各机器人进了哪场会话，网页引用它时回得到原会话。
-    ctx.on('channel/message', (message, control) => {
+    //M 别的渠道的消息认领完了（三个进来的事件里 bots 排在前面，claims 已填好）：记下各机器人进了哪场会话，网页引用它时回得到原会话。
+    //M   私聊、群里叫了机器人、只听的同一个处理（只听的认领记录是记背景的那场前台）。
+    const bindClaims = (message: protocol.ChannelMessage, control?: protocol.ChannelMessageControl): void => {
       if (message.channel === this.name) return;
 
       for (const claim of control?.claims ?? []) {
@@ -227,7 +230,10 @@ class WebApi {
         const id = this.timeline.findBySource(claim.bot, message.messageId);
         if (id !== undefined) this.timeline.bindSession(id, claim.sessionId);
       }
-    });
+    };
+    ctx.on('channel/direct', bindClaims);
+    ctx.on('channel/mention', bindClaims);
+    ctx.on('channel/listen', bindClaims);
 
     //M 别的渠道发成了的回话（channel/replied 带着请求正文）：按“消息号 + 机器人”或旧路会话最近认领的那条挂回网页那一行。
     ctx.on('channel/replied', (event) => {
@@ -416,7 +422,7 @@ class WebApi {
       session = target;
     }
 
-    //M 网页正在看哪儿（可选）：渠道要挂着、聊天要在清单里，这里查一次，带进 channel/message。
+    //M 网页正在看哪儿（可选）：渠道要挂着、聊天要在清单里，这里查一次，带进发出的标准消息。
     const view = this.getView(body.view, wanted);
 
     //M 附件先都读到手（任何一个不对就 400，什么都不存），再存进机器人工作区，最后删掉用过的上传。
@@ -457,7 +463,6 @@ class WebApi {
     //M 路由：一对一的渠道，零次回复直接发最后的话；指定会话、引用别的渠道的消息时带上校验过的会话号；
     //M   引用别的渠道的消息再记下被引那条的原渠道、原机器人、原会话（回话照旧回网页这条）。
     const routing: protocol.ChannelRouting = {
-      listenOnly: false,
       autoFinal: true,
     };
     if (session !== undefined) {
@@ -473,7 +478,7 @@ class WebApi {
       sessionLabel = session.id;
     }
     const vars = { messageId: id, bot: wanted, attachmentCount: paths.length, targetSession: sessionLabel };
-    this.ctx.emit('trace', 'WebApi.accept', 'trace.webApi.accept', "ctx.serial('channel/message')", vars);
+    this.ctx.emit('trace', 'WebApi.accept', 'trace.webApi.accept', 'protocol.emitInbound(ctx, msg, true, control)', vars);
 
     //M 推给机器人；回话地址就是消息号。推不进去（比如没有插件管分派）就删掉这一行，告诉调用方。
     try {
@@ -486,7 +491,7 @@ class WebApi {
   }
 
   /**
-   * 网页的一条话发出标准 channel/message：approval 先看“同意 N”，bots 再按 routing 认领（指定会话的只进那场）。
+   * 网页的一条话经 emitInbound 发出 channel/direct（网页是私聊）：approval 先看“同意 N”，bots 再按 routing 认领（指定会话的只进那场）。
    * 附件在 accept 里已经存进 bots 工作区并拼成 @路径，因此 attachments 传空以免重复物化。
    * 网页来的都是本人（http 统一查令牌：本机、免令牌地址、带对令牌的才进得来），role 写 owner。
    * @param id web_messages 消息号。
@@ -555,9 +560,9 @@ class WebApi {
       channelMessage.view = view;
     }
 
-    //M 发出 channel/message：approval 先看“同意 N”，bots 再认领进会话（前台用 channel_reply 回，几条都追加进回话清单）。
+    //M 发出 channel/direct（网页是私聊、本人叫机器人）：approval 先看“同意 N”，bots 再认领进会话（前台用 channel_reply 回，几条都追加进回话清单）。
     const control: protocol.ChannelMessageControl = { claims: [] };
-    await this.ctx.serial('channel/message', channelMessage, control);
+    await protocol.emitInbound(this.ctx, channelMessage, true, control);
     if (control.approvalHandled !== true && control.claims.length === 0) {
       throw new Error(`机器人 ${wanted} 收到了消息，但前台没有定下进哪场会话`);
     }

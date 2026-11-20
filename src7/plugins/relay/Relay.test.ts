@@ -14,7 +14,7 @@ import { Database } from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type * as cordis from 'cordis';
+import * as cordis from 'cordis';
 import fastify from 'fastify';
 import * as events from '../../utils/RequestEvent.ts';
 import type * as dispatchModule from '../bots/Dispatch.ts';
@@ -773,7 +773,7 @@ describe('relay 旧库和配置', () => {
 });
 
 
-test('决策图留话经 relay 回到原留言，重启补送旧回信且不打开会话', async () => {
+test('relay 按原目标回到留言带井号的节点，重启按回信号去重，缺精确目标的留待核对', async () => {
   const made = world();
   const helper = { name: 'A', prefixes: ['a '] };
   const prefix = '/api/work-decision';
@@ -817,13 +817,10 @@ test('决策图留话经 relay 回到原留言，重启补送旧回信且不打�
   const deliverySql = 'SELECT delivered FROM relay_replies ORDER BY id';
   expect(made.db.query(deliverySql).all()).toEqual([{ delivered: 1 }]);
 
-  //M 模拟图已存盘而 relay 尚未写回执，并留一条缺少回信目标的点选记录供启动补送。
+  //M 模拟图已存盘而 relay 尚未写回执，同时保留旧渠道标签下的精确回信目标。
   made.db.exec('UPDATE relay_replies SET delivered = 0');
   const choose = { method: 'POST', url: prefix + '/choose', payload: { node, option: 'yes' } } as const;
   const picked = (await made.app.inject(choose)).json() as { delivery: { relayId: number } };
-  const legacyAddress = '{"owner":true}';
-  const clearTarget = made.db.query('UPDATE relay_items SET address = ? WHERE id IN (?, ?)');
-  clearTarget.run(legacyAddress, added.delivery.relayId, picked.delivery.relayId);
   const insert = 'INSERT INTO relay_replies (item_id, session_id, text, done, at, via) VALUES (?, ?, ?, 1, ?, ?)';
   const oldKey = `decision-map:${node}`;
   made.db.query("UPDATE relay_items SET channel = 'decision-map', session_id = ? WHERE id = ?")
@@ -838,8 +835,27 @@ test('决策图留话经 relay 回到原留言，重启补送旧回信且不打�
   expect(after?.notes?.[2]).toMatchObject({ author: 'central', text: '收到你的选择' });
   expect(after?.notes?.[2]?.replyTo).toBeUndefined();
   expect(made.db.query(deliverySql).all()).toEqual([{ delivered: 1 }, { delivered: 1 }]);
+
+  //G 缺精确目标时，即使旧收件键看起来是个节点号，也保持未投递。
+  const update = 'UPDATE relay_items SET address = ? WHERE id = ?';
+  const missingTarget = '{"owner":true}';
+  made.db.query(update).run(missingTarget, picked.delivery.relayId);
+  made.db.query(insert).run(picked.delivery.relayId, oldKey, '缺少精确目标', Date.now(), 'http');
+  made.restart();
+  await settle();
+
+  const unchanged = (await made.app.inject(graphUrl)).json() as decisionTypes.DecisionGraph;
+  expect(unchanged.nodes.find((item) => item.id === node)?.notes).toEqual(after?.notes);
+  expect(made.db.query(deliverySql).all()).toEqual([{ delivered: 1 }, { delivered: 1 }, { delivered: 0 }]);
   expect(made.openedSessions).toEqual([]);
 }, SLOW);
+
+
+test('relay 入口拒绝旧本人清单并提示改用飞书 role', () => {
+  const ctx = new cordis.Context();
+  const config = { tasks: {}, owner_open_ids: ['ou_legacy'] };
+  expect(() => relayModule.apply(ctx, config)).toThrow('owner_open_ids 已不用');
+});
 
 
 describe('回信送进会话：先写进对话再标已送，走模型的会话排进结果队列', () => {

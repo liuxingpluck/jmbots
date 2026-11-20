@@ -111,7 +111,7 @@ for (const role of ['guest', 'builder'] as const) {
         rawText: '退款通知', text: '退款通知', attachments: [], createdAt: 100, receivedAt: 100,
         timeSource: 'provider', replyTo: null, origin: { channel: 'feishu', address },
         visibility: { scope: 'feishu:app1:current', trusted: false, publicSourceIds: [] },
-        routing: { listenOnly: false },
+        routing: {},
       };
       for (const sample of [
         { ...message, messageId: 'mine' },

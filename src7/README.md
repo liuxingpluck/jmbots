@@ -1,15 +1,20 @@
 # src7：jmbots 第 7 版骨架
 
-进度、还没验证的地方，见 `docs/src6开发/骨架和插件_进度.md`。本目录的代码和这份说明不一样时，以代码为准。
+新人从这里读起。本目录的代码和这份说明不一样时，以代码为准。
 
-词汇表（会话字段、“基地”的叫法、新人易卡的词）见 `docs/词汇表.md`。
+- **先读**：`docs/组块阅读/00_总览.md`，骨架拆成 7 块，每块 4～5 个概念，读完一块再读下一块；
+- **查词**：`docs/词汇表.md`（会话字段、“基地”的叫法、新人易卡的词）；
+- **查插件**：`docs/插件地图.md`（每个插件干什么、用了谁、听和发哪些事件）；
+- **逐行看骨架**：教程页 `/tutorial/` 的“骨架逐行”，数据在 `docs/骨架逐行/`；
+- **规矩**：根目录 `CLAUDE.md`，规矩只留那一份。
 
 ## 一条规矩：骨架少之又少
 
-- 骨架是本目录里 `plugins/` 以外的文件，**只管一件事：一场会话怎么跑**，要一眼读得懂。
-- 骨架里没有机器人、渠道、前台、分派、工作区这些词，它们全在插件里。
+- 骨架是本目录里 `plugins/` 以外的文件：`Main.ts`、`Resources.ts`、`Sessions.ts`、`Tools.ts` 四个，加 `utils/`。**只管一件事：一场会话怎么跑**，要一眼读得懂。
+- 机器人、渠道、前台、分派、工作区这些业务都在插件里。`utils/` 里的 `Bots.ts`、`Workspace.ts` 只是从配置和会话记录里读值的纯函数，给好几个插件共用，不收事件、不管流程。
+- 渠道协议在 `plugins/channels/`：一个**不挂服务的协议插件**，只放事件声明、标准数据结构和无状态小函数，渠道和 `bots` 直接 import 它。它不进 `plugins/Index.ts` 的 `BUILT_IN`，`config.yaml` 的 `plugins` 段也不写它。
 - **主线全是直接调用**，按 F12 能一路跳到实现；**事件只留给插件接进来**。
-- 各种业务功能都做成插件，以后也是往 `plugins/` 里加。给骨架加函数、加事件之前，先想能不能做成插件。
+- 各种业务功能都做成插件，以后也是往 `plugins/` 里加。给骨架加函数、加事件之前，先想能不能做成插件；真要加，只加最少的，并写清为什么插件做不了。
 - 外面进来的东西只校验一次：命令行参数、`config.yaml` 在 `utils/Checks.ts`；模型给工具的参数在 `Tools.execute`；插件的配置在插件自己的 `apply`。别处不再查。
 
 ## 文件
@@ -20,115 +25,78 @@ src7/
   Resources.ts       资源：config.yaml、数据库、pi 的供应商、运行时目录下的文件夹
   Sessions.ts        会话：一份记录 + 一个循环，加上用 pi 发一次模型请求的 chat()。最重要的一个文件
   Tools.ts           工具：登记、报清单、执行
-  utils/
+  utils/             通用的纯函数，和业务无关、几处共用
     Checks.ts        校验：命令行参数、config.yaml
-    Text.ts          小工具：把抛出来的错收成一句话
+    Bots.ts          从资源快照读机器人名单、每个机器人的配置和目录
+    Workspace.ts     工作区路径（相对路径落成绝对路径，不许出工作区）；这一轮说话人是哪一档、是不是本人、能不能带私人记忆、是不是群
+    index.ts         对象、数组的遍历和取字段（eachEntry、getField 这类）
+    Text.ts          把抛出来的错收成一句话、格式化时间
     Trace.ts         跟踪点长什么样
-    Mime.ts          按扩展名认文件类型（网页、文件接口共用）
+    Trail.ts         跟踪行和轨迹的形状（journal、tutorial 共用）
+    RequestEvent.ts  请求-回执事件：发一个请求事件，等对应的回执事件
+    Mime.ts          按扩展名认文件类型
     Cut.ts           长文字截断：从头留、从尾留（最多 2000 行、50KB），按字数截
-    Workspace.ts     工作区里的相对路径换成绝对路径，出了工作区就报错
-    Names.ts         安全文件名、20 位时刻号（生图、留言、命令窗口共用）
+    Names.ts         安全文件名、20 位时刻号
     Card.ts          卡片数据：审批卡片、长跑提醒卡片共用（网页、飞书照同一份画）
+    Files.ts         确保目录存在、原子写入文本
+    Image.ts         从用户的话里找出 @图片路径
+    Failure.ts       带状态码的错误，HTTP 接口里抛它
+    BackendLog.ts    后端控制台错误加本机时间和源码来源
+    Embedded.ts      编译进单个程序里的文件（网页、出厂提示词）
+    SourceDir.ts     源码根目录名
+    Versions.ts      版本表（Versions.json）：程序跑 version 时打印
   plugins/
-    Index.ts         插件的约定，和自带插件的名单（分类和每个插件提供什么、用了谁见 docs/插件地图.md）
-    —— 骨架配套 ——
-    workspaces/      工作区：一个机器人可以有好几个工作区，各有唯一 ID；服务 ctx.workspaces，前台工具 workspace；后台会话按 ID 绑工作区。要写在 bots 前面
-    bots/            机器人：名单、收消息（channel/message 认领、bot/receive 问一圈），渠道用 ctx.bots.channel 登记发送函数；
-                     前台 FrontDesk.ts（没人认领的消息进这个机器人对这个客户的前台对话，简单的自己答）、派后台 Dispatch.ts（复杂的转给后台会话，结果回前台整理再发回）、
-                     系统提示词 Prompt.ts（底座、功能声明、会话种类提示词、人设、记忆）、reply 工具 ReplyTool.ts（后台会话做到一半先回用户一句）、渠道工具 ChannelTools.ts
-    fake-model/      假模型：不发请求，离线跑通链路用
-    —— HTTP 底座和网页 ——
-    http/            HTTP 服务（Fastify）：端口读 server.port，本机免令牌，外部要令牌
-    web/             网页：把 dist/web 的页面发给浏览器
-    —— 渠道 ——
-    channels/        渠道协议（不挂服务，渠道和 bots 直接 import）：channel/message、reply、replied、settled、recall 的事件声明和类型，
-                     Message.ts 消息和来源快照、Reply.ts 回复请求和回执、TextReply.ts 纯文字渠道共用的 channel/reply 响应、Target.ts 跨聊天发话
-    cli/             命令行渠道
-    web-api/         网页要的接口：机器人、会话、发话、停止、换模型、追溯
-    feishu/          飞书渠道：收发消息、图片文件、卡片（待确认、进度）、飞书文档、发件箱，内部分子文件夹
-    wechat/          微信渠道（对外名 wechat-kefu，积木客服改写）：只读引擎轮询监听会话的新消息，每个客户一场前台会话（wechat:<会话>）；回话自动发或经待确认卡片发；客服页 /wechat-kefu/
-    —— 分派 ——
-    relay/           外部助手的交办都在这里，三样：
-                     转话：bots 里写 relay: direct 的机器人不调模型，把话写进收件箱交给外部助手（jm开发），回信再送回原渠道
-                     外部 AI 任务通道：agent_task 工具，外部 AI 来领活、交结果的 7 个接口（/api/agents*）
-                     给外部助手留言：用 agent_task 的 send 指定执行端并写 reply: false，领取即送达
-    —— 给模型的工具 ——
-    file-tools/      文件工具：time、read、list_dir、write、edit（按原文替换，引号空白宽松匹配）、find（按名字、内容找）；用户话里 @ 的图片接给看图模型
-    exec/            exec 工具：跑 shell 命令，先审核；点停止会把整棵进程树结束
-                     命令窗口（Runs.ts）：POST /api/run 不经模型直接跑命令（先审），列、查、看输出、停下
-    web-search/      web_search 工具：按顶层 search 段一家一家试，点停止就断开请求
-    image-gen/       image_generate 工具：调生图接口，图存进工作区，点停止就断开
-    assist/          助手体验：react、ask、todo 三个工具，加一段回话规范；/api/assist
-    —— 审核和流程 ——
-    approval/        待确认：命令审核（规则 → decision → 审核小会话 → 问用户），GET/POST /api/approvals，认“同意 N / 拒绝 N”
-    decision/        决策模型：一个或几个模型同时打分，合成放行 / 拒绝 / 拿不准（approval、progress 可选地用）
-    progress/        进度和限时：到点问 decision 延不延、收尾、超时记 overtime.jsonl；GET/POST /api/progress
-                     复盘（Review.ts）：空闲时挑一场超时的会话写复盘，经待确认，同意了存进 memory/复盘/
-    —— 模型与上下文 ——
-    model-catalog/   模型目录：从供应商拉模型清单、价格，网页换模型用
-                     换模型（Fallback.ts）：在 session/before-model 最后自己调模型，限流、超长时换着试，按模型、供应商排队。所以写在 plugins 段最后
-                     模型介绍和评价（Notes.ts，原 model-notes）：页面 /model-notes/，前台派活时经事件 model-catalog/request（prompt）参考
-    context-fit/     上下文：干活的会话做完一轮写一句总结（Summary.ts）；太长时开小会话把前面的压成摘要（Compress.ts）；发给模型前超过上下文窗口就只留最近几段
-    —— 记忆和知识 ——
-    memory/          memory 工具（自己的、公共的记忆）；后台会话开头先搜一遍记忆和技能；配了基地就定时让它更新库的索引
-                     客服记忆库（Store.ts、Backend.ts）：聊天记录按客户/会话/机器人、知识库按段，结果带来源引用；检索后端可换（本地 SQLite / 外部服务）
-                     记忆关系图（GraphRoutes.ts、GraphStore.ts）：页面 /graph/（React），接口 /api/memory-graph/*
-    skills/          技能：清单放进后台会话的系统提示词，skill 工具只读技能文件
-    —— 管理接口 ——
-    settings/        设置页：GET/PUT /api/settings（密钥遮住）、POST /api/bots 新建机器人、立即重启
-    files-api/       文件接口：上传、看文件、列目录
-    base-bridge/     基地转发：/api/update、/api/autostart、/api/memory/*、/api/rag/* 转给 engine.index_url；
-                     两样默认关、配置打开：通知（config.notify：待确认、长任务结束转到基地 toast，notify_user 工具）、
-                     更新监听（config.update_watch：盯基地的新版本，登记待确认，同意了叫基地去换，下一次报结果）
-    desktop/         窗口操控：/api/desktop/status、/api/desktop/action，调 AOBW 能力程序
-    —— 记录和调试 ——
-    tutorial/        教程和调试页 /tutorial/（/flow/ 跳过去）：录这次启动走过的路、最近消息的泳道图和每步快照、每个插件的说明/状态/代码；
-                     打开 trace_console 时控制台打印一条消息走过哪些模块、哪些函数、哪些事件。写在 plugins 段第一个
-    journal/         流水：跟踪行和事件记进 journal_lines 表，GET /api/events 查；
-                     会话镜像（FilesMirror.ts，服务 ctx.filesMirror）：bots/<机器人>/sessions/<会话>/对话.md 和 session.json
-    usage/           用量：每次模型请求记进 model_usage 表，GET /api/usage 按天、按模型汇总
+    Index.ts         插件的约定，和自带插件的名单 BUILT_IN
+    channels/        渠道协议（不挂服务，见上）
+    <名字>/          其余每个插件一个文件夹，index.ts 加同目录的 说明.md
 ```
 
-依赖：骨架是 `resources` ← `tools` ← `sessions`；插件里 `workspaces` 用骨架，`bots`（含前台、系统提示词）用骨架和 `workspaces`，渠道、自带工具用 `bots`；渠道协议 `channels` 不挂服务，渠道和 `bots` 直接 import 它。自带插件共 30 个文件夹，名单以 `plugins/Index.ts` 的 `BUILT_IN` 为准。
+插件清单、每个插件干什么、用了谁，看 `docs/插件地图.md`，那里的表由 `bun ztools/plugin-map/Gen_Plugin_Map.ts` 生成，这里不再抄一份。读“一条消息怎么走”要知道的几个：`bots`（机器人名单、认领消息、前台、派后台、系统提示词）、`workspaces`（工作区，写在 `bots` 前面）、渠道 `feishu`、`web-api`、`cli`、`wechat`。
 
-骨架和 utils 的行数会随提交变，不在这里写死；要看就数 wc -l src7/*.ts src7/utils/*.ts。插件清单看 docs/插件地图.md，那里的表由 bun ztools/plugin-map/Gen_Plugin_Map.ts 生成。
+依赖：骨架是 `resources` ← `tools` ← `sessions`；插件里 `workspaces` 用骨架，`bots` 用骨架和 `workspaces`，渠道、自带工具用 `bots`；渠道和 `bots` 直接 import `channels`。
+
+骨架和 utils 的行数会随提交变，不在这里写死；要看就数 `wc -l src7/*.ts src7/utils/*.ts`。
 
 ## 一条消息怎么走
 
 以飞书群里一条 @ 了机器人的普通消息为例。
 
-1. **收到群消息。** `Feishu.start` 监听飞书的 `im.message.receive_v1`，交给 `FeishuInbound.onMessage` 按消息号去重。 [`Feishu.start` · `im.message.receive_v1` · src7/plugins/feishu/index.ts:595](plugins/feishu/index.ts#L595) · [`FeishuInbound.onMessage` · src7/plugins/feishu/Inbound.ts:159](plugins/feishu/Inbound.ts#L159)
-2. **存好再分发。** `FeishuInbound.handleInboundMessage` 识别 @ 和群设置、准备附件并存聊天日志，再由 `FeishuInbound.deliver` 发 `channel/message`。 [`FeishuInbound.handleInboundMessage` · src7/plugins/feishu/Inbound.ts:212](plugins/feishu/Inbound.ts#L212) · [`FeishuInbound.deliver` · `channel/message` · src7/plugins/feishu/Inbound.ts:737](plugins/feishu/Inbound.ts#L737)
-3. **审批先看是不是批复。** `Approval.onChannelMessage` 抢在机器人前读取 `channel/message`，有权处理的“同意 3”之类指令只消费一次并直回，普通消息继续分派。 [`Approval.constructor` · `channel/message` · src7/plugins/approval/index.ts:418](plugins/approval/index.ts#L418) · [`Approval.onChannelMessage` · src7/plugins/approval/index.ts:971](plugins/approval/index.ts#L971)
-4. **逐个机器人找会话。** `Bots.onChannelMessage` 给每个目标机器人准备附件并发 `bot/receive`，让 relay 等插件先认领，其余普通消息交前台。 [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:471](plugins/bots/index.ts#L471) · [`Bots.onChannelMessage` · `bot/receive` · src7/plugins/bots/index.ts:539](plugins/bots/index.ts#L539)
+1. **收到群消息。** `Feishu.start` 监听飞书的 `im.message.receive_v1`，交给 `FeishuInbound.onMessage` 按消息号去重。 [`Feishu.start` · `im.message.receive_v1` · src7/plugins/feishu/index.ts:579](plugins/feishu/index.ts#L579) · [`FeishuInbound.onMessage` · src7/plugins/feishu/Inbound.ts:158](plugins/feishu/Inbound.ts#L158)
+2. **存好再分发。** `FeishuInbound.handleInboundMessage` 识别 @、引用和群设置，下载附件、存聊天日志，再由 `FeishuInbound.deliver` 发进来的事件。 [`FeishuInbound.handleInboundMessage` · src7/plugins/feishu/Inbound.ts:212](plugins/feishu/Inbound.ts#L212) · [`FeishuInbound.deliver` · src7/plugins/feishu/Inbound.ts:717](plugins/feishu/Inbound.ts#L717)
+   - 进来的事件有三个，一条只发一个，由 `channels` 的 `emitInbound` 按 `getInboundEvent` 分：私聊 `channel/direct`，群里 @ 或引用了机器人 `channel/mention`（这一例），没叫机器人 `channel/listen`。 [`getInboundEvent` · src7/plugins/channels/Message.ts:260](plugins/channels/Message.ts#L260) · [`emitInbound` · src7/plugins/channels/Message.ts:277](plugins/channels/Message.ts#L277)
+3. **审批先看是不是批复。** `Approval.onChannelMessage` 听 `channel/direct`、`channel/mention`，抢在机器人前读进来的消息，有权处理的“同意 3”之类指令只消费一次并直回，普通消息继续分派。 [`Approval.onChannelMessage` · src7/plugins/approval/index.ts:975](plugins/approval/index.ts#L975)
+4. **逐个机器人找会话。** `Bots.onChannelMessage` 给每个目标机器人准备附件并发 `bot/receive`，让 relay 等插件先认领，其余普通消息交前台。 [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:552](plugins/bots/index.ts#L552) · [`Bots.onChannelMessage` · `bot/receive` · src7/plugins/bots/index.ts:609](plugins/bots/index.ts#L609)
 5. **把话排进前台。** `DispatchClaim.claimChannelMessage` 按渠道、账号、聊天找这台机器人的前台，去重后保存消息和原回话地址，由 `DispatchResults.startQueuedUser` 在轮到它时调用 `Session.queueUserMessage` 和 `Session.run`。 [`DispatchClaim.claimChannelMessage` · src7/plugins/bots/DispatchClaim.ts:39](plugins/bots/DispatchClaim.ts#L39) · [`DispatchResults.startQueuedUser` · src7/plugins/bots/DispatchResults.ts:854](plugins/bots/DispatchResults.ts#L854)
-6. **调模型前。** `Session.getStepAnswer` 发 `session/before-model`，让插件调整提示词和工具清单，`approval` 按说话人筛工具，随后由 `Sessions.chat` 发出请求（插件已经给出回答或要求停下时跳过）。 [`Session.getStepAnswer` · `session/before-model` · src7/Sessions.ts:813](Sessions.ts#L813) · [`Approval.constructor` · `session/before-model` · src7/plugins/approval/index.ts:428](plugins/approval/index.ts#L428) · [`Sessions.chat` · src7/Sessions.ts:513](Sessions.ts#L513)
-7. **模型回答后。** `Session.getStepAnswer` 发 `session/after-model`，插件可以改回答或停止这一轮，放行的回答接进对话时由 `Session.append` 发 `session/new-message`。 [`Session.getStepAnswer` · `session/after-model` · src7/Sessions.ts:844](Sessions.ts#L844) · [`Session.append` · `session/new-message` · src7/Sessions.ts:907](Sessions.ts#L907)
-8. **执行工具前。** `Tools.execute` 发 `session/before-tool`，`approval` 按当前说话人复核工具权限并可用 `gate.deny` 拦下单次调用，放行后才校验参数并执行。 [`Tools.execute` · `session/before-tool` · src7/Tools.ts:187](Tools.ts#L187) · [`Approval.constructor` · `session/before-tool` · src7/plugins/approval/index.ts:448](plugins/approval/index.ts#L448)
-9. **回复发回飞书。** 模型调用 `channel_reply` 时，`ChannelTools.runReply` 经 `requestChannelReply` 发 `channel/reply`，`FeishuReply.onChannelReply` 向原群发纯文字并交回 `channel/replied` 回执。 [`ChannelTools.runReply` · src7/plugins/bots/ChannelTools.ts:162](plugins/bots/ChannelTools.ts#L162) · [`requestChannelReply` · src7/plugins/channels/Reply.ts:170](plugins/channels/Reply.ts#L170) · [`FeishuReply.onChannelReply` · src7/plugins/feishu/Reply.ts:140](plugins/feishu/Reply.ts#L140)
-10. **工具交回结果后。** `Session.loop` 发 `session/after-tool` 让插件看结果并存进对话，继续执行这一批工具，轮次还在运行时再回第 6 步。 [`Session.loop` · `session/after-tool` · src7/Sessions.ts:769](Sessions.ts#L769)
-11. **这一轮收尾。** 模型没再要工具时，`Session.change` 存好结果并发 `session/change`，`DispatchResults.onChange` 接手，按回复回执收尾后发 `bot/settled` 并推进队列。 [`Session.change` · src7/Sessions.ts:915](Sessions.ts#L915) · [`DispatchResults.onChange` · src7/plugins/bots/DispatchResults.ts:358](plugins/bots/DispatchResults.ts#L358) · [`DispatchResults.emitSettled` · src7/plugins/bots/DispatchResults.ts:688](plugins/bots/DispatchResults.ts#L688)
+6. **调模型前。** `Session.getStepAnswer` 发 `session/before-model`，让插件调整提示词和工具清单，`approval` 按说话人筛工具，随后由 `Sessions.chat` 发出请求（插件已经给出回答或要求停下时跳过）。 [`Session.getStepAnswer` · `session/before-model` · src7/Sessions.ts:812](Sessions.ts#L812) · [`Approval.constructor` · `session/before-model` · src7/plugins/approval/index.ts:432](plugins/approval/index.ts#L432) · [`Sessions.chat` · src7/Sessions.ts:512](Sessions.ts#L512)
+7. **模型回答后。** `Session.getStepAnswer` 发 `session/after-model`，插件可以改回答或停止这一轮，放行的回答接进对话时由 `Session.append` 发 `session/new-message`。 [`Session.getStepAnswer` · `session/after-model` · src7/Sessions.ts:843](Sessions.ts#L843) · [`Session.append` · `session/new-message` · src7/Sessions.ts:906](Sessions.ts#L906)
+8. **执行工具前。** `Tools.execute` 发 `session/before-tool`，`approval` 按当前说话人复核工具权限并可用 `gate.deny` 拦下单次调用，放行后才校验参数并执行。 [`Tools.execute` · `session/before-tool` · src7/Tools.ts:187](Tools.ts#L187) · [`Approval.constructor` · `session/before-tool` · src7/plugins/approval/index.ts:452](plugins/approval/index.ts#L452)
+9. **回复发回飞书。** 模型调用 `channel_reply` 时，`ChannelTools.runReply` 经 `requestChannelReply` 发 `channel/reply` 并等 `channel/replied`；`FeishuReply.onChannelReply` 按账号、聊天向原群发纯文字，交回带着原请求的 `channel/replied` 回执。 [`ChannelTools.runReply` · src7/plugins/bots/ChannelTools.ts:162](plugins/bots/ChannelTools.ts#L162) · [`requestChannelReply` · src7/plugins/channels/Reply.ts:193](plugins/channels/Reply.ts#L193) · [`FeishuReply.onChannelReply` · src7/plugins/feishu/Reply.ts:74](plugins/feishu/Reply.ts#L74)
+10. **工具交回结果后。** `Session.loop` 发 `session/after-tool` 让插件看结果并存进对话，继续执行这一批工具，轮次还在运行时再回第 6 步。 [`Session.loop` · `session/after-tool` · src7/Sessions.ts:768](Sessions.ts#L768)
+11. **这一轮收尾。** 模型没再要工具时，`Session.change` 存好结果并发 `session/change`，`DispatchResults.onChange` 接手，按回复回执收尾后发 `bot/settled` 并推进队列。 [`Session.change` · src7/Sessions.ts:914](Sessions.ts#L914) · [`DispatchResults.onChange` · src7/plugins/bots/DispatchResults.ts:358](plugins/bots/DispatchResults.ts#L358) · [`DispatchResults.emitSettled` · src7/plugins/bots/DispatchResults.ts:688](plugins/bots/DispatchResults.ts#L688)
 
-群里没 @ 到机器人时，按群设置只存日志、记作背景或交给决策模型判断要不要接话。 [`FeishuInbound.getTargets` · src7/plugins/feishu/Inbound.ts:418](plugins/feishu/Inbound.ts#L418) · [`FrontDesk.handleChannelListen` · src7/plugins/bots/FrontDesk.ts:276](plugins/bots/FrontDesk.ts#L276)
+群里没叫到机器人时发 `channel/listen`：登记了 `listen: all` 的群记作背景，`listen: judge` 的群交给决策模型判断要不要接话，没登记的群谁都不进、只给记忆等记录类插件记。 [`FeishuInbound.getTargets` · src7/plugins/feishu/Inbound.ts:447](plugins/feishu/Inbound.ts#L447) · [`FrontDesk.handleChannelListen` · src7/plugins/bots/FrontDesk.ts:257](plugins/bots/FrontDesk.ts#L257)
+
+**所有发出去的话一律走 `channel/reply` → `channel/replied`**：模型的 `channel_reply`、一轮结束的自动回话、后台结果、relay 回信、审批直回都一样。渠道只向 `bots` 登记自己的名字（`ctx.bots.channel(名字)`，给网页列渠道用），不登记发送函数；收话就发进来的事件。 [`Bots.channel` · src7/plugins/bots/index.ts:778](plugins/bots/index.ts#L778) · [`Bots.send` · src7/plugins/bots/index.ts:738](plugins/bots/index.ts#L738)
 
 `exec` 工具多一道命令审批。`Exec.onTool` 发 `approval/request` 并等 `approval/result`，放行后才执行命令，需要用户点头时转待确认。 [`Exec.onTool` · src7/plugins/exec/index.ts:261](plugins/exec/index.ts#L261) · [`requestReview` · `approval/request` · src7/plugins/exec/Runs.ts:109](plugins/exec/Runs.ts#L109)
 
-飞书前台一轮正常结束且零次调用回复工具时，`DispatchResults.finishChannelFront` 只加跑一轮，提醒模型调用 `channel_reply`。 [`DispatchResults.finishChannelFront` · src7/plugins/bots/DispatchResults.ts:528](plugins/bots/DispatchResults.ts#L528) · [`FrontDesk.onRequest` · src7/plugins/bots/FrontDesk.ts:555](plugins/bots/FrontDesk.ts#L555)
+飞书前台一轮正常结束且零次调用回复工具时，`DispatchResults.finishChannelFront` 只加跑一轮，提醒模型调用 `channel_reply`。 [`DispatchResults.finishChannelFront` · src7/plugins/bots/DispatchResults.ts:528](plugins/bots/DispatchResults.ts#L528) · [`FrontDesk.onRequest` · src7/plugins/bots/FrontDesk.ts:536](plugins/bots/FrontDesk.ts#L536)
 
 ### 网页、微信和命令行从哪里进
 
-- **网页**的 `POST /api/message` 由 `WebApi.accept` 存入时间线并发 `channel/message`，指定或引用会话时带已校验的会话号。回话由 `WebApi.replyDirect` 追加到原网页消息。 [`WebApi.accept` · src7/plugins/web-api/index.ts:386](plugins/web-api/index.ts#L386) · [`WebApi.emitChannelMessage` · `channel/message` · src7/plugins/web-api/index.ts:596](plugins/web-api/index.ts#L596) · [`WebApi.replyDirect` · src7/plugins/web-api/index.ts:649](plugins/web-api/index.ts#L649)
-- **微信**的 `Wechat.store` 存好监听到的新消息后，把需要回复的消息发成 `channel/message`。`Wechat.deliverOrDraft` 把回话放进发件表，按设置直发、待确认或留草稿。 [`Wechat.store` · src7/plugins/wechat/index.ts:384](plugins/wechat/index.ts#L384) · [`Wechat.store` · `channel/message` · src7/plugins/wechat/index.ts:478](plugins/wechat/index.ts#L478) · [`Wechat.deliverOrDraft` · src7/plugins/wechat/index.ts:696](plugins/wechat/index.ts#L696)
-- **命令行**的 `Cli.submitLine` 存好原始输入后发 `channel/message`，回话逐条打印。 [`Cli.submitLine` · src7/plugins/cli/index.ts:141](plugins/cli/index.ts#L141) · [`Cli.constructor` · src7/plugins/cli/index.ts:78](plugins/cli/index.ts#L78)
+这三个渠道都经 `emitInbound` 发进来的事件：网页、命令行是私聊，发 `channel/direct`；微信私聊发 `channel/direct`、群里 @我 发 `channel/mention`。
 
-这三个渠道的普通前台消息都用 `channel_tool`，并设置 `routing.autoFinal`，一轮正常结束且零次调用回复工具时，由 `DispatchResults.sendLastWords` 把 `row.reply` 经 `channel/reply` 发出。 [`WebApi.accept` · src7/plugins/web-api/index.ts:386](plugins/web-api/index.ts#L386) · [`Wechat.store` · src7/plugins/wechat/index.ts:384](plugins/wechat/index.ts#L384) · [`Cli.submitLine` · src7/plugins/cli/index.ts:141](plugins/cli/index.ts#L141) · [`DispatchResults.sendLastWords` · src7/plugins/bots/DispatchResults.ts:647](plugins/bots/DispatchResults.ts#L647)
+- **网页**的 `POST /api/message` 由 `WebApi.accept` 存入时间线并发 `channel/direct`，指定或引用会话时带已校验的会话号。回话由 `WebApi.replyDirect` 追加到原网页消息。 [`WebApi.accept` · src7/plugins/web-api/index.ts:354](plugins/web-api/index.ts#L354) · [`WebApi.emitChannelMessage` · `channel/direct` · src7/plugins/web-api/index.ts:565](plugins/web-api/index.ts#L565) · [`WebApi.replyDirect` · src7/plugins/web-api/index.ts:619](plugins/web-api/index.ts#L619)
+- **微信**的 `Wechat.store` 存好监听到的新消息后，把需要回复的消息发成 `channel/direct` 或 `channel/mention`。`Wechat.deliverOrDraft` 把回话放进发件表，按设置直发、待确认或留草稿。 [`Wechat.store` · src7/plugins/wechat/index.ts:389](plugins/wechat/index.ts#L389) · [`Wechat.store` · `channel/direct` · src7/plugins/wechat/index.ts:484](plugins/wechat/index.ts#L484) · [`Wechat.deliverOrDraft` · src7/plugins/wechat/index.ts:705](plugins/wechat/index.ts#L705)
+- **命令行**的 `Cli.submitLine` 存好原始输入后发 `channel/direct`，回话逐条打印。 [`Cli.submitLine` · src7/plugins/cli/index.ts:134](plugins/cli/index.ts#L134) · [`Cli.constructor` · src7/plugins/cli/index.ts:71](plugins/cli/index.ts#L71)
+
+这三个渠道的普通前台消息都用 `channel_tool`，并设置 `routing.autoFinal`，一轮正常结束且零次调用回复工具时，由 `DispatchResults.sendLastWords` 把 `row.reply` 经 `channel/reply` 发出。 [`WebApi.accept` · src7/plugins/web-api/index.ts:354](plugins/web-api/index.ts#L354) · [`Wechat.store` · src7/plugins/wechat/index.ts:389](plugins/wechat/index.ts#L389) · [`Cli.submitLine` · src7/plugins/cli/index.ts:134](plugins/cli/index.ts#L134) · [`DispatchResults.sendLastWords` · src7/plugins/bots/DispatchResults.ts:647](plugins/bots/DispatchResults.ts#L647)
 
 ### legacy_auto 还在哪里用
 
-`legacy_auto` 是兼容的自动回话方式。旧式会话结束时，若该轮有渠道且允许自动回话，`Bots` 的 `session/change` 监听器把 `row.reply` 交给渠道登记的发送函数；后台结果队列走这种方式时，由 `DispatchResults.finishFront` 发回原渠道。 [`Bots.constructor` · `session/change` · src7/plugins/bots/index.ts:348](plugins/bots/index.ts#L348) · [`DispatchResults.finishFront` · src7/plugins/bots/DispatchResults.ts:446](plugins/bots/DispatchResults.ts#L446)
+`legacy_auto` 是兼容的自动回话方式：一轮结束时把 `row.reply` 发回原渠道，模型不用调 `channel_reply`。旧式会话结束时，`Bots` 的 `session/change` 监听器调 `Bots.send`，照会话记的渠道和地址发 `channel/reply`；后台结果队列走这种方式时，由 `DispatchResults.finishFront` 发回原渠道。 [`Bots.constructor` · `session/change` · src7/plugins/bots/index.ts:365](plugins/bots/index.ts#L365) · [`DispatchResults.finishFront` · src7/plugins/bots/DispatchResults.ts:446](plugins/bots/DispatchResults.ts#L446)
 
-旧入口 `ctx.bots.receive` 仍可用，微信客服页点“让 AI 回复”起草时还走它。网页直投非前台会话、relay 直接认领会话也可走兼容自动回话；后台派活或结果没有继承到 `channel_tool` 来源时默认用 `legacy_auto`。 [`Wechat.draftReply` · src7/plugins/wechat/index.ts:807](plugins/wechat/index.ts#L807) · [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:471](plugins/bots/index.ts#L471) · [`DispatchTools.getPlan` · src7/plugins/bots/DispatchTools.ts:180](plugins/bots/DispatchTools.ts#L180) · [`DispatchResults.getResultItem` · src7/plugins/bots/DispatchResults.ts:263](plugins/bots/DispatchResults.ts#L263)
-
+`ctx.bots.receive` 只剩微信客服页点“让 AI 回复”起草时在用。网页直投非前台会话、relay 直接认领会话也走兼容自动回话；后台派活或结果没有继承到 `channel_tool` 来源时默认用 `legacy_auto`。 [`Wechat.draftReply` · src7/plugins/wechat/index.ts:816](plugins/wechat/index.ts#L816) · [`DispatchTools.getPlan` · src7/plugins/bots/DispatchTools.ts:180](plugins/bots/DispatchTools.ts#L180) · [`DispatchResults.getResultItem` · src7/plugins/bots/DispatchResults.ts:263](plugins/bots/DispatchResults.ts#L263)
 
 ## 事件
 
@@ -142,6 +110,7 @@ src7/
 | `session/after-tool` | 挨个问 | 关口四：每个工具执行完、结果接进对话之前（没执行、被 deny 拦下的也走） | 改 `done.outcome`（文字、图片、是否出错）；在 `done.stop` 写理由：结果照样接进对话（要和工具调用配对），这一批后面的工具不执行，这一轮停下 |
 | `session/new-message` | 通知 | 对话里新接了一条 | 记往来；将来的界面、流水 |
 | `session/change` | 通知 | 状态变了 | 渠道回话；记往来；写总结 |
+| `session/model-failed` | 通知 | 模型请求失败了一次（重试的每一次都算） | model-catalog 记用量、限流时换模型；journal 记进流水 |
 | `ready` | 通知 | 骨架已挂好，配置的插件已逐一尝试挂载 | 命令行渠道发出命令行里带的消息，bots 检查归档服务 |
 | `config/changed` | 通知 | 资源服务成功应用配置更新 | 携带新增、删除或变化的顶层键名 |
 | `trace` | 通知 | 骨架和插件走到关键的地方 | journal 记进流水；tutorial 开了 `trace_console` 就打印一行 |
@@ -169,7 +138,7 @@ src7/
 - 正在转的时候又来一句话：先排着，循环下一步开头接进对话（不会插在模型的回答和工具结果中间）。来得太晚、这一轮已经收尾了，就紧接着再转一轮。
 - 喊停 `session.stop(谁)`：状态改成 `stopped`，正在等的模型请求马上掐断；正在跑的那个工具拿到同一个停止信号，慢的马上断开、记成“已停止”（不算出错，做了的不回滚），快的照常做完；后面的记“未执行：停下来了”。reply 是“已停止（谁）”。已经停下了再喊不会再停一次（不再发 `session/change`）。
 - 喊停后慢工具还在收尾时又来一句话：先排着，这一轮收尾后紧接着转，不用等下一句话。
-- 模型请求出错：`Sessions.chat()` 里照 `engine.retry` 重试，试够了还不成，这一轮就是 `failed`。工具出错不算会话出错，原因当成工具结果给模型看。
+- 模型请求出错：`Sessions.chat()` 里照 `models.retry` 重试，试够了还不成，这一轮就是 `failed`。工具出错不算会话出错，原因当成工具结果给模型看。
 - 重启：入口把库里还是 `running` 的会话各调一次 `run()`，从存下来的对话接着走。
 
 ### 库里的表 `sessions`
@@ -182,7 +151,7 @@ src7/
 | `meta` | TEXT NOT NULL | 否 | 记录去掉 `messages` 后的 JSON：骨架的 id、kind、parent、model、thinking、state、reply、updatedAt，加插件声明的项（如 bot、channel、address、customer、summary、frontTask、resultQueue 等）；`sessions.find` 照它里面的项找 | `Session.save`：新开（`create`）、接进一条消息（`append`）、改状态（`change`）时，以及插件改完 `row` 自己调 `save()` 时；每次整行 INSERT OR REPLACE，`updatedAt` 改成当时 |
 | `messages` | TEXT NOT NULL | 否 | 整场对话 JSON（pi 的 Message 数组） | 同上 |
 
-依据：建表 `src7/Sessions.ts:206-208`；写 `:603-614`（`save`，由 `create` `:251`、`append` `:622`、`change` `:634` 调）。
+依据：`Sessions.ts` 里建 `sessions` 表的那段；写在 `Session.save`（`create`、`append`、`change` 调它）。
 
 ## 插件
 
@@ -207,7 +176,7 @@ export function apply(ctx: Context, config: unknown): void {
 - 这和 Cordis、DSH 的插件约定是同一套。拔掉插件时不用自己收拾：通过 `ctx` 登记的监听和工具会自动撤掉。
 - 业务代码照旧写成 class，`apply` 里 `new` 出来就行，看 `plugins/cli/index.ts`。
 - 工具的停止信号：`run(args, session, signal)` 的第三个参数是 `AbortSignal`，网页、飞书点停止时触发。要等很久的工具（搜索、生图、`exec`、子任务）把它交给 `fetch(url, { signal })`、`spawn(cmd, { signal })`，或者 `signal.addEventListener('abort', …)` 自己断开并抛错；骨架把这时抛的错记成“已停止”。写文件、替换文字这类快工具不用管它，老工具不写第三个参数也行。
-- 插件能做的事：听上面的事件；调 `ctx.tools.register()` 登记工具；做一个新渠道（向 `ctx.bots.channel(name, send)` 登记发送函数，收话调 `ctx.bots.receive`）；开一场小会话再问一次模型（看 `plugins/context-fit/Summary.ts`）；给会话的记录加自己的项；自己提供一个服务给别的插件用（看 `plugins/bots/index.ts`）。
+- 插件能做的事：听上面的事件；调 `ctx.tools.register()` 登记工具；做一个新渠道（见下面“接一个别人写的”）；开一场小会话再问一次模型（看 `plugins/context-fit/Summary.ts`）；给会话的记录加自己的项；自己提供一个服务给别的插件用（看 `plugins/bots/index.ts`）。
 - 插件要读 `config.yaml` 里不在 `plugins` 段的东西（`bots`、`channels`、`server`……），从 `ctx.resources.raw` 拿整份配置，自己校验一次。里面有密钥，不许打印。
 
 ### 加一个自带的
@@ -224,61 +193,21 @@ export function apply(ctx: Context, config: unknown): void {
 
 - 只用传进来的 `ctx`，**不要自己 `import 'cordis'`**，要类型就用 `import type`。发版以后 jmbots 是单文件程序，插件自己装的 cordis 和程序里的不是同一份。
 - 要用别的 npm 包，自己先用 `bun build` 打成一个 `index.js`。
-- 外部的渠道插件向 `ctx.bots.channel(渠道名, send)` 登记发送函数，收话调 `ctx.bots.receive`，附件调 `ctx.bots.saveFile`。
+- 外部的渠道插件：用 `ctx.bots.channel(渠道名)` 登记名字；收到话拼成 `plugins/channels/` 的标准消息，调 `emitInbound` 发进来的事件（私聊 `channel/direct`、群里叫了机器人 `channel/mention`、没叫 `channel/listen`）；听 `channel/reply`，认出是自己的就发出去，再回 `channel/replied`（纯文字渠道可直接用 `channels/TextReply.ts`）；附件调 `ctx.bots.saveFile`。
 - **还没验证**：编译成单文件的 jmbots 能不能在运行时 `import()` 磁盘上的 `index.ts`。
 
 ### config.yaml 怎么写
 
-```yaml
-plugins:
-  - name: tutorial               # 教程和调试页 /tutorial/（/flow/ 跳过去）：要录启动，一定写在第一个
-    config: { trace_console: false }   # true：控制台打印一条消息走过的路
-  - name: workspaces             # 机器人的工作区，要写在 bots 前面
-  - name: bots                   # 机器人（含前台、派后台、系统提示词）。要写在用它的插件前面
-    config: { thinking: medium, front: { recent: 50 }, prompt: true, reply_tool: false } # 后台会话的思考档；front 是前台的配置（recent 带最近几条往来）；prompt 系统提示词，reply_tool 工具 reply
-  - name: cli
-  - name: file-tools             # time、read、list_dir、write、edit、find 工具
-  - name: fake-model             # 假模型：只管模型名以 fake/ 开头的会话，别的会话照常发给真模型
-  - name: http                   # HTTP 服务：端口写在顶层 server.port，不写就报错
-  - name: web                    # 网页，要写在 http 后面
-  - name: web-api                # 网页要的接口
-  - name: files-api              # 文件接口
-  - name: relay                  # 转话给外部助手、外部 AI 任务与留言：写在 http、fake-model 后面
-    config: { remind_minutes: 15, expire_minutes: 120 }
-  - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 feishu 段
-  - name: journal                # 流水和会话镜像：保留天数读顶层 events.keep_days（默认 30）；mirror: false 只写简版 对话.md
-  - name: approval               # 待确认、命令审核；网页轮询 /api/approvals，挂 web-api 的就要挂它
-    config: { model: magpie/某模型, thinking: low, decision_pass: 0.2 }   # model 不写用 default_model
-  - name: exec                   # exec 工具和命令窗口 /api/run，要写在 approval 后面；读顶层 paths 段（runtimes、program）；runs: false 不开命令窗口
-  - name: web-search             # web_search 工具：搜索供应商写在顶层 search 段
-  - name: usage                  # 用量，GET /api/usage
-  - name: settings               # 设置页接口，要写在 http 后面
-  - name: memory                 # memory 工具、开头先搜记忆和技能、关系图 /graph/；读 engine.index_url、engine.memory_libs
-  - name: skills                 # 技能清单、skill 工具
-  - name: context-fit            # 总结、压缩、按上下文窗口裁剪
-    config: { keep: 6, ratio: 0.9, summary: true, compress: { at: 200000, keep: 6 } }
-  - name: progress               # 进度和限时、超时复盘：写在 bots 后面；读 engine.limit_* 几项；review: false 不写复盘
-  - name: decision               # 决策模型：配置在顶层 decision 段（models、combine、allow_at、deny_at、timeout_ms）
-  - name: image-gen              # 生图：读 engine.image_model
-  - name: assist                 # react、ask、todo 工具
-  - name: base-bridge            # 基地转发：读 engine.index_url
-    config: { notify: false, update_watch: false }   # 基地通知、盯基地新版本，默认都关
-  - name: desktop                # 窗口操控
-  - name: wechat-kefu            # 微信渠道和客服页 /wechat-kefu/
-    config: { bot: 助手 }
-  - name: model-catalog          # 模型目录和换模型、排队：在 session/before-model 最后自己调模型，写在所有改请求的插件和 fake-model 后面，放最后
-    config: { notes: { dir: models } }   # 模型介绍和评价（原 model-notes），/model-notes/；notes 可不写
-  - name: ./plugins/weather      # 别人写的：文件夹路径，相对路径从运行时目录算
-    config: { city: 上海 }
-```
+完整样例在根目录 `config.example.yaml` 的 `plugins` 段，每个自带插件一项、带注释，这里不再抄一份。
 
-- 照写的先后挂；这个先后也是 `session/before-model` 挨个问的先后。
-- 不写 `plugins` 段时，挂 `workspaces`、`bots`、`cli`、`file-tools`、`context-fit` 五个（前台和系统提示词在 `bots` 里；`utils/Checks.ts` 的 `DEFAULT_PLUGINS`）。
+- 照写的先后挂；这个先后也是 `session/before-model` 挨个问的先后。`tutorial` 写第一个（要录启动），`workspaces`、`bots` 写在用它们的插件前面，`model-catalog` 放最后。
+- 不写 `plugins` 段时，挂 `workspaces`、`bots`、`cli`、`file-tools`、`context-fit` 五个（`utils/Checks.ts` 的 `DEFAULT_PLUGINS`）。
 - `disabled: true` 是先不挂。找不到、起不来的插件打一行原因，不挡别的插件。
-- 一个插件要用的服务没人提供（比如没挂 `bots`），它会一直等着不开工；入口挂完以后会打一行“插件 X 没开工：它要用的 Y 没人提供”。`bots` 写在用它的插件后面也能跑（试过），但先后会乱，还是写在最前面。
+- 一个插件要用的服务没人提供（比如没挂 `bots`），它会一直等着不开工；入口挂完以后会打一行“插件 X 没开工：它要用的 Y 没人提供”。
 - 前台在 `bots` 里：问完 `bot/receive` 没人认领的，前台总会定下会话或处理掉，不用另挂管分派的插件。想换一种分派办法，写一个插件听 `bot/receive` 把 `event.session` 填上，前台就不接这条。
+- 别人写的插件：`name` 写文件夹路径，相对路径从运行时目录算。
 
-骨架自己读的配置：`providers`、`default_model`、`plugins`，和 `engine` 里的 `thinking`（新会话的思考档，默认 low）、`retry: { times, wait_ms, timeout_ms }`（默认 5、3000、120000）。会话不按步数限制，没有步数这一项。顶层的 `bots` 名单是插件 `bots` 读的，不写就是一个叫“助手”的机器人。
+骨架自己读的配置：`providers`、`default_model`、`plugins`，和 `models` 里的 `thinking`（新会话的思考档，默认 low）、`retry: { times, wait_ms, timeout_ms }`（默认 5、3000、120000）。会话不按步数限制，没有步数这一项。顶层的 `bots` 名单是插件 `bots` 读的，不写就是一个叫“助手”的机器人。
 
 ## 打印：看一条消息走过的路
 
@@ -288,11 +217,11 @@ plugins:
 - **事件**（黄色）：发了哪个事件、现在有哪些插件在听。Cordis 每发一个事件都会自己报一声，不用谁去发。
 
 ```text
-16:43:58.553 函数 Cli.submitLine │ 命令行收到一句话，发出 channel/message │ ctx.serial('channel/message') │ 机器人=助手 序号=1 字数=5 │ src7/plugins/cli/index.ts:166
-16:43:58.555 事件 channel/message（挨个问）听的人：approval、bots │ src7/plugins/cli/index.ts:204
+16:43:58.553 函数 Cli.submitLine │ 命令行收到一句话，发出 channel/direct │ protocol.emitInbound(ctx, msg, true, control) │ 机器人=助手 序号=1 字数=5 │ src7/plugins/cli/index.ts:158
+16:43:58.555 事件 channel/direct（挨个问）听的人：approval、bots │ src7/plugins/channels/Message.ts:298
 ```
 
-命令行先发跟踪点，再经统一渠道事件入站。时间和变量为示例，监听者随所挂插件变化。 [跟踪点 · `Cli.submitLine` · `trace` · src7/plugins/cli/index.ts:164](plugins/cli/index.ts#L164) · [入站事件 · `Cli.submitLine` · `channel/message` · src7/plugins/cli/index.ts:202](plugins/cli/index.ts#L202)
+命令行先发跟踪点，再经 `emitInbound` 发 `channel/direct` 入站。时间和变量为示例，监听者随所挂插件变化。 [跟踪点 · `Cli.submitLine` · `trace` · src7/plugins/cli/index.ts:158](plugins/cli/index.ts#L158) · [入站事件 · `Cli.submitLine` · `emitInbound` · src7/plugins/cli/index.ts:195](plugins/cli/index.ts#L195)
 
 - 函数那种行：模块.函数 │ 一句人话 │ 一句代码 │ 关键变量。一个跟踪点两行代码，`//T` 开头的注释标出来，写法见 `utils/Trace.ts`。
 - 事件那种行：事件名（怎么发的）听的人，照挂上去的先后；会话的三个事件还顺带打出带着什么。“挨个问”“通知”就是上面「事件」一节说的两种发法。
@@ -311,18 +240,8 @@ bun src7/Main.ts [--data 运行时目录] [--bot 机器人] 现在几点了
 - 离线跑：`plugins` 段里挂上 `fake-model`，`providers` 里加一家叫 `fake` 的（`base_url` 随便写，不会去连），`default_model` 写成 `fake/fake`。假模型第一步要调用 `time` 工具，第二步回一句“现在是……”。模型名不是 `fake/` 开头的会话，它不管。
 - 离线测交办：话写成“调用 工具名 {JSON 参数}”，假模型就去调那个工具。比如 `bun src7/Main.ts --data 目录 "调用 hand_session {\"text\":\"帮我看看现在几点\"}"`，能看到前台转给后台会话、后台回话、写总结。
 - **表结构改过**：以前跑出来的 `data/jmbots7.db`（连同 `-wal`、`-shm`）要先删掉，不然会报 `no such column: meta`。
-- 类型检查（在仓库根目录，共享目录上大约 3 分钟）：
-
-```text
-node node_modules/typescript/bin/tsc -p tsconfig.src7.json --pretty false --noEmit --incremental false
-```
-
-后端由 `tsconfig.src7.json` 单独检查，根目录的 `tsconfig.json` 配置项目脚本。
+- 类型检查（在仓库根目录）：`bun run typecheck:src7`，查后端和网页。
 
 ## 给写代码的 AI
 
-- `//M` 是主线，`//G` 是守卫，`//T` 是跟踪点。
-- 骨架里不加兜底、不加重复的校验、不加转发层。要加功能就写成插件。**给骨架加事件、加函数，必须先跟用户说清楚、等他明确点头**，不能自己拿主意。
-- `if` 里只有一句 `return` 的写成一行、不加大括号，后面空一行；上下两段不同的事之间用空行隔开。
-- 代码约定见根目录 `CLAUDE.md` 和 `docs/TypeScript书写规范.md`。
-- 功能说明以当前源码和设计文档为准。
+规矩只留一份，在根目录 `CLAUDE.md`（编码原则、代码约定）。跟踪点用 `//T` 开头的注释标出来，写法见 `utils/Trace.ts`。

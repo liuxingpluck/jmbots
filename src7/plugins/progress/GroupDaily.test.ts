@@ -1,4 +1,4 @@
-/** 飞书群进度调度离线测试：使用假模型和内存飞书发送端。 */
+/** 飞书群进度调度离线测试：使用假模型和内存飞书发送端；日报经 bot/request 交给机器人，回执决定成败。 */
 import { Database } from 'bun:sqlite';
 import { expect, test } from 'bun:test';
 import * as cordis from 'cordis';
@@ -7,6 +7,7 @@ import * as channel from '../channels/index.ts';
 import type { ChannelMessage, SourceSnapshot } from '../channels/index.ts';
 import { Sessions, type ChatRequest, type Session } from '../../Sessions.ts';
 import { Tools, type ToolGate } from '../../Tools.ts';
+import * as requests from '../../utils/RequestEvent.ts';
 import * as botsPlugin from '../bots/index.ts';
 import * as feishu from '../feishu/index.ts';
 import * as memory from '../memory/ChannelIndex.ts';
@@ -54,7 +55,9 @@ test('每日时刻按运行机器本地日历，重启错过的当日不补', ()
   expect(daily.getNextReportAt(after, 17, 30)).toEqual(tomorrow);
 });
 
-test('定时标准消息发给原群指定机器人，日报工具只查同群和同账号', async () => {
+type HandRequest = Extract<botsPlugin.BotRequest, { action: 'hand' }>;
+
+test('日报请求交给指定机器人、回话发回原群，日报工具只查同群和同账号', async () => {
   const ctx = new cordis.Context();
   const db = new Database(':memory:');
   try {
@@ -67,24 +70,78 @@ test('定时标准消息发给原群指定机器人，日报工具只查同群�
         return session;
       },
     });
-    const received: ChannelMessage[] = [];
-    ctx.on('channel/message', (message) => { received.push(message); });
+
+    //M 假机器人和生产一样经 onRequestEvent 接 bot/request（置 handled、回配对的 bot/result）；只收 hand，记下请求。
+    const received: HandRequest[] = [];
+    requests.onRequestEvent(ctx, 'bot/request', 'bot/result', (request) => {
+      if (request.action !== 'hand') return { ok: false };
+
+      received.push(request);
+      return { ok: true, sessionId: request.sessionId };
+    });
     daily.bindReportTools(ctx);
 
+    //M 同一计划重放两次：前台只开一场，两次交的是同一件活（replyTo.key 相同，bots 靠它认出不再排）。
     const at = new Date(2026, 10, 19, 17, 30);
     const group = { chatId: GROUP, name: '测试项目 群', hour: 17, minute: 30, bot: BOT, appId: 'cli_primary', prompt: PROMPT };
     await daily.dispatchReport(ctx, group, at);
     await daily.dispatchReport(ctx, group, at);
     expect(found).toHaveLength(1);
-    const message = received[0]!;
-    expect(received[1]!.messageId).toBe(message.messageId);
-    expect(message).toMatchObject({
-      targetBots: [BOT], chatId: GROUP, chatType: 'group', role: 'guest',
-      origin: { channel: 'feishu', address: { owner: false, trusted: false, messageId: '', openId: '', scheduled: 'daily-progress' } },
-      routing: { listenOnly: false, autoFinal: true, sessionId: 'synthetic-report-session' },
+    expect(received).toHaveLength(2);
+    const hand = received[0]!;
+    const replyTo = hand.replyTo!;
+    expect(received[1]!.replyTo).toEqual(replyTo);
+
+    //M 请求交给指定机器人、接进当天前台；回话地址是原群的飞书地址，按外人算（guest、不受信），带日报标记。
+    expect(hand).toMatchObject({ action: 'hand', bot: BOT, origin: {}, sessionId: 'synthetic-report-session' });
+    expect(replyTo).toMatchObject({
+      channel: 'feishu',
+      accountId: 'cli_primary',
+      chatId: GROUP,
+      chatType: 'group',
+      key: 'daily-progress:' + GROUP + ':2026-11-19',
+      sender: { id: 'daily-progress', name: '群进度定时任务' },
+      address: {
+        appId: 'cli_primary',
+        chatId: GROUP,
+        chatType: 'group',
+        chatName: '测试项目 群',
+        owner: false,
+        role: 'guest',
+        trusted: false,
+        messageId: '',
+        openId: '',
+        scheduled: 'daily-progress',
+      },
     });
-    expect(message.text).toContain(PROMPT);
-    expect(message.text).toContain('since 设为 2026-11-18 17:30，until 设为 2026-11-19 17:30');
+    expect(hand.text).toContain(PROMPT);
+    expect(hand.text).toContain('since 设为 2026-11-18 17:30，until 设为 2026-11-19 17:30');
+
+    //M 来源快照由 bots 照 replyTo 拼（handReply）；这里照同样的字段拼一份标准消息，后面查范围、工具限制都用它。
+    const nativeId = 'request:' + replyTo.key;
+    const message: ChannelMessage = {
+      v: 1,
+      messageId: channel.makeChannelMessageId(replyTo.channel, replyTo.accountId, nativeId),
+      nativeId,
+      channel: replyTo.channel,
+      accountId: replyTo.accountId,
+      chatId: replyTo.chatId,
+      chatType: replyTo.chatType,
+      sender: replyTo.sender,
+      role: 'guest',
+      targetBots: [hand.bot],
+      mentions: [],
+      rawText: hand.text,
+      text: hand.text,
+      attachments: [],
+      createdAt: at.getTime(),
+      receivedAt: at.getTime(),
+      timeSource: 'received',
+      replyTo: null,
+      origin: { channel: replyTo.channel, address: replyTo.address },
+      visibility: { scope: 'feishu:cli_primary:' + GROUP, trusted: false, publicSourceIds: [] },
+      routing: { autoFinal: true },
+    };
 
     const claimKey = channel.getClaimKey(message.messageId, BOT);
     const replyRoundKey = channel.getReplyRoundKey(message.messageId, BOT, 'synthetic-report-session');
@@ -118,6 +175,26 @@ test('定时标准消息发给原群指定机器人，日报工具只查同群�
   } finally {
     await ctx.fiber.dispose();
     db.close();
+  }
+});
+
+test('机器人回执没交成或没人接单时，日报抛错并带上原因', async () => {
+  const ctx = new cordis.Context();
+  try {
+    ctx.provide('sessions', { find: () => [], create: () => ({ id: 'synthetic-report-session' }) });
+    const at = new Date(2026, 10, 19, 17, 30);
+    const group = { chatId: GROUP, name: '测试项目 群', hour: 17, minute: 30, bot: BOT, appId: 'cli_primary', prompt: PROMPT };
+
+    //M 没有任何监听者接 bot/request：requestEvent 立即按 unhandled 退回，日报抛错。
+    await expect(daily.dispatchReport(ctx, group, at)).rejects.toThrow('unhandled');
+
+    //M bots 回执 { ok: false, error }（没有这个机器人、前台没定下）：抛的就是回执里的原因。
+    requests.onRequestEvent(ctx, 'bot/request', 'bot/result', () => {
+      return { ok: false, error: '没有这个机器人：' + BOT };
+    });
+    await expect(daily.dispatchReport(ctx, group, at)).rejects.toThrow('没有这个机器人：' + BOT);
+  } finally {
+    await ctx.fiber.dispose();
   }
 });
 

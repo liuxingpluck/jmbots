@@ -1,29 +1,32 @@
-/** 渠道消息的前台认领与延迟判断接话。 */
+/** 渠道消息的前台认领；群里只听的话交给群攒批（GroupBatch.ts），判断要接的一批也从这里排进前台。 */
 import type * as cordis from 'cordis';
 import type { Session, SessionMeta } from '../../Sessions.ts';
 import * as protocol from '../channels/index.ts';
 import * as utils from '../../utils/index.ts';
 import type { DispatchResults, QueueItem, ReplyControl } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
+import * as groupBatchModule from './GroupBatch.ts';
 import type { Bot } from './index.ts';
 
 /** 定下前台会话，保存来源快照，然后交给现有队列处理。 */
 export class DispatchClaim {
-  /** 接住前台的延迟接话决定，和普通认领共用结果队列。 */
+  /** 群攒批：只听的话进它的缓冲；叫了机器人时拿走攒着的；撤回时 DispatchRecall 调它拿掉。 */
+  readonly batch: groupBatchModule.GroupBatch;
+
+  /**
+   * 建群攒批；认领和接话的一批共用结果队列。
+   * @param home bots 插件的 ctx。
+   * @param desk 前台：找前台、只听的话记背景。
+   * @param queue 结果队列：排进去、前台空着就开跑。
+   * @param batchConfig 入口校验过的 bots 的 group_batch；undefined 是没开攒批。
+   */
   constructor(
     private readonly home: cordis.Context,
     private readonly desk: FrontDesk,
     private readonly queue: DispatchResults,
+    batchConfig: groupBatchModule.GroupBatchConfig | undefined,
   ) {
-    //M 前台对延迟的只听话判断 allow 之后，要把它补进 channel_tool 队列：队列归本类管，前台不知道队列，所以挂这个回调给它调。
-    this.desk.onChannelJudgeAllow = (botName, message, botOrigin, claimKey) => {
-      //M 按名字找机器人对象，名单里没有（配置改过）就算了。
-      const bot = this.home.bots.get(botName);
-      if (bot === undefined) return;
-
-      //M 把这条话当用户的话排进前台的单队列，等前台空闲了处理。
-      this.enqueueJudgeFollowUp(bot, message, botOrigin, claimKey);
-    };
+    this.batch = new groupBatchModule.GroupBatch(home, desk, this, batchConfig);
   }
 
   /**
@@ -72,37 +75,31 @@ export class DispatchClaim {
       return;
     }
 
-    //M 群里只听的话：先按本机器人独立配置存背景或问决策模型，只有 judge=allow 才继续入队跑一轮。
-    let inputText = botText;
+    //M 群里只听的话（channel/listen，bots 在地址副本上标了 listenOnly）：listen: judge 的群进群攒批，别的记进前台当背景；都不跑这一轮。
     if (utils.getField(botOrigin.address, 'listenOnly') === true) {
-      const listened = await this.desk.handleChannelListen(front, message, botOrigin, botText, claimKey);
-      if (!listened.reply) {
-        front.row.sourceClaims = [...(front.row.sourceClaims ?? []), claimKey].slice(-200);
-        front.save();
-        const record: protocol.ChannelClaimRecord = {
-          bot: bot.name,
-          claimKey,
-          status: 'listen',
-          sessionKind: 'front',
-          sessionId: front.id,
-        };
-        if (listened.outcome !== undefined) {
-          record.judged = listened.outcome;
-        }
-        //M 原渠道收到只听的认领记录，可以把判断结论写进来往流水。
-        control?.claims.push(record);
-        return;
-      }
-      inputText = listened.text;
+      this.claimListen(bot, front, { text: botText, message, botOrigin, claimKey }, control);
+      return;
+    }
+
+    //M 叫了机器人的话：这个群攒着没判断的一批拿出来，拼在这句前面一起交给前台（缓冲清空）。
+    let inputText = botText;
+    const earlier = this.batch.take(front.id);
+    if (earlier.length > 0) {
+      inputText = ['群里在这之前没叫你的话：', ...earlier, '', '叫你的这句：', botText].join('\n');
     }
 
     //M 先固定来源快照和回复轮，再一起持久保存认领键和排队项。
     const item = this.getClaimItem(front, bot, message, botOrigin, inputText, claimKey);
     this.persistClaim(front, item, scope, explicit);
 
-    //M 把认领结果与可选的判断结论交给原渠道。
-    const claimRecord = this.getClaimRecord(bot.name, claimKey, front.id, botOrigin.address);
-    control?.claims.push(claimRecord);
+    //M 把认领结果交给原渠道（写进来往流水）。
+    control?.claims.push({
+      bot: bot.name,
+      claimKey,
+      status: 'claimed',
+      sessionKind: 'front',
+      sessionId: front.id,
+    });
 
     //M channel_tool 首条输入也经同一个 drain 设置 activeKey 与快照后才启动 Session.run。
     if (front.row.state !== 'running' && front.row.activeKey === undefined) {
@@ -110,26 +107,38 @@ export class DispatchClaim {
     }
   }
 
-  /** 保留该次认领和渠道流水需要的判断结果。 */
-  private getClaimRecord(
-    botName: string,
-    claimKey: string,
-    sessionId: string,
-    address: Record<string, unknown>,
-  ): protocol.ChannelClaimRecord {
-    const claimRecord: protocol.ChannelClaimRecord = {
-      bot: botName,
-      claimKey,
-      status: 'claimed',
-      sessionKind: 'front',
-      sessionId,
-    };
-    //M 地址里带决策模型的结论（judged）就记进认领回执，飞书把它写进来往流水。
-    const judgedText = utils.getStringField(address, 'judged');
-    if (judgedText !== '') {
-      claimRecord.judged = judgedText;
+  /**
+   * 认领一句只听的话：listen: judge 的群（开了攒批）进群攒批的缓冲，别的记进前台对话当背景；都不跑这一轮。
+   * 认领键记到前台上（渠道重发认得出来），认领记录写 listen（飞书流水写“只记”，判断的结果另由 bot/judged 补一行）。
+   * @param bot 目标机器人。
+   * @param front 这个机器人在这个群的前台。
+   * @param heard 这一句：话、标准消息、地址副本、认领键。
+   * @param control 可选协调对象。
+   */
+  private claimListen(
+    bot: Bot,
+    front: Session,
+    heard: groupBatchModule.Heard,
+    control: protocol.ChannelMessageControl | undefined,
+  ): void {
+    //M 进群攒批；没收（没开攒批、不是 judge 的群）就记成背景。
+    const batched = this.batch.add(front, heard);
+    if (!batched) {
+      this.desk.listen(front, heard.text, heard.botOrigin.address);
     }
-    return claimRecord;
+
+    //M 认领键记到前台上，只留最近 200 个。
+    front.row.sourceClaims = [...(front.row.sourceClaims ?? []), heard.claimKey].slice(-200);
+    front.save();
+
+    //M 认领记录交给原渠道。
+    control?.claims.push({
+      bot: bot.name,
+      claimKey: heard.claimKey,
+      status: 'listen',
+      sessionKind: 'front',
+      sessionId: front.id,
+    });
   }
 
   /** 构造待运行的渠道项及该轮采用的回复策略。 */
@@ -217,59 +226,32 @@ export class DispatchClaim {
   }
 
   /**
-   * 延迟 judge 决定接话（followUp）时把已写入 messages 的原话补入 channel_tool 队列并唤醒 drain。
-   * @param bot 目标机器人。
-   * @param message 标准消息。
-   * @param botOrigin 已经去掉 listenOnly 的兼容地址快照。
-   * @param claimKey 原认领键。
+   * 群攒批判断要接话：照这一批最后一句排进前台的单队列（channel_tool），这一批（几行“说话人：话”）当这一轮的话，回话回到这个群。
+   * 和认领一句话走同一套：拼来源快照和回复轮、认领键和排队项一起存、前台空着就开跑。GroupBatch.look 调。
+   * @param front 这个机器人在这个群的前台。
+   * @param last 这一批最后一句。
+   * @param text 这一批的话。
    */
-  private enqueueJudgeFollowUp(
-    bot: Bot,
-    message: protocol.ChannelMessage,
-    botOrigin: { channel: string; address: Record<string, unknown> },
-    claimKey: string,
-  ): void {
-    //M 按来源域和客户号找到这场前台（延迟判断时会话已存在，没有才新开）。
+  enqueueBatch(front: Session, last: groupBatchModule.Heard, text: string): void {
+    //G 机器人名单里没有了（配置改过）：不排。
+    const bot = this.home.bots.get(front.row.bot);
+    if (bot === undefined) return;
+
+    //G 这一批已经排过（键在队列里或认领过）：不再排。
+    const batchKey = `${last.claimKey}:batch`;
+    const queued = (front.row.resultQueue ?? []).some((item) => item.key === batchKey);
+    if (queued || (front.row.sourceClaims ?? []).includes(batchKey)) return;
+
+    //M 地址副本去掉只听的标记：这一轮要回。
+    const address = structuredClone(last.botOrigin.address);
+    delete address['listenOnly'];
+    const botOrigin = { channel: last.botOrigin.channel, address };
+
+    //M 拼排队项，和认领键一起存进前台。
+    const message = last.message;
+    const item = this.getClaimItem(front, bot, message, botOrigin, text, batchKey);
     const scope = { channel: message.channel, accountId: message.accountId, chatId: message.chatId };
-    const customer = utils.getStringField(botOrigin.address, 'customer');
-    const front = this.desk.findOrCreateFrontByScope(bot.name, scope, customer);
-    const followKey = `${claimKey}:followup`;
-
-    //G 同一条已经补过队了（followKey 在队列里）→ 不再补。
-    if ((front.row.resultQueue ?? []).some((item) => item.key === followKey)) return;
-
-    //M 给这次延迟接话编一个回复轮键，写进来源快照，修复轮、回执都认它。
-    const replyRoundKey = protocol.getReplyRoundKey(message.messageId, bot.name, 'judge_followup');
-    const snapshot = protocol.getSourceSnapshot(message, bot.name, botOrigin, followKey, replyRoundKey);
-    const startIndex = Math.max(0, front.row.messages.length - 1);
-    const replyControl: ReplyControl = {
-      roundKey: replyRoundKey,
-      policy: 'channel_tool',
-      startMessageIndex: startIndex,
-      calledIds: [],
-      nextReplyIndex: 0,
-      reminder: 'none',
-      receiptKeys: [],
-    };
-    const item: QueueItem = {
-      key: followKey,
-      kind: 'user',
-      hash: '',
-      source: { type: 'user', id: message.channel },
-      origin: { channel: botOrigin.channel, address: structuredClone(botOrigin.address) },
-      payload: { text: '', files: [], sourceSnapshot: snapshot },
-      stage: 'queued',
-      note: '',
-      at: Date.now(),
-      deliveryMode: 'channel_tool',
-      claimKey: followKey,
-      alreadyRecorded: true,
-      replyControl,
-    };
-
-    //M 补进前台的队列（原话已经记在对话里了，处理时不再加一遍），存库。
-    front.row.resultQueue = [...(front.row.resultQueue ?? []), item];
-    front.save();
+    this.persistClaim(front, item, scope, false);
 
     //M 前台空闲（没在转、没有正在处理的项）就开始处理队列。
     if (front.row.state !== 'running' && front.row.activeKey === undefined) {

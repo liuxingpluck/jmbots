@@ -8,6 +8,7 @@ import * as resultsModule from './DispatchResults.ts';
 import * as toolsModule from './DispatchTools.ts';
 import type { AcceptReceipt, FrontTask, QueueItem, ResultInput } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
+import type { GroupBatchConfig } from './GroupBatch.ts';
 import type { Bot, ReceiveEvent } from './index.ts';
 
 export { normalizeLegacyReceipt } from './DispatchResults.ts';
@@ -47,14 +48,23 @@ export class Dispatch extends cordis.Service {
   private readonly results: resultsModule.DispatchResults;
   private readonly claims: claimModule.DispatchClaim;
 
-  /** 保留原来的服务名、工具和监听顺序。 */
-  constructor(ctx: cordis.Context, private readonly desk: FrontDesk) {
+  /**
+   * 保留原来的服务名、工具和监听顺序。
+   * @param ctx bots 插件的 ctx。
+   * @param desk 前台。
+   * @param batchConfig bots 的 apply 校验过的 group_batch；undefined 是没开群攒批。
+   */
+  constructor(
+    ctx: cordis.Context,
+    private readonly desk: FrontDesk,
+    batchConfig: GroupBatchConfig | undefined,
+  ) {
     super(ctx, 'frontDesk');
 
-    //M 队列在原来的插件上下文收结果，认领和撤回都操作同一份队列。
-    const recall = new recallModule.DispatchRecall(ctx, desk);
+    //M 队列在原来的插件上下文收结果，认领和撤回都操作同一份队列；认领里建群攒批，撤回也要拿掉缓冲里的话。
     this.results = new resultsModule.DispatchResults(ctx);
-    this.claims = new claimModule.DispatchClaim(ctx, desk, this.results);
+    this.claims = new claimModule.DispatchClaim(ctx, desk, this.results, batchConfig);
+    const recall = new recallModule.DispatchRecall(ctx, this.claims.batch);
 
     //M 顺序与拆分前一致，先挂派活工具，再处理收尾、恢复和撤回。
     new toolsModule.DispatchTools(ctx, desk);

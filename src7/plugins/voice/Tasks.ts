@@ -87,9 +87,7 @@ interface Snapshot {
 
 /** 只在语音入档中使用的路由说明。 */
 interface VoiceRouting extends channel.ChannelRouting {
-  /** 已经开工或只收录的整句，机器人不再分派。 */
-  recordOnly?: true;
-  /** 提前开工对应的任务号。 */
+  /** 提前开工对应的任务号（网页时间线记进地址的 voiceTaskId）。 */
   taskId?: string;
 }
 
@@ -118,17 +116,12 @@ declare module 'cordis' {
      */
     'voice/task'(task: VoiceTask): void;
     /**
-     * 半句获准先开工，由 bots 复用认领入口，不进入标准历史流。
-     * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch
-     * 谁接：src7/plugins/bots/index.ts 的 Bots.constructor；src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor
-     */
-    'voice/dispatch'(message: channel.ChannelMessage, control: channel.ChannelMessageControl): Promise<void>;
-    /**
      * 语音最终句先进入网页的持久时间线，随后才发标准渠道事件。
+     * sessionId 是这句接进的后台会话（半句已开工、或合并进上一句的）；waiting 是这句等不等机器人回话（只入档、没开工的不等）。
      * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispatch、VoiceTasks.record
      * 谁接：src7/plugins/voice/Replies.ts 的 VoiceReplies.constructor；src7/plugins/web-api/index.ts 的 WebApi.constructor
      */
-    'voice/record'(message: channel.ChannelMessage, sessionId?: string): void;
+    'voice/record'(message: channel.ChannelMessage, sessionId: string | undefined, waiting: boolean): void;
     /**
      * 没有最终字幕就失效的半句，取消关联回复等待。
      * 谁发：src7/plugins/voice/Tasks.ts 的 VoiceTasks.dispose
@@ -449,16 +442,21 @@ export class VoiceTasks {
   /** 保留最终记录并告知历史索引，既有任务接收者无需再次处理。 */
   private async record(sentence: Sentence): Promise<void> {
     const started = sentence.started;
-    const routing: VoiceRouting = { listenOnly: true, autoFinal: false, recordOnly: true };
+    const routing: VoiceRouting = { autoFinal: false };
     if (started !== undefined) {
       routing.taskId = sentence.id;
     }
     //M 将 ASR 修订后的整句作为入档和索引正文。
     const message = this.getMessage(sentence, sentence.text, routing);
-    //M 审批监听排在 bots 之前，整句入档通知从入口标成无需审批。
-    const control: channel.ChannelMessageControl = { claims: [], approvalHandled: true };
-    this.ctx.emit('voice/record', message, started?.sessionId);
-    await this.ctx.serial('channel/message', message, control);
+
+    //M 先写网页时间线：开工了的接回原任务等回话，没开工的不等。
+    const waiting = started !== undefined;
+    this.ctx.emit('voice/record', message, started?.sessionId, waiting);
+
+    //M 只入档的整句是“没叫机器人”的话，发 channel/listen：approval 不看；targetBots 置空，bots 不再收（开工的半句已经交过）。
+    const heard: channel.ChannelMessage = { ...message, targetBots: [] };
+    const control: channel.ChannelMessageControl = { claims: [] };
+    await channel.emitInbound(this.ctx, heard, false, control);
     this.consume(sentence);
   }
 
@@ -466,7 +464,7 @@ export class VoiceTasks {
   private async dispatch(sentence: Sentence, candidate: string): Promise<void> {
     const last = this.previous;
     const now = performance.now();
-    const routing: VoiceRouting = { listenOnly: false, autoFinal: true };
+    const routing: VoiceRouting = { autoFinal: true };
     let prefix = TRANSCRIBED;
     if (last !== undefined && !last.settled && now - last.at <= this.settings.mergeWindowMs) {
       routing.sessionId = last.sessionId;
@@ -477,6 +475,11 @@ export class VoiceTasks {
     let text = prefix + candidate;
     if (final) {
       text = sentence.text;
+    }
+
+    //M 半句：话还没说完先开工，标 partial，memory 等整句再记。
+    if (!final) {
+      routing.partial = true;
     }
     //M 保留句号与聊天号，供后台回话关联最终档案。
     const message = this.getMessage(sentence, text, routing);
@@ -489,15 +492,17 @@ export class VoiceTasks {
     const flight: Flight = { messageId, sessionId: routing.sessionId, settled: false };
     this.sending = flight;
     try {
+      //M 整句：先写时间线（等回话），再发 channel/direct，approval 看批复、bots 认领。
       if (final) {
-        //M 先写时间线，再允许渠道审批和机器人读取最终原话。
-        this.ctx.emit('voice/record', message, routing.sessionId);
-        await this.ctx.serial('channel/message', message, control);
-        this.consume(sentence);
+        this.ctx.emit('voice/record', message, routing.sessionId, true);
       }
-      if (!final) {
-        //M 半句只经内部派发，网页和记忆索引只收到最终消息。
-        await this.ctx.serial('voice/dispatch', message, control);
+
+      //M 整句、半句都发 channel/direct（语音是私聊）；半句带 partial，VoiceReplies 登记等整句入档，记忆不记。
+      await channel.emitInbound(this.ctx, message, true, control);
+
+      //M 整句处理完才移出队列；半句留着，等最终字幕再入档。
+      if (final) {
+        this.consume(sentence);
       }
     } finally {
       this.sending = undefined;

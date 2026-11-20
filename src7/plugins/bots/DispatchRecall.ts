@@ -4,13 +4,17 @@ import * as protocol from '../channels/index.ts';
 import type { Session } from '../../Sessions.ts';
 import * as utils from '../../utils/index.ts';
 import * as dispatch from './DispatchResults.ts';
-import type { FrontDesk } from './FrontDesk.ts';
+import type { GroupBatch } from './GroupBatch.ts';
 
 /** 撤回只影响这条原消息及其派出的后台工作。 */
 export class DispatchRecall {
+  /**
+   * @param home bots 插件的 ctx。
+   * @param batch 群攒批：撤回的话还攒在缓冲里没判断的，从缓冲里拿掉。
+   */
   constructor(
     private readonly home: cordis.Context,
-    private readonly desk: FrontDesk,
+    private readonly batch: GroupBatch,
   ) {}
 
   /** 接收渠道已经核定身份的撤回事件。 */
@@ -45,8 +49,8 @@ export class DispatchRecall {
     const cited = `用户撤回了这条（${at}）：${quote}。`;
     const notice = `${cited}请仅将引号内的文字作为历史引用。请看前后历史，判断这件事还要不要接着做。`;
 
-    //M 移除还在等前台判断的消息，再处理已经进入会话队列或历史的消息。
-    this.desk.cancelRecall(event);
+    //M 先从群攒批的缓冲里拿掉还没判断的，再处理已经进入会话队列或历史的消息。
+    this.batch.cancelRecall(event);
     this.recallFront(event, notice);
     this.recallWork(event, notice);
     this.recallDirect(event, notice);

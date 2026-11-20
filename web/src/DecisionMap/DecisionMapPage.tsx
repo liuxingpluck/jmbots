@@ -1,8 +1,9 @@
-/** 决策图整页，保持快照最新，提交用户的点选和写的话，可在放射、思维导图、表格、清单四种看法间切换。 */
+/** 决策图整页，保持快照最新，提交用户的点选和写的话，可在按日期、放射、思维导图、表格、清单五种看法间切换，默认按日期。 */
 import * as react from 'react';
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as api from './DecisionMapApi.ts';
+import * as dateMap from './DateMap.ts';
 import * as drawer from './Drawer.tsx';
 import * as layout from './Layout.ts';
 import * as nodes from './Nodes.tsx';
@@ -12,10 +13,10 @@ import * as words from './Words.ts';
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
 
-/** 四种看法：放射图、思维导图、表格、清单。 */
-type Look = 'radial' | 'mind' | 'table' | 'list';
+/** 五种看法：按日期、放射图、思维导图、表格、清单。 */
+type Look = 'date' | 'radial' | 'mind' | 'table' | 'list';
 
-const NODE_TYPES = { decision: nodes.DecisionNode };
+const NODE_TYPES = { decision: nodes.DecisionNode, day: nodes.DayNode };
 const ORIGIN: xyflow.NodeOrigin = [0.5, 0.5];
 const FIT: xyflow.FitViewOptions = {
   padding: { top: '24px', bottom: '48px', left: '24px', right: '24px' },
@@ -33,6 +34,7 @@ const DIRECTION_KEY = 'jmbots.decision-map.direction';
 /** 看法切换按钮，顺序即显示顺序。 */
 const LOOKS: { key: Look; label: string }[] = [
   //M 按钮文字在打开页面时按当前语言译好。
+  { key: 'date', label: t('按日期') },
   { key: 'mind', label: t('思维导图') },
   { key: 'radial', label: t('放射') },
   { key: 'table', label: t('表格') },
@@ -59,15 +61,14 @@ function writeStored(key: string, value: string): void {
   }
 }
 
-/** 打开时用哪种看法：记着的优先；没记过时手机用清单，宽屏用思维导图。 */
+/** 打开时用哪种看法：记着的优先，没记过时按日期。 */
 function getStartLook(): Look {
   //M 先看浏览器记着的看法，认得出才用。
   const stored = readStored(LOOK_KEY);
   const known = LOOKS.find((item) => item.key === stored);
   if (known !== undefined) return known.key;
-  if (window.innerWidth <= MOBILE_WIDTH) return 'list';
 
-  return 'mind';
+  return 'date';
 }
 
 /** 思维导图方向：记着“上下”就上下，默认左右。 */
@@ -91,6 +92,7 @@ export function DecisionMapPage() {
   const [mode, setMode] = react.useState<layout.ViewMode>('main');
   const [look, setLook] = react.useState<Look>(getStartLook);
   const [direction, setDirection] = react.useState<layout.MindDirection>(getStartDirection);
+  const [onlyAsk, setOnlyAsk] = react.useState(false);
   const [sending, setSending] = react.useState(false);
   const [noteError, setNoteError] = react.useState<string>();
   const [folds, setFolds] = react.useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -220,12 +222,13 @@ export function DecisionMapPage() {
     const view = { mode, folds, portrait, ...size };
     if (scope.path.length > 0) view.mode = 'all';
     //M 卡片和连线按此时的画布比例和看法一起计算；表格和清单不用画布。
+    if (look === 'date') return dateMap.getDateLayout(scope.nodes, folds, open, onlyAsk);
     if (look === 'mind') return layout.getMindLayout(scope.nodes, view, open, direction);
     if (look === 'radial') return layout.getLayout(scope.nodes, view, open);
 
     return { nodes: [], edges: [] };
-  }, [scope, mode, folds, portrait, size, open, look, direction]);
-  const isCanvas = look === 'mind' || look === 'radial';
+  }, [scope, mode, folds, portrait, size, open, look, direction, onlyAsk]);
+  const isCanvas = look === 'date' || look === 'mind' || look === 'radial';
   const pending = scope.nodes.filter((node) => node.kind === 'pending' && node.status === 'open');
   const selected = graph?.nodes.find((node) => node.id === nodeId);
   let fit = FIT;
@@ -364,11 +367,18 @@ export function DecisionMapPage() {
           <a href="/" className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
           <h1>{canvasLabel}</h1>
         </div>
-        {isCanvas && scope.path.length === 0 && (
+        {(look === 'mind' || look === 'radial') && scope.path.length === 0 && (
           <div className="decision-filters" role="group" aria-label="画布显示范围">
             <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
             <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
             <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>全部分支</button>
+          </div>
+        )}
+        {look === 'date' && (
+          <div className="decision-filters" role="group" aria-label={t('筛选')}>
+            <button type="button" data-only-ask aria-pressed={onlyAsk} onClick={() => setOnlyAsk(!onlyAsk)}>
+              {t('只看等用户定')}
+            </button>
           </div>
         )}
         <div className="decision-looks">
@@ -447,7 +457,7 @@ export function DecisionMapPage() {
         <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
           {isCanvas && diagram.nodes.length > 0 && (
             <xyflow.ReactFlow<layout.FlowNode>
-              key={`${root ?? ''}-${look}-${direction}-${mode}-${size.width}x${size.height}-${focused ?? ''}`}
+              key={`${root ?? ''}-${look}-${direction}-${mode}-${onlyAsk}-${size.width}x${size.height}-${focused ?? ''}`}
               nodes={diagram.nodes}
               edges={diagram.edges}
               nodeTypes={NODE_TYPES}
@@ -475,12 +485,21 @@ export function DecisionMapPage() {
           {look === 'list' && graph !== undefined && (
             <views.ListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
           )}
-          {isCanvas && diagram.nodes.length > 0 && (
+          {look === 'date' && diagram.nodes.length > 0 && (
+            <ul className="decision-legend" aria-label="图例">
+              <li><i data-tone="pending" />{t('等用户定')}</li>
+              <li><i data-tone="confirmed" />{t('中控已定')}</li>
+              <li><i data-tone="chosen" />{t('用户已定')}</li>
+              <li><i data-tone="done" />{t('做完')}</li>
+            </ul>
+          )}
+          {(look === 'mind' || look === 'radial') && diagram.nodes.length > 0 && (
             <ul className="decision-legend" aria-label="图例">
               <li><i data-tone="main" />主线</li>
               <li><i data-tone="pending" />待定</li>
               <li><i data-tone="working" />进行中</li>
-              <li><i data-tone="confirmed" />中控已确认</li>
+              <li><i data-tone="confirmed" />中控已定</li>
+              <li><i data-tone="chosen" />用户已定</li>
             </ul>
           )}
           {selected !== undefined && (

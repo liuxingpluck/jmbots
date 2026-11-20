@@ -23,16 +23,39 @@ interface Fold {
 }
 
 /** 送给自定义卡片的数据。 */
-type VisualData = {
+export type VisualData = {
   /** 当前快照的节点。 */
   entry: types.DecisionNode;
   /** 打开节点，传入目标展开状态时改为折叠操作。 */
   open: (id: string, expand?: boolean) => void;
   /** 有折叠内容的卡片在角落显示 +N。 */
   fold?: Fold;
+  /** 按日期看法在卡片第三行写的话。 */
+  hint?: string;
 };
 
-export type FlowNode = xyflow.Node<VisualData, 'decision'>;
+export type CardNode = xyflow.Node<VisualData, 'decision'>;
+
+/** 日期卡片的数据：哪一天、这天有几项、几项等用户定。 */
+export type DayData = {
+  /** 美东日期 YYYY-MM-DD。 */
+  day: string;
+  /** 卡片上的日期字，如“今天 11-19 周四”。 */
+  label: string;
+  /** 这天提出的节点数。 */
+  total: number;
+  /** 其中等用户定的个数。 */
+  asks: number;
+  /** 这天的内容是否展开。 */
+  expanded: boolean;
+  /** 点击时用 day:日期 和目标展开状态收起或展开。 */
+  open: VisualData['open'];
+};
+
+export type DayNode = xyflow.Node<DayData, 'day'>;
+
+/** 画布上的节点：决策卡片，或按日期看法里的日期卡片。 */
+export type FlowNode = CardNode | DayNode;
 
 /** 可见树及每张卡片有无折叠内容。 */
 interface Branch {
@@ -189,7 +212,7 @@ function getFlow(
   boxes: Box[], positions: Map<string, xyflow.XYPosition>, open: VisualData['open'], axis: Axis | undefined,
 ) {
   //M 尺寸从布局传给 CSS，避免估算值和实际不同。
-  const nodes = boxes.map((box): FlowNode => {
+  const nodes = boxes.map((box): CardNode => {
     const { entry, fold } = box.branch;
     return {
       id: entry.id,

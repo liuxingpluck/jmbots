@@ -99,6 +99,7 @@ declare module 'cordis' {
      * 谁接：
      *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.listen
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.constructor
+     *   src7/plugins/bots/GroupBatch.ts 的 GroupBatch.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/cli/index.ts 的 Cli.constructor
      *   src7/plugins/context-fit/Summary.ts 的 Summary.constructor

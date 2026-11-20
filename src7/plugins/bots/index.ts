@@ -12,9 +12,13 @@
  *   要等发完、拿回执的（一轮结束自动回话、前台送后台结果）由 Bots.send 照会话记的渠道和地址发 channel/reply；会话标了 quiet 的，本服务不自动发它的话。
  * 2026-11-17 插件 bot-front-desk 并进来（用户 #114、#115）：前台的配置写在本插件 config 的 front 一节。
  * 2026-11-17 插件 prompt（Prompt.ts，系统提示词）、reply-tool（ReplyTool.ts，工具 reply）并进来：开关写在 config 的 prompt、reply_tool。
- * 标准渠道事件 channel/message（飞书、网页、命令行、微信都走它，onChannelMessage）：问完 bot/receive 没人认领的进前台单队列，
+ * 进来的三个渠道事件（飞书、网页、命令行、微信、语音、外部程序都走它们，onChannelMessage）：
+ *   channel/direct（私聊）、channel/mention（群里叫了机器人）：问完 bot/receive 没人认领的进前台单队列，
  *   模型一轮里用 channel_reply 想发几条发几条；一对一的渠道（routing.autoFinal）一次没调就把最后的话发出去，飞书跑一次修复轮。
+ *   channel/listen（只听）：targetBots 里的机器人各自在地址副本上标 listenOnly，前台只记背景；
+ *     登记了 judge 的群进群攒批（GroupBatch.ts，config 的 group_batch）：攒一批再问决策模型要不要接，有人叫机器人时攒着的话一起带上。
  *   消息带 routing.sessionId（网页指定会话、引用别的渠道的消息）：只投给那场会话的机器人；是前台就排进那场前台，别的会话照旧交过去、一轮结束自动回。
+ * 插件请机器人干活、回话却要像回一条消息那样发到某个聊天的（群日报），发 bot/request 的 hand 带 replyTo：排进前台，按外人算。
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -33,6 +37,7 @@ import * as protocol from '../channels/index.ts';
 import { ChannelTools } from './ChannelTools.ts';
 import { Dispatch, type AcceptReceipt, type ResultInput } from './Dispatch.ts';
 import { FrontDesk, type FrontDeskConfig } from './FrontDesk.ts';
+import * as groupBatchModule from './GroupBatch.ts';
 import { Prompt } from './Prompt.ts';
 import { registerReplyTool } from './ReplyTool.ts';
 
@@ -57,7 +62,12 @@ export const name = 'bots';
 //M 1.5.1：前台构造函数瘦身：三个查历史工具的定义挪到模块顶上，长监听体挪成 onChange、onReplied、onReply。
 //M 1.5.11：旧路收掉——Bots.send 一律发 channel/reply（target 带会话记的地址），渠道只登记名字；删 bot/route；
 //M   前台只听 channel/replied 记往来（回执带请求正文），不再暂存 channel/reply 的正文。
-export const version = '1.5.12';
+//M 1.6.0：channel/message 拆成 direct、mention、listen 三个监听（listen 由 bots 自己在地址副本上标 listenOnly）；
+//M   voice/dispatch 并进 channel/direct；bot/request 的 hand 加 replyTo（群日报改走它，不再拼假的群消息）。
+//M 1.6.1：受管后台同轮 final 持久交回一次，progress 与失败回执独立保留。
+//M 1.6.2：群攒批（GroupBatch.ts）：listen: judge 的群攒一批（安静 N 秒或满 M 句）再问决策模型，每群每天上限；
+//M   数从 config 的 group_batch 读，缺键不开；判断改发 decision/judge；bot/judged 一批一次；有人叫机器人时攒着的话一起带上。
+export const version = '1.6.2';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -109,14 +119,16 @@ declare module 'cordis' {
      */
     'bot/settled'(event: protocol.ChannelSettledEvent): void;
     /**
-     * 前台（FrontDesk.ts）对群里没 @ 机器人的话判断完要不要接话（listen: judge）。会话在转时来的话是这一轮结束才判断，晚于收话那一刻，渠道听它补记一行流水。
-     * 谁发：src7/plugins/bots/FrontDesk.ts 的 FrontDesk.followUp
+     * 群攒批（GroupBatch.ts）看完一批群里没叫机器人的话（listen: judge）：接不接、今天看满了没。一批发一次，晚于收话那一刻，渠道听它补记一行流水。
+     * address 是这一批最后一句的地址，text 是这一批（一行一句“说话人：话”），outcome 是 judge:回 / judge:不回(0.32) / judge:不看(今天看满 N 次) 这类。
+     * 谁发：src7/plugins/bots/GroupBatch.ts 的 GroupBatch.look
      * 谁接：src7/plugins/feishu/Contacts.ts 的 FeishuContacts.constructor
      */
     'bot/judged'(address: unknown, text: string, outcome: string): void;
     /**
      * 别的插件请机器人办事（serial 发、等 bot/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。
      * 谁发：
+     *   src7/plugins/progress/GroupDaily.ts 的 dispatchReport
      *   src7/plugins/progress/index.ts 的 Progress.handOff
      *   src7/plugins/relay/AgentTasks.ts 的 requestResultDelivery
      *   src7/plugins/settings/index.ts 的 Settings.createBot
@@ -129,6 +141,7 @@ declare module 'cordis' {
      * bot/request 的回执（emit），按 requestId 配对。
      * 谁发：src7/plugins/bots/index.ts 的 Bots.constructor
      * 谁接：
+     *   src7/plugins/progress/GroupDaily.ts 的 dispatchReport
      *   src7/plugins/progress/index.ts 的 Progress.handOff
      *   src7/plugins/relay/AgentTasks.ts 的 requestResultDelivery
      *   src7/plugins/settings/index.ts 的 Settings.createBot
@@ -197,7 +210,7 @@ export interface IncomingMessage {
   time: number;
   /** 渠道自己认得的回话地址；这里不解释，原样记到会话上，回话时渠道自己拿。 */
   address?: unknown;
-  /** 标准消息号（channel/message 的 messageId）；从 channel/message 转进来的才有。web-api 记别的渠道的消息时存它，回话按它精确挂回。 */
+  /** 标准消息号（进来的三个渠道事件的 messageId）；从渠道事件转进来的才有。web-api 记别的渠道的消息时存它，回话按它精确挂回。 */
   sourceId?: string;
 }
 
@@ -221,23 +234,50 @@ export interface ReceiveEvent {
   session?: Session;
   /** 前面的插件已经把这条处理掉了：写了 true，这条就不进任何会话。 */
   handled?: boolean;
-  /** 由统一事件 channel/message 转入每机器人分派（approval 已在消息级处理过一次，不再重复消耗）。 */
+  /** 由进来的三个渠道事件转入每机器人分派（approval 已在消息级处理过一次，不再重复消耗）。 */
   fromChannelEvent?: boolean;
+}
+
+
+/**
+ * bot/request 的 hand 带的 replyTo：这件活的回话像回一条消息那样，由模型用 channel_reply 发到哪个聊天（群日报）。
+ * bots 照它拼一份来源快照，按外人算（guest、不受信）；不经渠道事件，记忆不会把交办的话当成聊天里的一句。
+ */
+export interface ReplyTo {
+  /** 渠道名。 */
+  channel: string;
+  /** 平台账号（飞书应用号）。 */
+  accountId: string;
+  /** 聊天号。 */
+  chatId: string;
+  /** 聊天种类。 */
+  chatType: protocol.ChannelChatType;
+  /** 渠道认得的回话地址（飞书：appId、chatId、chatType……），原样放进来源快照。 */
+  address: Record<string, unknown>;
+  /** 这件活的号：拼进标准消息号，同一个号同一场会话只排一次（群日报是“群:日期”）。 */
+  key: string;
+  /** 交活的是谁，记成这一轮的发话人（群日报写“群进度定时任务”）。 */
+  sender: { id: string; name?: string };
 }
 
 
 /** 事件 bot/request 的数据：action 分四种（契约 3.2 第 4 条）。 */
 export type BotRequest = requestEventModule.RequestEnvelope & ({
-  /** 把一件事交给这个机器人的一场后台（同 Bot.hand）。progress 转新会话时发。 */
+  /**
+   * 把一件事交给这个机器人的一场后台（同 Bot.hand）。progress 转新会话时发。
+   * 带 replyTo 的不开后台：排进 sessionId 那场前台（没给按 replyTo 的聊天找前台），回话照 replyTo 发。progress 群日报发。
+   */
   action: 'hand';
   /** 交给哪个机器人。 */
   bot: string;
   /** 要办的事。 */
   text: string;
-  /** 办完回话往哪送；不给渠道就不改那场会话原来记的。 */
+  /** 办完回话往哪送；不给渠道就不改那场会话原来记的。带 replyTo 时不用它。 */
   origin: Origin;
   /** 接着哪一场；不给新开一场。 */
   sessionId?: string;
+  /** 回话像回一条消息那样发到哪个聊天；不给照旧交后台。 */
+  replyTo?: ReplyTo;
 } | {
   /** 渠道收到的图片、文件存进机器人的工作区（同 Bots.saveFile）。web-api 上传时发。 */
   action: 'save-file';
@@ -366,10 +406,13 @@ export class Bots extends cordis.Service {
       void this.send(session, text);
     });
 
-    //M 标准渠道事件入口：每个 targetBot 独立物化附件、过 bot/receive 兼容关口、各自认领进自己的会话。
-    this.ctx.on('channel/message', (message, control) => this.onChannelMessage(message, control));
-    //M 语音半句可以提前开工，完整句才成为标准渠道历史。
-    this.ctx.on('voice/dispatch', (message, control) => this.onChannelMessage(message, control));
+    //M 私聊、群里叫了机器人：每个 targetBot 独立物化附件、过 bot/receive 兼容关口、各自认领进自己的会话。
+    //M   语音半句提前开工也走 channel/direct（routing.partial），和整句同一个认领入口。
+    this.ctx.on('channel/direct', (message, control) => this.onChannelMessage(message, false, control));
+    this.ctx.on('channel/mention', (message, control) => this.onChannelMessage(message, false, control));
+
+    //M 只听：targetBots 里的机器人只记背景（或问决策模型要不要接）；targetBots 空的（没登记的群、语音只入档）谁都不进。
+    this.ctx.on('channel/listen', (message, control) => this.onChannelMessage(message, true, control));
 
     //M 别的插件请机器人办事走请求事件 bot/request（契约 3.2 第 4 条）：onRequest 按 action 调现有方法，办完回 bot/result。
     //M   现有方法抛的错（没有这个机器人、重名、会话不在、结果冲突）转成 { ok: false, error }，调用方不干等超时。
@@ -398,7 +441,7 @@ export class Bots extends cordis.Service {
    * @throws 现有方法抛的错原样抛，由 onRequestEvent 的 onError 转成 { ok: false, error }。
    * 副作用：同各方法（开会话、写文件、建机器人目录、写库排结果队列）；发一个跟踪点。
    */
-  private onRequest(request: BotRequest): requestEventModule.StripResultId<BotResult> {
+  private async onRequest(request: BotRequest): Promise<requestEventModule.StripResultId<BotResult>> {
     //T 跟踪：别的插件经事件请机器人办事。
     const vars = { action: request.action, requestId: request.requestId };
     this.ctx.emit('trace', 'Bots.onRequest', 'trace.bots.request', `bot/request（${request.action}）`, vars);
@@ -407,6 +450,9 @@ export class Bots extends cordis.Service {
     if (request.action === 'hand') {
       const bot = this.get(request.bot);
       if (bot === undefined) return { ok: false, error: `没有这个机器人：${request.bot}` };
+
+      //M 带了 replyTo（群日报）：不开后台，排进前台，回话照 replyTo 发到那个聊天。
+      if (request.replyTo !== undefined) return this.handReply(bot, request.text, request.replyTo, request.sessionId);
 
       //M 把事交给这个机器人：不给会话号就新开一场后台，给了就接着那场；回执带会话号，请求方（progress）转新会话时要用。
       const session = bot.hand(request.text, request.origin, request.sessionId);
@@ -439,19 +485,83 @@ export class Bots extends cordis.Service {
   }
 
   /**
-   * 响应 channel/message：消息级审批命令已处理时跳过；否则按 targetBots 逐个机器人独立认领。
+   * bot/request 的 hand 带 replyTo：照 replyTo 拼一条标准消息当这一轮的来源（发话人是交活的插件，按外人算），
+   * 排进前台单队列，模型用 channel_reply 把回话发到那个聊天。不经渠道事件：approval、记忆都看不到这段交办的话。
+   * @param bot 交给哪个机器人。
+   * @param text 要办的事。
+   * @param replyTo 回话发到哪个聊天。
+   * @param sessionId 排进哪场前台；不给按 replyTo 的聊天找前台，没有就开。
+   * @returns 回执正文：排进了哪场会话（同一个 key 已经排过也是 ok，会话号照旧）。
+   * 副作用：可能新开前台；排队、存库，前台空着就开跑。
+   */
+  private async handReply(
+    bot: Bot,
+    text: string,
+    replyTo: ReplyTo,
+    sessionId: string | undefined,
+  ): Promise<requestEventModule.StripResultId<BotResult>> {
+    //M 标准消息号用 replyTo.key 拼：同一件活重发时认领键一样，前台认得出来不再排。
+    const nativeId = `request:${replyTo.key}`;
+    const messageId = protocol.makeChannelMessageId(replyTo.channel, replyTo.accountId, nativeId);
+    const now = Date.now();
+    const scope = `${replyTo.channel}:${replyTo.accountId}:${replyTo.chatId}`;
+
+    //M 拼成标准消息：发话人是交活的插件，按外人算（guest、不受信），这一轮只查这个聊天的；一轮没调 channel_reply 就把最后的话发出去。
+    const message: protocol.ChannelMessage = {
+      v: 1,
+      messageId,
+      nativeId,
+      channel: replyTo.channel,
+      accountId: replyTo.accountId,
+      chatId: replyTo.chatId,
+      chatType: replyTo.chatType,
+      sender: replyTo.sender,
+      role: 'guest',
+      targetBots: [bot.name],
+      mentions: [],
+      rawText: text,
+      text,
+      attachments: [],
+      createdAt: now,
+      receivedAt: now,
+      timeSource: 'received',
+      replyTo: null,
+      origin: { channel: replyTo.channel, address: structuredClone(replyTo.address) },
+      visibility: { scope, trusted: false, publicSourceIds: [] },
+      routing: { autoFinal: true },
+    };
+
+    //M 指定了会话就排进它；没指定由前台按聊天找，没有就开。
+    let target: Session | undefined;
+    if (sessionId !== undefined) {
+      target = this.home.sessions.open(sessionId);
+    }
+
+    //M 和渠道来的话走同一个认领：拼来源快照、排进前台单队列，前台空着就开跑。
+    const claimKey = protocol.getClaimKey(messageId, bot.name);
+    const control: protocol.ChannelMessageControl = { claims: [] };
+    await this.home.frontDesk.claimChannelMessage(bot, message, message.origin, text, claimKey, control, target);
+
+    //M 回执带排进的会话号（认领记录里写着）。
+    const claimed = control.claims.find((claim) => claim.sessionId !== undefined);
+    if (claimed?.sessionId === undefined) return { ok: false, error: '前台没有定下进哪场会话' };
+
+    return { ok: true, sessionId: claimed.sessionId };
+  }
+
+  /**
+   * 响应进来的三个渠道事件：消息级审批命令已处理时跳过；否则按 targetBots 逐个机器人独立认领。
+   * 只听的（channel/listen）在每个机器人的地址副本上标 listenOnly：前台只记背景或判断，relay 只认前缀开头的。
    * 带 routing.sessionId 的只投给那场会话的机器人（入口校验过会话在、属于目标机器人），别的机器人不收。
    * @param message 标准渠道消息。
+   * @param listen 是不是只听的（channel/listen）。
    * @param control 认领协调对象。
    */
   private async onChannelMessage(
     message: protocol.ChannelMessage,
+    listen: boolean,
     control?: protocol.ChannelMessageControl,
   ): Promise<void> {
-    const routing = message.routing;
-    //G 语音句尾的只入档事件对应已有任务或未通过的候选，不再认领。
-    if (message.channel === 'voice' && 'recordOnly' in routing && routing.recordOnly === true) return;
-
     if (control?.approvalHandled === true) return;
 
     //M 每个目标机器人各认领一次：按名字取机器人对象，名单里没有的（配置改过）跳过，不挡别的机器人。
@@ -476,18 +586,10 @@ export class Bots extends cordis.Service {
         channel: message.origin.channel,
         address: structuredClone(message.origin.address),
       };
-      const hint = message.routing.byBot?.[botName];
-      if (hint !== undefined) {
-        botOrigin.address['listenOnly'] = hint.listenOnly;
-        if (hint.listenOnly !== true) {
-          delete botOrigin.address['listenOnly'];
-        }
-        if (hint.judge === true) {
-          botOrigin.address['judge'] = true;
-        }
-        if (hint.judge !== true) {
-          delete botOrigin.address['judge'];
-        }
+
+      //M 只听的话：在这个机器人的地址副本上标 listenOnly（bots 内部的标记，前台、relay 读它；渠道的原地址不动）。
+      if (listen) {
+        botOrigin.address['listenOnly'] = true;
       }
 
       //M 按该机器人此轮授权目录把渠道保存的附件物化到 inbox。
@@ -988,6 +1090,8 @@ export interface BotsPluginConfig {
   prompt?: boolean;
   /** 工具 reply（原插件 reply-tool，ReplyTool.ts）：写 true 才登记；不写不登记。 */
   reply_tool?: boolean;
+  /** 群攒批（GroupBatch.ts）：{ quiet_seconds, max_lines, daily_limit }，三个都写才开；readGroupBatch 校验。 */
+  group_batch?: unknown;
 }
 
 
@@ -996,8 +1100,8 @@ export interface BotsPluginConfig {
  * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里写的服务都就绪，
  * 再调一次 apply(ctx, 配置)。详见 plugins/Index.ts 的 PluginModule。
  * @param ctx Cordis 给这个插件的 ctx。
- * @param config config.yaml 的 plugins 段里写给它的：thinking、front、prompt、reply_tool，见 BotsPluginConfig。
- * @throws bots 段、front 一节、prompt、reply_tool 写得不对时抛错。
+ * @param config config.yaml 的 plugins 段里写给它的：thinking、front、prompt、reply_tool、group_batch，见 BotsPluginConfig。
+ * @throws bots 段、front 一节、prompt、reply_tool、group_batch 写得不对时抛错（group_batch 没写、缺键不抛，只是不开）。
  */
 export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   //M 名单是外面进来的（config.yaml 顶层的 bots 段），在这里校验一次：
@@ -1029,11 +1133,21 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
     throw new Error('bots 的 prompt、reply_tool 要写成 true 或 false');
   }
 
+  //M 群攒批的三个数只从配置读：没写或缺键就不开（listen: judge 的群只记不判断），启动打一行写明缺哪个，不挡启动。
+  const batch = groupBatchModule.readGroupBatch(config.group_batch);
+  let batchConfig: groupBatchModule.GroupBatchConfig | undefined;
+  if (typeof batch === 'string') {
+    console.warn(`bots：群攒批没开（${batch}），listen: judge 的群只记不判断`);
+  }
+  if (typeof batch !== 'string') {
+    batchConfig = batch;
+  }
+
   //M 先后照并进来之前：机器人服务（回话的监听）在前，前台（往来记录、拼上下文）其次，派后台（结果队列）最后，紧接登记渠道工具。
   //M   都挂在本插件的 ctx 上，所以前台的 session/before-model 排在 file-tools 这些后挂的插件前面。
   new Bots(ctx, { bots: [...written], thinking: config.thinking ?? 'medium' });
   const desk = new FrontDesk(ctx, { recent, vision_model: vision });
-  new Dispatch(ctx, desk);
+  new Dispatch(ctx, desk, batchConfig);
   new ChannelTools(ctx);
 
   //M 系统提示词（Prompt.ts）：session/before-model 挂在上面几个之后。并进来之前它排在 relay、memory 后面，现在排到它们前面，

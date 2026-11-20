@@ -76,8 +76,9 @@ const WEB_DIR = path.resolve(import.meta.dir, '../../dist/web');
  * @returns 文件内容；没有这个文件、是文件夹、跳出了 dist/web，都是 undefined。
  */
 export async function readAsset(relative: string): Promise<Buffer | undefined> {
-  //M 编译版：登记时路径是 web/…，也认不带前缀的（兼容旧入口）。
-  const file = findEmbeddedFilePath(`web/${relative}`) ?? findEmbeddedFilePath(relative);
+  //M 编译版网页资产统一从 web/ 登记项查找。
+  const name = `web/${relative}`;
+  const file = findEmbeddedFilePath(name);
   if (file !== undefined) {
     const content = await Bun.file(file).arrayBuffer();
     return Buffer.from(content);

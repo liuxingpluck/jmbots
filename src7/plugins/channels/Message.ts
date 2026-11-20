@@ -1,7 +1,8 @@
 /**
  * 渠道协议：进来的一条消息（渠道消息、提及、附件、来源、可见性、路由、认领、撤回）。
- * 只放类型和无状态小函数：消息号、认领键、来源快照、旧地址的身份档位。事件声明在同目录 index.ts。
+ * 只放类型和无状态小函数：分法（发哪个事件）、消息号、认领键、来源快照、旧地址的身份档位。事件声明在同目录 index.ts。
  */
+import type * as cordis from 'cordis';
 import * as utils from '../../utils/index.ts';
 
 
@@ -73,29 +74,20 @@ export interface ChannelVisibility {
 }
 
 
-/** 单机器人路由附带信息。 */
-export interface BotRoutingHint {
-  /** 该机器人在这条消息上是否仅监听当背景。 */
-  listenOnly: boolean;
-  /** 是否由决策模型判断是否接话。 */
-  judge?: boolean;
-}
+/** 进来的一条话发哪个事件（三个互斥，一条只发一个），由 getInboundEvent 分。 */
+export type InboundEvent = 'channel/direct' | 'channel/mention' | 'channel/listen';
 
 
-/** 渠道路由建议。 */
+/** 渠道路由建议。私聊、@、只听不在这里标，看发的是哪个事件。 */
 export interface ChannelRouting {
-  /** 默认是否仅监听当背景。 */
-  listenOnly: boolean;
-  /** 默认是否由决策模型判断。 */
-  judge?: boolean;
   /** 服务端校验过的指定会话号：bots 只投给这场会话的机器人、进这场会话（网页“发给哪个会话”、引用别的渠道的消息）。 */
   sessionId?: string;
   /** 引用别的渠道的消息时，被引那条的原渠道、原机器人、原会话（入口校验过）；只作记录，回话照旧回本条来源。 */
   replyOrigin?: { source: string; bot: string; sessionId: string };
   /** 一轮一次 channel_reply 都没调时，把最后的话当 final 直接发出去（一对一的渠道：网页、命令行、微信）；不写走修复轮。 */
   autoFinal?: boolean;
-  /** 多机器人场景下每个机器人各自的监听/判断覆盖项。 */
-  byBot?: Record<string, BotRoutingHint>;
+  /** 半句：话还没说完就先交给机器人开工（语音）。只给机器人看，记录类插件（memory）不记，等同一消息号的整句再记。 */
+  partial?: boolean;
 }
 
 
@@ -130,7 +122,11 @@ export interface ChannelMessage {
   sender: { id: string; name?: string };
   /** 身份档位：由平台可信配置算得，缺证明时为 guest。 */
   role: ChannelRole;
-  /** 经可信配置和 @ 映射规范化去重后的目标机器人名单。 */
+  /**
+   * 经可信配置和 @ 映射规范化去重后的目标机器人名单。
+   * direct、mention：要回话的机器人；listen：要把这句记进前台当背景（或判断接不接）的机器人，
+   * 飞书是登记了 listen: all / judge 的群里本应用的机器人，没登记的群、语音只入档的整句是空的（只给记录类插件记）。
+   */
   targetBots: string[];
   /** @ 提及列表。 */
   mentions: ChannelMention[];
@@ -159,7 +155,7 @@ export interface ChannelMessage {
 }
 
 
-/** 单机器人在 channel/message 里的认领记录（供渠道流水与测试核对，不混用全局 handled）。 */
+/** 单机器人在进来的三个事件（direct、mention、listen）里的认领记录（供渠道流水与测试核对，不混用全局 handled）。 */
 export interface ChannelClaimRecord {
   /** 机器人名。 */
   bot: string;
@@ -176,7 +172,7 @@ export interface ChannelClaimRecord {
 }
 
 
-/** 随 channel/message 传递的可变协调对象。 */
+/** 随进来的三个事件传递的可变协调对象。 */
 export interface ChannelMessageControl {
   /** approval 消息级命令（如“同意 3”）已消费整条消息，不再进任何机器人会话。 */
   approvalHandled?: boolean;
@@ -249,6 +245,57 @@ export interface ChannelRecallEvent {
     /** 撤回人是否为系统登记的本人（owner）。 */
     isOwner: boolean;
   };
+}
+
+
+/**
+ * 进来的一条话该发哪个事件，各渠道共用这一个分法，一条只发一个：
+ *   没叫机器人 → channel/listen（群里没 @、语音里只入档的整句）；
+ *   叫了、在群里 → channel/mention（@ 了机器人，或引用了机器人的话）；
+ *   叫了、不在群里 → channel/direct（私聊：飞书 p2p、微信、网页、命令行、语音）。
+ * @param chatType 聊天种类。
+ * @param called 叫了机器人没有：私聊、群里 @ 了、引用了机器人的话是 true。
+ * @returns 事件名。
+ */
+export function getInboundEvent(chatType: ChannelChatType, called: boolean): InboundEvent {
+  if (!called) return 'channel/listen';
+
+  if (chatType === 'group') return 'channel/mention';
+
+  return 'channel/direct';
+}
+
+
+/**
+ * 渠道收下一条话、存好原件以后调：照 getInboundEvent 分好，发 channel/direct、channel/mention、channel/listen 之一（挨个问，等大家处理完）。
+ * 各渠道（命令行、飞书、外部程序、语音、网页、微信）都经它发，事件只在这一处写。
+ * @param ctx 渠道插件的 ctx。
+ * @param message 标准消息。
+ * @param called 叫了机器人没有（见 getInboundEvent）。
+ * @param control 认领协调对象：approval、bots 往里写结果。
+ */
+export async function emitInbound(
+  ctx: cordis.Context,
+  message: ChannelMessage,
+  called: boolean,
+  control: ChannelMessageControl,
+): Promise<void> {
+  const event = getInboundEvent(message.chatType, called);
+
+  //M 只听：没叫机器人的话，approval 不看，bots 只记背景或判断要不要接。
+  if (event === 'channel/listen') {
+    await ctx.serial('channel/listen', message, control);
+    return;
+  }
+
+  //M 群里叫了机器人：approval 先看批复，bots 认领要回的机器人。
+  if (event === 'channel/mention') {
+    await ctx.serial('channel/mention', message, control);
+    return;
+  }
+
+  //M 私聊：approval 先看批复，bots 认领。
+  await ctx.serial('channel/direct', message, control);
 }
 
 

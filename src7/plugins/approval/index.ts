@@ -39,7 +39,8 @@ export const name = 'approval';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.10：本人批准的主动发件改走 channel/reply（target 带确切地址：飞书应用号和聊天号，网页提醒带意图号），
 //M   删 channel/send、channel/sent 和一次性批准凭证 takeChannelSendApproval；只给外置程序的发件补 channel/replied。
-export const version = '1.2.10';
+//M 1.2.11：认批复改听 channel/direct、channel/mention（channel/message 拆了；只听的 channel/listen 不看）；语音半句不认。
+export const version = '1.2.11';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -383,7 +384,7 @@ interface Row {
 export class Approval extends cordis.Service {
   /**
    * 登记成 ctx.approval（cordis.Service 的构造函数做的：super(ctx, '名字') 就是“把我挂到 ctx 上叫这个名字”），
-   * 建表，听 approval/request（别的插件请审核办事）、channel/message 和 bot/receive（认文字回答）、
+   * 建表，听 approval/request（别的插件请审核办事）、channel/direct、channel/mention 和 bot/receive（认文字回答）、
    * session/before-model（给审核小会话加提示词；guest、builder 说的这一轮只给这一档的工具）和 session/before-tool（这一档没有的工具不让执行）。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
@@ -416,8 +417,9 @@ export class Approval extends cordis.Service {
       requestOptions,
     );
 
-    //M channel/message 消息级审批指令只消费一次：N 个机器人共存时不会各自批准一遍。
-    ctx.on('channel/message', (message, control) => this.onChannelMessage(message, control), { prepend: true });
+    //M 私聊、群里叫了机器人的话里认批复（“同意 3”），消息级只消费一次：N 个机器人共存时不会各自批准一遍。只听的话（channel/listen）不看。
+    ctx.on('channel/direct', (message, control) => this.onChannelMessage(message, control), { prepend: true });
+    ctx.on('channel/mention', (message, control) => this.onChannelMessage(message, control), { prepend: true });
 
     //M 仍排在前面，只是为了先认出“同意 3”这类话；批不批准由下面自己核对说话人，不靠监听顺序，也不看前面有没有分好会话。
     ctx.on('bot/receive', (event) => {
@@ -937,7 +939,7 @@ export class Approval extends cordis.Service {
   }
 
   /**
-   * 认文字回答（bot/receive，兼容未迁移渠道与离线测试）。如果该消息已经由 channel/message 入口转来则跳过，免得 N 机器人重复执行。
+   * 认文字回答（bot/receive，兼容未迁移渠道与离线测试）。如果该消息已经由渠道事件入口转来则跳过，免得 N 机器人重复执行。
    * 无权的人（微信客户、飞书群里的其他人）同样的话当普通消息交给前台；不靠前面有没有分好会话。
    * @param event 收到的消息。
    */
@@ -965,7 +967,7 @@ export class Approval extends cordis.Service {
   }
 
   /**
-   * 响应 channel/message 消息级审批文本指令（如“同意 1”“拒绝 2”“全部同意”“待确认有哪些”）。
+   * 响应 channel/direct、channel/mention 里的消息级审批文本指令（如“同意 1”“拒绝 2”“全部同意”“待确认有哪些”）。
    * 一条消息只消费一次，防止 N 个目标机器人重复批准或答复多次。
    * @param message 标准渠道消息。
    * @param control 协调对象。
@@ -975,6 +977,9 @@ export class Approval extends cordis.Service {
     control?: protocol.ChannelMessageControl,
   ): Promise<void> {
     if (control?.approvalHandled === true) return;
+
+    //G 语音半句（routing.partial）话还没说完，不当批复认；等同一消息号的整句来了再认。
+    if (message.routing.partial === true) return;
 
     //M 先认认是不是“同意 3”“待确认有哪些”这类话；不是就放过，照常往下走。
     const said = rules.parseReply(message.text);

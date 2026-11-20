@@ -35,7 +35,8 @@ export const name = 'progress';
 //M 1.1.5：长跑、复盘、限时判断和转交改用请求事件。
 //M 1.1.6：接入已登记飞书群的每日进度调度。
 //M 1.1.7：限时与收尾配置迁入插件 config，旧 engine 键在入口兼容。
-export const version = '1.1.12';
+//M 1.1.13：群日报改发 bot/request（hand 带 replyTo），不再拼假的群消息发渠道事件。
+export const version = '1.1.13';
 
 /** resources 拿配置和目录，bots 查机器人，sessions 开小会话；http 可选。审核、决策和转交经事件。 */
 export const inject = ['resources', 'sessions'];

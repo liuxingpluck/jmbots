@@ -15,7 +15,7 @@ const CHANNEL_NAME = /^[a-z0-9-]+$/u;
 
 /** 程序登记的一个渠道：程序只能用这些渠道名入站，主程序也只把这些渠道的回复和历史转给它。 */
 export interface ProgramChannel {
-  /** 渠道名，就是 channel/message 的 channel。 */
+  /** 渠道名，就是发出的标准消息的 channel。 */
   name: string;
   /** 这个渠道来的消息交给哪个机器人。 */
   bot: string;

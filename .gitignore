@@ -49,6 +49,11 @@
 !/src7/
 !/tsconfig.src7.json
 
+# 行号检查进 git（决策图 q-doc-lines）：ztools 里有令牌文件，只放开 check-lines，别的一律不进。
+!/ztools/
+/ztools/*
+!/ztools/check-lines/
+
 # 白名单目录里也不要的。
 node_modules/
 dist/

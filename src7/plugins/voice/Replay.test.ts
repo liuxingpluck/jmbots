@@ -109,7 +109,8 @@ test.skipIf(replayDir === undefined || dataDir === undefined)('静音回放五�
     requests.onRequestEvent(ctx, 'decision/judge', 'decision/judge-result', () => {
       return { verdict: 'unsure' as const, reason: '回放只量确认句尾后开始回复' };
     });
-    ctx.on('channel/message', (message, control) => {
+    //M 语音是私聊，确认句尾后的整句发 channel/direct：假机器人认领并立刻回“收到”。
+    ctx.on('channel/direct', (message, control) => {
       control?.claims.push({ bot: '回放机器人', sessionId: 'replay', claimKey: 'replay', status: 'claimed' });
       activeVoice?.sendReply('收到', message.messageId, 'final');
     });

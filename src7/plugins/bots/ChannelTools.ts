@@ -30,7 +30,8 @@ export class ChannelTools {
           + '不写 channel 和 chat 时，一律发回本轮当前绑定的来源聊天（平常回复当前对话不要填它们）。'
           + '只有当用户本人明确要求“帮我在别的渠道或别的聊天里说一下/回一下”时，才指定目标 channel 和 chat，绝不要自作主张往别处发；'
           + '发往别处成功后，原来源不会自动补发回话，需要告知用户时由你自行决定是否再调一次不带 channel/chat 的 channel_reply。'
-          + 'kind 可选 progress（阶段进度）或 final（默认，最终答复）。',
+          + 'kind 可选 progress（阶段进度）或 final（默认，最终答复）。'
+          + '受管后台同一轮 final 只交回一次；中途通知用 progress，最终交回后普通结束不再另发。',
         parameters: piAi.Type.Object({
           text: piAi.Type.String({ minLength: 1, description: '要发送的纯文字内容' }),
           kind: piAi.Type.Optional(piAi.Type.Union([
@@ -68,11 +69,14 @@ export class ChannelTools {
       }
     });
 
+    //M 工具完成后清掉调用号，避免下一次手工调用沿用旧幂等键。
     this.ctx.on('session/after-tool', (done) => {
       this.currentCallId.delete(done.session.id);
     });
 
+    //M 每次请求按当前来源绑定收紧工具，避免无渠道时误发。
     this.ctx.on('session/before-model', (request) => {
+      //M 统一维护本轮工具可见性及绑定提示。
       this.filterTools(request);
     });
   }
@@ -108,6 +112,7 @@ export class ChannelTools {
       if (label === '') {
         label = `${view.channel}·${view.chat}`;
       }
+      //M 将已核验的网页查看范围补入本轮模型上下文。
       request.system.push(`用户正在网页上看：${label}`);
     }
   }
@@ -119,8 +124,11 @@ export class ChannelTools {
   private hasBinding(session: Session): boolean {
     const row = session.row;
     if (row.kind === 'front') {
+      //M 前台只认当前活动项的不可变来源。
       const active = this.getActiveItem(session);
-      return active !== undefined && active.deliveryMode === 'channel_tool' && active.payload.sourceSnapshot !== undefined;
+      return active !== undefined
+        && active.deliveryMode === 'channel_tool'
+        && active.payload.sourceSnapshot !== undefined;
     }
     if (row.kind === 'work') {
       if (row.frontTask?.deliveryMode === 'channel_tool' && row.frontTask.sourceSnapshot !== undefined) return true;
@@ -148,7 +156,9 @@ export class ChannelTools {
   private getSnapshot(session: Session): protocol.SourceSnapshot | undefined {
     const row = session.row;
     if (row.kind === 'front') {
-      return this.getActiveItem(session)?.payload.sourceSnapshot ?? row.activeSourceSnapshot;
+      //M 优先用活动项的来源，防止同场前台插入新消息后串目标。
+      const active = this.getActiveItem(session);
+      return active?.payload.sourceSnapshot ?? row.activeSourceSnapshot;
     }
     return row.frontTask?.sourceSnapshot ?? row.activeSourceSnapshot;
   }
@@ -198,6 +208,7 @@ export class ChannelTools {
         kind,
         parts: [{ partId: 'text:0', kind: 'text' }],
       };
+      //G 跨目标必须由协议核实来源权限，不能借受管后台绕过。
       if (workCross.isElsewhere && !protocol.canReplyAcrossChats(workSnapshot)) {
         //G 外人或群聊本人在受管后台也不能指定往别的渠道/聊天发话。
         const reason = this.getCrossForbiddenReason(workSnapshot);
@@ -205,8 +216,15 @@ export class ChannelTools {
         return JSON.stringify(denied);
       }
 
-      const noticeKey = `work:${session.id}:notice:${callId}`;
+      const round = task.round;
+      let noticeKey = `work:${session.id}:notice:${callId}`;
+      if (kind === 'final') {
+        noticeKey = `work:${session.id}:${String(round)}:final`;
+      }
       let routedText = `（后台阶段回复）\n${text}`;
+      if (kind === 'final') {
+        routedText = `（后台最终结果）\n${text}`;
+      }
       if (workCross.isElsewhere) {
         let targetChatLabel = workCross.chat;
         if (targetChatLabel === '') {
@@ -223,8 +241,24 @@ export class ChannelTools {
         deliveryMode: 'channel_tool',
         payload: { text: routedText, files: [] },
       };
-      //M 将转交通知排入原前台会话单队列，等待原前台整理发回。
-      this.ctx.frontDesk.acceptResult(noticeInput, () => undefined);
+      //M progress 按调用逐条入队；final 同一后台同一轮只接收一次。
+      if (kind === 'progress' || task.finalRound !== round) {
+        const previousFinal = task.finalRound;
+        const commitFinal = () => {
+          if (kind !== 'final') return;
+
+          task.finalRound = round;
+          //M 与前台结果入队同事务保存，重启后仍知道本轮已交过 final。
+          session.save();
+        };
+        try {
+          //M 入队失败由原事务回滚前台队列，下方同步恢复后台内存标记。
+          this.ctx.frontDesk.acceptResult(noticeInput, commitFinal);
+        } catch (error) {
+          task.finalRound = previousFinal;
+          throw error;
+        }
+      }
       //M 回执分别说明整笔请求和正文段为什么转交，并保留队列编号。
       const partReason = '已转交原前台整理并回复原渠道';
       const queuedReceipt = protocol.getReceipt(receiptSource, 'queued', partReason);

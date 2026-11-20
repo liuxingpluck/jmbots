@@ -47,7 +47,8 @@ export const name = 'relay';
 //  1.4.0：单向留言通过 agent_task 的 reply:false 派送，执行端领取即送达。
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
 //  1.4.7：不再改会话的回话地址（删三处 bots.route）：direct 会话标 quiet，回答、超时提醒都由 relay 照收件地址发 channel/reply。
-export const version = '1.4.8';
+//M 1.4.9：决策回信只用收件保存的精确目标，拒绝旧的本人身份配置键。
+export const version = '1.4.9';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'work-decision';
@@ -685,7 +686,7 @@ export class Relay {
 
   /**
    * 响应 bot/receive：relay direct 机器人的消息，还没人定去向时，进这个客户的前台会话；
-   * 别的、以及渠道标了只听的（listenOnly，飞书群里没 @ 机器人的话），以前缀开头的进这个客户的 relay 会话。每个客户一场，没有就开。
+   * 别的、以及只听的（channel/listen 来的，bots 在地址副本上标了 listenOnly：飞书群里没 @ 机器人的话），以前缀开头的进这个客户的 relay 会话。每个客户一场，没有就开。
    * @param event 哪个机器人、哪条消息；把会话填进 event.session。
    */
   private onReceive(event: ReceiveEvent): void {
@@ -1042,19 +1043,22 @@ export class Relay {
     const item = this.getItem(reply.item_id);
     if (item === undefined) return;
 
-    //M 新收件带精确地址；旧收件把原收件键交给决策图解释。
-    const prefixLength = item.channel.length + 1;
-    const key = reply.session_id.slice(prefixLength);
+    //G 原收件必须保存精确节点；缺目标时保留回信等待核对。
     const origin = this.getOrigin(item);
     const stored = utils.getField(origin.address, 'decisionTarget');
     const node = utils.getStringField(stored, 'node');
+    if (node === '') {
+      console.error(`relay：回信 #${String(reply.id)} 缺少精确决策目标，保留待核对`);
+      return;
+    }
+
+    //M 留言号随原收件保存，空值是回复整个节点。
     const note = utils.getStringField(stored, 'note') || undefined;
-    let target: { node: string; note?: string } | undefined;
-    if (node !== '') target = { node, note };
+    const target = { node, note };
 
     const requestName = 'work-decision/note';
     const resultName = 'work-decision/note-result';
-    const payload = { action: 'reply' as const, id: reply.id, key, target, text: reply.text };
+    const payload = { action: 'reply' as const, id: reply.id, target, text: reply.text };
     const uncertain = '决策图回信写入结果不确定';
     const onFallback = () => ({ requestId: '', ok: false });
     const options = { timeoutMs: 3000, onFallback };
@@ -1739,12 +1743,16 @@ export class Relay {
  * @param ctx Cordis 给这个插件的 ctx。
  * @param config config.yaml 的 plugins 段里写给它的：helpers（要转话才写，每项 name、prefixes，可写 webhook_url、
  *   webhook_header，第一个是默认助手）、bots、remind_minutes、expire_minutes、poll_seconds；tasks（任务通道，{ scan_ms }）。
- *   旧的 owner_open_ids 这里不读：feishu 插件校验配置时把它并进 people（本人只在飞书插件判断）。
  * @throws 配置写得不对、helpers 写了但是空的、名单项 relay 写了别的值、tasks.scan_ms 不对时抛错。
  */
 export function apply(ctx: cordis.Context, config: RelayWritten | undefined): void {
   //M 插件的配置是外面进来的，在这里校验一次：任务通道的 tasks 子键先查，写错了整个插件不挂。
   const written = config ?? {};
+  //G 本人身份在飞书的 people 登记，避免旧清单被静默忽略。
+  if (Object.hasOwn(written, 'owner_open_ids')) {
+    throw new Error('relay 的 owner_open_ids 已不用，请在飞书插件 people 里登记本人并写 role: owner');
+  }
+
   const scanMs = agentTasksModule.getScanMs(written.tasks);
 
   //M 写了 helpers 才挂转话，配置写错就抛错；只用任务通道时可以省略 helpers。
@@ -1771,8 +1779,6 @@ interface RelayWritten {
   helpers?: unknown;
   /** 这些机器人的话全部直接转。 */
   bots?: unknown;
-  /** 旧写法：本人的 open_id，飞书插件读。 */
-  owner_open_ids?: unknown;
   /** 任务通道：{ scan_ms }，见 AgentTasks.ts 的 getScanMs。 */
   tasks?: unknown;
 }

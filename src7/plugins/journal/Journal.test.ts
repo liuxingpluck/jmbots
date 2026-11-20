@@ -98,12 +98,21 @@ async function setup(config?: unknown, eventsConfig?: Record<string, unknown>): 
 }
 
 
+/** 通过插件间使用的事件入口查流水。 */
+async function queryJournal(ctx: cordis.Context, params: Record<string, string>) {
+  const payload = { action: 'query', params } as const;
+
+  //M 沿用生产查询的参数校验与筛选规则。
+  return await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
+}
+
+
 describe('journal（含 FilesMirror 并入）', () => {
-  test('默认同时提供 ctx.journal 和 ctx.filesMirror，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.3.1');
+  test('默认只登记 ctx.filesMirror，流水走事件，配置校验生效', async () => {
+    expect(journalModule.version).toBe('1.3.3');
     const { ctx } = await setup();
 
-    expect(ctx.get('journal')).toBeDefined();
+    expect(ctx.get('journal')).toBeUndefined();
     expect(ctx.get('filesMirror')).toBeDefined();
 
     //M 非法配置应当抛出明确中文错误。
@@ -123,7 +132,7 @@ describe('journal（含 FilesMirror 并入）', () => {
     expect(thrown).toContain('mirror');
   });
 
-  test('记录 trace 和 internal/dispatch 到 journal_lines，支持 query 筛选、400 校验与 request 取消息轨迹', async () => {
+  test('记录 trace 和 internal/dispatch，事件支持流水筛选、参数校验与消息轨迹', async () => {
     const { ctx } = await setup();
 
     //M 发出模拟 web-api 收消息和会话事件。
@@ -135,33 +144,37 @@ describe('journal（含 FilesMirror 并入）', () => {
     } as piAi.Message);
     ctx.emit('trace', 'Bots.send', '发回用户', 'send()', { 会话: 's_req_1', 机器人: '小记' });
 
-    const allEvents = ctx.journal.query({});
-    expect(allEvents.some((e) => e.kind === '函数' && e.name === 'WebApi.accept')).toBe(true);
-    expect(allEvents.some((e) => e.kind === '事件' && e.name === 'session/new-message')).toBe(true);
+    const allEvents = await queryJournal(ctx, {});
+    expect(allEvents.lines?.some((e) => e.kind === '函数' && e.name === 'WebApi.accept')).toBe(true);
+    expect(allEvents.lines?.some((e) => e.kind === '事件' && e.name === 'session/new-message')).toBe(true);
 
-    const sessionEvents = ctx.journal.query({ name: 'session/*', kind: '事件', limit: '5' });
-    expect(sessionEvents).toHaveLength(1);
-    expect(sessionEvents[0]?.name).toBe('session/new-message');
+    const sessionParams = { name: 'session/*', kind: '事件', limit: '5' };
+    const sessionEvents = await queryJournal(ctx, sessionParams);
+    expect(sessionEvents.lines).toHaveLength(1);
+    expect(sessionEvents.lines?.[0]?.name).toBe('session/new-message');
 
-    const bySession = ctx.journal.query({ session: 's_req_1' });
-    expect(bySession.length).toBeGreaterThanOrEqual(2);
+    const sessionFilter = { session: 's_req_1' };
+    const bySession = await queryJournal(ctx, sessionFilter);
+    expect(bySession.lines?.length).toBeGreaterThanOrEqual(2);
 
-    const byMsg = ctx.journal.query({ message: '42' });
-    expect(byMsg.some((e) => e.name === 'WebApi.accept')).toBe(true);
+    const messageFilter = { message: '42' };
+    const byMsg = await queryJournal(ctx, messageFilter);
+    expect(byMsg.lines?.some((e) => e.name === 'WebApi.accept')).toBe(true);
 
     //M 从收件行关联到已认领的会话，其他消息和会话的行不占名额。
-    expect(ctx.journal.request(9999, 10)).toBeUndefined();
     const received = { id: 77, bot: '小记', channel: 'http', source: 'http', text: '开始', at: Date.now() };
     ctx.emit('web-api/received', received);
     ctx.emit('trace', 'Other.session', '其他会话', 'z', { 会话: 's_other' });
     ctx.emit('trace', 'Other.message', '同会话的其他消息', 'z', { 消息号: 78, 会话: 's_req_1' });
     ctx.emit('trace', 'Timeline.bindSession', '绑定会话', 'bind()', { 消息号: 77, 会话: 's_req_1' });
     ctx.emit('trace', 'After.step', '后续', 'y', { 会话: 's_req_1' });
-    const trail = ctx.journal.request(77, 3);
-    expect(trail?.map((line) => line.name)).toEqual(['web-api/received', 'Timeline.bindSession', 'After.step']);
+    //M 从流水挑出预期三行，对照回话追溯的顺序和外壳。
+    const before = await queryJournal(ctx, {});
+    const expectedNames = ['web-api/received', 'Timeline.bindSession', 'After.step'];
+    const trail = before.lines?.filter((line) => expectedNames.includes(line.name));
+    expect(trail?.map((line) => line.name)).toEqual(expectedNames);
 
     //M 两种轨迹查询以及用量查询都不写入流水。
-    const before = ctx.journal.query({}).length;
     const payload = { action: 'trail', message: 77, maxLines: 3 } as const;
     const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
     expect(result.trail?.message).toBe(77);
@@ -182,24 +195,31 @@ describe('journal（含 FilesMirror 并入）', () => {
     await ctx.serial('model-catalog/usage', usageQuery);
     const usageResult = { requestId: 'usage-test', rows: [], truncated: false };
     ctx.emit('model-catalog/usage-result', usageResult);
-    expect(ctx.journal.query({})).toHaveLength(before);
+    const after = await queryJournal(ctx, {});
+    expect(after.lines).toHaveLength(before.lines?.length ?? 0);
 
     const missing = { action: 'trail', message: 9999, maxLines: 10 } as const;
     const none = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', missing, eventOptions);
     expect(none.trail).toBeUndefined();
 
-    expect(() => ctx.journal.query({ limit: 'abc' })).toThrow('非负整数');
-    expect(() => ctx.journal.query({ kind: '无效' })).toThrow('kind');
+    const invalidLimit = { limit: 'abc' };
+    const badLimit = await queryJournal(ctx, invalidLimit);
+    expect(badLimit).toMatchObject({ ok: false, error: expect.stringContaining('非负整数') });
+
+    const invalidKind = { kind: '无效' };
+    const badKind = await queryJournal(ctx, invalidKind);
+    expect(badKind).toMatchObject({ ok: false, error: expect.stringContaining('kind') });
   });
 
   test('轨迹按标准消息号串：飞书收到那几行排在收件行前面，别的机器人的行不混进来', async () => {
     const { ctx } = await setup();
     const sourceId = JSON.stringify(['feishu', 'cli_a', 'om_1']);
 
-    //M 渠道那几行只带标准消息号（跟踪点的 messageId 是标准号字符串；channel/message 事件的参数本身带 messageId）。
+    //M 跟踪点与群聊 @ 事件都只带标准消息号，没有收件号。
     ctx.emit('trace', 'Feishu.start', 'trace.feishu.wsReceived', 'im.message.receive_v1', { appId: 'cli_a', messageId: sourceId });
     ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.receiveMessage', 'serial', { appId: 'cli_a', messageId: sourceId });
-    await ctx.serial('channel/message', { messageId: sourceId } as unknown as ChannelMessage);
+    const mention = { messageId: sourceId } as unknown as ChannelMessage;
+    await ctx.serial('channel/mention', mention);
     //M 平台原消息号（om_ 开头）和提醒号不是标准号，不记。
     ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.duplicateMessage', 'x', { messageId: 'om_1' });
 
@@ -210,19 +230,34 @@ describe('journal（含 FilesMirror 并入）', () => {
     ctx.emit('web-api/received', { id: 91, bot: '乙', channel: 'feishu', source: 'feishu', text: 'hi', at: Date.now() });
     ctx.emit('trace', 'Bots.say', '交给会话', 'say', { 会话: 's_a', 消息号: 90 });
 
-    const names = ctx.journal.request(90, 20)?.map((line) => line.name);
-    expect(names).toEqual(['Feishu.start', 'Feishu.onMessage', 'channel/message', 'Timeline.insert', 'web-api/received', 'Bots.say']);
-    const other = ctx.journal.request(91, 20)?.map((line) => line.name);
-    expect(other).toEqual(['Feishu.start', 'Feishu.onMessage', 'channel/message', 'Timeline.insert', 'web-api/received']);
+    const to = Date.now();
+    const firstQuery = { action: 'reply-lines' as const, message: 90, maxLines: 20, sessions: [], to };
+    const secondQuery = { ...firstQuery, message: 91 };
+
+    //M 分别沿回话追溯入口取两个机器人的流水，核对共用渠道行和各自的收件行。
+    const first = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', firstQuery, eventOptions);
+    const second = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', secondQuery, eventOptions);
+    const common = [
+      'Feishu.start',
+      'Feishu.onMessage',
+      'channel/mention',
+      'Timeline.insert',
+      'web-api/received',
+    ];
+    expect(first.events?.map((line) => line.type)).toEqual([...common, 'Bots.say']);
+    expect(second.events?.map((line) => line.type)).toEqual(common);
 
     //M 教程页用的 trail：第一格是飞书；按标准号查 /api/events 也行。
     const payload = { action: 'trail', message: 90, maxLines: 20 } as const;
     const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
     expect(result.trail?.steps[0]?.rows[0]?.name).toBe('Feishu.start');
     expect(result.picked?.map((line) => line.name)).toContain('Feishu.start');
-    const bySource = ctx.journal.query({ source: sourceId });
-    expect(bySource.map((line) => line.sourceId)).not.toContain(null);
-    expect(bySource.map((line) => line.name)).not.toContain('Bots.say');
+    const sourceFilter = { source: sourceId };
+    const bySource = await queryJournal(ctx, sourceFilter);
+    const sourceNames = bySource.lines?.map((line) => line.name);
+    expect(sourceNames).toContain('Feishu.start');
+    expect(bySource.lines?.map((line) => line.sourceId)).not.toContain(null);
+    expect(sourceNames).not.toContain('Bots.say');
   });
 
   test('1.2.2 以前建的 journal_lines 没有 source_id 列：启动时补上，旧行照常读', async () => {
@@ -243,8 +278,9 @@ describe('journal（含 FilesMirror 并入）', () => {
     ctx.emit('trace', '新行', '', '', { messageId: '["feishu","a","b"]' });
 
     //M 第一条新行进来时 journal 自己记一行清理（Journal.record），不算。
-    const lines = ctx.journal.query({}).filter((line) => line.name !== 'Journal.record');
-    expect(lines.map((line) => [line.name, line.sourceId])).toEqual([['旧行', null], ['新行', '["feishu","a","b"]']]);
+    const result = await queryJournal(ctx, {});
+    const lines = result.lines?.filter((line) => line.name !== 'Journal.record');
+    expect(lines?.map((line) => [line.name, line.sourceId])).toEqual([['旧行', null], ['新行', '["feishu","a","b"]']]);
   });
 
   test('流水事件回传筛选结果、错误及会话镜像目录', async () => {

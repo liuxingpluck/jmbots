@@ -7,7 +7,7 @@ import * as storeModule from './Store.ts';
 import * as toolsModule from './Tools.ts';
 
 export const name = 'work-decision';
-export const version = '1.3.4';
+export const version = '1.3.5';
 export const inject = ['resources', 'http', 'tools'];
 
 /** 读取配置文本，未设置时保持缺省。 */

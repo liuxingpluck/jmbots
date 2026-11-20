@@ -396,7 +396,7 @@ export function EventArrowDetail(props: {
 }
 
 
-/** 静态路线的一站：谁做、做什么、涉及的事件。事件名是方案终态（一条飞书消息的路线和渠道事件精简_一页）。 */
+/** 静态路线的一站：谁做、做什么、涉及的事件。事件名按当前代码；主路线3 落地后再改。 */
 export interface RouteStop {
   title: string;
   plugins: string[];
@@ -404,17 +404,63 @@ export interface RouteStop {
 }
 
 
-/** 一条飞书消息怎么走（方案终态），没跑过消息也能看。 */
+/** 一条飞书消息怎么走（当前代码），没跑过消息也能看。 */
 export const FEISHU_ROUTE: RouteStop[] = [
-  { title: 'WebSocket 收到，按消息号去重，附件下载，写原件日志', plugins: ['feishu'], events: [] },
-  { title: '分三种发出去，一条只发一种：私聊、群里 @、只听', plugins: ['feishu'], events: ['channel/direct', 'channel/mention', 'channel/listen'] },
-  { title: '各插件按需听：写聊天记录、记进库、收件表、看批复', plugins: ['channels', 'memory', 'web-api', 'approval'], events: [] },
-  { title: '认出该哪个机器人接（relay 可抢走）；群里没 @ 的进群缓冲', plugins: ['bots'], events: ['bot/receive'] },
-  { title: '排进这个机器人的前台会话，轮到就开跑', plugins: ['bots'], events: [] },
-  { title: '会话循环：调模型前后、调工具前后各一个关口', plugins: [], events: ['session/before-model', 'session/after-model', 'session/before-tool', 'session/after-tool'] },
-  { title: '模型调 channel_reply 工具回话；飞书发出去再回执', plugins: ['bots', 'feishu'], events: ['channel/reply', 'channel/replied'] },
-  { title: '模型不再调工具，会话完（网页直接发最后一句）', plugins: [], events: ['session/change'] },
-  { title: '这一轮完了，接着推下一条', plugins: ['bots'], events: ['bot/settled'] },
+  {
+    title: 'WebSocket 收到，按消息号去重（feishu/index.ts:578、Inbound.ts:169）',
+    plugins: ['feishu'],
+    events: [],
+  },
+  {
+    title: '下载附件、写原件 JSONL（Inbound.ts:247、:251）',
+    plugins: ['feishu'],
+    events: [],
+  },
+  {
+    title: '经 emitInbound 一条只发一个：私聊 direct、群里叫了 mention、没叫 listen（Inbound.ts:734）',
+    plugins: ['feishu', 'channels'],
+    events: ['channel/direct', 'channel/mention', 'channel/listen'],
+  },
+  {
+    title: '各插件按需听：记进库、收件表、看批复（只看前两个）（memory/ChannelIndex.ts:621 等）',
+    plugins: ['memory', 'web-api', 'approval'],
+    events: [],
+  },
+  {
+    title: '认出哪个机器人接，relay 可抢走；只听的先判断（bots/index.ts:552、DispatchClaim.ts:77）',
+    plugins: ['bots', 'relay'],
+    events: ['bot/receive'],
+  },
+  {
+    title: '排进前台单队列，轮到就开跑（bots/DispatchResults.ts:854）',
+    plugins: ['bots'],
+    events: [],
+  },
+  {
+    title: '会话循环四个关口（Sessions.ts:812、:843、:768，Tools.ts:187）',
+    plugins: [],
+    events: ['session/before-model', 'session/after-model', 'session/before-tool', 'session/after-tool'],
+  },
+  {
+    title: '模型调 channel_reply，发回复请求等回执（bots/ChannelTools.ts:292、channels/Reply.ts:213）',
+    plugins: ['bots', 'channels'],
+    events: ['channel/reply'],
+  },
+  {
+    title: '飞书发出去，回带原请求的回执（feishu/Reply.ts:65、:144、:201）',
+    plugins: ['feishu', 'channels'],
+    events: ['channel/replied'],
+  },
+  {
+    title: '会话完；一次没回的：飞书再跑一轮，网页把最后一句发出（DispatchResults.ts:542、:550）',
+    plugins: ['bots'],
+    events: ['session/change'],
+  },
+  {
+    title: '这一轮完了，接着推下一条（bots/DispatchResults.ts:707）',
+    plugins: ['bots'],
+    events: ['bot/settled'],
+  },
 ];
 
 

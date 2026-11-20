@@ -1,6 +1,7 @@
 /**
  * 外部程序的渠道回调，所有外部渠道程序共用（微信、INS、AOBW 客服……）：
- *   入站：程序 POST <回调前缀>/channel/message（带 x-jmbots-key），校验后发标准 channel/message，回收下、重复或拒收；
+ *   入站：程序 POST <回调前缀>/channel/message（带 x-jmbots-key；这是给程序的接口路径，没跟着事件改名），
+ *     校验后照分法发 channel/direct（私聊）、channel/mention（群里 @ 了自己）或 channel/listen（群里没 @），回收下、重复或拒收；
  *   回复：channel/reply 的渠道登记给了程序时，经骨架 registerTextReply 转给程序的 /jmbots/v1/channel/reply，照程序的回执回 channel/replied；
  * 认身份：Host 每次拉起发一把一次性密钥，只在子进程环境变量里；入站要带对，渠道名只能是 config 给这个程序登记的。
  */
@@ -227,7 +228,7 @@ export class ChannelBridge {
   }
 
   /**
-   * 把校验过的入站消息发成标准 channel/message（和内置渠道发的一样），按认领结果回执。
+   * 把校验过的入站消息照分法发成 channel/direct、channel/mention 或 channel/listen（和内置渠道发的一样），按认领结果回执。
    * @param owner 负责这个渠道的程序和登记。
    * @param inbound 校验过的入站消息。
    * @returns accepted 或 duplicate；没有机器人认领时 accepted 带说明。
@@ -342,17 +343,26 @@ export class ChannelBridge {
         publicSourceIds: [],
       },
       //M 一对一的渠道：一轮没调回复工具，就把最后的话当答复发出去。
-      routing: { listenOnly: false, autoFinal: true },
+      routing: { autoFinal: true },
     };
     const control: channelsModule.ChannelMessageControl = { claims: [] };
 
-    //T 跟踪：外部程序交来一条渠道消息，发出标准 channel/message。
-    const vars = { program: owner.host.spec.name, channel: inbound.channel, chat: inbound.chat, length: inbound.text.length };
-    const code = "ctx.serial('channel/message', message, control)";
+    //M 叫了机器人没有：私聊算叫了；群里 @ 了自己才算，没 @ 的是只听的话（机器人只记背景、不回）。
+    const called = inbound.chatType !== 'group' || inbound.mentioned;
+
+    //T 跟踪：外部程序交来一条渠道消息，照分法发出 channel/direct、channel/mention 或 channel/listen。
+    const vars = {
+      program: owner.host.spec.name,
+      channel: inbound.channel,
+      chat: inbound.chat,
+      length: inbound.text.length,
+      called,
+    };
+    const code = 'channelsModule.emitInbound(ctx, message, called, control)';
     this.ctx.emit('trace', 'ChannelBridge.accept', 'trace.programs.channelMessage', code, vars);
 
-    //M 和内置渠道一样挨个问：approval 先看消息级指令，bots 再按 targetBots 认领。
-    await this.ctx.serial('channel/message', message, control);
+    //M 和内置渠道一样挨个问：approval 先看消息级指令（只听的不看），bots 再按 targetBots 认领。
+    await channelsModule.emitInbound(this.ctx, message, called, control);
 
     //M 审批指令（如“同意 1”）消费了整条，也算收下。
     if (control.approvalHandled === true) return { ok: true, status: 'accepted', messageId };

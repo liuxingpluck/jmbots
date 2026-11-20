@@ -204,7 +204,7 @@ test.each(['模型', '工具', '工具关口', '回复发送'])('正在等%s时�
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
 
   const pendingReply = Promise.withResolvers<number>();
@@ -350,7 +350,7 @@ test('2. 排队时撤回：从队列移除且绝不开跑，前一条照常回�
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
 
   const stub = createFeishuStub(ctx.get('feishu') as feishuModule.Feishu, appId, { botOpenId: 'ou_bot' });
@@ -440,7 +440,7 @@ test('3. 派出的后台看到撤回后继续交回，已跑完的会话保持�
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
 
   const stub = createFeishuStub(ctx.get('feishu') as feishuModule.Feishu, appId, { botOpenId: 'ou_bot' });
@@ -565,7 +565,7 @@ test('4. 群聊权限边界：原发者可撤自己的消息，本人可撤其�
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
     people: [
-      { open_id: 'ou_owner', name: '老板', owner: true },
+      { open_id: 'ou_owner', name: '老板', role: 'owner' },
       { open_id: 'ou_guest_a', name: '外人A', role: 'guest' },
       { open_id: 'ou_guest_b', name: '外人B', role: 'guest' },
     ],

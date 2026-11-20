@@ -259,7 +259,7 @@ test('2. 单飞书账号单机器人：channel/message → claim 去重 → chan
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
   const feishu = ctx.get('feishu') as feishuModule.Feishu;
   const records: FeishuCallRecord = { textCalls: [], uploadCalls: 0 };
@@ -377,7 +377,7 @@ test('3. 多机器人独立认领与 approval 仅消费一次：同条消息两�
   await ctx.plugin(approvalModule, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
 
   const feishu = ctx.get('feishu') as feishuModule.Feishu;
@@ -460,7 +460,7 @@ test('5. 零次回复兜底：0 次调用只触发一次“你还没调用回复
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
 
   const feishu = ctx.get('feishu') as feishuModule.Feishu;
@@ -632,7 +632,7 @@ test('6. 重放同一前台归档事件只写一条往来和一份正文', async
   await ctx.plugin(botsPlugin, botsOptions);
   const feishuOptions = {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   };
   await ctx.plugin(feishuModule, feishuOptions);
   const feishu = ctx.get('feishu') as feishuModule.Feishu;

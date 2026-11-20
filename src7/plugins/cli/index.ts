@@ -1,8 +1,8 @@
 /**
- * 命令行渠道：通过统一事件 channel/message 把本机命令行输入交给机器人；前台一轮里 channel_reply 几次就逐条打几行，
+ * 命令行渠道：经 channels 的 emitInbound 发 channel/direct（命令行是私聊）把本机命令行输入交给机器人；前台一轮里 channel_reply 几次就逐条打几行，
  * 一次没调就打最后的话（routing.autoFinal）。本机输入就是本人（role: owner）。
  * 用法：bun src7/Main.ts [--bot 机器人] 你好
- *   先把原始输入存进 channels/cli/<YYYY-MM-DD>.jsonl，再发出 channel/message；等所有会话停下退出（出过错退出码为 1）。
+ *   先把原始输入存进 channels/cli/<YYYY-MM-DD>.jsonl，再发出 channel/direct；等所有会话停下退出（出过错退出码为 1）。
  *   没带话就什么也不做。它不从键盘读输入；要一问一答地聊，以后另写专门的插件。
  */
 import * as botUtils from '../../utils/Bots.ts';
@@ -20,7 +20,8 @@ export const name = 'cli';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.1.3：改成 channel_tool：一轮里能连发多条、逐条打印；零次回复打最后的话；收尾没回成红字、退出码 1；role 写 owner。
 //M 1.1.4：registerTextReply 接入 getTargetAddress 自行识别命令行跨渠道发话目标（本机 / cli:本机 / 命令行）。
-export const version = '1.1.7';
+//M 1.1.8：channel/message 拆了，命令行经 emitInbound 发 channel/direct。
+export const version = '1.1.8';
 
 /** 命令行跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const CLI_TARGET_CHATS = new Set(['', '本机', 'cli:本机', '命令行', 'local']);
@@ -125,10 +126,10 @@ export class Cli {
   }
 
   /**
-   * 落盘一行原始输入并发出标准 channel/message 事件；approval 消息级命令会被先消费一次。
+   * 落盘一行原始输入并发出 channel/direct 事件；approval 消息级命令会被先消费一次。
    * @param bot 目标机器人名。
    * @param sentence 用户说的话。
-   * @returns channel/message 协调结果（给离线测试检查认领与消费次数）。
+   * @returns 认领协调结果（给离线测试检查认领与消费次数）。
    * @throws 目标机器人不存在或没有任何插件处理该消息时抛错。
    */
   async submitLine(bot: string, sentence: string): Promise<protocol.ChannelMessageControl> {
@@ -154,7 +155,7 @@ export class Cli {
 
     //T 跟踪：命令行收到一句话，转成统一事件发出。
     const vars = { bot: bot, sequence: this.seq, length: sentence.length };
-    this.ctx.emit('trace', 'Cli.submitLine', 'trace.cli.submitLine', "ctx.serial('channel/message')", vars);
+    this.ctx.emit('trace', 'Cli.submitLine', 'trace.cli.submitLine', 'protocol.emitInbound(ctx, msg, true, control)', vars);
 
     const channelMessage: protocol.ChannelMessage = {
       v: 1,
@@ -185,14 +186,13 @@ export class Cli {
         publicSourceIds: [],
       },
       routing: {
-        listenOnly: false,
         autoFinal: true,
       },
     };
 
-    //M 发出 channel/message：approval 先看“同意 N”，bots 再排进前台（一轮里 channel_reply 几次打几条，一次没调就打最后的话）。
+    //M 发出 channel/direct（命令行是私聊）：approval 先看“同意 N”，bots 再排进前台（一轮里 channel_reply 几次打几条，一次没调就打最后的话）。
     const control: protocol.ChannelMessageControl = { claims: [] };
-    await this.ctx.serial('channel/message', channelMessage, control);
+    await protocol.emitInbound(this.ctx, channelMessage, true, control);
     if (control.approvalHandled !== true && control.claims.length === 0) {
       throw new Error(`机器人 ${bot} 收到了消息，但前台没有定下进哪场会话`);
     }

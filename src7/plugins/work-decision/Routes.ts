@@ -59,10 +59,8 @@ interface RelayReplyRequest extends events.RequestEnvelope {
   action: 'reply';
   /** relay 回信的持久编号，重复投递按它对账。 */
   id: number;
-  /** 旧收件键：节点或节点#留言号。 */
-  key: string;
-  /** 新收件记录的节点及留言，可省略留言号。 */
-  target?: storeModule.ReplyTarget;
+  /** 收件记录的精确节点及留言，可省略留言号。 */
+  target: storeModule.ReplyTarget;
   /** 中控已交给 relay 的回信原文。 */
   text: string;
 }
@@ -182,9 +180,9 @@ export function mount(
   events.onRequestEvent(ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
     if (request.action !== 'reply') return { ok: false };
 
-    const { key, text, id, target } = request;
+    const { text, id, target } = request;
     //M 和直达 HTTP 回话共用存储，保留和用户留言的关联。
-    store.replyFromRelay(key, text, id, target);
+    store.reply(target.node, target.note, text, id);
     return { ok: true };
   }, replyOptions);
 

@@ -495,29 +495,6 @@ export class Store {
     return { node: updated, note };
   }
 
-  /** 新收件带原始节点和留言号，重启时也能处理旧格式的待送回信。 */
-  replyFromRelay(key: string, text: string, relayReplyId: number, target?: ReplyTarget): void {
-    if (target !== undefined) {
-      //M 新收件无需拆字符串，节点号可以包含井号。
-      this.reply(target.node, target.note, text, relayReplyId);
-      return;
-    }
-
-    //M 旧收件的键是完整节点号，或在末尾附加 #留言号。
-    const graph = this.getGraph();
-    const isNode = graph.nodes.some((node) => node.id === key);
-    const separator = key.lastIndexOf('#');
-    if (isNode || separator < 0) {
-      this.reply(key, undefined, text, relayReplyId);
-      return;
-    }
-
-    const nodeId = key.slice(0, separator);
-    const noteId = key.slice(separator + 1);
-    //M 交给同一个入口核对节点和用户留言，并以回信号去重。
-    this.reply(nodeId, noteId, text, relayReplyId);
-  }
-
   /**
    * 记下中控对节点或某条用户留言的回话。
    * @param id 节点号。

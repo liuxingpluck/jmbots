@@ -1,6 +1,7 @@
 /**
  * 渠道消息索引（C 块，11-18，用户 #130）：各渠道的消息按聊天记进一张表，能按“渠道 + 聊天 + 时间范围 + 关键词”查。
- * 增量：听 channel/message（用户的话；飞书、微信、网页、命令行都是先落盘再发）、channel/replied（机器人的话发成了才记，回执带请求的来源快照和正文），
+ * 增量：听 channel/direct、channel/mention、channel/listen（用户的话，私聊、群里叫了机器人、只听的都记；渠道都是先落盘再发；
+ *   语音半句提前开工的 routing.partial 不记，等同一消息号的整句），channel/replied（机器人的话发成了才记，回执带请求的来源快照和正文），
  *   键分别是 messageId、replyRequestKey，INSERT OR IGNORE 幂等。
  * 查：工具 memory_search、memory_get 和 GET /api/memory/channel。受限会话只查本轮来源聊天。
  * 补旧：ztools/memory/Backfill_Channel_Index.ts 用这里的 ChannelIndex 写。
@@ -409,12 +410,15 @@ function getRow(row: Record<string, unknown>): ChannelRow {
 
 
 /**
- * 用户的一条话（channel/message）→ 一行。
+ * 用户的一条话（channel/direct、channel/mention、channel/listen）→ 一行。
  * @param message 渠道发的标准消息。
- * @returns 一行；没有正文（纯附件、空话）是 undefined。
+ * @returns 一行；没有正文（纯附件、空话）、语音半句（routing.partial，等整句再记）是 undefined。
  */
 export function getMessageRow(message: protocolModule.ChannelMessage): ChannelRow | undefined {
   if (message.text.trim() === '') return undefined;
+
+  //G 半句：话还没说完先交机器人开工的，键和整句一样；先记了半句，整句就被 INSERT OR IGNORE 挡掉了。
+  if (message.routing.partial === true) return undefined;
 
   //M 归属键：私聊对面的人就是发话人。
   const keySource = {
@@ -600,8 +604,8 @@ export function readEnabled(raw: unknown): boolean {
 export function applyChannelIndex(
   ctx: cordis.Context, index: ChannelIndex, rust?: ChannelBackfill,
 ): void {
-  //M 用户的话：渠道先落盘再发 channel/message；记不上只打日志，不挡别人认领。
-  ctx.on('channel/message', (message) => {
+  //M 用户的话：渠道先落盘再发；记不上只打日志，不挡别人认领。私聊、群里叫了机器人、只听的三个事件同一个处理。
+  const onInbound = (message: protocolModule.ChannelMessage): void => {
     try {
       const row = getMessageRow(message);
       if (row === undefined) return;
@@ -613,7 +617,10 @@ export function applyChannelIndex(
       //G 记不进索引只打日志，不往外抛，别挡别人认领这条消息。
       console.error(`memory：渠道消息记不进索引：${textModule.getErrorMessage(error)}`);
     }
-  }, { prepend: true });
+  };
+  ctx.on('channel/direct', onInbound, { prepend: true });
+  ctx.on('channel/mention', onInbound, { prepend: true });
+  ctx.on('channel/listen', onInbound, { prepend: true });
 
   //M 机器人的话：渠道回执说发成了（channel/replied 的 sent、partial）才记，正文取回执带的请求；同一个 replyRequestKey 重放不重复。
   ctx.on('channel/replied', (event) => {

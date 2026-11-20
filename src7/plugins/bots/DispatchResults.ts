@@ -15,6 +15,8 @@ export interface FrontTask {
   front: string;
   /** 第几轮：每交回前台一次加一。结果键 work:<会话号>:<轮> 用它。 */
   round: number;
+  /** 已排进前台的显式最终结果所属轮；与结果入队同事务保存。 */
+  finalRound?: number;
   /**
    * 工作区，只作显示（agent-tasks 也读它）：旧写法记前台给的相对路径或登记的名字（'.' 是说话人的工作区本身），按 ID 选的记工作区的名字。
    * 后台在哪个目录干以 row.workspaceId 为准。
@@ -251,7 +253,14 @@ export class DispatchResults {
     }
 
     //T 跟踪：一份结果排进队列。
-    const vars = { resultKey: input.key, targetSession: target.id, category: target.row.kind, queuedCount: getWaiting(next).length };
+    //M 先计算等待量，跟踪对象只保留本次已确定的结果信息。
+    const queuedCount = getWaiting(next).length;
+    const vars = {
+      resultKey: input.key,
+      targetSession: target.id,
+      category: target.row.kind,
+      queuedCount,
+    };
     this.home.emit('trace', 'Dispatch.acceptResult', 'trace.bots.queueResult', 'resultQueue.push(item)', vars);
 
     //M 下一拍再看目标会话：它空闲就开一轮处理这一项，在转就等它这一轮结束。
@@ -423,18 +432,48 @@ export class DispatchResults {
       input.deliveryMode = task.deliveryMode;
     }
 
-    //M 排进原前台的队列；同一个事务里把这场的轮数加一并存库（下一轮的结果键就不重了）。排不进去只记日志，不往外抛。
+    //M 显式 final 已持久交回：只结束这一轮，不按普通结束文本再开一份结果。
+    //M failed/stopped 仍交回真实原因，不把显式成功通知当作后续错误的掩盖。
     try {
-      this.acceptResult(input, () => {
-        task.round = round + 1;
-        work.save();
-      });
+      if (state === 'done' && task.finalRound === round) {
+        //M 已入前台的结果继续沿原回执处理，这里只推进后台轮数。
+        this.advanceRound(work, task, round);
+        //M 让后台自己的外部结果队列继续推进。
+        this.later(work);
+        return;
+      }
+
+      //M 自动结果与后台轮数在同一事务提交，保存失败恢复内存轮数。
+      const commitRound = () => {
+        //M 共用带回滚的轮数提交，避免失败后误以为本轮已经交回。
+        this.advanceRound(work, task, round);
+      };
+      //M 自动交回与推进后台轮数必须一起成功。
+      this.acceptResult(input, commitRound);
     } catch (error) {
       console.error(`后台 ${work.id} 的结果没交回前台 ${task.front}：${textModule.getErrorMessage(error)}`);
     }
 
     //M 交回后下一拍再看这场后台自己的队列（外部结果排着的话接着处理）。
     this.later(work);
+  }
+
+  /**
+   * 提交后台下一轮编号；存库失败时恢复内存，允许原结果重试。
+   * @param work 当前后台会话。
+   * @param task 已校验的受管后台任务。
+   * @param round 正在结束的轮号。
+   * @throws 保存失败原样抛出，调用方保留原回执和结果队列。
+   */
+  private advanceRound(work: Session, task: FrontTask, round: number): void {
+    task.round = round + 1;
+    try {
+      //M 轮号随会话元数据持久化，重启后不会把下一轮当本轮重复处理。
+      work.save();
+    } catch (error) {
+      task.round = round;
+      throw error;
+    }
   }
 
   /**
@@ -673,6 +712,7 @@ export class DispatchResults {
       replyIndex,
       kind: 'final' as const,
     };
+    //M 自动最终回复沿同一来源和请求键取回真实渠道回执。
     const receipt = await protocol.requestTextReply(this.home, snapshot, text, options);
 
     //M 记回执和结果，再走一遍收尾（reminder 是 used，不会再进兜底）。
@@ -843,7 +883,14 @@ export class DispatchResults {
     session.save();
 
     //T 跟踪：开始处理队列里的一项。
-    const vars = { session: session.id, category: row.kind, resultKey: item.key, remainingCount: getWaiting(queue).length - 1 };
+    //M 排除本次活动项后记录尚未处理的结果数量。
+    const remainingCount = getWaiting(queue).length - 1;
+    const vars = {
+      session: session.id,
+      category: row.kind,
+      resultKey: item.key,
+      remainingCount,
+    };
     this.home.emit('trace', 'Dispatch.drain', 'trace.bots.drainResult', 'session.run()', vars);
 
     //M 推会话跑一轮，不等；这一轮结束时 session/change 进 onChange 收尾。
@@ -909,6 +956,16 @@ export class DispatchResults {
       ...this.home.sessions.find({ kind: 'work' }),
     ];
     for (const meta of rows) {
+      //M final 入队后、普通完成提交前崩溃：恢复本轮收尾，不新排最终结果。
+      const task = meta.frontTask;
+      if (meta.kind === 'work' && meta.state === 'done'
+        && task !== undefined && task.finalRound === task.round) {
+        //M 即使后台没有自己的待办队列，也要结束已显式交回的轮次。
+        const work = this.home.sessions.open(meta.id);
+        this.returnWork(work, meta.state, meta.reply, task.round);
+      }
+
+      //M 只对尚未收尾的队列继续恢复，已交回 final 的轮号已在上面推进。
       const waiting = getWaiting(meta.resultQueue ?? []);
       if (waiting.length === 0 && meta.activeKey === undefined) continue;
 
@@ -1118,5 +1175,6 @@ export function normalizeLegacyReceipt(
   //M 沿用旧渠道的空原因约定，转成标准回执。
   if (reason === '') return protocol.getReceipt(source, status);
 
+  //M 保留原渠道明确给出的失败或降级原因。
   return protocol.getReceipt(source, status, reason);
 }

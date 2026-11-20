@@ -108,11 +108,13 @@ test('wechat 监听新消息：先存表再发 1 次 channel/message、认领 1 
   const wechat = new Wechat(ctx, checkConfig(ctx, { bot: '助手', interval_ms: 0, send: false }));
   wechat.approval = ctx.approval;
 
-  //M 记录 channel/message 与认领、模型执行次数。
+  //M 记录发出的 channel/direct（私聊）、channel/mention（群里 @我）与认领、模型执行次数。
   const emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }> = [];
-  ctx.on('channel/message', (message, control) => {
+  const record = (message: channels.ChannelMessage, control?: channels.ChannelMessageControl): void => {
     emitted.push({ message, control });
-  });
+  };
+  ctx.on('channel/direct', record);
+  ctx.on('channel/mention', record);
 
   let modelRuns = 0;
   //M 记下模型这一步拿到的工具名（本监听在 approval 之后挂，看到的是已按说话人过滤的清单）。

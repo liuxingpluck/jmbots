@@ -1,7 +1,7 @@
 /**
  * 换模型与限流回退（原 plugins/model-fallback，已并入 model-catalog）：
  * 在 session/before-model 里排最后，自己调骨架的 ctx.sessions.chat(request)，把回答填进 request.answer（骨架看到有回答就不再发）。
- * 出错时：限流 → 记冷却、换备选链里下一个；上下文超长 → 换窗口更大的；别的（鉴权、参数错）→ 不换，原样抛。
+ * 出错时：限流 → 记冷却、换备用模型；上下文超长 → 换窗口更大的；上游明确找不到服务 → 走备用链。
  * 被限流的模型记冷却（报错里读几点恢复，读不出按分钟数，最长一天），冷却里先不撞它；每个模型、每家供应商有并发名额（Queue.ts）。
  * 同一个模型的重试在 Sessions.chat() 里（pi 按 models.retry）；限流时这里只让它再试 1 次就掐断、换下一个。
  * 前面已经有人填了回答（假模型）就不管。plugins 里要排在所有改写请求和 fake-model 后面（一般放最后）。
@@ -16,16 +16,19 @@ import type { ModelCatalog } from './index.ts';
 import * as queueModule from './Queue.ts';
 
 
-/** model-catalog/fallback 的参数（总览第 3 节待补约定第 9 条）。reason 四种：rate-limit、cooldown、context-overflow、no-available-fallback。 */
+/** 可换备用模型的三种故障。 */
+type RetryableReason = 'rate-limit' | 'context-overflow' | 'upstream-unavailable';
+
+/** model-catalog/fallback 的参数。 */
 export interface FallbackInfo {
   /** 发生切换的会话实例。 */
   session: Session;
-  /** 会话要的模型。 */
+  /** 上一次尝试的模型，或首试前仍在冷却的模型。 */
   from: string;
   /** 这次去试的模型。 */
   to: string;
   /** 切换原因。 */
-  reason: string;
+  reason: RetryableReason | 'cooldown' | 'fallback-failed' | 'no-available-fallback';
 }
 
 /** 回退子配置：写在 plugins[model-catalog].config.fallback 下，写 false 或 enabled: false 可关闭；并发仍可沿用顶层 concurrency。 */
@@ -102,6 +105,27 @@ export function isOverflow(error: string): boolean {
   return /context.?window|context.?length|maximum context|too many tokens|prompt is too long|上下文.{0,6}(超|过长|太长)/iu.test(error);
 }
 
+/** 取 SDK 错误开头的 HTTP 4xx 状态码。 */
+function getClientErrorStatus(error: string): string | undefined {
+  return /^(?:HTTP\s+)?(4\d{2})\b/iu.exec(error.trimStart())?.[1];
+}
+
+/** 从错误原文识别可换模的故障。上游路由错误只认 400 与网关的服务缺失文案。 */
+function getFallbackReason(error: string): RetryableReason | undefined {
+  const status = getClientErrorStatus(error);
+
+  //G 鉴权响应即使带额度或服务名，也按原错返回。
+  if (status === '401' || status === '403') return undefined;
+
+  const serviceMissing = /服务信息找不到|\bservice info(?:rmation)? (?:was )?not found\b/iu.test(error);
+  if (status === '400' && serviceMissing) return 'upstream-unavailable';
+
+  if (isOverflow(error)) return 'context-overflow';
+  if (isRateLimited(error)) return 'rate-limit';
+
+  return undefined;
+}
+
 /** 时间单位 → 毫秒：ms/mil 毫秒，m 开头分，h 开头时，别的按秒。 */
 function unitMs(unit: string): number {
   if (unit.startsWith('ms') || unit.startsWith('mil')) return 1;
@@ -140,7 +164,7 @@ export function getResetTime(error: string, now: number): number | undefined {
 }
 
 
-/** 换模型处理器：挂载 session/before-model，失败时监听 session/model-failed 并按冷却/大窗口切换备选。 */
+/** 换模型处理器：挂载 session/before-model，并按失败原因与冷却状态选择备用模型。 */
 export class ModelFallback {
   /** 冷却表：模型 → 冷却到几点、那次的错。只在内存，重启就清。 */
   private readonly cooldowns = new Map<string, { until: number; error: string }>();
@@ -166,16 +190,17 @@ export class ModelFallback {
   }
 
   /**
-   * 主流程：先试要的（不在冷却时）；限流、超长就按顺序换着试；全都不行抛一句人话（骨架把会话记成 failed，原因就是这句）。
+   * 主流程：原模型未冷却就先试它，再按失败原因决定是否尝试备用模型。
    * @param request 这一步的请求。
-   * @throws 不是限流、不是超长的错原样抛；喊停了原样抛；全都不行抛人话。
+   * @throws 取消或无法回退的错原样抛。备选用完时汇总尝试记录。
    */
   private async onRequest(request: ChatRequest): Promise<void> {
     if (request.answer !== undefined) return;
 
     const asked = request.model;
-    const tried: { model: string; error: string }[] = [];
-    let first: string | undefined;
+    const tried: { model: string; error: string; reason?: RetryableReason }[] = [];
+    let from = asked;
+    let reason: FallbackInfo['reason'] = 'cooldown';
     //M 先查请求指定的模型是否不在冷却期，不在则优先直接试它。
     if (this.cooling(asked) === undefined) {
       try {
@@ -186,17 +211,19 @@ export class ModelFallback {
         if (request.signal.aborted) {
           throw error;
         }
-        //G 取错误文本判断是否为限流或上下文超长；鉴权、参数等其他错误直接原样抛出不走回退。
-        first = textModule.getErrorMessage(error);
-        if (!isRateLimited(first) && !isOverflow(first)) {
+        //G 只对明确可回退的错误继续尝试。
+        const detail = textModule.getErrorMessage(error);
+        const failure = getFallbackReason(detail);
+        if (failure === undefined) {
           throw error;
         }
-        tried.push({ model: asked, error: first });
+        reason = failure;
+        tried.push({ model: asked, error: detail, reason: failure });
       }
     }
 
     //M 排要试的：超长时只要窗口更大的；否则备选链 + 同供应商免费的，不在冷却的优先（全在冷却就照原顺序都试）。
-    const bigger = first !== undefined && isOverflow(first);
+    const bigger = reason === 'context-overflow';
     const list = this.candidates(asked, bigger);
     const fresh = list.filter((model) => this.cooling(model) === undefined);
     let order = fresh;
@@ -204,16 +231,11 @@ export class ModelFallback {
       order = list;
     }
 
-    let reason = 'rate-limit';
-    if (first === undefined) {
-      reason = 'cooldown';
-    }
-    if (bigger) {
-      reason = 'context-overflow';
-    }
-
     for (const model of order) {
-      this.ctx.emit('model-catalog/fallback', { session: request.session, from: asked, to: model, reason });
+      const change: FallbackInfo = { session: request.session, from, to: model, reason };
+
+      //M 每次切换记录实际离开的模型，让连续换模的顺序能串起来。
+      this.ctx.emit('model-catalog/fallback', change);
       try {
         //M 依次尝试排序后的备选模型，拿到结果立即回填 request.answer 并结束本轮。
         request.answer = await this.attempt(request, model);
@@ -222,8 +244,16 @@ export class ModelFallback {
         if (request.signal.aborted) {
           throw error;
         }
-        //M 排除外部取消后收集本次备选失败的报错原文，供全部失败时拼装错误提示。
-        tried.push({ model, error: textModule.getErrorMessage(error) });
+        //G 备用模型遇到参数或鉴权错误也直接停，避免继续发送会话。
+        const detail = textModule.getErrorMessage(error);
+        const failure = getFallbackReason(detail);
+        const status = getClientErrorStatus(detail);
+        if (failure === undefined && (status === '400' || status === '401' || status === '403')) {
+          throw error;
+        }
+        tried.push({ model, error: detail, reason: failure });
+        from = model;
+        reason = failure ?? 'fallback-failed';
       }
     }
 
@@ -234,7 +264,7 @@ export class ModelFallback {
       return;
     }
     //G 所有备选模型都尝试失败，汇总失败原因与仍在冷却的模型信息抛出。
-    throw new Error(this.giveUp(asked, list, tried, bigger));
+    throw new Error(this.giveUp(asked, list, tried));
   }
 
   /**
@@ -252,7 +282,10 @@ export class ModelFallback {
     let limited = 0;
     let limitError = '';
     const stopListening = this.ctx.on('session/model-failed', (info) => {
-      if (info.session !== request.session || info.model !== model || !isRateLimited(info.error)) return;
+      if (info.session !== request.session || info.model !== model) return;
+
+      const failure = getFallbackReason(info.error);
+      if (failure !== 'rate-limit') return;
 
       limited += 1;
       limitError = info.error;
@@ -307,7 +340,7 @@ export class ModelFallback {
   /** 是限流才记冷却；原来不在冷却就发 model-catalog/cooldown（ModelCatalog、journal 听）。 */
   private noteLimit(model: string, error: string): void {
     //G 仅限流或额度耗尽错误才记入冷却，其余异常直接跳过。
-    if (!isRateLimited(error)) return;
+    if (getFallbackReason(error) !== 'rate-limit') return;
 
     //M 从报错里解析重置时刻，读不出时采用默认冷却时长，并限制最长不超过一天。
     const now = Date.now();
@@ -371,9 +404,9 @@ export class ModelFallback {
   }
 
   /** 把所有候选模型均调用失败的原因写成提示。 */
-  private giveUp(asked: string, list: string[], tried: { model: string; error: string }[], bigger: boolean): string {
+  private giveUp(asked: string, list: string[], tried: { model: string; error: string; reason?: RetryableReason }[]): string {
     const names = tried.map((item) => item.model).join('、');
-    if (bigger) {
+    if (tried.every((item) => item.reason === 'context-overflow')) {
       return `上下文太长：依次试了 ${String(tried.length)} 个模型（${names}），都装不下。这个会话聊得太久了，开个新会话再说。`;
     }
 
@@ -384,7 +417,7 @@ export class ModelFallback {
       coolingNote = `；${cooling.join('、')} 还在限流冷却，没再试`;
     }
     //G 检查已尝试的模型是否全因限流失败，若是则返回明确的额度不足提示。
-    if (tried.every((item) => isRateLimited(item.error))) {
+    if (tried.every((item) => item.reason === 'rate-limit')) {
       return `模型额度不够：依次试了 ${String(tried.length)} 个模型（${names}），都被限流或额度用完了${coolingNote}。`
         + '等额度恢复，或在模型库插件的 fallback.chain 里加能用的模型。';
     }

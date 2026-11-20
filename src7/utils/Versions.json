@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.7.70",
+    "date": "2026-11-20",
+    "changes": [
+      "飞书等渠道的每条话（含群里不 @ 的、机器人自己发成功的回复、撤回）按聊天存成 Markdown：运行时 chats/渠道/私聊或群聊/名字_ID/，每份最多 200 条，附件复制进 附件/",
+      "进来的消息拆成三种事件：私聊 channel/direct、群里叫了机器人 channel/mention、没叫 channel/listen；没登记的群里不 @ 的话也进记忆（只记不回），群里回复机器人的那条算叫了它",
+      "发出去的话统一走 channel/reply → channel/replied，回执带原请求；channel/send、bot/route、渠道各自的发送函数都收掉",
+      "渠道协议从骨架挪成 plugins/channels 协议插件，骨架只剩 Main、Resources、Tools、Sessions 四个文件",
+      "决策图改名工作决策（work-decision）：数据进库、按工作区分组、机器人能用 ask_owner 请主人定；网页加按日期分组的思维导图",
+      "事件改名一批、删掉旧版本字样和三处旧数据兼容（飞书旧身份键 people[].owner 不再认，要写 role）",
+      "教程、README、插件地图按现在的代码重写；行号检查工具进 git（bun run check:lines）"
+    ]
+  },
+  {
     "version": "0.7.69",
     "date": "2026-11-20",
     "changes": [

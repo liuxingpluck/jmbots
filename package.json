@@ -1,6 +1,6 @@
 {
   "name": "jmbots",
-  "version": "0.6.0",
+  "version": "0.7.70",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.14",
@@ -10,8 +10,9 @@
   },
   "scripts": {
     "build:web": "bun web/Build.ts",
-    "typecheck": "tsc -p tsconfig.check.json && tsc -p web/tsconfig.json",
-    "typecheck:src7": "tsc -p tsconfig.src7.json && tsc -p web/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
+    "typecheck:src7": "bun run typecheck",
+    "check:lines": "bun ztools/check-lines/Check_Lines.ts",
     "test": "bun run test:src7",
     "test:src7": "bun test ./src7/plugins ./src7/tests/Web_Token.test.ts ./src7/tests/Session_Gates.test.ts &&bun src7/tests/Batch1_Test.ts && bun src7/tests/Cards_Test.ts && bun src7/tests/Feishu_Test.ts",
     "lint": "eslint \"src7/**/*.ts\" \"web/**/*.{ts,tsx}\" \"scripts/**/*.{ts,mjs}\" eslint.config.mjs"

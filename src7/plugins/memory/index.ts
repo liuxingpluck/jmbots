@@ -19,6 +19,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
+import * as archiveListenModule from '../channels/ArchiveListen.ts';
 import * as backendModule from './Backend.ts';
 import * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
@@ -41,7 +42,8 @@ export const name = 'memory';
 //M 1.7.0：渠道记录带人或群归属，统一检索可按 person、group 限定。
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
-export const version = '1.10.8';
+//M 1.10.9：用户的话改听 channel/direct、channel/mention、channel/listen（只听的、没登记的群也记）；语音半句（routing.partial）不记。
+export const version = '1.10.9';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];
@@ -817,6 +819,9 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
     const backfill = new channelBackfillModule.ChannelBackfill(ctx, channelIndex, memoryService, backfillSettings);
     channelIndexModule.applyChannelIndex(ctx, channelIndex, backfill);
   }
+
+  //M 聊天记全写 MD：五个渠道事件落到 chats/ 目录，与渠道索引开关无关。
+  archiveListenModule.applyChatArchive(ctx, ctx.resources.root);
 
   //M 关系图路由（GraphRoutes）和记忆库的 HTTP 接口（routes）：http 插件在才真正登记。
   const graphRoutes = new graphRoutesModule.GraphRoutes(

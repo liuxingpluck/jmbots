@@ -2,7 +2,7 @@
  * 模型清单与运行兜底（已并入原 model-fallback）：
  * 1. 清单：起来就向 providers 里每一家拉 <base_url>/models，和手写的合成一张模型表，给网页看、给别的插件查；
  *    一家拉不到不挡别家、不挡起服务：先用它手写的模型，每 60 秒再试，连上就换。
- * 2. 回退（Fallback.ts / Queue.ts）：在 session/before-model 里排最后调 ctx.sessions.chat，限流记冷却、超长换大窗口，带并发排队。
+ * 2. 回退（Fallback.ts / Queue.ts）：在 session/before-model 末尾调模型，限流记冷却、超长换大窗口、上游服务缺失走备用链。
  * 3. 模型介绍和评价（Notes.ts，11-18 并进原 model-notes）：运行时目录 models/ 下一个模型一份 MD；接口 /api/model-notes* 路径照旧；
  *    事件 model-catalog/request 的 action: 'prompt' 一次交回模型介绍评价和能用的思考档，前台派活时带上。
  * 4. 用量（Usage.ts，11-18 并进原 usage）：保留 usage 服务、model-catalog/usage 事件和 GET /api/usage。
@@ -31,7 +31,7 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.7';
+export const version = '1.3.8';
 
 /** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];

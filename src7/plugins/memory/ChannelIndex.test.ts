@@ -80,6 +80,7 @@ function getMessage(nativeId: string, chatId: string, text: string, at: string):
     mentions: [],
     text,
     createdAt: Date.parse(at),
+    routing: {},
   };
   return message as unknown as protocolModule.ChannelMessage;
 }
@@ -121,15 +122,20 @@ async function search(bench: Bench, args: Record<string, unknown>, session: Sess
 }
 
 
-test('听 channel/message、channel/replied 记进表，同一条不重复；按渠道、聊天、时间、关键词查，新的在前', () => {
+test('听 channel/direct、channel/mention、channel/listen、channel/replied 记进表，同一条不重复，半句不记；按渠道、聊天、时间、关键词查，新的在前', () => {
   const bench = makeBench();
 
-  //M 两个聊天各几句；同一条发两次只记一次；空话不记。
-  bench.emit('channel/message', getMessage('m1', 'oc_1', '明天开会讨论预算', '2026-11-16T09:00:00'));
-  bench.emit('channel/message', getMessage('m1', 'oc_1', '明天开会讨论预算', '2026-11-16T09:00:00'));
-  bench.emit('channel/message', getMessage('m2', 'oc_1', '预算 100% 定了', '2026-11-17T09:00:00'));
-  bench.emit('channel/message', getMessage('m3', 'oc_2', '另一个群也说预算', '2026-11-17T10:00:00'));
-  bench.emit('channel/message', getMessage('m4', 'oc_1', '   ', '2026-11-17T11:00:00'));
+  //G 语音半句（routing.partial）不记：先记了半句，同一消息号的整句就被 INSERT OR IGNORE 挡掉了。
+  const partial = getMessage('m1', 'oc_1', '明天开会', '2026-11-16T09:00:00');
+  partial.routing = { partial: true };
+  bench.emit('channel/direct', partial);
+
+  //M 两个聊天各几句，三个进来的事件都记；同一条发两次只记一次；空话不记。
+  bench.emit('channel/direct', getMessage('m1', 'oc_1', '明天开会讨论预算', '2026-11-16T09:00:00'));
+  bench.emit('channel/direct', getMessage('m1', 'oc_1', '明天开会讨论预算', '2026-11-16T09:00:00'));
+  bench.emit('channel/mention', getMessage('m2', 'oc_1', '预算 100% 定了', '2026-11-17T09:00:00'));
+  bench.emit('channel/listen', getMessage('m3', 'oc_2', '另一个群也说预算', '2026-11-17T10:00:00'));
+  bench.emit('channel/direct', getMessage('m4', 'oc_1', '   ', '2026-11-17T11:00:00'));
 
   //M 机器人的回复：渠道回执说发成了才记，正文和聊天照回执带的请求（来源快照）；同键重放只记一次。
   const reply = {
@@ -169,10 +175,10 @@ test('听 channel/message、channel/replied 记进表，同一条不重复；按
 
 test('memory_search 按聊天授权检索，支持只查渠道而不填关键词', async () => {
   const bench = makeBench();
-  bench.emit('channel/message', getMessage('m1', 'oc_1', '我的私事', '2026-11-16T09:00:00'));
+  bench.emit('channel/direct',getMessage('m1', 'oc_1', '我的私事', '2026-11-16T09:00:00'));
   const shared = getMessage('m2', 'oc_2', '群里的事', '2026-11-17T09:00:00');
-  bench.emit('channel/message', { ...shared, chatType: 'group' });
-  bench.emit('channel/message', getMessage('m3', 'oc_2', '他的私聊', '2026-11-17T09:00:00'));
+  bench.emit('channel/direct',{ ...shared, chatType: 'group' });
+  bench.emit('channel/direct',getMessage('m3', 'oc_2', '他的私聊', '2026-11-17T09:00:00'));
 
   //M 本人在私聊：不写聊天查全部，也能指定别的聊天。
   const owner = getSession('oc_1', 'owner', 'p2p');
@@ -206,11 +212,11 @@ test('memory_search 按聊天授权检索，支持只查渠道而不填关键词
 test('memory_get 默认本聊天，同毫秒消息分页稳定并绑定账号和查询条件', async () => {
   const bench = makeBench();
   const at = '2026-11-17T09:00:00';
-  bench.emit('channel/message', getMessage('m1', 'oc_1', '同一毫秒第一条', at));
-  bench.emit('channel/message', getMessage('m2', 'oc_1', '同一毫秒第二条', at));
+  bench.emit('channel/direct',getMessage('m1', 'oc_1', '同一毫秒第一条', at));
+  bench.emit('channel/direct',getMessage('m2', 'oc_1', '同一毫秒第二条', at));
   const accountOther = getMessage('m3', 'oc_1', '另一个账号同名聊天', at);
-  bench.emit('channel/message', { ...accountOther, accountId: 'cli_b' });
-  bench.emit('channel/message', getMessage('m4', 'oc_2', '本人其他聊天', at));
+  bench.emit('channel/direct',{ ...accountOther, accountId: 'cli_b' });
+  bench.emit('channel/direct',getMessage('m4', 'oc_2', '本人其他聊天', at));
 
   const session = getSession('oc_1', 'owner', 'p2p');
   const tool = bench.tools.find((spec) => spec.definition.name === 'memory_get')!;

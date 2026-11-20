@@ -18,7 +18,9 @@ import * as turnModule from './Turn.ts';
 import * as turnModel from './TurnModel.ts';
 
 export const name = 'voice';
-export const version = '0.6.2';
+//M 0.6.3：voice/dispatch 并进 channel/direct（半句带 routing.partial）；只入档的整句发 channel/listen（targetBots 空）；
+//M   voice/record 加 waiting 顶替 routing.recordOnly。
+export const version = '0.6.3';
 export const inject = ['resources', 'http', 'sessions'];
 
 type Provider = 'fake' | 'sherpa' | 'bailian' | 'xiaomi';

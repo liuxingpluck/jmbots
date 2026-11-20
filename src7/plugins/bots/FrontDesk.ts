@@ -4,8 +4,8 @@
  * 派活的三个工具和结果队列在 Dispatch.ts（服务 ctx.frontDesk）。这个文件做四件事：
  *   - 定“这条消息进哪场会话”（onReceive：Bot.receive 问完 bot/receive 没人认领时，经 Dispatch.receive 调它）：
  *     按客户号（渠道:用户）进这个机器人的前台对话，没有就开一场；
- *     渠道标了只听（地址里 listenOnly，飞书群里没 @ 机器人的话）的，只记进前台对话当背景，不调模型、不回；
- *     只听的话地址里还带 judge（飞书 listen: judge 的群）：先问决策模型“该不该接话”，allow 才交给前台会话跑，deny、unsure 只记不回；
+ *     只听的话（channel/listen 来的，bots 在地址副本上标 listenOnly：飞书群里没 @ 机器人的话）只记进前台对话当背景，不调模型、不回；
+ *     飞书 listen: judge 的群要不要接话不在这里判断：DispatchClaim 交给群攒批（GroupBatch.ts）攒一批再问决策模型；
  *   - 往来记录：用户每说一句、机器人每回一句（含会话中途先说的 bot/say）各记一条；查历史只查本客户这场和它交办的后台；
  *   - 前台对话每一步的上下文 = 最近 N 条往来（一条 system 消息，动态拼上去，不进系统提示词）+ 这一轮的消息；
  * 前台只回答简单的问题和分派，绝对不自己干活。
@@ -20,7 +20,6 @@ import * as imageModule from '../../utils/Image.ts';
 import * as namesModule from '../../utils/Names.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as utils from '../../utils/index.ts';
-import type * as decisionPlugin from '../decision/index.ts';
 import * as frontArchive from '../memory/FrontArchive.ts';
 import type { FrontEntry as BotLogEntry, FrontMessage, FrontQuery } from '../memory/FrontArchive.ts';
 import * as memoryKeyModule from '../memory/MemoryKey.ts';
@@ -45,34 +44,10 @@ export interface FrontDeskConfig {
 }
 
 
-/** 问决策模型要不要接话时，带最近多少句群聊。 */
-const JUDGE_LINES = 10;
-
-/** 只听的话要不要接：题目。 */
-const JUDGE_QUESTION = {
-  instructions: '你是群里的助手。看最近的群聊，最后这句话需要你回复吗？有人在问你能回答的问题、在找你、或者明显需要帮忙时才回；闲聊、别人之间的对话、已经有人答了的，不回。',
-  yes: '最后这句话需要你回复',
-  no: '最后这句话不需要你回复（闲聊、别人之间的对话、已经有人答了）',
-};
-
-
-  /** 会话正在转时排着、等这一轮结束再判断要不要接话的那一句：前台会话号 → 最后一句的渠道、地址、话（以及可选的标准消息快照）。 */
-  interface JudgeLater {
-    channel: string;
-    address: unknown;
-    text: string;
-    message?: protocol.ChannelMessage;
-    botOrigin?: { channel: string; address: Record<string, unknown> };
-    claimKey?: string;
-  }
-
-
 /** 机器人的前台。 */
 export class FrontDesk {
   /** 正在转的会话暂存只听不回的 Message，role 为 user，content 存正文，timestamp 记时间。本轮结束后入对话。 */
   private readonly heard = new Map<string, piAi.Message[]>();
-  /** 会话正在转时来的、要判断的话：前台会话号 → 最后一句；这一轮结束记完排着的话，再对它问一次决策模型（session/change）。 */
-  private readonly judgeLater = new Map<string, JudgeLater>();
   /**
    * 监听 session/before-model、session/new-message、session/change、bot/say、channel/replied。
    * @param ctx Cordis 给的 ctx。
@@ -90,7 +65,7 @@ export class FrontDesk {
       this.onMessage(session, message);
     });
 
-    //M 会话状态变了：onChange 在一轮结束时记机器人这一句、清查历史次数、存排着的话、对排着要判断的那句问决策模型。
+    //M 会话状态变了：onChange 在一轮结束时记机器人这一句、存排着的只听的话。
     this.ctx.on('session/change', (session) => {
       this.onChange(session);
     });
@@ -111,7 +86,7 @@ export class FrontDesk {
   }
 
   /**
-   * 收 session/change：一轮结束时记机器人这一句、清查历史次数、存转的时候排着的话，再对排着要判断的那句问一次决策模型。
+   * 收 session/change：一轮结束时记机器人这一句、存转的时候排着的只听的话。
    * @param session 状态变了的会话。
    */
   private onChange(session: Session): void {
@@ -134,13 +109,6 @@ export class FrontDesk {
     if (waiting !== undefined) {
       this.heard.delete(session.id);
       this.record(session, waiting);
-    }
-
-    //M 排着要判断的那句：这一轮的话都记完了，对最后一句问一次决策模型，要不要接着回。
-    const later = this.judgeLater.get(session.id);
-    if (later !== undefined) {
-      this.judgeLater.delete(session.id);
-      void this.followUp(session, later);
     }
   }
 
@@ -175,14 +143,6 @@ export class FrontDesk {
       sourceKey: receipt.replyRequestKey,
     });
   }
-
-  /** 延迟判断结果确认需要补入 channel_tool 队列时的回调（由 Dispatch 注入，避免循环引用）。 */
-  onChannelJudgeAllow?: (
-    botName: string,
-    message: protocol.ChannelMessage,
-    botOrigin: { channel: string; address: Record<string, unknown> },
-    claimKey: string,
-  ) => void;
 
   /**
    * 按来源作用域查找或新建这个机器人的前台对话（同 bot + sourceScope 优先，其次兼容同客户旧前态并补写 scope）。
@@ -246,61 +206,6 @@ export class FrontDesk {
   }
 
   /**
-   * 标准 channel/message 下处理只听（listenOnly / judge）话：每个机器人独立存背景或问决策模型。
-   * @param front 这个机器人的前台对话。
-   * @param message 标准消息。
-   * @param botOrigin 该机器人独立的兼容地址快照。
-   * @param botText 规范化正文（已物化附件）。
-   * @param claimKey 去重键。
-   * @returns 处理结论与可选 judge 文案。
-   */
-  async handleChannelListen(
-    front: Session,
-    message: protocol.ChannelMessage,
-    botOrigin: { channel: string; address: Record<string, unknown> },
-    botText: string,
-    claimKey: string,
-  ): Promise<{ reply: boolean; text: string; outcome?: string }> {
-    //M 从地址里取说话人，拼成“说话人：话”（和只听记的一样）；再看地址里有没有 judge 标记，决定要不要问决策模型。
-    const sender = getSpeaker(botOrigin.address);
-    const line = `${sender}：${botText}`;
-    const needJudge = utils.getField(botOrigin.address, 'judge') === true;
-
-    //M 不用判断的只听话：记进前台对话当背景，不调模型、不回。
-    if (!needJudge) {
-      this.listen(front, botText, botOrigin.address);
-      return { reply: false, text: botText };
-    }
-
-    //M 前台这一轮还在转：话先记进对话，最后一句排着，等这一轮结束（session/change）再判断。
-    if (front.row.state === 'running') {
-      this.listen(front, botText, botOrigin.address);
-      this.judgeLater.set(front.id, {
-        channel: message.channel,
-        address: botOrigin.address,
-        text: botText,
-        message,
-        botOrigin,
-        claimKey,
-      });
-      return { reply: false, text: botText, outcome: '只记' };
-    }
-
-    //M 前台没在转：马上问决策模型要不要接话，结论写在地址上（飞书记进来往流水）。
-    const judged = await this.judgeReply(front, botOrigin.address, line);
-    this.markJudged(botOrigin.address, judged.outcome);
-
-    //M 决策模型说不接：话只记进前台对话当背景，不回。
-    if (!judged.reply) {
-      this.listen(front, botText, botOrigin.address);
-      return { reply: false, text: botText, outcome: judged.outcome };
-    }
-
-    delete botOrigin.address['listenOnly'];
-    return { reply: true, text: line, outcome: judged.outcome };
-  }
-
-  /**
    * 按回复轮键找回关联的前台会话（用于 channel/replied 补记发送记录）。
    * @param roundKey 回复轮键。
    */
@@ -347,15 +252,9 @@ export class FrontDesk {
       session = this.ctx.sessions.create(input);
     }
 
-    //M 渠道标了只听（飞书登记了 listen: all 的群里没 @ 机器人的话）：记进这场前台对话当背景，不推它往下走、不回；这条就算处理掉了。
+    //M 标了只听（channel/listen 来的，飞书群里没 @ 机器人的话）：记进这场前台对话当背景，不推它往下走、不回；这条就算处理掉了。
+    //M   要不要接话不在这条旧路上判断：群攒批只接渠道事件那条路（DispatchClaim.ts → GroupBatch.ts）。
     if (utils.getField(address, 'listenOnly') === true) {
-      //M 要判断的群（listen: judge）：先问决策模型，allow 就当 @ 了机器人，照下面交给这场前台对话跑。
-      if (utils.getField(address, 'judge') === true && await this.judgeFirst(session, event)) {
-        event.session = session;
-        return;
-      }
-
-      //M 不接话（不用判断，或决策模型说不回）：话记进前台对话当背景，这条处理掉，不推会话往下走。
       this.listen(session, event.message.text, address);
       event.handled = true;
       return;
@@ -364,137 +263,18 @@ export class FrontDesk {
   }
 
   /**
-   * 只听的话要不要接：会话在转，话排着、这一轮结束再判断；不在转，马上问决策模型。
-   * allow 时把话改成“说话人：话”（和只听记的一样）、去掉只听的标记，交回 true，由 onReceive 照 @ 机器人的路径交给会话；
-   * 别的情况话记进对话（listen），结果写进地址的 judged（飞书记进来往流水），交回 false。
-   * @param session 这个群的前台对话。
-   * @param event 收到的话；allow 时改它的 message.text 和地址。
-   * @returns 要不要接话。
-   */
-  private async judgeFirst(session: Session, event: ReceiveEvent): Promise<boolean> {
-    //M 取说话人，拼成“说话人：话”：问决策模型、记进对话都用这个写法。
-    const address = event.message.address;
-    const sender = getSpeaker(address);
-    const line = `${sender}：${event.message.text}`;
-
-    //M 会话正在转：先排着，这一轮结束（session/change）再判断，这里只记下最后一句。
-    if (session.row.state === 'running') {
-      this.judgeLater.set(session.id, { channel: event.message.channel, address, text: event.message.text });
-      return false;
-    }
-
-    //M 会话没在转：马上问决策模型要不要接话，结论写在地址上（飞书记进来往流水）；不接就交回 false，由 onReceive 记进对话。
-    const judged = await this.judgeReply(session, address, line);
-    this.markJudged(address, judged.outcome);
-    if (!judged.reply) return false;
-
-    //M 接话：话带上说话人，去掉只听的标记（回话、relay、前台都不再当只听的）。
-    event.message.text = line;
-    const where = address as Record<string, unknown>;
-    delete where['listenOnly'];
-    return true;
-  }
-
-  /**
-   * 问一次决策模型：这句话机器人该不该接。题目中文，现状给最近 JUDGE_LINES 句（谁说的：话）和最后这句。
-   * 没挂决策模型、问出错：不接。deny、unsure 都不接。
-   * @param session 这个群的前台对话。
-   * @param address 回话地址：读 judgeThreshold。
-   * @param last 最后这句（“说话人：话”）；还没记进对话时它排在最近几句后面，已经记了就传 undefined。
-   * @returns reply 接不接；outcome 写进流水的结果（judge:回 / judge:不回(0.32)）。
-   */
-  private async judgeReply(
-    session: Session,
-    address: unknown,
-    last: string,
-  ): Promise<{ reply: boolean; outcome: string }> {
-    //G 决策模型是可选服务（不 inject）：没挂就不接话，不报错。
-    const decision = this.ctx.get('decision') as decisionPlugin.Decision | undefined;
-    if (decision === undefined) return { reply: false, outcome: 'judge:不回(没有决策模型)' };
-
-    //M 最近 JUDGE_LINES 句：对话里的，加上还没记进去的最后一句。
-    const lines = session.row.messages.map((message) => getLine(message, session.row.bot)).filter((one) => one !== '');
-    const recent = [...lines, last].filter((one) => one !== '').slice(-JUDGE_LINES);
-    const threshold = utils.getField(address, 'judgeThreshold');
-    const originalPrefix = '你是群里的助手。';
-    const promptBody = JUDGE_QUESTION.instructions.slice(originalPrefix.length);
-    const question = {
-      ...JUDGE_QUESTION,
-      instructions: `你是群里的助手 ${session.row.bot}。${promptBody}`,
-    };
-    const input: decisionPlugin.JudgeInput = {
-      kind: 'group-listen',
-      bot: session.row.bot,
-      question,
-      state: { 最后一句: recent.at(-1) ?? '', 最近群聊: recent },
-    };
-    if (typeof threshold === 'number') {
-      input.allowAt = threshold;
-    }
-
-    //T 跟踪：问决策模型要不要接话。
-    const vars = { session: session.id, messageCount: recent.length };
-    this.ctx.emit('trace', 'FrontDesk.judge', 'trace.bots.judgeGroupReply', 'decision.judge(question)', vars);
-
-    //M 问决策模型：allow 才接话，deny、unsure 都不接；分数用来写进流水。
-    const verdict = await decision.judge(input);
-    if (verdict.verdict === 'allow') return { reply: true, outcome: 'judge:回' };
-    let score = '';
-    if (verdict.score !== undefined) {
-      score = `(${verdict.score.toFixed(2)})`;
-    }
-    return { reply: false, outcome: `judge:不回${score}` };
-  }
-
-  /**
-   * 把判断结果写在回话地址上（judged）：飞书 onMessage 收尾时读它，写进来往流水那一行。
-   * @param address 回话地址。
-   * @param outcome 结果。
-   */
-  private markJudged(address: unknown, outcome: string): void {
-    (address as Record<string, unknown>)['judged'] = outcome;
-  }
-
-  /**
-   * 这一轮结束后对排着的最后一句判断：allow 就把这句交给前台对话接着跑（照 bot.deliver：记渠道和地址、话进对话、推它往下走）。
-   * 判断的结果补报一条 bot/judged（会话在转时那行流水已经写了“只记”，渠道补记一行）。
-   * @param session 这个群的前台对话（排着的话已经记完）。
-   * @param later 排着的最后一句。
-   */
-  private async followUp(session: Session, later: JudgeLater): Promise<void> {
-    //M 这句话已经记在对话里了，不再往后加一次。
-    const judged = await this.judgeReply(session, later.address, '');
-    this.ctx.emit('bot/judged', later.address, later.text, judged.outcome);
-    if (!judged.reply) return;
-
-    //M 接话：channel_tool 路径经队列重新触发，旧路径沿 bots.route + session.run。
-    delete (later.address as Record<string, unknown>)['listenOnly'];
-    if (
-      later.message !== undefined && later.botOrigin !== undefined
-      && later.claimKey !== undefined && this.onChannelJudgeAllow !== undefined
-    ) {
-      this.onChannelJudgeAllow(session.row.bot, later.message, later.botOrigin, later.claimKey);
-      return;
-    }
-
-    //M 旧路径（没有标准消息快照）：把回话地址换成排着那句的，再推前台会话往下跑，等这一轮跑完。
-    this.ctx.bots.route(session, { channel: later.channel, address: later.address });
-    await session.run();
-  }
-
-  /**
    * 只听的一句记进前台对话：前面带说话人（飞书查到的名字，没查到用 open_id 后 6 位），当成一句用户话存进对话，不调模型。
-   * 下次有人 @ 机器人，这一轮从上次回答之后算起（onRequest 的 thisRound），模型就看得到这几句群聊。
+   * 记下的往来进记忆的前台归档，前台下一轮“最近往来”的背景里看得到（本人的前台）。
    * 会话正在转就先排在 heard 里，这一轮结束（session/change）再记：免得插进工具调用和结果中间，也免得又引出一轮回答。
+   * DispatchClaim（只听的话、没开群攒批）、GroupBatch（一批判完不接、今天看满了）、onReceive（旧路）调。
    * @param session 这个群的前台对话。
    * @param text 说的话。
    * @param address 回话地址：读 senderName、openId。
    * 副作用：改对话并存库、记一条往来；或者排进 heard。
    */
-  private listen(session: Session, text: string, address: unknown): void {
+  listen(session: Session, text: string, address: unknown): void {
     //M 从回话地址取说话人的名字（没有名字用 open_id 后 6 位），拼成“说话人：话”存进对话。
-    const openId = utils.getStringField(address, 'openId');
-    const sender = utils.getStringField(address, 'senderName') || openId.slice(-6) || '有人';
+    const sender = getSpeaker(address);
     const message: piAi.Message = { role: 'user', content: `${sender}：${text}`, timestamp: Date.now() };
 
     if (session.row.state === 'running') {
@@ -825,63 +605,17 @@ export class FrontDesk {
     //M 与渠道索引共用正文，前台仍按会话保存自己的往来关系。
     this.ctx.emit('memory/front-message', entry);
   }
-
-  /**
-   * 撤回消息时清掉排在 judgeLater 里还没问决策模型的同源消息，避免当前轮结束后又去判断接话。
-   * @param event 渠道撤回事件。
-   */
-  cancelRecall(event: protocol.ChannelRecallEvent): void {
-    for (const [sessionId, later] of this.judgeLater.entries()) {
-      const msg = later.message;
-      if (msg === undefined || msg.messageId !== event.messageId) continue;
-
-      let allowed = event.recalledBy.isOwner;
-      if (!allowed && event.recalledBy.kind === 'sender') {
-        allowed = event.recalledBy.id === '' || event.recalledBy.id === msg.sender.id;
-      }
-      if (!allowed) continue;
-
-      this.judgeLater.delete(sessionId);
-    }
-  }
 }
 
 
 /**
- * 只听的话的说话人：飞书查到的名字，没查到用 open_id 后 6 位。
+ * 只听的话的说话人：飞书查到的名字，没查到用 open_id 后 6 位。FrontDesk.listen、GroupBatch 拼“说话人：话”用。
  * @param address 回话地址。
+ * @returns 说话人。
  */
-function getSpeaker(address: unknown): string {
+export function getSpeaker(address: unknown): string {
   //M 先用地址里的 senderName，没有就用 open_id 后 6 位，再没有就叫“有人”。
   return utils.getStringField(address, 'senderName') || utils.getStringField(address, 'openId').slice(-6) || '有人';
-}
-
-
-/**
- * 对话里的一句换成“谁说的：话”给决策模型看：用户话已经带说话人（只听记的），机器人的话前面加机器人名；别的（工具结果）不要。
- * @param message 一条消息。
- * @param bot 机器人名。
- * @returns 一行文字；没有文字是 ''。
- */
-function getLine(message: piAi.Message, bot: string): string {
-  if (message.role === 'toolResult') return '';
-
-  //M 消息内容可能是字符串或分段数组：分段的逐段用 getStringField 取出 text 拼起来。
-  const content: unknown = message.content;
-  let text = '';
-  if (typeof content === 'string') {
-    text = content;
-  }
-  if (Array.isArray(content)) {
-    const pieces = content.map((part: unknown) => utils.getStringField(part, 'text'));
-    text = pieces.join('');
-  }
-  const line = text.trim();
-  if (line === '') return '';
-
-  if (message.role === 'assistant') return `${bot}：${line}`;
-
-  return line;
 }
 
 

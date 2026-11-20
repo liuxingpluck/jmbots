@@ -36,6 +36,7 @@ declare module 'cordis' {
      * 请求（serial）：决策模型打分并合成 allow / deny / unsure 结论，回发 decision/judge-result。
      * 谁发：
      *   src7/plugins/approval/index.ts 的 Approval.askDecision
+     *   src7/plugins/bots/GroupBatch.ts 的 GroupBatch.judge
      *   src7/plugins/progress/index.ts 的 Progress.judge
      *   src7/plugins/screen/Analysis.ts 的 analyze
      *   src7/plugins/voice/Tasks.ts 的 VoiceTasks.judge
@@ -47,6 +48,7 @@ declare module 'cordis' {
      * 谁发：src7/plugins/decision/index.ts 的 Decision.constructor
      * 谁接：
      *   src7/plugins/approval/index.ts 的 Approval.askDecision
+     *   src7/plugins/bots/GroupBatch.ts 的 GroupBatch.judge
      *   src7/plugins/progress/index.ts 的 Progress.judge
      *   src7/plugins/screen/Analysis.ts 的 analyze
      *   src7/plugins/voice/Tasks.ts 的 VoiceTasks.judge

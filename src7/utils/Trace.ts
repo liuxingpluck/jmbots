@@ -30,7 +30,8 @@ declare module 'cordis' {
      *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.check、UpdateWatch.clearUncertainSwap、UpdateWatch.onDecided、UpdateWatch.tell
      *   src7/plugins/base-bridge/index.ts 的 Base.onRequest
      *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.acceptResult、DispatchResults.drain、DispatchResults.finishFront、DispatchResults.hold、DispatchResults.sendLastWords
-     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.judgeReply、FrontDesk.onRequest、FrontDesk.record
+     *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.onRequest、FrontDesk.record
+     *   src7/plugins/bots/GroupBatch.ts 的 GroupBatch.judge
      *   src7/plugins/bots/ReplyTool.ts 的 registerReplyTool
      *   src7/plugins/bots/index.ts 的 Bot.receive、Bots.constructor、Bots.onRequest、Bots.receive、Bots.say
      *   src7/plugins/cli/index.ts 的 Cli.submitLine
@@ -39,7 +40,7 @@ declare module 'cordis' {
      *   src7/plugins/context-fit/index.ts 的 apply
      *   src7/plugins/decision/index.ts 的 Decision.judge
      *   src7/plugins/exec/index.ts 的 Exec.onDecided、Exec.onTool、Exec.run
-     *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.handleInboundMessage、FeishuInbound.keepDropped、FeishuInbound.onCard、FeishuInbound.onMessage、FeishuInbound.onRecall
+     *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.handleInboundMessage、FeishuInbound.onCard、FeishuInbound.onMessage、FeishuInbound.onRecall
      *   src7/plugins/feishu/doc/Doc.ts 的 publish
      *   src7/plugins/feishu/index.ts 的 Feishu.mark、Feishu.start
      *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
@@ -192,7 +193,7 @@ export function buildDispatchLine(ctx: cordis.Context, mode: string, event: stri
     const messageId = item?.['messageId'] ?? receivedId;
     if (typeof messageId === 'number') line.messageId = messageId;
 
-    //M 标准消息号：参数本身带（channel/message 的 messageId），或参数里的 message 带（bot/receive 的 message.sourceId）。
+    //M 标准消息号：参数本身带（channel/direct 等进来的事件的 messageId），或参数里的 message 带（bot/receive 的 message.sourceId）。
     const inner = item?.['message'];
     let nested: Record<string, unknown> | undefined;
     if (typeof inner === 'object' && inner !== null) {

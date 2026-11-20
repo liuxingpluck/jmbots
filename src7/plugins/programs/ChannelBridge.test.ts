@@ -41,7 +41,7 @@ test('入站拒绝旧密钥和未登记渠道，只记下实际分派完成的�
   let fail = true;
   const received = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  ctx.on('channel/message', async (message) => {
+  ctx.on('channel/direct', async (message) => {
     calls += 1;
     expect(message.role).toBe('guest');
     expect(message.origin.address).toMatchObject({ owner: false, role: 'guest' });

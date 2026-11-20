@@ -20,8 +20,10 @@ export class VoiceReplies {
     private readonly ctx: cordis.Context,
     private readonly play: (text: string, request: channel.ChannelReplyRequest) => Promise<boolean>,
   ) {
-    //M 半句任务允许立即开始，回话等这句话有了最终记录再写。
-    ctx.on('voice/dispatch', async (message) => {
+    //M 半句任务允许立即开始，回话等这句话有了最终记录再写：语音发的半句（channel/direct 带 routing.partial）先登记一个等待。
+    ctx.on('channel/direct', (message) => {
+      if (message.channel !== 'voice' || message.routing.partial !== true) return;
+
       const gate = Promise.withResolvers<boolean>();
       this.unfinished.set(message.messageId, gate);
     }, { prepend: true });

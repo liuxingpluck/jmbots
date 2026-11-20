@@ -1,8 +1,8 @@
 /**
- * web-api 接入 channel/message 后的冒烟与离线测试（渠道统一第 2、3、4 步）：
+ * web-api 网页发话走 channel/direct 的冒烟与离线测试（渠道统一第 2、3、4 步）：
  *   1. POST /api/message 返回 { id, file: '' } 与原先一字不差；
- *      channel/message 只发 1 次，目标机器人只认领 1 次，回复照旧落进 GET /api/messages/:id 的 replies；
- *   2. 同客户前台会话发起待确认后通过 POST /api/message 发“同意 1” → channel/message 只发 1 次，
+ *      channel/direct 只发 1 次，目标机器人只认领 1 次，回复照旧落进 GET /api/messages/:id 的 replies；
+ *   2. 同客户前台会话发起待确认后通过 POST /api/message 发“同意 1” → channel/direct 只发 1 次，
  *      approval 只消费 1 次，确认文字通过 channel/reply 落进 replies，不再触发多余模型轮次；
  *   3. 第 4 步：一轮里调两次 channel_reply → replies 两条、顺序对；一次不调 → 零次兜底只出一条；
  *   4. 第 3 步：指定会话只进那场、只回一次，显式会话不投给别的机器人，“同意 N”只消费一次；引用别的渠道的消息进原会话、回到网页这条；
@@ -103,7 +103,7 @@ async function waitFor(check: () => boolean | Promise<boolean>): Promise<void> {
 }
 
 
-test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 channel/message 仅发 1 次、approval 仅消费 1 次', async () => {
+test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 channel/direct 仅发 1 次、approval 仅消费 1 次', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'webapi-channel-'));
   closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = new cordis.Context();
@@ -119,9 +119,9 @@ test('POST /api/message 与 GET /api/messages/:id 冒烟契约不变，且 chann
   await ctx.plugin(webApiModule);
   await ctx.http.app.ready();
 
-  //M 跟踪 channel/message 发出与认领结果、模型调用次数。
+  //M 跟踪 channel/direct 发出与认领结果、模型调用次数。
   const emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }> = [];
-  ctx.on('channel/message', (message, control) => {
+  ctx.on('channel/direct', (message, control) => {
     emitted.push({ message, control });
   });
 
@@ -242,9 +242,9 @@ async function makeWeb(
   await ctx.plugin(webApiModule);
   await ctx.http.app.ready();
 
-  //M 记下每次 channel/message 和认领结果。
+  //M 记下每次 channel/direct 和认领结果。
   const emitted: Array<{ message: channels.ChannelMessage; control: channels.ChannelMessageControl | undefined }> = [];
-  ctx.on('channel/message', (message, control) => {
+  ctx.on('channel/direct', (message, control) => {
     emitted.push({ message, control });
   });
 
@@ -669,9 +669,9 @@ test('第 3 步：指定会话只进那场、只回一次；显式会话不投�
   const direct = structuredClone(emitted.at(-1)!.message);
   direct.messageId = channels.makeChannelMessageId('http', 'local', 'direct-1');
   direct.targetBots = ['助手', '备选'];
-  direct.routing = { listenOnly: false, autoFinal: true, sessionId: otherFront.id };
+  direct.routing = { autoFinal: true, sessionId: otherFront.id };
   direct.origin = { channel: 'http', address: { messageId: 9999, customer: 'http:本机' } };
-  await ctx.serial('channel/message', direct, control);
+  await ctx.serial('channel/direct', direct, control);
   expect(control.claims).toEqual([
     expect.objectContaining({ bot: '备选', status: 'claimed', sessionId: otherFront.id }),
   ]);
@@ -836,7 +836,7 @@ test('A 块：GET /api/channels 列挂着的渠道和聊天；时间线按 chann
   await post(ctx, { text: '飞书最近怎样', bot: '助手', view: { channel: 'feishu' } });
   expect(emitted.at(-1)?.message.view).toEqual({ channel: 'feishu', chat: '', label: '飞书·全部聊天' });
 
-  //M 写错的 view 都 400，不发 channel/message。
+  //M 写错的 view 都 400，不发 channel/direct。
   const before = emitted.length;
   for (const bad of [{ channel: 'wechat', chat: 'x' }, { channel: 'feishu', chat: 'oc_none' }, { chat: 'oc_a' }, 'feishu']) {
     const response = await ctx.http.app.inject({ method: 'POST', url: '/api/message', payload: { text: '错的', bot: '助手', view: bad } });
@@ -933,7 +933,7 @@ test('第 6 步：网页主人可批飞书群/单聊与无会话待确认且只�
     address: { appId: 'cli_1', chatId: 'oc_g1', openId: 'ou_guest', chatType: 'group', owner: false, role: 'guest' },
   };
   const feishuGuestCtrl: channels.ChannelMessageControl = { claims: [] };
-  await ctx.serial('channel/message', feishuGuestMsg, feishuGuestCtrl);
+  await ctx.serial('channel/mention', feishuGuestMsg, feishuGuestCtrl);
   expect(feishuGuestCtrl.approvalHandled).toBeUndefined();
   expect(getApprovalState(pendingOwner.id)).toBe('waiting');
 
@@ -954,7 +954,7 @@ test('第 6 步：网页主人可批飞书群/单聊与无会话待确认且只�
     address: { account: 'wx_acc', chat: 'wx_c1', customer: 'wechat:wx_c1', name: '微信客户' },
   };
   const wechatCtrl: channels.ChannelMessageControl = { claims: [] };
-  await ctx.serial('channel/message', wechatCustomerMsg, wechatCtrl);
+  await ctx.serial('channel/direct', wechatCustomerMsg, wechatCtrl);
   expect(wechatCtrl.approvalHandled).toBeUndefined();
   expect(getApprovalState(pendingOwner.id)).toBe('waiting');
   expect(decidedIds).toHaveLength(0);

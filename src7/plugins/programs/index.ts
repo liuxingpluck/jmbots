@@ -15,7 +15,8 @@ import * as guardModule from './ResourceGuard.ts';
 
 /** 插件名和版本。 */
 export const name = 'programs';
-export const version = '1.7.4';
+//M 1.7.5：程序交来的入站照分法发 channel/direct、channel/mention、channel/listen（群里没 @ 的只记背景、不回）。
+export const version = '1.7.5';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 

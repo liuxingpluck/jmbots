@@ -39,7 +39,8 @@ function fake() {
       };
     },
     serial: async (name: string, ...args: unknown[]) => {
-      if (name === 'channel/message') {
+      //M 交给机器人的：私聊发 channel/direct，群里 @我 发 channel/mention。
+      if (name === 'channel/direct' || name === 'channel/mention') {
         const message = args[0] as { text: string; origin: { address: unknown } };
         received.push({ text: message.text, address: message.origin.address });
         return;
@@ -115,12 +116,12 @@ describe('微信后台全量监听、只听不发', () => {
     expect(received.map((item) => item.text)).toEqual(['还在吗']);
   });
 
-  test('同一轮里：没勾监听的私聊、群里 @我 都不发 channel/message；勾了的私聊、群里 @我 各发一次', async () => {
+  test('同一轮里：没勾监听的私聊、群里 @我 都不发事件；勾了的私聊发 channel/direct、群里 @我 发 channel/mention，各一次', async () => {
     const { wechat, ctx, received } = fake();
     let calls = 0;
     const origSerial = ctx.serial;
     ctx.serial = async (name: string, ...args: unknown[]) => {
-      if (name === 'channel/message') calls += 1;
+      if (name === 'channel/direct' || name === 'channel/mention') calls += 1;
       await origSerial(name, ...args);
     };
     for (const chat of ['wxid_on', 'gon@chatroom']) ctx.resources.db.query('INSERT INTO wechat_watch VALUES (?, ?, ?, 0, NULL)').run('acc1', chat, chat);

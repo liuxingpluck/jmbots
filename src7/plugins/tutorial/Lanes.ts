@@ -73,13 +73,15 @@ const SKELETON_SERVICES = new Set(['resources', 'tools', 'sessions']);
 /** 消息里算「存」的行：web-api 的收件表记下。渠道来的消息，它前面还有渠道那几行（飞书收到、去重、认 @），journal 按标准消息号一并交来，落在「收到」列。 */
 const MESSAGE_STORE = new Set(['web-api/received', 'Timeline.insert']);
 
-/** 消息里算「分给机器人」的行：WebApi.accept 是“收下，推给机器人”，排在 web-api/received 后面；channel/message 与独立认领也落这列。 */
+/** 消息里算「分给机器人」的行：WebApi.accept 是“收下，推给机器人”，排在 web-api/received 后面；进来的三个渠道事件与独立认领也落这列。 */
 const MESSAGE_DISPATCH = new Set([
   'WebApi.accept',
   'bot/receive',
   'Bots.receive',
   'Bot.receive',
-  'channel/message',
+  'channel/direct',
+  'channel/mention',
+  'channel/listen',
   'Bots.onChannelMessage',
   'Dispatch.claimChannelMessage',
 ]);

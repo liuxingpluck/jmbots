@@ -136,7 +136,7 @@ function ProgramRoutes({ name, channels }: { name: string; channels: readonly st
       {!hasChannels && <p className="tu-muted">没登记渠道，不给回调前缀。</p>}
       {hasChannels && (
         <ul>
-          <li><code>POST {callback}/message</code>：交来渠道消息，转成 <code>channel/message</code></li>
+          <li><code>POST {callback}/message</code>：交来渠道消息，照叫没叫机器人转成 <code>channel/direct</code>、<code>channel/mention</code> 或 <code>channel/listen</code></li>
           <li><code>POST {callback}/draft</code>：客服页手动起草</li>
           <li><code>POST {callback}/approval</code>：发件确认</li>
           <li>登记的渠道：{channels.join('、')}</li>

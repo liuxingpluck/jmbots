@@ -279,7 +279,7 @@ test('1. 网页本人让 AI 往飞书群发话：飞书收到 channel/reply 且�
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
     groups: [{ chat_id: 'oc_group_1', listen: 'all', trusted: false }],
   });
   await ctx.plugin(webApiModule);
@@ -411,7 +411,7 @@ test('2. 本人跨渠道发微信照守“点头才发”规矩（不改微信�
   await ctx.plugin(approvalModule, { thinking: 'low', decision_pass: 0.8 });
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
   });
   await ctx.plugin(webApiModule);
   await ctx.http.app.ready();
@@ -542,7 +542,7 @@ test('3. 外人（guest / builder / 微信客户）与群聊里的本人（含 t
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
     people: [
-      { open_id: 'ou_owner', name: '老板', owner: true },
+      { open_id: 'ou_owner', name: '老板', role: 'owner' },
       { open_id: 'ou_builder', name: '共建者', role: 'builder', dir: 'builders/b1' },
       { open_id: 'ou_guest', name: '访客', role: 'guest' },
     ],
@@ -563,7 +563,7 @@ test('3. 外人（guest / builder / 微信客户）与群聊里的本人（含 t
   //M 先从网页建立一个样例消息供构造微信客户标准入站事件，同时让 http:本机 存在记录。
   const receipts: channels.ReplyReceipt[] = [];
   const emittedWeb: Array<{ message: channels.ChannelMessage }> = [];
-  ctx.on('channel/message', (msg) => {
+  ctx.on('channel/direct', (msg) => {
     emittedWeb.push({ message: msg });
   });
 
@@ -651,8 +651,8 @@ test('3. 外人（guest / builder / 微信客户）与群聊里的本人（含 t
     address: { account: 'acc1', chat: 'wxid_customer_1', name: '外部客户', customer: 'wechat:wxid_customer_1' },
   };
   wxMsg.visibility = { scope: 'wechat:acc1:wxid_customer_1', trusted: true, publicSourceIds: [] };
-  wxMsg.routing = { listenOnly: false, autoFinal: true };
-  await ctx.serial('channel/message', wxMsg, { claims: [] });
+  wxMsg.routing = { autoFinal: true };
+  await ctx.serial('channel/direct', wxMsg, { claims: [] });
   await waitFor(() => receipts.length >= 3);
   await waitFrontIdle(ctx, '小守');
   expect(receipts[2]?.ok).toBe(false);
@@ -723,7 +723,7 @@ test('4. 不写 channel 和 chat 时严格保持现状：网页带 view 看飞�
   await ctx.plugin(botsPlugin, {});
   await ctx.plugin(feishuModule, {
     domain: 'http://127.0.0.1:9',
-    people: [{ open_id: 'ou_owner', name: '老板', owner: true }],
+    people: [{ open_id: 'ou_owner', name: '老板', role: 'owner' }],
     groups: [{ chat_id: 'oc_group_1', listen: 'all', trusted: false }],
   });
   await ctx.plugin(webApiModule);

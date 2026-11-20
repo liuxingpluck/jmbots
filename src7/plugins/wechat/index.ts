@@ -44,7 +44,8 @@ export const name = 'wechat-kefu';
 //M 1.1.6：getRoundId 从骨架 Channels.ts 挪进本文件，只有微信用。
 //M 1.2.4：跨聊天发话认目标时，拆目标串（去“微信·”、拆“账号:聊天”）改用骨架的 parseChatTarget；查表规则不变。
 //M 1.2.11：旧路自动回话也经 channel/reply 来（target 带会话记的地址、带会话号），删渠道自己的 send；带会话号的只发做完的一轮。
-export const version = '1.2.11';
+//M 1.2.12：channel/message 拆了，交给机器人的经 emitInbound 发：私聊 channel/direct、群里 @我 channel/mention。
+export const version = '1.2.12';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http'];
@@ -439,9 +440,9 @@ export class Wechat {
       //M 把微信原生消息标识转换成标准渠道消息号，供历史和事件关联。
       const messageId = protocol.makeChannelMessageId(this.name, account, nativeId);
 
-      //T 跟踪：微信来了一条要回的，先存表，再发出标准 channel/message。
+      //T 跟踪：微信来了一条要回的，先存表，再经 emitInbound 发出（私聊 channel/direct，群里 @我 channel/mention）。
       const vars = { account: account, chat: row.name, customer: address.customer, length: said.length };
-      this.ctx.emit('trace', 'Wechat.store', 'trace.wechat.receiveMessage', "ctx.serial('channel/message')", vars);
+      this.ctx.emit('trace', 'Wechat.store', 'trace.wechat.receiveMessage', 'protocol.emitInbound(ctx, msg, true, control)', vars);
 
       const channelMessage: protocol.ChannelMessage = {
         v: 1,
@@ -473,14 +474,14 @@ export class Wechat {
           publicSourceIds: [],
         },
         routing: {
-          listenOnly: false,
           autoFinal: true,
         },
       };
 
-      //M 发出 channel/message：bots 按来源范围排进这个客户的前台；一轮里 channel_reply 几次进几条发件，一次没调就把最后的话进发件。
+      //M 交下来的都是叫了机器人的（私聊、群里 @我）：私聊发 channel/direct、群里发 channel/mention。
+      //M   bots 按来源范围排进这个客户的前台；一轮里 channel_reply 几次进几条发件，一次没调就把最后的话进发件。
       const control: protocol.ChannelMessageControl = { claims: [] };
-      await this.ctx.serial('channel/message', channelMessage, control);
+      await protocol.emitInbound(this.ctx, channelMessage, true, control);
     }
     if (messages.length === 0) last = Math.max(last, row.at ?? 0);
 

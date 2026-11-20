@@ -129,6 +129,10 @@ channels:
 #         # vision_model: 供应商名/模型ID   # 有图要转后台时新开的后台用哪个看图模型；不写挑 providers 里第一个写了 vision: true 的
 #       prompt: true               # 系统提示词（原 prompt 插件）：不写是 true；人设读 bots/<机器人>/persona.md（任何一轮都带），私人记忆非本人、不受信的群里不带
 #       reply_tool: false          # reply 工具（原 reply-tool 插件）：后台会话做到一半先回用户一句；不写是 false，要用写 true
+#       group_batch:               # 群攒批：飞书 listen: judge 的群里没叫机器人的话攒一批，再问决策模型要不要接；三个都写才开，缺一个就只记不判断（启动日志写明缺哪个）
+#         quiet_seconds: 60        # 这一批最后一句之后安静满几秒就看一次
+#         max_lines: 30            # 攒满几句马上看
+#         daily_limit: 0           # 每群每天最多看几次，0 不限
 #   - name: cli
 #   - name: file-tools             # 工作区文件工具：time、read（含看图接图片）、list_dir、write、edit、find（排在 bots 后面）
 #   - name: fake-model             # 假模型，离线跑通链路用：只管模型名以 fake/ 开头的会话，别的照常发给真模型。
@@ -151,7 +155,6 @@ channels:
 #         - name: 助手乙
 #           prefixes: ['乙 ']
 #       bots: []                   # 这些机器人的话全部转给默认助手（也可以在顶层 bots 名单项里写 relay: direct）
-#       owner_open_ids: []         # 旧写法，照旧能用（并进 feishu 插件的 people 当本人）；新写法写在 feishu 插件的 people 里
 #       remind_minutes: 15         # 多久没回提醒一次
 #       expire_minutes: 120        # 多久没回先放下，之后回了照样送到
 #   - name: journal                # 事件日志与完整会话镜像：记进 journal_lines 表（GET /api/events），并默认生成 bots/<机器人>/sessions/<会话>/对话.md 和 session.json（原 files-mirror）
@@ -173,7 +176,7 @@ channels:
 #   - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 channels.feishu；config.domain 默认 https://open.feishu.cn；写在 http 后面才有 /api/feishu/contacts
 #     config:
 #       people:                    # 认得的人（open_id 每个飞书应用不同，几个应用就各登记一项）；谁是哪一档只在这里认，没登记的都是 guest
-#         - { open_id: ou_xxx, name: 我, role: owner }      # owner：本人，什么都能用、能批“同意 N”（旧写法 owner: true 照认）
+#         - { open_id: ou_xxx, name: 我, role: owner }      # owner：本人，什么都能用、能批“同意 N”
 #         - { open_id: ou_zzz, name: 小王, role: builder }  # builder：能让机器人写代码、跑程序，只在他的目录里（读写、exec、发文件）
 #                                                           #   dir 不写是运行时目录下 guests/<名字>/，写了相对运行时目录算；没有就建
 #         - { open_id: ou_yyy, name: 朋友 }                 # guest（不写 role 就是）：只给查、读、搜、答的工具
@@ -181,7 +184,7 @@ channels:
 #         - chat_id: oc_xxx
 #           name: 某个群           # 不写用飞书查到的群名
 #           listen: all            # all：不 @ 也收，只记进群的前台会话当上下文、不回（cc 开头的照转）；mention：只收 @（默认）
-#                                  # judge：不 @ 也收，记完问决策模型（要挂 decision 插件）要不要主动接话，allow 才回，否则只记；群里回话开头会 @ 最后说话的人
+#                                  # judge：不 @ 也收，攒一批（bots 的 group_batch）再问决策模型（要挂 decision 插件）要不要主动接话，allow 才回，否则只记；群里回话开头会 @ 最后说话的人
 #           judge_threshold: 0.8   # listen: judge 时用：决策模型的把握 ≥ 它才接话；不写用 decision 插件的 allow_at
 #           relay: model           # model：@ 机器人时它判断要不要转外部助手；direct：只认 cc 前缀（默认）
 #           trusted: false         # true：本人在这个群里说话照旧带私人记忆；false（默认）：群里谁说话都不带（回复群里人人看得到）

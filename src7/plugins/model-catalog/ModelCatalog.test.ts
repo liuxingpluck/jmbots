@@ -30,6 +30,8 @@ const catalogOptions = {
   onFallback: (reason: events.FallbackReason) => ({ requestId: reason }),
 };
 
+const routeMissing = 'HTTP 400 {"error":{"message":"hy4free 服务信息找不到"}}';
+
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) {
     await close();
@@ -274,6 +276,101 @@ test('3. 上下文超长：过滤掉更小窗口候选并按窗口降序优先�
   expect(session.row.reply).toBe('超大窗口 mock/huge');
   expect(seenModels).toEqual(['mock/primary', 'mock/huge']);
   expect(world.fallbackEvents[0]?.reason).toBe('context-overflow');
+});
+
+test.each([routeMissing, '400 service information not found'])('上游服务缺失时切到备用模型：%s', async (detail) => {
+  const world = await setupWorld();
+  const tried: string[] = [];
+  world.ctx.sessions.chat = async (request) => {
+    tried.push(request.model);
+    if (request.model === 'mock/primary') {
+      throw new Error(detail);
+    }
+    return piAi.fauxAssistantMessage(request.model);
+  };
+
+  const session = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session.queueUserMessage('沿备用链继续');
+  await session.run();
+
+  expect(session.row.state).toBe('done');
+  expect(session.row.reply).toBe('mock/medium');
+  expect(tried).toEqual(['mock/primary', 'mock/medium']);
+  expect(world.cooldownEvents).toHaveLength(0);
+  expect(world.fallbackEvents).toEqual([
+    { session, from: 'mock/primary', to: 'mock/medium', reason: 'upstream-unavailable' },
+  ]);
+});
+
+test.each([
+  'HTTP 400 unknown parameter: service',
+  'HTTP 401 unauthorized: service information not found (quota API)',
+])('参数或鉴权失败直接保留原错误：%s', async (detail) => {
+  const world = await setupWorld();
+  const tried: string[] = [];
+  world.ctx.sessions.chat = async (request) => {
+    tried.push(request.model);
+    throw new Error(detail);
+  };
+
+  const session = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session.queueUserMessage('失败直接返回');
+  await session.run();
+
+  expect(session.row.state).toBe('failed');
+  expect(session.row.reply).toBe(`出错了：${detail}`);
+  expect(tried).toEqual(['mock/primary']);
+  expect(world.fallbackEvents).toHaveLength(0);
+  expect(world.cooldownEvents).toHaveLength(0);
+});
+
+test('备用模型鉴权失败后保留原错误并停止后续尝试', async () => {
+  const world = await setupWorld();
+  const tried: string[] = [];
+  const unauthorized = 'HTTP 401 invalid API key';
+  world.ctx.sessions.chat = async (request) => {
+    tried.push(request.model);
+    if (request.model === 'mock/primary') {
+      throw new Error(routeMissing);
+    }
+    throw new Error(unauthorized);
+  };
+
+  const session = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session.queueUserMessage('备用鉴权失败');
+  await session.run();
+
+  expect(session.row.state).toBe('failed');
+  expect(session.row.reply).toBe(`出错了：${unauthorized}`);
+  expect(tried).toEqual(['mock/primary', 'mock/medium']);
+  expect(world.fallbackEvents).toHaveLength(1);
+});
+
+test('服务缺失耗尽备用链后汇总每次失败，连续换模按实际顺序记录', async () => {
+  const fallbackConfig = {
+    chain: ['mock/medium', 'mock/huge'],
+    include_siblings: false,
+  };
+  const world = await setupWorld({ pluginConfig: { fallback: fallbackConfig } });
+  const tried: string[] = [];
+  world.ctx.sessions.chat = async (request) => {
+    tried.push(request.model);
+    throw new Error(routeMissing);
+  };
+
+  const session = world.ctx.sessions.create({ kind: 't', bot: '测试', model: 'mock/primary' });
+  session.queueUserMessage('备用链耗尽');
+  await session.run();
+
+  expect(session.row.state).toBe('failed');
+  expect(session.row.reply).toContain('换了 3 个模型都没成功');
+  expect(session.row.reply).toContain('服务信息找不到');
+  expect(tried).toEqual(['mock/primary', 'mock/medium', 'mock/huge']);
+  expect(world.cooldownEvents).toHaveLength(0);
+  expect(world.fallbackEvents).toEqual([
+    { session, from: 'mock/primary', to: 'mock/medium', reason: 'upstream-unavailable' },
+    { session, from: 'mock/medium', to: 'mock/huge', reason: 'upstream-unavailable' },
+  ]);
 });
 
 

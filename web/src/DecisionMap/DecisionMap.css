@@ -207,6 +207,19 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 }
 .decision-node--goal .decision-node__button { align-items: center; padding: 9px 10px; text-align: center; }
 .decision-node--goal .decision-node__title { font-size: 19px; }
+.decision-node__hint {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  color: var(--decision-muted);
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.decision-node--day { width: 100%; border-color: #6a7893; border-radius: 22px; background: #1e2635; --node-accent: #c6d0e2; }
+.decision-node--day .decision-node__title { -webkit-line-clamp: 1; font-size: 18px; }
+.decision-node--day-ask { border-color: #ff7674; background: #3a2831; --node-accent: #ffafaa; }
 .decision-node__fold {
   position: absolute;
   z-index: 1;
@@ -296,6 +309,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-legend i[data-tone="pending"] { background: var(--decision-red); }
 .decision-legend i[data-tone="working"] { background: var(--decision-blue); }
 .decision-legend i[data-tone="confirmed"] { background: var(--decision-green); }
+.decision-legend i[data-tone="chosen"] { background: var(--decision-gold); }
+.decision-legend i[data-tone="done"] { background: #9ca8ba; }
 
 .decision-drawer {
   position: absolute;

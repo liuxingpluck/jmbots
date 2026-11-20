@@ -63,7 +63,7 @@ function getString(value: unknown): string {
 
 
 /**
- * 飞书：channels/feishu/chats/<应用号>/<聊天号>.jsonl。用户的话键是 messageId（和 channel/message 一样）；机器人的回复按正文查重。
+ * 飞书：channels/feishu/chats/<应用号>/<聊天号>.jsonl。用户的话键是 messageId（和渠道事件一样）；机器人的回复按正文查重。
  * @param root 运行时目录。
  */
 export async function* getFeishu(root: string): AsyncGenerator<Candidate> {
@@ -79,7 +79,7 @@ export async function* getFeishu(root: string): AsyncGenerator<Candidate> {
 
       const chatId = fileName.slice(0, -'.jsonl'.length);
 
-      //M 读这个聊天文件的每一行（坏行跳过），挑出正文和消息号（messageId，和 channel/message 一样）；没有正文、没有消息号的行不补。
+      //M 读这个聊天文件的每一行（坏行跳过），挑出正文和消息号（messageId，和渠道事件一样）；没有正文、没有消息号的行不补。
       //M person 是私聊对面的人：一个文件就是一个聊天，机器人的回复借前面最近一条用户的话的发话人。
       const file = path.join(appDir, fileName);
       let person = '';
@@ -146,7 +146,7 @@ function* getArchiveRows(db: bunSqlite.Database, sql: string): Generator<Record<
 
 
 /**
- * 微信：wechat_messages。键 JSON [渠道名, 账号, 分库:库内号]（和 wechat 插件发 channel/message 一样）；at 是秒。
+ * 微信：wechat_messages。键 JSON [渠道名, 账号, 分库:库内号]（和 wechat 插件发渠道事件一样）；at 是秒。
  * @param db 运行时的库。
  * @param channel 微信插件的渠道名。
  */
@@ -159,7 +159,7 @@ export function* getWechat(db: bunSqlite.Database, channel: string): Generator<C
     + ' FROM wechat_messages WHERE rowid > ? ORDER BY rowid LIMIT 100';
   //M 微信归档可能很大，用行号分页并逐条转成渠道索引格式。
   const rows = getArchiveRows(db, sql);
-  //M 逐行转成候选：键照微信插件发 channel/message 的拼法，才和插件新记的对得上，所以都不用查重（fuzzy 为 false）。
+  //M 逐行转成候选：键照微信插件发渠道事件的拼法，才和插件新记的对得上，所以都不用查重（fuzzy 为 false）。
   for (const item of rows) {
     const text = getString(item['text']);
     if (text.trim() === '') continue;
@@ -177,11 +177,11 @@ export function* getWechat(db: bunSqlite.Database, channel: string): Generator<C
       senderId = 'self';
     }
 
-    //M 归属键：微信私聊的会话名就是对面那个人（自己发的也归他），和微信插件发 channel/message 的发话人一样。
+    //M 归属键：微信私聊的会话名就是对面那个人（自己发的也归他），和微信插件发渠道事件的发话人一样。
     const keySource = { channel, chatType, chat, person: chat };
     const memoryKey = memoryKeyModule.getMemoryKey(keySource);
 
-    //M 键是 JSON [渠道名, 账号, 分库:库内号]，和微信插件发 channel/message 拼的一样。
+    //M 键是 JSON [渠道名, 账号, 分库:库内号]，和微信插件发渠道事件拼的一样。
     const account = getString(item['account']);
     const nativeId = `${getString(item['source'])}:${String(item['local_id'])}`;
     const row: channelIndexModule.ChannelRow = {
@@ -204,7 +204,7 @@ export function* getWechat(db: bunSqlite.Database, channel: string): Generator<C
 
 
 /**
- * 网页：web_messages 里 channel = 'http' 的。用户的话键是 JSON ['http', 'local', 行号]（和 web-api 发 channel/message 一样）；
+ * 网页：web_messages 里 channel = 'http' 的。用户的话键是 JSON ['http', 'local', 行号]（和 web-api 发渠道事件一样）；
  * replies 里机器人的回话键另起（web-reply:<行号>:<第几条>），按正文查重。
  * @param db 运行时的库。
  */
@@ -274,7 +274,7 @@ export function* getWeb(db: bunSqlite.Database): Generator<Candidate> {
 
 
 /**
- * 命令行：channels/cli/<日期>.jsonl，只有用户的话。键另起（cli-file:<文件名>:<行号>，文件里没存 channel/message 用的原始号），按正文查重。
+ * 命令行：channels/cli/<日期>.jsonl，只有用户的话。键另起（cli-file:<文件名>:<行号>，文件里没存渠道事件用的原始号），按正文查重。
  * @param root 运行时目录。
  */
 export async function* getCli(root: string): AsyncGenerator<Candidate> {

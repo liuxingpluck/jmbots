@@ -119,7 +119,8 @@ export const name = 'tutorial';
 //M 1.1.14：加 GET /api/tutorial/events 读事件目录 src7/docs/事件目录.json；消息轨迹按标准消息号串，第一格是飞书收到（journal 做）。1.1.15：教程页画布加顺序图、点箭头看事件详情、左栏加静态路线，只改网页。
 //M 1.1.16：不再 import journal：轨迹形状和 NOISE、FOLDERS 改读 utils/Trail.ts，启动轨迹发 journal/request 的 boot-trail 要；TRAIL_MAX_LINES 归 Files.ts。
 //M 1.1.18：channels 搬出骨架成了依赖型协议插件（不在自带名单里），左栏插件列表单独列它，/api/tutorial/readme?name=channels 读它的 说明.md。
-export const version = '1.1.18';
+//M 1.1.19：消息轨迹「分给机器人」列认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
+export const version = '1.1.19';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。

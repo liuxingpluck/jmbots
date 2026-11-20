@@ -360,7 +360,7 @@ function splitMarkdownBlocks(text: string): MarkdownBlock[] {
 
 
 /**
- * 从说明表格的事件列文字中提取标准 Cordis 事件名（例如 `channel/message`、`bot/receive`、`ready`、`trace`）。
+ * 从说明表格的事件列文字中提取标准 Cordis 事件名（例如 `channel/direct`、`bot/receive`、`ready`、`trace`）。
  * 非 Cordis 内部事件（如飞书 SDK 原生事件、WSClient 回调）返回 undefined。
  * @param cell 事件列单元格原文。
  */

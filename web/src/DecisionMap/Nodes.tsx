@@ -16,9 +16,9 @@ function getAppearance(entry: types.DecisionNode): { state: string; badge: strin
   if (entry.status === 'dropped') return { state: 'done', badge: '已放下' };
   if (entry.status === 'working') return { state: 'working', badge: '进行中' };
   if (entry.status === 'open' && entry.chosen !== undefined) return { state: 'open', badge: t('未开始') };
-  if (entry.kind === 'decided' && entry.decidedBy === 'central') return { state: 'confirmed', badge: '中控已定 ✓' };
-  if (entry.chosen !== undefined && entry.acknowledgedAt !== undefined) return { state: 'confirmed', badge: '已定 ✓' };
-  if (entry.chosen !== undefined) return { state: 'chosen', badge: '已定 ✓' };
+  if (entry.decidedBy === 'central') return { state: 'confirmed', badge: '中控已定 ✓' };
+  if (entry.chosen !== undefined && entry.acknowledgedAt !== undefined) return { state: 'chosen', badge: '用户已定 ✓ 中控已收' };
+  if (entry.chosen !== undefined || entry.decidedBy === 'user') return { state: 'chosen', badge: '用户已定 ✓' };
   if (entry.kind === 'decided' || entry.status === 'decided') return { state: 'confirmed', badge: '已定 ✓' };
   if (entry.kind === 'fork') return { state: 'fork', badge: '分叉' };
 
@@ -34,8 +34,8 @@ function getCanvasTitle(entry: types.DecisionNode): string {
 }
 
 /** 尺寸固定以支持画布缩放，用按钮同时支持指针和键盘。 */
-export function DecisionNode({ data, selected }: xyflow.NodeProps<layout.FlowNode>) {
-  const { entry, open, fold } = data;
+export function DecisionNode({ data, selected }: xyflow.NodeProps<layout.CardNode>) {
+  const { entry, open, fold, hint } = data;
 
   //M 用相同的状态词和颜色表达中控是否已确认。
   const appearance = getAppearance(entry);
@@ -57,6 +57,7 @@ export function DecisionNode({ data, selected }: xyflow.NodeProps<layout.FlowNod
       >
         <span className="decision-node__badge">{appearance.badge}</span>
         <strong className="decision-node__title">{title}</strong>
+        {hint !== undefined && <span className="decision-node__hint">{hint}</span>}
       </button>
       {fold !== undefined && <FoldButton fold={fold} title={entry.title} open={open} />}
       {SIDES.map((position) => (
@@ -73,9 +74,44 @@ export function DecisionNode({ data, selected }: xyflow.NodeProps<layout.FlowNod
   );
 }
 
+/** 按日期看法的日期卡片：点一下收起或展开这一天，有等用户定的事时醒目。 */
+export function DayNode({ data }: xyflow.NodeProps<layout.DayNode>) {
+  const { day, label, total, asks, expanded, open } = data;
+  let className = 'decision-node decision-node--day';
+  if (asks > 0) className += ' decision-node--day-ask';
+  let badge = t('{total} 项，无待定', { total });
+  if (asks > 0) badge = t('★ {asks} 件等你定 · 共 {total} 项', { asks, total });
+  let mark = '▾';
+  let action = t('收起「{label}」', { label });
+  if (!expanded) {
+    mark = '▸';
+    action = t('展开「{label}」', { label });
+  }
+
+  //M 日期只有左进右出两个锚点，点击切换这一天的内容。
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        className="decision-node__button nodrag"
+        data-day-id={day}
+        aria-label={action}
+        aria-expanded={expanded}
+        title={action}
+        onClick={() => open(`day:${day}`, !expanded)}
+      >
+        <span className="decision-node__badge">{badge}</span>
+        <strong className="decision-node__title">{mark} {label}</strong>
+      </button>
+      <xyflow.Handle type="target" id={xyflow.Position.Left} position={xyflow.Position.Left} isConnectable={false} />
+      <xyflow.Handle type="source" id={xyflow.Position.Right} position={xyflow.Position.Right} isConnectable={false} />
+    </div>
+  );
+}
+
 /** 折叠整支子树时，让控件留在父卡片上，不再占用一个画布节点。 */
 function FoldButton(
-  { fold, title, open }: Required<Pick<layout.FlowNode['data'], 'fold' | 'open'>> & { title: string },
+  { fold, title, open }: Required<Pick<layout.CardNode['data'], 'fold' | 'open'>> & { title: string },
 ) {
   let badge = `+${fold.count}`;
   let label = t('展开「{title}」下的子项', { title });
