@@ -9,6 +9,8 @@
  * 认文字回答：“同意 3”“拒绝”“全部同意”“待确认有哪些”，听 bot/receive。
  * 按说话人分档收工具（回话地址的 role，飞书照插件配置的 people 写）：guest 只给只读的（rules.READ_ONLY_TOOLS），
  * builder 再加在他自己目录里的 exec、write、edit、feishu_send_file（rules.BUILDER_TOOLS）；执行前再拦一次。
+ * 目录授权（Grants.ts，用户 #301）：本人把人、群绑到目录，进来的话按人按群写进地址的 grants.dirs，外人升 builder；
+ * 这些目录和子目录里的命令程序规则直接放行（getReviewDirs）；本人说的授权当轮就生效（before-model 补 applyTurn）。
  * builder 的命令审核照“只能在他的目录里动”把关，审不过直接拒、不问用户。
  * 自己核对说话人：只接受发起该项的同一人（登记时记下的 actor），或用户本人（回话地址里的 owner）；飞书群里说的、群里提的只认本人；
  * “待确认有哪些”只列当事人自己的项；其他人的同样文字当普通消息交给前台。正确性不依赖监听顺序。
@@ -20,12 +22,13 @@ import * as botUtils from '../../utils/Bots.ts';
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as fastify from 'fastify';
-import type { AskInput as SessionAskInput, Session, Thinking } from '../../Sessions.ts';
+import type { AskInput as SessionAskInput, Session, SessionMeta, Thinking } from '../../Sessions.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
 import * as protocol from '../channels/index.ts';
 import * as rules from './Rules.ts';
 import * as outboundModule from './Outbound.ts';
 import * as channelSend from './ChannelSend.ts';
+import * as grantsModule from './Grants.ts';
 import * as cardUtils from '../../utils/Card.ts';
 import * as checksModule from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -40,7 +43,9 @@ export const name = 'approval';
 //M 1.2.10：本人批准的主动发件改走 channel/reply（target 带确切地址：飞书应用号和聊天号，网页提醒带意图号），
 //M   删 channel/send、channel/sent 和一次性批准凭证 takeChannelSendApproval；只给外置程序的发件补 channel/replied。
 //M 1.2.11：认批复改听 channel/direct、channel/mention（channel/message 拆了；只听的 channel/listen 不看）；语音半句不认。
-export const version = '1.2.11';
+//M 1.2.12：目录授权向下延伸（Grants.ts，用户 #301）：按人、按群的授权目录，外人升 builder，本人说的当轮生效，工具 dir_grant、/api/grants；
+//M   带授权目录的外人，命令出了执行目录和授权目录规则直接拒。
+export const version = '1.2.12';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -298,11 +303,11 @@ const GUEST_PROMPT = '这一轮说话的不是用户本人（比如群里用户�
  */
 function getTurnRole(channel: string | undefined, address: unknown): string {
   //M 地址上已有档位（owner、builder、guest）：照它。
-  const role = workspaceModule.getSpeakerRole(address);
+  const role = protocol.getSpeakerRole(address);
   if (role !== '') return role;
 
   //G 没档位又不是本人：当 guest，只给只读工具。
-  if (!workspaceModule.isOwnerTurn(channel ?? '', address)) return 'guest';
+  if (!protocol.isOwnerTurn(channel, address)) return 'guest';
 
   return '';
 }
@@ -317,6 +322,18 @@ function builderPrompt(dir: string): string {
   return `这一轮说话的不是用户本人，是用户允许在自己目录里干活的人。工作区现在是他的目录 ${dir}：`
     + '可以在这里读写文件、写代码、跑命令（命令照样要审核），也可以把这里的文件发给他；'
     + '出了这个目录的文件、系统设置、装全局的东西、记忆、通知、交给别的 AI 这些做不了，也不要答应，告诉对方要用户本人来说。';
+}
+
+
+/**
+ * 这一轮有授权目录时加的一句（用户 #301“目录授权向下延伸”）。
+ * @param dirs 授权目录（回话地址的 grants.dirs）。
+ * @returns 提示词。
+ */
+function grantPrompt(dirs: string[]): string {
+  return `这一轮的授权目录：${dirs.join('、')}。这些目录和下面的子目录里读写文件、跑命令、发文件都不用再问用户：`
+    + '跑命令时先 cd 到那个目录（写成“cd /d 目录 && 命令”），命令里写的路径也都在这些目录里，就直接执行；'
+    + '出了这些目录照旧。在群里回话只说文件名或相对路径，不说本机的绝对路径。';
 }
 
 
@@ -382,16 +399,23 @@ interface Row {
 
 /** 审核和待确认服务。 */
 export class Approval extends cordis.Service {
+  /** 目录授权（Grants.ts，用户 #301）：按人、按群的授权目录，进来的话写进地址，本人说的当轮授权。 */
+  readonly grants: grantsModule.Grants;
+
   /**
    * 登记成 ctx.approval（cordis.Service 的构造函数做的：super(ctx, '名字') 就是“把我挂到 ctx 上叫这个名字”），
    * 建表，听 approval/request（别的插件请审核办事）、channel/direct、channel/mention 和 bot/receive（认文字回答）、
-   * session/before-model（给审核小会话加提示词；guest、builder 说的这一轮只给这一档的工具）和 session/before-tool（这一档没有的工具不让执行）。
+   * session/before-model（给审核小会话加提示词；补当轮授权、说授权目录；guest、builder 说的这一轮只给这一档的工具）
+   * 和 session/before-tool（这一档没有的工具不让执行）。目录授权的表和进来的话由 Grants 自己听。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
    */
   constructor(ctx: cordis.Context, private readonly config: ApprovalConfig) {
     //M 先把本服务登记成 ctx.approval。
     super(ctx, 'approval');
+
+    //M 目录授权：建表，听进来的话（prepend，在 bots 认领前把授权目录写进地址）。
+    this.grants = new grantsModule.Grants(ctx);
 
     //M 建待确认表（没有才建）。
     ctx.resources.db.exec('CREATE TABLE IF NOT EXISTS approval_pending (id INTEGER PRIMARY KEY AUTOINCREMENT,'
@@ -431,7 +455,15 @@ export class Approval extends cordis.Service {
     //M   别的直接从这一步的工具里拿掉，再在提示词里说一句，免得模型答应做不了的事。
     ctx.on('session/before-model', (request) => {
       if (request.session.row.kind === REVIEW_KIND) request.system.push(REVIEW_PROMPT);
+
+      //M 本人这一轮说的当轮授权：前台接下来的每一步、这一轮交办的后台都补进地址（Grants.applyTurn）。
+      this.grants.applyTurn(request.session);
       const address = request.session.row.address;
+
+      //M 这一轮有授权目录：告诉模型哪些目录能直接动、命令先 cd 过去（本人、外人都说）。
+      const grantDirs = workspaceModule.getGrantDirs(address);
+      if (grantDirs.length > 0) request.system.push(grantPrompt(grantDirs));
+
       const role = getTurnRole(request.session.row.channel, address);
       const allowedTools = rules.toolsFor(role);
       if (allowedTools === undefined) return;
@@ -511,14 +543,23 @@ export class Approval extends cordis.Service {
       asks.push(danger);
     }
 
-    //M 可信目录（用户 11-18 #169）：配置的 trusted_dirs，加上这场会话的授权目录（本人、中控发消息时带的 grants.dirs）。
-    //M   执行目录和命令里写的路径都落在这些目录里，程序规则直接放行，不再问模型、不弹卡片；不在的记下是哪个路径。
-    //G builder 让跑的（confined）不算：他只能在自己的目录里动，由审核照目录约束把关。
-    if (danger === undefined && input.confined === undefined) {
-      const grantDirs = this.getGrantDirs(input.session);
-      const trustedDirs = [...this.config.trustedDirs, ...grantDirs];
-      const untrusted = rules.getUntrusted(command, cwd, trustedDirs);
-      if (untrusted === undefined) return this.traced(input, { result: 'pass', by: 'rule', reason: '可信目录' });
+    //M 可信目录（用户 11-18 #169）和授权目录（用户 #301）：执行目录和命令里写的路径都落在这些目录里，
+    //M   程序规则直接放行，不再问模型、不弹卡片；不在的记下是哪个路径。哪些目录算数见 getReviewDirs：
+    //M   本人是配置的 trusted_dirs 加这一轮的授权目录；外人（confined）只认这一轮的授权目录。
+    if (danger === undefined) {
+      const reviewDirs = this.getReviewDirs(input);
+      const untrusted = rules.getUntrusted(command, cwd, reviewDirs);
+      let passReason = '可信目录';
+      if (input.confined !== undefined) {
+        passReason = '授权目录';
+      }
+      if (untrusted === undefined) return this.traced(input, { result: 'pass', by: 'rule', reason: passReason });
+
+      //G 外人这一轮带着授权目录（reviewDirs 不空），命令出了目录：规则直接拒，不问模型、不出卡片（用户 #301：出了这个目录照旧不行）。
+      if (input.confined !== undefined && reviewDirs.length > 0) {
+        const reason = `没放行：${untrusted}。只能在这一轮的工作目录和授权目录里动，别的要用户本人来说。`;
+        return this.traced(input, { result: 'reject', by: 'rule', reason });
+      }
 
       asks.push(untrusted);
     }
@@ -724,7 +765,7 @@ export class Approval extends cordis.Service {
       where = this.ctx.sessions.find({ id: pending.session })[0]?.address;
     }
     //G 群聊会话不在群内发确认口令，直接返回登记结果。
-    if (workspaceModule.isGroup(where) || pending.kind === outboundModule.REMINDER_APPROVAL_KIND) return pending;
+    if (protocol.isGroup(where) || pending.kind === outboundModule.REMINDER_APPROVAL_KIND) return pending;
 
     //M 有会话就跟用户说一句怎么回。
     if (pending.session !== undefined) {
@@ -917,25 +958,39 @@ export class Approval extends cordis.Service {
   }
 
   /**
-   * 这场会话带的授权目录（用户 11-18 #169）：本人、中控发消息时在消息里写 grants.dirs（POST /api/message 在入口 Checks.ts 的 checkGrants 查过、规范化过），
-   * 渠道把它写进回话地址，会话记着这个地址（bots.route），交办出去的后台会话也带着同一个地址。
-   * 地址跟着最后一句带渠道的话换：后来的消息没带 grants，授权就没了。
-   * @param sessionId 提问的会话；命令窗口没有。
-   * @returns 授权目录；没有会话、地址不是本人的（owner 不是 true）、没带 grants 都是空数组。
+   * 审命令时哪些目录算数（程序规则直接放行），都照 getPathKey 规范化好交给 rules.getUntrusted。
+   * 授权目录在回话地址的 grants.dirs 里（utils/Workspace.ts 的 getGrantDirs）：本人、中控发消息时带的（web-api 入口 checkGrants 查过），
+   * 渠道进来的话按人、按群从库里查到的（Grants.applyMessage）；再加本人这一轮说的当轮授权（Grants.getTurnDirs）。
+   * 地址跟着最后一句带渠道的话换：后来的消息没带、库里也没有，授权就没了。
+   * @param input 要审的命令：哪场会话、是不是外人让跑的（confined）。
+   * @returns 本人（不是 confined）：配置的 trusted_dirs，地址是本人的再加这一轮的授权目录；
+   *   外人（confined）：这一轮有授权目录时是执行目录加授权目录（trusted_dirs 是本人的，不给）；没有授权目录、没有会话的是空数组。
    */
-  private getGrantDirs(sessionId: string | undefined): string[] {
-    if (sessionId === undefined) return [];
+  private getReviewDirs(input: ReviewInput): string[] {
+    //M 会话记录（库里的）：回话地址、来源快照。命令窗口没有会话。
+    let meta: SessionMeta | undefined;
+    if (input.session !== undefined) {
+      meta = this.ctx.sessions.find({ id: input.session })[0];
+    }
 
-    //G 只认本人的地址：外人（builder、guest）那一轮不给授权，哪怕地址里有这一项。
-    const address = this.ctx.sessions.find({ id: sessionId })[0]?.address;
-    if (!isOwner(address)) return [];
+    //M 这一轮的授权目录：地址里的，加本人说的当轮授权。
+    let grantDirs: string[] = [];
+    if (meta !== undefined) {
+      grantDirs = [...workspaceModule.getGrantDirs(meta.address), ...this.grants.getTurnDirs(meta)];
+    }
+    const grantKeys = grantDirs.map((dir) => workspaceModule.getPathKey(dir));
 
-    //M 地址里的 grants.dirs 是入口规范化过的绝对路径，直接用。
-    const grants = utils.getField(address, 'grants');
-    const dirs = utils.getField(grants, 'dirs');
-    if (!Array.isArray(dirs)) return [];
+    //M 外人让跑的（confined，exec 给 builder 和升成 builder 的人）：这一轮没授权目录，交回空的，照旧交给后面的模型审。
+    //M   外人地址里的 grants 只会是 Grants.applyMessage 按库查出来写的（原有的它先删掉）。
+    if (input.confined !== undefined && grantKeys.length === 0) return grantKeys;
 
-    return dirs as string[];
+    //M 有授权目录的外人：他这一轮的执行目录（builder 自己的目录）加授权目录都算，出了这些 review 规则直接拒。
+    if (input.confined !== undefined) return [workspaceModule.getPathKey(input.confined), ...grantKeys];
+
+    //G 地址不是本人的：外人那一轮不给授权目录，只有配置的可信目录。
+    if (!isMarkedOwner(meta?.address)) return this.config.trustedDirs;
+
+    return [...this.config.trustedDirs, ...grantKeys];
   }
 
   /**
@@ -953,8 +1008,8 @@ export class Approval extends cordis.Service {
 
     //M 查说话人是谁、是不是本人，再列出这个机器人名下他能处理的待确认。
     const bot = event.bot.name;
-    const speaker = getSpeaker(event.message.channel, event.message.address);
-    const owner = isOwner(event.message.address);
+    const speaker = rules.getSpeaker(event.message.channel, event.message.address);
+    const owner = isMarkedOwner(event.message.address);
     const verified = event.message.channel !== 'http' || utils.getField(event.message.address, 'verifiedOwner') === true;
     const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner, verified));
     //M 标记已消费后才执行批复，审批监听者看到的时序保持一致。
@@ -986,8 +1041,8 @@ export class Approval extends cordis.Service {
     if (said === undefined) return;
 
     //M 查说话人是谁、是不是本人，再列出目标机器人名下他能处理的待确认。
-    const speaker = getSpeaker(message.channel, message.origin.address);
-    const owner = message.role === 'owner' && isOwner(message.origin.address);
+    const speaker = rules.getSpeaker(message.channel, message.origin.address);
+    const owner = message.role === 'owner' && isMarkedOwner(message.origin.address);
     const targetSet = new Set(message.targetBots);
     const verified = message.channel !== 'http' || message.origin.address['verifiedOwner'] === true;
     const waiting = this.list().filter((item) => targetSet.has(item.bot) && allowed(item, speaker, owner, verified));
@@ -1103,7 +1158,7 @@ export class Approval extends cordis.Service {
     const found = this.ctx.sessions.find({ id: sessionId })[0];
     const row = found ?? this.ctx.sessions.open(sessionId).row;
     const meta = row as { customer?: string; channel?: string; address?: unknown };
-    const speaker = getSpeaker(meta.channel, meta.address);
+    const speaker = rules.getSpeaker(meta.channel, meta.address);
     let customer = speaker.customer;
     if (typeof meta.customer === 'string' && meta.customer !== '') {
       customer = meta.customer;
@@ -1349,39 +1404,15 @@ function reviewCard(
   };
 }
 
-
-
 /**
- * 从渠道和回话地址取出说话人的客户号、个人身份。飞书按人（不用群号当个人），其余用地址里的 customer。
- * @param channel 渠道名。
- * @param address 渠道的回话地址。
- * @returns customer 客户号（地址里没写是空串）；actor 个人身份（飞书是 feishu:openId，其余同 customer）。
- */
-export function getSpeaker(channel: string | undefined, address: unknown): { customer: string; actor: string } {
-  let where: Record<string, unknown> = {};
-  if (typeof address === 'object' && address !== null && !Array.isArray(address)) {
-    where = address as Record<string, unknown>;
-  }
-  let customer = '';
-  if (typeof where['customer'] === 'string') {
-    customer = where['customer'];
-  }
-  if (channel === 'feishu') {
-    const who = String(where['openId'] ?? where['open_id'] ?? '');
-    if (who === '') return { customer, actor: customer };
-
-    return { customer, actor: `feishu:${who}` };
-  }
-  return { customer, actor: customer };
-}
-
-
-/**
- * 是不是用户本人：只看渠道写在回话地址里的 owner。本人只在渠道那边判断一次（飞书照插件配置的 people），这里不另存名单。
+ * 渠道有没有在回话地址上明写这是本人（owner: true）：批复“同意 N”、审命令时给本人的授权目录，只认这一条。
+ * 有意比 channels 的 isOwnerTurn 严（决策图 q-approval-owner 定的）：isOwnerTurn 把没写身份的命令行、没有渠道的内部会话也默认当本人，
+ * 那是为了让本机用起来顺手；可批命令、放宽可信目录是放行动手的事，要渠道亲口担保过的本人才行
+ * （飞书照插件配置的 people 写，网页由 http 插件核过本机或令牌才写），免得内部会话、默认身份自己批自己。
  * @param address 渠道的回话地址。
  * @returns 写了 owner: true 才是。
  */
-export function isOwner(address: unknown): boolean {
+export function isMarkedOwner(address: unknown): boolean {
   //M 读回话地址里的 owner，只有明写 true 才是本人。
   return utils.getField(address, 'owner') === true;
 }
@@ -1408,7 +1439,7 @@ export function allowed(
   if (owner) return true;
 
   //G 说话人在群里，或这件是群里的会话提的 → 只认本人。
-  if (workspaceModule.isGroup(speaker) || workspaceModule.isGroup(item)) return false;
+  if (protocol.isGroup(speaker) || protocol.isGroup(item)) return false;
   return item.actor !== undefined && item.actor !== '' && item.actor === speaker.actor;
 }
 
@@ -1567,10 +1598,13 @@ export function apply(ctx: cordis.Context, config: unknown): void {
     routes(sub.http.app, approval, isVerified);
     //M 主站发件复用这套 HTTP 鉴权及同一个 Outbound 账。
     channelSend.mountChannelSend(sub, sub.http);
+    //M 目录授权的网页接口（GET/POST /api/grants）：设、撤也只认本人。
+    approval.grants.mountRoutes(sub.http.app, isVerified);
   });
 
-  //M 工具服务就绪后才提供本轮聊天的发件申请。
+  //M 工具服务就绪后才提供本轮聊天的发件申请、目录授权（dir_grant，只有本人那一轮能用）。
   void ctx.inject(['tools'], (sub) => {
     channelSend.registerChannelSendTool(sub);
+    approval.grants.registerTool(sub.tools);
   });
 }

@@ -100,7 +100,7 @@ function cardWorld(rows: Row[], last: FeishuAddress | undefined): CardWorld {
   let serial = 0;
 
   const fake = {
-    config: { domain: '', apps: [{ appId: APP_ID, appSecret: 'fake', bot: BOT }], people: PEOPLE, groups: new Map() },
+    config: { domain: '', apps: [{ appId: APP_ID, appSecret: 'fake', bot: BOT }], people: PEOPLE, groups: new Map(), historyOnJoin: 0 },
     db,
     getApps: () => [APP_ID],
     lastPrivate: () => last,

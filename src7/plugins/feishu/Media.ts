@@ -93,9 +93,10 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
   ctx.tools.register({
     definition: {
       name: 'feishu_send_file',
-      description: '把机器人工作区内的图片、文件或 mp4 视频发到当前飞书聊天，返回 message_id。非飞书会话不可用。',
+      description: '把工作区或这一轮授权目录里的图片、文件或 mp4 视频发到当前飞书聊天（群里那一轮就发回这个群），返回 message_id。'
+        + '非飞书会话不可用。',
       parameters: piAi.Type.Object({
-        path: piAi.Type.String({ minLength: 1, description: '工作区相对路径或工作区内绝对路径' }),
+        path: piAi.Type.String({ minLength: 1, description: '工作区相对路径，或工作区、授权目录里的绝对路径' }),
         kind: piAi.Type.Optional(piAi.Type.Union([
           piAi.Type.Literal('image'), piAi.Type.Literal('file'), piAi.Type.Literal('video'),
         ])),
@@ -107,13 +108,14 @@ export function setup(feishu: Feishu, ctx: cordis.Context): void {
       if (session.row.channel !== 'feishu' || !address?.appId || !address.chatId) {
         throw new Error('当前不是飞书会话，无法确定发送的应用和聊天');
       }
-      //M 将入参路径解析成工作区内规范路径，并对目录越界做 realpath 校验。
+      //M 将入参路径解析成绝对路径（相对的照本轮工作区，去掉 @ 和引号，挡 config.yaml）。
       const file = doc.getFile(ctx, session, args['path'] as string);
-      //G 只发这一轮工作区里的文件：builder 说话时是他的目录（utils/Bots.ts 的 getSessionWorkspace），别的是机器人的工作区。
-      const workspace = botUtils.getSessionWorkspace(ctx.resources, session);
-      const relative = path.relative(fs.realpathSync(workspace), fs.realpathSync(file));
-      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-        throw new Error('只能发送这一轮工作区里的文件');
+      //G 只发这一轮工作区和授权目录里的文件（utils/Bots.ts 的 resolveSessionPath，解开链接再比）：
+      //G   builder 说话时工作区是他的目录，别的是机器人的工作区；授权目录是回话地址的 grants.dirs（用户 #301）。
+      try {
+        botUtils.resolveSessionPath(ctx.resources, session, file);
+      } catch {
+        throw new Error('只能发送这一轮工作区里的文件（授权目录里的也行）');
       }
       const kind = args['kind'] as 'image' | 'file' | 'video' | undefined;
       //M 校验通过后执行上传并把媒体发往当前飞书会话，回传生成的 message_id。

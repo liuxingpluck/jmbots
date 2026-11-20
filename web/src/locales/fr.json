@@ -968,5 +968,18 @@
   "这是 {file} 的逐行图，点块看每段代码": "Voici la carte ligne par ligne de {file} ; cliquez sur un bloc pour voir son code",
   "这是进程插件三方握手的流程图，点块看每一步": "Voici la poignée de main à trois des plugins de processus ; cliquez sur un bloc pour voir chaque étape",
   "进程插件": "Plugins de processus",
-  "骨架工具（utils）": "Utilitaires du squelette (utils)"
+  "骨架工具（utils）": "Utilitaires du squelette (utils)",
+  "目录授权": "Dossiers autorisés",
+  "把人或群绑到目录：目录和子目录里读写、跑命令、发文件不用再问你；存在后端库里，马上生效": "Associer une personne ou un groupe à un dossier : lire, écrire, lancer des commandes et envoyer des fichiers dans ce dossier et ses sous-dossiers ne demandent plus votre accord ; enregistré dans la base du serveur, effet immédiat",
+  "群": "Groupe",
+  "人": "Personne",
+  "谁": "Qui",
+  "撤掉这条授权？": "Retirer cette autorisation ?",
+  "撤掉": "Retirer",
+  "人或群": "Personne ou groupe",
+  "从最近说过话的人和群里挑；也可以直接填身份（飞书人 feishu:ou_…，群 feishu:group:oc_…）": "Choisir parmi les personnes et groupes ayant parlé récemment, ou saisir un identifiant (personne Feishu feishu:ou_…, groupe feishu:group:oc_…)",
+  "挑一个，或填身份": "Choisir, ou saisir un identifiant",
+  "绝对路径。这个目录和下面的子目录里读写、跑命令、发文件都不用再问你；出了这个目录照旧": "Chemin absolu. Lire, écrire, lancer des commandes et envoyer des fichiers dans ce dossier et ses sous-dossiers ne demandent plus votre accord ; en dehors, rien ne change",
+  "绝对路径": "Chemin absolu",
+  "加上授权": "Ajouter l'autorisation"
 }

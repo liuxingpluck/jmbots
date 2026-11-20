@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import * as aobbShot from '../../../ztools/aobb-shot/Options.ts';
 import * as embedded from '../../utils/Embedded.ts';
 import * as sourceDirModule from '../../utils/SourceDir.ts';
+import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 
 
@@ -55,6 +56,28 @@ export function toolsFor(role: string): Set<string> | undefined {
   if (role === 'guest') return READ_ONLY_TOOLS;
   if (role === 'builder') return BUILDER_TOOLS;
   return undefined;
+}
+
+
+/**
+ * 从渠道和回话地址取出说话人的客户号、个人身份。飞书按人（不用群号当个人），其余用地址里的 customer。
+ * approval 认批复的人（index.ts）、目录授权按人按群查（Grants.ts）共用。
+ * @param channel 渠道名。
+ * @param address 渠道的回话地址。
+ * @returns customer 客户号（地址里没写是空串；飞书群是 feishu:group:<chat_id>）；actor 个人身份（飞书是 feishu:openId，其余同 customer）。
+ */
+export function getSpeaker(channel: string | undefined, address: unknown): { customer: string; actor: string } {
+  //M 客户号照地址里的 customer。
+  const customer = utils.getStringField(address, 'customer');
+
+  //G 不是飞书：个人身份就是客户号。
+  if (channel !== 'feishu') return { customer, actor: customer };
+
+  //M 飞书按人：地址里的 openId（老地址写 open_id）；拿不到人就退回客户号。
+  const who = String(utils.getField(address, 'openId') ?? utils.getField(address, 'open_id') ?? '');
+  if (who === '') return { customer, actor: customer };
+
+  return { customer, actor: `feishu:${who}` };
 }
 
 
@@ -291,8 +314,8 @@ export function getAbsPaths(command: string): string[] {
 
 
 /**
- * 命令是不是只动可信目录里的东西（用户 11-18 #169）：执行目录、命令开头 cd 到的目录、命令里写的每个绝对路径、
- * 带 .. 往上走的和从盘根算的相对路径，解开后都要落在 dirs 里。写了环境变量、~ 的算不出落在哪，不算。
+ * 命令是不是只动可信目录里的东西（用户 11-18 #169）：真正跑命令的目录（开头 cd 过去了就是 cd 到的目录，否则是执行目录）、
+ * 命令里写的每个绝对路径、带 .. 往上走的和从盘根算的相对路径，解开后都要落在 dirs 里。写了环境变量、~ 的算不出落在哪，不算。
  * 只看路径，不看命令做什么：删系统、删注册表、删数据、格式化由调用方先用 mustAsk 拦下。
  * @param command 原命令。
  * @param cwd 执行目录，绝对路径。
@@ -312,10 +335,11 @@ export function getUntrusted(command: string, cwd: string, dirs: string[]): stri
     base = path.resolve(cwd, cdDir);
   }
 
-  //M 要查的：执行目录、cd 到的目录、绝对路径，和往上走、从盘根算的相对路径（照 cd 后的目录解开）。
+  //M 要查的：真正跑命令的目录（开头 cd 过去了就是 cd 到的目录，原来的执行目录不再用：cd 不成功 && 后面不跑）、
+  //M   绝对路径，和往上走、从盘根算的相对路径（照 cd 后的目录解开）。授权目录在工作区外面时，模型照提示先 cd 过去（用户 #301）。
   const relatives = command.split(TOKEN_SPLIT).filter((token) => UP_OR_ROOTED.test(token));
   const absolutes = getAbsPaths(command);
-  const targets = [cwd, base, ...absolutes, ...relatives];
+  const targets = [base, ...absolutes, ...relatives];
 
   //M 每一个都要落在某个可信目录里；.. 跳出去的、换了盘的都不算，交回第一个不在里面的。
   for (const target of targets) {

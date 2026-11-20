@@ -199,6 +199,7 @@ test('插件入口经真实 HTTP 核验，批准后经 channel/reply 照批准�
     apps: [{ appId: group.account, appSecret: 'fixture', bot: '合成机器人' }],
     people: new Map(),
     groups: new Map(),
+    historyOnJoin: 0,
   };
   const feishu = new feishuModule.Feishu(ctx, config);
   const sdk = feishu.client(group.account);

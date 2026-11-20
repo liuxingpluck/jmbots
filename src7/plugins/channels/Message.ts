@@ -1,6 +1,7 @@
 /**
  * 渠道协议：进来的一条消息（渠道消息、提及、附件、来源、可见性、路由、认领、撤回）。
- * 只放类型和无状态小函数：分法（发哪个事件）、消息号、认领键、来源快照、旧地址的身份档位。事件声明在同目录 index.ts。
+ * 只放类型和无状态小函数：分法（发哪个事件）、消息号、认领键、来源快照，说话的是谁（isOwnerTurn、getSpeakerRole、isGroup）。
+ * 事件声明在同目录 index.ts。
  */
 import type * as cordis from 'cordis';
 import * as utils from '../../utils/index.ts';
@@ -114,6 +115,8 @@ export interface ChannelMessage {
   channel: string;
   /** 平台账号 ID：飞书 appId、微信 account 等。 */
   accountId: string;
+  /** 收这条消息的账号叫什么，给人看的（飞书是 bot 名）；没有就不填。 */
+  accountName?: string;
   /** 聊天稳定 ID。 */
   chatId: string;
   /** 聊天种类。 */
@@ -363,19 +366,61 @@ export function makeChannelMessageId(channel: string, accountId: string, nativeI
 }
 
 
+/** 不写 owner、role 也算本人的渠道：本机网页、命令行；会话没有渠道（内部小会话）也算。 */
+const LOCAL_CHANNELS = new Set(['', 'http', 'web', 'cli']);
+
+
 /**
- * 按旧渠道地址里的 owner / role 推导标准渠道角色档位（绝不把 role 写回原兼容地址，以免改变 Workspace 权限）。
- * @param address 原渠道地址对象。
- * @returns 标准角色档位。
+ * 这一轮说话人是哪一档：渠道写在地址里的 role（飞书照插件配置的 people 写：owner、builder、guest）。
+ * 只写了 owner: false、没写 role 的地址（微信）当 guest；都没写的是 ''（地址本身分不出，要不要当本人看 isOwnerTurn）。
+ * @param address 会话现在记的回话地址：最后一句带渠道的话从哪来。
+ * @returns owner、builder、guest 或 ''。
  */
-export function resolveLegacyRole(address: Record<string, unknown>): ChannelRole {
-  //M 先看地址里是否明确标了本人（owner: true 或 role === 'owner'）。
-  if (utils.getField(address, 'owner') === true || utils.getStringField(address, 'role') === 'owner') {
-    return 'owner';
-  }
-  //M 其次识别 builder 角色档位。
-  if (utils.getStringField(address, 'role') === 'builder') {
-    return 'builder';
-  }
-  return 'guest';
+export function getSpeakerRole(address: unknown): string {
+  //M 先读地址上标明的角色。
+  const role = utils.getStringField(address, 'role');
+  if (role !== '') return role;
+
+  //M 没标角色、写了 owner: false 的是 guest；都没写的不定档。
+  if (utils.getField(address, 'owner') === false) return 'guest';
+
+  return '';
+}
+
+
+/**
+ * 这一轮是不是用户本人在说。“本人”只在这里判：工具、工作区、记忆、派活、跨聊天回复都问它。
+ * 规则：地址写了 role 就照它（只有 owner 算本人）；写了 owner: true 是本人，owner: false 是外人；
+ * 什么都没写的，只有网页、命令行（和没有渠道的内部会话）默认算本人，其他渠道（微信、飞书……）一律算外人。
+ * @param channel 会话现在的渠道名（session.row.channel；快照上是 snapshot.channel）；内部小会话没有渠道，是 undefined 或 ''。
+ * @param address 会话现在记的回话地址。
+ * @returns 本人 true，外人 false。
+ */
+export function isOwnerTurn(channel: string | undefined, address: unknown): boolean {
+  //M 地址上明确写了档位：只有 owner 算本人（builder、guest 不算）。
+  const role = getSpeakerRole(address);
+  if (role !== '') return role === 'owner';
+
+  //G 只写了 owner: true（没写 role）：本人。owner: false 已在 getSpeakerRole 里变成 guest。
+  if (utils.getField(address, 'owner') === true) return true;
+
+  //M 什么都没写：没有渠道的内部会话、本机网页、命令行默认本人，其他渠道不写 owner 就是外人。
+  if (channel === undefined) return true;
+
+  return LOCAL_CHANNELS.has(channel);
+}
+
+
+/**
+ * 是不是群：地址的 chatType 是 group，或客户号是 feishu:group:…（飞书插件 feishuCustomer 的写法）。
+ * memory（群里不带私人记忆）、approval（群里“同意 N”只认本人）、飞书（群里不发卡片）共用。
+ * @param address 回话地址；带 customer 的别的对象（approval 的说话人、待确认）也行。
+ */
+export function isGroup(address: unknown): boolean {
+  //M chatType 是 group，或客户号是 feishu:group: 开头。
+  const byType = utils.getStringField(address, 'chatType') === 'group';
+  if (byType) return true;
+
+  const customer = utils.getStringField(address, 'customer');
+  return customer.startsWith('feishu:group:');
 }

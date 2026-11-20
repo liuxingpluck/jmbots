@@ -247,7 +247,7 @@ export class FeishuInbound {
       const saved = await this.saveAttachments(facts, resources);
 
       //M 5. 拼成标准消息，先持久化渠道原始记录。
-      const channelMessage = this.getChannelMessage(facts, address, more, saved);
+      const channelMessage = this.getChannelMessage(facts, app.config.bot, address, more, saved);
       this.saveChatEntry(facts, channelMessage);
 
       //M 6. 经 emitInbound 发出三个事件之一；短分派完成后才记 feishu_seen 去重，再汇总认领结果写流水。
@@ -271,6 +271,34 @@ export class FeishuInbound {
         console.error(`${againTime} 飞书：“没处理成”也没发出去：${textModule.getErrorMessage(again)}`);
       }
     }
+  }
+
+  /**
+   * 历史消息（拉群历史，HistoryPull.ts 调）：和实时消息同一套认人认群认 @、同一套附件下载和聊天日志，
+   * 但不挂表情、不补引用转发、不去重表、不发 channel/direct、mention、listen，所以不触发任何会话、不回话。
+   * @param appId 应用号。
+   * @param app 应用运行时状态。
+   * @param data 拼成实时消息事件样子的一条历史消息。
+   * @param createdAt 飞书给的创建时间，毫秒。
+   * @returns 标准消息（targetBots 空；createdAt 是飞书给的时间）。
+   * 副作用：附件下载到渠道附件目录；聊天日志追加一行（同消息号已有就跳过）。
+   */
+  async onHistory(appId: string, app: AppState, data: ReceiveData, createdAt: number): Promise<protocol.ChannelMessage> {
+    //M 1. 认出 @、文字、谁在哪个群说的；再拼地址（标准消息的 origin 要用）。
+    const facts = await this.getFacts(appId, app, data);
+    const address = this.getAddress(facts);
+
+    //M 2. 附件照实时消息的规矩下载；历史里没有补引用转发，正文只用这条本身。
+    const saved = await this.saveAttachments(facts, facts.described.resources);
+    const noRelated: media.Related = { quote: '', forwarded: '', resources: [] };
+    const channelMessage = this.getChannelMessage(facts, app.config.bot, address, noRelated, saved);
+
+    //M 3. 时间用飞书给的；不投给任何机器人；写聊天日志。
+    channelMessage.createdAt = createdAt;
+    channelMessage.timeSource = 'provider';
+    channelMessage.targetBots = [];
+    this.saveChatEntry(facts, channelMessage);
+    return channelMessage;
   }
 
   /**
@@ -604,6 +632,7 @@ export class FeishuInbound {
   /**
    * 第 5 步前半：拼标准消息——正文（引用、正文、转发、没下载下来的附件）、引用的哪条、角色、可见范围。
    * @param facts 第 1 步认出的。
+   * @param accountName 收消息的应用配的机器人名（config 的 bot），给聊天目录起名用。
    * @param address 回话地址：克隆一份放进 origin。
    * @param more 引用、合并转发补回来的原文。
    * @param saved 第 4 步存好的附件和失败原因。
@@ -611,6 +640,7 @@ export class FeishuInbound {
    */
   private getChannelMessage(
     facts: InboundFacts,
+    accountName: string,
     address: FeishuAddress,
     more: media.Related,
     saved: { attachments: protocol.ChannelAttachment[]; failed: string[] },
@@ -647,6 +677,7 @@ export class FeishuInbound {
       nativeId: message.message_id,
       channel: this.name,
       accountId: appId,
+      accountName: accountName,
       chatId: message.chat_id,
       chatType,
       sender: facts.sender,

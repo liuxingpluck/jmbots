@@ -887,6 +887,62 @@ export function reconnectModels(provider?: string): Promise<{ results: types.Rec
 }
 
 
+/** 一条目录授权（GET /api/grants，后端 approval 的 Grants.ts）：谁（人或群）绑到哪个目录。 */
+export interface GrantItem {
+  /** 号：撤销用。 */
+  id: number;
+  /** 谁：人是个人身份（飞书 feishu:<open_id>），群是群的客户号（feishu:group:<chat_id>）。 */
+  subject: string;
+  /** 给人看的名字。 */
+  label: string;
+  /** 是不是群。 */
+  group: boolean;
+  /** 目录，绝对路径。 */
+  dir: string;
+  /** 谁设的：tool（对机器人说的）、http（网页）。 */
+  by: string;
+  /** 设的毫秒时刻。 */
+  createdAt: number;
+}
+
+/** 最近说过话的人和群（后端内存里记的，重启清空）：设授权时挑人用。 */
+export interface GrantSeen {
+  /** 人或群的身份，和 GrantItem.subject 同一种写法。 */
+  subject: string;
+  /** 名字。 */
+  label: string;
+  /** 是不是群。 */
+  group: boolean;
+}
+
+
+/** 目录授权清单和最近说过话的人、群（设置“目录授权”用）。 */
+export function grants(): Promise<{ items: GrantItem[]; seen: GrantSeen[] }> {
+  //M 拉取全部目录授权和最近见过的人、群，供设置页列表和挑人下拉框使用。
+  return getJson('/api/grants');
+}
+
+
+/**
+ * 设一条目录授权：这个人或群在这个目录和子目录里读写、跑命令、发文件不用再问。
+ * @param input 谁、名字、目录（绝对路径，后端查目录在不在）。
+ */
+export function addGrant(input: { subject: string; label: string; dir: string }): Promise<{ ok: boolean; grant: GrantItem }> {
+  //M 提交新授权；目录写错时后端回 400，错误原因交给调用方显示。
+  return sendJson('/api/grants', 'POST', { action: 'add', ...input });
+}
+
+
+/**
+ * 撤一条目录授权。
+ * @param id 授权的号。
+ */
+export function removeGrant(id: number): Promise<{ ok: boolean }> {
+  //M 按号撤销；没有这一条时后端回 404。
+  return sendJson('/api/grants', 'POST', { action: 'remove', id });
+}
+
+
 /** 读取基地的开机自启状态；查询失败交给调用方处理。 */
 export function autostart(): Promise<{ enabled: boolean }> {
   //M 经后端转发查询基地上的开机自启配置状态，供设置页初始化开关状态。
@@ -1101,6 +1157,26 @@ export function setMemoryBackfill(running: boolean): Promise<MemoryBackfill> {
   const body = { running };
   //M 服务端写入断点后返回新状态。
   return sendJson('/api/memory/backfill', 'POST', body);
+}
+
+/** 拉飞书群历史的结果（POST /api/feishu/history）。 */
+export interface FeishuHistoryResult {
+  /** 新交给记忆和聊天 MD 的条数。 */
+  pulled: number;
+  /** 跳过的条数：本地聊天日志里已有、机器人自己发的、已撤回的。 */
+  skipped: number;
+  /** 没处理成的条数。 */
+  failed: number;
+}
+
+/**
+ * 拉一个飞书群最近的历史消息。
+ * @throws ApiError 权限不够等失败时 message 是后端给的中文原因。
+ */
+export function pullFeishuHistory(chatId: string, limit: number): Promise<FeishuHistoryResult> {
+  const body = { chat_id: chatId, limit };
+  //M 后端校验群号和条数，拉的过程出错会把原因放在 error 里。
+  return sendJson('/api/feishu/history', 'POST', body);
 }
 
 

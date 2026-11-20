@@ -247,6 +247,9 @@ test('前台派活轮发 model-catalog/request（prompt）：有人答加两段�
   expect(plain.every((part) => typeof part === 'string')).toBe(true);
   expect(plain.some((part) => part.startsWith('上面是底座的通用说明'))).toBe(true);
   expect(plain.some((part) => part.startsWith('派活用 hand_session'))).toBe(true);
+  //M 同一问题已交办后台就先不下结论、后台结论为准、改口明说“更正”；前台自己答一般技术问题，不转外部助手。
+  expect(plain.some((part) => part.includes('只说“在查，做完发你”') && part.includes('更正：'))).toBe(true);
+  expect(plain.some((part) => part.includes('一般的技术解释、资料查询、简单问题自己直接答'))).toBe(true);
   expect(plain.some((part) => part.includes('模型介绍X'))).toBe(false);
 
   //M 假的 model-catalog 回两段：都加进系统提示词，介绍在前、思考档在后。

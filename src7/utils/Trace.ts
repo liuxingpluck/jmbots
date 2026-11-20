@@ -23,6 +23,7 @@ declare module 'cordis' {
      * 谁发：
      *   src7/Sessions.ts 的 Session.getStepAnswer
      *   src7/Tools.ts 的 Tools.execute
+     *   src7/plugins/approval/Grants.ts 的 Grants.add、Grants.remove、Grants.trace
      *   src7/plugins/approval/index.ts 的 Approval.answer、Approval.ask、Approval.onRequest、Approval.settle、Approval.traced
      *   src7/plugins/assist/Reminders.ts 的 Reminders.arm、Reminders.closeCard、Reminders.start
      *   src7/plugins/assist/index.ts 的 Assist.add
@@ -53,6 +54,7 @@ declare module 'cordis' {
      *   src7/plugins/journal/index.ts 的 Journal.record
      *   src7/plugins/memory/index.ts 的 Memory.onRequest
      *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.noteLimit
+     *   src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.onRequest
      *   src7/plugins/model-catalog/Notes.ts 的 ModelNotes.rate
      *   src7/plugins/model-catalog/index.ts 的 ModelCatalog.pull、apply
      *   src7/plugins/people/index.ts 的 People.resolve

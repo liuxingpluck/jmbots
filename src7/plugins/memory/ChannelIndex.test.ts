@@ -10,6 +10,7 @@ import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import type * as toolsModule from '../../Tools.ts';
 import type * as protocolModule from '../channels/index.ts';
+import type * as channelBackfillModule from './ChannelBackfill.ts';
 import * as channelIndexModule from './ChannelIndex.ts';
 import * as archiveModule from './FrontArchive.ts';
 import * as searchModule from './Search.ts';
@@ -29,7 +30,7 @@ interface Bench {
 
 
 /** 摆一个用例：内存库、假 ctx（记下监听和工具），挂上索引。 */
-function makeBench(): Bench {
+function makeBench(rust?: channelBackfillModule.ChannelBackfill): Bench {
   const handlers = new Map<string, ((payload: unknown) => void)[]>();
   const tools: toolsModule.ToolSpec[] = [];
   const ctx = {
@@ -51,7 +52,7 @@ function makeBench(): Bench {
   const archive = new archiveModule.FrontArchive(db, index);
   const unified = new searchModule.Search(ctx, {} as MemoryService, index, undefined, undefined, archive);
   unified.registerTools();
-  channelIndexModule.applyChannelIndex(ctx, index);
+  channelIndexModule.applyChannelIndex(ctx, index, rust);
   const emit = (name: string, payload: unknown): void => {
     for (const handler of handlers.get(name) ?? []) {
       handler(payload);
@@ -255,4 +256,28 @@ test('统一工具直接读前台编号，外来会话仍按渠道归属读取',
   expect(await get.run({ ref: '#10' }, owner, signal, 'get')).toContain('这场前台的归档');
   expect(await get.run({ ref: '#11' }, owner, signal, 'other')).toContain('不属于这场对话');
   await expect(get.run({ ref: '#10' }, guest, signal, 'forbidden')).rejects.toThrow('当前渠道聊天');
+});
+
+
+test('channel/history：历史进历史队列，已有的消息号跳过，有新增才请回填开跑', () => {
+  let resumed = 0;
+  const rust = { resume: () => { resumed += 1; }, wake: () => undefined } as unknown as channelBackfillModule.ChannelBackfill;
+  const bench = makeBench(rust);
+  const live = getMessage('om_live', 'oc_g', '实时收到的', '2026-11-19 10:00:00');
+  bench.emit('channel/listen', live);
+  expect(bench.index.getRustBatch(true, 10).length).toBe(1);
+
+  //M 历史里有一条和实时同一个消息号：不重复、不改成历史；另一条是新的，进历史队列。
+  const dup = getMessage('om_live', 'oc_g', '实时收到的', '2026-11-19 10:00:00');
+  const older = getMessage('om_old', 'oc_g', '进群以前的话', '2026-11-01 09:00:00');
+  bench.emit('channel/history', [older, dup]);
+
+  const history = bench.index.getRustBatch(false, 10);
+  expect(history.map((row) => row.text)).toEqual(['进群以前的话']);
+  expect(bench.index.getRustBatch(true, 10).map((row) => row.text)).toEqual(['实时收到的']);
+  expect(resumed).toBe(1);
+
+  //M 同一批再来一遍：没有新增，不再请回填。
+  bench.emit('channel/history', [older, dup]);
+  expect(resumed).toBe(1);
 });

@@ -79,6 +79,7 @@ function createFileChannel(ctx: cordis.Context): feishuModule.Feishu {
     apps: [{ appId: APP_ID, appSecret: 'x', bot: BOT }],
     people: PEOPLE,
     groups: GROUPS,
+    historyOnJoin: 0,
   };
   return new feishuModule.Feishu(ctx, config);
 }
@@ -327,7 +328,7 @@ function world(decision?: FakeDecision, extraBots: string[] = []): World {
   }
   const appConfig: feishuModule.FeishuApp = { appId: APP_ID, appSecret: 'x', bot: BOT, bots: extraBots };
   const config = {
-    domain: 'http://127.0.0.1:9', apps: [appConfig], people: PEOPLE, groups: GROUPS,
+    domain: 'http://127.0.0.1:9', apps: [appConfig], people: PEOPLE, groups: GROUPS, historyOnJoin: 0,
   };
   const feishu = new feishuModule.Feishu(ctx, config);
 

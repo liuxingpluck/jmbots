@@ -4,7 +4,7 @@
       "name": "approval/asked",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/approval/index.ts:66",
+      "declaredAt": "src7/plugins/approval/index.ts:71",
       "signature": "(pending: Pending) => void",
       "doc": "存完一件待确认的事（通知）。journal、feishu 听。",
       "params": [
@@ -19,7 +19,7 @@
         {
           "name": "Pending",
           "kind": "interface",
-          "site": "src7/plugins/approval/index.ts:112",
+          "site": "src7/plugins/approval/index.ts:117",
           "doc": "一件待确认的事。",
           "definition": "",
           "fields": [
@@ -28,98 +28,98 @@
               "optional": false,
               "type": "number",
               "doc": "号：从 1 往上，不复用，重启接着数。",
-              "site": "src7/plugins/approval/index.ts:114"
+              "site": "src7/plugins/approval/index.ts:119"
             },
             {
               "name": "kind",
               "optional": false,
               "type": "string",
               "doc": "谁提的：exec、run、update、review……",
-              "site": "src7/plugins/approval/index.ts:116"
+              "site": "src7/plugins/approval/index.ts:121"
             },
             {
               "name": "title",
               "optional": false,
               "type": "string",
               "doc": "一句话：要确认什么。",
-              "site": "src7/plugins/approval/index.ts:118"
+              "site": "src7/plugins/approval/index.ts:123"
             },
             {
               "name": "detail",
               "optional": false,
               "type": "string",
               "doc": "给用户看的细节，多行。",
-              "site": "src7/plugins/approval/index.ts:120"
+              "site": "src7/plugins/approval/index.ts:125"
             },
             {
               "name": "payload",
               "optional": false,
               "type": "unknown",
               "doc": "提的人自己放的，原样存成 JSON，决定后原样还给他。",
-              "site": "src7/plugins/approval/index.ts:122"
+              "site": "src7/plugins/approval/index.ts:127"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "哪个机器人的。",
-              "site": "src7/plugins/approval/index.ts:124"
+              "site": "src7/plugins/approval/index.ts:129"
             },
             {
               "name": "session",
               "optional": true,
               "type": "string",
               "doc": "哪场会话提的；命令窗口、更新提醒没有。",
-              "site": "src7/plugins/approval/index.ts:126"
+              "site": "src7/plugins/approval/index.ts:131"
             },
             {
               "name": "customer",
               "optional": true,
               "type": "string",
               "doc": "发起该项的客户号（会话上的 customer），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:128"
+              "site": "src7/plugins/approval/index.ts:133"
             },
             {
               "name": "actor",
               "optional": true,
               "type": "string",
               "doc": "发起人的个人身份（如飞书按人、微信按聊天），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:130"
+              "site": "src7/plugins/approval/index.ts:135"
             },
             {
               "name": "state",
               "optional": false,
               "type": "'waiting' | 'approved' | 'rejected'",
               "doc": "在等、同意了、拒绝了。",
-              "site": "src7/plugins/approval/index.ts:132"
+              "site": "src7/plugins/approval/index.ts:137"
             },
             {
               "name": "by",
               "optional": true,
               "type": "string",
               "doc": "谁定的：“HTTP”“cli 文字回复”“飞书卡片 ou_x”……",
-              "site": "src7/plugins/approval/index.ts:134"
+              "site": "src7/plugins/approval/index.ts:139"
             },
             {
               "name": "askedAt",
               "optional": false,
               "type": "number",
               "doc": "提的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:136"
+              "site": "src7/plugins/approval/index.ts:141"
             },
             {
               "name": "decidedAt",
               "optional": true,
               "type": "number",
               "doc": "定的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:138"
+              "site": "src7/plugins/approval/index.ts:143"
             },
             {
               "name": "card",
               "optional": false,
               "type": "cardUtils.CardData",
               "doc": "给用户点的卡片（utils/Card.ts）：网页审批面板、飞书卡片都照它画。",
-              "site": "src7/plugins/approval/index.ts:140"
+              "site": "src7/plugins/approval/index.ts:145"
             }
           ]
         }
@@ -128,7 +128,7 @@
         {
           "plugin": "approval",
           "function": "Approval.ask",
-          "site": "src7/plugins/approval/index.ts:719"
+          "site": "src7/plugins/approval/index.ts:760"
         }
       ],
       "listeners": [
@@ -148,7 +148,7 @@
       "name": "approval/decided",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/approval/index.ts:80",
+      "declaredAt": "src7/plugins/approval/index.ts:85",
       "signature": "(pending: Pending) => void",
       "doc": "定完一件事（通知），state 已是 approved / rejected。提的人（exec……）听它去做，journal、feishu 也听。",
       "params": [
@@ -163,7 +163,7 @@
         {
           "name": "Pending",
           "kind": "interface",
-          "site": "src7/plugins/approval/index.ts:112",
+          "site": "src7/plugins/approval/index.ts:117",
           "doc": "一件待确认的事。",
           "definition": "",
           "fields": [
@@ -172,98 +172,98 @@
               "optional": false,
               "type": "number",
               "doc": "号：从 1 往上，不复用，重启接着数。",
-              "site": "src7/plugins/approval/index.ts:114"
+              "site": "src7/plugins/approval/index.ts:119"
             },
             {
               "name": "kind",
               "optional": false,
               "type": "string",
               "doc": "谁提的：exec、run、update、review……",
-              "site": "src7/plugins/approval/index.ts:116"
+              "site": "src7/plugins/approval/index.ts:121"
             },
             {
               "name": "title",
               "optional": false,
               "type": "string",
               "doc": "一句话：要确认什么。",
-              "site": "src7/plugins/approval/index.ts:118"
+              "site": "src7/plugins/approval/index.ts:123"
             },
             {
               "name": "detail",
               "optional": false,
               "type": "string",
               "doc": "给用户看的细节，多行。",
-              "site": "src7/plugins/approval/index.ts:120"
+              "site": "src7/plugins/approval/index.ts:125"
             },
             {
               "name": "payload",
               "optional": false,
               "type": "unknown",
               "doc": "提的人自己放的，原样存成 JSON，决定后原样还给他。",
-              "site": "src7/plugins/approval/index.ts:122"
+              "site": "src7/plugins/approval/index.ts:127"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "哪个机器人的。",
-              "site": "src7/plugins/approval/index.ts:124"
+              "site": "src7/plugins/approval/index.ts:129"
             },
             {
               "name": "session",
               "optional": true,
               "type": "string",
               "doc": "哪场会话提的；命令窗口、更新提醒没有。",
-              "site": "src7/plugins/approval/index.ts:126"
+              "site": "src7/plugins/approval/index.ts:131"
             },
             {
               "name": "customer",
               "optional": true,
               "type": "string",
               "doc": "发起该项的客户号（会话上的 customer），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:128"
+              "site": "src7/plugins/approval/index.ts:133"
             },
             {
               "name": "actor",
               "optional": true,
               "type": "string",
               "doc": "发起人的个人身份（如飞书按人、微信按聊天），只读，核对用。",
-              "site": "src7/plugins/approval/index.ts:130"
+              "site": "src7/plugins/approval/index.ts:135"
             },
             {
               "name": "state",
               "optional": false,
               "type": "'waiting' | 'approved' | 'rejected'",
               "doc": "在等、同意了、拒绝了。",
-              "site": "src7/plugins/approval/index.ts:132"
+              "site": "src7/plugins/approval/index.ts:137"
             },
             {
               "name": "by",
               "optional": true,
               "type": "string",
               "doc": "谁定的：“HTTP”“cli 文字回复”“飞书卡片 ou_x”……",
-              "site": "src7/plugins/approval/index.ts:134"
+              "site": "src7/plugins/approval/index.ts:139"
             },
             {
               "name": "askedAt",
               "optional": false,
               "type": "number",
               "doc": "提的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:136"
+              "site": "src7/plugins/approval/index.ts:141"
             },
             {
               "name": "decidedAt",
               "optional": true,
               "type": "number",
               "doc": "定的时刻，毫秒。",
-              "site": "src7/plugins/approval/index.ts:138"
+              "site": "src7/plugins/approval/index.ts:143"
             },
             {
               "name": "card",
               "optional": false,
               "type": "cardUtils.CardData",
               "doc": "给用户点的卡片（utils/Card.ts）：网页审批面板、飞书卡片都照它画。",
-              "site": "src7/plugins/approval/index.ts:140"
+              "site": "src7/plugins/approval/index.ts:145"
             }
           ]
         }
@@ -272,7 +272,7 @@
         {
           "plugin": "approval",
           "function": "Approval.settle",
-          "site": "src7/plugins/approval/index.ts:813"
+          "site": "src7/plugins/approval/index.ts:854"
         }
       ],
       "listeners": [
@@ -289,7 +289,7 @@
         {
           "plugin": "exec",
           "function": "Exec.constructor",
-          "site": "src7/plugins/exec/index.ts:123"
+          "site": "src7/plugins/exec/index.ts:125"
         },
         {
           "plugin": "exec",
@@ -684,7 +684,7 @@
       "name": "approval/request",
       "mode": "请求-回执、挨个问",
       "pair": "approval/result",
-      "declaredAt": "src7/plugins/approval/index.ts:93",
+      "declaredAt": "src7/plugins/approval/index.ts:98",
       "signature": "(request: ApprovalRequest) => void | Promise<void>",
       "doc": "别的插件请审核办事（serial 发、等 approval/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听，按 action 调现有方法。",
       "params": [
@@ -699,7 +699,7 @@
         {
           "name": "ApprovalRequest",
           "kind": "type",
-          "site": "src7/plugins/approval/index.ts:200",
+          "site": "src7/plugins/approval/index.ts:205",
           "doc": "approval/request 的请求（契约 3.2 第 1 条）：按 action 分五种，各对应本服务一个现有方法。 review 要等审核小会话，input.signal 带会话停止和 exec 的等待时限。",
           "definition": "requestEventModule.RequestEnvelope & ( | { /** 审一条命令（review）。 */ action: 'review'; /** 命令、目录、机器人、会话、提的人、payload、问不问用户、停止信号。 */ input: ReviewInput; } | { /** 登记一件要用户点头的事（ask）。 */ action: 'ask'; /** 谁提的、标题、细节、payload、机器人、会话、卡片。 */ input: AskInput; } | { /** 定一件事（decide）。 */ action: 'decide'; /** 待确认的号。 */ id: number; /** true 同意，false 拒绝。 */ approve: boolean; /** 谁定的：“飞书卡片 ou_x”“命令窗口：发命令的停下了”…… */ by: string; } | { /** 作废一件还在等的事（close）。 */ action: 'close'; /** 待确认的号。 */ id: number; /** 一句原因，如“会话已结束”。 */ note: string; } | { /** 列还在等的（list）。 */ action: 'list'; /** 只要这一种（exec、update、review……）；不给是全部。 */ kind?: string; /** 只要这个机器人的；不给是全部。 */ bot?: string; } | { /** 查已有的定时提醒确认卡，供持久调度恢复。 */ action: 'reminder-card'; /** assist 的提醒记录号。 */ reminderId: number; /** 该提醒的机器人。 */ bot: string; } )",
           "fields": [
@@ -708,119 +708,119 @@
               "optional": false,
               "type": "'review'",
               "doc": "审一条命令（review）。",
-              "site": "src7/plugins/approval/index.ts:203"
+              "site": "src7/plugins/approval/index.ts:208"
             },
             {
               "name": "input",
               "optional": false,
               "type": "ReviewInput",
               "doc": "命令、目录、机器人、会话、提的人、payload、问不问用户、停止信号。",
-              "site": "src7/plugins/approval/index.ts:205"
+              "site": "src7/plugins/approval/index.ts:210"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'ask'",
               "doc": "登记一件要用户点头的事（ask）。",
-              "site": "src7/plugins/approval/index.ts:209"
+              "site": "src7/plugins/approval/index.ts:214"
             },
             {
               "name": "input",
               "optional": false,
               "type": "AskInput",
               "doc": "谁提的、标题、细节、payload、机器人、会话、卡片。",
-              "site": "src7/plugins/approval/index.ts:211"
+              "site": "src7/plugins/approval/index.ts:216"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'decide'",
               "doc": "定一件事（decide）。",
-              "site": "src7/plugins/approval/index.ts:215"
+              "site": "src7/plugins/approval/index.ts:220"
             },
             {
               "name": "id",
               "optional": false,
               "type": "number",
               "doc": "待确认的号。",
-              "site": "src7/plugins/approval/index.ts:217"
+              "site": "src7/plugins/approval/index.ts:222"
             },
             {
               "name": "approve",
               "optional": false,
               "type": "boolean",
               "doc": "true 同意，false 拒绝。",
-              "site": "src7/plugins/approval/index.ts:219"
+              "site": "src7/plugins/approval/index.ts:224"
             },
             {
               "name": "by",
               "optional": false,
               "type": "string",
               "doc": "谁定的：“飞书卡片 ou_x”“命令窗口：发命令的停下了”……",
-              "site": "src7/plugins/approval/index.ts:221"
+              "site": "src7/plugins/approval/index.ts:226"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'close'",
               "doc": "作废一件还在等的事（close）。",
-              "site": "src7/plugins/approval/index.ts:225"
+              "site": "src7/plugins/approval/index.ts:230"
             },
             {
               "name": "id",
               "optional": false,
               "type": "number",
               "doc": "待确认的号。",
-              "site": "src7/plugins/approval/index.ts:227"
+              "site": "src7/plugins/approval/index.ts:232"
             },
             {
               "name": "note",
               "optional": false,
               "type": "string",
               "doc": "一句原因，如“会话已结束”。",
-              "site": "src7/plugins/approval/index.ts:229"
+              "site": "src7/plugins/approval/index.ts:234"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'list'",
               "doc": "列还在等的（list）。",
-              "site": "src7/plugins/approval/index.ts:233"
+              "site": "src7/plugins/approval/index.ts:238"
             },
             {
               "name": "kind",
               "optional": true,
               "type": "string",
               "doc": "只要这一种（exec、update、review……）；不给是全部。",
-              "site": "src7/plugins/approval/index.ts:235"
+              "site": "src7/plugins/approval/index.ts:240"
             },
             {
               "name": "bot",
               "optional": true,
               "type": "string",
               "doc": "只要这个机器人的；不给是全部。",
-              "site": "src7/plugins/approval/index.ts:237"
+              "site": "src7/plugins/approval/index.ts:242"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'reminder-card'",
               "doc": "查已有的定时提醒确认卡，供持久调度恢复。",
-              "site": "src7/plugins/approval/index.ts:241"
+              "site": "src7/plugins/approval/index.ts:246"
             },
             {
               "name": "reminderId",
               "optional": false,
               "type": "number",
               "doc": "assist 的提醒记录号。",
-              "site": "src7/plugins/approval/index.ts:243"
+              "site": "src7/plugins/approval/index.ts:248"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "该提醒的机器人。",
-              "site": "src7/plugins/approval/index.ts:245"
+              "site": "src7/plugins/approval/index.ts:250"
             }
           ]
         }
@@ -901,7 +901,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:412"
+          "site": "src7/plugins/approval/index.ts:436"
         }
       ]
     },
@@ -909,7 +909,7 @@
       "name": "approval/result",
       "mode": "请求-回执",
       "pair": "approval/request",
-      "declaredAt": "src7/plugins/approval/index.ts:106",
+      "declaredAt": "src7/plugins/approval/index.ts:111",
       "signature": "(result: ApprovalResult) => void",
       "doc": "approval/request 的回执（emit），按 requestId 配对。",
       "params": [
@@ -924,7 +924,7 @@
         {
           "name": "ApprovalResult",
           "kind": "interface",
-          "site": "src7/plugins/approval/index.ts:250",
+          "site": "src7/plugins/approval/index.ts:255",
           "doc": "approval/result 的回执：按请求的 action 带回对应的一项，没办成的写 error。",
           "definition": "",
           "fields": [
@@ -933,35 +933,35 @@
               "optional": true,
               "type": "Verdict",
               "doc": "review：审的结论。",
-              "site": "src7/plugins/approval/index.ts:252"
+              "site": "src7/plugins/approval/index.ts:257"
             },
             {
               "name": "pending",
               "optional": true,
               "type": "Pending",
               "doc": "ask：新登记的待确认。",
-              "site": "src7/plugins/approval/index.ts:254"
+              "site": "src7/plugins/approval/index.ts:259"
             },
             {
               "name": "settled",
               "optional": true,
               "type": "Pending",
               "doc": "decide、close：定好的那件。",
-              "site": "src7/plugins/approval/index.ts:256"
+              "site": "src7/plugins/approval/index.ts:261"
             },
             {
               "name": "items",
               "optional": true,
               "type": "Pending[]",
               "doc": "list：还在等的，号从小到大。",
-              "site": "src7/plugins/approval/index.ts:258"
+              "site": "src7/plugins/approval/index.ts:263"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "decide、close 找不到、已经定过的原因；办的时候出错的原话。",
-              "site": "src7/plugins/approval/index.ts:260"
+              "site": "src7/plugins/approval/index.ts:265"
             }
           ]
         }
@@ -970,7 +970,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:412"
+          "site": "src7/plugins/approval/index.ts:436"
         }
       ],
       "listeners": [
@@ -1472,7 +1472,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:425"
+          "site": "src7/plugins/approval/index.ts:449"
         },
         {
           "plugin": "relay",
@@ -1794,12 +1794,12 @@
         {
           "plugin": "approval",
           "function": "Approval.ask",
-          "site": "src7/plugins/approval/index.ts:741"
+          "site": "src7/plugins/approval/index.ts:782"
         },
         {
           "plugin": "approval",
           "function": "Approval.answer",
-          "site": "src7/plugins/approval/index.ts:1135"
+          "site": "src7/plugins/approval/index.ts:1190"
         },
         {
           "plugin": "base-bridge",
@@ -1936,7 +1936,7 @@
       "name": "channel/direct",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:48",
+      "declaredAt": "src7/plugins/channels/index.ts:53",
       "signature": "(message: messageModule.ChannelMessage, control?: messageModule.ChannelMessageControl) => void | Promise<void>",
       "doc": "私聊机器人（飞书 p2p、微信、网页、命令行、语音；语音半句提前开工的带 routing.partial）。渠道存下原件后发，挨个问： approval 先看是不是“同意 3”这类批复，bots 再按 targetBots 逐个机器人认领。 各渠道（cli、feishu、programs、voice、web-api、wechat）都经 emitInbound 发。",
       "params": [
@@ -1957,7 +1957,7 @@
         {
           "name": "ChannelMessage",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:106",
+          "site": "src7/plugins/channels/Message.ts:107",
           "doc": "渠道发出的标准消息（v: 1）。",
           "definition": "",
           "fields": [
@@ -1966,161 +1966,168 @@
               "optional": false,
               "type": "1",
               "doc": "协议版本。",
-              "site": "src7/plugins/channels/Message.ts:108"
+              "site": "src7/plugins/channels/Message.ts:109"
             },
             {
               "name": "messageId",
               "optional": false,
               "type": "string",
               "doc": "渠道范围稳定 ID：推荐 JSON.stringify([channel, accountId, nativeId])。",
-              "site": "src7/plugins/channels/Message.ts:110"
+              "site": "src7/plugins/channels/Message.ts:111"
             },
             {
               "name": "nativeId",
               "optional": false,
               "type": "string | null",
               "doc": "平台原始消息 ID；无原生 ID 时首次生成 UUID 持久复用。",
-              "site": "src7/plugins/channels/Message.ts:112"
+              "site": "src7/plugins/channels/Message.ts:113"
             },
             {
               "name": "channel",
               "optional": false,
               "type": "string",
               "doc": "渠道名：feishu / wechat / http / cli。",
-              "site": "src7/plugins/channels/Message.ts:114"
+              "site": "src7/plugins/channels/Message.ts:115"
             },
             {
               "name": "accountId",
               "optional": false,
               "type": "string",
               "doc": "平台账号 ID：飞书 appId、微信 account 等。",
-              "site": "src7/plugins/channels/Message.ts:116"
+              "site": "src7/plugins/channels/Message.ts:117"
+            },
+            {
+              "name": "accountName",
+              "optional": true,
+              "type": "string",
+              "doc": "收这条消息的账号叫什么，给人看的（飞书是 bot 名）；没有就不填。",
+              "site": "src7/plugins/channels/Message.ts:119"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "聊天稳定 ID。",
-              "site": "src7/plugins/channels/Message.ts:118"
+              "site": "src7/plugins/channels/Message.ts:121"
             },
             {
               "name": "chatType",
               "optional": false,
               "type": "ChannelChatType",
               "doc": "聊天种类。",
-              "site": "src7/plugins/channels/Message.ts:120"
+              "site": "src7/plugins/channels/Message.ts:123"
             },
             {
               "name": "sender",
               "optional": false,
               "type": "{ id: string; name?: string }",
               "doc": "发送者渠道原始 ID 和展示名。",
-              "site": "src7/plugins/channels/Message.ts:122"
+              "site": "src7/plugins/channels/Message.ts:125"
             },
             {
               "name": "role",
               "optional": false,
               "type": "ChannelRole",
               "doc": "身份档位：由平台可信配置算得，缺证明时为 guest。",
-              "site": "src7/plugins/channels/Message.ts:124"
+              "site": "src7/plugins/channels/Message.ts:127"
             },
             {
               "name": "targetBots",
               "optional": false,
               "type": "string[]",
               "doc": "经可信配置和 @ 映射规范化去重后的目标机器人名单。 direct、mention：要回话的机器人；listen：要把这句记进前台当背景（或判断接不接）的机器人， 飞书是登记了 listen: all / judge 的群里本应用的机器人，没登记的群、语音只入档的整句是空的（只给记录类插件记）。",
-              "site": "src7/plugins/channels/Message.ts:130"
+              "site": "src7/plugins/channels/Message.ts:133"
             },
             {
               "name": "mentions",
               "optional": false,
               "type": "ChannelMention[]",
               "doc": "",
-              "site": "src7/plugins/channels/Message.ts:132"
+              "site": "src7/plugins/channels/Message.ts:135"
             },
             {
               "name": "rawText",
               "optional": false,
               "type": "string",
               "doc": "保留原始可读文本。",
-              "site": "src7/plugins/channels/Message.ts:134"
+              "site": "src7/plugins/channels/Message.ts:137"
             },
             {
               "name": "text",
               "optional": false,
               "type": "string",
               "doc": "面向模型的规范化文本（不再用 @本机路径 触发外发附件）。",
-              "site": "src7/plugins/channels/Message.ts:136"
+              "site": "src7/plugins/channels/Message.ts:139"
             },
             {
               "name": "attachments",
               "optional": false,
               "type": "ChannelAttachment[]",
               "doc": "渠道保存的附件列表。",
-              "site": "src7/plugins/channels/Message.ts:138"
+              "site": "src7/plugins/channels/Message.ts:141"
             },
             {
               "name": "createdAt",
               "optional": false,
               "type": "number",
               "doc": "平台原始创建时间（UTC 毫秒）；缺失时用 receivedAt。",
-              "site": "src7/plugins/channels/Message.ts:140"
+              "site": "src7/plugins/channels/Message.ts:143"
             },
             {
               "name": "receivedAt",
               "optional": false,
               "type": "number",
               "doc": "本机收到时间（UTC 毫秒）。",
-              "site": "src7/plugins/channels/Message.ts:142"
+              "site": "src7/plugins/channels/Message.ts:145"
             },
             {
               "name": "timeSource",
               "optional": false,
               "type": "'provider' | 'received'",
               "doc": "createdAt 的来源。",
-              "site": "src7/plugins/channels/Message.ts:144"
+              "site": "src7/plugins/channels/Message.ts:147"
             },
             {
               "name": "replyTo",
               "optional": false,
               "type": "ChannelReplyTo | null",
               "doc": "引用原消息（没有为 null）。",
-              "site": "src7/plugins/channels/Message.ts:146"
+              "site": "src7/plugins/channels/Message.ts:149"
             },
             {
               "name": "origin",
               "optional": false,
               "type": "ChannelOrigin",
               "doc": "不可变深拷贝的原渠道兼容地址。",
-              "site": "src7/plugins/channels/Message.ts:148"
+              "site": "src7/plugins/channels/Message.ts:151"
             },
             {
               "name": "visibility",
               "optional": false,
               "type": "ChannelVisibility",
               "doc": "渠道与权限插件计算出的授权范围。",
-              "site": "src7/plugins/channels/Message.ts:150"
+              "site": "src7/plugins/channels/Message.ts:153"
             },
             {
               "name": "routing",
               "optional": false,
               "type": "ChannelRouting",
               "doc": "群监听与路由线索。",
-              "site": "src7/plugins/channels/Message.ts:152"
+              "site": "src7/plugins/channels/Message.ts:155"
             },
             {
               "name": "view",
               "optional": true,
               "type": "ChannelView",
               "doc": "网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。",
-              "site": "src7/plugins/channels/Message.ts:154"
+              "site": "src7/plugins/channels/Message.ts:157"
             }
           ]
         },
         {
           "name": "ChannelMessageControl",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:176",
+          "site": "src7/plugins/channels/Message.ts:179",
           "doc": "随进来的三个事件传递的可变协调对象。",
           "definition": "",
           "fields": [
@@ -2129,14 +2136,14 @@
               "optional": true,
               "type": "boolean",
               "doc": "approval 消息级命令（如“同意 3”）已消费整条消息，不再进任何机器人会话。",
-              "site": "src7/plugins/channels/Message.ts:178"
+              "site": "src7/plugins/channels/Message.ts:181"
             },
             {
               "name": "claims",
               "optional": false,
               "type": "ChannelClaimRecord[]",
               "doc": "每个机器人独立认领写入的结果列表。",
-              "site": "src7/plugins/channels/Message.ts:180"
+              "site": "src7/plugins/channels/Message.ts:183"
             }
           ]
         }
@@ -2145,14 +2152,19 @@
         {
           "plugin": "channels",
           "function": "emitInbound",
-          "site": "src7/plugins/channels/Message.ts:298"
+          "site": "src7/plugins/channels/Message.ts:301"
         }
       ],
       "listeners": [
         {
           "plugin": "approval",
+          "function": "Grants.constructor",
+          "site": "src7/plugins/approval/Grants.ts:97"
+        },
+        {
+          "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:421"
+          "site": "src7/plugins/approval/index.ts:445"
         },
         {
           "plugin": "bots",
@@ -2182,12 +2194,224 @@
       ]
     },
     {
+      "name": "channel/history",
+      "mode": "挨个问",
+      "pair": "",
+      "declaredAt": "src7/plugins/channels/index.ts:97",
+      "signature": "(messages: messageModule.ChannelMessage[]) => void | Promise<void>",
+      "doc": "渠道拉回来的一批历史消息（飞书 im/v1/messages 拉群历史：机器人进群以前、服务停着时的话），按时间从旧到新。 不是新来的话：不触发会话、不回话、不问 approval，bots 不听；只给记录类插件补记（memory 入历史回填队列，按消息号去重）。",
+      "params": [
+        {
+          "name": "messages",
+          "optional": false,
+          "type": "messageModule.ChannelMessage[]",
+          "doc": ""
+        }
+      ],
+      "types": [
+        {
+          "name": "ChannelMessage",
+          "kind": "interface",
+          "site": "src7/plugins/channels/Message.ts:107",
+          "doc": "渠道发出的标准消息（v: 1）。",
+          "definition": "",
+          "fields": [
+            {
+              "name": "v",
+              "optional": false,
+              "type": "1",
+              "doc": "协议版本。",
+              "site": "src7/plugins/channels/Message.ts:109"
+            },
+            {
+              "name": "messageId",
+              "optional": false,
+              "type": "string",
+              "doc": "渠道范围稳定 ID：推荐 JSON.stringify([channel, accountId, nativeId])。",
+              "site": "src7/plugins/channels/Message.ts:111"
+            },
+            {
+              "name": "nativeId",
+              "optional": false,
+              "type": "string | null",
+              "doc": "平台原始消息 ID；无原生 ID 时首次生成 UUID 持久复用。",
+              "site": "src7/plugins/channels/Message.ts:113"
+            },
+            {
+              "name": "channel",
+              "optional": false,
+              "type": "string",
+              "doc": "渠道名：feishu / wechat / http / cli。",
+              "site": "src7/plugins/channels/Message.ts:115"
+            },
+            {
+              "name": "accountId",
+              "optional": false,
+              "type": "string",
+              "doc": "平台账号 ID：飞书 appId、微信 account 等。",
+              "site": "src7/plugins/channels/Message.ts:117"
+            },
+            {
+              "name": "accountName",
+              "optional": true,
+              "type": "string",
+              "doc": "收这条消息的账号叫什么，给人看的（飞书是 bot 名）；没有就不填。",
+              "site": "src7/plugins/channels/Message.ts:119"
+            },
+            {
+              "name": "chatId",
+              "optional": false,
+              "type": "string",
+              "doc": "聊天稳定 ID。",
+              "site": "src7/plugins/channels/Message.ts:121"
+            },
+            {
+              "name": "chatType",
+              "optional": false,
+              "type": "ChannelChatType",
+              "doc": "聊天种类。",
+              "site": "src7/plugins/channels/Message.ts:123"
+            },
+            {
+              "name": "sender",
+              "optional": false,
+              "type": "{ id: string; name?: string }",
+              "doc": "发送者渠道原始 ID 和展示名。",
+              "site": "src7/plugins/channels/Message.ts:125"
+            },
+            {
+              "name": "role",
+              "optional": false,
+              "type": "ChannelRole",
+              "doc": "身份档位：由平台可信配置算得，缺证明时为 guest。",
+              "site": "src7/plugins/channels/Message.ts:127"
+            },
+            {
+              "name": "targetBots",
+              "optional": false,
+              "type": "string[]",
+              "doc": "经可信配置和 @ 映射规范化去重后的目标机器人名单。 direct、mention：要回话的机器人；listen：要把这句记进前台当背景（或判断接不接）的机器人， 飞书是登记了 listen: all / judge 的群里本应用的机器人，没登记的群、语音只入档的整句是空的（只给记录类插件记）。",
+              "site": "src7/plugins/channels/Message.ts:133"
+            },
+            {
+              "name": "mentions",
+              "optional": false,
+              "type": "ChannelMention[]",
+              "doc": "",
+              "site": "src7/plugins/channels/Message.ts:135"
+            },
+            {
+              "name": "rawText",
+              "optional": false,
+              "type": "string",
+              "doc": "保留原始可读文本。",
+              "site": "src7/plugins/channels/Message.ts:137"
+            },
+            {
+              "name": "text",
+              "optional": false,
+              "type": "string",
+              "doc": "面向模型的规范化文本（不再用 @本机路径 触发外发附件）。",
+              "site": "src7/plugins/channels/Message.ts:139"
+            },
+            {
+              "name": "attachments",
+              "optional": false,
+              "type": "ChannelAttachment[]",
+              "doc": "渠道保存的附件列表。",
+              "site": "src7/plugins/channels/Message.ts:141"
+            },
+            {
+              "name": "createdAt",
+              "optional": false,
+              "type": "number",
+              "doc": "平台原始创建时间（UTC 毫秒）；缺失时用 receivedAt。",
+              "site": "src7/plugins/channels/Message.ts:143"
+            },
+            {
+              "name": "receivedAt",
+              "optional": false,
+              "type": "number",
+              "doc": "本机收到时间（UTC 毫秒）。",
+              "site": "src7/plugins/channels/Message.ts:145"
+            },
+            {
+              "name": "timeSource",
+              "optional": false,
+              "type": "'provider' | 'received'",
+              "doc": "createdAt 的来源。",
+              "site": "src7/plugins/channels/Message.ts:147"
+            },
+            {
+              "name": "replyTo",
+              "optional": false,
+              "type": "ChannelReplyTo | null",
+              "doc": "引用原消息（没有为 null）。",
+              "site": "src7/plugins/channels/Message.ts:149"
+            },
+            {
+              "name": "origin",
+              "optional": false,
+              "type": "ChannelOrigin",
+              "doc": "不可变深拷贝的原渠道兼容地址。",
+              "site": "src7/plugins/channels/Message.ts:151"
+            },
+            {
+              "name": "visibility",
+              "optional": false,
+              "type": "ChannelVisibility",
+              "doc": "渠道与权限插件计算出的授权范围。",
+              "site": "src7/plugins/channels/Message.ts:153"
+            },
+            {
+              "name": "routing",
+              "optional": false,
+              "type": "ChannelRouting",
+              "doc": "群监听与路由线索。",
+              "site": "src7/plugins/channels/Message.ts:155"
+            },
+            {
+              "name": "view",
+              "optional": true,
+              "type": "ChannelView",
+              "doc": "网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。",
+              "site": "src7/plugins/channels/Message.ts:157"
+            }
+          ]
+        }
+      ],
+      "senders": [
+        {
+          "plugin": "feishu",
+          "function": "FeishuHistoryPull.pull",
+          "site": "src7/plugins/feishu/HistoryPull.ts:135"
+        },
+        {
+          "plugin": "feishu",
+          "function": "FeishuHistoryPull.pull",
+          "site": "src7/plugins/feishu/HistoryPull.ts:140"
+        }
+      ],
+      "listeners": [
+        {
+          "plugin": "channels",
+          "function": "applyChatArchive",
+          "site": "src7/plugins/channels/ArchiveListen.ts:49"
+        },
+        {
+          "plugin": "memory",
+          "function": "applyChannelIndex",
+          "site": "src7/plugins/memory/ChannelIndex.ts:627"
+        }
+      ]
+    },
+    {
       "name": "channel/listen",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:78",
+      "declaredAt": "src7/plugins/channels/index.ts:85",
       "signature": "(message: messageModule.ChannelMessage, control?: messageModule.ChannelMessageControl) => void | Promise<void>",
-      "doc": "只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不听。 bots 把 targetBots 里的机器人记进前台当背景或判断要不要接（targetBots 空的谁都不进）；memory、网页照记。 各渠道（feishu、programs、voice）经 emitInbound 发。",
+      "doc": "只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不审批它，只由 Grants 给地址写上授权目录。 bots 把 targetBots 里的机器人记进前台当背景或判断要不要接（targetBots 空的谁都不进）；memory、网页照记。 各渠道（feishu、programs、voice）经 emitInbound 发。",
       "params": [
         {
           "name": "message",
@@ -2206,7 +2430,7 @@
         {
           "name": "ChannelMessage",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:106",
+          "site": "src7/plugins/channels/Message.ts:107",
           "doc": "渠道发出的标准消息（v: 1）。",
           "definition": "",
           "fields": [
@@ -2215,161 +2439,168 @@
               "optional": false,
               "type": "1",
               "doc": "协议版本。",
-              "site": "src7/plugins/channels/Message.ts:108"
+              "site": "src7/plugins/channels/Message.ts:109"
             },
             {
               "name": "messageId",
               "optional": false,
               "type": "string",
               "doc": "渠道范围稳定 ID：推荐 JSON.stringify([channel, accountId, nativeId])。",
-              "site": "src7/plugins/channels/Message.ts:110"
+              "site": "src7/plugins/channels/Message.ts:111"
             },
             {
               "name": "nativeId",
               "optional": false,
               "type": "string | null",
               "doc": "平台原始消息 ID；无原生 ID 时首次生成 UUID 持久复用。",
-              "site": "src7/plugins/channels/Message.ts:112"
+              "site": "src7/plugins/channels/Message.ts:113"
             },
             {
               "name": "channel",
               "optional": false,
               "type": "string",
               "doc": "渠道名：feishu / wechat / http / cli。",
-              "site": "src7/plugins/channels/Message.ts:114"
+              "site": "src7/plugins/channels/Message.ts:115"
             },
             {
               "name": "accountId",
               "optional": false,
               "type": "string",
               "doc": "平台账号 ID：飞书 appId、微信 account 等。",
-              "site": "src7/plugins/channels/Message.ts:116"
+              "site": "src7/plugins/channels/Message.ts:117"
+            },
+            {
+              "name": "accountName",
+              "optional": true,
+              "type": "string",
+              "doc": "收这条消息的账号叫什么，给人看的（飞书是 bot 名）；没有就不填。",
+              "site": "src7/plugins/channels/Message.ts:119"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "聊天稳定 ID。",
-              "site": "src7/plugins/channels/Message.ts:118"
+              "site": "src7/plugins/channels/Message.ts:121"
             },
             {
               "name": "chatType",
               "optional": false,
               "type": "ChannelChatType",
               "doc": "聊天种类。",
-              "site": "src7/plugins/channels/Message.ts:120"
+              "site": "src7/plugins/channels/Message.ts:123"
             },
             {
               "name": "sender",
               "optional": false,
               "type": "{ id: string; name?: string }",
               "doc": "发送者渠道原始 ID 和展示名。",
-              "site": "src7/plugins/channels/Message.ts:122"
+              "site": "src7/plugins/channels/Message.ts:125"
             },
             {
               "name": "role",
               "optional": false,
               "type": "ChannelRole",
               "doc": "身份档位：由平台可信配置算得，缺证明时为 guest。",
-              "site": "src7/plugins/channels/Message.ts:124"
+              "site": "src7/plugins/channels/Message.ts:127"
             },
             {
               "name": "targetBots",
               "optional": false,
               "type": "string[]",
               "doc": "经可信配置和 @ 映射规范化去重后的目标机器人名单。 direct、mention：要回话的机器人；listen：要把这句记进前台当背景（或判断接不接）的机器人， 飞书是登记了 listen: all / judge 的群里本应用的机器人，没登记的群、语音只入档的整句是空的（只给记录类插件记）。",
-              "site": "src7/plugins/channels/Message.ts:130"
+              "site": "src7/plugins/channels/Message.ts:133"
             },
             {
               "name": "mentions",
               "optional": false,
               "type": "ChannelMention[]",
               "doc": "",
-              "site": "src7/plugins/channels/Message.ts:132"
+              "site": "src7/plugins/channels/Message.ts:135"
             },
             {
               "name": "rawText",
               "optional": false,
               "type": "string",
               "doc": "保留原始可读文本。",
-              "site": "src7/plugins/channels/Message.ts:134"
+              "site": "src7/plugins/channels/Message.ts:137"
             },
             {
               "name": "text",
               "optional": false,
               "type": "string",
               "doc": "面向模型的规范化文本（不再用 @本机路径 触发外发附件）。",
-              "site": "src7/plugins/channels/Message.ts:136"
+              "site": "src7/plugins/channels/Message.ts:139"
             },
             {
               "name": "attachments",
               "optional": false,
               "type": "ChannelAttachment[]",
               "doc": "渠道保存的附件列表。",
-              "site": "src7/plugins/channels/Message.ts:138"
+              "site": "src7/plugins/channels/Message.ts:141"
             },
             {
               "name": "createdAt",
               "optional": false,
               "type": "number",
               "doc": "平台原始创建时间（UTC 毫秒）；缺失时用 receivedAt。",
-              "site": "src7/plugins/channels/Message.ts:140"
+              "site": "src7/plugins/channels/Message.ts:143"
             },
             {
               "name": "receivedAt",
               "optional": false,
               "type": "number",
               "doc": "本机收到时间（UTC 毫秒）。",
-              "site": "src7/plugins/channels/Message.ts:142"
+              "site": "src7/plugins/channels/Message.ts:145"
             },
             {
               "name": "timeSource",
               "optional": false,
               "type": "'provider' | 'received'",
               "doc": "createdAt 的来源。",
-              "site": "src7/plugins/channels/Message.ts:144"
+              "site": "src7/plugins/channels/Message.ts:147"
             },
             {
               "name": "replyTo",
               "optional": false,
               "type": "ChannelReplyTo | null",
               "doc": "引用原消息（没有为 null）。",
-              "site": "src7/plugins/channels/Message.ts:146"
+              "site": "src7/plugins/channels/Message.ts:149"
             },
             {
               "name": "origin",
               "optional": false,
               "type": "ChannelOrigin",
               "doc": "不可变深拷贝的原渠道兼容地址。",
-              "site": "src7/plugins/channels/Message.ts:148"
+              "site": "src7/plugins/channels/Message.ts:151"
             },
             {
               "name": "visibility",
               "optional": false,
               "type": "ChannelVisibility",
               "doc": "渠道与权限插件计算出的授权范围。",
-              "site": "src7/plugins/channels/Message.ts:150"
+              "site": "src7/plugins/channels/Message.ts:153"
             },
             {
               "name": "routing",
               "optional": false,
               "type": "ChannelRouting",
               "doc": "群监听与路由线索。",
-              "site": "src7/plugins/channels/Message.ts:152"
+              "site": "src7/plugins/channels/Message.ts:155"
             },
             {
               "name": "view",
               "optional": true,
               "type": "ChannelView",
               "doc": "网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。",
-              "site": "src7/plugins/channels/Message.ts:154"
+              "site": "src7/plugins/channels/Message.ts:157"
             }
           ]
         },
         {
           "name": "ChannelMessageControl",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:176",
+          "site": "src7/plugins/channels/Message.ts:179",
           "doc": "随进来的三个事件传递的可变协调对象。",
           "definition": "",
           "fields": [
@@ -2378,14 +2609,14 @@
               "optional": true,
               "type": "boolean",
               "doc": "approval 消息级命令（如“同意 3”）已消费整条消息，不再进任何机器人会话。",
-              "site": "src7/plugins/channels/Message.ts:178"
+              "site": "src7/plugins/channels/Message.ts:181"
             },
             {
               "name": "claims",
               "optional": false,
               "type": "ChannelClaimRecord[]",
               "doc": "每个机器人独立认领写入的结果列表。",
-              "site": "src7/plugins/channels/Message.ts:180"
+              "site": "src7/plugins/channels/Message.ts:183"
             }
           ]
         }
@@ -2394,10 +2625,15 @@
         {
           "plugin": "channels",
           "function": "emitInbound",
-          "site": "src7/plugins/channels/Message.ts:287"
+          "site": "src7/plugins/channels/Message.ts:290"
         }
       ],
       "listeners": [
+        {
+          "plugin": "approval",
+          "function": "Grants.constructor",
+          "site": "src7/plugins/approval/Grants.ts:99"
+        },
         {
           "plugin": "bots",
           "function": "Bots.constructor",
@@ -2424,7 +2660,7 @@
       "name": "channel/mention",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:63",
+      "declaredAt": "src7/plugins/channels/index.ts:69",
       "signature": "(message: messageModule.ChannelMessage, control?: messageModule.ChannelMessageControl) => void | Promise<void>",
       "doc": "群里叫了机器人：@ 了它，或引用了它的话。和 channel/direct 一样挨个问：approval 先看批复，bots 认领 targetBots 里被叫到的机器人。 各渠道（feishu、programs、wechat）经 emitInbound 发。",
       "params": [
@@ -2445,7 +2681,7 @@
         {
           "name": "ChannelMessage",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:106",
+          "site": "src7/plugins/channels/Message.ts:107",
           "doc": "渠道发出的标准消息（v: 1）。",
           "definition": "",
           "fields": [
@@ -2454,161 +2690,168 @@
               "optional": false,
               "type": "1",
               "doc": "协议版本。",
-              "site": "src7/plugins/channels/Message.ts:108"
+              "site": "src7/plugins/channels/Message.ts:109"
             },
             {
               "name": "messageId",
               "optional": false,
               "type": "string",
               "doc": "渠道范围稳定 ID：推荐 JSON.stringify([channel, accountId, nativeId])。",
-              "site": "src7/plugins/channels/Message.ts:110"
+              "site": "src7/plugins/channels/Message.ts:111"
             },
             {
               "name": "nativeId",
               "optional": false,
               "type": "string | null",
               "doc": "平台原始消息 ID；无原生 ID 时首次生成 UUID 持久复用。",
-              "site": "src7/plugins/channels/Message.ts:112"
+              "site": "src7/plugins/channels/Message.ts:113"
             },
             {
               "name": "channel",
               "optional": false,
               "type": "string",
               "doc": "渠道名：feishu / wechat / http / cli。",
-              "site": "src7/plugins/channels/Message.ts:114"
+              "site": "src7/plugins/channels/Message.ts:115"
             },
             {
               "name": "accountId",
               "optional": false,
               "type": "string",
               "doc": "平台账号 ID：飞书 appId、微信 account 等。",
-              "site": "src7/plugins/channels/Message.ts:116"
+              "site": "src7/plugins/channels/Message.ts:117"
+            },
+            {
+              "name": "accountName",
+              "optional": true,
+              "type": "string",
+              "doc": "收这条消息的账号叫什么，给人看的（飞书是 bot 名）；没有就不填。",
+              "site": "src7/plugins/channels/Message.ts:119"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "聊天稳定 ID。",
-              "site": "src7/plugins/channels/Message.ts:118"
+              "site": "src7/plugins/channels/Message.ts:121"
             },
             {
               "name": "chatType",
               "optional": false,
               "type": "ChannelChatType",
               "doc": "聊天种类。",
-              "site": "src7/plugins/channels/Message.ts:120"
+              "site": "src7/plugins/channels/Message.ts:123"
             },
             {
               "name": "sender",
               "optional": false,
               "type": "{ id: string; name?: string }",
               "doc": "发送者渠道原始 ID 和展示名。",
-              "site": "src7/plugins/channels/Message.ts:122"
+              "site": "src7/plugins/channels/Message.ts:125"
             },
             {
               "name": "role",
               "optional": false,
               "type": "ChannelRole",
               "doc": "身份档位：由平台可信配置算得，缺证明时为 guest。",
-              "site": "src7/plugins/channels/Message.ts:124"
+              "site": "src7/plugins/channels/Message.ts:127"
             },
             {
               "name": "targetBots",
               "optional": false,
               "type": "string[]",
               "doc": "经可信配置和 @ 映射规范化去重后的目标机器人名单。 direct、mention：要回话的机器人；listen：要把这句记进前台当背景（或判断接不接）的机器人， 飞书是登记了 listen: all / judge 的群里本应用的机器人，没登记的群、语音只入档的整句是空的（只给记录类插件记）。",
-              "site": "src7/plugins/channels/Message.ts:130"
+              "site": "src7/plugins/channels/Message.ts:133"
             },
             {
               "name": "mentions",
               "optional": false,
               "type": "ChannelMention[]",
               "doc": "",
-              "site": "src7/plugins/channels/Message.ts:132"
+              "site": "src7/plugins/channels/Message.ts:135"
             },
             {
               "name": "rawText",
               "optional": false,
               "type": "string",
               "doc": "保留原始可读文本。",
-              "site": "src7/plugins/channels/Message.ts:134"
+              "site": "src7/plugins/channels/Message.ts:137"
             },
             {
               "name": "text",
               "optional": false,
               "type": "string",
               "doc": "面向模型的规范化文本（不再用 @本机路径 触发外发附件）。",
-              "site": "src7/plugins/channels/Message.ts:136"
+              "site": "src7/plugins/channels/Message.ts:139"
             },
             {
               "name": "attachments",
               "optional": false,
               "type": "ChannelAttachment[]",
               "doc": "渠道保存的附件列表。",
-              "site": "src7/plugins/channels/Message.ts:138"
+              "site": "src7/plugins/channels/Message.ts:141"
             },
             {
               "name": "createdAt",
               "optional": false,
               "type": "number",
               "doc": "平台原始创建时间（UTC 毫秒）；缺失时用 receivedAt。",
-              "site": "src7/plugins/channels/Message.ts:140"
+              "site": "src7/plugins/channels/Message.ts:143"
             },
             {
               "name": "receivedAt",
               "optional": false,
               "type": "number",
               "doc": "本机收到时间（UTC 毫秒）。",
-              "site": "src7/plugins/channels/Message.ts:142"
+              "site": "src7/plugins/channels/Message.ts:145"
             },
             {
               "name": "timeSource",
               "optional": false,
               "type": "'provider' | 'received'",
               "doc": "createdAt 的来源。",
-              "site": "src7/plugins/channels/Message.ts:144"
+              "site": "src7/plugins/channels/Message.ts:147"
             },
             {
               "name": "replyTo",
               "optional": false,
               "type": "ChannelReplyTo | null",
               "doc": "引用原消息（没有为 null）。",
-              "site": "src7/plugins/channels/Message.ts:146"
+              "site": "src7/plugins/channels/Message.ts:149"
             },
             {
               "name": "origin",
               "optional": false,
               "type": "ChannelOrigin",
               "doc": "不可变深拷贝的原渠道兼容地址。",
-              "site": "src7/plugins/channels/Message.ts:148"
+              "site": "src7/plugins/channels/Message.ts:151"
             },
             {
               "name": "visibility",
               "optional": false,
               "type": "ChannelVisibility",
               "doc": "渠道与权限插件计算出的授权范围。",
-              "site": "src7/plugins/channels/Message.ts:150"
+              "site": "src7/plugins/channels/Message.ts:153"
             },
             {
               "name": "routing",
               "optional": false,
               "type": "ChannelRouting",
               "doc": "群监听与路由线索。",
-              "site": "src7/plugins/channels/Message.ts:152"
+              "site": "src7/plugins/channels/Message.ts:155"
             },
             {
               "name": "view",
               "optional": true,
               "type": "ChannelView",
               "doc": "网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。",
-              "site": "src7/plugins/channels/Message.ts:154"
+              "site": "src7/plugins/channels/Message.ts:157"
             }
           ]
         },
         {
           "name": "ChannelMessageControl",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:176",
+          "site": "src7/plugins/channels/Message.ts:179",
           "doc": "随进来的三个事件传递的可变协调对象。",
           "definition": "",
           "fields": [
@@ -2617,14 +2860,14 @@
               "optional": true,
               "type": "boolean",
               "doc": "approval 消息级命令（如“同意 3”）已消费整条消息，不再进任何机器人会话。",
-              "site": "src7/plugins/channels/Message.ts:178"
+              "site": "src7/plugins/channels/Message.ts:181"
             },
             {
               "name": "claims",
               "optional": false,
               "type": "ChannelClaimRecord[]",
               "doc": "每个机器人独立认领写入的结果列表。",
-              "site": "src7/plugins/channels/Message.ts:180"
+              "site": "src7/plugins/channels/Message.ts:183"
             }
           ]
         }
@@ -2633,14 +2876,19 @@
         {
           "plugin": "channels",
           "function": "emitInbound",
-          "site": "src7/plugins/channels/Message.ts:293"
+          "site": "src7/plugins/channels/Message.ts:296"
         }
       ],
       "listeners": [
         {
           "plugin": "approval",
+          "function": "Grants.constructor",
+          "site": "src7/plugins/approval/Grants.ts:98"
+        },
+        {
+          "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:422"
+          "site": "src7/plugins/approval/index.ts:446"
         },
         {
           "plugin": "bots",
@@ -2668,7 +2916,7 @@
       "name": "channel/recall",
       "mode": "挨个问",
       "pair": "",
-      "declaredAt": "src7/plugins/channels/index.ts:111",
+      "declaredAt": "src7/plugins/channels/index.ts:127",
       "signature": "(event: messageModule.ChannelRecallEvent) => void | Promise<void>",
       "doc": "渠道确认本人或原发信人撤回消息后发出。bots 清理排队原消息，通知正在处理它的会话。",
       "params": [
@@ -2683,7 +2931,7 @@
         {
           "name": "ChannelRecallEvent",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:224",
+          "site": "src7/plugins/channels/Message.ts:227",
           "doc": "事件 channel/recall 载荷：渠道确认原消息被撤回后发出。",
           "definition": "",
           "fields": [
@@ -2692,56 +2940,56 @@
               "optional": false,
               "type": "string",
               "doc": "渠道名（feishu / wechat / http / cli）。",
-              "site": "src7/plugins/channels/Message.ts:226"
+              "site": "src7/plugins/channels/Message.ts:229"
             },
             {
               "name": "accountId",
               "optional": false,
               "type": "string",
               "doc": "平台账号 ID（如飞书 appId）。",
-              "site": "src7/plugins/channels/Message.ts:228"
+              "site": "src7/plugins/channels/Message.ts:231"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "聊天稳定 ID。",
-              "site": "src7/plugins/channels/Message.ts:230"
+              "site": "src7/plugins/channels/Message.ts:233"
             },
             {
               "name": "messageId",
               "optional": false,
               "type": "string",
               "doc": "被撤回的原消息标准 ID：makeChannelMessageId(channel, accountId, nativeId)。",
-              "site": "src7/plugins/channels/Message.ts:232"
+              "site": "src7/plugins/channels/Message.ts:235"
             },
             {
               "name": "nativeId",
               "optional": true,
               "type": "string",
               "doc": "平台原始消息 ID（可用时）。",
-              "site": "src7/plugins/channels/Message.ts:234"
+              "site": "src7/plugins/channels/Message.ts:237"
             },
             {
               "name": "recalledAt",
               "optional": false,
               "type": "number",
               "doc": "撤回时刻，Unix 毫秒。",
-              "site": "src7/plugins/channels/Message.ts:236"
+              "site": "src7/plugins/channels/Message.ts:239"
             },
             {
               "name": "originalText",
               "optional": false,
               "type": "string",
               "doc": "渠道日志里的原话，日志未写入时为空。",
-              "site": "src7/plugins/channels/Message.ts:238"
+              "site": "src7/plugins/channels/Message.ts:241"
             },
             {
               "name": "recalledBy",
               "optional": false,
               "type": "{ /** 撤回人渠道原始 ID（平台仅返回 message_owner 且本地尚未落盘时为空串）。 */ id: string; /** 撤回身份类别：sender 原发消息人自撤，owner 本人撤回。 */ kind: 'sender' | 'owner'; /** 撤回人是否为系统登记的本人（owner）。 */ isOwner: boolean; }",
               "doc": "谁撤回的：由渠道根据可信身份配置与本地聊天日志核定。",
-              "site": "src7/plugins/channels/Message.ts:240"
+              "site": "src7/plugins/channels/Message.ts:243"
             }
           ]
         }
@@ -2750,7 +2998,7 @@
         {
           "plugin": "feishu",
           "function": "FeishuInbound.onRecall",
-          "site": "src7/plugins/feishu/Inbound.ts:921"
+          "site": "src7/plugins/feishu/Inbound.ts:952"
         }
       ],
       "listeners": [
@@ -2762,7 +3010,7 @@
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:73"
+          "site": "src7/plugins/channels/ArchiveListen.ts:80"
         }
       ]
     },
@@ -2770,7 +3018,7 @@
       "name": "channel/replied",
       "mode": "通知",
       "pair": "channel/reply",
-      "declaredAt": "src7/plugins/channels/index.ts:103",
+      "declaredAt": "src7/plugins/channels/index.ts:119",
       "signature": "(event: replyModule.ChannelRepliedEvent) => void",
       "doc": "发成了没有：渠道发完（或确认失败）经 emitReplied 回传回执，回执带着请求本身（正文、来源快照、目标）； 外置程序的主动发件由 approval 补一条。记往来、记忆、网页挂回都只听它。",
       "params": [
@@ -2836,7 +3084,7 @@
         {
           "plugin": "channels",
           "function": "applyChatArchive",
-          "site": "src7/plugins/channels/ArchiveListen.ts:49"
+          "site": "src7/plugins/channels/ArchiveListen.ts:56"
         },
         {
           "plugin": "channels",
@@ -2846,7 +3094,7 @@
         {
           "plugin": "memory",
           "function": "applyChannelIndex",
-          "site": "src7/plugins/memory/ChannelIndex.ts:626"
+          "site": "src7/plugins/memory/ChannelIndex.ts:650"
         },
         {
           "plugin": "web-api",
@@ -2859,7 +3107,7 @@
       "name": "channel/reply",
       "mode": "请求-回执",
       "pair": "channel/replied",
-      "declaredAt": "src7/plugins/channels/index.ts:91",
+      "declaredAt": "src7/plugins/channels/index.ts:107",
       "signature": "(request: replyModule.ChannelReplyRequest) => void | Promise<void>",
       "doc": "请渠道发一条（所有发出去的话都走它）：回来源快照的原消息，带 target.chat 跨聊天认目标，带 target.address 照确切地址发。 匹配 channel 的渠道插件置 handled、发完回发 channel/replied；没人接单立刻回 rejected。",
       "params": [
@@ -3129,7 +3377,7 @@
         {
           "plugin": "approval",
           "function": "Approval.askDecision",
-          "site": "src7/plugins/approval/index.ts:634"
+          "site": "src7/plugins/approval/index.ts:675"
         },
         {
           "plugin": "bots",
@@ -3237,7 +3485,7 @@
         {
           "plugin": "approval",
           "function": "Approval.askDecision",
-          "site": "src7/plugins/approval/index.ts:634"
+          "site": "src7/plugins/approval/index.ts:675"
         },
         {
           "plugin": "bots",
@@ -3270,7 +3518,7 @@
       "name": "feishu/send-file",
       "mode": "请求-回执",
       "pair": "feishu/send-file-result",
-      "declaredAt": "src7/plugins/feishu/index.ts:95",
+      "declaredAt": "src7/plugins/feishu/index.ts:99",
       "signature": "(request: SendFileRequest) => void | Promise<void>",
       "doc": "通过指定机器人向飞书聊天发送本地文件。",
       "params": [
@@ -3285,7 +3533,7 @@
         {
           "name": "SendFileRequest",
           "kind": "interface",
-          "site": "src7/plugins/feishu/index.ts:333",
+          "site": "src7/plugins/feishu/index.ts:346",
           "doc": "其他插件提交的文件投递请求。",
           "definition": "",
           "fields": [
@@ -3294,28 +3542,28 @@
               "optional": false,
               "type": "string",
               "doc": "发送文件的机器人名。",
-              "site": "src7/plugins/feishu/index.ts:335"
+              "site": "src7/plugins/feishu/index.ts:348"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "目标飞书聊天号。",
-              "site": "src7/plugins/feishu/index.ts:337"
+              "site": "src7/plugins/feishu/index.ts:350"
             },
             {
               "name": "filePath",
               "optional": false,
               "type": "string",
               "doc": "本地文件绝对路径。",
-              "site": "src7/plugins/feishu/index.ts:339"
+              "site": "src7/plugins/feishu/index.ts:352"
             },
             {
               "name": "kind",
               "optional": true,
               "type": "'image' | 'file'",
               "doc": "显式指定图片或附件；省略时按扩展名识别。",
-              "site": "src7/plugins/feishu/index.ts:341"
+              "site": "src7/plugins/feishu/index.ts:354"
             }
           ]
         }
@@ -3331,7 +3579,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:456"
+          "site": "src7/plugins/feishu/index.ts:475"
         }
       ]
     },
@@ -3339,7 +3587,7 @@
       "name": "feishu/send-file-result",
       "mode": "请求-回执",
       "pair": "feishu/send-file",
-      "declaredAt": "src7/plugins/feishu/index.ts:101",
+      "declaredAt": "src7/plugins/feishu/index.ts:105",
       "signature": "(result: SendFileResult) => void",
       "doc": "返回发送结果，失败时带原因。",
       "params": [
@@ -3354,7 +3602,7 @@
         {
           "name": "SendFileResult",
           "kind": "interface",
-          "site": "src7/plugins/feishu/index.ts:345",
+          "site": "src7/plugins/feishu/index.ts:358",
           "doc": "文件投递回执。",
           "definition": "",
           "fields": [
@@ -3363,21 +3611,21 @@
               "optional": false,
               "type": "boolean",
               "doc": "飞书发送是否成功。",
-              "site": "src7/plugins/feishu/index.ts:347"
+              "site": "src7/plugins/feishu/index.ts:360"
             },
             {
               "name": "messageId",
               "optional": true,
               "type": "string",
               "doc": "飞书返回的新消息号。",
-              "site": "src7/plugins/feishu/index.ts:349"
+              "site": "src7/plugins/feishu/index.ts:362"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "发送失败原因。",
-              "site": "src7/plugins/feishu/index.ts:351"
+              "site": "src7/plugins/feishu/index.ts:364"
             }
           ]
         }
@@ -3386,7 +3634,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:456"
+          "site": "src7/plugins/feishu/index.ts:475"
         }
       ],
       "listeners": [
@@ -3928,7 +4176,7 @@
         {
           "plugin": "memory",
           "function": "apply",
-          "site": "src7/plugins/memory/index.ts:803"
+          "site": "src7/plugins/memory/index.ts:804"
         }
       ]
     },
@@ -3936,7 +4184,7 @@
       "name": "memory/request",
       "mode": "请求-回执",
       "pair": "memory/result",
-      "declaredAt": "src7/plugins/memory/index.ts:470",
+      "declaredAt": "src7/plugins/memory/index.ts:471",
       "signature": "(request: MemoryRequest) => void | Promise<void>",
       "doc": "别的插件请记忆库办事（serial 发、等 memory/result，用 utils/RequestEvent.ts 的 requestEvent）。本插件听（MemoryService.onRequest）。",
       "params": [
@@ -3951,7 +4199,7 @@
         {
           "name": "MemoryRequest",
           "kind": "type",
-          "site": "src7/plugins/memory/index.ts:482",
+          "site": "src7/plugins/memory/index.ts:483",
           "doc": "事件 memory/request 的数据。bots 的前台（FrontDesk.ts 的 askMemory）等插件发。",
           "definition": "requestEventModule.RequestEnvelope & ({ /** 记一段往来（同 recordHistory）：同一 source 先删后收。 */ action: 'record-history'; /** 来源，比如 bot-log:<会话号>。 */ source: string; /** 要收的段；没有客户号的不收。 */ docs: HistoryDoc[]; } | { /** 搜这个客户的聊天记录（同 searchHistory）。 */ action: 'search-history'; /** 要找什么。 */ query: string; /** 哪个机器人。 */ bot: string; /** 客户号；空串不搜。 */ customer: string; /** 最多几条。 */ limit: number; } | { /** 读取可信前台会话范围内的归档。 */ action: 'front-history'; /** 会话范围、分页和关键词等过滤条件。 */ query: frontArchiveModule.FrontQuery; } | { /** 按统一接口搜所有来源。 */ action: 'search'; /** 与 GET /api/memory/search 相同，支持 person 或 group；调用插件负责确认用户权限。 */ query: Record<string, unknown>; } | { /** 用记忆服务的本地嵌入模型算向量（同 embed）。 */ action: 'embed'; /** 要嵌入的文字。 */ texts: string[]; })",
           "fields": [
@@ -3960,98 +4208,98 @@
               "optional": false,
               "type": "'record-history'",
               "doc": "记一段往来（同 recordHistory）：同一 source 先删后收。",
-              "site": "src7/plugins/memory/index.ts:484"
+              "site": "src7/plugins/memory/index.ts:485"
             },
             {
               "name": "source",
               "optional": false,
               "type": "string",
               "doc": "来源，比如 bot-log:<会话号>。",
-              "site": "src7/plugins/memory/index.ts:486"
+              "site": "src7/plugins/memory/index.ts:487"
             },
             {
               "name": "docs",
               "optional": false,
               "type": "HistoryDoc[]",
               "doc": "要收的段；没有客户号的不收。",
-              "site": "src7/plugins/memory/index.ts:488"
+              "site": "src7/plugins/memory/index.ts:489"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'search-history'",
               "doc": "搜这个客户的聊天记录（同 searchHistory）。",
-              "site": "src7/plugins/memory/index.ts:491"
+              "site": "src7/plugins/memory/index.ts:492"
             },
             {
               "name": "query",
               "optional": false,
               "type": "string",
               "doc": "要找什么。",
-              "site": "src7/plugins/memory/index.ts:493"
+              "site": "src7/plugins/memory/index.ts:494"
             },
             {
               "name": "bot",
               "optional": false,
               "type": "string",
               "doc": "哪个机器人。",
-              "site": "src7/plugins/memory/index.ts:495"
+              "site": "src7/plugins/memory/index.ts:496"
             },
             {
               "name": "customer",
               "optional": false,
               "type": "string",
               "doc": "客户号；空串不搜。",
-              "site": "src7/plugins/memory/index.ts:497"
+              "site": "src7/plugins/memory/index.ts:498"
             },
             {
               "name": "limit",
               "optional": false,
               "type": "number",
               "doc": "最多几条。",
-              "site": "src7/plugins/memory/index.ts:499"
+              "site": "src7/plugins/memory/index.ts:500"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'front-history'",
               "doc": "读取可信前台会话范围内的归档。",
-              "site": "src7/plugins/memory/index.ts:502"
+              "site": "src7/plugins/memory/index.ts:503"
             },
             {
               "name": "query",
               "optional": false,
               "type": "frontArchiveModule.FrontQuery",
               "doc": "会话范围、分页和关键词等过滤条件。",
-              "site": "src7/plugins/memory/index.ts:504"
+              "site": "src7/plugins/memory/index.ts:505"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'search'",
               "doc": "按统一接口搜所有来源。",
-              "site": "src7/plugins/memory/index.ts:507"
+              "site": "src7/plugins/memory/index.ts:508"
             },
             {
               "name": "query",
               "optional": false,
               "type": "Record<string, unknown>",
               "doc": "与 GET /api/memory/search 相同，支持 person 或 group；调用插件负责确认用户权限。",
-              "site": "src7/plugins/memory/index.ts:509"
+              "site": "src7/plugins/memory/index.ts:510"
             },
             {
               "name": "action",
               "optional": false,
               "type": "'embed'",
               "doc": "用记忆服务的本地嵌入模型算向量（同 embed）。",
-              "site": "src7/plugins/memory/index.ts:512"
+              "site": "src7/plugins/memory/index.ts:513"
             },
             {
               "name": "texts",
               "optional": false,
               "type": "string[]",
               "doc": "要嵌入的文字。",
-              "site": "src7/plugins/memory/index.ts:514"
+              "site": "src7/plugins/memory/index.ts:515"
             }
           ]
         }
@@ -4067,7 +4315,7 @@
         {
           "plugin": "memory",
           "function": "MemoryService.constructor",
-          "site": "src7/plugins/memory/index.ts:580"
+          "site": "src7/plugins/memory/index.ts:581"
         }
       ]
     },
@@ -4075,7 +4323,7 @@
       "name": "memory/result",
       "mode": "请求-回执",
       "pair": "memory/request",
-      "declaredAt": "src7/plugins/memory/index.ts:476",
+      "declaredAt": "src7/plugins/memory/index.ts:477",
       "signature": "(result: MemoryResult) => void",
       "doc": "memory/request 的回执（emit），按 requestId 配对。",
       "params": [
@@ -4090,7 +4338,7 @@
         {
           "name": "MemoryResult",
           "kind": "interface",
-          "site": "src7/plugins/memory/index.ts:519",
+          "site": "src7/plugins/memory/index.ts:520",
           "doc": "事件 memory/result 的数据：memory/request 的回执，每种 action 只带自己那一项。",
           "definition": "",
           "fields": [
@@ -4099,42 +4347,42 @@
               "optional": false,
               "type": "boolean",
               "doc": "办成没有：记忆服务没在线、记不成、搜不成都是 false，原因在 error。",
-              "site": "src7/plugins/memory/index.ts:521"
+              "site": "src7/plugins/memory/index.ts:522"
             },
             {
               "name": "hits",
               "optional": true,
               "type": "Array<{ start?: unknown; score?: unknown; text?: unknown }>",
               "doc": "search-history：命中原样（start 是来源里的编号）；没有客户号是 []。",
-              "site": "src7/plugins/memory/index.ts:523"
+              "site": "src7/plugins/memory/index.ts:524"
             },
             {
               "name": "search",
               "optional": true,
               "type": "searchModule.SearchResult",
               "doc": "search：统一检索回执；某一路没响应写在它的 unavailable、warnings 里。",
-              "site": "src7/plugins/memory/index.ts:525"
+              "site": "src7/plugins/memory/index.ts:526"
             },
             {
               "name": "frontEntries",
               "optional": true,
               "type": "frontArchiveModule.FrontEntry[]",
               "doc": "front-history：按机器人和会话范围过滤后的往来。",
-              "site": "src7/plugins/memory/index.ts:527"
+              "site": "src7/plugins/memory/index.ts:528"
             },
             {
               "name": "vectors",
               "optional": true,
               "type": "number[][]",
               "doc": "embed：每段一个向量；服务在线但模型没就绪是空。",
-              "site": "src7/plugins/memory/index.ts:529"
+              "site": "src7/plugins/memory/index.ts:530"
             },
             {
               "name": "error",
               "optional": true,
               "type": "string",
               "doc": "没办成的原因，如“记忆服务没在线（http://127.0.0.1:30087）：…”。",
-              "site": "src7/plugins/memory/index.ts:531"
+              "site": "src7/plugins/memory/index.ts:532"
             }
           ]
         }
@@ -4143,7 +4391,7 @@
         {
           "plugin": "memory",
           "function": "MemoryService.constructor",
-          "site": "src7/plugins/memory/index.ts:580"
+          "site": "src7/plugins/memory/index.ts:581"
         }
       ],
       "listeners": [
@@ -4205,7 +4453,7 @@
         {
           "plugin": "model-catalog",
           "function": "ModelFallback.noteLimit",
-          "site": "src7/plugins/model-catalog/Fallback.ts:325"
+          "site": "src7/plugins/model-catalog/Fallback.ts:372"
         }
       ],
       "listeners": [
@@ -4220,9 +4468,9 @@
       "name": "model-catalog/fallback",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/plugins/model-catalog/Fallback.ts:75",
+      "declaredAt": "src7/plugins/model-catalog/Fallback.ts:78",
       "signature": "(info: FallbackInfo) => void",
-      "doc": "每换一个模型去试之前发（journal 记成 model.fallback）。",
+      "doc": "准备尝试备用模型时发。原模型仍在冷却且没有备选时，回试原模型前也发。",
       "params": [
         {
           "name": "info",
@@ -4235,8 +4483,8 @@
         {
           "name": "FallbackInfo",
           "kind": "interface",
-          "site": "src7/plugins/model-catalog/Fallback.ts:20",
-          "doc": "model-catalog/fallback 的参数（总览第 3 节待补约定第 9 条）。reason 四种：rate-limit、cooldown、context-overflow、no-available-fallback。",
+          "site": "src7/plugins/model-catalog/Fallback.ts:23",
+          "doc": "model-catalog/fallback 的参数。",
           "definition": "",
           "fields": [
             {
@@ -4244,28 +4492,28 @@
               "optional": false,
               "type": "Session",
               "doc": "发生切换的会话实例。",
-              "site": "src7/plugins/model-catalog/Fallback.ts:22"
+              "site": "src7/plugins/model-catalog/Fallback.ts:25"
             },
             {
               "name": "from",
               "optional": false,
               "type": "string",
-              "doc": "会话要的模型。",
-              "site": "src7/plugins/model-catalog/Fallback.ts:24"
+              "doc": "上一次尝试的模型，或首试前仍在冷却的模型。",
+              "site": "src7/plugins/model-catalog/Fallback.ts:27"
             },
             {
               "name": "to",
               "optional": false,
               "type": "string",
               "doc": "这次去试的模型。",
-              "site": "src7/plugins/model-catalog/Fallback.ts:26"
+              "site": "src7/plugins/model-catalog/Fallback.ts:29"
             },
             {
               "name": "reason",
               "optional": false,
-              "type": "string",
+              "type": "RetryableReason | 'cooldown' | 'fallback-failed' | 'no-available-fallback'",
               "doc": "切换原因。",
-              "site": "src7/plugins/model-catalog/Fallback.ts:28"
+              "site": "src7/plugins/model-catalog/Fallback.ts:31"
             }
           ]
         }
@@ -4274,12 +4522,12 @@
         {
           "plugin": "model-catalog",
           "function": "ModelFallback.onRequest",
-          "site": "src7/plugins/model-catalog/Fallback.ts:216"
+          "site": "src7/plugins/model-catalog/Fallback.ts:238"
         },
         {
           "plugin": "model-catalog",
           "function": "ModelFallback.onRequest",
-          "site": "src7/plugins/model-catalog/Fallback.ts:232"
+          "site": "src7/plugins/model-catalog/Fallback.ts:276"
         }
       ],
       "listeners": []
@@ -4335,7 +4583,7 @@
         {
           "plugin": "bots",
           "function": "DispatchTools.onRequest",
-          "site": "src7/plugins/bots/DispatchTools.ts:638"
+          "site": "src7/plugins/bots/DispatchTools.ts:642"
         },
         {
           "plugin": "context-fit",
@@ -4429,7 +4677,7 @@
         {
           "plugin": "bots",
           "function": "DispatchTools.onRequest",
-          "site": "src7/plugins/bots/DispatchTools.ts:638"
+          "site": "src7/plugins/bots/DispatchTools.ts:642"
         },
         {
           "plugin": "context-fit",
@@ -5069,7 +5317,7 @@
         {
           "plugin": "memory",
           "function": "ChannelBackfill.backfill",
-          "site": "src7/plugins/memory/ChannelBackfill.ts:285"
+          "site": "src7/plugins/memory/ChannelBackfill.ts:297"
         },
         {
           "plugin": "voice",
@@ -5136,7 +5384,7 @@
         {
           "plugin": "memory",
           "function": "ChannelBackfill.backfill",
-          "site": "src7/plugins/memory/ChannelBackfill.ts:285"
+          "site": "src7/plugins/memory/ChannelBackfill.ts:297"
         },
         {
           "plugin": "voice",
@@ -5611,7 +5859,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:429"
+          "site": "src7/plugins/feishu/index.ts:445"
         },
         {
           "plugin": "feishu",
@@ -5631,7 +5879,7 @@
         {
           "plugin": "memory",
           "function": "apply",
-          "site": "src7/plugins/memory/index.ts:833"
+          "site": "src7/plugins/memory/index.ts:834"
         },
         {
           "plugin": "programs",
@@ -6152,7 +6400,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:432"
+          "site": "src7/plugins/approval/index.ts:456"
         },
         {
           "plugin": "assist",
@@ -6167,7 +6415,7 @@
         {
           "plugin": "bots",
           "function": "DispatchTools.constructor",
-          "site": "src7/plugins/bots/DispatchTools.ts:109"
+          "site": "src7/plugins/bots/DispatchTools.ts:111"
         },
         {
           "plugin": "bots",
@@ -6192,7 +6440,7 @@
         {
           "plugin": "file-tools",
           "function": "BaseTools.constructor",
-          "site": "src7/plugins/file-tools/BaseTools.ts:102"
+          "site": "src7/plugins/file-tools/BaseTools.ts:101"
         },
         {
           "plugin": "file-tools",
@@ -6207,12 +6455,12 @@
         {
           "plugin": "memory",
           "function": "Memory.constructor",
-          "site": "src7/plugins/memory/index.ts:148"
+          "site": "src7/plugins/memory/index.ts:149"
         },
         {
           "plugin": "model-catalog",
           "function": "ModelFallback.constructor",
-          "site": "src7/plugins/model-catalog/Fallback.ts:165"
+          "site": "src7/plugins/model-catalog/Fallback.ts:189"
         },
         {
           "plugin": "progress",
@@ -6301,7 +6549,7 @@
         {
           "plugin": "approval",
           "function": "Approval.constructor",
-          "site": "src7/plugins/approval/index.ts:452"
+          "site": "src7/plugins/approval/index.ts:484"
         },
         {
           "plugin": "bots",
@@ -6461,7 +6709,7 @@
         {
           "plugin": "model-catalog",
           "function": "ModelFallback.attempt",
-          "site": "src7/plugins/model-catalog/Fallback.ts:254"
+          "site": "src7/plugins/model-catalog/Fallback.ts:298"
         },
         {
           "plugin": "model-catalog",
@@ -6518,7 +6766,7 @@
         {
           "plugin": "memory",
           "function": "Memory.constructor",
-          "site": "src7/plugins/memory/index.ts:152"
+          "site": "src7/plugins/memory/index.ts:153"
         },
         {
           "plugin": "model-catalog",
@@ -6536,7 +6784,7 @@
       "name": "trace",
       "mode": "通知",
       "pair": "",
-      "declaredAt": "src7/utils/Trace.ts:81",
+      "declaredAt": "src7/utils/Trace.ts:83",
       "signature": "(where: string, text: string, code: string, vars: Record<string, unknown>) => void",
       "doc": "一个跟踪点。只是通知，谁也不许靠它改流程。",
       "params": [
@@ -6569,28 +6817,43 @@
       "senders": [
         {
           "plugin": "approval",
+          "function": "Grants.add",
+          "site": "src7/plugins/approval/Grants.ts:237"
+        },
+        {
+          "plugin": "approval",
+          "function": "Grants.remove",
+          "site": "src7/plugins/approval/Grants.ts:253"
+        },
+        {
+          "plugin": "approval",
+          "function": "Grants.trace",
+          "site": "src7/plugins/approval/Grants.ts:498"
+        },
+        {
+          "plugin": "approval",
           "function": "Approval.traced",
-          "site": "src7/plugins/approval/index.ts:696"
+          "site": "src7/plugins/approval/index.ts:737"
         },
         {
           "plugin": "approval",
           "function": "Approval.ask",
-          "site": "src7/plugins/approval/index.ts:718"
+          "site": "src7/plugins/approval/index.ts:759"
         },
         {
           "plugin": "approval",
           "function": "Approval.settle",
-          "site": "src7/plugins/approval/index.ts:812"
+          "site": "src7/plugins/approval/index.ts:853"
         },
         {
           "plugin": "approval",
           "function": "Approval.onRequest",
-          "site": "src7/plugins/approval/index.ts:871"
+          "site": "src7/plugins/approval/index.ts:912"
         },
         {
           "plugin": "approval",
           "function": "Approval.answer",
-          "site": "src7/plugins/approval/index.ts:1139"
+          "site": "src7/plugins/approval/index.ts:1194"
         },
         {
           "plugin": "assist",
@@ -6760,17 +7023,17 @@
         {
           "plugin": "exec",
           "function": "Exec.run",
-          "site": "src7/plugins/exec/index.ts:145"
+          "site": "src7/plugins/exec/index.ts:147"
         },
         {
           "plugin": "exec",
           "function": "Exec.onTool",
-          "site": "src7/plugins/exec/index.ts:289"
+          "site": "src7/plugins/exec/index.ts:293"
         },
         {
           "plugin": "exec",
           "function": "Exec.onDecided",
-          "site": "src7/plugins/exec/index.ts:326"
+          "site": "src7/plugins/exec/index.ts:330"
         },
         {
           "plugin": "feishu",
@@ -6790,22 +7053,22 @@
         {
           "plugin": "feishu",
           "function": "FeishuInbound.onRecall",
-          "site": "src7/plugins/feishu/Inbound.ts:909"
+          "site": "src7/plugins/feishu/Inbound.ts:940"
         },
         {
           "plugin": "feishu",
           "function": "FeishuInbound.onCard",
-          "site": "src7/plugins/feishu/Inbound.ts:985"
+          "site": "src7/plugins/feishu/Inbound.ts:1016"
         },
         {
           "plugin": "feishu",
           "function": "Feishu.start",
-          "site": "src7/plugins/feishu/index.ts:589"
+          "site": "src7/plugins/feishu/index.ts:608"
         },
         {
           "plugin": "feishu",
           "function": "Feishu.mark",
-          "site": "src7/plugins/feishu/index.ts:661"
+          "site": "src7/plugins/feishu/index.ts:686"
         },
         {
           "plugin": "feishu",
@@ -6815,7 +7078,7 @@
         {
           "plugin": "file-tools",
           "function": "BaseTools.attachImages",
-          "site": "src7/plugins/file-tools/BaseTools.ts:205"
+          "site": "src7/plugins/file-tools/BaseTools.ts:204"
         },
         {
           "plugin": "file-tools",
@@ -6860,12 +7123,17 @@
         {
           "plugin": "memory",
           "function": "Memory.onRequest",
-          "site": "src7/plugins/memory/index.ts:255"
+          "site": "src7/plugins/memory/index.ts:256"
+        },
+        {
+          "plugin": "model-catalog",
+          "function": "ModelFallback.onRequest",
+          "site": "src7/plugins/model-catalog/Fallback.ts:251"
         },
         {
           "plugin": "model-catalog",
           "function": "ModelFallback.noteLimit",
-          "site": "src7/plugins/model-catalog/Fallback.ts:328"
+          "site": "src7/plugins/model-catalog/Fallback.ts:375"
         },
         {
           "plugin": "model-catalog",
@@ -7224,7 +7492,7 @@
         {
           "name": "ChannelMessage",
           "kind": "interface",
-          "site": "src7/plugins/channels/Message.ts:106",
+          "site": "src7/plugins/channels/Message.ts:107",
           "doc": "渠道发出的标准消息（v: 1）。",
           "definition": "",
           "fields": [
@@ -7233,154 +7501,161 @@
               "optional": false,
               "type": "1",
               "doc": "协议版本。",
-              "site": "src7/plugins/channels/Message.ts:108"
+              "site": "src7/plugins/channels/Message.ts:109"
             },
             {
               "name": "messageId",
               "optional": false,
               "type": "string",
               "doc": "渠道范围稳定 ID：推荐 JSON.stringify([channel, accountId, nativeId])。",
-              "site": "src7/plugins/channels/Message.ts:110"
+              "site": "src7/plugins/channels/Message.ts:111"
             },
             {
               "name": "nativeId",
               "optional": false,
               "type": "string | null",
               "doc": "平台原始消息 ID；无原生 ID 时首次生成 UUID 持久复用。",
-              "site": "src7/plugins/channels/Message.ts:112"
+              "site": "src7/plugins/channels/Message.ts:113"
             },
             {
               "name": "channel",
               "optional": false,
               "type": "string",
               "doc": "渠道名：feishu / wechat / http / cli。",
-              "site": "src7/plugins/channels/Message.ts:114"
+              "site": "src7/plugins/channels/Message.ts:115"
             },
             {
               "name": "accountId",
               "optional": false,
               "type": "string",
               "doc": "平台账号 ID：飞书 appId、微信 account 等。",
-              "site": "src7/plugins/channels/Message.ts:116"
+              "site": "src7/plugins/channels/Message.ts:117"
+            },
+            {
+              "name": "accountName",
+              "optional": true,
+              "type": "string",
+              "doc": "收这条消息的账号叫什么，给人看的（飞书是 bot 名）；没有就不填。",
+              "site": "src7/plugins/channels/Message.ts:119"
             },
             {
               "name": "chatId",
               "optional": false,
               "type": "string",
               "doc": "聊天稳定 ID。",
-              "site": "src7/plugins/channels/Message.ts:118"
+              "site": "src7/plugins/channels/Message.ts:121"
             },
             {
               "name": "chatType",
               "optional": false,
               "type": "ChannelChatType",
               "doc": "聊天种类。",
-              "site": "src7/plugins/channels/Message.ts:120"
+              "site": "src7/plugins/channels/Message.ts:123"
             },
             {
               "name": "sender",
               "optional": false,
               "type": "{ id: string; name?: string }",
               "doc": "发送者渠道原始 ID 和展示名。",
-              "site": "src7/plugins/channels/Message.ts:122"
+              "site": "src7/plugins/channels/Message.ts:125"
             },
             {
               "name": "role",
               "optional": false,
               "type": "ChannelRole",
               "doc": "身份档位：由平台可信配置算得，缺证明时为 guest。",
-              "site": "src7/plugins/channels/Message.ts:124"
+              "site": "src7/plugins/channels/Message.ts:127"
             },
             {
               "name": "targetBots",
               "optional": false,
               "type": "string[]",
               "doc": "经可信配置和 @ 映射规范化去重后的目标机器人名单。 direct、mention：要回话的机器人；listen：要把这句记进前台当背景（或判断接不接）的机器人， 飞书是登记了 listen: all / judge 的群里本应用的机器人，没登记的群、语音只入档的整句是空的（只给记录类插件记）。",
-              "site": "src7/plugins/channels/Message.ts:130"
+              "site": "src7/plugins/channels/Message.ts:133"
             },
             {
               "name": "mentions",
               "optional": false,
               "type": "ChannelMention[]",
               "doc": "",
-              "site": "src7/plugins/channels/Message.ts:132"
+              "site": "src7/plugins/channels/Message.ts:135"
             },
             {
               "name": "rawText",
               "optional": false,
               "type": "string",
               "doc": "保留原始可读文本。",
-              "site": "src7/plugins/channels/Message.ts:134"
+              "site": "src7/plugins/channels/Message.ts:137"
             },
             {
               "name": "text",
               "optional": false,
               "type": "string",
               "doc": "面向模型的规范化文本（不再用 @本机路径 触发外发附件）。",
-              "site": "src7/plugins/channels/Message.ts:136"
+              "site": "src7/plugins/channels/Message.ts:139"
             },
             {
               "name": "attachments",
               "optional": false,
               "type": "ChannelAttachment[]",
               "doc": "渠道保存的附件列表。",
-              "site": "src7/plugins/channels/Message.ts:138"
+              "site": "src7/plugins/channels/Message.ts:141"
             },
             {
               "name": "createdAt",
               "optional": false,
               "type": "number",
               "doc": "平台原始创建时间（UTC 毫秒）；缺失时用 receivedAt。",
-              "site": "src7/plugins/channels/Message.ts:140"
+              "site": "src7/plugins/channels/Message.ts:143"
             },
             {
               "name": "receivedAt",
               "optional": false,
               "type": "number",
               "doc": "本机收到时间（UTC 毫秒）。",
-              "site": "src7/plugins/channels/Message.ts:142"
+              "site": "src7/plugins/channels/Message.ts:145"
             },
             {
               "name": "timeSource",
               "optional": false,
               "type": "'provider' | 'received'",
               "doc": "createdAt 的来源。",
-              "site": "src7/plugins/channels/Message.ts:144"
+              "site": "src7/plugins/channels/Message.ts:147"
             },
             {
               "name": "replyTo",
               "optional": false,
               "type": "ChannelReplyTo | null",
               "doc": "引用原消息（没有为 null）。",
-              "site": "src7/plugins/channels/Message.ts:146"
+              "site": "src7/plugins/channels/Message.ts:149"
             },
             {
               "name": "origin",
               "optional": false,
               "type": "ChannelOrigin",
               "doc": "不可变深拷贝的原渠道兼容地址。",
-              "site": "src7/plugins/channels/Message.ts:148"
+              "site": "src7/plugins/channels/Message.ts:151"
             },
             {
               "name": "visibility",
               "optional": false,
               "type": "ChannelVisibility",
               "doc": "渠道与权限插件计算出的授权范围。",
-              "site": "src7/plugins/channels/Message.ts:150"
+              "site": "src7/plugins/channels/Message.ts:153"
             },
             {
               "name": "routing",
               "optional": false,
               "type": "ChannelRouting",
               "doc": "群监听与路由线索。",
-              "site": "src7/plugins/channels/Message.ts:152"
+              "site": "src7/plugins/channels/Message.ts:155"
             },
             {
               "name": "view",
               "optional": true,
               "type": "ChannelView",
               "doc": "网页当前正在查看的渠道与聊天上下文（可选，131 接入后填入，本人查历史未传参时默认取它）。",
-              "site": "src7/plugins/channels/Message.ts:154"
+              "site": "src7/plugins/channels/Message.ts:157"
             }
           ]
         }
@@ -7893,7 +8168,7 @@
         {
           "plugin": "feishu",
           "function": "Feishu.constructor",
-          "site": "src7/plugins/feishu/index.ts:437"
+          "site": "src7/plugins/feishu/index.ts:453"
         },
         {
           "plugin": "wechat",

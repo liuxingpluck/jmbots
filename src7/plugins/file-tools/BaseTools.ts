@@ -11,7 +11,6 @@ import type { ChatRequest, Session } from '../../Sessions.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as mimeModule from '../../utils/Mime.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 
 
 /** 一张图最大多少字节；再大就不发给模型（请求太大，供应商会拒）。 */
@@ -209,15 +208,15 @@ export class BaseTools {
 
   /**
    * 把模型给的相对路径落到这场会话的工作区里（解开符号链接再比）。
-   * 工作区是机器人的；飞书上 builder / guest 说话的这一轮是他的目录（utils/Bots.ts 的 getSessionWorkspace）。
+   * 工作区是机器人的；飞书上 builder / guest 说话的这一轮是他的目录（utils/Bots.ts 的 getSessionWorkspace）；
+   * 这一轮的授权目录（回话地址的 grants.dirs）里的也能读。
    * @param session 这场会话。
    * @param relative 相对工作区的路径。
    * @returns 解开符号链接后的绝对路径。
-   * @throws 没有这个机器人、路径跑到工作区外面时抛错。
+   * @throws 没有这个机器人、路径跑到工作区和授权目录外面时抛错。
    */
   private getFile(session: Session, relative: string): string {
-    //M 按本轮来源选择目录，再校验目标的实际位置。
-    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, session);
-    return workspaceModule.resolveWorkspacePath(workspace, relative);
+    //M 按本轮来源选择目录，再校验目标的实际位置（utils/Bots.ts 的 resolveSessionPath）。
+    return botUtils.resolveSessionPath(this.ctx.resources, session, relative);
   }
 }

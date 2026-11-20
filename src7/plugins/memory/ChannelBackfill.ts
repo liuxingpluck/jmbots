@@ -155,6 +155,18 @@ export class ChannelBackfill {
     this.schedule(0);
   }
 
+  /**
+   * 渠道拉回历史（channel/history）后调：回填没在跑就开跑，让新进历史队列的行按批发出去。
+   * 副作用：回填原来是暂停的，写断点改成运行；归档若还没扫完，扫描也会接着做（和网页点“开始回填”一样）。
+   */
+  resume(): void {
+    if (!this.state.running) {
+      //M 沿用已有的归档扫描状态，只把运行打开；重启后仍按这个状态继续。
+      this.writeCheckpoint({ running: true, archiveDone: this.state.archiveDone });
+    }
+    this.wake();
+  }
+
   /** 网页轮询状态和开始/暂停指令，沿用 HTTP 插件的访问控制。 */
   private mount(): void {
     void this.ctx.inject(['http'], (ctx) => {

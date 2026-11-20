@@ -43,7 +43,8 @@ export const name = 'memory';
 //M 1.8.1：恢复受信群本人发言时的全部记忆访问。
 //M 1.10.0：存量渠道索引可独立补归属，与已有 Rust 副本同步。
 //M 1.10.9：用户的话改听 channel/direct、channel/mention、channel/listen（只听的、没登记的群也记）；语音半句（routing.partial）不记。
-export const version = '1.10.9';
+//M 1.11.0：听 channel/history（飞书拉回的群历史）进历史回填队列，并请回填开跑；ChannelBackfill 加 resume。
+export const version = '1.11.0';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];

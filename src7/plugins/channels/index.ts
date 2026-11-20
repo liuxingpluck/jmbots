@@ -9,6 +9,7 @@
  * 事件：
  *   - channel/direct、channel/mention、channel/listen(message, control)：渠道收到原始消息并落盘后经 emitInbound 发，一条只发一个——
  *     私聊、群里叫了机器人、只听；approval 只看前两个里的批复，bots 按 targetBots 逐个独立认领（只听的记背景或判断）；
+ *   - channel/history(messages)：渠道拉回来的群历史（机器人进群以前、服务停着时的话），不触发会话、不回话，只给记录类插件（memory、聊天归档）补记；
  *   - channel/reply(request) ↔ channel/replied(event)：所有发出去的话都走它（回复工具、零次兜底、审批直回、旧路自动回话、relay 回信、
  *     本人批准的主动发件），匹配的渠道发完回发回执，回执带着请求本身；
  *   - channel/recall(event)：渠道确认原消息撤回后发出，bots 移除排队消息并通知正在处理它的会话。
@@ -26,8 +27,11 @@ export * from './TextReply.ts';
 //M 1.1.0：回执带请求本身；来源快照可选，target 可带确切地址；channel/send 并进 channel/reply（主路线 2）。
 //M 1.2.0：channel/message 拆成 direct、mention、listen，分法 getInboundEvent、发事件 emitInbound；
 //M   删 routing.listenOnly、judge、byBot 和 BotRoutingHint，加 routing.partial（主路线 3）。
-//M 1.3.0：聊天记全写 MD——ArchiveListen.ts 听 direct、mention、listen、replied、recall，写进聊天目录和附件/。
-export const version = '1.3.0';
+//M 1.3.0：聊天记全写 MD——ArchiveListen.ts 听 direct、mention、listen、history、replied、recall，写进聊天目录和附件/。
+//M 1.5.0：ChannelMessage 加可选 accountName（收消息的账号叫什么）；聊天归档的账号目录有名字就叫“名字_ID”。
+//M 1.6.0：加 channel/history（渠道拉回的历史消息，只给记录类插件补记，不进 bots）。
+//M 1.7.0：聊天归档也听 channel/history，拉回的群历史写进聊天 MD。
+export const version = '1.7.0';
 
 
 declare module 'cordis' {
@@ -38,6 +42,7 @@ declare module 'cordis' {
      * 各渠道（cli、feishu、programs、voice、web-api、wechat）都经 emitInbound 发。
      * 谁发：src7/plugins/channels/Message.ts 的 emitInbound
      * 谁接：
+     *   src7/plugins/approval/Grants.ts 的 Grants.constructor
      *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
@@ -54,6 +59,7 @@ declare module 'cordis' {
      * 各渠道（feishu、programs、wechat）经 emitInbound 发。
      * 谁发：src7/plugins/channels/Message.ts 的 emitInbound
      * 谁接：
+     *   src7/plugins/approval/Grants.ts 的 Grants.constructor
      *   src7/plugins/approval/index.ts 的 Approval.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
@@ -65,11 +71,12 @@ declare module 'cordis' {
       control?: messageModule.ChannelMessageControl,
     ): void | Promise<void>;
     /**
-     * 只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不听。
+     * 只听：机器人收到了、但没叫它的话（群里没 @，没登记的群也发；语音里只入档的整句）。approval 不审批它，只由 Grants 给地址写上授权目录。
      * bots 把 targetBots 里的机器人记进前台当背景或判断要不要接（targetBots 空的谁都不进）；memory、网页照记。
      * 各渠道（feishu、programs、voice）经 emitInbound 发。
      * 谁发：src7/plugins/channels/Message.ts 的 emitInbound
      * 谁接：
+     *   src7/plugins/approval/Grants.ts 的 Grants.constructor
      *   src7/plugins/bots/index.ts 的 Bots.constructor
      *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
      *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex
@@ -79,6 +86,15 @@ declare module 'cordis' {
       message: messageModule.ChannelMessage,
       control?: messageModule.ChannelMessageControl,
     ): void | Promise<void>;
+    /**
+     * 渠道拉回来的一批历史消息（飞书 im/v1/messages 拉群历史：机器人进群以前、服务停着时的话），按时间从旧到新。
+     * 不是新来的话：不触发会话、不回话、不问 approval，bots 不听；只给记录类插件补记（memory 入历史回填队列，按消息号去重）。
+     * 谁发：src7/plugins/feishu/HistoryPull.ts 的 FeishuHistoryPull.pull
+     * 谁接：
+     *   src7/plugins/channels/ArchiveListen.ts 的 applyChatArchive
+     *   src7/plugins/memory/ChannelIndex.ts 的 applyChannelIndex
+     */
+    'channel/history'(messages: messageModule.ChannelMessage[]): void | Promise<void>;
     /**
      * 请渠道发一条（所有发出去的话都走它）：回来源快照的原消息，带 target.chat 跨聊天认目标，带 target.address 照确切地址发。
      * 匹配 channel 的渠道插件置 handled、发完回发 channel/replied；没人接单立刻回 rejected。

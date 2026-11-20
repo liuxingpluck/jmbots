@@ -61,6 +61,10 @@ export function getExplain(action: string, code: number, msg: unknown): string {
     if (action.startsWith('云文档')) {
       need = 'docx:document、drive:drive';
     }
+    //M 拉群历史要读群里所有消息：im:message.group_msg 是“获取群组中所有消息”，im:message:readonly 是读消息；机器人还得在群里。
+    if (action.startsWith('拉群历史')) {
+      need = 'im:message.group_msg（获取群组中所有消息）、im:message:readonly（获取单聊、群组消息）';
+    }
     text += `。请在飞书开放平台给应用开权限 ${need}，再发布一次版本`;
   }
   return text;

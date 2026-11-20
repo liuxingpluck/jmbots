@@ -36,6 +36,7 @@ import * as cards from './cards/Cards.ts';
 import { FeishuContacts } from './Contacts.ts';
 import * as doc from './doc/Doc.ts';
 import { FeishuChatLog } from './ChatLog.ts';
+import { FeishuHistoryPull } from './HistoryPull.ts';
 import { FeishuInbound } from './Inbound.ts';
 import type { RecallData, ReceiveData } from './Inbound.ts';
 import * as media from './Media.ts';
@@ -62,7 +63,10 @@ export const name = 'feishu';
 //M   引用了机器人的话算叫了它；地址不再写 listenOnly（bots 自己标）。
 //M 1.2.1：人员身份由 people[].role 决定，配置写旧身份键时报改法。
 //M 1.2.2：listen: judge 的群改由 bots 的群攒批判断（一批一次，来往流水的判断结果由 bot/judged 补记）；本插件只改说明。
-export const version = '1.2.2';
+//M 1.2.3：群里回话隐去本机绝对路径（mentioned 里 hideLocalPaths）；feishu_send_file 认这一轮的授权目录（用户 #301）。
+//M 1.2.4：拼标准消息时带上 accountName（应用配置的 bot 名），聊天归档的账号目录用它。
+//M 1.3.0：拉群聊历史（HistoryPull.ts）：POST /api/feishu/history、机器人新进群自动拉最近 history_on_join 条，发 channel/history 给 memory 补记；不触发会话。
+export const version = '1.3.0';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -164,6 +168,13 @@ export function feishuCustomer(chatType: string, chatId: string, openId: string,
 }
 
 
+/** 拉群历史默认条数：机器人新进群自动拉、HTTP 接口不写 limit 时都用它（config.example.yaml 写同一个数）。 */
+export const DEFAULT_HISTORY_LIMIT = 200;
+
+/** 拉群历史一次最多条数（HTTP 的 limit、配置的 history_on_join 都不能超过）。 */
+export const MAX_HISTORY_LIMIT = 5000;
+
+
 /** 名单里的一个飞书应用，校验后。 */
 export interface FeishuApp {
   /** 应用号 app_id。 */
@@ -223,6 +234,8 @@ export interface FeishuConfig {
   people: Map<string, FeishuPerson>;
   /** 专门设过的群：chat_id → 群。 */
   groups: Map<string, FeishuGroup>;
+  /** 机器人新进群时自动拉最近多少条历史；0 是不拉。默认 DEFAULT_HISTORY_LIMIT。 */
+  historyOnJoin: number;
 }
 
 
@@ -374,6 +387,9 @@ export class Feishu {
   /** 回话：响应 channel/reply（Reply.ts）。 */
   readonly reply: FeishuReply;
 
+  /** 拉群历史：HTTP 接口和机器人新进群调它（HistoryPull.ts）。 */
+  readonly historyPull: FeishuHistoryPull;
+
   /**
    * 建表、给每个应用建 SDK 客户端；ready 时连长连接；被拔掉时关长连接。
    * 向 bots 登记本渠道名（网页的渠道清单用）；所有回话都经 channel/reply 到 Reply.ts。
@@ -443,6 +459,9 @@ export class Feishu {
 
     //M 保留飞书聊天原始日志，供撤回核验与回复定位。
     this.history = new FeishuChatLog(this.ctx);
+
+    //M 拉群历史：用聊天日志去重，拼好的历史发 channel/history。
+    this.historyPull = new FeishuHistoryPull(this.ctx, this);
 
     const requestOptions = {
       onError: (error: unknown) => {
@@ -599,6 +618,12 @@ export class Feishu {
       'im.message.reaction.created_v1': () => undefined,
       'im.message.reaction.deleted_v1': () => undefined,
       'im.chat.access_event.bot_p2p_chat_entered_v1': () => undefined,
+      //M 机器人新进群：异步拉一次最近的历史（不等它，失败只打日志）。开放平台要订阅“机器人进群”事件才会收到。
+      'im.chat.member.bot.added_v1': (data: { chat_id?: string }) => {
+        if (data.chat_id === undefined) return;
+
+        void this.historyPull.onJoin(app, data.chat_id);
+      },
     });
 
     const ws = new lark.WSClient({
@@ -803,18 +828,25 @@ export class Feishu {
   }
 
   /**
-   * 群里的话：把 @名字 换成 <at user_id="open_id">名字</at>；认不出的名字原样留着。私聊不动。
+   * 群里的话：本机绝对路径换成文件名、目录名（用户 #301：群里不报本机路径）；
+   * 再把 @名字 换成 <at user_id="open_id">名字</at>，认不出的名字原样留着。私聊不动（本人自己的界面不打码）。
    * @param address 回话地址。
    * @param text 要发的话。
    * @returns 换好的话。
    */
   mentioned(address: FeishuAddress, text: string): string {
-    //G 私聊或正文不含 @ 符号时无需转换 <at> 标签，直接原样返回。
-    if (!workspaceModule.isGroup(address) || !text.includes('@')) return text;
+    //G 私聊原样返回。
+    if (!workspaceModule.isGroup(address)) return text;
+
+    //M 群里所有人都看得到：本机绝对路径只留最后一段（utils/Text.ts 的 hideLocalPaths）。
+    const hidden = textModule.hideLocalPaths(text);
+
+    //G 正文不含 @ 符号时无需转换 <at> 标签。
+    if (!hidden.includes('@')) return hidden;
 
     //M 长名字先换，免得“陈”抢了“陈大管家”。
     const known = this.getNames(address);
-    let body = text;
+    let body = hidden;
     for (const name of [...known.keys()].sort((a, b) => b.length - a.length)) {
       body = body.replaceAll(`@${name}`, `<at user_id="${known.get(name) ?? ''}">${name}</at>`);
     }
@@ -1005,7 +1037,16 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
     apps.push(appEntry);
   }
   //M 校验并解析人员权限清单与群配置清单后拼出完整飞书配置对象。
-  return { domain: domain.replace(/\/+$/u, ''), apps, people: getPeople(ctx, own), groups: getGroups(own, apps) };
+  //M 机器人新进群自动拉的历史条数：不写用默认，写 0 不拉。
+  const historyOnJoin = own['history_on_join'] ?? DEFAULT_HISTORY_LIMIT;
+  const historyValid = typeof historyOnJoin === 'number' && Number.isInteger(historyOnJoin)
+    && historyOnJoin >= 0 && historyOnJoin <= MAX_HISTORY_LIMIT;
+  if (!historyValid) {
+    throw new Error(`feishu 插件的 history_on_join 要写 0 到 ${String(MAX_HISTORY_LIMIT)} 的整数（0 是进群不拉历史）`);
+  }
+  const people = getPeople(ctx, own);
+  const groups = getGroups(own, apps);
+  return { domain: domain.replace(/\/+$/u, ''), apps, people, groups, historyOnJoin: historyOnJoin as number };
 }
 
 
@@ -1193,6 +1234,34 @@ export function apply(ctx: cordis.Context, config: unknown): void {
     http.app.get<{ Querystring: { limit?: string } }>('/api/feishu/contacts', (request) => {
       const limit = textModule.parseBoundedInt(request.query.limit, 50, 1, 1000);
       return { items: feishu.contacts.list(limit) };
+    });
+  }
+
+  //M http 挂了才有拉群历史的接口：POST /api/feishu/history { chat_id, app_id?, limit? }，在入口校验一次，再交给 HistoryPull.pull。
+  if (http !== undefined) {
+    http.app.post<{ Body: { chat_id?: unknown; app_id?: unknown; limit?: unknown } }>('/api/feishu/history', async (request, reply) => {
+      const body = request.body ?? {};
+      const chatId = body.chat_id;
+      if (typeof chatId !== 'string' || chatId === '') return reply.code(400).send({ error: '要给 chat_id（群号）' });
+
+      //G 一个应用时 app_id 可以不写；几个应用要写清用哪个。
+      const appId = body.app_id ?? feishu.config.apps[0]?.appId;
+      if (feishu.config.apps.length > 1 && body.app_id === undefined) {
+        return reply.code(400).send({ error: '配了几个飞书应用，要给 app_id' });
+      }
+      const app = typeof appId === 'string' ? feishu.apps.get(appId) : undefined;
+      if (app === undefined) return reply.code(400).send({ error: `没有飞书应用 ${String(appId)}` });
+
+      const limit = body.limit ?? DEFAULT_HISTORY_LIMIT;
+      const limitValid = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= MAX_HISTORY_LIMIT;
+      if (!limitValid) return reply.code(400).send({ error: `limit 要写 1 到 ${String(MAX_HISTORY_LIMIT)} 的整数` });
+
+      //M 拉的过程出错（权限不够等）把中文原因带回去，不悄悄失败。
+      try {
+        return await feishu.historyPull.pull(app, chatId, limit as number);
+      } catch (error) {
+        return reply.code(502).send({ error: textModule.getErrorMessage(error) });
+      }
     });
   }
 

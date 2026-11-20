@@ -968,5 +968,18 @@
   "这是 {file} 的逐行图，点块看每段代码": "This is the line-by-line map of {file}; click a block to see its code",
   "这是进程插件三方握手的流程图，点块看每一步": "This is the three-way handshake of process plugins; click a block to see each step",
   "进程插件": "Process plugins",
-  "骨架工具（utils）": "Core utilities (utils)"
+  "骨架工具（utils）": "Core utilities (utils)",
+  "目录授权": "Folder grants",
+  "把人或群绑到目录：目录和子目录里读写、跑命令、发文件不用再问你；存在后端库里，马上生效": "Bind a person or group to a folder: reading, writing, running commands and sending files inside it and its subfolders no longer need your approval; stored in the backend database and effective immediately",
+  "群": "Group",
+  "人": "Person",
+  "谁": "Who",
+  "撤掉这条授权？": "Remove this grant?",
+  "撤掉": "Remove",
+  "人或群": "Person or group",
+  "从最近说过话的人和群里挑；也可以直接填身份（飞书人 feishu:ou_…，群 feishu:group:oc_…）": "Pick from people and groups who spoke recently, or type an identity (Feishu person feishu:ou_…, group feishu:group:oc_…)",
+  "挑一个，或填身份": "Pick one, or type an identity",
+  "绝对路径。这个目录和下面的子目录里读写、跑命令、发文件都不用再问你；出了这个目录照旧": "Absolute path. Reading, writing, running commands and sending files in this folder and its subfolders no longer need your approval; outside it nothing changes",
+  "绝对路径": "Absolute path",
+  "加上授权": "Add grant"
 }

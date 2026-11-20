@@ -10,7 +10,6 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session } from '../../Sessions.ts';
 import * as cut from '../../utils/Cut.ts';
-import * as workspaceModule from '../../utils/Workspace.ts';
 import { BaseTools } from './BaseTools.ts';
 import * as editMatch from './EditMatch.ts';
 import * as skillModule from './Skill.ts';
@@ -24,7 +23,8 @@ export const name = 'file-tools';
 //M 1.1.0：并入原 base-tools（time、read、list_dir、write 与看图接图片 session/before-model 监听）。
 //M 1.1.1：读图片文件的 getImageBlock 从骨架 utils/Image.ts 挪进 BaseTools.ts，只有这里用。
 //M 1.2.0：并入原 skills 插件（Skill.ts：技能清单注入 work 会话、skill 工具；技能默认可用，config.yaml 不再单列 skills）。
-export const version = '1.2.0';
+//M 1.2.1：读写的路径除了工作区，这一轮的授权目录（回话地址 grants.dirs）里的也行（utils/Bots.ts 的 resolveSessionPath，用户 #301）。
+export const version = '1.2.1';
 
 /** 用到的服务：resources 查模型是否收图；tools 登记六个工具；bots 找机器人的工作区。 */
 export const inject = ['resources', 'tools'];
@@ -186,14 +186,14 @@ export class FileTools {
 
   /**
    * 相对工作区的路径落成绝对路径。
-   * @param session 哪场会话：用它的机器人的工作区；飞书上 builder 说话的这一轮用他的目录（botUtils.getSessionWorkspace）。
+   * @param session 哪场会话：用它的机器人的工作区；飞书上 builder 说话的这一轮用他的目录（botUtils.getSessionWorkspace）；
+   *   这一轮的授权目录（回话地址的 grants.dirs）里的也行。
    * @param relative 模型给的路径。
-   * @throws 没有这个机器人、出了工作区时抛错。
+   * @throws 没有这个机器人、出了工作区和授权目录时抛错。
    */
   private getFile(session: Session, relative: string): string {
-    //M 按本轮来源选择目录，再把目标路径限制在该目录。
-    const workspace = botUtils.getSessionWorkspace(this.ctx.resources, session);
-    return workspaceModule.resolveWorkspacePath(workspace, relative);
+    //M 按本轮来源选择目录，把目标路径限制在工作区和授权目录里（utils/Bots.ts 的 resolveSessionPath）。
+    return botUtils.resolveSessionPath(this.ctx.resources, session, relative);
   }
 }
 

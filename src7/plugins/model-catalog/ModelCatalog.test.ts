@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
+import * as traceText from '../../../web/src/locales/Trace.ts';
 import * as sessionsModule from '../../Sessions.ts';
 import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
@@ -281,6 +282,15 @@ test('3. 上下文超长：过滤掉更小窗口候选并按窗口降序优先�
 test.each([routeMissing, '400 service information not found'])('上游服务缺失时切到备用模型：%s', async (detail) => {
   const world = await setupWorld();
   const tried: string[] = [];
+  const switchLines: { text: string; vars: Record<string, unknown> }[] = [];
+
+  //M 用流水接收的同一个跟踪事件验证换模记录和文案占位符。
+  world.ctx.on('trace', (where, text, _code, vars) => {
+    if (where !== 'ModelFallback.onRequest') return;
+
+    switchLines.push({ text, vars });
+  });
+
   world.ctx.sessions.chat = async (request) => {
     tried.push(request.model);
     if (request.model === 'mock/primary') {
@@ -300,6 +310,21 @@ test.each([routeMissing, '400 service information not found'])('上游服务缺�
   expect(world.fallbackEvents).toEqual([
     { session, from: 'mock/primary', to: 'mock/medium', reason: 'upstream-unavailable' },
   ]);
+  expect(switchLines).toEqual([{
+    text: 'trace.modelCatalog.fallback.upstream-unavailable',
+    vars: {
+      session: session.id,
+      bot: '测试',
+      from: 'mock/primary',
+      to: 'mock/medium',
+      reason: 'upstream-unavailable',
+    },
+  }]);
+
+  const line = switchLines[0]!;
+  const parameters = traceText.getTraceParams(line.text, line.vars);
+  const caption = traceText.getTraceText('zh', line.text, parameters);
+  expect(caption).toBe('模型从 mock/primary 切到 mock/medium，上游服务信息找不到');
 });
 
 test.each([

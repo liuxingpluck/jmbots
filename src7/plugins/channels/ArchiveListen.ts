@@ -1,4 +1,4 @@
-/** 把渠道的五个事件（direct、mention、listen、replied、recall）写进聊天 Markdown，附件复制进聊天目录的 附件/。 */
+/** 把渠道的六个事件（direct、mention、listen、history、replied、recall）写进聊天 Markdown，附件复制进聊天目录的 附件/。 */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
@@ -16,7 +16,7 @@ const ATTACHMENT_DIR = '附件';
  * 挂上聊天归档：用户的话、机器人的话、撤回都写进同一聊天的 Markdown。
  * 写不进只打日志，不往外抛，别挡别人认领和收回执。
  * @param ctx 调用方插件的 ctx，监听随它卸载。
- * @param root 运行时根目录，聊天落在 root/chats/渠道/私聊或群聊/名字_ID。
+ * @param root 运行时根目录，聊天落在 root/channels/渠道/机器人名_ID/私聊或群聊/名字_ID。
  * @returns 归档对象。
  */
 export function applyChatArchive(ctx: cordis.Context, root: string): archiveModule.ChatArchive {
@@ -27,7 +27,7 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
     if (message.routing.partial === true) return;
 
     try {
-      const chat = getChat(message.channel, message.chatType, message.chatId, message.origin, message.sender.name);
+      const chat = getChat(message.channel, message.accountId, message.accountName, message.chatType, message.chatId, message.origin, message.sender.name);
       const directory = archive.getDirectory(chat);
       archive.record(chat, {
         key: `in:${message.messageId}`,
@@ -45,6 +45,13 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
   ctx.on('channel/mention', onInbound, { prepend: true });
   ctx.on('channel/listen', onInbound, { prepend: true });
 
+  //M 拉回来的群历史：已按时间从旧到新，逐条照实时消息记；同一消息号 Archive 按键去重，不重复写。
+  ctx.on('channel/history', (messages) => {
+    for (const message of messages) {
+      onInbound(message);
+    }
+  });
+
   //M 机器人的话：回执说发成了才记；没有来源快照的发话认不全聊天，先不记。
   ctx.on('channel/replied', (event) => {
     const status = event.receipt.status;
@@ -55,7 +62,7 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
     if (snapshot === undefined) return;
 
     try {
-      const chat = getChat(snapshot.channel, snapshot.chatType, snapshot.chatId, snapshot.origin, snapshot.senderName);
+      const chat = getChat(snapshot.channel, snapshot.accountId, undefined, snapshot.chatType, snapshot.chatId, snapshot.origin, snapshot.senderName);
       archive.record(chat, {
         key: `out:${request.replyRequestKey}`,
         at: event.receipt.at,
@@ -72,7 +79,7 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
   //M 撤回：原话已在文件里不改，另记一条撤回备注；这个聊天没归档过就不新建。
   ctx.on('channel/recall', (event) => {
     try {
-      const chat = archive.findChat(event.channel, event.chatId);
+      const chat = archive.findChat(event.channel, event.accountId, event.chatId);
       if (chat === undefined) return;
 
       archive.record(chat, {
@@ -95,6 +102,8 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
 /**
  * 聊天目录身份：群聊用地址里的群名，私聊、本机聊天用对面发话人的名字，都没有时目录只用 ID。
  * @param channel 渠道名。
+ * @param accountId 机器人（账号）ID。
+ * @param accountName 机器人（账号）展示名，回复没有。
  * @param chatType 聊天种类。
  * @param id 聊天稳定 ID。
  * @param origin 来源兼容地址，飞书把群名放在 chatName。
@@ -102,15 +111,17 @@ export function applyChatArchive(ctx: cordis.Context, root: string): archiveModu
  */
 function getChat(
   channel: string,
+  accountId: string,
+  accountName: string | undefined,
   chatType: messageModule.ChannelChatType,
   id: string,
   origin: messageModule.ChannelOrigin,
   senderName: string | undefined,
 ): archiveModule.ArchiveChat {
   const chatName = origin.address['chatName'];
-  if (chatType === 'group' && typeof chatName === 'string') return { channel, chatType, id, name: chatName };
+  if (chatType === 'group' && typeof chatName === 'string') return { channel, accountId, accountName, chatType, id, name: chatName };
 
-  return { channel, chatType, id, name: senderName ?? '' };
+  return { channel, accountId, accountName, chatType, id, name: senderName ?? '' };
 }
 
 

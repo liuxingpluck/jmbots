@@ -655,13 +655,15 @@ describe('飞书群登记的 relay、机器人的 relay', () => {
   test('群登记了 relay: model：这个群的会话有 relay_send 和提示；没登记的群、私聊没有，调了也拒', async () => {
     const made = await ready([{ name: 'Claude', prefixes: ['cc '] }]);
     expect(made.tools.map((tool) => tool.definition.name)).toEqual(['relay_send']);
-    expect(made.tools[0]?.definition.description).toContain('闲聊、打招呼不转');
+    expect(made.tools[0]?.definition.description).toContain('一般技术解释、资料查询、定方案、闲聊、打招呼都自己答');
+    expect(made.tools[0]?.definition.description).toContain('必须动项目代码时');
 
     const inModel = made.open(front);
     inModel.row.address = modelGroup;
     const asked = made.ask(inModel);
     expect(asked.tools).toEqual(['relay_send', 'read']);
     expect(asked.system.join('\n')).toContain('这是群聊');
+    expect(asked.system.join('\n')).toContain('只有对方明确要外部助手');
     expect(asked.system.join('\n')).toContain('以 cc 开头的话已经直接转给外部助手了');
 
     //M 群登记的 direct 和没登记一样：只认前缀，不给 relay_send。

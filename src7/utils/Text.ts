@@ -65,6 +65,34 @@ export function formatLocalTime(at: number, shape: ClockShape = 'time'): string 
 
 
 /**
+ * 本机绝对路径：盘符开头（前面不能紧挨字母、数字，免得把网址里的“s:/”当盘符），或 \\ 开头的共享路径；
+ * 到空白、引号、尖括号、括号、中文标点为止。
+ */
+const LOCAL_PATH = /(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|*?()（）「」【】，。；：、！？]*/gu;
+
+
+/**
+ * 把话里的本机绝对路径换成最后一段（文件名、目录名）：机器人在群里回话不报本机的目录结构（用户 #301）。
+ * 只剩盘符的（比如“F:\”）换成“（本机目录）”。飞书群里的回话（feishu 的 mentioned）用。
+ * @param text 要发的话。
+ * @returns 换好的话；没有路径就是原文。
+ */
+export function hideLocalPaths(text: string): string {
+  return text.replace(LOCAL_PATH, (found) => {
+    //M 去掉末尾的分隔符和句点，按 \、/ 切开取最后一段。
+    const trimmed = found.replace(/[\\/.]+$/u, '');
+    const parts = trimmed.split(/[\\/]/u).filter((part) => part !== '');
+    const last = parts.at(-1) ?? '';
+
+    //G 只剩盘符、或什么都不剩：说不出名字，写一句泛称。
+    if (last === '' || last.endsWith(':')) return '（本机目录）';
+
+    return last;
+  });
+}
+
+
+/**
  * 截到 max 个字（按字，不按 UTF-16 单元），截了加“…”。
  * @param text 一段字。
  * @param max 最多几个字。

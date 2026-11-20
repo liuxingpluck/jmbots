@@ -1,91 +1,13 @@
 /**
  * 工作区里的路径：模型给的相对路径落成绝对路径，不许跑出工作区（符号链接解开再比）。base-tools、file-tools 用。
- * 这一轮说话人是哪一档（getSpeakerRole）、是不是本人（isOwnerTurn）、用哪个工作区（getWorkspace）：approval、base-tools、file-tools、exec、feishu、memory、prompt、前台共用。
- * 这一轮能不能带用户的私人记忆（isPrivateMemoryAllowed）：prompt、memory、前台共用。是不是群（isGroup）：再加 approval、飞书卡片。
+ * 这一轮用哪个工作区（getWorkspace）：bots、workspaces、utils/Bots.ts 用。说话的是谁（是不是本人、哪一档、是不是群）不在这里，
+ * 由渠道协议判：plugins/channels/Message.ts 的 isOwnerTurn、getSpeakerRole、isGroup。
  * 比路径（getPathKey、isPathInDirectories）：approval 的可信目录、Checks.ts 的 checkDirs 用。
+ * 这一轮的授权目录（getGrantDirs，回话地址的 grants.dirs）：工作区之外也能读写、跑命令、发文件的目录，file-tools、飞书、approval 用。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as utils from './index.ts';
-
-
-/**
- * 这一轮说话人是哪一档：渠道写在地址里的 role（飞书照插件配置的 people 写：owner、builder、guest）。
- * 只写了 owner: false、没写 role 的地址当 guest；都没写的是 ''（地址本身分不出，要不要当本人看 isOwnerTurn）。
- * @param address 会话现在记的回话地址：最后一句带渠道的话从哪来。
- * @returns owner、builder、guest 或 ''。
- */
-export function getSpeakerRole(address: unknown): string {
-  //M 先读地址上标明的角色，没标再看 owner: false 判定为 guest，其余不限。
-  const role = utils.getStringField(address, 'role');
-  if (role !== '') return role;
-  if (utils.getField(address, 'owner') === false) return 'guest';
-
-  return '';
-}
-
-
-/** 不写 owner、role 也算本人的渠道：本机网页、命令行；会话没有渠道（内部小会话）也算。 */
-const LOCAL_CHANNELS = new Set(['', 'http', 'web', 'cli']);
-
-
-/**
- * 这一轮是不是用户本人在说：“本人”只在这里判，供工具、记忆和跨聊天回复检查。
- * 规则：地址写了 role 就照它（只有 owner 算本人）；写了 owner: true 是本人，owner: false 是外人；
- * 什么都没写的，只有网页、命令行（和没有渠道的内部会话）默认算本人，其他渠道（微信、飞书……）一律算外人。
- * @param channel 会话现在的渠道名（session.row.channel；快照上是 snapshot.channel）；没有渠道传 ''。
- * @param address 会话现在记的回话地址。
- * @returns 本人 true，外人 false。
- */
-export function isOwnerTurn(channel: string, address: unknown): boolean {
-  //M 地址上明确写了档位：只有 owner 算本人（builder、guest 不算）。
-  const role = getSpeakerRole(address);
-  if (role !== '') return role === 'owner';
-
-  //G 只写了 owner: true（没写 role）：本人。owner: false 已在 getSpeakerRole 里变成 guest。
-  if (utils.getField(address, 'owner') === true) return true;
-
-  //M 什么都没写：本机网页、命令行默认本人，其他渠道不写 owner 就是外人。
-  return LOCAL_CHANNELS.has(channel);
-}
-
-
-/**
- * 这一轮是不是别人（builder、guest）在说：用户的私人记忆、别的客户的记录不给他。
- * @param address 会话现在记的回话地址。
- */
-export function isNonOwnerSpeaker(address: unknown): boolean {
-  //M 按回话地址识别出说话人档位，再判断是不是限制查看私人记忆的外人角色。
-  const role = getSpeakerRole(address);
-  return role === 'builder' || role === 'guest';
-}
-
-
-/**
- * 这一轮能不能带用户的私人记忆（记忆目录、开场先搜、提示去查 memory）：本人、且不在不受信的群里才 true。
- * 群里机器人的回复所有人都看得到，所以群聊默认不带，飞书 groups 里登记了 trusted: true 的群（地址带 trusted）本人说话才带。
- * 没写 role 的渠道（网页、命令行、微信）和小会话不是群，照旧带。
- * @param address 会话现在记的回话地址。
- */
-export function isPrivateMemoryAllowed(address: unknown): boolean {
-  //G 非本人（builder、guest）不带。
-  if (isNonOwnerSpeaker(address)) return false;
-
-  //G 群里只有登记了 trusted: true 的才带。
-  return !isGroup(address) || utils.getField(address, 'trusted') === true;
-}
-
-
-/**
- * 是不是群：地址的 chatType 是 group，或客户号是 feishu:group:…（飞书插件 feishuCustomer 的写法）。
- * isPrivateMemoryAllowed、approval（群里“同意 N”只认本人）、飞书卡片（群里不发卡片）共用。
- * @param address 回话地址；带 customer 的别的对象（approval 的说话人、待确认）也行。
- */
-export function isGroup(address: unknown): boolean {
-  //M chatType 是 group，或客户号是 feishu:group: 开头。
-  const byType = utils.getStringField(address, 'chatType') === 'group';
-  return byType || utils.getStringField(address, 'customer').startsWith('feishu:group:');
-}
 
 
 /**
@@ -105,22 +27,41 @@ export function getWorkspace(botWorkspace: string, address: unknown): string {
 
 
 /**
- * 把相对工作区的路径落成绝对路径。工作区和目标都先解开符号链接再比，链接指到外面的算出了工作区。
- * @param workspace 这一轮的工作区，绝对路径。
- * @param relative 模型给的路径，相对工作区；写成绝对路径也行，但要在工作区里面。
- * @returns 解开链接后的绝对路径。
- * @throws 出了工作区、断了的链接解不开时抛错。
+ * 这一轮的授权目录（用户 #301“目录授权向下延伸”）：回话地址里的 grants.dirs。
+ * 谁写进去的：网页、中控发消息时带的（web-api 入口 Checks.ts 的 checkGrants 查过）；
+ * 渠道进来的话按人、按群从库里查到的，和本人这一轮说的“当轮授权”（approval 的 Grants.ts）。
+ * 这些目录和下面的子目录里读写、跑命令、发文件不用再问用户：file-tools、飞书发文件、approval 审命令都读它。
+ * @param address 会话现在记的回话地址。
+ * @returns 授权目录（绝对路径）；没写是空数组。
  */
-export function resolveWorkspacePath(workspace: string, relative: string): string {
-  //M 分别解析目标路径与工作区根路径的真实物理位置，再检验相对路径不能跳出根边界。
-  const full = getReal(path.resolve(workspace, relative));
-  const back = path.relative(getReal(workspace), full);
+export function getGrantDirs(address: unknown): string[] {
+  //M 地址里 grants.dirs 是入口校验过的绝对路径数组，直接取。
+  const grants = utils.getField(address, 'grants');
+  const dirs = utils.getField(grants, 'dirs');
+  if (!Array.isArray(dirs)) return [];
 
-  //G 落到工作区外面（../ 出去了、换了盘符、链接指出去）→ 不许。
-  if (back.startsWith('..') || path.isAbsolute(back)) {
-    throw new Error(`路径出了工作区：${relative}（只能用工作区里的路径）`);
-  }
-  return full;
+  return dirs as string[];
+}
+
+
+/**
+ * 把相对工作区的路径落成绝对路径。工作区、授权目录和目标都先解开符号链接再比，链接指到外面的算出了范围。
+ * @param workspace 这一轮的工作区，绝对路径；相对路径照它解开。
+ * @param relative 模型给的路径，相对工作区；写成绝对路径也行，但要在工作区或授权目录里面。
+ * @param grantDirs 这一轮的授权目录（getGrantDirs）；落在这些目录和子目录里也算在范围内。没有传空数组。
+ * @returns 解开链接后的绝对路径。
+ * @throws 出了工作区和授权目录、断了的链接解不开时抛错。
+ */
+export function resolveWorkspacePath(workspace: string, relative: string, grantDirs: string[]): string {
+  //M 目标路径照工作区解开，再解开符号链接，得到真正落在哪。
+  const full = getReal(path.resolve(workspace, relative));
+
+  //M 工作区和授权目录也解开链接，目标落在其中一个里面（目录本身也算）就行。
+  const roots = [workspace, ...grantDirs].map((dir) => getReal(dir));
+  if (isPathInDirectories(roots, full)) return full;
+
+  //G 落到外面（../ 出去了、换了盘符、链接指出去）→ 不许。
+  throw new Error(`路径出了工作区：${relative}（只能用工作区和授权目录里的路径）`);
 }
 
 

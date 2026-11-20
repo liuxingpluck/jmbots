@@ -61,3 +61,26 @@ export function getSessionWorkspace(resources: Pick<Resources, 'root' | 'raw'>, 
   //M 地址上的工作区保留 Builder、Guest 和派出的会话各自的目录。
   return workspace.getWorkspace(base, row.address);
 }
+
+
+/**
+ * 这一轮工具给的路径落成绝对路径：相对的照这一轮的工作区解开，只许落在工作区或这一轮的授权目录里（用户 #301）。
+ * file-tools 的读写、飞书发文件共用。
+ * @param resources 运行时目录、机器人名单。
+ * @param session 哪场会话：工作区、授权目录都看它现在记的回话地址。
+ * @param relative 模型给的路径。
+ * @returns 解开符号链接后的绝对路径。
+ * @throws 没有这个机器人、出了工作区和授权目录时抛错。
+ */
+export function resolveSessionPath(
+  resources: Pick<Resources, 'root' | 'raw'>,
+  session: Session,
+  relative: string,
+): string {
+  //M 先定这一轮的工作区，再取地址里的授权目录。
+  const workspaceDir = getSessionWorkspace(resources, session);
+  const grantDirs = workspace.getGrantDirs(session.row.address);
+
+  //M 照工作区解开路径，落在工作区或授权目录里才交回。
+  return workspace.resolveWorkspacePath(workspaceDir, relative, grantDirs);
+}

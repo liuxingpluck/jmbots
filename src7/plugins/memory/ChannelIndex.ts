@@ -622,6 +622,30 @@ export function applyChannelIndex(
   ctx.on('channel/mention', onInbound, { prepend: true });
   ctx.on('channel/listen', onInbound, { prepend: true });
 
+  //M 渠道拉回的群历史（channel/history，飞书拉群历史）：进历史队列（live 是 false），消息号已在库的 INSERT OR IGNORE 跳过；
+  //M   然后请回填开跑，历史批次照旧须经资源守卫批准。不触发会话，这里只记。
+  ctx.on('channel/history', (messages) => {
+    let added = 0;
+    for (const message of messages) {
+      try {
+        const row = getMessageRow(message);
+        if (row === undefined) continue;
+
+        //M 历史行不当实时：live 给 false，由回填按批、按资源守卫放行再发 Rust。
+        const isNew = index.add(row, false);
+        if (isNew) {
+          added += 1;
+        }
+      } catch (error) {
+        //G 一条记不进索引只打日志，不挡后面的。
+        console.error(`memory：渠道历史消息记不进索引：${textModule.getErrorMessage(error)}`);
+      }
+    }
+    if (added === 0) return;
+
+    rust?.resume();
+  });
+
   //M 机器人的话：渠道回执说发成了（channel/replied 的 sent、partial）才记，正文取回执带的请求；同一个 replyRequestKey 重放不重复。
   ctx.on('channel/replied', (event) => {
     const status = event.receipt.status;

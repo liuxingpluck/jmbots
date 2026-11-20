@@ -48,7 +48,7 @@ export const name = 'relay';
 //  1.4.1：明确轮询收件的本人标志与公开字段，补上旧留言的只读查看入口。
 //  1.4.7：不再改会话的回话地址（删三处 bots.route）：direct 会话标 quiet，回答、超时提醒都由 relay 照收件地址发 channel/reply。
 //M 1.4.9：决策回信只用收件保存的精确目标，拒绝旧的本人身份配置键。
-export const version = '1.4.9';
+export const version = '1.5.0';
 
 /** 决策图收件的来源，不代表机器人渠道或会话。 */
 const DECISION_CHANNEL = 'work-decision';
@@ -825,8 +825,8 @@ export class Relay {
     if (heads.length > 0) {
       skip = `以 ${heads.join('、')} 开头的话已经直接转给外部助手了，不用再转。`;
     }
-    return `聊到要查代码、定方案、改东西，或者问 jmbots 本身怎么做时，用 relay_send 把要点转给外部助手 ${helper}；`
-      + `闲聊、打招呼不转。${skip}`;
+    return `只有对方明确要外部助手（点名 ${helper}、或用了助手前缀），或者必须动项目代码时，才用 relay_send 把要点转给外部助手 ${helper}；`
+      + `一般技术解释、资料查询、定方案、闲聊、打招呼都自己答，自己答不够就交办自己的后台会话，不转。${skip}`;
   }
 
   /**
@@ -1461,7 +1461,7 @@ export class Relay {
     let real: string | undefined;
     for (const dir of dirs) {
       try {
-        real = workspaceModule.resolveWorkspacePath(dir, full);
+        real = workspaceModule.resolveWorkspacePath(dir, full, []);
         break;
       } catch {
         //M 不在这个目录里：看下一个。

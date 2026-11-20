@@ -21,6 +21,7 @@ afterEach(() => {
 /** 同一群的稳定聊天号，展示名可以变。 */
 const chat: archiveModule.ArchiveChat = {
   channel: 'feishu',
+  accountId: 'app',
   chatType: 'group',
   id: 'oc_test',
   name: '测试群',
@@ -54,10 +55,10 @@ test('原话和相对附件路径原样入档，重启或聊天改名后回放�
 
   expect(archive.record(chat, entry)).toBe(true);
   expect(archive.record(chat, entry)).toBe(false);
-  const directory = path.join(root, 'chats', 'feishu', '群聊', '测试群_oc_test');
+  const directory = path.join(root, 'channels', 'feishu', 'app', '群聊', '测试群_oc_test');
   const file = path.join(directory, '20261119_001.md');
   const initial = fs.readFileSync(file, 'utf8');
-  expect(initial).toContain('ou_test · 甲 · 2026-11-19T10:20:30.000Z');
+  expect(initial).toMatch(/ou_test · 甲 · 2026-11-19 \d\d:\d\d:\d\d [^*]+\*\*/u);
   expect(initial).toContain(original);
   expect(initial).toContain('- 附件/test.png');
 
@@ -104,9 +105,27 @@ test('私聊、群聊和频道分目录，文件名归一碰撞时仍按原 ID �
 
   expect(path.basename(path.dirname(groupDir))).toBe('群聊');
   expect(path.basename(path.dirname(p2p))).toBe('私聊');
-  expect(path.basename(path.dirname(path.dirname(web)))).toBe('http');
+  expect(path.basename(path.dirname(path.dirname(path.dirname(web))))).toBe('http');
   expect(new Set([groupDir, p2p, web, collision]).size).toBe(4);
   expect(fs.readFileSync(path.join(collision, '.chat-id'), 'utf8')).toBe('oc_:test');
+});
+
+
+test('有账号名时账号目录是“名字_ID”，没带名字的回复和重启后的撤回沿用它，没名字就只用 ID', () => {
+  const root = getTestDir();
+  const archive = new archiveModule.ChatArchive(root);
+  const named = archive.getDirectory({ ...chat, accountId: 'cli_x', accountName: '周小灵' });
+  expect(path.basename(path.dirname(path.dirname(named)))).toBe('周小灵_cli_x');
+
+  //M 回复没带名字：同一进程沿用刚记下的，重启后在渠道目录里找已有的“名字_ID”。
+  expect(archive.getDirectory({ ...chat, accountId: 'cli_x' })).toBe(named);
+  const restarted = new archiveModule.ChatArchive(root);
+  expect(restarted.getDirectory({ ...chat, accountId: 'cli_x' })).toBe(named);
+  expect(restarted.findChat('feishu', 'cli_x', 'oc_test')?.accountId).toBe('cli_x');
+
+  //M 从没带过名字的账号，目录还是只用 ID。
+  const plain = archive.getDirectory({ ...chat, accountId: 'cli_y' });
+  expect(path.basename(path.dirname(path.dirname(plain)))).toBe('cli_y');
 });
 
 
@@ -179,8 +198,8 @@ test('飞书私聊、群聊（含没 @）和机器人回复按名字_ID 落 MD�
   replyModule.emitReplied(ctx, request, receipt);
   replyModule.emitReplied(ctx, request, receipt);
 
-  const groupDir = path.join(root, 'chats', 'feishu', '群聊', '测试群_oc_group');
-  const privateDir = path.join(root, 'chats', 'feishu', '私聊', '甲_ou_a');
+  const groupDir = path.join(root, 'channels', 'feishu', 'app', '群聊', '测试群_oc_group');
+  const privateDir = path.join(root, 'channels', 'feishu', 'app', '私聊', '甲_ou_a');
   expect(fs.readFileSync(path.join(privateDir, '20261119_001.md'), 'utf8')).toContain('私聊一句');
 
   //M 回复和群消息在同一个群文件夹，重复回执只记一次。

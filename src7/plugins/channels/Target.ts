@@ -2,8 +2,7 @@
  * 渠道协议：跨渠道、跨聊天发话（目标描述、能不能跨、目标串怎么拆、候选聊天怎么认、认不出怎么说）。
  * 只放类型和无状态小函数；真正认聊天的是各渠道自己。
  */
-import * as workspaceModule from '../../utils/Workspace.ts';
-import type * as messageModule from './Message.ts';
+import * as messageModule from './Message.ts';
 
 
 /** 跨渠道或跨聊天发话时附带的目标描述（由目标渠道自行识别聊天）。 */
@@ -52,7 +51,7 @@ export interface ChatCandidate<T> {
  */
 export function canReplyAcrossChats(snapshot: messageModule.SourceSnapshot): boolean {
   //G 这一轮不是本人（地址标了 guest、builder、owner: false，或非网页、命令行的渠道没写 owner）一律禁止越界。
-  if (!workspaceModule.isOwnerTurn(snapshot.channel, snapshot.origin.address)) return false;
+  if (!messageModule.isOwnerTurn(snapshot.channel, snapshot.origin.address)) return false;
 
   //G 群聊里本人说话也不跨：当前群聊调用不能切换到别的聊天（11-18 中控补）。
   if (snapshot.chatType === 'group') return false;

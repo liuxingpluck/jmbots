@@ -1,8 +1,11 @@
-/** 记忆页的渠道回填进度和开始/暂停按钮。 */
+/** 记忆页的渠道回填进度、开始/暂停按钮，和拉飞书群历史。 */
 import * as react from 'react';
 import * as api from '../Api.ts';
 import * as i18n from '../I18n.ts';
 import * as privacy from '../Privacy/Mask.tsx';
+
+/** 最近说过话的飞书群的身份前缀，后面就是群号。 */
+const FEISHU_GROUP_PREFIX = 'feishu:group:';
 
 /** 独立轮询渠道进度。用户操作期间冻结自动刷新，避免旧状态盖掉新回执。 */
 export function ChannelBackfillCard() {
@@ -26,6 +29,12 @@ export function ChannelBackfillCard() {
   const [status, setStatus] = react.useState<api.MemoryBackfill>();
   const [busy, setBusy] = react.useState(false);
   const [error, setError] = react.useState('');
+  //M 拉飞书群历史：群从“最近说过话的群”里选，条数默认 50；结果和失败原因照实显示。
+  const [groups, setGroups] = react.useState<api.GrantSeen[]>([]);
+  const [chatId, setChatId] = react.useState('');
+  const [limit, setLimit] = react.useState('50');
+  const [pulling, setPulling] = react.useState(false);
+  const [pullResult, setPullResult] = react.useState('');
   const poll = react.useRef<AbortController | undefined>(undefined);
 
   react.useEffect(() => {
@@ -76,6 +85,28 @@ export function ChannelBackfillCard() {
     }
   };
 
+  //M 进页面读一次最近说过话的群，下拉里只留飞书群（身份写作 feishu:group:<群号>）。
+  react.useEffect(() => {
+    void api.grants().then((result) => {
+      setGroups(result.seen.filter((item) => item.subject.startsWith(FEISHU_GROUP_PREFIX)));
+    }).catch(() => {
+      setGroups([]);
+    });
+  }, []);
+
+  const pull = async () => {
+    //M 取群号和条数交给后端，后端在入口校验；权限不够等原因原样显示。
+    setPulling(true);
+    try {
+      const result = await api.pullFeishuHistory(chatId, Number(limit));
+      setPullResult(t('已拉取 {pulled} 条，跳过 {skipped} 条，失败 {failed} 条', { pulled: result.pulled, skipped: result.skipped, failed: result.failed }));
+    } catch (failure) {
+      setPullResult(t('拉取失败：{reason}', { reason: failure instanceof Error ? failure.message : String(failure) }));
+    } finally {
+      setPulling(false);
+    }
+  };
+
   if (status === undefined && error === '') return null;
 
   //M 总数随归档发现推进。状态提示优先显示按钮回执或资源守卫原因。
@@ -107,6 +138,18 @@ export function ChannelBackfillCard() {
       {status !== undefined && <div className="mm-row mm-backfill-action">
         <button type="button" disabled={busy} onClick={() => void change(!status.running)}>{label}</button>
       </div>}
+      <div className="mm-card-label mm-history-title">{t('拉飞书群历史')}</div>
+      <div className="mm-row mm-backfill-action">
+        <select value={chatId} aria-label={t('选择群')} onChange={(event) => setChatId(event.target.value)}>
+          <option value="">{t('选择群')}</option>
+          {groups.map((item) => (
+            <option key={item.subject} value={item.subject.slice(FEISHU_GROUP_PREFIX.length)}>{privacy.text(item.label, mask)}</option>
+          ))}
+        </select>
+        <input type="number" min={1} value={limit} aria-label={t('条数')} onChange={(event) => setLimit(event.target.value)} />
+        <button type="button" disabled={pulling || chatId === ''} onClick={() => void pull()}>{t('拉取')}</button>
+      </div>
+      {pullResult !== '' && <div className="mm-card-sub" role="status">{pullResult}</div>}
     </section>
   );
 }

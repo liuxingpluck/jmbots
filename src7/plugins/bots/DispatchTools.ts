@@ -38,7 +38,9 @@ const HAND_HINT = '派活用 hand_session：action new 新开一场后台，appe
   + '在哪个工作区干写 workspaceId（工作区 ID，先用 workspace 工具 list 查），或者照旧写 workspace（工作区里的相对路径，或机器人登记的名字），'
   + '两个只写一个，都不写是默认工作区；工作区定了以后 append 不能换，要换就新开一场。'
   + '还可写 model（供应商名/模型 ID）、thinking（思考档）；不写模型就沿用你现在的。'
-  + '后台做完的结果先回到你这里，由你整理后回给用户；要暂停一场用 stop_session，再 append 就接着做。';
+  + '后台做完的结果先回到你这里，由你整理后回给用户；要暂停一场用 stop_session，再 append 就接着做。'
+  + '同一个群里同一个问题，已经交办后台在查的，你先不给结论，只说“在查，做完发你”；'
+  + '后台的结论回来以它为准，要改你前面说过的话时明说“更正：……”。';
 
 /** 注册派活工具并管理普通前台轮的派活说明。 */
 export class DispatchTools {
@@ -516,9 +518,11 @@ export class DispatchTools {
     }
 
     //M 相对路径：出了范围 inside 抛错；目录不在就建，再原地登记成这个范围的工作区。
+    //M   这一轮的授权目录（回话地址的 grants.dirs，用户 #301）里的也行：后台可以直接在授权目录里干活。
+    const grantDirs = workspaceModule.getGrantDirs(address);
     let dir = '';
     try {
-      dir = workspaceModule.resolveWorkspacePath(access.root, pick.workspace);
+      dir = workspaceModule.resolveWorkspacePath(access.root, pick.workspace, grantDirs);
     } catch (error) {
       //G 保留路径校验失败的原异常，继续给工具回原拒绝原因。
       const reason = textModule.getErrorMessage(error);

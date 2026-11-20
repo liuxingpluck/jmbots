@@ -15,6 +15,7 @@ import * as i18n from '../I18n.ts';
 import * as theme from '../Theme.ts';
 import * as editsModule from './Edits.ts';
 import * as fields from './Fields.tsx';
+import * as grantsModule from './Grants.tsx';
 import * as reconnect from './Reconnect.tsx';
 import * as sections from './Sections.tsx';
 import './Settings.css';
@@ -61,6 +62,7 @@ const CATEGORIES: { key: string; label: string; hint: string; form?: (props: sec
   { key: 'ui', label: '界面', hint: '主题（存在这个浏览器里，不进 config.yaml）', paths: [] },
   { key: 'desktop', label: '窗口操控', hint: '拖动定位点选中窗口，预览指定区域并定向滚动', paths: [] },
   { key: 'reconnect', label: '重连', hint: '模型连不上、服务不对劲时用：重新测试模型连接、重启服务，不改 config.yaml', paths: [] },
+  { key: 'grants', label: '目录授权', hint: '把人或群绑到目录：目录和子目录里读写、跑命令、发文件不用再问你；存在后端库里，马上生效', paths: [] },
 ];
 
 /** 重启到哪一步了。 */
@@ -380,6 +382,7 @@ export function Settings(): react.JSX.Element {
                 </antd.Radio.Group>
               )}
               {current.key === 'reconnect' && <reconnect.Reconnect draft={draft} onReload={load} />}
+              {current.key === 'grants' && <grantsModule.Grants />}
               {current.key === 'desktop' && <desktop.Desktop />}
               {Form && loadError && <antd.Alert type="error" showIcon message={t('取不到配置：{reason}', { reason: loadError })} />}
               {Form && !loadError && !draft && <antd.Spin />}

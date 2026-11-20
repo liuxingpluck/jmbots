@@ -71,7 +71,7 @@ export interface FallbackSettings {
 declare module 'cordis' {
   interface Events {
     /**
-     * 每换一个模型去试之前发（journal 记成 model.fallback）。
+     * 准备尝试备用模型时发。原模型仍在冷却且没有备选时，回试原模型前也发。
      * 谁发：src7/plugins/model-catalog/Fallback.ts 的 ModelFallback.onRequest
      * 谁接：暂无
      */
@@ -236,6 +236,20 @@ export class ModelFallback {
 
       //M 每次切换记录实际离开的模型，让连续换模的顺序能串起来。
       this.ctx.emit('model-catalog/fallback', change);
+
+      const traceKey = `trace.modelCatalog.fallback.${reason}`;
+      const traceCode = 'this.attempt(request, model)';
+      const traceVars = {
+        session: request.session.id,
+        bot: request.session.row.bot,
+        from,
+        to: model,
+        reason,
+      };
+
+      //M 流水用会话号把换模行归到这轮，网页和教程按语言显示原因。
+      this.ctx.emit('trace', 'ModelFallback.onRequest', traceKey, traceCode, traceVars);
+
       try {
         //M 依次尝试排序后的备选模型，拿到结果立即回填 request.answer 并结束本轮。
         request.answer = await this.attempt(request, model);

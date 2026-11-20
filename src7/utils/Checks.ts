@@ -1,12 +1,14 @@
 /**
  * 校验：外面进来的东西只在这里查，一处一次。查过以后，骨架里面直接用，不再查、不再补默认值。
  * 骨架有两样外面进来的东西：命令行参数、config.yaml 里骨架自己用到的那几项。
- * 几个插件共用的校验也放这里（checkCount：网址里的非负整数；checkDirs、checkGrants：approval 的可信目录配置、POST /api/message 的授权目录）；
+ * 几个插件共用的校验也放这里（checkCount：网址里的非负整数；checkDirs、checkGrants：approval 的可信目录配置、POST /api/message 的授权目录；
+ * checkGrantDir：本人按人、按群设的授权目录，approval 的 dir_grant 工具和 POST /api/grants）；
  * 只有一个插件用的校验在那个插件里（relay/Checks.ts：外部 AI 打招呼、交回结果；model-catalog/Checks.ts：会话打分），
  * 它们借这里的 record、list、text、texts、oneOf 查字段。
  * 另外两样不在这里：插件要的配置（它自己那一段、顶层的 bots 这些）由插件自己查；
  * 模型给工具的参数在 Tools.execute 里照工具的定义查。
  */
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
 import type * as piAi from '@earendil-works/pi-ai';
@@ -451,6 +453,33 @@ export function checkGrants(raw: unknown): Grants | undefined {
   const written = raw as Record<string, unknown>;
   const dirs = checkDirs(written['dirs'], 'grants.dirs');
   return { dirs };
+}
+
+
+/**
+ * 查本人设的一个授权目录（用户 #301：某个人、某个群绑到这个目录，往下延伸不用再问）：模型工具 dir_grant、网页 POST /api/grants 调。
+ * 要是绝对路径、真有这个目录；交回解开 ..、符号链接后的真实路径（Windows 上盘符、目录名照磁盘上的大小写），以后比路径照它算。
+ * @param raw 外面给的目录。
+ * @returns 真实的绝对路径。
+ * @throws 带 statusCode 400 的错：不是非空字符串、不是绝对路径、目录不存在或不是目录。
+ */
+export function checkGrantDir(raw: unknown): string {
+  //G 要是写成绝对路径的非空字符串：相对路径不知道相对谁。
+  if (typeof raw !== 'string' || raw.trim() === '' || !path.isAbsolute(raw.trim())) {
+    const failure = new Error(`授权目录要写绝对路径：${String(raw)}`);
+    throw Object.assign(failure, { statusCode: 400 });
+  }
+
+  //G 目录要真有：写错了当场说，不存一条永远用不上的授权。
+  const full = path.resolve(raw.trim());
+  const stat = fs.statSync(full, { throwIfNoEntry: false });
+  if (stat === undefined || !stat.isDirectory()) {
+    const failure = new Error(`没有这个目录：${full}`);
+    throw Object.assign(failure, { statusCode: 400 });
+  }
+
+  //M 解开符号链接，照磁盘上的写法交回。
+  return fs.realpathSync.native(full);
 }
 
 

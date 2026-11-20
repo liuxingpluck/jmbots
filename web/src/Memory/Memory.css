@@ -20,6 +20,8 @@ code { background: #111a33; padding: 1px 6px; border-radius: 4px; }
 .mm-card.ok .mm-card-value { color: #5fe0a0; } .mm-card.bad .mm-card-value { color: #ff7a7a; } .mm-card.warn .mm-card-value { color: #ffc861; }
 .mm-card-sub { color: #7f8fb5; font-size: 12px; overflow-wrap: anywhere; }
 .mm-backfill-action { margin-top: 8px; }
+.mm-history-title { margin-top: 14px; }
+.mm-row input[type=number] { flex: 0 1 90px; }
 .mm-progress { grid-column: span 2; }
 .mm-bar { position: relative; height: 8px; border-radius: 4px; background: #2a3354; overflow: hidden; display: flex; margin: 6px 0; }
 .mm-bar i { display: block; height: 100%; } .mm-bar .done { background: linear-gradient(90deg, #2fbf7f, #5fe0a0); } .mm-bar .failed { background: #e05555; }

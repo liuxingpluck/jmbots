@@ -175,6 +175,7 @@ channels:
 #   - name: settings               # 设置页接口：GET/PUT /api/settings、POST /api/bots、立即重启；写在 http 后面
 #   - name: feishu                 # 飞书渠道：应用号、密钥写在顶层 channels.feishu；config.domain 默认 https://open.feishu.cn；写在 http 后面才有 /api/feishu/contacts
 #     config:
+#       history_on_join: 200       # 机器人新进群时自动拉最近这么多条群历史进记忆（0 不拉，最大 5000）；要给应用开 im:message.group_msg 和 im:message:readonly 权限并订阅“机器人进群”事件；也可手动 POST /api/feishu/history {chat_id, app_id?, limit?}
 #       people:                    # 认得的人（open_id 每个飞书应用不同，几个应用就各登记一项）；谁是哪一档只在这里认，没登记的都是 guest
 #         - { open_id: ou_xxx, name: 我, role: owner }      # owner：本人，什么都能用、能批“同意 N”
 #         - { open_id: ou_zzz, name: 小王, role: builder }  # builder：能让机器人写代码、跑程序，只在他的目录里（读写、exec、发文件）

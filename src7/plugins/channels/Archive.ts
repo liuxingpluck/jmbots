@@ -12,6 +12,10 @@ export interface ArchiveChat {
   channel: string;
   /** 群聊和私聊分开存，本机渠道归私聊。 */
   chatType: messages.ChannelChatType;
+  /** 机器人（账号）名：飞书 appId、本机渠道 'local'，和 feishu/ChatLog.ts 的账号目录同一个。 */
+  accountId: string;
+  /** 机器人（账号）的展示名，有就把账号目录叫“名字_ID”；回复、撤回没带，沿用已建好的目录。 */
+  accountName?: string;
   /** 平台聊天的稳定 ID。 */
   id: string;
   /** 当前的聊天名称，已有目录时沿用其路径。 */
@@ -60,16 +64,18 @@ const CHAT_ID_FILE = '.chat-id';
 const ENTRY_PREFIX = 'jmbots-entry';
 /** 一卷的最大消息数。 */
 const PAGE_SIZE = 200;
-/** 模块生成的卷名，日期按 UTC 取，卷号从 001 开始。 */
+/** 模块生成的卷名，日期按系统时区取，卷号从 001 开始。 */
 const PAGE_NAME = /^(\d{8})_(\d{3,})\.md$/u;
 
 
-/** 把归档记录写进运行时的 chats 目录，不读取渠道 JSONL 或记忆库。 */
+/** 把归档记录写进运行时的 channels 目录，不读取渠道 JSONL 或记忆库。 */
 export class ChatArchive {
   /** 此进程已定位的聊天目录。 */
   private readonly directories = new Map<string, string>();
   /** 按目录记住已核对的写入位置，免得每条都扫所有卷。 */
   private readonly states = new Map<string, ArchiveState>();
+  /** 渠道和账号 ID 对应的账号目录名，收到带名字的消息时记下。 */
+  private readonly accounts = new Map<string, string>();
 
   /** @param root 运行时根目录。 */
   constructor(private readonly root: string) {}
@@ -86,7 +92,8 @@ export class ChatArchive {
       kind = '群聊';
     }
     const channel = namesModule.getSafeName(chat.channel);
-    const parent = path.join(this.root, 'chats', channel, kind);
+    const account = this.getAccountDirectory(chat.channel, chat.accountId, chat.accountName);
+    const parent = path.join(this.root, 'channels', channel, account, kind);
     const key = JSON.stringify([parent, chat.id]);
     const cached = this.directories.get(key);
     if (cached !== undefined) return cached;
@@ -114,20 +121,48 @@ export class ChatArchive {
   }
 
   /**
+   * 账号目录名：有名字是“名字_ID”，没有是 ID。回复、撤回不带名字，先用收消息时记下的，
+   * 重启后没记下就在渠道目录里找已有的“名字_ID”，都没有才用 ID。
+   * @param channel 渠道名。
+   * @param accountId 平台账号 ID。
+   * @param accountName 账号展示名，可没有。
+   * @returns 渠道目录下的账号目录名。
+   */
+  private getAccountDirectory(channel: string, accountId: string, accountName?: string): string {
+    const safeId = namesModule.getSafeName(accountId, Infinity);
+    const key = JSON.stringify([channel, accountId]);
+    if (accountName !== undefined) {
+      const named = `${namesModule.getSafeName(accountName, Infinity)}_${safeId}`;
+      this.accounts.set(key, named);
+      return named;
+    }
+
+    const known = this.accounts.get(key);
+    if (known !== undefined) return known;
+
+    const channelDir = path.join(this.root, 'channels', namesModule.getSafeName(channel));
+    if (!fs.existsSync(channelDir)) return safeId;
+
+    const found = fs.readdirSync(channelDir).find((name) => name.endsWith(`_${safeId}`));
+    return found ?? safeId;
+  }
+
+  /**
    * 按聊天号找已有目录所属的聊天（撤回事件不带聊天种类），不新建目录。
    * @param channel 渠道名。
+   * @param accountId 机器人（账号）名。
    * @param id 平台聊天稳定 ID。
    * @returns 群聊或私聊里先找到的那个；都没有是 undefined。
    */
-  findChat(channel: string, id: string): ArchiveChat | undefined {
+  findChat(channel: string, accountId: string, id: string): ArchiveChat | undefined {
     const safeId = namesModule.getSafeName(id, 80);
     for (const chatType of ['group', 'p2p'] as const) {
       const kind = chatType === 'group' ? '群聊' : '私聊';
-      const parent = path.join(this.root, 'chats', namesModule.getSafeName(channel), kind);
+      const parent = path.join(this.root, 'channels', namesModule.getSafeName(channel), this.getAccountDirectory(channel, accountId), kind);
       if (!fs.existsSync(parent)) {
         continue;
       }
-      if (this.findDirectory(parent, safeId, id) !== undefined) return { channel, chatType, id, name: id };
+      if (this.findDirectory(parent, safeId, id) !== undefined) return { channel, accountId, chatType, id, name: id };
     }
     return undefined;
   }
@@ -145,9 +180,8 @@ export class ChatArchive {
     const key = Buffer.from(entry.key, 'utf8').toString('base64url');
     if (state.keys.has(key)) return false;
 
-    //M 日期和行头时刻共用 UTC，满 200 条后用新卷顺延。
-    const time = new Date(entry.at).toISOString();
-    const day = time.slice(0, 10).replaceAll('-', '');
+    //M 日期和行头时刻共用系统时区（如 2026-11-20 00:52:02 EST），满 200 条后用新卷顺延。
+    const { day, time } = formatLocalTime(entry.at);
     let page = state.days.get(day) ?? { number: 1, count: 0 };
     if (page.count >= PAGE_SIZE) {
       page = { number: page.number + 1, count: 0 };
@@ -217,6 +251,22 @@ export class ChatArchive {
     this.states.set(directory, state);
     return state;
   }
+}
+
+
+/** 按系统时区拆出文件名用的日期（20261120）和行头用的时刻（2026-11-20 00:52:02 EST）。 */
+function formatLocalTime(at: number): { day: string; time: string } {
+  const options: Intl.DateTimeFormatOptions = {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hourCycle: 'h23', timeZoneName: 'short',
+  };
+  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(at);
+  const get = (type: string): string => parts.find((part) => part.type === type)!.value;
+  const day = `${get('year')}-${get('month')}-${get('day')}`;
+  return {
+    day: day.replaceAll('-', ''),
+    time: `${day} ${get('hour')}:${get('minute')}:${get('second')} ${get('timeZoneName')}`,
+  };
 }
 
 

@@ -67,7 +67,7 @@ export const name = 'bots';
 //M 1.6.1：受管后台同轮 final 持久交回一次，progress 与失败回执独立保留。
 //M 1.6.2：群攒批（GroupBatch.ts）：listen: judge 的群攒一批（安静 N 秒或满 M 句）再问决策模型，每群每天上限；
 //M   数从 config 的 group_batch 读，缺键不开；判断改发 decision/judge；bot/judged 一批一次；有人叫机器人时攒着的话一起带上。
-export const version = '1.6.2';
+export const version = '1.6.3';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
