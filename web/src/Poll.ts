@@ -80,41 +80,76 @@ function canReload(store: zustand.StoreApi<storeModule.UiState>): boolean {
 }
 
 
+/** 跟踪后端启动时刻与已加载的版本资料，保证同一后端进程只拉一次完整 /api/ui/info。 */
+interface BackendTracker {
+  /** 已确认的后端进程启动时刻；检测到换版但暂不能刷新网页时保留旧值。 */
+  seenStartedAt: number | undefined;
+  /** 已拉取过完整版本资料的进程启动时刻。 */
+  infoLoadedAt: number | undefined;
+}
+
+
 /**
- * 后端换了版本（起来的时间变了）：网页也可能是新的，刷新一下，用户不用关开窗口。
- * 顺带把界面语言换成 config.yaml 的 ui.language（网址带 ?lang 时以网址为准，截图核对用）。
+ * 按配置同步界面语言；地址栏带 ?lang= 时以地址栏为准，不覆盖临时指定语言。
  * @param store 状态仓库。
- * @param seen 上一次看到的起来时间。
- * @returns 这一次看到的；问不到时还是原来的。
- * 副作用：发一个请求；可能刷新网页；语言变了写进仓库和浏览器。
+ * @param rawLanguage 后端交回的 ui.language。
+ */
+function syncConfigLanguage(
+  store: zustand.StoreApi<storeModule.UiState>,
+  rawLanguage: string | undefined,
+): void {
+  //M 解析地址栏 ?lang= 参数并归一化，存在时优先生效以支持截图等临时切语言场景。
+  const query = new URLSearchParams(window.location.search);
+  const urlLanguage = i18n.matchLanguage(query.get('lang'));
+  if (urlLanguage !== undefined) return;
+
+  //M 把后端返回的 ui.language 归一化为受支持语言代码，变化时写入仓库和浏览器存储。
+  const configLanguage = i18n.matchLanguage(rawLanguage);
+  if (configLanguage === undefined || store.getState().language === configLanguage) return;
+
+  store.getState().setLanguage(configLanguage);
+  i18n.saveLanguage(window.localStorage, configLanguage);
+}
+
+
+/**
+ * 轻量探测后端进程是否更换，并仅在首次加载或进程变化时拉一次完整版本资料。
+ * @param store 状态仓库。
+ * @param tracker 启动时刻与版本加载记录。
+ * 副作用：每轮只发轻量 /api/ui/status；按需拉一次 /api/ui/info、同步语言或刷新网页。
  */
 async function checkBackendChanged(
   store: zustand.StoreApi<storeModule.UiState>,
-  seen: number | undefined,
-): Promise<number | undefined> {
-  /** 后端进程信息（起来的时间、界面语言）。 */
-  //M 拉取后端进程启动时间与界面语言配置，用来识别后端重启换版并同步本地语言。
-  const info = await api.uiInfo().catch(() => undefined);
-  /** 后端起来的时间。 */
-  const startedAt = info?.startedAt;
-  /** 网址指定的语言；有它就不跟配置。 */
-  //M 解析地址栏 ?lang= 参数并归一化，存在时优先生效以支持截图等临时切语言场景。
-  const urlLanguage = i18n.matchLanguage(new URLSearchParams(window.location.search).get('lang'));
-  /** 配置里的语言。 */
-  //M 把后端返回的 ui.language 归一化为受支持语言代码，供下面与仓库当前语言比对同步。
-  const configLanguage = i18n.matchLanguage(info?.language);
-  //M 配置写了语言就跟配置：浏览器记的旧语言（比如 en）要让位，记一份新的下次打开不闪。
-  if (urlLanguage === undefined && configLanguage !== undefined && store.getState().language !== configLanguage) {
-    store.getState().setLanguage(configLanguage);
-    i18n.saveLanguage(window.localStorage, configLanguage);
+  tracker: BackendTracker,
+): Promise<void> {
+  //M 用不访问基地的轻量接口探测进程启动时刻与配置语言，免去每 1.5 秒打一次壳子版本。
+  const status = await api.uiStatus().catch(() => undefined);
+  const startedAt = status?.startedAt;
+  if (startedAt === undefined) return;
+
+  syncConfigLanguage(store, status?.language);
+
+  //G 确认后端启动时间变了且当前不在输入消息或设置页里，直接整页刷新装载新前端。
+  const changed = tracker.seenStartedAt !== undefined && startedAt !== tracker.seenStartedAt;
+  if (changed && canReload(store)) {
+    window.location.reload();
+    return;
   }
 
-  //G 确认后端启动时间变了且当前不在输入消息或设置页里，才整页刷新以装载新前端，以免打断编辑。
-  if (seen !== undefined && startedAt !== undefined && startedAt !== seen && canReload(store)) {
-    window.location.reload();
+  //M 首次进入或新进程暂缓刷新期间，只为当前进程拉一次完整版本信息供左栏展示。
+  if (tracker.infoLoadedAt !== startedAt) {
+    const info = await api.uiInfo().catch(() => undefined);
+    if (info !== undefined) {
+      store.getState().setUiInfo(info);
+      syncConfigLanguage(store, info.language);
+      tracker.infoLoadedAt = startedAt;
+    }
   }
-  //G 现在不能刷新：记着旧的，下一轮再看。
-  return seen ?? startedAt;
+
+  //G 首次记下启动时刻；若已换进程但正在编辑草稿或设置，保留旧时刻等空闲下一轮再刷。
+  if (tracker.seenStartedAt === undefined) {
+    tracker.seenStartedAt = startedAt;
+  }
 }
 
 
@@ -129,14 +164,14 @@ export function startPolling(store: zustand.StoreApi<storeModule.UiState>): () =
   let stopped = false;
   /** 下一轮的定时器。 */
   let timer: ReturnType<typeof setTimeout> | undefined;
-  /** 后端起来的时间（换了版本会变）。 */
-  let seenStartedAt: number | undefined;
+  /** 后端起来的时间与版本加载状态。 */
+  const tracker: BackendTracker = { seenStartedAt: undefined, infoLoadedAt: undefined };
   /** 问一轮，再排下一轮。 */
   const tick = async (): Promise<void> => {
     //M 执行本轮轮询以拉取机器人状态和待确认清单并写进仓库。
     await pollOnce(store);
-    //M 轮询完顺带检查后端是否换了新进程或改了界面语言，按需同步语言或触发刷新。
-    seenStartedAt = await checkBackendChanged(store, seenStartedAt);
+    //M 轻量检查后端是否换了新进程或改了界面语言，仅在首次或换进程时拉壳子版本。
+    await checkBackendChanged(store, tracker);
     if (!stopped) {
       //M 页面隐藏时放慢轮询频率，减少后台请求。
       let delay = POLL_MS;

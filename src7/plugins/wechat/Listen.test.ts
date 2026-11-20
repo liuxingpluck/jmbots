@@ -6,13 +6,16 @@
  * 一轮最多同步 60 个会话；机器人回复只成草稿、deliver 也不发；最近 50 条拼进 system；微信归档不足时用 backfill 补。
  * 2026-11-15：人手点“让 AI 回复”只对已监听会话调用 receive；监听会话 backfillAll 把更早的消息全部入库且不交机器人。
  */
+import * as fastify from 'fastify';
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { Session } from '../../Sessions.ts';
 import { Wechat, describe as describeView } from './index.ts';
 import type { WechatConfig } from './index.ts';
+import * as pageRoutes from './page/Routes.ts';
 import { Reader } from './read/Reader.ts';
 import type { ChatItem, RawMessage, SyncResult } from './read/Reader.ts';
+import * as voiceModule from './read/Voice.ts';
 
 /** 合成一条消息。 */
 function msg(id: number, at: number, text: string, fromSelf = false, atMe = false): RawMessage {
@@ -245,6 +248,112 @@ describe('微信后台全量监听、只听不发', () => {
     expect((ctx.resources.db.query("SELECT text FROM wechat_messages WHERE local_id = 1").get() as { text: string }).text).toBe('更早的历史');
     expect(received.length).toBe(0);
     expect((ctx.resources.db.query("SELECT full FROM wechat_sync WHERE chat = 'wxid_a'").get() as { full: number }).full).toBe(1);
+  });
+
+  test('客服页 messages 轮询：空闲轮回轻量 unchanged，新消息、旧历史补录、原地撤回与换实例均推进版本', async () => {
+    const { wechat, ctx, received } = fake();
+    const db = ctx.resources.db;
+    db.query('INSERT INTO wechat_watch VALUES (?, ?, ?, 0, 2000)').run('acc1', 'wxid_a', '甲');
+    db.query('INSERT INTO wechat_sync (account, chat, name, is_group, last_time, full) VALUES (?, ?, ?, 0, 2000, 0)')
+      .run('acc1', 'wxid_a', '甲');
+
+    //M 预塞 800 条历史消息，构造长窗口且全程保持同一 limit=1000 参数校验版本变化。
+    const insert = db.query(
+      'INSERT INTO wechat_messages (account, chat, source, local_id, at, from_self, kind, sender, text, view)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    for (let i = 1; i <= 800; i += 1) {
+      const text = `历史对话第 ${String(i)} 条正文内容用于核对体积`;
+      insert.run('acc1', 'wxid_a', 'm0', 1000 + i, 1000 + i, i % 2, 'text', '', text, JSON.stringify({ kind: 'text', text }));
+    }
+
+    const app = fastify.default({ logger: false });
+    const voice = new voiceModule.VoiceAudio(wechat.reader, '.');
+    pageRoutes.readRoutes(app, db, wechat, voice);
+
+    try {
+      //M 1. 不带 version 参数保持旧契约，直接返回消息数组。
+      const legacy = await app.inject('/api/wechat-kefu/messages?account=acc1&chat=wxid_a&limit=1000');
+      expect(legacy.statusCode).toBe(200);
+      expect((legacy.json() as unknown[]).length).toBe(800);
+
+      //M 2. 首次带空 version 拉回完整 800 条快照与版本号；空闲轮只回 ~50 字节的 unchanged。
+      const first = await app.inject('/api/wechat-kefu/messages?account=acc1&chat=wxid_a&limit=1000&version=');
+      expect(first.statusCode).toBe(200);
+      const firstBody = first.json() as { unchanged: boolean; version: string; messages?: { local_id: number; text: string }[] };
+      expect(firstBody.unchanged).toBe(false);
+      expect(firstBody.messages?.length).toBe(800);
+      expect(first.body.length).toBeGreaterThan(50_000);
+
+      //M 别的会话写入与 wechat_sync 更新不影响当前会话的快速命中。
+      insert.run('acc1', 'wxid_other', 'm0', 1, 3000, 0, 'text', '', '别的会话', '{}');
+      db.query('UPDATE wechat_sync SET last_time = 2001 WHERE account = ? AND chat = ?').run('acc1', 'wxid_a');
+
+      const idle = await app.inject(
+        `/api/wechat-kefu/messages?account=acc1&chat=wxid_a&limit=1000&version=${encodeURIComponent(firstBody.version)}`,
+      );
+      expect(idle.statusCode).toBe(200);
+      expect(idle.body.length).toBeLessThan(120);
+      const idleBody = idle.json() as { unchanged: boolean; version: string };
+      expect(idleBody).toEqual({ unchanged: true, version: firstBody.version });
+
+      //M 3. 旧历史补录（早于窗口首条，同一 limit=1000）：推进修订号并返回含补录旧消息的新窗口。
+      db.query('UPDATE wechat_sync SET full = 0 WHERE account = ? AND chat = ?').run('acc1', 'wxid_a');
+      wechat.reader.backfill = async (_a, _c, until): Promise<SyncResult> => {
+        if (until <= 500) return { chat: 'wxid_a', missing: false, messages: [] };
+
+        return { chat: 'wxid_a', missing: false, messages: [msg(500, 500, '补录的更早消息')] };
+      };
+      await wechat.backfillAll('acc1', 'wxid_a');
+      const afterBackfill = await app.inject(
+        `/api/wechat-kefu/messages?account=acc1&chat=wxid_a&limit=1000&version=${encodeURIComponent(firstBody.version)}`,
+      );
+      const backfillBody = afterBackfill.json() as { unchanged: boolean; version: string; messages: { text: string }[] };
+      expect(backfillBody.unchanged).toBe(false);
+      expect(backfillBody.version).not.toBe(firstBody.version);
+      expect(backfillBody.messages.length).toBe(801);
+      expect(backfillBody.messages[0]?.text).toBe('补录的更早消息');
+
+      //M 4. 微信侧原地撤回已落库的末条消息（同 source + local_id 变成 system 撤回提示）：更新展示、推进版本且不重派机器人。
+      const recalledMsg: RawMessage = {
+        source: 'm0',
+        local_id: 1800,
+        local_type: 10000,
+        create_time: 1800,
+        from_self: false,
+        at_me: false,
+        view: { kind: 'system', text: '"甲" 撤回了一条消息' },
+      };
+      wechat.reader.syncBatch = async (): Promise<SyncResult[]> => [
+        { chat: 'wxid_a', missing: false, is_group: false, messages: [recalledMsg] },
+      ];
+      await wechat.syncChats('acc1', [{ chat: 'wxid_a', name: '甲', since: 1799, at: 1800 }]);
+      expect(received.length).toBe(0);
+
+      const afterRecall = await app.inject(
+        `/api/wechat-kefu/messages?account=acc1&chat=wxid_a&limit=1000&version=${encodeURIComponent(backfillBody.version)}`,
+      );
+      const recallBody = afterRecall.json() as { unchanged: boolean; version: string; messages: { text: string; kind: string }[] };
+      expect(recallBody.unchanged).toBe(false);
+      expect(recallBody.version).not.toBe(backfillBody.version);
+      expect(recallBody.messages.at(-1)).toMatchObject({ kind: 'system', text: '"甲" 撤回了一条消息' });
+
+      //M 5. 模拟后端重启（新挂载的 readRoutes 实例有新 bootId）：旧 version 自动失效重拉快照。
+      const restartedApp = fastify.default({ logger: false });
+      pageRoutes.readRoutes(restartedApp, db, wechat, voice);
+      try {
+        const afterRestart = await restartedApp.inject(
+          `/api/wechat-kefu/messages?account=acc1&chat=wxid_a&limit=1000&version=${encodeURIComponent(recallBody.version)}`,
+        );
+        const restartBody = afterRestart.json() as { unchanged: boolean; version: string; messages?: unknown[] };
+        expect(restartBody.unchanged).toBe(false);
+        expect(restartBody.messages?.length).toBe(801);
+      } finally {
+        await restartedApp.close();
+      }
+    } finally {
+      await app.close();
+    }
   });
 });
 

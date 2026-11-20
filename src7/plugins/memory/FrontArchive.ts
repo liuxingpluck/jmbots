@@ -1,11 +1,42 @@
-import type { Session, Sessions } from '../../Sessions.ts';
-import * as memoryKeyModule from './MemoryKey.ts';
-/** 前台往来的正文统一由渠道消息索引持有，关联表只保留编号和会话归属。 */
+/**
+ * 前台往来归档与检索：正文统一由渠道消息索引持有，关联表只保留编号和会话归属；
+ * 提供会话范围计算、前台往来翻页与关键词/语义合并检索（searchFront）及按编号取全文（getFront）。
+ */
 import * as crypto from 'node:crypto';
 import type { Database } from 'bun:sqlite';
+import type { Session, Sessions } from '../../Sessions.ts';
 import type { ChannelIndex, ChannelRow } from './ChannelIndex.ts';
+import type { MemoryService } from './index.ts';
+import * as memoryKeyModule from './MemoryKey.ts';
 
+//退场：所有运行时的旧 bot_log 表数据都归档进 memory_channel_front（needsLegacyRead 恒为 false）以后
 const unarchived = "NOT EXISTS (SELECT 1 FROM memory_channel_front WHERE archive_key = 'front-log:' || b.id)";
+
+/** 查历史时每条截短到这么多字；全文用 memory_get。 */
+const HISTORY_CLIP = 240;
+
+/** 前台归档查询每次最多交回几条。 */
+const HISTORY_PAGE = 20;
+
+/** 语义命中的最低余弦相似度（bge-m3 已 L2 归一化）。 */
+const SEMANTIC_MIN = 0.22;
+
+/** 前台归档未挂载时给模型的提示。 */
+export const HISTORY_UNAVAILABLE = '前台往来暂时读不到，请以本轮消息为准。';
+
+/** 历史查询的附加条件，未提供的字段不参与筛选。 */
+interface HistoryRange {
+  /** 只取这一类发送人。 */
+  who?: 'user' | 'bot';
+  /** 最早时间，含。 */
+  from?: number;
+  /** 最晚时间，含。 */
+  to?: number;
+  /** 只取此编号之后的往来。 */
+  after?: number;
+  /** 只取此编号之前的往来。 */
+  before?: number;
+}
 
 /** 这一条往来在会话里实际看到的内容。 */
 export interface FrontMessage {
@@ -71,6 +102,7 @@ declare module 'cordis' {
 }
 
 export class FrontArchive {
+  //退场：所有运行时的旧 bot_log 表数据都归档进 memory_channel_front（needsLegacyRead 恒为 false）以后
   private readonly legacyMax: number;
   private readonly needsLegacyRead: boolean;
 
@@ -81,6 +113,7 @@ export class FrontArchive {
       + ' bot TEXT NOT NULL, session_id TEXT NOT NULL, time INTEGER NOT NULL)');
     db.exec('CREATE INDEX IF NOT EXISTS memory_channel_front_session ON memory_channel_front (bot, session_id, time)');
 
+    //退场：所有运行时的旧 bot_log 表数据都归档进 memory_channel_front（needsLegacyRead 恒为 false）以后
     //M 窗口迁移前的新编号也给现有 bot-log 引用留足位置。
     const exists = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bot_log'").get();
     let last = 0;
@@ -176,7 +209,9 @@ export class FrontArchive {
       ['instr(text, ?) > 0', query.keyword],
     ] as const;
     for (const [condition, value] of filters) {
-      if (value === undefined) continue;
+      if (value === undefined) {
+        continue;
+      }
 
       //M 条件与绑定值成对追加，空的筛选项已在上面跳过。
       where.push(condition);
@@ -193,6 +228,7 @@ export class FrontArchive {
     const predicate = where.join(' AND ');
     let source = 'SELECT f.id, f.bot, m.channel, m.direction AS who, f.session_id AS sessionId, m.text, f.time'
       + ' FROM memory_channel_front AS f JOIN memory_channel_messages AS m ON m.msg_key = f.msg_key';
+    //退场：所有运行时的旧 bot_log 表数据都归档进 memory_channel_front（needsLegacyRead 恒为 false）以后
     if (this.needsLegacyRead) {
       //M 过渡期只合并还没有关联的旧行，查询条件、顺序和分页同时约束新旧两边。
       source += ' UNION ALL SELECT b.id, b.bot, b.channel, b.who, b.sessionId, b.text, b.time FROM bot_log AS b'
@@ -202,6 +238,169 @@ export class FrontArchive {
 
     //M 给出这场有权读取的前台编号及其索引正文。
     return this.db.query<FrontEntry, (string | number)[]>(sql).all(...values, query.limit);
+  }
+
+  /**
+   * 按条件翻一页前台往来，最多 20 条。有关键词时合并文字匹配和语义检索。
+   * @param sessions 会话仓库，用于计算本场及交办后台的会话范围。
+   * @param service 记忆服务，有关键词时用于计算嵌入向量。
+   * @param session 前台对话。
+   * @param args 工具参数。
+   * @returns 拼好的单页往来摘要文本。
+   */
+  async searchFront(
+    sessions: Sessions,
+    service: MemoryService,
+    session: Session,
+    args: Record<string, unknown>,
+  ): Promise<string> {
+    //M 只查这场前台和它交办的后台会话（同一个客户），范围外的往来看不到。
+    const ids = getFrontSessionIds(sessions, session);
+    if (ids.length === 0) return '没有往来。';
+
+    const requestedCount = (args['count'] as number | undefined) ?? HISTORY_PAGE;
+    const take = Math.min(HISTORY_PAGE, Math.max(1, requestedCount));
+    const rawKeyword = args['keyword'];
+    let keyword: string | undefined;
+    if (typeof rawKeyword === 'string') {
+      keyword = rawKeyword.trim() || undefined;
+    }
+
+    //M 只把工具传来的有效筛选项交给两路检索共用。
+    const range: HistoryRange = {};
+    const who = args['who'];
+    if (who === 'user' || who === 'bot') {
+      range.who = who;
+    }
+    const numericKeys = ['from', 'to', 'after', 'before'] as const;
+    for (const key of numericKeys) {
+      const value = args[key];
+      if (typeof value === 'number') {
+        range[key] = value;
+      }
+    }
+    const fromEarliest = args['from_earliest'] === true || range.after !== undefined;
+    //M 同一份筛选条件约束关键词和语义两路，确保它们都只看当前会话范围。
+    const filter = { bot: session.row.bot, sessionIds: ids, ...range };
+
+    //M 有关键词才查语义。语义命中时再取更多关键词候选，合并后按相关程度排序。
+    let semantic: Array<{ entry: FrontEntry; score: number }> = [];
+    if (keyword !== undefined) {
+      semantic = await this.semanticHits(service, filter, keyword);
+    }
+    const ranked = semantic.length > 0;
+    let candidateCount = take;
+    if (ranked) {
+      candidateCount = 2000;
+    }
+
+    //M 保留按字匹配和语义匹配的去重总数，用于提示翻页。
+    let order: FrontQuery['order'] = 'last';
+    if (fromEarliest) {
+      order = 'first';
+    }
+    const query: FrontQuery = { ...filter, keyword, order, limit: candidateCount };
+    const keywordRows = this.read(query);
+    if (!fromEarliest) {
+      keywordRows.reverse();
+    }
+    const semanticRows = semantic.map((hit) => hit.entry);
+    const union = uniqueById(keywordRows, semanticRows);
+    let shown = keywordRows;
+    let orderNote = '按时间从早到晚';
+    if (ranked) {
+      shown = mergeHistoryHits(keywordRows, semantic, take);
+      orderNote = '按相关程度';
+    }
+    if (shown.length === 0) return '没有符合条件的往来。';
+
+    //M 开头一句说总数和这页范围、还有更多怎么翻；每条往来用 formatFrontEntry 截短排成一行，回给模型。
+    const total = union.length;
+    const first = String(shown[0]?.id);
+    const last = String(shown.at(-1)?.id);
+    let head = `共 ${String(total)} 条，这页 ${String(shown.length)} 条（编号 ${first}–${last}，${orderNote}）。`;
+    if (total > shown.length) {
+      head += '还有更多时，用 after 往后翻或 before 往前翻。';
+    }
+    //M 每条只放截短的正文和编号，模型需要全文时可用历史工具。
+    const lines = shown.map((entry) => formatFrontEntry(entry, HISTORY_CLIP));
+    return [head, ...lines].join('\n');
+  }
+
+  /** 语义检索只比较同一会话范围的候选，向量由记忆服务按需计算。 */
+  private async semanticHits(
+    service: MemoryService,
+    filter: Omit<FrontQuery, 'order' | 'limit'>,
+    keyword: string,
+  ): Promise<Array<{ entry: FrontEntry; score: number }>> {
+    const query: FrontQuery = { ...filter, order: 'last', limit: 2000 };
+    //G 先按会话权限取候选，没有可查的往来就不向记忆模型请求向量。
+    const candidates = this.read(query);
+    if (candidates.length === 0) return [];
+
+    //M 记忆服务离线时仍保留字面检索。
+    const words = [keyword];
+    const queryVec = await service.embed(words).catch(() => undefined);
+    const vector = queryVec?.[0];
+    if (vector === undefined) return [];
+
+    const hits: Array<{ entry: FrontEntry; score: number }> = [];
+    for (let offset = 0; offset < candidates.length; offset += 32) {
+      //M 按与原前台同样的批量大小编码，不再另建 SQLite 向量缓存。
+      const batch = candidates.slice(offset, offset + 32);
+      const texts = batch.map((entry) => entry.text);
+      const vectors = await service.embed(texts).catch(() => undefined);
+      if (vectors === undefined) {
+        break;
+      }
+
+      for (const [index, entry] of batch.entries()) {
+        const value = vectors[index];
+        if (value === undefined) {
+          continue;
+        }
+
+        //M 和查询向量同维且超过原门槛的才参与前台结果排序。
+        const score = cosine(vector, value);
+        if (score >= SEMANTIC_MIN) {
+          hits.push({ entry, score });
+        }
+      }
+    }
+    hits.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
+    return hits.slice(0, HISTORY_PAGE);
+  }
+
+  /**
+   * 读取本场前台归档中指定编号的全文。
+   * @param sessions 会话仓库，用于计算本场及交办后台的会话范围。
+   * @param session 前台对话。
+   * @param id 往来编号。
+   * @returns 指定往来的完整一行文本，或不存在提示。
+   */
+  getFront(sessions: Sessions, session: Session, id: number): string {
+    //G 同时按机器人、会话范围和编号查，越界时没有结果。
+    const sessionIds = getFrontSessionIds(sessions, session);
+    const query: FrontQuery = { bot: session.row.bot, sessionIds, id, order: 'last', limit: 1 };
+    const entries = this.read(query);
+    const row = entries[0];
+    if (row === undefined) return `没有编号 ${String(id)} 的往来，或不属于这场对话。`;
+
+    //M 范围内的才排成一行（不截短）回给模型。
+    return formatFrontEntry(row);
+  }
+}
+
+/**
+ * 核对前台归档编号读取权限：只允许有本人权限的前台会话读取。
+ * @param session 调工具的会话。
+ * @throws 外人、非受信群聊或非前台会话时抛错。
+ */
+export function checkFrontAccess(session: Session): void {
+  const access = memoryKeyModule.getMemoryAccess(session.row);
+  //G 原前台归档编号可能关联未补标的旧记录。
+  if (!access.full || session.row.kind !== 'front') {
+    throw new Error('这一轮只能查当前渠道聊天，请用 memory_search 查询已归属的记录');
   }
 }
 
@@ -215,9 +414,12 @@ export function getFrontSessionIds(sessions: Sessions, session: Session): string
   //M   非本人（builder、guest）说的那一轮不算：旧后台不知道是谁的，可能是用户自己的活。
   const access = memoryKeyModule.getMemoryAccess(session.row);
   if (!access.full) return [...ids];
+
   if (session.row.kind === 'front' && sessions.find({ bot: session.row.bot, kind: 'front' }).length <= 1) {
     for (const work of sessions.find({ bot: session.row.bot, kind: 'work' })) {
-      if (work.parent === undefined) ids.add(work.id);
+      if (work.parent === undefined) {
+        ids.add(work.id);
+      }
     }
   }
   return [...ids];
@@ -237,4 +439,87 @@ export function formatFrontEntry(entry: FrontEntry, clip?: number): string {
     suffix = '…（把 #编号交给 memory_get 取全文）';
   }
   return `#${String(entry.id)} [${when} ${entry.channel} ${who}] ${body}${suffix}`;
+}
+
+/**
+ * 把关键词命中和语义命中按编号合并，语义分数高的靠前；只要关键词命中也保留。
+ * @param keywordRows 按字匹配到的往来。
+ * @param semantic 语义命中。
+ * @param take 最多留几条。
+ * @returns 合并排序后的当前页往来。
+ */
+function mergeHistoryHits(
+  keywordRows: FrontEntry[],
+  semantic: Array<{ entry: FrontEntry; score: number }>,
+  take: number,
+): FrontEntry[] {
+  const scores = new Map<number, { entry: FrontEntry; score: number }>();
+  for (const entry of keywordRows) {
+    scores.set(entry.id, { entry, score: 1 });
+  }
+  for (const hit of semantic) {
+    const prev = scores.get(hit.entry.id);
+    if (prev === undefined) {
+      scores.set(hit.entry.id, hit);
+      continue;
+    }
+
+    //M 同一条同时命中关键词和语义时提高它的分数。
+    const score = hit.score + 1;
+    if (score > prev.score) {
+      scores.set(hit.entry.id, { entry: prev.entry, score });
+    }
+  }
+
+  //M 先按分数，再按编号稳定排序，只交回当前页的原文记录。
+  const ranked = [...scores.values()];
+  ranked.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
+  const shown = ranked.slice(0, take);
+  return shown.map((row) => row.entry);
+}
+
+/**
+ * 按编号去重，先出现的留下。
+ * @param groups 若干组往来。
+ * @returns 去重后的往来列表。
+ */
+function uniqueById(...groups: FrontEntry[][]): FrontEntry[] {
+  const seen = new Set<number>();
+  const out: FrontEntry[] = [];
+  for (const group of groups) {
+    for (const entry of group) {
+      if (seen.has(entry.id)) {
+        continue;
+      }
+      seen.add(entry.id);
+      //M 两路命中同一个编号时，只把第一次出现的那条留下。
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * 余弦相似度；长度不同或零向量交回 0。
+ * @param a 向量 a。
+ * @param b 向量 b。
+ * @returns 余弦相似度分数。
+ */
+function cosine(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  if (denom === 0) return 0;
+
+  return dot / denom;
 }

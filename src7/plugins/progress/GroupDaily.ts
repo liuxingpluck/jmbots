@@ -6,7 +6,7 @@ import type * as cordis from 'cordis';
 import type { SessionMeta } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
-import type { FeishuGroup } from '../feishu/index.ts';
+import type { FeishuGroup } from '../feishu/Config.ts';
 
 /** 已在飞书配置入口校验的群和定时参数。 */
 type GroupReport = NonNullable<FeishuGroup['daily']> & Pick<FeishuGroup, 'chatId' | 'name'>;

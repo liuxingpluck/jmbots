@@ -493,8 +493,7 @@ export class DispatchResults {
     const row = front.row;
     const item = getActive(row);
     if (item === undefined) {
-      this.clearActive(row);
-      front.save();
+      this.settle(front, false);
       return;
     }
 
@@ -511,10 +510,7 @@ export class DispatchResults {
     if (row.recalledStop === true || item.replyControl?.outcome === 'recalled') {
       item.stage = 'rejected';
       item.note = '已停止（用户撤回了消息）';
-      this.clearActive(row);
-      row.resultQueue = getKept(row.resultQueue ?? []);
-      front.save();
-      this.later(front);
+      this.settle(front);
       return;
     }
 
@@ -551,19 +547,14 @@ export class DispatchResults {
     //M 把按地址发送的结果转成标准回执，存进队列项。
     item.deliveryReceipt = normalizeAutoReplyReceipt(receipt.status, receipt.reason, receiptMeta);
 
-    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项（处理完的留键去重），存库。
-    this.clearActive(row);
-    row.resultQueue = getKept(row.resultQueue ?? []);
-    front.save();
+    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项（处理完的留键去重），存库并排下一拍检查后续项。
+    this.settle(front);
 
     //T 跟踪：后台结果整理好发出去了。
     const vars = { session: front.id, resultKey: item.key, receipt: receipt.status, reason: receipt.reason };
     const action = 'trace.bots.finishFront';
     const call = 'ctx.bots.send(front, text, item.origin)';
     this.home.emit('trace', 'Dispatch.finishFront', action, call, vars);
-
-    //M 这一项收完了：下一拍再看队列里还有没有排着的，有就接着处理。
-    this.later(front);
   }
 
   /**
@@ -614,27 +605,34 @@ export class DispatchResults {
     //M 按渠道回执或本轮状态记下处理结果。
     this.recordChannelOutcome(row, item);
 
-    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库。
-    this.clearActive(row);
-    row.resultQueue = getKept(row.resultQueue ?? []);
-    front.save();
+    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库并排下一拍检查后续项。
+    this.settle(front);
 
     //M 通知渠道这一轮收尾了（网页把那条标成回完，命令行出错时记退出码）。
     this.emitSettled(item);
-
-    //M 这一项收完了：下一拍再看队列里还有没有排着的，有就接着处理。
-    this.later(front);
   }
 
   /**
-   * 释放已结束轮次的标记，后续轮次不继承旧来源或撤回状态。
-   * @param row 当前前台会话，调用者负责持久化。
+   * 当前这一项收尾落盘：释放本轮活动与撤回标记（后台会话保留常驻的 quiet），队列只留未处理完的和最近 KEEP 项，存库；
+   * 需要接着处理后续队列项时排到下一拍。
+   * @param session 前台或后台会话。
+   * @param drainNext 是否排下一拍检查后续队列项（标记残留兜底或调用方另排时为 false）。
    */
-  private clearActive(row: SessionMeta): void {
+  private settle(session: Session, drainNext = true): void {
+    const row = session.row;
     delete row.activeKey;
-    delete row.quiet;
+    if (row.kind !== 'work') {
+      delete row.quiet;
+    }
     delete row.activeSourceSnapshot;
     delete row.recalledStop;
+    if (row.resultQueue !== undefined) {
+      row.resultQueue = getKept(row.resultQueue);
+    }
+    session.save();
+    if (drainNext) {
+      this.later(session);
+    }
   }
 
   /** 按渠道回执和停跑原因记录该轮处理结果。 */
@@ -829,10 +827,8 @@ export class DispatchResults {
       item.note = STATE_WORDS[row.state];
     }
 
-    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库。
-    delete row.activeKey;
-    row.resultQueue = getKept(row.resultQueue ?? []);
-    work.save();
+    //M 收尾：清掉“正在处理”的标记，队列只留最近的几项，存库（下一拍由调用方排）。
+    this.settle(work, false);
   }
 
   /**
@@ -1002,9 +998,7 @@ export class DispatchResults {
       item.replyControl.outcome = 'uncertain';
       item.stage = 'uncertain';
       item.note = '重启前正在执行零次回复修复轮，不自动重跑';
-      this.clearActive(row);
-      session.save();
-      this.later(session);
+      this.settle(session);
       return;
     }
 
@@ -1023,9 +1017,7 @@ export class DispatchResults {
       }
 
       //M 不管发没发到，都释放“正在处理”的标记，存库，下一拍接着处理队列里别的项。
-      this.clearActive(row);
-      session.save();
-      this.later(session);
+      this.settle(session);
       return;
     }
 

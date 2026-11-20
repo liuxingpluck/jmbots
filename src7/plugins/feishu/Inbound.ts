@@ -18,8 +18,10 @@ import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
 import type { Contact } from './Contacts.ts';
 import type { FeishuChatLogEntry } from './ChatLog.ts';
-import { feishuCustomer, GUEST_DIR } from './index.ts';
-import type { AppState, Feishu, FeishuAddress, FeishuApp, FeishuGroup, FeishuPerson, Toast } from './index.ts';
+import { GUEST_DIR } from './Config.ts';
+import type { FeishuApp, FeishuGroup, FeishuPerson } from './Config.ts';
+import { feishuCustomer } from './index.ts';
+import type { AppState, Feishu, FeishuAddress, Toast } from './index.ts';
 import * as media from './Media.ts';
 
 

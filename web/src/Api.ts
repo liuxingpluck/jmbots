@@ -816,9 +816,20 @@ export function applyUpdate(): Promise<{ ok: boolean }> {
 }
 
 
-/** 各渠道连着没有。 */
-export function uiStatus(): Promise<{ channels: { name: string; bot?: string; connected: boolean; detail: string }[] }> {
-  //M 拉取各外接渠道的连接健康状态，供左下角连接指示灯与悬停详情渲染。
+/** 轻量界面与渠道状态（GET /api/ui/status，不向基地发版本请求）。 */
+export interface UiStatus {
+  /** 后端进程启动时刻（毫秒），重启或换版后会变。 */
+  startedAt: number;
+  /** config.yaml 的 ui.language（没配不带）。 */
+  language?: string;
+  /** 各外接渠道的连接健康状态。 */
+  channels: { name: string; bot?: string; connected: boolean; detail: string }[];
+}
+
+
+/** 轻量读取后端启动时刻、界面语言及各渠道连接状态。 */
+export function uiStatus(): Promise<UiStatus> {
+  //M 拉取进程启动标记、可选语言与各外接渠道连通性，供主轮询轻量探活与左下角连接灯共用。
   return getJson('/api/ui/status');
 }
 
@@ -1034,7 +1045,7 @@ const RESTART_POLL_MS = 2000;
 
 
 /**
- * 等后端换成新进程：每隔一会儿问 /api/ui/info，起来的时间变了就是新进程（重启那几秒连不上是正常的）。
+ * 等后端换成新进程：每隔一会儿问轻量 /api/ui/status，起来的时间变了就是新进程（重启那几秒连不上是正常的）。
  * 设置页的“立即重启”和“重连”里的“重启服务”都用它。
  * @param startedAt 旧进程起来的时间（重启接口回的）。
  * @returns 3 分钟内等到了是 true，超时是 false。
@@ -1046,9 +1057,9 @@ export async function waitNewProcess(startedAt: number): Promise<boolean> {
     await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_MS));
     try {
       /** 现在的进程。 */
-      //M 轮询查询当前进程启动时刻，只要与重启前记录的 startedAt 不同即确认新进程已就绪。
-      const info = await uiInfo();
-      if (info.startedAt !== startedAt) {
+      //M 轮询查询当前进程轻量启动时刻，只要与重启前记录的 startedAt 不同即确认新进程已就绪。
+      const status = await uiStatus();
+      if (status.startedAt !== startedAt) {
         return true;
       }
     } catch {

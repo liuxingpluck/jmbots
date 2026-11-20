@@ -35,6 +35,7 @@ import * as utils from '../../utils/index.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
 import * as protocol from '../channels/index.ts';
 import { ChannelTools } from './ChannelTools.ts';
+import * as claimModule from './DispatchClaim.ts';
 import { Dispatch, type AcceptReceipt, type ResultInput } from './Dispatch.ts';
 import { FrontDesk, type FrontDeskConfig } from './FrontDesk.ts';
 import * as groupBatchModule from './GroupBatch.ts';
@@ -72,7 +73,8 @@ export const name = 'bots';
 //M 1.6.6：ready 时看 memory 开工没有，改读挂载结果的 state。
 //M 1.6.7：requestEvent 改新写法（云端 19 第 1、2 条）：查前台归档、取模型介绍不掐表；群攒批问决策模型只报警（decision 自己限时）。
 //M 1.6.8：群攒批判定要接话时，地址带 judgeHelper（飞书群登记的 judge_helper）的这一批记成背景、经 bot/receive 转给该外部助手（DispatchClaim.relayBatch，#318）。
-export const version = '1.6.8';
+//M 1.6.9：Bots 构造函数只做登记（回调挪成 onReady/onChange/onSay/onRequestError）；认领记录与结果队列收尾分别合成共用函数（云端20 #2/#4）。
+export const version = '1.6.9';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。
@@ -354,8 +356,8 @@ export class Bots extends cordis.Service {
   private readonly home: cordis.Context;
 
   /**
-   * 登记 bots 插件：把 Bots 作为服务挂到 Cordis 上（以后用 ctx.bots 取）；再照名单建好每个机器人（一个个调 add，和运行中新建走同一条路）。
-   * 同时挂上“这一轮有结果了就回话”“会话中途先说一句”：按会话记的渠道名找登记的 send。
+   * 登记 bots 插件：把 Bots 作为服务挂到 Cordis 上（以后用 ctx.bots 取）；照名单建好每个机器人；
+   * 构造函数只做事件和请求监听登记，具体处理写在下面的类方法里。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 名单、后台会话的思考档。
    * @throws 名单里有空名字、重名时抛错。
@@ -371,77 +373,92 @@ export class Bots extends cordis.Service {
     }
 
     //M 插件都挂过后检查一次归档服务；memory 可选，缺失时前台仍可答话。
-    this.ctx.once('ready', () => {
-      const status = this.ctx.resources.pluginStatus;
-      const memory = status.find((item) => item.name === 'memory');
-      if (memory?.state === 'ok') return;
+    this.ctx.once('ready', () => this.onReady());
 
-      console.warn('bots：memory 插件未启动，前台往来不会保存，历史往来暂时无法读取。');
-    });
+    //M 会话状态变了（跑完、出错、被停）就看要不要把这一轮的回话发回渠道。
+    this.ctx.on('session/change', (session) => this.onChange(session));
 
-    //M 会话状态变了（跑完、出错、被停）就看要不要把这一轮的回话发回渠道；还在转、没渠道、别人自己送的一律不管。
-    this.ctx.on('session/change', (session) => {
-      const row = session.row;
-      //G 还在转、或没有渠道（小会话）→ 不管。
-      if (row.state === 'running' || row.channel === undefined) return;
-
-      //G 回话由别的插件自己送（quiet）或启用 channel_tool 模式 → 绝不自动发 row.reply。
-      if (row.quiet === true || row.activeSourceSnapshot !== undefined) return;
-
-      //G 升级前已标记撤回停跑的旧轮次，沿用原收尾规则。
-      const activeOutcome = (row.resultQueue ?? []).find((item) => item.key === row.activeKey)?.replyControl?.outcome;
-      if (row.recalledStop === true || activeOutcome === 'recalled') return;
-
-      //T 跟踪：回话。
-      const vars = { channel: row.channel, session: row.id, state: row.state, textLength: row.reply.length };
-      this.ctx.emit('trace', 'Bots.onChange', 'trace.bots.deliverReply', 'this.send(session, reply)', vars);
-      void this.send(session, row.reply);
-    });
-
-    //M 会话中途先说一句（bots.say 发的通知 bot/say）：channel_tool 会话照本轮来源快照发，旧会话照会话记的地址发，都经 channel/reply。
-    this.ctx.on('bot/say', (session, text) => {
-      if (session.row.channel === undefined) return;
-
-      //M 当前轮带来源快照的（channel_tool 会话）：把这句话包成 progress 回复，交渠道协议的 channel/reply 发出去。
-      const snapshot = session.row.activeSourceSnapshot;
-      if (snapshot !== undefined) {
-        const replyRequestKey = protocol.getReplyRequestKey(snapshot.replyRoundKey, `say:${namesModule.createTimestampId()}`);
-        const options = { replyRequestKey, replyIndex: 0, kind: 'progress' as const };
-        //M 中途说明沿本轮来源发出，不阻塞当前会话。
-        void protocol.requestTextReply(this.home, snapshot, text, options);
-        return;
-      }
-
-      //M 没有来源快照的旧会话：照会话记的渠道和地址发，发了不等回执。
-      void this.send(session, text);
-    });
+    //M 会话中途先说一句（bots.say 发的通知 bot/say）。
+    this.ctx.on('bot/say', (session, text) => this.onSay(session, text));
 
     //M 私聊、群里叫了机器人：每个 targetBot 独立物化附件、过 bot/receive 兼容关口、各自认领进自己的会话。
-    //M   语音半句提前开工也走 channel/direct（routing.partial），和整句同一个认领入口。
     this.ctx.on('channel/direct', (message, control) => this.onChannelMessage(message, false, control));
     this.ctx.on('channel/mention', (message, control) => this.onChannelMessage(message, false, control));
 
-    //M 只听：targetBots 里的机器人只记背景（或问决策模型要不要接）；targetBots 空的（没登记的群、语音只入档）谁都不进。
+    //M 只听：targetBots 里的机器人只记背景（或问决策模型要不要接）；targetBots 空的谁都不进。
     this.ctx.on('channel/listen', (message, control) => this.onChannelMessage(message, true, control));
 
-    //M 别的插件请机器人办事走请求事件 bot/request（契约 3.2 第 4 条）：onRequest 按 action 调现有方法，办完回 bot/result。
-    //M   现有方法抛的错（没有这个机器人、重名、会话不在、结果冲突）转成 { ok: false, error }，调用方不干等超时。
+    //M 挂上 bot/request 的监听，收到请求就办，办完回一个 bot/result；抛错转成 { ok: false, error }。
     const requestOptions = {
-      onError: (error: unknown) => {
-        const message = textModule.getErrorMessage(error);
-        return { ok: false, error: message };
-      },
+      onError: (error: unknown) => this.onRequestError(error),
     };
-
-    //M 挂上 bot/request 的监听，收到请求就办，办完回一个 bot/result（带请求号，请求方按号配对）。
     requestEventModule.onRequestEvent(
       this.ctx,
       'bot/request',
       'bot/result',
-      //M 办事的函数：按 request.action 分发到 hand、saveFile、add、acceptResult，返回值就是回执正文。
       (request) => this.onRequest(request),
       requestOptions,
     );
+  }
+
+  /** ready：全部插件发起挂载后检查 memory 是否就绪，没起只打一条警告，不挡答话。 */
+  private onReady(): void {
+    const status = this.ctx.resources.pluginStatus;
+    const memory = status.find((item) => item.name === 'memory');
+    if (memory?.state === 'ok') return;
+
+    console.warn('bots：memory 插件未启动，前台往来不会保存，历史往来暂时无法读取。');
+  }
+
+  /**
+   * session/change：跑完、出错、被停的会话，看要不要把 row.reply 自动发回原渠道；
+   * 还在转、没有渠道（小会话）、别人自己送（quiet）、启用了 channel_tool 或已标撤回停跑的一律不发。
+   * @param session 状态变化的会话。
+   */
+  private onChange(session: Session): void {
+    const row = session.row;
+    if (row.state === 'running' || row.channel === undefined) return;
+    if (row.quiet === true || row.activeSourceSnapshot !== undefined) return;
+
+    //G 升级前已标记撤回停跑的旧轮次，沿用原收尾规则。
+    const activeItem = (row.resultQueue ?? []).find((item) => item.key === row.activeKey);
+    const activeOutcome = activeItem?.replyControl?.outcome;
+    if (row.recalledStop === true || activeOutcome === 'recalled') return;
+
+    //T 跟踪：回话。
+    const vars = { channel: row.channel, session: row.id, state: row.state, textLength: row.reply.length };
+    this.ctx.emit('trace', 'Bots.onChange', 'trace.bots.deliverReply', 'this.send(session, reply)', vars);
+    void this.send(session, row.reply);
+  }
+
+  /**
+   * bot/say：会话中途先说一句。channel_tool 会话照本轮来源快照发 progress 回复，旧会话照会话记的地址发，都不阻塞当前会话。
+   * @param session 说话的会话。
+   * @param text 要先说的话。
+   */
+  private onSay(session: Session, text: string): void {
+    if (session.row.channel === undefined) return;
+
+    const snapshot = session.row.activeSourceSnapshot;
+    if (snapshot !== undefined) {
+      const suffix = `say:${namesModule.createTimestampId()}`;
+      const replyRequestKey = protocol.getReplyRequestKey(snapshot.replyRoundKey, suffix);
+      const options = { replyRequestKey, replyIndex: 0, kind: 'progress' as const };
+      void protocol.requestTextReply(this.home, snapshot, text, options);
+      return;
+    }
+
+    //M 没有来源快照的旧会话：照会话记的渠道和地址发，发了不等回执。
+    void this.send(session, text);
+  }
+
+  /**
+   * bot/request 处理抛错时的回执：把原因放到 { ok: false, error }，调用方不干等超时。
+   * @param error onRequest 抛出的错。
+   */
+  private onRequestError(error: unknown): requestEventModule.StripResultId<BotResult> {
+    const message = textModule.getErrorMessage(error);
+    return { ok: false, error: message };
   }
 
   /**
@@ -627,7 +644,7 @@ export class Bots extends cordis.Service {
       await this.home.serial('bot/receive', receiveEvent);
 
       if (receiveEvent.handled === true) {
-        control?.claims.push({ bot: botName, claimKey, status: 'handled' });
+        claimModule.pushClaim(control, botName, claimKey, 'handled');
         continue;
       }
 
@@ -646,30 +663,18 @@ export class Bots extends cordis.Service {
 
         //G 同一条消息（同 claimKey）这场会话已经认领过：渠道重发的，不再投一次。
         if (claims.includes(claimKey)) {
-          const duplicate: protocol.ChannelClaimRecord = {
-            bot: botName,
-            claimKey,
-            status: 'duplicate',
-            sessionId: claimedSession.id,
-          };
-          control?.claims.push(duplicate);
+          claimModule.pushClaim(control, botName, claimKey, 'duplicate', claimedSession);
           continue;
         }
 
         //M 把这条的去重键记到会话上（只留最近 200 个），存库，下次重发才认得出来。
-        claimedSession.row.sourceClaims = [...claims, claimKey].slice(-200);
+        claimModule.rememberClaim(claimedSession, claimKey);
         claimedSession.save();
         let status: protocol.ChannelClaimRecord['status'] = 'claimed';
         if (claimedSession.row.kind === 'relay') {
           status = 'relay';
         }
-        control?.claims.push({
-          bot: botName,
-          claimKey,
-          status,
-          sessionKind: claimedSession.row.kind,
-          sessionId: claimedSession.id,
-        });
+        claimModule.pushClaim(control, botName, claimKey, status, claimedSession);
 
         //M 话交给认领的那场会话（比如 relay 的外部助手会话），记下回话往哪送，推它往下走；一轮结束自动回原渠道。
         bot.deliver(claimedSession, incoming.text, { channel: message.channel, address: botOrigin.address });

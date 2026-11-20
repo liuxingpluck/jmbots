@@ -14,6 +14,7 @@
  * 对应积木客服的 /api/accounts、/api/watch、/api/messages、/api/drafts*、/api/sender
  * （jimukefu src/services/Api.ts、Drafts.ts:182-185）。
  */
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import type * as fastify from 'fastify';
 import type { Database } from 'bun:sqlite';
@@ -21,6 +22,7 @@ import * as textModule from '../../../utils/Text.ts';
 import type { Http } from '../../http/index.ts';
 import type { Wechat } from '../index.ts';
 import * as readerModule from '../read/Reader.ts';
+import * as storeModule from '../read/Store.ts';
 import type * as voiceModule from '../read/Voice.ts';
 
 
@@ -76,6 +78,10 @@ type ReadSource = Pick<Wechat, 'reader' | 'status' | 'syncChats'> & {
 export function readRoutes(
   app: fastify.FastifyInstance, db: Database, wechat: ReadSource, voice: voiceModule.VoiceAudio,
 ): void {
+  //M 为当前路由实例生成进程代次并确保会话消息修订触发器就绪，供轮询轻量判变。
+  const bootId = crypto.randomUUID().slice(0, 8);
+  storeModule.ensureMessageRevisionTriggers(db);
+
   //M 把轮询状态、微信账号和刷新周期一并交给客服页面。
   app.get('/api/wechat-kefu/status', () => ({
     ...wechat.status, accounts: wechat.reader.accounts(), interval: wechat.config.intervalMs,
@@ -135,7 +141,21 @@ export function readRoutes(
       void wechat.backfillAll?.(account, chat);
     }
 
-    //M 从库里取最新的限量消息，再按对话时间正序返回页面。
+    //M 带 version 参数的轮询先比对会话窗口版本号，未变化时直接回轻量标记，免每 3 秒查表重传千条正文。
+    const queryRecord = request.query as Record<string, unknown> | undefined;
+    const hasVersion = typeof queryRecord?.['version'] === 'string';
+    if (hasVersion) {
+      const version = storeModule.getChatMessageVersion(db, bootId, account, chat, limit);
+      const knownVersion = field(request.query, 'version');
+      if (knownVersion !== '' && knownVersion === version) return { unchanged: true, version };
+
+      const rows = db
+        .query('SELECT * FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC, local_id DESC LIMIT ?')
+        .all(account, chat, limit);
+      return { unchanged: false, version, messages: rows.reverse() };
+    }
+
+    //M 未传 version 的调用方保持原样返回消息数组（兼容外置页与直接调用）。
     const rows = db
       .query('SELECT * FROM wechat_messages WHERE account = ? AND chat = ? ORDER BY at DESC, local_id DESC LIMIT ?')
       .all(account, chat, limit);

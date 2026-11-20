@@ -4,7 +4,7 @@
  * 通过 wechat-kefu 接口读取会话、消息和发件记录，已监听会话可起草建议。
  * 演示打码开启时隐藏账号、会话内容和建议原文。
  */
-import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import * as virtuoso from 'react-virtuoso';
 import { Guide } from '../Guide/Guide.tsx';
 import { WECHAT_STEPS } from '../Guide/steps-wechat-kefu.ts';
@@ -75,6 +75,11 @@ const FILTERS: [Filter, string][] = [
 ];
 const LOADED_AT = Date.now();
 interface Out { id: number; name: string; text: string; state: string; note: string; at: number }
+interface MessagePollReply {
+  unchanged: boolean;
+  version: string;
+  messages?: Message[];
+}
 
 function getKind(chat: Chat): Kind {
   const id = chat.username;
@@ -160,6 +165,56 @@ function pollJson<T>(
   void refresh(firstPath);
   return () => {
     //M 离开当前账号或会话时，不再接收旧请求的内容。
+    controller.abort();
+    window.clearTimeout(timer);
+  };
+}
+
+/** 按会话变更版本号轮询消息：无变化时服务端直接回轻量标记，避免每 3 秒重拉千条历史正文。 */
+function pollMessages(
+  account: string,
+  chat: string,
+  getName: () => string,
+  interval: number,
+  update: (rows: Message[]) => void,
+): () => void {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const options = { signal };
+  let knownVersion = '';
+  let timer: number | undefined;
+
+  async function refresh(): Promise<void> {
+    try {
+      const query = new URLSearchParams({
+        account,
+        chat,
+        name: getName(),
+        limit: '1000',
+        version: knownVersion,
+      });
+      const path = `/api/wechat-kefu/messages?${query.toString()}`;
+      //M 携带上次确认的会话版本号请求，未变时只收轻量标记，有新增、撤回或补录时才更新列表。
+      const reply = await call<MessagePollReply>(path, options);
+      if (signal.aborted) return;
+
+      knownVersion = reply.version;
+      if (!reply.unchanged && Array.isArray(reply.messages)) {
+        update(reply.messages);
+      }
+    } catch {
+      //G 断线或读取失败后清空已知版本，恢复连接时重新拉取完整窗口。
+      knownVersion = '';
+    } finally {
+      //M 等本轮结束才排下一次，避免慢请求重叠或倒序覆盖。
+      if (!signal.aborted) {
+        timer = window.setTimeout(() => { void refresh(); }, interval);
+      }
+    }
+  }
+
+  void refresh();
+  return () => {
     controller.abort();
     window.clearTimeout(timer);
   };
@@ -360,6 +415,8 @@ export function WechatPage() {
   }, [chats, selection]);
   const currentId = current?.username;
   const currentName = current?.chat ?? '';
+  const currentNameRef = useRef(currentName);
+  currentNameRef.current = currentName;
 
   //M 轮询通用状态，只在界面字段有变时更新，首次自动选中已连接的账号。
   useEffect(() => {
@@ -431,11 +488,9 @@ export function WechatPage() {
   useEffect(() => {
     if (currentId === undefined) return;
 
-    //M 每次切换会话取消上一会话的请求，保留原来的千条历史窗口。
-    const query = new URLSearchParams({ account, chat: currentId, name: currentName, limit: '1000' });
-    const path = `/api/wechat-kefu/messages?${query.toString()}`;
-    return pollJson<Message[]>(path, 3_000, setMessages);
-  }, [account, currentId, currentName]);
+    //M 切换账号或会话时取消上一会话的在途请求，常规轮询按会话修订号走轻量快速路径。
+    return pollMessages(account, currentId, () => currentNameRef.current, 3_000, setMessages);
+  }, [account, currentId]);
 
   const selectChat = (chat: Chat): void => {
     if (chat.username === currentId) return;

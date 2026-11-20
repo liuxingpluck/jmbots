@@ -387,6 +387,168 @@ test('页面版本查询无人应答只保留后端版本，收到基地回执�
   expect(withBase.json()).toMatchObject({ shell: { version: '1.2.3', builtAt: 123 } });
 });
 
+test('轻量 /api/ui/status 返回 startedAt 与可选 ui.language，且全程不触发 base/request', async () => {
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  let baseRequests = 0;
+  requestEventModule.onRequestEvent(ctx, 'base/request', 'base/result', () => {
+    baseRequests += 1;
+    return { ok: true, status: 200, body: { version: '2.0.0', builtAt: 456 } };
+  });
+
+  //M 未配置 ui.language 时返回 startedAt 与 channels，且不访问基地。
+  const first = await ctx.http.app.inject('/api/ui/status');
+  expect(first.statusCode).toBe(200);
+  const firstBody = first.json<{ startedAt: number; language?: string; channels: unknown[] }>();
+  expect(typeof firstBody.startedAt).toBe('number');
+  expect(firstBody.language).toBeUndefined();
+  expect(firstBody.channels).toEqual([]);
+  expect(baseRequests).toBe(0);
+
+  //M 配置 ui.language 后，/api/ui/status 实时带出语言且仍零次打基地；/api/ui/info 的 startedAt 与之一致。
+  ctx.resources.raw['ui'] = { language: 'en' };
+  const second = await ctx.http.app.inject('/api/ui/status');
+  expect(second.statusCode).toBe(200);
+  const secondBody = second.json<{ startedAt: number; language: string; channels: unknown[] }>();
+  expect(secondBody).toEqual({ startedAt: firstBody.startedAt, language: 'en', channels: [] });
+  expect(baseRequests).toBe(0);
+
+  const info = await ctx.http.app.inject('/api/ui/info');
+  expect(info.statusCode).toBe(200);
+  expect(info.json()).toMatchObject({
+    startedAt: firstBody.startedAt,
+    language: 'en',
+    shell: { version: '2.0.0', builtAt: 456 },
+  });
+  expect(baseRequests).toBe(1);
+});
+
+test('主站 Poll 轮询反对者检验：仅首次或换进程查 1 次 uiInfo，保留 ?lang=、未存设置、草稿防刷与待审批实时出现', async () => {
+  const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'));
+  ctx.resources.raw['ui'] = { language: 'en' };
+
+  let simulatedStartedAt = 1000;
+  let uiInfoCalls = 0;
+  let uiStatusCalls = 0;
+  let editorText = '';
+  let reloaded = 0;
+
+  //M 备份并注入最小浏览器全局环境，把前端 fetch 对接真实 Fastify 路由（可切换模拟 startedAt 验证换版）。
+  const prevWindow = (globalThis as Record<string, unknown>)['window'];
+  const prevDocument = (globalThis as Record<string, unknown>)['document'];
+  const prevFetch = globalThis.fetch;
+  const prevSetTimeout = globalThis.setTimeout;
+  const storageMap = new Map<string, string>();
+  const fakeWindow = {
+    location: {
+      href: 'http://127.0.0.1:30086/?lang=fr',
+      search: '?lang=fr',
+      reload: () => { reloaded += 1; },
+    },
+    localStorage: {
+      getItem: (key: string) => storageMap.get(key) ?? null,
+      setItem: (key: string, val: string) => { storageMap.set(key, val); },
+    },
+    dispatchEvent: () => true,
+  };
+  const fakeDocument = {
+    hidden: false,
+    documentElement: { style: {} },
+    createElement: () => ({ style: {} }),
+    querySelector: (sel: string) => {
+      if (sel === '.jm-editor') return { textContent: editorText };
+
+      return null;
+    },
+  };
+  const storeUrl = new URL('../../../web/src/Store.ts', import.meta.url).href;
+  const pollUrl = new URL('../../../web/src/Poll.ts', import.meta.url).href;
+  const storeMod = await import(storeUrl) as {
+    createUiStore: (theme: 'dark', lang: 'fr') => { getState: () => Record<string, unknown> };
+  };
+  const pollMod = await import(pollUrl) as {
+    startPolling: (s: unknown) => () => void;
+  };
+
+  (globalThis as Record<string, unknown>)['window'] = fakeWindow;
+  (globalThis as Record<string, unknown>)['document'] = fakeDocument;
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+    let actualMs = ms;
+    if (ms === 1500) {
+      actualMs = 15;
+    }
+    return prevSetTimeout(fn, actualMs, ...rest);
+  }) as typeof setTimeout;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/ui/info') uiInfoCalls += 1;
+    if (url === '/api/ui/status') uiStatusCalls += 1;
+    let method: 'GET' | 'POST' = 'GET';
+    if (init?.method === 'POST') {
+      method = 'POST';
+    }
+    const res = await ctx.http.app.inject({
+      method,
+      url,
+      headers: init?.headers as Record<string, string> | undefined,
+      payload: init?.body as string | undefined,
+    });
+    let bodyText = res.body;
+    if (url === '/api/ui/status' || url === '/api/ui/info') {
+      const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+      parsed['startedAt'] = simulatedStartedAt;
+      bodyText = JSON.stringify(parsed);
+    }
+    return new Response(bodyText, { status: res.statusCode });
+  }) as typeof fetch;
+
+  try {
+    const store = storeMod.createUiStore('dark', 'fr');
+    const stop = pollMod.startPolling(store);
+    try {
+      //M 1. 首轮完成：uiInfo 只拉 1 次并写进 store.uiInfo；地址带 ?lang=fr 不被 ui.language=en 覆盖。
+      await waitFor(() => uiStatusCalls >= 1 && store.getState()['uiInfo'] !== null);
+      expect(uiInfoCalls).toBe(1);
+      expect(store.getState()['language']).toBe('fr');
+
+      //M 2. 去掉 ?lang= 后再观察后续轮询：稳定态不调 uiInfo，配置语言自动同步为 en，待审批实时出现。
+      fakeWindow.location.search = '';
+      const front = ctx.sessions.create({ bot: '助手', kind: 'front', customer: 'http:本机' });
+      ctx.approval.ask({ kind: 'exec', title: '确认项', detail: 'ls', payload: {}, bot: '助手', session: front.id });
+
+      await waitFor(() => uiStatusCalls >= 3 && (store.getState()['approvals'] as unknown[]).length === 1);
+      expect(uiInfoCalls).toBe(1);
+      expect(store.getState()['language']).toBe('en');
+      expect(reloaded).toBe(0);
+
+      //M 3. 模拟换进程（startedAt 改变），但设置页开着或编辑器有草稿时不刷网页，且新进程也最多补拉 1 次 uiInfo。
+      (store.getState()['setSettingsOpen'] as (open: boolean) => void)(true);
+      editorText = '未发出的草稿';
+      simulatedStartedAt = 2000;
+      const beforeStatus = uiStatusCalls;
+      await waitFor(() => uiStatusCalls >= beforeStatus + 2);
+      expect(reloaded).toBe(0);
+      expect(uiInfoCalls).toBe(2);
+
+      //M 4. 关设置页仍有草稿 → 仍不刷；清空草稿后下一轮立即触发整页 reload。
+      (store.getState()['setSettingsOpen'] as (open: boolean) => void)(false);
+      const afterCloseSettings = uiStatusCalls;
+      await waitFor(() => uiStatusCalls >= afterCloseSettings + 2);
+      expect(reloaded).toBe(0);
+
+      editorText = '   ';
+      await waitFor(() => reloaded >= 1);
+      expect(uiInfoCalls).toBe(2);
+    } finally {
+      stop();
+    }
+  } finally {
+    globalThis.setTimeout = prevSetTimeout;
+    globalThis.fetch = prevFetch;
+    (globalThis as Record<string, unknown>)['window'] = prevWindow;
+    (globalThis as Record<string, unknown>)['document'] = prevDocument;
+  }
+});
+
 test.each([{ withApproval: true, approvals: 1 }, { withApproval: false, approvals: 0 }])(
   '机器人列表按审核回执显示待确认数，审批监听为 $withApproval', async ({ withApproval, approvals }) => {
     const { ctx } = await makeWeb(() => piAi.fauxAssistantMessage('好'), { withApproval });

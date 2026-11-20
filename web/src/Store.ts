@@ -204,12 +204,16 @@ export interface UiState {
   settingsCategory: string;
   /** 后端当前真正挂载了哪些插件（loading 还没问；unknown 没有接口，按全部可见；数组是 state==='ok' 的插件名）。 */
   mountedPlugins: api.MountedPlugins;
+  /** 后端与桌面壳子的版本信息，首次加载或换进程时拉取一次供左栏共用。 */
+  uiInfo: api.UiInfo | null;
   /** 主题。 */
   themeName: theme.ThemeName;
   /** 界面语言。 */
   language: i18n.Language;
   /** 记下后端已挂载的插件名单。 */
   setMountedPlugins: (plugins: api.MountedPlugins) => void;
+  /** 更新后端与桌面壳子的版本信息。 */
+  setUiInfo: (info: api.UiInfo) => void;
   /** 记下一次轮询的结果。 */
   setPolled: (result: {
     online: boolean;
@@ -361,9 +365,11 @@ export function createUiStore(initialTheme: theme.ThemeName, initialLanguage: i1
       newBotOpen: false,
       settingsCategory: 'providers',
       mountedPlugins: 'loading',
+      uiInfo: null,
       themeName: initialTheme,
       language: initialLanguage,
       setMountedPlugins: (mountedPlugins) => set({ mountedPlugins }),
+      setUiInfo: (uiInfo) => set({ uiInfo }),
       refreshAssist: async (bot) => {
         const state = get();
         //G 切换机器人或没挂插件时跳过这个机器人的取数请求。

@@ -11,33 +11,11 @@ import * as channel from './ChannelIndex.ts';
 import type { GraphRoutes } from './GraphRoutes.ts';
 import type { GraphStore } from './GraphStore.ts';
 import * as frontArchive from './FrontArchive.ts';
-import type { FrontEntry, FrontQuery } from './FrontArchive.ts';
 import type { MemoryService } from './index.ts';
 import * as memoryKeyModule from './MemoryKey.ts';
 import * as recall from './Recall.ts';
 import * as store from './Store.ts';
 
-/** 查历史时每条截短到这么多字；全文用 memory_get。 */
-const HISTORY_CLIP = 240;
-
-/** 前台归档查询每次最多交回几条。 */
-const HISTORY_PAGE = 20;
-
-/** 历史查询的附加条件，未提供的字段不参与筛选。 */
-interface HistoryRange {
-  /** 只取这一类发送人。 */
-  who?: 'user' | 'bot';
-  /** 最早时间，含。 */
-  from?: number;
-  /** 最晚时间，含。 */
-  to?: number;
-  /** 只取此编号之后的往来。 */
-  after?: number;
-  /** 只取此编号之前的往来。 */
-  before?: number;
-}
-
-const HISTORY_UNAVAILABLE = '前台往来暂时读不到，请以本轮消息为准。';
 const SOURCES = ['history', 'channel', 'knowledge', 'card'] as const;
 const MODES = ['keyword', 'semantic', 'hybrid', 'graph'] as const;
 const SEARCH_LIMIT = 50;
@@ -300,8 +278,10 @@ export class Search {
         //G 前台先扣本轮额度，再按来源和权限检索。
         this.takeTurn(session);
         if (args['front'] === true) {
-          this.checkFrontAccess(session);
-          return this.searchFront(session, args);
+          frontArchive.checkFrontAccess(session);
+          if (this.front === undefined) return frontArchive.HISTORY_UNAVAILABLE;
+
+          return this.front.searchFront(this.ctx.sessions, this.service, session, args);
         }
         if (args['mentions'] === true && getText(args, 'q') === '') {
           //M 无关键词时按本聊天翻看 @，沿用原文翻页游标。
@@ -335,9 +315,11 @@ export class Search {
         const ref = getText(args, 'ref');
         const entry = /^(?:bot-log:|#)([1-9]\d*)$/u.exec(ref);
         if (entry !== null) {
-          this.checkFrontAccess(session);
+          frontArchive.checkFrontAccess(session);
+          if (this.front === undefined) return frontArchive.HISTORY_UNAVAILABLE;
+
           const id = Number(entry[1]);
-          return this.getFront(session, id);
+          return this.front.getFront(this.ctx.sessions, session, id);
         }
 
         //M 索引引用和按时间截取的渠道消息走统一原文查找。
@@ -345,160 +327,6 @@ export class Search {
         return JSON.stringify(result);
       },
     });
-  }
-
-  /** 前台编号只能在有本人权限的前台会话中读取。 */
-  private checkFrontAccess(session: Session): void {
-    const access = channel.getAccess(session);
-    //G 原前台归档编号可能关联未补标的旧记录。
-    if (!access.full || session.row.kind !== 'front') {
-      throw new Error('这一轮只能查当前渠道聊天，请用 memory_search 查询已归属的记录');
-    }
-  }
-
-  /**
-   * 按条件翻一页前台往来，最多 20 条。有关键词时合并文字匹配和语义检索。
-   * @param session 前台对话。
-   * @param args 工具参数。
-   */
-  private async searchFront(session: Session, args: Record<string, unknown>): Promise<string> {
-    //M 只查这场前台和它交办的后台会话（同一个客户），范围外的往来看不到。
-    const ids = frontArchive.getFrontSessionIds(this.ctx.sessions, session);
-    if (ids.length === 0) return '没有往来。';
-
-    const requestedCount = (args['count'] as number | undefined) ?? HISTORY_PAGE;
-    const take = Math.min(HISTORY_PAGE, Math.max(1, requestedCount));
-    const rawKeyword = args['keyword'];
-    let keyword: string | undefined;
-    if (typeof rawKeyword === 'string') {
-      keyword = rawKeyword.trim() || undefined;
-    }
-
-    //M 只把工具传来的有效筛选项交给两路检索共用。
-    const range: HistoryRange = {};
-    const who = args['who'];
-    if (who === 'user' || who === 'bot') {
-      range.who = who;
-    }
-    const numericKeys = ['from', 'to', 'after', 'before'] as const;
-    for (const key of numericKeys) {
-      const value = args[key];
-      if (typeof value === 'number') {
-        range[key] = value;
-      }
-    }
-    const fromEarliest = args['from_earliest'] === true || range.after !== undefined;
-    //M 同一份筛选条件约束关键词和语义两路，确保它们都只看当前会话范围。
-    const filter = { bot: session.row.bot, sessionIds: ids, ...range };
-
-    //M 有关键词才查语义。语义命中时再取更多关键词候选，合并后按相关程度排序。
-    let semantic: Array<{ entry: FrontEntry; score: number }> = [];
-    if (keyword !== undefined) {
-      const hits = await this.semanticHits(filter, keyword);
-      if (hits === undefined) return HISTORY_UNAVAILABLE;
-
-      semantic = hits;
-    }
-    const ranked = semantic.length > 0;
-    let candidateCount = take;
-    if (ranked) {
-      candidateCount = 2000;
-    }
-
-    //M 保留按字匹配和语义匹配的去重总数，用于提示翻页。
-    let order: FrontQuery['order'] = 'last';
-    if (fromEarliest) {
-      order = 'first';
-    }
-    const query = { ...filter, keyword, order, limit: candidateCount };
-    const keywordRows = this.front?.read(query);
-    if (keywordRows === undefined) return HISTORY_UNAVAILABLE;
-
-    if (!fromEarliest) {
-      keywordRows.reverse();
-    }
-    const semanticRows = semantic.map((hit) => hit.entry);
-    const union = uniqueById(keywordRows, semanticRows);
-    let shown = keywordRows;
-    let orderNote = '按时间从早到晚';
-    if (ranked) {
-      shown = mergeHistoryHits(keywordRows, semantic, take);
-      orderNote = '按相关程度';
-    }
-    if (shown.length === 0) return '没有符合条件的往来。';
-
-    //M 开头一句说总数和这页范围、还有更多怎么翻；每条往来用 formatEntry 截短排成一行，回给模型。
-    const total = union.length;
-    const first = String(shown[0]?.id);
-    const last = String(shown.at(-1)?.id);
-    let head = `共 ${String(total)} 条，这页 ${String(shown.length)} 条（编号 ${first}–${last}，${orderNote}）。`;
-    if (total > shown.length) {
-      head += '还有更多时，用 after 往后翻或 before 往前翻。';
-    }
-    //M 每条只放截短的正文和编号，模型需要全文时可用历史工具。
-    const lines = shown.map((entry) => frontArchive.formatFrontEntry(entry, HISTORY_CLIP));
-    return [head, ...lines].join('\n');
-  }
-
-  /** 语义检索只比较同一会话范围的候选，向量由记忆服务按需计算。 */
-  private async semanticHits(
-    filter: Omit<FrontQuery, 'order' | 'limit'>,
-    keyword: string,
-  ): Promise<Array<{ entry: FrontEntry; score: number }> | undefined> {
-    const query: FrontQuery = { ...filter, order: 'last', limit: 2000 };
-    //G 先按会话权限取候选，没有可查的往来就不向记忆模型请求向量。
-    const candidates = this.front?.read(query);
-    if (candidates === undefined) return undefined;
-
-    if (candidates.length === 0) return [];
-
-    //M 记忆服务离线时仍保留字面检索。
-    const words = [keyword];
-    const queryVec = await this.service.embed(words).catch(() => undefined);
-    const vector = queryVec?.[0];
-    if (vector === undefined) return [];
-
-    const hits: Array<{ entry: FrontEntry; score: number }> = [];
-    for (let offset = 0; offset < candidates.length; offset += 32) {
-      //M 按与原前台同样的批量大小编码，不再另建 SQLite 向量缓存。
-      const batch = candidates.slice(offset, offset + 32);
-      const texts = batch.map((entry) => entry.text);
-      const vectors = await this.service.embed(texts).catch(() => undefined);
-      if (vectors === undefined) break;
-
-      for (const [index, entry] of batch.entries()) {
-        const value = vectors[index];
-        if (value === undefined) continue;
-
-        //M 和查询向量同维且超过原门槛的才参与前台结果排序。
-        const score = cosine(vector, value);
-        if (score >= SEMANTIC_MIN) {
-          hits.push({ entry, score });
-        }
-      }
-    }
-    hits.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
-    return hits.slice(0, HISTORY_PAGE);
-  }
-
-
-  /**
-   * 读取本场前台归档中指定编号的全文。
-   * @param session 前台对话。
-   * @param id 往来编号。
-   */
-  private getFront(session: Session, id: number): string {
-    //G 同时按机器人、会话范围和编号查，越界时没有结果。
-    const sessionIds = frontArchive.getFrontSessionIds(this.ctx.sessions, session);
-    const query: FrontQuery = { bot: session.row.bot, sessionIds, id, order: 'last', limit: 1 };
-    const entries = this.front?.read(query);
-    if (entries === undefined) return HISTORY_UNAVAILABLE;
-
-    const row = entries[0];
-    if (row === undefined) return `没有编号 ${String(id)} 的往来，或不属于这场对话。`;
-
-    //M 范围内的才排成一行（不截短）回给模型。
-    return frontArchive.formatFrontEntry(row);
   }
 
   /** 按 ref 读取原文。在查询数据前把聊天范围固定为本轮获准的范围。 */
@@ -588,7 +416,9 @@ export class Search {
     }
     const chosen = { channel: requestedChannel, chat };
     const scope = channel.getScope(chosen, access);
-    if (scope.channel === undefined || scope.chat === undefined) throw new Error('当前会话没有聊天来源，请给 ref 或指定 channel 和 chat');
+    if (scope.channel === undefined || scope.chat === undefined) {
+      throw new Error('当前会话没有聊天来源，请给 ref 或指定 channel 和 chat');
+    }
     if (scope.channel === access.channel && scope.chat === access.chat) {
       scope.account = access.account;
     }
@@ -1026,90 +856,4 @@ function getLimit(value: unknown, fallback: number, max: number): number {
 /** 判断后端候选是否在调用者指定的时间范围内。 */
 function inTime(at: number, query: channel.ChannelQuery): boolean {
   return at >= (query.since ?? 0) && at <= (query.until ?? Infinity);
-}
-
-/** 语义命中的最低余弦相似度（bge-m3 已 L2 归一化）。 */
-const SEMANTIC_MIN = 0.22;
-
-
-
-
-
-/**
- * 把关键词命中和语义命中按编号合并，语义分数高的靠前；只要关键词命中也保留。
- * @param keywordRows 按字匹配到的往来。
- * @param semantic 语义命中。
- * @param take 最多留几条。
- */
-function mergeHistoryHits(
-  keywordRows: FrontEntry[],
-  semantic: Array<{ entry: FrontEntry; score: number }>,
-  take: number,
-): FrontEntry[] {
-  const scores = new Map<number, { entry: FrontEntry; score: number }>();
-  for (const entry of keywordRows) {
-    scores.set(entry.id, { entry, score: 1 });
-  }
-  for (const hit of semantic) {
-    const prev = scores.get(hit.entry.id);
-    if (prev === undefined) {
-      scores.set(hit.entry.id, hit);
-      continue;
-    }
-
-    //M 同一条同时命中关键词和语义时提高它的分数。
-    const score = hit.score + 1;
-    if (score > prev.score) {
-      scores.set(hit.entry.id, { entry: prev.entry, score });
-    }
-  }
-
-  //M 先按分数，再按编号稳定排序，只交回当前页的原文记录。
-  const ranked = [...scores.values()];
-  ranked.sort((a, b) => b.score - a.score || a.entry.id - b.entry.id);
-  const shown = ranked.slice(0, take);
-  return shown.map((row) => row.entry);
-}
-
-
-/**
- * 按编号去重，先出现的留下。
- * @param groups 若干组往来。
- */
-function uniqueById(...groups: FrontEntry[][]): FrontEntry[] {
-  const seen = new Set<number>();
-  const out: FrontEntry[] = [];
-  for (const group of groups) {
-    for (const entry of group) {
-      if (seen.has(entry.id)) continue;
-      seen.add(entry.id);
-      //M 两路命中同一个编号时，只把第一次出现的那条留下。
-      out.push(entry);
-    }
-  }
-  return out;
-}
-
-
-/**
- * 余弦相似度；长度不同或零向量交回 0。
- * @param a 向量 a。
- * @param b 向量 b。
- */
-function cosine(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i] ?? 0;
-    const y = b[i] ?? 0;
-    dot += x * y;
-    na += x * x;
-    nb += y * y;
-  }
-  const denom = Math.sqrt(na) * Math.sqrt(nb);
-  if (denom === 0) return 0;
-
-  return dot / denom;
 }

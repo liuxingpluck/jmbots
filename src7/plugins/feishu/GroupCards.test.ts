@@ -17,7 +17,8 @@ import type { ReceiveEvent } from '../bots/index.ts';
 import * as approvalModule from '../approval/index.ts';
 import * as cards from './cards/Cards.ts';
 import type * as render from './cards/Render.ts';
-import type { Feishu, FeishuAddress, FeishuPerson } from './index.ts';
+import type { FeishuPerson } from './Config.ts';
+import type { Feishu, FeishuAddress } from './index.ts';
 
 
 const BOT = '测试机器人';

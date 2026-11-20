@@ -28,6 +28,7 @@ import type * as protocol from '../channels/index.ts';
 import * as dbModule from '../db/index.ts';
 import * as relayModule from '../relay/index.ts';
 import type { FeishuChatLogEntry } from './ChatLog.ts';
+import * as configModule from './Config.ts';
 import * as feishuModule from './index.ts';
 
 /** 临时运行时目录；每套环境在里面再开一个，流水文件不串。 */
@@ -59,12 +60,12 @@ const BUILDER_DIR = path.join(root, 'guests', '小王');
 const OTHER_BOT = '别的机器人';
 
 /** 登记：本人 leon、朋友周周（guest）、小王（builder）；一个 listen: all 的群。 */
-const PEOPLE = new Map<string, feishuModule.FeishuPerson>([
+const PEOPLE = new Map<string, configModule.FeishuPerson>([
   [OWNER, { openId: OWNER, name: 'leon', role: 'owner', dir: '' }],
   [FRIEND, { openId: FRIEND, name: '周周', role: 'guest', dir: '' }],
   [BUILDER, { openId: BUILDER, name: '小王', role: 'builder', dir: BUILDER_DIR }],
 ]);
-const GROUPS = new Map<string, feishuModule.FeishuGroup>([
+const GROUPS = new Map<string, configModule.FeishuGroup>([
   [LISTENED, { chatId: LISTENED, name: '周-论文实现', listen: 'all', relay: 'model', trusted: false }],
   [JUDGED, {
     chatId: JUDGED, name: '判断群', listen: 'judge', relay: 'direct', trusted: false, judgeThreshold: 0.8, judgeHelper: 'Claude',
@@ -332,7 +333,7 @@ function world(decision?: FakeDecision, extraBots: string[] = []): World {
   for (const eventName of ['channel/direct', 'channel/mention', 'channel/listen'] as const) {
     handlers.set(eventName, [bridge(eventName)]);
   }
-  const appConfig: feishuModule.FeishuApp = { appId: APP_ID, appSecret: 'x', bot: BOT, bots: extraBots };
+  const appConfig: configModule.FeishuApp = { appId: APP_ID, appSecret: 'x', bot: BOT, bots: extraBots };
   const config = {
     domain: 'http://127.0.0.1:9', apps: [appConfig], people: PEOPLE, groups: GROUPS, historyOnJoin: 0,
   };
@@ -613,7 +614,7 @@ describe('没登记的群、私聊', () => {
 
 describe('checkConfig 收登记', () => {
   /** 照 config.yaml 拼一个应用和飞书插件配置。 */
-  const getConfig = (own: Record<string, unknown>): ReturnType<typeof feishuModule.checkConfig> => {
+  const getConfig = (own: Record<string, unknown>): ReturnType<typeof configModule.checkConfig> => {
     const ctx = {
       resources: {
         root,
@@ -621,7 +622,7 @@ describe('checkConfig 收登记', () => {
       },
       bots: { get: (name: string) => (name === BOT ? { name } : undefined) },
     } as unknown as cordis.Context;
-    return feishuModule.checkConfig(ctx, own);
+    return configModule.checkConfig(ctx, own);
   };
 
   test('按 role 登记本人，缺省是访客，按设置创建 builder、guest 目录', () => {
@@ -781,12 +782,12 @@ describe('群里发的话 @ 人', () => {
 });
 
 describe('checkConfig 认 judge', () => {
-  const getConfig = (own: Record<string, unknown>): ReturnType<typeof feishuModule.checkConfig> => {
+  const getConfig = (own: Record<string, unknown>): ReturnType<typeof configModule.checkConfig> => {
     const raw = { bots: [{ name: BOT }], channels: { feishu: [{ app_id: APP_ID, app_secret: 'x', bot: BOT }] } };
     const ctx = {
       resources: { root, raw, config: { plugins: [] } },
     } as unknown as cordis.Context;
-    return feishuModule.checkConfig(ctx, own);
+    return configModule.checkConfig(ctx, own);
   };
 
   test('listen: judge 和 judge_threshold 收下；不写阈值就没有；写错抛错', () => {

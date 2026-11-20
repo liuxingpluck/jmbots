@@ -45,7 +45,8 @@ export const name = 'web-api';
 //M 1.1.22：按地址发的网页回话由 replyByAddress 追加。
 //M 1.1.23：插件间请求直接用 reply 或 why，网页沿用各自的缺项和失败反馈。
 //M 1.1.24：会话、机器人接口和回话追溯入口搬进 Views.ts（云端20 第2+3条）；构造函数只做登记，事件处理挪成 onVoiceRecord、onReceive、bindClaims 方法。
-export const version = '1.1.24';
+//M 1.1.25：GET /api/ui/status 附带内存 startedAt 与可选 ui.language（不问基地），供前端高频轮询轻量探测进程变化。
+export const version = '1.1.25';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -292,13 +293,25 @@ class WebApi {
       return this.accept(request.body, verified);
     });
 
-    //M 为网页状态栏提供版本信息和渠道连接状态。
+    //M 为网页状态栏提供版本信息和渠道连接状态；/api/ui/status 顺带交回内存启动时刻与界面语言，免高频打基地。
     scope.get('/api/ui/info', async () => this.uiInfo());
     scope.get('/api/ui/status', async () => {
       const list: ChannelStatus[] = [];
       await this.ctx.serial('web-api/status', list);
-      return { channels: list };
+      const language = this.getUiLanguage();
+      if (language === undefined) return { startedAt: this.startedAt, channels: list };
+
+      return { startedAt: this.startedAt, language, channels: list };
     });
+  }
+
+  /** 读取 config.yaml 里可选的 ui.language，未配置时返回 undefined。 */
+  private getUiLanguage(): string | undefined {
+    const ui = this.ctx.resources.raw['ui'];
+    const language = utils.getStringField(ui, 'language').trim();
+    if (language === '') return undefined;
+
+    return language;
   }
 
   /**
@@ -309,16 +322,21 @@ class WebApi {
     startedAt: number;
     version: string;
     builtAt: number;
+    language?: string;
     server: { version: string; builtAt: number };
     shell: { version: string; builtAt: number } | null;
   }> {
     //M 取得后端编译时刻，供网页与版本号一起展示。
     const builtAt = embedded.getBuiltTime();
     const server = { version: versions.VERSION, builtAt };
+    const language = this.getUiLanguage();
 
     //M 补充可用的壳子版本，让网页分别显示壳子与后端。
     const shell = await this.shellVersion();
-    return { startedAt: this.startedAt, version: server.version, builtAt: server.builtAt, server, shell };
+    const base = { startedAt: this.startedAt, version: server.version, builtAt: server.builtAt, server, shell };
+    if (language === undefined) return base;
+
+    return { ...base, language };
   }
 
   /**

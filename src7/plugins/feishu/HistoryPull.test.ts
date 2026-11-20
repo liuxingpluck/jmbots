@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type { ChannelMessage } from '../channels/index.ts';
+import * as configModule from './Config.ts';
 import * as feishuModule from './index.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-feishu-history-'));
@@ -41,14 +42,14 @@ function createWorld(historyOnJoin: number) {
   ctx.provide('bots', { channel: () => () => undefined });
   ctx.effect(() => () => db.close());
 
-  const people = new Map<string, feishuModule.FeishuPerson>([
+  const people = new Map<string, configModule.FeishuPerson>([
     [OWNER, { openId: OWNER, name: 'leon', role: 'owner', dir: '' }],
   ]);
   const config = {
     domain: 'http://127.0.0.1:9',
     apps: [{ appId: APP_ID, appSecret: 'x', bot: BOT }],
     people,
-    groups: new Map<string, feishuModule.FeishuGroup>(),
+    groups: new Map<string, configModule.FeishuGroup>(),
     historyOnJoin,
   };
   const feishu = new feishuModule.Feishu(ctx, config);

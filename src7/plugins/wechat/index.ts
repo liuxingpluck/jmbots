@@ -46,7 +46,8 @@ export const name = 'wechat-kefu';
 //M 1.2.11：旧路自动回话也经 channel/reply 来（target 带会话记的地址、带会话号），删渠道自己的 send；带会话号的只发做完的一轮。
 //M 1.2.12：channel/message 拆了，交给机器人的经 emitInbound 发：私聊 channel/direct、群里 @我 channel/mention。
 //M 1.2.13：标准消息的 role 直接写 guest（微信一律外人，删 resolveLegacyRole）；SessionRow.customer 不再在这里声明（bots 一处）。
-export const version = '1.2.13';
+//M 1.2.14：客服页 GET /api/wechat-kefu/messages 支持轻量 version 快速路径（空闲轮免每 3 秒查传千条正文），Store.save 同步支持撤回原地刷新。
+export const version = '1.2.14';
 
 /** 用到的服务。approval 有就用，在 apply 里 ctx.inject。 */
 export const inject = ['resources', 'bots', 'sessions', 'http'];

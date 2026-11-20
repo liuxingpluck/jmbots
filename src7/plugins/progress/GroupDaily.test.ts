@@ -9,7 +9,7 @@ import { Sessions, type ChatRequest, type Session } from '../../Sessions.ts';
 import { Tools, type ToolGate } from '../../Tools.ts';
 import * as requests from '../../utils/RequestEvent.ts';
 import * as botsPlugin from '../bots/index.ts';
-import * as feishu from '../feishu/index.ts';
+import * as feishuConfig from '../feishu/Config.ts';
 import * as memory from '../memory/ChannelIndex.ts';
 import * as daily from './GroupDaily.ts';
 
@@ -23,12 +23,12 @@ const APPS = [
   { app_id: 'cli_shared', app_secret: 'offline-test', bot: '助手', bots: [BOT] },
 ];
 
-function getConfig(groups: unknown[], apps = APPS.slice(0, 1)): feishu.FeishuConfig {
+function getConfig(groups: unknown[], apps = APPS.slice(0, 1)): feishuConfig.FeishuConfig {
   const ctx = new cordis.Context();
   const raw = { bots: [{ name: BOT }, { name: '助手' }], channels: { feishu: apps } };
   ctx.provide('resources', { raw, config: { plugins: [] } });
   ctx.provide('bots', { get: (name: string) => ({ name }) });
-  return feishu.checkConfig(ctx, { groups });
+  return feishuConfig.checkConfig(ctx, { groups });
 }
 
 test('只登记启用 daily 的飞书群并使用明确的发信机器人和账号', () => {

@@ -22,10 +22,12 @@ import * as botUtils from '../../utils/Bots.ts';
 import * as cordis from 'cordis';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as fastify from 'fastify';
-import type { AskInput as SessionAskInput, Session, SessionMeta, Thinking } from '../../Sessions.ts';
+import type { AskInput as SessionAskInput, ChatRequest, Session, SessionMeta, Thinking } from '../../Sessions.ts';
+import type { ToolGate } from '../../Tools.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
 import * as protocol from '../channels/index.ts';
 import * as rules from './Rules.ts';
+import * as reviewCardModule from './ReviewCard.ts';
 import * as outboundModule from './Outbound.ts';
 import * as channelSend from './ChannelSend.ts';
 import * as grantsModule from './Grants.ts';
@@ -51,7 +53,9 @@ export const name = 'approval';
 //M   外人地址里原有的 grants 先删再查库，查库出错只打日志、这一轮当没有授权，不再挡 bots 认领（云端 19 第 3 条）。
 //M 1.2.16：requestEvent 改新写法（云端 19 第 1、2 条）：本机的一问一答不掐表，问决策模型只报警（decision 自己限时）；
 //M   Outbound 删掉一层层相加的等待常量，只留 programs 发 HTTP 用的两个。
-export const version = '1.2.16';
+//M 1.2.17：拼审批卡片的 plainCard、cardLabel、getReviewReason、getCardPaths、reviewCard 搬进 ReviewCard.ts（云端 20 第 3 条）；
+//M   构造函数只做登记，监听干的活挪成方法 onCalled、onBeforeModel、onBeforeTool、getRequestError（第 2 条）。行为不变。
+export const version = '1.2.17';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -410,10 +414,12 @@ export class Approval extends cordis.Service {
 
   /**
    * 登记成 ctx.approval（cordis.Service 的构造函数做的：super(ctx, '名字') 就是“把我挂到 ctx 上叫这个名字”），
-   * 建表，听 approval/request（别的插件请审核办事）、channel/direct、channel/mention（先认批复，再过目录授权）、
-   * channel/listen（只过目录授权）、bot/receive（认文字回答）、
-   * session/before-model（给审核小会话加提示词；补当轮授权、说授权目录；guest、builder 说的这一轮只给这一档的工具）
-   * 和 session/before-tool（这一档没有的工具不让执行）。目录授权的表由 Grants 自己建。
+   * 建表，挂监听；构造函数只做登记，每个监听干的活在对应的方法里：
+   *   approval/request（别的插件请审核办事）→ onRequest，出错转回执 → getRequestError；
+   *   channel/direct、channel/mention（先认批复，再过目录授权）→ onCalled；channel/listen（只过目录授权）→ Grants.applyMessage；
+   *   bot/receive（认文字回答）→ onReceive；
+   *   session/before-model（给审核小会话加提示词；补当轮授权、说授权目录；guest、builder 说的这一轮只给这一档的工具）→ onBeforeModel；
+   *   session/before-tool（这一档没有的工具不让执行）→ onBeforeTool。目录授权的表由 Grants 自己建。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验后的配置。
    */
@@ -431,12 +437,9 @@ export class Approval extends cordis.Service {
       + ' card TEXT, customer TEXT, actor TEXT)');
 
     //M 别的插件请审核办事走请求事件 approval/request（契约 3.2 第 1 条）：onRequest 按 action 调现有方法，办完回 approval/result。
-    //M   现有方法抛的错转成 { error }，调用方不干等超时；review 没带回 verdict，exec 照“没有审核就不让跑命令”当拒绝。
+    //M   现有方法抛的错由 getRequestError 转成 { error }，调用方不干等超时；review 没带回 verdict，exec 照“没有审核就不让跑命令”当拒绝。
     const requestOptions = {
-      onError: (error: unknown) => {
-        const message = textModule.getErrorMessage(error);
-        return { error: message };
-      },
+      onError: (error: unknown) => this.getRequestError(error),
     };
 
     //M 登记请求监听：别的插件发 approval/request，本插件按 action 办，办完回 approval/result。
@@ -448,86 +451,127 @@ export class Approval extends cordis.Service {
       requestOptions,
     );
 
-    //M 进来的话：每个事件只挂一个监听，先后写在这里，不靠挂载顺序（prepend：都在 bots 认领、抄地址之前）。
-    //M   私聊、群里叫了机器人：先认批复（“同意 3”，消息级只消费一次，N 个机器人共存时不会各自批准一遍），
-    //M   再过目录授权（Grants.applyMessage 改地址，bots 认领时照抄；它不往外抛）。
-    const onCalled = async (
-      message: protocol.ChannelMessage,
-      control?: protocol.ChannelMessageControl,
-    ): Promise<void> => {
-      await this.onChannelMessage(message, control);
-      this.grants.applyMessage(message);
-    };
-    ctx.on('channel/direct', onCalled, { prepend: true });
-    ctx.on('channel/mention', onCalled, { prepend: true });
+    //M 进来的话：每个事件只挂一个监听，先后写在 onCalled 里，不靠挂载顺序（prepend：都在 bots 认领、抄地址之前）。
+    //M   私聊、群里叫了机器人：先认批复，再过目录授权。
+    ctx.on('channel/direct', (message, control) => this.onCalled(message, control), { prepend: true });
+    ctx.on('channel/mention', (message, control) => this.onCalled(message, control), { prepend: true });
 
     //M 只听的话：没叫机器人，不认批复，只过目录授权（前台判断接了以后也照这个地址干活）。
     ctx.on('channel/listen', (message) => {
       this.grants.applyMessage(message);
     }, { prepend: true });
 
-    //M 仍排在前面，只是为了先认出“同意 3”这类话；批不批准由下面自己核对说话人，不靠监听顺序，也不看前面有没有分好会话。
+    //M 仍排在前面，只是为了先认出“同意 3”这类话；批不批准由 onReceive 自己核对说话人，不靠监听顺序，也不看前面有没有分好会话。
     ctx.on('bot/receive', (event) => {
       this.onReceive(event);
     }, { prepend: true });
 
-    //M 审核小会话的提示词：prompt 插件只认 front、work，这种会话的提示词由这里给。
-    //M 这一轮说话的是 guest、builder（渠道在回话地址里写的 role）：只留这一档的工具（rules.toolsFor），
-    //M   别的直接从这一步的工具里拿掉，再在提示词里说一句，免得模型答应做不了的事。
+    //M 调模型之前：审核小会话的提示词、当轮授权、guest 和 builder 只留这一档的工具（onBeforeModel）。
     ctx.on('session/before-model', (request) => {
-      if (request.session.row.kind === REVIEW_KIND) request.system.push(REVIEW_PROMPT);
-
-      //M 本人这一轮说的当轮授权：前台接下来的每一步、这一轮交办的后台都补进地址（Grants.applyTurn）。
-      this.grants.applyTurn(request.session);
-      const address = request.session.row.address;
-
-      //M 这一轮有授权目录：告诉模型哪些目录能直接动、命令先 cd 过去（本人、外人都说）。
-      const grantDirs = workspaceModule.getGrantDirs(address);
-      if (grantDirs.length > 0) request.system.push(grantPrompt(grantDirs));
-
-      const role = getTurnRole(request.session.row.channel, address);
-      const allowedTools = rules.toolsFor(role);
-      if (allowedTools === undefined) return;
-
-      //M 这一档没有的工具，从这一步的工具里拿掉。
-      request.tools = request.tools.filter((tool) => allowedTools.has(tool.name));
-      let prompt = GUEST_PROMPT;
-      if (role === 'builder') {
-        //M builder 提示词写明他被限制在哪个子工作区。
-        prompt = builderPrompt(utils.getStringField(address, 'workspace'));
-      }
-
-      //M 把这一档的提示词加进系统提示词，告诉模型别答应做不了的事。
-      request.system.push(prompt);
+      this.onBeforeModel(request);
     });
 
-    //M 兜底：工具清单是这一步开头定的，会话转到一半换了说话人（群里别人插话）时，执行前再按现在的说话人拦一次。
+    //M 执行工具之前：会话转到一半换了说话人时，按现在的说话人再拦一次（onBeforeTool）。
     ctx.on('session/before-tool', (gate) => {
-      if (gate.deny !== undefined) return;
-
-      //M 本人（toolsFor 交回 undefined）：不拦。
-      const role = getTurnRole(gate.session.row.channel, gate.session.row.address);
-      const allowedTools = rules.toolsFor(role);
-      if (allowedTools === undefined) return;
-
-      //G 外人能用 workspace 工具，但只能看（list、get）；建、改名、归档只给本人。
-      const action = utils.getStringField(gate.call.arguments, 'action');
-      const changesWorkspace = gate.call.name === 'workspace' && !rules.OTHERS_WORKSPACE_ACTIONS.has(action);
-      if (changesWorkspace) {
-        gate.deny = `这一轮说话的不是用户本人：workspace 只能 list、get 看自己的工作区，${action} 只有本人能用`;
-        return;
-      }
-
-      //M 这一档有的工具：放行。
-      if (allowedTools.has(gate.call.name)) return;
-
-      //G 这一档没有的：builder 和 guest 各说一句为什么。
-      if (role === 'builder') {
-        gate.deny = '这一轮说话的人只能在他自己的目录里读写、跑命令、发文件，这个工具不给';
-        return;
-      }
-      gate.deny = '这一轮说话的不是用户本人，只能用查、读、搜、答这类工具';
+      this.onBeforeTool(gate);
     });
+  }
+
+  /**
+   * approval/request 办的时候抛了错：转成回执的 { error }，调用方不干等超时。
+   * 由构造函数里 onRequestEvent 的 onError 调。
+   * @param error onRequest 抛出的错。
+   * @returns 带原话的回执正文。
+   */
+  private getRequestError(error: unknown): requestEventModule.StripResultId<ApprovalResult> {
+    const message = textModule.getErrorMessage(error);
+    return { error: message };
+  }
+
+  /**
+   * channel/direct、channel/mention 的监听（构造函数里挂，prepend）：先认批复，再过目录授权。
+   * 先认批复（“同意 3”，消息级只消费一次，N 个机器人共存时不会各自批准一遍），
+   * 再过目录授权（Grants.applyMessage 改地址，bots 认领时照抄；它不往外抛）。
+   * @param message 标准渠道消息。
+   * @param control 协调对象。
+   */
+  private async onCalled(
+    message: protocol.ChannelMessage,
+    control?: protocol.ChannelMessageControl,
+  ): Promise<void> {
+    await this.onChannelMessage(message, control);
+    this.grants.applyMessage(message);
+  }
+
+  /**
+   * session/before-model 的监听（构造函数里挂）。
+   * 审核小会话的提示词：prompt 插件只认 front、work，这种会话的提示词由这里给。
+   * 这一轮说话的是 guest、builder（渠道在回话地址里写的 role）：只留这一档的工具（rules.toolsFor），
+   *   别的直接从这一步的工具里拿掉，再在提示词里说一句，免得模型答应做不了的事。
+   * @param request 这一步要发给模型的请求：改 system、tools。
+   */
+  private onBeforeModel(request: ChatRequest): void {
+    if (request.session.row.kind === REVIEW_KIND) {
+      request.system.push(REVIEW_PROMPT);
+    }
+
+    //M 本人这一轮说的当轮授权：前台接下来的每一步、这一轮交办的后台都补进地址（Grants.applyTurn）。
+    this.grants.applyTurn(request.session);
+    const address = request.session.row.address;
+
+    //M 这一轮有授权目录：告诉模型哪些目录能直接动、命令先 cd 过去（本人、外人都说）。
+    const grantDirs = workspaceModule.getGrantDirs(address);
+    if (grantDirs.length > 0) {
+      const promptText = grantPrompt(grantDirs);
+      request.system.push(promptText);
+    }
+
+    const role = getTurnRole(request.session.row.channel, address);
+    const allowedTools = rules.toolsFor(role);
+    if (allowedTools === undefined) return;
+
+    //M 这一档没有的工具，从这一步的工具里拿掉。
+    request.tools = request.tools.filter((tool) => allowedTools.has(tool.name));
+    let prompt = GUEST_PROMPT;
+    if (role === 'builder') {
+      //M builder 提示词写明他被限制在哪个子工作区。
+      prompt = builderPrompt(utils.getStringField(address, 'workspace'));
+    }
+
+    //M 把这一档的提示词加进系统提示词，告诉模型别答应做不了的事。
+    request.system.push(prompt);
+  }
+
+  /**
+   * session/before-tool 的监听（构造函数里挂）。兜底：工具清单是这一步开头定的，
+   * 会话转到一半换了说话人（群里别人插话）时，执行前再按现在的说话人拦一次。
+   * @param gate 要执行的工具调用：不让执行就写 deny。
+   */
+  private onBeforeTool(gate: ToolGate): void {
+    if (gate.deny !== undefined) return;
+
+    //M 本人（toolsFor 交回 undefined）：不拦。
+    const role = getTurnRole(gate.session.row.channel, gate.session.row.address);
+    const allowedTools = rules.toolsFor(role);
+    if (allowedTools === undefined) return;
+
+    //G 外人能用 workspace 工具，但只能看（list、get）；建、改名、归档只给本人。
+    const action = utils.getStringField(gate.call.arguments, 'action');
+    const changesWorkspace = gate.call.name === 'workspace' && !rules.OTHERS_WORKSPACE_ACTIONS.has(action);
+    if (changesWorkspace) {
+      gate.deny = `这一轮说话的不是用户本人：workspace 只能 list、get 看自己的工作区，${action} 只有本人能用`;
+      return;
+    }
+
+    //M 这一档有的工具：放行。
+    if (allowedTools.has(gate.call.name)) return;
+
+    //G 这一档没有的：builder 和 guest 各说一句为什么。
+    if (role === 'builder') {
+      gate.deny = '这一轮说话的人只能在他自己的目录里读写、跑命令、发文件，这个工具不给';
+      return;
+    }
+    gate.deny = '这一轮说话的不是用户本人，只能用查、读、搜、答这类工具';
   }
 
   /**
@@ -633,7 +677,7 @@ export class Approval extends cordis.Service {
     }
 
     //M 审核小会话没放行：它写的理由原文记下（没写、只写“无”的记“审核没给出理由”），拒绝和卡片都用它。
-    const reviewReason = getReviewReason(answer);
+    const reviewReason = reviewCardModule.getReviewReason(answer);
     if (answer !== undefined && danger === undefined) {
       last = { by: 'review', reason: reviewReason };
     }
@@ -652,7 +696,7 @@ export class Approval extends cordis.Service {
     }
 
     //M 第四档：照审核模型写的内容拼一张卡片，登记待确认，问用户。不等用户：马上交回“已经去问了”，用户定了由 approval/decided 通知提的人。
-    const card = reviewCard(input, script, answer, why, asks, decisionWhat);
+    const card = reviewCardModule.reviewCard(input, script, answer, why, asks, decisionWhat);
     const detail = cardUtils.getCardText({ ...card, state: 'waiting' });
     const pending = this.ask({ kind: input.kind, title: card.title, detail, payload: input.payload, bot, session: input.session, card });
     //G 登记通知期间若已经截止，将这张卡片作废并保存明确原因。
@@ -765,7 +809,7 @@ export class Approval extends cordis.Service {
    */
   ask(input: AskInput): Pending {
     //M 拼卡片、查出发起人，把这件事存进表，再按自增号读回来。
-    const card: cardUtils.CardData = { ...(input.card ?? plainCard(input.title, input.detail)), state: 'waiting' };
+    const card: cardUtils.CardData = { ...(input.card ?? reviewCardModule.plainCard(input.title, input.detail)), state: 'waiting' };
     const who = this.getInitiator(input.session);
     const sql = 'INSERT INTO approval_pending (kind, title, detail, payload, bot, session, customer, actor, state, asked_at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     const values = [input.kind, input.title, input.detail, JSON.stringify(input.payload ?? null), input.bot, input.session ?? null,
@@ -831,7 +875,7 @@ export class Approval extends cordis.Service {
       action = 'approve';
     }
     //M 取出对应按钮文案落库并广播 approval/decided。
-    return this.settle(found, nextState, by, `${cardLabel(found.card, action)}（${by}）`);
+    return this.settle(found, nextState, by, `${reviewCardModule.cardLabel(found.card, action)}（${by}）`);
   }
 
   /**
@@ -1230,23 +1274,6 @@ export class Approval extends cordis.Service {
 
 
 /**
- * 没给卡片时拼一张普通的：标题、细节，“同意”“拒绝”两个按钮。
- * @param title 标题。
- * @param detail 细节。
- */
-function plainCard(title: string, detail: string): Omit<cardUtils.CardData, 'state'> {
-  //M 有细节就放一行“细节”；按钮固定是“同意”“拒绝”两个。
-  const items: cardUtils.CardItem[] = [];
-  if (detail !== '') {
-    items.push({ label: '细节', value: detail });
-  }
-  return {
-    kind: 'approval', title, reason: '', items,
-    buttons: [{ action: 'approve', label: '同意', style: 'primary' }, { action: 'reject', label: '拒绝', style: 'default' }],
-  };
-}
-
-/**
  * decide、close 的结果转成回执正文：定好了带 settled，找不到、定过了带 error。
  * @param result decide、close 交回的：定好的那件，或一句原因。
  */
@@ -1268,146 +1295,6 @@ function getStoppedReview(signal: AbortSignal | undefined): Extract<Verdict, { r
   return { result: 'reject', by: 'rule', reason };
 }
 
-
-/** 卡片上某个按钮的字，结果里用（“终止了”“同意执行”）。 */
-function cardLabel(card: cardUtils.CardData, action: 'approve' | 'reject'): string {
-  //M 取卡片上这个动作对应按钮的字；卡片上没有这个按钮，退回“已同意”“已拒绝”。
-  const label = card.buttons.find((button) => button.action === action)?.label;
-  if (label !== undefined) return `点了“${label}”`;
-
-  if (action === 'approve') return '已同意';
-
-  return '已拒绝';
-}
-
-/** 审批卡片“动哪些”最多列几个路径。 */
-const CARD_PATHS_MAX = 5;
-
-/** 审批卡片正文每行最多几个字（飞书卡片顶上那段一眼要看完）。 */
-const CARD_LINE_MAX = 160;
-
-
-/**
- * 审核小会话没放行的理由原文（用户 11-18 #172：卡片要说清为什么问你，不许空着）。
- * @param answer 审核模型的 JSON；没答上来是 undefined。
- * @returns 它写的 risk 原文；没答上来、没写、只写“无”的给一句固定的话。
- */
-function getReviewReason(answer: Record<string, unknown> | undefined): string {
-  if (answer === undefined) return '没答上来（出错、超时或回的不是 JSON）';
-
-  //G 没写理由、或者不放行却写“无”：照实说没给，不留空。
-  const risk = utils.getStringField(answer, 'risk').trim();
-  if (risk === '' || risk === '无') return '审核没给出理由';
-
-  return risk;
-}
-
-
-/**
- * 卡片“动哪些”：命令里写的绝对路径在前，审核模型列的路径在后，去重后最多 CARD_PATHS_MAX 个；都没有就说在执行目录里。
- * @param input 审核的输入（命令、执行目录）。
- * @param modelPaths 审核模型 JSON 里的 paths。
- * @returns 一行文字。
- */
-function getCardPaths(input: ReviewInput, modelPaths: string[]): string {
-  //M 命令里解析出来的最可信，排前面；模型列的补在后面（相对路径的命令只有它能说出动哪里）。
-  const commandPaths = rules.getAbsPaths(input.command);
-  const all = [...new Set([...commandPaths, ...modelPaths])];
-  if (all.length === 0) return `执行目录 ${input.cwd} 里的文件`;
-
-  //M 超过 5 个只列前 5 个，后面说还有几个（详情里有全部）。
-  const shown = all.slice(0, CARD_PATHS_MAX).join('、');
-  if (all.length <= CARD_PATHS_MAX) return shown;
-
-  return `${shown} 等 ${String(all.length)} 个`;
-}
-
-
-/**
- * 命令审批卡片（用户 11-18 #172：说清楚，别说空话）。正文（reason）三行，飞书卡片顶上、网页审批面板一眼看完：
- *   要做什么：审核小会话写的执行结果（what），没写用决策模型顺带写的 what，都没有写“说不清会做成什么（命令：…）”；
- *   动哪些：getCardPaths；
- *   为什么问你：review 里每一档没放行的原因（不在可信目录、决策模型拿不准、审核小会话的理由原文、必须人审的那一小块）。
- * 命令、目录、脚本、机器人在干的活、会动到的每个路径、审核建议放进详情；风险说明写具体理由，不单写“风险中”。
- * 风险高时“同意执行”用危险色；调用的工具数据和审核原话放进可展开的 details。
- * @param input 审核的输入。
- * @param script 要跑的脚本。
- * @param answer 审核模型的 JSON；没答上来是 undefined。
- * @param why 机器人在干的活（会话最后一句用户的话）。
- * @param asks review 里每一档没放行的原因，照先后。
- * @param decisionWhat 决策模型顺带写的执行结果（decision/judge-result 的 what）；没有是空串。
- * @returns 还没定状态的卡片。
- */
-function reviewCard(
-  input: ReviewInput,
-  script: ReturnType<typeof rules.readScript>,
-  answer: Record<string, unknown> | undefined,
-  why: string,
-  asks: string[],
-  decisionWhat: string,
-): Omit<cardUtils.CardData, 'state' | 'result'> {
-  //M 取审核回答里某个字段的文字，没写、不是字符串就是空串。
-  const text = (key: string): string => {
-    const value = answer?.[key];
-    if (typeof value === 'string') return value.trim();
-
-    return '';
-  };
-  //M 把审核模型给出的风险等级归一为标准档位（未知值回落 medium）。
-  const level = cardUtils.getRiskLevel(answer?.['risk_level']);
-  const items: cardUtils.CardItem[] = [{ label: '命令', value: input.command, code: true }, { label: '目录', value: input.cwd, code: true }];
-  if (script !== undefined) items.push({ label: '要跑的脚本', value: script.file, code: true });
-  let paths: string[] = [];
-  if (Array.isArray(answer?.['paths'])) {
-    paths = (answer['paths'] as unknown[]).filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-  }
-
-  //M 把会动到的文件、机器人在干的活、审核建议逐项放进详情。
-  for (const file of paths) items.push({ label: '会动到', value: file, code: true });
-  if (why !== '') items.push({ label: '机器人在干的活', value: why });
-  if (text('advice') !== '') items.push({ label: '审核建议', value: text('advice') });
-  let approveStyle: 'danger' | 'primary' = 'primary';
-  if (level === 'high') {
-    approveStyle = 'danger';
-  }
-
-  //M 正文第一行“要做什么”：先用审核小会话写的执行结果，其次决策模型顺带写的；都没有就照实说“说不清会做成什么”并带上命令，不编。
-  let what = text('what');
-  if (what === '') {
-    what = decisionWhat;
-  }
-  if (what === '') {
-    what = `说不清会做成什么（命令：${input.command}）`;
-  }
-  const whatLine = `要做什么：${textModule.clipText(what, CARD_LINE_MAX)}`;
-
-  //M 第二行“动哪些”：命令里的路径和审核列的路径。
-  const pathsLine = `动哪些：${textModule.clipText(getCardPaths(input, paths), CARD_LINE_MAX)}`;
-
-  //M 第三行“为什么问你”：每一档没放行的原因；一条都没有（不该出现）就照实说。
-  let askText = asks.join('；');
-  if (askText === '') {
-    askText = '前几档都没能放行';
-  }
-  const askLine = `为什么问你：${textModule.clipText(askText, CARD_LINE_MAX)}`;
-
-  //M 风险说明写具体理由：审核小会话的理由原文，没给就写“审核没给出理由”。
-  const riskText = getReviewReason(answer);
-
-  //M 拼卡片：标题、三行正文、风险、可展开的原始数据；风险高时“同意执行”用危险色。
-  return {
-    kind: 'approval',
-    title: text('title') || '要执行一条命令',
-    reason: [whatLine, pathsLine, askLine].join('\n'),
-    items,
-    risk: { level, text: riskText },
-    details: { label: '调用的工具数据', data: { 工具: input.kind, 命令: input.command, 目录: input.cwd, 会话: input.session ?? null, 参数: input.payload, 审核原话: answer ?? null } },
-    buttons: [
-      { action: 'approve', label: '同意执行', style: approveStyle },
-      { action: 'reject', label: '拒绝', style: 'default' },
-    ],
-  };
-}
 
 /**
  * 渠道有没有在回话地址上明写这是本人（owner: true）：批复“同意 N”、审命令时给本人的授权目录，只认这一条。
@@ -1470,7 +1357,7 @@ function isImplicitDecision(item: Pending): boolean {
  */
 function getPending(row: Row): Pending {
   //M 有落库的卡片 JSON 直接解析；旧记录为 null 时用标题与细节补默认卡。
-  let card: cardUtils.CardData = { ...plainCard(row.title, row.detail), state: row.state };
+  let card: cardUtils.CardData = { ...reviewCardModule.plainCard(row.title, row.detail), state: row.state };
   if (row.card !== null) {
     card = JSON.parse(row.card) as cardUtils.CardData;
   }

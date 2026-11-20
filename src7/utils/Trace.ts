@@ -34,7 +34,7 @@ declare module 'cordis' {
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.onRequest、FrontDesk.record
      *   src7/plugins/bots/GroupBatch.ts 的 GroupBatch.judge
      *   src7/plugins/bots/ReplyTool.ts 的 registerReplyTool
-     *   src7/plugins/bots/index.ts 的 Bot.receive、Bots.constructor、Bots.onRequest、Bots.receive、Bots.say
+     *   src7/plugins/bots/index.ts 的 Bot.receive、Bots.onChange、Bots.onRequest、Bots.receive、Bots.say
      *   src7/plugins/cli/index.ts 的 Cli.submitLine
      *   src7/plugins/context-fit/Compress.ts 的 Compress.compress
      *   src7/plugins/context-fit/Summary.ts 的 Summary.onChange

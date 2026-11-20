@@ -47,7 +47,8 @@ export const name = 'memory';
 //M 1.11.1：客户号只读渠道写的（删 customerFrom）；私人记忆判断并进 MemoryKey.canReadAll，本人、群改问 channels。
 //M 1.11.2：渠道索引按归档路径记附件、按撤回事件记时刻，表结构交 db 管版本。
 //M 1.11.3：旧档回填问资源守卫改 requestEvent 新写法，不掐表（守卫读数自己限时），云端 19 第 1、2 条。
-export const version = '1.11.3';
+//M 1.11.4：前台往来检索与原文读取从 Search.ts 并入 FrontArchive.ts，bot_log 旧表双读补退场条件注释（云端 20 第 3 条、云端 18 第 4 条）。
+export const version = '1.11.4';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];

@@ -20,20 +20,17 @@
  * Cordis 大白话：apply 是插件的 main()，ctx 是它拿到的遥控器；通过 ctx 听的事件、登记的工具、ctx.effect 登记的收尾，
  * 插件被拔掉时 Cordis 自动撤掉。审批和进度卡片通过事件接收更新与发起操作。
  */
-import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type * as cordis from 'cordis';
-import * as checks from '../../utils/Checks.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
-import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as protocol from '../channels/index.ts';
 import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
+import * as configModule from './Config.ts';
 import { FeishuContacts } from './Contacts.ts';
 import * as doc from './doc/Doc.ts';
 import { FeishuChatLog } from './ChatLog.ts';
@@ -77,7 +74,8 @@ export const name = 'feishu';
 //M 1.3.5：飞书开放接口每个请求自己限时 60 秒（HTTP_TIMEOUT_MS，axios timeout），到点算不确定；
 //M   点卡片交给 approval、progress 改 requestEvent 新写法，本机的一问一答不掐表（云端 19 第 1、2 条）。
 //M 1.3.6：groups 每项可写 judge_helper（#318）：listen: judge 的群判定要接话时，地址带 judgeHelper，bots 把这批话转给该外部助手。
-export const version = '1.3.6';
+//M 1.3.7：配置校验搬进 Config.ts（改用 Checks.ts 的公共校验）；构造函数只做登记，建表、建客户端、发文件、关连接挪成方法（云端20 第 2、3 条）。
+export const version = '1.3.7';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -137,7 +135,7 @@ export interface FeishuAddress {
   /** 是否用户本人：收消息和点卡片时，按 people 里登记的 role: owner 写入。 */
   owner?: boolean;
   /** 说话人是哪一档（people 的 role，没登记是 guest）：approval 照它收工具。和 owner 一样收消息、点卡片时写。 */
-  role?: FeishuRole;
+  role?: configModule.FeishuRole;
   /**
    * builder、guest 的目录（people 的 dir；没登记的 guest 是 guests/_guest/）：
    * 这一轮的工作区，读写、exec、发文件都只在这里（utils/Workspace.ts 的 of 读）。owner 不写。
@@ -181,83 +179,10 @@ export function feishuCustomer(chatType: string, chatId: string, openId: string,
 }
 
 
-/** 拉群历史默认条数：机器人新进群自动拉、HTTP 接口不写 limit 时都用它（config.example.yaml 写同一个数）。 */
-export const DEFAULT_HISTORY_LIMIT = 200;
-
-/** 拉群历史一次最多条数（HTTP 的 limit、配置的 history_on_join 都不能超过）。 */
-export const MAX_HISTORY_LIMIT = 5000;
-
-
-/** 名单里的一个飞书应用，校验后。 */
-export interface FeishuApp {
-  /** 应用号 app_id。 */
-  appId: string;
-  /** 应用密钥 app_secret：只交给 SDK，不打印、不进跟踪。 */
-  appSecret: string;
-  /** 这个应用默认对应哪个机器人。 */
-  bot: string;
-  /** 可选：同一个飞书应用允许认领的多个机器人名（缺省只含 [bot]）。 */
-  bots?: string[];
-}
-
-
-/** 一个人能让机器人做什么：owner 本人什么都能；builder 在自己的目录里写代码、跑程序；guest 只查、读、搜、答。 */
-export type FeishuRole = 'owner' | 'builder' | 'guest';
-
-
-/** 登记的一个人（feishu 插件配置的 people）。 */
-export interface FeishuPerson {
-  /** 飞书 open_id：每个飞书应用不同，同一个人在几个应用下各登记一项。 */
-  openId: string;
-  /** 叫什么：收件、群聊记录里用它。 */
-  name: string;
-  /** 哪一档；旧写法 owner: true 并成 owner，不写是 guest。 */
-  role: FeishuRole;
-  /** builder、guest 的目录，绝对路径（不写是运行时目录 guests/<名字>/，启动时建好；guest 的名字当不了目录名时是 guests/_guest/）；owner 是 ''。 */
-  dir: string;
-}
-
-
-/** 登记的一个群（feishu 插件配置的 groups）。 */
-export interface FeishuGroup {
-  /** 飞书群号 chat_id。 */
-  chatId: string;
-  /** 群名；不写是 ''（用飞书查到的）。 */
-  name: string;
-  /** mention 只收 @ 机器人的（默认）；all 不 @ 的也收，只记不回；judge 不 @ 的也收，记完问决策模型要不要主动接话。 */
-  listen: 'mention' | 'all' | 'judge';
-  /** listen: judge 时决策模型的把握 ≥ 它才接话；不写用 decision 插件默认（allow_at）。 */
-  judgeThreshold?: number;
-  /** listen: judge 时判定要接话就转给这个外部助手（relay 的 helpers 里的名字）；不写由机器人自己接话。 */
-  judgeHelper?: string;
-  /** direct 只认外部助手前缀（默认，和没登记一样）；model 时 @ 机器人的话由模型判断要不要转。 */
-  relay: 'direct' | 'model';
-  /** 受不受信：true 时本人在这个群里说话照旧带私人记忆；不写是 false（群里的回复大家都看得到）。 */
-  trusted: boolean;
-  /** 每日群进度设置。省略时不挂定时。 */
-  daily?: { hour: number; minute: number; bot: string; appId: string; prompt: string };
-}
-
-
-/** apply 校验好以后给 Feishu 的东西。 */
-export interface FeishuConfig {
-  /** 飞书开放平台的地址（SDK 的 domain）；默认 https://open.feishu.cn，离线测试指向假飞书。 */
-  domain: string;
-  /** 飞书应用，照配置的先后。 */
-  apps: FeishuApp[];
-  /** 认得的人：open_id → 人。 */
-  people: Map<string, FeishuPerson>;
-  /** 专门设过的群：chat_id → 群。 */
-  groups: Map<string, FeishuGroup>;
-  /** 机器人新进群时自动拉最近多少条历史；0 是不拉。默认 DEFAULT_HISTORY_LIMIT。 */
-  historyOnJoin: number;
-}
-
-
 /** 一个应用运行时的样子。 */
 export interface AppState {
   /** 配置里那一项。 */
-  config: FeishuApp;
+  config: configModule.FeishuApp;
   /** SDK 客户端：调开放接口用，令牌 SDK 自己管。 */
   client: lark.Client;
   /** 长连接；ready 以后才有。 */
@@ -386,6 +311,34 @@ interface SendFileResult extends requestEventModule.ResultEnvelope {
   error?: string;
 }
 
+/**
+ * 所有 SDK 客户端共用的 HTTP 实例。Feishu.createClients 调。
+ * 每个请求自己限时（HTTP_TIMEOUT_MS），挂住的请求到点断开、算不确定，不让等它的会话一直等。
+ * Bun 的 node:http 上传仍会走环境代理：仅 multipart 改用原生 fetch，并显式直连；不改进程环境或 SDK 共享实例，普通接口、流式下载仍走 SDK 默认传输。
+ * @returns 带请求、响应拦截器的 axios 实例。
+ */
+function getHttpInstance(): ReturnType<typeof lark.defaultHttpInstance.create> {
+  const httpOptions = { timeout: HTTP_TIMEOUT_MS };
+  const httpInstance = lark.defaultHttpInstance.create(httpOptions);
+  httpInstance.interceptors.request.use((request) => {
+    if (String(request.headers.get('Content-Type')).startsWith('multipart/form-data')) {
+      request.adapter = 'fetch';
+      request.env = { FormData: globalThis.FormData };
+      request.fetchOptions = { proxy: '' };
+    }
+    return request;
+  });
+  //M create 不继承 SDK 的响应拦截器：保留普通响应解包和下载所需的响应头。
+  httpInstance.interceptors.response.use((response) => {
+    if ((response.config as { $return_headers?: boolean }).$return_headers) {
+      return { data: response.data, headers: response.headers };
+    }
+    return response.data;
+  });
+  return httpInstance;
+}
+
+
 /** 飞书渠道；外部发送复用实例方法。 */
 export class Feishu {
   /** 渠道名。 */
@@ -415,52 +368,17 @@ export class Feishu {
   /**
    * 建表、给每个应用建 SDK 客户端；ready 时连长连接；被拔掉时关长连接。
    * 向 bots 登记本渠道名（网页的渠道清单用）；所有回话都经 channel/reply 到 Reply.ts。
+   * 构造函数只做登记，建表、建客户端、发文件、关连接写成下面的方法。
    * @param ctx Cordis 给这个插件的 ctx。
    * @param config 校验过的配置。
    */
-  constructor(private readonly ctx: cordis.Context, readonly config: FeishuConfig) {
+  constructor(private readonly ctx: cordis.Context, readonly config: configModule.FeishuConfig) {
     //M 向 bots 登记渠道名，随本插件卸载由 Cordis 自动撤销。
     this.ctx.effect(() => this.ctx.bots.channel(this.name));
-    const db = this.ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS feishu_seen (message_id TEXT PRIMARY KEY, app_id TEXT, kind TEXT, at INTEGER)');
-    db.exec('CREATE TABLE IF NOT EXISTS feishu_p2p'
-      + ' (app_id TEXT PRIMARY KEY, chat_id TEXT, open_id TEXT, message_id TEXT, at INTEGER)');
-    db.exec('CREATE TABLE IF NOT EXISTS feishu_cards'
-      + ' (card_id TEXT PRIMARY KEY, kind TEXT, ref TEXT, ended INTEGER, at INTEGER)');
-    db.exec('CREATE INDEX IF NOT EXISTS feishu_cards_ref ON feishu_cards (kind, ref)');
 
-    //M Bun 的 node:http 上传仍会走环境代理；仅 multipart 改用原生 fetch，并显式直连。
-    //M 不改进程环境或 SDK 共享实例；普通接口、流式下载仍走 SDK 默认传输。
-    //M 每个请求自己限时（HTTP_TIMEOUT_MS），挂住的请求到点断开、算不确定，不让等它的会话一直等。
-    const httpOptions = { timeout: HTTP_TIMEOUT_MS };
-    const httpInstance = lark.defaultHttpInstance.create(httpOptions);
-    httpInstance.interceptors.request.use((request) => {
-      if (String(request.headers.get('Content-Type')).startsWith('multipart/form-data')) {
-        request.adapter = 'fetch';
-        request.env = { FormData: globalThis.FormData };
-        request.fetchOptions = { proxy: '' };
-      }
-      return request;
-    });
-    //M create 不继承 SDK 的响应拦截器：保留普通响应解包和下载所需的响应头。
-    httpInstance.interceptors.response.use((response) => {
-      if ((response.config as { $return_headers?: boolean }).$return_headers) {
-        return { data: response.data, headers: response.headers };
-      }
-      return response.data;
-    });
-    for (const app of config.apps) {
-      const client = new lark.Client({
-        //M 响应拦截器已解包为 SDK 的 HttpInstance 返回契约。
-        httpInstance: httpInstance as unknown as lark.HttpInstance,
-        appId: app.appId,
-        appSecret: app.appSecret,
-        domain: config.domain,
-        loggerLevel: lark.LoggerLevel.warn,
-        logger: SDK_LOGGER,
-      });
-      this.apps.set(app.appId, { config: app, client, state: '还没连', connected: false, at: Date.now() });
-    }
+    //M 建本插件的表，再给每个应用建 SDK 客户端。
+    this.createTables();
+    this.createClients();
 
     //M 收（Inbound.ts）：不登记事件，start 把长连接收到的消息、撤回、点卡片交给它。
     this.inbound = new FeishuInbound(this.ctx, this);
@@ -487,41 +405,87 @@ export class Feishu {
     //M 拉群历史：用聊天日志去重，拼好的历史发 channel/history。
     this.historyPull = new FeishuHistoryPull(this.ctx, this);
 
+    //M 别的插件请本插件发文件（feishu/send-file）；发失败把原因放进回执。
     const requestOptions = {
-      onError: (error: unknown) => {
-        //G 发文件失败时通过回执把原因交给调用方。
-        const detail = textModule.getErrorMessage(error);
-        return { ok: false, error: detail };
-      },
+      onError: (error: unknown) => this.onSendFileError(error),
     };
-
-    //M 文件投递沿用现有的应用归属校验、上传和发送逻辑。
     requestEventModule.onRequestEvent(
       this.ctx,
       'feishu/send-file',
       'feishu/send-file-result',
-      async (request) => {
-        const options: SendFileOptions = {
-          appId: request.appId,
-          kind: request.kind,
-          messageId: request.messageId,
-        };
-
-        //M 等上传并发送完成，再交回新消息号。
-        const messageId = await this.sendFile(request.bot, request.chatId, request.filePath, options);
-        return { ok: true, messageId };
-      },
+      (request) => this.onSendFile(request),
       requestOptions,
     );
 
     //M 被拔掉时关掉每条长连接。ctx.effect：先执行一次（这里什么也不做），交回的函数在插件被拔掉时 Cordis 来调。
-    this.ctx.effect(() => {
-      return () => {
-        for (const app of this.apps.values()) {
-          app.ws?.close();
-        }
-      };
+    this.ctx.effect(() => () => {
+      this.closeConnections();
     });
+  }
+
+  /** 建本插件的表：收到过的消息（去重）、最近私聊的人、发过的卡片。 */
+  private createTables(): void {
+    const db = this.ctx.resources.db;
+    db.exec('CREATE TABLE IF NOT EXISTS feishu_seen (message_id TEXT PRIMARY KEY, app_id TEXT, kind TEXT, at INTEGER)');
+    db.exec('CREATE TABLE IF NOT EXISTS feishu_p2p'
+      + ' (app_id TEXT PRIMARY KEY, chat_id TEXT, open_id TEXT, message_id TEXT, at INTEGER)');
+    db.exec('CREATE TABLE IF NOT EXISTS feishu_cards'
+      + ' (card_id TEXT PRIMARY KEY, kind TEXT, ref TEXT, ended INTEGER, at INTEGER)');
+    db.exec('CREATE INDEX IF NOT EXISTS feishu_cards_ref ON feishu_cards (kind, ref)');
+  }
+
+  /**
+   * 给每个应用建 SDK 客户端，记进 apps（状态“还没连”）。所有客户端共用一个 HTTP 实例（getHttpInstance）。
+   * 构造函数调一次。
+   */
+  private createClients(): void {
+    const httpInstance = getHttpInstance();
+    for (const app of this.config.apps) {
+      const client = new lark.Client({
+        //M 响应拦截器已解包为 SDK 的 HttpInstance 返回契约。
+        httpInstance: httpInstance as unknown as lark.HttpInstance,
+        appId: app.appId,
+        appSecret: app.appSecret,
+        domain: this.config.domain,
+        loggerLevel: lark.LoggerLevel.warn,
+        logger: SDK_LOGGER,
+      });
+      this.apps.set(app.appId, { config: app, client, state: '还没连', connected: false, at: Date.now() });
+    }
+  }
+
+  /**
+   * feishu/send-file：别的插件请本插件发文件。沿用应用归属校验、上传和发送逻辑（sendFile）。
+   * @param request 机器人、聊天号、文件路径，可选应用号、种类、要回复的消息号。
+   * @returns 发成了和新消息号。
+   * @throws sendFile 抛的错（应用不对、上传失败等），由 onSendFileError 转成回执。
+   */
+  private async onSendFile(request: SendFileRequest): Promise<{ ok: true; messageId: string }> {
+    const options: SendFileOptions = {
+      appId: request.appId,
+      kind: request.kind,
+      messageId: request.messageId,
+    };
+
+    //M 等上传并发送完成，再交回新消息号。
+    const messageId = await this.sendFile(request.bot, request.chatId, request.filePath, options);
+    return { ok: true, messageId };
+  }
+
+  /**
+   * feishu/send-file 处理抛错时的回执：发文件失败，把原因交给调用方。
+   * @param error 抛出的错。
+   */
+  private onSendFileError(error: unknown): { ok: false; error: string } {
+    const detail = textModule.getErrorMessage(error);
+    return { ok: false, error: detail };
+  }
+
+  /** 插件被拔掉时关掉每条长连接。 */
+  private closeConnections(): void {
+    for (const app of this.apps.values()) {
+      app.ws?.close();
+    }
   }
 
   /**
@@ -1002,248 +966,6 @@ function baseName(file: string): string {
 
 
 /**
- * 校验配置。channels.feishu 是外面进来的（config.yaml），在这里校验一次，里面直接信。
- * @param ctx 插件的 ctx（读 config.yaml、查机器人名单）。
- * @param written plugins 段里写给本插件的配置：domain、people、groups 都可选。
- * @returns 校验后的配置。
- * @throws 哪一项不对时抛错；错误里不带 app_secret。
- */
-export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig {
-  let ownObject: unknown = {};
-  if (typeof written === 'object' && written !== null) {
-    ownObject = written;
-  }
-  const own = ownObject as Record<string, unknown>;
-  const domain = own['domain'] ?? 'https://open.feishu.cn';
-  if (typeof domain !== 'string' || !/^https?:\/\/\S+$/u.test(domain)) {
-    throw new Error('feishu 插件的 domain 要写成 http:// 或 https:// 开头的地址');
-  }
-
-  const channels = ctx.resources.raw['channels'] as { feishu?: unknown } | undefined;
-  const list = channels?.feishu;
-  if (!Array.isArray(list) || list.length === 0) {
-    throw new Error('config.yaml 的 channels.feishu 要写成一张清单，至少一个飞书应用');
-  }
-  const apps: FeishuApp[] = [];
-  for (const [index, value] of list.entries()) {
-    let itemObject: unknown = {};
-    if (typeof value === 'object' && value !== null) {
-      itemObject = value;
-    }
-    const item = itemObject as Record<string, unknown>;
-    const where = `channels.feishu 第 ${String(index + 1)} 项`;
-    const appId = item['app_id'];
-    const appSecret = item['app_secret'];
-    const bot = item['bot'];
-    if (typeof appId !== 'string' || appId === '') throw new Error(`${where} 要写非空的 app_id`);
-    if (typeof appSecret !== 'string' || appSecret === '') throw new Error(`${where} 要写非空的 app_secret`);
-    //M 校验主机器人名字存在于已配置的机器人名单中。
-    if (typeof bot !== 'string' || botUtils.getBotConfig(ctx.resources.raw, bot) === undefined) {
-      throw new Error(`${where} 的 bot 要写机器人名单里有的名字`);
-    }
-    if (apps.some((app) => app.appId === appId)) throw new Error(`${where} 的 app_id 和前面的重了`);
-    const extraBotsRaw = item['bots'];
-    let botsList: string[] | undefined;
-    if (extraBotsRaw !== undefined) {
-      //M 校验多机器人共享账号配置的每一个追加机器人名均合法存在。
-      const botsInvalid = !Array.isArray(extraBotsRaw)
-        || extraBotsRaw.some((one) => typeof one !== 'string' || botUtils.getBotConfig(ctx.resources.raw, one) === undefined);
-      if (botsInvalid) {
-        throw new Error(`${where} 的 bots 要写成机器人名单里已有名字的清单`);
-      }
-      botsList = [...new Set([bot, ...(extraBotsRaw as string[])])];
-    }
-    const appEntry: FeishuApp = { appId, appSecret, bot };
-    if (botsList !== undefined) {
-      appEntry.bots = botsList;
-    }
-    //M 把校验完的一项加入已配置应用清单，启动时按这个清单连飞书。
-    apps.push(appEntry);
-  }
-  //M 校验并解析人员权限清单与群配置清单后拼出完整飞书配置对象。
-  //M 机器人新进群自动拉的历史条数：不写用默认，写 0 不拉。
-  const historyOnJoin = own['history_on_join'] ?? DEFAULT_HISTORY_LIMIT;
-  const historyValid = typeof historyOnJoin === 'number' && Number.isInteger(historyOnJoin)
-    && historyOnJoin >= 0 && historyOnJoin <= MAX_HISTORY_LIMIT;
-  if (!historyValid) {
-    throw new Error(`feishu 插件的 history_on_join 要写 0 到 ${String(MAX_HISTORY_LIMIT)} 的整数（0 是进群不拉历史）`);
-  }
-  const people = getPeople(ctx, own);
-  const groups = getGroups(own, apps);
-  return { domain: domain.replace(/\/+$/u, ''), apps, people, groups, historyOnJoin: historyOnJoin as number };
-}
-
-
-/**
- * 一张登记清单（people、groups）：不写是空的，写了要是对象的清单。
- * @param value 配置里写的。
- * @param key 哪一项，报错用。
- * @returns 每项当对象读。
- */
-function getEntries(value: unknown, key: string): Record<string, unknown>[] {
-  if (value === undefined) return [];
-  const valid = Array.isArray(value)
-    && value.every((item) => typeof item === 'object' && item !== null && !Array.isArray(item));
-  if (!valid) throw new Error(`feishu 插件的 ${key} 要写成清单，每项一个对象`);
-  return value as Record<string, unknown>[];
-}
-
-
-/** 没登记的 guest 共用的目录名：运行时目录 guests/_guest/（Inbound.ts 收消息、点卡片时也用）。 */
-export const GUEST_DIR = '_guest';
-
-
-/** people 里 role 能写的值。 */
-const ROLES: string[] = ['owner', 'builder', 'guest'];
-
-
-/**
- * 认得的人：people 每项 open_id、name（必写）、role（owner / builder / guest，默认 guest）、dir（builder 的目录）。
- * builder、guest 的 dir 相对运行时目录算（写绝对路径也行），不写是 guests/<名字>/；没有就建。
- * @param ctx 用于定位运行时目录。
- * @param own feishu 插件的配置。
- * @returns open_id → 人。
- * @throws 身份字段有误、用了旧 owner 配置、编号重复或工作区路径不合法时抛错。
- */
-function getPeople(ctx: cordis.Context, own: Record<string, unknown>): Map<string, FeishuPerson> {
-  const people = new Map<string, FeishuPerson>();
-  //M 逐条解析并校验配置里登记的人员身份档案（owner / builder / guest）。
-  for (const item of getEntries(own['people'], 'people')) {
-    //G 旧身份配置需要明确迁移，避免本人身份被误降为访客。
-    if (Object.hasOwn(item, 'owner')) {
-      throw new Error('feishu 的 people[].owner 已不用，本人改写 role: owner，其他人按角色填写或省略');
-    }
-
-    const openId = item['open_id'];
-    const name = item['name'];
-    if (typeof openId !== 'string' || openId === '' || typeof name !== 'string' || name === '') {
-      throw new Error('feishu 插件的 people 每项要写 open_id 和 name');
-    }
-    if (people.has(openId)) throw new Error(`feishu 插件的 people 里 ${openId} 写了两次`);
-
-    //M 未指定角色的登记人沿用访客权限。
-    const role = item['role'] ?? 'guest';
-    if (typeof role !== 'string' || !ROLES.includes(role)) {
-      throw new Error(`feishu 插件 people 里 ${name} 的 role 要写 owner、builder 或 guest`);
-    }
-
-    //M builder 的目录：写了相对运行时目录算，没写是 guests/<名字>/；没有就建。owner 用不到。
-    let dir = '';
-    if (role === 'builder') {
-      const written = item['dir'] ?? path.join('guests', name);
-      if (typeof written !== 'string' || written === '') throw new Error(`feishu 插件 people 里 ${name} 的 dir 要写目录`);
-      if (item['dir'] === undefined && (path.basename(name) !== name || name === '..')) {
-        throw new Error(`feishu 插件 people 里 ${name} 的名字当不了目录名，给他写 dir`);
-      }
-      dir = path.resolve(ctx.resources.root, written);
-      //M 确保已按配置解析的工作区目录存在。
-      filesModule.ensureDir(dir);
-    }
-    //M guest 的目录：写了照写，没写是 guests/<名字>/，名字当不了目录名就用 guests/_guest/；只建这一个目录。
-    if (role === 'guest') {
-      let defaultGuestDir = path.join('guests', GUEST_DIR);
-      if (path.basename(name) === name && name !== '..') {
-        defaultGuestDir = path.join('guests', name);
-      }
-      const written = item['dir'] ?? defaultGuestDir;
-      if (typeof written !== 'string' || written === '') throw new Error(`feishu 插件 people 里 ${name} 的 dir 要写目录`);
-      dir = path.resolve(ctx.resources.root, written);
-      //M 确保已按配置解析的工作区目录存在。
-      filesModule.ensureDir(dir);
-    }
-    people.set(openId, { openId, name, role: role as FeishuRole, dir });
-  }
-
-  return people;
-}
-
-
-/**
- * 专门设过的群：groups 每项 chat_id（必写）、name、listen（mention / all / judge，默认 mention）、
- * judge_threshold（0 到 1，可不写）、judge_helper（非空文字，可不写：判定要接话时转给这个外部助手）、relay（direct / model，默认 direct）、
- * trusted（true / false，默认 false：本人在 trusted 群里说话才带私人记忆）。
- * @param own feishu 插件的配置。
- * @returns chat_id → 群。
- * @throws 哪项没写 chat_id、chat_id 重了、listen 或 relay 写了别的值、judge_threshold 不是 0 到 1 的数、trusted 不是布尔时抛错。
- */
-function getGroups(own: Record<string, unknown>, apps: FeishuApp[]): Map<string, FeishuGroup> {
-  const groups = new Map<string, FeishuGroup>();
-  //M 逐条解析并校验专项群规则（监听策略、决策阈值、中转方式及隐私信任标记）。
-  for (const item of getEntries(own['groups'], 'groups')) {
-    const chatId = item['chat_id'];
-    const name = item['name'] ?? '';
-    let listen = item['listen'] ?? 'mention';
-    const relay = item['relay'] ?? 'direct';
-    const trusted = item['trusted'] ?? false;
-    const threshold = item['judge_threshold'];
-    if (typeof chatId !== 'string' || chatId === '') throw new Error('feishu 插件的 groups 每项要写 chat_id');
-    if (groups.has(chatId)) throw new Error(`feishu 插件的 groups 里 ${chatId} 写了两次`);
-    if (typeof name !== 'string') throw new Error(`feishu 插件 groups 里 ${chatId} 的 name 要写成字符串`);
-
-    //M 校验每日任务并从指定机器人的应用中确定唯一的发信账号。
-    const daily = getGroupDaily(item['daily'], chatId, apps);
-    if (daily !== undefined && item['listen'] === undefined) {
-      //M 已启用日报的群默认也收没有 @ 的成员汇报。
-      listen = 'all';
-    }
-    if (listen !== 'mention' && listen !== 'all' && listen !== 'judge') {
-      throw new Error(`feishu 插件 groups 里 ${chatId} 的 listen 只能写 mention、all 或 judge`);
-    }
-    if (threshold !== undefined && (typeof threshold !== 'number' || threshold < 0 || threshold > 1)) {
-      throw new Error(`feishu 插件 groups 里 ${chatId} 的 judge_threshold 要写 0 到 1 的数`);
-    }
-    if (relay !== 'direct' && relay !== 'model') {
-      throw new Error(`feishu 插件 groups 里 ${chatId} 的 relay 只能写 direct 或 model`);
-    }
-    if (typeof trusted !== 'boolean') throw new Error(`feishu 插件 groups 里 ${chatId} 的 trusted 只能写 true 或 false`);
-    const groupEntry: FeishuGroup = { chatId, name, listen, relay, trusted };
-    if (threshold !== undefined) {
-      groupEntry.judgeThreshold = threshold;
-    }
-    //M judge_helper：可选；写了要是非空文字。
-    if (item['judge_helper'] !== undefined) {
-      const helperLabel = `feishu 插件 groups 里 ${chatId} 的 judge_helper`;
-      groupEntry.judgeHelper = checks.checkNonEmptyText(item['judge_helper'], helperLabel);
-    }
-    if (daily !== undefined) {
-      groupEntry.daily = daily;
-    }
-    groups.set(chatId, groupEntry);
-  }
-  return groups;
-}
-
-
-/** 群日报入站配置的校验，匹配一个飞书发信账号并拆好本地时间。 */
-function getGroupDaily(raw: unknown, chatId: string, apps: FeishuApp[]): FeishuGroup['daily'] {
-  if (raw === undefined) return undefined;
-
-  const where = 'feishu 群 ' + chatId + ' 的 daily';
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    throw new Error(where + ' 要写 at、bot 和 prompt');
-  }
-  const daily = raw as Record<string, unknown>;
-  const { at, bot, prompt } = daily;
-  const requestedApp = daily['app_id'];
-  if (typeof at !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/u.test(at)) {
-    throw new Error(where + ' 的 at 要写成本地时刻 HH:mm');
-  }
-  if (typeof bot !== 'string' || bot.trim() === '') throw new Error(where + ' 的 bot 要写机器人名');
-  if (typeof prompt !== 'string' || prompt.trim() === '') throw new Error(where + ' 的 prompt 要写非空文字');
-
-  //M 共享应用同样接单，多个可用发信账号时由配置显式消除歧义。
-  const candidates = apps.filter((app) => app.bot === bot || app.bots?.includes(bot));
-  const selected = candidates.filter((app) => requestedApp === undefined || app.appId === requestedApp);
-  if (selected.length !== 1) throw new Error(where + ' 要能确定一个属于该机器人的 app_id');
-
-  //M 时间在配置入口拆开，定时器直接使用数值。
-  const hour = Number(at.slice(0, 2));
-  const minute = Number(at.slice(3));
-  return { hour, minute, bot, appId: selected[0]!.appId, prompt: prompt.trim() };
-}
-
-
-/**
  * 挂上飞书。
  * apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 先等 inject 里的服务都就绪，再调一次 apply。
  * 建渠道、登记云文档工具和发件箱，并挂卡片监听。
@@ -1253,7 +975,7 @@ function getGroupDaily(raw: unknown, chatId: string, apps: FeishuApp[]): FeishuG
  */
 export function apply(ctx: cordis.Context, config: unknown): void {
   //M 先按运行配置校验飞书账号、人员和群规则，再创建飞书渠道主实例。
-  const feishu = new Feishu(ctx, checkConfig(ctx, config));
+  const feishu = new Feishu(ctx, configModule.checkConfig(ctx, config));
   //M 挂成服务：别的插件用 ctx.get('feishu') 调 sendFile，不要 import 本文件的函数。
   ctx.provide('feishu', feishu);
 
@@ -1281,9 +1003,9 @@ export function apply(ctx: cordis.Context, config: unknown): void {
       const app = typeof appId === 'string' ? feishu.apps.get(appId) : undefined;
       if (app === undefined) return reply.code(400).send({ error: `没有飞书应用 ${String(appId)}` });
 
-      const limit = body.limit ?? DEFAULT_HISTORY_LIMIT;
-      const limitValid = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= MAX_HISTORY_LIMIT;
-      if (!limitValid) return reply.code(400).send({ error: `limit 要写 1 到 ${String(MAX_HISTORY_LIMIT)} 的整数` });
+      const limit = body.limit ?? configModule.DEFAULT_HISTORY_LIMIT;
+      const limitValid = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= configModule.MAX_HISTORY_LIMIT;
+      if (!limitValid) return reply.code(400).send({ error: `limit 要写 1 到 ${String(configModule.MAX_HISTORY_LIMIT)} 的整数` });
 
       //M 拉的过程出错（权限不够等）把中文原因带回去，不悄悄失败。
       try {

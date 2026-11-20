@@ -8,6 +8,44 @@ import type { FrontDesk } from './FrontDesk.ts';
 import * as groupBatchModule from './GroupBatch.ts';
 import type { Bot, IncomingMessage, ReceiveEvent } from './index.ts';
 
+/** 会话的 sourceClaims 最多保留最近多少个已认领去重键。 */
+const CLAIM_HISTORY_MAX = 200;
+
+/**
+ * 把去重键追加到会话的已认领清单（只留最近 200 个，不改原数组）；落盘由调用方做（事务里和队列项一起存）。
+ * @param session 认领这条消息的会话。
+ * @param claimKey 去重认领键。
+ */
+export function rememberClaim(session: Session, claimKey: string): void {
+  const existing = session.row.sourceClaims ?? [];
+  session.row.sourceClaims = [...existing, claimKey].slice(-CLAIM_HISTORY_MAX);
+}
+
+/**
+ * 往入站协调对象追加一条认领记录（control 没传就跳过）。
+ * @param control 随渠道事件传进来的协调对象。
+ * @param bot 机器人名。
+ * @param claimKey 去重认领键。
+ * @param status 认领结论。
+ * @param session 认领进的会话；handled 时没有。
+ */
+export function pushClaim(
+  control: protocol.ChannelMessageControl | undefined,
+  bot: string,
+  claimKey: string,
+  status: protocol.ChannelClaimRecord['status'],
+  session?: Session,
+): void {
+  if (control === undefined) return;
+
+  const record: protocol.ChannelClaimRecord = { bot, claimKey, status };
+  if (session !== undefined) {
+    record.sessionKind = session.row.kind;
+    record.sessionId = session.id;
+  }
+  control.claims.push(record);
+}
+
 /** 定下前台会话，保存来源快照，然后交给现有队列处理。 */
 export class DispatchClaim {
   /** 群攒批：只听的话进它的缓冲；叫了机器人时拿走攒着的；撤回时 DispatchRecall 调它拿掉。 */
@@ -65,13 +103,7 @@ export class DispatchClaim {
     const queue = front.row.resultQueue ?? [];
     const queuedSame = queue.some((item) => item.claimKey === claimKey || item.key === claimKey);
     if (claimedList.includes(claimKey) || queuedSame) {
-      control?.claims.push({
-        bot: bot.name,
-        claimKey,
-        status: 'duplicate',
-        sessionKind: 'front',
-        sessionId: front.id,
-      });
+      pushClaim(control, bot.name, claimKey, 'duplicate', front);
       return;
     }
 
@@ -93,13 +125,7 @@ export class DispatchClaim {
     this.persistClaim(front, item, scope, explicit);
 
     //M 把认领结果交给原渠道（写进来往流水）。
-    control?.claims.push({
-      bot: bot.name,
-      claimKey,
-      status: 'claimed',
-      sessionKind: 'front',
-      sessionId: front.id,
-    });
+    pushClaim(control, bot.name, claimKey, 'claimed', front);
 
     //M channel_tool 首条输入也经同一个 drain 设置 activeKey 与快照后才启动 Session.run。
     if (front.row.state !== 'running' && front.row.activeKey === undefined) {
@@ -127,18 +153,10 @@ export class DispatchClaim {
       this.desk.listen(front, heard.text, heard.botOrigin.address);
     }
 
-    //M 认领键记到前台上，只留最近 200 个。
-    front.row.sourceClaims = [...(front.row.sourceClaims ?? []), heard.claimKey].slice(-200);
+    //M 认领键记到前台上，只留最近 200 个；认领记录交给原渠道。
+    rememberClaim(front, heard.claimKey);
     front.save();
-
-    //M 认领记录交给原渠道。
-    control?.claims.push({
-      bot: bot.name,
-      claimKey: heard.claimKey,
-      status: 'listen',
-      sessionKind: 'front',
-      sessionId: front.id,
-    });
+    pushClaim(control, bot.name, heard.claimKey, 'listen', front);
   }
 
   /** 构造待运行的渠道项及该轮采用的回复策略。 */
@@ -203,7 +221,7 @@ export class DispatchClaim {
     const beforeClaims = front.row.sourceClaims;
     const beforeQueue = front.row.resultQueue;
     const commitClaim = db.transaction(() => {
-      front.row.sourceClaims = [...(beforeClaims ?? []), claimKey].slice(-200);
+      rememberClaim(front, claimKey);
       front.row.resultQueue = [...(beforeQueue ?? []), item];
 
       //M 按范围找到的前台记下范围；指定的前台可能是别的渠道的（网页接着飞书群的前台说），不改它的范围。

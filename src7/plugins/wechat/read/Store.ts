@@ -5,6 +5,61 @@ import type * as readerModule from './Reader.ts';
 /** 微信 SQLite 的语音类型，旧引擎没有 view 时也认得出来。 */
 const VOICE_TYPE = 34;
 
+/** 已在当前数据库连接上挂好会话变更临时触发器的实例集合。 */
+const revisionDbs = new WeakSet<sqlite.Database>();
+
+/**
+ * 为当前数据库连接挂载会话级临时变更计数触发器（不改持久化表结构），用于识别新消息、历史补录与撤回更新。
+ * @param db 微信消息所在的 SQLite 连接。
+ */
+export function ensureMessageRevisionTriggers(db: sqlite.Database): void {
+  if (revisionDbs.has(db)) return;
+
+  const table = db
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wechat_messages'")
+    .get();
+  if (table === null) return;
+
+  //M 在连接私有的 temp 库维护每个会话的写入修订号，增删改都递增，别的会话变动不互相干扰。
+  db.exec('CREATE TEMP TABLE IF NOT EXISTS _wechat_chat_rev'
+    + ' (account TEXT NOT NULL, chat TEXT NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY (account, chat))');
+  db.exec('CREATE TEMP TRIGGER IF NOT EXISTS _wechat_msg_ai AFTER INSERT ON main.wechat_messages BEGIN'
+    + ' INSERT INTO _wechat_chat_rev (account, chat, rev) VALUES (NEW.account, NEW.chat, 1)'
+    + ' ON CONFLICT (account, chat) DO UPDATE SET rev = rev + 1; END');
+  db.exec('CREATE TEMP TRIGGER IF NOT EXISTS _wechat_msg_au AFTER UPDATE ON main.wechat_messages BEGIN'
+    + ' INSERT INTO _wechat_chat_rev (account, chat, rev) VALUES (NEW.account, NEW.chat, 1)'
+    + ' ON CONFLICT (account, chat) DO UPDATE SET rev = rev + 1; END');
+  db.exec('CREATE TEMP TRIGGER IF NOT EXISTS _wechat_msg_ad AFTER DELETE ON main.wechat_messages BEGIN'
+    + ' INSERT INTO _wechat_chat_rev (account, chat, rev) VALUES (OLD.account, OLD.chat, 1)'
+    + ' ON CONFLICT (account, chat) DO UPDATE SET rev = rev + 1; END');
+  revisionDbs.add(db);
+}
+
+/**
+ * 计算单个微信会话读取窗口当前的轻量版本号（结合进程代次、跨进程页版本、查询上限与本会话修订号）。
+ * @param db 微信消息所在的 SQLite 连接。
+ * @param bootId 当前服务实例启动代次。
+ * @param account 微信账号。
+ * @param chat 会话标识。
+ * @param limit 查询上限。
+ */
+export function getChatMessageVersion(
+  db: sqlite.Database,
+  bootId: string,
+  account: string,
+  chat: string,
+  limit: number,
+): string {
+  ensureMessageRevisionTriggers(db);
+  const dataRow = db.query('PRAGMA data_version').get() as { data_version?: number } | null;
+  const dataVersion = dataRow?.data_version ?? 0;
+  const revRow = db
+    .query('SELECT rev FROM temp._wechat_chat_rev WHERE account = ? AND chat = ?')
+    .get(account, chat) as { rev: number } | null;
+  const rev = revRow?.rev ?? 0;
+  return `${bootId}:${String(dataVersion)}:${String(limit)}:${String(rev)}`;
+}
+
 /** 落库和通知使用同一份气泡类型。 */
 export function getMessageView(message: readerModule.RawMessage): NonNullable<readerModule.RawMessage['view']> {
   const view = message.view ?? {};
@@ -75,22 +130,26 @@ export class Store {
     //M view 保存整条气泡视图 JSON，供页面按消息类型渲染。
     db.exec('CREATE TABLE IF NOT EXISTS wechat_messages'
       + ' (account TEXT, chat TEXT, source TEXT, local_id INTEGER, at INTEGER,'
-      + ' from_self INTEGER, kind TEXT, sender TEXT, text TEXT, view TEXT, PRIMARY KEY (account, chat, source, local_id))');
+      + ' from_self INTEGER, kind TEXT, sender TEXT, text TEXT, view TEXT,'
+      + ' PRIMARY KEY (account, chat, source, local_id))');
 
     //M 全部会话的同步进度，full=1 表示历史已补全。
     db.exec('CREATE TABLE IF NOT EXISTS wechat_sync'
-      + ' (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER, full INTEGER, PRIMARY KEY (account, chat))');
+      + ' (account TEXT, chat TEXT, name TEXT, is_group INTEGER, last_time INTEGER,'
+      + ' full INTEGER, PRIMARY KEY (account, chat))');
     db.exec('CREATE TABLE IF NOT EXISTS wechat_outbox'
       + ' (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, chat TEXT, name TEXT,'
       + ' text TEXT, state TEXT, note TEXT, at INTEGER)');
+    ensureMessageRevisionTriggers(db);
   }
 
   /**
-   * 存一条微信消息进 wechat_messages；以前存过的（撞上表的唯一键）不重复存。同步、翻历史、补全量共用。
+   * 存一条微信消息进 wechat_messages；以前存过的（撞上表的唯一键）不重复存，若撤回等字段变了则原地更新展示。
+   * 同步、翻历史、补全量共用。
    * @param account 微信账号。
    * @param chat 哪个会话。
    * @param msg 读出来的一条消息。
-   * @returns 这次新存进去是 true，以前存过是 false。
+   * @returns 这次新存进去是 true，以前存过（含原地更新撤回）是 false。
    * 副作用：写库。
    */
   save(account: string, chat: string, msg: readerModule.RawMessage): boolean {
@@ -104,8 +163,9 @@ export class Store {
     const sender = view.sender ?? '';
     //M 与入站事件共用正文格式，让落库的非文字消息也可读。
     const text = describe(view);
+    const viewJson = JSON.stringify(view);
 
-    //M INSERT OR IGNORE：撞上就不写，changes 是 0。
+    //M INSERT OR IGNORE：新消息插入并返回 true，触发临时修订号递增。
     const sql = 'INSERT OR IGNORE INTO wechat_messages'
       + ' (account, chat, source, local_id, at, from_self, kind, sender, text, view)'
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
@@ -120,8 +180,19 @@ export class Store {
       kind,
       sender,
       text,
-      JSON.stringify(view),
+      viewJson,
     );
-    return result.changes > 0;
+    if (result.changes > 0) return true;
+
+    //M 已落库消息若在微信侧发生撤回等原地变化，更新展示字段并推进修订号，但不当新消息重派机器人。
+    const updateSql = 'UPDATE wechat_messages SET from_self = ?, kind = ?, sender = ?, text = ?, view = ?'
+      + ' WHERE account = ? AND chat = ? AND source = ? AND local_id = ?'
+      + " AND (from_self != ? OR kind != ? OR sender != ? OR text != ? OR IFNULL(view, '') != ?)";
+    this.db.query(updateSql).run(
+      fromSelf, kind, sender, text, viewJson,
+      account, chat, msg.source, msg.local_id,
+      fromSelf, kind, sender, text, viewJson,
+    );
+    return false;
   }
 }

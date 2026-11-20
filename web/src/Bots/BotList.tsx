@@ -143,13 +143,8 @@ export function BotList(): react.JSX.Element {
   //M 订阅界面翻译函数，供品牌区、占位卡、运行中标题及页脚版本号文案使用。
   const t = i18n.useT();
 
-  /** 壳子和后端的版本信息，异步从 /api/ui/info 拉取。 */
-  const [info, setInfo] = react.useState<api.UiInfo | undefined>(undefined);
-
-  //M 挂载后请求一次版本与编译时间，用于左下角展示与悬停提示。
-  react.useEffect(() => {
-    void api.uiInfo().then(setInfo, () => undefined);
-  }, []);
+  /** 壳子和后端的版本信息，由轮询按进程启动标记拉取一次并存入仓库共享。 */
+  const info = context.useUi((state) => state.uiInfo);
 
   /** 后端版本号，取新版 server 字段或兼容根字段。 */
   const serverVersion = info?.server?.version ?? info?.version ?? '';

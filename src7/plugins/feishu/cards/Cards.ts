@@ -12,7 +12,8 @@ import * as requestEventModule from '../../../utils/RequestEvent.ts';
 import * as textModule from '../../../utils/Text.ts';
 import * as protocol from '../../channels/index.ts';
 import { feishuCustomer } from '../index.ts';
-import type { FeishuAddress, Feishu, FeishuPerson, Toast } from '../index.ts';
+import type { FeishuPerson } from '../Config.ts';
+import type { FeishuAddress, Feishu, Toast } from '../index.ts';
 import * as render from './Render.ts';
 
 
