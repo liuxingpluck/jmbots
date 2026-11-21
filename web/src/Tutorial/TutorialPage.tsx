@@ -61,6 +61,7 @@ const LazyStepDetail = lazy(() => import('./LaneChart.tsx').then((m) => ({ defau
 const LazyReadingView = lazy(() => import('./TutorialDocViews.tsx').then((m) => ({ default: m.ReadingView })));
 const LazyPluginView = lazy(() => import('./TutorialDocViews.tsx').then((m) => ({ default: m.PluginView })));
 const LazyProgramView = lazy(() => import('./ProgramView.tsx').then((m) => ({ default: m.ProgramView })));
+const LazyDevMap = lazy(() => import('./DevMap.tsx').then((m) => ({ default: m.DevMap })));
 
 
 /** 画布与导图按需 chunk 加载期间的深色静音占位。 */
@@ -99,6 +100,8 @@ interface RouteState {
   util: string;
   /** 没有画布的页面（左栏点开的插件说明、进程插件）：两栏，内容占满左栏右边。 */
   doc: boolean;
+  /** 是否打开整屏「新插件开发地图」（?view=dev-map）。 */
+  devMap: boolean;
 }
 
 /** 左栏各组折叠状态（骨架、骨架工具、启动流程、最近消息、组块阅读、插件、进程插件）。 */
@@ -276,8 +279,9 @@ function getRouteFromUrl(search: string): RouteState {
   const rawRtab = params.get('rtab') ?? '';
   const reading = params.get('reading') ?? '';
   const util = params.get('util') ?? '';
-  //M page=doc 是左栏点开的没有画布的页面，刷新后仍是两栏。
+  //M page=doc 是左栏点开的没有画布的页面，刷新后仍是两栏；?view=dev-map 直达整屏开发地图。
   const doc = params.get('page') === 'doc';
+  const devMap = params.get('view') === 'dev-map' || rawRtab === 'devmap';
 
   //M 右栏页签优先认 URL 里的 rtab；没给时：无画布/只带 plugin 落到「插件」，其余默认看「这一步」。
   let rtab: RouteState['rtab'] = 'step';
@@ -307,7 +311,9 @@ function getRouteFromUrl(search: string): RouteState {
 
   //M Cordis 动态图不是插件说明，直达地址、刷新和前进后退都还原三栏画布。
   if (plugin === 'cordis') {
-    return { canvas: canvas || SENTINEL_AUTO, step: 0, plugin, ptab, event, reading, rtab: 'step', util, doc: false };
+    return {
+      canvas: canvas || SENTINEL_AUTO, step: 0, plugin, ptab, event, reading, rtab: 'step', util, doc: false, devMap,
+    };
   }
 
   //M 旧只看插件的链接（?plugin=xxx 且没有画布参数，或 ?tab=plugins）：保持无画布直达插件。
@@ -320,14 +326,14 @@ function getRouteFromUrl(search: string): RouteState {
       rtab = 'plugin';
     }
     //M 只看插件的旧链接没有画布，按两栏打开。
-    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab, util, doc: true };
+    return { canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab, util, doc: true, devMap };
   }
 
   //M 裸 /tutorial/ 或旧 ?tab=session 但未指定消息号：待消息列表到达后自动落最新一条（无消息落 boot）。
   if (canvas === '') {
     canvas = SENTINEL_AUTO;
   }
-  return { canvas, step, plugin, ptab, event, reading, rtab, util, doc };
+  return { canvas, step, plugin, ptab, event, reading, rtab, util, doc, devMap };
 }
 
 
@@ -343,6 +349,12 @@ function buildRouteUrl(route: RouteState): string {
   ];
   for (const key of routeKeys) {
     url.searchParams.delete(key);
+  }
+  if (route.devMap) {
+    url.searchParams.set('view', 'dev-map');
+  }
+  if (!route.devMap && url.searchParams.get('view') === 'dev-map') {
+    url.searchParams.delete('view');
   }
   if (route.canvas !== '' && route.canvas !== SENTINEL_AUTO) {
     url.searchParams.set('canvas', route.canvas);
@@ -1515,6 +1527,12 @@ export function TutorialPage(): JSX.Element {
   if (isNarrow && showMind && !contentOnly && !showRightPane) {
     bodyClass += ' tu-mind-solo';
   }
+  const toggleDevMap = (open: boolean): void => {
+    //M 开关整屏新插件开发地图，并同步地址栏 ?view=dev-map 以便刷新和前进后退还原。
+    setMobileNavOpen(false);
+    navigate({ ...route, devMap: open });
+  };
+
   let pageClass = 'tu-page';
   if (isNarrow && mobileNavOpen) {
     pageClass = 'tu-page tu-m-drawer-open';
@@ -1532,6 +1550,11 @@ export function TutorialPage(): JSX.Element {
       <TutorialWorkspaceContext.Provider value={workspace}>
         {contextHolder}
         <div className={pageClass}>
+          {route.devMap && (
+            <Suspense fallback={<StageChunkFallback />}>
+              <LazyDevMap onClose={() => toggleDevMap(false)} />
+            </Suspense>
+          )}
           {!isNarrow && (
             <header className="tu-top">
               <div className="tu-top-left">
@@ -1555,6 +1578,15 @@ export function TutorialPage(): JSX.Element {
                     高亮：{route.event} ×
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="tu-link"
+                  data-dev-map
+                  aria-pressed={route.devMap}
+                  onClick={() => toggleDevMap(!route.devMap)}
+                >
+                  开发地图
+                </button>
                 <button
                   type="button"
                   className="tu-link"
@@ -1765,6 +1797,14 @@ export function TutorialPage(): JSX.Element {
 
                 {isNarrow && (
                   <div className="tu-m-drawer-foot">
+                    <button
+                      type="button"
+                      className="tu-m-foot-btn"
+                      data-dev-map
+                      onClick={() => toggleDevMap(true)}
+                    >
+                      🗺️ 开发地图
+                    </button>
                     <a
                       className="tu-m-foot-link"
                       href={withToken('/work-decision/', TOKEN)}
