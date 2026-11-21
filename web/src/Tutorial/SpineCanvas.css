@@ -1,0 +1,684 @@
+/*
+ * 竖线全景交互画布（SpineCanvas.tsx）：盖满教程页整屏，颜色全取 --jm-* 变量，默认深色。
+ * 四种严格图例形状：
+ *   1. 蓝圆角框 = 模块动作（Action）
+ *   2. 黄菱形   = 事件（Event emit / serial，SVG 菱形描边 + 宽内边距保证文字居中绝不碰斜边）
+ *   3. 绿胶囊   = 写 SQLite 落盘（save()）
+ *   4. 紫侧卡   = 外部模块插进来干活（web-api / bots / model-catalog / Tools / 业务插件）
+ * 桌面双栏并排对照「三大骨架启动」与「消息主轴」，手机 <800px 原生单手竖滑零挤压。
+ */
+
+.tu-sp {
+  --sp-purple: color-mix(in srgb, #9b6bff 78%, var(--jm-text));
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  background: var(--jm-bg);
+  color: var(--jm-text);
+}
+
+/* 顶栏：标题、快速跳段与关闭按钮。 */
+.tu-sp-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--jm-panel);
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.tu-sp-brand {
+  flex: none;
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tu-sp-jump-nav {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tu-sp-pill-btn,
+.tu-sp-close {
+  flex: none;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--jm-muted);
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.tu-sp-pill-btn:hover,
+.tu-sp-close:hover {
+  color: var(--jm-text);
+  border-color: var(--jm-accent);
+}
+
+/* 顶部常驻图形图例栏：滚动全程可见。 */
+.tu-sp-legend {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 18px;
+  background: color-mix(in srgb, var(--jm-surface) 88%, var(--jm-panel));
+  border-bottom: 1px solid var(--jm-border);
+  font-size: 12px;
+}
+
+.tu-sp-lg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--jm-text);
+  min-width: 0;
+}
+
+.tu-sp-lg-action {
+  flex: none;
+  width: 18px;
+  height: 13px;
+  border-radius: 4px;
+  border: 1.5px solid var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
+.tu-sp-lg-diamond {
+  flex: none;
+  width: 22px;
+  height: 15px;
+  display: block;
+}
+
+.tu-sp-lg-diamond polygon {
+  fill: var(--jm-warning-soft);
+  stroke: var(--jm-warning);
+  stroke-width: 1.6;
+}
+
+.tu-sp-lg-save {
+  flex: none;
+  width: 22px;
+  height: 13px;
+  border-radius: 999px;
+  border: 1.5px solid var(--jm-success);
+  background: color-mix(in srgb, var(--jm-success) 18%, transparent);
+}
+
+.tu-sp-lg-side {
+  flex: none;
+  width: 18px;
+  height: 13px;
+  border-radius: 4px;
+  border: 1.5px dashed var(--sp-purple);
+  background: color-mix(in srgb, var(--sp-purple) 18%, transparent);
+}
+
+.tu-sp-lg-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--jm-muted);
+}
+
+/* 主滚动区：宽屏左右两段并排，中窄屏自动单列上下顺接。 */
+.tu-sp-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 18px;
+}
+
+.tu-sp-columns {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(420px, 560px) minmax(480px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1120px) {
+  .tu-sp-columns {
+    grid-template-columns: 1fr;
+    max-width: 820px;
+  }
+}
+
+.tu-sp-section {
+  min-width: 0;
+  padding: 16px 18px 22px;
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 14px;
+}
+
+.tu-sp-sec-head {
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--jm-border) 75%, transparent);
+}
+
+.tu-sp-sec-head h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--jm-text);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tu-sp-sec-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--jm-accent) 45%, var(--jm-border));
+}
+
+.tu-sp-sec-sub {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--jm-muted);
+}
+
+/* 竖线主轴流：每一站之间由居中竖向箭头串联。 */
+.tu-sp-track {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.tu-sp-step-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.tu-sp-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 310px) minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.tu-sp-row.solo {
+  grid-template-columns: minmax(220px, 340px);
+  justify-content: center;
+}
+
+.tu-sp-main-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+.tu-sp-side-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tu-sp-side-link {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sp-purple);
+  user-select: none;
+}
+
+/* 竖向连接箭头。 */
+.tu-sp-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 0;
+  color: var(--jm-muted);
+  user-select: none;
+}
+
+.tu-sp-arrow-line {
+  width: 2px;
+  height: 12px;
+  background: color-mix(in srgb, var(--jm-accent) 42%, var(--jm-border));
+}
+
+.tu-sp-arrow-tip {
+  font-size: 11px;
+  line-height: 1;
+  color: color-mix(in srgb, var(--jm-accent) 70%, var(--jm-muted));
+}
+
+.tu-sp-arrow-note {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--jm-muted);
+}
+
+/* 共用节点按钮重置。 */
+.tu-sp-node-btn {
+  width: 100%;
+  font: inherit;
+  color: var(--jm-text);
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.12s ease, border-color 0.14s ease, background 0.14s ease;
+}
+
+.tu-sp-node-btn:focus-visible {
+  outline: 2px solid var(--jm-accent);
+  outline-offset: 2px;
+}
+
+/* 形状 1：蓝圆角框 = 模块动作（Action）。 */
+.tu-sp-action {
+  padding: 10px 13px;
+  border-radius: 12px;
+  border: 1.5px solid color-mix(in srgb, var(--jm-accent) 56%, var(--jm-border));
+  background: color-mix(in srgb, var(--jm-accent) 12%, var(--jm-surface));
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tu-sp-action:hover,
+.tu-sp-action.open {
+  border-color: var(--jm-accent);
+  background: color-mix(in srgb, var(--jm-accent) 21%, var(--jm-surface));
+}
+
+.tu-sp-node-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tu-sp-action-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--jm-accent);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.tu-sp-chev {
+  flex: none;
+  font-size: 11px;
+  color: var(--jm-muted);
+}
+
+.tu-sp-sub {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--jm-muted);
+  overflow-wrap: anywhere;
+}
+
+/* 形状 2：黄菱形 = 事件（SVG 菱形描边 + 充足四向内边距，文字居中绝不碰斜边）。 */
+.tu-sp-diamond {
+  position: relative;
+  width: 100%;
+  max-width: 332px;
+  min-height: 92px;
+  padding: 27px 24%;
+  border: 0;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  text-align: center;
+}
+
+.tu-sp-diamond-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.tu-sp-diamond-svg polygon {
+  fill: color-mix(in srgb, var(--jm-warning) 14%, var(--jm-surface));
+  stroke: color-mix(in srgb, var(--jm-warning) 74%, var(--jm-border));
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  transition: fill 0.14s ease, stroke 0.14s ease;
+}
+
+.tu-sp-diamond:hover .tu-sp-diamond-svg polygon,
+.tu-sp-diamond.open .tu-sp-diamond-svg polygon {
+  fill: color-mix(in srgb, var(--jm-warning) 25%, var(--jm-surface));
+  stroke: var(--jm-warning);
+}
+
+.tu-sp-diamond-tag {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--jm-muted);
+  white-space: nowrap;
+}
+
+.tu-sp-diamond-code {
+  position: relative;
+  z-index: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--jm-warning);
+  white-space: nowrap;
+}
+
+/* 形状 3：绿胶囊 = 写 SQLite 落盘（save()）。 */
+.tu-sp-save {
+  padding: 9px 18px;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in srgb, var(--jm-success) 58%, var(--jm-border));
+  background: color-mix(in srgb, var(--jm-success) 12%, var(--jm-surface));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 2px;
+}
+
+.tu-sp-save:hover,
+.tu-sp-save.open {
+  border-color: var(--jm-success);
+  background: color-mix(in srgb, var(--jm-success) 22%, var(--jm-surface));
+}
+
+.tu-sp-save-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--jm-success);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.tu-sp-save-sub {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--jm-muted);
+}
+
+/* 形状 4：紫侧卡 = 外部模块插进来干活。 */
+.tu-sp-side-card {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1.5px dashed color-mix(in srgb, var(--sp-purple) 60%, var(--jm-border));
+  background: color-mix(in srgb, var(--sp-purple) 11%, var(--jm-surface));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tu-sp-side-card:hover,
+.tu-sp-side-card.open {
+  border-style: solid;
+  border-color: var(--sp-purple);
+  background: color-mix(in srgb, var(--sp-purple) 19%, var(--jm-surface));
+}
+
+.tu-sp-side-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sp-purple);
+}
+
+.tu-sp-side-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--jm-text);
+  line-height: 1.35;
+}
+
+.tu-sp-side-points {
+  margin: 0;
+  padding-left: 15px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--jm-muted);
+}
+
+.tu-sp-side-points code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--jm-panel);
+  color: var(--jm-text);
+  font-size: 11px;
+}
+
+/* 可选工具循环支路虚线框。 */
+.tu-sp-loop-box {
+  margin: 2px 0;
+  padding: 12px 14px 14px;
+  border-radius: 12px;
+  border: 1.5px dashed color-mix(in srgb, var(--sp-purple) 52%, var(--jm-border));
+  background: color-mix(in srgb, var(--sp-purple) 6%, var(--jm-bg));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tu-sp-loop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tu-sp-loop-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sp-purple);
+}
+
+.tu-sp-loop-skip {
+  font-size: 11.5px;
+  color: var(--jm-muted);
+}
+
+.tu-sp-loop-track {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tu-sp-loop-item {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tu-sp-loop-back {
+  margin-top: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--jm-muted);
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  text-align: center;
+}
+
+/* 点击节点后原地展开的说明 + file:line 源码抽屉。 */
+.tu-sp-detail {
+  margin-top: 8px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: var(--jm-bg);
+  border: 1px solid color-mix(in srgb, var(--jm-accent) 45%, var(--jm-border));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.tu-sp-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tu-sp-detail-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--jm-text);
+}
+
+.tu-sp-detail-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--jm-text);
+}
+
+.tu-sp-detail-anchors {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.tu-sp-detail-anchors > li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  min-width: 0;
+}
+
+.tu-sp-anchor-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.tu-sp-anchor-why {
+  font-size: 11.5px;
+  color: var(--jm-muted);
+}
+
+/* 手机 <800px：原生单手竖滑，主轴与紫侧卡全宽顺排零挤压。 */
+@media (max-width: 799px) {
+  .tu-sp-top {
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .tu-sp-close {
+    margin-left: auto;
+  }
+
+  .tu-sp-jump-nav {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .tu-sp-legend {
+    padding: 7px 12px;
+    gap: 6px 12px;
+    font-size: 11.5px;
+  }
+
+  .tu-sp-lg-hint {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  .tu-sp-body {
+    padding: 10px 10px calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .tu-sp-section {
+    padding: 13px 12px 18px;
+    border-radius: 12px;
+  }
+
+  .tu-sp-row,
+  .tu-sp-row.solo {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .tu-sp-side-cell {
+    padding-left: 14px;
+  }
+
+  .tu-sp-diamond {
+    max-width: 100%;
+    min-height: 88px;
+    padding: 25px 23%;
+  }
+
+  .tu-sp-diamond-code {
+    font-size: 12px;
+  }
+
+  .tu-sp-loop-item {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .tu-sp-diamond {
+    padding: 24px 21%;
+  }
+
+  .tu-sp-diamond-code {
+    font-size: 11.2px;
+  }
+}

@@ -4,7 +4,7 @@
  *   usePayloadTrail  ：按消息号缓存整条消息的 PayloadTrail，切步零重复请求，404 或空 items 静默回退；
  *   PayloadExportBar ：一键复制整条消息的 Markdown 摘要、一键下载 PayloadItem[] JSON。
  */
-import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import * as i18n from '../I18n.ts';
 import { SiteLink } from '../VscodeLink.tsx';
 import {
@@ -18,7 +18,7 @@ import {
 import './PayloadDiff.css';
 
 
-/** 内存缓存上限（保留最近看过的 30 条已完成消息载荷）。 */
+/** 完成态载荷 FIFO 缓存上限（最多保留 30 条完整消息载荷，超限淘汰最早写入项）。 */
 const MAX_CACHE_ENTRIES = 30;
 
 /** 单个对象节点默认展开深度，与教程其他 JSON 面板保持一致。 */
@@ -46,7 +46,7 @@ export function getTrailPayloadName(trail: Trail): string {
 
 
 /**
- * 按消息号读取并缓存整条消息的载荷；正在运行的消息合并在途请求但不永久锁死旧缓存。
+ * 按消息号读取并缓存整条消息的载荷；正在运行或尚为空/带缺失说明的结果合并在途请求但不固化进完成态缓存。
  * @param name 消息号或 boot。
  * @param cacheable 是否允许写入完成态缓存（running 态传 false）。
  */
@@ -61,18 +61,21 @@ export function loadPayloadCached(name: string, cacheable = true): Promise<Paylo
   const existing = payloadInFlight.get(name);
   if (existing !== undefined) return existing;
 
-  //M 发起单次 GET /api/tutorial/payload 请求，完成后按 LRU 上限写入内存缓存。
-  const pending = TutorialApi.getPayload(name).then((result) => {
-    payloadInFlight.delete(name);
-    if (cacheable) {
-      if (payloadCache.size >= MAX_CACHE_ENTRIES) {
-        const oldestKey = payloadCache.keys().next().value;
-        if (oldestKey !== undefined) payloadCache.delete(oldestKey);
+  //M 发起单次 GET /api/tutorial/payload 请求；在 finally 中清理在途表，仅把完整非空结果写入 FIFO 上限缓存。
+  const pending = TutorialApi.getPayload(name)
+    .then((result) => {
+      if (cacheable && result.items.length > 0 && !result.note) {
+        if (payloadCache.size >= MAX_CACHE_ENTRIES && !payloadCache.has(name)) {
+          const oldestKey = payloadCache.keys().next().value;
+          if (oldestKey !== undefined) payloadCache.delete(oldestKey);
+        }
+        payloadCache.set(name, result);
       }
-      payloadCache.set(name, result);
-    }
-    return result;
-  });
+      return result;
+    })
+    .finally(() => {
+      payloadInFlight.delete(name);
+    });
   payloadInFlight.set(name, pending);
   return pending;
 }
@@ -103,9 +106,15 @@ export function usePayloadTrail(trail: Trail): PayloadTrail | null {
     }
 
     let alive = true;
-    void loadPayloadCached(name, cacheable).then((loaded) => {
-      if (alive) setData(loaded);
-    });
+    void loadPayloadCached(name, cacheable).then(
+      (loaded) => {
+        if (alive) setData(loaded);
+      },
+      () => {
+        //G 请求异常时回退空清单，杜绝未捕获的 Promise rejection。
+        if (alive) setData({ ok: true, message: name, note: '', items: [] });
+      },
+    );
     return () => {
       alive = false;
     };
@@ -116,33 +125,55 @@ export function usePayloadTrail(trail: Trail): PayloadTrail | null {
 
 
 /**
- * 复制文本到剪贴板，兼容 HTTPS 与局域网 HTTP 环境，结果通过回调反馈在按钮文案上。
+ * 复制按钮文案状态与剪贴板写入钩子：兼容 HTTPS 与局域网 HTTP，组件卸载时自动清理还原定时器。
+ * @param resetWord 默认及还原后的按钮文字。
  */
-function copyWithFeedback(text: string, setLabel: (word: string) => void, resetWord: string): void {
-  const finish = (ok: boolean): void => {
-    let tip = '复制失败，请手动选中';
-    if (ok) tip = '已复制 ✓';
-    setLabel(tip);
-    window.setTimeout(() => setLabel(resetWord), 1800);
-  };
-  if (window.isSecureContext && navigator.clipboard !== undefined) {
-    void navigator.clipboard.writeText(text).then(() => finish(true), () => finish(false));
-    return;
-  }
-  //G 局域网非 HTTPS 打开时回退隐藏 textarea 复制，确保本地调试一键可用。
-  try {
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(area);
-    finish(ok);
-  } catch {
-    finish(false);
-  }
+function useCopyFeedback(resetWord: string): { label: string; copy: (text: string) => void } {
+  const [label, setLabel] = useState(resetWord);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
+  const copy = useCallback((text: string): void => {
+    const finish = (ok: boolean): void => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+      }
+      let tip = '复制失败，请手动选中';
+      if (ok) tip = '已复制 ✓';
+      setLabel(tip);
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        setLabel(resetWord);
+      }, 1800);
+    };
+    if (window.isSecureContext && navigator.clipboard !== undefined) {
+      void navigator.clipboard.writeText(text).then(() => finish(true), () => finish(false));
+      return;
+    }
+    //G 局域网非 HTTPS 打开时回退隐藏 textarea 复制，确保本地调试一键可用。
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(area);
+      finish(ok);
+    } catch {
+      finish(false);
+    }
+  }, [resetWord]);
+
+  return { label, copy };
 }
 
 
@@ -349,7 +380,7 @@ function ObjectTreeBox(props: {
   collapsible: boolean;
   forceOpen: boolean;
 }): JSX.Element {
-  const [copyWord, setCopyWord] = useState('复制 JSON');
+  const copyJson = useCopyFeedback('复制 JSON');
   const meta = useMemo(
     () => buildTreeHighlightMeta(props.diffs, props.focusPath),
     [props.diffs, props.focusPath],
@@ -365,10 +396,10 @@ function ObjectTreeBox(props: {
       className="tu-pd-act-btn"
       onClick={(event) => {
         event.stopPropagation();
-        copyWithFeedback(rawJson, setCopyWord, '复制 JSON');
+        copyJson.copy(rawJson);
       }}
     >
-      {copyWord}
+      {copyJson.label}
     </button>
   );
 
@@ -499,21 +530,32 @@ export function PayloadExportBar(props: {
   const { trail, dataFlow } = props;
   const t = i18n.useT();
   const payload = usePayloadTrail(trail);
-  const [copyWord, setCopyWord] = useState('复制摘要');
+  const copySummary = useCopyFeedback('复制摘要');
   const name = getTrailPayloadName(trail);
 
   const onCopySummary = (): void => {
     //M 按需确保拿到最新缓存后生成整条消息的 Markdown 摘要并复制。
-    void loadPayloadCached(name, trail.state !== 'running').then((loaded) => {
-      const md = formatTrailMarkdownSummary(trail, dataFlow, loaded, t);
-      copyWithFeedback(md, setCopyWord, '复制摘要');
-    });
+    void loadPayloadCached(name, trail.state !== 'running').then(
+      (loaded) => {
+        const md = formatTrailMarkdownSummary(trail, dataFlow, loaded, t);
+        copySummary.copy(md);
+      },
+      () => {
+        const md = formatTrailMarkdownSummary(trail, dataFlow, null, t);
+        copySummary.copy(md);
+      },
+    );
   };
 
   const onDownloadJson = (): void => {
-    void loadPayloadCached(name, trail.state !== 'running').then((loaded) => {
-      triggerPayloadJsonDownload(name, loaded.items);
-    });
+    void loadPayloadCached(name, trail.state !== 'running').then(
+      (loaded) => {
+        triggerPayloadJsonDownload(name, loaded.items);
+      },
+      () => {
+        triggerPayloadJsonDownload(name, []);
+      },
+    );
   };
 
   let jsonTitle = '下载整条消息的 PayloadItem[] JSON';
@@ -529,7 +571,7 @@ export function PayloadExportBar(props: {
         data-export-md
         onClick={onCopySummary}
       >
-        {copyWord}
+        {copySummary.label}
       </button>
       <button
         type="button"

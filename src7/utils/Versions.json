@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.88",
+    "date": "2026-11-21",
+    "changes": [
+      "教程页新增原生手机友好交互画布「竖线全景」（/tutorial/?view=spine，React.lazy 独立分块 27.7 KiB，桌面顶栏与手机顶栏/抽屉一键直达）：常驻图形图例（蓝圆角框动作 / 黄菱形事件 / 绿胶囊写 SQLite / 紫侧卡外部模块），上下两段竖线主轴完整呈现「Resources/Tools/Sessions 三大骨架启动」与「最简消息沿 Sessions 从头到尾」，共 72 处实核源码锚点，点任意节点原地展开源码与一键跳 VS Code",
+      "收尾云端 31 教程载荷加固：Payload.ts 补齐 cookie / x-jmbots-key / webhook_header 脱敏并将大数组/对象改为流式按预算早停 + 原地祖先栈；PayloadDiff.tsx 将 inFlight 清理移入 finally、防空载荷固化缓存并卸载清理复制反馈定时器"
+    ]
+  },
+  {
     "version": "0.7.87",
     "date": "2026-11-21",
     "changes": [

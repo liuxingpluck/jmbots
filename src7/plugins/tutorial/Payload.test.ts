@@ -228,6 +228,10 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
       accessToken: 'tok-4',
       Authorization: 'Bearer tok-5',
       userPassword: 'pw-6',
+      Cookie: 'sid=cookie-7',
+      'Set-Cookie': 'sid=cookie-8; HttpOnly',
+      'x-jmbots-key': 'jmbots-key-9',
+      webhook_header: 'Authorization: Bearer hook-10',
       totalTokens: 512,
       maxTokens: 4096,
       fn: function demoHandler(): void {},
@@ -245,12 +249,39 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
     expect(val['accessToken']).toBe('[凭据 已隐藏]');
     expect(val['Authorization']).toBe('[凭据 已隐藏]');
     expect(val['userPassword']).toBe('[凭据 已隐藏]');
+    expect(val['Cookie']).toBe('[凭据 已隐藏]');
+    expect(val['Set-Cookie']).toBe('[凭据 已隐藏]');
+    expect(val['x-jmbots-key']).toBe('[凭据 已隐藏]');
+    expect(val['webhook_header']).toBe('[凭据 已隐藏]');
     expect(val['totalTokens']).toBe(512);
     expect(val['maxTokens']).toBe(4096);
     expect(val['fn']).toBe('ƒ demoHandler');
     expect(val['self']).toBe('[循环]');
     expect(val['imgBlock']).toEqual({ type: 'image', mimeType: 'image/png', data: '[图片 image/png 12KB]' });
     expect(val['dataUrl']).toBe('[图片 image/jpeg 5KB]');
+
+    //M 超大数组、Set、对象按剩余预算边遍历边停（不提前整份展开后续元素）。
+    const bigArr = Array.from({ length: 50_000 }, (_v, i) => `item-${String(i)}-padding-text`);
+    const arrClone = payloadModule.clonePayload(bigArr, 512);
+    expect(arrClone.truncated).toBe(true);
+    expect((arrClone.value as unknown[]).length).toBeLessThan(50);
+
+    const streamObj: Record<string, unknown> = {};
+    for (let idx = 0; idx < 100; idx += 1) {
+      streamObj[`field_${String(idx)}`] = `value-${String(idx)}-0123456789abcdef`;
+    }
+    let touchedTail = false;
+    Object.defineProperty(streamObj, 'tailAfterBudget', {
+      enumerable: true,
+      get() {
+        touchedTail = true;
+        return 'never';
+      },
+    });
+    const objClone = payloadModule.clonePayload(streamObj, 512);
+    expect(objClone.truncated).toBe(true);
+    expect(touchedTail).toBe(false);
+    expect((objClone.value as Record<string, unknown>)['__truncated__']).toContain('已截断');
 
     //M 超过单份上限时标 truncated，仍保留可解析结构并支持算 diff。
     const hugeBefore = { keep: 'v1', blob: '中'.repeat(2000), tail: 1 };

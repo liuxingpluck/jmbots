@@ -146,8 +146,11 @@ const EVENT_OBJECT_NAMES: Record<string, string> = {
 /** 只记账不改数据的观察者插件名，不在监听者名单里单列。 */
 const PASSIVE_LISTENERS = new Set(['', 'journal', 'tutorial', 'usage']);
 
-/** 凭据键名匹配规则（设计文档 3.4）：命中时值替换为 [凭据 已隐藏]。 */
-const CREDENTIAL_KEY = /apiKey|api_key|secret|token|authorization|password/iu;
+/** 凭据键名匹配规则（设计文档 3.4 及云端 31 加固）：命中时值替换为 [凭据 已隐藏]。 */
+const CREDENTIAL_KEY = new RegExp(
+  'apiKey|api_key|secret|token|authorization|password|cookie|x-jmbots-key|webhook_header|webhookHeader',
+  'iu',
+);
 
 /** Data URL 形式的图片 base64 正则。 */
 const DATA_IMAGE_URL = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/iu;
@@ -324,10 +327,62 @@ function isBotInstance(value: object): boolean {
 }
 
 
+/** 对象单字段写入时的上下文标记。 */
+interface ObjectFieldContext {
+  imageMime: string | undefined;
+  nestedSession: boolean;
+  botObj: boolean;
+  inNestedSessionRow: boolean;
+}
+
+
 /**
- * 递归深拷贝事件参数：防循环、转特殊资源、压缩图片 base64、隐藏凭据，并按单份字节预算截断。
+ * 将对象或 Map 的单个键值按脱敏、图片占位与嵌套折叠规则写入目标对象。
+ */
+function writeObjectField(
+  out: Record<string, unknown>,
+  key: string,
+  rawItem: unknown,
+  ctx: ObjectFieldContext,
+  above: object[],
+  budget: CloneBudget,
+): void {
+  budget.used += Buffer.byteLength(key, 'utf8') + 4;
+
+  //M Bot 实例里的 home 指向整个 Bots 服务，写成 [Bots] 免得把全局服务表带进来。
+  if (ctx.botObj && key === 'home') {
+    out[key] = '[Bots]';
+    return;
+  }
+  //M 嵌套 Session.row 里的整场历史 messages 写成条数摘要（顶层 ChatRequest.messages 仍完整保留）。
+  if (ctx.inNestedSessionRow && key === 'messages' && Array.isArray(rawItem)) {
+    out[key] = `[对话历史 ${String(rawItem.length)} 条]`;
+    return;
+  }
+  //M 命中凭据键名时隐藏敏感值。
+  if (CREDENTIAL_KEY.test(key) && shouldMaskCredential(rawItem)) {
+    out[key] = '[凭据 已隐藏]';
+    return;
+  }
+  //M 图片对象里的 data / base64 字段或显式 imageBase64 字段换成 [图片 mime NKB]。
+  if (typeof rawItem === 'string' && rawItem !== '' && !rawItem.startsWith('[图片 ')) {
+    const isImgData = ctx.imageMime !== undefined && (key === 'data' || key === 'base64');
+    const isNamedB64 = key === 'imageBase64' || key === 'image_base64';
+    if (isImgData || isNamedB64) {
+      out[key] = formatImagePlaceholder(ctx.imageMime ?? 'image/*', rawItem);
+      return;
+    }
+  }
+
+  const enteringNestedRow = ctx.nestedSession && key === 'row';
+  out[key] = walkPayload(rawItem, above, budget, enteringNestedRow);
+}
+
+
+/**
+ * 递归深拷贝事件参数：防循环、转特殊资源、压缩图片 base64、隐藏凭据，并按单份字节预算边遍历边停。
  * @param value 当前节点值。
- * @param above 祖先对象链，检测循环引用。
+ * @param above 祖先对象栈（原地 push/pop 检测循环引用，避免每层复制数组）。
  * @param budget 单份字节预算。
  * @param inNestedSessionRow 是否正处于嵌套 Session 的 row 对象内（避免重复展开整场历史 messages）。
  */
@@ -379,95 +434,95 @@ function walkPayload(
   if (value instanceof Error) return `${value.name}: ${value.message}`;
   if (value instanceof RegExp || value instanceof URL) return String(value);
 
-  const inner = [...above, value];
+  const nestedSession = above.length >= 1 && isSessionObject(value);
+  above.push(value);
+  try {
+    //M 数组：直接按下标流式遍历，撞预算上限立即停下，不预先 [...value] 整份展开。
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      budget.used += 2;
+      for (let index = 0; index < value.length; index += 1) {
+        if (budget.used >= budget.limit) {
+          budget.truncated = true;
+          out.push(`[已截断 剩 ${String(value.length - index)} 项]`);
+          break;
+        }
+        out.push(walkPayload(value[index], above, budget, false));
+      }
+      return out;
+    }
 
-  //M 数组与 Set：逐项拷贝，撞预算上限时追加截断提示并停下。
-  if (Array.isArray(value) || value instanceof Set) {
-    const items = [...(value as Iterable<unknown>)];
-    const out: unknown[] = [];
+    //M Set：直接用迭代器流式遍历，撞预算上限立即停下，不转中间数组。
+    if (value instanceof Set) {
+      const total = value.size;
+      const out: unknown[] = [];
+      budget.used += 2;
+      let index = 0;
+      for (const item of value as Set<unknown>) {
+        if (budget.used >= budget.limit) {
+          budget.truncated = true;
+          out.push(`[已截断 剩 ${String(total - index)} 项]`);
+          break;
+        }
+        out.push(walkPayload(item, above, budget, false));
+        index += 1;
+      }
+      return out;
+    }
+
+    const fieldCtx: ObjectFieldContext = {
+      imageMime: getObjectImageMime(value),
+      nestedSession,
+      botObj: isBotInstance(value),
+      inNestedSessionRow,
+    };
+    const out: Record<string, unknown> = {};
+
+    //M Map：按条目迭代器边走边算预算，撞上限即停，不建中间 pairs 数组。
+    if (value instanceof Map) {
+      const total = value.size;
+      budget.used += 2;
+      let index = 0;
+      for (const [mapKey, mapVal] of value as Map<unknown, unknown>) {
+        if (budget.used >= budget.limit) {
+          budget.truncated = true;
+          out['__truncated__'] = `[已截断 剩 ${String(total - index)} 项]`;
+          break;
+        }
+        writeObjectField(out, String(mapKey), mapVal, fieldCtx, above, budget);
+        index += 1;
+      }
+      return out;
+    }
+
+    //M 普通对象与类实例：用 for..in + Object.hasOwn 流式扫描自身字段（不调 getter），撞预算立即 break。
     budget.used += 2;
-    for (let index = 0; index < items.length; index += 1) {
+    let seenOwn = false;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+
+      seenOwn = true;
       if (budget.used >= budget.limit) {
         budget.truncated = true;
-        out.push(`[已截断 剩 ${String(items.length - index)} 项]`);
+        out['__truncated__'] = '[已截断 后续字段省略]';
         break;
       }
-      out.push(walkPayload(items[index], inner, budget, false));
-    }
-    return out;
-  }
-
-  //M 收集对象或 Map 的全部自身键值（不调 getter）。
-  const pairs: [string, unknown][] = [];
-  if (value instanceof Map) {
-    for (const [mapKey, mapVal] of value as Map<unknown, unknown>) {
-      pairs.push([String(mapKey), mapVal]);
-    }
-  }
-  if (!(value instanceof Map)) {
-    for (const key of Object.keys(value)) {
       const slot = Object.getOwnPropertyDescriptor(value, key);
-      let item: unknown = '[getter]';
+      let rawItem: unknown = '[getter]';
       if (slot?.get === undefined) {
-        item = slot?.value;
+        rawItem = slot?.value;
       }
-      pairs.push([key, item]);
+      writeObjectField(out, key, rawItem, fieldCtx, above, budget);
     }
+
+    const proto = Object.getPrototypeOf(value) as object | null;
+    const plain = proto === Object.prototype || proto === null;
+    if (!seenOwn && !plain) return `[${value.constructor.name || 'Object'}]`;
+
+    return out;
+  } finally {
+    above.pop();
   }
-
-  const proto = Object.getPrototypeOf(value) as object | null;
-  const plain = proto === Object.prototype || proto === null || value instanceof Map;
-  if (pairs.length === 0 && !plain) return `[${value.constructor.name || 'Object'}]`;
-
-  const imageMime = getObjectImageMime(value);
-  const nestedSession = above.length >= 1 && isSessionObject(value);
-  const botObj = isBotInstance(value);
-  const out: Record<string, unknown> = {};
-  budget.used += 2;
-
-  for (let index = 0; index < pairs.length; index += 1) {
-    const pair = pairs[index];
-    if (pair === undefined) continue;
-
-    if (budget.used >= budget.limit) {
-      budget.truncated = true;
-      out['__truncated__'] = `[已截断 剩 ${String(pairs.length - index)} 项]`;
-      break;
-    }
-
-    const key = pair[0];
-    const rawItem = pair[1];
-    budget.used += Buffer.byteLength(key, 'utf8') + 4;
-
-    //M Bot 实例里的 home 指向整个 Bots 服务，写成 [Bots] 免得把全局服务表带进来。
-    if (botObj && key === 'home') {
-      out[key] = '[Bots]';
-      continue;
-    }
-    //M 嵌套 Session.row 里的整场历史 messages 写成条数摘要（顶层 ChatRequest.messages 仍完整保留）。
-    if (inNestedSessionRow && key === 'messages' && Array.isArray(rawItem)) {
-      out[key] = `[对话历史 ${String(rawItem.length)} 条]`;
-      continue;
-    }
-    //M 命中凭据键名时隐藏敏感值。
-    if (CREDENTIAL_KEY.test(key) && shouldMaskCredential(rawItem)) {
-      out[key] = '[凭据 已隐藏]';
-      continue;
-    }
-    //M 图片对象里的 data / base64 字段或显式 imageBase64 字段换成 [图片 mime NKB]。
-    if (typeof rawItem === 'string' && rawItem !== '' && !rawItem.startsWith('[图片 ')) {
-      const isImgData = imageMime !== undefined && (key === 'data' || key === 'base64');
-      const isNamedB64 = key === 'imageBase64' || key === 'image_base64';
-      if (isImgData || isNamedB64) {
-        out[key] = formatImagePlaceholder(imageMime ?? 'image/*', rawItem);
-        continue;
-      }
-    }
-
-    const enteringNestedRow = nestedSession && key === 'row';
-    out[key] = walkPayload(rawItem, inner, budget, enteringNestedRow);
-  }
-  return out;
 }
 
 
