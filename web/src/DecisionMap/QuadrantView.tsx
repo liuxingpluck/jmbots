@@ -78,6 +78,7 @@ export function QuadrantView({
   const [zoomedQuad, setZoomedQuad] = react.useState<types.DecisionQuadrant | null>(getInitialZoomedQuad);
 
   const root = nodes.find((entry) => entry.parent === null);
+  const byId = react.useMemo(() => new Map(nodes.map((entry) => [entry.id, entry])), [nodes]);
   const allEntries = react.useMemo(() => quadrants.buildQuadrantEntries(nodes), [nodes]);
   const visibleEntries = react.useMemo(
     () => quadrants.filterQuadrantEntries(allEntries, scopeFilter),
@@ -138,10 +139,14 @@ export function QuadrantView({
   const renderDetailDrawer = () => {
     if (selectedNode === undefined) return null;
 
+    //M 直接透传四象限矩阵已算好的归属象限与节点字典，保证侧栏高亮与卡片所在格完全一致。
+    const selectedEntry = allEntries.find((entry) => entry.node.id === selectedNode.id);
     return (
       <drawer.Drawer
         key={selectedNode.id}
         node={selectedNode}
+        quadrant={selectedEntry?.quadrant}
+        byId={byId}
         saving={drawerSaving}
         error={actionError}
         close={() => onSelectNode(undefined)}

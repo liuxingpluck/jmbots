@@ -21,8 +21,9 @@ export type { FrpcControlAction, FrpcRunner, LiveFrpcState } from './Process.ts'
 export const name = 'frpc';
 
 //M 1.0.0：外网隧道（frpc）状态巡检、无窗进程控制、Windows 开机自启、TOML 代理无损回写与日志脱敏接口。
+//M 1.0.1：主站端口映射改严格 IPv4 非回环白名单；拦截含高级字段的 TOML 防静默丢失；控制串行互斥与 JSON 键脱敏。
 /** 插件版本号。 */
-export const version = '1.0.0';
+export const version = '1.0.1';
 
 /** 依赖资源目录与主 HTTP 服务。 */
 export const inject = ['resources', 'http'];
@@ -74,8 +75,6 @@ export interface FrpcStatus {
 export interface FrpcConfig {
   /** 可选客户端目录路径；不配时默认自动定位 works/frp-clients/windows。 */
   dir?: string;
-  /** 可选自定义进程执行器（供单测离线注入）。 */
-  runner?: processModule.FrpcRunner;
 }
 
 
@@ -116,9 +115,6 @@ function parsePluginConfig(raw: unknown): FrpcConfig {
   const out: FrpcConfig = {};
   if (rec['dir'] !== undefined) {
     out.dir = checksModule.checkNonEmptyText(rec['dir'], 'plugins.frpc.dir');
-  }
-  if (rec['runner'] !== undefined && typeof rec['runner'] === 'object' && rec['runner'] !== null) {
-    out.runner = rec['runner'] as processModule.FrpcRunner;
   }
   return out;
 }
@@ -182,49 +178,42 @@ export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRun
   const tomlPath = path.join(dir, 'frpc.toml');
   const live = await runner.readLiveState(dir);
   const autoStart = runner.readAutoStart();
-  const stat = fs.statSync(tomlPath, { throwIfNoEntry: false });
-  if (stat === undefined || !stat.isFile()) {
-    return {
-      configured: false,
-      dir,
-      running: live.running,
-      connected: false,
-      pid: live.pid,
-      trayRunning: live.trayRunning,
-      trayPid: live.trayPid,
-      autoStart,
-      detail: '未找到 frpc.toml',
-      updatedAt: live.updatedAt,
-      serverAddr: '',
-      serverPort: 0,
-      user: '',
-      tlsEnabled: false,
-      hasAuthToken: false,
-      publicUrls: [],
-      proxies: [],
-    };
-  }
-
-  const rawToml = fs.readFileSync(tomlPath, 'utf8');
-  const parsed = tomlModule.parseFrpcToml(rawToml);
-  const publicUrls = tomlModule.derivePublicUrls(parsed.proxies);
-  return {
-    configured: true,
+  const base: FrpcStatus = {
+    configured: false,
     dir,
     running: live.running,
-    connected: live.connected,
+    connected: false,
     pid: live.pid,
     trayRunning: live.trayRunning,
     trayPid: live.trayPid,
     autoStart,
-    detail: live.detail,
+    detail: '未找到 frpc.toml',
     updatedAt: live.updatedAt,
+    serverAddr: '',
+    serverPort: 0,
+    user: '',
+    tlsEnabled: false,
+    hasAuthToken: false,
+    publicUrls: [],
+    proxies: [],
+  };
+
+  const stat = fs.statSync(tomlPath, { throwIfNoEntry: false });
+  if (stat === undefined || !stat.isFile()) return base;
+
+  const rawToml = fs.readFileSync(tomlPath, 'utf8');
+  const parsed = tomlModule.parseFrpcToml(rawToml);
+  return {
+    ...base,
+    configured: true,
+    connected: live.connected,
+    detail: live.detail,
     serverAddr: parsed.serverAddr,
     serverPort: parsed.serverPort,
     user: parsed.user,
     tlsEnabled: parsed.tlsEnabled,
     hasAuthToken: parsed.hasAuthToken,
-    publicUrls,
+    publicUrls: tomlModule.derivePublicUrls(parsed.proxies),
     proxies: parsed.proxies,
   };
 }
@@ -234,15 +223,32 @@ export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRun
 // 插件入口与 HTTP 路由挂载
 //==========================================================
 
+/** 读取当前主站配置的监听端口（缺省保护 30086）。 */
+function resolveGuardedServerPort(ctx: cordis.Context): number {
+  const rawServer = ctx.resources.raw?.['server'] as { port?: unknown } | undefined;
+  const port = rawServer?.port;
+  if (typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535) {
+    return port;
+  }
+  return 30086;
+}
+
+
 /**
  * 挂载 frpc 插件并在 ctx.http.app 上登记 5 条管理路由。
  * @param ctx Cordis 插件上下文。
- * @param config 可选插件配置（dir、runner）。
+ * @param config 可选插件配置（dir）。
+ * @param runnerOverride 单测注入的离线执行器。
  */
-export function apply(ctx: cordis.Context, config?: unknown): void {
+export function apply(
+  ctx: cordis.Context,
+  config?: unknown,
+  runnerOverride?: processModule.FrpcRunner,
+): void {
   const settings = parsePluginConfig(config);
   const dir = resolveFrpcDir(ctx.resources.root, settings.dir);
-  const runner = settings.runner ?? processModule.createDefaultRunner();
+  const runner = runnerOverride ?? processModule.createDefaultRunner();
+  const guardedPort = resolveGuardedServerPort(ctx);
   const app = ctx.http.app;
 
   //M 1. 读取完整隧道状态、配置摘要与公网快捷入口（不返回 auth.token 明文）。
@@ -279,7 +285,7 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   app.put('/api/frpc/proxies', async (request) => {
     requireVerified(ctx, request);
     const body = readBodyObject(request.body);
-    const proxies = tomlModule.validateProxies(body['proxies']);
+    const proxies = tomlModule.validateProxies(body['proxies'], guardedPort);
     const rawRestart = body['restart'];
     if (rawRestart !== undefined && typeof rawRestart !== 'boolean') {
       throw new failureModule.Failure(400, 'restart 必须是布尔值');

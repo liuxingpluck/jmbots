@@ -33,8 +33,8 @@ export interface MainArgs {
 /** 三种请求协议。 */
 const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
 
-/** 思考档，从不思考到最深。 */
-const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+/** 思考档，从不思考到最深。model-catalog 的 Pull.ts 照它排模型支持的档位。 */
+export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /**
  * 不写 plugins 段时挂的插件。前台和系统提示词在 bots 里（11-17 并进原 bot-front-desk、prompt）；base-tools 已并入 file-tools；summary 已并入 context-fit。

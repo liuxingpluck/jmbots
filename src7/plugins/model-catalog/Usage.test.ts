@@ -112,6 +112,30 @@ test('用量事件返回按模型价格入账的调用，目录缺席或异常�
   expect(afterError.reply?.rows[3]).toMatchObject({ ok: true, input: usage.input, cost: 0 });
 });
 
+test('模型名没有斜杠时供应商记整串，不切掉最后一个字', async () => {
+  const ctx = new cordis.Context();
+  closers.push(() => ctx.fiber.dispose());
+  await ctx.plugin(FakeResources);
+  const plugin = {
+    inject: ['resources'],
+    apply: (sub: cordis.Context): void => {
+      //M 只挂计量子模块；不挂目录，价格按零记。
+      new usagePlugin.Usage(sub);
+    },
+  };
+  await ctx.plugin(plugin);
+
+  //M 一次失败的调用，模型名没有“供应商/”前缀；另一次照常带斜杠。
+  const session = { id: 'session-1', row: { bot: '助手', kind: 'work' } } as Session;
+  ctx.emit('session/model-failed', { session, model: 'noslash', ms: 1, error: '测试' });
+  ctx.emit('session/model-failed', { session, model: 'acme/m1', ms: 1, error: '测试' });
+  await Bun.sleep(0);
+
+  const result = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
+  const providers = result.reply?.rows.map((row) => row.provider);
+  expect(providers).toEqual(['noslash', 'acme']);
+});
+
 test('用量插件未挂载时返回未处理原因', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());

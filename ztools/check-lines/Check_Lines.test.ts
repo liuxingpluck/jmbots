@@ -155,12 +155,68 @@ describe('Check_Lines', () => {
   test('取引用旁边的名字', () => {
     const line = '私有方法 `Session.loop`，`Sessions.ts:531`，插件调不到';
     const at = line.indexOf('Sessions.ts');
-    expect(checkLines.getHints(line, at, at + 'Sessions.ts:531'.length).primary).toBe('Session.loop');
+    const direct = checkLines.getHints(line, at, at + 'Sessions.ts:531'.length);
+    expect(direct.primary).toBe('Session.loop');
+    expect(direct.fromRow).toBeUndefined();
+
     const call = '（`ChannelTools.ts:356` 调 `requestChannelReply`）';
     const callAt = call.indexOf('ChannelTools');
     const hints = checkLines.getHints(call, callAt, callAt + 'ChannelTools.ts:356'.length);
     expect(hints.primary).toBeUndefined();
     expect(hints.extra).toEqual(['requestChannelReply']);
+
+    //M 表格行没有紧挨着的名字时退回第一格；已有紧挨名字时紧挨的优先。
+    const row = '| channel/reply（经 `requestTextReply`） | `Outbound.ts:535`（`submitChannel`）、`index.ts:1086` |';
+    const firstAt = row.indexOf('Outbound.ts');
+    const nearHints = checkLines.getHints(row, firstAt, firstAt + 'Outbound.ts:535'.length);
+    expect(nearHints.primary).toBe('submitChannel');
+    expect(nearHints.fromRow).toBeUndefined();
+
+    const secondAt = row.indexOf('index.ts');
+    const rowHints = checkLines.getHints(row, secondAt, secondAt + 'index.ts:1086'.length);
+    expect(rowHints.primary).toBe('channel/reply');
+    expect(rowHints.fromRow).toBe(true);
+  });
+
+  test('表格第一格取名（getRowName）覆盖常见写法与边界', () => {
+    expect(checkLines.getRowName('| `fooBar` | `src7/Demo.ts:12` | 说明 |')).toBe('fooBar');
+    expect(checkLines.getRowName('| apply | `src7/Demo.ts:12` | 说明 |')).toBe('apply');
+    expect(checkLines.getRowName('| Approval.ask | 参数 | `index.ts:395` |')).toBe('Approval.ask');
+    expect(checkLines.getRowName('| `Demo.constructor` | 构造 | `Demo.ts:10` |')).toBe('Demo.constructor');
+    expect(checkLines.getRowName('| Approval.askModel(input,bot,script,why) | `index.ts:10` |')).toBe('Approval.askModel');
+    expect(checkLines.getRowName('| `fooBar(a, b)` | `Demo.ts:12` |')).toBe('fooBar');
+    expect(checkLines.getRowName('| `fooBar`(a, b) | `Demo.ts:12` |')).toBe('fooBar');
+    expect(checkLines.getRowName('| readModel(value,providers):ImageModel\\|undefined | `index.ts:80` |')).toBe('readModel');
+    expect(checkLines.getRowName('| `Model<Api>` | 类型 | `types.d.ts:32` |')).toBe('Model');
+    expect(checkLines.getRowName('| Api.call<T> | 请求 | `Api.ts:10` |')).toBe('Api.call');
+    expect(checkLines.getRowName('| parse<T>(raw: string) | 解析 | `Parse.ts:10` |')).toBe('parse');
+    expect(checkLines.getRowName('| [`fooBar`](src7/Demo.ts#L12) | `Demo.ts:12` | 说明 |')).toBe('fooBar');
+    expect(checkLines.getRowName('| [`Demo.run(a, b)`](#lines=Demo.json&line=6) | 说明 |')).toBe('Demo.run');
+    expect(checkLines.getRowName('| [Demo.run](src7/Demo.ts#L6) | `Demo.ts:6` |')).toBe('Demo.run');
+    expect(checkLines.getRowName('| **[`Demo.run`](src7/Demo.ts#L6)**（主入口） | `Demo.ts:6` |')).toBe('Demo.run');
+    expect(checkLines.getRowName('| **`Demo.run`** | `Demo.ts:6` |')).toBe('Demo.run');
+    expect(checkLines.getRowName('| bot/receive（`prepend: true`） | `index.ts:242` |')).toBe('bot/receive');
+    expect(checkLines.getRowName('| `session/before-model`（技能） | `index.ts:27` |')).toBe('session/before-model');
+    expect(checkLines.getRowName('| hits（prefixed闭包） | `index.ts:178` |')).toBe('hits');
+    expect(checkLines.getRowName('| Bot.deliver `index.ts:643` | 投递 |')).toBe('Bot.deliver');
+    expect(checkLines.getRowName('  | `fooBar` | `Demo.ts:12` |')).toBe('fooBar');
+
+    //G 非表格行、表头、分隔行、路由、多符号并列、文件路径等不应误提取。
+    expect(checkLines.getRowName('`fooBar`（`Demo.ts:12`）')).toBeUndefined();
+    expect(checkLines.getRowName('| --- | --- |')).toBeUndefined();
+    expect(checkLines.getRowName('| :---: | ---: |')).toBeUndefined();
+    expect(checkLines.getRowName('| 名称 | 位置 | 说明 |')).toBeUndefined();
+    expect(checkLines.getRowName('|  | `Demo.ts:12` |')).toBeUndefined();
+    expect(checkLines.getRowName('| fooBar')).toBeUndefined();
+    expect(checkLines.getRowName('| POST /api/approvals/:id | 审批 | `Api.ts:445` |')).toBeUndefined();
+    expect(checkLines.getRowName('| ApprovalRequest / ApprovalResult | 类型 | `index.ts:10` |')).toBeUndefined();
+    expect(checkLines.getRowName('| `foo` / `bar` | `Demo.ts:12` |')).toBeUndefined();
+    expect(checkLines.getRowName('| `src7/Main.ts:12` | 位置 | `Demo.ts:12` |')).toBeUndefined();
+    expect(checkLines.getRowName('| `Demo.ts` | 文件 | `Demo.ts:12` |')).toBeUndefined();
+    expect(checkLines.getRowName('| `new cordis.Context()` | 根 | `Main.ts:79` |')).toBeUndefined();
+    expect(checkLines.getRowName('| a < b | 比较 | `Demo.ts:12` |')).toBeUndefined();
+    expect(checkLines.getRowName('| bots[].language（读配置） | 配置 | `Demo.ts:12` |')).toBeUndefined();
+    expect(checkLines.getRowName('| providers.<决策模型>.base_url | 配置 | `Demo.ts:12` |')).toBeUndefined();
   });
 
   test('归档文档只查越界', () => {
@@ -220,5 +276,72 @@ describe('Check_Lines', () => {
     const nodes = JSON.parse(raw) as typeof DEMO_NODES;
     expect(raw).toBe(JSON.stringify(nodes, null, 1).split('\n').join('\r\n'));
     expect(nodes[3].title).toBe('L5–L13 两个方法');
+  });
+
+  test('函数表第一格核验与 --fix：定位定义行且不误改同文件调用点', () => {
+    const root = makeRoot();
+    //M 放一份带构造函数、方法、调用点和顶层函数的源码。
+    const source = [
+      '// 头一行',
+      '// 第二行',
+      'export class Worker {',
+      '  constructor() {',
+      '    this.work();',
+      '  }',
+      '  work(): number {',
+      '    const value = 1;',
+      '    return value;',
+      '  }',
+      '}',
+      'export function boot(): Worker {',
+      '  const worker = new Worker();',
+      '  worker.work();',
+      '  return worker;',
+      '}',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/Worker.ts'), source);
+
+    const tableDoc = [
+      '# 函数对照表',
+      '',
+      '| 函数 | 定义及调用 | 说明 |',
+      '| --- | --- | --- |',
+      '| `Worker.constructor` | `src7/Worker.ts:2`、`src7/Worker.ts:13` | 构造与 new 调用 |',
+      '| Worker.work(x) | `src7/Worker.ts:6`、`src7/Worker.ts:11`、`src7/Worker.ts:14` | 定义漂了、第2处调用漂了、第3处对 |',
+      '| [`boot`](src7/Worker.ts#L12) | `src7/Worker.ts:10` | 顶层入口 |',
+      '| `Demo.run` | [Demo.ts L4](#lines=Demo.json&line=4) | 表格里的 #lines 链接 |',
+      '| 内部体引用 | `src7/Worker.ts:8`（`work`） | 裸方法名落在方法体内不误提示 |',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/docs/函数表.md'), tableDoc);
+
+    const files = ['src7/docs/函数表.md'];
+    const checker = new checkLines.LineChecker(root, false);
+    checker.run(files);
+    const errors = checker.errors.map((problem) => problem.message);
+    const warnings = checker.warnings.map((problem) => problem.message);
+
+    //M 三处漂移的定义行和一处 #lines 链接都被检出。
+    expect(errors.some((msg) => msg.includes('src7/Worker.ts:2 漂了') && msg.includes('应为 4'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('src7/Worker.ts:6 漂了') && msg.includes('应为 7'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('src7/Worker.ts:10 漂了') && msg.includes('应为 12'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('`Demo.run` 不在 src7/Demo.ts 第 4 行，应为 6'))).toBe(true);
+
+    //M 同文件调用点 :11 不应报成「应为 7」，而是只给提示；:13（new Worker）、:14（worker.work）和 :8（work体内）不误提示。
+    expect(errors.some((msg) => msg.includes('src7/Worker.ts:11'))).toBe(false);
+    expect(warnings.some((msg) => msg.includes('src7/Worker.ts:11 里看不到表格第一格的 `Worker.work`'))).toBe(true);
+    expect(warnings.some((msg) => msg.includes('src7/Worker.ts:13'))).toBe(false);
+    expect(warnings.some((msg) => msg.includes('src7/Worker.ts:14'))).toBe(false);
+    expect(warnings.some((msg) => msg.includes('src7/Worker.ts:8'))).toBe(false);
+
+    //M --fix 只修定义行和 #lines 链接，不把调用点 :11 误改成 :7。
+    const fixer = new checkLines.LineChecker(root, true);
+    fixer.run(files);
+    const updated = fs.readFileSync(path.join(root, 'src7/docs/函数表.md'), 'utf8');
+    expect(updated).toContain('| `Worker.constructor` | `src7/Worker.ts:4`、`src7/Worker.ts:13` |');
+    expect(updated).toContain('| Worker.work(x) | `src7/Worker.ts:7`、`src7/Worker.ts:11`、`src7/Worker.ts:14` |');
+    expect(updated).toContain('| [`boot`](src7/Worker.ts#L12) | `src7/Worker.ts:12` |');
+    expect(updated).toContain('| `Demo.run` | [Demo.ts L6](#lines=Demo.json&line=6) |');
   });
 });

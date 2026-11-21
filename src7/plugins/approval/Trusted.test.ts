@@ -265,4 +265,17 @@ describe('approval/request 各个 action', () => {
     const closed = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', close, options);
     expect(closed.error).toContain('没有待确认');
   });
+
+  test('作废的卡片再点同意：看卡片状态交回作废原因，不当成普通的“已经定过了”', async () => {
+    const input = { kind: 'update', title: '有新版本 10', detail: '', payload: { version: '10' }, bot: '周小灵' };
+    const asked = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', { action: 'ask', input } as const, options);
+    const id = asked.pending?.id ?? 0;
+    const close = { action: 'close', id, note: '会话已结束' } as const;
+    const closed = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', close, options);
+    expect(closed.settled?.card.state).toBe('ended');
+
+    const decide = { action: 'decide', id, approve: true, by: '测试' } as const;
+    const again = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', decide, options);
+    expect(again.error).toBe(`待确认 #${String(id)} 会话已结束`);
+  });
 });

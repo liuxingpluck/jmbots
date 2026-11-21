@@ -23,6 +23,7 @@ import * as dbModule from '../db/index.ts';
 import * as decisionModule from '../work-decision/index.ts';
 import type * as decisionTypes from '../work-decision/Types.ts';
 import * as relayModule from './index.ts';
+import * as receiveModule from './Receive.ts';
 
 /** 临时运行时目录。 */
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-relay-'));
@@ -796,7 +797,7 @@ describe('relay 旧库和配置', () => {
 
     expect(db.query('SELECT helper, chat FROM relay_items').all()).toEqual([{ helper: 'B', chat: 'p2p' }]);
     const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'relay' ORDER BY version").all() as { version: number }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
   });
 
   test('已有全部新栏的存量库（尚未登记迁移账本）：adoptColumn 直接接管，已有字段保持原样', () => {
@@ -805,7 +806,8 @@ describe('relay 旧库和配置', () => {
       + " helper TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL, channel TEXT NOT NULL, address TEXT NOT NULL,"
       + " owner INTEGER NOT NULL DEFAULT 0, sender TEXT NOT NULL DEFAULT '', chat TEXT NOT NULL DEFAULT 'p2p',"
       + " chat_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, at INTEGER NOT NULL, last_msg_at INTEGER,"
-      + " state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0, replied_at INTEGER)");
+      + " state TEXT NOT NULL DEFAULT 'pending', reminded INTEGER NOT NULL DEFAULT 0, replied_at INTEGER,"
+      + " ack_message_id TEXT NOT NULL DEFAULT '')");
     db.query("INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at) VALUES (?, 'B', 's1', 'http', 'null', 1, '', 'p2p', '', '存量网页收件', 1)")
       .run(BOT);
     relayModule.apply(world(db).ctx, { helpers: HELPERS });
@@ -814,13 +816,15 @@ describe('relay 旧库和配置', () => {
       { helper: 'B', owner: 1, sender: '', chat: 'p2p', chat_name: '' },
     ]);
     const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'relay' ORDER BY version").all() as { version: number }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4]);
   });
 
-  test('helpers 写了但是空的、名字重复、前缀有空串：apply 抛错', () => {
+  test('helpers 写了但是空的、名字重复、名字含首尾空白、前缀有空串：apply 抛错', () => {
     const bad: unknown[] = [
       [],
       [{ name: 'A', prefixes: ['a '] }, { name: 'A', prefixes: ['b '] }],
+      [{ name: '哈基米 ', prefixes: ['哈基米'] }],
+      [{ name: ' Claude', prefixes: ['cc'] }],
       [{ name: 'A', prefixes: ['a ', ''] }],
       [{ name: 'A', prefixes: ['  '] }],
     ];
@@ -1140,4 +1144,118 @@ describe('回信送进会话：先写进对话再标已送，走模型的会话�
     const jmItems = (jmInbox.json() as { items: { id: number; helper: string }[] }).items;
     expect(jmItems.map((one) => [one.id, one.helper])).toEqual([[2, 'jm开发']]);
   }, SLOW);
+
+  test('h60-ch-recall：飞书占位提示“已转给”发出后记录 ack_message_id，真回复发成后自动触发撤回且不二次撤回', async () => {
+    const made = await ready([{ name: 'Hajimi', title: '哈基米', prefixes: ['哈基米'] }]);
+    let seq = 100;
+    made.ctx.on('channel/reply', (request: channels.ChannelReplyRequest) => {
+      request.handled = true;
+      seq += 1;
+      const receipt = channels.getReceipt(request, 'sent');
+      receipt.messageIds = [`om_feishu_${String(seq)}`];
+      channels.emitReplied(made.ctx, request, receipt);
+    });
+
+    const recalled: { bot: string; messageId: string; appId?: string; chatId?: string }[] = [];
+    events.onRequestEvent(made.ctx, 'feishu/recall-message', 'feishu/recall-message-result', (req) => {
+      recalled.push({
+        bot: req.bot,
+        messageId: req.messageId,
+        appId: req.appId,
+        chatId: req.chatId,
+      });
+      return { ok: true };
+    });
+
+    const ackSaid = await made.say('哈基米 看一下日志', { appId: 'cli_a1', chatId: 'oc_c1', openId: 'ou_u1' });
+    expect(ackSaid).toBe('已转给 哈基米（#1），等回复。');
+    await settle();
+
+    // 真回复到达前：尚未触发撤回，relay_items 已记录占位消息号 om_feishu_101
+    expect(recalled).toEqual([]);
+    const ackRow = made.db.query<{ ack_message_id: string }, [number]>(
+      'SELECT ack_message_id FROM relay_items WHERE id = ?',
+    ).get(1);
+    expect(ackRow?.ack_message_id).toBe('om_feishu_101');
+
+    // 第一段回信（done: false）发出成功后即撤回占位提示，并清空 ack_message_id
+    const post1 = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 1, text: '正在定位，已找到原因', done: false },
+    });
+    expect(post1.statusCode).toBe(200);
+    await settle();
+    expect(made.answers.at(-1)).toBe('哈基米：正在定位，已找到原因');
+    expect(recalled).toEqual([
+      { bot: BOT, messageId: 'om_feishu_101', appId: 'cli_a1', chatId: 'oc_c1' },
+    ]);
+
+    // 最终段回信（done: true）不再重复撤回同一条占位消息
+    const post2 = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 1, text: '全部修复完毕', done: true },
+    });
+    expect(post2.statusCode).toBe(200);
+    await settle();
+    expect(recalled).toHaveLength(1);
+  }, SLOW);
+
+  test('h60-ch-recall 容错降级：飞书无撤回权限或超时报错时，真回复照常送达且不抛异常', async () => {
+    const made = await ready([{ name: 'Claude', title: 'Claude', prefixes: ['cc '] }]);
+    made.ctx.on('channel/reply', (request: channels.ChannelReplyRequest) => {
+      request.handled = true;
+      const receipt = channels.getReceipt(request, 'sent');
+      receipt.messageIds = ['om_ack_no_perm'];
+      channels.emitReplied(made.ctx, request, receipt);
+    });
+
+    events.onRequestEvent(
+      made.ctx,
+      'feishu/recall-message',
+      'feishu/recall-message-result',
+      () => ({ ok: false, error: '99991672 lack of permission im:message:recall' }),
+    );
+
+    expect(await made.say('cc 查个问题', { appId: 'cli_a1', chatId: 'oc_c1', openId: 'ou_u1' }))
+      .toBe('已转给 Claude（#1），等回复。');
+    await settle();
+
+    const post = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 1, text: '已查明并处理' },
+    });
+    expect(post.statusCode).toBe(200);
+    await settle();
+
+    // 真回复成功写库并标已送，完全不受撤回失败影响
+    expect(made.answers.at(-1)).toBe('Claude：已查明并处理');
+    const row = made.db.query<{ state: string }, [number]>('SELECT state FROM relay_items WHERE id = ?').get(1);
+    expect(row?.state).toBe('replied');
+    const recallTraces = made.emitted.filter(
+      (e) => e.name === 'trace' && e.args[1] === 'trace.relay.recallAck',
+    );
+    expect(recallTraces).toHaveLength(1);
+  }, SLOW);
+
+  test('Receive.pickReceiveSessionKind 三条扁平收话直路 100% 等价覆盖', () => {
+    const helpers: relayModule.Helper[] = [
+      { name: 'Claude', title: 'Claude', prefixes: ['cc', '哈基米'], webhookUrl: '', webhookHeader: '' },
+    ];
+    // 1. relayHelper 群攒批转交 -> 直接进 relay
+    expect(receiveModule.pickReceiveSessionKind(undefined, { relayHelper: 'Claude' }, '普通讨论', helpers))
+      .toBe('relay');
+    // 2. 非 listenOnly 的 direct 机器人 -> 无论有无前缀均进 front
+    expect(receiveModule.pickReceiveSessionKind('direct', {}, '随便聊一句', helpers)).toBe('front');
+    expect(receiveModule.pickReceiveSessionKind('direct', {}, 'cc 看一下', helpers)).toBe('front');
+    // 3. listenOnly 下的 direct 机器人或普通机器人 -> 命中前缀进 relay，否则返回 undefined
+    expect(receiveModule.pickReceiveSessionKind('direct', { listenOnly: true }, '群里闲聊', helpers))
+      .toBeUndefined();
+    expect(receiveModule.pickReceiveSessionKind('direct', { listenOnly: true }, '哈基米帮看下', helpers))
+      .toBe('relay');
+    expect(receiveModule.pickReceiveSessionKind('model', {}, 'cc 帮改一下', helpers)).toBe('relay');
+    expect(receiveModule.pickReceiveSessionKind('model', {}, '今天天气不错', helpers)).toBeUndefined();
+  });
 });

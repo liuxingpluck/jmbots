@@ -23,7 +23,6 @@ interface Frame {
 export class RoutedAsr implements asr.Asr {
   onPartial: asr.Asr['onPartial'] = () => {};
   onFinal: asr.Asr['onFinal'] = () => {};
-  onSpeechStart: asr.Asr['onSpeechStart'] = () => {};
   onProvider: routes.Report = () => {};
   onReset = (): void => {};
   onError: NonNullable<asr.Asr['onError']> = () => {};
@@ -151,12 +150,6 @@ export class RoutedAsr implements asr.Asr {
         //M 云转写按上游句尾位置清除已提交的音频，本地按当前帧确认。
         this.discardBefore(end);
         this.onFinal(text);
-      };
-      stream.onSpeechStart = () => {
-        if (this.stream !== stream) return;
-
-        //M 当前连接的开口通知与已退出线路隔离。
-        this.onSpeechStart();
       };
       stream.onError = (why) => {
         if (this.stream !== stream) return;

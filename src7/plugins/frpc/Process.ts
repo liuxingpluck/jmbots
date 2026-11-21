@@ -64,6 +64,9 @@ interface TrayFileSnapshot {
 /** tray-status.json 被视为新鲜的最大文件年龄（托盘每 3 秒刷新一次，放宽到 15 秒）。 */
 const TRAY_FRESH_MS = 15_000;
 
+/** 模块级控制串行互斥队列，防止双击或并发请求同时拉起两个 frpc.exe。 */
+let controlQueue: Promise<unknown> = Promise.resolve();
+
 
 //==========================================================
 // 基础系统探测工具
@@ -181,7 +184,7 @@ export function inspectLogConnection(dir: string): { connected: boolean; detail:
       return { connected: false, detail: '重连中' };
     }
   }
-  return { connected: true, detail: '在线' };
+  return { connected: false, detail: '未知' };
 }
 
 
@@ -334,9 +337,9 @@ export function createDefaultRunner(appdataOverride?: string): FrpcRunner {
     }
     const trayRunning = trayPid > 0;
 
-    //M 优先用极速 kill(pid, 0) 核验 tray-status.json 里的 frpcPid，失活或缺失时再扫进程表。
+    //M 仅当托盘快照新鲜时才直接用 kill(pid, 0) 采信 frpcPid；快照过期时强制按真实可执行路径反查防 PID 复用误报。
     let pid = 0;
-    if (snap !== undefined && snap.frpcPid > 0 && isPidAlive(snap.frpcPid)) {
+    if (snap !== undefined && snap.fresh && snap.frpcPid > 0 && isPidAlive(snap.frpcPid)) {
       pid = snap.frpcPid;
     }
     if (pid === 0 && process.platform === 'win32') {
@@ -426,12 +429,17 @@ export function createDefaultRunner(appdataOverride?: string): FrpcRunner {
     return latest;
   };
 
-  const control = async (dir: string, action: FrpcControlAction): Promise<LiveFrpcState> => {
-    if (action === 'stop') return stopAction(dir);
-    if (action === 'start') return startAction(dir);
+  const control = (dir: string, action: FrpcControlAction): Promise<LiveFrpcState> => {
+    const run = async (): Promise<LiveFrpcState> => {
+      if (action === 'stop') return stopAction(dir);
+      if (action === 'start') return startAction(dir);
 
-    await stopAction(dir);
-    return startAction(dir);
+      await stopAction(dir);
+      return startAction(dir);
+    };
+    const next = controlQueue.then(run, run);
+    controlQueue = next.then(() => undefined, () => undefined);
+    return next;
   };
 
   const readAutoStart = (): boolean => {

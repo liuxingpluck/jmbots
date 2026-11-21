@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { LINES, SESSION as S } from './tests/Lines.ts';
 import type { TrailLine } from '../../utils/Trail.ts';
-import { getNode, getSteps, getTrail } from './Trail.ts';
+import { getNode, getPickedTrail, getSteps, getTrail, pick } from './Trail.ts';
 import * as traceText from '../../../web/src/locales/Trace.ts';
 
 
@@ -23,6 +23,12 @@ describe('Trail', () => {
     expect(getNode('src7/plugins/memory/index.ts:1')).toBe('memory');
     expect(getNode('src7/Tools.ts:129')).toBe('tools');
     expect(getNode('src7/Sessions.ts:348')).toBe('sessions');
+  });
+
+  test('getPickedTrail 只挑一遍：轨迹和挑中的行跟分开调 pick、getTrail 完全一样', () => {
+    const both = getPickedTrail(7, LINES);
+    expect(both.trail).toEqual(getTrail(7, LINES));
+    expect(both.picked).toEqual(pick(7, LINES).picked);
   });
 
   test('按先后收成步骤，不混别的会话和定时事件', () => {

@@ -320,7 +320,8 @@ export class Grants {
       //M 撤：号要是正整数，没有这一条回 404。
       if (action === 'remove') {
         const id = utils.getField(body, 'id');
-        if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) return reply.code(400).send({ error: 'id 要是正整数' });
+        const valid = typeof id === 'number' && Number.isInteger(id) && id > 0;
+        if (!valid) return reply.code(400).send({ error: 'id 要是正整数' });
 
         const removed = this.remove(id);
         if (!removed) return reply.code(404).send({ error: `没有这一条授权：${String(id)}` });

@@ -93,10 +93,11 @@ export function findTopicIdForNode(
   nodes: types.DecisionNode[],
   rootId: string,
   nodeId?: string,
+  existingById?: ReadonlyMap<string, types.DecisionNode>,
 ): string {
   if (nodeId === undefined || nodeId === '' || nodeId === rootId) return rootId;
 
-  const byId = new Map(nodes.map((entry) => [entry.id, entry]));
+  const byId = existingById ?? new Map(nodes.map((entry) => [entry.id, entry]));
   let current = byId.get(nodeId);
   const visited = new Set<string>();
   while (current !== undefined && current.parent !== null) {
@@ -364,7 +365,7 @@ export function TopicView({
   /** 渲染单张高呼吸感待拍板卡片（大触控圆角按钮 + 推荐微光高亮）。 */
   const renderPendingCard = (item: types.DecisionNode, showTopicEyebrow: boolean) => {
     const isTargeted = targetNode.id === item.id;
-    const belongId = findTopicIdForNode(nodes, root.id, item.id);
+    const belongId = findTopicIdForNode(nodes, root.id, item.id, byId);
     const belongNode = byId.get(belongId);
     return (
       <div
@@ -823,6 +824,7 @@ export function TopicView({
                               )}
                               <drawer.TaskActions
                                 node={item}
+                                byId={byId}
                                 focus={() => onOpenInMind(item.id)}
                                 refresh={onRefresh}
                                 expand={onExpand}
@@ -848,6 +850,7 @@ export function TopicView({
                   <div className="decision-topic-add-wrap">
                     <drawer.TaskActions
                       node={activeTopic}
+                      byId={byId}
                       focus={() => onOpenInMind(activeTopic.id)}
                       refresh={onRefresh}
                       expand={onExpand}

@@ -8,91 +8,25 @@ import * as data from './MindData.ts';
 import * as readme from './ReadmeTabs.tsx';
 import * as lines from './LinesView.tsx';
 import * as stepFlowMod from './StepDataFlow.tsx';
+import {
+  getStoredChoice,
+  saveStoredChoice,
+  useMindTree,
+  useMindWords,
+  useTutorialView,
+  type TraceSubMode,
+  type TreeView,
+} from './MindState.ts';
 import '@xyflow/react/dist/style.css';
 import './MindMap.css';
 
-const VIEW_KEY = 'jmbots.tutorial.view';
+export { useMindTree, useMindWords, useTutorialView, type TraceSubMode, type TreeView };
+
 const DIRECTION_KEY = 'jmbots.tutorial.mind-direction';
-const TREE_KEY = 'jmbots.tutorial.mind-tree';
-const VIEWS = ['canvas', 'mind'] as const;
 const DIRECTIONS = ['sides', 'down'] as const;
-const TREES = ['project', 'trace', 'lines'] as const;
 
-export type TreeView = (typeof TREES)[number];
-export type TraceSubMode = 'flow' | 'plugin' | 'table';
-
-/** 读取持久化选择，只接受给定选项，访问失败使用默认。 */
-function getChoice<T extends string>(key: string, defaults: T, allowed: readonly T[]): T {
-  try {
-    const saved = window.localStorage.getItem(key);
-    //G 忽略旧值和无法识别的值。
-    const chosen = allowed.find((option) => option === saved);
-    return chosen ?? defaults;
-  } catch {
-    return defaults;
-  }
-}
-
-/** 保存非敏感的视图偏好，存储禁用时界面继续工作。 */
-function saveChoice(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    //G 存储不可用也允许切换视图。
-  }
-}
-
-/** 在原画布和思维导图之间保留上次使用的选择；地址带 ?view= 时优先，手机直开 ?canvas= 默认进步骤流。 */
-export function useTutorialView() {
-  //M 优先读地址栏显式指定的视图；手机竖屏点开具体消息画布时默认进纵向步骤卡片而非上次残留的导图。
-  const [view, setView] = react.useState<'canvas' | 'mind'>(() => {
-    const query = new URLSearchParams(window.location.search);
-    const requested = query.get('view');
-    if (requested === 'canvas' || requested === 'mind') return requested;
-    if (window.innerWidth < 800 && query.get('canvas') !== null) return 'canvas';
-
-    return getChoice(VIEW_KEY, 'canvas', VIEWS);
-  });
-  const select = (next: 'canvas' | 'mind'): void => {
-    //M 控件马上切换，同时为下次打开记住选择。
-    setView(next);
-    saveChoice(VIEW_KEY, next);
-  };
-  return { view, select };
-}
-
-/** 画布上显示哪棵树（项目结构、消息走过的路、骨架逐行），由左栏点选，记住上次的。 */
-export function useMindTree() {
-  //M 第一次打开是项目结构，以后恢复上次看的树。
-  const [mode, setMode] = react.useState(() => getChoice(TREE_KEY, 'project', TREES));
-  const select = react.useCallback((next: TreeView): void => {
-    //M 马上换树，同时为下次打开记住。
-    setMode(next);
-    saveChoice(TREE_KEY, next);
-  }, []);
-  return { mode, select };
-}
-
-/** 教程独立入口沿用地址和浏览器语言偏好。 */
-export function useMindWords(): i18n.Translate {
-  const [language] = react.useState<i18n.Language>(() => {
-    const query = new URLSearchParams(window.location.search);
-    //M 地址里的语言优先，便于独立打开教程链接。
-    const requested = query.get('lang');
-    const explicit = i18n.matchLanguage(requested);
-    if (explicit !== undefined) return explicit;
-
-    try {
-      //M 没有显式语言时沿用网页记住的语言。
-      const storage = window.localStorage;
-      return i18n.loadLanguage(storage);
-    } catch {
-      return 'zh-CN';
-    }
-  });
-  //M 给树和右栏持有同一稳定的翻译函数。
-  return react.useCallback((key, params) => i18n.translate(language, key, params), [language]);
-}
+const getChoice = getStoredChoice;
+const saveChoice = saveStoredChoice;
 
 /** 通用连接锚点组：支持左、右、上、下双向贴边连线。 */
 function ZoomHandles(): react.JSX.Element {

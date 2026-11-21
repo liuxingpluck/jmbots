@@ -5,6 +5,7 @@
 import type { ProviderConfig } from '../../Resources.ts';
 import * as checks from '../../utils/Checks.ts';
 import * as asrModule from './Asr.ts';
+import * as common from './Common.ts';
 import type * as models from './Models.ts';
 import type * as taskModule from './Tasks.ts';
 import * as turnModel from './TurnModel.ts';
@@ -212,7 +213,7 @@ export function getSettings(raw: unknown, providers: Record<string, ProviderConf
   const silenceMs = count(turn['silence_ms'], 'turn.silence_ms', 1200);
   const maxUtteranceMs = count(turn['max_utterance_ms'], 'turn.max_utterance_ms', 60_000);
   const tasks: taskModule.TaskSettings = {
-    minChars: count(judge['min_chars'], 'judge.min_chars', 6),
+    minChars: count(judge['min_chars'], 'judge.min_chars', common.MIN_CHARS),
     stepChars: count(judge['step_chars'], 'judge.step_chars', 12),
     stepMs: count(judge['step_ms'], 'judge.step_ms', 1000),
     allowAt,

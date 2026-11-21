@@ -407,6 +407,8 @@ export interface Hints {
   primary: string | undefined;
   /** 同一对全角括号里的其他名字，只用来确认那一行对不对。 */
   extra: string[];
+  /** primary 来自表格第一格，而不是紧挨着引用的反引号。 */
+  fromRow?: boolean;
 }
 
 /**
@@ -422,6 +424,38 @@ function getHintName(raw: string | undefined): string | undefined {
   if (SYMBOL.test(name) || EVENT.test(name)) return name;
 
   return undefined;
+}
+
+/**
+ * 表格行里取第一格的符号名：函数表、事件表的第一格就是这一行讲的函数或事件。
+ * @param line 引用所在的那行。
+ * @returns 第一格里提取出的符号名或事件名；不是表格行或不像名字时返回 undefined。
+ */
+export function getRowName(line: string): string | undefined {
+  const trimmed = line.trimStart();
+  //G 不是 Markdown 表格行就不管。
+  if (!trimmed.startsWith('|')) return undefined;
+
+  //M 按未转义的竖线切出第一格，避免参数类型里的 `\|` 把第一格截断。
+  const cells = trimmed.split(/(?<!\\)\|/u);
+  if (cells.length < 3) return undefined;
+
+  let raw = cells[1].trim();
+  if (raw === '') return undefined;
+
+  //M 解开 Markdown 链接 `[文字](地址)`，保留展示文字。
+  raw = raw.replace(/\[([^\]]+)\]\([^)]*\)/gu, '$1').trim();
+  //M 去掉第一格末尾附带的文件位置（如 `Bot.deliver \`index.ts:643\``）。
+  raw = raw.replace(/\s+`[^`]*\.(?:tsx?|m?js)(?::\d+(?:[–-]\d+)?)?`\s*$/u, '').trim();
+  //M 去掉中文括号补充说明（如 `bot/receive（\`prepend: true\`）`）。
+  raw = raw.replace(/（.*$/u, '').trim();
+  //M 去掉首尾加粗/斜体星号和反引号。
+  raw = raw.replace(/^\*+|\*+$/gu, '').trim();
+  raw = raw.replace(/`/gu, '').trim();
+  //M 去掉参数括号和紧贴名字的泛型尖括号。
+  raw = raw.replace(/\(.*$/u, '').trim();
+  raw = raw.replace(/(?<!\s)<.*$/u, '').trim();
+  return getHintName(raw);
 }
 
 /**
@@ -443,13 +477,20 @@ export function getHints(line: string, start: number, end: number): Hints {
   }
   const before = /`([^`]+)`[ \t，,：:（(]*$/u.exec(line.slice(0, left));
   const after = /^[ \t（(]*`([^`]+)`/u.exec(line.slice(right));
-  //M 左边紧挨着的优先，没有再看右边。
-  const primary = getHintName(before?.[1]) ?? getHintName(after?.[1]);
+  //M 左边紧挨着的优先，没有再看右边，都没有再看表格第一格。
+  const near = getHintName(before?.[1]) ?? getHintName(after?.[1]);
+  const rowName = getRowName(line);
+  const fromRow = near === undefined && rowName !== undefined;
+  const primary = near ?? rowName;
 
   const extra: string[] = [];
   const open = line.lastIndexOf('（', left);
   const close = line.indexOf('）', right);
-  if (open < 0 || close < 0 || line.lastIndexOf('）', left) > open) return { primary, extra };
+  if (open < 0 || close < 0 || line.lastIndexOf('）', left) > open) {
+    if (fromRow) return { primary, extra, fromRow: true };
+
+    return { primary, extra };
+  }
 
   for (const span of line.slice(open, close).matchAll(CODE_SPAN)) {
     //M 括号里别的反引号名字，比如「（`ChannelTools.ts:356` 调 `requestChannelReply`）」。
@@ -459,6 +500,8 @@ export function getHints(line: string, start: number, end: number): Hints {
     //M 记进只用来核对的名字。
     extra.push(name);
   }
+  if (fromRow) return { primary, extra, fromRow: true };
+
   return { primary, extra };
 }
 
@@ -478,6 +521,10 @@ function getHintKeys(hint: string): string[] {
   if (parts.length > 1 && GENERIC_METHODS.has(keys[0])) {
     //M 前一段也拿来核对。
     keys.push(parts[parts.length - 2]);
+  }
+  if (parts.length > 1 && keys[0] === 'constructor') {
+    //M 构造函数的调用处写成 `new 类名`。
+    keys.push('new ' + parts[parts.length - 2]);
   }
   return keys;
 }
@@ -752,9 +799,14 @@ export class LineChecker {
       const ctor = index?.declarations.get(hint + '.constructor') ?? [];
       if (ctor.some((line) => line >= from && line <= to)) return true;
 
-      //M 指到这个函数（或类）里面的某一行也对。
+      //M 指到这个函数（或类）里面的某一行也对；只写方法名时也认 `类名.方法名` 的范围。
       const lower = hint.toLowerCase();
-      const spans = [...(index?.spans.entries() ?? [])].filter(([name]) => name.toLowerCase() === lower);
+      const suffix = '.' + lower;
+      const bare = !hint.includes('.');
+      const spans = [...(index?.spans.entries() ?? [])].filter(([name]) => {
+        const lowerName = name.toLowerCase();
+        return lowerName === lower || (bare && lowerName.endsWith(suffix));
+      });
       const inside = spans.some(([, list]) => list.some(([first, last]) => from >= first && to <= last));
       if (inside) return true;
     }
@@ -1387,14 +1439,26 @@ export class LineChecker {
       skip.push([link.index, link.index + link[0].length]);
     }
     const edits: { start: number; end: number; text: string }[] = [];
+    //M 同一表格行里同一文件靠第一格取名时，只有第一个不同行号按声明定位，其余视为调用点只查存在性。
+    const rowFirstLine = new Map<string, number>();
     const visit = (file: string, start: number, digits: string, endDigits: string | undefined, hints: Hints): void => {
       const no = Number(digits);
       let last: number | undefined;
       if (endDigits !== undefined) {
         last = Number(endDigits);
       }
+      let canLocate = true;
+      if (hints.fromRow && hints.primary !== undefined) {
+        const firstNo = rowFirstLine.get(file);
+        if (firstNo === undefined) {
+          rowFirstLine.set(file, no);
+        }
+        if (firstNo !== undefined && firstNo !== no) {
+          canLocate = false;
+        }
+      }
       //M 核对一个引用，能改的给出新行号。
-      const fixed = this.checkRef(file, no, last, hints, doc, site, docShifts, live);
+      const fixed = this.checkRef(file, no, last, hints, doc, site, docShifts, live, canLocate);
       if (fixed === undefined) return;
 
       const delta = fixed - no;
@@ -1509,6 +1573,10 @@ export class LineChecker {
     if (hintMatch !== null && (SYMBOL.test(hintMatch[1]) || EVENT.test(hintMatch[1]))) {
       hint = hintMatch[1];
     }
+    if (hint === undefined) {
+      //M 表格行里的 #lines 链接也可以退回到第一格的符号名。
+      hint = getRowName(line);
+    }
     const inBlock = ranges.some((range) => no >= range.start && no <= range.end);
     //M 链接前面的名字要在那一行，或者那行是它的构造函数。
     const onLine = hint === undefined || this.isShown(source, no, no, [hint]);
@@ -1544,6 +1612,7 @@ export class LineChecker {
    * @param site 报告用的位置。
    * @param docShifts 同文档代码原文的挪动。
    * @param live 为 true 时查漂移。
+   * @param canLocate 为 true 时允许按声明位置自动定位；表格同文件后续调用点为 false。
    * @returns --fix 时要换成的起始行；不用改或改不了时返回 undefined。
    */
   private checkRef(
@@ -1555,6 +1624,7 @@ export class LineChecker {
     site: string,
     docShifts: Shift[],
     live: boolean,
+    canLocate: boolean,
   ): number | undefined {
     //M 读源码，读不到就没法核对。
     const code = this.getLines(file);
@@ -1576,12 +1646,22 @@ export class LineChecker {
         this.report('warning', doc, site, ref + '–' + String(end) + ' 里看不到 `' + hint + '`，要人工核对');
         return undefined;
       }
-
-      //M 旁边的名字不在那一行：到源码里找它。
-      fixed = this.locate(file, hint);
-      reason = '旁边的 `' + hint + '` 在第 ' + String(fixed) + ' 行';
-      if (fixed === undefined) {
-        this.report('warning', doc, site, ref + ' 旁边的 `' + hint + '` 不在那一行，也没法唯一定位');
+      if (!canLocate && !outside) {
+        //G 同一表格行同一文件的后续引用通常是调用点，只核对存在性，不按声明位置硬挪。
+        this.report('warning', doc, site, ref + ' 里看不到表格第一格的 `' + hint + '`，要人工核对');
+        return undefined;
+      }
+      if (canLocate) {
+        //M 旁边的名字不在那一行：到源码里找它。
+        fixed = this.locate(file, hint);
+        let label = '旁边的 `';
+        if (hints.fromRow) {
+          label = '表格第一格的 `';
+        }
+        reason = label + hint + '` 在第 ' + String(fixed) + ' 行';
+        if (fixed === undefined) {
+          this.report('warning', doc, site, ref + ' ' + label + hint + '` 不在那一行，也没法唯一定位');
+        }
       }
     }
     if (live && hint === undefined) {

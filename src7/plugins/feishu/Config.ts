@@ -66,6 +66,17 @@ export interface FeishuGroup {
 }
 
 
+/** 发件箱默认路由可选配置（plugins.feishu.outbox）。 */
+export interface FeishuOutboxConfig {
+  /** 默认选用哪个飞书应用号。 */
+  appId?: string;
+  /** 默认选用哪个机器人对应的飞书应用。 */
+  bot?: string;
+  /** 默认投递目标聊天号；缺省走所选应用最近私聊的人。 */
+  chatId?: string;
+}
+
+
 /** apply 校验好以后给 Feishu 的东西。 */
 export interface FeishuConfig {
   /** 飞书开放平台的地址（SDK 的 domain）；默认 https://open.feishu.cn，离线测试指向假飞书。 */
@@ -78,6 +89,8 @@ export interface FeishuConfig {
   groups: Map<string, FeishuGroup>;
   /** 机器人新进群时自动拉最近多少条历史；0 是不拉。默认 DEFAULT_HISTORY_LIMIT。 */
   historyOnJoin: number;
+  /** 可选发件箱默认投递目标配置。 */
+  outbox?: FeishuOutboxConfig;
 }
 
 
@@ -146,7 +159,8 @@ export function checkConfig(ctx: cordis.Context, written: unknown): FeishuConfig
   const historyOnJoin = checks.checkNumber(historyWritten, 'feishu 插件的 history_on_join（0 是进群不拉历史）', historyRule);
   const people = getPeople(ctx, own);
   const groups = getGroups(own, apps);
-  return { domain: domain.replace(/\/+$/u, ''), apps, people, groups, historyOnJoin };
+  const outbox = getOutboxConfig(own['outbox'], apps);
+  return { domain: domain.replace(/\/+$/u, ''), apps, people, groups, historyOnJoin, outbox };
 }
 
 
@@ -315,4 +329,32 @@ function getGroupDaily(raw: unknown, chatId: string, apps: FeishuApp[]): FeishuG
   const hour = Number(at.slice(0, 2));
   const minute = Number(at.slice(3));
   return { hour, minute, bot, appId: selected[0]!.appId, prompt: prompt.trim() };
+}
+
+
+/** 校验可选的发件箱默认路由配置（outbox.app_id / bot / chat_id）。 */
+function getOutboxConfig(raw: unknown, apps: FeishuApp[]): FeishuOutboxConfig | undefined {
+  if (raw === undefined) return undefined;
+
+  const rec = checks.checkRecord(raw, 'feishu 插件的 outbox');
+  const result: FeishuOutboxConfig = {};
+  if (rec['app_id'] !== undefined) {
+    const appId = checks.checkNonEmptyText(rec['app_id'], 'feishu 插件 outbox.app_id');
+    if (!apps.some((app) => app.appId === appId)) {
+      throw new Error(`feishu 插件 outbox.app_id 没有对应的飞书应用：${appId}`);
+    }
+    result.appId = appId;
+  }
+  if (rec['bot'] !== undefined) {
+    const bot = checks.checkNonEmptyText(rec['bot'], 'feishu 插件 outbox.bot');
+    const matched = apps.filter((app) => app.bot === bot || app.bots?.includes(bot));
+    if (matched.length === 0) {
+      throw new Error(`feishu 插件 outbox.bot 没有关联的飞书应用：${bot}`);
+    }
+    result.bot = bot;
+  }
+  if (rec['chat_id'] !== undefined) {
+    result.chatId = checks.checkNonEmptyText(rec['chat_id'], 'feishu 插件 outbox.chat_id');
+  }
+  return result;
 }

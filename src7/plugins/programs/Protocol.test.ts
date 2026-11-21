@@ -40,16 +40,30 @@ test('info/health须核对协议和名字，RSS为有限非负MiB，pause只认�
 test('暂停/恢复只有明确确认才成功，体带原因，错误paused或授权不会触发其它动作', async () => {
   const h = getReply({ ok: true, paused: false });
   const signal = new AbortController().signal;
-  expect(await protocolModule.requestPause('http://mock.invalid', true, signal)).toBe(false);
+  expect(await protocolModule.requestPause('http://mock.invalid', 'k1', true, signal)).toBe(false);
   h.data.value = { ok: true, paused: true };
-  expect(await protocolModule.requestPause('http://mock.invalid', true, signal)).toBe(true);
+  expect(await protocolModule.requestPause('http://mock.invalid', 'k1', true, signal)).toBe(true);
   expect(h.calls[1]?.input).toBe('http://mock.invalid/jmbots/v1/pause');
   expect(h.calls[1]?.init?.body).toBe(JSON.stringify({ reason: 'mem-limit' }));
+  //M 暂停请求带上这次启动的密钥。
+  const pauseHeaders = h.calls[1]?.init?.headers as Record<string, string> | undefined;
+  expect(pauseHeaders?.[protocolModule.KEY_HEADER]).toBe('k1');
   h.data.value = { ok: true, state: 'expired' };
   expect(await protocolModule.readLicense('http://mock.invalid', signal)).toBe('expired');
   h.data.value = { ok: true, state: 'unknown-value' };
   expect(await protocolModule.readLicense('http://mock.invalid', signal)).toBeUndefined();
   expect(h.calls).toHaveLength(4);
+});
+
+
+test('退出请求带上这次启动的密钥，体里写收尾时长', async () => {
+  const h = getReply({ ok: true });
+  await protocolModule.requestExit('http://mock.invalid', 'k2', 1500);
+  expect(h.calls[0]?.input).toBe('http://mock.invalid/jmbots/v1/exit');
+  expect(h.calls[0]?.init?.body).toBe(JSON.stringify({ graceMs: 1500 }));
+  expect(h.calls[0]?.init?.redirect).toBe('error');
+  const headers = h.calls[0]?.init?.headers as Record<string, string> | undefined;
+  expect(headers?.[protocolModule.KEY_HEADER]).toBe('k2');
 });
 
 

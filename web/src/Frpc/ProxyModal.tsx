@@ -12,6 +12,8 @@ export interface ProxyModalProps {
   open: boolean;
   /** 编辑原规则下标；新增为 -1。 */
   editIndex: number;
+  /** 编辑态原规则名称（按名称排除自身重名判断）；新增为 null。 */
+  editingName?: string | null;
   /** 编辑态初始规则；新增为 null。 */
   initialProxy: frpcApi.FrpcProxy | null;
   /** 当前已有的全部规则（用于重名校验）。 */
@@ -31,7 +33,7 @@ export interface ProxyModalProps {
  * 隧道映射新增与编辑弹层。
  */
 export function ProxyModal(props: ProxyModalProps): react.JSX.Element | null {
-  const { open, editIndex, initialProxy, existingProxies, serverAddr, saving } = props;
+  const { open, editIndex, editingName, initialProxy, existingProxies, serverAddr, saving, onClose } = props;
   const [name, setName] = react.useState('');
   const [proto, setProto] = react.useState<frpcApi.FrpcProtocol>('http');
   const [localIP, setLocalIP] = react.useState('192.168.200.1');
@@ -76,27 +78,27 @@ export function ProxyModal(props: ProxyModalProps): react.JSX.Element | null {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape' && !saving) {
         //M 未在提交时响应 Escape 键关闭弹层。
-        props.onClose();
+        onClose();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, props, saving]);
+  }, [open, saving, onClose]);
 
   if (!open) return null;
 
   const portNum = Number(localPort.trim());
   const isMainPort = portNum === 30086;
-  //M 实时检测 30086 端口是否误填环回 IP 并解析输入域名列表。
-  const loopbackDanger = isMainPort && frpcApi.isLoopbackIp(localIP);
+  //M 实时检测 30086 端口是否满足非 127./0. 点分 IPv4 白名单，并解析输入域名列表。
+  const loopbackDanger = isMainPort && !frpcApi.isAllowedMainPortIp(localIP);
   const isHttpLike = proto === 'http' || proto === 'https';
   const parsedDomains = frpcApi.parseDomainList(domainsText);
 
-  //M 切换本地端口为 30086 时若原填 127.0.0.1/localhost，自动切到安全局域网地址 192.168.200.1。
+  //M 切换本地端口为 30086 时若当前源 IP 不在主站安全白名单内，自动切到局域网地址 192.168.200.1。
   const handlePortChange = (nextVal: string): void => {
     setLocalPort(nextVal);
     setFormError('');
-    if (Number(nextVal.trim()) === 30086 && frpcApi.isLoopbackIp(localIP)) {
+    if (Number(nextVal.trim()) === 30086 && !frpcApi.isAllowedMainPortIp(localIP)) {
       setLocalIP('192.168.200.1');
     }
   };
@@ -122,8 +124,8 @@ export function ProxyModal(props: ProxyModalProps): react.JSX.Element | null {
       candidate.remotePort = Number(remotePort.trim());
     }
 
-    //M 提交前先走共享规则校验，拦截空名、重名、非法端口与 30086 环回绕过风险。
-    const invalidReason = frpcApi.validateProxyCandidate(candidate, existingProxies, editIndex);
+    //M 提交前先走共享规则校验，拦截空名、重名、非法端口与 30086 白名单外地址。
+    const invalidReason = frpcApi.validateProxyCandidate(candidate, existingProxies, editIndex, editingName);
     if (invalidReason !== '') {
       setFormError(invalidReason);
       return;

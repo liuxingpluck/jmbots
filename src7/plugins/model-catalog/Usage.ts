@@ -234,8 +234,13 @@ export class Usage extends cordis.Service {
     const bot = row.bot;
     const purpose = PURPOSES[row.kind] ?? row.kind;
     const sessionId = session.id;
+
+    //M 供应商是“供应商名/模型 ID”斜杠前那段；没有斜杠（入口没拼过的名字）就记整串，不把最后一个字切掉。
     const slash = model.indexOf('/');
-    const provider = model.slice(0, slash);
+    let provider = model;
+    if (slash >= 0) {
+      provider = model.slice(0, slash);
+    }
 
     const lookup = { action: 'find', model } as const;
     //M 通过事件查价格，清单未响应或查无模型时按零计费。

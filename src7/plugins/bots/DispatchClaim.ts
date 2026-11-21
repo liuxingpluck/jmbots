@@ -12,6 +12,20 @@ import type { Bot, IncomingMessage, ReceiveEvent } from './index.ts';
 const CLAIM_HISTORY_MAX = 200;
 
 /**
+ * 这场会话是不是已经认领过这条消息（已记在 sourceClaims 或已在 resultQueue 里）。
+ * @param session 目标会话（前台或别的插件认领的会话）。
+ * @param claimKey 去重认领键（普通消息是 claimKey，群攒批接话是 `${claimKey}:batch`）。
+ * @returns 已经认领过是 true。
+ */
+export function isClaimed(session: Session, claimKey: string): boolean {
+  const claimedList = session.row.sourceClaims ?? [];
+  if (claimedList.includes(claimKey)) return true;
+
+  const queue = session.row.resultQueue ?? [];
+  return queue.some((item) => item.claimKey === claimKey || item.key === claimKey);
+}
+
+/**
  * 把去重键追加到会话的已认领清单（只留最近 200 个，不改原数组）；落盘由调用方做（事务里和队列项一起存）。
  * @param session 认领这条消息的会话。
  * @param claimKey 去重认领键。
@@ -98,11 +112,8 @@ export class DispatchClaim {
     const front = picked;
     const explicit = target !== undefined;
 
-    //G 同一条消息对该机器人已经认领过（front 或 sourceClaims 已记）→ 返回 duplicate，不再重复入队。
-    const claimedList = front.row.sourceClaims ?? [];
-    const queue = front.row.resultQueue ?? [];
-    const queuedSame = queue.some((item) => item.claimKey === claimKey || item.key === claimKey);
-    if (claimedList.includes(claimKey) || queuedSame) {
+    //G 同一条消息对该机器人已经认领过（sourceClaims 或 resultQueue 已记）→ 返回 duplicate，不再重复入队。
+    if (isClaimed(front, claimKey)) {
       pushClaim(control, bot.name, claimKey, 'duplicate', front);
       return;
     }
@@ -257,8 +268,7 @@ export class DispatchClaim {
 
     //G 这一批已经排过（键在队列里或认领过）：不再排。
     const batchKey = `${last.claimKey}:batch`;
-    const queued = (front.row.resultQueue ?? []).some((item) => item.key === batchKey);
-    if (queued || (front.row.sourceClaims ?? []).includes(batchKey)) return;
+    if (isClaimed(front, batchKey)) return;
 
     //M 地址副本去掉只听的标记：这一轮要回。
     const address = structuredClone(last.botOrigin.address);

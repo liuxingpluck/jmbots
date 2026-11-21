@@ -4,7 +4,7 @@
  */
 import * as react from 'react';
 import * as authGate from '../components/AuthGate.tsx';
-import * as theme from '../Theme.ts';
+import * as theme from '../ThemePalette.ts';
 import { TOKEN, withToken } from '../Token.ts';
 import * as frpcApi from './FrpcApi.ts';
 import { ProxyModal } from './ProxyModal.tsx';
@@ -112,6 +112,7 @@ function getRemoteTargets(proxy: frpcApi.FrpcProxy, serverAddr: string): string[
 function HeroSection(props: {
   status: frpcApi.FrpcStatus;
   beacon: ReturnType<typeof resolveBeaconState>;
+  busy: boolean;
   pendingControl: frpcApi.FrpcControlAction | null;
   pendingAutoStart: boolean;
   copiedUrl: string;
@@ -119,8 +120,7 @@ function HeroSection(props: {
   onToggleAutoStart: (next: boolean) => void;
   onCopyUrl: (url: string) => void;
 }): react.JSX.Element {
-  const { status, beacon, pendingControl, pendingAutoStart, copiedUrl } = props;
-  const busy = pendingControl !== null;
+  const { status, beacon, busy, pendingControl, copiedUrl } = props;
 
   let serverText = '未配置服务器';
   if (status.serverAddr !== '' && status.serverPort > 0) {
@@ -230,7 +230,7 @@ function HeroSection(props: {
           aria-label="Windows 开机自启"
           data-frpc-autostart
           className={switchClass}
-          disabled={pendingAutoStart || !status.configured}
+          disabled={busy || !status.configured}
           onClick={() => props.onToggleAutoStart(!status.autoStart)}
         >
           <span className="fr-switch-knob" />
@@ -284,15 +284,16 @@ function HeroSection(props: {
  */
 function ProxiesSection(props: {
   status: frpcApi.FrpcStatus;
-  deleteIndex: number;
+  deletingName: string | null;
+  busy: boolean;
   savingProxy: boolean;
   onAdd: () => void;
-  onEdit: (index: number) => void;
-  onAskDelete: (index: number) => void;
+  onEdit: (name: string) => void;
+  onAskDelete: (name: string) => void;
   onCancelDelete: () => void;
-  onConfirmDelete: (index: number) => void;
+  onConfirmDelete: (name: string) => void;
 }): react.JSX.Element {
-  const { status, deleteIndex, savingProxy } = props;
+  const { status, deletingName, busy, savingProxy } = props;
   const proxies = status.proxies;
 
   return (
@@ -306,7 +307,7 @@ function ProxiesSection(props: {
           type="button"
           className="fr-btn primary sm"
           data-frpc-add-proxy
-          disabled={!status.configured || savingProxy}
+          disabled={!status.configured || busy}
           onClick={props.onAdd}
         >
           + 新增隧道
@@ -319,7 +320,7 @@ function ProxiesSection(props: {
           <button
             type="button"
             className="fr-btn secondary sm"
-            disabled={!status.configured}
+            disabled={!status.configured || busy}
             onClick={props.onAdd}
           >
             立即新增第一条隧道
@@ -331,8 +332,8 @@ function ProxiesSection(props: {
         <div className="fr-proxy-grid">
           {proxies.map((proxy, index) => {
             const targets = getRemoteTargets(proxy, status.serverAddr);
-            const isGuardedMain = proxy.localPort === 30086 && !frpcApi.isLoopbackIp(proxy.localIP);
-            const isDeleting = deleteIndex === index;
+            const isGuardedMain = proxy.localPort === 30086 && frpcApi.isAllowedMainPortIp(proxy.localIP);
+            const isDeleting = deletingName === proxy.name;
 
             return (
               <article key={`${proxy.name}-${String(index)}`} className="fr-proxy-card" data-proxy-card={proxy.name}>
@@ -345,16 +346,16 @@ function ProxiesSection(props: {
                     <button
                       type="button"
                       className="fr-mini-btn"
-                      disabled={savingProxy}
-                      onClick={() => props.onEdit(index)}
+                      disabled={busy}
+                      onClick={() => props.onEdit(proxy.name)}
                     >
                       编辑
                     </button>
                     <button
                       type="button"
                       className="fr-mini-btn danger"
-                      disabled={savingProxy}
-                      onClick={() => props.onAskDelete(index)}
+                      disabled={busy}
+                      onClick={() => props.onAskDelete(proxy.name)}
                     >
                       删除
                     </button>
@@ -385,7 +386,7 @@ function ProxiesSection(props: {
                       <button
                         type="button"
                         className="fr-mini-btn"
-                        disabled={savingProxy}
+                        disabled={busy}
                         onClick={props.onCancelDelete}
                       >
                         取消
@@ -393,8 +394,8 @@ function ProxiesSection(props: {
                       <button
                         type="button"
                         className="fr-mini-btn danger-solid"
-                        disabled={savingProxy}
-                        onClick={() => props.onConfirmDelete(index)}
+                        disabled={busy}
+                        onClick={() => props.onConfirmDelete(proxy.name)}
                       >
                         {savingProxy && '删除中…'}
                         {!savingProxy && '确认删除并重启'}
@@ -530,9 +531,9 @@ export function FrpcPage(): react.JSX.Element {
   const [copiedUrl, setCopiedUrl] = react.useState('');
 
   const [modalOpen, setModalOpen] = react.useState(false);
-  const [editIndex, setEditIndex] = react.useState(-1);
+  const [editingName, setEditingName] = react.useState<string | null>(null);
   const [savingProxy, setSavingProxy] = react.useState(false);
-  const [deleteIndex, setDeleteIndex] = react.useState(-1);
+  const [deletingName, setDeletingName] = react.useState<string | null>(null);
 
   const [lineLimit, setLineLimit] = react.useState<number>(120);
   const [logs, setLogs] = react.useState<frpcApi.FrpcLogsResponse | null>(null);
@@ -540,6 +541,16 @@ export function FrpcPage(): react.JSX.Element {
   const [logError, setLogError] = react.useState('');
   const [autoPoll, setAutoPoll] = react.useState(true);
   const termRef = react.useRef<HTMLDivElement | null>(null);
+
+  //M 全局写操作互斥与请求序号守卫，彻底杜绝旧轮询回包覆盖刚提交的控制或配置状态。
+  const busy = pendingControl !== null || savingProxy || pendingAutoStart;
+  const busyRef = react.useRef(busy);
+  busyRef.current = busy;
+  const writeLockRef = react.useRef(false);
+  const statusSeqRef = react.useRef(0);
+  const logsSeqRef = react.useRef(0);
+  const lineLimitRef = react.useRef(lineLimit);
+  lineLimitRef.current = lineLimit;
 
   //M 同步全局主题变量并监听跨标签页主题切换。
   react.useEffect(() => {
@@ -569,67 +580,81 @@ export function FrpcPage(): react.JSX.Element {
     }
   }, []);
 
-  /** 拉取指定行数的末尾日志。 */
+  /** 拉取指定行数的末尾日志（按单调序号仅采信最新一次响应）。 */
   const loadLogs = react.useCallback(async (limit: number, stickBottom = false): Promise<void> => {
+    logsSeqRef.current += 1;
+    const seq = logsSeqRef.current;
     setLoadingLogs(true);
     try {
       const nextLogs = await frpcApi.fetchFrpcLogs(limit);
+      if (seq !== logsSeqRef.current) return;
+
       setLogs(nextLogs);
       setLogError('');
       if (stickBottom) {
         window.requestAnimationFrame(() => scrollLogsToBottom());
       }
     } catch (err) {
+      if (seq !== logsSeqRef.current) return;
+
       setLogError((err as Error).message || '读取 frpc.log 失败');
     } finally {
-      setLoadingLogs(false);
+      if (seq === logsSeqRef.current) {
+        setLoadingLogs(false);
+      }
     }
   }, [scrollLogsToBottom]);
 
-  /** 并发刷新状态与日志。 */
-  const refreshAll = react.useCallback(async (isInitial = false): Promise<void> => {
-    if (isInitial) setLoading(true);
-    if (!isInitial) setRefreshing(true);
+  /** 刷新状态与日志（支持首屏加载、手动刷新与后台静默轮询共用同一套防竞态逻辑）。 */
+  const refreshAll = react.useCallback(async (mode: 'initial' | 'manual' | 'poll' = 'manual'): Promise<void> => {
+    if (mode !== 'initial' && (busyRef.current || writeLockRef.current)) return;
+
+    statusSeqRef.current += 1;
+    const seq = statusSeqRef.current;
+    if (mode === 'initial') setLoading(true);
+    if (mode === 'manual') setRefreshing(true);
     try {
       const nextStatus = await frpcApi.fetchFrpcStatus();
-      setStatus(nextStatus);
-      setLoadError('');
+      if (seq === statusSeqRef.current && !busyRef.current && !writeLockRef.current) {
+        setStatus(nextStatus);
+        setLoadError('');
+      }
     } catch (err) {
-      setLoadError((err as Error).message || '无法连接外网隧道状态接口');
+      if (mode !== 'poll' && seq === statusSeqRef.current) {
+        setLoadError((err as Error).message || '无法连接外网隧道状态接口');
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (mode === 'initial') setLoading(false);
+      if (mode === 'manual') setRefreshing(false);
     }
-    await loadLogs(lineLimit, isInitial);
-  }, [lineLimit, loadLogs]);
+    if (busyRef.current || writeLockRef.current) return;
+
+    await loadLogs(lineLimitRef.current, mode === 'initial');
+  }, [loadLogs]);
 
   //M 页面首次挂载时拉取完整状态与默认 120 行日志。
   react.useEffect(() => {
-    void refreshAll(true);
-  }, []);
+    void refreshAll('initial');
+  }, [refreshAll]);
 
-  //M 开启每 10 秒自动轮询时，仅在页面前台可见时发普通 GET 更新状态与日志。
+  //M 开启每 10 秒自动轮询时：写操作进行中或页面不可见时直接跳过，切换日志行数不重建定时器。
   react.useEffect(() => {
     if (!autoPoll) return undefined;
 
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
+      if (document.visibilityState !== 'visible' || busyRef.current || writeLockRef.current) return;
 
-      void frpcApi.fetchFrpcStatus().then((next) => {
-        setStatus(next);
-        setLoadError('');
-      }, () => {
-        //G 轮询抖动静默忽略，保留上一次界面数据。
-      });
-      void loadLogs(lineLimit, false);
+      void refreshAll('poll');
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [autoPoll, lineLimit, loadLogs]);
+  }, [autoPoll, refreshAll]);
 
   /** 执行启动 / 停止 / 重启隧道动作。 */
   const handleControl = async (action: frpcApi.FrpcControlAction): Promise<void> => {
-    if (pendingControl !== null) return;
+    if (busy || writeLockRef.current) return;
 
+    writeLockRef.current = true;
+    statusSeqRef.current += 1;
     setPendingControl(action);
     setBanner(null);
     let label = '启动';
@@ -637,24 +662,30 @@ export function FrpcPage(): react.JSX.Element {
     if (action === 'restart') label = '重启';
     try {
       const res = await frpcApi.controlFrpc(action);
+      statusSeqRef.current += 1;
       setStatus(res.status);
+      setLoadError('');
       setBanner({ kind: 'ok', text: `隧道${label}指令已执行` });
-      await loadLogs(lineLimit, true);
+      await loadLogs(lineLimitRef.current, true);
     } catch (err) {
       setBanner({ kind: 'err', text: `${label}失败：${(err as Error).message}` });
     } finally {
+      writeLockRef.current = false;
       setPendingControl(null);
     }
   };
 
   /** 切换开机自启。 */
   const handleToggleAutoStart = async (enabled: boolean): Promise<void> => {
-    if (pendingAutoStart) return;
+    if (busy || writeLockRef.current) return;
 
+    writeLockRef.current = true;
+    statusSeqRef.current += 1;
     setPendingAutoStart(true);
     setBanner(null);
     try {
       const res = await frpcApi.setFrpcAutoStart(enabled);
+      statusSeqRef.current += 1;
       setStatus((prev) => {
         if (prev === null) return null;
 
@@ -666,6 +697,7 @@ export function FrpcPage(): react.JSX.Element {
     } catch (err) {
       setBanner({ kind: 'err', text: `设置开机自启失败：${(err as Error).message}` });
     } finally {
+      writeLockRef.current = false;
       setPendingAutoStart(false);
     }
   };
@@ -687,64 +719,93 @@ export function FrpcPage(): react.JSX.Element {
     }, 1800);
   };
 
-  /** 提交新增或修改后的单条映射规则。 */
+  /** 提交新增或修改后的单条映射规则（按原规则 name 定位替换，杜绝轮询重排错改）。 */
   const handleSubmitProxy = async (proxy: frpcApi.FrpcProxy, restart: boolean): Promise<void> => {
-    if (status === null) return;
+    if (status === null || busy || writeLockRef.current) return;
 
+    writeLockRef.current = true;
+    statusSeqRef.current += 1;
     setSavingProxy(true);
     try {
       const nextList = [...status.proxies];
-      if (editIndex >= 0 && editIndex < nextList.length) {
-        nextList[editIndex] = proxy;
+      if (editingName !== null) {
+        const targetIdx = nextList.findIndex((item) => item.name === editingName);
+        if (targetIdx < 0) {
+          throw new Error(`原隧道「${editingName}」已被移除，请关闭弹层刷新后重试`);
+        }
+        nextList[targetIdx] = proxy;
       }
-      if (editIndex < 0) {
+      if (editingName === null) {
         nextList.push(proxy);
       }
       const res = await frpcApi.saveFrpcProxies(nextList, restart);
+      statusSeqRef.current += 1;
       setStatus(res.status);
+      setLoadError('');
       setModalOpen(false);
-      setEditIndex(-1);
+      setEditingName(null);
       let note = `已保存隧道「${proxy.name}」配置`;
       if (restart) note = `已保存隧道「${proxy.name}」并平滑重启生效`;
       setBanner({ kind: 'ok', text: note });
-      await loadLogs(lineLimit, true);
+      await loadLogs(lineLimitRef.current, true);
     } finally {
+      writeLockRef.current = false;
       setSavingProxy(false);
     }
   };
 
-  /** 确认删除指定下标的隧道映射并重启生效。 */
-  const handleConfirmDelete = async (index: number): Promise<void> => {
-    if (status === null || savingProxy) return;
+  /** 确认删除指定名称的隧道映射并重启生效。 */
+  const handleConfirmDelete = async (targetName: string): Promise<void> => {
+    if (status === null || busy || writeLockRef.current) return;
 
-    const target = status.proxies[index];
-    if (target === undefined) return;
+    const target = status.proxies.find((item) => item.name === targetName);
+    if (target === undefined) {
+      setDeletingName(null);
+      return;
+    }
 
+    writeLockRef.current = true;
+    statusSeqRef.current += 1;
     setSavingProxy(true);
     try {
-      const nextList = status.proxies.filter((_item, idx) => idx !== index);
+      const nextList = status.proxies.filter((item) => item.name !== targetName);
       const res = await frpcApi.saveFrpcProxies(nextList, true);
+      statusSeqRef.current += 1;
       setStatus(res.status);
-      setDeleteIndex(-1);
+      setLoadError('');
+      setDeletingName(null);
       setBanner({ kind: 'ok', text: `已删除隧道「${target.name}」并平滑重启` });
-      await loadLogs(lineLimit, true);
+      await loadLogs(lineLimitRef.current, true);
     } catch (err) {
       setBanner({ kind: 'err', text: `删除隧道失败：${(err as Error).message}` });
     } finally {
+      writeLockRef.current = false;
       setSavingProxy(false);
     }
   };
 
   /** 切换日志尾部行数档位并立即重拉。 */
   const handleChangeLineLimit = (nextLimit: number): void => {
+    lineLimitRef.current = nextLimit;
     setLineLimit(nextLimit);
     void loadLogs(nextLimit, true);
   };
 
+  const handleCloseModal = react.useCallback((): void => {
+    if (busyRef.current || writeLockRef.current) return;
+
+    setModalOpen(false);
+    setEditingName(null);
+  }, []);
+
   const beacon = resolveBeaconState(status);
   let editingProxy: frpcApi.FrpcProxy | null = null;
-  if (status !== null && editIndex >= 0) {
-    editingProxy = status.proxies[editIndex] ?? null;
+  let editIndex = -1;
+  if (status !== null && editingName !== null) {
+    editIndex = status.proxies.findIndex((item) => item.name === editingName);
+    if (editIndex >= 0) {
+      editingProxy = status.proxies[editIndex] ?? null;
+    }
   }
 
   return (
@@ -774,9 +835,9 @@ export function FrpcPage(): react.JSX.Element {
           <button
             type="button"
             className="fr-nav-btn"
-            disabled={refreshing || loading}
+            disabled={refreshing || loading || busy}
             title="立即刷新状态与日志"
-            onClick={() => void refreshAll(false)}
+            onClick={() => void refreshAll('manual')}
           >
             {refreshing && '刷新中…'}
             {!refreshing && '↻ 刷新'}
@@ -817,7 +878,8 @@ export function FrpcPage(): react.JSX.Element {
             <button
               type="button"
               className="fr-btn secondary sm"
-              onClick={() => void refreshAll(false)}
+              disabled={busy}
+              onClick={() => void refreshAll('manual')}
             >
               重试连接
             </button>
@@ -833,6 +895,7 @@ export function FrpcPage(): react.JSX.Element {
             <HeroSection
               status={status}
               beacon={beacon}
+              busy={busy}
               pendingControl={pendingControl}
               pendingAutoStart={pendingAutoStart}
               copiedUrl={copiedUrl}
@@ -843,19 +906,20 @@ export function FrpcPage(): react.JSX.Element {
 
             <ProxiesSection
               status={status}
-              deleteIndex={deleteIndex}
+              deletingName={deletingName}
+              busy={busy}
               savingProxy={savingProxy}
               onAdd={() => {
-                setEditIndex(-1);
+                setEditingName(null);
                 setModalOpen(true);
               }}
-              onEdit={(idx) => {
-                setEditIndex(idx);
+              onEdit={(targetName) => {
+                setEditingName(targetName);
                 setModalOpen(true);
               }}
-              onAskDelete={(idx) => setDeleteIndex(idx)}
-              onCancelDelete={() => setDeleteIndex(-1)}
-              onConfirmDelete={(idx) => void handleConfirmDelete(idx)}
+              onAskDelete={(targetName) => setDeletingName(targetName)}
+              onCancelDelete={() => setDeletingName(null)}
+              onConfirmDelete={(targetName) => void handleConfirmDelete(targetName)}
             />
           </>
         )}
@@ -877,16 +941,12 @@ export function FrpcPage(): react.JSX.Element {
       <ProxyModal
         open={modalOpen}
         editIndex={editIndex}
+        editingName={editingName}
         initialProxy={editingProxy}
         existingProxies={status?.proxies ?? []}
         serverAddr={status?.serverAddr ?? ''}
         saving={savingProxy}
-        onClose={() => {
-          if (!savingProxy) {
-            setModalOpen(false);
-            setEditIndex(-1);
-          }
-        }}
+        onClose={handleCloseModal}
         onSubmit={handleSubmitProxy}
       />
     </div>

@@ -3,6 +3,7 @@
  * 只有函数，不建 class；index.ts 调它们。
  * 密钥只放进请求头，不进返回、不进报错。
  */
+import * as checks from '../../utils/Checks.ts';
 
 
 /** 一个模型交出去的样子。照网页 web/src/Api.ts:653-670，多两项缓存价和 limitedUntil。 */
@@ -56,9 +57,6 @@ interface ListEntry {
   pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
 }
 
-
-/** 思考档，从低到高。 */
-export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /** 拉清单最多等多久，毫秒。 */
 const LIST_TIMEOUT_MS = 15_000;
@@ -131,7 +129,9 @@ export function merge(
     const name = own?.name ?? entry.display_name ?? entry.id;
     const id = `${provider}/${entry.id}`;
     if (entry.kind === 'decision') {
-      models.push({ id, name, kind: 'decision', contextWindow: entry.context_window ?? 0, thinking: [], vision: false, price: { input: 0, output: 0 } });
+      const contextWindow = entry.context_window ?? 0;
+      const price = { input: 0, output: 0 };
+      models.push({ id, name, kind: 'decision', contextWindow, thinking: [], vision: false, price });
       continue;
     }
 
@@ -152,7 +152,7 @@ export function merge(
 
         return level;
       });
-    const thinking = THINKING_LEVELS.filter((level) => efforts.includes(level));
+    const thinking = checks.THINKING.filter((level) => efforts.includes(level));
     const inputs = entry.modalities?.input ?? entry.architecture?.input_modalities ?? [];
 
     //M 整理价格（手写价已是美元每百万 token，清单里的字符串是每 token 需折算）：先取输入输出价。

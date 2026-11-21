@@ -138,53 +138,97 @@ function canReadAll(owner: boolean, address: unknown, chatType: string): boolean
 }
 
 
-/** 按可信的本轮来源决定能查谁。受信群仅本人放行其他分区。 */
-export function getMemoryAccess(row: SessionMeta): MemoryAccess {
-  const snapshot = row.frontTask?.sourceSnapshot ?? row.activeSourceSnapshot;
-  if (snapshot !== undefined) {
-    //M 后台沿用派活时的快照，前台沿用本轮渠道快照。
-    const source = getSnapshotSource(snapshot);
-    //G 渠道档位决定本人身份，受信群的标记从同一份来源快照里取。
-    const address = snapshot.origin.address;
-    const owner = snapshot.role === 'owner' && channelProtocol.isOwnerTurn(snapshot.channel, address);
-    const full = canReadAll(owner, address, source.chatType);
-    const scope = { full, channel: snapshot.channel, chat: snapshot.chatId, account: snapshot.accountId };
-    if (full) return scope;
+/** 算本轮权限要的几样：两种来源（标准快照、老会话地址）各取一份，后面走同一套规则。 */
+interface AccessInput {
+  /** 算归属键用的来源。 */
+  source: KeySource;
+  /** 本轮回话地址：认群、认受信群用。 */
+  address: unknown;
+  /** 渠道判过是不是本人。 */
+  owner: boolean;
+  /** 放行时交出的渠道、聊天、账号。 */
+  scope: Omit<MemoryAccess, 'full' | 'key'>;
+  /** 本机来源又不是本人时交出的范围：快照照样带渠道、聊天、账号，老会话什么都不带。 */
+  localScope: Omit<MemoryAccess, 'full' | 'key'>;
+}
 
-    //G 未授予本人权限的本机快照也不能读取 owner 记忆。
-    if (snapshot.chatType === 'local') return scope;
 
-    //M 派生可信的个人或群键供当前模型请求使用。
-    const key = getMemoryKey(source);
-    return { ...scope, key: key || undefined };
-  }
+/** 有标准快照时的输入：后台沿用派活时的快照，前台沿用本轮渠道快照。 */
+function getSnapshotInput(snapshot: channelProtocol.SourceSnapshot): AccessInput {
+  const source = getSnapshotSource(snapshot);
 
-  //M 老会话用于比较的来源仍取其快照地址，内部会话沿用原有本人权限。
+  //G 渠道档位决定本人身份，受信群的标记从同一份来源快照里取。
+  const address = snapshot.origin.address;
+  const owner = snapshot.role === 'owner' && channelProtocol.isOwnerTurn(snapshot.channel, address);
+  const scope = { channel: snapshot.channel, chat: snapshot.chatId, account: snapshot.accountId };
+  return { source, address, owner, scope, localScope: scope };
+}
+
+
+/** 老会话没有快照时的输入：来源取会话当时记下的渠道和地址。 */
+function getOriginInput(row: SessionMeta): AccessInput {
   const origin = row.frontTask?.origin;
   const channel = origin?.channel ?? row.channel ?? '';
   const address = origin?.address ?? row.address;
   const source = getOriginSource(channel, address);
+
   //G 是不是本人只问 isOwnerTurn：地址没写档位时，只有网页、命令行、内部会话算本人；群里能不能读由 canReadAll 再管。
   const owner = channelProtocol.isOwnerTurn(channel, address);
-  const full = canReadAll(owner, address, source.chatType);
   let account = utils.getStringField(address, 'accountId')
     || utils.getStringField(address, 'appId')
     || utils.getStringField(address, 'account');
+
+  //M 本机来源：账号记 local，命令行和网页没记聊天号的补成“渠道:本机”（只在放行时交出去）。
   if (source.chatType === 'local') {
-    if (!full) return { full };
     account = 'local';
     if (source.chat === '' && (channel === 'cli' || channel === 'http')) {
       source.chat = `${channel}:本机`;
     }
   }
-  const scope = { full, channel: channel || undefined, chat: source.chat || undefined, account: account || undefined };
-  if (full) return scope;
+  const scope = { channel: channel || undefined, chat: source.chat || undefined, account: account || undefined };
+  return { source, address, owner, scope, localScope: {} };
+}
 
-  if (source.chatType === 'local') return { full };
 
-  //M 老来源只能按明确的归属和渠道帐号继续读取。
-  const key = getMemoryKey(source);
-  return { ...scope, key: key || undefined };
+/** 有快照用快照，没有用老会话记下的地址。 */
+function getAccessInput(row: SessionMeta): AccessInput {
+  const snapshot = row.frontTask?.sourceSnapshot ?? row.activeSourceSnapshot;
+  if (snapshot !== undefined) return getSnapshotInput(snapshot);
+
+  return getOriginInput(row);
+}
+
+
+/** 按可信的本轮来源决定能查谁。受信群仅本人放行其他分区。 */
+export function getMemoryAccess(row: SessionMeta): MemoryAccess {
+  const input = getAccessInput(row);
+  const full = canReadAll(input.owner, input.address, input.source.chatType);
+
+  //M 本人（不在群里，或在受信群里）放行，交出本轮的渠道、聊天、账号。
+  if (full) return { full, ...input.scope };
+
+  //G 本机来源又不是本人：不给归属键，读不到 owner 记忆。
+  if (input.source.chatType === 'local') return { full, ...input.localScope };
+
+  //M 外人和普通群只按派生出的个人或群键读。
+  const key = getMemoryKey(input.source);
+  return { full, ...input.scope, key: key || undefined };
+}
+
+
+/**
+ * 这一轮能不能查渠道消息：本人放行；别人要本轮来源里的渠道、聊天、账号和归属键四样都在。
+ * 开场召回、旧 memory 工具、统一检索的默认来源和渠道范围 getScope 都用这一处，口径一致。
+ * @param access getMemoryAccess 算出的本轮权限。
+ */
+export function canQueryChannel(access: MemoryAccess): boolean {
+  //M 本人不按来源限制。
+  if (access.full) return true;
+
+  //G 缺任何一样都认不出是哪个聊天、归谁，不放行。
+  if (!access.channel || !access.chat || !access.account) return false;
+
+  return access.key !== undefined;
 }
 
 

@@ -3,6 +3,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cordis from 'cordis';
 import type { ChannelMessage } from '../channels/index.ts';
@@ -10,7 +11,53 @@ import type { Session } from '../../Sessions.ts';
 import * as channel from '../memory/ChannelIndex.ts';
 import * as searchModule from '../memory/Search.ts';
 import type { MemoryService } from '../memory/index.ts';
-import { isProjectCheck, toolsFor } from './Rules.ts';
+import { isProjectCheck, mustAsk, toolsFor } from './Rules.ts';
+
+describe('mustAsk 认得出 .. 往上走的删除', () => {
+  //M 数据目录和机器人工作区：只拿来算路径，不建目录。
+  const root = path.join(os.tmpdir(), 'jm-must-ask', 'jmbotsData');
+  const workspace = path.join(root, 'bots', '周小灵', 'workspace');
+  const up = ['..', '..', '..', 'memory'].join(path.sep);
+
+  test('在工作区里用 .. 删数据目录的东西：要人审', () => {
+    expect(mustAsk(`rd /s /q ${up}`, root, workspace)).toContain('删数据目录里的东西');
+    expect(mustAsk(`rm -rf ${up}`, root, workspace)).toContain('删数据目录里的东西');
+  });
+
+  test('先 cd .. 上去再删：照 cd 以后的目录算', () => {
+    const climb = ['..', '..', '..'].join(path.sep);
+    expect(mustAsk(`cd ${climb} && rd /s /q memory`, root, workspace)).toContain('删数据目录里的东西');
+  });
+
+  test('.. 绕一圈还在工作区里、直接删工作区里的：不归这里管', () => {
+    const inside = ['sub', '..', 'tmp'].join(path.sep);
+    expect(mustAsk(`rm -rf ${inside}`, root, workspace)).toBeUndefined();
+    expect(mustAsk('rd /s /q tmp', root, workspace)).toBeUndefined();
+  });
+
+  test('云端 27 M1：带引号、含空格又含 .. 的绝对路径，解开后落在数据目录里：要人审', () => {
+    //M 用 join(path.sep) 拼，path.join 会把 .. 提前消掉。
+    const detour = [path.dirname(root), 'x y', '..', 'jmbotsData', 'memory'].join(path.sep);
+    expect(mustAsk(`rd /s /q "${detour}"`, root, workspace)).toContain('删数据目录里的东西');
+  });
+
+  test('云端 27 M2：删数据目录的上级、cd 到上级再相对删数据目录：要人审', () => {
+    const toParent = ['..', '..', '..', '..'].join(path.sep);
+    const parent = path.dirname(root);
+    const memory = path.join('jmbotsData', 'memory');
+    expect(mustAsk(`rd /s /q ${toParent}`, root, workspace)).toContain('删数据目录的上级');
+    expect(mustAsk(`cd /d "${parent}" && rd /s /q ${memory}`, root, workspace)).toContain('删数据目录里的东西');
+  });
+
+  test('cd 到上级删别的、删数据目录外的绝对路径、删命令后面接 echo：不误伤', () => {
+    const parent = path.dirname(root);
+    const other = path.join(os.tmpdir(), 'jm-must-ask-other', 'a b');
+    expect(mustAsk(`cd /d "${parent}" && del notes.txt`, root, workspace)).toBeUndefined();
+    expect(mustAsk(`rd /s /q "${other}"`, root, root)).toBeUndefined();
+    expect(mustAsk('rd /s /q tmp && echo memory', root, workspace)).toBeUndefined();
+  });
+});
+
 
 describe('isProjectCheck', () => {
   test('src7 的检查、测试、编译放行', () => {

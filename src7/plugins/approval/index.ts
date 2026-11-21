@@ -55,7 +55,7 @@ export const name = 'approval';
 //M   Outbound 删掉一层层相加的等待常量，只留 programs 发 HTTP 用的两个。
 //M 1.2.17：拼审批卡片的 plainCard、cardLabel、getReviewReason、getCardPaths、reviewCard 搬进 ReviewCard.ts（云端 20 第 3 条）；
 //M   构造函数只做登记，监听干的活挪成方法 onCalled、onBeforeModel、onBeforeTool、getRequestError（第 2 条）。行为不变。
-export const version = '1.2.17';
+export const version = '1.2.19';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
@@ -364,7 +364,9 @@ const REVIEW_PROMPT = '你是命令审核员。一个机器人要在用户的电
   + '要问用户：删除或覆盖用户的文件（尤其是工作目录外面的）、改系统设置、装卸软件、动别的程序和服务、往外发数据、花钱、读密钥。拿不准就问用户。\n\n'
   + '要问用户时，你写的就是给用户看的审批卡片：标题用大白话说要做什么（不要写“执行命令”这种空话），原因从机器人的任务里看。\n\n'
   + '"what" 和 "risk" 用户一眼就要看懂，必须具体：\n'
-  + '- what：写命令执行完的结果，不要复述命令：对哪些文件做了什么、最后变成什么样，带上关键的路径，比如“把 src 整个复制到 zlt\\code，同名文件直接覆盖”“把 X 编译成 Y.exe 放到 Z”“删掉 A 目录下 3 个文件”。看不出会做成什么就不写 what，别编。\n'
+  + '- what：写命令执行完的结果，不要复述命令：对哪些文件做了什么、最后变成什么样，带上关键的路径，'
+  + '比如“把 src 整个复制到 zlt\\code，同名文件直接覆盖”“把 X 编译成 Y.exe 放到 Z”“删掉 A 目录下 3 个文件”。'
+  + '看不出会做成什么就不写 what，别编。\n'
   + '- risk：safe 是 false 时，写清是哪个路径、哪种操作（删除、覆盖、改设置、装软件、往外发……）、会有什么后果，'
   + '比如“会覆盖 zlt\\code 里的同名文件，那边没提交的改动会丢”。不许只写“有风险”“风险中”“可能有影响”这种空话；'
   + 'safe 是 true 时写“无”。\n\n'
@@ -649,8 +651,14 @@ export class Approval extends cordis.Service {
 
       //M 决策模型真答过才看结论；没挂、出错都当没问过，保留“规则定不了”往下一档。
       const judged = asked.reply;
-      if (judged?.verdict === 'allow') return this.traced(input, { result: 'pass', by: 'decision', reason: `决策模型认为安全：${judged.reason}` });
-      if (judged?.verdict === 'deny') return this.traced(input, { result: 'reject', by: 'decision', reason: judged.reason });
+      if (judged?.verdict === 'allow') {
+        const reason = `决策模型认为安全：${judged.reason}`;
+        return this.traced(input, { result: 'pass', by: 'decision', reason });
+      }
+      if (judged?.verdict === 'deny') {
+        const reason = judged.reason;
+        return this.traced(input, { result: 'reject', by: 'decision', reason });
+      }
 
       //M 拿不准：记下决策模型的原因，和它顺带写的执行结果（只给卡片显示，不改上面的放行判断）。
       if (judged !== undefined) {
@@ -687,18 +695,29 @@ export class Approval extends cordis.Service {
 
     //G 调用方说了不问用户 → 直接拒绝。
     if (input.ask === false) {
-      return this.traced(input, { result: 'reject', by: last.by, reason: `没放行：${last.reason}。要用户拍板就带上 ask_user 再发一次。` });
+      const reason = `没放行：${last.reason}。要用户拍板就带上 ask_user 再发一次。`;
+      return this.traced(input, { result: 'reject', by: last.by, reason });
     }
 
     //G builder 的命令审不过直接拒：登记了待确认，发起人自己就能说“同意 N”（allowed 认 actor），等于自己批自己。
     if (input.confined !== undefined) {
-      return this.traced(input, { result: 'reject', by: last.by, reason: `没放行：${last.reason}。只能在 ${input.confined} 里动，别的要用户本人来说。` });
+      const reason = `没放行：${last.reason}。只能在 ${input.confined} 里动，别的要用户本人来说。`;
+      return this.traced(input, { result: 'reject', by: last.by, reason });
     }
 
     //M 第四档：照审核模型写的内容拼一张卡片，登记待确认，问用户。不等用户：马上交回“已经去问了”，用户定了由 approval/decided 通知提的人。
     const card = reviewCardModule.reviewCard(input, script, answer, why, asks, decisionWhat);
     const detail = cardUtils.getCardText({ ...card, state: 'waiting' });
-    const pending = this.ask({ kind: input.kind, title: card.title, detail, payload: input.payload, bot, session: input.session, card });
+    const askInput = {
+      kind: input.kind,
+      title: card.title,
+      detail,
+      payload: input.payload,
+      bot,
+      session: input.session,
+      card,
+    };
+    const pending = this.ask(askInput);
     //G 登记通知期间若已经截止，将这张卡片作废并保存明确原因。
     const afterAsk = getStoppedReview(input.signal);
     if (afterAsk !== undefined) {
@@ -717,7 +736,11 @@ export class Approval extends cordis.Service {
    * @param state 给模型看的现状：命令、目录、脚本、会话、约束。
    * @returns reply 是决策模型的结论；没挂 decision、出错、提问的会话喊停时是 why。
    */
-  private async askDecision(input: ReviewInput, bot: string, state: Record<string, unknown>): Promise<requestEventModule.Asked<DecisionReply>> {
+  private async askDecision(
+    input: ReviewInput,
+    bot: string,
+    state: Record<string, unknown>,
+  ): Promise<requestEventModule.Asked<DecisionReply>> {
     //M 顺带要一句“执行完会做成什么”（同一次调用，不多调模型），只给卡片的“要做什么”用。
     const want = ['what'] as const;
     const judgeInput = {
@@ -735,7 +758,9 @@ export class Approval extends cordis.Service {
     };
 
     //M 发 decision/judge 等回执；提问的会话被喊停，这次等待跟着结束。
-    return await requestEventModule.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', judgeInput, options);
+    const asking = 'decision/judge';
+    const answer = 'decision/judge-result';
+    return await requestEventModule.requestEvent(this.ctx, asking, answer, judgeInput, options);
   }
 
   /**
@@ -746,14 +771,20 @@ export class Approval extends cordis.Service {
    * @param why 机器人在干的活（getWhy 取的会话最后一句用户的话），可能是空串。
    * @returns 模型回的 JSON；没做完、不是 JSON 都是 undefined（当拿不准）。
    */
-  private async askModel(input: ReviewInput, bot: string, script: ReturnType<typeof rules.readScript>, why: string): Promise<Record<string, unknown> | undefined> {
+  private async askModel(
+    input: ReviewInput,
+    bot: string,
+    script: ReturnType<typeof rules.readScript>,
+    why: string,
+  ): Promise<Record<string, unknown> | undefined> {
     //M 拼审核小会话要看的话：命令、目录、约束、脚本内容、机器人在干的活，最后叮嘱只回 JSON。
     const config = this.config;
     const lines = [`命令：${input.command}`, `执行目录：${input.cwd}`];
     if (input.confined !== undefined) lines.push(confinedRule(input.confined));
     if (script !== undefined) lines.push(`要跑的脚本：${script.file}（前 4000 字）\n${script.content}`);
     if (why !== '') lines.push(`机器人在干的活：${why}`);
-    lines.push('只回一段 JSON：{"safe": ..., "title": "...", "reason": "...", "what": "...", "paths": [...], "risk_level": "...", "risk": "...", "advice": "..."}。'
+    lines.push('只回一段 JSON：{"safe": ..., "title": "...", "reason": "...", "what": "...", "paths": [...], '
+      + '"risk_level": "...", "risk": "...", "advice": "..."}。'
       + 'what、risk 要写具体的路径和操作，不许只写“有风险”。');
 
     //M 开审核小会话问一次；提问的会话被喊停，它也停（input.signal）。
@@ -796,7 +827,12 @@ export class Approval extends cordis.Service {
     if ('by' in verdict) {
       decidedBy = verdict.by;
     }
-    const vars = { command: input.command.slice(0, 80), verdict: verdict.result, decidedBy: decidedBy, reason: verdict.reason };
+    const vars = {
+      command: input.command.slice(0, 80),
+      verdict: verdict.result,
+      decidedBy: decidedBy,
+      reason: verdict.reason,
+    };
     this.ctx.emit('trace', 'Approval.review', 'trace.approval.review', 'approval.review(input)', vars);
     return verdict;
   }
@@ -809,11 +845,25 @@ export class Approval extends cordis.Service {
    */
   ask(input: AskInput): Pending {
     //M 拼卡片、查出发起人，把这件事存进表，再按自增号读回来。
-    const card: cardUtils.CardData = { ...(input.card ?? reviewCardModule.plainCard(input.title, input.detail)), state: 'waiting' };
+    const base = input.card ?? reviewCardModule.plainCard(input.title, input.detail);
+    const card: cardUtils.CardData = { ...base, state: 'waiting' };
     const who = this.getInitiator(input.session);
-    const sql = 'INSERT INTO approval_pending (kind, title, detail, payload, bot, session, customer, actor, state, asked_at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    const values = [input.kind, input.title, input.detail, JSON.stringify(input.payload ?? null), input.bot, input.session ?? null,
-      who.customer, who.actor, 'waiting', Date.now(), JSON.stringify(card)];
+    const sql = 'INSERT INTO approval_pending'
+      + ' (kind, title, detail, payload, bot, session, customer, actor, state, asked_at, card)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const values = [
+      input.kind,
+      input.title,
+      input.detail,
+      JSON.stringify(input.payload ?? null),
+      input.bot,
+      input.session ?? null,
+      who.customer,
+      who.actor,
+      'waiting',
+      Date.now(),
+      JSON.stringify(card),
+    ];
     const done = this.ctx.resources.db.query(sql).run(...values);
     const pending = this.getRow(Number(done.lastInsertRowid)) as Pending;
 
@@ -860,9 +910,8 @@ export class Approval extends cordis.Service {
     const found = this.getRow(id);
     if (found === undefined) return `没有待确认 #${String(id)}`;
 
-    //G 卡片作废后仍可能被点到，直接交回已超时的原因。
-    const expired = found.card.state === 'ended' && found.by === REVIEW_TIMED_OUT;
-    if (expired) return `待确认 #${String(id)} ${REVIEW_TIMED_OUT}`;
+    //G 卡片作废后（审核超时、提的人不要了，都经 close）仍可能被点到：看卡片状态，交回作废时记下的原因，不比文字。
+    if (found.card.state === 'ended') return `待确认 #${String(id)} ${found.by ?? '已作废'}`;
 
     if (!verified && found.kind === outboundModule.REMINDER_APPROVAL_KIND) return '定时提醒只接受本人确认';
 
@@ -902,11 +951,18 @@ export class Approval extends cordis.Service {
    * @param result 卡片上写的结果。
    * @param cardState 卡片的状态；不给就跟着 state。
    */
-  private settle(found: Pending, state: 'approved' | 'rejected', by: string, result: string, cardState?: cardUtils.CardState): Pending {
+  private settle(
+    found: Pending,
+    state: 'approved' | 'rejected',
+    by: string,
+    result: string,
+    cardState?: cardUtils.CardState,
+  ): Pending {
     //M 改表里的状态和卡片，再读回来给后面发通知用。
     const id = found.id;
     const at = Date.now();
-    const card: cardUtils.CardData = { ...found.card, state: cardState ?? state, result: `${result}，${new Date(at).toLocaleString('zh-CN', { hour12: false })}` };
+    const when = new Date(at).toLocaleString('zh-CN', { hour12: false });
+    const card: cardUtils.CardData = { ...found.card, state: cardState ?? state, result: `${result}，${when}` };
     const sql = 'UPDATE approval_pending SET state = ?, decided_by = ?, decided_at = ?, card = ? WHERE id = ?';
     this.ctx.resources.db.query(sql).run(state, by, at, JSON.stringify(card), id);
     const pending = this.getRow(id) as Pending;
@@ -925,7 +981,8 @@ export class Approval extends cordis.Service {
   recent(): Pending[] {
     //M 查 10 分钟内定了的，只留长跑提醒（网页上变灰留着给人看）。
     const since = Date.now() - RECENT_MS;
-    const rows = this.ctx.resources.db.query("SELECT * FROM approval_pending WHERE state != 'waiting' AND decided_at >= ? ORDER BY id").all(since) as Row[];
+    const sql = "SELECT * FROM approval_pending WHERE state != 'waiting' AND decided_at >= ? ORDER BY id";
+    const rows = this.ctx.resources.db.query(sql).all(since) as Row[];
     return rows.map(getPending).filter((item) => item.card.kind === 'long-run');
   }
 
@@ -1073,7 +1130,8 @@ export class Approval extends cordis.Service {
     const bot = event.bot.name;
     const speaker = rules.getSpeaker(event.message.channel, event.message.address);
     const owner = isMarkedOwner(event.message.address);
-    const verified = event.message.channel !== 'http' || utils.getField(event.message.address, 'verifiedOwner') === true;
+    const verifiedOwner = utils.getField(event.message.address, 'verifiedOwner') === true;
+    const verified = event.message.channel !== 'http' || verifiedOwner;
     const waiting = this.list().filter((item) => item.bot === bot && allowed(item, speaker, owner, verified));
     //M 标记已消费后才执行批复，审批监听者看到的时序保持一致。
     const answer = this.getTextAnswer(said, waiting);
@@ -1254,7 +1312,8 @@ export class Approval extends cordis.Service {
       return;
     }
     //T 跟踪：没有会话可回。
-    this.ctx.emit('trace', 'Approval.answer', 'trace.approval.answerWithoutSession', "ctx.emit('bot/say')", { bot: bot, spoken: text });
+    const vars = { bot: bot, spoken: text };
+    this.ctx.emit('trace', 'Approval.answer', 'trace.approval.answerWithoutSession', "ctx.emit('bot/say')", vars);
   }
 
   /**
@@ -1467,7 +1526,9 @@ export function apply(ctx: cordis.Context, config: unknown): void {
 
   //G 决策模型只放行只读、低风险的命令，门槛至少 0.8（用户 11-14；原来默认 0.2，放行过 rd /s /q System32）。
   const pass = raw['decision_pass'] ?? DECISION_PASS;
-  if (typeof pass !== 'number' || pass < DECISION_PASS || pass > 1) throw new Error(`approval.decision_pass 要是 ${String(DECISION_PASS)}～1 的数`);
+  if (typeof pass !== 'number' || pass < DECISION_PASS || pass > 1) {
+    throw new Error(`approval.decision_pass 要是 ${String(DECISION_PASS)}～1 的数`);
+  }
 
   //M 可信目录（用户 11-18 #169）：绝对路径的数组，在 config.yaml 里配，代码不写死；这里规范化一次（解开 ..、Windows 上转小写）。
   const trustedDirs = checksModule.checkDirs(raw['trusted_dirs'], 'approval.trusted_dirs');

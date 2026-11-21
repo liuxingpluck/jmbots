@@ -55,7 +55,6 @@ class Socket extends events.EventEmitter<{ message: [Wire, boolean]; close: []; 
 class FakeAsr implements asrModule.Asr {
   onPartial = (_text: string): void => {};
   onFinal = (_text: string): void => {};
-  onSpeechStart = (): void => {};
   onError?: (reason: string) => void;
   readonly input: number[][] = [];
   closed = false;
@@ -910,6 +909,39 @@ test('重复的标准回复只进入一次语音播放，回执保留实际播�
   expect(first).toMatchObject({ ok: true, spoken: true });
   expect(replayed).toEqual(first);
   expect(calls).toBe(1);
+});
+
+test('回话回执只留最近 RECEIPT_MAX 条：最早的被挤掉后重放会再播，最近的照旧命中', async () => {
+  const ctx = new cordis.Context();
+  cleanups.push(() => ctx.fiber.dispose());
+  let calls = 0;
+  const play = async (): Promise<boolean> => {
+    calls += 1;
+    return true;
+  };
+  new replyModule.VoiceReplies(ctx, play);
+  const parts = [{ partId: 'text:0', kind: 'text' as const, text: '收到' }];
+  const getRequest = (index: number) => ({
+    channel: 'voice', bot: '默认机器人', replyRequestKey: `reply-${String(index)}`, replyRoundKey: 'reply-round',
+    replyIndex: 0, kind: 'final' as const, mode: 'text' as const, parts, payloadHash: 'same-text',
+    sourceSnapshot: { channel: 'voice' } as channel.SourceSnapshot,
+  });
+  const max = replyModule.RECEIPT_MAX;
+
+  //M 放进 max + 1 条不同的回复号：第 0 条被挤掉。
+  for (let index = 0; index <= max; index += 1) {
+    await channel.requestChannelReply(ctx, getRequest(index));
+  }
+  expect(calls).toBe(max + 1);
+
+  //M 最近一条还在：重放直接交回原回执，不再播。
+  const latest = await channel.requestChannelReply(ctx, getRequest(max));
+  expect(latest).toMatchObject({ ok: true, spoken: true });
+  expect(calls).toBe(max + 1);
+
+  //M 最早一条已淘汰：重放当成新的，再播一次。
+  await channel.requestChannelReply(ctx, getRequest(0));
+  expect(calls).toBe(max + 2);
 });
 
 test('替换连接取消旧判断的等待，迟到的 allow 不派发', async () => {

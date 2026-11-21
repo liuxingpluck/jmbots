@@ -102,7 +102,10 @@ export function isRateLimited(error: string): boolean {
  * @returns 属于上下文超限错误时返回 true，否则返回 false。
  */
 export function isOverflow(error: string): boolean {
-  return /context.?window|context.?length|maximum context|too many tokens|prompt is too long|上下文.{0,6}(超|过长|太长)/iu.test(error);
+  //M 英文报错几种说法，中文报错“上下文……超/过长/太长”，对上一种就算超长。
+  const english = /context.?window|context.?length|maximum context|too many tokens|prompt is too long/iu;
+  const chinese = /上下文.{0,6}(超|过长|太长)/iu;
+  return english.test(error) || chinese.test(error);
 }
 
 /** 取 SDK 错误开头的 HTTP 4xx 状态码。 */
@@ -144,13 +147,18 @@ function unitMs(unit: string): number {
  * @returns 恢复时刻毫秒；读不出是 undefined。
  */
 export function getResetTime(error: string, now: number): number | undefined {
-  const stamp = /(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?\s*(?:UTC|GMT)?\s*([+-])(\d{1,2})(?::?(\d{2}))?/iu.exec(error);
+  //M 报错里的“年-月-日 时:分(:秒)”加时区偏移：前半段是日期时刻，后半段是 UTC/GMT 和 +8、-05:00 这类偏移。
+  const datePart = String.raw`(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?`;
+  const zonePart = String.raw`\s*(?:UTC|GMT)?\s*([+-])(\d{1,2})(?::?(\d{2}))?`;
+  const stamp = new RegExp(datePart + zonePart, 'iu').exec(error);
   if (stamp !== null) {
     let clock = stamp[2] ?? '';
     if (clock.length === 5) {
       clock = `${clock}:00`;
     }
-    const at = Date.parse(`${stamp[1] ?? ''}T${clock}${stamp[3] ?? '+'}${(stamp[4] ?? '0').padStart(2, '0')}:${stamp[5] ?? '00'}`);
+    const offsetHour = (stamp[4] ?? '0').padStart(2, '0');
+    const offset = `${stamp[3] ?? '+'}${offsetHour}:${stamp[5] ?? '00'}`;
+    const at = Date.parse(`${stamp[1] ?? ''}T${clock}${offset}`);
     if (Number.isNaN(at)) return undefined;
 
     return at;
@@ -273,7 +281,8 @@ export class ModelFallback {
 
     //M 要的在冷却、备选一个都没有：还是调它（冷却记错了也不至于一个不用）。
     if (tried.length === 0) {
-      this.ctx.emit('model-catalog/fallback', { session: request.session, from: asked, to: asked, reason: 'no-available-fallback' });
+      const noFallback = { session: request.session, from: asked, to: asked, reason: 'no-available-fallback' } as const;
+      this.ctx.emit('model-catalog/fallback', noFallback);
       request.answer = await this.attempt(request, asked);
       return;
     }
@@ -372,7 +381,8 @@ export class ModelFallback {
     this.ctx.emit('model-catalog/cooldown', { model, until, reason: error.slice(0, 200) });
     //T 跟踪：记了冷却。
     const traceVars = { model: model, until: new Date(until).toLocaleString() };
-    this.ctx.emit('trace', 'ModelFallback.noteLimit', 'trace.modelCatalog.rateLimited', 'cooldowns.set(model, until)', traceVars);
+    const traceCode = 'cooldowns.set(model, until)';
+    this.ctx.emit('trace', 'ModelFallback.noteLimit', 'trace.modelCatalog.rateLimited', traceCode, traceVars);
   }
 
   /**
@@ -391,7 +401,8 @@ export class ModelFallback {
     let free: string[] = [];
     if (siblings) {
       free = models
-        .filter((item) => item.kind === 'chat' && item.id.split('/')[0] === provider && item.price.input === 0 && item.price.output === 0)
+        .filter((item) => item.kind === 'chat' && item.id.split('/')[0] === provider)
+        .filter((item) => item.price.input === 0 && item.price.output === 0)
         .map((item) => item.id);
     }
     const unique = [...new Set([...chain, ...free])].filter((model) => model !== asked);
@@ -418,14 +429,19 @@ export class ModelFallback {
   }
 
   /** 把所有候选模型均调用失败的原因写成提示。 */
-  private giveUp(asked: string, list: string[], tried: { model: string; error: string; reason?: RetryableReason }[]): string {
+  private giveUp(
+    asked: string,
+    list: string[],
+    tried: { model: string; error: string; reason?: RetryableReason }[],
+  ): string {
     const names = tried.map((item) => item.model).join('、');
     if (tried.every((item) => item.reason === 'context-overflow')) {
       return `上下文太长：依次试了 ${String(tried.length)} 个模型（${names}），都装不下。这个会话聊得太久了，开个新会话再说。`;
     }
 
     //M 收集因仍在冷却期而跳过的模型名，附进最终报错提示里方便排查。
-    const cooling = [asked, ...list].filter((model) => !tried.some((item) => item.model === model) && this.cooling(model) !== undefined);
+    const untried = [asked, ...list].filter((model) => !tried.some((item) => item.model === model));
+    const cooling = untried.filter((model) => this.cooling(model) !== undefined);
     let coolingNote = '';
     if (cooling.length > 0) {
       coolingNote = `；${cooling.join('、')} 还在限流冷却，没再试`;
@@ -496,7 +512,8 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
       limits: { perModel: 1, models: {}, providers: {} },
     };
   }
-  if (rawFallback !== undefined && rawFallback !== null && (typeof rawFallback !== 'object' || Array.isArray(rawFallback))) {
+  const fallbackWritten = rawFallback !== undefined && rawFallback !== null;
+  if (fallbackWritten && (typeof rawFallback !== 'object' || Array.isArray(rawFallback))) {
     throw new Error('model-catalog.fallback 要写成对象或 false');
   }
 
@@ -547,7 +564,8 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
   const rawMaxTries = sub['max_tries'];
 
   const rawSubConcurrency = sub['concurrency'];
-  if (rawSubConcurrency !== undefined && rawSubConcurrency !== null && (typeof rawSubConcurrency !== 'object' || Array.isArray(rawSubConcurrency))) {
+  const concurrencyWritten = rawSubConcurrency !== undefined && rawSubConcurrency !== null;
+  if (concurrencyWritten && (typeof rawSubConcurrency !== 'object' || Array.isArray(rawSubConcurrency))) {
     throw new Error('model-catalog.fallback.concurrency 要写成对象');
   }
   const subConcurrency = (rawSubConcurrency ?? {}) as Record<string, unknown>;

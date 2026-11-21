@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.7.83",
+    "date": "2026-11-21",
+    "changes": [
+      "新增积木知识库后端插件 knowledge（1.0.0）：单写源 SQLite（kb_dirs/kb_docs/kb_tags/kb_doc_tags）+ 磁盘镜像导出 + 10 个 /api/knowledge/* 接口（含 PUT baseUpdatedAt 409 乐观锁防并发覆盖）+ 温和桥接 memory 混合检索 + 前后台只读检索工具 kb_search，为工作决策专题挂载与 /knowledge/ 前端打好底座",
+      "前端性能 P1 全面提速与容错：开启 esbuild splitting 分包与 antd/@ant-design/icons 子路径树摇（用 Bun.Transpiler 剥离注释/类型防误跳过），各入口首屏 JS 显著瘦身（frpc −77.6%、work-decision −60.6%、tutorial −54.7%、index −51.7%、memory −40.9%、model-notes 再瘦 −35.4%，antd 桶文件彻底清出产物）；全站懒加载根入口新增 ChunkErrorBoundary 防发版换哈希 404 白屏；修复 GraphPage 旧详情竞态、DecisionMapPage 30s 探针零无效重绘与象限/紧急正则边界，以及 FrpcPage 状态序号与并发写锁",
+      "渠道与外网隧道安全加固：frpc（1.0.1）升级严格 IPv4 非回环白名单护住 server.port 与 30086、未支持键回 409 防静默丢配置、串行启停互斥；feishu（1.3.9）新增严格白名单撤回与发件箱归档隔离防重发死循环；relay（1.5.6）瘦身拆分为 Receive/Files/Decision 并在真回复后自动异步撤回「已转给」占位提示；bots（1.6.10）启动严校 judge_helper 并合一三处认领判断",
+      "后端核心插件全链稳健加固：context-fit（1.1.6）图片块定额 1500 token 估算防大图误裁历史、单条超大消息截断与压缩失败退避、仅限 front/work 压缩与 60s 窗口缓存；approval（1.2.19）+ programs（1.7.7）+ external/wechat 封堵引号空格/上级目录/cd 相对下钻删数据目录绕过并补齐进程退出 x-jmbots-key 鉴权；voice（0.6.7）回执上限 500 并彻底移除 Silero VAD；screen（0.3.5）清道夫改按需启停零空转；model-catalog（1.3.10）、memory（1.11.5）、journal（1.3.5）、tutorial（1.1.25）批量补齐容量上限、原子写、去重与边界保护",
+      "教程页新增组块阅读第 12–17 块（外网门禁与知识库、记忆人员与压缩、安全审批与进程插件、语音录屏与提醒、模型调度与用量、教程与流水账，全链 01–17 完整闭环），Check_Lines 增强函数表行号检测并将全仓 111 份文档清零至 0 问题"
+    ]
+  },
+  {
     "version": "0.7.82",
     "date": "2026-11-21",
     "changes": [

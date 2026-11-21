@@ -3,6 +3,7 @@
  * 绝不向外暴露 auth.token 明文；回写 [[proxies]] 时 100% 原样保留头部注释、鉴权、TLS 与日志配置。
  */
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as failureModule from '../../utils/Failure.ts';
 
 
@@ -65,6 +66,22 @@ const VALID_TYPES: readonly FrpcProxyType[] = ['http', 'https', 'tcp', 'udp'];
 /** 30086 回环地址拦截提示语。 */
 export const LOOPBACK_30086_ERROR =
   '30086 端口映射禁止使用 127.0.0.1/localhost，请使用局域网地址 192.168.200.1 以防绕过外网 AuthGate 登录门禁';
+
+/** 现有 frpc.toml 含高级字段时拒绝覆盖提示语。 */
+export const UNSUPPORTED_TOML_ERROR =
+  '现有 frpc.toml 含控制台暂不支持的高级字段，请手改文件避免丢失';
+
+/** 控制台支持无损编辑的 [[proxies]] 白名单键名。 */
+const ALLOWED_PROXY_KEYS = new Set([
+  'name',
+  'type',
+  'localIP',
+  'localIp',
+  'localPort',
+  'customDomains',
+  'subdomain',
+  'remotePort',
+]);
 
 
 //==========================================================
@@ -342,15 +359,16 @@ export function parseFrpcToml(raw: string): ParsedFrpcToml {
 //==========================================================
 
 /**
- * 判断地址是否属于本机回环或通配监听地址（映射 30086 时会绕过外网 AuthGate 门禁）。
+ * 严格白名单核验主站端口映射源地址：仅允许标准点分十进制非回环、非全零 IPv4 地址，
+ * 彻底封死 ::、::ffff:127.0.0.1、localhost.、0x7f.0.0.1、八进制或整数 IP 等全部绕过写法。
  * @param host 待检 localIP。
- * @returns 属于回环地址返回 true。
+ * @returns 允许映射返回 true。
  */
-function isLoopbackOrWildcardHost(host: string): boolean {
-  const lower = host.trim().toLowerCase();
-  if (lower === 'localhost' || lower === '::1' || lower === '[::1]' || lower === '0.0.0.0') return true;
+export function isAllowedServerMapIp(host: string): boolean {
+  const trimmed = host.trim();
+  if (!net.isIPv4(trimmed)) return false;
 
-  return lower.startsWith('127.');
+  return !/^(127\.|0\.)/u.test(trimmed);
 }
 
 
@@ -399,9 +417,10 @@ function checkCustomDomains(raw: unknown, proxyName: string): string[] | undefin
 /**
  * 严格校验 PUT /api/frpc/proxies 提交的整套隧道配置。
  * @param raw 请求体里的 proxies 字段。
+ * @param guardedPort 主站 HTTP 监听端口（默认 30086，随 server.port 注入同步保护）。
  * @returns 规范化后的 FrpcProxy 列表。
  */
-export function validateProxies(raw: unknown): FrpcProxy[] {
+export function validateProxies(raw: unknown, guardedPort = 30086): FrpcProxy[] {
   //G 外层必须是数组。
   if (!Array.isArray(raw)) {
     throw new failureModule.Failure(400, 'proxies 要写成数组');
@@ -441,8 +460,9 @@ export function validateProxies(raw: unknown): FrpcProxy[] {
     const localIP = rawIp.trim();
     const localPort = checkPort(rec['localPort'], `隧道 ${name} 的 localPort`);
 
-    //G 安全铁律：30086 端口严禁用 127.0.0.1 / localhost，防止外网流量变成 isLocal 免登录请求。
-    if (localPort === 30086 && isLoopbackOrWildcardHost(localIP)) {
+    //G 安全铁律：主站端口映射强制走严格 IPv4 非回环白名单，防止外网流量变成 isLocal 免登录请求。
+    const isGuardedPort = localPort === 30086 || localPort === guardedPort;
+    if (isGuardedPort && !isAllowedServerMapIp(localIP)) {
       throw new failureModule.Failure(400, LOOPBACK_30086_ERROR);
     }
 
@@ -526,22 +546,50 @@ export function rewriteFrpcTomlProxies(originalToml: string, proxies: FrpcProxy[
     eol = '\n';
   }
 
-  //M 逐行扫描：只剔除旧 [[proxies]] 段落内的键值行，其余配置、空行与全部注释原封不动保留。
+  //M 逐行扫描：拦截原 [[proxies]] 中任何控制台暂不支持的高级字段、子表或跨行数组，防静默丢失。
   const rawLines = body.split(/\r?\n/u);
   const keptLines: string[] = [];
+  let pendingComments: string[] = [];
   let inProxyBlock = false;
 
   for (const rawLine of rawLines) {
     const cleaned = stripTomlComment(rawLine).trim();
+    if (/^\[\[?\s*proxies\s*\./iu.test(cleaned)) {
+      throw new failureModule.Failure(409, UNSUPPORTED_TOML_ERROR);
+    }
     if (/^\[\[\s*proxies\s*\]\]$/u.test(cleaned)) {
       inProxyBlock = true;
+      pendingComments = [];
       continue;
     }
     if (inProxyBlock && /^\[.+\]$/u.test(cleaned)) {
       inProxyBlock = false;
+      keptLines.push(...pendingComments);
+      pendingComments = [];
     }
     if (!inProxyBlock) {
       keptLines.push(rawLine);
+      continue;
+    }
+    if (cleaned === '') {
+      pendingComments.push(rawLine);
+      continue;
+    }
+    pendingComments = [];
+    const eqIndex = cleaned.indexOf('=');
+    if (eqIndex <= 0) {
+      throw new failureModule.Failure(409, UNSUPPORTED_TOML_ERROR);
+    }
+    const key = cleaned.slice(0, eqIndex).trim();
+    const valText = cleaned.slice(eqIndex + 1).trim();
+    if (!ALLOWED_PROXY_KEYS.has(key) || valText === '') {
+      throw new failureModule.Failure(409, UNSUPPORTED_TOML_ERROR);
+    }
+    if (valText.startsWith('"""') || valText.startsWith("'''") || valText.startsWith('{')) {
+      throw new failureModule.Failure(409, UNSUPPORTED_TOML_ERROR);
+    }
+    if (key === 'customDomains' && parseTomlStringArray(valText) === undefined) {
+      throw new failureModule.Failure(409, UNSUPPORTED_TOML_ERROR);
     }
   }
 
@@ -575,41 +623,38 @@ export function rewriteFrpcTomlProxies(originalToml: string, proxies: FrpcProxy[
  */
 export function derivePublicUrls(proxies: FrpcProxy[]): string[] {
   const seen = new Set<string>();
-  const addUrl = (url: string): void => {
-    if (!seen.has(url)) {
-      seen.add(url);
-    }
-  };
-
   for (const proxy of proxies) {
     if (proxy.type !== 'http' && proxy.type !== 'https') continue;
     if (proxy.customDomains === undefined) continue;
 
     for (const domain of proxy.customDomains) {
       if (proxy.localPort === 30086) {
-        addUrl(`https://${domain}/work-decision/`);
-        addUrl(`https://${domain}/tutorial/`);
-        addUrl(`https://${domain}/frpc/`);
-        addUrl(`https://${domain}/`);
+        seen.add(`https://${domain}/work-decision/`);
+        seen.add(`https://${domain}/tutorial/`);
+        seen.add(`https://${domain}/frpc/`);
+        seen.add(`https://${domain}/`);
         continue;
       }
-      addUrl(`https://${domain}/`);
+      seen.add(`https://${domain}/`);
     }
   }
   return [...seen];
 }
 
 
+const SECRET_KV_PATTERN = new RegExp(
+  '(["\']?\\b(?:auth\\.token|[A-Za-z0-9_]*token|credentials?|password|passwd|secret)\\b["\']?)'
+    + '(\\s*[=:]\\s*)("[^"]*"|\'[^\']*\'|[^\\s,;}\\]]+)',
+  'giu',
+);
+
 /**
- * 脱敏单行日志中可能出现的 token、auth.token、credential、password 或 Bearer 凭据。
+ * 脱敏单行日志中可能出现的 token、authToken、auth.token、credential、password 或 Bearer 凭据（兼容 JSON 引号键）。
  * @param line 原始日志行。
  * @returns 脱敏后的安全日志行。
  */
 export function redactLogLine(line: string): string {
-  const maskedKV = line.replace(
-    /\b(auth\.token|token|credential|credentials|password|secret)\b(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;}\]]+)/giu,
-    '$1$2"***"',
-  );
+  const maskedKV = line.replace(SECRET_KV_PATTERN, '$1$2"***"');
   return maskedKV.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/giu, '$1***');
 }
 

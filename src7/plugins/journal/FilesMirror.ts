@@ -43,6 +43,9 @@ const JSON_EVERY_MS = 1000;
 /** 对话.md 和 session.json 只给人看，改名失败（Windows 上被编辑器开着）就退回直接写。 */
 const FALLBACK_DIRECT = true;
 
+/** written 最多记几场会话：7×24 跑着不跟着会话数一直涨；被挤掉的那场下次来消息时照库整份重写一次。 */
+export const WRITTEN_MAX = 2000;
+
 
 /**
  * 多行的放进代码块，围栏比里面最长的一串反引号多一个；一行的原样。
@@ -68,7 +71,7 @@ function hardBreaks(text: string): string {
 
 /** 会话文件镜像（原 files-mirror），挂为 ctx.filesMirror 服务。 */
 export class FilesMirror extends cordis.Service {
-  /** 会话号 → 对话.md 里写了几条消息、写到第几步。 */
+  /** 会话号 → 对话.md 里写了几条消息、写到第几步。按最近整份重写的先后排，最多 WRITTEN_MAX 场。 */
   private readonly written = new Map<string, { count: number; step: number }>();
 
   /** session.json 的合并定时器。 */
@@ -210,7 +213,18 @@ export class FilesMirror extends cordis.Service {
     const file = path.join(this.getDir(row), '对话.md');
     const text = parts.join('');
     filesModule.writeTextAtomic(file, text, FALLBACK_DIRECT);
+
+    //M 记下写到哪：先删再放，这场排到最后（Map 按放进去的先后排）。
+    this.written.delete(row.id);
     this.written.set(row.id, { count: row.messages.length, step });
+
+    //G 超过 WRITTEN_MAX 场：丢最早那场；它再来消息时 written 里没有，照库整份重写，文件不会错。
+    if (this.written.size > WRITTEN_MAX) {
+      const oldest = this.written.keys().next().value;
+      if (oldest !== undefined) {
+        this.written.delete(oldest);
+      }
+    }
   }
 
   /**

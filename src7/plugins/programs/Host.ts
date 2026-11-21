@@ -274,15 +274,17 @@ export class Host {
   async pause(paused: boolean): Promise<boolean> {
     //M 只从本Host已核实身份的就绪地址发暂停请求。
     const url = this.getUrl();
+    const key = this.getKey();
     const child = this.child;
     const signal = this.control?.signal;
-    if (url === undefined || child === undefined || signal === undefined || !this.canPause) return false;
+    if (url === undefined || key === undefined || child === undefined || signal === undefined) return false;
+    if (!this.canPause) return false;
     if (child.exitCode !== null || child.signalCode !== null) return false;
     if (this.paused === paused) return true;
 
     const generation = this.generation;
     //M 暂停只走协议，不用进程级挂起，查询等前台能力照常工作。
-    const confirmed = await protocolModule.requestPause(url, paused, signal);
+    const confirmed = await protocolModule.requestPause(url, key, paused, signal);
     if (!confirmed || signal.aborted || this.child !== child || generation !== this.generation) return false;
 
     this.paused = paused;
@@ -469,6 +471,8 @@ export class Host {
       //M 留下启动超时、进程管道或健康接口的错误说明。
       this.note = textModule.getErrorMessage(error);
     } finally {
+      //M 请它退出时还要带这把钥匙，作废前先留一份只给 releaseChild 用。
+      const exitKey = this.key;
       //M 子进程要退了，它的密钥立刻作废，之后带这把钥匙的回调一律拒。
       this.key = undefined;
       this.instance = undefined;
@@ -485,7 +489,7 @@ export class Host {
 
       //M 正常退出和重启都只回收当前实例，先等退出接口再用强制手段。
       try {
-        await this.releaseChild(endpoint);
+        await this.releaseChild(endpoint, exitKey);
       } finally {
         reader?.close();
         output?.destroy();
@@ -533,15 +537,19 @@ export class Host {
     }
   }
 
-  /** 先让程序退出，超时后仅结束所持句柄对应的进程。 */
-  private async releaseChild(endpoint: string | undefined): Promise<void> {
+  /**
+   * 先让程序退出，超时后仅结束所持句柄对应的进程。
+   * @param endpoint 程序报过的本机地址；没就绪过是 undefined，直接走强制结束。
+   * @param key 这次启动的密钥（runChild 的 finally 在作废前留的），请它退出时带上。
+   */
+  private async releaseChild(endpoint: string | undefined, key: string | undefined): Promise<void> {
     const child = this.child;
     if (child === undefined) return;
 
-    if (endpoint !== undefined && child.exitCode === null && child.signalCode === null) {
+    if (endpoint !== undefined && key !== undefined && child.exitCode === null && child.signalCode === null) {
       try {
         //M 已确认身份的程序可以自己收尾，等待它完成退出。
-        await protocolModule.requestExit(endpoint, this.spec.exitWaitMs);
+        await protocolModule.requestExit(endpoint, key, this.spec.exitWaitMs);
       } catch {
         // 退出请求失败时仍给进程一段收尾时间。
       }

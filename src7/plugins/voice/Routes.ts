@@ -14,8 +14,10 @@ export class RouteFailure extends Error {}
 export async function allowLocal(ctx: cordis.Context, signal?: AbortSignal, heavy = true): Promise<void> {
   const request = { action: 'can-start', who: 'voice', heavy } as const;
   const options = { signal };
+  const asking = 'programs/resource-request';
+  const answer = 'programs/resource-result';
   //G 本地模型加载先取得 programs 的实时资源回执。
-  const checked = await events.requestEvent(ctx, 'programs/resource-request', 'programs/resource-result', request, options);
+  const checked = await events.requestEvent(ctx, asking, answer, request, options);
   if (checked.reply?.ok === true) return;
 
   const reason = checked.reply?.reason ?? '资源守卫未放行';

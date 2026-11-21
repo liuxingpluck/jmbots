@@ -6,11 +6,8 @@ import * as channel from '../channels/index.ts';
 import * as requests from '../../utils/RequestEvent.ts';
 import type * as models from './Models.ts';
 import type * as routes from './Routes.ts';
+import * as common from './Common.ts';
 
-const CHANNEL = 'voice';
-const LOCAL = 'local';
-const CUSTOMER = 'voice:本机';
-const WINDOW_MS = 60_000;
 const RECENT_MAX = 5;
 const TRANSCRIBED = '【语音转写，可能有错字】';
 const SUPPLEMENT = '【补充】';
@@ -140,8 +137,8 @@ export class VoiceTasks {
   private timer?: ReturnType<typeof setTimeout>;
   private lastJudgeAt = performance.now();
   private lastJudgeLength = 0;
-  private rateStart = this.lastJudgeAt;
-  private calls = 0;
+  /** 每分钟最多判断几次（settings.maxPerMinute），构造时建。 */
+  private readonly limit: common.MinuteLimit;
   private sending?: Flight;
   private previous?: Recent;
   /** 网页浏览器对应的语音客户号；客户端未提供设备号时使用本机客户号。 */
@@ -168,9 +165,10 @@ export class VoiceTasks {
     private readonly report: (place?: routes.Place, reason?: string) => void = () => {},
     private readonly device?: string,
   ) {
-    this.customer = CUSTOMER;
+    this.limit = new common.MinuteLimit(settings.maxPerMinute);
+    this.customer = common.CUSTOMER;
     if (device !== undefined) {
-      this.customer = CHANNEL + ':' + device;
+      this.customer = common.CHANNEL + ':' + device;
     }
   }
 
@@ -249,7 +247,7 @@ export class VoiceTasks {
     clearTimeout(this.timer);
     for (const sentence of this.sentences) {
       //G 不让丢失最终字幕的提前任务留下无主回复等待。
-      const id = channel.makeChannelMessageId(CHANNEL, LOCAL, sentence.id);
+      const id = channel.makeChannelMessageId(common.CHANNEL, common.LOCAL, sentence.id);
       this.ctx.emit('voice/abandon', id);
     }
     this.sentences.length = 0;
@@ -262,7 +260,7 @@ export class VoiceTasks {
     if (sentence === undefined || (sentence.started !== undefined && !sentence.final)) return undefined;
 
     const text = sentence.text.trim();
-    const length = [...text].length;
+    const length = common.getCharCount(text);
     if (length < this.settings.minChars && !sentence.final) return undefined;
 
     return { sentence, text, length, final: sentence.final };
@@ -279,13 +277,11 @@ export class VoiceTasks {
     if (snapshot === undefined) return;
 
     const now = performance.now();
-    if (now - this.rateStart >= WINDOW_MS) {
-      this.calls = 0;
-      this.rateStart = now;
-    }
+    //M 这一分钟的名额用完了，半句先不判；整句照判（也记一次）。
+    const full = this.limit.isFull(now);
     if (!snapshot.final) {
       const growth = snapshot.length - this.lastJudgeLength;
-      if (growth <= 0 || this.calls >= this.settings.maxPerMinute) return;
+      if (growth <= 0 || full) return;
 
       const wait = this.settings.stepMs - (now - this.lastJudgeAt);
       if (growth < this.settings.stepChars && wait > 0) {
@@ -296,7 +292,7 @@ export class VoiceTasks {
     }
 
     //M 字数、时间或句尾已满足条件，锁住直到回执和派发都处理完。
-    this.calls += 1;
+    this.limit.add();
     this.lastJudgeAt = now;
     this.lastJudgeLength = snapshot.length;
     this.pending = Promise.resolve().then(() => this.handle(snapshot)).catch(() => {
@@ -401,8 +397,8 @@ export class VoiceTasks {
   private getMessage(sentence: Sentence, text: string, routing: VoiceRouting): channel.ChannelMessage {
     const taskId = sentence.id;
     //M 半句派发和句尾入档共用同一个标准来源号。
-    const messageId = channel.makeChannelMessageId(CHANNEL, LOCAL, taskId);
-    const chatId = this.device ?? LOCAL;
+    const messageId = channel.makeChannelMessageId(common.CHANNEL, common.LOCAL, taskId);
+    const chatId = this.device ?? common.LOCAL;
     const address: channel.ChannelOrigin['address'] = {
       customer: this.customer,
       owner: true,
@@ -415,10 +411,10 @@ export class VoiceTasks {
       v: 1,
       messageId,
       nativeId: taskId,
-      channel: CHANNEL,
-      accountId: LOCAL,
+      channel: common.CHANNEL,
+      accountId: common.LOCAL,
       chatId,
-      chatType: 'local',
+      chatType: common.LOCAL,
       sender: { id: 'owner', name: '语音' },
       role: 'owner',
       targetBots: [this.bot],
@@ -430,7 +426,7 @@ export class VoiceTasks {
       receivedAt: Date.now(),
       timeSource: 'received',
       replyTo: null,
-      origin: { channel: CHANNEL, address },
+      origin: { channel: common.CHANNEL, address },
       visibility: { scope: this.customer, trusted: true, publicSourceIds: [] },
       routing,
     };

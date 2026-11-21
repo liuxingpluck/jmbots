@@ -130,6 +130,33 @@ function stopWithSignal(signal: AbortSignal): Promise<piAi.AssistantMessage> {
   });
 }
 
+test('清理定时器按需开关：没有会话不开，开了会话才开，客户端都回收后停，再开会话重新开', async () => {
+  const intervals = spyOn(globalThis, 'setInterval');
+  closers.push(() => intervals.mockRestore());
+  const { app } = await setup();
+  //M 只数 screen 的 250 毫秒清理定时器。
+  const getSweeps = (): number => intervals.mock.calls.filter((call) => call[1] === 250).length;
+
+  await app.inject({ method: 'GET', url: STATUS });
+  expect(getSweeps()).toBe(0);
+
+  const opened = await app.inject({ method: 'POST', url: STATE, payload: start });
+  expect(opened.statusCode).toBe(200);
+  expect(getSweeps()).toBe(1);
+
+  //M 时钟拨过租约和保留期：状态查询顺带清理，客户端回收后定时器停。
+  const later = performance.now() + 120_000;
+  const clock = spyOn(performance, 'now').mockReturnValue(later);
+  closers.push(() => clock.mockRestore());
+  await app.inject({ method: 'GET', url: STATUS });
+
+  //M 定时器停过，新一代会话再开时会重新建一个。
+  const again = { ...start, epoch: 2 };
+  const reopened = await app.inject({ method: 'POST', url: STATE, payload: again });
+  expect(reopened.statusCode).toBe(200);
+  expect(getSweeps()).toBe(2);
+});
+
 test('功能关闭及空模型的状态可查询，点击不会调用模型', async () => {
   const off = await setup({ enabled: false, model: '' });
   const status = await off.app.inject(STATUS);

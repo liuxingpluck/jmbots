@@ -118,6 +118,116 @@ export function readGroupBatch(written: unknown): GroupBatchConfig | string {
 }
 
 
+/** 校验时读取的已启用插件配置项。 */
+interface EnabledPluginEntry {
+  /** 插件名。 */
+  name: string;
+  /** 该插件的原始配置。 */
+  config: unknown;
+}
+
+
+/**
+ * 取出骨架已校验并过滤 disabled 的插件清单（resources.config.plugins）。
+ * @param ctx bots 插件的 ctx。
+ * @returns 已启用插件条目清单。
+ */
+function getEnabledPlugins(ctx: cordis.Context): EnabledPluginEntry[] {
+  const configured = utils.getField(ctx.resources.config, 'plugins');
+  if (!Array.isArray(configured)) return [];
+
+  const entries: EnabledPluginEntry[] = [];
+  for (const item of configured) {
+    const record = utils.getRecord(item);
+    const name = utils.getStringField(record, 'name');
+    if (name === '') continue;
+
+    entries.push({ name, config: record['config'] });
+  }
+  return entries;
+}
+
+
+/**
+ * 读取已启用 relay 插件配置里的所有外部助手名（name，原样精确匹配，与 relay 启动校验一致）。
+ * @param plugins 已启用插件清单。
+ * @returns 未启用 relay 返回 undefined；已启用时返回助手名集合（未配 helpers 时为空集合）。
+ */
+function getRelayHelperNames(plugins: EnabledPluginEntry[]): Set<string> | undefined {
+  const relayEntries = plugins.filter((entry) => entry.name === 'relay');
+  if (relayEntries.length === 0) return undefined;
+
+  const names = new Set<string>();
+  for (const entry of relayEntries) {
+    const relayConfig = utils.getRecord(entry.config);
+    const helpers = relayConfig['helpers'];
+    if (!Array.isArray(helpers)) continue;
+
+    for (const helper of helpers) {
+      const helperRecord = utils.getRecord(helper);
+      const helperName = utils.getStringField(helperRecord, 'name');
+      if (helperName !== '') {
+        names.add(helperName);
+      }
+    }
+  }
+  return names;
+}
+
+
+/**
+ * 跨插件核对单个群配置里的 judge_helper 是否在已启用 relay.helpers 名单中存在，避免运行时静默落回默认助手。
+ * 基础字符串合法性由 feishu/Config.ts 入口校验，首尾空白由 relay/Files.ts 入口拒绝。
+ * @param chatId 群号标识（报错展示用）。
+ * @param helper 群配置中写的非空 judge_helper。
+ * @param helperNames 已启用 relay 的助手名集合；undefined 表示未启用 relay 插件。
+ * @throws 未启用 relay、relay 未配 helpers 或助手名不在名单中时抛错。
+ */
+function checkGroupJudgeHelper(chatId: string, helper: string, helperNames: Set<string> | undefined): void {
+  //G 必须启用 relay 且配置了对应的外部助手，防止运行时静默落回默认助手。
+  if (helperNames === undefined) {
+    throw new Error(`feishu 群 ${chatId} 配了 judge_helper「${helper}」，但未启用 relay 插件，找不到对应外部助手`);
+  }
+  if (helperNames.size === 0) {
+    throw new Error(`feishu 群 ${chatId} 配了 judge_helper「${helper}」，但 relay 插件未配置任何 helpers`);
+  }
+  if (!helperNames.has(helper)) {
+    const available = [...helperNames].join('、');
+    throw new Error(`feishu 群 ${chatId} 的 judge_helper「${helper}」在 relay.helpers 中不存在（可用助手：${available}）`);
+  }
+}
+
+
+/**
+ * 启动期严格核对群配置里的 judge_helper：非空值在 relay.helpers 中找不到对应助手时直接报错拦截。
+ * 在 bots 的 apply 阶段调用，只读配置快照，不跨插件导入 feishu 或 relay。
+ * @param ctx bots 插件的 ctx。
+ * @throws 任一群配置的 judge_helper 不在 relay.helpers 名单中时抛错。
+ */
+export function checkJudgeHelpers(ctx: cordis.Context): void {
+  const plugins = getEnabledPlugins(ctx);
+  const feishuEntries = plugins.filter((entry) => entry.name === 'feishu');
+  if (feishuEntries.length === 0) return;
+
+  const helperNames = getRelayHelperNames(plugins);
+  for (const entry of feishuEntries) {
+    const feishuConfig = utils.getRecord(entry.config);
+    const groups = feishuConfig['groups'];
+    if (!Array.isArray(groups)) continue;
+
+    for (const rawGroup of groups) {
+      const group = utils.getRecord(rawGroup);
+      const rawHelper = group['judge_helper'];
+      //G 基础非空字符串格式交由 feishu/Config.ts 入口校验，此处仅做跨插件助手存在性核对。
+      if (typeof rawHelper !== 'string' || rawHelper.trim() === '') continue;
+
+      const chatId = utils.getStringField(group, 'chat_id') || '未命名群';
+      checkGroupJudgeHelper(chatId, rawHelper, helperNames);
+    }
+  }
+}
+
+
 /**
  * 一批话写成给模型看的几行“说话人：话”。
  * @param heard 这一批。
@@ -331,7 +441,7 @@ export class GroupBatch {
     const replyText = remaining.join('\n');
 
     //M 群登记了 judge_helper：这一批记进前台当背景，再转给那个外部助手，不由机器人自答。
-    const judgeHelper = utils.getStringField(source.botOrigin.address, 'judgeHelper');
+    const judgeHelper = utils.getStringField(source.botOrigin.address, 'judgeHelper').trim();
     if (judgeHelper !== '') {
       this.keep(front, batch.heard);
       await this.claims.relayBatch(front, source, replyText, judgeHelper);
@@ -417,7 +527,13 @@ export class GroupBatch {
       prefix: 'group-batch',
       warnAfterMs: JUDGE_WARN_MS,
     };
-    const asked = await requestEventModule.requestEvent(this.ctx, 'decision/judge', 'decision/judge-result', input, options);
+    const asked = await requestEventModule.requestEvent(
+      this.ctx,
+      'decision/judge',
+      'decision/judge-result',
+      input,
+      options,
+    );
 
     //G 没等到回执（没挂 decision、出错）：不接，结果写明原因。
     if (asked.why !== undefined) return { reply: false, outcome: `judge:不回(${FALLBACK_TEXT[asked.why]})` };

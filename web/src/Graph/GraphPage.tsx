@@ -3,7 +3,7 @@
  * 右栏是命中路径（关系连成链）和命中原文；点点看关联原文，点线看关系出自哪段；双击点展开邻居。
  * 网址参数：customer、bot、q（有就先检索）、mode（hybrid | graph）、token。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as virtuoso from 'react-virtuoso';
 import * as privacy from '../Privacy/Mask.tsx';
 import * as vscodeLink from '../VscodeLink.tsx';
@@ -27,6 +27,14 @@ type Side =
   | { type: 'edge'; subject: string; object: string; label: string; text: string; docs: Doc[] }
   | { type: 'doc'; doc: Doc; relations: { id: number; text: string }[] };
 
+/** 判断异常是否由 AbortController 主动取消触发。 */
+function isAbortError(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted) return true;
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+
+  return false;
+}
+
 /** 命中的边首尾相接连成链（最长的在前）。 */
 function getChains(graph: Graph, hit: number[]): GraphEdge[][] {
   const edges = graph.edges.filter((e) => hit.includes(e.id));
@@ -34,6 +42,7 @@ function getChains(graph: Graph, hit: number[]): GraphEdge[][] {
   const out: GraphEdge[][] = [];
   for (const edge of edges) {
     if (used.has(edge.id)) continue;
+
     const path = [edge];
     used.add(edge.id);
     for (let grew = true; grew;) {
@@ -41,11 +50,15 @@ function getChains(graph: Graph, hit: number[]): GraphEdge[][] {
       for (const f of edges) {
         if (used.has(f.id)) continue;
         if (f.source === path[path.length - 1]!.target) {
-          path.push(f); used.add(f.id); grew = true;
+          path.push(f);
+          used.add(f.id);
+          grew = true;
           continue;
         }
         if (f.target === path[0]!.source) {
-          path.unshift(f); used.add(f.id); grew = true;
+          path.unshift(f);
+          used.add(f.id);
+          grew = true;
         }
       }
     }
@@ -84,13 +97,10 @@ function DocView({ doc }: { doc: Doc }) {
 
 /**
  * 记忆关系图谱页面主组件：管理客户切换、检索模式（混合或图谱重排）、知识库开关与右侧详情栏，
- * 并驱动 GraphCanvas 渲染整网或检索高亮子图。
- * @returns 图谱页顶部控制栏、画布舞台与右侧详情栏组成的 JSX 元素。
- * 副作用：请求 `/api/memory-graph/*` 接口读写图谱与详情，监听 `jmbots-guide-prefill` 并派发 `jmbots-guide-searched` 引导事件，
- * 以及在检索后设置提示条自动清除定时器。
+ * 内置 AbortController + 递增代次号（requestSeq）与在途请求去重，杜绝切换范围时的旧结果乱序覆盖或重复拉取。
  */
 export function GraphPage() {
-  //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位
+  //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位。
   const mask = privacy.useMask();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customer, setCustomer] = useState(PARAMS.get('customer') ?? '');
@@ -103,7 +113,7 @@ export function GraphPage() {
   //M 初始化当前检索模式与地址栏带来的初始问句状态。
   const [mode, setMode] = useState(initialMode);
   const [query, setQuery] = useState(PARAMS.get('q') ?? '');
-  const [knowledge, setKnowledge] = useState(false);
+  const [knowledge, setKnowledge] = useState(() => (PARAMS.get('customer') ?? '') === '');
   const [graph, setGraph] = useState<Graph>(EMPTY);
   const [hitEdges, setHitEdges] = useState<number[]>([]);
   const [hitNodes, setHitNodes] = useState<number[]>([]);
@@ -115,7 +125,52 @@ export function GraphPage() {
   const [banner, setBanner] = useState('');
   const [ready, setReady] = useState(false);
 
-  const getCommonQuery = (extra = '') => {
+  //M 主画布请求与右侧详情请求分别维护 AbortController、递增代次号与在途键，防竞态且零重复发包。
+  const mainAbortRef = useRef<AbortController | null>(null);
+  const requestSeqRef = useRef(0);
+  const inFlightKeyRef = useRef('');
+  const bannerTimerRef = useRef(0);
+  const sideAbortRef = useRef<AbortController | null>(null);
+  const sideSeqRef = useRef(0);
+
+  const clearBannerTimer = useCallback((): void => {
+    if (bannerTimerRef.current !== 0) {
+      window.clearTimeout(bannerTimerRef.current);
+      bannerTimerRef.current = 0;
+    }
+  }, []);
+
+  /** 启动一次新的主图谱请求：中止旧在途请求并递增 requestSeq。 */
+  const beginMainRequest = useCallback((dedupKey: string, force: boolean): {
+    seq: number;
+    signal: AbortSignal;
+  } | null => {
+    //G 相同范围/检索参数已在途中且非用户强制重刷时直接跳过重复请求。
+    if (!force && inFlightKeyRef.current === dedupKey && mainAbortRef.current !== null) {
+      return null;
+    }
+    mainAbortRef.current?.abort();
+    //M 主图要换了，右侧在途的详情也作废，免得迟到的 openNode 盖掉新图的 summary（云端 26 次要 #1）。
+    sideAbortRef.current?.abort();
+    sideSeqRef.current += 1;
+    const controller = new AbortController();
+    mainAbortRef.current = controller;
+    inFlightKeyRef.current = dedupKey;
+    requestSeqRef.current += 1;
+    clearBannerTimer();
+    return { seq: requestSeqRef.current, signal: controller.signal };
+  }, [clearBannerTimer]);
+
+  /** 启动一次右侧实体/关系/原文详情请求，切换点击目标时立即取消上一次详情拉取。 */
+  const beginSideRequest = useCallback((): { seq: number; signal: AbortSignal } => {
+    sideAbortRef.current?.abort();
+    const controller = new AbortController();
+    sideAbortRef.current = controller;
+    sideSeqRef.current += 1;
+    return { seq: sideSeqRef.current, signal: controller.signal };
+  }, []);
+
+  const getCommonQuery = useCallback((extra = ''): string => {
     let botParam = '';
     if (BOT) {
       botParam = `&bot=${encodeURIComponent(BOT)}`;
@@ -125,45 +180,77 @@ export function GraphPage() {
       knowledgeParam = '&knowledge=1';
     }
     return `customer=${encodeURIComponent(customer)}${botParam}${knowledgeParam}${extra}`;
-  };
-  const show = (g: Graph, hits: number[], nodes: number[], keep = false) => {
-    setGraph(g); setHitEdges(hits); setHitNodes(nodes); setMerge(keep); setVersion((v) => v + 1);
-  };
+  }, [customer, knowledge]);
 
-  const loadAll = async () => {
-    setBanner('读取整张关系网…'); setFound(null); setSide({ type: 'summary' });
+  const show = useCallback((g: Graph, hits: number[], nodes: number[], keep = false): void => {
+    setGraph(g);
+    setHitEdges(hits);
+    setHitNodes(nodes);
+    setMerge(keep);
+    setVersion((v) => v + 1);
+  }, []);
+
+  const loadAll = useCallback(async (force = false): Promise<void> => {
+    const queryStr = getCommonQuery('&limit=200');
+    const started = beginMainRequest(`graph:${queryStr}`, force);
+    if (started === null) return;
+
+    const { seq, signal } = started;
+    setBanner('读取整张关系网…');
+    setFound(null);
+    setSide({ type: 'summary' });
     try {
-      //M 拼装当前客户与知识库范围参数，拉取最多 200 个节点的全量关系网并交由画布重绘。
-      const g = await get<Graph>(`/api/memory-graph/graph?${getCommonQuery('&limit=200')}`);
+      //M 拼装当前客户与知识库范围参数，拉取最多 200 个节点的全量关系网并核验请求代次。
+      const g = await get<Graph>(`/api/memory-graph/graph?${queryStr}`, signal);
+      if (signal.aborted || seq !== requestSeqRef.current) return;
+
       show(g, [], []);
       let emptyBanner = '';
       if (g.nodes.length === 0) {
         emptyBanner = '这个客户还没有抽出关系（后台抽三元组可能还没跑完）';
       }
       setBanner(emptyBanner);
-    } catch (error) { setBanner(`读取失败：${(error as Error).message}`); }
-  };
+    } catch (error) {
+      if (isAbortError(error, signal) || seq !== requestSeqRef.current) return;
 
-  const search = async (text = query) => {
+      setBanner(`读取失败：${(error as Error).message}`);
+    } finally {
+      if (seq === requestSeqRef.current) {
+        inFlightKeyRef.current = '';
+      }
+    }
+  }, [beginMainRequest, getCommonQuery, show]);
+
+  const search = useCallback(async (text = query, force = false): Promise<void> => {
     //G 问句为空时直接回退加载整张关系网，不发起空检索。
-    if (!text.trim()) { await loadAll(); return; }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      await loadAll(force);
+      return;
+    }
+
+    const params = new URLSearchParams({ q: trimmed, mode, sources: 'knowledge', limit: '8' });
+    if (customer !== '') {
+      params.set('customer', customer);
+      params.set('sources', 'history,knowledge');
+    }
+    if (BOT !== '') params.set('bot', BOT);
+
+    const started = beginMainRequest(`search:${params.toString()}`, force);
+    if (started === null) return;
+
+    const { seq, signal } = started;
     let modeHint = '';
     if (mode === 'graph') {
       modeHint = '（图谱+大模型重排，约 5–10 秒）';
     }
-    setBanner(`正在从记忆里检索：${text}${modeHint}`);
+    setBanner(`正在从记忆里检索：${trimmed}${modeHint}`);
     setSide({ type: 'summary' });
     try {
-      //M 记忆页与图谱页使用同一检索，图谱的整体查询和点边原文仍走图谱接口。
-      const params = new URLSearchParams({ q: text, mode, sources: 'knowledge', limit: '8' });
-      if (customer !== '') {
-        params.set('customer', customer);
-        params.set('sources', 'history,knowledge');
-      }
-      if (BOT !== '') params.set('bot', BOT);
+      //M 统一结果有命中子图时高亮，过期响应直接丢弃绝不覆盖新范围。
+      const result = await api.memorySearch(params, signal);
+      if (signal.aborted || seq !== requestSeqRef.current) return;
 
-      //M 统一结果有命中子图时高亮，没走关系时仍展示原文摘要。
-      const result = await api.memorySearch(params);
       setFound(result);
       const resultGraph = result.graph ?? EMPTY;
       const edges = resultGraph.hitEdges ?? [];
@@ -175,63 +262,145 @@ export function GraphPage() {
       }
       if (result.unavailable.length > 0) hitBanner += `。未响应：${result.unavailable.join('、')}`;
       setBanner(hitBanner);
-      window.setTimeout(() => setBanner(''), 6000);
+      bannerTimerRef.current = window.setTimeout(() => {
+        if (seq === requestSeqRef.current) setBanner('');
+      }, 6000);
       window.dispatchEvent(new Event('jmbots-guide-searched'));
     } catch (error) {
+      if (isAbortError(error, signal) || seq !== requestSeqRef.current) return;
+
       setBanner(`检索失败：${(error as Error).message}`);
       window.dispatchEvent(new Event('jmbots-guide-searched'));
+    } finally {
+      if (seq === requestSeqRef.current) {
+        inFlightKeyRef.current = '';
+      }
+    }
+  }, [beginMainRequest, customer, loadAll, mode, query, show]);
+
+  const expand = async (name: string): Promise<void> => {
+    const queryStr = `${getCommonQuery('&knowledge=1&limit=120')}&focus=${encodeURIComponent(name)}`;
+    const started = beginMainRequest(`expand:${queryStr}`, true);
+    if (started === null) return;
+
+    const { seq, signal } = started;
+    //M 以双击节点为焦点拉取最多 120 个关联邻居，以增量 merge 模式并入当前画布并保留原高亮。
+    setBanner(`展开：${name}`);
+    try {
+      const g = await get<Graph>(`/api/memory-graph/graph?${queryStr}`, signal);
+      if (signal.aborted || seq !== requestSeqRef.current) return;
+
+      show(g, hitEdges, hitNodes, true);
+      setBanner('');
+    } catch (error) {
+      if (isAbortError(error, signal) || seq !== requestSeqRef.current) return;
+
+      setBanner(`展开失败：${(error as Error).message}`);
+    } finally {
+      if (seq === requestSeqRef.current) {
+        inFlightKeyRef.current = '';
+      }
     }
   };
 
-  const expand = async (name: string) => {
-    //M 以双击节点为焦点拉取最多 120 个关联邻居（含知识库），以增量 merge 模式并入当前画布并保留原高亮。
-    setBanner(`展开：${name}`);
-    const g = await get<Graph>(`/api/memory-graph/graph?${getCommonQuery('&knowledge=1&limit=120')}&focus=${encodeURIComponent(name)}`);
-    show(g, hitEdges, hitNodes, true);
-    setBanner('');
+  const openNode = async (id: number): Promise<void> => {
+    const { seq, signal } = beginSideRequest();
+    try {
+      //M 点选节点时拉取该实体的全部关系与关联原文，切到右侧实体详情栏展示。
+      const url = `/api/memory-graph/entity/${String(id)}`;
+      const j = await get<{
+        entity: { name: string } | null;
+        relations: { id: number; text: string }[];
+        docs: Doc[];
+      }>(url, signal);
+      if (signal.aborted || seq !== sideSeqRef.current) return;
+
+      setSide({ type: 'node', name: j.entity?.name ?? '', relations: j.relations, docs: j.docs });
+    } catch (error) {
+      if (isAbortError(error, signal)) return;
+    }
   };
 
-  const openNode = async (id: number) => {
-    //M 点选节点时拉取该实体的全部关系与关联原文，切到右侧实体详情栏展示。
-    const j = await get<{ entity: { name: string } | null; relations: { id: number; text: string }[]; docs: Doc[] }>(`/api/memory-graph/entity/${id}`);
-    setSide({ type: 'node', name: j.entity?.name ?? '', relations: j.relations, docs: j.docs });
-  };
-  const openEdge = async (id: number) => {
-    //M 点选关系边或路径连线时拉取该三元组原句与来源段落，切到右侧关系详情栏展示。
-    const j = await get<{ relation: { subject: string; object: string; label: string; text: string } | null; docs: Doc[] }>(`/api/memory-graph/edge/${id}`);
-    if (j.relation) setSide({ type: 'edge', ...j.relation, docs: j.docs });
-  };
-  const openDoc = async (id: number) => {
-    //M 点击命中原文时拉取该段完整原文及其挂接的关系列表，切到右侧原文详情栏展示。
-    const j = await get<{ passage: Doc; relations: { id: number; text: string }[] }>(`/api/memory-graph/passage/${id}`);
-    setSide({ type: 'doc', doc: j.passage, relations: j.relations });
+  const openEdge = async (id: number): Promise<void> => {
+    const { seq, signal } = beginSideRequest();
+    try {
+      //M 点选关系边或路径连线时拉取该三元组原句与来源段落，切到右侧关系详情栏展示。
+      const url = `/api/memory-graph/edge/${String(id)}`;
+      const j = await get<{
+        relation: { subject: string; object: string; label: string; text: string } | null;
+        docs: Doc[];
+      }>(url, signal);
+      if (signal.aborted || seq !== sideSeqRef.current) return;
+      if (j.relation) setSide({ type: 'edge', ...j.relation, docs: j.docs });
+    } catch (error) {
+      if (isAbortError(error, signal)) return;
+    }
   };
 
-  //M 开页：取客户列表；网址带了 q 就先检索，否则看整张网。
+  const openDoc = async (id: number): Promise<void> => {
+    const { seq, signal } = beginSideRequest();
+    try {
+      //M 点击命中原文时拉取该段完整原文及其挂接的关系列表，切到右侧原文详情栏展示。
+      const url = `/api/memory-graph/passage/${String(id)}`;
+      const j = await get<{ passage: Doc; relations: { id: number; text: string }[] }>(url, signal);
+      if (signal.aborted || seq !== sideSeqRef.current) return;
+
+      setSide({ type: 'doc', doc: j.passage, relations: j.relations });
+    } catch (error) {
+      if (isAbortError(error, signal)) return;
+    }
+  };
+
+  //M 开页：取客户列表，组件卸载时统一取消全部在途请求与提示计时器。
   useEffect(() => {
-    void get<{ list: Customer[] }>('/api/memory-graph/customers').then((j) => {
+    const bootAbort = new AbortController();
+    void get<{ list: Customer[] }>('/api/memory-graph/customers', bootAbort.signal).then((j) => {
+      if (bootAbort.signal.aborted) return;
+
       setCustomers(j.list);
-      if (!PARAMS.has('customer')) setCustomer(j.list.find((c) => c.scope === 'history')?.customer ?? '');
+      if (!PARAMS.has('customer')) {
+        const firstCustomer = j.list.find((c) => c.scope === 'history')?.customer ?? '';
+        setCustomer(firstCustomer);
+        if (firstCustomer !== '' && PARAMS.get('customer') === null) {
+          setKnowledge(false);
+        }
+      }
       setReady(true);
-    }).catch((error: Error) => setBanner(`读不到记忆库：${error.message}`));
-  }, []);
+    }).catch((error: Error) => {
+      if (isAbortError(error, bootAbort.signal)) return;
+
+      setBanner(`读不到记忆库：${error.message}`);
+    });
+    return () => {
+      bootAbort.abort();
+      mainAbortRef.current?.abort();
+      sideAbortRef.current?.abort();
+      clearBannerTimer();
+    };
+  }, [clearBannerTimer]);
 
   useEffect(() => {
-    //M 客户就绪或切换客户/知识库范围时：有初始问句则自动检索，否则加载全量关系网。
+    //M 客户就绪或切换客户/知识库范围时：切到空客户先翻开 knowledge 再单次拉数，绝不连发两次。
     if (!ready) return;
-    if (customer === '') setKnowledge(true);
+    if (customer === '' && !knowledge) {
+      setKnowledge(true);
+      return;
+    }
+    sideAbortRef.current?.abort();
     if (query.trim()) {
-      void search();
+      void search(query, false);
       return;
     }
 
     //M 未填检索问句时拉取当前范围的整张关系网。
-    void loadAll();
+    void loadAll(false);
   }, [ready, customer, knowledge]);
 
   useEffect(() => {
     const onPrefill = (event: Event): void => {
-      const detail = (event as CustomEvent<{ text?: string; customer?: string; mode?: 'hybrid' | 'graph' }>).detail ?? {};
+      const detail = (
+        event as CustomEvent<{ text?: string; customer?: string; mode?: 'hybrid' | 'graph' }>
+      ).detail ?? {};
       if (detail.customer) setCustomer(detail.customer);
       if (detail.mode) setMode(detail.mode);
       if (typeof detail.text === 'string' && detail.text.trim()) setQuery(detail.text);
@@ -241,14 +410,25 @@ export function GraphPage() {
   }, []);
 
   const names = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n.name])), [graph]);
-  const top = useMemo(() => [...graph.nodes].sort((a, b) => b.degree - a.degree).slice(0, 12), [graph]);
+  const top = useMemo(
+    () => [...graph.nodes].sort((a, b) => b.degree - a.degree).slice(0, 12),
+    [graph],
+  );
   let backTarget = '关系网';
   if (found) {
     backTarget = '检索结果';
   }
-  const back = <p><button onClick={() => setSide({ type: 'summary' })}>← 回到{backTarget}</button></p>;
+  const back = (
+    <p>
+      <button type="button" onClick={() => setSide({ type: 'summary' })}>
+        ← 回到{backTarget}
+      </button>
+    </p>
+  );
   const history = customers.filter((c) => c.scope === 'history');
-  if (customer !== '' && !history.some((c) => c.customer === customer)) history.unshift({ customer, bot: '', docs: 0, scope: 'history' });
+  if (customer !== '' && !history.some((c) => c.customer === customer)) {
+    history.unshift({ customer, bot: '', docs: 0, scope: 'history' });
+  }
   let headerTop: number | undefined;
   let stageTop: number | undefined;
   let maskLabel = '打开打码';
@@ -269,7 +449,7 @@ export function GraphPage() {
   const locatedGraph = found?.graph ?? EMPTY;
   const locatedEdges = locatedGraph.hitEdges ?? [];
 
-  //M 渲染关系图谱页三段主体：顶部控制栏（客户/问句/检索模式/打码开关/跨页导航）、中间画布舞台与右侧详情栏。
+  //M 渲染关系图谱页三段主体：顶部控制栏、中间画布舞台与右侧详情栏。
   return (
     <>
       <privacy.MaskBanner />
@@ -291,26 +471,51 @@ export function GraphPage() {
             //M 按打码开关脱敏显示可选客户名并拼接文档段数标签。
             let docsLabel = '';
             if (c.docs > 0) {
-              docsLabel = `（${c.docs} 段）`;
+              docsLabel = `（${String(c.docs)} 段）`;
             }
-
-            //M 按打码开关脱敏客户名称并渲染单个下拉选项。
-            return <option key={index} value={String(index)}>{privacy.text(c.customer, mask)}{docsLabel}</option>;
+            return (
+              <option key={index} value={String(index)}>
+                {privacy.text(c.customer, mask)}{docsLabel}
+              </option>
+            );
           })}
           <option value="">只看知识库</option>
         </select>
-        {
-          //M 问题输入框、检索方式与操作按钮：脱敏回显输入、触发检索或重读全网、切换打码并带令牌跳转记忆/聊天页。
-        /**/}
-        <input className="mg-q" value={privacy.text(query, mask)} readOnly={mask} placeholder="问一句，比如：王磊的上级是谁？她负责什么？"
-          onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void search(); }} />
+        <input
+          className="mg-q"
+          value={privacy.text(query, mask)}
+          readOnly={mask}
+          placeholder="问一句，比如：王磊的上级是谁？她负责什么？"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void search(query, true);
+          }}
+        />
         <select data-guide="mode" value={mode} onChange={(e) => setMode(e.target.value)} title="检索方式">
           <option value="hybrid">混合检索（快）</option>
           <option value="graph">图谱+大模型重排</option>
         </select>
-        <button data-guide="search" onClick={() => void search()}>检索并高亮</button>
-        <button className="ghost" onClick={() => { setQuery(''); void loadAll(); }}>整张关系网</button>
-        <label><input type="checkbox" checked={knowledge} onChange={(e) => setKnowledge(e.target.checked)} />含知识库</label>
+        <button type="button" data-guide="search" onClick={() => void search(query, true)}>
+          检索并高亮
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => {
+            setQuery('');
+            void loadAll(true);
+          }}
+        >
+          整张关系网
+        </button>
+        <label>
+          <input
+            type="checkbox"
+            checked={knowledge}
+            onChange={(e) => setKnowledge(e.target.checked)}
+          />
+          含知识库
+        </label>
         <button type="button" onClick={() => privacy.setMask(!mask)}>{maskLabel}</button>
         <a className="mg-link" href={withToken('/memory/', TOKEN)}>记忆检索</a>
         <a className="mg-link" href={withToken('/', TOKEN)}>聊天</a>
@@ -318,14 +523,21 @@ export function GraphPage() {
       </header>
 
       <div className="mg-stage" style={{ top: stageTop }}>
-        {
-          //M 渲染关系图画布组件并接入节点/边点选与邻居展开回调，同时按打码开关脱敏状态横幅。
-        /**/}
-        <GraphCanvas graph={graph} hitEdges={hitEdges} hitNodes={hitNodes} merge={merge} version={version}
-          onNode={(id) => void openNode(id)} onEdge={(id) => void openEdge(id)} onExpand={(name) => void expand(name)} />
+        <GraphCanvas
+          graph={graph}
+          hitEdges={hitEdges}
+          hitNodes={hitNodes}
+          merge={merge}
+          version={version}
+          onNode={(id) => void openNode(id)}
+          onEdge={(id) => void openEdge(id)}
+          onExpand={(name) => void expand(name)}
+        />
         {banner && <div className="mg-banner">{privacy.text(banner, mask)}</div>}
         <div className="mg-legend">
-          {[['person', '人'], ['org', '组织'], ['thing', '事'], ['item', '编号/日期/数']].map(([k, t]) => <span key={k}><i style={{ background: COLORS[k!] }} />{t}</span>)}
+          {[['person', '人'], ['org', '组织'], ['thing', '事'], ['item', '编号/日期/数']].map(([k, label]) => (
+            <span key={k}><i style={{ background: COLORS[k!] }} />{label}</span>
+          ))}
           <span><i style={{ background: '#ffc44d' }} />命中路径</span>
         </div>
         <div className="mg-help">滚轮缩放 · 拖空白处平移 · 拖点 · 点点/线看原文 · 双击点展开邻居</div>
@@ -334,32 +546,45 @@ export function GraphPage() {
       <aside className="mg-side" ref={setSideEl} style={{ top: stageTop }}>
         {side.type === 'summary' && found && (
           <>
-            {
-              //M 渲染检索命中路径：把命中边首尾连成多跳链并绑定节点/边详情点击，名称和关系词按需脱敏。
-            /**/}
             <h2>命中路径（{locatedEdges.length} 条关系）</h2>
-            {locatedEdges.length === 0 && <div className="mg-muted">这次没有走到关系（只靠关键词/向量命中）</div>}
-            {getChains(locatedGraph, locatedEdges).map((path) => (
-              <div className="mg-chain" key={path[0]!.id}>
-                <span className="mg-ent" onClick={() => void openNode(path[0]!.source)}>{privacy.text(names.get(path[0]!.source) ?? '', mask)}</span>
-                {path.map((e) => (
-                  <span key={e.id} style={{ display: 'contents' }}>
-                    <span className="mg-rel" onClick={() => void openEdge(e.id)}>—{privacy.text(e.label, mask)}→</span>
-                    <span className="mg-ent" onClick={() => void openNode(e.target)}>{privacy.text(names.get(e.target) ?? '', mask)}</span>
-                  </span>
-                ))}
-              </div>
-            ))}
-            {
-              //M 展示检索统计指标、问句提取实体与后端告警提示，字符串均经隐私脱敏。
-            /**/}
+            {locatedEdges.length === 0 && (
+              <div className="mg-muted">这次没有走到关系（只靠关键词/向量命中）</div>
+            )}
+            {getChains(locatedGraph, locatedEdges).map((path) => {
+              const headSource = path[0]!.source;
+              const headName = privacy.text(names.get(headSource) ?? '', mask);
+              return (
+                <div className="mg-chain" key={path[0]!.id}>
+                  <span className="mg-ent" onClick={() => void openNode(headSource)}>{headName}</span>
+                  {path.map((e) => {
+                    const targetName = privacy.text(names.get(e.target) ?? '', mask);
+                    return (
+                      <span key={e.id} style={{ display: 'contents' }}>
+                        <span className="mg-rel" onClick={() => void openEdge(e.id)}>
+                          —{privacy.text(e.label, mask)}→
+                        </span>
+                        <span className="mg-ent" onClick={() => void openNode(e.target)}>
+                          {targetName}
+                        </span>
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })}
             <div className="mg-stat">
               <span><b>{found.queryEntities.length}</b>问句实体</span>
               <span><b>{found.hits.length}</b>命中原文</span>
               <span><b>{found.total_ms}</b>毫秒（{foundModeLabel}）</span>
             </div>
-            {found.queryEntities.length > 0 && <div className="mg-muted">问句实体：{privacy.text(found.queryEntities.join('、'), mask)}</div>}
-            {warnings.length > 0 && <div className="mg-muted">提示：{privacy.text(warnings.join('；'), mask)}</div>}
+            {found.queryEntities.length > 0 && (
+              <div className="mg-muted">
+                问句实体：{privacy.text(found.queryEntities.join('、'), mask)}
+              </div>
+            )}
+            {warnings.length > 0 && (
+              <div className="mg-muted">提示：{privacy.text(warnings.join('；'), mask)}</div>
+            )}
             <h2>本次检索命中的原文（{found.hits.length}）</h2>
             {sideEl !== null && found.hits.length > 0 && (
               <virtuoso.Virtuoso
@@ -375,7 +600,6 @@ export function GraphPage() {
                   const hitFile = h.file ?? '';
                   const passageId = Number(h.id);
 
-                  //M 渲染命中原文卡片 DOM：点击加载原文详情、展示通路徽章与脱敏标题。
                   return (
                     <div className="mg-card" onClick={() => void openDoc(passageId)}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -383,7 +607,6 @@ export function GraphPage() {
                         {!mask && hitFile !== '' && <vscodeLink.VsCodeOpen site={hitFile} />}
                       </span>
                       {h.via.map((v) => {
-                        //M 已知命中通路映射为中文徽章，未知通路名按打码开关脱敏。
                         let badgeClass = 'mg-badge ';
                         let badgeText = privacy.text(v, mask);
                         if (['keyword', 'vector', 'graph'].includes(v)) {
@@ -392,9 +615,6 @@ export function GraphPage() {
                         }
                         return <span key={v} className={badgeClass}>{badgeText}</span>;
                       })}
-                      {
-                        //M 展示当前命中片段的脱敏正文摘要与相关度分数。
-                      /**/}
                       <div>{privacy.text(h.snippet, mask)}</div>
                       <div className="mg-meta">相关度 {(h.score * 100).toFixed(0)}%{relSuffix}</div>
                     </div>
@@ -406,24 +626,25 @@ export function GraphPage() {
         )}
         {side.type === 'summary' && !found && (
           <>
-            {
-              //M 未检索时展示当前范围关系网概况及度数最高的核心实体列表，点击可进入实体详情。
-            /**/}
             <h2>{privacy.text(customer, mask) || '知识库'} 的关系网</h2>
             <div className="mg-stat">
               <span><b>{graph.nodes.length}</b>实体（共 {graph.total.nodes}）</span>
               <span><b>{graph.edges.length}</b>关系（共 {graph.total.edges}）</span>
             </div>
             <h2>连接最多的实体</h2>
-            {top.map((n) => <div className="mg-card" key={n.id} onClick={() => void openNode(n.id)}><b>{privacy.text(n.name, mask)}</b><span className="mg-badge">{n.degree} 条</span></div>)}
-            <p className="mg-muted">点一个实体看它关联的原文；双击展开它的邻居。上面输入问题可以看检索命中的路径。</p>
+            {top.map((n) => (
+              <div className="mg-card" key={n.id} onClick={() => void openNode(n.id)}>
+                <b>{privacy.text(n.name, mask)}</b>
+                <span className="mg-badge">{n.degree} 条</span>
+              </div>
+            ))}
+            <p className="mg-muted">
+              点一个实体看它关联的原文；双击展开它的邻居。上面输入问题可以看检索命中的路径。
+            </p>
           </>
         )}
         {side.type === 'node' && (
           <>
-            {
-              //M 渲染实体详情栏：显示脱敏实体名、连着的关系卡片列表与关联原文列表。
-            /**/}
             <h2>实体</h2>
             <div className="mg-chain"><span className="mg-ent">{privacy.text(side.name, mask)}</span></div>
             <h2>连着的关系（{side.relations.length}）</h2>
@@ -433,7 +654,9 @@ export function GraphPage() {
                 data={side.relations}
                 computeItemKey={(_index, r) => r.id}
                 itemContent={(_index, r) => (
-                  <div className="mg-card" onClick={() => void openEdge(r.id)}>{privacy.text(r.text, mask)}</div>
+                  <div className="mg-card" onClick={() => void openEdge(r.id)}>
+                    {privacy.text(r.text, mask)}
+                  </div>
                 )}
               />
             )}
@@ -446,20 +669,18 @@ export function GraphPage() {
                 itemContent={(_index, d) => <DocView doc={d} />}
               />
             )}
-            {
-              //M 提供从实体详情栏直接把该实体邻居增量展开并入画布的操作按钮。
-            /**/}
-            <p><button onClick={() => void expand(side.name)}>展开它的邻居</button></p>
+            <p><button type="button" onClick={() => void expand(side.name)}>展开它的邻居</button></p>
             {back}
           </>
         )}
         {side.type === 'edge' && (
           <>
-            {
-              //M 渲染关系详情栏：显示脱敏后的主客体三元组、原句与来源原文片段。
-            /**/}
             <h2>关系</h2>
-            <div className="mg-chain"><span className="mg-ent">{privacy.text(side.subject, mask)}</span><span className="mg-rel">—{privacy.text(side.label, mask)}→</span><span className="mg-ent">{privacy.text(side.object, mask)}</span></div>
+            <div className="mg-chain">
+              <span className="mg-ent">{privacy.text(side.subject, mask)}</span>
+              <span className="mg-rel">—{privacy.text(side.label, mask)}→</span>
+              <span className="mg-ent">{privacy.text(side.object, mask)}</span>
+            </div>
             <div className="mg-muted">原句：{privacy.text(side.text, mask)}</div>
             <h2>关系来源（{side.docs.length} 段原文）</h2>
             {sideEl !== null && side.docs.length > 0 && (
@@ -475,9 +696,6 @@ export function GraphPage() {
         )}
         {side.type === 'doc' && (
           <>
-            {
-              //M 渲染原文详情栏：展示选中段落内容及挂接在该原文上的关系列表，点击关系可跳转查看。
-            /**/}
             <h2>原文</h2>
             <DocView doc={side.doc} />
             <h2>挂在这段上的关系</h2>
@@ -487,7 +705,9 @@ export function GraphPage() {
                 data={side.relations}
                 computeItemKey={(_index, r) => r.id}
                 itemContent={(_index, r) => (
-                  <div className="mg-card" onClick={() => void openEdge(r.id)}>{privacy.text(r.text, mask)}</div>
+                  <div className="mg-card" onClick={() => void openEdge(r.id)}>
+                    {privacy.text(r.text, mask)}
+                  </div>
                 )}
               />
             )}

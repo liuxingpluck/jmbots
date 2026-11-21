@@ -19,7 +19,8 @@
  *   GET /api/tutorial/line?name=            读一份骨架逐行 JSON
  *   GET /api/tutorial/program-readme?name=  进程插件（config 里 programs 登记的程序）目录下的 说明.md；运行状态网页直接读 /api/programs
  *   GET /api/tutorial/reading?name=         清单内一篇组块 Markdown 原文
- *   GET /api/tutorial/events                事件目录：每个事件的发法、谁发谁听（带文件:行）、数据的 TS 类型字段和注释，读 src7/docs/事件目录.json（Check_Event_Docs.ts 扫出来的）
+ *   GET /api/tutorial/events                事件目录：每个事件的发法、谁发谁听（带文件:行）、数据的 TS 类型字段和注释，
+ *                                           读 src7/docs/事件目录.json（Check_Event_Docs.ts 扫出来的）
  *   GET /api/tutorial/utils                 骨架工具层 src7/utils/ 下的 .ts 文件名清单（不含测试），按现有文件动态列
  *   GET /api/tutorial/util-readme?name=     清单内一个工具文件的说明：文件头注释和函数表，从源码实时提取
  *   GET /api/tutorial/state?name=           这个插件现在的运行时变量：它提供的服务对象，加它用 ctx.flow.state 登记的，全量原样
@@ -117,15 +118,18 @@ export const name = 'tutorial';
 /** 版本号。 */
 //M 1.1.8：运行时变量快照（Snapshot.ts）从骨架 utils/ 挪进本插件，只有 tutorial 用。
 //M 1.1.10：Trail.ts 挪进 journal（journal/Trail.ts）；消息的轨迹改发 journal/request 的 trail 要现成的，不再自己取行再收。
-//M 1.1.14：加 GET /api/tutorial/events 读事件目录 src7/docs/事件目录.json；消息轨迹按标准消息号串，第一格是飞书收到（journal 做）。1.1.15：教程页画布加顺序图、点箭头看事件详情、左栏加静态路线，只改网页。
-//M 1.1.16：不再 import journal：轨迹形状和 NOISE、FOLDERS 改读 utils/Trail.ts，启动轨迹发 journal/request 的 boot-trail 要；TRAIL_MAX_LINES 归 Files.ts。
+//M 1.1.14：加 GET /api/tutorial/events 读事件目录 src7/docs/事件目录.json；消息轨迹按标准消息号串，第一格是飞书收到（journal 做）。
+//M 1.1.15：教程页画布加顺序图、点箭头看事件详情、左栏加静态路线，只改网页。
+//M 1.1.16：不再 import journal：轨迹形状和 NOISE、FOLDERS 改读 utils/Trail.ts，启动轨迹发 journal/request 的 boot-trail 要；
+//M   TRAIL_MAX_LINES 归 Files.ts。
 //M 1.1.18：channels 搬出骨架成了依赖型协议插件（不在自带名单里），左栏插件列表单独列它，/api/tutorial/readme?name=channels 读它的 说明.md。
 //M 1.1.19：消息轨迹「分给机器人」列认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
 //M 1.1.20：跟踪打印直接读当前界面语言。
 //M 1.1.21：挂载结果合成 state 加 error，左栏和启动录像照它原样给，不再自己拼。
 //M 1.1.23：启动录像第一个插件步骤的加载说明改取 plugins/Index.ts 的 loadPlugin（原 Main.ts 的 loadExternalPlugin 搬过去了）。
 //M 1.1.24：/api/tutorial/canvas 新增端到端数据流转 dataFlow（DataFlow.ts），Source.getCallers 按作用域精准过滤调用方。
-export const version = '1.1.24';
+//M 1.1.25：快照文件（data/flow/*.json）改原子写（utils/Files.ts 的 writeTextAtomic），写到一半不会被读成坏 JSON。
+export const version = '1.1.25';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -561,7 +565,8 @@ class Tutorial {
     //M 事件目录：扫出来的 JSON 原样交给页面；还没扫过（没有这个文件）回 404 并写明怎么生成。
     app.get('/api/tutorial/events', async (_request, reply) => {
       const lines = await sourceModule.readLines(EVENTS_FILE);
-      if (lines === undefined) return reply.code(404).send({ error: '没有事件目录，先跑 bun ztools/check-events/Check_Event_Docs.ts' });
+      const noEvents = { error: '没有事件目录，先跑 bun ztools/check-events/Check_Event_Docs.ts' };
+      if (lines === undefined) return reply.code(404).send(noEvents);
 
       return JSON.parse(lines.join('\n')) as unknown;
     });
@@ -635,7 +640,8 @@ class Tutorial {
 
       //M 读取或现算对应轨迹，不存在则报 404，否则展开成泳道图数据结构。
       const trail = await this.getTrail(canvas);
-      if (trail === undefined) return reply.code(404).send({ error: `没有画布 ${canvas}：快照文件没有，跟踪行里也没有（没挂 journal，或过期删了）` });
+      const noCanvas = { error: `没有画布 ${canvas}：快照文件没有，跟踪行里也没有（没挂 journal，或过期删了）` };
+      if (trail === undefined) return reply.code(404).send(noCanvas);
 
       //M 将按时间串行的步骤摆进道与阶段列生成泳道图，并同步产出端到端数据流转与状态变化视图。
       const lanes = lanesModule.getLanes(trail);
@@ -753,13 +759,23 @@ class Tutorial {
       //M 补充未启用自带插件的文档存在性与依赖清单，标记为 idle。
       const hasReadme = await this.hasReadme(pluginName);
       const inject = plugin.inject ?? [];
-      items.push({ name: pluginName, version: getVersion(plugin), state: 'idle', error: '', inject, hasReadme, kind: 'plugin' });
+      const version = getVersion(plugin);
+      items.push({ name: pluginName, version, state: 'idle', error: '', inject, hasReadme, kind: 'plugin' });
     }
 
     //M 依赖型协议插件：谁 import 它谁就在用，没有挂载状态，固定 ok；不依赖服务。
     for (const dependency of DEPENDENCY_PLUGINS) {
       const hasReadme = await this.hasReadme(dependency.name);
-      items.push({ name: dependency.name, version: dependency.version, state: 'ok', error: '', inject: [], hasReadme, kind: 'plugin' });
+      const item: PluginItem = {
+        name: dependency.name,
+        version: dependency.version,
+        state: 'ok',
+        error: '',
+        inject: [],
+        hasReadme,
+        kind: 'plugin',
+      };
+      items.push(item);
     }
     return items;
   }
@@ -853,7 +869,8 @@ class Tutorial {
       if (entries.size >= this.settings.recentMessages) break;
 
       const row = received[index];
-      if (row === undefined || typeof row.messageId !== 'number' || !Number.isSafeInteger(row.messageId) || row.messageId <= 0) continue;
+      if (row === undefined || typeof row.messageId !== 'number') continue;
+      if (!Number.isSafeInteger(row.messageId) || row.messageId <= 0) continue;
 
       const key = String(row.messageId);
       if (entries.has(key)) continue;
@@ -1012,15 +1029,21 @@ export function apply(ctx: cordis.Context, config: TutorialConfig = {}): void {
 
   //M 快照上限：正数，MB。
   const maxMb = config.snapshot_max_mb ?? DEFAULT_MAX_MB;
-  if (typeof maxMb !== 'number' || !Number.isFinite(maxMb) || maxMb <= 0) throw new Error('tutorial 的 snapshot_max_mb 要是正数');
+  if (typeof maxMb !== 'number' || !Number.isFinite(maxMb) || maxMb <= 0) {
+    throw new Error('tutorial 的 snapshot_max_mb 要是正数');
+  }
 
   //M 留几个消息文件：正整数。
   const keep = config.snapshot_files ?? DEFAULT_FILES;
-  if (typeof keep !== 'number' || !Number.isSafeInteger(keep) || keep <= 0) throw new Error('tutorial 的 snapshot_files 要是正整数');
+  if (typeof keep !== 'number' || !Number.isSafeInteger(keep) || keep <= 0) {
+    throw new Error('tutorial 的 snapshot_files 要是正整数');
+  }
 
   //M 「会话」画布最近列几条消息：正整数。
   const recentMessages = config.recent_messages ?? DEFAULT_RECENT_MESSAGES;
-  if (typeof recentMessages !== 'number' || !Number.isSafeInteger(recentMessages) || recentMessages <= 0) throw new Error('tutorial 的 recent_messages 要是正整数');
+  if (typeof recentMessages !== 'number' || !Number.isSafeInteger(recentMessages) || recentMessages <= 0) {
+    throw new Error('tutorial 的 recent_messages 要是正整数');
+  }
 
   //M 源码根目录：字符串。
   const workspace = config.workspace ?? '';
@@ -1034,7 +1057,9 @@ export function apply(ctx: cordis.Context, config: TutorialConfig = {}): void {
   if (typeof traceFile !== 'boolean') throw new Error('tutorial 的 trace_file 要是 true 或 false');
 
   const varLimit = config.trace_var_limit ?? DEFAULT_VAR_LIMIT;
-  if (typeof varLimit !== 'number' || !Number.isSafeInteger(varLimit) || varLimit <= 0) throw new Error('tutorial 的 trace_var_limit 要是正整数');
+  if (typeof varLimit !== 'number' || !Number.isSafeInteger(varLimit) || varLimit <= 0) {
+    throw new Error('tutorial 的 trace_var_limit 要是正整数');
+  }
 
   const settings: Settings = {
     keyword,

@@ -116,7 +116,7 @@ export function getAsrLines(
     //G 缺文件时保留明确的失败原因供备用线路记录。
     if (!sherpaReady) throw new routes.RouteFailure(NO_ASR.message);
 
-    //G 每条本地识别流都会加载独享的 VAD，需要先检查当前资源。
+    //G 本地识别吃 CPU：开流前先问 programs 的资源守卫（routes.allowLocal），CPU、内存紧时不开，限住本地并发。
     await routes.allowLocal(ctx, lineSignal);
     lineSignal.throwIfAborted();
     //M 在进程中复用已加载的本地转写模型。

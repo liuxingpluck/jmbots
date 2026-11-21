@@ -124,7 +124,10 @@ export function approvals(): Promise<types.ApprovalView[]> {
  * @param bot 机器人名。
  * @param query before（往前翻）、after（取变化）、limit、origin（web 只要网页发的，other 只要别的渠道的）。
  */
-export function messages(bot: string, query: { before?: number; after?: number; limit?: number; origin?: types.MessageOrigin; channel?: string } = {}): Promise<types.MessagePage> {
+export function messages(
+  bot: string,
+  query: { before?: number; after?: number; limit?: number; origin?: types.MessageOrigin; channel?: string } = {},
+): Promise<types.MessagePage> {
   /** 查询参数。 */
   const params = new URLSearchParams({ bot });
   for (const [name, value] of Object.entries(query)) {
@@ -781,7 +784,12 @@ export interface ModelInfo {
  * 直接问一家供应商有哪些模型（设置页“获取可用模型”，用还没保存的地址和密钥，不用重启）。
  * @param input 供应商的名字、地址、密钥、协议。
  */
-export function providerModels(input: { provider: string; base_url: string; api_key: string; api: string }): Promise<{ models: ModelInfo[] }> {
+export function providerModels(input: {
+  provider: string;
+  base_url: string;
+  api_key: string;
+  api: string;
+}): Promise<{ models: ModelInfo[] }> {
   //M 把表单里暂未落盘的供应商地址与密钥直接发给后端拉取模型清单，支持设置页先试连再保存。
   return sendJson('/api/ui/provider-models', 'POST', input);
 }
@@ -794,7 +802,11 @@ export interface UpdateInfo {
   /** 现在跑的版本。 */
   current?: { version: string; builtAt: number } | null;
   /** 新版本和它比现在多做了什么；没有是 null。 */
-  available?: { version: string; builtAt: number; changes: { version: string; date: string; changes: string[] }[] } | null;
+  available?: {
+    version: string;
+    builtAt: number;
+    changes: { version: string; date: string; changes: string[] }[];
+  } | null;
   /** 正在换吗。 */
   applying?: boolean;
   /** 上一次换的结果。 */
@@ -938,7 +950,11 @@ export function grants(): Promise<{ items: GrantItem[]; seen: GrantSeen[] }> {
  * 设一条目录授权：这个人或群在这个目录和子目录里读写、跑命令、发文件不用再问。
  * @param input 谁、名字、目录（绝对路径，后端查目录在不在）。
  */
-export function addGrant(input: { subject: string; label: string; dir: string }): Promise<{ ok: boolean; grant: GrantItem }> {
+export function addGrant(input: {
+  subject: string;
+  label: string;
+  dir: string;
+}): Promise<{ ok: boolean; grant: GrantItem }> {
   //M 提交新授权；目录写错时后端回 400，错误原因交给调用方显示。
   return sendJson('/api/grants', 'POST', { action: 'add', ...input });
 }
@@ -1217,11 +1233,12 @@ export interface MemorySearchResult {
 /**
  * 统一记忆搜索，参数由发起查询的页面按所选来源和范围提供。
  * @param params 查询串，q 必填，sources、mode、customer、bot 等可选。
+ * @param signal 可选中止信号，用于图谱切范围或连续检索时取消上一次请求。
  */
-export function memorySearch(params: URLSearchParams): Promise<MemorySearchResult> {
-  //M 记忆和图谱页面都从同一入口拿各路结果。
+export function memorySearch(params: URLSearchParams, signal?: AbortSignal): Promise<MemorySearchResult> {
+  //M 记忆和图谱页面都从同一入口拿各路结果，透传 signal 以便切换范围时中止过期检索。
   const query = params.toString();
-  return getJson<MemorySearchResult>(`/api/memory/search?${query}`);
+  return getJson<MemorySearchResult>(`/api/memory/search?${query}`, { signal });
 }
 
 
@@ -1325,7 +1342,12 @@ export function getModelNotes(): Promise<{ list: ModelNoteItem[] }> {
  * 给指定会话打分或改分（POST /api/model-notes/rate）。
  * @param input session 会话号，by 评价者，score 1..5，note 一句话可选。
  */
-export function rateSession(input: { session: string; by: string; score: number; note: string }): Promise<{ ok: boolean; note: ModelNoteItem }> {
+export function rateSession(input: {
+  session: string;
+  by: string;
+  score: number;
+  note: string;
+}): Promise<{ ok: boolean; note: ModelNoteItem }> {
   //M 提交用户对指定会话的评分与一句话评语，拿回更新后的模型汇总用于页面即时刷新。
   return sendJson<{ ok: boolean; note: ModelNoteItem }>('/api/model-notes/rate', 'POST', input);
 }

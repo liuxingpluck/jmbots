@@ -526,8 +526,8 @@ export class Search {
     const allowed = new Set(sources as Source[]);
     const skipped: Source[] = [];
     for (const source of allowed) {
-      if (source === 'channel' && !access.full && (!access.chat || !access.account || !access.key) && !explicit) {
-        //G 老会话缺来源快照时没有渠道授权，继续查询它能查的其他来源。
+      if (source === 'channel' && !memoryKeyModule.canQueryChannel(access) && !explicit) {
+        //G 没有渠道授权（老会话缺来源快照、认不出归属）：默认来源里去掉渠道，继续查询它能查的其他来源。
         allowed.delete(source);
         skipped.push(source);
         continue;
@@ -779,7 +779,7 @@ export class Search {
     const previous = this.quota.get(session);
     let calls = 0;
     if (previous?.turn === turn) calls = previous?.calls ?? 0;
-    if (calls >= HISTORY_CALLS) throw new Error('本轮记忆工具已调用 3 次。需要通读大量历史时请用 hand_session。');
+    if (calls >= HISTORY_CALLS) throw new Error(`本轮记忆工具已调用 ${String(HISTORY_CALLS)} 次。需要通读大量历史时请用 hand_session。`);
 
     this.quota.set(session, { turn, calls: calls + 1 });
   }

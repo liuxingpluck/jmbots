@@ -116,7 +116,7 @@ async function world(): Promise<{ ctx: cordis.Context; sent: Sent[] }> {
   channels.registerTextReply(ctx, {
     channel: 'test',
     sendDirectText: (text, request, targetAddress) => {
-      const origin = { channel: request.channel, address: targetAddress };
+      const origin = { channel: request.channel, address: targetAddress ?? request.sourceSnapshot?.origin.address };
       sent.push({ reply: text, origin });
     },
   });
@@ -161,10 +161,14 @@ test('派活：后台做完结果先回前台，前台整理后发回原渠道�
   expect(work?.frontTask?.front).toBe(front?.id);
   expect(work?.quiet).toBe(true);
 
-  //M 交回一次，轮数加一；前台队列里那一项发到了。
-  await waitFor(() => ctx.sessions.find({ kind: 'front' })[0]?.resultQueue?.[0]?.stage === 'sent');
+  //M 交回一次，轮数加一；前台队列里对应的后台结果项发到了。
+  const workKey = `work:${work?.id ?? ''}:1`;
+  await waitFor(() => {
+    const queue = ctx.sessions.find({ kind: 'front' })[0]?.resultQueue ?? [];
+    return queue.some((item) => item.key === workKey && item.stage === 'sent');
+  });
   const queue = ctx.sessions.find({ kind: 'front' })[0]?.resultQueue ?? [];
-  expect(queue[0]?.key).toBe(`work:${work?.id ?? ''}:1`);
+  expect(queue.find((item) => item.key === workKey)?.stage).toBe('sent');
   expect(ctx.sessions.find({ kind: 'work' })[0]?.frontTask?.round).toBe(2);
 
   //M 后台自己的回话没直接发；结果按派活时的地址发。

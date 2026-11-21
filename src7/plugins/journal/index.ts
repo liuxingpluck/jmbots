@@ -41,7 +41,8 @@ export const name = 'journal';
 //M   轨迹第一格不再是“收件表记下”；/api/events 加 source 参数。
 //M 1.3.3：事件人话认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
 //M 1.3.4：journal_lines 建表与 source_id 补列交 db 插件迁移账本管理（adoptColumn 接管已有列），删手写查表与 ALTER。
-export const version = '1.3.4';
+//M 1.3.5：FilesMirror 的 written 最多记 2000 场（挤掉最早的，下次照库重写）；trail 请求只 pick 一遍（Trail.getPickedTrail）。
+export const version = '1.3.5';
 
 /** 用到的服务：resources 拿数据库、运行时目录，db 按版本迁移流水表。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources', 'db'];
@@ -305,9 +306,12 @@ class Journal {
       + ' (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, source_id, vars)'
       + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     //M 把跟踪行连同截短后的内容和变量写入数据库，供轨迹查询。
+    const listeners = JSON.stringify(line.listeners);
+    const text = cut.clipTextWithLength(line.text, TEXT_MAX_CHARS);
+    const code = cut.clipTextWithLength(line.code, TEXT_MAX_CHARS);
     this.ctx.resources.db.query(sql).run(
-      now, line.kind, line.name, line.mode, JSON.stringify(line.listeners), cut.clipTextWithLength(line.text, TEXT_MAX_CHARS),
-      cut.clipTextWithLength(line.code, TEXT_MAX_CHARS), line.site, line.bot, line.sessionId, line.messageId,
+      now, line.kind, line.name, line.mode, listeners, text,
+      code, line.site, line.bot, line.sessionId, line.messageId,
       line.sourceId ?? null, shrink(line.vars));
 
     //G 一天之内删过了 → 不再删。
@@ -333,7 +337,12 @@ class Journal {
    * @param to 可选的截止时间，包含该毫秒内的匹配行。
    * @returns 按号从小到大。没有收件行时是 undefined。
    */
-  request(message: number, maxLines: number, sessions: string[] = [], to = Number.MAX_SAFE_INTEGER): JournalEvent[] | undefined {
+  request(
+    message: number,
+    maxLines: number,
+    sessions: string[] = [],
+    to = Number.MAX_SAFE_INTEGER,
+  ): JournalEvent[] | undefined {
     const db = this.ctx.resources.db;
 
     //M 收件表记下这条消息的那一行：没有它就不是一条收下的消息。
@@ -343,23 +352,27 @@ class Journal {
     if (start === null) return undefined;
 
     //M 渠道来的消息：Timeline.insert 那行带着标准消息号，从这个标准号第一次出现的行起算；别的渠道、网页来的没有，从收件行起算。
-    const bridge = db.query('SELECT source_id FROM journal_lines WHERE message_id = ? AND source_id IS NOT NULL ORDER BY id LIMIT 1')
-      .get(message) as { source_id: string } | null;
+    const bridgeSql = 'SELECT source_id FROM journal_lines WHERE message_id = ? AND source_id IS NOT NULL'
+      + ' ORDER BY id LIMIT 1';
+    const bridge = db.query(bridgeSql).get(message) as { source_id: string } | null;
     const sourceId = bridge?.source_id ?? null;
     let from = start.id;
     if (sourceId !== null) {
-      const first = db.query('SELECT MIN(id) AS id FROM journal_lines WHERE source_id = ?').get(sourceId) as { id: number };
+      const firstSql = 'SELECT MIN(id) AS id FROM journal_lines WHERE source_id = ?';
+      const first = db.query(firstSql).get(sourceId) as { id: number };
       from = Math.min(from, first.id);
     }
 
     //M 有其他消息号的行归那条消息（同一条群消息给几个机器人，各有各的收件号）。
     //M   无收件号、无会话、带这条标准号的渠道行归这条；其余无收件号的行只认明确关联的会话。
     const sql = 'SELECT * FROM journal_lines WHERE id >= ? AND at <= ? AND name NOT IN (?, ?, ?, ?)'
-      + ' AND (message_id = ? OR (message_id IS NULL AND session_id IS NULL AND source_id = ?) OR (message_id IS NULL AND session_id IN ('
+      + ' AND (message_id = ? OR (message_id IS NULL AND session_id IS NULL AND source_id = ?)'
+      + ' OR (message_id IS NULL AND session_id IN ('
       + ' SELECT session_id FROM journal_lines WHERE message_id = ? AND id >= ? AND at <= ? AND session_id IS NOT NULL'
       + ' UNION SELECT value FROM json_each(?)))) ORDER BY id LIMIT ?';
     const knownSessions = JSON.stringify(sessions);
-    const rows = db.query(sql).all(from, to, ...READ_EVENTS, message, sourceId, message, from, to, knownSessions, maxLines) as Row[];
+    const params = [from, to, ...READ_EVENTS, message, sourceId, message, from, to, knownSessions, maxLines];
+    const rows = db.query(sql).all(...params) as Row[];
     return rows.map(getEvent);
   }
 
@@ -534,9 +547,8 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
       const raw = journal.request(request.message, request.maxLines);
       if (raw === undefined) return {};
 
-      //M 挑出这条请求的行（tutorial 对快照用），再收成一步一步。
-      const picked = trailModule.pick(request.message, raw).picked;
-      const trail = trailModule.getTrail(request.message, raw);
+      //M 挑出这条请求的行（tutorial 对快照用），再收成一步一步：只挑一遍，两样一起交回。
+      const { trail, picked } = trailModule.getPickedTrail(request.message, raw);
       return { trail, picked };
     }
     if (request.action === 'boot-trail') {

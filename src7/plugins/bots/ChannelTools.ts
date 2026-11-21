@@ -241,6 +241,9 @@ export class ChannelTools {
         deliveryMode: 'channel_tool',
         payload: { text: routedText, files: [] },
       };
+      if (task.autoFinal === true) {
+        noticeInput.autoFinal = true;
+      }
       //M progress 按调用逐条入队；final 同一后台同一轮只接收一次。
       if (kind === 'progress' || task.finalRound !== round) {
         const previousFinal = task.finalRound;

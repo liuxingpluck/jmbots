@@ -360,7 +360,16 @@ export async function startWechatServer(
   });
   //M 挂载轻量健康检查接口。
   app.get('/jmbots/v1/health', () => PLUGIN_IDENTITY);
-  app.post('/jmbots/v1/exit', (_request, reply) => {
+  app.post('/jmbots/v1/exit', (request, reply) => {
+    //G 由主程序拉起（登记了渠道、手里有宿主密钥）：只认带对 x-jmbots-key 的退出请求，本机别的进程关不掉它。
+    //G   单独预览没有宿主密钥（没人能带），照旧放行，和 PUT /jmbots/v1/license 的规矩一样。
+    const hostKey = bridge?.key;
+    const given = request.headers[protocol.KEY_HEADER];
+    if (hostKey !== undefined && !protocol.isSameKey(hostKey, given)) {
+      return reply.code(401).send({ ok: false, error: '退出要带主程序给的密钥' });
+    }
+
+    //M 停发件队列，回完这条再关服务。
     approvedSend?.stop();
     reply.raw.once('finish', () => {
       void close();

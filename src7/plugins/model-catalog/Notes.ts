@@ -10,7 +10,8 @@
  *   GET  /api/model-notes        列表 { list }
  *   POST /api/model-notes/rate   会话打分 { session, by, score, note }，正文由 Checks.ts 的 checkRating 查一次
  * 页面 /model-notes/ 是 web 打包的 model-notes.html（web/src/ModelNotes/），web 插件的兜底路由按文件名托管，这里不登记。
- * 配置（plugins[model-catalog].config.notes，都可不写）：dir（默认 models，相对运行时目录）、time_zone（评价时间按哪个时区写，默认 America/New_York，写出来是 EST/EDT）。
+ * 配置（plugins[model-catalog].config.notes，都可不写）：dir（默认 models，相对运行时目录）、
+ *   time_zone（评价时间按哪个时区写，默认 America/New_York，写出来是 EST/EDT）。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -188,6 +189,51 @@ function getSessionStats(ratings: Rating[]): { sessionCount: number; average: nu
 
 
 /**
+ * 找“## 评价”这一节在哪：标题行的下标，和这一节到哪为止（下一个 # 开头的标题，或文末）。
+ * 读评价、删旧评价、写新评价三处共用。
+ * @param lines MD 按行拆开。
+ * @returns heading 是“## 评价”那一行，end 是这一节后面第一行（不含）；没有这一节是 undefined。
+ */
+function getRatingsSection(lines: string[]): { heading: number; end: number } | undefined {
+  const heading = lines.findIndex((line) => line.trim() === RATINGS_HEADING);
+  if (heading < 0) return undefined;
+
+  //M 这一节到下一个 # 开头的标题为止；没有下一个标题就到文末。
+  let end = lines.findIndex((line, index) => index > heading && line.startsWith('#'));
+  if (end < 0) {
+    end = lines.length;
+  }
+  return { heading, end };
+}
+
+/**
+ * 在评价节里删掉同一评价者对同一场会话的旧评价行（原地改 lines）。删旧评价、写新评价两处共用。
+ * @param lines MD 按行拆开；删掉的行直接从里面拿走。
+ * @param section getRatingsSection 找到的这一节。
+ * @param session 会话号。
+ * @param by 评价者。
+ * @returns 删了几行。
+ */
+function removeOldRatings(
+  lines: string[],
+  section: { heading: number; end: number },
+  session: string,
+  by: string,
+): number {
+  //M 倒序逐行解析，删的时候后面的下标不会乱。
+  let removed = 0;
+  for (let index = section.end - 1; index > section.heading; index -= 1) {
+    const parsed = getRating(lines[index] ?? '');
+    if (parsed !== undefined && parsed.session === session && parsed.by === by) {
+      lines.splice(index, 1);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+
+/**
  * 解析一份 MD：标题行之后、“## 评价”之前是介绍；“## 评价”下面到下一个标题之间的行是评价，解析不了的跳过。
  * @param model 模型 ID。
  * @param text MD 全文。
@@ -201,23 +247,19 @@ function getNote(model: string, text: string): ModelNote {
   if (lines[0]?.startsWith('# ') === true) {
     introStart = 1;
   }
-  const heading = lines.findIndex((line) => line.trim() === RATINGS_HEADING);
+  const section = getRatingsSection(lines);
   let introEnd = lines.length;
-  if (heading >= 0) {
-    introEnd = heading;
+  if (section !== undefined) {
+    introEnd = section.heading;
   }
   const intro = lines.slice(introStart, introEnd).join('\n').trim();
 
   //M 没有“## 评价”这一节：还没人打过分。
-  if (heading < 0) return { model, intro, ratings: [], sessionCount: 0, average: 0 };
+  if (section === undefined) return { model, intro, ratings: [], sessionCount: 0, average: 0 };
 
-  //M 评价这一节到下一个 # 开头的标题为止。
-  let sectionEnd = lines.findIndex((line, index) => index > heading && line.startsWith('#'));
-  if (sectionEnd < 0) {
-    sectionEnd = lines.length;
-  }
+  //M 评价这一节里的每一行，解析得了的才算一条评价。
   const rawRatings: Rating[] = [];
-  for (const line of lines.slice(heading + 1, sectionEnd)) {
+  for (const line of lines.slice(section.heading + 1, section.end)) {
     const rating = getRating(line);
     if (rating !== undefined) {
       rawRatings.push(rating);
@@ -253,24 +295,12 @@ function removeRatingLine(text: string, session: string, by: string): string {
   //M 先识别原文件的行尾符，写回时保持 LF 或 CRLF 一致。
   const eol = getEol(text);
   const lines = text.split(/\r?\n/u);
-  const heading = lines.findIndex((each) => each.trim() === RATINGS_HEADING);
-  if (heading < 0) return text;
+  const section = getRatingsSection(lines);
+  if (section === undefined) return text;
 
-  let sectionEnd = lines.findIndex((each, index) => index > heading && each.startsWith('#'));
-  if (sectionEnd < 0) {
-    sectionEnd = lines.length;
-  }
-
-  //M 倒序逐行解析评价节，删掉同评价者对同一场会话的所有旧记录。
-  let removed = false;
-  for (let index = sectionEnd - 1; index > heading; index -= 1) {
-    const parsed = getRating(lines[index] ?? '');
-    if (parsed !== undefined && parsed.session === session && parsed.by === by) {
-      lines.splice(index, 1);
-      removed = true;
-    }
-  }
-  if (!removed) return text;
+  //M 删掉同评价者对同一场会话的所有旧记录；一行都没删就原样交回。
+  const removed = removeOldRatings(lines, section, session, by);
+  if (removed === 0) return text;
 
   return lines.join(eol);
 }
@@ -290,25 +320,16 @@ function upsertRatingLine(text: string, session: string, by: string, line: strin
   const lines = text.split(/\r?\n/u);
 
   //M 没有“## 评价”：文末空一行补上这一节。
-  const heading = lines.findIndex((each) => each.trim() === RATINGS_HEADING);
-  if (heading < 0) return `${text.trimEnd()}${eol}${eol}${RATINGS_HEADING}${eol}${line}${eol}`;
+  const section = getRatingsSection(lines);
+  if (section === undefined) return `${text.trimEnd()}${eol}${eol}${RATINGS_HEADING}${eol}${line}${eol}`;
 
-  //M 找到这一节的范围（下一个 # 开头的标题，或文末），先删掉同 (session, by) 的旧评价。
-  let sectionEnd = lines.findIndex((each, index) => index > heading && each.startsWith('#'));
-  if (sectionEnd < 0) {
-    sectionEnd = lines.length;
-  }
-  for (let index = sectionEnd - 1; index > heading; index -= 1) {
-    const parsed = getRating(lines[index] ?? '');
-    if (parsed !== undefined && parsed.session === session && parsed.by === by) {
-      lines.splice(index, 1);
-      sectionEnd -= 1;
-    }
-  }
+  //M 先删掉同 (session, by) 的旧评价，这一节的结尾跟着往前挪。
+  const removed = removeOldRatings(lines, section, session, by);
+  const sectionEnd = section.end - removed;
 
   //M 往回跳过空行，插在最后一行有字的后面。
   let at = sectionEnd;
-  while (at > heading + 1 && lines[at - 1]?.trim() === '') {
+  while (at > section.heading + 1 && lines[at - 1]?.trim() === '') {
     at -= 1;
   }
   lines.splice(at, 0, line);
@@ -444,7 +465,14 @@ export class ModelNotes {
     fs.writeFileSync(file, updated, 'utf8');
 
     //T 跟踪：记下或修改了一条会话评价。
-    const vars = { model: model, session: input.session, thinking: thinking, reviewer: input.by, score: input.score, file: file };
+    const vars = {
+      model: model,
+      session: input.session,
+      thinking: thinking,
+      reviewer: input.by,
+      score: input.score,
+      file: file,
+    };
     const code = 'fs.writeFileSync(file, upsertRatingLine(text, input.session, input.by, line))';
     this.ctx.emit('trace', 'ModelNotes.rate', 'trace.modelCatalog.rateSession', code, vars);
     return getNote(model, updated);

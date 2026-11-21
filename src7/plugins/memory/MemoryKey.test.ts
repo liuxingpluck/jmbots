@@ -275,3 +275,46 @@ bunTest.test('只读统计能恢复旧归属，缺少或歧义的来源只计原
     store.close();
   }
 });
+
+
+bunTest.test.each([
+  { name: '本人私聊', role: 'owner', chatType: 'p2p', trusted: false, senderId: 'user-fixture', allowed: true },
+  { name: '本人在受信群', role: 'owner', chatType: 'group', trusted: true, senderId: 'user-fixture', allowed: true },
+  { name: '本人在普通群', role: 'owner', chatType: 'group', trusted: false, senderId: 'user-fixture', allowed: true },
+  { name: '外人私聊', role: 'guest', chatType: 'p2p', trusted: false, senderId: 'user-fixture', allowed: true },
+  { name: '外人私聊缺发话人', role: 'guest', chatType: 'p2p', trusted: false, senderId: '', allowed: false },
+] as const)('$name：能不能查渠道消息只看 canQueryChannel', ({ role, chatType, trusted, senderId, allowed }) => {
+  const chatId = 'chat-fixture';
+  const address = { chatType, chatId, role, trusted, appId: 'app-fixture' };
+  const activeSourceSnapshot = {
+    channel: 'feishu', chatType, chatId, accountId: 'app-fixture',
+    senderId, role, origin: { channel: 'feishu', address },
+  };
+  const row = { channel: 'feishu', address, activeSourceSnapshot } as unknown as SessionMeta;
+
+  //M 召回、旧 memory 工具、统一检索和 getScope 共用这一个口径。
+  const access = keys.getMemoryAccess(row);
+  bunTest.expect(keys.canQueryChannel(access)).toBe(allowed);
+});
+
+
+bunTest.test('本机来源不是本人：快照带范围不带键，老会话什么都不给；本人老会话补本机聊天号', () => {
+  const address = { role: 'guest' };
+  const snapshot = {
+    channel: 'http', chatType: 'local', chatId: 'http:本机', accountId: 'local',
+    senderId: 'http:本机', role: 'guest', origin: { channel: 'http', address },
+  };
+  const withSnapshot = { channel: 'http', address, activeSourceSnapshot: snapshot } as unknown as SessionMeta;
+  const legacy = { channel: 'http', address } as unknown as SessionMeta;
+  const ownerLegacy = { channel: 'http', address: {} } as unknown as SessionMeta;
+
+  //M 两种来源的交回形状原样保留，读不到 owner 记忆，也查不了渠道消息。
+  const current = keys.getMemoryAccess(withSnapshot);
+  bunTest.expect(current).toEqual({ full: false, channel: 'http', chat: 'http:本机', account: 'local' });
+  bunTest.expect(keys.canQueryChannel(current)).toBe(false);
+  bunTest.expect(keys.getMemoryAccess(legacy)).toEqual({ full: false });
+
+  //M 没写档位的本机网页算本人：账号记 local，聊天号补成 http:本机。
+  const owner = keys.getMemoryAccess(ownerLegacy);
+  bunTest.expect(owner).toEqual({ full: true, channel: 'http', chat: 'http:本机', account: 'local' });
+});

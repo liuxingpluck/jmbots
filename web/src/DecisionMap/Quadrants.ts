@@ -70,7 +70,7 @@ export interface QuadrantEntry {
 
 const HIGH_IMPACT_RE = /(?:P0|隐患|直连|开工|第一单|住宅\s*IP|架构|底座|知识库|A\+A\+A|主线|安全|回退)/iu;
 const TRIVIAL_CLEANUP_RE = /(?:删掉废弃|表情包|精简成三行|外网隧道|占位消息)/u;
-const TIME_URGENT_RE = /(?:P0|真验|提醒|到家在场|24\s*小时|下次重启|立刻|紧急)/iu;
+const TIME_URGENT_RE = /(?:P0|真验|提醒|到家在场|24\s*小时|下次重启|立刻|(?<!不)紧急)/iu;
 const LOW_BACKGROUND_RE = /(?:表情包|介绍用法|等周周定|累计步数|getRowName)/iu;
 
 /** 判断节点或其祖先链上是否带有 main 主线标记。 */

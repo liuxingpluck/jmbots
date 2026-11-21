@@ -129,9 +129,10 @@ export class FeishuReply {
       let providerId = '';
       receipt = protocol.getReceipt(request, 'sent');
 
-      //M atFiles 启用时，把正文里的 @路径 当文件一起发，有文件没发出去是 partial。
+      //M atFiles 启用时，把正文里的 @路径 当文件一起发，保留文本消息号，有文件没发出去是 partial。
       if (request.atFiles === true) {
         const sent = await this.feishu.sendText(address, atText);
+        providerId = sent.messageId ?? '';
         if (sent.status === 'partial') {
           receipt = protocol.getReceipt(request, 'partial', sent.reason);
         }

@@ -5,27 +5,29 @@
  * 原有预览、工作区、消息、待审核、记忆、详情和用量各保留原入口。
  */
 import * as icons from '@ant-design/icons';
-import * as antd from 'antd';
+import { Button, Segmented } from 'antd';
 import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
 import * as privacy from '../Privacy/Mask.tsx';
-import * as approvals from './Approvals.tsx';
-import * as assist from '../Chat/Assist.tsx';
-import * as details from './Details.tsx';
-import * as events from './Events.tsx';
-import * as memory from './Memory.tsx';
-import * as messages from './Messages.tsx';
-import * as preview from './Preview.tsx';
 import * as runningTasks from './RunningTasks.tsx';
-import * as session from './Session.tsx';
-import * as usage from './Usage.tsx';
-import * as workspace from './Workspace.tsx';
 import * as historyModule from './History.ts';
 import * as readingModule from './Reading.ts';
 import './Reader.css';
 import type * as storeModule from '../Store.ts';
+
+/** 右栏各子标签页按需懒加载，切到哪一页才加载对应预览器/用量图表/记忆树模块。 */
+const LazyEvents = react.lazy(async () => ({ default: (await import('./Events.tsx')).Events }));
+const LazyPreview = react.lazy(async () => ({ default: (await import('./Preview.tsx')).Preview }));
+const LazyWorkspace = react.lazy(async () => ({ default: (await import('./Workspace.tsx')).Workspace }));
+const LazySession = react.lazy(async () => ({ default: (await import('./Session.tsx')).Session }));
+const LazyMessages = react.lazy(async () => ({ default: (await import('./Messages.tsx')).Messages }));
+const LazyApprovals = react.lazy(async () => ({ default: (await import('./Approvals.tsx')).Approvals }));
+const LazyMemory = react.lazy(async () => ({ default: (await import('./Memory.tsx')).Memory }));
+const LazyDetails = react.lazy(async () => ({ default: (await import('./Details.tsx')).Details }));
+const LazyUsage = react.lazy(async () => ({ default: (await import('./Usage.tsx')).Usage }));
+const LazyTodoPanel = react.lazy(async () => ({ default: (await import('../Chat/Assist.tsx')).TodoPanel }));
 
 
 /** 原有内容入口与只读事件追踪；窄右栏通过横向滚动选择标签。 */
@@ -81,7 +83,14 @@ function PreviewTabs(): react.JSX.Element | null {
   //M 渲染已打开文件的多标签切换栏，支持轮转切换上一个预览。
   return (
     <div className="jm-preview-tabs">
-      <antd.Button size="small" type="text" icon={<icons.LeftOutlined />} aria-label={t('上一个预览')} disabled={tabs.length < 2} onClick={() => step(-1)} />
+      <Button
+        size="small"
+        type="text"
+        icon={<icons.LeftOutlined />}
+        aria-label={t('上一个预览')}
+        disabled={tabs.length < 2}
+        onClick={() => step(-1)}
+      />
       <div className="jm-preview-tab-list" ref={listRef}>
         {tabs.map((item) => {
           let tabClass = 'jm-preview-tab';
@@ -95,16 +104,27 @@ function PreviewTabs(): react.JSX.Element | null {
               <button type="button" className="jm-preview-tab-name" onClick={() => showPreview(item.path)}>
                 {privacy.name(item.name, masked)}
               </button>
-              <button type="button" className="jm-preview-tab-close" aria-label={t('关掉这个预览')} onClick={() => closePreview(item.path)}>
+              <button
+                type="button"
+                className="jm-preview-tab-close"
+                aria-label={t('关掉这个预览')}
+                onClick={() => closePreview(item.path)}
+              >
                 ×
               </button>
             </span>
           );
         })}
       </div>
-      <antd.Button
+      <Button
         //M 轮转切换到下一个已打开的预览标签。
-        size="small" type="text" icon={<icons.RightOutlined />} aria-label={t('下一个预览')} disabled={tabs.length < 2} onClick={() => step(1)} />
+        size="small"
+        type="text"
+        icon={<icons.RightOutlined />}
+        aria-label={t('下一个预览')}
+        disabled={tabs.length < 2}
+        onClick={() => step(1)}
+      />
     </div>
   );
 }
@@ -151,12 +171,24 @@ function ReadingHistory(): react.JSX.Element {
 
   return (
     <nav className="jm-reading-history" aria-label={t('右栏查看历史')}>
-      <antd.Button size="small" type="text" icon={<icons.LeftOutlined />}
-        aria-label={t('后退到上一处查看')} title={t('后退到上一处查看')}
-        disabled={index <= 0} onClick={back} />
-      <antd.Button size="small" type="text" icon={<icons.RightOutlined />}
-        aria-label={t('前进到下一处查看')} title={t('前进到下一处查看')}
-        disabled={index < 0 || index >= entries.length - 1} onClick={forward} />
+      <Button
+        size="small"
+        type="text"
+        icon={<icons.LeftOutlined />}
+        aria-label={t('后退到上一处查看')}
+        title={t('后退到上一处查看')}
+        disabled={index <= 0}
+        onClick={back}
+      />
+      <Button
+        size="small"
+        type="text"
+        icon={<icons.RightOutlined />}
+        aria-label={t('前进到下一处查看')}
+        title={t('前进到下一处查看')}
+        disabled={index < 0 || index >= entries.length - 1}
+        onClick={forward}
+      />
       <span className="jm-reading-identity" title={identity}>{identity}</span>
       <span className="jm-muted">{position} / {entries.length}</span>
     </nav>
@@ -194,7 +226,8 @@ export function RightPanel(): react.JSX.Element {
 
       //G 仅在 memory 或 base-bridge 插件挂载时展示“记忆”标签。
       if (item.key === 'memory') {
-        return api.isPluginMounted(mountedPlugins, 'memory', true) || api.isPluginMounted(mountedPlugins, 'base-bridge', false);
+        return api.isPluginMounted(mountedPlugins, 'memory', true)
+          || api.isPluginMounted(mountedPlugins, 'base-bridge', false);
       }
 
       return true;
@@ -232,7 +265,7 @@ export function RightPanel(): react.JSX.Element {
     <div className="jm-panel">
       <header className="jm-panel-head">
         <div className="jm-panel-tabs">
-          <antd.Segmented
+          <Segmented
             size="small"
             value={activeTab}
             //M 生成可见标签页的切换选项及带待审核计数/忙碌指示的标签内容。
@@ -240,27 +273,35 @@ export function RightPanel(): react.JSX.Element {
             onChange={(value) => openPanel(value)}
           />
         </div>
-        <antd.Button type="text" size="small" icon={<icons.CloseOutlined />} aria-label={t('收起右栏（Esc）')} onClick={closePanel} />
+        <Button
+          type="text"
+          size="small"
+          icon={<icons.CloseOutlined />}
+          aria-label={t('收起右栏（Esc）')}
+          onClick={closePanel}
+        />
       </header>
       <ReadingHistory />
       <readingModule.PanelScrollContext.Provider value={panelScroll}>
         <div className="jm-panel-body" ref={setPanelScroll}>
           <runningTasks.RunningTasks />
-          {activeTab === 'events' && <events.Events />}
-          {activeTab === 'preview' && (
-            <>
-              <PreviewTabs />
-              <preview.Preview target={target} />
-            </>
-          )}
-          {activeTab === 'workspace' && <workspace.Workspace />}
-          {activeTab === 'session' && <session.Session />}
-          {activeTab === 'messages' && <messages.Messages />}
-          {activeTab === 'approvals' && <approvals.Approvals />}
-          {activeTab === 'memory' && <memory.Memory />}
-          {activeTab === 'details' && <details.Details />}
-          {activeTab === 'usage' && <usage.Usage />}
-          {activeTab === 'todo' && <assist.TodoPanel />}
+          <react.Suspense fallback={<div className="jm-muted" style={{ padding: 12 }}>…</div>}>
+            {activeTab === 'events' && <LazyEvents />}
+            {activeTab === 'preview' && (
+              <>
+                <PreviewTabs />
+                <LazyPreview target={target} />
+              </>
+            )}
+            {activeTab === 'workspace' && <LazyWorkspace />}
+            {activeTab === 'session' && <LazySession />}
+            {activeTab === 'messages' && <LazyMessages />}
+            {activeTab === 'approvals' && <LazyApprovals />}
+            {activeTab === 'memory' && <LazyMemory />}
+            {activeTab === 'details' && <LazyDetails />}
+            {activeTab === 'usage' && <LazyUsage />}
+            {activeTab === 'todo' && <LazyTodoPanel />}
+          </react.Suspense>
         </div>
       </readingModule.PanelScrollContext.Provider>
     </div>

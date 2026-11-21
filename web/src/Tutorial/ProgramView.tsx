@@ -1,46 +1,18 @@
 /** 教程右栏的「进程插件」：programs 托管的外部程序的说明、运行状态和它与主程序之间的接口。 */
 import * as react from 'react';
-import * as antd from 'antd';
+import { Alert, Button, Descriptions, Spin } from 'antd';
 import * as api from './TutorialApi.ts';
 import * as readme from './ReadmeTabs.tsx';
+import {
+  HANDSHAKE,
+  PROGRAM_PREFIX,
+  getProgramName,
+  getStateDot,
+  usePrograms,
+} from './ProgramState.ts';
 
-/** 左栏、导图和骨架逐行共用的模块名：选中它时骨架逐行打开三方握手图。 */
-export const HANDSHAKE = '进程插件';
-/** 路由里进程插件的前缀：plugin=program:<程序名>，不和普通插件重名。 */
-export const PROGRAM_PREFIX = 'program:';
+export { HANDSHAKE, PROGRAM_PREFIX, getProgramName, getStateDot, usePrograms };
 
-/**
- * 从路由的 plugin 取进程插件名。
- * @param plugin 路由里的 plugin。
- * @returns 程序名；不是进程插件是 undefined。
- */
-export function getProgramName(plugin: string): string | undefined {
-  if (!plugin.startsWith(PROGRAM_PREFIX)) return undefined;
-
-  return plugin.slice(PROGRAM_PREFIX.length);
-}
-
-/** 左栏圆点颜色：ready 绿、blocked 和 unhealthy 红，其余黄。 */
-export function getStateDot(state: string): string {
-  if (state === 'ready') return 'ok';
-  if (state === 'blocked' || state === 'unhealthy') return 'failed';
-
-  return 'waiting';
-}
-
-/**
- * 拉 /api/programs 一次。
- * @returns 程序清单；没挂 programs 或读不到是空清单。
- */
-export function usePrograms(): api.ProgramItem[] {
-  const [programs, setPrograms] = react.useState<api.ProgramItem[]>([]);
-  react.useEffect(() => {
-    //M 教程打开时读一次托管程序清单，失败当作没有进程插件。
-    const loading = api.TutorialApi.getPrograms();
-    void loading.then((result) => setPrograms(result.programs), () => setPrograms([]));
-  }, []);
-  return programs;
-}
 
 interface ViewProps {
   /** 要看的程序名；空串看总览。 */
@@ -53,10 +25,11 @@ interface ViewProps {
   onSelectProgram: (name: string) => void;
 }
 
+
 /** 一个进程插件：状态、说明、接口；name 为空时列出全部和三方握手图入口。 */
 export function ProgramView({ name, programs, onOpenHandshake, onSelectProgram }: ViewProps): react.JSX.Element {
   const handshake = (
-    <antd.Button size="small" onClick={onOpenHandshake}>看三方握手图（骨架逐行）</antd.Button>
+    <Button size="small" onClick={onOpenHandshake}>看三方握手图（骨架逐行）</Button>
   );
   if (name === '') {
     //M 总览：一句话说明，再列出 config 里登记的程序。
@@ -91,9 +64,10 @@ export function ProgramView({ name, programs, onOpenHandshake, onSelectProgram }
   );
 }
 
+
 /** /api/programs 里的运行状态：状态、端口、健康、版本、授权、界面。 */
 function ProgramStatus({ program }: { program: api.ProgramItem | undefined }): react.JSX.Element {
-  if (program === undefined) return <antd.Alert type="warning" message="/api/programs 里没有这个程序" />;
+  if (program === undefined) return <Alert type="warning" message="/api/programs 里没有这个程序" />;
 
   //M 没就绪时端口、版本是 null，显示成横线。
   let port = '—';
@@ -111,11 +85,12 @@ function ProgramStatus({ program }: { program: api.ProgramItem | undefined }): r
   return (
     <section>
       <h4>运行状态</h4>
-      <antd.Descriptions size="small" column={1} bordered items={items} />
+      <Descriptions size="small" column={1} bordered items={items} />
       {program.ui !== null && <p><a href={program.ui} target="_blank" rel="noreferrer">打开它的界面</a></p>}
     </section>
   );
 }
+
 
 /** 它和主程序之间的接口：两个方向各列一组，回调只有登记了渠道才有。 */
 function ProgramRoutes({ name, channels }: { name: string; channels: readonly string[] }): react.JSX.Element {
@@ -136,7 +111,10 @@ function ProgramRoutes({ name, channels }: { name: string; channels: readonly st
       {!hasChannels && <p className="tu-muted">没登记渠道，不给回调前缀。</p>}
       {hasChannels && (
         <ul>
-          <li><code>POST {callback}/message</code>：交来渠道消息，照叫没叫机器人转成 <code>channel/direct</code>、<code>channel/mention</code> 或 <code>channel/listen</code></li>
+          <li>
+            <code>POST {callback}/message</code>：交来渠道消息，照叫没叫机器人转成{' '}
+            <code>channel/direct</code>、<code>channel/mention</code> 或 <code>channel/listen</code>
+          </li>
           <li><code>POST {callback}/draft</code>：客服页手动起草</li>
           <li><code>POST {callback}/approval</code>：发件确认</li>
           <li>登记的渠道：{channels.join('、')}</li>
@@ -145,6 +123,7 @@ function ProgramRoutes({ name, channels }: { name: string; channels: readonly st
     </section>
   );
 }
+
 
 /** 程序目录下的 说明.md，运行时现读。 */
 function ProgramReadme({ name }: { name: string }): react.JSX.Element {
@@ -158,8 +137,8 @@ function ProgramReadme({ name }: { name: string }): react.JSX.Element {
     void loading.then((result) => setText(result.text), (error: unknown) => setFailed((error as Error).message));
   }, [name]);
 
-  if (failed !== '') return <antd.Alert type="warning" message={`读不到说明：${failed}`} />;
-  if (text === null) return <antd.Spin />;
+  if (failed !== '') return <Alert type="warning" message={`读不到说明：${failed}`} />;
+  if (text === null) return <Spin />;
   if (text === '') return <p className="tu-muted">程序目录下还没有 说明.md。</p>;
 
   return (

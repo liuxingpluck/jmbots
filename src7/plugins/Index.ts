@@ -27,6 +27,7 @@ import * as frpc from './frpc/index.ts';
 import * as http from './http/index.ts';
 import * as imageGen from './image-gen/index.ts';
 import * as journal from './journal/index.ts';
+import * as knowledge from './knowledge/index.ts';
 import * as memory from './memory/index.ts';
 import * as modelCatalog from './model-catalog/index.ts';
 import * as programs from './programs/index.ts';
@@ -99,6 +100,7 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'web-search': webSearch,
   'settings': settings,
   'memory': memory,
+  'knowledge': knowledge,
   'programs': programs,
   db,
   'context-fit': contextFit,

@@ -710,3 +710,112 @@ test('6. 重放同一前台归档事件只写一条往来和一份正文', async
   const indexRows = statement.all();
   expect(indexRows).toEqual([{ text }]);
 });
+
+
+test('7. 收话入口统一收敛：微信起草（bots.receive）与 channel/direct 进同一前台会话、同一单队列，listenOnly 仅记背景', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-unified-receive-'));
+  closers.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx = new cordis.Context();
+  closers.push(() => ctx.fiber.dispose());
+
+  const appId = 'cli_unified00001111';
+  await ctx.plugin(FakeResources, {
+    root,
+    bots: [{ name: '助手' }],
+    feishuApps: [{ app_id: appId, app_secret: 'sec', bot: '助手' }],
+  });
+  await ctx.plugin(toolsModule.Tools);
+  await ctx.plugin(sessionsModule.Sessions);
+  await ctx.plugin(workspacesPlugin);
+  await ctx.plugin(botsPlugin, {});
+
+  let modelCalls = 0;
+  ctx.on('session/before-model', (request) => {
+    modelCalls += 1;
+    const last = request.messages.findLast((item) => item.role === 'user');
+    let said = '';
+    if (last !== undefined) {
+      said = piAi.contentText(last.content);
+    }
+    request.answer = piAi.fauxAssistantMessage(`草稿回复：${said}`);
+  });
+
+  //M 模拟微信渠道注册纯文字回复出口，记录发往微信的地址与正文。
+  const wechatSent: Array<{ text: string; address: unknown }> = [];
+  ctx.bots.channel('wechat');
+  channels.registerTextReply(ctx, {
+    channel: 'wechat',
+    sendDirectText: (text, request, targetAddress) => {
+      const address = targetAddress ?? request.sourceSnapshot?.origin.address;
+      wechatSent.push({ text, address });
+    },
+  });
+
+  //M 先走标准 channel/direct 收到一条微信客户消息，建立按 (wechat, wx_acc1, wx_chat1) 索引的前台。
+  const wechatAddr = {
+    account: 'wx_acc1',
+    chat: 'wx_chat1',
+    name: '客户甲',
+    customer: 'wechat:wx_chat1',
+    owner: false,
+  };
+  const now = Date.now();
+  const messageId = channels.makeChannelMessageId('wechat', 'wx_acc1', 'wx:1');
+  const inbound: channels.ChannelMessage = {
+    v: 1,
+    messageId,
+    nativeId: 'wx:1',
+    channel: 'wechat',
+    accountId: 'wx_acc1',
+    chatId: 'wx_chat1',
+    chatType: 'p2p',
+    sender: { id: 'wx_chat1', name: '客户甲' },
+    role: 'guest',
+    targetBots: ['助手'],
+    mentions: [],
+    rawText: '请问发货了吗',
+    text: '请问发货了吗',
+    attachments: [],
+    createdAt: now,
+    receivedAt: now,
+    timeSource: 'received',
+    replyTo: null,
+    origin: { channel: 'wechat', address: { ...wechatAddr } },
+    visibility: { scope: 'wechat:wx_acc1:wx_chat1', trusted: true, publicSourceIds: [] },
+    routing: { autoFinal: true },
+  };
+  await channels.emitInbound(ctx, inbound, true, { claims: [] });
+  await waitFor(() => wechatSent.some((item) => item.text === '草稿回复：请问发货了吗'));
+
+  const frontsBefore = ctx.sessions.find({ kind: 'front', bot: '助手' });
+  expect(frontsBefore).toHaveLength(1);
+  const frontId = frontsBefore[0]?.id ?? '';
+
+  //M 模拟微信客服页点“让 AI 起草”调 ctx.bots.receive：必须进同一场前台、共享 sourceScope、写 sourceClaims 并发出草稿。
+  const draftPrompt = '请根据这个会话的最近聊天记录，起草一条合适的回复。只起草，不要向对方发送。';
+  await ctx.bots.receive('wechat', '助手', draftPrompt, wechatAddr);
+  await waitFor(() => wechatSent.some((item) => item.text === `草稿回复：${draftPrompt}`));
+
+  const frontsAfter = ctx.sessions.find({ kind: 'front', bot: '助手' });
+  expect(frontsAfter).toHaveLength(1);
+  expect(frontsAfter[0]?.id).toBe(frontId);
+  expect(frontsAfter[0]?.sourceScope).toEqual({ channel: 'wechat', accountId: 'wx_acc1', chatId: 'wx_chat1' });
+  expect((frontsAfter[0]?.sourceClaims ?? []).length).toBe(2);
+  const draftReply = wechatSent.find((item) => item.text === `草稿回复：${draftPrompt}`);
+  expect(draftReply?.address).toMatchObject({ account: 'wx_acc1', chat: 'wx_chat1', customer: 'wechat:wx_chat1' });
+
+  //M 只听消息经 bots.receive 也走同一入口：仅记前台背景，不触发模型调用。
+  const callsBeforeListen = modelCalls;
+  await ctx.bots.receive('wechat', '助手', '群里旁听一句', {
+    ...wechatAddr,
+    senderName: '客户甲',
+    listenOnly: true,
+  });
+  await Bun.sleep(30);
+  expect(modelCalls).toBe(callsBeforeListen);
+  const opened = ctx.sessions.open(frontId);
+  const hasBackground = opened.row.messages.some(
+    (msg) => msg.role === 'user' && piAi.contentText(msg.content).includes('客户甲：群里旁听一句'),
+  );
+  expect(hasBackground).toBe(true);
+});

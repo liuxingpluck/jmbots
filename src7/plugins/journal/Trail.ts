@@ -228,12 +228,14 @@ export function pick(
 ): { picked: TrailLine[]; session: string | null; state: string } {
   //M 会话：先找带着这个消息号又带会话的行（Timeline.reply）；没有就用开始后第一个出现的会话（Bot.receive）。
   //M   渠道来的消息，收件行前面还有渠道那几行（飞书收到、去重、认 @、channel/direct 等进来的事件）：没有收件号和会话、只带这条的标准消息号，也算。
-  const sourceId = lines.find((line) => line.messageId === message && typeof line.sourceId === 'string')?.sourceId ?? null;
+  const sourceLine = lines.find((line) => line.messageId === message && typeof line.sourceId === 'string');
+  const sourceId = sourceLine?.sourceId ?? null;
   const carriesSource = (line: TrailLine): boolean => {
     return sourceId !== null && line.messageId === null && line.sessionId === null && line.sourceId === sourceId;
   };
   const carries = (line: TrailLine): boolean => {
-    return line.messageId === message || (line.vars['messageId'] ?? line.vars['消息号']) === message || carriesSource(line);
+    const varMessage = line.vars['messageId'] ?? line.vars['消息号'];
+    return line.messageId === message || varMessage === message || carriesSource(line);
   };
   const byMessage = lines.find((line) => line.sessionId !== null && carries(line));
   const firstSession = lines.find((line) => line.sessionId !== null);
@@ -356,11 +358,22 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
 
 
 /**
- * 一条请求的轨迹：挑出属于它的行，收成一步一步。
+ * 一条请求的轨迹：挑出属于它的行，收成一步一步。只要轨迹的用它；还要挑中的行的用 getPickedTrail。
  * @param message 消息号。
  * @param lines 从 web-api/received 那行起、按号从小到大（行数由请求的 maxLines 限定）。
  */
 export function getTrail(message: number, lines: TrailLine[]): Trail {
+  return getPickedTrail(message, lines).trail;
+}
+
+
+/**
+ * 一条请求的轨迹，连同挑中的行一起交回：journal/request 的 trail 两样都要（tutorial 拿挑中的行对快照），只挑一遍。
+ * @param message 消息号。
+ * @param lines 从 web-api/received 那行起、按号从小到大（行数由请求的 maxLines 限定）。
+ * @returns trail 是收好的轨迹，picked 是 pick 挑中的行。
+ */
+export function getPickedTrail(message: number, lines: TrailLine[]): { trail: Trail; picked: TrailLine[] } {
   //M 先按消息号与所属会话筛出请求起止范围内的轨迹行。
   const { picked, session, state } = pick(message, lines);
   //M 再把连续落在同一道上的跟踪行归并成一步一步。
@@ -377,7 +390,7 @@ export function getTrail(message: number, lines: TrailLine[]): Trail {
   const preview = String(userLine?.vars['content'] ?? userLine?.vars['说了'] ?? '').trim();
 
   const anyError = steps.some((step) => step.error);
-  return {
+  const trail: Trail = {
     message,
     session,
     bot: String(botLine?.vars['bot'] ?? botLine?.vars['机器人'] ?? ''),
@@ -390,6 +403,7 @@ export function getTrail(message: number, lines: TrailLine[]): Trail {
     steps,
     notes: { ...ROW_NOTES, ...FACT_NOTES },
   };
+  return { trail, picked };
 }
 
 

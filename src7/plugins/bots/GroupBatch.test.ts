@@ -4,10 +4,11 @@ import * as cordis from 'cordis';
 import type { Session, SessionState } from '../../Sessions.ts';
 import * as protocol from '../channels/index.ts';
 import type * as decision from '../decision/index.ts';
-import { DispatchClaim } from './DispatchClaim.ts';
+import { DispatchClaim, isClaimed } from './DispatchClaim.ts';
 import type { DispatchResults } from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import * as batches from './GroupBatch.ts';
+import * as botsPlugin from './index.ts';
 import type { Bot, ReceiveEvent } from './index.ts';
 
 const CONFIG = { quiet_seconds: 1, max_lines: 3, daily_limit: 0 };
@@ -436,4 +437,89 @@ test('relayBatch 经 bot/receive 发出去：地址去掉 listenOnly、带 relay
 
   //M relay 认领了：这一批交给那场会话，回话照这个地址回群里。
   expect(delivered).toEqual([{ session: relaySession, text: '小明：这个报错', origin: { channel: 'feishu', address } }]);
+});
+
+
+/** 构造只带 resources 的最小上下文（按生产格式填 config.plugins），用来测 checkJudgeHelpers 的启动校验。 */
+function makeConfigCtx(plugins: Array<{ name: string; config?: unknown }>): cordis.Context {
+  const ctx = new cordis.Context();
+  contexts.push(ctx);
+  const resources = {
+    raw: { bots: [{ name: '助手' }] },
+    config: { providers: {}, plugins },
+  };
+  ctx.provide('resources', resources);
+  return ctx;
+}
+
+
+test('checkJudgeHelpers：合法配置与未写 judge_helper 通过，助手名写错或未启用 relay 启动报错', () => {
+  //M 合法配置：feishu 群写的 judge_helper 在 relay.helpers 里精确存在 → 通过。
+  const validCtx = makeConfigCtx([
+    { name: 'relay', config: { helpers: [{ name: 'Claude' }, { name: '小助手' }] } },
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_ok', listen: 'judge', judge_helper: 'Claude' }] } },
+  ]);
+  expect(() => batches.checkJudgeHelpers(validCtx)).not.toThrow();
+
+  //M 未写 judge_helper：即使未启用 relay 也不报错。
+  const noHelperCtx = makeConfigCtx([
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_plain', listen: 'judge' }] } },
+  ]);
+  expect(() => batches.checkJudgeHelpers(noHelperCtx)).not.toThrow();
+
+  //M 写错助手名：明确报错拦截，列出可用助手，不再悄悄落回默认助手。
+  const typoCtx = makeConfigCtx([
+    { name: 'relay', config: { helpers: [{ name: 'Claude' }] } },
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_typo', listen: 'judge', judge_helper: 'Cluade' }] } },
+  ]);
+  expect(() => batches.checkJudgeHelpers(typoCtx)).toThrow('Cluade');
+  expect(() => batches.checkJudgeHelpers(typoCtx)).toThrow('Claude');
+
+  //M 精确匹配不做 trim：relay 助手带尾空格或群配置带首尾空格时直接拦截，与运行时比对一致。
+  const spaceCtx = makeConfigCtx([
+    { name: 'relay', config: { helpers: [{ name: 'Claude ' }] } },
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_space', listen: 'judge', judge_helper: 'Claude' }] } },
+  ]);
+  expect(() => batches.checkJudgeHelpers(spaceCtx)).toThrow('不存在');
+
+  //M 未启用 relay 时配了 judge_helper → 报错拦截。
+  const noRelayCtx = makeConfigCtx([
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_norelay', listen: 'judge', judge_helper: 'Claude' }] } },
+  ]);
+  expect(() => batches.checkJudgeHelpers(noRelayCtx)).toThrow('未启用 relay');
+
+  //M relay 启用但未配 helpers → 报错拦截。
+  const emptyHelpersCtx = makeConfigCtx([
+    { name: 'relay', config: { helpers: [] } },
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_empty', listen: 'judge', judge_helper: 'Claude' }] } },
+  ]);
+  expect(() => batches.checkJudgeHelpers(emptyHelpersCtx)).toThrow('未配置任何 helpers');
+});
+
+
+test('bots.apply 启动期直接拦截错误的 judge_helper 配置', () => {
+  const ctx = makeConfigCtx([
+    { name: 'relay', config: { helpers: [{ name: 'Claude' }] } },
+    { name: 'feishu', config: { groups: [{ chat_id: 'oc_boot', listen: 'judge', judge_helper: '不存在的助手' }] } },
+  ]);
+  expect(() => botsPlugin.apply(ctx, {})).toThrow('不存在的助手');
+});
+
+
+test('isClaimed 统一判断 sourceClaims 与 resultQueue 中的 key / claimKey', () => {
+  const session = {
+    id: 's1',
+    row: {
+      id: 's1',
+      sourceClaims: ['claim-recorded'],
+      resultQueue: [
+        { key: 'claim-by-key', claimKey: 'claim-by-field' },
+      ],
+    },
+  } as unknown as Session;
+
+  expect(isClaimed(session, 'claim-recorded')).toBe(true);
+  expect(isClaimed(session, 'claim-by-key')).toBe(true);
+  expect(isClaimed(session, 'claim-by-field')).toBe(true);
+  expect(isClaimed(session, 'claim-fresh')).toBe(false);
 });

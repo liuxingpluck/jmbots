@@ -11,6 +11,7 @@ import * as poll from './Poll.ts';
 import * as storeModule from './Store.ts';
 import * as theme from './Theme.ts';
 import * as authGate from './components/AuthGate.tsx';
+import * as chunkError from './components/ChunkErrorBoundary.tsx';
 import './App.css';
 
 
@@ -20,7 +21,9 @@ const themeName = theme.loadThemeName(window.localStorage);
 theme.applyTheme(document.documentElement, theme.THEMES[themeName]);
 /** 状态仓库。 */
 //M 按“URL ?lang= 参数优先、本地记忆语言次之”决定首屏语言，连同主题创建全局唯一状态仓库。
-const store = storeModule.createUiStore(themeName, i18n.matchLanguage(new URLSearchParams(window.location.search).get('lang')) ?? i18n.loadLanguage(window.localStorage));
+const urlLang = new URLSearchParams(window.location.search).get('lang');
+const language = i18n.matchLanguage(urlLang) ?? i18n.loadLanguage(window.localStorage);
+const store = storeModule.createUiStore(themeName, language);
 /** 挂载点；index.html 里一定有，没有说明打包出了问题。 */
 const rootElement = document.getElementById('root');
 //G 找不到挂载点时直接报错，不显示空白页。
@@ -34,13 +37,15 @@ function MainAppShell(): react.JSX.Element {
   return <appModule.App />;
 }
 
-//M 把状态仓库注入 UiContext，外层套上外网登录门禁壳后挂载根组件 App。
+//M 把状态仓库注入 UiContext，外层套上外网登录门禁壳后挂载根组件 App；最外层接住换版后懒加载分块失败。
 reactDomClient.createRoot(rootElement).render(
   <react.StrictMode>
-    <authGate.AuthGate>
-      <context.UiContext.Provider value={store}>
-        <MainAppShell />
-      </context.UiContext.Provider>
-    </authGate.AuthGate>
+    <chunkError.ChunkErrorBoundary>
+      <authGate.AuthGate>
+        <context.UiContext.Provider value={store}>
+          <MainAppShell />
+        </context.UiContext.Provider>
+      </authGate.AuthGate>
+    </chunkError.ChunkErrorBoundary>
   </react.StrictMode>,
 );

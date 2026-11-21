@@ -210,14 +210,14 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
     const app = fastify.default({ logger: false });
     registerHttpErrorHandler(app);
     const fakeCtx = {
-      resources: { root: rootDir },
+      resources: { root: rootDir, raw: { server: { port: 30099 } } },
       http: {
         app,
         isVerified: () => verified,
       },
     } as unknown as cordis.Context;
 
-    frpcPlugin.apply(fakeCtx, { dir: clientDir, runner: mockRunner });
+    frpcPlugin.apply(fakeCtx, { dir: clientDir }, mockRunner);
     await app.ready();
 
     return {
@@ -302,10 +302,28 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
     }
   });
 
-  test('PUT /api/frpc/proxies 严格拦截 30086 + 127.0.0.1/localhost，合法保存时备份 .bak 并支持平滑重启', async () => {
+  test('PUT /api/frpc/proxies 严格白名单拦截全部回环绕过变体与高级字段覆盖风险', async () => {
     const h = await createHarness();
     try {
-      for (const badIp of ['127.0.0.1', 'localhost', '::1', '127.0.0.2']) {
+      const bypassAttempts = [
+        '127.0.0.1',
+        '127.0.0.2',
+        '0.0.0.0',
+        '0.1.2.3',
+        'localhost',
+        'localhost.',
+        'foo.localhost',
+        'ip6-localhost',
+        '::1',
+        '::',
+        '[::]',
+        '::ffff:127.0.0.1',
+        '0:0:0:0:0:0:0:1',
+        '0x7f.0.0.1',
+        '0177.0.0.1',
+        '2130706433',
+      ];
+      for (const badIp of bypassAttempts) {
         const badRes = await h.app.inject({
           method: 'PUT',
           url: '/api/frpc/proxies',
@@ -324,6 +342,24 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
         expect(badRes.statusCode).toBe(400);
         expect(badRes.json<{ error: string }>().error).toBe(tomlModule.LOOPBACK_30086_ERROR);
       }
+
+      // 同时保护注入的 server.port（如 30099）
+      const customPortBad = await h.app.inject({
+        method: 'PUT',
+        url: '/api/frpc/proxies',
+        payload: {
+          proxies: [
+            {
+              name: 'jmbots-alt',
+              type: 'http',
+              localIP: '127.0.0.1',
+              localPort: 30099,
+              customDomains: ['app.xuanguiyl.top'],
+            },
+          ],
+        },
+      });
+      expect(customPortBad.statusCode).toBe(400);
 
       const goodRes = await h.app.inject({
         method: 'PUT',
@@ -359,19 +395,51 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
       expect(savedToml).toContain(`auth.token = "${SAMPLE_SECRET}"`);
       expect(savedToml).toContain('name = "rdp-tunnel"');
       expect(savedToml).toContain('remotePort = 13389');
+
+      // 若磁盘 frpc.toml 含高级字段/子表/跨行数组，PUT 必须返回 409 拒绝静默覆盖
+      const advancedSamples = [
+        `${SAMPLE_TOML}\r\ntransport.useEncryption = true\r\n`,
+        `${SAMPLE_TOML}\r\nhttpUser = "admin"\r\n`,
+        `${SAMPLE_TOML}\r\n[proxies.transport]\r\nuseCompression = true\r\n`,
+        `${SAMPLE_TOML.replace('customDomains = ["app.xuanguiyl.top"]', 'customDomains = [\r\n  "app.xuanguiyl.top"\r\n]')}`,
+      ];
+      for (const advToml of advancedSamples) {
+        fs.writeFileSync(path.join(h.clientDir, 'frpc.toml'), advToml, 'utf8');
+        const conflictRes = await h.app.inject({
+          method: 'PUT',
+          url: '/api/frpc/proxies',
+          payload: {
+            proxies: [
+              {
+                name: 'jmbots-web',
+                type: 'http',
+                localIP: '192.168.200.1',
+                localPort: 30086,
+                customDomains: ['app.xuanguiyl.top'],
+              },
+            ],
+          },
+        });
+        expect(conflictRes.statusCode).toBe(409);
+        expect(conflictRes.json<{ error: string }>().error).toBe(tomlModule.UNSUPPORTED_TOML_ERROR);
+        expect(fs.readFileSync(path.join(h.clientDir, 'frpc.toml'), 'utf8')).toBe(advToml);
+      }
     } finally {
       await h.app.close();
     }
   });
 
-  test('GET /api/frpc/logs 按行数截尾并彻底脱敏 token / credential / Bearer', async () => {
+  test('GET /api/frpc/logs 兼容 JSON 引号键与 authToken 脱敏，且无连接关键字日志默认判未知', async () => {
     const h = await createHarness();
     try {
+      // 无连接成功关键字时 inspectLogConnection 不盲目判在线
+      fs.writeFileSync(path.join(h.clientDir, 'frpc.log'), '2026-11-21 12:00:00 [I] booting...\r\n', 'utf8');
+      expect(processModule.inspectLogConnection(h.clientDir)).toEqual({ connected: false, detail: '未知' });
+
       const logLines = [
-        '2026-11-21 12:00:01 [I] [sub/root.go:142] start frpc service',
         `2026-11-21 12:00:02 [W] auth.token = "${SAMPLE_SECRET}"`,
-        '2026-11-21 12:00:03 [I] login with token=raw_secret_abc123 credential: my_cred_xyz',
-        '2026-11-21 12:00:04 [I] header Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+        '2026-11-21 12:00:03 [I] json={"token":"json_tok_999","password":\'single_pw_888\'} authToken=camel_777',
+        '2026-11-21 12:00:04 [I] header Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 credential: cred_666',
         '2026-11-21 12:00:05 [I] [jmbots-web] start proxy success',
       ];
       fs.writeFileSync(path.join(h.clientDir, 'frpc.log'), `\uFEFF${logLines.join('\r\n')}\r\n`, 'utf8');
@@ -379,8 +447,10 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
       const res = await h.app.inject({ method: 'GET', url: '/api/frpc/logs?lines=4' });
       expect(res.statusCode).toBe(200);
       expect(res.body).not.toContain(SAMPLE_SECRET);
-      expect(res.body).not.toContain('raw_secret_abc123');
-      expect(res.body).not.toContain('my_cred_xyz');
+      expect(res.body).not.toContain('json_tok_999');
+      expect(res.body).not.toContain('single_pw_888');
+      expect(res.body).not.toContain('camel_777');
+      expect(res.body).not.toContain('cred_666');
       expect(res.body).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
 
       const payload = res.json<{ ok: boolean; lines: string[]; totalBytes: number }>();

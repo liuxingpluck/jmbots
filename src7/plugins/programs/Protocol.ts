@@ -213,16 +213,17 @@ export async function checkProgram(
 /**
  * 让已经报端口的程序先自行关闭。
  * @param url 程序的本机地址。
+ * @param key 这次启动发给程序的密钥（Host 的 runChild 生成）：带在 x-jmbots-key 里，程序据此认出是主程序在请它退出。
  * @param graceMs 程序完成收尾的最长时间。
  * @throws 连不上时交给托管方继续走强制退出路径。
  */
-export async function requestExit(url: string, graceMs: number): Promise<void> {
+export async function requestExit(url: string, key: string, graceMs: number): Promise<void> {
   const endpoint = `${url}/jmbots/v1/exit`;
   const signal = AbortSignal.timeout(1000);
   const body = JSON.stringify({ graceMs });
-  const options: RequestInit = {
-    method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, signal, body,
-  };
+  //M 带上这次启动的密钥：不验密钥的老程序照常收，验密钥的能挡住本机别的进程。
+  const headers = { 'content-type': 'application/json', [KEY_HEADER]: key };
+  const options: RequestInit = { method: 'POST', redirect: 'error', headers, signal, body };
 
   //M 请求程序收尾，读完短回执再由托管方等待进程退出。
   const response = await fetch(endpoint, options);
@@ -293,8 +294,15 @@ export async function readLicense(url: string, signal: AbortSignal): Promise<str
   }
 }
 
-/** 对声明了pause能力的自有就绪进程请求暂停/恢复；不使用OS挂起或任意PID。 */
-export async function requestPause(url: string, paused: boolean, signal: AbortSignal): Promise<boolean> {
+/**
+ * 对声明了pause能力的自有就绪进程请求暂停/恢复；不使用OS挂起或任意PID。
+ * @param url 程序的本机地址。
+ * @param key 这次启动发给程序的密钥，带在 x-jmbots-key 里。
+ * @param paused true 暂停，false 恢复。
+ * @param signal Host 的停止信号。
+ * @returns 程序明确确认了才是 true。
+ */
+export async function requestPause(url: string, key: string, paused: boolean, signal: AbortSignal): Promise<boolean> {
   let action = 'resume';
   if (paused) {
     action = 'pause';
@@ -303,9 +311,9 @@ export async function requestPause(url: string, paused: boolean, signal: AbortSi
   const timeout = AbortSignal.timeout(1000);
   const until = AbortSignal.any([signal, timeout]);
   const body = JSON.stringify({ reason: 'mem-limit' });
-  const options: RequestInit = {
-    method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, signal: until, body,
-  };
+  //M 带上这次启动的密钥，和退出请求一样。
+  const headers = { 'content-type': 'application/json', [KEY_HEADER]: key };
+  const options: RequestInit = { method: 'POST', redirect: 'error', headers, signal: until, body };
   try {
     //M 有明确确认才改变Host的暂停状态，404和业务失败不当成功。
     const response = await fetch(endpoint, options);

@@ -2,7 +2,9 @@
  * session-context（主插件 context-fit，并入 compress、summary）离线测试：
  *   1. 纯函数 estimate / fit（先省略旧工具结果，仍超再按段裁剪并保留最后用户话）；
  *   2. Summary 在 work 会话进入 done 时触发 summary 小会话并写回 row.summary，compress/summary 开关与非法配置校验；
- *   3. 同一 apply 内的 session/before-model 严格顺序：Compress 先压缩并替换 request.messages，ContextFit 再在预算内省略旧工具结果。
+ *   3. 同一 apply 内的 session/before-model 严格顺序：Compress 先压缩并替换 request.messages，ContextFit 再在预算内省略旧工具结果；
+ *   4. 体检修复：小会话不带 parent 也不压；交给压缩的对话按窗口限长；同一模型的登记窗口一分钟内只问一次目录；
+ *   5. 云端 26：图片按固定 token 估、单条超大消息也压在预算内且先保最新、压缩失败后多出几条消息才重试。
  * 跑法：bun test src7/plugins/context-fit
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
@@ -14,6 +16,7 @@ import * as toolsModule from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as dbPlugin from '../db/index.ts';
 import * as catalogPull from '../model-catalog/Pull.ts';
+import * as compressModule from './Compress.ts';
 import * as contextFitPlugin from './index.ts';
 
 
@@ -136,6 +139,69 @@ describe('context-fit 纯裁剪与配置校验', () => {
     expect(() => contextFitPlugin.apply(ctx, { ratio: 0 })).toThrow();
     expect(() => contextFitPlugin.apply(ctx, { ratio: 1.2 })).toThrow();
   });
+
+  test('交给压缩的对话：图片换字、长工具结果截短，还超就留首尾、省中间', () => {
+    //M 一条带图的用户话，一条 9000 字的工具结果，再加几条普通话。
+    const image: piAi.Message = {
+      role: 'user',
+      content: [{ type: 'text', text: '看图' }, { type: 'image', data: 'A'.repeat(50000), mimeType: 'image/png' }],
+      timestamp: 1,
+    };
+    const longTool = fakeToolResultMessage('c1', 'read', 'L'.repeat(9000));
+    const shortInput = compressModule.getCompressInput([image, longTool], 100000);
+    expect(shortInput).toContain('[图片]');
+    expect(shortInput).not.toContain('A'.repeat(100));
+    expect(shortInput).toContain('中间省略 7000 字');
+
+    //M 预算很小：第一条和最后几条留着，中间写一句省了几条。
+    const many: piAi.Message[] = [{ role: 'user', content: '起头这件事', timestamp: 1 }];
+    for (let index = 0; index < 20; index += 1) {
+      many.push({ role: 'user', content: `第 ${String(index)} 句：${'话'.repeat(100)}`, timestamp: index + 2 });
+    }
+    const tight = compressModule.getCompressInput(many, 600);
+    expect(tight).toContain('起头这件事');
+    expect(tight).toContain('第 19 句');
+    expect(tight).not.toContain('第 0 句');
+    expect(tight).toMatch(/中间 \d+ 条太长，没交给压缩/u);
+    expect(contextFitPlugin.estimate(JSON.parse(tight))).toBeLessThanOrEqual(600);
+  });
+  test('M4：图片按固定 token 估，不按 base64 字数；带大图的对话不会被当成超长而丢历史', () => {
+    //M 一张 500KB 的“截图”：按字数估会是十几万 token。
+    const big: piAi.Message = {
+      role: 'user',
+      content: [{ type: 'text', text: '看这张图' }, { type: 'image', data: 'A'.repeat(500000), mimeType: 'image/png' }],
+      timestamp: 2,
+    };
+    const tokens = contextFitPlugin.estimate([big]);
+    expect(tokens).toBeGreaterThanOrEqual(1500);
+    expect(tokens).toBeLessThan(2000);
+
+    //M 预算 3000：一段旧对话加这张图装得下，什么都不丢。
+    const old: piAi.Message = { role: 'user', content: '先前的问题', timestamp: 1 };
+    const fitted = contextFitPlugin.fit([old, big], 3000, 0);
+    expect(fitted.dropped).toBe(0);
+    expect(fitted.messages).toHaveLength(2);
+  });
+
+  test('M3：单条超大消息、超大回答和最新消息都压在预算内，最新的优先留', () => {
+    //M 只有一条、十万字的用户话：截到预算的四分之一以内，照样是能解析的 JSON。
+    const huge: piAi.Message = { role: 'user', content: '长'.repeat(100000), timestamp: 1 };
+    const single = compressModule.getCompressInput([huge], 4000);
+    expect(contextFitPlugin.estimate(JSON.parse(single))).toBeLessThanOrEqual(4000);
+    expect(single).toContain('中间省略');
+
+    //M 超大回答（思考、调工具参数各五万字）夹在中间，最后一条是最新的大段话：最新的一定留住。
+    const answer = piAi.fauxAssistantMessage([
+      { type: 'thinking', thinking: '想'.repeat(50000) },
+      piAi.fauxToolCall('write', { content: '写'.repeat(50000) }, { id: 'w1' }),
+    ]);
+    const latest: piAi.Message = { role: 'user', content: `最新的话：${'新'.repeat(50000)}`, timestamp: 3 };
+    const mixed = compressModule.getCompressInput([huge, answer, latest], 4000);
+    expect(contextFitPlugin.estimate(JSON.parse(mixed))).toBeLessThanOrEqual(4000);
+    expect(mixed).toContain('最新的话');
+    expect(mixed).not.toContain('想'.repeat(2000));
+    expect(mixed).not.toContain('写'.repeat(2000));
+  });
 });
 
 
@@ -168,6 +234,8 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
       { kind: 'front', tokens: 80, summary: true },
       { kind: 'work', parent: root.id, tokens: 80, summary: true },
       { kind: 'review', parent: root.id, tokens: 80, summary: false },
+      //M 体检第 1 条：decision 这类小会话开的时候不带 parent，也要跳过。
+      { kind: 'decision', tokens: 80, summary: false },
     ];
     for (const sample of cases) {
       const input = { kind: sample.kind, parent: sample.parent, bot: '助手' };
@@ -247,7 +315,8 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
   test('压缩沿用当前请求选出的消息，保留此前省略的历史边界', async () => {
     const ctx = new cordis.Context();
     closers.push(() => ctx.fiber.dispose());
-    await ctx.plugin(makeResources(100));
+    //M 窗口要够大：压缩输入预算是窗口的一半，太小会把要看的消息截掉（这一条测的是挑哪些消息，不是限长）。
+    await ctx.plugin(makeResources(10000));
     await ctx.plugin(toolsModule.Tools);
     await ctx.plugin(sessionsModule.Sessions);
     await ctx.plugin(dbPlugin);
@@ -264,7 +333,7 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     const session = ctx.sessions.create({ kind: 'front', bot: '助手' });
     const excluded: piAi.Message = { role: 'user', content: '已从本轮排除的历史', timestamp: 1 };
     const visible: piAi.Message = { role: 'user', content: '本轮可见的旧消息', timestamp: 2 };
-    const answer = fakeAssistantWithUsage('上一答', 80);
+    const answer = fakeAssistantWithUsage('上一答', 8000);
     const current: piAi.Message = { role: 'user', content: '当前问题', timestamp: 3 };
     session.row.messages = [excluded, visible, answer, current];
     const request: sessionsModule.ChatRequest = {
@@ -315,6 +384,8 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     expect(request.messages).toContain(lastMessage);
 
     stop();
+    //M 目录给的登记窗口按模型名缓存一分钟；后两段换一个模型名，才真的走到“目录缺席”。
+    request.model = 'fake/other';
     request.messages = messages;
     await ctx.serial('session/before-model', request);
     expect(request.messages).toBe(messages);
@@ -437,5 +508,104 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     expect(messages[0]).toContain('旧库保存的摘要');
     expect(messages).toContain('摘要后的新消息');
     expect(messages).not.toContain('第一次聊天的全文');
+  });
+
+  test('同一模型的登记窗口一分钟内只问一次目录；目录只给估算值时不缓存', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    await ctx.plugin(makeResources(5000));
+    await ctx.plugin(toolsModule.Tools);
+    await ctx.plugin(sessionsModule.Sessions);
+    await ctx.plugin(dbPlugin);
+    await ctx.plugin(contextFitPlugin, { summary: false, compress: false });
+
+    //M 目录监听数自己被问了几次；fake/estimated 只给估算值。
+    let asked = 0;
+    events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
+      if (request.action !== 'find') return {};
+
+      asked += 1;
+      const info: catalogPull.ModelInfo = {
+        id: request.model, name: request.model, kind: 'chat', contextWindow: 100000,
+        thinking: [], price: { input: 0, output: 0 },
+      };
+      //M 目录的类型里“估算”只有 true 一个值，只给估算的模型才写上。
+      if (request.model === 'fake/estimated') {
+        info.contextWindowEstimated = true;
+      }
+      return { info };
+    });
+
+    const session = ctx.sessions.create({ kind: 'work', bot: '助手' });
+    const messages: piAi.Message[] = [{ role: 'user', content: '当前问题', timestamp: 1 }];
+    const request: sessionsModule.ChatRequest = {
+      session, model: 'fake/fake', thinking: 'off', system: [], tools: [], messages,
+      signal: new AbortController().signal,
+    };
+
+    //M 登记值：问一次，后两步用缓存。
+    await ctx.serial('session/before-model', request);
+    await ctx.serial('session/before-model', request);
+    await ctx.serial('session/before-model', request);
+    expect(asked).toBe(1);
+
+    //M 只有估算值：不缓存，每一步照问。
+    request.model = 'fake/estimated';
+    await ctx.serial('session/before-model', request);
+    await ctx.serial('session/before-model', request);
+    expect(asked).toBe(3);
+  });
+
+  test('M3：压缩小会话没做成后，消息没多出 10 条就不重试；多出了再试', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    await ctx.plugin(makeResources(100));
+    await ctx.plugin(toolsModule.Tools);
+    await ctx.plugin(sessionsModule.Sessions);
+    await ctx.plugin(dbPlugin);
+    await ctx.plugin(contextFitPlugin, { summary: false, compress: { ratio: 0.8, keep: 1 } });
+
+    //M 压缩小会话一开就被停掉：ask 交回 ok: false。数被开了几次。
+    let compressCalls = 0;
+    ctx.on('session/before-model', (inner) => {
+      if (inner.session.row.kind !== 'compress') return;
+
+      compressCalls += 1;
+      inner.session.stop('测试：压缩模型挂了');
+    });
+
+    const session = ctx.sessions.create({ kind: 'front', bot: '助手' });
+    const base: piAi.Message[] = [
+      { role: 'user', content: '上一问', timestamp: 1 },
+      fakeAssistantWithUsage('上一答', 90),
+      { role: 'user', content: '当前问题', timestamp: 2 },
+    ];
+    const ask = async (extra: number): Promise<void> => {
+      const more: piAi.Message[] = [];
+      for (let index = 0; index < extra; index += 1) {
+        more.push({ role: 'user', content: `补充 ${String(index)}`, timestamp: 10 + index });
+      }
+      //M 最后一条回答用量 90（窗口 100 的 90%），每次都够触发压缩。
+      const tail: piAi.Message[] = [fakeAssistantWithUsage('又一答', 90), { role: 'user', content: '再问', timestamp: 99 }];
+      const messages = [...base, ...more, ...tail];
+      session.row.messages = messages;
+      const request: sessionsModule.ChatRequest = {
+        session, model: 'fake/fake', thinking: 'off', system: [], tools: [], messages,
+        signal: new AbortController().signal,
+      };
+      await ctx.serial('session/before-model', request);
+    };
+
+    //M 第一次：试了，失败。
+    await ask(0);
+    expect(compressCalls).toBe(1);
+
+    //M 多出 1 条：不试。
+    await ask(1);
+    expect(compressCalls).toBe(1);
+
+    //M 多出 10 条：再试一次。
+    await ask(10);
+    expect(compressCalls).toBe(2);
   });
 });

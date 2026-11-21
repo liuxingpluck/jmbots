@@ -37,6 +37,10 @@ interface DrawerProps {
   refresh: () => Promise<void>;
   /** 展开新子项的父节点。 */
   expand: (id: string) => void;
+  /** 父视图已算好的所属象限（传入时直接复用，避免无父链字典重算不一致）。 */
+  quadrant?: types.DecisionQuadrant;
+  /** 可选全图节点字典，供未预传 quadrant 的视图追溯祖先 main 标记。 */
+  byId?: ReadonlyMap<string, types.DecisionNode>;
 }
 
 /** 毫秒时间戳写成本地的月日时分。 */
@@ -154,8 +158,8 @@ export function DecisionHistory({ node }: { node: types.DecisionNode }) {
 
 /** 侧栏的任务操作。选项和留言继续走各自入口。 */
 export function TaskActions({
-  node, focus, openTopic, refresh, expand,
-}: Pick<DrawerProps, 'node' | 'focus' | 'openTopic' | 'refresh' | 'expand'>) {
+  node, focus, openTopic, refresh, expand, quadrant, byId,
+}: Pick<DrawerProps, 'node' | 'focus' | 'openTopic' | 'refresh' | 'expand' | 'quadrant' | 'byId'>) {
   const [adding, setAdding] = react.useState(false);
   const [title, setTitle] = react.useState('');
   const [busy, setBusy] = react.useState(false);
@@ -168,15 +172,21 @@ export function TaskActions({
     setBusy(true);
     setError('');
     try {
-      //M 成功后读新快照，失败时保留标题和原状态。
+      //M 先提交保存，入库成功后再静默刷新快照（避免已保存却因刷新抖动误报保存失败）。
       await action();
-      await refresh();
     } catch (reason) {
+      setBusy(false);
       if (reason instanceof Error) {
         setError(reason.message);
         return;
       }
       setError(String(reason));
+      return;
+    }
+    try {
+      await refresh();
+    } catch {
+      //G 保存本身已落盘，刷新偶发抖动交由后续版本探针自动补齐。
     } finally {
       setBusy(false);
     }
@@ -201,7 +211,7 @@ export function TaskActions({
       setAdding(false);
     });
   };
-  const effectiveQuad = quadrants.resolveNodeQuadrant(node);
+  const effectiveQuad = quadrant ?? quadrants.resolveNodeQuadrant(node, byId);
   const pickQuadrant = (target: types.DecisionQuadrant | null): void => {
     void save(async () => {
       await api.setQuadrant(node.id, target);
@@ -225,7 +235,13 @@ export function TaskActions({
         {openTopic !== undefined && (
           <button type="button" className="decision-task-button" onClick={openTopic}>{t('进专题')}</button>
         )}
-        <button type="button" className="decision-task-button" data-task-child onClick={() => setAdding(true)} disabled={adding}>
+        <button
+          type="button"
+          className="decision-task-button"
+          data-task-child
+          onClick={() => setAdding(true)}
+          disabled={adding}
+        >
           {t('加子项')}
         </button>
       </div>
@@ -263,9 +279,18 @@ export function TaskActions({
       {adding && (
         <form className="decision-task-actions__row" onSubmit={add}>
           <label htmlFor="decision-child-title">{t('子项标题')}</label>
-          <input id="decision-child-title" data-task-title value={title} onChange={(event) => setTitle(event.target.value)} />
-          <button type="submit" className="decision-task-button" disabled={busy || text === ''}>{t('保存')}</button>
-          <button type="button" className="decision-task-button" onClick={() => setAdding(false)} disabled={busy}>{t('取消')}</button>
+          <input
+            id="decision-child-title"
+            data-task-title
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+          <button type="submit" className="decision-task-button" disabled={busy || text === ''}>
+            {t('保存')}
+          </button>
+          <button type="button" className="decision-task-button" onClick={() => setAdding(false)} disabled={busy}>
+            {t('取消')}
+          </button>
         </form>
       )}
       {error !== '' && <p className="decision-error" role="alert">{error}</p>}
@@ -275,7 +300,7 @@ export function TaskActions({
 
 /** 待定时显示点击即可提交的选项，已定时显示中控接收状态。 */
 export function Drawer({
-  node, saving, error, close, choose, sending, noteError, send, focus, openTopic, refresh, expand,
+  node, saving, error, close, choose, sending, noteError, send, focus, openTopic, refresh, expand, quadrant, byId,
 }: DrawerProps) {
   const [draft, setDraft] = drafts.useNodeDraft(node.id);
   /** 侧栏本身（.decision-drawer 会滚动），交给留言列表当滚动容器。 */
@@ -334,8 +359,20 @@ export function Drawer({
       </div>
       <h2 id="decision-drawer-title">{node.title}</h2>
       {node.summary !== '' && <p className="decision-drawer__summary">{node.summary}</p>}
-      <TaskActions node={node} focus={focus} openTopic={openTopic} refresh={refresh} expand={expand} />
-      {node.body && <div className="decision-drawer__body"><markdown.Markdown text={node.body} onOpen={() => undefined} /></div>}
+      <TaskActions
+        node={node}
+        focus={focus}
+        openTopic={openTopic}
+        refresh={refresh}
+        expand={expand}
+        quadrant={quadrant}
+        byId={byId}
+      />
+      {node.body && (
+        <div className="decision-drawer__body">
+          <markdown.Markdown text={node.body} onOpen={() => undefined} />
+        </div>
+      )}
       {isPending && (
         <div className="decision-options" aria-label="可选决定">
           {node.options?.map((option) => (

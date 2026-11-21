@@ -116,10 +116,12 @@ function normalizeProxy(raw: Partial<FrpcProxy>): FrpcProxy {
  * 归一化后端返回的 FrpcStatus，防止缺省字段导致渲染异常。
  */
 export function normalizeFrpcStatus(raw: Partial<FrpcStatus>): FrpcStatus {
-  //M 确保数组字段始终是干净的数组实例。
+  //M 确保数组字段始终是干净的数组实例，且公网快捷入口仅保留合法非通配 https:// 地址。
   let publicUrls: string[] = [];
   if (Array.isArray(raw.publicUrls)) {
-    publicUrls = raw.publicUrls.map((url) => String(url).trim()).filter((url) => url !== '');
+    publicUrls = raw.publicUrls
+      .map((url) => String(url).trim())
+      .filter((url) => /^https:\/\//u.test(url) && !url.includes('*'));
   }
   let proxies: FrpcProxy[] = [];
   if (Array.isArray(raw.proxies)) {
@@ -230,12 +232,39 @@ export async function fetchFrpcLogs(lines: number): Promise<FrpcLogsResponse> {
 
 
 /**
- * 判断输入 IP 是否为本机环回地址（用于 30086 外网门禁防绕过校验）。
+ * 判断字符串是否为严格标准点分十进制 IPv4（等价于后端 `net.isIPv4`，拒绝前导零八进制、十六进制与 IPv6）。
+ * @param host 待检字符串。
+ */
+function isStrictIpv4(host: string): boolean {
+  const parts = host.split('.');
+  if (parts.length !== 4) return false;
+
+  for (const part of parts) {
+    if (!/^(?:0|[1-9]\d{0,2})$/u.test(part)) return false;
+    if (Number(part) > 255) return false;
+  }
+  return true;
+}
+
+
+/**
+ * 与后端 `isAllowedServerMapIp` 白名单对齐：主站 30086 映射仅允许非 `127.` / `0.` 开头的标准点分 IPv4。
+ * @param ip 待检主机名或 IP。
+ */
+export function isAllowedMainPortIp(ip: string): boolean {
+  const trimmed = ip.trim();
+  if (!isStrictIpv4(trimmed)) return false;
+
+  return !/^(127\.|0\.)/u.test(trimmed);
+}
+
+
+/**
+ * 判断输入地址是否不满足 30086 主站端口安全白名单（回环、全零、IPv6 或主机名均拦截）。
  * @param ip 待检主机名或 IP。
  */
 export function isLoopbackIp(ip: string): boolean {
-  const clean = ip.trim().toLowerCase();
-  return clean === '127.0.0.1' || clean === 'localhost' || clean === '::1' || clean === '[::1]';
+  return !isAllowedMainPortIp(ip);
 }
 
 
@@ -262,18 +291,26 @@ export function parseDomainList(raw: string): string[] {
  * 校验单条待保存的隧道映射规则；合法返回空串，非法返回中文错误提示。
  * @param candidate 待校验规则。
  * @param existing 现有规则数组。
- * @param editIndex 编辑模式下原规则下标；新增模式传 -1。
+ * @param editIndex 编辑模式下原规则下标（未传 editingName 时回退使用）。
+ * @param editingName 编辑模式下原规则唯一名称；新增模式传 null。
  */
 export function validateProxyCandidate(
   candidate: FrpcProxy,
   existing: readonly FrpcProxy[],
   editIndex: number,
+  editingName?: string | null,
 ): string {
-  //G 逐项核对名称、唯一性、端口区间、30086 安全铁律与协议必填参数。
+  //G 逐项核对名称、唯一性、端口区间、30086 安全白名单与协议必填参数。
   const name = candidate.name.trim();
   if (name === '') return '请填写隧道名称（如 jmbots-web）';
 
-  const duplicate = existing.some((item, idx) => idx !== editIndex && item.name === name);
+  let duplicate = false;
+  if (editingName !== undefined) {
+    duplicate = existing.some((item) => item.name !== editingName && item.name === name);
+  }
+  if (editingName === undefined) {
+    duplicate = existing.some((item, idx) => idx !== editIndex && item.name === name);
+  }
   if (duplicate) return `隧道名称「${name}」已存在，请换一个唯一名称`;
 
   const ip = candidate.localIP.trim();
@@ -283,9 +320,9 @@ export function validateProxyCandidate(
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return '本地端口必须是 1 到 65535 之间的整数';
   }
-  //G 30086 主站端口禁止绑定本机环回 IP，防止外网流量绕过 AuthGate 门禁。
-  if (port === 30086 && isLoopbackIp(ip)) {
-    return '30086 主站端口禁止使用 127.0.0.1 / localhost，请改为局域网地址 192.168.200.1 以防绕过外网 AuthGate 登录门禁';
+  //G 30086 主站端口与后端对齐：仅允许非 127./0. 的标准点分 IPv4，防止外网流量绕过 AuthGate 门禁。
+  if (port === 30086 && !isAllowedMainPortIp(ip)) {
+    return '30086 主站端口仅允许非 127./0. 开头的点分十进制 IPv4（如 192.168.200.1），以防绕过外网 AuthGate 登录门禁';
   }
 
   const isHttpLike = candidate.type === 'http' || candidate.type === 'https';

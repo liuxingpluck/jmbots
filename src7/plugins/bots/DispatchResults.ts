@@ -34,6 +34,8 @@ export interface FrontTask {
   deliveryMode?: DeliveryMode;
   /** 派活时不可变来源快照。 */
   sourceSnapshot?: protocol.SourceSnapshot;
+  /** 原前台轮是否开启零次回复自动发最终正文（一对一渠道、wechat、cli、http 等）。 */
+  autoFinal?: boolean;
   /** 前台喊了暂停：不往下跑、不交回，等前台 append 再接着。 */
   paused: boolean;
   /** progress 把这件事转到了哪场新会话；转了以后这场停下不交回。 */
@@ -140,6 +142,8 @@ export interface ResultInput {
   sourceSnapshot?: protocol.SourceSnapshot;
   /** 本项回复模式（可选）。 */
   deliveryMode?: DeliveryMode;
+  /** 是否延续原前台轮的零次回复自动发最终正文策略。 */
+  autoFinal?: boolean;
   /** 正文和交回文件的绝对路径。 */
   payload: ResultPayload;
 }
@@ -312,6 +316,9 @@ export class DispatchResults {
         reminder: 'none',
         receiptKeys: [],
       };
+      if (input.autoFinal === true || activeItem?.replyControl?.autoFinal === true) {
+        replyControl.autoFinal = true;
+      }
     }
     const item: QueueItem = {
       key: input.key,
@@ -436,6 +443,9 @@ export class DispatchResults {
     }
     if (task.deliveryMode !== undefined) {
       input.deliveryMode = task.deliveryMode;
+    }
+    if (task.autoFinal === true) {
+      input.autoFinal = true;
     }
 
     //M 显式 final 已持久交回：只结束这一轮，不按普通结束文本再开一份结果。

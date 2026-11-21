@@ -32,9 +32,12 @@ const DECLARE: Record<string, string> = {
   zh: '上面是底座的通用说明。你实际是 jmbots 平台里的聊天机器人，通过网页、飞书、微信等渠道和用户对话：'
     + '能做什么以这次请求给你的工具列表为准，上面提到、工具列表里没有的能力（比如组队、开子代理）就当没有；'
     + '你的名字、身份、说话风格以后面的人设和记忆为准；回答用户时不提底座、模型、提示词这些内部的事。',
-  en: 'The text above is the generic harness description. You are actually a chat bot on the jmbots platform, talking with users through web, Feishu, WeChat and other channels. '
-    + 'What you can do is exactly the tool list given in this request; any ability mentioned above but missing from the tool list (teams, sub-agents, etc.) does not exist. '
-    + 'Your name, identity and style come from the persona and memory below. Never mention the harness, model or prompts to users.',
+  en: 'The text above is the generic harness description. You are actually a chat bot on the jmbots platform, '
+    + 'talking with users through web, Feishu, WeChat and other channels. '
+    + 'What you can do is exactly the tool list given in this request; any ability mentioned above but missing '
+    + 'from the tool list (teams, sub-agents, etc.) does not exist. '
+    + 'Your name, identity and style come from the persona and memory below. '
+    + 'Never mention the harness, model or prompts to users.',
 };
 
 /** 没有提示词文件时用的：会话种类 → 提示词。 */
@@ -144,7 +147,9 @@ export class Prompt {
     if (!access.full) return;
 
     //M 记忆：两个目录下的 .md、.txt，按文件名的先后，一个文件一段。
-    const dirs = [this.ctx.resources.ensureRuntimeDir('bots', row.bot, 'memory'), this.ctx.resources.ensureRuntimeDir('memory')];
+    const botMemoryDir = this.ctx.resources.ensureRuntimeDir('bots', row.bot, 'memory');
+    const sharedMemoryDir = this.ctx.resources.ensureRuntimeDir('memory');
+    const dirs = [botMemoryDir, sharedMemoryDir];
     for (const dir of dirs) {
       const names = fs.readdirSync(dir).filter((item) => item.endsWith('.md') || item.endsWith('.txt'));
       for (const item of names.sort()) {

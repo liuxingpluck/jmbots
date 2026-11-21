@@ -300,7 +300,17 @@ test('独立进程只在已登记渠道挂批准接口，显式启用仍需合�
     const request = { method: 'POST', headers, body: JSON.stringify(payload) };
     const refused = await fetch(route, request);
     expect(await refused.json()).toEqual({ status: 'failed', reason: '微信账号尚未连接' });
-    const exit = await fetch(`${base}/jmbots/v1/exit`, { method: 'POST' });
+    //M 主程序拉起的进程：不带密钥、带错密钥都退不掉，进程还在。
+    const noKey = await fetch(`${base}/jmbots/v1/exit`, { method: 'POST' });
+    expect(noKey.status).toBe(401);
+    const wrongHeaders = { [protocol.KEY_HEADER]: `${key}x` };
+    const wrongKey = await fetch(`${base}/jmbots/v1/exit`, { method: 'POST', headers: wrongHeaders });
+    expect(wrongKey.status).toBe(401);
+    expect(child.exitCode).toBeNull();
+
+    //M 带对密钥才退出。
+    const keyHeaders = { [protocol.KEY_HEADER]: key };
+    const exit = await fetch(`${base}/jmbots/v1/exit`, { method: 'POST', headers: keyHeaders });
     expect(await exit.json()).toEqual({ ok: true });
     expect(await child.exited).toBe(0);
   } finally {

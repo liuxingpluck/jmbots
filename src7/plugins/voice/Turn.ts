@@ -2,6 +2,7 @@
 
 import * as asr from './Asr.ts';
 import * as cloud from './CloudAsr.ts';
+import * as common from './Common.ts';
 import type * as models from './Models.ts';
 import type * as routes from './Routes.ts';
 
@@ -15,18 +16,19 @@ export class Turn {
   private quiet = 0;
   private text = '';
   private judged = '';
-  private calls = 0;
-  private windowStart = performance.now();
   private readonly pauseSamples: number;
+  /** 每分钟最多判断几次（turn.max_per_minute）。 */
+  private readonly limit: common.MinuteLimit;
 
   /** 输入每次判断的通用模型、最短停顿和实际线路的回报出口。 */
   constructor(
     private readonly predict: models.Predict,
     pauseMs: number,
-    private readonly maxPerMinute: number,
+    maxPerMinute: number,
     private readonly report: (place?: routes.Place, reason?: string) => void,
   ) {
     this.pauseSamples = pauseMs * asr.SAMPLE_RATE / 1000;
+    this.limit = new common.MinuteLimit(maxPerMinute);
   }
 
   /** 转写器更新当前句时，旧字幕尚在飞行的判断即作废。 */
@@ -63,19 +65,17 @@ export class Turn {
 
     this.quiet += pcm.length;
     const text = this.text;
-    if (cut === undefined || this.quiet < this.pauseSamples || text.length < 6) return;
+    //G 停顿不够长、字太少（和任务理解同一个口径：按字数数、默认 MIN_CHARS）都不判。
+    if (cut === undefined || this.quiet < this.pauseSamples) return;
+    if (common.getCharCount(text) < common.MIN_CHARS) return;
 
     if (this.active !== undefined || this.judged === text) return;
 
     //G 断句模型也有单连接限速，超出则让既有静音收尾。
     const now = performance.now();
-    if (now - this.windowStart >= 60_000) {
-      this.windowStart = now;
-      this.calls = 0;
-    }
-    if (this.calls >= this.maxPerMinute) return;
+    if (this.limit.isFull(now)) return;
 
-    this.calls += 1;
+    this.limit.add();
     this.judged = text;
     const controller = new AbortController();
     this.active = controller;

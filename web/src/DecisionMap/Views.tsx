@@ -1,10 +1,13 @@
 /** 决策图的表格和清单两种看法，和画布用同一份节点、同一个侧栏。 */
-import * as antd from 'antd';
+import { ConfigProvider, Table, theme as antdThemeAlg, type TableColumnsType, type ThemeConfig } from 'antd';
 import * as react from 'react';
 import * as virtuoso from 'react-virtuoso';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as drawer from './Drawer.tsx';
+import { getChildren, getScope } from './Scope.ts';
 import * as words from './Words.ts';
+
+export { getScope };
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
@@ -104,8 +107,8 @@ const TABLE_WIDTH = 960;
 /** 小号表头的预留高度，表身按容器剩余空间滚动。 */
 const TABLE_HEADER_HEIGHT = 48;
 /** 独立的决策图入口没有主站的主题容器。 */
-const TABLE_THEME: antd.ThemeConfig = {
-  algorithm: antd.theme.darkAlgorithm,
+const TABLE_THEME: ThemeConfig = {
+  algorithm: antdThemeAlg.darkAlgorithm,
   token: { colorBgContainer: '#11161f' },
   components: {
     Table: { headerBg: '#18202c', rowHoverBg: '#1f2938', borderColor: '#252e3d' },
@@ -160,7 +163,7 @@ export function TableView({ nodes, selected, open }: ViewProps) {
     open(id);
   };
 
-  const columns: antd.TableColumnsType<types.DecisionNode> = [
+  const columns: TableColumnsType<types.DecisionNode> = [
     {
       key: 'state',
       title: t('状态'),
@@ -230,8 +233,8 @@ export function TableView({ nodes, selected, open }: ViewProps) {
         ))}
       </div>
       <div className="decision-table__scroll" ref={viewport}>
-        <antd.ConfigProvider theme={TABLE_THEME}>
-          <antd.Table
+        <ConfigProvider theme={TABLE_THEME}>
+          <Table
             size="small"
             virtual
             pagination={false}
@@ -242,7 +245,7 @@ export function TableView({ nodes, selected, open }: ViewProps) {
             locale={locale}
             onRow={getRowProps}
           />
-        </antd.ConfigProvider>
+        </ConfigProvider>
       </div>
     </div>
   );
@@ -256,48 +259,6 @@ interface ListRow {
   depth: number;
   /** 此行可以展开下级。 */
   hasChildren: boolean;
-}
-
-/** 同级按快照顺序排列，供清单与聚焦路径使用。 */
-function getChildren(nodes: types.DecisionNode[]) {
-  const children = new Map<string, types.DecisionNode[]>();
-  for (const entry of nodes) {
-    if (entry.parent === null) continue;
-
-    const siblings = children.get(entry.parent) ?? [];
-    siblings.push(entry);
-    children.set(entry.parent, siblings);
-  }
-  return children;
-}
-
-/** 从快照取出单棵子树和从总目标到它的面包屑。 */
-export function getScope(nodes: types.DecisionNode[], focus?: string) {
-  if (focus === undefined) return { nodes, path: [] };
-
-  const byId = new Map(nodes.map((entry) => [entry.id, entry]));
-  const root = byId.get(focus);
-  if (root === undefined) return { nodes, path: [] };
-
-  const path = [root];
-  let parent = root.parent;
-  while (parent !== null) {
-    const entry = byId.get(parent);
-    if (entry === undefined) break;
-
-    path.push(entry);
-    parent = entry.parent;
-  }
-
-  //M 只把当前视图的根视为顶层，保存的真实父编号保持原样。
-  const children = getChildren(nodes);
-  const scope: types.DecisionNode[] = [{ ...root, parent: null }];
-  for (const entry of scope) {
-    for (const child of children.get(entry.id) ?? []) {
-      scope.push(child);
-    }
-  }
-  return { nodes: scope, path: path.reverse() };
 }
 
 /** 为虚拟清单保留列表语义；部件引用固定，更新选中节点时不用重建清单。 */

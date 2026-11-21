@@ -15,8 +15,6 @@ export interface Asr {
   onPartial: (text: string) => void;
   /** 一句话结束时的最终结果。 */
   onFinal: (text: string, endSamples?: number) => void;
-  /** 开始说话，用于以后的语音打断。 */
-  onSpeechStart: () => void;
   /** 异步线路在上游授权并接受音频后才调用。 */
   onReady?: () => void;
   /** 线路实际切换或不可恢复故障的回调，仅自动线路使用。 */
@@ -66,19 +64,11 @@ interface OnlineRecognizer {
   reset(stream: OnlineStream): void;
 }
 
-/** 只用于开口通知的每连接 Silero 实例。 */
-interface SpeechDetector {
-  acceptWaveform(samples: Float32Array): void;
-  isDetected(): boolean;
-  isEmpty(): boolean;
-  pop(): void;
-}
-
-/** 加载外置 JS 与本地模型，每个连接分配独立的解码流和 VAD。 */
+/** 加载外置 JS 与本地模型，每个连接分配独立的解码流。 */
 export async function loadSherpa(options: SherpaOptions): Promise<AsrFactory | undefined> {
   //M 模型检查与构造共用部署目录中的同一组文件。
   const files = getSherpaFiles(options);
-  const { entry, encoder, decoder, joiner, tokens, vadModel } = files;
+  const { entry, encoder, decoder, joiner, tokens } = files;
   const required = Object.values(files);
 
   //G 缺文件时让 Voice 原有的状态接口告知用户。
@@ -86,7 +76,7 @@ export async function loadSherpa(options: SherpaOptions): Promise<AsrFactory | u
   if (missing) return undefined;
 
   //M 全部必需文件齐全后才启用原生识别器。
-  return createSherpa(options, entry, encoder, decoder, joiner, tokens, vadModel);
+  return createSherpa(options, entry, encoder, decoder, joiner, tokens);
 }
 
 /** 只做文件检查，状态查询不加载 CPU 模型。 */
@@ -105,8 +95,7 @@ function getSherpaFiles(options: SherpaOptions) {
   const decoder = path.join(folder, 'decoder-epoch-99-avg-1.onnx');
   const joiner = path.join(folder, 'joiner-epoch-99-avg-1.int8.onnx');
   const tokens = path.join(folder, 'tokens.txt');
-  const vadModel = path.join(options.modelsDir, 'vad', 'silero_vad.onnx');
-  return { entry, encoder, decoder, joiner, tokens, vadModel };
+  return { entry, encoder, decoder, joiner, tokens };
 }
 
 /** 产出可复用的本地识别器。调用方已经检查本地资源和文件。 */
@@ -117,7 +106,6 @@ function createSherpa(
   decoder: string,
   joiner: string,
   tokens: string,
-  vadModel: string,
 ): AsrFactory | undefined {
   const seconds = options.silenceMs / 1000;
   const config = {
@@ -133,25 +121,15 @@ function createSherpa(
     rule2MinTrailingSilence: seconds,
     rule3MinUtteranceLength: options.maxUtteranceMs / 1000,
   };
-  const vadConfig = {
-    sileroVad: { model: vadModel, minSilenceDuration: 0.25, minSpeechDuration: 0.25 },
-    sampleRate: SAMPLE_RATE,
-    numThreads: 1,
-    provider: 'cpu',
-  };
   try {
     //M 保留外置包的磁盘位置，保证它按原布局加载原生库与 DLL。
     const load = modules.createRequire(process.execPath);
     const sherpa = load(entry) as {
       OnlineRecognizer: new (input: typeof config) => OnlineRecognizer;
-      Vad: new (input: typeof vadConfig, seconds: number) => SpeechDetector;
     };
     const recognizer = new sherpa.OnlineRecognizer(config);
-    return () => {
-      //M 共享只读识别模型，每个连接保有自己的可变流。
-      const detector = new sherpa.Vad(vadConfig, 30);
-      return new SherpaAsr(recognizer, detector);
-    };
+    //M 共享只读识别模型，每个连接保有自己的可变流。
+    return () => new SherpaAsr(recognizer);
   } catch {
     return undefined;
   }
@@ -161,16 +139,13 @@ function createSherpa(
 class SherpaAsr implements Asr {
   onPartial: Asr['onPartial'] = () => {};
   onFinal: Asr['onFinal'] = () => {};
-  onSpeechStart: Asr['onSpeechStart'] = () => {};
 
   private stream?: OnlineStream;
-  private detected = false;
   private previous = '';
 
   /** 建立连接专属流，共用已预载的只读识别模型。 */
   constructor(
     private readonly recognizer: OnlineRecognizer,
-    private readonly detector: SpeechDetector,
   ) {
     //M 一条 WebSocket 对应一个解码句流。
     this.stream = recognizer.createStream();
@@ -183,17 +158,6 @@ class SherpaAsr implements Asr {
 
     //M Node-API 接受归一化的单声道 Float32 采样。
     const samples = Float32Array.from(pcm, (sample) => sample / 32_768);
-    this.detector.acceptWaveform(samples);
-    const detected = this.detector.isDetected();
-    if (detected && !this.detected) {
-      this.onSpeechStart();
-    }
-    this.detected = detected;
-    while (!this.detector.isEmpty()) {
-      //M VAD 在这里仅判断开口，语音段交由在线识别的端点处理。
-      this.detector.pop();
-    }
-
     const waveform = { samples, sampleRate: SAMPLE_RATE };
     stream.acceptWaveform(waveform);
     //M 输出当前可解码的内容，端点出现时用全文收尾。
@@ -259,7 +223,6 @@ class SherpaAsr implements Asr {
 export class FakeAsr implements Asr {
   onPartial: Asr['onPartial'] = () => {};
   onFinal: Asr['onFinal'] = () => {};
-  onSpeechStart: Asr['onSpeechStart'] = () => {};
 
   private spoken = 0;
   private quiet = 0;
@@ -281,7 +244,6 @@ export class FakeAsr implements Asr {
     const speaks = pcm.some((sample) => sample !== 0);
     if (speaks) {
       if (this.spoken === 0) {
-        this.onSpeechStart();
         this.onPartial('模拟听写');
       }
       this.quiet = 0;

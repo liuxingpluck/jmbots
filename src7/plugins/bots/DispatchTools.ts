@@ -200,8 +200,9 @@ export class DispatchTools {
     if (activeFrontItem?.deliveryMode === 'channel_tool' || activeSnapshot !== undefined) {
       deliveryMode = 'channel_tool';
     }
+    const autoFinal = activeFrontItem?.replyControl?.autoFinal === true;
 
-    return { text, model, thinking, images, origin, deliveryMode, sourceSnapshot: activeSnapshot };
+    return { text, model, thinking, images, origin, deliveryMode, sourceSnapshot: activeSnapshot, autoFinal };
   }
 
   /**
@@ -235,6 +236,9 @@ export class DispatchTools {
     };
     if (plan.sourceSnapshot !== undefined) {
       frontTask.sourceSnapshot = structuredClone(plan.sourceSnapshot);
+    }
+    if (plan.autoFinal) {
+      frontTask.autoFinal = true;
     }
 
     //M 开后台会话：kind 是 work，挂在前台下面（parent），记上客户号、模型、思考档、frontTask 和工作区 ID。
@@ -335,6 +339,12 @@ export class DispatchTools {
     task.deliveryMode = plan.deliveryMode;
     if (plan.sourceSnapshot !== undefined) {
       task.sourceSnapshot = structuredClone(plan.sourceSnapshot);
+    }
+    if (plan.autoFinal) {
+      task.autoFinal = true;
+    }
+    if (!plan.autoFinal) {
+      delete task.autoFinal;
     }
 
     //M 模型、思考档、工作区 ID、frontTask 都改好了，存库，再交给机器人推它跑。
@@ -680,6 +690,8 @@ interface HandPlan {
   deliveryMode: DeliveryMode;
   /** 派活时不可变来源快照。 */
   sourceSnapshot?: protocol.SourceSnapshot;
+  /** 原前台轮是否开启零次回复自动发最终正文。 */
+  autoFinal: boolean;
 }
 
 

@@ -16,7 +16,7 @@ import * as guardModule from './ResourceGuard.ts';
 /** 插件名和版本。 */
 export const name = 'programs';
 //M 1.7.6：商业授权 getLicenseLabel 将自报 none 标为“未授权”（与 free“不需要”区分）。
-export const version = '1.7.6';
+export const version = '1.7.7';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 

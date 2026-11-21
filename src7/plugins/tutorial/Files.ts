@@ -10,6 +10,7 @@ import type * as cordis from 'cordis';
 import { Buffer } from 'node:buffer';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as snapshotModule from './Snapshot.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -84,7 +85,11 @@ const HEAD_BYTES = 8192;
  * @param no 第几步，从 1 起。
  * @returns 没有这一步、这一步一份都没拍到是 undefined。
  */
-export function getStepShot(steps: trailModule.TrailStep[], taken: (Taken | undefined)[], no: number): StepShot | undefined {
+export function getStepShot(
+  steps: trailModule.TrailStep[],
+  taken: (Taken | undefined)[],
+  no: number,
+): StepShot | undefined {
   const step = steps[no - 1];
   if (step === undefined) return undefined;
 
@@ -321,15 +326,18 @@ export class FlowFiles {
   }
 
   /**
-   * 拼好、写下；写的是消息文件就删多出来的旧的。
+   * 拼好、原子写下（先写临时文件再改名，读的人不会读到写了一半的 JSON）；写的是消息文件就删多出来的旧的。
    * @param file 文件名。
    * @param build 拼内容。
+   * 副作用：建 data/flow/ 目录、写文件；改名失败（Windows 上被别的程序开着）退回直接写，快照只给开发看。
    */
   private async write(file: string, build: () => Promise<FlowFile>): Promise<void> {
     const content = await build();
     const json = JSON.stringify(content);
-    await fs.promises.mkdir(this.dir, { recursive: true });
-    await fs.promises.writeFile(path.join(this.dir, file), json, 'utf8');
+
+    //M 原子写：utils/Files.ts 的 writeTextAtomic 建目录、写同目录临时文件、改名盖过去。
+    const full = path.join(this.dir, file);
+    filesModule.writeTextAtomic(full, json, true);
     if (file === BOOT_FILE) return;
 
     //M 消息快照受保留数量限制，写完新文件后顺手清理最旧的消息快照。

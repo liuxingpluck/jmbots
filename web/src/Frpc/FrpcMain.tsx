@@ -1,7 +1,7 @@
 /** 外网隧道控制台入口（web/frpc.html）：首帧写入深色主题变量，外层套 AuthGate 承接外网登录。 */
 import { createRoot } from 'react-dom/client';
 import { AuthGate } from '../components/AuthGate.tsx';
-import * as theme from '../Theme.ts';
+import * as theme from '../ThemePalette.ts';
 import { FrpcPage } from './FrpcPage.tsx';
 import './Frpc.css';
 

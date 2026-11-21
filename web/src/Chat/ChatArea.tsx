@@ -3,7 +3,7 @@
  * 审核卡片（第 8 节）排在时间线里，不挡消息，翻上去也能点；有待审核时上面一行有个入口，点了在右栏集中看。? 打开快捷键帮助（输入框里打字时不触发）。
  */
 import * as icons from '@ant-design/icons';
-import * as antd from 'antd';
+import { Button } from 'antd';
 import * as react from 'react';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
@@ -12,8 +12,13 @@ import * as channelTabs from './ChannelTabs.tsx';
 import * as composer from './Composer.tsx';
 import * as guide from '../Guide/Guide.tsx';
 import { CHAT_STEPS } from '../Guide/steps-chat.ts';
-import * as helpModal from './HelpModal.tsx';
 import * as mascot from '../Mascot/Mascot.tsx';
+
+/** 快捷键帮助弹窗按需懒加载，仅在用户按 ? 或斜杠命令打开时拉取。 */
+const LazyHelpModal = react.lazy(async () => {
+  const mod = await import('./HelpModal.tsx');
+  return { default: mod.HelpModal };
+});
 import * as messageList from './MessageList.tsx';
 import * as privacy from '../Privacy/Mask.tsx';
 import * as progressBar from './ProgressBar.tsx';
@@ -28,7 +33,9 @@ import * as useMessagesModule from './useMessages.ts';
  * @param target 事件的目标。
  */
 function isTyping(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+  const editable = target instanceof HTMLElement
+    && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+  return editable;
 }
 
 
@@ -112,7 +119,11 @@ export function ChatArea(): react.JSX.Element {
   const [reply, setReply] = react.useState<composer.ReplyDraft | null>(null);
   const [quote, setQuote] = react.useState<{ text: string } | null>(null);
   //M 按当前机器人与渠道聊天筛选条件订阅并拉取统一时间线消息流。
-  const messages = useMessagesModule.useMessages(current, 'web', { channel: view.channel, chat: view.chat, unified: true });
+  const messages = useMessagesModule.useMessages(current, 'web', {
+    channel: view.channel,
+    chat: view.chat,
+    unified: true,
+  });
   react.useEffect(() => setReply(null), [current]);
   //M 检查已挂载插件清单，决定是否显示进度条。
   const mountedPlugins = context.useUi((state) => state.mountedPlugins);
@@ -134,7 +145,10 @@ export function ChatArea(): react.JSX.Element {
   }, []);
 
   /** 在右栏打开一个文件。 */
-  const onOpen = react.useCallback((target: { path: string; name: string }) => openPanel('preview', target), [openPanel]);
+  const onOpen = react.useCallback(
+    (target: { path: string; name: string }) => openPanel('preview', target),
+    [openPanel],
+  );
 
   //M 右栏按钮文案与空状态展示先在 return 前定好，保持 JSX 清晰。
   let panelIcon = <icons.MenuFoldOutlined />;
@@ -166,7 +180,10 @@ export function ChatArea(): react.JSX.Element {
       if (view.chat) {
         composerView = { channel: view.channel, chat: view.chat };
         const shortLabel = view.chatLabel || channelTabs.getChatShortLabel(view.chat, view.channel);
-        viewBanner = t('正在看：{channel} · {chat}，机器人会知道', { channel: channelName, chat: privacy.name(shortLabel, masked) });
+        viewBanner = t('正在看：{channel} · {chat}，机器人会知道', {
+          channel: channelName,
+          chat: privacy.name(shortLabel, masked),
+        });
       }
       if (!view.chat) {
         composerView = { channel: view.channel };
@@ -216,7 +233,7 @@ export function ChatArea(): react.JSX.Element {
         <mascot.Mascot bot={current ?? undefined} />
         <div className="jm-chat-head-right">
           <quickPages.QuickPages />
-          <antd.Button
+          <Button
             size="small"
             type="text"
             className="jm-chat-panel-toggle"
@@ -231,7 +248,7 @@ export function ChatArea(): react.JSX.Element {
             }}
           >
             {panelLabel}
-          </antd.Button>
+          </Button>
           <guide.Guide steps={CHAT_STEPS} language={language} />
           {approvals.length > 0 && (
             <button type="button" className="jm-chat-approvals" onClick={() => openPanel('approvals')}>
@@ -241,7 +258,11 @@ export function ChatArea(): react.JSX.Element {
         </div>
       </header>
       {body}
-      <helpModal.HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {helpOpen && (
+        <react.Suspense fallback={null}>
+          <LazyHelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+        </react.Suspense>
+      )}
     </div>
   );
 }

@@ -37,7 +37,6 @@ function getPcmBytes(pcm: Int16Array): Buffer {
 export class BailianAsr implements asr.Asr {
   onPartial: asr.Asr['onPartial'] = () => {};
   onFinal: asr.Asr['onFinal'] = () => {};
-  onSpeechStart: asr.Asr['onSpeechStart'] = () => {};
   onReady = (): void => {};
   onError: NonNullable<asr.Asr['onError']> = () => {};
 
@@ -265,7 +264,6 @@ function getWave(frames: Buffer[], samples: number): string {
 export class XiaomiAsr implements asr.Asr {
   onPartial: asr.Asr['onPartial'] = () => {};
   onFinal: asr.Asr['onFinal'] = () => {};
-  onSpeechStart: asr.Asr['onSpeechStart'] = () => {};
   onError: NonNullable<asr.Asr['onError']> = () => {};
 
   private readonly controller = new AbortController();
@@ -289,10 +287,6 @@ export class XiaomiAsr implements asr.Asr {
     //M 只有检测到开口才开始积累整句。
     const speech = hasSpeech(pcm);
     if (this.count === 0 && !speech) return;
-    if (this.count === 0) {
-      //M 通知外层这句的起点。
-      this.onSpeechStart();
-    }
     if (speech) {
       this.quiet = 0;
     }

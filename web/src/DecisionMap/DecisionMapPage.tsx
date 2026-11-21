@@ -1,20 +1,34 @@
 /** 工作决策工作台：PC 三栏总览与专题双视图 + 手机竖屏 48px 单行顶栏/底栏原生级极简体验。 */
 import * as react from 'react';
-import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import * as authGate from '../components/AuthGate.tsx';
 import * as token from '../Token.ts';
 import * as api from './DecisionMapApi.ts';
 import * as composer from './Composer.tsx';
-import * as dateMap from './DateMap.ts';
+import type { CanvasLook, PendingCameraRequest } from './DecisionFlowCanvas.tsx';
 import * as drafts from './Drafts.ts';
 import * as drawer from './Drawer.tsx';
-import * as layout from './Layout.ts';
-import * as nodes from './Nodes.tsx';
-import * as quadrantView from './QuadrantView.tsx';
+import * as scopeMod from './Scope.ts';
 import * as topicView from './TopicView.tsx';
-import * as views from './Views.tsx';
 import * as words from './Words.ts';
+
+/** 按需懒加载非首屏重型视图（ReactFlow 导图/放射/日期、AntD 虚拟表、虚拟清单、四象限）。 */
+const LazyFlowCanvas = react.lazy(async () => {
+  const mod = await import('./DecisionFlowCanvas.tsx');
+  return { default: mod.DecisionFlowCanvas };
+});
+const LazyQuadrantView = react.lazy(async () => {
+  const mod = await import('./QuadrantView.tsx');
+  return { default: mod.QuadrantView };
+});
+const LazyTableView = react.lazy(async () => {
+  const mod = await import('./Views.tsx');
+  return { default: mod.TableView };
+});
+const LazyListView = react.lazy(async () => {
+  const mod = await import('./Views.tsx');
+  return { default: mod.ListView };
+});
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
@@ -22,17 +36,6 @@ const t = words.t;
 /** 七种看法：专题目录、四象限、思维导图、按日期、放射图、表格、清单。 */
 type Look = 'topic' | 'quadrant' | 'mind' | 'date' | 'radial' | 'table' | 'list';
 
-const NODE_TYPES = { decision: nodes.DecisionNode, day: nodes.DayNode };
-const ORIGIN: xyflow.NodeOrigin = [0.5, 0.5];
-const FIT: xyflow.FitViewOptions = {
-  padding: { top: '24px', bottom: '48px', left: '24px', right: '24px' },
-  maxZoom: 1,
-};
-const FIT_MOBILE: xyflow.FitViewOptions = {
-  padding: { top: '44px', bottom: '68px', left: '12px', right: '12px' },
-  minZoom: 0.62,
-  maxZoom: 1.05,
-};
 /** 每 30 秒发一次轻量 GET /api/work-decision/version（严禁使用 SSE 或 WebSocket）。 */
 const VERSION_POLL_MS = 30_000;
 const MOBILE_BREAKPOINT = 800;
@@ -85,7 +88,7 @@ function getStartLook(): Look {
 }
 
 /** 思维导图方向：记着“上下”就上下，默认左右。 */
-function getStartDirection(): layout.MindDirection {
+function getStartDirection(): scopeMod.MindDirection {
   const stored = readStored(DIRECTION_KEY);
   if (stored === 'down') return 'down';
 
@@ -116,9 +119,9 @@ export function DecisionMapPage() {
   const [lastNormalTopicId, setLastNormalTopicId] = react.useState<string>();
   const [savingKey, setSavingKey] = react.useState<string>();
   const [chooseError, setChooseError] = react.useState<string>();
-  const [mode, setMode] = react.useState<layout.ViewMode>('main');
+  const [mode, setMode] = react.useState<scopeMod.ViewMode>('main');
   const [look, setLook] = react.useState<Look>(getStartLook);
-  const [direction, setDirection] = react.useState<layout.MindDirection>(getStartDirection);
+  const [direction, setDirection] = react.useState<scopeMod.MindDirection>(getStartDirection);
   const [onlyAsk, setOnlyAsk] = react.useState(false);
   const [sending, setSending] = react.useState(false);
   const [noteError, setNoteError] = react.useState<string>();
@@ -131,13 +134,19 @@ export function DecisionMapPage() {
   const [isMobile, setIsMobile] = react.useState(() => window.innerWidth < MOBILE_BREAKPOINT);
   const [mobileDrawerOpen, setMobileDrawerOpen] = react.useState(false);
   const [mobileSwitcherOpen, setMobileSwitcherOpen] = react.useState(false);
+  const [cameraRequest, setCameraRequest] = react.useState<PendingCameraRequest | null>(null);
 
   const canvas = react.useRef<HTMLElement>(null);
-  const flow = react.useRef<xyflow.ReactFlowInstance<layout.FlowNode> | undefined>(undefined);
   const lastPending = react.useRef<string | undefined>(undefined);
+  const cameraSeqRef = react.useRef(0);
   const appStartedAtRef = react.useRef<number | undefined>(undefined);
   const dataRevRef = react.useRef<number | undefined>(undefined);
-  const checkingRef = react.useRef(false);
+  /** 正在跑的那次版本检查的代次，0 表示没有在跑；只有自己那一代结束才清，手动刷新和自动探针不互相清标记。 */
+  const checkingRef = react.useRef(0);
+  /** 版本检查的代次计数，每次检查加一。 */
+  const checkSeqRef = react.useRef(0);
+  const graphAbortRef = react.useRef<AbortController | null>(null);
+  const graphSeqRef = react.useRef(0);
   const [size, setSize] = react.useState({ width: 0, height: 0 });
   const portrait = size.width <= 670 || isMobile;
 
@@ -176,52 +185,89 @@ export function DecisionMapPage() {
     return () => observer.disconnect();
   }, [look]);
 
-  /** 静默拉取最新节点图并在本地合并，绝不整页刷新、不清空草稿、不抢输入框焦点。 */
-  const refresh = react.useCallback(async (signal?: AbortSignal) => {
+  /**
+   * 静默拉取最新节点图并在本地合并：带代次号防乱序覆盖，版本一致时保持原引用零多余重绘。
+   * @param externalSignal 外部中止信号。
+   * @param restarted 后端刚重启过：不再拿旧的 revision 比大小，直接用新图（云端 26 次要 #2）。
+   */
+  const refresh = react.useCallback(async (externalSignal?: AbortSignal, restarted = false) => {
+    graphAbortRef.current?.abort();
+    const controller = new AbortController();
+    graphAbortRef.current = controller;
+    graphSeqRef.current += 1;
+    const seq = graphSeqRef.current;
+    const onExternalAbort = (): void => controller.abort();
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
     try {
-      const next = await api.getGraph(signal);
+      const next = await api.getGraph(controller.signal);
+      if (controller.signal.aborted || seq !== graphSeqRef.current) return;
+      if (!restarted && dataRevRef.current !== undefined && next.revision < dataRevRef.current) return;
+
       dataRevRef.current = next.revision;
       setGraph((current) => {
-        if (current === undefined || next.revision !== current.revision) return next;
+        if (current === undefined || restarted) return next;
+        if (next.revision < current.revision) return current;
+        if (next.revision !== current.revision) return next;
         if (JSON.stringify(next.projects) !== JSON.stringify(current.projects)) {
           return { ...current, projects: next.projects };
         }
         return current;
       });
-      setLoadingError(undefined);
+      setLoadingError((prev) => {
+        if (prev === undefined) return prev;
+        return undefined;
+      });
     } catch (error) {
-      if (signal?.aborted === true) return;
+      if (controller.signal.aborted || externalSignal?.aborted === true) return;
+      if (error instanceof DOMException && error.name === 'AbortError') return;
 
       let message = String(error);
       if (error instanceof Error) message = error.message;
       setLoadingError(message);
+    } finally {
+      externalSignal?.removeEventListener('abort', onExternalAbort);
     }
   }, []);
 
-  /** 检查轻量版本探针：仅 dataRev 变化时静默拉图；appStartedAt 变化时按空闲/草稿状态安全处理。 */
+  /** 检查 30 秒轻量版本探针：dataRev 未变时绝不拉整图、绝不触发任何 setState 重绘。 */
   const checkVersion = react.useCallback(async (manual = false, signal?: AbortSignal) => {
-    if (checkingRef.current && !manual) return;
+    if (checkingRef.current !== 0 && !manual) return;
 
-    checkingRef.current = true;
+    //M 记下这一次的代次，结束时只清自己那一代
+    checkSeqRef.current += 1;
+    const checkSeq = checkSeqRef.current;
+    checkingRef.current = checkSeq;
     if (manual) setRefreshing(true);
     try {
       const ver = await api.getVersion(signal);
+      if (signal?.aborted === true) return;
+
       const prevStarted = appStartedAtRef.current;
       if (prevStarted === undefined) {
         appStartedAtRef.current = ver.appStartedAt;
       }
-      if (prevStarted !== undefined && ver.appStartedAt !== prevStarted) {
+      const restarted = prevStarted !== undefined && ver.appStartedAt !== prevStarted;
+      if (restarted) {
         if (!isUserBusyWithInput()) {
           window.location.reload();
           return;
         }
-        setNewVersionReady(true);
+        //M 用户正忙不整页刷新：亮出新版提示，记下新的启动时刻，数据照样换成后端现在的
+        setNewVersionReady((prev) => prev || true);
+        appStartedAtRef.current = ver.appStartedAt;
+        await refresh(signal, true);
+        return;
       }
-      if (manual || dataRevRef.current === undefined || ver.dataRev !== dataRevRef.current) {
-        await refresh(signal);
-      }
+
+      //G 空闲自动探针在本地已有快照且 dataRev 完全相同时直接返回，零 /graph 请求、零重绘。
+      const isUnchanged = dataRevRef.current !== undefined && ver.dataRev === dataRevRef.current;
+      if (!manual && isUnchanged) return;
+
+      await refresh(signal);
     } catch (error) {
       if (signal?.aborted === true) return;
+      if (error instanceof DOMException && error.name === 'AbortError') return;
 
       if (dataRevRef.current === undefined || manual) {
         let message = String(error);
@@ -229,7 +275,9 @@ export function DecisionMapPage() {
         setLoadingError(message);
       }
     } finally {
-      checkingRef.current = false;
+      if (checkingRef.current === checkSeq) {
+        checkingRef.current = 0;
+      }
       if (manual) setRefreshing(false);
     }
   }, [refresh]);
@@ -237,7 +285,14 @@ export function DecisionMapPage() {
   react.useEffect(() => {
     const control = new AbortController();
 
-    void checkVersion(true, control.signal);
+    //M 首屏并发发起版本探针与快照读取（1 RTT 呈现内容），其后每 30 秒只发 ~50B 版本探针。
+    void refresh(control.signal);
+    void api.getVersion(control.signal).then((ver) => {
+      if (!control.signal.aborted && appStartedAtRef.current === undefined) {
+        appStartedAtRef.current = ver.appStartedAt;
+      }
+    }, () => undefined);
+
     const timer = window.setInterval(() => {
       if (!document.hidden) {
         void checkVersion(false, control.signal);
@@ -253,8 +308,9 @@ export function DecisionMapPage() {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
       control.abort();
+      graphAbortRef.current?.abort();
     };
-  }, [checkVersion]);
+  }, [checkVersion, refresh]);
 
   const open = react.useCallback((id: string, expand?: boolean) => {
     if (expand !== undefined) {
@@ -296,12 +352,17 @@ export function DecisionMapPage() {
 
   const projectScope = react.useMemo(() => {
     const entries = graph?.nodes ?? [];
-    return views.getScope(entries, root);
+    return scopeMod.getScope(entries, root);
   }, [graph, root]);
 
   const scope = react.useMemo(() => {
-    return views.getScope(projectScope.nodes, focused);
+    return scopeMod.getScope(projectScope.nodes, focused);
   }, [projectScope.nodes, focused]);
+
+  const projectById = react.useMemo(
+    () => new Map(projectScope.nodes.map((entry) => [entry.id, entry])),
+    [projectScope.nodes],
+  );
 
   const topicSummaries = react.useMemo(
     () => topicView.getTopicSummaryItems(projectScope.nodes),
@@ -342,18 +403,6 @@ export function DecisionMapPage() {
     setMobileSwitcherOpen(false);
   }
 
-  const diagram = react.useMemo(() => {
-    if (size.width === 0 || size.height === 0) return { nodes: [], edges: [] };
-
-    const view = { mode, folds, portrait, ...size };
-    if (scope.path.length > 0) view.mode = 'all';
-    if (look === 'date') return dateMap.getDateLayout(scope.nodes, folds, open, onlyAsk);
-    if (look === 'mind') return layout.getMindLayout(scope.nodes, view, open, direction);
-    if (look === 'radial') return layout.getLayout(scope.nodes, view, open);
-
-    return { nodes: [], edges: [] };
-  }, [scope, mode, folds, portrait, size, open, look, direction, onlyAsk]);
-
   const isCanvas = look === 'date' || look === 'mind' || look === 'radial';
   const totalProjectPending = projectScope.nodes.filter(
     (node) => node.kind === 'pending' && node.status === 'open',
@@ -365,12 +414,8 @@ export function DecisionMapPage() {
   const pending = activePendingSource.filter((node) => node.kind === 'pending' && node.status === 'open');
   const selected = projectScope.nodes.find((node) => node.id === nodeId);
   const overviewRoot = scope.nodes.find((node) => node.parent === null);
-  let fit = FIT;
-  if (portrait) {
-    fit = FIT_MOBILE;
-  }
 
-  function changeMode(next: layout.ViewMode): void {
+  function changeMode(next: scopeMod.ViewMode): void {
     if (mode === next) return;
 
     close();
@@ -405,7 +450,7 @@ export function DecisionMapPage() {
     changeLook('mind');
   }
 
-  function changeDirection(next: layout.MindDirection): void {
+  function changeDirection(next: scopeMod.MindDirection): void {
     if (direction === next) return;
 
     writeStored(DIRECTION_KEY, next);
@@ -467,22 +512,10 @@ export function DecisionMapPage() {
       return;
     }
 
-    const map = flow.current;
-    const target = diagram.nodes.find((node) => node.id === next.id);
-    if (map === undefined || target === undefined) return;
-
-    const zoom = Math.max(1.08, map.getZoom());
-    let y = target.position.y;
-    if (portrait) y += size.height * 0.28 / zoom;
-    let duration = 480;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) duration = 0;
-    const camera = { zoom, duration };
-    void map.setCenter(target.position.x, y, camera);
+    //M 在导图/日期/放射画布中通过递增序号通知懒加载画布将镜头聚焦到目标待定卡片。
+    cameraSeqRef.current += 1;
+    setCameraRequest({ nodeId: next.id, seq: cameraSeqRef.current });
   }
-
-  const connect = react.useCallback((map: xyflow.ReactFlowInstance<layout.FlowNode>) => {
-    flow.current = map;
-  }, []);
 
   async function chooseOptionForNode(targetId: string, option: string): Promise<void> {
     if (savingKey !== undefined) return;
@@ -601,14 +634,27 @@ export function DecisionMapPage() {
       {!isMobile && (
         <header className="decision-bar">
           <div className="decision-bar__title">
-            <a href={token.withToken('/', token.TOKEN)} className="decision-back" aria-label="返回 jmbots" title="返回 jmbots">‹</a>
+            <a
+              href={token.withToken('/', token.TOKEN)}
+              className="decision-back"
+              aria-label="返回 jmbots"
+              title="返回 jmbots"
+            >
+              ‹
+            </a>
             <h1>{canvasLabel}</h1>
           </div>
           {(look === 'mind' || look === 'radial') && scope.path.length === 0 && (
             <div className="decision-filters" role="group" aria-label="画布显示范围">
-              <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>当前进展</button>
-              <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>只看待定</button>
-              <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>全部分支</button>
+              <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>
+                当前进展
+              </button>
+              <button type="button" aria-pressed={mode === 'pending'} onClick={() => changeMode('pending')}>
+                只看待定
+              </button>
+              <button type="button" aria-pressed={mode === 'all'} onClick={() => changeMode('all')}>
+                全部分支
+              </button>
             </div>
           )}
           {look === 'date' && (
@@ -1114,124 +1160,76 @@ export function DecisionMapPage() {
           <section className="decision-canvas decision-canvas--quadrant" aria-label={canvasLabel} data-look={look}>
             {graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
             {graph !== undefined && (
-              <quadrantView.QuadrantView
-                nodes={projectScope.nodes}
-                isMobile={isMobile}
-                selectedNodeId={nodeId}
-                onSelectNode={setNodeId}
-                onChooseOption={chooseOptionForNode}
-                onSendNote={sendNoteForNode}
-                savingKey={savingKey}
-                actionError={chooseError}
-                sending={sending}
-                noteError={noteError}
-                onRefresh={() => refresh()}
-                onExpand={(id) => open(id, true)}
-                onFocusTree={(id) => {
-                  focusTree(id);
-                  changeLook('mind');
-                }}
-                onOpenNodeTopic={openNodeTopic}
-              />
+              <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载四象限矩阵…')}</div>}>
+                <LazyQuadrantView
+                  nodes={projectScope.nodes}
+                  isMobile={isMobile}
+                  selectedNodeId={nodeId}
+                  onSelectNode={setNodeId}
+                  onChooseOption={chooseOptionForNode}
+                  onSendNote={sendNoteForNode}
+                  savingKey={savingKey}
+                  actionError={chooseError}
+                  sending={sending}
+                  noteError={noteError}
+                  onRefresh={() => refresh()}
+                  onExpand={(id) => open(id, true)}
+                  onFocusTree={(id) => {
+                    focusTree(id);
+                    changeLook('mind');
+                  }}
+                  onOpenNodeTopic={openNodeTopic}
+                />
+              </react.Suspense>
             )}
           </section>
         )}
 
         {look !== 'topic' && look !== 'quadrant' && (
           <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
-            {isMobile && look === 'mind' && diagram.nodes.length > 0 && (
-              <div className="decision-m-mind-bar" role="toolbar" aria-label={t('导图操控')}>
-                <button
-                  type="button"
-                  aria-pressed={direction === 'sides'}
-                  onClick={() => changeDirection('sides')}
-                >
-                  {t('左右')}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={direction === 'down'}
-                  onClick={() => changeDirection('down')}
-                >
-                  {t('上下')}
-                </button>
-                <span className="decision-m-mind-bar__sep" />
-                <button
-                  type="button"
-                  aria-pressed={mode === 'main'}
-                  onClick={() => changeMode('main')}
-                >
-                  {t('主线')}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={mode === 'pending'}
-                  onClick={() => changeMode('pending')}
-                >
-                  {t('待定')}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={mode === 'all'}
-                  onClick={() => changeMode('all')}
-                >
-                  {t('全图')}
-                </button>
-              </div>
+            {isCanvas && graph === undefined && (
+              <div className="decision-empty" role="status">{empty}</div>
             )}
-            {isCanvas && diagram.nodes.length > 0 && (
-              <xyflow.ReactFlow<layout.FlowNode>
-                key={`${root ?? ''}-${look}-${direction}-${mode}-${onlyAsk}-${size.width}x${size.height}-${focused ?? ''}`}
-                nodes={diagram.nodes}
-                edges={diagram.edges}
-                nodeTypes={NODE_TYPES}
-                nodeOrigin={ORIGIN}
-                nodesDraggable={false}
-                nodesConnectable={false}
-                edgesFocusable={false}
-                panOnDrag
-                zoomOnPinch
-                fitView
-                fitViewOptions={fit}
-                minZoom={0.22}
-                maxZoom={2}
-                className="dark"
-                onInit={connect}
-                onPaneClick={close}
-              >
-                <xyflow.Background gap={26} size={1.2} color="#303a50" />
-                <xyflow.Controls position="bottom-right" showInteractive={false} fitViewOptions={fit} />
-              </xyflow.ReactFlow>
+            {isCanvas && graph !== undefined && (
+              <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在准备导图画布…')}</div>}>
+                <LazyFlowCanvas
+                  root={root}
+                  focused={focused}
+                  look={look as CanvasLook}
+                  mode={mode}
+                  direction={direction}
+                  onlyAsk={onlyAsk}
+                  isMobile={isMobile}
+                  portrait={portrait}
+                  size={size}
+                  scopeNodes={scope.nodes}
+                  hasScopePath={scope.path.length > 0}
+                  folds={folds}
+                  emptyText={empty}
+                  cameraRequest={cameraRequest}
+                  onOpen={open}
+                  onClose={close}
+                  onChangeDirection={changeDirection}
+                  onChangeMode={changeMode}
+                />
+              </react.Suspense>
             )}
-            {isCanvas && diagram.nodes.length === 0 && <div className="decision-empty" role="status">{empty}</div>}
             {!isCanvas && graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
             {look === 'table' && graph !== undefined && (
-              <views.TableView nodes={scope.nodes} selected={nodeId} open={open} />
+              <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载表格…')}</div>}>
+                <LazyTableView nodes={scope.nodes} selected={nodeId} open={open} />
+              </react.Suspense>
             )}
             {look === 'list' && graph !== undefined && (
-              <views.ListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
-            )}
-            {look === 'date' && diagram.nodes.length > 0 && (
-              <ul className="decision-legend" aria-label="图例">
-                <li><i data-tone="pending" />{t('等用户定')}</li>
-                <li><i data-tone="confirmed" />{t('中控已定')}</li>
-                <li><i data-tone="chosen" />{t('用户已定')}</li>
-                <li><i data-tone="done" />{t('做完')}</li>
-              </ul>
-            )}
-            {(look === 'mind' || look === 'radial') && diagram.nodes.length > 0 && (
-              <ul className="decision-legend" aria-label="图例">
-                <li><i data-tone="main" />主线</li>
-                <li><i data-tone="pending" />待定</li>
-                <li><i data-tone="working" />进行中</li>
-                <li><i data-tone="confirmed" />中控已定</li>
-                <li><i data-tone="chosen" />用户已定</li>
-              </ul>
+              <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载清单…')}</div>}>
+                <LazyListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
+              </react.Suspense>
             )}
             {selected !== undefined && (
               <drawer.Drawer
                 key={selected.id}
                 node={selected}
+                byId={projectById}
                 saving={drawerSaving}
                 error={chooseError}
                 close={close}

@@ -11,7 +11,15 @@ import { useEffect, useState, type JSX } from 'react';
 import * as i18n from '../I18n.ts';
 import * as traceText from '../locales/Trace.ts';
 import { JsonBlock, SiteLink } from './Code.tsx';
-import { TutorialApi, type Canvas, type EventCatalogItem, type EventSite, type Trail, type TrailRow, type TrailStep } from './TutorialApi.ts';
+import {
+  TutorialApi,
+  type Canvas,
+  type EventCatalogItem,
+  type EventSite,
+  type Trail,
+  type TrailRow,
+  type TrailStep,
+} from './TutorialApi.ts';
 import type { CanvasLayout } from './LaneChart.tsx';
 
 /** 每道多宽，像素。 */
@@ -131,7 +139,15 @@ export function getSeqLayout(trail: Trail, t: i18n.Translate): SeqLayout {
       const targets = row.listeners.filter((name) => name !== step.node).map((name) => lanes.indexOf(name));
       if (targets.length === 0) targets.push(lane);
       targets.forEach((to, index) => {
-        arrows.push({ step: step.no, event: row.name, from: lane, to, y: y + ARROW_H - 6, label: index === 0, error: row.error });
+        arrows.push({
+          step: step.no,
+          event: row.name,
+          from: lane,
+          to,
+          y: y + ARROW_H - 6,
+          label: index === 0,
+          error: row.error,
+        });
       });
       y += ARROW_H;
     }
@@ -174,7 +190,15 @@ export function SeqChart(props: {
   return (
     <svg className="tu-seq" width={layout.width} height={layout.total}>
       <defs>
-        <marker id="tu-seq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <marker
+          id="tu-seq-arrow"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto-start-reverse"
+        >
           <path d="M 0 0 L 10 5 L 0 10 z" />
         </marker>
       </defs>
@@ -242,7 +266,14 @@ export function SeqChart(props: {
           >
             <title>{arrow.event}</title>
             <line className="tu-seq-hit" x1={fromX} y1={arrow.y} x2={toX} y2={arrow.y} />
-            <line className="tu-seq-line" x1={fromX} y1={arrow.y} x2={toX} y2={arrow.y} markerEnd="url(#tu-seq-arrow)" />
+            <line
+              className="tu-seq-line"
+              x1={fromX}
+              y1={arrow.y}
+              x2={toX}
+              y2={arrow.y}
+              markerEnd="url(#tu-seq-arrow)"
+            />
             {arrow.label && <text x={labelX} y={arrow.y - 4} textAnchor={anchor}>{cut(arrow.event)}</text>}
           </g>
         );
@@ -269,7 +300,9 @@ export function SeqChart(props: {
           >
             <title>{`#${String(block.step)} ${block.text}`}</title>
             <rect x={x} y={block.y} width={BLOCK_W} height={BLOCK_H} rx={5} />
-            <text x={x + 8} y={block.y + BLOCK_H / 2} dominantBaseline="middle">{cut(`${String(block.step)} ${block.text}`)}</text>
+            <text x={x + 8} y={block.y + BLOCK_H / 2} dominantBaseline="middle">
+              {cut(`${String(block.step)} ${block.text}`)}
+            </text>
           </g>
         );
       })}
@@ -285,18 +318,32 @@ let catalogLoading: Promise<EventCatalogItem[]> | null = null;
 function loadCatalog(): Promise<EventCatalogItem[]> {
   if (catalogLoading !== null) return catalogLoading;
 
-  catalogLoading = TutorialApi.get<{ events: EventCatalogItem[] }>('/api/tutorial/events').then((body) => body.events, () => []);
+  catalogLoading = TutorialApi.get<{ events: EventCatalogItem[] }>('/api/tutorial/events').then(
+    (body) => body.events,
+    () => [],
+  );
   return catalogLoading;
 }
 
 
 /** 发或听的一处：插件、函数、文件:行（点开 VS Code）。 */
-function SiteItem(props: { item: EventSite; workspace: string; pluginNames: Set<string>; onSelectPlugin: (name: string, ptab?: string) => void }): JSX.Element {
+function SiteItem(props: {
+  item: EventSite;
+  workspace: string;
+  pluginNames: Set<string>;
+  onSelectPlugin: (name: string, ptab?: string) => void;
+}): JSX.Element {
   const { item } = props;
   return (
     <li>
       {props.pluginNames.has(item.plugin) && (
-        <button type="button" className="tu-dep-tag clickable" onClick={() => props.onSelectPlugin(item.plugin, 'events')}>{item.plugin}</button>
+        <button
+          type="button"
+          className="tu-dep-tag clickable"
+          onClick={() => props.onSelectPlugin(item.plugin, 'events')}
+        >
+          {item.plugin}
+        </button>
       )}
       {!props.pluginNames.has(item.plugin) && <span className="tu-dep-tag skeleton">{item.plugin}</span>}
       {' '}
@@ -356,14 +403,26 @@ export function EventArrowDetail(props: {
           {item.senders.length === 0 && <p className="tu-muted">没人发</p>}
           <ul>
             {item.senders.map((site) => (
-              <SiteItem key={site.site} item={site} workspace={props.workspace} pluginNames={props.pluginNames} onSelectPlugin={props.onSelectPlugin} />
+              <SiteItem
+                key={site.site}
+                item={site}
+                workspace={props.workspace}
+                pluginNames={props.pluginNames}
+                onSelectPlugin={props.onSelectPlugin}
+              />
             ))}
           </ul>
           <h5>谁听</h5>
           {item.listeners.length === 0 && <p className="tu-muted">没人听</p>}
           <ul>
             {item.listeners.map((site) => (
-              <SiteItem key={site.site} item={site} workspace={props.workspace} pluginNames={props.pluginNames} onSelectPlugin={props.onSelectPlugin} />
+              <SiteItem
+                key={site.site}
+                item={site}
+                workspace={props.workspace}
+                pluginNames={props.pluginNames}
+                onSelectPlugin={props.onSelectPlugin}
+              />
             ))}
           </ul>
           <h5>数据的 TS 类型</h5>
@@ -396,96 +455,4 @@ export function EventArrowDetail(props: {
 }
 
 
-/** 静态路线的一站：谁做、做什么、涉及的事件。事件名按当前代码；主路线3 落地后再改。 */
-export interface RouteStop {
-  title: string;
-  plugins: string[];
-  events: string[];
-}
-
-
-/** 一条飞书消息怎么走（当前代码），没跑过消息也能看。 */
-export const FEISHU_ROUTE: RouteStop[] = [
-  {
-    title: 'WebSocket 收到，按消息号去重（feishu/index.ts:578、Inbound.ts:169）',
-    plugins: ['feishu'],
-    events: [],
-  },
-  {
-    title: '下载附件、写原件 JSONL（Inbound.ts:247、:251）',
-    plugins: ['feishu'],
-    events: [],
-  },
-  {
-    title: '经 emitInbound 一条只发一个：私聊 direct、群里叫了 mention、没叫 listen（Inbound.ts:734）',
-    plugins: ['feishu', 'channels'],
-    events: ['channel/direct', 'channel/mention', 'channel/listen'],
-  },
-  {
-    title: '各插件按需听：记进库、收件表、看批复（只看前两个）（memory/ChannelIndex.ts:621 等）',
-    plugins: ['memory', 'web-api', 'approval'],
-    events: [],
-  },
-  {
-    title: '认出哪个机器人接，relay 可抢走；只听的先判断（bots/index.ts:552、DispatchClaim.ts:77）',
-    plugins: ['bots', 'relay'],
-    events: ['bot/receive'],
-  },
-  {
-    title: '排进前台单队列，轮到就开跑（bots/DispatchResults.ts:854）',
-    plugins: ['bots'],
-    events: [],
-  },
-  {
-    title: '会话循环四个关口（Sessions.ts:812、:843、:768，Tools.ts:187）',
-    plugins: [],
-    events: ['session/before-model', 'session/after-model', 'session/before-tool', 'session/after-tool'],
-  },
-  {
-    title: '模型调 channel_reply，发回复请求等回执（bots/ChannelTools.ts:292、channels/Reply.ts:213）',
-    plugins: ['bots', 'channels'],
-    events: ['channel/reply'],
-  },
-  {
-    title: '飞书发出去，回带原请求的回执（feishu/Reply.ts:65、:144、:201）',
-    plugins: ['feishu', 'channels'],
-    events: ['channel/replied'],
-  },
-  {
-    title: '会话完；一次没回的：飞书再跑一轮，网页把最后一句发出（DispatchResults.ts:542、:550）',
-    plugins: ['bots'],
-    events: ['session/change'],
-  },
-  {
-    title: '这一轮完了，接着推下一条（bots/DispatchResults.ts:707）',
-    plugins: ['bots'],
-    events: ['bot/settled'],
-  },
-];
-
-
-/**
- * 左栏路线的一站。
- * @param props.index 第几站，从 0 起。
- * @param props.stop 这一站。
- * @param props.pluginNames 全部已知插件名，是插件的标签能点。
- * @param props.onSelectPlugin 点插件在右栏看。
- */
-export function RouteStopItem(props: { index: number; stop: RouteStop; pluginNames: Set<string>; onSelectPlugin: (name: string, ptab?: string) => void }): JSX.Element {
-  const { stop } = props;
-  return (
-    <div className="tu-route-stop">
-      <div><b>{props.index + 1}</b> {stop.title}</div>
-      <div className="tu-route-tags">
-        {stop.plugins.map((plugin) => {
-          if (!props.pluginNames.has(plugin)) return <span key={plugin} className="tu-dep-tag skeleton">{plugin}</span>;
-
-          return <button key={plugin} type="button" className="tu-dep-tag clickable" onClick={() => props.onSelectPlugin(plugin, 'events')}>{plugin}</button>;
-        })}
-        {stop.events.map((event) => (
-          <code key={event} className="tu-route-event">{event}</code>
-        ))}
-      </div>
-    </div>
-  );
-}
+export { FEISHU_ROUTE, RouteStopItem, type RouteStop } from './TutorialContext.tsx';

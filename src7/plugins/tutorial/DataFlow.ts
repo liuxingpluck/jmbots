@@ -1266,6 +1266,14 @@ function mergeStepFacts(rows: TrailRow[]): Record<string, string | number | bool
 }
 
 
+/** 仅读取对象自身属性，防止 constructor / toString 等原型链键污染说明文本。 */
+function lookupOwnNote(notes: Record<string, string>, key: string): string | undefined {
+  if (Object.hasOwn(notes, key)) return notes[key];
+
+  return undefined;
+}
+
+
 /** 将合并后的实测 facts 转为带中文说明的 DataField 数组。 */
 function buildFactInputs(
   facts: Record<string, string | number | boolean>,
@@ -1273,7 +1281,7 @@ function buildFactInputs(
 ): DataField[] {
   const fields: DataField[] = [];
   for (const [key, value] of Object.entries(facts)) {
-    const note = FACT_NOTES[key] ?? trailNotes[key] ?? key;
+    const note = lookupOwnNote(FACT_NOTES, key) ?? lookupOwnNote(trailNotes, key) ?? key;
     fields.push({
       key,
       value: String(value),

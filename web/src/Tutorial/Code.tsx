@@ -5,12 +5,12 @@
  *   CallerList    “谁调它”：每处调用的位置、为什么调、那一行代码；
  *   VsCodeOpen    在 VS Code 里打开这一行。
  */
-import { createContext, useContext, useEffect, useState, type CSSProperties, type JSX, type ReactNode } from 'react';
+import { useContext, useEffect, useState, type CSSProperties, type JSX, type ReactNode } from 'react';
 import JsonView from '@uiw/react-json-view';
 import { darkTheme } from '@uiw/react-json-view/dark';
 import { lightTheme } from '@uiw/react-json-view/light';
 import * as virtuoso from 'react-virtuoso';
-import * as theme from '../Theme.ts';
+import * as theme from '../ThemePalette.ts';
 import {
   SiteLink,
   TutorialWorkspaceContext,
@@ -19,26 +19,29 @@ import {
   getVscodeHref,
 } from '../VscodeLink.tsx';
 import { TutorialApi, type FunctionSource } from './TutorialApi.ts';
+import {
+  CODE_VIRTUAL_LINES,
+  PATH_SEP,
+  TutorialScrollContext,
+  VIRTUAL_THRESHOLD,
+} from './TutorialContext.tsx';
 
 
-export { SiteLink, TutorialWorkspaceContext, VsCodeOpen, getSiteParts, getVscodeHref };
+export {
+  CODE_VIRTUAL_LINES,
+  PATH_SEP,
+  SiteLink,
+  TutorialScrollContext,
+  TutorialWorkspaceContext,
+  VIRTUAL_THRESHOLD,
+  VsCodeOpen,
+  getSiteParts,
+  getVscodeHref,
+};
 
 
 /** 单条函数调用处（与 FunctionSource.callers 项一致）。 */
 type FunctionCaller = FunctionSource['callers'][number];
-
-
-/** 变了的地方拼成一个键：一串键名用这个字连起来（键名里不会有它）。 */
-export const PATH_SEP = '\u001f';
-
-/** 右栏独立滚动容器 Context：内部长列表借它做 react-virtuoso 虚拟滚动，不另起嵌套滚动框。 */
-export const TutorialScrollContext = createContext<HTMLElement | null>(null);
-
-/** 超过或达到这个条数时，长列表改用虚拟滚动；短列表保持普通渲染。 */
-export const VIRTUAL_THRESHOLD = 30;
-
-/** 一个函数的源码达到这个行数时，逐行改用虚拟滚动；少于它保持普通渲染。 */
-export const CODE_VIRTUAL_LINES = 200;
 
 /**
  * 按当前主题挑 JSON 树的配色，底色透明（用外面 .tu-json 的底）。
@@ -102,7 +105,13 @@ function getKeyPath(keys: readonly (string | number)[] | undefined, keyName: str
  * @param props.marks 变了的路径（一串键名用 PATH_SEP 连起来）；不给就不标。
  * @param props.notes 键的中文解释。
  */
-export function JsonBlock(props: { head: ReactNode; value: unknown; empty: string; marks?: Set<string>; notes?: Record<string, string> }): JSX.Element {
+export function JsonBlock(props: {
+  head: ReactNode;
+  value: unknown;
+  empty: string;
+  marks?: Set<string>;
+  notes?: Record<string, string>;
+}): JSX.Element {
   const { value } = props;
   const [copied, setCopied] = useState('复制全部');
   let json = '';
@@ -376,7 +385,10 @@ export function SourceView(props: { file: string; line: number }): JSX.Element {
     <div className="tu-code-box">
       <div className="tu-head-row">
         <span className="tu-muted tu-site">
-          <SiteLink site={`${source.file}:${String(source.start)}`} label={`${source.file}:${String(source.start)}–${String(source.end)}`} />
+          <SiteLink
+            site={`${source.file}:${String(source.start)}`}
+            label={`${source.file}:${String(source.start)}–${String(source.end)}`}
+          />
           {source.cut && '（没找到函数结尾，只给了这几行）'}
         </span>
         <button

@@ -12,48 +12,71 @@
  *   5. 浏览器前进/后退/刷新通过 history.pushState + popstate 保持原地（canvas / step / plugin / ptab / event / rtab / util / page）。
  */
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type JSX,
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from 'react';
-import * as antd from 'antd';
+import { ConfigProvider, Empty, Input, Spin, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import * as virtuoso from 'react-virtuoso';
-import * as i18n from '../I18n.ts';
 import * as theme from '../Theme.ts';
 import { TOKEN, withToken } from '../Token.ts';
+import { TutorialWorkspaceContext } from '../VscodeLink.tsx';
 import * as authGate from '../components/AuthGate.tsx';
-import * as traceText from '../locales/Trace.ts';
-import { JsonBlock, TutorialScrollContext, TutorialWorkspaceContext, VIRTUAL_THRESHOLD } from './Code.tsx';
-import { SeqChart, RouteStopItem, FEISHU_ROUTE, getSeqLayout } from './SeqChart.tsx';
-import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
-import { CodeTab, TryTab } from './PluginTabs.tsx';
-import { buildReadmeTabItems, MarkdownContent } from './ReadmeTabs.tsx';
-import * as mind from './MindMap.tsx';
-import * as programView from './ProgramView.tsx';
-import { StepDataFlowPanel, findStepFlow, resolveTrailDataFlow } from './StepDataFlow.tsx';
 import type * as mindData from './MindData.ts';
+import * as mind from './MindState.ts';
+import * as programView from './ProgramState.ts';
+import { StepDataFlowPanel, findStepFlow, resolveTrailDataFlow } from './StepDataFlow.tsx';
 import {
   TutorialApi,
-  type Canvas,
   type CanvasList,
   type MessageCanvasItem,
   type PluginItem,
   type PluginList,
   type ProgramItem,
-  type StateGroup,
   type Trail,
   type TrailDataFlow,
-  type TrailStep,
 } from './TutorialApi.ts';
+import {
+  FEISHU_ROUTE,
+  RouteStopItem,
+  STATE_WORDS,
+  TutorialScrollContext,
+  clamp,
+  getChannelLabel,
+  getMatchedSteps,
+  type NarrowTraceMode,
+} from './TutorialContext.tsx';
 
-/** 窄屏轨迹看法：默认纵向步骤流，保留泳道全景与顺序图一键切换。 */
-type NarrowTraceMode = 'steps' | 'lanes' | 'seq';
+
+//M 将重画布舞台、@xyflow/react 思维导图、Markdown 拆段及 JSON 树按需拆入独立 chunk，首屏深底平滑过渡。
+const LazyCanvasStage = lazy(() => import('./CanvasStage.tsx').then((m) => ({ default: m.CanvasStage })));
+const LazyMindMap = lazy(() => import('./MindMap.tsx').then((m) => ({ default: m.TutorialMindMap })));
+const LazyStepDetail = lazy(() => import('./LaneChart.tsx').then((m) => ({ default: m.StepDetail })));
+const LazyReadingView = lazy(() => import('./TutorialDocViews.tsx').then((m) => ({ default: m.ReadingView })));
+const LazyPluginView = lazy(() => import('./TutorialDocViews.tsx').then((m) => ({ default: m.PluginView })));
+const LazyProgramView = lazy(() => import('./ProgramView.tsx').then((m) => ({ default: m.ProgramView })));
+
+
+/** 画布与导图按需 chunk 加载期间的深色静音占位。 */
+function StageChunkFallback(): JSX.Element {
+  return (
+    <div className="tu-stage">
+      <div className="tu-stage-center"><Spin /></div>
+    </div>
+  );
+}
+
+
+/** 右侧详情、组块阅读或插件说明 chunk 加载期间的静音占位。 */
+function PaneChunkFallback(): JSX.Element {
+  return <div style={{ padding: '20px 0' }}><Spin /></div>;
+}
 
 
 /** 地址栏里记住的当前位置。 */
@@ -126,26 +149,6 @@ const LEFT_LIST_COMPONENTS = {
   Footer: LeftListFooter,
 };
 
-/** 底层画布平移缩放状态（桌面模式用 CSS transform）。 */
-interface CanvasTransform {
-  tx: number;
-  ty: number;
-  scale: number;
-}
-
-/** 画布中间未被左右浮栏遮挡的安全可视区域，单位像素。 */
-interface SafeViewport {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-  width: number;
-  height: number;
-}
-
-
-/** 默认和极值常量。 */
-const STATE_MS = 3000;
 /** 三栏时右侧详情拖过的宽度；没拖过不存，默认取去掉左栏后剩余宽度的一半。 */
 const DETAIL_WIDTH_KEY = 'jm.tutorial.detailWidth';
 const LEFT_WIDTH_KEY = 'jm.tutorial.leftWidth';
@@ -158,36 +161,8 @@ const MIN_LEFT_WIDTH = 220;
 const MIN_PANE_WIDTH = 300;
 const MAX_SIDE_RATIO = 0.45;
 const NARROW_BREAKPOINT = 800;
-const MIN_SCALE = 0.2;
-const MAX_SCALE = 2.5;
 const SENTINEL_AUTO = '__AUTO__';
 const SENTINEL_FIRST = '__FIRST__';
-
-/** 插件状态 → 一句话说明。 */
-const STATE_WORDS: Record<string, string> = {
-  missing: '找不到插件',
-  mounting: '正在挂载',
-  ok: '挂上了',
-  failed: '没挂上',
-  waiting: '挂了但缺服务，没开工',
-  idle: '配置里没挂',
-};
-
-/** 渠道英文代号 → 左栏显示中文短标签。 */
-const CHANNEL_LABELS: Record<string, string> = {
-  feishu: '飞书',
-  http: '网页',
-  wechat: '微信',
-  cli: '命令行',
-};
-
-
-/**
- * 把数值夹在 [min, max] 之间。
- */
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
 
 
 /**
@@ -276,78 +251,6 @@ function saveStored(key: string, value: string): void {
   } catch {
     //G 无痕或存储满时忽略，不影响页面交互。
   }
-}
-
-
-/**
- * 算出当前画布中间未被左右浮栏遮挡的安全区域边界。
- * @param stageW 画布舞台宽。
- * @param stageH 画布舞台高。
- * @param leftOpen 左栏是否展开。
- * @param leftW 左栏当前宽。
- * @param rightOpen 右栏是否展开。
- * @param rightW 右栏当前宽。
- */
-function getSafeViewport(
-  stageW: number,
-  stageH: number,
-  leftOpen: boolean,
-  leftW: number,
-  rightOpen: boolean,
-  rightW: number,
-): SafeViewport {
-  let left = 92;
-  if (leftOpen) {
-    left = leftW + 24;
-  }
-  let right = stageW - 92;
-  if (rightOpen) {
-    right = stageW - rightW - 24;
-  }
-  const safeRight = Math.max(left + 180, right);
-  const top = 56;
-  const bottom = Math.max(top + 120, stageH - 54);
-  return {
-    left,
-    top,
-    right: safeRight,
-    bottom,
-    width: Math.max(180, safeRight - left),
-    height: Math.max(120, bottom - top),
-  };
-}
-
-
-/**
- * 算出让整张泳道图自适应放进中间安全可视区的平移与缩放。
- * @param layout 泳道图总尺寸。
- * @param safe 中间不被遮挡的矩形区域。
- */
-function getFitTransform(layout: CanvasLayout, safe: SafeViewport): CanvasTransform {
-  const pad = 16;
-  const availW = Math.max(120, safe.width - pad * 2);
-  const availH = Math.max(100, safe.height - pad * 2);
-  const scaleX = availW / Math.max(1, layout.width);
-  const scaleY = availH / Math.max(1, layout.total);
-  //M 用宽高里能容纳全图的一项，并允许小图在正常缩放范围内放大。
-  const fitted = Math.min(scaleX, scaleY);
-  const scale = clamp(fitted, MIN_SCALE, MAX_SCALE);
-  const drawnW = layout.width * scale;
-  const drawnH = layout.total * scale;
-  const tx = Math.round(safe.left + Math.max(pad, (safe.width - drawnW) / 2));
-  const ty = Math.round(safe.top + Math.max(8, (safe.height - drawnH) / 2));
-  return { tx, ty, scale };
-}
-
-
-/**
- * 渠道代号转短中文徽标文本（未知代号原样显示）。
- * @param channel 渠道英文代号。
- */
-function getChannelLabel(channel?: string): string {
-  if (channel === undefined || channel === '') return '';
-
-  return CHANNEL_LABELS[channel] ?? channel;
 }
 
 
@@ -473,24 +376,6 @@ function buildRouteUrl(route: RouteState): string {
 
 
 /**
- * 算出某个事件在当前轨迹里出现的全部步骤号（去重升序）。
- * @param trail 当前画布轨迹。
- * @param eventName 事件名。
- */
-function getMatchedSteps(trail: Trail | null, eventName: string): number[] {
-  if (trail === null || eventName === '') return [];
-
-  const matched: number[] = [];
-  for (const step of trail.steps) {
-    if (step.rows.some((row) => row.name === eventName)) {
-      matched.push(step.no);
-    }
-  }
-  return matched;
-}
-
-
-/**
  * 毫秒时间戳 → 月-日 时:分。
  * @param at 毫秒时间戳。
  */
@@ -517,1051 +402,10 @@ function getMessageTitle(item: MessageCanvasItem): string {
 }
 
 
-/**
- * 读某个插件的 说明.md 原文。
- * @param name 插件名。
- */
-function usePluginReadme(name: string): { text: string | null; error: string } {
-  const [text, setText] = useState<string | null>(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    setText(null);
-    setError('');
-    //M 按插件名即时抓取 说明.md 原文用于右栏分栏渲染。
-    const loading = TutorialApi.get<{ text: string }>(`/api/tutorial/readme?name=${encodeURIComponent(name)}`);
-    loading.then((result) => setText(result.text), (failed: unknown) => setError((failed as Error).message));
-  }, [name]);
-
-  return { text, error };
-}
-
-
-/** 读取并展示一篇组块或骨架工具说明，切换时由文件名重建组件。 */
-function ReadingView(props: {
-  name: string; loadingLabel: string; errorLabel: string; util?: boolean; onHashLink?: (href: string) => void;
-}): JSX.Element {
-  const { name } = props;
-  const [text, setText] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    //M 右栏只读所选文档，跳走后忽略未完成的请求。
-    let load = TutorialApi.getReading;
-    if (props.util) load = TutorialApi.getUtilReadme;
-    let file = name;
-    if (name.startsWith('cordis/')) {
-      load = TutorialApi.getCordisReading;
-      file = name.slice('cordis/'.length);
-    }
-    //M 文档名已选好，按所属目录读取。
-    const loading = load(file);
-    void loading.then((result) => {
-      if (!active) return;
-
-      setText(result.text);
-    }, () => {
-      if (!active) return;
-
-      setFailed(true);
-    });
-    return () => {
-      active = false;
-    };
-  }, [name, props.util]);
-
-  if (failed) return <p className="tu-error" role="alert">{props.errorLabel}</p>;
-
-  if (text === null) return <antd.Spin aria-label={props.loadingLabel} />;
-
-  //G 只有 Cordis 用法接管站内链接；组块阅读保持原来的链接行为。
-  let onHashLink: ((href: string) => void) | undefined;
-  if (name.startsWith('cordis/')) onHashLink = props.onHashLink;
-
-  //M 复用插件说明页签的 Markdown、代码和表格渲染。
-  return <article className="tu-doc"><MarkdownContent body={text} onHashLink={onHashLink} /></article>;
-}
-
-
-/**
- * 一组运行时状态的折叠块，PluginState 在常规和虚拟滚动模式下共用。
- * @param props.group 状态组。
- */
-function PluginStateGroup(props: { group: StateGroup }): JSX.Element {
-  const { group } = props;
-  return (
-    <details className="tu-state-group" open>
-      <summary>{group.name}</summary>
-      <JsonBlock
-        head={<span className="tu-muted">{group.note}</span>}
-        value={group.value}
-        empty="（空）"
-        notes={group.notes}
-      />
-    </details>
-  );
-}
-
-
-/**
- * 插件的「状态」：它提供的服务对象、它用 ctx.flow.state 登记的，全量原样；每 STATE_MS 刷新一次，能暂停；组数 >= 30 时开启虚拟滚动。
- * @param props.name 插件名。
- */
-function PluginState(props: { name: string }): JSX.Element {
-  const [groups, setGroups] = useState<StateGroup[] | null>(null);
-  const [at, setAt] = useState(0);
-  const [error, setError] = useState('');
-  const [paused, setPaused] = useState(false);
-  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
-
-  //M 换了插件：清掉上一个的。
-  useEffect(() => {
-    setGroups(null);
-    setAt(0);
-  }, [props.name]);
-
-  //M 没暂停就定时读。
-  useEffect(() => {
-    if (paused) return undefined;
-
-    let alive = true;
-    const load = (): void => {
-      //M 现拉该插件服务对象及登记状态变量快照，实现状态面板实时刷新。
-      const url = `/api/tutorial/state?name=${encodeURIComponent(props.name)}`;
-      const loading = TutorialApi.get<{ at: number; groups: StateGroup[] }>(url);
-      loading.then((result) => {
-        if (!alive) return;
-
-        setGroups(result.groups);
-        setAt(result.at);
-        setError('');
-      }, (failed: unknown) => {
-        if (alive) {
-          setError((failed as Error).message);
-        }
-      });
-    };
-    //M 组件挂载后立即首刷一次状态，再由定时器按固定频率周期轮询。
-    load();
-    const timer = window.setInterval(load, STATE_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [paused, props.name]);
-
-  //M 顶上一行：什么时候读的、刷新还是暂停。
-  let said = '正在读…';
-  if (at > 0) {
-    said = `${new Date(at).toLocaleTimeString()} 读的`;
-  }
-  let refresh = `每 ${String(STATE_MS / 1000)} 秒刷新`;
-  if (paused) {
-    refresh = '已暂停';
-  }
-  let button = '暂停';
-  if (paused) {
-    button = '继续刷新';
-  }
-
-  return (
-    <TutorialScrollContext.Consumer>
-      {(ctxScrollParent) => {
-        if (ctxScrollParent !== scrollParent) {
-          queueMicrotask(() => setScrollParent(ctxScrollParent));
-        }
-        const list = groups ?? [];
-        const useVirtual = list.length >= VIRTUAL_THRESHOLD && ctxScrollParent !== null;
-        return (
-          <div className="tu-state">
-            <div className="tu-head-row">
-              <span className="tu-muted">{said} · {refresh}</span>
-              <button type="button" className="tu-link" onClick={() => setPaused(!paused)}>{button}</button>
-            </div>
-            {error !== '' && <p className="tu-error">读不到：{error}</p>}
-            {groups !== null && groups.length === 0 && (
-              <antd.Empty description="这个插件没有提供服务，也没登记运行时变量（用 ctx.flow.state 登记）" />
-            )}
-            {useVirtual && (
-              <virtuoso.Virtuoso
-                customScrollParent={ctxScrollParent}
-                data={list}
-                computeItemKey={(_index, group) => group.name}
-                itemContent={(_index, group) => <PluginStateGroup group={group} />}
-              />
-            )}
-            {!useVirtual && list.map((group) => (
-              <PluginStateGroup key={group.name} group={group} />
-            ))}
-          </div>
-        );
-      }}
-    </TutorialScrollContext.Consumer>
-  );
-}
-
-
-/**
- * 插件详情面板：拆标签说明 + 状态 + 代码 + 试一试；支持可控当前标签、就地展开源码和点击事件高亮画布。
- * @param props.plugin 当前插件。
- * @param props.pluginNames 所有已知插件名。
- * @param props.activeTab 当前选中的插件内子标签 key。
- * @param props.onTabChange 切换子标签（同步地址栏）。
- * @param props.activeEvent 当前画布高亮的事件名。
- * @param props.onSelectEvent 点击事件名高亮画布对应步骤。
- * @param props.onSelectPlugin 点击依赖跳转到另一个插件。
- */
-function PluginView(props: {
-  plugin: PluginItem;
-  pluginNames: Set<string>;
-  activeTab: string;
-  onTabChange: (key: string) => void;
-  activeEvent: string;
-  onSelectEvent: (eventName: string) => void;
-  onSelectPlugin: (name: string) => void;
-}): JSX.Element {
-  const { plugin } = props;
-  //M 插件状态沿用独立教程页的语言偏好。
-  const t = mind.useMindWords();
-  //M 读取选中插件的 说明.md Markdown 文本准备拆分多页签展示。
-  const readme = usePluginReadme(plugin.name);
-  let version = '还没写版本号';
-  if (plugin.version !== '') {
-    version = `v${plugin.version}`;
-  }
-  let inject = '不用别的服务';
-  if (plugin.inject.length > 0) {
-    inject = `要用：${plugin.inject.join('、')}`;
-  }
-
-  //M 说明按 ## 拆成多个标签，再接原来的 状态 / 代码 / 试一试。
-  const readmeTabs = buildReadmeTabItems({
-    plugin,
-    text: readme.text,
-    error: readme.error,
-    pluginNames: props.pluginNames,
-    onSelectPlugin: props.onSelectPlugin,
-    activeEvent: props.activeEvent,
-    onSelectEvent: props.onSelectEvent,
-  });
-  const tabs: NonNullable<antd.TabsProps['items']> = [
-    ...readmeTabs,
-    { key: 'state', label: '状态', children: <PluginState name={plugin.name} /> },
-    { key: 'code', label: '代码', children: <CodeTab name={plugin.name} /> },
-    { key: 'try', label: '试一试', children: <TryTab name={plugin.name} /> },
-  ];
-
-  //M 当 URL 里的子标签在这个插件被禁用或不存在时，安全回退到「概要」。
-  let resolvedTab = props.activeTab;
-  const matched = tabs.find((item) => item.key === resolvedTab && item.disabled !== true);
-  if (matched === undefined) {
-    resolvedTab = 'overview';
-  }
-
-  const stateWord = STATE_WORDS[plugin.state] ?? plugin.state;
-  let stateText = t(stateWord);
-  if (plugin.kind === 'skeleton') {
-    stateText = '骨架常驻';
-  }
-
-  return (
-    <div className="tu-doc tu-plugin-doc">
-      <div className="tu-plugin-meta">
-        <span className="tu-pane-plugin-name">{plugin.name}</span>
-        {plugin.kind === 'skeleton' && <antd.Tag>骨架</antd.Tag>}
-        <antd.Tag className="tu-version">{version}</antd.Tag>
-        <span className="tu-muted">
-          <span className={`tu-dot ${plugin.state}`} /> {stateText} · {inject}
-        </span>
-      </div>
-      {plugin.error !== '' && <antd.Alert type="error" showIcon title={plugin.error} />}
-      <antd.Tabs key={plugin.name} activeKey={resolvedTab} items={tabs} onChange={props.onTabChange} />
-    </div>
-  );
-}
-
-
-/** 把轨迹一步的标题还原为当前语言的自然短句，避免把原始 trace 键名摆上卡片。 */
-function getStepDisplayTitle(step: TrailStep, tr: i18n.Translate): string {
-  let text = step.title;
-  if (traceText.isTraceText(text) || text === '') {
-    text = traceText.getTraceStepTitle(step.rows, (id, params) => i18n.renderTrace(tr, id, params));
-  }
-  if (text === '') return step.node;
-
-  return text;
-}
-
-
-/** 提取一步里发出的不重复事件名（最多 3 个），供窄屏步骤卡片速览。 */
-function getStepEvents(step: TrailStep): string[] {
-  const names: string[] = [];
-  for (const row of step.rows) {
-    if (row.kind !== '事件') continue;
-    if (names.includes(row.name)) continue;
-    names.push(row.name);
-    if (names.length >= 3) break;
-  }
-  return names;
-}
-
-
-/** 格式化一步耗时文本，慢操作（>= 500ms）转秒显示更直观。 */
-function formatStepDuration(ms: number): string {
-  if (ms <= 0) return '<1ms';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${String(ms)}ms`;
-}
-
-
-/** 把轨迹状态英文转成直观中文短标签。 */
-function getTrailStateLabel(state: string): string {
-  if (state === 'done') return '已完成';
-  if (state === 'running') return '处理中';
-  if (state === 'failed') return '出错';
-  if (state === 'stopped') return '已停止';
-  return state;
-}
-
-
 /** 把组块阅读文件名格式化成紧凑的手机顶栏标题（如 09_渠道插件全家桶.md -> 09 · 渠道插件全家桶）。 */
 function formatReadingTitle(name: string): string {
   const bare = name.replace(/^cordis\//u, '').replace(/\.md$/u, '');
   return bare.replace(/^(\d{2})_/u, '$1 · ');
-}
-
-
-/**
- * 底层全视口泳道图舞台：桌面模式下铺满底部、支持拖拽平移与滚轮缩放、自带左上角单行 HUD 与左下角「适应窗口 / 100%」，
- * 窄屏（< 800px）默认使用纵向时间线步骤卡片并支持原地展开详情，同时保留泳道全景与顺序图切换。
- * @param props.name 画布名：boot 或消息号。
- * @param props.step 选中的第几步；0 是没选。
- * @param props.onPick 点了一步。
- * @param props.keyword 快照关键词。
- * @param props.hasSnapshot 会话消息有没有运行时变量快照。
- * @param props.pluginNames 全部已知插件名。
- * @param props.activePlugin 右侧正展示的插件名。
- * @param props.highlightEvent 当前高亮的事件名。
- * @param props.onSelectPlugin 打开指定插件并切右栏页签。
- * @param props.onSelectEvent 点事件名高亮命中步。
- * @param props.onClearEvent 清除事件高亮。
- * @param props.onTrailLoaded 画布加载完交回轨迹供右栏步骤详情使用。
- * @param props.workspace 源码根目录。
- * @param props.leftOpen 左浮栏是否展开。
- * @param props.leftWidth 左浮栏宽度。
- * @param props.rightOpen 右浮栏是否展开。
- * @param props.rightWidth 右浮栏宽度。
- * @param props.isNarrow 是否窄屏模式。
- * @param props.narrowMode 窄屏当前轨迹看法。
- * @param props.onNarrowModeChange 切换窄屏轨迹看法。
- */
-function CanvasStage(props: {
-  name: string;
-  step: number;
-  onPick: (step: number) => void;
-  onPickArrow: (step: number, event: string) => void;
-  keyword: string;
-  hasSnapshot?: boolean;
-  pluginNames: Set<string>;
-  activePlugin: string;
-  highlightEvent: string;
-  onSelectPlugin: (name: string, ptab?: string) => void;
-  onOpenSkeletonLines: (skeletonFile: string) => void;
-  onSelectEvent: (eventName: string) => void;
-  onClearEvent: () => void;
-  onTrailLoaded: (canvasName: string, trail: Trail | null, dataFlow?: TrailDataFlow | null) => void;
-  workspace: string;
-  leftOpen: boolean;
-  leftWidth: number;
-  rightOpen: boolean;
-  rightWidth: number;
-  isNarrow: boolean;
-  narrowMode: NarrowTraceMode;
-  onNarrowModeChange: (mode: NarrowTraceMode) => void;
-}): JSX.Element {
-  const [canvas, setCanvas] = useState<Canvas | null>(null);
-  //M 桌面画布两种看法：表格（泳道）、顺序图。
-  const [look, setLook] = useState<'table' | 'seq'>('table');
-  const [mobileFit, setMobileFit] = useState(true);
-  const [narrowWidth, setNarrowWidth] = useState(() => Math.max(300, window.innerWidth - 28));
-  const tr = i18n.useT();
-  const [error, setError] = useState('');
-  const [dragging, setDragging] = useState(false);
-  const [transform, setTransform] = useState<CanvasTransform>({ tx: 296, ty: 68, scale: 1 });
-  const stageRef = useRef<HTMLDivElement | null>(null);
-  const autoFittedForRef = useRef('');
-  const lastCenteredStepRef = useRef('');
-  const transformRef = useRef(transform);
-  transformRef.current = transform;
-  const { onTrailLoaded } = props;
-
-  //M 拉取当前画布的数据。
-  useEffect(() => {
-    setCanvas(null);
-    setError('');
-    onTrailLoaded(props.name, null, null);
-    let alive = true;
-    const url = `/api/tutorial/canvas?name=${encodeURIComponent(props.name)}`;
-    const loading = TutorialApi.get<Canvas>(url);
-    loading.then((loaded) => {
-      if (!alive) return;
-
-      setCanvas(loaded);
-      //M 画布轨迹加载成功后通知顶层页面保存当前活动轨迹与数据流转，并联动右侧步骤详情。
-      onTrailLoaded(props.name, loaded.trail, loaded.dataFlow ?? null);
-    }, (failed: unknown) => {
-      if (alive) {
-        setError((failed as Error).message);
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, [props.name, onTrailLoaded]);
-
-  const resolvedDataFlow = useMemo(() => {
-    if (canvas === null) return null;
-
-    return resolveTrailDataFlow(canvas.trail, canvas.dataFlow);
-  }, [canvas]);
-
-  const seqLayout = useMemo(() => {
-    if (canvas === null) return null;
-
-    //M 顺序图的摆法：道、方块、箭头。
-    return getSeqLayout(canvas.trail, tr);
-  }, [canvas, tr]);
-
-  const layout = useMemo(() => {
-    if (canvas === null) return null;
-
-    //M 预计算当前看法的尺寸及每步包围盒缓存，供视图居中与窄屏缩宽复用。
-    if (props.isNarrow && props.narrowMode === 'seq') return seqLayout;
-    if (!props.isNarrow && look === 'seq') return seqLayout;
-
-    return getCanvasLayout(canvas.lanes);
-  }, [canvas, look, props.isNarrow, props.narrowMode, seqLayout]);
-
-  //M 计算此刻不被左右两浮栏挡住的中间区域。
-  const getLiveSafe = useCallback((): SafeViewport => {
-    const stageW = stageRef.current?.clientWidth || window.innerWidth;
-    const stageH = stageRef.current?.clientHeight || Math.max(400, window.innerHeight - 52);
-    return getSafeViewport(stageW, stageH, props.leftOpen, props.leftWidth, props.rightOpen, props.rightWidth);
-  }, [props.leftOpen, props.leftWidth, props.rightOpen, props.rightWidth]);
-
-  //M 适应窗口：把整张泳道图缩放并居中摆进中间可见区域。
-  const fitToWindow = useCallback((): void => {
-    if (layout === null) return;
-
-    //M 基于当前安全可视区反算全图自适应变换并应用到画布。
-    const safe = getLiveSafe();
-    setTransform(getFitTransform(layout, safe));
-  }, [getLiveSafe, layout]);
-
-  //M 100% 原比例：停在中间安全区左上角。
-  const resetToHundred = useCallback((): void => {
-    const safe = getLiveSafe();
-    setTransform({ tx: safe.left + 8, ty: safe.top + 8, scale: 1 });
-  }, [getLiveSafe]);
-
-  //M 每次切换到一张新画布加载完毕时，自动适应一次窗口，开页就一眼看得全。
-  useEffect(() => {
-    if (props.isNarrow || layout === null) return;
-
-    const fitKey = `${props.name}:${String(layout.width)}:${String(layout.total)}`;
-    if (autoFittedForRef.current === fitKey) return;
-
-    autoFittedForRef.current = fitKey;
-    lastCenteredStepRef.current = '';
-    //M 初次展现该画布时重置缩放平移矩阵使整张泳道图恰好居中可见。
-    setTransform(getFitTransform(layout, getLiveSafe()));
-  }, [getLiveSafe, layout, props.isNarrow, props.name]);
-
-  //M 选中某一步时：若它落在左右两浮栏下面或屏幕外（尤其被右栏遮住），自动把画布平移到中间安全区看得见的地方。
-  useEffect(() => {
-    if (props.isNarrow || layout === null || props.step <= 0) {
-      lastCenteredStepRef.current = '';
-      return;
-    }
-    const stepKey = `${props.name}#${String(props.step)}:${String(props.rightOpen)}:${String(props.leftOpen)}`;
-    if (lastCenteredStepRef.current === stepKey) return;
-
-    lastCenteredStepRef.current = stepKey;
-    //M 查表获得当前选中步所在的像素包围盒，找不到则保持视口不动。
-    const box = layout.stepBoxes.get(props.step);
-    if (box === undefined) return;
-
-    const safe = getLiveSafe();
-    setTransform((prev) => {
-      const pad = 20;
-      const stepLeft = prev.tx + box.x * prev.scale;
-      const stepRight = stepLeft + box.w * prev.scale;
-      const stepTop = prev.ty + box.y * prev.scale;
-      const stepBottom = stepTop + box.h * prev.scale;
-
-      let nextTx = prev.tx;
-      let nextTy = prev.ty;
-      if (stepRight > safe.right - pad) {
-        nextTx -= stepRight - (safe.right - pad);
-      }
-      const adjustedLeft = nextTx + box.x * prev.scale;
-      if (adjustedLeft < safe.left + pad) {
-        nextTx += safe.left + pad - adjustedLeft;
-      }
-      if (stepBottom > safe.bottom - pad) {
-        nextTy -= stepBottom - (safe.bottom - pad);
-      }
-      const adjustedTop = nextTy + box.y * prev.scale;
-      if (adjustedTop < safe.top + pad) {
-        nextTy += safe.top + pad - adjustedTop;
-      }
-      if (nextTx === prev.tx && nextTy === prev.ty) return prev;
-
-      return { ...prev, tx: Math.round(nextTx), ty: Math.round(nextTy) };
-    });
-  }, [getLiveSafe, layout, props.isNarrow, props.leftOpen, props.name, props.rightOpen, props.step]);
-
-  //M 滚轮以鼠标所在位置为中心缩放（必须用 passive: false 拦住浏览器默认页面滚动）。
-  useEffect(() => {
-    if (props.isNarrow) return undefined;
-
-    const el = stageRef.current;
-    if (el === null) return undefined;
-
-    const onWheel = (event: WheelEvent): void => {
-      const target = event.target;
-      if (target instanceof Element && target.closest('.tu-stage-hud, .tu-stage-tools') !== null) return;
-
-      event.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const mouseX = event.clientX - rect.left;
-      const mouseY = event.clientY - rect.top;
-      let factor = 0.9;
-      if (event.deltaY < 0) {
-        factor = 1.12;
-      }
-      const prev = transformRef.current;
-      //M 将滚轮缩放倍率的步进结果夹在合法缩限以内，避免无限放大或缩小失踪。
-      const nextScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
-      if (nextScale === prev.scale) return;
-
-      const worldX = (mouseX - prev.tx) / prev.scale;
-      const worldY = (mouseY - prev.ty) / prev.scale;
-      setTransform({
-        tx: Math.round(mouseX - worldX * nextScale),
-        ty: Math.round(mouseY - worldY * nextScale),
-        scale: nextScale,
-      });
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [props.isNarrow]);
-
-  //M 窄屏模式下实时测量舞台宽度，供「适应屏宽」按真实容器宽度缩放整张泳道图或顺序图。
-  useEffect(() => {
-    if (!props.isNarrow) return undefined;
-
-    const el = stageRef.current;
-    if (el === null) return undefined;
-
-    const measure = (): void => {
-      if (el.clientWidth > 0) {
-        setNarrowWidth(el.clientWidth);
-      }
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [props.isNarrow]);
-
-  //M 按住空白区域拖动平移画布（按钮、链接、输入控件上的点击照常响应）。
-  const onStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (props.isNarrow || event.button !== 0) return;
-
-    const target = event.target;
-    const interactiveSel = 'button, a, input, textarea, select, .tu-stage-hud, .tu-stage-tools';
-    if (target instanceof Element && target.closest(interactiveSel) !== null) {
-      return;
-    }
-
-    event.preventDefault();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const startTx = transformRef.current.tx;
-    const startTy = transformRef.current.ty;
-    setDragging(true);
-
-    const onMove = (moveEvent: PointerEvent): void => {
-      const dx = moveEvent.clientX - startX;
-      const dy = moveEvent.clientY - startY;
-      setTransform((prev) => ({
-        ...prev,
-        tx: Math.round(startTx + dx),
-        ty: Math.round(startTy + dy),
-      }));
-    };
-    const onUp = (): void => {
-      setDragging(false);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-  };
-
-  let stageClass = 'tu-stage';
-  if (dragging) {
-    stageClass = 'tu-stage dragging';
-  }
-  if (props.isNarrow) {
-    stageClass = 'tu-stage narrow';
-  }
-
-  const liveSafe = getLiveSafe();
-  let hudLeft = 16;
-  let hudMaxWidth: number | undefined;
-  if (!props.isNarrow) {
-    hudLeft = liveSafe.left;
-    hudMaxWidth = Math.max(240, liveSafe.right - liveSafe.left);
-  }
-
-  let title = '启动流程';
-  if (props.name !== 'boot') {
-    title = `消息 #${props.name}`;
-  }
-
-  const trail = canvas?.trail ?? null;
-  //M 若选中事件高亮，找出当前轨迹里所有触发过该事件的步骤号供画布加亮及 HUD 快速跳转。
-  const matchedList = getMatchedSteps(trail, props.highlightEvent);
-  const matchedSet = new Set(matchedList);
-
-  const metaParts: string[] = [];
-  if (trail !== null) {
-    if (trail.bot !== '') {
-      metaParts.push(trail.bot);
-    }
-    if (trail.channel !== '') {
-      //M 把英文渠道代号映射为中文短标签拼入画布摘要条。
-      metaParts.push(getChannelLabel(trail.channel));
-    }
-    metaParts.push(trail.state);
-    metaParts.push(`${String(trail.steps.length)} 步 · ${String(trail.ms)}ms`);
-  }
-
-  let hudTitleTip = title;
-  if (trail !== null && trail.preview !== '') {
-    hudTitleTip = `${title}：${trail.preview}`;
-  }
-  if (props.name !== 'boot' && props.hasSnapshot === false) {
-    hudTitleTip += `（未带 ${props.keyword}，无运行时变量快照；泳道与源码照常可看）`;
-  }
-
-  const zoomPercent = String(Math.round(transform.scale * 100));
-
-  let mobileChannelLabel = '';
-  if (trail !== null && trail.channel !== '') {
-    mobileChannelLabel = getChannelLabel(trail.channel);
-  }
-  let mobileStateClass = 'tu-m-state-pill';
-  if (trail !== null && trail.state === 'done') mobileStateClass += ' done';
-  if (trail !== null && (trail.state === 'failed' || trail.error)) mobileStateClass += ' error';
-
-  return (
-    <div ref={stageRef} className={stageClass} onPointerDown={onStagePointerDown}>
-      {/* 桌面端：右栏之外贴靠在左栏右边的一行摘要 HUD，不吃大片垂直空间。 */}
-      {!props.isNarrow && (
-        <div
-          className="tu-stage-hud"
-          style={{ left: hudLeft, maxWidth: hudMaxWidth }}
-          title={hudTitleTip}
-        >
-          <span className="tu-hud-title">{title}</span>
-          {trail !== null && trail.preview !== '' && (
-            <span className="tu-hud-preview">{trail.preview}</span>
-          )}
-          {metaParts.length > 0 && (
-            <span className="tu-hud-meta">{metaParts.join(' · ')}</span>
-          )}
-          {trail !== null && trail.error && (
-            <span className="tu-hud-err">有出错步</span>
-          )}
-          {props.name !== 'boot' && props.hasSnapshot === true && (
-            <span className="tu-shot-badge">含快照</span>
-          )}
-          {props.name !== 'boot' && props.hasSnapshot === false && (
-            <span className="tu-hud-tag">无快照</span>
-          )}
-          {props.highlightEvent !== '' && matchedList.length > 0 && (
-            <span className="tu-hud-events">
-              <span className="tu-hud-ev-name">{props.highlightEvent}</span>
-              {matchedList.map((no) => {
-                let hitClass = 'tu-event-hit-btn';
-                if (props.step === no) {
-                  hitClass = 'tu-event-hit-btn active';
-                }
-                return (
-                  <button
-                    key={no}
-                    type="button"
-                    className={hitClass}
-                    onClick={
-                      //M 点击事件命中步骤徽章直接跳转到画布对应步骤。
-                      () => props.onPick(no)
-                    }
-                  >
-                    #{String(no)}
-                  </button>
-                );
-              })}
-              <button type="button" className="tu-link" onClick={props.onClearEvent}>清除</button>
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* 手机端：原生感消息摘要卡片 + 看法分段胶囊条。 */}
-      {props.isNarrow && trail !== null && (
-        <section className="tu-m-trace-card">
-          <div className="tu-m-trace-meta">
-            {mobileChannelLabel !== '' && (
-              <span className={`tu-ch-badge ${trail.channel}`}>{mobileChannelLabel}</span>
-            )}
-            {trail.bot !== '' && <span className="tu-m-bot-pill">{trail.bot}</span>}
-            <span className={mobileStateClass}>{getTrailStateLabel(trail.state)}</span>
-            <span className="tu-m-trace-stat">
-              {String(trail.steps.length)} 步 · {formatStepDuration(trail.ms)}
-            </span>
-            {props.name !== 'boot' && props.hasSnapshot === true && (
-              <span className="tu-shot-badge">含快照</span>
-            )}
-          </div>
-          {trail.preview !== '' && (
-            <p className="tu-m-trace-preview">{trail.preview}</p>
-          )}
-          {props.highlightEvent !== '' && matchedList.length > 0 && (
-            <div className="tu-m-event-filter">
-              <span className="tu-hud-ev-name">⚡ {props.highlightEvent}</span>
-              <div className="tu-m-event-hits">
-                {matchedList.map((no) => {
-                  let hitClass = 'tu-event-hit-btn';
-                  if (props.step === no) hitClass += ' active';
-                  return (
-                    <button
-                      key={no}
-                      type="button"
-                      className={hitClass}
-                      onClick={() => props.onPick(no)}
-                    >
-                      #{String(no)}
-                    </button>
-                  );
-                })}
-                <button type="button" className="tu-link" onClick={props.onClearEvent}>清除</button>
-              </div>
-            </div>
-          )}
-          <div className="tu-m-trace-bar">
-            <div className="tu-m-seg" role="tablist" aria-label="轨迹展示方式">
-              <button
-                type="button"
-                className="tu-m-seg-btn"
-                data-narrow-mode="steps"
-                aria-pressed={props.narrowMode === 'steps'}
-                onClick={() => props.onNarrowModeChange('steps')}
-              >
-                步骤流
-              </button>
-              <button
-                type="button"
-                className="tu-m-seg-btn"
-                data-narrow-mode="lanes"
-                aria-pressed={props.narrowMode === 'lanes'}
-                onClick={() => props.onNarrowModeChange('lanes')}
-              >
-                泳道全景
-              </button>
-              <button
-                type="button"
-                className="tu-m-seg-btn"
-                data-narrow-mode="seq"
-                aria-pressed={props.narrowMode === 'seq'}
-                onClick={() => props.onNarrowModeChange('seq')}
-              >
-                顺序图
-              </button>
-            </div>
-            {props.narrowMode !== 'steps' && (
-              <button
-                type="button"
-                className="tu-m-fit-toggle"
-                data-stage-fit
-                aria-pressed={mobileFit}
-                onClick={() => setMobileFit((prev) => !prev)}
-              >
-                {mobileFit && '适应屏宽'}
-                {!mobileFit && '原大横滑'}
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* 加载态或报错居中提示（躲在浮栏中间可见区）。 */}
-      {error !== '' && (
-        <div className="tu-stage-center" style={{ left: hudLeft, maxWidth: hudMaxWidth }}>
-          <antd.Alert type="error" showIcon title={error} />
-        </div>
-      )}
-      {error === '' && canvas === null && (
-        <div className="tu-stage-center" style={{ left: hudLeft, maxWidth: hudMaxWidth }}>
-          <antd.Spin />
-        </div>
-      )}
-
-      {/* 泳道图本体：桌面模式下包在平移缩放层内铺满整个视口。 */}
-      {canvas !== null && !props.isNarrow && (
-        <div
-          className="tu-stage-world"
-          style={{
-            transform:
-              `translate(${String(transform.tx)}px, ${String(transform.ty)}px) scale(${String(transform.scale)})`,
-            transformOrigin: '0 0',
-          }}
-        >
-          {look === 'table' && (
-            <LaneChart
-              canvas={canvas}
-              picked={props.step}
-              onPick={props.onPick}
-              pluginNames={props.pluginNames}
-              activePlugin={props.activePlugin}
-              matchedSteps={matchedSet}
-              onSelectPlugin={props.onSelectPlugin}
-              panZoom
-            />
-          )}
-          {look === 'seq' && seqLayout !== null && (
-            <SeqChart
-              canvas={canvas}
-              layout={seqLayout}
-              picked={props.step}
-              event={props.highlightEvent}
-              onPick={props.onPick}
-              onPickArrow={props.onPickArrow}
-              pluginNames={props.pluginNames}
-              activePlugin={props.activePlugin}
-              onSelectPlugin={props.onSelectPlugin}
-            />
-          )}
-        </div>
-      )}
-
-      {/* 手机端默认：纵向时间线步骤卡片，点一步直接在当前卡片内就地展开状态变化、函数、源码与快照。 */}
-      {canvas !== null && props.isNarrow && props.narrowMode === 'steps' && (
-        <div className="tu-m-steps">
-          {canvas.trail.steps.map((stepItem) => {
-            const picked = props.step === stepItem.no;
-            const hit = matchedSet.has(stepItem.no);
-            const stepTitle = getStepDisplayTitle(stepItem, tr);
-            const stepEvents = getStepEvents(stepItem);
-            const stepFlow = findStepFlow(resolvedDataFlow, stepItem.no);
-            const isSkeleton = stepFlow?.layer === 'skeleton';
-            let cardClass = 'tu-m-step-card';
-            if (isSkeleton) cardClass += ' skeleton';
-            if (picked) cardClass += ' picked';
-            if (stepItem.error) cardClass += ' error';
-            if (hit) cardClass += ' event-hit';
-
-            let nodeClass = 'tu-m-step-node';
-            let nodeLabel = stepItem.node;
-            if (isSkeleton) {
-              nodeClass += ' skeleton';
-              nodeLabel = `骨架 · ${stepItem.node}`;
-            }
-
-            let sumClass = 'tu-m-step-summary';
-            if (isSkeleton) sumClass += ' gold';
-            if (!isSkeleton && (stepFlow?.changes.length ?? 0) > 0) sumClass += ' changed';
-
-            let msClass = 'tu-m-step-ms';
-            if (stepItem.ms >= 500) msClass += ' slow';
-            let chevron = '▾';
-            if (picked) chevron = '▴';
-            const onToggleStep = (): void => {
-              if (picked) {
-                props.onPick(0);
-                return;
-              }
-              props.onPick(stepItem.no);
-            };
-            return (
-              <div key={stepItem.no} className={cardClass}>
-                <button
-                  type="button"
-                  className="tu-m-step-btn"
-                  data-step-card={stepItem.no}
-                  aria-expanded={picked}
-                  onClick={onToggleStep}
-                >
-                  <div className="tu-m-step-top">
-                    <span className="tu-m-step-no">#{String(stepItem.no)}</span>
-                    <span className={nodeClass}>{nodeLabel}</span>
-                    {stepItem.error && <span className="tu-m-step-err">报错</span>}
-                    <span className={msClass}>{formatStepDuration(stepItem.ms)}</span>
-                    <span className="tu-m-step-chev" aria-hidden="true">{chevron}</span>
-                  </div>
-                  <div className="tu-m-step-title">{stepTitle}</div>
-                  {stepFlow !== undefined && stepFlow.summary !== '' && (
-                    <div className={sumClass}>{stepFlow.summary}</div>
-                  )}
-                  {stepEvents.length > 0 && (
-                    <div className="tu-m-step-events">
-                      {stepEvents.map((evName) => (
-                        <span key={evName} className="tu-m-step-ev">⚡ {evName}</span>
-                      ))}
-                    </div>
-                  )}
-                </button>
-                {picked && (
-                  <div className="tu-m-step-detail">
-                    {stepFlow !== undefined && (
-                      <StepDataFlowPanel
-                        compact
-                        trail={canvas.trail}
-                        step={stepItem}
-                        stepFlow={stepFlow}
-                        workspace={props.workspace}
-                        pluginNames={props.pluginNames}
-                        onPickStep={props.onPick}
-                        onOpenSkeletonLines={props.onOpenSkeletonLines}
-                        onSelectPlugin={props.onSelectPlugin}
-                      />
-                    )}
-                    <StepDetail
-                      canvas={props.name}
-                      trail={canvas.trail}
-                      step={stepItem}
-                      workspace={props.workspace}
-                      keyword={props.keyword}
-                      pluginNames={props.pluginNames}
-                      highlightEvent={props.highlightEvent}
-                      hideHeader={stepFlow !== undefined}
-                      onSelectPlugin={props.onSelectPlugin}
-                      onSelectEvent={props.onSelectEvent}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* 手机端切到泳道全景或顺序图时：支持一键适应屏宽或原尺寸横滑。 */}
-      {canvas !== null && props.isNarrow && props.narrowMode !== 'steps' && (
-        <div className="tu-m-chart-shell">
-          {!mobileFit && props.narrowMode === 'lanes' && (
-            <LaneChart
-              canvas={canvas}
-              picked={props.step}
-              onPick={props.onPick}
-              pluginNames={props.pluginNames}
-              activePlugin={props.activePlugin}
-              matchedSteps={matchedSet}
-              onSelectPlugin={props.onSelectPlugin}
-              panZoom={false}
-            />
-          )}
-          {!mobileFit && props.narrowMode === 'seq' && seqLayout !== null && (
-            <div className="tu-lanes-scroll">
-              <SeqChart
-                canvas={canvas}
-                layout={seqLayout}
-                picked={props.step}
-                event={props.highlightEvent}
-                onPick={props.onPick}
-                onPickArrow={props.onPickArrow}
-                pluginNames={props.pluginNames}
-                activePlugin={props.activePlugin}
-                onSelectPlugin={props.onSelectPlugin}
-              />
-            </div>
-          )}
-          {mobileFit && layout !== null && (() => {
-            const fitScale = clamp((narrowWidth - 16) / Math.max(1, layout.width), 0.34, 1);
-            const scaledHeight = Math.ceil(layout.total * fitScale) + 12;
-            return (
-              <div className="tu-lanes-fit" style={{ height: `${String(scaledHeight)}px` }}>
-                <div
-                  style={{
-                    width: `${String(layout.width)}px`,
-                    transform: `scale(${String(fitScale)})`,
-                    transformOrigin: '0 0',
-                  }}
-                >
-                  {props.narrowMode === 'lanes' && (
-                    <LaneChart
-                      canvas={canvas}
-                      picked={props.step}
-                      onPick={props.onPick}
-                      pluginNames={props.pluginNames}
-                      activePlugin={props.activePlugin}
-                      matchedSteps={matchedSet}
-                      onSelectPlugin={props.onSelectPlugin}
-                      panZoom
-                    />
-                  )}
-                  {props.narrowMode === 'seq' && seqLayout !== null && (
-                    <SeqChart
-                      canvas={canvas}
-                      layout={seqLayout}
-                      picked={props.step}
-                      event={props.highlightEvent}
-                      onPick={props.onPick}
-                      onPickArrow={props.onPickArrow}
-                      pluginNames={props.pluginNames}
-                      activePlugin={props.activePlugin}
-                      onSelectPlugin={props.onSelectPlugin}
-                    />
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* 画布左下角控件：适应窗口、100%、当前比例、交互说明。 */}
-      {!props.isNarrow && canvas !== null && (
-        <div className="tu-stage-tools" style={{ left: hudLeft }}>
-          <button
-            type="button"
-            className="tu-tool-btn"
-            aria-pressed={look === 'table'}
-            onClick={() => setLook('table')}
-          >
-            表格
-          </button>
-          <button
-            type="button"
-            className="tu-tool-btn"
-            aria-pressed={look === 'seq'}
-            onClick={() => setLook('seq')}
-          >
-            顺序图
-          </button>
-          <button type="button" className="tu-tool-btn" onClick={fitToWindow}>适应窗口</button>
-          <button type="button" className="tu-tool-btn" onClick={resetToHundred}>100%</button>
-          <span className="tu-tool-zoom">{zoomPercent}%</span>
-          <span className="tu-tool-hint">滚轮缩放 · 按住空白拖动 · 点步看详情</span>
-        </div>
-      )}
-    </div>
-  );
 }
 
 
@@ -1617,7 +461,7 @@ export function TutorialPage(): JSX.Element {
   const [activeTrail, setActiveTrail] = useState<Trail | null>(null);
   const [activeDataFlow, setActiveDataFlow] = useState<TrailDataFlow | null>(null);
   const [loadedCanvasName, setLoadedCanvasName] = useState('');
-  const [messageApi, contextHolder] = antd.message.useMessage();
+  const [messageApi, contextHolder] = message.useMessage();
   //M 读回教程上次选的视图，并将新控件按当前语言显示。
   const tutorialView = mind.useTutorialView();
   //M 顶上的三种树改成左栏入口，画布只留下方向小切换。
@@ -2678,7 +1522,7 @@ export function TutorialPage(): JSX.Element {
   const hideMobilePaneBar = isNarrow && (route.rtab === 'reading' || route.rtab === 'util');
 
   return (
-    <antd.ConfigProvider
+    <ConfigProvider
       theme={
         //M 将页面当前选中的主题色板注入 Ant Design 容器（如空状态、表格、标签）。
         theme.antdTheme(themeSpec)
@@ -2790,37 +1634,39 @@ export function TutorialPage(): JSX.Element {
             {/* 最底层：全视口泳道画布舞台，在左右两浮栏后面全幅铺开。 */}
             {!contentOnly && !canvasesLoaded && route.canvas === SENTINEL_AUTO && (
               <div className="tu-stage">
-                <div className="tu-stage-center"><antd.Spin /></div>
+                <div className="tu-stage-center"><Spin /></div>
               </div>
             )}
             {!contentOnly && hasRealCanvas && (
-              <CanvasStage
-                name={route.canvas}
-                step={route.step}
-                onPick={onPickStep}
-                onPickArrow={onPickArrow}
-                keyword={keyword}
-                hasSnapshot={activeMessage?.hasSnapshot}
-                pluginNames={pluginNames}
-                activePlugin={resolvedPluginName}
-                highlightEvent={route.event}
-                onSelectPlugin={
-                  //M 泳道上点插件名留在三栏，右侧看说明。
-                  (name) => onSelectPlugin(name, undefined, true)
-                }
-                onOpenSkeletonLines={onOpenSkeletonLines}
-                onSelectEvent={onSelectEvent}
-                onClearEvent={() => navigate({ ...route, event: '' })}
-                onTrailLoaded={handleTrailLoaded}
-                workspace={workspace}
-                leftOpen={!leftCollapsed}
-                leftWidth={clampedLeftWidth}
-                rightOpen={!rightCollapsed}
-                rightWidth={clampedRightWidth}
-                isNarrow={isNarrow}
-                narrowMode={narrowMode}
-                onNarrowModeChange={setNarrowMode}
-              />
+              <Suspense fallback={<StageChunkFallback />}>
+                <LazyCanvasStage
+                  name={route.canvas}
+                  step={route.step}
+                  onPick={onPickStep}
+                  onPickArrow={onPickArrow}
+                  keyword={keyword}
+                  hasSnapshot={activeMessage?.hasSnapshot}
+                  pluginNames={pluginNames}
+                  activePlugin={resolvedPluginName}
+                  highlightEvent={route.event}
+                  onSelectPlugin={
+                    //M 泳道上点插件名留在三栏，右侧看说明。
+                    (name) => onSelectPlugin(name, undefined, true)
+                  }
+                  onOpenSkeletonLines={onOpenSkeletonLines}
+                  onSelectEvent={onSelectEvent}
+                  onClearEvent={() => navigate({ ...route, event: '' })}
+                  onTrailLoaded={handleTrailLoaded}
+                  workspace={workspace}
+                  leftOpen={!leftCollapsed}
+                  leftWidth={clampedLeftWidth}
+                  rightOpen={!rightCollapsed}
+                  rightWidth={clampedRightWidth}
+                  isNarrow={isNarrow}
+                  narrowMode={narrowMode}
+                  onNarrowModeChange={setNarrowMode}
+                />
+              </Suspense>
             )}
             {!contentOnly && !hasRealCanvas && canvasesLoaded && route.canvas !== SENTINEL_AUTO && (
               <div className="tu-stage">
@@ -2831,24 +1677,26 @@ export function TutorialPage(): JSX.Element {
             )}
 
             {!contentOnly && showMind && (
-              <mind.TutorialMindMap
-                plugins={pluginList}
-                trail={mindTrail}
-                dataFlow={mindDataFlow}
-                pickedStep={route.step}
-                canvas={route.canvas}
-                left={mindLeft}
-                right={mindRight}
-                t={t}
-                onPick={onMindPick}
-                plugin={route.plugin}
-                onSelectPlugin={onLinesPlugin}
-                programs={programs}
-                mode={mindTree.mode}
-                onSelectMode={mindTree.select}
-                detailHost={lineDetailHost}
-                onLineDetail={onLineDetail}
-              />
+              <Suspense fallback={<StageChunkFallback />}>
+                <LazyMindMap
+                  plugins={pluginList}
+                  trail={mindTrail}
+                  dataFlow={mindDataFlow}
+                  pickedStep={route.step}
+                  canvas={route.canvas}
+                  left={mindLeft}
+                  right={mindRight}
+                  t={t}
+                  onPick={onMindPick}
+                  plugin={route.plugin}
+                  onSelectPlugin={onLinesPlugin}
+                  programs={programs}
+                  mode={mindTree.mode}
+                  onSelectMode={mindTree.select}
+                  detailHost={lineDetailHost}
+                  onLineDetail={onLineDetail}
+                />
+              </Suspense>
             )}
 
             {/* 悬浮左栏：展开时是带阴影的卡片，收起时退成边缘一条按钮；手机窄屏默认收进顶栏目录抽屉。 */}
@@ -2869,7 +1717,7 @@ export function TutorialPage(): JSX.Element {
               <aside className="tu-side tu-float-left" style={leftStyle}>
                 <div className="tu-side-top">
                   <div className="tu-side-search">
-                    <antd.Input
+                    <Input
                       size="small"
                       allowClear
                       placeholder="搜索组块、消息、插件…"
@@ -3091,21 +1939,23 @@ export function TutorialPage(): JSX.Element {
                                   onSelectPlugin={(name) => onSelectPlugin(name, undefined, true)}
                                 />
                               )}
-                              <StepDetail
-                                canvas={route.canvas}
-                                trail={activeTrail}
-                                step={pickedStep}
-                                workspace={workspace}
-                                keyword={keyword}
-                                pluginNames={pluginNames}
-                                highlightEvent={route.event}
-                                hideHeader={pickedStepFlow !== undefined}
-                                onSelectPlugin={
-                                  //M 步骤详情里点插件名留在三栏。
-                                  (name) => onSelectPlugin(name, undefined, true)
-                                }
-                                onSelectEvent={onSelectEvent}
-                              />
+                              <Suspense fallback={<PaneChunkFallback />}>
+                                <LazyStepDetail
+                                  canvas={route.canvas}
+                                  trail={activeTrail}
+                                  step={pickedStep}
+                                  workspace={workspace}
+                                  keyword={keyword}
+                                  pluginNames={pluginNames}
+                                  highlightEvent={route.event}
+                                  hideHeader={pickedStepFlow !== undefined}
+                                  onSelectPlugin={
+                                    //M 步骤详情里点插件名留在三栏。
+                                    (name) => onSelectPlugin(name, undefined, true)
+                                  }
+                                  onSelectEvent={onSelectEvent}
+                                />
+                              </Suspense>
                             </>
                           )}
                           {(pickedStep === undefined || activeTrail === null || !hasRealCanvas) && (
@@ -3143,37 +1993,43 @@ export function TutorialPage(): JSX.Element {
                         <p className="tu-muted">{t('在左栏选择一篇组块')}</p>
                       )}
                       {route.rtab === 'reading' && route.reading !== '' && (
-                        <ReadingView
-                          key={route.reading}
-                          name={route.reading}
-                          loadingLabel={readingLoadingLabel}
-                          errorLabel={readingErrorLabel}
-                          onHashLink={onReadingHash}
-                        />
+                        <Suspense fallback={<PaneChunkFallback />}>
+                          <LazyReadingView
+                            key={route.reading}
+                            name={route.reading}
+                            loadingLabel={readingLoadingLabel}
+                            errorLabel={readingErrorLabel}
+                            onHashLink={onReadingHash}
+                          />
+                        </Suspense>
                       )}
 
                       {route.rtab === 'util' && route.util !== '' && (
-                        <ReadingView
-                          key={`util:${route.util}`}
-                          name={route.util}
-                          util
-                          loadingLabel={utilsLoadingLabel}
-                          errorLabel={utilsErrorLabel}
-                        />
+                        <Suspense fallback={<PaneChunkFallback />}>
+                          <LazyReadingView
+                            key={`util:${route.util}`}
+                            name={route.util}
+                            util
+                            loadingLabel={utilsLoadingLabel}
+                            errorLabel={utilsErrorLabel}
+                          />
+                        </Suspense>
                       )}
 
                       {route.rtab === 'plugin' && isProcess && (
-                        <programView.ProgramView
-                          key={resolvedPluginName}
-                          name={programName ?? ''}
-                          programs={programs}
-                          onOpenHandshake={onOpenHandshake}
-                          onSelectProgram={onSelectProgram}
-                        />
+                        <Suspense fallback={<PaneChunkFallback />}>
+                          <LazyProgramView
+                            key={resolvedPluginName}
+                            name={programName ?? ''}
+                            programs={programs}
+                            onOpenHandshake={onOpenHandshake}
+                            onSelectProgram={onSelectProgram}
+                          />
+                        </Suspense>
                       )}
                       {route.rtab === 'plugin' && !isProcess && (
                         <>
-                          {plugins === null && error === '' && <antd.Spin />}
+                          {plugins === null && error === '' && <Spin />}
                           {plugins !== null && !hasPluginName && (
                             <div className="tu-pane-empty">
                               <p>在左栏「骨架」或「插件」列选一项，或点画布泳道名字</p>
@@ -3181,21 +2037,23 @@ export function TutorialPage(): JSX.Element {
                             </div>
                           )}
                           {plugins !== null && hasPluginName && activePlugin === undefined && (
-                            <antd.Empty description={`没有找到插件 ${resolvedPluginName}`} />
+                            <Empty description={`没有找到插件 ${resolvedPluginName}`} />
                           )}
                           {activePlugin !== undefined && (
-                            <PluginView
-                              plugin={activePlugin}
-                              pluginNames={pluginNames}
-                              activeTab={route.ptab}
-                              onTabChange={(nextKey) => navigate({ ...route, ptab: nextKey })}
-                              activeEvent={route.event}
-                              onSelectEvent={onSelectEvent}
-                              onSelectPlugin={
-                                //M 从插件详情内部的依赖/路由跳转到目标插件说明视图。
-                                (name) => onSelectPlugin(name, undefined, !route.doc)
-                              }
-                            />
+                            <Suspense fallback={<PaneChunkFallback />}>
+                              <LazyPluginView
+                                plugin={activePlugin}
+                                pluginNames={pluginNames}
+                                activeTab={route.ptab}
+                                onTabChange={(nextKey) => navigate({ ...route, ptab: nextKey })}
+                                activeEvent={route.event}
+                                onSelectEvent={onSelectEvent}
+                                onSelectPlugin={
+                                  //M 从插件详情内部的依赖/路由跳转到目标插件说明视图。
+                                  (name) => onSelectPlugin(name, undefined, !route.doc)
+                                }
+                              />
+                            </Suspense>
                           )}
                         </>
                       )}
@@ -3207,6 +2065,6 @@ export function TutorialPage(): JSX.Element {
           </div>
         </div>
       </TutorialWorkspaceContext.Provider>
-    </antd.ConfigProvider>
+    </ConfigProvider>
   );
 }

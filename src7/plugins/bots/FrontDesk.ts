@@ -225,32 +225,20 @@ export class FrontDesk {
   }
 
   /**
-   * 定这条消息进哪场会话：进这个客户的前台对话。每个客户一场，没有就开。Bot.receive 问完 bot/receive 后经 Dispatch.receive 调。
-   * 客户号只读渠道写在回话地址里的 address.customer。别的插件在 bot/receive 里已经定了去向（微信按客户、relay 转外部助手）的，这里不会再改。
+   * 兼容收话分派（供 Dispatch.receive 调）：复按来源范围找前台（findOrCreateFrontByScope），与标准渠道入口同一套找法。
+   * 别的插件在 bot/receive 里已经定了去向（relay 转外部助手）的，这里不会再改。
    * @param event 哪个机器人、哪条消息；把会话填进 event.session。
    */
   async onReceive(event: ReceiveEvent): Promise<void> {
     //G 排在前面的插件已经定了去向、或者已经把这条处理掉了（handled）→ 不管。
     if (event.session !== undefined || event.handled === true) return;
 
-    //M 客户号只读渠道写在回话地址里的 address.customer；按机器人加客户号找前台对话，没有就开一场。
+    //M 统一走 findOrCreateFrontByScope（渠道 + 账号 + 聊天，兼容同客户旧前台），前台只保留这一种找法。
     const bot = event.bot.name;
     const address = event.message.address;
     const customer = utils.getStringField(address, 'customer');
-    const input: { bot: string; kind: string; customer?: string } = { bot, kind: 'front' };
-    if (customer !== '') {
-      input.customer = customer;
-    }
-
-    //M 旧入口按客户找已有前台，没有时用相同条件开一场。
-    const found = this.ctx.sessions.find(input)[0];
-    let session: Session | undefined;
-    if (found !== undefined) {
-      session = this.ctx.sessions.open(found.id);
-    }
-    if (session === undefined) {
-      session = this.ctx.sessions.create(input);
-    }
+    const scope = getScopeFromAddress(event.message.channel, address);
+    const session = this.findOrCreateFrontByScope(bot, scope, customer);
 
     //M 标了只听（channel/listen 来的，飞书群里没 @ 机器人的话）：记进这场前台对话当背景，不推它往下走、不回；这条就算处理掉了。
     //M   群攒批判断只接渠道事件（DispatchClaim.ts → GroupBatch.ts），直接收话的入口只记背景。
@@ -586,6 +574,28 @@ export class FrontDesk {
     //M 与渠道索引共用正文，前台仍按会话保存自己的往来关系。
     this.ctx.emit('memory/front-message', entry);
   }
+}
+
+
+/**
+ * 从渠道名和地址里推导标准来源域（渠道 + 账号 + 聊天），供 Bots.receive 收敛入口和 FrontDesk.onReceive 共用。
+ * 微信地址含 account、chat，与微信标准入站消息的来源域完全一致；飞书地址含 appId、chatId；其余退回 customer 或 default。
+ * @param channel 渠道名。
+ * @param address 渠道地址对象。
+ * @returns 来源域。
+ */
+export function getScopeFromAddress(
+  channel: string,
+  address: unknown,
+): { channel: string; accountId: string; chatId: string } {
+  const accountId = utils.getStringField(address, 'account')
+    || utils.getStringField(address, 'appId')
+    || 'default';
+  const chatId = utils.getStringField(address, 'chat')
+    || utils.getStringField(address, 'chatId')
+    || utils.getStringField(address, 'customer')
+    || 'default';
+  return { channel, accountId, chatId };
 }
 
 

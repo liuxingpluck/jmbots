@@ -48,7 +48,9 @@ export const name = 'memory';
 //M 1.11.2：渠道索引按归档路径记附件、按撤回事件记时刻，表结构交 db 管版本。
 //M 1.11.3：旧档回填问资源守卫改 requestEvent 新写法，不掐表（守卫读数自己限时），云端 19 第 1、2 条。
 //M 1.11.4：前台往来检索与原文读取从 Search.ts 并入 FrontArchive.ts，bot_log 旧表双读补退场条件注释（云端 20 第 3 条、云端 18 第 4 条）。
-export const version = '1.11.4';
+//M 1.11.5：外人能不能查渠道消息收成 MemoryKey.canQueryChannel，召回、旧 memory 工具、统一检索同一口径；
+//M   getMemoryAccess 两种来源只取输入、规则合一份；额度报错文案引用常量（第 13 块体检第 5、7、8 条）。
+export const version = '1.11.5';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
 export const inject = ['resources', 'tools'];
@@ -277,10 +279,10 @@ export class Memory {
     const q = [...said].slice(0, 300).join('').trim();
     if (q === '') return [];
 
-    //M 召回按检索入口自动加归属；同时用渠道索引接住还未同步到 Rust 的消息。
+    //M 召回按检索入口自动加归属；能查渠道消息的（canQueryChannel）同时用渠道索引接住还未同步到 Rust 的消息。
     const row = session.row;
     let sources = 'history';
-    if (access.full || (access.chat && access.account)) {
+    if (memoryKeyModule.canQueryChannel(access)) {
       sources = 'history,channel';
     }
     const service = this.ctx.memory.unified;
@@ -340,8 +342,9 @@ export class Memory {
     const access = memoryKeyModule.getMemoryAccess(session.row);
     if (!access.full) {
       if (action === 'search' || action === 'history') {
+        //M 能不能带上渠道消息和召回、统一检索同一口径（canQueryChannel）。
         let sources = 'history';
-        if (access.account && access.chat && access.channel) {
+        if (memoryKeyModule.canQueryChannel(access)) {
           sources = 'history,channel';
         }
         const query = { q: args['query'], sources, limit: args['limit'] ?? CITE_HITS };

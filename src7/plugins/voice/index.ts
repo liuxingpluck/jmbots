@@ -1,7 +1,8 @@
 /**
  * voice：接入浏览器麦克风，让当前连接查看字幕，并把判断通过的语音交给机器人。
  * 文件：本文件（连接、Voice、apply 装配和登记）、Config.ts（配置校验）、Lines.ts（转写、合成主备线路装配）、
- * Asr.ts、CloudAsr.ts、RoutedAsr.ts（转写）、Tts.ts（合成）、Tasks.ts、Turn.ts、Models.ts（任务判断、断句）、Replies.ts（回话）。
+ * Asr.ts、CloudAsr.ts、RoutedAsr.ts（转写）、Tts.ts（合成）、Tasks.ts、Turn.ts、Models.ts（任务判断、断句）、Replies.ts（回话）、
+ * Common.ts（共用常量、字数、限速）。
  */
 
 import * as path from 'node:path';
@@ -26,7 +27,7 @@ export const name = 'voice';
 //M   voice/record 加 waiting 顶替 routing.recordOnly。
 //M 0.6.5：getSettings 改用 Checks.ts 的 checkNumber、checkFlag、checkModelRef 等公共校验；模型线路的供应商要在 providers 里。
 //M 0.6.6：配置校验搬进 Config.ts，转写、合成线路装配搬进 Lines.ts（云端20 第 3 条），apply 只装配、登记路由和事件。
-export const version = '0.6.6';
+export const version = '0.6.7';
 export const inject = ['resources', 'http', 'sessions'];
 
 type State = 'idle' | 'listening' | 'error';

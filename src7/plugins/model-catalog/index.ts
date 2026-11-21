@@ -31,7 +31,7 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.9';
+export const version = '1.3.10';
 
 /** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
@@ -305,7 +305,8 @@ export class ModelCatalog extends cordis.Service {
         results.push({ provider: one, ok: true, models: this.tables.get(one)?.length ?? 0 });
       } catch (error) {
         //G 单家重拉失败时不中断循环，保留原表数量并记下错误原因返回给调用方。
-        results.push({ provider: one, ok: false, models: this.tables.get(one)?.length ?? 0, error: text.getErrorMessage(error) });
+        const kept = this.tables.get(one)?.length ?? 0;
+        results.push({ provider: one, ok: false, models: kept, error: text.getErrorMessage(error) });
       }
     }
     return results;
@@ -370,12 +371,14 @@ export class ModelCatalog extends cordis.Service {
 
       //T 跟踪：拉到了一家的清单。
       const vars = { provider: provider, modelCount: merged.models.length, guessedCount: merged.guessed };
-      this.ctx.emit('trace', 'model-catalog.pull', 'trace.modelCatalog.pull', 'merge(provider, fetchList(baseUrl, apiKey), written)', vars);
+      const pullCode = 'merge(provider, fetchList(baseUrl, apiKey), written)';
+      this.ctx.emit('trace', 'model-catalog.pull', 'trace.modelCatalog.pull', pullCode, vars);
     } catch (error) {
       const reason = text.getErrorMessage(error);
       //T 跟踪：没拉到。
       const vars = { provider: provider, reason: reason, modelCount: this.tables.get(provider)?.length ?? 0 };
-      this.ctx.emit('trace', 'model-catalog.pull', 'trace.modelCatalog.pullFallback', 'fetchList(baseUrl, apiKey)', vars);
+      const fallbackCode = 'fetchList(baseUrl, apiKey)';
+      this.ctx.emit('trace', 'model-catalog.pull', 'trace.modelCatalog.pullFallback', fallbackCode, vars);
       if (required) throw new Error(`拉供应商 ${provider}（${config.baseUrl}）的模型清单失败：${reason}`, { cause: error });
       if (!this.warned.has(provider)) {
         this.warned.add(provider);
@@ -426,7 +429,12 @@ export class ModelCatalog extends cordis.Service {
           return value;
         };
         //M 从表单字段拼出探测参数并直接拉取清单返回，不改动当前内存模型表。
-        const input = { provider: field('provider'), baseUrl: body['base_url'].trim(), apiKey: field('api_key'), api: field('api') };
+        const input = {
+          provider: field('provider'),
+          baseUrl: body['base_url'].trim(),
+          apiKey: field('api_key'),
+          api: field('api'),
+        };
         return { models: await this.probe(input) };
       });
     });

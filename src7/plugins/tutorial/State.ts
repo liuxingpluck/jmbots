@@ -52,7 +52,7 @@ export interface Shot {
   message: number | null;
   /** 这一刻的运行时变量（全量原样）。 */
   groups: snapshotModule.StateGroup[];
-  /** 这一份新占的字节数（沿用上一份的组不算），拍的时候算一次（snapshotModule.bytesOf）。 */
+  /** 这一份新占的字节数（沿用上一份的组不算），拍的时候算一次（snapshotModule.getBytes）。 */
   bytes: number;
 }
 
@@ -212,7 +212,13 @@ export class Shots {
    * 一行该不该拍：该拍就拍；这一轮结束的会话、写回的消息撤掉。
    * @param line 种类、名字、会话、消息号；session/change 带状态。
    */
-  private consider(line: { kind: string; name: string; session: string | null; message: number | undefined; state: string | undefined }): void {
+  private consider(line: {
+    kind: string;
+    name: string;
+    session: string | null;
+    message: number | undefined;
+    state: string | undefined;
+  }): void {
     //M 带关键词的 bot/receive 分到会话了：记下这场会话。
     const now = Date.now();
     this.pending = this.pending.filter(({ event, at }) => {
@@ -227,8 +233,15 @@ export class Shots {
 
     //M 立即抓拍此刻运行时变量快照，若本轮结束或已回写则撤除监控。
     this.take(line.kind, line.name, line.session, line.message ?? null);
-    if (line.session !== null && line.state !== undefined && line.state !== 'running') this.sessions.delete(line.session);
-    if (line.name === 'web-api/replied' && line.message !== undefined && this.messages.delete(line.message)) this.done.push(line.message);
+    const roundOver = line.state !== undefined && line.state !== 'running';
+    if (line.session !== null && roundOver) {
+      this.sessions.delete(line.session);
+    }
+    const message = line.message;
+    const replied = line.name === 'web-api/replied' && message !== undefined;
+    if (replied && this.messages.delete(message)) {
+      this.done.push(message);
+    }
 
     //M 停拍：回话写回了、也没有别的要拍了（会话这一轮也结束了），写成文件。
     if (this.done.length === 0 || !this.isIdle()) return;

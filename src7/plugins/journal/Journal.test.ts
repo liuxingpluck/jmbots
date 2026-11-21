@@ -13,6 +13,7 @@ import type { ChannelMessage } from '../channels/index.ts';
 import type { Session, SessionRow } from '../../Sessions.ts';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as dbModule from '../db/index.ts';
+import * as filesMirrorModule from './FilesMirror.ts';
 import * as journalModule from './index.ts';
 import { getTraceEvent } from './Trace.ts';
 
@@ -111,7 +112,7 @@ async function queryJournal(ctx: cordis.Context, params: Record<string, string>)
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认只登记 ctx.filesMirror，流水走事件，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.3.4');
+    expect(journalModule.version).toBe('1.3.5');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeUndefined();
@@ -394,6 +395,32 @@ describe('journal（含 FilesMirror 并入）', () => {
     expect(snapshot.messages).toBe(2);
     expect(snapshot.state).toBe('done');
     expect(snapshot.file).toBe(mdFile);
+  });
+
+  test('written 最多记 WRITTEN_MAX 场：满了丢最早那场，被丢的再来消息照库整份重写', async () => {
+    const { ctx } = await setup();
+    //M 直接看私有的 written：先塞满 WRITTEN_MAX 场假的，最早那场叫 s_old_0。
+    const written = (ctx.filesMirror as unknown as { written: Map<string, { count: number; step: number }> }).written;
+    for (let index = 0; index < filesMirrorModule.WRITTEN_MAX; index += 1) {
+      written.set(`s_old_${String(index)}`, { count: 1, step: 0 });
+    }
+
+    //M 一场新会话来第一条消息：整份重写并记进 written，最早那场被挤掉，总数不涨。
+    const userMsg: piAi.Message = { role: 'user', content: '新的一场', timestamp: Date.now() };
+    const session = makeSession('s_new_1', 'running', [userMsg]);
+    ctx.emit('session/new-message', session, userMsg);
+    expect(written.size).toBe(filesMirrorModule.WRITTEN_MAX);
+    expect(written.has('s_new_1')).toBe(true);
+    expect(written.has('s_old_0')).toBe(false);
+    expect(written.has('s_old_1')).toBe(true);
+
+    //M 被挤掉的那场再来消息：照库整份重写，对话.md 照样写出来。
+    const oldMsg: piAi.Message = { role: 'user', content: '老会话又说话了', timestamp: Date.now() };
+    const old = makeSession('s_old_0', 'running', [oldMsg]);
+    ctx.emit('session/new-message', old, oldMsg);
+    const oldFile = path.join(ctx.filesMirror.getDir(old.row), '对话.md');
+    expect(fs.readFileSync(oldFile, 'utf8')).toContain('老会话又说话了');
+    expect(written.size).toBe(filesMirrorModule.WRITTEN_MAX);
   });
 
   test('mirror: false 时不挂 ctx.filesMirror，回退由 Markdown.ts 写简版 对话.md', async () => {

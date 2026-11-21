@@ -7,7 +7,7 @@
 import type { JSX } from 'react';
 import * as i18n from '../I18n.ts';
 import * as traceText from '../locales/Trace.ts';
-import { SiteLink } from './Code.tsx';
+import { SiteLink } from '../VscodeLink.tsx';
 import type * as api from './TutorialApi.ts';
 
 

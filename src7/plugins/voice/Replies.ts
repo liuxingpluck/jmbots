@@ -4,6 +4,10 @@ import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as utils from '../../utils/index.ts';
 import * as channel from '../channels/index.ts';
+import * as common from './Common.ts';
+
+/** 回话回执最多留几条：同一回复号重放时要命中，太早的删掉，语音长开内存不再一直涨。 */
+export const RECEIPT_MAX = 500;
 
 /** 浏览器确认至少有一段语音实际经过播放。 */
 interface VoiceReceipt extends channel.ReplyReceipt {
@@ -22,7 +26,7 @@ export class VoiceReplies {
   ) {
     //M 半句任务允许立即开始，回话等这句话有了最终记录再写：语音发的半句（channel/direct 带 routing.partial）先登记一个等待。
     ctx.on('channel/direct', (message) => {
-      if (message.channel !== 'voice' || message.routing.partial !== true) return;
+      if (message.channel !== common.CHANNEL || message.routing.partial !== true) return;
 
       const gate = Promise.withResolvers<boolean>();
       this.unfinished.set(message.messageId, gate);
@@ -74,11 +78,11 @@ export class VoiceReplies {
     const botName = request.bot;
     let chatId = utils.getStringField(address, 'chatId');
     if (chatId === '') {
-      chatId = 'local';
+      chatId = common.LOCAL;
     }
     let customer = utils.getStringField(address, 'customer');
     if (customer === '') {
-      customer = 'voice:本机';
+      customer = common.CUSTOMER;
     }
     //M 让标准回执关联到既有的消息认领。
     const claimKey = channel.getClaimKey(messageId, botName);
@@ -87,16 +91,16 @@ export class VoiceReplies {
     request.sourceSnapshot = {
       messageId,
       nativeId: null,
-      channel: 'voice',
-      accountId: 'local',
+      channel: common.CHANNEL,
+      accountId: common.LOCAL,
       chatId,
-      chatType: 'local',
+      chatType: common.LOCAL,
       senderId: 'owner',
       senderName: '语音',
       role: 'owner',
       targetBots: [botName],
       mentions: [],
-      origin: { channel: 'voice', address: { ...address, voiceSessionId: sessionId } },
+      origin: { channel: common.CHANNEL, address: { ...address, voiceSessionId: sessionId } },
       visibility: { scope: customer, trusted: true, publicSourceIds: [] },
       botName,
       claimKey,
@@ -119,7 +123,7 @@ export class VoiceReplies {
 
   /** 同一回复请求重放回执，不重复写入或播报。 */
   private async onReply(request: channel.ChannelReplyRequest): Promise<void> {
-    if (request.channel !== 'voice' || request.handled === true) return;
+    if (request.channel !== common.CHANNEL || request.handled === true) return;
 
     request.handled = true;
 
@@ -157,12 +161,20 @@ export class VoiceReplies {
     //M 首次看到该回复号时，开始尝试在原浏览器播报。
     const result = this.deliver(request);
     this.receipts.set(request.replyRequestKey, { hash: request.payloadHash, result });
+
+    //G 只留最近 RECEIPT_MAX 条：Map 按放进去的先后排，超了就删最早的一条。
+    if (this.receipts.size <= RECEIPT_MAX) return result;
+
+    const oldest = this.receipts.keys().next().value;
+    if (oldest !== undefined) {
+      this.receipts.delete(oldest);
+    }
     return result;
   }
 
   /** 验证回复形状，只有原聊天的文字可以进入这条语音回路。 */
   private async deliver(request: channel.ChannelReplyRequest): Promise<VoiceReceipt> {
-    if (request.sourceSnapshot?.channel !== 'voice' || request.target !== undefined || request.mode !== 'text') {
+    if (request.sourceSnapshot?.channel !== common.CHANNEL || request.target !== undefined || request.mode !== 'text') {
       const reason = '语音渠道只支持原聊天的文字回复';
       //G 这类回复没有可投递的原聊天文字。
       return this.getReceipt(request, false, reason);

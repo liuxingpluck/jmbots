@@ -18,7 +18,7 @@ bun test ./ztools/check-lines/Check_Lines.test.ts
 - 解释：`- Lx–Ly：` 条目写的行号在本块里；写了别的文件名的不算本块；句子中顺带提到块外位置的给提示。
 - `#lines=X.json&line=N`：目标 JSON 存在，N 在它的一个源码块里；链接前反引号里的名字应当在那行。类名指到构造函数、方法名指到方法体内也算。
 - Markdown 代码原文：围栏里第一行是 `// src7/…ts` 或 `// node_modules/cordis/lib/index.js…`，后面是「行号 + 制表符或两个空格 + 原文」，逐行和源码核对；`…`、`...` 或跳号表示另起一段。
-- 行内引用：`src7/Main.ts:78–80`、`Sessions.ts:531`、同一行前面提到文件的「第 194–213 行」，不能越界。有相邻名字时也核对名字是否在那几行。
+- 行内引用：`src7/Main.ts:78–80`、`Sessions.ts:531`、同一行前面提到文件的「第 194–213 行」，不能越界。有相邻名字时也核对名字是否在那几行；Markdown 函数/事件对照表里没有相邻反引号名字时，自动从第一格提取符号名（支持反引号、`Class.method`、参数括号、泛型、Markdown 链接与中文括号备注）核对定义与调用点存在性。
 - `[文字](路径.ts#L行号)` 整段交给既有的 `ztools/doc-links/Fix_Doc_Links.ts`，这里不重复修。
 - 只写文件名的引用：同一文档代码块头写过的文件优先；插件说明先找本插件；带插件目录的（`bots/index.ts`）补 `src7/`、`src7/plugins/`；再按文件名结尾找，唯一才算。文件名按原样比大小写（Windows 上 `plugins/index.ts` 不会认成 `plugins/Index.ts`）。
 

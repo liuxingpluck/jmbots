@@ -12,6 +12,8 @@ const RETAIN_CLIENT_MS = 30_000;
 const CACHE_MAX = 64;
 const MAX_MODELS = 2;
 const VOICE_WARN_MS = 500;
+/** 清理定时器的间隔：有客户端或回执要回收时才跑。 */
+const SWEEP_MS = 250;
 
 const CLICK_PROMPT = '你是桌面界面的中文讲解员。输入是鼠标点击的控件信息及局部截图。用一两句话说明用户点到的是什么、通常用来做什么。';
 const STREAM_PROMPT = [
@@ -215,20 +217,14 @@ function getExplanation(answer: piAi.AssistantMessage): Explanation {
 export class Screen {
   private readonly clients = new Map<string, ClientState>();
   private readonly cache = new Map<string, Cached>();
-  private readonly sweeper: ReturnType<typeof setInterval>;
+  /** 清理定时器：有客户端或回执时才有，都回收完就停（updateSweeper）。 */
+  private sweeper?: ReturnType<typeof setInterval>;
   private modelsRunning = 0;
   private observationsRunning = 0;
   private disposed = false;
 
-  /** 保存已校验配置并启动内存记录清理。 */
-  constructor(private readonly ctx: cordis.Context, private readonly config: protocol.ScreenConfig) {
-    //M 定时回收失联客户端和过期回执；不阻止进程退出。
-    this.sweeper = setInterval(() => {
-      const now = performance.now();
-      this.sweep(now);
-    }, 250);
-    this.sweeper.unref();
-  }
+  /** 保存已校验配置；清理定时器等第一个会话或回执进来再开，没开功能、没人用时不空跑。 */
+  constructor(private readonly ctx: cordis.Context, private readonly config: protocol.ScreenConfig) {}
 
   /** 查询可用性及指定客户端当前 lease，顺带清理过期记录。 */
   getStatus(clientId?: string): StatusResult {
@@ -301,6 +297,8 @@ export class Screen {
         lastSeq: 0,
       };
       this.clients.set(input.clientId, state);
+      //M 有客户端要看租约了，开清理定时器。
+      this.updateSweeper();
       //M 用刚建立的会话回执确认开启成功。
       return this.stateResult(state);
     }
@@ -459,6 +457,8 @@ export class Screen {
         result.segment = speech.parts.length;
       }
       this.cache.set(key, { result, expiresAt: now + CACHE_MS, speech });
+      //M 有回执要过期回收，确保清理定时器在跑。
+      this.updateSweeper();
       if (this.cache.size > CACHE_MAX) {
         const oldest = this.cache.keys().next().value;
         if (oldest !== undefined) {
@@ -659,6 +659,7 @@ export class Screen {
 
     this.disposed = true;
     clearInterval(this.sweeper);
+    this.sweeper = undefined;
     for (const state of this.clients.values()) {
       //M 插件卸载时取消尚在进行的所有活跃操作。
       if (state.phase !== 'inactive') {
@@ -801,6 +802,28 @@ export class Screen {
         this.cache.delete(key);
       }
     }
+    //M 回收完看一眼：客户端和回执都没了就停定时器。
+    this.updateSweeper();
+  }
+
+  /** 有客户端或回执要回收时才开清理定时器；都清空了就停，空闲时不再每 250 毫秒空跑。 */
+  private updateSweeper(): void {
+    const idle = this.clients.size === 0 && this.cache.size === 0;
+
+    //M 没东西要回收了：停掉在跑的定时器。
+    if (idle && this.sweeper !== undefined) {
+      clearInterval(this.sweeper);
+      this.sweeper = undefined;
+      return;
+    }
+    if (idle || this.disposed || this.sweeper !== undefined) return;
+
+    //M 定时回收失联客户端和过期回执；不阻止进程退出。
+    this.sweeper = setInterval(() => {
+      const now = performance.now();
+      this.sweep(now);
+    }, SWEEP_MS);
+    this.sweeper.unref();
   }
 
   /** 私有单轮请求，保留并发限制、取消和首句流式返回。 */

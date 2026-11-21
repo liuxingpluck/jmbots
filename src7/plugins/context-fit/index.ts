@@ -16,14 +16,14 @@ import compressionSql from './migrations/0000_compress_log.sql' with { type: 'te
 import * as summaryModule from './Summary.ts';
 
 
-export { readCompressSettings, type CompressConfig, type CompressSettings } from './Compress.ts';
+export { estimate, readCompressSettings, type CompressConfig, type CompressSettings } from './Compress.ts';
 export { readSummaryEnabled } from './Summary.ts';
 
 
 /** 插件名。 */
 export const name = 'context-fit';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
-export const version = '1.1.4';
+export const version = '1.1.6';
 
 /** Resources 读模型上限，Sessions 开小会话，db 管压缩表。 */
 export const inject = ['resources', 'sessions', 'db'];
@@ -60,14 +60,19 @@ interface ModelWindow {
   fit: number;
 }
 
-/**
- * 估 token：JSON 以后的 UTF-8 字节数 ÷ 3（中文一个字约 1 token、3 字节；英文估偏多，宁可多留余量）。
- * @param value 任意可 JSON 化的东西。
- * @returns 估算占用的 token 数（向上取整）。
- */
-export function estimate(value: unknown): number {
-  return Math.ceil(Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8') / 3);
+/** 模型目录给的登记窗口在本进程里记多久，毫秒：同一个模型一分钟内不再每一步都问一遍。 */
+const WINDOW_TTL_MS = 60_000;
+
+/** 记下的一个模型窗口。 */
+interface CachedWindow {
+  /** 什么时候记的（毫秒时间戳），过了 WINDOW_TTL_MS 就重问。 */
+  at: number;
+  /** 当时查到的两个窗口。 */
+  window: ModelWindow;
 }
+
+/** 估 token，实现在 Compress.ts（压缩限长也用它）。 */
+const estimate = compressModule.estimate;
 
 /**
  * 一条工具结果换成“已省略”。
@@ -162,6 +167,11 @@ export function fit(messages: piAi.Message[], budget: number, keep: number): Fit
     current = [notice, ...current.slice(from)];
     tokens = estimate(current);
   }
+
+  //G 能丢的都丢了还超（系统提示和工具定义本身就占满了，或最后一段太长）：照发，打一行好定位。
+  if (tokens > budget) {
+    console.warn(`context-fit：裁完还超预算（约 ${String(tokens)} > ${String(budget)} token），照原样发出`);
+  }
   return { messages: current, tokens, trimmed: count, dropped };
 }
 
@@ -182,12 +192,23 @@ function readConfig(config: Record<string, unknown> | undefined): Config {
 
 /**
  * 先查模型目录，再查经过 Resources 校验的手写配置。
+ * 目录给了登记值（不是估算）才记进 cache，一分钟内同一个模型直接用；目录没就绪、查不到、只有估算值都不记，下次照问。
  * @param ctx 插件上下文，用来查模型目录和配置。
+ * @param cache 本插件 apply 里建的窗口缓存：模型名 → 记下的窗口。
  * @param modelName 要发请求的供应商名/模型 ID。
  * @param signal 会话的取消信号，启动检查时省略。
  * @returns 压缩使用已登记的窗口，裁剪也可使用既有的估算值。
  */
-async function readModelWindow(ctx: cordis.Context, modelName: string, signal?: AbortSignal): Promise<ModelWindow> {
+async function readModelWindow(
+  ctx: cordis.Context,
+  cache: Map<string, CachedWindow>,
+  modelName: string,
+  signal?: AbortSignal,
+): Promise<ModelWindow> {
+  //M 一分钟内问过、目录给的是登记值：直接用记下的，不再发事件。
+  const cached = cache.get(modelName);
+  if (cached !== undefined && Date.now() - cached.at < WINDOW_TTL_MS) return cached.window;
+
   const lookup = { action: 'find', model: modelName } as const;
   const options = { signal };
   //M 两个处理阶段共用这次目录查询。会话取消时结束等待。
@@ -200,10 +221,23 @@ async function readModelWindow(ctx: cordis.Context, modelName: string, signal?: 
   );
   const info = result.reply?.info;
   const listed = info?.contextWindow ?? 0;
-  if (listed > 0 && info?.contextWindowEstimated !== true) return { registered: listed, fit: listed };
+  if (listed > 0 && info?.contextWindowEstimated !== true) {
+    //M 目录给的是登记值：记下来，一分钟内同一个模型不再问。
+    const window = { registered: listed, fit: listed };
+    cache.set(modelName, { at: Date.now(), window });
+    return window;
+  }
+
+  //G 模型名没有“供应商/”：不切（slice(0, -1) 会砍掉最后一个字），报一行警告，记一分钟免得每步都报。
+  const slash = modelName.indexOf('/');
+  if (slash < 0) {
+    console.warn(`context-fit：模型名 ${modelName} 没有“供应商/”前缀，查不到窗口，这一分钟不压缩也不裁剪`);
+    const none = { registered: 0, fit: 0 };
+    cache.set(modelName, { at: Date.now(), window: none });
+    return none;
+  }
 
   //M 从原始配置识别明确登记的窗口，Resources 的校验结果会为省略项补估算值。
-  const slash = modelName.indexOf('/');
   const providerName = modelName.slice(0, slash);
   const modelId = modelName.slice(slash + 1);
   const rawProvider = utils.getField(ctx.resources.raw['providers'], providerName);
@@ -220,8 +254,12 @@ async function readModelWindow(ctx: cordis.Context, modelName: string, signal?: 
   return { registered: 0, fit: model.contextWindow };
 }
 
-/** 启动时汇总默认模型、手写模型和兼容配置中的未登记窗口。 */
-async function warnMissingWindows(ctx: cordis.Context): Promise<void> {
+/**
+ * 启动时汇总默认模型、手写模型和兼容配置中的未登记窗口。
+ * @param ctx 插件上下文。
+ * @param cache 窗口缓存，和请求共用：启动时查到的登记值，第一步就不用再问。
+ */
+async function warnMissingWindows(ctx: cordis.Context, cache: Map<string, CachedWindow>): Promise<void> {
   const config = ctx.resources.config;
   const names = new Set([config.defaultModel]);
   //M 纳入所有在 providers 里列出或自定义兼容方式的模型。
@@ -235,7 +273,7 @@ async function warnMissingWindows(ctx: cordis.Context): Promise<void> {
   const missing: string[] = [];
   for (const name of names) {
     //M 使用与请求相同的登记规则，查不到就加入本次启动的汇总。
-    const window = await readModelWindow(ctx, name);
+    const window = await readModelWindow(ctx, cache, name);
     if (window.registered === 0) {
       missing.push(name);
     }
@@ -274,12 +312,15 @@ export function apply(ctx: cordis.Context, raw: Record<string, unknown> | undefi
     compress = new compressModule.Compress(ctx, compressConfig, orm);
   }
 
-  //M 启动时等模型目录监听挂好，再汇总一次窗口登记。
-  ctx.once('ready', () => warnMissingWindows(ctx));
+  //M 模型窗口缓存：模型名 → 记下的窗口，只在本插件这次挂载里有效（拔掉插件就扔）。
+  const windowCache = new Map<string, CachedWindow>();
 
-  //M 查一次模型窗口，先按登记值压缩，再按裁剪预算处理请求。
+  //M 启动时等模型目录监听挂好，再汇总一次窗口登记。
+  ctx.once('ready', () => warnMissingWindows(ctx, windowCache));
+
+  //M 查一次模型窗口（一分钟内同模型用缓存），先按登记值压缩，再按裁剪预算处理请求。
   ctx.on('session/before-model', async (request) => {
-    const windows = await readModelWindow(ctx, request.model, request.signal);
+    const windows = await readModelWindow(ctx, windowCache, request.model, request.signal);
     if (request.signal.aborted) return;
 
     if (compress !== undefined) {

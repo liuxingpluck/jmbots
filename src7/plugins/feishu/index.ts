@@ -43,11 +43,13 @@ import * as recall from './Recall.ts';
 import { FeishuReply } from './Reply.ts';
 
 /** sendText 交回的回执：accepted 文字和文件都发了，partial 有文件没发出去（reason 写哪几个）。 */
-interface SendTextReceipt {
+export interface SendTextReceipt {
   /** 文字和附件的发送状态。 */
   status: 'accepted' | 'partial' | 'uncertain' | 'rejected';
   /** 发送失败时的原因。 */
   reason: string;
+  /** 文字正文发成后飞书返回的消息号（如 om_xxx）。 */
+  messageId?: string;
 }
 
 
@@ -66,7 +68,7 @@ export const name = 'feishu';
 //M 1.2.2：listen: judge 的群改由 bots 的群攒批判断（一批一次，来往流水的判断结果由 bot/judged 补记）；本插件只改说明。
 //M 1.2.3：群里回话隐去本机绝对路径（mentioned 里 hideLocalPaths）；feishu_send_file 认这一轮的授权目录（用户 #301）。
 //M 1.2.4：拼标准消息时带上 accountName（应用配置的 bot 名），聊天归档的账号目录用它。
-//M 1.3.0：拉群聊历史（HistoryPull.ts）：POST /api/feishu/history、机器人新进群自动拉最近 history_on_join 条，发 channel/history 给 memory 补记；不触发会话。
+//M 1.3.0：拉群聊历史（HistoryPull.ts）：POST /api/feishu/history 及进群自动拉最近 history_on_join 条，发 channel/history 补记。
 //M 1.3.1：收发文档路径按机器人和回话地址定位工作区。
 //M 1.3.2：是不是群、点卡片的是不是本人改问 channels 的 isGroup、getSpeakerRole（从 utils/Workspace.ts 挪过去的），判断不变。
 //M 1.3.3：新工具 feishu_recall（Recall.ts）撤回机器人自己发的消息；feishu_doc 群里建文档后给这个群阅读权限；提示里加“群里要文件优先发 Word”。
@@ -76,7 +78,8 @@ export const name = 'feishu';
 //M 1.3.6：groups 每项可写 judge_helper（#318）：listen: judge 的群判定要接话时，地址带 judgeHelper，bots 把这批话转给该外部助手。
 //M 1.3.7：配置校验搬进 Config.ts（改用 Checks.ts 的公共校验）；构造函数只做登记，建表、建客户端、发文件、关连接挪成方法（云端20 第 2、3 条）。
 //M 1.3.8：post 富文本入站剥除对本机器人的 @名字（保留他人 @提及），at 标签缺 user_name 时回退 user_id 且不叠双 @。
-export const version = '1.3.8';
+//M 1.3.9：新增 feishu/recall-message 温和撤回占位消息事件；sendText 返回文本 messageId；发件箱单份失败进 failed/ 不卡整轮并支持多应用路由。
+export const version = '1.3.9';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
@@ -113,6 +116,18 @@ declare module 'cordis' {
      * 谁接：src7/plugins/relay/index.ts 的 Relay.sendFile
      */
     'feishu/send-file-result'(result: SendFileResult): void;
+    /**
+     * 温和撤回飞书机器人刚发出的占位消息（如 relay 真回复发出后撤回“已转给…”）。
+     * 谁发：src7/plugins/relay/index.ts 的 Relay.recallAckMessage
+     * 谁接：src7/plugins/feishu/index.ts 的 Feishu.constructor
+     */
+    'feishu/recall-message'(request: RecallMessageRequest): void | Promise<void>;
+    /**
+     * 返回占位消息撤回结果；无撤回权限、超时或超撤回时限均回 ok: false，绝不阻断主流程。
+     * 谁发：src7/plugins/feishu/index.ts 的 Feishu.constructor
+     * 谁接：src7/plugins/relay/index.ts 的 Relay.recallAckMessage
+     */
+    'feishu/recall-message-result'(result: RecallMessageResult): void;
   }
 }
 
@@ -312,6 +327,26 @@ interface SendFileResult extends requestEventModule.ResultEnvelope {
   error?: string;
 }
 
+/** 撤回单条机器人占位消息的请求载荷。 */
+export interface RecallMessageRequest extends requestEventModule.RequestEnvelope {
+  /** 发出占位消息的机器人名。 */
+  bot: string;
+  /** 飞书消息号（如 om_xxx）。 */
+  messageId: string;
+  /** 所属应用号；不填时在单应用机器人下自动选用。 */
+  appId?: string;
+  /** 可选所属聊天号，用于核验与同步标记本地聊天日志。 */
+  chatId?: string;
+}
+
+/** 撤回单条机器人占位消息的回执。 */
+export interface RecallMessageResult extends requestEventModule.ResultEnvelope {
+  /** 是否已成功撤回（含已被删除）。 */
+  ok: boolean;
+  /** 未撤成时的原因说明。 */
+  error?: string;
+}
+
 /**
  * 所有 SDK 客户端共用的 HTTP 实例。Feishu.createClients 调。
  * 每个请求自己限时（HTTP_TIMEOUT_MS），挂住的请求到点断开、算不确定，不让等它的会话一直等。
@@ -417,6 +452,13 @@ export class Feishu {
       (request) => this.onSendFile(request),
       requestOptions,
     );
+    requestEventModule.onRequestEvent(
+      this.ctx,
+      'feishu/recall-message',
+      'feishu/recall-message-result',
+      (request) => this.onRecallMessage(request),
+      requestOptions,
+    );
 
     //M 被拔掉时关掉每条长连接。ctx.effect：先执行一次（这里什么也不做），交回的函数在插件被拔掉时 Cordis 来调。
     this.ctx.effect(() => () => {
@@ -471,6 +513,24 @@ export class Feishu {
     //M 等上传并发送完成，再交回新消息号。
     const messageId = await this.sendFile(request.bot, request.chatId, request.filePath, options);
     return { ok: true, messageId };
+  }
+
+  /**
+   * feishu/recall-message：温和撤回机器人刚发出的占位消息，权限不足或过期仅回 ok: false。
+   */
+  private async onRecallMessage(request: RecallMessageRequest): Promise<Omit<RecallMessageResult, 'requestId'>> {
+    const candidates = [...this.apps.values()]
+      .filter((app) => app.config.bot === request.bot || app.config.bots?.includes(request.bot))
+      .map((app) => app.config.appId);
+    let appId = request.appId ?? '';
+    if (appId === '' && candidates.length === 1) {
+      appId = candidates[0] ?? '';
+    }
+    //G 无论是否显式传了 appId，都必须确认归属该 bot（在 candidates 内）且应用已加载。
+    if (appId === '' || !candidates.includes(appId) || !this.apps.has(appId)) {
+      return { ok: false, error: `无法确定归属机器人 ${request.bot} 的飞书应用：${request.appId ?? request.bot}` };
+    }
+    return recall.recallBotMessage(this, appId, request.chatId, request.messageId);
   }
 
   /**
@@ -690,7 +750,8 @@ export class Feishu {
     } catch (error) {
       //M 查询自身信息失败仅记日志不阻断连线，后续群 @ 退回模糊放行策略。
       const logTime = textModule.formatLocalTime(Date.now(), 'date');
-      console.error(`${logTime} 飞书 ${app.config.appId} 没查到机器人自己的 open_id（群里有 @ 就回）：${textModule.getErrorMessage(error)}`);
+      const errText = textModule.getErrorMessage(error);
+      console.error(`${logTime} 飞书 ${app.config.appId} 没查到机器人自己的 open_id（群里有 @ 就回）：${errText}`);
     }
   }
 
@@ -761,8 +822,9 @@ export class Feishu {
     }
     //M 群里的话：@名字 换成飞书的 <at> 标签，才真的 @ 到人。
     body = this.mentioned(address, body);
+    let messageId: string | undefined;
     if (body.trim() !== '') {
-      await media.message(this, address.appId, address.chatId, 'text', { text: body }, address.messageId);
+      messageId = await media.message(this, address.appId, address.chatId, 'text', { text: body }, address.messageId);
     }
 
     //M 文件一个个发；发不出去的补一句，不挡后面的。
@@ -784,9 +846,9 @@ export class Feishu {
     }
 
     //M 有文件没发出去：只发了一部分。
-    if (failed.length > 0) return { status: 'partial', reason: failed.join('；') };
+    if (failed.length > 0) return { status: 'partial', reason: failed.join('；'), messageId };
 
-    return { status: 'accepted', reason: '' };
+    return { status: 'accepted', reason: '', messageId };
   }
 
   /**
@@ -991,7 +1053,8 @@ export function apply(ctx: cordis.Context, config: unknown): void {
 
   //M http 挂了才有拉群历史的接口：POST /api/feishu/history { chat_id, app_id?, limit? }，在入口校验一次，再交给 HistoryPull.pull。
   if (http !== undefined) {
-    http.app.post<{ Body: { chat_id?: unknown; app_id?: unknown; limit?: unknown } }>('/api/feishu/history', async (request, reply) => {
+    type HistoryBody = { chat_id?: unknown; app_id?: unknown; limit?: unknown };
+    http.app.post<{ Body: HistoryBody }>('/api/feishu/history', async (request, reply) => {
       const body = request.body ?? {};
       const chatId = body.chat_id;
       if (typeof chatId !== 'string' || chatId === '') return reply.code(400).send({ error: '要给 chat_id（群号）' });
@@ -1001,12 +1064,18 @@ export function apply(ctx: cordis.Context, config: unknown): void {
       if (feishu.config.apps.length > 1 && body.app_id === undefined) {
         return reply.code(400).send({ error: '配了几个飞书应用，要给 app_id' });
       }
-      const app = typeof appId === 'string' ? feishu.apps.get(appId) : undefined;
+      let app: AppState | undefined;
+      if (typeof appId === 'string') {
+        app = feishu.apps.get(appId);
+      }
       if (app === undefined) return reply.code(400).send({ error: `没有飞书应用 ${String(appId)}` });
 
+      const maxLimit = configModule.MAX_HISTORY_LIMIT;
       const limit = body.limit ?? configModule.DEFAULT_HISTORY_LIMIT;
-      const limitValid = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= configModule.MAX_HISTORY_LIMIT;
-      if (!limitValid) return reply.code(400).send({ error: `limit 要写 1 到 ${String(configModule.MAX_HISTORY_LIMIT)} 的整数` });
+      const limitValid = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= maxLimit;
+      if (!limitValid) {
+        return reply.code(400).send({ error: `limit 要写 1 到 ${String(maxLimit)} 的整数` });
+      }
 
       //M 拉的过程出错（权限不够等）把中文原因带回去，不悄悄失败。
       try {

@@ -18,7 +18,8 @@ import * as workspaceModule from '../../utils/Workspace.ts';
  * guest（飞书上没登记、或登记成 guest 的人，比如群里用户的朋友）说的那一轮只能用的工具：查、读、搜、答。
  * 不在表里的一律不给，新插件登记的工具默认算动手，要放给别人用得在这里加。每个工具做什么、为什么这么分，
  * 见 docs/开发进度/131_群聊转话_20261117.md。
- * 不给的：exec、write、edit、feishu_send_file、feishu_doc、feishu_doc_delete、feishu_recall（撤回机器人自己发的消息）、image_generate、memory（会写记忆）、
+ * 不给的：exec、write、edit、feishu_send_file、feishu_doc、feishu_doc_delete、
+ *   feishu_recall（撤回机器人自己发的消息）、image_generate、memory（会写记忆）、
  * reply（话里 @路径 会把本机文件发出去）、notify_user、agent_task、stop_session。
  * 也不给 list_sessions（可能列出没有客户归属的旧后台会话）。
  * memory_search、memory_get 给，检索和原文查询都限于本轮已授权的渠道归属。
@@ -95,10 +96,16 @@ export type Reply = { approve: boolean; id?: number; all?: boolean } | { list: t
 
 
 /** 算“同意”的说法：只收说得明确的；“好”“可以”这种可能在答别的。 */
-const APPROVE_WORDS = new Set(['同意', '同意执行', '同意執行', '放行', '批准', '执行', '執行', '确认执行', '確認執行', 'approve', 'approved', 'allow', 'approuver', 'autoriser']);
+const APPROVE_WORDS = new Set([
+  '同意', '同意执行', '同意執行', '放行', '批准', '执行', '執行', '确认执行', '確認執行',
+  'approve', 'approved', 'allow', 'approuver', 'autoriser',
+]);
 
 /** 算“拒绝”的说法：拒绝错了只是多问一句，可以宽一点。 */
-const REJECT_WORDS = new Set(['拒绝', '拒絕', '不同意', '不行', '不要', '别执行', '別執行', '不要执行', '不要執行', '取消', 'reject', 'rejected', 'deny', 'no', 'refuser', 'non']);
+const REJECT_WORDS = new Set([
+  '拒绝', '拒絕', '不同意', '不行', '不要', '别执行', '別執行', '不要执行', '不要執行', '取消',
+  'reject', 'rejected', 'deny', 'no', 'refuser', 'non',
+]);
 
 /** 说的是待确认。 */
 const CARD_WORDS = /待审核|待審核|待确认|待確認|审核卡|審核卡|审批|審批|确认卡|確認卡|approvals?|validations?/;
@@ -129,6 +136,14 @@ export function parseCommand(command: string): ParsedCommand {
 }
 
 
+/** 密钥文件名，前后要是分隔符（touchesSecret 用）。 */
+const SECRET_FILE = new RegExp([
+  String.raw`(?:^|[\\/\s"'=])`,
+  String.raw`(config\.ya?ml|\.env(?!\.example)(?:\.[\w-]+)?|secrets\.ya?ml|\.credentials\.\w+|credentials\.json)`,
+  String.raw`(?=$|[\s"'&|;>)])`,
+].join(''), 'i');
+
+
 /**
  * 命令碰没碰密钥文件（config.yaml、.env、secrets.yaml、credentials）。config.example.yaml、.env.example 不算。
  * @param command 原命令。
@@ -136,7 +151,7 @@ export function parseCommand(command: string): ParsedCommand {
  */
 export function touchesSecret(command: string): string | undefined {
   //M 在命令里找密钥文件名（前后要是分隔符，免得把 config.example.yaml 当成 config.yaml）。
-  const found = /(?:^|[\\/\s"'=])(config\.ya?ml|\.env(?!\.example)(?:\.[\w-]+)?|secrets\.ya?ml|\.credentials\.\w+|credentials\.json)(?=$|[\s"'&|;>)])/i.exec(command);
+  const found = SECRET_FILE.exec(command);
   return found?.[1];
 }
 
@@ -191,6 +206,13 @@ function isProjectShot(command: string, cwd: string, runtimeRoot: string | undef
 }
 
 
+/** bun、node、python、tsx 跑的脚本名（readScript 用）。 */
+const RUN_SCRIPT = new RegExp([
+  String.raw`^(?:bun(?:\.cmd)?|node|python3?|py|tsx)\s+(?:run\s+)?`,
+  String.raw`("[^"]+\.(?:ts|js|mjs|cjs|py)"|\S+\.(?:ts|js|mjs|cjs|py))(?:\s|$)`,
+].join(''), 'i');
+
+
 /**
  * 命令要跑的本地脚本（bun/node/python/py/tsx 后面的 .ts/.js/.mjs/.cjs/.py，pwsh -File 后面的，或直接 .cmd/.bat），读前 4000 字。
  * @param command 原命令。
@@ -201,7 +223,7 @@ export function readScript(command: string, cwd: string): { file: string; conten
   //M 去掉开头的 cd，再按 bun/node/pwsh/.cmd 几种写法认出要跑的脚本名。
   const { cdDir, rest } = parseCommand(command);
   const target =
-    /^(?:bun(?:\.cmd)?|node|python3?|py|tsx)\s+(?:run\s+)?("[^"]+\.(?:ts|js|mjs|cjs|py)"|\S+\.(?:ts|js|mjs|cjs|py))(?:\s|$)/i.exec(rest)?.[1] ??
+    RUN_SCRIPT.exec(rest)?.[1] ??
     /^(?:pwsh|powershell)(?:\.exe)?\s+(?:-\w+\s+)*-File\s+("[^"]+"|\S+)/i.exec(rest)?.[1] ??
     /^("[^"]+\.(?:cmd|bat)"|\S+\.(?:cmd|bat))(?:\s|$)/i.exec(rest)?.[1];
   if (target === undefined) return undefined;
@@ -262,13 +284,22 @@ export function parseReply(text: string): Reply | undefined {
 const DELETE = /\b(?:rd|rmdir|del|erase)\b|\brm\b[^&|;\n]*\s-[a-z]*[rf]|\b(?:Remove-Item|ri)\b/i;
 
 /** 删注册表（reg delete、Remove-ItemProperty、Remove-Item HKLM:\…）。 */
-const REGISTRY_DELETE = /\breg(?:\.exe)?\s+delete\b|\bRemove-ItemProperty\b|\b(?:Remove-Item|ri)\b[^&|;\n]*\bHK(?:LM|CU|CR|U|CC):/i;
+const REGISTRY_DELETE = new RegExp([
+  String.raw`\breg(?:\.exe)?\s+delete\b`,
+  String.raw`|\bRemove-ItemProperty\b`,
+  String.raw`|\b(?:Remove-Item|ri)\b[^&|;\n]*\bHK(?:LM|CU|CR|U|CC):`,
+].join(''), 'i');
 
 /** 格式化磁盘。 */
 const FORMAT = /\bformat(?:\.com)?\s+[a-z]:/i;
 
 /** 系统目录（盘符根、Windows、Program Files、ProgramData、System32；/etc、/usr……）。 */
-const SYSTEM_DIR = /^(?:[a-z]:[\\/]*(?:\*[^\\/]*)?$|[a-z]:[\\/]+(?:windows|program files(?: \(x86\))?|programdata)(?:[\\/]|$)|.*[\\/]system32(?:[\\/]|$)|\/(?:$|etc|usr|bin|sbin|boot|lib|lib64|sys|proc|System|Library)(?:\/|$))/i;
+const SYSTEM_DIR = new RegExp([
+  String.raw`^(?:[a-z]:[\\/]*(?:\*[^\\/]*)?$`,
+  String.raw`|[a-z]:[\\/]+(?:windows|program files(?: \(x86\))?|programdata)(?:[\\/]|$)`,
+  String.raw`|.*[\\/]system32(?:[\\/]|$)`,
+  String.raw`|\/(?:$|etc|usr|bin|sbin|boot|lib|lib64|sys|proc|System|Library)(?:\/|$))`,
+].join(''), 'i');
 
 /** 命令里的绝对路径（Windows 盘符、带引号的带空格路径、POSIX 根）。 */
 const ABS_PATH = /"[a-z]:[\\/][^"]*"|[a-z]:[\\/][^\s"'|&<>;]*|(?<=^|[\s"'=])\/[^\s"'|&<>;]*/gi;
@@ -284,6 +315,12 @@ const UP_OR_ROOTED = /^\\|^[a-z]:(?![\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)/i;
 
 /** 把命令拆成一段段：按空白、引号、管道、重定向、分号、等号切开。 */
 const TOKEN_SPLIT = /[\s"'|&<>;=]+/;
+
+/** 删东西的命令名（一条小命令的第一个词）：getDeleteArgs 用来认出哪几段是删除。 */
+const DELETE_WORD = /^(?:rd|rmdir|del|erase|rm|remove-item|ri)$/i;
+
+/** 命令里的一个个词：带引号的整段算一个（"D:\x y\z" 不拆开）。 */
+const WORD = /"[^"]*"|'[^']*'|[^\s"']+/g;
 
 
 /**
@@ -329,15 +366,11 @@ export function getUntrusted(command: string, cwd: string, dirs: string[]): stri
   if (ENV_REF.test(command)) return '命令里写了环境变量或 ~，算不出动到哪里';
 
   //M 命令开头 cd 过去的目录算这条命令的执行目录（相对的照 cwd 解开）。
-  const { cdDir } = parseCommand(command);
-  let base = cwd;
-  if (cdDir !== undefined) {
-    base = path.resolve(cwd, cdDir);
-  }
+  const base = getCommandBase(command, cwd);
 
   //M 要查的：真正跑命令的目录（开头 cd 过去了就是 cd 到的目录，原来的执行目录不再用：cd 不成功 && 后面不跑）、
   //M   绝对路径，和往上走、从盘根算的相对路径（照 cd 后的目录解开）。授权目录在工作区外面时，模型照提示先 cd 过去（用户 #301）。
-  const relatives = command.split(TOKEN_SPLIT).filter((token) => UP_OR_ROOTED.test(token));
+  const relatives = getUpPaths(command, base);
   const absolutes = getAbsPaths(command);
   const targets = [base, ...absolutes, ...relatives];
 
@@ -369,21 +402,95 @@ export function mustAsk(command: string, dataRoot: string, cwd: string): string 
   const norm = (value: string): string => value.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   const root = norm(dataRoot);
 
-  //M 命令里写的绝对路径（getAbsPaths：Windows 的开关、网址不算，/etc 这种系统目录照算）。
-  const found = getAbsPaths(command);
-  let targets = [cwd];
+  //M 命令开头 cd 过去的目录算执行目录：先 cd .. 上去再删，照上去以后的目录算。
+  const base = getCommandBase(command, cwd);
+
+  //M 要查的路径只取 cd 后面真正要跑的那段（cd 到的目录本身不是删的东西）：
+  //M   写的绝对路径（getAbsPaths：Windows 的开关、网址不算，/etc 这种系统目录照算），
+  //M   往上走（..）、从盘根算的相对路径：在工作区里 rd /s /q ..\..\memory 删的是数据目录，
+  //M   删命令后面的参数：cd D:\AIJMBots && rd /s /q jmbotsData\memory 删的也是数据目录（云端 27 M2）。
+  const rest = parseCommand(command).rest;
+  const absolutes = getAbsPaths(rest);
+  const ups = getUpPaths(command, base);
+  const args = getDeleteArgs(command, base);
+  const found = [...absolutes, ...ups, ...args];
+  let targets = [base];
   if (found.length > 0) {
     targets = found;
   }
   for (const target of targets) {
-    //G 删的是系统目录里的东西：直接要人审。
-    if (SYSTEM_DIR.test(target)) return `删系统目录里的东西（${target}），要你亲自确认`;
+    //M 先照执行目录解开再比：带引号、含空格又含 .. 的绝对路径（"D:\x y\..\jmbotsData"）也落回真实位置（云端 27 M1）。
+    const full = path.resolve(base, target);
+
+    //G 删的是系统目录里的东西：直接要人审（/etc 这种在 Windows 上解开会变样，原样的也查一次）。
+    const isSystem = SYSTEM_DIR.test(target) || SYSTEM_DIR.test(full);
+    if (isSystem) return `删系统目录里的东西（${target}），要你亲自确认`;
+
+    //G 删的是数据目录的上级：整个数据目录跟着没了，要人审（云端 27 M2：rd /s /q ..\..\..\..）。
+    const t = norm(full);
+    if (root.startsWith(t + '\\')) return `删数据目录的上级（${full}），整个数据目录会跟着没了，要你亲自确认`;
 
     //G 删的是数据目录里的东西（机器人工作区除外）：要人审。
-    const t = norm(target);
     const inData = t === root || t.startsWith(root + '\\');
     const inWorkspace = /^bots\\[^\\]+\\workspace(?:\\|$)/.test(t.slice(root.length + 1));
-    if (inData && !inWorkspace) return `删数据目录里的东西（${target}），要你亲自确认`;
+    if (inData && !inWorkspace) return `删数据目录里的东西（${full}），要你亲自确认`;
   }
   return undefined;
+}
+
+
+/**
+ * 一条命令真正在哪个目录跑：开头 cd 过去了就是 cd 到的目录（相对的照 cwd 解开），没 cd 就是 cwd。
+ * @param command 原命令。
+ * @param cwd 执行目录，绝对路径。
+ * @returns 绝对路径。getUntrusted、mustAsk 用。
+ */
+function getCommandBase(command: string, cwd: string): string {
+  const { cdDir } = parseCommand(command);
+  if (cdDir === undefined) return cwd;
+
+  return path.resolve(cwd, cdDir);
+}
+
+
+/**
+ * 命令里往上走（..）、从盘根算的相对路径，照 base 解开成绝对路径。开头的 cd 已经算进 base，不再拿来解一遍。
+ * @param command 原命令。
+ * @param base 执行目录（getCommandBase 算的）。
+ * @returns 绝对路径；没有是空数组。getUntrusted、mustAsk 用同一个口径。
+ */
+function getUpPaths(command: string, base: string): string[] {
+  //M 只看 cd 后面真正要跑的那段：cd ..\.. 的 .. 已经在 base 里了，再解一次就多走了几层。
+  const rest = parseCommand(command).rest;
+  const tokens = rest.split(TOKEN_SPLIT).filter((token) => UP_OR_ROOTED.test(token));
+  return tokens.map((token) => path.resolve(base, token));
+}
+
+
+/**
+ * 删命令（rd、del、rm、Remove-Item……）后面写的路径参数，照 base 解开成绝对路径。
+ * 开关（- 或 / 开头）不算；带引号的整段算一个，去掉引号。只看以删命令开头的那几段小命令（按 &、|、; 切开）。
+ * @param command 原命令。
+ * @param base 执行目录（getCommandBase 算的）。
+ * @returns 绝对路径；没有是空数组。mustAsk 用。
+ */
+function getDeleteArgs(command: string, base: string): string[] {
+  //M 只看 cd 后面那段，按 &、|、; 切成一条条小命令。
+  const rest = parseCommand(command).rest;
+  const found: string[] = [];
+  for (const part of rest.split(/[&|;]+/)) {
+    //G 第一个词不是删命令的小命令不看（echo、dir 这些的参数不是删的东西）。
+    const words = part.match(WORD) ?? [];
+    const name = words[0] ?? '';
+    if (!DELETE_WORD.test(name)) continue;
+
+    //M 剩下的词去掉引号，开关跳过，照执行目录解开。
+    for (const word of words.slice(1)) {
+      const item = word.replace(/^["']|["']$/g, '');
+      if (/^[-/]/.test(item) && !SYSTEM_DIR.test(item)) continue;
+
+      found.push(path.resolve(base, item));
+    }
+  }
+  return found;
 }
