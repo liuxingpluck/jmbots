@@ -23,6 +23,7 @@ import * as exec from './exec/index.ts';
 import * as fakeModel from './fake-model/index.ts';
 import * as feishu from './feishu/index.ts';
 import * as fileTools from './file-tools/index.ts';
+import * as frpc from './frpc/index.ts';
 import * as http from './http/index.ts';
 import * as imageGen from './image-gen/index.ts';
 import * as journal from './journal/index.ts';
@@ -74,7 +75,7 @@ export interface PluginModule {
 //   模型与上下文：model-catalog（已并入原 model-fallback、usage、model-notes，模型评价在 /model-notes/）
 //     context-fit（已并入原 compress、summary）
 //   记忆和知识：memory（已并入原 memory-graph）；技能在 file-tools 里
-//   管理接口：settings、base-bridge（已并入原 notify、update-watch）、desktop
+//   管理接口：settings、base-bridge（已并入原 notify、update-watch）、desktop、frpc
 //   记录和调试：tutorial（写在 plugins 段第一个；11-17 由 flow、boot-trail、trace 合成）、journal（已并入原 files-mirror）
 /** 自带插件：名字 → 模块。名字就是 config.yaml 里写的那个，也是文件夹名。 */
 export const BUILT_IN: Record<string, PluginModule> = {
@@ -108,6 +109,7 @@ export const BUILT_IN: Record<string, PluginModule> = {
   'assist': assist,
   'base-bridge': baseBridge,
   'desktop': desktop,
+  'frpc': frpc,
   'wechat-kefu': wechat,
 };
 

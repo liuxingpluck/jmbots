@@ -33,6 +33,7 @@ function getQuickPageItems(t: i18n.Translate): QuickPageItem[] {
     { href: '/memory/', label: t('记忆'), plugin: 'memory' },
     { href: '/graph/', label: t('图谱'), plugin: 'memory' },
     { href: '/work-decision/', label: t('工作决策'), plugin: 'work-decision' },
+    { href: '/frpc/', label: t('外网隧道'), plugin: 'frpc' },
     { href: '/model-notes/', label: t('模型'), plugin: 'model-catalog' },
     { href: '/wechat-kefu/', label: t('客服'), plugin: 'wechat-kefu' },
   ];

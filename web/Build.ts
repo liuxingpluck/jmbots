@@ -28,6 +28,7 @@ const result = await Bun.build({
     path.join(root, 'web', 'tutorial.html'),
     path.join(root, 'web', 'model-notes.html'),
     path.join(root, 'web', 'work-decision.html'),
+    path.join(root, 'web', 'frpc.html'),
   ],
   outdir: outDir,
   target: 'browser',
