@@ -79,7 +79,7 @@ export function copyText(text: string, said: (word: string) => void): void {
 
 
 /**
- * 一个键在整个值里的路径（和后端 getDiff 给的一样，一串键名）。
+ * 一个键在整个值里的路径（和后端 Walk.ts 的 getDiff 给的一样，一串键名）。
  * @param keys 库给的路径：有的版本含这个键自己，有的只到上一层，最后一个不是它就补上。
  * @param keyName 这个键。
  */

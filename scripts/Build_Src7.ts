@@ -3,7 +3,7 @@
  * 网页、出厂提示词和 src7 源码原文（给 /flow/“看启动”取注释）打进程序里。必须用 --out 指定输出目录。
  * --out 可以是运行时的 updates/：只放带版本号的那一个，基地扫到后由 POST :30085/update/apply 换版；
  * 运行时目录本身、jmbotsDataS4（旧正式版）、dist/release* 不许写。
- * 默认先做类型检查，显式传 --skip_checks yes 可跳过。
+ * 默认先做类型检查和教程行号检查，显式传 --skip_checks yes 可跳过。
  *
  * 运行：bun scripts/Build_Src7.ts --out <输出目录> [--skip_checks yes]
  */
@@ -251,6 +251,8 @@ async function main(): Promise<void> {
   if (skipChecks !== 'yes') {
     const startedAt = Date.now();
     step('类型检查', ['x', 'tsc', '-p', 'tsconfig.json']);
+    //M 教程和说明里的行号越界、漂移或文件缺失算确定问题，阻断换版；只读，不自动修。
+    step('教程行号', ['ztools/check-lines/Check_Lines.ts']);
     console.log(`检查一共 ${seconds(startedAt)} 秒`);
   }
   //M 中间产物放项目自己的 cache/，不落在 --out 里，免得基地扫 updates/ 时看到。

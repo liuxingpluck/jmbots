@@ -161,7 +161,7 @@ export function touchesSecret(command: string): string | undefined {
 
 /**
  * 是不是项目自己的检查或编译，而且没用 &、|、; 接别的命令（末尾的 2>&1 可以有）：
- *   bun run typecheck、typecheck:src7、lint、test、test:src7；bun test …；
+ *   bun run typecheck、typecheck:src7、lint、test、test:src7、check:lines；bun test …；
  *   bun scripts/Build_Src7.ts，参数只许“--键 值”，值可以是带中文的路径。
  * 外面的程序（比如在别的机器上写代码的 AI）经 POST /api/run 让 jmbots 编译 src7，靠这条不问人直接跑（用户 11-16 定）。
  * @param command 原命令。
@@ -178,7 +178,7 @@ export function isProjectCheck(command: string, cwd?: string, runtimeRoot?: stri
 
   //M 拼出允许的几种命令的样子，整条对得上才算。typecheck:src7、test:src7 的后缀是源码根目录名（src7/utils/SourceDir.ts）。
   const suffix = sourceDirModule.SOURCE_DIR;
-  const run = String.raw`run\s+(?:typecheck(?::${suffix})?|lint|test(?::${suffix})?)`;
+  const run = String.raw`run\s+(?:typecheck(?::${suffix})?|lint|test(?::${suffix})?|check:lines)`;
   const test = String.raw`test(?:\s+[\w./\\-]+)*`;
   const script = String.raw`scripts[\\/]Build_Src7\.ts(?:\s+--\w+\s+[\p{L}\p{N}_.:\\/-]+)*`;
   const pattern = new RegExp(String.raw`^bun(?:\.cmd)?\s+(?:${run}|${test}|${script})$`, 'iu');

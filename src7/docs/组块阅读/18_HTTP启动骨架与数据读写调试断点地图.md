@@ -807,7 +807,7 @@
 773
 774	  /**
 775	   * 往对话后面接一条：存库，通知大家。
-776	   * @param message 接进对话并通知插件的新消息。`Message` 的四种形状见本文件 L96。
+776	   * @param message 接进对话并通知插件的新消息。`Message` 的四种形状见 `session/new-message` 的 @param message。
 777	   */
 778	  private append(message: piAi.Message): void {
 779	    //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.95",
+    "date": "2026-11-21",
+    "changes": [
+      "落地云端顾问 32 号报告第 2 条「快照与载荷共用遍历与对比」（tutorial/Walk.ts）：合并 Snapshot.ts（239→132 行）与 Payload.ts（1,923→1,397 行，净减 526 行）重复遍历与结构差异逻辑至统一模块 Walk.ts，完整保留 0.7.94 模型关口按引用 < 32KB 增量对比，并补齐 Snapshot.test.ts 双模式与路径一致性单测（62 pass / 0 fail）",
+      "落地云端顾问 33 号报告第 1、3、4、5 条：补齐 Check_Lines.ts 对 [文字 · 文件:行号](文件#L行号) 的校验盲区与自动同步，将只读 check:lines 正式接入 Build_Src7.ts 构建前检查并在 approval/Rules.ts 放行只读 bun run check:lines；修齐 src7/README.md 全部 52 处链接并补入 SessionHelpers.ts，清理 Sessions.ts / SessionHelpers.ts 注释中 12 处硬编码行号（Sessions.ts 稳守 798 行）",
+      "规范化前一半 17 份插件说明（http/file-tools/channels/db/frpc 等）标准标题并补齐漏写听/发事件（approval/assist/bots/feishu 等，静态对账漏写 0 处）；教程页 web/src/Tutorial/ReadmeTabs.tsx 新增运行时事件自对账小标签（「说明没写：…」）"
+    ]
+  },
+  {
     "version": "0.7.94",
     "date": "2026-11-21",
     "changes": [

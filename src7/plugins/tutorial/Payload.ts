@@ -5,34 +5,23 @@
  * 两个模型关口的顶层数组（system、tools、messages）按引用比：发出时只留浅拷，补拷时只深拷变了的那几条。
  * “这个事件属于哪条消息”不在这里猜：用 utils/Trace.ts 的 buildDispatchLine 认出的那一份（和 journal 同一份）。
  */
-import { Buffer } from 'node:buffer';
-import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Database } from 'bun:sqlite';
-import * as cordis from 'cordis';
+import type * as cordis from 'cordis';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
-import type * as filesPluginModule from './Files.ts';
 import type { Trail, TrailStep } from '../../utils/Trail.ts';
+import type * as filesPluginModule from './Files.ts';
+import * as walkModule from './Walk.ts';
+
+export { computePayloadDiff, type PayloadDiff } from './Walk.ts';
+import type { PayloadDiff } from './Walk.ts';
 
 
 //==========================================================
 //M 对外 JSON 契约类型（严格对齐设计文档 3.1）
 //==========================================================
-
-/** 一个路径上的变化。 */
-export interface PayloadDiff {
-  /** 路径，如 messages[3].content、system[2]。 */
-  path: string;
-  /** add 新增、change 修改、remove 删除、same 透传（只列顶层键）。 */
-  kind: 'add' | 'change' | 'remove' | 'same';
-  /** 前值的一句话预览，最多 200 字；add 没有这一项。 */
-  before?: string;
-  /** 后值的一句话预览，最多 200 字；remove 没有这一项。 */
-  after?: string;
-}
 
 
 /** 一个事件参数对象，在这一步的前后两份。 */
@@ -154,26 +143,8 @@ const MODEL_GATE_EVENTS = new Set(['session/before-model', 'session/after-model'
 /** 模型关口参数里按引用比的顶层数组（每步都带整段历史和工具定义，最占地方）。 */
 const GATE_ARRAY_KEYS: readonly string[] = ['system', 'tools', 'messages'];
 
-/** 凭据键名匹配规则（设计文档 3.4 及云端 31 加固）：命中时值替换为 [凭据 已隐藏]。 */
-const CREDENTIAL_KEY = new RegExp(
-  'apiKey|api_key|secret|token|authorization|password|cookie|x-jmbots-key|webhook_header|webhookHeader',
-  'iu',
-);
-
-/** Data URL 形式的图片 base64 正则。 */
-const DATA_IMAGE_URL = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/iu;
-
-/** 普通点分标识符属性名。 */
-const IDENTIFIER_KEY = /^[A-Za-z_$][\w$]*$/u;
-
 /** 磁盘上的消息载荷文件名：<消息号>.payload.json。 */
 const PAYLOAD_FILE = /^(\d+)\.payload\.json$/u;
-
-/** diff 中 add / change / remove 最多保留条数。 */
-const DIFF_MAX = 500;
-
-/** diff 前后值单行预览最大字数。 */
-const PREVIEW_MAX_CHARS = 200;
 
 /** 与 journal 事件行核对时间戳允许的误差毫秒。 */
 const ROW_MATCH_MS = 200;
@@ -182,519 +153,22 @@ const ROW_MATCH_MS = 200;
 const PENDING_RECEIVE_MS = 10_000;
 
 
-//==========================================================
-//M 深拷贝、图片 base64 压缩、凭据隐藏与单份字节上限截断
-//==========================================================
-
-/** 单次深拷贝的字节预算状态。 */
-interface CloneBudget {
-  /** 已估算占用的 UTF-8 字节数。 */
-  used: number;
-  /** 单份允许的最大字节数。 */
-  limit: number;
-  /** 是否撞了单份上限发生截断。 */
-  truncated: boolean;
-}
-
-
-/** 深拷贝结果。 */
-export interface ClonedPayload {
-  /** 可直接 JSON 序列化的安全副本。 */
-  value: unknown;
-  /** JSON 序列化后的 UTF-8 字节数。 */
-  bytes: number;
-  /** 是否超过单份上限并做了截断。 */
-  truncated: boolean;
-}
+/** 深拷贝结果（同 Walk.ts 的 Walked）。 */
+export type ClonedPayload = walkModule.Walked;
 
 
 /**
- * 识别不往里展开的外部资源或框架实例（沿用 Snapshot.ts 规则并补齐取消信号）。
- * @param value 待检查的对象。
- */
-function getResourceName(value: object): string | undefined {
-  if (cordis.Context.is(value)) return 'Context';
-
-  //M Fastify 实例按特有方法识别，只用 in 检查不触发 getter。
-  if ('inject' in value && 'listen' in value && 'register' in value && 'server' in value) return 'Fastify';
-
-  const isResource = value instanceof cordis.Fiber
-    || value instanceof Database
-    || value instanceof EventEmitter
-    || value instanceof Promise
-    || value instanceof WeakMap
-    || value instanceof WeakSet
-    || value instanceof ArrayBuffer
-    || ArrayBuffer.isView(value)
-    || value instanceof AbortSignal
-    || value instanceof AbortController;
-  if (isResource) return value.constructor.name || 'Resource';
-
-  return undefined;
-}
-
-
-/**
- * 计算一段 base64 字符串解码后的近似 KB 数（非空至少记 1KB），拼成占位文本。
- * @param mime 图片 MIME，如 image/png。
- * @param rawBase64 原始 base64 段。
- */
-function formatImagePlaceholder(mime: string, rawBase64: string): string {
-  const clean = rawBase64.replace(/\s+/gu, '');
-  const bytes = Buffer.byteLength(clean, 'base64');
-  let kb = Math.round(bytes / 1024);
-  if (bytes > 0 && kb === 0) {
-    kb = 1;
-  }
-  return `[图片 ${mime} ${String(kb)}KB]`;
-}
-
-
-/**
- * 不触发 getter 地读取对象自身的属性值。
- * @param target 目标对象。
- * @param key 属性名。
- */
-function getOwnDataValue(target: object, key: string): unknown {
-  const slot = Object.getOwnPropertyDescriptor(target, key);
-  if (slot === undefined || slot.get !== undefined) return undefined;
-
-  return slot.value;
-}
-
-
-/**
- * 判断对象是否为图片内容块（如 pi-ai ImageContent 或带 image/* mime 的块），返回其 MIME。
- * @param target 待检查对象。
- */
-function getObjectImageMime(target: object): string | undefined {
-  const mimeFields = ['mimeType', 'mime', 'mediaType', 'media_type'];
-  for (const field of mimeFields) {
-    const raw = getOwnDataValue(target, field);
-    if (typeof raw === 'string' && raw.startsWith('image/')) return raw;
-  }
-  const blockType = getOwnDataValue(target, 'type');
-  if (blockType === 'image') return 'image/*';
-
-  return undefined;
-}
-
-
-/**
- * 判断凭据键对应的值是否需要隐藏：保留数字（如 totalTokens、maxTokens）、布尔和空值，隐藏非空字符串与对象凭据。
- * @param value 字段原值。
- */
-function shouldMaskCredential(value: unknown): boolean {
-  if (value === undefined || value === null || value === '') return false;
-  if (typeof value === 'number' || typeof value === 'boolean') return false;
-
-  return true;
-}
-
-
-/**
- * 按剩余 UTF-8 字节上限截断长字符串，避免切碎多字节字符。
- * @param text 原字符串。
- * @param maxBytes 允许保留的最大字节数。
- */
-function clipStringByUtf8(text: string, maxBytes: number): string {
-  if (maxBytes <= 24) return '[已截断]';
-
-  //M 逐步按字符长度收敛，保证最终 UTF-8 字节数不超过剩余预算。
-  let end = Math.min(text.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(text.slice(0, end), 'utf8') > maxBytes - 18) {
-    end = Math.floor(end * 0.8);
-  }
-  return `${text.slice(0, end)}…[已截断]`;
-}
-
-
-/**
- * 判断对象是否为嵌套的 Session 实例（含 id 与 row.messages），避免在 ChatRequest.session 等内层重复展开整场历史。
- * @param value 待判断对象。
- */
-function isSessionObject(value: object): boolean {
-  const id = getOwnDataValue(value, 'id');
-  const row = getOwnDataValue(value, 'row');
-  if (typeof id !== 'string' || typeof row !== 'object' || row === null) return false;
-
-  const messages = getOwnDataValue(row, 'messages');
-  return Array.isArray(messages);
-}
-
-
-/**
- * 判断对象是否为 Bots 插件里的 Bot 实例（含 name 与 home 服务引用），避免把整个 Bots 服务表拷进 bot/receive。
- * @param value 待判断对象。
- */
-function isBotInstance(value: object): boolean {
-  const botName = getOwnDataValue(value, 'name');
-  if (typeof botName !== 'string') return false;
-
-  return Object.hasOwn(value, 'home') && typeof getOwnDataValue(value, 'home') === 'object';
-}
-
-
-/** 对象单字段写入时的上下文标记。 */
-interface ObjectFieldContext {
-  imageMime: string | undefined;
-  nestedSession: boolean;
-  botObj: boolean;
-  inNestedSessionRow: boolean;
-}
-
-
-/**
- * 将对象或 Map 的单个键值按脱敏、图片占位与嵌套折叠规则写入目标对象。
- */
-function writeObjectField(
-  out: Record<string, unknown>,
-  key: string,
-  rawItem: unknown,
-  ctx: ObjectFieldContext,
-  above: object[],
-  budget: CloneBudget,
-): void {
-  budget.used += Buffer.byteLength(key, 'utf8') + 4;
-
-  //M Bot 实例里的 home 指向整个 Bots 服务，写成 [Bots] 免得把全局服务表带进来。
-  if (ctx.botObj && key === 'home') {
-    out[key] = '[Bots]';
-    return;
-  }
-  //M 嵌套 Session.row 里的整场历史 messages 写成条数摘要（顶层 ChatRequest.messages 仍完整保留）。
-  if (ctx.inNestedSessionRow && key === 'messages' && Array.isArray(rawItem)) {
-    out[key] = `[对话历史 ${String(rawItem.length)} 条]`;
-    return;
-  }
-  //M 命中凭据键名时隐藏敏感值。
-  if (CREDENTIAL_KEY.test(key) && shouldMaskCredential(rawItem)) {
-    out[key] = '[凭据 已隐藏]';
-    return;
-  }
-  //M 图片对象里的 data / base64 字段或显式 imageBase64 字段换成 [图片 mime NKB]。
-  if (typeof rawItem === 'string' && rawItem !== '' && !rawItem.startsWith('[图片 ')) {
-    const isImgData = ctx.imageMime !== undefined && (key === 'data' || key === 'base64');
-    const isNamedB64 = key === 'imageBase64' || key === 'image_base64';
-    if (isImgData || isNamedB64) {
-      out[key] = formatImagePlaceholder(ctx.imageMime ?? 'image/*', rawItem);
-      return;
-    }
-  }
-
-  const enteringNestedRow = ctx.nestedSession && key === 'row';
-  out[key] = walkPayload(rawItem, above, budget, enteringNestedRow);
-}
-
-
-/**
- * 递归深拷贝事件参数：防循环、转特殊资源、压缩图片 base64、隐藏凭据，并按单份字节预算边遍历边停。
- * @param value 当前节点值。
- * @param above 祖先对象栈（原地 push/pop 检测循环引用，避免每层复制数组）。
- * @param budget 单份字节预算。
- * @param inNestedSessionRow 是否正处于嵌套 Session 的 row 对象内（避免重复展开整场历史 messages）。
- */
-function walkPayload(
-  value: unknown,
-  above: object[],
-  budget: CloneBudget,
-  inNestedSessionRow = false,
-): unknown {
-  if (typeof value === 'function') return `ƒ ${value.name || '（匿名）'}`;
-  if (typeof value === 'bigint') return String(value);
-  if (value === undefined) return null;
-  if (value === null || typeof value === 'boolean') {
-    budget.used += 5;
-    return value;
-  }
-  if (typeof value === 'number') {
-    budget.used += 8;
-    if (!Number.isFinite(value)) return null;
-
-    return value;
-  }
-  if (typeof value === 'string') {
-    //M Data URL 形式的内嵌图片直接替换成 [图片 mime NKB] 占位。
-    const dataMatch = DATA_IMAGE_URL.exec(value);
-    if (dataMatch !== null) {
-      const placeholder = formatImagePlaceholder(dataMatch[1] ?? 'image/*', dataMatch[2] ?? '');
-      budget.used += Buffer.byteLength(placeholder, 'utf8') + 2;
-      return placeholder;
-    }
-    const strBytes = Buffer.byteLength(value, 'utf8') + 2;
-    if (budget.used + strBytes > budget.limit) {
-      budget.truncated = true;
-      const clipped = clipStringByUtf8(value, budget.limit - budget.used);
-      budget.used = budget.limit;
-      return clipped;
-    }
-    budget.used += strBytes;
-    return value;
-  }
-  if (typeof value !== 'object') return String(value);
-
-  //G 循环引用与外部重资源对象只记标签，不往里递归。
-  if (above.includes(value)) return '[循环]';
-  const resource = getResourceName(value);
-  if (resource !== undefined) return `[${resource}]`;
-
-  if (value instanceof Date) return value.toLocaleString('zh-CN', { hourCycle: 'h23' });
-  if (value instanceof Error) return `${value.name}: ${value.message}`;
-  if (value instanceof RegExp || value instanceof URL) return String(value);
-
-  const nestedSession = above.length >= 1 && isSessionObject(value);
-  above.push(value);
-  try {
-    //M 数组：直接按下标流式遍历，撞预算上限立即停下，不预先 [...value] 整份展开。
-    if (Array.isArray(value)) {
-      const out: unknown[] = [];
-      budget.used += 2;
-      for (let index = 0; index < value.length; index += 1) {
-        if (budget.used >= budget.limit) {
-          budget.truncated = true;
-          out.push(`[已截断 剩 ${String(value.length - index)} 项]`);
-          break;
-        }
-        out.push(walkPayload(value[index], above, budget, false));
-      }
-      return out;
-    }
-
-    //M Set：直接用迭代器流式遍历，撞预算上限立即停下，不转中间数组。
-    if (value instanceof Set) {
-      const total = value.size;
-      const out: unknown[] = [];
-      budget.used += 2;
-      let index = 0;
-      for (const item of value as Set<unknown>) {
-        if (budget.used >= budget.limit) {
-          budget.truncated = true;
-          out.push(`[已截断 剩 ${String(total - index)} 项]`);
-          break;
-        }
-        out.push(walkPayload(item, above, budget, false));
-        index += 1;
-      }
-      return out;
-    }
-
-    const fieldCtx: ObjectFieldContext = {
-      imageMime: getObjectImageMime(value),
-      nestedSession,
-      botObj: isBotInstance(value),
-      inNestedSessionRow,
-    };
-    const out: Record<string, unknown> = {};
-
-    //M Map：按条目迭代器边走边算预算，撞上限即停，不建中间 pairs 数组。
-    if (value instanceof Map) {
-      const total = value.size;
-      budget.used += 2;
-      let index = 0;
-      for (const [mapKey, mapVal] of value as Map<unknown, unknown>) {
-        if (budget.used >= budget.limit) {
-          budget.truncated = true;
-          out['__truncated__'] = `[已截断 剩 ${String(total - index)} 项]`;
-          break;
-        }
-        writeObjectField(out, String(mapKey), mapVal, fieldCtx, above, budget);
-        index += 1;
-      }
-      return out;
-    }
-
-    //M 普通对象与类实例：用 for..in + Object.hasOwn 流式扫描自身字段（不调 getter），撞预算立即 break。
-    budget.used += 2;
-    let seenOwn = false;
-    for (const key in value) {
-      if (!Object.hasOwn(value, key)) continue;
-
-      seenOwn = true;
-      if (budget.used >= budget.limit) {
-        budget.truncated = true;
-        out['__truncated__'] = '[已截断 后续字段省略]';
-        break;
-      }
-      const slot = Object.getOwnPropertyDescriptor(value, key);
-      let rawItem: unknown = '[getter]';
-      if (slot?.get === undefined) {
-        rawItem = slot?.value;
-      }
-      writeObjectField(out, key, rawItem, fieldCtx, above, budget);
-    }
-
-    const proto = Object.getPrototypeOf(value) as object | null;
-    const plain = proto === Object.prototype || proto === null;
-    if (!seenOwn && !plain) return `[${value.constructor.name || 'Object'}]`;
-
-    return out;
-  } finally {
-    above.pop();
-  }
-}
-
-
-/**
- * 深拷贝一份事件载荷并计算序列化字节数与截断标记。
+ * 深拷贝一份事件载荷并计算序列化字节数与截断标记（共用 Walk.ts 的流式遍历与脱敏规则）。
  * @param value 原始事件参数对象。
  * @param maxBytes 单份允许的最大字节数（payload_item_kb 换算）。
  */
 export function clonePayload(value: unknown, maxBytes: number): ClonedPayload {
-  const budget: CloneBudget = { used: 0, limit: maxBytes, truncated: false };
-  const cloned = walkPayload(value, [], budget, false);
-  const json = JSON.stringify(cloned) ?? 'null';
-  const bytes = Buffer.byteLength(json, 'utf8');
-  const truncated = budget.truncated || bytes > maxBytes;
-  return { value: cloned, bytes, truncated };
-}
-
-
-//==========================================================
-//M 前后两份载荷逐路径对比（add / change / remove <= 500 + 顶层 same）
-//==========================================================
-
-/**
- * 生成单行值预览，最多 200 字。
- * @param value 任意已深拷贝的值。
- */
-function formatPreview(value: unknown): string {
-  let raw = '';
-  if (typeof value === 'string') {
-    raw = value;
-  }
-  if (typeof value !== 'string') {
-    raw = JSON.stringify(value) ?? String(value);
-  }
-  const singleLine = raw.replace(/\s+/gu, ' ');
-  if (singleLine.length > PREVIEW_MAX_CHARS) {
-    return `${singleLine.slice(0, PREVIEW_MAX_CHARS - 1)}…`;
-  }
-  return singleLine;
-}
-
-
-/**
- * 拼接对象子属性路径（普通标识符用 a.b，其余特殊键名拼回点分文本）。
- * @param base 父路径。
- * @param key 属性名。
- */
-function joinObjectPath(base: string, key: string): string {
-  if (base === '') return key;
-  if (IDENTIFIER_KEY.test(key)) return `${base}.${key}`;
-
-  return `${base}.${key.replaceAll('.', '_')}`;
-}
-
-
-/**
- * 递归比较两份已深拷贝的值，将 add / change / remove 推入 out（最多 DIFF_MAX 条）。
- * @param older 进来时的拷贝。
- * @param newer 交出去时的拷贝。
- * @param currentPath 当前路径。
- * @param out 累积变化列表。
- */
-function collectChanges(
-  older: unknown,
-  newer: unknown,
-  currentPath: string,
-  out: PayloadDiff[],
-): void {
-  if (out.length >= DIFF_MAX) return;
-  if (Object.is(older, newer)) return;
-
-  const bothArrays = Array.isArray(older) && Array.isArray(newer);
-  if (bothArrays) {
-    const shared = Math.min(older.length, newer.length);
-    for (let idx = 0; idx < shared; idx += 1) {
-      if (out.length >= DIFF_MAX) return;
-
-      const elemPath = `${currentPath}[${String(idx)}]`;
-      collectChanges(older[idx], newer[idx], elemPath, out);
-    }
-    for (let idx = older.length; idx < newer.length; idx += 1) {
-      if (out.length >= DIFF_MAX) return;
-
-      out.push({
-        path: `${currentPath}[${String(idx)}]`,
-        kind: 'add',
-        after: formatPreview(newer[idx]),
-      });
-    }
-    for (let idx = newer.length; idx < older.length; idx += 1) {
-      if (out.length >= DIFF_MAX) return;
-
-      out.push({
-        path: `${currentPath}[${String(idx)}]`,
-        kind: 'remove',
-        before: formatPreview(older[idx]),
-      });
-    }
-    return;
-  }
-
-  const bothPlainObjects = typeof older === 'object' && older !== null && !Array.isArray(older)
-    && typeof newer === 'object' && newer !== null && !Array.isArray(newer);
-  if (bothPlainObjects) {
-    const oldRec = older as Record<string, unknown>;
-    const newRec = newer as Record<string, unknown>;
-    const keys = new Set([...Object.keys(oldRec), ...Object.keys(newRec)]);
-    for (const key of keys) {
-      if (out.length >= DIFF_MAX) return;
-      if (key === '__truncated__') continue;
-
-      const childPath = joinObjectPath(currentPath, key);
-      const inOld = Object.hasOwn(oldRec, key);
-      const inNew = Object.hasOwn(newRec, key);
-      if (!inOld && inNew) {
-        out.push({ path: childPath, kind: 'add', after: formatPreview(newRec[key]) });
-        continue;
-      }
-      if (inOld && !inNew) {
-        out.push({ path: childPath, kind: 'remove', before: formatPreview(oldRec[key]) });
-        continue;
-      }
-      collectChanges(oldRec[key], newRec[key], childPath, out);
-    }
-    return;
-  }
-
-  out.push({
-    path: currentPath || '(root)',
-    kind: 'change',
-    before: formatPreview(older),
-    after: formatPreview(newer),
-  });
-}
-
-
-/**
- * 计算 before 与 after 之间的逐路径差异：add / change / remove 最多 500 条，same 只列顶层未变键。
- * @param before 发出刻深拷贝。
- * @param after 下一事件或收尾时的深拷贝；未取到传 null。
- */
-export function computePayloadDiff(before: unknown, after: unknown | null): PayloadDiff[] {
-  if (after === null) return [];
-
-  const diffs: PayloadDiff[] = [];
-  collectChanges(before, after, '', diffs);
-
-  //M 顶层均为普通对象时，把前后完全一致的顶层键标为 same（透传）。
-  const bothObjects = typeof before === 'object' && before !== null && !Array.isArray(before)
-    && typeof after === 'object' && after !== null && !Array.isArray(after);
-  if (!bothObjects) return diffs;
-
-  const oldTop = before as Record<string, unknown>;
-  const newTop = after as Record<string, unknown>;
-  for (const key of Object.keys(oldTop)) {
-    if (key === '__truncated__' || !Object.hasOwn(newTop, key)) continue;
-
-    const sameJson = JSON.stringify(oldTop[key]) === JSON.stringify(newTop[key]);
-    if (!sameJson) continue;
-
-    const preview = formatPreview(oldTop[key]);
-    diffs.push({ path: key, kind: 'same', before: preview, after: preview });
-  }
-  return diffs;
+  //M 载荷要省地方：单份有上限，凭据、图片、嵌套会话都省略。
+  const rule: walkModule.WalkRule = {
+    limit: maxBytes,
+    slim: true,
+  };
+  return walkModule.walk(value, rule);
 }
 
 
@@ -768,7 +242,7 @@ function shapeGateFrame(
     if (!Object.hasOwn(record, key)) continue;
     if (Object.hasOwn(lists, key)) continue;
 
-    shaped[key] = getOwnDataValue(record, key);
+    shaped[key] = walkModule.getOwnDataValue(record, key);
   }
 
   //M 顶层数组在后：只记条数，再带上点到的那几条。
@@ -887,25 +361,25 @@ function addRefDiff(
 ): void {
   //M 新加、换上的：换掉的往里比，否则是新加。
   for (const index of changes.added) {
-    if (out.length >= DIFF_MAX) return;
+    if (out.length >= walkModule.DIFF_MAX) return;
 
     const slot = String(index);
     const itemPath = `${key}[${slot}]`;
     const newer = afterList?.[slot];
     if (changes.paired.has(index)) {
-      collectChanges(beforeList?.[slot], newer, itemPath, out);
+      walkModule.collectChanges(beforeList?.[slot], newer, itemPath, out);
       continue;
     }
-    out.push({ path: itemPath, kind: 'add', after: formatPreview(newer) });
+    out.push({ path: itemPath, kind: 'add', after: walkModule.formatPreview(newer) });
   }
 
   //M 删掉、换掉的：上面已经当“改了”比过的跳过。
   for (const index of changes.removed) {
-    if (out.length >= DIFF_MAX) return;
+    if (out.length >= walkModule.DIFF_MAX) return;
     if (changes.paired.has(index)) continue;
 
     const slot = String(index);
-    out.push({ path: `${key}[${slot}]`, kind: 'remove', before: formatPreview(beforeList?.[slot]) });
+    out.push({ path: `${key}[${slot}]`, kind: 'remove', before: walkModule.formatPreview(beforeList?.[slot]) });
   }
 }
 
@@ -917,7 +391,7 @@ function addRefDiff(
  * @param changes 每个顶层数组按引用比的结果。
  */
 function computeGateDiff(before: unknown, after: unknown, changes: Record<string, RefChanges>): PayloadDiff[] {
-  const small = computePayloadDiff(omitGateKeys(before), omitGateKeys(after));
+  const small = walkModule.computePayloadDiff(omitGateKeys(before), omitGateKeys(after));
   const diffs = small.filter((row) => row.kind !== 'same');
   const sames = small.filter((row) => row.kind === 'same');
   const beforeRec = asRecord(before);
@@ -1583,7 +1057,7 @@ export class PayloadRecorder {
     if (gateRefs !== undefined) return cloneGateAfter(before, gateRefs, ref, maxBytes);
 
     const cloned = clonePayload(ref, maxBytes);
-    const diff = computePayloadDiff(before, cloned.value);
+    const diff = walkModule.computePayloadDiff(before, cloned.value);
     return { before, after: cloned.value, bytes: cloned.bytes, truncated: cloned.truncated, diff };
   }
 

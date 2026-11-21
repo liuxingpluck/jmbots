@@ -15,8 +15,8 @@ export interface ChatParts {
   /**
    * pi-ai `Context` 是发给模型前的提示词、历史和工具。
    * - `systemPrompt` 可选，是系统提示词。
-   * - `messages` 是对话消息，`Message` 见 src7/Sessions.ts L96。
-   * - `tools` 可选，是工具定义数组，`Tool` 见 src7/Sessions.ts L192。
+   * - `messages` 是对话消息，`Message` 见 src7/Sessions.ts 的 `session/new-message`。
+   * - `tools` 可选，是工具定义数组，`Tool` 见 src7/Sessions.ts 的 `ChatRequest.tools`。
    * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:543。
    */
   context: piAi.Context;
@@ -101,7 +101,7 @@ export function getToolCalls(answer: piAi.AssistantMessage): piAi.ToolCall[] {
  * 把一次工具执行的结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。
  * @param call 模型要的这次调用，用它的 id、name 和结果配对。
  * @param outcome 执行的结果（关口四 session/after-tool 里插件可能改过，以改过的为准）。
- * @returns 给模型看的工具结果，属于 `role: 'toolResult'` 的 `Message`，见 src7/Sessions.ts L96。
+ * @returns 给模型看的工具结果，属于 `role: 'toolResult'` 的 `Message`，见 src7/Sessions.ts 的 `session/new-message`。
  */
 export function getToolResultMessage(call: piAi.ToolCall, outcome: ToolOutcome): piAi.Message {
   /**

@@ -50,8 +50,11 @@ const PATH_MENTION = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|m?js|md|json|y
 /** 教程页内部的行号链接：[文字](#lines=X.json&line=N)。 */
 const LINES_LINK = /\[([^\]\r\n]*)\]\(#lines=([^&)\s]+\.json)&line=(\d+)\)/gu;
 
-/** ztools/doc-links 管的 `[文字](路径.ts#L行号)` 链接，这里整段跳过。 */
+/** `[文字](路径.ts#L行号)` 链接：只跳过圆括号里的地址，方括号里的行内引用照常核对。 */
 const DOC_LINK = /\[[^\]\r\n]*\]\([^()\s]*#L\d+\)/gu;
+
+/** 方括号带 `:行号`、圆括号带 `#L行号` 的文档链接，用来核对和同步两侧行号。 */
+const DOC_LINK_PAIR = /\[([^\]\r\n]*):(\d+)([–-]\d+)?\]\(([^()\s]*)#L(\d+)\)/gu;
 
 /** 行内代码 `…`。 */
 const CODE_SPAN = /(?<!`)(`+)(.*?)\1(?!`)/gu;
@@ -459,6 +462,24 @@ export function getRowName(line: string): string | undefined {
 }
 
 /**
+ * 让 `[文字 · 文件:行号](文件#L行号)` 的锚点行号跟着方括号里的行号走。
+ * @param line 已经按行内引用修过的一行。
+ * @returns 锚点与方括号行号一致的一行。
+ */
+export function syncDocLinks(line: string): string {
+  //M 方括号里最后一个「:行号（可带范围）」的起始行就是这条链接指向的位置。
+  return line.replace(
+    DOC_LINK_PAIR,
+    (all: string, label: string, digits: string, range: string | undefined, url: string, anchor: string) => {
+      if (digits === anchor) return all;
+
+      const tail = range ?? '';
+      return '[' + label + ':' + digits + tail + '](' + url + '#L' + digits + ')';
+    },
+  );
+}
+
+/**
  * 取一个引用旁边反引号里的名字。
  * @param line 引用所在的那行。
  * @param start 引用在行里的起点。
@@ -475,7 +496,7 @@ export function getHints(line: string, start: number, end: number): Hints {
     left = span.index;
     right = spanEnd;
   }
-  const before = /`([^`]+)`[ \t，,：:（(]*$/u.exec(line.slice(0, left));
+  const before = /`([^`]+)`[ \t，,：:（(·]*$/u.exec(line.slice(0, left));
   const after = /^[ \t（(]*`([^`]+)`/u.exec(line.slice(right));
   //M 左边紧挨着的优先，没有再看右边，都没有再看表格第一格。
   const near = getHintName(before?.[1]) ?? getHintName(after?.[1]);
@@ -719,8 +740,8 @@ export class LineChecker {
     const plugin = /^src7\/plugins\/([^/]+)\//u.exec(doc);
     const guesses: string[] = [];
     if (plugin !== null) {
-      //M 插件说明里的文件名先找本插件。
-      guesses.push('src7/plugins/' + plugin[1] + '/' + ref);
+      //M 插件说明里的文件名先找本插件（含 `../Index.ts` 这类相对路径）。
+      guesses.push(path.posix.normalize('src7/plugins/' + plugin[1] + '/' + ref));
     }
     if (ref.includes('/')) {
       //M 带了插件目录的，比如 bots/index.ts。
@@ -1433,10 +1454,11 @@ export class LineChecker {
       return '[' + nextLabel + '](#lines=' + json + '&line=' + String(fixed) + ')';
     });
 
-    //M 再找行内引用：先记下要换的位置，最后从后往前换，免得位置错开。
+    //M `[文字](路径#L行号)`：只跳过圆括号里的地址，方括号里的「文件:行号」照行内引用查。
     const skip: [number, number][] = [];
     for (const link of next.matchAll(DOC_LINK)) {
-      skip.push([link.index, link.index + link[0].length]);
+      const urlStart = link.index + link[0].indexOf('](');
+      skip.push([urlStart, link.index + link[0].length]);
     }
     const edits: { start: number; end: number; text: string }[] = [];
     //M 同一表格行里同一文件靠第一格取名时，只有第一个不同行号按声明定位，其余视为调用点只查存在性。
@@ -1534,6 +1556,27 @@ export class LineChecker {
     edits.sort((a, b) => b.start - a.start);
     for (const edit of edits) {
       next = next.slice(0, edit.start) + edit.text + next.slice(edit.end);
+    }
+    if (this.fix) {
+      //M 修完方括号里的行号后，把圆括号里的 `#L行号` 同步过去。
+      const synced = syncDocLinks(next);
+      if (synced !== next && edits.length === 0) {
+        for (const match of next.matchAll(DOC_LINK_PAIR)) {
+          if (match[2] === match[5]) continue;
+
+          //M 记下单独对齐的链接锚点，最后打印出来。
+          this.changes.push(site + '  ' + match[4] + ' #L' + match[5] + ' → #L' + match[2]);
+        }
+      }
+      next = synced;
+    }
+    if (!this.fix && live) {
+      //M 校验模式也核对 `[文字:行号](路径#L行号)` 两侧行号是否一致。
+      for (const match of next.matchAll(DOC_LINK_PAIR)) {
+        if (match[2] === match[5]) continue;
+
+        this.report('error', doc, site, match[4] + '#L' + match[5] + ' 和方括号里的 :' + match[2] + ' 不符');
+      }
     }
     return next;
   }

@@ -344,4 +344,56 @@ describe('Check_Lines', () => {
     expect(updated).toContain('| [`boot`](src7/Worker.ts#L12) | `src7/Worker.ts:12` |');
     expect(updated).toContain('| `Demo.run` | [Demo.ts L6](#lines=Demo.json&line=6) |');
   });
+
+  test('文档链接 [文字 · 文件:行号](文件#L行号) 核对并同步 #L 锚点', () => {
+    //M syncDocLinks：按方括号里的起始行同步圆括号里的 #L，保留范围与无行号链接。
+    expect(checkLines.syncDocLinks('[`Demo.run` · src7/Demo.ts:6](Demo.ts#L4)')).toBe(
+      '[`Demo.run` · src7/Demo.ts:6](Demo.ts#L6)',
+    );
+    expect(checkLines.syncDocLinks('[`Demo.run` · src7/Demo.ts:6–8](Demo.ts#L4)')).toBe(
+      '[`Demo.run` · src7/Demo.ts:6–8](Demo.ts#L6)',
+    );
+    expect(checkLines.syncDocLinks('[见源码](Demo.ts#L4)')).toBe('[见源码](Demo.ts#L4)');
+
+    //M 中点 `·` 分隔的链接文字能取出紧挨着引用的符号名或事件名。
+    const linkLine = '[`Demo.run` · src7/Demo.ts:4](Demo.ts#L4) · [`Demo.stop` · `session/change` · src7/Demo.ts:8](Demo.ts#L8)';
+    const firstAt = linkLine.indexOf('src7/Demo.ts:4');
+    expect(checkLines.getHints(linkLine, firstAt, firstAt + 'src7/Demo.ts:4'.length).primary).toBe('Demo.run');
+    const secondAt = linkLine.indexOf('src7/Demo.ts:8');
+    expect(checkLines.getHints(linkLine, secondAt, secondAt + 'src7/Demo.ts:8'.length).primary).toBe('session/change');
+
+    //M 端到端：校验模式报出漂移链接与 #L 不一致；--fix 同步更新方括号和 #L，重查归零。
+    const root = makeRoot();
+    fs.mkdirSync(path.join(root, 'src7/plugins/demo'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src7/plugins/Index.ts'), '// 1\n// 2\nexport const BUILT_IN = [];\n');
+    const readme = [
+      '# 入口',
+      '',
+      '1. [`Demo.run` · src7/Demo.ts:4](Demo.ts#L4) · [`Demo.stop` · src7/Demo.ts:10](Demo.ts#L99)',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/README.md'), readme);
+    const pluginDoc = '[内置登记 · `BUILT_IN` · ../Index.ts:1](../Index.ts#L1)\n[真实登记 · `BUILT_IN` · ../Index.ts:2](../Index.ts#L2)\n';
+    fs.writeFileSync(path.join(root, 'src7/plugins/demo/说明.md'), pluginDoc);
+
+    const files = ['src7/README.md', 'src7/plugins/demo/说明.md'];
+    const checker = new checkLines.LineChecker(root, false);
+    checker.run(files);
+    const errors = checker.errors.map((problem) => problem.message);
+    expect(errors.some((msg) => msg.includes('src7/Demo.ts:4 漂了') && msg.includes('应为 6'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('Demo.ts#L99 和方括号里的 :10 不符'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('src7/plugins/Index.ts:2 漂了') && msg.includes('应为 3'))).toBe(true);
+
+    const fixer = new checkLines.LineChecker(root, true);
+    fixer.run(files);
+    const fixedReadme = fs.readFileSync(path.join(root, 'src7/README.md'), 'utf8');
+    expect(fixedReadme).toContain('[`Demo.run` · src7/Demo.ts:6](Demo.ts#L6)');
+    expect(fixedReadme).toContain('[`Demo.stop` · src7/Demo.ts:10](Demo.ts#L10)');
+    const fixedPluginDoc = fs.readFileSync(path.join(root, 'src7/plugins/demo/说明.md'), 'utf8');
+    expect(fixedPluginDoc).toContain('[真实登记 · `BUILT_IN` · ../Index.ts:3](../Index.ts#L3)');
+
+    const recheck = new checkLines.LineChecker(root, false);
+    recheck.run(files);
+    expect(recheck.errors).toEqual([]);
+  });
 });

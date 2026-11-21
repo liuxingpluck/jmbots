@@ -2,10 +2,12 @@
  * 教程页「插件」右栏的说明拆标签组件：前端按 说明.md 的二级标题（##）切段，拆成 概要 / 事件 / 对外函数 / 内部函数 / 数据 / 配置 / （可选）补充，
  * 表格用深色 antd.Table 显示，依赖的插件做成可点的小标签（点完在左栏切到那个插件），空段或“无”灰掉标签。
  */
+import * as react from 'react';
 import type { JSX, MouseEvent, ReactNode } from 'react';
 import * as antd from 'antd';
 import * as reactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { TOKEN, withToken } from '../Token.ts';
 import { SiteLink, SourceToggle, VIRTUAL_THRESHOLD, VsCodeOpen, getSiteParts } from './Code.tsx';
 import type { PluginItem } from './TutorialApi.ts';
 import * as sourceDirModule from '../../../src7/utils/SourceDir.ts';
@@ -155,7 +157,7 @@ function assignSection(parsed: ParsedReadme, title: string, body: string): void 
     parsed.config = body;
     return;
   }
-  //M 所有未落入标准分类的二级标题（如「补充：…」「挂载先后」「给外部 AI 的打分接口」）全部保留在概要页尾，避免裁掉文档。
+  //M 所有未落入标准分类的二级标题（如「补充：…」「挂载先后」「给外部 AI 的打分接口」）全部归入「补充」标签，避免裁掉文档。
   parsed.extras.push({ title, body });
 }
 
@@ -958,8 +960,47 @@ function CombinedSection(props: {
 }
 
 
+/** 运行时各插件实听事件缓存（来自只读接口 GET /api/tutorial/plugin-map）。 */
+let runtimeEventsPromise: Promise<Map<string, string[]>> | undefined;
+
+/**
+ * 懒加载一次运行时插件监听事件清单；接口不可用时返回空表，不影响正文展示。
+ * @returns 插件名 → 运行时实听事件名数组。
+ */
+function loadRuntimeEvents(): Promise<Map<string, string[]>> {
+  if (runtimeEventsPromise !== undefined) return runtimeEventsPromise;
+
+  const address = withToken('/api/tutorial/plugin-map', TOKEN);
+  runtimeEventsPromise = fetch(address)
+    .then(async (response) => {
+      if (!response.ok) return new Map<string, string[]>();
+
+      const data = await response.json() as { plugins?: { name: string; events?: string[] }[] };
+      const map = new Map<string, string[]>();
+      for (const node of data.plugins ?? []) {
+        map.set(node.name, node.events ?? []);
+      }
+      return map;
+    })
+    .catch(() => new Map<string, string[]>());
+  return runtimeEventsPromise;
+}
+
+/**
+ * 判断「听的事件」说明正文里是否已经写到某个事件名（按词边界匹配，避免 ready 误中 already）。
+ * @param listened 「听的事件」段落原文。
+ * @param eventName 运行时监听到的事件名。
+ */
+function hasListenedEvent(listened: string, eventName: string): boolean {
+  const escaped = eventName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const pattern = new RegExp(`(?<![\\w/-])${escaped}(?![\\w/-])`, 'u');
+  return pattern.test(listened);
+}
+
+
 /**
  * 「事件」标签：听的事件、发的事件左右（窄屏上下）两块，每个事件一行，事件名支持点击并在画布高亮。
+ * @param props.pluginName 当前插件名，用于对照运行时实听事件标出说明漏写项。
  * @param props.listened 听的事件正文。
  * @param props.emitted 发的事件正文。
  * @param props.pluginFolder 当前插件目录。
@@ -967,12 +1008,33 @@ function CombinedSection(props: {
  * @param props.onSelectEvent 点击事件名回调。
  */
 function EventsTab(props: {
+  pluginName: string;
   listened: string;
   emitted: string;
   pluginFolder?: string;
   activeEvent?: string;
   onSelectEvent?: (eventName: string) => void;
 }): JSX.Element {
+  const [runtimeEvents, setRuntimeEvents] = react.useState<string[]>([]);
+  react.useEffect(() => {
+    let alive = true;
+    void loadRuntimeEvents().then((map) => {
+      if (!alive) return;
+
+      let list = map.get(props.pluginName);
+      if (list === undefined && props.pluginName === 'wechat-kefu') {
+        list = map.get('wechat');
+      }
+      setRuntimeEvents(list ?? []);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [props.pluginName]);
+
+  //M 运行时在听、说明「听的事件」段里没写到的事件，打一个轻量小标签提醒。
+  const missing = runtimeEvents.filter((name) => !hasListenedEvent(props.listened, name));
+
   //M 分别判定听的事件与发的事件段是否非空，缺省空段显示占位字样。
   const hasListened = !isNoneSection(props.listened);
   const hasEmitted = !isNoneSection(props.emitted);
@@ -980,6 +1042,11 @@ function EventsTab(props: {
     <div className="tu-events-grid">
       <section className="tu-event-card">
         <h3>听的事件</h3>
+        {missing.length > 0 && (
+          <div className="tu-overview-badges">
+            <antd.Tag className="tu-version-note">说明没写：{missing.join('、')}</antd.Tag>
+          </div>
+        )}
         {!hasListened && <p className="tu-muted">无</p>}
         {hasListened && (
           <MarkdownContent
@@ -1093,6 +1160,7 @@ export function buildReadmeTabItems(params: {
       disabled: eventsDisabled,
       children: parsed !== null && (
         <EventsTab
+          pluginName={params.plugin.name}
           listened={parsed.listenedEvents}
           emitted={parsed.emittedEvents}
           pluginFolder={pluginFolder}

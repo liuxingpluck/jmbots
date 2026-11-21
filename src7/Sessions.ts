@@ -10,7 +10,7 @@
  * 事件只留给插件接进来。每一步有四个关口，插件挨个看，谁写了 stop 这一轮就停在那里（类型见 SessionGate）：
  *   session/before-model   调模型之前，请求交给插件挨个改（本文件）；
  *   session/after-model  模型回来之后、回答接进对话之前（本文件）；
- *   session/before-tool  执行一个工具之前，还能用 deny 只拦这一个（声明在 src7/Tools.ts:29，发出在 :178）；
+ *   session/before-tool  执行一个工具之前，还能用 deny 只拦这一个（声明和发出都在 src7/Tools.ts，发出在 Tools.execute）；
  *   session/after-tool   一个工具执行完、结果接进对话之前（本文件）。
  * 另外三个只是通知，也声明在本文件：
  *   session/new-message  对话里新接了一条；
@@ -189,7 +189,7 @@ export interface ChatRequest extends SessionGate {
    * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:528。
    */
   tools: piAi.Tool[];
-  /** 这一步要发给模型的对话副本。改它不会改库里存的原文。`Message` 的四种形状见本文件 L96。 */
+  /** 这一步要发给模型的对话副本。改它不会改库里存的原文。`Message` 的四种形状见 `session/new-message` 的 @param message。 */
   messages: piAi.Message[];
   /** 取消信号：喊停时触发，正在等的请求马上断开。 */
   signal: AbortSignal;
@@ -218,7 +218,7 @@ export interface ChatRequest extends SessionGate {
 
 /** 事件 session/after-model 的数据：就是这一步的请求，回答已经有了（模型回的，或者插件给的）。 */
 export type AnsweredRequest = ChatRequest & {
-  /** 这一步的回答。插件可以改它、换掉它，接进对话的是最后这一份。`AssistantMessage` 见本文件 L216。 */
+  /** 这一步的回答。插件可以改它、换掉它，接进对话的是最后这一份。`AssistantMessage` 字段见 `ChatRequest.answer`。 */
   answer: piAi.AssistantMessage;
 };
 
@@ -253,7 +253,7 @@ export interface SessionRow {
   state: SessionState;
   /** 这一轮的结果，就是要回给用户的话：做完了是模型最后那句，出错、停下是原因。正在转时是空的。 */
   reply: string;
-  /** 整场对话，随这场会话一起存库。`Message` 的四种形状见本文件 L96。 */
+  /** 整场对话，随这场会话一起存库。`Message` 的四种形状见 `session/new-message` 的 @param message。 */
   messages: piAi.Message[];
   /**
    * 这场会话一共走了多少步，一步 = 调一次模型加执行它要的工具。跨 run 累计、存库，
@@ -387,7 +387,7 @@ export class Sessions extends cordis.Service {
     //G 库里没有 → 抛错。
     if (stored === null) throw new Error(`没有这场会话：${id}`);
 
-    //M 解析元信息、按保存时的 pi-ai Message[] 还原整场对话（四种形状见本文件 L96），重建会话并记进 openedSessions。
+    //M 解析元信息、按保存时的 pi-ai Message[] 还原整场对话（形状见 `session/new-message`），重建会话并记进 openedSessions。
     const meta = sessionHelpers.parseSessionMeta(stored.meta);
     const messages = JSON.parse(stored.messages) as piAi.Message[];
     const session = new Session({ ...meta, messages }, this.ctx);
@@ -470,7 +470,7 @@ export class Sessions extends cordis.Service {
    * `Session.loop` 每一步经这里发出请求。model-catalog 的 `ModelFallback.attempt` 换模型后能把原请求
    * 交给 `ctx.sessions.chat()` 重发，两条路径共用鉴权、重试和失败通知。
    * @param request 模型、思考档、提示词、对话、工具、取消信号。
-   * @returns 模型回的整条 `AssistantMessage`，字段见本文件 L216。
+   * @returns 模型回的整条 `AssistantMessage`，字段见 `ChatRequest.answer`。
    * @throws 试够了次数还是不成、或者被喊停掐断时抛错；Session.run 接住。
    * 副作用：发 HTTP 请求；每失败一次发一次 session/model-failed。
    */
@@ -488,7 +488,7 @@ export class Sessions extends cordis.Service {
     //==========================================================
     //M 发一次并记录单次请求的失败
     //==========================================================
-    //M 发一次，交回单次请求的 `AssistantMessage`（见本文件 L216）：每次失败（stopReason 是 error）
+    //M 发一次，交回单次请求的 `AssistantMessage`（字段见 `ChatRequest.answer`）：每次失败（stopReason 是 error）
     //M   发一次通知 session/model-failed，重试的那几次插件也看得到；被喊停的 aborted 不发。
     const send = async (): Promise<piAi.AssistantMessage> => {
       const start = Date.now();
@@ -534,7 +534,7 @@ export class Session {
 
   /**
    * 用户说了、还没接进对话的话。每一步开头才接进去，避免插在模型的回答和工具结果之间。
-   * `Message` 的四种形状见本文件 L96。
+   * `Message` 的四种形状见 `session/new-message` 的 @param message。
    */
   private readonly inbox: piAi.Message[] = [];
 
@@ -773,7 +773,7 @@ export class Session {
 
   /**
    * 往对话后面接一条：存库，通知大家。
-   * @param message 接进对话并通知插件的新消息。`Message` 的四种形状见本文件 L96。
+   * @param message 接进对话并通知插件的新消息。`Message` 的四种形状见 `session/new-message` 的 @param message。
    */
   private append(message: piAi.Message): void {
     //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。

@@ -65,6 +65,8 @@ describe('isProjectCheck', () => {
       'bun run typecheck:src7',
       'bun.cmd run test:src7',
       'bun run typecheck',
+      'bun run check:lines',
+      'bun.cmd run check:lines',
       'bun test src7/plugins/relay',
       String.raw`cd /d jmbots && bun scripts/Build_Src7.ts --out cache\打包测试\20261116-1500EST`,
       'bun scripts/Build_Src7.ts --out cache/build --skip_checks yes 2>&1',
@@ -78,6 +80,8 @@ describe('isProjectCheck', () => {
   test('接了别的命令、不认识的脚本、怪参数不放行', () => {
     const rejected = [
       'bun run typecheck:src7 & del x',
+      'bun run check:lines -- --fix',
+      'bun run check:lines & del x',
       'bun run build',
       'bun run release',
       'bun scripts/Swap_Serve.ts',
