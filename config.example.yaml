@@ -244,12 +244,10 @@ channels:
 #                                  # 程序 info 报了 ui 就在 /programs/<name>/ 打开，网页顶栏自动出入口；一个程序都不写时资源守卫照样工作
 #     config:
 #       guard:                         # 默认启用；G为GiB，所有容量事件值为字节；越线写飞书发件箱，同类10分钟最多一条
-#         cpu_percent: 80
-#         cpu_resume_percent: 70
-#         memory_gb: 60
+#         memory_gb: 60                 # CPU 不限（cpu_percent 等旧字段照收不生效）
 #         resume_gb: 55
-#         vram_gb: 15.9                 # 逐卡硬线，还受该卡实际容量限制
-#         vram_resume_gb: 15
+#         vram_gb: 15.5                 # 逐卡硬线，还受该卡实际容量限制
+#         vram_resume_gb: 14.5
 #         interval_ms: 5000
 #         nvidia_smi: nvidia-smi        # PATH命令名或可执行文件路径，不经shell
 #       channel_aliases: [[wechat, wechat-external]]  # 同组视作同一个渠道；启用内置微信时拦下同组外置程序

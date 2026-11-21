@@ -105,6 +105,10 @@ export interface DispatchLine {
   messageId?: number;
   /** 标准消息号（渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])）；事件参数里的 messageId 或 sourceId，或参数里 message 的这两项。 */
   sourceId?: string;
+  /** channel/reply、channel/replied 带的回复请求号：把一次回复的请求和回执配成一对。 */
+  replyRequestId?: string;
+  /** 参数本身是会话或带着会话时，会话这一刻的状态（running、done 等）。 */
+  sessionState?: string;
   /** 认得的关键值（状态、角色、说了什么、要了什么工具）。 */
   vars: Record<string, unknown>;
 }
@@ -253,8 +257,98 @@ export function getSourceId(value: unknown): string | undefined {
 
 
 /**
+ * 取对象里的一个正整数（web-api 收件表的消息号）。
+ * @param record 对象；不是对象传 undefined。
+ * @param key 字段名。
+ * @returns 是正整数就原样交回；不是是 undefined。
+ */
+function getPositiveInt(record: Record<string, unknown> | undefined, key: string): number | undefined {
+  const raw = record?.[key];
+  if (typeof raw !== 'number') return undefined;
+  if (!Number.isSafeInteger(raw) || raw <= 0) return undefined;
+
+  return raw;
+}
+
+
+/**
+ * 补认“这个事件属于哪条消息”：buildDispatchLine 的参数循环认不出的几个位置，在这里一处认。
+ * journal 记流水、Print 打印、State 拍快照、Payload 录载荷都用这一份，流水页和载荷页对得上。
+ * 只补还空着的：参数循环已经认出的不改。
+ * @param line 正在拼的事件行，原地补 messageId、sourceId、session、bot、replyRequestId、sessionState。
+ * @param event 事件名。
+ * @param first 事件的第一个参数；不是对象传 undefined。
+ */
+function addMessageRefs(line: DispatchLine, event: string, first: Record<string, unknown> | undefined): void {
+  if (first === undefined) return;
+
+  /** 补认出来的几项，最后只填 line 上还空着的。 */
+  let messageId: number | undefined;
+  let sourceId: string | undefined;
+  let session: string | undefined;
+  let bot: string | undefined;
+
+  //M 1. 渠道消息（channel/direct 等）、bot/receive：origin.address 或 message.address 里的收件号，message.bot。
+  const origin = asRecord(first['origin']);
+  const inner = asRecord(first['message']);
+  messageId = getPositiveInt(asRecord(origin?.['address']), 'messageId');
+  messageId ??= getPositiveInt(asRecord(inner?.['address']), 'messageId');
+  if (typeof inner?.['bot'] === 'string') {
+    bot = inner['bot'];
+  }
+
+  //M 2. 参数本身是会话或带着会话：row.state、row.address 里的收件号、row.activeSourceSnapshot 的标准消息号。
+  const sessionObj = asRecord(first['session']) ?? first;
+  const row = asRecord(sessionObj['row']);
+  if (row !== undefined) {
+    if (typeof row['state'] === 'string') {
+      line.sessionState = row['state'];
+    }
+    messageId ??= getPositiveInt(asRecord(row['address']), 'messageId');
+    const active = asRecord(row['activeSourceSnapshot']);
+    sourceId = getSourceId(active?.['messageId']);
+  }
+
+  //M 3. channel/reply、channel/replied：回复请求（channel/replied 的在 request 里）带的 requestId、sessionId、bot。
+  const request = asRecord(first['request']) ?? first;
+  const isReply = event === 'channel/reply' || event === 'channel/replied';
+  if (isReply && typeof request['requestId'] === 'string') {
+    line.replyRequestId = request['requestId'];
+  }
+  if (isReply && typeof request['sessionId'] === 'string' && request['sessionId'] !== '') {
+    session = request['sessionId'];
+  }
+  if (isReply && bot === undefined && typeof request['bot'] === 'string') {
+    bot = request['bot'];
+  }
+
+  //M 4. 回复、收尾（channel/reply、channel/replied、bot/settled）带的来源快照：标准消息号、机器人、origin.address 的收件号。
+  const snapshot = asRecord(request['sourceSnapshot']) ?? asRecord(first['sourceSnapshot']);
+  if (snapshot !== undefined) {
+    sourceId ??= getSourceId(snapshot['messageId']);
+    if (bot === undefined && typeof snapshot['botName'] === 'string') {
+      bot = snapshot['botName'];
+    }
+    const snapshotOrigin = asRecord(snapshot['origin']);
+    messageId ??= getPositiveInt(asRecord(snapshotOrigin?.['address']), 'messageId');
+  }
+
+  //M 5. 回复目标 target.address 的收件号。
+  const target = asRecord(request['target']);
+  messageId ??= getPositiveInt(asRecord(target?.['address']), 'messageId');
+
+  //M 只填还空着的：参数循环认出的优先。
+  if (line.messageId === undefined && messageId !== undefined) line.messageId = messageId;
+  if (line.sourceId === undefined && sourceId !== undefined) line.sourceId = sourceId;
+  if (line.session === undefined && session !== undefined) line.session = session;
+  if (line.bot === undefined && bot !== undefined) line.bot = bot;
+}
+
+
+/**
  * 拼一个事件行：Cordis 每发一个事件先发 internal/dispatch（发法、事件名、参数），trace、journal 都听它。
  * 会话从参数里找：参数本身是会话、带 session（ChatRequest、session/model-failed 的 info）、带 sessionId 或 session 号（待确认、进度）。
+ * 参数循环认不出的渠道地址、会话快照、回复请求，由 addMessageRefs 补认（“属于哪条消息”只在这一处认）。
  * @param ctx 听的那个插件的 ctx（用来查这个事件登记着哪些监听）。
  * @param mode Cordis 的发法。
  * @param event 事件名。
@@ -324,8 +418,11 @@ export function buildDispatchLine(
     }
   }
 
-  //M 会话的几个核心事件带着什么，这里认得，顺带记下结构化数值与状态（不记隐私正文或密钥）。
+  //M 参数循环认不出的几个位置（渠道地址、会话快照、回复请求）再补认一遍：journal、Print、State、Payload 都用这一份。
   const firstObj = asRecord(args[0]);
+  addMessageRefs(line, event, firstObj);
+
+  //M 会话的几个核心事件带着什么，这里认得，顺带记下结构化数值与状态（不记隐私正文或密钥）。
   //M session/before-model：记录进入关口一时的模型、思考档、初始 system 段数、初始工具数与历史条数。
   if (event === 'session/before-model' && firstObj !== undefined) {
     const ses = sessionLike(firstObj['session']);

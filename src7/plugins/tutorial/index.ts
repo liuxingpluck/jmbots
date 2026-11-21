@@ -138,7 +138,9 @@ export const name = 'tutorial';
 //M 1.2.1：新增插件 X 光图谱 GET /api/tutorial/plugin-map（PluginMap.ts）：版本、依赖、听的事件、源码与说明、事件倒排、工具名；
 //M   老的 /api/tutorial/plugins（左栏列表）原样保留，网页三处在用。
 //M 1.2.2：旁听迁入 utils/Trace onDispatch/onTrace（出错隔离+单次调用栈缓存）、Source/Code/Skeleton 去重与 getBlockEnd 替换、配置校验收拢 Checks。
-export const version = '1.2.2';
+//M 1.2.3：载荷录制两个模型关口的顶层数组（system、tools、messages）按引用比，只深拷变了的几条，长会话不再丢最新消息和 answer；
+//M   “属于哪条消息”并进 utils/Trace.ts 的 buildDispatchLine，Payload 不再自己猜（云端 31 第 3、4 条）。
+export const version = '1.2.3';
 
 /** 配置里“正数”的规则：比 0 大，可以带小数（MB、KB 这类）。 */
 const POSITIVE: checksModule.NumberRule = { above: 0 };

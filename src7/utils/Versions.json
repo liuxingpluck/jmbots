@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.94",
+    "date": "2026-11-21",
+    "changes": [
+      "落地云端顾问 31 号报告第 3 条「教程模型关口载荷按引用比」（tutorial 1.2.3）：before-model / after-model 发出时对 system / tools / messages 仅保留浅拷贝，补拷时按引用逐条对比（仅深拷贝新增或替换条目，小字段与 answer 优先保留），彻底杜绝长对话历史被截断导致最新消息与 answer 丢失，实测 3001 条 ~1MB 对话历史单条载荷压缩至 < 32KB",
+      "落地云端顾问 31 号报告第 4 条「消息归属只在一处认」（utils/Trace + tutorial/Payload）：统一收敛 Payload.ts 原约 95 行 extractEventRefs 到 Trace.ts addMessageRefs，补全 replyRequestId / sessionState 归属字段，journal 与 tutorial 全链路共用同一份归属识别结果（补齐 161 项单测 0 失败与全仓 Check_Lines 0 问题）",
+      "清理 0.7.93 误带入仓库的未启用草稿目录 src7/plugins/host-guard/ 及 Index.ts 引用，同步收口 config.example.yaml 中 programs.guard 60G 内存 / 15.5G 显存注释示例"
+    ]
+  },
+  {
     "version": "0.7.93",
     "date": "2026-11-21",
     "changes": [

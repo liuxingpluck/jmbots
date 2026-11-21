@@ -2,7 +2,8 @@
  * 旁听工具 Trace.ts 的 onDispatch、onTrace 单元测试：
  *   1. 第一个 onDispatch 旁听者抛错，第二个旁听者和后面的业务监听照常收到事件，emit 不往外抛；
  *   2. 同一次派发交给几个 onDispatch 旁听者的是同一个 SharedLine 引用（只拼一次）；跟踪点、Cordis 内部事件不交过来；
- *   3. onTrace 旁听者抛错，不拦发跟踪点那一行后面的业务代码。
+ *   3. onTrace 旁听者抛错，不拦发跟踪点那一行后面的业务代码；
+ *   4. buildDispatchLine 一处认“属于哪条消息”：回复请求的来源快照、目标地址，会话的地址和状态，渠道消息的 origin.address。
  * 跑法：bun test ./src7/utils/Trace.test.ts
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
@@ -128,5 +129,75 @@ describe('Trace 旁听隔离', () => {
     logged.mockRestore();
     expect(messages.length).toBe(1);
     expect(messages[0]).toContain('[旁听异常:trace-boom]');
+  });
+});
+
+describe('buildDispatchLine 一处认属于哪条消息', () => {
+  test('channel/reply、channel/replied、bot/settled、web-api/replied、渠道消息都认得出消息号', () => {
+    const ctx = makeContext();
+    const sourceId = JSON.stringify(['http', 'local', '42']);
+    const snapshot = {
+      messageId: sourceId,
+      botName: '周小灵',
+      origin: { channel: 'http', address: { messageId: 42 } },
+    };
+    const reply = { requestId: 'req-42', channel: 'http', sessionId: 's_42', sourceSnapshot: snapshot };
+
+    //M channel/reply：requestId、sessionId 从请求取，标准消息号、机器人、收件号从来源快照取。
+    const replyLine = traceUtils.buildDispatchLine(ctx, 'serial', 'channel/reply', [reply], 200);
+    expect(replyLine.replyRequestId).toBe('req-42');
+    expect(replyLine.session).toBe('s_42');
+    expect(replyLine.sourceId).toBe(sourceId);
+    expect(replyLine.bot).toBe('周小灵');
+    expect(replyLine.messageId).toBe(42);
+
+    //M channel/replied：请求包在 request 里。
+    const repliedArgs = [{ requestId: 'req-42', request: reply, receipt: { ok: true } }];
+    const repliedLine = traceUtils.buildDispatchLine(ctx, 'emit', 'channel/replied', repliedArgs, 200);
+    expect(repliedLine.replyRequestId).toBe('req-42');
+    expect(repliedLine.messageId).toBe(42);
+    expect(repliedLine.sourceId).toBe(sourceId);
+
+    //M bot/settled：只带来源快照，不认 requestId。
+    const settledArgs = [{ sourceSnapshot: snapshot, stage: 'sent' }];
+    const settledLine = traceUtils.buildDispatchLine(ctx, 'emit', 'bot/settled', settledArgs, 200);
+    expect(settledLine.replyRequestId).toBeUndefined();
+    expect(settledLine.messageId).toBe(42);
+    expect(settledLine.bot).toBe('周小灵');
+
+    //M 回复目标 target.address 的收件号。
+    const targetArgs = [{ requestId: 'req-43', target: { address: { messageId: 43 } } }];
+    const targetLine = traceUtils.buildDispatchLine(ctx, 'serial', 'channel/reply', targetArgs, 200);
+    expect(targetLine.messageId).toBe(43);
+
+    //M 会话：row.state、row.address 的收件号、row.activeSourceSnapshot 的标准消息号；参数里已带的消息号优先。
+    const session = {
+      id: 's_42',
+      row: {
+        bot: '周小灵',
+        state: 'done',
+        address: { messageId: 41 },
+        activeSourceSnapshot: { messageId: sourceId },
+        messages: [],
+      },
+    };
+    const changeLine = traceUtils.buildDispatchLine(ctx, 'emit', 'session/change', [session, 'running'], 200);
+    expect(changeLine.sessionState).toBe('done');
+    expect(changeLine.messageId).toBe(41);
+    expect(changeLine.sourceId).toBe(sourceId);
+    const webArgs = [{ messageId: 42, session }];
+    const webLine = traceUtils.buildDispatchLine(ctx, 'emit', 'web-api/replied', webArgs, 200);
+    expect(webLine.messageId).toBe(42);
+    expect(webLine.sessionState).toBe('done');
+
+    //M 渠道消息：origin.address 的收件号；平台原消息号不当标准消息号。
+    const channelArgs = [{ messageId: sourceId, origin: { address: { messageId: 44 } } }, { claims: [] }];
+    const channelLine = traceUtils.buildDispatchLine(ctx, 'serial', 'channel/direct', channelArgs, 200);
+    expect(channelLine.messageId).toBe(44);
+    expect(channelLine.sourceId).toBe(sourceId);
+    const rawArgs = [{ messageId: 'om_x', origin: { address: { messageId: 'om_x' } } }];
+    const rawLine = traceUtils.buildDispatchLine(ctx, 'serial', 'channel/direct', rawArgs, 200);
+    expect(rawLine.messageId).toBeUndefined();
+    expect(rawLine.sourceId).toBeUndefined();
   });
 });

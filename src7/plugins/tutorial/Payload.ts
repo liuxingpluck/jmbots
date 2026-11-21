@@ -1,7 +1,9 @@
 /**
- * 事件参数载荷采集（tutorial 1.2.0）：零改骨架，监听 Cordis 已有的 internal/dispatch，
+ * 事件参数载荷采集（tutorial 1.2.3）：零改骨架，监听 Cordis 已有的 internal/dispatch，
  * 按 15 个核心事件白名单在发出刻深拷贝 before 并留住活引用，同会话下一事件到来或本轮结束时补拷 after，
  * 逐路径算出 add / change / remove（最多 500 条）与顶层 same 透传键，原子落盘 data/flow/<消息号>.payload.json。
+ * 两个模型关口的顶层数组（system、tools、messages）按引用比：发出时只留浅拷，补拷时只深拷变了的那几条。
+ * “这个事件属于哪条消息”不在这里猜：用 utils/Trace.ts 的 buildDispatchLine 认出的那一份（和 journal 同一份）。
  */
 import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
@@ -145,6 +147,12 @@ const EVENT_OBJECT_NAMES: Record<string, string> = {
 
 /** 只记账不改数据的观察者插件名，不在监听者名单里单列。 */
 const PASSIVE_LISTENERS = new Set(['', 'journal', 'tutorial', 'usage']);
+
+/** 两个模型关口：顶层数组按引用比，只深拷变了的那几条（云端 31 第 3 条）。 */
+const MODEL_GATE_EVENTS = new Set(['session/before-model', 'session/after-model']);
+
+/** 模型关口参数里按引用比的顶层数组（每步都带整段历史和工具定义，最占地方）。 */
+const GATE_ARRAY_KEYS: readonly string[] = ['system', 'tools', 'messages'];
 
 /** 凭据键名匹配规则（设计文档 3.4 及云端 31 加固）：命中时值替换为 [凭据 已隐藏]。 */
 const CREDENTIAL_KEY = new RegExp(
@@ -691,6 +699,329 @@ export function computePayloadDiff(before: unknown, after: unknown | null): Payl
 
 
 //==========================================================
+//M 模型关口按引用比：顶层数组发出时只留浅拷，补拷 after 时只深拷变了的那几条（云端 31 第 3 条）
+//==========================================================
+
+/** 补拷 after 的结果：普通事件 before 原样；模型关口的 before 补上了删掉、换掉的旧条目。 */
+interface AfterCopy {
+  /** 这一条的 before（模型关口补过旧条目的那份）。 */
+  before: unknown;
+  /** 这一条的 after。 */
+  after: unknown;
+  /** 这次补拷新占的字节数（记进单条消息的总量）。 */
+  bytes: number;
+  /** 这次补拷撞没撞单份上限。 */
+  truncated: boolean;
+  /** before 和 after 的逐路径对比。 */
+  diff: PayloadDiff[];
+}
+
+
+/** 一个顶层数组前后按引用比的结果。 */
+interface RefChanges {
+  /** 新数组里新加、换上的条目下标：旧数组里没有这个引用（字符串按值）。 */
+  added: number[];
+  /** 旧数组里删掉、换掉的条目下标：新数组里没有这个引用。 */
+  removed: number[];
+  /** 换掉的下标：同一下标一删一加，而且前面删的和加的条数一样多（前面一一对齐），算“改了这一条”，往里逐路径比。 */
+  paired: Set<number>;
+  /** 前后条数一样。 */
+  sameLength: boolean;
+}
+
+
+/**
+ * 留下模型关口参数顶层数组的浅拷：只拷每条的引用，几乎不占地方。
+ * 监听者整个换数组、往后 push、map 出新数组，都改不到这份浅拷；补拷 after 时拿它逐条比。
+ * @param target 事件参数（ChatRequest 或 AnsweredRequest）。
+ * @returns 数组键 → 这一刻的浅拷；不是数组的键不留。
+ */
+function takeGateRefs(target: unknown): Record<string, unknown[]> {
+  const record = asRecord(target);
+  const refs: Record<string, unknown[]> = {};
+  for (const key of GATE_ARRAY_KEYS) {
+    const list = record?.[key];
+    if (Array.isArray(list)) {
+      refs[key] = [...list];
+    }
+  }
+  return refs;
+}
+
+
+/**
+ * 把模型关口参数拼成要深拷的样子：别的字段照原样（还是引用），顶层数组写成 { count, 下标: 条目 }。
+ * @param record 事件参数。
+ * @param lists 顶层数组（takeGateRefs 留的浅拷）。
+ * @param picks 每个顶层数组要带上的条目下标；不给就只记条数。
+ * @returns 交给 clonePayload 的对象。
+ */
+function shapeGateFrame(
+  record: Record<string, unknown>,
+  lists: Record<string, unknown[]>,
+  picks: Record<string, number[]> | undefined,
+): Record<string, unknown> {
+  const shaped: Record<string, unknown> = {};
+
+  //M 小字段在前：answer、stop、model 这些先拷，单份撞上限时不会被长历史挤掉。
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    if (Object.hasOwn(lists, key)) continue;
+
+    shaped[key] = getOwnDataValue(record, key);
+  }
+
+  //M 顶层数组在后：只记条数，再带上点到的那几条。
+  for (const key of GATE_ARRAY_KEYS) {
+    const list = lists[key];
+    if (list === undefined) continue;
+
+    const summary: Record<string, unknown> = { count: list.length };
+    const indexes = picks?.[key] ?? [];
+    for (const index of indexes) {
+      summary[String(index)] = list[index];
+    }
+    shaped[key] = summary;
+  }
+  return shaped;
+}
+
+
+/**
+ * 一个顶层数组前后逐条按引用比：两边都有的引用不管挪没挪位置都算没变，只挑出真新加的、真删掉的。
+ * @param older 发出时的浅拷。
+ * @param newer 现在的数组。
+ */
+function getRefChanges(older: unknown[], newer: unknown[]): RefChanges {
+  const olderSet = new Set(older);
+  const newerSet = new Set(newer);
+
+  const added: number[] = [];
+  for (let index = 0; index < newer.length; index += 1) {
+    if (!olderSet.has(newer[index])) {
+      added.push(index);
+    }
+  }
+
+  const removed: number[] = [];
+  for (let index = 0; index < older.length; index += 1) {
+    if (!newerSet.has(older[index])) {
+      removed.push(index);
+    }
+  }
+
+  //M 换掉的：同一下标一删一加，而且排在它前面删掉的条数和新加的条数一样多（两边前面一一对齐）。
+  //M   context-fit 把开头 61 条换成 1 条摘要时，后面挪了位置的条目不会被错配成“改了”。
+  const paired = new Set<number>();
+  let cursor = 0;
+  for (let order = 0; order < added.length; order += 1) {
+    const index = added[order] ?? -1;
+    while (cursor < removed.length && (removed[cursor] ?? index) < index) {
+      cursor += 1;
+    }
+    const sameIndex = removed[cursor] === index;
+    const alignedBefore = cursor === order;
+    if (sameIndex && alignedBefore) {
+      paired.add(index);
+    }
+  }
+  return { added, removed, paired, sameLength: older.length === newer.length };
+}
+
+
+/**
+ * 去掉顶层数组，只留小字段：小字段照常逐路径比。
+ * @param value before 或 after 的拷贝。
+ */
+function omitGateKeys(value: unknown): unknown {
+  const record = asRecord(value);
+  if (record === undefined) return value;
+
+  const rest: Record<string, unknown> = {};
+  for (const key of Object.keys(record)) {
+    if (GATE_ARRAY_KEYS.includes(key)) continue;
+
+    rest[key] = record[key];
+  }
+  return rest;
+}
+
+
+/**
+ * 把补拷的旧条目并进发出时的 before：before 的顶层数组原来只记了条数。
+ * @param before 发出时的拷贝。
+ * @param extra 旧条目的拷贝（shapeGateFrame 拼、clonePayload 拷）。
+ * @returns 新的 before，不改原来那份（教程页现拍时还要用原来的）。
+ */
+function mergeGateFrame(before: unknown, extra: unknown): unknown {
+  const base = asRecord(before);
+  const more = asRecord(extra);
+  if (base === undefined || more === undefined) return before;
+
+  const merged: Record<string, unknown> = { ...base };
+  for (const key of GATE_ARRAY_KEYS) {
+    const baseList = asRecord(base[key]);
+    const moreList = asRecord(more[key]);
+    if (baseList === undefined || moreList === undefined) continue;
+
+    merged[key] = { ...baseList, ...moreList };
+  }
+  return merged;
+}
+
+
+/**
+ * 列出一个顶层数组的变化：新加的 add，删掉的 remove，换掉的（paired）往里逐路径比。
+ * @param key 数组键，如 messages。
+ * @param changes getRefChanges 比出来的结果。
+ * @param beforeList before 里这个数组（{ count, 下标: 旧条目 }）。
+ * @param afterList after 里这个数组（{ count, 下标: 新条目 }）。
+ * @param out 累积变化列表（最多 DIFF_MAX 条）。
+ */
+function addRefDiff(
+  key: string,
+  changes: RefChanges,
+  beforeList: Record<string, unknown> | undefined,
+  afterList: Record<string, unknown> | undefined,
+  out: PayloadDiff[],
+): void {
+  //M 新加、换上的：换掉的往里比，否则是新加。
+  for (const index of changes.added) {
+    if (out.length >= DIFF_MAX) return;
+
+    const slot = String(index);
+    const itemPath = `${key}[${slot}]`;
+    const newer = afterList?.[slot];
+    if (changes.paired.has(index)) {
+      collectChanges(beforeList?.[slot], newer, itemPath, out);
+      continue;
+    }
+    out.push({ path: itemPath, kind: 'add', after: formatPreview(newer) });
+  }
+
+  //M 删掉、换掉的：上面已经当“改了”比过的跳过。
+  for (const index of changes.removed) {
+    if (out.length >= DIFF_MAX) return;
+    if (changes.paired.has(index)) continue;
+
+    const slot = String(index);
+    out.push({ path: `${key}[${slot}]`, kind: 'remove', before: formatPreview(beforeList?.[slot]) });
+  }
+}
+
+
+/**
+ * 模型关口的差异：小字段逐路径比，顶层数组按引用比的结果逐条列；same 放最后。
+ * @param before 补过旧条目的 before。
+ * @param after 补拷的 after。
+ * @param changes 每个顶层数组按引用比的结果。
+ */
+function computeGateDiff(before: unknown, after: unknown, changes: Record<string, RefChanges>): PayloadDiff[] {
+  const small = computePayloadDiff(omitGateKeys(before), omitGateKeys(after));
+  const diffs = small.filter((row) => row.kind !== 'same');
+  const sames = small.filter((row) => row.kind === 'same');
+  const beforeRec = asRecord(before);
+  const afterRec = asRecord(after);
+
+  for (const key of GATE_ARRAY_KEYS) {
+    const found = changes[key];
+    if (found === undefined) continue;
+
+    const beforeList = asRecord(beforeRec?.[key]);
+    const afterList = asRecord(afterRec?.[key]);
+    addRefDiff(key, found, beforeList, afterList, diffs);
+
+    //M 一条没变的数组也标 same：读的人知道它原样透传。
+    const untouched = found.added.length === 0 && found.removed.length === 0 && found.sameLength;
+    if (untouched) {
+      const preview = `${String(afterList?.['count'])} 条`;
+      sames.push({ path: key, kind: 'same', before: preview, after: preview });
+    }
+  }
+  return [...diffs, ...sames];
+}
+
+
+/**
+ * 拷事件发出时的 before。模型关口：小字段深拷，顶层数组只记条数，另外留一份浅拷给补拷 after 用。
+ * @param event 事件名。
+ * @param target 事件参数（buildTargetRef 取的）。
+ * @param maxBytes 单份上限。
+ * @returns 拷贝；refs 是模型关口顶层数组的浅拷，别的事件是 undefined。
+ */
+function cloneBefore(
+  event: string,
+  target: unknown,
+  maxBytes: number,
+): { cloned: ClonedPayload; refs: Record<string, unknown[]> | undefined } {
+  //M 别的事件整份深拷。
+  if (!MODEL_GATE_EVENTS.has(event)) {
+    const whole = clonePayload(target, maxBytes);
+    return { cloned: whole, refs: undefined };
+  }
+
+  //M 模型关口：顶层数组只记条数，浅拷留着补拷时逐条比。
+  const record = asRecord(target) ?? {};
+  const refs = takeGateRefs(target);
+  const shaped = shapeGateFrame(record, refs, undefined);
+  const cloned = clonePayload(shaped, maxBytes);
+  return { cloned, refs };
+}
+
+
+/**
+ * 补拷模型关口的 after：顶层数组逐条按引用比，只深拷新加、换上的那几条，before 只补删掉、换掉的旧条目。
+ * 长会话每步不再深拷 4 份整段历史，最新几条和 answer 不会被 256KB 单份上限截掉。
+ * 前提：监听者不原地改单条消息（核过：context-fit、bots、file-tools、progress 都是换数组、push 或换新对象）。
+ * @param before 发出时的拷贝（cloneGateBefore 拷的）。
+ * @param older 发出时顶层数组的浅拷。
+ * @param target 事件参数的活引用。
+ * @param maxBytes 单份上限：after、旧条目各按这个上限拷。
+ */
+function cloneGateAfter(
+  before: unknown,
+  older: Record<string, unknown[]>,
+  target: unknown,
+  maxBytes: number,
+): AfterCopy {
+  const record = asRecord(target) ?? {};
+  const newer = takeGateRefs(target);
+
+  //M 1. 逐个顶层数组按引用比：哪几条是新加、换上的，哪几条是删掉、换掉的。
+  const changes: Record<string, RefChanges> = {};
+  const addedPicks: Record<string, number[]> = {};
+  const removedPicks: Record<string, number[]> = {};
+  for (const key of Object.keys(newer)) {
+    const olderList = older[key] ?? [];
+    const newerList = newer[key] ?? [];
+    const found = getRefChanges(olderList, newerList);
+    changes[key] = found;
+    addedPicks[key] = found.added;
+    removedPicks[key] = found.removed;
+  }
+
+  //M 2. after：小字段照常深拷，顶层数组只深拷新加、换上的那几条。
+  const afterShaped = shapeGateFrame(record, newer, addedPicks);
+  const afterClone = clonePayload(afterShaped, maxBytes);
+
+  //M 3. before：发出时顶层数组只记了条数，这里补拷删掉、换掉的旧条目（没人原地改，现在拷和发出时一样）。
+  const removedShaped = shapeGateFrame({}, older, removedPicks);
+  const removedClone = clonePayload(removedShaped, maxBytes);
+  const fullBefore = mergeGateFrame(before, removedClone.value);
+
+  //M 4. 差异：小字段逐路径比，顶层数组按引用比的结果逐条列。
+  const diff = computeGateDiff(fullBefore, afterClone.value, changes);
+  return {
+    before: fullBefore,
+    after: afterClone.value,
+    bytes: afterClone.bytes + removedClone.bytes,
+    truncated: afterClone.truncated || removedClone.truncated,
+    diff,
+  };
+}
+
+
+//==========================================================
 //M 按轨迹步骤时间窗与事件行核对 step 与 site
 //==========================================================
 
@@ -784,6 +1115,8 @@ interface RecordedEntry {
   outerChannel: boolean;
   /** 事件参数的活引用；补拷完 after 后立即置 undefined 释放内存。 */
   liveRef: unknown;
+  /** 模型关口发出时顶层数组的浅拷（每条的引用），补拷 after 时逐条按引用比；别的事件、补拷完是 undefined。 */
+  gateRefs: Record<string, unknown[]> | undefined;
   /** 是否已完成 after 补拷。 */
   settled: boolean;
 }
@@ -858,101 +1191,6 @@ function buildTargetRef(event: string, args: unknown[]): unknown {
     return { session: args[0], stateBefore: args[1] };
   }
   return args[0];
-}
-
-
-/**
- * 从任意事件参数中深度挖掘标准消息号、数字收件号、会话号、回复请求号与会话当前状态。
- */
-interface ExtractedRefs {
-  messageId: number | undefined;
-  sourceId: string | undefined;
-  sessionId: string | undefined;
-  bot: string | undefined;
-  replyRequestId: string | undefined;
-  sessionState: string | undefined;
-}
-
-
-/**
- * 结合共用事件行（utils/Trace.ts 的 onDispatch 交来的）与渠道回复/收尾快照提取关联线索，覆盖全部 15 种白名单事件。
- * @param line 共用的事件行：会话号、机器人、消息号先从它取。
- * @param args 事件参数。
- * @returns 认出的关联线索。
- */
-function extractEventRefs(line: traceUtils.SharedLine, args: unknown[]): ExtractedRefs {
-  const event = line.name;
-  const first = asRecord(args[0]);
-  let messageId = line.messageId;
-  let sourceId = line.sourceId;
-  let sessionId = line.session;
-  let bot = line.bot;
-  let replyRequestId: string | undefined;
-  let sessionState: string | undefined;
-
-  //M 1. 渠道消息与 bot/receive：从 origin.address 或 message.address 提取网页收件号。
-  const origin = asRecord(first?.['origin']);
-  const originAddr = asRecord(origin?.['address']);
-  const innerMsg = asRecord(first?.['message']);
-  const innerAddr = asRecord(innerMsg?.['address']);
-  if (messageId === undefined) {
-    messageId = readPositiveInt(originAddr, 'messageId') ?? readPositiveInt(innerAddr, 'messageId');
-  }
-  if (bot === undefined && typeof innerMsg?.['bot'] === 'string') {
-    bot = innerMsg['bot'];
-  }
-
-  //M 2. 会话对象自身携带的 activeSourceSnapshot 与 row.address（兜底认出所属渠道消息与收件号）。
-  const sessionObj = asRecord(first?.['session']) ?? first;
-  const sessionRow = asRecord(sessionObj?.['row']);
-  if (sessionRow !== undefined) {
-    if (typeof sessionRow['state'] === 'string') {
-      sessionState = sessionRow['state'];
-    }
-    const rowAddr = asRecord(sessionRow['address']);
-    if (messageId === undefined) {
-      messageId = readPositiveInt(rowAddr, 'messageId');
-    }
-    const activeSnap = asRecord(sessionRow['activeSourceSnapshot']);
-    if (sourceId === undefined) {
-      sourceId = traceUtils.getSourceId(activeSnap?.['messageId']);
-    }
-  }
-
-  //M 3. channel/reply、channel/replied、bot/settled：从 sourceSnapshot、request、target.address 提取线索。
-  const reqObj = asRecord(first?.['request']) ?? first;
-  if (event === 'channel/reply' || event === 'channel/replied') {
-    if (typeof reqObj?.['requestId'] === 'string') {
-      replyRequestId = reqObj['requestId'];
-    }
-    if (sessionId === undefined && typeof reqObj?.['sessionId'] === 'string' && reqObj['sessionId'] !== '') {
-      sessionId = reqObj['sessionId'];
-    }
-    if (bot === undefined && typeof reqObj?.['bot'] === 'string') {
-      bot = reqObj['bot'];
-    }
-  }
-  const snap = asRecord(reqObj?.['sourceSnapshot']) ?? asRecord(first?.['sourceSnapshot']);
-  if (snap !== undefined) {
-    if (sourceId === undefined) {
-      sourceId = traceUtils.getSourceId(snap['messageId']);
-    }
-    if (bot === undefined && typeof snap['botName'] === 'string') {
-      bot = snap['botName'];
-    }
-    const snapOrigin = asRecord(snap['origin']);
-    const snapAddr = asRecord(snapOrigin?.['address']);
-    if (messageId === undefined) {
-      messageId = readPositiveInt(snapAddr, 'messageId');
-    }
-  }
-  const targetObj = asRecord(reqObj?.['target']);
-  const targetAddr = asRecord(targetObj?.['address']);
-  if (messageId === undefined) {
-    messageId = readPositiveInt(targetAddr, 'messageId');
-  }
-
-  return { messageId, sourceId, sessionId, bot, replyRequestId, sessionState };
 }
 
 
@@ -1192,11 +1430,11 @@ export class PayloadRecorder {
 
   /**
    * 处理命中的 15 类白名单事件：定位桶 → 先补拷同会话前序事件 after → 拷本次 before 并留住活引用 → 判断本轮收尾。
+   * 会话号、消息号、回复请求号、会话状态都用共用事件行 line 里认出的（utils/Trace.ts 的 buildDispatchLine）。
    */
   private onWhitelistedDispatch(line: traceUtils.SharedLine, args: unknown[]): void {
     const event = line.name;
-    const refs = extractEventRefs(line, args);
-    const bucket = this.resolveOrCreateBucket(event, args, refs);
+    const bucket = this.resolveOrCreateBucket(line, args);
     if (bucket === null || !bucket.wanted) return;
 
     bucket.updatedAt = Date.now();
@@ -1205,22 +1443,23 @@ export class PayloadRecorder {
     //M    - 进入会话事件时，先前未结算的 bot/receive 与同会话上一事件已完成监听修改，立即补拷；
     //M    - 进到模型关口或收尾事件时，外层 channel/* 认领 claims 也已填齐，一并补拷；
     //M    - channel/replied 到来时，补拷对应的 channel/reply（handled 已置 true）。
-    this.settlePreviousEntries(bucket, event, refs.sessionId ?? null);
+    this.settlePreviousEntries(bucket, event, line.session ?? null);
 
     //M 2. 若本消息已超单消息字节上限，不再录新事件。
     if (bucket.capped) {
-      this.checkRoundEnd(bucket, event, refs.sessionState);
+      this.checkRoundEnd(bucket, event, line.sessionState);
       return;
     }
 
-    //M 3. 深拷贝当前事件的 before，检查单消息 8MB 预算。
+    //M 3. 深拷贝当前事件的 before，检查单消息 8MB 预算（模型关口的顶层数组只记条数、留浅拷）。
     const targetRef = buildTargetRef(event, args);
-    const beforeClone = clonePayload(targetRef, this.settings.maxItemBytes);
+    const taken = cloneBefore(event, targetRef, this.settings.maxItemBytes);
+    const beforeClone = taken.cloned;
     const wouldExceed = bucket.bytes + beforeClone.bytes > this.settings.maxMessageBytes;
     if (wouldExceed && bucket.entries.length > 0) {
       bucket.capped = true;
       bucket.note = this.formatCapNote();
-      this.checkRoundEnd(bucket, event, refs.sessionState);
+      this.checkRoundEnd(bucket, event, line.sessionState);
       return;
     }
 
@@ -1248,15 +1487,16 @@ export class PayloadRecorder {
     };
     const entry: RecordedEntry = {
       item,
-      sessionId: refs.sessionId ?? null,
+      sessionId: line.session ?? null,
       outerChannel: CHANNEL_INBOUND_EVENTS.has(event),
       liveRef: targetRef,
+      gateRefs: taken.refs,
       settled: false,
     };
     bucket.entries.push(entry);
 
     //M 4. 检查这一轮是否收尾；收尾则在当前事件监听跑完后补齐剩余 after 并原子写盘。
-    this.checkRoundEnd(bucket, event, refs.sessionState);
+    this.checkRoundEnd(bucket, event, line.sessionState);
   }
 
   /**
@@ -1307,7 +1547,9 @@ export class PayloadRecorder {
 
     entry.settled = true;
     const ref = entry.liveRef;
+    const gateRefs = entry.gateRefs;
     entry.liveRef = undefined;
+    entry.gateRefs = undefined;
     if (ref === undefined) return;
 
     //G 若补拷前已严重超出消息总上限，after 留 null 并记明原因。
@@ -1318,15 +1560,31 @@ export class PayloadRecorder {
       return;
     }
 
-    const afterClone = clonePayload(ref, this.settings.maxItemBytes);
-    bucket.bytes += afterClone.bytes;
+    const copy = this.copyAfter(entry.item.before, gateRefs, ref);
+    bucket.bytes += copy.bytes;
     if (bucket.bytes > this.settings.maxMessageBytes) {
       bucket.capped = true;
       bucket.note = this.formatCapNote();
     }
-    entry.item.after = afterClone.value;
-    entry.item.truncated = entry.item.truncated || afterClone.truncated;
-    entry.item.diff = computePayloadDiff(entry.item.before, afterClone.value);
+    entry.item.before = copy.before;
+    entry.item.after = copy.after;
+    entry.item.truncated = entry.item.truncated || copy.truncated;
+    entry.item.diff = copy.diff;
+  }
+
+  /**
+   * 补拷一条的 after 并算差异：模型关口按引用比（cloneGateAfter），别的事件整份深拷再逐路径比。
+   * @param before 发出时的拷贝。
+   * @param gateRefs 模型关口发出时顶层数组的浅拷；别的事件是 undefined。
+   * @param ref 事件参数的活引用。
+   */
+  private copyAfter(before: unknown, gateRefs: Record<string, unknown[]> | undefined, ref: unknown): AfterCopy {
+    const maxBytes = this.settings.maxItemBytes;
+    if (gateRefs !== undefined) return cloneGateAfter(before, gateRefs, ref, maxBytes);
+
+    const cloned = clonePayload(ref, maxBytes);
+    const diff = computePayloadDiff(before, cloned.value);
+    return { before, after: cloned.value, bytes: cloned.bytes, truncated: cloned.truncated, diff };
   }
 
   /**
@@ -1396,13 +1654,13 @@ export class PayloadRecorder {
       if (entry.settled || entry.liveRef === undefined) {
         return { ...entry.item };
       }
-      const liveAfter = clonePayload(entry.liveRef, this.settings.maxItemBytes);
-      const diff = computePayloadDiff(entry.item.before, liveAfter.value);
+      const live = this.copyAfter(entry.item.before, entry.gateRefs, entry.liveRef);
       return {
         ...entry.item,
-        after: liveAfter.value,
-        diff,
-        truncated: entry.item.truncated || liveAfter.truncated,
+        before: live.before,
+        after: live.after,
+        diff: live.diff,
+        truncated: entry.item.truncated || live.truncated,
       };
     });
     const items = assignTrailSteps(rawItems, trail);
@@ -1419,26 +1677,30 @@ export class PayloadRecorder {
   //==========================================================
 
   /**
-   * 按事件携带的线索查找已有桶，或在入站起点新建桶。
+   * 按共用事件行认出的线索查找已有桶，或在入站起点新建桶。
+   * @param line 共用事件行：回复请求号、收件号、会话号、标准消息号、机器人都从它取。
+   * @param args 事件参数（认快照关键词用）。
    */
-  private resolveOrCreateBucket(event: string, args: unknown[], refs: ExtractedRefs): PayloadBucket | null {
+  private resolveOrCreateBucket(line: traceUtils.SharedLine, args: unknown[]): PayloadBucket | null {
+    const event = line.name;
+
     //M 1. 先按明确线索依次查：replyRequestId → 数字收件号 → 会话号（含父会话）→ 标准消息号。
     let bucket: PayloadBucket | undefined;
-    if (refs.replyRequestId !== undefined) {
-      bucket = this.byReplyId.get(refs.replyRequestId);
+    if (line.replyRequestId !== undefined) {
+      bucket = this.byReplyId.get(line.replyRequestId);
     }
-    if (bucket === undefined && refs.messageId !== undefined) {
-      bucket = this.byMessage.get(refs.messageId);
+    if (bucket === undefined && line.messageId !== undefined) {
+      bucket = this.byMessage.get(line.messageId);
     }
-    if (bucket === undefined && refs.sessionId !== undefined) {
-      bucket = this.findBySession(refs.sessionId);
+    if (bucket === undefined && line.session !== undefined) {
+      bucket = this.findBySession(line.session);
     }
-    if (bucket === undefined && refs.sourceId !== undefined) {
-      bucket = this.findBySource(refs.sourceId, refs.bot);
+    if (bucket === undefined && line.sourceId !== undefined) {
+      bucket = this.findBySource(line.sourceId, line.bot);
     }
 
     //M 2. 兼容刚发过 web-api/received 但未走 Timeline.bindSession 的直发会话事件（与 Trail.pick 的 firstSession 一致）。
-    if (bucket === undefined && refs.sessionId !== undefined && this.recentUnbound !== undefined) {
+    if (bucket === undefined && line.session !== undefined && this.recentUnbound !== undefined) {
       const fresh = Date.now() - this.recentUnbound.at <= PENDING_RECEIVE_MS;
       if (fresh && this.recentUnbound.bucket.sessions.size === 0) {
         bucket = this.recentUnbound.bucket;
@@ -1450,24 +1712,24 @@ export class PayloadRecorder {
     if (bucket === undefined) {
       const canStart = CHANNEL_INBOUND_EVENTS.has(event)
         || event === 'bot/receive'
-        || refs.messageId !== undefined
-        || refs.sessionId !== undefined;
+        || line.messageId !== undefined
+        || line.session !== undefined;
       if (!canStart) return null;
 
-      const hasKw = this.detectEventKeyword(event, args, refs.sessionId);
+      const hasKw = this.detectEventKeyword(event, args, line.session);
       const wanted = this.settings.recordMode === 'all' || hasKw;
       bucket = this.createBucket({
-        messageId: refs.messageId ?? null,
-        sourceId: refs.sourceId ?? null,
-        bot: refs.bot ?? '',
+        messageId: line.messageId ?? null,
+        sourceId: line.sourceId ?? null,
+        bot: line.bot ?? '',
         wanted,
       });
     }
 
     //M 4. 把本次新露面的线索绑回同一个桶，后续同链事件即可直接命中。
-    this.bindBucket(bucket, refs.messageId, refs.sourceId, refs.sessionId, refs.bot);
-    if (refs.replyRequestId !== undefined) {
-      this.byReplyId.set(refs.replyRequestId, bucket);
+    this.bindBucket(bucket, line.messageId, line.sourceId, line.session, line.bot);
+    if (line.replyRequestId !== undefined) {
+      this.byReplyId.set(line.replyRequestId, bucket);
       if (this.byReplyId.size > 500) {
         const oldestReq = this.byReplyId.keys().next().value;
         if (oldestReq !== undefined) {
@@ -1475,7 +1737,7 @@ export class PayloadRecorder {
         }
       }
     }
-    if (this.detectEventKeyword(event, args, refs.sessionId)) {
+    if (this.detectEventKeyword(event, args, line.session)) {
       bucket.wanted = true;
     }
     return bucket;

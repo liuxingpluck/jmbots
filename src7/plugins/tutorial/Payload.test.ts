@@ -99,8 +99,8 @@ async function setupTutorial(
 
 
 describe('Payload 真实事件载荷采集与 Diff', () => {
-  test('tutorial 版本至少 1.2.0（现 1.2.2）且默认白名单包含设计文档规定的 15 个事件', () => {
-    expect(tutorialModule.version).toBe('1.2.2');
+  test('tutorial 版本至少 1.2.0（现 1.2.3）且默认白名单包含设计文档规定的 15 个事件', () => {
+    expect(tutorialModule.version).toBe('1.2.3');
     expect(payloadModule.DEFAULT_PAYLOAD_EVENTS).toEqual([
       'channel/direct',
       'channel/mention',
@@ -190,32 +190,145 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
     const trail = recorder.getBySession('ses-gate-1');
     expect(trail.items).toHaveLength(2);
 
+    //M 模型关口按引用比：before 的顶层数组只记条数并补上删掉、换掉的旧条目，after 只带新加、换上的那几条。
     const first = trail.items[0]!;
     expect(first.event).toBe('session/before-model');
     expect(first.object).toBe('ChatRequest');
     expect(first.truncated).toBe(false);
-    const beforeRec = first.before as { system: string[]; messages: unknown[]; signal: string };
-    const afterRec = first.after as { system: string[]; messages: unknown[]; signal: string };
-    expect(beforeRec.system).toEqual(['基础系统提示']);
-    expect(afterRec.system).toEqual(['基础系统提示', '记忆：用户偏好中文直答']);
-    expect(beforeRec.messages).toHaveLength(3);
-    expect(afterRec.messages).toHaveLength(2);
+    const beforeRec = first.before as { system: unknown; messages: unknown; tools: unknown; signal: string };
+    const afterRec = first.after as { system: unknown; messages: unknown; tools: unknown; signal: string };
+    expect(beforeRec.system).toEqual({ count: 1 });
+    expect(afterRec.system).toEqual({ count: 2, '1': '记忆：用户偏好中文直答' });
+    expect(beforeRec.messages).toEqual({
+      count: 3,
+      '0': { role: 'user', content: '第一句很旧的话' },
+      '1': { role: 'assistant', content: '第一句回答' },
+    });
+    expect(afterRec.messages).toEqual({ count: 2, '0': { role: 'user', content: '已裁剪早期工具结果' } });
+    expect(beforeRec.tools).toEqual({ count: 1 });
+    expect(afterRec.tools).toEqual({ count: 1 });
     expect(beforeRec.signal).toBe('[AbortSignal]');
 
-    //M diff 中应同时包含新增 system[1]、改写 messages[0/1]、删除 messages[2] 以及透传的 model/thinking。
+    //M diff：新增 system[1]；“最新问题”引用没变不算变化；messages[0] 换成新对象（前面对齐）往里比出 content 改了，
+    //M   messages[1] 删掉；model、thinking、tools 原样透传标 same。
     expect(first.diff).toContainEqual({
       path: 'system[1]',
       kind: 'add',
       after: '记忆：用户偏好中文直答',
     });
     expect(first.diff.some((d) => d.kind === 'change' && d.path === 'messages[0].content')).toBe(true);
-    expect(first.diff.some((d) => d.kind === 'remove' && d.path === 'messages[2]')).toBe(true);
+    expect(first.diff.some((d) => d.kind === 'remove' && d.path === 'messages[1]')).toBe(true);
+    expect(first.diff.some((d) => d.path === 'messages[2]')).toBe(false);
     expect(first.diff.some((d) => d.kind === 'same' && d.path === 'model')).toBe(true);
     expect(first.diff.some((d) => d.kind === 'same' && d.path === 'thinking')).toBe(true);
+    expect(first.diff.some((d) => d.kind === 'same' && d.path === 'tools')).toBe(true);
 
     //M totalTokens 是数值，不能被凭据正则误打码。
     const secondAfter = trail.items[1]?.after as { answer: { usage: { totalTokens: number } } };
     expect(secondAfter.answer.usage.totalTokens).toBe(128);
+  });
+
+  test('长历史会话：模型关口只深拷变了的几条，最新消息与 answer 完整保留不被 256KB 截断', async () => {
+    const root = makeTempRoot();
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    ctx.provide('resources', { root });
+
+    const files = new filesModule.FlowFiles(ctx, 5);
+    const recorder = new payloadModule.PayloadRecorder(ctx, {
+      recordMode: 'all',
+      keyword: '#调试',
+      maxItemBytes: 256 * 1024,
+      maxMessageBytes: 8 * 1024 * 1024,
+      maxMessages: 20,
+      extraEvents: [],
+    }, files);
+    const serial = (name: string, ...args: unknown[]) => {
+      return (ctx as unknown as { serial(ev: string, ...evArgs: unknown[]): Promise<void> }).serial(name, ...args);
+    };
+
+    //M 1. 3000 条、每条约 300 字节的旧历史（整段约 1MB，远超单份 256KB），最后一条是这一步要看的新问题。
+    const history: { role: string; content: string }[] = [];
+    for (let idx = 0; idx < 3000; idx += 1) {
+      history.push({ role: 'user', content: `旧消息 ${String(idx)} ${'x'.repeat(280)}` });
+    }
+    history.push({ role: 'user', content: '最新问题：今天几号' });
+
+    //M 2. 模拟 progress 往后 push 一条、file-tools 换掉一条为新对象（同一下标）、approval 往 system 里加一段。
+    ctx.on('session/before-model' as never, ((req: {
+      system: string[];
+      messages: { role: string; content: unknown }[];
+    }) => {
+      req.system.push('审核提示');
+      req.messages = req.messages.map((message, index) => {
+        if (index !== 2999) return message;
+
+        return { ...message, content: [{ type: 'text', text: '旧消息 2999 带图' }] };
+      });
+      req.messages.push({ role: 'user', content: '进度提醒：别忘了回话' });
+    }) as never);
+
+    const session = {
+      id: 'ses-long-1',
+      row: { id: 'ses-long-1', bot: '周小灵', kind: 'front', state: 'running', messages: history },
+    };
+    const chatRequest = {
+      session,
+      model: 'provider/opus',
+      thinking: 'high',
+      system: ['基础系统提示'],
+      tools: [{ name: 'file_read' }, { name: 'exec' }],
+      messages: [...history],
+      signal: new AbortController().signal,
+    };
+    await serial('session/before-model', chatRequest);
+    const answered = {
+      ...chatRequest,
+      answer: {
+        role: 'assistant',
+        provider: 'provider',
+        model: 'opus',
+        stopReason: 'stop',
+        usage: { input: 9000, output: 12, totalTokens: 9012 },
+        content: [{ type: 'text', text: '今天是 11 月 21 日' }],
+      },
+    };
+    await serial('session/after-model', answered);
+    await serial('session/new-message', session, answered.answer);
+
+    const trail = recorder.getBySession('ses-long-1');
+    expect(trail.items.map((item) => item.event)).toEqual([
+      'session/before-model',
+      'session/after-model',
+      'session/new-message',
+    ]);
+
+    //M 3. 关口一：before 只记条数；after 只带换掉的 messages[2999] 和新加的 messages[3001]，没有截断。
+    const gate1 = trail.items[0]!;
+    expect(gate1.truncated).toBe(false);
+    const before1 = gate1.before as { messages: Record<string, unknown> };
+    const after1 = gate1.after as { messages: Record<string, unknown>; system: Record<string, unknown> };
+    expect(Object.keys(before1.messages).sort()).toEqual(['2999', 'count']);
+    expect(before1.messages['count']).toBe(3001);
+    expect(Object.keys(after1.messages).sort()).toEqual(['2999', '3001', 'count']);
+    expect(after1.messages['count']).toBe(3002);
+    expect(after1.messages['3001']).toEqual({ role: 'user', content: '进度提醒：别忘了回话' });
+    expect(after1.system).toEqual({ count: 2, '1': '审核提示' });
+    expect(gate1.diff).toContainEqual({ path: 'messages[3001]', kind: 'add', after: expect.stringContaining('进度提醒') });
+    expect(gate1.diff.some((d) => d.kind === 'change' && d.path.startsWith('messages[2999].content'))).toBe(true);
+    expect(gate1.diff.some((d) => d.path === 'messages[3000]')).toBe(false);
+
+    //M 4. 关口二：answer 完整保留在前面，数组一条没变标 same。
+    const gate2 = trail.items[1]!;
+    expect(gate2.truncated).toBe(false);
+    const before2 = gate2.before as { answer: { content: { text: string }[] }; messages: unknown };
+    expect(before2.answer.content[0]?.text).toBe('今天是 11 月 21 日');
+    expect(before2.messages).toEqual({ count: 3002 });
+    expect(gate2.diff.some((d) => d.kind === 'same' && d.path === 'messages')).toBe(true);
+
+    //M 5. 整条消息的载荷远小于整段历史（改前每步深拷 4 份整段历史，单份就到 256KB 上限）。
+    const totalBytes = Buffer.byteLength(JSON.stringify(trail), 'utf8');
+    expect(totalBytes).toBeLessThan(32 * 1024);
   });
 
   test('深拷贝规则：防循环、函数标名、凭据键隐藏、图片 base64 换 [图片 mime NKB]、超单份上限标 truncated 且 diff 超过 500 条封顶', () => {
