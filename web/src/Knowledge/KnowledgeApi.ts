@@ -1,5 +1,5 @@
 /**
- * 积木知识库页面的接口封装：/api/knowledge/* 十个接口，沿用 jmbots 的页面令牌。
+ * 积木知识库页面的接口封装：/api/knowledge/* 十五个接口，沿用 jmbots 的页面令牌。
  * 401 广播 jmbots:unauthorized（AuthGate 弹登录）；403 抛 KnowledgeError，页面据此切成只读；
  * 保存带 baseUpdatedAt，别处改过时后端回 409，这里交回 { conflict: true, doc } 让页面换成最新的。
  */
@@ -16,6 +16,11 @@ export type KnowledgeMemoryHit = types.KnowledgeMemoryHit;
 export type KnowledgeSearchHit = types.KnowledgeSearchHit;
 export type KnowledgeSourceType = types.KnowledgeSourceType;
 export type KnowledgeTreeResponse = types.KnowledgeTreeResponse;
+export type KnowledgeTagMode = types.KnowledgeTagMode;
+export type KnowledgeLinksResponse = types.KnowledgeLinksResponse;
+export type KnowledgeGraphResponse = types.KnowledgeGraphResponse;
+export type KnowledgeGraphNode = types.KnowledgeGraphNode;
+export type KnowledgeGraphEdge = types.KnowledgeGraphEdge;
 
 const BASE = '/api/knowledge';
 
@@ -52,8 +57,12 @@ export interface DocPage {
 export interface DocQuery {
   /** 目录号；UNASSIGNED 只看未归类。 */
   dirId?: string;
-  /** 标签名，多个时取交集（一个时照旧发 tag，多个时发 tags=a,b）。 */
+  /** 标签名（一个时照旧发 tag，多个时发 tags=a,b），多个时按 tagMode 组合。 */
   tags?: string[];
+  /** 多个标签怎么组合：all 全部满足、any 任一满足；只在选了两个以上标签时发。 */
+  tagMode?: types.KnowledgeTagMode;
+  /** 只看硬性系统规则。 */
+  systemRule?: boolean;
   /** 工作决策节点号。 */
   topicId?: string;
   /** 分页偏移。 */
@@ -121,15 +130,23 @@ function getWriteOptions(method: string, body?: unknown): RequestInit {
 
 
 /**
- * 标签筛选写成查询参数：一个时照旧发 tag（老后端也认），多个时发 tags（逗号分隔，后端取交集）。
- * @param tags 选中的标签；没有是空。
+ * 标签和系统规则筛选写成查询参数：一个标签时照旧发 tag（老后端也认）；多个时发 tags（逗号分隔）和 tagMode。
+ * @param query 列表筛选。
  */
-function getTagParams(tags: string[] | undefined): { tag?: string; tags?: string } {
-  if (tags === undefined || tags.length === 0) return {};
-
-  if (tags.length === 1) return { tag: tags[0] };
-
-  return { tags: tags.join(',') };
+function getFilterParams(query: DocQuery): Record<string, string | undefined> {
+  const params: Record<string, string | undefined> = {};
+  if (query.systemRule === true) {
+    params['systemRule'] = '1';
+  }
+  const tags = query.tags ?? [];
+  if (tags.length === 1) {
+    params['tag'] = tags[0];
+  }
+  if (tags.length > 1) {
+    params['tags'] = tags.join(',');
+    params['tagMode'] = query.tagMode;
+  }
+  return params;
 }
 
 
@@ -160,8 +177,8 @@ export function getTree(signal?: AbortSignal): Promise<types.KnowledgeTreeRespon
 
 /** 2. 文档摘要列表（按更新时间倒序，每页 50）。 */
 export function listDocs(query: DocQuery, signal?: AbortSignal): Promise<DocPage> {
-  const tagParams = getTagParams(query.tags);
-  const values = { dirId: query.dirId, topicId: query.topicId, offset: query.offset, ...tagParams };
+  const filterParams = getFilterParams(query);
+  const values = { dirId: query.dirId, topicId: query.topicId, offset: query.offset, ...filterParams };
   const search = getQueryString({ ...values, limit: query.limit ?? PAGE_SIZE });
   return request(`/docs${search}`, { signal });
 }
@@ -243,8 +260,8 @@ export function search(
   query: DocQuery,
   signal?: AbortSignal,
 ): Promise<types.KnowledgeSearchResponse> {
-  const tagParams = getTagParams(query.tags);
-  const params = getQueryString({ q, dirId: query.dirId, topicId: query.topicId, ...tagParams, limit: 30 });
+  const filterParams = getFilterParams(query);
+  const params = getQueryString({ q, dirId: query.dirId, topicId: query.topicId, ...filterParams, limit: 30 });
   return request(`/search${params}`, { signal });
 }
 
@@ -330,4 +347,26 @@ export async function fetchRelatedDocs(docId: string, limit = 6, signal?: AbortS
   } catch {
     return [];
   }
+}
+
+
+/**
+ * 14. 一篇文档的 [[双链]]：引出链接（含还没建的）和引用了它的文档。
+ * @param docId 文档号。
+ * @param signal 换文档时中止。
+ */
+export function fetchDocLinks(docId: string, signal?: AbortSignal): Promise<types.KnowledgeLinksResponse> {
+  const route = `/docs/${encodeURIComponent(docId)}/links`;
+  return request(route, { signal });
+}
+
+
+/**
+ * 15. 双链图谱：不给 centerId 是整个知识库（全部文档都是节点，页面顺带拿它当标题索引）；给了是这篇和一跳邻居。
+ * @param centerId 中心文档号。
+ * @param signal 中止信号。
+ */
+export function fetchGraph(centerId?: string, signal?: AbortSignal): Promise<types.KnowledgeGraphResponse> {
+  const route = `/graph${getQueryString({ centerId })}`;
+  return request(route, { signal });
 }

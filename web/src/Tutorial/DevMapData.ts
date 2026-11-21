@@ -302,7 +302,7 @@ export const DEV_CARDS: DevCard[] = [
           { file: 'src7/plugins/knowledge/Tools.ts', line: 66, mark: 'ctx.tools.register({' },
           {
             file: 'src7/plugins/knowledge/index.ts',
-            line: 34,
+            line: 40,
             mark: "export const inject = ['resources', 'http', 'tools', 'db']",
           },
         ],
@@ -328,7 +328,7 @@ export const DEV_CARDS: DevCard[] = [
         title: '参考：knowledge 的表和网页入口',
         note: '表走 db 迁移；网页的 html 加进 web/Build.ts 入口；插件在 Index.ts 登记。',
         anchors: [
-          { file: 'src7/plugins/knowledge/index.ts', line: 74, mark: 'ctx.db.migrate(knowledgeMigrations)' },
+          { file: 'src7/plugins/knowledge/index.ts', line: 86, mark: 'ctx.db.migrate(knowledgeMigrations)' },
           { file: 'web/Build.ts', line: 271, mark: "'knowledge.html'" },
           { file: 'src7/plugins/Index.ts', line: 103, mark: "'knowledge': knowledge" },
         ],

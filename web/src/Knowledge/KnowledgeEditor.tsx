@@ -1,5 +1,7 @@
 /**
  * 知识库右栏（懒加载）：标题、摘要、目录、标签、专题、来源的编辑，正文源码编辑 / 富文本（RichEditor.tsx，再懒加载一层）/ 预览 / 分屏。
+ * [[双链]]（1.1.0）：源码框敲 [[ 弹标题联想（WikiTextarea.tsx），预览里双链渲染成芯片（已有的点了打开，没有的可一键创建），
+ * 底部「🔗 双向链接」卡片（LinksPanel.tsx）；「🔒 硬性系统规则」开关，开了标题栏挂锁，AI 只能读不能改。
  * Ctrl+S 保存，保存带 baseUpdatedAt：别处先改过时后端回 409，这里把自己的改动存成草稿、换成最新的再提示。
  * 没保存的改动随手存进 localStorage（按文档号），关页、崩溃后再打开能恢复。
  * KnowledgePage 用 key 区分文档，换文档就重新挂一个编辑器，这里不处理“换文档”。
@@ -8,7 +10,10 @@ import * as react from 'react';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as docList from './DocList.tsx';
 import * as api from './KnowledgeApi.ts';
+import * as linksPanel from './LinksPanel.tsx';
 import * as relatedDocs from './RelatedDocs.tsx';
+import * as wiki from './WikiLinks.ts';
+import * as wikiTextarea from './WikiTextarea.tsx';
 
 /** 富文本编辑器（Tiptap）：只有切到「富文本」才拉这一块，不拉高首屏。 */
 const LazyRichEditor = react.lazy(async () => {
@@ -42,8 +47,14 @@ export interface EditorProps {
   onError: (error: unknown) => void;
   /** 给用户一句提示。 */
   onNotice: (text: string) => void;
-  /** 打开另一篇（底部「相关文档」点进去）。实现在 KnowledgePage 的 openDoc。 */
+  /** 打开另一篇（底部「相关文档」、双链芯片点进去）。实现在 KnowledgePage 的 openDoc。 */
   onOpenDoc: (id: string) => void;
+  /** 新建一篇预填好标题的词条（点了还没创建的双链）。实现在 KnowledgePage 的 newDoc。 */
+  onCreateDoc: (title: string) => void;
+  /** 打开双链图谱抽屉。实现在 KnowledgePage（setGraphOpen）。 */
+  onShowGraph: () => void;
+  /** 标题索引（小写标题 → 文档号），[[ 联想和预览判断词条在不在都用它。KnowledgePage 用整库图谱建。 */
+  titles: wiki.TitleIndex;
   /** 左栏改名、删了标签后库里最新的这篇（KnowledgePage 的 syncOpenedTag 拿的）；没有是 undefined。 */
   tagChange?: TagChange;
 }
@@ -152,6 +163,8 @@ interface Form {
   sourceType: api.KnowledgeSourceType;
   /** 来源路径或网址。 */
   sourcePath: string;
+  /** 硬性系统规则：只有本人能改，AI 只读。 */
+  isSystemRule: boolean;
 }
 
 /** 表单的全部字段名，getPatch 逐个比。 */
@@ -164,6 +177,7 @@ const FORM_KEYS: readonly (keyof Form)[] = [
   'tags',
   'sourceType',
   'sourcePath',
+  'isSystemRule',
 ];
 
 /** 正文区怎么显示。 */
@@ -202,6 +216,7 @@ function getForm(doc: api.KnowledgeDoc | undefined, preset: Preset): Form {
       tags: [],
       sourceType: 'note',
       sourcePath: '',
+      isSystemRule: false,
     };
   }
   return {
@@ -213,6 +228,7 @@ function getForm(doc: api.KnowledgeDoc | undefined, preset: Preset): Form {
     tags: doc.tags,
     sourceType: doc.sourceType,
     sourcePath: doc.sourcePath,
+    isSystemRule: doc.isSystemRule === true,
   };
 }
 
@@ -375,7 +391,7 @@ function TagInput(props: { tags: string[]; disabled: boolean; change: (tags: str
 
 /** 知识库编辑器。 */
 export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
-  const { readOnly, isMobile, onDirty, onNotice } = props;
+  const { readOnly, isMobile, onDirty, onNotice, titles } = props;
   const draftKey = getDraftKey(props.doc);
 
   //M 打开时的文档和表单：保存成功、冲突换新都会更新，判断“改没改”跟它比。
@@ -582,6 +598,36 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
   const showPreview = mode === 'preview' || mode === 'split';
   const canSave = !readOnly && !saving && (dirty || isNew);
 
+  //M 预览前把 [[双链]] 换成页内锚点链接，地址里标着词条在不在（WikiLinks.ts）。
+  const previewText = react.useMemo(() => wiki.toWikiMarkdown(form.content, titles), [form.content, titles]);
+
+  /** 预览里点了链接：是双链就接管，已有的打开，没有的问一句再新建；别的链接照常。 */
+  const onPreviewLink = (href: string): boolean => {
+    const title = wiki.getWikiTitle(href);
+    if (title === undefined) return false;
+
+    const found = titles.get(title.toLowerCase());
+    if (found !== undefined) {
+      props.onOpenDoc(found.id);
+      return true;
+    }
+    if (readOnly) {
+      onNotice(`还没有「${title}」这篇`);
+      return true;
+    }
+    const ok = window.confirm(`还没有「${title}」这篇，现在创建？`);
+    if (ok) {
+      props.onCreateDoc(title);
+    }
+    return true;
+  };
+
+  //M 双向链接卡片里的「创建该词条」：只读时不给。
+  let createTitled: ((title: string) => void) | undefined;
+  if (!readOnly) {
+    createTitled = props.onCreateDoc;
+  }
+
   return (
     <article className="kb-editor" data-mode={mode}>
       <header className="kb-editor-bar">
@@ -593,9 +639,15 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
             </button>
           ))}
         </div>
+        {form.isSystemRule && (
+          <span className="kb-rule-badge" title="硬性系统规则：只有你本人能在这里改，AI 只能读">🔒 硬性系统规则</span>
+        )}
         <span className="kb-grow" />
         {dirty && <span className="kb-dirty" title="有没保存的改动">●</span>}
         {!isNew && <span className="kb-muted kb-small">{docList.getShortTime(base.updatedAt)}</span>}
+        <button type="button" className="kb-link-btn" onClick={props.onShowGraph} title="看这篇和它的双链邻居">
+          🕸️ 图谱
+        </button>
         <button type="button" className="kb-link-btn" onClick={exportMarkdown} title="下载成带 YAML 头的 Markdown 文件">
           导出 .md
         </button>
@@ -667,6 +719,16 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
             )}
           </div>
         )}
+        <label className="kb-meta-wide kb-rule-toggle" data-on={form.isSystemRule}>
+          <input
+            type="checkbox"
+            checked={form.isSystemRule}
+            disabled={readOnly}
+            onChange={(event) => setField('isSystemRule', event.target.checked)}
+          />
+          <b>🔒 设为硬性系统规则</b>
+          <em>（AI 仅只读不可修改，只有你本人能在这里改）</em>
+        </label>
         <label className="kb-meta-wide">
           <span>摘要</span>
           <input
@@ -679,13 +741,11 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
       </div>
       <div className="kb-body">
         {showSource && (
-          <textarea
-            className="kb-source"
+          <wikiTextarea.WikiTextarea
             value={form.content}
-            placeholder="用 Markdown 写正文"
             readOnly={readOnly}
-            spellCheck={false}
-            onChange={(event) => setField('content', event.target.value)}
+            titles={titles}
+            onChange={(text) => setField('content', text)}
           />
         )}
         {mode === 'rich' && (
@@ -700,10 +760,13 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
         {showPreview && (
           <div className="kb-preview">
             {form.content.trim() === '' && <p className="kb-muted">还没有正文</p>}
-            <markdown.Markdown text={form.content} onOpen={() => undefined} />
+            <markdown.Markdown text={previewText} onOpen={() => undefined} onLink={onPreviewLink} />
           </div>
         )}
       </div>
+      {base !== undefined && (
+        <linksPanel.LinksPanel docId={base.id} version={base.updatedAt} open={props.onOpenDoc} create={createTitled} />
+      )}
       {base !== undefined && <relatedDocs.RelatedDocs docId={base.id} open={props.onOpenDoc} />}
     </article>
   );

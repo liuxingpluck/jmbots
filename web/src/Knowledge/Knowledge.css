@@ -1038,3 +1038,299 @@ a {
   background: rgba(76, 141, 255, 0.12);
   border-radius: 4px;
 }
+
+/* ===== 1.1.0：[[双链]]、图谱、多标签组合、硬性系统规则 ===== */
+
+/* 源码框外层（WikiTextarea.tsx）：给 [[ 联想浮层当定位参照 */
+.kb-source-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.kb-source-wrap .kb-source {
+  flex: 1;
+}
+
+.kb-wiki-pop {
+  position: absolute;
+  z-index: 30;
+  width: 260px;
+  max-height: 280px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--jm-surface, #232323);
+  border: 1px solid var(--jm-border, #303030);
+  border-radius: var(--jm-radius, 6px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.kb-wiki-pop li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.kb-wiki-pop li[data-active="true"],
+.kb-wiki-pop li:hover {
+  background: var(--jm-hover, #2a2a2a);
+}
+
+.kb-wiki-pop-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kb-wiki-pop-new {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--jm-muted, #9a9a9a);
+}
+
+/* 双链芯片：预览里的 [[ ]]（WikiLinks.ts 换成 #kb-wiki/1|0/标题 的链接）和双向链接卡片里的一项 */
+.kb-preview a[href^="#kb-wiki/"],
+.kb-wiki-chip {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 0.95em;
+  line-height: 1.5;
+  color: var(--jm-accent, #4c8dff);
+  text-decoration: none;
+  background: var(--jm-accent-soft, rgba(76, 141, 255, 0.14));
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.kb-preview a[href^="#kb-wiki/"]:hover,
+button.kb-wiki-chip:hover {
+  border-color: var(--jm-accent, #4c8dff);
+}
+
+.kb-preview a[href^="#kb-wiki/0/"],
+.kb-wiki-chip[data-missing="true"] {
+  color: var(--jm-muted, #9a9a9a);
+  background: transparent;
+  border: 1px dashed var(--jm-muted, #9a9a9a);
+  cursor: default;
+}
+
+.kb-preview a[href^="#kb-wiki/0/"] {
+  cursor: pointer;
+}
+
+/* 双向链接卡片（LinksPanel.tsx） */
+.kb-links {
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--jm-border, #303030);
+}
+
+.kb-links summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--jm-muted, #9a9a9a);
+  cursor: pointer;
+}
+
+.kb-links-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.kb-links h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--jm-muted, #9a9a9a);
+}
+
+.kb-links ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kb-links-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 硬性系统规则：编辑区开关、标题栏徽标、列表里的锁 */
+.kb-meta-grid .kb-rule-toggle {
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px dashed var(--jm-border, #303030);
+  border-radius: var(--jm-radius, 6px);
+  cursor: pointer;
+}
+
+.kb-meta-grid .kb-rule-toggle[data-on="true"] {
+  border-style: solid;
+  border-color: var(--jm-warning, #f0b429);
+}
+
+.kb-meta-grid .kb-rule-toggle input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--jm-warning, #f0b429);
+}
+
+.kb-rule-toggle b {
+  font-size: 13px;
+}
+
+.kb-rule-toggle em {
+  font-size: 12px;
+  font-style: normal;
+  color: var(--jm-muted, #9a9a9a);
+}
+
+.kb-rule-badge {
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 22px;
+  white-space: nowrap;
+  color: var(--jm-warning, #f0b429);
+  border: 1px solid currentColor;
+  border-radius: 11px;
+}
+
+.kb-lock {
+  margin-right: 4px;
+}
+
+/* 多标签组合（TagCloud.tsx）：AND / OR 切换和清空 */
+.kb-tag-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 6px;
+}
+
+.kb-tag-mode .kb-modes button {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.kb-tag-mode .kb-link-btn {
+  font-size: 12px;
+}
+
+/* 双链图谱抽屉（GraphView.tsx） */
+.kb-graph-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.kb-graph-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.kb-graph {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 100vw);
+  background: var(--jm-bg, #141414);
+  border-left: 1px solid var(--jm-border, #303030);
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
+}
+
+.kb-graph-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--jm-border, #303030);
+}
+
+.kb-graph-title {
+  font-weight: 600;
+}
+
+.kb-graph-svg {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+
+.kb-graph-edge {
+  stroke: var(--jm-border, #3a3a3a);
+  stroke-width: 1.2;
+}
+
+.kb-graph-edge[data-lit="true"] {
+  stroke: var(--jm-accent, #4c8dff);
+  stroke-width: 2;
+}
+
+.kb-graph-arrow {
+  fill: var(--jm-muted, #9a9a9a);
+}
+
+.kb-graph-node {
+  cursor: pointer;
+}
+
+.kb-graph-node circle {
+  fill: var(--jm-muted, #9a9a9a);
+  stroke: var(--jm-bg, #141414);
+  stroke-width: 2;
+}
+
+.kb-graph-node:hover circle {
+  fill: var(--jm-accent, #4c8dff);
+}
+
+.kb-graph-node[data-center="true"] circle {
+  fill: var(--jm-accent, #4c8dff);
+}
+
+.kb-graph-node[data-rule="true"] circle {
+  fill: var(--jm-warning, #f0b429);
+}
+
+.kb-graph-node[data-dim="true"] {
+  opacity: 0.25;
+}
+
+.kb-graph-node text {
+  font-size: 11px;
+  text-anchor: middle;
+  fill: var(--jm-text, #e6e6e6);
+  pointer-events: none;
+}
+
+.kb-graph-foot {
+  margin: 0;
+  padding: 6px 16px 10px;
+}

@@ -10,6 +10,7 @@ import * as sqlite from 'bun:sqlite';
 import * as fastify from 'fastify';
 import * as sendModule from './ApprovedSend.ts';
 import * as embeddedPage from './EmbeddedPage.ts';
+import * as exportModule from './ExportChat.ts';
 import * as kefu from './KefuRoutes.ts';
 import * as licenseModule from './License.ts';
 import * as protocol from './Protocol.ts';
@@ -59,6 +60,7 @@ export type ParsedCliAction =
   | { mode: 'help' }
   | { mode: 'discover'; data: string; targetFolder: string }
   | { mode: 'connect'; data: string; targetFolder: string; pid?: number }
+  | { mode: 'export-chat'; exportOptions: exportModule.ValidatedExportOptions }
   | {
     mode: 'serve';
     data: string;
@@ -90,6 +92,7 @@ export function buildHelpText(): string {
     '  jmbots-wechat --data <数据目录> [选项]',
     '  jmbots-wechat --data <数据目录> --discover <微信xwechat_files目录>',
     '  jmbots-wechat --data <数据目录> --connect <微信xwechat_files目录> [--pid <PID>]',
+    '  jmbots-wechat export-chat --data <数据目录> --chat <会话名或wxid> --out <目标目录> [导出选项]',
     '  jmbots-wechat --version | --help',
     '',
     '核心选项：',
@@ -103,7 +106,66 @@ export function buildHelpText(): string {
     '  --chat-limit <数量>      单账号最近会话读取上限（默认 5000）',
     '  --at-names <昵称列表>    额外群提及昵称，逗号分隔',
     '  --archive-all            后台自动归档未监听会话',
+    '',
+    '显式单会话导出选项（仅在显式子命令 export-chat 下生效，AI 不可静默触发）：',
+    '  --chat <会话名或wxid>    目标微信会话名称或原始 wxid（必填）',
+    '  --out <目标目录>         导出落盘目录，产出 messages.md 与 manifest.json（必填）',
+    '  --account <账号ID>       多账号连接时指定账号 ID（单账号自动识别）',
+    '  --limit <正整数>         最近 N 条消息上限（默认 1000，支持 2000 及更长历史）',
+    '  --chunk-by <模式>        分卷模式：none（默认单文件）| month（按月）| count（按条数）',
+    '  --chunk-size <正整数>    chunk-by=count 时每卷条数（默认 1000）',
+    '  --media-dir <相对目录>   媒体输出子目录名（默认 media，引用为 ./media/...）',
   ].join('\n');
+}
+
+
+/**
+ * 解析显式子命令 `export-chat` 的专用参数并执行安全边界校验。
+ * @param subArgs `export-chat` 之后的参数数组。
+ * @param env 进程环境变量表。
+ */
+function parseExportChatAction(
+  subArgs: string[],
+  env: Record<string, string | undefined>,
+): ParsedCliAction {
+  //G 宿主托管环境禁止触发本地会话导出，确保仅限本机用户显式手动执行。
+  if (env[protocol.KEY_ENV] !== undefined || env[protocol.CALLBACK_ENV] !== undefined) {
+    throw new Error('export-chat 仅支持本机手动显式调用，禁止在托管后台环境中触发');
+  }
+
+  const { values } = util.parseArgs({
+    args: subArgs,
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      data: { type: 'string' },
+      engine: { type: 'string' },
+      account: { type: 'string' },
+      chat: { type: 'string' },
+      out: { type: 'string' },
+      limit: { type: 'string' },
+      'chunk-by': { type: 'string' },
+      'chunk-size': { type: 'string' },
+      'media-dir': { type: 'string' },
+      'at-names': { type: 'string' },
+    },
+  });
+
+  if (values.help) return { mode: 'help' };
+
+  //M 在入口完成一次性导出参数合法性与防目录穿越校验。
+  const exportOptions = exportModule.validateExportCliInput({
+    data: values.data,
+    engine: values.engine,
+    account: values.account,
+    chat: values.chat,
+    out: values.out,
+    limit: values.limit,
+    chunkBy: values['chunk-by'],
+    chunkSize: values['chunk-size'],
+    mediaDir: values['media-dir'],
+    atNames: values['at-names'],
+  });
+  return { mode: 'export-chat', exportOptions };
 }
 
 
@@ -118,6 +180,10 @@ export function parseCliOptions(
   env: Record<string, string | undefined> = process.env,
   release = false,
 ): ParsedCliAction {
+  if (args[0] === 'export-chat') {
+    //M 仅当首参显式为 `export-chat` 子命令时才进入单会话导出解析分支。
+    return parseExportChatAction(args.slice(1), env);
+  }
   const { values } = util.parseArgs({
     args,
     options: {
@@ -478,6 +544,21 @@ export async function runCli(args: string[], release = false): Promise<void> {
     if (!anyConnected) {
       globalThis.process.exitCode = 1;
     }
+    return;
+  }
+  if (action.mode === 'export-chat') {
+    //M 执行显式单会话只读导出并输出不含任何本机绝对路径的脱敏回执。
+    const manifest = await exportModule.runExportChatCli(action.exportOptions);
+    console.log(JSON.stringify({
+      ok: true,
+      chat: manifest.chat.displayName,
+      chatType: manifest.chat.chatType,
+      totalMessages: manifest.totalMessages,
+      chunks: manifest.chunks.length,
+      mediaCopied: manifest.media.copiedCount,
+      mediaMissing: manifest.media.missingCount,
+      redactionPassed: manifest.redactionCheck.passed,
+    }));
     return;
   }
 

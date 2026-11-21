@@ -9,8 +9,8 @@ import * as api from './KnowledgeApi.ts';
 
 /** 一个筛选胶囊：点 × 去掉这一项筛选。 */
 export interface FilterChip {
-  /** 哪一项：dir、tag、topic、q。 */
-  key: 'dir' | 'tag' | 'topic' | 'q';
+  /** 哪一项：dir、tag、topic、q、rule（只看硬性系统规则）。 */
+  key: 'dir' | 'tag' | 'topic' | 'q' | 'rule';
   /** 显示的字。 */
   label: string;
   /** 同一项里的哪一个值（多选标签每个标签一个胶囊）；单值的项不给。 */
@@ -91,7 +91,7 @@ interface DocRowProps {
 }
 
 
-/** 一行文档：标题、摘要两行、目录、标签、专题角标、更新时间。 */
+/** 一行文档：标题（硬性系统规则带锁）、摘要两行、目录、标签、专题角标、更新时间。 */
 function DocRow(props: DocRowProps): react.JSX.Element {
   const doc = props.doc;
   let text = doc.summary;
@@ -115,7 +115,10 @@ function DocRow(props: DocRowProps): react.JSX.Element {
       onDragStart={onDragStart}
     >
       <button type="button" className="kb-doc-open" onClick={() => props.open(doc.id)}>
-        <span className="kb-doc-title">{doc.title}</span>
+        <span className="kb-doc-title">
+          {doc.isSystemRule && <span className="kb-lock" title="硬性系统规则：AI 只读不可修改">🔒</span>}
+          {doc.title}
+        </span>
         {text !== '' && <span className="kb-doc-summary">{text}</span>}
       </button>
       <div className="kb-doc-meta">

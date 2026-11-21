@@ -1,5 +1,5 @@
 /**
- * 知识库左栏：全部 / 未归类计数、可折叠目录树（新建子目录、重命名、删除）、标签云单选筛选。
+ * 知识库左栏：全部 / 未归类 / 🔒 系统规则计数、可折叠目录树（新建子目录、重命名、删除）、标签云多选筛选（AND / OR）。
  * 桌面上支持原生 HTML5 拖拽：把文档拖到目录上是移动文档，把目录拖到目录上是移动目录；手机不拖，改在编辑器里选目录。
  * 增删改都交给 KnowledgePage 去调接口，这里只管显示和收手势。
  */
@@ -20,16 +20,26 @@ interface DirTreeProps {
   tree: api.KnowledgeTreeResponse | undefined;
   /** 当前选中的目录号；UNASSIGNED 是未归类；undefined 是全部。 */
   dir: string | undefined;
-  /** 当前选中的标签（多个取交集）。 */
+  /** 当前选中的标签（多个按 tagMode 组合）。 */
   tags: string[];
+  /** 多个标签怎么组合：all 全部满足、any 任一满足。 */
+  tagMode: api.KnowledgeTagMode;
+  /** 只看硬性系统规则开没开。 */
+  ruleOnly: boolean;
   /** 只读：不显示增删改按钮、不接拖拽。 */
   readOnly: boolean;
   /** 能不能拖拽（桌面才开）。 */
   dragEnabled: boolean;
   /** 选目录；undefined 回到全部。实现在 KnowledgePage 的 pickDir。 */
   pickDir: (dir: string | undefined) => void;
-  /** 点一个标签：没选的加上、选了的去掉（多选取交集）。实现在 KnowledgePage 的 pickTag。 */
+  /** 点一个标签：没选的加上、选了的去掉。实现在 KnowledgePage 的 pickTag。 */
   pickTag: (tag: string) => void;
+  /** 切换多标签组合方式。实现在 KnowledgePage（setTagMode）。 */
+  setTagMode: (mode: api.KnowledgeTagMode) => void;
+  /** 清空选中的标签。实现在 KnowledgePage 的 clearTags。 */
+  clearTags: () => void;
+  /** 开关「只看系统规则」。实现在 KnowledgePage 的 toggleRuleOnly。 */
+  toggleRuleOnly: () => void;
   /** 新建目录，parentId 为 null 建在顶层。 */
   createDir: (parentId: string | null) => void;
   /** 重命名目录。 */
@@ -252,6 +262,7 @@ export function DirTree(props: DirTreeProps): react.JSX.Element {
   const unassignedDrop = getDropHandlers(props, null, { doc: true, dir: false }, ':unassigned', setOver);
   const totalDocs = tree?.totalDocs ?? 0;
   const unassignedDocs = tree?.unassignedDocs ?? 0;
+  const systemRuleDocs = tree?.systemRuleDocs ?? 0;
   const dirs = tree?.dirs ?? [];
   const tags = tree?.tags ?? [];
 
@@ -283,6 +294,19 @@ export function DirTree(props: DirTreeProps): react.JSX.Element {
         <button type="button" className="kb-dir-name" onClick={() => props.pickDir(api.UNASSIGNED)}>未归类</button>
         <span className="kb-count">{unassignedDocs}</span>
       </div>
+      <div className="kb-dir-row" data-active={props.ruleOnly}>
+        <span className="kb-dir-arrow" />
+        <button
+          type="button"
+          className="kb-dir-name"
+          aria-pressed={props.ruleOnly}
+          title="只看标成硬性系统规则的词条（AI 只读不可改）；可以和目录、标签一起筛"
+          onClick={props.toggleRuleOnly}
+        >
+          🔒 硬性系统规则
+        </button>
+        <span className="kb-count">{systemRuleDocs}</span>
+      </div>
       <ul className="kb-dir-list">
         {dirs.map((node) => (
           <DirRow
@@ -300,8 +324,11 @@ export function DirTree(props: DirTreeProps): react.JSX.Element {
       <tagCloud.TagCloud
         tags={tags}
         selected={props.tags}
+        tagMode={props.tagMode}
         readOnly={props.readOnly}
         pickTag={props.pickTag}
+        setTagMode={props.setTagMode}
+        clearTags={props.clearTags}
         renameTag={props.renameTag}
         removeTag={props.removeTag}
       />

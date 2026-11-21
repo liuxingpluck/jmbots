@@ -1,6 +1,7 @@
 /**
  * 积木知识库（knowledge）领域模型、查询参数与 REST API 契约定义。
- * 三大原子：虚拟目录树（kb_dirs）、统一知识文档（kb_docs，可挂载工作决策 topicId）、多对多标签（kb_tags / kb_doc_tags）。
+ * 三大原子：虚拟目录树（kb_dirs）、统一知识文档（kb_docs，可挂载工作决策 topicId）、多对多标签（kb_tags / kb_doc_tags）；
+ * 1.1.0 起加上 [[双链]] 关系表 kb_links 和「硬性系统规则」标记（只有本人能改，AI 只读）。
  */
 
 
@@ -61,6 +62,8 @@ export interface KnowledgeDocSummary {
   sourceType: KnowledgeSourceType;
   /** 已绑定的标签名称列表（按字母序稳定排列）。 */
   tags: string[];
+  /** 硬性系统规则：只有本人在网页上能改，AI 的 kb_save 只读不可写（1.1.0）。 */
+  isSystemRule: boolean;
   /** 创建毫秒时间戳。 */
   createdAt: number;
   /** 最近修改毫秒时间戳。 */
@@ -120,6 +123,8 @@ export interface CreateDocInput {
   sourceType?: KnowledgeSourceType;
   /** 标签数组（自动剥离前导 # 并去重）。 */
   tags?: string[];
+  /** 设为硬性系统规则（默认 false）；只有 HTTP 写接口会带，kb_save 拒绝。 */
+  isSystemRule?: boolean;
 }
 
 /** 更新文档局部补丁入参。 */
@@ -140,6 +145,8 @@ export interface UpdateDocInput {
   sourceType?: KnowledgeSourceType;
   /** 全量替换文档标签列表。 */
   tags?: string[];
+  /** 设为或取消硬性系统规则。 */
+  isSystemRule?: boolean;
   /** 编辑时看到的 updatedAt；传了且和库里的不一样，说明别处改过，回 409 不覆盖。不传不查。 */
   baseUpdatedAt?: number;
 }
@@ -152,8 +159,12 @@ export interface DocListFilter {
   topicId?: string;
   /** 限定包含指定标签名。 */
   tag?: string;
-  /** 限定同时包含这些标签（交集；和 tag 合并去重，大小写不敏感）。 */
+  /** 限定这些标签（和 tag 合并去重，大小写不敏感）；按 tagMode 取交集或并集。 */
   tags?: string[];
+  /** 多个标签怎么组合：all 全部满足（交集，默认）、any 任一满足（并集）。 */
+  tagMode?: KnowledgeTagMode;
+  /** 为 true 时只看硬性系统规则。 */
+  systemRule?: boolean;
   /** 标题/摘要/正文/标签关键词。 */
   q?: string;
   /** 每页上限（1..200，默认 50）。 */
@@ -163,6 +174,9 @@ export interface DocListFilter {
   /** 列表项是否附带完整 content（默认 false）。 */
   includeContent?: boolean;
 }
+
+/** 多标签筛选的组合方式：all 全部满足（交集）、any 任一满足（并集）。 */
+export type KnowledgeTagMode = 'all' | 'any';
 
 /** 标签聚合统计项。 */
 export interface KnowledgeTagStat {
@@ -198,6 +212,8 @@ export interface KnowledgeTreeResponse {
   totalDocs: number;
   /** 未归入任何目录的文档数。 */
   unassignedDocs: number;
+  /** 硬性系统规则的篇数（1.1.0）。 */
+  systemRuleDocs: number;
 }
 
 /** 本地知识库命中项。 */
@@ -302,4 +318,75 @@ export interface KnowledgeRelatedResponse {
   docId: string;
   /** 相关文档，分高的在前，同分新的在前。 */
   items: KnowledgeRelatedItem[];
+}
+
+
+//==========================================================
+// [[双链]] 与图谱（1.1.0）
+//==========================================================
+
+/** 一篇文档正文里写的一条 [[双链]]（引出链接）。 */
+export interface KnowledgeOutlink {
+  /** [[ ]] 里写的目标标题（别名不算）。 */
+  targetTitle: string;
+  /** 按标题（大小写不敏感）找到的文档 ID；还没有这篇是 null。 */
+  targetId: string | null;
+  /** 目标文档在不在。 */
+  exists: boolean;
+}
+
+/** 引用了本篇的一篇文档（反向链接）。 */
+export interface KnowledgeBacklink {
+  /** 文档 ID。 */
+  id: string;
+  /** 标题。 */
+  title: string;
+  /** 摘要。 */
+  summary: string;
+  /** 最近修改毫秒时间戳。 */
+  updatedAt: number;
+}
+
+/** GET /api/knowledge/docs/:id/links 响应。 */
+export interface KnowledgeLinksResponse {
+  /** 是否成功。 */
+  ok: true;
+  /** 本篇写出去的链接，按正文里出现的先后。 */
+  outgoing: KnowledgeOutlink[];
+  /** 引用了本篇的文档（不含自己），新的在前。 */
+  backlinks: KnowledgeBacklink[];
+}
+
+/** 图谱里的一个节点（一篇文档）。 */
+export interface KnowledgeGraphNode {
+  /** 文档 ID。 */
+  id: string;
+  /** 标题。 */
+  title: string;
+  /** 标签。 */
+  tags: string[];
+  /** 是不是硬性系统规则。 */
+  isSystemRule: boolean;
+  /** 这张图里连着它的边数（进出都算）。 */
+  degree: number;
+}
+
+/** 图谱里的一条边：source 正文里写了 [[target 的标题]]。 */
+export interface KnowledgeGraphEdge {
+  /** 写链接的文档 ID。 */
+  source: string;
+  /** 被链接的文档 ID。 */
+  target: string;
+  /** [[ ]] 里写的标题。 */
+  targetTitle: string;
+}
+
+/** GET /api/knowledge/graph 响应。 */
+export interface KnowledgeGraphResponse {
+  /** 是否成功。 */
+  ok: true;
+  /** 节点：不带 centerId 是全部文档；带了是中心和它的一跳邻居。 */
+  nodes: KnowledgeGraphNode[];
+  /** 边：只含两头都在的链接，不含指向自己的。 */
+  edges: KnowledgeGraphEdge[];
 }

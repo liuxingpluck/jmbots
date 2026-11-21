@@ -1,5 +1,6 @@
 /**
- * 知识库左栏的标签云：点标签多选筛选（交集）；「管理标签」打开后每个标签旁出现「改名」「删除」。
+ * 知识库左栏的标签云：点标签多选筛选，选了两个以上时出现「全部满足 (AND) / 任一满足 (OR)」切换和「清空」；
+ * 「管理标签」打开后每个标签旁出现「改名」「删除」。
  * 改名时输入已有的标签名就是合并；名字里不许有逗号（多标签筛选用逗号分隔）。
  * 增删改的接口调用和刷新都在 KnowledgePage（renameTag、removeTag），这里只管界面。
  * 从 DirTree.tsx 拆出来（云端 29 之后的标签治理，Phase 3）。
@@ -14,10 +15,16 @@ export interface TagCloudProps {
   tags: api.KnowledgeTreeResponse['tags'];
   /** 现在选中的标签。 */
   selected: string[];
+  /** 多个标签怎么组合：all 全部满足、any 任一满足。 */
+  tagMode: api.KnowledgeTagMode;
   /** 只读：不显示「管理标签」。 */
   readOnly: boolean;
   /** 点一个标签：没选的加上、选了的去掉。实现在 KnowledgePage 的 pickTag。 */
   pickTag: (tag: string) => void;
+  /** 切换组合方式。实现在 KnowledgePage（setTagMode）。 */
+  setTagMode: (mode: api.KnowledgeTagMode) => void;
+  /** 清空选中的标签。实现在 KnowledgePage 的 clearTags。 */
+  clearTags: () => void;
   /** 改名（新名字已有就合并）。实现在 KnowledgePage 的 renameTag。 */
   renameTag: (name: string, newName: string) => void;
   /** 删除（只从文档上摘掉）。实现在 KnowledgePage 的 removeTag。 */
@@ -142,6 +149,33 @@ export function TagCloud(props: TagCloudProps) {
           </button>
         )}
       </div>
+      {props.selected.length > 0 && (
+        <div className="kb-tag-mode">
+          <div className="kb-modes" role="radiogroup" aria-label="多标签组合方式">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={props.tagMode === 'all'}
+              data-active={props.tagMode === 'all'}
+              title="文档要同时带上所有选中的标签"
+              onClick={() => props.setTagMode('all')}
+            >
+              全部满足 (AND)
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={props.tagMode === 'any'}
+              data-active={props.tagMode === 'any'}
+              title="文档带上任一个选中的标签就算"
+              onClick={() => props.setTagMode('any')}
+            >
+              任一满足 (OR)
+            </button>
+          </div>
+          <button type="button" className="kb-link-btn" onClick={props.clearTags}>清空</button>
+        </div>
+      )}
       <div className="kb-tags" data-managing={managing}>
         {props.tags.map((item) => {
           //M 多选：已选的再点一次就去掉，KnowledgePage 的 pickTag 负责增删。

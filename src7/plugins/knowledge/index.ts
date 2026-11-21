@@ -4,12 +4,15 @@
  * 2. 自动维护 <runtimeRoot>/knowledge/YYYYMMDD/<id>_<标题>/{content.md, meta.json} 磁盘镜像；
  * 3. 挂载 /api/knowledge/* 全套 REST 接口（写操作强制 isVerified 核验，搜索时按需附查 memory）；
  * 4. 注册模型只读检索工具 kb_search，供前台与后台机器人按关键词、专题或标签查阅资料；
- * 5. 注册写工具 kb_save（新建、追加、带乐观锁的替换），标签改名合并删除与相关文档推荐接口。
+ * 5. 注册写工具 kb_save（新建、追加、带乐观锁的替换），标签改名合并删除与相关文档推荐接口；
+ * 6. [[双链]] 关系表 kb_links（引出、反向链接与图谱接口）、多标签 all/any 组合筛选、
+ *    只有本人能改的「硬性系统规则」（kb_save 不能建、不能改）。
  */
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as checksModule from '../../utils/Checks.ts';
 import * as mirrorModule from './DiskMirror.ts';
+import * as linksModule from './Links.ts';
 import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
 import * as toolsModule from './Tools.ts';
@@ -17,6 +20,7 @@ import * as toolsModule from './Tools.ts';
 export * from './Types.ts';
 export { DiskMirror, formatDateFolder, generateAtomId, sanitizeTitleSlug } from './DiskMirror.ts';
 export { KnowledgeStore, SCHEMA_SQL, deriveAutoSummary, normalizeTags } from './Store.ts';
+export { parseWikiLinks } from './Links.ts';
 
 
 /** 插件名。 */
@@ -27,8 +31,10 @@ export const name = 'knowledge';
 //M 1.0.3：记忆桥接不再传 requestEvent 的 timeoutMs，改传 AbortSignal.timeout(4 秒)（云端 31 第 2 条）。
 //M 1.0.4：建表只走 db 迁移账本（云端 36 第 1 条）：db 成了必需依赖，KnowledgeStore 不再自己建表；
 //M   第 2 版按语句拆开补齐第 1 版只执行了第一句的那几张表。
+//M 1.1.0：Obsidian 式 [[双链]]（第 4 版迁移建 kb_links，引出/反向链接与图谱接口）；多标签 tagMode=all|any；
+//M   硬性系统规则（第 3 版迁移给 kb_docs 加 is_system_rule，kb_save 不能建、不能改，只有本人在网页上改）。
 /** 插件版本号。 */
-export const version = '1.0.4';
+export const version = '1.1.0';
 
 /** 依赖资源主库、主 HTTP 服务、模型工具注册表，以及建表用的 db 迁移账本。 */
 export const inject = ['resources', 'http', 'tools', 'db'];
@@ -39,6 +45,12 @@ export const knowledgeMigrations = {
   migrations: [
     { version: 1, sql: storeModule.SCHEMA_SQL },
     { version: 2, sql: storeModule.SCHEMA_SPLIT_SQL },
+    {
+      version: 3,
+      sql: storeModule.SYSTEM_RULE_SQL,
+      adoptColumn: { table: 'kb_docs', name: 'is_system_rule' },
+    },
+    { version: 4, sql: linksModule.LINKS_SQL },
   ],
 };
 
@@ -74,6 +86,12 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   ctx.db.migrate(knowledgeMigrations);
   const mirror = new mirrorModule.DiskMirror(settings.mirrorDir);
   const store = new storeModule.KnowledgeStore(ctx.resources.db, mirror);
+
+  //M 老库刚升到第 4 版：关系表是空的，按已有正文回填一次 [[双链]]；没有文档时回填也是空操作。
+  //退场：所有运行中的库都升到 1.1.0、kb_links 回填过以后，连同 Links.ts 的 rebuildAll 一起删。
+  if (store.links.isEmpty()) {
+    store.links.rebuildAll();
+  }
   routesModule.mountKnowledgeRoutes(ctx, store);
   toolsModule.registerKbSearchTool(ctx, store);
   toolsModule.registerKbSaveTool(ctx, store);

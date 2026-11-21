@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.98",
+    "date": "2026-11-21",
+    "changes": [
+      "积木知识库升级 v1.1.0（Obsidian 风格 [[双链]] + 多标签组合 + 仅用户可改的硬性系统规则）：新增 db 迁移 v3/v4（kb_docs.is_system_rule 与 kb_links 双链表及老库自动回填）、Links.ts 双向解析与悬空链接回填、GET /api/knowledge/docs/:id/links 与 GET /api/knowledge/graph 接口、列表与检索支持 tags + tagMode=all|any 交并集及 systemRule=1 筛选；AI 写工具 kb_save 严格拒绝创建或篡改任何硬性系统规则文档（仅可读不可写）",
+      "知识库前端（/knowledge/）全面焕新：源码/分屏编辑框新增 [[ 实时词条联想（兼容中文输入法）、预览区可点击双链芯片（未建词条一键创建）、双向链接折叠面板（引出+反向链接）、纯 SVG 星型/力导向双链图谱抽屉、左栏多标签 AND/OR 组合筛选及 🔒 硬性系统规则徽章与入口（18 项单测全绿、前后端 tsc 0 错、全仓 122 份文档 Check_Lines 0 error）",
+      "外置微信插件（external/wechat）新增显式命令行本地导出子命令 export-chat：严禁在宿主代理环境下静默触发，支持 --limit（1000/2000+ 长历史自动向前分页）、--chunk-by（none/month/count 分夹）、自动解密图片与 SILK 语音并转为相对路径 ./media/ 复制落盘、落盘前零绝对路径泄露自检（35 项离线合成单测全绿，零读取真实私聊）"
+    ]
+  },
+  {
     "version": "0.7.97",
     "date": "2026-11-21",
     "changes": [

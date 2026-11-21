@@ -18,11 +18,11 @@ export const VERSION = VERSIONS[0]!.version;
  * 副作用：写一行 JSON。
  */
 export function printVersionInfo(): void {
-  //M 汇编版号、编译时间戳（源码跑兜底当前时刻）和更新说明后打印 JSON 给基地读取。
+  //M 仅打印最近 20 条更新说明，防 Windows 64KiB 匿名管道满载导致基地读版本死锁超时；完整历史仍在 VERSIONS。
   const payload = {
     version: VERSION,
     builtAt: embedded.getBuiltTime() || Date.now(),
-    versions: VERSIONS,
+    versions: VERSIONS.slice(0, 20),
   };
   console.log(JSON.stringify(payload));
 }

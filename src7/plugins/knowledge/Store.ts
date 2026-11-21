@@ -1,11 +1,13 @@
 /**
  * 积木知识库 SQLite 存储层：管理 kb_dirs、kb_docs、kb_tags 与 kb_doc_tags，
- * 提供事务一致性读写、目录环路防护、专题与标签聚合计数、多词相关性本地检索及磁盘镜像联动。
+ * 提供事务一致性读写、目录环路防护、专题与标签聚合计数、多词相关性本地检索及磁盘镜像联动；
+ * 建文档、改正文、改标题、删文档时在同一事务里刷新 kb_links（Links.ts）。
  */
 import type { Database } from 'bun:sqlite';
 import * as failureModule from '../../utils/Failure.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as mirrorModule from './DiskMirror.ts';
+import * as linksModule from './Links.ts';
 import * as types from './Types.ts';
 
 
@@ -69,6 +71,15 @@ export const SCHEMA_SPLIT_SQL = SCHEMA_SQL
   .filter((part) => part !== '')
   .join(';\n--> statement-breakpoint\n');
 
+/**
+ * 迁移第 3 版：kb_docs 加「硬性系统规则」列（1.1.0）。只有这一句加列，db 的 adoptColumn 遇到列已在就只登记。
+ */
+export const SYSTEM_RULE_SQL = 'ALTER TABLE kb_docs ADD COLUMN is_system_rule INTEGER NOT NULL DEFAULT 0';
+
+/** 文档查询统一取的列（kb_docs 别名 d）。 */
+const DOC_COLUMNS = `d.id, d.dir_id, d.topic_id, d.title, d.summary, d.content,
+  d.source_path, d.source_type, d.is_system_rule, d.created_at, d.updated_at`;
+
 interface DirRow {
   id: string;
   parent_id: string | null;
@@ -87,6 +98,7 @@ interface DocRow {
   content: string;
   source_path: string;
   source_type: string;
+  is_system_rule: number;
   created_at: number;
   updated_at: number;
 }
@@ -282,6 +294,7 @@ function mapDocSummary(row: DocRow, tags: string[]): types.KnowledgeDocSummary {
     sourcePath: row.source_path,
     sourceType,
     tags,
+    isSystemRule: row.is_system_rule === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -336,6 +349,9 @@ export class KnowledgeConflictError extends failureModule.Failure {
 
 /** 积木知识库 SQLite 存储服务。 */
 export class KnowledgeStore {
+  /** [[双链]] 关系表的读写；路由读引出、反向链接和图谱直接用它。 */
+  readonly links: linksModule.KnowledgeLinks;
+
   /**
    * @param db 应用共享 SQLite 连接。
    * @param mirror 可选磁盘镜像导出器。
@@ -343,7 +359,9 @@ export class KnowledgeStore {
   constructor(
     private readonly db: Database,
     private readonly mirror?: mirrorModule.DiskMirror,
-  ) {}
+  ) {
+    this.links = new linksModule.KnowledgeLinks(db);
+  }
 
   /** 在单个 SQLite 事务内执行一组写操作。 */
   private runTx<T>(work: () => T): T {
@@ -503,8 +521,8 @@ export class KnowledgeStore {
   // 标签关联与文档（kb_docs / kb_tags / kb_doc_tags）CRUD
   //----------------------------------------------------------
 
-  /** 批量查询一批文档各自的标签列表。 */
-  private loadTagsByDocIds(docIds: readonly string[]): Map<string, string[]> {
+  /** 批量查询一批文档各自的标签列表（图谱取节点标签也用它）。 */
+  loadTagsByDocIds(docIds: readonly string[]): Map<string, string[]> {
     const result = new Map<string, string[]>();
     if (docIds.length === 0) return result;
 
@@ -553,10 +571,7 @@ export class KnowledgeStore {
 
   /** 按 ID 读取完整知识文档（含正文与标签）。 */
   getDoc(id: string): types.KnowledgeDoc | undefined {
-    const sql = `
-      SELECT id, dir_id, topic_id, title, summary, content, source_path, source_type, created_at, updated_at
-      FROM kb_docs WHERE id = ?
-    `;
+    const sql = `SELECT ${DOC_COLUMNS} FROM kb_docs d WHERE d.id = ?`;
     const row = this.db.query<DocRow, [string]>(sql).get(id);
     if (row === null) return undefined;
 
@@ -585,20 +600,29 @@ export class KnowledgeStore {
     const sourcePath = (input.sourcePath ?? '').trim();
     const sourceType = checkSourceType(input.sourceType);
     const tags = normalizeTags(input.tags);
+    let systemRule = 0;
+    if (input.isSystemRule === true) {
+      systemRule = 1;
+    }
     const now = Date.now();
 
     this.runTx(() => {
       const insertSql = `
         INSERT INTO kb_docs (
-          id, dir_id, topic_id, title, summary, content, source_path, source_type, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, dir_id, topic_id, title, summary, content, source_path, source_type, is_system_rule,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
       this.db
         .query(insertSql)
-        .run(id, dirId, topicId, title, summary, content, sourcePath, sourceType, now, now);
+        .run(id, dirId, topicId, title, summary, content, sourcePath, sourceType, systemRule, now, now);
       if (tags.length > 0) {
         this.replaceDocTags(id, tags, now);
       }
+
+      //M 双链：记下这篇写出去的 [[ ]]，再把别的文档原来悬空指向这个标题的连上。
+      this.links.refreshDoc(id, content);
+      this.links.relinkTitles([title]);
     });
 
     const created = this.getDoc(id)!;
@@ -665,17 +689,31 @@ export class KnowledgeStore {
       nextTags = normalizeTags(input.tags);
     }
 
+    let systemRule = 0;
+    if (input.isSystemRule ?? existing.isSystemRule) {
+      systemRule = 1;
+    }
+
     const now = Date.now();
     this.runTx(() => {
       const sql = `
         UPDATE kb_docs
         SET dir_id = ?, topic_id = ?, title = ?, summary = ?, content = ?,
-            source_path = ?, source_type = ?, updated_at = ?
+            source_path = ?, source_type = ?, is_system_rule = ?, updated_at = ?
         WHERE id = ?
       `;
-      this.db.query(sql).run(dirId, topicId, title, summary, content, sourcePath, sourceType, now, id);
+      const values = [dirId, topicId, title, summary, content, sourcePath, sourceType, systemRule, now, id];
+      this.db.query(sql).run(...values);
       if (nextTags !== undefined) {
         this.replaceDocTags(id, nextTags, now);
+      }
+
+      //M 双链：正文变了重写引出链接；标题变了，指向新旧两个标题的链接重新找一遍文档。
+      if (content !== existing.content) {
+        this.links.refreshDoc(id, content);
+      }
+      if (title !== existing.title) {
+        this.links.relinkTitles([existing.title, title]);
       }
     });
 
@@ -695,6 +733,10 @@ export class KnowledgeStore {
       this.db.query('DELETE FROM kb_doc_tags WHERE doc_id = ?').run(id);
       this.db.query('DELETE FROM kb_docs WHERE id = ?').run(id);
       this.pruneOrphanTags();
+
+      //M 双链：删掉它写出去的；指向它的留着、target_id 重新找（没有同名的就置空，网页显示成悬空）。
+      this.links.removeSource(id);
+      this.links.relinkTitles([existing.title]);
     });
     this.syncMirrorRemove(id, existing.createdAt);
   }
@@ -755,7 +797,10 @@ export class KnowledgeStore {
     `;
     const topics = this.db.query<types.KnowledgeTopicStat, []>(topicSql).all();
 
-    return { dirs: roots, flatDirs, tags, topics, totalDocs, unassignedDocs };
+    const ruleSql = 'SELECT COUNT(*) AS cnt FROM kb_docs WHERE is_system_rule = 1';
+    const systemRuleDocs = this.db.query<{ cnt: number }, []>(ruleSql).get()?.cnt ?? 0;
+
+    return { dirs: roots, flatDirs, tags, topics, totalDocs, unassignedDocs, systemRuleDocs };
   }
 
   /** 按目录、专题、标签与关键词分页筛选文档列表。 */
@@ -787,18 +832,26 @@ export class KnowledgeStore {
       params.push(filter.topicId.trim());
     }
 
-    //M 标签交集：tag 和 tags 合并去重，文档要把这些标签全带上才算（G3）。
+    //M 多标签：tag 和 tags 合并去重；all（默认）要把这些标签全带上，any 带上任一个就算（1.1.0）。
     const tagNames = getFilterTags(filter.tag, filter.tags);
     if (tagNames.length > 0) {
       const marks = tagNames.map(() => '?').join(', ');
+      let needCount = tagNames.length;
+      if (filter.tagMode === 'any') {
+        needCount = 1;
+      }
       clauses.push(`d.id IN (
           SELECT dt.doc_id FROM kb_doc_tags dt
           JOIN kb_tags t ON t.id = dt.tag_id
           WHERE t.name COLLATE NOCASE IN (${marks})
           GROUP BY dt.doc_id
-          HAVING COUNT(DISTINCT t.id) = ?
+          HAVING COUNT(DISTINCT t.id) >= ?
         )`);
-      params.push(...tagNames, tagNames.length);
+      params.push(...tagNames, needCount);
+    }
+
+    if (filter.systemRule === true) {
+      clauses.push('d.is_system_rule = 1');
     }
 
     if (filter.q !== undefined && filter.q.trim() !== '') {
@@ -839,8 +892,7 @@ export class KnowledgeStore {
     const offset = Math.max(0, rawOffset);
 
     const selectSql = `
-      SELECT d.id, d.dir_id, d.topic_id, d.title, d.summary, d.content,
-             d.source_path, d.source_type, d.created_at, d.updated_at
+      SELECT ${DOC_COLUMNS}
       FROM kb_docs d
       ${whereSql}
       ORDER BY d.updated_at DESC, d.id DESC
@@ -864,7 +916,7 @@ export class KnowledgeStore {
    */
   searchLocal(
     queryText: string,
-    options: { dirId?: string; topicId?: string; tag?: string; tags?: string[]; limit?: number } = {},
+    options: Pick<types.DocListFilter, 'dirId' | 'topicId' | 'tag' | 'tags' | 'tagMode' | 'systemRule' | 'limit'> = {},
   ): types.KnowledgeSearchHit[] {
     let maxHits = 20;
     if (options.limit !== undefined && Number.isFinite(options.limit)) {
@@ -883,6 +935,8 @@ export class KnowledgeStore {
         topicId: options.topicId,
         tag: options.tag,
         tags: options.tags,
+        tagMode: options.tagMode,
+        systemRule: options.systemRule,
         q: trimmed,
         limit: 2000,
         offset: 0,
@@ -1095,10 +1149,7 @@ export class KnowledgeStore {
     //M 取候选的摘要和标签，算分（同专题 +3、每个共同标签 +2、同目录 +1）、拼理由，排序截断。
     const ids = [...found.keys()];
     const placeholders = ids.map(() => '?').join(', ');
-    const listSql = `
-      SELECT id, dir_id, topic_id, title, summary, '' AS content, source_path, source_type, created_at, updated_at
-      FROM kb_docs WHERE id IN (${placeholders})
-    `;
+    const listSql = `SELECT ${DOC_COLUMNS} FROM kb_docs d WHERE d.id IN (${placeholders})`;
     const rows = this.db.query<DocRow, string[]>(listSql).all(...ids);
     const tagMap = this.loadTagsByDocIds(ids);
     const items = rows.map((row): types.KnowledgeRelatedItem => {

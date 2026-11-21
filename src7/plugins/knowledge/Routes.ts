@@ -1,6 +1,7 @@
 /**
  * 积木知识库 REST API 路由与记忆服务温和桥接（/api/knowledge/*）。
  * 所有写接口（POST/PUT/DELETE）强制核验 ctx.http.isVerified(request)，未通过一律返回 403；
+ * 动到硬性系统规则的写请求（本机或已核验的本人）额外记一行日志；
  * 搜索接口通过 requestEvent 桥接 memory/request，未挂载 memory 或远端离线时平滑退化，绝不报错中断。
  */
 import type * as cordis from 'cordis';
@@ -159,6 +160,60 @@ function readQueryTags(query: Record<string, unknown>): string[] {
 }
 
 
+/** 多标签组合方式的合法写法。 */
+const TAG_MODES: readonly types.KnowledgeTagMode[] = ['all', 'any'];
+
+
+/**
+ * 读多标签组合方式 ?tagMode=all|any；没给是 undefined（Store 按 all 处理，老前端照旧取交集）。
+ * @param query 查询对象。
+ * @throws Failure(400) 写了别的。
+ */
+function readQueryTagMode(query: Record<string, unknown>): types.KnowledgeTagMode | undefined {
+  const raw = readQueryText(query, 'tagMode');
+  if (raw === undefined || raw === '') return undefined;
+
+  return checksModule.checkAllowedValue(raw, TAG_MODES, 'tagMode');
+}
+
+
+/** 查询里的开关：1 或 true 算开。 */
+function readQueryFlag(query: Record<string, unknown>, key: string): boolean {
+  const raw = readQueryText(query, key);
+  return raw === '1' || raw === 'true';
+}
+
+
+/** 请求体里的可选开关 isSystemRule：没写是 undefined，写了要是 true 或 false。 */
+function readSystemRule(body: Record<string, unknown>): boolean | undefined {
+  if (body['isSystemRule'] === undefined) return undefined;
+
+  return checksModule.checkFlag(body['isSystemRule'], 'isSystemRule');
+}
+
+
+/**
+ * 写接口动到了硬性系统规则：记一行日志，写明是谁（本机还是带令牌的远程）、做了什么、哪一篇。
+ * 能走到这里的都已过了 requireVerified。
+ * @param ctx 插件上下文。
+ * @param request 请求。
+ * @param action 新建、修改、删除。
+ * @param doc 那篇的 ID 和标题。
+ */
+function logSystemRuleWrite(
+  ctx: cordis.Context,
+  request: Parameters<cordis.Context['http']['isLocal']>[0],
+  action: string,
+  doc: { id: string; title: string },
+): void {
+  let who = '远程已核验';
+  if (ctx.http.isLocal(request)) {
+    who = '本机';
+  }
+  console.info(`knowledge：硬性系统规则${action}，操作者=${who}，docId=${doc.id}，标题=${doc.title}`);
+}
+
+
 /** 读取路由路径参数（如 :id、:name，Fastify 已解好百分号编码）。 */
 function readParam(params: unknown, key: string): string {
   const raw = (params as Record<string, unknown> | null)?.[key];
@@ -198,6 +253,8 @@ export function mountKnowledgeRoutes(
       dirId: readQueryText(query, 'dirId'),
       topicId: readQueryText(query, 'topicId'),
       tags: readQueryTags(query),
+      tagMode: readQueryTagMode(query),
+      systemRule: readQueryFlag(query, 'systemRule'),
       q: readQueryText(query, 'q'),
       limit: checksModule.checkCount(query['limit'], 'limit'),
       offset: checksModule.checkCount(query['offset'], 'offset'),
@@ -232,8 +289,12 @@ export function mountKnowledgeRoutes(
       sourcePath: readOptionalString(body, 'sourcePath'),
       sourceType: readOptionalString(body, 'sourceType') as types.KnowledgeSourceType | undefined,
       tags: readOptionalStringArray(body, 'tags'),
+      isSystemRule: readSystemRule(body),
     };
     const doc = store.createDoc(input);
+    if (doc.isSystemRule) {
+      logSystemRuleWrite(ctx, request, '新建', doc);
+    }
     return { ok: true, doc };
   });
 
@@ -267,13 +328,18 @@ export function mountKnowledgeRoutes(
     if ('tags' in body) {
       patch.tags = readOptionalStringArray(body, 'tags');
     }
+    patch.isSystemRule = readSystemRule(body);
     if (body['baseUpdatedAt'] !== undefined) {
       patch.baseUpdatedAt = checksModule.checkNumber(body['baseUpdatedAt'], 'baseUpdatedAt', { integer: true });
     }
 
     //G 别处先改过：回 409，并把库里最新的文档一起带回，前端直接拿它刷新（统一的错误处理只回 error，带不了 doc）。
     try {
+      const before = store.getDoc(id);
       const doc = store.updateDoc(id, patch);
+      if (doc.isSystemRule || before?.isSystemRule === true) {
+        logSystemRuleWrite(ctx, request, '修改', doc);
+      }
       return { ok: true, doc };
     } catch (error) {
       if (!(error instanceof storeModule.KnowledgeConflictError)) throw error;
@@ -287,7 +353,11 @@ export function mountKnowledgeRoutes(
   app.delete('/api/knowledge/docs/:id', (request) => {
     ctx.http.requireVerified(request, '知识库写操作');
     const id = readParam(request.params, 'id');
+    const before = store.getDoc(id);
     store.deleteDoc(id);
+    if (before?.isSystemRule === true) {
+      logSystemRuleWrite(ctx, request, '删除', before);
+    }
     return { ok: true, id };
   });
 
@@ -351,14 +421,17 @@ export function mountKnowledgeRoutes(
     if (typeof query['topicId'] === 'string' && query['topicId'].trim() !== '') {
       topicId = query['topicId'].trim();
     }
-    //M 标签：?tag= 可重复，?tags= 逗号分隔，合并去重后按交集筛（G3）。
+    //M 标签：?tag= 可重复，?tags= 逗号分隔，合并去重后按 tagMode 筛（默认 all 交集，any 并集）。
     const tags = storeModule.getFilterTags(undefined, readQueryTags(query));
-    if (q === '' && dirId === undefined && topicId === undefined && tags.length === 0) {
+    const tagMode = readQueryTagMode(query);
+    const systemRule = readQueryFlag(query, 'systemRule');
+    const noFilter = dirId === undefined && topicId === undefined && tags.length === 0 && !systemRule;
+    if (q === '' && noFilter) {
       throw new failureModule.Failure(400, '请至少提供搜索词 q、topicId、dirId 或 tag 之一');
     }
 
     const limit = checksModule.checkCount(query['limit'], 'limit') ?? 15;
-    const hits = store.searchLocal(q, { dirId, topicId, tags, limit });
+    const hits = store.searchLocal(q, { dirId, topicId, tags, tagMode, systemRule, limit });
 
     const skipMemory = query['includeMemory'] === '0' || query['includeMemory'] === 'false';
     if (skipMemory || q === '') {
@@ -414,6 +487,29 @@ export function mountKnowledgeRoutes(
     const written = checksModule.checkCount(query['limit'], 'limit') ?? 6;
     const limit = Math.min(20, Math.max(1, written));
     const response: types.KnowledgeRelatedResponse = { ok: true, docId: id, items: store.getRelated(id, limit) };
+    return response;
+  });
+
+  //M 14. [[双链]]：本篇写出去的链接（含悬空的）和引用了本篇的文档。
+  app.get('/api/knowledge/docs/:id/links', (request) => {
+    const id = readParam(request.params, 'id');
+    if (store.getDoc(id) === undefined) {
+      throw new failureModule.Failure(404, `文档不存在：${id}`);
+    }
+    const response: types.KnowledgeLinksResponse = { ok: true, ...store.links.getLinks(id) };
+    return response;
+  });
+
+  //M 15. 双链图谱：不带 centerId 是整个知识库，带了是这篇和它的一跳邻居。
+  app.get('/api/knowledge/graph', (request) => {
+    const query = (request.query ?? {}) as Record<string, string | undefined>;
+    let centerId: string | undefined;
+    const rawCenter = readQueryText(query, 'centerId')?.trim() ?? '';
+    if (rawCenter !== '') {
+      centerId = rawCenter;
+    }
+    const getTags = (ids: readonly string[]) => store.loadTagsByDocIds(ids);
+    const response: types.KnowledgeGraphResponse = { ok: true, ...store.links.getGraph(centerId, getTags) };
     return response;
   });
 }

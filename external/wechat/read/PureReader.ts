@@ -506,6 +506,168 @@ export class Reader {
   }
 
   /**
+   * 按指定条数上限读取单个会话最近 `limit` 条完整消息（超过单页 5000 条时自动向前循环 backfill 拼接）。
+   * @param account 微信账号标识。
+   * @param chatQuery 会话原始 username 或唯一备注/群名。
+   * @param limit 需要导出的最近消息条数上限。
+   * @returns 命中会话时返回元信息与时间升序消息列表；该账号下不存在此会话时返回 undefined。
+   */
+  async readChatHistory(
+    account: string,
+    chatQuery: string,
+    limit: number,
+  ): Promise<{ username: string; displayName: string; isGroup: boolean; messages: RawMessage[] } | undefined> {
+    const ctx = this.getAccountContext(account);
+    const pageCap = 5000;
+    const firstBatchSize = Math.min(limit, pageCap);
+    //M 先拉取最新一批消息并解析标准会话 username。
+    const first = ctx.wechatDb.syncChat(chatQuery, null, firstBatchSize);
+    if (first.missing) return undefined;
+
+    if (first.error !== undefined) {
+      throw new Error('读取微信会话记录失败');
+    }
+
+    const username = first.username ?? chatQuery;
+    const displayName = first.chat_display ?? username;
+    const isGroup = first.is_group === true;
+    const initialRows = first.messages ?? [];
+    if (initialRows.length >= limit || initialRows.length < pageCap) {
+      return {
+        username,
+        displayName,
+        isGroup,
+        messages: initialRows.slice(-limit),
+      };
+    }
+
+    //M 需要超过 5000 条长历史时，按最早秒级时间戳继续向前分页去重拼接。
+    const byKey = new Map<string, RawMessage>();
+    let oldestTime = Number.MAX_SAFE_INTEGER;
+    for (const msg of initialRows) {
+      const msgKey = `${msg.source}:${String(msg.local_id)}`;
+      byKey.set(msgKey, msg);
+      oldestTime = Math.min(oldestTime, msg.create_time);
+    }
+
+    while (byKey.size < limit && oldestTime > 0) {
+      const untilTime = oldestTime + 1;
+      //M 向前拉取更早一批记录。
+      const older = ctx.wechatDb.backfill(username, untilTime, pageCap);
+      if (older.missing || older.error !== undefined) {
+        break;
+      }
+      const batch = older.messages ?? [];
+      if (batch.length === 0) {
+        break;
+      }
+
+      let nextOldest = oldestTime;
+      let addedCount = 0;
+      for (const msg of batch) {
+        const msgKey = `${msg.source}:${String(msg.local_id)}`;
+        if (!byKey.has(msgKey)) {
+          byKey.set(msgKey, msg);
+          addedCount += 1;
+        }
+        nextOldest = Math.min(nextOldest, msg.create_time);
+      }
+      if (batch.length < pageCap || addedCount === 0 || nextOldest >= oldestTime) {
+        break;
+      }
+      oldestTime = nextOldest;
+    }
+
+    const merged = [...byKey.values()];
+    merged.sort((left, right) => {
+      if (left.create_time !== right.create_time) return left.create_time - right.create_time;
+      if (left.source !== right.source) return left.source.localeCompare(right.source);
+      return left.local_id - right.local_id;
+    });
+    return {
+      username,
+      displayName,
+      isGroup,
+      messages: merged.slice(-limit),
+    };
+  }
+
+  /**
+   * 在当前微信账号的 `msg/file` 附件目录内安全查找已下载的本地文件原件（严格拦截路径穿越与外部软链接）。
+   * @param account 微信账号标识。
+   * @param rawTitle 消息气泡中的文件标题。
+   * @param createTime 消息秒级时间戳。
+   */
+  findSafeFileAttachment(account: string, rawTitle: string, createTime: number): string | undefined {
+    const trimmed = rawTitle.trim();
+    if (trimmed === '' || trimmed.includes('\0')) return undefined;
+    //G 标题自身若含路径分隔符或 .. 穿越片段，直接拒绝定位磁盘文件。
+    if (trimmed.includes('/') || trimmed.includes('\\') || trimmed === '.' || trimmed === '..') {
+      return undefined;
+    }
+    if (trimmed.includes('..')) return undefined;
+
+    const ctx = this.getAccountContext(account);
+    let wechatAccountRoot = ctx.dbDir;
+    if (path.basename(ctx.dbDir) === 'db_storage') {
+      wechatAccountRoot = path.dirname(ctx.dbDir);
+    }
+    const fileRoot = path.join(wechatAccountRoot, 'msg', 'file');
+    if (!fs.existsSync(fileRoot)) return undefined;
+
+    let realRoot: string;
+    try {
+      realRoot = fs.realpathSync(fileRoot);
+    } catch {
+      return undefined;
+    }
+
+    const candidateDirs: string[] = [];
+    if (createTime > 0) {
+      const dt = new Date(createTime * 1000);
+      const yyyy = String(dt.getFullYear());
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      //M 优先查找消息发出当月的附件归档夹。
+      candidateDirs.push(path.join(realRoot, `${yyyy}-${mm}`));
+    }
+    //M 同时允许直接在 msg/file 根与其余月份子目录查找。
+    candidateDirs.push(realRoot);
+    try {
+      const entries = fs.readdirSync(realRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && /^\d{4}-\d{2}$/u.test(entry.name)) {
+          const monthDir = path.join(realRoot, entry.name);
+          if (!candidateDirs.includes(monthDir)) {
+            //M 纳入其它月份归档目录以兼容跨月延迟下载。
+            candidateDirs.push(monthDir);
+          }
+        }
+      }
+    } catch {
+      return undefined;
+    }
+
+    const maxFileBytes = 100 * 1024 * 1024;
+    for (const dir of candidateDirs) {
+      const candidate = path.join(dir, trimmed);
+      const stat = fs.statSync(candidate, { throwIfNoEntry: false });
+      if (!stat?.isFile() || stat.size <= 0 || stat.size > maxFileBytes) {
+        continue;
+      }
+      try {
+        //G 用 realpathSync 确认目标文件未通过符号链接或目录联接跳出 msg/file 根目录。
+        const realTarget = fs.realpathSync(candidate);
+        const rel = path.relative(realRoot, realTarget);
+        const inside = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+        if (inside) return realTarget;
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * 纯 Bun 解密并缓存单条图片消息的缩略图（或原图）。
    * @param account 微信账号标识。
    * @param chat 会话原始 username。

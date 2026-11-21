@@ -3,6 +3,7 @@
  *   kb_search（只读）：按关键词、专题节点 topicId、标签或目录查索引摘要，按 docId 取完整正文；
  *   kb_save（写，1.0.2）：新建文档，或往已有文档追加、替换正文（替换要带 baseUpdatedAt 走乐观锁）。
  * 两个都给前台（front）与后台（work）；外人那一轮由 approval 的只读白名单挡掉，kb_save 执行时再核一次本人。
+ * 硬性系统规则（1.1.0）：kb_search 照常读；kb_save 不能建带这个标记的文档，也不能追加、替换、改动已标记的文档。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
@@ -96,6 +97,9 @@ export function registerKbSearchTool(
         if (doc.summary !== '') {
           metaLines.push(`- 摘要: ${doc.summary}`);
         }
+        if (doc.isSystemRule) {
+          metaLines.push('- 硬性系统规则: 是（AI 只读，必须遵守，不能用 kb_save 修改）');
+        }
         return `${metaLines.join('\n')}\n\n${doc.content}`;
       }
 
@@ -143,6 +147,9 @@ export function registerKbSearchTool(
         if (hit.tags.length > 0) {
           badges += ` ${hit.tags.map((t) => `#${t}`).join(' ')}`;
         }
+        if (hit.isSystemRule) {
+          badges += ' [硬性系统规则·只读]';
+        }
         const preview = hit.summary || hit.snippet;
         outLines.push(`${String(i + 1)}. [docId=${hit.id}] ${hit.title} ${badges}\n   ${preview}`);
       }
@@ -171,6 +178,9 @@ export function registerKbSearchTool(
 
 /** kb_save 一次最多带几个标签。 */
 const SAVE_MAX_TAGS = 20;
+
+/** kb_save 碰到硬性系统规则时交给模型的话。 */
+export const SYSTEM_RULE_DENIED = '该文档为硬性系统规则，AI 仅可读不可修改，请由用户本人在知识库网页操作';
 
 const KB_SAVE_PARAMETERS = piAi.Type.Object({
   docId: piAi.Type.Optional(piAi.Type.String({ description: '要更新的文档 ID；不传就新建一篇' })),
@@ -244,6 +254,11 @@ function runKbSave(store: storeModule.KnowledgeStore, args: Record<string, unkno
     throw new Error('只有本人能写知识库');
   }
 
+  //G 硬性系统规则只能由本人在网页上建：模型带了 isSystemRule=true 直接拒（参数定义里没有这一项，防它硬塞）。
+  if (args['isSystemRule'] === true) {
+    throw new Error(SYSTEM_RULE_DENIED);
+  }
+
   const docId = readArgText(args, 'docId');
   const content = readArgText(args, 'content');
   const tags = readSaveTags(args['tags']);
@@ -280,6 +295,11 @@ function runKbSave(store: storeModule.KnowledgeStore, args: Record<string, unkno
   const existing = store.getDoc(docId);
   if (existing === undefined) {
     throw new Error(`知识库里没有这篇：${docId}`);
+  }
+
+  //G 已标记的硬性系统规则：追加、替换、改标题标签目录一律不行。
+  if (existing.isSystemRule) {
+    throw new Error(SYSTEM_RULE_DENIED);
   }
 
   //M replace：整篇替换，必须带读文档时看到的 updatedAt，过期就不覆盖。
@@ -330,7 +350,8 @@ export function registerKbSaveTool(
     definition: {
       name: 'kb_save',
       description: '往积木知识库写资料：不传 docId 新建一篇（要 title、content）；传 docId 默认把 content 追加到原文后面，'
-        + 'mode=replace 才整篇替换（要带 baseUpdatedAt）。可同时改标题、摘要、标签、目录、专题。',
+        + 'mode=replace 才整篇替换（要带 baseUpdatedAt）。可同时改标题、摘要、标签、目录、专题。'
+        + '标着「硬性系统规则」的文档只读，不能用它改。',
       parameters: KB_SAVE_PARAMETERS,
     },
     sessionKinds: ['front', 'work'],

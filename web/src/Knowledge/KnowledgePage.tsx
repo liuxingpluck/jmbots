@@ -1,9 +1,10 @@
 /**
  * 积木知识库页面（/knowledge/）：桌面 >=800px 三栏（目录与标签 / 文档列表 / 编辑器），手机 <800px 单栏三屏
  * （列表、左侧滑出的目录抽屉、全屏文档，安卓返回键回到列表）。
- * 筛选和打开的文档写在网址里（?dir、tag、q、doc、topic），刷新不丢、能分享；
+ * 筛选和打开的文档写在网址里（?dir、tag、tagMode、rule、q、doc、topic），刷新不丢、能分享；
  * ?new=1&topic=<节点号>&title=<标题> 是工作决策“记一篇”跳过来的，直接打开预填好的新建表单。
  * 列表（或搜索）和单篇正文各走一路请求，各有 AbortController 和序号，迟到的回包不会盖掉新的。
+ * 整库双链图谱和目录树一起拉：既给「🕸️ 图谱」抽屉用，也当标题索引给编辑器的 [[ 联想和双链芯片用。
  */
 import * as react from 'react';
 import { TOKEN, withToken } from '../Token.ts';
@@ -11,11 +12,18 @@ import * as dirTree from './DirTree.tsx';
 import * as docList from './DocList.tsx';
 import * as api from './KnowledgeApi.ts';
 import type * as editorModule from './KnowledgeEditor.tsx';
+import * as wiki from './WikiLinks.ts';
 
 /** 编辑器连同 Markdown 渲染按需加载，首屏只有顶栏、目录和列表。 */
 const LazyEditor = react.lazy(async () => {
   const mod = await import('./KnowledgeEditor.tsx');
   return { default: mod.KnowledgeEditor };
+});
+
+/** 双链图谱抽屉按需加载：点了「🕸️ 图谱」才拉。 */
+const LazyGraph = react.lazy(async () => {
+  const mod = await import('./GraphView.tsx');
+  return { default: mod.GraphView };
 });
 
 /** 窄于这个宽度按手机排（和 /work-decision/ 同一个断点）。 */
@@ -25,7 +33,7 @@ const SEARCH_DELAY_MS = 300;
 /** 提示条显示多久。 */
 const NOTICE_MS = 5000;
 /** 这个页面在网址里用的参数；写网址时先全删再按现状写，别的参数（令牌）不动。 */
-const URL_KEYS = ['dir', 'tag', 'q', 'doc', 'topic', 'new', 'title'];
+const URL_KEYS = ['dir', 'tag', 'tagMode', 'rule', 'q', 'doc', 'topic', 'new', 'title'];
 
 /** 右栏打开的东西：一篇已有文档（可能还在加载），或一个新建表单。 */
 interface Opened {
@@ -43,8 +51,12 @@ interface Opened {
 interface UrlState {
   /** 目录筛选。 */
   dir: string | undefined;
-  /** 标签筛选（多个取交集）；网址里写成 ?tag=a,b。 */
+  /** 标签筛选；网址里写成 ?tag=a,b。 */
   tags: string[];
+  /** 多个标签怎么组合；网址里 ?tagMode=any 是任一满足，不写是全部满足。 */
+  tagMode: api.KnowledgeTagMode;
+  /** 只看硬性系统规则；网址里 ?rule=1。 */
+  ruleOnly: boolean;
   /** 专题筛选。 */
   topic: string | undefined;
   /** 搜索词。 */
@@ -76,9 +88,15 @@ function readUrl(): UrlState {
   if (params.get('new') === '1') {
     preset = { title: params.get('title') ?? '', topicId: getOne('topic') ?? null, dirId: null };
   }
+  let tagMode: api.KnowledgeTagMode = 'all';
+  if (params.get('tagMode') === 'any') {
+    tagMode = 'any';
+  }
   return {
     dir: getOne('dir'),
     tags: (getOne('tag') ?? '').split(',').filter((one) => one !== ''),
+    tagMode,
+    ruleOnly: params.get('rule') === '1',
     topic: getOne('topic'),
     q: params.get('q') ?? '',
     doc: getOne('doc'),
@@ -140,12 +158,17 @@ export function KnowledgePage(): react.JSX.Element {
   //M 筛选：目录、标签、专题；搜索框的字（qInput）停手 300ms 才变成真正生效的 q。
   const [dir, setDir] = react.useState(initial.dir);
   const [tags, setTags] = react.useState(initial.tags);
+  const [tagMode, setTagMode] = react.useState(initial.tagMode);
+  const [ruleOnly, setRuleOnly] = react.useState(initial.ruleOnly);
   const [topic, setTopic] = react.useState(initial.topic);
   const [qInput, setQInput] = react.useState(initial.q);
   const [q, setQ] = react.useState(initial.q.trim());
 
   //M 左栏数据、中栏列表或搜索结果。
   const [tree, setTree] = react.useState<api.KnowledgeTreeResponse>();
+  //M 整库双链图谱：图谱抽屉的全库视图，也是 [[ 联想的标题索引；后端还没 1.1.0 时是 undefined。
+  const [graph, setGraph] = react.useState<api.KnowledgeGraphResponse>();
+  const [graphOpen, setGraphOpen] = react.useState(false);
   const [items, setItems] = react.useState<api.KnowledgeDocSummary[]>([]);
   /** 现在列表里显示了几条：切回页面刷新时按它拉（visibilitychange 的监听里读）。 */
   const itemCountRef = react.useRef(0);
@@ -203,10 +226,13 @@ export function KnowledgePage(): react.JSX.Element {
     treeSeqRef.current += 1;
     const seq = treeSeqRef.current;
     try {
-      const next = await api.getTree();
+      //M 图谱拿不到（老后端）不挡目录树，标题索引空着就是了。
+      const graphLoad = api.fetchGraph().catch(() => undefined);
+      const [next, nextGraph] = await Promise.all([api.getTree(), graphLoad]);
       if (seq !== treeSeqRef.current) return;
 
       setTree(next);
+      setGraph(nextGraph);
     } catch (error) {
       showNotice(getMessage(error));
     }
@@ -218,7 +244,7 @@ export function KnowledgePage(): react.JSX.Element {
     listAbortRef.current = controller;
     listSeqRef.current += 1;
     const seq = listSeqRef.current;
-    const query: api.DocQuery = { dirId: dir, tags, topicId: topic };
+    const query: api.DocQuery = { dirId: dir, tags, tagMode, systemRule: ruleOnly, topicId: topic };
     setLoading(true);
     try {
       //M 有搜索词：走混合搜索，本地命中加相关记忆。
@@ -254,7 +280,7 @@ export function KnowledgePage(): react.JSX.Element {
         setLoading(false);
       }
     }
-  }, [dir, tags, topic, q]);
+  }, [dir, tags, tagMode, ruleOnly, topic, q]);
 
   //M 首屏拉树；筛选一变就重拉列表。
   react.useEffect(() => {
@@ -291,8 +317,16 @@ export function KnowledgePage(): react.JSX.Element {
   //M 现状写回网址；?new、?title 只在第一次用，写回时就去掉了。
   react.useEffect(() => {
     const tag = tags.join(',');
-    writeUrl({ dir, tag, topic, q, doc: opened?.id });
-  }, [dir, tags, topic, q, opened?.id]);
+    let modeParam: string | undefined;
+    if (tagMode === 'any') {
+      modeParam = 'any';
+    }
+    let rule: string | undefined;
+    if (ruleOnly) {
+      rule = '1';
+    }
+    writeUrl({ dir, tag, tagMode: modeParam, rule, topic, q, doc: opened?.id });
+  }, [dir, tags, tagMode, ruleOnly, topic, q, opened?.id]);
 
   //==========================================================
   //M 右栏：打开、新建、关掉文档；手机上打开时压一层历史，返回键回列表
@@ -353,8 +387,11 @@ export function KnowledgePage(): react.JSX.Element {
     void openDoc(id, true);
   }, [initial.preset, openDoc]);
 
-  /** 新建：预填当前所在的目录和专题。 */
-  const newDoc = react.useCallback(() => {
+  /**
+   * 新建：预填当前所在的目录和专题；点了还没创建的双链时顺带预填标题。
+   * @param title 预填的标题；顶栏「新建」是空串。
+   */
+  const newDoc = react.useCallback((title: string) => {
     if (!confirmLeave()) return;
 
     docAbortRef.current?.abort();
@@ -365,7 +402,7 @@ export function KnowledgePage(): react.JSX.Element {
     if (dir !== undefined && dir !== api.UNASSIGNED) {
       dirId = dir;
     }
-    const preset = { title: '', topicId: topic ?? null, dirId };
+    const preset = { title, topicId: topic ?? null, dirId };
     setOpened({ key: `new:${String(newSeqRef.current)}`, id: undefined, doc: undefined, preset });
     pushMobile();
   }, [confirmLeave, dir, topic, pushMobile]);
@@ -454,7 +491,7 @@ export function KnowledgePage(): react.JSX.Element {
     setDrawerOpen(false);
   }, []);
 
-  //M 标签多选：没选的加上、选了的去掉，筛选取交集。
+  //M 标签多选：没选的加上、选了的去掉，按 tagMode 取交集或并集。
   //M 不关手机抽屉，方便连续选几个标签（点目录照旧关，见 pickDir）。
   const pickTag = react.useCallback((name: string) => {
     setTags((current) => {
@@ -462,6 +499,15 @@ export function KnowledgePage(): react.JSX.Element {
 
       return [...current, name];
     });
+  }, []);
+
+  /** 清空选中的标签。 */
+  const clearTags = react.useCallback(() => setTags([]), []);
+
+  /** 开关「只看系统规则」。 */
+  const toggleRuleOnly = react.useCallback(() => {
+    setRuleOnly((current) => !current);
+    setDrawerOpen(false);
   }, []);
 
   /** 跑一个写操作，成功后刷新树（和列表），出错统一处理。 */
@@ -577,6 +623,7 @@ export function KnowledgePage(): react.JSX.Element {
 
   const flatDirs = tree?.flatDirs ?? [];
   const dirNames = react.useMemo(() => new Map(flatDirs.map((item) => [item.id, item.name])), [flatDirs]);
+  const titles = react.useMemo(() => wiki.getTitleIndex(graph?.nodes ?? []), [graph]);
 
   const chips: docList.FilterChip[] = [];
   if (dir === api.UNASSIGNED) {
@@ -585,9 +632,16 @@ export function KnowledgePage(): react.JSX.Element {
   if (dir !== undefined && dir !== api.UNASSIGNED) {
     chips.push({ key: 'dir', label: `目录：${dirNames.get(dir) ?? dir}` });
   }
-  //M 选中的标签每个一个胶囊，点 × 只去掉那一个。
+  //M 选中的标签每个一个胶囊，点 × 只去掉那一个；选了多个且是任一满足时，胶囊上标个“或”。
+  let tagJoin = '';
+  if (tags.length > 1 && tagMode === 'any') {
+    tagJoin = '（或）';
+  }
   for (const one of tags) {
-    chips.push({ key: 'tag', label: `#${one}`, value: one });
+    chips.push({ key: 'tag', label: `#${one}${tagJoin}`, value: one });
+  }
+  if (ruleOnly) {
+    chips.push({ key: 'rule', label: '🔒 只看系统规则' });
   }
   if (topic !== undefined) {
     chips.push({ key: 'topic', label: `专题：${topic}` });
@@ -610,6 +664,9 @@ export function KnowledgePage(): react.JSX.Element {
     if (key === 'q') {
       setQInput('');
       setQ('');
+    }
+    if (key === 'rule') {
+      setRuleOnly(false);
     }
   }, []);
 
@@ -641,7 +698,12 @@ export function KnowledgePage(): react.JSX.Element {
           placeholder="搜标题、摘要、正文、标签"
           onChange={(event) => setQInput(event.target.value)}
         />
-        {!isMobile && !readOnly && <button type="button" className="kb-primary-btn" onClick={newDoc}>＋ 新建</button>}
+        <button type="button" className="kb-link-btn" onClick={() => setGraphOpen(true)} title="整个知识库的双链图谱">
+          🕸️{!isMobile && ' 图谱'}
+        </button>
+        {!isMobile && !readOnly && (
+          <button type="button" className="kb-primary-btn" onClick={() => newDoc('')}>＋ 新建</button>
+        )}
         {!isMobile && <a className="kb-nav" href={homeHref}>主页</a>}
         {!isMobile && <a className="kb-nav" href={decisionHref}>工作决策</a>}
       </header>
@@ -652,10 +714,15 @@ export function KnowledgePage(): react.JSX.Element {
             tree={tree}
             dir={dir}
             tags={tags}
+            tagMode={tagMode}
+            ruleOnly={ruleOnly}
             readOnly={readOnly}
             dragEnabled={dragEnabled}
             pickDir={pickDir}
             pickTag={pickTag}
+            setTagMode={setTagMode}
+            clearTags={clearTags}
+            toggleRuleOnly={toggleRuleOnly}
             createDir={createDir}
             renameDir={renameDir}
             removeDir={removeDir}
@@ -707,14 +774,27 @@ export function KnowledgePage(): react.JSX.Element {
                 onError={handleError}
                 onNotice={showNotice}
                 onOpenDoc={(id) => void openDoc(id)}
+                onCreateDoc={newDoc}
+                onShowGraph={() => setGraphOpen(true)}
+                titles={titles}
                 tagChange={tagChange}
               />
             </react.Suspense>
           )}
         </main>
       </div>
+      {graphOpen && (
+        <react.Suspense fallback={null}>
+          <LazyGraph
+            fullGraph={graph}
+            centerId={opened?.id}
+            open={(id) => void openDoc(id)}
+            onClose={() => setGraphOpen(false)}
+          />
+        </react.Suspense>
+      )}
       {isMobile && screen === 'list' && !readOnly && (
-        <button type="button" className="kb-fab" onClick={newDoc} aria-label="新建">＋</button>
+        <button type="button" className="kb-fab" onClick={() => newDoc('')} aria-label="新建">＋</button>
       )}
     </div>
   );

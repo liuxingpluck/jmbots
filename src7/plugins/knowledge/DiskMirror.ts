@@ -142,6 +142,7 @@ export class DiskMirror {
       sourcePath: doc.sourcePath,
       sourceType: doc.sourceType,
       tags: doc.tags,
+      isSystemRule: doc.isSystemRule,
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,
     };
