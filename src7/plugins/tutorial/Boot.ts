@@ -15,6 +15,7 @@ import * as sourceDirModule from '../../utils/SourceDir.ts';
 import * as snapshotModule from './Snapshot.ts';
 import type * as filesModule from './Files.ts';
 import * as sourceModule from './Source.ts';
+import * as traceUtils from '../../utils/Trace.ts';
 import { FOLDERS } from '../../utils/Trail.ts';
 
 
@@ -245,7 +246,8 @@ export class BootTrail {
     this.ctx.on('ready', () => {
       this.onReady();
     });
-    this.ctx.on('trace', (where, text, _code, vars) => {
+    //M HTTP 开始监听的跟踪点经 utils/Trace.ts 的 onTrace 挂：记启动出错只记日志，不拦 Http.listen。
+    traceUtils.onTrace(this.ctx, 'tutorial.boot', (where, text, _code, vars) => {
       if (where === 'Http.listen') this.onListen(text, vars);
     });
   }

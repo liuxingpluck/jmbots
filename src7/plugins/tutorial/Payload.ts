@@ -875,19 +875,13 @@ interface ExtractedRefs {
 
 
 /**
- * 结合 buildDispatchLine 与渠道回复/收尾快照提取关联线索，覆盖全部 15 种白名单事件。
- * @param ctx tutorial 的 ctx。
- * @param mode Cordis 派发模式。
- * @param event 事件名。
+ * 结合共用事件行（utils/Trace.ts 的 onDispatch 交来的）与渠道回复/收尾快照提取关联线索，覆盖全部 15 种白名单事件。
+ * @param line 共用的事件行：会话号、机器人、消息号先从它取。
  * @param args 事件参数。
+ * @returns 认出的关联线索。
  */
-function extractEventRefs(
-  ctx: cordis.Context,
-  mode: string,
-  event: string,
-  args: unknown[],
-): { line: traceUtils.DispatchLine; refs: ExtractedRefs } {
-  const line = traceUtils.buildDispatchLine(ctx, mode, event, args, 1);
+function extractEventRefs(line: traceUtils.SharedLine, args: unknown[]): ExtractedRefs {
+  const event = line.name;
   const first = asRecord(args[0]);
   let messageId = line.messageId;
   let sourceId = line.sourceId;
@@ -958,10 +952,7 @@ function extractEventRefs(
     messageId = readPositiveInt(targetAddr, 'messageId');
   }
 
-  return {
-    line,
-    refs: { messageId, sourceId, sessionId, bot, replyRequestId, sessionState },
-  };
+  return { messageId, sourceId, sessionId, bot, replyRequestId, sessionState };
 }
 
 
@@ -1034,7 +1025,7 @@ export class PayloadRecorder {
     }, true);
 
     //M 监听 Timeline.insert / Timeline.bindSession 跟踪点，第一时间把标准消息号、会话号桥接到数字收件号。
-    this.ctx.on('trace', (where, _text, _code, vars) => {
+    traceUtils.onTrace(this.ctx, 'tutorial.payload', (where, _text, _code, vars) => {
       if (where !== 'Timeline.insert' && where !== 'Timeline.bindSession') return;
 
       const msgId = readPositiveInt(vars, 'messageId');
@@ -1053,16 +1044,15 @@ export class PayloadRecorder {
     });
 
     //M 核心监听：Cordis 同步发完 internal/dispatch 才调各插件监听，此刻拷 before 并留活引用。
-    this.ctx.on('internal/dispatch', (mode, event, args) => {
-      if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/')) return;
-
-      if (event === 'web-api/received') {
+    //M   跟踪点、Cordis 内部的事件 onDispatch 已滤掉；录载荷出错只记日志，不拦业务事件。
+    traceUtils.onDispatch(this.ctx, 'tutorial.payload', (line, args) => {
+      if (line.name === 'web-api/received') {
         this.onWebReceived(args[0]);
         return;
       }
-      if (!this.whitelist.has(event)) return;
+      if (!this.whitelist.has(line.name)) return;
 
-      this.onWhitelistedDispatch(mode, event, args);
+      this.onWhitelistedDispatch(line, args);
     });
   }
 
@@ -1203,8 +1193,9 @@ export class PayloadRecorder {
   /**
    * 处理命中的 15 类白名单事件：定位桶 → 先补拷同会话前序事件 after → 拷本次 before 并留住活引用 → 判断本轮收尾。
    */
-  private onWhitelistedDispatch(mode: string, event: string, args: unknown[]): void {
-    const { line, refs } = extractEventRefs(this.ctx, mode, event, args);
+  private onWhitelistedDispatch(line: traceUtils.SharedLine, args: unknown[]): void {
+    const event = line.name;
+    const refs = extractEventRefs(line, args);
     const bucket = this.resolveOrCreateBucket(event, args, refs);
     if (bucket === null || !bucket.wanted) return;
 
@@ -1241,7 +1232,7 @@ export class PayloadRecorder {
 
     const listeners = line.listeners.filter((plugin) => !PASSIVE_LISTENERS.has(plugin));
     const objectName = EVENT_OBJECT_NAMES[event] ?? 'Object';
-    const site = traceUtils.getCallSite(['plugins/tutorial/']);
+    const site = line.site;
     const item: PayloadItem = {
       seq: bucket.entries.length + 1,
       at: Date.now(),

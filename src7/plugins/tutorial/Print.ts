@@ -51,14 +51,15 @@ export class Printer {
     private readonly ctx: cordis.Context,
     private readonly config: PrintConfig,
   ) {
-    //M 一个跟踪点：打一行函数行。
-    this.ctx.on('trace', (where, text, code, vars) => {
+    //M 一个跟踪点：打一行函数行。打印出错只记日志，不拦发跟踪点的业务代码（utils/Trace.ts 的 onTrace）。
+    traceUtils.onTrace(this.ctx, 'tutorial.print', (where, text, code, vars) => {
       this.onPoint(where, text, code, vars);
     });
 
     //M Cordis 每发一个事件，都会先发一个 internal/dispatch：发法、事件名、带的参数。打一行事件行。
-    this.ctx.on('internal/dispatch', (mode, event, args) => {
-      this.onDispatch(mode, event, args);
+    //M   事件行和 journal 共用一份（utils/Trace.ts 的 onDispatch），跟踪点、Cordis 内部的事件那里已滤掉。
+    traceUtils.onDispatch(this.ctx, 'tutorial.print', (line) => {
+      this.onDispatch(line);
     });
   }
 
@@ -79,23 +80,17 @@ export class Printer {
     }
     //M 把跟踪点名、人话、源码句和裁剪后的变量拼成“函数”行写出。
     const caption = traceText.getTraceText(this.language, text, vars);
-    this.write('function', [where, caption, code, shown.join(' ')]);
+
+    //M 是哪一行代码发的跟踪点：从调用栈里自动找，不用发的人自己写。
+    const at = traceUtils.getCallSite(['plugins/tutorial/']);
+    this.write('function', [where, caption, code, shown.join(' ')], at);
   }
 
   /**
    * 响应 internal/dispatch：打一行“发了哪个事件、谁在听、带着什么”。
-   * @param mode Cordis 的发法：emit、parallel、serial……
-   * @param event 事件名。
-   * @param args 这个事件带的参数。
+   * @param line 共用的事件行（和 journal 记进库的是同一份）：事件名、发法、听的人、会话、认得的关键值、发事件的那一行。
    */
-  private onDispatch(mode: string, event: string | symbol, args: unknown[]): void {
-    //G 跟踪点自己、Cordis 内部的事件不算。
-    if (typeof event !== 'string') return;
-    if (event === 'trace') return;
-    if (event.startsWith('internal/')) return;
-
-    //M 拼事件行（和 journal 记进库的是同一种行）：事件名、发法、听的人、会话、认得的关键值。
-    const line = traceUtils.buildDispatchLine(this.ctx, mode, event, args, this.config.varLimit);
+  private onDispatch(line: traceUtils.SharedLine): void {
     const modeId = traceText.getTraceModeId(line.mode);
     const modeText = traceText.getTraceText(this.language, modeId);
     const listeners = line.listeners.join('、');
@@ -114,24 +109,22 @@ export class Printer {
       values.push(`${label}=${short}`);
     }
     //M 把事件头与关键参数拼成“事件”行输出到控制台和当日日志。
-    this.write('event', [head, values.join(' ')]);
+    this.write('event', [head, values.join(' ')], line.site);
   }
 
   /**
    * 把一行打出去：前面加上时间和这是哪种行，后面加上是哪一行代码走到这里的。
    * @param kind 哪种行：函数是代码往下走到了哪，事件是发了哪个事件。
    * @param parts 这一行的几段；空的那几段不打。
+   * @param at 是哪一行代码走到这里的，“文件:行号”。
    * 副作用：config.console 开着时打控制台；config.file 开着时追加到运行时目录 trace/ 下当天的文件。
    */
-  private write(kind: 'function' | 'event', parts: string[]): void {
+  private write(kind: 'function' | 'event', parts: string[], at: string): void {
     //M 取精确到毫秒的本地时钟，作为每条输出行的统一时间前缀。
     const time = textModule.formatLocalTime(Date.now(), 'ms');
     const body = parts.filter((part) => part !== '').join(' │ ');
     const kindId = `trace.kind.${kind}`;
     const label = traceText.getTraceText(this.language, kindId);
-
-    //M 是哪一行代码发的：从调用栈里自动找，不用发的人自己写。
-    const at = traceUtils.getCallSite(['plugins/tutorial/']);
 
     //M 控制台上：开头那两个字带颜色，一眼分得开；位置用暗色。
     if (this.config.console) {

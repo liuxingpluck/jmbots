@@ -591,52 +591,52 @@
 
 ```ts
 // src7/plugins/bots/index.ts
-589	  private async onChannelMessage(
-590	    message: protocol.ChannelMessage,
-591	    listen: boolean,
-592	    control?: protocol.ChannelMessageControl,
-593	    fromChannelEvent = true,
-594	  ): Promise<void> {
-595	    if (control?.approvalHandled === true) return;
-596
+588	  private async onChannelMessage(
+589	    message: protocol.ChannelMessage,
+590	    listen: boolean,
+591	    control?: protocol.ChannelMessageControl,
+592	    fromChannelEvent = true,
+593	  ): Promise<void> {
+594	    if (control?.approvalHandled === true) return;
+595
 …
-614	      const claimKey = protocol.getClaimKey(message.messageId, botName);
-615	      const botOrigin: { channel: string; address: Record<string, unknown> } = {
-616	        channel: message.origin.channel,
-617	        address: structuredClone(message.origin.address),
-618	      };
-619
-620	      //M 只听的话：在这个机器人的地址副本上标 listenOnly（bots 内部的标记，前台、relay 读它；渠道的原地址不动）。
-621	      if (listen) {
-622	        botOrigin.address['listenOnly'] = true;
-623	      }
-624
-625	      //M 按该机器人此轮授权目录把渠道保存的附件物化到 inbox。
-626	      const botText = this.materializeAttachments(bot, botOrigin.address, message);
-627	      const incoming: IncomingMessage = {
-628	        channel: message.channel,
-629	        bot: botName,
-630	        text: botText,
-631	        time: message.createdAt,
-632	        address: botOrigin.address,
-633	        sourceId: message.messageId,
-634	      };
-635	      const receiveEvent: ReceiveEvent = {
-636	        bot,
-637	        message: incoming,
-638	        fromChannelEvent,
-639	      };
+613	      const claimKey = protocol.getClaimKey(message.messageId, botName);
+614	      const botOrigin: { channel: string; address: Record<string, unknown> } = {
+615	        channel: message.origin.channel,
+616	        address: structuredClone(message.origin.address),
+617	      };
+618
+619	      //M 只听的话：在这个机器人的地址副本上标 listenOnly（bots 内部的标记，前台、relay 读它；渠道的原地址不动）。
+620	      if (listen) {
+621	        botOrigin.address['listenOnly'] = true;
+622	      }
+623
+624	      //M 按该机器人此轮授权目录把渠道保存的附件物化到 inbox。
+625	      const botText = this.materializeAttachments(bot, botOrigin.address, message);
+626	      const incoming: IncomingMessage = {
+627	        channel: message.channel,
+628	        bot: botName,
+629	        text: botText,
+630	        time: message.createdAt,
+631	        address: botOrigin.address,
+632	        sourceId: message.messageId,
+633	      };
+634	      const receiveEvent: ReceiveEvent = {
+635	        bot,
+636	        message: incoming,
+637	        fromChannelEvent,
+638	      };
 …
-647	      await this.home.serial('bot/receive', receiveEvent);
-648
-649	      if (receiveEvent.handled === true) {
-650	        claimModule.pushClaim(control, botName, claimKey, 'handled');
-651	        continue;
-652	      }
+646	      await this.home.serial('bot/receive', receiveEvent);
+647
+648	      if (receiveEvent.handled === true) {
+649	        claimModule.pushClaim(control, botName, claimKey, 'handled');
+650	        continue;
+651	      }
 …
-687	      //M 未被其他插件接管 → 按来源范围进该机器人的前台单队列（channel_tool 模式）。话用 incoming.text（理由同上）。
-688	      await this.home.frontDesk.claimChannelMessage(bot, message, botOrigin, incoming.text, claimKey, control);
-689	    }
+686	      //M 未被其他插件接管 → 按来源范围进该机器人的前台单队列（channel_tool 模式）。话用 incoming.text（理由同上）。
+687	      await this.home.frontDesk.claimChannelMessage(bot, message, botOrigin, incoming.text, claimKey, control);
+688	    }
 ```
 
 进 `DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`）后，先查 `isClaimed` 防渠道重推，再拼好带不可变来源快照 `SourceSnapshot` 的排队项 `QueueItem`，在 `DispatchClaim.persistClaim`（`src7/plugins/bots/DispatchClaim.ts:223`）里用 **`db.transaction` 原子写入 `sourceClaims`、`resultQueue`、`sourceScope` 并调 `front.save()`**：
@@ -914,7 +914,7 @@
 | 接口报 `401` / 外网登录跳回登录页 | `Http.check`（`src7/plugins/http/index.ts:398`）、`WebAuth.checkExternal`（`src7/plugins/http/WebAuth.ts:341`） | `route`、`guarded`、`external`、`local`、`this.verified.has(request)` |
 | 网页点发送报 `400` 或没进会话 | `WebApi.accept`（`src7/plugins/web-api/index.ts:381`）、`Timeline.insert`（`src7/plugins/web-api/Timeline.ts:288`） | `verifiedOwner`、`body`、返回的收件号 `id`、`control.claims` |
 | 飞书发了话没动静 / 敲键盘表情不退 | `FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:214`）、`FeishuInbound.deliver`（`src7/plugins/feishu/Inbound.ts:759`） | `facts.called`、`facts.targetBots`、`channelMessage`、`outcome` |
-| 发“同意 3”没批掉反而当普通话聊了 | `Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1151`） | `said`、`speaker`、`owner`、`verified`、`waiting`、`control.approvalHandled` |
+| 发“同意 3”没批掉反而当普通话聊了 | `Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1169`） | `said`、`speaker`、`owner`、`verified`、`waiting`、`control.approvalHandled` |
 | 话被外部助手截走 / 附件没拷进工作区 | `Bots.onChannelMessage`（`src7/plugins/bots/index.ts:589`） | `claimKey`、`botText`、`receiveEvent.session`、`receiveEvent.handled` |
 | 消息被判重复丢掉 / 进错了前台会话 | `DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`）、`DispatchClaim.persistClaim`（`src7/plugins/bots/DispatchClaim.ts:223`） | `scope`、`front.id`、`isClaimed(front, claimKey)`、`item.replyControl` |
 | 消息进了 `resultQueue` 却一直卡着不跑 | `DispatchResults.drain`（`src7/plugins/bots/DispatchResults.ts:853`）、`DispatchResults.startQueuedUser`（`src7/plugins/bots/DispatchResults.ts:920`） | `row.state`、`row.activeKey`、`row.frontTask?.paused`、`queue` |
@@ -922,7 +922,7 @@
 | 工具为什么被拒（`deny`）或整轮被停（`stop`） | `Tools.execute`（`src7/Tools.ts:170`） | `187` 行后的 `gate.deny`、`gate.stop`、`spec.sessionKinds`、`args` |
 | 抓到底是谁偷偷改了 `sessions` 表（看调用栈） | `Session.save`（`src7/Sessions.ts:760`）、`Session.append`（`src7/Sessions.ts:778`）、`Session.change`（`src7/Sessions.ts:790`） | 调用栈 `Error().stack`、`this.row.state`、`this.row.messages.at(-1)` |
 | 模型调了回复但飞书/网页没收到或报幂等冲突 | `ChannelTools.runReply`（`src7/plugins/bots/ChannelTools.ts:172`）、`FeishuReply.onChannelReply`（`src7/plugins/feishu/Reply.ts:74`）、`Timeline.reply`（`src7/plugins/web-api/Timeline.ts:385`） | `replyRequestKey`、`requested.isElsewhere`、`existing`、`receipt.status` |
-| 教程页画布漏步骤 / 查 SQLite 原始流水 | `Journal.listen`（`src7/plugins/journal/index.ts:230`）、`Journal.record`（`src7/plugins/journal/index.ts:304`） | `line.name`、`line.messageId`、`line.sessionId`、`line.sourceId` |
+| 教程页画布漏步骤 / 查 SQLite 原始流水 | `Journal.listen`（`src7/plugins/journal/index.ts:230`）、`Journal.record`（`src7/plugins/journal/index.ts:308`） | `line.name`、`line.messageId`、`line.sessionId`、`line.sourceId` |
 
 ---
 
@@ -935,7 +935,7 @@
 | ① | 原始入口：`FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:214`） / 网页 `WebApi.accept`（`src7/plugins/web-api/index.ts:381`） | **入**：飞书 SDK `ReceiveData`（`om_xxx`、`oc_xxx`、`ou_xxx`）或网页 JSON `{ text, bot, uploads }`。<br>**落库**：网页先 `Timeline.insert` 写 `web_messages` 拿收件号 `id`；飞书更新 `feishu_p2p`。 |
 | ② | 标准化：`ChannelMessage`（`src7/plugins/channels/Message.ts:107`） | **出**：统一成 `v: 1` 标准消息：`messageId = '["feishu","cli_a1","om_xxx"]'`、`role`（`owner`/`builder`/`guest`）、`targetBots`、下载好的 `attachments`、`origin.address`（含 `customer`、群 `judge` 配置）；网页额外带 `routing.autoFinal = true`。 |
 | ③ | 分拣广播：`emitInbound`（`src7/plugins/channels/Message.ts:280`） | **入 → 出**：数据字段不变，`getInboundEvent`（`src7/plugins/channels/Message.ts:263`）按 `chatType` 与 `called` 三选一 `ctx.serial` 发出 `channel/direct`、`channel/mention` 或 `channel/listen`，附可变协调单 `control: { claims: [] }`。 |
-| ④ | 口令拦截：`Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1151`） | **改写**：若认出本人发“同意 3 / 拒绝 2”，办结审批并写 `control.approvalHandled = true`（后续机器人全部跳过）；普通消息原样放行，`Grants` 顺手往地址写授权目录。 |
+| ④ | 口令拦截：`Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1169`） | **改写**：若认出本人发“同意 3 / 拒绝 2”，办结审批并写 `control.approvalHandled = true`（后续机器人全部跳过）；普通消息原样放行，`Grants` 顺手往地址写授权目录。 |
 | ⑤ | 逐机器人认领：`Bots.onChannelMessage`（`src7/plugins/bots/index.ts:589`） | **出**：每个目标机器人算 `claimKey`（`getClaimKey`，`src7/plugins/channels/Message.ts:311`），深拷贝 `botOrigin`（只听标 `listenOnly: true`），附件拷进 `<工作区>/inbox/<日期>/` 拼进 `botText`（`@绝对路径`），包成 `ReceiveEvent` 串行问 `bot/receive`（`relay` 可填 `event.session` 截走，`web-api` 把非网页消息补记进 `web_messages`）。 |
 | ⑥ | 事务排入单队列：`DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`） | **改写与落库**：按 `scope` 找或建前台 `Session`，调 `getSourceSnapshot`（`src7/plugins/channels/Message.ts:325`）冻结本轮来源快照，拼 `QueueItem { stage: 'queued', deliveryMode: 'channel_tool', replyControl }`；`persistClaim` 用 `db.transaction` 原子写 `row.sourceClaims`、`row.resultQueue`、`row.sourceScope` → `Session.save` 写 `sessions` 表；返回后飞书 `deliver` 写 `feishu_seen`、`web-api` 调 `bindSession` 绑上 `session_id`。 |
 | ⑦ | 出队激活开跑：`DispatchResults.drain`（`src7/plugins/bots/DispatchResults.ts:853`） | **改写与落库**：`said.stage = 'working'`、`row.activeKey = claimKey`、`row.activeSourceSnapshot = 快照`、`Bots.route` 更新回话地址 → `Session.save`；`queueUserMessage` 入 `inbox` → `Session.run()` 把 `row.state` 改为 `'running'` 落库，循环开头 `Session.append` 把用户话推入 `row.messages` 落库并发 `session/new-message`（记忆与归档旁听）。 |
@@ -974,7 +974,7 @@
 | 拦住某次危险工具调用，或直接停掉整轮 | `session/before-tool`（`src7/Tools.ts:187`） | 单次拒绝写 `gate.deny = '理由'`（模型能看到理由并换招）；整轮停写 `gate.stop = '理由'` |
 | 给工具输出脱敏、截断或补附图 | `session/after-tool`（`src7/Sessions.ts:672`） | 改写 `done.outcome.text` 或 `done.outcome.images` |
 | 加“暂停 5”这类消息级快捷口令 | `channel/direct` + `channel/mention`，传 `{ prepend: true }` | 照 `Approval.constructor`（`src7/plugins/approval/index.ts:458`），消费后写 `control.approvalHandled = true` |
-| 把带特定前缀（如 `#报销`）的话改道进专用会话 | `bot/receive`（`src7/plugins/bots/index.ts:647`） | 把 `event.session` 填成你开的 `Session`，或完全吃掉写 `event.handled = true` |
+| 把带特定前缀（如 `#报销`）的话改道进专用会话 | `bot/receive`（`src7/plugins/bots/index.ts:646`） | 把 `event.session` 填成你开的 `Session`，或完全吃掉写 `event.handled = true` |
 | 回复发出前统一加落款，或旁听已发回执做统计 | `channel/reply`（改字） / `channel/replied`（只读统计） | 改字在渠道接单前改 `request.parts`；统计只听 `channel/replied` 读 `event.receipt.status` |
 
 #### 4. 存新数据：扩会话字段 vs 建插件新表

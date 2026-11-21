@@ -14,10 +14,9 @@ import {
 } from 'react';
 import { Alert, Spin } from 'antd';
 import * as i18n from '../I18n.ts';
-import * as traceText from '../locales/Trace.ts';
 import { LaneChart, StepDetail, getCanvasLayout, type CanvasLayout } from './LaneChart.tsx';
 import { SeqChart, getSeqLayout } from './SeqChart.tsx';
-import { StepDataFlowPanel, findStepFlow, resolveTrailDataFlow } from './StepDataFlow.tsx';
+import { StepDataFlowPanel, findStepFlow, resolveStepTitle, resolveTrailDataFlow } from './StepDataFlow.tsx';
 import { TutorialApi, type Canvas, type Trail, type TrailDataFlow, type TrailStep } from './TutorialApi.ts';
 import { clamp, getChannelLabel, getMatchedSteps, type NarrowTraceMode } from './TutorialContext.tsx';
 
@@ -93,18 +92,6 @@ function getFitTransform(layout: CanvasLayout, safe: SafeViewport): CanvasTransf
   const tx = Math.round(safe.left + Math.max(pad, (safe.width - drawnW) / 2));
   const ty = Math.round(safe.top + Math.max(8, (safe.height - drawnH) / 2));
   return { tx, ty, scale };
-}
-
-
-/** 把轨迹一步的标题还原为当前语言的自然短句，避免把原始 trace 键名摆上卡片。 */
-function getStepDisplayTitle(step: TrailStep, tr: i18n.Translate): string {
-  let text = step.title;
-  if (traceText.isTraceText(text) || text === '') {
-    text = traceText.getTraceStepTitle(step.rows, (id, params) => i18n.renderTrace(tr, id, params));
-  }
-  if (text === '') return step.node;
-
-  return text;
 }
 
 
@@ -458,6 +445,54 @@ export function CanvasStage(props: CanvasStageProps): JSX.Element {
   if (trail !== null && trail.state === 'done') mobileStateClass += ' done';
   if (trail !== null && (trail.state === 'failed' || trail.error)) mobileStateClass += ' error';
 
+
+  //==========================================================
+  //M 泳道图、顺序图：桌面、手机原尺寸、手机适应屏宽三处共用一份，只有泳道图的 panZoom 不同
+  //==========================================================
+
+  /**
+   * 画泳道图。
+   * @param panZoom 外面包了平移缩放层（桌面、手机适应屏宽）是 true；手机原尺寸横滑是 false。
+   * @returns 还没拿到画布时是 null。
+   */
+  const renderLane = (panZoom: boolean): JSX.Element | null => {
+    if (canvas === null) return null;
+
+    return (
+      <LaneChart
+        canvas={canvas}
+        picked={props.step}
+        onPick={props.onPick}
+        pluginNames={props.pluginNames}
+        activePlugin={props.activePlugin}
+        matchedSteps={matchedSet}
+        onSelectPlugin={props.onSelectPlugin}
+        panZoom={panZoom}
+      />
+    );
+  };
+
+  /**
+   * 画顺序图。
+   * @returns 还没拿到画布或顺序图布局时是 null。
+   */
+  const renderSeq = (): JSX.Element | null => {
+    if (canvas === null || seqLayout === null) return null;
+
+    return (
+      <SeqChart
+        canvas={canvas}
+        layout={seqLayout}
+        picked={props.step}
+        event={props.highlightEvent}
+        onPick={props.onPick}
+        onPickArrow={props.onPickArrow}
+        pluginNames={props.pluginNames}
+        activePlugin={props.activePlugin}
+        onSelectPlugin={props.onSelectPlugin}
+      />
+    );
+  };
   return (
     <div ref={stageRef} className={stageClass} onPointerDown={onStagePointerDown}>
       {/* 桌面端：右栏之外贴靠在左栏右边的一行摘要 HUD，不吃大片垂直空间。 */}
@@ -620,31 +655,8 @@ export function CanvasStage(props: CanvasStageProps): JSX.Element {
             transformOrigin: '0 0',
           }}
         >
-          {look === 'table' && (
-            <LaneChart
-              canvas={canvas}
-              picked={props.step}
-              onPick={props.onPick}
-              pluginNames={props.pluginNames}
-              activePlugin={props.activePlugin}
-              matchedSteps={matchedSet}
-              onSelectPlugin={props.onSelectPlugin}
-              panZoom
-            />
-          )}
-          {look === 'seq' && seqLayout !== null && (
-            <SeqChart
-              canvas={canvas}
-              layout={seqLayout}
-              picked={props.step}
-              event={props.highlightEvent}
-              onPick={props.onPick}
-              onPickArrow={props.onPickArrow}
-              pluginNames={props.pluginNames}
-              activePlugin={props.activePlugin}
-              onSelectPlugin={props.onSelectPlugin}
-            />
-          )}
+          {look === 'table' && renderLane(true)}
+          {look === 'seq' && renderSeq()}
         </div>
       )}
 
@@ -654,7 +666,7 @@ export function CanvasStage(props: CanvasStageProps): JSX.Element {
           {canvas.trail.steps.map((stepItem) => {
             const picked = props.step === stepItem.no;
             const hit = matchedSet.has(stepItem.no);
-            const stepTitle = getStepDisplayTitle(stepItem, tr);
+            const stepTitle = resolveStepTitle(stepItem, tr);
             const stepEvents = getStepEvents(stepItem);
             const stepFlow = findStepFlow(resolvedDataFlow, stepItem.no);
             const isSkeleton = stepFlow?.layer === 'skeleton';
@@ -753,32 +765,9 @@ export function CanvasStage(props: CanvasStageProps): JSX.Element {
       {/* 手机端切到泳道全景或顺序图时：支持一键适应屏宽或原尺寸横滑。 */}
       {canvas !== null && props.isNarrow && props.narrowMode !== 'steps' && (
         <div className="tu-m-chart-shell">
-          {!mobileFit && props.narrowMode === 'lanes' && (
-            <LaneChart
-              canvas={canvas}
-              picked={props.step}
-              onPick={props.onPick}
-              pluginNames={props.pluginNames}
-              activePlugin={props.activePlugin}
-              matchedSteps={matchedSet}
-              onSelectPlugin={props.onSelectPlugin}
-              panZoom={false}
-            />
-          )}
+          {!mobileFit && props.narrowMode === 'lanes' && renderLane(false)}
           {!mobileFit && props.narrowMode === 'seq' && seqLayout !== null && (
-            <div className="tu-lanes-scroll">
-              <SeqChart
-                canvas={canvas}
-                layout={seqLayout}
-                picked={props.step}
-                event={props.highlightEvent}
-                onPick={props.onPick}
-                onPickArrow={props.onPickArrow}
-                pluginNames={props.pluginNames}
-                activePlugin={props.activePlugin}
-                onSelectPlugin={props.onSelectPlugin}
-              />
-            </div>
+            <div className="tu-lanes-scroll">{renderSeq()}</div>
           )}
           {mobileFit && layout !== null && (() => {
             const fitScale = clamp((narrowWidth - 16) / Math.max(1, layout.width), 0.34, 1);
@@ -792,31 +781,8 @@ export function CanvasStage(props: CanvasStageProps): JSX.Element {
                     transformOrigin: '0 0',
                   }}
                 >
-                  {props.narrowMode === 'lanes' && (
-                    <LaneChart
-                      canvas={canvas}
-                      picked={props.step}
-                      onPick={props.onPick}
-                      pluginNames={props.pluginNames}
-                      activePlugin={props.activePlugin}
-                      matchedSteps={matchedSet}
-                      onSelectPlugin={props.onSelectPlugin}
-                      panZoom
-                    />
-                  )}
-                  {props.narrowMode === 'seq' && seqLayout !== null && (
-                    <SeqChart
-                      canvas={canvas}
-                      layout={seqLayout}
-                      picked={props.step}
-                      event={props.highlightEvent}
-                      onPick={props.onPick}
-                      onPickArrow={props.onPickArrow}
-                      pluginNames={props.pluginNames}
-                      activePlugin={props.activePlugin}
-                      onSelectPlugin={props.onSelectPlugin}
-                    />
-                  )}
+                  {props.narrowMode === 'lanes' && renderLane(true)}
+                  {props.narrowMode === 'seq' && renderSeq()}
                 </div>
               </div>
             );

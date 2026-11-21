@@ -100,9 +100,6 @@ export const SKELETON_SPECS: readonly SkeletonSpec[] = [
 /** 快速查询表：模块名 → 骨架规格。 */
 const SPEC_BY_NAME = new Map<string, SkeletonSpec>(SKELETON_SPECS.map((spec) => [spec.name, spec]));
 
-/** 匹配顶层导出函数或类声明。 */
-const TOP_EXPORT = /^export\s+(?:async\s+)?(function|class)\s*\*?\s*([\w$]+)/u;
-
 /** 匹配非导出的顶层函数声明（如 Main.ts 的 main、loadPlugin）。 */
 const TOP_INTERNAL_FN = /^(?:async\s+)?function\s*\*?\s*([\w$]+)/u;
 
@@ -164,23 +161,6 @@ function escapeCell(text: string): string {
 
 
 /**
- * 截取定义行正上方的 JSDoc 第一句说明；没写注释返回空串。
- * @param lines 源码按行数组。
- * @param index 定义行下标（从 0 起）。
- * @returns 首句简介文本。
- */
-function readSummaryAbove(lines: string[], index: number): string {
-  //M 提取紧贴定义行上方的 JSDoc 注释块。
-  const block = sourceModule.getBlockAbove(lines, index);
-  if (block === undefined) return '';
-
-  //M 拆解 JSDoc 字段并按句号截出第一句短简介。
-  const parsed = sourceModule.splitDoc(block);
-  return sourceModule.getFirstSentence(parsed.summary);
-}
-
-
-/**
  * 从单个源码文件抽出顶层函数/类以及导出类里的公开或私有方法。
  * @param file 相对仓库根目录的源码文件路径。
  * @param lines 文件行数组。
@@ -191,12 +171,12 @@ function extractFileSymbols(file: string, lines: string[], scanClassMethods: boo
   const symbols: ExtractedSymbol[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
-    const exported = TOP_EXPORT.exec(line);
+    const exported = sourceModule.TOP_EXPORT.exec(line);
     if (exported !== null) {
       const kind = exported[1] as 'function' | 'class';
       const symbolName = exported[2] ?? '';
       //M 取顶层导出符号上方注释首句并记录精确位置。
-      const summary = readSummaryAbove(lines, index);
+      const summary = sourceModule.getSummaryAbove(lines, index);
       symbols.push({
         name: symbolName,
         kind,
@@ -215,7 +195,7 @@ function extractFileSymbols(file: string, lines: string[], scanClassMethods: boo
     if (internal !== null) {
       const symbolName = internal[1] ?? '';
       //M 取非导出顶层函数上方注释，归入模块内部函数表。
-      const summary = readSummaryAbove(lines, index);
+      const summary = sourceModule.getSummaryAbove(lines, index);
       symbols.push({
         name: symbolName,
         kind: 'function',
@@ -263,7 +243,7 @@ function extractClassMethods(
     if (methodName === '' || methodName === 'constructor') continue;
 
     //M 抽该方法上方 JSDoc 简介，按 private/protected 判断是否对外。
-    const summary = readSummaryAbove(lines, index);
+    const summary = sourceModule.getSummaryAbove(lines, index);
     const isPrivate = /^\s*(?:private|protected)\b/u.test(line) || modifier === 'private' || modifier === 'protected';
     out.push({
       name: `${className}.${methodName}`,
@@ -340,25 +320,16 @@ export async function getSkeletonFunctions(name: string, source: sourceModule.So
  */
 function extractDeclaredEventDocs(lines: string[]): Map<string, string> {
   const map = new Map<string, string>();
-  let inEvents = false;
-  let braces = 0;
+  //M 找 interface Events { 那一行；没有就是空表。
+  const head = lines.findIndex((line) => /^\s*interface\s+Events\s*\{/u.test(line));
+  if (head < 0) return map;
 
-  for (let index = 0; index < lines.length; index += 1) {
+  //M 接口到哪一行结束，交给认得字符串、注释、正则的 getBlockEnd 找（JSDoc 里写了不成对的 { 也不会截错）。
+  const end = sourceModule.getBlockEnd(lines, head);
+  if (end < 0) return map;
+
+  for (let index = head + 1; index < end; index += 1) {
     const raw = lines[index] ?? '';
-    if (!inEvents && /^\s*interface\s+Events\s*\{/u.test(raw)) {
-      inEvents = true;
-      braces = 1;
-      continue;
-    }
-    if (!inEvents) continue;
-
-    //M 统计花括号深度，离开 interface Events { ... } 后立即结束收集。
-    for (const ch of raw) {
-      if (ch === '{') braces += 1;
-      if (ch === '}') braces -= 1;
-    }
-    if (braces <= 0) break;
-
     const eventMatch = /^\s*['"`]([^'"`]+)['"`]\s*\(/u.exec(raw);
     if (eventMatch === null) continue;
 
@@ -366,7 +337,7 @@ function extractDeclaredEventDocs(lines: string[]): Map<string, string> {
     if (eventName === '') continue;
 
     //M 提取该事件声明上方的 JSDoc 首句说明备用。
-    const summary = readSummaryAbove(lines, index);
+    const summary = sourceModule.getSummaryAbove(lines, index);
     if (summary !== '') {
       map.set(eventName, summary);
     }
@@ -486,41 +457,30 @@ function extractDataSection(file: string, lines: string[]): string {
  */
 function extractConfigFields(file: string, lines: string[]): ConfigFieldInfo[] {
   const fields: ConfigFieldInfo[] = [];
-  let currentConfig = '';
-  let braces = 0;
+  for (let head = 0; head < lines.length; head += 1) {
+    const found = /^export\s+interface\s+(\w*Config)\s*\{/u.exec(lines[head] ?? '');
+    if (found === null) continue;
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index] ?? '';
-    if (currentConfig === '') {
-      const head = /^export\s+interface\s+(\w*Config)\s*\{/u.exec(raw);
-      if (head !== null) {
-        currentConfig = head[1] ?? '';
-        braces = 1;
-      }
-      continue;
+    //M 接口到哪一行结束，交给认得字符串、注释、正则的 getBlockEnd 找（JSDoc 里写了不成对的 { 也不会截错）。
+    const configName = found[1] ?? '';
+    const end = sourceModule.getBlockEnd(lines, head);
+    if (end < 0) continue;
+
+    //M 只认缩进两格的顶层字段，嵌套对象里的不算。
+    for (let index = head + 1; index < end; index += 1) {
+      const prop = /^  ([A-Za-z0-9_]+)\??\s*:/u.exec(lines[index] ?? '');
+      if (prop === null) continue;
+
+      const fieldName = prop[1] ?? '';
+      //M 读取紧贴该配置属性上方的 JSDoc 首句作为配置说明。
+      const summary = sourceModule.getSummaryAbove(lines, index);
+      fields.push({
+        name: `${configName}.${fieldName}`,
+        site: `${file}:${String(index + 1)}`,
+        summary,
+      });
     }
-
-    //M 计算花括号深度，interface 结束时退出当前配置接口扫描。
-    for (const ch of raw) {
-      if (ch === '{') braces += 1;
-      if (ch === '}') braces -= 1;
-    }
-    if (braces <= 0) {
-      currentConfig = '';
-      continue;
-    }
-
-    const prop = /^  ([A-Za-z0-9_]+)\??\s*:/u.exec(raw);
-    if (prop === null) continue;
-
-    const fieldName = prop[1] ?? '';
-    //M 读取紧贴该配置属性上方的 JSDoc 首句作为配置说明。
-    const summary = readSummaryAbove(lines, index);
-    fields.push({
-      name: `${currentConfig}.${fieldName}`,
-      site: `${file}:${String(index + 1)}`,
-      summary,
-    });
+    head = end;
   }
   return fields;
 }

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.91",
+    "date": "2026-11-21",
+    "changes": [
+      "落地云端顾问 31 号报告第 1 条「旁听者不许拦正事」（utils/Trace + journal 1.3.7 + tutorial 1.2.2）：新增统一 onDispatch / onTrace 旁听入口，以 WeakMap 缓存同一次派发的事件行与调用栈（2–4 次重复计算降为 1 次）并用 try/catch 彻底隔离旁听异常，杜绝调试/日志插件出错阻断业务事件链，补齐 3 项隔离单测（Trace.test.ts）",
+      "落地云端顾问 32 号报告第 3、4、5 条：收拢 tutorial/Source、Code、Skeleton 重复函数与正则并将两处裸数花括号替换为 Source.getBlockEnd（防 JSDoc 内 { 截断）；tutorial 配置校验收拢至 Checks.checkNumber/checkFlag；approval 接入 checkModelRef 并拆出 getRuleVerdict 精简审批主函数；删除 bots/index.ts 过期文件头",
+      "竖线全景（SpineCanvas.tsx）全部 72 处源码锚点补齐 mark 防漂移校验并修复 9 处偏移，新增 SpineCanvas.test.ts 与 DevMapData.test.ts 双重守护；CanvasStage.tsx 消重步骤标题与三处重复 LaneChart/SeqChart 渲染"
+    ]
+  },
+  {
     "version": "0.7.90",
     "date": "2026-11-21",
     "changes": [

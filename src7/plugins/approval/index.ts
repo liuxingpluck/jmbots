@@ -589,47 +589,15 @@ export class Approval extends cordis.Service {
 
     const { command, cwd } = input;
 
-    //M 第一档：程序规则。碰了密钥文件直接拒绝；项目自己的检查直接放行。
-    const secret = rules.touchesSecret(command);
-    if (secret !== undefined) {
-      const reason = `不准执行：命令碰了密钥文件 ${secret}。先用现有工具；缺能力时可用 agent_task 的 list 找执行端，再用 send（reply: false）留言`;
-      return this.traced(input, { result: 'reject', by: 'rule', reason });
-    }
-    //G builder 的目录里 package.json 是他自己写的，“项目自己的检查”可能是任意命令，不直接放行。
-    const runtimeRoot = this.ctx.resources.root;
-    if (input.confined === undefined && rules.isProjectCheck(command, cwd, runtimeRoot)) {
-      return this.traced(input, { result: 'pass', by: 'rule', reason: '项目自己的检查，直接执行' });
-    }
-
     //G 命中 mustAsk 时跳过可信目录和决策模型。仍开审核小会话生成卡片内容，其结论不能放行。
     const danger = rules.mustAsk(command, this.ctx.resources.root, cwd);
 
     //M 每一档没放行的原因，照先后记下（用户 11-18 #172）：最后要问用户时，卡片的“为什么问你”就写这些，不写空话。
     const asks: string[] = [];
-    if (danger !== undefined) {
-      asks.push(danger);
-    }
 
-    //M 可信目录（用户 11-18 #169）和授权目录（用户 #301）：执行目录和命令里写的路径都落在这些目录里，
-    //M   程序规则直接放行，不再问模型、不弹卡片；不在的记下是哪个路径。哪些目录算数见 getReviewDirs：
-    //M   本人是配置的 trusted_dirs 加这一轮的授权目录；外人（confined）只认这一轮的授权目录。
-    if (danger === undefined) {
-      const reviewDirs = this.getReviewDirs(input);
-      const untrusted = rules.getUntrusted(command, cwd, reviewDirs);
-      let passReason = '可信目录';
-      if (input.confined !== undefined) {
-        passReason = '授权目录';
-      }
-      if (untrusted === undefined) return this.traced(input, { result: 'pass', by: 'rule', reason: passReason });
-
-      //G 外人这一轮带着授权目录（reviewDirs 不空），命令出了目录：规则直接拒，不问模型、不出卡片（用户 #301：出了这个目录照旧不行）。
-      if (input.confined !== undefined && reviewDirs.length > 0) {
-        const reason = `没放行：${untrusted}。只能在这一轮的工作目录和授权目录里动，别的要用户本人来说。`;
-        return this.traced(input, { result: 'reject', by: 'rule', reason });
-      }
-
-      asks.push(untrusted);
-    }
+    //M 第一档：程序规则和可信目录（getRuleVerdict）。能定就直接交回，定不了的原因已记进 asks。
+    const ruled = this.getRuleVerdict(input, danger, asks);
+    if (ruled !== undefined) return this.traced(input, ruled);
 
     //M 准备给后面几档看的材料：要跑的脚本内容、记在哪个机器人名下、命令现状。
     const script = rules.readScript(command, cwd);
@@ -726,6 +694,56 @@ export class Approval extends cordis.Service {
     }
 
     return this.traced(input, { result: 'asked', id: pending.id, reason: `等用户决定（待确认 #${String(pending.id)}）` });
+  }
+
+  /**
+   * 第一档：程序规则和可信目录。碰了密钥文件拒绝；项目自己的检查放行；
+   * 没命中 mustAsk 时，执行目录和命令里的路径都在可信目录或授权目录里就放行，外人出了授权目录就拒绝。
+   * @param input 审核的输入（命令、目录、confined）。
+   * @param danger rules.mustAsk 的结论；命中时不看可信目录，只记进 asks。
+   * @param asks 每一档没放行的原因；这一档定不了时往里加 mustAsk 的原因或不在可信目录里的路径。
+   * @returns 放行或拒绝；规则定不了是 undefined，往下一档。
+   */
+  private getRuleVerdict(input: ReviewInput, danger: string | undefined, asks: string[]): Verdict | undefined {
+    const { command, cwd } = input;
+
+    //M 碰了密钥文件直接拒绝。
+    const secret = rules.touchesSecret(command);
+    if (secret !== undefined) {
+      const reason = `不准执行：命令碰了密钥文件 ${secret}。先用现有工具；缺能力时可用 agent_task 的 list 找执行端，再用 send（reply: false）留言`;
+      return { result: 'reject', by: 'rule', reason };
+    }
+    //G builder 的目录里 package.json 是他自己写的，“项目自己的检查”可能是任意命令，不直接放行。
+    const runtimeRoot = this.ctx.resources.root;
+    if (input.confined === undefined && rules.isProjectCheck(command, cwd, runtimeRoot)) {
+      return { result: 'pass', by: 'rule', reason: '项目自己的检查，直接执行' };
+    }
+
+    //G 命中 mustAsk：不看可信目录，记下原因往下一档。
+    if (danger !== undefined) {
+      asks.push(danger);
+      return undefined;
+    }
+
+    //M 可信目录（用户 11-18 #169）和授权目录（用户 #301）：执行目录和命令里写的路径都落在这些目录里，
+    //M   程序规则直接放行，不再问模型、不弹卡片；不在的记下是哪个路径。哪些目录算数见 getReviewDirs：
+    //M   本人是配置的 trusted_dirs 加这一轮的授权目录；外人（confined）只认这一轮的授权目录。
+    const reviewDirs = this.getReviewDirs(input);
+    const untrusted = rules.getUntrusted(command, cwd, reviewDirs);
+    let passReason = '可信目录';
+    if (input.confined !== undefined) {
+      passReason = '授权目录';
+    }
+    if (untrusted === undefined) return { result: 'pass', by: 'rule', reason: passReason };
+
+    //G 外人这一轮带着授权目录（reviewDirs 不空），命令出了目录：规则直接拒，不问模型、不出卡片（用户 #301：出了这个目录照旧不行）。
+    if (input.confined !== undefined && reviewDirs.length > 0) {
+      const reason = `没放行：${untrusted}。只能在这一轮的工作目录和授权目录里动，别的要用户本人来说。`;
+      return { result: 'reject', by: 'rule', reason };
+    }
+
+    asks.push(untrusted);
+    return undefined;
   }
 
   /**
@@ -1512,14 +1530,10 @@ function routes(
 export function apply(ctx: cordis.Context, config: unknown): void {
   //G 配置在这里校验一次：模型要写成“供应商名/模型 ID”，思考档、放行门槛也在下面查。
   const raw = (config ?? {}) as Record<string, unknown>;
-  const model = raw['model'];
-  if (model !== undefined && (typeof model !== 'string' || !model.includes('/'))) {
-    throw new Error('approval.model 要写成“供应商名/模型 ID”');
-  }
-
-  //G 模型的供应商要在 providers 里。
-  if (typeof model === 'string' && ctx.resources.config.providers[model.slice(0, model.indexOf('/'))] === undefined) {
-    throw new Error(`approval.model 的供应商不在 providers 里：${model}`);
+  //G 写了模型就交给 checkModelRef：要写成“供应商名/模型 ID”，供应商要在 providers 里。
+  let model: string | undefined;
+  if (raw['model'] !== undefined) {
+    model = checksModule.checkModelRef(raw['model'], 'approval.model', ctx.resources.config.providers);
   }
   const thinking = raw['thinking'] ?? 'low';
   if (typeof thinking !== 'string') throw new Error('approval.thinking 要是思考档（off、low、medium、high……）');
@@ -1534,7 +1548,7 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   const trustedDirs = checksModule.checkDirs(raw['trusted_dirs'], 'approval.trusted_dirs');
 
   const approvalConfig: ApprovalConfig = {
-    model: model as string | undefined,
+    model,
     thinking: thinking as Thinking,
     decisionPass: pass,
     trustedDirs,

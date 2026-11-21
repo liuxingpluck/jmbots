@@ -43,7 +43,7 @@ export const name = 'journal';
 //M 1.3.4：journal_lines 建表与 source_id 补列交 db 插件迁移账本管理（adoptColumn 接管已有列），删手写查表与 ALTER。
 //M 1.3.5：FilesMirror 的 written 最多记 2000 场（挤掉最早的，下次照库重写）；trail 请求只 pick 一遍（Trail.getPickedTrail）。
 //M 1.3.6：Trail.ts 放宽 FACT_KEYS 暴露飞书入口、说话人、上下文裁剪、审批结论与记忆召回关键数值，People.resolve 的 role 映射为 speakerRole。
-export const version = '1.3.6';
+export const version = '1.3.7';
 
 /** 用到的服务：resources 拿数据库、运行时目录，db 按版本迁移流水表。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources', 'db'];
@@ -187,9 +187,6 @@ const TEXT_MAX_CHARS = 2000;
 /** 整条变量 JSON 最多多少字。 */
 const DATA_MAX_CHARS = 16000;
 
-/** 事件行里一个值最多几个字（和 trace 默认一样）。 */
-const VAR_MAX = 200;
-
 /** 一天多少毫秒：一天删一次过期的。 */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -226,10 +223,11 @@ class Journal {
 
   /**
    * 挂监听：跟踪点 trace、Cordis 的 internal/dispatch。ctx.on 登记的监听在插件被拔掉时 Cordis 自己撤掉。
+   * 后两个经 utils/Trace.ts 的 onTrace、onDispatch 挂：写库出错只打一行日志，不拦业务事件。
    */
   private listen(): void {
     const ctx = this.ctx;
-    ctx.on('trace', (where, text, code, vars) => {
+    traceUtils.onTrace(ctx, 'journal', (where, text, code, vars) => {
       const session = vars['session'] ?? vars['会话'];
       const bot = vars['bot'] ?? vars['机器人'];
       let botValue: string | null = null;
@@ -259,19 +257,25 @@ class Journal {
       });
     });
 
-    //M Cordis 每发一个事件，都会先发一个 internal/dispatch：发法、事件名、带的参数。和 trace 插件拼法一样（utils/Trace.ts）。
-    ctx.on('internal/dispatch', (mode, event, args) => {
-      if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/')) return;
-
+    //M Cordis 每发一个事件，都会先发一个 internal/dispatch：发法、事件名、带的参数。
+    //M   事件行和 tutorial 共用一份（utils/Trace.ts 的 onDispatch），跟踪点、Cordis 内部的事件那里已滤掉。
+    traceUtils.onDispatch(ctx, 'journal', (line) => {
       //G 查询流水或用量时不写流水，重复查看不会把查询本身记成运行步骤。
-      if (READ_EVENT_NAMES.has(event)) return;
+      if (READ_EVENT_NAMES.has(line.name)) return;
 
-      const line = traceUtils.buildDispatchLine(ctx, mode, event, args, VAR_MAX);
       this.record({
-        kind: '事件', name: line.name, mode: line.mode, listeners: line.listeners, text: '', code: '',
-        site: traceUtils.getCallSite(['plugins/journal/']),
-        bot: line.bot ?? null, sessionId: line.session ?? null, messageId: line.messageId ?? null,
-        sourceId: line.sourceId ?? null, vars: line.vars,
+        kind: '事件',
+        name: line.name,
+        mode: line.mode,
+        listeners: line.listeners,
+        text: '',
+        code: '',
+        site: line.site,
+        bot: line.bot ?? null,
+        sessionId: line.session ?? null,
+        messageId: line.messageId ?? null,
+        sourceId: line.sourceId ?? null,
+        vars: line.vars,
       });
     });
 

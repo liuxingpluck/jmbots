@@ -59,6 +59,7 @@ import * as skeletonModule from './Skeleton.ts';
 import * as sourceModule from './Source.ts';
 import * as stateModule from './State.ts';
 import type * as trailModule from '../../utils/Trail.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 declare module 'cordis' {
@@ -136,7 +137,13 @@ export const name = 'tutorial';
 //M 1.2.0：新增真实事件参数载荷捕获（Payload.ts）与 GET /api/tutorial/payload，零改骨架记录前后拷贝与逐路径 diff。
 //M 1.2.1：新增插件 X 光图谱 GET /api/tutorial/plugin-map（PluginMap.ts）：版本、依赖、听的事件、源码与说明、事件倒排、工具名；
 //M   老的 /api/tutorial/plugins（左栏列表）原样保留，网页三处在用。
-export const version = '1.2.1';
+//M 1.2.2：旁听迁入 utils/Trace onDispatch/onTrace（出错隔离+单次调用栈缓存）、Source/Code/Skeleton 去重与 getBlockEnd 替换、配置校验收拢 Checks。
+export const version = '1.2.2';
+
+/** 配置里“正数”的规则：比 0 大，可以带小数（MB、KB 这类）。 */
+const POSITIVE: checksModule.NumberRule = { above: 0 };
+/** 配置里“正整数”的规则（条数、字数这类），同 utils/Checks.ts 的 POSITIVE_INT。 */
+const POSITIVE_INT = checksModule.POSITIVE_INT;
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -1094,20 +1101,14 @@ function parsePayloadSettings(config: TutorialConfig, keyword: string): payloadM
     throw new Error('tutorial 的 payload_record 要是 all 或 keyword');
   }
 
-  const itemKb = config.payload_item_kb ?? DEFAULT_PAYLOAD_ITEM_KB;
-  if (typeof itemKb !== 'number' || !Number.isFinite(itemKb) || itemKb <= 0) {
-    throw new Error('tutorial 的 payload_item_kb 要是正数');
-  }
+  const itemKbRaw = config.payload_item_kb ?? DEFAULT_PAYLOAD_ITEM_KB;
+  const itemKb = checksModule.checkNumber(itemKbRaw, 'tutorial 的 payload_item_kb', POSITIVE);
 
-  const messageMb = config.payload_message_mb ?? DEFAULT_PAYLOAD_MESSAGE_MB;
-  if (typeof messageMb !== 'number' || !Number.isFinite(messageMb) || messageMb <= 0) {
-    throw new Error('tutorial 的 payload_message_mb 要是正数');
-  }
+  const messageMbRaw = config.payload_message_mb ?? DEFAULT_PAYLOAD_MESSAGE_MB;
+  const messageMb = checksModule.checkNumber(messageMbRaw, 'tutorial 的 payload_message_mb', POSITIVE);
 
-  const maxMessages = config.payload_messages ?? DEFAULT_PAYLOAD_MESSAGES;
-  if (typeof maxMessages !== 'number' || !Number.isSafeInteger(maxMessages) || maxMessages <= 0) {
-    throw new Error('tutorial 的 payload_messages 要是正整数');
-  }
+  const maxMessagesRaw = config.payload_messages ?? DEFAULT_PAYLOAD_MESSAGES;
+  const maxMessages = checksModule.checkNumber(maxMessagesRaw, 'tutorial 的 payload_messages', POSITIVE_INT);
 
   const rawEvents = config.payload_events ?? [];
   if (!Array.isArray(rawEvents)) {
@@ -1146,38 +1147,30 @@ export function apply(ctx: cordis.Context, config: TutorialConfig = {}): void {
   if (typeof keyword !== 'string' || keyword.trim() === '') throw new Error('tutorial 的 snapshot_keyword 要是非空字符串');
 
   //M 快照上限：正数，MB。
-  const maxMb = config.snapshot_max_mb ?? DEFAULT_MAX_MB;
-  if (typeof maxMb !== 'number' || !Number.isFinite(maxMb) || maxMb <= 0) {
-    throw new Error('tutorial 的 snapshot_max_mb 要是正数');
-  }
+  const maxMbRaw = config.snapshot_max_mb ?? DEFAULT_MAX_MB;
+  const maxMb = checksModule.checkNumber(maxMbRaw, 'tutorial 的 snapshot_max_mb', POSITIVE);
 
   //M 留几个消息文件：正整数。
-  const keep = config.snapshot_files ?? DEFAULT_FILES;
-  if (typeof keep !== 'number' || !Number.isSafeInteger(keep) || keep <= 0) {
-    throw new Error('tutorial 的 snapshot_files 要是正整数');
-  }
+  const keepRaw = config.snapshot_files ?? DEFAULT_FILES;
+  const keep = checksModule.checkNumber(keepRaw, 'tutorial 的 snapshot_files', POSITIVE_INT);
 
   //M 「会话」画布最近列几条消息：正整数。
-  const recentMessages = config.recent_messages ?? DEFAULT_RECENT_MESSAGES;
-  if (typeof recentMessages !== 'number' || !Number.isSafeInteger(recentMessages) || recentMessages <= 0) {
-    throw new Error('tutorial 的 recent_messages 要是正整数');
-  }
+  const recentMessagesRaw = config.recent_messages ?? DEFAULT_RECENT_MESSAGES;
+  const recentMessages = checksModule.checkNumber(recentMessagesRaw, 'tutorial 的 recent_messages', POSITIVE_INT);
 
   //M 源码根目录：字符串。
   const workspace = config.workspace ?? '';
   if (typeof workspace !== 'string') throw new Error('tutorial 的 workspace 要是字符串');
 
   //M 打印：两个开关是真假，字数是正整数。
-  const traceConsole = config.trace_console ?? false;
-  if (typeof traceConsole !== 'boolean') throw new Error('tutorial 的 trace_console 要是 true 或 false');
+  const traceConsoleRaw = config.trace_console ?? false;
+  const traceConsole = checksModule.checkFlag(traceConsoleRaw, 'tutorial 的 trace_console');
 
-  const traceFile = config.trace_file ?? false;
-  if (typeof traceFile !== 'boolean') throw new Error('tutorial 的 trace_file 要是 true 或 false');
+  const traceFileRaw = config.trace_file ?? false;
+  const traceFile = checksModule.checkFlag(traceFileRaw, 'tutorial 的 trace_file');
 
-  const varLimit = config.trace_var_limit ?? DEFAULT_VAR_LIMIT;
-  if (typeof varLimit !== 'number' || !Number.isSafeInteger(varLimit) || varLimit <= 0) {
-    throw new Error('tutorial 的 trace_var_limit 要是正整数');
-  }
+  const varLimitRaw = config.trace_var_limit ?? DEFAULT_VAR_LIMIT;
+  const varLimit = checksModule.checkNumber(varLimitRaw, 'tutorial 的 trace_var_limit', POSITIVE_INT);
 
   const payload = parsePayloadSettings(config, keyword);
   const settings: Settings = {

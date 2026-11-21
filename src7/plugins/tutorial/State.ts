@@ -9,7 +9,7 @@
  *   web-api 接着已有会话发（走 Bot.hand，不发 bot/receive）→ web-api 调 ctx.flow.mark：去掉关键词、直接记下那场会话。
  *   三处认关键词共用 strip。留最近 SHOTS_MAX 份，加起来不超过 snapshot_max_mb。
  * 停拍：web-api 收下的那条回话写回了、而且没有别的要拍了（isIdle），交给 Files.ts 写成 data/flow/<消息号>.json。
- * 没有要拍的消息时，两个监听第一步就回，不拼行、不遍历。
+ * 没有要拍的消息时，两个监听第一步就回，不遍历。事件行是和 journal、Print 共用的那一份（utils/Trace.ts 的 onDispatch），这里不另拼。
  * 拍在 internal/dispatch 那一刻：Cordis 先发它、再挨个调听的人，所以一份快照是“这个事件发出时”的样子。
  */
 import type * as cordis from 'cordis';
@@ -99,7 +99,8 @@ export class Shots {
       this.pending.push({ event, at: Date.now() });
     }, true);
 
-    this.ctx.on('trace', (where, _text, _code, vars) => {
+    //M 跟踪点、事件都经 utils/Trace.ts 挂：拍快照出错只记日志，不拦业务代码。
+    traceUtils.onTrace(this.ctx, 'tutorial.state', (where, _text, _code, vars) => {
       //G 没有要拍的消息：第一步就回。
       if (this.isIdle()) return;
 
@@ -124,16 +125,16 @@ export class Shots {
       this.consider(shotArgs);
     });
 
-    this.ctx.on('internal/dispatch', (mode, event, args) => {
+    //M 跟踪点自己、Cordis 内部的事件 onDispatch 已滤掉；line 是共用的事件行，会话号、消息号照跟踪日志同款规则认出。
+    traceUtils.onDispatch(this.ctx, 'tutorial.state', (line, args) => {
+      const event = line.name;
       //M 收到入口消息事件时立即检查关键词，避免后续异步调度时遗漏登记。
       if (event === 'web-api/received') this.onReceived(args[0]);
-      //G 没有要拍的消息：第一步就回，不拼行、不遍历。
+      //G 没有要拍的消息：第一步就回，不遍历。
       if (this.isIdle()) return;
-      //G 和 journal 一样不记跟踪点自己、Cordis 内部的；轨迹里不要的杂事件（NOISE）也不拍。
-      if (typeof event !== 'string' || event === 'trace' || event.startsWith('internal/') || NOISE.has(event)) return;
+      //G 轨迹里不要的杂事件（NOISE）不拍。
+      if (NOISE.has(event)) return;
 
-      //M 按跟踪日志同款规则提取事件里的会话号与消息号，供后续命中判断。
-      const line = traceUtils.buildDispatchLine(this.ctx, mode, event, args, 1);
       let rawState: unknown;
       if (event === 'session/change') {
         rawState = line.vars['state'];

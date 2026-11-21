@@ -1,9 +1,10 @@
 /**
  * 跟踪点：骨架和插件走到关键的地方各发一个，说清“现在走到哪个模块的哪个函数、在干什么”。
  * 骨架只管发，不管打印；打印是 plugins/tutorial（Print.ts，配置 trace_console）的事。没挂它时没人听，发了等于没发。
- * 写法（一个跟踪点两行，//T 开头的注释标出来）：
+ * 写法（变量、代码先放进有名字的局部变量，//T 开头的注释标出来）：
  *   const vars = { session: session.id, channel: message.channel };
- *   this.ctx.emit('trace', 'Bot.receive', 'trace.bots.receiveIntoSession', 'session.queueUserMessage(); session.run()', vars);
+ *   const code = 'session.queueUserMessage(); session.run()';
+ *   this.ctx.emit('trace', 'Bot.receive', 'trace.bots.receiveIntoSession', code, vars);
  * 会话发的三个事件（session/before-model、session/new-message、session/change）不用另发跟踪点：
  * Cordis 每发一个事件都会自己报一声，打印插件顺带打出来。
  *
@@ -15,6 +16,7 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
+import * as textModule from './Text.ts';
 
 declare module 'cordis' {
   interface Events {
@@ -108,6 +110,91 @@ export interface DispatchLine {
 }
 
 
+/** 旁听者拿到的事件行：事件行本身，加上是哪一行代码发的这个事件。 */
+export type SharedLine = DispatchLine & {
+  /** 发这个事件的那一行代码，“文件:行号”（getCallSite 取的）。 */
+  site: string;
+};
+
+
+/**
+ * 共用事件行里一个值最多几个字：journal 的 VAR_MAX、tutorial 默认的 trace_var_limit 都是 200。
+ * State、Payload 不看正文，多截少截不影响；trace_var_limit 配得比 200 大时，Print 的事件行最多也只到 200 字。
+ */
+const SHARED_VAR_MAX = 200;
+
+/** 旁听者自己的文件夹：取调用栈时跳过，取到的就是业务代码发事件的那一行。 */
+const OBSERVER_DIRS = ['plugins/journal/', 'plugins/tutorial/'];
+
+/** 一次派发只拼一次事件行。键是 Cordis 交给每个 internal/dispatch 监听的同一个 args 数组，派发完自然释放。 */
+const sharedLines = new WeakMap<unknown[], SharedLine>();
+
+
+/**
+ * 旁听 Cordis 的每次派发：journal 记库、tutorial 打印、拍快照、录载荷都从这里挂。
+ * 跟踪点自己（trace）、Cordis 内部的事件（internal/ 开头）不交过来。
+ * 同一次派发，第一个旁听者拼事件行、取调用栈，后面的旁听者拿同一份（同一个引用）。
+ * 旁听者跑在发事件的那一行里，Cordis 的 emit 不接异常：这里出错只打一行日志、不往外抛，业务监听照常收到事件。
+ * @param ctx 旁听插件的 ctx（用来查这个事件登记着哪些监听）。
+ * @param who 旁听者的名字，写进出错日志。
+ * @param handler 拿到共用的事件行和原始参数。
+ * 副作用：在 ctx 上登记一个 internal/dispatch 监听，插件拔掉时 Cordis 自己撤掉。
+ */
+export function onDispatch(
+  ctx: cordis.Context,
+  who: string,
+  handler: (line: SharedLine, args: unknown[]) => void,
+): void {
+  ctx.on('internal/dispatch', (mode, event, args: unknown[]) => {
+    //G 跟踪点自己、Cordis 内部的事件不算。
+    if (typeof event !== 'string') return;
+    if (event === 'trace') return;
+    if (event.startsWith('internal/')) return;
+
+    //M 旁听者出错只记一行：调试插件坏了，不能把这条消息一起拦下。
+    try {
+      //M 同一次派发，第一个旁听者拼事件行、取调用栈，后面的直接拿。
+      let line = sharedLines.get(args);
+      if (line === undefined) {
+        const built = buildDispatchLine(ctx, mode, event, args, SHARED_VAR_MAX);
+        const site = getCallSite(OBSERVER_DIRS);
+        line = { ...built, site };
+        sharedLines.set(args, line);
+      }
+
+      handler(line, args);
+    } catch (error) {
+      const reason = textModule.getErrorMessage(error);
+      console.error(`[旁听异常:${who}] 事件 ${event} 出错，已跳过：${reason}`);
+    }
+  });
+}
+
+
+/**
+ * 旁听跟踪点：和 onDispatch 一样，旁听者出错只打一行日志，不冒到发跟踪点的业务代码里。
+ * @param ctx 旁听插件的 ctx。
+ * @param who 旁听者的名字，写进出错日志。
+ * @param handler 拿到跟踪点的四个参数（见上面 Events 里 trace 的说明）。
+ * 副作用：在 ctx 上登记一个 trace 监听，插件拔掉时 Cordis 自己撤掉。
+ */
+export function onTrace(
+  ctx: cordis.Context,
+  who: string,
+  handler: (where: string, text: string, code: string, vars: Record<string, unknown>) => void,
+): void {
+  ctx.on('trace', (where, text, code, vars) => {
+    //M 旁听者出错只记一行：跟踪点只是通知，不能拦住发它的业务代码。
+    try {
+      handler(where, text, code, vars);
+    } catch (error) {
+      const reason = textModule.getErrorMessage(error);
+      console.error(`[旁听异常:${who}] 跟踪点 ${where} 出错，已跳过：${reason}`);
+    }
+  });
+}
+
+
 /**
  * 一句话截短、压成一行。
  * @param value 值。
@@ -174,7 +261,13 @@ export function getSourceId(value: unknown): string | undefined {
  * @param args 事件带的参数。
  * @param max 一个值最多几个字。
  */
-export function buildDispatchLine(ctx: cordis.Context, mode: string, event: string, args: unknown[], max: number): DispatchLine {
+export function buildDispatchLine(
+  ctx: cordis.Context,
+  mode: string,
+  event: string,
+  args: unknown[],
+  max: number,
+): DispatchLine {
   //M 听的人：这个事件现在登记着的监听，各取登记它的那个插件的名字。
   const hooks = ctx.events._hooks[event] ?? [];
   const pluginNames = hooks.map((hook) => hook.ctx.fiber.name);

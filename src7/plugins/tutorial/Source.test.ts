@@ -81,3 +81,52 @@ describe('SourceDocs.getSource / getCallers 调用链精准匹配', () => {
     expect(sites.some((site) => site.startsWith('src7/plugins/voice/'))).toBe(true);
   });
 });
+
+
+describe('接口块的范围与 JSDoc 首句（云端 32 第 3 条：Skeleton 不再裸数花括号）', () => {
+  test('JSDoc、字符串、行注释里有不成对的 { } 时，getBlockEnd 仍配到接口真正的结尾', () => {
+    const lines = [
+      'export interface DemoConfig {',
+      '  /** 写法像 { a: 1 这样，少了一个右括号。 */',
+      '  first: string;',
+      "  /** 默认 '}' 这种字符串也不算。 */",
+      '  second?: number; // 行尾注释里 { 也不算',
+      '  nested: {',
+      '    inner: boolean;',
+      '  };',
+      "  third: '{';",
+      '}',
+      '',
+      'export interface OtherConfig {',
+      '  last: string;',
+      '}',
+    ];
+    expect(sourceModule.getBlockEnd(lines, 0)).toBe(9);
+    expect(sourceModule.getBlockEnd(lines, 11)).toBe(13);
+  });
+
+  test('declare module 里缩进的 interface Events 也能配上，事件 JSDoc 里的 { 不截断', () => {
+    const lines = [
+      "declare module 'cordis' {",
+      '  interface Events {',
+      '    /** 收到消息（payload 形如 { text 时）。 */',
+      "    'demo/a'(payload: { text: string }): void;",
+      '    /** 第二个事件。 */',
+      "    'demo/b'(): void;",
+      '  }',
+      '}',
+    ];
+    expect(sourceModule.getBlockEnd(lines, 1)).toBe(6);
+    expect(sourceModule.getSummaryAbove(lines, 3)).toBe('收到消息（payload 形如 { text 时）');
+    expect(sourceModule.getSummaryAbove(lines, 5)).toBe('第二个事件');
+  });
+
+  test('TOP_EXPORT 认顶层 export function / class，不认缩进的和 export const', () => {
+    expect(sourceModule.TOP_EXPORT.exec('export async function getPlan(a) {')?.slice(1)).toEqual(['function', 'getPlan']);
+    expect(sourceModule.TOP_EXPORT.exec('export class Store {')?.slice(1)).toEqual(['class', 'Store']);
+    expect(sourceModule.TOP_EXPORT.exec('  export function inner() {')).toBeNull();
+    expect(sourceModule.TOP_EXPORT.exec('export const value = 1;')).toBeNull();
+    expect(sourceModule.getSummaryAbove(['', 'export function none() {}'], 1)).toBe('');
+  });
+});
+

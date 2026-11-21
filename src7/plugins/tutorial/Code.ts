@@ -85,9 +85,6 @@ interface ToolSpecLike {
   sessionKinds: string[];
 }
 
-/** 顶层 export function / export class。 */
-const EXPORTED = /^export\s+(?:async\s+)?(function|class)\s*\*?\s*([\w$]+)/u;
-
 
 /** 取一个插件的代码信息。 */
 export class PluginCode {
@@ -143,32 +140,16 @@ export class PluginCode {
 
       //M 扫描顶层 export function / export class，提取上方一行摘要与定义位置。
       for (let index = 0; index < lines.length; index++) {
-        const found = EXPORTED.exec(lines[index] ?? '');
+        const found = sourceModule.TOP_EXPORT.exec(lines[index] ?? '');
         if (found === null) continue;
 
         //M 截取定义正上方 JSDoc 首句作为该导出符号的一句话说明。
-        const summary = this.getSummary(lines, index);
+        const summary = sourceModule.getSummaryAbove(lines, index);
         const site = `${file}:${String(index + 1)}`;
         items.push({ name: found[2] ?? '', kind: found[1] ?? '', site, summary });
       }
     }
     return items;
-  }
-
-  /**
-   * 定义那一行上方注释的第一句。
-   * @param lines 整个文件。
-   * @param index 定义那一行的下标。
-   * @returns 没写注释是空串。
-   */
-  private getSummary(lines: string[], index: number): string {
-    //M 取出贴在定义行上方的 JSDoc 块并摘出首句作为教程卡片简介。
-    const block = sourceModule.getBlockAbove(lines, index);
-    if (block === undefined) return '';
-
-    //M 拆解 JSDoc 区块并截取 summary 第一句供代码条目副标题显示。
-    const parsed = sourceModule.splitDoc(block);
-    return sourceModule.getFirstSentence(parsed.summary);
   }
 
   /**

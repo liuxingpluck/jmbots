@@ -81,6 +81,9 @@ export interface Caller {
 /** 找不到函数结尾时最多给几行。 */
 export const SOURCE_MAX_LINES = 80;
 
+/** 顶层 export function / export class（Code.ts 列对外函数、Skeleton.ts 列骨架导出共用）：第 1 组是种类，第 2 组是名字。 */
+export const TOP_EXPORT = /^export\s+(?:async\s+)?(function|class)\s*\*?\s*([\w$]+)/u;
+
 /** 像函数定义开头的一行：function、const x = () =>、类方法、对象里的 x: () =>。真不真还要 getBlockEnd 配得上括号。 */
 const DEFINITION = [
   /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b/u,
@@ -437,6 +440,24 @@ export function getFirstSentence(summary: string): string {
   if (sentence.length > 50) return `${sentence.slice(0, 50)}…`;
 
   return sentence;
+}
+
+
+/**
+ * 定义行正上方 JSDoc 的第一句；没写注释是空串。教程卡片的副标题、事件说明、配置说明都用它
+ * （Code.ts 的对外函数、Skeleton.ts 的事件和配置字段共用这一份）。
+ * @param lines 整个文件，一行一项。
+ * @param index 定义那一行的下标（从 0 起）。
+ * @returns 第一句。
+ */
+export function getSummaryAbove(lines: string[], index: number): string {
+  //M 取出贴在定义行上方的 JSDoc 块；没有就是空串。
+  const block = getBlockAbove(lines, index);
+  if (block === undefined) return '';
+
+  //M 拆开 JSDoc，取说明部分的第一句。
+  const parsed = splitDoc(block);
+  return getFirstSentence(parsed.summary);
 }
 
 
