@@ -105,4 +105,46 @@ describe('Trail', () => {
     expect(rows.map((row) => row.text)).toContain('收件表记下这条消息');
     expect(JSON.stringify(trail.steps)).not.toContain('只给流水');
   });
+
+  test('FACT_KEYS 放宽飞书、说话人、裁剪、审批与记忆数值，People.resolve 的 role 映射为 speakerRole 且不收 args', () => {
+    const base = LINES[0]!;
+    const sample: TrailLine[] = [
+      { ...base, id: 1, at: 10, kind: '事件', name: 'web-api/received', messageId: 12, vars: {} },
+      {
+        ...base, id: 2, at: 12, kind: '函数', name: 'Feishu.onMessage',
+        site: 'src7/plugins/feishu/Inbound.ts:233', messageId: 12,
+        vars: { type: 'text', chat: 'group', called: true },
+      },
+      {
+        ...base, id: 3, at: 14, kind: '函数', name: 'People.resolve',
+        site: 'src7/plugins/people/index.ts:213', sessionId: 's12', messageId: 12,
+        vars: { personName: '张三', role: 'owner', channel: 'feishu' },
+      },
+      {
+        ...base, id: 4, at: 16, kind: '函数', name: 'ContextFit.fit',
+        site: 'src7/plugins/context-fit/index.ts:349', sessionId: 's12',
+        vars: { tokensBefore: 9000, tokensAfter: 4200, trimmedCount: 3, droppedCount: 2 },
+      },
+      {
+        ...base, id: 5, at: 18, kind: '函数', name: 'Approval.review',
+        site: 'src7/plugins/approval/index.ts:836', sessionId: 's12',
+        vars: { verdict: 'allow', decidedBy: 'rule', args: '{"cmd":"ls"}' },
+      },
+      {
+        ...base, id: 6, at: 20, kind: '函数', name: 'Memory.recall',
+        site: 'src7/plugins/memory/index.ts:262', sessionId: 's12',
+        vars: { skillCount: 2, citationCount: 5 },
+      },
+    ];
+    const trail = getTrail(12, sample);
+    const byName = new Map(trail.steps.flatMap((step) => step.rows.map((row) => [row.name, row.facts])));
+    expect(byName.get('Feishu.onMessage')).toEqual({ type: 'text', chat: 'group', called: true });
+    expect(byName.get('People.resolve')).toEqual({ channel: 'feishu', personName: '张三', speakerRole: 'owner' });
+    expect(byName.get('ContextFit.fit')).toEqual({
+      tokensBefore: 9000, tokensAfter: 4200, trimmedCount: 3, droppedCount: 2,
+    });
+    expect(byName.get('Approval.review')).toEqual({ verdict: 'allow', decidedBy: 'rule' });
+    expect(byName.get('Memory.recall')).toEqual({ skillCount: 2, citationCount: 5 });
+    expect(trail.notes['speakerRole']).toBe('说话人身份');
+  });
 });

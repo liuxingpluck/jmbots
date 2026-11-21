@@ -1,0 +1,461 @@
+/* 单步真实事件载荷 Diff 卡、接力播放控制与总表导出样式（全取 --jm-* 主题变量，默认深色）。 */
+
+.tu-pd-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.tu-pd-empty-note {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--jm-muted);
+  background: var(--jm-bg);
+  border: 1px dashed var(--jm-border);
+  border-radius: 6px;
+}
+
+.tu-pd-card {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--jm-bg);
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+}
+
+.tu-pd-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.tu-pd-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.tu-pd-seq-pill {
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+  border-radius: 999px;
+}
+
+.tu-pd-event {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--jm-text);
+}
+
+.tu-pd-obj {
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-muted);
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  border-radius: 4px;
+}
+
+.tu-pd-trunc-badge {
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--jm-warning);
+  background: var(--jm-warning-soft);
+  border-radius: 4px;
+}
+
+.tu-pd-listeners {
+  font-size: 11px;
+  color: var(--jm-muted);
+}
+
+.tu-pd-head-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tu-pd-seg {
+  display: inline-flex;
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tu-pd-seg-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--jm-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tu-pd-seg-btn[aria-pressed='true'] {
+  color: var(--jm-text);
+  font-weight: 600;
+  background: var(--jm-accent-soft);
+}
+
+.tu-pd-act-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--jm-muted);
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tu-pd-act-btn:hover:not(:disabled) {
+  color: var(--jm-text);
+  border-color: var(--jm-accent);
+}
+
+.tu-pd-act-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 三栏对比与窄容器 / 手机竖屏自动上下堆叠 */
+.tu-pd-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tu-pd-col-diff {
+  order: 1;
+}
+
+.tu-pd-col-before {
+  order: 2;
+}
+
+.tu-pd-col-after {
+  order: 3;
+}
+
+@container (min-width: 760px) {
+  .tu-pd-grid.full-mode {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+  }
+
+  .tu-pd-col-before {
+    order: 1;
+  }
+
+  .tu-pd-col-diff {
+    order: 2;
+  }
+
+  .tu-pd-col-after {
+    order: 3;
+  }
+}
+
+.tu-pd-box {
+  min-width: 0;
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tu-pd-box > summary,
+.tu-pd-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--jm-text);
+  background: var(--jm-surface);
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.tu-pd-box > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.tu-pd-box > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tu-pd-box:not([open]) > summary {
+  border-bottom: none;
+}
+
+.tu-pd-box-body {
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* 改动列表：绿增、黄改、红删、灰透传 */
+.tu-pd-diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tu-pd-diff-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--jm-text);
+  background: var(--jm-bg);
+  border: 1px solid transparent;
+  border-left: 3px solid var(--jm-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tu-pd-diff-row:hover {
+  background: var(--jm-hover);
+}
+
+.tu-pd-diff-row.focused {
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
+.tu-pd-diff-row.kind-add {
+  border-left-color: var(--jm-success);
+  background: color-mix(in srgb, var(--jm-success) 10%, var(--jm-bg));
+}
+
+.tu-pd-diff-row.kind-change {
+  border-left-color: var(--jm-warning);
+  background: color-mix(in srgb, var(--jm-warning) 10%, var(--jm-bg));
+}
+
+.tu-pd-diff-row.kind-remove {
+  border-left-color: var(--jm-danger);
+  background: color-mix(in srgb, var(--jm-danger) 10%, var(--jm-bg));
+}
+
+.tu-pd-diff-row.kind-same {
+  border-left-color: var(--jm-border);
+  color: var(--jm-muted);
+  cursor: default;
+}
+
+.tu-pd-op {
+  flex: none;
+  font-weight: 700;
+}
+
+.tu-pd-op.add {
+  color: var(--jm-success);
+}
+
+.tu-pd-op.change {
+  color: var(--jm-warning);
+}
+
+.tu-pd-op.remove {
+  color: var(--jm-danger);
+}
+
+.tu-pd-op.same {
+  color: var(--jm-muted);
+}
+
+.tu-pd-path {
+  font-weight: 600;
+  color: var(--jm-text);
+  word-break: break-all;
+}
+
+.tu-pd-preview {
+  min-width: 0;
+  color: var(--jm-muted);
+  word-break: break-word;
+}
+
+.tu-pd-preview .before {
+  color: var(--jm-danger);
+}
+
+.tu-pd-preview .after {
+  color: var(--jm-success);
+}
+
+.tu-pd-same-bar {
+  margin-top: 2px;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--jm-muted);
+  background: var(--jm-bg);
+  border-radius: 4px;
+}
+
+/* 可折叠且支持按路径自动展开高亮的对象树 */
+.tu-pd-tree {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--jm-text);
+}
+
+.tu-pd-tree-node {
+  padding-left: 12px;
+  border-left: 1px solid var(--jm-border);
+}
+
+.tu-pd-tree-root > .tu-pd-tree-node {
+  padding-left: 0;
+  border-left: none;
+}
+
+.tu-pd-tree-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.tu-pd-tree-line.changed-add {
+  background: color-mix(in srgb, var(--jm-success) 15%, transparent);
+}
+
+.tu-pd-tree-line.changed-change {
+  background: var(--jm-warning-soft);
+}
+
+.tu-pd-tree-line.changed-remove {
+  background: var(--jm-danger-soft);
+}
+
+.tu-pd-tree-line.focused {
+  outline: 1px solid var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
+.tu-pd-tree-toggle {
+  padding: 0 3px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--jm-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.tu-pd-tree-key {
+  color: var(--jm-accent);
+}
+
+.tu-pd-tree-str {
+  color: var(--jm-success);
+  word-break: break-word;
+}
+
+.tu-pd-tree-num {
+  color: var(--jm-warning);
+}
+
+.tu-pd-tree-lit {
+  color: var(--jm-muted);
+}
+
+/* StepRelayBar 播放控制条与 DataFlowTable 顶部导出按钮 */
+.tu-df-relay-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tu-df-play-btn,
+.tu-df-speed-btn {
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: var(--jm-text);
+  background: var(--jm-surface);
+  border: 1px solid var(--jm-border);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tu-df-play-btn.playing {
+  color: var(--jm-accent);
+  border-color: var(--jm-accent);
+  background: var(--jm-accent-soft);
+}
+
+.tu-df-play-btn:hover:not(:disabled),
+.tu-df-speed-btn:hover:not(:disabled) {
+  border-color: var(--jm-accent);
+}
+
+.tu-df-play-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tu-dft-head-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.tu-dft-head-bar .tu-dft-objects {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 200px;
+}
+
+.tu-dft-export-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 800px) {
+  .tu-pd-card {
+    padding: 8px 10px;
+  }
+
+  .tu-pd-box-body {
+    max-height: 240px;
+  }
+}

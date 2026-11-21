@@ -922,7 +922,7 @@
 | 工具为什么被拒（`deny`）或整轮被停（`stop`） | `Tools.execute`（`src7/Tools.ts:170`） | `187` 行后的 `gate.deny`、`gate.stop`、`spec.sessionKinds`、`args` |
 | 抓到底是谁偷偷改了 `sessions` 表（看调用栈） | `Session.save`（`src7/Sessions.ts:890`）、`Session.append`（`src7/Sessions.ts:908`）、`Session.change`（`src7/Sessions.ts:920`） | 调用栈 `Error().stack`、`this.row.state`、`this.row.messages.at(-1)` |
 | 模型调了回复但飞书/网页没收到或报幂等冲突 | `ChannelTools.runReply`（`src7/plugins/bots/ChannelTools.ts:172`）、`FeishuReply.onChannelReply`（`src7/plugins/feishu/Reply.ts:74`）、`Timeline.reply`（`src7/plugins/web-api/Timeline.ts:385`） | `replyRequestKey`、`requested.isElsewhere`、`existing`、`receipt.status` |
-| 教程页画布漏步骤 / 查 SQLite 原始流水 | `Journal.listen`（`src7/plugins/journal/index.ts:229`）、`Journal.record`（`src7/plugins/journal/index.ts:303`） | `line.name`、`line.messageId`、`line.sessionId`、`line.sourceId` |
+| 教程页画布漏步骤 / 查 SQLite 原始流水 | `Journal.listen`（`src7/plugins/journal/index.ts:230`）、`Journal.record`（`src7/plugins/journal/index.ts:304`） | `line.name`、`line.messageId`、`line.sessionId`、`line.sourceId` |
 
 ---
 

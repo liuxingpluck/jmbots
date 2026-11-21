@@ -42,7 +42,8 @@ export const name = 'journal';
 //M 1.3.3：事件人话认 channel/direct、channel/mention、channel/listen（channel/message 拆了）。
 //M 1.3.4：journal_lines 建表与 source_id 补列交 db 插件迁移账本管理（adoptColumn 接管已有列），删手写查表与 ALTER。
 //M 1.3.5：FilesMirror 的 written 最多记 2000 场（挤掉最早的，下次照库重写）；trail 请求只 pick 一遍（Trail.getPickedTrail）。
-export const version = '1.3.5';
+//M 1.3.6：Trail.ts 放宽 FACT_KEYS 暴露飞书入口、说话人、上下文裁剪、审批结论与记忆召回关键数值，People.resolve 的 role 映射为 speakerRole。
+export const version = '1.3.6';
 
 /** 用到的服务：resources 拿数据库、运行时目录，db 按版本迁移流水表。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources', 'db'];

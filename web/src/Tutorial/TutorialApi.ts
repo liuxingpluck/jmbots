@@ -295,6 +295,57 @@ export interface Canvas {
 }
 
 
+/** 一个路径上的变化（GET /api/tutorial/payload）。 */
+export interface PayloadDiff {
+  /** 路径，如 messages[3].content、system[2]。 */
+  path: string;
+  /** add 新增、change 修改、remove 删除、same 透传（只列顶层键）。 */
+  kind: 'add' | 'change' | 'remove' | 'same';
+  /** 前值的一句话预览，最多 200 字；add 没有这一项。 */
+  before?: string;
+  /** 后值的一句话预览，最多 200 字；remove 没有这一项。 */
+  after?: string;
+}
+
+
+/** 一个事件参数对象，在这一步的前后两份。 */
+export interface PayloadItem {
+  /** 本消息内从 1 开始的序号。 */
+  seq: number;
+  /** 发出时刻，毫秒。 */
+  at: number;
+  /** 对应 trail.steps[].no：后端按 at 落进哪一步的时间窗来算。 */
+  step: number;
+  /** 事件名，如 session/before-model。 */
+  event: string;
+  /** 参数对象的类型名，按事件名查表，如 ChatRequest。 */
+  object: string;
+  /** 发出位置“文件:行号”，取自对应 journal 行的 site。 */
+  site: string;
+  /** 听这个事件的插件，取自 dispatch 时的监听者。 */
+  listeners: string[];
+  /** dispatch 那一刻的深拷贝。 */
+  before: unknown;
+  /** 同一会话下一个被记录的事件发出时（或一轮结束时）再拷一次；没取到为 null。 */
+  after: unknown | null;
+  /** before 和 after 的逐路径对比。 */
+  diff: PayloadDiff[];
+  /** 拷贝时撞了单份上限：before、after 只保留到上限，diff 照常算到能算的部分。 */
+  truncated: boolean;
+}
+
+
+/** 整条消息的载荷（GET /api/tutorial/payload?name=<消息号>）。 */
+export interface PayloadTrail {
+  ok: true;
+  /** 消息号，同 canvas 的 name。 */
+  message: string;
+  /** 为什么没有或不全（没录、被挤掉、超上限）；完整录到时为空字符串。 */
+  note: string;
+  items: PayloadItem[];
+}
+
+
 /** 运行时变量的一组（全量原样，调试用不打码）。 */
 export interface StateGroup {
   /** 组名：服务名，或插件用 ctx.flow.state 登记的名字。 */
@@ -527,6 +578,39 @@ export class TutorialApi {
     const route = `/api/tutorial/program-readme?name=${encoded}`;
     //M 程序目录由后端从 config 推出来，这里只传名字。
     return TutorialApi.get<{ file: string; text: string }>(route);
+  }
+
+  /**
+   * 读取整条消息的事件参数载荷与前后对比（GET /api/tutorial/payload?name=<消息号>）。
+   * 名字是 boot、后端回 404 或网络异常时静默返回空 items，不抛错影响原有胶囊面板。
+   * @param name 消息号，或 boot。
+   */
+  static async getPayload(name: string): Promise<PayloadTrail> {
+    if (name === '' || name === 'boot') {
+      return { ok: true, message: name || 'boot', note: '', items: [] };
+    }
+    //M 附带统一鉴权令牌请求单消息全量载荷；404 或异常温和降级为空列表。
+    const url = withToken(`/api/tutorial/payload?name=${encodeURIComponent(name)}`, TOKEN);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        return { ok: true, message: name, note: '', items: [] };
+      }
+      const body = (await response.json()) as Partial<PayloadTrail>;
+      let items: PayloadItem[] = [];
+      if (Array.isArray(body.items)) {
+        items = body.items;
+      }
+      return {
+        ok: true,
+        message: String(body.message ?? name),
+        note: String(body.note ?? ''),
+        items,
+      };
+    } catch {
+      //G 接口未挂载或网络瞬断时回退空清单，保持页面零报错。
+      return { ok: true, message: name, note: '', items: [] };
+    }
   }
 
   /**

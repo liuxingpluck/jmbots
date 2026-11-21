@@ -112,7 +112,7 @@ async function queryJournal(ctx: cordis.Context, params: Record<string, string>)
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认只登记 ctx.filesMirror，流水走事件，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.3.5');
+    expect(journalModule.version).toBe('1.3.6');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeUndefined();

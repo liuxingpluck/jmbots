@@ -4,10 +4,11 @@
  *   StepDataFlowPanel   ：右栏「这一步」顶部与手机卡片展开区的接力导航条、骨架直达联动、输入/前→后变化/去向卡片。
  *   DataFlowTable       ：思维导图「消息轨迹 → 数据变化总表」整屏表格，点击任意行同步定位步骤并展开右侧详情。
  */
-import type { JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import * as i18n from '../I18n.ts';
 import * as traceText from '../locales/Trace.ts';
 import { SiteLink } from '../VscodeLink.tsx';
+import { PayloadDiff, PayloadExportBar } from './PayloadDiff.tsx';
 import type * as api from './TutorialApi.ts';
 
 
@@ -342,8 +343,16 @@ function getSourceBadgeText(source: 'real' | 'schema'): string {
 }
 
 
+/** 判断键盘焦点是否落在输入控件中（避免空格播放键抢占搜索框输入）。 */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+}
+
+
 /**
- * 步骤接力导航条：上一步 / 当前步与模块类型 / 下一步 + 来龙去脉微流程条。
+ * 步骤接力导航条：上一步 / 播放控制（▶/⏸ 1.5s 自动推进） / 当前步与模块类型 / 下一步 + 来龙去脉微流程条。
  */
 function StepRelayBar(props: {
   trail: api.Trail;
@@ -352,12 +361,87 @@ function StepRelayBar(props: {
   onPickStep: (stepNo: number) => void;
 }): JSX.Element {
   const { trail, step, stepFlow, onPickStep } = props;
+  const [playing, setPlaying] = useState(false);
+  const [fast, setFast] = useState(false);
+  const expectedAutoStepRef = useRef<number | null>(null);
+
   const index = trail.steps.findIndex((item) => item.no === step.no);
   //M 不用三元表达式定位前后相邻步骤，支持任意步号序列一键接力跳转。
   let prev: api.TrailStep | undefined;
   if (index > 0) prev = trail.steps[index - 1];
   let next: api.TrailStep | undefined;
   if (index >= 0 && index + 1 < trail.steps.length) next = trail.steps[index + 1];
+
+  //M 切换消息画布时立即停表，防止旧画布播放状态串到新画布。
+  useEffect(() => {
+    expectedAutoStepRef.current = null;
+    setPlaying(false);
+  }, [trail.at, trail.message]);
+
+  //M 区分自动跳步与用户手动点步：非计时器推进的步号变化或抵达终点时立即停表。
+  useEffect(() => {
+    if (!playing) return;
+    if (expectedAutoStepRef.current !== step.no) {
+      expectedAutoStepRef.current = null;
+      setPlaying(false);
+      return;
+    }
+    expectedAutoStepRef.current = null;
+    const curIdx = trail.steps.findIndex((item) => item.no === step.no);
+    if (curIdx < 0 || curIdx + 1 >= trail.steps.length) {
+      setPlaying(false);
+    }
+  }, [playing, step.no, trail.steps]);
+
+  //M 自动播放计时器：默认 1.5s（2x 为 0.75s）推进一步，卸载或暂停时清理 timeout 零泄漏。
+  useEffect(() => {
+    if (!playing) return undefined;
+
+    const curIdx = trail.steps.findIndex((item) => item.no === step.no);
+    const nextStep = trail.steps[curIdx + 1];
+    if (curIdx < 0 || nextStep === undefined) {
+      setPlaying(false);
+      return undefined;
+    }
+    let delayMs = 1500;
+    if (fast) delayMs = 750;
+    const timer = window.setTimeout(() => {
+      expectedAutoStepRef.current = nextStep.no;
+      onPickStep(nextStep.no);
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [fast, onPickStep, playing, step.no, trail.steps]);
+
+  const togglePlay = useCallback((): void => {
+    if (playing) {
+      expectedAutoStepRef.current = null;
+      setPlaying(false);
+      return;
+    }
+    if (trail.steps.length <= 1) return;
+
+    const curIdx = trail.steps.findIndex((item) => item.no === step.no);
+    const firstStep = trail.steps[0];
+    //M 已在最后一步点播放时自动回到 #1 从头播放整条链路。
+    if ((curIdx < 0 || curIdx + 1 >= trail.steps.length) && firstStep !== undefined) {
+      expectedAutoStepRef.current = firstStep.no;
+      setPlaying(true);
+      onPickStep(firstStep.no);
+      return;
+    }
+    setPlaying(true);
+  }, [onPickStep, playing, step.no, trail.steps]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.code !== 'Space' || isEditableTarget(event.target)) return;
+
+      event.preventDefault();
+      togglePlay();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [togglePlay]);
 
   let prevTitle = '已是第一步';
   if (prev !== undefined) prevTitle = `跳到 #${String(prev.no)} ${prev.node}`;
@@ -373,6 +457,10 @@ function StepRelayBar(props: {
   }
   let msClass = 'tu-df-ms-pill';
   if (step.ms >= 500) msClass += ' slow';
+  let playBtnClass = 'tu-df-play-btn';
+  if (playing) playBtnClass += ' playing';
+  let speedLabel = '1x';
+  if (fast) speedLabel = '2x';
 
   const inText = getTransferText(stepFlow.incoming.via, stepFlow.incoming.dataType);
   const outText = getTransferText(
@@ -403,6 +491,29 @@ function StepRelayBar(props: {
         </button>
 
         <div className="tu-df-relay-cur">
+          <div className="tu-df-relay-play">
+            <button
+              type="button"
+              className={playBtnClass}
+              data-relay-play
+              disabled={trail.steps.length <= 1}
+              aria-pressed={playing}
+              title="按 1.5s 间隔自动逐跳播放（快捷键：空格）"
+              onClick={togglePlay}
+            >
+              {playing && '⏸ 暂停'}
+              {!playing && '▶ 播放'}
+            </button>
+            <button
+              type="button"
+              className="tu-df-speed-btn"
+              data-relay-speed
+              title="切换播放速度（1x=1.5s / 2x=0.75s）"
+              onClick={() => setFast((cur) => !cur)}
+            >
+              {speedLabel}
+            </button>
+          </div>
           <span className="tu-df-cur-no">当前 #{String(step.no)}</span>
           <span className={modBadgeClass}>{modBadgeText}</span>
           <span className={msClass}>{formatStepMs(step.ms)}</span>
@@ -558,6 +669,13 @@ export function StepDataFlowPanel(props: StepDataFlowPanelProps): JSX.Element {
           )}
         </div>
 
+        <PayloadDiff
+          trail={trail}
+          stepNo={step.no}
+          workspace={workspace}
+          compact={compact}
+        />
+
         <div className="tu-df-section">
           <div className="tu-df-sec-label">状态变化（前 → 后）</div>
           {stepFlow.changes.length === 0 && (
@@ -656,26 +774,30 @@ export function DataFlowTable(props: {
 
   return (
     <div className="tu-dft-wrap">
-      {dataFlow.objects.length > 0 && (
-        <div className="tu-dft-objects" aria-label="涉及的核心数据表与内存对象">
-          <span className="tu-dft-obj-lead">涉及对象：</span>
-          {dataFlow.objects.map((obj, idx) => {
-            const kindLabel = getObjectKindLabel(obj.kind);
-            let objTip = `[${kindLabel}] ${obj.name}`;
-            if (obj.role !== '') objTip = `[${kindLabel}] ${obj.name}：${obj.role}`;
-            return (
-              <span
-                key={`${obj.name}-${String(idx)}`}
-                className={`tu-dft-obj-badge ${obj.kind}`}
-                title={objTip}
-              >
-                <b>{kindLabel}</b>
-                <code>{obj.name}</code>
-              </span>
-            );
-          })}
-        </div>
-      )}
+      <div className="tu-dft-head-bar">
+        {dataFlow.objects.length > 0 && (
+          <div className="tu-dft-objects" aria-label="涉及的核心数据表与内存对象">
+            <span className="tu-dft-obj-lead">涉及对象：</span>
+            {dataFlow.objects.map((obj, idx) => {
+              const kindLabel = getObjectKindLabel(obj.kind);
+              let objTip = `[${kindLabel}] ${obj.name}`;
+              if (obj.role !== '') objTip = `[${kindLabel}] ${obj.name}：${obj.role}`;
+              return (
+                <span
+                  key={`${obj.name}-${String(idx)}`}
+                  className={`tu-dft-obj-badge ${obj.kind}`}
+                  title={objTip}
+                >
+                  <b>{kindLabel}</b>
+                  <code>{obj.name}</code>
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {dataFlow.objects.length === 0 && <span className="tu-dft-obj-lead">全链路数据变化总表</span>}
+        <PayloadExportBar trail={trail} dataFlow={dataFlow} />
+      </div>
 
       <div className="tu-dft-scroll">
         <table className="tu-dft-table">

@@ -5,6 +5,7 @@
  * 几块各在哪个文件：
  *   Boot.ts   录这次启动：每个插件挂了多久、多出哪些服务和工具、每步的快照；
  *   State.ts  带快照关键词（默认 #调试）的消息，每个事件拍一份运行时变量；
+ *   Payload.ts 监听 internal/dispatch 采集 15 类核心事件的真实参数对象前后两份与逐路径 diff；
  *   Files.ts  快照写成 data/flow/boot.json、<消息号>.json，左栏「画布」读的就是这些文件；
  *   Lanes.ts  把轨迹摆成泳道图；跟踪行、录下的启动 → 一步一步在 journal/Trail.ts（消息的、启动的都发 journal/request 问 journal 要）；
  *   Source.ts 读源码：注释、函数源码、谁调它，和插件的 说明.md；
@@ -27,6 +28,7 @@
  *   GET /api/tutorial/canvases              左栏画布：启动流程，加 data/flow/ 里每条带关键词的消息
  *   GET /api/tutorial/canvas?name=          一张画布：轨迹和泳道图（name 是 boot 或消息号）
  *   GET /api/tutorial/snapshot?name=&step=  画布上点中一步时那一刻的运行时变量，和上一步比变了哪些
+ *   GET /api/tutorial/payload?name=         整条消息每一步真实事件参数对象的进出拷贝与逐路径 diff
  *   GET /api/tutorial/code?name=            「代码」「试一试」：这个插件的对外函数、登记的 HTTP 接口、模型工具，加认不出归属的接口（Code.ts）
  *   GET /api/tutorial/source?file=&line=    “看实现”：这一行所在函数的完整源码、里面调到的函数、谁调它
  * 提供服务 flow（名字沿用，relay、web-api 在用）：别的插件用 ctx.flow.state(名字, 取值函数) 露自己的运行时变量；
@@ -49,6 +51,7 @@ import * as codeModule from './Code.ts';
 import * as dataFlowModule from './DataFlow.ts';
 import * as filesModule from './Files.ts';
 import * as lanesModule from './Lanes.ts';
+import * as payloadModule from './Payload.ts';
 import * as printModule from './Print.ts';
 import * as programsModule from './Programs.ts';
 import * as skeletonModule from './Skeleton.ts';
@@ -129,7 +132,8 @@ export const name = 'tutorial';
 //M 1.1.23：启动录像第一个插件步骤的加载说明改取 plugins/Index.ts 的 loadPlugin（原 Main.ts 的 loadExternalPlugin 搬过去了）。
 //M 1.1.24：/api/tutorial/canvas 新增端到端数据流转 dataFlow（DataFlow.ts），Source.getCallers 按作用域精准过滤调用方。
 //M 1.1.25：快照文件（data/flow/*.json）改原子写（utils/Files.ts 的 writeTextAtomic），写到一半不会被读成坏 JSON。
-export const version = '1.1.25';
+//M 1.2.0：新增真实事件参数载荷捕获（Payload.ts）与 GET /api/tutorial/payload，零改骨架记录前后拷贝与逐路径 diff。
+export const version = '1.2.0';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -161,6 +165,16 @@ export interface TutorialConfig {
   trace_file?: unknown;
   /** 打印时一个变量、一段话最多打多少字。不写是 200，要是正整数。 */
   trace_var_limit?: unknown;
+  /** 事件参数载荷录制模式：all 每条消息都录，keyword 只录带快照关键词的。不写是 all。 */
+  payload_record?: unknown;
+  /** 单份事件参数拷贝序列化后的上限（KB），超了截断并标 truncated。不写是 256，要是正数。 */
+  payload_item_kb?: unknown;
+  /** 单条消息总载荷上限（MB），超了后面的不再录并写进 note。不写是 8，要是正数。 */
+  payload_message_mb?: unknown;
+  /** 内存与 data/flow/*.payload.json 保留最近几条消息。不写是 20，要是正整数。 */
+  payload_messages?: unknown;
+  /** 额外追加进载荷白名单的事件名数组。不写为空。 */
+  payload_events?: unknown;
 }
 
 
@@ -178,6 +192,8 @@ interface Settings {
   workspace: string;
   /** 打印的配置。 */
   print: printModule.PrintConfig;
+  /** 事件参数载荷采集配置。 */
+  payload: payloadModule.PayloadSettings;
 }
 
 
@@ -254,6 +270,18 @@ const PREVIEW_SCAN_LINES = 50;
 
 /** 不写 trace_var_limit 时一个值最多打几个字。 */
 const DEFAULT_VAR_LIMIT = 200;
+
+/** 不写 payload_record 时的默认录制模式。 */
+const DEFAULT_PAYLOAD_RECORD: payloadModule.PayloadRecordMode = 'all';
+
+/** 不写 payload_item_kb 时单份拷贝默认上限，KB。 */
+const DEFAULT_PAYLOAD_ITEM_KB = 256;
+
+/** 不写 payload_message_mb 时单条消息默认上限，MB。 */
+const DEFAULT_PAYLOAD_MESSAGE_MB = 8;
+
+/** 不写 payload_messages 时默认保留条数。 */
+const DEFAULT_PAYLOAD_MESSAGES = 20;
 
 /** 画布名：boot 或消息号。 */
 const CANVAS_NAME = /^(?:boot|\d+)$/u;
@@ -415,6 +443,9 @@ class Tutorial {
   /** 带关键词的消息的快照。 */
   private readonly shots: stateModule.Shots;
 
+  /** 事件参数载荷录制器。 */
+  private readonly payloads: payloadModule.PayloadRecorder;
+
   /** 插件用 ctx.flow.state 登记的取值函数：组名 → 取值函数和键的解释。 */
   private readonly registered = new Map<string, { read: () => unknown; notes: Record<string, string> }>();
 
@@ -425,7 +456,7 @@ class Tutorial {
   private readonly code: codeModule.PluginCode;
 
   /**
-   * 先建录启动的（要赶上后面的插件），再建快照、打印，提供 flow 服务，等 http 起来登记接口。
+   * 先建录启动的（要赶上后面的插件），再建快照、载荷录制、打印，提供 flow 服务，等 http 起来登记接口。
    * @param ctx tutorial 的 ctx。
    * @param settings apply 校验过的配置。
    */
@@ -433,10 +464,11 @@ class Tutorial {
     private readonly ctx: cordis.Context,
     private readonly settings: Settings,
   ) {
-    //M 录启动、拍快照、写文件三块：文件先建，另外两块写文件要用它。
+    //M 录启动、拍快照、录载荷、写文件：文件先建，另外几块写文件要用它。
     this.files = new filesModule.FlowFiles(ctx, settings.keep);
     this.boot = new bootModule.BootTrail(ctx, this.files);
     this.shots = new stateModule.Shots(ctx, settings.keyword, settings.maxBytes, this.files);
+    this.payloads = new payloadModule.PayloadRecorder(ctx, settings.payload, this.files);
     this.workspace = getWorkspace(settings.workspace, ctx.resources.root);
     this.code = new codeModule.PluginCode(ctx, this.boot.source, this.boot.toolOwners);
 
@@ -449,7 +481,13 @@ class Tutorial {
     //M 提供 ctx.flow：插件登记的取值函数放在 registered，「状态」标签现调；mark 给不走 bot/receive 的路认快照关键词。
     const flow: FlowState = {
       state: (groupName, read, notes = {}) => this.addState(groupName, read, notes),
-      mark: (text, sessionId) => this.shots.mark(text, sessionId),
+      mark: (text, sessionId) => {
+        const stripped = this.shots.mark(text, sessionId);
+        if (stripped !== text) {
+          this.payloads.markSession(sessionId);
+        }
+        return stripped;
+      },
     };
     ctx.provide('flow', flow);
 
@@ -664,6 +702,21 @@ class Tutorial {
         return reply.code(404).send({ error: why });
       }
       return shot;
+    });
+
+    //M 登记整条消息的真实事件参数载荷查询接口（名字是 boot 时回空 items）。
+    app.get<Query>('/api/tutorial/payload', async (request, reply) => {
+      //G 画布名只认 boot 或正整数消息号，拒绝目录穿越。
+      const canvas = request.query['name'] ?? '';
+      if (!CANVAS_NAME.test(canvas)) return reply.code(400).send({ error: '要给 name（boot 或消息号）' });
+      if (canvas === 'boot') {
+        const bootEmpty: payloadModule.PayloadTrail = { ok: true, message: 'boot', note: '', items: [] };
+        return bootEmpty;
+      }
+
+      //M 先按需获取轨迹用于按时间窗对齐 step；轨迹读取异常时不阻断已录载荷返回。
+      const trail = await this.getTrail(canvas).catch(() => undefined);
+      return this.payloads.getPayload(canvas, trail);
     });
 
     //M 登记源码查看接口，支持按文件路径和行号返回完整函数体及上下游调用。
@@ -1015,11 +1068,60 @@ class Tutorial {
 
 
 /**
+ * 校验并转换 3.3 节的事件参数载荷配置。
+ * @param config tutorial 原始配置。
+ * @param keyword 已校验过的快照关键词。
+ */
+function parsePayloadSettings(config: TutorialConfig, keyword: string): payloadModule.PayloadSettings {
+  const recordMode = config.payload_record ?? DEFAULT_PAYLOAD_RECORD;
+  if (recordMode !== 'all' && recordMode !== 'keyword') {
+    throw new Error('tutorial 的 payload_record 要是 all 或 keyword');
+  }
+
+  const itemKb = config.payload_item_kb ?? DEFAULT_PAYLOAD_ITEM_KB;
+  if (typeof itemKb !== 'number' || !Number.isFinite(itemKb) || itemKb <= 0) {
+    throw new Error('tutorial 的 payload_item_kb 要是正数');
+  }
+
+  const messageMb = config.payload_message_mb ?? DEFAULT_PAYLOAD_MESSAGE_MB;
+  if (typeof messageMb !== 'number' || !Number.isFinite(messageMb) || messageMb <= 0) {
+    throw new Error('tutorial 的 payload_message_mb 要是正数');
+  }
+
+  const maxMessages = config.payload_messages ?? DEFAULT_PAYLOAD_MESSAGES;
+  if (typeof maxMessages !== 'number' || !Number.isSafeInteger(maxMessages) || maxMessages <= 0) {
+    throw new Error('tutorial 的 payload_messages 要是正整数');
+  }
+
+  const rawEvents = config.payload_events ?? [];
+  if (!Array.isArray(rawEvents)) {
+    throw new Error('tutorial 的 payload_events 要是事件名数组');
+  }
+  const extraEvents: string[] = [];
+  for (const item of rawEvents) {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new Error('tutorial 的 payload_events 每项都要是非空字符串');
+    }
+    extraEvents.push(item.trim());
+  }
+
+  return {
+    recordMode,
+    keyword,
+    maxItemBytes: Math.max(1, Math.round(itemKb * 1024)),
+    maxMessageBytes: Math.max(1, Math.round(messageMb * 1024 * 1024)),
+    maxMessages,
+    extraEvents,
+  };
+}
+
+
+/**
  * 挂上教程插件。apply 是 Cordis 插件的入口函数：Main.ts 里 app.plugin(本模块, 配置) 时，Cordis 等 inject 里的服务都就绪后调一次。
  * 配置是外面进来的，在这里校验一次。
  * @param ctx Cordis 给这个插件的 ctx。
  * @param config 见 TutorialConfig；每一项都可以不写。
- * 副作用：开始录启动、拍快照；提供服务 flow；http 起来后登记接口。
+ * 副作用：开始录启动、拍快照、录载荷；提供服务 flow；http 起来后登记接口。
  * @throws 配置项写了但类型、范围不对时抛错。
  */
 export function apply(ctx: cordis.Context, config: TutorialConfig = {}): void {
@@ -1061,6 +1163,7 @@ export function apply(ctx: cordis.Context, config: TutorialConfig = {}): void {
     throw new Error('tutorial 的 trace_var_limit 要是正整数');
   }
 
+  const payload = parsePayloadSettings(config, keyword);
   const settings: Settings = {
     keyword,
     maxBytes: maxMb * 1024 * 1024,
@@ -1068,7 +1171,8 @@ export function apply(ctx: cordis.Context, config: TutorialConfig = {}): void {
     recentMessages,
     workspace,
     print: { console: traceConsole, file: traceFile, varLimit },
+    payload,
   };
-  //M 初始化并启动教程插件主实例（登记状态服务、启动轨迹与 HTTP 接口）。
+  //M 初始化并启动教程插件主实例（登记状态服务、启动轨迹、载荷采集与 HTTP 接口）。
   new Tutorial(ctx, settings);
 }

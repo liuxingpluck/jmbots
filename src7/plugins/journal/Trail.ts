@@ -54,6 +54,19 @@ const FACT_KEYS: Record<string, string> = {
   收件状态: 'status',
   自动兜底回话: 'autoFinal',
   指定会话: 'targetSession',
+  消息类型: 'type',
+  聊天类型: 'chat',
+  叫了机器人: 'called',
+  说话人: 'personName',
+  说话人身份: 'speakerRole',
+  裁剪前词元: 'tokensBefore',
+  裁剪后词元: 'tokensAfter',
+  截短几条: 'trimmedCount',
+  丢掉几条: 'droppedCount',
+  审核结论: 'verdict',
+  决策来源: 'decidedBy',
+  命中技能数: 'skillCount',
+  命中引用数: 'citationCount',
 };
 
 /** 请求轨迹关键变量的说明表：英文键 → 中文解释。 */
@@ -191,13 +204,20 @@ function getEventText(line: TrailLine, name: string): string {
 
 
 /**
- * 只留 FACT_KEYS 里的、短的值，键换成英文名。
- * @param vars 跟踪行的变量（中文名）。
+ * 只留 FACT_KEYS 里的、短的值，键换成英文名；People.resolve 的 role 映射为 speakerRole 免得和消息角色重名。
+ * @param vars 跟踪行的变量（中文名或英文名）。
+ * @param lineName 跟踪行名称（如 People.resolve）。
  */
-function getFacts(vars: Record<string, unknown>): Record<string, string | number | boolean> {
+function getFacts(vars: Record<string, unknown>, lineName = ''): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
+  const isPeople = lineName === 'People.resolve';
   for (const [said, key] of Object.entries(FACT_KEYS)) {
-    const value = vars[key] ?? vars[said];
+    if (isPeople && key === 'role') continue;
+
+    let value = vars[key] ?? vars[said];
+    if (isPeople && key === 'speakerRole' && value === undefined) {
+      value = vars['role'];
+    }
     if (typeof value === 'number' || typeof value === 'boolean') {
       out[key] = value;
       continue;
@@ -316,7 +336,7 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
       params: traceText.getTraceParams(text, line.vars),
       listeners: line.listeners.filter((name) => !PASSIVE.has(name)),
       site: line.site,
-      facts: line.facts ?? getFacts(line.vars),
+      facts: line.facts ?? getFacts(line.vars, name),
       error,
     };
     const docs = line.docs ?? [];
