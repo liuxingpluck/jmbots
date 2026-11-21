@@ -13,7 +13,8 @@ export const name = 'work-decision';
 //M 1.3.9：旧 data/decision-map JSON 导入过渡代码标明 //退场：条件。
 //M 1.3.10：新增 GET /api/work-decision/version 轻量版本探针，供工作台 30 秒无感自动刷新。
 //M 1.3.11：节点可选支持 quadrant 四象限字段及 POST/PUT /api/work-decision/quadrant，前端新增四象限决策矩阵视图。
-export const version = '1.3.11';
+//M 1.3.12：新增只读工具 work_topics（前后台会话、只限本人）：概览、按状态和关键词筛、看单个节点，带 topicId 给知识库用。
+export const version = '1.3.12';
 export const inject = ['resources', 'http', 'tools'];
 
 /** 读取配置文本，未设置时保持缺省。 */
@@ -68,4 +69,5 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const store = new storeModule.Store(resources.db, dir, legacyWorkspaceId);
   routesModule.mount(ctx, store, helper, notice);
   toolsModule.registerAskOwner(ctx, store, notice);
+  toolsModule.registerWorkTopics(ctx, store);
 }

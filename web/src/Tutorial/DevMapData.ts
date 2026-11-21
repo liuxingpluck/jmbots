@@ -144,7 +144,7 @@ export const DEV_CARDS: DevCard[] = [
         title: '关口一 session/before-model · ChatRequest',
         note: '调模型之前。能改 system、tools、messages、model、thinking；写 stop 让会话停。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 814, mark: "serial('session/before-model'" },
+          { file: 'src7/Sessions.ts', line: 697, mark: "serial('session/before-model'" },
           { file: 'src7/plugins/context-fit/index.ts', line: 322, mark: "on('session/before-model'" },
           { file: 'src7/plugins/memory/index.ts', line: 155, mark: "on('session/before-model'" },
           { file: 'src7/plugins/approval/index.ts', line: 472, mark: "on('session/before-model'" },
@@ -154,7 +154,7 @@ export const DEV_CARDS: DevCard[] = [
         title: '关口二 session/after-model · AnsweredRequest',
         note: '模型回来之后。answer 里是正文、思考、工具调用和 usage；写 stop 丢掉这次回答。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 849, mark: "serial('session/after-model'" },
+          { file: 'src7/Sessions.ts', line: 719, mark: "serial('session/after-model'" },
         ],
       },
       {
@@ -169,7 +169,7 @@ export const DEV_CARDS: DevCard[] = [
         title: '关口四 session/after-tool · ToolDone',
         note: '工具跑完之后。能改 outcome（交回模型的文字、图片、isError）；写 stop 停这一轮。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 769, mark: "serial('session/after-tool'" },
+          { file: 'src7/Sessions.ts', line: 672, mark: "serial('session/after-tool'" },
           { file: 'src7/plugins/bots/ChannelTools.ts', line: 73, mark: "on('session/after-tool'" },
         ],
       },
@@ -225,42 +225,42 @@ export const DEV_CARDS: DevCard[] = [
         title: '① 读：按会话号取回',
         note: '取 meta 和完整对话数组，恢复成内存里的会话。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 394, mark: 'SELECT meta, messages FROM sessions' },
+          { file: 'src7/Sessions.ts', line: 383, mark: 'SELECT meta, messages FROM sessions' },
         ],
       },
       {
         title: '② 写：save 落库',
         note: '对话一块、别的字段一块，各转 JSON，按主键整行覆盖。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 901, mark: 'query.run(meta.id, metaJson, messagesJson)' },
+          { file: 'src7/Sessions.ts', line: 771, mark: 'query.run(meta.id, metaJson, messagesJson)' },
         ],
       },
       {
         title: '③ 加一条消息：先进内存',
         note: 'append 先 push 进 row.messages，再 save，保证不丢。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 910, mark: 'this.row.messages.push(message)' },
+          { file: 'src7/Sessions.ts', line: 780, mark: 'this.row.messages.push(message)' },
         ],
       },
       {
         title: '④ 加一条消息：再通知',
         note: '落库之后才发 session/new-message，journal、对话.md、网页时间线都听它。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 912, mark: "emit('session/new-message'" },
+          { file: 'src7/Sessions.ts', line: 782, mark: "emit('session/new-message'" },
         ],
       },
       {
         title: '⑤ 改状态：先改再存',
         note: 'change 记下原状态，改 state 和 reply，再 save。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 923, mark: 'this.row.state = state' },
+          { file: 'src7/Sessions.ts', line: 793, mark: 'this.row.state = state' },
         ],
       },
       {
         title: '⑥ 改状态：通知带上原状态',
         note: '发 session/change(session, stateBefore)；做完时渠道插件据此发回复。',
         anchors: [
-          { file: 'src7/Sessions.ts', line: 926, mark: "emit('session/change'" },
+          { file: 'src7/Sessions.ts', line: 796, mark: "emit('session/change'" },
         ],
       },
     ],
@@ -299,7 +299,7 @@ export const DEV_CARDS: DevCard[] = [
         title: '参考：知识库的 kb_search',
         note: 'inject 里带上 tools，apply 里登记；参数用 piAi.Type 描述，run 交回给模型的文字。',
         anchors: [
-          { file: 'src7/plugins/knowledge/Tools.ts', line: 61, mark: 'ctx.tools.register({' },
+          { file: 'src7/plugins/knowledge/Tools.ts', line: 66, mark: 'ctx.tools.register({' },
           {
             file: 'src7/plugins/knowledge/index.ts',
             line: 29,

@@ -722,6 +722,7 @@ export function CanvasStage(props: CanvasStageProps): JSX.Element {
                         trail={canvas.trail}
                         step={stepItem}
                         stepFlow={stepFlow}
+                        dataFlow={resolvedDataFlow ?? undefined}
                         workspace={props.workspace}
                         pluginNames={props.pluginNames}
                         onPickStep={props.onPick}

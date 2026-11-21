@@ -4,7 +4,7 @@
  *   StepDataFlowPanel   ：右栏「这一步」顶部与手机卡片展开区的接力导航条、骨架直达联动、输入/前→后变化/去向卡片。
  *   DataFlowTable       ：思维导图「消息轨迹 → 数据变化总表」整屏表格，点击任意行同步定位步骤并展开右侧详情。
  */
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import * as i18n from '../I18n.ts';
 import * as traceText from '../locales/Trace.ts';
 import { SiteLink } from '../VscodeLink.tsx';
@@ -582,6 +582,8 @@ export interface StepDataFlowPanelProps {
   onSelectPlugin: (name: string) => void;
   /** 手机步骤卡片内展开时使用紧凑排布。 */
   compact?: boolean;
+  /** 整条轨迹的数据流转（载荷区「复制摘要」用）；没传时按 trail.steps 兜底构造。 */
+  dataFlow?: api.TrailDataFlow;
 }
 
 
@@ -595,6 +597,9 @@ export function StepDataFlowPanel(props: StepDataFlowPanelProps): JSX.Element {
   const isSkeleton = stepFlow.layer === 'skeleton' && stepFlow.skeletonFile !== '';
   const skeletonLabel = stepFlow.skeletonFile.replace(/\.(ts|json)$/iu, '');
   const canOpenPlugin = pluginNames.has(step.node);
+  //M 载荷区「复制摘要」要整条轨迹的数据流转：外层传了用传的，没传按轨迹兜底构造一份（0.7.90 审计）。
+  const fallbackFlow = useMemo(() => resolveTrailDataFlow(trail), [trail]);
+  const trailFlow = props.dataFlow ?? fallbackFlow;
 
   //M 手机紧凑模式最多展示前 4 个输入项，桌面右栏完整展示。
   let visibleInputs = stepFlow.inputs;
@@ -673,6 +678,7 @@ export function StepDataFlowPanel(props: StepDataFlowPanelProps): JSX.Element {
           trail={trail}
           stepNo={step.no}
           workspace={workspace}
+          dataFlow={trailFlow}
           compact={compact}
         />
 

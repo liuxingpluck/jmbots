@@ -247,3 +247,87 @@ export function search(
   const params = getQueryString({ q, dirId: query.dirId, topicId: query.topicId, ...tagParams, limit: 30 });
   return request(`/search${params}`, { signal });
 }
+
+
+//==========================================================
+//M 标签治理与相关文档（knowledge v1.0.2，131 在补后端；没上线时前端温和降级）
+//==========================================================
+
+/** 改名、合并、删除标签的回执。 */
+export interface TagMutationResult {
+  /** 成功。 */
+  ok: true;
+  /** 原标签名（改名、合并）或被删的标签名（删除时放在 name）。 */
+  oldName?: string;
+  /** 新标签名（改名、合并）。 */
+  newName?: string;
+  /** 被删的标签名（删除）。 */
+  name?: string;
+  /** 新名字本来就有：两个标签合成了一个。 */
+  merged?: boolean;
+  /** 动到了几篇文档。 */
+  affectedDocs: number;
+}
+
+/** 一篇相关文档推荐。 */
+export interface RelatedDocItem {
+  /** 文档号。 */
+  id: string;
+  /** 标题。 */
+  title: string;
+  /** 摘要。 */
+  summary: string;
+  /** 所在目录；未归类是 null。 */
+  dirId: string | null;
+  /** 所在专题；没有是 null。 */
+  topicId: string | null;
+  /** 标签。 */
+  tags: string[];
+  /** 相关度，越大越相关。 */
+  score: number;
+  /** 推荐理由，比如“同专题”“共同标签: AOBB”。 */
+  reasons: string[];
+  /** 最近修改时间。 */
+  updatedAt: string | number;
+}
+
+
+/**
+ * 11. 标签改名；新名字已经有了就合并成一个。
+ * @param name 原标签名。
+ * @param newName 新标签名。
+ */
+export function renameOrMergeTag(name: string, newName: string): Promise<TagMutationResult> {
+  const route = `/tags/${encodeURIComponent(name)}`;
+  return request(route, getWriteOptions('PUT', { newName }));
+}
+
+
+/**
+ * 12. 删除标签：只从文档上摘掉，文档不删。
+ * @param name 标签名。
+ */
+export function deleteTag(name: string): Promise<TagMutationResult> {
+  const route = `/tags/${encodeURIComponent(name)}`;
+  return request(route, getWriteOptions('DELETE'));
+}
+
+
+/**
+ * 13. 一篇文档的相关文档推荐。后端没上线（404）、网络不通、回包不对时安静交回空数组，不打扰页面。
+ * @param docId 文档号。
+ * @param limit 最多几篇。
+ * @param signal 换文档时中止。
+ * @returns 推荐列表；拿不到是空数组。
+ */
+export async function fetchRelatedDocs(docId: string, limit = 6, signal?: AbortSignal): Promise<RelatedDocItem[]> {
+  const route = `/docs/${encodeURIComponent(docId)}/related${getQueryString({ limit })}`;
+  try {
+    const body = await request<{ items?: unknown }>(route, { signal });
+    if (!Array.isArray(body.items)) return [];
+
+    return body.items as RelatedDocItem[];
+  } catch {
+    return [];
+  }
+}

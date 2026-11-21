@@ -223,13 +223,36 @@
   gap: 4px;
 }
 
-.tu-pd-diff-row {
+/* 改动行筛选：搜索框 + 增改删快切 + 命中数 */
+.tu-pd-filter-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
+  align-items: center;
+  gap: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.tu-pd-filter-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--jm-text);
+  background: var(--jm-bg);
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.tu-pd-filter-input:focus {
+  border-color: var(--jm-accent);
+}
+
+.tu-pd-diff-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   width: 100%;
-  text-align: left;
   padding: 4px 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
@@ -239,7 +262,41 @@
   border: 1px solid transparent;
   border-left: 3px solid var(--jm-border);
   border-radius: 4px;
+}
+
+/* 行主体：可点定位，占满除复制按钮外的宽度 */
+.tu-pd-diff-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
   cursor: pointer;
+}
+
+/* 行右侧复制路径 / 复制值：平时淡，悬停整行时变清楚 */
+.tu-pd-row-tools {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  opacity: 0.55;
+}
+
+.tu-pd-diff-row:hover .tu-pd-row-tools,
+.tu-pd-row-tools:focus-within {
+  opacity: 1;
+}
+
+.tu-pd-copy-btn {
+  padding: 1px 6px;
+  font-size: 10.5px;
 }
 
 .tu-pd-diff-row:hover {

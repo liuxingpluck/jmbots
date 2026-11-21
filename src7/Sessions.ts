@@ -21,8 +21,8 @@ import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';
 import type { ToolDone } from './Tools.ts';
 import { createTimestampId } from './utils/Names.ts';
+import * as sessionHelpers from './utils/SessionHelpers.ts';
 import * as textModule from './utils/Text.ts';
-import * as utils from './utils/index.ts';
 
 
 declare module 'cordis' {
@@ -355,19 +355,8 @@ export class Sessions extends cordis.Service {
       if (exists !== null && attempt >= 5) throw new Error('生成会话号连续撞上已有记录');
       if (exists !== null) continue;
 
-      //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的），存库，记进 openedSessions。
-      const row: SessionRow = {
-        ...input,
-        id,
-        model: input.model ?? config.defaultModel,
-        thinking: input.thinking ?? config.thinking,
-        state: 'done',
-        reply: '',
-        messages: [],
-        steps: 0,
-        updatedAt: Date.now(),
-      };
-      //M 按配置补齐模型与思考档并创建新会话实例，随后写入持久化列表。
+      //M 号没人用：拼一份新记录（模型、思考档没给就用配置里的，见 src7/utils/SessionHelpers.ts 的 getNewSessionRow）。
+      const row = sessionHelpers.getNewSessionRow(input, id, config);
       const session = new Session(row, this.ctx);
       //M 立即落库持久化并记进 openedSessions，确保后续消息与停止动作能命中同一实例。
       session.save();
@@ -396,13 +385,10 @@ export class Sessions extends cordis.Service {
     const stored = query.get(id) as { meta: string; messages: string } | null;
 
     //G 库里没有 → 抛错。
-    if (stored === null) {
-      throw new Error(`没有这场会话：${id}`);
-    }
+    if (stored === null) throw new Error(`没有这场会话：${id}`);
 
-    //M 解析磁盘元信息与对话历史重建会话实例，并记进 openedSessions 供同一场对话复用。
-    const meta = this.parseMeta(stored.meta);
-    //M 按保存时的 pi-ai Message[] 还原整场对话。Message 的四种形状见本文件 L96。
+    //M 解析元信息、按保存时的 pi-ai Message[] 还原整场对话（四种形状见本文件 L96），重建会话并记进 openedSessions。
+    const meta = sessionHelpers.parseSessionMeta(stored.meta);
     const messages = JSON.parse(stored.messages) as piAi.Message[];
     const session = new Session({ ...meta, messages }, this.ctx);
     this.remember(session);
@@ -434,38 +420,18 @@ export class Sessions extends cordis.Service {
   }
 
   /**
-   * 把库里 meta 那一列解析回记录（不带对话）。open、find 读库都走这里。
-   * @param json 库里 meta 列的原文。
-   * @returns 记录。早先存的会话没有 steps（后加的一项），在这里补 0，往后内部直接用。
-   */
-  private parseMeta(json: string): SessionMeta {
-    const meta = JSON.parse(json) as Omit<SessionMeta, 'steps'>
-      & Partial<Pick<SessionMeta, 'steps'>>;
-    const steps = meta.steps ?? 0;
-    return { ...meta, steps };
-  }
-
-  /**
    * 找会话：给的几项都相等的那些。只读记录（不带对话），不打开。
    * @param where 照哪几项找，比如 { state: 'running' }；插件给记录加的项也能用，比如 { bot: '助手', kind: 'work' }。
    * @returns 记录，最近动过的在前。
    */
   find(where: Partial<SessionMeta>): SessionMeta[] {
-    //M 每一项都用 json_extract 从 meta 里取出来比，所以插件加的项不用改表也能拿来找。
-    let sql = 'SELECT meta FROM sessions WHERE 1 = 1';
-    /** 填进 SQL 里问号的值：每一项两个，先是 JSON 路径（$.state），再是要等于的值。 */
-    const values: (string | number)[] = [];
-    //M 逐条追加过滤键到 WHERE 子句与绑定参数，最后按更新时间倒序返回。
-    utils.eachEntry(where, (key, value) => {
-      sql += ' AND json_extract(meta, ?) = ?';
-      values.push(`$.${key}`, value as string | number);
-    });
-    sql += " ORDER BY json_extract(meta, '$.updatedAt') DESC";
+    //M 每一项都用 json_extract 从 meta 里取出来比，插件加的项不用改表也能找（SQL 由 SessionHelpers.getFindQuery 拼）。
+    const find = sessionHelpers.getFindQuery(where);
 
     //M 查出来的每行只有 meta 一列，解析回记录。
-    const query = this.ctx.resources.db.query(sql);
-    const found = query.all(...values) as { meta: string }[];
-    return found.map((item) => this.parseMeta(item.meta));
+    const query = this.ctx.resources.db.query(find.sql);
+    const found = query.all(...find.values) as { meta: string }[];
+    return found.map((item) => sessionHelpers.parseSessionMeta(item.meta));
   }
 
   /**
@@ -485,9 +451,7 @@ export class Sessions extends cordis.Service {
     child.queueUserMessage(text);
 
     //M 提问方的信号断了 → 小会话也停，不再等模型。不管怎么结束都把监听摘掉。
-    const stop = (): void => {
-      child.stop('提问方停了');
-    };
+    const stop = (): void => child.stop('提问方停了');
     signal?.addEventListener('abort', stop, { once: true });
     try {
       await child.run();
@@ -516,70 +480,19 @@ export class Sessions extends cordis.Service {
     //==========================================================
     /** 建好的供应商、模型和重试的配置，都在 resources 里（src7/Resources.ts）。 */
     const resources = this.ctx.resources;
-    const retry = resources.config.retry;
-    //M 按“供应商/模型”名查出配置好的 pi 模型定义与参数，供下面构建上下文和重连使用。
+    //M 按“供应商/模型”名查出 pi 模型；上下文（提示词段落用空行连成一段）、请求选项（pi 自己不重试，思考档不是 off 才传）、
+    //M   重试策略，照请求和配置的 models.retry 拼好，见 src7/utils/SessionHelpers.ts 的 getChatParts。
     const model = resources.getModel(request.model);
-
-    //M 拼 pi 要的上下文：提示词的段落用空行连成一段。
-    const systemPrompt = request.system.join('\n\n');
-    /**
-     * pi-ai `Context` 是发给模型前的提示词、历史和工具。
-     * - `systemPrompt` 可选，是系统提示词。
-     * - `messages` 是对话消息，`Message` 见本文件 L96。
-     * - `tools` 可选，是工具定义数组，`Tool` 见本文件 L192。
-     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:543。
-     */
-    const context: piAi.Context = {
-      systemPrompt,
-      messages: request.messages,
-      tools: request.tools,
-    };
-
-    //M 请求选项：pi 自己不重试（maxRetries 0），重试交给下面的 retryAssistantCall。
-    /**
-     * pi-ai `SimpleStreamOptions` 是发起模型请求时的选项。
-     * - `signal` 可选，用来取消请求。
-     * - `timeoutMs` 可选，是接口支持时的毫秒超时。
-     * - `maxRetries` 可选，是 SDK 支持时的内部重试上限。
-     * - `reasoning` 可选，取 `'minimal'`、`'low'`、`'medium'`、`'high'`、`'xhigh'` 或 `'max'`。
-     * - `toolChoice` 可选，取 `'auto'` 或 `'none'`。
-     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:233，继承字段见同文件 48、107 行。
-     */
-    const options: piAi.SimpleStreamOptions = {
-      signal: request.signal,
-      timeoutMs: retry.timeoutMs,
-      maxRetries: 0,
-    };
-
-    //M 思考档不是 off 才传 reasoning；off 就不传，模型不思考。
-    if (request.thinking !== 'off') {
-      options.reasoning = request.thinking;
-    }
+    const parts = sessionHelpers.getChatParts(request, resources.config.retry);
 
     //==========================================================
-    //M 设定重试并记录单次请求的失败
+    //M 发一次并记录单次请求的失败
     //==========================================================
-    //M 重试的规矩：临时的错（断网、限流、超时）隔一会儿再试，最多再试 retry.times 次；喊停了不再试。
-    //M   重试、判断哪种错值得再试，都是 pi 的 retryAssistantCall 做的。
-    /**
-     * pi-ai `RetryPolicy` 是整次调用失败后的重试策略。
-     * - `enabled` 决定是否启用重试。
-     * - `maxRetries` 是最多重试几次，首次调用单独计算。
-     * - `baseDelayMs` 是指数退避的起始毫秒数，pi-ai 会加随机偏移。
-     * - `maxAgentDelayMs` 可选，限制这层等待的最长毫秒数。
-     * 全部字段见 node_modules/@earendil-works/pi-ai/dist/utils/retry.d.ts:9。
-     */
-    const policy: piAi.RetryPolicy = {
-      enabled: true,
-      maxRetries: retry.times,
-      baseDelayMs: retry.waitMs,
-    };
-
-    //M 发一次：每次失败（stopReason 是 error）发一次通知 session/model-failed，重试的那几次插件也看得到；被喊停的 aborted 不发。
-    /** @returns 单次请求的 `AssistantMessage`，见本文件 L216。 */
+    //M 发一次，交回单次请求的 `AssistantMessage`（见本文件 L216）：每次失败（stopReason 是 error）
+    //M   发一次通知 session/model-failed，重试的那几次插件也看得到；被喊停的 aborted 不发。
     const send = async (): Promise<piAi.AssistantMessage> => {
       const start = Date.now();
-      const answer = await resources.models.completeSimple(model, context, options);
+      const answer = await resources.models.completeSimple(model, parts.context, parts.options);
       if (answer.stopReason !== 'error') return answer;
 
       const failed: ModelFailed = {
@@ -595,8 +508,8 @@ export class Sessions extends cordis.Service {
     //==========================================================
     //M 发请求并把失败或取消抛给调用方
     //==========================================================
-    //M 发请求，失败了照上面的规矩再试。
-    const answer = await piAi.retryAssistantCall(send, policy, request.signal);
+    //M 发请求，失败了照重试策略再试：临时的错（断网、限流、超时）隔一会儿再试，喊停了不再试。
+    const answer = await piAi.retryAssistantCall(send, parts.policy, request.signal);
 
     //G pi 把失败写在回答的 stopReason 里，不抛错。出错、被喊停都在这里统一抛出去。
     if (answer.stopReason === 'error' || answer.stopReason === 'aborted') {
@@ -740,18 +653,8 @@ export class Session {
       //==========================================================
       //M 有工具就执行并经过关口三、四，没工具就结束本轮
       //==========================================================
-      //M 从回答里挑出工具调用。
-      /**
-       * pi-ai `ToolCall` 是模型要求执行的一次调用。
-       * - `type: 'toolCall'` 用来从回答的其他内容块里认出调用。
-       * - `id` 用来配对调用与结果。
-       * - `name` 是工具名。
-       * - `arguments` 是要交给工具校验的 `JsonObject`。
-       * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:271。
-       */
-      const calls = answer.content.filter((block): block is piAi.ToolCall => {
-        return block.type === 'toolCall';
-      });
+      //M 从回答里挑出工具调用（pi-ai `ToolCall` 的字段见 SessionHelpers.getToolCalls）。
+      const calls = sessionHelpers.getToolCalls(answer);
 
       //M 模型没要工具 → 这一轮做完了，它说的就是回给用户的话。
       if (calls.length === 0) {
@@ -768,29 +671,9 @@ export class Session {
         const done: ToolDone = { session: this, call, outcome: executed };
         await this.ctx.serial('session/after-tool', done);
 
-        //M 插件可能改了结果，以改过的为准。
-        const outcome = done.outcome;
-
-        //M 结果写成一条 toolResult：先是文字，后面跟着图片（有的话）。
-        /**
-         * pi-ai `TextContent` 是纯文字内容块。
-         * - `type: 'text'` 用来区分文字与图片等内容块。
-         * - `text` 是工具结果正文。
-         * - `textSignature` 可选，留给带签名的内容块。
-         * 全部字段见 node_modules/@earendil-works/pi-ai/dist/types.d.ts:252。
-         */
-        const textBlock: piAi.TextContent = { type: 'text', text: outcome.text };
-        const images = outcome.images ?? [];
-        /** 给模型看的工具结果，属于 `role: 'toolResult'` 的 `Message`，见本文件 L96。 */
-        const result: piAi.Message = {
-          role: 'toolResult',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [textBlock, ...images],
-          isError: outcome.isError,
-          timestamp: Date.now(),
-        };
-        //M 把打包好的工具结果追加到对话历史并落库广播，供下一步继续喂给模型。
+        //M 插件可能改了结果，以改过的为准；写成一条 toolResult（先文字、后图片，见 SessionHelpers.getToolResultMessage），
+        //M   追加到对话历史并落库广播，供下一步继续喂给模型。
+        const result = sessionHelpers.getToolResultMessage(call, done.outcome);
         this.append(result);
 
         //G 有插件喊停 → 这一轮停在这里。结果已经接进对话（要和工具调用配对）；
@@ -820,21 +703,8 @@ export class Session {
         return;
       }
 
-      //T 跟踪：调模型；插件已经给了回答就写明没有调。
-      let answeredBy = '';
-      if (request.answer !== undefined) {
-        answeredBy = `${request.answer.provider}/${request.answer.model}`;
-      }
-      const vars = {
-        session: this.id, sessionKind: this.row.kind, step: this.row.steps,
-        model: request.model, thinking: request.thinking, systemBefore,
-        systemAfter: request.system.length, toolsCount: request.tools.length,
-        messageCount: request.messages.length, answeredByPlugin: request.answer !== undefined, answeredBy,
-      };
-      let doing = 'trace.sessions.callModel';
-      if (request.answer !== undefined) {
-        doing = 'trace.sessions.answerProvided';
-      }
+      //T 跟踪：调模型；插件已经给了回答就写明没有调（文字键和变量由 SessionHelpers.getModelTrace 拼）。
+      const { doing, vars } = sessionHelpers.getModelTrace(request, systemBefore);
       this.ctx.emit('trace', 'Session.loop', doing, 'ctx.sessions.chat(request)', vars);
 
       //M 采用插件给出的回答，或用本步的信号请求模型。

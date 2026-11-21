@@ -52,6 +52,7 @@ import * as dataFlowModule from './DataFlow.ts';
 import * as filesModule from './Files.ts';
 import * as lanesModule from './Lanes.ts';
 import * as payloadModule from './Payload.ts';
+import * as pluginMapModule from './PluginMap.ts';
 import * as printModule from './Print.ts';
 import * as programsModule from './Programs.ts';
 import * as skeletonModule from './Skeleton.ts';
@@ -133,7 +134,9 @@ export const name = 'tutorial';
 //M 1.1.24：/api/tutorial/canvas 新增端到端数据流转 dataFlow（DataFlow.ts），Source.getCallers 按作用域精准过滤调用方。
 //M 1.1.25：快照文件（data/flow/*.json）改原子写（utils/Files.ts 的 writeTextAtomic），写到一半不会被读成坏 JSON。
 //M 1.2.0：新增真实事件参数载荷捕获（Payload.ts）与 GET /api/tutorial/payload，零改骨架记录前后拷贝与逐路径 diff。
-export const version = '1.2.0';
+//M 1.2.1：新增插件 X 光图谱 GET /api/tutorial/plugin-map（PluginMap.ts）：版本、依赖、听的事件、源码与说明、事件倒排、工具名；
+//M   老的 /api/tutorial/plugins（左栏列表）原样保留，网页三处在用。
+export const version = '1.2.1';
 
 /**
  * 依赖型协议插件：不挂服务、不在自带名单（plugins/Index.ts 的 BUILT_IN）里，但左栏要列出它、能读它的 说明.md。
@@ -551,6 +554,19 @@ class Tutorial {
       //M 查询左栏插件清单，并附带快照关键词与工作区路径供页面跳转 VS Code。
       const list = await this.getPlugins();
       return { list, keyword: this.settings.keyword, workspace: this.workspace };
+    });
+
+    //M 插件 X 光图谱：每个插件的版本、依赖、听的事件、源码和说明，加事件倒排和工具名；?name= 只看一个，没有回 404。
+    app.get<Query>('/api/tutorial/plugin-map', async (request, reply) => {
+      const builtIn = await getBuiltIn();
+      const map = pluginMapModule.inspectPluginMap(this.ctx, this.workspace, builtIn);
+      const name = request.query['name'] ?? '';
+      if (name === '') return map;
+
+      const one = pluginMapModule.pickPlugin(map, name);
+      if (one === undefined) return reply.code(404).send({ ok: false, error: `未找到插件：${name}` });
+
+      return one;
     });
 
     //M 登记插件 说明.md 原文读取接口，先校验插件名防止目录穿越。

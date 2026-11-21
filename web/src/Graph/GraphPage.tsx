@@ -13,6 +13,7 @@ import { Guide } from '../Guide/Guide.tsx';
 import { GRAPH_STEPS } from '../Guide/steps-graph.ts';
 import { COLORS, GraphCanvas } from './GraphCanvas.tsx';
 import { get, type Customer, type Doc, type Graph, type GraphEdge } from './GraphApi.ts';
+import * as saveToKnowledge from '../components/SaveToKnowledge.tsx';
 
 const PARAMS = new URLSearchParams(window.location.search);
 //M 从网址查询参数读取可选机器人名，供后续图谱与检索请求透传限定范围。
@@ -26,6 +27,30 @@ type Side =
   | { type: 'node'; name: string; relations: { id: number; text: string }[]; docs: Doc[] }
   | { type: 'edge'; subject: string; object: string; label: string; text: string; docs: Doc[] }
   | { type: 'doc'; doc: Doc; relations: { id: number; text: string }[] };
+
+/**
+ * 实体存进知识库时的正文：实体名、已加载的关系、关联原文标题，写成 Markdown。
+ * @param name 实体名。
+ * @param relations 右栏已经拉到的关系。
+ * @param docs 右栏已经拉到的关联原文。
+ */
+function getEntityMarkdown(name: string, relations: { id: number; text: string }[], docs: Doc[]): string {
+  const lines = [`# ${name}`, ''];
+  if (relations.length > 0) {
+    lines.push(`## 关系（${String(relations.length)}）`, '');
+    for (const relation of relations) {
+      lines.push(`- ${relation.text}`);
+    }
+    lines.push('');
+  }
+  if (docs.length > 0) {
+    lines.push(`## 关联原文（${String(docs.length)}）`, '');
+    for (const doc of docs) {
+      lines.push(`- #${String(doc.id)} ${doc.title}`);
+    }
+  }
+  return lines.join('\n').trim();
+}
 
 /** 判断异常是否由 AbortController 主动取消触发。 */
 function isAbortError(error: unknown, signal: AbortSignal): boolean {
@@ -121,6 +146,8 @@ export function GraphPage() {
   const [version, setVersion] = useState(0);
   const [found, setFound] = useState<api.MemorySearchResult | null>(null);
   const [side, setSide] = useState<Side>({ type: 'summary' });
+  //M 知识库能不能用（顺带拿目录）：页面打开时探一次，不能用就不显示「存入知识库」。
+  const kbDirs = saveToKnowledge.useKnowledgeDirs();
   const [sideEl, setSideEl] = useState<HTMLElement | null>(null);
   const [banner, setBanner] = useState('');
   const [ready, setReady] = useState(false);
@@ -647,6 +674,18 @@ export function GraphPage() {
           <>
             <h2>实体</h2>
             <div className="mg-chain"><span className="mg-ent">{privacy.text(side.name, mask)}</span></div>
+            {
+              //M 知识库能用、没开打码（打码时不露原文）：给「存入知识库」；换实体时 key 变，面板重新预填。
+            /**/}
+            {kbDirs !== undefined && !mask && (
+              <saveToKnowledge.SaveToKnowledgeButton
+                key={side.name}
+                title={`实体：${side.name}`}
+                content={getEntityMarkdown(side.name, side.relations, side.docs)}
+                dirs={kbDirs}
+                defaultTag="图谱沉淀"
+              />
+            )}
             <h2>连着的关系（{side.relations.length}）</h2>
             {sideEl !== null && side.relations.length > 0 && (
               <virtuoso.Virtuoso

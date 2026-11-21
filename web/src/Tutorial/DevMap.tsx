@@ -1,11 +1,13 @@
 /**
  * 新插件开发速查地图：盖在教程页上的一整屏，按卡片讲会话四关口、HTTP 启动骨架、数据读写断点和三类扩展模板。
- * 每个源码位置可以原地展开真实源码（SourceToggle）、一键跳 VS Code（SiteLink）；模板一键复制（copyText）。
+ * 每个源码位置可以原地展开真实源码（SourceToggle）、一键跳 VS Code（SiteLink）、
+ * 一键复制 file:line 断点（CopySiteButton）；模板一键复制（copyText）。
  * 数据在 DevMapData.ts；由 TutorialPage 在地址带 ?view=dev-map 或点顶栏「开发地图」时 lazy 加载。
  */
 import { useState, type JSX } from 'react';
 import { SiteLink } from '../VscodeLink.tsx';
 import { SourceToggle, copyText } from './Code.tsx';
+import { CopySiteButton } from './PayloadDiff.tsx';
 import { DEV_CARDS, getSite } from './DevMapData.ts';
 import type { DevCard } from './DevMapData.ts';
 import './DevMap.css';
@@ -47,6 +49,7 @@ function CardView(props: { card: DevCard }): JSX.Element {
                 return (
                   <li key={site}>
                     <SiteLink site={site} />
+                    <CopySiteButton site={site} />
                     <SourceToggle site={site} label="看源码" />
                   </li>
                 );

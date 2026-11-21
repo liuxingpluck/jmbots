@@ -338,6 +338,16 @@ describe('knowledge 三表 CRUD、目录环路防护、专题挂载与磁盘镜�
         expect(res.statusCode).toBe(400);
         expect(res.json<{ error: string }>().error).toContain('标签名不能包含逗号');
       }
+      //G 0.7.90 审计：纯点号标签名拼进路径会被规范化吃掉，写入时拒绝；带点的普通名字照常。
+      for (const bad of ['.', '..', '...']) {
+        const payload = { title: 'x', tags: [bad] };
+        const res = await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload });
+        expect(res.statusCode).toBe(400);
+        expect(res.json<{ error: string }>().error).toContain('标签名不能只有点号');
+      }
+      const dottedPayload = { title: 'x', tags: ['v0.7'] };
+      const dotted = await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload: dottedPayload });
+      expect(dotted.statusCode).toBe(200);
       const many = Array.from({ length: 21 }, (_, index) => `t${String(index)}`);
       const tooMany = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs?tags=${many.join(',')}` });
       expect(tooMany.statusCode).toBe(400);
@@ -558,6 +568,163 @@ describe('knowledge 写操作 403 身份核验、memory 搜索桥接与 kb_searc
       expect(detailOut.text).toContain('唯一事务真源');
 
       disposeMem();
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+/** 按文档 ID 在镜像目录里找 meta.json 读出来（YYYYMMDD/<id>_<标题>/meta.json）。 */
+function readMirrorMeta(mirrorRoot: string, id: string): { tags: string[] } | undefined {
+  for (const day of fs.readdirSync(mirrorRoot)) {
+    const dayDir = path.join(mirrorRoot, day);
+    const folder = fs.readdirSync(dayDir).find((name) => name.startsWith(`${id}_`));
+    if (folder !== undefined) return JSON.parse(fs.readFileSync(path.join(dayDir, folder, 'meta.json'), 'utf8'));
+  }
+  return undefined;
+}
+
+
+/** 用本人会话调一次 kb_save，交回工具结果。 */
+async function callSave(h: Awaited<ReturnType<typeof createKnowledgeHarness>>, args: Record<string, unknown>, session?: Session) {
+  const owner = {
+    id: 's-owner',
+    row: { id: 's-owner', kind: 'front', state: 'running', bot: 'main', messages: [] },
+  } as unknown as Session;
+  const toolArgs = args as Parameters<typeof h.tools.execute>[0]['arguments'];
+  const call = { type: 'toolCall' as const, id: `save-${String(Date.now())}`, name: 'kb_save', arguments: toolArgs };
+  return await h.tools.execute(call, session ?? owner, new AbortController().signal);
+}
+
+
+describe('knowledge 1.0.2：kb_save 写工具、标签治理与相关文档推荐', () => {
+  test('kb_save：前后台都有；新建要标题正文；追加不盖原文；替换要 baseUpdatedAt，过期给最新时间；外人拒绝', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      expect(h.tools.listToolsForSessionKind('front').map((t) => t.name)).toContain('kb_save');
+      expect(h.tools.listToolsForSessionKind('work').map((t) => t.name)).toContain('kb_save');
+
+      //M 新建：缺正文报错；齐了建出来，标签去 # 去重。
+      const missing = await callSave(h, { title: '只有标题' });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain('title 和 content');
+      const created = await callSave(h, { title: 'AOBB 方案', content: '第一段', tags: ['#AOBB', 'aobb', '浏览器'] });
+      expect(created.isError).toBe(false);
+      const docId = /docId=(\S+)/u.exec(created.text)?.[1] ?? '';
+      const fresh = (await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${docId}` })).json().doc;
+      expect(fresh.sourceType).toBe('note');
+      expect(fresh.tags.sort()).toEqual(['AOBB', '浏览器'].sort());
+
+      //M 追加（默认）：原文原样留着，新内容空一行接在后面。
+      const appended = await callSave(h, { docId, content: '第二段' });
+      expect(appended.isError).toBe(false);
+      const afterAppend = (await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${docId}` })).json().doc;
+      expect(afterAppend.content).toBe('第一段\n\n第二段');
+
+      //M 替换：不带 baseUpdatedAt 拒绝；带旧的拒绝并给出最新 updatedAt；带对的才替换。
+      const noBase = await callSave(h, { docId, mode: 'replace', content: '全新' });
+      expect(noBase.isError).toBe(true);
+      expect(noBase.text).toContain(String(afterAppend.updatedAt));
+      const stale = await callSave(h, { docId, mode: 'replace', content: '全新', baseUpdatedAt: afterAppend.updatedAt - 1 });
+      expect(stale.isError).toBe(true);
+      expect(stale.text).toContain(`最新 updatedAt 是 ${String(afterAppend.updatedAt)}`);
+      const replaced = await callSave(h, { docId, mode: 'replace', content: '全新', baseUpdatedAt: afterAppend.updatedAt });
+      expect(replaced.isError).toBe(false);
+      expect((await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${docId}` })).json().doc.content).toBe('全新');
+
+      //M 标签超 20 个、文档不存在都报错。
+      const many = Array.from({ length: 21 }, (_v, i) => `t${String(i)}`);
+      expect((await callSave(h, { title: 'x', content: 'y', tags: many })).text).toContain('最多 20 个');
+      expect((await callSave(h, { docId: 'nope', content: 'y' })).text).toContain('没有这篇');
+
+      //M 外人（飞书 guest）那一轮：拒绝写。
+      const guest = {
+        id: 's-guest',
+        row: { id: 's-guest', kind: 'front', state: 'running', bot: 'main', messages: [], channel: 'feishu',
+          address: { role: 'guest' } },
+      } as unknown as Session;
+      const denied = await callSave(h, { title: '外人写的', content: '内容' }, guest);
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain('只有本人');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('标签治理：改名、并进已有标签、删除都刷镜像；不存在回 404，未核验回 403', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const make = async (title: string, tags: string[]) => {
+        const res = await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload: { title, content: '正文', tags } });
+        return res.json().doc.id as string;
+      };
+      const a = await make('甲', ['旧名', '公共']);
+      const b = await make('乙', ['旧名']);
+      const c = await make('丙', ['公共']);
+
+      //M 改名：新名字没有 → 原地改名。
+      const renamed = await h.app.inject({ method: 'PUT', url: `/api/knowledge/tags/${encodeURIComponent('旧名')}`, payload: { newName: '新名' } });
+      const renamedBody: unknown = renamed.json();
+      expect(renamedBody).toEqual({ ok: true, oldName: '旧名', newName: '新名', merged: false, affectedDocs: 2 });
+      expect(readMirrorMeta(h.mirrorRoot, b)?.tags).toEqual(['新名']);
+
+      //M 合并：新名字已存在 → 甲两个都挂着（主键冲突忽略），乙、丙都并到「公共」。
+      const merged = await h.app.inject({ method: 'PUT', url: `/api/knowledge/tags/${encodeURIComponent('新名')}`, payload: { newName: '公共' } });
+      const mergedBody: unknown = merged.json();
+      expect(mergedBody).toEqual({ ok: true, oldName: '新名', newName: '公共', merged: true, affectedDocs: 2 });
+      expect(readMirrorMeta(h.mirrorRoot, a)?.tags).toEqual(['公共']);
+      expect(readMirrorMeta(h.mirrorRoot, b)?.tags).toEqual(['公共']);
+      const tree = (await h.app.inject({ method: 'GET', url: '/api/knowledge/tree' })).json();
+      expect(tree.tags).toEqual([expect.objectContaining({ name: '公共', docCount: 3 })]);
+
+      //M 删除：解除关联、文档还在、镜像里标签清空。
+      const removed = await h.app.inject({ method: 'DELETE', url: `/api/knowledge/tags/${encodeURIComponent('公共')}` });
+      const removedBody: unknown = removed.json();
+      expect(removedBody).toEqual({ ok: true, name: '公共', affectedDocs: 3 });
+      expect(readMirrorMeta(h.mirrorRoot, c)?.tags).toEqual([]);
+      expect((await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${c}` })).statusCode).toBe(200);
+
+      //M 边界：不存在 404；新名字带逗号 400；缺 newName 400；未核验 403。
+      expect((await h.app.inject({ method: 'DELETE', url: '/api/knowledge/tags/nothing' })).statusCode).toBe(404);
+      await make('丁', ['某'] );
+      expect((await h.app.inject({ method: 'PUT', url: '/api/knowledge/tags/%E6%9F%90', payload: { newName: 'a,b' } })).statusCode).toBe(400);
+      expect((await h.app.inject({ method: 'PUT', url: '/api/knowledge/tags/%E6%9F%90', payload: {} })).statusCode).toBe(400);
+      h.setVerified(false);
+      expect((await h.app.inject({ method: 'PUT', url: '/api/knowledge/tags/%E6%9F%90', payload: { newName: 'x' } })).statusCode).toBe(403);
+      expect((await h.app.inject({ method: 'DELETE', url: '/api/knowledge/tags/%E6%9F%90' })).statusCode).toBe(403);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('相关文档：同专题 +3、共同标签各 +2、同目录 +1，排除自己和 0 分，同分新的在前，limit 生效，不存在 404', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      await h.app.inject({ method: 'POST', url: '/api/knowledge/dirs', payload: { id: 'dir_x', name: '目录' } });
+      const make = async (payload: Record<string, unknown>) => {
+        const res = await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload: { content: '正文', ...payload } });
+        return res.json().doc.id as string;
+      };
+      const self = await make({ title: '本篇', topicId: 'h60-aobb', dirId: 'dir_x', tags: ['AOBB', '浏览器'] });
+      const topicAndTag = await make({ title: '同专题同标签', topicId: 'h60-aobb', tags: ['AOBB'] });
+      const twoTags = await make({ title: '两个共同标签', tags: ['AOBB', '浏览器'] });
+      const dirOnlyOld = await make({ title: '同目录旧', dirId: 'dir_x' });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const dirOnlyNew = await make({ title: '同目录新', dirId: 'dir_x' });
+      await make({ title: '无关', tags: ['别的'] });
+
+      const res = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${self}/related` });
+      const body = res.json();
+      expect(body.docId).toBe(self);
+      expect(body.items.map((item: { id: string }) => item.id)).toEqual([topicAndTag, twoTags, dirOnlyNew, dirOnlyOld]);
+      expect(body.items.map((item: { score: number }) => item.score)).toEqual([5, 4, 1, 1]);
+      expect(body.items[0].reasons).toEqual(['同专题', '共同标签: AOBB']);
+      expect(body.items[1].reasons).toEqual(['共同标签: AOBB、浏览器']);
+      expect(body.items[2].reasons).toEqual(['同目录']);
+
+      const limited = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${self}/related?limit=2` });
+      expect(limited.json().items.length).toBe(2);
+      expect((await h.app.inject({ method: 'GET', url: '/api/knowledge/docs/nope/related' })).statusCode).toBe(404);
     } finally {
       await h.close();
     }

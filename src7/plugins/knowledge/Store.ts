@@ -143,6 +143,10 @@ export function normalizeTags(raw: readonly string[] | undefined): string[] {
     if (/[,，]/u.test(cleaned)) {
       throw new failureModule.Failure(400, `标签名不能包含逗号：${cleaned}`);
     }
+    //G 纯点号（. ..）拼进 /tags/:name 会被浏览器按路径规范化吃掉，改名、删除打到别的地址（0.7.90 审计）。
+    if (/^\.+$/u.test(cleaned)) {
+      throw new failureModule.Failure(400, `标签名不能只有点号：${cleaned}`);
+    }
     const key = cleaned.toLowerCase();
     if (seen.has(key)) continue;
 
@@ -947,5 +951,200 @@ export class KnowledgeStore {
 
     hits.sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt);
     return hits.slice(0, maxHits);
+  }
+
+  //----------------------------------------------------------
+  // 标签治理（改名、并进已有标签、删除）与相关文档推荐（1.0.2）
+  //----------------------------------------------------------
+
+  /** 按名字（大小写不敏感）找标签。 */
+  private findTag(name: string): { id: string; name: string } | undefined {
+    const sql = 'SELECT id, name FROM kb_tags WHERE name = ? COLLATE NOCASE';
+    const cleaned = name.trim().replace(/^#+/u, '').trim();
+    const row = this.db.query<{ id: string; name: string }, [string]>(sql).get(cleaned);
+    if (row === null) return undefined;
+
+    return row;
+  }
+
+  /** 挂着某个标签的文档 ID。 */
+  private getTagDocIds(tagId: string): string[] {
+    const sql = 'SELECT doc_id FROM kb_doc_tags WHERE tag_id = ?';
+    return this.db.query<{ doc_id: string }, [string]>(sql).all(tagId).map((row) => row.doc_id);
+  }
+
+  /**
+   * 标签变了的文档：updated_at 记成现在（打开着编辑框的人再存会拿到 409 去刷新，不会把旧标签写回来），再刷磁盘镜像。
+   * 调用方在事务里先改好关联，本函数在事务里只改时间，镜像在事务外刷。
+   */
+  private touchDocs(docIds: readonly string[], now: number): void {
+    for (const docId of docIds) {
+      this.db.query('UPDATE kb_docs SET updated_at = ? WHERE id = ?').run(now, docId);
+    }
+  }
+
+  /** 事务提交后刷新这批文档的磁盘镜像。 */
+  private refreshMirrors(docIds: readonly string[]): void {
+    for (const docId of docIds) {
+      const doc = this.getDoc(docId);
+      if (doc !== undefined) {
+        this.syncMirrorWrite(doc);
+      }
+    }
+  }
+
+  /**
+   * 标签改名；新名字已经有了就并进去（原标签的文档挂到新标签上，原标签删掉）。
+   * @param oldName 原标签名（大小写不敏感）。
+   * @param newName 新标签名，照 normalizeTags 的规矩查（不能空、不能带逗号、最多 64 字）。
+   * @returns 改名还是合并、影响了几篇。
+   * @throws Failure(404) 原标签不存在；Failure(400) 新名字不合法。
+   */
+  renameTag(oldName: string, newName: string): Omit<types.KnowledgeTagRenameResult, 'ok'> {
+    const cleaned = normalizeTags([newName]);
+    if (cleaned.length !== 1) {
+      throw new failureModule.Failure(400, '新标签名不能为空');
+    }
+    const target = cleaned[0]!;
+    const source = this.findTag(oldName);
+    if (source === undefined) {
+      throw new failureModule.Failure(404, `标签不存在：${oldName}`);
+    }
+
+    //M 新名字是另一个已有标签：合并进去；是它自己（只改大小写）或还没有：原地改名。
+    const existing = this.findTag(target);
+    let mergeId = '';
+    let newNameStored = target;
+    if (existing !== undefined && existing.id !== source.id) {
+      mergeId = existing.id;
+      newNameStored = existing.name;
+    }
+    const merged = mergeId !== '';
+    const docIds = this.getTagDocIds(source.id);
+    const now = Date.now();
+    this.runTx(() => {
+      if (merged) {
+        //M INSERT OR IGNORE：两个标签都挂着的文档，主键冲突就跳过。
+        const moveSql = 'INSERT OR IGNORE INTO kb_doc_tags (doc_id, tag_id)'
+          + ' SELECT doc_id, ? FROM kb_doc_tags WHERE tag_id = ?';
+        this.db.query(moveSql).run(mergeId, source.id);
+        this.db.query('DELETE FROM kb_doc_tags WHERE tag_id = ?').run(source.id);
+        this.db.query('DELETE FROM kb_tags WHERE id = ?').run(source.id);
+      }
+      if (!merged) {
+        this.db.query('UPDATE kb_tags SET name = ? WHERE id = ?').run(target, source.id);
+      }
+      this.touchDocs(docIds, now);
+    });
+    this.refreshMirrors(docIds);
+    return { oldName: source.name, newName: newNameStored, merged, affectedDocs: docIds.length };
+  }
+
+  /**
+   * 删除标签：解除它和所有文档的关联再删掉，文档本身不动。
+   * @param name 标签名（大小写不敏感）。
+   * @returns 删掉的名字和影响了几篇。
+   * @throws Failure(404) 标签不存在。
+   */
+  deleteTag(name: string): Omit<types.KnowledgeTagDeleteResult, 'ok'> {
+    const tag = this.findTag(name);
+    if (tag === undefined) {
+      throw new failureModule.Failure(404, `标签不存在：${name}`);
+    }
+
+    const docIds = this.getTagDocIds(tag.id);
+    const now = Date.now();
+    this.runTx(() => {
+      this.db.query('DELETE FROM kb_doc_tags WHERE tag_id = ?').run(tag.id);
+      this.db.query('DELETE FROM kb_tags WHERE id = ?').run(tag.id);
+      this.touchDocs(docIds, now);
+    });
+    this.refreshMirrors(docIds);
+    return { name: tag.name, affectedDocs: docIds.length };
+  }
+
+  /**
+   * 相关文档：同专题 +3、每个共同标签 +2、同目录 +1，只要分大于 0 的，排除自己；分高的在前，同分新的在前。
+   * @param id 文档 ID。
+   * @param limit 最多几篇（调用方已限在 1～20）。
+   * @returns 相关文档。
+   * @throws Failure(404) 文档不存在。
+   */
+  getRelated(id: string, limit: number): types.KnowledgeRelatedItem[] {
+    const doc = this.getDoc(id);
+    if (doc === undefined) {
+      throw new failureModule.Failure(404, `文档不存在：${id}`);
+    }
+
+    //M 攒每篇候选：同专题、同目录、共同标签各查一次，最后统一算分、拼理由。
+    const found = new Map<string, { sameTopic: boolean; sameDir: boolean; shared: string[] }>();
+    const getEntry = (docId: string) => {
+      const entry = found.get(docId) ?? { sameTopic: false, sameDir: false, shared: [] };
+      found.set(docId, entry);
+      return entry;
+    };
+    const idSql = 'SELECT id FROM kb_docs WHERE {column} = ? AND id != ?';
+    if (doc.topicId !== null) {
+      const topicSql = idSql.replace('{column}', 'topic_id');
+      for (const row of this.db.query<{ id: string }, [string, string]>(topicSql).all(doc.topicId, id)) {
+        getEntry(row.id).sameTopic = true;
+      }
+    }
+    const tagSql = `
+      SELECT dt.doc_id, t.name
+      FROM kb_doc_tags dt
+      JOIN kb_tags t ON t.id = dt.tag_id
+      WHERE dt.tag_id IN (SELECT tag_id FROM kb_doc_tags WHERE doc_id = ?) AND dt.doc_id != ?
+      ORDER BY t.name COLLATE NOCASE ASC
+    `;
+    for (const row of this.db.query<DocTagRow, [string, string]>(tagSql).all(id, id)) {
+      getEntry(row.doc_id).shared.push(row.name);
+    }
+    if (doc.dirId !== null) {
+      const dirSql = idSql.replace('{column}', 'dir_id');
+      for (const row of this.db.query<{ id: string }, [string, string]>(dirSql).all(doc.dirId, id)) {
+        getEntry(row.id).sameDir = true;
+      }
+    }
+    if (found.size === 0) return [];
+
+    //M 取候选的摘要和标签，算分（同专题 +3、每个共同标签 +2、同目录 +1）、拼理由，排序截断。
+    const ids = [...found.keys()];
+    const placeholders = ids.map(() => '?').join(', ');
+    const listSql = `
+      SELECT id, dir_id, topic_id, title, summary, '' AS content, source_path, source_type, created_at, updated_at
+      FROM kb_docs WHERE id IN (${placeholders})
+    `;
+    const rows = this.db.query<DocRow, string[]>(listSql).all(...ids);
+    const tagMap = this.loadTagsByDocIds(ids);
+    const items = rows.map((row): types.KnowledgeRelatedItem => {
+      const entry = found.get(row.id)!;
+      const reasons: string[] = [];
+      let score = entry.shared.length * 2;
+      if (entry.sameTopic) {
+        score += 3;
+        reasons.push('同专题');
+      }
+      if (entry.shared.length > 0) {
+        reasons.push(`共同标签: ${entry.shared.join('、')}`);
+      }
+      if (entry.sameDir) {
+        score += 1;
+        reasons.push('同目录');
+      }
+      return {
+        id: row.id,
+        title: row.title,
+        summary: row.summary,
+        dirId: row.dir_id,
+        topicId: row.topic_id,
+        tags: tagMap.get(row.id) ?? [],
+        score,
+        reasons,
+        updatedAt: row.updated_at,
+      };
+    });
+    items.sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt);
+    return items.slice(0, limit);
   }
 }

@@ -1,0 +1,316 @@
+/*
+ * 插件 X 光（PluginMapView.tsx）：盖满教程页整屏，颜色全取 --jm-* 变量（深色、浅色都跟着主题走），手机竖屏单列。
+ */
+
+.tu-pm {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  background: var(--jm-bg);
+  color: var(--jm-text);
+}
+
+/* 顶栏：标题、汇总、刷新、关闭。 */
+.tu-pm-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--jm-panel);
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.tu-pm-brand {
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tu-pm-stats {
+  color: var(--jm-muted);
+  font-size: 13px;
+}
+
+.tu-pm-grow {
+  flex: 1;
+}
+
+.tu-pm-btn {
+  padding: 4px 12px;
+  color: var(--jm-text);
+  background: transparent;
+  border: 1px solid var(--jm-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tu-pm-btn:hover {
+  border-color: var(--jm-accent);
+}
+
+/* 筛选条：搜索框和两种看法。 */
+.tu-pm-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.tu-pm-search {
+  flex: 1;
+  min-width: 200px;
+  height: 32px;
+  padding: 0 12px;
+  color: var(--jm-text);
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+}
+
+.tu-pm-modes {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+}
+
+.tu-pm-modes button {
+  height: 28px;
+  padding: 0 12px;
+  color: var(--jm-muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tu-pm-modes button[aria-pressed="true"] {
+  color: var(--jm-text);
+  background: color-mix(in srgb, var(--jm-accent) 18%, transparent);
+}
+
+.tu-pm-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 40px;
+}
+
+.tu-pm-muted {
+  color: var(--jm-muted);
+  font-size: 13px;
+}
+
+.tu-pm-notice {
+  padding: 14px 16px;
+  color: var(--jm-text);
+  background: var(--jm-panel);
+  border: 1px dashed var(--jm-border);
+  border-radius: 8px;
+}
+
+/* 按插件看：卡片网格。 */
+.tu-pm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.tu-pm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+}
+
+.tu-pm-card[data-focused="true"],
+.tu-pm-pipe[data-focused="true"] {
+  border-color: var(--jm-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--jm-accent) 35%, transparent);
+}
+
+.tu-pm-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tu-pm-version {
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.tu-pm-summary {
+  margin: 0;
+  color: var(--jm-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tu-pm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.tu-pm-label {
+  margin-right: 2px;
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.tu-pm-chip {
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--jm-text);
+  background: color-mix(in srgb, var(--jm-text) 8%, transparent);
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+button.tu-pm-chip {
+  cursor: pointer;
+}
+
+button.tu-pm-chip:hover {
+  border-color: var(--jm-accent);
+}
+
+.tu-pm-chip[data-kind="inject"] {
+  color: color-mix(in srgb, #7ce1ad 70%, var(--jm-text));
+}
+
+.tu-pm-chip[data-kind="event"],
+.tu-pm-chip[data-kind="plugin"] {
+  color: var(--jm-accent);
+  background: color-mix(in srgb, var(--jm-accent) 12%, transparent);
+}
+
+.tu-pm-chip[data-core="true"] {
+  font-weight: 600;
+}
+
+.tu-pm-chip[data-kind="internal"],
+.tu-pm-chip[data-kind="tool"] {
+  color: var(--jm-muted);
+}
+
+.tu-pm-internal summary,
+.tu-pm-tools summary {
+  color: var(--jm-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tu-pm-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.tu-pm-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--jm-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 按事件看：每个事件一条横向管道。 */
+.tu-pm-pipes {
+  display: grid;
+  gap: 8px;
+}
+
+.tu-pm-pipe {
+  padding: 10px 14px;
+  background: var(--jm-panel);
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+}
+
+.tu-pm-pipe[data-core="true"] {
+  border-left: 3px solid color-mix(in srgb, #f1c779 80%, var(--jm-text));
+}
+
+.tu-pm-pipe-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tu-pm-core {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  color: color-mix(in srgb, #f1c779 80%, var(--jm-text));
+  background: color-mix(in srgb, #f1c779 14%, transparent);
+  border-radius: 4px;
+}
+
+.tu-pm-count {
+  color: var(--jm-muted);
+  font-size: 12px;
+}
+
+.tu-pm-pipe-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.tu-pm-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tu-pm-arrow {
+  color: var(--jm-muted);
+}
+
+.tu-pm-tools {
+  margin-top: 18px;
+}
+
+.tu-pm-tools .tu-pm-row {
+  margin-top: 8px;
+}
+
+/* 手机竖屏：单列、顶栏收紧。 */
+@media (max-width: 799px) {
+  .tu-pm-top,
+  .tu-pm-bar {
+    padding: 8px 12px;
+  }
+
+  .tu-pm-stats {
+    display: none;
+  }
+
+  .tu-pm-body {
+    padding: 12px 12px 40px;
+  }
+
+  .tu-pm-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -99,8 +99,8 @@ async function setupTutorial(
 
 
 describe('Payload 真实事件载荷采集与 Diff', () => {
-  test('tutorial 版本升为 1.2.0 且默认白名单包含设计文档规定的 15 个事件', () => {
-    expect(tutorialModule.version).toBe('1.2.0');
+  test('tutorial 版本至少 1.2.0（现 1.2.1）且默认白名单包含设计文档规定的 15 个事件', () => {
+    expect(tutorialModule.version).toBe('1.2.1');
     expect(payloadModule.DEFAULT_PAYLOAD_EVENTS).toEqual([
       'channel/direct',
       'channel/mention',

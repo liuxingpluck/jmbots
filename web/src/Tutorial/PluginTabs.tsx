@@ -9,7 +9,15 @@
 import { useContext, useEffect, useState, type JSX } from 'react';
 import * as antd from 'antd';
 import * as virtuoso from 'react-virtuoso';
-import { CallerList, SiteLink, SourceToggle, SourceView, TutorialScrollContext, VIRTUAL_THRESHOLD, getSiteParts } from './Code.tsx';
+import {
+  CallerList,
+  SiteLink,
+  SourceToggle,
+  SourceView,
+  TutorialScrollContext,
+  VIRTUAL_THRESHOLD,
+  getSiteParts,
+} from './Code.tsx';
 import { TutorialApi, type CodeRoute, type PluginCodeInfo, type TryResult } from './TutorialApi.ts';
 
 
@@ -41,7 +49,12 @@ function useCodeInfo(name: string): { info: PluginCodeInfo | null; error: string
  * @param props.site 文件:行号；空串是找不到位置。
  * @param props.callers 谁调它：函数用 CallerList 现查；接口自己给列表；工具不给。
  */
-function CodeEntry(props: { title: string; summary: string; site: string; callers: 'function' | CodeRoute['callers'] | null }): JSX.Element {
+function CodeEntry(props: {
+  title: string;
+  summary: string;
+  site: string;
+  callers: 'function' | CodeRoute['callers'] | null;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   //M 解析代码位置字符串的文件与行号，用以控制“展开”按钮和源码查看器。
   const parts = getSiteParts(props.site);
@@ -59,7 +72,9 @@ function CodeEntry(props: { title: string; summary: string; site: string; caller
           <code className="tu-fn-name">{props.title}</code>
           {props.summary !== '' && <span className="tu-muted"> {props.summary}</span>}
         </span>
-        {parts !== undefined && <button type="button" className="tu-link" onClick={() => setOpen(!open)}>{word}</button>}
+        {parts !== undefined && (
+          <button type="button" className="tu-link" onClick={() => setOpen(!open)}>{word}</button>
+        )}
       </div>
       <div className="tu-site">
         {props.site === '' && <span>位置：没找到</span>}
@@ -190,7 +205,13 @@ export function CodeTab(props: { name: string }): JSX.Element {
       {!virtRoutes && info.routes.length > 0 && (
         <div className="tu-entries">
           {info.routes.map((item) => (
-            <CodeEntry key={`${item.method} ${item.url}`} title={`${item.method} ${item.url}`} summary="" site={item.site} callers={item.callers} />
+            <CodeEntry
+              key={`${item.method} ${item.url}`}
+              title={`${item.method} ${item.url}`}
+              summary=""
+              site={item.site}
+              callers={item.callers}
+            />
           ))}
         </div>
       )}
@@ -205,7 +226,12 @@ export function CodeTab(props: { name: string }): JSX.Element {
             data={info.tools}
             computeItemKey={(_index, item) => item.name}
             itemContent={(_index, item) => (
-              <CodeEntry title={item.name} summary={`${item.summary}（会话：${item.kinds.join('、')}）`} site={item.site} callers={null} />
+              <CodeEntry
+                title={item.name}
+                summary={`${item.summary}（会话：${item.kinds.join('、')}）`}
+                site={item.site}
+                callers={null}
+              />
             )}
           />
         </div>
@@ -213,7 +239,13 @@ export function CodeTab(props: { name: string }): JSX.Element {
       {!virtTools && info.tools.length > 0 && (
         <div className="tu-entries">
           {info.tools.map((item) => (
-            <CodeEntry key={item.name} title={item.name} summary={`${item.summary}（会话：${item.kinds.join('、')}）`} site={item.site} callers={null} />
+            <CodeEntry
+              key={item.name}
+              title={item.name}
+              summary={`${item.summary}（会话：${item.kinds.join('、')}）`}
+              site={item.site}
+              callers={null}
+            />
           ))}
         </div>
       )}
@@ -276,10 +308,21 @@ function TryForm(props: { route: CodeRoute }): JSX.Element {
         <label>路径</label>
         <antd.Input size="small" value={path} onChange={(event) => setPath(event.target.value)} />
         <label>查询串</label>
-        <antd.Input size="small" placeholder="如 name=http&step=1（不带问号）" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <antd.Input
+          size="small"
+          placeholder="如 name=http&step=1（不带问号）"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
         {route.method !== 'GET' && <label>JSON 正文</label>}
         {route.method !== 'GET' && (
-          <antd.Input.TextArea size="small" rows={3} placeholder='如 {"name":"x"}' value={body} onChange={(event) => setBody(event.target.value)} />
+          <antd.Input.TextArea
+            size="small"
+            rows={3}
+            placeholder='如 {"name":"x"}'
+            value={body}
+            onChange={(event) => setBody(event.target.value)}
+          />
         )}
       </div>
       <antd.Button size="small" type="primary" loading={sending} onClick={send}>发送</antd.Button>

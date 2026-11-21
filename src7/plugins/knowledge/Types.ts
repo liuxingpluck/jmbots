@@ -243,3 +243,63 @@ export interface KnowledgeSearchResponse {
   /** memory 部分不可用时的温和说明（不阻塞主响应）。 */
   memoryWarning?: string;
 }
+
+//==========================================================
+// 标签治理与相关文档推荐（1.0.2）
+//==========================================================
+
+/** PUT /api/knowledge/tags/:name 响应：改名或并进已有标签。 */
+export interface KnowledgeTagRenameResult {
+  /** 是否成功。 */
+  ok: true;
+  /** 原标签名（库里存的写法）。 */
+  oldName: string;
+  /** 新标签名。 */
+  newName: string;
+  /** 新名字已存在、并进去了为 true；只是改名为 false。 */
+  merged: boolean;
+  /** 受影响的文档数。 */
+  affectedDocs: number;
+}
+
+/** DELETE /api/knowledge/tags/:name 响应。 */
+export interface KnowledgeTagDeleteResult {
+  /** 是否成功。 */
+  ok: true;
+  /** 删掉的标签名（库里存的写法）。 */
+  name: string;
+  /** 解除了关联的文档数。 */
+  affectedDocs: number;
+}
+
+/** 相关文档推荐的一项。 */
+export interface KnowledgeRelatedItem {
+  /** 文档 ID。 */
+  id: string;
+  /** 标题。 */
+  title: string;
+  /** 摘要。 */
+  summary: string;
+  /** 所在目录 ID。 */
+  dirId: string | null;
+  /** 关联专题 ID。 */
+  topicId: string | null;
+  /** 标签。 */
+  tags: string[];
+  /** 相关分：同专题 +3、每个共同标签 +2、同目录 +1。 */
+  score: number;
+  /** 为什么相关，如 ['同专题', '共同标签: AOBB']。 */
+  reasons: string[];
+  /** 最近修改毫秒时间戳。 */
+  updatedAt: number;
+}
+
+/** GET /api/knowledge/docs/:id/related 响应。 */
+export interface KnowledgeRelatedResponse {
+  /** 是否成功。 */
+  ok: true;
+  /** 查的是哪篇。 */
+  docId: string;
+  /** 相关文档，分高的在前，同分新的在前。 */
+  items: KnowledgeRelatedItem[];
+}

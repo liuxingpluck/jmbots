@@ -338,7 +338,8 @@ function splitMarkdownBlocks(text: string): MarkdownBlock[] {
     while (index < lines.length) {
       const rowLine = lines[index] ?? '';
       const rowTrimmed = rowLine.trim();
-      if (rowTrimmed === '' || !rowTrimmed.includes('|') || rowTrimmed.startsWith('#') || rowTrimmed.startsWith('```')) {
+      const notTableRow = rowTrimmed === '' || !rowTrimmed.includes('|');
+      if (notTableRow || rowTrimmed.startsWith('#') || rowTrimmed.startsWith('```')) {
         index -= 1;
         break;
       }
@@ -607,7 +608,9 @@ export function MarkdownContent(props: {
         if (block.kind === 'md') {
           return (
             <div key={`md-${String(blockIndex)}`} className="tu-markdown">
-              <reactMarkdown.default remarkPlugins={[remarkGfm]} components={linkComponents}>{block.text}</reactMarkdown.default>
+              <reactMarkdown.default remarkPlugins={[remarkGfm]} components={linkComponents}>
+                {block.text}
+              </reactMarkdown.default>
             </div>
           );
         }
@@ -623,18 +626,21 @@ export function MarkdownContent(props: {
 
         const columns = block.headers.map((header, colIndex) => {
           const cleanHeader = header.trim();
-          const isSiteCol = cleanHeader.includes('位置') || cleanHeader.includes('源码') || cleanHeader.includes('在哪') || cleanHeader.includes('谁在调') || cleanHeader.includes('文件');
+          const siteWords = ['位置', '源码', '在哪', '谁在调', '文件'];
+          const isSiteCol = siteWords.some((word) => cleanHeader.includes(word));
           return {
             title: <InlineMarkdown text={header} />,
             dataIndex: `c${String(colIndex)}`,
             key: `c${String(colIndex)}`,
             width: colWidth,
             render: (value: string) => {
-              if (isDepTable && colIndex === 0 && props.pluginNames !== undefined && props.onSelectPlugin !== undefined) {
+              const pluginNames = props.pluginNames;
+              const onSelectPlugin = props.onSelectPlugin;
+              if (isDepTable && colIndex === 0 && pluginNames !== undefined && onSelectPlugin !== undefined) {
                 //M 解析依赖表首列的服务名为左栏可跳插件名，非骨架服务才做成按钮。
-                const target = resolvePluginName(value, props.pluginNames);
+                const target = resolvePluginName(value, pluginNames);
                 if (target !== undefined) {
-                  const selectPlugin = props.onSelectPlugin;
+                  const selectPlugin = onSelectPlugin;
                   return (
                     <button type="button" className="tu-dep-inline" onClick={() => selectPlugin(target)}>
                       <InlineMarkdown text={value} />
@@ -827,7 +833,8 @@ function OverviewTab(props: {
   if (versionLabel === '') {
     versionLabel = '未标版本号';
   }
-  const hasDocMismatch = parsed !== null && parsed.docVersion !== '' && plugin.version !== '' && parsed.docVersion !== `v${plugin.version}`;
+  const bothVersions = parsed !== null && parsed.docVersion !== '' && plugin.version !== '';
+  const hasDocMismatch = bothVersions && parsed.docVersion !== `v${plugin.version}`;
 
   let depBody = '';
   if (parsed !== null) {
@@ -927,7 +934,12 @@ function OverviewTab(props: {
  * @param secondary 次段正文。
  * @param pluginFolder 当前插件目录（供位置列直接展开看实现）。
  */
-function CombinedSection(props: { primary: string; secondaryTitle: string; secondary: string; pluginFolder?: string }): JSX.Element {
+function CombinedSection(props: {
+  primary: string;
+  secondaryTitle: string;
+  secondary: string;
+  pluginFolder?: string;
+}): JSX.Element {
   //M 分别检测主段与次段是否实质内容为空（或标为“无”），决定展示内容还是统一显示“无”。
   const hasPrimary = !isNoneSection(props.primary);
   const hasSecondary = !isNoneSection(props.secondary);
@@ -1052,8 +1064,10 @@ export function buildReadmeTabItems(params: {
   const pluginFolder = getPluginFolder(params.plugin.name);
 
   //M 按各分栏对应正文的实质内容判定为空或“无”，统一将空页签置灰禁用。
-  const eventsDisabled = parsed === null || (isNoneSection(parsed.listenedEvents) && isNoneSection(parsed.emittedEvents));
-  const publicDisabled = parsed === null || (isNoneSection(parsed.publicFunctions) && isNoneSection(parsed.paramFields));
+  const noEvents = parsed !== null && isNoneSection(parsed.listenedEvents) && isNoneSection(parsed.emittedEvents);
+  const eventsDisabled = parsed === null || noEvents;
+  const noPublic = parsed !== null && isNoneSection(parsed.publicFunctions) && isNoneSection(parsed.paramFields);
+  const publicDisabled = parsed === null || noPublic;
   const internalDisabled = parsed === null || isNoneSection(parsed.internalFunctions);
   const dataDisabled = parsed === null || (isNoneSection(parsed.data) && isNoneSection(parsed.dataFields));
   const configDisabled = parsed === null || isNoneSection(parsed.config);
@@ -1092,7 +1106,12 @@ export function buildReadmeTabItems(params: {
       label: '对外函数',
       disabled: publicDisabled,
       children: parsed !== null && (
-        <CombinedSection primary={parsed.publicFunctions} secondaryTitle="参数字段明细" secondary={parsed.paramFields} pluginFolder={pluginFolder} />
+        <CombinedSection
+          primary={parsed.publicFunctions}
+          secondaryTitle="参数字段明细"
+          secondary={parsed.paramFields}
+          pluginFolder={pluginFolder}
+        />
       ),
     },
     {
@@ -1106,7 +1125,12 @@ export function buildReadmeTabItems(params: {
       label: '数据',
       disabled: dataDisabled,
       children: parsed !== null && (
-        <CombinedSection primary={parsed.data} secondaryTitle="数据字段表" secondary={parsed.dataFields} pluginFolder={pluginFolder} />
+        <CombinedSection
+          primary={parsed.data}
+          secondaryTitle="数据字段表"
+          secondary={parsed.dataFields}
+          pluginFolder={pluginFolder}
+        />
       ),
     },
     {

@@ -589,3 +589,54 @@ test('前端四象限自动归类与手动覆盖规则合理分布于 Q1~Q4 且�
   const activeOnly = quadrants.filterQuadrantEntries(built, 'active');
   expect(activeOnly.map((item) => item.node.id)).toEqual(['p-core', 'p-clean', 'w-core']);
 });
+
+
+test('work_topics 前后台本人可查：概览、按状态和关键词筛、看详情、limit，外人会话被拒', async () => {
+  const { app, tools } = await setup();
+  //M 合成四个节点：目标进行中、待定带选项、已完成带英文关键词、已放弃。
+  const done = { id: 'docs', kind: 'feature', title: '补说明', parent: 'goal', status: 'done', summary: '写 Alpha 说明' };
+  const dropped = { id: 'old', kind: 'feature', title: '旧方案', parent: 'goal', status: 'dropped' };
+  const payload = [entries[0], entries[1], done, dropped];
+  const seeded = await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload });
+  expect(seeded.statusCode).toBe(200);
+
+  const tool = tools.get('work_topics')!;
+  expect(tool.sessionKinds).toEqual(['front', 'work']);
+  const signal = new AbortController().signal;
+  const owner = { row: { id: 'front-1', bot: '开发', kind: 'front' } } as Session;
+  const run = async (args: Record<string, unknown>) => String(await tool.run(args, owner, signal, 'call'));
+
+  //T 无参数：各状态计数，待定排在进行中前面，末尾带知识库提示。
+  const overview = await run({});
+  expect(overview).toContain('决策图共 4 个节点：待定 1，进行中 1，已定 0，已完成 1，已放弃 1。');
+  expect(overview.indexOf('[topicId=release]')).toBeLessThan(overview.indexOf('[topicId=goal]'));
+  expect(overview).toContain('kb_search');
+
+  //T 按状态、按关键词（大小写不敏感）、没有命中。
+  const byStatus = await run({ status: 'done' });
+  expect(byStatus).toContain('- [topicId=docs]〔已完成〕补说明 — 写 Alpha 说明');
+  expect(byStatus).not.toContain('[topicId=goal]');
+  expect(await run({ query: 'ALPHA' })).toContain('[topicId=docs]');
+  expect(await run({ query: '不存在的词' })).toContain('没有符合条件的节点。');
+
+  //T limit 截断时提示还有几个。
+  expect(await run({ limit: 1 })).toContain('还有 3 个没列');
+
+  //T 看详情：选项带推荐标记、上级带 topicId；目标节点列出下级；不存在的给提示。
+  const detail = await run({ nodeId: 'release' });
+  expect(detail).toContain('## [topicId=release] 今天发吗');
+  expect(detail).toContain('- 选项 a★：今天发（代价：留时间看日志）');
+  expect(detail).toContain('- 上级：[topicId=goal] 上线目标');
+  expect(await run({ nodeId: 'goal' })).toContain('  - [topicId=docs]〔已完成〕补说明');
+  expect(await run({ nodeId: 'nope' })).toContain('没有节点 nope');
+
+  //T 后台本人会话同样能查。
+  const work = { row: { id: 'work-1', bot: '开发', kind: 'work', channel: 'web' } } as Session;
+  expect(String(await tool.run({ nodeId: 'docs' }, work, signal, 'call'))).toContain('[topicId=docs]');
+
+  //T 飞书群里的外人会话：拒绝，不吐任何节点。
+  const guestRow = { id: 'front-2', bot: '开发', kind: 'front', channel: 'feishu', address: { role: 'guest' } };
+  const guest = { row: guestRow } as unknown as Session;
+  expect(() => tool.run({}, guest, signal, 'call')).toThrow('只有本人会话可以查看工作决策');
+});
+

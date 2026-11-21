@@ -99,9 +99,15 @@ export function ChannelBackfillCard() {
     setPulling(true);
     try {
       const result = await api.pullFeishuHistory(chatId, Number(limit));
-      setPullResult(t('已拉取 {pulled} 条，跳过 {skipped} 条，失败 {failed} 条', { pulled: result.pulled, skipped: result.skipped, failed: result.failed }));
+      const counts = { pulled: result.pulled, skipped: result.skipped, failed: result.failed };
+      setPullResult(t('已拉取 {pulled} 条，跳过 {skipped} 条，失败 {failed} 条', counts));
     } catch (failure) {
-      setPullResult(t('拉取失败：{reason}', { reason: failure instanceof Error ? failure.message : String(failure) }));
+      //G 拿出失败原因：是 Error 用它的 message，别的转成字。
+      let reason = String(failure);
+      if (failure instanceof Error) {
+        reason = failure.message;
+      }
+      setPullResult(t('拉取失败：{reason}', { reason }));
     } finally {
       setPulling(false);
     }
@@ -143,10 +149,18 @@ export function ChannelBackfillCard() {
         <select value={chatId} aria-label={t('选择群')} onChange={(event) => setChatId(event.target.value)}>
           <option value="">{t('选择群')}</option>
           {groups.map((item) => (
-            <option key={item.subject} value={item.subject.slice(FEISHU_GROUP_PREFIX.length)}>{privacy.text(item.label, mask)}</option>
+            <option key={item.subject} value={item.subject.slice(FEISHU_GROUP_PREFIX.length)}>
+              {privacy.text(item.label, mask)}
+            </option>
           ))}
         </select>
-        <input type="number" min={1} value={limit} aria-label={t('条数')} onChange={(event) => setLimit(event.target.value)} />
+        <input
+          type="number"
+          min={1}
+          value={limit}
+          aria-label={t('条数')}
+          onChange={(event) => setLimit(event.target.value)}
+        />
         <button type="button" disabled={pulling || chatId === ''} onClick={() => void pull()}>{t('拉取')}</button>
       </div>
       {pullResult !== '' && <div className="mm-card-sub" role="status">{pullResult}</div>}

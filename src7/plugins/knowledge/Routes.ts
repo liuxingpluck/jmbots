@@ -182,6 +182,16 @@ function parseOptionalInt(raw: unknown, label: string): number | undefined {
 }
 
 
+/** 读取路由路径参数 :name（标签名，Fastify 已解好百分号编码）。 */
+function readParamName(params: unknown): string {
+  const raw = (params as Record<string, unknown> | null)?.['name'];
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new failureModule.Failure(400, '缺少路径参数 name');
+  }
+  return raw.trim();
+}
+
+
 /** 读取路由路径参数 :id。 */
 function readParamId(params: unknown): string {
   const raw = (params as Record<string, unknown> | null)?.['id'];
@@ -415,6 +425,37 @@ export function mountKnowledgeRoutes(
     if (mem.warning !== undefined && mem.warning !== '') {
       response.memoryWarning = mem.warning;
     }
+    return response;
+  });
+
+  //M 11. 标签改名；新名字已有就合并（强检身份核验）。
+  app.put('/api/knowledge/tags/:name', (request) => {
+    requireVerified(ctx, request);
+    const name = readParamName(request.params);
+    const body = readBodyRecord(request.body);
+    const newName = readOptionalString(body, 'newName');
+    if (newName === undefined) {
+      throw new failureModule.Failure(400, '要写 newName');
+    }
+    const result: types.KnowledgeTagRenameResult = { ok: true, ...store.renameTag(name, newName) };
+    return result;
+  });
+
+  //M 12. 删除标签，文档本身不动（强检身份核验）。
+  app.delete('/api/knowledge/tags/:name', (request) => {
+    requireVerified(ctx, request);
+    const name = readParamName(request.params);
+    const result: types.KnowledgeTagDeleteResult = { ok: true, ...store.deleteTag(name) };
+    return result;
+  });
+
+  //M 13. 相关文档推荐：limit 默认 6，限在 1～20。
+  app.get('/api/knowledge/docs/:id/related', (request) => {
+    const id = readParamId(request.params);
+    const query = (request.query ?? {}) as Record<string, unknown>;
+    const written = parseOptionalInt(query['limit'], 'limit') ?? 6;
+    const limit = Math.min(20, Math.max(1, written));
+    const response: types.KnowledgeRelatedResponse = { ok: true, docId: id, items: store.getRelated(id, limit) };
     return response;
   });
 }

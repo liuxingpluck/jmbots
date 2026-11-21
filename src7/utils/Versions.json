@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.90",
+    "date": "2026-11-21",
+    "changes": [
+      "核心骨架 Sessions.ts 从 928 行优雅瘦身回 798 行（回归 ≤820 硬红线，纯数据辅助抽至 src7/utils/SessionHelpers.ts，零行为变化），同步更新全仓 116 份文档（Check_Lines --all 0 问题）及 DevMap/SpineCanvas 全部源码锚点",
+      "知识库升级 v1.0.2 + 前端 Phase 3：新增前后台模型写入/追加工具 kb_save（默认追加+替换乐观锁+本人校验）、标签重命名/合并/删除 API 与左栏治理 UI、相关文档推荐 API 与卡片、单篇带 YAML 头一键导出 .md、多标签独立可点 × 胶囊；同步打通工作决策台只读工具 work_topics（1.3.12，带本人隔离）与记忆页/图谱页共享一键「存入知识库」组件",
+      "教程页升级 v1.2.1：新增实时「插件 X 光」接口（GET /api/tutorial/plugin-map，零配置泄露）与独立懒加载视图（/tutorial/?view=plugins，6.5 KiB，按插件/按事件管道双向跳转）、载荷 Diff 搜索过滤+类型快切+行复制+200 行首屏性能优化、DevMap/SpineCanvas 一键复制断点（file:line），并完成全站 8/8 公网入口 100% 覆盖 ChunkErrorBoundary 与 0.7.90 发版前红队审计全部 P1/关键 P2 修复"
+    ]
+  },
+  {
     "version": "0.7.89",
     "date": "2026-11-21",
     "changes": [

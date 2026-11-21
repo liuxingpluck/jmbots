@@ -35,14 +35,20 @@ function getRawId(target: cytoscape.SingularElementArgument): number {
 const STYLE = [
   { selector: 'node', style: {
     'background-fill': 'radial-gradient',
-    'background-gradient-stop-colors': (ele: cytoscape.NodeSingular) => `#ffffff ${COLORS[ele.data('kind') as string] ?? '#9b8cff'} ${DARK[ele.data('kind') as string] ?? '#33295e'}`,
+    'background-gradient-stop-colors': (ele: cytoscape.NodeSingular) => {
+      const kind = ele.data('kind') as string;
+      return `#ffffff ${COLORS[kind] ?? '#9b8cff'} ${DARK[kind] ?? '#33295e'}`;
+    },
     'background-gradient-stop-positions': '0 35 100',
     label: 'data(name)', color: '#dfe6f5', 'font-size': 11, 'text-valign': 'bottom', 'text-margin-y': 4,
     'text-outline-color': '#060912', 'text-outline-width': 2, 'text-max-width': '140px', 'text-wrap': 'ellipsis',
     width: 'mapData(degree, 1, 10, 18, 46)', height: 'mapData(degree, 1, 10, 18, 46)',
     'border-width': 1.5, 'border-color': '#ffffff', 'border-opacity': 0.35,
     //M 节点外圈光晕沿用按实体 kind 映射的分类色，在画布上区分人、组织、事与编号。
-    'underlay-color': (ele: cytoscape.NodeSingular) => COLORS[ele.data('kind') as string] ?? '#9b8cff', 'underlay-opacity': 0.22, 'underlay-padding': 6, 'underlay-shape': 'ellipse',
+    'underlay-color': (ele: cytoscape.NodeSingular) => COLORS[ele.data('kind') as string] ?? '#9b8cff',
+    'underlay-opacity': 0.22,
+    'underlay-padding': 6,
+    'underlay-shape': 'ellipse',
   } },
   { selector: 'edge', style: {
     width: 1.4, 'line-color': '#6e8cdc', 'line-opacity': 0.55, 'curve-style': 'bezier',
@@ -53,15 +59,21 @@ const STYLE = [
   { selector: 'edge.label', style: { label: 'data(label)' } },
   { selector: '.faded', style: { opacity: 0.28 } },
   { selector: 'node.hit', style: {
-    'border-color': HIT, 'border-width': 3, 'border-opacity': 1, 'underlay-color': HIT, 'underlay-opacity': 0.4, 'underlay-padding': 7,
+    'border-color': HIT, 'border-width': 3, 'border-opacity': 1,
+    'underlay-color': HIT, 'underlay-opacity': 0.4, 'underlay-padding': 7,
     color: '#ffe2a3', 'font-size': 13, 'font-weight': 'bold', 'z-index': 10,
   } },
   { selector: 'edge.hit', style: {
-    width: 4, 'line-color': HIT, 'line-opacity': 1, 'target-arrow-color': HIT, 'line-style': 'dashed', 'line-dash-pattern': [10, 8],
-    label: 'data(label)', color: '#ffd98a', 'font-size': 12, 'underlay-color': HIT, 'underlay-opacity': 0.18, 'underlay-padding': 5, 'z-index': 10,
+    width: 4, 'line-color': HIT, 'line-opacity': 1, 'target-arrow-color': HIT,
+    'line-style': 'dashed', 'line-dash-pattern': [10, 8],
+    label: 'data(label)', color: '#ffd98a', 'font-size': 12,
+    'underlay-color': HIT, 'underlay-opacity': 0.18, 'underlay-padding': 5, 'z-index': 10,
   } },
   { selector: 'node:selected', style: { 'border-color': '#ffffff', 'border-width': 3, 'border-opacity': 1 } },
-  { selector: 'edge:selected', style: { 'line-color': '#ffffff', 'target-arrow-color': '#ffffff', 'line-opacity': 1, label: 'data(label)' } },
+  {
+    selector: 'edge:selected',
+    style: { 'line-color': '#ffffff', 'target-arrow-color': '#ffffff', 'line-opacity': 1, label: 'data(label)' },
+  },
 ] as unknown as cytoscape.StylesheetJson;
 
 /**
@@ -103,7 +115,9 @@ export function GraphCanvas(props: Props) {
       const name = names.current.get(id);
       if (name !== undefined) handlers.current.onExpand(name);
     });
-    cy.on('mouseover', 'node', (event) => { (event.target as cytoscape.NodeSingular).connectedEdges().addClass('label'); });
+    cy.on('mouseover', 'node', (event) => {
+      (event.target as cytoscape.NodeSingular).connectedEdges().addClass('label');
+    });
     cy.on('mouseout', 'node', () => { if (cy.zoom() < 1.3) cy.edges().removeClass('label'); });
     cy.on('zoom', () => {
       if (cy.zoom() >= 1.3) {
@@ -163,8 +177,16 @@ export function GraphCanvas(props: Props) {
     }));
 
     //M 仅把尚未在画布中且两端节点均已存在的新关系边经隐私脱敏后加入 cytoscape。
-    cy.add(graph.edges.filter((e) => cy.getElementById(`e${e.id}`).empty() && cy.getElementById(`n${e.source}`).nonempty() && cy.getElementById(`n${e.target}`).nonempty())
-      .map((e) => ({ group: 'edges' as const, data: { id: `e${e.id}`, raw: e.id, source: `n${e.source}`, target: `n${e.target}`, label: privacy.text(e.label, mask) } })));
+    //M 只加还没画过、两头节点都在的边。
+    const fresh = graph.edges.filter((e) => {
+      const isNew = cy.getElementById(`e${e.id}`).empty();
+      return isNew && cy.getElementById(`n${e.source}`).nonempty() && cy.getElementById(`n${e.target}`).nonempty();
+    });
+    cy.add(fresh.map((e) => {
+      const label = privacy.text(e.label, mask);
+      const data = { id: `e${e.id}`, raw: e.id, source: `n${e.source}`, target: `n${e.target}`, label };
+      return { group: 'edges' as const, data };
+    }));
     cy.elements().removeClass('hit faded');
     if (hitEdges.length > 0) {
       cy.elements().addClass('faded');

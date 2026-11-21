@@ -505,12 +505,13 @@ export class TutorialApi {
     //M 给同源请求地址附带管理员令牌，避免后端鉴权拦截。
     const url = withToken(path, TOKEN);
     const response = await fetch(url);
-    const body = await response.json() as T & { error?: string };
     if (!response.ok) {
-      const reason = body.error ?? String(response.status);
+      //G 出错时回包可能不是 JSON（代理回 502 的 HTML 页）：读不出就只报状态码，不抛 SyntaxError。
+      const failed = await response.json().catch(() => ({})) as { error?: string };
+      const reason = failed.error ?? String(response.status);
       throw new Error(reason);
     }
-    return body;
+    return await response.json() as T;
   }
 
   /** 取左栏组块清单，文件名顺序由后端确定。 */
@@ -582,7 +583,7 @@ export class TutorialApi {
 
   /**
    * 读取整条消息的事件参数载荷与前后对比（GET /api/tutorial/payload?name=<消息号>）。
-   * 名字是 boot、后端回 404 或网络异常时静默返回空 items，不抛错影响原有胶囊面板。
+   * 名字是 boot、后端回 404 时静默返回空 items；别的失败也返回空 items，但 note 写明原因。不抛错。
    * @param name 消息号，或 boot。
    */
   static async getPayload(name: string): Promise<PayloadTrail> {
@@ -593,8 +594,13 @@ export class TutorialApi {
     const url = withToken(`/api/tutorial/payload?name=${encodeURIComponent(name)}`, TOKEN);
     try {
       const response = await fetch(url);
-      if (!response.ok) {
+      //G 404 是后端还没这个接口：照旧静默。
+      if (response.status === 404) {
         return { ok: true, message: name, note: '', items: [] };
+      }
+      //G 别的失败写进 note，界面上分得清“没录”和“读失败”（失败的不进缓存，见 loadPayloadCached）。
+      if (!response.ok) {
+        return { ok: true, message: name, note: `载荷读取失败（HTTP ${String(response.status)}）`, items: [] };
       }
       const body = (await response.json()) as Partial<PayloadTrail>;
       let items: PayloadItem[] = [];
@@ -608,8 +614,8 @@ export class TutorialApi {
         items,
       };
     } catch {
-      //G 接口未挂载或网络瞬断时回退空清单，保持页面零报错。
-      return { ok: true, message: name, note: '', items: [] };
+      //G 网络瞬断或回包不是 JSON：回退空清单、写明原因，保持页面零报错。
+      return { ok: true, message: name, note: '载荷读取失败（网络或回包格式）', items: [] };
     }
   }
 

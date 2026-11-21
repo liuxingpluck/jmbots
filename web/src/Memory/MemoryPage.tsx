@@ -16,6 +16,7 @@ import { MEMORY_STEPS } from '../Guide/steps-memory.ts';
 import { get, type Customer, type GraphEdge } from '../Graph/GraphApi.ts';
 import * as api from '../Api.ts';
 import { ChannelBackfillCard } from './ChannelBackfillCard.tsx';
+import * as saveToKnowledge from '../components/SaveToKnowledge.tsx';
 import { DEMO_PREFIX, ERP_CUSTOMER, ERP_QUESTIONS } from './questions.ts';
 import { TOKEN, withToken } from '../Token.ts';
 import * as i18n from '../I18n.ts';
@@ -120,8 +121,13 @@ function Card(props: { label: string; value: string; sub?: string; tone?: 'ok' |
   );
 }
 
-/** 一张命中卡片：点开看全文。 */
-function HitCard({ hit, index, ownerLabel }: { hit: api.MemoryHit; index: number; ownerLabel: string }) {
+/** 一张命中卡片：点开看全文；知识库能用时（kbDirs 不是 undefined）多一个「存入知识库」。 */
+function HitCard({ hit, index, ownerLabel, kbDirs }: {
+  hit: api.MemoryHit;
+  index: number;
+  ownerLabel: string;
+  kbDirs: saveToKnowledge.KnowledgeDirOption[] | undefined;
+}) {
   //M 订阅全局演示打码开关，并整理来源路径、VS Code 跳转定位与去前缀后的正文。
   const mask = privacy.useMask();
   const [open, setOpen] = useState(index === 0);
@@ -187,6 +193,12 @@ function HitCard({ hit, index, ownerLabel }: { hit: api.MemoryHit; index: number
         //M 展示按当前打码开关处理后的命中片段正文。
       /**/}
       <div className="mm-hit-text">{privacy.text(text, mask)}</div>
+      {
+        //M 知识库能用、没开演示打码（打码时不露原文）、卡片展开着：给「存入知识库」。
+      /**/}
+      {kbDirs !== undefined && !mask && open && (
+        <saveToKnowledge.SaveToKnowledgeButton title={hit.title} content={text} dirs={kbDirs} defaultTag="记忆沉淀" />
+      )}
     </div>
   );
 }
@@ -212,6 +224,8 @@ export function MemoryPage() {
   });
   const t: i18n.Translate = (text, values) => i18n.translate(language, text, values);
   const [status, setStatus] = useState<api.MemoryHealth | null>(null);
+  //M 知识库能不能用（顺带拿目录）：页面打开时探一次，不能用就不显示「存入知识库」。
+  const kbDirs = saveToKnowledge.useKnowledgeDirs();
   const [statusError, setStatusError] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
   //M 保留旧链接指定的演示客户。
@@ -252,7 +266,10 @@ export function MemoryPage() {
   useEffect(() => {
     void get<{ list: Customer[] }>('/api/memory-graph/customers').then((j) => {
       const seen = new Set<string>();
-      setCustomers(j.list.filter((c) => c.customer.startsWith(DEMO_PREFIX) && !seen.has(c.customer) && seen.add(c.customer)));
+      const demo = j.list.filter((c) => {
+        return c.customer.startsWith(DEMO_PREFIX) && !seen.has(c.customer) && seen.add(c.customer);
+      });
+      setCustomers(demo);
     }).catch(() => undefined);
   }, []);
 
@@ -502,7 +519,11 @@ export function MemoryPage() {
             //M 渲染服务状态、文档/向量/实体/三元组计数卡及关系抽取进度条，数字格式化并按需脱敏模型名。
           /**/}
           <Card label="记忆服务" value={memValue} tone={memTone} sub={memSub} />
-          <Card label="文档段数" value={formatCount(counts.docs)} sub={`客户聊天 ${formatCount(counts.history)} · 知识库 ${formatCount(counts.knowledge)}`} />
+          <Card
+            label="文档段数"
+            value={formatCount(counts.docs)}
+            sub={`客户聊天 ${formatCount(counts.history)} · 知识库 ${formatCount(counts.knowledge)}`}
+          />
           <Card label="已嵌入向量"
             value={`${formatCount(counts.embedded)} / ${formatCount(counts.docs)}`}
             sub={privacy.text(status?.embedding?.model ?? '', mask)} tone={embeddedTone} />
@@ -516,7 +537,9 @@ export function MemoryPage() {
               <i className="done" style={{ width: `${String((done / total) * 100)}%` }} />
               <i className="failed" style={{ width: `${String((failed / total) * 100)}%` }} />
             </div>
-            <div className="mm-card-sub">完成 {formatCount(done)} · 排队 {formatCount(pending)} · 失败 {formatCount(failed)}</div>
+            <div className="mm-card-sub">
+              完成 {formatCount(done)} · 排队 {formatCount(pending)} · 失败 {formatCount(failed)}
+            </div>
           </div>
           <ChannelBackfillCard />
         </section>
@@ -545,14 +568,23 @@ export function MemoryPage() {
               {
                 //M 按打码状态脱敏渲染可选演示客户与文档段数选项。
               /**/}
-              {choices.map((c, index) => <option key={index} value={String(index)}>{privacy.text(c.customer, mask)}（{c.docs} 段）</option>)}
+              {choices.map((c, index) => (
+                <option key={index} value={String(index)}>{privacy.text(c.customer, mask)}（{c.docs} 段）</option>
+              ))}
               <option value={KNOWLEDGE}>公共知识库（不选客户）</option>
             </select>
             {
               //M 问题输入框、检索模式下拉与检索触发按钮：打码态只读脱敏、支持回车触发与推荐问题一键检索。
             /**/}
-            <input data-guide="query" className="mm-q" value={privacy.text(query, mask)} readOnly={mask} placeholder="问一个问题，比如：厂送通知是用来管什么的？"
-              onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void search(); }} />
+            <input
+              data-guide="query"
+              className="mm-q"
+              value={privacy.text(query, mask)}
+              readOnly={mask}
+              placeholder="问一个问题，比如：厂送通知是用来管什么的？"
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void search(); }}
+            />
             <select data-guide="mode" value={mode} onChange={(e) => setMode(e.target.value)}>
               <option value="keyword">关键词</option>
               <option value="semantic">语义</option>
@@ -562,7 +594,9 @@ export function MemoryPage() {
             <button data-guide="search" disabled={busy} onClick={() => void search()}>{searchLabel}</button>
           </div>
           {allOwners && <div className="mm-chips">
-            {ERP_QUESTIONS.map((q) => <button key={q} className="mm-chip" onClick={() => { setQuery(q); void search(q); }}>{q}</button>)}
+            {ERP_QUESTIONS.map((q) => (
+              <button key={q} className="mm-chip" onClick={() => { setQuery(q); void search(q); }}>{q}</button>
+            ))}
           </div>}
           {banner && <div className="mm-banner">{privacy.text(banner, mask)}</div>}
         </section>
@@ -581,7 +615,7 @@ export function MemoryPage() {
                     //M 命中和选择项用相同显示名，演示模式只交给卡片脱敏后的文字。
                     const owner = ownerByKey.get(hit.customer);
                     const ownerLabel = getOwnerLabel(hit.customer, owner, mask, t);
-                    return <HitCard hit={hit} index={index} ownerLabel={ownerLabel} />;
+                    return <HitCard hit={hit} index={index} ownerLabel={ownerLabel} kbDirs={kbDirs} />;
                   }}
                 />
               )}
@@ -591,7 +625,9 @@ export function MemoryPage() {
                 //M 展示问句中提取的实体及首尾相连的多跳关系路径，实体与关系词均按打码开关脱敏。
               /**/}
               <h2>问题里的实体</h2>
-              <div className="mm-ents">{found.queryEntities.map((e) => <span key={e} className="mm-ent">{privacy.text(e, mask)}</span>)}</div>
+              <div className="mm-ents">
+                {found.queryEntities.map((e) => <span key={e} className="mm-ent">{privacy.text(e, mask)}</span>)}
+              </div>
               {paths.length > 0 && (
                 <>
                   <h2>多跳路径（{paths.length}）</h2>
@@ -599,7 +635,10 @@ export function MemoryPage() {
                     <div className="mm-chain" key={path.map((e) => e.id).join('-')}>
                       <span className="mm-ent">{privacy.text(names.get(path[0]!.source) ?? '?', mask)}</span>
                       {path.map((e) => (
-                        <span key={e.id}><span className="mm-rel">—{privacy.text(e.label, mask)}→</span><span className="mm-ent">{privacy.text(names.get(e.target) ?? '?', mask)}</span></span>
+                        <span key={e.id}>
+                          <span className="mm-rel">—{privacy.text(e.label, mask)}→</span>
+                          <span className="mm-ent">{privacy.text(names.get(e.target) ?? '?', mask)}</span>
+                        </span>
                       ))}
                     </div>
                   ))}
@@ -610,13 +649,17 @@ export function MemoryPage() {
               /**/}
               <h2>用到的关系三元组（{found.relations.length}）</h2>
               {found.relations.length === 0 && <p className="mm-muted">这次没有用到关系（关系抽取可能还没跑到这些段）。</p>}
-              <ol className="mm-triples">{found.relations.slice(0, 20).map((r) => <li key={r}>{privacy.text(r, mask)}</li>)}</ol>
+              <ol className="mm-triples">
+                {found.relations.slice(0, 20).map((r) => <li key={r}>{privacy.text(r, mask)}</li>)}
+              </ol>
               {allOwners && (
                 <a data-guide="graph" className="mm-graph-link" href={graphLink} target="_blank" rel="noreferrer">
                   在关系图谱里看这次检索 →
                 </a>
               )}
-              {found.warnings && found.warnings.length > 0 && <p className="mm-muted">提示：{privacy.text(found.warnings.join('；'), mask)}</p>}
+              {found.warnings && found.warnings.length > 0 && (
+                <p className="mm-muted">提示：{privacy.text(found.warnings.join('；'), mask)}</p>
+              )}
             </aside>
           </section>
         )}
@@ -626,13 +669,31 @@ export function MemoryPage() {
             //M 公共知识库导入表单：按打码状态脱敏并锁定输入、提交写入知识库并渲染可点开的导入路径反馈。
           /**/}
           <h2>导入文档</h2>
-          <p className="mm-muted">粘贴一段文字，收进公共知识库，马上能检索。整本 PDF / Word 用 <code>ztools/doc-import</code> 导入到指定客户（出版ERP 就是这样导进来的）。</p>
+          <p className="mm-muted">
+            粘贴一段文字，收进公共知识库，马上能检索。整本 PDF / Word 用 <code>ztools/doc-import</code>
+            导入到指定客户（出版ERP 就是这样导进来的）。
+          </p>
           <div className="mm-row">
-            <input value={privacy.text(importName, mask)} readOnly={mask} placeholder="标题，比如：退货流程说明" onChange={(e) => setImportName(e.target.value)} />
+            <input
+              value={privacy.text(importName, mask)}
+              readOnly={mask}
+              placeholder="标题，比如：退货流程说明"
+              onChange={(e) => setImportName(e.target.value)}
+            />
             <button onClick={() => void importKnowledge()}>收进知识库</button>
           </div>
-          <textarea value={privacy.text(importText, mask)} readOnly={mask} rows={5} placeholder="正文…" onChange={(e) => setImportText(e.target.value)} />
-          {importNote && <div className="mm-banner"><vscodeLink.TextWithVscodeLinks text={privacy.text(importNote, mask)} masked={mask} /></div>}
+          <textarea
+            value={privacy.text(importText, mask)}
+            readOnly={mask}
+            rows={5}
+            placeholder="正文…"
+            onChange={(e) => setImportText(e.target.value)}
+          />
+          {importNote && (
+            <div className="mm-banner">
+              <vscodeLink.TextWithVscodeLinks text={privacy.text(importNote, mask)} masked={mask} />
+            </div>
+          )}
         </section>
       </main>
     </div>

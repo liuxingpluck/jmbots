@@ -1,10 +1,12 @@
 /**
  * 单步真实事件载荷 Diff 卡、整条消息按需缓存与 Markdown / JSON 导出工具（工单乙）。
- *   PayloadDiff      ：展示本步采集到的事件参数对象（只看变化 / 完整对象切换，点改动行自动展开前后对象树对应路径并高亮）；
+ *   PayloadDiff      ：展示本步采集到的事件参数对象（只看变化 / 完整对象切换，点改动行自动展开前后对象树对应路径并高亮；
+ *                      改动行可按路径或值搜索、按增/改/删快切、单行复制路径/值；完整对象可全部展开/收起）；
+ *   CopyButton / CopySiteButton：带「已复制」反馈的小复制按钮，DevMap、SpineCanvas 的「复制断点」也用它；
  *   usePayloadTrail  ：按消息号缓存整条消息的 PayloadTrail，切步零重复请求，404 或空 items 静默回退；
  *   PayloadExportBar ：一键复制整条消息的 Markdown 摘要、一键下载 PayloadItem[] JSON。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import * as i18n from '../I18n.ts';
 import { SiteLink } from '../VscodeLink.tsx';
 import {
@@ -105,6 +107,12 @@ export function usePayloadTrail(trail: Trail): PayloadTrail | null {
       return undefined;
     }
 
+    //M 没命中缓存：先清掉上一条消息的载荷，免得请求回来前按步号串到这条消息上（0.7.90 审计 P1-2）。
+    setData((current) => {
+      if (current?.message === name) return current;
+
+      return null;
+    });
     let alive = true;
     void loadPayloadCached(name, cacheable).then(
       (loaded) => {
@@ -119,6 +127,9 @@ export function usePayloadTrail(trail: Trail): PayloadTrail | null {
       alive = false;
     };
   }, [cacheable, name, trail.steps.length]);
+
+  //G 兜底：这一拍 effect 还没跑（刚切消息），手里是上一条的就当还没拿到。
+  if (data !== null && data.message !== name) return null;
 
   return data;
 }
@@ -174,6 +185,42 @@ function useCopyFeedback(resetWord: string): { label: string; copy: (text: strin
   }, [resetWord]);
 
   return { label, copy };
+}
+
+
+/**
+ * 一个小复制按钮：点了复制 text，按钮上短暂显示「已复制 ✓」再还原（剪贴板容错见 useCopyFeedback）。
+ * 载荷改动行的「复制路径 / 复制值」、DevMap 与 SpineCanvas 的「复制断点」共用。
+ * @param props.text 要复制的文字。
+ * @param props.word 按钮上平时的字。
+ * @param props.title 鼠标悬停的说明。
+ */
+export function CopyButton(props: { text: string; word: string; title: string }): JSX.Element {
+  const feedback = useCopyFeedback(props.word);
+  return (
+    <button
+      type="button"
+      className="tu-pd-act-btn tu-pd-copy-btn"
+      title={props.title}
+      onClick={(event) => {
+        //G 放在可点的行或折叠头里时，不让点击冒上去触发定位或开合。
+        event.stopPropagation();
+        feedback.copy(props.text);
+      }}
+    >
+      {feedback.label}
+    </button>
+  );
+}
+
+
+/**
+ * 一个源码位置旁的「复制断点」：复制 `src7/Sessions.ts:890` 这样的 file:line，VS Code 里 Ctrl+P 粘贴直跳。
+ * @param props.site 文件:行号。
+ */
+export function CopySiteButton(props: { site: string }): JSX.Element {
+  const title = `复制 ${props.site}，VS Code 里 Ctrl+P 粘贴直跳`;
+  return <CopyButton text={props.site} word="复制断点" title={title} />;
 }
 
 
@@ -243,6 +290,15 @@ function renderScalarValue(value: unknown): JSX.Element {
 }
 
 
+/** 「全部展开 / 全部收起」的指令：每点一次 tick 加一，树上每个节点照 open 开合一次。 */
+interface TreeBulk {
+  /** 这次是全部展开还是全部收起。 */
+  open: boolean;
+  /** 第几次点；0 表示还没点过，节点保持默认开合。 */
+  tick: number;
+}
+
+
 /** 递归对象树单节点属性。 */
 interface TreeNodeProps {
   label: string | null;
@@ -252,6 +308,8 @@ interface TreeNodeProps {
   changedMap: ReadonlyMap<string, DiffRow['kind']>;
   focusKey: string;
   focusAncestors: ReadonlySet<string>;
+  /** 卡片顶上「全部展开 / 全部收起」发来的指令。 */
+  bulk: TreeBulk;
 }
 
 
@@ -259,15 +317,30 @@ interface TreeNodeProps {
  * 可折叠 JSON 节点：默认展开前两层，点击「这一步改了」任意路径时自动沿祖先链展开并高亮目标键。
  */
 function PayloadTreeNode(props: TreeNodeProps): JSX.Element {
-  const { label, value, segments, depth, changedMap, focusKey, focusAncestors } = props;
+  const { label, value, segments, depth, changedMap, focusKey, focusAncestors, bulk } = props;
   const nodeKey = toPathKey(segments);
   const mustOpen = focusAncestors.has(nodeKey) || (focusKey !== '' && nodeKey === focusKey);
-  const [open, setOpen] = useState<boolean>(() => depth < DEFAULT_OPEN_DEPTH || mustOpen);
+  const [open, setOpen] = useState<boolean>(() => {
+    //M 点过「全部展开 / 全部收起」之后新挂上的子节点照指令开合，不再回到默认深度。
+    if (bulk.tick > 0) return bulk.open || mustOpen || depth === 0;
+
+    return depth < DEFAULT_OPEN_DEPTH || mustOpen;
+  });
   const [showAll, setShowAll] = useState(false);
+  //M 这个节点已经照着办过的那次指令；挂上时算办过，新挂的子节点由上面的初始值管。
+  const appliedTickRef = useRef(bulk.tick);
 
   useEffect(() => {
     if (mustOpen) setOpen(true);
   }, [mustOpen]);
+
+  useEffect(() => {
+    if (appliedTickRef.current === bulk.tick) return;
+
+    //M 每点一次「全部展开 / 全部收起」，已挂着的节点照指令开合一次；根节点收起时保留一层，免得整块只剩一个括号。
+    appliedTickRef.current = bulk.tick;
+    setOpen(bulk.open || depth === 0);
+  }, [bulk.open, bulk.tick, depth]);
 
   const changeKind = changedMap.get(nodeKey);
   let lineClass = 'tu-pd-tree-line';
@@ -348,6 +421,7 @@ function PayloadTreeNode(props: TreeNodeProps): JSX.Element {
                 changedMap={changedMap}
                 focusKey={focusKey}
                 focusAncestors={focusAncestors}
+                bulk={bulk}
               />
             );
           })}
@@ -368,6 +442,10 @@ function PayloadTreeNode(props: TreeNodeProps): JSX.Element {
 }
 
 
+/** 改动行默认先画几行，其余点「展开其余」再画（上千行的 diff 一次全画会卡）。 */
+const ROW_LIMIT = 200;
+
+
 /**
  * 单棵对象面板（支持一键复制整块格式化 JSON 与按路径展开高亮）。
  */
@@ -379,23 +457,22 @@ function ObjectTreeBox(props: {
   focusPath: string;
   collapsible: boolean;
   forceOpen: boolean;
+  bulk: TreeBulk;
 }): JSX.Element {
   const copyJson = useCopyFeedback('复制 JSON');
   const meta = useMemo(
     () => buildTreeHighlightMeta(props.diffs, props.focusPath),
     [props.diffs, props.focusPath],
   );
-  let rawJson = '';
-  if (props.value !== undefined && props.value !== null) {
-    rawJson = JSON.stringify(props.value, null, 2);
-  }
-
-  const copyBtn = rawJson !== '' && (
+  //M 整块 JSON 点复制时才序列化：256KB 的载荷每次渲染都 stringify 会让打字搜索卡（0.7.90 审计 P1-3）。
+  const hasValue = props.value !== undefined && props.value !== null;
+  const copyBtn = hasValue && (
     <button
       type="button"
       className="tu-pd-act-btn"
       onClick={(event) => {
         event.stopPropagation();
+        const rawJson = JSON.stringify(props.value, null, 2);
         copyJson.copy(rawJson);
       }}
     >
@@ -418,6 +495,7 @@ function ObjectTreeBox(props: {
             changedMap={meta.changedMap}
             focusKey={meta.focusKey}
             focusAncestors={meta.focusAncestors}
+            bulk={props.bulk}
           />
         </div>
       )}
@@ -426,7 +504,7 @@ function ObjectTreeBox(props: {
 
   if (props.collapsible) {
     return (
-      <details className="tu-pd-box" open={props.forceOpen}>
+      <details className="tu-pd-box" open={props.forceOpen || (props.bulk.tick > 0 && props.bulk.open)}>
         <summary>
           <span>▸ {props.title}</span>
           {copyBtn}
@@ -587,6 +665,102 @@ export function PayloadExportBar(props: {
 }
 
 
+/** 改动行快切：全部，或只看增、改、删其中一类。 */
+type KindFilter = 'all' | 'add' | 'change' | 'remove';
+
+/** 快切胶囊的顺序和字。 */
+const KIND_FILTERS: readonly { kind: KindFilter; word: string }[] = [
+  { kind: 'all', word: '全部' },
+  { kind: 'add', word: '+ 增' },
+  { kind: 'change', word: '~ 改' },
+  { kind: 'remove', word: '- 删' },
+];
+
+
+/**
+ * 按快切类型和搜索词筛改动行：词不分大小写，路径、前值、后值任一含它就算命中。
+ * @param rows 本张卡的改动行（不含 same）。
+ * @param query 搜索框里的字；空白当没填。
+ * @param kind 只看哪一类；all 不限。
+ */
+function filterDiffRows(rows: readonly DiffRow[], query: string, kind: KindFilter): DiffRow[] {
+  const word = query.trim().toLowerCase();
+  return rows.filter((row) => {
+    if (kind !== 'all' && row.kind !== kind) return false;
+
+    if (word === '') return true;
+
+    const haystack = `${row.path}\n${row.before ?? ''}\n${row.after ?? ''}`.toLowerCase();
+    return haystack.includes(word);
+  });
+}
+
+
+/**
+ * 一条改动行「复制值」复制的那个值：删掉的取前值，增加和改动取后值。
+ * @param row 改动行。
+ */
+function getRowValue(row: DiffRow): string {
+  if (row.kind === 'remove') return row.before ?? '';
+
+  return row.after ?? '';
+}
+
+
+/**
+ * 一条改动行：主体可点（切完整对象并定位到这条路径），右侧「复制路径 / 复制值」两个小按钮。
+ * @param props.row 改动行。
+ * @param props.focused 是不是当前定位的那条。
+ * @param props.onPick 点主体时调，实现是 SinglePayloadCard 的 pickDiffRow。
+ */
+function DiffRowView(props: { row: DiffRow; focused: boolean; onPick: (path: string) => void }): JSX.Element {
+  const { row } = props;
+  let opSymbol = '~';
+  if (row.kind === 'add') opSymbol = '+';
+  if (row.kind === 'remove') opSymbol = '-';
+  let rowClass = `tu-pd-diff-row kind-${row.kind}`;
+  if (props.focused) rowClass += ' focused';
+  const value = getRowValue(row);
+
+  return (
+    <div className={rowClass}>
+      <button
+        type="button"
+        className="tu-pd-diff-main"
+        title="点击在前后完整对象树中展开并高亮此路径"
+        onClick={() => props.onPick(row.path)}
+      >
+        <span className={`tu-pd-op ${row.kind}`}>{opSymbol}</span>
+        <code className="tu-pd-path">{row.path}</code>
+        {row.kind === 'add' && row.after !== undefined && (
+          <span className="tu-pd-preview"><span className="after">{row.after}</span></span>
+        )}
+        {row.kind === 'remove' && row.before !== undefined && (
+          <span className="tu-pd-preview"><span className="before">{row.before}</span></span>
+        )}
+        {row.kind === 'change' && (
+          <span className="tu-pd-preview">
+            <span className="before">{row.before ?? '空'}</span>
+            {' → '}
+            <span className="after">{row.after ?? '空'}</span>
+          </span>
+        )}
+      </button>
+      <span className="tu-pd-row-tools">
+        <CopyButton text={row.path} word="复制路径" title={`复制路径 ${row.path}`} />
+        {value !== '' && (
+          <CopyButton
+            text={value}
+            word="复制值"
+            title="复制这一行的值预览（最多 200 字；删掉的取前值，其余取后值）"
+          />
+        )}
+      </span>
+    </div>
+  );
+}
+
+
 /**
  * 单张事件参数载荷对比卡（支持「只看变化」与「完整对象」切换）。
  */
@@ -598,10 +772,34 @@ function SinglePayloadCard(props: {
   const { item, workspace, compact } = props;
   const [mode, setMode] = useState<'diff' | 'full'>('diff');
   const [focusPath, setFocusPath] = useState('');
+  //M 改动行筛选：搜索框里的字（按路径或前后值匹配，不分大小写）与增/改/删快切。
+  const [query, setQuery] = useState('');
+  //M 筛选用延后的搜索词：输入框照常跟手，上千行的筛选和重画放到空闲时（0.7.90 审计 P1-3）。
+  const deferredQuery = useDeferredValue(query);
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all');
+  //M 改动行先画前 ROW_LIMIT 行，点「展开其余」才画全。
+  const [showAllRows, setShowAllRows] = useState(false);
+  //M 完整对象视图「全部展开 / 全部收起」的指令，左右两棵树共用。
+  const [bulk, setBulk] = useState<TreeBulk>({ open: true, tick: 0 });
   const isNarrowScreen = typeof window !== 'undefined' && window.innerWidth < 800;
   const collapsibleTrees = compact || isNarrowScreen;
 
   const mutations = useMemo(() => item.diff.filter((row) => row.kind !== 'same'), [item.diff]);
+  const visibleMutations = useMemo(
+    () => filterDiffRows(mutations, deferredQuery, kindFilter),
+    [mutations, deferredQuery, kindFilter],
+  );
+  let shownMutations = visibleMutations;
+  if (!showAllRows) {
+    shownMutations = visibleMutations.slice(0, ROW_LIMIT);
+  }
+  const hiddenRows = visibleMutations.length - shownMutations.length;
+
+  const pressBulk = (open: boolean): void => {
+    //M 每点一次 tick 加一，树上已挂的节点据此开合一次（见 PayloadTreeNode）。
+    setBulk((prev) => ({ open, tick: prev.tick + 1 }));
+  };
+
   const sameKeys = useMemo(
     () => item.diff.filter((row) => row.kind === 'same').map((row) => row.path),
     [item.diff],
@@ -653,6 +851,26 @@ function SinglePayloadCard(props: {
               完整对象
             </button>
           </div>
+          {mode === 'full' && (
+            <>
+              <button
+                type="button"
+                className="tu-pd-act-btn"
+                data-payload-bulk="open"
+                onClick={() => pressBulk(true)}
+              >
+                全部展开
+              </button>
+              <button
+                type="button"
+                className="tu-pd-act-btn"
+                data-payload-bulk="close"
+                onClick={() => pressBulk(false)}
+              >
+                全部收起
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -667,6 +885,7 @@ function SinglePayloadCard(props: {
               focusPath={focusPath}
               collapsible={collapsibleTrees}
               forceOpen={focusPath !== ''}
+              bulk={bulk}
             />
           </div>
         )}
@@ -689,39 +908,53 @@ function SinglePayloadCard(props: {
                 <div className="tu-pd-same-bar">监听插件未改动字段（全部原样透传）</div>
               )}
               {mutations.length > 0 && (
-                <div className="tu-pd-diff-list">
-                  {mutations.map((row, idx) => {
-                    let opSymbol = '~';
-                    if (row.kind === 'add') opSymbol = '+';
-                    if (row.kind === 'remove') opSymbol = '-';
-                    let rowClass = `tu-pd-diff-row kind-${row.kind}`;
-                    if (focusPath === row.path) rowClass += ' focused';
-                    return (
+                <div className="tu-pd-filter-bar">
+                  <input
+                    type="search"
+                    className="tu-pd-filter-input"
+                    data-payload-filter
+                    placeholder="按字段路径或值筛选，如 system / tools / messages / state"
+                    aria-label="按字段路径或值筛选改动"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                  <div className="tu-pd-seg" role="group" aria-label="只看哪类改动">
+                    {KIND_FILTERS.map((entry) => (
                       <button
-                        key={`${row.path}-${String(idx)}`}
+                        key={entry.kind}
                         type="button"
-                        className={rowClass}
-                        title="点击在前后完整对象树中展开并高亮此路径"
-                        onClick={() => pickDiffRow(row.path)}
+                        className="tu-pd-seg-btn"
+                        data-payload-kind={entry.kind}
+                        aria-pressed={kindFilter === entry.kind}
+                        onClick={() => setKindFilter(entry.kind)}
                       >
-                        <span className={`tu-pd-op ${row.kind}`}>{opSymbol}</span>
-                        <code className="tu-pd-path">{row.path}</code>
-                        {row.kind === 'add' && row.after !== undefined && (
-                          <span className="tu-pd-preview"><span className="after">{row.after}</span></span>
-                        )}
-                        {row.kind === 'remove' && row.before !== undefined && (
-                          <span className="tu-pd-preview"><span className="before">{row.before}</span></span>
-                        )}
-                        {row.kind === 'change' && (
-                          <span className="tu-pd-preview">
-                            <span className="before">{row.before ?? '空'}</span>
-                            {' → '}
-                            <span className="after">{row.after ?? '空'}</span>
-                          </span>
-                        )}
+                        {entry.word}
                       </button>
-                    );
-                  })}
+                    ))}
+                  </div>
+                  <span className="tu-pd-listeners" data-payload-hits>
+                    匹配 {String(visibleMutations.length)} / {String(mutations.length)}
+                  </span>
+                </div>
+              )}
+              {mutations.length > 0 && visibleMutations.length === 0 && (
+                <div className="tu-pd-same-bar">没有匹配的改动，换个词或切回「全部」</div>
+              )}
+              {visibleMutations.length > 0 && (
+                <div className="tu-pd-diff-list">
+                  {shownMutations.map((row, idx) => (
+                    <DiffRowView
+                      key={`${row.path}-${String(idx)}`}
+                      row={row}
+                      focused={focusPath === row.path}
+                      onPick={pickDiffRow}
+                    />
+                  ))}
+                  {hiddenRows > 0 && (
+                    <button type="button" className="tu-pd-act-btn" onClick={() => setShowAllRows(true)}>
+                      展开其余 {String(hiddenRows)} 条
+                    </button>
+                  )}
                 </div>
               )}
               {sameKeys.length > 0 && (
@@ -743,6 +976,7 @@ function SinglePayloadCard(props: {
               focusPath={focusPath}
               collapsible={collapsibleTrees}
               forceOpen={focusPath !== ''}
+              bulk={bulk}
             />
           </div>
         )}

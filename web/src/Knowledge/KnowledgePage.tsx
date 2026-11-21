@@ -164,6 +164,8 @@ export function KnowledgePage(): react.JSX.Element {
     return { key: 'new:0', id: undefined, doc: undefined, preset: initial.preset };
   });
   const [readOnly, setReadOnly] = react.useState(false);
+  //M 左栏改名、删了标签后，开着那篇的最新一份，交给编辑器换底稿（见 syncOpenedTag）。
+  const [tagChange, setTagChange] = react.useState<editorModule.TagChange>();
   const [notice, setNotice] = react.useState<string>();
   const [drawerOpen, setDrawerOpen] = react.useState(false);
 
@@ -475,6 +477,54 @@ export function KnowledgePage(): react.JSX.Element {
     }
   }, [handleError, loadList, loadTree]);
 
+  /**
+   * 左栏改名、删了标签：后端会刷新挂着它的文档的 updatedAt，开着的那篇重新拿一份交给编辑器换底稿，
+   * 免得下次保存误报 409（0.7.90 审计 P1-1）。编辑器按 editKey 认、按 updatedAt 判断这篇到底变没变。
+   * @param from 原标签名。
+   * @param to 新标签名；删除是 null。
+   */
+  const syncOpenedTag = react.useCallback(async (from: string, to: string | null) => {
+    //G 没开文档、新建的、还在打开中：不用管。
+    if (opened?.id === undefined || opened.doc === undefined) return;
+
+    const editKey = opened.key;
+    const doc = await api.getDoc(opened.id);
+    setTagChange({ editKey, from, to, doc });
+  }, [opened]);
+
+  //M 标签改名（新名字已有就合并）：成功后刷新树和列表；已选着这个标签的，换成新名字（合并时去掉重复）。
+  const renameTag = react.useCallback((name: string, newName: string) => {
+    void runWrite(async () => {
+      const result = await api.renameOrMergeTag(name, newName);
+      await syncOpenedTag(name, result.newName ?? newName);
+      setTags((current) => {
+        if (!current.includes(name)) return current;
+
+        const replaced = current.map((one) => {
+          if (one === name) return newName;
+
+          return one;
+        });
+        return [...new Set(replaced)];
+      });
+      let word = '改名';
+      if (result.merged === true) {
+        word = '合并';
+      }
+      showNotice(`标签「${name}」已${word}为「${newName}」，动到 ${String(result.affectedDocs)} 篇`);
+    }, true);
+  }, [runWrite, showNotice, syncOpenedTag]);
+
+  //M 删标签：成功后刷新树和列表，并从已选标签里去掉它。
+  const removeTag = react.useCallback((name: string) => {
+    void runWrite(async () => {
+      const result = await api.deleteTag(name);
+      await syncOpenedTag(name, null);
+      setTags((current) => current.filter((one) => one !== name));
+      showNotice(`标签「${name}」已删除，从 ${String(result.affectedDocs)} 篇文档上摘掉`);
+    }, true);
+  }, [runWrite, showNotice, syncOpenedTag]);
+
   const createDir = react.useCallback((parentId: string | null) => {
     const name = window.prompt('新目录的名字')?.trim() ?? '';
     if (name === '') return;
@@ -535,8 +585,9 @@ export function KnowledgePage(): react.JSX.Element {
   if (dir !== undefined && dir !== api.UNASSIGNED) {
     chips.push({ key: 'dir', label: `目录：${dirNames.get(dir) ?? dir}` });
   }
-  if (tags.length > 0) {
-    chips.push({ key: 'tag', label: tags.map((one) => `#${one}`).join(' ') });
+  //M 选中的标签每个一个胶囊，点 × 只去掉那一个。
+  for (const one of tags) {
+    chips.push({ key: 'tag', label: `#${one}`, value: one });
   }
   if (topic !== undefined) {
     chips.push({ key: 'topic', label: `专题：${topic}` });
@@ -545,12 +596,13 @@ export function KnowledgePage(): react.JSX.Element {
     chips.push({ key: 'q', label: `搜：${q}` });
   }
 
-  const clearChip = react.useCallback((key: docList.FilterChip['key']) => {
+  const clearChip = react.useCallback((key: docList.FilterChip['key'], value?: string) => {
     if (key === 'dir') {
       setDir(undefined);
     }
+    //M 标签胶囊每个带着自己的标签名，只去掉那一个。
     if (key === 'tag') {
-      setTags([]);
+      setTags((current) => current.filter((one) => one !== value));
     }
     if (key === 'topic') {
       setTopic(undefined);
@@ -609,6 +661,8 @@ export function KnowledgePage(): react.JSX.Element {
             removeDir={removeDir}
             moveDoc={moveDoc}
             moveDir={moveDir}
+            renameTag={renameTag}
+            removeTag={removeTag}
           />
         </aside>
         {isMobile && drawerOpen && <div className="kb-scrim" onClick={() => setDrawerOpen(false)} />}
@@ -652,6 +706,8 @@ export function KnowledgePage(): react.JSX.Element {
                 onDirty={onDirty}
                 onError={handleError}
                 onNotice={showNotice}
+                onOpenDoc={(id) => void openDoc(id)}
+                tagChange={tagChange}
               />
             </react.Suspense>
           )}

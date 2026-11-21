@@ -1,11 +1,16 @@
 /**
- * 积木知识库模型只读检索工具（kb_search）。
- * 供前台（front）与后台干活会话（work）按关键词、专题节点 topicId、标签或目录查索引摘要，并支持按 docId 按需取完整正文。
+ * 积木知识库的模型工具：
+ *   kb_search（只读）：按关键词、专题节点 topicId、标签或目录查索引摘要，按 docId 取完整正文；
+ *   kb_save（写，1.0.2）：新建文档，或往已有文档追加、替换正文（替换要带 baseUpdatedAt 走乐观锁）。
+ * 两个都给前台（front）与后台（work）；外人那一轮由 approval 的只读白名单挡掉，kb_save 执行时再核一次本人。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
+import type { Session } from '../../Sessions.ts';
+import * as channelProtocol from '../channels/index.ts';
 import * as routesModule from './Routes.ts';
-import type * as storeModule from './Store.ts';
+import * as storeModule from './Store.ts';
+import type * as types from './Types.ts';
 
 
 const KB_SEARCH_PARAMETERS = piAi.Type.Object({
@@ -155,6 +160,182 @@ export function registerKbSearchTool(
 
       const header = `命中知识库文档 ${String(hits.length)} 篇（需看全文请传 docId 再调 kb_search）：`;
       return `${header}\n${outLines.join('\n')}`;
+    },
+  });
+}
+
+
+//==========================================================
+// kb_save：模型写入知识库（1.0.2）
+//==========================================================
+
+/** kb_save 一次最多带几个标签。 */
+const SAVE_MAX_TAGS = 20;
+
+const KB_SAVE_PARAMETERS = piAi.Type.Object({
+  docId: piAi.Type.Optional(piAi.Type.String({ description: '要更新的文档 ID；不传就新建一篇' })),
+  title: piAi.Type.Optional(piAi.Type.String({ description: '标题；新建时必填' })),
+  content: piAi.Type.Optional(piAi.Type.String({ description: '正文 Markdown；新建时必填，更新时按 mode 追加或替换' })),
+  mode: piAi.Type.Optional(piAi.Type.Union([piAi.Type.Literal('append'), piAi.Type.Literal('replace')], {
+    description: '更新时：append 接在原正文后面（默认，不会盖掉原文）；replace 整篇替换，必须带 baseUpdatedAt',
+  })),
+  baseUpdatedAt: piAi.Type.Optional(piAi.Type.Integer({ description: 'replace 时必填：读文档时看到的 updatedAt' })),
+  summary: piAi.Type.Optional(piAi.Type.String({ description: '摘要；不传按正文自动生成' })),
+  tags: piAi.Type.Optional(piAi.Type.Array(piAi.Type.String(), { description: '标签（不能带逗号，最多 20 个）' })),
+  dirId: piAi.Type.Optional(piAi.Type.String({ description: '虚拟目录 ID' })),
+  topicId: piAi.Type.Optional(piAi.Type.String({ description: '工作决策台专题节点 ID' })),
+  sourceType: piAi.Type.Optional(piAi.Type.String({ description: '来源：note（默认）、file、url、transcript' })),
+});
+
+
+/**
+ * 查标签：照 normalizeTags 的规矩（去 #、去重、不能带逗号），再限最多 SAVE_MAX_TAGS 个。
+ * @param raw 模型给的标签。
+ * @returns 规范后的标签；没给是 undefined（更新时不动标签）。
+ */
+function readSaveTags(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+
+  const tags = storeModule.normalizeTags(raw as string[]);
+  if (tags.length > SAVE_MAX_TAGS) {
+    throw new Error(`标签最多 ${String(SAVE_MAX_TAGS)} 个`);
+  }
+  return tags;
+}
+
+
+/**
+ * 写好以后交给模型的一段话：ID、标题、摘要、目录、专题、标签、updatedAt（下次 replace 要用）。
+ * @param action 新建还是更新。
+ * @param doc 写好的文档。
+ * @returns 文字。
+ */
+function formatSaved(action: string, doc: types.KnowledgeDoc): string {
+  const lines = [
+    `已${action}知识库文档：docId=${doc.id}`,
+    `- 标题: ${doc.title}`,
+    `- 摘要: ${doc.summary}`,
+    `- updatedAt: ${String(doc.updatedAt)}（下次整篇替换时作 baseUpdatedAt）`,
+  ];
+  if (doc.dirId !== null) {
+    lines.push(`- 目录: ${doc.dirId}`);
+  }
+  if (doc.topicId !== null) {
+    lines.push(`- 关联专题: ${doc.topicId}`);
+  }
+  if (doc.tags.length > 0) {
+    lines.push(`- 标签: ${doc.tags.map((tag) => `#${tag}`).join(' ')}`);
+  }
+  return lines.join('\n');
+}
+
+
+/**
+ * 执行 kb_save。
+ * @param store 知识库存储。
+ * @param args 模型给的参数（Tools.ts 已按定义校验过形状）。
+ * @param session 调用的会话。
+ * @returns 给模型看的话。
+ * @throws 不是本人、参数不对、文档不存在、目录不存在、乐观锁冲突时抛错，原因给模型看。
+ */
+function runKbSave(store: storeModule.KnowledgeStore, args: Record<string, unknown>, session: Session): string {
+  //G approval 已经按只读白名单把外人挡在外面；没挂 approval 时这里再核一次：只有本人能写知识库。
+  if (!channelProtocol.isOwnerTurn(session.row.channel, session.row.address)) {
+    throw new Error('只有本人能写知识库');
+  }
+
+  const docId = readArgText(args, 'docId');
+  const content = readArgText(args, 'content');
+  const tags = readSaveTags(args['tags']);
+  const patch: types.UpdateDocInput = {};
+  const title = readArgText(args, 'title');
+  if (title !== '') {
+    patch.title = title;
+  }
+  if (typeof args['summary'] === 'string') {
+    patch.summary = args['summary'];
+  }
+  if (tags !== undefined) {
+    patch.tags = tags;
+  }
+  if (typeof args['dirId'] === 'string') {
+    patch.dirId = args['dirId'];
+  }
+  if (typeof args['topicId'] === 'string') {
+    patch.topicId = args['topicId'];
+  }
+  if (typeof args['sourceType'] === 'string') {
+    patch.sourceType = args['sourceType'] as types.KnowledgeSourceType;
+  }
+
+  //M 没给 docId：新建，标题和正文都要有。
+  if (docId === '') {
+    if (title === '' || content === '') {
+      throw new Error('新建文档要写 title 和 content');
+    }
+    const created = store.createDoc({ ...patch, title, content });
+    return formatSaved('新建', created);
+  }
+
+  const existing = store.getDoc(docId);
+  if (existing === undefined) {
+    throw new Error(`知识库里没有这篇：${docId}`);
+  }
+
+  //M replace：整篇替换，必须带读文档时看到的 updatedAt，过期就不覆盖。
+  if (args['mode'] === 'replace') {
+    if (typeof args['baseUpdatedAt'] !== 'number') {
+      throw new Error(`整篇替换要带 baseUpdatedAt（这篇现在的 updatedAt 是 ${String(existing.updatedAt)}）`);
+    }
+    try {
+      const replaced = store.updateDoc(docId, { ...patch, content, baseUpdatedAt: args['baseUpdatedAt'] });
+      return formatSaved('替换', replaced);
+    } catch (error) {
+      if (!(error instanceof storeModule.KnowledgeConflictError)) throw error;
+
+      const latest = String(error.doc.updatedAt);
+      throw new Error(`这篇在别处改过了，没有覆盖（最新 updatedAt 是 ${latest}）。先用 kb_search 读最新正文再决定。`);
+    }
+  }
+
+  //M append（默认）：新内容用空行接在原正文后面，原文一个字不动；顺带用读到的 updatedAt 防和别处同时写。
+  let merged = existing.content;
+  if (content !== '' && merged.trim() !== '') {
+    merged = `${merged}\n\n${content}`;
+  }
+  if (content !== '' && existing.content.trim() === '') {
+    merged = content;
+  }
+  try {
+    const appended = store.updateDoc(docId, { ...patch, content: merged, baseUpdatedAt: existing.updatedAt });
+    return formatSaved('追加到', appended);
+  } catch (error) {
+    if (!(error instanceof storeModule.KnowledgeConflictError)) throw error;
+
+    throw new Error(`这篇刚被别处改过（最新 updatedAt 是 ${String(error.doc.updatedAt)}），请重试。`);
+  }
+}
+
+
+/**
+ * 注册写工具 kb_save。
+ * @param ctx 插件上下文。
+ * @param store 知识库存储实例。
+ */
+export function registerKbSaveTool(
+  ctx: cordis.Context,
+  store: storeModule.KnowledgeStore,
+): void {
+  ctx.tools.register({
+    definition: {
+      name: 'kb_save',
+      description: '往积木知识库写资料：不传 docId 新建一篇（要 title、content）；传 docId 默认把 content 追加到原文后面，'
+        + 'mode=replace 才整篇替换（要带 baseUpdatedAt）。可同时改标题、摘要、标签、目录、专题。',
+      parameters: KB_SAVE_PARAMETERS,
+    },
+    sessionKinds: ['front', 'work'],
+    run(args, session) {
+      return runKbSave(store, args, session);
     },
   });
 }

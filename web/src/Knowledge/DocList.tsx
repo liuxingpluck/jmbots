@@ -13,6 +13,8 @@ export interface FilterChip {
   key: 'dir' | 'tag' | 'topic' | 'q';
   /** 显示的字。 */
   label: string;
+  /** 同一项里的哪一个值（多选标签每个标签一个胶囊）；单值的项不给。 */
+  value?: string;
 }
 
 /** 中栏入参，数据和操作都来自 KnowledgePage。 */
@@ -33,8 +35,8 @@ interface DocListProps {
   error: string | undefined;
   /** 当前生效的筛选。 */
   chips: FilterChip[];
-  /** 去掉一项筛选。实现在 KnowledgePage 的 clearChip。 */
-  clearChip: (key: FilterChip['key']) => void;
+  /** 去掉一项筛选；给了 value 只去掉那一个值。实现在 KnowledgePage 的 clearChip。 */
+  clearChip: (key: FilterChip['key'], value?: string) => void;
   /** 当前打开的文档号。 */
   activeId: string | undefined;
   /** 能不能把文档拖到目录上（桌面且可写）。 */
@@ -153,7 +155,12 @@ export function DocList(props: DocListProps): react.JSX.Element {
       <div className="kb-list-head">
         <span className="kb-muted">{headline}</span>
         {props.chips.map((chip) => (
-          <button key={chip.key} type="button" className="kb-chip" onClick={() => props.clearChip(chip.key)}>
+          <button
+            key={`${chip.key}:${chip.value ?? ''}`}
+            type="button"
+            className="kb-chip"
+            onClick={() => props.clearChip(chip.key, chip.value)}
+          >
             {chip.label}<span aria-hidden="true"> ×</span>
           </button>
         ))}

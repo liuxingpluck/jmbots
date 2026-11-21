@@ -8,6 +8,7 @@ import * as react from 'react';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as docList from './DocList.tsx';
 import * as api from './KnowledgeApi.ts';
+import * as relatedDocs from './RelatedDocs.tsx';
 
 /** 富文本编辑器（Tiptap）：只有切到「富文本」才拉这一块，不拉高首屏。 */
 const LazyRichEditor = react.lazy(async () => {
@@ -41,7 +42,87 @@ export interface EditorProps {
   onError: (error: unknown) => void;
   /** 给用户一句提示。 */
   onNotice: (text: string) => void;
+  /** 打开另一篇（底部「相关文档」点进去）。实现在 KnowledgePage 的 openDoc。 */
+  onOpenDoc: (id: string) => void;
+  /** 左栏改名、删了标签后库里最新的这篇（KnowledgePage 的 syncOpenedTag 拿的）；没有是 undefined。 */
+  tagChange?: TagChange;
 }
+
+/** 左栏改名、删了标签：交给编辑器换底稿用（后端改标签会刷新文档的 updatedAt，不换下次保存会误报 409）。 */
+export interface TagChange {
+  /** 发给哪一次打开的编辑器（opened.key），别的编辑器不认。 */
+  editKey: string;
+  /** 原标签名。 */
+  from: string;
+  /** 新标签名（合并时是已有那个的写法）；删除是 null。 */
+  to: string | null;
+  /** 改完以后库里的这篇。 */
+  doc: api.KnowledgeDoc;
+}
+
+/** Windows 不让当文件名的设备名（不分大小写，带扩展名也不行）。 */
+const RESERVED_FILE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/iu;
+
+/**
+ * 导出文件名：Windows 不认的 \ / : * ? " < > | 和控制字符换成下划线，去掉首尾空白和点，最长 100 字。
+ * @param title 文档标题。
+ * @returns 不带扩展名的文件名；清完是空的叫“未命名”。
+ */
+function getSafeFileName(title: string): string {
+  const replaced = title.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, '_');
+  const cleaned = replaced.trim().replace(/^\.+|\.+$/gu, '');
+  if (cleaned === '') return '未命名';
+
+  //G CON、NUL、COM1 这类设备名 Windows 存不下：前面加个下划线。
+  const clipped = cleaned.slice(0, 100);
+  if (RESERVED_FILE_NAME.test(clipped)) return `_${clipped}`;
+
+  return clipped;
+}
+
+
+/**
+ * 拼一份带 YAML 头（title、tags、topicId、updatedAt）的 Markdown。字符串都用 JSON 写法，YAML 照样认。
+ * @param fields 标题、标签、专题、正文。
+ * @param updatedAt 最近修改的毫秒时间戳；新建还没存过是 undefined，不写这一行。
+ */
+function getExportMarkdown(
+  fields: { title: string; tags: string[]; topicId: string | null; content: string },
+  updatedAt: number | undefined,
+): string {
+  const lines = [
+    '---',
+    `title: ${JSON.stringify(fields.title)}`,
+    `tags: ${JSON.stringify(fields.tags)}`,
+    `topicId: ${JSON.stringify(fields.topicId)}`,
+  ];
+  if (updatedAt !== undefined) {
+    lines.push(`updatedAt: ${JSON.stringify(new Date(updatedAt).toISOString())}`);
+  }
+  lines.push('---', '', fields.content);
+  return lines.join('\n');
+}
+
+
+/**
+ * 让浏览器下载一份 UTF-8 文本：Blob 加一个临时的 <a download>，点完就拿掉，下一拍撤销地址。
+ * @param fileName 文件名（带扩展名）。
+ * @param text 全文。
+ */
+function downloadText(fileName: string, text: string): void {
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+
+  //M 下一拍再撤销：有的浏览器点完还没开始下载，马上撤会下不到。
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 
 /** 新建时预填的内容。 */
 export interface Preset {
@@ -155,6 +236,32 @@ function getPatch(base: Form, form: Form): Partial<Form> {
 
 
 /**
+ * 表单里的标签照左栏的改名、删除换掉：大小写不敏感找原名，改名换成新名，删除去掉，换完按小写去重。
+ * @param tags 表单里的标签。
+ * @param from 原标签名。
+ * @param to 新标签名；删除是 null。
+ * @returns 换好的标签。
+ */
+function getRenamedTags(tags: string[], from: string, to: string | null): string[] {
+  const lowerFrom = from.toLowerCase();
+  const result: string[] = [];
+  for (const tag of tags) {
+    let name = tag;
+    if (tag.toLowerCase() === lowerFrom && to === null) continue;
+
+    if (tag.toLowerCase() === lowerFrom && to !== null) {
+      name = to;
+    }
+    const lower = name.toLowerCase();
+    if (result.some((one) => one.toLowerCase() === lower)) continue;
+
+    result.push(name);
+  }
+  return result;
+}
+
+
+/**
  * 草稿在 localStorage 里的键：按文档号分开，新建共用一个。
  * @param doc 文档；undefined 是新建。
  */
@@ -222,7 +329,9 @@ function TagInput(props: { tags: string[]; disabled: boolean; change: (tags: str
   const commit = (): void => {
     const name = text.replace(/^#+/u, '').trim();
     setText('');
-    if (name === '' || props.tags.includes(name)) return;
+    //G 和后端一样大小写不敏感：已有 AOBB 再敲 aobb 不加。
+    const lower = name.toLowerCase();
+    if (name === '' || props.tags.some((tag) => tag.toLowerCase() === lower)) return;
 
     props.change([...props.tags, name]);
   };
@@ -322,6 +431,27 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
     setBaseForm(next);
     setForm(next);
   };
+
+  //M 左栏改名、删了标签：库里这篇的 updatedAt 跟着变了，换成最新底稿，免得下次保存误报 409。
+  //M 自己没动过的字段取库里最新的，动过的留着；标签动过的照新名字换，不把旧标签写回去。
+  const tagChange = props.tagChange;
+  react.useEffect(() => {
+    if (tagChange === undefined || tagChange.editKey !== props.editKey) return;
+
+    //G 不是这篇、或库里没变（这篇没挂那个标签）：不动。
+    const latest = tagChange.doc;
+    if (base === undefined || latest.id !== base.id || latest.updatedAt === base.updatedAt) return;
+
+    const nextBaseForm = getForm(latest, props.preset);
+    const mine = getPatch(baseForm, formRef.current);
+    const next = { ...nextBaseForm, ...mine };
+    if (mine.tags !== undefined) {
+      next.tags = getRenamedTags(mine.tags, tagChange.from, tagChange.to);
+    }
+    setBase(latest);
+    setBaseForm(nextBaseForm);
+    setForm(next);
+  }, [tagChange]);
 
   //==========================================================
   //M 保存：新建走 POST；已有的只发改过的字段，带 baseUpdatedAt 防覆盖
@@ -441,6 +571,13 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
   if (saving) {
     saveText = '正在保存…';
   }
+  //M 导出 .md：用表单里现在的内容（没保存的改动也导出），文件名按标题清洗。
+  const exportMarkdown = (): void => {
+    const text = getExportMarkdown(form, base?.updatedAt);
+    const fileName = `${getSafeFileName(form.title)}.md`;
+    downloadText(fileName, text);
+  };
+
   const showSource = mode === 'edit' || mode === 'split';
   const showPreview = mode === 'preview' || mode === 'split';
   const canSave = !readOnly && !saving && (dirty || isNew);
@@ -459,6 +596,9 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
         <span className="kb-grow" />
         {dirty && <span className="kb-dirty" title="有没保存的改动">●</span>}
         {!isNew && <span className="kb-muted kb-small">{docList.getShortTime(base.updatedAt)}</span>}
+        <button type="button" className="kb-link-btn" onClick={exportMarkdown} title="下载成带 YAML 头的 Markdown 文件">
+          导出 .md
+        </button>
         {!readOnly && <button type="button" className="kb-danger-btn" onClick={() => void remove()}>删除</button>}
         {!readOnly && (
           <button type="button" className="kb-primary-btn" disabled={!canSave} onClick={() => void save()}>
@@ -564,6 +704,7 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
           </div>
         )}
       </div>
+      {base !== undefined && <relatedDocs.RelatedDocs docId={base.id} open={props.onOpenDoc} />}
     </article>
   );
 }

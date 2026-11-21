@@ -204,7 +204,7 @@
     "parent": "r-main-07",
     "title": "L207–L213 续跑没跑完的会话",
     "summary": "库里状态还是 running 的会话（上次没跑完就退出了），逐个打开、接着跑。",
-    "body": "**行号：L207–L213**\n\n### 代码原文\n```ts\n207    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n208    for (const row of app.sessions.find({ state: 'running' })) {\n209      void app.sessions.open(row.id).run();\n210    }\n211  }\n212  \n213  \n```\n\n### 解释\n- L208：按记录里的状态找出还是 running 的会话。\n- L209：逐个打开，调 run 往下走，不等。\n\n### 这段代码调用了\n- `Sessions.find`（[Sessions.ts L454](#lines=Sessions.json&line=454) · 骨架）—— 按给的几项找会话记录（不带对话）。\n- `Sessions.open`（[Sessions.ts L386](#lines=Sessions.json&line=386) · 骨架）—— 打开一场会话（内存里有就复用，没有从库里读）。\n- `Session.run`（[Sessions.ts L668](#lines=Sessions.json&line=668) · 骨架）—— 推这场会话往下走，进入主循环。",
+    "body": "**行号：L207–L213**\n\n### 代码原文\n```ts\n207    //M 上次没跑完的会话（库里还是 running 的），接着跑。\n208    for (const row of app.sessions.find({ state: 'running' })) {\n209      void app.sessions.open(row.id).run();\n210    }\n211  }\n212  \n213  \n```\n\n### 解释\n- L208：按记录里的状态找出还是 running 的会话。\n- L209：逐个打开，调 run 往下走，不等。\n\n### 这段代码调用了\n- `Sessions.find`（[Sessions.ts L427](#lines=Sessions.json&line=427) · 骨架）—— 按给的几项找会话记录（不带对话）。\n- `Sessions.open`（[Sessions.ts L386](#lines=Sessions.json&line=386) · 骨架）—— 打开一场会话（内存里有就复用，没有从库里读）。\n- `Session.run`（[Sessions.ts L581](#lines=Sessions.json&line=581) · 骨架）—— 推这场会话往下走，进入主循环。",
     "sources": [
       "src7/Main.ts"
     ]

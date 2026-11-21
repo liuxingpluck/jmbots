@@ -63,6 +63,7 @@ const LazyPluginView = lazy(() => import('./TutorialDocViews.tsx').then((m) => (
 const LazyProgramView = lazy(() => import('./ProgramView.tsx').then((m) => ({ default: m.ProgramView })));
 const LazyDevMap = lazy(() => import('./DevMap.tsx').then((m) => ({ default: m.DevMap })));
 const LazySpineCanvas = lazy(() => import('./SpineCanvas.tsx').then((m) => ({ default: m.SpineCanvas })));
+const LazyPluginMap = lazy(() => import('./PluginMapView.tsx').then((m) => ({ default: m.PluginMapView })));
 
 
 /** 画布与导图按需 chunk 加载期间的深色静音占位。 */
@@ -105,6 +106,8 @@ interface RouteState {
   devMap: boolean;
   /** 是否打开整屏「竖线全景」交互画布（?view=spine）。 */
   spine: boolean;
+  /** 是否打开整屏「插件 X 光」（?view=plugins）：跑着哪些插件、各听哪些事件。 */
+  plugins: boolean;
 }
 
 /** 左栏各组折叠状态（骨架、骨架工具、启动流程、最近消息、组块阅读、插件、进程插件）。 */
@@ -287,6 +290,7 @@ function getRouteFromUrl(search: string): RouteState {
   const viewParam = params.get('view') ?? '';
   const devMap = viewParam === 'dev-map' || rawRtab === 'devmap';
   const spine = viewParam === 'spine';
+  const plugins = viewParam === 'plugins';
 
   //M 右栏页签优先认 URL 里的 rtab；没给时：无画布/只带 plugin 落到「插件」，其余默认看「这一步」。
   let rtab: RouteState['rtab'] = 'step';
@@ -318,7 +322,7 @@ function getRouteFromUrl(search: string): RouteState {
   if (plugin === 'cordis') {
     return {
       canvas: canvas || SENTINEL_AUTO, step: 0, plugin, ptab, event, reading,
-      rtab: 'step', util, doc: false, devMap, spine,
+      rtab: 'step', util, doc: false, devMap, spine, plugins,
     };
   }
 
@@ -333,7 +337,7 @@ function getRouteFromUrl(search: string): RouteState {
     }
     //M 只看插件的旧链接没有画布，按两栏打开。
     return {
-      canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab, util, doc: true, devMap, spine,
+      canvas: '', step: 0, plugin: targetPlugin, ptab, event, reading, rtab, util, doc: true, devMap, spine, plugins,
     };
   }
 
@@ -341,7 +345,7 @@ function getRouteFromUrl(search: string): RouteState {
   if (canvas === '') {
     canvas = SENTINEL_AUTO;
   }
-  return { canvas, step, plugin, ptab, event, reading, rtab, util, doc, devMap, spine };
+  return { canvas, step, plugin, ptab, event, reading, rtab, util, doc, devMap, spine, plugins };
 }
 
 
@@ -359,7 +363,7 @@ function buildRouteUrl(route: RouteState): string {
     url.searchParams.delete(key);
   }
   const currentView = url.searchParams.get('view');
-  if (currentView === 'dev-map' || currentView === 'spine') {
+  if (currentView === 'dev-map' || currentView === 'spine' || currentView === 'plugins') {
     url.searchParams.delete('view');
   }
   if (route.devMap) {
@@ -367,6 +371,9 @@ function buildRouteUrl(route: RouteState): string {
   }
   if (route.spine) {
     url.searchParams.set('view', 'spine');
+  }
+  if (route.plugins) {
+    url.searchParams.set('view', 'plugins');
   }
   if (route.canvas !== '' && route.canvas !== SENTINEL_AUTO) {
     url.searchParams.set('canvas', route.canvas);
@@ -1542,12 +1549,17 @@ export function TutorialPage(): JSX.Element {
   const toggleDevMap = (open: boolean): void => {
     //M 开关整屏新插件开发地图，并同步地址栏 ?view=dev-map 以便刷新和前进后退还原。
     setMobileNavOpen(false);
-    navigate({ ...route, devMap: open, spine: false });
+    navigate({ ...route, devMap: open, spine: false, plugins: false });
   };
   const toggleSpine = (open: boolean): void => {
     //M 开关整屏竖线全景画布，并同步地址栏 ?view=spine（兼容浏览器 popstate）。
     setMobileNavOpen(false);
-    navigate({ ...route, spine: open, devMap: false });
+    navigate({ ...route, spine: open, devMap: false, plugins: false });
+  };
+  const togglePlugins = (open: boolean): void => {
+    //M 开关整屏插件 X 光，并同步地址栏 ?view=plugins（刷新、前进后退都还原）。
+    setMobileNavOpen(false);
+    navigate({ ...route, plugins: open, devMap: false, spine: false });
   };
 
   let pageClass = 'tu-page';
@@ -1575,6 +1587,11 @@ export function TutorialPage(): JSX.Element {
           {route.spine && (
             <Suspense fallback={<StageChunkFallback />}>
               <LazySpineCanvas onClose={() => toggleSpine(false)} />
+            </Suspense>
+          )}
+          {route.plugins && (
+            <Suspense fallback={<StageChunkFallback />}>
+              <LazyPluginMap onClose={() => togglePlugins(false)} />
             </Suspense>
           )}
           {!isNarrow && (
@@ -1617,6 +1634,15 @@ export function TutorialPage(): JSX.Element {
                   onClick={() => toggleDevMap(!route.devMap)}
                 >
                   开发地图
+                </button>
+                <button
+                  type="button"
+                  className="tu-link"
+                  data-tutorial-plugins-entry
+                  aria-pressed={route.plugins}
+                  onClick={() => togglePlugins(!route.plugins)}
+                >
+                  插件 X 光
                 </button>
                 <button
                   type="button"
@@ -1847,6 +1873,14 @@ export function TutorialPage(): JSX.Element {
                     <button
                       type="button"
                       className="tu-m-foot-btn"
+                      data-tutorial-plugins-entry
+                      onClick={() => togglePlugins(true)}
+                    >
+                      ⚙ 插件 X 光
+                    </button>
+                    <button
+                      type="button"
+                      className="tu-m-foot-btn"
                       data-dev-map
                       onClick={() => toggleDevMap(true)}
                     >
@@ -2019,6 +2053,7 @@ export function TutorialPage(): JSX.Element {
                                   trail={activeTrail}
                                   step={pickedStep}
                                   stepFlow={pickedStepFlow}
+                                  dataFlow={activeDataFlow ?? undefined}
                                   workspace={workspace}
                                   pluginNames={pluginNames}
                                   onPickStep={onPickStep}

@@ -4,11 +4,13 @@
  *      绿胶囊 = 写 SQLite 落盘（save()）、紫侧卡 = 外部模块插进来干活；
  *   2. 上段展示三大骨架怎么启动（Main.ts:73-78 → 按序挂插件 → ready → Http.listen(30086)）；
  *   3. 下段展示 Sessions 竖线主轴：最简消息「你好」从头到尾 + 可选工具循环支路；
- *   4. 点任意动作框、黄菱形、绿胶囊或紫侧卡，原地展开精炼说明 + file:line（SourceToggle 看真实源码 + SiteLink 跳 VS Code）。
+ *   4. 点任意动作框、黄菱形、绿胶囊或紫侧卡，原地展开精炼说明 + file:line（SourceToggle 看真实源码 + SiteLink 跳 VS Code
+ *      + CopySiteButton 复制 file:line 断点）。
  */
 import { useCallback, useState, type JSX } from 'react';
 import { SiteLink } from '../VscodeLink.tsx';
 import { SourceToggle } from './Code.tsx';
+import { CopySiteButton } from './PayloadDiff.tsx';
 import { TutorialScrollContext } from './TutorialContext.tsx';
 import './SpineCanvas.css';
 
@@ -322,8 +324,8 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '进入骨架 src7/Sessions.ts 主线！若 this.aborter 已存在说明正在转，直接返回防重入；'
         + '否则建本轮取消开关、改状态为 running，进入不限步数的 Session.loop。',
       anchors: [
-        { site: 'src7/Sessions.ts:668', why: 'Session.run：防重入守卫、建 aborter、异常兜底与尾消息续转' },
-        { site: 'src7/Sessions.ts:700', why: 'Session.loop：一步 = 调一次模型 + 执行它要求的工具' },
+        { site: 'src7/Sessions.ts:581', why: 'Session.run：防重入守卫、建 aborter、异常兜底与尾消息续转' },
+        { site: 'src7/Sessions.ts:613', why: 'Session.loop：一步 = 调一次模型 + 执行它要求的工具' },
       ],
     },
   },
@@ -340,9 +342,9 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '开跑先把 row.state 改成 running、清空旧 reply，立即整行写入 SQLite sessions 表，再发 session/change；'
         + '即使进程中途断电，下次启动也能凭 running 状态自动续跑。',
       anchors: [
-        { site: 'src7/Sessions.ts:675', why: "run() 开头调用 this.change('running', '')" },
-        { site: 'src7/Sessions.ts:920', why: 'Session.change：改状态、调 save() 落库、发 session/change' },
-        { site: 'src7/Sessions.ts:890', why: 'Session.save：拆成 meta 与 messages 两列写入 SQLite' },
+        { site: 'src7/Sessions.ts:588', why: "run() 开头调用 this.change('running', '')" },
+        { site: 'src7/Sessions.ts:790', why: 'Session.change：改状态、调 save() 落库、发 session/change' },
+        { site: 'src7/Sessions.ts:760', why: 'Session.save：拆成 meta 与 messages 两列写入 SQLite' },
       ],
     },
   },
@@ -359,9 +361,9 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '每步循环开头把 inbox 里暂存的用户消息全部取出，push 进 row.messages 后立即调 save() 落盘，'
         + '再发出 session/new-message 让 journal、memory、网页时间线同步记录。',
       anchors: [
-        { site: 'src7/Sessions.ts:719', why: '循环开头把 inbox 里的待接入消息逐条 append 进对话' },
-        { site: 'src7/Sessions.ts:908', why: 'Session.append：先入内存并 save() 落库，再发 session/new-message' },
-        { site: 'src7/Sessions.ts:901', why: 'INSERT OR REPLACE INTO sessions 持久化最新对话数组' },
+        { site: 'src7/Sessions.ts:632', why: '循环开头把 inbox 里的待接入消息逐条 append 进对话' },
+        { site: 'src7/Sessions.ts:778', why: 'Session.append：先入内存并 save() 落库，再发 session/new-message' },
+        { site: 'src7/Sessions.ts:771', why: 'INSERT OR REPLACE INTO sessions 持久化最新对话数组' },
       ],
     },
   },
@@ -378,7 +380,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '骨架按会话当前 model、thinking、空 system 数组、ctx.tools 按会话种类筛出的工具定义，'
         + '以及 row.messages 的浅拷贝拼出本步 ChatRequest（插件裁剪副本不改动库里原记录）。',
       anchors: [
-        { site: 'src7/Sessions.ts:724', why: '构造本步 ChatRequest 请求对象交给 getStepAnswer' },
+        { site: 'src7/Sessions.ts:637', why: '构造本步 ChatRequest 请求对象交给 getStepAnswer' },
         { site: 'src7/Tools.ts:154', why: 'listToolsForSessionKind：按 front/work 等会话种类筛选可用工具' },
       ],
     },
@@ -396,7 +398,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '按插件挂载顺序逐个 await 监听函数：可往 request.system 加提示词、裁剪或注入 request.messages、'
         + '预填 request.answer 跳过真调模型，或写 request.stop 直接停下本轮。',
       anchors: [
-        { site: 'src7/Sessions.ts:814', why: "await this.ctx.serial('session/before-model', request)" },
+        { site: 'src7/Sessions.ts:697', why: "await this.ctx.serial('session/before-model', request)" },
         { site: 'src7/Sessions.ts:59', why: 'session/before-model 事件契约与全部监听方清单' },
       ],
     },
@@ -433,9 +435,9 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '若关口一没有插件预填 answer，骨架调用 ctx.sessions.chat(request) 经 @earendil-works/pi-ai 发请求，'
         + '内置临时错误指数退避重试，单次失败还会广播 session/model-failed 供统计与换模感知。',
       anchors: [
-        { site: 'src7/Sessions.ts:806', why: 'Session.getStepAnswer：串联关口一、模型请求与关口二' },
-        { site: 'src7/Sessions.ts:843', why: '调用 this.ctx.sessions.chat(request) 发起真实模型请求' },
-        { site: 'src7/Sessions.ts:513', why: 'Sessions.chat：拼 pi-ai Context、重试策略与失败通知' },
+        { site: 'src7/Sessions.ts:689', why: 'Session.getStepAnswer：串联关口一、模型请求与关口二' },
+        { site: 'src7/Sessions.ts:713', why: '调用 this.ctx.sessions.chat(request) 发起真实模型请求' },
+        { site: 'src7/Sessions.ts:477', why: 'Sessions.chat：拼 pi-ai Context、重试策略与失败通知' },
       ],
     },
     side: {
@@ -450,7 +452,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '模型返回后、写进 row.messages 之前必过关口二 session/after-model；'
         + '若写 answered.stop，本次回答连同里面要求的工具调用全部作废，确保把关插件拥有最终否决权。',
       anchors: [
-        { site: 'src7/Sessions.ts:849', why: "await this.ctx.serial('session/after-model', answered)" },
+        { site: 'src7/Sessions.ts:719', why: "await this.ctx.serial('session/after-model', answered)" },
         { site: 'src7/Sessions.ts:67', why: 'session/after-model 事件契约与 AnsweredRequest 说明' },
         { site: 'src7/plugins/model-catalog/Fallback.ts:263', why: 'ModelFallback：限流或超长时自动切备用模型重发' },
       ],
@@ -469,8 +471,8 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '通过关口二的 AssistantMessage 先落库保存并通知用量与日志插件（Usage 统计 token），'
         + '接着从 answer.content 里筛出 type === "toolCall" 的调用块决定是否走工具支路。',
       anchors: [
-        { site: 'src7/Sessions.ts:738', why: 'this.append(answer) 把模型回答持久化进 sessions 表' },
-        { site: 'src7/Sessions.ts:752', why: '筛选 answer.content 里的 toolCall 判断要不要跑工具' },
+        { site: 'src7/Sessions.ts:651', why: 'this.append(answer) 把模型回答持久化进 sessions 表' },
+        { site: 'src7/Sessions.ts:657', why: '筛选 answer.content 里的 toolCall 判断要不要跑工具' },
       ],
     },
   },
@@ -517,8 +519,8 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
         detail: '工具跑完（含被 deny 拦下）后串行发出关口四，插件可改写 done.outcome；'
           + '随后包装成 role: "toolResult" 消息调 append(result) → save() 落盘，回到循环顶部继续下一步。',
         anchors: [
-          { site: 'src7/Sessions.ts:769', why: "await this.ctx.serial('session/after-tool', done)" },
-          { site: 'src7/Sessions.ts:794', why: 'this.append(result) 把 toolResult 落库配对并进入下一轮模型步' },
+          { site: 'src7/Sessions.ts:672', why: "await this.ctx.serial('session/after-tool', done)" },
+          { site: 'src7/Sessions.ts:677', why: 'this.append(result) 把 toolResult 落库配对并进入下一轮模型步' },
         ],
       },
     ],
@@ -536,9 +538,9 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '「你好」无需调用工具（calls.length === 0），提取模型回答纯文本写入 row.reply，'
         + '将状态改为 done 落盘保存，并发出 session/change(session, "running") 宣告本轮完成。',
       anchors: [
-        { site: 'src7/Sessions.ts:757', why: 'calls.length === 0 分支：模型不再要工具，本轮完成' },
-        { site: 'src7/Sessions.ts:759', why: "this.change('done', reply) 写库并广播 session/change" },
-        { site: 'src7/Sessions.ts:926', why: "emit('session/change', this, stateBefore) 通知外部收尾" },
+        { site: 'src7/Sessions.ts:660', why: 'calls.length === 0 分支：模型不再要工具，本轮完成' },
+        { site: 'src7/Sessions.ts:662', why: "this.change('done', reply) 写库并广播 session/change" },
+        { site: 'src7/Sessions.ts:796', why: "emit('session/change', this, stateBefore) 通知外部收尾" },
       ],
     },
   },
@@ -636,6 +638,7 @@ function SpineDetailDrawer(props: {
           <li key={anchor.site}>
             <div className="tu-sp-anchor-bar">
               <SiteLink site={anchor.site} />
+              <CopySiteButton site={anchor.site} />
               <SourceToggle site={anchor.site} label="看源码" />
             </div>
             <span className="tu-sp-anchor-why">{anchor.why}</span>

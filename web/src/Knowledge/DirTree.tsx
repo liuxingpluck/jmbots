@@ -5,6 +5,7 @@
  */
 import * as react from 'react';
 import * as api from './KnowledgeApi.ts';
+import * as tagCloud from './TagCloud.tsx';
 
 /** 拖文档时 dataTransfer 里的类型，值是文档号（DocList 设）。 */
 export const DOC_MIME = 'application/x-kb-doc';
@@ -39,6 +40,10 @@ interface DirTreeProps {
   moveDoc: (docId: string, dirId: string | null) => void;
   /** 把目录移到别的目录下；null 是移到顶层。 */
   moveDir: (dirId: string, parentId: string | null) => void;
+  /** 标签改名（新名字已有就合并）。实现在 KnowledgePage 的 renameTag。 */
+  renameTag: (name: string, newName: string) => void;
+  /** 删除标签。实现在 KnowledgePage 的 removeTag。 */
+  removeTag: (name: string) => void;
 }
 
 /** 一个拖放目标能接什么。 */
@@ -292,29 +297,14 @@ export function DirTree(props: DirTreeProps): react.JSX.Element {
           />
         ))}
       </ul>
-      {tags.length > 0 && (
-        <>
-          <div className="kb-tree-head"><span>标签</span></div>
-          <div className="kb-tags">
-            {tags.map((item) => {
-              //M 多选：已选的再点一次就去掉，KnowledgePage 的 pickTag 负责增删。
-              const isActive = props.tags.includes(item.name);
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="kb-tag"
-                  data-active={isActive}
-                  aria-pressed={isActive}
-                  onClick={() => props.pickTag(item.name)}
-                >
-                  #{item.name}<span className="kb-count">{item.docCount}</span>
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
+      <tagCloud.TagCloud
+        tags={tags}
+        selected={props.tags}
+        readOnly={props.readOnly}
+        pickTag={props.pickTag}
+        renameTag={props.renameTag}
+        removeTag={props.removeTag}
+      />
     </nav>
   );
 }

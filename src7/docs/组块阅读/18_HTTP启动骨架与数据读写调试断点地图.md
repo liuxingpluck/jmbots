@@ -716,119 +716,119 @@
 
 #### 写盘点 D：会话循环四关口与全系统唯一 `sessions` 落盘口（`Sessions.ts`）
 
-`Session.loop`（`src7/Sessions.ts:700`）每走一步，依次过四个 `ctx.serial` 关口：
+`Session.loop`（`src7/Sessions.ts:613`）每走一步，依次过四个 `ctx.serial` 关口：
 
-- **关口一 `session/before-model`**（`src7/Sessions.ts:814`）：`bots` 拼最近往来、人设和回复规则，`memory` 拼召回，`context-fit` 做 80% 窗口压缩裁剪，排最后的 `model-catalog` 选模型并发起真实请求，把回答塞进 `request.answer`；
-- **关口二 `session/after-model`**（`src7/Sessions.ts:849`）：模型回答接进历史前允许插件检查或喊停；
+- **关口一 `session/before-model`**（`src7/Sessions.ts:697`）：`bots` 拼最近往来、人设和回复规则，`memory` 拼召回，`context-fit` 做 80% 窗口压缩裁剪，排最后的 `model-catalog` 选模型并发起真实请求，把回答塞进 `request.answer`；
+- **关口二 `session/after-model`**（`src7/Sessions.ts:719`）：模型回答接进历史前允许插件检查或喊停；
 - **关口三 `session/before-tool`**（在 `Tools.execute` 里，`src7/Tools.ts:187`）：`approval` 在这里做命令四档把关，不许跑单次写 `gate.deny`，整轮喊停写 `gate.stop`；
-- **关口四 `session/after-tool`**（`src7/Sessions.ts:769`）：工具结果打包进 `toolResult` 前允许插件检查或改写。
+- **关口四 `session/after-tool`**（`src7/Sessions.ts:672`）：工具结果打包进 `toolResult` 前允许插件检查或改写。
 
 ```ts
 // src7/Sessions.ts
-719	      for (const waiting of this.inbox.splice(0)) {
-720	        this.append(waiting);
-721	      }
-722
-723	      //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/before-model）。
-724	      const request: ChatRequest = {
-725	        session: this,
-726	        model: this.row.model,
-727	        thinking: this.row.thinking,
-728	        system: [],
-729	        tools: this.ctx.tools.listToolsForSessionKind(this.row.kind),
-730	        messages: [...this.row.messages],
-731	        signal: modelSignal,
-732	      };
-733	      //M 经过两个模型关口后接入回答；这一步被取消时，重新从队列取话。
-734	      const answer = await this.getStepAnswer(request);
-735	      if (answer === undefined || modelSignal.aborted) continue;
-736
-737	      //M 插件可能改了、换了回答，以最后这一份为准，接进对话。
-738	      this.append(answer);
-739
+632	      for (const waiting of this.inbox.splice(0)) {
+633	        this.append(waiting);
+634	      }
+635
+636	      //M 关口一，调模型之前：备好这一步的请求，交给插件挨个改（session/before-model）。
+637	      const request: ChatRequest = {
+638	        session: this,
+639	        model: this.row.model,
+640	        thinking: this.row.thinking,
+641	        system: [],
+642	        tools: this.ctx.tools.listToolsForSessionKind(this.row.kind),
+643	        messages: [...this.row.messages],
+644	        signal: modelSignal,
+645	      };
+646	      //M 经过两个模型关口后接入回答；这一步被取消时，重新从队列取话。
+647	      const answer = await this.getStepAnswer(request);
+648	      if (answer === undefined || modelSignal.aborted) continue;
+649
+650	      //M 插件可能改了、换了回答，以最后这一份为准，接进对话。
+651	      this.append(answer);
+652
 …
-757	      if (calls.length === 0) {
-758	        const reply = piAi.contentText(answer.content);
-759	        this.change('done', reply);
-760	        return;
-761	      }
-762
-763	      //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。
-764	      for (const call of calls) {
-765	        const executed = await this.ctx.tools.execute(call, this, signal, stepSignal);
-766
-767	        //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。
-768	        const done: ToolDone = { session: this, call, outcome: executed };
-769	        await this.ctx.serial('session/after-tool', done);
-770
+660	      if (calls.length === 0) {
+661	        const reply = piAi.contentText(answer.content);
+662	        this.change('done', reply);
+663	        return;
+664	      }
+665
+666	      //M 模型要了工具 → 一个个执行（关口三 session/before-tool 在 Tools.execute 里），结果接进对话，回到开头走下一步。
+667	      for (const call of calls) {
+668	        const executed = await this.ctx.tools.execute(call, this, signal, stepSignal);
+669
+670	        //M 关口四，工具执行之后：结果接进对话之前，交给插件挨个看（session/after-tool）。
+671	        const done: ToolDone = { session: this, call, outcome: executed };
+672	        await this.ctx.serial('session/after-tool', done);
+673
 …
-794	        this.append(result);
-795
+677	        this.append(result);
+678
 ```
 
 ```ts
 // src7/Sessions.ts
-813	      //M 关口一：插件在这里修改请求，也可以提供现成回答。
-814	      await this.ctx.serial('session/before-model', request);
-815	      if (signal.aborted) return;
+696	      //M 关口一：插件在这里修改请求，也可以提供现成回答。
+697	      await this.ctx.serial('session/before-model', request);
+698	      if (signal.aborted) return;
 …
-841	      let answer = request.answer;
-842	      if (answer === undefined) {
-843	        answer = await this.ctx.sessions.chat(request);
-844	      }
-845	      if (signal.aborted) return;
-846
-847	      //M 关口二：插件在回答进入历史前检查或替换回答。
-848	      const answered: AnsweredRequest = { ...request, answer };
-849	      await this.ctx.serial('session/after-model', answered);
-850	      if (signal.aborted) return;
+711	      let answer = request.answer;
+712	      if (answer === undefined) {
+713	        answer = await this.ctx.sessions.chat(request);
+714	      }
+715	      if (signal.aborted) return;
+716
+717	      //M 关口二：插件在回答进入历史前检查或替换回答。
+718	      const answered: AnsweredRequest = { ...request, answer };
+719	      await this.ctx.serial('session/after-model', answered);
+720	      if (signal.aborted) return;
 ```
 
-最关键的设计在文件最底下这 38 行——`Session.save`（`src7/Sessions.ts:890`）、`Session.append`（`src7/Sessions.ts:908`）与 `Session.change`（`src7/Sessions.ts:920`）：
+最关键的设计在文件最底下这 38 行——`Session.save`（`src7/Sessions.ts:760`）、`Session.append`（`src7/Sessions.ts:778`）与 `Session.change`（`src7/Sessions.ts:790`）：
 
 - `row` 在内存里把字段摊平，存库时 `const { messages, ...meta } = this.row` 一刀拆成两列：`meta` 存除对话外的一切状态与插件扩展字段（`Sessions.find` 靠 SQLite 的 `json_extract(meta, '$.xxx')` 直接检索，插件加字段永远不用 `ALTER TABLE`），`messages` 存完整对话数组；
 - `append` 和 `change` 严格遵守**先 `this.save()` 落盘、再 `this.ctx.emit(...)` 广播**——任何监听 `session/new-message` 或 `session/change` 的插件去读库，读到的永远是已经落盘的最新状态！
 
 ```ts
 // src7/Sessions.ts
-890	  save(): void {
-891	    this.row.updatedAt = Date.now();
-892
-893	    //M 记录拆成两块：对话一块，别的项（连同插件加的）一块，各自转成 JSON。
-894	    const { messages, ...meta } = this.row;
-895	    const metaJson = JSON.stringify(meta);
-896	    const messagesJson = JSON.stringify(messages);
-897
-898	    //M 按主键覆盖持久化这一场会话的元信息与完整对话数组。
-899	    const sql = 'INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)';
-900	    const query = this.ctx.resources.db.query(sql);
-901	    query.run(meta.id, metaJson, messagesJson);
-902	  }
-903
-904	  /**
-905	   * 往对话后面接一条：存库，通知大家。
-906	   * @param message 接进对话并通知插件的新消息。`Message` 的四种形状见本文件 L96。
-907	   */
-908	  private append(message: piAi.Message): void {
-909	    //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。
-910	    this.row.messages.push(message);
-911	    this.save();
-912	    this.ctx.emit('session/new-message', this, message);
-913	  }
-914
-915	  /**
-916	   * 改状态：存库，通知大家。
-917	   * @param state 新状态。
-918	   * @param reply 这一轮的结果，要回给用户的话；刚开始转时是空的。
-919	   */
-920	  private change(state: SessionState, reply: string): void {
-921	    //M 同步更新状态与结果正文并落库，再连同原状态通知监听状态变更的插件。
-922	    const stateBefore = this.row.state;
-923	    this.row.state = state;
-924	    this.row.reply = reply;
-925	    this.save();
-926	    this.ctx.emit('session/change', this, stateBefore);
-927	  }
+760	  save(): void {
+761	    this.row.updatedAt = Date.now();
+762
+763	    //M 记录拆成两块：对话一块，别的项（连同插件加的）一块，各自转成 JSON。
+764	    const { messages, ...meta } = this.row;
+765	    const metaJson = JSON.stringify(meta);
+766	    const messagesJson = JSON.stringify(messages);
+767
+768	    //M 按主键覆盖持久化这一场会话的元信息与完整对话数组。
+769	    const sql = 'INSERT OR REPLACE INTO sessions (id, meta, messages) VALUES (?, ?, ?)';
+770	    const query = this.ctx.resources.db.query(sql);
+771	    query.run(meta.id, metaJson, messagesJson);
+772	  }
+773
+774	  /**
+775	   * 往对话后面接一条：存库，通知大家。
+776	   * @param message 接进对话并通知插件的新消息。`Message` 的四种形状见本文件 L96。
+777	   */
+778	  private append(message: piAi.Message): void {
+779	    //M 先写进内存与库中保证不丢消息，再通知订阅该会话新消息的插件。
+780	    this.row.messages.push(message);
+781	    this.save();
+782	    this.ctx.emit('session/new-message', this, message);
+783	  }
+784
+785	  /**
+786	   * 改状态：存库，通知大家。
+787	   * @param state 新状态。
+788	   * @param reply 这一轮的结果，要回给用户的话；刚开始转时是空的。
+789	   */
+790	  private change(state: SessionState, reply: string): void {
+791	    //M 同步更新状态与结果正文并落库，再连同原状态通知监听状态变更的插件。
+792	    const stateBefore = this.row.state;
+793	    this.row.state = state;
+794	    this.row.reply = reply;
+795	    this.save();
+796	    this.ctx.emit('session/change', this, stateBefore);
+797	  }
 ```
 
 #### 写盘点 E：回复工具幂等键、飞书发信与回执落库（`ChannelTools.ts` / `feishu/Reply.ts`）
@@ -918,9 +918,9 @@
 | 话被外部助手截走 / 附件没拷进工作区 | `Bots.onChannelMessage`（`src7/plugins/bots/index.ts:589`） | `claimKey`、`botText`、`receiveEvent.session`、`receiveEvent.handled` |
 | 消息被判重复丢掉 / 进错了前台会话 | `DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`）、`DispatchClaim.persistClaim`（`src7/plugins/bots/DispatchClaim.ts:223`） | `scope`、`front.id`、`isClaimed(front, claimKey)`、`item.replyControl` |
 | 消息进了 `resultQueue` 却一直卡着不跑 | `DispatchResults.drain`（`src7/plugins/bots/DispatchResults.ts:853`）、`DispatchResults.startQueuedUser`（`src7/plugins/bots/DispatchResults.ts:920`） | `row.state`、`row.activeKey`、`row.frontTask?.paused`、`queue` |
-| 想看真正喂给模型的完整提示词与压缩后历史 | `Session.getStepAnswer`（`src7/Sessions.ts:806`）、`Sessions.chat`（`src7/Sessions.ts:513`） | `814` 行前后的 `request.system`、`request.messages`、`request.tools`、`request.answer` |
+| 想看真正喂给模型的完整提示词与压缩后历史 | `Session.getStepAnswer`（`src7/Sessions.ts:689`）、`Sessions.chat`（`src7/Sessions.ts:513`） | `814` 行前后的 `request.system`、`request.messages`、`request.tools`、`request.answer` |
 | 工具为什么被拒（`deny`）或整轮被停（`stop`） | `Tools.execute`（`src7/Tools.ts:170`） | `187` 行后的 `gate.deny`、`gate.stop`、`spec.sessionKinds`、`args` |
-| 抓到底是谁偷偷改了 `sessions` 表（看调用栈） | `Session.save`（`src7/Sessions.ts:890`）、`Session.append`（`src7/Sessions.ts:908`）、`Session.change`（`src7/Sessions.ts:920`） | 调用栈 `Error().stack`、`this.row.state`、`this.row.messages.at(-1)` |
+| 抓到底是谁偷偷改了 `sessions` 表（看调用栈） | `Session.save`（`src7/Sessions.ts:760`）、`Session.append`（`src7/Sessions.ts:778`）、`Session.change`（`src7/Sessions.ts:790`） | 调用栈 `Error().stack`、`this.row.state`、`this.row.messages.at(-1)` |
 | 模型调了回复但飞书/网页没收到或报幂等冲突 | `ChannelTools.runReply`（`src7/plugins/bots/ChannelTools.ts:172`）、`FeishuReply.onChannelReply`（`src7/plugins/feishu/Reply.ts:74`）、`Timeline.reply`（`src7/plugins/web-api/Timeline.ts:385`） | `replyRequestKey`、`requested.isElsewhere`、`existing`、`receipt.status` |
 | 教程页画布漏步骤 / 查 SQLite 原始流水 | `Journal.listen`（`src7/plugins/journal/index.ts:230`）、`Journal.record`（`src7/plugins/journal/index.ts:304`） | `line.name`、`line.messageId`、`line.sessionId`、`line.sourceId` |
 
@@ -939,7 +939,7 @@
 | ⑤ | 逐机器人认领：`Bots.onChannelMessage`（`src7/plugins/bots/index.ts:589`） | **出**：每个目标机器人算 `claimKey`（`getClaimKey`，`src7/plugins/channels/Message.ts:311`），深拷贝 `botOrigin`（只听标 `listenOnly: true`），附件拷进 `<工作区>/inbox/<日期>/` 拼进 `botText`（`@绝对路径`），包成 `ReceiveEvent` 串行问 `bot/receive`（`relay` 可填 `event.session` 截走，`web-api` 把非网页消息补记进 `web_messages`）。 |
 | ⑥ | 事务排入单队列：`DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`） | **改写与落库**：按 `scope` 找或建前台 `Session`，调 `getSourceSnapshot`（`src7/plugins/channels/Message.ts:325`）冻结本轮来源快照，拼 `QueueItem { stage: 'queued', deliveryMode: 'channel_tool', replyControl }`；`persistClaim` 用 `db.transaction` 原子写 `row.sourceClaims`、`row.resultQueue`、`row.sourceScope` → `Session.save` 写 `sessions` 表；返回后飞书 `deliver` 写 `feishu_seen`、`web-api` 调 `bindSession` 绑上 `session_id`。 |
 | ⑦ | 出队激活开跑：`DispatchResults.drain`（`src7/plugins/bots/DispatchResults.ts:853`） | **改写与落库**：`said.stage = 'working'`、`row.activeKey = claimKey`、`row.activeSourceSnapshot = 快照`、`Bots.route` 更新回话地址 → `Session.save`；`queueUserMessage` 入 `inbox` → `Session.run()` 把 `row.state` 改为 `'running'` 落库，循环开头 `Session.append` 把用户话推入 `row.messages` 落库并发 `session/new-message`（记忆与归档旁听）。 |
-| ⑧ | 四关口模型与工具循环：`Session.loop`（`src7/Sessions.ts:700`） | **改写与落库**：组 `ChatRequest`（`messages` 是浅拷贝副本）→ 关口一各插件往 `request.system` 塞上下文与压缩历史、`model-catalog` 调模型填 `request.answer` → 关口二审回答 → `Session.append(answer)` 落库；有 `toolCall` 则进 `Tools.execute`（关口三审命令、跑工具）→ 关口四 → `Session.append(toolResult)` 落库再走下一步；无工具则 `Session.change('done', reply)` 落库。 |
+| ⑧ | 四关口模型与工具循环：`Session.loop`（`src7/Sessions.ts:613`） | **改写与落库**：组 `ChatRequest`（`messages` 是浅拷贝副本）→ 关口一各插件往 `request.system` 塞上下文与压缩历史、`model-catalog` 调模型填 `request.answer` → 关口二审回答 → `Session.append(answer)` 落库；有 `toolCall` 则进 `Tools.execute`（关口三审命令、跑工具）→ 关口四 → `Session.append(toolResult)` 落库再走下一步；无工具则 `Session.change('done', reply)` 落库。 |
 | ⑨ | 发起渠道回复：`ChannelTools.runReply`（`src7/plugins/bots/ChannelTools.ts:172`） | **出与落库**：算幂等键 `replyRequestKey = replyRoundKey + callId`，递增 `replyControl.nextReplyIndex` 调 `Session.save`；若网页一轮零次调工具且带 `autoFinal`，收尾时由 `DispatchResults` 自动把 `reply` 补发出去；统一经 `requestChannelReply`（`src7/plugins/channels/Reply.ts:196`）发 `channel/reply` 等回执。 |
 | ⑩ | 渠道投递与回执收尾：`FeishuReply.onChannelReply`（`src7/plugins/feishu/Reply.ts:74`） / `Timeline.reply`（`src7/plugins/web-api/Timeline.ts:385`） | **落库与闭环**：飞书核对幂等键、发消息、写回执并发 `channel/replied { receipt: { status: 'sent' } }`；网页直接更新 `web_messages.replies` 与 `status = 'replied'`；`ChannelTools` 把 `receipt` 存入 `active.deliveryReceipt` 落库；本轮 `done` 后 `DispatchResults` 清掉 `activeKey` 继续 `drain` 队列下一项，`journal` 全程写 `journal_lines`。 |
 
@@ -969,17 +969,17 @@
 
 | 想做的事 | 挂哪个事件 | 改哪个字段（参考实现） |
 |---|---|---|
-| 往系统提示词塞上下文，或临时裁剪发给模型的历史 | `session/before-model`（`src7/Sessions.ts:814`） | `request.system.push(...)` 或改 `request.messages`（它是当步副本，不会弄脏 `sessions` 表原记录） |
-| 代调模型或拦截模型不当回答 | `session/before-model` / `session/after-model`（`src7/Sessions.ts:849`） | 填 `request.answer`（代调），或设 `answered.stop = '原因'`（整轮喊停，不入对话） |
+| 往系统提示词塞上下文，或临时裁剪发给模型的历史 | `session/before-model`（`src7/Sessions.ts:697`） | `request.system.push(...)` 或改 `request.messages`（它是当步副本，不会弄脏 `sessions` 表原记录） |
+| 代调模型或拦截模型不当回答 | `session/before-model` / `session/after-model`（`src7/Sessions.ts:719`） | 填 `request.answer`（代调），或设 `answered.stop = '原因'`（整轮喊停，不入对话） |
 | 拦住某次危险工具调用，或直接停掉整轮 | `session/before-tool`（`src7/Tools.ts:187`） | 单次拒绝写 `gate.deny = '理由'`（模型能看到理由并换招）；整轮停写 `gate.stop = '理由'` |
-| 给工具输出脱敏、截断或补附图 | `session/after-tool`（`src7/Sessions.ts:769`） | 改写 `done.outcome.text` 或 `done.outcome.images` |
+| 给工具输出脱敏、截断或补附图 | `session/after-tool`（`src7/Sessions.ts:672`） | 改写 `done.outcome.text` 或 `done.outcome.images` |
 | 加“暂停 5”这类消息级快捷口令 | `channel/direct` + `channel/mention`，传 `{ prepend: true }` | 照 `Approval.constructor`（`src7/plugins/approval/index.ts:458`），消费后写 `control.approvalHandled = true` |
 | 把带特定前缀（如 `#报销`）的话改道进专用会话 | `bot/receive`（`src7/plugins/bots/index.ts:647`） | 把 `event.session` 填成你开的 `Session`，或完全吃掉写 `event.handled = true` |
 | 回复发出前统一加落款，或旁听已发回执做统计 | `channel/reply`（改字） / `channel/replied`（只读统计） | 改字在渠道接单前改 `request.parts`；统计只听 `channel/replied` 读 `event.receipt.status` |
 
 #### 4. 存新数据：扩会话字段 vs 建插件新表
 
-- **跟单场会话走的状态**（比如某场会话绑定的工单号）：用 TypeScript 模块扩充 `declare module '../../Sessions.ts' { interface SessionMeta { ticketId?: string } }`，直接赋值 `session.row.ticketId = 'T100'` 再调 `session.save()`（`src7/Sessions.ts:890`）。它自动存进 `sessions.meta` JSON 列，且立刻能用 `ctx.sessions.find({ ticketId: 'T100' })`（`src7/Sessions.ts:453`）按字段反查，**零建表、零迁移**。
+- **跟单场会话走的状态**（比如某场会话绑定的工单号）：用 TypeScript 模块扩充 `declare module '../../Sessions.ts' { interface SessionMeta { ticketId?: string } }`，直接赋值 `session.row.ticketId = 'T100'` 再调 `session.save()`（`src7/Sessions.ts:760`）。它自动存进 `sessions.meta` JSON 列，且立刻能用 `ctx.sessions.find({ ticketId: 'T100' })`（`src7/Sessions.ts:453`）按字段反查，**零建表、零迁移**。
 - **跨会话的独立业务表**（比如知识库、用量账单）：`inject` 写 `'db'` 和 `'resources'`，把建表/加列 SQL 登记进 `ctx.db.migrate(...)`（照 `src7/plugins/journal/index.ts:216`），读写直接用 `ctx.resources.db.query(...)`。
 
 #### 5. 加新的 HTTP 接口或独立前端页面
@@ -1019,6 +1019,6 @@
 
 <details><summary>参考答案</summary>
 
-不会删掉原记录。`Session.loop` 在 `src7/Sessions.ts:730` 构造 `request` 时写的是 `messages: [...this.row.messages]`（浅拷贝新数组），`context-fit` 等插件在关口一里替换或裁剪 `request.messages` 只影响当步发给模型的那一次请求，不动 `session.row.messages`。想给会话永久存自定义标记，直接改 `session.row.<字段名>` 后调 `session.save()`（`src7/Sessions.ts:890`），它会随 `meta` JSON 列一起通过 `INSERT OR REPLACE INTO sessions` 落盘。
+不会删掉原记录。`Session.loop` 在 `src7/Sessions.ts:643` 构造 `request` 时写的是 `messages: [...this.row.messages]`（浅拷贝新数组），`context-fit` 等插件在关口一里替换或裁剪 `request.messages` 只影响当步发给模型的那一次请求，不动 `session.row.messages`。想给会话永久存自定义标记，直接改 `session.row.<字段名>` 后调 `session.save()`（`src7/Sessions.ts:760`），它会随 `meta` JSON 列一起通过 `INSERT OR REPLACE INTO sessions` 落盘。
 
 </details>
