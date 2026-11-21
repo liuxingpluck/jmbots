@@ -314,7 +314,7 @@ export class Host {
       while (!signal.aborted) {
         if (this.guard !== undefined) {
           const request = { action: 'can-start' as const, heavy: this.spec.heavy, who: this.spec.name };
-          //M 自动重试也必须过守卫，不能绕过CPU或内存门槛拉起新进程。
+          //M 自动重试也必须过守卫，不能绕过内存门槛拉起新进程。
           const allowed = await this.guard.request(request);
           if (signal.aborted) return;
           if (!allowed.ok) {

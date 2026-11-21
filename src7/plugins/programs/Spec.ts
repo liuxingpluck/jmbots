@@ -320,10 +320,6 @@ export function getLaunch(root: string, spec: ProgramSpec) {
 
 /** 守卫内部统一使用字节与毫秒，不重复读取原配置。 */
 export interface GuardSettings {
-  /** CPU进入忙碌的百分比。 */
-  cpuPercent: number;
-  /** CPU低于此百分比才解除忙碌。 */
-  cpuResumePercent: number;
   /** 已用物理内存上限，字节。 */
   memoryBytes: number;
   /** 已用物理内存低于此字节数才恢复。 */
@@ -359,7 +355,7 @@ export function readGuard(config: unknown): GuardSettings {
     'cpu_percent', 'cpu_resume_percent', 'memory_gb', 'resume_gb',
     'vram_gb', 'vram_resume_gb', 'interval_ms', 'nvidia_smi',
   ]);
-  //G 拼错字段不能静默沿用阈值。
+  //G 拼错字段不能静默沿用阈值。cpu_percent、cpu_resume_percent是停用的旧字段，照收不报错，也不再生效。
   for (const field of Object.keys(raw)) {
     if (!fields.has(field)) {
       throw new Error(`programs.guard 不支持字段 ${field}`);
@@ -368,21 +364,14 @@ export function readGuard(config: unknown): GuardSettings {
       throw new Error(`programs.guard.${field} 不能是null`);
     }
   }
-  //M 统一在入口解析CPU进入线，内部不再读取原配置。
-  const cpuPercent = getGuardNumber(raw, 'cpu_percent', 80, 1, 100);
-  //M CPU恢复线与进入线分离，避免阈值附近反复抖动。
-  const cpuResumePercent = getGuardNumber(raw, 'cpu_resume_percent', 70, 0, 100);
   //M 用户的G按GiB解释，容量只在本入口换算一次。
   const memoryGb = getGuardNumber(raw, 'memory_gb', 60, 0.001, 1_000_000);
   //M 读取用户已定的55GiB恢复线，而不是把60以下全部当恢复。
   const resumeGb = getGuardNumber(raw, 'resume_gb', 55, 0, 1_000_000);
-  //M 逐卡显存硬线，不把多个卡容量合并。
-  const vramGb = getGuardNumber(raw, 'vram_gb', 15.9, 0.001, 1_000_000);
+  //M 逐卡显存硬线15.5GiB（用户 #442），不把多个卡容量合并。
+  const vramGb = getGuardNumber(raw, 'vram_gb', 15.5, 0.001, 1_000_000);
   //M 显存退出线低于硬线，避免重复限流通知。
-  const vramResumeGb = getGuardNumber(raw, 'vram_resume_gb', 15, 0, 1_000_000);
-  if (cpuResumePercent >= cpuPercent) {
-    throw new Error('cpu_resume_percent 要小于 cpu_percent');
-  }
+  const vramResumeGb = getGuardNumber(raw, 'vram_resume_gb', 14.5, 0, 1_000_000);
   if (resumeGb >= memoryGb) {
     throw new Error('resume_gb 要小于 memory_gb');
   }
@@ -395,8 +384,6 @@ export function readGuard(config: unknown): GuardSettings {
   const nvidiaSmi = getText(raw, 'nvidia_smi', 'programs.guard', 'nvidia-smi');
   const gib = 1024 ** 3;
   return {
-    cpuPercent,
-    cpuResumePercent,
     memoryBytes: memoryGb * gib,
     resumeBytes: resumeGb * gib,
     vramBytes: vramGb * gib,

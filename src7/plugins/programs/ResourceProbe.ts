@@ -57,17 +57,11 @@ export class ResourceProbe {
     return { at: Date.now(), cpu, memory, totalMemory, gpus };
   }
 
-  /** 累计所有逻辑核时钟，按区间增量计算CPU占用。 */
+  /** 累计所有逻辑核时钟，按区间增量计算CPU占用；只读给页面看，守卫不拿它限流。 */
   private getCpu(): number | null {
     try {
       const cpus = os.cpus();
-      let total = 0;
-      let idle = 0;
-      for (const cpu of cpus) {
-        const times = cpu.times;
-        total += times.user + times.nice + times.sys + times.irq + times.idle;
-        idle += times.idle;
-      }
+      const { total, idle } = sumCpuTimes(cpus, process.platform);
       const previous = this.previous;
       this.previous = { total, idle, cores: cpus.length };
       if (previous === undefined || previous.cores !== cpus.length || cpus.length === 0) {
@@ -78,15 +72,13 @@ export class ResourceProbe {
       const elapsed = total - previous.total;
       const idleElapsed = idle - previous.idle;
       if (elapsed <= 0 || idleElapsed < 0 || idleElapsed > elapsed) return null;
-      if (elapsed > 0 && idleElapsed >= 0 && idleElapsed <= elapsed) {
-        const percentage = 100 * (elapsed - idleElapsed) / elapsed;
-        //M 保留三个实际有效区间，不把无变化的时钟当0%加入均值。
-        this.percentages.push(percentage);
-        if (this.percentages.length > 3) {
-          this.percentages.shift();
-        }
+
+      //M 保留三个实际有效区间，不把无变化的时钟当0%加入均值。
+      const percentage = 100 * (elapsed - idleElapsed) / elapsed;
+      this.percentages.push(percentage);
+      if (this.percentages.length > 3) {
+        this.percentages.shift();
       }
-      if (this.percentages.length === 0) return null;
 
       let sum = 0;
       for (const percentage of this.percentages) {
@@ -120,6 +112,29 @@ export class ResourceProbe {
       return null;
     }
   }
+}
+
+/**
+ * 把各核累计时钟加成总时长和空闲时长，毫秒。
+ * Windows上libuv的sys已是“内核时间减空闲”，irq（中断时间）本来就在内核时间里，再加一遍会重复计入；
+ * Linux的irq是单独一栏，要加。11-21在宿主机实测：20核2秒，user+sys+idle正好等于墙钟乘核数，再加irq多出约1%。
+ * @param cpus os.cpus()的结果。
+ * @param platform process.platform，测试可传别的平台。
+ * @returns 总时长和其中的空闲时长。
+ */
+export function sumCpuTimes(cpus: os.CpuInfo[], platform: string): { total: number; idle: number } {
+  let total = 0;
+  let idle = 0;
+  for (const cpu of cpus) {
+    const times = cpu.times;
+    total += times.user + times.nice + times.sys + times.idle;
+    idle += times.idle;
+    //M 只有非Windows的irq是单独记的，才加进总时长。
+    if (platform !== 'win32') {
+      total += times.irq;
+    }
+  }
+  return { total, idle };
 }
 
 /** 在nvidia-smi文本边界核对有限数和唯一索引，把MiB转换为字节。 */

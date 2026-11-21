@@ -955,7 +955,7 @@
 
 - **入站收话**：把平台回调转成 `ChannelMessage`（`src7/plugins/channels/Message.ts:107`），调 `emitInbound`（`src7/plugins/channels/Message.ts:280`）即可自动接入审批口令、多机器人认领、时间线同步和记忆归档。一对一且不希望跑零次回复修复轮的渠道，在 `routing` 里写 `autoFinal: true`（照 `src7/plugins/web-api/index.ts:490`）。
 - **出站回话**：纯文字渠道直接调 `registerTextReply`（`src7/plugins/channels/TextReply.ts:49`）交一个 `sendDirectText` 回调（自动获得幂等重放与 `channel/replied` 回执）；需要自定义富媒体或附件协议的，照 `FeishuReply`（`src7/plugins/feishu/Reply.ts:65`）自己 `ctx.on('channel/reply', ...)` 标 `request.handled = true` 后调 `emitReplied`（`src7/plugins/channels/Reply.ts:354`）。
-- **登记渠道名与入口**：在插件里调 `ctx.effect(() => ctx.bots.channel('<渠道名>'))`（照 `src7/plugins/web-api/index.ts:151`），把模块加进 `BUILT_IN`（`src7/plugins/Index.ts:82`）并在 `config.yaml` 的 `plugins` 段挂上（外部独立插件连 `Index.ts` 都不用改，直接在 `config.yaml` 写文件夹路径，`loadPlugin` 在 `src7/Main.ts:146` 动态加载）。
+- **登记渠道名与入口**：在插件里调 `ctx.effect(() => ctx.bots.channel('<渠道名>'))`（照 `src7/plugins/web-api/index.ts:151`），把模块加进 `BUILT_IN`（`src7/plugins/Index.ts:83`）并在 `config.yaml` 的 `plugins` 段挂上（外部独立插件连 `Index.ts` 都不用改，直接在 `config.yaml` 写文件夹路径，`loadPlugin` 在 `src7/Main.ts:146` 动态加载）。
 
 #### 2. 给模型加一个新工具
 

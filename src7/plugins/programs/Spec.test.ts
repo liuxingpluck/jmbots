@@ -51,16 +51,20 @@ test('同组别名共享渠道占用，格式错误和重复分组在入口拒�
 test('守卫默认阈值按GiB转换、closable默认false，并在入口拒绝非法配置', () => {
   const settings = specModule.readGuard(undefined);
   expect(settings).toMatchObject({
-    cpuPercent: 80, cpuResumePercent: 70, memoryBytes: 60 * 1024 ** 3,
-    resumeBytes: 55 * 1024 ** 3, vramBytes: 15.9 * 1024 ** 3, intervalMs: 5000,
+    memoryBytes: 60 * 1024 ** 3, resumeBytes: 55 * 1024 ** 3,
+    vramBytes: 15.5 * 1024 ** 3, vramResumeBytes: 14.5 * 1024 ** 3, intervalMs: 5000,
   });
+  //M CPU限制已停用（用户 #442）：老配置写了cpu字段照收不报错，也不再进守卫设置。
+  const old = specModule.readGuard({ guard: { cpu_percent: 80, cpu_resume_percent: 70 } });
+  expect(old).not.toHaveProperty('cpuPercent');
+  expect(old).not.toHaveProperty('cpuResumePercent');
   const [spec] = specModule.readPrograms({ programs: [{ name: 'a', file: 'unused' }] });
   expect(spec?.closable).toBe(false);
   const cases = [
     { guard: null }, { guard: [] }, { guard: { memory_gb: null } },
-    { guard: { cpu_percent: NaN } }, { guard: { interval_ms: 0 } },
-    { guard: { resume_gb: 60 } }, { guard: { cpu_resume_percent: 80 } },
-    { guard: { vram_resume_gb: 15.9 } }, { guard: { typo: 1 } },
+    { guard: { interval_ms: 0 } },
+    { guard: { resume_gb: 60 } },
+    { guard: { vram_resume_gb: 15.5 } }, { guard: { typo: 1 } },
   ];
   for (const config of cases) {
     expect(() => specModule.readGuard(config)).toThrow();

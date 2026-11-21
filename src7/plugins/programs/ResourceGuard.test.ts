@@ -130,16 +130,25 @@ function getHarness() {
   return { ctx, hosts, notices, env, guard, host };
 }
 
-test('CPU到80拒绝重活，70仍忙、严格低于70恢复；轻任务不被CPU单独阻塞', async () => {
+test('CPU不限流（用户 #442）：CPU 99%或读不到都放行重活，不发CPU告警，档位仍是ok', async () => {
   const h = getHarness();
-  h.env.sample.cpu = 80;
+  const events: guardModule.ResourcePressure[] = [];
+  h.ctx.on('programs/pressure', (event) => { events.push(event); });
   const request = { action: 'can-start' as const };
-  expect((await h.guard.request(request)).ok).toBe(false);
-  expect((await h.guard.request({ ...request, heavy: false })).ok).toBe(true);
-  h.env.sample.cpu = 70;
-  expect((await h.guard.request(request)).ok).toBe(false);
-  h.env.sample.cpu = 69.9;
+  h.env.sample.cpu = 99;
   expect((await h.guard.request(request)).ok).toBe(true);
+  h.env.now = 120_000;
+  await h.guard.tick();
+  h.env.sample.cpu = null;
+  expect((await h.guard.request(request)).ok).toBe(true);
+  await h.guard.tick();
+  expect(h.notices.filter((n) => n.key.startsWith('cpu'))).toHaveLength(0);
+  expect(events.every((event) => event.level === 'ok')).toBe(true);
+
+  //M CPU再高，内存到60GiB照样拦。
+  h.env.sample.cpu = 99;
+  h.env.sample.memory = 60 * GIB;
+  expect((await h.guard.request(request)).ok).toBe(false);
 });
 
 test('60GiB暂停所有有能力的在办项，30秒只停一个可关最大RSS，严格低于55恢复', async () => {
@@ -188,19 +197,8 @@ test('60GiB暂停所有有能力的在办项，30秒只停一个可关最大RSS�
   expect(recovered?.text).toContain('已恢复 not-closable、small、largest');
 });
 
-test('一个程序都没有也通知：CPU连续忙满1分钟、内存超线、显存超线，正文写清现在多少和该做什么', async () => {
+test('一个程序都没有也通知：内存超线、显存超线，正文写清现在多少和该做什么', async () => {
   const h = getHarness();
-  h.env.sample.cpu = 90;
-  await h.guard.tick();
-  h.env.now = 59_999;
-  await h.guard.tick();
-  expect(h.notices.filter((n) => n.key === 'cpu-busy')).toHaveLength(0);
-  h.env.now = 60_000;
-  await h.guard.tick();
-  const cpu = h.notices.find((n) => n.key === 'cpu-busy');
-  expect(cpu?.text).toContain('CPU 90%（线 80%），已连续 1 分钟以上');
-  expect(cpu?.text).toContain('你可以：');
-
   h.env.sample.memory = 61 * GIB;
   //M 16GiB减50MiB正好是15.951171875GiB，两位小数显示15.95，不受浮点误差影响。
   h.env.sample.gpus = [{ index: 0, used: 16 * GIB - 50 * 1024 ** 2, total: 16 * GIB }];
@@ -210,25 +208,8 @@ test('一个程序都没有也通知：CPU连续忙满1分钟、内存超线、�
   expect(memory?.text).toContain('jmbots 没有拉起能暂停的程序');
   expect(memory?.text).toContain('任务管理器');
   const vram = h.notices.find((n) => n.key === 'vram-high:0');
-  expect(vram?.text).toContain('卡0 已用 15.95GiB / 共 16.00GiB（线 15.90GiB）');
-});
-
-test('CPU忙不满1分钟就降下来，不通知；再忙从头算', async () => {
-  const h = getHarness();
-  h.env.sample.cpu = 90;
-  await h.guard.tick();
-  h.env.now = 50_000;
-  h.env.sample.cpu = 60;
-  await h.guard.tick();
-  h.env.now = 55_000;
-  h.env.sample.cpu = 90;
-  await h.guard.tick();
-  h.env.now = 110_000;
-  await h.guard.tick();
-  expect(h.notices.filter((n) => n.key === 'cpu-busy')).toHaveLength(0);
-  h.env.now = 115_000;
-  await h.guard.tick();
-  expect(h.notices.filter((n) => n.key === 'cpu-busy')).toHaveLength(1);
+  expect(vram?.text).toContain('卡0 已用 15.95GiB / 共 16.00GiB（线 15.50GiB）');
+  expect(vram?.text).toContain('你可以：');
 });
 
 test('插件一个程序都不配也挂守卫：ready后采样，发programs/pressure和内存通知', async () => {
@@ -328,7 +309,7 @@ test('GPU请求计入逐卡上限、安全余量和并发预留；60秒后过期
   expect(second.ok).toBe(false);
   expect(second.reason).toContain('已用10.00GiB');
   expect(second.reason).toContain('要3.00GiB');
-  expect(second.reason).toContain('上限15.90GiB');
+  expect(second.reason).toContain('上限15.50GiB');
   h.env.now = 60_000;
   expect((await h.guard.request(request)).ok).toBe(true);
 });
@@ -350,15 +331,12 @@ test('不跨GPU凑空间，小卡按物理总量裁剪；voice已有量加需求
   expect(result.reason).toContain('8GiB');
 });
 
-test('GPU不可用不阻断CPU任务；CPU/内存未知或采样失败拒绝对应新工作', async () => {
+test('GPU不可用不阻断非显卡任务；内存未知或采样失败拒绝新工作', async () => {
   const h = getHarness();
   const request = { action: 'can-start' as const };
   h.env.sample.gpus = null;
   expect((await h.guard.request(request)).ok).toBe(true);
   expect((await h.guard.request({ ...request, vram_mb: 10 })).ok).toBe(false);
-  h.env.sample.cpu = null;
-  expect((await h.guard.request(request)).ok).toBe(false);
-  h.env.sample.cpu = 10;
   h.env.sample.memory = null;
   expect((await h.guard.request(request)).ok).toBe(false);
   h.env.read = async () => { throw new Error('模拟读数失败'); };
@@ -372,7 +350,7 @@ test('显存硬线与压力事件迟滞；连崩放弃和授权过期分别限�
   host.license = 'expired';
   const events: guardModule.ResourcePressure[] = [];
   h.ctx.on('programs/pressure', (event) => { events.push(event); });
-  h.env.sample.gpus = [{ index: 0, used: 15.9 * GIB, total: 16 * GIB }];
+  h.env.sample.gpus = [{ index: 0, used: 15.5 * GIB, total: 16 * GIB }];
   await h.guard.tick();
   await h.guard.tick();
   expect(events).toHaveLength(1);
@@ -383,7 +361,7 @@ test('显存硬线与压力事件迟滞；连崩放弃和授权过期分别限�
   h.env.sample.gpus[0]!.used = 15 * GIB;
   await h.guard.tick();
   expect(events).toHaveLength(1);
-  h.env.sample.gpus[0]!.used = 14.9 * GIB;
+  h.env.sample.gpus[0]!.used = 14.4 * GIB;
   await h.guard.tick();
   expect(events[1]?.level).toBe('ok');
 });

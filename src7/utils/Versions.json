@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.93",
+    "date": "2026-11-21",
+    "changes": [
+      "按老板 #442/#444 要求彻底关闭 programs/ResourceGuard（v1.7.8）的 CPU 门槛限制与 CPU 忙碌告警：绝不再因 CPU 占用或 CPU 采样未就绪拦截后台重活/暂停托管程序，仅严格守护宿主机两条硬红线——物理内存 ≤ 60 GiB（恢复线 55 GiB）与逐卡显存 ≤ 15.5 GiB（恢复线 14.5 GiB），老配置 cpu_percent 字段保留兼容解析不报错",
+      "修复 programs/ResourceProbe.ts Windows 平台 CPU 采样重复计入中断时间（irq）问题：实测 Windows 20 核宿主机 libuv 的 sys 已包含中断时间，win32 下不再重复叠加 irq，采样统计更精准（programs / memory / voice 150 项单测与全仓 Check_Lines 0 问题全绿）"
+    ]
+  },
+  {
     "version": "0.7.92",
     "date": "2026-11-21",
     "changes": [

@@ -1,4 +1,7 @@
-/** programs内部资源守卫：状态迟滞、事件准入、GPU短期预留与自有托管程序的有限恢复。 */
+/**
+ * programs内部资源守卫：状态迟滞、事件准入、GPU短期预留与自有托管程序的有限恢复。
+ * 只守内存60GiB与逐卡显存15.5GiB；CPU只读出来给页面看，不限流、不告警（用户 #442/#444）。
+ */
 import type * as cordis from 'cordis';
 import * as requestModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -13,9 +16,9 @@ export interface ResourceRequest extends requestModule.RequestEnvelope {
   action: 'can-start';
   /** 调用方名称；voice适用自己的8GiB预算。 */
   who?: string;
-  /** 是否为CPU重活，缺省为true。 */
+  /** 调用方自报是否重活；CPU限制停用后不影响准入，只留作标记。 */
   heavy?: boolean;
-  /** 预计新增显存，MiB；缺席表示CPU任务。 */
+  /** 预计新增显存，MiB；缺席表示不加载显卡模型。 */
   vram_mb?: number;
   /** 调用方已驻留显存，MiB，voice用来核对自身总预算。 */
   owned_vram_mb?: number;
@@ -33,12 +36,10 @@ export interface ResourceResult extends requestModule.ResultEnvelope {
 
 /** 档位变化时广播；原始读数也供后续消费者判断未知状态。 */
 export interface ResourcePressure {
-  /** 高线优先于CPU忙碌。 */
-  level: 'ok' | 'busy' | 'high';
+  /** 内存或显存达到高线为high，其余为ok；CPU不参与档位。 */
+  level: 'ok' | 'high';
   /** 当前原因，不把未知读数写成空闲。 */
   reason: string;
-  /** CPU迟滞状态。 */
-  cpuBusy: boolean;
   /** 内存迟滞状态，60GiB进入、严格低于55GiB解除。 */
   memoryHigh: boolean;
   /** 逐卡显存迟滞合并状态。 */
@@ -113,10 +114,6 @@ export class ResourceGuard {
   private timer?: ReturnType<typeof setInterval>;
   /** 最后成功或未知的资源快照。 */
   private current: probeModule.ResourceSample = { at: 0, cpu: null, memory: null, totalMemory: null, gpus: null };
-  /** CPU忙碌迟滞。 */
-  private cpuBusy = false;
-  /** 这一段CPU忙从哪一刻开始；连续忙满一分钟才通知用户。 */
-  private cpuSince?: number;
   /** 内存高位迟滞。 */
   private memoryHigh = false;
   /** 各显卡高位迟滞，失去读数不等于恢复。 */
@@ -221,9 +218,8 @@ export class ResourceGuard {
     if (now - sample.at > maxAge || sample.at > now + 1000) return { ok: false, reason: '资源读数已过期，未放行' };
     if (sample.memory === null) return { ok: false, reason: '取不到内存读数，未放行新工作' };
     if (this.memoryHigh) return { ok: false, reason: '内存达到上限，低于恢复线后才开新工作' };
-    if (request.heavy !== false && sample.cpu === null) return { ok: false, reason: 'CPU采样尚未就绪，未放行重活' };
-    if (request.heavy !== false && this.cpuBusy) return { ok: false, reason: 'CPU忙碌，先不开后台重活' };
-    if (request.vram_mb === undefined) return { ok: true, reason: 'CPU和内存允许开工' };
+    //M CPU不参与准入（用户 #442）：读不到CPU或CPU再高都不拦，只看内存和显存。
+    if (request.vram_mb === undefined) return { ok: true, reason: '内存允许开工' };
 
     const gpuIndex = request.gpu ?? 0;
     const gpu = sample.gpus?.find((item) => item.index === gpuIndex);
@@ -334,21 +330,6 @@ export class ResourceGuard {
 
   /** 根据新鲜读数维护迟滞；未知内存不会错误地解除高位状态。 */
   private updatePressure(sample: probeModule.ResourceSample): void {
-    if (sample.cpu !== null) {
-      if (sample.cpu >= this.settings.cpuPercent) {
-        this.cpuBusy = true;
-      }
-      if (sample.cpu < this.settings.cpuResumePercent) {
-        this.cpuBusy = false;
-      }
-    }
-    //M 记下这一段CPU忙的起点，编译这类几十秒的高峰不够一分钟就不打扰用户。
-    if (!this.cpuBusy) {
-      this.cpuSince = undefined;
-    }
-    if (this.cpuBusy && this.cpuSince === undefined) {
-      this.cpuSince = this.now();
-    }
     const wasMemoryHigh = this.memoryHigh;
     if (sample.memory !== null) {
       if (sample.memory >= this.settings.memoryBytes) {
@@ -381,12 +362,9 @@ export class ResourceGuard {
       }
     }
     const vramHigh = Array.from(this.gpuHigh.values()).includes(true);
+    //M 档位只看内存和显存高线；读数未就绪也是ok，由每次准入自己拒绝。
     let level: ResourcePressure['level'] = 'ok';
     let reason = '资源允许';
-    if (this.cpuBusy || sample.cpu === null || sample.memory === null) {
-      level = 'busy';
-      reason = 'CPU忙碌或资源读数未就绪';
-    }
     if (this.memoryHigh || vramHigh) {
       level = 'high';
       reason = '内存或显存达到高线，尚未确认低于恢复线';
@@ -395,15 +373,14 @@ export class ResourceGuard {
     for (const [index, high] of this.gpuHigh) {
       gpuSignature += `${String(index)}:${String(high)};`;
     }
-    const cpuAvailable = sample.cpu !== null;
     const memoryAvailable = sample.memory !== null;
     const gpuAvailable = sample.gpus !== null;
-    const available = `${String(cpuAvailable)}:${String(memoryAvailable)}:${String(gpuAvailable)}`;
-    const signature = `${level}:${String(this.cpuBusy)}:${String(this.memoryHigh)}:${gpuSignature}:${available}`;
+    const available = `${String(memoryAvailable)}:${String(gpuAvailable)}`;
+    const signature = `${level}:${String(this.memoryHigh)}:${gpuSignature}:${available}`;
     if (signature === this.signature) return;
 
     this.signature = signature;
-    const pressure = { level, reason, cpuBusy: this.cpuBusy, memoryHigh: this.memoryHigh, vramHigh, sample };
+    const pressure = { level, reason, memoryHigh: this.memoryHigh, vramHigh, sample };
     //M 只在档位变化时广播；具体数值仍随最新快照更新，不每五秒刷事件。
     this.ctx.emit('programs/pressure', structuredClone(pressure));
   }
@@ -441,20 +418,6 @@ export class ResourceGuard {
       }
     }
 
-    //M CPU连续忙满一分钟才通知；读不到数的那一轮不发，免得正文写不出现在多少。
-    const now = this.now();
-    if (this.cpuSince !== undefined && now - this.cpuSince >= 60_000 && sample.cpu !== null) {
-      const cpu = String(Math.round(sample.cpu));
-      const limit = String(this.settings.cpuPercent);
-      const resume = String(this.settings.cpuResumePercent);
-      const notice = this.getNotice(
-        'CPU 忙',
-        `CPU ${cpu}%（线 ${limit}%），已连续 1 分钟以上；降到 ${resume}% 以下算恢复`,
-        '暂停开新的后台重活（建索引、回填、批量嵌入），已经在跑的不动',
-        '电脑卡的话，打开任务管理器按“CPU”排序，看是哪个程序占着，不用的关掉',
-      );
-      this.notify('cpu-busy', notice);
-    }
     for (const gpu of sample.gpus ?? []) {
       //M 只通知实际达到逐卡高线的设备，不把无显卡当超限。
       if (this.gpuHigh.get(gpu.index) !== true) {
@@ -495,7 +458,7 @@ export class ResourceGuard {
     //M 即使没有可控程序，跨过恢复线也向用户交代一次。
     let done = '后台活可以再开了；没有要恢复的程序';
     if (restored.length > 0) {
-      done = `已恢复 ${restored.join('、')}（重新拉起的还要过 CPU 准入）；后台活可以再开了`;
+      done = `已恢复 ${restored.join('、')}（重新拉起的还要过内存准入）；后台活可以再开了`;
     }
     //M 正文写这一轮的读数和恢复线，用户知道已经降到哪。
     const memoryUsed = this.getGiB(sample.memory);
@@ -665,7 +628,7 @@ export class ResourceGuard {
         continue;
       }
 
-      //M 只拉起守卫关过的程序，CPU/内存仍由Host启动前再过守卫。
+      //M 只拉起守卫关过的程序，内存仍由Host启动前再过守卫。
       host.start();
       this.stopped.delete(host);
       this.paused.delete(host);
