@@ -3,6 +3,7 @@
 import { expect, test } from 'bun:test';
 import type { ProviderConfig } from '../Resources.ts';
 import * as checks from './Checks.ts';
+import * as failureModule from './Failure.ts';
 
 
 test('checkNumber 按范围收数，报错说清该写成什么样', () => {
@@ -40,4 +41,32 @@ test('checkModelRef 要写成“供应商名/模型 ID”，供应商要在 prov
   expect(() => checks.checkModelRef('known/', 'm', providers)).toThrow('m 要写成“供应商名/模型 ID”');
   expect(() => checks.checkModelRef('other/x', 'm', providers)).toThrow('m 的供应商不在 providers 里：other/x');
   expect(() => checks.checkModelRef('', 'm', providers)).toThrow('m 要写成非空的文字');
+});
+
+
+test('通用校验与网址整数校验统一抛出带 status=400 的 Failure', () => {
+  const catch400 = (run: () => unknown): void => {
+    let caught: unknown;
+    try {
+      run();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(failureModule.Failure);
+    expect((caught as failureModule.Failure).status).toBe(400);
+  };
+
+  catch400(() => checks.checkRecord([], '请求体'));
+  catch400(() => checks.checkArray({}, 'items'));
+  catch400(() => checks.checkNonEmptyText('', 'name'));
+  catch400(() => checks.checkNumber('x', 'port', { integer: true, min: 1, max: 65535 }));
+  catch400(() => checks.checkFlag('yes', 'enabled'));
+  catch400(() => checks.checkAllowedValue('bad', ['ok', 'no'] as const, 'mode'));
+  catch400(() => checks.checkCount('1.5', 'limit'));
+  catch400(() => checks.checkDirs('not-array', 'dirs'));
+  catch400(() => checks.checkGrants('not-object'));
+  catch400(() => checks.checkGrantDir('relative/path'));
+  expect(checks.checkCount(undefined, 'limit')).toBeUndefined();
+  expect(checks.checkCount('', 'limit')).toBeUndefined();
+  expect(checks.checkCount('42', 'limit')).toBe(42);
 });

@@ -1,4 +1,8 @@
-/** 统一检索与原文读取。网页、内部事件和模型共用检索，模型的范围由会话来源决定。 */
+/**
+ * 统一检索与原文读取：网页、内部事件和模型工具共用这一套检索。
+ * `Search` 按范围合并本地 SQLite 索引、文件记忆与 Rust 记忆服务结果；模型的可见范围由本轮会话来源决定，外人看不到私人记忆。
+ * 由 `memory/index.ts` 实例化，承接 `memory/request` 事件、`/api/memory/*` 路由和 `memory_search`/`memory_get` 工具。
+ */
 import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';

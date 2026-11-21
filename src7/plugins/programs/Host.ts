@@ -1,4 +1,8 @@
-/** 托管单个外部程序的进程、就绪状态、健康与关停；每次拉起发一把一次性密钥，渠道回调靠它认身份。 */
+/**
+ * 托管单个外部程序的进程、就绪状态、健康检查与关停。
+ * 每次拉起生成一把一次性密钥，供生命周期接口和渠道回调核验身份；状态变化发 `programs/state`。
+ * 由 `programs/index.ts` 按配置逐个创建，协议通信在 `Protocol.ts`，配置校验在 `Spec.ts`。
+ */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import type * as cordis from 'cordis';

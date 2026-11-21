@@ -1,4 +1,8 @@
-/** 语音转写的有序判断、收尾与任务派发。只处理已经转成文字的当前连接。 */
+/**
+ * 语音转写的有序判断、收尾与任务派发（`VoiceTasks`）。
+ * 接收已转成文字的片段，调用断句模型和 `decision/judge` 判定半句提前开工或整句收尾，经 `emitInbound` 发入渠道并发 `voice/task`、`voice/abandon`。
+ * 只处理当前活跃连接，由 `voice/index.ts` 为每条语音会话创建。
+ */
 
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';

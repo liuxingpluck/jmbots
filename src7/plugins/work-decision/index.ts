@@ -1,6 +1,7 @@
 /** 收集插件和网页的任务节点，把任务变化、选择与留言交给中控。 */
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
+import * as checksModule from '../../utils/Checks.ts';
 import type * as notifications from './Notify.ts';
 import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
@@ -38,7 +39,7 @@ function getNotice(config: Record<string, unknown>): notifications.OwnerNotice |
     throw new Error('public_url 要是不含账号和密码的 HTTP 或 HTTPS 地址');
   }
   //G 通知目标需要是含三个路由字段的对象。
-  const owner = storeModule.readObject(value);
+  const owner = checksModule.checkRecord(value, 'owner_target');
   //G 明确选择负责通知的机器人。
   const bot = storeModule.readText(owner['bot'], 'owner_target.bot');
   //G 明确选择机器人的发件渠道。
@@ -57,7 +58,7 @@ function getNotice(config: Record<string, unknown>): notifications.OwnerNotice |
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 配置在挂载时读一次，之后入口使用已经解析过的字段。
-  const settings = storeModule.readObject(config ?? {});
+  const settings = checksModule.checkRecord(config ?? {}, 'work-decision.config');
   const helper = getOptionalText(settings, 'relay_helper');
   //退场：所有运行时的旧 data/decision-map/graph.json 都导入 SQLite 以后，连同 legacy_workspace_id 与 importLegacy 一起删
   const legacyWorkspaceId = getOptionalText(settings, 'legacy_workspace_id');

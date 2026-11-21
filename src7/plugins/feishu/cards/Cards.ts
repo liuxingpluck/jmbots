@@ -384,7 +384,7 @@ export async function onAction(
     const asked = await requestEventModule.requestEvent(ctx, 'approval/request', 'approval/result', input);
 
     //G 接了单却出错：可能已经定了，保留占用，迟到的决定仍可刷新整件审批的终态。
-    if (asked.why !== undefined && asked.why !== 'unhandled') {
+    if (requestEventModule.isUncertain(asked)) {
       const action = `提交审批决定 approve=${String(approve)}`;
       return reportActionUncertain(row, action, asked.why);
     }

@@ -87,7 +87,7 @@ src7/
 
 这三个渠道都经 `emitInbound` 发进来的事件：网页、命令行是私聊，发 `channel/direct`；微信私聊发 `channel/direct`、群里 @我 发 `channel/mention`。
 
-- **网页**的 `POST /api/message` 由 `WebApi.accept` 存入时间线并发 `channel/direct`，指定或引用会话时带已校验的会话号。回话由 `WebApi.replyDirect` 追加到原网页消息。 [`WebApi.accept` · src7/plugins/web-api/index.ts:381](plugins/web-api/index.ts#L381) · [`WebApi.emitChannelMessage` · `channel/direct` · src7/plugins/web-api/index.ts:591](plugins/web-api/index.ts#L591) · [`WebApi.replyDirect` · src7/plugins/web-api/index.ts:649](plugins/web-api/index.ts#L649)
+- **网页**的 `POST /api/message` 由 `WebApi.accept` 存入时间线并发 `channel/direct`，指定或引用会话时带已校验的会话号。回话由 `WebApi.replyDirect` 追加到原网页消息。 [`WebApi.accept` · src7/plugins/web-api/index.ts:381](plugins/web-api/index.ts#L381) · [`WebApi.emitChannelMessage` · `channel/direct` · src7/plugins/web-api/index.ts:176](plugins/web-api/index.ts#L176) · [`WebApi.replyDirect` · src7/plugins/web-api/index.ts:649](plugins/web-api/index.ts#L649)
 - **微信**的 `Wechat.store` 存好监听到的新消息后，把需要回复的消息发成 `channel/direct` 或 `channel/mention`。`Wechat.deliverOrDraft` 把回话放进发件表，按设置直发、待确认或留草稿。 [`Wechat.store` · src7/plugins/wechat/index.ts:384](plugins/wechat/index.ts#L384) · [`Wechat.store` · `channel/direct` · src7/plugins/wechat/index.ts:475](plugins/wechat/index.ts#L475) · [`Wechat.deliverOrDraft` · src7/plugins/wechat/index.ts:700](plugins/wechat/index.ts#L700)
 - **命令行**的 `Cli.submitLine` 存好原始输入后发 `channel/direct`，回话逐条打印。 [`Cli.submitLine` · src7/plugins/cli/index.ts:135](plugins/cli/index.ts#L135) · [`Cli.constructor` · src7/plugins/cli/index.ts:72](plugins/cli/index.ts#L72)
 

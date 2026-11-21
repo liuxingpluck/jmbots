@@ -1,5 +1,5 @@
 /**
- * 教程插件 tutorial：一个页面看懂每个插件、每条流程。11-17 由 flow（画布、运行时变量、快照）、boot-trail（录启动）、trace（打印执行路径）合成。
+ * 教程页：看懂每个插件、每条消息怎么走。由原 flow、boot-trail、trace 三个插件合成。
  * 要写在 config.yaml plugins 段的第一个：录启动要赶上后面每个插件开始挂（Boot.ts）。所以只 inject 骨架的 resources、sessions，
  * HTTP 接口等 http 插件起来后再登记（ctx.inject(['http'])）。
  * 几块各在哪个文件：
@@ -10,7 +10,7 @@
  *   Lanes.ts  把轨迹摆成泳道图；跟踪行、录下的启动 → 一步一步在 journal/Trail.ts（消息的、启动的都发 journal/request 问 journal 要）；
  *   Source.ts 读源码：注释、函数源码、谁调它，和插件的 说明.md；
  *   Print.ts  控制台打印执行路径（原 trace 插件），配置 trace_console 打开。
- * 页面 /tutorial/ 由 web 插件按约定托管（dist/web/tutorial.html，源码 web/src/Tutorial/）；/flow/ 跳到 /tutorial/。接口：
+ * 页面 /tutorial/ 由 http 的 Static.ts 按约定托管（dist/web/tutorial.html，源码 web/src/Tutorial/）；/flow/ 跳到 /tutorial/。接口：
  *   GET /api/tutorial/plugins               左栏插件：名字、版本、挂没挂上、有没有说明，加快照关键词、源码根目录
  *   GET /api/tutorial/readme?name=          插件的 说明.md 原文；还没写是空串
  *   GET /api/tutorial/cordis                Cordis 用法文档清单

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.96",
+    "date": "2026-11-21",
+    "changes": [
+      "落地云端顾问 35 号报告第 1、2、4、5 条：utils/Checks.ts 全部通用校验统一抛出 Failure(400, …)，清掉 knowledge / frpc / relay / work-decision / exec / web-api 重复的请求体对象检查、非负整数解析、端口校验、BadInput 类与 400 包装 try/catch；knowledge 外部入口单次校验并收拢 cleanTag / checkName / readParam；本地时间与时间戳收拢至 Text.formatLocalTime / Names.createTimestampId；补齐 RequestEvent.isUncertain（全仓 11 处清零）、Text.getDigest（3 处 sha256 收拢）、http.requireVerified 与只读 http.port，并修复 frpc 写死 30086 端口的真实 bug（428 项相关单测全绿，业务代码净减约 200 行）",
+      "落地云端顾问 34 号报告第 1、2、3、4 条：升级 Check_Lines.ts 新增四项插件文档硬检（7 个标准二级标题、源码-事件表漏写对账、index.ts 首句 ≤50 字且不以冒号结尾、缺失文件引用升为 error），同步删去 tutorial/说明.md 815 行过期照抄源码清单、重写全仓插件 index.ts 简明一句话简介与 11 个 300+ 行大文件头并清掉说明与注释中的营销腔及历史死引用，全仓 120 份文档在新版严检下 0 error 全绿"
+    ]
+  },
+  {
     "version": "0.7.95",
     "date": "2026-11-21",
     "changes": [

@@ -1,5 +1,5 @@
 /**
- * 模型清单与运行兜底（已并入原 model-fallback）：
+ * 模型清单：有哪些模型、出错换哪个、用了多少。
  * 1. 清单：起来就向 providers 里每一家拉 <base_url>/models，和手写的合成一张模型表，给网页看、给别的插件查；
  *    一家拉不到不挡别家、不挡起服务：先用它手写的模型，每 60 秒再试，连上就换。
  * 2. 回退（Fallback.ts / Queue.ts）：在 session/before-model 末尾调模型，限流记冷却、超长换大窗口、上游服务缺失走备用链。
@@ -7,7 +7,7 @@
  *    事件 model-catalog/request 的 action: 'prompt' 一次交回模型介绍评价和能用的思考档，前台派活时带上。
  * 4. 用量（Usage.ts，11-18 并进原 usage）：保留 usage 服务、model-catalog/usage 事件和 GET /api/usage。
  * 只是一张表加回退层：正常调模型仍走骨架的 ctx.resources.getModel。
- * 设计：docs/src7插件设计/model-catalog.md、docs/src7插件设计/model-fallback.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as piAi from '@earendil-works/pi-ai';
 import * as cordis from 'cordis';

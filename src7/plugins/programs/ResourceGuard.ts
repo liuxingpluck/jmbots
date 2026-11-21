@@ -1,6 +1,8 @@
 /**
- * programs内部资源守卫：状态迟滞、事件准入、GPU短期预留与自有托管程序的有限恢复。
- * 只守内存60GiB与逐卡显存15.5GiB；CPU只读出来给页面看，不限流、不告警（用户 #442/#444）。
+ * 资源守卫：盯着本机内存（60 GiB）和每张卡的显存（15.5 GiB），别让后台重活把机器拖垮；CPU 只读出来给页面看，不管。
+ * 定时采样（tick）：过了高位线就暂停本插件托管的、能暂停的程序；内存连续 30 秒顶在硬线上再停一个；回到恢复线以下再拉起来（restore）。
+ * 开工前问一声（request）：别的插件发 programs/resource-request，这里现采一次样、算上已批出去的显存再答；档位变了发 programs/pressure。
+ * 只管构造时交进来的 Host，不碰系统里别的进程。index.ts 建它，读数在 ResourceProbe.ts。
  */
 import type * as cordis from 'cordis';
 import * as requestModule from '../../utils/RequestEvent.ts';
@@ -96,7 +98,7 @@ declare module 'cordis' {
   }
 }
 
-/** 只管理构造时传入的本插件Host，绝不枚举或杀系统其他进程。 */
+/** 只管理构造时传入的本插件Host，不枚举也不杀系统其他进程。 */
 export class ResourceGuard {
   /** 系统读数依赖，生产只有此处创建探针。 */
   private readonly read: NonNullable<GuardDependencies['read']>;

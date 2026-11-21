@@ -1,4 +1,8 @@
-/** 按配置托管外部程序，提供状态、启停、HTTP 转发和界面入口 /programs/<名字>/；资源守卫没有程序时也照样采样。 */
+/**
+ * 外部程序：按配置起停、转发 HTTP，带资源守卫。
+ * 提供状态、启停、HTTP 转发与 /programs/<名字>/ 页面入口；无外部程序配置时资源守卫仍照常采样。
+ * 进程托管在 Host.ts，资源守卫在 ResourceGuard.ts，渠道发件与回调在 ChannelSend.ts、ChannelBridge.ts。
+ */
 import * as stream from 'node:stream';
 import * as path from 'node:path';
 import * as cordis from 'cordis';

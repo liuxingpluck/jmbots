@@ -11,7 +11,7 @@ export interface GpuSample {
   total: number;
 }
 
-/** 一次系统快照；null表示不可用，绝不当作零占用。 */
+/** 一次系统快照；null表示不可用，不当作零占用。 */
 export interface ResourceSample {
   /** 采样完成时刻，Unix毫秒。 */
   at: number;

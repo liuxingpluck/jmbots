@@ -20,7 +20,7 @@ import type { PayloadDiff } from './Walk.ts';
 
 
 //==========================================================
-//M 对外 JSON 契约类型（严格对齐设计文档 3.1）
+//M 对外 JSON 契约类型（见同目录 说明.md）
 //==========================================================
 
 
@@ -1372,7 +1372,7 @@ export class PayloadRecorder {
     return parsed;
   }
 
-  /** 磁盘上的 *.payload.json 超过 maxMessages 个时，按修改时间删最旧的（绝不碰 boot.json 与 <消息号>.json）。 */
+  /** 磁盘上的 *.payload.json 超过 maxMessages 个时，按修改时间删最旧的（不动 boot.json 与 <消息号>.json）。 */
   private async pruneDiskFiles(): Promise<void> {
     if (!fs.existsSync(this.dir)) return;
 

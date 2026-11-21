@@ -1,6 +1,5 @@
 /** 带持久化的结果队列、状态推进、回复收尾与重启恢复。 */
 import * as botUtils from '../../utils/Bots.ts';
-import * as crypto from 'node:crypto';
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { Session, SessionMeta, SessionState } from '../../Sessions.ts';
@@ -224,7 +223,7 @@ export class DispatchResults {
     }
 
     //G 同键收过：内容一样是重试，交回 duplicate；不一样报冲突，不覆盖。
-    const hash = getHash(input.payload);
+    const hash = textModule.getDigest(input.payload);
     const before = target.row.resultQueue;
     const queue = before ?? [];
     const found = queue.find((item) => item.key === input.key);
@@ -1048,15 +1047,6 @@ export class DispatchResults {
     //M 收尾后下一拍再看队列里还有没有排着的，有就接着处理。
     this.later(session);
   }
-}
-
-/**
- * 结果的摘要：sha256 前 16 位，同键比内容用。
- * @param payload 正文和文件。
- */
-function getHash(payload: ResultPayload): string {
-  const text = JSON.stringify(payload);
-  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
 
 

@@ -264,11 +264,11 @@ channel/reply → 渠道发出
 
 ```ts
 // src7/plugins/bots/DispatchResults.ts
-427	    //G 暂停（stop_session）、转给了别的会话（progress）→ 不交回。轮数变了 → 这一轮交回过了。
-428	    if (task.paused || task.handedTo !== undefined || task.round !== round) {
-429	      this.later(work);
-430	      return;
-431	    }
+426	    //G 暂停（stop_session）、转给了别的会话（progress）→ 不交回。轮数变了 → 这一轮交回过了。
+427	    if (task.paused || task.handedTo !== undefined || task.round !== round) {
+428	      this.later(work);
+429	      return;
+430	    }
 ```
 
 - 暂停了、转交给别的会话了、这一轮已经交回过（轮数变了）：都不交回；

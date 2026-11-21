@@ -4,6 +4,7 @@
  */
 import type { Http } from '../http/index.ts';
 import type { Relay } from './index.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 
 
@@ -21,10 +22,10 @@ const STATES = new Set(['pending', 'replied', 'expired']);
  */
 export function routes(http: Http, relay: Relay): void {
   //M 收件：外部助手定时来拉自己的那几条；查询参数在这里转成数、查一遍，参数不对就抛带 400 的业务错误。
-  http.app.get<{ Querystring: Record<string, unknown> }>('/api/relay/inbox', (request) => {
+  http.app.get<{ Querystring: Record<string, string | undefined> }>('/api/relay/inbox', (request) => {
     const query = request.query;
-    const since = whole(query['since'], 0, 'since');
-    let limit = Math.min(whole(query['limit'], 50, 'limit'), 200);
+    const since = checks.checkCount(query['since'], 'since') ?? 0;
+    let limit = Math.min(checks.checkCount(query['limit'], 'limit') ?? 50, 200);
     if (limit === 0) {
       limit = 50;
     }
@@ -42,24 +43,6 @@ export function routes(http: Http, relay: Relay): void {
     const item = relay.accept(request.body, 'http');
     return { ok: true, item };
   });
-}
-
-
-
-/**
- * 查询参数里的非负整数。
- * @param value 查询参数的值。
- * @param fallback 没写时用它。
- * @param key 参数名，报错用。
- * @returns 整数。
- * @throws 写了但不是非负整数时抛 Failure(400)。
- */
-function whole(value: unknown, fallback: number, key: string): number {
-  if (value === undefined || value === '') return fallback;
-  //M 查询参数都是字符串：先转成数，不是非负整数就 400。
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < 0) throw new failureModule.Failure(400, `${key} 要写成非负整数`);
-  return number;
 }
 
 

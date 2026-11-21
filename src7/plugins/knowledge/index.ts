@@ -1,8 +1,8 @@
 /**
- * 积木知识库插件（knowledge）：
- * 1. 管理 SQLite 三组核心表（虚拟目录 kb_dirs、知识文档 kb_docs、标签与关联 kb_tags / kb_doc_tags）；
+ * 管理积木知识库的目录、文档、标签、磁盘镜像与检索工具。
+ * 1. 管理 SQLite 三组表（虚拟目录 kb_dirs、知识文档 kb_docs、标签与关联 kb_tags / kb_doc_tags）；
  * 2. 自动维护 <runtimeRoot>/knowledge/YYYYMMDD/<id>_<标题>/{content.md, meta.json} 磁盘镜像；
- * 3. 挂载 /api/knowledge/* 全套 REST 接口（写操作强制 isVerified 核验，搜索温和桥接 memory）；
+ * 3. 挂载 /api/knowledge/* 全套 REST 接口（写操作强制 isVerified 核验，搜索时按需附查 memory）；
  * 4. 注册模型只读检索工具 kb_search，供前台与后台机器人按关键词、专题或标签查阅资料；
  * 5. 注册写工具 kb_save（新建、追加、带乐观锁的替换），标签改名合并删除与相关文档推荐接口。
  */
@@ -22,7 +22,7 @@ export { KnowledgeStore, SCHEMA_SQL, deriveAutoSummary, normalizeTags } from './
 /** 插件名。 */
 export const name = 'knowledge';
 
-//M 1.0.0：积木知识库三原子 SQLite 存储、磁盘镜像导出、REST API、memory 搜索温和桥接与 kb_search 工具。
+//M 1.0.0：积木知识库三原子 SQLite 存储、磁盘镜像导出、REST API、memory 搜索附查与 kb_search 工具。
 //M 1.0.2：kb_save 写工具（新建、追加、乐观锁替换）；标签改名、合并、删除接口；相关文档推荐接口。
 //M 1.0.3：记忆桥接不再传 requestEvent 的 timeoutMs，改传 AbortSignal.timeout(4 秒)（云端 31 第 2 条）。
 /** 插件版本号。 */
@@ -58,14 +58,6 @@ function parseKnowledgeConfig(
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   const settings = parseKnowledgeConfig(ctx.resources.root, config);
-
-  //M 若已挂载 db 迁移服务则纳入统一版本账本，否则由 KnowledgeStore 直接幂等建表。
-  const dbService = ctx.get('db');
-  dbService?.migrate({
-    plugin: name,
-    migrations: [{ version: 1, sql: storeModule.SCHEMA_SQL }],
-  });
-
   const mirror = new mirrorModule.DiskMirror(settings.mirrorDir);
   const store = new storeModule.KnowledgeStore(ctx.resources.db, mirror);
   routesModule.mountKnowledgeRoutes(ctx, store);

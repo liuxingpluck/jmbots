@@ -196,3 +196,16 @@ export function onRequestEvent<
     }
   });
 }
+
+
+/**
+ * 这次请求的结果说不准：处理方抛了错，或者调用方中止了，事情可能已经做了一半。
+ * 没人接单（unhandled）是确定没做，不算。
+ */
+export function isUncertain(
+  asked: Asked<unknown>,
+): asked is { reply?: undefined; why: 'aborted' | 'error'; detail?: string } {
+  if (asked.why === 'aborted') return true;
+
+  return asked.why === 'error';
+}

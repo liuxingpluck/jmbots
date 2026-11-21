@@ -4,6 +4,7 @@
  */
 import * as path from 'node:path';
 import * as checks from '../../utils/Checks.ts';
+import * as failureModule from '../../utils/Failure.ts';
 
 
 /** 外部 AI 交回结果的两种办法：http 调 result 接口；file 写任务文件夹里的 result/result.json，jmbots 定时扫。 */
@@ -50,7 +51,7 @@ export function checkAgentHello(body: unknown): AgentHello {
   //M description：可以不写，写了要是文字。
   const description = item['description'] ?? '';
   if (typeof description !== 'string') {
-    throw new Error('description 要写成文字（可以不写）');
+    throw new failureModule.Failure(400, 'description 要写成文字（可以不写）');
   }
 
   //M 没写 models：只是打招呼，能力留旧的。
@@ -68,10 +69,7 @@ export function checkAgentHello(body: unknown): AgentHello {
   }
 
   //M subagents：能不能开子代理，不写当不能；returnMode：不写是 http。
-  const subagents = item['subagents'] ?? false;
-  if (typeof subagents !== 'boolean') {
-    throw new Error('subagents 要写成 true 或 false');
-  }
+  const subagents = checks.checkFlag(item['subagents'] ?? false, 'subagents');
   //G 限制结果交回方式只取已知枚举值（默认 http）。
   const returnMode = checks.checkAllowedValue(item['returnMode'] ?? 'http', RETURN_MODES, 'returnMode');
 
@@ -178,7 +176,7 @@ export function checkTaskResult(body: unknown): TaskResult {
 
   //G 版本和种类：只认 v1 的 result。
   if (item['version'] !== 1 || item['kind'] !== 'result') {
-    throw new Error('结果要写 version: 1、kind: "result"');
+    throw new failureModule.Failure(400, '结果要写 version: 1、kind: "result"');
   }
 
   //M 任务号、领取键、结论、具体结论。
@@ -191,7 +189,7 @@ export function checkTaskResult(body: unknown): TaskResult {
   const resultKey = `${taskId}/${claimKey}/result`;
   const writtenKey = item['resultKey'] ?? resultKey;
   if (writtenKey !== resultKey) {
-    throw new Error(`resultKey 要写成 ${resultKey}（任务号/claimKey/result）`);
+    throw new failureModule.Failure(400, `resultKey 要写成 ${resultKey}（任务号/claimKey/result）`);
   }
 
   //M actualExecution：每项都要写，核实不了写 unknown。
@@ -226,12 +224,12 @@ export function checkTaskResult(body: unknown): TaskResult {
     const file = checks.checkNonEmptyText(artifact['path'], `${label}.path`);
     const parts = file.split(/[\\/]/u);
     if (path.isAbsolute(file) || path.win32.isAbsolute(file) || parts.includes('..')) {
-      throw new Error(`${label}.path 要写相对 result/artifacts/ 的路径，不能是绝对路径、不能有 ..`);
+      throw new failureModule.Failure(400, `${label}.path 要写相对 result/artifacts/ 的路径，不能是绝对路径、不能有 ..`);
     }
     //G 校核交付物的校验和格式及一句话描述，随后登记到结果列表。
     const sha256 = checks.checkNonEmptyText(artifact['sha256'], `${label}.sha256`);
     if (!SHA256_PATTERN.test(sha256)) {
-      throw new Error(`${label}.sha256 要写成 64 位小写十六进制`);
+      throw new failureModule.Failure(400, `${label}.sha256 要写成 64 位小写十六进制`);
     }
     //M 校验交付物的一句话描述为非空文字，再写入结果数组。
     const description = checks.checkNonEmptyText(artifact['description'], `${label}.description`);

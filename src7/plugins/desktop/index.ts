@@ -1,7 +1,7 @@
 /**
- * 窗口操控接口：GET /api/desktop/status 看能不能用（只看系统和程序在不在，不起进程）；POST /api/desktop/action 做四种操作之一
- * （pick 拖定位点选窗口、inspect 看窗口和子窗口、capture 拍客户区、scroll 滚几格）。一次请求起一个隐藏的 aobw-capability.exe，
- * 请求 JSON 写进它的输入，读它输出的一个 JSON 原样回。校验一次，不许把任意命令、路径传给系统；同时只许一个 pick；网页断开只结束这一次的子进程。
+ * 提供本机窗口拾取、查看、截图与滚动接口。
+ * GET /api/desktop/status 查可用性；POST /api/desktop/action 起隐藏 aobw-capability.exe 做 pick/inspect/capture/scroll，
+ * 输入输出走 JSON，校验一次且不透传任意命令路径；同时只许一个 pick，网页断开结束本次子进程。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as childProcess from 'node:child_process';

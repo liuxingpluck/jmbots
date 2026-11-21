@@ -1,5 +1,5 @@
 /**
- * 飞书：一个插件管飞书的全部——渠道收发、确认卡片和进度卡片（cards/）、飞书云文档工具（doc/）、发件箱（outbox/）。
+ * 接入飞书渠道收发、审批进度卡片、云文档工具与发件箱。
  * 用户定了：平台型插件放在一个插件里，用子文件夹分管功能。设计见同目录 说明.md 的「设计要点」一节。
  * 渠道收发按职责分文件：这个文件是入口（类型、配置校验、长连接、别的插件调的发送口、apply）；
  * 收消息、撤回、点卡片在 Inbound.ts，channel/reply 在 Reply.ts（所有发出去的话都经它），聊天日志在 ChatLog.ts，
@@ -28,6 +28,7 @@ import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as protocol from '../channels/index.ts';
+import type { ChannelStatus } from '../web-api/index.ts';
 import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
 import * as configModule from './Config.ts';
@@ -83,19 +84,6 @@ export const version = '1.3.9';
 
 /** 用到的必需服务。审核和进度通过事件协作。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
-
-
-/** 一个渠道连接的状态，给网页左下角的小圆点（形状照 web-api.md 的 ChannelStatus）。 */
-export interface ChannelStatus {
-  /** 'feishu:<应用号>'；网页按 name 开头认渠道。 */
-  name: string;
-  /** 这条连接属于哪个机器人。 */
-  bot?: string;
-  /** 通不通。 */
-  connected: boolean;
-  /** 鼠标放上去的一句话。 */
-  detail: string;
-}
 
 
 declare module 'cordis' {

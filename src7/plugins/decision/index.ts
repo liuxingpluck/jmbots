@@ -1,7 +1,7 @@
 /**
- * 决策模型：一道是非题加一份现状，交给配置里的一个或几个模型同时打分（“答案是‘是’”的把握，0～1），合成一个分，照阈值交回
- * allow / deny / unsure。两种模型都认：对话模型（开一场 kind: 'decision' 的小会话，让它回一段带 probability 的 JSON）；
- * 用 typesafe-system-one 分类，交回各选项的概率。不拦事件、不出题、不记表。
+ * 给是非题打分并返回放行、拒绝或拿不准。
+ * 把一道是非题加现状交给配置的对话模型（小会话 JSON 概率）或 typesafe-system-one 分类器打分（0～1），
+ * 合成一个分照阈值交回 allow / deny / unsure。不拦事件、不出题、不记表。
  * 谁要判断谁发请求事件 decision/judge（approval、bots 前台、progress 可选地用），本插件回 decision/judge-result；没挂本插件时发的一方当场退回拿不准。
  * 请求带 want: ['what'] 时，对话模型在同一次回答里顺带写一句“执行完会做成什么”，回执带回 what（只用来显示，不进合分）；分类器给不出文字，不带 what。
  * 设计见同目录 说明.md 的「设计要点」一节。

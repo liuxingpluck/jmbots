@@ -1,5 +1,5 @@
 /**
- * 进度和限时：有用户的会话（记录上有 channel、没有 parent；前台交出去的后台会话 kind work 有 parent 也算）每转一轮就有一项进度：开始时间、第几步、在调哪个工具、各工具用时、限时、阶段、结果。
+ * 进度：用户在等的会话报进度、限时叫停、事后复盘。有用户的会话和前台派出的 work 会话每转一轮记一项进度。
  * 长跑提醒（用户 11-14 定的）：一轮跑满 15 分钟（progress.long_run_card_minutes）发一张卡片问要不要终止（approval 的待确认，网页、飞书同一份卡片数据）。
  *   点“终止”才停；点“继续”或一直不点都一直做下去。一轮只发一张；会话结束时还没点的卡片变灰写“会话已结束”。
  * 限时：默认不限时（progress.limit_default_minutes 默认 0，不能“不点就自动停”）；设置正数后，到点前报时，到点时判断是否继续。
@@ -608,7 +608,7 @@ export class Progress extends cordis.Service {
     this.ctx.emit('trace', 'Progress.sendCard', 'trace.progress.requestCard', 'approval/request ask', cardVars);
 
     //G 未获回执时可能已经登记，等待原卡或保留待核对状态。
-    if (asked.why !== undefined && asked.why !== 'unhandled') {
+    if (requestEventModule.isUncertain(asked)) {
       item.cardId = 0;
       this.note(item, uncertain);
       return;
@@ -1034,7 +1034,7 @@ export class Progress extends cordis.Service {
     const asked = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
 
     //G 老会话已经停止。未确认转交时保留新旧关联，避免旧会话交回或再转。
-    if (asked.why !== undefined && asked.why !== 'unhandled') {
+    if (requestEventModule.isUncertain(asked)) {
       this.note(item, uncertain);
       this.close(item, 'stopped', uncertain);
       this.ctx.emit('bot/say', item.session, uncertain);

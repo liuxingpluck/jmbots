@@ -35,8 +35,8 @@ const ARCHIVE_FILES = new Set(['src7/docs/进度.md', 'src7/docs/jm开发_问Cla
 const AUTO_START = '<!-- 自动生成 开始 -->';
 const AUTO_END = '<!-- 自动生成 结束 -->';
 
-/** 行内源码引用：文件名（可带目录）、冒号、行号，可带「–终止行」。 */
-const FILE_REF = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.(?:tsx?|m?js)):(\d+)(?:[–-](\d+))?(?![\w.])/gu;
+/** 行内源码引用：文件名（可带目录和 @scope）、冒号、行号，可带「–终止行」。 */
+const FILE_REF = /(?<![\w/@.-])((?:[\w.@-]+\/)*[\w.-]+\.(?:tsx?|m?js)):(\d+)(?:[–-](\d+))?(?![\w.])/gu;
 
 /** 紧跟在引用后面、沿用同一文件的行号，比如「`Sessions.ts:556`、`588`」「`index.ts:477、498`」里的 588、498。 */
 const MORE_REF = /^`?、`?(\d+)(?:[–-](\d+))?(?![\w.:])`?/u;
@@ -79,6 +79,18 @@ const L_TOKEN = /(?<![\w.])L(\d+)/gu;
 
 /** 「L 行号」前面紧挨着别的文件名时，它指的是那个文件。 */
 const L_FILE_PREFIX = /([A-Za-z][\w.-]*)\s*(?:的\s*)?(?:L\d+[–-])?$/u;
+
+/** 插件 说明.md 必须有的七个标准二级标题（没有对应内容也保留标题并写「无」）。 */
+const DOC_SECTIONS = ['依赖', '听的事件', '发的事件', '对外函数', '内部函数', '数据', '配置'];
+
+/** 插件源码里收发带斜杠事件名的写法（支持多行参数），按整份源码匹配。 */
+const EVENT_USE = new RegExp(
+  String.raw`\b(?:on|emit|serial|requestEvent|onRequestEvent)\(\s*(?:[\w.]+\s*,\s*)?['"]([a-z][a-z0-9-]*\/[a-z0-9-]+)['"]`,
+  'gu',
+);
+
+/** index.ts 文件头首句最大字数，超过 50 字会被启动画布的步骤标题截断。 */
+const HEAD_MAX_CHARS = 50;
 
 /**
  * 去掉后缀的文件名，「Host.ts」和「Host」算同一个文件。
@@ -462,6 +474,66 @@ export function getRowName(line: string): string | undefined {
 }
 
 /**
+ * 按二级标题（##）把一份 Markdown 切成段落，跳过围栏代码块里的 ##。
+ * @param text 文档原文。
+ * @returns 标题文字（不含 ##）到段正文的映射。
+ */
+export function getSections(text: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  const lines = text.split(/\r?\n/u);
+  let current: string | undefined;
+  let buffer: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+      inFence = !inFence;
+      buffer.push(line);
+      continue;
+    }
+    if (!inFence && /^##\s+(.+)$/u.test(trimmed)) {
+      if (current !== undefined) {
+        sections.set(current, buffer.join('\n').trim());
+      }
+      current = trimmed.replace(/^##\s+/u, '').trim();
+      buffer = [];
+      continue;
+    }
+    buffer.push(line);
+  }
+  if (current !== undefined) {
+    sections.set(current, buffer.join('\n').trim());
+  }
+  return sections;
+}
+
+/**
+ * 取源码顶部 JSDoc 文件头的第一句（截到第一个句号或分号，和教程页 getFirstSentence 一致）。
+ * @param text 源码全文。
+ * @returns 首句文字；没有文件头 JSDoc 时返回空串。
+ */
+export function getHeadSentence(text: string): string {
+  const trimmed = text.replace(/^\uFEFF/u, '').trimStart();
+  if (!trimmed.startsWith('/**')) return '';
+
+  const end = trimmed.indexOf('*/');
+  if (end < 0) return '';
+
+  const block = trimmed.slice(3, end);
+  for (const rawLine of block.split(/\r?\n/u)) {
+    const cleaned = rawLine.replace(/^\s*\*\s?/u, '').trim();
+    if (cleaned === '') continue;
+
+    //M 截到第一个句号或分号，和 tutorial/Source.ts 的 getFirstSentence 口径一致。
+    const stop = cleaned.search(/[。；]/u);
+    if (stop >= 0) return cleaned.slice(0, stop);
+
+    return cleaned;
+  }
+  return '';
+}
+
+/**
  * 让 `[文字 · 文件:行号](文件#L行号)` 的锚点行号跟着方括号里的行号走。
  * @param line 已经按行内引用修过的一行。
  * @returns 锚点与方括号行号一致的一行。
@@ -723,9 +795,10 @@ export class LineChecker {
    * @param ref 文档里写的，比如 Sessions.ts、bots/index.ts、src7/Main.ts。
    * @param doc 文档路径，插件说明里的 index.ts 先找本插件。
    * @param shifts 同一文档代码原文的挪动，代码块头写过的文件优先。
+   * @param bases 文档里点明过的依赖目录起点（如 `node_modules/@earendil-works/pi-ai/dist/`）。
    * @returns 找到的路径；找不到或有多个时返回 undefined。
    */
-  private resolveFile(ref: string, doc: string, shifts: Shift[]): string | undefined {
+  private resolveFile(ref: string, doc: string, shifts: Shift[], bases: string[] = []): string | undefined {
     const tops = ['src7/', 'web/', 'ztools/', 'node_modules/', 'scripts/', 'external/'];
     if (tops.some((top) => ref.startsWith(top))) {
       //G 带了顶层目录的就是全路径。
@@ -747,6 +820,10 @@ export class LineChecker {
       //M 带了插件目录的，比如 bots/index.ts。
       guesses.push('src7/' + ref, 'src7/plugins/' + ref);
     }
+    for (const base of bases) {
+      //M 文档开头说明了依赖包目录起点的，把相对路径拼上去试。
+      guesses.push(path.posix.normalize(base + ref));
+    }
     for (const guess of guesses) {
       //M 先按常见位置猜。
       if (this.getLines(guess) !== undefined) return guess;
@@ -756,6 +833,38 @@ export class LineChecker {
     if (matches.length !== 1) return undefined;
 
     return matches[0];
+  }
+
+  /**
+   * 查一个短文件名是不是因为多处重名才解析不出。
+   * @param ref 文档里写的文件名。
+   * @returns 命中多于一个源码文件时返回 true。
+   */
+  private isAmbiguousFile(ref: string): boolean {
+    const tops = ['src7/', 'web/', 'ztools/', 'node_modules/', 'scripts/', 'external/'];
+    if (tops.some((top) => ref.startsWith(top))) return false;
+
+    const matches = this.listFiles().filter((file) => file.endsWith('/' + ref));
+    return matches.length > 1;
+  }
+
+  /**
+   * 报告一个无法解析的文件引用：重名歧义只给提示，真不存在在当前文档里报问题。
+   * @param ref 文档里写的文件名。
+   * @param doc 文档路径。
+   * @param site 报告用的位置。
+   * @param live 是否为当前文档（非归档）。
+   */
+  private reportMissingFile(ref: string, doc: string, site: string, live: boolean): void {
+    if (this.isAmbiguousFile(ref)) {
+      this.report('warning', doc, site, ref + ' 命中多个同名文件，无法确定是哪一个');
+      return;
+    }
+    let level: 'error' | 'warning' = 'warning';
+    if (live) {
+      level = 'error';
+    }
+    this.report(level, doc, site, '找不到 ' + ref + ' 是哪个文件');
   }
 
   /**
@@ -1397,17 +1506,112 @@ export class LineChecker {
       //M 记下这行，代码块都看完后再查行内引用。
       prose.push(index);
     }
+    const docBases: string[] = [];
+    for (const index of prose) {
+      //M 收集文档正文反引号里点明过的 node_modules 目录起点（如 `node_modules/@earendil-works/pi-ai/dist/`）。
+      for (const found of parts[index].matchAll(/`(node_modules\/[\w.@/-]+\/)`/gu)) {
+        if (!docBases.includes(found[1])) {
+          docBases.push(found[1]);
+        }
+      }
+    }
     for (const index of prose) {
       const site = rel + ':' + String(index / 2 + 1);
       //M 代码块外的每一行查链接和引用。
-      parts[index] = this.checkRefLine(parts[index], rel, site, docShifts, live);
+      parts[index] = this.checkRefLine(parts[index], rel, site, docShifts, live, docBases);
     }
 
     const text = parts.join('');
+    if (/^src7\/plugins\/[^/]+\/说明\.md$/u.test(rel)) {
+      //M 插件说明加查七个标准二级标题、源码收发事件漏写和 index.ts 文件头首句。
+      this.checkPluginDoc(rel, text);
+    }
     if (!this.fix || text === raw) return;
 
     //M 写回前再读一次，别盖掉并行的改动。
     this.writeFile(rel, raw, text);
+  }
+
+  /**
+   * 扫描插件目录下所有非测试 .ts 文件，收集实际收发的带斜杠事件及其首次出现位置。
+   * @param folder 插件目录（相对代码库根目录）。
+   * @returns 事件名 → 首次出现的「文件:行号」。
+   */
+  private getUsedEvents(folder: string): Map<string, string> {
+    const used = new Map<string, string>();
+    const walk = (dir: string): void => {
+      const full = path.join(this.root, dir);
+      if (!fs.existsSync(full)) return;
+
+      for (const entry of fs.readdirSync(full, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (entry.name === 'node_modules' || entry.name === 'tests' || entry.name.startsWith('.')) continue;
+
+        const child = dir + '/' + entry.name;
+        if (entry.isDirectory()) {
+          walk(child);
+          continue;
+        }
+        if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+
+        const lines = this.getLines(child);
+        if (lines === undefined) continue;
+
+        const content = lines.join('\n');
+        for (const match of content.matchAll(EVENT_USE)) {
+          const eventName = match[1];
+          if (used.has(eventName)) continue;
+
+          const lineNo = content.slice(0, match.index).split('\n').length;
+          //G 跳过注释行里的示例写法，避免把说明注释误当成代码收发。
+          if (/^\s*(?:\/\/|\*)/u.test(lines[lineNo - 1] ?? '')) continue;
+
+          used.set(eventName, child + ':' + String(lineNo));
+        }
+      }
+    };
+    walk(folder);
+    return used;
+  }
+
+  /**
+   * 查一份插件说明的形状：七个标准标题齐不齐、源码收发事件漏没漏、index.ts 首句合不合规。
+   * @param rel 说明.md 相对代码库根目录的路径。
+   * @param text 说明全文。
+   */
+  private checkPluginDoc(rel: string, text: string): void {
+    const sections = getSections(text);
+    //M 缺的标准标题各报一条：教程页认不出，对应标签会变灰。
+    for (const title of DOC_SECTIONS) {
+      if (sections.has(title)) continue;
+
+      this.report('error', rel, rel + ':1', '缺 `## ' + title + '`（没有就写“无”）');
+    }
+
+    //M 源码里收发、但两张事件表都没写的事件各报一条。
+    const folder = path.posix.dirname(rel);
+    const used = this.getUsedEvents(folder);
+    const listened = sections.get('听的事件') ?? '';
+    const emitted = sections.get('发的事件') ?? '';
+    for (const [eventName, site] of used) {
+      if (listened.includes(eventName)) continue;
+      if (emitted.includes(eventName)) continue;
+
+      this.report('error', rel, site, '用了 `' + eventName + '`，事件表没写');
+    }
+
+    //M index.ts 文件头首句会用作启动画布步骤标题：超 50 字截断，冒号结尾只剩半句。
+    const entry = folder + '/index.ts';
+    const entryLines = this.getLines(entry);
+    if (entryLines === undefined) return;
+
+    const head = getHeadSentence(entryLines.join('\n'));
+    const length = [...head].length;
+    if (length > HEAD_MAX_CHARS) {
+      this.report('error', rel, entry + ':1', '文件头第一句 ' + String(length) + ' 字，步骤标题会截断');
+    }
+    if (head.endsWith('：') || head.endsWith(':')) {
+      this.report('error', rel, entry + ':1', '文件头第一句以冒号结尾，步骤标题只剩半句');
+    }
   }
 
   /**
@@ -1440,9 +1644,17 @@ export class LineChecker {
    * @param site 报告用的位置。
    * @param docShifts 同一文档里代码原文的挪动，给没有名字的引用推算。
    * @param live 不是归档文档时才查漂移。
+   * @param docBases 文档里点明过的依赖目录起点。
    * @returns 这一行（--fix 时是改好的）。
    */
-  private checkRefLine(line: string, doc: string, site: string, docShifts: Shift[], live: boolean): string {
+  private checkRefLine(
+    line: string,
+    doc: string,
+    site: string,
+    docShifts: Shift[],
+    live: boolean,
+    docBases: string[] = [],
+  ): string {
     //M 先换 #lines 链接。
     let next = line.replace(LINES_LINK, (all: string, label: string, json: string, digits: string, offset: number) => {
       const fixed = this.checkLinesLink(line, offset, json, Number(digits), doc, site);
@@ -1505,10 +1717,10 @@ export class LineChecker {
     for (const ref of next.matchAll(FILE_REF)) {
       if (skip.some(([from, to]) => ref.index >= from && ref.index < to)) continue;
 
-      const file = this.resolveFile(ref[1], doc, docShifts);
+      const file = this.resolveFile(ref[1], doc, docShifts, docBases);
       if (file === undefined) {
-        //M 记一条提示，不影响退出码。
-        this.report('warning', doc, site, '找不到 ' + ref[1] + ' 是哪个文件');
+        //M 当前文档引用的文件不存在报问题，重名歧义与归档快照给提示。
+        this.reportMissingFile(ref[1], doc, site, live);
         continue;
       }
       const numberAt = ref.index + ref[1].length + 1;
@@ -1540,10 +1752,10 @@ export class LineChecker {
       }
       if (mention === undefined || !/\.(?:tsx?|m?js)$/u.test(mention)) continue;
 
-      const file = this.resolveFile(mention, doc, docShifts);
+      const file = this.resolveFile(mention, doc, docShifts, docBases);
       if (file === undefined) {
-        //M 记一条提示，不影响退出码。
-        this.report('warning', doc, site, '找不到 ' + mention + ' 是哪个文件');
+        //M 当前文档引用的文件不存在报问题，重名歧义与归档快照给提示。
+        this.reportMissingFile(mention, doc, site, live);
         continue;
       }
       const numberAt = ref.index + ref[0].indexOf(ref[1]);

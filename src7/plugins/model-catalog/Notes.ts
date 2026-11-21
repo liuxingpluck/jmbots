@@ -9,7 +9,7 @@
  * 接口（路径照旧，网页不用改）：
  *   GET  /api/model-notes        列表 { list }
  *   POST /api/model-notes/rate   会话打分 { session, by, score, note }，正文由 Checks.ts 的 checkRating 查一次
- * 页面 /model-notes/ 是 web 打包的 model-notes.html（web/src/ModelNotes/），web 插件的兜底路由按文件名托管，这里不登记。
+ * 页面 /model-notes/ 是 web 打包的 model-notes.html（web/src/ModelNotes/），http 的 Static.ts 兜底路由按文件名托管，这里不登记。
  * 配置（plugins[model-catalog].config.notes，都可不写）：dir（默认 models，相对运行时目录）、
  *   time_zone（评价时间按哪个时区写，默认 America/New_York，写出来是 EST/EDT）。
  */

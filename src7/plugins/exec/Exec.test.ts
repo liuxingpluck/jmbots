@@ -14,6 +14,7 @@ import * as cordis from 'cordis';
 import fastify, { type FastifyInstance } from 'fastify';
 import * as requestEvents from '../../utils/RequestEvent.ts';
 import { isProjectCheck } from '../approval/Rules.ts';
+import { registerHttpErrorHandler } from '../http/index.ts';
 import * as execPlugin from './index.ts';
 import * as runsModule from './Runs.ts';
 
@@ -48,6 +49,7 @@ async function runsWorld(
 }> {
   const db = new Database(':memory:');
   const app = fastify();
+  registerHttpErrorHandler(app);
   const decidedCalls: { id: number; approve: boolean; by: string }[] = [];
   const ctx = new cordis.Context();
   closers.push(() => app.close());
@@ -123,6 +125,9 @@ describe('exec 与 Runs 命令窗口合并回归', () => {
     const items = listRes.json<(execPlugin.RunRecord & { output?: string })[]>();
     expect(items).toHaveLength(1);
     expect(items[0]?.output).toBeUndefined();
+
+    const badRes = await app.inject({ method: 'POST', url: '/api/run', payload: { command: '  ' } });
+    expect(badRes.statusCode).toBe(400);
   });
 
   test('非白名单按 ask_user 拒绝或待确认，stop 会撤销待确认并标 stopped', async () => {

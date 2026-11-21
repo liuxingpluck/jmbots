@@ -7,6 +7,8 @@
  */
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
+import * as checksModule from '../../utils/Checks.ts';
+import * as failureModule from '../../utils/Failure.ts';
 import { createTimestampId } from '../../utils/Names.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -68,10 +70,6 @@ const REVIEW_TIMEOUT_MESSAGE = '命令审核已超时';
 /** 结尾留几行、几个字节。 */
 const TAIL_LINES = 200;
 const TAIL_BYTES = 20_000;
-
-
-/** 输入不对：处理函数回 400。 */
-class BadInput extends Error {}
 
 
 /**
@@ -169,7 +167,7 @@ export class Runs {
    * POST /api/run：校验、记一行、审、按结论拒绝 / 等用户 / 跑。
    * @param body 请求体。
    * @returns 审完那一刻的记录。
-   * @throws BadInput：输入不对。
+   * @throws Failure(400)：输入不对。
    */
   async start(body: unknown): Promise<RunRecord> {
     let input: Record<string, unknown> = {};
@@ -179,23 +177,23 @@ export class Runs {
 
     //G 入口校验：command 要是非空字符串。
     const command = input['command'];
-    if (typeof command !== 'string' || command.trim() === '') throw new BadInput('command 要是非空字符串');
+    if (typeof command !== 'string' || command.trim() === '') {
+      throw new failureModule.Failure(400, 'command 要是非空字符串');
+    }
 
     const text = (key: string, fallback: string): string => {
       //G 取字符串参数：没给用默认值，给了不是字符串就拒绝。
       const value = input[key] ?? fallback;
-      if (typeof value !== 'string') throw new BadInput(`${key} 要是字符串`);
+      if (typeof value !== 'string') throw new failureModule.Failure(400, `${key} 要是字符串`);
 
       return value;
     };
 
     //G timeout 是秒，要是正数，没给用默认值。
-    const timeout = input['timeout'] ?? DEFAULT_TIMEOUT_SEC;
-    if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) throw new BadInput('timeout 是秒，要是正数');
+    const timeout = checksModule.checkNumber(input['timeout'] ?? DEFAULT_TIMEOUT_SEC, 'timeout', { above: 0 });
 
     //G ask_user 要是布尔，没给就是 false（放不了行直接拒绝，不去问用户）。
-    const askUser = input['ask_user'] ?? false;
-    if (typeof askUser !== 'boolean') throw new BadInput('ask_user 要是 true 或 false');
+    const askUser = checksModule.checkFlag(input['ask_user'] ?? false, 'ask_user');
 
     //M 记一行新命令：号用时间戳，其余字段取上面校验过的值。
     const row: Row = {
@@ -516,16 +514,9 @@ export function mountRunsRoutes(app: fastify.FastifyInstance, runs: Runs): void 
   //M 五条路由：跑一条、列表、查一条、看整段输出、停下；处理函数都转给 runs 的同名方法。
   type Id = { Params: { id: string } };
   const missing = (id: string) => ({ error: `没有这条命令：${id}` });
-  app.post<{ Body: unknown }>('/api/run', async (request, reply) => {
-    try {
-      //M 交给 runs.start 校验、审核、开跑，返回审完那一刻的记录。
-      return await runs.start(request.body);
-    } catch (error) {
-      //G 输入不对（BadInput）回 400，别的错误往上抛。
-      if (error instanceof BadInput) return reply.code(400).send({ error: error.message });
-
-      throw error;
-    }
+  app.post<{ Body: unknown }>('/api/run', async (request) => {
+    //M 交给 runs.start 校验（写错直接抛 400）、审核、开跑，返回审完那一刻的记录。
+    return await runs.start(request.body);
   });
 
   //M GET /api/runs：最近几条命令的列表。

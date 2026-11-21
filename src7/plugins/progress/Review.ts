@@ -330,7 +330,7 @@ export class Review {
     );
 
     //G 未确认登记时保留已复盘标记，避免再次发卡或写入。
-    if (asked.why !== undefined && asked.why !== 'unhandled') return this.skip(uncertain);
+    if (requestEventModule.isUncertain(asked)) return this.skip(uncertain);
 
     //G 无人接单或明确登记失败，记录原因供排查。
     const pending = asked.reply?.pending;

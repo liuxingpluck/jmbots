@@ -234,7 +234,7 @@ export class GraphRoutes {
     };
 
     app.get('/graph', (_request, reply) => reply.redirect('/graph/'));
-    //M 页面是 web 打包出来的 graph.html（和 web 插件一样走 utils/Embedded.readAsset，编译版读内嵌的）。
+    //M 页面是 web 打包出来的 graph.html（和 http 的 Static.ts 一样走 utils/Embedded.readAsset，编译版读内嵌的）。
     app.get('/graph/', async (_request, reply) => {
       const page = await embedded.readAsset('graph.html');
       if (page === undefined) return reply.code(404).type('text/plain; charset=utf-8').send('图谱页还没打包：在代码目录跑 bun run build:web');

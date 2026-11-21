@@ -1,7 +1,7 @@
 /**
  * 客服页面的接口。（原：页面是 Page.ts 里的字符串、不进 web/ 打包；2026-11-14 起页面改为 React，
- * 在 web/wechat-kefu.html，由 web 插件挂在 /wechat-kefu/。）令牌由 http 统一查（本机免令牌）。
- *   GET  /wechat-kefu/                    客服页面：React 版由 web 插件托管（web/wechat-kefu.html）；旧路径 /wechat/ 在这里跳过去
+ * 在 web/wechat-kefu.html，由 http 的 Static.ts 挂在 /wechat-kefu/。）令牌由 http 统一查（本机免令牌）。
+ *   GET  /wechat-kefu/                    客服页面：React 版由 http 的 Static.ts 托管（web/wechat-kefu.html）；旧路径 /wechat/ 在这里跳过去
  *   GET  /api/wechat-kefu/status               轮询状态、账号
  *   GET  /api/wechat-kefu/chats?account=       最近会话与监听配置，fresh=1 强制扫描
  *   PUT  /api/wechat-kefu/watch                { account, chat, name, watch, auto }
@@ -226,8 +226,8 @@ export function readRoutes(
  */
 export function routes(http: Http, db: Database, wechat: Wechat, voice: voiceModule.VoiceAudio): void {
   const app = http.app;
-  //M 2026-11-14 jm开发：页面改成 React（web/wechat-kefu.html，源码 web/src/WechatKefu/），由 web 插件按插件名挂在 /wechat-kefu/；
-  //M   这里不再登记 /wechat-kefu、/wechat-kefu/（再登记会和 web 插件撞路由）。旧的字符串页面 Page.ts 已删
+  //M 2026-11-14 jm开发：页面改成 React（web/wechat-kefu.html，源码 web/src/WechatKefu/），由 http 的 Static.ts 按插件名挂在 /wechat-kefu/；
+  //M   这里不再登记 /wechat-kefu、/wechat-kefu/（再登记会撞路由）。旧的字符串页面 Page.ts 已删
   //M   （16:25 EST，备份在 cache/src7备份/20261114-1625EST-删Page和Assets/）。
   app.get('/wechat', (_request, reply) => reply.redirect('/wechat-kefu/'));
   app.get('/wechat/', (_request, reply) => reply.redirect('/wechat-kefu/'));
@@ -259,7 +259,7 @@ export function routes(http: Http, db: Database, wechat: Wechat, voice: voiceMod
     return { ok: true };
   });
 
-  //M 2026-11-15 00:17 EST：人手点“让 AI 回复”。只对已监听会话起草，结果进草稿栏，绝不发送。
+  //M 2026-11-15 00:17 EST：人手点“让 AI 回复”。只对已监听会话起草，结果进草稿栏，不直接发送。
   app.post('/api/wechat-kefu/draft', async (request, reply) => {
     const body = request.body as Record<string, unknown>;
     const account = field(body, 'account'), chat = field(body, 'chat');

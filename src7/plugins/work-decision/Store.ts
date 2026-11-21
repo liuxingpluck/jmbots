@@ -1,6 +1,7 @@
 /** 校验工作决策树及节点变更，通过 SQLite 将节点、留言和流水一并保存。 */
 import * as crypto from 'node:crypto';
 import type { Database } from 'bun:sqlite';
+import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as sql from './Sqlite.ts';
 import * as types from './Types.ts';
@@ -9,14 +10,6 @@ import * as types from './Types.ts';
 function invalid(message: string): never {
   //G 统一报告接口输入不合法，保持已保存的图不变。
   throw new failureModule.Failure(400, message);
-}
-
-/** 只接收普通 JSON 对象。 */
-export function readObject(raw: unknown): Record<string, unknown> {
-  //G 节点与请求体都需要按字段读取，先拦截数组和空值。
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return invalid('需要 JSON 对象');
-
-  return raw as Record<string, unknown>;
 }
 
 /** 读选项、标题和节点号时要求给出非空文本。 */
@@ -90,7 +83,7 @@ function readOptions(value: unknown): types.DecisionOption[] | undefined {
   const ids = new Set<string>();
   return value.map((entry: unknown) => {
     //G 选项号随点选请求传回，必须在节点内唯一。
-    const item = readObject(entry);
+    const item = checksModule.checkRecord(entry, 'options 里的每一项');
     const id = readText(item['id'], 'options.id');
     if (ids.has(id)) return invalid(`选项 ${id} 重复`);
 
@@ -112,7 +105,7 @@ function readAsker(value: unknown): types.DecisionAsker | undefined {
   if (value === undefined) return;
 
   //G 新节点的收件人按种类校验来源标识。
-  const item = readObject(value);
+  const item = checksModule.checkRecord(value, 'asker');
   if (item['kind'] === 'session') {
     const sessionId = readText(item['sessionId'], 'asker.sessionId');
     return { kind: 'session', sessionId };
@@ -413,7 +406,7 @@ export class Store {
     const now = Date.now();
     for (const entry of raw) {
       //G 单批只有一个同名条目，防止修改顺序造成歧义。
-      const input = readObject(entry);
+      const input = checksModule.checkRecord(entry, 'nodes 里的每一项');
       const id = readText(input['id'], 'id');
       if (ids.has(id)) return invalid(`这批节点的 ${id} 重复`);
 

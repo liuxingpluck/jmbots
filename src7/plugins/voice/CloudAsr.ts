@@ -1,4 +1,8 @@
-/** 实时百炼与整句小米转写。PCM 仅在当前连接和有界内存里流转。 */
+/**
+ * 云端语音转写实现：`BailianAsr`（百炼实时流式）与 `XiaomiAsr`（小米整句转写）。
+ * 提供语音能量检测 `hasSpeech`，音频 PCM 仅在当前连接和有界内存缓冲区里流转，不落盘。
+ * 由 `Lines.ts` 按配置装配并交给 `RoutedAsr` 做主备切换。
+ */
 
 import * as crypto from 'node:crypto';
 import * as asr from './Asr.ts';

@@ -4,7 +4,9 @@
  */
 import * as fs from 'node:fs';
 import * as net from 'node:net';
+import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
+import * as textModule from '../../utils/Text.ts';
 
 
 //==========================================================
@@ -372,18 +374,8 @@ export function isAllowedServerMapIp(host: string): boolean {
 }
 
 
-/**
- * 校验端口号是否为 1..65535 的安全整数。
- * @param value 原始字段值。
- * @param label 错误提示字段名。
- * @returns 合法整数端口。
- */
-function checkPort(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new failureModule.Failure(400, `${label} 要填写 1..65535 的整数端口`);
-  }
-  return value;
-}
+/** 合法端口号范围（1..65535 整数）。 */
+const PORT_RULE: checksModule.NumberRule = { integer: true, min: 1, max: 65535 };
 
 
 /**
@@ -458,7 +450,7 @@ export function validateProxies(raw: unknown, guardedPort = 30086): FrpcProxy[] 
       throw new failureModule.Failure(400, `隧道 ${name} 的 localIP 不能为空且不能含空白或引号`);
     }
     const localIP = rawIp.trim();
-    const localPort = checkPort(rec['localPort'], `隧道 ${name} 的 localPort`);
+    const localPort = checksModule.checkNumber(rec['localPort'], `隧道 ${name} 的 localPort`, PORT_RULE);
 
     //G 安全铁律：主站端口映射强制走严格 IPv4 非回环白名单，防止外网流量变成 isLocal 免登录请求。
     const isGuardedPort = localPort === 30086 || localPort === guardedPort;
@@ -492,7 +484,8 @@ export function validateProxies(raw: unknown, guardedPort = 30086): FrpcProxy[] 
     }
 
     //M TCP / UDP 隧道必须给合法 remotePort。
-    const remotePort = checkPort(rec['remotePort'], `隧道 ${name} (${type.toUpperCase()}) 的 remotePort`);
+    const remoteLabel = `隧道 ${name} (${type.toUpperCase()}) 的 remotePort`;
+    const remotePort = checksModule.checkNumber(rec['remotePort'], remoteLabel, PORT_RULE);
     proxy.remotePort = remotePort;
     result.push(proxy);
   }
@@ -663,23 +656,6 @@ export function redactLogLine(line: string): string {
 }
 
 
-/**
- * 将 Date 格式化为本地 YYYY-MM-DD HH:mm:ss 字符串。
- * @param date 时间对象。
- * @returns 格式化时间串。
- */
-export function formatLocalTime(date: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  const y = String(date.getFullYear());
-  const m = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  const hh = pad(date.getHours());
-  const mm = pad(date.getMinutes());
-  const ss = pad(date.getSeconds());
-  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
-}
-
-
 /** 读取日志尾部时的最大单次字节窗口（256 KB 足够容纳逾千行日志）。 */
 const MAX_LOG_TAIL_BYTES = 256 * 1024;
 
@@ -700,7 +676,7 @@ export function readTailLines(
   }
 
   const totalBytes = stat.size;
-  const updatedAt = formatLocalTime(stat.mtime);
+  const updatedAt = textModule.formatLocalTime(stat.mtimeMs, 'date');
   if (totalBytes === 0) {
     return { lines: [], totalBytes: 0, updatedAt };
   }

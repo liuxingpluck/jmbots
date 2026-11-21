@@ -373,7 +373,34 @@ describe('Check_Lines', () => {
       '',
     ].join('\n');
     fs.writeFileSync(path.join(root, 'src7/README.md'), readme);
-    const pluginDoc = '[内置登记 · `BUILT_IN` · ../Index.ts:1](../Index.ts#L1)\n[真实登记 · `BUILT_IN` · ../Index.ts:2](../Index.ts#L2)\n';
+    const pluginDoc = [
+      '# demo',
+      '',
+      '演示插件。',
+      '',
+      '## 依赖',
+      '无。',
+      '',
+      '## 听的事件',
+      '无。',
+      '',
+      '## 发的事件',
+      '无。',
+      '',
+      '## 对外函数',
+      '无。',
+      '',
+      '## 内部函数',
+      '[内置登记 · `BUILT_IN` · ../Index.ts:1](../Index.ts#L1)',
+      '[真实登记 · `BUILT_IN` · ../Index.ts:2](../Index.ts#L2)',
+      '',
+      '## 数据',
+      '无。',
+      '',
+      '## 配置',
+      '无。',
+      '',
+    ].join('\n');
     fs.writeFileSync(path.join(root, 'src7/plugins/demo/说明.md'), pluginDoc);
 
     const files = ['src7/README.md', 'src7/plugins/demo/说明.md'];
@@ -395,5 +422,161 @@ describe('Check_Lines', () => {
     const recheck = new checkLines.LineChecker(root, false);
     recheck.run(files);
     expect(recheck.errors).toEqual([]);
+  });
+
+  test('提取二级标题与文件头第一句（getSections / getHeadSentence）', () => {
+    const md = [
+      '# 插件',
+      '',
+      '## 依赖',
+      '只用 http。',
+      '',
+      '```md',
+      '## 围栏里的假标题',
+      '```',
+      '',
+      '## 听的事件',
+      '`demo/in`',
+      '',
+    ].join('\n');
+    const sections = checkLines.getSections(md);
+    expect([...sections.keys()]).toEqual(['依赖', '听的事件']);
+    expect(sections.get('依赖')).toContain('只用 http。');
+    expect(sections.get('听的事件')).toContain('demo/in');
+
+    expect(checkLines.getHeadSentence('/**\n * 管理会话记录。\n * 第二句。\n */\n')).toBe('管理会话记录');
+    expect(checkLines.getHeadSentence('/**\n * 管理会话记录；顺带归档。\n */\n')).toBe('管理会话记录');
+    expect(checkLines.getHeadSentence('/**\n * 暴露三个入口：\n * - a\n */\n')).toBe('暴露三个入口：');
+    expect(checkLines.getHeadSentence('import * as fs from "node:fs";\n')).toBe('');
+  });
+
+  test('插件说明校验：缺标准标题、源码收发事件漏写、index.ts 首句过长或冒号结尾', () => {
+    const root = makeRoot();
+    fs.mkdirSync(path.join(root, 'src7/plugins/bad'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'src7/plugins/good'), { recursive: true });
+
+    //M bad 插件：首句超过 50 字且以冒号结尾，含多行 requestEvent、注释假事件与测试文件事件。
+    const longHead = '管理超过五十个字符的插件启动描述测试文本'.repeat(3) + '：';
+    const badIndex = [
+      '/**',
+      ' * ' + longHead,
+      ' */',
+      "ctx.on('bad/recv', () => {});",
+      'requestEvent(',
+      '  ctx,',
+      "  'bad/ask',",
+      ');',
+      "// ctx.emit('comment/only');",
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/plugins/bad/index.ts'), badIndex);
+    fs.writeFileSync(path.join(root, 'src7/plugins/bad/Bad.test.ts'), "ctx.emit('test/only');\n");
+    const badDoc = [
+      '# bad',
+      '',
+      '## 依赖',
+      '无。',
+      '',
+      '## 听的事件',
+      '| 事件 | 说明 |',
+      '| --- | --- |',
+      '| `bad/recv` | 收消息 |',
+      '',
+      '## 发的事件',
+      '无。',
+      '',
+      '## 对外函数',
+      '无。',
+      '',
+      '## 数据',
+      '无。',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/plugins/bad/说明.md'), badDoc);
+
+    //M good 插件：七个标准标题齐全、收发事件全登记、index.ts 首句简短平实。
+    fs.writeFileSync(
+      path.join(root, 'src7/plugins/good/index.ts'),
+      "/** 管好自己的事。 */\nctx.emit('good/done');\n",
+    );
+    const goodDoc = [
+      '# good',
+      '',
+      '管好自己的事。',
+      '',
+      '## 依赖',
+      '无。',
+      '',
+      '## 听的事件',
+      '无。',
+      '',
+      '## 发的事件',
+      '`good/done`',
+      '',
+      '## 对外函数',
+      '无。',
+      '',
+      '## 内部函数',
+      '无。',
+      '',
+      '## 数据',
+      '无。',
+      '',
+      '## 配置',
+      '无。',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/plugins/good/说明.md'), goodDoc);
+
+    const checker = new checkLines.LineChecker(root, false);
+    checker.run(['src7/plugins/bad/说明.md', 'src7/plugins/good/说明.md']);
+    const errors = checker.errors.map((problem) => problem.site + ' ' + problem.message);
+
+    expect(errors.some((msg) => msg.includes('缺 `## 内部函数`'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('缺 `## 配置`'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('src7/plugins/bad/index.ts:5') && msg.includes('`bad/ask`'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('`bad/recv`'))).toBe(false);
+    expect(errors.some((msg) => msg.includes('`comment/only`'))).toBe(false);
+    expect(errors.some((msg) => msg.includes('`test/only`'))).toBe(false);
+    expect(errors.some((msg) => msg.includes('文件头第一句') && msg.includes('步骤标题会截断'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('文件头第一句以冒号结尾'))).toBe(true);
+    expect(errors.some((msg) => msg.includes('src7/plugins/good/'))).toBe(false);
+  });
+
+  test('缺失文件在当前文档报问题、归档和重名歧义给提示，支持依赖目录起点', () => {
+    const root = makeRoot();
+    fs.mkdirSync(path.join(root, 'src7/a'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'src7/b'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'node_modules/@scope/pkg/dist'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src7/a/Dup.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(root, 'src7/b/Dup.ts'), 'export const b = 2;\n');
+    fs.writeFileSync(
+      path.join(root, 'node_modules/@scope/pkg/dist/types.d.ts'),
+      'export interface Msg { id: string; }\n',
+    );
+
+    const liveDoc = [
+      '# 现行文档',
+      '',
+      '起点 `node_modules/@scope/pkg/dist/`。',
+      '- 真缺文件：`src7/Missing.ts:1`',
+      '- 重名短名：`Dup.ts:1`',
+      '- 依赖全路径：`Msg`（`node_modules/@scope/pkg/dist/types.d.ts:1`）',
+      '- 依赖相对路径：`Msg`（`types.d.ts:1`）',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(root, 'src7/docs/引用测试.md'), liveDoc);
+    fs.writeFileSync(path.join(root, 'src7/docs/云端/02_旧快照_20261121.md'), '旧引用 `src7/Missing.ts:1`。\n');
+
+    const checker = new checkLines.LineChecker(root, false);
+    checker.run(['src7/docs/引用测试.md', 'src7/docs/云端/02_旧快照_20261121.md']);
+    const errors = checker.errors.map((problem) => problem.site + ' ' + problem.message);
+    const warnings = checker.warnings.map((problem) => problem.site + ' ' + problem.message);
+
+    //M 当前文档真缺文件升级为问题；依赖全路径与相对路径都能定位不误报。
+    expect(errors).toEqual(['src7/docs/引用测试.md:4 找不到 src7/Missing.ts 是哪个文件']);
+    //M 重名短名和归档文档缺文件仍只给提示。
+    expect(warnings.some((msg) => msg.includes('Dup.ts 命中多个同名文件'))).toBe(true);
+    expect(warnings.some((msg) => msg.includes('02_旧快照_20261121.md:1 找不到 src7/Missing.ts'))).toBe(true);
   });
 });

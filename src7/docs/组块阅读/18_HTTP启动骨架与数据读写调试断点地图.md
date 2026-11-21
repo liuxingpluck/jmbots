@@ -132,62 +132,63 @@
 
 ### 第 2 步：`http` 插件建全局唯一 Fastify 实例与路由登记簿
 
-骨架就位后，`Main.ts` 按 `config.yaml` 的 `plugins` 顺序挂载插件。轮到 `http` 时，`apply`（`src7/plugins/http/index.ts:562`）先校验顶层 `server` 段（`port` 必填，不默认 `30086`，防测试误占正式端口），再 `new Http(...)` 把 `ctx.http` 服务挂到 Cordis 上：
+骨架就位后，`Main.ts` 按 `config.yaml` 的 `plugins` 顺序挂载插件。轮到 `http` 时，`apply`（`src7/plugins/http/index.ts:583`）先校验顶层 `server` 段（`port` 必填，不默认 `30086`，防测试误占正式端口），再 `new Http(...)` 把 `ctx.http` 服务挂到 Cordis 上：
 
 ```ts
 // src7/plugins/http/index.ts
-562	export function apply(ctx: cordis.Context, pluginConfig?: unknown): void {
-563	  //M server 段是外面进来的（config.yaml 顶层，和基地共用），在这里校验一次；没有主令牌就当空串。
-564	  const server = (ctx.resources.raw['server'] ?? {}) as {
-565	    port?: unknown; token?: unknown; host?: unknown; trusted_ips?: unknown; web_auth?: unknown;
-566	  };
-567	  //M 不写 server.port 就报错，不再默认 30086（那是正式运行的端口，免得测试或新目录误占）。
-568	  if (server.port === undefined) {
-569	    throw new Error('配置里没有 server.port');
-570	  }
-571	  const port = server.port;
+583	export function apply(ctx: cordis.Context, pluginConfig?: unknown): void {
+584	  //M server 段是外面进来的（config.yaml 顶层，和基地共用），在这里校验一次；没有主令牌就当空串。
+585	  const server = (ctx.resources.raw['server'] ?? {}) as {
+586	    port?: unknown; token?: unknown; host?: unknown; trusted_ips?: unknown; web_auth?: unknown;
+587	  };
+588	  //M 不写 server.port 就报错，不再默认 30086（那是正式运行的端口，免得测试或新目录误占）。
+589	  if (server.port === undefined) {
+590	    throw new Error('配置里没有 server.port');
+591	  }
+592	  const port = server.port;
 …
-601	  //M server 配置校验通过后，实例化 Http 并作为服务挂到 ctx 上供其他插件登记路由。
-602	  const trustedIps = (trusted as string[]).map((item) => item.trim());
-603	  new Http(ctx, { port: port as number, token, host, trustedIps, webAuth });
-604	}
+622	  //M server 配置校验通过后，实例化 Http 并作为服务挂到 ctx 上供其他插件登记路由。
+623	  const trustedIps = (trusted as string[]).map((item) => item.trim());
+624	  new Http(ctx, { port: port as number, token, host, trustedIps, webAuth });
+625	}
 ```
 
-`Http.constructor`（`src7/plugins/http/index.ts:223`）一口气搭好骨架，但**故意还不调 `listen`**：
+`Http.constructor`（`src7/plugins/http/index.ts:226`）一口气搭好骨架，但**故意还不调 `listen`**：
 
 ```ts
 // src7/plugins/http/index.ts
-223	  constructor(ctx: cordis.Context, private readonly config: HttpConfig) {
-224	    super(ctx, 'http');
-225
-226	    //M forceCloseConnections：拔插件时连着的 keep-alive 连接一起关，不然 close 要等它们自己断。
-227	    this.app = fastify.default({ logger: false, bodyLimit: BODY_LIMIT, forceCloseConnections: true });
-228
-229	    //M 根实例统一生成错误响应，各路由仍保留自己的业务状态码。
-230	    registerHttpErrorHandler(this.app);
-231
-232	    //M 先挂登记簿的钩子，后面登记的每条路径（含下面的健康检查）都记下来。
-233	    routesModule.watchRoutes(this.app, this.routes);
-234
-235	    //M 每个请求先查令牌。用 async 钩子：Bun 上同步钩子返回 undefined 会把请求卡住。
-236	    this.app.addHook('onRequest', (request, reply) => this.check(request, reply));
-237	    //M 2026-11-16：problems 报插件没挂上/没开工；ok 仍表示 HTTP 服务本身活着（换版、看门狗只认 ok，插件问题不能把服务判死）。
-238	    this.app.get('/api/health', () => ({ ok: true, problems: getPluginProblems(this.ctx.resources.pluginStatus) }));
-239
+226	  constructor(ctx: cordis.Context, private readonly config: HttpConfig) {
+227	    super(ctx, 'http');
+228	    this.currentPort = config.port;
+229
+230	    //M forceCloseConnections：拔插件时连着的 keep-alive 连接一起关，不然 close 要等它们自己断。
+231	    this.app = fastify.default({ logger: false, bodyLimit: BODY_LIMIT, forceCloseConnections: true });
+232
+233	    //M 根实例统一生成错误响应，各路由仍保留自己的业务状态码。
+234	    registerHttpErrorHandler(this.app);
+235
+236	    //M 先挂登记簿的钩子，后面登记的每条路径（含下面的健康检查）都记下来。
+237	    routesModule.watchRoutes(this.app, this.routes);
+238
+239	    //M 每个请求先查令牌。用 async 钩子：Bun 上同步钩子返回 undefined 会把请求卡住。
+240	    this.app.addHook('onRequest', (request, reply) => this.check(request, reply));
+241	    //M 2026-11-16：problems 报插件没挂上/没开工；ok 仍表示 HTTP 服务本身活着（换版、看门狗只认 ok，插件问题不能把服务判死）。
+242	    this.app.get('/api/health', () => ({ ok: true, problems: getPluginProblems(this.ctx.resources.pluginStatus) }));
+243
 …
-267	    const file = path.join(this.ctx.resources.ensureRuntimeDir('data'), 'tokens.json');
-268	    this.tokens = new tokensModule.Tokens(this, file, config.token);
-269	    //M 挂载外网反向代理登录接口（仅当请求带 X-External-Proxy: 1 且配了 web_auth 时启用拦截）。
-270	    this.webAuth = new webAuthModule.WebAuth(this.app, config.webAuth, config.now);
-271
-272	    //M 都挂完了才监听：这时候别的插件的路径都登记好了。
-273	    //M 并入原 web 插件：监听之前先登记文件接口、插件页面和网页兜底路由（Static.ts）。
-274	    this.ctx.on('ready', (argv) => {
-275	      void staticModule.registerStatic(this.ctx, this.app).then(() => this.listen(argv));
-276	    });
+271	    const file = path.join(this.ctx.resources.ensureRuntimeDir('data'), 'tokens.json');
+272	    this.tokens = new tokensModule.Tokens(this, file, config.token);
+273	    //M 挂载外网反向代理登录接口（仅当请求带 X-External-Proxy: 1 且配了 web_auth 时启用拦截）。
+274	    this.webAuth = new webAuthModule.WebAuth(this.app, config.webAuth, config.now);
+275
+276	    //M 都挂完了才监听：这时候别的插件的路径都登记好了。
+277	    //M 并入原 web 插件：监听之前先登记文件接口、插件页面和网页兜底路由（Static.ts）。
+278	    this.ctx.on('ready', (argv) => {
+279	      void staticModule.registerStatic(this.ctx, this.app).then(() => this.listen(argv));
+280	    });
 ```
 
-注意 233 行的 `watchRoutes`（`src7/plugins/http/Routes.ts:62`）：它在登记任何路径之前先挂 Fastify 的 `onRoute` 钩子。后面任何插件调 `app.get` / `app.post` 时，钩子同步抓当前调用栈，认出第一个落在 `src7/plugins/<文件夹>/` 里的帧，自动记下这条路由归哪个插件管——教程页展示“每个插件有哪些 HTTP 接口”全靠它自动采集，零手写清单：
+注意 237 行的 `watchRoutes`（`src7/plugins/http/Routes.ts:62`）：它在登记任何路径之前先挂 Fastify 的 `onRoute` 钩子。后面任何插件调 `app.get` / `app.post` 时，钩子同步抓当前调用栈，认出第一个落在 `src7/plugins/<文件夹>/` 里的帧，自动记下这条路由归哪个插件管——教程页展示“每个插件有哪些 HTTP 接口”全靠它自动采集，零手写清单：
 
 ```ts
 // src7/plugins/http/Routes.ts
@@ -217,72 +218,72 @@
 
 ### 第 3 步：`onRequest` 两道门禁（外网 `WebAuth` + 本机/令牌/受信网关）
 
-每一个进 `:30086` 的请求，在进业务路由前都先过 `Http.check`（`src7/plugins/http/index.ts:398`）。第一步先用 `Http.isGuarded`（`src7/plugins/http/index.ts:454`）判定要不要保护：**路由模式**与 **`decodeURI` 解码后的路径**两边都查 `/api/`、`/files/`、`/programs/`，堵死 `/%61pi/message` 这种 URL 编码绕过：
+每一个进 `:30086` 的请求，在进业务路由前都先过 `Http.check`（`src7/plugins/http/index.ts:418`）。第一步先用 `Http.isGuarded`（`src7/plugins/http/index.ts:474`）判定要不要保护：**路由模式**与 **`decodeURI` 解码后的路径**两边都查 `/api/`、`/files/`、`/programs/`，堵死 `/%61pi/message` 这种 URL 编码绕过：
 
 ```ts
 // src7/plugins/http/index.ts
-398	  private async check(
-399	    request: fastify.FastifyRequest,
-400	    reply: fastify.FastifyReply,
-401	  ): Promise<fastify.FastifyReply | undefined> {
-402	    const route = request.url.split('?')[0] ?? '';
-403	    //M 路由模式或解码后的路径在要令牌的前缀下，就要令牌（isGuarded 说了为什么两样都查）。
-404	    const guarded = this.isGuarded(request, route);
-405
-406	    //G 外网代理（X-External-Proxy: 1）且配了 web_auth 时优先走会话 Cookie 鉴权；本机与内网无此头不受影响。
-407	    const external = await this.webAuth.checkExternal(request, reply, route, guarded);
-408	    if (external === 'blocked') return reply;
-409	    if (external === 'pass_verified') {
-410	      this.verified.add(request);
-411	      return undefined;
-412	    }
-413	    if (external === 'pass_unverified') return undefined;
-414
-415	    //M 本机来源直接标为已核验，保持免令牌放行。
-416	    const local = this.isLocal(request);
-417	    if (local) {
-418	      this.verified.add(request);
-419	      return undefined;
-420	    }
-421
-422	    //G 免查路径或未配置任何令牌时照常放行，远程请求没有身份标记。
-423	    if (!guarded || this.open.has(route) || this.tokens.none()) return undefined;
-424
-425	    const query = (request.query as { token?: unknown }).token;
-426	    const header = (request.headers.authorization ?? '').replace(/^Bearer\s+/iu, '');
-427	    let value = header;
-428	    if (typeof query === 'string' && query !== '') {
-429	      value = query;
-430	    }
-431	    //G 优先拿查询参数 token、其次拿 Bearer 请求头交由令牌表核验，有效即放行。
-432	    if (this.tokens.check(value)) {
-433	      this.verified.add(request);
-434	      return undefined;
-435	    }
-436
-437	    //M 受信网关仍可免令牌浏览；远程请求须自行提供有效令牌才算已核验。
-438	    const trusted = trustedIp(request.ip, this.config.trustedIps);
-439	    if (trusted) return undefined;
-440
-441	    //G 先 await 掉 send 再 return reply，Fastify 才停下。只返回 reply 无法结束请求。
-442	    await reply.code(401).send({ error: '要带 token：网址后面加 ?token=…，或请求头 Authorization: Bearer …' });
-443	    return reply;
-444	  }
+418	  private async check(
+419	    request: fastify.FastifyRequest,
+420	    reply: fastify.FastifyReply,
+421	  ): Promise<fastify.FastifyReply | undefined> {
+422	    const route = request.url.split('?')[0] ?? '';
+423	    //M 路由模式或解码后的路径在要令牌的前缀下，就要令牌（isGuarded 说了为什么两样都查）。
+424	    const guarded = this.isGuarded(request, route);
+425
+426	    //G 外网代理（X-External-Proxy: 1）且配了 web_auth 时优先走会话 Cookie 鉴权；本机与内网无此头不受影响。
+427	    const external = await this.webAuth.checkExternal(request, reply, route, guarded);
+428	    if (external === 'blocked') return reply;
+429	    if (external === 'pass_verified') {
+430	      this.verified.add(request);
+431	      return undefined;
+432	    }
+433	    if (external === 'pass_unverified') return undefined;
+434
+435	    //M 本机来源直接标为已核验，保持免令牌放行。
+436	    const local = this.isLocal(request);
+437	    if (local) {
+438	      this.verified.add(request);
+439	      return undefined;
+440	    }
+441
+442	    //G 免查路径或未配置任何令牌时照常放行，远程请求没有身份标记。
+443	    if (!guarded || this.open.has(route) || this.tokens.none()) return undefined;
+444
+445	    const query = (request.query as { token?: unknown }).token;
+446	    const header = (request.headers.authorization ?? '').replace(/^Bearer\s+/iu, '');
+447	    let value = header;
+448	    if (typeof query === 'string' && query !== '') {
+449	      value = query;
+450	    }
+451	    //G 优先拿查询参数 token、其次拿 Bearer 请求头交由令牌表核验，有效即放行。
+452	    if (this.tokens.check(value)) {
+453	      this.verified.add(request);
+454	      return undefined;
+455	    }
+456
+457	    //M 受信网关仍可免令牌浏览；远程请求须自行提供有效令牌才算已核验。
+458	    const trusted = trustedIp(request.ip, this.config.trustedIps);
+459	    if (trusted) return undefined;
+460
+461	    //G 先 await 掉 send 再 return reply，Fastify 才停下。只返回 reply 无法结束请求。
+462	    await reply.code(401).send({ error: '要带 token：网址后面加 ?token=…，或请求头 Authorization: Bearer …' });
+463	    return reply;
+464	  }
 …
-454	  private isGuarded(request: fastify.FastifyRequest, route: string): boolean {
-455	    //G 路由模式就是路由的真实决定，不受编码、大小写、重复斜线这些写法影响。
-456	    const pattern = request.routeOptions.url ?? '';
-457	    if (hasGuardedPrefix(pattern)) return true;
-458
-459	    //G 没对上的会落到网页的兜底 /*（或 404，模式是 undefined），模式不在前缀下；再按解码后的路径查，不让兜底放行。
-460	    try {
-461	      const decoded = decodeURI(route);
-462	      return hasGuardedPrefix(decoded);
-463	    } catch {
-464	      //G 解不开的地址（坏的 %xx）按要令牌处理，不因为看不懂就放行。
-465	      return true;
-466	    }
-467	  }
+474	  private isGuarded(request: fastify.FastifyRequest, route: string): boolean {
+475	    //G 路由模式就是路由的真实决定，不受编码、大小写、重复斜线这些写法影响。
+476	    const pattern = request.routeOptions.url ?? '';
+477	    if (hasGuardedPrefix(pattern)) return true;
+478
+479	    //G 没对上的会落到网页的兜底 /*（或 404，模式是 undefined），模式不在前缀下；再按解码后的路径查，不让兜底放行。
+480	    try {
+481	      const decoded = decodeURI(route);
+482	      return hasGuardedPrefix(decoded);
+483	    } catch {
+484	      //G 解不开的地址（坏的 %xx）按要令牌处理，不因为看不懂就放行。
+485	      return true;
+486	    }
+487	  }
 ```
 
 看清 `Http.check` 里**身份标记 `this.verified`（即 `ctx.http.isVerified(request)`）**的 4 种分流，查鉴权 Bug 时断在这里一眼见底：
@@ -446,7 +447,7 @@
 
 ### 第 6 步：`Http.listen` 绑 `30086`、80 秒让口重试、落 `pid` 文件
 
-`registerStatic` 一完成，`.then(() => this.listen(argv))` 进入最后一步 `Http.listen`（`src7/plugins/http/index.ts:474`）：
+`registerStatic` 一完成，`.then(() => this.listen(argv))` 进入最后一步 `Http.listen`（`src7/plugins/http/index.ts:494`）：
 
 - 命令行传了 `--port N` 就覆盖配置的 `30086`（基地试运行新包时用临时端口探活）；
 - 遇到端口还被旧进程占着（`EADDRINUSE`），在 80 秒期限内每 2 秒重试一次，配合基地平滑换版无缝接棒；
@@ -454,39 +455,39 @@
 
 ```ts
 // src7/plugins/http/index.ts
-474	  private async listen(argv: string[]): Promise<void> {
-475	    //M 命令行是外面进来的：--port 在这里校验一次。
-476	    const at = argv.indexOf('--port');
-477	    let port = this.config.port;
-478	    if (at >= 0) {
-479	      port = Number(argv[at + 1]);
-480	    }
+494	  private async listen(argv: string[]): Promise<void> {
+495	    //M 命令行是外面进来的：--port 在这里校验一次。
+496	    const at = argv.indexOf('--port');
+497	    let port = this.config.port;
+498	    if (at >= 0) {
+499	      port = Number(argv[at + 1]);
+500	    }
 …
-487	    const deadline = Date.now() + LISTEN_WAIT_MS;
-488	    for (;;) {
-489	      try {
-490	        await this.app.listen({ host: this.config.host, port });
-491	        break;
-492	      } catch (error) {
-493	        const text = textModule.getErrorMessage(error);
-494	        const inUse = (error as NodeJS.ErrnoException).code === 'EADDRINUSE' || /in use/iu.test(text);
-495	        if (!inUse || Date.now() > deadline) {
-496	          console.error(`HTTP 服务没起来：${text}`);
-497	          return;
-498	        }
-499	        console.error(`端口 ${String(port)} 被占着，${String(LISTEN_RETRY_MS / 1000)} 秒后再试`);
-500	        await Bun.sleep(LISTEN_RETRY_MS);
-501	      }
-502	    }
-503
-504	    //M 进程号写进 data/serve_<端口>.pid，基地换版本时按它停旧进程；被拔掉、进程退出、收到 SIGTERM/SIGINT 时删掉。
-505	    this.pidFile = path.join(this.ctx.resources.ensureRuntimeDir('data'), `serve_${String(port)}.pid`);
-506	    fs.writeFileSync(this.pidFile, String(process.pid));
+508	    const deadline = Date.now() + LISTEN_WAIT_MS;
+509	    for (;;) {
+510	      try {
+511	        await this.app.listen({ host: this.config.host, port });
+512	        break;
+513	      } catch (error) {
+514	        const text = textModule.getErrorMessage(error);
+515	        const inUse = (error as NodeJS.ErrnoException).code === 'EADDRINUSE' || /in use/iu.test(text);
+516	        if (!inUse || Date.now() > deadline) {
+517	          console.error(`HTTP 服务没起来：${text}`);
+518	          return;
+519	        }
+520	        console.error(`端口 ${String(port)} 被占着，${String(LISTEN_RETRY_MS / 1000)} 秒后再试`);
+521	        await Bun.sleep(LISTEN_RETRY_MS);
+522	      }
+523	    }
+524
+525	    //M 进程号写进 data/serve_<端口>.pid，基地换版本时按它停旧进程；被拔掉、进程退出、收到 SIGTERM/SIGINT 时删掉。
+526	    this.pidFile = path.join(this.ctx.resources.ensureRuntimeDir('data'), `serve_${String(port)}.pid`);
+527	    fs.writeFileSync(this.pidFile, String(process.pid));
 …
-513	    const vars = { host: this.config.host, port: port, hasToken: !this.tokens.none() };
-514	    this.ctx.emit('trace', 'Http.listen', 'trace.http.listen', "app.listen({ host, port })", vars);
-515	    console.log(`HTTP 服务已开：http://<本机地址>:${String(port)}（本机请求不用令牌；别的机器要带令牌）`);
-516	  }
+534	    const vars = { host: this.config.host, port: port, hasToken: !this.tokens.none() };
+535	    this.ctx.emit('trace', 'Http.listen', 'trace.http.listen', "app.listen({ host, port })", vars);
+536	    console.log(`HTTP 服务已开：http://<本机地址>:${String(port)}（本机请求不用令牌；别的机器要带令牌）`);
+537	  }
 ```
 
 ---
@@ -672,46 +673,46 @@
 
 ```ts
 // src7/plugins/bots/DispatchResults.ts
-853	  drain(session: Session): void {
-854	    const row = session.row;
-855	    if (row.state === 'running' || row.activeKey !== undefined) return;
-856
-857	    if (row.frontTask?.paused === true) return;
-858
-859	    const queue = row.resultQueue ?? [];
-860
-861	    //M 用户排着的话：自动回话项取出直跑；channel_tool 项留在队列并占有 activeKey 与快照后直接启动。
-862	    const said = queue.find((item) => item.kind === 'user' && item.stage === 'queued');
-863	    if (said !== undefined) {
-864	      //M 优先接排着的用户话，沿用它原先的渠道模式。
-865	      this.startQueuedUser(session, said, queue);
-866	      return;
-867	    }
+852	  drain(session: Session): void {
+853	    const row = session.row;
+854	    if (row.state === 'running' || row.activeKey !== undefined) return;
+855
+856	    if (row.frontTask?.paused === true) return;
+857
+858	    const queue = row.resultQueue ?? [];
+859
+860	    //M 用户排着的话：自动回话项取出直跑；channel_tool 项留在队列并占有 activeKey 与快照后直接启动。
+861	    const said = queue.find((item) => item.kind === 'user' && item.stage === 'queued');
+862	    if (said !== undefined) {
+863	      //M 优先接排着的用户话，沿用它原先的渠道模式。
+864	      this.startQueuedUser(session, said, queue);
+865	      return;
+866	    }
 …
-920	  private startQueuedUser(session: Session, said: QueueItem, queue: QueueItem[]): void {
-921	    const row = session.row;
-922
-923	    if (said.deliveryMode === 'channel_tool') {
-924	      row.activeKey = said.key;
-925	      said.stage = 'working';
-926	      row.quiet = true;
-927	      if (said.payload.sourceSnapshot !== undefined) {
-928	        row.activeSourceSnapshot = structuredClone(said.payload.sourceSnapshot);
-929	      }
-930	      if (said.replyControl !== undefined && said.alreadyRecorded !== true) {
-931	        said.replyControl.startMessageIndex = row.messages.length;
-932	      }
-933
-934	      //M 回话地址换成这一条话的来源，存库；原话没记进对话的才加进去（延迟接话的已经记过）。
-935	      this.home.bots.route(session, said.origin);
-936	      session.save();
-937	      if (said.alreadyRecorded !== true) {
-938	        session.queueUserMessage(said.payload.text);
-939	      }
-940
-941	      //M 推会话跑一轮，不等；回话由 channel_tool 的回复工具发。
-942	      void session.run();
-943	      return;
+919	  private startQueuedUser(session: Session, said: QueueItem, queue: QueueItem[]): void {
+920	    const row = session.row;
+921
+922	    if (said.deliveryMode === 'channel_tool') {
+923	      row.activeKey = said.key;
+924	      said.stage = 'working';
+925	      row.quiet = true;
+926	      if (said.payload.sourceSnapshot !== undefined) {
+927	        row.activeSourceSnapshot = structuredClone(said.payload.sourceSnapshot);
+928	      }
+929	      if (said.replyControl !== undefined && said.alreadyRecorded !== true) {
+930	        said.replyControl.startMessageIndex = row.messages.length;
+931	      }
+932
+933	      //M 回话地址换成这一条话的来源，存库；原话没记进对话的才加进去（延迟接话的已经记过）。
+934	      this.home.bots.route(session, said.origin);
+935	      session.save();
+936	      if (said.alreadyRecorded !== true) {
+937	        session.queueUserMessage(said.payload.text);
+938	      }
+939
+940	      //M 推会话跑一轮，不等；回话由 channel_tool 的回复工具发。
+941	      void session.run();
+942	      return;
 ```
 
 #### 写盘点 D：会话循环四关口与全系统唯一 `sessions` 落盘口（`Sessions.ts`）
@@ -911,7 +912,7 @@
 
 | 排障症状 | 必中断点位置 | 断住看什么变量 |
 |---|---|---|
-| 接口报 `401` / 外网登录跳回登录页 | `Http.check`（`src7/plugins/http/index.ts:398`）、`WebAuth.checkExternal`（`src7/plugins/http/WebAuth.ts:341`） | `route`、`guarded`、`external`、`local`、`this.verified.has(request)` |
+| 接口报 `401` / 外网登录跳回登录页 | `Http.check`（`src7/plugins/http/index.ts:418`）、`WebAuth.checkExternal`（`src7/plugins/http/WebAuth.ts:341`） | `route`、`guarded`、`external`、`local`、`this.verified.has(request)` |
 | 网页点发送报 `400` 或没进会话 | `WebApi.accept`（`src7/plugins/web-api/index.ts:381`）、`Timeline.insert`（`src7/plugins/web-api/Timeline.ts:288`） | `verifiedOwner`、`body`、返回的收件号 `id`、`control.claims` |
 | 飞书发了话没动静 / 敲键盘表情不退 | `FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:214`）、`FeishuInbound.deliver`（`src7/plugins/feishu/Inbound.ts:759`） | `facts.called`、`facts.targetBots`、`channelMessage`、`outcome` |
 | 发“同意 3”没批掉反而当普通话聊了 | `Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1169`） | `said`、`speaker`、`owner`、`verified`、`waiting`、`control.approvalHandled` |

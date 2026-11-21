@@ -214,6 +214,9 @@ export class Http extends cordis.Service {
   /** 已接受基地的停服请求。 */
   private windowStopping = false;
 
+  /** 当前监听端口：初始取配置的 server.port，ready 时带 --port 则更新为实际监听端口。 */
+  private currentPort: number;
+
   /**
    * 登记 http 插件：把 Http 作为服务挂到 Cordis 上（以后用 ctx.http 取）；再建 Fastify，挂查令牌的钩子、健康检查、管令牌的接口；等 ready 才监听。
    * @param ctx Cordis 给这个插件的 ctx。
@@ -222,6 +225,7 @@ export class Http extends cordis.Service {
    */
   constructor(ctx: cordis.Context, private readonly config: HttpConfig) {
     super(ctx, 'http');
+    this.currentPort = config.port;
 
     //M forceCloseConnections：拔插件时连着的 keep-alive 连接一起关，不然 close 要等它们自己断。
     this.app = fastify.default({ logger: false, bodyLimit: BODY_LIMIT, forceCloseConnections: true });
@@ -367,6 +371,11 @@ export class Http extends cordis.Service {
     return address === '::1' || address.startsWith('127.');
   }
 
+  /** 主站 HTTP 实际监听端口（未监听前为配置的 server.port，带 --port 启动后更新为实际监听端口）。 */
+  get port(): number {
+    return this.currentPort;
+  }
+
   /**
    * 读取本次请求的身份核验结果，供 programs 界面代理使用。
    * @param request 经过本服务 onRequest 钩子的请求。
@@ -375,6 +384,17 @@ export class Http extends cordis.Service {
   isVerified(request: fastify.FastifyRequest): boolean {
     //M 只查询 HTTP 自己记下的结果，不再读取客户端头或重复校验令牌。
     return this.verified.has(request);
+  }
+
+  /**
+   * 没核验过身份就抛 403。写操作的接口开头调一次。
+   * @param request 经过本服务 onRequest 钩子的请求。
+   * @param what 被拦下的是什么操作，写进提示语，如“知识库写操作”。
+   */
+  requireVerified(request: fastify.FastifyRequest, what: string): void {
+    if (this.isVerified(request)) return;
+
+    throw new failureModule.Failure(403, `${what}需要先完成身份核验`);
   }
 
   /**
@@ -482,6 +502,7 @@ export class Http extends cordis.Service {
       console.error('--port 后面要写 1 到 65535 的整数');
       return;
     }
+    this.currentPort = port;
 
     //M 端口被占着（EADDRINUSE，Bun 的说法是 “Is port N in use?”）→ 等一会儿再试，到点还不行才放弃。
     const deadline = Date.now() + LISTEN_WAIT_MS;

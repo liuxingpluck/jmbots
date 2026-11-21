@@ -1,4 +1,8 @@
-/** 为运行时回填和命令行补录提供同一套渠道归档候选。 */
+/**
+ * 为运行时回填和命令行补录提供同一套渠道归档候选。
+ * 扫描各渠道落盘的 JSONL/聊天记录转为统一候选条目，经 `addCandidate` 写入 `ChannelIndex` 去重入库。
+ * 由 `ChannelBackfill` 和离线补录脚本调用，本身不直接调 Rust 记忆服务。
+ */
 import type * as bunSqlite from 'bun:sqlite';
 import * as fs from 'node:fs';
 import * as path from 'node:path';

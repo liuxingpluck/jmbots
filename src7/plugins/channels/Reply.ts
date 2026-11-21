@@ -3,11 +3,13 @@
  * 所有发出去的话都走这里：模型的 channel_reply、零次兜底、审批直回、按地址发的自动回话、relay 回信、本人批准的主动发件。
  * requestChannelReply 发 channel/reply 并等 channel/replied；emitReplied 是渠道回发回执的唯一出口，回执带着请求本身。
  */
-import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as requestEvents from '../../utils/RequestEvent.ts';
+import * as textModule from '../../utils/Text.ts';
 import type * as messageModule from './Message.ts';
 import type * as targetModule from './Target.ts';
+
+export { getDigest as getPayloadHash } from '../../utils/Text.ts';
 
 
 /** 回复轮里的回复类别。 */
@@ -172,16 +174,6 @@ export function getReplyRequestKey(replyRoundKey: string, callId: string): strin
 }
 
 
-/**
- * 计算发送请求正文摘要，用于同键防篡改/防冲突核对。
- * @param value 任意结构化载荷。
- * @returns 16 位十六进制 sha256 摘要。
- */
-export function getPayloadHash(value: unknown): string {
-  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
-}
-
-
 /** 等渠道回执这么久还没来就报警；不掐表，走网络的渠道（飞书）自己限时、到点回 uncertain。 */
 const REPLY_WARN_MS = 30_000;
 
@@ -251,7 +243,7 @@ export async function requestTextReply(
   if ('target' in from) {
     const fromTarget = from.target;
     const fromHashInput = { kind, mode, parts, target: fromTarget };
-    const fromHash = getPayloadHash(fromHashInput);
+    const fromHash = textModule.getDigest(fromHashInput);
     const direct: Omit<ChannelReplyRequest, 'requestId'> = {
       channel: fromTarget.channel,
       bot: from.bot,
@@ -282,7 +274,7 @@ export async function requestTextReply(
   const target = options.target;
   //M 保留原有字段顺序和目标范围，已落盘的哈希在同键重试时仍可匹配。
   const hashInput = { kind, mode, parts, target };
-  const payloadHash = getPayloadHash(hashInput);
+  const payloadHash = textModule.getDigest(hashInput);
   const reply: Omit<ChannelReplyRequest, 'requestId'> = {
     channel: target?.channel ?? snapshot.channel,
     bot: snapshot.botName,

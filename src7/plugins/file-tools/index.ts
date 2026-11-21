@@ -1,6 +1,6 @@
 /**
- * 文件工具：统一管理工作区的基础文件读写（time、read、list_dir、write + 接图片监听，原 base-tools 并入 BaseTools.ts）
- * 以及精确/宽松修改与搜索（edit、find，FileTools + EditMatch.ts）。路径均按当前轮工作区解符号链接判界，出不去。
+ * 提供工作区文件读写、编辑搜索与技能工具。
+ * 含基础读写与看图接图（BaseTools.ts）、编辑与查找（EditMatch.ts）及技能（Skill.ts），路径按当前轮工作区与授权目录判界。
  * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as botUtils from '../../utils/Bots.ts';

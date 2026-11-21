@@ -1,13 +1,13 @@
 /**
- * 记忆：工具 memory（列、搜、读、写、删机器人自己的记忆和公共记忆），干活的会话第一次调模型前先替模型搜一次。
- * 开场搜技能目录和 Rust 记忆服务。两个记忆目录由提示词插件提供。
+ * 记忆：机器人和公共记忆的读写、统一检索、渠道消息索引。
+ * 工具 memory 列、搜、读、写、删机器人与公共记忆，work 会话首步前替模型先搜一次；开场搜技能目录和 Rust 记忆服务。
  * 客服用的记忆库（Store.ts、Backend.ts）：聊天记录按客户、会话、机器人收，知识库文件按段收；工具 memory 的 history、knowledge，
  *   开场先搜也带上“这个客户以前说过的”和知识库；结果带编号、来源、片段，回答时能引用。检索后端可换（本地 SQLite，或外部服务 backend_url）。
  *   HTTP：GET /api/memory/recall、POST /api/memory/knowledge、GET /api/memory/backend。
  * Rust 记忆服务 jmbots-memory 由 programs 插件按 config 拉起（界面在 /programs/jmbots-memory/），本插件不托管进程，
  *   只按 service_url（默认 http://127.0.0.1:30087）调 HTTP；服务没起来时接口和工具如实报“记忆服务没在线”。
  * 关系图（GraphRoutes.ts、GraphStore.ts、GraphSources.ts，原 memory-graph 并入）：GET /graph/、/api/memory-graph/* 与对话附带关系图链接提示。
- * 设计：docs/src7插件设计/memory.md。
+ * 设计见同目录 说明.md 的「设计要点」一节。
  */
 import * as botUtils from '../../utils/Bots.ts';
 import * as fs from 'node:fs';

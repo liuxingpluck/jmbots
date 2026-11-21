@@ -1,4 +1,8 @@
-/** 读取外部程序的启动通知和生命周期接口，校验跨进程回执；渠道回调的常量和格式两边共用（外置程序直接 import）。 */
+/**
+ * 外部程序的启动通知、生命周期接口与跨进程回执校验。
+ * 包含 `waitReady`、`checkProgram`、`requestExit`、`requestPause`、`readReport` 及一次性密钥比对 `isSameKey`。
+ * 渠道回调常量与格式由主站与外置程序共用，外置程序直接 import 本文件。
+ */
 import * as crypto from 'node:crypto';
 import type * as readline from 'node:readline';
 import type { ProgramSpec } from './Spec.ts';

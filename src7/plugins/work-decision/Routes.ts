@@ -2,6 +2,7 @@
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
+import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
@@ -212,7 +213,7 @@ export function mount(
     //M 同一份选择排给原会话，等本机机器人确认入队。
     const result = await events.requestEvent(ctx, 'bot/request', 'bot/result', request, options);
     //G 回执未确认时保留补投机会。
-    if (result.why !== undefined) return { ok: false, uncertain: result.why !== 'unhandled' };
+    if (result.why !== undefined) return { ok: false, uncertain: events.isUncertain(result) };
     if (!result.reply.ok || result.reply.receipt === undefined) return { ok: false };
 
     //M 记住已入队，后续再点也不会重复唤醒已处理的会话。
@@ -272,7 +273,7 @@ export function mount(
       let nodes = request.body;
       if (!Array.isArray(nodes)) {
         //M 批量入口同时接收节点列表和带 nodes 的包装对象。
-        const body = storeModule.readObject(nodes);
+        const body = checksModule.checkRecord(nodes, '请求体');
         nodes = body['nodes'];
       }
       //M 成批保存节点，失败时不会新增提醒。
@@ -285,7 +286,7 @@ export function mount(
 
     scope.post<{ Body: unknown }>(`${PREFIX}/ask`, (request) => {
       //G 外部发起提问时提供稳定编号、归属和回信的助手。
-      const body = storeModule.readObject(request.body);
+      const body = checksModule.checkRecord(request.body, '请求体');
       const id = storeModule.readText(body['id'], 'id');
       const bot = storeModule.readText(body['bot'], 'bot');
       const name = storeModule.readText(body['helper'], 'helper');
@@ -317,7 +318,7 @@ export function mount(
       return notifications.notify(ctx, ownerNotice, graph, manualKey);
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/child`, async (request) => {
-      const body = storeModule.readObject(request.body);
+      const body = checksModule.checkRecord(request.body, '请求体');
       const parent = storeModule.readText(body['parent'], 'parent');
       const title = storeModule.readText(body['title'], 'title');
       const id = crypto.randomUUID();
@@ -333,7 +334,7 @@ export function mount(
       method: ['POST', 'PUT'],
       url: `${PREFIX}/status`,
       async handler(request) {
-        const body = storeModule.readObject(request.body);
+        const body = checksModule.checkRecord(request.body, '请求体');
         const id = storeModule.readText(body['id'], 'id');
         const status = storeModule.readStatus(body['status']);
         if (request.method === 'PUT') return store.setStatus(id, status, 'central');
@@ -350,7 +351,7 @@ export function mount(
       method: ['POST', 'PUT'],
       url: `${PREFIX}/quadrant`,
       handler(request) {
-        const body = storeModule.readObject(request.body);
+        const body = checksModule.checkRecord(request.body, '请求体');
         const id = storeModule.readText(body['id'], 'id');
         const quadrant = storeModule.readQuadrant(body['quadrant']);
         if (quadrant === undefined) {
@@ -364,17 +365,13 @@ export function mount(
     });
     //M 允许中控按版本只提取尚未处理的变化。
     scope.get<{ Querystring: { since?: string } }>(`${PREFIX}/changes`, (request) => {
-      const raw = request.query.since ?? '0';
-      const since = Number(raw);
-      if (!/^\d+$/u.test(raw) || !Number.isSafeInteger(since)) {
-        throw new failureModule.Failure(400, 'since 要是不小于 0 的整数');
-      }
+      const since = checksModule.checkCount(request.query.since, 'since') ?? 0;
 
       //M 根据序号取变化，中控轮询时不会重复处理旧决定。
       return store.getChanges(since);
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/choose`, async (request) => {
-      const body = storeModule.readObject(request.body);
+      const body = checksModule.checkRecord(request.body, '请求体');
       const id = storeModule.readText(body['node'], 'node');
       const optionId = storeModule.readText(body['option'], 'option');
 
@@ -387,7 +384,7 @@ export function mount(
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/note`, async (request) => {
       //G 入口校验一次：节点号、文字非空且不超长，选项可省略。
-      const body = storeModule.readObject(request.body);
+      const body = checksModule.checkRecord(request.body, '请求体');
       const id = storeModule.readText(body['node'], 'node');
       const text = readNoteText(body['text']);
       let optionId: string | undefined;
@@ -430,7 +427,7 @@ export function mount(
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/reply`, async (request) => {
       //G 中控回话入口同样只校验一次：节点号、留言号、文字。
-      const body = storeModule.readObject(request.body);
+      const body = checksModule.checkRecord(request.body, '请求体');
       const id = storeModule.readText(body['node'], 'node');
       const replyTo = storeModule.readText(body['note'], 'note');
       const text = readNoteText(body['text']);
@@ -447,7 +444,7 @@ export function mount(
       const asked = await requestRelay(ctx, relay);
 
       //G relay 处理时抛错：归档结果不确定。
-      if (asked.why !== undefined && asked.why !== 'unhandled') {
+      if (events.isUncertain(asked)) {
         return { node: replied.node, note: replied.note, notification: RELAY_UNCERTAIN };
       }
 
@@ -457,7 +454,7 @@ export function mount(
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/ack`, async (request) => {
       //G 确认入口只取节点号与可选附言。
-      const body = storeModule.readObject(request.body);
+      const body = checksModule.checkRecord(request.body, '请求体');
       const id = storeModule.readText(body['node'], 'node');
       let note: string | undefined;
 
@@ -475,7 +472,7 @@ export function mount(
       const asked = await requestRelay(ctx, relay);
 
       //G relay 处理时抛错：归档结果不确定。
-      if (asked.why !== undefined && asked.why !== 'unhandled') return { node, notification: RELAY_UNCERTAIN };
+      if (events.isUncertain(asked)) return { node, notification: RELAY_UNCERTAIN };
 
       //M 没挂 relay 算没通知到。
       const notified = asked.reply?.ok === true;

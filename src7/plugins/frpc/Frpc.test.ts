@@ -10,6 +10,7 @@ import * as process from 'node:process';
 import { afterEach, describe, expect, test } from 'bun:test';
 import type * as cordis from 'cordis';
 import * as fastify from 'fastify';
+import * as failureModule from '../../utils/Failure.ts';
 import { registerHttpErrorHandler } from '../http/index.ts';
 import * as frpcPlugin from './index.ts';
 import * as processModule from './Process.ts';
@@ -213,7 +214,13 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
       resources: { root: rootDir, raw: { server: { port: 30099 } } },
       http: {
         app,
+        port: 30099,
         isVerified: () => verified,
+        requireVerified: (_req: unknown, what: string) => {
+          if (verified) return;
+
+          throw new failureModule.Failure(403, `${what}需要先完成身份核验`);
+        },
       },
     } as unknown as cordis.Context;
 

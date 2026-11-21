@@ -1,4 +1,8 @@
-/** 代理本人确认入口和受批准的发送运输，外置草稿内容只从程序读取。 */
+/**
+ * 代理本人确认入口和受批准的外部程序发件运输，外置草稿内容只从程序读取。
+ * `listenChannelSend` 听 `programs/channel-send-request` 执行草稿读取和已批准发送；`mountOutbound` 挂接网页审核与发件路由。
+ * 由 `programs/index.ts` 装配，发件账状态机归 `approval/Outbound.ts` 管。
+ */
 import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as events from '../../utils/RequestEvent.ts';
@@ -153,7 +157,7 @@ async function callProgram(host: Host, request: ChannelSendRequest) {
     return { draft };
   }
 
-  //G 实例代次变化或超过截止时间都在发请求前拒绝，绝不把旧批准换新密钥提交。
+  //G 实例代次变化或超过截止时间都在发请求前拒绝，不把旧批准换新密钥提交。
   if (target.generation !== request.generation || channel !== request.call.channel) {
     return { code: 409, error: '外部程序代次或渠道已变化，请重新确认' };
   }

@@ -1,5 +1,5 @@
 /**
- * 跑命令与命令窗口（由 exec 与原 runs 合并）：
+ * 执行受审核的本机命令并提供命令窗口接口。
  *   服务 exec.run：不经过模型、不审核，起一个 shell 跑一条命令，交回退出码和输出。
  *   工具 exec：先发 approval/request（action: review）请审核插件审，放行就跑；拒绝、去问用户了，都把一句话交给模型。
  *     没挂 approval、审核超时一律拒绝（Runs.ts 的 requestReview）。在这一轮的工作区里跑（飞书上 builder 说话时是他的目录，审核也照这个目录把关）。

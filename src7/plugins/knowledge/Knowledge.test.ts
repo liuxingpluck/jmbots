@@ -58,6 +58,11 @@ async function createKnowledgeHarness() {
     http: {
       app,
       isVerified: () => verified,
+      requireVerified: (_req: unknown, what: string) => {
+        if (verified) return;
+
+        throw new failureModule.Failure(403, `${what}需要先完成身份核验`);
+      },
     },
     tools,
   });

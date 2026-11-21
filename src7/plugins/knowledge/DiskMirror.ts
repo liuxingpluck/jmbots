@@ -7,6 +7,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as filesModule from '../../utils/Files.ts';
+import * as namesModule from '../../utils/Names.ts';
 import type * as types from './Types.ts';
 
 
@@ -34,17 +35,8 @@ function randomLetters3(): string {
  * @returns 全局唯一且按时间字典序递增的 ID。
  */
 export function generateAtomId(prefix = '', now = new Date()): string {
-  const pad2 = (n: number): string => String(n).padStart(2, '0');
-  const pad3 = (n: number): string => String(n).padStart(3, '0');
-  const stamp = [
-    String(now.getFullYear()),
-    pad2(now.getMonth() + 1),
-    pad2(now.getDate()),
-    pad2(now.getHours()),
-    pad2(now.getMinutes()),
-    pad2(now.getSeconds()),
-    pad3(now.getMilliseconds()),
-  ].join('');
+  //M 时刻取 utils 的时刻号前 17 位（本地年月日时分秒毫秒），后面接 3 个小写字母。
+  const stamp = namesModule.createTimestampId(now).slice(0, 17);
   return `${prefix}${stamp}${randomLetters3()}`;
 }
 
@@ -55,11 +47,9 @@ export function generateAtomId(prefix = '', now = new Date()): string {
  * @returns 8 位日期字符串。
  */
 export function formatDateFolder(timestampMs: number): string {
-  const d = new Date(timestampMs);
-  const y = String(d.getFullYear());
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}${m}${day}`;
+  //M 日期目录就是时刻号的前 8 位。
+  const at = new Date(timestampMs);
+  return namesModule.createTimestampId(at).slice(0, 8);
 }
 
 

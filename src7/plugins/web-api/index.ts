@@ -380,10 +380,7 @@ class WebApi {
    */
   private async accept(raw: unknown, verifiedOwner: boolean): Promise<{ id: number; file: string }> {
     //M 外面进来的，这里校验一次。
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new failureModule.Failure(400, '请求体要是 JSON 对象');
-
-    //G 正文缺省可以靠附件发出，给了正文就必须是字符串。
-    const body = raw as MessageBody;
+    const body = checksModule.checkRecord(raw, '请求体') as MessageBody;
     const text = body.text ?? '';
     if (typeof text !== 'string') throw new failureModule.Failure(400, 'text 要是字符串');
 

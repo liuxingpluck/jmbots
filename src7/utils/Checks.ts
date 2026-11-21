@@ -15,6 +15,7 @@ import * as process from 'node:process';
 import type * as piAi from '@earendil-works/pi-ai';
 import type { JmbotsConfig, PluginEntry, ProviderConfig } from '../Resources.ts';
 import * as embedded from './Embedded.ts';
+import * as failureModule from './Failure.ts';
 import * as utils from './index.ts';
 import * as workspaceModule from './Workspace.ts';
 
@@ -296,11 +297,11 @@ export function checkConfig(raw: unknown): JmbotsConfig {
 /**
  * 要一组“名字: 值”。
  * @param value 原始值。
- * @param label 是配置里的哪一项，写进错误信息。
+ * @param label 是哪一项，写进错误信息。
  */
 export function checkRecord(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${label} 没写，或者写得不对：要写成一组“名字: 值”`);
+    throw new failureModule.Failure(400, `${label} 没写，或者写得不对：要写成一组“名字: 值”`);
   }
   return value as Record<string, unknown>;
 }
@@ -309,11 +310,11 @@ export function checkRecord(value: unknown, label: string): Record<string, unkno
 /**
  * 要一张清单。
  * @param value 原始值。
- * @param label 是配置里的哪一项，写进错误信息。
+ * @param label 是哪一项，写进错误信息。
  */
 export function checkArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new Error(`${label} 要写成一张清单`);
+    throw new failureModule.Failure(400, `${label} 要写成一张清单`);
   }
   return value as unknown[];
 }
@@ -322,11 +323,11 @@ export function checkArray(value: unknown, label: string): unknown[] {
 /**
  * 要非空的文字。
  * @param value 原始值。
- * @param label 是配置里的哪一项，写进错误信息。
+ * @param label 是哪一项，写进错误信息。
  */
 export function checkNonEmptyText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value === '') {
-    throw new Error(`${label} 要写成非空的文字`);
+    throw new failureModule.Failure(400, `${label} 要写成非空的文字`);
   }
   return value;
 }
@@ -362,26 +363,26 @@ export const POSITIVE_INT: NumberRule = { integer: true, min: 1 };
 
 
 /**
- * 要一个数，在给定范围里。插件配置里的个数、毫秒、0 到 1 的阈值这类都用它查。
+ * 要一个数，在给定范围里。插件配置里的个数、毫秒、0 到 1 的阈值和 HTTP 入参里的数都用它查。
  * 没写时的默认值由调用方先用 ?? 补上再交进来。
  * @param value 原始值。
- * @param label 是配置里的哪一项，写进错误信息。
+ * @param label 是哪一项，写进错误信息。
  * @param rule 要整数、上下限；不写就是任意有限的数。
  * @returns 原样交回那个数。
- * @throws 不是有限的数、不是整数（要整数时）或超出范围时抛错，说明该写成什么样。
+ * @throws Failure(400)：不是有限的数、不是整数（要整数时）或超出范围，说明该写成什么样。
  */
 export function checkNumber(value: unknown, label: string, rule: NumberRule = {}): number {
   //M 报错说法按范围拼一次，下面几道关口共用。
   const failure = `${label} 要写成${getNumberKind(rule)}`;
 
   //G 先要是有限的数，要整数的还得是安全整数。
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(failure);
-  if (rule.integer === true && !Number.isSafeInteger(value)) throw new Error(failure);
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new failureModule.Failure(400, failure);
+  if (rule.integer === true && !Number.isSafeInteger(value)) throw new failureModule.Failure(400, failure);
 
   //G 再看上下限。
-  if (rule.min !== undefined && value < rule.min) throw new Error(failure);
-  if (rule.above !== undefined && value <= rule.above) throw new Error(failure);
-  if (rule.max !== undefined && value > rule.max) throw new Error(failure);
+  if (rule.min !== undefined && value < rule.min) throw new failureModule.Failure(400, failure);
+  if (rule.above !== undefined && value <= rule.above) throw new failureModule.Failure(400, failure);
+  if (rule.max !== undefined && value > rule.max) throw new failureModule.Failure(400, failure);
 
   return value;
 }
@@ -422,12 +423,12 @@ function getNumberKind(rule: NumberRule): string {
 /**
  * 要一个开关：true 或 false。没写时的默认值由调用方先用 ?? 补上再交进来。
  * @param value 原始值。
- * @param label 是配置里的哪一项，写进错误信息。
+ * @param label 是哪一项，写进错误信息。
  * @returns 原样交回。
- * @throws 不是 true 或 false 时抛错。
+ * @throws Failure(400)：不是 true 或 false。
  */
 export function checkFlag(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') throw new Error(`${label} 要写成 true 或 false`);
+  if (typeof value !== 'boolean') throw new failureModule.Failure(400, `${label} 要写成 true 或 false`);
 
   return value;
 }
@@ -440,7 +441,7 @@ export function checkFlag(value: unknown, label: string): boolean {
  * @param label 是配置里的哪一项，写进错误信息。
  * @param providers 校验过的供应商表（ctx.resources.config.providers；骨架自己查时是正在拼的那张）。
  * @returns 原样交回。
- * @throws 不是非空文字、没有斜杠或斜杠后没写模型、供应商不在 providers 里时抛错。
+ * @throws Failure(400)：不是非空文字、没有斜杠或斜杠后没写模型、供应商不在 providers 里。
  */
 export function checkModelRef(value: unknown, label: string, providers: Record<string, ProviderConfig>): string {
   //M 先要非空文字，再按第一个斜杠拆成供应商和模型 ID。
@@ -450,10 +451,12 @@ export function checkModelRef(value: unknown, label: string, providers: Record<s
   const model = ref.slice(slash + 1);
 
   //G 没有斜杠、斜杠后没写模型：写法不对。
-  if (slash < 0 || model === '') throw new Error(`${label} 要写成“供应商名/模型 ID”`);
+  if (slash < 0 || model === '') throw new failureModule.Failure(400, `${label} 要写成“供应商名/模型 ID”`);
 
   //G 供应商没配：连不上，启动时就说。
-  if (providers[provider] === undefined) throw new Error(`${label} 的供应商不在 providers 里：${ref}`);
+  if (providers[provider] === undefined) {
+    throw new failureModule.Failure(400, `${label} 的供应商不在 providers 里：${ref}`);
+  }
 
   return ref;
 }
@@ -463,13 +466,13 @@ export function checkModelRef(value: unknown, label: string, providers: Record<s
  * 要几个固定写法里的一个。
  * @param value 原始值。
  * @param allowed 允许的写法。
- * @param label 是配置里的哪一项，写进错误信息。
+ * @param label 是哪一项，写进错误信息。
  */
 export function checkAllowedValue<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
-  //G 仅接受枚举清单里出现的固定值，其余抛错提示合法范围。
+  //G 仅接受枚举清单里出现的固定值，其余抛 400 提示合法范围。
   const found = allowed.find((item) => item === value);
   if (found === undefined) {
-    throw new Error(`${label} 只能是 ${allowed.join('、')}`);
+    throw new failureModule.Failure(400, `${label} 只能是 ${allowed.join('、')}`);
   }
   return found;
 }
@@ -480,24 +483,24 @@ const COUNT_PATTERN = /^\d+$/u;
 
 
 /**
- * 查网址里的一个可选非负整数（before、after、since、limit、message 这类）。journal、web-api 的 GET 接口调。
+ * 查网址里的一个可选非负整数（before、after、since、limit、message 这类）。各 HTTP GET 接口调。
  * 和 Text.ts 的 parseBoundedInt 不一样：写错了不按默认值，而是回 400，让调的人知道写错了。
  * @param value 网址里的值，可能没给。
  * @param key 参数名，报错用。
  * @returns 那个整数；没给、给了空串是 undefined。
- * @throws 带 statusCode 400 的错：不是只有数字的非负整数。Fastify 自己的错误处理、web-api 的 setErrorHandler 都照 statusCode 回 400。
+ * @throws Failure(400)：不是只有数字的非负整数，或者超出安全整数范围。
  */
 export function checkCount(value: string | undefined, key: string): number | undefined {
   //M 没给、给了空串：当没写。
   if (value === undefined || value === '') return undefined;
 
-  //G 不是只有数字 → 抛带 400 的错。
-  if (!COUNT_PATTERN.test(value)) {
-    const failure = new Error(`${key} 要是非负整数`);
-    throw Object.assign(failure, { statusCode: 400 });
+  //G 不是只有数字或超出安全整数 → 抛 400。
+  const parsed = Number(value);
+  if (!COUNT_PATTERN.test(value) || !Number.isSafeInteger(parsed)) {
+    throw new failureModule.Failure(400, `${key} 要是非负整数`);
   }
 
-  return Number(value);
+  return parsed;
 }
 
 
@@ -507,24 +510,22 @@ export function checkCount(value: string | undefined, key: string): number | und
  * @param raw 外面给的：绝对路径的数组；不给是没有。
  * @param key 报错用的名字，如 approval.trusted_dirs。
  * @returns 规范化后的绝对路径；不给是空数组。
- * @throws 带 statusCode 400 的错：不是数组、有一项不是非空字符串、不是绝对路径。插件配置写错时插件挂不上，HTTP 正文写错时回 400。
+ * @throws Failure(400)：不是数组、有一项不是非空字符串、不是绝对路径。插件配置写错时插件挂不上，HTTP 正文写错时回 400。
  */
 export function checkDirs(raw: unknown, key: string): string[] {
   //M 没给：没有可信目录。
   if (raw === undefined) return [];
 
-  //G 不是数组 → 抛带 400 的错。
+  //G 不是数组 → 抛 400。
   if (!Array.isArray(raw)) {
-    const failure = new Error(`${key} 要是绝对路径的数组`);
-    throw Object.assign(failure, { statusCode: 400 });
+    throw new failureModule.Failure(400, `${key} 要是绝对路径的数组`);
   }
 
   const dirs: string[] = [];
   for (const item of raw) {
     //G 每一项都要是绝对路径：相对路径不知道相对谁，不认。
     if (typeof item !== 'string' || item.trim() === '' || !path.isAbsolute(item.trim())) {
-      const failure = new Error(`${key} 的每一项都要是绝对路径：${String(item)}`);
-      throw Object.assign(failure, { statusCode: 400 });
+      throw new failureModule.Failure(400, `${key} 的每一项都要是绝对路径：${String(item)}`);
     }
 
     //M 规范化后收下。
@@ -546,16 +547,15 @@ export interface Grants {
  * 查 POST /api/message 的 grants：本人、中控交代任务时写明哪些目录可信，这场会话里 exec 在这些目录里的命令直接放行（approval 读）。
  * @param raw 请求体里的 grants；不给是没有。
  * @returns 校验、规范化后的授权范围；不给是 undefined。
- * @throws 带 statusCode 400 的错：不是对象，或 dirs 不对（见 checkDirs）。
+ * @throws Failure(400)：不是对象，或 dirs 不对（见 checkDirs）。
  */
 export function checkGrants(raw: unknown): Grants | undefined {
   //M 没给：这场会话不带授权。
   if (raw === undefined) return undefined;
 
-  //G 不是对象 → 抛带 400 的错。
+  //G 不是对象 → 抛 400。
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    const failure = new Error('grants 要写成 { dirs: [绝对路径…] }');
-    throw Object.assign(failure, { statusCode: 400 });
+    throw new failureModule.Failure(400, 'grants 要写成 { dirs: [绝对路径…] }');
   }
 
   //M 目录照 checkDirs 查一次、规范化一次。
@@ -570,21 +570,19 @@ export function checkGrants(raw: unknown): Grants | undefined {
  * 要是绝对路径、真有这个目录；交回解开 ..、符号链接后的真实路径（Windows 上盘符、目录名照磁盘上的大小写），以后比路径照它算。
  * @param raw 外面给的目录。
  * @returns 真实的绝对路径。
- * @throws 带 statusCode 400 的错：不是非空字符串、不是绝对路径、目录不存在或不是目录。
+ * @throws Failure(400)：不是非空字符串、不是绝对路径、目录不存在或不是目录。
  */
 export function checkGrantDir(raw: unknown): string {
   //G 要是写成绝对路径的非空字符串：相对路径不知道相对谁。
   if (typeof raw !== 'string' || raw.trim() === '' || !path.isAbsolute(raw.trim())) {
-    const failure = new Error(`授权目录要写绝对路径：${String(raw)}`);
-    throw Object.assign(failure, { statusCode: 400 });
+    throw new failureModule.Failure(400, `授权目录要写绝对路径：${String(raw)}`);
   }
 
   //G 目录要真有：写错了当场说，不存一条永远用不上的授权。
   const full = path.resolve(raw.trim());
   const stat = fs.statSync(full, { throwIfNoEntry: false });
   if (stat === undefined || !stat.isDirectory()) {
-    const failure = new Error(`没有这个目录：${full}`);
-    throw Object.assign(failure, { statusCode: 400 });
+    throw new failureModule.Failure(400, `没有这个目录：${full}`);
   }
 
   //M 解开符号链接，照磁盘上的写法交回。

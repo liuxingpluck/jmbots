@@ -6,7 +6,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
-import type * as fastify from 'fastify';
 import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
@@ -121,31 +120,6 @@ function parsePluginConfig(raw: unknown): FrpcConfig {
 
 
 /**
- * 拦截未经 HTTP 身份核验的写操作请求。
- * @param ctx 插件上下文。
- * @param request Fastify 请求对象。
- */
-function requireVerified(ctx: cordis.Context, request: fastify.FastifyRequest): void {
-  if (ctx.http.isVerified(request)) return;
-
-  throw new failureModule.Failure(403, '外网隧道写操作需要先完成身份核验');
-}
-
-
-/**
- * 校验请求体为普通对象。
- * @param body Fastify 解析后的 body。
- * @returns 键值对象。
- */
-function readBodyObject(body: unknown): Record<string, unknown> {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new failureModule.Failure(400, '请求体必须是 JSON 对象');
-  }
-  return body as Record<string, unknown>;
-}
-
-
-/**
  * 解析日志查询行数（默认 120，上限 500）。
  * @param query Fastify 请求的查询参数。
  * @returns 1..500 的正整数。
@@ -154,13 +128,11 @@ function parseLogLinesCount(query: unknown): number {
   if (typeof query !== 'object' || query === null) return 120;
 
   const raw = (query as Record<string, unknown>)['lines'];
-  if (raw === undefined || raw === '') return 120;
-
-  const text = String(raw).trim();
-  if (!/^\d+$/u.test(text)) {
-    throw new failureModule.Failure(400, 'lines 参数必须是正整数');
+  let text: string | undefined;
+  if (raw !== undefined) {
+    text = String(raw).trim();
   }
-  const count = Number(text);
+  const count = checksModule.checkCount(text, 'lines') ?? 120;
   if (count < 1) {
     throw new failureModule.Failure(400, 'lines 参数必须大于等于 1');
   }
@@ -223,17 +195,6 @@ export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRun
 // 插件入口与 HTTP 路由挂载
 //==========================================================
 
-/** 读取当前主站配置的监听端口（缺省保护 30086）。 */
-function resolveGuardedServerPort(ctx: cordis.Context): number {
-  const rawServer = ctx.resources.raw?.['server'] as { port?: unknown } | undefined;
-  const port = rawServer?.port;
-  if (typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535) {
-    return port;
-  }
-  return 30086;
-}
-
-
 /**
  * 挂载 frpc 插件并在 ctx.http.app 上登记 5 条管理路由。
  * @param ctx Cordis 插件上下文。
@@ -248,7 +209,6 @@ export function apply(
   const settings = parsePluginConfig(config);
   const dir = resolveFrpcDir(ctx.resources.root, settings.dir);
   const runner = runnerOverride ?? processModule.createDefaultRunner();
-  const guardedPort = resolveGuardedServerPort(ctx);
   const app = ctx.http.app;
 
   //M 1. 读取完整隧道状态、配置摘要与公网快捷入口（不返回 auth.token 明文）。
@@ -258,12 +218,9 @@ export function apply(
 
   //M 2. 控制隧道启动、停止或平滑重启（强制身份核验）。
   app.post('/api/frpc/control', async (request) => {
-    requireVerified(ctx, request);
-    const body = readBodyObject(request.body);
-    const action = body['action'];
-    if (action !== 'start' && action !== 'stop' && action !== 'restart') {
-      throw new failureModule.Failure(400, 'action 必须是 start、stop 或 restart');
-    }
+    ctx.http.requireVerified(request, '外网隧道写操作');
+    const body = checksModule.checkRecord(request.body, '请求体');
+    const action = checksModule.checkAllowedValue(body['action'], ['start', 'stop', 'restart'] as const, 'action');
     await runner.control(dir, action);
     const status = await buildFrpcStatus(dir, runner);
     return { ok: true, status };
@@ -271,24 +228,21 @@ export function apply(
 
   //M 3. 切换 Windows 登录开机自动拉起托盘与隧道（强制身份核验）。
   app.post('/api/frpc/autostart', async (request) => {
-    requireVerified(ctx, request);
-    const body = readBodyObject(request.body);
-    const enabled = body['enabled'];
-    if (typeof enabled !== 'boolean') {
-      throw new failureModule.Failure(400, 'enabled 必须是布尔值');
-    }
+    ctx.http.requireVerified(request, '外网隧道写操作');
+    const body = checksModule.checkRecord(request.body, '请求体');
+    const enabled = checksModule.checkFlag(body['enabled'], 'enabled');
     const autoStart = runner.writeAutoStart(dir, enabled);
     return { ok: true, autoStart };
   });
 
   //M 4. 校验并无损保存 [[proxies]] 隧道映射，可选平滑重启（强制身份核验）。
   app.put('/api/frpc/proxies', async (request) => {
-    requireVerified(ctx, request);
-    const body = readBodyObject(request.body);
-    const proxies = tomlModule.validateProxies(body['proxies'], guardedPort);
+    ctx.http.requireVerified(request, '外网隧道写操作');
+    const body = checksModule.checkRecord(request.body, '请求体');
+    const proxies = tomlModule.validateProxies(body['proxies'], ctx.http.port);
     const rawRestart = body['restart'];
-    if (rawRestart !== undefined && typeof rawRestart !== 'boolean') {
-      throw new failureModule.Failure(400, 'restart 必须是布尔值');
+    if (rawRestart !== undefined) {
+      checksModule.checkFlag(rawRestart, 'restart');
     }
 
     const tomlPath = path.join(dir, 'frpc.toml');

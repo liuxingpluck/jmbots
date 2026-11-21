@@ -7,7 +7,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as failureModule from '../../utils/Failure.ts';
-import * as textModule from '../../utils/Text.ts';
 import * as checksModule from './Checks.ts';
 import { type AgentTasks, type FinishInput, NAME, STATUSES, type Task, type TaskStatus } from './AgentTasks.ts';
 import type * as protocolModule from './TaskProtocol.ts';
@@ -122,16 +121,10 @@ function getFinishInput(body: Record<string, unknown>): FinishInput {
     throw new failureModule.Failure(400, 'uploads 要是上传号清单（PUT /api/uploads/<文件名> 回的 id）');
   }
 
-  //M 新协议：protocolResult 就是 result.json 的内容。
+  //M 新协议：protocolResult 就是 result.json 的内容，查不过 relay/Checks.ts 自己抛 400。
   if (body['protocolResult'] !== undefined) {
-    try {
-      const result = checksModule.checkTaskResult(body['protocolResult']);
-      return { uploads, result };
-    } catch (error) {
-      //G 只把输入协议校验失败标为 400，任务落库失败交给全局处理。
-      const message = textModule.getErrorMessage(error);
-      throw new failureModule.Failure(400, message);
-    }
+    const result = checksModule.checkTaskResult(body['protocolResult']);
+    return { uploads, result };
   }
 
   //退场：所有运行时的 agent_tasks 表里没有 protocol IS NULL 的未结束旧任务以后
@@ -179,15 +172,8 @@ export function registerRoutes(ctx: cordis.Context, tasks: AgentTasks): void {
     const checked = check(request.params, reply);
     if (checked === undefined) return reply;
 
-    //M 校验执行端提交的说明和能力，再登记上线并返回登记结果。
-    let said: ReturnType<typeof checksModule.checkAgentHello>;
-    try {
-      said = checksModule.checkAgentHello(request.body);
-    } catch (error) {
-      //G 登记正文格式错误沿用 400，实际登记故障由 HTTP 插件处理。
-      const message = textModule.getErrorMessage(error);
-      throw new failureModule.Failure(400, message);
-    }
+    //M 校验执行端提交的说明和能力（查不过 relay/Checks.ts 自己抛 400），再登记上线并返回登记结果。
+    const said = checksModule.checkAgentHello(request.body);
     return tasks.hello(checked.agent, said);
   });
 

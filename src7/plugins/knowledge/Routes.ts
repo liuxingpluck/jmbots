@@ -4,7 +4,7 @@
  * 搜索接口通过 requestEvent 桥接 memory/request，未挂载 memory 或远端离线时平滑退化，绝不报错中断。
  */
 import type * as cordis from 'cordis';
-import type * as fastify from 'fastify';
+import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as storeModule from './Store.ts';
@@ -90,25 +90,8 @@ export async function searchMemoryBridge(
 
 
 //==========================================================
-// 入参读取与身份核验辅助函数
+// 入参读取辅助函数
 //==========================================================
-
-/** 拦截未经 HTTP 身份核验的写操作请求。 */
-function requireVerified(ctx: cordis.Context, request: fastify.FastifyRequest): void {
-  if (ctx.http.isVerified(request)) return;
-
-  throw new failureModule.Failure(403, '知识库写操作需要先完成身份核验');
-}
-
-
-/** 读取并校验 JSON 对象请求体。 */
-function readBodyRecord(body: unknown): Record<string, unknown> {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new failureModule.Failure(400, '请求体必须是 JSON 对象');
-  }
-  return body as Record<string, unknown>;
-}
-
 
 /** 从对象读取可选字符串字段。 */
 function readOptionalString(rec: Record<string, unknown>, key: string): string | undefined {
@@ -176,33 +159,11 @@ function readQueryTags(query: Record<string, unknown>): string[] {
 }
 
 
-/** 从查询对象读取正整数或零。 */
-function parseOptionalInt(raw: unknown, label: string): number | undefined {
-  if (raw === undefined || raw === '') return undefined;
-
-  const text = String(raw).trim();
-  if (!/^\d+$/u.test(text)) {
-    throw new failureModule.Failure(400, `${label} 必须是非负整数`);
-  }
-  return Number(text);
-}
-
-
-/** 读取路由路径参数 :name（标签名，Fastify 已解好百分号编码）。 */
-function readParamName(params: unknown): string {
-  const raw = (params as Record<string, unknown> | null)?.['name'];
+/** 读取路由路径参数（如 :id、:name，Fastify 已解好百分号编码）。 */
+function readParam(params: unknown, key: string): string {
+  const raw = (params as Record<string, unknown> | null)?.[key];
   if (typeof raw !== 'string' || raw.trim() === '') {
-    throw new failureModule.Failure(400, '缺少路径参数 name');
-  }
-  return raw.trim();
-}
-
-
-/** 读取路由路径参数 :id。 */
-function readParamId(params: unknown): string {
-  const raw = (params as Record<string, unknown> | null)?.['id'];
-  if (typeof raw !== 'string' || raw.trim() === '') {
-    throw new failureModule.Failure(400, '缺少路径参数 id');
+    throw new failureModule.Failure(400, `缺少路径参数 ${key}`);
   }
   return raw.trim();
 }
@@ -231,15 +192,15 @@ export function mountKnowledgeRoutes(
 
   //M 2. 文档多维筛选与分页列表。
   app.get('/api/knowledge/docs', (request) => {
-    const query = (request.query ?? {}) as Record<string, unknown>;
+    const query = (request.query ?? {}) as Record<string, string | undefined>;
     const includeContent = query['includeContent'] === '1' || query['includeContent'] === 'true';
     const filter: types.DocListFilter = {
       dirId: readQueryText(query, 'dirId'),
       topicId: readQueryText(query, 'topicId'),
       tags: readQueryTags(query),
       q: readQueryText(query, 'q'),
-      limit: parseOptionalInt(query['limit'], 'limit'),
-      offset: parseOptionalInt(query['offset'], 'offset'),
+      limit: checksModule.checkCount(query['limit'], 'limit'),
+      offset: checksModule.checkCount(query['offset'], 'offset'),
       includeContent,
     };
     const page = store.listDocs(filter);
@@ -248,7 +209,7 @@ export function mountKnowledgeRoutes(
 
   //M 3. 读取单篇完整文档（含 Markdown 正文）。
   app.get('/api/knowledge/docs/:id', (request) => {
-    const id = readParamId(request.params);
+    const id = readParam(request.params, 'id');
     const doc = store.getDoc(id);
     if (doc === undefined) {
       throw new failureModule.Failure(404, `文档不存在：${id}`);
@@ -258,8 +219,8 @@ export function mountKnowledgeRoutes(
 
   //M 4. 新建知识文档（强检身份核验）。
   app.post('/api/knowledge/docs', (request) => {
-    requireVerified(ctx, request);
-    const body = readBodyRecord(request.body);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const body = checksModule.checkRecord(request.body, '请求体');
     const title = readOptionalString(body, 'title') ?? '';
     const input: types.CreateDocInput = {
       id: readOptionalString(body, 'id'),
@@ -278,9 +239,9 @@ export function mountKnowledgeRoutes(
 
   //M 5. 更新知识文档（支持局部修改与标签重绑，强检身份核验；带 baseUpdatedAt 时防别处改过被覆盖）。
   app.put('/api/knowledge/docs/:id', (request, reply) => {
-    requireVerified(ctx, request);
-    const id = readParamId(request.params);
-    const body = readBodyRecord(request.body);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const id = readParam(request.params, 'id');
+    const body = checksModule.checkRecord(request.body, '请求体');
     const patch: types.UpdateDocInput = {};
     if ('dirId' in body) {
       patch.dirId = readNullableString(body, 'dirId');
@@ -307,10 +268,7 @@ export function mountKnowledgeRoutes(
       patch.tags = readOptionalStringArray(body, 'tags');
     }
     if (body['baseUpdatedAt'] !== undefined) {
-      if (typeof body['baseUpdatedAt'] !== 'number' || !Number.isSafeInteger(body['baseUpdatedAt'])) {
-        throw new failureModule.Failure(400, 'baseUpdatedAt 必须是整数毫秒时间戳');
-      }
-      patch.baseUpdatedAt = body['baseUpdatedAt'];
+      patch.baseUpdatedAt = checksModule.checkNumber(body['baseUpdatedAt'], 'baseUpdatedAt', { integer: true });
     }
 
     //G 别处先改过：回 409，并把库里最新的文档一起带回，前端直接拿它刷新（统一的错误处理只回 error，带不了 doc）。
@@ -327,23 +285,20 @@ export function mountKnowledgeRoutes(
 
   //M 6. 删除知识文档（强检身份核验）。
   app.delete('/api/knowledge/docs/:id', (request) => {
-    requireVerified(ctx, request);
-    const id = readParamId(request.params);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const id = readParam(request.params, 'id');
     store.deleteDoc(id);
     return { ok: true, id };
   });
 
   //M 7. 新建虚拟目录（强检身份核验）。
   app.post('/api/knowledge/dirs', (request) => {
-    requireVerified(ctx, request);
-    const body = readBodyRecord(request.body);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const body = checksModule.checkRecord(request.body, '请求体');
     const name = readOptionalString(body, 'name') ?? '';
     let sortOrder: number | undefined;
     if (body['sortOrder'] !== undefined) {
-      if (typeof body['sortOrder'] !== 'number' || !Number.isInteger(body['sortOrder'])) {
-        throw new failureModule.Failure(400, 'sortOrder 必须是整数');
-      }
-      sortOrder = body['sortOrder'];
+      sortOrder = checksModule.checkNumber(body['sortOrder'], 'sortOrder', { integer: true });
     }
     const dir = store.createDir({
       id: readOptionalString(body, 'id'),
@@ -356,9 +311,9 @@ export function mountKnowledgeRoutes(
 
   //M 8. 更新虚拟目录（强检身份核验）。
   app.put('/api/knowledge/dirs/:id', (request) => {
-    requireVerified(ctx, request);
-    const id = readParamId(request.params);
-    const body = readBodyRecord(request.body);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const id = readParam(request.params, 'id');
+    const body = checksModule.checkRecord(request.body, '请求体');
     const patch: types.UpdateDirInput = {};
     if ('name' in body) {
       patch.name = readOptionalString(body, 'name');
@@ -367,10 +322,7 @@ export function mountKnowledgeRoutes(
       patch.parentId = readNullableString(body, 'parentId');
     }
     if ('sortOrder' in body && body['sortOrder'] !== undefined) {
-      if (typeof body['sortOrder'] !== 'number' || !Number.isInteger(body['sortOrder'])) {
-        throw new failureModule.Failure(400, 'sortOrder 必须是整数');
-      }
-      patch.sortOrder = body['sortOrder'];
+      patch.sortOrder = checksModule.checkNumber(body['sortOrder'], 'sortOrder', { integer: true });
     }
     const dir = store.updateDir(id, patch);
     return { ok: true, dir };
@@ -378,15 +330,15 @@ export function mountKnowledgeRoutes(
 
   //M 9. 删除虚拟目录（不删原文档，强检身份核验）。
   app.delete('/api/knowledge/dirs/:id', (request) => {
-    requireVerified(ctx, request);
-    const id = readParamId(request.params);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const id = readParam(request.params, 'id');
     store.deleteDir(id);
     return { ok: true, id };
   });
 
-  //M 10. 混合搜索：本地 SQLite 加权命中 + 温和桥接 memory 搜索。
+  //M 10. 混合搜索：本地 SQLite 加权命中 + 桥接 memory 搜索。
   app.get('/api/knowledge/search', async (request) => {
-    const query = (request.query ?? {}) as Record<string, unknown>;
+    const query = (request.query ?? {}) as Record<string, string | undefined>;
     let q = '';
     if (typeof query['q'] === 'string') {
       q = query['q'].trim();
@@ -405,7 +357,7 @@ export function mountKnowledgeRoutes(
       throw new failureModule.Failure(400, '请至少提供搜索词 q、topicId、dirId 或 tag 之一');
     }
 
-    const limit = parseOptionalInt(query['limit'], 'limit') ?? 15;
+    const limit = checksModule.checkCount(query['limit'], 'limit') ?? 15;
     const hits = store.searchLocal(q, { dirId, topicId, tags, limit });
 
     const skipMemory = query['includeMemory'] === '0' || query['includeMemory'] === 'false';
@@ -436,9 +388,9 @@ export function mountKnowledgeRoutes(
 
   //M 11. 标签改名；新名字已有就合并（强检身份核验）。
   app.put('/api/knowledge/tags/:name', (request) => {
-    requireVerified(ctx, request);
-    const name = readParamName(request.params);
-    const body = readBodyRecord(request.body);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const name = readParam(request.params, 'name');
+    const body = checksModule.checkRecord(request.body, '请求体');
     const newName = readOptionalString(body, 'newName');
     if (newName === undefined) {
       throw new failureModule.Failure(400, '要写 newName');
@@ -449,17 +401,17 @@ export function mountKnowledgeRoutes(
 
   //M 12. 删除标签，文档本身不动（强检身份核验）。
   app.delete('/api/knowledge/tags/:name', (request) => {
-    requireVerified(ctx, request);
-    const name = readParamName(request.params);
+    ctx.http.requireVerified(request, '知识库写操作');
+    const name = readParam(request.params, 'name');
     const result: types.KnowledgeTagDeleteResult = { ok: true, ...store.deleteTag(name) };
     return result;
   });
 
   //M 13. 相关文档推荐：limit 默认 6，限在 1～20。
   app.get('/api/knowledge/docs/:id/related', (request) => {
-    const id = readParamId(request.params);
-    const query = (request.query ?? {}) as Record<string, unknown>;
-    const written = parseOptionalInt(query['limit'], 'limit') ?? 6;
+    const id = readParam(request.params, 'id');
+    const query = (request.query ?? {}) as Record<string, string | undefined>;
+    const written = checksModule.checkCount(query['limit'], 'limit') ?? 6;
     const limit = Math.min(20, Math.max(1, written));
     const response: types.KnowledgeRelatedResponse = { ok: true, docId: id, items: store.getRelated(id, limit) };
     return response;

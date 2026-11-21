@@ -1,6 +1,6 @@
 /**
- * 命令行渠道：经 channels 的 emitInbound 发 channel/direct（命令行是私聊）把本机命令行输入交给机器人；前台一轮里 channel_reply 几次就逐条打几行，
- * 一次没调就打最后的话（routing.autoFinal）。本机输入就是本人（role: owner）。
+ * 把本机命令行输入交给机器人并把回复打印到终端。
+ * 经 channels 的 emitInbound 发 channel/direct（本机输入 role: owner）；channel_reply 几次就打几行，没调就打最后的话。
  * 用法：bun src7/Main.ts [--bot 机器人] 你好
  *   先把原始输入存进 channels/cli/<YYYY-MM-DD>.jsonl，再发出 channel/direct；等所有会话停下退出（出过错退出码为 1）。
  *   没带话就什么也不做。它不从键盘读输入；要一问一答地聊，以后另写专门的插件。

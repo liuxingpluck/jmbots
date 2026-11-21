@@ -5,7 +5,6 @@
  * 交回结果的形状 TaskResult、打招呼报的能力 AgentAbilities 在 Checks.ts（外面进来的东西在那里查）。
  * 设计见同目录 说明.md 的「设计要点」一节（外部任务协议 v1）。
  */
-import * as crypto from 'node:crypto';
 import type { ReturnMode, TaskResult } from './Checks.ts';
 import type { Origin } from '../bots/index.ts';
 import type { AgentInfo } from './AgentTasks.ts';
@@ -348,16 +347,4 @@ export function getTaskMarkdown(spec: TaskSpec): string {
   //M 给执行端结果字段的查询入口，避免任务单重复写完整协议。
   lines.push('- 结果的字段见 GET /api/agents/guide 的“新协议”一节。');
   return lines.join('\n');
-}
-
-
-/**
- * 一份内容的摘要：JSON 的 SHA-256 前 16 位。同一个结果键重交时比对内容。
- * @param value 要比的内容（校验过的结果，或旧格式的 { ok, text, uploads }）。
- * @returns 16 位十六进制。
- */
-export function getHash(value: unknown): string {
-  const json = JSON.stringify(value);
-  const digest = crypto.createHash('sha256').update(json).digest('hex');
-  return digest.slice(0, 16);
 }

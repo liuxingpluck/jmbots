@@ -1,5 +1,5 @@
 /**
- * 工作区：一个机器人可以有好几个工作区，名字可以重复，每个有唯一 ID（crypto.randomUUID），归属某个机器人。服务 ctx.workspaces。
+ * 工作区：机器人干活的目录，一个机器人可以有好几个。名字可重、用 crypto.randomUUID 区分，服务名 ctx.workspaces。
  * 自有表 workspaces：一行一个工作区。目录登记以后不改；改名只改 name，归档只改 status，都不搬、不删文件。
  * 旧目录原地登记，不搬不删：
  *   - bots/<机器人>/workspace/ 是这个机器人的 private 默认工作区（ensureDefault，bots 建机器人时调）；

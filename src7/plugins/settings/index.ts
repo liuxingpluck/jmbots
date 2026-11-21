@@ -1,5 +1,5 @@
 /**
- * 设置页的接口：看和改 config.yaml、新建机器人、重启。五条路径都登记在 ctx.http.app 上；令牌由 http 统一查。
+ * 设置页：看和改 config.yaml、新建机器人、重启。五条路径都登记在 ctx.http.app 上；令牌由 http 统一查。
  *   GET  /api/settings          白名单里的段，密钥换成代号
  *   PUT  /api/settings          保存配置，回报哪些设置会重读、哪些要等重启
  *   POST /api/bots              新建机器人：写进 bots 段（填了飞书再写 channels.feishu），建目录和记忆概要，当场加进名单
@@ -160,7 +160,7 @@ class Settings {
     //M 让机器人插件按已保存的配置实时登记，并返回它分配的记忆目录。
     const added = await requestEventModule.requestEvent(this.ctx, 'bot/request', 'bot/result', request, options);
     //G 失去回执时可能已登记，保留配置并提示核对。
-    if (added.why !== undefined && added.why !== 'unhandled') throw new failureModule.Failure(504, uncertain);
+    if (requestEventModule.isUncertain(added)) throw new failureModule.Failure(504, uncertain);
 
     //G 确定未登记时告诉调用者配置已保存，可重启生效。
     const bot = added.reply?.bot;

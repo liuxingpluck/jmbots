@@ -1,4 +1,5 @@
-/** 文字处理工具：错误转述、字串裁剪、日期和单位格式化、整数参数解析。 */
+/** 文字处理工具：错误转述、字串裁剪、日期和单位格式化、整数参数解析、内容摘要。 */
+import * as crypto from 'node:crypto';
 
 
 /** formatLocalTime 写成什么样：time 时:分:秒；ms 时:分:秒.毫秒；date 年-月-日 时:分:秒。 */
@@ -140,4 +141,15 @@ export function parseBoundedInt(value: string | undefined, fallback: number, min
   if (value === undefined || value === '' || !Number.isInteger(number) || number < min) return fallback;
 
   return Math.min(number, max);
+}
+
+
+/**
+ * 结构化值转 JSON 后取 SHA-256 前 16 位十六进制，供同键重试与结果去重核对正文。
+ * @param value 任意可 JSON 序列化的值。
+ * @returns 16 位小写十六进制摘要。
+ */
+export function getDigest(value: unknown): string {
+  const json = JSON.stringify(value);
+  return crypto.createHash('sha256').update(json).digest('hex').slice(0, 16);
 }

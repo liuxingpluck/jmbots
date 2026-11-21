@@ -214,11 +214,6 @@ const FLOW_NOTES: Record<string, string> = {
   bots: '直接转的机器人',
 };
 
-/** 毫秒时间戳 → 本地时间 2026-11-14 06:30:05。 */
-function local(ms: number): string {
-  return new Date(ms).toLocaleString('sv-SE');
-}
-
 
 /** relay 插件本体。只由 apply 来建。 */
 export class Relay {
@@ -1003,7 +998,7 @@ export class Relay {
       ...speaker,
       text,
       files,
-      at: local(now),
+      at: textModule.formatLocalTime(now, 'date'),
       atMs: now,
       state: 'pending',
     };
@@ -1015,7 +1010,7 @@ export class Relay {
       if (this.getMode(bot.name) === undefined) continue;
       try {
         const dir = filesModule.ensureBotRelayDir(this.ctx.resources, bot.name);
-        filesModule.pollBotReplyFile(dir, bot.name, (parsed, b) => this.accept(parsed, 'file', b), local);
+        filesModule.pollBotReplyFile(dir, bot.name, (parsed, b) => this.accept(parsed, 'file', b));
       } catch (error) {
         console.error(`relay：读 ${bot.name} 的回信文件出错：${textModule.getErrorMessage(error)}`);
       }
@@ -1230,7 +1225,7 @@ export class Relay {
     const owner = row.owner === 1;
     let repliedAt: string | null = null;
     if (row.replied_at !== null) {
-      repliedAt = local(row.replied_at);
+      repliedAt = textModule.formatLocalTime(row.replied_at, 'date');
     }
     return {
       id: row.id,
@@ -1246,7 +1241,7 @@ export class Relay {
       chatName: row.chat_name,
       text: row.text,
       files: filesModule.extractRelativeFiles(this.ctx.resources.root, row.text),
-      at: local(row.at),
+      at: textModule.formatLocalTime(row.at, 'date'),
       atMs: row.at,
       state: row.state,
       repliedAt,

@@ -91,7 +91,6 @@ export function pollBotReplyFile(
   dir: string,
   bot: string,
   acceptLine: (parsed: unknown, botName: string) => void,
-  formatTime: (ms: number) => string,
 ): void {
   const file = path.join(dir, 'replies.jsonl');
   const posFile = path.join(dir, 'replies.pos');
@@ -121,7 +120,8 @@ export function pollBotReplyFile(
     try {
       acceptLine(JSON.parse(line) as unknown, bot);
     } catch (error) {
-      const failed = { line, reason: textModule.getErrorMessage(error), at: formatTime(Date.now()) };
+      const at = textModule.formatLocalTime(Date.now(), 'date');
+      const failed = { line, reason: textModule.getErrorMessage(error), at };
       fs.appendFileSync(path.join(dir, 'replies.err.jsonl'), `${JSON.stringify(failed)}\n`, 'utf8');
     }
   }

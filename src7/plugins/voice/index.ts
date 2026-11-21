@@ -1,5 +1,5 @@
 /**
- * voice：接入浏览器麦克风，让当前连接查看字幕，并把判断通过的语音交给机器人。
+ * 语音：浏览器麦克风收话、转写出字幕，回话再念出来。
  * 文件：本文件（连接、Voice、apply 装配和登记）、Config.ts（配置校验）、Lines.ts（转写、合成主备线路装配）、
  * Asr.ts、CloudAsr.ts、RoutedAsr.ts（转写）、Tts.ts（合成）、Tasks.ts、Turn.ts、Models.ts（任务判断、断句）、Replies.ts（回话）、
  * Common.ts（共用常量、字数、限速）。

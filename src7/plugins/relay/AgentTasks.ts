@@ -516,7 +516,7 @@ export class AgentTasks {
     }
 
     //G 已经交过：同一份内容是重交，交回原样；内容不一样报冲突，不覆盖。
-    const hash = protocolModule.getHash(result ?? input);
+    const hash = textModule.getDigest(result ?? input);
     const finished = task.status === 'done' || task.status === 'failed';
     if (finished && protocol?.hash === hash) return task;
 

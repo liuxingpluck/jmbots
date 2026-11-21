@@ -1,4 +1,8 @@
-/** 渠道消息进 Rust 的持久化队列。实时记录优先，历史批次须经资源守卫批准。 */
+/**
+ * 渠道消息进 Rust 记忆服务的持久化队列。
+ * 实时记录优先入队，历史批次先发 `programs/resource-request` 经资源守卫批准再推，并听 `programs/pressure` 暂停/恢复。
+ * 由 `memory/index.ts` 创建并随 `ready` 启动，文档拼装见 `getChannelDoc`，配置解析见 `getBackfillSettings`。
+ */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';

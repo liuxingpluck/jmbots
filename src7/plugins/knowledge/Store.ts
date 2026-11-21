@@ -122,6 +122,24 @@ function escapeLikeTerm(term: string): string {
 }
 
 
+/** 标签名去掉两头空白和开头的 #。建标签、按标签筛、按名字找标签共用。 */
+function cleanTag(raw: string): string {
+  const trimmed = raw.trim();
+  const noHash = trimmed.replace(/^#+/u, '');
+  return noHash.trim();
+}
+
+
+/** 名称、标题：去掉两头空白后不能是空的。 */
+function checkName(value: string, label: string): string {
+  const name = value.trim();
+  if (name === '') {
+    throw new failureModule.Failure(400, `${label}不能为空`);
+  }
+  return name;
+}
+
+
 /**
  * 归一化标签列表：剥离前导 #、去空白并按大小写不敏感去重。
  */
@@ -134,7 +152,7 @@ export function normalizeTags(raw: readonly string[] | undefined): string[] {
     if (typeof item !== 'string') {
       throw new failureModule.Failure(400, '标签项必须是字符串');
     }
-    const cleaned = item.trim().replace(/^#+/u, '').trim();
+    const cleaned = cleanTag(item);
     if (cleaned === '') continue;
     if (cleaned.length > 64) {
       throw new failureModule.Failure(400, `标签名过长（最多 64 字）：${cleaned}`);
@@ -275,7 +293,7 @@ export function getFilterTags(tag: string | undefined, tags: string[] | undefine
   const seen = new Set<string>();
   const names: string[] = [];
   for (const item of raw) {
-    const name = item.trim().replace(/^#+/u, '').trim();
+    const name = cleanTag(item);
     const key = name.toLowerCase();
     if (name === '' || seen.has(key)) continue;
 
@@ -390,9 +408,7 @@ export class KnowledgeStore {
 
   /** 新建虚拟目录。 */
   createDir(input: types.CreateDirInput): types.KnowledgeDir {
-    if (typeof input.name !== 'string' || input.name.trim() === '') {
-      throw new failureModule.Failure(400, '目录名称不能为空');
-    }
+    const name = checkName(input.name, '目录名称');
     const id = checkCustomId(input.id, 'dir_');
     if (this.getDir(id) !== undefined) {
       throw new failureModule.Failure(409, `目录 ID 已存在：${id}`);
@@ -400,22 +416,15 @@ export class KnowledgeStore {
 
     const parentId = normalizeNullableId(input.parentId);
     this.assertValidParent(id, parentId);
-
-    let sortOrder = 0;
-    if (input.sortOrder !== undefined) {
-      if (typeof input.sortOrder !== 'number' || !Number.isInteger(input.sortOrder)) {
-        throw new failureModule.Failure(400, 'sortOrder 必须是整数');
-      }
-      sortOrder = input.sortOrder;
-    }
+    const sortOrder = input.sortOrder ?? 0;
 
     const now = Date.now();
     const sql = `
       INSERT INTO kb_dirs (id, parent_id, name, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `;
-    this.db.query(sql).run(id, parentId, input.name.trim(), sortOrder, now, now);
-    return { id, parentId, name: input.name.trim(), sortOrder, createdAt: now, updatedAt: now };
+    this.db.query(sql).run(id, parentId, name, sortOrder, now, now);
+    return { id, parentId, name, sortOrder, createdAt: now, updatedAt: now };
   }
 
   /** 更新虚拟目录名称、父节点或排序权重。 */
@@ -427,10 +436,7 @@ export class KnowledgeStore {
 
     let name = existing.name;
     if (input.name !== undefined) {
-      if (typeof input.name !== 'string' || input.name.trim() === '') {
-        throw new failureModule.Failure(400, '目录名称不能为空');
-      }
-      name = input.name.trim();
+      name = checkName(input.name, '目录名称');
     }
 
     let parentId = existing.parentId;
@@ -439,13 +445,7 @@ export class KnowledgeStore {
       this.assertValidParent(id, parentId);
     }
 
-    let sortOrder = existing.sortOrder;
-    if (input.sortOrder !== undefined) {
-      if (typeof input.sortOrder !== 'number' || !Number.isInteger(input.sortOrder)) {
-        throw new failureModule.Failure(400, 'sortOrder 必须是整数');
-      }
-      sortOrder = input.sortOrder;
-    }
+    const sortOrder = input.sortOrder ?? existing.sortOrder;
 
     const now = Date.now();
     this.db
@@ -554,9 +554,7 @@ export class KnowledgeStore {
 
   /** 新建知识文档并同步导出磁盘镜像。 */
   createDoc(input: types.CreateDocInput): types.KnowledgeDoc {
-    if (typeof input.title !== 'string' || input.title.trim() === '') {
-      throw new failureModule.Failure(400, '文档标题不能为空');
-    }
+    const title = checkName(input.title, '文档标题');
     const id = checkCustomId(input.id, '');
     if (this.getDoc(id) !== undefined) {
       throw new failureModule.Failure(409, `文档 ID 已存在：${id}`);
@@ -567,22 +565,12 @@ export class KnowledgeStore {
       throw new failureModule.Failure(404, `所属目录不存在：${dirId}`);
     }
     const topicId = normalizeNullableId(input.topicId);
-    const title = input.title.trim();
-    let content = '';
-    if (typeof input.content === 'string') {
-      content = input.content;
-    }
-    let summary = '';
-    if (typeof input.summary === 'string') {
-      summary = input.summary.trim();
-    }
+    const content = input.content ?? '';
+    let summary = (input.summary ?? '').trim();
     if (summary === '' && content.trim() !== '') {
       summary = deriveAutoSummary(content);
     }
-    let sourcePath = '';
-    if (typeof input.sourcePath === 'string') {
-      sourcePath = input.sourcePath.trim();
-    }
+    const sourcePath = (input.sourcePath ?? '').trim();
     const sourceType = checkSourceType(input.sourceType);
     const tags = normalizeTags(input.tags);
     const now = Date.now();
@@ -634,25 +622,12 @@ export class KnowledgeStore {
 
     let title = existing.title;
     if (input.title !== undefined) {
-      if (typeof input.title !== 'string' || input.title.trim() === '') {
-        throw new failureModule.Failure(400, '文档标题不能为空');
-      }
-      title = input.title.trim();
+      title = checkName(input.title, '文档标题');
     }
 
-    let content = existing.content;
-    if (input.content !== undefined) {
-      if (typeof input.content !== 'string') {
-        throw new failureModule.Failure(400, 'content 必须是字符串');
-      }
-      content = input.content;
-    }
-
+    const content = input.content ?? existing.content;
     let summary = existing.summary;
     if (input.summary !== undefined) {
-      if (typeof input.summary !== 'string') {
-        throw new failureModule.Failure(400, 'summary 必须是字符串');
-      }
       summary = input.summary.trim();
     }
     const wasAutoSummary = existing.summary === '' || existing.summary === deriveAutoSummary(existing.content);
@@ -665,9 +640,6 @@ export class KnowledgeStore {
 
     let sourcePath = existing.sourcePath;
     if (input.sourcePath !== undefined) {
-      if (typeof input.sourcePath !== 'string') {
-        throw new failureModule.Failure(400, 'sourcePath 必须是字符串');
-      }
       sourcePath = input.sourcePath.trim();
     }
 
@@ -960,7 +932,7 @@ export class KnowledgeStore {
   /** 按名字（大小写不敏感）找标签。 */
   private findTag(name: string): { id: string; name: string } | undefined {
     const sql = 'SELECT id, name FROM kb_tags WHERE name = ? COLLATE NOCASE';
-    const cleaned = name.trim().replace(/^#+/u, '').trim();
+    const cleaned = cleanTag(name);
     const row = this.db.query<{ id: string; name: string }, [string]>(sql).get(cleaned);
     if (row === null) return undefined;
 

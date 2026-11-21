@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
+import * as textModule from '../../utils/Text.ts';
 import * as tomlModule from './Toml.ts';
 
 
@@ -221,29 +222,51 @@ function runHiddenPowerShell(script: string, extraEnv: Record<string, string>): 
 }
 
 
+/** 从 PowerShell 标准输出首行提取正整数 PID，无匹配时返回 0。 */
+function readPid(out: string): number {
+  const first = out.split(/\r?\n/u)[0]?.trim() ?? '';
+  if (!/^\d+$/u.test(first)) return 0;
+
+  return Number(first);
+}
+
+
 /**
- * 在 Windows 上精准查找可执行文件路径等于 <dir>\frpc.exe 的进程 PID。
+ * 扫描并定位或终止可执行文件路径等于 <dir>\frpc.exe 的进程（不碰其他目录的 frpc 或托盘进程）。
  * @param dir 客户端目录。
- * @returns 匹配的进程 PID；未运行回 0。
+ * @param action find 返回进程 PID；kill 强制停止匹配进程。
  */
-async function findWindowsFrpcPid(dir: string): Promise<number> {
+async function runFrpcScan(dir: string, action: 'find' | 'kill'): Promise<number> {
   const targetExe = path.join(dir, 'frpc.exe');
+  let hit = 'Write-Output $p.Id; break';
+  if (action === 'kill') {
+    hit = 'Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue';
+  }
   const script = [
     '$exe = $env:FRPC_TARGET_EXE',
     "$list = Get-Process -Name 'frpc' -ErrorAction SilentlyContinue",
     'foreach ($p in $list) {',
     '  try {',
     '    if ($p.Path -and [string]::Equals($p.Path, $exe, [System.StringComparison]::OrdinalIgnoreCase)) {',
-    '      Write-Output $p.Id; break',
+    `      ${hit}`,
     '    }',
     '  } catch {}',
     '}',
   ].join('\n');
   const out = await runHiddenPowerShell(script, { FRPC_TARGET_EXE: targetExe });
-  const first = out.split(/\r?\n/u)[0]?.trim() ?? '';
-  if (!/^\d+$/u.test(first)) return 0;
+  if (action === 'kill') return 0;
 
-  return Number(first);
+  return readPid(out);
+}
+
+
+/**
+ * 在 Windows 上精准查找可执行文件路径等于 <dir>\frpc.exe 的进程 PID。
+ * @param dir 客户端目录。
+ * @returns 匹配的进程 PID；未运行回 0。
+ */
+async function findWindowsFrpcPid(dir: string): Promise<number> {
+  return runFrpcScan(dir, 'find');
 }
 
 
@@ -264,31 +287,16 @@ async function findWindowsTrayPid(dir: string): Promise<number> {
     '}',
   ].join('\n');
   const out = await runHiddenPowerShell(script, { FRPC_TARGET_PS1: targetScript });
-  const first = out.split(/\r?\n/u)[0]?.trim() ?? '';
-  if (!/^\d+$/u.test(first)) return 0;
-
-  return Number(first);
+  return readPid(out);
 }
 
 
 /**
- * 精准停止可执行文件路径等于 <dir>\frpc.exe 的进程，绝不误杀其他目录进程或托盘进程。
+ * 精准停止可执行文件路径等于 <dir>\frpc.exe 的进程，只停当前目录的 frpc，不碰其他目录进程或托盘进程。
  * @param dir 客户端目录。
  */
 async function killDirFrpcOnly(dir: string): Promise<void> {
-  const targetExe = path.join(dir, 'frpc.exe');
-  const script = [
-    '$exe = $env:FRPC_TARGET_EXE',
-    "$list = Get-Process -Name 'frpc' -ErrorAction SilentlyContinue",
-    'foreach ($p in $list) {',
-    '  try {',
-    '    if ($p.Path -and [string]::Equals($p.Path, $exe, [System.StringComparison]::OrdinalIgnoreCase)) {',
-    '      Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue',
-    '    }',
-    '  } catch {}',
-    '}',
-  ].join('\n');
-  await runHiddenPowerShell(script, { FRPC_TARGET_EXE: targetExe });
+  await runFrpcScan(dir, 'kill');
 }
 
 
@@ -346,7 +354,7 @@ export function createDefaultRunner(appdataOverride?: string): FrpcRunner {
       pid = await findWindowsFrpcPid(dir);
     }
 
-    const nowStr = tomlModule.formatLocalTime(new Date());
+    const nowStr = textModule.formatLocalTime(Date.now(), 'date');
     if (pid <= 0) {
       let updatedAt = nowStr;
       if (snap !== undefined && snap.updatedAt !== '') {

@@ -368,7 +368,7 @@ export class Reminders {
       //M 请求卡片期间可能已有取消操作，按最新状态决定是否作废卡片。
       const current = this.getById(row.id);
       //G 审批处理时抛错：登记结果不确定，沿用持久待核对原因，下次核对原卡。
-      if (asked.why !== undefined && asked.why !== 'unhandled') throw new Error(CARD_UNCERTAIN);
+      if (events.isUncertain(asked)) throw new Error(CARD_UNCERTAIN);
 
       //G 没挂审批、审批回了错：这次没登记上。
       const card = asked.reply?.pending;

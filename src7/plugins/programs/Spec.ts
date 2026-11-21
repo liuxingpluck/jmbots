@@ -1,4 +1,8 @@
-/** 外部程序配置入口，校验后交给托管逻辑使用。 */
+/**
+ * 外部程序配置入口：解析并校验 `plugins.programs` 里的程序列表与资源守卫阈值。
+ * `readPrograms` 校验路径、端口、渠道冲突和启动参数，`getLaunch` 拼启动命令，`readGuard` 读内存/显存阈值。
+ * 纯函数模块，只由 `programs/index.ts` 在启动校验时调用。
+ */
 import * as net from 'node:net';
 import * as path from 'node:path';
 import type { PluginEntry } from '../../Resources.ts';

@@ -260,7 +260,7 @@ export class UpdateWatch {
     const asked = await requestEventModule.requestEvent(this.ctx, 'approval/request', 'approval/result', askRequest, askOptions);
 
     //G 未获回执时可能已经登记，保留同版本的占用并让中控核对。
-    if (asked.why !== undefined && asked.why !== 'unhandled') {
+    if (requestEventModule.isUncertain(asked)) {
       this.uncertainApproval = available.version;
       console.error(`盯更新：新版本 ${available.version} 的${uncertain}`);
       return;

@@ -1,5 +1,5 @@
 /**
- * 基地服务、基地通知与更新监听（由 base-bridge 与原 notify、update-watch 合并）：
+ * 桥接基地服务，并按配置提供通知与更新监听。
  *   1. Base 服务（ctx.base）与更新、自启动的网页接口；
  *   2. 通知模块（Notify.ts，默认关闭）：config.notify 开启时登记 notify_user 工具并转发待确认/长任务结束 toast；
  *   3. 更新监听（UpdateWatch.ts，默认关闭）：config.update_watch 开启时定时检查 GET /update，卸载时清理定时器。

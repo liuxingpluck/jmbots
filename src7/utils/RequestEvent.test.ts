@@ -9,7 +9,13 @@
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import * as cordis from 'cordis';
-import { onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope } from './RequestEvent.ts';
+import {
+  isUncertain,
+  onRequestEvent,
+  requestEvent,
+  type RequestEnvelope,
+  type ResultEnvelope,
+} from './RequestEvent.ts';
 
 
 declare module 'cordis' {
@@ -208,5 +214,12 @@ describe('RequestEvent 通用请求-回执', () => {
     const aborted = await requestEvent(ctx, 'test/req', 'test/res', { value: 'wait' }, duringOptions);
     expect(Date.now() - start).toBeLessThan(300);
     expect(aborted).toEqual({ why: 'aborted' });
+  });
+
+  test('isUncertain：只把 aborted 与 error 判为结果不确定，reply 与 unhandled 均为 false', () => {
+    expect(isUncertain({ reply: { ok: true, answer: 'done', requestId: 'r_1' } })).toBe(false);
+    expect(isUncertain({ why: 'unhandled' })).toBe(false);
+    expect(isUncertain({ why: 'aborted' })).toBe(true);
+    expect(isUncertain({ why: 'error', detail: 'boom' })).toBe(true);
   });
 });

@@ -482,6 +482,19 @@ export class Screen {
     }
   }
 
+  /** 组装点击与后台观察响应共用的六项点击身份标识。 */
+  private getClickIdentity(click: protocol.ClickInput) {
+    const protocolVersion: typeof protocol.VERSION = protocol.VERSION;
+    return {
+      protocolVersion,
+      clientId: click.clientId,
+      sessionId: click.sessionId,
+      epoch: click.epoch,
+      clickId: click.clickId,
+      seq: click.seq,
+    };
+  }
+
   /** 给当前 HTTP 响应附上相同的点击身份和显示配置。 */
   private getClickResult(
     click: protocol.ClickInput,
@@ -491,12 +504,7 @@ export class Screen {
     //M 当前挂载的语音服务决定基地是否需要发送呈现确认。
     const speakEligible = this.config.speak && this.hasVoice();
     return {
-      protocolVersion: protocol.VERSION,
-      clientId: click.clientId,
-      sessionId: click.sessionId,
-      epoch: click.epoch,
-      clickId: click.clickId,
-      seq: click.seq,
+      ...this.getClickIdentity(click),
       ok: true,
       ...explanation,
       elapsedMs: Math.round(performance.now() - started),
@@ -541,12 +549,7 @@ export class Screen {
       //M 只把枚举标签给决策插件，原图和原文都留在 HTTP 调用栈。
       const decision = await background.analyze(this.ctx, click.cues, modelSignal);
       const result: ObservationResult = {
-        protocolVersion: protocol.VERSION,
-        clientId: click.clientId,
-        sessionId: click.sessionId,
-        epoch: click.epoch,
-        clickId: click.clickId,
-        seq: click.seq,
+        ...this.getClickIdentity(click),
         ok: true,
         ...decision,
         inspected: false,
@@ -647,7 +650,7 @@ export class Screen {
     //M 同一片段只发一次，等待原语音回执。
     const answer = await requests.requestEvent(this.ctx, 'voice/request', 'voice/result', request, options);
     if (answer.reply?.ok === true) return { ok: true, speech: 'accepted' };
-    if (answer.why !== undefined && answer.why !== 'unhandled') {
+    if (requests.isUncertain(answer)) {
       return { ok: true, speech: 'uncertain', reason: '播报结果不确定' };
     }
 
