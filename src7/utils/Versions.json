@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.99",
+    "date": "2026-11-21",
+    "changes": [
+      "积木知识库升级 v1.2.0（Phase 4 实体别名与同名消歧）：db 迁移 v5 给 kb_docs 无损补 aliases / content_hash 两列（只加带默认值的列，已有文档一行不动）；文档增改支持 aliases（去空白去重、最多 20 个、单个 ≤60 字）；kb_search 与 GET /api/knowledge/search 同时匹配标题、别名与正文，排序为精确标题 > 精确别名 > 包含；[[双链]] 无同名标题时按唯一别名命中，多篇共用同一别名记为歧义不连（引出链接标 ambiguous）；新增 GET /api/knowledge/disambiguate 与只读工具 kb_disambiguate，返回 exact / aliasMatches / candidates / ambiguous 及每篇候选的分类、别名、摘要",
+      "积木知识库新增本地文件夹只读同步（FolderSync.ts）：插件配置 localWatchDirs 或请求临时 dirs，只读扫描 .md / .txt（跳过隐藏目录、.git、node_modules、dist 与知识库镜像，单文件 ≤256 KB、单目录 ≤200 个，拒绝系统根目录与系统目录），按规范化 source_path + sha256 content_hash 去重：未变跳过、新文件建档（标题取首个 # H1 或文件名，默认分类「外部学习」，自动带 #本地导入）、内容变了原位更新，绝不覆盖硬性系统规则；新增 POST /api/knowledge/sync-folders 与 GET /api/knowledge/sync-status；网页编辑器加别名输入、顶栏加「同步本地目录」轻面板（知识库单测 27 项全绿）"
+    ]
+  },
+  {
     "version": "0.7.98",
     "date": "2026-11-21",
     "changes": [

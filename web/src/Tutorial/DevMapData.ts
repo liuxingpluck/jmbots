@@ -299,10 +299,10 @@ export const DEV_CARDS: DevCard[] = [
         title: '参考：知识库的 kb_search',
         note: 'inject 里带上 tools，apply 里登记；参数用 piAi.Type 描述，run 交回给模型的文字。',
         anchors: [
-          { file: 'src7/plugins/knowledge/Tools.ts', line: 66, mark: 'ctx.tools.register({' },
+          { file: 'src7/plugins/knowledge/Tools.ts', line: 68, mark: 'ctx.tools.register({' },
           {
             file: 'src7/plugins/knowledge/index.ts',
-            line: 40,
+            line: 45,
             mark: "export const inject = ['resources', 'http', 'tools', 'db']",
           },
         ],
@@ -328,7 +328,7 @@ export const DEV_CARDS: DevCard[] = [
         title: '参考：knowledge 的表和网页入口',
         note: '表走 db 迁移；网页的 html 加进 web/Build.ts 入口；插件在 Index.ts 登记。',
         anchors: [
-          { file: 'src7/plugins/knowledge/index.ts', line: 86, mark: 'ctx.db.migrate(knowledgeMigrations)' },
+          { file: 'src7/plugins/knowledge/index.ts', line: 99, mark: 'ctx.db.migrate(knowledgeMigrations)' },
           { file: 'web/Build.ts', line: 271, mark: "'knowledge.html'" },
           { file: 'src7/plugins/Index.ts', line: 103, mark: "'knowledge': knowledge" },
         ],

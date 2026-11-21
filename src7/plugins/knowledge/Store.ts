@@ -1,7 +1,8 @@
 /**
  * 积木知识库 SQLite 存储层：管理 kb_dirs、kb_docs、kb_tags 与 kb_doc_tags，
  * 提供事务一致性读写、目录环路防护、专题与标签聚合计数、多词相关性本地检索及磁盘镜像联动；
- * 建文档、改正文、改标题、删文档时在同一事务里刷新 kb_links（Links.ts）。
+ * 建文档、改正文、改标题、改别名、删文档时在同一事务里刷新 kb_links（Links.ts）；
+ * 1.2.0 起管别名（搜索、消歧）和本地目录同步要的 content_hash。
  */
 import type { Database } from 'bun:sqlite';
 import * as failureModule from '../../utils/Failure.ts';
@@ -76,9 +77,18 @@ export const SCHEMA_SPLIT_SQL = SCHEMA_SQL
  */
 export const SYSTEM_RULE_SQL = 'ALTER TABLE kb_docs ADD COLUMN is_system_rule INTEGER NOT NULL DEFAULT 0';
 
+/**
+ * 迁移第 5 版（1.2.0）：kb_docs 加别名 aliases（JSON 字符串数组）和本地目录同步用的 content_hash。
+ * 只加列、都带默认值，已有文档一行不动；source_path 第 1 版就有，不再加。
+ */
+export const ALIAS_HASH_SQL = [
+  "ALTER TABLE kb_docs ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE kb_docs ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+].join(';\n--> statement-breakpoint\n');
+
 /** 文档查询统一取的列（kb_docs 别名 d）。 */
 const DOC_COLUMNS = `d.id, d.dir_id, d.topic_id, d.title, d.summary, d.content,
-  d.source_path, d.source_type, d.is_system_rule, d.created_at, d.updated_at`;
+  d.source_path, d.source_type, d.is_system_rule, d.aliases, d.created_at, d.updated_at`;
 
 interface DirRow {
   id: string;
@@ -99,6 +109,7 @@ interface DocRow {
   source_path: string;
   source_type: string;
   is_system_rule: number;
+  aliases: string;
   created_at: number;
   updated_at: number;
 }
@@ -201,6 +212,45 @@ export function normalizeTags(raw: readonly string[] | undefined): string[] {
 }
 
 
+/** 一篇最多几个别名。 */
+export const MAX_ALIASES = 20;
+
+/** 一个别名最多几个字。 */
+const MAX_ALIAS_CHARS = 60;
+
+
+/**
+ * 归一化别名：去两头空白、去空，大小写不敏感去重，留第一次的写法。
+ * @param raw 外面给的别名（HTTP、kb_save 已确认是字符串数组）。
+ * @returns 规范后的别名；没给是空数组。
+ * @throws Failure(400) 超过 MAX_ALIASES 个，或有一个超过 60 字。
+ */
+export function normalizeAliases(raw: readonly string[] | undefined): string[] {
+  if (raw === undefined) return [];
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    const alias = item.trim();
+    const key = alias.toLowerCase();
+    if (alias === '' || seen.has(key)) continue;
+
+    //G 别名要能写进 [[ ]]，太长的不收。
+    if ([...alias].length > MAX_ALIAS_CHARS) {
+      throw new failureModule.Failure(400, `别名过长（最多 ${String(MAX_ALIAS_CHARS)} 字）：${alias}`);
+    }
+    seen.add(key);
+    out.push(alias);
+  }
+
+  //G 别名最多 MAX_ALIASES 个。
+  if (out.length > MAX_ALIASES) {
+    throw new failureModule.Failure(400, `别名最多 ${String(MAX_ALIASES)} 个`);
+  }
+  return out;
+}
+
+
 /**
  * 校验来源分类枚举。
  */
@@ -295,6 +345,7 @@ function mapDocSummary(row: DocRow, tags: string[]): types.KnowledgeDocSummary {
     sourceType,
     tags,
     isSystemRule: row.is_system_rule === 1,
+    aliases: JSON.parse(row.aliases) as string[],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -600,6 +651,9 @@ export class KnowledgeStore {
     const sourcePath = (input.sourcePath ?? '').trim();
     const sourceType = checkSourceType(input.sourceType);
     const tags = normalizeTags(input.tags);
+    const aliases = normalizeAliases(input.aliases);
+    const aliasesText = JSON.stringify(aliases);
+    const contentHash = input.contentHash ?? '';
     let systemRule = 0;
     if (input.isSystemRule === true) {
       systemRule = 1;
@@ -610,19 +664,21 @@ export class KnowledgeStore {
       const insertSql = `
         INSERT INTO kb_docs (
           id, dir_id, topic_id, title, summary, content, source_path, source_type, is_system_rule,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          aliases, content_hash, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
-      this.db
-        .query(insertSql)
-        .run(id, dirId, topicId, title, summary, content, sourcePath, sourceType, systemRule, now, now);
+      const values = [
+        id, dirId, topicId, title, summary, content, sourcePath, sourceType, systemRule,
+        aliasesText, contentHash, now, now,
+      ];
+      this.db.query(insertSql).run(...values);
       if (tags.length > 0) {
         this.replaceDocTags(id, tags, now);
       }
 
-      //M 双链：记下这篇写出去的 [[ ]]，再把别的文档原来悬空指向这个标题的连上。
+      //M 双链：记下这篇写出去的 [[ ]]，再把别的文档原来悬空指向这个标题、这些别名的连上（或变成歧义）。
       this.links.refreshDoc(id, content);
-      this.links.relinkTitles([title]);
+      this.links.relinkTitles([title, ...aliases]);
     });
 
     const created = this.getDoc(id)!;
@@ -694,15 +750,30 @@ export class KnowledgeStore {
       systemRule = 1;
     }
 
+    let aliases = existing.aliases;
+    if (input.aliases !== undefined) {
+      aliases = normalizeAliases(input.aliases);
+    }
+    const aliasesText = JSON.stringify(aliases);
+    const aliasesChanged = aliasesText !== JSON.stringify(existing.aliases);
+
+    //M content_hash 只有本地目录同步会带；不带就留着库里原来的。
+    const hashSql = 'SELECT content_hash FROM kb_docs WHERE id = ?';
+    const storedHash = this.db.query<{ content_hash: string }, [string]>(hashSql).get(id)?.content_hash ?? '';
+    const contentHash = input.contentHash ?? storedHash;
+
     const now = Date.now();
     this.runTx(() => {
       const sql = `
         UPDATE kb_docs
         SET dir_id = ?, topic_id = ?, title = ?, summary = ?, content = ?,
-            source_path = ?, source_type = ?, is_system_rule = ?, updated_at = ?
+            source_path = ?, source_type = ?, is_system_rule = ?, aliases = ?, content_hash = ?, updated_at = ?
         WHERE id = ?
       `;
-      const values = [dirId, topicId, title, summary, content, sourcePath, sourceType, systemRule, now, id];
+      const values = [
+        dirId, topicId, title, summary, content, sourcePath, sourceType, systemRule,
+        aliasesText, contentHash, now, id,
+      ];
       this.db.query(sql).run(...values);
       if (nextTags !== undefined) {
         this.replaceDocTags(id, nextTags, now);
@@ -714,6 +785,11 @@ export class KnowledgeStore {
       }
       if (title !== existing.title) {
         this.links.relinkTitles([existing.title, title]);
+      }
+
+      //M 别名变了：指向新旧别名的链接重新找（唯一的连上，撞了别人的变成歧义）。
+      if (aliasesChanged) {
+        this.links.relinkTitles([...existing.aliases, ...aliases]);
       }
     });
 
@@ -735,8 +811,9 @@ export class KnowledgeStore {
       this.pruneOrphanTags();
 
       //M 双链：删掉它写出去的；指向它的留着、target_id 重新找（没有同名的就置空，网页显示成悬空）。
+      //M   它的别名也重新找：原来两篇共用、算歧义的，删掉一篇后剩下那篇连上。
       this.links.removeSource(id);
-      this.links.relinkTitles([existing.title]);
+      this.links.relinkTitles([existing.title, ...existing.aliases]);
     });
     this.syncMirrorRemove(id, existing.createdAt);
   }
@@ -859,13 +936,14 @@ export class KnowledgeStore {
       for (const term of terms) {
         const pattern = `%${escapeLikeTerm(term)}%`;
         clauses.push(`(
-          d.title LIKE ? ESCAPE '\\' OR d.summary LIKE ? ESCAPE '\\' OR d.content LIKE ? ESCAPE '\\' OR EXISTS (
+          d.title LIKE ? ESCAPE '\\' OR d.summary LIKE ? ESCAPE '\\' OR d.content LIKE ? ESCAPE '\\'
+          OR d.aliases LIKE ? ESCAPE '\\' OR EXISTS (
             SELECT 1 FROM kb_doc_tags dt
             JOIN kb_tags t ON t.id = dt.tag_id
             WHERE dt.doc_id = d.id AND t.name LIKE ? ESCAPE '\\'
           )
         )`);
-        params.push(pattern, pattern, pattern, pattern);
+        params.push(pattern, pattern, pattern, pattern, pattern);
       }
     }
 
@@ -912,7 +990,8 @@ export class KnowledgeStore {
   }
 
   /**
-   * 按标题、标签、摘要与正文多字段加权搜索本地知识库文档。
+   * 按标题、别名、标签、摘要与正文多字段加权搜索本地知识库文档。
+   * 整个搜索词和标题一模一样（大小写不敏感）的排最前，其次是和某个别名一模一样的，再往后按包含的字段加分。
    */
   searchLocal(
     queryText: string,
@@ -946,10 +1025,12 @@ export class KnowledgeStore {
     ).items as types.KnowledgeDoc[];
 
     const hits: types.KnowledgeSearchHit[] = [];
+    const lowerQuery = trimmed.toLowerCase();
     for (const doc of candidates) {
       let score = 0;
-      const matchedSet = new Set<'title' | 'summary' | 'content' | 'tag'>();
+      const matchedSet = new Set<types.KnowledgeMatchField>();
       const lowerTitle = doc.title.toLowerCase();
+      const lowerAliases = doc.aliases.map((alias) => alias.toLowerCase());
       const lowerSummary = doc.summary.toLowerCase();
       const lowerContent = doc.content.toLowerCase();
       const lowerTags = doc.tags.map((t) => t.toLowerCase());
@@ -957,11 +1038,25 @@ export class KnowledgeStore {
       if (terms.length === 0) {
         score = 10;
       }
+
+      //M 精确命中：整个搜索词就是标题 +1000，就是某个别名 +500，保证排序是精确标题 > 精确别名 > 包含。
+      if (lowerQuery !== '' && lowerTitle === lowerQuery) {
+        score += 1000;
+        matchedSet.add('title');
+      }
+      if (lowerQuery !== '' && lowerTitle !== lowerQuery && lowerAliases.includes(lowerQuery)) {
+        score += 500;
+        matchedSet.add('alias');
+      }
       for (const term of terms) {
         const lt = term.toLowerCase();
         if (lowerTitle.includes(lt)) {
           score += 50;
           matchedSet.add('title');
+        }
+        if (lowerAliases.some((alias) => alias.includes(lt))) {
+          score += 40;
+          matchedSet.add('alias');
         }
         if (lowerTags.some((tg) => tg.includes(lt))) {
           score += 35;
@@ -989,6 +1084,82 @@ export class KnowledgeStore {
 
     hits.sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt);
     return hits.slice(0, maxHits);
+  }
+
+  //----------------------------------------------------------
+  // 别名消歧与本地目录同步要用的查询（1.2.0）
+  //----------------------------------------------------------
+
+  /**
+   * 消歧：标题或别名和这个词一样（大小写不敏感）的文档。两篇以上就是有歧义。
+   * @param query 要查的词（调用方已去两头空白、确认不空）。
+   * @returns 标题对上的、别名对上的、两者合起来的候选和是否有歧义。
+   */
+  disambiguate(query: string): Omit<types.KnowledgeDisambiguateResponse, 'ok'> {
+    //M 分类就是所在虚拟目录的名字。
+    const dirNames = new Map<string, string>();
+    for (const dir of this.listDirs()) {
+      dirNames.set(dir.id, dir.name);
+    }
+    const toCandidate = (row: DocRow, matchedBy: 'title' | 'alias'): types.KnowledgeDisambiguateCandidate => {
+      let category = '';
+      if (row.dir_id !== null) {
+        category = dirNames.get(row.dir_id) ?? '';
+      }
+      return {
+        id: row.id,
+        title: row.title,
+        category,
+        aliases: JSON.parse(row.aliases) as string[],
+        summary: row.summary,
+        matchedBy,
+      };
+    };
+
+    //M 标题对上的：同名的可能不止一篇，早建的在前（同一毫秒建的按插入先后）。
+    const titleSql = `SELECT ${DOC_COLUMNS} FROM kb_docs d WHERE d.title = ? COLLATE NOCASE
+      ORDER BY d.created_at ASC, d.rowid ASC`;
+    const titleRows = this.db.query<DocRow, [string]>(titleSql).all(query);
+    const exact = titleRows.map((row) => toCandidate(row, 'title'));
+
+    //M 别名对上、标题不是这个词的。
+    const aliasSql = `SELECT ${DOC_COLUMNS} FROM kb_docs d
+      WHERE EXISTS (SELECT 1 FROM json_each(d.aliases) a WHERE a.value = ? COLLATE NOCASE)
+        AND d.title != ? COLLATE NOCASE
+      ORDER BY d.created_at ASC, d.rowid ASC`;
+    const aliasRows = this.db.query<DocRow, [string, string]>(aliasSql).all(query, query);
+    const aliasMatches = aliasRows.map((row) => toCandidate(row, 'alias'));
+
+    const candidates = [...exact, ...aliasMatches];
+    return { query, exact, aliasMatches, candidates, ambiguous: candidates.length >= 2 };
+  }
+
+  /**
+   * 本地目录同步导入过的文档（content_hash 不空的）：同步时按 source_path 认出是哪篇。
+   * @returns 每篇的 ID、源文件路径、内容哈希、是不是硬性系统规则。
+   */
+  listImported(): { id: string; sourcePath: string; contentHash: string; isSystemRule: boolean }[] {
+    const sql = "SELECT id, source_path, content_hash, is_system_rule FROM kb_docs WHERE content_hash != ''";
+    type ImportedRow = { id: string; source_path: string; content_hash: string; is_system_rule: number };
+    const rows = this.db.query<ImportedRow, []>(sql).all();
+    return rows.map((row) => ({
+      id: row.id,
+      sourcePath: row.source_path,
+      contentHash: row.content_hash,
+      isSystemRule: row.is_system_rule === 1,
+    }));
+  }
+
+  /**
+   * 按名字找虚拟目录，没有就在顶层建一个（本地目录同步把文档放进「外部学习」这类分类时用）。
+   * @param name 目录名（调用方已去两头空白、确认不空）。
+   * @returns 目录 ID。
+   */
+  getOrCreateDirByName(name: string): string {
+    const found = this.listDirs().find((dir) => dir.name === name);
+    if (found !== undefined) return found.id;
+
+    return this.createDir({ name }).id;
   }
 
   //----------------------------------------------------------

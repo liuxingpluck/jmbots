@@ -1,7 +1,8 @@
 /**
  * 积木知识库（knowledge）离线单测：
  * 覆盖三组表 CRUD、目录树环路防护与安全删目录、专题 topicId 挂载、标签去重与孤儿清理、
- * 磁盘镜像导出、写接口 403/200 鉴权、memory 搜索桥接（未挂载平滑退化 + 已挂载融合）及 kb_search 工具。
+ * 磁盘镜像导出、写接口 403/200 鉴权、memory 搜索桥接（未挂载平滑退化 + 已挂载融合）及 kb_search 工具；
+ * 1.2.0 起加上别名（CRUD、搜索排序、双链唯一别名命中与歧义不连）、消歧接口与工具、本地目录只读同步。
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -37,8 +38,11 @@ afterEach(() => {
 });
 
 
-/** 构造一套独立内存数据库 + 临时运行时目录 + Fastify + Cordis 的测试夹具。 */
-async function createKnowledgeHarness() {
+/**
+ * 构造一套独立内存数据库 + 临时运行时目录 + Fastify + Cordis 的测试夹具。
+ * @param config 可选插件配置（如 localWatchDirs）。
+ */
+async function createKnowledgeHarness(config?: unknown) {
   const rootDir = makeTempDir('kb-test-');
   const db = new Database(':memory:');
   const ctx = new cordis.Context();
@@ -72,7 +76,7 @@ async function createKnowledgeHarness() {
     tools,
   });
 
-  knowledgePlugin.apply(ctx);
+  knowledgePlugin.apply(ctx, config);
   await app.ready();
 
   return {
@@ -746,12 +750,12 @@ describe('建表走 db 迁移账本（云端 36 第 1 条）', () => {
   const TABLES = "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'kb_%' ORDER BY name";
   const LEDGER = "SELECT version FROM db_migrations WHERE plugin = 'knowledge' ORDER BY version";
 
-  test('新库：四版迁移建齐五张表，账本记四版；重启只核对摘要', async () => {
+  test('新库：五版迁移建齐五张表，账本记五版；重启只核对摘要', async () => {
     const h = await createKnowledgeHarness();
     try {
       const names = h.db.query<{ name: string }, []>(TABLES).all().map((row) => row.name);
       expect(names).toEqual(['kb_dirs', 'kb_doc_tags', 'kb_docs', 'kb_links', 'kb_tags']);
-      const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+      const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }];
       expect(h.db.query<{ version: number }, []>(LEDGER).all()).toEqual(versions);
 
       //M 第 2 版把整串语句按分隔符拆开，第 1 版原样不动（老库账本的哈希要对得上）。
@@ -767,7 +771,7 @@ describe('建表走 db 迁移账本（云端 36 第 1 条）', () => {
     }
   });
 
-  test('老库（0.7.90 记过第 1 版、表由旧构造函数建齐、有数据）：升到第 4 版，数据原样', () => {
+  test('老库（0.7.90 记过第 1 版、表由旧构造函数建齐、有数据）：升到第 5 版，数据原样', () => {
     const db = new Database(':memory:');
     try {
       //M 模拟老库：旧代码记了第 1 版账本（只建出 kb_dirs），又靠构造函数 exec 把四张表建齐、写了一篇。
@@ -780,7 +784,7 @@ describe('建表走 db 迁移账本（云端 36 第 1 条）', () => {
       //M 新代码挂上：第 1 版哈希对得上只核对，第 2 版全是 IF NOT EXISTS，不动已有数据。
       const upgraded = new dbModule.Db(new cordis.Context(), db);
       upgraded.migrate(knowledgePlugin.knowledgeMigrations);
-      const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+      const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }];
       expect(db.query<{ version: number }, []>(LEDGER).all()).toEqual(versions);
       const store = new knowledgePlugin.KnowledgeStore(db);
       expect(store.getDoc('kb_old')?.title).toBe('老文档');
@@ -805,6 +809,14 @@ describe('knowledge 1.1.0：[[双链]]、图谱、多标签 all/any、硬性系�
     expect(res.statusCode).toBe(200);
     return res.json().doc.id as string;
   };
+
+  /** 一条没有歧义的引出链接：targetId 是 null 就是悬空。 */
+  const getOutlink = (targetTitle: string, targetId: string | null): knowledgePlugin.KnowledgeOutlink => ({
+    targetTitle,
+    targetId,
+    exists: targetId !== null,
+    ambiguous: false,
+  });
 
   /** 读一篇的引出和反向链接。 */
   const getLinks = async (h: Awaited<ReturnType<typeof createKnowledgeHarness>>, id: string) => {
@@ -843,8 +855,8 @@ describe('knowledge 1.1.0：[[双链]]、图谱、多标签 all/any、硬性系�
       //M 引出：一条连上、一条悬空；反链：飞书接入被总览引用。
       const out = await getLinks(h, source);
       expect(out.outgoing).toEqual([
-        { targetTitle: '飞书接入', targetId: target, exists: true },
-        { targetTitle: '还没写', targetId: null, exists: false },
+        getOutlink('飞书接入', target),
+        getOutlink('还没写', null),
       ]);
       expect(out.backlinks).toEqual([]);
       const back = await getLinks(h, target);
@@ -853,24 +865,24 @@ describe('knowledge 1.1.0：[[双链]]、图谱、多标签 all/any、硬性系�
 
       //M 新建同名（大小写不敏感也算）：悬空的自动连上。
       const later = await make(h, { title: '还没写', content: '补上了' });
-      expect((await getLinks(h, source)).outgoing[1]).toEqual({ targetTitle: '还没写', targetId: later, exists: true });
+      expect((await getLinks(h, source)).outgoing[1]).toEqual(getOutlink('还没写', later));
 
       //M 改名：旧标题的链接断开，指向新标题的悬空链接连上。
       const waiting = await make(h, { title: '等改名', content: '指向 [[新名字]]' });
       expect((await getLinks(h, waiting)).outgoing[0]?.exists).toBe(false);
       const renamed = await h.app.inject({ method: 'PUT', url: `/api/knowledge/docs/${later}`, payload: { title: '新名字' } });
       expect(renamed.statusCode).toBe(200);
-      expect((await getLinks(h, waiting)).outgoing[0]).toEqual({ targetTitle: '新名字', targetId: later, exists: true });
-      expect((await getLinks(h, source)).outgoing[1]).toEqual({ targetTitle: '还没写', targetId: null, exists: false });
+      expect((await getLinks(h, waiting)).outgoing[0]).toEqual(getOutlink('新名字', later));
+      expect((await getLinks(h, source)).outgoing[1]).toEqual(getOutlink('还没写', null));
 
       //M 改正文：引出链接跟着重写。
       await h.app.inject({ method: 'PUT', url: `/api/knowledge/docs/${source}`, payload: { content: '只剩 [[新名字]]' } });
-      expect((await getLinks(h, source)).outgoing).toEqual([{ targetTitle: '新名字', targetId: later, exists: true }]);
+      expect((await getLinks(h, source)).outgoing).toEqual([getOutlink('新名字', later)]);
       expect((await getLinks(h, target)).backlinks).toEqual([]);
 
       //M 删目标：指向它的链接留着、置空；删源头：它写出去的一起删。
       await h.app.inject({ method: 'DELETE', url: `/api/knowledge/docs/${later}` });
-      expect((await getLinks(h, source)).outgoing).toEqual([{ targetTitle: '新名字', targetId: null, exists: false }]);
+      expect((await getLinks(h, source)).outgoing).toEqual([getOutlink('新名字', null)]);
       await h.app.inject({ method: 'DELETE', url: `/api/knowledge/docs/${source}` });
       const left = h.db.query<{ cnt: number }, [string]>('SELECT COUNT(*) AS cnt FROM kb_links WHERE source_id = ?');
       expect(left.get(source)?.cnt).toBe(0);
@@ -1025,7 +1037,7 @@ describe('knowledge 1.1.0：[[双链]]、图谱、多标签 all/any、硬性系�
       });
       knowledgePlugin.apply(ctx);
       await app.ready();
-      const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }];
+      const versions = [{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }];
       expect(db.query<{ version: number }, []>(LEDGER).all()).toEqual(versions);
       const links = (await app.inject({ method: 'GET', url: '/api/knowledge/docs/d2/links' })).json();
       expect(links.backlinks.map((item: { id: string }) => item.id)).toEqual(['d1']);
@@ -1033,6 +1045,394 @@ describe('knowledge 1.1.0：[[双链]]、图谱、多标签 all/any、硬性系�
       await ctx.fiber.dispose();
     } finally {
       db.close();
+    }
+  });
+});
+
+
+describe('knowledge 1.2.0：实体别名、同名消歧与本地目录只读同步', () => {
+  const LEDGER = "SELECT version FROM db_migrations WHERE plugin = 'knowledge' ORDER BY version";
+  type Harness = Awaited<ReturnType<typeof createKnowledgeHarness>>;
+
+  /** 新建一篇，交回整篇。 */
+  const make = async (h: Harness, payload: Record<string, unknown>): Promise<knowledgePlugin.KnowledgeDoc> => {
+    const res = await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload });
+    expect(res.statusCode).toBe(200);
+    return res.json().doc as knowledgePlugin.KnowledgeDoc;
+  };
+
+  /** 改一篇，交回响应。 */
+  const update = (h: Harness, id: string, payload: Record<string, unknown>) => {
+    return h.app.inject({ method: 'PUT', url: `/api/knowledge/docs/${id}`, payload });
+  };
+
+  /** 读一篇的引出链接。 */
+  const getOutgoing = async (h: Harness, id: string): Promise<knowledgePlugin.KnowledgeOutlink[]> => {
+    const res = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${id}/links` });
+    expect(res.statusCode).toBe(200);
+    return res.json<knowledgePlugin.KnowledgeLinksResponse>().outgoing;
+  };
+
+  /** 调一次同步。 */
+  const sync = (h: Harness, payload?: Record<string, unknown>) => {
+    return h.app.inject({ method: 'POST', url: '/api/knowledge/sync-folders', payload });
+  };
+
+  /** 用本人会话调一次工具。 */
+  const callTool = async (h: Harness, name: string, args: Record<string, unknown>) => {
+    const owner = {
+      id: 's-owner',
+      row: { id: 's-owner', kind: 'front', state: 'running', bot: 'main', messages: [] },
+    } as unknown as Session;
+    const toolArgs = args as Parameters<typeof h.tools.execute>[0]['arguments'];
+    const call = { type: 'toolCall' as const, id: `${name}-${String(Date.now())}`, name, arguments: toolArgs };
+    return await h.tools.execute(call, owner, new AbortController().signal);
+  };
+
+  /** 工具结果里的文字。 */
+  const getToolText = (out: Awaited<ReturnType<typeof callTool>>): string => out.text;
+
+  test('v5 迁移无损：老库记过四版、已有 24 篇，升级后一篇不少，别名为空、哈希为空', () => {
+    const db = new Database(':memory:');
+    try {
+      //M 模拟 0.7.98 的库：四版迁移都记过，24 篇文档带标签和系统规则。
+      const old = new dbModule.Db(new cordis.Context(), db);
+      const firstFour = knowledgePlugin.knowledgeMigrations.migrations.slice(0, 4);
+      old.migrate({ plugin: 'knowledge', migrations: firstFour });
+      for (let i = 1; i <= 24; i += 1) {
+        const id = `old_${String(i)}`;
+        const insert = 'INSERT INTO kb_docs (id, title, content, source_path, is_system_rule, created_at, updated_at)'
+          + ' VALUES (?, ?, ?, ?, ?, ?, ?)';
+        db.query(insert).run(id, `老文档${String(i)}`, `正文${String(i)}`, `p${String(i)}`, i % 2, i, i);
+      }
+      const before = db.query<{ id: string; title: string; content: string }, []>(
+        'SELECT id, title, content FROM kb_docs ORDER BY id',
+      ).all();
+
+      //M 新代码挂上：第 5 版只加两列。
+      const upgraded = new dbModule.Db(new cordis.Context(), db);
+      upgraded.migrate(knowledgePlugin.knowledgeMigrations);
+      const versions = [1, 2, 3, 4, 5].map((version) => ({ version }));
+      expect(db.query<{ version: number }, []>(LEDGER).all()).toEqual(versions);
+      const after = db.query<{ id: string; title: string; content: string }, []>(
+        'SELECT id, title, content FROM kb_docs ORDER BY id',
+      ).all();
+      expect(after).toEqual(before);
+      const columns = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('kb_docs')").all();
+      expect(columns.map((col) => col.name)).toEqual(expect.arrayContaining(['aliases', 'content_hash', 'source_path']));
+
+      //M 读出来：别名空数组、系统规则和来源路径原样。
+      const store = new knowledgePlugin.KnowledgeStore(db);
+      const doc = store.getDoc('old_3');
+      expect(doc?.aliases).toEqual([]);
+      expect(doc?.isSystemRule).toBe(true);
+      expect(doc?.sourcePath).toBe('p3');
+      expect(store.listDocs({}).total).toBe(24);
+      expect(store.listImported()).toEqual([]);
+
+      //M 再挂一次只核对。
+      new dbModule.Db(new cordis.Context(), db).migrate(knowledgePlugin.knowledgeMigrations);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('别名 CRUD：去空白、去重、去空；全量替换；不带不动；超 20 个或超 60 字 400；镜像带别名', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const doc = await make(h, { title: '积木', aliases: ['  JM ', 'jm', '', '积木AI'] });
+      expect(doc.aliases).toEqual(['JM', '积木AI']);
+      expect(readMirrorMeta(h.mirrorRoot, doc.id)).toEqual(expect.objectContaining({ aliases: ['JM', '积木AI'] }));
+
+      const replaced = await update(h, doc.id, { aliases: ['jmbots'] });
+      expect(replaced.json().doc.aliases).toEqual(['jmbots']);
+      const untouched = await update(h, doc.id, { content: '只改正文' });
+      expect(untouched.json().doc.aliases).toEqual(['jmbots']);
+      const read = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${doc.id}` });
+      expect(read.json().doc.aliases).toEqual(['jmbots']);
+
+      const tooMany = Array.from({ length: 21 }, (_, i) => `别名${String(i)}`);
+      expect((await update(h, doc.id, { aliases: tooMany })).statusCode).toBe(400);
+      expect((await update(h, doc.id, { aliases: ['长'.repeat(61)] })).statusCode).toBe(400);
+      expect((await update(h, doc.id, { aliases: 'JM' })).statusCode).toBe(400);
+      const exactTwenty = Array.from({ length: 20 }, (_, i) => `名${String(i)}`);
+      expect((await update(h, doc.id, { aliases: exactTwenty })).statusCode).toBe(200);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('别名搜索：精确标题 > 精确别名 > 包含；matchedIn 带 alias；kb_search 也能按别名找到', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const contains = await make(h, { title: '积木机器人说明', content: '正文' });
+      const byAlias = await make(h, { title: '项目总览', aliases: ['积木'], content: '另一篇' });
+      const byTitle = await make(h, { title: '积木', content: '本体' });
+
+      const res = await h.app.inject({ method: 'GET', url: `/api/knowledge/search?q=${encodeURIComponent('积木')}&includeMemory=0` });
+      const hits = res.json<knowledgePlugin.KnowledgeSearchResponse>().hits;
+      expect(hits.map((hit) => hit.id)).toEqual([byTitle.id, byAlias.id, contains.id]);
+      expect(hits[1]?.matchedIn).toContain('alias');
+
+      //M 只有别名里有的词也能搜到。
+      await update(h, byAlias.id, { aliases: ['积木', 'Overview'] });
+      const onlyAlias = await h.app.inject({ method: 'GET', url: '/api/knowledge/search?q=overview&includeMemory=0' });
+      expect(onlyAlias.json<knowledgePlugin.KnowledgeSearchResponse>().hits.map((hit) => hit.id)).toEqual([byAlias.id]);
+
+      const out = await callTool(h, 'kb_search', { query: 'Overview' });
+      expect(getToolText(out)).toContain(byAlias.id);
+      expect(getToolText(out)).toContain('[别名:积木、Overview]');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('双链按唯一别名连上；两篇共用别名算歧义不连；删掉一篇恢复；同名标题优先于别名', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const target = await make(h, { title: '周小灵', aliases: ['小灵'] });
+      const source = await make(h, { title: '日记', content: '今天和 [[小灵]] 聊了，还提到 [[JM]]。' });
+      let out = await getOutgoing(h, source.id);
+      expect(out[0]).toEqual({ targetTitle: '小灵', targetId: target.id, exists: true, ambiguous: false });
+      expect(out[1]?.exists).toBe(false);
+      const back = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${target.id}/links` });
+      expect(back.json().backlinks.map((item: { id: string }) => item.id)).toEqual([source.id]);
+
+      //M 后来给别的文档加上悬空链接要的别名：连上。
+      const jm = await make(h, { title: '积木', aliases: [] });
+      await update(h, jm.id, { aliases: ['JM'] });
+      out = await getOutgoing(h, source.id);
+      expect(out[1]?.targetId).toBe(jm.id);
+
+      //M 第二篇也叫「小灵」（别名）：不知道指哪篇，不连，标 ambiguous。
+      const other = await make(h, { title: '另一个小灵', aliases: ['小灵'] });
+      out = await getOutgoing(h, source.id);
+      expect(out[0]).toEqual({ targetTitle: '小灵', targetId: null, exists: false, ambiguous: true });
+
+      //M 删掉第二篇：又只剩一篇，连回原来的。
+      await h.app.inject({ method: 'DELETE', url: `/api/knowledge/docs/${other.id}` });
+      out = await getOutgoing(h, source.id);
+      expect(out[0]?.targetId).toBe(target.id);
+
+      //M 有篇标题就叫「小灵」：标题优先。
+      const titled = await make(h, { title: '小灵', content: '同名标题' });
+      out = await getOutgoing(h, source.id);
+      expect(out[0]?.targetId).toBe(titled.id);
+
+      //M 去掉别名：JM 又悬空。
+      await update(h, jm.id, { aliases: [] });
+      out = await getOutgoing(h, source.id);
+      expect(out[1]?.exists).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('消歧接口与 kb_disambiguate：同名加同别名算歧义，带分类、别名、摘要；单篇不歧义；空词 400', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const dirRes = await h.app.inject({ method: 'POST', url: '/api/knowledge/dirs', payload: { name: '人物' } });
+      const dirId = dirRes.json().dir.id as string;
+      const first = await make(h, { title: '张三', dirId, aliases: ['老张'], content: '同事张三' });
+      const second = await make(h, { title: '张三', content: '客户张三' });
+      const third = await make(h, { title: '张三丰', aliases: ['张三'], content: '武当' });
+
+      const url = `/api/knowledge/disambiguate?q=${encodeURIComponent('张三')}`;
+      const body = (await h.app.inject({ method: 'GET', url })).json<knowledgePlugin.KnowledgeDisambiguateResponse>();
+      expect(body.query).toBe('张三');
+      expect(body.exact.map((item) => item.id)).toEqual([first.id, second.id]);
+      expect(body.aliasMatches.map((item) => item.id)).toEqual([third.id]);
+      expect(body.candidates.map((item) => item.id)).toEqual([first.id, second.id, third.id]);
+      expect(body.ambiguous).toBe(true);
+      expect(body.exact[0]).toEqual({
+        id: first.id,
+        title: '张三',
+        category: '人物',
+        aliases: ['老张'],
+        summary: '同事张三',
+        matchedBy: 'title',
+      });
+      expect(body.aliasMatches[0]?.matchedBy).toBe('alias');
+
+      const single = await h.app.inject({ method: 'GET', url: `/api/knowledge/disambiguate?q=${encodeURIComponent('老张')}` });
+      const singleBody = single.json<knowledgePlugin.KnowledgeDisambiguateResponse>();
+      expect(singleBody.exact).toEqual([]);
+      expect(singleBody.candidates.map((item) => item.id)).toEqual([first.id]);
+      expect(singleBody.ambiguous).toBe(false);
+      expect((await h.app.inject({ method: 'GET', url: '/api/knowledge/disambiguate?q=%20' })).statusCode).toBe(400);
+
+      //M 工具：前后台都有；歧义时列出三篇 docId 并提醒先选定；查不到给提示。
+      expect(h.tools.listToolsForSessionKind('front').map((t) => t.name)).toContain('kb_disambiguate');
+      expect(h.tools.listToolsForSessionKind('work').map((t) => t.name)).toContain('kb_disambiguate');
+      const text = getToolText(await callTool(h, 'kb_disambiguate', { query: '张三' }));
+      expect(text).toContain('有歧义');
+      expect(text).toContain(`docId=${first.id}`);
+      expect(text).toContain(`docId=${third.id}`);
+      expect(text).toContain('[分类:人物]');
+      const none = getToolText(await callTool(h, 'kb_disambiguate', { query: '李四' }));
+      expect(none).toContain('没有标题或别名叫「李四」');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('kb_save 可写别名；硬性系统规则照旧不能改', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const out = await callTool(h, 'kb_save', { title: '飞书', content: '渠道', aliases: ['Lark', 'lark'] });
+      expect(out.isError).toBe(false);
+      expect(getToolText(out)).toContain('- 别名: Lark');
+      const id = /docId=(\S+)/u.exec(getToolText(out))?.[1] ?? '';
+      expect((await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${id}` })).json().doc.aliases).toEqual(['Lark']);
+    } finally {
+      await h.close();
+    }
+  });
+
+  /** 建一个源目录：两个能导的、一个超大的，加上该跳过的隐藏目录、node_modules、dist 和别的扩展名。 */
+  const makeSource = (): string => {
+    const src = makeTempDir('kb-sync-src-');
+    fs.writeFileSync(path.join(src, 'a.md'), '# 甲笔记\n内容一');
+    fs.mkdirSync(path.join(src, 'sub'));
+    fs.writeFileSync(path.join(src, 'sub', 'b.txt'), '纯文本');
+    fs.writeFileSync(path.join(src, 'big.md'), 'x'.repeat(256 * 1024 + 1));
+    fs.writeFileSync(path.join(src, 'g.json'), '{}');
+    for (const skip of ['.git', '.hidden', 'node_modules', 'dist']) {
+      fs.mkdirSync(path.join(src, skip));
+      fs.writeFileSync(path.join(src, skip, 'skip.md'), '# 不该导入');
+    }
+    return src;
+  };
+
+  /** 源目录下全部文件和内容（递归），用来确认同步没动过源文件。 */
+  const snapshot = (dir: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const name of fs.readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
+      const full = path.join(dir, name);
+      if (fs.statSync(full).isFile()) {
+        out[name] = fs.readFileSync(full, 'utf8');
+      }
+    }
+    return out;
+  };
+
+  test('本地目录同步：新建、未变跳过、内容更新、系统规则不覆盖、源文件一个字不动', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const src = makeSource();
+      const before = snapshot(src);
+
+      //M 第一次：a.md、sub/b.txt 新建，big.md 超限记问题，跳过的目录和扩展名不算。
+      const first = await sync(h, { dirs: [src] });
+      expect(first.statusCode).toBe(200);
+      const firstBody = first.json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect([firstBody.scanned, firstBody.created, firstBody.updated, firstBody.skipped]).toEqual([3, 2, 0, 0]);
+      expect(firstBody.errors.length).toBe(1);
+      expect(firstBody.errors[0]?.path.endsWith('big.md')).toBe(true);
+      expect(firstBody.lastSyncedAt).toBeGreaterThan(0);
+      expect(snapshot(src)).toEqual(before);
+
+      //M 导进来的：标题取 # 或文件名，#本地导入，来源 file，放进「外部学习」。
+      const list = (await h.app.inject({ method: 'GET', url: '/api/knowledge/docs' })).json();
+      const docs = list.items as knowledgePlugin.KnowledgeDocSummary[];
+      expect(docs.map((doc) => doc.title).sort()).toEqual(['b', '甲笔记']);
+      const tree = (await h.app.inject({ method: 'GET', url: '/api/knowledge/tree' })).json();
+      const syncDir = tree.flatDirs.find((dir: { name: string }) => dir.name === '外部学习');
+      expect(syncDir).toBeDefined();
+      for (const doc of docs) {
+        expect(doc.tags).toEqual(['本地导入']);
+        expect(doc.sourceType).toBe('file');
+        expect(doc.dirId).toBe(syncDir.id);
+      }
+      const docA = docs.find((doc) => doc.title === '甲笔记')!;
+      const docB = docs.find((doc) => doc.title === 'b')!;
+      expect(docA.sourcePath.endsWith('a.md')).toBe(true);
+
+      //M 第二次：都没变，跳过。
+      const second = (await sync(h, { dirs: [src] })).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect([second.created, second.updated, second.skipped]).toEqual([0, 0, 2]);
+
+      //M 改了 a.md：原位更新正文，标题、标签不动。
+      fs.writeFileSync(path.join(src, 'a.md'), '# 甲笔记\n内容二');
+      const third = (await sync(h, { dirs: [src] })).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect([third.created, third.updated, third.skipped]).toEqual([0, 1, 1]);
+      const docARead = (await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${docA.id}` })).json().doc;
+      expect(docARead.content).toBe('# 甲笔记\n内容二');
+      expect(docARead.tags).toEqual(['本地导入']);
+
+      //M b 被本人标成硬性系统规则，再改源文件：不覆盖，记一条问题。
+      expect((await update(h, docB.id, { isSystemRule: true })).statusCode).toBe(200);
+      fs.writeFileSync(path.join(src, 'sub', 'b.txt'), '被改了');
+      const fourth = (await sync(h, { dirs: [src] })).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect([fourth.created, fourth.updated, fourth.skipped]).toEqual([0, 0, 1]);
+      expect(fourth.errors.some((item) => item.reason.includes('硬性系统规则'))).toBe(true);
+      const docBRead = (await h.app.inject({ method: 'GET', url: `/api/knowledge/docs/${docB.id}` })).json().doc;
+      expect(docBRead.content).toBe('纯文本');
+
+      //M 指定分类：新文件进「资料」。
+      fs.writeFileSync(path.join(src, 'c.md'), '新的');
+      const fifth = (await sync(h, { dirs: [src], category: '资料' })).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect(fifth.created).toBe(1);
+      const treeAfter = (await h.app.inject({ method: 'GET', url: '/api/knowledge/tree' })).json();
+      expect(treeAfter.flatDirs.map((dir: { name: string }) => dir.name).sort()).toEqual(['外部学习', '资料']);
+
+      //M 源目录里只多了测试自己写的 c.md：同步没新建、没删任何源文件。
+      expect(Object.keys(snapshot(src)).sort()).toEqual([...Object.keys(before), 'c.md'].sort());
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('本地目录同步：非法路径、系统根目录、没有目录 400；不存在记问题；超过 200 个截断；未核验 403', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      expect((await sync(h, { dirs: ['relative/path'] })).statusCode).toBe(400);
+      const root = path.parse(os.tmpdir()).root;
+      const rootRes = await sync(h, { dirs: [root] });
+      expect(rootRes.statusCode).toBe(400);
+      expect(rootRes.json().error).toContain('系统根目录');
+      const systemDir = path.join(root, 'Windows');
+      expect((await sync(h, { dirs: [systemDir] })).statusCode).toBe(400);
+      expect((await sync(h)).statusCode).toBe(400);
+      expect((await sync(h, { dirs: 'x' })).statusCode).toBe(400);
+
+      const missing = path.join(makeTempDir('kb-sync-missing-'), '没有这个');
+      const missingBody = (await sync(h, { dirs: [missing] })).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect(missingBody.errors[0]?.reason).toBe('目录不存在');
+
+      //M 201 个文件：只扫 200 个，记一条超限。
+      const many = makeTempDir('kb-sync-many-');
+      for (let i = 0; i < 201; i += 1) {
+        fs.writeFileSync(path.join(many, `n${String(i).padStart(3, '0')}.txt`), `第 ${String(i)} 个`);
+      }
+      const manyBody = (await sync(h, { dirs: [many] })).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect(manyBody.scanned).toBe(200);
+      expect(manyBody.created).toBe(200);
+      expect(manyBody.errors.some((item) => item.reason.includes('超过 200 个文件'))).toBe(true);
+
+      h.setVerified(false);
+      expect((await sync(h, { dirs: [many] })).statusCode).toBe(403);
+    } finally {
+      await h.close();
+    }
+  }, 30000);
+
+  test('配置 localWatchDirs：sync-status 列出配置的目录；不带 dirs 用配置的；状态记最近一次', async () => {
+    const src = makeSource();
+    const h = await createKnowledgeHarness({ localWatchDirs: [src] });
+    try {
+      const status = (await h.app.inject({ method: 'GET', url: '/api/knowledge/sync-status' })).json();
+      expect(status.localWatchDirs.length).toBe(1);
+      expect(path.resolve(status.localWatchDirs[0]).toLowerCase()).toBe(path.resolve(src).toLowerCase());
+      expect(status.lastSync).toBeNull();
+
+      const done = (await sync(h)).json<knowledgePlugin.KnowledgeSyncResponse>();
+      expect(done.created).toBe(2);
+      const after = (await h.app.inject({ method: 'GET', url: '/api/knowledge/sync-status' })).json();
+      expect(after.lastSync.created).toBe(2);
+      expect(after.lastSync.lastSyncedAt).toBe(done.lastSyncedAt);
+    } finally {
+      await h.close();
     }
   });
 });

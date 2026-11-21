@@ -2,12 +2,14 @@
  * 积木知识库 REST API 路由与记忆服务温和桥接（/api/knowledge/*）。
  * 所有写接口（POST/PUT/DELETE）强制核验 ctx.http.isVerified(request)，未通过一律返回 403；
  * 动到硬性系统规则的写请求（本机或已核验的本人）额外记一行日志；
- * 搜索接口通过 requestEvent 桥接 memory/request，未挂载 memory 或远端离线时平滑退化，绝不报错中断。
+ * 搜索接口通过 requestEvent 桥接 memory/request，未挂载 memory 或远端离线时平滑退化，绝不报错中断；
+ * 1.2.0 起有别名消歧接口和本地文件夹只读同步接口（实际干活的是 FolderSync.ts）。
  */
 import type * as cordis from 'cordis';
 import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
+import * as folderSyncModule from './FolderSync.ts';
 import * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
 
@@ -232,10 +234,12 @@ function readParam(params: unknown, key: string): string {
  * 在 ctx.http.app 上登记积木知识库全部读写与混合搜索接口。
  * @param ctx 插件上下文。
  * @param store 知识库存储实例。
+ * @param folderSync 本地文件夹只读同步（index.ts 建的）。
  */
 export function mountKnowledgeRoutes(
   ctx: cordis.Context,
   store: storeModule.KnowledgeStore,
+  folderSync: folderSyncModule.FolderSync,
 ): void {
   const app = ctx.http.app;
 
@@ -290,6 +294,7 @@ export function mountKnowledgeRoutes(
       sourceType: readOptionalString(body, 'sourceType') as types.KnowledgeSourceType | undefined,
       tags: readOptionalStringArray(body, 'tags'),
       isSystemRule: readSystemRule(body),
+      aliases: readOptionalStringArray(body, 'aliases'),
     };
     const doc = store.createDoc(input);
     if (doc.isSystemRule) {
@@ -327,6 +332,9 @@ export function mountKnowledgeRoutes(
     }
     if ('tags' in body) {
       patch.tags = readOptionalStringArray(body, 'tags');
+    }
+    if ('aliases' in body) {
+      patch.aliases = readOptionalStringArray(body, 'aliases');
     }
     patch.isSystemRule = readSystemRule(body);
     if (body['baseUpdatedAt'] !== undefined) {
@@ -510,6 +518,36 @@ export function mountKnowledgeRoutes(
     }
     const getTags = (ids: readonly string[]) => store.loadTagsByDocIds(ids);
     const response: types.KnowledgeGraphResponse = { ok: true, ...store.links.getGraph(centerId, getTags) };
+    return response;
+  });
+
+  //M 16. 别名消歧：标题或别名和 q 一样的文档，两篇以上 ambiguous 为 true。
+  app.get('/api/knowledge/disambiguate', (request) => {
+    const query = (request.query ?? {}) as Record<string, string | undefined>;
+    const q = readQueryText(query, 'q')?.trim() ?? '';
+    if (q === '') {
+      throw new failureModule.Failure(400, '要写查询词 q');
+    }
+    const response: types.KnowledgeDisambiguateResponse = { ok: true, ...store.disambiguate(q) };
+    return response;
+  });
+
+  //M 17. 本地文件夹只读同步一次（强检身份核验）：body 可带临时的 dirs（绝对路径）和 category（分类名）。
+  app.post('/api/knowledge/sync-folders', (request) => {
+    ctx.http.requireVerified(request, '知识库写操作');
+    let body: Record<string, unknown> = {};
+    if (request.body !== undefined && request.body !== null) {
+      body = checksModule.checkRecord(request.body, '请求体');
+    }
+    const dirs = checksModule.checkDirs(body['dirs'], 'dirs');
+    const category = readOptionalString(body, 'category')?.trim() || folderSyncModule.DEFAULT_SYNC_CATEGORY;
+    const response: types.KnowledgeSyncResponse = { ok: true, ...folderSync.sync(dirs, category) };
+    return response;
+  });
+
+  //M 18. 同步状态：配置的 localWatchDirs 和这次启动以来最近一次同步的结果。
+  app.get('/api/knowledge/sync-status', () => {
+    const response: types.KnowledgeSyncStatusResponse = { ok: true, ...folderSync.getStatus() };
     return response;
   });
 }

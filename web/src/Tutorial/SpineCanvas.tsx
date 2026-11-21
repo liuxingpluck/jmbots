@@ -232,7 +232,7 @@ export const BOOT_SPINE_STEPS: SpineTrackStep[] = [
           why: 'http 插件只注入 resources，对外提供 ctx.http 服务',
         },
         {
-          site: 'src7/plugins/knowledge/Tools.ts:68',
+          site: 'src7/plugins/knowledge/Tools.ts:70',
           mark: "name: 'kb_search'",
           why: 'knowledge 插件通过 ctx.tools.register 登记 kb_search',
         },
@@ -540,7 +540,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
           why: 'memory 在关口一按权限召回记忆注入本步请求',
         },
         {
-          site: 'src7/plugins/knowledge/Tools.ts:68',
+          site: 'src7/plugins/knowledge/Tools.ts:70',
           mark: "name: 'kb_search'",
           why: 'knowledge 登记 kb_search 供模型按需检索知识库',
         },

@@ -159,6 +159,8 @@ interface Form {
   topicId: string | null;
   /** 标签。 */
   tags: string[];
+  /** 别名：用于 [[双链]] 和消歧。 */
+  aliases: string[];
   /** 来源分类。 */
   sourceType: api.KnowledgeSourceType;
   /** 来源路径或网址。 */
@@ -175,6 +177,7 @@ const FORM_KEYS: readonly (keyof Form)[] = [
   'dirId',
   'topicId',
   'tags',
+  'aliases',
   'sourceType',
   'sourcePath',
   'isSystemRule',
@@ -214,6 +217,7 @@ function getForm(doc: api.KnowledgeDoc | undefined, preset: Preset): Form {
       dirId: preset.dirId,
       topicId: preset.topicId,
       tags: [],
+      aliases: [],
       sourceType: 'note',
       sourcePath: '',
       isSystemRule: false,
@@ -226,6 +230,7 @@ function getForm(doc: api.KnowledgeDoc | undefined, preset: Preset): Form {
     dirId: doc.dirId,
     topicId: doc.topicId,
     tags: doc.tags,
+    aliases: doc.aliases,
     sourceType: doc.sourceType,
     sourcePath: doc.sourcePath,
     isSystemRule: doc.isSystemRule === true,
@@ -337,19 +342,37 @@ function removeDraft(key: string): void {
 }
 
 
-/** 标签输入：回车或逗号变成胶囊，× 去掉，空着按退格删最后一个。 */
-function TagInput(props: { tags: string[]; disabled: boolean; change: (tags: string[]) => void }): react.JSX.Element {
+/** 胶囊输入框的参数：标签和别名共用。 */
+interface ChipInputProps {
+  /** 现有的项。 */
+  items: string[];
+  /** 胶囊前面显示的符号：标签是 #（输入时也去掉开头的 #），别名是空串。 */
+  prefix: string;
+  /** 输入框的提示字。 */
+  placeholder: string;
+  /** 只读时不显示 × 和输入框。 */
+  disabled: boolean;
+  /** 改了以后交回新的一组。 */
+  change: (items: string[]) => void;
+}
+
+
+/** 胶囊输入（标签、别名）：回车或逗号变成胶囊，× 去掉，空着按退格删最后一个。 */
+function ChipInput(props: ChipInputProps): react.JSX.Element {
   const [text, setText] = react.useState('');
 
-  //M 把输入框里的字收成一个标签：去掉 # 和空白，重复的不加。
+  //M 把输入框里的字收成一项：去掉两头空白（标签还去掉开头的 #），重复的不加。
   const commit = (): void => {
-    const name = text.replace(/^#+/u, '').trim();
+    let name = text.trim();
+    if (props.prefix === '#') {
+      name = name.replace(/^#+/u, '').trim();
+    }
     setText('');
     //G 和后端一样大小写不敏感：已有 AOBB 再敲 aobb 不加。
     const lower = name.toLowerCase();
-    if (name === '' || props.tags.some((tag) => tag.toLowerCase() === lower)) return;
+    if (name === '' || props.items.some((item) => item.toLowerCase() === lower)) return;
 
-    props.change([...props.tags, name]);
+    props.change([...props.items, name]);
   };
   const onKeyDown = (event: react.KeyboardEvent<HTMLInputElement>): void => {
     //G 中文输入法还在选字时的回车不算（云端 29 #5）。
@@ -360,25 +383,25 @@ function TagInput(props: { tags: string[]; disabled: boolean; change: (tags: str
       commit();
       return;
     }
-    if (event.key === 'Backspace' && text === '' && props.tags.length > 0) {
-      props.change(props.tags.slice(0, -1));
+    if (event.key === 'Backspace' && text === '' && props.items.length > 0) {
+      props.change(props.items.slice(0, -1));
     }
   };
 
   return (
     <div className="kb-tag-input">
-      {props.tags.map((tag) => (
-        <span key={tag} className="kb-chip">
-          #{tag}
+      {props.items.map((chip) => (
+        <span key={chip} className="kb-chip">
+          {props.prefix}{chip}
           {!props.disabled && (
-            <button type="button" onClick={() => props.change(props.tags.filter((item) => item !== tag))}>×</button>
+            <button type="button" onClick={() => props.change(props.items.filter((item) => item !== chip))}>×</button>
           )}
         </span>
       ))}
       {!props.disabled && (
         <input
           value={text}
-          placeholder="加标签，回车确定"
+          placeholder={props.placeholder}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           onBlur={commit}
@@ -697,7 +720,23 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
         </label>
         <label className="kb-meta-wide">
           <span>标签</span>
-          <TagInput tags={form.tags} disabled={readOnly} change={(tags) => setField('tags', tags)} />
+          <ChipInput
+            items={form.tags}
+            prefix="#"
+            placeholder="加标签，回车确定"
+            disabled={readOnly}
+            change={(tags) => setField('tags', tags)}
+          />
+        </label>
+        <label className="kb-meta-wide" title="同一实体的别的叫法：[[别名]] 也能连到这篇，同名时用来消歧">
+          <span>别名</span>
+          <ChipInput
+            items={form.aliases}
+            prefix=""
+            placeholder="用于 [[双链]] 与消歧，逗号或回车添加"
+            disabled={readOnly}
+            change={(aliases) => setField('aliases', aliases)}
+          />
         </label>
         {form.sourceType !== 'note' && (
           <label className="kb-meta-wide">

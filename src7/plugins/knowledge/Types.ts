@@ -1,7 +1,8 @@
 /**
  * 积木知识库（knowledge）领域模型、查询参数与 REST API 契约定义。
  * 三大原子：虚拟目录树（kb_dirs）、统一知识文档（kb_docs，可挂载工作决策 topicId）、多对多标签（kb_tags / kb_doc_tags）；
- * 1.1.0 起加上 [[双链]] 关系表 kb_links 和「硬性系统规则」标记（只有本人能改，AI 只读）。
+ * 1.1.0 起加上 [[双链]] 关系表 kb_links 和「硬性系统规则」标记（只有本人能改，AI 只读）；
+ * 1.2.0 起加上实体别名（aliases，参与搜索、双链和消歧）与本地文件夹只读同步（FolderSync.ts）。
  */
 
 
@@ -64,6 +65,8 @@ export interface KnowledgeDocSummary {
   tags: string[];
   /** 硬性系统规则：只有本人在网页上能改，AI 的 kb_save 只读不可写（1.1.0）。 */
   isSystemRule: boolean;
+  /** 别名：同一实体的别的叫法，参与搜索、[[双链]] 和消歧（1.2.0）。 */
+  aliases: string[];
   /** 创建毫秒时间戳。 */
   createdAt: number;
   /** 最近修改毫秒时间戳。 */
@@ -125,6 +128,10 @@ export interface CreateDocInput {
   tags?: string[];
   /** 设为硬性系统规则（默认 false）；只有 HTTP 写接口会带，kb_save 拒绝。 */
   isSystemRule?: boolean;
+  /** 别名（去两头空白、去重、去空，最多 20 个，每个最多 60 字）。 */
+  aliases?: string[];
+  /** 源文件内容的 sha256；只有本地目录同步（FolderSync.ts）写，HTTP 和 kb_save 不带。 */
+  contentHash?: string;
 }
 
 /** 更新文档局部补丁入参。 */
@@ -147,6 +154,10 @@ export interface UpdateDocInput {
   tags?: string[];
   /** 设为或取消硬性系统规则。 */
   isSystemRule?: boolean;
+  /** 全量替换别名。 */
+  aliases?: string[];
+  /** 源文件内容的 sha256；只有本地目录同步写。 */
+  contentHash?: string;
   /** 编辑时看到的 updatedAt；传了且和库里的不一样，说明别处改过，回 409 不覆盖。不传不查。 */
   baseUpdatedAt?: number;
 }
@@ -216,6 +227,9 @@ export interface KnowledgeTreeResponse {
   systemRuleDocs: number;
 }
 
+/** 搜索命中的字段（alias 是 1.2.0 加的别名）。 */
+export type KnowledgeMatchField = 'title' | 'alias' | 'summary' | 'content' | 'tag';
+
 /** 本地知识库命中项。 */
 export interface KnowledgeSearchHit extends KnowledgeDocSummary {
   /** 命中上下文片段。 */
@@ -223,7 +237,7 @@ export interface KnowledgeSearchHit extends KnowledgeDocSummary {
   /** 相关性综合得分。 */
   score: number;
   /** 命中的字段列表。 */
-  matchedIn: ('title' | 'summary' | 'content' | 'tag')[];
+  matchedIn: KnowledgeMatchField[];
 }
 
 /** 从 memory 服务桥接融合的记忆命中片段。 */
@@ -327,12 +341,14 @@ export interface KnowledgeRelatedResponse {
 
 /** 一篇文档正文里写的一条 [[双链]]（引出链接）。 */
 export interface KnowledgeOutlink {
-  /** [[ ]] 里写的目标标题（别名不算）。 */
+  /** [[ ]] 里写的目标标题（| 后面的显示文字不算）。 */
   targetTitle: string;
   /** 按标题（大小写不敏感）找到的文档 ID；还没有这篇是 null。 */
   targetId: string | null;
   /** 目标文档在不在。 */
   exists: boolean;
+  /** 没有同名标题、却有两篇以上用了这个别名：不知道指哪篇，没连（1.2.0）。 */
+  ambiguous: boolean;
 }
 
 /** 引用了本篇的一篇文档（反向链接）。 */
@@ -363,6 +379,8 @@ export interface KnowledgeGraphNode {
   id: string;
   /** 标题。 */
   title: string;
+  /** 实体别名（1.2.0），供前端 [[ 联想和预览识别别名双链。 */
+  aliases?: string[];
   /** 标签。 */
   tags: string[];
   /** 是不是硬性系统规则。 */
@@ -389,4 +407,81 @@ export interface KnowledgeGraphResponse {
   nodes: KnowledgeGraphNode[];
   /** 边：只含两头都在的链接，不含指向自己的。 */
   edges: KnowledgeGraphEdge[];
+}
+
+
+//==========================================================
+// 实体别名消歧与本地文件夹同步（1.2.0）
+//==========================================================
+
+/** 消歧时的一篇候选。 */
+export interface KnowledgeDisambiguateCandidate {
+  /** 文档 ID。 */
+  id: string;
+  /** 标题。 */
+  title: string;
+  /** 分类：所在虚拟目录的名字，未归目录是空串。 */
+  category: string;
+  /** 别名。 */
+  aliases: string[];
+  /** 摘要。 */
+  summary: string;
+  /** 是标题对上的（title），还是别名对上的（alias）。 */
+  matchedBy: 'title' | 'alias';
+}
+
+/** GET /api/knowledge/disambiguate 响应。 */
+export interface KnowledgeDisambiguateResponse {
+  /** 是否成功。 */
+  ok: true;
+  /** 查的词（去了两头空白）。 */
+  query: string;
+  /** 标题和这个词一样（大小写不敏感）的文档，早建的在前。 */
+  exact: KnowledgeDisambiguateCandidate[];
+  /** 别名里有这个词、标题不是它的文档，早建的在前。 */
+  aliasMatches: KnowledgeDisambiguateCandidate[];
+  /** exact 加 aliasMatches，标题对上的在前。 */
+  candidates: KnowledgeDisambiguateCandidate[];
+  /** 候选有两篇以上：写引用、查资料前要先选定是哪篇。 */
+  ambiguous: boolean;
+}
+
+/** 同步时没处理的一个文件或目录。 */
+export interface KnowledgeSyncError {
+  /** 文件或目录路径。 */
+  path: string;
+  /** 为什么没处理。 */
+  reason: string;
+}
+
+/** 一次本地目录同步的结果。 */
+export interface KnowledgeSyncResult {
+  /** 扫到的 .md、.txt 文件数。 */
+  scanned: number;
+  /** 新建了几篇。 */
+  created: number;
+  /** 内容变了、原位更新了几篇。 */
+  updated: number;
+  /** 内容没变、跳过了几篇。 */
+  skipped: number;
+  /** 没处理的文件和目录（太大、读不了、硬性系统规则不覆盖、超过文件数上限）。 */
+  errors: KnowledgeSyncError[];
+  /** 这次同步完成的毫秒时间戳。 */
+  lastSyncedAt: number;
+}
+
+/** POST /api/knowledge/sync-folders 响应。 */
+export interface KnowledgeSyncResponse extends KnowledgeSyncResult {
+  /** 是否成功。 */
+  ok: true;
+}
+
+/** GET /api/knowledge/sync-status 响应。 */
+export interface KnowledgeSyncStatusResponse {
+  /** 是否成功。 */
+  ok: true;
+  /** 插件配置里的 localWatchDirs（规范化后的绝对路径）。 */
+  localWatchDirs: string[];
+  /** 这次启动以来最近一次同步的结果；还没同步过是 null。 */
+  lastSync: KnowledgeSyncResult | null;
 }

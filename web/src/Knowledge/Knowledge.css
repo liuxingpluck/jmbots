@@ -1334,3 +1334,61 @@ button.kb-wiki-chip:hover {
   margin: 0;
   padding: 6px 16px 10px;
 }
+
+/* ===== 顶栏「同步本地目录」轻面板（knowledge v1.2.0） ===== */
+
+.kb-sync-panel {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(480px, calc(100% - 32px));
+  padding: 12px;
+  background: var(--jm-surface, #232323);
+  border: 1px solid var(--jm-border, #303030);
+  border-radius: var(--jm-radius, 6px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+.kb-sync-head,
+.kb-sync-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kb-sync-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.kb-sync-section code {
+  word-break: break-all;
+}
+
+.kb-sync-dirs,
+.kb-sync-row input {
+  padding: 4px 8px;
+  background: var(--jm-bg, #141414);
+  border: 1px solid var(--jm-border, #303030);
+  border-radius: var(--jm-radius, 6px);
+}
+
+.kb-sync-dirs {
+  resize: vertical;
+}
+
+.kb-sync-row input {
+  flex: 1;
+  height: 30px;
+}
+
+.kb-sync-error {
+  color: var(--jm-warning, #f0b429);
+  word-break: break-all;
+}

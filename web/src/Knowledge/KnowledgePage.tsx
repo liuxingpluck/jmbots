@@ -5,11 +5,13 @@
  * ?new=1&topic=<节点号>&title=<标题> 是工作决策“记一篇”跳过来的，直接打开预填好的新建表单。
  * 列表（或搜索）和单篇正文各走一路请求，各有 AbortController 和序号，迟到的回包不会盖掉新的。
  * 整库双链图谱和目录树一起拉：既给「🕸️ 图谱」抽屉用，也当标题索引给编辑器的 [[ 联想和双链芯片用。
+ * 顶栏「同步本地目录」打开 FolderSyncPanel，只读导入本机 .md、.txt，同步完刷新树和列表。
  */
 import * as react from 'react';
 import { TOKEN, withToken } from '../Token.ts';
 import * as dirTree from './DirTree.tsx';
 import * as docList from './DocList.tsx';
+import * as folderSync from './FolderSyncPanel.tsx';
 import * as api from './KnowledgeApi.ts';
 import type * as editorModule from './KnowledgeEditor.tsx';
 import * as wiki from './WikiLinks.ts';
@@ -169,6 +171,7 @@ export function KnowledgePage(): react.JSX.Element {
   //M 整库双链图谱：图谱抽屉的全库视图，也是 [[ 联想的标题索引；后端还没 1.1.0 时是 undefined。
   const [graph, setGraph] = react.useState<api.KnowledgeGraphResponse>();
   const [graphOpen, setGraphOpen] = react.useState(false);
+  const [syncOpen, setSyncOpen] = react.useState(false);
   const [items, setItems] = react.useState<api.KnowledgeDocSummary[]>([]);
   /** 现在列表里显示了几条：切回页面刷新时按它拉（visibilitychange 的监听里读）。 */
   const itemCountRef = react.useRef(0);
@@ -523,6 +526,12 @@ export function KnowledgePage(): react.JSX.Element {
     }
   }, [handleError, loadList, loadTree]);
 
+  /** 同步完本地目录：新建的文档可能进了新目录，树和列表都刷新。 */
+  const refreshAfterSync = react.useCallback(() => {
+    void loadTree();
+    void loadList(0);
+  }, [loadList, loadTree]);
+
   /**
    * 左栏改名、删了标签：后端会刷新挂着它的文档的 updatedAt，开着的那篇重新拿一份交给编辑器换底稿，
    * 免得下次保存误报 409（0.7.90 审计 P1-1）。编辑器按 editKey 认、按 updatedAt 判断这篇到底变没变。
@@ -702,12 +711,29 @@ export function KnowledgePage(): react.JSX.Element {
           🕸️{!isMobile && ' 图谱'}
         </button>
         {!isMobile && !readOnly && (
+          <button
+            type="button"
+            className="kb-link-btn"
+            onClick={() => setSyncOpen(true)}
+            title="只读导入本机目录里的 .md、.txt"
+          >
+            同步本地目录
+          </button>
+        )}
+        {!isMobile && !readOnly && (
           <button type="button" className="kb-primary-btn" onClick={() => newDoc('')}>＋ 新建</button>
         )}
         {!isMobile && <a className="kb-nav" href={homeHref}>主页</a>}
         {!isMobile && <a className="kb-nav" href={decisionHref}>工作决策</a>}
       </header>
       {notice !== undefined && <div className="kb-toast" role="status">{notice}</div>}
+      {syncOpen && (
+        <folderSync.FolderSyncPanel
+          onSynced={refreshAfterSync}
+          onError={handleError}
+          onClose={() => setSyncOpen(false)}
+        />
+      )}
       <div className="kb-main">
         <aside className="kb-side" data-open={drawerOpen}>
           <dirTree.DirTree

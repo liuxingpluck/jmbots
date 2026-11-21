@@ -1,6 +1,6 @@
 /**
  * 积木知识库的 [[双链]]（1.1.0）：从 Markdown 正文解析 [[标题]]、[[标题|别名]]，维护 kb_links 关系表，
- * 按标题（大小写不敏感）把链接连到文档上，给出引出链接、反向链接和图谱。
+ * 按标题（大小写不敏感）把链接连到文档上，标题没有就找唯一用了这个别名的文档（1.2.0），给出引出链接、反向链接和图谱。
  * 写入都由 KnowledgeStore 在它自己的事务里调用，这里不开事务、不碰磁盘镜像。
  */
 import type { Database } from 'bun:sqlite';
@@ -87,20 +87,57 @@ interface LinkRow {
   target_id: string | null;
 }
 
+/** 引出链接的一行：多带用了这个别名的文档数，判断歧义用。 */
+interface OutRow extends LinkRow {
+  alias_docs: number;
+}
+
 /** 图谱节点要的文档字段。 */
 interface NodeRow {
   id: string;
   title: string;
+  aliases: string;
   is_system_rule: number;
 }
 
+/** 把 kb_docs.aliases 的 JSON 串解析成字符串数组，脏数据回空数组。 */
+function parseNodeAliases(raw: string): string[] {
+  if (raw === '' || raw === '[]') return [];
 
-/** 按标题找文档 ID 的子查询：大小写不敏感，同名的取最早建的那篇。 */
-const RESOLVE_SQL = `(
-  SELECT d.id FROM kb_docs d
-  WHERE d.title = kb_links.target_title COLLATE NOCASE
-  ORDER BY d.created_at ASC, d.id ASC
-  LIMIT 1
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  } catch {
+    return [];
+  }
+}
+
+
+/**
+ * 按标题找文档 ID 的子查询：大小写不敏感，同名的取最早建的那篇；
+ * 没有这个标题时找别名（1.2.0）：恰好一篇用了这个别名才连，两篇以上算歧义、不连，免得串链。
+ */
+const RESOLVE_SQL = `COALESCE(
+  (
+    SELECT d.id FROM kb_docs d
+    WHERE d.title = kb_links.target_title COLLATE NOCASE
+    ORDER BY d.created_at ASC, d.id ASC
+    LIMIT 1
+  ),
+  (
+    SELECT CASE WHEN COUNT(DISTINCT d.id) = 1 THEN MIN(d.id) END
+    FROM kb_docs d, json_each(d.aliases) a
+    WHERE a.value = kb_links.target_title COLLATE NOCASE
+  )
+)`;
+
+/** 用了 kb_links.target_title 这个别名的文档数（引出链接判断歧义用）。 */
+const ALIAS_DOCS_SQL = `(
+  SELECT COUNT(DISTINCT d.id)
+  FROM kb_docs d, json_each(d.aliases) a
+  WHERE a.value = kb_links.target_title COLLATE NOCASE
 )`;
 
 
@@ -129,7 +166,8 @@ export class KnowledgeLinks {
 
   /**
    * 指向这些标题的链接重新按标题找一遍文档：新建、改名、删除文档后调，悬空的连上，删掉的置空（或换成另一篇同名的）。
-   * @param titles 变动的标题（改名时新旧两个都给）。
+   * 别名变了也调它（新旧别名都给），按别名连上的链接跟着重新找。
+   * @param titles 变动的标题和别名（改名时新旧两个都给）。
    */
   relinkTitles(titles: readonly string[]): void {
     for (const title of titles) {
@@ -169,15 +207,19 @@ export class KnowledgeLinks {
   /**
    * 一篇文档的引出链接和反向链接。
    * @param docId 文档 ID（调用方已确认存在）。
-   * @returns 引出链接按正文先后；反向链接不含自己，新的在前。
+   * @returns 引出链接按正文先后，没连上又有两篇以上用了这个别名的标 ambiguous；反向链接不含自己，新的在前。
    */
   getLinks(docId: string): Omit<types.KnowledgeLinksResponse, 'ok'> {
-    const outSql = 'SELECT source_id, target_title, target_id FROM kb_links WHERE source_id = ? ORDER BY rowid ASC';
-    const outRows = this.db.query<LinkRow, [string]>(outSql).all(docId);
+    const outSql = `
+      SELECT source_id, target_title, target_id, ${ALIAS_DOCS_SQL} AS alias_docs
+      FROM kb_links WHERE source_id = ? ORDER BY rowid ASC
+    `;
+    const outRows = this.db.query<OutRow, [string]>(outSql).all(docId);
     const outgoing = outRows.map((row): types.KnowledgeOutlink => ({
       targetTitle: row.target_title,
       targetId: row.target_id,
       exists: row.target_id !== null,
+      ambiguous: row.target_id === null && row.alias_docs >= 2,
     }));
 
     const backSql = `
@@ -228,7 +270,7 @@ export class KnowledgeLinks {
     }));
 
     //M 再取节点：整个库是全部文档；有中心时是中心加边上出现过的文档。
-    const allSql = 'SELECT id, title, is_system_rule FROM kb_docs ORDER BY updated_at DESC';
+    const allSql = 'SELECT id, title, aliases, is_system_rule FROM kb_docs ORDER BY updated_at DESC';
     let nodeRows = this.db.query<NodeRow, []>(allSql).all();
     if (centerId !== undefined) {
       const ids = new Set([centerId]);
@@ -237,7 +279,7 @@ export class KnowledgeLinks {
         ids.add(edge.target);
       }
       const marks = [...ids].map(() => '?').join(', ');
-      const sql = `SELECT id, title, is_system_rule FROM kb_docs WHERE id IN (${marks}) ORDER BY updated_at DESC`;
+      const sql = `SELECT id, title, aliases, is_system_rule FROM kb_docs WHERE id IN (${marks}) ORDER BY updated_at DESC`;
       nodeRows = this.db.query<NodeRow, string[]>(sql).all(...ids);
       if (!nodeRows.some((row) => row.id === centerId)) {
         throw new failureModule.Failure(404, `文档不存在：${centerId}`);
@@ -254,6 +296,7 @@ export class KnowledgeLinks {
     const nodes = nodeRows.map((row): types.KnowledgeGraphNode => ({
       id: row.id,
       title: row.title,
+      aliases: parseNodeAliases(row.aliases),
       tags: tagMap.get(row.id) ?? [],
       isSystemRule: row.is_system_rule === 1,
       degree: degrees.get(row.id) ?? 0,

@@ -143,6 +143,7 @@ export class DiskMirror {
       sourceType: doc.sourceType,
       tags: doc.tags,
       isSystemRule: doc.isSystemRule,
+      aliases: doc.aliases,
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,
     };

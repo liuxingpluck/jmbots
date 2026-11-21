@@ -1,8 +1,9 @@
 /**
  * 积木知识库的模型工具：
  *   kb_search（只读）：按关键词、专题节点 topicId、标签或目录查索引摘要，按 docId 取完整正文；
+ *   kb_disambiguate（只读，1.2.0）：查一个词对应哪几篇（标题或别名一样），有歧义时列出候选让模型选定 docId；
  *   kb_save（写，1.0.2）：新建文档，或往已有文档追加、替换正文（替换要带 baseUpdatedAt 走乐观锁）。
- * 两个都给前台（front）与后台（work）；外人那一轮由 approval 的只读白名单挡掉，kb_save 执行时再核一次本人。
+ * 三个都给前台（front）与后台（work）；外人那一轮由 approval 的只读白名单挡掉，kb_save 执行时再核一次本人。
  * 硬性系统规则（1.1.0）：kb_search 照常读；kb_save 不能建带这个标记的文档，也不能追加、替换、改动已标记的文档。
  */
 import * as piAi from '@earendil-works/pi-ai';
@@ -15,7 +16,7 @@ import type * as types from './Types.ts';
 
 
 const KB_SEARCH_PARAMETERS = piAi.Type.Object({
-  query: piAi.Type.Optional(piAi.Type.String({ description: '检索关键词（匹配标题、摘要、正文与标签）' })),
+  query: piAi.Type.Optional(piAi.Type.String({ description: '检索关键词（匹配标题、别名、摘要、正文与标签）' })),
   topicId: piAi.Type.Optional(piAi.Type.String({ description: '按工作决策台专题节点 ID 查挂载资料' })),
   tag: piAi.Type.Optional(piAi.Type.String({ description: '按标签名筛选（如 AOBB）' })),
   dirId: piAi.Type.Optional(piAi.Type.String({ description: '按虚拟目录 ID 筛选' })),
@@ -91,6 +92,9 @@ export function registerKbSearchTool(
         if (doc.tags.length > 0) {
           metaLines.push(`- 标签: ${doc.tags.map((t) => `#${t}`).join(' ')}`);
         }
+        if (doc.aliases.length > 0) {
+          metaLines.push(`- 别名: ${doc.aliases.join('、')}`);
+        }
         if (doc.sourcePath !== '') {
           metaLines.push(`- 来源路径: ${doc.sourcePath}`);
         }
@@ -147,6 +151,9 @@ export function registerKbSearchTool(
         if (hit.tags.length > 0) {
           badges += ` ${hit.tags.map((t) => `#${t}`).join(' ')}`;
         }
+        if (hit.aliases.length > 0) {
+          badges += ` [别名:${hit.aliases.join('、')}]`;
+        }
         if (hit.isSystemRule) {
           badges += ' [硬性系统规则·只读]';
         }
@@ -173,6 +180,78 @@ export function registerKbSearchTool(
 
 
 //==========================================================
+// kb_disambiguate：同名、同别名消歧（1.2.0）
+//==========================================================
+
+const KB_DISAMBIGUATE_PARAMETERS = piAi.Type.Object({
+  query: piAi.Type.String({ description: '要消歧的词：人名、项目名、简称等，按标题和别名精确比（大小写不敏感）' }),
+});
+
+
+/**
+ * 消歧结果写成给模型看的话：每篇候选一行，带 docId、分类、别名、摘要；有歧义时提醒先选定 docId。
+ * @param result Store.disambiguate 的结果。
+ * @returns 文字。
+ */
+function formatDisambiguate(result: Omit<types.KnowledgeDisambiguateResponse, 'ok'>): string {
+  if (result.candidates.length === 0) {
+    return `知识库里没有标题或别名叫「${result.query}」的文档，可以用 kb_search 按关键词再找。`;
+  }
+
+  const lines: string[] = [];
+  for (const [index, item] of result.candidates.entries()) {
+    let how = '标题';
+    if (item.matchedBy === 'alias') {
+      how = '别名';
+    }
+    let extra = '';
+    if (item.category !== '') {
+      extra += ` [分类:${item.category}]`;
+    }
+    if (item.aliases.length > 0) {
+      extra += ` [别名:${item.aliases.join('、')}]`;
+    }
+    lines.push(`${String(index + 1)}. [docId=${item.id}]（${how}对上）${item.title}${extra}\n   ${item.summary}`);
+  }
+
+  let header = `「${result.query}」只对应一篇：`;
+  if (result.ambiguous) {
+    header = `「${result.query}」有 ${String(result.candidates.length)} 篇对得上，有歧义：`
+      + '写 [[引用]] 或查资料前先按下面的摘要选定是哪篇，用 docId 指明，必要时问用户。';
+  }
+  return `${header}\n${lines.join('\n')}`;
+}
+
+
+/**
+ * 注册只读工具 kb_disambiguate。
+ * @param ctx 插件上下文。
+ * @param store 知识库存储实例。
+ */
+export function registerKbDisambiguateTool(
+  ctx: cordis.Context,
+  store: storeModule.KnowledgeStore,
+): void {
+  ctx.tools.register({
+    definition: {
+      name: 'kb_disambiguate',
+      description: '查一个词在积木知识库里对应哪几篇：标题或别名和它一样的都列出来（带 docId、分类、别名、摘要）。'
+        + '同名、同别名有两篇以上时提示有歧义，写 [[引用]] 或下结论前先用它选定是哪篇。',
+      parameters: KB_DISAMBIGUATE_PARAMETERS,
+    },
+    sessionKinds: ['front', 'work'],
+    run(args) {
+      const query = readArgText(args, 'query');
+      if (query === '') {
+        throw new Error('要写 query');
+      }
+      return formatDisambiguate(store.disambiguate(query));
+    },
+  });
+}
+
+
+//==========================================================
 // kb_save：模型写入知识库（1.0.2）
 //==========================================================
 
@@ -192,6 +271,9 @@ const KB_SAVE_PARAMETERS = piAi.Type.Object({
   baseUpdatedAt: piAi.Type.Optional(piAi.Type.Integer({ description: 'replace 时必填：读文档时看到的 updatedAt' })),
   summary: piAi.Type.Optional(piAi.Type.String({ description: '摘要；不传按正文自动生成' })),
   tags: piAi.Type.Optional(piAi.Type.Array(piAi.Type.String(), { description: '标签（不能带逗号，最多 20 个）' })),
+  aliases: piAi.Type.Optional(piAi.Type.Array(piAi.Type.String(), {
+    description: '别名：同一实体的别的叫法（简称、英文名），全量替换；最多 20 个，每个最多 60 字',
+  })),
   dirId: piAi.Type.Optional(piAi.Type.String({ description: '虚拟目录 ID' })),
   topicId: piAi.Type.Optional(piAi.Type.String({ description: '工作决策台专题节点 ID' })),
   sourceType: piAi.Type.Optional(piAi.Type.String({ description: '来源：note（默认）、file、url、transcript' })),
@@ -236,6 +318,9 @@ function formatSaved(action: string, doc: types.KnowledgeDoc): string {
   if (doc.tags.length > 0) {
     lines.push(`- 标签: ${doc.tags.map((tag) => `#${tag}`).join(' ')}`);
   }
+  if (doc.aliases.length > 0) {
+    lines.push(`- 别名: ${doc.aliases.join('、')}`);
+  }
   return lines.join('\n');
 }
 
@@ -272,6 +357,9 @@ function runKbSave(store: storeModule.KnowledgeStore, args: Record<string, unkno
   }
   if (tags !== undefined) {
     patch.tags = tags;
+  }
+  if (Array.isArray(args['aliases'])) {
+    patch.aliases = args['aliases'] as string[];
   }
   if (typeof args['dirId'] === 'string') {
     patch.dirId = args['dirId'];
@@ -350,7 +438,7 @@ export function registerKbSaveTool(
     definition: {
       name: 'kb_save',
       description: '往积木知识库写资料：不传 docId 新建一篇（要 title、content）；传 docId 默认把 content 追加到原文后面，'
-        + 'mode=replace 才整篇替换（要带 baseUpdatedAt）。可同时改标题、摘要、标签、目录、专题。'
+        + 'mode=replace 才整篇替换（要带 baseUpdatedAt）。可同时改标题、摘要、标签、别名、目录、专题。'
         + '标着「硬性系统规则」的文档只读，不能用它改。',
       parameters: KB_SAVE_PARAMETERS,
     },

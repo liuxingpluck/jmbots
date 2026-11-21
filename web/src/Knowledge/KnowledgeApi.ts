@@ -1,5 +1,5 @@
 /**
- * 积木知识库页面的接口封装：/api/knowledge/* 十五个接口，沿用 jmbots 的页面令牌。
+ * 积木知识库页面的接口封装：/api/knowledge/* 十八个接口，沿用 jmbots 的页面令牌。
  * 401 广播 jmbots:unauthorized（AuthGate 弹登录）；403 抛 KnowledgeError，页面据此切成只读；
  * 保存带 baseUpdatedAt，别处改过时后端回 409，这里交回 { conflict: true, doc } 让页面换成最新的。
  */
@@ -21,6 +21,9 @@ export type KnowledgeLinksResponse = types.KnowledgeLinksResponse;
 export type KnowledgeGraphResponse = types.KnowledgeGraphResponse;
 export type KnowledgeGraphNode = types.KnowledgeGraphNode;
 export type KnowledgeGraphEdge = types.KnowledgeGraphEdge;
+export type KnowledgeDisambiguateResponse = types.KnowledgeDisambiguateResponse;
+export type KnowledgeSyncResult = types.KnowledgeSyncResult;
+export type KnowledgeSyncStatusResponse = types.KnowledgeSyncStatusResponse;
 
 const BASE = '/api/knowledge';
 
@@ -369,4 +372,34 @@ export function fetchDocLinks(docId: string, signal?: AbortSignal): Promise<type
 export function fetchGraph(centerId?: string, signal?: AbortSignal): Promise<types.KnowledgeGraphResponse> {
   const route = `/graph${getQueryString({ centerId })}`;
   return request(route, { signal });
+}
+
+
+//==========================================================
+//M 别名消歧与本地目录同步（knowledge v1.2.0）
+//==========================================================
+
+/**
+ * 16. 别名消歧：标题或别名和这个词一样的文档，两篇以上 ambiguous 为 true。
+ * @param q 要查的词。
+ * @param signal 中止信号。
+ */
+export function disambiguate(q: string, signal?: AbortSignal): Promise<types.KnowledgeDisambiguateResponse> {
+  return request(`/disambiguate${getQueryString({ q })}`, { signal });
+}
+
+
+/**
+ * 17. 同步一次本地目录（只读源目录）：dirs 不给用后端配置的 localWatchDirs；category 不给放进「外部学习」。
+ * @param dirs 临时指定的本机绝对路径。
+ * @param category 分类（虚拟目录名）。
+ */
+export function syncFolders(dirs?: string[], category?: string): Promise<types.KnowledgeSyncResponse> {
+  return request('/sync-folders', getWriteOptions('POST', { dirs, category }));
+}
+
+
+/** 18. 同步状态：配置的目录和最近一次同步的结果。 */
+export function getSyncStatus(signal?: AbortSignal): Promise<types.KnowledgeSyncStatusResponse> {
+  return request('/sync-status', { signal });
 }

@@ -6,12 +6,14 @@
  * 4. 注册模型只读检索工具 kb_search，供前台与后台机器人按关键词、专题或标签查阅资料；
  * 5. 注册写工具 kb_save（新建、追加、带乐观锁的替换），标签改名合并删除与相关文档推荐接口；
  * 6. [[双链]] 关系表 kb_links（引出、反向链接与图谱接口）、多标签 all/any 组合筛选、
- *    只有本人能改的「硬性系统规则」（kb_save 不能建、不能改）。
+ *    只有本人能改的「硬性系统规则」（kb_save 不能建、不能改）；
+ * 7. 实体别名（搜索、双链、消歧接口与 kb_disambiguate 工具）和本地文件夹只读同步（FolderSync.ts）。
  */
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as checksModule from '../../utils/Checks.ts';
 import * as mirrorModule from './DiskMirror.ts';
+import * as folderSyncModule from './FolderSync.ts';
 import * as linksModule from './Links.ts';
 import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
@@ -19,7 +21,8 @@ import * as toolsModule from './Tools.ts';
 
 export * from './Types.ts';
 export { DiskMirror, formatDateFolder, generateAtomId, sanitizeTitleSlug } from './DiskMirror.ts';
-export { KnowledgeStore, SCHEMA_SQL, deriveAutoSummary, normalizeTags } from './Store.ts';
+export { KnowledgeStore, SCHEMA_SQL, deriveAutoSummary, normalizeAliases, normalizeTags } from './Store.ts';
+export { FolderSync } from './FolderSync.ts';
 export { parseWikiLinks } from './Links.ts';
 
 
@@ -33,8 +36,10 @@ export const name = 'knowledge';
 //M   第 2 版按语句拆开补齐第 1 版只执行了第一句的那几张表。
 //M 1.1.0：Obsidian 式 [[双链]]（第 4 版迁移建 kb_links，引出/反向链接与图谱接口）；多标签 tagMode=all|any；
 //M   硬性系统规则（第 3 版迁移给 kb_docs 加 is_system_rule，kb_save 不能建、不能改，只有本人在网页上改）。
+//M 1.2.0：实体别名（第 5 版迁移加 aliases、content_hash；搜索、[[双链]] 唯一别名命中、消歧接口与 kb_disambiguate）；
+//M   本地文件夹只读同步（localWatchDirs，POST /api/knowledge/sync-folders、GET /api/knowledge/sync-status）。
 /** 插件版本号。 */
-export const version = '1.1.0';
+export const version = '1.2.0';
 
 /** 依赖资源主库、主 HTTP 服务、模型工具注册表，以及建表用的 db 迁移账本。 */
 export const inject = ['resources', 'http', 'tools', 'db'];
@@ -51,33 +56,41 @@ export const knowledgeMigrations = {
       adoptColumn: { table: 'kb_docs', name: 'is_system_rule' },
     },
     { version: 4, sql: linksModule.LINKS_SQL },
+    { version: 5, sql: storeModule.ALIAS_HASH_SQL },
   ],
 };
 
 
-/** 解析可选插件配置。 */
-function parseKnowledgeConfig(
-  runtimeRoot: string,
-  raw: unknown,
-): { mirrorDir: string } {
+/** 校验后的插件配置。 */
+interface KnowledgeSettings {
+  /** 磁盘镜像根目录。 */
+  mirrorDir: string;
+  /** 本地文件夹只读同步的目录（规范化后的绝对路径）；没配是空数组。 */
+  localWatchDirs: string[];
+}
+
+
+/** 解析可选插件配置（mirror_dir、localWatchDirs）。 */
+function parseKnowledgeConfig(runtimeRoot: string, raw: unknown): KnowledgeSettings {
   const defaultDir = path.join(runtimeRoot, 'knowledge');
   if (raw === undefined || raw === true) {
-    return { mirrorDir: defaultDir };
+    return { mirrorDir: defaultDir, localWatchDirs: [] };
   }
 
   const rec = checksModule.checkRecord(raw, 'plugins.knowledge');
+  const localWatchDirs = checksModule.checkDirs(rec['localWatchDirs'], 'plugins.knowledge.localWatchDirs');
   if (rec['mirror_dir'] !== undefined) {
     const custom = checksModule.checkNonEmptyText(rec['mirror_dir'], 'plugins.knowledge.mirror_dir');
-    return { mirrorDir: path.resolve(runtimeRoot, custom) };
+    return { mirrorDir: path.resolve(runtimeRoot, custom), localWatchDirs };
   }
-  return { mirrorDir: defaultDir };
+  return { mirrorDir: defaultDir, localWatchDirs };
 }
 
 
 /**
  * 挂载积木知识库插件。
  * @param ctx Cordis 插件上下文。
- * @param config 可选插件配置（mirror_dir）。
+ * @param config 可选插件配置（mirror_dir、localWatchDirs）。
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   const settings = parseKnowledgeConfig(ctx.resources.root, config);
@@ -92,7 +105,9 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   if (store.links.isEmpty()) {
     store.links.rebuildAll();
   }
-  routesModule.mountKnowledgeRoutes(ctx, store);
+  const folderSync = new folderSyncModule.FolderSync(store, settings.localWatchDirs, settings.mirrorDir);
+  routesModule.mountKnowledgeRoutes(ctx, store, folderSync);
   toolsModule.registerKbSearchTool(ctx, store);
+  toolsModule.registerKbDisambiguateTool(ctx, store);
   toolsModule.registerKbSaveTool(ctx, store);
 }

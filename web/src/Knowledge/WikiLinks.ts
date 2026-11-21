@@ -29,7 +29,7 @@ export type TitleIndex = ReadonlyMap<string, { id: string; title: string }>;
 
 
 /**
- * 用整库图谱的节点建标题索引；同名的留第一篇。
+ * 用整库图谱的节点建标题索引；同名的留第一篇，再补充全库唯一的实体别名（与后端 RESOLVE_SQL 对齐）。
  * @param nodes 图谱节点。
  */
 export function getTitleIndex(nodes: readonly api.KnowledgeGraphNode[]): TitleIndex {
@@ -39,6 +39,30 @@ export function getTitleIndex(nodes: readonly api.KnowledgeGraphNode[]): TitleIn
     if (index.has(key)) continue;
 
     index.set(key, { id: node.id, title: node.title });
+  }
+
+  //M 统计每个别名出现在哪些文档里：只有恰好一篇且不与现有标题冲突时才写入索引。
+  const aliasDocs = new Map<string, Map<string, string>>();
+  for (const node of nodes) {
+    for (const alias of node.aliases ?? []) {
+      const key = alias.trim().toLowerCase();
+      if (key === '' || index.has(key)) continue;
+
+      let docs = aliasDocs.get(key);
+      if (docs === undefined) {
+        docs = new Map<string, string>();
+        aliasDocs.set(key, docs);
+      }
+      docs.set(node.id, node.title);
+    }
+  }
+  for (const [key, docs] of aliasDocs) {
+    if (docs.size !== 1) continue;
+
+    const first = docs.entries().next().value;
+    if (first !== undefined) {
+      index.set(key, { id: first[0], title: first[1] });
+    }
   }
   return index;
 }
@@ -185,7 +209,7 @@ export function insertWikiLink(
  */
 export function getSuggestions(titles: TitleIndex, query: string, limit: number): string[] {
   const lower = query.trim().toLowerCase();
-  const found: { title: string; rank: number }[] = [];
+  const best = new Map<string, { title: string; rank: number }>();
   for (const [key, entry] of titles) {
     const at = key.indexOf(lower);
     if (at < 0) continue;
@@ -194,8 +218,12 @@ export function getSuggestions(titles: TitleIndex, query: string, limit: number)
     if (at === 0) {
       rank = 0;
     }
-    found.push({ title: entry.title, rank });
+    const prev = best.get(entry.id);
+    if (prev === undefined || rank < prev.rank) {
+      best.set(entry.id, { title: entry.title, rank });
+    }
   }
+  const found = [...best.values()];
   found.sort((a, b) => a.rank - b.rank || a.title.length - b.title.length);
   return found.slice(0, limit).map((item) => item.title);
 }
