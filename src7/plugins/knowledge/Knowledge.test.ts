@@ -288,6 +288,68 @@ describe('knowledge 三表 CRUD、目录环路防护、专题挂载与磁盘镜�
     }
   });
 
+  test('G3 多标签交集：单标签兼容、双标签交集命中与不命中、空与重复标签归一，搜索同样生效', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      //M 三篇：A 带 安全+FRPC，B 只带 安全，C 带 FRPC+ASR。
+      const seeds = [
+        { title: '隧道 A', tags: ['安全', 'FRPC'] },
+        { title: '隧道 B', tags: ['安全'] },
+        { title: '隧道 C', tags: ['FRPC', 'ASR'] },
+      ];
+      for (const payload of seeds) {
+        await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload: { ...payload, content: '正文' } });
+      }
+
+      /** 列表接口按某个查询串筛，交回命中的标题（排好序）。 */
+      const listTitles = async (search: string): Promise<string[]> => {
+        const res = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs?${search}` });
+        expect(res.statusCode).toBe(200);
+        const body = res.json<{ items: knowledgePlugin.KnowledgeDocSummary[]; total: number }>();
+        expect(body.total).toBe(body.items.length);
+        return body.items.map((item) => item.title).sort();
+      };
+      const safe = encodeURIComponent('安全');
+      const asr = encodeURIComponent('ASR');
+
+      //M 单个 tag 照旧；重复 tag、tags 逗号都是交集，大小写不敏感。
+      expect(await listTitles(`tag=${safe}`)).toEqual(['隧道 A', '隧道 B']);
+      expect(await listTitles(`tag=${safe}&tag=frpc`)).toEqual(['隧道 A']);
+      expect(await listTitles(`tags=${safe},FRPC`)).toEqual(['隧道 A']);
+      expect(await listTitles(`tags=${safe},${asr}`)).toEqual([]);
+
+      //M 空项、带 # 的重复项归成一个。
+      const messy = encodeURIComponent(',安全,#安全, ');
+      expect(await listTitles(`tags=${messy}`)).toEqual(['隧道 A', '隧道 B']);
+
+      //M 搜索接口也按交集筛。
+      const found = await h.app.inject({
+        method: 'GET',
+        url: `/api/knowledge/search?q=${encodeURIComponent('隧道')}&tags=${safe},frpc&includeMemory=0`,
+      });
+      expect(found.statusCode).toBe(200);
+      const hits = found.json<{ hits: knowledgePlugin.KnowledgeSearchHit[] }>().hits;
+      expect(hits.map((hit) => hit.title)).toEqual(['隧道 A']);
+
+      //G 云端 30 #1：标签名带逗号（中英文）写入时拒绝；筛选标签超过 20 个拒绝，20 个照常。
+      for (const bad of ['a,b', '甲，乙']) {
+        const payload = { title: 'x', tags: [bad] };
+        const res = await h.app.inject({ method: 'POST', url: '/api/knowledge/docs', payload });
+        expect(res.statusCode).toBe(400);
+        expect(res.json<{ error: string }>().error).toContain('标签名不能包含逗号');
+      }
+      const many = Array.from({ length: 21 }, (_, index) => `t${String(index)}`);
+      const tooMany = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs?tags=${many.join(',')}` });
+      expect(tooMany.statusCode).toBe(400);
+      expect(tooMany.json<{ error: string }>().error).toContain('最多 20 个');
+      const twenty = many.slice(0, 20).join(',');
+      const enough = await h.app.inject({ method: 'GET', url: `/api/knowledge/docs?tags=${twenty}` });
+      expect(enough.statusCode).toBe(200);
+    } finally {
+      await h.close();
+    }
+  });
+
   test('安全边界回归：镜像防 kb/kb_2 前缀误删、禁冒号 ID、LIKE 通配符转义与自动摘要重算', async () => {
     const h = await createKnowledgeHarness();
     try {

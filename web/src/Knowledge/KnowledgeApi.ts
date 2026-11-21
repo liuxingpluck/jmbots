@@ -52,13 +52,18 @@ export interface DocPage {
 export interface DocQuery {
   /** 目录号；UNASSIGNED 只看未归类。 */
   dirId?: string;
-  /** 单个标签名。 */
-  tag?: string;
+  /** 标签名，多个时取交集（一个时照旧发 tag，多个时发 tags=a,b）。 */
+  tags?: string[];
   /** 工作决策节点号。 */
   topicId?: string;
   /** 分页偏移。 */
   offset?: number;
+  /** 这一页拉几条；不写是 PAGE_SIZE。切回页面按已显示的条数刷新时用。 */
+  limit?: number;
 }
+
+/** 列表一页几条。 */
+export const PAGE_SIZE = 50;
 
 /** 保存的结果：conflict 为 true 时 doc 是库里最新的（别处先改过）。 */
 export interface SaveResult {
@@ -116,6 +121,19 @@ function getWriteOptions(method: string, body?: unknown): RequestInit {
 
 
 /**
+ * 标签筛选写成查询参数：一个时照旧发 tag（老后端也认），多个时发 tags（逗号分隔，后端取交集）。
+ * @param tags 选中的标签；没有是空。
+ */
+function getTagParams(tags: string[] | undefined): { tag?: string; tags?: string } {
+  if (tags === undefined || tags.length === 0) return {};
+
+  if (tags.length === 1) return { tag: tags[0] };
+
+  return { tags: tags.join(',') };
+}
+
+
+/**
  * 把一组可选参数拼成查询串，空的不写。
  * @param values 参数名到值。
  * @returns 带问号的查询串；全空时是空字符串。
@@ -142,7 +160,9 @@ export function getTree(signal?: AbortSignal): Promise<types.KnowledgeTreeRespon
 
 /** 2. 文档摘要列表（按更新时间倒序，每页 50）。 */
 export function listDocs(query: DocQuery, signal?: AbortSignal): Promise<DocPage> {
-  const search = getQueryString({ ...query, limit: 50 });
+  const tagParams = getTagParams(query.tags);
+  const values = { dirId: query.dirId, topicId: query.topicId, offset: query.offset, ...tagParams };
+  const search = getQueryString({ ...values, limit: query.limit ?? PAGE_SIZE });
   return request(`/docs${search}`, { signal });
 }
 
@@ -223,6 +243,7 @@ export function search(
   query: DocQuery,
   signal?: AbortSignal,
 ): Promise<types.KnowledgeSearchResponse> {
-  const params = getQueryString({ q, dirId: query.dirId, tag: query.tag, topicId: query.topicId, limit: 30 });
+  const tagParams = getTagParams(query.tags);
+  const params = getQueryString({ q, dirId: query.dirId, topicId: query.topicId, ...tagParams, limit: 30 });
   return request(`/search${params}`, { signal });
 }

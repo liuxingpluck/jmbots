@@ -8,6 +8,8 @@ import * as api from './KnowledgeApi.ts';
 
 /** 拖文档时 dataTransfer 里的类型，值是文档号（DocList 设）。 */
 export const DOC_MIME = 'application/x-kb-doc';
+/** 拖文档时顺带的类型，值是文档现在所在的目录号（未归类是空串，DocList 设）：拖回原目录时直接忽略。 */
+export const DOC_DIR_MIME = 'application/x-kb-doc-dir';
 /** 拖目录时 dataTransfer 里的类型，值是目录号。 */
 export const DIR_MIME = 'application/x-kb-dir';
 
@@ -17,16 +19,16 @@ interface DirTreeProps {
   tree: api.KnowledgeTreeResponse | undefined;
   /** 当前选中的目录号；UNASSIGNED 是未归类；undefined 是全部。 */
   dir: string | undefined;
-  /** 当前选中的标签。 */
-  tag: string | undefined;
+  /** 当前选中的标签（多个取交集）。 */
+  tags: string[];
   /** 只读：不显示增删改按钮、不接拖拽。 */
   readOnly: boolean;
   /** 能不能拖拽（桌面才开）。 */
   dragEnabled: boolean;
   /** 选目录；undefined 回到全部。实现在 KnowledgePage 的 pickDir。 */
   pickDir: (dir: string | undefined) => void;
-  /** 选标签；再点一次传 undefined 取消。 */
-  pickTag: (tag: string | undefined) => void;
+  /** 点一个标签：没选的加上、选了的去掉（多选取交集）。实现在 KnowledgePage 的 pickTag。 */
+  pickTag: (tag: string) => void;
   /** 新建目录，parentId 为 null 建在顶层。 */
   createDir: (parentId: string | null) => void;
   /** 重命名目录。 */
@@ -45,6 +47,34 @@ interface DropAccept {
   doc: boolean;
   /** 接目录：放下后目录移到这个目录下面（null 是顶层）。 */
   dir: boolean;
+}
+
+
+/**
+ * 把目录移到 target 下面是不是没意义或不合法：移到自己、移到现在的父目录下（原地不动）、移到自己的子孙下面（成环）。
+ * 前端先拦住，不发空的或非法的 PUT。
+ * @param tree 目录树；还没拉到时不拦，交给后端。
+ * @param dirId 拖起来的目录号。
+ * @param target 放下的目标目录号；null 是顶层。
+ * @returns 该拦是 true。
+ */
+function isNoopDirMove(tree: api.KnowledgeTreeResponse | undefined, dirId: string, target: string | null): boolean {
+  if (dirId === target) return true;
+
+  if (tree === undefined) return false;
+
+  //M 父目录表：目录号 → 父目录号（顶层是 null）。
+  const parents = new Map(tree.flatDirs.map((dir) => [dir.id, dir.parentId]));
+  if (parents.get(dirId) === target) return true;
+
+  //M 从目标一路往上找父目录，碰到拖起来的目录就是要移到它自己的子孙下面。
+  let cursor = target;
+  while (cursor !== null) {
+    if (cursor === dirId) return true;
+
+    cursor = parents.get(cursor) ?? null;
+  }
+  return false;
 }
 
 
@@ -87,13 +117,23 @@ function getDropHandlers(
       const docId = event.dataTransfer.getData(DOC_MIME);
       if (accept.doc && docId !== '') {
         event.preventDefault();
+
+        //G 拖回它现在所在的目录：什么都不做，不发空 PUT。
+        const fromDir = event.dataTransfer.getData(DOC_DIR_MIME);
+        if (fromDir === (target ?? '')) return;
+
         props.moveDoc(docId, target);
         return;
       }
 
-      //G 目录拖到自己身上不算；拖到自己子孙下面由后端拦环路。
+      //G 目录拖到自己、现在的父目录、自己的子孙下面：前端直接拦住，不发 PUT。
       const dirId = event.dataTransfer.getData(DIR_MIME);
-      if (!accept.dir || dirId === '' || dirId === target) return;
+      if (!accept.dir || dirId === '') return;
+
+      if (isNoopDirMove(props.tree, dirId, target)) {
+        event.preventDefault();
+        return;
+      }
 
       event.preventDefault();
       props.moveDir(dirId, target);
@@ -257,19 +297,16 @@ export function DirTree(props: DirTreeProps): react.JSX.Element {
           <div className="kb-tree-head"><span>标签</span></div>
           <div className="kb-tags">
             {tags.map((item) => {
-              const isActive = props.tag === item.name;
-              //M 再点一次已选的标签就是取消。
-              let next: string | undefined = item.name;
-              if (isActive) {
-                next = undefined;
-              }
+              //M 多选：已选的再点一次就去掉，KnowledgePage 的 pickTag 负责增删。
+              const isActive = props.tags.includes(item.name);
               return (
                 <button
                   key={item.id}
                   type="button"
                   className="kb-tag"
                   data-active={isActive}
-                  onClick={() => props.pickTag(next)}
+                  aria-pressed={isActive}
+                  onClick={() => props.pickTag(item.name)}
                 >
                   #{item.name}<span className="kb-count">{item.docCount}</span>
                 </button>

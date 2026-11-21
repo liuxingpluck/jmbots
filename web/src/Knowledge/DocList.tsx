@@ -100,6 +100,8 @@ function DocRow(props: DocRowProps): react.JSX.Element {
   //M 拖起来带文档号，DirTree 的目录行接住后移动文档。
   const onDragStart = (event: react.DragEvent): void => {
     event.dataTransfer.setData(dirTree.DOC_MIME, doc.id);
+    //M 顺带文档现在所在的目录（未归类是空串）：拖回原目录时 DirTree 直接忽略，不发空 PUT。
+    event.dataTransfer.setData(dirTree.DOC_DIR_MIME, doc.dirId ?? '');
     event.dataTransfer.effectAllowed = 'move';
   };
 

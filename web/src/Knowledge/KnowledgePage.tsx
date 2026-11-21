@@ -43,8 +43,8 @@ interface Opened {
 interface UrlState {
   /** 目录筛选。 */
   dir: string | undefined;
-  /** 标签筛选。 */
-  tag: string | undefined;
+  /** 标签筛选（多个取交集）；网址里写成 ?tag=a,b。 */
+  tags: string[];
   /** 专题筛选。 */
   topic: string | undefined;
   /** 搜索词。 */
@@ -78,7 +78,7 @@ function readUrl(): UrlState {
   }
   return {
     dir: getOne('dir'),
-    tag: getOne('tag'),
+    tags: (getOne('tag') ?? '').split(',').filter((one) => one !== ''),
     topic: getOne('topic'),
     q: params.get('q') ?? '',
     doc: getOne('doc'),
@@ -139,7 +139,7 @@ export function KnowledgePage(): react.JSX.Element {
 
   //M 筛选：目录、标签、专题；搜索框的字（qInput）停手 300ms 才变成真正生效的 q。
   const [dir, setDir] = react.useState(initial.dir);
-  const [tag, setTag] = react.useState(initial.tag);
+  const [tags, setTags] = react.useState(initial.tags);
   const [topic, setTopic] = react.useState(initial.topic);
   const [qInput, setQInput] = react.useState(initial.q);
   const [q, setQ] = react.useState(initial.q.trim());
@@ -147,6 +147,9 @@ export function KnowledgePage(): react.JSX.Element {
   //M 左栏数据、中栏列表或搜索结果。
   const [tree, setTree] = react.useState<api.KnowledgeTreeResponse>();
   const [items, setItems] = react.useState<api.KnowledgeDocSummary[]>([]);
+  /** 现在列表里显示了几条：切回页面刷新时按它拉（visibilitychange 的监听里读）。 */
+  const itemCountRef = react.useRef(0);
+  itemCountRef.current = items.length;
   const [total, setTotal] = react.useState(0);
   const [hits, setHits] = react.useState<api.KnowledgeSearchHit[]>();
   const [memoryHits, setMemoryHits] = react.useState<api.KnowledgeMemoryHit[]>([]);
@@ -207,13 +210,13 @@ export function KnowledgePage(): react.JSX.Element {
     }
   }, [showNotice]);
 
-  const loadList = react.useCallback(async (offset: number) => {
+  const loadList = react.useCallback(async (offset: number, limit = api.PAGE_SIZE) => {
     listAbortRef.current?.abort();
     const controller = new AbortController();
     listAbortRef.current = controller;
     listSeqRef.current += 1;
     const seq = listSeqRef.current;
-    const query: api.DocQuery = { dirId: dir, tag, topicId: topic };
+    const query: api.DocQuery = { dirId: dir, tags, topicId: topic };
     setLoading(true);
     try {
       //M 有搜索词：走混合搜索，本地命中加相关记忆。
@@ -229,7 +232,7 @@ export function KnowledgePage(): react.JSX.Element {
       }
 
       //M 没搜索词：分页列表；offset 为 0 是重拉，大于 0 是接在后面。
-      const page = await api.listDocs({ ...query, offset }, controller.signal);
+      const page = await api.listDocs({ ...query, offset, limit }, controller.signal);
       if (seq !== listSeqRef.current) return;
 
       setHits(undefined);
@@ -249,7 +252,7 @@ export function KnowledgePage(): react.JSX.Element {
         setLoading(false);
       }
     }
-  }, [dir, tag, topic, q]);
+  }, [dir, tags, topic, q]);
 
   //M 首屏拉树；筛选一变就重拉列表。
   react.useEffect(() => {
@@ -271,7 +274,13 @@ export function KnowledgePage(): react.JSX.Element {
       if (document.hidden) return;
 
       void loadTree();
-      void loadList(0);
+
+      //M 已经往下翻过不止一页：按现在显示的条数刷新（最多 200），不把翻到一半的列表硬重置回第一页。
+      let limit = api.PAGE_SIZE;
+      if (itemCountRef.current > api.PAGE_SIZE) {
+        limit = Math.min(200, itemCountRef.current);
+      }
+      void loadList(0, limit);
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
@@ -279,8 +288,9 @@ export function KnowledgePage(): react.JSX.Element {
 
   //M 现状写回网址；?new、?title 只在第一次用，写回时就去掉了。
   react.useEffect(() => {
+    const tag = tags.join(',');
     writeUrl({ dir, tag, topic, q, doc: opened?.id });
-  }, [dir, tag, topic, q, opened?.id]);
+  }, [dir, tags, topic, q, opened?.id]);
 
   //==========================================================
   //M 右栏：打开、新建、关掉文档；手机上打开时压一层历史，返回键回列表
@@ -442,9 +452,14 @@ export function KnowledgePage(): react.JSX.Element {
     setDrawerOpen(false);
   }, []);
 
-  const pickTag = react.useCallback((next: string | undefined) => {
-    setTag(next);
-    setDrawerOpen(false);
+  //M 标签多选：没选的加上、选了的去掉，筛选取交集。
+  //M 不关手机抽屉，方便连续选几个标签（点目录照旧关，见 pickDir）。
+  const pickTag = react.useCallback((name: string) => {
+    setTags((current) => {
+      if (current.includes(name)) return current.filter((one) => one !== name);
+
+      return [...current, name];
+    });
   }, []);
 
   /** 跑一个写操作，成功后刷新树（和列表），出错统一处理。 */
@@ -520,8 +535,8 @@ export function KnowledgePage(): react.JSX.Element {
   if (dir !== undefined && dir !== api.UNASSIGNED) {
     chips.push({ key: 'dir', label: `目录：${dirNames.get(dir) ?? dir}` });
   }
-  if (tag !== undefined) {
-    chips.push({ key: 'tag', label: `#${tag}` });
+  if (tags.length > 0) {
+    chips.push({ key: 'tag', label: tags.map((one) => `#${one}`).join(' ') });
   }
   if (topic !== undefined) {
     chips.push({ key: 'topic', label: `专题：${topic}` });
@@ -535,7 +550,7 @@ export function KnowledgePage(): react.JSX.Element {
       setDir(undefined);
     }
     if (key === 'tag') {
-      setTag(undefined);
+      setTags([]);
     }
     if (key === 'topic') {
       setTopic(undefined);
@@ -584,7 +599,7 @@ export function KnowledgePage(): react.JSX.Element {
           <dirTree.DirTree
             tree={tree}
             dir={dir}
-            tag={tag}
+            tags={tags}
             readOnly={readOnly}
             dragEnabled={dragEnabled}
             pickDir={pickDir}

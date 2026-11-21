@@ -152,6 +152,8 @@ export interface DocListFilter {
   topicId?: string;
   /** 限定包含指定标签名。 */
   tag?: string;
+  /** 限定同时包含这些标签（交集；和 tag 合并去重，大小写不敏感）。 */
+  tags?: string[];
   /** 标题/摘要/正文/标签关键词。 */
   q?: string;
   /** 每页上限（1..200，默认 50）。 */

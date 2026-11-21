@@ -436,10 +436,45 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
   font-size: 11px;
   line-height: 18px;
 }
+/* 「🔗 关联已有」：按钮和链接并排，展开一个搜索框和候选列表 */
+.decision-knowledge__actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+button.decision-knowledge__new { background: none; font: inherit; font-size: 12px; cursor: pointer; }
+.decision-knowledge__picker { display: grid; gap: 6px; margin-top: 8px; }
+.decision-knowledge__input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--decision-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.decision-knowledge__input:focus { border-color: var(--decision-blue); }
+.decision-knowledge__hint { margin: 0; color: var(--decision-muted); font-size: 12px; }
+.decision-knowledge__candidates { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.decision-knowledge__candidate {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px dashed var(--decision-border);
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.decision-knowledge__candidate:hover:not(:disabled) { border-color: var(--decision-blue); }
+.decision-knowledge__candidate:disabled { cursor: default; opacity: 0.6; }
+.decision-knowledge__move { color: var(--decision-blue); font-size: 11px; }
 /* 手机全屏抽屉：点的区域大一点 */
 @media (max-width: 670px) {
   .decision-knowledge__new { padding: 6px 12px; }
   .decision-knowledge__item a { padding: 10px 12px; }
+  .decision-knowledge__candidate { padding: 10px 12px; }
 }
 
 /* 顶栏的看法切换，和画布范围按钮同一种样子 */

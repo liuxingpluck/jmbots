@@ -147,6 +147,29 @@ function readQueryText(query: Record<string, unknown>, key: string): string | un
 }
 
 
+/**
+ * 从查询对象读标签列表：?tag=a&tag=b（重复参数）、?tags=a,b（逗号分隔，中文逗号也认）都收，去重留给 Store。
+ * @param query 查询对象。
+ * @returns 标签名；都没给是空数组。
+ */
+function readQueryTags(query: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  for (const key of ['tag', 'tags']) {
+    const val = query[key];
+    let values: unknown[] = [val];
+    if (Array.isArray(val)) {
+      values = val;
+    }
+    for (const item of values) {
+      if (typeof item !== 'string') continue;
+
+      names.push(...item.split(/[,，]/u));
+    }
+  }
+  return names;
+}
+
+
 /** 从查询对象读取正整数或零。 */
 function parseOptionalInt(raw: unknown, label: string): number | undefined {
   if (raw === undefined || raw === '') return undefined;
@@ -197,7 +220,7 @@ export function mountKnowledgeRoutes(
     const filter: types.DocListFilter = {
       dirId: readQueryText(query, 'dirId'),
       topicId: readQueryText(query, 'topicId'),
-      tag: readQueryText(query, 'tag'),
+      tags: readQueryTags(query),
       q: readQueryText(query, 'q'),
       limit: parseOptionalInt(query['limit'], 'limit'),
       offset: parseOptionalInt(query['offset'], 'offset'),
@@ -360,16 +383,14 @@ export function mountKnowledgeRoutes(
     if (typeof query['topicId'] === 'string' && query['topicId'].trim() !== '') {
       topicId = query['topicId'].trim();
     }
-    let tag: string | undefined;
-    if (typeof query['tag'] === 'string' && query['tag'].trim() !== '') {
-      tag = query['tag'].trim();
-    }
-    if (q === '' && dirId === undefined && topicId === undefined && tag === undefined) {
+    //M 标签：?tag= 可重复，?tags= 逗号分隔，合并去重后按交集筛（G3）。
+    const tags = storeModule.getFilterTags(undefined, readQueryTags(query));
+    if (q === '' && dirId === undefined && topicId === undefined && tags.length === 0) {
       throw new failureModule.Failure(400, '请至少提供搜索词 q、topicId、dirId 或 tag 之一');
     }
 
     const limit = parseOptionalInt(query['limit'], 'limit') ?? 15;
-    const hits = store.searchLocal(q, { dirId, topicId, tag, limit });
+    const hits = store.searchLocal(q, { dirId, topicId, tags, limit });
 
     const skipMemory = query['includeMemory'] === '0' || query['includeMemory'] === 'false';
     if (skipMemory || q === '') {

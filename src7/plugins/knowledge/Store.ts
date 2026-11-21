@@ -139,6 +139,10 @@ export function normalizeTags(raw: readonly string[] | undefined): string[] {
     if (cleaned.length > 64) {
       throw new failureModule.Failure(400, `标签名过长（最多 64 字）：${cleaned}`);
     }
+    //G 逗号是筛选参数 ?tags=a,b 的分隔符，标签名里带了就再也筛不出来（云端 30 #1）。
+    if (/[,，]/u.test(cleaned)) {
+      throw new failureModule.Failure(400, `标签名不能包含逗号：${cleaned}`);
+    }
     const key = cleaned.toLowerCase();
     if (seen.has(key)) continue;
 
@@ -251,6 +255,37 @@ function mapDocSummary(row: DocRow, tags: string[]): types.KnowledgeDocSummary {
 //==========================================================
 // KnowledgeStore 核心实现
 //==========================================================
+
+/** 一次筛选最多带几个标签。 */
+export const MAX_FILTER_TAGS = 20;
+
+
+/**
+ * 筛选用的标签：单个 tag 和多个 tags 合在一起，去掉前导 #、空白和空的，大小写不敏感去重。
+ * @param tag 单个标签（老参数）。
+ * @param tags 多个标签。
+ * @returns 去重后的标签名，保留第一次出现时的写法。
+ */
+export function getFilterTags(tag: string | undefined, tags: string[] | undefined): string[] {
+  const raw = [tag ?? '', ...(tags ?? [])];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of raw) {
+    const name = item.trim().replace(/^#+/u, '').trim();
+    const key = name.toLowerCase();
+    if (name === '' || seen.has(key)) continue;
+
+    seen.add(key);
+    names.push(name);
+  }
+
+  //G 筛选标签最多 MAX_FILTER_TAGS 个：每个占一个 SQLite 参数，极端长的网址不至于撞参数上限（云端 30 #1）。
+  if (names.length > MAX_FILTER_TAGS) {
+    throw new failureModule.Failure(400, `筛选标签最多 ${String(MAX_FILTER_TAGS)} 个`);
+  }
+  return names;
+}
+
 
 /** 文档已在别处更新：updateDoc 带的 baseUpdatedAt 过期了。带上库里最新的文档，路由原样回给前端刷新。 */
 export class KnowledgeConflictError extends failureModule.Failure {
@@ -764,16 +799,18 @@ export class KnowledgeStore {
       params.push(filter.topicId.trim());
     }
 
-    if (filter.tag !== undefined && filter.tag.trim() !== '') {
-      const cleanTag = filter.tag.trim().replace(/^#+/u, '').trim();
-      if (cleanTag !== '') {
-        clauses.push(`EXISTS (
-          SELECT 1 FROM kb_doc_tags dt
+    //M 标签交集：tag 和 tags 合并去重，文档要把这些标签全带上才算（G3）。
+    const tagNames = getFilterTags(filter.tag, filter.tags);
+    if (tagNames.length > 0) {
+      const marks = tagNames.map(() => '?').join(', ');
+      clauses.push(`d.id IN (
+          SELECT dt.doc_id FROM kb_doc_tags dt
           JOIN kb_tags t ON t.id = dt.tag_id
-          WHERE dt.doc_id = d.id AND t.name = ? COLLATE NOCASE
+          WHERE t.name COLLATE NOCASE IN (${marks})
+          GROUP BY dt.doc_id
+          HAVING COUNT(DISTINCT t.id) = ?
         )`);
-        params.push(cleanTag);
-      }
+      params.push(...tagNames, tagNames.length);
     }
 
     if (filter.q !== undefined && filter.q.trim() !== '') {
@@ -839,7 +876,7 @@ export class KnowledgeStore {
    */
   searchLocal(
     queryText: string,
-    options: { dirId?: string; topicId?: string; tag?: string; limit?: number } = {},
+    options: { dirId?: string; topicId?: string; tag?: string; tags?: string[]; limit?: number } = {},
   ): types.KnowledgeSearchHit[] {
     let maxHits = 20;
     if (options.limit !== undefined && Number.isFinite(options.limit)) {
@@ -857,6 +894,7 @@ export class KnowledgeStore {
         dirId: options.dirId,
         topicId: options.topicId,
         tag: options.tag,
+        tags: options.tags,
         q: trimmed,
         limit: 2000,
         offset: 0,

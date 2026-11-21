@@ -23,7 +23,7 @@ export const name = 'knowledge';
 
 //M 1.0.0：积木知识库三原子 SQLite 存储、磁盘镜像导出、REST API、memory 搜索温和桥接与 kb_search 工具。
 /** 插件版本号。 */
-export const version = '1.0.0';
+export const version = '1.0.1';
 
 /** 依赖资源主库、主 HTTP 服务与模型工具注册表。 */
 export const inject = ['resources', 'http', 'tools'];

@@ -1,5 +1,5 @@
 /**
- * 知识库右栏（懒加载）：标题、摘要、目录、标签、专题、来源的编辑，正文源码编辑 / Markdown 预览 / 分屏。
+ * 知识库右栏（懒加载）：标题、摘要、目录、标签、专题、来源的编辑，正文源码编辑 / 富文本（RichEditor.tsx，再懒加载一层）/ 预览 / 分屏。
  * Ctrl+S 保存，保存带 baseUpdatedAt：别处先改过时后端回 409，这里把自己的改动存成草稿、换成最新的再提示。
  * 没保存的改动随手存进 localStorage（按文档号），关页、崩溃后再打开能恢复。
  * KnowledgePage 用 key 区分文档，换文档就重新挂一个编辑器，这里不处理“换文档”。
@@ -8,6 +8,12 @@ import * as react from 'react';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as docList from './DocList.tsx';
 import * as api from './KnowledgeApi.ts';
+
+/** 富文本编辑器（Tiptap）：只有切到「富文本」才拉这一块，不拉高首屏。 */
+const LazyRichEditor = react.lazy(async () => {
+  const loaded = await import('./RichEditor.tsx');
+  return { default: loaded.RichEditor };
+});
 
 /** 编辑器入参；实现都在 KnowledgePage。 */
 export interface EditorProps {
@@ -80,7 +86,7 @@ const FORM_KEYS: readonly (keyof Form)[] = [
 ];
 
 /** 正文区怎么显示。 */
-type ViewMode = 'edit' | 'preview' | 'split';
+type ViewMode = 'edit' | 'rich' | 'preview' | 'split';
 
 /** 来源分类的中文名。 */
 const SOURCE_LABELS: Record<api.KnowledgeSourceType, string> = {
@@ -92,7 +98,8 @@ const SOURCE_LABELS: Record<api.KnowledgeSourceType, string> = {
 
 /** 正文显示方式的中文名。 */
 const MODE_LABELS: Record<ViewMode, string> = {
-  edit: '编辑',
+  edit: '源码',
+  rich: '富文本',
   preview: '预览',
   split: '分屏',
 };
@@ -426,9 +433,9 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
   };
 
   //M 手机上不给分屏。
-  let modes: ViewMode[] = ['edit', 'preview', 'split'];
+  let modes: ViewMode[] = ['edit', 'rich', 'preview', 'split'];
   if (isMobile) {
-    modes = ['edit', 'preview'];
+    modes = ['edit', 'rich', 'preview'];
   }
   let saveText = '保存';
   if (saving) {
@@ -540,6 +547,15 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
             spellCheck={false}
             onChange={(event) => setField('content', event.target.value)}
           />
+        )}
+        {mode === 'rich' && (
+          <react.Suspense fallback={<p className="kb-muted kb-center">正在加载富文本编辑器…</p>}>
+            <LazyRichEditor
+              value={form.content}
+              readOnly={readOnly}
+              onChange={(markdown) => setField('content', markdown)}
+            />
+          </react.Suspense>
         )}
         {showPreview && (
           <div className="kb-preview">
