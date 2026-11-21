@@ -591,52 +591,52 @@
 
 ```ts
 // src7/plugins/bots/index.ts
-588	  private async onChannelMessage(
-589	    message: protocol.ChannelMessage,
-590	    listen: boolean,
-591	    control?: protocol.ChannelMessageControl,
-592	    fromChannelEvent = true,
-593	  ): Promise<void> {
-594	    if (control?.approvalHandled === true) return;
-595
+589	  private async onChannelMessage(
+590	    message: protocol.ChannelMessage,
+591	    listen: boolean,
+592	    control?: protocol.ChannelMessageControl,
+593	    fromChannelEvent = true,
+594	  ): Promise<void> {
+595	    if (control?.approvalHandled === true) return;
+596
 …
-613	      const claimKey = protocol.getClaimKey(message.messageId, botName);
-614	      const botOrigin: { channel: string; address: Record<string, unknown> } = {
-615	        channel: message.origin.channel,
-616	        address: structuredClone(message.origin.address),
-617	      };
-618
-619	      //M 只听的话：在这个机器人的地址副本上标 listenOnly（bots 内部的标记，前台、relay 读它；渠道的原地址不动）。
-620	      if (listen) {
-621	        botOrigin.address['listenOnly'] = true;
-622	      }
-623
-624	      //M 按该机器人此轮授权目录把渠道保存的附件物化到 inbox。
-625	      const botText = this.materializeAttachments(bot, botOrigin.address, message);
-626	      const incoming: IncomingMessage = {
-627	        channel: message.channel,
-628	        bot: botName,
-629	        text: botText,
-630	        time: message.createdAt,
-631	        address: botOrigin.address,
-632	        sourceId: message.messageId,
-633	      };
-634	      const receiveEvent: ReceiveEvent = {
-635	        bot,
-636	        message: incoming,
-637	        fromChannelEvent,
-638	      };
+614	      const claimKey = protocol.getClaimKey(message.messageId, botName);
+615	      const botOrigin: { channel: string; address: Record<string, unknown> } = {
+616	        channel: message.origin.channel,
+617	        address: structuredClone(message.origin.address),
+618	      };
+619
+620	      //M 只听的话：在这个机器人的地址副本上标 listenOnly（bots 内部的标记，前台、relay 读它；渠道的原地址不动）。
+621	      if (listen) {
+622	        botOrigin.address['listenOnly'] = true;
+623	      }
+624
+625	      //M 按该机器人此轮授权目录把渠道保存的附件物化到 inbox。
+626	      const botText = this.materializeAttachments(bot, botOrigin.address, message);
+627	      const incoming: IncomingMessage = {
+628	        channel: message.channel,
+629	        bot: botName,
+630	        text: botText,
+631	        time: message.createdAt,
+632	        address: botOrigin.address,
+633	        sourceId: message.messageId,
+634	      };
+635	      const receiveEvent: ReceiveEvent = {
+636	        bot,
+637	        message: incoming,
+638	        fromChannelEvent,
+639	      };
 …
-646	      await this.home.serial('bot/receive', receiveEvent);
-647
-648	      if (receiveEvent.handled === true) {
-649	        claimModule.pushClaim(control, botName, claimKey, 'handled');
-650	        continue;
-651	      }
+647	      await this.home.serial('bot/receive', receiveEvent);
+648
+649	      if (receiveEvent.handled === true) {
+650	        claimModule.pushClaim(control, botName, claimKey, 'handled');
+651	        continue;
+652	      }
 …
-686	      //M 未被其他插件接管 → 按来源范围进该机器人的前台单队列（channel_tool 模式）。话用 incoming.text（理由同上）。
-687	      await this.home.frontDesk.claimChannelMessage(bot, message, botOrigin, incoming.text, claimKey, control);
-688	    }
+687	      //M 未被其他插件接管 → 按来源范围进该机器人的前台单队列（channel_tool 模式）。话用 incoming.text（理由同上）。
+688	      await this.home.frontDesk.claimChannelMessage(bot, message, botOrigin, incoming.text, claimKey, control);
+689	    }
 ```
 
 进 `DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`）后，先查 `isClaimed` 防渠道重推，再拼好带不可变来源快照 `SourceSnapshot` 的排队项 `QueueItem`，在 `DispatchClaim.persistClaim`（`src7/plugins/bots/DispatchClaim.ts:223`）里用 **`db.transaction` 原子写入 `sourceClaims`、`resultQueue`、`sourceScope` 并调 `front.save()`**：

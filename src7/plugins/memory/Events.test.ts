@@ -34,11 +34,22 @@ afterEach(async () => {
 });
 
 
-/** 调用方的退回：requestId 写成退回原因，ok: false。 */
-const memoryOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason, detail?: string) => ({ requestId: reason, ok: false, error: detail ?? reason }),
-};
+/**
+ * 发 memory/request、等 memory/result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * knowledge 搜记忆也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns memory/result 的回执。
+ */
+async function askMemory(
+  ctx: cordis.Context,
+  payload: events.StripEnvelope<events.EventArg<'memory/request'>>,
+): Promise<events.EventArg<'memory/result'>> {
+  const asked = await events.requestEvent(ctx, 'memory/request', 'memory/result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 memory/result：${asked.why} ${asked.detail ?? ''}`);
+
+  return asked.reply;
+}
 
 
 /** 什么也不收的检索后端：只给 Store 建起来用。 */
@@ -98,7 +109,7 @@ async function fakeService(recall: Record<string, string> = {}): Promise<{
 
 /**
  * 一个连上就断的本机地址，模拟记忆服务没起来或刚崩：fetch 照样被拒，走 fetchMemory 的“没在线”。
- * 不用空端口：Windows 上连没人听的本机端口要等约 2 秒才报拒绝，会撞上 memoryOptions 的 1 秒超时。
+ * 不用空端口：Windows 上连没人听的本机端口要等约 2 秒才报拒绝，测试要白等这么久。
  */
 async function offlineUrl(): Promise<string> {
   const server = net.createServer((socket) => socket.destroy());
@@ -150,11 +161,11 @@ test('memory/request 的前台往来只读指定机器人及会话范围', async
 
   const query: frontArchiveModule.FrontQuery = { bot: row.bot, sessionIds: ['own'], order: 'time', limit: 10 };
   const request = { action: 'front-history' as const, query };
-  const result = await events.requestEvent(ctx, 'memory/request', 'memory/result', request, memoryOptions);
+  const result = await askMemory(ctx, request);
   expect(result.ok).toBe(true);
   expect(result.frontEntries?.map((entry) => entry.id)).toEqual([10]);
   const hidden = { ...request, query: { ...query, id: 11 } };
-  const forbidden = await events.requestEvent(ctx, 'memory/request', 'memory/result', hidden, memoryOptions);
+  const forbidden = await askMemory(ctx, hidden);
   expect(forbidden.frontEntries).toEqual([]);
 });
 
@@ -176,7 +187,7 @@ test('memory/request 有人答：记往来、搜聊天记录、算向量都回 m
     end: 7,
   };
   const record = { action: 'record-history' as const, source: 'bot-log:s1', docs: [doc, { ...doc, customer: '' }] };
-  const recorded = await events.requestEvent(ctx, 'memory/request', 'memory/result', record, memoryOptions);
+  const recorded = await askMemory(ctx, record);
   expect(recorded.ok).toBe(true);
   expect(recorded.requestId).toStartWith('req_');
   expect(got.map((item) => item.route)).toEqual(['/remove', '/ingest']);
@@ -184,23 +195,23 @@ test('memory/request 有人答：记往来、搜聊天记录、算向量都回 m
 
   //M search-history：命中原样交回。
   const search = { action: 'search-history', query: '吃什么', bot: '助手', customer: 'test:u1', limit: 5 } as const;
-  const searched = await events.requestEvent(ctx, 'memory/request', 'memory/result', search, memoryOptions);
+  const searched = await askMemory(ctx, search);
   expect(searched).toMatchObject({ ok: true, hits: [{ start: 7, score: 0.9, text: '以前说过' }] });
 
   //M 新 search action 给插件带回统一结果，仍用同一个 requestId 机制。
   const unified = { action: 'search' as const, query: { q: '退款', sources: 'knowledge', mode: 'keyword' } };
-  const result = await events.requestEvent(ctx, 'memory/request', 'memory/result', unified, memoryOptions);
+  const result = await askMemory(ctx, unified);
   expect(result).toMatchObject({ ok: true, search: { hits: [{ source: 'knowledge', id: '9' }], unavailable: [] } });
 
   //M 事件走同一套归属参数校验和 Rust customer 过滤。
   const person = 'person:test:u1';
   const scoped = { action: 'search' as const, query: { q: '申请单', sources: 'history', person } };
-  const scopedResult = await events.requestEvent(ctx, 'memory/request', 'memory/result', scoped, memoryOptions);
+  const scopedResult = await askMemory(ctx, scoped);
   expect(scopedResult).toMatchObject({ ok: true, search: { hits: [{ id: '10', customer: person }] } });
 
   //M embed：每段一个向量。
   const embed = { action: 'embed' as const, texts: ['甲', '乙'] };
-  const embedded = await events.requestEvent(ctx, 'memory/request', 'memory/result', embed, memoryOptions);
+  const embedded = await askMemory(ctx, embed);
   expect(embedded).toMatchObject({ ok: true, vectors: [[1, 0], [1, 0]] });
 });
 
@@ -270,28 +281,28 @@ test('memory/request 出错：记忆服务没在线时都回 ok: false 写明原
 
   //M recordHistory 连不上抛“记忆服务没在线”，onError 转成 { ok: false, error }，不等超时。
   const record = { action: 'record-history' as const, source: 'bot-log:s1', docs: [doc] };
-  const recorded = await events.requestEvent(ctx, 'memory/request', 'memory/result', record, memoryOptions);
+  const recorded = await askMemory(ctx, record);
   expect(recorded.requestId).toStartWith('req_');
   expect(recorded.ok).toBe(false);
   expect(recorded.error).toContain('记忆服务没在线');
 
   //M search-history：不再悄悄交回空的，回执写明没在线。
   const search = { action: 'search-history', query: '你好', bot: '助手', customer: 'test:u1', limit: 5 } as const;
-  const searched = await events.requestEvent(ctx, 'memory/request', 'memory/result', search, memoryOptions);
+  const searched = await askMemory(ctx, search);
   expect(searched.ok).toBe(false);
   expect(searched.hits).toBeUndefined();
   expect(searched.error).toContain('记忆服务没在线');
 
   //M embed：同上，没有向量、写明原因。
   const embed = { action: 'embed' as const, texts: ['甲'] };
-  const embedded = await events.requestEvent(ctx, 'memory/request', 'memory/result', embed, memoryOptions);
+  const embedded = await askMemory(ctx, embed);
   expect(embedded.ok).toBe(false);
   expect(embedded.vectors).toBeUndefined();
   expect(embedded.error).toContain('记忆服务没在线');
 
   //M 统一检索：知识库这一路没响应，原因进 warnings（记忆页的“提示”、模型都看得到）。
   const unified = { action: 'search' as const, query: { q: '退款', sources: 'knowledge', mode: 'keyword' } };
-  const result = await events.requestEvent(ctx, 'memory/request', 'memory/result', unified, memoryOptions);
+  const result = await askMemory(ctx, unified);
   expect(result.search?.unavailable).toEqual(['knowledge']);
   expect(result.search?.warnings?.join('；')).toContain('记忆服务没在线');
 
@@ -306,8 +317,8 @@ test('没挂 memory：memory/request 立刻走无人接单退路', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   const embed = { action: 'embed' as const, texts: ['甲'] };
-  const result = await events.requestEvent(ctx, 'memory/request', 'memory/result', embed, memoryOptions);
-  expect(result).toEqual({ requestId: 'unhandled', ok: false, error: 'unhandled', fallback: 'unhandled' });
+  const asked = await events.requestEvent(ctx, 'memory/request', 'memory/result', embed);
+  expect(asked).toEqual({ why: 'unhandled' });
 });
 
 

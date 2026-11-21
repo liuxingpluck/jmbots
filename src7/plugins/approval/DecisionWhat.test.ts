@@ -85,15 +85,21 @@ type ApprovalReply = requestEvents.EventArg<'approval/result'>;
 type JudgeBody = Omit<requestEvents.EventArg<'decision/judge-result'>, 'requestId'>;
 
 /**
- * 没人答时的退回：测试里不该走到，走到了就带个原因让断言看得出。
- * @param reason requestEvent 给的退回原因。
+ * 发 approval/request、等 approval/result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * exec、http 等生产调用方也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns approval/result 的回执。
  */
-function getMissing(reason: requestEvents.FallbackReason): ApprovalReply {
-  return { requestId: '', error: `没人答：${reason}` };
-}
+async function askApproval(
+  ctx: cordis.Context,
+  payload: requestEvents.StripEnvelope<requestEvents.EventArg<'approval/request'>>,
+): Promise<requestEvents.EventArg<'approval/result'>> {
+  const asked = await requestEvents.requestEvent(ctx, 'approval/request', 'approval/result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 approval/result：${asked.why} ${asked.detail ?? ''}`);
 
-/** 等待设置。 */
-const options = { prefix: 'apr', timeoutMs: 5000, onFallback: getMissing };
+  return asked.reply;
+}
 
 
 /**
@@ -140,7 +146,7 @@ async function review(name: string): Promise<ApprovalReply['verdict']> {
   const target = path.join(OUTSIDE, name);
   const input = { kind: 'exec', payload: null, command: `copy a.txt "${target}"`, cwd: TRUSTED };
   const request = { action: 'review', input } as const;
-  const result = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', request, options);
+  const result = await askApproval(app, request);
   return result.verdict;
 }
 

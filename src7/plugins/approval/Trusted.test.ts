@@ -87,15 +87,21 @@ type ApprovalReply = requestEvents.EventArg<'approval/result'>;
 type ReviewInput = Extract<requestEvents.EventArg<'approval/request'>, { action: 'review' }>['input'];
 
 /**
- * 没人答时的退回：测试里不该走到，走到了就带个原因让断言看得出。
- * @param reason requestEvent 给的退回原因。
+ * 发 approval/request、等 approval/result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * exec、http 等生产调用方也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns approval/result 的回执。
  */
-function getMissing(reason: requestEvents.FallbackReason): ApprovalReply {
-  return { requestId: '', error: `没人答：${reason}` };
-}
+async function askApproval(
+  ctx: cordis.Context,
+  payload: requestEvents.StripEnvelope<requestEvents.EventArg<'approval/request'>>,
+): Promise<requestEvents.EventArg<'approval/result'>> {
+  const asked = await requestEvents.requestEvent(ctx, 'approval/request', 'approval/result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 approval/result：${asked.why} ${asked.detail ?? ''}`);
 
-/** 等待设置。 */
-const options = { prefix: 'apr', timeoutMs: 5000, onFallback: getMissing };
+  return asked.reply;
+}
 
 
 let app: cordis.Context;
@@ -122,7 +128,7 @@ afterAll(async () => {
 async function review(input: Pick<ReviewInput, 'command' | 'cwd'> & Partial<ReviewInput>): Promise<ApprovalReply['verdict']> {
   const full: ReviewInput = { kind: 'exec', payload: null, ...input };
   const request = { action: 'review', input: full } as const;
-  const result = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', request, options);
+  const result = await askApproval(app, request);
   return result.verdict;
 }
 
@@ -247,35 +253,35 @@ describe('入口校验', () => {
 describe('approval/request 各个 action', () => {
   test('ask 登记、list 列出、decide 定了、再 decide 回原因、close 找不到回原因', async () => {
     const input = { kind: 'update', title: '有新版本 9', detail: '', payload: { version: '9' }, bot: '周小灵' };
-    const asked = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', { action: 'ask', input } as const, options);
+    const asked = await askApproval(app, { action: 'ask', input } as const);
     const id = asked.pending?.id ?? 0;
     expect(id).toBeGreaterThan(0);
 
-    const listed = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', { action: 'list', kind: 'update' } as const, options);
+    const listed = await askApproval(app, { action: 'list', kind: 'update' } as const);
     expect(listed.items?.map((item) => item.id)).toContain(id);
 
     const decide = { action: 'decide', id, approve: false, by: '测试' } as const;
-    const decided = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', decide, options);
+    const decided = await askApproval(app, decide);
     expect(decided.settled?.state).toBe('rejected');
 
-    const again = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', decide, options);
+    const again = await askApproval(app, decide);
     expect(again.error).toContain('已经定过了');
 
     const close = { action: 'close', id: 99_999, note: '会话已结束' } as const;
-    const closed = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', close, options);
+    const closed = await askApproval(app, close);
     expect(closed.error).toContain('没有待确认');
   });
 
   test('作废的卡片再点同意：看卡片状态交回作废原因，不当成普通的“已经定过了”', async () => {
     const input = { kind: 'update', title: '有新版本 10', detail: '', payload: { version: '10' }, bot: '周小灵' };
-    const asked = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', { action: 'ask', input } as const, options);
+    const asked = await askApproval(app, { action: 'ask', input } as const);
     const id = asked.pending?.id ?? 0;
     const close = { action: 'close', id, note: '会话已结束' } as const;
-    const closed = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', close, options);
+    const closed = await askApproval(app, close);
     expect(closed.settled?.card.state).toBe('ended');
 
     const decide = { action: 'decide', id, approve: true, by: '测试' } as const;
-    const again = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', decide, options);
+    const again = await askApproval(app, decide);
     expect(again.error).toBe(`待确认 #${String(id)} 会话已结束`);
   });
 });

@@ -24,8 +24,9 @@ export const name = 'knowledge';
 
 //M 1.0.0：积木知识库三原子 SQLite 存储、磁盘镜像导出、REST API、memory 搜索温和桥接与 kb_search 工具。
 //M 1.0.2：kb_save 写工具（新建、追加、乐观锁替换）；标签改名、合并、删除接口；相关文档推荐接口。
+//M 1.0.3：记忆桥接不再传 requestEvent 的 timeoutMs，改传 AbortSignal.timeout(4 秒)（云端 31 第 2 条）。
 /** 插件版本号。 */
-export const version = '1.0.2';
+export const version = '1.0.3';
 
 /** 依赖资源主库、主 HTTP 服务与模型工具注册表。 */
 export const inject = ['resources', 'http', 'tools'];

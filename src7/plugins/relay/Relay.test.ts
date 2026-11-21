@@ -508,22 +508,6 @@ describe('relay 接两个助手', () => {
     await settle();
     expect(sent()[1]).toBe('飞书文件发送结果不确定：飞书处理时出错 模拟飞书处理抛错');
 
-    //M 飞书接单后一直没回，等待到第 30 秒时也只记录结果不确定。
-    handlers.set('feishu/send-file', [(request: unknown) => {
-      const asked = request as { handled?: boolean };
-      asked.handled = true;
-    }]);
-    vi.useFakeTimers();
-    try {
-      const waiting = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload });
-      expect(waiting.statusCode).toBe(200);
-      vi.advanceTimersByTime(30_000);
-    } finally {
-      vi.useRealTimers();
-    }
-    await settle();
-    expect(sent()[2]).toBe('飞书文件发送结果不确定：等待回执超时');
-
     //M 假飞书接单并回 ok: true：trace 写已发和新消息号。
     handlers.set('feishu/send-file', [(request: unknown) => {
       const asked = request as { requestId: string; handled?: boolean };
@@ -533,8 +517,8 @@ describe('relay 接两个助手', () => {
     const answered = await made.app.inject({ method: 'POST', url: '/api/relay/reply', payload });
     expect(answered.statusCode).toBe(200);
     await settle();
-    expect(sent()).toHaveLength(4);
-    expect(sent()[3]).toBe('已发 om_sent');
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]).toBe('已发 om_sent');
   }, SLOW);
 
   test('带附件的话转出去：inbox.jsonl、GET /api/relay/inbox、webhook 都带 files（相对运行时目录）', async () => {

@@ -175,9 +175,11 @@ async function run(name: string, args: Record<string, unknown>, session: { id: s
 /** 经 approval/request 审一条命令（不跑）。 */
 async function reviewCommand(command: string, cwd: string, session: string, confined?: string): Promise<approvalModule.Verdict | undefined> {
   const input = { command, cwd, session, confined, kind: 'exec', payload: null, ask: false };
-  const options = { prefix: 'apr', timeoutMs: 5000, onFallback: () => ({ requestId: '', error: '没人答' }) };
-  const result = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', { action: 'review', input }, options);
-  return result.verdict;
+  const options = { prefix: 'apr' };
+  const asked = await requestEvents.requestEvent(app, 'approval/request', 'approval/result', { action: 'review', input }, options);
+  if (asked.why !== undefined) throw new Error(`没人答：${asked.why}`);
+
+  return asked.reply.verdict;
 }
 
 

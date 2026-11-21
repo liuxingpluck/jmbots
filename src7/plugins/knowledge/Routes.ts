@@ -11,6 +11,10 @@ import * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
 
 
+/** 搜记忆最多等几毫秒（只读，晚了就不要）。 */
+const MEMORY_WAIT_MS = 4000;
+
+
 //==========================================================
 // 记忆服务事件桥接（零跨插件 import）
 //==========================================================
@@ -43,6 +47,8 @@ export async function searchMemoryBridge(
   const q = queryText.trim();
   if (q === '') return { available: false, hits: [] };
 
+  //M 搜记忆是只读的，晚了就不要：自己限 4 秒（memory 后端 HTTP 限 8 秒），到点按中止处理。
+  const options = { prefix: 'kb', signal: AbortSignal.timeout(MEMORY_WAIT_MS) };
   const asked = await requestEventModule.requestEvent(
     ctx,
     'memory/request',
@@ -51,7 +57,7 @@ export async function searchMemoryBridge(
       action: 'search',
       query: { q, sources, limit },
     },
-    { prefix: 'kb', timeoutMs: 4000 },
+    options,
   );
 
   //G 无人接单说明当前实例未挂 memory 插件，静默返回空数组。

@@ -71,30 +71,30 @@ channel/reply → 渠道发出
 
 ```ts
 // src7/plugins/bots/index.ts
-1225	  new Bots(ctx, { bots: [...written], thinking: config.thinking ?? 'medium' });
-1226	  const desk = new FrontDesk(ctx, { recent, vision_model: vision });
-1227	  new Dispatch(ctx, desk, batchConfig);
-1228	  new ChannelTools(ctx);
+1226	  new Bots(ctx, { bots: [...written], thinking: config.thinking ?? 'medium' });
+1227	  const desk = new FrontDesk(ctx, { recent, vision_model: vision });
+1228	  new Dispatch(ctx, desk, batchConfig);
+1229	  new ChannelTools(ctx);
 ```
 
 **每个机器人建出来时做三件事**（`Bot` 的构造函数）：
 
 ```ts
 // src7/plugins/bots/index.ts
-1007	    //M 工作区和记忆目录放在运行时目录 bots/<机器人>/ 下，resources.ensureRuntimeDir 没有就建，返回绝对路径。
-1008	    const workspace = botUtils.getBotDir(this.ctx.resources, this.name, 'workspace');
-1009	    const memory = botUtils.getBotDir(this.ctx.resources, this.name, 'memory');
-1010	    //M 建立配置机器人的默认工作区与记忆目录。
-1011	    this.workspace = filesModule.ensureDir(workspace);
-1012	    this.memory = filesModule.ensureDir(memory);
-1013
-1014	    //M 工作区原地登记，不搬不删：默认的 bots/<机器人>/workspace/。登记过的按目录认，重启不重登。
-1015	    const workspaces = this.ctx.workspaces;
-1016	    workspaces.ensureDefault(this.name);
+1008	    //M 工作区和记忆目录放在运行时目录 bots/<机器人>/ 下，resources.ensureRuntimeDir 没有就建，返回绝对路径。
+1009	    const workspace = botUtils.getBotDir(this.ctx.resources, this.name, 'workspace');
+1010	    const memory = botUtils.getBotDir(this.ctx.resources, this.name, 'memory');
+1011	    //M 建立配置机器人的默认工作区与记忆目录。
+1012	    this.workspace = filesModule.ensureDir(workspace);
+1013	    this.memory = filesModule.ensureDir(memory);
+1014
+1015	    //M 工作区原地登记，不搬不删：默认的 bots/<机器人>/workspace/。登记过的按目录认，重启不重登。
+1016	    const workspaces = this.ctx.workspaces;
+1017	    workspaces.ensureDefault(this.name);
 ```
 
 - 运行时目录下 `bots/<机器人>/workspace/` 是它的工作区，`bots/<机器人>/memory/` 是它的记忆；
-- 配置里 `workspaces` 登记的目录（比如源码仓库）也登记成工作区，只给本人用（`bots/index.ts:1028`）；
+- 配置里 `workspaces` 登记的目录（比如源码仓库）也登记成工作区，只给本人用（`bots/index.ts:1029`）；
 - 人设放 `bots/<机器人>/persona.md`，每一轮由系统提示词带上（`bots/Prompt.ts:139`）。
 
 名字在 `Bots.add` 里校验：要非空、不能重名（`bots/index.ts:905`）。设置页运行中新建机器人，走的也是这个 `add`，所以加完马上能收消息。
@@ -193,22 +193,22 @@ channel/reply → 渠道发出
 
 ```ts
 // src7/plugins/bots/GroupBatch.ts
-299	    //M 触发二：攒满 max_lines 句，马上看。
-300	    if (batch.heard.length >= config.max_lines) {
-301	      void this.look(front.id);
-302	      return true;
-303	    }
-304
-305	    //M 触发一：从这句起安静满 quiet_seconds 秒再看；再来一句就重新数。
-306	    const waitMs = config.quiet_seconds * 1000;
-307	    batch.timer = setTimeout(() => {
-308	      void this.look(front.id);
-309	    }, waitMs);
-310	    return true;
+298	    //M 触发二：攒满 max_lines 句，马上看。
+299	    if (batch.heard.length >= config.max_lines) {
+300	      void this.look(front.id);
+301	      return true;
+302	    }
+303
+304	    //M 触发一：从这句起安静满 quiet_seconds 秒再看；再来一句就重新数。
+305	    const waitMs = config.quiet_seconds * 1000;
+306	    batch.timer = setTimeout(() => {
+307	      void this.look(front.id);
+308	    }, waitMs);
+309	    return true;
 ```
 
-- 到点时前台正在转，就等这一轮停下再看（`GroupBatch.ts:386`）；
-- 每群每天最多看 `daily_limit` 次，看满了这一批只记背景（`GroupBatch.ts:402`）；
+- 到点时前台正在转，就等这一轮停下再看（`GroupBatch.ts:385`）；
+- 每群每天最多看 `daily_limit` 次，看满了这一批只记背景（`GroupBatch.ts:401`）；
 - “看”就是发请求事件 `decision/judge` 问决策模型（`GroupBatch.ts:550`）。没挂决策插件、出错，一律按不接（`GroupBatch.ts:559`）；
 - 中途有人叫了机器人，攒着的这批会被拿走，拼在叫它的那句前面（`DispatchClaim.ts:129`），机器人能看到前情。
 
@@ -216,21 +216,21 @@ channel/reply → 渠道发出
 
 ```ts
 // src7/plugins/bots/GroupBatch.ts
-443	    //M 群登记了 judge_helper：这一批记进前台当背景，再转给那个外部助手，不由机器人自答。
-444	    const judgeHelper = utils.getStringField(source.botOrigin.address, 'judgeHelper').trim();
-445	    if (judgeHelper !== '') {
-446	      this.keep(front, batch.heard);
-447	      await this.claims.relayBatch(front, source, replyText, judgeHelper);
-448	      return;
-449	    }
-450
-451	    //M 其余消息仍以整批排入前台。
-452	    this.claims.enqueueBatch(front, source, replyText);
+442	    //M 群登记了 judge_helper：这一批记进前台当背景，再转给那个外部助手，不由机器人自答。
+443	    const judgeHelper = utils.getStringField(source.botOrigin.address, 'judgeHelper').trim();
+444	    if (judgeHelper !== '') {
+445	      this.keep(front, batch.heard);
+446	      await this.claims.relayBatch(front, source, replyText, judgeHelper);
+447	      return;
+448	    }
+449
+450	    //M 其余消息仍以整批排入前台。
+451	    this.claims.enqueueBatch(front, source, replyText);
 ```
 
 - 群没登记 `judge_helper`：`enqueueBatch`（`DispatchClaim.ts:264`）把这一批照最后一句排进前台，机器人自己答；
 - 群登记了 `judge_helper`（飞书把它写进地址的 `judgeHelper`，`feishu/Inbound.ts:559`）：这一批先记成前台背景，再由 `relayBatch`（`DispatchClaim.ts:300`）拼一条带 `relayHelper` 的收件，发一次 `bot/receive`。relay 认出 `relayHelper`，直接进外部助手的会话（`relay/index.ts:614`），机器人自己不开口。这就是“静默转中控”。
-- `judge_helper` 启动时就核对：写错了、没开 relay、relay 的 helpers 里找不到这个名字，都直接报错、不让启动，不会悄悄落回默认助手。核对的函数是 `checkJudgeHelpers`（`GroupBatch.ts:207`），启动时在 `bots/index.ts:1211` 调用。
+- `judge_helper` 启动时就核对：写错了、没开 relay、relay 的 helpers 里找不到这个名字，都直接报错、不让启动，不会悄悄落回默认助手。核对的函数是 `checkJudgeHelpers`（`GroupBatch.ts:207`），启动时在 `bots/index.ts:1212` 调用。
 
 **类比**：护士站。`mention`：只有点名叫护士才过来；`all`：护士坐在旁边听、记在本子上，但不插嘴；`judge`：护士听一阵子，攒几句就想一想“要不要过去”，要过去的，要么自己去（自答），要么悄悄叫主任来（`judge_helper`）。
 
@@ -339,7 +339,7 @@ bots 里用到它的地方：
 ## 常见踩坑
 
 1. **群里没 @ 的话 bots 根本收不到**：群没登记，或者写的是 `mention`，`targetBots` 是空的（`feishu/Inbound.ts:512`）。想让机器人旁听，要写 `all` 或 `judge`。
-2. **写了 `judge` 却从来不判断**：`group_batch` 的三个数（`quiet_seconds`、`max_lines`、`daily_limit`）缺一个就不开攒批，只在启动日志打一行（`bots/index.ts:1217`），`judge` 群退化成“只记”。
+2. **写了 `judge` 却从来不判断**：`group_batch` 的三个数（`quiet_seconds`、`max_lines`、`daily_limit`）缺一个就不开攒批，只在启动日志打一行（`bots/index.ts:1218`），`judge` 群退化成“只记”。
 3. **攒着的一批和每天的次数都只在内存**（`GroupBatch.ts:11`）：重启丢掉攒着没判断的话（话本身照旧在记忆的渠道索引里），当天次数清零。
 4. **新接的外部渠道不写身份就是外人**：地址里不写 `role` 或 `owner`，`isOwnerTurn` 判外人（`channels/Message.ts:410`），没记忆、不能挑模型。
 5. **喊停以后结果不会回来**：`stop_session` 记了暂停，不是出错；要接着做，用 `hand_session` 的 `append`。
@@ -367,7 +367,7 @@ bots 里用到它的地方：
 <summary>答案</summary>
 
 1. 两遍，每个机器人一遍。去重键是“消息号 + 机器人名”，两个机器人的键不同，各自认领；重发的那条，两个机器人的键都已经记过，都记成 `duplicate`，不再排队（`DispatchClaim.ts:116` 调 `isClaimed`）。
-2. 两个触发满足一个就看：攒满 `max_lines` 句马上看，或者最后一句之后安静满 `quiet_seconds` 秒（`GroupBatch.ts:299` 起）；前台正在转就等它停下，当天看满 `daily_limit` 次就不看了。决定接以后：群没登记 `judge_helper`，机器人自己把这一批排进前台答；登记了，就记成背景、转给那个外部助手，机器人不开口（`GroupBatch.ts:443` 起）。
+2. 两个触发满足一个就看：攒满 `max_lines` 句马上看，或者最后一句之后安静满 `quiet_seconds` 秒（`GroupBatch.ts:298` 起）；前台正在转就等它停下，当天看满 `daily_limit` 次就不看了。决定接以后：群没登记 `judge_helper`，机器人自己把这一批排进前台答；登记了，就记成背景、转给那个外部助手，机器人不开口（`GroupBatch.ts:442` 起）。
 3. 不会。前台调 `stop_session`，后台先记 `paused = true` 再停（`DispatchTools.ts:396`），`returnWork` 看到暂停就不交回。想接着做，用 `hand_session` 的 `append`，它把 `paused` 改回 `false`。
 4. 都不能。后台的记忆权限按派活那一刻的来源快照算，外人的快照拿不到本人记忆（`memory/MemoryKey.ts:142`）；外人派活时写了模型或思考档会被拒，只能用前台的（`DispatchTools.ts:151`）。
 

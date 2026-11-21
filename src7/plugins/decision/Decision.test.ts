@@ -2,28 +2,33 @@
  * decision 事件接口单元测试（只用假会话问答，不调真实模型或分类器）：
  *   1. 验证仅配置 chat 模型（无 classifier）时构造阶段仍正确挂载 `decision/judge` 监听；
  *   2. 验证 `allow`（>= allowAt）、`deny`（< denyAt）与 `unsure`（中间分/答不上来）回执结构完整配对；
- *   3. 没挂 decision 时 requestEvent 当场退回拿不准，不等超时；
+ *   3. 没挂 decision 时 requestEvent 当场退回 why: 'unhandled'，不干等；
  *   4. 带 want: ['what'] 同一次提问拿到执行结果；不带 want 的提示词和回执不变；几个模型按配置顺序取第一个写了的。
  * 跑法：bun test ./src7/plugins/decision
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as cordis from 'cordis';
-import { requestEvent, type FallbackReason } from '../../utils/RequestEvent.ts';
+import * as requestEvents from '../../utils/RequestEvent.ts';
 import * as decisionPlugin from './index.ts';
 
 
 /**
- * 三次问共用的退回：没人答、超时都当拿不准。
- * 写明返回类型，verdict 才是字面量 'unsure'，不被推成 string。
- * @param reason requestEvent 给的退回原因。
- * @param detail 出错时的原话。
+ * 发 decision/judge、等 decision/judge-result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * bots 群攒批、approval 也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param input 不带 requestId 的判断请求。
+ * @returns decision/judge-result 的回执。
  */
-function getUnsure(reason: FallbackReason, detail?: string): decisionPlugin.DecisionJudgeResult {
-  return { requestId: '', verdict: 'unsure', reason: detail ?? reason };
-}
+async function askJudge(
+  ctx: cordis.Context,
+  input: requestEvents.StripEnvelope<requestEvents.EventArg<'decision/judge'>>,
+): Promise<decisionPlugin.DecisionJudgeResult> {
+  const options = { prefix: 'dec' };
+  const asked = await requestEvents.requestEvent(ctx, 'decision/judge', 'decision/judge-result', input, options);
+  if (asked.why !== undefined) throw new Error(`没拿到 decision/judge-result：${asked.why} ${asked.detail ?? ''}`);
 
-/** 三次问共用的等待设置。 */
-const judgeOptions = { prefix: 'dec', timeoutMs: 1000, onFallback: getUnsure };
+  return asked.reply;
+}
 
 
 const closers: (() => Promise<unknown> | void)[] = [];
@@ -78,63 +83,44 @@ describe('decision/judge 事件裁定', () => {
     let nextReply = '{"probability": 0.92, "reason": "只读安全"}';
     const ctx = await createDecisionWorld(() => ({ ok: true, reply: nextReply }));
 
-    const allow = await requestEvent(
-      ctx,
-      'decision/judge',
-      'decision/judge-result',
-      {
-        kind: 'exec',
-        question: { instructions: '安全吗', yes: '安全', no: '有风险' },
-        state: { 命令: 'ls' },
-      },
-      judgeOptions,
-    );
+    const allow = await askJudge(ctx, {
+      kind: 'exec',
+      question: { instructions: '安全吗', yes: '安全', no: '有风险' },
+      state: { 命令: 'ls' },
+    });
     expect(allow.verdict).toBe('allow');
     expect(allow.score).toBe(0.92);
     expect(allow.reason).toContain('0.92');
 
     nextReply = '{"probability": 0.1, "reason": "危险命令"}';
-    const deny = await requestEvent(
-      ctx,
-      'decision/judge',
-      'decision/judge-result',
-      {
-        kind: 'exec',
-        question: { instructions: '安全吗', yes: '安全', no: '有风险' },
-        state: { 命令: 'rm' },
-      },
-      judgeOptions,
-    );
+    const deny = await askJudge(ctx, {
+      kind: 'exec',
+      question: { instructions: '安全吗', yes: '安全', no: '有风险' },
+      state: { 命令: 'rm' },
+    });
     expect(deny.verdict).toBe('deny');
     expect(deny.score).toBe(0.1);
 
     nextReply = '看不出来';
-    const unsure = await requestEvent(
-      ctx,
-      'decision/judge',
-      'decision/judge-result',
-      {
-        kind: 'progress-limit',
-        question: { instructions: '继续吗', yes: '继续', no: '停下' },
-        state: { 进度: '50%' },
-      },
-      judgeOptions,
-    );
+    const unsure = await askJudge(ctx, {
+      kind: 'progress-limit',
+      question: { instructions: '继续吗', yes: '继续', no: '停下' },
+      state: { 进度: '50%' },
+    });
     expect(unsure.verdict).toBe('unsure');
     expect(unsure.score).toBeUndefined();
   });
 
-  test('没挂 decision：当场退回拿不准，不等超时', async () => {
+  test('没挂 decision：当场退回 unhandled，不干等', async () => {
     const ctx = new cordis.Context();
     closers.push(() => ctx.fiber.dispose());
     const question = { instructions: '安全吗', yes: '安全', no: '有风险' };
     const input = { kind: 'exec', question, state: { 命令: 'ls' } };
-    const options = { ...judgeOptions, timeoutMs: 60_000 };
 
-    //M 超时设成一分钟：秒回说明是“没人接单”退回的，不是等到点。
+    //M 不设时限：秒回说明是“没人接单”退回的。
     const began = Date.now();
-    const result = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', input, options);
-    expect(result).toEqual({ requestId: '', verdict: 'unsure', reason: 'unhandled', fallback: 'unhandled' });
+    const asked = await requestEvents.requestEvent(ctx, 'decision/judge', 'decision/judge-result', input);
+    expect(asked).toEqual({ why: 'unhandled' });
     expect(Date.now() - began).toBeLessThan(1000);
   });
 
@@ -151,7 +137,7 @@ describe('decision/judge 事件裁定', () => {
     const plainInput = { kind: 'exec', question, state: { 命令: 'copy a.txt b' } };
 
     //M 不带 want：模型回了 what 也不带；回执只有原来四样，提示词不提 what。
-    const plain = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', plainInput, judgeOptions);
+    const plain = await askJudge(ctx, plainInput);
     const plainKeys = Object.keys(plain).sort();
     expect(plainKeys).toEqual(['reason', 'requestId', 'score', 'verdict']);
     expect(asked[0]).not.toContain('what');
@@ -159,7 +145,7 @@ describe('decision/judge 事件裁定', () => {
     //M 带 want：提示词多要 what，回执带回来；结论、分和不带时一样，模型只多问了这一次。
     const want = ['what'] as const;
     const wantInput = { ...plainInput, want };
-    const wanted = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', wantInput, judgeOptions);
+    const wanted = await askJudge(ctx, wantInput);
     expect(wanted.what).toBe('把 a.txt 复制到 b 目录');
     expect(wanted.verdict).toBe(plain.verdict);
     expect(wanted.score).toBe(plain.score);
@@ -182,12 +168,12 @@ describe('decision/judge 事件裁定', () => {
     const want = ['what'] as const;
     const input = { kind: 'exec', question, state: { 命令: 'copy a.txt b' }, want };
 
-    const found = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', input, judgeOptions);
+    const found = await askJudge(ctx, input);
     expect(found.what).toBe('复制 a.txt');
 
     //M 两个都没写：回执里不出现 what 这个键。
     secondWhat = '';
-    const empty = await requestEvent(ctx, 'decision/judge', 'decision/judge-result', input, judgeOptions);
+    const empty = await askJudge(ctx, input);
     expect('what' in empty).toBe(false);
   });
 });

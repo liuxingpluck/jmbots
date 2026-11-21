@@ -59,11 +59,22 @@ class FakeResources extends cordis.Service {
 }
 
 
-/** 调用方的退回：requestId 写成退回原因，ok: false。 */
-const botOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason) => ({ requestId: reason, ok: false, error: reason }),
-};
+/**
+ * 发 bot/request、等 bot/result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * 生产代码（channels、relay）也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns bot/result 的回执。
+ */
+async function askBot(
+  ctx: cordis.Context,
+  payload: events.StripEnvelope<events.EventArg<'bot/request'>>,
+): Promise<events.EventArg<'bot/result'>> {
+  const asked = await events.requestEvent(ctx, 'bot/request', 'bot/result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 bot/result：${asked.why} ${asked.detail ?? ''}`);
+
+  return asked.reply;
+}
 
 
 /**
@@ -149,7 +160,7 @@ test('bot/request 有人答：hand、save-file、add、accept-result 都回 bot/
 
   //M hand：新开一场后台，回执带会话号；后台跑完照常回原渠道。
   const hand = { action: 'hand' as const, bot: '助手', text: '查一下', origin: { channel: 'test', address: { customer: 'test:u1' } } };
-  const handed = await events.requestEvent(ctx, 'bot/request', 'bot/result', hand, botOptions);
+  const handed = await askBot(ctx, hand);
   expect(handed.ok).toBe(true);
   expect(handed.requestId).toStartWith('req_');
   expect(ctx.sessions.open(handed.sessionId ?? '').row.kind).toBe('work');
@@ -158,14 +169,14 @@ test('bot/request 有人答：hand、save-file、add、accept-result 都回 bot/
   //M save-file：存进机器人工作区的 inbox，回执带绝对路径。
   const data = new TextEncoder().encode('附件内容');
   const save = { action: 'save-file' as const, bot: '助手', name: 'a/b\\说明.txt', data };
-  const saved = await events.requestEvent(ctx, 'bot/request', 'bot/result', save, botOptions);
+  const saved = await askBot(ctx, save);
   expect(saved.ok).toBe(true);
   expect(path.basename(saved.path ?? '')).toEndWith('_说明.txt');
   expect(fs.readFileSync(saved.path ?? '', 'utf8')).toBe('附件内容');
 
   //M add：运行中新建机器人，回执带名字、工作区、记忆目录；马上取得到。
   const add = { action: 'add' as const, config: { name: '新来的', language: 'zh' } };
-  const added = await events.requestEvent(ctx, 'bot/request', 'bot/result', add, botOptions);
+  const added = await askBot(ctx, add);
   expect(added.ok).toBe(true);
   expect(added.bot?.name).toBe('新来的');
   expect(added.bot?.memory).toBe(ctx.bots.get('新来的')?.memory);
@@ -182,9 +193,9 @@ test('bot/request 有人答：hand、save-file、add、accept-result 都回 bot/
     payload: { text: '查到了', files: [] },
   };
   const accept = { action: 'accept-result' as const, input };
-  const accepted = await events.requestEvent(ctx, 'bot/request', 'bot/result', accept, botOptions);
+  const accepted = await askBot(ctx, accept);
   expect(accepted).toMatchObject({ ok: true, receipt: { status: 'queued', key: 'relay:5' } });
-  const again = await events.requestEvent(ctx, 'bot/request', 'bot/result', accept, botOptions);
+  const again = await askBot(ctx, accept);
   expect(again).toMatchObject({ ok: true, receipt: { status: 'duplicate', key: 'relay:5' } });
 
   //M 前台空闲：下一拍处理这份结果，跑完再收拾。
@@ -196,31 +207,31 @@ test('bot/request 出错：没有机器人、会话不在、重名、结果冲�
   const { ctx, sent } = await world();
   const origin = { channel: 'test', address: { customer: 'test:u3' } };
 
-  const noBot = await events.requestEvent(ctx, 'bot/request', 'bot/result', { action: 'hand' as const, bot: '没有', text: '查', origin }, botOptions);
+  const noBot = await askBot(ctx, { action: 'hand' as const, bot: '没有', text: '查', origin });
   expect(noBot).toMatchObject({ ok: false, error: '没有这个机器人：没有' });
   expect(noBot.requestId).toStartWith('req_');
 
   //M 会话号不在：sessions.open 抛错，onError 转成 ok: false。
   const noSession = { action: 'hand' as const, bot: '助手', text: '查', origin, sessionId: 'no-such' };
-  const missing = await events.requestEvent(ctx, 'bot/request', 'bot/result', noSession, botOptions);
+  const missing = await askBot(ctx, noSession);
   expect(missing.ok).toBe(false);
   expect(missing.error).toBeString();
 
   const data = new Uint8Array([1]);
-  const saveFail = await events.requestEvent(ctx, 'bot/request', 'bot/result', { action: 'save-file' as const, bot: '没有', name: 'x.txt', data }, botOptions);
+  const saveFail = await askBot(ctx, { action: 'save-file' as const, bot: '没有', name: 'x.txt', data });
   expect(saveFail).toMatchObject({ ok: false, error: '没有这个机器人：没有' });
 
-  const twice = await events.requestEvent(ctx, 'bot/request', 'bot/result', { action: 'add' as const, config: { name: '助手' } }, botOptions);
+  const twice = await askBot(ctx, { action: 'add' as const, config: { name: '助手' } });
   expect(twice).toMatchObject({ ok: false, error: '已经有叫 助手 的机器人了' });
 
   //M 同键内容不同：result_conflict。
   const front = ctx.sessions.create({ kind: 'front', bot: '助手', customer: 'test:u3' });
   ctx.bots.route(front, origin);
   const input = { key: 'agent:1:result', sessionId: front.id, source: { type: 'agent' as const, id: '1' }, payload: { text: '甲', files: [] } };
-  const first = await events.requestEvent(ctx, 'bot/request', 'bot/result', { action: 'accept-result' as const, input }, botOptions);
+  const first = await askBot(ctx, { action: 'accept-result' as const, input });
   expect(first.ok).toBe(true);
   const changed = { ...input, payload: { text: '乙', files: [] } };
-  const conflict = await events.requestEvent(ctx, 'bot/request', 'bot/result', { action: 'accept-result' as const, input: changed }, botOptions);
+  const conflict = await askBot(ctx, { action: 'accept-result' as const, input: changed });
   expect(conflict.ok).toBe(false);
   expect(conflict.error).toContain('result_conflict');
   await waitFor(() => front.row.resultQueue?.[0]?.stage === 'sent');
@@ -232,8 +243,8 @@ test('没挂 bots：bot/request 立刻走无人接单退路', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   const add = { action: 'add' as const, config: { name: '甲' } };
-  const result = await events.requestEvent(ctx, 'bot/request', 'bot/result', add, botOptions);
-  expect(result).toEqual({ requestId: 'unhandled', ok: false, error: 'unhandled', fallback: 'unhandled' });
+  const asked = await events.requestEvent(ctx, 'bot/request', 'bot/result', add);
+  expect(asked).toEqual({ why: 'unhandled' });
 });
 
 

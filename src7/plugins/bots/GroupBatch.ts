@@ -27,7 +27,6 @@ const JUDGE_WARN_MS = 60_000;
 /** 没等到决策模型回执的原因，写进 bot/judged 的结果。 */
 const FALLBACK_TEXT: Record<requestEventModule.FallbackReason, string> = {
   unhandled: '没有决策模型',
-  timeout: '决策模型超时',
   aborted: '判断被取消',
   error: '决策模型出错',
 };

@@ -1,14 +1,15 @@
 /**
  * 通用请求-回执事件工具 RequestEvent.ts 单元测试：
  *   1. 有人答：异步与同步监听回执均可精确配对，且结束后自动撤监听；
- *   2. 没人答秒退：无监听者或 filter 放过时当场返回 'unhandled'，不等长超时；
- *   3. 超时：接单但不回执时按 timeoutMs 返回 'timeout'；
- *   4. abort：等待中途中止与传入已中止信号均立即返回 'aborted'。
+ *   2. 没人答秒退：无监听者或 filter 放过时当场返回 'unhandled'；
+ *   3. 限时：调用方传 AbortSignal.timeout，接单但不回执时到点返回 'aborted'；
+ *   4. abort：等待中途中止与传入已中止信号均立即返回 'aborted'；
+ *   5. 出错：接单后抛错退回 'error' 带异常文字，onError 可转成结构化失败回执。
  * 跑法：bun test ./src7/utils/RequestEvent.test.ts
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import * as cordis from 'cordis';
-import { isUnsure, onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope } from './RequestEvent.ts';
+import { onRequestEvent, requestEvent, type RequestEnvelope, type ResultEnvelope } from './RequestEvent.ts';
 
 
 declare module 'cordis' {
@@ -54,7 +55,7 @@ function createWorld(): cordis.Context {
 
 
 describe('RequestEvent 通用请求-回执', () => {
-  test('省略 onFallback 时回 reply 或 why，处理异常附上详情', async () => {
+  test('回 reply 或 why，处理异常附上详情', async () => {
     const ctx = createWorld();
     const payload = { value: 'echo' };
     const missed = await requestEvent(ctx, 'test/req', 'test/res', payload);
@@ -109,40 +110,28 @@ describe('RequestEvent 通用请求-回执', () => {
     });
 
     const before = ctx.events._hooks['test/res']?.length ?? 0;
+    const options = { prefix: 't' };
     const [r1, r2] = await Promise.all([
-      requestEvent(ctx, 'test/req', 'test/res', { value: 'one' }, {
-        prefix: 't',
-        timeoutMs: 1000,
-        onFallback: (reason) => ({ requestId: '', ok: false, answer: reason }),
-      }),
-      requestEvent(ctx, 'test/req', 'test/res', { value: 'two' }, {
-        prefix: 't',
-        timeoutMs: 1000,
-        onFallback: (reason) => ({ requestId: '', ok: false, answer: reason }),
-      }),
+      requestEvent(ctx, 'test/req', 'test/res', { value: 'one' }, options),
+      requestEvent(ctx, 'test/req', 'test/res', { value: 'two' }, options),
     ]);
 
-    expect(r1.ok).toBe(true);
-    expect(r1.answer).toBe('echo:one');
-    expect(r1.fallback).toBeUndefined();
-    expect(isUnsure(r1)).toBe(false);
-    expect(r1.requestId.startsWith('t_')).toBe(true);
-    expect(r2.ok).toBe(true);
-    expect(r2.answer).toBe('echo:two');
-    expect(r2.requestId).not.toBe(r1.requestId);
+    expect(r1.why).toBeUndefined();
+    expect(r1.reply?.ok).toBe(true);
+    expect(r1.reply?.answer).toBe('echo:one');
+    expect(r1.reply?.requestId.startsWith('t_')).toBe(true);
+    expect(r2.reply?.ok).toBe(true);
+    expect(r2.reply?.answer).toBe('echo:two');
+    expect(r2.reply?.requestId).not.toBe(r1.reply?.requestId);
     expect(ctx.events._hooks['test/res']?.length ?? 0).toBe(before);
   });
 
-  test('没人答秒退：无监听者或 filter 返回 false 时立刻返回 unhandled，不等待 timeoutMs', async () => {
+  test('没人答秒退：无监听者或 filter 返回 false 时立刻返回 unhandled', async () => {
     const ctx = createWorld();
     const start1 = Date.now();
-    const miss = await requestEvent(ctx, 'test/req', 'test/res', { value: 'none' }, {
-      timeoutMs: 5_000,
-      onFallback: (reason) => ({ requestId: '', ok: false, answer: 'fallback', reason }),
-    });
+    const miss = await requestEvent(ctx, 'test/req', 'test/res', { value: 'none' });
     expect(Date.now() - start1).toBeLessThan(200);
-    expect(miss).toEqual({ requestId: '', ok: false, answer: 'fallback', reason: 'unhandled', fallback: 'unhandled' });
-    expect(isUnsure(miss)).toBe(false);
+    expect(miss).toEqual({ why: 'unhandled' });
 
     onRequestEvent(
       ctx,
@@ -152,27 +141,21 @@ describe('RequestEvent 通用请求-回执', () => {
       { filter: (req) => req.value === 'wanted' },
     );
     const start2 = Date.now();
-    const skipped = await requestEvent(ctx, 'test/req', 'test/res', { value: 'other' }, {
-      timeoutMs: 5_000,
-      onFallback: (reason) => ({ requestId: '', ok: false, answer: 'fallback', reason }),
-    });
+    const skipped = await requestEvent(ctx, 'test/req', 'test/res', { value: 'other' });
     expect(Date.now() - start2).toBeLessThan(200);
-    expect(skipped.reason).toBe('unhandled');
+    expect(skipped.why).toBe('unhandled');
   });
 
-  test('超时与异常转回执：接单后超期返回 timeout，onError 可转成结构化失败', async () => {
+  test('限时与异常转回执：接单后到了调用方的时限返回 aborted，onError 可转成结构化失败', async () => {
     const ctx = createWorld();
     const stopSlow = ctx.on('test/req', async (req) => {
       req.handled = true;
       await Bun.sleep(200);
     });
-    const timedOut = await requestEvent(ctx, 'test/req', 'test/res', { value: 'slow' }, {
-      timeoutMs: 25,
-      onFallback: (reason) => ({ requestId: '', ok: false, answer: '', reason }),
-    });
-    expect(timedOut.reason).toBe('timeout');
-    expect(timedOut.fallback).toBe('timeout');
-    expect(isUnsure(timedOut)).toBe(true);
+    //M 调用方要限时就传 AbortSignal.timeout，到点按中止退回。
+    const limited = { signal: AbortSignal.timeout(25) };
+    const timedOut = await requestEvent(ctx, 'test/req', 'test/res', { value: 'slow' }, limited);
+    expect(timedOut).toEqual({ why: 'aborted' });
     stopSlow();
 
     onRequestEvent(
@@ -183,20 +166,16 @@ describe('RequestEvent 通用请求-回执', () => {
         throw new Error('处理炸了');
       },
       {
-        onError: (error) => ({ ok: false, answer: '', reason: error instanceof Error ? error.message : String(error) }),
+        onError: (error) => ({ ok: false, answer: '', reason: (error as Error).message }),
       },
     );
-    const failed = await requestEvent(ctx, 'test/req', 'test/res', { value: 'boom' }, {
-      timeoutMs: 5_000,
-      onFallback: (reason) => ({ requestId: '', ok: false, answer: '', reason }),
-    });
-    expect(failed.ok).toBe(false);
-    expect(failed.reason).toBe('处理炸了');
-    expect(failed.fallback).toBeUndefined();
-    expect(isUnsure(failed)).toBe(false);
+    const failed = await requestEvent(ctx, 'test/req', 'test/res', { value: 'boom' });
+    expect(failed.why).toBeUndefined();
+    expect(failed.reply?.ok).toBe(false);
+    expect(failed.reply?.reason).toBe('处理炸了');
   });
 
-  test('接单后抛错且未回执时，退回保留原因和细节', async () => {
+  test('接单后抛错且未回执时，退回 error 并带上异常文字', async () => {
     const ctx = createWorld();
     //M 构造可能已完成部分写入、但未返回业务回执的监听者。
     ctx.on('test/req', (request) => {
@@ -204,29 +183,19 @@ describe('RequestEvent 通用请求-回执', () => {
       throw new Error('部分写入后出错');
     });
     const payload = { value: 'write' };
-    const options = {
-      timeoutMs: 1000,
-      onFallback: (_reason: unknown, detail?: string) => ({ requestId: '', ok: false, answer: detail ?? '' }),
-    };
 
-    //M 检查错误详情仍由调用方决定，是否不确定由公共函数判断。
-    const result = await requestEvent(ctx, 'test/req', 'test/res', payload, options);
-    expect(result.answer).toBe('部分写入后出错');
-    expect(result.fallback).toBe('error');
-    expect(isUnsure(result)).toBe(true);
+    //M 结果不确定由调用方按 why 判断：只有 unhandled 能确定对方没执行。
+    const result = await requestEvent(ctx, 'test/req', 'test/res', payload);
+    expect(result).toEqual({ why: 'error', detail: '部分写入后出错' });
   });
 
   test('AbortSignal 中止：提前 aborted 与等待中途 abort 都立刻返回 aborted', async () => {
     const ctx = createWorld();
     const pre = new AbortController();
     pre.abort();
-    const immediate = await requestEvent(ctx, 'test/req', 'test/res', { value: 'pre' }, {
-      timeoutMs: 5_000,
-      signal: pre.signal,
-      onFallback: (reason) => ({ requestId: '', ok: false, answer: '', reason }),
-    });
-    expect(immediate.reason).toBe('aborted');
-    expect(immediate.fallback).toBe('aborted');
+    const preOptions = { signal: pre.signal };
+    const immediate = await requestEvent(ctx, 'test/req', 'test/res', { value: 'pre' }, preOptions);
+    expect(immediate).toEqual({ why: 'aborted' });
 
     ctx.on('test/req', async (req) => {
       req.handled = true;
@@ -235,14 +204,9 @@ describe('RequestEvent 通用请求-回执', () => {
     const during = new AbortController();
     setTimeout(() => during.abort(), 15);
     const start = Date.now();
-    const aborted = await requestEvent(ctx, 'test/req', 'test/res', { value: 'wait' }, {
-      timeoutMs: 5_000,
-      signal: during.signal,
-      onFallback: (reason) => ({ requestId: '', ok: false, answer: '', reason }),
-    });
+    const duringOptions = { signal: during.signal };
+    const aborted = await requestEvent(ctx, 'test/req', 'test/res', { value: 'wait' }, duringOptions);
     expect(Date.now() - start).toBeLessThan(300);
-    expect(aborted.reason).toBe('aborted');
-    expect(aborted.fallback).toBe('aborted');
-    expect(isUnsure(aborted)).toBe(true);
+    expect(aborted).toEqual({ why: 'aborted' });
   });
 });

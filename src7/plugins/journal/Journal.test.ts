@@ -19,10 +19,24 @@ import { getTraceEvent } from './Trace.ts';
 
 
 const closers: Array<() => Promise<unknown> | void> = [];
-const eventOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: requestEvents.FallbackReason) => ({ requestId: reason }),
-};
+
+
+/**
+ * 发 journal/request、等 journal/result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * 生产代码也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns journal/result 的回执。
+ */
+async function askJournal(
+  ctx: cordis.Context,
+  payload: requestEvents.StripEnvelope<requestEvents.EventArg<'journal/request'>>,
+): Promise<requestEvents.EventArg<'journal/result'>> {
+  const asked = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 journal/result：${asked.why} ${asked.detail ?? ''}`);
+
+  return asked.reply;
+}
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) {
     await close();
@@ -106,7 +120,7 @@ async function queryJournal(ctx: cordis.Context, params: Record<string, string>)
   const payload = { action: 'query', params } as const;
 
   //M 沿用生产查询的参数校验与筛选规则。
-  return await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
+  return await askJournal(ctx, payload);
 }
 
 
@@ -180,18 +194,18 @@ describe('journal（含 FilesMirror 并入）', () => {
 
     //M 两种轨迹查询以及用量查询都不写入流水。
     const payload = { action: 'trail', message: 77, maxLines: 3 } as const;
-    const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
+    const result = await askJournal(ctx, payload);
     expect(result.trail?.message).toBe(77);
     expect(result.trail?.session).toBe('s_req_1');
     expect(result.picked?.map((line) => line.name)).toContain('After.step');
     const to = trail?.[2]?.at ?? 0;
     const replyQuery = { action: 'reply-lines' as const, message: 77, maxLines: 3, sessions: ['s_req_1'], to };
-    const replied = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', replyQuery, eventOptions);
+    const replied = await askJournal(ctx, replyQuery);
     expect(replied.events).toEqual(trail?.map(getTraceEvent));
     expect(replied.cut).toBe(false);
 
     const shortQuery = { ...replyQuery, maxLines: 2 };
-    const short = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', shortQuery, eventOptions);
+    const short = await askJournal(ctx, shortQuery);
     expect(short.events).toEqual(trail?.slice(0, 2).map(getTraceEvent));
     expect(short.cut).toBe(true);
 
@@ -203,7 +217,7 @@ describe('journal（含 FilesMirror 并入）', () => {
     expect(after.lines).toHaveLength(before.lines?.length ?? 0);
 
     const missing = { action: 'trail', message: 9999, maxLines: 10 } as const;
-    const none = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', missing, eventOptions);
+    const none = await askJournal(ctx, missing);
     expect(none.trail).toBeUndefined();
 
     const invalidLimit = { limit: 'abc' };
@@ -239,8 +253,8 @@ describe('journal（含 FilesMirror 并入）', () => {
     const secondQuery = { ...firstQuery, message: 91 };
 
     //M 分别沿回话追溯入口取两个机器人的流水，核对共用渠道行和各自的收件行。
-    const first = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', firstQuery, eventOptions);
-    const second = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', secondQuery, eventOptions);
+    const first = await askJournal(ctx, firstQuery);
+    const second = await askJournal(ctx, secondQuery);
     const common = [
       'Feishu.start',
       'Feishu.onMessage',
@@ -253,7 +267,7 @@ describe('journal（含 FilesMirror 并入）', () => {
 
     //M 教程页用的 trail：第一格是飞书；按标准号查 /api/events 也行。
     const payload = { action: 'trail', message: 90, maxLines: 20 } as const;
-    const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', payload, eventOptions);
+    const result = await askJournal(ctx, payload);
     expect(result.trail?.steps[0]?.rows[0]?.name).toBe('Feishu.start');
     expect(result.picked?.map((line) => line.name)).toContain('Feishu.start');
     const sourceFilter = { source: sourceId };
@@ -317,20 +331,20 @@ describe('journal（含 FilesMirror 并入）', () => {
     ctx.emit('trace', '测试查询', '写一行', 'emit()', {});
 
     const query = { action: 'query', params: { name: '测试查询' } } as const;
-    const queried = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', query, eventOptions);
+    const queried = await askJournal(ctx, query);
     expect(queried.ok).toBe(true);
     expect(queried.lines?.map((line) => line.name)).toEqual(['测试查询']);
 
     const invalid = { action: 'query', params: { limit: '坏值' } } as const;
-    const rejected = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', invalid, eventOptions);
+    const rejected = await askJournal(ctx, invalid);
     expect(rejected).toMatchObject({ ok: false, lines: [], error: expect.stringContaining('非负整数') });
 
     const mirror = { action: 'mirror-dir', bot: '小记', sessionId: 's_event' } as const;
-    const mirrored = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', mirror, eventOptions);
+    const mirrored = await askJournal(ctx, mirror);
     expect(mirrored.dir).toBe(path.join(root, 'bots', '小记', 'sessions', 's_event'));
 
     const disabled = await setup({ mirror: false });
-    const noMirror = await requestEvents.requestEvent(disabled.ctx, 'journal/request', 'journal/result', mirror, eventOptions);
+    const noMirror = await askJournal(disabled.ctx, mirror);
     expect(noMirror.requestId).toStartWith('req_');
     expect(noMirror.dir).toBeUndefined();
   });
@@ -339,8 +353,8 @@ describe('journal（含 FilesMirror 并入）', () => {
     const ctx = new cordis.Context();
     closers.push(() => ctx.fiber.dispose());
     const query = { action: 'query', params: {} } as const;
-    const result = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', query, eventOptions);
-    expect(result).toEqual({ requestId: 'unhandled', fallback: 'unhandled' });
+    const asked = await requestEvents.requestEvent(ctx, 'journal/request', 'journal/result', query);
+    expect(asked).toEqual({ why: 'unhandled' });
   });
 
   test('默认写入完整 对话.md（不与简版双写）及防抖 session.json；子会话不镜像', async () => {

@@ -1,27 +1,17 @@
 /**
  * 通用请求-回执事件工具（#113 插件解耦底座）：
- *   1. requestEvent：先挂回执监听，再 serial 派发请求；没人接单立即退回，接单后按需报警、超时或中止；
+ *   1. requestEvent：先挂回执监听，再 serial 派发请求；没人接单立即退回，接单后按需报警，调用方可用 signal 中止；
  *   2. onRequestEvent：统一在进入异步逻辑前标 handled = true，完成后仅当存在 requestId 时回发配对回执。
  * 说明：供插件之间一问一答，复用请求与回执的等待逻辑。渠道协议见 src7/plugins/channels/。
+ * 等多久由处理方定（比如飞书每个接口限 60 秒）；提问方自己要限时，就传 AbortSignal.timeout(...)。
  */
 import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as textModule from './Text.ts';
 
 
-/** 请求未获得正常业务回执时的退回原因。 */
-export type FallbackReason = 'unhandled' | 'timeout' | 'aborted' | 'error';
-
-/** 仅本地退回值附带的原因，配对的业务回执没有这个字段。 */
-export interface RequestFallback {
-  /** 未取得回执的原因。 */
-  fallback?: FallbackReason;
-}
-
-/** 写操作未取得回执时，只有无人接单能确定对方未执行。 */
-export function isUnsure(reply: RequestFallback): reply is { fallback: Exclude<FallbackReason, 'unhandled'> } {
-  return reply.fallback !== undefined && reply.fallback !== 'unhandled';
-}
+/** 请求没拿到业务回执的原因：没人接单、调用方中止（含自己设的时限到了）、处理方抛错。 */
+export type FallbackReason = 'unhandled' | 'aborted' | 'error';
 
 /** 需要回执或接单判定的请求信封。 */
 export interface RequestEnvelope {
@@ -47,24 +37,14 @@ export type StripResultId<T> = T extends unknown ? Omit<T, 'requestId'> : never;
 export type EventArg<K extends keyof cordis.Events> =
   Parameters<cordis.Events[K]> extends [infer Arg] ? Arg : never;
 
-/** 两种请求返回方式共用的等待选项。 */
+/** requestEvent 的等待选项。 */
 interface RequestWaitOptions {
   /** requestId 前缀，如 'apr'、'dec'、'cat'；不给默认 'req'。 */
   prefix?: string;
-  /** 最长等待毫秒数；省略时由处理方决定何时完成。 */
-  timeoutMs?: number;
   /** 超过此毫秒数时写一条警告，继续等回执。 */
   warnAfterMs?: number;
-  /** 退出前仍要等到超时结果时，让定时器保持进程运行。 */
-  keepAlive?: boolean;
-  /** 可选中止信号；触发后立即撤监听并退回 'aborted'。 */
+  /** 可选中止信号；触发后立即撤监听并退回 'aborted'。要限时就传 AbortSignal.timeout(...)。 */
   signal?: AbortSignal;
-}
-
-/** 使用业务形状退回的现有调用选项。 */
-export interface RequestEventOptions<Res> extends RequestWaitOptions {
-  /** 无人接单、超时、中止或监听器抛错时的退回值构造器。 */
-  onFallback: (reason: FallbackReason, detail?: string) => Res;
 }
 
 /** 收到业务回执，或说明本次为何没有收到。 */
@@ -76,8 +56,6 @@ export type Asked<Res> =
 export interface OnRequestEventOptions<Req extends RequestEnvelope, Res extends ResultEnvelope> {
   /** 可选前置过滤器；返回 false 时不置 handled，让后续监听者接单。 */
   filter?: (request: Req) => boolean;
-  /** 同步处理完成时立即发出回执，保留原有同步应答的事件顺序。 */
-  replySynchronously?: boolean;
   /** 业务处理抛错且存在 requestId 时，将异常转成结构化失败回执发出。 */
   onError?: (error: unknown, request: Req) => StripResultId<Res>;
 }
@@ -96,23 +74,9 @@ interface InternalBus {
  * @param requestEventName 请求事件名（serial 投递）。
  * @param resultEventName 回执事件名（emit 回收）。
  * @param payload 不含 requestId 与 handled 的业务载荷。
- * @param options 前缀、报警、超时和中止信号；传 onFallback 继续使用业务形状。
- * @returns 没有 onFallback 时交回 reply 或 why；有 onFallback 时保持原有返回形状。
+ * @param options 前缀、报警时刻和中止信号。
+ * @returns 收到回执交回 { reply }；没人接单、中止、处理方抛错交回 { why, detail? }。
  */
-export function requestEvent<ReqKey extends keyof cordis.Events, ResKey extends keyof cordis.Events>(
-  ctx: cordis.Context,
-  requestEventName: ReqKey,
-  resultEventName: ResKey,
-  payload: StripEnvelope<EventArg<ReqKey>>,
-  options: RequestEventOptions<EventArg<ResKey>>,
-): Promise<EventArg<ResKey> & RequestFallback>;
-export function requestEvent<ReqKey extends keyof cordis.Events, ResKey extends keyof cordis.Events>(
-  ctx: cordis.Context,
-  requestEventName: ReqKey,
-  resultEventName: ResKey,
-  payload: StripEnvelope<EventArg<ReqKey>>,
-  options?: RequestWaitOptions & { onFallback?: undefined },
-): Promise<Asked<EventArg<ResKey>>>;
 export async function requestEvent<
   ReqKey extends keyof cordis.Events,
   ResKey extends keyof cordis.Events,
@@ -121,25 +85,12 @@ export async function requestEvent<
   requestEventName: ReqKey,
   resultEventName: ResKey,
   payload: StripEnvelope<EventArg<ReqKey>>,
-  options: RequestWaitOptions & Partial<Pick<RequestEventOptions<EventArg<ResKey>>, 'onFallback'>> = {},
-): Promise<Asked<EventArg<ResKey>> | (EventArg<ResKey> & RequestFallback)> {
-  type Reply = EventArg<ResKey>;
-  type Answer = Asked<Reply> | (Reply & RequestFallback);
-  const onFallback = options.onFallback;
-
-  //M 新调用直接取原因，旧调用继续用自己的退回正文和 fallback。
-  const getFallback = (reason: FallbackReason, detail?: string): Answer => {
-    if (onFallback === undefined) {
-      if (detail === undefined) return { why: reason };
-      return { why: reason, detail };
-    }
-    const result = onFallback(reason, detail);
-    const metadata = { fallback: reason };
-    return Object.assign({}, result, metadata);
-  };
+  options: RequestWaitOptions = {},
+): Promise<Asked<EventArg<ResKey>>> {
+  type Answer = Asked<EventArg<ResKey>>;
 
   //G 发起前已经被中止：直接按 aborted 退回，不再注册监听与定时器。
-  if (options.signal?.aborted === true) return getFallback('aborted');
+  if (options.signal?.aborted === true) return { why: 'aborted' };
 
   const prefix = options.prefix ?? 'req';
   const requestId = `${prefix}_${crypto.randomUUID()}`;
@@ -149,20 +100,19 @@ export async function requestEvent<
 
   return await new Promise<Answer>((resolve) => {
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let warning: ReturnType<typeof setTimeout> | undefined;
     let dispose: () => boolean = () => false;
 
     const onAbort = (): void => {
-      //M 外部信号中止时立即结束等待并清理监听。
-      finishFallback('aborted');
+      //M 外部信号中止（含调用方自己设的时限到了）时立即结束等待并清理监听。
+      finish({ why: 'aborted' });
     };
 
     const finish = (result: Answer): void => {
+      //G 回执、中止、出错谁先到算谁，迟到的不再交第二份结果。
       if (settled) return;
 
       settled = true;
-      clearTimeout(timer);
       clearTimeout(warning);
       options.signal?.removeEventListener('abort', onAbort);
       //M 退订回执事件监听，避免单次请求后残留监听器。
@@ -170,35 +120,13 @@ export async function requestEvent<
       resolve(result);
     };
 
-    const finishFallback = (reason: FallbackReason, detail?: string): void => {
-      //G 回执或中止已经结束等待时，迟到的失败不再构造第二份结果。
-      if (settled) return;
-
-      const result = getFallback(reason, detail);
-      finish(result);
-    };
-
     //M 先订回执事件再 serial 发请求，避免监听器同步 emit 回执时漏接。
     dispose = bus.on(String(resultEventName), (event: EventArg<ResKey> & ResultEnvelope) => {
       if (event.requestId !== requestId) return;
 
       //M 收到匹配当前 requestId 的回执，结束本次请求等待。
-      if (onFallback === undefined) {
-        finish({ reply: event });
-        return;
-      }
-      finish(event);
+      finish({ reply: event });
     });
-
-    //M 只为显式指定时限的请求安排超时结案。
-    if (options.timeoutMs !== undefined) {
-      timer = setTimeout(() => {
-        finishFallback('timeout');
-      }, options.timeoutMs);
-      if (options.keepAlive !== true) {
-        timer.unref?.();
-      }
-    }
 
     //M 报警只写一行，回执监听继续保留。
     const waitedMs = options.warnAfterMs;
@@ -211,16 +139,16 @@ export async function requestEvent<
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
-    //M 串行通知全部请求监听者；全部跑完仍未接单时立即秒退，不傻等超时。
+    //M 串行通知全部请求监听者；全部跑完仍未接单时立即秒退，不傻等。
     void bus.serial(requestName, fullRequest).then(() => {
-      if (settled || fullRequest.handled === true) return;
+      if (fullRequest.handled === true) return;
 
       //G 没有任何监听者置 handled = true：立即退回 unhandled。
-      finishFallback('unhandled');
+      finish({ why: 'unhandled' });
     }).catch((error: unknown) => {
-      //M 监听器抛出未捕获异常，按 error 原因走统一退回逻辑。
+      //M 监听器抛出未捕获异常：退回 error，带上异常文字。
       const detail = textModule.getErrorMessage(error);
-      finishFallback('error', detail);
+      finish({ why: 'error', detail });
     });
   });
 }
@@ -254,10 +182,7 @@ export function onRequestEvent<
     request.handled = true;
     try {
       //M 执行业务处理器并收集不含 requestId 的结果正文。
-      let body = handler(request);
-      if (options?.replySynchronously !== true || body instanceof Promise) {
-        body = await body;
-      }
+      const body = await handler(request);
       if (request.requestId === undefined) return;
 
       //M 调用方要求等待回执（带了 requestId）：原样拼上 requestId 广播结果事件。
@@ -265,7 +190,7 @@ export function onRequestEvent<
     } catch (error) {
       if (request.requestId === undefined || options?.onError === undefined) throw error;
 
-      //M 若配置了结构化错误映射，则在原地发回错误回执，防止调用方干等到超时。
+      //M 若配置了结构化错误映射，则在原地发回错误回执，防止调用方干等。
       const failed = options.onError(error, request);
       bus.emit(String(resultEventName), { ...(failed as Record<string, unknown>), requestId: request.requestId });
     }

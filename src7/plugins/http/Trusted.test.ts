@@ -10,10 +10,22 @@ import * as httpPlugin from './index.ts';
 
 const { trustedIp } = httpPlugin;
 
-const eventOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason) => ({ requestId: '', ok: false, error: reason }),
-};
+/**
+ * 发 http/request、等 http/result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * 生产代码也是这样拿 reply 或 why。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns http/result 的回执。
+ */
+async function askHttp(
+  ctx: cordis.Context,
+  payload: events.StripEnvelope<events.EventArg<'http/request'>>,
+): Promise<events.EventArg<'http/result'>> {
+  const asked = await events.requestEvent(ctx, 'http/request', 'http/result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 http/result：${asked.why} ${asked.detail ?? ''}`);
+
+  return asked.reply;
+}
 
 /** HTTP 测试用的内存配置；注入请求只在 Fastify 进程内运行。 */
 class FakeResources extends cordis.Service {
@@ -178,20 +190,20 @@ test('HTTP 插件应答注入请求及关闭请求', async () => {
     ctx.http.app.post('/probe', (_, reply) => reply.code(201).send('已收到'));
 
     const health = { action: 'inject', method: 'GET', url: '/api/health' } as const;
-    const healthResult = await events.requestEvent(ctx, 'http/request', 'http/result', health, eventOptions);
+    const healthResult = await askHttp(ctx, health);
     expect(healthResult.ok).toBe(true);
     expect(healthResult.statusCode).toBe(200);
     expect(JSON.parse(healthResult.body ?? '')).toEqual({ ok: true, problems: [] });
 
     const probe = { action: 'inject', method: 'POST', url: '/probe' } as const;
-    const probeResult = await events.requestEvent(ctx, 'http/request', 'http/result', probe, eventOptions);
+    const probeResult = await askHttp(ctx, probe);
     expect(probeResult).toMatchObject({ ok: true, statusCode: 201, body: '已收到' });
 
     const close = { action: 'close', waitMs: 500 } as const;
-    const closeResult = await events.requestEvent(ctx, 'http/request', 'http/result', close, eventOptions);
+    const closeResult = await askHttp(ctx, close);
     expect(closeResult.ok).toBe(true);
 
-    const closed = await events.requestEvent(ctx, 'http/request', 'http/result', health, eventOptions);
+    const closed = await askHttp(ctx, health);
     expect(closed).toMatchObject({ ok: false, error: expect.any(String) });
     expect(closed.requestId).toStartWith('req_');
   } finally {
@@ -203,8 +215,8 @@ test('HTTP 插件未挂载时使用无人接单退路', async () => {
   const ctx = new cordis.Context();
   try {
     const probe = { action: 'inject', method: 'GET', url: '/api/health' } as const;
-    const result = await events.requestEvent(ctx, 'http/request', 'http/result', probe, eventOptions);
-    expect(result).toEqual({ requestId: '', ok: false, error: 'unhandled', fallback: 'unhandled' });
+    const asked = await events.requestEvent(ctx, 'http/request', 'http/result', probe);
+    expect(asked).toEqual({ why: 'unhandled' });
   } finally {
     await ctx.fiber.dispose();
   }
@@ -223,7 +235,7 @@ test('关闭超过等待上限时回执失败，Fastify 继续关闭', async () 
     });
 
     const close = { action: 'close', waitMs: 10 } as const;
-    const pending = events.requestEvent(ctx, 'http/request', 'http/result', close, eventOptions);
+    const pending = askHttp(ctx, close);
     const result = await pending;
     expect(result).toMatchObject({ ok: false, error: '等待 HTTP 关闭超时' });
     await closingStarted.promise;

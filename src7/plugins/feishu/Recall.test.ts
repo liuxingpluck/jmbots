@@ -164,7 +164,6 @@ describe('feishu_recall', () => {
       'feishu/recall-message',
       'feishu/recall-message-result',
       { bot: 'BotA', appId: 'cli_b', chatId: 'oc_1', messageId: 'om_bot_a' },
-      { timeoutMs: 2000 },
     );
     expect(wrongApp.why).toBeUndefined();
     expect(wrongApp.reply?.ok).toBe(false);
@@ -177,7 +176,6 @@ describe('feishu_recall', () => {
       'feishu/recall-message',
       'feishu/recall-message-result',
       { bot: 'BotA', appId: 'cli_a', chatId: 'oc_1', messageId: 'om_bot_a' },
-      { timeoutMs: 2000 },
     );
     expect(rightApp.why).toBeUndefined();
     expect(rightApp.reply?.ok).toBe(true);

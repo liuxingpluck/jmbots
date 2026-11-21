@@ -47,10 +47,12 @@ function getWorld() {
     return { receipt: state.result };
   });
 
-  const request = (action: outbound.OutboundAction, actor = 'owner') => {
+  const request = async (action: outbound.OutboundAction, actor = 'owner') => {
     const input = { ...action, program: 'wechat', actor };
-    const options = { timeoutMs: 500, onFallback: () => ({ requestId: '', code: 500, error: '测试未回执' }) };
-    return events.requestEvent(ctx, 'approval/outbound-request', 'approval/outbound-result', input, options);
+    const asked = await events.requestEvent(ctx, 'approval/outbound-request', 'approval/outbound-result', input);
+    if (asked.why !== undefined) throw new Error(`测试未回执：${asked.why}`);
+
+    return asked.reply;
   };
   const prepare = async () => {
     const ready = await request({ action: 'prepare', draftId: draft.draftId });

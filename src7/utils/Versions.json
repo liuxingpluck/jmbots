@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.92",
+    "date": "2026-11-21",
+    "changes": [
+      "落地云端顾问 31 号报告第 2 条「RequestEvent.ts 历史旧路收尾」：彻底移除生产已不使用的 onFallback 重载、RequestEventOptions、RequestFallback、isUnsure、keepAlive、replySynchronously、timeoutMs 与 'timeout' 结局，RequestEvent.ts 由 273 行瘦身至 198 行（等待选项收拢为 prefix / warnAfterMs / signal，结局收拢为 unhandled / aborted / error）",
+      "修复飞书发文件 30 秒误判“结果不确定”的真实隐患：清理 relay 与飞书通道残留的 timeoutMs 硬超时（改由飞书接口自身 60s 时限兜底），knowledge 搜索桥接迁至 AbortSignal.timeout(4000)，同步迁移全部 11+ 处测试与全仓 117 份文档（Check_Lines --all 0 问题）"
+    ]
+  },
+  {
     "version": "0.7.91",
     "date": "2026-11-21",
     "changes": [

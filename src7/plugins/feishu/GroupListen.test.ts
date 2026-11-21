@@ -88,10 +88,22 @@ function createFileChannel(ctx: cordis.Context): feishuModule.Feishu {
   return new feishuModule.Feishu(ctx, config);
 }
 
-const fileEventOptions = {
-  timeoutMs: 1000,
-  onFallback: (reason: events.FallbackReason) => ({ requestId: '', ok: false, error: reason }),
-};
+/**
+ * 发 feishu/send-file、等 feishu/send-file-result；没拿到回执（没人接、出错）就让测试失败，原因写进报错。
+ * relay 发文件也是这样拿 reply 或 why，不掐表。
+ * @param ctx 发请求用的上下文。
+ * @param payload 不带 requestId 的请求。
+ * @returns feishu/send-file-result 的回执。
+ */
+async function askSendFile(
+  ctx: cordis.Context,
+  payload: events.StripEnvelope<events.EventArg<'feishu/send-file'>>,
+): Promise<events.EventArg<'feishu/send-file-result'>> {
+  const asked = await events.requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', payload);
+  if (asked.why !== undefined) throw new Error(`没拿到 feishu/send-file-result：${asked.why} ${asked.detail ?? ''}`);
+
+  return asked.reply;
+}
 
 test('飞书投递事件上传文件、引用原消息并回传新消息号', async () => {
   const ctx = new cordis.Context();
@@ -104,7 +116,7 @@ test('飞书投递事件上传文件、引用原消息并回传新消息号', as
     fs.writeFileSync(filePath, '测试文件');
     const input = { bot: BOT, chatId: PLAIN, filePath, appId: APP_ID, kind: 'file', messageId: 'om_origin' } as const;
 
-    const result = await events.requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', input, fileEventOptions);
+    const result = await askSendFile(ctx, input);
     expect(result).toMatchObject({ ok: true, messageId: 'om_file' });
     expect(upload).toHaveBeenCalledWith({ data: { file_type: 'stream', file_name: 'event.png', file: Buffer.from('测试文件') } });
     expect(reply).toHaveBeenCalledWith({
@@ -127,7 +139,7 @@ test('飞书投递发送失败时回执错误', async () => {
     fs.writeFileSync(filePath, '测试文件');
     const input = { bot: BOT, chatId: PLAIN, filePath } as const;
 
-    const result = await events.requestEvent(ctx, 'feishu/send-file', 'feishu/send-file-result', input, fileEventOptions);
+    const result = await askSendFile(ctx, input);
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining('测试发送失败') });
     expect(result.requestId).toStartWith('req_');
     expect(send).toHaveBeenCalledTimes(1);

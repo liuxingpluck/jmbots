@@ -49,7 +49,8 @@ export const name = 'relay';
 //M 1.5.4：helpers 支持可选展示名 title（内部名 name 不变）；预留 address.relayHelper 群攒批静默转交入口。
 //M 1.5.5：prefixed 跳过引用及前导 @提及与空白；中文结尾前缀允许直接紧跟英文字母或数字（如“哈基米a OBB”）。
 //M 1.5.6：飞书真回复发出后异步温和撤回“已转给”占位消息（ack_message_id）；收话分流、文件与决策辅助拆入独立子模块瘦身。
-export const version = '1.5.6';
+//M 1.5.7：飞书发文件、撤回占位不再自己掐表（原 30 秒、15 秒），飞书自己限时 60 秒、到点回执；删“等待回执超时”分支（云端 31 第 2 条）。
+export const version = '1.5.7';
 
 /** 用到的服务。db 负责收件与回信表的版本迁移和事务；http 是可选的：用到时 ctx.get 现取。 */
 export const inject = ['resources', 'tools', 'sessions', 'bots', 'db'];
@@ -772,7 +773,7 @@ export class Relay {
           appId: where?.appId,
           chatId: where?.chatId,
         },
-        { prefix: 'rc', timeoutMs: 15_000 },
+        { prefix: 'rc' },
       );
       if (asked.why !== undefined) {
         outcome = `skipped:${asked.why}`;
@@ -1120,7 +1121,8 @@ export class Relay {
         appId: where.appId,
         messageId: where.messageId,
       };
-      const options = { prefix: 'sf', timeoutMs: 30_000 };
+      //M 请飞书发文件。飞书每个开放接口自己限时 60 秒（feishu 1.3.5），这里不另掐表，30 秒没回只报警。
+      const options = { prefix: 'sf', warnAfterMs: 30_000 };
       const asked = await requestEventModule.requestEvent(
         this.ctx,
         'feishu/send-file',
@@ -1135,9 +1137,6 @@ export class Relay {
       }
       if (asked.why === 'unhandled') {
         result = '没发出去：飞书插件没挂，没人接发文件的请求';
-      }
-      if (asked.why === 'timeout') {
-        result = '飞书文件发送结果不确定：等待回执超时';
       }
       if (asked.why === 'error') {
         result = `飞书文件发送结果不确定：飞书处理时出错 ${asked.detail ?? ''}`.trim();
