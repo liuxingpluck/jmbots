@@ -119,6 +119,26 @@ describe('frpc TOML 零损解析与无损回写', () => {
     expect(reparsed.hasAuthToken).toBe(true);
     expect(reparsed.proxies).toEqual(nextProxies);
   });
+
+  test('没写 localIP 的隧道照 frpc 默认记成 127.0.0.1，不悄悄丢掉', () => {
+    const raw = ['[[proxies]]', 'name = "no-ip"', 'type = "http"', 'localPort = 30086', ''].join('\r\n');
+    const parsed = tomlModule.parseFrpcToml(raw);
+    expect(parsed.proxies).toEqual([{ name: 'no-ip', type: 'http', localIP: '127.0.0.1', localPort: 30086 }]);
+  });
+
+  test('getProxyWarnings 和 PUT 校验同一个判断：主站端口接回环才告警，别的端口不管', () => {
+    const proxies: tomlModule.FrpcProxy[] = [
+      { name: 'safe-web', type: 'http', localIP: '192.168.200.1', localPort: 30086 },
+      { name: 'loop-web', type: 'http', localIP: '127.0.0.1', localPort: 30086 },
+      { name: 'loop-custom', type: 'http', localIP: 'localhost', localPort: 30099 },
+      { name: 'dev-ssh', type: 'tcp', localIP: '127.0.0.1', localPort: 22, remotePort: 16022 },
+    ];
+    const warnings = tomlModule.getProxyWarnings(proxies, 30099);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('loop-web');
+    expect(warnings[1]).toContain('loop-custom');
+    expect(tomlModule.getProxyWarnings([proxies[0]!, proxies[3]!], 30099)).toEqual([]);
+  });
 });
 
 
@@ -261,6 +281,39 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
       expect(data.publicUrls).toContain('https://app.xuanguiyl.top/memory/');
       expect(data.publicUrls).toContain('https://app.xuanguiyl.top/frpc/');
       expect(data.publicUrls).toContain('https://app.xuanguiyl.top/');
+      expect(data.warnings).toEqual([]);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  test('GET /api/frpc/status 对手改 frpc.toml 接回环的隧道带告警（PUT 校验拦不到的那条路）', async () => {
+    const h = await createHarness();
+    try {
+      //M 绕开 PUT，直接手改 frpc.toml：一条写明回环地址，一条干脆不写 localIP（frpc 默认回环）。
+      const handEdited = [
+        SAMPLE_TOML,
+        '[[proxies]]',
+        'name = "hand-loop"',
+        'type = "http"',
+        'localIP = "127.0.0.1"',
+        'localPort = 30099',
+        '',
+        '[[proxies]]',
+        'name = "hand-no-ip"',
+        'type = "http"',
+        'localPort = 30086',
+        '',
+      ].join('\r\n');
+      fs.writeFileSync(path.join(h.clientDir, 'frpc.toml'), handEdited, 'utf8');
+
+      const res = await h.app.inject({ method: 'GET', url: '/api/frpc/status' });
+      expect(res.statusCode).toBe(200);
+      const data = res.json<frpcPlugin.FrpcStatus>();
+      expect(data.warnings).toHaveLength(2);
+      expect(data.warnings[0]).toContain('hand-loop');
+      expect(data.warnings[1]).toContain('hand-no-ip');
+      expect(res.body).not.toContain(SAMPLE_SECRET);
     } finally {
       await h.app.close();
     }

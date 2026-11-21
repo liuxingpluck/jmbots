@@ -14,6 +14,7 @@ import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import type { ModelCatalog } from './index.ts';
 import * as queueModule from './Queue.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** 可换备用模型的三种故障。 */
@@ -459,17 +460,11 @@ export class ModelFallback {
 
 /** 读整数开关/正数，错误带上清晰配置路径。 */
 function readPositiveInt(value: unknown, label: string, fallback: number, allowZero = false): number {
-  const result = value ?? fallback;
-  let minAllowed = 1;
-  let minLabel = '正';
+  let rule = checksModule.POSITIVE_INT;
   if (allowZero) {
-    minAllowed = 0;
-    minLabel = '不小于 0 ';
+    rule = { integer: true, min: 0 };
   }
-  if (typeof result !== 'number' || !Number.isInteger(result) || result < minAllowed) {
-    throw new Error(`${label} 要是${minLabel}整数`);
-  }
-  return result;
+  return checksModule.checkNumber(value ?? fallback, label, rule);
 }
 
 /** 读模型/供应商并发字典，缺失/null 交回 {}。 */
@@ -520,10 +515,7 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
   const sub = (rawFallback ?? {}) as Record<string, unknown>;
   let enabled = true;
   if (sub['enabled'] !== undefined) {
-    if (typeof sub['enabled'] !== 'boolean') {
-      throw new Error('model-catalog.fallback.enabled 要写 true 或 false');
-    }
-    enabled = sub['enabled'];
+    enabled = checksModule.checkFlag(sub['enabled'], 'model-catalog.fallback.enabled');
   }
 
   const concurrency = (ctx.resources.raw['concurrency'] ?? {}) as Record<string, unknown>;
@@ -543,9 +535,7 @@ export function readFallbackSettings(ctx: cordis.Context, rawConfig: unknown): F
   const siblingValue = sub['include_siblings'];
   let siblings = true;
   if (siblingValue !== undefined) {
-    if (typeof siblingValue !== 'boolean') throw new Error(`${siblingsLabel} 要是 true 或 false`);
-
-    siblings = siblingValue;
+    siblings = checksModule.checkFlag(siblingValue, siblingsLabel);
   }
 
   //M 默认只把限流模型冷却五分钟，显式 0 则不用默认冷却。

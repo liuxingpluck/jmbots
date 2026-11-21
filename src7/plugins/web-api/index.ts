@@ -84,19 +84,25 @@ declare module 'cordis' {
      * 谁发：src7/plugins/web-api/Timeline.ts 的 Timeline.insert
      * 谁接：暂无
      */
-    'web-api/received'(message: { id: number; bot: string; channel: string; source: string; text: string; at: number }): void;
+    'web-api/received'(
+      message: { id: number; bot: string; channel: string; source: string; text: string; at: number },
+    ): void;
     /**
      * 一句回话追加进收件表，replyIndex 是它在 replies 里的下标。journal 和 tutorial 通过 internal/dispatch 记录。
      * 谁发：src7/plugins/web-api/Timeline.ts 的 Timeline.reply
      * 谁接：暂无
      */
-    'web-api/replied'(reply: { messageId: number; replyIndex: number; session: Session; text: string; at: number }): void;
+    'web-api/replied'(
+      reply: { messageId: number; replyIndex: number; session: Session; text: string; at: number },
+    ): void;
     /**
      * 网页换了会话的模型。journal 通过 internal/dispatch 记录。
      * 谁发：src7/plugins/web-api/Views.ts 的 Views.setModel
      * 谁接：暂无
      */
-    'web-api/model'(change: { session: Session; from: string; to: string; thinkingFrom: string; thinkingTo: string; by: 'HTTP' }): void;
+    'web-api/model'(
+      change: { session: Session; from: string; to: string; thinkingFrom: string; thinkingTo: string; by: 'HTTP' },
+    ): void;
   }
 }
 
@@ -143,7 +149,7 @@ class WebApi {
    * @param ctx Cordis 给这个插件的 ctx：在它上面 ctx.on 听的事件，插件被拔掉时 Cordis 自动撤掉。
    */
   constructor(private readonly ctx: cordis.Context) {
-    //M 初始化收件表和时间线，让网页查询与历史监听共享已建好的记录；会话、机器人接口也读它。
+    //M 初始化收件表和时间线，让网页查询共享已建好的记录；会话、机器人接口也读它。
     this.timeline = new timelineModule.Timeline(ctx);
     this.views = new viewsModule.Views(ctx, this.timeline);
 
@@ -503,7 +509,8 @@ class WebApi {
       messageId: id, bot: wanted, table: 'web_messages', autoFinal: routing.autoFinal === true,
       attachmentCount: paths.length, targetSession: sessionLabel,
     };
-    this.ctx.emit('trace', 'WebApi.accept', 'trace.webApi.accept', 'protocol.emitInbound(ctx, msg, true, control)', vars);
+    const code = 'protocol.emitInbound(ctx, msg, true, control)';
+    this.ctx.emit('trace', 'WebApi.accept', 'trace.webApi.accept', code, vars);
 
     //M 推给机器人；回话地址就是消息号。推不进去（比如没有插件管分派）就删掉这一行，告诉调用方。
     try {
@@ -734,7 +741,8 @@ class WebApi {
    */
   private writeReminder(bot: string, intentId: string, text: string): protocol.TextReplyOutcome {
     if (bot === '') return { status: 'rejected', reason: '网页提醒没有目标机器人' };
-    if (botUtils.getBotConfig(this.ctx.resources.raw, bot) === undefined) return { status: 'rejected', reason: '原机器人已不存在' };
+    const botConfig = botUtils.getBotConfig(this.ctx.resources.raw, bot);
+    if (botConfig === undefined) return { status: 'rejected', reason: '原机器人已不存在' };
 
     const sourceId = `reminder:${intentId}`;
     const session = this.getOrCreateWebFront(bot);
@@ -816,7 +824,9 @@ class WebApi {
         image = item;
       }
       //G 内联文件必须含可解码的正文。
-      if (typeof image.data !== 'string' || image.data === '') throw new failureModule.Failure(400, `images[${String(index)}].data 要是 base64 字符串`);
+      if (typeof image.data !== 'string' || image.data === '') {
+        throw new failureModule.Failure(400, `images[${String(index)}].data 要是 base64 字符串`);
+      }
 
       let name = `图片${String(index + 1)}.png`;
       if (typeof image.name === 'string' && image.name !== '') {
@@ -842,7 +852,9 @@ class WebApi {
     const names = fs.readdirSync(dir);
     return value.map((id: unknown) => {
       //G 只接受约定格式的上传号和确实存在的暂存文件。
-      if (typeof id !== 'string' || !/^\d{20}$/u.test(id)) throw new failureModule.Failure(400, `上传号要是 20 位数字：${String(id)}`);
+      if (typeof id !== 'string' || !/^\d{20}$/u.test(id)) {
+        throw new failureModule.Failure(400, `上传号要是 20 位数字：${String(id)}`);
+      }
 
       //M 用上传号定位暂存文件，同时取出用户上传时的文件名。
       const found = names.find((item) => item.startsWith(`${id}_`));
@@ -1024,6 +1036,6 @@ class WebApi {
  * @param ctx Cordis 给这个插件的 ctx。
  */
 export function apply(ctx: cordis.Context): void {
-  //M 挂上网页渠道、历史监听和核心 HTTP 接口。
+  //M 挂上网页渠道和核心 HTTP 接口。
   new WebApi(ctx);
 }

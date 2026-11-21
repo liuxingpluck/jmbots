@@ -42,45 +42,39 @@ class FakeResources extends cordis.Service {
 }
 
 
-test('用量事件返回按模型价格入账的调用，目录缺席或异常时按零计费', async () => {
+test('用量事件返回按模型价格入账的调用，目录查无模型时按零计费', async () => {
   const ctx = new cordis.Context();
   closers.push(() => ctx.fiber.dispose());
   await ctx.plugin(FakeResources);
+
+  //M 假模型目录：priced 为 true 时交回单价，否则查无此模型。
+  let priced = true;
+  const price = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.4 };
+  const catalog = {
+    find: (id: string) => {
+      if (!priced) return undefined;
+
+      return { id, name: id, kind: 'chat' as const, contextWindow: 1000, thinking: [], price };
+    },
+  };
   //M 子模块不再是独立插件，测试用与原入口相同的resources依赖创建服务。
   const plugin = {
     inject: ['resources'],
     apply: (sub: cordis.Context): void => {
-      //M 只挂计量子模块，模型目录的价格回执由本例自行提供。
-      new usagePlugin.Usage(sub);
+      new usagePlugin.Usage(sub, catalog);
     },
   };
   await ctx.plugin(plugin);
-
-  const stop = events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', (request) => {
-    if (request.action !== 'find') return {};
-
-    const { model } = request;
-    return {
-      info: {
-        id: model,
-        name: model,
-        kind: 'chat' as const,
-        contextWindow: 1000,
-        thinking: [],
-        price: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.4 },
-      },
-    };
-  });
   const session = { id: 'session-1', row: { bot: '助手', kind: 'work' } } as Session;
   const reply = piAi.fauxAssistantMessage('完成');
   const usage = { ...reply.usage, input: 1000000, output: 500000, cacheRead: 1000000, cacheWrite: 500000 };
   const message = { ...reply, usage, durationMs: 12 };
   const model = `${reply.provider}/${reply.model}`;
 
-  //M 等本轮事件投递和入账完成后，再卸掉模型目录。
+  //M 等本轮事件投递和入账完成后，目录改成查无此模型。
   ctx.emit('session/new-message', session, message);
   await Bun.sleep(0);
-  stop();
+  priced = false;
 
   //M 同样的非零用量没有价格时要留下记录，失败尝试也单独记一行。
   ctx.emit('session/new-message', session, message);
@@ -98,18 +92,6 @@ test('用量事件返回按模型价格入账的调用，目录缺席或异常�
   const all = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
   expect(all.reply?.rows[2]).toMatchObject({ ok: false, input: 0, cost: 0, ms: 4, error: '测试连接失败' });
   expect(all.reply?.truncated).toBe(false);
-
-  //M 目录接单后抛错时，仍需记录这一次成功调用。
-  events.onRequestEvent(ctx, 'model-catalog/request', 'model-catalog/result', () => {
-    throw new Error('模拟价格读取失败');
-  });
-  //M 发送一条实际用量非零的成功记录。
-  ctx.emit('session/new-message', session, message);
-  await Bun.sleep(0);
-  //G 价格查询失败后，入账仍保留用量并将费用记为零。
-  const afterError = await events.requestEvent(ctx, 'model-catalog/usage', 'model-catalog/usage-result', query);
-  expect(afterError.reply?.rows).toHaveLength(4);
-  expect(afterError.reply?.rows[3]).toMatchObject({ ok: true, input: usage.input, cost: 0 });
 });
 
 test('模型名没有斜杠时供应商记整串，不切掉最后一个字', async () => {
@@ -119,8 +101,8 @@ test('模型名没有斜杠时供应商记整串，不切掉最后一个字', as
   const plugin = {
     inject: ['resources'],
     apply: (sub: cordis.Context): void => {
-      //M 只挂计量子模块；不挂目录，价格按零记。
-      new usagePlugin.Usage(sub);
+      //M 只挂计量子模块；目录里一个模型都没有，价格按零记。
+      new usagePlugin.Usage(sub, { find: () => undefined });
     },
   };
   await ctx.plugin(plugin);

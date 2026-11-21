@@ -6,6 +6,7 @@
 import * as net from 'node:net';
 import * as path from 'node:path';
 import type { PluginEntry } from '../../Resources.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as utils from '../../utils/index.ts';
 
 /** 内置配置名对应实际登记的渠道。微信的两个插件名接同一个微信渠道。 */
@@ -198,22 +199,22 @@ export function readPrograms(config: unknown, aliases: ReadonlyMap<string, strin
       throw new Error(`${key}.env 要是字符串值组成的对象`);
     }
 
-    const autostart = item['autostart'] ?? true;
-    if (typeof autostart !== 'boolean') throw new Error(`${key}.autostart 要是布尔值`);
-    let closable = item['closable'];
-    if (closable === undefined) {
-      closable = false;
+    //G 三个开关统一交给 checks.checkFlag，报错说法和别的插件一样。
+    const autostartRaw = item['autostart'] ?? true;
+    const autostart = checks.checkFlag(autostartRaw, `${key}.autostart`);
+    //G closable 只有没写才用默认 false，写成 null 照旧拒绝（不用 ??）。
+    let closableRaw = item['closable'];
+    if (closableRaw === undefined) {
+      closableRaw = false;
     }
-    if (typeof closable !== 'boolean') {
-      throw new Error(`${key}.closable 要是布尔值`);
-    }
-    const heavy = item['heavy'] ?? false;
-    if (typeof heavy !== 'boolean') throw new Error(`${key}.heavy 要是布尔值`);
+    const closable = checks.checkFlag(closableRaw, `${key}.closable`);
+    const heavyRaw = item['heavy'] ?? false;
+    const heavy = checks.checkFlag(heavyRaw, `${key}.heavy`);
 
     //M 将端口和等待时间限制在网络和定时器可用的范围内。
-    const port = getInteger(item, 'port', key, 0, 0, 65535);
-    const startupMs = getInteger(item, 'startup_ms', key, 120_000, 1, 2_147_483_647);
-    const exitWaitMs = getInteger(item, 'exit_wait_ms', key, 5000, 1, 2_147_483_647);
+    const port = getNumber(item, 'port', key, 0, PORT_RULE);
+    const startupMs = getNumber(item, 'startup_ms', key, 120_000, TIMER_RULE);
+    const exitWaitMs = getNumber(item, 'exit_wait_ms', key, 5000, TIMER_RULE);
 
     //M 程序登记的渠道：入站只认这些名字，回复和历史也只把这些渠道转给它。
     const channels = getChannels(item, key, channelNames, aliases);
@@ -280,15 +281,35 @@ function getText(item: Record<string, unknown>, field: string, key: string, fall
   return value.trim();
 }
 
-/** 从配置读取指定范围内的整数。 */
-function getInteger(
-  item: Record<string, unknown>, field: string, key: string, fallback: number, min: number, max: number,
+/** 端口：0（系统分配）到 65535 的整数。 */
+const PORT_RULE: checks.NumberRule = { integer: true, min: 0, max: 65535 };
+
+/** 定时器毫秒：正整数，不超过 setTimeout 能接的上限。 */
+const TIMER_RULE: checks.NumberRule = { integer: true, min: 1, max: 2_147_483_647 };
+
+/** 守卫采样间隔：至少 100 毫秒，不能忙循环。 */
+const INTERVAL_RULE: checks.NumberRule = { integer: true, min: 100, max: 2_147_483_647 };
+
+/** 内存、显存硬线（GiB）：大于 0 的有限数。 */
+const LIMIT_GB_RULE: checks.NumberRule = { min: 0.001, max: 1_000_000 };
+
+/** 内存、显存恢复线（GiB）：不小于 0 的有限数。 */
+const RESUME_GB_RULE: checks.NumberRule = { min: 0, max: 1_000_000 };
+
+/**
+ * 从配置读取有范围的数，没写时用给定值；范围和报错说法都交给 checks.checkNumber，只在本文件的配置入口调用。
+ * @param item 程序项或守卫段的原始配置。
+ * @param field 字段名。
+ * @param key 这一段在配置里的位置（如 programs.guard），拼进报错。
+ * @param fallback 没写时的默认值。
+ * @param rule 整数、上下限。
+ * @returns 校验过的数。
+ */
+function getNumber(
+  item: Record<string, unknown>, field: string, key: string, fallback: number, rule: checks.NumberRule,
 ): number {
   const value = item[field] ?? fallback;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-    throw new Error(`${key}.${field} 要是 ${String(min)} 至 ${String(max)} 的整数`);
-  }
-  return value;
+  return checks.checkNumber(value, `${key}.${field}`, rule);
 }
 
 /**
@@ -369,13 +390,13 @@ export function readGuard(config: unknown): GuardSettings {
     }
   }
   //M 用户的G按GiB解释，容量只在本入口换算一次。
-  const memoryGb = getGuardNumber(raw, 'memory_gb', 60, 0.001, 1_000_000);
+  const memoryGb = getNumber(raw, 'memory_gb', 'programs.guard', 60, LIMIT_GB_RULE);
   //M 读取用户已定的55GiB恢复线，而不是把60以下全部当恢复。
-  const resumeGb = getGuardNumber(raw, 'resume_gb', 55, 0, 1_000_000);
+  const resumeGb = getNumber(raw, 'resume_gb', 'programs.guard', 55, RESUME_GB_RULE);
   //M 逐卡显存硬线15.5GiB（用户 #442），不把多个卡容量合并。
-  const vramGb = getGuardNumber(raw, 'vram_gb', 15.5, 0.001, 1_000_000);
+  const vramGb = getNumber(raw, 'vram_gb', 'programs.guard', 15.5, LIMIT_GB_RULE);
   //M 显存退出线低于硬线，避免重复限流通知。
-  const vramResumeGb = getGuardNumber(raw, 'vram_resume_gb', 14.5, 0, 1_000_000);
+  const vramResumeGb = getNumber(raw, 'vram_resume_gb', 'programs.guard', 14.5, RESUME_GB_RULE);
   if (resumeGb >= memoryGb) {
     throw new Error('resume_gb 要小于 memory_gb');
   }
@@ -383,7 +404,7 @@ export function readGuard(config: unknown): GuardSettings {
     throw new Error('vram_resume_gb 要小于 vram_gb');
   }
   //M 采样计时器必须是有界正整数，不能忙循环或溢出。
-  const intervalMs = getInteger(raw, 'interval_ms', 'programs.guard', 5000, 100, 2_147_483_647);
+  const intervalMs = getNumber(raw, 'interval_ms', 'programs.guard', 5000, INTERVAL_RULE);
   //M 只保存配置命令名或路径，不在配置入口启动探针。
   const nvidiaSmi = getText(raw, 'nvidia_smi', 'programs.guard', 'nvidia-smi');
   const gib = 1024 ** 3;
@@ -395,15 +416,4 @@ export function readGuard(config: unknown): GuardSettings {
     intervalMs,
     nvidiaSmi,
   };
-}
-
-/** 从外部守卫段读取有界有限数；只在readGuard边界调用。 */
-function getGuardNumber(
-  raw: Record<string, unknown>, field: string, fallback: number, min: number, max: number,
-): number {
-  const value = raw[field] ?? fallback;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
-    throw new Error(`programs.guard.${field} 要是 ${String(min)} 至 ${String(max)} 的有限数`);
-  }
-  return value;
 }

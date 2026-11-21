@@ -9,6 +9,7 @@ import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import { Database } from 'bun:sqlite';
 import * as cordis from 'cordis';
+import * as traceUtils from '../../utils/Trace.ts';
 
 
 //==========================================================
@@ -55,8 +56,8 @@ export interface PayloadDiff {
 /** 载荷 diff 中 add / change / remove 最多保留条数。 */
 export const DIFF_MAX = 500;
 
-/** diff 前后值单行预览最大字数。 */
-const PREVIEW_MAX_CHARS = 200;
+/** diff 前后值单行预览截到多少字再补“…”（连省略号共 200 字），交给 traceUtils.formatTraceValue。 */
+export const PREVIEW_CHARS = 199;
 
 /** 凭据键名匹配规则（设计文档 3.4 及云端 31 加固）：slim 模式下命中时值替换为 [凭据 已隐藏]。 */
 const CREDENTIAL_KEY = new RegExp(
@@ -481,26 +482,6 @@ interface DiffState {
 
 
 /**
- * 生成单行值预览，最多 200 字。
- * @param value 任意已通过 walk 序列化的值。
- */
-export function formatPreview(value: unknown): string {
-  let raw = '';
-  if (typeof value === 'string') {
-    raw = value;
-  }
-  if (typeof value !== 'string') {
-    raw = JSON.stringify(value) ?? String(value);
-  }
-  const singleLine = raw.replace(/\s+/gu, ' ');
-  if (singleLine.length > PREVIEW_MAX_CHARS) {
-    return `${singleLine.slice(0, PREVIEW_MAX_CHARS - 1)}…`;
-  }
-  return singleLine;
-}
-
-
-/**
  * 拼接对象子属性路径（普通标识符用 a.b，其余特殊键名把点号换成下划线拼回点分文本）。
  * @param base 父路径。
  * @param key 属性名。
@@ -537,10 +518,10 @@ function recordDiff(
   if (state.changes !== undefined) {
     const item: PayloadDiff = { path: path || '(root)', kind };
     if (kind !== 'add') {
-      item.before = formatPreview(older);
+      item.before = traceUtils.formatTraceValue(older, PREVIEW_CHARS);
     }
     if (kind !== 'remove') {
-      item.after = formatPreview(newer);
+      item.after = traceUtils.formatTraceValue(newer, PREVIEW_CHARS);
     }
     state.changes.push(item);
   }
@@ -655,7 +636,7 @@ export function computePayloadDiff(before: unknown, after: unknown | null): Payl
     const sameJson = JSON.stringify(oldTop[key]) === JSON.stringify(newTop[key]);
     if (!sameJson) continue;
 
-    const preview = formatPreview(oldTop[key]);
+    const preview = traceUtils.formatTraceValue(oldTop[key], PREVIEW_CHARS);
     diffs.push({ path: key, kind: 'same', before: preview, after: preview });
   }
   return diffs;

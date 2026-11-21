@@ -38,10 +38,11 @@ const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /**
- * 不写 plugins 段时挂的插件。前台和系统提示词在 bots 里（11-17 并进原 bot-front-desk、prompt）；base-tools 已并入 file-tools；summary 已并入 context-fit。
- * workspaces 排在 bots 前面：bots 依赖它（11-17）。
+ * 不写 plugins 段时挂的插件。前台和系统提示词在 bots 里（11-17 并进原 bot-front-desk、prompt）；
+ * base-tools 已并入 file-tools；summary 已并入 context-fit。
+ * workspaces 排在 bots 前面：bots 依赖它（11-17）。db 排最前：context-fit 等按版本迁移建表要等它（云端 36 号第 1 条）。
  */
-const DEFAULT_PLUGINS = ['workspaces', 'bots', 'cli', 'file-tools', 'context-fit'];
+const DEFAULT_PLUGINS = ['db', 'workspaces', 'bots', 'cli', 'file-tools', 'context-fit'];
 
 /** config.yaml 里没手写的模型用的保守值。Resources.getModel 也用它。 */
 export const MODEL_DEFAULTS = { contextWindow: 128000, maxTokens: 8192, reasoning: false, input: ['text' as const] };
@@ -173,7 +174,8 @@ export function checkConfig(raw: unknown): JmbotsConfig {
     throw new Error('config.yaml 的顶层 engine 段已取消，请删掉并把设置挪走：'
       + 'wrapup_model、限时类的键 → plugins 里 progress 的 config；'
       + 'index_url → base-bridge 的 config；image_model → image-gen 的 config；'
-      + 'fallback_chain、fallback_max_tries、fallback_include_siblings → model-catalog 的 config.fallback（chain、max_tries、include_siblings）；'
+      + 'fallback_chain、fallback_max_tries、fallback_include_siblings → '
+      + 'model-catalog 的 config.fallback（chain、max_tries、include_siblings）；'
       + 'vision_model → bots 的 config.front.vision_model；retry_delays_ms → models.retry；'
       + 'poll_ms、compress_at、exec_pass、memory_libs 已不再使用，直接删掉');
   }
@@ -606,5 +608,7 @@ export function checkVersion(name: string, version: unknown): void {
 
   //M 不是 x.y.z：报错，写明插件和写错的值。
   const written = String(version);
-  if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) throw new Error(`插件 ${name} 的版本号 ${written} 不对：要写成 x.y.z，比如 '1.0.0'`);
+  if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) {
+    throw new Error(`插件 ${name} 的版本号 ${written} 不对：要写成 x.y.z，比如 '1.0.0'`);
+  }
 }

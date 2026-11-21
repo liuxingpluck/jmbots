@@ -109,9 +109,14 @@ async function runSmoke(): Promise<void> {
   if (process.platform === 'win32') {
     suffix = '.exe';
   }
-  const distExe = path.join(import.meta.dir, 'dist', `jmbots-wechat${suffix}`);
+  //M 发行版只验“换公钥的口子关着”；解密、转语音整条链路跑测试版（Build.ts --test-keys 编的）。
+  const releaseExe = path.join(import.meta.dir, 'dist', `jmbots-wechat${suffix}`);
+  const distExe = path.join(import.meta.dir, 'dist', `jmbots-wechat-testkeys${suffix}`);
+  if (!fs.existsSync(releaseExe)) {
+    throw new Error(`未找到发行版产物：${releaseExe}，请先执行 Build.ts`);
+  }
   if (!fs.existsSync(distExe)) {
-    throw new Error(`未找到已编译产物：${distExe}，请先执行 Build.ts`);
+    throw new Error(`未找到测试版产物：${distExe}，请先执行 Build.ts --test-keys`);
   }
 
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'jmbots-wx-standalone-smoke-'));
@@ -122,7 +127,7 @@ async function runSmoke(): Promise<void> {
     //M 把单文件二进制单独拷贝进无任何依赖的空白目录运行，验证 100% 零外置依赖。
     const isolatedBinDir = path.join(sandbox, 'isolated-bin');
     fs.mkdirSync(isolatedBinDir, { recursive: true });
-    const isolatedExe = path.join(isolatedBinDir, `jmbots-wechat${suffix}`);
+    const isolatedExe = path.join(isolatedBinDir, `jmbots-wechat-testkeys${suffix}`);
     fs.copyFileSync(distExe, isolatedExe);
 
     //M 1. 验证 --version 与 --help。
@@ -150,6 +155,17 @@ async function runSmoke(): Promise<void> {
     assertTrue(helpProc.exitCode === 0, '--help 退出码为 0');
     const helpText = helpProc.stdout.toString('utf8');
     assertTrue(helpText.includes('--host') && helpText.includes('127.0.0.1'), '--help 包含 --host 默认说明');
+
+    //M 1b. 发行版带 --license-pubkey 启动要报错退出，不许拿临时公钥自签授权。
+    const isolatedRelease = path.join(isolatedBinDir, `jmbots-wechat${suffix}`);
+    fs.copyFileSync(releaseExe, isolatedRelease);
+    const releaseData = path.join(sandbox, 'release-data');
+    const releaseProc = Bun.spawnSync([
+      isolatedRelease, '--data', releaseData, '--license-pubkey', '00'.repeat(32),
+    ], { cwd: isolatedBinDir, stdout: 'pipe', stderr: 'pipe', windowsHide: true });
+    const releaseErr = releaseProc.stderr.toString('utf8');
+    assertTrue(releaseProc.exitCode !== 0, '发行版带 --license-pubkey 非零退出');
+    assertTrue(releaseErr.includes('发行版不接受'), '发行版报“发行版不接受 --license-pubkey”');
 
     //M 2. 准备合成加密微信库、V2 加密图片与 SILK 音频。
     const dataDir = path.join(sandbox, 'data');
@@ -402,6 +418,7 @@ async function runSmoke(): Promise<void> {
       checks: [
         'version',
         'help',
+        'release_rejects_pubkey',
         'discover',
         'embedded_html',
         'license_402_block',

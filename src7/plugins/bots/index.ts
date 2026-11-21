@@ -40,6 +40,7 @@ import { FrontDesk, getScopeFromAddress, type FrontDeskConfig } from './FrontDes
 import * as groupBatchModule from './GroupBatch.ts';
 import { Prompt } from './Prompt.ts';
 import { registerReplyTool } from './ReplyTool.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 export { normalizeAutoReplyReceipt, type ReplyControl, type ReplyPolicy } from './Dispatch.ts';
 
@@ -1184,29 +1185,16 @@ export function apply(ctx: cordis.Context, config: BotsPluginConfig): void {
   const frontConfig = front as Partial<FrontDeskConfig>;
 
   //M recent 不写是 50，必须是正整数。
-  const recent = frontConfig.recent ?? 50;
-  if (!Number.isInteger(recent) || recent <= 0) {
-    throw new Error('bots 的 front.recent 必须是正整数');
-  }
+  const recent = checksModule.checkNumber(frontConfig.recent ?? 50, 'bots.front.recent', checksModule.POSITIVE_INT);
   //M vision_model 写了就要是“供应商名/模型 ID”，供应商在 providers 里。
   const vision = frontConfig.vision_model;
   if (vision !== undefined) {
-    if (typeof vision !== 'string') {
-      throw new Error('bots 的 front.vision_model 要写成“供应商名/模型 ID”，供应商要在 providers 里');
-    }
-    const slash = vision.indexOf('/');
-    const providerName = vision.slice(0, slash);
-    if (slash <= 0 || ctx.resources.config.providers[providerName] === undefined) {
-      throw new Error('bots 的 front.vision_model 要写成“供应商名/模型 ID”，供应商要在 providers 里');
-    }
+    checksModule.checkModelRef(vision, 'bots.front.vision_model', ctx.resources.config.providers);
   }
 
   //M prompt（原插件 prompt）不写是开；reply_tool（原插件 reply-tool）不写是关。写了都要是 true 或 false。
-  const promptOn = config.prompt ?? true;
-  const replyToolOn = config.reply_tool ?? false;
-  if (typeof promptOn !== 'boolean' || typeof replyToolOn !== 'boolean') {
-    throw new Error('bots 的 prompt、reply_tool 要写成 true 或 false');
-  }
+  const promptOn = checksModule.checkFlag(config.prompt ?? true, 'bots.prompt');
+  const replyToolOn = checksModule.checkFlag(config.reply_tool ?? false, 'bots.reply_tool');
 
   //M 启动期严格核对群配置 judge_helper：格式非法或对应 relay 助手不存在时立即报错拦截，不再静默落回默认助手。
   groupBatchModule.checkJudgeHelpers(ctx);

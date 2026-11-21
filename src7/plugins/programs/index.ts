@@ -20,7 +20,8 @@ import * as guardModule from './ResourceGuard.ts';
 /** 插件名和版本。 */
 export const name = 'programs';
 //M 1.7.6：商业授权 getLicenseLabel 将自报 none 标为“未授权”（与 free“不需要”区分）。
-export const version = '1.7.8';
+//M 1.7.9：Spec.ts 的开关、端口、毫秒、守卫阈值改调 Checks.ts 的 checkFlag、checkNumber（云端 32 第 5 条），取值范围和守卫行为不变。
+export const version = '1.7.9';
 /** 数据目录由 resources 提供，HTTP 接口按需挂载。 */
 export const inject = ['resources'];
 

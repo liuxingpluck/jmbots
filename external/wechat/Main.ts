@@ -98,7 +98,7 @@ export function buildHelpText(): string {
     '  --port <端口>            HTTP 绑定端口（默认 0 由系统分配空闲端口）',
     '  --channel <渠道名>       主站 programs 登记的渠道名（配合宿主环境变量启用回调）',
     '  --license-file <路径>    Ed25519 离线许可证文件路径（默认 <data>/license.json）',
-    '  --license-pubkey <公钥>  可选覆盖验签公钥（64 位十六进制或 PEM）',
+    '  --license-pubkey <公钥>  换验签公钥（64 位十六进制或 PEM），只给源码跑和测试版用，发行版带上即报错',
     '  --interval-ms <毫秒>     后台轮询间隔（默认 3000，0 禁用轮询）',
     '  --chat-limit <数量>      单账号最近会话读取上限（默认 5000）',
     '  --at-names <昵称列表>    额外群提及昵称，逗号分隔',
@@ -111,10 +111,12 @@ export function buildHelpText(): string {
  * 校验并解析命令行参数与宿主环境变量（读取一次性密钥后立即从 `env` 擦除）。
  * @param args 命令行参数数组（不含可执行文件前缀）。
  * @param env 进程环境变量对象（默认 `process.env`）。
+ * @param release 是不是编进 exe 的发行版：发行版不许换验签公钥（`Build.ts` 写进编译入口，源码跑为 false）。
  */
 export function parseCliOptions(
   args: string[],
   env: Record<string, string | undefined> = process.env,
+  release = false,
 ): ParsedCliAction {
   const { values } = util.parseArgs({
     args,
@@ -190,7 +192,13 @@ export function parseCliOptions(
   const fallbackEngine = path.join(data, 'engine');
   const engine = path.resolve(values.engine ?? fallbackEngine);
   const licenseFile = path.resolve(values['license-file'] ?? path.join(data, 'license.json'));
+  //M 换验签公钥只给源码跑的测试和另编的测试版用。
   const licensePubkey = values['license-pubkey'] ?? env['JMBOTS_WECHAT_PUBKEY'];
+
+  //G 发行版带了换公钥的参数 → 报错退出，不悄悄忽略（免得以为生效了，也免得自签授权）。
+  if (release && licensePubkey !== undefined) {
+    throw new Error('发行版不接受 --license-pubkey 或 JMBOTS_WECHAT_PUBKEY（换验签公钥只给测试版用）');
+  }
 
   //M 校验轮询节拍与会话上限等读取端参数。
   const read = readOptions.getReadOptions(values);
@@ -442,10 +450,11 @@ export async function startWechatServer(
 /**
  * 执行完整 CLI 分发（供直接运行 `Main.ts` 及单文件编译入口 `Build.ts` 共用）。
  * @param args 命令行参数数组。
+ * @param release 是不是发行版（`Build.ts` 生成的编译入口写死传入；直接跑 `Main.ts` 为 false）。
  */
-export async function runCli(args: string[]): Promise<void> {
+export async function runCli(args: string[], release = false): Promise<void> {
   //M 解析参数并根据子模式执行对应动作。
-  const action = parseCliOptions(args);
+  const action = parseCliOptions(args, process.env, release);
 
   if (action.mode === 'version') {
     console.log(JSON.stringify({ ...PLUGIN_IDENTITY, engine: 'pure-bun' }));

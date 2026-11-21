@@ -2,7 +2,9 @@
  * 将外置微信纯 Bun 插件打包编译为单个独立可执行文件（Windows 为 `jmbots-wechat.exe`）。
  * 自动内联客服工作台单页 HTML 并将 `silk-wasm` 的 `.wasm` 资产嵌进同一可执行文件，运行时零外部源码或模块依赖。
  *
- * 用法：bun external/wechat/Build.ts [--out <输出目录，默认 external/wechat/dist>]
+ * 用法：bun external/wechat/Build.ts [--out <输出目录，默认 external/wechat/dist>] [--test-keys]
+ * 默认编发行版 `jmbots-wechat`：不许 `--license-pubkey` 换验签公钥。
+ * `--test-keys` 另编测试版 `jmbots-wechat-testkeys`，只给冒烟测试用临时公钥自签授权。
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -55,12 +57,21 @@ async function buildStandaloneBinary(): Promise<void> {
   const { values } = util.parseArgs({
     options: {
       out: { type: 'string' },
+      'test-keys': { type: 'boolean', default: false },
     },
   });
 
   const defaultOut = path.join(import.meta.dir, 'dist');
   const outDir = path.resolve(values.out ?? defaultOut);
-  const exeName = `jmbots-wechat${getExeSuffix()}`;
+
+  //M 默认编发行版；--test-keys 编测试版，名字另起，免得测试版被当发行版发出去。
+  const testKeys = values['test-keys'] === true;
+  const release = !testKeys;
+  let baseName = 'jmbots-wechat';
+  if (testKeys) {
+    baseName = 'jmbots-wechat-testkeys';
+  }
+  const exeName = `${baseName}${getExeSuffix()}`;
   const finalExePath = path.join(outDir, exeName);
 
   //M 第一步：把 React 客服工作台编译为自包含内联 HTML。
@@ -76,7 +87,7 @@ async function buildStandaloneBinary(): Promise<void> {
       `import * as embedded from ${toImportLiteral(embeddedFile)};`,
       `import * as mainModule from ${toImportLiteral(mainFile)};`,
       `embedded.setEmbeddedKefuHtml(${JSON.stringify(html)});`,
-      'await mainModule.runCli(process.argv.slice(2));',
+      `await mainModule.runCli(process.argv.slice(2), ${String(release)});`,
       '',
     ].join('\n');
     fs.writeFileSync(entryFile, entryCode, 'utf8');
@@ -125,6 +136,7 @@ async function buildStandaloneBinary(): Promise<void> {
       ok: true,
       output: finalExePath,
       version: mainModule.PLUGIN_VERSION,
+      release,
       sizeBytes,
       sizeMb: Number(sizeMb),
       elapsedSec: Number(elapsedSec),

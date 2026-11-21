@@ -22,9 +22,6 @@ import { NOISE, type TrailLine } from '../../utils/Trail.ts';
 /** 运行时留最近几份。 */
 export const SHOTS_MAX = 500;
 
-/** 快照和 journal 的行对时刻，差多少毫秒以内算同一下（两边各自取 Date.now()）。 */
-const MATCH_MS = 50;
-
 /** 带关键词的 bot/receive 等分会话最多等多久，毫秒：没人分（出错、被别的插件吞了）就不再“什么都拍”。 */
 const PENDING_MS = 10_000;
 
@@ -50,6 +47,8 @@ export interface Shot {
   session: string | null;
   /** 收件表消息号；认法和 journal 一样（跟踪点的“消息号”、事件参数里的 messageId）。 */
   message: number | null;
+  /** utils/Trace.ts 发的号，和 journal 那一行的 seq 是同一个：按它对齐，不对时刻。 */
+  seq: number;
   /** 这一刻的运行时变量（全量原样）。 */
   groups: snapshotModule.StateGroup[];
   /** 这一份新占的字节数（沿用上一份的组不算），拍的时候算一次（snapshotModule.getBytes）。 */
@@ -100,7 +99,7 @@ export class Shots {
     }, true);
 
     //M 跟踪点、事件都经 utils/Trace.ts 挂：拍快照出错只记日志，不拦业务代码。
-    traceUtils.onTrace(this.ctx, 'tutorial.state', (where, _text, _code, vars) => {
+    traceUtils.onTrace(this.ctx, 'tutorial.state', (where, _text, _code, vars, seq) => {
       //G 没有要拍的消息：第一步就回。
       if (this.isIdle()) return;
 
@@ -120,6 +119,7 @@ export class Shots {
         session,
         message,
         state: undefined,
+        seq,
       };
       //M 汇总跟踪点所属会话与消息号后，交由快照筛选器决定是否拍下此刻状态。
       this.consider(shotArgs);
@@ -149,6 +149,7 @@ export class Shots {
         session: line.session ?? null,
         message: line.messageId,
         state,
+        seq: line.seq,
       };
       //M 把事件行上下文送入筛选器判断是否抓拍及何时停拍。
       this.consider(shotArgs);
@@ -211,7 +212,7 @@ export class Shots {
 
   /**
    * 一行该不该拍：该拍就拍；这一轮结束的会话、写回的消息撤掉。
-   * @param line 种类、名字、会话、消息号；session/change 带状态。
+   * @param line 种类、名字、会话、消息号、号；session/change 带状态。
    */
   private consider(line: {
     kind: string;
@@ -219,6 +220,7 @@ export class Shots {
     session: string | null;
     message: number | undefined;
     state: string | undefined;
+    seq: number;
   }): void {
     //M 带关键词的 bot/receive 分到会话了：记下这场会话。
     const now = Date.now();
@@ -233,7 +235,7 @@ export class Shots {
     if (!wanted) return;
 
     //M 立即抓拍此刻运行时变量快照，若本轮结束或已回写则撤除监控。
-    this.take(line.kind, line.name, line.session, line.message ?? null);
+    this.take(line.kind, line.name, line.session, line.message ?? null, line.seq);
     const roundOver = line.state !== undefined && line.state !== 'running';
     if (line.session !== null && roundOver) {
       this.sessions.delete(line.session);
@@ -278,13 +280,14 @@ export class Shots {
    * @param name 跟踪点名或事件名。
    * @param session 哪场会话。
    * @param message 收件表消息号。
+   * @param seq utils/Trace.ts 发的号。
    */
-  private take(kind: string, name: string, session: string | null, message: number | null): void {
+  private take(kind: string, name: string, session: string | null, message: number | null, seq: number): void {
     //M 以上一份快照作基线收集本刻运行时变量并估算新增内存占用。
     const previous = this.list.at(-1)?.groups ?? [];
     const groups = snapshotModule.getSnapshot(this.ctx, previous);
     const bytes = snapshotModule.getBytes(groups, previous);
-    this.list.push({ at: Date.now(), kind, name, session, message, groups, bytes });
+    this.list.push({ at: Date.now(), kind, name, session, message, seq, groups, bytes });
     this.total += bytes;
 
     while (this.list.length > 1 && (this.list.length > SHOTS_MAX || this.total > this.maxBytes)) {
@@ -293,28 +296,22 @@ export class Shots {
   }
 
   /**
-   * 一串 journal 的行各自对应的那份：按先后一一往后对，种类、名字、会话、消息号一样、时刻差在 MATCH_MS 内。
+   * 一串 journal 的行各自对应的那份：快照和流水行拿的是 utils/Trace.ts 发的同一个号，按号取，不对时刻。
    * @param lines 按先后排的行（一条请求挑出来的）。
-   * @returns 和 lines 一一对应；早就被挤掉的、flow 挂上之前的是 undefined。
+   * @returns 和 lines 一一对应；早就被挤掉的、flow 挂上之前的、改版前没有号的旧行是 undefined。
    */
   getMatched(lines: TrailLine[]): (Shot | undefined)[] {
-    let from = 0;
+    //M 先按号建一张表。
+    const bySeq = new Map<number, Shot>();
+    for (const shot of this.list) {
+      bySeq.set(shot.seq, shot);
+    }
+
     return lines.map((line) => {
-      for (let index = from; index < this.list.length; index += 1) {
-        const shot = this.list[index];
-        if (shot === undefined || shot.at > line.at + MATCH_MS) break;
+      //G 改版前写的旧行没有号：配不上就空着，不再猜。
+      if (typeof line.seq !== 'number') return undefined;
 
-        const same = shot.kind === line.kind
-          && shot.name === line.name
-          && shot.session === line.sessionId
-          && shot.message === line.messageId
-          && shot.at >= line.at - MATCH_MS;
-        if (!same) continue;
-
-        from = index + 1;
-        return shot;
-      }
-      return undefined;
+      return bySeq.get(line.seq);
     });
   }
 }

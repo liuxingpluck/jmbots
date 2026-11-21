@@ -140,7 +140,8 @@ export const name = 'tutorial';
 //M 1.2.2：旁听迁入 utils/Trace onDispatch/onTrace（出错隔离+单次调用栈缓存）、Source/Code/Skeleton 去重与 getBlockEnd 替换、配置校验收拢 Checks。
 //M 1.2.3：载荷录制两个模型关口的顶层数组（system、tools、messages）按引用比，只深拷变了的几条，长会话不再丢最新消息和 answer；
 //M   “属于哪条消息”并进 utils/Trace.ts 的 buildDispatchLine，Payload 不再自己猜（云端 31 第 3、4 条）。
-export const version = '1.2.3';
+//M 1.2.5：快照（State.getMatched）和载荷（assignTrailSteps）按 utils/Trace.ts 发的号对齐 journal 的行，删掉 50ms、200ms 时间窗和按时间段找步骤。
+export const version = '1.2.5';
 
 /** 配置里“正数”的规则：比 0 大，可以带小数（MB、KB 这类）。 */
 const POSITIVE: checksModule.NumberRule = { above: 0 };
@@ -739,7 +740,7 @@ class Tutorial {
         return bootEmpty;
       }
 
-      //M 先按需获取轨迹用于按时间窗对齐 step；轨迹读取异常时不阻断已录载荷返回。
+      //M 先按需获取轨迹，按 utils/Trace.ts 发的号对齐 step；轨迹读取异常时不阻断已录载荷返回。
       const trail = await this.getTrail(canvas).catch(() => undefined);
       return this.payloads.getPayload(canvas, trail);
     });

@@ -612,8 +612,8 @@ test('转交无人应答时撤销老会话的转交标记，进度和通知都�
 
 
 test('4. ProgressConfig 入口校验与 review: false 开关', async () => {
-  expect(() => progressPlugin.apply({} as cordis.Context, { review: { first_ms: 0 } })).toThrow('progress.review.first_ms 要是正数');
-  expect(() => progressPlugin.apply({} as cordis.Context, { review: { every_ms: -1 } })).toThrow('progress.review.every_ms 要是正数');
+  expect(() => progressPlugin.apply({} as cordis.Context, { review: { first_ms: 0 } })).toThrow('progress.review.first_ms 要写成大于 0 的数');
+  expect(() => progressPlugin.apply({} as cordis.Context, { review: { every_ms: -1 } })).toThrow('progress.review.every_ms 要写成大于 0 的数');
   expect(() => progressPlugin.apply({} as cordis.Context, 'bad' as unknown as progressPlugin.ProgressConfig)).toThrow('progress 的 config 要写成对象');
 
   const disabledWorld = await setupWorld({

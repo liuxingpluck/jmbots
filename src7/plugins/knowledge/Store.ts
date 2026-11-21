@@ -13,7 +13,11 @@ import * as types from './Types.ts';
 // 表结构与底层行映射类型
 //==========================================================
 
-/** 幂等建表与索引 SQL（供 db 插件迁移账本与单测直连共用）。 */
+/**
+ * 迁移第 1 版：幂等建表与索引（一整串，原样保留）。
+ * 0.7.90 起有 db 插件的库已按这份记过账，改一个字哈希就对不上、启动报错，所以不动它。
+ * 它交给 db.migrate 时只执行了第一句（只建出 kb_dirs），其余靠第 2 版补齐。
+ */
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS kb_dirs (
   id TEXT PRIMARY KEY NOT NULL,
@@ -54,6 +58,16 @@ CREATE TABLE IF NOT EXISTS kb_doc_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_kb_doc_tags_tag ON kb_doc_tags (tag_id, doc_id);
 `;
+
+/**
+ * 迁移第 2 版：同一串语句按 Drizzle 的 `--> statement-breakpoint` 拆开，db.migrate 才会逐句执行。
+ * 全是 IF NOT EXISTS：旧库（以前靠 KnowledgeStore 构造函数自己建好的）什么都不改；新库补齐四张表和索引。
+ */
+export const SCHEMA_SPLIT_SQL = SCHEMA_SQL
+  .split(';')
+  .map((part) => part.trim())
+  .filter((part) => part !== '')
+  .join(';\n--> statement-breakpoint\n');
 
 interface DirRow {
   id: string;
@@ -329,9 +343,7 @@ export class KnowledgeStore {
   constructor(
     private readonly db: Database,
     private readonly mirror?: mirrorModule.DiskMirror,
-  ) {
-    db.exec(SCHEMA_SQL);
-  }
+  ) {}
 
   /** 在单个 SQLite 事务内执行一组写操作。 */
   private runTx<T>(work: () => T): T {

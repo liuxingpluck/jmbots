@@ -22,7 +22,7 @@ export const LICENSE_TOKEN_PREFIX = 'jmbots-lic-v1';
 /** 标准 Ed25519 SPKI DER 编码的固定 12 字节 ASN.1 前缀（后跟 32 字节原始公钥）。 */
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
-/** 内置默认发行版 Ed25519 32 字节公钥（十六进制）；测试可通过 `--license-pubkey` 注入临时公钥。 */
+/** 内置发行版 Ed25519 32 字节公钥（十六进制）；只有源码跑和测试版（`Build.ts --test-keys`）能用 `--license-pubkey` 换。 */
 export const DEFAULT_OFFICIAL_PUBKEY_HEX = '3d3bb994ff95cfcfad8343bd21265894b005511161a49ca1911bea50ceacd7a1';
 
 /** 允许在未授权或过期状态下正常访问的生命周期与授权管理路由集合。 */

@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as requestEvents from '../../utils/RequestEvent.ts';
+import * as traceUtils from '../../utils/Trace.ts';
 import type { TrailLine } from '../../utils/Trail.ts';
 import { getBootTrail, getTrail, pick } from '../journal/Trail.ts';
 import * as filesModule from './Files.ts';
@@ -36,6 +37,21 @@ function makeTempRoot(): string {
 
 
 /** 构造挂在真实 Cordis Context 上的最小 tutorial 测试底座（不监听任何网卡端口，仅用 fastify.inject）。 */
+/**
+ * 在 ctx 上挂一个旁听者，按事件名记下 utils/Trace.ts 最近一次派发的号：手拼的流水行带上它，载荷才对得上步。
+ * 按名字记，是因为 web-api/replied 的监听里还会再发 journal/request，“最近一个号”会被它盖掉。
+ * @param ctx setupTutorial 交回的 ctx（tutorial 已挂上，这个旁听者排在它后面，拿到同一个号）。
+ * @returns 事件名 → 最近一次的号。
+ */
+function watchSeqs(ctx: cordis.Context): Map<string, number> {
+  const seqs = new Map<string, number>();
+  traceUtils.onDispatch(ctx, 'test.seq', (line) => {
+    seqs.set(line.name, line.seq);
+  });
+  return seqs;
+}
+
+
 async function setupTutorial(
   lines: TrailLine[],
   config: tutorialModule.TutorialConfig = {},
@@ -99,8 +115,8 @@ async function setupTutorial(
 
 
 describe('Payload 真实事件载荷采集与 Diff', () => {
-  test('tutorial 版本至少 1.2.0（现 1.2.3）且默认白名单包含设计文档规定的 15 个事件', () => {
-    expect(tutorialModule.version).toBe('1.2.3');
+  test('tutorial 版本至少 1.2.0（现 1.2.5）且默认白名单包含设计文档规定的 15 个事件', () => {
+    expect(tutorialModule.version).toBe('1.2.5');
     expect(payloadModule.DEFAULT_PAYLOAD_EVENTS).toEqual([
       'channel/direct',
       'channel/mention',
@@ -426,6 +442,7 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
       payload_messages: 2,
       payload_message_mb: 0.05,
     });
+    const seqs = watchSeqs(ctx);
     const serial = (name: string, ...args: unknown[]) => {
       return (ctx as unknown as { serial(ev: string, ...evArgs: unknown[]): Promise<void> }).serial(name, ...args);
     };
@@ -478,7 +495,7 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
       lines.push({
         id: lines.length + 1, at: now, kind: '事件', name: 'web-api/received',
         listeners: [], text: '', site: 'src7/plugins/web-api/Timeline.ts:311',
-        sessionId: null, messageId: id, sourceId, vars: {},
+        sessionId: null, messageId: id, sourceId, seq: seqs.get('web-api/received'), vars: {},
       });
 
       const chMsg = {
@@ -495,7 +512,7 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
       lines.push({
         id: lines.length + 1, at: Date.now(), kind: '事件', name: 'channel/direct',
         listeners: ['bots'], text: '', site: 'src7/plugins/channels/Message.ts:292',
-        sessionId: null, messageId: null, sourceId, vars: {},
+        sessionId: null, messageId: null, sourceId, seq: seqs.get('channel/direct'), vars: {},
       });
 
       const gate = { session, call: { id: 'c1', name: 'channel_reply' }, args: { text: '好的' } };
@@ -503,7 +520,7 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
       lines.push({
         id: lines.length + 1, at: Date.now(), kind: '事件', name: 'session/before-tool',
         listeners: ['approval'], text: '', site: 'src7/Tools.ts:187',
-        sessionId, messageId: null, vars: { tool: 'channel_reply' },
+        sessionId, messageId: null, seq: seqs.get('session/before-tool'), vars: { tool: 'channel_reply' },
       });
 
       const replyReq = {
@@ -514,11 +531,21 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
         parts: [{ partId: 'text:0', kind: 'text', text: '好的' }],
       };
       await serial('channel/reply', replyReq);
+      lines.push({
+        id: lines.length + 1, at: Date.now(), kind: '事件', name: 'channel/reply',
+        listeners: ['channels'], text: '', site: 'src7/plugins/channels/index.ts:1',
+        sessionId, messageId: null, seq: seqs.get('channel/reply'), vars: {},
+      });
       emit('channel/replied', {
         requestId: `req-${String(id)}`,
         replyRoundKey: 'rk',
         receipt: { v: 2, ok: true, status: 'sent', parts: [] },
         request: replyReq,
+      });
+      lines.push({
+        id: lines.length + 1, at: Date.now(), kind: '事件', name: 'channel/replied',
+        listeners: ['bots'], text: '', site: 'src7/plugins/channels/index.ts:2',
+        sessionId, messageId: null, seq: seqs.get('channel/replied'), vars: {},
       });
 
       session.row.state = 'done';
@@ -526,18 +553,23 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
       lines.push({
         id: lines.length + 1, at: Date.now(), kind: '事件', name: 'session/change',
         listeners: ['bots'], text: '', site: 'src7/Sessions.ts:880',
-        sessionId, messageId: null, vars: { state: 'done' },
+        sessionId, messageId: null, seq: seqs.get('session/change'), vars: { state: 'done' },
       });
       emit('bot/settled', {
         sourceSnapshot: { messageId: sourceId, botName: '周小灵', origin: { channel: 'http', address: { messageId: id } } },
         stage: 'sent',
         note: '',
       });
+      lines.push({
+        id: lines.length + 1, at: Date.now(), kind: '事件', name: 'bot/settled',
+        listeners: ['web-api'], text: '', site: 'src7/plugins/bots/index.ts:1',
+        sessionId, messageId: null, seq: seqs.get('bot/settled'), vars: {},
+      });
       emit('web-api/replied', { messageId: id, replyIndex: 0, session, text: '好的', at: Date.now() });
       lines.push({
         id: lines.length + 1, at: Date.now(), kind: '事件', name: 'web-api/replied',
         listeners: [], text: '', site: 'src7/plugins/web-api/Timeline.ts:441',
-        sessionId, messageId: id, vars: {},
+        sessionId, messageId: id, seq: seqs.get('web-api/replied'), vars: {},
       });
 
       await Bun.sleep(40);
@@ -572,6 +604,58 @@ describe('Payload 真实事件载荷采集与 Diff', () => {
     const replyItem = body103.items.find((item) => item.event === 'channel/reply')!;
     expect((replyItem.after as { handled?: boolean }).handled).toBe(true);
     expect(replyItem.diff.some((d) => d.path === 'handled' && d.kind === 'add')).toBe(true);
+  });
+
+  test('同名事件 1ms 内连发两次、流水时刻比载荷早 5 秒：载荷照号各自对上自己那一行的步和位置', async () => {
+    const lines: TrailLine[] = [];
+    const { ctx, app } = await setupTutorial(lines);
+    const seqs = watchSeqs(ctx);
+    const serial = (name: string, ...args: unknown[]) => {
+      return (ctx as unknown as { serial(ev: string, ...evArgs: unknown[]): Promise<void> }).serial(name, ...args);
+    };
+    const emit = (name: string, ...args: unknown[]) => {
+      (ctx as unknown as { emit(ev: string, ...evArgs: unknown[]): boolean }).emit(name, ...args);
+    };
+
+    //M 流水时刻统一往前拨 5 秒，两行同名事件还落在同一毫秒：按时刻找是分不开的。
+    const id = 301;
+    const sourceId = JSON.stringify(['http', 'local', String(id)]);
+    const skewed = Date.now() - 5000;
+    emit('web-api/received', { id, bot: '周小灵', channel: 'http', source: 'http', text: '连发', at: Date.now() });
+    lines.push({
+      id: 1, at: skewed, kind: '事件', name: 'web-api/received',
+      listeners: [], text: '', site: 'src7/plugins/web-api/Timeline.ts:311',
+      sessionId: null, messageId: id, sourceId, seq: seqs.get('web-api/received'), vars: {},
+    });
+
+    //M 同一条渠道消息连发两次 channel/direct；两行落在不同的道（位置不同），所以是不同的两步。
+    const chMsg = {
+      v: 1,
+      messageId: sourceId,
+      channel: 'http',
+      rawText: '连发',
+      text: '连发',
+      targetBots: ['周小灵'],
+      origin: { channel: 'http', address: { messageId: id } },
+    };
+    const sites = ['src7/plugins/channels/Message.ts:292', 'src7/plugins/bots/index.ts:5'];
+    for (const site of sites) {
+      await serial('channel/direct', chMsg, { claims: [] });
+      lines.push({
+        id: lines.length + 1, at: skewed, kind: '事件', name: 'channel/direct',
+        listeners: [], text: '', site,
+        sessionId: null, messageId: null, sourceId, seq: seqs.get('channel/direct'), vars: {},
+      });
+    }
+
+    //M 两份载荷各自拿到自己那一行的位置，步号一前一后。
+    const res = await app.inject({ method: 'GET', url: `/api/tutorial/payload?name=${String(id)}` });
+    const body = res.json() as payloadModule.PayloadTrail;
+    const directs = body.items.filter((item) => item.event === 'channel/direct');
+    expect(directs.map((item) => item.site)).toEqual(sites);
+    expect(directs[0]!.step).toBeGreaterThanOrEqual(1);
+    expect(directs[1]!.step).toBeGreaterThan(directs[0]!.step);
+    expect(directs[0]!.traceSeq).toBeLessThan(directs[1]!.traceSeq!);
   });
 
   test('单消息字节上限拦截与配置校验、keyword 过滤模式生效', async () => {

@@ -91,8 +91,6 @@ export class Cli {
       },
     });
 
-    //M 挂上命令行历史监听，让其他渠道能按约定查本机记录。
-
     //M 一轮收尾没回成（模型出错、停下）：红字打出原因，退出码记 1。
     this.ctx.on('bot/settled', (event) => {
       if (event.sourceSnapshot.channel !== this.name) return;
@@ -155,7 +153,8 @@ export class Cli {
 
     //T 跟踪：命令行收到一句话，转成统一事件发出。
     const vars = { bot: bot, sequence: this.seq, length: sentence.length };
-    this.ctx.emit('trace', 'Cli.submitLine', 'trace.cli.submitLine', 'protocol.emitInbound(ctx, msg, true, control)', vars);
+    const code = 'protocol.emitInbound(ctx, msg, true, control)';
+    this.ctx.emit('trace', 'Cli.submitLine', 'trace.cli.submitLine', code, vars);
 
     const channelMessage: protocol.ChannelMessage = {
       v: 1,

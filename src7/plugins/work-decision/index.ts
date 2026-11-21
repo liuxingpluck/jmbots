@@ -15,8 +15,9 @@ export const name = 'work-decision';
 //M 1.3.10：新增 GET /api/work-decision/version 轻量版本探针，供工作台 30 秒无感自动刷新。
 //M 1.3.11：节点可选支持 quadrant 四象限字段及 POST/PUT /api/work-decision/quadrant，前端新增四象限决策矩阵视图。
 //M 1.3.12：新增只读工具 work_topics（前后台会话、只限本人）：概览、按状态和关键词筛、看单个节点，带 topicId 给知识库用。
-export const version = '1.3.12';
-export const inject = ['resources', 'http', 'tools'];
+//M 1.3.13：建表、加列改走 db 迁移账本（云端 36 第 1 条）：db 成了必需依赖；quadrant 列是迁移第 2 版，旧库已有的只登记。
+export const version = '1.3.13';
+export const inject = ['resources', 'http', 'tools', 'db'];
 
 /** 读取配置文本，未设置时保持缺省。 */
 function getOptionalText(config: Record<string, unknown>, key: string): string | undefined {
@@ -64,10 +65,10 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const legacyWorkspaceId = getOptionalText(settings, 'legacy_workspace_id');
   const notice = getNotice(settings);
 
-  //M 工作决策使用资源数据库，旧目录仅用于一次性读取。
+  //M 工作决策使用资源数据库，建表走 db 的迁移账本；旧目录仅用于一次性读取。
   const resources = ctx.resources;
   const dir = path.join(resources.root, 'data', 'decision-map');
-  const store = new storeModule.Store(resources.db, dir, legacyWorkspaceId);
+  const store = new storeModule.Store(resources.db, ctx.db, dir, legacyWorkspaceId);
   routesModule.mount(ctx, store, helper, notice);
   toolsModule.registerAskOwner(ctx, store, notice);
   toolsModule.registerWorkTopics(ctx, store);

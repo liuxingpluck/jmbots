@@ -280,10 +280,10 @@ export const BOOT_SPINE_STEPS: SpineTrackStep[] = [
       detail: 'Fastify 开始监听后就不能再加路由，所以 http 插件在 ready 回调里最后一步挂上静态网页托管，'
         + '再调用 app.listen 监听 0.0.0.0:30086（换版端口占用时自动重试等待）。',
       anchors: [
-        { site: 'src7/plugins/http/index.ts:274', mark: "this.ctx.on('ready'", why: '监听 ready 事件：先挂静态页再启动端口监听' },
-        { site: 'src7/plugins/http/index.ts:474', mark: 'private async listen(', why: 'Http.listen：解析端口并带端口占用重试保护' },
+        { site: 'src7/plugins/http/index.ts:279', mark: "this.ctx.on('ready'", why: '监听 ready 事件：先挂静态页再启动端口监听' },
+        { site: 'src7/plugins/http/index.ts:495', mark: 'private async listen(', why: 'Http.listen：解析端口并带端口占用重试保护' },
         {
-          site: 'src7/plugins/http/index.ts:490',
+          site: 'src7/plugins/http/index.ts:512',
           mark: 'this.app.listen({',
           why: 'this.app.listen({ host, port }) 正式对外提供服务',
         },
@@ -653,7 +653,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
             why: "await this.ctx.serial('session/before-tool', gate)",
           },
           {
-            site: 'src7/plugins/approval/index.ts:477',
+            site: 'src7/plugins/approval/index.ts:481',
             mark: "ctx.on('session/before-tool'",
             why: 'approval 在关口三拦截高风险命令等待用户批准',
           },
@@ -745,7 +745,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
           why: 'sendLastWords：一对一渠道零次回复自动发最终正文',
         },
         {
-          site: 'src7/plugins/channels/Reply.ts:202',
+          site: 'src7/plugins/channels/Reply.ts:194',
           mark: "requestEvent(ctx, 'channel/reply'",
           why: 'requestChannelReply：发 channel/reply 并等 channel/replied',
         },
@@ -763,7 +763,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
       detail: '回话完全走统一事件协议：不管是网页轮询还是飞书卡片，渠道只认 channel/reply 干活、回 channel/replied 报账。',
       anchors: [
         {
-          site: 'src7/plugins/web-api/index.ts:154',
+          site: 'src7/plugins/web-api/index.ts:160',
           mark: 'protocol.registerTextReply(this.ctx',
           why: 'web-api 注册 registerTextReply 接单写入网页消息回话列表',
         },

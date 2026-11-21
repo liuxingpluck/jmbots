@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import type { Database } from 'bun:sqlite';
 import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
+import type * as dbModule from '../db/index.ts';
 import * as sql from './Sqlite.ts';
 import * as types from './Types.ts';
 
@@ -290,13 +291,14 @@ export class Store {
   /**
    * 打开工作决策表，并从旧目录恢复尚未入库的节点和历史。
    * @param db resources 打开的应用数据库。
+   * @param migrations db 插件的迁移服务（ctx.db），建表、加列走它的账本。
    * @param legacyDir 旧应用的 data/decision-map 目录。
    * @param legacyWorkspaceId 导入旧图时使用的已有工作区，可省略。
    * 副作用：首次创建表并导入已有数据。
    */
-  constructor(db: Database, legacyDir: string, legacyWorkspaceId?: string) {
+  constructor(db: Database, migrations: dbModule.Db, legacyDir: string, legacyWorkspaceId?: string) {
     //M 已导入的库直接读三张表，旧文件保留。
-    this.storage = new sql.Sqlite(db);
+    this.storage = new sql.Sqlite(db, migrations);
     //退场：所有运行时的旧 data/decision-map/graph.json 都导入 SQLite 以后
     let project: sql.WorkspaceProject | undefined;
     if (legacyWorkspaceId !== undefined) {

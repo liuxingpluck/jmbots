@@ -442,7 +442,7 @@ test('4. Queue 并发上限与取消信号、fallback: false 开关与配置校�
       config: { defaultModel: 'mock/primary', providers: {} },
     },
   } as unknown as cordis.Context;
-  expect(() => catalogPlugin.apply(badCtx, { fallback: { max_tries: -1 } })).toThrow('plugins[model-catalog].config.fallback.max_tries 要是不小于 0 整数');
+  expect(() => catalogPlugin.apply(badCtx, { fallback: { max_tries: -1 } })).toThrow('plugins[model-catalog].config.fallback.max_tries 要写成不小于 0 的整数');
 });
 
 

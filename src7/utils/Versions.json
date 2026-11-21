@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.97",
+    "date": "2026-11-21",
+    "changes": [
+      "落地云端顾问 36 号报告第 1、2、4 条：DEFAULT_PLUGINS 补齐 db 修复默认配置下 context-fit 启动阻塞；db 1.0.2 改用原生 SQLite exec 执行迁移段彻底根治无分隔符多语句静默截断，knowledge(1.0.4) / memory(1.11.6) / work-decision(1.3.13) 全面接入 ctx.db.migrate；Trace.ts 统一发放单调递增 seq 编号，journal(1.3.9) 迁移落库并由 tutorial(1.2.5) 按号精确对齐快照与载荷（彻底移除 50ms/200ms 时间窗猜测）；外置微信发行版锁死验签公钥拒绝 --license-pubkey 与环境变量篡改，frpc(1.0.2) 补齐读状态回环告警与缺 localIP 兜底",
+      "落地云端顾问 35 号第 3 条与第 5.8 节、23 号第 4 条及 32 号第 5 条全仓扫尾：utils/index.ts 新增 isRecord / getOptionalRecord，Trail.ts 共享 PASSIVE 监听名单，tutorial/Payload/Walk/Skeleton/DataFlow 消重；model-catalog(1.3.11) Usage 直查目录不再自问自答；voice(0.6.8) 收拢来源快照；全仓 13 个插件手写配置校验收拢至 Checks.ts 并在 Check_Style.ts 新增 AST 防回潮规则 hand-check；同步修齐 DevMapData 与 SpineCanvas 全部 19 处源码锚点，全仓 121 份文档 Check_Lines 0 error 全绿"
+    ]
+  },
+  {
     "version": "0.7.96",
     "date": "2026-11-21",
     "changes": [

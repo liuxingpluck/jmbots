@@ -14,6 +14,7 @@ import type { AskInput } from '../../Sessions.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type { Progress, ProgressItem } from './index.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 declare module '../../Sessions.ts' {
@@ -114,20 +115,11 @@ export function readReviewSettings(rawConfig: unknown): ReviewSettings {
   const review = rawReview as Record<string, unknown>;
   let enabled = true;
   if (review['enabled'] !== undefined) {
-    if (typeof review['enabled'] !== 'boolean') {
-      throw new Error('progress.review.enabled 要写 true 或 false');
-    }
-    enabled = review['enabled'];
+    enabled = checksModule.checkFlag(review['enabled'], 'progress.review.enabled');
   }
 
-  const first = review['first_ms'] ?? FIRST_MS;
-  const every = review['every_ms'] ?? EVERY_MS;
-  if (typeof first !== 'number' || !Number.isFinite(first) || first <= 0) {
-    throw new Error('progress.review.first_ms 要是正数');
-  }
-  if (typeof every !== 'number' || !Number.isFinite(every) || every <= 0) {
-    throw new Error('progress.review.every_ms 要是正数');
-  }
+  const first = checksModule.checkNumber(review['first_ms'] ?? FIRST_MS, 'progress.review.first_ms', { above: 0 });
+  const every = checksModule.checkNumber(review['every_ms'] ?? EVERY_MS, 'progress.review.every_ms', { above: 0 });
   return { enabled, first, every };
 }
 

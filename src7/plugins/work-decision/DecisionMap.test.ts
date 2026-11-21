@@ -9,8 +9,10 @@ import type { Session } from '../../Sessions.ts';
 import type { ToolSpec } from '../../Tools.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as channel from '../channels/Reply.ts';
+import * as dbModule from '../db/index.ts';
 import * as plugin from './index.ts';
 import type * as routesModule from './Routes.ts';
+import * as sqliteModule from './Sqlite.ts';
 import * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
 
@@ -30,6 +32,11 @@ afterEach(async () => {
   }
 });
 
+/** 和正式 db 插件一样的迁移服务，包同一个连接（建表、加列走它的账本）。 */
+function getMigrations(db: Database): dbModule.Db {
+  return new dbModule.Db(new cordis.Context(), db);
+}
+
 /** 网络接口用 Fastify 注入，运行时目录只包含本用例的数据。 */
 async function setup(helper?: string, config: Record<string, unknown> = {}) {
   const root = fs.mkdtempSync(path.join(import.meta.dir, '.map-test-'));
@@ -43,6 +50,7 @@ async function setup(helper?: string, config: Record<string, unknown> = {}) {
   ctx.provide('http', { app });
   ctx.provide('resources', { db, root, raw: {} });
   ctx.provide('tools', { register: (tool: ToolSpec) => tools.set(tool.definition.name, tool) });
+  ctx.provide('db', getMigrations(db));
   await ctx.plugin(plugin, { ...config, relay_helper: helper });
   const dir = path.join(root, 'data', 'decision-map');
   return { app, ctx, db, dir, tools };
@@ -229,7 +237,8 @@ test('旧图和留言只导入一次，快照补齐残缺的历史并保留版�
   cleanups.push(() => db.close());
   const project = { bot: '开发', workspaceId: 'repo' };
   db.exec("CREATE TABLE workspaces (id, bot, name, scope_key); INSERT INTO workspaces VALUES ('repo', '开发', '仓库', 'private')");
-  const restored = new storeModule.Store(db, dir, project.workspaceId);
+  const migrations = getMigrations(db);
+  const restored = new storeModule.Store(db, migrations, dir, project.workspaceId);
   //M 选择、作者、留言和版本一起恢复，后续写入从原序号继续。
   const restoredGraph = restored.getGraph();
   const restoredNode = restoredGraph.nodes.find((node) => node.id === 'release');
@@ -237,7 +246,7 @@ test('旧图和留言只导入一次，快照补齐残缺的历史并保留版�
   expect(restoredNode).toMatchObject({ ...project, chosen: 'a', decidedBy: 'user', notes: decision.notes });
   expect(restored.getChanges(1)).toMatchObject({ changes: [{ seq: 2, action: 'choose', option: 'a' }] });
   restored.ack('release');
-  const reopened = new storeModule.Store(db, dir, project.workspaceId);
+  const reopened = new storeModule.Store(db, migrations, dir, project.workspaceId);
   expect(reopened.getGraph().revision).toBe(3);
   expect(reopened.getChanges(0).changes.map((change) => change.seq)).toEqual([1, 2, 3]);
   expect(fs.readFileSync(graph, 'utf8')).toBe(encoded);
@@ -505,9 +514,15 @@ test('节点四象限可选字段读写、平滑补列、POST/PUT 调整及 null
     INSERT INTO decisions (id, parent, kind, status, title, summary, created_at)
     VALUES ('goal', NULL, 'goal', 'working', '旧库根目标', '', 1700000000000);
   `);
-  const migratedStore = new storeModule.Store(legacyDb, path.join(import.meta.dir, '.non-existent'));
+  const legacyDir = path.join(import.meta.dir, '.non-existent');
+  const migratedStore = new storeModule.Store(legacyDb, getMigrations(legacyDb), legacyDir);
   expect(migratedStore.getGraph().nodes[0]?.id).toBe('goal');
   expect(migratedStore.getGraph().nodes[0]?.quadrant).toBeUndefined();
+  //M 迁移账本记下两版，quadrant 是第 2 版真加出来的。
+  const columns = legacyDb.query<{ name: string }, []>('PRAGMA table_info(decisions)').all();
+  expect(columns.some((column) => column.name === 'quadrant')).toBe(true);
+  const ledger = "SELECT version FROM db_migrations WHERE plugin = 'work-decision' ORDER BY version";
+  expect(legacyDb.query<{ version: number }, []>(ledger).all()).toEqual([{ version: 1 }, { version: 2 }]);
 
   const { app } = await setup();
   const initial = await app.inject({
@@ -638,5 +653,32 @@ test('work_topics 前后台本人可查：概览、按状态和关键词筛、�
   const guestRow = { id: 'front-2', bot: '开发', kind: 'front', channel: 'feishu', address: { role: 'guest' } };
   const guest = { row: guestRow } as unknown as Session;
   expect(() => tool.run({}, guest, signal, 'call')).toThrow('只有本人会话可以查看工作决策');
+});
+
+
+test('旧代码已手动补过 quadrant 的库：迁移第 2 版只登记不重加，数据和四象限原样保留；重启只核对账本', () => {
+  //M 模拟 1.3.11 跑过的用户库：三张表都在，decisions 已有 quadrant 列和数据，账本里没有 work-decision。
+  const db = new Database(':memory:');
+  cleanups.push(() => db.close());
+  const createDecisions = sqliteModule.decisionMigrations.migrations[0]!.sql.split('--> statement-breakpoint')[0]!;
+  db.exec(createDecisions);
+  db.exec('ALTER TABLE decisions ADD COLUMN quadrant TEXT');
+  db.exec(`INSERT INTO decisions (id, parent, kind, status, title, summary, created_at, quadrant)
+    VALUES ('goal', NULL, 'goal', 'working', '老库目标', '', 1700000000000, 'q2')`);
+
+  const legacyDir = path.join(import.meta.dir, '.non-existent');
+  const store = new storeModule.Store(db, getMigrations(db), legacyDir);
+  expect(store.getGraph().nodes).toMatchObject([{ id: 'goal', title: '老库目标', quadrant: 'q2' }]);
+
+  //M 第 1 版补齐了缺的两张表；第 2 版接管已有的列，没有再 ALTER（再加一次会报 duplicate column）。
+  const tables = "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'decision%' ORDER BY name";
+  const names = db.query<{ name: string }, []>(tables).all().map((row) => row.name);
+  expect(names).toEqual(['decision_changes', 'decision_notes', 'decisions']);
+  const ledger = "SELECT version FROM db_migrations WHERE plugin = 'work-decision' ORDER BY version";
+  expect(db.query<{ version: number }, []>(ledger).all()).toEqual([{ version: 1 }, { version: 2 }]);
+
+  //M 重启再挂一次：账本已有，只核对摘要，不重跑、不报错。
+  const again = new storeModule.Store(db, getMigrations(db), legacyDir);
+  expect(again.getGraph().nodes[0]?.quadrant).toBe('q2');
 });
 

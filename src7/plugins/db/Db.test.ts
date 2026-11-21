@@ -86,3 +86,91 @@ test('事务回调抛错后回滚，原连接仍可继续写入', async () => {
     client.close();
   }
 });
+
+
+/**
+ * 一段里写了多条语句（不写 --> statement-breakpoint），交给迁移后建出了哪些表。
+ * @param sql 迁移第 1 版的 SQL。
+ * @returns 连接、建出的表名（按名字排）。
+ */
+async function migrateOne(sql: string): Promise<{ client: sqlite.Database; tables: string[]; close: () => Promise<void> }> {
+  const { ctx, client } = await world();
+  ctx.db.migrate({ plugin: 'multi', migrations: [{ version: 1, sql }] });
+  const query = "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'm\\_%' ESCAPE '\\' ORDER BY name";
+  const tables = client.query<{ name: string }, []>(query).all().map((row) => row.name);
+  const close = async (): Promise<void> => {
+    await ctx.fiber.dispose();
+    client.close();
+  };
+  return { client, tables, close };
+}
+
+
+test('一段多条语句、不写分隔符：每条都执行（1.0.2 以前只执行第一条，后面的表悄悄丢掉）', async () => {
+  const sql = 'CREATE TABLE m_a (x TEXT);\nCREATE TABLE m_b (x TEXT);\nCREATE INDEX m_b_x ON m_b (x);\nCREATE TABLE m_c (x TEXT);';
+  const world = await migrateOne(sql);
+  try {
+    expect(world.tables).toEqual(['m_a', 'm_b', 'm_c']);
+  } finally {
+    await world.close();
+  }
+});
+
+
+test('字符串、行注释、块注释里的分号不切错', async () => {
+  const sql = [
+    'CREATE TABLE m_text (v TEXT); -- 行注释里的分号; 不算',
+    "INSERT INTO m_text VALUES ('a;b');",
+    '/* 块注释; 里的; 分号 */',
+    "INSERT INTO m_text VALUES ('c'';d');",
+  ].join('\n');
+  const world = await migrateOne(sql);
+  try {
+    const rows = world.client.query<{ v: string }, []>('SELECT v FROM m_text ORDER BY rowid').all();
+    expect(rows.map((row) => row.v)).toEqual(['a;b', "c';d"]);
+  } finally {
+    await world.close();
+  }
+});
+
+
+test('触发器 BEGIN…END 里的分号照样配对，触发器能用', async () => {
+  const sql = [
+    'CREATE TABLE m_src (v TEXT);',
+    'CREATE TABLE m_log (v TEXT);',
+    'CREATE TRIGGER m_copy AFTER INSERT ON m_src BEGIN',
+    '  INSERT INTO m_log VALUES (NEW.v);',
+    "  INSERT INTO m_log VALUES (NEW.v || ';2');",
+    'END;',
+  ].join('\n');
+  const world = await migrateOne(sql);
+  try {
+    world.client.exec("INSERT INTO m_src VALUES ('x')");
+    const rows = world.client.query<{ v: string }, []>('SELECT v FROM m_log ORDER BY rowid').all();
+    expect(rows.map((row) => row.v)).toEqual(['x', 'x;2']);
+  } finally {
+    await world.close();
+  }
+});
+
+
+test('一段里后面的语句出错：整版回滚，前面建的表和账本都不留', async () => {
+  const { ctx, client } = await world();
+  try {
+    const broken = { plugin: 'broken', migrations: [{ version: 1, sql: 'CREATE TABLE m_half (x TEXT);\nCREATE TABLE ;' }] };
+    expect(() => ctx.db.migrate(broken)).toThrow();
+    const half = client.query("SELECT name FROM sqlite_master WHERE name = 'm_half'").all();
+    expect(half).toEqual([]);
+    const ledger = client.query("SELECT version FROM db_migrations WHERE plugin = 'broken'").all();
+    expect(ledger).toEqual([]);
+
+    //M 回滚后连接照常能用，修好再迁一次就成。
+    ctx.db.migrate({ plugin: 'broken', migrations: [{ version: 1, sql: 'CREATE TABLE m_half (x TEXT);' }] });
+    const fixed = client.query("SELECT name FROM sqlite_master WHERE name = 'm_half'").all();
+    expect(fixed).toEqual([{ name: 'm_half' }]);
+  } finally {
+    await ctx.fiber.dispose();
+    client.close();
+  }
+});
+

@@ -21,8 +21,9 @@ export const name = 'frpc';
 
 //M 1.0.0：外网隧道（frpc）状态巡检、无窗进程控制、Windows 开机自启、TOML 代理无损回写与日志脱敏接口。
 //M 1.0.1：主站端口映射改严格 IPv4 非回环白名单；拦截含高级字段的 TOML 防静默丢失；控制串行互斥与 JSON 键脱敏。
+//M 1.0.2：读状态也核对隧道，手改 frpc.toml 接了回环地址时 status 带 warnings；没写 localIP 的隧道按 frpc 默认记成 127.0.0.1。
 /** 插件版本号。 */
-export const version = '1.0.1';
+export const version = '1.0.2';
 
 /** 依赖资源目录与主 HTTP 服务。 */
 export const inject = ['resources', 'http'];
@@ -68,6 +69,8 @@ export interface FrpcStatus {
   publicUrls: string[];
   /** 当前配置的全部隧道映射。 */
   proxies: tomlModule.FrpcProxy[];
+  /** 现有隧道的安全告警（主站端口接了回环地址等，手改 frpc.toml 时 PUT 校验拦不到）；没有就空数组。 */
+  warnings: string[];
 }
 
 /** 插件可选配置项。 */
@@ -144,9 +147,14 @@ function parseLogLinesCount(query: unknown): number {
  * 汇总 TOML 配置、进程实时状态与开机自启状态，拼出完整 FrpcStatus。
  * @param dir 客户端目录。
  * @param runner 进程与自启执行器。
+ * @param guardedPort 主站 HTTP 监听端口（ctx.http.port），用来核对隧道有没有接回环地址。
  * @returns 当前完整状态。
  */
-export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRunner): Promise<FrpcStatus> {
+export async function buildFrpcStatus(
+  dir: string,
+  runner: processModule.FrpcRunner,
+  guardedPort: number,
+): Promise<FrpcStatus> {
   const tomlPath = path.join(dir, 'frpc.toml');
   const live = await runner.readLiveState(dir);
   const autoStart = runner.readAutoStart();
@@ -168,6 +176,7 @@ export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRun
     hasAuthToken: false,
     publicUrls: [],
     proxies: [],
+    warnings: [],
   };
 
   const stat = fs.statSync(tomlPath, { throwIfNoEntry: false });
@@ -175,6 +184,8 @@ export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRun
 
   const rawToml = fs.readFileSync(tomlPath, 'utf8');
   const parsed = tomlModule.parseFrpcToml(rawToml);
+  //M 读状态也用 PUT 那一个判断核对隧道，手改出来的回环映射在控制台看得见。
+  const warnings = tomlModule.getProxyWarnings(parsed.proxies, guardedPort);
   return {
     ...base,
     configured: true,
@@ -187,6 +198,7 @@ export async function buildFrpcStatus(dir: string, runner: processModule.FrpcRun
     hasAuthToken: parsed.hasAuthToken,
     publicUrls: tomlModule.derivePublicUrls(parsed.proxies),
     proxies: parsed.proxies,
+    warnings,
   };
 }
 
@@ -213,7 +225,7 @@ export function apply(
 
   //M 1. 读取完整隧道状态、配置摘要与公网快捷入口（不返回 auth.token 明文）。
   app.get('/api/frpc/status', async () => {
-    return buildFrpcStatus(dir, runner);
+    return buildFrpcStatus(dir, runner, ctx.http.port);
   });
 
   //M 2. 控制隧道启动、停止或平滑重启（强制身份核验）。
@@ -222,7 +234,7 @@ export function apply(
     const body = checksModule.checkRecord(request.body, '请求体');
     const action = checksModule.checkAllowedValue(body['action'], ['start', 'stop', 'restart'] as const, 'action');
     await runner.control(dir, action);
-    const status = await buildFrpcStatus(dir, runner);
+    const status = await buildFrpcStatus(dir, runner, ctx.http.port);
     return { ok: true, status };
   });
 
@@ -261,7 +273,7 @@ export function apply(
     if (rawRestart === true) {
       await runner.control(dir, 'restart');
     }
-    const status = await buildFrpcStatus(dir, runner);
+    const status = await buildFrpcStatus(dir, runner, ctx.http.port);
     return { ok: true, status };
   });
 

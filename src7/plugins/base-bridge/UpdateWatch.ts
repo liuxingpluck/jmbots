@@ -14,6 +14,7 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** 一件待确认：照 approval 声明的 approval/decided 事件取，不 import approval 目录。 */
@@ -75,17 +76,12 @@ export function readUpdateWatchSettings(raw: unknown): UpdateWatchSettings {
     throw new Error('base-bridge.update_watch 要是 true、false 或对象');
   }
   const own = raw as { enabled?: unknown; first_ms?: unknown; every_ms?: unknown };
-  if (own.enabled !== undefined && typeof own.enabled !== 'boolean') {
-    throw new Error('base-bridge.update_watch.enabled 要是 true 或 false');
+  //G enabled 写了要是 true 或 false；first_ms 不小于 0，every_ms 大于 0。
+  if (own.enabled !== undefined) {
+    checksModule.checkFlag(own.enabled, 'base-bridge.update_watch.enabled');
   }
-  const firstMs = own.first_ms ?? FIRST_MS;
-  if (typeof firstMs !== 'number' || !Number.isFinite(firstMs) || firstMs < 0) {
-    throw new Error('base-bridge.update_watch.first_ms 要是不小于 0 的数字');
-  }
-  const everyMs = own.every_ms ?? EVERY_MS;
-  if (typeof everyMs !== 'number' || !Number.isFinite(everyMs) || everyMs <= 0) {
-    throw new Error('base-bridge.update_watch.every_ms 要是正数');
-  }
+  const firstMs = checksModule.checkNumber(own.first_ms ?? FIRST_MS, 'base-bridge.update_watch.first_ms', { min: 0 });
+  const everyMs = checksModule.checkNumber(own.every_ms ?? EVERY_MS, 'base-bridge.update_watch.every_ms', { above: 0 });
   return { enabled: own.enabled !== false, firstMs, everyMs };
 }
 

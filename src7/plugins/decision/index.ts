@@ -10,8 +10,10 @@ import * as botUtils from '../../utils/Bots.ts';
 import * as piAi from '@earendil-works/pi-ai';
 import * as piSystemOne from '@earendil-works/pi-ai/api/typesafe-system-one.lazy';
 import * as cordis from 'cordis';
+import type { ProviderConfig } from '../../Resources.ts';
 import type { AskInput } from '../../Sessions.ts';
 import { onRequestEvent, type RequestEnvelope, type ResultEnvelope } from '../../utils/RequestEvent.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** 插件名。 */
@@ -376,7 +378,7 @@ export class Decision extends cordis.Service {
  * @param providers 配置里的供应商名。
  * @throws 不对就抛错，插件挂不上。
  */
-function checkConfig(raw: unknown, providers: Record<string, unknown>): DecisionConfig {
+function checkConfig(raw: unknown, providers: Record<string, ProviderConfig>): DecisionConfig {
   if (raw !== undefined && (typeof raw !== 'object' || raw === null)) throw new Error('decision 段要是一组设置');
   const record = (raw ?? {}) as Record<string, unknown>;
   //M 用户 11-14：只用 jev 一个分类器，不再几个模型取平均。不写 models 就用它。
@@ -390,24 +392,24 @@ function checkConfig(raw: unknown, providers: Record<string, unknown>): Decision
     }
     const model = entry?.['model'];
     const type = entry?.['type'] ?? 'chat';
-    if (typeof model !== 'string' || !model.includes('/')) throw new Error(`${label} 要写成“供应商名/模型 ID”或 { model, type: classifier }`);
+    //G 不是文字时提示两种写法；是文字再交给 checkModelRef 查斜杠和供应商。
+    if (typeof model !== 'string') throw new Error(`${label} 要写成“供应商名/模型 ID”或 { model, type: classifier }`);
     if (type !== 'chat' && type !== 'classifier') throw new Error(`${label}.type 只能是 chat 或 classifier`);
-    if (providers[model.slice(0, model.indexOf('/'))] === undefined) throw new Error(`${label} 的供应商不在 providers 里：${model}`);
-    return { name: model, type };
+    const modelName = checksModule.checkModelRef(model, label, providers);
+    return { name: modelName, type };
   });
   const combine = record['combine'] ?? 'average';
   if (combine !== 'average' && combine !== 'min' && combine !== 'max') throw new Error('decision.combine 只能是 average、min、max');
   const ratio = (key: string, fallback: number): number => {
     const value = record[key] ?? fallback;
-    if (typeof value !== 'number' || value < 0 || value > 1) throw new Error(`decision.${key} 要是 0～1 的数`);
-    return value;
+    return checksModule.checkNumber(value, `decision.${key}`, { min: 0, max: 1 });
   };
   //M 解析并校验 allow_at 与 deny_at 阈值（均须落在 0～1），供后续比对大小关系。
   const allowAt = ratio('allow_at', 0.8);
   const denyAt = ratio('deny_at', 0);
   if (denyAt > allowAt) throw new Error('decision.deny_at 要小于等于 allow_at');
-  const timeoutMs = record['timeout_ms'] ?? 10_000;
-  if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error('decision.timeout_ms 要是正整数');
+  const timeoutWritten = record['timeout_ms'] ?? 10_000;
+  const timeoutMs = checksModule.checkNumber(timeoutWritten, 'decision.timeout_ms', checksModule.POSITIVE_INT);
   return { members, combine, allowAt, denyAt, timeoutMs };
 }
 

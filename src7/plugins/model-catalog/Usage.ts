@@ -9,6 +9,7 @@ import * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import type * as piAi from '@earendil-works/pi-ai';
 import type { Session } from '../../Sessions.ts';
+import type { ModelCatalog } from './index.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 
@@ -89,18 +90,6 @@ export interface UsageRecord {
 }
 
 
-/** 模型清单回执中计价用到的单价，美元每百万 token。 */
-interface CatalogPrice {
-  /** 输入单价，美元每百万 token。 */
-  input: number;
-  /** 输出单价，美元每百万 token。 */
-  output: number;
-  /** 缓存读取单价，美元每百万 token。 */
-  cacheRead?: number;
-  /** 缓存写入单价，美元每百万 token。 */
-  cacheWrite?: number;
-}
-
 /** 时间段 → SQLite strftime 的格式。 */
 const FORMATS: Record<string, string> = { hour: '%Y-%m-%d %H:00', day: '%Y-%m-%d', week: '%Y-W%W', month: '%Y-%m' };
 
@@ -152,9 +141,10 @@ export class Usage extends cordis.Service {
   /**
    * 登记用量子模块：把 Usage 作为服务挂到 Cordis 上（以后用 ctx.usage 取）；再建表，听回答和失败。
    * @param ctx Cordis 给这个插件的 ctx。
+   * @param catalog 模型目录，算费用时直接查单价；由 model-catalog/index.ts 的 apply 建好传进来。
    * 副作用：建 model_usage 表和索引，把 Usage 挂到 ctx.usage，并监听用量查询、成功与失败事件。
    */
-  constructor(ctx: cordis.Context) {
+  constructor(ctx: cordis.Context, private readonly catalog: Pick<ModelCatalog, 'find'>) {
     super(ctx, 'usage');
     const db = ctx.resources.db;
     db.exec('CREATE TABLE IF NOT EXISTS model_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,'
@@ -173,7 +163,7 @@ export class Usage extends cordis.Service {
       const ms = message.durationMs ?? 0;
 
       //M 只记录模型产出的 assistant 回复，把用量和耗时写入 model_usage。
-      void this.add(session, model, message.usage, ms, undefined);
+      this.add(session, model, message.usage, ms, undefined);
     });
 
     //M 一次没成的调用 → 记一行失败的；重试的每一次都会来一次。
@@ -183,7 +173,7 @@ export class Usage extends cordis.Service {
       const error = info.error.slice(0, ERROR_MAX_CHARS);
 
       //M 每一次失败也记一行，保留失败原因和耗时。
-      void this.add(info.session, info.model, zero, info.ms, error);
+      this.add(info.session, info.model, zero, info.ms, error);
     });
 
     //M 供其他插件通过事件查询已入账的模型调用。
@@ -221,14 +211,14 @@ export class Usage extends cordis.Service {
    * @param error 失败的原因；成功是 undefined。
    * 副作用：写库。
    */
-  private async add(
+  private add(
     session: Session,
     model: string,
     usage: piAi.Usage,
     ms: number,
     error: string | undefined,
-  ): Promise<void> {
-    //M 按入口收到通知的时刻和会话归属记账，等待价格不改变这两项。
+  ): void {
+    //M 按入口收到通知的时刻和会话归属记账。
     const at = Date.now();
     const row = session.row;
     const bot = row.bot;
@@ -242,15 +232,8 @@ export class Usage extends cordis.Service {
       provider = model.slice(0, slash);
     }
 
-    const lookup = { action: 'find', model } as const;
-    //M 通过事件查价格，清单未响应或查无模型时按零计费。
-    const result = await requestEventModule.requestEvent(
-      this.ctx,
-      'model-catalog/request',
-      'model-catalog/result',
-      lookup,
-    );
-    const price: CatalogPrice | undefined = result.reply?.info?.price;
+    //M 同一插件里直接查模型目录的单价（不再绕 model-catalog/request 问自己）；查无模型时按零计费。
+    const price = this.catalog.find(model)?.price;
     let cost = 0;
     if (price !== undefined) {
       cost = ((usage.input * price.input) + (usage.output * price.output)

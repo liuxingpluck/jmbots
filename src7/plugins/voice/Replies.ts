@@ -6,7 +6,10 @@ import * as utils from '../../utils/index.ts';
 import * as channel from '../channels/index.ts';
 import * as common from './Common.ts';
 
-/** 回话回执最多留几条：同一回复号重放时要命中，太早的删掉，语音长开内存不再一直涨。 */
+/**
+ * 回话回执、语音原消息最多各留几条：同一回复号重放时要命中、旧路回话要按消息号找回原消息，
+ * 太早的删掉，语音长开内存不再一直涨。
+ */
 export const RECEIPT_MAX = 500;
 
 /** 浏览器确认至少有一段语音实际经过播放。 */
@@ -18,6 +21,8 @@ interface VoiceReceipt extends channel.ReplyReceipt {
 export class VoiceReplies {
   private readonly unfinished = new Map<string, ReturnType<typeof Promise.withResolvers<boolean>>>();
   private readonly receipts = new Map<string, { hash: string; result: Promise<VoiceReceipt> }>();
+  /** 语音原消息（消息号 → 消息）：channel/direct、voice/record 带来的，旧路回话按它生成来源快照。 */
+  private readonly messages = new Map<string, channel.ChannelMessage>();
 
   /** 绑定标准回复事件；播报可用时交给对应连接。 */
   constructor(
@@ -26,13 +31,18 @@ export class VoiceReplies {
   ) {
     //M 半句任务允许立即开始，回话等这句话有了最终记录再写：语音发的半句（channel/direct 带 routing.partial）先登记一个等待。
     ctx.on('channel/direct', (message) => {
-      if (message.channel !== common.CHANNEL || message.routing.partial !== true) return;
+      if (message.channel !== common.CHANNEL) return;
+
+      //M 记下原消息：旧路回话按消息号找回它生成来源快照。
+      this.remember(message);
+      if (message.routing.partial !== true) return;
 
       const gate = Promise.withResolvers<boolean>();
       this.unfinished.set(message.messageId, gate);
     }, { prepend: true });
     ctx.on('voice/record', (message) => {
-      //M 时间线会在同一次同步事件里先保存用户的最终字幕。
+      //M 整句定稿：原消息换成最终那份；时间线会在同一次同步事件里先保存用户的最终字幕。
+      this.remember(message);
       this.release(message.messageId, true);
     });
     ctx.on('voice/abandon', (messageId) => {
@@ -42,6 +52,18 @@ export class VoiceReplies {
     ctx.on('channel/reply', async (request) => {
       await this.onReply(request);
     });
+  }
+
+  /** 按消息号记下语音原消息，只留最近 RECEIPT_MAX 条（Map 按放进去的先后排，再放一次挪到最后）。 */
+  private remember(message: channel.ChannelMessage): void {
+    this.messages.delete(message.messageId);
+    this.messages.set(message.messageId, message);
+    if (this.messages.size <= RECEIPT_MAX) return;
+
+    const oldest = this.messages.keys().next().value;
+    if (oldest !== undefined) {
+      this.messages.delete(oldest);
+    }
   }
 
   /** 结束这一句的回话等待，后续回复可以直接走标准事件。 */
@@ -75,37 +97,18 @@ export class VoiceReplies {
       if (!committed) return '语音未确认最终字幕';
     }
 
+    //G 找回原消息：服务重启过、或太早被挤掉（超过 RECEIPT_MAX 条）的找不到，这条回话对不上原句，写明原因拒收。
+    const message = this.messages.get(messageId);
+    if (message === undefined) return '语音原消息已不在内存里（服务重启过或太早），回话对不上原句';
+
     const botName = request.bot;
-    let chatId = utils.getStringField(address, 'chatId');
-    if (chatId === '') {
-      chatId = common.LOCAL;
-    }
-    let customer = utils.getStringField(address, 'customer');
-    if (customer === '') {
-      customer = common.CUSTOMER;
-    }
     //M 让标准回执关联到既有的消息认领。
     const claimKey = channel.getClaimKey(messageId, botName);
     //M 按后台会话区分同一条消息的回复轮次。
     const replyRoundKey = channel.getReplyRoundKey(messageId, botName, sessionId);
-    request.sourceSnapshot = {
-      messageId,
-      nativeId: null,
-      channel: common.CHANNEL,
-      accountId: common.LOCAL,
-      chatId,
-      chatType: common.LOCAL,
-      senderId: 'owner',
-      senderName: '语音',
-      role: 'owner',
-      targetBots: [botName],
-      mentions: [],
-      origin: { channel: common.CHANNEL, address: { ...address, voiceSessionId: sessionId } },
-      visibility: { scope: customer, trusted: true, publicSourceIds: [] },
-      botName,
-      claimKey,
-      replyRoundKey,
-    };
+    //M 来源快照照原消息拷一份（channels 的 getSourceSnapshot）；地址带上会话号，播报找得到这场会话。
+    const origin = { channel: common.CHANNEL, address: { ...address, voiceSessionId: sessionId } };
+    request.sourceSnapshot = channel.getSourceSnapshot(message, botName, origin, claimKey, replyRoundKey);
     delete request.target;
 
     //M 会话做完了是最终回话，沿用固定调用号，多次转发仍可合并为一条；还在转的是中途一句，各用各的号。

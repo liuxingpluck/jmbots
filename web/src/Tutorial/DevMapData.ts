@@ -147,7 +147,7 @@ export const DEV_CARDS: DevCard[] = [
           { file: 'src7/Sessions.ts', line: 697, mark: "serial('session/before-model'" },
           { file: 'src7/plugins/context-fit/index.ts', line: 322, mark: "on('session/before-model'" },
           { file: 'src7/plugins/memory/index.ts', line: 155, mark: "on('session/before-model'" },
-          { file: 'src7/plugins/approval/index.ts', line: 472, mark: "on('session/before-model'" },
+          { file: 'src7/plugins/approval/index.ts', line: 476, mark: "on('session/before-model'" },
         ],
       },
       {
@@ -162,7 +162,7 @@ export const DEV_CARDS: DevCard[] = [
         note: '执行工具之前。call 里有工具名和参数；写 deny 只拦这一个，写 stop 停整个会话。',
         anchors: [
           { file: 'src7/Tools.ts', line: 187, mark: "serial('session/before-tool'" },
-          { file: 'src7/plugins/approval/index.ts', line: 477, mark: "on('session/before-tool'" },
+          { file: 'src7/plugins/approval/index.ts', line: 481, mark: "on('session/before-tool'" },
         ],
       },
       {
@@ -194,23 +194,23 @@ export const DEV_CARDS: DevCard[] = [
         title: '建 Fastify 实例',
         note: 'http 插件的构造函数里建 app，插件的路由都挂在 ctx.http.app 上。',
         anchors: [
-          { file: 'src7/plugins/http/index.ts', line: 227, mark: 'fastify.default(' },
+          { file: 'src7/plugins/http/index.ts', line: 232, mark: 'fastify.default(' },
         ],
       },
       {
         title: '每个请求先过鉴权',
         note: 'onRequest 钩子：本机不查令牌，别的机器要带 server.token。',
         anchors: [
-          { file: 'src7/plugins/http/index.ts', line: 236, mark: "addHook('onRequest'" },
+          { file: 'src7/plugins/http/index.ts', line: 241, mark: "addHook('onRequest'" },
         ],
       },
       {
         title: 'ready 之后挂静态页、开始监听',
         note: '所有插件都挂好才发 ready；先注册 dist/web 静态页，再定端口 listen，端口被占会隔一会儿重试。',
         anchors: [
-          { file: 'src7/plugins/http/index.ts', line: 275, mark: 'registerStatic(this.ctx, this.app)' },
-          { file: 'src7/plugins/http/index.ts', line: 474, mark: 'private async listen(' },
-          { file: 'src7/plugins/http/index.ts', line: 490, mark: 'this.app.listen(' },
+          { file: 'src7/plugins/http/index.ts', line: 280, mark: 'registerStatic(this.ctx, this.app)' },
+          { file: 'src7/plugins/http/index.ts', line: 495, mark: 'private async listen(' },
+          { file: 'src7/plugins/http/index.ts', line: 512, mark: 'this.app.listen(' },
         ],
       },
     ],
@@ -284,7 +284,7 @@ export const DEV_CARDS: DevCard[] = [
         anchors: [
           { file: 'src7/plugins/feishu/Inbound.ts', line: 776, mark: 'protocol.emitInbound(this.ctx' },
           { file: 'src7/plugins/cli/index.ts', line: 195, mark: 'protocol.emitInbound(this.ctx' },
-          { file: 'src7/plugins/feishu/index.ts', line: 1043, mark: "ctx.provide('feishu'" },
+          { file: 'src7/plugins/feishu/index.ts', line: 1031, mark: "ctx.provide('feishu'" },
         ],
       },
     ],
@@ -302,8 +302,8 @@ export const DEV_CARDS: DevCard[] = [
           { file: 'src7/plugins/knowledge/Tools.ts', line: 66, mark: 'ctx.tools.register({' },
           {
             file: 'src7/plugins/knowledge/index.ts',
-            line: 29,
-            mark: "export const inject = ['resources', 'http', 'tools']",
+            line: 34,
+            mark: "export const inject = ['resources', 'http', 'tools', 'db']",
           },
         ],
       },
@@ -317,18 +317,18 @@ export const DEV_CARDS: DevCard[] = [
     items: [
       {
         title: '参考：frpc 的入口和接口',
-        note: '路由都写在 apply 里；写接口先 isVerified。',
+        note: '路由都写在 apply 里；写接口先 requireVerified。',
         anchors: [
-          { file: 'src7/plugins/frpc/index.ts', line: 243, mark: 'export function apply(' },
-          { file: 'src7/plugins/frpc/index.ts', line: 255, mark: "app.get('/api/frpc/status'" },
-          { file: 'src7/plugins/frpc/index.ts', line: 129, mark: 'ctx.http.isVerified(request)' },
+          { file: 'src7/plugins/frpc/index.ts', line: 216, mark: 'export function apply(' },
+          { file: 'src7/plugins/frpc/index.ts', line: 227, mark: "app.get('/api/frpc/status'" },
+          { file: 'src7/plugins/frpc/index.ts', line: 233, mark: 'ctx.http.requireVerified(request' },
         ],
       },
       {
         title: '参考：knowledge 的表和网页入口',
         note: '表走 db 迁移；网页的 html 加进 web/Build.ts 入口；插件在 Index.ts 登记。',
         anchors: [
-          { file: 'src7/plugins/knowledge/index.ts', line: 61, mark: 'migrate({' },
+          { file: 'src7/plugins/knowledge/index.ts', line: 74, mark: 'ctx.db.migrate(knowledgeMigrations)' },
           { file: 'web/Build.ts', line: 271, mark: "'knowledge.html'" },
           { file: 'src7/plugins/Index.ts', line: 103, mark: "'knowledge': knowledge" },
         ],

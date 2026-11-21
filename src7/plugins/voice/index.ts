@@ -27,7 +27,8 @@ export const name = 'voice';
 //M   voice/record 加 waiting 顶替 routing.recordOnly。
 //M 0.6.5：getSettings 改用 Checks.ts 的 checkNumber、checkFlag、checkModelRef 等公共校验；模型线路的供应商要在 providers 里。
 //M 0.6.6：配置校验搬进 Config.ts，转写、合成线路装配搬进 Lines.ts（云端20 第 3 条），apply 只装配、登记路由和事件。
-export const version = '0.6.7';
+//M 0.6.8：旧路回话的来源快照改用 channels 的 getSourceSnapshot，照原消息拷（Replies 按消息号留着原消息），删掉手拼的 16 个字段（云端 35 第 5.8 节）。
+export const version = '0.6.8';
 export const inject = ['resources', 'http', 'sessions'];
 
 type State = 'idle' | 'listening' | 'error';

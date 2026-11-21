@@ -14,7 +14,9 @@ import ledgerSql from './migrations/0000_db_migrations.sql' with { type: 'text' 
 
 /** 自带插件名及版本。 */
 export const name = 'db';
-export const version = '1.0.1';
+//M 1.0.2：迁移每段 SQL 交给 SQLite 原生 exec 执行，一段里写了几条语句就执行几条（原来走 Drizzle 的预编译，
+//M   只执行第一条，漏写 --> statement-breakpoint 的建表悄悄丢表，knowledge 第 1 版就中过）。
+export const version = '1.0.2';
 
 /** Resources 持有原生连接，db 随它启动。 */
 export const inject = ['resources'];
@@ -139,7 +141,9 @@ export class Db extends cordis.Service implements DbEngine<SqliteOrm, SqliteTx> 
         }
 
         if (!adopted) {
-          //M Drizzle Kit 以此注释分隔语句，每条在同一事务连接执行。
+          //M Drizzle Kit 以此注释分隔语句；每段交给 SQLite 原生 exec，同一连接、同一事务里执行。
+          //M   exec 由 SQLite 自己解析：一段里有几条语句执行几条，字符串、注释、触发器 BEGIN…END 里的分号都不会切错。
+          //M   不能用 tx.run：它走预编译，只执行第一条，后面的悄悄丢掉。
           const statements = source.split('--> statement-breakpoint');
           for (const part of statements) {
             const text = part.trim();
@@ -147,8 +151,7 @@ export class Db extends cordis.Service implements DbEngine<SqliteOrm, SqliteTx> 
               continue;
             }
 
-            const statement = drizzle.sql.raw(text);
-            tx.run(statement);
+            this.orm.$client.exec(text);
           }
         }
 

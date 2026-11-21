@@ -12,12 +12,8 @@
  * 本文件不 import 别的插件，也不 import 同目录的 index.ts。
  */
 import * as traceText from '../../../web/src/locales/Trace.ts';
-import { FOLDERS, NOISE } from '../../utils/Trail.ts';
+import { FOLDERS, NOISE, PASSIVE } from '../../utils/Trail.ts';
 import type { Trail, TrailLine, TrailRow, TrailStep } from '../../utils/Trail.ts';
-
-
-/** 只记账、什么都不改的插件：不算“经过”。tutorial 自己（录、拍、打印）也只是看。 */
-const PASSIVE = new Set(['journal', 'tutorial', 'usage']);
 
 /**
  * 页面上可以露的几个值（不含说了什么、参数、回话正文）：跟踪点里的中文变量名 → 交给页面的英文键。
@@ -339,6 +335,10 @@ export function getSteps(lines: TrailLine[]): { steps: TrailStep[]; start: numbe
       facts: line.facts ?? getFacts(line.vars, name),
       error,
     };
+    //M 带号的行把号带上：载荷按号对上这一行（tutorial/Payload.ts 的 assignTrailSteps）。
+    if (typeof line.seq === 'number') {
+      row.seq = line.seq;
+    }
     const docs = line.docs ?? [];
 
     //M 和上一步在同一条道上：并进上一步。

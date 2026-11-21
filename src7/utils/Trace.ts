@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import * as process from 'node:process';
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
+import * as utils from './index.ts';
 import * as textModule from './Text.ts';
 
 declare module 'cordis' {
@@ -26,13 +27,16 @@ declare module 'cordis' {
      *   src7/Sessions.ts 的 Session.getStepAnswer
      *   src7/Tools.ts 的 Tools.execute
      *   src7/plugins/approval/Grants.ts 的 Grants.add、Grants.remove、Grants.trace
-     *   src7/plugins/approval/index.ts 的 Approval.answer、Approval.ask、Approval.onRequest、Approval.settle、Approval.traced
+     *   src7/plugins/approval/index.ts 的 Approval.answer、Approval.ask、Approval.onRequest、
+     *     Approval.settle、Approval.traced
      *   src7/plugins/assist/Reminders.ts 的 Reminders.arm、Reminders.closeCard、Reminders.start
      *   src7/plugins/assist/index.ts 的 Assist.add
      *   src7/plugins/base-bridge/Notify.ts 的 mountNotify
-     *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.check、UpdateWatch.clearUncertainSwap、UpdateWatch.onDecided、UpdateWatch.tell
+     *   src7/plugins/base-bridge/UpdateWatch.ts 的 UpdateWatch.check、UpdateWatch.clearUncertainSwap、
+     *     UpdateWatch.onDecided、UpdateWatch.tell
      *   src7/plugins/base-bridge/index.ts 的 Base.onRequest
-     *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.acceptResult、DispatchResults.drain、DispatchResults.finishFront、DispatchResults.hold、DispatchResults.sendLastWords
+     *   src7/plugins/bots/DispatchResults.ts 的 DispatchResults.acceptResult、DispatchResults.drain、
+     *     DispatchResults.finishFront、DispatchResults.hold、DispatchResults.sendLastWords
      *   src7/plugins/bots/FrontDesk.ts 的 FrontDesk.onRequest、FrontDesk.record
      *   src7/plugins/bots/GroupBatch.ts 的 GroupBatch.judge
      *   src7/plugins/bots/ReplyTool.ts 的 registerReplyTool
@@ -43,7 +47,8 @@ declare module 'cordis' {
      *   src7/plugins/context-fit/index.ts 的 apply
      *   src7/plugins/decision/index.ts 的 Decision.judge
      *   src7/plugins/exec/index.ts 的 Exec.onDecided、Exec.onTool、Exec.run
-     *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.handleInboundMessage、FeishuInbound.onCard、FeishuInbound.onMessage、FeishuInbound.onRecall
+     *   src7/plugins/feishu/Inbound.ts 的 FeishuInbound.handleInboundMessage、FeishuInbound.onCard、
+     *     FeishuInbound.onMessage、FeishuInbound.onRecall
      *   src7/plugins/feishu/doc/Doc.ts 的 publish
      *   src7/plugins/feishu/index.ts 的 Feishu.mark、Feishu.start
      *   src7/plugins/feishu/outbox/Outbox.ts 的 setup
@@ -62,9 +67,11 @@ declare module 'cordis' {
      *   src7/plugins/people/index.ts 的 People.resolve
      *   src7/plugins/programs/ChannelBridge.ts 的 ChannelBridge.dispatch
      *   src7/plugins/progress/Review.ts 的 Review.check、Review.constructor、Review.skip
-     *   src7/plugins/progress/index.ts 的 Progress.close、Progress.onDeadline、Progress.onDecided、Progress.sendCard、Progress.setLimit
+     *   src7/plugins/progress/index.ts 的 Progress.close、Progress.onDeadline、Progress.onDecided、
+     *     Progress.sendCard、Progress.setLimit
      *   src7/plugins/relay/AgentTasks.ts 的 AgentTasks.finishTask、AgentTasks.send、AgentTasks.take
-     *   src7/plugins/relay/index.ts 的 Relay.accept、Relay.checkLate、Relay.onRequest、Relay.push、Relay.queueReply、Relay.register、Relay.sendFile
+     *   src7/plugins/relay/index.ts 的 Relay.accept、Relay.checkLate、Relay.onRequest、Relay.push、
+     *     Relay.queueReply、Relay.register、Relay.sendFile
      *   src7/plugins/settings/index.ts 的 Settings.constructor、Settings.createBot、Settings.exitSoon、Settings.restart
      *   src7/plugins/voice/index.ts 的 VoiceConnection.reportRoute
      *   src7/plugins/web-api/Timeline.ts 的 Timeline.bindSession、Timeline.insert、Timeline.reply
@@ -118,6 +125,8 @@ export interface DispatchLine {
 export type SharedLine = DispatchLine & {
   /** 发这个事件的那一行代码，“文件:行号”（getCallSite 取的）。 */
   site: string;
+  /** 这次派发的号（takeSeq 发的）：journal 存进 seq 列，快照和载荷按它对齐。只给旁听对齐用，不进业务表。 */
+  seq: number;
 };
 
 
@@ -133,11 +142,31 @@ const OBSERVER_DIRS = ['plugins/journal/', 'plugins/tutorial/'];
 /** 一次派发只拼一次事件行。键是 Cordis 交给每个 internal/dispatch 监听的同一个 args 数组，派发完自然释放。 */
 const sharedLines = new WeakMap<unknown[], SharedLine>();
 
+/**
+ * 下一个要发的号：每次派发、每个跟踪点各一个，单调递增。
+ * 从启动时刻乘 1000 起算，重启后不会和上次的号撞上；到 2255 年才超出安全整数。
+ */
+let nextSeq = Date.now() * 1000;
+
+/** 跟踪点没有共用的行对象，用它的 vars 当钥匙：同一个跟踪点，几个旁听者拿同一个号。 */
+const traceSeqs = new WeakMap<object, number>();
+
+
+/**
+ * 发一个号。
+ * @returns 新号，比之前发过的都大。
+ */
+function takeSeq(): number {
+  const seq = nextSeq;
+  nextSeq += 1;
+  return seq;
+}
+
 
 /**
  * 旁听 Cordis 的每次派发：journal 记库、tutorial 打印、拍快照、录载荷都从这里挂。
  * 跟踪点自己（trace）、Cordis 内部的事件（internal/ 开头）不交过来。
- * 同一次派发，第一个旁听者拼事件行、取调用栈，后面的旁听者拿同一份（同一个引用）。
+ * 同一次派发，第一个旁听者拼事件行、取调用栈、发号，后面的旁听者拿同一份（同一个引用、同一个号）。
  * 旁听者跑在发事件的那一行里，Cordis 的 emit 不接异常：这里出错只打一行日志、不往外抛，业务监听照常收到事件。
  * @param ctx 旁听插件的 ctx（用来查这个事件登记着哪些监听）。
  * @param who 旁听者的名字，写进出错日志。
@@ -162,7 +191,8 @@ export function onDispatch(
       if (line === undefined) {
         const built = buildDispatchLine(ctx, mode, event, args, SHARED_VAR_MAX);
         const site = getCallSite(OBSERVER_DIRS);
-        line = { ...built, site };
+        const seq = takeSeq();
+        line = { ...built, site, seq };
         sharedLines.set(args, line);
       }
 
@@ -179,18 +209,25 @@ export function onDispatch(
  * 旁听跟踪点：和 onDispatch 一样，旁听者出错只打一行日志，不冒到发跟踪点的业务代码里。
  * @param ctx 旁听插件的 ctx。
  * @param who 旁听者的名字，写进出错日志。
- * @param handler 拿到跟踪点的四个参数（见上面 Events 里 trace 的说明）。
+ * @param handler 拿到跟踪点的四个参数（见上面 Events 里 trace 的说明），加上这个跟踪点的号。
  * 副作用：在 ctx 上登记一个 trace 监听，插件拔掉时 Cordis 自己撤掉。
  */
 export function onTrace(
   ctx: cordis.Context,
   who: string,
-  handler: (where: string, text: string, code: string, vars: Record<string, unknown>) => void,
+  handler: (where: string, text: string, code: string, vars: Record<string, unknown>, seq: number) => void,
 ): void {
   ctx.on('trace', (where, text, code, vars) => {
     //M 旁听者出错只记一行：跟踪点只是通知，不能拦住发它的业务代码。
     try {
-      handler(where, text, code, vars);
+      //M 同一个跟踪点，第一个旁听者发号，后面的拿同一个。
+      let seq = traceSeqs.get(vars);
+      if (seq === undefined) {
+        seq = takeSeq();
+        traceSeqs.set(vars, seq);
+      }
+
+      handler(where, text, code, vars, seq);
     } catch (error) {
       const reason = textModule.getErrorMessage(error);
       console.error(`[旁听异常:${who}] 跟踪点 ${where} 出错，已跳过：${reason}`);
@@ -216,12 +253,6 @@ export function formatTraceValue(value: unknown, max: number): string {
   if (line.length > max) return `${line.slice(0, max)}…`;
 
   return line;
-}
-
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  return value as Record<string, unknown>;
 }
 
 
@@ -262,7 +293,7 @@ export function getSourceId(value: unknown): string | undefined {
  * @param key 字段名。
  * @returns 是正整数就原样交回；不是是 undefined。
  */
-function getPositiveInt(record: Record<string, unknown> | undefined, key: string): number | undefined {
+export function getPositiveInt(record: Record<string, unknown> | undefined, key: string): number | undefined {
   const raw = record?.[key];
   if (typeof raw !== 'number') return undefined;
   if (!Number.isSafeInteger(raw) || raw <= 0) return undefined;
@@ -289,28 +320,28 @@ function addMessageRefs(line: DispatchLine, event: string, first: Record<string,
   let bot: string | undefined;
 
   //M 1. 渠道消息（channel/direct 等）、bot/receive：origin.address 或 message.address 里的收件号，message.bot。
-  const origin = asRecord(first['origin']);
-  const inner = asRecord(first['message']);
-  messageId = getPositiveInt(asRecord(origin?.['address']), 'messageId');
-  messageId ??= getPositiveInt(asRecord(inner?.['address']), 'messageId');
+  const origin = utils.getOptionalRecord(first['origin']);
+  const inner = utils.getOptionalRecord(first['message']);
+  messageId = getPositiveInt(utils.getOptionalRecord(origin?.['address']), 'messageId');
+  messageId ??= getPositiveInt(utils.getOptionalRecord(inner?.['address']), 'messageId');
   if (typeof inner?.['bot'] === 'string') {
     bot = inner['bot'];
   }
 
   //M 2. 参数本身是会话或带着会话：row.state、row.address 里的收件号、row.activeSourceSnapshot 的标准消息号。
-  const sessionObj = asRecord(first['session']) ?? first;
-  const row = asRecord(sessionObj['row']);
+  const sessionObj = utils.getOptionalRecord(first['session']) ?? first;
+  const row = utils.getOptionalRecord(sessionObj['row']);
   if (row !== undefined) {
     if (typeof row['state'] === 'string') {
       line.sessionState = row['state'];
     }
-    messageId ??= getPositiveInt(asRecord(row['address']), 'messageId');
-    const active = asRecord(row['activeSourceSnapshot']);
+    messageId ??= getPositiveInt(utils.getOptionalRecord(row['address']), 'messageId');
+    const active = utils.getOptionalRecord(row['activeSourceSnapshot']);
     sourceId = getSourceId(active?.['messageId']);
   }
 
   //M 3. channel/reply、channel/replied：回复请求（channel/replied 的在 request 里）带的 requestId、sessionId、bot。
-  const request = asRecord(first['request']) ?? first;
+  const request = utils.getOptionalRecord(first['request']) ?? first;
   const isReply = event === 'channel/reply' || event === 'channel/replied';
   if (isReply && typeof request['requestId'] === 'string') {
     line.replyRequestId = request['requestId'];
@@ -323,19 +354,20 @@ function addMessageRefs(line: DispatchLine, event: string, first: Record<string,
   }
 
   //M 4. 回复、收尾（channel/reply、channel/replied、bot/settled）带的来源快照：标准消息号、机器人、origin.address 的收件号。
-  const snapshot = asRecord(request['sourceSnapshot']) ?? asRecord(first['sourceSnapshot']);
+  let snapshot = utils.getOptionalRecord(request['sourceSnapshot']);
+  snapshot ??= utils.getOptionalRecord(first['sourceSnapshot']);
   if (snapshot !== undefined) {
     sourceId ??= getSourceId(snapshot['messageId']);
     if (bot === undefined && typeof snapshot['botName'] === 'string') {
       bot = snapshot['botName'];
     }
-    const snapshotOrigin = asRecord(snapshot['origin']);
-    messageId ??= getPositiveInt(asRecord(snapshotOrigin?.['address']), 'messageId');
+    const snapshotOrigin = utils.getOptionalRecord(snapshot['origin']);
+    messageId ??= getPositiveInt(utils.getOptionalRecord(snapshotOrigin?.['address']), 'messageId');
   }
 
   //M 5. 回复目标 target.address 的收件号。
-  const target = asRecord(request['target']);
-  messageId ??= getPositiveInt(asRecord(target?.['address']), 'messageId');
+  const target = utils.getOptionalRecord(request['target']);
+  messageId ??= getPositiveInt(utils.getOptionalRecord(target?.['address']), 'messageId');
 
   //M 只填还空着的：参数循环认出的优先。
   if (line.messageId === undefined && messageId !== undefined) line.messageId = messageId;
@@ -419,7 +451,7 @@ export function buildDispatchLine(
   }
 
   //M 参数循环认不出的几个位置（渠道地址、会话快照、回复请求）再补认一遍：journal、Print、State、Payload 都用这一份。
-  const firstObj = asRecord(args[0]);
+  const firstObj = utils.getOptionalRecord(args[0]);
   addMessageRefs(line, event, firstObj);
 
   //M 会话的几个核心事件带着什么，这里认得，顺带记下结构化数值与状态（不记隐私正文或密钥）。
@@ -451,11 +483,11 @@ export function buildDispatchLine(
 
   //M session/before-tool 与 session/after-tool：记录工具名与执行成败。
   if ((event === 'session/before-tool' || event === 'session/after-tool') && firstObj !== undefined) {
-    const call = asRecord(firstObj['call']);
+    const call = utils.getOptionalRecord(firstObj['call']);
     if (call !== undefined && typeof call['name'] === 'string') {
       line.vars['tool'] = call['name'];
     }
-    const outcome = asRecord(firstObj['outcome']);
+    const outcome = utils.getOptionalRecord(firstObj['outcome']);
     if (outcome !== undefined && typeof outcome['isError'] === 'boolean') {
       line.vars['failed'] = outcome['isError'];
     }

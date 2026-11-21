@@ -138,7 +138,7 @@ function buildBootDataFlow(trail: Trail): TrailDataFlow {
     const prev = trail.steps[index - 1];
     const next = trail.steps[index + 1];
     const layer = getStepLayer(item.node);
-    const skeletonFile = getSkeletonFile(item);
+    const skeletonFile = getStepSkeletonDoc(item);
     const { fnName, fnSite } = pickPrimaryFn(item);
     const facts = mergeStepFacts(item.rows);
     const inputs = buildFactInputs(facts, trail.notes);
@@ -294,7 +294,7 @@ function buildMessageDataFlow(trail: Trail): TrailDataFlow {
     const nextDraft = drafts[index + 1];
 
     const layer = getStepLayer(step.node);
-    const skeletonFile = getSkeletonFile(step);
+    const skeletonFile = getStepSkeletonDoc(step);
     const { fnName, fnSite } = pickPrimaryFn(step);
 
     //M 入边优先衔接上一步算出的出边协议与数据类型，首步保留自身入口来源。
@@ -1219,7 +1219,7 @@ function getStepLayer(node: string): 'skeleton' | 'plugin' {
 
 
 /** 识别骨架步骤对应的「骨架逐行」文档名（Main / Resources / Tools / Sessions）；插件或纯工具层返回空串。 */
-function getSkeletonFile(step: TrailStep): string {
+function getStepSkeletonDoc(step: TrailStep): string {
   if (!SKELETON_NODES.has(step.node)) return '';
 
   if (step.node === 'main') return 'Main';

@@ -123,7 +123,7 @@ channels:
 #       trace_console: false       # 控制台打印执行路径（原 trace 插件）：想看一条消息走过的路时改成 true
 #       trace_file: false          # 执行路径同时写到运行时目录 trace/ 下当天的文件
 #       trace_var_limit: 200       # 打印时一个值最多几个字
-#   - name: db                     # 数据库迁移和事务（默认 SQLite，沿用 Resources 的原连接；写在 journal、relay、memory、context-fit 前面）
+#   - name: db                     # 数据库迁移和事务（默认 SQLite，沿用 Resources 的原连接）。建表走它的迁移账本的插件都把它写进 inject，Cordis 会等它挂好，不用管写在哪
 #   - name: workspaces            # 工作区：一个机器人可以有多个（按 ID 认，名字可重复）；workspace 工具管、hand_session 写 workspaceId 选。bots 依赖它，要写在 bots 前面；没有配置
 #   - name: bots                  # 机器人和前台：要写在用它的插件前面。消息没被别的插件认领的进前台，简单的前台自己答，复杂的派给后台会话
 #     config:

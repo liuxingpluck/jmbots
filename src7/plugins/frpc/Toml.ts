@@ -65,6 +65,9 @@ interface ProxyDraft {
 /** 合法协议集合。 */
 const VALID_TYPES: readonly FrpcProxyType[] = ['http', 'https', 'tcp', 'udp'];
 
+/** frpc 隧道不写 localIP 时它自己用的源地址。 */
+const FRPC_DEFAULT_LOCAL_IP = '127.0.0.1';
+
 /** 30086 回环地址拦截提示语。 */
 export const LOOPBACK_30086_ERROR =
   '30086 端口映射禁止使用 127.0.0.1/localhost，请使用局域网地址 192.168.200.1 以防绕过外网 AuthGate 登录门禁';
@@ -198,13 +201,18 @@ function parseTomlStringArray(raw: string): string[] | undefined {
 function finalizeDraft(draft: ProxyDraft): FrpcProxy | undefined {
   if (draft.name === undefined || draft.name === '') return undefined;
   if (draft.type === undefined) return undefined;
-  if (draft.localIP === undefined || draft.localIP === '') return undefined;
   if (draft.localPort === undefined || draft.localPort <= 0) return undefined;
+
+  //M 没写 localIP 时 frpc 自己按 127.0.0.1 转发；照实记成回环地址，读状态的告警才看得见，不悄悄丢掉这条隧道。
+  let localIP = FRPC_DEFAULT_LOCAL_IP;
+  if (draft.localIP !== undefined && draft.localIP !== '') {
+    localIP = draft.localIP;
+  }
 
   const proxy: FrpcProxy = {
     name: draft.name,
     type: draft.type,
-    localIP: draft.localIP,
+    localIP,
     localPort: draft.localPort,
   };
   if (draft.customDomains !== undefined && draft.customDomains.length > 0) {
@@ -374,6 +382,39 @@ export function isAllowedServerMapIp(host: string): boolean {
 }
 
 
+/**
+ * 判断一条隧道是不是把主站端口接到了不许的源地址：PUT 校验和读状态告警共用这一个判断。
+ * @param localIP 隧道源地址。
+ * @param localPort 隧道源端口。
+ * @param guardedPort 主站 HTTP 监听端口（随 server.port）。
+ * @returns true 表示外网请求会被当成本机请求，绕过登录门禁。
+ */
+export function isUnsafeGuardedProxy(localIP: string, localPort: number, guardedPort: number): boolean {
+  const isGuardedPort = localPort === 30086 || localPort === guardedPort;
+  if (!isGuardedPort) return false;
+
+  return !isAllowedServerMapIp(localIP);
+}
+
+
+/**
+ * 读状态时核对 frpc.toml 里现有的隧道：有人手改接了回环地址，控制台要看得出来。
+ * @param proxies 从 frpc.toml 解析出的隧道。
+ * @param guardedPort 主站 HTTP 监听端口。
+ * @returns 每条不安全隧道一句告警；都安全时是空数组。
+ */
+export function getProxyWarnings(proxies: FrpcProxy[], guardedPort: number): string[] {
+  const warnings: string[] = [];
+  for (const proxy of proxies) {
+    const unsafe = isUnsafeGuardedProxy(proxy.localIP, proxy.localPort, guardedPort);
+    if (!unsafe) continue;
+
+    warnings.push(`隧道 ${proxy.name}：${LOOPBACK_30086_ERROR}`);
+  }
+  return warnings;
+}
+
+
 /** 合法端口号范围（1..65535 整数）。 */
 const PORT_RULE: checksModule.NumberRule = { integer: true, min: 1, max: 65535 };
 
@@ -453,8 +494,8 @@ export function validateProxies(raw: unknown, guardedPort = 30086): FrpcProxy[] 
     const localPort = checksModule.checkNumber(rec['localPort'], `隧道 ${name} 的 localPort`, PORT_RULE);
 
     //G 安全铁律：主站端口映射强制走严格 IPv4 非回环白名单，防止外网流量变成 isLocal 免登录请求。
-    const isGuardedPort = localPort === 30086 || localPort === guardedPort;
-    if (isGuardedPort && !isAllowedServerMapIp(localIP)) {
+    const unsafe = isUnsafeGuardedProxy(localIP, localPort, guardedPort);
+    if (unsafe) {
       throw new failureModule.Failure(400, LOOPBACK_30086_ERROR);
     }
 

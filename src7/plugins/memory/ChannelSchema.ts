@@ -25,7 +25,7 @@ export const channelMigrations: dbModule.MigrationPlan = {
 /**
  * 在开始查询前迁移渠道索引，事务和版本校验全部交给 db。
  * @param client 调用方持有的 SQLite 连接，不接管关闭。
- * @param service 正式插件注入的 db；离线索引和内存测试可不给。
+ * @param service 正式插件注入的 db（memory 插件必给）；只有离线补旧脚本和内存测试不给，自建一份同样的账本。
  */
 export function migrateChannelIndex(client: sqlite.Database, service?: dbModule.Db): void {
   if (service !== undefined) {

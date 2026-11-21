@@ -25,6 +25,8 @@ export interface TrailLine {
   messageId: number | null;
   /** 标准消息号（渠道发来的）；旧行、启动合成行没有。 */
   sourceId?: string | null;
+  /** utils/Trace.ts 发的号（journal 的 seq 列）；快照按它对齐。改版前的旧行、启动合成行没有。 */
+  seq?: number | null;
   vars: Record<string, unknown>;
   /** 泳道图上的道；不给就按 site 认（getNode）。启动轨迹给：一个插件一步。 */
   node?: string;
@@ -57,6 +59,8 @@ export interface TrailRow {
   facts: Record<string, string | number | boolean>;
   /** 这一行算不算出错。 */
   error: boolean;
+  /** utils/Trace.ts 发的号，载荷按它对上这一行；改版前的旧行没有。 */
+  seq?: number;
 }
 
 
@@ -191,6 +195,12 @@ export interface TrailDataFlow {
 
 /** 和这条请求无关、隔一会儿就来一次的事件。journal 收轨迹、tutorial 拍快照都跳过这些。 */
 export const NOISE = new Set(['web-api/status', 'trace', 'ready']);
+
+/**
+ * 只记账、什么都不改的插件：journal 画轨迹、tutorial 算载荷时都不算“经过”。
+ * 原来还有 usage：用量服务现在由 model-catalog 的 apply 建，监听算在 model-catalog 名下，名单里不会再出现 usage。
+ */
+export const PASSIVE = new Set(['journal', 'tutorial']);
 
 /** 自带插件里名字和文件夹不一样的（plugins/Index.ts 的别名）：名字 → 文件夹。journal 认道、tutorial/Boot.ts 找插件文件都用它。 */
 export const FOLDERS: Record<string, string> = { 'wechat-kefu': 'wechat' };

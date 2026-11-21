@@ -1140,3 +1140,66 @@ test('配置入口：供应商在 providers 里的模型线路照收，插件正
   const res = await app.inject('/api/voice/status');
   expect(res.json()).toMatchObject({ enabled: false, error: { code: 'voice-disabled' } });
 });
+
+
+/**
+ * 只挂 VoiceReplies 的世界：假的 sessions（会话已做完）；播报时把收到的请求记下来，好看它的来源快照。
+ * @returns ctx、播报收到的请求、按旧路（没有来源快照、target 带语音地址）发一条回话的函数。
+ */
+function legacyReplyWorld() {
+  const ctx = new cordis.Context();
+  cleanups.push(() => ctx.fiber.dispose());
+  ctx.provide('sessions', { open: () => ({ row: { state: 'done' } }) });
+  const played: channel.ChannelReplyRequest[] = [];
+  const play = async (_text: string, request: channel.ChannelReplyRequest): Promise<boolean> => {
+    played.push(request);
+    return true;
+  };
+  new replyModule.VoiceReplies(ctx, play);
+  const sendLegacy = (messageId: string): Promise<channel.ReplyReceipt> => {
+    const replyRoundKey = channel.getReplyRoundKey(messageId, '默认机器人', 'legacy');
+    const replyRequestKey = channel.getReplyRequestKey(replyRoundKey, 'call-1');
+    const address = { customer: 'voice:dev-1', owner: true, voiceMessageId: messageId, chatId: 'dev-1' };
+    const target = { channel: 'voice', chat: '', address };
+    const from = { bot: '默认机器人', replyRoundKey, target, sessionId: 'session-1' };
+    const options = { replyRequestKey, replyIndex: 0, kind: 'final' as const, atFiles: true };
+    return channel.requestTextReply(ctx, from, '整理好了', options);
+  };
+  return { ctx, played, sendLegacy };
+}
+
+
+test('旧路回话：来源快照照原消息拷（getSourceSnapshot），地址带上会话号', async () => {
+  const world = legacyReplyWorld();
+  //M 语音发过一句：channel/direct 带来原消息（和 Tasks.getMessage 拼的同一个样子）。
+  const address = { customer: 'voice:dev-1', owner: true, voiceMessageId: 'voice-msg-1', chatId: 'dev-1' };
+  const message = {
+    v: 1, messageId: 'voice-msg-1', nativeId: 'task-7', channel: 'voice', accountId: 'local', chatId: 'dev-1',
+    chatType: 'local', sender: { id: 'owner', name: '语音' }, role: 'owner', targetBots: ['默认机器人'],
+    mentions: [], rawText: '帮我整理', text: '帮我整理', attachments: [], createdAt: 1, receivedAt: 1,
+    timeSource: 'received', replyTo: null, origin: { channel: 'voice', address },
+    visibility: { scope: 'voice:dev-1', trusted: true, publicSourceIds: [] }, routing: { autoFinal: false },
+  } as unknown as channel.ChannelMessage;
+  world.ctx.emit('channel/direct', message);
+
+  const receipt = await world.sendLegacy('voice-msg-1');
+  expect(receipt).toMatchObject({ ok: true });
+  expect(world.played).toHaveLength(1);
+  const snapshot = world.played[0]?.sourceSnapshot;
+  //M 快照的字段来自原消息：nativeId 是任务号（原来手拼时写死 null），聊天和发送人照原样。
+  expect(snapshot).toMatchObject({
+    messageId: 'voice-msg-1', nativeId: 'task-7', channel: 'voice', chatId: 'dev-1', senderId: 'owner',
+    senderName: '语音', role: 'owner', targetBots: ['默认机器人'], botName: '默认机器人',
+  });
+  expect(snapshot?.origin.address).toMatchObject({ voiceMessageId: 'voice-msg-1', voiceSessionId: 'session-1' });
+});
+
+
+test('旧路回话找不到原消息（重启过或太早）：拒收并写明原因，不播报', async () => {
+  const world = legacyReplyWorld();
+  const receipt = await world.sendLegacy('never-seen');
+  expect(receipt).toMatchObject({ ok: false });
+  expect(JSON.stringify(receipt)).toContain('语音原消息已不在内存里');
+  expect(world.played).toHaveLength(0);
+});
+

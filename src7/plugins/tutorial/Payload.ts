@@ -9,9 +9,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as filesModule from '../../utils/Files.ts';
+import * as utils from '../../utils/index.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as traceUtils from '../../utils/Trace.ts';
-import type { Trail, TrailStep } from '../../utils/Trail.ts';
+import { PASSIVE } from '../../utils/Trail.ts';
+import type { Trail } from '../../utils/Trail.ts';
 import type * as filesPluginModule from './Files.ts';
 import * as walkModule from './Walk.ts';
 
@@ -30,8 +32,10 @@ export interface PayloadItem {
   seq: number;
   /** 发出时刻，毫秒。 */
   at: number;
-  /** 对应 trail.steps[].no：后端按 at 落进哪一步的时间窗来算。 */
+  /** 对应 trail.steps[].no：按 traceSeq 对上轨迹那一行所在的步；对不上是 0。 */
   step: number;
+  /** utils/Trace.ts 发的号，和 journal 那一行的 seq 是同一个；改版前录的旧载荷没有。 */
+  traceSeq?: number;
   /** 事件名，如 session/before-model。 */
   event: string;
   /** 参数对象的类型名，按事件名查表，如 ChatRequest。 */
@@ -134,9 +138,6 @@ const EVENT_OBJECT_NAMES: Record<string, string> = {
   'web-api/replied': 'WebApiReplied',
 };
 
-/** 只记账不改数据的观察者插件名，不在监听者名单里单列。 */
-const PASSIVE_LISTENERS = new Set(['', 'journal', 'tutorial', 'usage']);
-
 /** 两个模型关口：顶层数组按引用比，只深拷变了的那几条（云端 31 第 3 条）。 */
 const MODEL_GATE_EVENTS = new Set(['session/before-model', 'session/after-model']);
 
@@ -145,9 +146,6 @@ const GATE_ARRAY_KEYS: readonly string[] = ['system', 'tools', 'messages'];
 
 /** 磁盘上的消息载荷文件名：<消息号>.payload.json。 */
 const PAYLOAD_FILE = /^(\d+)\.payload\.json$/u;
-
-/** 与 journal 事件行核对时间戳允许的误差毫秒。 */
-const ROW_MATCH_MS = 200;
 
 /** 尚未绑定收件号但刚收到 web-api/received 的短时间配对窗口，毫秒。 */
 const PENDING_RECEIVE_MS = 10_000;
@@ -211,7 +209,7 @@ interface RefChanges {
  * @returns 数组键 → 这一刻的浅拷；不是数组的键不留。
  */
 function takeGateRefs(target: unknown): Record<string, unknown[]> {
-  const record = asRecord(target);
+  const record = utils.getOptionalRecord(target);
   const refs: Record<string, unknown[]> = {};
   for (const key of GATE_ARRAY_KEYS) {
     const list = record?.[key];
@@ -308,7 +306,7 @@ function getRefChanges(older: unknown[], newer: unknown[]): RefChanges {
  * @param value before 或 after 的拷贝。
  */
 function omitGateKeys(value: unknown): unknown {
-  const record = asRecord(value);
+  const record = utils.getOptionalRecord(value);
   if (record === undefined) return value;
 
   const rest: Record<string, unknown> = {};
@@ -328,14 +326,14 @@ function omitGateKeys(value: unknown): unknown {
  * @returns 新的 before，不改原来那份（教程页现拍时还要用原来的）。
  */
 function mergeGateFrame(before: unknown, extra: unknown): unknown {
-  const base = asRecord(before);
-  const more = asRecord(extra);
+  const base = utils.getOptionalRecord(before);
+  const more = utils.getOptionalRecord(extra);
   if (base === undefined || more === undefined) return before;
 
   const merged: Record<string, unknown> = { ...base };
   for (const key of GATE_ARRAY_KEYS) {
-    const baseList = asRecord(base[key]);
-    const moreList = asRecord(more[key]);
+    const baseList = utils.getOptionalRecord(base[key]);
+    const moreList = utils.getOptionalRecord(more[key]);
     if (baseList === undefined || moreList === undefined) continue;
 
     merged[key] = { ...baseList, ...moreList };
@@ -370,7 +368,8 @@ function addRefDiff(
       walkModule.collectChanges(beforeList?.[slot], newer, itemPath, out);
       continue;
     }
-    out.push({ path: itemPath, kind: 'add', after: walkModule.formatPreview(newer) });
+    const after = traceUtils.formatTraceValue(newer, walkModule.PREVIEW_CHARS);
+    out.push({ path: itemPath, kind: 'add', after });
   }
 
   //M 删掉、换掉的：上面已经当“改了”比过的跳过。
@@ -379,7 +378,8 @@ function addRefDiff(
     if (changes.paired.has(index)) continue;
 
     const slot = String(index);
-    out.push({ path: `${key}[${slot}]`, kind: 'remove', before: walkModule.formatPreview(beforeList?.[slot]) });
+    const before = traceUtils.formatTraceValue(beforeList?.[slot], walkModule.PREVIEW_CHARS);
+    out.push({ path: `${key}[${slot}]`, kind: 'remove', before });
   }
 }
 
@@ -394,15 +394,15 @@ function computeGateDiff(before: unknown, after: unknown, changes: Record<string
   const small = walkModule.computePayloadDiff(omitGateKeys(before), omitGateKeys(after));
   const diffs = small.filter((row) => row.kind !== 'same');
   const sames = small.filter((row) => row.kind === 'same');
-  const beforeRec = asRecord(before);
-  const afterRec = asRecord(after);
+  const beforeRec = utils.getOptionalRecord(before);
+  const afterRec = utils.getOptionalRecord(after);
 
   for (const key of GATE_ARRAY_KEYS) {
     const found = changes[key];
     if (found === undefined) continue;
 
-    const beforeList = asRecord(beforeRec?.[key]);
-    const afterList = asRecord(afterRec?.[key]);
+    const beforeList = utils.getOptionalRecord(beforeRec?.[key]);
+    const afterList = utils.getOptionalRecord(afterRec?.[key]);
     addRefDiff(key, found, beforeList, afterList, diffs);
 
     //M 一条没变的数组也标 same：读的人知道它原样透传。
@@ -435,7 +435,7 @@ function cloneBefore(
   }
 
   //M 模型关口：顶层数组只记条数，浅拷留着补拷时逐条比。
-  const record = asRecord(target) ?? {};
+  const record = utils.getOptionalRecord(target) ?? {};
   const refs = takeGateRefs(target);
   const shaped = shapeGateFrame(record, refs, undefined);
   const cloned = clonePayload(shaped, maxBytes);
@@ -458,7 +458,7 @@ function cloneGateAfter(
   target: unknown,
   maxBytes: number,
 ): AfterCopy {
-  const record = asRecord(target) ?? {};
+  const record = utils.getOptionalRecord(target) ?? {};
   const newer = takeGateRefs(target);
 
   //M 1. 逐个顶层数组按引用比：哪几条是新加、换上的，哪几条是删掉、换掉的。
@@ -496,81 +496,42 @@ function cloneGateAfter(
 
 
 //==========================================================
-//M 按轨迹步骤时间窗与事件行核对 step 与 site
+//M 按 utils/Trace.ts 发的号对上轨迹的事件行，取 step 与 site
 //==========================================================
 
 /**
- * 按时刻落进哪一步的时间窗算出 step 编号（1..N）。
- * @param at 事件发出时刻（毫秒）。
- * @param start 轨迹起点时刻（trail.at）。
- * @param steps 轨迹步骤数组。
- */
-function findStepByWindow(at: number, start: number, steps: TrailStep[]): number {
-  const first = steps[0];
-  if (first === undefined) return 0;
-  if (at <= start + first.t) return first.no;
-
-  //M 先找严格落在 [stepStart, stepEnd] 时间窗里的步骤。
-  for (const step of steps) {
-    const stepStart = start + step.t;
-    const stepEnd = stepStart + Math.max(step.ms, 0);
-    if (at >= stepStart && at <= stepEnd) return step.no;
-  }
-
-  //M 落在步间空隙或收尾稍后时，归入已开始但最接近的那一步。
-  let chosen = first.no;
-  for (const step of steps) {
-    if (start + step.t <= at) {
-      chosen = step.no;
-    }
-  }
-  return chosen;
-}
-
-
-/**
- * 将录到的 PayloadItem 列表对齐到 journal 轨迹的步骤号与事件行源码位置。
+ * 将录到的 PayloadItem 列表对齐到 journal 轨迹的步骤号与事件行源码位置：按 utils/Trace.ts 发的号取，不对时刻。
  * @param items 原始载荷列表。
  * @param trail 对应消息的轨迹；未挂 journal 或查不到时为 undefined。
+ * @returns 对上的带步号和 journal 记的 site；改版前没有号的旧载荷、旧轨迹原样交回（step 照旧），不再猜。
  */
 export function assignTrailSteps(items: PayloadItem[], trail: Trail | undefined): PayloadItem[] {
   if (trail === undefined || trail.steps.length === 0) return items;
 
-  //M 展平轨迹里所有事件行，按顺序优先精确配对同名且时刻接近的行以复用 journal 的 site 和步号。
-  const eventRows: { stepNo: number; name: string; at: number; site: string; used: boolean }[] = [];
+  //M 轨迹里带号的事件行按号建表：号 → 步号和 journal 记的位置。
+  const bySeq = new Map<number, { stepNo: number; site: string }>();
   for (const step of trail.steps) {
     for (const row of step.rows) {
       if (row.kind !== '事件') continue;
+      if (row.seq === undefined) continue;
 
-      eventRows.push({
-        stepNo: step.no,
-        name: row.name,
-        at: trail.at + row.t,
-        site: row.site,
-        used: false,
-      });
+      bySeq.set(row.seq, { stepNo: step.no, site: row.site });
     }
   }
 
-  let cursor = 0;
   return items.map((item) => {
-    for (let idx = cursor; idx < eventRows.length; idx += 1) {
-      const row = eventRows[idx];
-      if (row === undefined || row.used) continue;
-      if (row.name !== item.event) continue;
-      if (Math.abs(row.at - item.at) > ROW_MATCH_MS) continue;
+    //G 没有号的旧载荷、号不在这条轨迹里的：原样交回。
+    if (item.traceSeq === undefined) return item;
 
-      row.used = true;
-      cursor = idx + 1;
-      let site = item.site;
-      if (row.site !== '' && row.site !== '位置不明') {
-        site = row.site;
-      }
-      return { ...item, step: row.stepNo, site };
+    const row = bySeq.get(item.traceSeq);
+    if (row === undefined) return item;
+
+    //M 对上了：步号取轨迹的；journal 记下了位置就用它。
+    let site = item.site;
+    if (row.site !== '' && row.site !== '位置不明') {
+      site = row.site;
     }
-
-    const fallbackStep = findStepByWindow(item.at, trail.at, trail.steps);
-    return { ...item, step: fallbackStep };
+    return { ...item, step: row.stepNo, site };
   });
 }
 
@@ -622,30 +583,6 @@ interface PayloadBucket {
   updatedAt: number;
   /** 是否已有挂起中的写盘定时器（合并同一轮收尾连续触发的多次写盘请求）。 */
   writeScheduled: boolean;
-}
-
-
-/**
- * 将未知值安全窄化为非空、非数组的普通键值对象；不满足时返回 undefined。
- * @param value 待判断值。
- */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-
-  return value as Record<string, unknown>;
-}
-
-
-/**
- * 从普通对象安全取出数字形式的正整数消息号。
- * @param record 待读取对象。
- * @param key 字段名。
- */
-function readPositiveInt(record: Record<string, unknown> | undefined, key: string): number | undefined {
-  const raw = record?.[key];
-  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0) return raw;
-
-  return undefined;
 }
 
 
@@ -740,7 +677,7 @@ export class PayloadRecorder {
     traceUtils.onTrace(this.ctx, 'tutorial.payload', (where, _text, _code, vars) => {
       if (where !== 'Timeline.insert' && where !== 'Timeline.bindSession') return;
 
-      const msgId = readPositiveInt(vars, 'messageId');
+      const msgId = traceUtils.getPositiveInt(vars, 'messageId');
       if (msgId === undefined) return;
 
       const srcId = traceUtils.getSourceId(vars['sourceId']);
@@ -794,7 +731,7 @@ export class PayloadRecorder {
   /**
    * 按消息号读取整条消息的载荷（优先读内存最新状态，其次读磁盘 .payload.json），并按轨迹对齐 step 与 site。
    * @param name 消息号字符串（调用方已排除 boot 并校验过纯数字）。
-   * @param trail 对应消息的轨迹（用于计算 step 时间窗）。
+   * @param trail 对应消息的轨迹（按号对齐 step）。
    */
   async getPayload(name: string, trail: Trail | undefined): Promise<PayloadTrail> {
     const messageId = Number.parseInt(name, 10);
@@ -853,8 +790,8 @@ export class PayloadRecorder {
    * @param payload Timeline.insert 发出的收件行摘要。
    */
   private onWebReceived(payload: unknown): void {
-    const rec = asRecord(payload);
-    const id = readPositiveInt(rec, 'id');
+    const rec = utils.getOptionalRecord(payload);
+    const id = traceUtils.getPositiveInt(rec, 'id');
     if (id === undefined) return;
 
     let bot = '';
@@ -943,11 +880,13 @@ export class PayloadRecorder {
       bucket.note = this.formatCapNote();
     }
 
-    const listeners = line.listeners.filter((plugin) => !PASSIVE_LISTENERS.has(plugin));
+    //M 只记账的插件（utils/Trail.ts 的 PASSIVE）和没名字的监听不算“经过”。
+    const listeners = line.listeners.filter((plugin) => !PASSIVE.has(plugin) && plugin !== '');
     const objectName = EVENT_OBJECT_NAMES[event] ?? 'Object';
     const site = line.site;
     const item: PayloadItem = {
       seq: bucket.entries.length + 1,
+      traceSeq: line.seq,
       at: Date.now(),
       step: 0,
       event,
@@ -1221,12 +1160,12 @@ export class PayloadRecorder {
   private detectEventKeyword(event: string, args: unknown[], sessionId: string | undefined): boolean {
     if (sessionId !== undefined && this.markedSessions.has(sessionId)) return true;
 
-    const first = asRecord(args[0]);
+    const first = utils.getOptionalRecord(args[0]);
     if (CHANNEL_INBOUND_EVENTS.has(event)) {
       return this.hasKeyword(first?.['rawText']) || this.hasKeyword(first?.['text']);
     }
     if (event === 'bot/receive') {
-      const msg = asRecord(first?.['message']);
+      const msg = utils.getOptionalRecord(first?.['message']);
       return this.hasKeyword(msg?.['text']);
     }
     return false;

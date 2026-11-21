@@ -14,6 +14,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as requestEvents from '../../utils/RequestEvent.ts';
+import * as traceUtils from '../../utils/Trace.ts';
 import * as snapshotModule from './Snapshot.ts';
 import * as tutorialModule from './index.ts';
 import type { TrailLine } from '../../utils/Trail.ts';
@@ -234,6 +235,33 @@ function getMissing(body: string, skip: string[] = []): string[] {
   return RAW.filter((raw) => !skip.includes(raw) && !body.includes(JSON.stringify(raw).slice(1, -1)));
 }
 
+/**
+ * 在 handlers 链最后挂一个旁听者，记下 utils/Trace.ts 最近一次派发、跟踪点发的号：手拼的流水行带上它才对得上快照。
+ * 前面的旁听者（拍快照）已经拼好事件行，这里拿的是同一份，同一个号。
+ * @param handlers serve 交回的监听表。
+ * @returns 取最近一个号。
+ */
+function watchSeq(handlers: Record<string, (...args: unknown[]) => void>): () => number {
+  let last = 0;
+  const chain = {
+    on: (name: string, handler: (...args: unknown[]) => void) => {
+      const before = handlers[name];
+      handlers[name] = (...args: unknown[]) => {
+        before?.(...args);
+        handler(...args);
+      };
+    },
+  } as unknown as cordis.Context;
+  traceUtils.onDispatch(chain, 'test.seq', (line) => {
+    last = line.seq;
+  });
+  traceUtils.onTrace(chain, 'test.seq', (_where, _text, _code, _vars, seq) => {
+    last = seq;
+  });
+  return () => last;
+}
+
+
 /** 只在插件登记的那组里有的原值。 */
 const REGISTERED_ONLY = ['REG-TOKEN', '登记来的私密话'];
 
@@ -354,18 +382,21 @@ describe('运行时变量', () => {
   test('快照：带 #调试 的消息拍了、关键词被去掉；不带的没拍；点中一步交回那一刻的、标出比上一步变了的；启动的也有', async () => {
     const lines: TrailLine[] = [];
     const { app, handlers } = await serve(getJournal(lines));
+    const lastSeq = watchSeq(handlers);
+    //M 流水行的时刻故意比快照早 5 秒（模拟写库慢、两边时刻差很远）：按号对齐，照样对得上。
+    const skewed = Date.now() - 5000;
 
     //M 消息 7 带关键词，照真实的先后：web-api 收下（发 web-api/received，认出关键词、拍一份），journal 记一行；
     //M   机器人收到（bot/receive，排最前、去掉关键词），管分派的插件填上会话；会话状态变了，再来一个跟踪点（认出会话、拍一份）。
     handlers['internal/dispatch']?.('emit', 'web-api/received', [{ id: 7, text: '你好 #调试' }]);
-    lines.push({ id: 1, at: Date.now(), kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: 7, vars: {} });
+    lines.push({ id: 1, at: skewed, kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: 7, seq: lastSeq(), vars: {} });
     const receive: { message: { text: string }; session?: { id: string } } = { message: { text: '你好 #调试' } };
     handlers['bot/receive']?.(receive);
     expect(receive.message.text).toBe('你好');
     receive.session = { id: session.id };
     session.row.state = 'done';
     handlers['trace']?.('Bots.receive', '交给会话', '', { 会话: session.id });
-    lines.push({ id: 2, at: Date.now(), kind: '函数', name: 'Bots.receive', listeners: [], text: '交给会话', site: 'src7/plugins/bots/index.ts:5', sessionId: session.id, messageId: null, vars: { 会话: session.id } });
+    lines.push({ id: 2, at: skewed + 1, kind: '函数', name: 'Bots.receive', listeners: [], text: '交给会话', site: 'src7/plugins/bots/index.ts:5', sessionId: session.id, messageId: null, seq: lastSeq(), vars: { 会话: session.id } });
 
     //M 消息 8 不带关键词：一份都不拍，接口说没有快照。
     handlers['internal/dispatch']?.('emit', 'web-api/received', [{ id: 8, text: '普通的话' }]);
@@ -436,15 +467,16 @@ describe('运行时变量', () => {
 
     const lines: TrailLine[] = [];
     const { app, handlers } = await serve(getJournal(lines), { snapshot_files: 2 });
+    const lastSeq = watchSeq(handlers);
 
     //M 三条带关键词的消息：收下、回话写回（web-api/replied 照真实的样子带着会话对象）就停拍，后台写文件。
     for (const id of [21, 22, 23]) {
       handlers['internal/dispatch']?.('emit', 'web-api/received', [{ id, text: '查一下 #调试' }]);
-      const receivedLine = { id: lines.length + 1, at: Date.now(), kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: id, vars: {} };
+      const receivedLine = { id: lines.length + 1, at: Date.now(), kind: '事件', name: 'web-api/received', listeners: [], text: '', site: 'src7/plugins/web-api/index.ts:10', sessionId: null, messageId: id, seq: lastSeq(), vars: {} };
       lines.push(receivedLine);
 
       handlers['internal/dispatch']?.('emit', 'web-api/replied', [{ messageId: id, session, text: '好' }]);
-      const repliedLine = { id: lines.length + 1, at: Date.now(), kind: '事件', name: 'web-api/replied', listeners: [], text: '', site: 'src7/plugins/web-api/Timeline.ts:305', sessionId: session.id, messageId: id, vars: {} };
+      const repliedLine = { id: lines.length + 1, at: Date.now(), kind: '事件', name: 'web-api/replied', listeners: [], text: '', site: 'src7/plugins/web-api/Timeline.ts:305', sessionId: session.id, messageId: id, seq: lastSeq(), vars: {} };
       lines.push(repliedLine);
 
       await Bun.sleep(60);

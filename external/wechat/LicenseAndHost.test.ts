@@ -270,6 +270,32 @@ function validTokenPayload(
 }
 
 
+test('发行版拒绝换验签公钥：--license-pubkey 和 JMBOTS_WECHAT_PUBKEY 都报错，源码跑照常可换', () => {
+  const dir = makeTempDir();
+  const fakeKey = '00'.repeat(32);
+  const keyArgs = ['--data', dir, '--license-pubkey', fakeKey];
+
+  //M 发行版：命令行传、环境变量传，都要明确报错。
+  expect(() => mainModule.parseCliOptions(keyArgs, {}, true)).toThrow('发行版不接受');
+  const envWithKey = { JMBOTS_WECHAT_PUBKEY: fakeKey };
+  expect(() => mainModule.parseCliOptions(['--data', dir], envWithKey, true)).toThrow('发行版不接受');
+
+  //M 发行版不带换公钥参数：照常启动，用内置公钥。
+  const releaseOpt = mainModule.parseCliOptions(['--data', dir], {}, true);
+  expect(releaseOpt.mode).toBe('serve');
+  if (releaseOpt.mode === 'serve') {
+    expect(releaseOpt.licensePubkey).toBeUndefined();
+  }
+
+  //M 源码跑（默认 release=false）：换公钥照常生效，冒烟和单测靠它自签授权。
+  const devOpt = mainModule.parseCliOptions(keyArgs, {});
+  expect(devOpt.mode).toBe('serve');
+  if (devOpt.mode === 'serve') {
+    expect(devOpt.licensePubkey).toBe(fakeKey);
+  }
+});
+
+
 test('Host 监听参数：默认绑定 127.0.0.1 免防火墙弹窗，显式传 --host 可切换至 0.0.0.0 或指定网卡 IP', async () => {
   const dir = makeTempDir();
   const dummyPage = path.join(dir, 'page.html');

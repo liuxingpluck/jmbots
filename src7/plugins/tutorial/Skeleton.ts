@@ -288,28 +288,43 @@ export async function getSkeletonFunctions(name: string, source: sourceModule.So
   if (!spec.includeUtils) return items;
 
   //M main 一并汇总骨架 utils/ 下各工具模块顶层导出的函数与类。
+  const utilSymbols = await getUtilSymbols(source);
+  for (const sym of utilSymbols) {
+    items.push({
+      name: sym.name,
+      kind: sym.kind,
+      site: sym.site,
+      summary: sym.summary,
+    });
+  }
+  return items;
+}
+
+
+/**
+ * 骨架 utils/ 下各文件的公开导出：main 的函数表和说明都要并进来。
+ * @param source 共用源码缓存实例。
+ * @returns 每个文件顶层公开的函数、类；读不到的文件跳过。
+ */
+async function getUtilSymbols(source: sourceModule.SourceDocs): Promise<ExtractedSymbol[]> {
+  const symbols: ExtractedSymbol[] = [];
   const allFiles = await source.getSourceFiles();
   for (const file of allFiles) {
     if (!file.startsWith(UTILS)) continue;
 
-    //M 逐个读取 utils 模块，抽出顶层 export function / class 附入清单。
-    const utilLines = await source.read(file);
-    if (utilLines === undefined) continue;
+    //M 读不到就跳过这个文件。
+    const lines = await source.read(file);
+    if (lines === undefined) continue;
 
-    //M 工具模块只扫顶层导出定义，避免把局部辅助函数塞满主表。
-    const utilSymbols = extractFileSymbols(file, utilLines, false);
-    for (const sym of utilSymbols) {
+    //M 只要顶层的公开定义，不把局部辅助函数塞满主表。
+    const found = extractFileSymbols(file, lines, false);
+    for (const sym of found) {
       if (!sym.isPublic) continue;
 
-      items.push({
-        name: sym.name,
-        kind: sym.kind,
-        site: sym.site,
-        summary: sym.summary,
-      });
+      symbols.push(sym);
     }
   }
-  return items;
+  return symbols;
 }
 
 
@@ -602,23 +617,9 @@ export async function getSkeletonReadme(
   //M 提取「对外函数」与「内部函数」符号表（main 同步收入 src7/utils/*.ts 的顶层导出）。
   const allSymbols = extractFileSymbols(spec.file, lines, true);
   if (spec.includeUtils) {
-    //M 对 main 额外扫描 src7/utils/*.ts，把共用导出工具收进「对外函数」分栏。
-    const allFiles = await source.getSourceFiles();
-    for (const file of allFiles) {
-      if (!file.startsWith(UTILS)) continue;
-
-      //M 读取单个工具文件并追加其顶层 export 符号。
-      const utilLines = await source.read(file);
-      if (utilLines === undefined) continue;
-
-      //M 提取工具文件顶层符号并仅保留公开 export 项。
-      const utilSymbols = extractFileSymbols(file, utilLines, false);
-      for (const sym of utilSymbols) {
-        if (sym.isPublic) {
-          allSymbols.push(sym);
-        }
-      }
-    }
+    //M 对 main 额外收入 src7/utils/*.ts 的公开导出，放进「对外函数」分栏。
+    const utilSymbols = await getUtilSymbols(source);
+    allSymbols.push(...utilSymbols);
   }
 
   const publicSyms = allSymbols.filter((sym) => sym.isPublic);

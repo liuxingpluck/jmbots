@@ -24,11 +24,34 @@ export function getField(value: unknown, key: string): unknown {
  */
 export function getRecord(value: unknown): Record<string, unknown> {
   //G 只认非空、非数组的对象。
-  if (typeof value !== 'object') return {};
-  if (value === null) return {};
-  if (Array.isArray(value)) return {};
+  if (!isRecord(value)) return {};
 
-  return value as Record<string, unknown>;
+  return value;
+}
+
+
+/**
+ * 是不是普通的“名字: 值”对象。
+ * @param value 任意值。
+ * @returns null、数组、非对象都是 false。
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object') return false;
+  if (value === null) return false;
+
+  return !Array.isArray(value);
+}
+
+
+/**
+ * 是对象就交回它，不是就交回 undefined；读嵌套字段时接 ?. 用。
+ * @param value 任意值。
+ * @returns 普通对象本身（不复制）；null、数组、非对象是 undefined。
+ */
+export function getOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+
+  return value;
 }
 
 

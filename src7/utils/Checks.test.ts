@@ -70,3 +70,11 @@ test('通用校验与网址整数校验统一抛出带 status=400 的 Failure', 
   expect(checks.checkCount('', 'limit')).toBeUndefined();
   expect(checks.checkCount('42', 'limit')).toBe(42);
 });
+
+
+test('不写 plugins 段时默认挂上 db，排在最前，context-fit 等得到它', () => {
+  const raw = { providers: { mock: { base_url: 'http://127.0.0.1:9' } }, default_model: 'mock/primary' };
+  const config = checks.checkConfig(raw);
+  const names = config.plugins.map((item) => item.name);
+  expect(names).toEqual(['db', 'workspaces', 'bots', 'cli', 'file-tools', 'context-fit']);
+});

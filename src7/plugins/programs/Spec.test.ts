@@ -72,3 +72,28 @@ test('守卫默认阈值按GiB转换、closable默认false，并在入口拒绝�
   const invalid = { programs: [{ name: 'a', file: 'unused', closable: 'yes' }] };
   expect(() => specModule.readPrograms(invalid)).toThrow('closable');
 });
+
+
+test('开关和数统一走 Checks.ts：报错说法一致，写明是哪一项、该写成什么', () => {
+  const program = { name: 'a', file: 'unused' };
+  //M 三个开关交给 checkFlag。
+  const badAuto = { programs: [{ ...program, autostart: 1 }] };
+  expect(() => specModule.readPrograms(badAuto)).toThrow('programs.a.autostart 要写成 true 或 false');
+  const nullClosable = { programs: [{ ...program, closable: null }] };
+  expect(() => specModule.readPrograms(nullClosable)).toThrow('closable');
+  const badHeavy = { programs: [{ ...program, heavy: 'no' }] };
+  expect(() => specModule.readPrograms(badHeavy)).toThrow('heavy 要写成 true 或 false');
+
+  //M 端口、毫秒交给 checkNumber：小数、越界都拒绝。
+  const badPort = { programs: [{ ...program, port: 80.5 }] };
+  expect(() => specModule.readPrograms(badPort)).toThrow('port 要写成不小于 0 且不大于 65535 的整数');
+  const badWait = { programs: [{ ...program, exit_wait_ms: 0 }] };
+  expect(() => specModule.readPrograms(badWait)).toThrow('exit_wait_ms');
+
+  //M 守卫阈值：硬线要大于 0，采样间隔至少 100 毫秒；行为和原来一样。
+  const badMemory = { guard: { memory_gb: 0 } };
+  const memoryText = 'programs.guard.memory_gb 要写成不小于 0.001 且不大于 1000000 的数';
+  expect(() => specModule.readGuard(badMemory)).toThrow(memoryText);
+  expect(() => specModule.readGuard({ guard: { interval_ms: 99 } })).toThrow('programs.guard.interval_ms');
+  expect(specModule.readGuard({ guard: { interval_ms: 100 } }).intervalMs).toBe(100);
+});

@@ -103,6 +103,35 @@ describe('Trace 旁听隔离', () => {
     expect(first[1]?.session).toBe('s_b');
   });
 
+  test('派发和跟踪点都从同一个计数器拿号：同一次共用一个号，先后越来越大（云端 36 号第 2 条）', () => {
+    const ctx = makeContext();
+
+    //M 两个旁听者各自记下派发和跟踪点拿到的号。
+    const dispatched: number[][] = [[], []];
+    const traced: number[][] = [[], []];
+    for (const slot of [0, 1]) {
+      traceUtils.onDispatch(ctx, `d${String(slot)}`, (line) => {
+        dispatched[slot]?.push(line.seq);
+      });
+      traceUtils.onTrace(ctx, `t${String(slot)}`, (_where, _text, _code, _vars, seq) => {
+        traced[slot]?.push(seq);
+      });
+    }
+
+    //M 同名事件 1 毫秒内连发两次，中间夹一个跟踪点。
+    ctx.emit('test/observed', { sessionId: 's_a' });
+    ctx.emit('trace', 'Test.point', '一个跟踪点', 'emit()', {});
+    ctx.emit('test/observed', { sessionId: 's_a' });
+
+    //M 两个旁听者拿到的号一样；两次同名派发的号不同，跟踪点的号夹在中间。
+    expect(dispatched[1]).toEqual(dispatched[0] ?? []);
+    expect(traced[1]).toEqual(traced[0] ?? []);
+    const [firstSeq, secondSeq] = dispatched[0] ?? [];
+    const [traceSeq] = traced[0] ?? [];
+    expect(firstSeq).toBeLessThan(traceSeq ?? 0);
+    expect(traceSeq).toBeLessThan(secondSeq ?? 0);
+  });
+
   test('onTrace 旁听者抛错：发跟踪点后面的业务代码照常往下走', () => {
     const ctx = makeContext();
     const logged = spyOn(console, 'error').mockImplementation(() => undefined);

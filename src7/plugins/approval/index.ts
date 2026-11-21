@@ -55,10 +55,14 @@ export const name = 'approval';
 //M   Outbound 删掉一层层相加的等待常量，只留 programs 发 HTTP 用的两个。
 //M 1.2.17：拼审批卡片的 plainCard、cardLabel、getReviewReason、getCardPaths、reviewCard 搬进 ReviewCard.ts（云端 20 第 3 条）；
 //M   构造函数只做登记，监听干的活挪成方法 onCalled、onBeforeModel、onBeforeTool、getRequestError（第 2 条）。行为不变。
-export const version = '1.2.19';
+//M 1.2.20：配置的 thinking、decision_pass 改调 Checks.ts 的 checkAllowedValue、checkNumber（云端 32 第 5 条）；thinking 写错档启动就报。
+export const version = '1.2.20';
 
 /** 决策模型放行的最低门槛，也是默认值。 */
 export const DECISION_PASS = 0.8;
+
+/** decision_pass 的取值范围：不低于 DECISION_PASS，不超过 1。 */
+const PASS_RULE: checksModule.NumberRule = { min: DECISION_PASS, max: 1 };
 
 /** 问决策模型等这么久还没回就报警（decision 每个模型自己限时，到点回拿不准）。 */
 const DECISION_WARN_MS = 20_000;
@@ -1535,21 +1539,20 @@ export function apply(ctx: cordis.Context, config: unknown): void {
   if (raw['model'] !== undefined) {
     model = checksModule.checkModelRef(raw['model'], 'approval.model', ctx.resources.config.providers);
   }
-  const thinking = raw['thinking'] ?? 'low';
-  if (typeof thinking !== 'string') throw new Error('approval.thinking 要是思考档（off、low、medium、high……）');
+  //G 思考档要是 checks.THINKING 里的一档，写错启动就报，不等到问审核模型时才出错。
+  const thinkingRaw = raw['thinking'] ?? 'low';
+  const thinking = checksModule.checkAllowedValue(thinkingRaw, checksModule.THINKING, 'approval.thinking');
 
   //G 决策模型只放行只读、低风险的命令，门槛至少 0.8（用户 11-14；原来默认 0.2，放行过 rd /s /q System32）。
-  const pass = raw['decision_pass'] ?? DECISION_PASS;
-  if (typeof pass !== 'number' || pass < DECISION_PASS || pass > 1) {
-    throw new Error(`approval.decision_pass 要是 ${String(DECISION_PASS)}～1 的数`);
-  }
+  const passRaw = raw['decision_pass'] ?? DECISION_PASS;
+  const pass = checksModule.checkNumber(passRaw, 'approval.decision_pass', PASS_RULE);
 
   //M 可信目录（用户 11-18 #169）：绝对路径的数组，在 config.yaml 里配，代码不写死；这里规范化一次（解开 ..、Windows 上转小写）。
   const trustedDirs = checksModule.checkDirs(raw['trusted_dirs'], 'approval.trusted_dirs');
 
   const approvalConfig: ApprovalConfig = {
     model,
-    thinking: thinking as Thinking,
+    thinking,
     decisionPass: pass,
     trustedDirs,
   };

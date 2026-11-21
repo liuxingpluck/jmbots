@@ -19,6 +19,7 @@ import * as fallback from './Fallback.ts';
 import * as notesModule from './Notes.ts';
 import * as pull from './Pull.ts';
 import * as usageModule from './Usage.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 export type { ModelInfo } from './Pull.ts';
 export type { ModelNote, Rating } from './Notes.ts';
@@ -31,7 +32,8 @@ export const name = 'model-catalog';
 //M 插件版本号，写成 x.y.z；启动时 plugins/Index.ts 用 Checks.ts 的 checkVersion 查。
 //M 1.2.0：并进 model-notes（Notes.ts，接口路径照旧）；model-catalog/request 加 action: 'prompt'。
 //M 1.3.1：会话打分的校验（checkRating、checkModelId）从骨架 utils/Checks.ts 挪进 model-catalog/Checks.ts，只有 Notes.ts 用。
-export const version = '1.3.10';
+//M 1.3.11：用量记账直接查本插件的模型目录单价，不再发 model-catalog/request 问自己（云端 23 号第 4 条）。
+export const version = '1.3.11';
 
 /** 用到的服务：resources 读 providers 与并发配置、运行时目录；sessions 调模型兜底、打分时查会话。http 是可选的（就绪才挂模型、评价与用量接口）。 */
 export const inject = ['resources', 'sessions'];
@@ -475,8 +477,7 @@ function checkWritten(value: unknown, label: string): pull.WrittenModel {
     result.name = model['name'];
   }
   if (model['vision'] !== undefined) {
-    if (typeof model['vision'] !== 'boolean') throw new Error(`${label}.vision 要写 true 或 false`);
-    result.vision = model['vision'];
+    result.vision = checksModule.checkFlag(model['vision'], `${label}.vision`);
   }
   if (model['price'] !== undefined) {
     const price = model['price'] as Record<string, unknown> | null;
@@ -519,10 +520,7 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
   //M 照骨架校验过的 providers 的先后走（骨架已查过 raw.providers 和 models 都是“名字: 值”）。
   for (const provider of Object.keys(ctx.resources.config.providers)) {
     const item = raw[provider] ?? {};
-    const listModels = item['list_models'] ?? true;
-    if (typeof listModels !== 'boolean') {
-      throw new Error(`providers.${provider}.list_models 要写 true 或 false`);
-    }
+    const listModels = checksModule.checkFlag(item['list_models'] ?? true, `providers.${provider}.list_models`);
     const written: Record<string, pull.WrittenModel> = {};
     //M 逐条校验该供应商 config.yaml 手写的模型属性，生成供合并使用的手写表。
     utils.eachEntry((item['models'] ?? {}) as Record<string, unknown>, (id, value) => {
@@ -546,8 +544,8 @@ export function apply(ctx: cordis.Context, config?: ModelCatalogConfig): void {
   //M 启动 ModelCatalog 服务实例，初始化模型表与定时器；prompt 请求从 notes 读介绍。
   const catalog = new ModelCatalog(ctx, plans, notes);
 
-  //M 模型查询处理器已就绪，再登记用量服务，沿用 usage 服务名与原表结构。
-  const usage = new usageModule.Usage(ctx);
+  //M 模型目录建好后再登记用量服务，算费用直接查目录；沿用 usage 服务名与原表结构。
+  const usage = new usageModule.Usage(ctx, catalog);
 
   //M http 是可选的：统一挂模型管理、模型介绍评价和用量统计接口。
   //M 没有 HTTP 时，纯会话回退、命令行与用量记账仍可启动。

@@ -18,6 +18,7 @@ import * as webAuthModule from './WebAuth.ts';
 import type { PluginStatus } from '../../Resources.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** 插件名。 */
@@ -591,9 +592,9 @@ export function apply(ctx: cordis.Context, pluginConfig?: unknown): void {
   }
   const port = server.port;
   const token = server.token ?? '';
-  if (typeof server !== 'object' || !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) {
-    throw new Error('server.port 要写成 1 到 65535 的整数');
-  }
+  if (typeof server !== 'object') throw new Error('server.port 要写成 1 到 65535 的整数');
+
+  checksModule.checkNumber(port, 'server.port', { integer: true, min: 1, max: 65535 });
   if (typeof token !== 'string') {
     throw new Error('server.token 要写成字符串，没有就写空串');
   }

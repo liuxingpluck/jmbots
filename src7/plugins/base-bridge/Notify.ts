@@ -7,6 +7,7 @@ import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import * as textModule from '../../utils/Text.ts';
 import type { BaseReply } from './index.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** approval/asked 通知携带的最小字段（不从 approval/index.ts 引类型）。 */
@@ -63,8 +64,9 @@ export function readNotifySettings(raw: unknown): NotifySettings {
   if (own.url !== undefined && typeof own.url !== 'string') {
     throw new Error('base-bridge.notify.url 要是字符串');
   }
-  if (own.enabled !== undefined && typeof own.enabled !== 'boolean') {
-    throw new Error('base-bridge.notify.enabled 要是 true 或 false');
+  //G enabled 写了要是 true 或 false。
+  if (own.enabled !== undefined) {
+    checksModule.checkFlag(own.enabled, 'base-bridge.notify.enabled');
   }
   let url = '';
   if (typeof own.url === 'string') {

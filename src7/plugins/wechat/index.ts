@@ -33,6 +33,7 @@ import * as storeModule from './read/Store.ts';
 export { describe } from './read/Store.ts';
 import { Sender } from './send/Sender.ts';
 import { Window } from './send/Window.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** 插件名。 */
@@ -258,8 +259,6 @@ export class Wechat {
       },
     });
 
-    //M 挂上统一渠道的历史查询，让其他工具读取微信已落库的消息。
-
     //M 等 Main 把插件都挂完（事件 ready）才开始定时查，拔掉插件时清定时器、关发送 worker。
     this.ctx.on('ready', () => {
       if (config.intervalMs <= 0) return;
@@ -436,7 +435,8 @@ export class Wechat {
 
       //T 跟踪：微信来了一条要回的，先存表，再经 emitInbound 发出（私聊 channel/direct，群里 @我 channel/mention）。
       const vars = { account: account, chat: row.name, customer: address.customer, length: said.length };
-      this.ctx.emit('trace', 'Wechat.store', 'trace.wechat.receiveMessage', 'protocol.emitInbound(ctx, msg, true, control)', vars);
+      const code = 'protocol.emitInbound(ctx, msg, true, control)';
+      this.ctx.emit('trace', 'Wechat.store', 'trace.wechat.receiveMessage', code, vars);
 
       const channelMessage: protocol.ChannelMessage = {
         v: 1,
@@ -928,10 +928,11 @@ export function checkConfig(ctx: cordis.Context, written: unknown): WechatConfig
 
   //G 未指定时用名单首项，并确认选定机器人确实已登记。
   const bot = own['bot'] ?? botUtils.getDefaultBot(ctx.resources.raw);
-  if (typeof bot !== 'string' || botUtils.getBotConfig(ctx.resources.raw, bot) === undefined) throw new Error('wechat 插件的 bot 要写机器人名单里有的名字');
+  const known = typeof bot === 'string' && botUtils.getBotConfig(ctx.resources.raw, bot) !== undefined;
+  if (!known) throw new Error('wechat 插件的 bot 要写机器人名单里有的名字');
 
-  const intervalMs = own['interval_ms'] ?? 3000;
-  if (!Number.isInteger(intervalMs) || (intervalMs as number) < 0) throw new Error('wechat 插件的 interval_ms 要写成非负整数');
+  const intervalWritten = own['interval_ms'] ?? 3000;
+  const intervalMs = checksModule.checkNumber(intervalWritten, 'wechat.interval_ms', { integer: true, min: 0 });
 
   let rawRoot = 'program/wechat';
   if (typeof own['root'] === 'string') {

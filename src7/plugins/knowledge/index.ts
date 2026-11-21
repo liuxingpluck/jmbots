@@ -25,11 +25,22 @@ export const name = 'knowledge';
 //M 1.0.0：积木知识库三原子 SQLite 存储、磁盘镜像导出、REST API、memory 搜索附查与 kb_search 工具。
 //M 1.0.2：kb_save 写工具（新建、追加、乐观锁替换）；标签改名、合并、删除接口；相关文档推荐接口。
 //M 1.0.3：记忆桥接不再传 requestEvent 的 timeoutMs，改传 AbortSignal.timeout(4 秒)（云端 31 第 2 条）。
+//M 1.0.4：建表只走 db 迁移账本（云端 36 第 1 条）：db 成了必需依赖，KnowledgeStore 不再自己建表；
+//M   第 2 版按语句拆开补齐第 1 版只执行了第一句的那几张表。
 /** 插件版本号。 */
-export const version = '1.0.3';
+export const version = '1.0.4';
 
-/** 依赖资源主库、主 HTTP 服务与模型工具注册表。 */
-export const inject = ['resources', 'http', 'tools'];
+/** 依赖资源主库、主 HTTP 服务、模型工具注册表，以及建表用的 db 迁移账本。 */
+export const inject = ['resources', 'http', 'tools', 'db'];
+
+/** 知识库在 db 迁移账本里的版本。 */
+export const knowledgeMigrations = {
+  plugin: name,
+  migrations: [
+    { version: 1, sql: storeModule.SCHEMA_SQL },
+    { version: 2, sql: storeModule.SCHEMA_SPLIT_SQL },
+  ],
+};
 
 
 /** 解析可选插件配置。 */
@@ -58,6 +69,9 @@ function parseKnowledgeConfig(
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   const settings = parseKnowledgeConfig(ctx.resources.root, config);
+
+  //M 建表交给 db 的迁移账本：旧库里表已经在，账本只登记；新库照两版建齐。
+  ctx.db.migrate(knowledgeMigrations);
   const mirror = new mirrorModule.DiskMirror(settings.mirrorDir);
   const store = new storeModule.KnowledgeStore(ctx.resources.db, mirror);
   routesModule.mountKnowledgeRoutes(ctx, store);

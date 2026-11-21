@@ -50,10 +50,11 @@ export const name = 'memory';
 //M 1.11.4：前台往来检索与原文读取从 Search.ts 并入 FrontArchive.ts，bot_log 旧表双读补退场条件注释（云端 20 第 3 条、云端 18 第 4 条）。
 //M 1.11.5：外人能不能查渠道消息收成 MemoryKey.canQueryChannel，召回、旧 memory 工具、统一检索同一口径；
 //M   getMemoryAccess 两种来源只取输入、规则合一份；额度报错文案引用常量（第 13 块体检第 5、7、8 条）。
-export const version = '1.11.5';
+//M 1.11.6：db 改成必需依赖（云端 36 第 1 条）：渠道索引的表只走 ctx.db 的迁移账本，不再按 db 挂没挂分两条路。
+export const version = '1.11.6';
 
-/** 用到的服务：resources 拿目录和配置；tools 登记工具；bots 找机器人的记忆目录和语言。 */
-export const inject = ['resources', 'tools'];
+/** 用到的服务：resources 拿目录和配置；tools 登记工具；db 管渠道索引的表结构版本。 */
+export const inject = ['resources', 'tools', 'db'];
 
 
 declare module '../../Sessions.ts' {
@@ -800,8 +801,8 @@ export function apply(ctx: cordis.Context, config?: Record<string, unknown>): vo
   //M 给统一检索和渠道监听共用的索引；channel_index 不写是开。
   const channelIndexOn = channelIndexModule.readEnabled(own['channel_index']);
   const db = ctx.resources.db;
-  //M db 已挂就复用它的服务，旧插件顺序也在同一主库按迁移账本升级。
-  const migrations = ctx.get('db');
+  //M 渠道索引的表交给 db 的迁移账本（db 是必需依赖，Cordis 等它挂好才调 apply）。
+  const migrations = ctx.db;
   const archiveIndex = new channelIndexModule.ChannelIndex(db, migrations);
   const frontArchive = new frontArchiveModule.FrontArchive(db, archiveIndex);
   let channelIndex: channelIndexModule.ChannelIndex | undefined;

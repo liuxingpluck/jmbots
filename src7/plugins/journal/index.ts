@@ -22,6 +22,7 @@ import { FilesMirror } from './FilesMirror.ts';
 import * as markdown from './Markdown.ts';
 import initialSql from './migrations/0000_journal_lines.sql' with { type: 'text' };
 import sourceIdSql from './migrations/0001_journal_source_id.sql' with { type: 'text' };
+import seqSql from './migrations/0002_journal_seq.sql' with { type: 'text' };
 import * as traceModule from './Trace.ts';
 import * as trailModule from './Trail.ts';
 
@@ -43,7 +44,8 @@ export const name = 'journal';
 //M 1.3.4：journal_lines 建表与 source_id 补列交 db 插件迁移账本管理（adoptColumn 接管已有列），删手写查表与 ALTER。
 //M 1.3.5：FilesMirror 的 written 最多记 2000 场（挤掉最早的，下次照库重写）；trail 请求只 pick 一遍（Trail.getPickedTrail）。
 //M 1.3.6：Trail.ts 放宽 FACT_KEYS 暴露飞书入口、说话人、上下文裁剪、审批结论与记忆召回关键数值，People.resolve 的 role 映射为 speakerRole。
-export const version = '1.3.7';
+//M 1.3.9：journal_lines 加 seq 列（迁移第 3 版）：utils/Trace.ts 源头发的号，快照、载荷按它对齐，不再对时刻（云端 36 号第 2 条）。
+export const version = '1.3.9';
 
 /** 用到的服务：resources 拿数据库、运行时目录，db 按版本迁移流水表。http 是可选的，有就开接口（见 apply）。 */
 export const inject = ['resources', 'db'];
@@ -57,6 +59,11 @@ const journalMigrations: dbModule.MigrationPlan = {
       version: 2,
       sql: sourceIdSql,
       adoptColumn: { table: 'journal_lines', name: 'source_id' },
+    },
+    {
+      version: 3,
+      sql: seqSql,
+      adoptColumn: { table: 'journal_lines', name: 'seq' },
     },
   ],
 };
@@ -176,6 +183,8 @@ export interface JournalEvent {
   messageId: number | null;
   /** 标准消息号：渠道发来的 JSON.stringify([渠道, 账号, 平台原消息号])；没带的行是 null。查库交出的行一定有这项，测试里手拼的行可以省。 */
   sourceId?: string | null;
+  /** utils/Trace.ts 发的号：同一次派发、同一个跟踪点，快照和载荷拿到同一个号，按它对齐。改版前的旧行是 null。 */
+  seq?: number | null;
   /** 截短过的关键变量。 */
   vars: Record<string, unknown>;
 }
@@ -227,7 +236,7 @@ class Journal {
    */
   private listen(): void {
     const ctx = this.ctx;
-    traceUtils.onTrace(ctx, 'journal', (where, text, code, vars) => {
+    traceUtils.onTrace(ctx, 'journal', (where, text, code, vars, seq) => {
       const session = vars['session'] ?? vars['会话'];
       const bot = vars['bot'] ?? vars['机器人'];
       let botValue: string | null = null;
@@ -253,7 +262,7 @@ class Journal {
       this.record({
         kind: '函数', name: where, mode: '', listeners: [], text, code,
         site: traceUtils.getCallSite(['plugins/journal/']),
-        bot: botValue, sessionId: sessionValue, messageId: messageIdValue, sourceId, vars,
+        bot: botValue, sessionId: sessionValue, messageId: messageIdValue, sourceId, vars, seq,
       });
     });
 
@@ -276,6 +285,7 @@ class Journal {
         messageId: line.messageId ?? null,
         sourceId: line.sourceId ?? null,
         vars: line.vars,
+        seq: line.seq,
       });
     });
 
@@ -308,8 +318,8 @@ class Journal {
   private record(line: Omit<JournalEvent, 'id' | 'at'>): void {
     const now = Date.now();
     const sql = 'INSERT INTO journal_lines'
-      + ' (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, source_id, vars)'
-      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      + ' (at, kind, name, mode, listeners, text, code, site, bot, session_id, message_id, source_id, vars, seq)'
+      + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
     //M 把跟踪行连同截短后的内容和变量写入数据库，供轨迹查询。
     const listeners = JSON.stringify(line.listeners);
     const text = cut.clipTextWithLength(line.text, TEXT_MAX_CHARS);
@@ -317,7 +327,7 @@ class Journal {
     this.ctx.resources.db.query(sql).run(
       now, line.kind, line.name, line.mode, listeners, text,
       code, line.site, line.bot, line.sessionId, line.messageId,
-      line.sourceId ?? null, shrink(line.vars));
+      line.sourceId ?? null, shrink(line.vars), line.seq ?? null);
 
     //G 一天之内删过了 → 不再删。
     if (now - this.prunedAt < DAY_MS) return;
@@ -458,6 +468,7 @@ interface Row {
   session_id: string | null;
   message_id: number | null;
   source_id: string | null;
+  seq: number | null;
   vars: string;
 }
 

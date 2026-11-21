@@ -15,6 +15,7 @@ import * as toolsServiceModule from '../../Tools.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as dbModule from '../db/index.ts';
 import * as knowledgePlugin from './index.ts';
 
 
@@ -53,7 +54,10 @@ async function createKnowledgeHarness() {
   });
 
   let verified = true;
+  //M 和正式 db 插件一样的迁移服务，包同一个连接：知识库建表只走它的账本。
+  const migrations = new dbModule.Db(new cordis.Context(), db);
   Object.assign(ctx, {
+    db: migrations,
     resources: { root: rootDir, db },
     http: {
       app,
@@ -735,3 +739,51 @@ describe('knowledge 1.0.2：kb_save 写工具、标签治理与相关文档推�
     }
   });
 });
+
+
+describe('建表走 db 迁移账本（云端 36 第 1 条）', () => {
+  const TABLES = "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'kb_%' ORDER BY name";
+  const LEDGER = "SELECT version FROM db_migrations WHERE plugin = 'knowledge' ORDER BY version";
+
+  test('新库：两版迁移建齐四张表，账本记两版；重启只核对摘要', async () => {
+    const h = await createKnowledgeHarness();
+    try {
+      const names = h.db.query<{ name: string }, []>(TABLES).all().map((row) => row.name);
+      expect(names).toEqual(['kb_dirs', 'kb_doc_tags', 'kb_docs', 'kb_tags']);
+      expect(h.db.query<{ version: number }, []>(LEDGER).all()).toEqual([{ version: 1 }, { version: 2 }]);
+
+      //M 第 2 版把整串语句按分隔符拆开，第 1 版原样不动（老库账本的哈希要对得上）。
+      expect(knowledgePlugin.knowledgeMigrations.migrations[0]?.sql).toBe(knowledgePlugin.SCHEMA_SQL);
+      const parts = knowledgePlugin.knowledgeMigrations.migrations[1]?.sql.split('--> statement-breakpoint') ?? [];
+      expect(parts.length).toBe(9);
+
+      //M 同一连接再挂一次：已登记的两版只核对，不报错。
+      const again = new dbModule.Db(new cordis.Context(), h.db);
+      again.migrate(knowledgePlugin.knowledgeMigrations);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('老库（0.7.90 记过第 1 版、表由旧构造函数建齐、有数据）：升到第 2 版，数据原样', () => {
+    const db = new Database(':memory:');
+    try {
+      //M 模拟老库：旧代码记了第 1 版账本（只建出 kb_dirs），又靠构造函数 exec 把四张表建齐、写了一篇。
+      const old = new dbModule.Db(new cordis.Context(), db);
+      old.migrate({ plugin: 'knowledge', migrations: [{ version: 1, sql: knowledgePlugin.SCHEMA_SQL }] });
+      db.exec(knowledgePlugin.SCHEMA_SQL);
+      const insert = "INSERT INTO kb_docs (id, title, created_at, updated_at) VALUES ('kb_old', '老文档', 1, 1)";
+      db.exec(insert);
+
+      //M 新代码挂上：第 1 版哈希对得上只核对，第 2 版全是 IF NOT EXISTS，不动已有数据。
+      const upgraded = new dbModule.Db(new cordis.Context(), db);
+      upgraded.migrate(knowledgePlugin.knowledgeMigrations);
+      expect(db.query<{ version: number }, []>(LEDGER).all()).toEqual([{ version: 1 }, { version: 2 }]);
+      const store = new knowledgePlugin.KnowledgeStore(db);
+      expect(store.getDoc('kb_old')?.title).toBe('老文档');
+    } finally {
+      db.close();
+    }
+  });
+});
+

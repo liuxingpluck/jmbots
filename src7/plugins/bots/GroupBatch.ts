@@ -19,6 +19,7 @@ import type * as protocol from '../channels/index.ts';
 import type * as decisionModule from '../decision/index.ts';
 import type { DispatchClaim } from './DispatchClaim.ts';
 import * as frontDeskModule from './FrontDesk.ts';
+import * as checksModule from '../../utils/Checks.ts';
 
 
 /** 问决策模型等这么久还没回就报警（decision 每个模型自己限时，到点回拿不准）。 */
@@ -96,22 +97,16 @@ export function readGroupBatch(written: unknown): GroupBatchConfig | string {
   if (missing.length > 0) return `group_batch 缺 ${missing.join('、')}`;
 
   //M quiet_seconds 是正数（秒，可以带小数）。
-  const quiet = utils.getField(written, 'quiet_seconds');
-  if (typeof quiet !== 'number' || !(quiet > 0)) {
-    throw new Error('bots 的 group_batch.quiet_seconds 要写正数（秒）');
-  }
+  const quietWritten = utils.getField(written, 'quiet_seconds');
+  const quiet = checksModule.checkNumber(quietWritten, 'bots.group_batch.quiet_seconds', { above: 0 });
 
   //M max_lines 是正整数（句）。
-  const maxLines = utils.getField(written, 'max_lines');
-  if (typeof maxLines !== 'number' || !Number.isInteger(maxLines) || maxLines <= 0) {
-    throw new Error('bots 的 group_batch.max_lines 要写正整数（句）');
-  }
+  const maxWritten = utils.getField(written, 'max_lines');
+  const maxLines = checksModule.checkNumber(maxWritten, 'bots.group_batch.max_lines', checksModule.POSITIVE_INT);
 
   //M daily_limit 是非负整数（次），0 不限。
-  const dailyLimit = utils.getField(written, 'daily_limit');
-  if (typeof dailyLimit !== 'number' || !Number.isInteger(dailyLimit) || dailyLimit < 0) {
-    throw new Error('bots 的 group_batch.daily_limit 要写非负整数（次，0 是不限）');
-  }
+  const dailyWritten = utils.getField(written, 'daily_limit');
+  const dailyLimit = checksModule.checkNumber(dailyWritten, 'bots.group_batch.daily_limit', { integer: true, min: 0 });
 
   return { quiet_seconds: quiet, max_lines: maxLines, daily_limit: dailyLimit };
 }

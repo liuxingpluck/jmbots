@@ -2,8 +2,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Database } from 'bun:sqlite';
+import type * as dbModule from '../db/index.ts';
 import type * as types from './Types.ts';
 
+/**
+ * 迁移第 1 版：原来的三张表和索引（decisions 不带 quadrant，quadrant 在第 2 版加）。
+ * 每句之间用 Drizzle 的 `--> statement-breakpoint` 隔开：db.migrate 按它拆句，不隔开只会执行第一句。
+ */
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS decisions (
     id TEXT PRIMARY KEY NOT NULL,
@@ -19,7 +24,6 @@ const SCHEMA = `
     chosen TEXT,
     asker TEXT,
     main TEXT,
-    quadrant TEXT,
     needs TEXT,
     sources TEXT,
     links TEXT,
@@ -30,7 +34,9 @@ const SCHEMA = `
     acknowledged_at INTEGER,
     note TEXT
   );
+  --> statement-breakpoint
   CREATE INDEX IF NOT EXISTS decisions_project ON decisions (bot, workspace_id);
+  --> statement-breakpoint
   CREATE TABLE IF NOT EXISTS decision_notes (
     decision_id TEXT NOT NULL REFERENCES decisions (id),
     id TEXT NOT NULL,
@@ -43,6 +49,7 @@ const SCHEMA = `
     relay_reply_id INTEGER,
     PRIMARY KEY (decision_id, id)
   );
+  --> statement-breakpoint
   CREATE TABLE IF NOT EXISTS decision_changes (
     seq INTEGER PRIMARY KEY,
     at INTEGER NOT NULL,
@@ -52,6 +59,23 @@ const SCHEMA = `
     detail TEXT NOT NULL
   );
 `;
+
+/**
+ * 工作决策在 db 迁移账本里的版本。
+ * 第 1 版：三张表（旧库里表已经在，IF NOT EXISTS 什么都不改，账本只登记）。
+ * 第 2 版：加四象限列 quadrant；1.3.11 起旧代码已经手动补过这一列的库，adoptColumn 只登记、不重加。
+ */
+export const decisionMigrations: dbModule.MigrationPlan = {
+  plugin: 'work-decision',
+  migrations: [
+    { version: 1, sql: SCHEMA },
+    {
+      version: 2,
+      sql: 'ALTER TABLE decisions ADD COLUMN quadrant TEXT',
+      adoptColumn: { table: 'decisions', name: 'quadrant' },
+    },
+  ],
+};
 
 //M 使用原节点的 JSON 字段绑定 SQLite 列，数组、对象和布尔值保留 JSON 类型。
 const PUT_NODE = `
@@ -127,14 +151,17 @@ export interface WorkspaceProject extends LegacyProject {
 
 /** 三张表使用资源插件已有的应用数据库。 */
 export class Sqlite {
-  /** @param db 由 resources 管理连接。副作用：初始化工作决策表。 */
-  constructor(private readonly db: Database) {
-    //M 工作决策表随插件挂载初始化，已存在的旧库自动平滑补齐 quadrant 列。
-    db.exec(SCHEMA);
-    const cols = db.query<{ name: string }, []>('PRAGMA table_info(decisions)').all();
-    if (!cols.some((col) => col.name === 'quadrant')) {
-      db.exec('ALTER TABLE decisions ADD COLUMN quadrant TEXT');
-    }
+  /**
+   * @param db 由 resources 管理连接。
+   * @param migrations db 插件的迁移服务（ctx.db），和 db 用同一个连接。
+   * 副作用：按迁移账本建表、加列；旧库照账本平滑升级。
+   */
+  constructor(
+    private readonly db: Database,
+    migrations: dbModule.Db,
+  ) {
+    //M 建表、加列只走 db 的迁移账本，不在这里查列补列。
+    migrations.migrate(decisionMigrations);
   }
 
   /** 读取客户端版本，包括旧快照的历史已被清理时保留的版本。 */

@@ -126,7 +126,7 @@ async function queryJournal(ctx: cordis.Context, params: Record<string, string>)
 
 describe('journal（含 FilesMirror 并入）', () => {
   test('默认只登记 ctx.filesMirror，流水走事件，配置校验生效', async () => {
-    expect(journalModule.version).toBe('1.3.7');
+    expect(journalModule.version).toBe('1.3.9');
     const { ctx } = await setup();
 
     expect(ctx.get('journal')).toBeUndefined();
@@ -300,8 +300,11 @@ describe('journal（含 FilesMirror 并入）', () => {
     const result = await queryJournal(ctx, {});
     const lines = result.lines?.filter((line) => line.name !== 'Journal.record');
     expect(lines?.map((line) => [line.name, line.sourceId])).toEqual([['旧行', null], ['新行', '["feishu","a","b"]']]);
+    //M 改版前的旧行没有号（seq 是 null），新行带 utils/Trace.ts 发的号。
+    expect(lines?.[0]?.seq).toBeNull();
+    expect(typeof lines?.[1]?.seq).toBe('number');
     const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'journal' ORDER BY version").all() as { version: number }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
   });
 
   test('已有 source_id 列的旧库（尚未登记迁移账本）：adoptColumn 直接接管并补记版本', async () => {
@@ -323,7 +326,7 @@ describe('journal（含 FilesMirror 并入）', () => {
     const result = await queryJournal(ctx, { name: '存量行' });
     expect(result.lines?.map((line) => [line.name, line.sourceId])).toEqual([['存量行', '["cli","local","1"]']]);
     const versions = db.query("SELECT version FROM db_migrations WHERE plugin = 'journal' ORDER BY version").all() as { version: number }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
   });
 
   test('流水事件回传筛选结果、错误及会话镜像目录', async () => {

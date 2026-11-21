@@ -27,6 +27,7 @@ import type * as dispatchModule from '../bots/Dispatch.ts';
 import * as checksModule from './Checks.ts';
 import * as protocolModule from './TaskProtocol.ts';
 import { registerRoutes } from './TaskRoutes.ts';
+import * as utilsChecks from '../../utils/Checks.ts';
 
 
 /** 任务通道要的服务：resources 存表和文件夹；tools 登记工具；http 开接口。 */
@@ -1140,10 +1141,7 @@ export function getScanMs(raw: unknown): number {
 
   //G scan_ms：不少于 1000 的整数毫秒。
   const every = (raw as { scan_ms?: unknown }).scan_ms ?? SCAN_MS;
-  if (typeof every !== 'number' || !Number.isInteger(every) || every < 1000) {
-    throw new Error('relay 的 tasks.scan_ms 要写成不少于 1000 的整数（毫秒）');
-  }
-  return every;
+  return utilsChecks.checkNumber(every, 'relay.tasks.scan_ms', { integer: true, min: 1000 });
 }
 
 
