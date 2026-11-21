@@ -7,7 +7,7 @@
 import type * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import * as drizzle from 'drizzle-orm';
-import type { AskInput, ChatRequest, SessionRow } from '../../Sessions.ts';
+import type { AskInput, AskResult, ChatRequest, SessionRow } from '../../Sessions.ts';
 import * as utils from '../../utils/index.ts';
 import type * as dbModule from '../db/index.ts';
 import * as schema from './Schema.ts';
@@ -92,11 +92,34 @@ export function estimate(value: unknown): number {
 function getShortText(text: string, max: number): string {
   if (text.length <= max) return text;
 
+  //M 头尾各留一半；切口落在 emoji 这类代理对中间时，把半个字丢掉，不发出孤立的代理码点。
   const half = Math.floor(max / 2);
-  const head = text.slice(0, half);
-  const tail = text.slice(-half);
-  const cut = text.length - half * 2;
+  let head = text.slice(0, half);
+  if (isHighSurrogate(head.charCodeAt(head.length - 1))) {
+    head = head.slice(0, -1);
+  }
+  let tail = text.slice(-half);
+  if (isLowSurrogate(tail.charCodeAt(0))) {
+    tail = tail.slice(1);
+  }
+  const cut = text.length - head.length - tail.length;
   return `${head}\n…（中间省略 ${String(cut)} 字）…\n${tail}`;
+}
+
+/**
+ * 是不是代理对的前半（0xD800–0xDBFF）。
+ * @param code UTF-16 码元；越界读出的 NaN 不算。
+ */
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+/**
+ * 是不是代理对的后半（0xDC00–0xDFFF）。
+ * @param code UTF-16 码元；越界读出的 NaN 不算。
+ */
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }
 
 /**
@@ -362,7 +385,18 @@ export class Compress {
       signal: request.signal,
     };
     //M 运行内部 compress 小会话生成摘要，并等待结果决定是否更新压缩记录。
-    const { ok, reply } = await this.ctx.sessions.ask(askInput);
+    let asked: AskResult;
+    try {
+      asked = await this.ctx.sessions.ask(askInput);
+    } catch (error) {
+      //G 小会话抛错（不只是 ok: false）：叫停的不算失败；别的也记失败退避、打一行，这一步不压，不挡主会话。
+      if (request.signal.aborted) return done;
+
+      this.noteFailed(row.id, row.messages.length);
+      console.error(`context-fit：会话 ${row.id} 的压缩小会话出错了：${String(error)}`);
+      return done;
+    }
+    const { ok, reply } = asked;
 
     //G 被叫停了 → 这次不压，也不算失败。
     if (request.signal.aborted) return done;

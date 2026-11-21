@@ -4,6 +4,9 @@
  * 规则的来历（用户 11-03）：发个文档也要他放行，嫌烦；同一天有机器人用 findstr 读 config.yaml，决策模型给了 0.94 直接放行，
  * 飞书密钥泄露。所以：碰密钥文件的命令直接拒绝；项目自己的检查直接放行；跑本地脚本的，把脚本内容读出来一起给审核看。
  * 用户 11-18 #169：任务写明了、目录可信的也直接放行（getUntrusted），删系统、删注册表、删数据、格式化（mustAsk）照旧人审。
+ * mustAsk 的边界：只认常见写法的删系统目录、删注册表、删数据目录、格式化（rd、rmdir、del、erase、rm -r/-f、Remove-Item，
+ *   reg delete，format 这类，见下面的 DELETE 等正则），不是通用的 shell 解析器——rm --recursive、unlink、move、robocopy /mir、%DATA% 这类环境变量写法
+ *   它不认，这些落到决策模型和审核小会话把关。别把它当成“删除类命令全覆盖”。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

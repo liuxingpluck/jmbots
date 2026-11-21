@@ -202,6 +202,17 @@ describe('context-fit 纯裁剪与配置校验', () => {
     expect(mixed).not.toContain('想'.repeat(2000));
     expect(mixed).not.toContain('写'.repeat(2000));
   });
+  test('截短时不把 emoji 这类代理对切成两半', () => {
+    //M 前面一个 a、后面一个 b，让头尾两个切口都正好落在代理对中间。
+    const text = `a${'😀'.repeat(5000)}b`;
+    const message: piAi.Message = { role: 'user', content: text, timestamp: 1 };
+    const input = compressModule.getCompressInput([message], 4004);
+    const parsed = JSON.parse(input) as { content: string }[];
+    const content = parsed[0]!.content;
+    expect(content).toContain('中间省略');
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
+    expect(lone.test(content)).toBe(false);
+  });
 });
 
 
@@ -607,5 +618,51 @@ describe('session-context 集成：Summary 与 Compress -> ContextFit 顺序', (
     //M 多出 10 条：再试一次。
     await ask(10);
     expect(compressCalls).toBe(2);
+  });
+
+  test('压缩小会话抛异常（不只是 ok: false）也记失败退避，主会话这一步照常往下走', async () => {
+    const ctx = new cordis.Context();
+    closers.push(() => ctx.fiber.dispose());
+    await ctx.plugin(makeResources(100));
+    await ctx.plugin(toolsModule.Tools);
+    await ctx.plugin(sessionsModule.Sessions);
+    await ctx.plugin(dbPlugin);
+    await ctx.plugin(contextFitPlugin, { summary: false, compress: { ratio: 0.8, keep: 1 } });
+
+    //M 让 sessions.ask 直接抛错，数被调了几次；错误日志静音。
+    let askCalls = 0;
+    //M 打在原型上：ctx.sessions 取到的是 Cordis 包过的对象，打在它身上 Compress 那边看不到。
+    const ask = spyOn(sessionsModule.Sessions.prototype, 'ask').mockImplementation(async () => {
+      askCalls += 1;
+      throw new Error('测试：压缩小会话炸了');
+    });
+    closers.push(() => ask.mockRestore());
+    const quiet = spyOn(console, 'error').mockImplementation(() => {});
+    closers.push(() => quiet.mockRestore());
+
+    const session = ctx.sessions.create({ kind: 'front', bot: '助手' });
+    const send = async (extra: number): Promise<void> => {
+      const more: piAi.Message[] = [];
+      for (let index = 0; index < extra; index += 1) {
+        more.push({ role: 'user', content: `补充 ${String(index)}`, timestamp: 10 + index });
+      }
+      const head: piAi.Message[] = [{ role: 'user', content: '上一问', timestamp: 1 }];
+      const tail: piAi.Message[] = [fakeAssistantWithUsage('上一答', 90), { role: 'user', content: '再问', timestamp: 99 }];
+      const messages = [...head, ...more, ...tail];
+      session.row.messages = messages;
+      const request: sessionsModule.ChatRequest = {
+        session, model: 'fake/fake', thinking: 'off', system: [], tools: [], messages,
+        signal: new AbortController().signal,
+      };
+      await ctx.serial('session/before-model', request);
+    };
+
+    //M 第一次：抛错被接住，这一步照常走完；记了失败。
+    await send(0);
+    expect(askCalls).toBe(1);
+
+    //M 多出 1 条：退避中，不再调。
+    await send(1);
+    expect(askCalls).toBe(1);
   });
 });

@@ -242,21 +242,21 @@ channel/reply → 渠道发出
 
 ```ts
 // src7/plugins/bots/DispatchTools.ts
-245	    const work = this.home.sessions.create({
-246	      kind: 'work',
-247	      bot: bot.name,
-248	      parent: front.id,
-249	      customer: front.row.customer,
-250	      model: picked.model,
-251	      thinking: picked.thinking,
-252	      frontTask,
-253	      quiet: true,
-254	      workspaceId: resolved.workspace.id,
-255	    });
-256
+246	    const work = this.home.sessions.create({
+247	      kind: 'work',
+248	      bot: bot.name,
+249	      parent: front.id,
+250	      customer: front.row.customer,
+251	      model: picked.model,
+252	      thinking: picked.thinking,
+253	      frontTask,
+254	      quiet: true,
+255	      workspaceId: resolved.workspace.id,
+256	    });
+257
 ```
 
-然后 `bot.hand` 把话交进去、推它跑，不等（`DispatchTools.ts:264`）。`Bot.deliver`（`bots/index.ts:1063`）就三步：记回话往哪送、话进会话、`run`。
+然后 `bot.hand` 把话交进去、推它跑，不等（`DispatchTools.ts:265`）。`Bot.deliver`（`bots/index.ts:1063`）就三步：记回话往哪送、话进会话、`run`。
 
 `quiet: true` 让 `Bots.onChange` 不把后台这一轮的回答直接发给用户（`bots/index.ts:423`）。
 
@@ -274,18 +274,18 @@ channel/reply → 渠道发出
 - 暂停了、转交给别的会话了、这一轮已经交回过（轮数变了）：都不交回；
 - 否则结果键记成 `work:<后台号>:<第几轮>`，正文前面加一句怎么结束的，比如“（做完了）”“（出错了）”（`STATE_WORDS`，`DispatchResults.ts:166`）；排进前台队列，同一个事务里轮数加一。
 
-**前台整理时用户又说话**：先排着，不进这一轮（`hold`，`DispatchResults.ts:346`；`Dispatch.ts:115` 调它）。整理那一轮里，`hand_session`、`stop_session`、`agent_task` 都被拿掉（`NO_DISPATCH`，`DispatchTools.ts:23`），免得前台整理着又派新活。
+**前台整理时用户又说话**：先排着，不进这一轮（`hold`，`DispatchResults.ts:346`；`Dispatch.ts:115` 调它）。整理那一轮里，`hand_session`、`stop_session`、`agent_task` 都被拿掉（`NO_DISPATCH`，`DispatchTools.ts:24`），免得前台整理着又派新活。
 
 **用户喊停**：前台调 `stop_session`，实际是 `pause`（`DispatchTools.ts:373`）：
 
 ```ts
 // src7/plugins/bots/DispatchTools.ts
-394	    //M 受管：先存库记暂停（没在跑也记，免得排着的外部结果把它推起来），再喊停。已经做了的不回滚。
-395	    task.paused = true;
-396	    target.save();
-397	    if (running) {
-398	      target.stop('前台暂停');
-399	    }
+395	    //M 受管：先存库记暂停（没在跑也记，免得排着的外部结果把它推起来），再喊停。已经做了的不回滚。
+396	    task.paused = true;
+397	    target.save();
+398	    if (running) {
+399	      target.stop('前台暂停');
+400	    }
 ```
 
 先存库记暂停，再喊停。记暂停是为了堵住三个口子：
@@ -368,7 +368,7 @@ bots 里用到它的地方：
 
 1. 两遍，每个机器人一遍。去重键是“消息号 + 机器人名”，两个机器人的键不同，各自认领；重发的那条，两个机器人的键都已经记过，都记成 `duplicate`，不再排队（`DispatchClaim.ts:116` 调 `isClaimed`）。
 2. 两个触发满足一个就看：攒满 `max_lines` 句马上看，或者最后一句之后安静满 `quiet_seconds` 秒（`GroupBatch.ts:299` 起）；前台正在转就等它停下，当天看满 `daily_limit` 次就不看了。决定接以后：群没登记 `judge_helper`，机器人自己把这一批排进前台答；登记了，就记成背景、转给那个外部助手，机器人不开口（`GroupBatch.ts:443` 起）。
-3. 不会。前台调 `stop_session`，后台先记 `paused = true` 再停（`DispatchTools.ts:395`），`returnWork` 看到暂停就不交回。想接着做，用 `hand_session` 的 `append`，它把 `paused` 改回 `false`。
+3. 不会。前台调 `stop_session`，后台先记 `paused = true` 再停（`DispatchTools.ts:396`），`returnWork` 看到暂停就不交回。想接着做，用 `hand_session` 的 `append`，它把 `paused` 改回 `false`。
 4. 都不能。后台的记忆权限按派活那一刻的来源快照算，外人的快照拿不到本人记忆（`memory/MemoryKey.ts:142`）；外人派活时写了模型或思考档会被拒，只能用前台的（`DispatchTools.ts:151`）。
 
 </details>

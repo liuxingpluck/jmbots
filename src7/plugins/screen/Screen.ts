@@ -378,9 +378,10 @@ export class Screen {
       throw new protocol.ScreenError('busy');
     }
 
-    //M 若已有成功回执且窗口、顺序仍匹配，直接交回缓存。
+    //M 若已有成功回执、还没过期（和播报那边 presented 一样看 expiresAt，清理每 250ms 才跑一次），且窗口、顺序仍匹配，直接交回缓存。
     const cached = this.cache.get(key);
-    if (cached !== undefined && state.windowKey === click.windowKey && cached.result.seq === click.seq) {
+    const fresh = cached !== undefined && cached.expiresAt > started;
+    if (fresh && state.windowKey === click.windowKey && cached.result.seq === click.seq) {
       return cached.result;
     }
     if (cached !== undefined || click.seq <= state.lastSeq) {

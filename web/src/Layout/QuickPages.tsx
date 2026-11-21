@@ -1,5 +1,5 @@
 /**
- * 主页顶栏右侧快捷入口：把原本挤在左下角的各独立功能页面（教程、记忆、图谱、模型、客服）
+ * 主页顶栏右侧快捷入口：把原本挤在左下角的各独立功能页面（教程、记忆、图谱、工作决策、知识库、模型、客服）
  * 挪到聊天顶栏右侧，按已挂载插件过滤显示；带当前访问令牌跳转，全部未挂载时不占位。
  */
 import * as react from 'react';
@@ -33,6 +33,7 @@ function getQuickPageItems(t: i18n.Translate): QuickPageItem[] {
     { href: '/memory/', label: t('记忆'), plugin: 'memory' },
     { href: '/graph/', label: t('图谱'), plugin: 'memory' },
     { href: '/work-decision/', label: t('工作决策'), plugin: 'work-decision' },
+    { href: '/knowledge/', label: t('知识库'), plugin: 'knowledge' },
     { href: '/frpc/', label: t('外网隧道'), plugin: 'frpc' },
     { href: '/model-notes/', label: t('模型'), plugin: 'model-catalog' },
     { href: '/wechat-kefu/', label: t('客服'), plugin: 'wechat-kefu' },

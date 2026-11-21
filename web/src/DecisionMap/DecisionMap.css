@@ -392,6 +392,56 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--decision-blue);
 .decision-links { padding-left: 16px; }
 .decision-links a { color: var(--decision-blue); }
 
+/* 抽屉里的「相关文档」（KnowledgeLinks.tsx）：知识库里挂在这个专题下的文档，深色卡片列表 */
+.decision-knowledge { margin-top: 16px; }
+.decision-knowledge__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.decision-knowledge__head h3 { margin: 0; font-size: 14px; font-weight: 660; }
+.decision-knowledge__new {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--decision-border);
+  border-radius: 999px;
+  color: var(--decision-blue);
+  font-size: 12px;
+  text-decoration: none;
+}
+.decision-knowledge__new:hover, .decision-knowledge__new:focus-visible { border-color: var(--decision-blue); }
+.decision-knowledge__empty { margin: 8px 0 0; color: var(--decision-muted); font-size: 12px; }
+.decision-knowledge__list { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.decision-knowledge__item a {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--decision-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  text-decoration: none;
+}
+.decision-knowledge__item a:hover, .decision-knowledge__item a:focus-visible { border-color: var(--decision-blue); }
+.decision-knowledge__title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.decision-knowledge__summary {
+  overflow: hidden;
+  color: var(--decision-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.decision-knowledge__tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.decision-knowledge__tag {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(137, 184, 255, 0.12);
+  color: var(--decision-blue);
+  font-size: 11px;
+  line-height: 18px;
+}
+/* 手机全屏抽屉：点的区域大一点 */
+@media (max-width: 670px) {
+  .decision-knowledge__new { padding: 6px 12px; }
+  .decision-knowledge__item a { padding: 10px 12px; }
+}
+
 /* 顶栏的看法切换，和画布范围按钮同一种样子 */
 .decision-bar { flex-wrap: wrap; gap: 10px 16px; padding-top: 10px; padding-bottom: 10px; }
 .decision-looks { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

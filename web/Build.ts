@@ -268,8 +268,11 @@ const result = await Bun.build({
     path.join(root, 'web', 'model-notes.html'),
     path.join(root, 'web', 'work-decision.html'),
     path.join(root, 'web', 'frpc.html'),
+    path.join(root, 'web', 'knowledge.html'),
   ],
   outdir: outDir,
+  //M 产物路径照 web/ 算：不写时 Bun 按参与打包的文件算公共根，图里一旦有 web 外面的文件，html 就多套一层 web/。
+  root: path.join(root, 'web'),
   target: 'browser',
   splitting: true,
   minify: true,

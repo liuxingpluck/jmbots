@@ -5,6 +5,7 @@ import * as longList from '../Shared/LongList.tsx';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as api from './DecisionMapApi.ts';
 import * as drafts from './Drafts.ts';
+import * as knowledgeLinks from './KnowledgeLinks.tsx';
 import * as quadrants from './Quadrants.ts';
 import * as words from './Words.ts';
 
@@ -422,6 +423,7 @@ export function Drawer({
         </button>
         {noteError && <p className="decision-error" role="alert">{noteError}</p>}
       </form>
+      <knowledgeLinks.KnowledgeLinks nodeId={node.id} title={node.title} />
       {sources.size > 0 && (
         <section className="decision-sources" aria-label="出处">
           <h3>出处</h3>

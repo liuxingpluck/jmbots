@@ -256,6 +256,9 @@ export function DecisionMapPage() {
         //M 用户正忙不整页刷新：亮出新版提示，记下新的启动时刻，数据照样换成后端现在的
         setNewVersionReady((prev) => prev || true);
         appStartedAtRef.current = ver.appStartedAt;
+
+        //M 重启后 revision 从头数，旧的作废：这次拉图失败或被新一轮顶掉，下一轮探针照样拉新图，不会被旧 revision 卡住。
+        dataRevRef.current = undefined;
         await refresh(signal, true);
         return;
       }

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.84",
+    "date": "2026-11-21",
+    "changes": [
+      "新增积木知识库第 3 步独立深色前端（/knowledge/，接入主顶栏「知识库」、AuthGate 外网门禁与 ChunkErrorBoundary）：首屏 JS 仅 242.5 KiB（CSS 15.3 KiB），编辑与 Markdown 预览独立懒加载；支持桌面三栏（目录树+标签云 / 摘要列表与含记忆融合搜索 / 源码·预览·分屏编辑器）与手机 <800px 单栏三屏+返回键保护、原生拖拽移动、URL 参数同步、baseUpdatedAt 409 冲突差异草稿保护与 localStorage 全容错",
+      "工作决策工作台（/work-decision/）节点抽屉新增知识库挂接（KnowledgeLinks）：自动展示当前专题节点关联文档并支持新窗直达，提供「＋ 记一篇」带专题预填直跳 /knowledge/ 新建，未启用知识库插件时静默隐藏零干扰",
+      "收尾云端 27/28 稳健与精简项：DecisionMapPage 服务端重启分支先清 dataRevRef 防后续探针卡死；context-fit 压缩小会话抛异常纳入退避且截短避开 emoji UTF-16 代理对；memory/ChannelIndex 复用 canQueryChannel、bots/DispatchTools 复用共享 THINKING、screen 命中缓存对齐过期校验、approval/Rules 明确边界注释"
+    ]
+  },
+  {
     "version": "0.7.83",
     "date": "2026-11-21",
     "changes": [

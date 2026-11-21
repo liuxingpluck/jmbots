@@ -538,7 +538,8 @@ export function getScope(args: Record<string, unknown>, access: ChannelAccess): 
   const chat = utils.getStringField(args, 'chat') || undefined;
   if (access.full) return { channel, chat };
 
-  if (!access.channel || !access.chat || !access.account || access.key === undefined) {
+  //G 能不能查渠道只问 MemoryKey.canQueryChannel（渠道、聊天、账号、归属键四样齐了才行），和记忆工具同一口径。
+  if (!memoryKeyModule.canQueryChannel(access)) {
     throw new Error('这一轮没有确定的来源聊天和归属，查不了渠道消息');
   }
 

@@ -2,6 +2,7 @@
 import * as piAi from '@earendil-works/pi-ai';
 import type * as cordis from 'cordis';
 import type { ChatRequest, Session, SessionMeta, Thinking } from '../../Sessions.ts';
+import * as checks from '../../utils/Checks.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
@@ -16,8 +17,8 @@ import * as dispatch from './DispatchResults.ts';
 import type { FrontDesk } from './FrontDesk.ts';
 import type { Bot, Origin } from './index.ts';
 
-/** 思考档，从低到高。hand_session 的 thinking 只收这几个。 */
-const LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+/** 思考档，从低到高。hand_session 的 thinking 只收这几个；清单在 utils/Checks.ts 的 THINKING，全仓一份。 */
+const LEVELS = checks.THINKING;
 
 /** 前台整理结果的那一轮拿掉的工具：不再派活、不喊停、不交外部 AI。 */
 const NO_DISPATCH = new Set(['hand_session', 'stop_session', 'agent_task']);
