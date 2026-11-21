@@ -829,8 +829,20 @@ export function FrpcPage(): react.JSX.Element {
           <a className="fr-nav-link" href={withToken('/work-decision/', TOKEN)}>
             工作决策
           </a>
+          <a className="fr-nav-link" href={withToken('/knowledge/', TOKEN)}>
+            知识库
+          </a>
           <a className="fr-nav-link" href={withToken('/tutorial/', TOKEN)}>
             教程
+          </a>
+          <a className="fr-nav-link" href={withToken('/wechat-kefu/', TOKEN)}>
+            智能客服
+          </a>
+          <a className="fr-nav-link" href={withToken('/graph/', TOKEN)}>
+            知识图谱
+          </a>
+          <a className="fr-nav-link" href={withToken('/memory/', TOKEN)}>
+            记忆搜索
           </a>
           <button
             type="button"

@@ -8,6 +8,7 @@ import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useR
 import * as virtuoso from 'react-virtuoso';
 import { Guide } from '../Guide/Guide.tsx';
 import { WECHAT_STEPS } from '../Guide/steps-wechat-kefu.ts';
+import * as authGate from '../components/AuthGate.tsx';
 import * as privacy from '../Privacy/Mask.tsx';
 import { TOKEN, withToken } from '../Token.ts';
 import * as voice from './WechatVoice.tsx';
@@ -400,6 +401,7 @@ export function WechatPage() {
   const [drafting, setDrafting] = useState(false);
   //M 演示打码默认关；开着时顶部有提示条，下面 paddingTop/top 才让位
   const mask = privacy.useMask();
+  const webAuth = authGate.useWebAuth();
   const [pollOpen, setPollOpen] = useState(false);
 
   //G 演示打码：整段换成＊，只留字数，联系人名和内容一个字都不露（投屏、截图用）。
@@ -805,6 +807,15 @@ export function WechatPage() {
           {scanLabel}
         </button>
         <Guide steps={WECHAT_STEPS} className="wk-guide" />
+        {webAuth.required && (
+          <button
+            type="button"
+            className="wk-top-link wk-logout"
+            onClick={() => void webAuth.logout()}
+          >
+            退出
+          </button>
+        )}
       </header>
 
       <section className="wk-stats" data-guide="stats">

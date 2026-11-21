@@ -630,7 +630,11 @@ export function derivePublicUrls(proxies: FrpcProxy[]): string[] {
     for (const domain of proxy.customDomains) {
       if (proxy.localPort === 30086) {
         seen.add(`https://${domain}/work-decision/`);
+        seen.add(`https://${domain}/knowledge/`);
         seen.add(`https://${domain}/tutorial/`);
+        seen.add(`https://${domain}/wechat-kefu/`);
+        seen.add(`https://${domain}/graph/`);
+        seen.add(`https://${domain}/memory/`);
         seen.add(`https://${domain}/frpc/`);
         seen.add(`https://${domain}/`);
         continue;

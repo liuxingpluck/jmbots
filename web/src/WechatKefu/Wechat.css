@@ -3,8 +3,14 @@
 html { color-scheme: dark; }
 html, body, #root { margin: 0; height: 100%; background: #0b1020; color: #e3e8f4; font: 14px/1.55 system-ui, "Microsoft YaHei", sans-serif; }
 button, input, select, textarea { font: inherit; color: inherit; }
-.wk-top-link { text-decoration: none; color: #b9c8ec; padding: 4px 10px; border: 1px solid #2a3a66; border-radius: 8px; background: #111a33; font-size: 13px; white-space: nowrap; }
+.wk-top-link {
+  text-decoration: none; color: #b9c8ec; padding: 4px 10px;
+  border: 1px solid #2a3a66; border-radius: 8px; background: #111a33;
+  font-size: 13px; white-space: nowrap; cursor: pointer;
+}
 .wk-top-link:hover { border-color: #4f79d9; color: #fff; }
+.wk-logout { color: #ff9a9a; border-color: #5b2833; }
+.wk-logout:hover { border-color: #ff6b6b; color: #ffd4d4; }
 .wk-page { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .wk-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px clamp(10px, 2vw, 20px); background: linear-gradient(90deg, #101a35, #0d152b); border-bottom: 1px solid #1e2b50; }
 .wk-top h1 { margin: 0; font-size: 18px; font-weight: 600; background: linear-gradient(90deg, #4fd1a5, #6aa8ff); -webkit-background-clip: text; background-clip: text; color: transparent; white-space: nowrap; }

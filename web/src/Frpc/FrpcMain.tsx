@@ -1,6 +1,7 @@
 /** 外网隧道控制台入口（web/frpc.html）：首帧写入深色主题变量，外层套 AuthGate 承接外网登录。 */
 import { createRoot } from 'react-dom/client';
 import { AuthGate } from '../components/AuthGate.tsx';
+import { ChunkErrorBoundary } from '../components/ChunkErrorBoundary.tsx';
 import * as theme from '../ThemePalette.ts';
 import { FrpcPage } from './FrpcPage.tsx';
 import './Frpc.css';
@@ -10,12 +11,14 @@ const themeName = theme.loadThemeName(window.localStorage);
 const spec = theme.THEMES[themeName];
 theme.applyTheme(document.documentElement, spec);
 
-//M 挂载外网隧道控制台根组件，公网域名自动经过统一 AuthGate 鉴权。
+//M 挂载外网隧道控制台根组件，公网域名自动经过统一 AuthGate 鉴权与懒加载分块兜底。
 const root = document.getElementById('root');
 if (root !== null) {
   createRoot(root).render(
-    <AuthGate>
-      <FrpcPage />
-    </AuthGate>,
+    <ChunkErrorBoundary>
+      <AuthGate>
+        <FrpcPage />
+      </AuthGate>
+    </ChunkErrorBoundary>,
   );
 }

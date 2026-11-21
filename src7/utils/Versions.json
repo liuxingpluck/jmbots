@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.89",
+    "date": "2026-11-21",
+    "changes": [
+      "外网隧道控制台（/frpc/）收齐全部 8 大公网快捷入口（/work-decision/、/knowledge/、/tutorial/、/wechat-kefu/、/graph/、/memory/、/frpc/、/）与顶栏导航，并为 FrpcMain 与 WechatMain 补齐 ChunkErrorBoundary 换版防白屏",
+      "智能客服（/wechat-kefu/）外网门禁细节完善：顶栏接入 useWebAuth() 外网退出按钮，HTML 补齐 viewport-fit=cover 与 referrer=no-referrer"
+    ]
+  },
+  {
     "version": "0.7.88",
     "date": "2026-11-21",
     "changes": [

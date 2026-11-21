@@ -247,8 +247,13 @@ describe('frpc HTTP 路由契约、403 鉴权、30086 防绕过拦截与日志�
       expect(data.hasAuthToken).toBe(true);
       expect(data.tlsEnabled).toBe(true);
       expect(data.publicUrls).toContain('https://app.xuanguiyl.top/work-decision/');
+      expect(data.publicUrls).toContain('https://app.xuanguiyl.top/knowledge/');
       expect(data.publicUrls).toContain('https://app.xuanguiyl.top/tutorial/');
+      expect(data.publicUrls).toContain('https://app.xuanguiyl.top/wechat-kefu/');
+      expect(data.publicUrls).toContain('https://app.xuanguiyl.top/graph/');
+      expect(data.publicUrls).toContain('https://app.xuanguiyl.top/memory/');
       expect(data.publicUrls).toContain('https://app.xuanguiyl.top/frpc/');
+      expect(data.publicUrls).toContain('https://app.xuanguiyl.top/');
     } finally {
       await h.app.close();
     }
