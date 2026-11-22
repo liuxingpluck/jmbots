@@ -2,6 +2,7 @@
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as checksModule from '../../utils/Checks.ts';
+import * as controlPlaneModule from './ControlPlane.ts';
 import type * as notifications from './Notify.ts';
 import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
@@ -16,7 +17,8 @@ export const name = 'work-decision';
 //M 1.3.11：节点可选支持 quadrant 四象限字段及 POST/PUT /api/work-decision/quadrant，前端新增四象限决策矩阵视图。
 //M 1.3.12：新增只读工具 work_topics（前后台会话、只限本人）：概览、按状态和关键词筛、看单个节点，带 topicId 给知识库用。
 //M 1.3.13：建表、加列改走 db 迁移账本（云端 36 第 1 条）：db 成了必需依赖；quadrant 列是迁移第 2 版，旧库已有的只登记。
-export const version = '1.3.13';
+//M 1.4.0：新增多 AI 协同控制面任务面板（ControlPlane.ts，control-plane-tasks.json + /api/work-decision/tasks* 占坑防撞锁与心跳时间线）。
+export const version = '1.4.0';
 export const inject = ['resources', 'http', 'tools', 'db'];
 
 /** 读取配置文本，未设置时保持缺省。 */
@@ -69,7 +71,8 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const resources = ctx.resources;
   const dir = path.join(resources.root, 'data', 'decision-map');
   const store = new storeModule.Store(resources.db, ctx.db, dir, legacyWorkspaceId);
-  routesModule.mount(ctx, store, helper, notice);
+  const controlStore = new controlPlaneModule.ControlPlaneStore(resources.root);
+  routesModule.mount(ctx, store, helper, notice, controlStore);
   toolsModule.registerAskOwner(ctx, store, notice);
   toolsModule.registerWorkTopics(ctx, store);
 }

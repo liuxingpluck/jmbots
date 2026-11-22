@@ -7,6 +7,7 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as events from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import type * as dispatch from '../bots/Dispatch.ts';
+import * as controlPlaneModule from './ControlPlane.ts';
 import * as notifications from './Notify.ts';
 import * as storeModule from './Store.ts';
 import type * as types from './Types.ts';
@@ -177,6 +178,7 @@ export function mount(
   store: storeModule.Store,
   helper: string | undefined,
   ownerNotice: notifications.OwnerNotice | undefined,
+  controlStore = new controlPlaneModule.ControlPlaneStore(ctx.resources.root),
 ): void {
   const app = ctx.http.app;
   const onError = (error: unknown) => ({ ok: false, error: textModule.getErrorMessage(error) });
@@ -480,8 +482,15 @@ export function mount(
     });
 
     const appStartedAt = Date.now();
-    //M 30 秒轻量探针只回启动时刻和数据序号，无变化时不拉完整图。
-    scope.get(`${PREFIX}/version`, () => ({ appStartedAt, dataRev: store.getRevision() }));
+    //M 30 秒轻量探针只回启动时刻和数据序号（含控制面任务修订号 tasksRev），无变化时不拉完整图。
+    scope.get(`${PREFIX}/version`, () => ({
+      appStartedAt,
+      dataRev: store.getRevision(),
+      tasksRev: controlStore.getRevision(),
+    }));
+
+    //M 挂载多 AI 协同控制面任务面板 REST 接口（/api/work-decision/tasks*）。
+    controlPlaneModule.mountControlPlaneRoutes(scope, PREFIX, controlStore);
   });
 }
 

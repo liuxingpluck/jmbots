@@ -4,12 +4,22 @@ import * as token from '../Token.ts';
 
 const BASE = '/api/work-decision';
 
+export type ControlTask = types.ControlTask;
+export type ControlTaskStatus = types.ControlTaskStatus;
+export type ControlTaskPriority = types.ControlTaskPriority;
+export type ControlTaskEventKind = types.ControlTaskEventKind;
+export type ControlTaskEvent = types.ControlTaskEvent;
+export type ActiveLockHolder = types.ActiveLockHolder;
+export type ControlTaskListResponse = types.ControlTaskListResponse;
+
 /** 轻量版本探针响应，仅包含进程启动时刻和数据修订号。 */
 export interface DecisionVersion {
   /** 当前后端路由挂载时刻（毫秒时间戳），换版重启后改变。 */
   appStartedAt: number;
   /** 当前工作决策数据修订号，节点、选择、留言或回复变化后递增。 */
   dataRev: number;
+  /** 多 AI 控制面任务面板修订号，任务或事件变化后递增。 */
+  tasksRev?: number;
 }
 
 /** 请求并读取决策图接口的 JSON 返回。 */
@@ -104,4 +114,95 @@ export function setQuadrant(
 
   //M 点击象限胶囊后即时入库，返回更新后的节点。
   return request('/quadrant', options);
+}
+
+
+//==========================================================
+// 多 AI 协同控制面任务面板 API（/api/work-decision/tasks*）
+//==========================================================
+
+/** 读取控制面任务列表、状态计数、活跃占坑锁与可立即派发队列。 */
+export function getControlTasks(
+  filter?: { status?: string; lockTag?: string; owner?: string },
+  signal?: AbortSignal,
+): Promise<types.ControlTaskListResponse> {
+  const qs = new URLSearchParams();
+  if (filter?.status !== undefined && filter.status !== '') {
+    qs.set('status', filter.status);
+  }
+  if (filter?.lockTag !== undefined && filter.lockTag !== '') {
+    qs.set('lockTag', filter.lockTag);
+  }
+  if (filter?.owner !== undefined && filter.owner !== '') {
+    qs.set('owner', filter.owner);
+  }
+  const suffix = qs.toString();
+  const route = suffix !== '' ? `/tasks?${suffix}` : '/tasks';
+  return request(route, { signal });
+}
+
+/** 创建控制面任务卡。 */
+export function createControlTask(input: {
+  id?: string;
+  title: string;
+  summary?: string;
+  status?: types.ControlTaskStatus;
+  priority?: types.ControlTaskPriority;
+  lockTags?: string[];
+  owner?: string;
+  doneCriteria?: string;
+  by?: string;
+  initialNote?: string;
+}): Promise<{ ok: true; task: types.ControlTask }> {
+  return request('/tasks', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/** 局部更新控制面任务卡（状态/优先级/负责人/验收标准/占坑锁，撞锁抛错含 409 详情）。 */
+export function patchControlTask(
+  id: string,
+  patch: {
+    title?: string;
+    summary?: string;
+    status?: types.ControlTaskStatus;
+    priority?: types.ControlTaskPriority;
+    lockTags?: string[];
+    owner?: string;
+    doneCriteria?: string;
+    by?: string;
+    reason?: string;
+    eventKind?: types.ControlTaskEventKind;
+    heartbeat?: boolean;
+  },
+): Promise<{ ok: true; task: types.ControlTask }> {
+  return request(`/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 追加一条原则更新 / 范围变更 / 心跳事件并自动刷新 lastHeartbeatAt。 */
+export function appendControlTaskEvent(
+  id: string,
+  input: {
+    kind?: types.ControlTaskEventKind;
+    by?: string;
+    text: string;
+    status?: types.ControlTaskStatus;
+  },
+): Promise<{ ok: true; task: types.ControlTask; event: types.ControlTaskEvent }> {
+  return request(`/tasks/${encodeURIComponent(id)}/events`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/** 删除控制面任务卡。 */
+export function deleteControlTask(id: string): Promise<{ ok: true; deleted: string }> {
+  return request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

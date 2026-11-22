@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.7.101",
+    "date": "2026-11-22",
+    "changes": [
+      "工作决策（work-decision 1.4.0）新增多 AI 协同控制面任务面板（ControlPlane.ts）：数据独立原子持久化于 <runtime>/control-plane-tasks.json，开放 GET/POST /api/work-decision/tasks、PATCH/DELETE /api/work-decision/tasks/:id、POST /api/work-decision/tasks/:id/events；支持 6 态流转、P0/P1/P2 优先级、lockTags 占坑互斥锁（切 running 撞锁返回 409 并附冲突持有者）、activeLocks 活跃锁总览、dispatchableIds 无冲突可立即派发队列、lastHeartbeatAt 心跳刷新与完整变更时间线",
+      "工作决策前端（/work-decision/）顶栏新增「🎛️ AI 任务控制面」页签（与现有决策导图共存，支持 ?tab=tasks 直达）：内置各状态计数胶囊、占坑锁实时监控带、执行中超 15 分钟无心跳自动亮橙色「可能卡住」告警、机器可验证验收标准展示、一键展开变更时间线及纯应用内新建/编辑/记变更/删除模态框（零原生浏览器弹窗，work-decision 单测 19 项全绿）"
+    ]
+  },
+  {
     "version": "0.7.100",
     "date": "2026-11-22",
     "changes": [

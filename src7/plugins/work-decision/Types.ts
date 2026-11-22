@@ -180,3 +180,110 @@ export interface DecisionChange {
   /** 写话或回话时的留言号。 */
   noteId?: string;
 }
+
+
+//==========================================================
+// 多 AI 协同控制面任务面板（Control Plane Task Board）
+//==========================================================
+
+/** 控制面任务状态：待拍板 / 可直接干 / 执行中 / 阻塞 / 已验收 / 已取消。 */
+export const CONTROL_TASK_STATUSES = [
+  'pending_decision',
+  'ready',
+  'running',
+  'blocked',
+  'done',
+  'cancelled',
+] as const;
+
+export type ControlTaskStatus = (typeof CONTROL_TASK_STATUSES)[number];
+
+/** 控制面任务优先级。 */
+export const CONTROL_TASK_PRIORITIES = ['P0', 'P1', 'P2'] as const;
+
+export type ControlTaskPriority = (typeof CONTROL_TASK_PRIORITIES)[number];
+
+/** 变更时间线事件类别。 */
+export const CONTROL_TASK_EVENT_KINDS = [
+  'created',
+  'principle_update',
+  'scope_change',
+  'status',
+  'heartbeat',
+  'note',
+  'cancelled',
+] as const;
+
+export type ControlTaskEventKind = (typeof CONTROL_TASK_EVENT_KINDS)[number];
+
+/** 任务卡变更时间线中的单条记录。 */
+export interface ControlTaskEvent {
+  /** 事件发生的毫秒时间戳。 */
+  at: number;
+  /** 发起人或 AI 节点标识（如 boss、central、coder-opus）。 */
+  by: string;
+  /** 事件种类。 */
+  kind: ControlTaskEventKind;
+  /** 变更或心跳说明文本。 */
+  text: string;
+}
+
+/** 单张多 AI 协同控制面任务卡。 */
+export interface ControlTask {
+  /** 唯一任务 ID。 */
+  id: string;
+  /** 任务简短标题。 */
+  title: string;
+  /** 背景或需求摘要。 */
+  summary: string;
+  /** 当前状态。 */
+  status: ControlTaskStatus;
+  /** 优先级（P0 / P1 / P2）。 */
+  priority: ControlTaskPriority;
+  /** 占坑/资源互斥锁标签（如 ['repo:jmbots', 'host:132']）。 */
+  lockTags: string[];
+  /** 当前认领执行的 AI 或节点名；未认领为空字符串。 */
+  owner: string;
+  /** 可机器验证的验收标准（如 bun test 0 fail & curl 200）。 */
+  doneCriteria: string;
+  /** 认领 AI 最近一次心跳或事件上报毫秒时间戳；未上报为 null。 */
+  lastHeartbeatAt: number | null;
+  /** 完整变更与心跳时间线（按时间先后追加）。 */
+  events: ControlTaskEvent[];
+  /** 创建毫秒时间戳。 */
+  createdAt: number;
+  /** 最近修改毫秒时间戳。 */
+  updatedAt: number;
+}
+
+/** 当前正被 running 任务占用的资源坑位信息。 */
+export interface ActiveLockHolder {
+  /** 占用该锁的任务 ID。 */
+  taskId: string;
+  /** 占用该锁的任务标题。 */
+  title: string;
+  /** 当前执行负责人。 */
+  owner: string;
+}
+
+/** 409 占坑冲突明细项。 */
+export interface ControlTaskLockConflict extends ActiveLockHolder {
+  /** 冲突的占坑标签名。 */
+  lockTag: string;
+}
+
+/** GET /api/work-decision/tasks 响应契约。 */
+export interface ControlTaskListResponse {
+  /** 请求成功。 */
+  ok: true;
+  /** 控制面任务账本递增修订号。 */
+  revision: number;
+  /** 满足筛选条件的任务列表。 */
+  tasks: ControlTask[];
+  /** 全量各状态任务计数（不受筛选参数影响，供顶栏仪表带直接展示）。 */
+  counts: Record<ControlTaskStatus, number>;
+  /** 当前全局正在被 running 任务占用的坑位映射（lockTag -> 持有者）。 */
+  activeLocks: Record<string, ActiveLockHolder>;
+  /** 当前处于 ready 状态且不与任何 running 任务撞坑、巡检环可立即派发的任务 ID 列表。 */
+  dispatchableIds: string[];
+}

@@ -5,7 +5,7 @@ import * as authGate from '../components/AuthGate.tsx';
 import * as token from '../Token.ts';
 import * as api from './DecisionMapApi.ts';
 import * as composer from './Composer.tsx';
-import type { CanvasLook, PendingCameraRequest } from './DecisionFlowCanvas.tsx';
+import type { PendingCameraRequest } from './DecisionFlowCanvas.tsx';
 import * as drafts from './Drafts.ts';
 import * as drawer from './Drawer.tsx';
 import * as scopeMod from './Scope.ts';
@@ -29,9 +29,16 @@ const LazyListView = react.lazy(async () => {
   const mod = await import('./Views.tsx');
   return { default: mod.ListView };
 });
+const LazyControlPlaneView = react.lazy(async () => {
+  const mod = await import('./ControlPlaneView.tsx');
+  return { default: mod.ControlPlaneView };
+});
 
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
+
+/** 顶栏主工作区页签：决策图（默认）与多 AI 任务控制面（?tab=tasks 直达）。 */
+type MainTab = 'map' | 'tasks';
 
 /** 七种看法：专题目录、四象限、思维导图、按日期、放射图、表格、清单。 */
 type Look = 'topic' | 'quadrant' | 'mind' | 'date' | 'radial' | 'table' | 'list';
@@ -66,6 +73,29 @@ function readStored(key: string): string | null {
 function writeStored(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value);
+  } catch {
+    return;
+  }
+}
+
+/** 打开时进入哪个主页签：?tab=tasks 直达多 AI 任务控制面，其余情况保持原有决策图入口。 */
+function getStartMainTab(): MainTab {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tab') === 'tasks' || params.get('look') === 'tasks') return 'tasks';
+
+  return 'map';
+}
+
+/** 同步顶栏主页签到地址栏 ?tab=tasks，便于收藏或中控发直达链接。 */
+function syncMainTabUrl(nextTab: MainTab): void {
+  try {
+    const url = new URL(window.location.href);
+    if (nextTab === 'tasks') {
+      url.searchParams.set('tab', 'tasks');
+    } else {
+      url.searchParams.delete('tab');
+    }
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   } catch {
     return;
   }
@@ -120,6 +150,8 @@ export function DecisionMapPage() {
   const [savingKey, setSavingKey] = react.useState<string>();
   const [chooseError, setChooseError] = react.useState<string>();
   const [mode, setMode] = react.useState<scopeMod.ViewMode>('main');
+  const [mainTab, setMainTab] = react.useState<MainTab>(getStartMainTab);
+  const [tasksRev, setTasksRev] = react.useState<number | undefined>(undefined);
   const [look, setLook] = react.useState<Look>(getStartLook);
   const [direction, setDirection] = react.useState<scopeMod.MindDirection>(getStartDirection);
   const [onlyAsk, setOnlyAsk] = react.useState(false);
@@ -264,6 +296,9 @@ export function DecisionMapPage() {
       }
 
       //G 空闲自动探针在本地已有快照且 dataRev 完全相同时直接返回，零 /graph 请求、零重绘。
+      if (ver.tasksRev !== undefined) {
+        setTasksRev((prev) => (prev === ver.tasksRev ? prev : ver.tasksRev));
+      }
       const isUnchanged = dataRevRef.current !== undefined && ver.dataRev === dataRevRef.current;
       if (!manual && isUnchanged) return;
 
@@ -291,8 +326,12 @@ export function DecisionMapPage() {
     //M 首屏并发发起版本探针与快照读取（1 RTT 呈现内容），其后每 30 秒只发 ~50B 版本探针。
     void refresh(control.signal);
     void api.getVersion(control.signal).then((ver) => {
-      if (!control.signal.aborted && appStartedAtRef.current === undefined) {
+      if (control.signal.aborted) return;
+      if (appStartedAtRef.current === undefined) {
         appStartedAtRef.current = ver.appStartedAt;
+      }
+      if (ver.tasksRev !== undefined) {
+        setTasksRev((prev) => (prev === ver.tasksRev ? prev : ver.tasksRev));
       }
     }, () => undefined);
 
@@ -418,6 +457,13 @@ export function DecisionMapPage() {
   const selected = projectScope.nodes.find((node) => node.id === nodeId);
   const overviewRoot = scope.nodes.find((node) => node.parent === null);
 
+  function switchMainTab(nextTab: MainTab): void {
+    setMobileDrawerOpen(false);
+    setMobileSwitcherOpen(false);
+    setMainTab(nextTab);
+    syncMainTabUrl(nextTab);
+  }
+
   function changeMode(next: scopeMod.ViewMode): void {
     if (mode === next) return;
 
@@ -428,6 +474,10 @@ export function DecisionMapPage() {
   function changeLook(next: Look): void {
     setMobileDrawerOpen(false);
     setMobileSwitcherOpen(false);
+    if (mainTab !== 'map') {
+      setMainTab('map');
+      syncMainTabUrl('map');
+    }
     if (look === next) return;
 
     writeStored(LOOK_KEY, next);
@@ -464,7 +514,11 @@ export function DecisionMapPage() {
   function toggleMobileAllPending(): void {
     setMobileDrawerOpen(false);
     setMobileSwitcherOpen(false);
-    if (look === 'topic' && resolvedTopicId === topicView.ALL_PENDING_TOPIC) {
+    if (mainTab !== 'map') {
+      setMainTab('map');
+      syncMainTabUrl('map');
+    }
+    if (mainTab === 'map' && look === 'topic' && resolvedTopicId === topicView.ALL_PENDING_TOPIC) {
       const fallback = lastNormalTopicId ?? root;
       if (fallback !== undefined) {
         setTopicId(fallback);
@@ -489,6 +543,10 @@ export function DecisionMapPage() {
 
   /** 手机视图快切：一键回到 2 列专题方块总览网格。 */
   function switchMobileToTileGrid(): void {
+    if (mainTab !== 'map') {
+      setMainTab('map');
+      syncMainTabUrl('map');
+    }
     if (root !== undefined) {
       selectTopic(root);
     }
@@ -499,6 +557,11 @@ export function DecisionMapPage() {
 
   function openPending(): void {
     if (pending.length === 0) return;
+
+    if (mainTab !== 'map') {
+      setMainTab('map');
+      syncMainTabUrl('map');
+    }
 
     const current = pending.findIndex((node) => node.id === lastPending.current);
     const next = pending[(current + 1) % pending.length]!;
@@ -630,6 +693,10 @@ export function DecisionMapPage() {
       mobileSwitcherLabel = foundLook.label;
     }
   }
+  if (mainTab === 'tasks') {
+    mobileHeaderTitle = t('AI 任务控制面');
+    mobileSwitcherLabel = t('任务台');
+  }
 
   return (
     <main className="decision-page">
@@ -646,8 +713,30 @@ export function DecisionMapPage() {
               ‹
             </a>
             <h1>{canvasLabel}</h1>
+            <div className="decision-main-tabs" role="tablist" aria-label={t('主工作区')}>
+              <button
+                type="button"
+                role="tab"
+                data-main-tab="map"
+                aria-selected={mainTab === 'map'}
+                aria-pressed={mainTab === 'map'}
+                onClick={() => switchMainTab('map')}
+              >
+                🗺️ {t('决策导图')}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                data-main-tab="tasks"
+                aria-selected={mainTab === 'tasks'}
+                aria-pressed={mainTab === 'tasks'}
+                onClick={() => switchMainTab('tasks')}
+              >
+                🎛️ {t('AI 任务控制面')}
+              </button>
+            </div>
           </div>
-          {(look === 'mind' || look === 'radial') && scope.path.length === 0 && (
+          {mainTab === 'map' && (look === 'mind' || look === 'radial') && scope.path.length === 0 && (
             <div className="decision-filters" role="group" aria-label="画布显示范围">
               <button type="button" aria-pressed={mode === 'main'} onClick={() => changeMode('main')}>
                 当前进展
@@ -660,49 +749,51 @@ export function DecisionMapPage() {
               </button>
             </div>
           )}
-          {look === 'date' && (
+          {mainTab === 'map' && look === 'date' && (
             <div className="decision-filters" role="group" aria-label={t('筛选')}>
               <button type="button" data-only-ask aria-pressed={onlyAsk} onClick={() => setOnlyAsk(!onlyAsk)}>
                 {t('只看等用户定')}
               </button>
             </div>
           )}
-          <div className="decision-looks">
-            <div className="decision-filters" role="group" aria-label={t('看法')}>
-              <span className="decision-looks__label">{t('看法')}</span>
-              {LOOKS.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  data-look={item.key}
-                  aria-pressed={look === item.key}
-                  onClick={() => changeLook(item.key)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            {look === 'mind' && (
-              <div className="decision-filters" role="group" aria-label={t('思维导图方向')}>
-                <button
-                  type="button"
-                  data-dir="lr"
-                  aria-pressed={direction === 'sides'}
-                  onClick={() => changeDirection('sides')}
-                >
-                  {t('左右')}
-                </button>
-                <button
-                  type="button"
-                  data-dir="tb"
-                  aria-pressed={direction === 'down'}
-                  onClick={() => changeDirection('down')}
-                >
-                  {t('上下')}
-                </button>
+          {mainTab === 'map' && (
+            <div className="decision-looks">
+              <div className="decision-filters" role="group" aria-label={t('看法')}>
+                <span className="decision-looks__label">{t('看法')}</span>
+                {LOOKS.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    data-look={item.key}
+                    aria-pressed={look === item.key}
+                    onClick={() => changeLook(item.key)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
+              {look === 'mind' && (
+                <div className="decision-filters" role="group" aria-label={t('思维导图方向')}>
+                  <button
+                    type="button"
+                    data-dir="lr"
+                    aria-pressed={direction === 'sides'}
+                    onClick={() => changeDirection('sides')}
+                  >
+                    {t('左右')}
+                  </button>
+                  <button
+                    type="button"
+                    data-dir="tb"
+                    aria-pressed={direction === 'down'}
+                    onClick={() => changeDirection('down')}
+                  >
+                    {t('上下')}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <div className="decision-bar__right">
             {newVersionReady && (
               <button
@@ -911,10 +1002,18 @@ export function DecisionMapPage() {
                 </button>
                 <button
                   type="button"
-                  aria-pressed={look === 'table'}
+                  aria-pressed={mainTab === 'map' && look === 'table'}
                   onClick={() => changeLook('table')}
                 >
                   {t('表格')}
+                </button>
+                <button
+                  type="button"
+                  data-switch-view="tasks"
+                  aria-pressed={mainTab === 'tasks'}
+                  onClick={() => switchMainTab('tasks')}
+                >
+                  🎛️ {t('AI 任务控制面')}
                 </button>
               </div>
             </div>
@@ -949,6 +1048,18 @@ export function DecisionMapPage() {
             </div>
 
             <div className="decision-m-drawer__body">
+              <button
+                type="button"
+                className="decision-m-drawer__cp-hero"
+                aria-pressed={mainTab === 'tasks'}
+                onClick={() => switchMainTab(mainTab === 'tasks' ? 'map' : 'tasks')}
+              >
+                <span>🎛️ {t('AI 任务控制面')}</span>
+                <span className="decision-m-drawer__cp-tag">
+                  {mainTab === 'tasks' ? t('切回决策图') : t('进入任务台')}
+                </span>
+              </button>
+
               {totalProjectPending.length > 0 && (
                 <button
                   type="button"
@@ -1103,7 +1214,7 @@ export function DecisionMapPage() {
         </form>
       )}
 
-      {look !== 'topic' && look !== 'quadrant' && scope.path.length > 0 && (
+      {mainTab === 'map' && look !== 'topic' && look !== 'quadrant' && scope.path.length > 0 && (
         <nav className="decision-breadcrumb" aria-label={t('任务树路径')}>
           <button type="button" data-tree-root onClick={() => focusTree()}>{t('全部节点')}</button>
           {scope.path.map((entry) => {
@@ -1119,7 +1230,13 @@ export function DecisionMapPage() {
       )}
 
       <div className="decision-content">
-        {!isMobile && projects.length > 0 && (
+        {mainTab === 'tasks' && (
+          <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载 AI 任务控制面…')}</div>}>
+            <LazyControlPlaneView externalTasksRev={tasksRev} isMobile={isMobile} />
+          </react.Suspense>
+        )}
+
+        {mainTab === 'map' && !isMobile && projects.length > 0 && (
           <nav className="decision-projects" aria-label={t('项目')}>
             {projects.map((project) => (
               <button
@@ -1134,7 +1251,7 @@ export function DecisionMapPage() {
           </nav>
         )}
 
-        {look === 'topic' && (
+        {mainTab === 'map' && look === 'topic' && (
           <section className="decision-canvas decision-canvas--topic" aria-label={canvasLabel} data-look={look}>
             {graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
             {graph !== undefined && (
@@ -1159,7 +1276,7 @@ export function DecisionMapPage() {
           </section>
         )}
 
-        {look === 'quadrant' && (
+        {mainTab === 'map' && look === 'quadrant' && (
           <section className="decision-canvas decision-canvas--quadrant" aria-label={canvasLabel} data-look={look}>
             {graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
             {graph !== undefined && (
@@ -1188,7 +1305,7 @@ export function DecisionMapPage() {
           </section>
         )}
 
-        {look !== 'topic' && look !== 'quadrant' && (
+        {mainTab === 'map' && look !== 'topic' && look !== 'quadrant' && (
           <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
             {isCanvas && graph === undefined && (
               <div className="decision-empty" role="status">{empty}</div>
@@ -1198,7 +1315,7 @@ export function DecisionMapPage() {
                 <LazyFlowCanvas
                   root={root}
                   focused={focused}
-                  look={look as CanvasLook}
+                  look={look}
                   mode={mode}
                   direction={direction}
                   onlyAsk={onlyAsk}

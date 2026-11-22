@@ -2661,3 +2661,768 @@ button.decision-knowledge__new { background: none; font: inherit; font-size: 12p
   font-weight: 660;
   color: #ffd594;
 }
+
+
+/* ==========================================================================
+   🎛️ 多 AI 协同控制面任务面板（Control Plane Task Board）
+   ========================================================================== */
+
+.decision-main-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid #2e394d;
+  background: #0f141d;
+}
+.decision-main-tabs button {
+  min-height: 32px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #9ba8bf;
+  font-size: 13px;
+  font-weight: 620;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.decision-main-tabs button:hover {
+  color: #edf2fb;
+  background: #1b2332;
+}
+.decision-main-tabs button[aria-selected="true"] {
+  border-color: #4c6fa8;
+  background: linear-gradient(180deg, #253652 0%, #1d2a40 100%);
+  color: #eef5ff;
+  box-shadow: 0 2px 8px rgba(8, 13, 24, 0.45);
+}
+
+.decision-m-drawer__cp-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid #3f5c8a;
+  background: linear-gradient(135deg, #1d2c46 0%, #172236 100%);
+  color: #eef5ff;
+  font-size: 14px;
+  font-weight: 660;
+  cursor: pointer;
+}
+.decision-m-drawer__cp-hero[aria-pressed="true"] {
+  border-color: #956e38;
+  background: linear-gradient(135deg, #3a3026 0%, #26201b 100%);
+  color: #f7d798;
+}
+.decision-m-drawer__cp-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cp-board {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 0%, #182131 0%, #111621 55%, #0e121b 100%);
+}
+
+.cp-grow {
+  flex: 1 1 auto;
+}
+
+/* 顶部提示吐司 */
+.cp-toast {
+  position: fixed;
+  top: 78px;
+  right: 24px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 11px 16px;
+  border-radius: 10px;
+  border: 1px solid #3a5275;
+  background: #1a2536;
+  color: #eef4fc;
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 12px 32px rgba(4, 8, 16, 0.65);
+}
+.cp-toast[data-kind="ok"] {
+  border-color: #367859;
+  background: #172b24;
+  color: #c9f7df;
+}
+.cp-toast[data-kind="err"] {
+  border-color: #9e4747;
+  background: #331c22;
+  color: #ffd0ce;
+}
+.cp-toast__close {
+  border: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+}
+.cp-toast__close:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 1. 顶部仪表带 */
+.cp-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 22px;
+  border-bottom: 1px solid #263042;
+  background: #141a25;
+}
+.cp-status-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.cp-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid #313d52;
+  background: #1a2231;
+  color: #cbd5e6;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.cp-status-pill:hover {
+  border-color: #4f6282;
+  background: #212b3e;
+}
+.cp-status-pill[data-active="true"] {
+  border-color: #6b95df;
+  background: #243652;
+  color: #f4f8ff;
+}
+.cp-status-pill[data-status="pending_decision"][data-active="true"] {
+  border-color: #d69d49;
+  background: #3a2e20;
+  color: #ffe0ad;
+}
+.cp-status-pill[data-status="ready"][data-active="true"] {
+  border-color: #3da674;
+  background: #1b362b;
+  color: #bef7d8;
+}
+.cp-status-pill[data-status="running"][data-active="true"] {
+  border-color: #5b97f7;
+  background: #1e3354;
+  color: #cfe3ff;
+}
+.cp-status-pill[data-status="blocked"][data-active="true"] {
+  border-color: #df6764;
+  background: #3b2228;
+  color: #ffc5c3;
+}
+.cp-pill-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.cp-topbar__right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+}
+.cp-dispatch-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(92, 214, 152, 0.32);
+  background: rgba(32, 74, 54, 0.45);
+  color: #a8f0c8;
+  font-size: 12.5px;
+}
+.cp-dispatch-hint b {
+  font-size: 13.5px;
+  color: #dcffec;
+}
+.cp-search-input {
+  width: 210px;
+  min-height: 34px;
+  padding: 6px 11px;
+  border-radius: 8px;
+  border: 1px solid #334056;
+  background: #0f141e;
+  color: #edf2fa;
+  font-size: 13px;
+}
+.cp-search-input:focus {
+  outline: none;
+  border-color: #6794e0;
+}
+
+/* 2. 当前占坑锁监控条 */
+.cp-locks-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 22px;
+  border-bottom: 1px solid #232c3d;
+  background: #111722;
+  font-size: 12.5px;
+}
+.cp-locks-bar__label {
+  color: #9aa7bf;
+  font-weight: 620;
+}
+.cp-locks-bar__free {
+  color: #79cfa3;
+}
+.cp-lock-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid #496692;
+  background: #1b283d;
+  color: #dce9ff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cp-lock-chip:hover {
+  border-color: #759ee0;
+}
+.cp-lock-chip[data-active="true"] {
+  border-color: #f0b865;
+  background: #3b2f1f;
+  color: #ffe3b3;
+}
+.cp-lock-chip__tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 650;
+}
+.cp-lock-chip__sep {
+  opacity: 0.6;
+}
+.cp-lock-chip__owner {
+  color: #9ec5ff;
+}
+.cp-clear-link {
+  border: 0;
+  padding: 2px 6px;
+  background: transparent;
+  color: #8ab4ff;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* 3. 任务卡片滚动区与网格 */
+.cp-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 22px 36px;
+}
+.cp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 220px;
+  color: var(--decision-muted);
+  font-size: 14px;
+}
+.cp-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.cp-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 15px 16px;
+  border-radius: 14px;
+  border: 1px solid #2d384c;
+  background: #171e2c;
+  box-shadow: 0 6px 20px rgba(5, 9, 17, 0.42);
+  transition: border-color 0.15s ease;
+}
+.cp-card:hover {
+  border-color: #41516e;
+}
+.cp-card[data-status="running"] {
+  border-color: #3d66a3;
+  background: linear-gradient(180deg, #192438 0%, #161e2c 100%);
+}
+.cp-card[data-status="pending_decision"] {
+  border-color: #826135;
+}
+.cp-card[data-status="blocked"] {
+  border-color: #874347;
+}
+.cp-card[data-status="done"],
+.cp-card[data-status="cancelled"] {
+  opacity: 0.84;
+}
+/* 超过 15 分钟无心跳的 running 任务自动亮橙色告警边框 */
+.cp-card[data-stale="true"] {
+  border-color: #f08c3a;
+  box-shadow: 0 0 0 2px rgba(240, 140, 58, 0.18), 0 8px 24px rgba(8, 12, 22, 0.55);
+}
+
+.cp-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.cp-prio-badge {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+}
+.cp-prio-badge[data-prio="P0"] {
+  border: 1px solid #cf5755;
+  background: #472026;
+  color: #ffb8b6;
+}
+.cp-prio-badge[data-prio="P1"] {
+  border: 1px solid #4d7ec4;
+  background: #1e3250;
+  color: #bdd8ff;
+}
+.cp-prio-badge[data-prio="P2"] {
+  border: 1px solid #47546b;
+  background: #222a38;
+  color: #b8c4d9;
+}
+
+.cp-state-badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid #38455c;
+  background: #202838;
+  color: #d6dfee;
+  font-size: 12px;
+  font-weight: 620;
+}
+.cp-state-badge[data-status="pending_decision"] {
+  border-color: #9e7337;
+  background: #382c1d;
+  color: #ffdca6;
+}
+.cp-state-badge[data-status="ready"] {
+  border-color: #36875f;
+  background: #193328;
+  color: #b2f2cf;
+}
+.cp-state-badge[data-status="running"] {
+  border-color: #497fd1;
+  background: #1c3152;
+  color: #c7dfff;
+}
+.cp-state-badge[data-status="blocked"] {
+  border-color: #ad4c4f;
+  background: #3b2026;
+  color: #ffc1bf;
+}
+.cp-state-badge[data-status="done"] {
+  border-color: #3b4b5e;
+  background: #1c2430;
+  color: #9db0c9;
+}
+
+.cp-ready-go-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(54, 179, 116, 0.16);
+  color: #8ef0ba;
+  font-size: 11.5px;
+  font-weight: 630;
+}
+.cp-wait-lock-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(235, 162, 66, 0.16);
+  color: #ffd191;
+  font-size: 11.5px;
+}
+
+.cp-owner-pill {
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid #2f3b4f;
+  background: #131924;
+  color: #8e9cb5;
+  font-size: 12px;
+}
+.cp-owner-pill[data-claimed="true"] {
+  border-color: #435d87;
+  background: #1a263b;
+  color: #d4e5ff;
+  font-weight: 600;
+}
+
+.cp-card__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+  line-height: 1.38;
+  color: #f2f6fc;
+  overflow-wrap: anywhere;
+}
+.cp-card__summary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.52;
+  color: #a6b3ca;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cp-card__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cp-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cp-tag-none {
+  font-size: 12px;
+  color: #74829c;
+}
+.cp-tag-pill {
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #35445c;
+  background: #121824;
+  color: #b7c8e4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cp-tag-pill:hover,
+.cp-tag-pill[data-active="true"] {
+  border-color: #dca655;
+  color: #ffe0ad;
+  background: #2e261b;
+}
+
+.cp-hb-normal {
+  font-size: 12px;
+  color: #8b9ab3;
+}
+.cp-hb-stale {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #eb8634;
+  background: rgba(235, 134, 52, 0.18);
+  color: #ffc58f;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.cp-criteria-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #273347;
+  background: #111722;
+  font-size: 12px;
+}
+.cp-criteria-box__label {
+  color: #93a3bf;
+  font-weight: 620;
+}
+.cp-criteria-box__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #bfe0ff;
+  overflow-wrap: anywhere;
+}
+
+.cp-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* 通用控制面按钮 */
+.cp-btn {
+  min-height: 31px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid #364359;
+  background: #1e2738;
+  color: #dce5f5;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.cp-btn:hover:not(:disabled) {
+  border-color: #54688a;
+  background: #273349;
+}
+.cp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cp-btn--primary {
+  border-color: #4d7ed1;
+  background: #244375;
+  color: #f2f7ff;
+}
+.cp-btn--primary:hover:not(:disabled) {
+  border-color: #6fa0f2;
+  background: #2c518c;
+}
+.cp-btn--accent {
+  border-color: #4678bd;
+  background: #1f395e;
+  color: #d9ebff;
+}
+.cp-btn--success {
+  border-color: #368a61;
+  background: #1b3d2e;
+  color: #c4f7dc;
+}
+.cp-btn--warn {
+  border-color: #a66932;
+  background: #3b2919;
+  color: #ffd8ad;
+}
+.cp-btn--danger {
+  border-color: #b84a4d;
+  background: #472025;
+  color: #ffd1d0;
+}
+.cp-btn--ghost {
+  border-color: #2e394d;
+  background: #161d2b;
+  color: #bac6dc;
+}
+.cp-btn--danger-text {
+  border-color: transparent;
+  background: transparent;
+  color: #a87579;
+}
+.cp-btn--danger-text:hover:not(:disabled) {
+  border-color: #7d3b40;
+  background: #2e1a1f;
+  color: #ffb5b3;
+}
+
+/* 展开的变更时间线 */
+.cp-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #263246;
+  background: #10151f;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.cp-timeline__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+.cp-timeline__item:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.cp-timeline__badge {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: #222c3d;
+  color: #bfd0eb;
+  font-size: 11px;
+  font-weight: 650;
+}
+.cp-timeline__badge[data-kind="principle"] {
+  background: #3d2e1b;
+  color: #ffd89a;
+}
+.cp-timeline__badge[data-kind="scope"] {
+  background: #223554;
+  color: #b5d5ff;
+}
+.cp-timeline__badge[data-kind="cancelled"] {
+  background: #402026;
+  color: #ffb8b6;
+}
+.cp-timeline__by {
+  color: #93b4eb;
+  font-weight: 600;
+}
+.cp-timeline__time {
+  color: #6f7e96;
+}
+.cp-timeline__text {
+  flex: 1 1 100%;
+  margin: 1px 0 0;
+  color: #d7e0ef;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 应用内模态框（零原生 alert/prompt/confirm） */
+.cp-modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.cp-modal-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 10, 18, 0.72);
+  backdrop-filter: blur(3px);
+}
+.cp-modal-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 20px 22px;
+  border-radius: 16px;
+  border: 1px solid #384760;
+  background: #171f2e;
+  box-shadow: 0 20px 56px rgba(3, 6, 14, 0.78);
+}
+.cp-modal-card--wide {
+  width: min(640px, 100%);
+}
+.cp-modal-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 680;
+  color: #f2f6fc;
+}
+.cp-modal-desc {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #adbacc;
+}
+.cp-field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.cp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: #a9b7cf;
+}
+.cp-field input,
+.cp-field select,
+.cp-field textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #324057;
+  background: #0f1520;
+  color: #eef3fb;
+  font: inherit;
+  font-size: 13.5px;
+}
+.cp-field input:focus,
+.cp-field select:focus,
+.cp-field textarea:focus {
+  outline: none;
+  border-color: #6694e3;
+}
+.cp-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding-top: 4px;
+}
+
+@media (max-width: 799px) {
+  .cp-topbar {
+    padding: 10px 12px;
+  }
+  .cp-locks-bar {
+    padding: 8px 12px;
+  }
+  .cp-list-wrap {
+    padding: 12px 12px 28px;
+  }
+  .cp-search-input {
+    flex: 1 1 140px;
+    width: auto;
+  }
+  .cp-toast {
+    top: 56px;
+    right: 12px;
+    left: 12px;
+  }
+}
