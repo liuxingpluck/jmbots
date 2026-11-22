@@ -3,7 +3,7 @@
  * 将原 index.ts 中交叉判断的收话逻辑拆成三条扁平直路，行为 100% 等价。
  */
 import * as utils from '../../utils/index.ts';
-import type { ChatKind, Helper, InboxItem, RelayMode, Speaker } from './index.ts';
+import type { ChatKind, Helper, InboxItem, OwnerP2pDirectRule, RelayMode, Speaker } from './index.ts';
 
 
 /**
@@ -108,14 +108,44 @@ export function matchHelperPrefix(helpers: readonly Helper[], text: string): Hel
 
 
 /**
+ * 判定是否命中“仅本人私聊指定机器人免前缀直通”（owner_p2p_direct）严格安全守卫：
+ * 1. 目标机器人 bot 命中 owner_p2p_direct 规则；
+ * 2. getChat(customer) === 'p2p' 且 address.chatType !== 'group'（严禁任何群聊触发）；
+ * 3. address.owner === true（严禁任何外人/访客私聊触发）；
+ * 4. address.listenOnly !== true（只听消息绝不触发）。
+ */
+export function matchOwnerP2pDirectHelper(
+  bot: string,
+  address: unknown,
+  helpers: readonly Helper[],
+  ownerP2pDirect: readonly OwnerP2pDirectRule[] = [],
+): Helper | undefined {
+  if (bot === '' || ownerP2pDirect.length === 0) return undefined;
+
+  const rule = ownerP2pDirect.find((item) => item.bot === bot);
+  if (rule === undefined) return undefined;
+  if (utils.getField(address, 'listenOnly') === true) return undefined;
+  if (utils.getField(address, 'owner') !== true) return undefined;
+  if (utils.getStringField(address, 'chatType') === 'group') return undefined;
+
+  const customer = utils.getStringField(address, 'customer');
+  if (getChat(customer) !== 'p2p') return undefined;
+
+  return helpers.find((helper) => helper.name === rule.helper);
+}
+
+
+/**
  * 入站收话三条扁平分流规则（消除原交叉嵌套条件，行为 100% 等价）：
  * 1. 群攒批转交（address.relayHelper 非空）：直接进 relay 会话；
  * 2. 非只听状态下的 direct 机器人：整句进该客户的前台会话（由 direct 前台拦截直转）；
- * 3. 只听消息或非 direct 机器人：命中助手前缀才进 relay 会话，否则放行给后续插件。
+ * 3. 只听消息或非 direct 机器人：命中助手前缀，或命中 owner_p2p_direct 严格五重守卫时进 relay 会话，否则放行给后续插件。
  * @param botMode 该机器人的 relay 模式。
  * @param address 入站消息回话地址。
  * @param text 入站消息正文。
  * @param helpers 外部助手清单。
+ * @param bot 目标机器人名（用于匹配 owner_p2p_direct）。
+ * @param ownerP2pDirect 仅本人私聊指定机器人免前缀直通规则。
  * @returns 目标会话种类（front / relay）；不截走返回 undefined。
  */
 export function pickReceiveSessionKind(
@@ -123,6 +153,8 @@ export function pickReceiveSessionKind(
   address: unknown,
   text: string,
   helpers: readonly Helper[],
+  bot = '',
+  ownerP2pDirect: readonly OwnerP2pDirectRule[] = [],
 ): 'front' | 'relay' | undefined {
   //M 第 1 条路：群攒批指定了外部助手（judge_helper → relayHelper），直接进 relay 会话。
   const relayHelper = utils.getStringField(address, 'relayHelper').trim();
@@ -132,8 +164,9 @@ export function pickReceiveSessionKind(
   const listenOnly = utils.getField(address, 'listenOnly') === true;
   if (!listenOnly && botMode === 'direct') return 'front';
 
-  //M 第 3 条路：其余情况仅在命中助手前缀时进 relay 会话。
+  //M 第 3 条路：命中助手前缀，或命中“仅本人私聊指定机器人免前缀直通”，进 relay 会话。
   if (matchHelperPrefix(helpers, text) !== undefined) return 'relay';
+  if (matchOwnerP2pDirectHelper(bot, address, helpers, ownerP2pDirect) !== undefined) return 'relay';
 
   return undefined;
 }

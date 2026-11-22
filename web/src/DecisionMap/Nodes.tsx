@@ -1,4 +1,5 @@
 /** 决策图节点的标题、当前状态和交互入口。 */
+import * as react from 'react';
 import * as xyflow from '@xyflow/react';
 import type * as types from '../../../src7/plugins/work-decision/Types.ts';
 import type * as layout from './Layout.ts';
@@ -34,7 +35,7 @@ function getCanvasTitle(entry: types.DecisionNode): string {
 }
 
 /** 尺寸固定以支持画布缩放，用按钮同时支持指针和键盘。 */
-export function DecisionNode({ data, selected }: xyflow.NodeProps<layout.CardNode>) {
+function DecisionNodeInner({ data, selected }: xyflow.NodeProps<layout.CardNode>) {
   const { entry, open, fold, hint } = data;
 
   //M 用相同的状态词和颜色表达中控是否已确认。
@@ -74,8 +75,20 @@ export function DecisionNode({ data, selected }: xyflow.NodeProps<layout.CardNod
   );
 }
 
+/** 记忆化决策节点卡片：节点引用、选中态与折叠状态未变时跳过重绘。 */
+export const DecisionNode = react.memo(DecisionNodeInner, (prev, next) => {
+  return (
+    prev.selected === next.selected &&
+    prev.data.entry === next.data.entry &&
+    prev.data.hint === next.data.hint &&
+    prev.data.fold?.id === next.data.fold?.id &&
+    prev.data.fold?.count === next.data.fold?.count &&
+    prev.data.fold?.expanded === next.data.fold?.expanded
+  );
+});
+
 /** 按日期看法的日期卡片：点一下收起或展开这一天，有等用户定的事时醒目。 */
-export function DayNode({ data }: xyflow.NodeProps<layout.DayNode>) {
+function DayNodeInner({ data }: xyflow.NodeProps<layout.DayNode>) {
   const { day, label, total, asks, expanded, open } = data;
   let className = 'decision-node decision-node--day';
   if (asks > 0) className += ' decision-node--day-ask';
@@ -108,6 +121,17 @@ export function DayNode({ data }: xyflow.NodeProps<layout.DayNode>) {
     </div>
   );
 }
+
+/** 记忆化日期分组卡片。 */
+export const DayNode = react.memo(DayNodeInner, (prev, next) => {
+  return (
+    prev.data.day === next.data.day &&
+    prev.data.label === next.data.label &&
+    prev.data.total === next.data.total &&
+    prev.data.asks === next.data.asks &&
+    prev.data.expanded === next.data.expanded
+  );
+});
 
 /** 折叠整支子树时，让控件留在父卡片上，不再占用一个画布节点。 */
 function FoldButton(

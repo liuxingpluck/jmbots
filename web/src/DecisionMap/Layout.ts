@@ -336,7 +336,7 @@ function isFree(box: Box, position: xyflow.XYPosition, placed: Box[]): boolean {
   });
 }
 
-/** 在目标点附近寻找能装下当前卡片的位置。 */
+/** 在目标点附近按由近及远的同心方环寻找能装下当前卡片的位置，避免全画布双重网格扫描阻塞主线程。 */
 function placeLandscape(boxes: Box[], bounds: { width: number; height: number }): void {
   const placed: Box[] = [];
   for (const box of boxes) {
@@ -347,26 +347,47 @@ function placeLandscape(boxes: Box[], bounds: { width: number; height: number })
       continue;
     }
 
-    //M 只在碰撞时找最近的空位，留在画布尺寸允许的区间。
+    //M 从原坐标出发按步长 16px 的同心方环由内向外扩散搜索，命中同一环上的最近空位即刻停止。
     const limitX = (bounds.width - box.width) / 2;
     const limitY = (bounds.height - box.height) / 2;
+    const baseX = Math.round(box.position.x / 16) * 16;
+    const baseY = Math.round(box.position.y / 16) * 16;
+    const maxRadius = Math.ceil(Math.max(limitX + Math.abs(baseX), limitY + Math.abs(baseY)) / 16);
     let best: xyflow.XYPosition | undefined;
     let distance = Infinity;
-    for (let y = -limitY; y <= limitY; y += 16) {
-      for (let x = -limitX; x <= limitX; x += 16) {
-        const deltaX = x - box.position.x;
-        const deltaY = y - box.position.y;
-        const cost = deltaX * deltaX + deltaY * deltaY;
-        if (cost >= distance) continue;
 
-        const candidate = { x, y };
-        //G 空位即使离得近，也要给周围的字和高亮留出间隔。
-        if (!isFree(box, candidate, placed)) continue;
+    for (let ring = 1; ring <= maxRadius; ring += 1) {
+      const span = ring * 16;
+      //G 若当前环的最小可能平方距离已超过已找到的 best，直接提前结束搜索。
+      if (best !== undefined && (span - 16) * (span - 16) >= distance) break;
 
-        best = candidate;
-        distance = cost;
+      for (let dy = -span; dy <= span; dy += 16) {
+        const y = baseY + dy;
+        if (y < -limitY || y > limitY) continue;
+
+        const isTopOrBottom = Math.abs(dy) === span;
+        let xStep = span * 2;
+        if (isTopOrBottom || span === 0) {
+          xStep = 16;
+        }
+        for (let dx = -span; dx <= span; dx += xStep) {
+          const x = baseX + dx;
+          if (x < -limitX || x > limitX) continue;
+
+          const deltaX = x - box.position.x;
+          const deltaY = y - box.position.y;
+          const cost = deltaX * deltaX + deltaY * deltaY;
+          if (cost >= distance) continue;
+
+          const candidate = { x, y };
+          if (!isFree(box, candidate, placed)) continue;
+
+          best = candidate;
+          distance = cost;
+        }
       }
     }
+
     if (best === undefined) {
       //M 特大展开图会多占一行，避免把两张必须能点击的卡片叠在一起。
       const bottom = Math.max(...placed.map((other) => other.position.y + other.height / 2));

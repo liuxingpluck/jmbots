@@ -50,7 +50,8 @@ export const name = 'relay';
 //M 1.5.5：prefixed 跳过引用及前导 @提及与空白；中文结尾前缀允许直接紧跟英文字母或数字（如“哈基米a OBB”）。
 //M 1.5.6：飞书真回复发出后异步温和撤回“已转给”占位消息（ack_message_id）；收话分流、文件与决策辅助拆入独立子模块瘦身。
 //M 1.5.7：飞书发文件、撤回占位不再自己掐表（原 30 秒、15 秒），飞书自己限时 60 秒、到点回执；删“等待回执超时”分支（云端 31 第 2 条）。
-export const version = '1.5.7';
+//M 1.5.8：新增可选 owner_p2p_direct 配置，仅本人私聊指定机器人且未命中其他显式前缀时免前缀直通指定外部助手。
+export const version = '1.5.8';
 
 /** 用到的服务。db 负责收件与回信表的版本迁移和事务；http 是可选的：用到时 ctx.get 现取。 */
 export const inject = ['resources', 'tools', 'sessions', 'bots', 'db'];
@@ -78,6 +79,15 @@ export interface Helper {
 }
 
 
+/** 仅本人私聊指定机器人时免前缀直通某个外部助手的规则。 */
+export interface OwnerP2pDirectRule {
+  /** 目标机器人名字（不可重复）。 */
+  bot: string;
+  /** 默认投递的外部助手名字（必须在 helpers 中存在）。 */
+  helper: string;
+}
+
+
 /** apply 校验好以后给 Relay 的东西。 */
 export interface RelayConfig {
   /** 多久没回提醒一次，分钟。 */
@@ -90,6 +100,8 @@ export interface RelayConfig {
   helpers: [Helper, ...Helper[]];
   /** 这些机器人的话全部直接转（等于名单项写 relay: direct）。 */
   bots: string[];
+  /** 仅本人私聊（p2p + owner=true + 非 listenOnly）发给指定机器人时，未命中其他显式前缀也直通对应助手。 */
+  ownerP2pDirect: OwnerP2pDirectRule[];
 }
 
 
@@ -236,7 +248,7 @@ export class Relay {
     this.migrateOldItems();
 
     for (const bot of botUtils.getBotConfigs(this.ctx.resources.raw)) {
-      if (this.getMode(bot.name) !== undefined) {
+      if (this.hasBotRelayDir(bot.name)) {
         filesModule.ensureBotRelayDir(this.ctx.resources, bot.name);
       }
     }
@@ -373,6 +385,13 @@ export class Relay {
     if (this.config.bots.includes(bot)) return 'direct';
 
     return botUtils.getBotConfig(this.ctx.resources.raw, bot)?.['relay'] as RelayMode | undefined;
+  }
+
+  /** 这个机器人是否启用了文件收发目录与 replies.jsonl 轮询（含 owner_p2p_direct 指定的机器人）。 */
+  private hasBotRelayDir(bot: string): boolean {
+    if (this.getMode(bot) !== undefined) return true;
+
+    return this.config.ownerP2pDirect.some((rule) => rule.bot === bot);
   }
 
   /** 这场会话怎么转：先看机器人；机器人没写再看飞书群地址里的 relay: model。 */
@@ -539,6 +558,8 @@ export class Relay {
       address,
       event.message.text,
       this.config.helpers,
+      bot,
+      this.config.ownerP2pDirect,
     );
     if (kind === undefined) return;
 
@@ -605,7 +626,13 @@ export class Relay {
     )[0];
     const relayHelper = utils.getStringField(row.address, 'relayHelper').trim();
     const explicitHelper = this.config.helpers.find((one) => one.name === relayHelper);
-    const helper = this.prefixed(text) ?? explicitHelper ?? this.config.helpers[0];
+    const ownerDirectHelper = receiveModule.matchOwnerP2pDirectHelper(
+      row.bot,
+      row.address,
+      this.config.helpers,
+      this.config.ownerP2pDirect,
+    );
+    const helper = this.prefixed(text) ?? explicitHelper ?? ownerDirectHelper ?? this.config.helpers[0];
     const id = known?.id ?? this.register(session, helper, text, lastTimestamp);
     if (relayHelper !== '') {
       request.answer = this.said(row.bot, '');
@@ -1007,7 +1034,7 @@ export class Relay {
   /** 轮询读取每个 relay 机器人的 replies.jsonl。 */
   private pollFile(): void {
     for (const bot of botUtils.getBotConfigs(this.ctx.resources.raw)) {
-      if (this.getMode(bot.name) === undefined) continue;
+      if (!this.hasBotRelayDir(bot.name)) continue;
       try {
         const dir = filesModule.ensureBotRelayDir(this.ctx.resources, bot.name);
         filesModule.pollBotReplyFile(dir, bot.name, (parsed, b) => this.accept(parsed, 'file', b));
@@ -1267,6 +1294,7 @@ export interface RelayWritten {
   poll_seconds?: unknown;
   helpers?: unknown;
   bots?: unknown;
+  owner_p2p_direct?: unknown;
   tasks?: unknown;
 }
 

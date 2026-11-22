@@ -14,11 +14,11 @@ const t = words.t;
 
 const NODE_TYPES = { decision: nodes.DecisionNode, day: nodes.DayNode };
 const ORIGIN: xyflow.NodeOrigin = [0.5, 0.5];
-const FIT: xyflow.FitViewOptions = {
+const FIT: xyflow.FitViewOptions<layout.FlowNode> = {
   padding: { top: '24px', bottom: '48px', left: '24px', right: '24px' },
   maxZoom: 1,
 };
-const FIT_MOBILE: xyflow.FitViewOptions = {
+const FIT_MOBILE: xyflow.FitViewOptions<layout.FlowNode> = {
   padding: { top: '44px', bottom: '68px', left: '12px', right: '12px' },
   minZoom: 0.62,
   maxZoom: 1.05,
@@ -35,6 +35,7 @@ export interface PendingCameraRequest {
 
 /** 图形画布属性。 */
 export interface DecisionFlowCanvasProps {
+  active: boolean;
   root?: string;
   focused?: string;
   look: CanvasLook;
@@ -57,12 +58,17 @@ export interface DecisionFlowCanvasProps {
 
 /**
  * 渲染工作决策 React Flow 画布、手机导图操控胶囊与状态图例。
+ * 保持单一 ReactFlow 实例原地热更新 nodes/edges 并自动 fitView，避免每次切换方向/范围都卸载重建整套 DOM。
  */
-export function DecisionFlowCanvas(props: DecisionFlowCanvasProps): react.JSX.Element {
-  const { root, focused, look, mode, direction, onlyAsk, isMobile, portrait, size } = props;
+function DecisionFlowCanvasInner(props: DecisionFlowCanvasProps): react.JSX.Element {
+  const { active, root, focused, look, mode, direction, onlyAsk, isMobile, portrait, size } = props;
   const { scopeNodes, hasScopePath, folds, emptyText, cameraRequest } = props;
   const flowRef = react.useRef<xyflow.ReactFlowInstance<layout.FlowNode> | undefined>(undefined);
   const handledSeqRef = react.useRef(0);
+  const needsFitRef = react.useRef(false);
+
+  let fit = FIT;
+  if (portrait) fit = FIT_MOBILE;
 
   //M 按当前视图类型（思维导图、日期或放射）即时排布节点与连线坐标。
   const diagram = react.useMemo(() => {
@@ -75,6 +81,25 @@ export function DecisionFlowCanvas(props: DecisionFlowCanvasProps): react.JSX.El
 
     return layout.getLayout(scopeNodes, view, props.onOpen);
   }, [direction, folds, hasScopePath, look, mode, onlyAsk, portrait, props.onOpen, scopeNodes, size]);
+
+  //M 布局输入参数变化时标记需要在可见态下重新 fitView；单纯在导图与四象限之间往返切换时保持用户现有镜头位置。
+  react.useEffect(() => {
+    needsFitRef.current = true;
+  }, [diagram.nodes.length, direction, fit, focused, look, mode, onlyAsk, portrait, root]);
+
+  //M 当画布处于可见激活态且存在待处理的 fitView 标记时，在下一帧平滑适配视口。
+  react.useEffect(() => {
+    if (!active || !needsFitRef.current) return;
+
+    const map = flowRef.current;
+    if (map === undefined || diagram.nodes.length === 0) return;
+
+    needsFitRef.current = false;
+    const rafId = window.requestAnimationFrame(() => {
+      void map.fitView(fit);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [active, diagram.nodes.length, direction, fit, focused, look, mode, onlyAsk, portrait, root]);
 
   //M 响应顶栏「待定」按钮发来的镜头聚焦请求，平滑平移并放大到目标待定卡片。
   react.useEffect(() => {
@@ -96,19 +121,6 @@ export function DecisionFlowCanvas(props: DecisionFlowCanvasProps): react.JSX.El
   const connect = react.useCallback((map: xyflow.ReactFlowInstance<layout.FlowNode>): void => {
     flowRef.current = map;
   }, []);
-
-  let fit = FIT;
-  if (portrait) fit = FIT_MOBILE;
-
-  const flowKey = [
-    root ?? '',
-    look,
-    direction,
-    mode,
-    String(onlyAsk),
-    `${String(size.width)}x${String(size.height)}`,
-    focused ?? '',
-  ].join('-');
 
   return (
     <>
@@ -155,7 +167,6 @@ export function DecisionFlowCanvas(props: DecisionFlowCanvasProps): react.JSX.El
 
       {diagram.nodes.length > 0 && (
         <xyflow.ReactFlow<layout.FlowNode>
-          key={flowKey}
           nodes={diagram.nodes}
           edges={diagram.edges}
           nodeTypes={NODE_TYPES}
@@ -163,6 +174,7 @@ export function DecisionFlowCanvas(props: DecisionFlowCanvasProps): react.JSX.El
           nodesDraggable={false}
           nodesConnectable={false}
           edgesFocusable={false}
+          onlyRenderVisibleElements
           panOnDrag
           zoomOnPinch
           fitView
@@ -200,3 +212,6 @@ export function DecisionFlowCanvas(props: DecisionFlowCanvasProps): react.JSX.El
     </>
   );
 }
+
+/** 记忆化工作决策画布组件。 */
+export const DecisionFlowCanvas = react.memo(DecisionFlowCanvasInner);

@@ -5,11 +5,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as botUtils from '../../utils/Bots.ts';
+import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
-import type { Helper, RelayConfig, RelayWritten } from './index.ts';
+import type { Helper, OwnerP2pDirectRule, RelayConfig, RelayWritten } from './index.ts';
 
 
 /**
@@ -193,11 +194,50 @@ export function parseRelayWrittenConfig(
     }
   }
 
+  const ownerP2pDirect = parseOwnerP2pDirect(written.owner_p2p_direct, helpers);
+
   return {
     remindMinutes: positive(written.remind_minutes, 15, 'remind_minutes'),
     expireMinutes: positive(written.expire_minutes, 120, 'expire_minutes'),
     pollSeconds: positive(written.poll_seconds, 2, 'poll_seconds'),
     helpers: helpers as [Helper, ...Helper[]],
     bots: list(written.bots, [], 'bots'),
+    ownerP2pDirect,
   };
+}
+
+
+/**
+ * 校验可选的 owner_p2p_direct 配置：必须是 { bot, helper } 列表，bot 不可重复，helper 必须在 helpers 中存在。
+ */
+function parseOwnerP2pDirect(raw: unknown, helpers: readonly Helper[]): OwnerP2pDirectRule[] {
+  if (raw === undefined) return [];
+
+  const entries = checksModule.checkArray(raw, 'relay.owner_p2p_direct');
+  const rules: OwnerP2pDirectRule[] = [];
+  const seenBots = new Set<string>();
+
+  for (const [index, entry] of entries.entries()) {
+    const label = `relay.owner_p2p_direct[${String(index)}]`;
+    const item = checksModule.checkRecord(entry, label);
+    const bot = checksModule.checkNonEmptyText(item['bot'], `${label}.bot`);
+    const helper = checksModule.checkNonEmptyText(item['helper'], `${label}.helper`);
+
+    if (bot.trim() === '' || bot !== bot.trim()) {
+      throw new Error(`${label}.bot 要写成无首尾空白的非空机器人名字`);
+    }
+    if (helper.trim() === '' || helper !== helper.trim()) {
+      throw new Error(`${label}.helper 要写成无首尾空白的非空助手名字`);
+    }
+    if (seenBots.has(bot)) {
+      throw new Error(`relay 的 owner_p2p_direct 中 bot 不能重复：${bot}`);
+    }
+    if (!helpers.some((known) => known.name === helper)) {
+      throw new Error(`relay 的 owner_p2p_direct 中机器人 ${bot} 指定的 helper 不在 helpers 里：${helper}`);
+    }
+
+    seenBots.add(bot);
+    rules.push({ bot, helper });
+  }
+  return rules;
 }

@@ -58,7 +58,7 @@ function getInitialZoomedQuad(): types.DecisionQuadrant | null {
 }
 
 /** 四象限决策矩阵主体组件。 */
-export function QuadrantView({
+function QuadrantViewInner({
   nodes,
   isMobile,
   selectedNodeId,
@@ -77,31 +77,43 @@ export function QuadrantView({
   const [scopeFilter, setScopeFilter] = react.useState<quadrants.QuadrantScopeFilter>('active');
   const [zoomedQuad, setZoomedQuad] = react.useState<types.DecisionQuadrant | null>(getInitialZoomedQuad);
 
-  const root = nodes.find((entry) => entry.parent === null);
+  const root = react.useMemo(() => nodes.find((entry) => entry.parent === null), [nodes]);
   const byId = react.useMemo(() => new Map(nodes.map((entry) => [entry.id, entry])), [nodes]);
   const allEntries = react.useMemo(() => quadrants.buildQuadrantEntries(nodes), [nodes]);
   const visibleEntries = react.useMemo(
     () => quadrants.filterQuadrantEntries(allEntries, scopeFilter),
     [allEntries, scopeFilter],
   );
+  const counts = react.useMemo(() => {
+    let activeCount = 0;
+    let pendingCount = 0;
+    for (const entry of allEntries) {
+      if (!entry.isClosed) activeCount += 1;
+      if (entry.isPendingOpen) pendingCount += 1;
+    }
+    return { activeCount, pendingCount, totalCount: allEntries.length };
+  }, [allEntries]);
+
+  const grouped = react.useMemo(() => {
+    const map = new Map<types.DecisionQuadrant, quadrants.QuadrantEntry[]>();
+    for (const spec of quadrants.QUADRANT_SPECS) {
+      map.set(spec.key, []);
+    }
+    for (const entry of visibleEntries) {
+      map.get(entry.quadrant)!.push(entry);
+    }
+    return map;
+  }, [visibleEntries]);
 
   if (root === undefined) {
     return <div className="decision-empty">{t('还没有工作决策节点')}</div>;
   }
 
-  const activeCount = allEntries.filter((entry) => !entry.isClosed).length;
-  const pendingCount = allEntries.filter((entry) => entry.isPendingOpen).length;
-  const totalCount = allEntries.length;
-
-  const grouped = new Map<types.DecisionQuadrant, quadrants.QuadrantEntry[]>();
-  for (const spec of quadrants.QUADRANT_SPECS) {
-    grouped.set(spec.key, []);
+  const { activeCount, pendingCount, totalCount } = counts;
+  let selectedNode: types.DecisionNode | undefined;
+  if (selectedNodeId !== undefined) {
+    selectedNode = byId.get(selectedNodeId);
   }
-  for (const entry of visibleEntries) {
-    grouped.get(entry.quadrant)!.push(entry);
-  }
-
-  const selectedNode = nodes.find((entry) => entry.id === selectedNodeId);
   let drawerSaving: string | undefined;
   if (selectedNode !== undefined && savingKey !== undefined && savingKey.startsWith(`${selectedNode.id}:`)) {
     drawerSaving = savingKey.slice(selectedNode.id.length + 1);
@@ -434,3 +446,6 @@ export function QuadrantView({
     </div>
   );
 }
+
+/** 记忆化四象限矩阵视图，避免顶栏或后台探针无关状态导致重复重绘。 */
+export const QuadrantView = react.memo(QuadrantViewInner);

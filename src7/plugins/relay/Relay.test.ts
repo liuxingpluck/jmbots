@@ -1242,4 +1242,158 @@ describe('回信送进会话：先写进对话再标已送，走模型的会话�
     expect(receiveModule.pickReceiveSessionKind('model', {}, 'cc 帮改一下', helpers)).toBe('relay');
     expect(receiveModule.pickReceiveSessionKind('model', {}, '今天天气不错', helpers)).toBeUndefined();
   });
+
+  test('owner_p2p_direct：仅老板私聊指定机器人免前缀直通指定助手（保留显式前缀优先、撤回占位与 replies.jsonl，严拒群聊/外人/只听）', async () => {
+    //M 保持 helpers 顺序不变（第一个仍是 jm开发），验证不会破坏默认助手归属。
+    const helpers = [
+      { name: 'jm开发', prefixes: ['jm'] },
+      { name: 'Claude', title: '哈基米', prefixes: ['cc', '哈基米'] },
+      { name: 'Codex', prefixes: ['cx'] },
+    ];
+    const made = await ready(helpers, {
+      owner_p2p_direct: [{ bot: BOT, helper: 'Claude' }],
+      poll_seconds: 0.05,
+    });
+
+    let msgSeq = 500;
+    made.ctx.on('channel/reply', (request: channels.ChannelReplyRequest) => {
+      request.handled = true;
+      msgSeq += 1;
+      const receipt = channels.getReceipt(request, 'sent');
+      receipt.messageIds = [`om_p2p_${String(msgSeq)}`];
+      channels.emitReplied(made.ctx, request, receipt);
+    });
+
+    const recalled: { bot: string; messageId: string; chatId?: string }[] = [];
+    events.onRequestEvent(made.ctx, 'feishu/recall-message', 'feishu/recall-message-result', (req) => {
+      recalled.push({ bot: req.bot, messageId: req.messageId, chatId: req.chatId });
+      return { ok: true };
+    });
+
+    const ownerP2pAddr = {
+      appId: 'cli_zxl',
+      chatId: 'oc_p2p_leon',
+      chatType: 'p2p',
+      openId: 'ou_leon',
+      customer: 'feishu:ou_leon',
+      senderName: 'leon',
+      owner: true,
+      role: 'owner',
+    };
+
+    // 1. 老板私聊目标机器人免 cc / 免哈基米：直通 Claude（不走 helpers[0] jm开发），发占位并在回信后撤回
+    const ack1 = await made.say('帮我看下今天上海官网授权进度', ownerP2pAddr);
+    expect(ack1).toBe('已转给 哈基米（#1），等回复。');
+    await settle();
+
+    const claudeInbox = (
+      await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Claude' })
+    ).json() as { items: { id: number; helper: string; chat: string; owner: boolean; text: string }[] };
+    expect(claudeInbox.items).toHaveLength(1);
+    expect(claudeInbox.items[0]).toMatchObject({
+      id: 1,
+      helper: 'Claude',
+      chat: 'p2p',
+      owner: true,
+      text: '帮我看下今天上海官网授权进度',
+    });
+
+    const reply1 = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 1, helper: 'Claude', text: '授权校验已联调通过' },
+    });
+    expect(reply1.statusCode).toBe(200);
+    await settle();
+    expect(made.answers.at(-1)).toBe('哈基米：授权校验已联调通过');
+    expect(recalled).toEqual([{ bot: BOT, messageId: 'om_p2p_501', chatId: 'oc_p2p_leon' }]);
+
+    // 2. 老板私聊目标机器人但显式打了 jm / cx 前缀：显式前缀优先转给 jm开发 / Codex
+    expect(await made.say('jm 顺手查一下编译状态', ownerP2pAddr)).toBe('已转给 jm开发（#2），等回复。');
+    expect(await made.say('cx 审一下这段逻辑', ownerP2pAddr)).toBe('已转给 Codex（#3），等回复。');
+
+    const jmInbox = (
+      await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=jm%E5%BC%80%E5%8F%91' })
+    ).json() as { items: { id: number; helper: string }[] };
+    expect(jmInbox.items.map((item) => [item.id, item.helper])).toEqual([[2, 'jm开发']]);
+
+    const cxInbox = (
+      await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Codex' })
+    ).json() as { items: { id: number; helper: string }[] };
+    expect(cxInbox.items.map((item) => [item.id, item.helper])).toEqual([[3, 'Codex']]);
+
+    // 3. 安全边界：外人/访客私聊（owner=false）、群聊（feishu:group:* 或 chatType=group，哪怕 owner=true）、listenOnly、其他机器人均严禁触发直通
+    const shouldNotClaim: { botName?: string; text: string; address: Record<string, unknown> }[] = [
+      {
+        text: '你好请问在吗',
+        address: { chatId: 'oc_guest', chatType: 'p2p', openId: 'ou_guest', customer: 'feishu:ou_guest', owner: false },
+      },
+      {
+        text: '群里同步一下进展',
+        address: { chatId: 'oc_grp1', chatType: 'group', openId: 'ou_leon', customer: 'feishu:group:oc_grp1', owner: true },
+      },
+      {
+        text: '无 customer 前缀但标了 group 的群消息',
+        address: { chatId: 'oc_grp2', chatType: 'group', openId: 'ou_leon', customer: '', owner: true },
+      },
+      {
+        text: '只听消息不触发直通',
+        address: { ...ownerP2pAddr, listenOnly: true },
+      },
+      {
+        botName: 'leon 的dsh',
+        text: '发给其他机器人的普通话',
+        address: ownerP2pAddr,
+      },
+    ];
+
+    for (const item of shouldNotClaim) {
+      const event: {
+        bot: { name: string; config: Record<string, unknown> };
+        message: { text: string; address: unknown };
+        session?: FakeSession;
+      } = {
+        bot: { name: item.botName ?? BOT, config: {} },
+        message: { text: item.text, address: item.address },
+      };
+      for (const handler of made.handlers.get('bot/receive') ?? []) {
+        handler(event);
+      }
+      expect(event.session).toBeUndefined();
+    }
+
+    // 4. 即使机器人本身未写 relay: direct/model，owner_p2p_direct 机器人的 replies.jsonl 文件回信照常轮询生效
+    const ack4 = await made.say('走文件回信测试', ownerP2pAddr);
+    expect(ack4).toBe('已转给 哈基米（#4），等回复。');
+    const replyFile = path.join(root, 'integrations', 'relay', BOT, 'replies.jsonl');
+    fs.appendFileSync(replyFile, `${JSON.stringify({ id: 4, helper: 'Claude', text: '文件回信已送达' })}\n`, 'utf8');
+    await settle(180);
+    expect(made.answers.at(-1)).toBe('哈基米：文件回信已送达');
+  }, SLOW);
+
+  test('owner_p2p_direct 非法配置校验：非数组、缺字段、未知 helper、重复 bot 均启动即抛错', () => {
+    const helpers = [
+      { name: 'jm开发', prefixes: ['jm'] },
+      { name: 'Claude', prefixes: ['cc'] },
+    ];
+    const invalidConfigs: unknown[] = [
+      'not-an-array',
+      [null],
+      [{}],
+      [{ bot: '', helper: 'Claude' }],
+      [{ bot: ' 周小灵 ', helper: 'Claude' }],
+      [{ bot: '周小灵', helper: '' }],
+      [{ bot: '周小灵', helper: ' Claude ' }],
+      [{ bot: '周小灵', helper: '未知助手' }],
+      [
+        { bot: '周小灵', helper: 'Claude' },
+        { bot: '周小灵', helper: 'jm开发' },
+      ],
+    ];
+
+    for (const bad of invalidConfigs) {
+      const w = world();
+      expect(() => relayModule.apply(w.ctx, { helpers, owner_p2p_direct: bad })).toThrow();
+    }
+  });
 });

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.102",
+    "date": "2026-11-22",
+    "changes": [
+      "转交插件（relay 1.5.8）新增精准安全的「仅本人私聊指定机器人免前缀直通外部助手」配置 owner_p2p_direct（如 [{ bot: '周小灵', helper: 'Claude' }]）：严格四重守卫（owner=true、p2p 私聊且 chatType!==group、listenOnly!==true、未命中其他显式助手前缀如 jm/cx），不改变 helpers 默认顺序，群聊/外人私聊/leon 的dsh 100% 零影响（43 项单测全绿）",
+      "教程页（/tutorial/）顶栏与手机抽屉新增「🍡 糖葫芦架构」交互画布（?view=tanghulu）：100% 对齐 src7 真实 Cordis 事件的 4 纵列 20 节点 + 2 列间事件菱形区 + 40 条有向连线 + 9 步飞书消息完整旅程动画 + 底部 4 栏白话讲透面板",
+      "工作决策工作台（/work-decision/）视图切换流畅度全面提速：移除 ReactFlow 破坏性 key 重建、开启 onlyRenderVisibleElements、首屏空闲预热分包并对思维导图/四象限/专题目录/AI 任务控制面四视图启用 display:none 保活与 memo/useMemo 优化，二次切换秒切零卡顿"
+    ]
+  },
+  {
     "version": "0.7.101",
     "date": "2026-11-22",
     "changes": [

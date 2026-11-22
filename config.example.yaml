@@ -160,6 +160,8 @@ channels:
 #         - name: 助手乙
 #           prefixes: ['乙 ']
 #       bots: []                   # 这些机器人的话全部转给默认助手（也可以在顶层 bots 名单项里写 relay: direct）
+#       # owner_p2p_direct:        # 仅本人私聊（p2p + owner=true + 非 listenOnly）发给指定机器人时，未命中其他显式前缀也直通该助手（不影响群聊与外人私聊）
+#       #   - { bot: 周小灵, helper: 助手甲 }
 #       remind_minutes: 15         # 多久没回提醒一次
 #       expire_minutes: 120        # 多久没回先放下，之后回了照样送到
 #   - name: journal                # 事件日志与完整会话镜像：记进 journal_lines 表（GET /api/events），并默认生成 bots/<机器人>/sessions/<会话>/对话.md 和 session.json（原 files-mirror）

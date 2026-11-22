@@ -179,8 +179,52 @@ export function DecisionMapPage() {
   const checkSeqRef = react.useRef(0);
   const graphAbortRef = react.useRef<AbortController | null>(null);
   const graphSeqRef = react.useRef(0);
-  const [size, setSize] = react.useState({ width: 0, height: 0 });
+  const [size, setSize] = react.useState(() => ({
+    width: Math.max(360, window.innerWidth - 220),
+    height: Math.max(320, window.innerHeight - 110),
+  }));
+  const [visitedTasks, setVisitedTasks] = react.useState(() => mainTab === 'tasks');
+  const [visitedTopic, setVisitedTopic] = react.useState(() => mainTab === 'map' && look === 'topic');
+  const [visitedQuadrant, setVisitedQuadrant] = react.useState(() => mainTab === 'map' && look === 'quadrant');
+  const [visitedFlow, setVisitedFlow] = react.useState(
+    () => mainTab === 'map' && (look === 'mind' || look === 'date' || look === 'radial'),
+  );
+  const [lastCanvasLook, setLastCanvasLook] = react.useState<'mind' | 'date' | 'radial'>(() => {
+    if (look === 'date' || look === 'radial') return look;
+    return 'mind';
+  });
   const portrait = size.width <= 670 || isMobile;
+
+  //M 首屏空闲时预热导图、四象限、控制面与表格/清单懒加载分包，首次点击切换无需等待网络下载。
+  react.useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void import('./DecisionFlowCanvas.tsx');
+      void import('./QuadrantView.tsx');
+      void import('./ControlPlaneView.tsx');
+      void import('./Views.tsx');
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  //M 记录已访问过的视图并记住最近一次图形画布模式，支持在导图/四象限/专题/控制面间保活秒切。
+  react.useEffect(() => {
+    if (mainTab === 'tasks') {
+      setVisitedTasks(true);
+      return;
+    }
+    if (look === 'topic') {
+      setVisitedTopic(true);
+      return;
+    }
+    if (look === 'quadrant') {
+      setVisitedQuadrant(true);
+      return;
+    }
+    if (look === 'mind' || look === 'date' || look === 'radial') {
+      setVisitedFlow(true);
+      setLastCanvasLook(look);
+    }
+  }, [look, mainTab]);
 
   react.useEffect(() => {
     const onResize = (): void => {
@@ -205,6 +249,8 @@ export function DecisionMapPage() {
     const measure = () => {
       const width = element.clientWidth;
       const height = element.clientHeight;
+      if (width === 0 || height === 0) return;
+
       setSize((current) => {
         if (current.width === width && current.height === height) return current;
 
@@ -215,7 +261,7 @@ export function DecisionMapPage() {
     observer.observe(element);
     measure();
     return () => observer.disconnect();
-  }, [look]);
+  }, [look, mainTab]);
 
   /**
    * 静默拉取最新节点图并在本地合并：带代次号防乱序覆盖，版本一致时保持原引用零多余重绘。
@@ -572,7 +618,7 @@ export function DecisionMapPage() {
       const belong = topicView.findTopicIdForNode(projectScope.nodes, root, next.id);
       selectTopic(belong);
       window.requestAnimationFrame(() => {
-        const selector = `[data-node-id="${CSS.escape(next.id)}"]`;
+        const selector = `.decision-canvas--topic [data-node-id="${CSS.escape(next.id)}"]`;
         document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
       return;
@@ -650,6 +696,27 @@ export function DecisionMapPage() {
   if (loadingError !== undefined) empty = loadingError;
 
   const canvasLabel = t('工作决策');
+
+  let tasksStyle: react.CSSProperties = { display: 'none' };
+  if (mainTab === 'tasks') {
+    tasksStyle = { display: 'flex', flex: 1, minWidth: 0, minHeight: 0 };
+  }
+  let topicStyle: react.CSSProperties | undefined = { display: 'none' };
+  if (mainTab === 'map' && look === 'topic') {
+    topicStyle = undefined;
+  }
+  let quadrantStyle: react.CSSProperties | undefined = { display: 'none' };
+  if (mainTab === 'map' && look === 'quadrant') {
+    quadrantStyle = undefined;
+  }
+  let canvasStyle: react.CSSProperties | undefined = { display: 'none' };
+  if (mainTab === 'map' && look !== 'topic' && look !== 'quadrant') {
+    canvasStyle = undefined;
+  }
+  let activeCanvasLook = lastCanvasLook;
+  if (look === 'mind' || look === 'date' || look === 'radial') {
+    activeCanvasLook = look;
+  }
 
   const isAllPendingActive = look === 'topic' && resolvedTopicId === topicView.ALL_PENDING_TOPIC;
   const activeSummary = topicSummaries.find((item) => item.node.id === resolvedTopicId);
@@ -1230,10 +1297,12 @@ export function DecisionMapPage() {
       )}
 
       <div className="decision-content">
-        {mainTab === 'tasks' && (
-          <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载 AI 任务控制面…')}</div>}>
-            <LazyControlPlaneView externalTasksRev={tasksRev} isMobile={isMobile} />
-          </react.Suspense>
+        {(mainTab === 'tasks' || visitedTasks) && (
+          <div className="decision-cp-keepalive" style={tasksStyle}>
+            <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载 AI 任务控制面…')}</div>}>
+              <LazyControlPlaneView externalTasksRev={tasksRev} isMobile={isMobile} />
+            </react.Suspense>
+          </div>
         )}
 
         {mainTab === 'map' && !isMobile && projects.length > 0 && (
@@ -1251,8 +1320,13 @@ export function DecisionMapPage() {
           </nav>
         )}
 
-        {mainTab === 'map' && look === 'topic' && (
-          <section className="decision-canvas decision-canvas--topic" aria-label={canvasLabel} data-look={look}>
+        {((mainTab === 'map' && look === 'topic') || visitedTopic) && (
+          <section
+            className="decision-canvas decision-canvas--topic"
+            aria-label={canvasLabel}
+            data-look="topic"
+            style={topicStyle}
+          >
             {graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
             {graph !== undefined && (
               <topicView.TopicView
@@ -1276,8 +1350,13 @@ export function DecisionMapPage() {
           </section>
         )}
 
-        {mainTab === 'map' && look === 'quadrant' && (
-          <section className="decision-canvas decision-canvas--quadrant" aria-label={canvasLabel} data-look={look}>
+        {((mainTab === 'map' && look === 'quadrant') || visitedQuadrant) && (
+          <section
+            className="decision-canvas decision-canvas--quadrant"
+            aria-label={canvasLabel}
+            data-look="quadrant"
+            style={quadrantStyle}
+          >
             {graph === undefined && <div className="decision-empty" role="status">{empty}</div>}
             {graph !== undefined && (
               <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在加载四象限矩阵…')}</div>}>
@@ -1305,17 +1384,24 @@ export function DecisionMapPage() {
           </section>
         )}
 
-        {mainTab === 'map' && look !== 'topic' && look !== 'quadrant' && (
-          <section className="decision-canvas" aria-label={canvasLabel} ref={canvas} data-look={look}>
+        {((mainTab === 'map' && look !== 'topic' && look !== 'quadrant') || visitedFlow) && (
+          <section
+            className="decision-canvas"
+            aria-label={canvasLabel}
+            ref={canvas}
+            data-look={activeCanvasLook}
+            style={canvasStyle}
+          >
             {isCanvas && graph === undefined && (
               <div className="decision-empty" role="status">{empty}</div>
             )}
-            {isCanvas && graph !== undefined && (
+            {(isCanvas || visitedFlow) && look !== 'table' && look !== 'list' && graph !== undefined && (
               <react.Suspense fallback={<div className="decision-empty" role="status">{t('正在准备导图画布…')}</div>}>
                 <LazyFlowCanvas
+                  active={mainTab === 'map' && isCanvas}
                   root={root}
                   focused={focused}
-                  look={look}
+                  look={activeCanvasLook}
                   mode={mode}
                   direction={direction}
                   onlyAsk={onlyAsk}
@@ -1345,7 +1431,7 @@ export function DecisionMapPage() {
                 <LazyListView nodes={scope.nodes} selected={nodeId} open={open} folds={folds} toggle={open} />
               </react.Suspense>
             )}
-            {selected !== undefined && (
+            {mainTab === 'map' && look !== 'topic' && look !== 'quadrant' && selected !== undefined && (
               <drawer.Drawer
                 key={selected.id}
                 node={selected}
@@ -1363,7 +1449,7 @@ export function DecisionMapPage() {
                 expand={(id) => open(id, true)}
               />
             )}
-            {selected === undefined && overviewRoot !== undefined && (
+            {mainTab === 'map' && look !== 'topic' && look !== 'quadrant' && selected === undefined && overviewRoot !== undefined && (
               <div className="decision-overview-dock">
                 <composer.CentralDock
                   targetNode={overviewRoot}
