@@ -39,7 +39,7 @@ export const name = 'knowledge';
 //M 1.2.0：实体别名（第 5 版迁移加 aliases、content_hash；搜索、[[双链]] 唯一别名命中、消歧接口与 kb_disambiguate）；
 //M   本地文件夹只读同步（localWatchDirs，POST /api/knowledge/sync-folders、GET /api/knowledge/sync-status）。
 /** 插件版本号。 */
-export const version = '1.2.0';
+export const version = '1.2.1';
 
 /** 依赖资源主库、主 HTTP 服务、模型工具注册表，以及建表用的 db 迁移账本。 */
 export const inject = ['resources', 'http', 'tools', 'db'];

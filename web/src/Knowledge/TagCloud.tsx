@@ -6,6 +6,7 @@
  * 从 DirTree.tsx 拆出来（云端 29 之后的标签治理，Phase 3）。
  */
 import * as react from 'react';
+import * as dialogs from './KbDialogs.tsx';
 import type * as api from './KnowledgeApi.ts';
 
 
@@ -113,6 +114,7 @@ export function TagCloud(props: TagCloudProps) {
 
   /** 正在改名的是哪个标签；没有是 undefined。 */
   const [renaming, setRenaming] = react.useState<string | undefined>(undefined);
+  const kbDialog = dialogs.useKbDialog();
 
   if (props.tags.length === 0) return null;
 
@@ -124,9 +126,14 @@ export function TagCloud(props: TagCloudProps) {
     setRenaming(undefined);
   };
 
-  /** 删一个标签：先问一句。 */
-  const askRemove = (name: string, count: number): void => {
-    const ok = window.confirm(`删除标签「${name}」？会从 ${String(count)} 篇文档上摘掉，文档本身不删。`);
+  /** 删一个标签：应用内确认框二次确认。 */
+  const askRemove = async (name: string, count: number): Promise<void> => {
+    const ok = await kbDialog.confirm({
+      title: `删除标签 #${name}`,
+      message: `将从 ${String(count)} 篇文档上摘除该标签，文档本身不会被删除。`,
+      confirmText: '摘除并删除',
+      danger: true,
+    });
     if (!ok) return;
 
     props.removeTag(name);
@@ -197,7 +204,7 @@ export function TagCloud(props: TagCloudProps) {
                   <button
                     type="button"
                     className="kb-link-btn kb-tag-delete"
-                    onClick={() => askRemove(item.name, item.docCount)}
+                    onClick={() => void askRemove(item.name, item.docCount)}
                   >
                     删除
                   </button>
@@ -215,6 +222,7 @@ export function TagCloud(props: TagCloudProps) {
           );
         })}
       </div>
+      {kbDialog.modalElement}
     </>
   );
 }

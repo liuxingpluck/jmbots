@@ -9,6 +9,7 @@
 import * as react from 'react';
 import * as markdown from '../Chat/Markdown.tsx';
 import * as docList from './DocList.tsx';
+import * as dialogs from './KbDialogs.tsx';
 import * as api from './KnowledgeApi.ts';
 import * as linksPanel from './LinksPanel.tsx';
 import * as relatedDocs from './RelatedDocs.tsx';
@@ -415,6 +416,7 @@ function ChipInput(props: ChipInputProps): react.JSX.Element {
 /** 知识库编辑器。 */
 export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
   const { readOnly, isMobile, onDirty, onNotice, titles } = props;
+  const kbDialog = dialogs.useKbDialog();
   const draftKey = getDraftKey(props.doc);
 
   //M 打开时的文档和表单：保存成功、冲突换新都会更新，判断“改没改”跟它比。
@@ -570,14 +572,19 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  //M 删除：二次确认；新建还没存的直接关掉。
+  //M 删除：应用内确认框二次确认；新建还没存的直接关掉。
   const remove = async (): Promise<void> => {
     if (base === undefined) {
       removeDraft(draftKey);
       props.onClose();
       return;
     }
-    const ok = window.confirm(`删除「${base.title}」？删了找不回来。`);
+    const ok = await kbDialog.confirm({
+      title: `删除文档「${base.title}」`,
+      message: '删除后无法恢复，确定永久删除这篇知识文档吗？',
+      confirmText: '永久删除',
+      danger: true,
+    });
     if (!ok) return;
 
     try {
@@ -638,10 +645,15 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
       onNotice(`还没有「${title}」这篇`);
       return true;
     }
-    const ok = window.confirm(`还没有「${title}」这篇，现在创建？`);
-    if (ok) {
-      props.onCreateDoc(title);
-    }
+    void kbDialog.confirm({
+      title: '创建新双链词条',
+      message: `知识库还没有「${title}」这篇文档，是否现在新建？`,
+      confirmText: '立即创建',
+    }).then((ok) => {
+      if (ok) {
+        props.onCreateDoc(title);
+      }
+    });
     return true;
   };
 
@@ -807,6 +819,7 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
         <linksPanel.LinksPanel docId={base.id} version={base.updatedAt} open={props.onOpenDoc} create={createTitled} />
       )}
       {base !== undefined && <relatedDocs.RelatedDocs docId={base.id} open={props.onOpenDoc} />}
+      {kbDialog.modalElement}
     </article>
   );
 }

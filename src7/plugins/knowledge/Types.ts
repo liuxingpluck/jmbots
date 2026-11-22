@@ -379,6 +379,10 @@ export interface KnowledgeGraphNode {
   id: string;
   /** 标题。 */
   title: string;
+  /** 所在虚拟目录 ID；未归目录为 null。 */
+  dirId?: string | null;
+  /** 精简摘要，供图谱画布侧栏轻预览使用。 */
+  summary?: string;
   /** 实体别名（1.2.0），供前端 [[ 联想和预览识别别名双链。 */
   aliases?: string[];
   /** 标签。 */

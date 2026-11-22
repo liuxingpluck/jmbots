@@ -95,24 +95,54 @@ describe('关系图配置与路由合并回归', () => {
       mode: 'graph',
       link: false,
     });
+    expect(readGraphSettings(root, { public_url: 'https://jm.example.com/' }).publicUrl).toBe('https://jm.example.com');
     expect(() => readGraphSettings(root, 'bad')).toThrow();
     expect(() => readGraphSettings(root, { link: 'yes' })).toThrow();
+    expect(() => readGraphSettings(root, { public_url: '/relative' })).toThrow();
   });
 
-  test('buildLinkHint 只在用到记忆引用或记忆工具找到时加链接', () => {
-    const fakeReq = {
+  test('buildLinkHint：网页会话输出相对链接且 q 截断 40 字以内；飞书等外部渠道未配公网前缀时不附链接', () => {
+    const longSpeech = '这是一段超过四十个汉字的超长语音输入，包含很多很多背景描述和工作安排细节，用来验证链接查询参数绝对不会拼成几千字的刷屏雷霆网址。';
+    const webReq = {
+      session: {
+        row: {
+          kind: 'work',
+          bot: '助手',
+          channel: 'http',
+          customer: 'http:本机',
+          recall: '# 可能相关的聊天记录和知识库\n[1] ...',
+          messages: [{ role: 'user', content: longSpeech, timestamp: 1 }],
+        },
+      },
+    } as unknown as ChatRequest;
+    const webHint = buildLinkHint(webReq);
+    expect(webHint).toContain('/graph/?customer=http%3A%E6%9C%AC%E6%9C%BA&bot=%E5%8A%A9%E6%89%8B&q=');
+    const webUrlMatch = /\((\/graph\/\?[^)]+)\)/u.exec(webHint ?? '');
+    expect(webUrlMatch).not.toBeNull();
+    const webParams = new URLSearchParams(webUrlMatch![1]!.split('?')[1]);
+    expect([...(webParams.get('q') ?? '')].length).toBe(40);
+
+    //M 外部渠道（飞书、微信）未配公网前缀时不输出相对路径 /graph/?...
+    const feishuReq = {
       session: {
         row: {
           kind: 'work',
           bot: '助手',
           customer: 'feishu:ou_1',
           recall: '# 可能相关的聊天记录和知识库\n[1] ...',
-          messages: [{ role: 'user', content: '查合同进展', timestamp: 1 }],
+          messages: [{ role: 'user', content: longSpeech, timestamp: 1 }],
         },
       },
     } as unknown as ChatRequest;
-    const hint = buildLinkHint(fakeReq);
-    expect(hint).toContain('/graph/?customer=feishu%3Aou_1&bot=%E5%8A%A9%E6%89%8B&q=');
+    expect(buildLinkHint(feishuReq)).toBeUndefined();
+
+    //M 配了公网前缀后，外部渠道输出完整公网链接，且 q 同样截断在 40 字以内
+    const pubHint = buildLinkHint(feishuReq, 'https://jm.example.com/');
+    expect(pubHint).toContain('https://jm.example.com/graph/?customer=feishu%3Aou_1&bot=%E5%8A%A9%E6%89%8B&q=');
+    const pubUrlMatch = /\((https:\/\/jm\.example\.com\/graph\/\?[^)]+)\)/u.exec(pubHint ?? '');
+    expect(pubUrlMatch).not.toBeNull();
+    const pubParams = new URLSearchParams(pubUrlMatch![1]!.split('?')[1]);
+    expect([...(pubParams.get('q') ?? '')].length).toBe(40);
   });
 
   test('GraphRoutes 保留 /graph/ 与 /api/memory-graph/* 路由登记', () => {

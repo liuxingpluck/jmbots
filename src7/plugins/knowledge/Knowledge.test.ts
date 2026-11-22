@@ -909,6 +909,8 @@ describe('knowledge 1.1.0：[[双链]]、图谱、多标签 all/any、硬性系�
       expect(degreeOf(all, c)).toBe(3);
       expect(degreeOf(all, lone)).toBe(0);
       expect(all.nodes.find((node) => node.id === a)?.tags).toEqual(['核心']);
+      expect(all.nodes.find((node) => node.id === a)?.dirId).toBeNull();
+      expect(typeof all.nodes.find((node) => node.id === a)?.summary).toBe('string');
       expect(all.edges.length).toBe(4);
       expect(all.edges).toContainEqual({ source: a, target: b, targetTitle: 'B' });
 

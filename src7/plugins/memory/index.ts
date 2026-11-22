@@ -31,6 +31,7 @@ import * as graphStoreModule from './GraphStore.ts';
 import * as recall from './Recall.ts';
 import * as searchModule from './Search.ts';
 import * as storeModule from './Store.ts';
+import * as vgrAdminModule from './VgrAdmin.ts';
 
 
 /** 插件名。 */
@@ -51,7 +52,7 @@ export const name = 'memory';
 //M 1.11.5：外人能不能查渠道消息收成 MemoryKey.canQueryChannel，召回、旧 memory 工具、统一检索同一口径；
 //M   getMemoryAccess 两种来源只取输入、规则合一份；额度报错文案引用常量（第 13 块体检第 5、7、8 条）。
 //M 1.11.6：db 改成必需依赖（云端 36 第 1 条）：渠道索引的表只走 ctx.db 的迁移账本，不再按 db 挂没挂分两条路。
-export const version = '1.11.6';
+export const version = '1.11.7';
 
 /** 用到的服务：resources 拿目录和配置；tools 登记工具；db 管渠道索引的表结构版本。 */
 export const inject = ['resources', 'tools', 'db'];
@@ -768,6 +769,28 @@ export class MemoryService extends cordis.Service {
 
     return hits as Array<{ start?: unknown }>;
   }
+
+  /** 请记忆服务将抽图失败的文档重排队（POST /graph/retry）；服务离线时返回 ok:false 与原因。 */
+  async retryGraph(): Promise<{ ok: boolean; retry: number; error?: string }> {
+    try {
+      const res = await this.post('/graph/retry', {}, 8000);
+      const body = res.json as { ok?: unknown; retry?: unknown; error?: unknown } | undefined;
+      if (!res.ok || body?.ok === false) {
+        let errText = `HTTP ${String(res.status)}`;
+        if (typeof body?.error === 'string') {
+          errText = body.error;
+        }
+        return { ok: false, retry: 0, error: errText };
+      }
+      let retry = 0;
+      if (typeof body?.retry === 'number') {
+        retry = body.retry;
+      }
+      return { ok: true, retry };
+    } catch (error) {
+      return { ok: false, retry: 0, error: textModule.getErrorMessage(error) };
+    }
+  }
 }
 
 /**
@@ -972,5 +995,7 @@ function routes(
     graphRoutes.mountRoutes(app);
     //M 统一检索与模型走同一份数据源和排名。
     service.unified.mount(app, graphRoutes);
+    //M VGR 配置（memory.yaml 脱敏读写）、索引刷新与长期记忆条管理接口。
+    vgrAdminModule.mountVgrAdminRoutes(sub, store, service);
   });
 }

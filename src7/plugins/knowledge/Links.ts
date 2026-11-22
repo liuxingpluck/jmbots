@@ -95,7 +95,9 @@ interface OutRow extends LinkRow {
 /** 图谱节点要的文档字段。 */
 interface NodeRow {
   id: string;
+  dir_id: string | null;
   title: string;
+  summary: string;
   aliases: string;
   is_system_rule: number;
 }
@@ -270,7 +272,7 @@ export class KnowledgeLinks {
     }));
 
     //M 再取节点：整个库是全部文档；有中心时是中心加边上出现过的文档。
-    const allSql = 'SELECT id, title, aliases, is_system_rule FROM kb_docs ORDER BY updated_at DESC';
+    const allSql = 'SELECT id, dir_id, title, summary, aliases, is_system_rule FROM kb_docs ORDER BY updated_at DESC';
     let nodeRows = this.db.query<NodeRow, []>(allSql).all();
     if (centerId !== undefined) {
       const ids = new Set([centerId]);
@@ -279,7 +281,7 @@ export class KnowledgeLinks {
         ids.add(edge.target);
       }
       const marks = [...ids].map(() => '?').join(', ');
-      const sql = `SELECT id, title, aliases, is_system_rule FROM kb_docs WHERE id IN (${marks}) ORDER BY updated_at DESC`;
+      const sql = `SELECT id, dir_id, title, summary, aliases, is_system_rule FROM kb_docs WHERE id IN (${marks}) ORDER BY updated_at DESC`;
       nodeRows = this.db.query<NodeRow, string[]>(sql).all(...ids);
       if (!nodeRows.some((row) => row.id === centerId)) {
         throw new failureModule.Failure(404, `文档不存在：${centerId}`);
@@ -296,6 +298,8 @@ export class KnowledgeLinks {
     const nodes = nodeRows.map((row): types.KnowledgeGraphNode => ({
       id: row.id,
       title: row.title,
+      dirId: row.dir_id,
+      summary: row.summary,
       aliases: parseNodeAliases(row.aliases),
       tags: tagMap.get(row.id) ?? [],
       isSystemRule: row.is_system_rule === 1,

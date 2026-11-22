@@ -146,7 +146,7 @@ export const DEV_CARDS: DevCard[] = [
         anchors: [
           { file: 'src7/Sessions.ts', line: 697, mark: "serial('session/before-model'" },
           { file: 'src7/plugins/context-fit/index.ts', line: 322, mark: "on('session/before-model'" },
-          { file: 'src7/plugins/memory/index.ts', line: 155, mark: "on('session/before-model'" },
+          { file: 'src7/plugins/memory/index.ts', line: 157, mark: "on('session/before-model'" },
           { file: 'src7/plugins/approval/index.ts', line: 476, mark: "on('session/before-model'" },
         ],
       },

@@ -535,7 +535,7 @@ export const SESSION_SPINE_STEPS: SpineTrackStep[] = [
           why: 'Prompt 按序拼入底座、功能声明、人设与记忆文件',
         },
         {
-          site: 'src7/plugins/memory/index.ts:155',
+          site: 'src7/plugins/memory/index.ts:157',
           mark: "ctx.on('session/before-model'",
           why: 'memory 在关口一按权限召回记忆注入本步请求',
         },

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.100",
+    "date": "2026-11-22",
+    "changes": [
+      "知识库（knowledge 1.2.1）与记忆库（memory 1.11.7）大融合升级：/knowledge/ 顶栏新增「📄 文档 | 🕸️ 关系图谱 | 🧠 记忆与 VGR」三态主视图切换；新增 VgrAdmin.ts（GET/PUT /api/memory/vgr-config 脱敏读写 memory.yaml 并保留注释与 api_key、POST /api/memory/reindex 刷新索引与重抽失败图谱、/api/memory/items* 长期记忆条管理并保护知识库 DiskMirror 镜像）及 MemoryVgrView 工作台（实时展示 Rust 引擎与本地 ONNX 嵌入模型状态、keyword / vector / graph 命中通路徽章与一键沉淀入知识库）",
+      "关系图谱升级为 Obsidian 级全幅交互大画布（GraphView.tsx）：1:1 像素坐标系、强斥力力导向 + 36 轮胶囊防碰撞分离、按虚拟目录配色与左下角过滤图例、11.5px 半透明深色胶囊标签（超 16 字截断、悬停展开、放大反向微缩）、滚轮缩放/拖拽平移/单节点拖拽/一跳高亮/节点搜索定位/孤立节点开关（首屏默认隐藏孤立点聚焦已连网节点）及右侧 340px 轻预览抽屉（含摘要、别名、标签、正反向双链与「打开编辑」）；GET /api/knowledge/graph 节点补齐 dirId 与 summary",
+      "清理知识库前端全部 7 处原生 window.prompt / window.confirm 弹窗（统一替换为 KbDialogs 应用内模态框，保留关页未保存 beforeunload 守卫）并补齐防回退单测；修复 memory 关系图链接提示（GraphRoutes.buildLinkHint）在飞书等非 Web 外部渠道未配 public_url 时误附相对路径 /graph/?... 及超长语音刷屏问题（q 参数截断 ≤40 字）"
+    ]
+  },
+  {
     "version": "0.7.99",
     "date": "2026-11-21",
     "changes": [

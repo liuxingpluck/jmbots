@@ -1,32 +1,41 @@
 /**
- * 积木知识库页面（/knowledge/）：桌面 >=800px 三栏（目录与标签 / 文档列表 / 编辑器），手机 <800px 单栏三屏
- * （列表、左侧滑出的目录抽屉、全屏文档，安卓返回键回到列表）。
- * 筛选和打开的文档写在网址里（?dir、tag、tagMode、rule、q、doc、topic），刷新不丢、能分享；
- * ?new=1&topic=<节点号>&title=<标题> 是工作决策“记一篇”跳过来的，直接打开预填好的新建表单。
- * 列表（或搜索）和单篇正文各走一路请求，各有 AbortController 和序号，迟到的回包不会盖掉新的。
- * 整库双链图谱和目录树一起拉：既给「🕸️ 图谱」抽屉用，也当标题索引给编辑器的 [[ 联想和双链芯片用。
- * 顶栏「同步本地目录」打开 FolderSyncPanel，只读导入本机 .md、.txt，同步完刷新树和列表。
+ * 积木知识库与记忆一体化工作台（/knowledge/）：
+ * 顶栏提供清晰三态视图切换：「📄 文档」 | 「🕸️ 关系图谱」 | 「🧠 记忆与 VGR」（同步到网址 ?view=）。
+ * - 「📄 文档」：桌面 >=800px 三栏（目录与标签 / 文档列表 / 编辑器），手机 <800px 单栏三屏；
+ * - 「🕸️ 关系图谱」：主内容区全幅 Obsidian 级交互力导向画布 + 右侧节点轻预览抽屉；
+ * - 「🧠 记忆与 VGR」：混合检索（keyword / vector / graph 徽章）、长期记忆条管理与本地嵌入模型配置（memory.yaml）。
+ * 全站交互均采用应用内模态框（KbDialogs.tsx）与轻量 Toast，仅保留关页未保存的浏览器 beforeunload 守卫。
  */
 import * as react from 'react';
-import { TOKEN, withToken } from '../Token.ts';
+import * as token from '../Token.ts';
 import * as dirTree from './DirTree.tsx';
 import * as docList from './DocList.tsx';
 import * as folderSync from './FolderSyncPanel.tsx';
+import * as dialogs from './KbDialogs.tsx';
 import * as api from './KnowledgeApi.ts';
 import type * as editorModule from './KnowledgeEditor.tsx';
 import * as wiki from './WikiLinks.ts';
 
-/** 编辑器连同 Markdown 渲染按需加载，首屏只有顶栏、目录和列表。 */
+/** 编辑器连同 Markdown 渲染按需加载，首屏轻快。 */
 const LazyEditor = react.lazy(async () => {
   const mod = await import('./KnowledgeEditor.tsx');
   return { default: mod.KnowledgeEditor };
 });
 
-/** 双链图谱抽屉按需加载：点了「🕸️ 图谱」才拉。 */
+/** 全幅关系图谱画布按需加载。 */
 const LazyGraph = react.lazy(async () => {
   const mod = await import('./GraphView.tsx');
   return { default: mod.GraphView };
 });
+
+/** 记忆与 VGR 视图按需加载。 */
+const LazyMemoryVgr = react.lazy(async () => {
+  const mod = await import('./MemoryVgrView.tsx');
+  return { default: mod.MemoryVgrView };
+});
+
+/** 顶栏三大主视图模式。 */
+export type KnowledgeMainView = 'docs' | 'graph' | 'memory';
 
 /** 窄于这个宽度按手机排（和 /work-decision/ 同一个断点）。 */
 const MOBILE_BREAKPOINT = 800;
@@ -35,7 +44,7 @@ const SEARCH_DELAY_MS = 300;
 /** 提示条显示多久。 */
 const NOTICE_MS = 5000;
 /** 这个页面在网址里用的参数；写网址时先全删再按现状写，别的参数（令牌）不动。 */
-const URL_KEYS = ['dir', 'tag', 'tagMode', 'rule', 'q', 'doc', 'topic', 'new', 'title'];
+const URL_KEYS = ['view', 'dir', 'tag', 'tagMode', 'rule', 'q', 'doc', 'topic', 'new', 'title'];
 
 /** 右栏打开的东西：一篇已有文档（可能还在加载），或一个新建表单。 */
 interface Opened {
@@ -51,6 +60,8 @@ interface Opened {
 
 /** 网址里读出的初始状态。 */
 interface UrlState {
+  /** 当前顶栏视图。 */
+  view: KnowledgeMainView;
   /** 目录筛选。 */
   dir: string | undefined;
   /** 标签筛选；网址里写成 ?tag=a,b。 */
@@ -85,16 +96,24 @@ function readUrl(): UrlState {
     return value;
   };
 
+  let view: KnowledgeMainView = 'docs';
+  const rawView = params.get('view');
+  if (rawView === 'graph' || rawView === 'memory') {
+    view = rawView;
+  }
+
   //M ?new=1 带专题和标题：工作决策节点“记一篇”跳过来的。
   let preset: editorModule.Preset | undefined;
   if (params.get('new') === '1') {
     preset = { title: params.get('title') ?? '', topicId: getOne('topic') ?? null, dirId: null };
+    view = 'docs';
   }
   let tagMode: api.KnowledgeTagMode = 'all';
   if (params.get('tagMode') === 'any') {
     tagMode = 'any';
   }
   return {
+    view,
     dir: getOne('dir'),
     tags: (getOne('tag') ?? '').split(',').filter((one) => one !== ''),
     tagMode,
@@ -117,7 +136,9 @@ function writeUrl(values: Record<string, string | undefined>): void {
     params.delete(key);
   }
   for (const [key, value] of Object.entries(values)) {
-    if (value === undefined || value === '') continue;
+    if (value === undefined || value === '') {
+      continue;
+    }
 
     params.set(key, value);
   }
@@ -156,6 +177,11 @@ function useIsMobile(): boolean {
 export function KnowledgePage(): react.JSX.Element {
   const [initial] = react.useState(readUrl);
   const isMobile = useIsMobile();
+  const kbDialog = dialogs.useKbDialog();
+
+  //M 顶栏主视图（文档 / 关系图谱 / 记忆与 VGR）与图谱初始聚焦节点。
+  const [view, setView] = react.useState<KnowledgeMainView>(initial.view);
+  const [graphFocusId, setGraphFocusId] = react.useState<string | undefined>(initial.doc);
 
   //M 筛选：目录、标签、专题；搜索框的字（qInput）停手 300ms 才变成真正生效的 q。
   const [dir, setDir] = react.useState(initial.dir);
@@ -168,9 +194,8 @@ export function KnowledgePage(): react.JSX.Element {
 
   //M 左栏数据、中栏列表或搜索结果。
   const [tree, setTree] = react.useState<api.KnowledgeTreeResponse>();
-  //M 整库双链图谱：图谱抽屉的全库视图，也是 [[ 联想的标题索引；后端还没 1.1.0 时是 undefined。
+  //M 整库双链图谱：全幅图谱画布的数据源，也是 [[ 联想的标题索引。
   const [graph, setGraph] = react.useState<api.KnowledgeGraphResponse>();
-  const [graphOpen, setGraphOpen] = react.useState(false);
   const [syncOpen, setSyncOpen] = react.useState(false);
   const [items, setItems] = react.useState<api.KnowledgeDocSummary[]>([]);
   /** 现在列表里显示了几条：切回页面刷新时按它拉（visibilitychange 的监听里读）。 */
@@ -306,7 +331,6 @@ export function KnowledgePage(): react.JSX.Element {
 
       void loadTree();
 
-      //M 已经往下翻过不止一页：按现在显示的条数刷新（最多 200），不把翻到一半的列表硬重置回第一页。
       let limit = api.PAGE_SIZE;
       if (itemCountRef.current > api.PAGE_SIZE) {
         limit = Math.min(200, itemCountRef.current);
@@ -328,19 +352,27 @@ export function KnowledgePage(): react.JSX.Element {
     if (ruleOnly) {
       rule = '1';
     }
-    writeUrl({ dir, tag, tagMode: modeParam, rule, topic, q, doc: opened?.id });
-  }, [dir, tags, tagMode, ruleOnly, topic, q, opened?.id]);
+    let viewParam: string | undefined;
+    if (view !== 'docs') {
+      viewParam = view;
+    }
+    writeUrl({ view: viewParam, dir, tag, tagMode: modeParam, rule, topic, q, doc: opened?.id });
+  }, [view, dir, tags, tagMode, ruleOnly, topic, q, opened?.id]);
 
   //==========================================================
-  //M 右栏：打开、新建、关掉文档；手机上打开时压一层历史，返回键回列表
+  //M 右栏：打开、新建、关掉文档；全程应用内确认框，不弹原生 confirm
   //==========================================================
 
-  /** 有没保存的改动时先问一句（草稿已经存着，离开也能找回）。 */
-  const confirmLeave = react.useCallback((): boolean => {
+  /** 有没保存的改动时用应用内弹窗确认离开（草稿已存，离开也能找回）。 */
+  const confirmLeave = react.useCallback(async (): Promise<boolean> => {
     if (!dirtyRef.current) return true;
 
-    return window.confirm('有没保存的改动（已存成草稿），确定离开？');
-  }, []);
+    return kbDialog.confirm({
+      title: '未保存改动提示',
+      message: '当前文档有尚未保存的改动（已自动暂存为草稿），确定离开吗？',
+      confirmText: '离开当前文档',
+    });
+  }, [kbDialog]);
 
   /** 手机上打开文档时压一层历史。 */
   const pushMobile = react.useCallback(() => {
@@ -351,9 +383,9 @@ export function KnowledgePage(): react.JSX.Element {
   }, [isMobile]);
 
   const openDoc = react.useCallback(async (id: string, force = false) => {
-    if (!force && !confirmLeave()) return;
+    if (!force && !(await confirmLeave())) return;
 
-    //M 正文这一路：中止上一篇，记序号，先显示“正在打开”。
+    setView('docs');
     docAbortRef.current?.abort();
     const controller = new AbortController();
     docAbortRef.current = controller;
@@ -370,7 +402,6 @@ export function KnowledgePage(): react.JSX.Element {
     } catch (error) {
       if (controller.signal.aborted) return;
 
-      //M 打开失败：关右栏，手机上压的那层历史也退掉，免得要多按一次返回（云端 29 #9）。
       setOpened(undefined);
       if (pushedRef.current) {
         pushedRef.current = false;
@@ -387,16 +418,19 @@ export function KnowledgePage(): react.JSX.Element {
     if (id === undefined || initial.preset !== undefined) return;
 
     firstDocRef.current = undefined;
-    void openDoc(id, true);
-  }, [initial.preset, openDoc]);
+    if (initial.view === 'docs') {
+      void openDoc(id, true);
+    }
+  }, [initial.preset, initial.view, openDoc]);
 
   /**
    * 新建：预填当前所在的目录和专题；点了还没创建的双链时顺带预填标题。
    * @param title 预填的标题；顶栏「新建」是空串。
    */
-  const newDoc = react.useCallback((title: string) => {
-    if (!confirmLeave()) return;
+  const newDoc = react.useCallback(async (title: string) => {
+    if (!(await confirmLeave())) return;
 
+    setView('docs');
     docAbortRef.current?.abort();
     docSeqRef.current += 1;
     newSeqRef.current += 1;
@@ -411,8 +445,8 @@ export function KnowledgePage(): react.JSX.Element {
   }, [confirmLeave, dir, topic, pushMobile]);
 
   /** 关掉右栏；手机上把压的那层历史退掉。 */
-  const closeDoc = react.useCallback(() => {
-    if (!confirmLeave()) return;
+  const closeDoc = react.useCallback(async (force = false) => {
+    if (!force && !(await confirmLeave())) return;
 
     dirtyRef.current = false;
     docAbortRef.current?.abort();
@@ -423,25 +457,36 @@ export function KnowledgePage(): react.JSX.Element {
     }
   }, [confirmLeave]);
 
-  //M 安卓返回键：退回列表；有没保存的改动又不想走，就再压一层留在文档里。
+  //M 安卓返回键：退回列表；若有未保存改动，先保持在文档里并用应用内弹窗询问。
   react.useEffect(() => {
     const onPopState = (): void => {
       if (!pushedRef.current) return;
 
       pushedRef.current = false;
-      if (!confirmLeave()) {
-        window.history.pushState({ kb: 'doc' }, '', window.location.href);
-        pushedRef.current = true;
+      if (!dirtyRef.current) {
+        setOpened(undefined);
         return;
       }
-      dirtyRef.current = false;
-      setOpened(undefined);
+
+      //M 先把历史压回原位，等用户确认离开后再真正关闭。
+      window.history.pushState({ kb: 'doc' }, '', window.location.href);
+      pushedRef.current = true;
+      void confirmLeave().then((ok) => {
+        if (ok) {
+          dirtyRef.current = false;
+          setOpened(undefined);
+          if (pushedRef.current) {
+            pushedRef.current = false;
+            window.history.back();
+          }
+        }
+      });
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, [confirmLeave]);
 
-  //M 关页、刷新前有没保存的改动：浏览器自己问一句。
+  //M 关页、刷新前有没保存的改动：保留浏览器 beforeunload 提示。
   react.useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent): void => {
       if (!dirtyRef.current) return;
@@ -452,6 +497,26 @@ export function KnowledgePage(): react.JSX.Element {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
+  /** 切换到关系图谱视图（若有未保存编辑先确认，以免切换视图卸载编辑器丢失内存状态）。 */
+  const switchView = react.useCallback(async (nextView: KnowledgeMainView, focusDocId?: string) => {
+    if (nextView === view) {
+      if (nextView === 'graph' && focusDocId !== undefined) {
+        setGraphFocusId(focusDocId);
+      }
+      return;
+    }
+    if (view === 'docs' && !(await confirmLeave())) {
+      return;
+    }
+    if (view === 'docs') {
+      dirtyRef.current = false;
+    }
+    if (nextView === 'graph') {
+      setGraphFocusId(focusDocId ?? opened?.id);
+    }
+    setView(nextView);
+  }, [view, confirmLeave, opened?.id]);
+
   /** 编辑器报告改动状态。 */
   const onDirty = react.useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
@@ -459,7 +524,6 @@ export function KnowledgePage(): react.JSX.Element {
 
   /**
    * 存好了：新建的换成那篇（换 key 重挂），刷新树和列表。
-   * editKey 是发起保存的那个编辑器；回包时用户已经切到别的文档，就只刷新，不顶掉现在开着的（云端 29 #3）。
    */
   const onSaved = react.useCallback((doc: api.KnowledgeDoc, created: boolean, editKey: string) => {
     const isCurrent = openedKeyRef.current === editKey;
@@ -479,7 +543,7 @@ export function KnowledgePage(): react.JSX.Element {
   /** 删掉了：关右栏，刷新。 */
   const onDeleted = react.useCallback(() => {
     dirtyRef.current = false;
-    closeDoc();
+    void closeDoc(true);
     showNotice('已删除');
     void loadTree();
     void loadList(0);
@@ -494,8 +558,6 @@ export function KnowledgePage(): react.JSX.Element {
     setDrawerOpen(false);
   }, []);
 
-  //M 标签多选：没选的加上、选了的去掉，按 tagMode 取交集或并集。
-  //M 不关手机抽屉，方便连续选几个标签（点目录照旧关，见 pickDir）。
   const pickTag = react.useCallback((name: string) => {
     setTags((current) => {
       if (current.includes(name)) return current.filter((one) => one !== name);
@@ -504,16 +566,13 @@ export function KnowledgePage(): react.JSX.Element {
     });
   }, []);
 
-  /** 清空选中的标签。 */
   const clearTags = react.useCallback(() => setTags([]), []);
 
-  /** 开关「只看系统规则」。 */
   const toggleRuleOnly = react.useCallback(() => {
     setRuleOnly((current) => !current);
     setDrawerOpen(false);
   }, []);
 
-  /** 跑一个写操作，成功后刷新树（和列表），出错统一处理。 */
   const runWrite = react.useCallback(async (action: () => Promise<unknown>, refreshList: boolean) => {
     try {
       await action();
@@ -526,20 +585,12 @@ export function KnowledgePage(): react.JSX.Element {
     }
   }, [handleError, loadList, loadTree]);
 
-  /** 同步完本地目录：新建的文档可能进了新目录，树和列表都刷新。 */
   const refreshAfterSync = react.useCallback(() => {
     void loadTree();
     void loadList(0);
   }, [loadList, loadTree]);
 
-  /**
-   * 左栏改名、删了标签：后端会刷新挂着它的文档的 updatedAt，开着的那篇重新拿一份交给编辑器换底稿，
-   * 免得下次保存误报 409（0.7.90 审计 P1-1）。编辑器按 editKey 认、按 updatedAt 判断这篇到底变没变。
-   * @param from 原标签名。
-   * @param to 新标签名；删除是 null。
-   */
   const syncOpenedTag = react.useCallback(async (from: string, to: string | null) => {
-    //G 没开文档、新建的、还在打开中：不用管。
     if (opened?.id === undefined || opened.doc === undefined) return;
 
     const editKey = opened.key;
@@ -547,7 +598,6 @@ export function KnowledgePage(): react.JSX.Element {
     setTagChange({ editKey, from, to, doc });
   }, [opened]);
 
-  //M 标签改名（新名字已有就合并）：成功后刷新树和列表；已选着这个标签的，换成新名字（合并时去掉重复）。
   const renameTag = react.useCallback((name: string, newName: string) => {
     void runWrite(async () => {
       const result = await api.renameOrMergeTag(name, newName);
@@ -570,7 +620,6 @@ export function KnowledgePage(): react.JSX.Element {
     }, true);
   }, [runWrite, showNotice, syncOpenedTag]);
 
-  //M 删标签：成功后刷新树和列表，并从已选标签里去掉它。
   const removeTag = react.useCallback((name: string) => {
     void runWrite(async () => {
       const result = await api.deleteTag(name);
@@ -581,31 +630,47 @@ export function KnowledgePage(): react.JSX.Element {
   }, [runWrite, showNotice, syncOpenedTag]);
 
   const createDir = react.useCallback((parentId: string | null) => {
-    const name = window.prompt('新目录的名字')?.trim() ?? '';
-    if (name === '') return;
+    void kbDialog.prompt({
+      title: '新建虚拟目录',
+      placeholder: '输入新目录名称…',
+      confirmText: '创建目录',
+    }).then((name) => {
+      if (name === null || name.trim() === '') return;
 
-    void runWrite(() => api.createDir(name, parentId), false);
-  }, [runWrite]);
+      void runWrite(() => api.createDir(name.trim(), parentId), false);
+    });
+  }, [kbDialog, runWrite]);
 
   const renameDir = react.useCallback((target: api.KnowledgeDir) => {
-    const name = window.prompt('目录改名为', target.name)?.trim() ?? '';
-    if (name === '' || name === target.name) return;
+    void kbDialog.prompt({
+      title: '修改目录名称',
+      initialValue: target.name,
+      placeholder: '输入新的目录名称…',
+      confirmText: '保存',
+    }).then((name) => {
+      if (name === null || name.trim() === '' || name.trim() === target.name) return;
 
-    void runWrite(() => api.updateDir(target.id, { name }), true);
-  }, [runWrite]);
+      void runWrite(() => api.updateDir(target.id, { name: name.trim() }), true);
+    });
+  }, [kbDialog, runWrite]);
 
   const removeDir = react.useCallback((target: api.KnowledgeDir) => {
-    const ok = window.confirm(`删除目录「${target.name}」？里面的文档不会删，会变成未归类，子目录上提一层。`);
-    if (!ok) return;
+    void kbDialog.confirm({
+      title: `删除目录「${target.name}」`,
+      message: '里面的文档不会被删除，会转为「未归类」，子目录自动上提一层。',
+      confirmText: '删除目录',
+      danger: true,
+    }).then((ok) => {
+      if (!ok) return;
 
-    if (dir === target.id) {
-      setDir(undefined);
-    }
-    void runWrite(() => api.deleteDir(target.id), true);
-  }, [dir, runWrite]);
+      if (dir === target.id) {
+        setDir(undefined);
+      }
+      void runWrite(() => api.deleteDir(target.id), true);
+    });
+  }, [dir, kbDialog, runWrite]);
 
   const moveDoc = react.useCallback((docId: string, dirId: string | null) => {
-    //G 拖的正是开着又改过的那篇：先保存再移，免得移完再存撞 409（云端 29 #7）。
     if (opened?.id === docId && dirtyRef.current) {
       showNotice('这篇有未保存改动，请先保存再移动');
       return;
@@ -613,8 +678,6 @@ export function KnowledgePage(): react.JSX.Element {
 
     const move = async (): Promise<void> => {
       await api.updateDoc(docId, { dirId });
-
-      //M 移的正是开着的那篇、又没改过：重新打开，免得之后保存撞上 409。
       if (opened?.id === docId && !dirtyRef.current) {
         void openDoc(docId, true);
       }
@@ -627,12 +690,24 @@ export function KnowledgePage(): react.JSX.Element {
   }, [runWrite]);
 
   //==========================================================
-  //M 算显示用的东西：目录名、筛选胶囊、手机现在在哪一屏
+  //M 算显示用的东西：目录名、图谱补充元数据、筛选胶囊、手机屏态
   //==========================================================
 
   const flatDirs = tree?.flatDirs ?? [];
   const dirNames = react.useMemo(() => new Map(flatDirs.map((item) => [item.id, item.name])), [flatDirs]);
   const titles = react.useMemo(() => wiki.getTitleIndex(graph?.nodes ?? []), [graph]);
+
+  //M 汇总前端已知文档的目录与摘要，供图谱节点在旧后端未重启时兜底配色与预览。
+  const docMetaById = react.useMemo(() => {
+    const map = new Map<string, { dirId: string | null; summary: string }>();
+    for (const item of items) {
+      map.set(item.id, { dirId: item.dirId, summary: item.summary });
+    }
+    if (opened?.doc !== undefined) {
+      map.set(opened.doc.id, { dirId: opened.doc.dirId, summary: opened.doc.summary });
+    }
+    return map;
+  }, [items, opened?.doc]);
 
   const chips: docList.FilterChip[] = [];
   if (dir === api.UNASSIGNED) {
@@ -641,7 +716,6 @@ export function KnowledgePage(): react.JSX.Element {
   if (dir !== undefined && dir !== api.UNASSIGNED) {
     chips.push({ key: 'dir', label: `目录：${dirNames.get(dir) ?? dir}` });
   }
-  //M 选中的标签每个一个胶囊，点 × 只去掉那一个；选了多个且是任一满足时，胶囊上标个“或”。
   let tagJoin = '';
   if (tags.length > 1 && tagMode === 'any') {
     tagJoin = '（或）';
@@ -663,7 +737,6 @@ export function KnowledgePage(): react.JSX.Element {
     if (key === 'dir') {
       setDir(undefined);
     }
-    //M 标签胶囊每个带着自己的标签名，只去掉那一个。
     if (key === 'tag') {
       setTags((current) => current.filter((one) => one !== value));
     }
@@ -679,7 +752,6 @@ export function KnowledgePage(): react.JSX.Element {
     }
   }, []);
 
-  //M 记下现在开着的是哪个编辑器，onSaved 据此判断回包时用户切没切走。
   openedKeyRef.current = opened?.key;
 
   let screen = 'list';
@@ -688,29 +760,65 @@ export function KnowledgePage(): react.JSX.Element {
   }
   const dragEnabled = !isMobile && !readOnly;
   const isLoadingDoc = opened !== undefined && opened.id !== undefined && opened.doc === undefined;
-  const homeHref = withToken('/', TOKEN);
-  const decisionHref = withToken('/work-decision/', TOKEN);
+  const homeHref = token.withToken('/', token.TOKEN);
+  const decisionHref = token.withToken('/work-decision/', token.TOKEN);
 
   return (
-    <div className="kb-app" data-mobile={isMobile} data-screen={screen}>
+    <div className="kb-app" data-mobile={isMobile} data-screen={screen} data-view={view}>
       <header className="kb-top">
-        {isMobile && (
+        {isMobile && view === 'docs' && (
           <button type="button" className="kb-icon-btn" onClick={() => setDrawerOpen(true)} aria-label="目录与标签">
             ☰
           </button>
         )}
         <span className="kb-brand">知识库</span>
-        <input
-          className="kb-search"
-          type="search"
-          value={qInput}
-          placeholder="搜标题、摘要、正文、标签"
-          onChange={(event) => setQInput(event.target.value)}
-        />
-        <button type="button" className="kb-link-btn" onClick={() => setGraphOpen(true)} title="整个知识库的双链图谱">
-          🕸️{!isMobile && ' 图谱'}
-        </button>
-        {!isMobile && !readOnly && (
+
+        {/* 三态核心视图切换器 */}
+        <nav className="kb-view-tabs" role="tablist" aria-label="知识与记忆主视图切换">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'docs'}
+            data-active={view === 'docs'}
+            onClick={() => void switchView('docs')}
+          >
+            <span>📄 文档</span>
+            {tree !== undefined && <span className="kb-tab-badge">{tree.totalDocs}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'graph'}
+            data-active={view === 'graph'}
+            onClick={() => void switchView('graph')}
+          >
+            <span>🕸️ 关系图谱</span>
+            {graph !== undefined && <span className="kb-tab-badge">{graph.edges.length}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'memory'}
+            data-active={view === 'memory'}
+            onClick={() => void switchView('memory')}
+          >
+            <span>🧠 记忆与 VGR</span>
+          </button>
+        </nav>
+
+        {view === 'docs' ? (
+          <input
+            className="kb-search"
+            type="search"
+            value={qInput}
+            placeholder="搜标题、摘要、正文、标签"
+            onChange={(event) => setQInput(event.target.value)}
+          />
+        ) : (
+          <span className="kb-grow" />
+        )}
+
+        {!isMobile && !readOnly && view === 'docs' && (
           <button
             type="button"
             className="kb-link-btn"
@@ -721,12 +829,14 @@ export function KnowledgePage(): react.JSX.Element {
           </button>
         )}
         {!isMobile && !readOnly && (
-          <button type="button" className="kb-primary-btn" onClick={() => newDoc('')}>＋ 新建</button>
+          <button type="button" className="kb-primary-btn" onClick={() => void newDoc('')}>＋ 新建</button>
         )}
         {!isMobile && <a className="kb-nav" href={homeHref}>主页</a>}
         {!isMobile && <a className="kb-nav" href={decisionHref}>工作决策</a>}
       </header>
+
       {notice !== undefined && <div className="kb-toast" role="status">{notice}</div>}
+
       {syncOpen && (
         <folderSync.FolderSyncPanel
           onSynced={refreshAfterSync}
@@ -734,94 +844,128 @@ export function KnowledgePage(): react.JSX.Element {
           onClose={() => setSyncOpen(false)}
         />
       )}
-      <div className="kb-main">
-        <aside className="kb-side" data-open={drawerOpen}>
-          <dirTree.DirTree
-            tree={tree}
-            dir={dir}
-            tags={tags}
-            tagMode={tagMode}
-            ruleOnly={ruleOnly}
-            readOnly={readOnly}
+
+      {/* 视图 1：三栏知识文档工作区 */}
+      {view === 'docs' && (
+        <div className="kb-main">
+          <aside className="kb-side" data-open={drawerOpen}>
+            <dirTree.DirTree
+              tree={tree}
+              dir={dir}
+              tags={tags}
+              tagMode={tagMode}
+              ruleOnly={ruleOnly}
+              readOnly={readOnly}
+              dragEnabled={dragEnabled}
+              pickDir={pickDir}
+              pickTag={pickTag}
+              setTagMode={setTagMode}
+              clearTags={clearTags}
+              toggleRuleOnly={toggleRuleOnly}
+              createDir={createDir}
+              renameDir={renameDir}
+              removeDir={removeDir}
+              moveDoc={moveDoc}
+              moveDir={moveDir}
+              renameTag={renameTag}
+              removeTag={removeTag}
+            />
+          </aside>
+          {isMobile && drawerOpen && <div className="kb-scrim" onClick={() => setDrawerOpen(false)} />}
+          <docList.DocList
+            items={items}
+            total={total}
+            hits={hits}
+            memoryHits={memoryHits}
+            memoryWarning={memoryWarning}
+            loading={loading}
+            error={listError}
+            chips={chips}
+            clearChip={clearChip}
+            activeId={opened?.id}
             dragEnabled={dragEnabled}
-            pickDir={pickDir}
-            pickTag={pickTag}
-            setTagMode={setTagMode}
-            clearTags={clearTags}
-            toggleRuleOnly={toggleRuleOnly}
-            createDir={createDir}
-            renameDir={renameDir}
-            removeDir={removeDir}
-            moveDoc={moveDoc}
-            moveDir={moveDir}
-            renameTag={renameTag}
-            removeTag={removeTag}
-          />
-        </aside>
-        {isMobile && drawerOpen && <div className="kb-scrim" onClick={() => setDrawerOpen(false)} />}
-        <docList.DocList
-          items={items}
-          total={total}
-          hits={hits}
-          memoryHits={memoryHits}
-          memoryWarning={memoryWarning}
-          loading={loading}
-          error={listError}
-          chips={chips}
-          clearChip={clearChip}
-          activeId={opened?.id}
-          dragEnabled={dragEnabled}
-          dirNames={dirNames}
-          open={(id) => void openDoc(id)}
-          more={() => void loadList(items.length)}
-        />
-        <main className="kb-pane">
-          {opened === undefined && <p className="kb-empty kb-center">在左边选一篇，或者新建一篇</p>}
-          {isLoadingDoc && (
-            <div className="kb-pane-loading">
-              {isMobile && <button type="button" className="kb-icon-btn" onClick={closeDoc} aria-label="返回">←</button>}
-              <span className="kb-muted">正在打开…</span>
-            </div>
-          )}
-          {opened !== undefined && !isLoadingDoc && (
-            <react.Suspense fallback={<p className="kb-muted kb-center">正在加载编辑器…</p>}>
-              <LazyEditor
-                key={opened.key}
-                editKey={opened.key}
-                doc={opened.doc}
-                preset={opened.preset}
-                dirs={flatDirs}
-                readOnly={readOnly}
-                isMobile={isMobile}
-                onSaved={onSaved}
-                onDeleted={onDeleted}
-                onClose={closeDoc}
-                onDirty={onDirty}
-                onError={handleError}
-                onNotice={showNotice}
-                onOpenDoc={(id) => void openDoc(id)}
-                onCreateDoc={newDoc}
-                onShowGraph={() => setGraphOpen(true)}
-                titles={titles}
-                tagChange={tagChange}
-              />
-            </react.Suspense>
-          )}
-        </main>
-      </div>
-      {graphOpen && (
-        <react.Suspense fallback={null}>
-          <LazyGraph
-            fullGraph={graph}
-            centerId={opened?.id}
+            dirNames={dirNames}
             open={(id) => void openDoc(id)}
-            onClose={() => setGraphOpen(false)}
+            more={() => void loadList(items.length)}
           />
-        </react.Suspense>
+          <main className="kb-pane">
+            {opened === undefined && <p className="kb-empty kb-center">在左边选一篇，或者新建一篇</p>}
+            {isLoadingDoc && (
+              <div className="kb-pane-loading">
+                {isMobile && (
+                  <button type="button" className="kb-icon-btn" onClick={() => void closeDoc()} aria-label="返回">←</button>
+                )}
+                <span className="kb-muted">正在打开…</span>
+              </div>
+            )}
+            {opened !== undefined && !isLoadingDoc && (
+              <react.Suspense fallback={<p className="kb-muted kb-center">正在加载编辑器…</p>}>
+                <LazyEditor
+                  key={opened.key}
+                  editKey={opened.key}
+                  doc={opened.doc}
+                  preset={opened.preset}
+                  dirs={flatDirs}
+                  readOnly={readOnly}
+                  isMobile={isMobile}
+                  onSaved={onSaved}
+                  onDeleted={onDeleted}
+                  onClose={() => void closeDoc()}
+                  onDirty={onDirty}
+                  onError={handleError}
+                  onNotice={showNotice}
+                  onOpenDoc={(id) => void openDoc(id)}
+                  onCreateDoc={(title) => void newDoc(title)}
+                  onShowGraph={() => void switchView('graph', opened.id)}
+                  titles={titles}
+                  tagChange={tagChange}
+                />
+              </react.Suspense>
+            )}
+          </main>
+        </div>
       )}
-      {isMobile && screen === 'list' && !readOnly && (
-        <button type="button" className="kb-fab" onClick={() => newDoc('')} aria-label="新建">＋</button>
+
+      {/* 视图 2：全幅关系图谱交互画布 */}
+      {view === 'graph' && (
+        <div className="kb-stage-full">
+          <react.Suspense fallback={<p className="kb-muted kb-center">正在加载关系图谱画布…</p>}>
+            <LazyGraph
+              fullGraph={graph}
+              dirs={flatDirs}
+              docMetaById={docMetaById}
+              initialFocusId={graphFocusId}
+              readOnly={readOnly}
+              onOpenEditor={(id) => void openDoc(id)}
+              onCreateDoc={(title) => void newDoc(title)}
+            />
+          </react.Suspense>
+        </div>
       )}
+
+      {/* 视图 3：记忆与 VGR 融合管理中心 */}
+      {view === 'memory' && (
+        <div className="kb-stage-full">
+          <react.Suspense fallback={<p className="kb-muted kb-center">正在加载记忆与 VGR 工作台…</p>}>
+            <LazyMemoryVgr
+              readOnly={readOnly}
+              onNotice={showNotice}
+              onError={handleError}
+              onSavedToKnowledge={(docId) => {
+                void loadTree();
+                void loadList(0);
+                void openDoc(docId, true);
+              }}
+            />
+          </react.Suspense>
+        </div>
+      )}
+
+      {isMobile && view === 'docs' && screen === 'list' && !readOnly && (
+        <button type="button" className="kb-fab" onClick={() => void newDoc('')} aria-label="新建">＋</button>
+      )}
+
+      {kbDialog.modalElement}
     </div>
   );
 }

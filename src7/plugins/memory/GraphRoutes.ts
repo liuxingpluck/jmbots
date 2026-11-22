@@ -29,6 +29,8 @@ export interface GraphSettings {
   mode: string;
   /** 回复用到记忆时是否在系统提示词附加关系图链接要求。 */
   link: boolean;
+  /** 外部渠道可点击的公网地址前缀（如 https://jm.example.com）；未配时非网页会话不附图谱链接。 */
+  publicUrl?: string;
 }
 
 /** 关系图向 MemoryService 取记忆服务地址（service_url）和状态。 */
@@ -65,6 +67,16 @@ export function readGraphSettings(root: string, raw: unknown): GraphSettings {
   if (own['link'] !== undefined && typeof own['link'] !== 'boolean') {
     throw new Error('memory.graph.link 要是 true 或 false');
   }
+  if (own['public_url'] !== undefined && typeof own['public_url'] !== 'string') {
+    throw new Error('memory.graph.public_url 要是字符串');
+  }
+  let publicUrl = '';
+  if (typeof own['public_url'] === 'string') {
+    publicUrl = own['public_url'].trim().replace(/\/+$/u, '');
+    if (publicUrl !== '' && !/^https?:\/\//iu.test(publicUrl)) {
+      throw new Error('memory.graph.public_url 要以 http:// 或 https:// 开头');
+    }
+  }
   let db = 'data/memory/memory.db';
   if (typeof own['db'] === 'string' && own['db'] !== '') {
     db = own['db'];
@@ -73,12 +85,16 @@ export function readGraphSettings(root: string, raw: unknown): GraphSettings {
   if (typeof own['mode'] === 'string') {
     mode = own['mode'];
   }
-  return {
+  const settings: GraphSettings = {
     enabled: true,
     db: path.resolve(root, db),
     mode,
     link: own['link'] !== false,
   };
+  if (publicUrl !== '') {
+    settings.publicUrl = publicUrl;
+  }
+  return settings;
 }
 
 
@@ -100,18 +116,46 @@ function graphCustomer(row: { customer?: string; address?: unknown }): string {
 }
 
 
+/** 判断本轮会话是否来自网页渠道（只有网页能直接点开相对路径 /graph/...）。 */
+function isWebGraphSession(row: ChatRequest['session']['row'], accessChannel: string | undefined): boolean {
+  const rawChannel = (accessChannel ?? row.channel ?? '').trim().toLowerCase();
+  if (rawChannel !== '' && rawChannel !== 'http' && rawChannel !== 'web') {
+    return false;
+  }
+  const customer = graphCustomer(row).trim().toLowerCase();
+  if (
+    customer !== ''
+    && customer !== 'owner'
+    && !customer.startsWith('http:')
+    && !customer.startsWith('web:')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+
+/** q 参数最多保留 40 个 Unicode 字符，避免长段语音或整篇原文拼出刷屏超长链接。 */
+const MAX_LINK_QUERY_CHARS = 40;
+
+
 /**
  * 回答用到记忆时让模型附的链接提示：开场先搜带了引用，或这一轮 memory 工具查到了东西，才有。
+ * 飞书、微信、命令行等非网页外部渠道在未配置公网前缀（publicUrl）时不附加相对路径链接。
  * @param request 这一步的请求（从 session.row 取机器人、客户号和消息）。
- * @returns 提示文字（链接带客户号、机器人、用户最后一句话）；没用到记忆或不是前台、干活的会话是 undefined。
+ * @param publicUrl 可选公网域名（如 https://jm.example.com）；为空时仅网页会话输出相对链接。
+ * @returns 提示文字（链接带客户号、机器人、用户最后一句话前 40 字）；不满足条件时是 undefined。
  */
-export function buildLinkHint(request: ChatRequest): string | undefined {
+export function buildLinkHint(request: ChatRequest, publicUrl?: string): string | undefined {
   const row = request.session.row;
   if (row.kind !== 'work' && row.kind !== 'front') return undefined;
 
   //G 旧图谱链接按客户和知识库组图，只给本人使用。
   const access = memoryKeyModule.getMemoryAccess(row);
   if (!access.full) return undefined;
+
+  const cleanPublicUrl = (publicUrl ?? '').trim().replace(/\/+$/u, '');
+  if (!isWebGraphSession(row, access.channel) && cleanPublicUrl === '') return undefined;
 
   const messages = row.messages;
   let lastUser = -1;
@@ -134,11 +178,16 @@ export function buildLinkHint(request: ChatRequest): string | undefined {
   });
   if (!recalled && !searched) return undefined;
 
-  const asked = [...piAi.contentText(messages[lastUser]!.content).replace(/^【[^】]*】/u, '').trim()].slice(0, 120).join('');
+  const rawText = piAi.contentText(messages[lastUser]!.content).replace(/^【[^】]*】/u, '').replace(/\s+/gu, ' ').trim();
+  const asked = [...rawText].slice(0, MAX_LINK_QUERY_CHARS).join('');
 
-  //M 链接里带上客户号（只读会话记录，不自己推）、机器人和用户最后一句话，关系图页面打开就能照这个查。
+  //M 链接里带上客户号（只读会话记录，不自己推）、机器人和用户最后一句话（限 40 字），关系图页面打开就能照这个查。
   const params = new URLSearchParams({ customer: graphCustomer(row), bot: row.bot, q: asked });
-  return `# 关系图链接\n回答如果用到了上面的聊天记录、知识库引用，在回答最后另起一行原样写这个链接（不要改动、不要解释）：\n[🔗 查看本次记忆的关系图](/graph/?${params.toString()})`;
+  let basePath = '/graph/';
+  if (cleanPublicUrl !== '') {
+    basePath = `${cleanPublicUrl}/graph/`;
+  }
+  return `# 关系图链接\n回答如果用到了上面的聊天记录、知识库引用，在回答最后另起一行原样写这个链接（不要改动、不要解释）：\n[🔗 查看本次记忆的关系图](${basePath}?${params.toString()})`;
 }
 
 
@@ -175,7 +224,7 @@ export class GraphRoutes {
     if (settings.enabled && settings.link) {
       ctx.on('session/before-model', (request) => {
         //M 这一步用没用到记忆：用到了才有提示，加进系统提示词，让模型回答末尾附关系图链接。
-        const hint = buildLinkHint(request);
+        const hint = buildLinkHint(request, settings.publicUrl);
         if (hint !== undefined) {
           request.system.push(hint);
         }
