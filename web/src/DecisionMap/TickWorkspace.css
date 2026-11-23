@@ -789,10 +789,14 @@ body.tick-resizing {
   min-height: 0;
   background: #18181b;
 }
+.tick-sidebar-backdrop {
+  display: none;
+}
 .tick-list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
   padding: 14px 18px 10px;
 }
 .tick-list-header__left {
@@ -800,6 +804,12 @@ body.tick-resizing {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+.tick-list-header__right {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 }
 .tick-list-header__icon {
   font-size: 18px;
@@ -812,6 +822,32 @@ body.tick-resizing {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.tick-header-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid #3f68c8;
+  border-radius: 7px;
+  background: rgba(59, 102, 214, 0.22);
+  color: #dce8ff;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.tick-header-add-btn:hover {
+  border-color: #5b87ec;
+  background: rgba(76, 126, 243, 0.34);
+  color: #ffffff;
+}
+.tick-header-add-btn[data-active="true"] {
+  border-color: #4b5568;
+  background: #262934;
+  color: #cfd6e6;
 }
 .tick-sort-btn {
   padding: 5px 10px;
@@ -979,6 +1015,43 @@ body.tick-resizing {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #e9ecf3;
+}
+.tick-task-row__edit-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b93a7;
+  font-size: 12px;
+  opacity: 0.28;
+  cursor: pointer;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.tick-task-row:hover .tick-task-row__edit-btn,
+.tick-task-row[data-selected="true"] .tick-task-row__edit-btn {
+  opacity: 0.88;
+}
+.tick-task-row__edit-btn:hover {
+  opacity: 1;
+  background: #2b3040;
+  color: #e6f0ff;
+}
+.tick-task-row__title-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid #4c7ef3;
+  border-radius: 6px;
+  background: #14161d;
+  color: #f5f7fc;
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
 }
 .tick-task-row__tag {
   flex: 0 0 auto;
@@ -1150,8 +1223,10 @@ body.tick-resizing {
 
 .tick-detail__bar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 10px 14px;
   border-bottom: 1px solid #26262c;
 }
@@ -1160,6 +1235,57 @@ body.tick-resizing {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+.tick-detail-status-select {
+  height: 27px;
+  max-width: 146px;
+  padding: 0 7px;
+  border: 1px solid #323748;
+  border-radius: 6px;
+  background: #20232e;
+  color: #dfe6f6;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 580;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.tick-detail-status-select:hover {
+  border-color: #4f5c7a;
+}
+.tick-detail-status-select:focus {
+  border-color: #4c7ef3;
+}
+.tick-detail-status-select option {
+  background: #1d1f28;
+  color: #eef1f8;
+}
+.tick-detail-status-select[data-status="pending_decision"] {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fde68a;
+}
+.tick-detail-status-select[data-status="running"] {
+  border-color: rgba(76, 126, 243, 0.5);
+  background: rgba(76, 126, 243, 0.16);
+  color: #dbeafe;
+}
+.tick-detail-status-select[data-status="blocked"] {
+  border-color: rgba(249, 115, 22, 0.45);
+  background: rgba(249, 115, 22, 0.15);
+  color: #fed7aa;
+}
+.tick-detail-status-select[data-status="done"] {
+  border-color: rgba(16, 185, 129, 0.42);
+  background: rgba(16, 185, 129, 0.14);
+  color: #bbf7d0;
+}
+.tick-detail-status-select[data-status="cancelled"] {
+  border-color: #444754;
+  background: #22232a;
+  color: #9da3b4;
 }
 .tick-detail__divider {
   width: 1px;
@@ -1208,6 +1334,54 @@ body.tick-resizing {
   gap: 6px;
 }
 
+/* 移入垃圾桶深色二次确认弹窗（零原生 window.confirm） */
+.tick-confirm-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 98;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.tick-confirm-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 8, 14, 0.7);
+  backdrop-filter: blur(2px);
+}
+.tick-confirm-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, 100%);
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid #482d33;
+  background: #201c20;
+  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.75);
+}
+.tick-confirm-dialog__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 660;
+  color: #fecaca;
+}
+.tick-confirm-dialog__desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #cbd2e1;
+  word-break: break-word;
+}
+.tick-confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
 .tick-detail__body {
   flex: 1;
   min-height: 0;
@@ -1236,22 +1410,53 @@ body.tick-resizing {
 .tick-detail-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .tick-detail-title {
   flex: 1;
   min-width: 0;
-  border: 0;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-bottom: 1px dashed #394052;
+  border-radius: 6px;
   background: transparent;
   color: #f5f7fc;
   font: inherit;
   font-size: 18px;
   font-weight: 660;
   outline: none;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.tick-detail-title:hover {
+  background: #232631;
+  border-bottom-color: #5b6888;
+}
+.tick-detail-title:focus {
+  background: #14161d;
+  border: 1px solid #4c7ef3;
 }
 .tick-detail-title--done {
   color: #8c92a2;
   text-decoration: line-through;
+}
+.tick-detail-title-edit {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #7f899f;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.tick-detail-title-edit:hover {
+  background: #272b38;
+  color: #dbe8ff;
 }
 .tick-saved-hint {
   flex: 0 0 auto;
@@ -1555,6 +1760,11 @@ body.tick-resizing {
   border-left: 3px solid #f59e0b;
   background: rgba(245, 158, 11, 0.08);
 }
+.tick-event-card[data-role="redteam"] {
+  border-color: rgba(239, 68, 68, 0.42);
+  border-left: 3.5px solid #ef4444;
+  background: linear-gradient(180deg, rgba(127, 29, 29, 0.22), rgba(26, 18, 22, 0.94));
+}
 .tick-event-card__head {
   display: flex;
   justify-content: space-between;
@@ -1576,12 +1786,21 @@ body.tick-resizing {
 .tick-event-card[data-role="boss"] .tick-event-card__by {
   color: #fbbf24;
 }
+.tick-event-card[data-role="redteam"] .tick-event-card__by {
+  color: #fca5a5;
+}
 .tick-event-card__kind {
   padding: 1px 6px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.06);
   color: #9da6ba;
   font-size: 11px;
+}
+.tick-event-card[data-role="redteam"] .tick-event-card__kind {
+  border: 1px solid rgba(248, 113, 113, 0.42);
+  background: rgba(220, 38, 38, 0.24);
+  color: #fecaca;
+  font-weight: 640;
 }
 .tick-event-card__time {
   color: #767f94;
@@ -1869,7 +2088,15 @@ body.tick-resizing {
 .tick-reply-targets {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 5px;
+}
+.tick-reply-targets__sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: #333a4c;
+  flex: 0 0 auto;
 }
 .tick-reply-target {
   padding: 3px 9px;
@@ -1886,6 +2113,16 @@ body.tick-resizing {
   border-color: #4f5975;
   color: #edf1fa;
 }
+.tick-reply-target--persona {
+  border-color: rgba(239, 68, 68, 0.34);
+  background: rgba(127, 29, 29, 0.18);
+  color: #fca5a5;
+}
+.tick-reply-target--persona:hover {
+  border-color: rgba(248, 113, 113, 0.68);
+  background: rgba(153, 27, 27, 0.3);
+  color: #ffe4e6;
+}
 .tick-reply-target[data-active="true"][data-target="Claude"] {
   border-color: #4c7ef3;
   background: rgba(76, 126, 243, 0.22);
@@ -1900,6 +2137,12 @@ body.tick-resizing {
   border-color: #6b7280;
   background: #2c2f3a;
   color: #f3f4f6;
+}
+.tick-reply-target[data-active="true"][data-target="persona"] {
+  border-color: #f87171;
+  background: rgba(220, 38, 38, 0.32);
+  color: #fff1f2;
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.22);
 }
 .tick-reply-bar__composer {
   display: flex;
@@ -1944,6 +2187,15 @@ body.tick-resizing {
 }
 .tick-reply-bar__send:hover:not(:disabled) {
   background: #4c79ea;
+}
+.tick-reply-bar__send[data-persona="true"] {
+  border-color: #dc2626;
+  background: linear-gradient(135deg, #b91c1c, #c2410c);
+  color: #fff7ed;
+}
+.tick-reply-bar__send[data-persona="true"]:hover:not(:disabled) {
+  border-color: #f87171;
+  background: linear-gradient(135deg, #dc2626, #ea580c);
 }
 .tick-reply-bar__send:disabled {
   opacity: 0.48;
@@ -2957,104 +3209,6 @@ body.tick-resizing {
 }
 
 /*==========================================================
- * 窄屏响应式适配
- *==========================================================*/
-@media (max-width: 1020px) {
-  .tick-drawer-panel {
-    flex: 0 0 340px;
-  }
-  .tick-list-detail-wrap {
-    flex: 0 0 var(--tick-detail-w, 380px);
-    width: var(--tick-detail-w, 380px);
-    max-width: 58vw;
-  }
-}
-
-@media (max-width: 799px) {
-  .tick-rail {
-    flex: 0 0 44px;
-  }
-  .tick-sidebar {
-    flex: 0 0 184px;
-    width: 184px;
-    border-right: 1px solid #26262b;
-  }
-  .tick-resizer,
-  .tick-wide-toggle {
-    display: none;
-  }
-  .tick-list-main {
-    min-width: 0;
-  }
-  .tick-detail {
-    display: none;
-  }
-  .tick-list-detail-wrap[data-open="false"] {
-    display: none;
-  }
-  .tick-drawer-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 59;
-    background: rgba(6, 8, 13, 0.65);
-    backdrop-filter: blur(2px);
-  }
-  .tick-quadrant-grid {
-    grid-template-columns: 1fr;
-    grid-template-rows: none;
-    overflow-y: auto;
-  }
-  .tick-q-card {
-    min-height: 220px;
-  }
-  .tick-habit-weekbar,
-  .tick-habit-row {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-  .tick-habit-days {
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    width: 100%;
-  }
-  .tick-habit-row__stat {
-    justify-content: space-between;
-  }
-  .tick-drawer-panel {
-    position: fixed;
-    top: 48px;
-    right: 0;
-    bottom: 0;
-    z-index: 60;
-    flex: none;
-    width: min(460px, 100vw);
-    max-width: 100vw;
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.6);
-  }
-  .tick-drawer-panel .tick-detail {
-    display: flex;
-    flex: 1;
-    width: 100%;
-    max-width: 100%;
-    border-left: 0;
-  }
-}
-
-@media (max-width: 560px) {
-  .tick-drawer-panel {
-    left: 0;
-    width: 100vw;
-  }
-  .tick-reply-bar__composer {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .tick-reply-bar__send {
-    align-self: flex-end;
-  }
-}
-
-/*==========================================================
  * 顶部「动态组合筛选条」与内置「存为视图 / 编辑视图」模态窗
  *==========================================================*/
 .tick-fbar {
@@ -3553,4 +3707,246 @@ body.tick-resizing {
   padding: 11px 18px;
   border-top: 1px solid #2b2e3a;
   background: #1b1c22;
+}
+
+/*==========================================================
+ * 窄屏与手机端全面响应式适配（置于末尾确保优先级）
+ *==========================================================*/
+@media (hover: none), (pointer: coarse) {
+  .tick-task-row__edit-btn {
+    opacity: 0.78;
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 1020px) {
+  .tick-drawer-panel {
+    flex: 0 0 340px;
+  }
+  .tick-list-detail-wrap {
+    flex: 0 0 var(--tick-detail-w, 380px);
+    width: var(--tick-detail-w, 380px);
+    max-width: 58vw;
+  }
+}
+
+@media (max-width: 799px) {
+  .tick-rail {
+    flex: 0 0 44px;
+  }
+  /* 侧栏改为浮层抽屉，绝不挤压 375px 手机屏中栏宽度 */
+  .tick-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 57;
+    background: rgba(6, 8, 13, 0.58);
+    backdrop-filter: blur(1.5px);
+  }
+  .tick-sidebar {
+    position: fixed;
+    top: 48px;
+    left: 44px;
+    bottom: 0;
+    z-index: 58;
+    flex: none;
+    width: min(244px, calc(100vw - 52px));
+    border-right: 1px solid #2d303c;
+    box-shadow: 10px 0 32px rgba(0, 0, 0, 0.65);
+  }
+  .tick-resizer,
+  .tick-wide-toggle {
+    display: none;
+  }
+  .tick-list-main {
+    min-width: 0;
+  }
+  .tick-task-row__edit-btn {
+    opacity: 0.78;
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+  }
+  .tick-detail {
+    display: none;
+  }
+  .tick-list-detail-wrap[data-open="false"] {
+    display: none;
+  }
+  .tick-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: rgba(6, 8, 13, 0.65);
+    backdrop-filter: blur(2px);
+  }
+  .tick-drawer-panel {
+    position: fixed;
+    top: 48px;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    flex: none;
+    width: min(460px, 100vw);
+    max-width: 100vw;
+    height: calc(100dvh - 48px);
+    max-height: calc(100dvh - 48px);
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.6);
+  }
+  .tick-drawer-panel .tick-detail {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    max-width: 100%;
+    border-left: 0;
+  }
+
+  /* 顶部动态筛选条手机端单行横向平滑滚动，绝不折 3-4 行占满首屏 */
+  .tick-fbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 6px;
+    padding: 6px 10px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tick-fbar::-webkit-scrollbar {
+    display: none;
+  }
+  .tick-fbar__left {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  .tick-fbar__left > *,
+  .tick-fbar__right {
+    flex: 0 0 auto;
+  }
+  /* 筛选下拉弹层改为视口固定定位，彻底防止手机右侧溢出裁切 */
+  .tick-fbar__pop,
+  .tick-fbar__pop--tags {
+    position: fixed;
+    top: 96px;
+    left: 10px;
+    right: 10px;
+    min-width: 0;
+    max-width: none;
+    width: auto;
+    z-index: 85;
+  }
+
+  /* 底部批示条胶囊区（含红军胶囊）单行横向滚动 + 安全区留白防手势条遮挡 */
+  .tick-reply-bar {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .tick-reply-targets {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    width: 100%;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tick-reply-targets::-webkit-scrollbar {
+    display: none;
+  }
+  .tick-reply-target {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .tick-detail__foot {
+    padding-bottom: calc(9px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 移动端所有输入框字号 >= 16px，防止 iOS Safari 聚焦自动放大视口 */
+  .tick-fbar__kw-input,
+  .tick-fbar__pop-search,
+  .tick-detail-status-select,
+  .tick-detail-title,
+  .tick-detail-summary,
+  .tick-task-row__title-input,
+  .tick-quick-add__input,
+  .tick-reply-bar__input,
+  .tick-view-modal__input,
+  .tick-view-modal__tag-inline input,
+  .tick-tag-input,
+  .tick-subtask-add input,
+  .tick-tag-pool__search,
+  .tick-search-input {
+    font-size: 16px;
+  }
+  .tick-fbar__kw-input {
+    width: 118px;
+    height: 30px;
+  }
+  .tick-fbar__kw-input:focus {
+    width: 152px;
+  }
+  .tick-detail-status-select {
+    height: 30px;
+    max-width: 162px;
+  }
+
+  .tick-quadrant-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    overflow-y: auto;
+  }
+  .tick-q-card {
+    min-height: 220px;
+  }
+  .tick-habit-weekbar,
+  .tick-habit-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .tick-habit-days {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    width: 100%;
+  }
+  .tick-habit-row__stat {
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 560px) {
+  .tick-drawer-panel {
+    left: 0;
+    width: 100vw;
+  }
+  .tick-search-layer {
+    padding: 0;
+  }
+  .tick-view-modal,
+  .tick-search-card {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border: 0;
+  }
+  .tick-view-modal__foot {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  .tick-list-header {
+    padding: 10px 12px 8px;
+  }
+  .tick-list-header__title {
+    font-size: 16.5px;
+  }
+  .tick-quick-add {
+    margin: 0 10px 10px;
+  }
+  .tick-reply-bar__composer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .tick-reply-bar__send {
+    align-self: flex-end;
+  }
 }

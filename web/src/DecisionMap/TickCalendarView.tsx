@@ -38,6 +38,14 @@ export interface TickCalendarViewProps {
     kind: api.ControlTaskEventKind,
     options?: { notifyHelper?: string; broadcast?: boolean },
   ) => Promise<boolean>;
+  /** 可选无状态反方红军角色列表。 */
+  personas?: readonly api.PersonaSummary[];
+  /** 可选召唤红军角色无状态拍砖回调。 */
+  onPersonaReview?: (
+    taskId: string,
+    personaId: string,
+    prompt?: string,
+  ) => Promise<boolean>;
 }
 
 /** 日历表头星期名称（周日起）。 */
@@ -56,6 +64,8 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
     onPatchTask,
     onDeleteTask,
     onAppendEvent,
+    personas,
+    onPersonaReview,
   } = props;
 
   const todayDate = utils.parseDateStr(todayStr) ?? new Date();
@@ -372,6 +382,8 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
             onCreateTask={onCreateTask}
             onAppendEvent={onAppendEvent}
             onDeleteTask={onDeleteTask}
+            personas={personas}
+            onPersonaReview={onPersonaReview}
           />
         </div>
       )}

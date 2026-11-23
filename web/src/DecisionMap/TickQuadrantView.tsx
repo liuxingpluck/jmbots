@@ -42,6 +42,14 @@ export interface TickQuadrantViewProps {
     kind: api.ControlTaskEventKind,
     options?: { notifyHelper?: string; broadcast?: boolean },
   ) => Promise<boolean>;
+  /** 可选无状态反方红军角色列表。 */
+  personas?: readonly api.PersonaSummary[];
+  /** 可选召唤红军角色无状态拍砖回调。 */
+  onPersonaReview?: (
+    taskId: string,
+    personaId: string,
+    prompt?: string,
+  ) => Promise<boolean>;
 }
 
 /** 单个象限内部四类时间分组结构。 */
@@ -100,6 +108,8 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
     onPatchTask,
     onDeleteTask,
     onAppendEvent,
+    personas,
+    onPersonaReview,
   } = props;
 
   //M 记录哪些分组被折叠（键格式：q1:done 等），默认折叠各象限的已完成分组。
@@ -459,6 +469,8 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
             onCreateTask={onCreateTask}
             onAppendEvent={onAppendEvent}
             onDeleteTask={onDeleteTask}
+            personas={personas}
+            onPersonaReview={onPersonaReview}
           />
         </div>
       )}

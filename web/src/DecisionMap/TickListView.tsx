@@ -61,6 +61,14 @@ export interface TickListViewProps {
     kind: api.ControlTaskEventKind,
     options?: { notifyHelper?: string; broadcast?: boolean },
   ) => Promise<boolean>;
+  /** 可选无状态反方红军角色列表。 */
+  personas?: readonly api.PersonaSummary[];
+  /** 可选召唤红军角色无状态拍砖回调。 */
+  onPersonaReview?: (
+    taskId: string,
+    personaId: string,
+    prompt?: string,
+  ) => Promise<boolean>;
   /** 新建自定义分组回调。 */
   onCreateList: (name: string, icon: string) => Promise<void>;
   /** 删除自定义分组回调。 */
@@ -178,6 +186,8 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     onPatchTask,
     onDeleteTask,
     onAppendEvent,
+    personas,
+    onPersonaReview,
     onCreateList,
     onDeleteList,
   } = props;
@@ -185,7 +195,12 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
   const [sortMode, setSortMode] = react.useState<utils.TickSortMode>('default');
   const [collapsedIds, setCollapsedIds] = react.useState<ReadonlySet<string>>(() => new Set());
   const [completedOpen, setCompletedOpen] = react.useState(true);
-  const [sidebarOpen, setSidebarOpen] = react.useState(true);
+  //M 窄屏手机（<800px）默认收起左侧导航栏，让中栏节点列表完整占满视口宽度。
+  const [sidebarOpen, setSidebarOpen] = react.useState(() => {
+    if (typeof window === 'undefined') return true;
+
+    return window.innerWidth >= 800;
+  });
 
   //M 左侧分组视图与核心标签池折叠、迷你搜标签、展开低频标签及多选开关。
   const [groupsFolded, setGroupsFolded] = react.useState(false);
@@ -221,11 +236,17 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     };
   }, []);
 
-  //M 顶部快速添加栏状态。
+  //M 顶部按需展开快速添加栏状态（默认不占行高，点中栏头部「+ 新建」展开）。
+  const [quickAddOpen, setQuickAddOpen] = react.useState(false);
   const [quickTitle, setQuickTitle] = react.useState('');
   const [quickDue, setQuickDue] = react.useState<string>('');
   const [quickQuadrant, setQuickQuadrant] = react.useState<api.TickQuadrant>('q2');
   const [quickDueOpen, setQuickDueOpen] = react.useState(false);
+
+  //M 中栏列表行内就地编辑标题状态（支持桌面端双击标题或双端点击 ✎ 按钮）。
+  const [editingRowId, setEditingRowId] = react.useState<string | undefined>(undefined);
+  const [editingRowTitle, setEditingRowTitle] = react.useState('');
+  const cancelRowEditRef = react.useRef(false);
 
   //M 左侧新建/删除分组与动态视图内联确认状态（零原生弹窗）。
   const [addingList, setAddingList] = react.useState(false);
@@ -456,6 +477,97 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     await onPatchTask(task.id, { status: nextStatus, by: 'boss' });
   };
 
+  /** 在左侧栏切换视图范围（窄屏浮层模式下自动收起抽屉）。 */
+  const selectScopeFromSidebar = (next: filterEngine.WorkbenchScope): void => {
+    onChangeScope(next);
+    if (typeof window !== 'undefined' && window.innerWidth < 800) {
+      setSidebarOpen(false);
+    }
+  };
+
+  /** 进入中栏行内标题就地编辑态。 */
+  const startInlineEdit = (task: api.ControlTask): void => {
+    cancelRowEditRef.current = false;
+    setEditingRowId(task.id);
+    setEditingRowTitle(task.title);
+  };
+
+  /** 取消中栏行内标题编辑。 */
+  const cancelInlineEdit = (): void => {
+    cancelRowEditRef.current = true;
+    setEditingRowId(undefined);
+    setEditingRowTitle('');
+  };
+
+  /** 提交保存中栏行内修改的标题。 */
+  const commitInlineEdit = async (task: api.ControlTask): Promise<void> => {
+    if (cancelRowEditRef.current) {
+      cancelRowEditRef.current = false;
+      return;
+    }
+    setEditingRowId(undefined);
+    const cleaned = editingRowTitle.trim();
+    if (cleaned === '' || cleaned === task.title) return;
+
+    await onPatchTask(task.id, { title: cleaned, by: 'boss' }, '已更新节点标题');
+  };
+
+  /** 渲染任务行标题与行内直接改名控件（双击标题或点 ✎ 图标均可就地编辑）。 */
+  const renderRowTitleArea = (item: api.ControlTask): react.JSX.Element => {
+    if (editingRowId === item.id) {
+      return (
+        <input
+          type="text"
+          className="tick-task-row__title-input"
+          value={editingRowTitle}
+          aria-label="修改节点标题"
+          autoFocus
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onChange={(e) => setEditingRowTitle(e.target.value)}
+          onBlur={() => void commitInlineEdit(item)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              e.stopPropagation();
+              cancelInlineEdit();
+            }
+          }}
+        />
+      );
+    }
+    return (
+      <>
+        <span
+          className="tick-task-row__title"
+          title="双击直接修改标题"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            startInlineEdit(item);
+          }}
+        >
+          {item.title}
+        </span>
+        <button
+          type="button"
+          className="tick-task-row__edit-btn"
+          title="修改标题"
+          aria-label={`修改标题：${item.title}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            startInlineEdit(item);
+          }}
+        >
+          ✎
+        </button>
+      </>
+    );
+  };
+
   /** 提交新建分组。 */
   const handleSubmitNewList = async (event: react.FormEvent): Promise<void> => {
     event.preventDefault();
@@ -465,7 +577,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     await onCreateList(cleaned, newListIcon);
     setNewListName('');
     setAddingList(false);
-    onChangeScope({ kind: 'list', name: cleaned });
+    selectScopeFromSidebar({ kind: 'list', name: cleaned });
   };
 
   const canQuickAdd = scope.kind !== 'completed' && scope.kind !== 'trash';
@@ -553,6 +665,11 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
       {/* 左栏：上部独立可滚动区（智能视图 / 动态筛选器 / 分组视图 / 核心标签池） + 底部固定贴底区（已完成 & 垃圾桶） */}
       {sidebarOpen && (
         <>
+          <div
+            className="tick-sidebar-backdrop"
+            aria-hidden="true"
+            onClick={() => setSidebarOpen(false)}
+          />
           <aside className="tick-sidebar" aria-label="视图与标签导航">
             <div className="tick-sidebar__scroll">
               {/* 1. 智能视图 */}
@@ -577,7 +694,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                         type="button"
                         className="tick-nav-item"
                         data-active={active}
-                        onClick={() => onChangeScope({ kind: 'smart', key: meta.key })}
+                        onClick={() => selectScopeFromSidebar({ kind: 'smart', key: meta.key })}
                       >
                         <span className="tick-nav-item__icon">{meta.icon}</span>
                         <span className="tick-nav-item__label">{meta.label}</span>
@@ -631,7 +748,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                             title={ruleTip}
                             onClick={() => {
                               setConfirmDeleteViewId(undefined);
-                              onChangeScope({ kind: 'view', viewId: view.id });
+                              selectScopeFromSidebar({ kind: 'view', viewId: view.id });
                             }}
                           >
                             <span className="tick-nav-item__icon" style={viewDotStyle}>
@@ -768,7 +885,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                             data-active={active}
                             onClick={() => {
                               setConfirmDeleteListId(undefined);
-                              onChangeScope({ kind: 'list', name: item.name });
+                              selectScopeFromSidebar({ kind: 'list', name: item.name });
                             }}
                           >
                             <span className="tick-nav-item__icon">{item.icon ?? '📋'}</span>
@@ -935,7 +1052,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                 type="button"
                 className="tick-nav-item tick-nav-item--compact"
                 data-active={scope.kind === 'completed'}
-                onClick={() => onChangeScope({ kind: 'completed' })}
+                onClick={() => selectScopeFromSidebar({ kind: 'completed' })}
               >
                 <span className="tick-nav-item__icon">☑️</span>
                 <span className="tick-nav-item__label">已完成</span>
@@ -949,7 +1066,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                 type="button"
                 className="tick-nav-item tick-nav-item--compact"
                 data-active={scope.kind === 'trash'}
-                onClick={() => onChangeScope({ kind: 'trash' })}
+                onClick={() => selectScopeFromSidebar({ kind: 'trash' })}
               >
                 <span className="tick-nav-item__icon">🗑️</span>
                 <span className="tick-nav-item__label">垃圾桶</span>
@@ -994,6 +1111,22 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
             <h2 className="tick-list-header__title">{headerMeta.title}</h2>
           </div>
           <div className="tick-list-header__right">
+            {canQuickAdd && (
+              <button
+                type="button"
+                className="tick-header-add-btn"
+                data-active={quickAddOpen}
+                title="展开或收起快速新建框"
+                aria-expanded={quickAddOpen}
+                onClick={() => {
+                  setQuickAddOpen((prev) => !prev);
+                  setQuickDueOpen(false);
+                }}
+              >
+                {quickAddOpen && '✕ 收起'}
+                {!quickAddOpen && '+ 新建'}
+              </button>
+            )}
             <button
               type="button"
               className="tick-sort-btn"
@@ -1005,8 +1138,8 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
           </div>
         </header>
 
-        {/* 快速添加输入框（支持 #标签 + 日期 + 象限） */}
-        {canQuickAdd && (
+        {/* 按需展开的快速添加输入框（默认收起不占行高，支持 #标签 + 日期 + 象限 + Esc 收起） */}
+        {canQuickAdd && quickAddOpen && (
           <form className="tick-quick-add" onSubmit={(e) => void handleQuickCreate(e)}>
             <span className="tick-quick-add__plus" aria-hidden="true">
               +
@@ -1015,8 +1148,16 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
               type="text"
               className="tick-quick-add__input"
               value={quickTitle}
-              placeholder={`新建节点至「${headerMeta.title}」，输入 #标签 自动打标，回车创建…`}
+              autoFocus
+              placeholder={`新建节点至「${headerMeta.title}」，输入 #标签 自动打标，回车创建（Esc 收起）…`}
               onChange={(e) => setQuickTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setQuickDueOpen(false);
+                  setQuickAddOpen(false);
+                }
+              }}
             />
             <div className="tick-quick-add__tools">
               <div className="tick-quick-due-wrap">
@@ -1097,7 +1238,18 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
           {pendingRows.length === 0 && doneRows.length === 0 && (
             <div className="tick-list-empty">
               <p>当前筛选条件下暂无节点</p>
-              {canQuickAdd && <span>在上方输入框直接回车即可快速新建一个节点</span>}
+              {canQuickAdd && !quickAddOpen && (
+                <button
+                  type="button"
+                  className="tick-header-add-btn"
+                  onClick={() => setQuickAddOpen(true)}
+                >
+                  + 新建节点
+                </button>
+              )}
+              {canQuickAdd && quickAddOpen && (
+                <span>在上方新建框输入标题（支持 #标签）回车创建，按 Esc 收起</span>
+              )}
             </div>
           )}
 
@@ -1183,7 +1335,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                   {done && <span aria-hidden="true">✓</span>}
                 </button>
 
-                <span className="tick-task-row__title">{item.title}</span>
+                {renderRowTitleArea(item)}
 
                 {sourceBadge !== undefined && (
                   <span className="tick-source-badge">{sourceBadge}</span>
@@ -1272,7 +1424,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                   >
                     <span aria-hidden="true">✓</span>
                   </button>
-                  <span className="tick-task-row__title">{item.title}</span>
+                  {renderRowTitleArea(item)}
                   {renderRowTagPills(item.tags, activeFilterTags, (tag) =>
                     onToggleTagFilter(tag, true),
                   )}
@@ -1321,7 +1473,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                       >
                         <span aria-hidden="true">✓</span>
                       </button>
-                      <span className="tick-task-row__title">{item.title}</span>
+                      {renderRowTitleArea(item)}
                       {renderRowTagPills(item.tags, activeFilterTags, (tag) =>
                         onToggleTagFilter(tag, true),
                       )}
@@ -1376,6 +1528,8 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
           onPatchTask={onPatchTask}
           onCreateTask={onCreateTask}
           onAppendEvent={onAppendEvent}
+          personas={personas}
+          onPersonaReview={onPersonaReview}
           onDeleteTask={onDeleteTask}
         />
       </div>

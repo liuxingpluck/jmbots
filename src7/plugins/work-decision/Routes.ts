@@ -228,6 +228,7 @@ function readNotifyBot(rawBody: unknown): string | undefined {
  * @param noticeConfig 主人私聊通知路由配置（默认目标与按机器人路由目标表）。
  * @param controlStore 多 AI 协同控制面任务存储。
  * @param dispatchConfig 控制面单向唤醒与作战室播报配置（缺省按未配置处理）。
+ * @param personas 可选自定义无状态反方红军角色列表。
  */
 export function mount(
   ctx: cordis.Context,
@@ -236,6 +237,7 @@ export function mount(
   noticeConfig: notifications.OwnerNoticeConfig | undefined,
   controlStore = new controlPlaneModule.ControlPlaneStore(ctx.resources.root),
   dispatchConfig: notifications.ControlDispatchConfig = { helperBots: new Map(), noticeConfig },
+  personas?: readonly types.PersonaDef[],
 ): void {
   const app = ctx.http.app;
   const onError = (error: unknown) => ({ ok: false, error: textModule.getErrorMessage(error) });
@@ -569,8 +571,15 @@ export function mount(
       tasksRev: controlStore.getRevision(),
     }));
 
-    //M 挂载多 AI 协同控制面任务面板 REST 接口（/api/work-decision/tasks*）。
-    controlPlaneModule.mountControlPlaneRoutes(scope, PREFIX, controlStore, ctx, dispatchConfig);
+    //M 挂载多 AI 协同控制面任务面板与无状态红军 REST 接口（/api/work-decision/tasks* 等）。
+    controlPlaneModule.mountControlPlaneRoutes(
+      scope,
+      PREFIX,
+      controlStore,
+      ctx,
+      dispatchConfig,
+      personas,
+    );
   });
 }
 

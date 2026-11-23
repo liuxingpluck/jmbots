@@ -215,6 +215,7 @@ export const CONTROL_TASK_EVENT_KINDS = [
   'status',
   'heartbeat',
   'note',
+  'redteam',
   'cancelled',
 ] as const;
 
@@ -642,3 +643,74 @@ export interface ControlPlaneSnapshot {
 
 /** GET /api/work-decision/tasks 响应契约的兼容别名。 */
 export type ControlTaskListResponse = ControlPlaneSnapshot;
+
+
+//==========================================================
+// 无状态反方红军角色机制（Stateless Redteam Personas）
+//==========================================================
+
+/** 无状态反方红军角色定义（支持 work-decision 插件配置可选 personas 覆盖）。 */
+export interface PersonaDef {
+  /** 角色唯一标识（如 biz-redteam、arch-critic、legal-guard）。 */
+  id: string;
+  /** 角色完整名称（如 冷血商业红军）。 */
+  name: string;
+  /** 底部胶囊短名（如 冷血商业）；缺省使用 name。 */
+  shortName?: string;
+  /** 角色 emoji 图标（如 🔪）。 */
+  icon: string;
+  /** 一句话立场简介（供前端胶囊悬停提示）。 */
+  tagline: string;
+  /** 优先调用的异构模型名（provider/modelId）；不可用时自动降级 defaultModel。 */
+  preferredModel: string;
+  /** 角色专属反顺从 System Prompt（含证据锚定与三段量化硬问题约束）。 */
+  systemPrompt: string;
+  /** 是否启用（缺省为 true，配置 false 时不对外列出或调用）。 */
+  enabled?: boolean;
+}
+
+/** GET /api/work-decision/personas 返回给前端的单个启用角色摘要。 */
+export interface PersonaSummary {
+  /** 角色唯一标识。 */
+  id: string;
+  /** 角色完整名称。 */
+  name: string;
+  /** 底部胶囊短名。 */
+  shortName: string;
+  /** 角色 emoji 图标。 */
+  icon: string;
+  /** 一句话立场简介。 */
+  tagline: string;
+  /** 配置的优先异构模型名。 */
+  preferredModel: string;
+  /** 当前实际解析可用的模型名（优先模型不可用时降级 defaultModel，均不可用为空串）。 */
+  resolvedModel: string;
+}
+
+/** POST /api/work-decision/tasks/:id/persona-review 请求输入。 */
+export interface PersonaReviewInput {
+  /** 目标红军角色 ID（必填）。 */
+  personaId: string;
+  /** 老板本轮可选重点追问；省略或空串时直接对整张任务卡一键拍砖。 */
+  prompt?: string;
+  /** 可选临时覆盖本次调用的模型名（provider/modelId）。 */
+  model?: string;
+}
+
+/** POST /api/work-decision/tasks/:id/persona-review 响应契约。 */
+export interface PersonaReviewResult {
+  /** 请求成功。 */
+  ok: true;
+  /** 落盘后的控制面账本修订号。 */
+  revision: number;
+  /** 落盘后的最新任务卡完整副本。 */
+  task: ControlTask;
+  /** 本次追加的红军拍砖事件（kind: 'redteam'）。 */
+  event: ControlTaskEvent;
+  /** 本次执行的红军角色 ID。 */
+  personaId: string;
+  /** 本次实际调用的模型名。 */
+  model: string;
+  /** 模型单轮推理耗时（毫秒）。 */
+  durationMs: number;
+}

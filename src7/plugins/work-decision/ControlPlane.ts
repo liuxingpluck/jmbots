@@ -15,6 +15,8 @@
  * - POST   /api/work-decision/views             新建自定义动态筛选视图
  * - PATCH  /api/work-decision/views/:id         更新自定义动态筛选视图
  * - DELETE /api/work-decision/views/:id         删除自定义动态筛选视图
+ * - GET    /api/work-decision/personas          列出已启用的无状态反方红军角色
+ * - POST   /api/work-decision/tasks/:id/persona-review 无状态红军一键拍砖并原位记入时间线
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -27,6 +29,7 @@ import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as filterViewsModule from './FilterViews.ts';
 import * as notificationsModule from './Notify.ts';
+import * as personasModule from './Personas.ts';
 import * as sourceRefModule from './SourceRef.ts';
 import * as types from './Types.ts';
 
@@ -609,6 +612,15 @@ export class ControlPlaneStore {
   /** 当前控制面任务修订号（每次增删改递增，供 /version 探针感知）。 */
   getRevision(): number {
     return this.revision;
+  }
+
+  /** 按任务 ID 只读读取单张任务卡深拷贝副本；不存在时返回 undefined。 */
+  getTask(id: string): types.ControlTask | undefined {
+    const found = this.tasks.find((item) => item.id === id);
+    if (found === undefined) return undefined;
+
+    //M 返回深拷贝副本，防调用方修改内部内存态。
+    return cloneTask(found);
   }
 
   /** 返回按 sortOrder 排好序的清单浅拷贝数组。 */
@@ -1304,18 +1316,22 @@ export class ControlPlaneStore {
       text = '进度心跳正常';
     }
 
-    //M 构造事件并裁剪超长历史。
+    //M 构造事件并裁剪超长历史；无状态红军拍砖（redteam）不刷新中控 lastHeartbeatAt。
     const now = Date.now();
     const event: types.ControlTaskEvent = { at: now, by, kind, text };
     const nextEvents = [...current.events.map((ev) => ({ ...ev })), event];
     if (nextEvents.length > MAX_EVENTS_PER_TASK) {
       nextEvents.splice(0, nextEvents.length - MAX_EVENTS_PER_TASK);
     }
+    let nextHeartbeatAt = current.lastHeartbeatAt;
+    if (kind !== 'redteam') {
+      nextHeartbeatAt = now;
+    }
 
     const updatedTask: types.ControlTask = {
       ...cloneTask(current),
       status: nextStatus,
-      lastHeartbeatAt: now,
+      lastHeartbeatAt: nextHeartbeatAt,
       events: nextEvents,
       updatedAt: now,
     };
@@ -1331,6 +1347,59 @@ export class ControlPlaneStore {
       event,
       activeLocks: meta.activeLocks,
       dispatchableIds: meta.dispatchableIds,
+    };
+  }
+
+  /**
+   * 原子写入一次无状态反方红军拍砖结果（可选先记老板追问 note，再记 redteam 事件）。
+   * 严格保持原任务 lastHeartbeatAt 不变，不触发任何中控心跳或锁变更。
+   */
+  appendRedteamReview(
+    id: string,
+    input: { bossNote?: string; by: string; text: string },
+  ): {
+    revision: number;
+    task: types.ControlTask;
+    event: types.ControlTaskEvent;
+  } {
+    const index = this.tasks.findIndex((item) => item.id === id);
+    if (index < 0) {
+      //G 推理返回时若任务已被删则回 404，不写孤儿记录。
+      throw new failureModule.Failure(404, `任务不存在：${id}`);
+    }
+    const current = this.tasks[index]!;
+    const now = Date.now();
+    const added: types.ControlTaskEvent[] = [];
+    if (input.bossNote !== undefined && input.bossNote !== '') {
+      //M 老板附带指定追问时，先记一条 boss 的 note 留痕。
+      added.push({ at: now, by: 'boss', kind: 'note', text: input.bossNote });
+    }
+    const redteamEvent: types.ControlTaskEvent = {
+      at: now,
+      by: input.by,
+      kind: 'redteam',
+      text: input.text,
+    };
+    added.push(redteamEvent);
+
+    //M 合并时间线并限制单卡事件条数，原样保留 lastHeartbeatAt。
+    const nextEvents = [...current.events.map((ev) => ({ ...ev })), ...added];
+    if (nextEvents.length > MAX_EVENTS_PER_TASK) {
+      nextEvents.splice(0, nextEvents.length - MAX_EVENTS_PER_TASK);
+    }
+    const updatedTask: types.ControlTask = {
+      ...cloneTask(current),
+      events: nextEvents,
+      updatedAt: now,
+    };
+
+    const nextTasks = this.tasks.slice();
+    nextTasks[index] = updatedTask;
+    this.saveToDisk(this.revision + 1, nextTasks);
+    return {
+      revision: this.revision,
+      task: cloneTask(updatedTask),
+      event: redteamEvent,
     };
   }
 
@@ -1783,12 +1852,13 @@ async function runWithLockReply<T>(
 
 
 /**
- * 在 `/api/work-decision` 路由域下挂载控制面任务与滴答视图 REST 接口。
+ * 在 `/api/work-decision` 路由域下挂载控制面任务、动态视图与无状态红军 REST 接口。
  * @param scope Fastify 路由作用域。
  * @param prefix 路由前缀（`/api/work-decision`）。
  * @param controlStore 控制面与滴答任务持久化存储实例。
- * @param ctx 可选插件上下文，用于触发单向唤醒与作战室战报事件。
+ * @param ctx 可选插件上下文，用于触发单向唤醒、作战室战报与红军无状态模型调用。
  * @param dispatchConfig 可选唤醒与播报配置（broadcast_target、helper_bots、owner_targets）。
+ * @param personas 可选自定义反方红军角色列表（未传时使用内置 3 角色）。
  */
 export function mountControlPlaneRoutes(
   scope: fastify.FastifyInstance,
@@ -1796,6 +1866,7 @@ export function mountControlPlaneRoutes(
   controlStore: ControlPlaneStore,
   ctx?: cordis.Context,
   dispatchConfig?: notificationsModule.ControlDispatchConfig,
+  personas?: readonly types.PersonaDef[],
 ): void {
   //M 1. 查询任务列表、清单定义、状态计数、活跃占坑锁与可派发队列（可按来源 6 维筛）。
   scope.get<{ Querystring: TaskListQuery }>(
@@ -2003,4 +2074,10 @@ export function mountControlPlaneRoutes(
     const removed = controlStore.removeView(id);
     return { ok: true, ...removed };
   });
+
+  //M 13. 挂载无状态反方红军角色列表与一键拍砖接口（/personas 与 /tasks/:id/persona-review）。
+  if (ctx !== undefined) {
+    const reviewer = new personasModule.PersonaReviewer(ctx, controlStore, personas);
+    reviewer.mountRoutes(scope, prefix);
+  }
 }

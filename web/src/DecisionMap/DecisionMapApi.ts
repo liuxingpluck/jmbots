@@ -15,6 +15,8 @@ export type TaskFilterViewDef = types.TaskFilterViewDef;
 export type TaskTagMode = types.TaskTagMode;
 export type TaskDueScope = types.TaskDueScope;
 export type TaskSourceRef = types.TaskSourceRef;
+export type PersonaSummary = types.PersonaSummary;
+export type PersonaReviewInput = types.PersonaReviewInput;
 
 /** 滴答风格任务实体类别：普通任务 / 倒数纪念日 / 习惯。 */
 export type TickTaskKind = 'task' | 'countdown' | 'habit';
@@ -439,4 +441,29 @@ export function deleteFilterView(
   id: string,
 ): Promise<{ ok: true; revision: number; deleted: string; views: TaskFilterViewDef[] }> {
   return request(`/views/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** POST /api/work-decision/tasks/:id/persona-review 前端响应结构。 */
+export type PersonaReviewResult = Omit<types.PersonaReviewResult, 'task'> & {
+  /** 落盘后的最新任务卡完整副本。 */
+  task: ControlTask;
+};
+
+/** 读取已启用的无状态反方红军角色列表。 */
+export function getPersonas(
+  signal?: AbortSignal,
+): Promise<{ ok: true; personas: PersonaSummary[] }> {
+  return request('/personas', { signal });
+}
+
+/** 请求指定红军角色对任务卡执行一次无状态拍砖并原位写入时间线。 */
+export function requestPersonaReview(
+  id: string,
+  input: PersonaReviewInput,
+): Promise<PersonaReviewResult> {
+  return request(`/tasks/${encodeURIComponent(id)}/persona-review`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
 }

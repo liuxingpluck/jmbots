@@ -3308,6 +3308,11 @@ button.decision-knowledge__new { background: none; font: inherit; font-size: 12p
   background: #402026;
   color: #ffb8b6;
 }
+.cp-timeline__badge[data-kind="redteam"] {
+  border: 1px solid rgba(248, 113, 113, 0.42);
+  background: rgba(185, 28, 28, 0.3);
+  color: #fecaca;
+}
 .cp-timeline__by {
   color: #93b4eb;
   font-weight: 600;

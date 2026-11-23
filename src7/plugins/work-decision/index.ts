@@ -5,6 +5,7 @@ import * as checksModule from '../../utils/Checks.ts';
 import * as utils from '../../utils/index.ts';
 import * as controlPlaneModule from './ControlPlane.ts';
 import type * as notifications from './Notify.ts';
+import * as personasModule from './Personas.ts';
 import * as routesModule from './Routes.ts';
 import * as storeModule from './Store.ts';
 import * as toolsModule from './Tools.ts';
@@ -23,7 +24,8 @@ export const name = 'work-decision';
 //M 1.4.2：新增控制面任务面板单向唤醒（notifyHelper / helper_bots）与作战室精炼播报（broadcast / broadcast_target）。
 //M 1.4.3：控制面任务加 sourceRef 来源引用（SourceRef.ts）、GET /tasks 来源 6 维筛选、POST /tasks/upsert 幂等入池与 work-decision/task-upsert 事件。
 //M 1.4.4：控制面新增自定义动态筛选视图（FilterViews.ts，TaskFilterRule / TaskFilterViewDef）与 /api/work-decision/views* 接口。
-export const version = '1.4.4';
+//M 1.4.5：新增无状态反方红军角色机制（Personas.ts，GET /personas 与 POST /tasks/:id/persona-review，可选 personas 配置覆盖）。
+export const version = '1.4.5';
 export const inject = ['resources', 'http', 'tools', 'db'];
 
 /** 读取配置文本，未设置时保持缺省。 */
@@ -152,6 +154,8 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const broadcastTarget = getBroadcastTarget(settings);
   //M 解析可选外部助手到机器人名的映射表（helper_bots）。
   const helperBots = getHelperBots(settings);
+  //M 解析可选自定义无状态反方红军角色覆盖配置（未配置时使用内置 3 角色）。
+  const personas = personasModule.readPersonasConfig(settings['personas']);
   const dispatchConfig: notifications.ControlDispatchConfig = {
     broadcastTarget,
     helperBots,
@@ -163,8 +167,8 @@ export function apply(ctx: cordis.Context, config?: unknown): void {
   const dir = path.join(resources.root, 'data', 'decision-map');
   const store = new storeModule.Store(resources.db, ctx.db, dir, legacyWorkspaceId);
   const controlStore = new controlPlaneModule.ControlPlaneStore(resources.root);
-  //M 挂载决策图与控制面接口，并注入单向唤醒与作战室播报配置。
-  routesModule.mount(ctx, store, helper, noticeConfig, controlStore, dispatchConfig);
+  //M 挂载决策图、控制面与无状态红军接口，并注入单向唤醒与作战室播报配置。
+  routesModule.mount(ctx, store, helper, noticeConfig, controlStore, dispatchConfig, personas);
   //M 注册后台提问与只读专题查询工具。
   toolsModule.registerAskOwner(ctx, store, noticeConfig);
   toolsModule.registerWorkTopics(ctx, store);

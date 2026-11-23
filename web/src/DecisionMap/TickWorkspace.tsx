@@ -174,12 +174,27 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
   const [selectedTaskId, setSelectedTaskId] = react.useState<string | undefined>(undefined);
   const [searchOpen, setSearchOpen] = react.useState(false);
   const [viewModal, setViewModal] = react.useState<ViewModalState | undefined>(undefined);
+  const [personas, setPersonas] = react.useState<readonly api.PersonaSummary[]>([]);
   const [toast, setToast] = react.useState<{ kind: 'ok' | 'err'; text: string } | undefined>(
     undefined,
   );
   const toastTimerRef = react.useRef<number | undefined>(undefined);
   const pendingDeepLinkRef = react.useRef<string | undefined>(readTaskParamFromUrl());
   const deepLinkCheckedRef = react.useRef(false);
+
+  //M 初始化拉取可用无状态反方红军角色列表（失败静默降级为空数组，不影响基础工作台功能）。
+  react.useEffect(() => {
+    const controller = new AbortController();
+    api
+      .getPersonas(controller.signal)
+      .then((res) => {
+        setPersonas(res.personas);
+      })
+      .catch(() => {
+        setPersonas([]);
+      });
+    return () => controller.abort();
+  }, []);
 
   const todayStr = utils.getTodayStr();
   const tasks = board?.tasks ?? [];
@@ -340,6 +355,31 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
           'ok',
           formatAppendEventToast(payload.notifyHelper, res.notifications?.wakeup),
         );
+        await onRefresh(true);
+        return true;
+      } catch (error) {
+        showToast('err', utils.getErrorMessage(error));
+        return false;
+      }
+    },
+    [onRefresh, showToast],
+  );
+
+  /** 召唤无状态反方红军角色一键拍砖或带追问审阅任务卡。 */
+  const handlePersonaReview = react.useCallback(
+    async (
+      taskId: string,
+      personaId: string,
+      prompt?: string,
+    ): Promise<boolean> => {
+      try {
+        const payload: api.PersonaReviewInput = { personaId };
+        if (prompt !== undefined && prompt !== '') {
+          payload.prompt = prompt;
+        }
+        const res = await api.requestPersonaReview(taskId, payload);
+        const sec = (res.durationMs / 1000).toFixed(1);
+        showToast('ok', `红军拍砖已落盘（${res.event.by} · ${sec}s）`);
         await onRefresh(true);
         return true;
       } catch (error) {
@@ -676,6 +716,8 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
               onPatchTask={handlePatchTask}
               onDeleteTask={handleDeleteTask}
               onAppendEvent={handleAppendEvent}
+              personas={personas}
+              onPersonaReview={handlePersonaReview}
               onCreateList={handleCreateList}
               onDeleteList={handleDeleteList}
             />
@@ -695,6 +737,8 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
               onPatchTask={handlePatchTask}
               onDeleteTask={handleDeleteTask}
               onAppendEvent={handleAppendEvent}
+              personas={personas}
+              onPersonaReview={handlePersonaReview}
             />
           )}
 
@@ -710,6 +754,8 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
               onPatchTask={handlePatchTask}
               onDeleteTask={handleDeleteTask}
               onAppendEvent={handleAppendEvent}
+              personas={personas}
+              onPersonaReview={handlePersonaReview}
             />
           )}
 

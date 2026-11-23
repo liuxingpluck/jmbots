@@ -81,6 +81,7 @@ const EVENT_KIND_META: Record<api.ControlTaskEventKind, { label: string; badge: 
   status: { label: '状态流转', badge: 'status' },
   heartbeat: { label: '进度心跳', badge: 'heartbeat' },
   note: { label: '协同备注', badge: 'note' },
+  redteam: { label: '红军拍砖', badge: 'redteam' },
   cancelled: { label: '喊停取消', badge: 'cancelled' },
 };
 
