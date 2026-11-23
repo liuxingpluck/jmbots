@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.7.108",
+    "date": "2026-11-23",
+    "changes": [
+      "全渠道任务中枢 Phase 1（work-decision 1.4.3）——控制面任务新增轻量原子字段 TaskSourceRef（SourceRef.ts）与 6 维来源筛选（channel/bot/chatId/sessionId/relayId/hasSource）、幂等入池接口 POST /api/work-decision/tasks/upsert（支持 mergeMissing 补齐、reopen 守卫与 notifyHelper/broadcast 通知）、POST /tasks 与 PATCH 来源冲突 409 校验及 Cordis 解耦事件契约（work-decision/task-upsert 与 task-upsert-result），并补齐超长默认标题截断、纯空白 dedupeKey 降级、安全整数 relayId 与显式不同 dedupeKey 拆分边界加固"
+    ]
+  },
+  {
     "version": "0.7.107",
     "date": "2026-11-23",
     "changes": [

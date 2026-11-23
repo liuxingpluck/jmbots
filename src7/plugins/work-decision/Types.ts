@@ -256,6 +256,52 @@ export interface TaskListDef {
   sortOrder?: number;
 }
 
+/** 来源会话类型：私聊或群聊。 */
+export const SOURCE_CHAT_TYPES = ['p2p', 'group'] as const;
+
+/** 来源会话类型取值。 */
+export type SourceChatType = (typeof SOURCE_CHAT_TYPES)[number];
+
+/** 任务的来源引用：从哪个渠道、哪个机器人、哪个群或会话、哪条 relay 收件或消息进来（SourceRef.ts 校验）。 */
+export interface TaskSourceRef {
+  /** 来源渠道（如 feishu、wechat、http、web），必填。 */
+  channel: string;
+  /** 收到这条话的机器人名。 */
+  bot?: string;
+  /** 群号或私聊会话号。 */
+  chatId?: string;
+  /** 私聊 p2p 或群聊 group。 */
+  chatType?: SourceChatType;
+  /** 群名或会话名（展示用）。 */
+  chatName?: string;
+  /** jmbots 会话 ID。 */
+  sessionId?: string;
+  /** relay 收件编号（正整数）。 */
+  relayId?: number;
+  /** 渠道原始消息 ID。 */
+  messageId?: string;
+  /** 说话人（名字或渠道用户 ID）。 */
+  sender?: string;
+  /** 显式去重键；不写时由 relayId 或 messageId 推出。 */
+  dedupeKey?: string;
+}
+
+/** 按来源筛任务（GET /api/work-decision/tasks 的 6 个来源查询参数）；不写的维度不筛。 */
+export interface ControlTaskSourceFilter {
+  /** 来源渠道。 */
+  channel?: string;
+  /** 来源机器人。 */
+  bot?: string;
+  /** 来源群号或会话号。 */
+  chatId?: string;
+  /** 来源 jmbots 会话 ID。 */
+  sessionId?: string;
+  /** 来源 relay 收件编号。 */
+  relayId?: number;
+  /** true 只要带来源的任务，false 只要不带来源的任务。 */
+  hasSource?: boolean;
+}
+
 /** 单张多 AI 协同控制面任务卡。 */
 export interface ControlTask {
   /** 唯一任务 ID。 */
@@ -304,6 +350,8 @@ export interface ControlTask {
   trashedAt?: number | null;
   /** 排序权重（数值越小越靠前）。 */
   sortOrder?: number;
+  /** 来源引用；没有来源的任务不写这个键（老 JSON 照旧能读）。 */
+  sourceRef?: TaskSourceRef;
 }
 
 /** 创建控制面任务卡（POST /api/work-decision/tasks）的请求输入。 */
@@ -350,12 +398,28 @@ export interface ControlTaskCreateInput {
   trashedAt?: number | null;
   /** 排序权重。 */
   sortOrder?: number;
+  /** 来源引用；推出的去重键撞上没进垃圾桶的任务时回 409。 */
+  sourceRef?: TaskSourceRef;
   /** 可选单向唤醒目标外部助手名（写入 relay 收件箱，如 HanXin / Claude）。 */
   notifyHelper?: string;
   /** 可选显式指定目标机器人名；省略时优先走 helper_bots 映射。 */
   notifyBot?: string;
   /** 是否向配置的作战室播报一行简洁战报（默认 false）。 */
   broadcast?: boolean;
+}
+
+/** 按来源幂等入池（POST /api/work-decision/tasks/upsert 与 work-decision/task-upsert 事件）的请求输入。 */
+export interface ControlTaskUpsertInput extends Omit<ControlTaskCreateInput, 'title' | 'sourceRef'> {
+  /** 新建时的标题；不写按来源和 eventText 补一个。 */
+  title?: string;
+  /** 来源引用（必填）：按它找已有任务。 */
+  sourceRef: TaskSourceRef;
+  /** 这次来的话；命中已有任务时追加一条 note 事件，新建时缺省用来补标题首行与摘要（初始时间线默认记入池来源）。 */
+  eventText?: string;
+  /** eventText 的别名。 */
+  note?: string;
+  /** 命中的任务已完成或已取消时，传 true 才回到待派发；不传保持原状态。 */
+  reopen?: boolean;
 }
 
 /** 局部更新控制面任务卡（PATCH / PUT /api/work-decision/tasks/:id）的请求输入。 */
@@ -404,6 +468,8 @@ export interface ControlTaskPatchInput {
   trashedAt?: number | null;
   /** 排序权重。 */
   sortOrder?: number;
+  /** 来源引用；传 null 清空来源关联。 */
+  sourceRef?: TaskSourceRef | null;
   /** 可选单向唤醒目标外部助手名（写入 relay 收件箱，如 HanXin / Claude）。 */
   notifyHelper?: string;
   /** 可选显式指定目标机器人名；省略时优先走 helper_bots 映射。 */

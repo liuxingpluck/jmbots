@@ -2,8 +2,9 @@
  * 多 AI 协同控制面任务与滴答视图原子存储与 HTTP 路由实现。
  * 数据独立持久化在 `<runtime>/control-plane-tasks.json`（走防杀毒容错原子写入），
  * 提供控制面任务与滴答视图共用 REST 接口：
- * - GET    /api/work-decision/tasks             列出任务、清单、各状态计数、活跃占坑锁与可派发队列
- * - POST   /api/work-decision/tasks             创建任务卡（未传 status 默认 ready，running 检查撞锁）
+ * - GET    /api/work-decision/tasks             列出任务、清单、各状态计数、活跃占坑锁与可派发队列（可按来源 6 维筛）
+ * - POST   /api/work-decision/tasks             创建任务卡（未传 status 默认 ready，running 检查撞锁，来源重复回 409）
+ * - POST   /api/work-decision/tasks/upsert      按 sourceRef 幂等入池：没有就建，有就补来源、追加事件
  * - PATCH  /api/work-decision/tasks/:id         局部更新任务卡（支持 PUT，撞锁回 409）
  * - POST   /api/work-decision/tasks/:id/events  追加原则更新/需求变更/心跳事件并刷新 lastHeartbeatAt
  * - DELETE /api/work-decision/tasks/:id         硬删除任务卡
@@ -22,6 +23,7 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as notificationsModule from './Notify.ts';
+import * as sourceRefModule from './SourceRef.ts';
 import * as types from './Types.ts';
 
 
@@ -38,6 +40,23 @@ export class LockConflictFailure extends failureModule.Failure {
     super(409, message);
   }
 }
+
+/** 来源重复错误（HTTP 409）：同一来源已经有一张没进垃圾桶的任务，附带它的任务 ID。 */
+export class DuplicateSourceFailure extends failureModule.Failure {
+  /**
+   * @param message 给调用方看的说明。
+   * @param taskId 已有任务的 ID。
+   */
+  constructor(
+    message: string,
+    readonly taskId: string,
+  ) {
+    super(409, message);
+  }
+}
+
+/** 来源引用的校验、去重键与筛选（无状态，全文件共用一个）。 */
+const SOURCE_REFS = new sourceRefModule.SourceRefHelper();
 
 /** 内置默认清单列表（旧文件缺失 lists 时兜底返回，首次写盘一并保存）。 */
 export const DEFAULT_TASK_LISTS: readonly types.TaskListDef[] = [
@@ -152,6 +171,9 @@ function cloneTask(task: types.ControlTask): types.ControlTask {
   }
   if (task.checkIns !== undefined) {
     copy.checkIns = [...task.checkIns];
+  }
+  if (task.sourceRef !== undefined) {
+    copy.sourceRef = SOURCE_REFS.clone(task.sourceRef);
   }
   return copy;
 }
@@ -398,6 +420,14 @@ function applyExtendedFields(
     //G 校验排序权重数值。
     target.sortOrder = checkSortOrder(body['sortOrder']);
   }
+  if (body['sourceRef'] === null) {
+    //M 传 null 清空来源关联。
+    delete target.sourceRef;
+  }
+  if (body['sourceRef'] !== undefined && body['sourceRef'] !== null) {
+    //G 校验并规范化来源引用。
+    target.sourceRef = SOURCE_REFS.normalize(body['sourceRef']);
+  }
 }
 
 
@@ -504,7 +534,43 @@ function collectPatchChanges(current: types.ControlTask, updated: types.ControlT
     //M 记下从垃圾桶还原事件。
     changes.push('从垃圾桶还原');
   }
+  const refBefore = current.sourceRef;
+  const refAfter = updated.sourceRef;
+  if (refBefore !== undefined && refAfter === undefined) {
+    //M 记下清空来源关联。
+    changes.push('清空来源关联');
+  }
+  if (refBefore === undefined && refAfter !== undefined) {
+    //M 记下新增来源关联。
+    changes.push(`关联来源 ${SOURCE_REFS.describe(refAfter)}`);
+  }
+  const refChanged = JSON.stringify(refBefore) !== JSON.stringify(refAfter);
+  if (refBefore !== undefined && refAfter !== undefined && refChanged) {
+    //M 记下来源关联更新。
+    changes.push(`更新来源关联 ${SOURCE_REFS.describe(refAfter)}`);
+  }
   return changes;
+}
+
+
+/** 写一张任务后的统一结果：最新修订号、任务副本、活跃占坑锁与可派发队列。 */
+export interface TaskWriteResult {
+  /** 写盘后的修订号。 */
+  revision: number;
+  /** 写盘后的任务副本。 */
+  task: types.ControlTask;
+  /** 活跃占坑锁。 */
+  activeLocks: Record<string, types.ActiveLockHolder>;
+  /** 不撞锁、可立即派发的 ready 任务 ID。 */
+  dispatchableIds: string[];
+}
+
+/** 按来源幂等入池的结果。 */
+export interface UpsertResult extends TaskWriteResult {
+  /** 这次新建了任务。 */
+  created: boolean;
+  /** 这次命中了已有任务（没新建）。 */
+  deduplicated: boolean;
 }
 
 
@@ -654,6 +720,57 @@ export class ControlPlaneStore {
     };
   }
 
+  /**
+   * 按来源找没进垃圾桶的已有任务：先比去重键，对不上再退到同渠道同 relayId 或 messageId。
+   * 当现有任务与入参均显式设置了不同的非空 dedupeKey 时，跳过退化合并（支持同消息拆多张任务）。
+   * @param ref 已规范化的来源。
+   * @param excludeTaskId 不算这张任务（改自己的来源时用）。
+   * @returns 命中任务在 this.tasks 里的下标；没命中是 -1。
+   */
+  private findBySource(ref: types.TaskSourceRef, excludeTaskId?: string): number {
+    //M 只看带来源、没进垃圾桶的其他任务。
+    const isCandidate = (task: types.ControlTask): boolean => {
+      return task.sourceRef !== undefined && !isTrashedTask(task) && task.id !== excludeTaskId;
+    };
+
+    //M 先按去重键找。
+    const key = SOURCE_REFS.deriveDedupeKey(ref);
+    if (key !== undefined) {
+      const byKey = this.tasks.findIndex((task) => {
+        return isCandidate(task) && SOURCE_REFS.deriveDedupeKey(task.sourceRef!) === key;
+      });
+      if (byKey >= 0) return byKey;
+    }
+
+    //M 去重键对不上时，退到同渠道同 relayId 或 messageId；双方显式 dedupeKey 不同则跳过退化合并。
+    const incomingKey = ref.dedupeKey?.trim() ?? '';
+    return this.tasks.findIndex((task) => {
+      if (!isCandidate(task)) return false;
+
+      const existingRef = task.sourceRef!;
+      const existingKey = existingRef.dedupeKey?.trim() ?? '';
+      const hasDistinctKeys = incomingKey !== '' && existingKey !== '' && incomingKey !== existingKey;
+      //G 双方均显式设置了不同的非空 dedupeKey，跳过按消息 ID 退化合并。
+      if (hasDistinctKeys) return false;
+
+      return SOURCE_REFS.isSameMessage(existingRef, ref);
+    });
+  }
+
+  /**
+   * 来源已被别的没进垃圾桶的任务占了就抛 409（带已有任务 ID），POST /tasks 不悄悄复用。
+   * @param ref 已规范化的来源。
+   * @param excludeTaskId 不算这张任务。
+   * @throws DuplicateSourceFailure(409)。
+   */
+  private assertSourceFree(ref: types.TaskSourceRef, excludeTaskId?: string): void {
+    const index = this.findBySource(ref, excludeTaskId);
+    if (index < 0) return;
+
+    const existing = this.tasks[index]!;
+    throw new DuplicateSourceFailure(`这个来源已经有任务了：${existing.id}（${existing.title}）`, existing.id);
+  }
+
   /** 检查 lockTags 是否与除 excludeTaskId 外其他未进垃圾桶的 running 任务撞坑；冲突时抛 409。 */
   private assertNoLockConflict(lockTags: readonly string[], excludeTaskId?: string): void {
     if (lockTags.length === 0) return;
@@ -692,11 +809,12 @@ export class ControlPlaneStore {
     throw new LockConflictFailure(`占坑锁冲突，无法同时进入 running：${detail}`, conflicts);
   }
 
-  /** 查询任务与清单快照，支持按 status（逗号分隔）、lockTag、owner 筛选。 */
+  /** 查询任务与清单快照，支持按 status（逗号分隔）、lockTag、owner 与来源 6 维筛选。 */
   list(filter?: {
     statuses?: readonly types.ControlTaskStatus[];
     lockTag?: string;
     owner?: string;
+    source?: types.ControlTaskSourceFilter;
   }): types.ControlPlaneSnapshot {
     //M 先基于全量任务计算全局计数、活跃锁与可派发队列。
     const meta = this.computeBoardMeta();
@@ -716,6 +834,11 @@ export class ControlPlaneStore {
       const who = filter.owner;
       //M 按负责人过滤任务。
       matched = matched.filter((task) => task.owner === who);
+    }
+    if (filter?.source !== undefined) {
+      const source = filter.source;
+      //M 按来源 channel、bot、chatId、sessionId、relayId、hasSource 过滤任务。
+      matched = matched.filter((task) => SOURCE_REFS.matchesFilter(task.sourceRef, source));
     }
 
     //M 复制并按状态、优先级、最近修改时间降序整理返回列表。
@@ -823,6 +946,11 @@ export class ControlPlaneStore {
     //M 解析并写入所有可选滴答视图原子字段（含 parentId !== id 与格式校验）。
     applyExtendedFields(body, id, task);
 
+    //G 来源撞上没进垃圾桶的已有任务时回 409（带已有任务 ID）。
+    if (task.sourceRef !== undefined) {
+      this.assertSourceFree(task.sourceRef);
+    }
+
     //G 非垃圾桶任务进入 running 前检查占坑锁互斥。
     if (status === 'running' && !isTrashedTask(task)) {
       this.assertNoLockConflict(lockTags, id);
@@ -898,6 +1026,13 @@ export class ControlPlaneStore {
     //M 合并并校验本次补丁中提供的滴答扩展字段（支持 null 清空）。
     applyExtendedFields(body, id, updatedTask);
 
+    //G 换了来源或从垃圾桶还原时，来源不许撞上别的没进垃圾桶的任务。
+    const refChanged = JSON.stringify(updatedTask.sourceRef) !== JSON.stringify(current.sourceRef);
+    const restored = isTrashedTask(current) && !isTrashedTask(updatedTask);
+    if (updatedTask.sourceRef !== undefined && !isTrashedTask(updatedTask) && (refChanged || restored)) {
+      this.assertSourceFree(updatedTask.sourceRef, id);
+    }
+
     //G 只要更新后是未进垃圾桶的 running 状态，必须确保不与其他 running 任务撞锁。
     if (updatedTask.status === 'running' && !isTrashedTask(updatedTask)) {
       this.assertNoLockConflict(updatedTask.lockTags, id);
@@ -955,6 +1090,147 @@ export class ControlPlaneStore {
       task: cloneTask(updatedTask),
       activeLocks: meta.activeLocks,
       dispatchableIds: meta.dispatchableIds,
+    };
+  }
+
+  /**
+   * 按来源幂等入池：没有就建一张，有就只补来源里缺的子字段、按需重开并追加一条事件。
+   * @param rawBody 请求体（ControlTaskUpsertInput，外面进来的，这里校验一次）。
+   * @returns created / deduplicated 两个标记，加上写盘后的修订号、任务、活跃锁与可派发队列。
+   * @throws Failure(400)：sourceRef 没写或不对、其他字段不对；LockConflictFailure(409)：新建直接 running 撞锁。
+   */
+  upsertBySource(rawBody: unknown): UpsertResult {
+    //G sourceRef 必填并校验。
+    const body = checksModule.checkRecord(rawBody, '请求体');
+    if (body['sourceRef'] === undefined || body['sourceRef'] === null) {
+      throw new failureModule.Failure(400, 'sourceRef 必填：要写成带 channel 的对象');
+    }
+    const ref = SOURCE_REFS.normalize(body['sourceRef']);
+
+    //G 这次的话（eventText，别名 note）和 reopen 开关。
+    const eventText = checkOptionalString(body['eventText'], 'eventText')
+      || checkOptionalString(body['note'], 'note')
+      || '';
+    let reopen = false;
+    if (body['reopen'] !== undefined) {
+      reopen = checksModule.checkFlag(body['reopen'], 'reopen');
+    }
+
+    //M 命中已有任务：只补来源、按需重开和追加事件。
+    const index = this.findBySource(ref);
+    if (index >= 0) {
+      const merged = this.mergeIntoExisting(index, ref, body, eventText, reopen);
+      return { created: false, deduplicated: true, ...merged };
+    }
+
+    //M 没命中：补默认值后走 create（create 再校验一遍字段并查撞锁）。
+    const createBody = this.getUpsertCreateBody(body, ref, eventText);
+    const created = this.create(createBody);
+    return { created: true, deduplicated: false, ...created };
+  }
+
+  /**
+   * 入池新建时补默认值：标题用这次的话的第一行（再没有用来源），摘要是这次的话，清单进收集箱。
+   * 状态、优先级不写由 create 补（ready、P1）。
+   * @param body 已校验过结构的请求体。
+   * @param ref 已规范化的来源。
+   * @param eventText 这次的话。
+   * @returns 交给 create 的请求体。
+   */
+  private getUpsertCreateBody(
+    body: Record<string, unknown>,
+    ref: types.TaskSourceRef,
+    eventText: string,
+  ): Record<string, unknown> {
+    const label = SOURCE_REFS.describe(ref);
+    const createBody: Record<string, unknown> = { ...body, sourceRef: ref };
+    if (body['title'] === undefined) {
+      //M 没写标题：这次的话的第一行（截 60 字），没有话就写截断后的来源（避免超过 200 字上限）。
+      const shortLabel = label.slice(0, 120).trim();
+      let title = `来自 ${shortLabel} 的任务`;
+      const firstLine = eventText.split('\n')[0]?.trim() ?? '';
+      if (firstLine !== '') {
+        title = firstLine.slice(0, 60);
+      }
+      createBody['title'] = title;
+    }
+    if (body['summary'] === undefined && eventText !== '') {
+      //M 没写摘要：这次的话。
+      createBody['summary'] = eventText;
+    }
+    if (body['list'] === undefined) {
+      //M 没写清单：进收集箱（用户改过名时用改后的名字）。
+      const inbox = this.lists.find((item) => item.id === 'inbox');
+      createBody['list'] = inbox?.name ?? '收集箱';
+    }
+    if (body['initialNote'] === undefined) {
+      //M 初始时间线写清从哪来。
+      createBody['initialNote'] = `从 ${label} 入池`;
+    }
+    return createBody;
+  }
+
+  /**
+   * 入池命中已有任务：只补来源里缺的子字段，主字段一个不动；done、cancelled 的传了 reopen 才回到待派发；带了话追加一条备注。
+   * 什么都没变时不写盘、不涨修订号。
+   * @param index 命中任务的下标。
+   * @param ref 这次来的来源。
+   * @param body 已校验过结构的请求体（只读 by）。
+   * @param eventText 这次的话；空串不追加。
+   * @param reopen 是否重开已完成或已取消的任务。
+   */
+  private mergeIntoExisting(
+    index: number,
+    ref: types.TaskSourceRef,
+    body: Record<string, unknown>,
+    eventText: string,
+    reopen: boolean,
+  ): TaskWriteResult {
+    const current = this.tasks[index]!;
+    const updatedTask = cloneTask(current);
+    updatedTask.sourceRef = SOURCE_REFS.mergeMissing(current.sourceRef!, ref);
+    const now = Date.now();
+    const by = checkOptionalString(body['by'], 'by', 120) || current.owner || 'central';
+
+    //M 已完成或已取消：传了 reopen 才回到待派发，不然保持原状态。
+    const closed = current.status === 'done' || current.status === 'cancelled';
+    if (closed && reopen) {
+      updatedTask.status = 'ready';
+      const text = `状态 ${STATUS_LABELS[current.status]} → ${STATUS_LABELS.ready}（同一来源重新入池）`;
+      updatedTask.events.push({ at: now, by, kind: 'status', text });
+    }
+
+    //M 这次带了话就追加一条备注。
+    if (eventText !== '') {
+      updatedTask.events.push({ at: now, by, kind: 'note', text: eventText });
+    }
+
+    //G 来源没补出新东西、也没有新事件：原样返回，不写盘。
+    const meta = this.computeBoardMeta();
+    const refChanged = JSON.stringify(updatedTask.sourceRef) !== JSON.stringify(current.sourceRef);
+    if (!refChanged && updatedTask.events.length === current.events.length) {
+      return {
+        revision: this.revision,
+        task: cloneTask(current),
+        activeLocks: meta.activeLocks,
+        dispatchableIds: meta.dispatchableIds,
+      };
+    }
+
+    //M 裁掉超出上限的旧事件，替换后原子写盘。
+    if (updatedTask.events.length > MAX_EVENTS_PER_TASK) {
+      updatedTask.events.splice(0, updatedTask.events.length - MAX_EVENTS_PER_TASK);
+    }
+    updatedTask.updatedAt = now;
+    const nextTasks = this.tasks.slice();
+    nextTasks[index] = updatedTask;
+    this.saveToDisk(this.revision + 1, nextTasks);
+    const nextMeta = this.computeBoardMeta();
+    return {
+      revision: this.revision,
+      task: cloneTask(updatedTask),
+      activeLocks: nextMeta.activeLocks,
+      dispatchableIds: nextMeta.dispatchableIds,
     };
   }
 
@@ -1290,6 +1566,17 @@ function readIdParam(params: unknown, missingMessage: string): string {
 }
 
 
+/** GET /api/work-decision/tasks 的查询参数：状态、占坑标签、负责人，加来源 6 维。 */
+interface TaskListQuery extends sourceRefModule.SourceRefQuery {
+  /** 状态（逗号分隔多个）。 */
+  status?: string;
+  /** 占坑标签。 */
+  lockTag?: string;
+  /** 负责人。 */
+  owner?: string;
+}
+
+
 /** 解析查询参数 ?status=（支持逗号分隔多状态）。 */
 function parseStatusQuery(raw: string | undefined): types.ControlTaskStatus[] | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
@@ -1383,7 +1670,7 @@ async function maybeDispatchNotifications(
 }
 
 
-/** 统一将占坑互斥锁冲突转为 HTTP 409 结构化响应。 */
+/** 统一将占坑互斥锁冲突与来源重复转为 HTTP 409 结构化响应。 */
 async function runWithLockReply<T>(
   reply: fastify.FastifyReply,
   action: () => T | Promise<T>,
@@ -1398,6 +1685,14 @@ async function runWithLockReply<T>(
         ok: false,
         error: error.message,
         conflicts: error.conflicts,
+      });
+    }
+    //G 来源重复：回 409 并带上已有任务 ID。
+    if (error instanceof DuplicateSourceFailure) {
+      return reply.code(409).send({
+        ok: false,
+        error: error.message,
+        taskId: error.taskId,
       });
     }
     throw error;
@@ -1420,16 +1715,17 @@ export function mountControlPlaneRoutes(
   ctx?: cordis.Context,
   dispatchConfig?: notificationsModule.ControlDispatchConfig,
 ): void {
-  //M 1. 查询任务列表、清单定义、状态计数、活跃占坑锁与可派发队列。
-  scope.get<{ Querystring: { status?: string; lockTag?: string; owner?: string } }>(
+  //M 1. 查询任务列表、清单定义、状态计数、活跃占坑锁与可派发队列（可按来源 6 维筛）。
+  scope.get<{ Querystring: TaskListQuery }>(
     `${prefix}/tasks`,
     (request) => {
-      //G 解析并校验可选 status 过滤串。
+      //G 解析并校验可选 status 过滤串与来源筛选参数（relayId、hasSource 不对回 400）。
       const statuses = parseStatusQuery(request.query.status);
       const lockTag = request.query.lockTag?.trim() || undefined;
       const owner = request.query.owner?.trim() || undefined;
+      const source = SOURCE_REFS.parseQuery(request.query);
       //M 读取控制面任务与清单完整快照。
-      return controlStore.list({ statuses, lockTag, owner });
+      return controlStore.list({ statuses, lockTag, owner, source });
     },
   );
 
@@ -1457,6 +1753,32 @@ export function mountControlPlaneRoutes(
       if (notifications !== undefined) return { ok: true, ...created, notifications };
 
       return { ok: true, ...created };
+    });
+  });
+
+  //M 2b. 按来源幂等入池（新建直接 running 撞锁回 409），支持可选单向唤醒与作战室播报。
+  scope.post<{ Body: unknown }>(`${prefix}/tasks/upsert`, (request, reply) => {
+    //M 先在入口校验通知参数，再入池写盘并按需投递通知，撞锁由统一包装转 409。
+    return runWithLockReply(reply, async () => {
+      //G 入口校验一次可选 notifyHelper、notifyBot 与 broadcast。
+      const noticeOpts = parseTaskNotificationInput(request.body);
+      //M 新建或命中已有任务。
+      const upserted = controlStore.upsertBySource(request.body);
+      //M 提取本次的操作人与事件说明用于通知投递。
+      const summary = getPatchNotifySummary(request.body, upserted.task);
+      //M 按需向目标中控投递单向唤醒并向作战室播报战报。
+      const notifications = await maybeDispatchNotifications(
+        ctx,
+        dispatchConfig,
+        noticeOpts,
+        upserted.task,
+        upserted.revision,
+        summary.actor,
+        summary.eventText,
+      );
+      if (notifications !== undefined) return { ok: true, ...upserted, notifications };
+
+      return { ok: true, ...upserted };
     });
   });
 

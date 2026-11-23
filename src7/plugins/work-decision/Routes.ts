@@ -15,6 +15,27 @@ import * as types from './Types.ts';
 /** 新节点提供必填字段，更新只给节点号及待改内容。 */
 type NodePatch = Pick<types.DecisionNode, 'id'> & Partial<types.DecisionNode>;
 
+/** 别的插件按来源把一件事放进任务池（字段同 POST /api/work-decision/tasks/upsert）。 */
+type TaskUpsertRequest = events.RequestEnvelope & types.ControlTaskUpsertInput;
+
+/** 按来源入池的回执。 */
+interface TaskUpsertResult extends events.ResultEnvelope {
+  /** 写成了（新建或命中已有任务）。 */
+  ok: boolean;
+  /** 这次新建了任务。 */
+  created?: boolean;
+  /** 这次命中了已有任务。 */
+  deduplicated?: boolean;
+  /** 写盘后的控制面修订号。 */
+  revision?: number;
+  /** 新建或命中的任务。 */
+  task?: types.ControlTask;
+  /** 失败原因。 */
+  error?: string;
+  /** 失败时对应的 HTTP 状态码（400 参数不对、409 撞锁）。 */
+  statusCode?: number;
+}
+
 /** 插件批量发布工作决策的入口。 */
 interface AskRequest extends events.RequestEnvelope {
   /** 一批新节点或已有节点的局部更新。 */
@@ -149,6 +170,18 @@ declare module 'cordis' {
      *   src7/plugins/relay/index.ts 的 Relay.queueDecisionReply
      */
     'work-decision/note-result'(result: DecisionRelayResult): void;
+    /**
+     * 按来源把一件事放进控制面任务池：没有就建，有就补来源、追加事件（不重复建）。
+     * 谁发：暂无（Phase 2 由 relay、飞书、微信、网页接入）
+     * 谁接：src7/plugins/work-decision/Routes.ts 的 mount
+     */
+    'work-decision/task-upsert'(request: TaskUpsertRequest): void | Promise<void>;
+    /**
+     * 入池结果：新建还是命中、任务本身，失败时给原因和状态码。
+     * 谁发：src7/plugins/work-decision/Routes.ts 的 mount
+     * 谁接：暂无
+     */
+    'work-decision/task-upsert-result'(result: TaskUpsertResult): void;
   }
 }
 
@@ -167,6 +200,13 @@ function readNoteText(value: unknown): string {
   if (text.length > NOTE_MAX) throw new failureModule.Failure(400, `text 最多 ${String(NOTE_MAX)} 字`);
 
   return text;
+}
+
+/** 错误对应的 HTTP 状态码：Failure 用它自己的，别的算 500。 */
+function getFailureStatus(error: unknown): number {
+  if (error instanceof failureModule.Failure) return error.status;
+
+  return 500;
 }
 
 /** 读取手动提醒接口的可选 bot 参数，兼容无请求体、空请求体和空对象。 */
@@ -272,6 +312,25 @@ export function mount(
     await deliverTasks(tasks, graph.revision);
     return { ok: true, ids: request.nodes.map((node) => node.id) };
   }, { onError });
+
+  //M 登记按来源入池入口：和 POST /api/work-decision/tasks/upsert 共用控制面存储，失败回带状态码的回执。
+  const upsertOptions = {
+    onError: (error: unknown) => ({
+      ok: false,
+      error: textModule.getErrorMessage(error),
+      statusCode: getFailureStatus(error),
+    }),
+  };
+  events.onRequestEvent(ctx, 'work-decision/task-upsert', 'work-decision/task-upsert-result', (request) => {
+    const upserted = controlStore.upsertBySource(request);
+    return {
+      ok: true,
+      created: upserted.created,
+      deduplicated: upserted.deduplicated,
+      revision: upserted.revision,
+      task: upserted.task,
+    };
+  }, upsertOptions);
 
   //M 决策图接口沿用 HTTP 插件的鉴权和错误处理。
   void app.register(async (scope) => {

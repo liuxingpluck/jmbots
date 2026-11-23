@@ -21,7 +21,8 @@ export const name = 'work-decision';
 //M 1.4.0：新增多 AI 协同控制面任务面板（ControlPlane.ts，control-plane-tasks.json + /api/work-decision/tasks* 占坑防撞锁与心跳时间线）。
 //M 1.4.1：新增 owner_targets 多机器人提醒路由与 POST /api/work-decision/notify 可选 { bot }，向后兼容旧 owner_target 配置。
 //M 1.4.2：新增控制面任务面板单向唤醒（notifyHelper / helper_bots）与作战室精炼播报（broadcast / broadcast_target）。
-export const version = '1.4.2';
+//M 1.4.3：控制面任务加 sourceRef 来源引用（SourceRef.ts）、GET /tasks 来源 6 维筛选、POST /tasks/upsert 幂等入池与 work-decision/task-upsert 事件。
+export const version = '1.4.3';
 export const inject = ['resources', 'http', 'tools', 'db'];
 
 /** 读取配置文本，未设置时保持缺省。 */
