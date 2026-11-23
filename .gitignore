@@ -17,15 +17,6 @@
 !/tests/
 !/local/
 !/web/
-!/shell/
-/shell/*
-/shell/**/*
-!/shell/**/
-!/shell/**/*.go
-!/shell/go.mod
-!/shell/go.sum
-!/shell/README.md
-/shell/**/*.exe
 
 # 第 7 版骨架。
 !/src7/
