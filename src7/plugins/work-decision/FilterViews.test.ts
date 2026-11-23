@@ -506,4 +506,94 @@ describe('Markdown vscode://file/ 安全白名单直跳与全站去滴答品牌�
       expect(raw.includes('滴答')).toBe(false);
     }
   });
+
+  test('PATCH/PUT /lists/:id 支持重名 409 防冲突、存量虚拟分组转正及原子级联更新 tasks 与 views.rule.lists', async () => {
+    const h = await createHarness();
+
+    //M 1. 新建自定义分组 biz 与一条仅存在于任务 list 字段的存量虚拟分组「商业沟通」
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/lists`,
+      payload: { id: 'list-client', name: '客户线索', icon: '🤝', color: '#3b82f6' },
+    });
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 'task-c1', title: '跟进甲方首付款', list: '客户线索' },
+    });
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 'task-v1', title: '报价方案敲定', list: '商业沟通' },
+    });
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/views`,
+      payload: {
+        id: 'view-combo',
+        name: '商务重点视图',
+        rule: { lists: ['客户线索', '商业沟通', '工作任务'], priorities: ['P0', 'P1'] },
+      },
+    });
+
+    //G 2. 改名撞上已有分组「工作任务」必须回 409 且不脏写
+    const conflictRes = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/lists/list-client`,
+      payload: { name: '工作任务' },
+    });
+    expect(conflictRes.statusCode).toBe(409);
+
+    //M 3. 合法改名「客户线索 -> 核心客户」并更新图标/颜色：task.list 与 views[].rule.lists 原子级联同步
+    const patchRes = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/lists/list-client`,
+      payload: { name: '核心客户', icon: '💎', color: '#f59e0b' },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    const patchedBody = patchRes.json<{
+      ok: true;
+      list: types.TaskListDef;
+      lists: types.TaskListDef[];
+      views: types.TaskFilterViewDef[];
+    }>();
+    expect(patchedBody.list.name).toBe('核心客户');
+    expect(patchedBody.list.icon).toBe('💎');
+    expect(patchedBody.list.color).toBe('#f59e0b');
+    expect(patchedBody.views[0]?.rule.lists).toEqual(['核心客户', '商业沟通', '工作任务']);
+
+    //M 4. 编辑虚拟分组 virtual-商业沟通（PUT 同样兼容）：自动转正落盘并同步级联任务与视图规则
+    const virtualPatch = await h.app.inject({
+      method: 'PUT',
+      url: `${PREFIX}/lists/${encodeURIComponent('virtual-商业沟通')}`,
+      payload: { name: '商务谈判', icon: '💼', color: '#10b981' },
+    });
+    expect(virtualPatch.statusCode).toBe(200);
+    const vBody = virtualPatch.json<{
+      list: types.TaskListDef;
+      lists: types.TaskListDef[];
+      views: types.TaskFilterViewDef[];
+    }>();
+    expect(vBody.list.id.startsWith('list-')).toBe(true);
+    expect(vBody.list.name).toBe('商务谈判');
+    expect(vBody.views[0]?.rule.lists).toEqual(['核心客户', '商务谈判', '工作任务']);
+
+    //M 5. 重启实例验证 tasks、lists、views 三者持久化一致且零孤儿任务
+    const h2 = await createHarness(h.root);
+    const snap = (await h2.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(snap.tasks.find((t) => t.id === 'task-c1')?.list).toBe('核心客户');
+    expect(snap.tasks.find((t) => t.id === 'task-v1')?.list).toBe('商务谈判');
+    expect(snap.lists.some((l) => l.name === '核心客户' && l.icon === '💎')).toBe(true);
+    expect(snap.lists.some((l) => l.name === '商务谈判' && l.icon === '💼')).toBe(true);
+    expect(snap.views?.[0]?.rule.lists).toEqual(['核心客户', '商务谈判', '工作任务']);
+
+    //G 6. 不存在的分组 ID 返回 404
+    const notFound = await h2.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/lists/not-found-id`,
+      payload: { name: '新名' },
+    });
+    expect(notFound.statusCode).toBe(404);
+  });
 });

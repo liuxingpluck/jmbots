@@ -385,17 +385,31 @@ export function createTaskList(input: {
   });
 }
 
-/** 修改滴答清单名称、图标或颜色。 */
+/** 修改分组清单名称、图标、主题色或排序权重（重名回 409，改名原子级联更新任务与视图）。 */
 export function patchTaskList(
   id: string,
-  patch: { name?: string; icon?: string; color?: string; sortOrder?: number },
-): Promise<{ ok: true; list: TaskListDef }> {
+  patch: {
+    name?: string;
+    icon?: string | null;
+    color?: string | null;
+    sortOrder?: number;
+  },
+): Promise<{
+  ok: true;
+  revision: number;
+  list: TaskListDef;
+  lists: TaskListDef[];
+  views?: TaskFilterViewDef[];
+}> {
   return request(`/lists/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(patch),
   });
 }
+
+/** patchTaskList 的标准简短别名。 */
+export const patchList = patchTaskList;
 
 /** 删除自定义分组清单。 */
 export function deleteTaskList(id: string): Promise<{ ok: true; deleted: string }> {

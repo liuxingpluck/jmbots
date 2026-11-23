@@ -617,6 +617,12 @@ export interface TickViewModalProps {
   editingView?: api.TaskFilterViewDef;
   /** 新建模式下预填的组合筛选规则。 */
   initialRule: api.TaskFilterRule;
+  /** 新建模式下可选预填名称（如从分组视图一键升级过来）。 */
+  initialName?: string;
+  /** 新建模式下可选预填图标。 */
+  initialIcon?: string;
+  /** 新建模式下可选预填颜色。 */
+  initialColor?: string;
   /** 全部任务（用于实时预览匹配条数）。 */
   tasks: readonly api.ControlTask[];
   /** 全量可见分组清单。 */
@@ -642,6 +648,9 @@ export function TickViewModal(props: TickViewModalProps): react.JSX.Element {
     mode,
     editingView,
     initialRule,
+    initialName,
+    initialIcon,
+    initialColor,
     tasks,
     lists,
     tagEntries,
@@ -650,9 +659,9 @@ export function TickViewModal(props: TickViewModalProps): react.JSX.Element {
     onSubmit,
   } = props;
 
-  const [name, setName] = react.useState(() => editingView?.name ?? '');
-  const [icon, setIcon] = react.useState(() => editingView?.icon ?? '🔖');
-  const [color, setColor] = react.useState(() => editingView?.color ?? '#4c7ef3');
+  const [name, setName] = react.useState(() => editingView?.name ?? initialName ?? '');
+  const [icon, setIcon] = react.useState(() => editingView?.icon ?? initialIcon ?? '🔖');
+  const [color, setColor] = react.useState(() => editingView?.color ?? initialColor ?? '#4c7ef3');
   const [draftRule, setDraftRule] = react.useState<api.TaskFilterRule>(() => {
     if (editingView !== undefined) return { ...editingView.rule };
 
@@ -999,6 +1008,219 @@ export function TickViewModal(props: TickViewModalProps): react.JSX.Element {
           >
             {submitText}
           </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
+//==========================================================
+// 内置「编辑分组视图」模态窗（支持改名/图标/颜色 + 一键转动态筛选器）
+//==========================================================
+
+/** 分组视图可选图标合并池。 */
+const GROUP_EDIT_ICONS: readonly string[] = [
+  '💼',
+  '📝',
+  '📘',
+  '📋',
+  '🎯',
+  '🚀',
+  '💡',
+  '🛒',
+  '🏃',
+  '🤝',
+  '💎',
+  '🔥',
+  '📌',
+  '⚡',
+];
+
+/** 分组视图编辑模态窗入参。 */
+export interface TickListEditModalProps {
+  /** 待编辑的分组清单对象。 */
+  editingList: api.TaskListDef;
+  /** 关闭弹窗回调。 */
+  onClose: () => void;
+  /** 提交修改回调（成功返回 true 关闭弹窗）。 */
+  onSubmit: (payload: {
+    name: string;
+    icon: string;
+    color: string | null;
+  }) => Promise<boolean>;
+  /** 一键切换到「以此分组建动态筛选器」规则编辑器回调。 */
+  onPromoteToView: (seed: {
+    listName: string;
+    suggestedName: string;
+    icon: string;
+    color: string;
+  }) => void;
+}
+
+/** 左栏「分组视图」内置深色编辑弹窗组件（零原生弹窗）。 */
+export function TickListEditModal(props: TickListEditModalProps): react.JSX.Element {
+  const { editingList, onClose, onSubmit, onPromoteToView } = props;
+
+  const [name, setName] = react.useState(() => editingList.name);
+  const [icon, setIcon] = react.useState(() => editingList.icon ?? '📋');
+  const [color, setColor] = react.useState<string>(() => editingList.color ?? '');
+  const [saving, setSaving] = react.useState(false);
+
+  /** 提交保存分组名称、图标与颜色。 */
+  const handleFormSubmit = async (event: react.FormEvent): Promise<void> => {
+    event.preventDefault();
+    const cleanedName = name.trim();
+    if (cleanedName === '' || saving) return;
+
+    setSaving(true);
+    try {
+      let nextColor: string | null = null;
+      if (color !== '') {
+        nextColor = color;
+      }
+      const ok = await onSubmit({
+        name: cleanedName,
+        icon,
+        color: nextColor,
+      });
+      if (ok) {
+        onClose();
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  let saveLabel = '保存修改';
+  if (saving) {
+    saveLabel = '保存中…';
+  }
+
+  return (
+    <div
+      className="tick-search-layer"
+      role="dialog"
+      aria-modal="true"
+      aria-label="编辑分组视图"
+    >
+      <div className="tick-search-mask" aria-hidden="true" onClick={onClose} />
+      <form
+        className="tick-view-modal tick-list-edit-modal"
+        onSubmit={(e) => void handleFormSubmit(e)}
+      >
+        <header className="tick-view-modal__head">
+          <h3>编辑分组视图</h3>
+          <button
+            type="button"
+            className="tick-icon-btn"
+            aria-label="关闭弹窗"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </header>
+
+        <div className="tick-view-modal__body">
+          <div className="tick-view-modal__field">
+            <label className="tick-view-modal__label" htmlFor="tick-list-edit-name">
+              分组名称
+            </label>
+            <input
+              id="tick-list-edit-name"
+              type="text"
+              className="tick-view-modal__input"
+              value={name}
+              placeholder="输入分组名称…"
+              autoFocus
+              onChange={(e) => setName(e.target.value)}
+            />
+            <span className="tick-view-modal__hint">
+              改名后，归属该分组的任务节点与关联动态筛选器会自动同步更新
+            </span>
+          </div>
+
+          <div className="tick-view-modal__field">
+            <span className="tick-view-modal__label">分组图标</span>
+            <div className="tick-emoji-strip">
+              {GROUP_EDIT_ICONS.map((ch) => (
+                <button
+                  key={ch}
+                  type="button"
+                  className="tick-emoji-btn"
+                  data-active={icon === ch}
+                  onClick={() => setIcon(ch)}
+                >
+                  {ch}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="tick-view-modal__field">
+            <div className="tick-view-modal__row-between">
+              <span className="tick-view-modal__label">强调色（可选）</span>
+              {color !== '' && (
+                <button
+                  type="button"
+                  className="tick-tag-pool__clear"
+                  onClick={() => setColor('')}
+                >
+                  恢复默认色
+                </button>
+              )}
+            </div>
+            <div className="tick-view-modal__colors">
+              {filterEngine.VIEW_COLOR_CHOICES.map((hex) => (
+                <button
+                  key={hex}
+                  type="button"
+                  className="tick-color-dot"
+                  data-active={color === hex}
+                  style={{ backgroundColor: hex }}
+                  aria-label={`颜色 ${hex}`}
+                  onClick={() => setColor(hex)}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <footer className="tick-view-modal__foot tick-view-modal__foot--between">
+          <button
+            type="button"
+            className="tick-promote-view-btn"
+            title="基于该分组打开动态筛选器规则编辑器，继续叠加标签、状态、优先级或日期条件"
+            onClick={() => {
+              let seedName = editingList.name;
+              if (name.trim() !== '') {
+                seedName = name.trim();
+              }
+              let seedColor = '#4c7ef3';
+              if (color !== '') {
+                seedColor = color;
+              }
+              onPromoteToView({
+                listName: editingList.name,
+                suggestedName: `${seedName} · 精选`,
+                icon,
+                color: seedColor,
+              });
+            }}
+          >
+            🔖 以此分组建动态筛选器
+          </button>
+          <div className="tick-view-modal__foot-right">
+            <button type="button" className="tick-mini-btn" onClick={onClose}>
+              取消
+            </button>
+            <button
+              type="submit"
+              className="tick-primary-btn"
+              disabled={saving || name.trim() === ''}
+            >
+              {saveLabel}
+            </button>
+          </div>
         </footer>
       </form>
     </div>

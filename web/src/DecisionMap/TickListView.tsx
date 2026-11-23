@@ -71,6 +71,8 @@ export interface TickListViewProps {
   ) => Promise<boolean>;
   /** 新建自定义分组回调。 */
   onCreateList: (name: string, icon: string) => Promise<void>;
+  /** 打开分组视图编辑弹窗回调。 */
+  onOpenEditList: (list: api.TaskListDef) => void;
   /** 删除自定义分组回调。 */
   onDeleteList: (listId: string, listName: string) => Promise<void>;
 }
@@ -189,6 +191,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     personas,
     onPersonaReview,
     onCreateList,
+    onOpenEditList,
     onDeleteList,
   } = props;
 
@@ -512,7 +515,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     await onPatchTask(task.id, { title: cleaned, by: 'boss' }, '已更新节点标题');
   };
 
-  /** 渲染任务行标题与行内直接改名控件（双击标题或点 ✎ 图标均可就地编辑）。 */
+  /** 渲染任务行标题：桌面端（>799px）单击标题文字本身直接选中并就地改名，手机端交由详情抽屉修改。 */
   const renderRowTitleArea = (item: api.ControlTask): react.JSX.Element => {
     if (editingRowId === item.id) {
       return (
@@ -523,7 +526,6 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
           aria-label="修改节点标题"
           autoFocus
           onClick={(e) => e.stopPropagation()}
-          onDoubleClick={(e) => e.stopPropagation()}
           onChange={(e) => setEditingRowTitle(e.target.value)}
           onBlur={() => void commitInlineEdit(item)}
           onKeyDown={(e) => {
@@ -544,26 +546,18 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
       <>
         <span
           className="tick-task-row__title"
-          title="双击直接修改标题"
-          onDoubleClick={(e) => {
+          title="点击直接修改标题"
+          onClick={(e) => {
+            if (typeof window !== 'undefined' && window.innerWidth <= 799) return;
+
             e.stopPropagation();
+            onSelectTask(item.id);
             startInlineEdit(item);
           }}
         >
           {item.title}
         </span>
-        <button
-          type="button"
-          className="tick-task-row__edit-btn"
-          title="修改标题"
-          aria-label={`修改标题：${item.title}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            startInlineEdit(item);
-          }}
-        >
-          ✎
-        </button>
+        <span className="tick-task-row__spacer" aria-hidden="true" />
       </>
     );
   };
@@ -739,17 +733,22 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                       if (view.color !== undefined && view.color !== '') {
                         viewDotStyle = { color: view.color };
                       }
+                      let viewTip = ruleTip;
+                      if (viewTip === '') {
+                        viewTip = '双击或点右侧 ✎ 编辑动态筛选器';
+                      }
                       return (
-                        <div key={view.id} className="tick-nav-item-wrap">
+                        <div key={view.id} className="tick-nav-item-wrap" data-active={active}>
                           <button
                             type="button"
                             className="tick-nav-item"
                             data-active={active}
-                            title={ruleTip}
+                            title={viewTip}
                             onClick={() => {
                               setConfirmDeleteViewId(undefined);
                               selectScopeFromSidebar({ kind: 'view', viewId: view.id });
                             }}
+                            onDoubleClick={() => onOpenEditView(view)}
                           >
                             <span className="tick-nav-item__icon" style={viewDotStyle}>
                               {view.icon ?? '🔖'}
@@ -877,33 +876,60 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                         !utils.SYSTEM_LIST_NAMES.has(item.name)
                         && !item.id.startsWith('virtual-');
                       const confirming = confirmDeleteListId === item.id;
+                      let listIconStyle: react.CSSProperties | undefined;
+                      if (item.color !== undefined && item.color !== '') {
+                        listIconStyle = { color: item.color };
+                      }
                       return (
-                        <div key={item.id} className="tick-nav-item-wrap">
+                        <div key={item.id} className="tick-nav-item-wrap" data-active={active}>
                           <button
                             type="button"
                             className="tick-nav-item"
                             data-active={active}
+                            title="点击查看 · 双击或点右侧 ✎ 修改分组"
                             onClick={() => {
                               setConfirmDeleteListId(undefined);
                               selectScopeFromSidebar({ kind: 'list', name: item.name });
                             }}
+                            onDoubleClick={() => onOpenEditList(item)}
                           >
-                            <span className="tick-nav-item__icon">{item.icon ?? '📋'}</span>
+                            <span className="tick-nav-item__icon" style={listIconStyle}>
+                              {item.icon ?? '📋'}
+                            </span>
                             <span className="tick-nav-item__label">{item.name}</span>
                             {count > 0 && (
                               <span className="tick-nav-item__count">{String(count)}</span>
                             )}
                           </button>
-                          {deletable && !confirming && (
-                            <button
-                              type="button"
-                              className="tick-nav-item__del"
-                              title={`删除分组「${item.name}」`}
-                              aria-label={`删除分组 ${item.name}`}
-                              onClick={() => setConfirmDeleteListId(item.id)}
-                            >
-                              ×
-                            </button>
+                          {!confirming && (
+                            <div className="tick-nav-item__hover-ops">
+                              <button
+                                type="button"
+                                className="tick-nav-item__op-btn"
+                                title={`编辑分组「${item.name}」`}
+                                aria-label={`编辑分组 ${item.name}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenEditList(item);
+                                }}
+                              >
+                                ✎
+                              </button>
+                              {deletable && (
+                                <button
+                                  type="button"
+                                  className="tick-nav-item__op-btn tick-nav-item__op-btn--del"
+                                  title={`删除分组「${item.name}」`}
+                                  aria-label={`删除分组 ${item.name}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteListId(item.id);
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
                           )}
                           {deletable && confirming && (
                             <button

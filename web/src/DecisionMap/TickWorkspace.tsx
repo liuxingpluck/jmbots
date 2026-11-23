@@ -24,7 +24,13 @@ export interface TickWorkspaceProps {
 
 /** 内置动态视图弹窗状态。 */
 type ViewModalState =
-  | { mode: 'create'; initialRule: api.TaskFilterRule }
+  | {
+    mode: 'create';
+    initialRule: api.TaskFilterRule;
+    initialName?: string;
+    initialIcon?: string;
+    initialColor?: string;
+  }
   | { mode: 'edit'; view: api.TaskFilterViewDef };
 
 /** 渲染极简线条 SVG 导航图标。 */
@@ -174,6 +180,7 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
   const [selectedTaskId, setSelectedTaskId] = react.useState<string | undefined>(undefined);
   const [searchOpen, setSearchOpen] = react.useState(false);
   const [viewModal, setViewModal] = react.useState<ViewModalState | undefined>(undefined);
+  const [listModal, setListModal] = react.useState<api.TaskListDef | undefined>(undefined);
   const [personas, setPersonas] = react.useState<readonly api.PersonaSummary[]>([]);
   const [toast, setToast] = react.useState<{ kind: 'ok' | 'err'; text: string } | undefined>(
     undefined,
@@ -256,6 +263,11 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
         setSearchOpen((prev) => !prev);
         return;
       }
+      if (event.key === 'Escape' && listModal !== undefined) {
+        event.stopPropagation();
+        setListModal(undefined);
+        return;
+      }
       if (event.key === 'Escape' && viewModal !== undefined) {
         event.stopPropagation();
         setViewModal(undefined);
@@ -268,7 +280,7 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [active, searchOpen, viewModal]);
+  }, [active, listModal, searchOpen, viewModal]);
 
   /** 统一创建任务/纪念日/习惯。 */
   const handleCreateTask = react.useCallback(
@@ -415,6 +427,37 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
       }
     },
     [onRefresh, showToast],
+  );
+
+  /** 提交修改分组（清单）名称、图标或颜色；改名时自动同步当前选中范围。 */
+  const handleSubmitListModal = react.useCallback(
+    async (payload: {
+      name: string;
+      icon: string;
+      color: string | null;
+    }): Promise<boolean> => {
+      if (listModal === undefined) return false;
+
+      try {
+        const oldName = listModal.name;
+        const res = await api.patchList(listModal.id, payload);
+        if (res.list.name !== oldName) {
+          setScope((prev) => {
+            if (prev.kind === 'list' && prev.name === oldName) {
+              return { kind: 'list', name: res.list.name };
+            }
+            return prev;
+          });
+        }
+        showToast('ok', `已更新分组「${res.list.name}」`);
+        await onRefresh(true);
+        return true;
+      } catch (error) {
+        showToast('err', utils.getErrorMessage(error));
+        return false;
+      }
+    },
+    [listModal, onRefresh, showToast],
   );
 
   /** 删除自定义分组（清单）。 */
@@ -719,6 +762,7 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
               personas={personas}
               onPersonaReview={handlePersonaReview}
               onCreateList={handleCreateList}
+              onOpenEditList={(list) => setListModal(list)}
               onDeleteList={handleDeleteList}
             />
           )}
@@ -780,22 +824,50 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
         </div>
       </div>
 
+      {/* 内置「编辑分组视图」模态窗（支持改名/图标/颜色及一键转动态筛选器） */}
+      {listModal !== undefined && (
+        <filterBar.TickListEditModal
+          editingList={listModal}
+          onClose={() => setListModal(undefined)}
+          onSubmit={handleSubmitListModal}
+          onPromoteToView={(seed) => {
+            setListModal(undefined);
+            setViewModal({
+              mode: 'create',
+              initialRule: { lists: [seed.listName] },
+              initialName: seed.suggestedName,
+              initialIcon: seed.icon,
+              initialColor: seed.color,
+            });
+          }}
+        />
+      )}
+
       {/* 内置「存为视图 / 编辑动态视图」模态窗 */}
       {viewModal !== undefined && (() => {
         let editingView: api.TaskFilterViewDef | undefined;
         let modalRule: api.TaskFilterRule = {};
+        let modalName: string | undefined;
+        let modalIcon: string | undefined;
+        let modalColor: string | undefined;
         if (viewModal.mode === 'edit') {
           editingView = viewModal.view;
           modalRule = viewModal.view.rule;
         }
         if (viewModal.mode === 'create') {
           modalRule = viewModal.initialRule;
+          modalName = viewModal.initialName;
+          modalIcon = viewModal.initialIcon;
+          modalColor = viewModal.initialColor;
         }
         return (
           <filterBar.TickViewModal
             mode={viewModal.mode}
             editingView={editingView}
             initialRule={modalRule}
+            initialName={modalName}
+            initialIcon={modalIcon}
+            initialColor={modalColor}
             tasks={tasks}
             lists={lists}
             tagEntries={tagEntries}

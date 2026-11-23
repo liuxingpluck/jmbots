@@ -529,9 +529,20 @@ body.tick-resizing {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+.tick-nav-item-wrap:hover {
+  background: #24242a;
+}
+.tick-nav-item-wrap[data-active="true"] {
+  background: #2b2c34;
 }
 .tick-nav-item {
   display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
   gap: 9px;
   width: 100%;
@@ -548,6 +559,10 @@ body.tick-resizing {
 }
 .tick-nav-item:hover {
   background: #24242a;
+}
+.tick-nav-item-wrap:hover .tick-nav-item,
+.tick-nav-item-wrap[data-active="true"] .tick-nav-item {
+  background: transparent;
 }
 .tick-nav-item[data-active="true"] {
   background: #2b2c34;
@@ -618,13 +633,14 @@ body.tick-resizing {
   font-weight: 500;
 }
 .tick-nav-item__hover-ops {
-  position: absolute;
-  right: 5px;
   display: none;
+  flex: 0 0 auto;
   align-items: center;
   gap: 2px;
+  padding-right: 4px;
 }
-.tick-nav-item-wrap:hover .tick-nav-item__hover-ops {
+.tick-nav-item-wrap:hover .tick-nav-item__hover-ops,
+.tick-nav-item-wrap[data-active="true"] .tick-nav-item__hover-ops {
   display: inline-flex;
 }
 .tick-nav-item__op-btn {
@@ -1009,37 +1025,30 @@ body.tick-resizing {
 }
 
 .tick-task-row__title {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  padding: 2px 5px;
+  margin: -2px -5px;
+  border-radius: 5px;
+  border-bottom: 1px dashed transparent;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #e9ecf3;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.tick-task-row__edit-btn {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 22px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: #8b93a7;
-  font-size: 12px;
-  opacity: 0.28;
-  cursor: pointer;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+@media (min-width: 800px) {
+  .tick-task-row__title {
+    cursor: text;
+  }
+  .tick-task-row__title:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-bottom-color: #65759a;
+  }
 }
-.tick-task-row:hover .tick-task-row__edit-btn,
-.tick-task-row[data-selected="true"] .tick-task-row__edit-btn {
-  opacity: 0.88;
-}
-.tick-task-row__edit-btn:hover {
-  opacity: 1;
-  background: #2b3040;
-  color: #e6f0ff;
+.tick-task-row__spacer {
+  flex: 1 1 8px;
+  min-width: 8px;
 }
 .tick-task-row__title-input {
   flex: 1;
@@ -3708,17 +3717,50 @@ body.tick-resizing {
   border-top: 1px solid #2b2e3a;
   background: #1b1c22;
 }
+.tick-view-modal__foot--between {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.tick-view-modal__foot-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.tick-list-edit-modal {
+  width: min(460px, 100%);
+}
+.tick-view-modal__hint {
+  color: #7c869d;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.tick-promote-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #3c5794;
+  border-radius: 7px;
+  background: rgba(76, 126, 243, 0.14);
+  color: #cfe0ff;
+  font-size: 12px;
+  font-weight: 580;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.tick-promote-view-btn:hover {
+  border-color: #5b87ec;
+  background: rgba(76, 126, 243, 0.28);
+  color: #ffffff;
+}
 
 /*==========================================================
  * 窄屏与手机端全面响应式适配（置于末尾确保优先级）
  *==========================================================*/
 @media (hover: none), (pointer: coarse) {
-  .tick-task-row__edit-btn {
-    opacity: 0.78;
-    flex: 0 0 26px;
-    width: 26px;
-    height: 26px;
-    font-size: 13px;
+  .tick-nav-item__hover-ops {
+    display: inline-flex;
   }
 }
 
@@ -3763,13 +3805,6 @@ body.tick-resizing {
   }
   .tick-list-main {
     min-width: 0;
-  }
-  .tick-task-row__edit-btn {
-    opacity: 0.78;
-    flex: 0 0 26px;
-    width: 26px;
-    height: 26px;
-    font-size: 13px;
   }
   .tick-detail {
     display: none;

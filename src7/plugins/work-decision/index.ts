@@ -25,7 +25,8 @@ export const name = 'work-decision';
 //M 1.4.3：控制面任务加 sourceRef 来源引用（SourceRef.ts）、GET /tasks 来源 6 维筛选、POST /tasks/upsert 幂等入池与 work-decision/task-upsert 事件。
 //M 1.4.4：控制面新增自定义动态筛选视图（FilterViews.ts，TaskFilterRule / TaskFilterViewDef）与 /api/work-decision/views* 接口。
 //M 1.4.5：新增无状态反方红军角色机制（Personas.ts，GET /personas 与 POST /tasks/:id/persona-review，可选 personas 配置覆盖）。
-export const version = '1.4.5';
+//M 1.4.6：PATCH /lists/:id 支持重名 409 冲突校验、虚拟分组转正及改名原子级联更新 tasks 与 views.rule.lists。
+export const version = '1.4.6';
 export const inject = ['resources', 'http', 'tools', 'db'];
 
 /** 读取配置文本，未设置时保持缺省。 */

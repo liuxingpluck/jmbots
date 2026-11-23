@@ -1499,28 +1499,56 @@ export class ControlPlaneStore {
     };
   }
 
-  /** 修改清单属性；若改名则同步更新归属旧清单名任务的 list 字段。 */
+  /**
+   * 修改分组清单属性（名称、图标、颜色、排序权重）；重名返回 409。
+   * 当名称变更时，原子级联更新所有归属旧分组名的任务（task.list）与动态筛选视图（view.rule.lists）。
+   */
   patchList(id: string, rawBody: unknown): {
     revision: number;
     list: types.TaskListDef;
     lists: types.TaskListDef[];
+    views: types.TaskFilterViewDef[];
   } {
     const index = this.lists.findIndex((item) => item.id === id);
-    if (index < 0) {
+    let current: types.TaskListDef | undefined = this.lists[index];
+    if (current === undefined && id.startsWith('virtual-')) {
+      //M 兼容仅存于存量任务 list 字段上的虚拟分组（如 virtual-商业沟通），首次编辑自动转正落盘。
+      const virtualName = id.slice('virtual-'.length).trim();
+      const hasTask =
+        virtualName !== ''
+        && this.tasks.some((task) => (task.list ?? '工作任务') === virtualName);
+      if (hasTask) {
+        let maxOrder = -1;
+        for (const item of this.lists) {
+          if (item.sortOrder !== undefined && item.sortOrder > maxOrder) {
+            maxOrder = item.sortOrder;
+          }
+        }
+        current = {
+          id: generateId('list'),
+          name: virtualName,
+          icon: '📋',
+          sortOrder: maxOrder + 1,
+        };
+      }
+    }
+    if (current === undefined) {
       //G 清单不存在返回 404。
       throw new failureModule.Failure(404, `清单不存在：${id}`);
     }
+
     //G 校验请求体并合并更新字段。
     const body = checksModule.checkRecord(rawBody, '请求体');
-    const current = this.lists[index]!;
     const updated = cloneList(current);
 
     if ('name' in body && body['name'] !== undefined) {
-      //G 校验新清单名称并防止与其他清单重名。
+      //G 校验新清单名称；与其他已存在分组重名时返回 409 防冲突。
       const nextName = checkRequiredString(body['name'], 'name', 80);
-      if (this.lists.some((item) => item.id !== id && item.name === nextName)) {
-        //G 禁止改名后与其他清单重名。
-        throw new failureModule.Failure(400, `清单名称已存在：${nextName}`);
+      const hasConflict =
+        nextName !== current.name
+        && this.lists.some((item) => item.id !== current.id && item.name === nextName);
+      if (hasConflict) {
+        throw new failureModule.Failure(409, `清单名称已存在：${nextName}`);
       }
       updated.name = nextName;
     }
@@ -1545,27 +1573,55 @@ export class ControlPlaneStore {
       updated.sortOrder = checkSortOrder(body['sortOrder']);
     }
 
-    //M 若清单名称发生变化，同步把归属旧名称的任务迁到新清单名。
+    //M 若分组名称变更，原子级联更新所有归属旧名称的 task.list 以及 views 中 rule.lists 的旧名称。
     let nextTasks = this.tasks;
+    let nextViews = this.views;
     if (updated.name !== current.name) {
+      const oldName = current.name;
+      const newName = updated.name;
       const now = Date.now();
       nextTasks = this.tasks.map((task) => {
         const belonging = task.list ?? '工作任务';
-        if (belonging !== current.name) return task;
+        if (belonging !== oldName) return task;
 
-        return { ...cloneTask(task), list: updated.name, updatedAt: now };
+        return { ...cloneTask(task), list: newName, updatedAt: now };
+      });
+      nextViews = this.views.map((view) => {
+        const clonedView = FILTER_VIEWS.cloneView(view);
+        const ruleLists = clonedView.rule.lists;
+        if (ruleLists === undefined || !ruleLists.includes(oldName)) {
+          return clonedView;
+        }
+        const mergedLists: string[] = [];
+        for (const entry of ruleLists) {
+          let mapped = entry;
+          if (entry === oldName) {
+            mapped = newName;
+          }
+          if (!mergedLists.includes(mapped)) {
+            mergedLists.push(mapped);
+          }
+        }
+        clonedView.rule.lists = mergedLists;
+        return clonedView;
       });
     }
 
     const rawNextLists = this.lists.slice();
-    rawNextLists[index] = updated;
-    //M 重新排序并原子持久化任务与清单。
+    if (index >= 0) {
+      rawNextLists[index] = updated;
+    }
+    if (index < 0) {
+      rawNextLists.push(updated);
+    }
+    //M 重新排序并一次性原子持久化 tasks、lists 与 views。
     const nextLists = sortLists(rawNextLists);
-    this.saveToDisk(this.revision + 1, nextTasks, nextLists);
+    this.saveToDisk(this.revision + 1, nextTasks, nextLists, nextViews);
     return {
       revision: this.revision,
       list: cloneList(updated),
       lists: this.getClonedLists(),
+      views: this.getClonedViews(),
     };
   }
 
