@@ -171,12 +171,12 @@ channel/reply → 渠道发出
 
 ```ts
 // src7/plugins/feishu/Inbound.ts
-507	    //M 群里谁都没叫：登记了全量监听（all、judge）的群，本应用的机器人都记背景或判断要不要接。
-508	    const canListen = registered?.listen === 'all' || registered?.listen === 'judge';
-509	    if (canListen) return { targetBots: [...allowedBots], called: false };
-510
-511	    //M 没登记的群：谁都不投，照样发 channel/listen 给记录类插件记。
-512	    return { targetBots: [], called: false };
+545	    //M 群里谁都没叫：登记了全量监听（all、judge）的群，本应用的机器人都记背景或判断要不要接。
+546	    const canListen = registered?.listen === 'all' || registered?.listen === 'judge';
+547	    if (canListen) return { targetBots: [...allowedBots], called: false };
+548
+549	    //M 没登记的群：谁都不投，照样发 channel/listen 给记录类插件记。
+550	    return { targetBots: [], called: false };
 ```
 
 | 模式 | 群里没叫机器人的话 | bots 收到后 |
@@ -338,7 +338,7 @@ bots 里用到它的地方：
 
 ## 常见踩坑
 
-1. **群里没 @ 的话 bots 根本收不到**：群没登记，或者写的是 `mention`，`targetBots` 是空的（`feishu/Inbound.ts:512`）。想让机器人旁听，要写 `all` 或 `judge`。
+1. **群里没 @ 的话 bots 根本收不到**：群没登记，或者写的是 `mention`，`targetBots` 是空的（`feishu/Inbound.ts:550`）。想让机器人旁听，要写 `all` 或 `judge`。
 2. **写了 `judge` 却从来不判断**：`group_batch` 的三个数（`quiet_seconds`、`max_lines`、`daily_limit`）缺一个就不开攒批，只在启动日志打一行（`bots/index.ts:1218`），`judge` 群退化成“只记”。
 3. **攒着的一批和每天的次数都只在内存**（`GroupBatch.ts:11`）：重启丢掉攒着没判断的话（话本身照旧在记忆的渠道索引里），当天次数清零。
 4. **新接的外部渠道不写身份就是外人**：地址里不写 `role` 或 `owner`，`isOwnerTurn` 判外人（`channels/Message.ts:410`），没记忆、不能挑模型。

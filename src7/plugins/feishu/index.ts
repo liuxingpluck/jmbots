@@ -23,11 +23,12 @@
 import * as fs from 'node:fs';
 import type { Database } from 'bun:sqlite';
 import * as lark from '@larksuiteoapi/node-sdk';
-import type * as cordis from 'cordis';
+import * as cordis from 'cordis';
 import * as requestEventModule from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as protocol from '../channels/index.ts';
+import * as dbModule from '../db/index.ts';
 import type { ChannelStatus } from '../web-api/index.ts';
 import * as api from './Api.ts';
 import * as cards from './cards/Cards.ts';
@@ -39,6 +40,8 @@ import { FeishuHistoryPull } from './HistoryPull.ts';
 import { FeishuInbound } from './Inbound.ts';
 import type { RecallData, ReceiveData } from './Inbound.ts';
 import * as media from './Media.ts';
+import seenCompositeSql from './migrations/0001_feishu_seen_composite_pk.sql' with { type: 'text' };
+import tablesSql from './migrations/0000_feishu_tables.sql' with { type: 'text' };
 import * as outbox from './outbox/Outbox.ts';
 import * as recall from './Recall.ts';
 import { FeishuReply } from './Reply.ts';
@@ -80,10 +83,21 @@ export const name = 'feishu';
 //M 1.3.7：配置校验搬进 Config.ts（改用 Checks.ts 的公共校验）；构造函数只做登记，建表、建客户端、发文件、关连接挪成方法（云端20 第 2、3 条）。
 //M 1.3.8：post 富文本入站剥除对本机器人的 @名字（保留他人 @提及），at 标签缺 user_name 时回退 user_id 且不叠双 @。
 //M 1.3.9：新增 feishu/recall-message 温和撤回占位消息事件；sendText 返回文本 messageId；发件箱单份失败进 failed/ 不卡整轮并支持多应用路由。
-export const version = '1.3.9';
+//M 1.3.10：feishu_seen 经 db 迁移账本升为 (message_id, app_id) 复合主键隔离多应用去重；
+//M   入站拦截 sender_type === 'app' 防全 AI 群互 @ 引用死循环。
+export const version = '1.3.10';
 
-/** 用到的必需服务。审核和进度通过事件协作。 */
+/** 用到的必需服务；db 存在时优先复用其迁移账本，未挂 db 时回退同连接 Db 实例。 */
 export const inject = ['resources', 'bots', 'sessions', 'tools'];
+
+/** 飞书数据库表结构迁移计划，交给 db 迁移账本按版本原子执行。 */
+export const feishuMigrations: dbModule.MigrationPlan = {
+  plugin: name,
+  migrations: [
+    { version: 1, sql: tablesSql },
+    { version: 2, sql: seenCompositeSql },
+  ],
+};
 
 
 declare module 'cordis' {
@@ -345,6 +359,7 @@ function getHttpInstance(): ReturnType<typeof lark.defaultHttpInstance.create> {
   const httpOptions = { timeout: HTTP_TIMEOUT_MS };
   const httpInstance = lark.defaultHttpInstance.create(httpOptions);
   httpInstance.interceptors.request.use((request) => {
+    //M 对 multipart/form-data 请求改走原生 fetch 直连，绕开 Bun node:http 的代理链路。
     if (String(request.headers.get('Content-Type')).startsWith('multipart/form-data')) {
       request.adapter = 'fetch';
       request.env = { FormData: globalThis.FormData };
@@ -429,10 +444,11 @@ export class Feishu {
     //M 拉群历史：用聊天日志去重，拼好的历史发 channel/history。
     this.historyPull = new FeishuHistoryPull(this.ctx, this);
 
-    //M 别的插件请本插件发文件（feishu/send-file）；发失败把原因放进回执。
+    //M 别的插件请本插件发文件（feishu/send-file）和撤回占位消息（feishu/recall-message）。
     const requestOptions = {
       onError: (error: unknown) => this.onSendFileError(error),
     };
+    //M 挂载 feishu/send-file 请求-回执监听，由 onSendFile 执行上传发送。
     requestEventModule.onRequestEvent(
       this.ctx,
       'feishu/send-file',
@@ -440,6 +456,7 @@ export class Feishu {
       (request) => this.onSendFile(request),
       requestOptions,
     );
+    //M 挂载 feishu/recall-message 请求-回执监听，由 onRecallMessage 温和撤回占位消息。
     requestEventModule.onRequestEvent(
       this.ctx,
       'feishu/recall-message',
@@ -454,15 +471,20 @@ export class Feishu {
     });
   }
 
-  /** 建本插件的表：收到过的消息（去重）、最近私聊的人、发过的卡片。 */
+  /** 通过 db 迁移账本建表并把旧 feishu_seen 无损升级为复合主键。 */
   private createTables(): void {
-    const db = this.ctx.resources.db;
-    db.exec('CREATE TABLE IF NOT EXISTS feishu_seen (message_id TEXT PRIMARY KEY, app_id TEXT, kind TEXT, at INTEGER)');
-    db.exec('CREATE TABLE IF NOT EXISTS feishu_p2p'
-      + ' (app_id TEXT PRIMARY KEY, chat_id TEXT, open_id TEXT, message_id TEXT, at INTEGER)');
-    db.exec('CREATE TABLE IF NOT EXISTS feishu_cards'
-      + ' (card_id TEXT PRIMARY KEY, kind TEXT, ref TEXT, ended INTEGER, at INTEGER)');
-    db.exec('CREATE INDEX IF NOT EXISTS feishu_cards_ref ON feishu_cards (kind, ref)');
+    //M 优先复用宿主挂载的 db 服务；未挂时回退同连接 Db 走同一迁移账本。
+    const dbService = this.ctx.get('db');
+    if (dbService !== undefined) {
+      //M 宿主已挂载 db 服务时直接复用主库迁移账本按版本执行。
+      dbService.migrate(feishuMigrations);
+      return;
+    }
+
+    //M 未注入 db 服务的独立环境（如单测）用同连接 Db 走完全同一份迁移账本，不手写裸建表。
+    const standalone = new dbModule.Db(new cordis.Context(), this.ctx.resources.db);
+    //M 原子应用 feishu 表创建与 feishu_seen 复合主键迁移。
+    standalone.migrate(feishuMigrations);
   }
 
   /**
@@ -470,6 +492,7 @@ export class Feishu {
    * 构造函数调一次。
    */
   private createClients(): void {
+    //M 建本插件共用的带 60 秒超时及直连 multipart 的 axios 实例。
     const httpInstance = getHttpInstance();
     for (const app of this.config.apps) {
       const client = new lark.Client({
@@ -518,6 +541,7 @@ export class Feishu {
     if (appId === '' || !candidates.includes(appId) || !this.apps.has(appId)) {
       return { ok: false, error: `无法确定归属机器人 ${request.bot} 的飞书应用：${request.appId ?? request.bot}` };
     }
+    //M 应用归属核验通过，委托 Recall 模块温和撤回目标占位消息。
     return recall.recallBotMessage(this, appId, request.chatId, request.messageId);
   }
 
@@ -526,6 +550,7 @@ export class Feishu {
    * @param error 抛出的错。
    */
   private onSendFileError(error: unknown): { ok: false; error: string } {
+    //M 提取可读错误文本作为文件发送失败回执原因。
     const detail = textModule.getErrorMessage(error);
     return { ok: false, error: detail };
   }
@@ -643,6 +668,7 @@ export class Feishu {
           chat: data.message.chat_type,
         };
         this.ctx.emit('trace', 'Feishu.start', 'trace.feishu.wsReceived', 'im.message.receive_v1', vars);
+        //M 长连接回调不阻塞 ACK，异步交由 FeishuInbound.onMessage 按应用与消息号去重分派。
         void this.inbound.onMessage(appId, data);
       },
       'im.message.recalled_v1': (data: RecallData) => {
@@ -659,6 +685,7 @@ export class Feishu {
       'im.chat.member.bot.added_v1': (data: { chat_id?: string }) => {
         if (data.chat_id === undefined) return;
 
+        //M 异步补拉新进群最近历史，失败仅打控制台日志。
         void this.historyPull.onJoin(app, data.chat_id);
       },
     });
@@ -1056,12 +1083,14 @@ export function apply(ctx: cordis.Context, config: unknown): void {
       if (typeof appId === 'string') {
         app = feishu.apps.get(appId);
       }
+      //G 指定的应用不存在或未初始化时返回 400 参数错误。
       if (app === undefined) return reply.code(400).send({ error: `没有飞书应用 ${String(appId)}` });
 
       const maxLimit = configModule.MAX_HISTORY_LIMIT;
       const limit = body.limit ?? configModule.DEFAULT_HISTORY_LIMIT;
       const limitValid = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= maxLimit;
       if (!limitValid) {
+        //G limit 超出合法整数范围时返回 400 参数错误。
         return reply.code(400).send({ error: `limit 要写 1 到 ${String(maxLimit)} 的整数` });
       }
 

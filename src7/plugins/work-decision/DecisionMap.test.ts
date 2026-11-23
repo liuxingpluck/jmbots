@@ -682,3 +682,215 @@ test('旧代码已手动补过 quadrant 的库：迁移第 2 版只登记不重�
   expect(again.getGraph().nodes[0]?.quadrant).toBe('q2');
 });
 
+/** 捕获 channel/reply 请求并立即回 sent 回执，供通知路由单测断言。 */
+function captureReplies(ctx: cordis.Context): channel.ChannelReplyRequest[] {
+  const notices: channel.ChannelReplyRequest[] = [];
+  ctx.on('channel/reply', (request) => {
+    request.handled = true;
+    notices.push(request);
+    const receipt = channel.getReceipt(request, 'sent', '');
+    channel.emitReplied(ctx, request, receipt);
+  });
+  return notices;
+}
+
+/** 直接调 plugin.apply 以同步验证非法配置在启动阶段即抛出中文错。 */
+function mountWithConfig(config: Record<string, unknown>): void {
+  const root = fs.mkdtempSync(path.join(import.meta.dir, '.map-test-'));
+  const ctx = new cordis.Context();
+  const app = fastify.default();
+  const db = new Database(':memory:');
+  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  cleanups.push(() => db.close());
+  cleanups.push(async () => { await app.close(); }, async () => { await ctx.fiber.dispose(); });
+  ctx.provide('http', { app });
+  ctx.provide('resources', { db, root, raw: {} });
+  ctx.provide('tools', { register: () => undefined });
+  ctx.provide('db', getMigrations(db));
+  plugin.apply(ctx, config);
+}
+
+test('多机器人 owner_targets 按 node.bot 精准路由，未命中回落 owner_target，同批次按机器人去重且防撞键', async () => {
+  const config = {
+    public_url: 'http://127.0.0.1:30086/work-decision/',
+    owner_target: { bot: '总控', channel: 'feishu', chat: 'ou_default' },
+    owner_targets: [
+      { bot: '开发', channel: 'feishu', chat: 'ou_dev' },
+      { bot: '运维', channel: 'feishu', chat: 'ou_ops' },
+    ],
+  };
+  const { app, ctx, tools } = await setup('中控', config);
+  const notices = captureReplies(ctx);
+
+  //T 命中 owner_targets 的「开发」：路由到 ou_dev，全图仅 1 件时沿用简洁文案。
+  const askDev = {
+    id: 'ask-dev-1', bot: '开发', helper: '助手甲',
+    title: '发版窗口', summary: '确认今天是否发版', options: entries[1]!.options,
+  };
+  const r1 = await app.inject({ method: 'POST', url: `${PREFIX}/ask`, payload: askDev });
+  expect(r1.statusCode).toBe(200);
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ bot: '开发', target: { channel: 'feishu', chat: 'ou_dev' } });
+  expect(notices[0]?.parts[0]?.text).toContain('工作决策有 1 件等你定');
+
+  //T 命中 owner_targets 的「运维」：路由到 ou_ops，全图 2 件时附带该机器人待定件数。
+  const askOps = {
+    id: 'ask-ops-1', bot: '运维', helper: '助手乙',
+    title: '扩容节点', summary: '是否新增备机', options: entries[1]!.options,
+  };
+  const r2 = await app.inject({ method: 'POST', url: `${PREFIX}/ask`, payload: askOps });
+  expect(r2.statusCode).toBe(200);
+  expect(notices).toHaveLength(2);
+  expect(notices[1]).toMatchObject({ bot: '运维', target: { channel: 'feishu', chat: 'ou_ops' } });
+  expect(notices[1]?.parts[0]?.text).toContain('工作决策有 2 件等你定（运维 1 件）');
+
+  //T 未命中 owner_targets 的「法务」：回落到默认 owner_target（总控 / ou_default）。
+  const askFallback = {
+    id: 'ask-legal-1', bot: '法务', helper: '助手丙',
+    title: '合同条款', summary: '确认免责条款', options: entries[1]!.options,
+  };
+  const r3 = await app.inject({ method: 'POST', url: `${PREFIX}/ask`, payload: askFallback });
+  expect(r3.statusCode).toBe(200);
+  expect(notices).toHaveLength(3);
+  expect(notices[2]).toMatchObject({ bot: '总控', target: { channel: 'feishu', chat: 'ou_default' } });
+  expect(notices[2]?.parts[0]?.text).toContain('工作决策有 3 件等你定');
+
+  //T 单批次同时为「开发」（2 件）和「运维」（1 件）打开待定项：按发件机器人去重发 2 条，且去重键带机器人名不撞键。
+  const graphNow = (await app.inject(`${PREFIX}/graph`)).json<types.DecisionGraph>();
+  const devRoot = graphNow.nodes.find((node) => node.parent === null && node.bot === '开发');
+  const opsRoot = graphNow.nodes.find((node) => node.parent === null && node.bot === '运维');
+  if (devRoot === undefined || opsRoot === undefined) {
+    throw new Error('缺少开发或运维的项目根节点');
+  }
+  const batch = [
+    { id: 'dev-p2', parent: devRoot.id, kind: 'pending', status: 'open', title: '接口限流', options: entries[1]!.options },
+    { id: 'dev-p3', parent: devRoot.id, kind: 'pending', status: 'open', title: '缓存策略', options: entries[1]!.options },
+    { id: 'ops-p2', parent: opsRoot.id, kind: 'pending', status: 'open', title: '日志保留', options: entries[1]!.options },
+  ];
+  const putRes = await app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: batch });
+  expect(putRes.statusCode).toBe(200);
+  const batchNotices = notices.slice(3);
+  expect(batchNotices).toHaveLength(2);
+  const batchBots = batchNotices.map((item) => item.bot).sort();
+  expect(batchBots).toEqual(['开发', '运维']);
+  expect(batchNotices[0]?.replyRoundKey).not.toBe(batchNotices[1]?.replyRoundKey);
+  expect(batchNotices.some((item) => item.replyRoundKey.includes('开发'))).toBe(true);
+  expect(batchNotices.some((item) => item.replyRoundKey.includes('运维'))).toBe(true);
+
+  //T 后台会话 ask_owner 也按会话所属机器人精准路由。
+  const askOwner = tools.get('ask_owner')!;
+  const opsSession = { row: { id: 'work-ops', bot: '运维', kind: 'work' } } as Session;
+  const signal = new AbortController().signal;
+  await askOwner.run({ title: '备份周期', summary: '选周期', options: entries[1]!.options }, opsSession, signal, 'call-ops');
+  expect(notices).toHaveLength(6);
+  expect(notices[5]).toMatchObject({ bot: '运维', target: { channel: 'feishu', chat: 'ou_ops' } });
+});
+
+test('POST /notify 支持无请求体、空对象与显式 { bot }，缺失或歧义配置返回 400', async () => {
+  const publicUrl = 'http://127.0.0.1:30086/work-decision/';
+
+  //T 1. 同时有默认 owner_target 和多机器人 owner_targets。
+  const both = await setup('中控', {
+    public_url: publicUrl,
+    owner_target: { bot: '总控', channel: 'feishu', chat: 'ou_default' },
+    owner_targets: [
+      { bot: '开发', channel: 'feishu', chat: 'ou_dev' },
+      { bot: '运维', channel: 'feishu', chat: 'ou_ops' },
+    ],
+  });
+  const noticesBoth = captureReplies(both.ctx);
+  await both.app.inject({ method: 'PUT', url: `${PREFIX}/nodes`, payload: entries });
+  noticesBoth.length = 0;
+
+  //T 无请求体与空对象均走默认 owner_target。
+  const noBody = await both.app.inject({ method: 'POST', url: `${PREFIX}/notify` });
+  expect(noBody.statusCode).toBe(200);
+  expect(noticesBoth[0]).toMatchObject({ bot: '总控', target: { channel: 'feishu', chat: 'ou_default' } });
+
+  const emptyObj = await both.app.inject({ method: 'POST', url: `${PREFIX}/notify`, payload: {} });
+  expect(emptyObj.statusCode).toBe(200);
+  expect(noticesBoth[1]).toMatchObject({ bot: '总控', target: { channel: 'feishu', chat: 'ou_default' } });
+
+  //T 显式指定 owner_targets 中的 bot 或与 default 同名的 bot 均命中对应目标。
+  const byDedicated = await both.app.inject({ method: 'POST', url: `${PREFIX}/notify`, payload: { bot: '开发' } });
+  expect(byDedicated.statusCode).toBe(200);
+  expect(noticesBoth[2]).toMatchObject({ bot: '开发', target: { channel: 'feishu', chat: 'ou_dev' } });
+
+  const byDefaultBot = await both.app.inject({ method: 'POST', url: `${PREFIX}/notify`, payload: { bot: '总控' } });
+  expect(byDefaultBot.statusCode).toBe(200);
+  expect(noticesBoth[3]).toMatchObject({ bot: '总控', target: { channel: 'feishu', chat: 'ou_default' } });
+
+  //T 指定未配置的 bot 或空白 bot 返回 400。
+  const missingBot = await both.app.inject({ method: 'POST', url: `${PREFIX}/notify`, payload: { bot: '不存在' } });
+  expect(missingBot.statusCode).toBe(400);
+  const blankBot = await both.app.inject({ method: 'POST', url: `${PREFIX}/notify`, payload: { bot: '  ' } });
+  expect(blankBot.statusCode).toBe(400);
+
+  //T 2. 无 owner_target、owner_targets 仅有一项时，无请求体自动使用该项。
+  const single = await setup('中控', {
+    public_url: publicUrl,
+    owner_targets: [{ bot: '开发', channel: 'feishu', chat: 'ou_dev' }],
+  });
+  const noticesSingle = captureReplies(single.ctx);
+  const singleRes = await single.app.inject({ method: 'POST', url: `${PREFIX}/notify` });
+  expect(singleRes.statusCode).toBe(200);
+  expect(noticesSingle[0]).toMatchObject({ bot: '开发', target: { channel: 'feishu', chat: 'ou_dev' } });
+
+  //T 3. 无 owner_target、owner_targets 有多项时，不传 bot 报 400，传 bot 正常发送。
+  const multi = await setup('中控', {
+    public_url: publicUrl,
+    owner_targets: [
+      { bot: '开发', channel: 'feishu', chat: 'ou_dev' },
+      { bot: '运维', channel: 'feishu', chat: 'ou_ops' },
+    ],
+  });
+  const noticesMulti = captureReplies(multi.ctx);
+  const ambiguous = await multi.app.inject({ method: 'POST', url: `${PREFIX}/notify` });
+  expect(ambiguous.statusCode).toBe(400);
+  const explicit = await multi.app.inject({ method: 'POST', url: `${PREFIX}/notify`, payload: { bot: '运维' } });
+  expect(explicit.statusCode).toBe(200);
+  expect(noticesMulti[0]).toMatchObject({ bot: '运维', target: { channel: 'feishu', chat: 'ou_ops' } });
+
+  //T 4. 未配任何通知目标时，POST /notify 返回 400。
+  const none = await setup('中控');
+  const unconfigured = await none.app.inject({ method: 'POST', url: `${PREFIX}/notify` });
+  expect(unconfigured.statusCode).toBe(400);
+});
+
+test('owner_targets 非法配置（非数组、重复 bot、缺字段、缺 public_url）在启动时抛出中文错', () => {
+  const publicUrl = 'http://127.0.0.1:30086/work-decision/';
+
+  //T owner_targets 不是数组时抛错。
+  expect(() => mountWithConfig({ public_url: publicUrl, owner_targets: 'bad' })).toThrow('owner_targets');
+
+  //T owner_targets 中出现重复 bot 时抛中文错。
+  expect(() => mountWithConfig({
+    public_url: publicUrl,
+    owner_targets: [
+      { bot: '开发', channel: 'feishu', chat: 'ou_1' },
+      { bot: '开发', channel: 'feishu', chat: 'ou_2' },
+    ],
+  })).toThrow('重复');
+
+  //T owner_targets 某项缺少必填字段时抛错。
+  expect(() => mountWithConfig({
+    public_url: publicUrl,
+    owner_targets: [{ bot: '开发', channel: 'feishu', chat: '  ' }],
+  })).toThrow('owner_targets[0].chat');
+
+  //T 非空 owner_targets 缺少 public_url 时抛错。
+  expect(() => mountWithConfig({
+    owner_targets: [{ bot: '开发', channel: 'feishu', chat: 'ou_1' }],
+  })).toThrow('public_url');
+
+  //T public_url 带账号密码或非法协议时抛错。
+  expect(() => mountWithConfig({
+    public_url: 'http://user:pass@127.0.0.1:30086/work-decision/',
+    owner_targets: [{ bot: '开发', channel: 'feishu', chat: 'ou_1' }],
+  })).toThrow('public_url');
+
+  //T 空数组 owner_targets 且无 owner_target 时，不强制要求 public_url。
+  expect(() => mountWithConfig({ owner_targets: [] })).not.toThrow();
+});
+
+

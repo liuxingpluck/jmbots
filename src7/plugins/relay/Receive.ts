@@ -3,7 +3,16 @@
  * 将原 index.ts 中交叉判断的收话逻辑拆成三条扁平直路，行为 100% 等价。
  */
 import * as utils from '../../utils/index.ts';
-import type { ChatKind, Helper, InboxItem, OwnerP2pDirectRule, RelayMode, Speaker } from './index.ts';
+import type {
+  ChatKind,
+  ExclusiveBotRule,
+  Helper,
+  InboxItem,
+  OwnerGroupDirectRule,
+  OwnerP2pDirectRule,
+  RelayMode,
+  Speaker,
+} from './index.ts';
 
 
 /**
@@ -108,6 +117,28 @@ export function matchHelperPrefix(helpers: readonly Helper[], text: string): Hel
 
 
 /**
+ * 判定是否命中“机器人独占直通”（exclusive_bots）：
+ * 1. 目标机器人 bot 命中 exclusive_bots 规则；
+ * 2. address.listenOnly !== true（只听消息绝不截走，留给记录类插件）；
+ * 3. 命中后无论私聊群聊、是否本人、是否带其他 AI 前缀，均最高优先级锁定对应 helper。
+ */
+export function matchExclusiveBotHelper(
+  bot: string,
+  address: unknown,
+  helpers: readonly Helper[],
+  exclusiveBots: readonly ExclusiveBotRule[] = [],
+): Helper | undefined {
+  if (bot === '' || exclusiveBots.length === 0) return undefined;
+  if (utils.getField(address, 'listenOnly') === true) return undefined;
+
+  const rule = exclusiveBots.find((item) => item.bot === bot);
+  if (rule === undefined) return undefined;
+
+  return helpers.find((helper) => helper.name === rule.helper);
+}
+
+
+/**
  * 判定是否命中“仅本人私聊指定机器人免前缀直通”（owner_p2p_direct）严格安全守卫：
  * 1. 目标机器人 bot 命中 owner_p2p_direct 规则；
  * 2. getChat(customer) === 'p2p' 且 address.chatType !== 'group'（严禁任何群聊触发）；
@@ -136,16 +167,53 @@ export function matchOwnerP2pDirectHelper(
 
 
 /**
- * 入站收话三条扁平分流规则（消除原交叉嵌套条件，行为 100% 等价）：
+ * 判定是否命中“受信私人群免前缀直通”（owner_group_direct）严格安全守卫：
+ * 1. 目标机器人 bot 与群号（address.chatId || address.chat）命中 owner_group_direct 规则；
+ * 2. address.listenOnly !== true（只听消息绝不触发）；
+ * 3. address.owner === true（严禁非本人、其他 AI 机器人、guest、builder 触发，防多 AI 互聊死循环）；
+ * 4. 属于群聊（getChat(customer) === 'group' 或 address.chatType === 'group'）。
+ */
+export function matchOwnerGroupDirectHelper(
+  bot: string,
+  address: unknown,
+  helpers: readonly Helper[],
+  ownerGroupDirect: readonly OwnerGroupDirectRule[] = [],
+): Helper | undefined {
+  if (bot === '' || ownerGroupDirect.length === 0) return undefined;
+  if (utils.getField(address, 'listenOnly') === true) return undefined;
+  if (utils.getField(address, 'owner') !== true) return undefined;
+
+  const customer = utils.getStringField(address, 'customer');
+  const chatType = utils.getStringField(address, 'chatType');
+  if (chatType !== '' && chatType !== 'group') return undefined;
+
+  const isGroup = getChat(customer) === 'group' || chatType === 'group';
+  if (!isGroup) return undefined;
+
+  const chatId = utils.getStringField(address, 'chatId') || utils.getStringField(address, 'chat');
+  if (chatId === '') return undefined;
+
+  const rule = ownerGroupDirect.find((item) => item.bot === bot && item.chatId === chatId);
+  if (rule === undefined) return undefined;
+
+  return helpers.find((helper) => helper.name === rule.helper);
+}
+
+
+/**
+ * 入站收话扁平分流规则：
  * 1. 群攒批转交（address.relayHelper 非空）：直接进 relay 会话；
- * 2. 非只听状态下的 direct 机器人：整句进该客户的前台会话（由 direct 前台拦截直转）；
- * 3. 只听消息或非 direct 机器人：命中助手前缀，或命中 owner_p2p_direct 严格五重守卫时进 relay 会话，否则放行给后续插件。
+ * 2. 独占直通机器人（exclusive_bots）：listenOnly 时放行给记录类插件，非 listenOnly 全部直进 relay 会话；
+ * 3. 非只听状态下的 direct 机器人：整句进该客户的前台会话（由 direct 前台拦截直转）；
+ * 4. 其余情形：命中助手前缀、owner_p2p_direct 或 owner_group_direct 守卫时进 relay 会话，否则放行给后续插件。
  * @param botMode 该机器人的 relay 模式。
  * @param address 入站消息回话地址。
  * @param text 入站消息正文。
  * @param helpers 外部助手清单。
- * @param bot 目标机器人名（用于匹配 owner_p2p_direct）。
+ * @param bot 目标机器人名（用于匹配 exclusive_bots、owner_p2p_direct、owner_group_direct）。
  * @param ownerP2pDirect 仅本人私聊指定机器人免前缀直通规则。
+ * @param exclusiveBots 机器人独占直通规则。
+ * @param ownerGroupDirect 受信私人群免前缀直通规则。
  * @returns 目标会话种类（front / relay）；不截走返回 undefined。
  */
 export function pickReceiveSessionKind(
@@ -155,18 +223,30 @@ export function pickReceiveSessionKind(
   helpers: readonly Helper[],
   bot = '',
   ownerP2pDirect: readonly OwnerP2pDirectRule[] = [],
+  exclusiveBots: readonly ExclusiveBotRule[] = [],
+  ownerGroupDirect: readonly OwnerGroupDirectRule[] = [],
 ): 'front' | 'relay' | undefined {
   //M 第 1 条路：群攒批指定了外部助手（judge_helper → relayHelper），直接进 relay 会话。
   const relayHelper = utils.getStringField(address, 'relayHelper').trim();
   if (relayHelper !== '') return 'relay';
 
-  //M 第 2 条路：非只听的 direct 机器人，全部进该客户的 front 会话。
   const listenOnly = utils.getField(address, 'listenOnly') === true;
+
+  //M 第 2 条路：独占直通机器人；只听消息不截走、放行给记录类插件，非只听全部直接进 relay 会话。
+  const isExclusiveBot = bot !== '' && exclusiveBots.some((rule) => rule.bot === bot);
+  if (isExclusiveBot) {
+    if (listenOnly) return undefined;
+
+    return 'relay';
+  }
+
+  //M 第 3 条路：非只听的 direct 机器人，全部进该客户的 front 会话。
   if (!listenOnly && botMode === 'direct') return 'front';
 
-  //M 第 3 条路：命中助手前缀，或命中“仅本人私聊指定机器人免前缀直通”，进 relay 会话。
+  //M 第 4 条路：命中助手前缀、owner_p2p_direct 或 owner_group_direct 守卫时进 relay 会话。
   if (matchHelperPrefix(helpers, text) !== undefined) return 'relay';
   if (matchOwnerP2pDirectHelper(bot, address, helpers, ownerP2pDirect) !== undefined) return 'relay';
+  if (matchOwnerGroupDirectHelper(bot, address, helpers, ownerGroupDirect) !== undefined) return 'relay';
 
   return undefined;
 }

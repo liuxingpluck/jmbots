@@ -10,7 +10,14 @@ import * as failureModule from '../../utils/Failure.ts';
 import * as imageModule from '../../utils/Image.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as workspaceModule from '../../utils/Workspace.ts';
-import type { Helper, OwnerP2pDirectRule, RelayConfig, RelayWritten } from './index.ts';
+import type {
+  ExclusiveBotRule,
+  Helper,
+  OwnerGroupDirectRule,
+  OwnerP2pDirectRule,
+  RelayConfig,
+  RelayWritten,
+} from './index.ts';
 
 
 /**
@@ -139,7 +146,14 @@ export function parseRelayWrittenConfig(
 ): RelayConfig {
   const positive = (value: unknown, fallback: number, key: string): number => {
     if (value === undefined) return fallback;
-    if (typeof value !== 'number' || !(value > 0)) throw new Error(`relay 的 ${key} 要写成正数`);
+    if (typeof value !== 'number' || !Number.isFinite(value) || !(value > 0)) throw new Error(`relay 的 ${key} 要写成正数`);
+    return value;
+  };
+  const nonNegative = (value: unknown, fallback: number, key: string): number => {
+    if (value === undefined) return fallback;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new Error(`relay 的 ${key} 要写成非负数（0 表示禁用）`);
+    }
     return value;
   };
   const list = (value: unknown, fallback: string[], key: string): string[] => {
@@ -194,50 +208,108 @@ export function parseRelayWrittenConfig(
     }
   }
 
-  const ownerP2pDirect = parseOwnerP2pDirect(written.owner_p2p_direct, helpers);
+  const ownerP2pDirect = parseBotHelperRules(written.owner_p2p_direct, 'owner_p2p_direct', helpers);
+  const exclusiveBots = parseBotHelperRules(written.exclusive_bots, 'exclusive_bots', helpers);
+  const ownerGroupDirect = parseOwnerGroupDirect(written.owner_group_direct, helpers);
 
   return {
-    remindMinutes: positive(written.remind_minutes, 15, 'remind_minutes'),
-    expireMinutes: positive(written.expire_minutes, 120, 'expire_minutes'),
+    remindMinutes: nonNegative(written.remind_minutes, 0, 'remind_minutes'),
+    expireMinutes: nonNegative(written.expire_minutes, 0, 'expire_minutes'),
     pollSeconds: positive(written.poll_seconds, 2, 'poll_seconds'),
     helpers: helpers as [Helper, ...Helper[]],
     bots: list(written.bots, [], 'bots'),
     ownerP2pDirect,
+    exclusiveBots,
+    ownerGroupDirect,
   };
 }
 
 
 /**
- * 校验可选的 owner_p2p_direct 配置：必须是 { bot, helper } 列表，bot 不可重复，helper 必须在 helpers 中存在。
+ * 校验对象中的字符串字段为无首尾空白的非空文本。
  */
-function parseOwnerP2pDirect(raw: unknown, helpers: readonly Helper[]): OwnerP2pDirectRule[] {
+function checkTrimmedField(
+  item: Record<string, unknown>,
+  field: string,
+  label: string,
+  kindName: string,
+): string {
+  const fieldLabel = `${label}.${field}`;
+  const value = checksModule.checkNonEmptyText(item[field], fieldLabel);
+  if (value.trim() === '' || value !== value.trim()) {
+    throw new Error(`${fieldLabel} 要写成无首尾空白的非空${kindName}`);
+  }
+  return value;
+}
+
+
+/**
+ * 校验可选的 { bot, helper } 规则列表（owner_p2p_direct / exclusive_bots 共用）：
+ * 须为数组，每项为对象，含无首尾空白的非空 bot 与 helper，bot 不可重复，helper 必须在 helpers 中登记。
+ */
+function parseBotHelperRules(
+  raw: unknown,
+  key: string,
+  helpers: readonly Helper[],
+): Array<OwnerP2pDirectRule & ExclusiveBotRule> {
   if (raw === undefined) return [];
 
-  const entries = checksModule.checkArray(raw, 'relay.owner_p2p_direct');
-  const rules: OwnerP2pDirectRule[] = [];
+  const entries = checksModule.checkArray(raw, `relay.${key}`);
+  const rules: Array<OwnerP2pDirectRule & ExclusiveBotRule> = [];
   const seenBots = new Set<string>();
 
   for (const [index, entry] of entries.entries()) {
-    const label = `relay.owner_p2p_direct[${String(index)}]`;
+    const label = `relay.${key}[${String(index)}]`;
     const item = checksModule.checkRecord(entry, label);
-    const bot = checksModule.checkNonEmptyText(item['bot'], `${label}.bot`);
-    const helper = checksModule.checkNonEmptyText(item['helper'], `${label}.helper`);
+    const bot = checkTrimmedField(item, 'bot', label, '机器人名字');
+    const helper = checkTrimmedField(item, 'helper', label, '助手名字');
 
-    if (bot.trim() === '' || bot !== bot.trim()) {
-      throw new Error(`${label}.bot 要写成无首尾空白的非空机器人名字`);
-    }
-    if (helper.trim() === '' || helper !== helper.trim()) {
-      throw new Error(`${label}.helper 要写成无首尾空白的非空助手名字`);
-    }
+    //G bot 不能重复，避免同一机器人绑定冲突。
     if (seenBots.has(bot)) {
-      throw new Error(`relay 的 owner_p2p_direct 中 bot 不能重复：${bot}`);
+      throw new Error(`relay 的 ${key} 中 bot 不能重复：${bot}`);
     }
+    //G helper 必须已在 helpers 中登记。
     if (!helpers.some((known) => known.name === helper)) {
-      throw new Error(`relay 的 owner_p2p_direct 中机器人 ${bot} 指定的 helper 不在 helpers 里：${helper}`);
+      throw new Error(`relay 的 ${key} 中机器人 ${bot} 指定的 helper 不在 helpers 里：${helper}`);
     }
 
     seenBots.add(bot);
     rules.push({ bot, helper });
+  }
+  return rules;
+}
+
+
+/**
+ * 校验可选的 owner_group_direct 配置：
+ * 须为数组，每项为对象，含无首尾空白的非空 chat_id、bot、helper，(chat_id, bot) 不可重复，helper 必须在 helpers 中登记。
+ */
+function parseOwnerGroupDirect(raw: unknown, helpers: readonly Helper[]): OwnerGroupDirectRule[] {
+  if (raw === undefined) return [];
+
+  const entries = checksModule.checkArray(raw, 'relay.owner_group_direct');
+  const rules: OwnerGroupDirectRule[] = [];
+  const seenPairs = new Set<string>();
+
+  for (const [index, entry] of entries.entries()) {
+    const label = `relay.owner_group_direct[${String(index)}]`;
+    const item = checksModule.checkRecord(entry, label);
+    const chatId = checkTrimmedField(item, 'chat_id', label, '群号');
+    const bot = checkTrimmedField(item, 'bot', label, '机器人名字');
+    const helper = checkTrimmedField(item, 'helper', label, '助手名字');
+
+    //G 同群同机器人组合不能重复。
+    const pairKey = `${chatId}\u0000${bot}`;
+    if (seenPairs.has(pairKey)) {
+      throw new Error(`relay 的 owner_group_direct 中 (chat_id, bot) 组合不能重复：${chatId} / ${bot}`);
+    }
+    //G helper 必须已在 helpers 中登记。
+    if (!helpers.some((known) => known.name === helper)) {
+      throw new Error(`relay 的 owner_group_direct 中群 ${chatId} 机器人 ${bot} 指定的 helper 不在 helpers 里：${helper}`);
+    }
+
+    seenPairs.add(pairKey);
+    rules.push({ chatId, bot, helper });
   }
   return rules;
 }

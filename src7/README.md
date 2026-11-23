@@ -62,8 +62,8 @@ src7/
 
 以飞书群里一条 @ 了机器人的普通消息为例。
 
-1. **收到群消息。** `Feishu.start` 监听飞书的 `im.message.receive_v1`，交给 `FeishuInbound.onMessage` 按消息号去重。 [`Feishu.start` · `im.message.receive_v1` · src7/plugins/feishu/index.ts:649](plugins/feishu/index.ts#L649) · [`FeishuInbound.onMessage` · src7/plugins/feishu/Inbound.ts:160](plugins/feishu/Inbound.ts#L160)
-2. **存好再分发。** `FeishuInbound.handleInboundMessage` 识别 @、引用和群设置，下载附件、存聊天日志，再由 `FeishuInbound.deliver` 发进来的事件。 [`FeishuInbound.handleInboundMessage` · src7/plugins/feishu/Inbound.ts:214](plugins/feishu/Inbound.ts#L214) · [`FeishuInbound.deliver` · src7/plugins/feishu/Inbound.ts:759](plugins/feishu/Inbound.ts#L759)
+1. **收到群消息。** `Feishu.start` 监听飞书的 `im.message.receive_v1`，交给 `FeishuInbound.onMessage` 按消息号去重。 [`Feishu.start` · `im.message.receive_v1` · src7/plugins/feishu/index.ts:649](plugins/feishu/index.ts#L649) · [`FeishuInbound.onMessage` · src7/plugins/feishu/Inbound.ts:163](plugins/feishu/Inbound.ts#L163)
+2. **存好再分发。** `FeishuInbound.handleInboundMessage` 识别 @、引用和群设置，下载附件、存聊天日志，再由 `FeishuInbound.deliver` 发进来的事件。 [`FeishuInbound.handleInboundMessage` · src7/plugins/feishu/Inbound.ts:219](plugins/feishu/Inbound.ts#L219) · [`FeishuInbound.deliver` · src7/plugins/feishu/Inbound.ts:798](plugins/feishu/Inbound.ts#L798)
    - 进来的事件有三个，一条只发一个，由 `channels` 的 `emitInbound` 按 `getInboundEvent` 分：私聊 `channel/direct`，群里 @ 或引用了机器人 `channel/mention`（这一例），没叫机器人 `channel/listen`。 [`getInboundEvent` · src7/plugins/channels/Message.ts:263](plugins/channels/Message.ts#L263) · [`emitInbound` · src7/plugins/channels/Message.ts:280](plugins/channels/Message.ts#L280)
 3. **审批先看是不是批复。** `Approval.onChannelMessage` 听 `channel/direct`、`channel/mention`，抢在机器人前读进来的消息，有权处理的“同意 3”之类指令只消费一次并直回，普通消息继续分派。 [`Approval.onChannelMessage` · src7/plugins/approval/index.ts:1173](plugins/approval/index.ts#L1173)
 4. **逐个机器人找会话。** `Bots.onChannelMessage` 给每个目标机器人准备附件并发 `bot/receive`，让 relay 等插件先认领，其余普通消息交前台。 [`Bots.onChannelMessage` · src7/plugins/bots/index.ts:590](plugins/bots/index.ts#L590) · [`Bots.onChannelMessage` · `bot/receive` · src7/plugins/bots/index.ts:647](plugins/bots/index.ts#L647)
@@ -75,7 +75,7 @@ src7/
 10. **工具交回结果后。** `Session.loop` 发 `session/after-tool` 让插件看结果并存进对话，继续执行这一批工具，轮次还在运行时再回第 6 步。 [`Session.loop` · `session/after-tool` · src7/Sessions.ts:672](Sessions.ts#L672)
 11. **这一轮收尾。** 模型没再要工具时，`Session.change` 存好结果并发 `session/change`，`DispatchResults.onChange` 接手，按回复回执收尾后发 `bot/settled` 并推进队列。 [`Session.change` · src7/Sessions.ts:790](Sessions.ts#L790) · [`DispatchResults.onChange` · src7/plugins/bots/DispatchResults.ts:380](plugins/bots/DispatchResults.ts#L380) · [`DispatchResults.emitSettled` · src7/plugins/bots/DispatchResults.ts:749](plugins/bots/DispatchResults.ts#L749)
 
-群里没叫到机器人时发 `channel/listen`：登记了 `listen: all` 的群记作背景，`listen: judge` 的群交给决策模型判断要不要接话，没登记的群谁都不进、只给记忆等记录类插件记。 [`FeishuInbound.getTargets` · src7/plugins/feishu/Inbound.ts:482](plugins/feishu/Inbound.ts#L482) · [`FrontDesk.listen` · src7/plugins/bots/FrontDesk.ts:263](plugins/bots/FrontDesk.ts#L263)
+群里没叫到机器人时发 `channel/listen`：登记了 `listen: all` 的群记作背景，`listen: judge` 的群交给决策模型判断要不要接话，没登记的群谁都不进、只给记忆等记录类插件记。 [`FeishuInbound.getTargets` · src7/plugins/feishu/Inbound.ts:516](plugins/feishu/Inbound.ts#L516) · [`FrontDesk.listen` · src7/plugins/bots/FrontDesk.ts:263](plugins/bots/FrontDesk.ts#L263)
 
 **所有发出去的话一律走 `channel/reply` → `channel/replied`**：模型的 `channel_reply`、一轮结束的自动回话、后台结果、relay 回信、审批直回都一样。渠道只向 `bots` 登记自己的名字（`ctx.bots.channel(名字)`，给网页列渠道用），不登记发送函数；收话就发进来的事件。 [`Bots.channel` · src7/plugins/bots/index.ts:807](plugins/bots/index.ts#L807) · [`Bots.send` · src7/plugins/bots/index.ts:766](plugins/bots/index.ts#L766)
 

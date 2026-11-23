@@ -51,7 +51,10 @@ export const name = 'relay';
 //M 1.5.6：飞书真回复发出后异步温和撤回“已转给”占位消息（ack_message_id）；收话分流、文件与决策辅助拆入独立子模块瘦身。
 //M 1.5.7：飞书发文件、撤回占位不再自己掐表（原 30 秒、15 秒），飞书自己限时 60 秒、到点回执；删“等待回执超时”分支（云端 31 第 2 条）。
 //M 1.5.8：新增可选 owner_p2p_direct 配置，仅本人私聊指定机器人且未命中其他显式前缀时免前缀直通指定外部助手。
-export const version = '1.5.8';
+//M 1.5.9：新增 exclusive_bots（机器人独占直通）与 owner_group_direct（受信私人群免前缀直通）；
+//M   POST /api/relay/reply 与 accept 支持可选 alsoCloseIds 静默闭环同聊天同机器人旧 pending 收件并撤回飞书占位；
+//M   remind_minutes 与 expire_minutes 允许填 0 且默认 0（彻底禁用超时催促与过期放下）。
+export const version = '1.5.9';
 
 /** 用到的服务。db 负责收件与回信表的版本迁移和事务；http 是可选的：用到时 ctx.get 现取。 */
 export const inject = ['resources', 'tools', 'sessions', 'bots', 'db'];
@@ -88,11 +91,31 @@ export interface OwnerP2pDirectRule {
 }
 
 
+/** 指定机器人独占直通某个外部助手的规则（不走本地模型、不受其他助手前缀劫持）。 */
+export interface ExclusiveBotRule {
+  /** 目标机器人名字（不可重复）。 */
+  bot: string;
+  /** 独占绑定的外部助手名字（必须在 helpers 中存在）。 */
+  helper: string;
+}
+
+
+/** 仅本人在指定受信群发给指定机器人时免前缀直通某个外部助手的规则。 */
+export interface OwnerGroupDirectRule {
+  /** 目标群号（飞书 chat_id，同机器人下不可重复）。 */
+  chatId: string;
+  /** 目标机器人名字。 */
+  bot: string;
+  /** 默认投递的外部助手名字（必须在 helpers 中存在）。 */
+  helper: string;
+}
+
+
 /** apply 校验好以后给 Relay 的东西。 */
 export interface RelayConfig {
-  /** 多久没回提醒一次，分钟。 */
+  /** 多久没回提醒一次，分钟；0 表示彻底禁用催促提醒。 */
   remindMinutes: number;
-  /** 多久没回就说“先放下”，分钟；之后回了照样送到。 */
+  /** 多久没回就说“先放下”，分钟；0 表示彻底禁用过期放下，之后回了照样送到。 */
   expireMinutes: number;
   /** 多久读一次 replies.jsonl，秒。 */
   pollSeconds: number;
@@ -102,6 +125,10 @@ export interface RelayConfig {
   bots: string[];
   /** 仅本人私聊（p2p + owner=true + 非 listenOnly）发给指定机器人时，未命中其他显式前缀也直通对应助手。 */
   ownerP2pDirect: OwnerP2pDirectRule[];
+  /** 独占直通规则：目标机器人非 listenOnly 消息全部直进 relay 会话并最高优先级锁定对应助手。 */
+  exclusiveBots: ExclusiveBotRule[];
+  /** 受信私人群直通规则：仅本人在指定群发给指定机器人且非 listenOnly 时免前缀直通对应助手。 */
+  ownerGroupDirect: OwnerGroupDirectRule[];
 }
 
 
@@ -387,11 +414,13 @@ export class Relay {
     return botUtils.getBotConfig(this.ctx.resources.raw, bot)?.['relay'] as RelayMode | undefined;
   }
 
-  /** 这个机器人是否启用了文件收发目录与 replies.jsonl 轮询（含 owner_p2p_direct 指定的机器人）。 */
+  /** 这个机器人是否启用了文件收发目录与 replies.jsonl 轮询（含 exclusive_bots、owner_p2p_direct 与 owner_group_direct 指定的机器人）。 */
   private hasBotRelayDir(bot: string): boolean {
     if (this.getMode(bot) !== undefined) return true;
+    if (this.config.exclusiveBots.some((rule) => rule.bot === bot)) return true;
+    if (this.config.ownerP2pDirect.some((rule) => rule.bot === bot)) return true;
 
-    return this.config.ownerP2pDirect.some((rule) => rule.bot === bot);
+    return this.config.ownerGroupDirect.some((rule) => rule.bot === bot);
   }
 
   /** 这场会话怎么转：先看机器人；机器人没写再看飞书群地址里的 relay: model。 */
@@ -462,6 +491,8 @@ export class Relay {
       throw new failureModule.Failure(400, 'file 要写成文件路径（相对数据目录，或绝对路径）');
     }
 
+    const alsoCloseInput = this.parseAlsoCloseIds(body['alsoCloseIds']);
+
     const id = body['id'];
     const chat = body['chat'];
     const byChat = (id === undefined || id === null) && typeof chat === 'string' && chat !== '';
@@ -498,30 +529,61 @@ export class Relay {
       fileFull = filesModule.resolveAllowedReplyFile(this.ctx.resources, item.bot, file);
     }
 
+    //M 在写库前校验完 alsoCloseIds 存在性与助手/机器人/同聊天安全边界，确保校验失败不留半套写入。
+    let targetHelper = item.helper;
+    let primaryIdForDedup: number | undefined = item.id;
+    if (proactive) {
+      targetHelper = helper;
+      primaryIdForDedup = undefined;
+    }
+    const extraItems = this.resolveAlsoCloseItems(alsoCloseInput, primaryIdForDedup, targetHelper, item, bot);
+
     if (proactive) {
       item = this.startProactive(item, helper);
     }
     const itemId = item.id;
 
     const replyTo = body['reply_to'];
-    if (typeof replyTo === 'string' && replyTo !== '') {
-      const updateSql = "UPDATE relay_items SET address = json_set(address, '$.messageId', ?)"
-        + " WHERE id = ? AND address LIKE '{%'";
-      this.run(updateSql, [replyTo, itemId]);
-    }
-
     const now = Date.now();
     let doneFlag = 0;
     if (done) {
       doneFlag = 1;
     }
 
-    this.run(
-      'INSERT INTO relay_replies (item_id, session_id, text, done, at, via) VALUES (?, ?, ?, ?, ?, ?)',
-      [itemId, item.session_id, text, doneFlag, now, via],
-    );
-    if (done) {
-      this.run("UPDATE relay_items SET state = 'replied', replied_at = ? WHERE id = ?", [now, itemId]);
+    //M 主回信写入与 alsoCloseIds 静默闭环在同一数据库事务内提交，不插多余 relay_replies、不发重复飞书回复。
+    const recallExtras: { item: ItemRow; ackMsgId: string }[] = [];
+    this.ctx.db.transaction(() => {
+      if (typeof replyTo === 'string' && replyTo !== '') {
+        const updateSql = "UPDATE relay_items SET address = json_set(address, '$.messageId', ?)"
+          + " WHERE id = ? AND address LIKE '{%'";
+        this.run(updateSql, [replyTo, itemId]);
+      }
+
+      this.run(
+        'INSERT INTO relay_replies (item_id, session_id, text, done, at, via) VALUES (?, ?, ?, ?, ?, ?)',
+        [itemId, item.session_id, text, doneFlag, now, via],
+      );
+      if (done) {
+        this.run("UPDATE relay_items SET state = 'replied', replied_at = ? WHERE id = ?", [now, itemId]);
+      }
+
+      for (const extra of extraItems) {
+        if (extra.state !== 'pending') continue;
+
+        this.run(
+          "UPDATE relay_items SET state = 'replied', replied_at = ?, reminded = 1 WHERE id = ? AND state = 'pending'",
+          [now, extra.id],
+        );
+        if (extra.channel === 'feishu' && extra.ack_message_id !== '') {
+          this.run("UPDATE relay_items SET ack_message_id = '' WHERE id = ?", [extra.id]);
+          recallExtras.push({ item: extra, ackMsgId: extra.ack_message_id });
+        }
+      }
+    });
+
+    //M 被静默闭环的旧飞书收件若有“已转给”占位消息，温和异步触发撤回（失败静默降级）。
+    for (const pendingRecall of recallExtras) {
+      void this.recallAckMessage(pendingRecall.item, pendingRecall.ackMsgId);
     }
 
     //T 跟踪：收到一条回信。
@@ -545,7 +607,84 @@ export class Relay {
   }
 
   /**
-   * 响应 bot/receive：用 Receive.pickReceiveSessionKind 三条扁平直路判定去向并打开对应会话。
+   * 入口校验可选的 alsoCloseIds：省略返回空数组；传入须为正整数数组，否则抛 400。
+   */
+  private parseAlsoCloseIds(raw: unknown): number[] {
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) {
+      throw new failureModule.Failure(400, 'alsoCloseIds 要写成正整数数组');
+    }
+
+    const ids: number[] = [];
+    for (const one of raw) {
+      if (typeof one !== 'number' || !Number.isInteger(one) || one < 1) {
+        throw new failureModule.Failure(400, 'alsoCloseIds 每项都要写成正整数');
+      }
+      ids.push(one);
+    }
+    return ids;
+  }
+
+  /** 从收件保存的地址 JSON 中提取精确聊天号（chatId 优先，其次 chat）。 */
+  private getItemChatKey(row: ItemRow): string {
+    try {
+      const parsed = JSON.parse(row.address) as unknown;
+      return utils.getStringField(parsed, 'chatId') || utils.getStringField(parsed, 'chat');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 去重并剔除主收件号后，逐项校验 alsoCloseIds 的存在性（404）与助手/机器人/同聊天安全边界（400）。
+   */
+  private resolveAlsoCloseItems(
+    rawIds: readonly number[],
+    primaryId: number | undefined,
+    primaryHelper: string,
+    primaryItem: ItemRow,
+    bot: string | undefined,
+  ): ItemRow[] {
+    const seen = new Set<number>();
+    const items: ItemRow[] = [];
+    const primaryChat = this.getItemChatKey(primaryItem);
+
+    for (const extraId of rawIds) {
+      if (extraId === primaryId || seen.has(extraId)) continue;
+      seen.add(extraId);
+
+      const extra = this.getItem(extraId);
+      if (extra === undefined) {
+        throw new failureModule.Failure(404, `alsoCloseIds 中没有这个收件号：${String(extraId)}`);
+      }
+      if (extra.helper !== primaryHelper) {
+        const msg = `alsoCloseIds 中的收件 #${String(extraId)} 是转给 ${extra.helper} 的，不能由 ${primaryHelper} 关闭`;
+        throw new failureModule.Failure(400, msg);
+      }
+      //G 强制校验机器人归属一致（覆盖 HTTP 通道 bot 缺省与 file 通道传参两种场景）。
+      if (extra.bot !== primaryItem.bot || (bot !== undefined && extra.bot !== bot)) {
+        const msg = `alsoCloseIds 中的收件 #${String(extraId)} 是 ${extra.bot} 的，不能由 ${primaryItem.bot} 关闭`;
+        throw new failureModule.Failure(400, msg);
+      }
+      //G 强制校验同一渠道与同一聊天/会话边界，严禁误关其他群聊或私聊用户的待回项。
+      if (extra.channel !== primaryItem.channel) {
+        const msg = `alsoCloseIds 中的收件 #${String(extraId)} 来自其他渠道，不能跨渠道关闭`;
+        throw new failureModule.Failure(400, msg);
+      }
+      const extraChat = this.getItemChatKey(extra);
+      const sameChat = primaryChat !== '' && extraChat === primaryChat;
+      const sameSession = primaryChat === '' && extraChat === '' && extra.session_id === primaryItem.session_id;
+      if (!sameChat && !sameSession) {
+        const msg = `alsoCloseIds 中的收件 #${String(extraId)} 不属于当前聊天，不能跨聊天关闭`;
+        throw new failureModule.Failure(400, msg);
+      }
+      items.push(extra);
+    }
+    return items;
+  }
+
+  /**
+   * 响应 bot/receive：用 Receive.pickReceiveSessionKind 扁平分流规则判定去向并打开对应会话。
    */
   private onReceive(event: ReceiveEvent): void {
     //G 前面已经有人定了去向、处理掉了 → 不管。
@@ -560,6 +699,8 @@ export class Relay {
       this.config.helpers,
       bot,
       this.config.ownerP2pDirect,
+      this.config.exclusiveBots,
+      this.config.ownerGroupDirect,
     );
     if (kind === undefined) return;
 
@@ -624,6 +765,12 @@ export class Relay {
       'SELECT id, helper FROM relay_items WHERE session_id = ? AND last_msg_at = ? AND text = ?',
       [session.id, lastTimestamp, text],
     )[0];
+    const exclusiveHelper = receiveModule.matchExclusiveBotHelper(
+      row.bot,
+      row.address,
+      this.config.helpers,
+      this.config.exclusiveBots,
+    );
     const relayHelper = utils.getStringField(row.address, 'relayHelper').trim();
     const explicitHelper = this.config.helpers.find((one) => one.name === relayHelper);
     const ownerDirectHelper = receiveModule.matchOwnerP2pDirectHelper(
@@ -632,7 +779,18 @@ export class Relay {
       this.config.helpers,
       this.config.ownerP2pDirect,
     );
-    const helper = this.prefixed(text) ?? explicitHelper ?? ownerDirectHelper ?? this.config.helpers[0];
+    const ownerGroupHelper = receiveModule.matchOwnerGroupDirectHelper(
+      row.bot,
+      row.address,
+      this.config.helpers,
+      this.config.ownerGroupDirect,
+    );
+    const helper = exclusiveHelper
+      ?? this.prefixed(text)
+      ?? explicitHelper
+      ?? ownerDirectHelper
+      ?? ownerGroupHelper
+      ?? this.config.helpers[0];
     const id = known?.id ?? this.register(session, helper, text, lastTimestamp);
     if (relayHelper !== '') {
       request.answer = this.said(row.bot, '');
@@ -1044,13 +1202,19 @@ export class Relay {
     }
   }
 
-  /** 查超时：过 remind_minutes 提醒一次，过 expire_minutes 改为 expired。 */
+  /** 查超时：remind_minutes > 0 时过线提醒一次，expire_minutes > 0 时过线改为 expired；两者均为 0 时彻底禁用。 */
   private checkLate(): void {
+    const remindEnabled = this.config.remindMinutes > 0;
+    const expireEnabled = this.config.expireMinutes > 0;
+    //G 催促提醒与过期放下均禁用时直接跳过，不查库也不发任何提醒消息。
+    if (!remindEnabled && !expireEnabled) return;
+
     const now = Date.now();
     for (const item of this.query<ItemRow>("SELECT * FROM relay_items WHERE state = 'pending' ORDER BY id", [])) {
       const minutes = (now - item.at) / 60_000;
-      const expire = minutes >= this.config.expireMinutes;
-      if (!expire && (item.reminded === 1 || minutes < this.config.remindMinutes)) continue;
+      const expire = expireEnabled && minutes >= this.config.expireMinutes;
+      const remind = remindEnabled && item.reminded === 0 && minutes >= this.config.remindMinutes;
+      if (!expire && !remind) continue;
 
       let session: Session;
       try {
@@ -1295,6 +1459,8 @@ export interface RelayWritten {
   helpers?: unknown;
   bots?: unknown;
   owner_p2p_direct?: unknown;
+  exclusive_bots?: unknown;
+  owner_group_direct?: unknown;
   tasks?: unknown;
 }
 

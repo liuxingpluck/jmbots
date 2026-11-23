@@ -91,6 +91,7 @@ export class FeishuHistoryPull {
         params.page_token = pageToken;
       }
 
+      //M 带 429 重试调用飞书分页拉群消息列表接口并汇总本页历史条目。
       const page = await api.call('拉群历史', () => app.client.im.v1.message.list({ params }));
       items.push(...((page.data?.items ?? []) as HistoryItem[]));
       if (page.data?.has_more !== true) break;
@@ -111,13 +112,15 @@ export class FeishuHistoryPull {
       const standardId = JSON.stringify([this.feishu.name, appId, nativeId]);
 
       //G 没消息号、已撤回、机器人自己发的、本地日志里已有的，都不拉。
-      const skip = nativeId === '' || item.deleted === true || item.sender?.sender_type === 'app' || known.has(standardId);
+      const isApp = item.sender?.sender_type === 'app';
+      const skip = nativeId === '' || item.deleted === true || isApp || known.has(standardId);
       if (skip) {
         result.skipped += 1;
         continue;
       }
 
       try {
+        //M 将历史消息拼装为入站事件交给 onHistory 落盘并加入当前批次。
         const data = this.getReceiveData(chatId, nativeId, item);
         const createdAt = Number(item.create_time ?? 0);
         const message = await this.feishu.inbound.onHistory(appId, app, data, createdAt);
@@ -152,6 +155,7 @@ export class FeishuHistoryPull {
     if (limit === 0) return;
 
     try {
+      //M 机器人新进群后拉取最近配置的群历史条数补入记忆。
       const result = await this.pull(app, chatId, limit);
       const summary = `拉了 ${String(result.pulled)} 条，跳过 ${String(result.skipped)} 条，失败 ${String(result.failed)} 条`;
       console.log(`飞书 ${app.config.appId} 进群 ${chatId}，历史${summary}`);

@@ -287,6 +287,7 @@ function world(decision?: FakeDecision, extraBots: string[] = []): World {
       if (close !== undefined) closers.push(close);
     },
     get: (service: string) => {
+      if (service === 'db') return dbService;
       if (service !== 'decision' || decision === undefined) return undefined;
       return {
         judge: (input: FakeDecision['asked'][number]) => {
@@ -831,9 +832,9 @@ describe('post 富文本 + 引用回复 + @提及 转 relay', () => {
       data: { items: [{ msg_type: 'text', body: { content: JSON.stringify({ text: '上一轮讨论' }) } }] },
     });
 
-    //M 场景 1：对方机器人发 post + 引用 + @本机器人 + 多个空格 + cc。
+    //M 场景 1：人类用户发 post + 引用 + @本机器人 + 多个空格 + cc（测试富文本剥除 @ 与转发 relay）。
     await inside.inbound.onMessage(APP_ID, {
-      sender: { sender_id: { open_id: FRIEND }, sender_type: 'app' },
+      sender: { sender_id: { open_id: FRIEND }, sender_type: 'user' },
       message: {
         message_id: 'om_post_cc',
         parent_id: 'om_prev_1',

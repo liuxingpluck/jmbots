@@ -167,17 +167,30 @@ function readNoteText(value: unknown): string {
   return text;
 }
 
+/** 读取手动提醒接口的可选 bot 参数，兼容无请求体、空请求体和空对象。 */
+function readNotifyBot(rawBody: unknown): string | undefined {
+  if (rawBody === undefined || rawBody === null || rawBody === '') return undefined;
+
+  //G 提供请求体时须是对象，bot 字段省略走默认目标，填写须为非空文本。
+  const body = checksModule.checkRecord(rawBody, '请求体');
+  if (body['bot'] === undefined) return undefined;
+
+  return storeModule.readText(body['bot'], 'bot');
+}
+
 /**
  * 注册读图、批量写入、点选、写话、回话、轮询和确认入口。
  * @param ctx 插件的 Cordis 上下文。
  * @param store 运行时决策图。
  * @param helper 配置的中控 relay 助手，省略时通过变化接口收结果。
+ * @param noticeConfig 主人私聊通知路由配置（默认目标与按机器人路由目标表）。
+ * @param controlStore 多 AI 协同控制面任务存储。
  */
 export function mount(
   ctx: cordis.Context,
   store: storeModule.Store,
   helper: string | undefined,
-  ownerNotice: notifications.OwnerNotice | undefined,
+  noticeConfig: notifications.OwnerNoticeConfig | undefined,
   controlStore = new controlPlaneModule.ControlPlaneStore(ctx.resources.root),
 ): void {
   const app = ctx.http.app;
@@ -248,7 +261,7 @@ export function mount(
   events.onRequestEvent(ctx, 'work-decision/ask', 'work-decision/ask-result', async (request) => {
     //M 局部更新和新事项共用父链校验与事务提交。
     const { graph, tasks } = store.put(request.nodes, 'plugin');
-    notifications.notifyNew(ctx, ownerNotice, graph, tasks);
+    notifications.notifyNew(ctx, noticeConfig, graph, tasks);
     await deliverTasks(tasks, graph.revision);
     return { ok: true, ids: request.nodes.map((node) => node.id) };
   }, { onError });
@@ -280,8 +293,8 @@ export function mount(
       }
       //M 成批保存节点，失败时不会新增提醒。
       const saved = store.put(nodes, 'central');
-      //M 批次若打开了待定项，按当前图通知主人。
-      notifications.notifyNew(ctx, ownerNotice, saved.graph, saved.tasks);
+      //M 批次若打开了待定项，按节点归属机器人通知主人。
+      notifications.notifyNew(ctx, noticeConfig, saved.graph, saved.tasks);
       //M 写入回执与读图使用同样的项目结构。
       return store.getPublicGraph();
     });
@@ -305,19 +318,20 @@ export function mount(
       //M 新项目按工作区归组，发起方由已校验的助手名称确定。
       const saved = store.ask(input);
       //M 上一条重复提交已返回原节点，只有新事项计入提醒。
-      notifications.notifyNew(ctx, ownerNotice, saved.graph, saved.tasks);
+      notifications.notifyNew(ctx, noticeConfig, saved.graph, saved.tasks);
       const query = new URLSearchParams({ focus: id });
       const url = `${notifications.PAGE}?${query.toString()}`;
       return { id, url };
     });
-    scope.post(`${PREFIX}/notify`, () => {
-      //G 主动提醒需要配置明确的私聊目标。
-      if (ownerNotice === undefined) throw new failureModule.Failure(400, '请配置 owner_target 和 public_url');
+    scope.post<{ Body: unknown }>(`${PREFIX}/notify`, (request) => {
+      //G 主动提醒支持可选 { bot }；未配目标或查无此机器人时均回 400。
+      const bot = readNotifyBot(request.body);
+      const resolved = notifications.getManualNotice(noticeConfig, bot);
 
       //M 中控手动提醒沿用同一渠道请求，不另写飞书发件箱。
       const graph = store.getGraph();
       const manualKey = crypto.randomUUID();
-      return notifications.notify(ctx, ownerNotice, graph, manualKey);
+      return notifications.notify(ctx, resolved.notice, graph, manualKey, resolved.scopedBot);
     });
     scope.post<{ Body: unknown }>(`${PREFIX}/child`, async (request) => {
       const body = checksModule.checkRecord(request.body, '请求体');

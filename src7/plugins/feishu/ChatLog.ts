@@ -58,7 +58,8 @@ export class FeishuChatLog {
   /** 飞书聊天本地日志文件（channels/feishu/chats/<app>/<chat>.jsonl）。 */
   private chatLogFile(appId: string, chatId: string): string {
     //M 将 appId 安全转义为目录名，生成对应的聊天历史文件夹并拼出聊天日志文件。
-    const dir = this.ctx.resources.ensureRuntimeDir('channels', 'feishu', 'chats', namesModule.getSafeName(appId, Infinity));
+    const safeApp = namesModule.getSafeName(appId, Infinity);
+    const dir = this.ctx.resources.ensureRuntimeDir('channels', 'feishu', 'chats', safeApp);
     return path.join(dir, `${namesModule.getSafeName(chatId, Infinity)}.jsonl`);
   }
 
@@ -110,6 +111,7 @@ export class FeishuChatLog {
       if (item.messageId === messageId) {
         item.recalled = true;
       }
+      //M 将可能已补写 recalled 标记的条目逐行序列化写回。
       lines.push(JSON.stringify(item));
     }
     fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');

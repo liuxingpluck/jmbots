@@ -15,7 +15,8 @@ const STATES = new Set(['pending', 'replied', 'expired']);
 /**
  * 在 http.app 上登记两条接口。要在 ready（开始监听）之前调。
  *   GET  /api/relay/inbox?since=&bot=&state=&helper=&limit=  → { items, last }
- *   POST /api/relay/reply { id | chat, text, bot?, helper?, reply_to?, file?, done? } → { ok: true, item }
+ *   POST /api/relay/reply
+ *     { id | chat, text, bot?, helper?, reply_to?, file?, done?, alsoCloseIds? } → { ok: true, item }
  * @param http HTTP 服务。
  * @param relay relay 插件本体。
  * 副作用：在 http.app 上加两条路由。

@@ -22,6 +22,7 @@ import * as channels from '../channels/index.ts';
 import * as dbModule from '../db/index.ts';
 import * as decisionModule from '../work-decision/index.ts';
 import type * as decisionTypes from '../work-decision/Types.ts';
+import * as filesModule from './Files.ts';
 import * as relayModule from './index.ts';
 import * as receiveModule from './Receive.ts';
 
@@ -210,7 +211,7 @@ function world(db = new Database(':memory:')): World {
     },
     bots: {
       list: () => [bot],
-      get: (name: string) => (name === BOT ? bot : undefined),
+      get: (name: string) => (name === bot.name ? bot : undefined),
       route: (session: FakeSession, origin: { channel?: string; address?: unknown }) => {
         if (origin.channel !== undefined) session.row.channel = origin.channel;
         if (origin.address !== undefined) session.row.address = origin.address;
@@ -318,8 +319,9 @@ const settle = (ms = 150): Promise<void> => new Promise((resolve) => setTimeout(
 async function ready(helpers: unknown[] = HELPERS, more: Record<string, unknown> = {}): Promise<World> {
   const made = world();
   made.db.exec('CREATE TABLE web_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT, channel TEXT, address TEXT)');
-  //M more：别的配置（bots 这类）；写了 relay 就是测试机器人名单项的 relay。
-  const { relay, ...config } = more;
+  //M more：别的配置（bots 这类）；写了 relay 就是测试机器人名单项的 relay，写了 botName 可用独立机器人名隔离 replies.jsonl。
+  const { relay, botName, ...config } = more;
+  if (typeof botName === 'string' && botName !== '') made.bot.name = botName;
   if (relay !== undefined) made.bot.config['relay'] = relay;
   relayModule.apply(made.ctx, { helpers, ...config });
   await made.app.ready();
@@ -1396,4 +1398,593 @@ describe('回信送进会话：先写进对话再标已送，走模型的会话�
       expect(() => relayModule.apply(w.ctx, { helpers, owner_p2p_direct: bad })).toThrow();
     }
   });
+
+  test('exclusive_bots：非只听全部直进 relay 并最高优先级锁定 helper，只听放行给记录类插件且支持 replies.jsonl 轮询', async () => {
+    const exBot = '独占测试机器人';
+    const helpers = [
+      { name: 'jm开发', prefixes: ['jm'] },
+      { name: 'Claude', title: '哈基米', prefixes: ['cc', '哈基米'] },
+      { name: 'OpenClaw', title: '小爪', prefixes: ['oc'] },
+    ];
+    const made = await ready(helpers, {
+      botName: exBot,
+      exclusive_bots: [{ bot: exBot, helper: 'OpenClaw' }],
+      poll_seconds: 0.05,
+    });
+
+    // 1. 即使机器人本身无 direct 模式，私聊（含非 owner 访客）和群聊全部直进 relay 会话并锁定 OpenClaw
+    const p2pGuest = {
+      chatId: 'oc_guest_p2p',
+      chatType: 'p2p',
+      openId: 'ou_guest',
+      customer: 'feishu:ou_guest',
+      owner: false,
+    };
+    const groupMember = {
+      chatId: 'oc_grp_ex',
+      chatType: 'group',
+      openId: 'ou_other',
+      customer: 'feishu:group:oc_grp_ex',
+      owner: false,
+    };
+
+    expect(await made.say('普通访客私聊一句话', p2pGuest)).toBe('已转给 小爪（#1），等回复。');
+    // 2. 带有其他 AI 前缀（cc / jm）与 address.relayHelper，仍被 exclusive_bots 最高优先级锁定给 OpenClaw
+    expect(await made.say('cc 尝试劫持到 Claude', groupMember)).toBe('已转给 小爪（#2），等回复。');
+    expect(await made.say('jm 尝试劫持到 jm开发', p2pGuest)).toBe('已转给 小爪（#3），等回复。');
+    expect(await made.say('带 relayHelper 也锁独占助手', { ...groupMember, relayHelper: 'Claude' })).toBe('');
+
+    const ocInbox = (
+      await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=OpenClaw' })
+    ).json() as { items: { id: number; helper: string; chat: string }[] };
+    expect(ocInbox.items.map((item) => [item.id, item.helper, item.chat])).toEqual([
+      [1, 'OpenClaw', 'p2p'],
+      [2, 'OpenClaw', 'group'],
+      [3, 'OpenClaw', 'p2p'],
+      [4, 'OpenClaw', 'group'],
+    ]);
+
+    // 确认全部进入了 relay 会话而非 front 会话
+    const sessionKinds = [...made.sessions.values()].map((s) => s.row.kind);
+    expect(sessionKinds.every((k) => k === 'relay')).toBe(true);
+
+    // 3. listenOnly === true（群 listen: all 未 @ 机器人）：无论普通话还是带前缀，均不截走、放行给记录类插件
+    const listenCases = [
+      { text: '群里旁听普通话', address: { ...groupMember, listenOnly: true } },
+      { text: 'cc 群里别人叫别的助手', address: { ...groupMember, listenOnly: true } },
+      { text: 'jm 旁听不该截走', address: { ...groupMember, listenOnly: true } },
+    ];
+    for (const one of listenCases) {
+      const event: {
+        bot: { name: string; config: Record<string, unknown> };
+        message: { text: string; address: unknown };
+        session?: FakeSession;
+      } = {
+        bot: { name: exBot, config: {} },
+        message: { text: one.text, address: one.address },
+      };
+      for (const handler of made.handlers.get('bot/receive') ?? []) {
+        handler(event);
+      }
+      expect(event.session).toBeUndefined();
+    }
+
+    // 4. replies.jsonl 文件回信轮询同步覆盖 exclusive_bots 机器人
+    const replyFile = path.join(root, 'integrations', 'relay', exBot, 'replies.jsonl');
+    fs.appendFileSync(replyFile, `${JSON.stringify({ id: 1, helper: 'OpenClaw', text: '小爪文件回信送达' })}\n`, 'utf8');
+    await settle(180);
+    expect(made.answers.at(-1)).toBe('小爪：小爪文件回信送达');
+
+    // 5. pickReceiveSessionKind 纯函数覆盖：即便 botMode 为 direct，exclusive_bots 非只听仍直进 relay
+    const helperList: relayModule.Helper[] = [
+      { name: 'OpenClaw', title: '小爪', prefixes: ['oc'], webhookUrl: '', webhookHeader: '' },
+      { name: 'Claude', title: 'Claude', prefixes: ['cc'], webhookUrl: '', webhookHeader: '' },
+    ];
+    const exRules: relayModule.ExclusiveBotRule[] = [{ bot: '独占号', helper: 'OpenClaw' }];
+    expect(receiveModule.pickReceiveSessionKind('direct', {}, 'cc 随便说', helperList, '独占号', [], exRules))
+      .toBe('relay');
+    expect(
+      receiveModule.pickReceiveSessionKind('direct', { listenOnly: true }, 'cc 旁听', helperList, '独占号', [], exRules),
+    ).toBeUndefined();
+  }, SLOW);
+
+  test('exclusive_bots 非法配置校验：非数组、缺字段、空白、未知 helper、重复 bot 均启动即抛错', () => {
+    const helpers = [
+      { name: 'jm开发', prefixes: ['jm'] },
+      { name: 'OpenClaw', prefixes: ['oc'] },
+    ];
+    const invalidConfigs: unknown[] = [
+      'not-an-array',
+      [null],
+      [{}],
+      [{ bot: '', helper: 'OpenClaw' }],
+      [{ bot: ' 独占号 ', helper: 'OpenClaw' }],
+      [{ bot: '独占号', helper: '' }],
+      [{ bot: '独占号', helper: ' OpenClaw ' }],
+      [{ bot: '独占号', helper: '不存在的助手' }],
+      [
+        { bot: '独占号', helper: 'OpenClaw' },
+        { bot: '独占号', helper: 'jm开发' },
+      ],
+    ];
+
+    for (const bad of invalidConfigs) {
+      const w = world();
+      expect(() => relayModule.apply(w.ctx, { helpers, exclusive_bots: bad })).toThrow();
+    }
+  });
+
+  test('owner_group_direct：仅本人在受信私人群免前缀直通，严拒非 owner/私聊/只听/其他群，显式前缀优先且支持 replies.jsonl', async () => {
+    const grpBot = '群直通测试机器人';
+    const helpers = [
+      { name: 'jm开发', prefixes: ['jm'] },
+      { name: 'Claude', title: '哈基米', prefixes: ['cc', '哈基米'] },
+      { name: 'Codex', prefixes: ['cx'] },
+    ];
+    const trustedChatId = 'oc_trusted_private_group';
+    const made = await ready(helpers, {
+      botName: grpBot,
+      owner_group_direct: [{ chat_id: trustedChatId, bot: grpBot, helper: 'Claude' }],
+      poll_seconds: 0.05,
+    });
+
+    const ownerGroupAddr = {
+      appId: 'cli_zxl',
+      chatId: trustedChatId,
+      chatType: 'group',
+      openId: 'ou_leon',
+      customer: `feishu:group:${trustedChatId}`,
+      senderName: 'leon',
+      chatName: '老板私人群',
+      owner: true,
+      role: 'owner',
+    };
+
+    // 1. 老板在受信私人群免前缀说话：直通 Claude
+    expect(await made.say('看一下今天的日报进度', ownerGroupAddr)).toBe('已转给 哈基米（#1），等回复。');
+
+    // 2. 用 address.chat 且仅 chatType === 'group'（不带 feishu:group: customer）也能正确命中
+    const altGroupAddr = {
+      chat: trustedChatId,
+      chatType: 'group',
+      openId: 'ou_leon',
+      customer: '',
+      owner: true,
+    };
+    expect(await made.say('再补一句任务', altGroupAddr)).toBe('已转给 哈基米（#2），等回复。');
+
+    // 3. 显式前缀（jm / cx）在非独占机器人上优先于 owner_group_direct
+    expect(await made.say('jm 跑一下检查', ownerGroupAddr)).toBe('已转给 jm开发（#3），等回复。');
+    expect(await made.say('cx 审一段代码', ownerGroupAddr)).toBe('已转给 Codex（#4），等回复。');
+
+    const claudeItems = (
+      (await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Claude' })).json() as {
+        items: { id: number; helper: string }[];
+      }
+    ).items;
+    expect(claudeItems.map((one) => [one.id, one.helper])).toEqual([[1, 'Claude'], [2, 'Claude']]);
+
+    const jmItems = (
+      (await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=jm%E5%BC%80%E5%8F%91' })).json() as {
+        items: { id: number; helper: string }[];
+      }
+    ).items;
+    expect(jmItems.map((one) => [one.id, one.helper])).toEqual([[3, 'jm开发']]);
+
+    const cxItems = (
+      (await made.app.inject({ method: 'GET', url: '/api/relay/inbox?helper=Codex' })).json() as {
+        items: { id: number; helper: string }[];
+      }
+    ).items;
+    expect(cxItems.map((one) => [one.id, one.helper])).toEqual([[4, 'Codex']]);
+
+    // 4. 严格安全边界：非 owner（其他 AI 机器人/guest/builder）、listenOnly、未登记群、私聊、其他机器人均严禁触发
+    const blockedCases: { botName?: string; text: string; address: Record<string, unknown> }[] = [
+      {
+        text: '群里其他 AI 机器人发言',
+        address: { ...ownerGroupAddr, openId: 'ou_other_bot', owner: false, role: 'guest' },
+      },
+      {
+        text: '群里 builder 发言',
+        address: { ...ownerGroupAddr, openId: 'ou_builder', owner: false, role: 'builder' },
+      },
+      {
+        text: '未 @ 机器人的只听消息',
+        address: { ...ownerGroupAddr, listenOnly: true },
+      },
+      {
+        text: '其他普通群的老板发言',
+        address: { ...ownerGroupAddr, chatId: 'oc_other_group', customer: 'feishu:group:oc_other_group' },
+      },
+      {
+        text: '私聊即使 chatId 碰巧相同也不能走 owner_group_direct',
+        address: { chatId: trustedChatId, chatType: 'p2p', openId: 'ou_leon', customer: 'feishu:ou_leon', owner: true },
+      },
+      {
+        text: 'chatType 为 p2p 时即使 customer 误带 group 前缀也严禁走 owner_group_direct',
+        address: {
+          chatId: trustedChatId,
+          chatType: 'p2p',
+          openId: 'ou_leon',
+          customer: `feishu:group:${trustedChatId}`,
+          owner: true,
+        },
+      },
+      {
+        botName: '别的机器人',
+        text: '发给其他机器人的群消息',
+        address: ownerGroupAddr,
+      },
+    ];
+    for (const one of blockedCases) {
+      const event: {
+        bot: { name: string; config: Record<string, unknown> };
+        message: { text: string; address: unknown };
+        session?: FakeSession;
+      } = {
+        bot: { name: one.botName ?? grpBot, config: {} },
+        message: { text: one.text, address: one.address },
+      };
+      for (const handler of made.handlers.get('bot/receive') ?? []) {
+        handler(event);
+      }
+      expect(event.session).toBeUndefined();
+    }
+
+    // 5. replies.jsonl 轮询同步覆盖 owner_group_direct 机器人
+    const replyFile = path.join(root, 'integrations', 'relay', grpBot, 'replies.jsonl');
+    fs.appendFileSync(replyFile, `${JSON.stringify({ id: 1, helper: 'Claude', text: '群直通文件回信送达' })}\n`, 'utf8');
+    await settle(180);
+    expect(made.answers.at(-1)).toBe('哈基米：群直通文件回信送达');
+  }, SLOW);
+
+  test('owner_group_direct 非法配置校验：非数组、缺字段、首尾空白、未知 helper、重复 (chat_id, bot) 启动即抛错', () => {
+    const helpers = [
+      { name: 'jm开发', prefixes: ['jm'] },
+      { name: 'Claude', prefixes: ['cc'] },
+    ];
+    const invalidConfigs: unknown[] = [
+      'not-an-array',
+      [null],
+      [{}],
+      [{ chat_id: '', bot: '周小灵', helper: 'Claude' }],
+      [{ chat_id: ' oc_1 ', bot: '周小灵', helper: 'Claude' }],
+      [{ chat_id: 'oc_1', bot: '', helper: 'Claude' }],
+      [{ chat_id: 'oc_1', bot: ' 周小灵 ', helper: 'Claude' }],
+      [{ chat_id: 'oc_1', bot: '周小灵', helper: '' }],
+      [{ chat_id: 'oc_1', bot: '周小灵', helper: ' Claude ' }],
+      [{ chat_id: 'oc_1', bot: '周小灵', helper: '未知助手' }],
+      [
+        { chat_id: 'oc_1', bot: '周小灵', helper: 'Claude' },
+        { chat_id: 'oc_1', bot: '周小灵', helper: 'jm开发' },
+      ],
+    ];
+
+    for (const bad of invalidConfigs) {
+      const w = world();
+      expect(() => relayModule.apply(w.ctx, { helpers, owner_group_direct: bad })).toThrow();
+    }
+
+    // 同一群不同机器人、同机器人不同群均合法通过
+    const validWorld = world();
+    expect(() =>
+      relayModule.apply(validWorld.ctx, {
+        helpers,
+        owner_group_direct: [
+          { chat_id: 'oc_1', bot: '周小灵', helper: 'Claude' },
+          { chat_id: 'oc_1', bot: '小助手B', helper: 'jm开发' },
+          { chat_id: 'oc_2', bot: '周小灵', helper: 'jm开发' },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  test('POST /api/relay/reply alsoCloseIds：合并回复静默闭环旧 pending 收件、撤回原飞书占位并校验 400/404', async () => {
+    const helpers = [
+      { name: 'Claude', title: '哈基米', prefixes: ['cc'] },
+      { name: 'jm开发', prefixes: ['jm'] },
+    ];
+    const made = await ready(helpers);
+
+    let seq = 800;
+    const channelReplies: channels.ChannelReplyRequest[] = [];
+    made.ctx.on('channel/reply', (request: channels.ChannelReplyRequest) => {
+      request.handled = true;
+      channelReplies.push(request);
+      seq += 1;
+      const receipt = channels.getReceipt(request, 'sent');
+      receipt.messageIds = [`om_also_${String(seq)}`];
+      channels.emitReplied(made.ctx, request, receipt);
+    });
+
+    const recalled: { bot: string; messageId: string; chatId?: string }[] = [];
+    events.onRequestEvent(made.ctx, 'feishu/recall-message', 'feishu/recall-message-result', (req) => {
+      recalled.push({ bot: req.bot, messageId: req.messageId, chatId: req.chatId });
+      return { ok: true };
+    });
+
+    const addr = { appId: 'cli_a1', chatId: 'oc_voice', openId: 'ou_u1' };
+    // 连发 3 条给 Claude（#1、#2、#3），以及 1 条给 jm开发（#4）
+    expect(await made.say('cc 第一段语音', addr)).toBe('已转给 哈基米（#1），等回复。');
+    expect(await made.say('cc 第二段语音', addr)).toBe('已转给 哈基米（#2），等回复。');
+    expect(await made.say('cc 第三段语音', addr)).toBe('已转给 哈基米（#3），等回复。');
+    expect(await made.say('jm 另一条独立任务', addr)).toBe('已转给 jm开发（#4），等回复。');
+    await settle();
+
+    // 确认 #1 #2 #3 已分别记下占位消息号 om_also_801 / 802 / 803
+    const ackRows = made.db.query<{ id: number; ack_message_id: string }, []>(
+      'SELECT id, ack_message_id FROM relay_items ORDER BY id',
+    ).all();
+    expect(ackRows.slice(0, 3)).toEqual([
+      { id: 1, ack_message_id: 'om_also_801' },
+      { id: 2, ack_message_id: 'om_also_802' },
+      { id: 3, ack_message_id: 'om_also_803' },
+    ]);
+
+    // 1. 非法 alsoCloseIds 参数校验：非数组、非正整数 -> 400
+    const badInputs: unknown[] = ['1', 123, null, {}, [0], [-2], [1.5], ['1']];
+    for (const bad of badInputs) {
+      const res = await made.app.inject({
+        method: 'POST',
+        url: '/api/relay/reply',
+        payload: { id: 3, helper: 'Claude', text: '合并回复', alsoCloseIds: bad },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+
+    // 2. 包含不存在收件号 -> 404，且主收件保持 pending、不写 relay_replies
+    const notFoundRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 3, helper: 'Claude', text: '合并回复', alsoCloseIds: [1, 9999] },
+    });
+    expect(notFoundRes.statusCode).toBe(404);
+
+    // 3. 跨助手关闭他人收件（#4 是 jm开发的）-> 400，且主收件和旧收件均保持 pending
+    const crossHelperRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 3, helper: 'Claude', text: '合并回复', alsoCloseIds: [1, 4] },
+    });
+    expect(crossHelperRes.statusCode).toBe(400);
+
+    const beforeStates = made.db.query<{ id: number; state: string }, []>(
+      'SELECT id, state FROM relay_items ORDER BY id',
+    ).all();
+    expect(beforeStates).toEqual([
+      { id: 1, state: 'pending' },
+      { id: 2, state: 'pending' },
+      { id: 3, state: 'pending' },
+      { id: 4, state: 'pending' },
+    ]);
+    expect(made.db.query<{ c: number }, []>('SELECT COUNT(*) AS c FROM relay_replies').get()?.c).toBe(0);
+
+    // 4. 正常合并回复：带重复 id 与主 id（[1, 2, 2, 3]），仅发一条真回复给用户，#1 #2 静默闭环并撤回原占位
+    const replyCountBefore = channelReplies.length;
+    const okRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 3, helper: 'Claude', text: '三条语音我都听完了，统一回复你', alsoCloseIds: [1, 2, 2, 3] },
+    });
+    expect(okRes.statusCode).toBe(200);
+    await settle();
+
+    // 仅发出一条新的渠道真回复（不重复给 #1 #2 发飞书回复）
+    expect(channelReplies.length - replyCountBefore).toBe(1);
+    expect(made.answers.at(-1)).toBe('哈基米：三条语音我都听完了，统一回复你');
+
+    // relay_replies 只插入了主收件 #3 的 1 条回信
+    const replyRows = made.db.query<{ item_id: number }, []>('SELECT item_id FROM relay_replies ORDER BY id').all();
+    expect(replyRows).toEqual([{ item_id: 3 }]);
+
+    // #1、#2 均被静默置为 replied、replied_at 非空、reminded = 1；#4 保持 pending
+    const afterRows = made.db.query<{
+      id: number;
+      state: string;
+      reminded: number;
+      replied_at: number | null;
+      ack_message_id: string;
+    }, []>('SELECT id, state, reminded, replied_at, ack_message_id FROM relay_items ORDER BY id').all();
+    expect(afterRows[0]).toMatchObject({ id: 1, state: 'replied', reminded: 1, ack_message_id: '' });
+    expect(afterRows[0]?.replied_at).not.toBeNull();
+    expect(afterRows[1]).toMatchObject({ id: 2, state: 'replied', reminded: 1, ack_message_id: '' });
+    expect(afterRows[1]?.replied_at).not.toBeNull();
+    expect(afterRows[2]).toMatchObject({ id: 3, state: 'replied', ack_message_id: '' });
+    expect(afterRows[3]).toMatchObject({ id: 4, state: 'pending', reminded: 0 });
+
+    // #1、#2、#3 三条飞书“已转给”占位消息均已异步触发撤回
+    const recalledIds = recalled.map((one) => one.messageId).sort();
+    expect(recalledIds).toEqual(['om_also_801', 'om_also_802', 'om_also_803']);
+
+    // 5. 幂等性：alsoCloseIds 里带已经 replied 或 expired 的旧同助手收件，不报错、不改写 expired 状态、不重撤回
+    expect(await made.say('cc 第四条消息', addr)).toBe('已转给 哈基米（#5），等回复。');
+    expect(await made.say('cc 第五条消息', addr)).toBe('已转给 哈基米（#6），等回复。');
+    await settle();
+    made.db.query("UPDATE relay_items SET state = 'expired', reminded = 1 WHERE id = 5").run();
+    const recalledBeforeIdem = recalled.length;
+
+    const idemRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 6, helper: 'Claude', text: '第五条已处理', alsoCloseIds: [1, 5] },
+    });
+    expect(idemRes.statusCode).toBe(200);
+    await settle();
+
+    // #5 原为 expired，未被改为 replied；仅撤回了主收件 #6 自己的占位（+1）
+    const row5 = made.db.query<{ state: string }, []>('SELECT state FROM relay_items WHERE id = 5').get();
+    expect(row5?.state).toBe('expired');
+    expect(recalled.length - recalledBeforeIdem).toBe(1);
+
+    // 6. 跨聊天/跨机器人/跨渠道安全边界校验（HTTP 不传 bot 也须拦截）
+    const otherGroupAddr = { appId: 'cli_a1', chatId: 'oc_other_group', openId: 'ou_u1' };
+    const otherP2pAddr = { appId: 'cli_a1', chatId: 'oc_other_p2p', openId: 'ou_u2' };
+    expect(await made.say('cc 别的群语音', otherGroupAddr)).toBe('已转给 哈基米（#7），等回复。');
+    expect(await made.say('cc 别的私聊语音', otherP2pAddr)).toBe('已转给 哈基米（#8），等回复。');
+    expect(await made.say('cc 本群新一轮', addr)).toBe('已转给 哈基米（#9），等回复。');
+    await settle();
+
+    // 6a. 跨群聊 -> 400
+    const crossGroupRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 9, helper: 'Claude', text: '不能关外群', alsoCloseIds: [7] },
+    });
+    expect(crossGroupRes.statusCode).toBe(400);
+
+    // 6b. 跨私聊 -> 400
+    const crossP2pRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 9, helper: 'Claude', text: '不能关别人私聊', alsoCloseIds: [8] },
+    });
+    expect(crossP2pRes.statusCode).toBe(400);
+
+    // 6c. 同聊天跨机器人（HTTP 省略 bot 时也须按主收件 bot 拦截）-> 400
+    const otherBotRow = made.db.query(
+      "INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at)"
+        + " VALUES ('别的机器人', 'Claude', 's_other_bot', 'feishu', ?, 1, 'leon', 'group', '', '同群别的机器人', 1)",
+    ).run(JSON.stringify(addr));
+    const otherBotItemId = Number(otherBotRow.lastInsertRowid);
+    const crossBotRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 9, helper: 'Claude', text: '不能关别的机器人', alsoCloseIds: [otherBotItemId] },
+    });
+    expect(crossBotRes.statusCode).toBe(400);
+
+    // 6d. 同聊天跨渠道 -> 400
+    const otherChannelRow = made.db.query(
+      "INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at)"
+        + " VALUES (?, 'Claude', 's_other_ch', 'http', ?, 1, 'leon', 'group', '', '同聊天号不同渠道', 1)",
+    ).run(BOT, JSON.stringify(addr));
+    const otherChannelItemId = Number(otherChannelRow.lastInsertRowid);
+    const crossChannelRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: 9, helper: 'Claude', text: '不能跨渠道关闭', alsoCloseIds: [otherChannelItemId] },
+    });
+    expect(crossChannelRes.statusCode).toBe(400);
+
+    // 6e. 无 chatId 的纯会话（如网页）：同 session_id 可关，不同 session_id -> 400
+    const webItem1 = Number(made.db.query(
+      "INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at)"
+        + " VALUES (?, 'Claude', 's_web_1', 'http', 'null', 1, '', 'p2p', '', '网页第一句', 1)",
+    ).run(BOT).lastInsertRowid);
+    const webItem2 = Number(made.db.query(
+      "INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at)"
+        + " VALUES (?, 'Claude', 's_web_1', 'http', 'null', 1, '', 'p2p', '', '网页第二句', 1)",
+    ).run(BOT).lastInsertRowid);
+    const webItemOther = Number(made.db.query(
+      "INSERT INTO relay_items (bot, helper, session_id, channel, address, owner, sender, chat, chat_name, text, at)"
+        + " VALUES (?, 'Claude', 's_web_2', 'http', 'null', 1, '', 'p2p', '', '另一个网页会话', 1)",
+    ).run(BOT).lastInsertRowid);
+
+    const crossWebRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: webItem2, helper: 'Claude', text: '不能关别的网页会话', alsoCloseIds: [webItemOther] },
+    });
+    expect(crossWebRes.statusCode).toBe(400);
+
+    const sameWebRes = await made.app.inject({
+      method: 'POST',
+      url: '/api/relay/reply',
+      payload: { id: webItem2, helper: 'Claude', text: '同网页会话合并关闭', alsoCloseIds: [webItem1] },
+    });
+    expect(sameWebRes.statusCode).toBe(200);
+
+    // 确认被拦截的所有跨界收件依然保持 pending
+    for (const untouchedId of [7, 8, 9, otherBotItemId, otherChannelItemId, webItemOther]) {
+      const state = made.db.query<{ state: string }, [number]>('SELECT state FROM relay_items WHERE id = ?').get(untouchedId)?.state;
+      expect(state).toBe('pending');
+    }
+    expect(made.db.query<{ state: string }, [number]>('SELECT state FROM relay_items WHERE id = ?').get(webItem1)?.state)
+      .toBe('replied');
+  }, SLOW);
+
+  test('remind_minutes / expire_minutes：支持填 0 且默认 0（彻底禁用超时催促与过期放下），支持单项开关与非法值校验', async () => {
+    const rawConfig = { bots: [{ name: BOT }] };
+    const helpers = [{ name: 'Claude', title: '哈基米', prefixes: ['cc '] }];
+
+    // 1. 缺省与显式 0 均解析为 0；正数原样保留
+    const parsedDefault = filesModule.parseRelayWrittenConfig(rawConfig, { helpers });
+    expect(parsedDefault.remindMinutes).toBe(0);
+    expect(parsedDefault.expireMinutes).toBe(0);
+
+    const parsedZero = filesModule.parseRelayWrittenConfig(rawConfig, { helpers, remind_minutes: 0, expire_minutes: 0 });
+    expect(parsedZero.remindMinutes).toBe(0);
+    expect(parsedZero.expireMinutes).toBe(0);
+
+    const parsedPositive = filesModule.parseRelayWrittenConfig(rawConfig, { helpers, remind_minutes: 15, expire_minutes: 120 });
+    expect(parsedPositive.remindMinutes).toBe(15);
+    expect(parsedPositive.expireMinutes).toBe(120);
+
+    // 2. 负数、NaN、Infinity、字符串等非法值启动即抛中文错
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, '0', null]) {
+      expect(() => filesModule.parseRelayWrittenConfig(rawConfig, { helpers, remind_minutes: bad })).toThrow('非负数');
+      expect(() => filesModule.parseRelayWrittenConfig(rawConfig, { helpers, expire_minutes: bad })).toThrow('非负数');
+    }
+
+    // 3. 构造独立 Relay 实例直测 checkLate 行为（0/0 禁用、15/0 只提醒不过期、0/120 只过期不提醒）
+    const runLateCheck = async (remindMinutes: number, expireMinutes: number, ageMinutes: number) => {
+      const w = world();
+      w.db.exec('CREATE TABLE web_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT, channel TEXT, address TEXT)');
+      const sent: string[] = [];
+      w.ctx.on('channel/reply', (request: channels.ChannelReplyRequest) => {
+        request.handled = true;
+        const body = request.parts.map((part) => part.text ?? '').join('');
+        sent.push(body);
+        channels.emitReplied(w.ctx, request, channels.getReceipt(request, 'sent'));
+      });
+      const cfg = filesModule.parseRelayWrittenConfig(rawConfig, {
+        helpers,
+        remind_minutes: remindMinutes,
+        expire_minutes: expireMinutes,
+      });
+      const relay = new relayModule.Relay(w.ctx, cfg);
+      await w.app.ready();
+      closers.push(() => { void w.app.close(); });
+      const addr = { appId: 'cli_a1', chatId: 'oc_late', openId: 'ou_u1' };
+      expect(await w.say('cc 超时验证消息', addr)).toBe('已转给 哈基米（#1），等回复。');
+      await settle();
+
+      const sentBefore = sent.length;
+      const pastAt = Date.now() - ageMinutes * 60_000;
+      w.db.query('UPDATE relay_items SET at = ? WHERE id = 1').run(pastAt);
+
+      (relay as unknown as { checkLate(): void }).checkLate();
+      await settle();
+
+      const row = w.db.query<{ state: string; reminded: number }, []>(
+        'SELECT state, reminded FROM relay_items WHERE id = 1',
+      ).get();
+      return { added: sent.slice(sentBefore), row, relay, w, sent };
+    };
+
+    // 3a. 两者均为 0：200 分钟未回也不发任何催促/过期消息，状态与 reminded 原样保持
+    const disabled = await runLateCheck(0, 0, 200);
+    expect(disabled.added).toEqual([]);
+    expect(disabled.row).toEqual({ state: 'pending', reminded: 0 });
+
+    // 3b. remind_minutes = 15, expire_minutes = 0：200 分钟只发一次催促，绝不置 expired，再次检查不再发
+    const remindOnly = await runLateCheck(15, 0, 200);
+    expect(remindOnly.added.length).toBe(1);
+    expect(remindOnly.added[0]).toContain('还没回复');
+    expect(remindOnly.row).toEqual({ state: 'pending', reminded: 1 });
+    const countAfterFirst = remindOnly.sent.length;
+    (remindOnly.relay as unknown as { checkLate(): void }).checkLate();
+    await settle();
+    expect(remindOnly.sent.length).toBe(countAfterFirst);
+
+    // 3c. remind_minutes = 0, expire_minutes = 120：30 分钟静默不提醒，130 分钟直接过期放下
+    const expireOnly30 = await runLateCheck(0, 120, 30);
+    expect(expireOnly30.added).toEqual([]);
+    expect(expireOnly30.row).toEqual({ state: 'pending', reminded: 0 });
+
+    const expireOnly130 = await runLateCheck(0, 120, 130);
+    expect(expireOnly130.added.length).toBe(1);
+    expect(expireOnly130.added[0]).toContain('先放下');
+    expect(expireOnly130.row).toEqual({ state: 'expired', reminded: 1 });
+  }, SLOW);
 });

@@ -16,7 +16,7 @@ import * as types from './Types.ts';
 export function registerAskOwner(
   ctx: cordis.Context,
   store: storeModule.Store,
-  notice: notifications.OwnerNotice | undefined,
+  noticeConfig: notifications.OwnerNoticeConfig | undefined,
 ): void {
   const parameters = piAi.Type.Object({
     title: piAi.Type.String(),
@@ -58,7 +58,7 @@ export function registerAskOwner(
       //M 幂等提问与正常接口共用工作区和选项校验。
       const saved = store.ask(input);
       //M 写入待定项后请求通知，工具立即交回节点。
-      notifications.notifyNew(ctx, notice, saved.graph, saved.tasks);
+      notifications.notifyNew(ctx, noticeConfig, saved.graph, saved.tasks);
 
       //M 决策编号既是重试键，也是页面的直达链接。
       const query = new URLSearchParams({ focus: id });

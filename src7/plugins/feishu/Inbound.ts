@@ -1,6 +1,7 @@
 /**
  * 飞书收：长连接推来的三种事件——收到消息、撤回消息、点卡片按钮（index.ts 的 Feishu.start 交给 SDK 分发器）。
- * 收到消息：按消息号去重（存表，重启也认得）→ 认出 @ 了哪些机器人、引用的是不是机器人的话、文字、谁在哪个群说的、投给哪些机器人
+ * 收到消息：按 (应用号, 消息号) 去重（存表，重启也认得，多应用同群互不吞消息）→ 认出发信方类型、@ 了哪些机器人、
+ * 引用的是不是机器人的话、文字、谁在哪个群说的、投给哪些机器人（sender_type === 'app' 仅群记日志后忽略，防 AI 死循环）
  * → 记最近私聊的人、拼回话地址 → 挂表情（叫了机器人的才挂）、补引用转发、附件存进渠道目录
  * → 拼标准消息落盘、经 emitInbound 发 channel/direct（私聊）、channel/mention（群里叫了机器人）或 channel/listen（别的，没登记的群也发）
  * → 记去重、汇总认领结果写来往流水、没人接就撤表情。
@@ -76,6 +77,8 @@ interface InboundFacts {
   body: string;
   /** 说话人 open_id；拿不到是 ''。 */
   openId: string;
+  /** 飞书发信方类型（user 为人类用户，app 为机器人应用）。 */
+  senderType: string;
   /** people 里登记的这个人；没登记是 undefined。 */
   person: FeishuPerson | undefined;
   /** groups 里登记的这个群；私聊、没登记是 undefined。 */
@@ -135,7 +138,7 @@ export class FeishuInbound {
   /** 渠道名。 */
   readonly name = 'feishu';
 
-  /** 正在处理中的入站消息号（防并发重推穿透），保存+广播后写入 feishu_seen。 */
+  /** 正在处理中的入站消息键 `${appId}:${messageId}`（防同应用并发重推穿透），保存+广播后写入 feishu_seen。 */
   private readonly inFlight = new Set<string>();
 
   /** 已收到撤回通知的原消息键 `${appId}:${nativeId}` 集合，拦截尚在下载附件的入站或刚撤回时的在途回话（Reply.ts 也读）。 */
@@ -152,13 +155,14 @@ export class FeishuInbound {
   ) {}
 
   /**
-   * 收到一条消息：去重、记最近私聊的人、挂表情、换成文字、下载附件、交给机器人。
+   * 收到一条消息：按 (appId, messageId) 去重、防机器人消息循环、记最近私聊的人、挂表情、换成文字、下载附件、交给机器人。
    * @param appId 哪个应用收的。
    * @param data 飞书的消息事件。
    * 副作用：写表；下载文件进工作区；推给机器人；出错给这个聊天发一句。
    */
   async onMessage(appId: string, data: ReceiveData): Promise<void> {
     let messageId = '（未知）';
+    let flightKey = '';
     let ownsSlot = false;
     try {
       //M 按事件所属应用 ID 查找应用实例，找不到直接忽略。
@@ -166,20 +170,21 @@ export class FeishuInbound {
       if (app === undefined) return;
 
       messageId = data.message.message_id;
+      flightKey = `${appId}:${messageId}`;
       const db = this.ctx.resources.db;
-      const sql = "SELECT 1 FROM feishu_seen WHERE message_id = ? AND kind = 'in'";
+      const sql = "SELECT 1 FROM feishu_seen WHERE message_id = ? AND (app_id = ? OR app_id = '') AND kind = 'in'";
 
-      //G 重推或正在处理中：只有落盘并完成分派以后才写 feishu_seen。
-      const seenRow = db.query(sql).get(messageId);
-      if (seenRow !== null || this.inFlight.has(messageId)) {
+      //G 重推或正在处理中：按 (message_id, app_id) 判重（兼容迁移旧行 app_id=''），多应用收同条消息互不干扰。
+      const seenRow = db.query(sql).get(messageId, appId);
+      if (seenRow !== null || this.inFlight.has(flightKey)) {
         const vars = { appId: appId, messageId: JSON.stringify([this.name, appId, messageId]), nativeId: messageId };
         //M 保留重复投递的去重流水。
         this.ctx.emit('trace', 'Feishu.onMessage', 'trace.feishu.duplicateMessage', 'SELECT feishu_seen', vars);
         return;
       }
 
-      //M 只让这一份入站占住消息号，再交给解析、存盘和分发管线。
-      this.inFlight.add(messageId);
+      //M 只让当前应用下的这一份入站占住并发锁，再交给解析、存盘和分发管线。
+      this.inFlight.add(flightKey);
       ownsSlot = true;
       await this.handleInboundMessage(appId, app, data);
     } catch (error) {
@@ -188,8 +193,8 @@ export class FeishuInbound {
       this.logFailedMessage(messageId, reason);
     } finally {
       if (ownsSlot) {
-        //M 只有占到消息号的这份入站可以释放它，让失败的消息后续能重投。
-        this.inFlight.delete(messageId);
+        //M 只有占到当前并发锁的这份入站可以释放它，让失败的消息后续能重投。
+        this.inFlight.delete(flightKey);
       }
     }
   }
@@ -233,6 +238,22 @@ export class FeishuInbound {
     this.ctx.emit('trace', 'Feishu.onMessage', summary, 'protocol.emitInbound(ctx, msg, called, control)', vars);
 
     try {
+      //G 发言方是飞书机器人应用（sender_type === 'app'）：群聊仅写本地原始聊天日志供后续引用背景，私聊直接忽略；
+      //G   绝不挂“敲键盘”表情、绝不调 emitInbound，彻底阻断多 AI 群互 @ 或引用触发死循环。
+      if (facts.senderType === 'app') {
+        if (facts.group) {
+          const noRelated: media.Related = { quote: '', forwarded: '', resources: [] };
+          const emptySaved = { attachments: [], failed: [] };
+          //M 拼精简标准消息追加进群聊天日志供真人稍后引用查询，不拉上下文也不下载附件。
+          const channelMessage = this.getChannelMessage(facts, app.config.bot, address, noRelated, emptySaved);
+          this.saveChatEntry(facts, channelMessage);
+        }
+        //M 按 (message_id, app_id) 记去重并落来往流水后直接退出，绝不进入 FrontDesk、relay 或 GroupBatch。
+        this.markSeen(appId, message.message_id);
+        this.feishu.contacts.log(facts.contact, '忽略机器人消息');
+        return;
+      }
+
       //M 3. 挂“敲键盘”表情，告诉用户收到了；只有叫了机器人的才挂（只听的不回）。
       if (facts.called) {
         await this.addTyping(app, message.message_id, address);
@@ -285,7 +306,12 @@ export class FeishuInbound {
    * @returns 标准消息（targetBots 空；createdAt 是飞书给的时间）。
    * 副作用：附件下载到渠道附件目录；聊天日志追加一行（同消息号已有就跳过）。
    */
-  async onHistory(appId: string, app: AppState, data: ReceiveData, createdAt: number): Promise<protocol.ChannelMessage> {
+  async onHistory(
+    appId: string,
+    app: AppState,
+    data: ReceiveData,
+    createdAt: number,
+  ): Promise<protocol.ChannelMessage> {
     //M 1. 认出 @、文字、谁在哪个群说的；再拼地址（标准消息的 origin 要用）。
     const facts = await this.getFacts(appId, app, data);
     const address = this.getAddress(facts);
@@ -331,7 +357,9 @@ export class FeishuInbound {
     }
 
     //M 认人、认群：config 里登记的名字优先；群名、人名没登记的，群里再去飞书查。
-    const openId = data.sender.sender_id?.open_id ?? '';
+    const openId = data.sender?.sender_id?.open_id ?? '';
+    const senderType = data.sender?.sender_type ?? '';
+    const isAppSender = senderType === 'app';
     const person = this.feishu.config.people.get(openId);
     let registered: FeishuGroup | undefined;
     if (group) {
@@ -349,6 +377,10 @@ export class FeishuInbound {
       sender.name = senderName;
     }
 
+    let atMe = mentioned.atMe;
+    if (isAppSender) {
+      atMe = false;
+    }
     const contact: Omit<Contact, 'outcome'> = {
       //M 取格式化日期时间戳作为联系人流水记录时间，后文裁剪正文前 80 字。
       at: textModule.formatLocalTime(Date.now(), 'date'),
@@ -358,19 +390,19 @@ export class FeishuInbound {
       chatName,
       openId,
       sender: senderName,
-      atMe: mentioned.atMe,
+      atMe,
       //M 截断消息文本保留摘要片段写入流水表，避免超长对话刷爆日志。
       text: textModule.clipText(body.trim(), 80),
     };
 
-    //M 群里引用的那条是不是本应用的机器人发的：是的话算叫了那个机器人（私聊本来就算叫了，不用查）。
+    //M 群里引用的那条是不是本应用的机器人发的：是的话算叫了那个机器人（私聊与机器人应用发言不查引用）。
     let quotedBot: string | undefined;
-    if (group) {
+    if (group && !isAppSender) {
       quotedBot = this.getQuotedBot(appId, app, message);
     }
 
-    //M 定投给谁：私聊投给全部允许的机器人；群里 @ 到的、被引用的要回；都没叫的，登记了只听的群本应用的机器人只听。
-    const targets = this.getTargets(app, group, registered, mentioned, quotedBot);
+    //M 定投给谁：机器人应用发言全拦截；人类私聊全投；群里 @ 或引用要回；只听群转 listen。
+    const targets = this.getTargets(app, group, registered, mentioned, quotedBot, senderType);
 
     return {
       appId,
@@ -380,6 +412,7 @@ export class FeishuInbound {
       described,
       body,
       openId,
+      senderType,
       person,
       registered,
       chatName,
@@ -469,14 +502,15 @@ export class FeishuInbound {
   }
 
   /**
-   * 定投给谁、叫了机器人没有：私聊投给本应用允许的全部机器人（算叫了）；
-   * 群里 @ 到的、@ 了本应用时的默认机器人、被引用的那条是它发的，要回（算叫了，只投给它们）；
-   * 群里都没叫的只听：登记了 listen: all / judge 的群投给本应用的全部机器人（记背景，judge 的要判断），没登记的群谁都不投。
+   * 定投给谁、叫了机器人没有：机器人应用（app）发言全部返回空名单且 called: false；
+   * 人类私聊投给本应用允许的全部机器人（算叫了）；群里 @ 到的、@ 了本应用时的默认机器人、被引用的那条是它发的，要回（算叫了）；
+   * 群里都没叫的只听：登记了 listen: all / judge 的群投给本应用的全部机器人，没登记的群谁都不投。
    * @param app 应用运行时状态。
    * @param group 是不是群聊。
    * @param registered groups 里登记的这个群。
    * @param mentioned 标准 @ 清单和算不算 @ 了本应用（getMentions）。
    * @param quotedBot 引用的那条是哪个机器人发的（getQuotedBot）；不是机器人的话是 undefined。
+   * @param senderType 发信方类型（user / app）。
    * @returns 投给哪些机器人，叫了没有。
    */
   private getTargets(
@@ -485,7 +519,11 @@ export class FeishuInbound {
     registered: FeishuGroup | undefined,
     mentioned: { standardMentions: protocol.ChannelMention[]; atMe: boolean },
     quotedBot: string | undefined,
+    senderType: string,
   ): { targetBots: string[]; called: boolean } {
+    //G 发言方为飞书机器人应用时绝不投递给任何机器人也不置 called，阻断多 AI 群互 @ 死循环。
+    if (senderType === 'app') return { targetBots: [], called: false };
+
     //G 群里的提及和监听设置只在当前飞书应用允许的机器人中匹配。
     const allowedBots = this.getAllowedBots(app.config);
 
@@ -513,12 +551,13 @@ export class FeishuInbound {
   }
 
   /**
-   * 第 2 步前半：私聊的记成这个应用最近私聊的人（feishu_p2p）；群聊、拿不到 open_id 的不记。
+   * 第 2 步前半：私聊的记成这个应用最近私聊的人（feishu_p2p）；群聊、机器人应用发言或拿不到 open_id 的不记。
    * @param facts 第 1 步认出的。
    */
   private rememberPrivate(facts: InboundFacts): void {
     const message = facts.message;
-    if (message.chat_type !== 'p2p' || facts.openId === '') return;
+    //G 机器人应用发来的私聊不覆盖 feishu_p2p 最近真人联系人映射，避免循环投递。
+    if (facts.senderType === 'app' || message.chat_type !== 'p2p' || facts.openId === '') return;
 
     const sql = 'INSERT INTO feishu_p2p (app_id, chat_id, open_id, message_id, at) VALUES (?, ?, ?, ?, ?)'
       + ' ON CONFLICT(app_id) DO UPDATE SET chat_id = excluded.chat_id, open_id = excluded.open_id,'
@@ -779,38 +818,40 @@ export class FeishuInbound {
     this.markSeen(appId, messageId);
 
     //M 根据各插件填回的认领声明汇总本条消息的最终流向并写入来往流水。
-    const outcome = this.resolveOutcome(control, facts.called, messageId, address.judged);
+    const outcome = this.resolveOutcome(appId, control, facts.called, messageId, address.judged);
     this.feishu.contacts.log(facts.contact, outcome);
 
     //M 若无机器人认领会话（或被审批插件直接截断），立即撤掉之前挂上的“敲键盘”表情。
     const hasSessionClaim = control.claims.some((c) => c.status === 'claimed' || c.status === 'relay');
     if (address.typingReaction !== undefined
       && (control.approvalHandled === true
-        || (!hasSessionClaim && this.takenBy(messageId) === undefined))) {
+        || (!hasSessionClaim && this.takenBy(appId, messageId) === undefined))) {
       //M 调用撤回接口移除“正在输入”表情反馈。
       await this.feishu.untype(address);
     }
   }
 
   /**
-   * 记下这条消息收过了（feishu_seen，kind 是 in）：飞书重推时 onMessage 认得。丢了、已撤回、交给机器人以后各调一次。
+   * 记下这条消息收过了（feishu_seen，kind 是 in）：飞书重推时 onMessage 按 (message_id, app_id) 认得。
    * @param appId 应用号。
    * @param messageId 飞书消息号。
    */
   private markSeen(appId: string, messageId: string): void {
     const sql = 'INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)';
-    //M 分派完成后记住消息号与时间，后续重推可以跳过。
+    //M 分派完成后按应用与消息号联合主键写去重表，同群多应用并发收消息互不吞消息。
     this.ctx.resources.db.query(sql).run(messageId, appId, 'in', Date.now());
   }
 
   /**
    * 汇总一条飞书消息发完事件后的流水结果文案。
+   * @param appId 飞书应用号。
    * @param control 协调结果。
    * @param called 叫了机器人没有；没叫的是只听的话。
    * @param nativeId 飞书原生消息号（兼容未迁移路径）。
    * @param legacyJudged 旧字段 judged。
    */
   private resolveOutcome(
+    appId: string,
     control: protocol.ChannelMessageControl,
     called: boolean,
     nativeId: string,
@@ -840,8 +881,8 @@ export class FeishuInbound {
     const handledClaim = control.claims.find((c) => c.status === 'handled');
     if (handledClaim !== undefined) return '别的插件处理掉了';
 
-    //M 全无声明时回退按本地会话表认领记录归类最终流水状态。
-    const kind = this.takenBy(nativeId);
+    //M 全无声明时回退按当前应用在会话表的认领记录归类最终流水状态。
+    const kind = this.takenBy(appId, nativeId);
     return getOutcome(kind, called);
   }
 
@@ -855,13 +896,19 @@ export class FeishuInbound {
   }
 
   /**
-   * 这条消息是哪种会话接的：回话地址是它的那场飞书会话。
+   * 这条消息是哪种会话接的：按应用号与消息号查回话地址匹配的飞书会话。
+   * @param appId 飞书应用号。
    * @param messageId 飞书消息号。
    * @returns 会话种类（front、relay……）；没有会话接（只记了、被别的插件处理掉了）是 undefined。
    */
-  private takenBy(messageId: string): string | undefined {
-    //M Sessions.find 每一项用 json_extract(meta, '$.项') 比，所以 address.messageId 这种嵌套的也能找。
-    const where = { channel: 'feishu', 'address.messageId': messageId } as unknown as Partial<SessionMeta>;
+  private takenBy(appId: string, messageId: string): string | undefined {
+    //M Sessions.find 每一项用 json_extract(meta, '$.项') 比，按 appId 与 messageId 双重匹配防多应用串查。
+    const where = {
+      channel: 'feishu',
+      'address.appId': appId,
+      'address.messageId': messageId,
+    } as unknown as Partial<SessionMeta>;
+    //M 查询同时匹配 appId 与 messageId 的飞书会话种类，防多应用收同条消息串查。
     return this.ctx.sessions.find(where)[0]?.kind;
   }
 
@@ -947,8 +994,16 @@ export class FeishuInbound {
 
     //M 先登记撤回消息号，入站据此去重，发送据此取消引用。
     this.rememberRecalledNative(appId, nativeId);
-    const vars = { appId: appId, messageId: standardMessageId, chat: chatId, originalMessageId: nativeId, recalledBy: recalledId || 'message_owner', owner: isOwner };
-    this.ctx.emit('trace', 'Feishu.onRecall', 'trace.feishu.recallMessage', "ctx.serial('channel/recall', event)", vars);
+    const vars = {
+      appId: appId,
+      messageId: standardMessageId,
+      chat: chatId,
+      originalMessageId: nativeId,
+      recalledBy: recalledId || 'message_owner',
+      owner: isOwner,
+    };
+    const traceAction = "ctx.serial('channel/recall', event)";
+    this.ctx.emit('trace', 'Feishu.onRecall', 'trace.feishu.recallMessage', traceAction, vars);
     const event: protocol.ChannelRecallEvent = {
       channel: this.name,
       accountId: appId,

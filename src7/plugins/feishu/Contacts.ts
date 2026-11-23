@@ -30,7 +30,7 @@ export interface Contact {
   atMe: boolean;
   /** 话的前 80 字，超了带“…”（附件是 [图片] 这类标记）。 */
   text: string;
-  /** 最后怎么处理的：交给会话、转外部助手、只记、丢了、别的插件处理掉了、没处理成：原因。 */
+  /** 最后怎么处理的：交给会话、转外部助手、只记、忽略机器人消息、已撤回、别的插件处理掉了、没处理成：原因。 */
   outcome: string;
 }
 
@@ -103,9 +103,14 @@ export class FeishuContacts {
     if (!this.feishu.apps.has(appId)) return;
     const contact: Omit<Contact, 'outcome'> = {
       //M 汇总日期戳、聊天元信息与裁剪后正文构成流水条，写入来往记录。
-      at: textModule.formatLocalTime(Date.now(), 'date'), app: appId, chatType: utils.getStringField(address, 'chatType'),
-      chatId: utils.getStringField(address, 'chatId'), chatName: utils.getStringField(address, 'chatName'),
-      openId: utils.getStringField(address, 'openId'), sender: utils.getStringField(address, 'senderName'), atMe: false,
+      at: textModule.formatLocalTime(Date.now(), 'date'),
+      app: appId,
+      chatType: utils.getStringField(address, 'chatType'),
+      chatId: utils.getStringField(address, 'chatId'),
+      chatName: utils.getStringField(address, 'chatName'),
+      openId: utils.getStringField(address, 'openId'),
+      sender: utils.getStringField(address, 'senderName'),
+      atMe: false,
       text: textModule.clipText(text.trim(), 80),
     };
     //M 将前台补充判定的结果标签追加写入联系人流水文件。

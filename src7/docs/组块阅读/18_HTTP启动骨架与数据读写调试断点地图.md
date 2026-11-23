@@ -544,41 +544,41 @@
 
 #### 写盘点 B：飞书入站 6 步、拼 `ChannelMessage` 与后置去重（`feishu/Inbound.ts`）
 
-飞书 WebSocket 推来 `im.message.receive_v1` 后，进 `FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:214`）：先认人认群认 `@`、更新 `feishu_p2p`、挂“敲键盘”表情、把图片/文件下载到渠道目录、拼成全渠道统一的 `ChannelMessage`（定义在 `src7/plugins/channels/Message.ts:107`），最后进 `deliver` 发事件，**等下游认领完毕才调 `markSeen` 写 `feishu_seen`**：
+飞书 WebSocket 推来 `im.message.receive_v1` 后，进 `FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:219`）：先认人认群认 `@`、更新 `feishu_p2p`、挂“敲键盘”表情、把图片/文件下载到渠道目录、拼成全渠道统一的 `ChannelMessage`（定义在 `src7/plugins/channels/Message.ts:107`），最后进 `deliver` 发事件，**等下游认领完毕才调 `markSeen` 写 `feishu_seen`**：
 
 ```ts
 // src7/plugins/feishu/Inbound.ts
-214	  private async handleInboundMessage(appId: string, app: AppState, data: ReceiveData): Promise<void> {
-215	    const message = data.message;
-216
-217	    //M 1. 认出 @ 了哪些机器人、引用的是不是机器人的话、文字、谁在哪个群说的、投给哪些机器人。
-218	    const facts = await this.getFacts(appId, app, data);
-219
-220	    //M 2. 私聊的记成这个应用最近私聊的人，再拼回话地址。
-221	    this.rememberPrivate(facts);
-222	    const address = this.getAddress(facts);
-223
+219	  private async handleInboundMessage(appId: string, app: AppState, data: ReceiveData): Promise<void> {
+220	    const message = data.message;
+221
+222	    //M 1. 认出 @ 了哪些机器人、引用的是不是机器人的话、文字、谁在哪个群说的、投给哪些机器人。
+223	    const facts = await this.getFacts(appId, app, data);
+224
+225	    //M 2. 私聊的记成这个应用最近私聊的人，再拼回话地址。
+226	    this.rememberPrivate(facts);
+227	    const address = this.getAddress(facts);
+228
 …
-251	      //M 5. 拼成标准消息，先持久化渠道原始记录。
-252	      const channelMessage = this.getChannelMessage(facts, app.config.bot, address, more, saved);
-253	      this.saveChatEntry(facts, channelMessage);
-254
-255	      //M 6. 经 emitInbound 发出三个事件之一；短分派完成后才记 feishu_seen 去重，再汇总认领结果写流水。
-256	      await this.deliver(facts, address, channelMessage);
+272	      //M 5. 拼成标准消息，先持久化渠道原始记录。
+273	      const channelMessage = this.getChannelMessage(facts, app.config.bot, address, more, saved);
+274	      this.saveChatEntry(facts, channelMessage);
+275
+276	      //M 6. 经 emitInbound 发出三个事件之一；短分派完成后才记 feishu_seen 去重，再汇总认领结果写流水。
+277	      await this.deliver(facts, address, channelMessage);
 …
-774	    //M 照叫没叫机器人分好事件发出：私聊 direct、群里叫了 mention、别的 listen。
-775	    const control: protocol.ChannelMessageControl = { claims: [] };
-776	    await protocol.emitInbound(this.ctx, channelMessage, facts.called, control);
-777
-778	    //M 确认原消息存盘且同步分发流程完成后才写 feishu_seen，防止崩溃丢消息。
-779	    this.markSeen(appId, messageId);
-780
+813	    //M 照叫没叫机器人分好事件发出：私聊 direct、群里叫了 mention、别的 listen。
+814	    const control: protocol.ChannelMessageControl = { claims: [] };
+815	    await protocol.emitInbound(this.ctx, channelMessage, facts.called, control);
+816
+817	    //M 确认原消息存盘且同步分发流程完成后才写 feishu_seen，防止崩溃丢消息。
+818	    this.markSeen(appId, messageId);
+819
 …
-800	  private markSeen(appId: string, messageId: string): void {
-801	    const sql = 'INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)';
-802	    //M 分派完成后记住消息号与时间，后续重推可以跳过。
-803	    this.ctx.resources.db.query(sql).run(messageId, appId, 'in', Date.now());
-804	  }
+839	  private markSeen(appId: string, messageId: string): void {
+840	    const sql = 'INSERT OR IGNORE INTO feishu_seen (message_id, app_id, kind, at) VALUES (?, ?, ?, ?)';
+841	    //M 分派完成后按应用与消息号联合主键写去重表，同群多应用并发收消息互不吞消息。
+842	    this.ctx.resources.db.query(sql).run(messageId, appId, 'in', Date.now());
+843	  }
 ```
 
 #### 写盘点 C：机器人认领、附件进工作区与前台单队列事务（`bots`）
@@ -914,7 +914,7 @@
 |---|---|---|
 | 接口报 `401` / 外网登录跳回登录页 | `Http.check`（`src7/plugins/http/index.ts:419`）、`WebAuth.checkExternal`（`src7/plugins/http/WebAuth.ts:341`） | `route`、`guarded`、`external`、`local`、`this.verified.has(request)` |
 | 网页点发送报 `400` 或没进会话 | `WebApi.accept`（`src7/plugins/web-api/index.ts:387`）、`Timeline.insert`（`src7/plugins/web-api/Timeline.ts:288`） | `verifiedOwner`、`body`、返回的收件号 `id`、`control.claims` |
-| 飞书发了话没动静 / 敲键盘表情不退 | `FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:214`）、`FeishuInbound.deliver`（`src7/plugins/feishu/Inbound.ts:759`） | `facts.called`、`facts.targetBots`、`channelMessage`、`outcome` |
+| 飞书发了话没动静 / 敲键盘表情不退 | `FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:219`）、`FeishuInbound.deliver`（`src7/plugins/feishu/Inbound.ts:798`） | `facts.called`、`facts.targetBots`、`channelMessage`、`outcome` |
 | 发“同意 3”没批掉反而当普通话聊了 | `Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1173`） | `said`、`speaker`、`owner`、`verified`、`waiting`、`control.approvalHandled` |
 | 话被外部助手截走 / 附件没拷进工作区 | `Bots.onChannelMessage`（`src7/plugins/bots/index.ts:590`） | `claimKey`、`botText`、`receiveEvent.session`、`receiveEvent.handled` |
 | 消息被判重复丢掉 / 进错了前台会话 | `DispatchClaim.claimChannelMessage`（`src7/plugins/bots/DispatchClaim.ts:94`）、`DispatchClaim.persistClaim`（`src7/plugins/bots/DispatchClaim.ts:223`） | `scope`、`front.id`、`isClaimed(front, claimKey)`、`item.replyControl` |
@@ -933,7 +933,7 @@
 
 | 跳 | 经手位置与事件 | 数据变形（入 → 出 / 落库） |
 |---|---|---|
-| ① | 原始入口：`FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:214`） / 网页 `WebApi.accept`（`src7/plugins/web-api/index.ts:387`） | **入**：飞书 SDK `ReceiveData`（`om_xxx`、`oc_xxx`、`ou_xxx`）或网页 JSON `{ text, bot, uploads }`。<br>**落库**：网页先 `Timeline.insert` 写 `web_messages` 拿收件号 `id`；飞书更新 `feishu_p2p`。 |
+| ① | 原始入口：`FeishuInbound.handleInboundMessage`（`src7/plugins/feishu/Inbound.ts:219`） / 网页 `WebApi.accept`（`src7/plugins/web-api/index.ts:387`） | **入**：飞书 SDK `ReceiveData`（`om_xxx`、`oc_xxx`、`ou_xxx`）或网页 JSON `{ text, bot, uploads }`。<br>**落库**：网页先 `Timeline.insert` 写 `web_messages` 拿收件号 `id`；飞书更新 `feishu_p2p`。 |
 | ② | 标准化：`ChannelMessage`（`src7/plugins/channels/Message.ts:107`） | **出**：统一成 `v: 1` 标准消息：`messageId = '["feishu","cli_a1","om_xxx"]'`、`role`（`owner`/`builder`/`guest`）、`targetBots`、下载好的 `attachments`、`origin.address`（含 `customer`、群 `judge` 配置）；网页额外带 `routing.autoFinal = true`。 |
 | ③ | 分拣广播：`emitInbound`（`src7/plugins/channels/Message.ts:280`） | **入 → 出**：数据字段不变，`getInboundEvent`（`src7/plugins/channels/Message.ts:263`）按 `chatType` 与 `called` 三选一 `ctx.serial` 发出 `channel/direct`、`channel/mention` 或 `channel/listen`，附可变协调单 `control: { claims: [] }`。 |
 | ④ | 口令拦截：`Approval.onChannelMessage`（`src7/plugins/approval/index.ts:1173`） | **改写**：若认出本人发“同意 3 / 拒绝 2”，办结审批并写 `control.approvalHandled = true`（后续机器人全部跳过）；普通消息原样放行，`Grants` 顺手往地址写授权目录。 |

@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.7.106",
+    "date": "2026-11-23",
+    "changes": [
+      "双中控协同合发——feishu (1.3.10) 复合主键 (message_id, app_id) 多应用去重与 sender_type=app 防 AI 群循环；relay (1.5.9) 新增 exclusive_bots（独占直通）、owner_group_direct（受信私人群免前缀直通）、alsoCloseIds（同聊天同机器人旧 pending 静默闭环并撤回占位）与 remind_minutes/expire_minutes 归零禁用；work-decision (1.4.1) 支持多机器人 owner_targets 提醒路由"
+    ]
+  },
+  {
     "version": "0.7.105",
     "date": "2026-11-23",
     "changes": [
