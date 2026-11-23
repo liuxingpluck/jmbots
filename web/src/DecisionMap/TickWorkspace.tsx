@@ -97,6 +97,63 @@ const RAIL_ITEMS: ReadonlyArray<{ key: utils.TickNavMode; title: string }> = [
   { key: 'habit', title: '习惯' },
 ];
 
+/** 从地址栏读取 ?task=<id> 深链接任务号。 */
+function readTaskParamFromUrl(): string | undefined {
+  try {
+    const raw = new URLSearchParams(window.location.search).get('task');
+    if (raw === null) return undefined;
+
+    const trimmed = raw.trim();
+    if (trimmed === '') return undefined;
+
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 平滑同步 ?task= 查询参数（保留 tab=tick、token 等既有参数）。 */
+function syncTaskParamToUrl(taskId: string | undefined): void {
+  try {
+    const url = new URL(window.location.href);
+    if (taskId === undefined || taskId === '') {
+      url.searchParams.delete('task');
+    }
+    if (taskId !== undefined && taskId !== '') {
+      url.searchParams.set('task', taskId);
+    }
+    const nextHref = `${url.pathname}${url.search}${url.hash}`;
+    const curHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextHref === curHref) return;
+
+    window.history.replaceState(window.history.state, '', nextHref);
+  } catch {
+    return;
+  }
+}
+
+/** 构造批示落盘与单向唤醒后的轻提示文案。 */
+function formatAppendEventToast(
+  notifyHelper: string | undefined,
+  wakeup: api.ControlTaskNotifications['wakeup'] | undefined,
+): string {
+  if (notifyHelper === undefined || notifyHelper === '') {
+    return '已记录批示';
+  }
+  let helperLabel = notifyHelper;
+  if (notifyHelper === 'Claude') {
+    helperLabel = '哈基米';
+  }
+  if (notifyHelper === 'HanXin') {
+    helperLabel = '韩信';
+  }
+  if (wakeup !== undefined && !wakeup.ok) {
+    const reason = wakeup.reason ?? '唤醒通道未配置';
+    return `已记录批示（${helperLabel}唤醒未投递：${reason}）`;
+  }
+  return `已记录并唤醒 ${helperLabel}`;
+}
+
 /** 滴答清单多视图工作台主组件。 */
 export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
   const { board, loading, onRefresh, active } = props;
@@ -112,6 +169,8 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
     undefined,
   );
   const toastTimerRef = react.useRef<number | undefined>(undefined);
+  const pendingDeepLinkRef = react.useRef<string | undefined>(readTaskParamFromUrl());
+  const deepLinkCheckedRef = react.useRef(false);
 
   const todayStr = utils.getTodayStr();
   const tasks = board?.tasks ?? [];
@@ -205,19 +264,36 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
     [onRefresh, showToast],
   );
 
-  /** 统一追加 AI 协同时间线事件。 */
+  /** 统一追加 AI 协同时间线事件（支持透传 notifyHelper 与 broadcast）。 */
   const handleAppendEvent = react.useCallback(
     async (
       taskId: string,
       text: string,
       kind: api.ControlTaskEventKind,
-    ): Promise<void> => {
+      options?: { notifyHelper?: string; broadcast?: boolean },
+    ): Promise<boolean> => {
       try {
-        await api.appendControlTaskEvent(taskId, { kind, by: 'boss', text });
-        showToast('ok', '已写入 AI 协同时间线');
+        const payload: Parameters<typeof api.appendControlTaskEvent>[1] = {
+          kind,
+          by: 'boss',
+          text,
+        };
+        if (options?.notifyHelper !== undefined && options.notifyHelper !== '') {
+          payload.notifyHelper = options.notifyHelper;
+        }
+        if (options?.broadcast !== undefined) {
+          payload.broadcast = options.broadcast;
+        }
+        const res = await api.appendControlTaskEvent(taskId, payload);
+        showToast(
+          'ok',
+          formatAppendEventToast(payload.notifyHelper, res.notifications?.wakeup),
+        );
         await onRefresh(true);
+        return true;
       } catch (error) {
         showToast('err', utils.getErrorMessage(error));
+        return false;
       }
     },
     [onRefresh, showToast],
@@ -264,10 +340,26 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
     [onRefresh, showToast],
   );
 
-  /** 搜索结果点击任务：切回清单视图并精确定位选中该任务。 */
-  const handleJumpTask = (task: api.ControlTask): void => {
+  /** 搜索结果点击或 URL 深链接定位任务：切回对应清单视图并选中该任务。 */
+  const handleJumpTask = react.useCallback((task: api.ControlTask): void => {
     setSearchOpen(false);
+    const kind = utils.getTaskKind(task);
+    if (kind === 'countdown') {
+      setNavMode('countdown');
+      setSelectedTaskId(undefined);
+      return;
+    }
+    if (kind === 'habit') {
+      setNavMode('habit');
+      setSelectedTaskId(undefined);
+      return;
+    }
     setNavMode('list');
+    if (utils.isTaskTrashed(task)) {
+      setListFilter({ kind: 'trash' });
+      setSelectedTaskId(task.id);
+      return;
+    }
     const listName = utils.getTaskListName(task);
     if (listName === '收集箱') {
       setListFilter({ kind: 'inbox' });
@@ -276,7 +368,31 @@ export function TickWorkspace(props: TickWorkspaceProps): react.JSX.Element {
       setListFilter({ kind: 'list', name: listName });
     }
     setSelectedTaskId(task.id);
-  };
+  }, []);
+
+  //M 首屏挂载且任务列表首次加载完成后，消费一次 ?task=<id> 深链接并定位到所属清单。
+  react.useEffect(() => {
+    if (deepLinkCheckedRef.current) return;
+    if (board === undefined) return;
+
+    deepLinkCheckedRef.current = true;
+    const targetId = pendingDeepLinkRef.current;
+    pendingDeepLinkRef.current = undefined;
+    if (targetId === undefined) return;
+
+    const matched = tasks.find((item) => item.id === targetId);
+    if (matched !== undefined) {
+      handleJumpTask(matched);
+    }
+  }, [board, tasks, handleJumpTask]);
+
+  //M 选中或取消选中任务时，平滑同步地址栏 ?task= 参数（保留 tab=tick 与 token 等参数）。
+  react.useEffect(() => {
+    if (!active) return;
+    if (!deepLinkCheckedRef.current) return;
+
+    syncTaskParamToUrl(selectedTaskId);
+  }, [active, selectedTaskId]);
 
   /** 搜索结果点击清单：切回清单视图并打开该清单。 */
   const handleJumpList = (listName: string): void => {

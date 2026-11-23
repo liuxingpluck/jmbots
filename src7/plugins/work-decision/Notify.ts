@@ -1,10 +1,14 @@
-/** 把待定件数和页面链接发给配置中的主人。 */
+/** 把待定件数和页面链接发给配置中的主人，以及控制面单向唤醒与作战室播报。 */
+import * as crypto from 'node:crypto';
 import type * as cordis from 'cordis';
 import * as failureModule from '../../utils/Failure.ts';
+import * as events from '../../utils/RequestEvent.ts';
+import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
 import * as channel from '../channels/Reply.ts';
 import type * as targetModule from '../channels/Target.ts';
-import type * as types from './Types.ts';
+import type { DecisionRelayRequest } from './Routes.ts';
+import * as types from './Types.ts';
 
 export const PAGE = '/work-decision/';
 
@@ -32,6 +36,46 @@ export interface ResolvedNotice {
   notice: OwnerNotice;
   /** 命中专属机器人目标时记录该机器人名，用于多机器人并存时附带该机器人件数。 */
   scopedBot?: string;
+}
+
+/** 作战室群战报配置目的地（来自 plugins[name="work-decision"].config.broadcast_target）。 */
+export interface BroadcastTarget {
+  /** 发送渠道（默认 feishu）。 */
+  channel: string;
+  /** 负责往作战室发战报的机器人名。 */
+  bot: string;
+  /** 作战室群或聊天 ID（配置里填，代码不硬编码）。 */
+  chatId: string;
+}
+
+/** 控制面任务单向唤醒与作战室播报的运行时路由配置。 */
+export interface ControlDispatchConfig {
+  /** 可选作战室战报投递目标（未配置时温和降级跳过）。 */
+  broadcastTarget?: BroadcastTarget;
+  /** 可选助手名到机器人名的映射表（helper_bots）。 */
+  helperBots: ReadonlyMap<string, string>;
+  /** 可选主人私聊通知配置（缺省时用于兜底解析目标机器人）。 */
+  noticeConfig?: OwnerNoticeConfig;
+}
+
+/** 控制面单向唤醒与作战室播报的共享上下文输入。 */
+export interface TaskDispatchInput {
+  /** 已原子落盘的最新版任务卡。 */
+  task: types.ControlTask;
+  /** 本次落盘后的账本修订号。 */
+  revision: number;
+  /** 任务状态的中文展示名。 */
+  statusLabel: string;
+  /** 本次操作人或 AI 节点名。 */
+  actor: string;
+  /** 本次进展或事件说明正文。 */
+  eventText: string;
+  /** 可选单向唤醒的外部助手名。 */
+  notifyHelper?: string;
+  /** 可选显式指定唤醒机器人名。 */
+  notifyBot?: string;
+  /** 是否向配置作战室发送一行战报。 */
+  broadcast: boolean;
 }
 
 /**
@@ -177,4 +221,238 @@ export async function notify(
   //M 主路线统一的渠道回复负责选路和同键重投。
   const receipt = await channel.requestTextReply(ctx, from, text, options);
   return { pending, status: receipt.status };
+}
+
+
+/**
+ * 按优先级解析唤醒目标中控时使用的机器人名：
+ * 请求显式 notifyBot > 配置 helper_bots[helper] > broadcast_target.bot > owner_target / 单项 owner_targets。
+ * @param notifyHelper 目标外部助手名。
+ * @param notifyBot 请求传入的可选机器人名。
+ * @param dispatchConfig 控制面唤醒与播报配置。
+ * @returns 解析出的机器人名；全部缺省时返回 undefined。
+ */
+export function resolveWakeupBot(
+  notifyHelper: string,
+  notifyBot: string | undefined,
+  dispatchConfig: ControlDispatchConfig,
+): string | undefined {
+  //M 请求显式指定 notifyBot 时优先采用。
+  if (notifyBot !== undefined) return notifyBot;
+
+  //M 其次按配置的 helper_bots 映射表解析目标机器人。
+  const helperBots: ReadonlyMap<string, string> = dispatchConfig.helperBots;
+  const mapped = helperBots.get(notifyHelper);
+  if (mapped !== undefined) return mapped;
+
+  //M 未配 helper_bots 时优先兜底使用配置的作战室机器人。
+  if (dispatchConfig.broadcastTarget !== undefined) return dispatchConfig.broadcastTarget.bot;
+
+  //M 仍缺省时回落默认 owner_target 或唯一的 owner_targets 条目。
+  const notice = dispatchConfig.noticeConfig;
+  if (notice?.default !== undefined) return notice.default.bot;
+
+  if (notice !== undefined && notice.byBot.size === 1) {
+    const only = notice.byBot.values().next().value;
+    if (only !== undefined) return only.bot;
+  }
+  return undefined;
+}
+
+
+/** 剥离文本中可能混入的飞书 <at> 标签，保留人名纯文本。 */
+function stripAtTags(raw: string): string {
+  return raw
+    .replace(/<at\b[^>]*>([\s\S]*?)<\/at>/giu, '$1')
+    .replace(/<\/?at\b[^>]*>/giu, '');
+}
+
+
+/**
+ * 通过既有 work-decision/note 事件向目标中控的 relay 收件箱投递一次性单向唤醒。
+ * 绝不阻塞或抛错阻断任务主写入，失败仅记日志并返回结构化状态。
+ */
+async function sendTaskWakeup(
+  ctx: cordis.Context,
+  dispatchConfig: ControlDispatchConfig,
+  input: TaskDispatchInput,
+  helper: string,
+): Promise<types.WakeupNotificationResult> {
+  //M 解析本次单向唤醒归属的机器人名，供 relay 与调用方回执展示。
+  const bot = resolveWakeupBot(helper, input.notifyBot, dispatchConfig);
+  const head = `[控制面单向唤醒 · 任务 ${input.task.id}] 来自 ${input.actor}`;
+  const subject = `（状态：${input.statusLabel}）：${input.task.title}`;
+  const lines = [
+    `${head}${subject}`,
+    `进展：${input.eventText}`,
+    '（本消息为面板单向唤醒，处理完请回写控制面，勿在群内互 @ 循环）',
+  ];
+  const nodeKey = `cp:${input.task.id}#rev:${String(input.revision)}`;
+  const targetNode = `${types.CONTROL_WAKEUP_TARGET_PREFIX}${input.task.id}`;
+  const relay: events.StripEnvelope<DecisionRelayRequest> = {
+    action: 'deliver',
+    node: nodeKey,
+    helper,
+    text: lines.join('\n'),
+    target: { node: targetNode },
+  };
+  if (bot !== undefined) {
+    relay.bot = bot;
+  }
+
+  const buildFailure = (reason: string): types.WakeupNotificationResult => {
+    const failed: types.WakeupNotificationResult = { ok: false, helper, reason };
+    if (bot !== undefined) {
+      failed.bot = bot;
+    }
+    return failed;
+  };
+
+  try {
+    //M 复用既有 work-decision/note 请求-回执事件写入目标 helper 的 relay 收件箱（maxHops=1 防循环）。
+    const asked = await events.requestEvent(ctx, 'work-decision/note', 'work-decision/note-result', relay);
+    if (asked.why === 'unhandled') {
+      console.error(`work-decision：控制面单向唤醒失败（${helper}），未挂载 relay 处理监听`);
+      //M 返回未挂载 relay 的温和失败回执。
+      return buildFailure('未挂载 relay 插件或无人处理 work-decision/note');
+    }
+    if (asked.why !== undefined) {
+      const reason = asked.detail ?? asked.why;
+      console.error(`work-decision：控制面单向唤醒异常（${helper}），${reason}`);
+      //M 返回 relay 事件异常回执。
+      return buildFailure(reason);
+    }
+    if (!asked.reply.ok) {
+      const reason = asked.reply.error ?? 'relay 投递未成功';
+      console.error(`work-decision：控制面单向唤醒被拒（${helper}），${reason}`);
+      //M 返回 relay 拒收原因。
+      return buildFailure(reason);
+    }
+    const result: types.WakeupNotificationResult = { ok: true, helper };
+    if (bot !== undefined) {
+      result.bot = bot;
+    }
+    if (asked.reply.id !== undefined) {
+      result.relayId = asked.reply.id;
+    }
+    return result;
+  } catch (error) {
+    //M 捕获未预期异常并温和降级返回，绝不影响控制面任务写盘。
+    const reason = textModule.getErrorMessage(error);
+    console.error(`work-decision：控制面单向唤醒出错（${helper}），${reason}`);
+    //M 构造包含异常摘要的失败状态。
+    return buildFailure(reason);
+  }
+}
+
+
+/**
+ * 向配置的作战室群发送 2–3 行不带 <at> 标签的精炼纯文本战报。
+ * 未配置 broadcast_target 时温和返回 { ok: false, reason: '未配置 broadcast_target' }。
+ */
+async function broadcastTaskReport(
+  ctx: cordis.Context,
+  broadcastTarget: BroadcastTarget | undefined,
+  input: TaskDispatchInput,
+): Promise<types.BroadcastNotificationResult> {
+  //G 未配置作战室目的地时温和降级，不报错不阻断任务更新。
+  if (broadcastTarget === undefined) {
+    return { ok: false, reason: '未配置 broadcast_target' };
+  }
+
+  //M 剥离潜在 <at> 标签拼出纯文本战报正文，并按是否带 notifyHelper 附带单向唤醒尾注。
+  const cleanActor = stripAtTags(input.actor);
+  //M 清洗任务标题中的潜在 <at> 标签。
+  const cleanTitle = stripAtTags(input.task.title);
+  //M 清洗进展正文中的潜在 <at> 标签。
+  const cleanEvent = stripAtTags(input.eventText);
+  let detailLine = cleanEvent;
+  if (input.notifyHelper !== undefined) {
+    //M 清洗唤醒助手名后附在战报末尾。
+    const cleanHelper = stripAtTags(input.notifyHelper);
+    detailLine = `${detailLine} → 已单向唤醒 ${cleanHelper}`;
+  }
+  const header = `📋 [控制面战报] ${cleanActor} 更新「${cleanTitle}」（${input.statusLabel}）`;
+  const text = `${header}\n${detailLine}`;
+
+  const suffix = `${input.task.id}:${String(input.revision)}:${crypto.randomUUID()}`;
+  const replyRoundKey = `work-decision:broadcast:${suffix}`;
+  const target: targetModule.ChannelReplyTarget = {
+    channel: broadcastTarget.channel,
+    chat: broadcastTarget.chatId,
+  };
+  const from: channel.ReplyFrom = {
+    bot: broadcastTarget.bot,
+    target,
+    replyRoundKey,
+  };
+  const options = {
+    kind: 'final' as const,
+    replyIndex: 0,
+    replyRequestKey: replyRoundKey,
+  };
+  const baseResult = {
+    channel: broadcastTarget.channel,
+    bot: broadcastTarget.bot,
+    chatId: broadcastTarget.chatId,
+  };
+
+  try {
+    //M 复用标准 channel/reply 渠道协议发送作战室战报。
+    const receipt = await channel.requestTextReply(ctx, from, text, options);
+    if (receipt.ok) {
+      const sent: types.BroadcastNotificationResult = {
+        ok: true,
+        ...baseResult,
+        status: receipt.status,
+      };
+      if (receipt.messageIds !== undefined) {
+        sent.messageIds = receipt.messageIds;
+      }
+      return sent;
+    }
+    const reason = receipt.reason ?? receipt.status;
+    console.error(`work-decision：作战室战报未送达（${broadcastTarget.chatId}），${reason}`);
+    return { ok: false, ...baseResult, status: receipt.status, reason };
+  } catch (error) {
+    //M 捕获渠道发送异常并记录诊断日志，不阻断控制面主写入。
+    const reason = textModule.getErrorMessage(error);
+    console.error(`work-decision：作战室战报发送异常（${broadcastTarget.chatId}），${reason}`);
+    return { ok: false, ...baseResult, reason };
+  }
+}
+
+
+/**
+ * 在控制面任务写盘后并发触发可选的单向唤醒（notifyHelper）与作战室战报播报（broadcast）。
+ * @param ctx 插件 Cordis 上下文。
+ * @param dispatchConfig 启动时解析的控制面通知路由配置。
+ * @param input 已落盘任务及本次变更上下文。
+ * @returns 唤醒与播报回执汇总对象。
+ */
+export async function dispatchTaskNotifications(
+  ctx: cordis.Context,
+  dispatchConfig: ControlDispatchConfig,
+  input: TaskDispatchInput,
+): Promise<types.ControlTaskNotifications> {
+  const result: types.ControlTaskNotifications = {};
+  let wakeupTask: Promise<types.WakeupNotificationResult> | undefined;
+  if (input.notifyHelper !== undefined) {
+    //M 启动向目标中控 relay 收件箱的单向唤醒投递。
+    wakeupTask = sendTaskWakeup(ctx, dispatchConfig, input, input.notifyHelper);
+  }
+
+  let broadcastTask: Promise<types.BroadcastNotificationResult> | undefined;
+  if (input.broadcast) {
+    //M 启动向配置作战室群发一行战报的渠道投递。
+    broadcastTask = broadcastTaskReport(ctx, dispatchConfig.broadcastTarget, input);
+  }
+
+  if (wakeupTask !== undefined) {
+    result.wakeup = await wakeupTask;
+  }
+  if (broadcastTask !== undefined) {
+    result.broadcast = await broadcastTask;
+  }
+  return result;
 }

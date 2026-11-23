@@ -1,5 +1,5 @@
 /**
- * 设置中心轻量声明式注册表：定义 6 大一级分组与 16 个二级设置节点元数据、
+ * 设置中心轻量声明式注册表：定义 6 大一级分组与 17 个二级设置节点元数据、
  * `#settings=` 深链接别名映射、秒搜匹配（中英文/键名/@modified）与未保存改动判定。
  * 所有文案使用静态中文原文，渲染层经 `t()` 翻译，不引入重型 JSON Schema。
  */
@@ -93,7 +93,10 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ];
 
 
-/** 16 个二级设置节点清单（按分组与展示顺序排列）。 */
+/**
+ * 17 个二级设置节点清单（按分组与展示顺序排列）。
+ * 入口节点（immediate）带了 configPaths 的，下面还有写进 config.yaml 的表单，红点和 @modified 照常算。
+ */
 export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
   {
     id: 'console-overview',
@@ -206,6 +209,26 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     immediate: true,
   },
   {
+    id: 'channel-policy',
+    groupId: 'bots',
+    title: '转话与飞书群策略',
+    subtitle: '外部助手转话的催促与过期、免前缀直通规则，以及飞书各群的监听方式与受信开关',
+    keywords: [
+      'relay', 'remind_minutes', 'expire_minutes', 'owner_p2p_direct',
+      'owner_group_direct', 'exclusive_bots', 'helper', 'feishu', 'groups',
+      'listen', 'mention', 'judge', 'trusted', 'chat_id',
+      '转话', '催促', '过期', '直通', '独占', '免前缀', '群策略', '监听', '受信', '飞书群',
+    ],
+    configPaths: [
+      editsModule.PLUGIN_PATHS.relayRemind,
+      editsModule.PLUGIN_PATHS.relayExpire,
+      editsModule.PLUGIN_PATHS.relayOwnerP2p,
+      editsModule.PLUGIN_PATHS.relayOwnerGroup,
+      editsModule.PLUGIN_PATHS.relayExclusive,
+      editsModule.PLUGIN_PATHS.feishuGroups,
+    ],
+  },
+  {
     id: 'search',
     groupId: 'knowledge',
     title: '网页搜索配置',
@@ -223,9 +246,20 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     subtitle: '查看记忆服务健康统计，直达知识库、统一记忆检索与实体关系图谱',
     keywords: [
       'knowledge', 'memory', 'vgr', 'graph', 'rag', 'jmbots-memory',
-      '知识库', '记忆', '图谱', '关系图', '向量',
+      'history', 'recall_history', 'recall_knowledge', 'service_url',
+      'backend_timeout_ms', 'backfill', 'batch_size', 'interval_ms',
+      '知识库', '记忆', '图谱', '关系图', '向量', '召回', '回填', '超时',
     ],
-    configPaths: [],
+    configPaths: [
+      editsModule.PLUGIN_PATHS.memoryHistory,
+      editsModule.PLUGIN_PATHS.memoryRecallHistory,
+      editsModule.PLUGIN_PATHS.memoryRecallKnowledge,
+      editsModule.PLUGIN_PATHS.memoryServiceUrl,
+      editsModule.PLUGIN_PATHS.memoryTimeout,
+      editsModule.PLUGIN_PATHS.memoryBackfillEnabled,
+      editsModule.PLUGIN_PATHS.memoryBackfillBatch,
+      editsModule.PLUGIN_PATHS.memoryBackfillInterval,
+    ],
     immediate: true,
   },
   {
@@ -247,10 +281,10 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     title: '外网隧道 FRPC 概览',
     subtitle: '实时查看 FRPC 隧道在线状态、开机自启与公网域名，一键打开控制面板',
     keywords: [
-      'frpc', 'tunnel', 'proxy', 'domain', 'autostart', 'publicUrls',
-      '隧道', '外网', '反代', '公网', '域名', '内网穿透',
+      'frpc', 'tunnel', 'proxy', 'domain', 'autostart', 'publicUrls', 'dir', 'frpc.dir',
+      '隧道', '外网', '反代', '公网', '域名', '内网穿透', '客户端目录',
     ],
-    configPaths: [],
+    configPaths: [editsModule.PLUGIN_PATHS.frpcDir],
     immediate: true,
   },
   {
@@ -259,10 +293,10 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     title: '目录授权',
     subtitle: '将人员或群聊绑定到本机目录，授权目录及子目录内操作免反复确认',
     keywords: [
-      'grants', 'dir', 'approval', 'trusted', 'permission',
-      '目录授权', '授权', '目录', '免确认', '群',
+      'grants', 'dir', 'approval', 'trusted', 'trusted_dirs', 'permission',
+      '目录授权', '授权', '目录', '免确认', '群', '可信目录',
     ],
-    configPaths: [],
+    configPaths: [editsModule.PLUGIN_PATHS.trustedDirs],
     immediate: true,
   },
   {
@@ -316,6 +350,7 @@ const LEGACY_CATEGORY_MAP: Readonly<Record<string, string>> = {
   engine: 'engine',
   bots: 'bots-list',
   channels: 'channels-entry',
+  relay: 'channel-policy',
   search: 'search',
   knowledge: 'knowledge-entry',
   http: 'server-http',

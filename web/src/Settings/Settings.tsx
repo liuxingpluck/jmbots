@@ -1,7 +1,7 @@
 /**
  * 全站统一设置中心（Phase 1）：
  * 保留主站宽屏居中浮层（含最大化与 `#settings=<id>` 双向深链接），
- * 采用轻量声明式注册表（Registry.ts）组织 6 大一级分组与 16 个二级设置节点：
+ * 采用轻量声明式注册表（Registry.ts）组织 6 大一级分组与 17 个二级设置节点：
  *   - 顶部固定秒搜（`/` 或 `Ctrl/Cmd+F` 聚焦、80ms 防抖、中英文/键名/`@modified`）；
  *   - 左侧可折叠二级分层树（命中计数 + 未保存红点）；
  *   - 右侧连续长滚容器 + IntersectionObserver Scroll-Spy（600ms 编程滚动锁 + 触底兜底）；
@@ -293,15 +293,34 @@ function renderSectionBody(params: {
       />
     );
   }
+  if (sectionId === 'channel-policy') return withDraft(sections.ChannelPolicy);
   if (sectionId === 'search') return withDraft(sections.Search);
+  //M 入口节点：上面是即时的状态卡片或授权表，下面是写进 config.yaml 的插件配置表单。
   if (sectionId === 'knowledge-entry') {
-    return <overviewCards.KnowledgeEntry snapshot={snapshot} />;
+    return (
+      <>
+        <overviewCards.KnowledgeEntry snapshot={snapshot} />
+        {withDraft(sections.MemoryConfig)}
+      </>
+    );
   }
   if (sectionId === 'server-http') return withDraft(sections.Http);
   if (sectionId === 'frpc-entry') {
-    return <overviewCards.FrpcEntry snapshot={snapshot} onRefresh={params.onRefreshSnapshot} />;
+    return (
+      <>
+        <overviewCards.FrpcEntry snapshot={snapshot} onRefresh={params.onRefreshSnapshot} />
+        {withDraft(sections.FrpcConfig)}
+      </>
+    );
   }
-  if (sectionId === 'grants') return <grantsModule.Grants />;
+  if (sectionId === 'grants') {
+    return (
+      <>
+        <grantsModule.Grants />
+        {withDraft(sections.TrustedDirs)}
+      </>
+    );
+  }
   if (sectionId === 'shell-local') return withDraft(sections.Local);
   if (sectionId === 'ui-theme') return <UiThemeSection />;
   if (sectionId === 'desktop-window') return <desktop.Desktop />;
@@ -1068,7 +1087,7 @@ export function Settings(): react.JSX.Element {
                                 {t('即时生效')}
                               </span>
                             )}
-                            {!sec.immediate && (
+                            {(!sec.immediate || sec.configPaths.length > 0) && (
                               <span className="jm-sc-badge jm-sc-badge-config">config.yaml</span>
                             )}
                           </div>

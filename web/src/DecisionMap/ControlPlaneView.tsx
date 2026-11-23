@@ -11,6 +11,31 @@ import * as api from './DecisionMapApi.ts';
 import * as tickUtils from './TickUtils.ts';
 
 
+/** 非研发个人生活清单集合（无占坑锁且无 AI 认领时不进研发控制面）。 */
+const PERSONAL_NON_RD_LISTS: ReadonlySet<string> = new Set([
+  '个人备忘',
+  '心愿清单',
+  '购物清单',
+  '锻炼计划',
+]);
+
+/** 判断任务是否应在「AI 研发控制面」展示（过滤个人/商业沟通项）。 */
+function isRdControlPlaneTask(task: api.ControlTask): boolean {
+  if (!tickUtils.isControlPlaneTask(task)) return false;
+
+  //G 持有互斥占坑锁的任务始终保留，避免与顶部活跃锁监控条脱节。
+  if (task.lockTags.length > 0) return true;
+
+  const listName = tickUtils.getTaskListName(task);
+  //G 「商业沟通」清单专供老板看方案话术与回复，即使有中控 owner 也不混入研发控制面。
+  if (listName === '商业沟通') return false;
+
+  if (task.owner.trim() !== '') return true;
+  if (PERSONAL_NON_RD_LISTS.has(listName)) return false;
+
+  return true;
+}
+
 /** 心跳超时阈值：执行中任务超过 15 分钟无心跳标橙色告警。 */
 const STALE_HEARTBEAT_MS = 15 * 60 * 1000;
 
@@ -246,9 +271,9 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
-      } else {
-        next.add(id);
+        return next;
       }
+      next.add(id);
       return next;
     });
   };
@@ -311,7 +336,8 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
           initialNote: formModal.reason.trim() || undefined,
         });
         showToast('ok', `已创建任务「${title}」`);
-      } else if (formModal.taskId !== undefined) {
+      }
+      if (formModal.mode === 'edit' && formModal.taskId !== undefined) {
         await api.patchControlTask(formModal.taskId, {
           title,
           summary: formModal.summary.trim(),
@@ -328,8 +354,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
       setFormModal(undefined);
       await loadBoard(true);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      showToast('err', msg);
+      showToast('err', tickUtils.getErrorMessage(error));
     } finally {
       setModalSubmitting(false);
     }
@@ -347,8 +372,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
       showToast('ok', okMessage);
       await loadBoard(true);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      showToast('err', msg);
+      showToast('err', tickUtils.getErrorMessage(error));
     } finally {
       setBusyTaskId(undefined);
     }
@@ -378,8 +402,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
       showToast('ok', '变更时间线已记录并刷新心跳');
       await loadBoard(true);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      showToast('err', msg);
+      showToast('err', tickUtils.getErrorMessage(error));
     } finally {
       setModalSubmitting(false);
     }
@@ -397,17 +420,16 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
       setDeleteTarget(undefined);
       await loadBoard(true);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      showToast('err', msg);
+      showToast('err', tickUtils.getErrorMessage(error));
     } finally {
       setModalSubmitting(false);
     }
   };
 
-  //M 过滤掉倒数纪念日、习惯与垃圾桶任务，避免干扰多 AI 执行看板。
+  //M 过滤掉倒数纪念日、习惯、垃圾桶及纯个人/商业沟通任务，保持 AI 研发控制面聚焦清爽。
   const allTasks = react.useMemo(() => {
     const raw = board?.tasks ?? [];
-    return raw.filter((task) => tickUtils.isControlPlaneTask(task));
+    return raw.filter((task) => isRdControlPlaneTask(task));
   }, [board?.tasks]);
 
   const counts = react.useMemo(() => {
@@ -489,7 +511,13 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                 className="cp-status-pill"
                 data-status={item.key}
                 data-active={statusFilter === item.key}
-                onClick={() => setStatusFilter((prev) => (prev === item.key ? 'all' : item.key))}
+                onClick={() => {
+                  setStatusFilter((prev) => {
+                    if (prev === item.key) return 'all';
+
+                    return item.key;
+                  });
+                }}
               >
                 <span>{item.icon} {item.label}</span>
                 <span className="cp-pill-count">{count}</span>
@@ -531,7 +559,10 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
         )}
         {activeLockEntries.map(([tag, holder]) => {
           const isFiltered = lockFilter === tag;
-          const ownerText = holder.owner !== '' ? holder.owner : '未署名';
+          let ownerText = '未署名';
+          if (holder.owner !== '') {
+            ownerText = holder.owner;
+          }
           return (
             <button
               key={tag}
@@ -539,7 +570,13 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
               className="cp-lock-chip"
               data-active={isFiltered}
               title={`正在由 ${ownerText} 执行「${holder.title}」占用，点击筛选相关任务`}
-              onClick={() => setLockFilter((prev) => (prev === tag ? undefined : tag))}
+              onClick={() => {
+                setLockFilter((prev) => {
+                  if (prev === tag) return undefined;
+
+                  return tag;
+                });
+              }}
             >
               <span className="cp-lock-chip__tag">{tag}</span>
               <span className="cp-lock-chip__sep">←</span>
@@ -597,6 +634,21 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
             const isExpanded = expandedIds.has(task.id);
             const isBusy = busyTaskId === task.id;
             const reversedEvents = [...task.events].reverse();
+            const blockingHint = blockingHolders
+              .map((b) => `${b.tag}(${b.holder.owner || b.holder.taskId})`)
+              .join(', ');
+            let ownerBadgeText = '未认领';
+            if (task.owner !== '') {
+              ownerBadgeText = task.owner;
+            }
+            let hbLabel = `🕒 更新于 ${formatElapsed(task.updatedAt, nowMs)}`;
+            if (task.lastHeartbeatAt !== null) {
+              hbLabel = `💓 心跳 ${formatElapsed(task.lastHeartbeatAt, nowMs)}`;
+            }
+            let timelineArrow = '▾';
+            if (isExpanded) {
+              timelineArrow = '▴';
+            }
 
             return (
               <article
@@ -620,7 +672,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                   {task.status === 'ready' && !isDispatchable && blockingHolders.length > 0 && (
                     <span
                       className="cp-wait-lock-badge"
-                      title={`等待占坑锁释放：${blockingHolders.map((b) => `${b.tag}(${b.holder.owner || b.holder.taskId})`).join(', ')}`}
+                      title={`等待占坑锁释放：${blockingHint}`}
                     >
                       ⏳ 等待锁释放 ({blockingHolders.map((b) => b.tag).join(', ')})
                     </span>
@@ -629,7 +681,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                   <span className="cp-grow" />
 
                   <span className="cp-owner-pill" data-claimed={task.owner !== ''}>
-                    🤖 {task.owner !== '' ? task.owner : '未认领'}
+                    🤖 {ownerBadgeText}
                   </span>
                 </header>
 
@@ -648,7 +700,13 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                         type="button"
                         className="cp-tag-pill"
                         data-active={lockFilter === tag}
-                        onClick={() => setLockFilter((prev) => (prev === tag ? undefined : tag))}
+                        onClick={() => {
+                          setLockFilter((prev) => {
+                            if (prev === tag) return undefined;
+
+                            return tag;
+                          });
+                        }}
                       >
                         🔒 {tag}
                       </button>
@@ -662,13 +720,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                       ⚠️ 心跳 {formatElapsed(hbBase, nowMs)} · 可能卡住
                     </span>
                   )}
-                  {!isStaleRunning && (
-                    <span className="cp-hb-normal">
-                      {task.lastHeartbeatAt !== null
-                        ? `💓 心跳 ${formatElapsed(task.lastHeartbeatAt, nowMs)}`
-                        : `🕒 更新于 ${formatElapsed(task.updatedAt, nowMs)}`}
-                    </span>
-                  )}
+                  {!isStaleRunning && <span className="cp-hb-normal">{hbLabel}</span>}
                 </div>
 
                 {/* 机器可验证验收标准 */}
@@ -795,7 +847,7 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                     aria-expanded={isExpanded}
                     onClick={() => toggleTimeline(task.id)}
                   >
-                    🕒 时间线 ({task.events.length}) {isExpanded ? '▴' : '▾'}
+                    🕒 时间线 ({task.events.length}) {timelineArrow}
                   </button>
 
                   <span className="cp-grow" />
@@ -839,7 +891,8 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
           <div className="cp-modal-mask" onClick={() => setFormModal(undefined)} />
           <form className="cp-modal-card cp-modal-card--wide" onSubmit={(e) => void submitTaskForm(e)}>
             <h3 className="cp-modal-title">
-              {formModal.mode === 'create' ? '＋ 新建多 AI 协同任务卡' : '✏️ 编辑控制面任务卡'}
+              {formModal.mode === 'create' && '＋ 新建多 AI 协同任务卡'}
+              {formModal.mode !== 'create' && '✏️ 编辑控制面任务卡'}
             </h3>
 
             <label className="cp-field">
@@ -928,7 +981,10 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
             </label>
 
             <label className="cp-field">
-              <span>{formModal.mode === 'create' ? '初始原则备注（可选）' : '本次调整说明（记入变更时间线）'}</span>
+              <span>
+                {formModal.mode === 'create' && '初始原则备注（可选）'}
+                {formModal.mode !== 'create' && '本次调整说明（记入变更时间线）'}
+              </span>
               <input
                 type="text"
                 value={formModal.reason}
@@ -942,7 +998,8 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                 取消
               </button>
               <button type="submit" className="cp-btn cp-btn--primary" disabled={modalSubmitting}>
-                {modalSubmitting ? '正在保存…' : '保存任务卡'}
+                {modalSubmitting && '正在保存…'}
+                {!modalSubmitting && '保存任务卡'}
               </button>
             </div>
           </form>
@@ -1001,7 +1058,8 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                 取消
               </button>
               <button type="submit" className="cp-btn cp-btn--primary" disabled={modalSubmitting}>
-                {modalSubmitting ? '提交中…' : '追加到时间线'}
+                {modalSubmitting && '提交中…'}
+                {!modalSubmitting && '追加到时间线'}
               </button>
             </div>
           </form>
@@ -1027,7 +1085,8 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
                 disabled={modalSubmitting}
                 onClick={() => void confirmDeleteTask()}
               >
-                {modalSubmitting ? '删除中…' : '确认永久删除'}
+                {modalSubmitting && '删除中…'}
+                {!modalSubmitting && '确认永久删除'}
               </button>
             </div>
           </div>

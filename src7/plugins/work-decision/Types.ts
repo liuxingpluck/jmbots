@@ -197,6 +197,9 @@ export const CONTROL_TASK_STATUSES = [
   'cancelled',
 ] as const;
 
+/** 控制面唤醒投递到 relay 时使用的 target.node 前缀（防与决策图节点混淆）。 */
+export const CONTROL_WAKEUP_TARGET_PREFIX = 'control-plane:';
+
 export type ControlTaskStatus = (typeof CONTROL_TASK_STATUSES)[number];
 
 /** 控制面任务优先级。 */
@@ -347,6 +350,12 @@ export interface ControlTaskCreateInput {
   trashedAt?: number | null;
   /** 排序权重。 */
   sortOrder?: number;
+  /** 可选单向唤醒目标外部助手名（写入 relay 收件箱，如 HanXin / Claude）。 */
+  notifyHelper?: string;
+  /** 可选显式指定目标机器人名；省略时优先走 helper_bots 映射。 */
+  notifyBot?: string;
+  /** 是否向配置的作战室播报一行简洁战报（默认 false）。 */
+  broadcast?: boolean;
 }
 
 /** 局部更新控制面任务卡（PATCH / PUT /api/work-decision/tasks/:id）的请求输入。 */
@@ -395,6 +404,70 @@ export interface ControlTaskPatchInput {
   trashedAt?: number | null;
   /** 排序权重。 */
   sortOrder?: number;
+  /** 可选单向唤醒目标外部助手名（写入 relay 收件箱，如 HanXin / Claude）。 */
+  notifyHelper?: string;
+  /** 可选显式指定目标机器人名；省略时优先走 helper_bots 映射。 */
+  notifyBot?: string;
+  /** 是否向配置的作战室播报一行简洁战报（默认 false）。 */
+  broadcast?: boolean;
+}
+
+/** 追加控制面任务事件（POST /api/work-decision/tasks/:id/events）的请求输入。 */
+export interface ControlTaskEventInput {
+  /** 事件种类（缺省为 note）。 */
+  kind?: ControlTaskEventKind;
+  /** 可选一并切换的任务状态。 */
+  status?: ControlTaskStatus;
+  /** 发起人或 AI 节点标识。 */
+  by?: string;
+  /** 事件说明正文（非 heartbeat 必填）。 */
+  text?: string;
+  /** 可选单向唤醒目标外部助手名（写入 relay 收件箱，如 HanXin / Claude）。 */
+  notifyHelper?: string;
+  /** 可选显式指定目标机器人名；省略时优先走 helper_bots 映射。 */
+  notifyBot?: string;
+  /** 是否向配置的作战室播报一行简洁战报（默认 false）。 */
+  broadcast?: boolean;
+}
+
+/** 单向唤醒目标中控 relay 收件箱的结果状态。 */
+export interface WakeupNotificationResult {
+  /** 是否成功投递进 relay 收件箱。 */
+  ok: boolean;
+  /** 目标外部助手名（如 HanXin 或 Claude）。 */
+  helper: string;
+  /** 解析出的目标机器人名（请求 notifyBot > helper_bots > 兜底）。 */
+  bot?: string;
+  /** relay 收件箱分配的收件编号（成功时返回）。 */
+  relayId?: number;
+  /** 失败或降级原因（ok 为 false 时返回）。 */
+  reason?: string;
+}
+
+/** 作战室群一行战报播报的结果状态。 */
+export interface BroadcastNotificationResult {
+  /** 是否成功向配置作战室发出战报。 */
+  ok: boolean;
+  /** 发送渠道名（未配置 broadcast_target 时省略）。 */
+  channel?: string;
+  /** 发件机器人名（未配置 broadcast_target 时省略）。 */
+  bot?: string;
+  /** 作战室群或聊天 ID（未配置 broadcast_target 时省略）。 */
+  chatId?: string;
+  /** 渠道回执状态（sent / queued / draft / partial / uncertain / rejected）。 */
+  status?: string;
+  /** 渠道返回的消息号列表（发送成功且渠道提供时附带）。 */
+  messageIds?: string[];
+  /** 未配置或发送失败原因（ok 为 false 时返回）。 */
+  reason?: string;
+}
+
+/** 控制面任务落盘后附带的可选单向唤醒与作战室播报回执。 */
+export interface ControlTaskNotifications {
+  /** 单向唤醒目标中控结果（传入 notifyHelper 时返回）。 */
+  wakeup?: WakeupNotificationResult;
+  /** 作战室群战报结果（传入 broadcast: true 时返回）。 */
+  broadcast?: BroadcastNotificationResult;
 }
 
 /** control-plane-tasks.json 磁盘持久化结构。 */

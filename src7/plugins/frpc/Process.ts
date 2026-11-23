@@ -2,13 +2,13 @@
  * Windows 外网隧道进程探测、无窗启停控制与开机自启管理。
  * 读取 tray-status.json（容错 UTF-8 BOM）并结合真实进程存活核验，杜绝僵尸状态文件误报；
  * 启停全程 windowsHide 无黑框，停止时只精准终止当前目录下的 frpc.exe，保留托盘图标常驻。
+ * Windows 上托盘和 frpc.exe 经 WMI 拉起，不在 jmbots-server 的 Job 里，后端热更、退出时隧道不掉线。
  */
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as process from 'node:process';
 import * as failureModule from '../../utils/Failure.ts';
-import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as tomlModule from './Toml.ts';
 
@@ -49,6 +49,13 @@ export interface FrpcRunner {
   /** 开启或关闭 Windows 登录开机自启。 */
   writeAutoStart(dir: string, enabled: boolean): boolean;
 }
+
+/**
+ * 无窗拉起外部进程（托盘 wscript.exe 或 frpc.exe）的函数。
+ * 默认实现是本文件的 launchOutsideJob；单测经 createDefaultRunner 第二个参数注入假的，记下启动参数。
+ * @returns 新进程 PID；拿不到时为 0。
+ */
+export type DetachedLauncher = (command: string, args: string[], cwd: string) => Promise<number>;
 
 /** tray-status.json 解析出的原始快照。 */
 interface TrayFileSnapshot {
@@ -302,11 +309,14 @@ async function killDirFrpcOnly(dir: string): Promise<void> {
 
 /**
  * 无窗后台分离拉起外部进程（wscript.exe 或 frpc.exe），不阻塞主服务退出。
+ * Windows 上这样拉起的进程仍在基地给 jmbots-server 套的 Job 里，后端热更时会被一起结束，
+ * 所以 Windows 只在 WMI 拉不起来时才用它兜底。
  * @param command 可执行文件。
  * @param args 参数数组。
  * @param cwd 工作目录。
+ * @returns 新进程 PID；拿不到时为 0。
  */
-function spawnDetachedHidden(command: string, args: string[], cwd: string): void {
+function spawnDetachedHidden(command: string, args: string[], cwd: string): number {
   const child = childProcess.spawn(command, args, {
     cwd,
     windowsHide: true,
@@ -315,6 +325,94 @@ function spawnDetachedHidden(command: string, args: string[], cwd: string): void
   });
   child.on('error', () => undefined);
   child.unref();
+  return child.pid ?? 0;
+}
+
+
+/**
+ * 经 WMI 的 Win32_Process.Create 无窗拉起进程的 PowerShell 脚本，成功时输出新进程 PID。
+ * 新进程由 WMI 服务（WmiPrvSE.exe）创建，不在 jmbots-server 的进程树里，也不在基地给它套的 Job 里
+ * （local/src/process_job.rs：KILL_ON_JOB_CLOSE、不许 breakaway），后端热更时 TerminateJobObject 带不走它。
+ * 命令行和工作目录经环境变量 FRPC_LAUNCH_CMD、FRPC_LAUNCH_CWD 传入，路径含空格或特殊字符也不用转义。
+ */
+export const WMI_LAUNCH_SCRIPT = [
+  "$startup = ([wmiclass]'Win32_ProcessStartup').CreateInstance()",
+  '$startup.ShowWindow = 0',
+  "$result = ([wmiclass]'Win32_Process').Create($env:FRPC_LAUNCH_CMD, $env:FRPC_LAUNCH_CWD, $startup)",
+  'if ($result.ReturnValue -eq 0) { Write-Output $result.ProcessId }',
+].join('\n');
+
+
+/**
+ * 把可执行文件和参数拼成一条 Windows 命令行，带空白的部分用双引号包住（Windows 路径里不会有双引号）。
+ * @param command 可执行文件。
+ * @param args 参数数组。
+ * @returns 交给 Win32_Process.Create 的命令行。
+ */
+export function buildWindowsCommandLine(command: string, args: string[]): string {
+  const parts = [command, ...args];
+  const quoted = parts.map((part) => {
+    if (!/\s/u.test(part)) return part;
+
+    return `"${part}"`;
+  });
+  return quoted.join(' ');
+}
+
+
+/**
+ * 无窗拉起外部进程（托盘 wscript.exe 或 frpc.exe），让它活得比 jmbots-server 久。
+ * Windows：经 WMI 创建（见 WMI_LAUNCH_SCRIPT），等 PowerShell 报回新进程 PID 再返回；
+ * WMI 没拉起来时退回 spawnDetachedHidden，至少当场能起，只是后端热更时会被连带结束。
+ * 其他平台没有基地的 Job，直接分离拉起。
+ * @param command 可执行文件。
+ * @param args 参数数组。
+ * @param cwd 工作目录。
+ * @returns 新进程 PID；拿不到时为 0。
+ */
+export async function launchOutsideJob(command: string, args: string[], cwd: string): Promise<number> {
+  //M 非 Windows：直接分离拉起。
+  if (process.platform !== 'win32') return spawnDetachedHidden(command, args, cwd);
+
+  //M Windows：命令行和工作目录放进环境变量，交给 PowerShell 走 WMI 创建。
+  const launchEnv = {
+    FRPC_LAUNCH_CMD: buildWindowsCommandLine(command, args),
+    FRPC_LAUNCH_CWD: cwd,
+  };
+  const out = await runHiddenPowerShell(WMI_LAUNCH_SCRIPT, launchEnv);
+  const pid = readPid(out);
+  if (pid > 0) return pid;
+
+  //G WMI 没拉起来（服务被禁用等）→ 退回直接分离拉起。
+  return spawnDetachedHidden(command, args, cwd);
+}
+
+
+/**
+ * 把开机自启脚本写进 Windows Startup 目录：目录已在就不建，同目录写临时文件再改名，改名不成直接写。
+ * Startup 是带系统属性的特殊目录，Windows 上的 Bun 对已存在的它跑 mkdirSync(recursive) 会抛 EEXIST，
+ * 所以这里不走 Files.ts 的 writeTextAtomic（它总是先 ensureDir）。
+ * @param file 目标脚本路径。
+ * @param content 脚本正文。
+ */
+function writeStartupScript(file: string, content: string): void {
+  //M 父目录真缺时（离线单测的临时 APPDATA）才建；已在的 Startup 目录不碰 mkdir。
+  const parentDir = path.dirname(file);
+  const parentStat = fs.statSync(parentDir, { throwIfNoEntry: false });
+  if (parentStat?.isDirectory() !== true) {
+    fs.mkdirSync(parentDir, { recursive: true });
+  }
+
+  //M 同目录写临时文件再改名盖过去，读的人要么看到旧的，要么看到新的。
+  const temp = `${file}.${String(process.pid)}.tmp`;
+  fs.writeFileSync(temp, content, 'utf8');
+  try {
+    fs.renameSync(temp, file);
+  } catch {
+    //G 改名没成（目标被占用等）→ 清掉临时文件，直接写目标。
+    fs.rmSync(temp, { force: true });
+    fs.writeFileSync(file, content, 'utf8');
+  }
 }
 
 
@@ -329,9 +427,13 @@ function delayMs(ms: number): Promise<void> {
 /**
  * 创建默认的 Windows 外网隧道进程与开机自启执行器。
  * @param appdataOverride 可选 APPDATA 覆盖路径（默认取 process.env.APPDATA）。
+ * @param launch 拉起托盘和 frpc.exe 的函数；默认本文件的 launchOutsideJob，单测注入假的。
  * @returns FrpcRunner 实例。
  */
-export function createDefaultRunner(appdataOverride?: string): FrpcRunner {
+export function createDefaultRunner(
+  appdataOverride?: string,
+  launch: DetachedLauncher = launchOutsideJob,
+): FrpcRunner {
   const resolveAppdata = (): string => appdataOverride ?? process.env['APPDATA'] ?? '';
 
   const readLiveState = async (dir: string): Promise<LiveFrpcState> => {
@@ -417,13 +519,15 @@ export function createDefaultRunner(appdataOverride?: string): FrpcRunner {
     const initial = await readLiveState(dir);
     const startTrayVbs = path.join(dir, 'start-tray.vbs');
     if (!initial.trayRunning && fs.existsSync(startTrayVbs)) {
-      spawnDetachedHidden('wscript.exe', ['//B', '//NoLogo', startTrayVbs], dir);
+      //M 托盘没在跑就拉起托盘；托盘起来后自己查重再带起 frpc.exe。
+      await launch('wscript.exe', ['//B', '//NoLogo', startTrayVbs], dir);
       await delayMs(450);
     }
 
+    //M 托盘没带起 frpc.exe（或没有托盘脚本）时直接拉起 frpc.exe。
     const mid = await readLiveState(dir);
     if (!mid.running) {
-      spawnDetachedHidden(frpcExe, ['-c', frpcToml], dir);
+      await launch(frpcExe, ['-c', frpcToml], dir);
     }
 
     //M 最多轮询等待约 2.2 秒让新进程完成上线注册。
@@ -472,7 +576,7 @@ export function createDefaultRunner(appdataOverride?: string): FrpcRunner {
       throw new failureModule.Failure(400, `未找到托盘启动脚本：${startTrayVbs}`);
     }
     const content = buildStartupVbsContent(startTrayVbs);
-    filesModule.writeTextAtomic(startupVbs, content, true);
+    writeStartupScript(startupVbs, content);
     return true;
   };
 

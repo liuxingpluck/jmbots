@@ -2,6 +2,7 @@
 import * as path from 'node:path';
 import type * as cordis from 'cordis';
 import * as checksModule from '../../utils/Checks.ts';
+import * as utils from '../../utils/index.ts';
 import * as controlPlaneModule from './ControlPlane.ts';
 import type * as notifications from './Notify.ts';
 import * as routesModule from './Routes.ts';
@@ -19,7 +20,8 @@ export const name = 'work-decision';
 //M 1.3.13：建表、加列改走 db 迁移账本（云端 36 第 1 条）：db 成了必需依赖；quadrant 列是迁移第 2 版，旧库已有的只登记。
 //M 1.4.0：新增多 AI 协同控制面任务面板（ControlPlane.ts，control-plane-tasks.json + /api/work-decision/tasks* 占坑防撞锁与心跳时间线）。
 //M 1.4.1：新增 owner_targets 多机器人提醒路由与 POST /api/work-decision/notify 可选 { bot }，向后兼容旧 owner_target 配置。
-export const version = '1.4.1';
+//M 1.4.2：新增控制面任务面板单向唤醒（notifyHelper / helper_bots）与作战室精炼播报（broadcast / broadcast_target）。
+export const version = '1.4.2';
 export const inject = ['resources', 'http', 'tools', 'db'];
 
 /** 读取配置文本，未设置时保持缺省。 */
@@ -90,26 +92,78 @@ function getNoticeConfig(config: Record<string, unknown>): notifications.OwnerNo
   return { default: fallback, byBot };
 }
 
+/** 校验作战室群战报配置（未配置时返回 undefined，播报能力温和降级）。 */
+function getBroadcastTarget(config: Record<string, unknown>): notifications.BroadcastTarget | undefined {
+  const raw = config['broadcast_target'];
+  if (raw === undefined) return undefined;
+
+  //G broadcast_target 须为包含 bot、chat_id 与可选 channel（默认 feishu）的对象。
+  const written = checksModule.checkRecord(raw, 'broadcast_target');
+  let channel = 'feishu';
+  if (written['channel'] !== undefined) {
+    //M 显式指定发送渠道时校验为非空文本。
+    channel = storeModule.readText(written['channel'], 'broadcast_target.channel');
+  }
+  //M 校验负责向作战室发战报的机器人名。
+  const bot = storeModule.readText(written['bot'], 'broadcast_target.bot');
+  //M 校验作战室群或聊天 ID（绝不硬编码）。
+  const chatId = storeModule.readText(written['chat_id'], 'broadcast_target.chat_id');
+  return { channel, bot, chatId };
+}
+
+/** 校验可选外部助手到机器人名的映射表（helper_bots）。 */
+function getHelperBots(config: Record<string, unknown>): ReadonlyMap<string, string> {
+  const map = new Map<string, string>();
+  const raw = config['helper_bots'];
+  if (raw === undefined) return map;
+
+  //G helper_bots 须为非数组对象，且所有键名与机器人名均须为非空文本。
+  const written = checksModule.checkRecord(raw, 'helper_bots');
+  //M 逐条校验 helper -> bot 映射并收进只读映射表。
+  utils.eachEntry(written, (helperName, botValue) => {
+    if (helperName.trim() === '' || helperName !== helperName.trim()) {
+      throw new Error('helper_bots 的键名要写成无首尾空白的非空助手名');
+    }
+    //M 校验目标机器人名为非空文本。
+    const bot = storeModule.readText(botValue, `helper_bots.${helperName}`);
+    map.set(helperName, bot);
+  });
+  return map;
+}
+
 /**
  * 校验配置并把当前数据目录的图挂到主 HTTP 服务上。
  * @param ctx Cordis 插件上下文。
- * @param config 可选中控助手、旧图所属工作区和提醒目的地。
+ * @param config 可选中控助手、旧图所属工作区、提醒目的地及控制面播报与助手机器人映射。
  * 副作用：初始化工作决策表，导入旧快照，挂载 HTTP 入口和插件事件。
  */
 export function apply(ctx: cordis.Context, config?: unknown): void {
   //M 配置在挂载时读一次，之后入口使用已经解析过的字段。
   const settings = checksModule.checkRecord(config ?? {}, 'work-decision.config');
+  //M 读取可选默认中控 relay 助手名。
   const helper = getOptionalText(settings, 'relay_helper');
   //退场：所有运行时的旧 data/decision-map/graph.json 都导入 SQLite 以后，连同 legacy_workspace_id 与 importLegacy 一起删
   const legacyWorkspaceId = getOptionalText(settings, 'legacy_workspace_id');
+  //M 解析主人私聊提醒路由配置。
   const noticeConfig = getNoticeConfig(settings);
+  //M 解析可选作战室群战报目的地（broadcast_target）。
+  const broadcastTarget = getBroadcastTarget(settings);
+  //M 解析可选外部助手到机器人名的映射表（helper_bots）。
+  const helperBots = getHelperBots(settings);
+  const dispatchConfig: notifications.ControlDispatchConfig = {
+    broadcastTarget,
+    helperBots,
+    noticeConfig,
+  };
 
   //M 工作决策使用资源数据库，建表走 db 的迁移账本；旧目录仅用于一次性读取。
   const resources = ctx.resources;
   const dir = path.join(resources.root, 'data', 'decision-map');
   const store = new storeModule.Store(resources.db, ctx.db, dir, legacyWorkspaceId);
   const controlStore = new controlPlaneModule.ControlPlaneStore(resources.root);
-  routesModule.mount(ctx, store, helper, noticeConfig, controlStore);
+  //M 挂载决策图与控制面接口，并注入单向唤醒与作战室播报配置。
+  routesModule.mount(ctx, store, helper, noticeConfig, controlStore, dispatchConfig);
+  //M 注册后台提问与只读专题查询工具。
   toolsModule.registerAskOwner(ctx, store, noticeConfig);
   toolsModule.registerWorkTopics(ctx, store);
 }

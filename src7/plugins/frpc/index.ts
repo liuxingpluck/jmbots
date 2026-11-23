@@ -22,8 +22,9 @@ export const name = 'frpc';
 //M 1.0.0：外网隧道（frpc）状态巡检、无窗进程控制、Windows 开机自启、TOML 代理无损回写与日志脱敏接口。
 //M 1.0.1：主站端口映射改严格 IPv4 非回环白名单；拦截含高级字段的 TOML 防静默丢失；控制串行互斥与 JSON 键脱敏。
 //M 1.0.2：读状态也核对隧道，手改 frpc.toml 接了回环地址时 status 带 warnings；没写 localIP 的隧道按 frpc 默认记成 127.0.0.1。
+//M 1.0.3：Windows 上托盘和 frpc.exe 经 WMI 拉起，脱离 jmbots-server 的 Job，热更不掉线；写开机自启不对已在的 Startup 目录 mkdir（防 EEXIST）。
 /** 插件版本号。 */
-export const version = '1.0.2';
+export const version = '1.0.3';
 
 /** 依赖资源目录与主 HTTP 服务。 */
 export const inject = ['resources', 'http'];

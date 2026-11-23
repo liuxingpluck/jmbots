@@ -737,6 +737,27 @@
 .jm-sc-shell-source {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+/* 飞书群策略：每个群一张卡片（Sections.tsx 的 FeishuGroups） */
+.jm-sc-feishu-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jm-sc-feishu-group {
+  padding: 10px 12px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+}
+
+.jm-sc-feishu-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
 }
 
 @media (max-width: 820px) {

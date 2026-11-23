@@ -380,13 +380,47 @@
 /* 左栏：智能箱 / 清单 / 标签 */
 .tick-sidebar {
   display: flex;
-  flex: 0 0 226px;
+  flex: 0 0 var(--tick-sidebar-w, 226px);
+  width: var(--tick-sidebar-w, 226px);
+  min-width: 0;
   flex-direction: column;
   gap: 6px;
   padding: 12px 10px 14px;
   background: #1a1a1d;
-  border-right: 1px solid #26262b;
   overflow-y: auto;
+}
+
+/* 可拖拽竖向分割条（6px 透明命中热区 + 居中 1px 视觉线） */
+.tick-resizer {
+  position: relative;
+  z-index: 8;
+  flex: 0 0 6px;
+  width: 6px;
+  margin: 0 -3px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+.tick-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: #26262c;
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.tick-resizer:hover::after,
+.tick-resizer[data-dragging="true"]::after {
+  width: 2px;
+  background: #4c7ef3;
+}
+body.tick-resizing {
+  user-select: none;
+  cursor: col-resize;
 }
 .tick-sidebar__group {
   display: flex;
@@ -812,12 +846,39 @@
  *==========================================================*/
 .tick-detail {
   display: flex;
-  flex: 0 0 382px;
-  flex-direction: column;
+  flex: 1;
+  width: 100%;
   min-width: 0;
   min-height: 0;
+  flex-direction: column;
   background: #1c1c20;
   border-left: 1px solid #26262c;
+}
+.tick-wide-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #323646;
+  border-radius: 6px;
+  background: #22242d;
+  color: #aeb6c9;
+  font-size: 11.5px;
+  font-weight: 560;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.tick-wide-toggle:hover {
+  border-color: #4f6cb8;
+  background: #283044;
+  color: #ffffff;
+}
+.tick-wide-toggle[data-active="true"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.2);
+  color: #dbe8ff;
 }
 .tick-detail--empty {
   justify-content: center;
@@ -960,20 +1021,335 @@
 }
 .tick-detail-summary {
   width: 100%;
-  min-height: 92px;
-  padding: 10px 11px;
-  border: 1px solid #292931;
+  min-height: 112px;
+  padding: 10px 12px;
+  border: 1px solid #2c3142;
   border-radius: 8px;
-  background: #17171b;
-  color: #d6dae6;
+  background: #14161c;
+  color: #e4e8f3;
   font: inherit;
   font-size: 13.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   resize: vertical;
   outline: none;
 }
 .tick-detail-summary:focus {
   border-color: #4c7ef3;
+}
+
+/* 方案简报阅读/编辑双态卡片与一键复制按钮 */
+.tick-summary-card,
+.tick-summary-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3e;
+  background: #15171e;
+}
+.tick-summary-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #232735;
+}
+.tick-summary-card__label {
+  color: #9ba7c2;
+  font-size: 12px;
+  font-weight: 620;
+}
+.tick-summary-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tick-summary-card__body {
+  min-width: 0;
+}
+.tick-summary-editor__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tick-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #36415c;
+  border-radius: 6px;
+  background: #202738;
+  color: #cddcff;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.tick-copy-btn:hover {
+  border-color: #5378cc;
+  background: #28334d;
+  color: #ffffff;
+}
+.tick-copy-btn[data-copied="true"] {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(16, 185, 129, 0.16);
+  color: #6ee7b7;
+}
+.tick-copy-btn--sm {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* 深色高质感 Markdown 排版（适配 PC 与手机触屏） */
+.tick-markdown .jm-markdown {
+  color: #dde3f0;
+  font-size: 13.5px;
+  line-height: 1.68;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.tick-markdown .jm-markdown > :first-child {
+  margin-top: 0;
+}
+.tick-markdown .jm-markdown > :last-child {
+  margin-bottom: 0;
+}
+.tick-markdown .jm-markdown p {
+  margin: 0 0 9px;
+}
+.tick-markdown .jm-markdown h1,
+.tick-markdown .jm-markdown h2,
+.tick-markdown .jm-markdown h3,
+.tick-markdown .jm-markdown h4 {
+  margin: 14px 0 7px;
+  color: #f4f7fe;
+  font-weight: 660;
+  line-height: 1.38;
+}
+.tick-markdown .jm-markdown h1 {
+  font-size: 17px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #282d3b;
+}
+.tick-markdown .jm-markdown h2 {
+  font-size: 15.5px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid #242834;
+}
+.tick-markdown .jm-markdown h3 {
+  font-size: 14.2px;
+  color: #bcd0fb;
+}
+.tick-markdown .jm-markdown h4 {
+  font-size: 13.5px;
+  color: #a9b8d8;
+}
+.tick-markdown .jm-markdown ul,
+.tick-markdown .jm-markdown ol {
+  margin: 0 0 9px;
+  padding-left: 20px;
+}
+.tick-markdown .jm-markdown li {
+  margin: 3px 0;
+}
+.tick-markdown .jm-markdown strong {
+  color: #ffffff;
+  font-weight: 650;
+}
+.tick-markdown .jm-markdown blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid #4c7ef3;
+  border-radius: 0 6px 6px 0;
+  background: rgba(76, 126, 243, 0.08);
+  color: #b7c2da;
+}
+.tick-markdown .jm-markdown a {
+  color: #7ab0ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.tick-markdown .jm-markdown code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: #232735;
+  color: #c9dbff;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+.tick-markdown .jm-markdown hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid #2a2f3e;
+}
+.tick-markdown .jm-table {
+  margin: 8px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid #2c3142;
+}
+.tick-markdown .jm-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.tick-markdown .jm-markdown th,
+.tick-markdown .jm-markdown td {
+  padding: 6px 9px;
+  border-bottom: 1px solid #262b39;
+  border-right: 1px solid #262b39;
+  text-align: left;
+  vertical-align: top;
+}
+.tick-markdown .jm-markdown th:last-child,
+.tick-markdown .jm-markdown td:last-child {
+  border-right: 0;
+}
+.tick-markdown .jm-markdown tr:last-child td {
+  border-bottom: 0;
+}
+.tick-markdown .jm-markdown th {
+  background: #1d2230;
+  color: #dce6fa;
+  font-weight: 620;
+}
+.tick-markdown .jm-markdown tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+.tick-markdown .jm-code {
+  position: relative;
+  margin: 8px 0;
+  border-radius: 9px;
+  border: 1px solid #2e3548;
+  background: #101218;
+  overflow: hidden;
+}
+.tick-markdown .jm-code pre {
+  margin: 0;
+  padding: 36px 12px 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #e2e8f6;
+}
+.tick-markdown .jm-code pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+.tick-markdown .jm-code-copy {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid #3c4764;
+  border-radius: 6px;
+  background: #202636;
+  color: #d6e4ff;
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 1;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.tick-markdown .jm-code-copy:hover {
+  border-color: #5b84e2;
+  background: #2a344c;
+  color: #ffffff;
+}
+.tick-markdown .jm-code-copy::after {
+  content: "复制";
+}
+.tick-markdown .jm-code-copy:has(.anticon-check) {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+}
+.tick-markdown .jm-code-copy:has(.anticon-check)::after {
+  content: "已复制";
+}
+
+/* 直接可见的对话与批示时间线 */
+.tick-timeline-section {
+  gap: 9px;
+}
+.tick-timeline-empty {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px dashed #2b2f3c;
+  color: #777f92;
+  font-size: 12px;
+}
+.tick-timeline-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tick-event-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid #262c3b;
+  border-left: 3px solid #4c7ef3;
+  background: #151822;
+}
+.tick-event-card[data-role="boss"] {
+  border-color: rgba(245, 158, 11, 0.34);
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+}
+.tick-event-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.tick-event-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tick-event-card__by {
+  color: #93b8ff;
+  font-size: 12px;
+  font-weight: 650;
+}
+.tick-event-card[data-role="boss"] .tick-event-card__by {
+  color: #fbbf24;
+}
+.tick-event-card__kind {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #9da6ba;
+  font-size: 11px;
+}
+.tick-event-card__time {
+  color: #767f94;
+  font-size: 11px;
+}
+.tick-event-card__body {
+  min-width: 0;
 }
 
 .tick-detail-section {
@@ -1229,6 +1605,112 @@
   word-break: break-word;
 }
 
+/* 底部常驻「批示 / 回复给 AI」快捷输入条 */
+.tick-reply-bar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid #2a3040;
+  background: #171922;
+}
+.tick-reply-bar__head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.tick-reply-bar__title {
+  color: #c8d2ea;
+  font-size: 12px;
+  font-weight: 640;
+}
+.tick-reply-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.tick-reply-target {
+  padding: 3px 9px;
+  border: 1px solid #303647;
+  border-radius: 999px;
+  background: #1d212c;
+  color: #9ba5bc;
+  font-size: 11.5px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+.tick-reply-target:hover {
+  border-color: #4f5975;
+  color: #edf1fa;
+}
+.tick-reply-target[data-active="true"][data-target="Claude"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.22);
+  color: #dbe8ff;
+}
+.tick-reply-target[data-active="true"][data-target="HanXin"] {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.2);
+  color: #d1fae5;
+}
+.tick-reply-target[data-active="true"][data-target="none"] {
+  border-color: #6b7280;
+  background: #2c2f3a;
+  color: #f3f4f6;
+}
+.tick-reply-bar__composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.tick-reply-bar__input {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  max-height: 132px;
+  padding: 8px 10px;
+  border: 1px solid #303648;
+  border-radius: 8px;
+  background: #11131a;
+  color: #eef1f8;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+}
+.tick-reply-bar__input:focus {
+  border-color: #4c7ef3;
+}
+.tick-reply-bar__input::placeholder {
+  color: #6a7285;
+}
+.tick-reply-bar__send {
+  flex: 0 0 auto;
+  padding: 8px 13px;
+  border: 1px solid #4772db;
+  border-radius: 8px;
+  background: #3b66d6;
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s ease, opacity 0.14s ease;
+}
+.tick-reply-bar__send:hover:not(:disabled) {
+  background: #4c79ea;
+}
+.tick-reply-bar__send:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
 .tick-detail__foot {
   display: flex;
   align-items: center;
@@ -1264,11 +1746,24 @@
   min-height: 0;
   overflow: hidden;
 }
+.tick-drawer-backdrop {
+  display: none;
+}
 .tick-drawer-panel {
   display: flex;
-  flex: 0 0 382px;
+  flex: 0 0 clamp(382px, 32vw, 480px);
+  min-width: 0;
   min-height: 0;
   box-shadow: -8px 0 28px rgba(0, 0, 0, 0.35);
+}
+.tick-list-detail-wrap {
+  flex: 0 0 var(--tick-detail-w, 440px);
+  width: var(--tick-detail-w, 440px);
+  max-width: 72vw;
+  box-shadow: none;
+}
+.tick-list-detail-wrap .tick-detail {
+  border-left: 0;
 }
 
 .tick-view-header {
@@ -2226,11 +2721,13 @@
  * 窄屏响应式适配
  *==========================================================*/
 @media (max-width: 1020px) {
-  .tick-detail {
-    flex: 0 0 320px;
-  }
   .tick-drawer-panel {
-    flex: 0 0 320px;
+    flex: 0 0 340px;
+  }
+  .tick-list-detail-wrap {
+    flex: 0 0 var(--tick-detail-w, 380px);
+    width: var(--tick-detail-w, 380px);
+    max-width: 58vw;
   }
 }
 
@@ -2240,9 +2737,29 @@
   }
   .tick-sidebar {
     flex: 0 0 184px;
+    width: 184px;
+    border-right: 1px solid #26262b;
+  }
+  .tick-resizer,
+  .tick-wide-toggle {
+    display: none;
+  }
+  .tick-list-main {
+    min-width: 0;
   }
   .tick-detail {
     display: none;
+  }
+  .tick-list-detail-wrap[data-open="false"] {
+    display: none;
+  }
+  .tick-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: rgba(6, 8, 13, 0.65);
+    backdrop-filter: blur(2px);
   }
   .tick-quadrant-grid {
     grid-template-columns: 1fr;
@@ -2270,11 +2787,30 @@
     right: 0;
     bottom: 0;
     z-index: 60;
-    width: min(360px, 92vw);
+    flex: none;
+    width: min(460px, 100vw);
+    max-width: 100vw;
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.6);
   }
   .tick-drawer-panel .tick-detail {
     display: flex;
     flex: 1;
     width: 100%;
+    max-width: 100%;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .tick-drawer-panel {
+    left: 0;
+    width: 100vw;
+  }
+  .tick-reply-bar__composer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .tick-reply-bar__send {
+    align-self: flex-end;
   }
 }

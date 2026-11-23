@@ -48,7 +48,8 @@ export interface TickListViewProps {
     taskId: string,
     text: string,
     kind: api.ControlTaskEventKind,
-  ) => Promise<void>;
+    options?: { notifyHelper?: string; broadcast?: boolean },
+  ) => Promise<boolean>;
   /** 新建自定义清单回调。 */
   onCreateList: (name: string, icon: string) => Promise<void>;
   /** 删除自定义清单回调。 */
@@ -61,6 +62,45 @@ const SORT_LABELS: Readonly<Record<utils.TickSortMode, string>> = {
   priority: '按象限优先级',
   dueDate: '按到期日期',
 };
+
+const SIDEBAR_WIDTH_KEY = 'jmbots.tick.sidebarWidth';
+const DETAIL_WIDTH_KEY = 'jmbots.tick.detailWidth';
+const DEFAULT_SIDEBAR_WIDTH = 226;
+const MIN_SIDEBAR_WIDTH = 160;
+const MAX_SIDEBAR_WIDTH = 380;
+const DEFAULT_DETAIL_WIDTH = 440;
+const MIN_DETAIL_WIDTH = 300;
+const MAX_DETAIL_WIDTH = 860;
+const WIDE_DETAIL_WIDTH = 720;
+
+/** 把列宽限制在允许区间内。 */
+function clampWidth(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/** 从 localStorage 读取列宽，异常或越界时回退默认值。 */
+function readStoredWidth(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+
+    const num = Number(raw);
+    if (!Number.isFinite(num)) return fallback;
+
+    return clampWidth(num, min, max);
+  } catch {
+    return fallback;
+  }
+}
+
+/** 持久化列宽到 localStorage（隐私模式失败静默跳过）。 */
+function writeStoredWidth(key: string, value: number): void {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    return;
+  }
+}
 
 /** 计算当前过滤视图的顶部标题与图标。 */
 function getFilterHeader(
@@ -100,6 +140,33 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
   const [collapsedIds, setCollapsedIds] = react.useState<ReadonlySet<string>>(() => new Set());
   const [completedOpen, setCompletedOpen] = react.useState(true);
   const [sidebarOpen, setSidebarOpen] = react.useState(true);
+
+  //M 左右两条竖向分割条的可拖拽列宽与宽读模式状态。
+  const [sidebarWidth, setSidebarWidth] = react.useState(() =>
+    readStoredWidth(SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
+  );
+  const [detailWidth, setDetailWidth] = react.useState(() =>
+    readStoredWidth(DETAIL_WIDTH_KEY, DEFAULT_DETAIL_WIDTH, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH),
+  );
+  const [draggingSide, setDraggingSide] = react.useState<'sidebar' | 'detail' | undefined>(
+    undefined,
+  );
+  const preWideWidthRef = react.useRef<number>(DEFAULT_DETAIL_WIDTH);
+  const dragCleanupRef = react.useRef<(() => void) | undefined>(undefined);
+
+  react.useEffect(() => {
+    writeStoredWidth(SIDEBAR_WIDTH_KEY, sidebarWidth);
+  }, [sidebarWidth]);
+
+  react.useEffect(() => {
+    writeStoredWidth(DETAIL_WIDTH_KEY, detailWidth);
+  }, [detailWidth]);
+
+  react.useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.();
+    };
+  }, []);
 
   //M 顶部快速添加栏状态。
   const [quickTitle, setQuickTitle] = react.useState('');
@@ -343,11 +410,74 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
   }
   const tomorrowStr = utils.addDaysStr(todayStr, 1);
 
+  /** 开始拖拽左侧清单栏或右侧详情栏分割条（拖动期间禁用全局选字）。 */
+  const startResize = (
+    side: 'sidebar' | 'detail',
+    event: react.PointerEvent<HTMLDivElement>,
+  ): void => {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    dragCleanupRef.current?.();
+
+    const startX = event.clientX;
+    let startWidth = detailWidth;
+    if (side === 'sidebar') {
+      startWidth = sidebarWidth;
+    }
+
+    setDraggingSide(side);
+    document.body.classList.add('tick-resizing');
+
+    const onMove = (ev: PointerEvent): void => {
+      const delta = ev.clientX - startX;
+      if (side === 'sidebar') {
+        setSidebarWidth(clampWidth(startWidth + delta, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH));
+        return;
+      }
+      setDetailWidth(clampWidth(startWidth - delta, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH));
+    };
+
+    const cleanup = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+      document.body.classList.remove('tick-resizing');
+      setDraggingSide(undefined);
+      dragCleanupRef.current = undefined;
+    };
+
+    dragCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
+  };
+
+  /** 在当前宽度与 720px 宽读模式间切换详情面板宽度。 */
+  const toggleWideRead = (): void => {
+    if (detailWidth >= WIDE_DETAIL_WIDTH - 20) {
+      let restore = DEFAULT_DETAIL_WIDTH;
+      if (preWideWidthRef.current < WIDE_DETAIL_WIDTH - 20) {
+        restore = preWideWidthRef.current;
+      }
+      setDetailWidth(clampWidth(restore, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH));
+      return;
+    }
+    preWideWidthRef.current = detailWidth;
+    setDetailWidth(WIDE_DETAIL_WIDTH);
+  };
+
+  const columnVars = {
+    '--tick-sidebar-w': `${String(sidebarWidth)}px`,
+    '--tick-detail-w': `${String(detailWidth)}px`,
+  } as react.CSSProperties;
+
   return (
-    <div className="tick-three-col">
-      {/* 左栏：智能箱 + 清单 + 标签 + 已完成/垃圾桶 */}
+    <div className="tick-three-col" style={columnVars}>
+      {/* 左栏：智能箱 + 清单 + 标签 + 已完成/垃圾桶 + 可拖拽分割条 */}
       {sidebarOpen && (
-        <aside className="tick-sidebar" aria-label="清单与智能箱">
+        <>
+          <aside className="tick-sidebar" aria-label="清单与智能箱">
           <div className="tick-sidebar__group">
             <button
               type="button"
@@ -553,6 +683,17 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
             </button>
           </div>
         </aside>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整清单侧栏宽度（双击恢复默认）"
+            title="拖动调整侧栏宽度 · 双击恢复默认"
+            className="tick-resizer"
+            data-dragging={draggingSide === 'sidebar'}
+            onPointerDown={(e) => startResize('sidebar', e)}
+            onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+          />
+        </>
       )}
 
       {/* 中栏：标题、快速添加与多级父子任务树 */}
@@ -910,18 +1051,47 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
         </div>
       </section>
 
-      {/* 右栏：固定任务详情面板 */}
-      <detail.TickTaskDetail
-        task={selectedTask}
-        allTasks={tasks}
-        lists={lists}
-        todayStr={todayStr}
-        onSelectTask={(id) => onSelectTask(id)}
-        onPatchTask={onPatchTask}
-        onCreateTask={onCreateTask}
-        onAppendEvent={onAppendEvent}
-        onDeleteTask={onDeleteTask}
+      {/* 窄屏选中任务时的半透明遮罩层（桌面端隐藏） */}
+      {selectedTask !== undefined && (
+        <div
+          className="tick-drawer-backdrop"
+          aria-hidden="true"
+          onClick={() => onSelectTask(undefined)}
+        />
+      )}
+
+      {/* 右侧详情分割条（桌面端生效，窄屏自动隐藏；双击恢复 440px） */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整详情面板宽度（双击恢复默认）"
+        title="拖动调整详情宽度 · 双击恢复默认"
+        className="tick-resizer"
+        data-dragging={draggingSide === 'detail'}
+        onPointerDown={(e) => startResize('detail', e)}
+        onDoubleClick={() => setDetailWidth(DEFAULT_DETAIL_WIDTH)}
       />
+
+      {/* 右栏：桌面端固定详情栏；窄屏（<=799px）选中任务时以抽屉浮层滑出 */}
+      <div
+        className="tick-drawer-panel tick-list-detail-wrap"
+        data-open={selectedTask !== undefined}
+      >
+        <detail.TickTaskDetail
+          task={selectedTask}
+          allTasks={tasks}
+          lists={lists}
+          todayStr={todayStr}
+          wideRead={detailWidth >= WIDE_DETAIL_WIDTH - 20}
+          onToggleWideRead={toggleWideRead}
+          onClose={() => onSelectTask(undefined)}
+          onSelectTask={(id) => onSelectTask(id)}
+          onPatchTask={onPatchTask}
+          onCreateTask={onCreateTask}
+          onAppendEvent={onAppendEvent}
+          onDeleteTask={onDeleteTask}
+        />
+      </div>
     </div>
   );
 }

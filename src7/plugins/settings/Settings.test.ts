@@ -88,6 +88,7 @@ test('设置页按插件名只读写五个已开放的插件字段', async () =>
   const initial = await app.inject('/api/settings');
   expect(initial.json().config.plugins).toEqual({
     'base-bridge': { config: { index_url: 'http://127.0.0.1:9' } },
+    'image-gen': { config: {} },
     'model-catalog': { config: { fallback: { chain: ['mock/listed'] } } },
   });
   const fallback = ['plugins', 'model-catalog', 'config', 'fallback'];
@@ -131,6 +132,244 @@ test('设置页按插件名只读写五个已开放的插件字段', async () =>
     const denied = await app.inject({ method: 'PUT', url: '/api/settings', payload });
     expect(denied.statusCode).toBe(400);
     expect(denied.json<{ error: string }>().error).toContain('该插件字段不能从设置页修改');
+  }
+  expect(fs.readFileSync(file, 'utf8')).toBe(written);
+});
+
+
+test('shell 段能读能改：密钥遮住，改 shell.port 保留注释、BOM 和别的键', async () => {
+  const { app, root } = await setup();
+  const file = path.join(root, 'config.yaml');
+  fs.writeFileSync(file, '﻿' + [
+    'providers:',
+    '  mock:',
+    '    base_url: http://127.0.0.1:9',
+    'default_model: mock/listed',
+    'bots: []',
+    'shell:',
+    '  port: 30085 # 基地端口注释',
+    '  token: SHELL_SECRET_TOKEN',
+    '  libs: data/index/libs',
+    '',
+  ].join('\n'));
+
+  const initial = await app.inject('/api/settings');
+  expect(initial.body).not.toContain('SHELL_SECRET_TOKEN');
+  const shell = initial.json().config.shell;
+  expect(shell.port).toBe(30085);
+  expect(shell.libs).toBe('data/index/libs');
+  expect(shell.token).toMatch(/^‹已设置:[0-9a-f]{8}›$/u);
+
+  const payload = [{ path: ['shell', 'port'], value: 30095 }];
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings', payload });
+  expect(saved.statusCode).toBe(200);
+  const written = fs.readFileSync(file, 'utf8');
+  expect(written.startsWith('﻿')).toBe(true);
+  expect(written).toContain('port: 30095 # 基地端口注释');
+  expect(written).toContain('token: SHELL_SECRET_TOKEN');
+  expect(written).toContain('libs: data/index/libs');
+});
+
+
+/** relay、approval、memory、frpc 新开放字段用的插件段。 */
+const PHASE2_PLUGINS = [
+  'plugins:',
+  '  - name: relay',
+  '    config:',
+  '      remind_minutes: 5 # 催促注释',
+  '      helpers:',
+  '        - name: Claude',
+  '          prefixes: [cc]',
+  '          webhook_header: "Bearer RELAY_SECRET_HEADER"',
+  '        - name: Grok',
+  '          prefixes: [gk]',
+  '      owner_p2p_direct:',
+  '        - { bot: 周小灵, helper: Claude }',
+  '  - name: approval',
+  '    config: { model: mock/listed }',
+  '  - name: memory',
+  '    config:',
+  '      backend_token: MEMORY_SECRET_TOKEN',
+  '      recall_history: 3',
+  '      backfill:',
+  '        enabled: false # 回填注释',
+  '  - name: frpc',
+];
+
+
+test('relay、approval、memory、frpc 开放字段：读只给白名单，helpers 只给名字，改了保留注释和凭据', async () => {
+  const { app, root } = await setup(true, PHASE2_PLUGINS);
+
+  //M 读：凭据不出现，登记了没写字段的插件也给空视图。
+  const initial = await app.inject('/api/settings');
+  expect(initial.body).not.toContain('RELAY_SECRET_HEADER');
+  expect(initial.body).not.toContain('MEMORY_SECRET_TOKEN');
+  expect(initial.json().config.plugins).toEqual({
+    relay: {
+      config: { remind_minutes: 5, owner_p2p_direct: [{ bot: '周小灵', helper: 'Claude' }] },
+      helpers: ['Claude', 'Grok'],
+    },
+    approval: { config: {} },
+    memory: { config: { recall_history: 3, backfill: { enabled: false } } },
+    frpc: { config: {} },
+  });
+
+  //M 改：每个新开放字段都写一次。
+  const trustedDir = path.join(root, 'trusted');
+  const frpcDir = path.join(root, 'frp-clients');
+  const memory = ['plugins', 'memory', 'config'];
+  const relay = ['plugins', 'relay', 'config'];
+  const changes = [
+    { path: [...relay, 'remind_minutes'], value: 0 },
+    { path: [...relay, 'expire_minutes'], value: 30 },
+    { path: [...relay, 'owner_p2p_direct'], value: [{ bot: '周小灵', helper: 'Grok' }] },
+    { path: [...relay, 'owner_group_direct'], value: [{ chat_id: 'oc_1', bot: '周小灵', helper: 'Claude' }] },
+    { path: [...relay, 'exclusive_bots'], value: [{ bot: '韩信', helper: 'Claude' }] },
+    { path: ['plugins', 'approval', 'config', 'trusted_dirs'], value: [trustedDir] },
+    { path: [...memory, 'history'], value: false },
+    { path: [...memory, 'recall_knowledge'], value: 5 },
+    { path: [...memory, 'service_url'], value: 'http://127.0.0.1:30087' },
+    { path: [...memory, 'backend_timeout_ms'], value: 9000 },
+    { path: [...memory, 'backfill', 'batch_size'], value: 50 },
+    { path: [...memory, 'backfill', 'interval_ms'], value: 3000 },
+    { path: ['plugins', 'frpc', 'config', 'dir'], value: frpcDir },
+  ];
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings', payload: changes });
+  expect(saved.statusCode).toBe(200);
+
+  const readBack = await app.inject('/api/settings');
+  expect(readBack.json().config.plugins).toEqual({
+    relay: {
+      config: {
+        remind_minutes: 0,
+        expire_minutes: 30,
+        owner_p2p_direct: [{ bot: '周小灵', helper: 'Grok' }],
+        owner_group_direct: [{ chat_id: 'oc_1', bot: '周小灵', helper: 'Claude' }],
+        exclusive_bots: [{ bot: '韩信', helper: 'Claude' }],
+      },
+      helpers: ['Claude', 'Grok'],
+    },
+    approval: { config: { trusted_dirs: [trustedDir] } },
+    memory: { config: {
+      history: false,
+      recall_history: 3,
+      recall_knowledge: 5,
+      service_url: 'http://127.0.0.1:30087',
+      backend_timeout_ms: 9000,
+      backfill: { enabled: false, batch_size: 50, interval_ms: 3000 },
+    } },
+    frpc: { config: { dir: frpcDir } },
+  });
+
+  //M 文件里：注释、凭据、没开放的键都还在。
+  const written = fs.readFileSync(path.join(root, 'config.yaml'), 'utf8');
+  expect(written).toContain('催促注释');
+  expect(written).toContain('回填注释');
+  expect(written).toContain('Bearer RELAY_SECRET_HEADER');
+  expect(written).toContain('backend_token: MEMORY_SECRET_TOKEN');
+  expect(written).toContain('model: mock/listed');
+});
+
+
+test('relay、approval、memory、frpc 开放字段：值不对、越界、凭据字段一律 400，文件不变', async () => {
+  const { app, root } = await setup(true, PHASE2_PLUGINS);
+  const file = path.join(root, 'config.yaml');
+  const before = fs.readFileSync(file, 'utf8');
+  const relay = ['plugins', 'relay', 'config'];
+  const memory = ['plugins', 'memory', 'config'];
+  const cases: [(string | number)[], unknown, string][] = [
+    [[...relay, 'remind_minutes'], -1, '值类型不对'],
+    [[...relay, 'expire_minutes'], 1.5, '值类型不对'],
+    [[...relay, 'owner_p2p_direct'], [{ bot: '', helper: 'Claude' }], '值类型不对'],
+    [[...relay, 'owner_p2p_direct'], [{ bot: ' 周小灵', helper: 'Claude' }], '值类型不对'],
+    [[...relay, 'owner_p2p_direct'], [{ bot: '周小灵', helper: 'Nobody' }], '不在 relay 的 helpers 里'],
+    [[...relay, 'exclusive_bots'], [{ bot: '韩信', helper: 'Claude' }, { bot: '韩信', helper: 'Grok' }], '写了两次'],
+    [[...relay, 'owner_group_direct'], [{ bot: '周小灵', helper: 'Claude' }], '值类型不对'],
+    [[...relay, 'helpers'], [], '该插件字段不能从设置页修改'],
+    [[...relay, 'helpers', 0, 'webhook_header'], 'x', '该插件字段不能从设置页修改'],
+    [['plugins', 'approval', 'config', 'trusted_dirs'], ['relative/dir'], '值类型不对'],
+    [[...memory, 'backfill', 'batch_size'], 0, '值类型不对'],
+    [[...memory, 'backfill', 'batch_size'], 101, '值类型不对'],
+    [[...memory, 'backfill', 'interval_ms'], 0, '值类型不对'],
+    [[...memory, 'service_url'], 'ftp://127.0.0.1', '值类型不对'],
+    [[...memory, 'history'], 'yes', '值类型不对'],
+    [[...memory, 'backend_token'], 'x', '该插件字段不能从设置页修改'],
+    [['plugins', 'frpc', 'config', 'dir'], '  ', '值类型不对'],
+    [['plugins', 'feishu', 'config', 'groups', 'oc_1', 'listen'], 'all', '请先在 config.yaml 登记插件 feishu'],
+  ];
+  for (const [stepPath, value, reason] of cases) {
+    const payload = [{ path: stepPath, value }];
+    const denied = await app.inject({ method: 'PUT', url: '/api/settings', payload });
+    expect(denied.statusCode).toBe(400);
+    expect(denied.json<{ error: string }>().error).toContain(reason);
+  }
+  expect(fs.readFileSync(file, 'utf8')).toBe(before);
+});
+
+
+test('飞书群策略：按 chat_id 只改 listen、trusted，同群其他字段和注释留着，app_secret 不回显', async () => {
+  const { app, root } = await setup(true, [
+    'channels:',
+    '  feishu:',
+    '    - app_id: cli_test',
+    '      app_secret: FEISHU_APP_SECRET',
+    'plugins:',
+    '  - name: feishu',
+    '    config:',
+    '      groups:',
+    '        - chat_id: oc_daily',
+    '          name: 日报群',
+    '          relay: model # 转话注释',
+    '          judge_threshold: 0.7',
+    '          daily: { hour: 9, minute: 0, bot: 周小灵, prompt: 写日报 }',
+    '        - { chat_id: oc_plain, listen: judge, trusted: true }',
+  ]);
+
+  //M 读：listen 没写的照默认算（有 daily 是 all），密钥换成代号。
+  const initial = await app.inject('/api/settings');
+  expect(initial.body).not.toContain('FEISHU_APP_SECRET');
+  expect(initial.json().config.plugins.feishu.config.groups).toEqual({
+    oc_daily: { name: '日报群', listen: 'all', trusted: false },
+    oc_plain: { name: '', listen: 'judge', trusted: true },
+  });
+
+  //M 改：日报群改 judge 并受信，另一个群删掉 listen 回默认。
+  const groups = ['plugins', 'feishu', 'config', 'groups'];
+  const changes = [
+    { path: [...groups, 'oc_daily', 'listen'], value: 'judge' },
+    { path: [...groups, 'oc_daily', 'trusted'], value: true },
+    { path: [...groups, 'oc_plain', 'listen'], delete: true },
+  ];
+  const saved = await app.inject({ method: 'PUT', url: '/api/settings', payload: changes });
+  expect(saved.statusCode).toBe(200);
+  const readBack = await app.inject('/api/settings');
+  expect(readBack.json().config.plugins.feishu.config.groups).toEqual({
+    oc_daily: { name: '日报群', listen: 'judge', trusted: true },
+    oc_plain: { name: '', listen: 'mention', trusted: true },
+  });
+
+  //M 文件里：同群的 relay、judge_threshold、daily 和注释都在，app_secret 原样。
+  const file = path.join(root, 'config.yaml');
+  const written = fs.readFileSync(file, 'utf8');
+  expect(written).toContain('relay: model # 转话注释');
+  expect(written).toContain('judge_threshold: 0.7');
+  expect(written).toContain('prompt: 写日报');
+  expect(written).toContain('app_secret: FEISHU_APP_SECRET');
+
+  //M 不对的：值不对、群没登记、别的键、按下标改，一律 400，文件不变。
+  const cases: [(string | number)[], unknown, string][] = [
+    [[...groups, 'oc_daily', 'listen'], 'loud', 'listen 只能是'],
+    [[...groups, 'oc_daily', 'trusted'], 'yes', '值类型不对'],
+    [[...groups, 'oc_missing', 'listen'], 'all', '没在 feishu 插件的 groups 里登记'],
+    [[...groups, 'oc_daily', 'relay'], 'direct', '该插件字段不能从设置页修改'],
+    [[...groups, 0, 'listen'], 'all', '该插件字段不能从设置页修改'],
+    [groups, [], '该插件字段不能从设置页修改'],
+  ];
+  for (const [stepPath, value, reason] of cases) {
+    const payload = [{ path: stepPath, value }];
+    const denied = await app.inject({ method: 'PUT', url: '/api/settings', payload });
+    expect(denied.statusCode).toBe(400);
+    expect(denied.json<{ error: string }>().error).toContain(reason);
   }
   expect(fs.readFileSync(file, 'utf8')).toBe(written);
 });

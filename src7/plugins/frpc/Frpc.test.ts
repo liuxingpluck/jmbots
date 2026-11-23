@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as process from 'node:process';
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import type * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import * as failureModule from '../../utils/Failure.ts';
@@ -186,6 +186,141 @@ describe('frpc 托盘 BOM 兼容与 Windows 开机自启脚本', () => {
     expect(runner.readAutoStart()).toBe(false);
     // 再次删除保持幂等
     expect(runner.writeAutoStart(clientDir, false)).toBe(false);
+  });
+
+  test('Startup 目录已在时不走 mkdir：模拟 Windows Bun 对它抛 EEXIST 也照样写好 LeonFRPS-Tray.vbs', () => {
+    const clientDir = makeTempDir('frpc-client-');
+    const appdataDir = makeTempDir('frpc-appdata-');
+    const startTrayPath = path.join(clientDir, 'start-tray.vbs');
+    fs.writeFileSync(startTrayPath, 'rem tray\r\n', 'utf8');
+    const vbsFile = processModule.getStartupVbsPath(appdataDir);
+    fs.mkdirSync(path.dirname(vbsFile), { recursive: true });
+
+    // 模拟 Windows 上的 Bun：对已存在的 Startup 目录 mkdirSync(recursive) 抛 EEXIST
+    const mkdirSpy = spyOn(fs, 'mkdirSync').mockImplementation(() => {
+      const error = new Error('EEXIST: file already exists, mkdir') as NodeJS.ErrnoException;
+      error.code = 'EEXIST';
+      throw error;
+    });
+    try {
+      // 反证桩确实打到 Process.ts：Startup 目录不在的 APPDATA 要 mkdir，就会抛出 EEXIST
+      const missingRunner = processModule.createDefaultRunner(makeTempDir('frpc-appdata-missing-'));
+      expect(() => missingRunner.writeAutoStart(clientDir, true)).toThrow('EEXIST');
+      expect(mkdirSpy).toHaveBeenCalledTimes(1);
+      mkdirSpy.mockClear();
+
+      const runner = processModule.createDefaultRunner(appdataDir);
+      expect(runner.writeAutoStart(clientDir, true)).toBe(true);
+      // 目标已在时再写一次：改名盖过去，照样成功
+      expect(runner.writeAutoStart(clientDir, true)).toBe(true);
+      expect(mkdirSpy).not.toHaveBeenCalled();
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(vbsFile, 'utf8')).toContain(startTrayPath);
+    const leftovers = fs.readdirSync(path.dirname(vbsFile)).filter((item) => item.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
+});
+
+
+describe('frpc 启动脱离 jmbots-server 进程树（WMI 拉起）与 start 状态收敛', () => {
+  /** 在客户端目录写一份新鲜的 tray-status.json，模拟托盘或 frpc 已经起来。PID 用本进程，保证存活。 */
+  function writeFreshTrayStatus(dir: string, trayPid: number): void {
+    const status = {
+      trayPid,
+      frpcPid: process.pid,
+      frpcRunning: true,
+      frpcConnected: true,
+      detail: '在线',
+      updatedAt: '2026-11-23 08:30:00',
+    };
+    fs.writeFileSync(path.join(dir, 'tray-status.json'), JSON.stringify(status), 'utf8');
+  }
+
+  /** 建一个带 frpc.exe、frpc.toml 的假客户端目录；withTray 时再放 start-tray.vbs。 */
+  function makeClientDir(withTray: boolean): string {
+    const dir = makeTempDir('frpc-start-');
+    fs.writeFileSync(path.join(dir, 'frpc.exe'), '', 'utf8');
+    fs.writeFileSync(path.join(dir, 'frpc.toml'), SAMPLE_TOML, 'utf8');
+    if (withTray) {
+      fs.writeFileSync(path.join(dir, 'start-tray.vbs'), 'rem tray\r\n', 'utf8');
+    }
+    return dir;
+  }
+
+  test('有托盘脚本：只经启动器拉起托盘，托盘带起 frpc 后不再重复拉 frpc，状态收敛为在线', async () => {
+    const clientDir = makeClientDir(true);
+    const launches: string[][] = [];
+    const fakeLaunch: processModule.DetachedLauncher = async (command, args, cwd) => {
+      launches.push([command, ...args, cwd]);
+      writeFreshTrayStatus(clientDir, process.pid);
+      return process.pid;
+    };
+
+    const runner = processModule.createDefaultRunner(makeTempDir('frpc-appdata-'), fakeLaunch);
+    const state = await runner.control(clientDir, 'start');
+
+    const startTrayVbs = path.join(clientDir, 'start-tray.vbs');
+    expect(launches).toEqual([['wscript.exe', '//B', '//NoLogo', startTrayVbs, clientDir]]);
+    expect(state.running).toBe(true);
+    expect(state.connected).toBe(true);
+    expect(state.trayRunning).toBe(true);
+    expect(state.pid).toBe(process.pid);
+  }, 20_000);
+
+  test('没有托盘脚本：经启动器直接拉起 frpc.exe -c frpc.toml，状态收敛为在线', async () => {
+    const clientDir = makeClientDir(false);
+    const launches: string[][] = [];
+    const fakeLaunch: processModule.DetachedLauncher = async (command, args, cwd) => {
+      launches.push([command, ...args, cwd]);
+      writeFreshTrayStatus(clientDir, 0);
+      return process.pid;
+    };
+
+    const runner = processModule.createDefaultRunner(makeTempDir('frpc-appdata-'), fakeLaunch);
+    const state = await runner.control(clientDir, 'start');
+
+    const frpcExe = path.join(clientDir, 'frpc.exe');
+    const frpcToml = path.join(clientDir, 'frpc.toml');
+    expect(launches).toEqual([[frpcExe, '-c', frpcToml, clientDir]]);
+    expect(state.running).toBe(true);
+    expect(state.connected).toBe(true);
+  }, 20_000);
+
+  test('WMI 启动参数：命令行给带空格的路径加引号，脚本只经环境变量取命令行和目录，Windows 上语法可解析', () => {
+    const exe = path.join('frp clients', 'frpc.exe');
+    const toml = path.join('frp clients', 'frpc.toml');
+    const line = processModule.buildWindowsCommandLine(exe, ['-c', toml]);
+    expect(line).toBe(`"${exe}" -c "${toml}"`);
+    expect(processModule.buildWindowsCommandLine('wscript.exe', ['//B', '//NoLogo'])).toBe('wscript.exe //B //NoLogo');
+
+    const script = processModule.WMI_LAUNCH_SCRIPT;
+    expect(script).toContain("[wmiclass]'Win32_Process'");
+    expect(script).toContain('$startup.ShowWindow = 0');
+    expect(script).toContain('$env:FRPC_LAUNCH_CMD');
+    expect(script).toContain('$env:FRPC_LAUNCH_CWD');
+    if (process.platform !== 'win32') return;
+
+    // Windows 上只做 PowerShell AST 语法解析，不真的拉起任何进程
+    const parseCmd = [
+      '$tokens = $null; $errors = $null',
+      '[void][System.Management.Automation.Language.Parser]::ParseInput($env:WMI_SCRIPT, [ref]$tokens, [ref]$errors)',
+      'if ($errors.Count -gt 0) { Write-Error ($errors | Out-String); exit 1 }',
+      'Write-Output "PS_AST_OK"',
+    ].join('; ');
+    const proc = childProcess.spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', parseCmd],
+      {
+        windowsHide: true,
+        env: { ...process.env, WMI_SCRIPT: script },
+        encoding: 'utf8',
+      },
+    );
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).toContain('PS_AST_OK');
   });
 });
 

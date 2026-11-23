@@ -163,6 +163,66 @@ export function NumberField(
 
 
 /**
+ * 一列文字（如可信目录）：每项一行输入框，能改、能删、能加。
+ * 改哪一项都整列写回（插件字段后端只认整列，见 src7/plugins/settings/ConfigFile.ts）；删空了就删掉这一项（用默认值）。
+ * @param props 公共属性和每行的占位文字。
+ */
+export function TextListField(props: FieldProps & { placeholder?: string }): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于删除和追加按钮的文案。
+  const t = i18n.useT();
+  //M 从草稿读出当前列表，非文字的项不显示。
+  const value = editsModule.getAt(props.draft, props.path);
+  let list: string[] = [];
+  if (Array.isArray(value)) {
+    list = value.filter((item): item is string => typeof item === 'string');
+  }
+
+  /**
+   * 整列写回。
+   * @param next 新列表。
+   */
+  const save = (next: string[]): void => {
+    const edit = getValueOrDeleteEdit(props.path, next, next.length > 0);
+    props.onEdit(edit);
+  };
+
+  //M 渲染文字列表：每行一个输入框和删除按钮，末尾一个追加按钮。
+  return (
+    <Row label={props.label} hint={props.hint} path={props.path}>
+      <div className="jm-objects">
+        {list.map((item, index) => (
+          <div key={index} className="jm-object-row">
+            <antd.Input
+              className="jm-object-cell"
+              value={item}
+              placeholder={props.placeholder}
+              onChange={(event) => {
+                //M 改了这一行：换掉这一项后整列写回。
+                const next = [...list];
+                next[index] = event.target.value;
+                save(next);
+              }}
+            />
+            <antd.Button
+              size="small"
+              type="text"
+              danger
+              icon={<icons.DeleteOutlined />}
+              aria-label={t('删掉这一项')}
+              onClick={() => save(list.filter((_, at) => at !== index))}
+            />
+          </div>
+        ))}
+        <antd.Button className="jm-list-add" icon={<icons.PlusOutlined />} onClick={() => save([...list, ''])}>
+          {t('加一项')}
+        </antd.Button>
+      </div>
+    </Row>
+  );
+}
+
+
+/**
  * 开关。
  * @param props 公共属性和没写时算什么。
  */

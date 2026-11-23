@@ -13,9 +13,12 @@ import * as cordis from 'cordis';
 import * as fastify from 'fastify';
 import type { ToolSpec } from '../../Tools.ts';
 import * as failureModule from '../../utils/Failure.ts';
+import * as events from '../../utils/RequestEvent.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as channel from '../channels/Reply.ts';
 import * as dbModule from '../db/index.ts';
 import * as plugin from './index.ts';
+import type * as routesModule from './Routes.ts';
 import type * as types from './Types.ts';
 
 
@@ -30,7 +33,7 @@ afterEach(async () => {
   }
 });
 
-async function createHarness(existingRoot?: string) {
+async function createHarness(existingRoot?: string, pluginConfig: Record<string, unknown> = {}) {
   const root = existingRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jm-ctrl-plane-'));
   if (existingRoot === undefined) {
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -58,9 +61,9 @@ async function createHarness(existingRoot?: string) {
   ctx.provide('resources', { db, root, raw: {} });
   ctx.provide('tools', { register: (tool: ToolSpec) => tools.set(tool.definition.name, tool) });
   ctx.provide('db', new dbModule.Db(new cordis.Context(), db));
-  await ctx.plugin(plugin, {});
+  await ctx.plugin(plugin, pluginConfig);
   await app.ready();
-  return { root, app };
+  return { root, app, ctx };
 }
 
 
@@ -649,5 +652,322 @@ describe('Control Plane Task Board：状态流转、占坑锁 409 防冲突与�
       }
     }
     expect(bad).toEqual([]);
+  });
+
+  test('notifyHelper 单向唤醒目标 helper 投递事件与返回值验证（含失败温和降级与 reply 闭环）', async () => {
+    const h = await createHarness(undefined, {
+      broadcast_target: { bot: 'BotWar', chat_id: 'oc_war_1' },
+      helper_bots: { Claude: 'BotClaude', HanXin: 'BotHanXin' },
+    });
+
+    const delivered: routesModule.DecisionRelayRequest[] = [];
+    events.onRequestEvent(h.ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
+      if (request.action === 'reply') return { ok: false };
+
+      delivered.push(request);
+      return { ok: true, id: 100 + delivered.length };
+    });
+
+    //M 1. POST /tasks 创建时附带 notifyHelper=HanXin：自动按 helper_bots 解析 bot=BotHanXin 并写入 relay 收件箱。
+    const createRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: {
+        id: 'cp-wakeup-1',
+        title: '双中控联调任务',
+        status: 'running',
+        owner: 'Claude',
+        by: 'Claude',
+        initialNote: '已建卡占锁，请接力审核',
+        notifyHelper: 'HanXin',
+      },
+    });
+    expect(createRes.statusCode).toBe(200);
+    const createdBody = createRes.json<{
+      ok: true;
+      task: types.ControlTask;
+      notifications: types.ControlTaskNotifications;
+    }>();
+    expect(createdBody.notifications.wakeup).toEqual({
+      ok: true,
+      helper: 'HanXin',
+      bot: 'BotHanXin',
+      relayId: 101,
+    });
+    expect(createdBody.notifications.broadcast).toBeUndefined();
+    expect(delivered[0]).toMatchObject({
+      action: 'deliver',
+      helper: 'HanXin',
+      bot: 'BotHanXin',
+      target: { node: 'control-plane:cp-wakeup-1' },
+    });
+    expect(delivered[0]?.text).toContain('[控制面单向唤醒 · 任务 cp-wakeup-1]');
+    expect(delivered[0]?.text).toContain('来自 Claude（状态：执行中）：双中控联调任务');
+    expect(delivered[0]?.text).toContain('进展：已建卡占锁，请接力审核');
+    expect(delivered[0]?.text).toContain('勿在群内互 @ 循环');
+
+    //M 2. POST /tasks/:id/events 显式传 notifyBot 覆盖映射，且 node 去重键随 revision 递增。
+    const evRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/cp-wakeup-1/events`,
+      payload: {
+        kind: 'note',
+        by: 'HanXin',
+        text: '复核完成，切回主控验收',
+        notifyHelper: 'Claude',
+        notifyBot: 'BotCustom',
+      },
+    });
+    expect(evRes.statusCode).toBe(200);
+    const evBody = evRes.json<{ notifications: types.ControlTaskNotifications }>();
+    expect(evBody.notifications.wakeup).toEqual({
+      ok: true,
+      helper: 'Claude',
+      bot: 'BotCustom',
+      relayId: 102,
+    });
+    expect(delivered[1]?.node).not.toBe(delivered[0]?.node);
+    expect(delivered[1]?.bot).toBe('BotCustom');
+
+    //M 3. PATCH /tasks/:id 未匹配 helper_bots 时兜底取 broadcast_target.bot。
+    const patchRes = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/cp-wakeup-1`,
+      payload: {
+        status: 'done',
+        by: 'Claude',
+        reason: '全部验证通过',
+        notifyHelper: 'OtherHelper',
+      },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    expect(patchRes.json<{ notifications: types.ControlTaskNotifications }>().notifications.wakeup).toEqual({
+      ok: true,
+      helper: 'OtherHelper',
+      bot: 'BotWar',
+      relayId: 103,
+    });
+
+    //M 4. 模拟被唤醒助手经 relay 回复 control-plane:cp-wakeup-1：work-decision 直接返回 ok=true 不抛 404。
+    const replyAsked = await events.requestEvent(h.ctx, 'work-decision/note', 'work-decision/note-result', {
+      action: 'reply',
+      id: 901,
+      target: { node: 'control-plane:cp-wakeup-1' },
+      text: '收到唤醒',
+    });
+    expect(replyAsked.why).toBeUndefined();
+    expect(replyAsked.reply?.ok).toBe(true);
+
+    //M 5. relay 未挂载时：任务写盘照样 200 成功，wakeup 温和返回 ok=false 与原因。
+    const hNoRelay = await createHarness();
+    const resNoRelay = await hNoRelay.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: {
+        id: 'cp-no-relay',
+        title: '无 relay 降级验证',
+        notifyHelper: 'HanXin',
+      },
+    });
+    expect(resNoRelay.statusCode).toBe(200);
+    const noRelayBody = resNoRelay.json<{
+      task: types.ControlTask;
+      notifications: types.ControlTaskNotifications;
+    }>();
+    expect(noRelayBody.task.id).toBe('cp-no-relay');
+    expect(noRelayBody.notifications.wakeup?.ok).toBe(false);
+    expect(noRelayBody.notifications.wakeup?.helper).toBe('HanXin');
+    expect(noRelayBody.notifications.wakeup?.reason).toContain('relay');
+  });
+
+  test('broadcast: true 发送不带 <at> 的简洁群战报，未配 broadcast_target 时温和降级', async () => {
+    const h = await createHarness(undefined, {
+      broadcast_target: { channel: 'feishu', bot: 'BotWar', chat_id: 'oc_hq_9002' },
+      helper_bots: { HanXin: 'BotHanXin' },
+    });
+
+    const sentReplies: channel.ChannelReplyRequest[] = [];
+    h.ctx.on('channel/reply', (request) => {
+      request.handled = true;
+      sentReplies.push(request);
+      channel.emitReplied(h.ctx, request, channel.getReceipt(request, 'sent', ''));
+    });
+    events.onRequestEvent(h.ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
+      if (request.action === 'reply') return { ok: false };
+
+      return { ok: true, id: 55 };
+    });
+
+    //M 1. 创建任务并同时触发 notifyHelper + broadcast（含模拟 <at> 标签验证会剥离）。
+    const createRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: {
+        id: 'cp-bc-1',
+        title: '热更联调',
+        status: 'running',
+        by: '哈基米(132)',
+        initialNote: '已通知 <at user_id="ou_x">韩信</at> 开始检查',
+        notifyHelper: 'HanXin',
+        broadcast: true,
+      },
+    });
+    expect(createRes.statusCode).toBe(200);
+    const body = createRes.json<{ notifications: types.ControlTaskNotifications }>();
+    expect(body.notifications.wakeup).toEqual({
+      ok: true,
+      helper: 'HanXin',
+      bot: 'BotHanXin',
+      relayId: 55,
+    });
+    expect(body.notifications.broadcast).toEqual({
+      ok: true,
+      channel: 'feishu',
+      bot: 'BotWar',
+      chatId: 'oc_hq_9002',
+      status: 'sent',
+    });
+    expect(sentReplies).toHaveLength(1);
+    const reportText = sentReplies[0]?.parts[0]?.text ?? '';
+    expect(sentReplies[0]).toMatchObject({
+      channel: 'feishu',
+      bot: 'BotWar',
+      target: { channel: 'feishu', chat: 'oc_hq_9002' },
+    });
+    expect(reportText).not.toContain('<at');
+    expect(reportText).not.toContain('</at>');
+    expect(reportText).toContain('📋 [控制面战报] 哈基米(132) 更新「热更联调」（执行中）');
+    expect(reportText).toContain('已通知 韩信 开始检查 → 已单向唤醒 HanXin');
+
+    //M 2. 仅 broadcast: true（不带 notifyHelper）时只发简洁战报不带唤醒尾注。
+    const evRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/cp-bc-1/events`,
+      payload: {
+        kind: 'note',
+        by: '韩信(130)',
+        text: '测试全部通过',
+        broadcast: true,
+      },
+    });
+    expect(evRes.statusCode).toBe(200);
+    expect(sentReplies).toHaveLength(2);
+    const text2 = sentReplies[1]?.parts[0]?.text ?? '';
+    expect(text2).toContain('📋 [控制面战报] 韩信(130) 更新「热更联调」（执行中）\n测试全部通过');
+    expect(text2).not.toContain('已单向唤醒');
+
+    //M 3. 未配 broadcast_target 时温和返回 { ok: false, reason: '未配置 broadcast_target' } 且不阻断写盘。
+    const hNoTarget = await createHarness();
+    const res1 = await hNoTarget.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 'cp-no-bc', title: '无配置战报', broadcast: true },
+    });
+    expect(res1.statusCode).toBe(200);
+    const noTargetBody = res1.json<{
+      task: types.ControlTask;
+      notifications: types.ControlTaskNotifications;
+    }>();
+    expect(noTargetBody.task.id).toBe('cp-no-bc');
+    expect(noTargetBody.notifications.broadcast).toEqual({
+      ok: false,
+      reason: '未配置 broadcast_target',
+    });
+  });
+
+  test('非法 notifyHelper（空串/纯空白/非字符串）及非法 notifyBot / broadcast 在入口返回 400 且不写盘', async () => {
+    const h = await createHarness();
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 'cp-guard-1', title: '守卫基准任务' },
+    });
+    const beforeSnap = (await h.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+
+    const badWakeupBodies: Array<Record<string, unknown>> = [
+      { notifyHelper: '' },
+      { notifyHelper: '   ' },
+      { notifyHelper: 123 },
+      { notifyHelper: null },
+      { notifyHelper: ['HanXin'] },
+      { notifyHelper: 'HanXin', notifyBot: '' },
+      { notifyHelper: 'HanXin', notifyBot: 456 },
+      { broadcast: 'true' },
+    ];
+    for (const extra of badWakeupBodies) {
+      const postRes = await h.app.inject({
+        method: 'POST',
+        url: `${PREFIX}/tasks`,
+        payload: { title: '不应落盘', ...extra },
+      });
+      expect(postRes.statusCode).toBe(400);
+
+      const patchRes = await h.app.inject({
+        method: 'PATCH',
+        url: `${PREFIX}/tasks/cp-guard-1`,
+        payload: { reason: '不应落盘', ...extra },
+      });
+      expect(patchRes.statusCode).toBe(400);
+
+      const evRes = await h.app.inject({
+        method: 'POST',
+        url: `${PREFIX}/tasks/cp-guard-1/events`,
+        payload: { text: '不应落盘', ...extra },
+      });
+      expect(evRes.statusCode).toBe(400);
+    }
+
+    const afterSnap = (await h.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(afterSnap.revision).toBe(beforeSnap.revision);
+    expect(afterSnap.tasks).toEqual(beforeSnap.tasks);
+  });
+
+  test('config 中 broadcast_target 与 helper_bots 合法与非法配置校验', () => {
+    const applyConfig = (cfg: Record<string, unknown>): void => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-ctrl-cfg-'));
+      const ctx = new cordis.Context();
+      const app = fastify.default({ logger: false });
+      const db = new sqlite.Database(':memory:');
+      cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+      cleanups.push(() => db.close());
+      cleanups.push(async () => {
+        await app.close();
+      });
+      cleanups.push(async () => {
+        await ctx.fiber.dispose();
+      });
+      ctx.provide('http', { app });
+      ctx.provide('resources', { db, root, raw: {} });
+      ctx.provide('tools', { register: () => undefined });
+      ctx.provide('db', new dbModule.Db(new cordis.Context(), db));
+      plugin.apply(ctx, cfg);
+    };
+
+    //M 合法配置：省略 channel 时默认 feishu，helper_bots 可为空对象或有效映射（无需 public_url）。
+    expect(() => applyConfig({
+      broadcast_target: { bot: 'BotWar', chat_id: 'oc_123' },
+      helper_bots: { Claude: 'BotA', HanXin: 'BotB' },
+    })).not.toThrow();
+    expect(() => applyConfig({
+      broadcast_target: { channel: 'feishu', bot: 'BotWar', chat_id: 'oc_123' },
+      helper_bots: {},
+    })).not.toThrow();
+
+    //G 非法 broadcast_target 配置。
+    expect(() => applyConfig({ broadcast_target: 'bad' })).toThrow('broadcast_target');
+    expect(() => applyConfig({ broadcast_target: { bot: 'BotWar' } })).toThrow('broadcast_target.chat_id');
+    expect(() => applyConfig({ broadcast_target: { chat_id: 'oc_1' } })).toThrow('broadcast_target.bot');
+    expect(() => applyConfig({
+      broadcast_target: { channel: '  ', bot: 'BotWar', chat_id: 'oc_1' },
+    })).toThrow('broadcast_target.channel');
+
+    //G 非法 helper_bots 配置。
+    expect(() => applyConfig({ helper_bots: ['Claude'] })).toThrow('helper_bots');
+    expect(() => applyConfig({ helper_bots: { '  ': 'BotA' } })).toThrow('helper_bots');
+    expect(() => applyConfig({ helper_bots: { ' HanXin': 'BotA' } })).toThrow('helper_bots');
+    expect(() => applyConfig({ helper_bots: { HanXin: '' } })).toThrow('helper_bots.HanXin');
+    expect(() => applyConfig({ helper_bots: { HanXin: 123 } })).toThrow('helper_bots.HanXin');
   });
 });

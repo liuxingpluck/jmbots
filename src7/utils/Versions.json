@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.7.107",
+    "date": "2026-11-23",
+    "changes": [
+      "五合一里程碑——滴答详情 Markdown 排版/一键复制/三栏拖拽调宽/?task= 直达与批示秒醒、双中控 notifyHelper 唤醒与 AI指挥部 战报播报、frpc WMI 脱离进程树与自启防 EEXIST、设置中心 Phase 2 及教程极限压缩元模型"
+    ]
+  },
+  {
     "version": "0.7.106",
     "date": "2026-11-23",
     "changes": [

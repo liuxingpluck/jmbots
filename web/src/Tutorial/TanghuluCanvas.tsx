@@ -6,6 +6,7 @@
  * - 底部 4 栏「白话讲透面板」：一句话人话讲透、真实事件名与谁发谁听、真实 TS 载荷结构、对应源码目录与函数。
  */
 import * as react from 'react';
+import * as compactView from './CompactMetaView.tsx';
 import * as tanghuluData from './TanghuluData.ts';
 import './TanghuluCanvas.css';
 
@@ -27,10 +28,11 @@ const FILTER_REP_NODE: Readonly<Record<Exclude<tanghuluData.TanghuluFilterKey, '
 };
 
 /**
- * 「糖葫芦 + 列间事件菱形」全屏交互画布。
+ * 「糖葫芦 + 列间事件菱形」28 节点全屏详图组件。
  * @param props.onClose 关闭画布返回教程主视图。
+ * @param props.onCompact 可选回调：切回极限压缩认知全景。
  */
-export function TanghuluCanvas(props: { onClose: () => void }): react.JSX.Element {
+function TanghuluDetail(props: { onClose: () => void; onCompact?: () => void }): react.JSX.Element {
   const [selectedId, setSelectedId] = react.useState<string>('ev-ch-msg');
   const [focusMode, setFocusMode] = react.useState<'none' | 'node' | 'filter' | 'journey'>('none');
   const [activeFilter, setActiveFilter] = react.useState<tanghuluData.TanghuluFilterKey>('all');
@@ -420,6 +422,16 @@ export function TanghuluCanvas(props: { onClose: () => void }): react.JSX.Elemen
               {dockToggleLabel}
             </button>
           </div>
+          {props.onCompact !== undefined && (
+            <button
+              type="button"
+              className="tu-cm-detail-btn"
+              data-th-compact
+              onClick={props.onCompact}
+            >
+              ⚡ 回到极限压缩
+            </button>
+          )}
           <button
             type="button"
             className="tu-th-close-btn"
@@ -823,4 +835,17 @@ export function TanghuluCanvas(props: { onClose: () => void }): react.JSX.Elemen
       </footer>
     </div>
   );
+}
+
+
+/**
+ * 教程页「糖葫芦架构」入口：默认进入符合 4~6 工作记忆组块的极限压缩全景，可随时切换 28 节点原详图。
+ * @param props.onClose 关闭画布返回教程主视图。
+ */
+export function TanghuluCanvas(props: { onClose: () => void }): react.JSX.Element {
+  //M 独立外层包装持有视图切换开关，确保子组件内部 React Hooks 顺序恒定不崩。
+  const [compact, setCompact] = react.useState<boolean>(true);
+  if (compact) return <compactView.CompactMetaView onDetail={() => setCompact(false)} onClose={props.onClose} />;
+
+  return <TanghuluDetail onClose={props.onClose} onCompact={() => setCompact(true)} />;
 }

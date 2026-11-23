@@ -6,9 +6,11 @@
  * 整个读改写都用同步的 fs：一个请求从读到改名中间不让出，两个请求不会互相覆盖。
  * 决策模型：网页设置接口使用 models.decision.model，决策插件使用配置里的 decision.models：
  *   读的时候把 decision.models 的第一个放进 models.decision.model 给网页看；改的时候把它换成改 decision.models 的第一个。
+ * 插件：只读写 PLUGIN_FIELDS 白名单里的字段；飞书群策略按 chat_id 只改 listen、trusted；relay 只给 helpers 的名字。
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as yaml from 'yaml';
 import * as checks from '../../utils/Checks.ts';
 import * as filesModule from '../../utils/Files.ts';
@@ -19,9 +21,12 @@ import * as failureModule from '../../utils/Failure.ts';
 export type Edit = { path: (string | number)[]; value?: unknown; delete?: boolean };
 
 
-/** 网页能看能改的顶层段（照网页设置页 web/src/Settings/Settings.tsx:23-34 读写的段，加上 src7 的 decision）。 */
+/**
+ * 网页能看能改的顶层段（照网页设置页 web/src/Settings/ 读写的段，加上 src7 的 decision）。
+ * shell 是基地壳子 jmbots.exe 读的段（local/src/config.rs，旧名 local 照读，两个都在时 shell 整段优先）。
+ */
 const SECTIONS = new Set(['providers', 'default_model', 'models', 'bots', 'channels', 'search', 'concurrency',
-  'server', 'http', 'local', 'ui', 'decision']);
+  'server', 'http', 'shell', 'local', 'ui', 'decision']);
 
 /** 一个允许从设置页改的插件字段。 */
 interface PluginField {
@@ -31,11 +36,26 @@ interface PluginField {
   group?: string;
   /** 字段名。 */
   key: string;
-  /** 字段值类型。 */
-  kind: 'text' | 'list' | 'count' | 'flag';
+  /**
+   * 字段值类型：text 文字；filled 无首尾空白以外还有字的文字；url 空串或 http(s) 地址；list 文字列表；
+   * dirs 绝对路径列表；count 整数（min 到 max）；flag 开关；rules 规则表（每项 ruleKeys 都是无首尾空白的非空文字）。
+   */
+  kind: 'text' | 'filled' | 'url' | 'list' | 'dirs' | 'count' | 'flag' | 'rules';
+  /** count 的下限（含）；不写是 0。 */
+  min?: number;
+  /** count 的上限（含）；不写不封顶。 */
+  max?: number;
+  /** rules 每项必写的键；除 helper 外的键合起来不许重复，helper 要在 relay 的 helpers 里（照 relay/Files.ts 的校验）。 */
+  ruleKeys?: readonly string[];
 }
 
-/** 读写共用同一份字段白名单。 */
+/** relay 的 owner_p2p_direct、exclusive_bots 每项的键。 */
+const BOT_RULE_KEYS = ['bot', 'helper'];
+
+/** relay 的 owner_group_direct 每项的键。 */
+const GROUP_RULE_KEYS = ['chat_id', 'bot', 'helper'];
+
+/** 读写共用同一份字段白名单；值的规则照各插件自己读配置时的校验（文件见每组上面的注释）。 */
 const PLUGIN_FIELDS: readonly PluginField[] = [
   { plugin: 'base-bridge', key: 'index_url', kind: 'text' },
   { plugin: 'image-gen', key: 'image_model', kind: 'text' },
@@ -44,7 +64,47 @@ const PLUGIN_FIELDS: readonly PluginField[] = [
   { plugin: 'model-catalog', group: 'fallback', key: 'chain', kind: 'list' },
   { plugin: 'model-catalog', group: 'fallback', key: 'max_tries', kind: 'count' },
   { plugin: 'model-catalog', group: 'fallback', key: 'include_siblings', kind: 'flag' },
+  //M relay/Files.ts 的 parseRelayWrittenConfig；helpers（带 webhook_header 凭据）不开放。
+  { plugin: 'relay', key: 'remind_minutes', kind: 'count' },
+  { plugin: 'relay', key: 'expire_minutes', kind: 'count' },
+  { plugin: 'relay', key: 'owner_p2p_direct', kind: 'rules', ruleKeys: BOT_RULE_KEYS },
+  { plugin: 'relay', key: 'owner_group_direct', kind: 'rules', ruleKeys: GROUP_RULE_KEYS },
+  { plugin: 'relay', key: 'exclusive_bots', kind: 'rules', ruleKeys: BOT_RULE_KEYS },
+  //M approval/index.ts 用 Checks.ts 的 checkDirs 读 trusted_dirs。
+  { plugin: 'approval', key: 'trusted_dirs', kind: 'dirs' },
+  //M memory/index.ts 的 readSettings 与 ChannelBackfill.ts 的 getBackfillSettings；backend_token 不开放。
+  { plugin: 'memory', key: 'history', kind: 'flag' },
+  { plugin: 'memory', key: 'recall_history', kind: 'count' },
+  { plugin: 'memory', key: 'recall_knowledge', kind: 'count' },
+  { plugin: 'memory', key: 'service_url', kind: 'url' },
+  { plugin: 'memory', key: 'backend_timeout_ms', kind: 'count' },
+  { plugin: 'memory', group: 'backfill', key: 'enabled', kind: 'flag' },
+  { plugin: 'memory', group: 'backfill', key: 'batch_size', kind: 'count', min: 1, max: 100 },
+  { plugin: 'memory', group: 'backfill', key: 'interval_ms', kind: 'count', min: 1, max: 600_000 },
+  //M frpc/index.ts 的 parsePluginConfig：dir 写了就要有字；页面留空发删除。
+  { plugin: 'frpc', key: 'dir', kind: 'filled' },
 ];
+
+/** 飞书群策略能写的监听方式（照 feishu/Config.ts 的 getGroups）。 */
+const GROUP_LISTENS: readonly string[] = ['mention', 'all', 'judge'];
+
+/** 设置页回给网页的一个插件：开放的字段；relay 另给 helpers 的名字（只读，路径不在 config 下，改不了）。 */
+interface PluginView {
+  /** 白名单里写了合法值的字段；feishu 另有按 chat_id 排的 groups。 */
+  config: Record<string, unknown>;
+  /** relay 的外部助手名字，规则表的 helper 下拉用。 */
+  helpers?: string[];
+}
+
+/** 网页看到的一个飞书群策略。 */
+interface GroupView {
+  /** 群名；没写是空串。 */
+  name: string;
+  /** 监听方式，没写时照 feishu 插件的默认算。 */
+  listen: string;
+  /** 受不受信，没写是 false。 */
+  trusted: boolean;
+}
 
 /** 键名是这些的字符串值算密钥。 */
 const SECRET_KEYS = new Set(['api_key', 'app_secret', 'token', 'secret', 'password']);
@@ -209,13 +269,20 @@ export class ConfigFile {
       document.deleteIn(step.path);
       return String(top);
     }
-    //M 先把前端传回的值里的代号还原为原密钥，再转为 YAML 节点写入目标路径。
-    document.setIn(step.path, document.createNode(this.unmask(step.value)));
+    //M 先把前端传回的值里的代号还原为原密钥，再写入目标路径，旧节点上的注释搬到新节点上。
+    const value = this.unmask(step.value);
+    setKeepingComments(document, step.path, value);
     return String(top);
   }
 
-  /** 按插件名找当前清单项，只修改白名单内的单个字段。 */
+  /** 按插件名找当前清单项，只修改白名单内的单个字段；飞书群策略按 chat_id 单独改。 */
   private applyPluginField(document: yaml.Document, step: Edit): void {
+    //M 飞书群策略的路径另有一段 chat_id，单独处理。
+    if (isGroupPolicyPath(step.path)) {
+      applyGroupPolicy(document, step);
+      return;
+    }
+
     const [, name, config, key, nested] = step.path;
 
     //G 路径须完整匹配一个字段，清单下标、整个分组和字段内的路径均不可写。
@@ -237,9 +304,15 @@ export class ConfigFile {
     if (index < 0) throw new failureModule.Failure(400, `请先在 config.yaml 登记插件 ${field.plugin}`);
 
     //G 页面只允许给这个字段保存所需类型的值。
-    if (step.delete !== true && !isPluginFieldValue(field.kind, step.value)) {
+    if (step.delete !== true && !isPluginFieldValue(field, step.value)) {
       const reason = `插件字段 ${field.key} 的值类型不对`;
       throw new failureModule.Failure(400, reason);
+    }
+
+    //G 规则表再查重复和 helper 登记，免得存下 relay 下次启动读不了的配置。
+    if (step.delete !== true && field.kind === 'rules') {
+      const pluginConfig = getPluginConfig(written, field.plugin);
+      checkRules(field, step.value as Record<string, unknown>[], pluginConfig);
     }
 
     //M 当前文件的插件顺序以查到的下标为准。
@@ -273,15 +346,8 @@ export class ConfigFile {
       document.setIn(prefix, empty);
     }
 
-    //M 保存普通值，并保留结构化字段旧节点上的注释和空行。
-    const previous = document.getIn(target, true);
-    const value = document.createNode(step.value);
-    if (yaml.isNode(previous)) {
-      value.comment = previous.comment;
-      value.commentBefore = previous.commentBefore;
-      value.spaceBefore = previous.spaceBefore;
-    }
-    document.setIn(target, value);
+    //M 保存值，并保留旧节点上的注释和空行。
+    setKeepingComments(document, target, step.value);
   }
 
   /**
@@ -379,30 +445,228 @@ function getPluginIndex(plugins: unknown, name: string): number {
   return disabled;
 }
 
-/** 只接受设置页使用的标量和字符串列表。 */
-function isPluginFieldValue(kind: PluginField['kind'], value: unknown): boolean {
+/**
+ * 取清单里某个插件的 config（同名时照 getPluginIndex 选）。
+ * @param plugins config.yaml 的 plugins 段（JSON）。
+ * @param name 插件名。
+ * @returns 它的 config；没登记或 config 不是映射时是空对象。
+ */
+function getPluginConfig(plugins: unknown, name: string): Record<string, unknown> {
+  const index = getPluginIndex(plugins, name);
+  if (index < 0) return {};
+
+  const item = asRecord((plugins as unknown[])[index]);
+  return asRecord(item['config']);
+}
+
+/** 是无首尾空白的非空文字。 */
+function isTrimmedText(value: unknown): value is string {
+  return typeof value === 'string' && value !== '' && value === value.trim();
+}
+
+/** 规则表的一项：对象，ruleKeys 每个键都是无首尾空白的非空文字。 */
+function isRule(item: unknown, ruleKeys: readonly string[]): boolean {
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return false;
+
+  const record = item as Record<string, unknown>;
+  return ruleKeys.every((key) => isTrimmedText(record[key]));
+}
+
+/** 只接受设置页使用的值：照字段的 kind 查。 */
+function isPluginFieldValue(field: PluginField, value: unknown): boolean {
+  const kind = field.kind;
   if (kind === 'text') return typeof value === 'string';
+
+  if (kind === 'filled') return typeof value === 'string' && value.trim() !== '';
+
+  if (kind === 'url') return typeof value === 'string' && /^(?:https?:\/\/.*)?$/u.test(value.trim());
 
   if (kind === 'flag') return typeof value === 'boolean';
 
-  if (kind === 'count') return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  if (kind === 'count') {
+    const min = field.min ?? 0;
+    const max = field.max ?? Number.MAX_SAFE_INTEGER;
+    return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
+  }
 
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  //M 剩下的都是列表。
+  if (!Array.isArray(value)) return false;
+
+  if (kind === 'list') return value.every((item) => typeof item === 'string');
+
+  if (kind === 'dirs') return value.every((item) => typeof item === 'string' && path.isAbsolute(item.trim()));
+
+  return value.every((item) => isRule(item, field.ruleKeys ?? []));
 }
 
-/** 返回设置页可读的具名插件配置，剔除无效或未开放的字段。 */
-function getEditablePlugins(raw: unknown): Record<string, { config: Record<string, unknown> }> {
-  const visible: Record<string, { config: Record<string, unknown> }> = {};
+/** relay 配置里 helpers 的名字（只取 name，webhook 等凭据不碰）。 */
+function getHelperNames(helpers: unknown): string[] {
+  if (!Array.isArray(helpers)) return [];
+
+  const names: string[] = [];
+  for (const helper of helpers) {
+    const helperName = asRecord(helper)['name'];
+    if (typeof helperName === 'string' && helperName !== '') {
+      names.push(helperName);
+    }
+  }
+  return names;
+}
+
+/**
+ * 规则表写入前再查两样（照 relay/Files.ts 的 parseBotHelperRules、parseOwnerGroupDirect）：
+ * 除 helper 外的键合起来不许重复；helper 要在同一份 relay 配置的 helpers 里。
+ * @param field 规则表字段。
+ * @param rules 网页发来的规则（已过 isPluginFieldValue）。
+ * @param pluginConfig 这个插件现在的 config。
+ * @throws Failure(400)：有重复或 helper 没登记。
+ */
+function checkRules(field: PluginField, rules: Record<string, unknown>[], pluginConfig: Record<string, unknown>): void {
+  const helperNames = getHelperNames(pluginConfig['helpers']);
+  const identityKeys = (field.ruleKeys ?? []).filter((key) => key !== 'helper');
+  const seen = new Set<string>();
+  for (const rule of rules) {
+    //G 同一组键（bot，或 chat_id + bot）只能写一条。
+    const identity = identityKeys.map((key) => String(rule[key])).join(' / ');
+    if (seen.has(identity)) throw new failureModule.Failure(400, `${field.key} 里 ${identity} 写了两次`);
+
+    seen.add(identity);
+
+    //G helper 要是 relay 已登记的外部助手。
+    const helper = String(rule['helper']);
+    if (!helperNames.includes(helper)) {
+      throw new failureModule.Failure(400, `${field.key} 里 ${identity} 的 helper 不在 relay 的 helpers 里：${helper}`);
+    }
+  }
+}
+
+/**
+ * 读出飞书群策略：groups 里每个有 chat_id 的群，按 chat_id 给 { name, listen, trusted }。
+ * listen 没写照 feishu 插件的默认（有 daily 是 all，否则 mention）；trusted 没写是 false。
+ * 群的其他字段（relay、judge_threshold、judge_helper、daily）不给页面，写回时也不动。
+ * @param groups feishu 插件 config 的 groups。
+ */
+function getGroupView(groups: unknown): Record<string, GroupView> {
+  const view: Record<string, GroupView> = {};
+  if (!Array.isArray(groups)) return view;
+
+  for (const raw of groups) {
+    const group = asRecord(raw);
+    const chatId = group['chat_id'];
+    if (typeof chatId !== 'string' || chatId === '') continue;
+
+    //M 群名、监听方式、受不受信按 feishu 插件的默认补齐。
+    let name = '';
+    if (typeof group['name'] === 'string') {
+      name = group['name'];
+    }
+    let listen = 'mention';
+    if (group['daily'] !== undefined) {
+      listen = 'all';
+    }
+    if (typeof group['listen'] === 'string') {
+      listen = group['listen'];
+    }
+    const trusted = group['trusted'] === true;
+    view[chatId] = { name, listen, trusted };
+  }
+  return view;
+}
+
+/** 路径是飞书群策略：['plugins', 'feishu', 'config', 'groups', chat_id, 'listen' 或 'trusted']。 */
+function isGroupPolicyPath(stepPath: Edit['path']): boolean {
+  if (stepPath.length !== 6) return false;
+
+  const [, name, config, groups, chatId, key] = stepPath;
+  if (name !== 'feishu' || config !== 'config' || groups !== 'groups') return false;
+
+  return typeof chatId === 'string' && (key === 'listen' || key === 'trusted');
+}
+
+/**
+ * 改一个飞书群的 listen 或 trusted：按 chat_id 找到 groups 里那一项，只动这一个键，同群其他字段和注释都留着。
+ * @param document yaml 文档。
+ * @param step 一步改动，路径已过 isGroupPolicyPath。
+ * @throws Failure(400)：feishu 没登记、群没登记、值不对。
+ */
+function applyGroupPolicy(document: yaml.Document, step: Edit): void {
+  const chatId = String(step.path[4]);
+  const key = String(step.path[5]);
+
+  //G 只改已登记的 feishu 插件里已登记的群。
+  const plugins = asRecord(document.toJSON())['plugins'];
+  const index = getPluginIndex(plugins, 'feishu');
+  if (index < 0) throw new failureModule.Failure(400, '请先在 config.yaml 登记插件 feishu');
+
+  const groups = getPluginConfig(plugins, 'feishu')['groups'];
+  let at = -1;
+  if (Array.isArray(groups)) {
+    at = groups.findIndex((group) => asRecord(group)['chat_id'] === chatId);
+  }
+  if (at < 0) throw new failureModule.Failure(400, `飞书群 ${chatId} 没在 feishu 插件的 groups 里登记`);
+
+  //M 删掉这个键：回到 feishu 插件的默认。
+  const target = ['plugins', index, 'config', 'groups', at, key];
+  if (step.delete === true) {
+    if (document.hasIn(target)) {
+      document.deleteIn(target);
+    }
+    return;
+  }
+
+  //G listen 只能是三种之一，trusted 只认真假。
+  if (key === 'listen' && !GROUP_LISTENS.includes(String(step.value))) {
+    throw new failureModule.Failure(400, `飞书群 ${chatId} 的 listen 只能是 mention、all、judge`);
+  }
+  if (key === 'trusted' && typeof step.value !== 'boolean') {
+    throw new failureModule.Failure(400, `飞书群 ${chatId} 的 trusted 的值类型不对`);
+  }
+
+  //M 保存值，并保留旧节点上的注释。
+  setKeepingComments(document, target, step.value);
+}
+
+/**
+ * 写一个值，换掉旧节点时把旧节点上的注释和空行搬到新节点上。
+ * @param document yaml 文档。
+ * @param target 路径（下标已换成文件里的真实下标）。
+ * @param raw 要写的值。
+ */
+function setKeepingComments(document: yaml.Document, target: (string | number)[], raw: unknown): void {
+  const previous = document.getIn(target, true);
+  const value = document.createNode(raw);
+  if (yaml.isNode(previous)) {
+    value.comment = previous.comment;
+    value.commentBefore = previous.commentBefore;
+    value.spaceBefore = previous.spaceBefore;
+  }
+  document.setIn(target, value);
+}
+
+/**
+ * 返回设置页可读的具名插件配置，剔除无效或未开放的字段。
+ * 白名单里的插件（加上 feishu）登记了就给一项，页面据此分清“没登记”和“登记了还没写字段”。
+ * @param raw config.yaml 的 plugins 段（JSON）。
+ */
+function getEditablePlugins(raw: unknown): Record<string, PluginView> {
+  const visible: Record<string, PluginView> = {};
   if (!Array.isArray(raw)) return visible;
 
+  //M 登记了的插件先各给一个空视图。
+  const names = new Set([...PLUGIN_FIELDS.map((field) => field.plugin), 'feishu']);
+  for (const pluginName of names) {
+    if (getPluginIndex(raw, pluginName) < 0) continue;
+
+    visible[pluginName] = { config: {} };
+  }
+
   for (const field of PLUGIN_FIELDS) {
-    //M 从当前清单项取指定字段。
-    const index = getPluginIndex(raw, field.plugin);
-    if (index < 0) continue;
+    //M 没登记的插件跳过。
+    const entry = visible[field.plugin];
+    if (entry === undefined) continue;
 
     //M 查找字段所属配置映射。
-    const written = asRecord(raw[index]);
-    const config = asRecord(written['config']);
+    const config = getPluginConfig(raw, field.plugin);
     let source = config;
     if (field.group !== undefined) {
       //M 回退参数来自 fallback 子配置。
@@ -411,20 +675,30 @@ function getEditablePlugins(raw: unknown): Record<string, { config: Record<strin
 
     //G 只把设定的值类型传给页面，配置中的其他内容留在文件里。
     const value = source[field.key];
-    if (!isPluginFieldValue(field.kind, value)) continue;
+    if (!isPluginFieldValue(field, value)) continue;
 
     //M 回给页面的视图只填已校验的字段。
-    const entry = visible[field.plugin] ?? { config: {} };
-    visible[field.plugin] = entry;
     if (field.group === undefined) {
       entry.config[field.key] = value;
       continue;
     }
 
-    //M 同一插件的多个回退字段合并到一个分组。
+    //M 同一插件同一分组的多个字段合并到一个分组。
     const group = asRecord(entry.config[field.group]);
     group[field.key] = value;
     entry.config[field.group] = group;
+  }
+
+  //M relay：只给 helpers 的名字，规则表的 helper 下拉用。
+  const relay = visible['relay'];
+  if (relay !== undefined) {
+    relay.helpers = getHelperNames(getPluginConfig(raw, 'relay')['helpers']);
+  }
+
+  //M feishu：按 chat_id 给每个群的监听方式和受不受信。
+  const feishu = visible['feishu'];
+  if (feishu !== undefined) {
+    feishu.config['groups'] = getGroupView(getPluginConfig(raw, 'feishu')['groups']);
   }
   return visible;
 }

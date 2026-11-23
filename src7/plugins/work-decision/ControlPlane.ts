@@ -15,11 +15,13 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type * as cordis from 'cordis';
 import type * as fastify from 'fastify';
 import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as notificationsModule from './Notify.ts';
 import * as types from './Types.ts';
 
 
@@ -1302,14 +1304,93 @@ function parseStatusQuery(raw: string | undefined): types.ControlTaskStatus[] | 
 }
 
 
+/** HTTP 入口传入的已校验可选唤醒与播报参数。 */
+interface TaskNotificationInput {
+  /** 可选单向唤醒目标外部助手名。 */
+  notifyHelper?: string;
+  /** 可选显式指定唤醒机器人名。 */
+  notifyBot?: string;
+  /** 是否向配置作战室发送一行战报（默认 false）。 */
+  broadcast: boolean;
+}
+
+
+/** 入口校验一次可选 notifyHelper、notifyBot 与 broadcast 参数，非法输入返回 400。 */
+function parseTaskNotificationInput(rawBody: unknown): TaskNotificationInput {
+  //G 入口校验请求体结构，在任务落盘前拦截非法通知参数。
+  const body = checksModule.checkRecord(rawBody, '请求体');
+  let notifyHelper: string | undefined;
+  if ('notifyHelper' in body && body['notifyHelper'] !== undefined) {
+    //G 显式传入 notifyHelper 时必须是非空非纯空白字符串。
+    notifyHelper = checkRequiredString(body['notifyHelper'], 'notifyHelper', 120);
+  }
+  let notifyBot: string | undefined;
+  if ('notifyBot' in body && body['notifyBot'] !== undefined) {
+    //G 显式传入 notifyBot 时必须是非空非纯空白字符串。
+    notifyBot = checkRequiredString(body['notifyBot'], 'notifyBot', 120);
+  }
+  let broadcast = false;
+  if ('broadcast' in body && body['broadcast'] !== undefined) {
+    //G 显式传入 broadcast 时必须为布尔值。
+    broadcast = checksModule.checkFlag(body['broadcast'], 'broadcast');
+  }
+  return { notifyHelper, notifyBot, broadcast };
+}
+
+
+/** 从 PATCH 写盘后的任务卡提取操作人与进展摘要，供单向唤醒和战报播报复用。 */
+function getPatchNotifySummary(
+  rawBody: unknown,
+  task: types.ControlTask,
+): { actor: string; eventText: string } {
+  const latest = task.events.at(-1);
+  if (latest !== undefined && latest.at === task.updatedAt) {
+    return { actor: latest.by, eventText: latest.text };
+  }
+
+  //M 读取请求体中的操作人，未追加新时间线事件时回落任务负责人。
+  const body = checksModule.checkRecord(rawBody, '请求体');
+  const actor = checkOptionalString(body['by'], 'by', 120) || task.owner || 'central';
+  return { actor, eventText: '更新任务信息' };
+}
+
+
+/** 任务写盘后按需触发单向唤醒与作战室播报；未传相关参数时返回 undefined。 */
+async function maybeDispatchNotifications(
+  ctx: cordis.Context | undefined,
+  dispatchConfig: notificationsModule.ControlDispatchConfig | undefined,
+  noticeOpts: TaskNotificationInput,
+  task: types.ControlTask,
+  revision: number,
+  actor: string,
+  eventText: string,
+): Promise<types.ControlTaskNotifications | undefined> {
+  if (ctx === undefined) return undefined;
+  if (noticeOpts.notifyHelper === undefined && !noticeOpts.broadcast) return undefined;
+
+  const config = dispatchConfig ?? { helperBots: new Map<string, string>() };
+  //M 投递动作发生在账本落盘之后，单向唤醒或播报失败不回滚、不阻塞写盘结果。
+  return notificationsModule.dispatchTaskNotifications(ctx, config, {
+    task,
+    revision,
+    statusLabel: STATUS_LABELS[task.status],
+    actor,
+    eventText,
+    notifyHelper: noticeOpts.notifyHelper,
+    notifyBot: noticeOpts.notifyBot,
+    broadcast: noticeOpts.broadcast,
+  });
+}
+
+
 /** 统一将占坑互斥锁冲突转为 HTTP 409 结构化响应。 */
-function runWithLockReply<T>(
+async function runWithLockReply<T>(
   reply: fastify.FastifyReply,
-  action: () => T,
-): T | fastify.FastifyReply {
+  action: () => T | Promise<T>,
+): Promise<T | fastify.FastifyReply> {
   try {
     //M 执行写操作并返回正常载荷。
-    return action();
+    return await action();
   } catch (error) {
     //G 捕获占坑互斥锁冲突并回传 409 与冲突持有者清单。
     if (error instanceof LockConflictFailure) {
@@ -1329,11 +1410,15 @@ function runWithLockReply<T>(
  * @param scope Fastify 路由作用域。
  * @param prefix 路由前缀（`/api/work-decision`）。
  * @param controlStore 控制面与滴答任务持久化存储实例。
+ * @param ctx 可选插件上下文，用于触发单向唤醒与作战室战报事件。
+ * @param dispatchConfig 可选唤醒与播报配置（broadcast_target、helper_bots、owner_targets）。
  */
 export function mountControlPlaneRoutes(
   scope: fastify.FastifyInstance,
   prefix: string,
   controlStore: ControlPlaneStore,
+  ctx?: cordis.Context,
+  dispatchConfig?: notificationsModule.ControlDispatchConfig,
 ): void {
   //M 1. 查询任务列表、清单定义、状态计数、活跃占坑锁与可派发队列。
   scope.get<{ Querystring: { status?: string; lockTag?: string; owner?: string } }>(
@@ -1348,42 +1433,89 @@ export function mountControlPlaneRoutes(
     },
   );
 
-  //M 2. 创建新任务卡（撞锁时返回 409 及结构化 conflicts）。
+  //M 2. 创建新任务卡（撞锁时返回 409 及结构化 conflicts），支持可选单向唤醒与作战室播报。
   scope.post<{ Body: unknown }>(`${prefix}/tasks`, (request, reply) => {
-    //M 委托存储层校验并创建任务，撞锁由统一包装转 409。
-    return runWithLockReply(reply, () => {
+    //M 先在入口校验通知参数，再写盘并按需投递通知，撞锁由统一包装转 409。
+    return runWithLockReply(reply, async () => {
+      //G 入口校验一次可选 notifyHelper、notifyBot 与 broadcast。
+      const noticeOpts = parseTaskNotificationInput(request.body);
       //M 写入新任务并返回最新锁信息。
       const created = controlStore.create(request.body);
+      const initialEvent = created.task.events[0];
+      const actor = initialEvent?.by ?? (created.task.owner || 'central');
+      const eventText = initialEvent?.text ?? '创建任务';
+      //M 按需向目标中控投递单向唤醒并向作战室播报战报。
+      const notifications = await maybeDispatchNotifications(
+        ctx,
+        dispatchConfig,
+        noticeOpts,
+        created.task,
+        created.revision,
+        actor,
+        eventText,
+      );
+      if (notifications !== undefined) return { ok: true, ...created, notifications };
+
       return { ok: true, ...created };
     });
   });
 
-  //M 3. 更新任务卡（支持 PATCH 与 PUT，撞锁回 409）。
+  //M 3. 更新任务卡（支持 PATCH 与 PUT，撞锁回 409），支持可选单向唤醒与作战室播报。
   scope.route<{ Params: { id: string }; Body: unknown }>({
     method: ['PATCH', 'PUT'],
     url: `${prefix}/tasks/:id`,
     handler(request, reply) {
-      //M 委托存储层校验并更新任务，撞锁由统一包装转 409。
-      return runWithLockReply(reply, () => {
+      //M 先在入口校验通知参数，再写盘并按需投递通知，撞锁由统一包装转 409。
+      return runWithLockReply(reply, async () => {
         //G 读取任务 ID 并局部更新字段。
         const id = readIdParam(request.params, '缺少任务 ID');
+        //G 入口校验一次可选 notifyHelper、notifyBot 与 broadcast。
+        const noticeOpts = parseTaskNotificationInput(request.body);
         //M 执行局部更新并返回最新任务与占坑锁快照。
         const updated = controlStore.patch(id, request.body);
+        //M 提取本次更新的操作人与事件说明用于通知投递。
+        const summary = getPatchNotifySummary(request.body, updated.task);
+        //M 按需向目标中控投递单向唤醒并向作战室播报战报。
+        const notifications = await maybeDispatchNotifications(
+          ctx,
+          dispatchConfig,
+          noticeOpts,
+          updated.task,
+          updated.revision,
+          summary.actor,
+          summary.eventText,
+        );
+        if (notifications !== undefined) return { ok: true, ...updated, notifications };
+
         return { ok: true, ...updated };
       });
     },
   });
 
-  //M 4. 追加原则更新 / 范围变更 / 心跳事件并自动刷新 lastHeartbeatAt。
+  //M 4. 追加原则更新 / 范围变更 / 心跳事件并自动刷新 lastHeartbeatAt，支持可选单向唤醒与作战室播报。
   scope.post<{ Params: { id: string }; Body: unknown }>(
     `${prefix}/tasks/:id/events`,
     (request, reply) => {
       //M 委托存储层追加事件，进入 running 撞锁由统一包装转 409。
-      return runWithLockReply(reply, () => {
+      return runWithLockReply(reply, async () => {
         //G 读取任务 ID 并追加时间线事件。
         const id = readIdParam(request.params, '缺少任务 ID');
+        //G 入口校验一次可选 notifyHelper、notifyBot 与 broadcast。
+        const noticeOpts = parseTaskNotificationInput(request.body ?? {});
         //M 写入事件并刷新心跳时间。
         const appended = controlStore.appendEvent(id, request.body);
+        //M 按需向目标中控投递单向唤醒并向作战室播报战报。
+        const notifications = await maybeDispatchNotifications(
+          ctx,
+          dispatchConfig,
+          noticeOpts,
+          appended.task,
+          appended.revision,
+          appended.event.by,
+          appended.event.text,
+        );
+        if (notifications !== undefined) return { ok: true, ...appended, notifications };
+
         return { ok: true, ...appended };
       });
     },

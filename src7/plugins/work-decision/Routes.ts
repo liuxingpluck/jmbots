@@ -10,7 +10,7 @@ import type * as dispatch from '../bots/Dispatch.ts';
 import * as controlPlaneModule from './ControlPlane.ts';
 import * as notifications from './Notify.ts';
 import * as storeModule from './Store.ts';
-import type * as types from './Types.ts';
+import * as types from './Types.ts';
 
 /** 新节点提供必填字段，更新只给节点号及待改内容。 */
 type NodePatch = Pick<types.DecisionNode, 'id'> & Partial<types.DecisionNode>;
@@ -43,6 +43,8 @@ export interface DecisionRelayRequest extends events.RequestEnvelope {
   target?: storeModule.ReplyTarget;
   /** 只在投递时提供的收件文字。 */
   text?: string;
+  /** 可选目标机器人名（控制面单向唤醒按 helper_bots 等配置解析后附带）。 */
+  bot?: string;
 }
 
 /** relay 处理收件或确认后的回执。 */
@@ -185,6 +187,7 @@ function readNotifyBot(rawBody: unknown): string | undefined {
  * @param helper 配置的中控 relay 助手，省略时通过变化接口收结果。
  * @param noticeConfig 主人私聊通知路由配置（默认目标与按机器人路由目标表）。
  * @param controlStore 多 AI 协同控制面任务存储。
+ * @param dispatchConfig 控制面单向唤醒与作战室播报配置（缺省按未配置处理）。
  */
 export function mount(
   ctx: cordis.Context,
@@ -192,6 +195,7 @@ export function mount(
   helper: string | undefined,
   noticeConfig: notifications.OwnerNoticeConfig | undefined,
   controlStore = new controlPlaneModule.ControlPlaneStore(ctx.resources.root),
+  dispatchConfig: notifications.ControlDispatchConfig = { helperBots: new Map(), noticeConfig },
 ): void {
   const app = ctx.http.app;
   const onError = (error: unknown) => ({ ok: false, error: textModule.getErrorMessage(error) });
@@ -200,11 +204,14 @@ export function mount(
     onError,
   };
 
-  //M relay 确认写图完成后才结清自己的回信，失败时留待重试。
+  //M relay 确认写图完成后才结清自己的回信，失败时留待重试；控制面唤醒回执直接确认防环路。
   events.onRequestEvent(ctx, 'work-decision/note', 'work-decision/note-result', (request) => {
     if (request.action !== 'reply') return { ok: false };
 
     const { text, id, target } = request;
+    //M 控制面单向唤醒收件若被回信，只结清 relay 队列，不写入决策图也不再触发任务事件。
+    if (target.node.startsWith(types.CONTROL_WAKEUP_TARGET_PREFIX)) return { ok: true };
+
     //M 和直达 HTTP 回话共用存储，保留和用户留言的关联。
     store.reply(target.node, target.note, text, id);
     return { ok: true };
@@ -504,7 +511,7 @@ export function mount(
     }));
 
     //M 挂载多 AI 协同控制面任务面板 REST 接口（/api/work-decision/tasks*）。
-    controlPlaneModule.mountControlPlaneRoutes(scope, PREFIX, controlStore);
+    controlPlaneModule.mountControlPlaneRoutes(scope, PREFIX, controlStore, ctx, dispatchConfig);
   });
 }
 

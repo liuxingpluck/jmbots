@@ -17,6 +17,23 @@ export const PLUGIN_PATHS = {
   fallbackSiblings: ['plugins', 'model-catalog', 'config', 'fallback', 'include_siblings'],
   visionModel: ['plugins', 'bots', 'config', 'front', 'vision_model'],
   wrapupModel: ['plugins', 'progress', 'config', 'wrapup_model'],
+  relayRemind: ['plugins', 'relay', 'config', 'remind_minutes'],
+  relayExpire: ['plugins', 'relay', 'config', 'expire_minutes'],
+  relayOwnerP2p: ['plugins', 'relay', 'config', 'owner_p2p_direct'],
+  relayOwnerGroup: ['plugins', 'relay', 'config', 'owner_group_direct'],
+  relayExclusive: ['plugins', 'relay', 'config', 'exclusive_bots'],
+  //M 飞书群策略：后端按 chat_id 排成表，下一段是 chat_id，再下一段是 listen 或 trusted。
+  feishuGroups: ['plugins', 'feishu', 'config', 'groups'],
+  trustedDirs: ['plugins', 'approval', 'config', 'trusted_dirs'],
+  memoryHistory: ['plugins', 'memory', 'config', 'history'],
+  memoryRecallHistory: ['plugins', 'memory', 'config', 'recall_history'],
+  memoryRecallKnowledge: ['plugins', 'memory', 'config', 'recall_knowledge'],
+  memoryServiceUrl: ['plugins', 'memory', 'config', 'service_url'],
+  memoryTimeout: ['plugins', 'memory', 'config', 'backend_timeout_ms'],
+  memoryBackfillEnabled: ['plugins', 'memory', 'config', 'backfill', 'enabled'],
+  memoryBackfillBatch: ['plugins', 'memory', 'config', 'backfill', 'batch_size'],
+  memoryBackfillInterval: ['plugins', 'memory', 'config', 'backfill', 'interval_ms'],
+  frpcDir: ['plugins', 'frpc', 'config', 'dir'],
 } satisfies Record<string, Path>;
 
 

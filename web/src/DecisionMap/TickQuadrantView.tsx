@@ -34,7 +34,8 @@ export interface TickQuadrantViewProps {
     taskId: string,
     text: string,
     kind: api.ControlTaskEventKind,
-  ) => Promise<void>;
+    options?: { notifyHelper?: string; broadcast?: boolean },
+  ) => Promise<boolean>;
 }
 
 /** 单个象限内部四类时间分组结构。 */
@@ -395,7 +396,14 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
         </div>
       </div>
 
-      {/* 右侧详情滑板 */}
+      {/* 右侧详情滑板（窄屏附带背景遮罩） */}
+      {selectedTask !== undefined && (
+        <div
+          className="tick-drawer-backdrop"
+          aria-hidden="true"
+          onClick={() => onSelectTask(undefined)}
+        />
+      )}
       {selectedTask !== undefined && (
         <div className="tick-drawer-panel">
           <detail.TickTaskDetail

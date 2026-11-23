@@ -50,8 +50,8 @@ interface ColumnSpec {
 
 
 /**
- * 一列对象（bots、channels.feishu、search）：每项一行，能改、能加、能删、能挪顺序。
- * 改字段只改那一项的那个键；加、删、挪是整列换掉。
+ * 一列对象（bots、channels.feishu、search、relay 的直通规则）：每项一行，能改、能加、能删、能挪顺序。
+ * 改字段只改那一项的那个键；加、删、挪是整列换掉。whole 时改字段也整列换掉（插件字段后端只认整列）。
  * @param props 公共属性、列、新项的样子。
  */
 function ObjectListField(
@@ -59,6 +59,7 @@ function ObjectListField(
     columns: ColumnSpec[];
     blank: Record<string, unknown>;
     orderable?: boolean;
+    whole?: boolean;
   },
 ): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于移动、删除和追加条目的按钮文案。
@@ -89,6 +90,18 @@ function ObjectListField(
               const cell = item[column.key];
               /** 改这一格。 */
               const edit = (next: string): void => {
+                //M 整列模式：换掉这一格（清空就删掉这个键）后整列写回。
+                if (props.whole === true) {
+                  const row: Record<string, unknown> = { ...item, [column.key]: next };
+                  if (next === '') {
+                    delete row[column.key];
+                  }
+                  const nextList = [...list];
+                  nextList[index] = row;
+                  save(nextList);
+                  return;
+                }
+
                 /** 当前单元格在配置草稿中的位置。 */
                 const path = [...props.path, index, column.key];
                 if (next === '') {
@@ -1450,33 +1463,48 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * 基地壳子（Rust 写的本地程序 jmbots.exe）：
- * 读取优先 `shell.*` 回落旧 `local.*`，写入保持与当前已生效段一致，平滑兼容迁移期。
+ * 默认读写 `shell.*`；config.yaml 只有旧 `local.*` 时照旧写 `local.*`（基地见到 shell 段会整段盖过 local，
+ * 只写一半会丢掉 local 里的其他项，见 local/src/config.rs），并给一个按钮把整段迁到 `shell.*`。
  * @param props 草稿、改动回调与全部模型清单。
  */
 export function Local(props: SectionProps): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于基地配置字段名称、说明和占位示例。
   const t = i18n.useT();
-  const hasShell = isPlainRecord(editsModule.getAt(props.draft, ['shell']));
-  const hasLocal = isPlainRecord(editsModule.getAt(props.draft, ['local']));
+  const shellSection = editsModule.getAt(props.draft, ['shell']);
+  const localSection = editsModule.getAt(props.draft, ['local']);
+  const hasShell = isPlainRecord(shellSection);
+  const hasLocal = isPlainRecord(localSection);
 
-  //M 若 config.yaml 已有 shell 段则写入 shell.*（读取回落 local.*）；否则写回 local.* 兼容当前后端白名单。
-  let writeRoot: 'shell' | 'local' = 'local';
-  let fallbackRoot: 'shell' | 'local' = 'shell';
-  let sourceTag = t('尚未显式配置（使用默认 30085）');
+  //M 默认写 shell.*（读取回落 local.*）；只有旧 local 段时写回 local.*。
+  let writeRoot: 'shell' | 'local' = 'shell';
+  let fallbackRoot: 'shell' | 'local' = 'local';
+  let sourceTag = t('尚未显式配置（使用默认 30085），保存后写进 shell.*');
   if (hasShell) {
-    writeRoot = 'shell';
-    fallbackRoot = 'local';
     sourceTag = t('当前配置源：shell.*（推荐）');
   }
-  if (!hasShell && hasLocal) {
+  const onlyLocal = !hasShell && hasLocal;
+  if (onlyLocal) {
+    writeRoot = 'local';
+    fallbackRoot = 'shell';
     sourceTag = t('当前配置源：旧版 local.*（平滑兼容）');
   }
+
+  /** 把整段 local 搬到 shell：先写 shell，再删 local，保存后基地照读。 */
+  const migrate = (): void => {
+    props.onEdit({ path: ['shell'], value: localSection });
+    props.onEdit({ path: ['local'], delete: true });
+  };
 
   //M 渲染“基地”配置表单：包含开机自启开关与端口、监听地址、试跑端口、后端地址、记忆库及 RAG 目录。
   return (
     <div className="jm-section">
       <div className="jm-sc-shell-source">
         <antd.Tag>{sourceTag}</antd.Tag>
+        {onlyLocal && (
+          <antd.Button size="small" onClick={migrate}>
+            {t('整段迁到 shell.*')}
+          </antd.Button>
+        )}
       </div>
       <AutostartSwitch />
       <fields.NumberField
@@ -1533,6 +1561,380 @@ export function Local(props: SectionProps): react.JSX.Element {
         draft={props.draft}
         path={[writeRoot, 'rag']}
         fallbackPath={[fallbackRoot, 'rag']}
+        onEdit={props.onEdit}
+      />
+    </div>
+  );
+}
+
+
+//==========================================================
+// Phase 2：插件配置表单（转话与群策略、FRPC 目录、可信目录、记忆收录召回与回填）
+//==========================================================
+
+
+/**
+ * config.yaml 的 plugins 里登记了这个插件没有。
+ * 后端只给登记了的插件回一项（src7/plugins/settings/ConfigFile.ts 的 getEditablePlugins），没写字段的也回空的 config。
+ * @param draft 草稿。
+ * @param plugin 插件名。
+ * @returns 登记了是 true。
+ */
+function isPluginListed(draft: unknown, plugin: string): boolean {
+  const entry = editsModule.getAt(draft, ['plugins', plugin]);
+  return isPlainRecord(entry);
+}
+
+
+/**
+ * 插件没登记时的提示：不给输入框，免得改了保存时报错。
+ * @param props 插件名。
+ */
+function PluginMissing(props: { plugin: string }): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于提示文字。
+  const t = i18n.useT();
+  return (
+    <antd.Alert
+      type="info"
+      showIcon
+      message={t('config.yaml 的 plugins 里还没登记 {name} 插件', { name: props.plugin })}
+      description={t('先在 plugins 里加上它（写法见 config.example.yaml），重启后再来这里改')}
+    />
+  );
+}
+
+
+/**
+ * 一组字符串变成下拉选项（值和显示一样）。
+ * @param names 名字列表。
+ */
+function getNameOptions(names: string[]): { value: string; label: string }[] {
+  return names.map((name) => ({ value: name, label: name }));
+}
+
+
+/**
+ * 草稿里机器人的名字（直通规则的 bot 下拉用）。
+ * @param draft 草稿。
+ */
+function getBotNames(draft: unknown): string[] {
+  const bots = editsModule.getAt(draft, ['bots']);
+  if (!Array.isArray(bots)) return [];
+
+  const names: string[] = [];
+  for (const bot of bots) {
+    const botName = editsModule.getAt(bot, ['name']);
+    if (typeof botName === 'string' && botName !== '') {
+      names.push(botName);
+    }
+  }
+  return names;
+}
+
+
+/**
+ * relay 已登记的外部助手名字：后端只给名字（webhook 等凭据不给），见 ConfigFile.ts 的 PluginView.helpers。
+ * @param draft 草稿。
+ */
+function getHelperNames(draft: unknown): string[] {
+  const helpers = editsModule.getAt(draft, ['plugins', 'relay', 'helpers']);
+  if (!Array.isArray(helpers)) return [];
+
+  return helpers.filter((item): item is string => typeof item === 'string');
+}
+
+
+/** 飞书群的监听方式（照 src7/plugins/feishu/Config.ts 的 getGroups）。 */
+const GROUP_LISTENS = [
+  { value: 'mention', label: 'mention：只收 @ 机器人的' },
+  { value: 'all', label: 'all：不 @ 也收，只记不回' },
+  { value: 'judge', label: 'judge：不 @ 也收，记完问决策模型要不要接话' },
+];
+
+
+/**
+ * 飞书群策略卡片：每个已登记的群一张，改监听方式和受不受信。
+ * 只改这两项，同群的 relay、judge_threshold、daily 等后端原样留着；新群要先在 config.yaml 里登记 chat_id。
+ * @param props 草稿和改动回调。
+ */
+function FeishuGroups(props: { draft: unknown; onEdit: (edit: editsModule.Edit) => void }): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于卡片文字和监听方式选项。
+  const t = i18n.useT();
+  const groupsPath = editsModule.PLUGIN_PATHS.feishuGroups;
+  const groups = editsModule.getAt(props.draft, groupsPath);
+  let chatIds: string[] = [];
+  if (isPlainRecord(groups)) {
+    chatIds = Object.keys(groups);
+  }
+
+  //G 还没登记群：说清怎么加。
+  if (chatIds.length === 0) {
+    return <div className="jm-muted">{t('feishu 插件的 groups 里还没登记群；新群先在 config.yaml 里写上 chat_id')}</div>;
+  }
+
+  const listenOptions = GROUP_LISTENS.map((option) => ({ value: option.value, label: t(option.label) }));
+
+  //M 每个群一张卡片：群名和群号，下面是监听方式和受信开关。
+  return (
+    <div className="jm-sc-feishu-groups">
+      {chatIds.map((chatId) => {
+        const groupName = editsModule.getAt(groups, [chatId, 'name']);
+        let title = chatId;
+        if (typeof groupName === 'string' && groupName !== '') {
+          title = groupName;
+        }
+        return (
+          <div key={chatId} className="jm-sc-feishu-group">
+            <div className="jm-sc-feishu-group-head">
+              <strong>{title}</strong>
+              <span className="jm-sc-mono jm-muted">{chatId}</span>
+            </div>
+            <fields.SelectField
+              label={t('监听方式 listen')}
+              hint={t('清空回默认：写了 daily 日报的群是 all，别的是 mention')}
+              options={listenOptions}
+              draft={props.draft}
+              path={[...groupsPath, chatId, 'listen']}
+              onEdit={props.onEdit}
+            />
+            <fields.BoolField
+              label={t('受信 trusted')}
+              hint={t('开了以后本人在这个群里说话照旧带私人记忆；群里的回复大家都看得到，默认关')}
+              fallback={false}
+              draft={props.draft}
+              path={[...groupsPath, chatId, 'trusted']}
+              onEdit={props.onEdit}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
+/**
+ * 转话与飞书群策略：relay 的催促、过期和三张免前缀直通规则表，feishu 各群的监听方式和受不受信。
+ * 规则表的 helper 只能选 relay 已登记的外部助手；helpers 本身（带 webhook 凭据）不在这里改。改了要重启才生效。
+ * @param props 草稿、改动回调与全部模型清单。
+ */
+export function ChannelPolicy(props: SectionProps): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于字段名称、说明和列名。
+  const t = i18n.useT();
+  const relayListed = isPluginListed(props.draft, 'relay');
+  const feishuListed = isPluginListed(props.draft, 'feishu');
+
+  //M 规则表的三种列：机器人、外部助手从草稿里取选项，群号手填。
+  const botColumn: ColumnSpec = {
+    key: 'bot',
+    label: t('机器人 bot'),
+    kind: 'select',
+    options: getNameOptions(getBotNames(props.draft)),
+  };
+  const helperColumn: ColumnSpec = {
+    key: 'helper',
+    label: t('外部助手 helper'),
+    kind: 'select',
+    options: getNameOptions(getHelperNames(props.draft)),
+  };
+  const chatColumn: ColumnSpec = { key: 'chat_id', label: t('群号 chat_id'), kind: 'text' };
+
+  //M 渲染两块：relay 转话（没登记就提示），飞书群策略（没登记就提示）。
+  return (
+    <div className="jm-section">
+      <div className="jm-sc-subhead">{t('外部助手转话 relay（改了要重启才生效）')}</div>
+      {!relayListed && <PluginMissing plugin="relay" />}
+      {relayListed && (
+        <>
+          <fields.NumberField
+            label={t('多久催一次 remind_minutes')}
+            hint={t('转给外部助手的话过了这么多分钟还没回，提醒一次（分钟，默认 0：不催）')}
+            min={0}
+            draft={props.draft}
+            path={editsModule.PLUGIN_PATHS.relayRemind}
+            onEdit={props.onEdit}
+          />
+          <fields.NumberField
+            label={t('多久算过期 expire_minutes')}
+            hint={t('过了这么多分钟还没回就放下这件（分钟，默认 0：不过期）')}
+            min={0}
+            draft={props.draft}
+            path={editsModule.PLUGIN_PATHS.relayExpire}
+            onEdit={props.onEdit}
+          />
+          <ObjectListField
+            label={t('本人私聊直通 owner_p2p_direct')}
+            hint={t('本人私聊这个机器人、又没写别的助手前缀时，直接转给指定的外部助手；一个机器人只写一条')}
+            columns={[botColumn, helperColumn]}
+            blank={{}}
+            whole
+            draft={props.draft}
+            path={editsModule.PLUGIN_PATHS.relayOwnerP2p}
+            onEdit={props.onEdit}
+          />
+          <ObjectListField
+            label={t('受信群直通 owner_group_direct')}
+            hint={t('本人在这个群里对这个机器人说话，不写前缀也转给指定的外部助手；同群同机器人只写一条')}
+            columns={[chatColumn, botColumn, helperColumn]}
+            blank={{}}
+            whole
+            draft={props.draft}
+            path={editsModule.PLUGIN_PATHS.relayOwnerGroup}
+            onEdit={props.onEdit}
+          />
+          <ObjectListField
+            label={t('机器人独占直通 exclusive_bots')}
+            hint={t('发给这个机器人的话全部直接转给指定的外部助手，机器人自己不接；一个机器人只写一条')}
+            columns={[botColumn, helperColumn]}
+            blank={{}}
+            whole
+            draft={props.draft}
+            path={editsModule.PLUGIN_PATHS.relayExclusive}
+            onEdit={props.onEdit}
+          />
+        </>
+      )}
+      <div className="jm-sc-subhead">{t('飞书群策略 feishu.groups（改了要重启才生效）')}</div>
+      {!feishuListed && <PluginMissing plugin="feishu" />}
+      {feishuListed && <FeishuGroups draft={props.draft} onEdit={props.onEdit} />}
+    </div>
+  );
+}
+
+
+/**
+ * FRPC 客户端目录：写进 plugins.frpc.config.dir，留空删掉这一项、自动定位默认目录。
+ * @param props 草稿、改动回调与全部模型清单。
+ */
+export function FrpcConfig(props: SectionProps): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于字段名称和说明。
+  const t = i18n.useT();
+
+  //G frpc 没登记：只给提示。
+  if (!isPluginListed(props.draft, 'frpc')) return <PluginMissing plugin="frpc" />;
+
+  //M 渲染客户端目录输入框。
+  return (
+    <div className="jm-section">
+      <fields.TextField
+        label={t('客户端目录 frpc.dir')}
+        hint={t('frpc.exe、frpc.toml 和托盘脚本所在的目录，绝对路径或相对运行时目录；留空自动定位 works/frp-clients/windows。改了要重启才生效')}
+        placeholder={t('留空自动定位')}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.frpcDir}
+        onEdit={props.onEdit}
+      />
+    </div>
+  );
+}
+
+
+/**
+ * 可信目录：写进 plugins.approval.config.trusted_dirs，本人的会话在这些目录里执行免确认。
+ * @param props 草稿、改动回调与全部模型清单。
+ */
+export function TrustedDirs(props: SectionProps): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于字段名称和说明。
+  const t = i18n.useT();
+
+  //G approval 没登记：只给提示。
+  if (!isPluginListed(props.draft, 'approval')) return <PluginMissing plugin="approval" />;
+
+  //M 渲染可信目录列表。
+  return (
+    <div className="jm-section">
+      <fields.TextListField
+        label={t('可信目录 approval.trusted_dirs')}
+        hint={t('本人的会话里，执行目录和命令里写的路径都在这些目录里时不用再确认；每项写绝对路径，只对本人生效。改了要重启才生效')}
+        placeholder={t('绝对路径')}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.trustedDirs}
+        onEdit={props.onEdit}
+      />
+    </div>
+  );
+}
+
+
+/**
+ * 记忆的收录、召回与回填：写进 plugins.memory.config（backend_token 不在这里改）。
+ * @param props 草稿、改动回调与全部模型清单。
+ */
+export function MemoryConfig(props: SectionProps): react.JSX.Element {
+  //M 取当前界面语言的翻译函数，用于字段名称和说明。
+  const t = i18n.useT();
+
+  //G memory 没登记：只给提示。
+  if (!isPluginListed(props.draft, 'memory')) return <PluginMissing plugin="memory" />;
+
+  //M 渲染收录、召回、服务地址、超时和回填几项。
+  return (
+    <div className="jm-section">
+      <div className="jm-sc-subhead">{t('记忆插件 memory（改了要重启才生效）')}</div>
+      <fields.BoolField
+        label={t('收聊天记录 history')}
+        hint={t('用户看得到的会话每来一条就收进记忆库的聊天记录（默认开）')}
+        fallback
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryHistory}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('召回聊天记录条数 recall_history')}
+        hint={t('每轮从聊天记录里召回几条放进上下文（默认 3，0 不召回）')}
+        min={0}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryRecallHistory}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('召回知识库条数 recall_knowledge')}
+        hint={t('每轮从知识库里召回几段放进上下文（默认 3，0 不召回）')}
+        min={0}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryRecallKnowledge}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('记忆服务地址 service_url')}
+        hint={t('Rust 记忆服务 jmbots-memory 的 http(s) 地址；不写用默认的本机 30087，换了地址或端口才写')}
+        placeholder="http://127.0.0.1:30087"
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryServiceUrl}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('记忆服务超时 backend_timeout_ms')}
+        hint={t('调记忆服务最多等多久（毫秒，默认 8000，写 0 也按 8000）')}
+        min={0}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryTimeout}
+        onEdit={props.onEdit}
+      />
+      <fields.BoolField
+        label={t('启动就回填 backfill.enabled')}
+        hint={t('启动后自动把渠道归档补进记忆库；默认关，可在记忆页手动开始或暂停')}
+        fallback={false}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryBackfillEnabled}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('每批条数 backfill.batch_size')}
+        hint={t('回填每批最多补多少条（1 到 100，默认 25）')}
+        min={1}
+        max={100}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryBackfillBatch}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('两批间隔 backfill.interval_ms')}
+        hint={t('两批回填之间至少等多久（毫秒，1 到 600000，默认 2000）')}
+        min={1}
+        max={600000}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.memoryBackfillInterval}
         onEdit={props.onEdit}
       />
     </div>

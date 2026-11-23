@@ -8,6 +8,7 @@ export type ControlTaskStatus = types.ControlTaskStatus;
 export type ControlTaskPriority = types.ControlTaskPriority;
 export type ControlTaskEventKind = types.ControlTaskEventKind;
 export type ControlTaskEvent = types.ControlTaskEvent;
+export type ControlTaskNotifications = types.ControlTaskNotifications;
 export type ActiveLockHolder = types.ActiveLockHolder;
 
 /** 滴答风格任务实体类别：普通任务 / 倒数纪念日 / 习惯。 */
@@ -316,7 +317,7 @@ export function patchControlTask(
   });
 }
 
-/** 追加一条原则更新 / 范围变更 / 心跳事件并自动刷新 lastHeartbeatAt。 */
+/** 追加一条原则更新 / 范围变更 / 心跳事件并自动刷新 lastHeartbeatAt（支持可选唤醒与播报）。 */
 export function appendControlTaskEvent(
   id: string,
   input: {
@@ -324,8 +325,16 @@ export function appendControlTaskEvent(
     by?: string;
     text: string;
     status?: types.ControlTaskStatus;
+    notifyHelper?: string;
+    notifyBot?: string;
+    broadcast?: boolean;
   },
-): Promise<{ ok: true; task: ControlTask; event: types.ControlTaskEvent }> {
+): Promise<{
+  ok: true;
+  task: ControlTask;
+  event: types.ControlTaskEvent;
+  notifications?: types.ControlTaskNotifications;
+}> {
   return request(`/tasks/${encodeURIComponent(id)}/events`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

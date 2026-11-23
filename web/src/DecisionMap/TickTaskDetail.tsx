@@ -1,7 +1,11 @@
-/** 滴答工作台右侧任务详情面板：编辑标题备注、日期象限、标签、内联子任务与 AI 协同控制。 */
+/** 滴答工作台右侧任务详情面板：方案 Markdown 阅读/编辑、一键复制、交互时间线与底部 AI 批示条。 */
 import * as react from 'react';
+import * as markdownModule from '../Chat/Markdown.tsx';
 import * as api from './DecisionMapApi.ts';
 import * as utils from './TickUtils.ts';
+
+/** 底部批示框可选的唤醒目标。 */
+type ReplyTarget = 'Claude' | 'HanXin' | 'none';
 
 /** 任务详情面板入参。 */
 export interface TickTaskDetailProps {
@@ -13,8 +17,12 @@ export interface TickTaskDetailProps {
   lists: readonly api.TaskListDef[];
   /** 今日日期字符串 YYYY-MM-DD。 */
   todayStr: string;
-  /** 是否作为右侧滑板浮层展示（提供关闭按钮）。 */
+  /** 是否作为右侧滑板或抽屉浮层展示（提供关闭按钮）。 */
   onClose?: () => void;
+  /** 当前是否处于宽读模式（用于展示展开/收窄切换按钮）。 */
+  wideRead?: boolean;
+  /** 切换宽读模式（当前宽度 <-> 720px）回调。 */
+  onToggleWideRead?: () => void;
   /** 选中另一个任务（例如点击子任务或父任务跳转）。 */
   onSelectTask: (taskId: string) => void;
   /** 局部更新任务回调。 */
@@ -28,12 +36,13 @@ export interface TickTaskDetailProps {
     input: api.CreateControlTaskInput,
     toastText?: string,
   ) => Promise<api.ControlTask | undefined>;
-  /** 追加 AI 协同事件回调。 */
+  /** 追加 AI 协同事件回调（支持唤醒与播报参数，成功返回 true）。 */
   onAppendEvent: (
     taskId: string,
     text: string,
     kind: api.ControlTaskEventKind,
-  ) => Promise<void>;
+    options?: { notifyHelper?: string; broadcast?: boolean },
+  ) => Promise<boolean>;
   /** 彻底删除任务回调。 */
   onDeleteTask: (taskId: string) => Promise<void>;
 }
@@ -51,12 +60,76 @@ const AI_STATUSES: readonly api.ControlTaskStatus[] = [
 /** 所有可选优先级。 */
 const AI_PRIORITIES: readonly api.ControlTaskPriority[] = ['P0', 'P1', 'P2'];
 
+/** 底部唤醒目标选择器选项。 */
+const REPLY_TARGET_OPTIONS: ReadonlyArray<{
+  key: ReplyTarget;
+  label: string;
+  hint: string;
+}> = [
+  { key: 'Claude', label: '@哈基米 (132)', hint: '落盘并单向唤醒哈基米' },
+  { key: 'HanXin', label: '@韩信 (130)', hint: '落盘并单向唤醒韩信' },
+  { key: 'none', label: '仅记录不唤醒', hint: '仅记录时间线，不唤醒中控' },
+];
+
+/** 时间线事件类型中文徽标映射。 */
+const EVENT_KIND_LABELS: Readonly<Record<api.ControlTaskEventKind, string>> = {
+  created: '新建',
+  principle_update: '原则更新',
+  scope_change: '需求调整',
+  status: '状态流转',
+  heartbeat: '进度汇报',
+  note: '批示对话',
+  cancelled: '已取消',
+};
+
 /** 拆分逗号或空格分隔的锁标签输入。 */
 function splitLocks(raw: string): string[] {
   return raw
     .split(/[,，\s]+/u)
     .map((item) => item.trim())
     .filter((item) => item !== '');
+}
+
+/** 根据任务当前认领人推导默认唤醒中控（owner 含「韩信」默认韩信，否则默认哈基米）。 */
+function getDefaultReplyTarget(owner: string): ReplyTarget {
+  if (owner.includes('韩信')) return 'HanXin';
+
+  return 'Claude';
+}
+
+/** 复制文本到剪贴板，局域网 HTTP 环境降级使用隐藏 textarea 兜底。 */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (text === '') return false;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    //G 非 HTTPS 局域网环境下 Clipboard API 可能不可用，改走 execCommand 兜底。
+  }
+  try {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('readonly', 'true');
+    helper.style.position = 'fixed';
+    helper.style.left = '-9999px';
+    document.body.appendChild(helper);
+    helper.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(helper);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** 自适应调整底部批示输入框高度（2 行起，最高 132px）。 */
+function resizeReplyTextarea(el: HTMLTextAreaElement | null): void {
+  if (el === null) return;
+
+  el.style.height = 'auto';
+  const nextHeight = Math.min(Math.max(el.scrollHeight, 48), 132);
+  el.style.height = `${String(nextHeight)}px`;
 }
 
 /** 滴答右侧任务详情面板组件。 */
@@ -67,6 +140,8 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
     lists,
     todayStr,
     onClose,
+    wideRead,
+    onToggleWideRead,
     onSelectTask,
     onPatchTask,
     onCreateTask,
@@ -76,35 +151,67 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
 
   const [titleDraft, setTitleDraft] = react.useState('');
   const [summaryDraft, setSummaryDraft] = react.useState('');
+  const [summaryEditing, setSummaryEditing] = react.useState(false);
   const [tagDraft, setTagDraft] = react.useState('');
   const [subtaskDraft, setSubtaskDraft] = react.useState('');
   const [dateMenuOpen, setDateMenuOpen] = react.useState(false);
   const [aiExpanded, setAiExpanded] = react.useState(false);
   const [confirmHardDelete, setConfirmHardDelete] = react.useState(false);
   const [savedHint, setSavedHint] = react.useState(false);
+  const [copiedKey, setCopiedKey] = react.useState<string | undefined>(undefined);
 
-  //M AI 协同字段本地草稿，避免打字过程频繁触发请求。
+  //M AI 协同字段与底部常驻批示回复条状态（切任务时才清空输入草稿，轮询刷新不打断打字）。
   const [ownerDraft, setOwnerDraft] = react.useState('');
   const [locksDraft, setLocksDraft] = react.useState('');
   const [criteriaDraft, setCriteriaDraft] = react.useState('');
   const [noteDraft, setNoteDraft] = react.useState('');
+  const [replyTarget, setReplyTarget] = react.useState<ReplyTarget>('Claude');
   const [busy, setBusy] = react.useState(false);
 
-  //M 切换任务或远端刷新时同步表单草稿。
-  react.useEffect(() => {
-    if (task === undefined) return;
+  const prevTaskIdRef = react.useRef<string | undefined>(undefined);
+  const copyTimerRef = react.useRef<number | undefined>(undefined);
+  const replyTextareaRef = react.useRef<HTMLTextAreaElement | null>(null);
 
+  //M 切换到不同任务时重置编辑态、回复草稿与默认唤醒目标。
+  react.useEffect(() => {
+    if (task === undefined) {
+      prevTaskIdRef.current = undefined;
+      return;
+    }
+    if (prevTaskIdRef.current === task.id) return;
+
+    prevTaskIdRef.current = task.id;
     setTitleDraft(task.title);
     setSummaryDraft(task.summary);
+    setSummaryEditing(task.summary.trim() === '');
     setOwnerDraft(task.owner);
     setLocksDraft(task.lockTags.join(', '));
     setCriteriaDraft(task.doneCriteria);
     setTagDraft('');
     setSubtaskDraft('');
     setNoteDraft('');
+    setReplyTarget(getDefaultReplyTarget(task.owner));
     setDateMenuOpen(false);
     setConfirmHardDelete(false);
     setSavedHint(false);
+    setCopiedKey(undefined);
+    if (replyTextareaRef.current !== null) {
+      replyTextareaRef.current.style.height = '';
+    }
+  }, [task]);
+
+  //M 同一任务被远端轮询刷新时仅同步非编辑中的字段，避免覆盖未保存草稿。
+  react.useEffect(() => {
+    if (task === undefined) return;
+    if (prevTaskIdRef.current !== task.id) return;
+
+    setTitleDraft(task.title);
+    setOwnerDraft(task.owner);
+    setLocksDraft(task.lockTags.join(', '));
+    setCriteriaDraft(task.doneCriteria);
+    if (!summaryEditing) {
+      setSummaryDraft(task.summary);
+    }
   }, [task?.id, task?.updatedAt]);
 
   if (task === undefined) {
@@ -159,12 +266,25 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
     flashSaved();
   };
 
-  /** 提交备注修改。 */
-  const commitSummary = async (): Promise<void> => {
-    if (summaryDraft === task.summary) return;
+  /** 复制任意方案全文或时间线文本并闪现 1.5s 已复制提示。 */
+  const handleCopyText = async (key: string, text: string): Promise<void> => {
+    const ok = await copyTextToClipboard(text);
+    if (!ok) return;
 
-    await onPatchTask(task.id, { summary: summaryDraft, by: 'boss' });
-    flashSaved();
+    window.clearTimeout(copyTimerRef.current);
+    setCopiedKey(key);
+    copyTimerRef.current = window.setTimeout(() => setCopiedKey(undefined), 1500);
+  };
+
+  /** 提交备注/方案修改（returnToRead=true 且内容非空时切回 Markdown 阅读态）。 */
+  const commitSummary = async (returnToRead: boolean): Promise<void> => {
+    if (summaryDraft !== task.summary) {
+      await onPatchTask(task.id, { summary: summaryDraft, by: 'boss' });
+      flashSaved();
+    }
+    if (returnToRead && summaryDraft.trim() !== '') {
+      setSummaryEditing(false);
+    }
   };
 
   /** 切换任务完成态。 */
@@ -264,19 +384,33 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
     }
   };
 
-  /** 追加一条时间线协同备注。 */
-  const handleAppendNote = async (event: react.FormEvent): Promise<void> => {
-    event.preventDefault();
+  /** 提交底部常驻批示/回复并按所选目标唤醒中控。 */
+  const sendReply = async (): Promise<void> => {
     const trimmed = noteDraft.trim();
-    if (trimmed === '') return;
+    if (trimmed === '' || busy) return;
 
+    let notifyHelper: string | undefined;
+    if (replyTarget === 'Claude' || replyTarget === 'HanXin') {
+      notifyHelper = replyTarget;
+    }
     setBusy(true);
     try {
-      await onAppendEvent(task.id, trimmed, 'note');
-      setNoteDraft('');
+      const ok = await onAppendEvent(task.id, trimmed, 'note', { notifyHelper });
+      if (ok) {
+        setNoteDraft('');
+        if (replyTextareaRef.current !== null) {
+          replyTextareaRef.current.style.height = '';
+        }
+      }
     } finally {
       setBusy(false);
     }
+  };
+
+  /** 底部批示框提交包装。 */
+  const handleAppendNote = async (event: react.FormEvent): Promise<void> => {
+    event.preventDefault();
+    await sendReply();
   };
 
   /** 移入垃圾桶或从垃圾桶还原。 */
@@ -313,11 +447,24 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
 
   const tomorrowStr = utils.addDaysStr(todayStr, 1);
   const nextWeekStr = utils.addDaysStr(todayStr, 7);
-  const reversedEvents = [...task.events].reverse();
+  const timelineEvents = task.events;
   const aiStatusInfo = utils.AI_STATUS_META[task.status];
   const allListNames = ['收集箱', ...lists.map((item) => item.name)];
   if (!allListNames.includes(currentList)) {
     allListNames.push(currentList);
+  }
+
+  const hasSummary = task.summary.trim() !== '';
+  const showSummaryEditor = summaryEditing || !hasSummary;
+  let replySendLabel = '发送并唤醒哈基米';
+  if (replyTarget === 'HanXin') {
+    replySendLabel = '发送并唤醒韩信';
+  }
+  if (replyTarget === 'none') {
+    replySendLabel = '发送批示';
+  }
+  if (busy) {
+    replySendLabel = '发送中…';
   }
 
   return (
@@ -415,6 +562,19 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
               🗑
             </button>
           )}
+          {onToggleWideRead !== undefined && (
+            <button
+              type="button"
+              className="tick-wide-toggle"
+              data-active={wideRead === true}
+              title="在当前宽度与 720px 宽读模式间切换"
+              aria-pressed={wideRead === true}
+              onClick={onToggleWideRead}
+            >
+              {wideRead === true && '⛶ 收窄'}
+              {wideRead !== true && '⛶ 展开'}
+            </button>
+          )}
           {onClose !== undefined && (
             <button
               type="button"
@@ -492,20 +652,150 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
           {savedHint && <span className="tick-saved-hint">已保存</span>}
         </div>
 
-        <textarea
-          className="tick-detail-summary"
-          rows={4}
-          value={summaryDraft}
-          placeholder="输入内容或备注，失焦自动保存…"
-          onChange={(e) => setSummaryDraft(e.target.value)}
-          onBlur={() => void commitSummary()}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-              e.preventDefault();
-              void commitSummary();
-            }
-          }}
-        />
+        {/* 方案简报 / 正文：非空默认 Markdown 阅读态，支持一键复制全文与双态切换编辑 */}
+        {!showSummaryEditor && (
+          <section className="tick-summary-card" aria-label="方案简报">
+            <div className="tick-summary-card__head">
+              <span className="tick-summary-card__label">📄 方案简报</span>
+              <div className="tick-summary-card__actions">
+                <button
+                  type="button"
+                  className="tick-copy-btn"
+                  data-copied={copiedKey === 'summary'}
+                  onClick={() => void handleCopyText('summary', task.summary)}
+                >
+                  {copiedKey === 'summary' && '✓ 已复制'}
+                  {copiedKey !== 'summary' && '📋 复制全文'}
+                </button>
+                <button
+                  type="button"
+                  className="tick-mini-btn"
+                  onClick={() => {
+                    setSummaryDraft(task.summary);
+                    setSummaryEditing(true);
+                  }}
+                >
+                  ✏️ 编辑
+                </button>
+              </div>
+            </div>
+            <div className="tick-summary-card__body tick-markdown">
+              <markdownModule.Markdown text={task.summary} onOpen={() => undefined} />
+            </div>
+          </section>
+        )}
+
+        {showSummaryEditor && (
+          <section className="tick-summary-editor" aria-label="编辑方案简报">
+            <div className="tick-summary-card__head">
+              <span className="tick-summary-card__label">✏️ 编辑方案简报（支持 Markdown）</span>
+              {hasSummary && (
+                <div className="tick-summary-card__actions">
+                  <button
+                    type="button"
+                    className="tick-copy-btn"
+                    data-copied={copiedKey === 'summary'}
+                    onClick={() => void handleCopyText('summary', summaryDraft)}
+                  >
+                    {copiedKey === 'summary' && '✓ 已复制'}
+                    {copiedKey !== 'summary' && '📋 复制'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <textarea
+              className="tick-detail-summary"
+              rows={6}
+              value={summaryDraft}
+              placeholder="输入方案简报、话术或工单（支持 Markdown、表格与 ```代码块```，Ctrl+S 保存）…"
+              onChange={(e) => setSummaryDraft(e.target.value)}
+              onBlur={() => void commitSummary(false)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+                  e.preventDefault();
+                  void commitSummary(true);
+                }
+              }}
+            />
+            <div className="tick-summary-editor__actions">
+              <button
+                type="button"
+                className="tick-mini-btn tick-mini-btn--primary"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void commitSummary(true)}
+              >
+                保存并返回阅读
+              </button>
+              {hasSummary && (
+                <button
+                  type="button"
+                  className="tick-mini-btn"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setSummaryDraft(task.summary);
+                    setSummaryEditing(false);
+                  }}
+                >
+                  取消
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* 直接可见的交互时间线：老板批示与 AI 回复分区呈现 + Markdown 渲染 + 单条复制 */}
+        <section className="tick-detail-section tick-timeline-section" aria-label="对话与批示时间线">
+          <div className="tick-detail-section__head">
+            <span>💬 对话与批示时间线</span>
+            <span className="tick-detail-section__count">{String(timelineEvents.length)} 条</span>
+          </div>
+          {timelineEvents.length === 0 && (
+            <p className="tick-timeline-empty">暂无互动记录，在下方输入批示即可直达对应中控</p>
+          )}
+          {timelineEvents.length > 0 && (
+            <ul className="tick-timeline-list">
+              {timelineEvents.map((ev, idx) => {
+                const isBoss = ev.by === 'boss';
+                let roleAttr = 'ai';
+                let roleLabel = `🤖 ${ev.by}`;
+                if (isBoss) {
+                  roleAttr = 'boss';
+                  roleLabel = '👤 老板批示';
+                }
+                const kindLabel = EVENT_KIND_LABELS[ev.kind] ?? ev.kind;
+                const copyKey = `ev-${String(idx)}`;
+                const isCopied = copiedKey === copyKey;
+                return (
+                  <li
+                    key={`${String(ev.at)}-${String(idx)}`}
+                    className="tick-event-card"
+                    data-role={roleAttr}
+                  >
+                    <div className="tick-event-card__head">
+                      <div className="tick-event-card__meta">
+                        <span className="tick-event-card__by">{roleLabel}</span>
+                        <span className="tick-event-card__kind">{kindLabel}</span>
+                        <span className="tick-event-card__time">{utils.formatEventTime(ev.at)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="tick-copy-btn tick-copy-btn--sm"
+                        data-copied={isCopied}
+                        onClick={() => void handleCopyText(copyKey, ev.text)}
+                      >
+                        {isCopied && '✓ 已复制'}
+                        {!isCopied && '复制'}
+                      </button>
+                    </div>
+                    <div className="tick-event-card__body tick-markdown">
+                      <markdownModule.Markdown text={ev.text} onOpen={() => undefined} />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
 
         {/* 标签区块 */}
         <section className="tick-detail-section">
@@ -682,46 +972,67 @@ export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
                   保存 AI 配置
                 </button>
               </div>
-
-              {/* 变更与心跳时间线 */}
-              <div className="tick-ai-events">
-                <div className="tick-ai-events__head">协同时间线</div>
-                <form className="tick-ai-note-form" onSubmit={(e) => void handleAppendNote(e)}>
-                  <input
-                    type="text"
-                    value={noteDraft}
-                    placeholder="追加一条协同备注…"
-                    onChange={(e) => setNoteDraft(e.target.value)}
-                  />
-                  <button
-                    type="submit"
-                    className="tick-mini-btn"
-                    disabled={busy || noteDraft.trim() === ''}
-                  >
-                    记录
-                  </button>
-                </form>
-                {reversedEvents.length === 0 && (
-                  <p className="tick-ai-events__empty">暂无时间线记录</p>
-                )}
-                {reversedEvents.length > 0 && (
-                  <ul className="tick-ai-events__list">
-                    {reversedEvents.map((ev, idx) => (
-                      <li key={`${String(ev.at)}-${String(idx)}`} className="tick-ai-event-row">
-                        <div className="tick-ai-event-row__meta">
-                          <span className="tick-ai-event-row__by">{ev.by}</span>
-                          <span>{utils.formatEventTime(ev.at)}</span>
-                        </div>
-                        <p className="tick-ai-event-row__text">{ev.text}</p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
             </div>
           )}
         </section>
       </div>
+
+      {/* 底部常驻「批示 / 回复给 AI」快捷输入条（固定在底部清单操作区上方） */}
+      <form
+        className="tick-reply-bar"
+        aria-label="批示与回复给 AI"
+        onSubmit={(e) => void handleAppendNote(e)}
+      >
+        <div className="tick-reply-bar__head">
+          <span className="tick-reply-bar__title">💬 批示 / 回复给 AI</span>
+          <div className="tick-reply-targets" role="group" aria-label="选择唤醒目标">
+            {REPLY_TARGET_OPTIONS.map((opt) => {
+              const selected = replyTarget === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  className="tick-reply-target"
+                  title={opt.hint}
+                  aria-pressed={selected}
+                  data-active={selected}
+                  data-target={opt.key}
+                  onClick={() => setReplyTarget(opt.key)}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="tick-reply-bar__composer">
+          <textarea
+            ref={replyTextareaRef}
+            className="tick-reply-bar__input"
+            rows={2}
+            value={noteDraft}
+            placeholder="输入您的批示或回复，Ctrl+Enter 发送…"
+            onChange={(e) => {
+              setNoteDraft(e.target.value);
+              resizeReplyTextarea(e.currentTarget);
+            }}
+            onKeyDown={(e) => {
+              const isSubmitKey = (e.metaKey || e.ctrlKey) && e.key === 'Enter';
+              if (isSubmitKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void sendReply();
+              }
+            }}
+          />
+          <button
+            type="submit"
+            className="tick-reply-bar__send"
+            disabled={busy || noteDraft.trim() === ''}
+          >
+            {replySendLabel}
+          </button>
+        </div>
+      </form>
 
       {/* 底部栏：所属清单快速切换 */}
       <footer className="tick-detail__foot">
