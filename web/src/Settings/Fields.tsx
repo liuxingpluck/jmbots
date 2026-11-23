@@ -14,6 +14,9 @@ import type * as api from '../Api.ts';
 /** 判断某个路径改过没有（Settings.tsx 提供，Row 用它把名字变红）。 */
 export const ChangedContext = react.createContext<(path: editsModule.Path) => boolean>(() => false);
 
+/** 跳到设置中心某个二级节点（由 Settings.tsx 提供，优先用于平滑定位）。 */
+export const NavigateSectionContext = react.createContext<((sectionId: string) => void) | null>(null);
+
 
 /** 供应商下拉里“添加供应商”这一项的值。 */
 const ADD_PROVIDER = '__add_provider__';
@@ -29,8 +32,23 @@ export interface FieldProps {
   draft: unknown;
   /** 在 config.yaml 里的路径。 */
   path: editsModule.Path;
+  /** 可选读取回退路径（如优先读 `shell.*`、未配时回落旧 `local.*`）。 */
+  fallbackPath?: editsModule.Path;
   /** 改了。 */
   onEdit: (edit: editsModule.Edit) => void;
+}
+
+
+/** 读取字段值；主路径未定义时可回退旧配置路径。 */
+function readFieldValue(
+  draft: unknown,
+  path: editsModule.Path,
+  fallbackPath?: editsModule.Path,
+): unknown {
+  const primary = editsModule.getAt(draft, path);
+  if (primary !== undefined || fallbackPath === undefined) return primary;
+
+  return editsModule.getAt(draft, fallbackPath);
 }
 
 
@@ -46,11 +64,19 @@ function getValueOrDeleteEdit(path: editsModule.Path, value: unknown, present: b
  * 一行：名字、输入、说明。
  * @param props label、hint、path（写在 data-path 上，自动测试靠它找到这一项）、children。
  */
-export function Row(props: { label: string; hint?: string; path?: editsModule.Path; children: react.ReactNode }): react.JSX.Element {
+export function Row(props: {
+  label: string;
+  hint?: string;
+  path?: editsModule.Path;
+  fallbackPath?: editsModule.Path;
+  children: react.ReactNode;
+}): react.JSX.Element {
   /** 判断改过没有。 */
   const isChanged = react.useContext(ChangedContext);
+  const primaryChanged = props.path !== undefined && isChanged(props.path);
+  const fallbackChanged = props.fallbackPath !== undefined && isChanged(props.fallbackPath);
   let rowClass = 'jm-field';
-  if (props.path && isChanged(props.path)) {
+  if (primaryChanged || fallbackChanged) {
     rowClass = 'jm-field jm-field-changed';
   }
   return (
@@ -84,15 +110,18 @@ function getText(value: unknown): string {
  */
 export function TextField(props: FieldProps & { placeholder?: string }): react.JSX.Element {
   /** 现在的值。 */
-  //M 从设置草稿读取该配置项当前值，用于输入框回显。
-  const value = editsModule.getAt(props.draft, props.path);
+  //M 从设置草稿读取该配置项当前值（优先主路径，必要时回落旧路径），用于输入框回显。
+  const value = readFieldValue(props.draft, props.path, props.fallbackPath);
   //M 渲染文本输入框：草稿值转文本显示，清空输入时删除该键，非空则写入新字符串。
   return (
-    <Row label={props.label} hint={props.hint} path={props.path}>
+    <Row label={props.label} hint={props.hint} path={props.path} fallbackPath={props.fallbackPath}>
       <antd.Input
         value={getText(value)}
         placeholder={props.placeholder}
-        onChange={(event) => props.onEdit(getValueOrDeleteEdit(props.path, event.target.value, event.target.value !== ''))}
+        onChange={(event) => {
+          const nextText = event.target.value;
+          props.onEdit(getValueOrDeleteEdit(props.path, nextText, nextText !== ''));
+        }}
       />
     </Row>
   );
@@ -103,12 +132,14 @@ export function TextField(props: FieldProps & { placeholder?: string }): react.J
  * 数字。空着就删掉这一项（用默认值）。
  * @param props 公共属性、范围、步长、占位文字。
  */
-export function NumberField(props: FieldProps & { min?: number; max?: number; step?: number; placeholder?: string }): react.JSX.Element {
+export function NumberField(
+  props: FieldProps & { min?: number; max?: number; step?: number; placeholder?: string },
+): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于“用默认值”占位提示。
   const t = i18n.useT();
   /** 现在的值。 */
-  //M 从设置草稿读取该路径当前值，供下方过滤出合法数字回显。
-  const value = editsModule.getAt(props.draft, props.path);
+  //M 从设置草稿读取该路径当前值（支持回退路径），供下方过滤出合法数字回显。
+  const value = readFieldValue(props.draft, props.path, props.fallbackPath);
   let numericValue: number | null = null;
   if (typeof value === 'number') {
     numericValue = value;
@@ -116,7 +147,7 @@ export function NumberField(props: FieldProps & { min?: number; max?: number; st
 
   //M 渲染数值输入框：仅有效数字写入草稿，清空输入框则删键改用默认值。
   return (
-    <Row label={props.label} hint={props.hint} path={props.path}>
+    <Row label={props.label} hint={props.hint} path={props.path} fallbackPath={props.fallbackPath}>
       <antd.InputNumber
         className="jm-field-number"
         value={numericValue}
@@ -157,7 +188,9 @@ export function BoolField(props: FieldProps & { fallback: boolean }): react.JSX.
  * 从几项里选一项。空着就删掉这一项。
  * @param props 公共属性和选项。
  */
-export function SelectField(props: FieldProps & { options: { value: string; label: string }[]; placeholder?: string }): react.JSX.Element {
+export function SelectField(
+  props: FieldProps & { options: { value: string; label: string }[]; placeholder?: string },
+): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于默认的“用默认值”占位文本。
   const t = i18n.useT();
   /** 现在的值。 */
@@ -217,12 +250,24 @@ export interface ModelFilter {
  * @param t 翻译函数。
  * @returns 选项：值是不带供应商的模型 ID。
  */
-function getModelChoices(draft: unknown, provider: string, models: api.ModelInfo[], filter: ModelFilter, t: i18n.Translate): { value: string; label: string }[] {
+function getModelChoices(
+  draft: unknown,
+  provider: string,
+  models: api.ModelInfo[],
+  filter: ModelFilter,
+  t: i18n.Translate,
+): { value: string; label: string }[] {
   /** 模型 ID 的开头。 */
   const prefix = `${provider}/`;
   /** 选项。 */
   const options = models
-    .filter((model) => model.id.startsWith(prefix) && (!filter.kind || model.kind === filter.kind) && (!filter.needVision || model.vision === true))
+    .filter((model) => {
+      if (!model.id.startsWith(prefix)) return false;
+      if (filter.kind && model.kind !== filter.kind) return false;
+      if (filter.needVision && model.vision !== true) return false;
+
+      return true;
+    })
     .map((model) => {
       let contextSuffix = '';
       if (model.contextWindow) {
@@ -270,8 +315,9 @@ export function ModelPicker(
   //M 取当前界面语言的翻译函数，用于供应商和模型选择器占位提示与引导文案。
   const t = i18n.useT();
   /** 去设置的某一类。 */
-  //M 从界面状态仓库取得切分类动作，以便用户选“添加供应商”时直接跳到供应商配置页。
+  //M 从界面状态仓库取得切分类动作，并优先使用设置中心平滑跳转上下文，以便用户点“添加供应商”时直达供应商区。
   const goTo = context.useUi((state) => state.setSettingsCategory);
+  const navigateSection = react.useContext(NavigateSectionContext);
   /** 只选了供应商、还没选模型时记在这里。 */
   const [picked, setPicked] = react.useState('');
   /** 第一个斜杠前面是供应商，后面是模型 ID（模型 ID 里还能有斜杠）。 */
@@ -307,6 +353,10 @@ export function ModelPicker(
         onChange={(next: string) => {
           if (next === ADD_PROVIDER) {
             //M 选择“添加供应商”入口时直接切去供应商管理分类。
+            if (navigateSection !== null) {
+              navigateSection('providers');
+              return;
+            }
             goTo('providers');
             return;
           }

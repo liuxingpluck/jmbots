@@ -117,7 +117,12 @@ export function Grants(): react.JSX.Element {
     {
       title: '',
       render: (_, item) => (
-        <antd.Popconfirm title={t('撤掉这条授权？')} okText={t('撤掉')} cancelText={t('取消')} onConfirm={() => void remove(item.id)}>
+        <antd.Popconfirm
+          title={t('撤掉这条授权？')}
+          okText={t('撤掉')}
+          cancelText={t('取消')}
+          onConfirm={() => void remove(item.id)}
+        >
           <antd.Button size="small" danger>
             {t('撤掉')}
           </antd.Button>

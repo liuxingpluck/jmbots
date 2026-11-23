@@ -9,6 +9,7 @@ import * as react from 'react';
 import * as virtuoso from 'react-virtuoso';
 import * as editsModule from './Edits.ts';
 import * as fields from './Fields.tsx';
+import * as webAuthField from './WebAuthField.tsx';
 import * as api from '../Api.ts';
 import * as context from '../Context.ts';
 import * as i18n from '../I18n.ts';
@@ -301,8 +302,15 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
   const rows: ModelRow[] = [
     ...Object.entries(written).map(([id, params]) => ({ id, params, written: true })),
     ...props.models
-      .filter((model) => model.kind === 'chat' && model.id.startsWith(prefix) && !(model.id.slice(prefix.length) in written))
-      .map((model) => ({ id: model.id.slice(prefix.length), params: getModelParams(model), written: false })),
+      .filter((model) => {
+        const shortId = model.id.slice(prefix.length);
+        return model.kind === 'chat' && model.id.startsWith(prefix) && !(shortId in written);
+      })
+      .map((model) => ({
+        id: model.id.slice(prefix.length),
+        params: getModelParams(model),
+        written: false,
+      })),
   ];
   /** 筛过的。 */
   const shown = rows.filter((row) => row.id.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -349,11 +357,20 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
     };
 
     //M 用草稿里的当前连接参数向供应商拉取最新模型清单，并筛出尚未手写的对话模型供勾选导入。
-    void api.providerModels({ provider: props.provider, base_url: getTextAt('base_url'), api_key: getTextAt('api_key'), api: getTextAt('api') }).then(
+    const queryInput = {
+      provider: props.provider,
+      base_url: getTextAt('base_url'),
+      api_key: getTextAt('api_key'),
+      api: getTextAt('api'),
+    };
+    void api.providerModels(queryInput).then(
       (result) => {
         setFetching(false);
         /** 还没写进 config.yaml 的。 */
-        const fresh = result.models.filter((model) => model.kind === 'chat' && !(model.id.slice(prefix.length) in written));
+        const fresh = result.models.filter((model) => {
+          const shortId = model.id.slice(prefix.length);
+          return model.kind === 'chat' && !(shortId in written);
+        });
         setPicked(fresh.map((model) => model.id));
         setFetched(fresh);
         setNotice(t('这家一共 {count} 个模型', { count: result.models.length }));
@@ -371,16 +388,28 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
     <div className="jm-provider-models">
       <div className="jm-provider-models-head">
         <strong>{t('模型目录')}</strong>
-        <span className="jm-muted">{t('手写的优先；清单只给 ID 时，没写的用保守值（上下文 128000、最大输出 8192、看不了图）')}</span>
+        <span className="jm-muted">
+          {t('手写的优先；清单只给 ID 时，没写的用保守值（上下文 128000、最大输出 8192、看不了图）')}
+        </span>
         <antd.Button size="small" icon={<icons.CloudDownloadOutlined />} loading={fetching} onClick={fetchModels}>
           {t('获取可用模型')}
         </antd.Button>
       </div>
       {notice && <div className="jm-muted">{notice}</div>}
       <div className="jm-model-tools">
-        <antd.Input size="small" allowClear placeholder={t('筛选（共 {count} 个）', { count: rows.length })} value={filter} onChange={(event) => setFilter(event.target.value)} />
+        <antd.Input
+          size="small"
+          allowClear
+          placeholder={t('筛选（共 {count} 个）', { count: rows.length })}
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
         <antd.Space.Compact size="small">
-          <antd.Input placeholder={t('手写一个模型 ID')} value={adding} onChange={(event) => setAdding(event.target.value.trim())} />
+          <antd.Input
+            placeholder={t('手写一个模型 ID')}
+            value={adding}
+            onChange={(event) => setAdding(event.target.value.trim())}
+          />
           <antd.Button
             icon={<icons.PlusOutlined />}
             disabled={!adding || adding in written}
@@ -430,13 +459,27 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
                       {!row.written && <antd.Tag className="jm-models-tag">{t('清单')}</antd.Tag>}
                     </td>
                     <td>
-                      <antd.InputNumber size="small" min={1} value={getNumberOrNull(row.params.context_window)} onChange={(next) => set(row, ['context_window'], next ?? undefined)} />
+                      <antd.InputNumber
+                        size="small"
+                        min={1}
+                        value={getNumberOrNull(row.params.context_window)}
+                        onChange={(next) => set(row, ['context_window'], next ?? undefined)}
+                      />
                     </td>
                     <td>
-                      <antd.InputNumber size="small" min={1} value={getNumberOrNull(row.params.max_output_tokens)} onChange={(next) => set(row, ['max_output_tokens'], next ?? undefined)} />
+                      <antd.InputNumber
+                        size="small"
+                        min={1}
+                        value={getNumberOrNull(row.params.max_output_tokens)}
+                        onChange={(next) => set(row, ['max_output_tokens'], next ?? undefined)}
+                      />
                     </td>
                     <td>
-                      <antd.Switch size="small" checked={row.params.vision === true} onChange={(checked) => set(row, ['vision'], checked)} />
+                      <antd.Switch
+                        size="small"
+                        checked={row.params.vision === true}
+                        onChange={(checked) => set(row, ['vision'], checked)}
+                      />
                     </td>
                     <td>
                       <antd.Select
@@ -457,11 +500,32 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
                       />
                     </td>
                     <td className="jm-models-price">
-                      <antd.InputNumber size="small" min={0} step={0.01} value={getNumberOrNull(price.input)} onChange={(next) => set(row, ['price', 'input'], next ?? undefined)} />
-                      <antd.InputNumber size="small" min={0} step={0.01} value={getNumberOrNull(price.output)} onChange={(next) => set(row, ['price', 'output'], next ?? undefined)} />
+                      <antd.InputNumber
+                        size="small"
+                        min={0}
+                        step={0.01}
+                        value={getNumberOrNull(price.input)}
+                        onChange={(next) => set(row, ['price', 'input'], next ?? undefined)}
+                      />
+                      <antd.InputNumber
+                        size="small"
+                        min={0}
+                        step={0.01}
+                        value={getNumberOrNull(price.output)}
+                        onChange={(next) => set(row, ['price', 'output'], next ?? undefined)}
+                      />
                     </td>
                     <td>
-                      {row.written && <antd.Button size="small" type="text" danger icon={<icons.DeleteOutlined />} aria-label={t('删掉 {name} 的手写参数', { name: row.id })} onClick={() => props.onEdit({ path: [...base, row.id], delete: true })} />}
+                      {row.written && (
+                        <antd.Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<icons.DeleteOutlined />}
+                          aria-label={t('删掉 {name} 的手写参数', { name: row.id })}
+                          onClick={() => props.onEdit({ path: [...base, row.id], delete: true })}
+                        />
+                      )}
                     </td>
                   </>
                 );
@@ -487,7 +551,12 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
         <p className="jm-muted">{t('写进去以后以 config.yaml 为准，改上下文就是改那一行。不写进去也能用，用的是清单给的值。')}</p>
         {fetched?.length === 0 && <p>{t('都写过了。')}</p>}
         {/* //M 一家几百个模型：虚拟滚动，借勾选组自己限高滚动；勾了哪些由 picked 记着，滚出去的照旧算勾上。 */}
-        <antd.Checkbox.Group className="jm-pull-list" ref={setPullScroller} value={picked} onChange={(next) => setPicked(next)}>
+        <antd.Checkbox.Group
+          className="jm-pull-list"
+          ref={setPullScroller}
+          value={picked}
+          onChange={(next) => setPicked(next)}
+        >
           {pullScroller && (
             <virtuoso.Virtuoso
               customScrollParent={pullScroller}
@@ -498,11 +567,15 @@ function ProviderModels(props: SectionProps & { provider: string }): react.JSX.E
                 if (model.vision) {
                   visionText = t('看图');
                 }
+                const summaryText = t('{id} · 上下文 {context} · 最大输出 {output} · {vision}', {
+                  id: model.id.slice(prefix.length),
+                  context: model.contextWindow,
+                  output: model.maxOutputTokens ?? '?',
+                  vision: visionText,
+                });
                 return (
                   <div className="jm-pull-row">
-                    <antd.Checkbox value={model.id}>
-                      {t('{id} · 上下文 {context} · 最大输出 {output} · {vision}', { id: model.id.slice(prefix.length), context: model.contextWindow, output: model.maxOutputTokens ?? '?', vision: visionText })}
-                    </antd.Checkbox>
+                    <antd.Checkbox value={model.id}>{summaryText}</antd.Checkbox>
                   </div>
                 );
               }}
@@ -532,7 +605,12 @@ function ProviderForm(props: SectionProps & { name: string }): react.JSX.Element
     <div className="jm-provider-form">
       <header className="jm-provider-head">
         <strong>{props.name}</strong>
-        <antd.Popconfirm title={t('删掉供应商 {name}？', { name: props.name })} okText={t('删掉')} cancelText={t('不删')} onConfirm={() => props.onEdit({ path: ['providers', props.name], delete: true })}>
+        <antd.Popconfirm
+          title={t('删掉供应商 {name}？', { name: props.name })}
+          okText={t('删掉')}
+          cancelText={t('不删')}
+          onConfirm={() => props.onEdit({ path: ['providers', props.name], delete: true })}
+        >
           <antd.Button size="small" type="text" danger icon={<icons.DeleteOutlined />}>
             {t('删掉')}
           </antd.Button>
@@ -541,10 +619,36 @@ function ProviderForm(props: SectionProps & { name: string }): react.JSX.Element
       {
         //M 渲染该供应商基础连接字段（密钥、地址、协议、启动拉清单开关），经 getPathAt 拼出草稿路径。
       /**/}
-      <fields.TextField label={t('API 密钥 api_key')} hint={t('本地不要密钥的服务可以不写')} draft={props.draft} path={getPathAt('api_key')} onEdit={props.onEdit} />
-      <fields.TextField label={t('API 地址 base_url')} hint={t('如 https://api.deepseek.com/v1；本地的服务写本机地址')} draft={props.draft} path={getPathAt('base_url')} onEdit={props.onEdit} />
-      <fields.SelectField label={t('API 协议 api')} options={APIS} placeholder={t('openai-completions（默认）')} draft={props.draft} path={getPathAt('api')} onEdit={props.onEdit} />
-      <fields.BoolField label={t('启动时拉模型清单 list_models')} hint={t('启动时向 <base_url>/models 拉清单（默认开）；没有清单接口就关掉，只用手写的')} fallback draft={props.draft} path={getPathAt('list_models')} onEdit={props.onEdit} />
+      <fields.TextField
+        label={t('API 密钥 api_key')}
+        hint={t('本地不要密钥的服务可以不写')}
+        draft={props.draft}
+        path={getPathAt('api_key')}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('API 地址 base_url')}
+        hint={t('如 https://api.deepseek.com/v1；本地的服务写本机地址')}
+        draft={props.draft}
+        path={getPathAt('base_url')}
+        onEdit={props.onEdit}
+      />
+      <fields.SelectField
+        label={t('API 协议 api')}
+        options={APIS}
+        placeholder={t('openai-completions（默认）')}
+        draft={props.draft}
+        path={getPathAt('api')}
+        onEdit={props.onEdit}
+      />
+      <fields.BoolField
+        label={t('启动时拉模型清单 list_models')}
+        hint={t('启动时向 <base_url>/models 拉清单（默认开）；没有清单接口就关掉，只用手写的')}
+        fallback
+        draft={props.draft}
+        path={getPathAt('list_models')}
+        onEdit={props.onEdit}
+      />
       <ProviderModels {...props} provider={props.name} />
       <antd.Collapse
         size="small"
@@ -558,8 +662,20 @@ function ProviderForm(props: SectionProps & { name: string }): react.JSX.Element
                 {
                   //M 渲染供应商级与单模型级兼容性 JSON 覆盖字段，经 getPathAt 拼出高级兼容配置路径。
                 /**/}
-                <fields.JsonField label={t('兼容设置 compat')} hint={t('发请求时的兼容设置，原样交给 Pi（OpenAICompletionsCompat），如 { "maxTokensField": "max_tokens" }')} draft={props.draft} path={getPathAt('compat')} onEdit={props.onEdit} />
-                <fields.JsonField label={t('个别模型的兼容 model_compat')} hint={t('模型 ID → 再加的兼容设置，如 DeepSeek 思考模式下调工具要带回上一步的思考')} draft={props.draft} path={getPathAt('model_compat')} onEdit={props.onEdit} />
+                <fields.JsonField
+                  label={t('兼容设置 compat')}
+                  hint={t('发请求时的兼容设置，原样交给 Pi（OpenAICompletionsCompat），如 { "maxTokensField": "max_tokens" }')}
+                  draft={props.draft}
+                  path={getPathAt('compat')}
+                  onEdit={props.onEdit}
+                />
+                <fields.JsonField
+                  label={t('个别模型的兼容 model_compat')}
+                  hint={t('模型 ID → 再加的兼容设置，如 DeepSeek 思考模式下调工具要带回上一步的思考')}
+                  draft={props.draft}
+                  path={getPathAt('model_compat')}
+                  onEdit={props.onEdit}
+                />
               </>
             ),
           },
@@ -615,14 +731,21 @@ export function Providers(props: SectionProps): react.JSX.Element {
           );
         })}
         <antd.Space.Compact className="jm-provider-add">
-          <antd.Input value={adding} placeholder={t('新供应商的名字')} onChange={(event) => setAdding(event.target.value.trim())} />
+          <antd.Input
+            value={adding}
+            placeholder={t('新供应商的名字')}
+            onChange={(event) => setAdding(event.target.value.trim())}
+          />
           <antd.Button
             icon={<icons.PlusOutlined />}
             aria-label={t('添加供应商')}
             disabled={!adding || names.includes(adding)}
             onClick={() => {
               //M 为新供应商写入默认协议与启动拉清单开关到草稿，并立即选中它便于继续编辑。
-              props.onEdit({ path: ['providers', adding], value: { base_url: '', api: 'openai-completions', list_models: true } });
+              props.onEdit({
+                path: ['providers', adding],
+                value: { base_url: '', api: 'openai-completions', list_models: true },
+              });
               setSelected(adding);
               setAdding('');
             }}
@@ -645,8 +768,24 @@ export function Models(props: SectionProps): react.JSX.Element {
   //M 渲染“模型”分类表单：分别配置默认模型、决策模型、备用链、重试上限与看图模型。
   return (
     <div className="jm-section">
-      <fields.ModelField label={t('默认模型 default_model')} hint={t('新开会话和 exec 审核的小循环用它。写成“供应商/模型 ID”。会话要换模型在会话页换')} models={props.models} kind="chat" draft={props.draft} path={['default_model']} onEdit={props.onEdit} />
-      <fields.ModelField label={t('决策模型 models.decision')} hint={t('分派、压缩、exec 审核先问它（只回每个选项的概率）；可以不配')} models={props.models} kind="decision" draft={props.draft} path={['models', 'decision', 'model']} onEdit={props.onEdit} />
+      <fields.ModelField
+        label={t('默认模型 default_model')}
+        hint={t('新开会话和 exec 审核的小循环用它。写成“供应商/模型 ID”。会话要换模型在会话页换')}
+        models={props.models}
+        kind="chat"
+        draft={props.draft}
+        path={['default_model']}
+        onEdit={props.onEdit}
+      />
+      <fields.ModelField
+        label={t('决策模型 models.decision')}
+        hint={t('分派、压缩、exec 审核先问它（只回每个选项的概率）；可以不配')}
+        models={props.models}
+        kind="decision"
+        draft={props.draft}
+        path={['models', 'decision', 'model']}
+        onEdit={props.onEdit}
+      />
       <fields.ModelListField
         label={t('备用链 fallback.chain')}
         hint={t('模型被限流时依次换着试（能调顺序）')}
@@ -663,7 +802,16 @@ export function Models(props: SectionProps): react.JSX.Element {
         path={editsModule.PLUGIN_PATHS.fallbackMaxTries}
         onEdit={props.onEdit}
       />
-      <fields.ModelField label={t('看图的模型 vision_model')} hint={t('看不了图的模型读到图片时，先交给它转成文字；不写就不转')} models={props.models} needVision kind="chat" draft={props.draft} path={editsModule.PLUGIN_PATHS.visionModel} onEdit={props.onEdit} />
+      <fields.ModelField
+        label={t('看图的模型 vision_model')}
+        hint={t('看不了图的模型读到图片时，先交给它转成文字；不写就不转')}
+        models={props.models}
+        needVision
+        kind="chat"
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.visionModel}
+        onEdit={props.onEdit}
+      />
     </div>
   );
 }
@@ -688,7 +836,13 @@ interface FeishuApp {
  * 一行飞书应用。
  * @param props 第几项、这一项、改一个键、删掉、能选的机器人（没绑机器人的那几项才有）。
  */
-function FeishuRow(props: { index: number; app: FeishuApp; onEdit: (edit: editsModule.Edit) => void; onDelete: () => void; bots?: { value: string; label: string }[] }): react.JSX.Element {
+function FeishuRow(props: {
+  index: number;
+  app: FeishuApp;
+  onEdit: (edit: editsModule.Edit) => void;
+  onDelete: () => void;
+  bots?: { value: string; label: string }[];
+}): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于机器人下拉占位符和删除按钮无障碍标签。
   const t = i18n.useT();
   /**
@@ -696,7 +850,9 @@ function FeishuRow(props: { index: number; app: FeishuApp; onEdit: (edit: editsM
    * @param key 键。
    * @param value 新值。
    */
-  const set = (key: string, value: string): void => props.onEdit({ path: ['channels', 'feishu', props.index, key], value });
+  const set = (key: string, value: string): void => {
+    props.onEdit({ path: ['channels', 'feishu', props.index, key], value });
+  };
   let appId = '';
   if (typeof props.app.app_id === 'string') {
     appId = props.app.app_id;
@@ -713,10 +869,35 @@ function FeishuRow(props: { index: number; app: FeishuApp; onEdit: (edit: editsM
   //M 渲染单行飞书应用表单：输入 app_id 与 app_secret，并在未绑定行允许选择关联机器人。
   return (
     <div className="jm-object-row">
-      <antd.Input className="jm-object-cell" placeholder="app_id" value={appId} onChange={(event) => set('app_id', event.target.value)} />
-      <antd.Input className="jm-object-cell" placeholder="app_secret" value={appSecret} onChange={(event) => set('app_secret', event.target.value)} />
-      {props.bots && <antd.Select className="jm-object-cell" placeholder={t('对应的机器人')} value={botValue} options={props.bots} onChange={(next: string) => set('bot', next)} />}
-      <antd.Button size="small" type="text" danger icon={<icons.DeleteOutlined />} aria-label={t('删掉这个飞书应用')} onClick={props.onDelete} />
+      <antd.Input
+        className="jm-object-cell"
+        placeholder="app_id"
+        value={appId}
+        onChange={(event) => set('app_id', event.target.value)}
+      />
+      <antd.Input
+        className="jm-object-cell"
+        placeholder="app_secret"
+        value={appSecret}
+        onChange={(event) => set('app_secret', event.target.value)}
+      />
+      {props.bots && (
+        <antd.Select
+          className="jm-object-cell"
+          placeholder={t('对应的机器人')}
+          value={botValue}
+          options={props.bots}
+          onChange={(next: string) => set('bot', next)}
+        />
+      )}
+      <antd.Button
+        size="small"
+        type="text"
+        danger
+        icon={<icons.DeleteOutlined />}
+        aria-label={t('删掉这个飞书应用')}
+        onClick={props.onDelete}
+      />
     </div>
   );
 }
@@ -765,7 +946,9 @@ export function Bots(props: SectionProps): react.JSX.Element {
    * 把机器人的名单整个写进 config.yaml。
    * @param next 新名单。
    */
-  const saveBots = (next: Map<string, string>): void => props.onEdit({ path: ['bots'], value: [...next].map(([name, language]) => ({ name, language })) });
+  const saveBots = (next: Map<string, string>): void => {
+    props.onEdit({ path: ['bots'], value: [...next].map(([name, language]) => ({ name, language })) });
+  };
   /**
    * 整列换掉飞书应用。
    * @param next 新列表。
@@ -787,20 +970,41 @@ export function Bots(props: SectionProps): react.JSX.Element {
             //M 切换该机器人提示词语言时，把合并后的完整机器人名单写回草稿。
           /**/}
           <fields.Row label={t('语言')} hint={t('选提示词用哪种语言')} path={['bots']}>
-            <antd.Select className="jm-field-select" value={language} options={LANGUAGES} onChange={(next: string) => saveBots(new Map(all).set(name, next))} />
+            <antd.Select
+              className="jm-field-select"
+              value={language}
+              options={LANGUAGES}
+              onChange={(next: string) => saveBots(new Map(all).set(name, next))}
+            />
           </fields.Row>
-          <fields.Row label={t('飞书应用')} hint={t('这个机器人接哪几个飞书应用；回复从收到消息的那个应用发回去')} path={['channels', 'feishu']}>
+          <fields.Row
+            label={t('飞书应用')}
+            hint={t('这个机器人接哪几个飞书应用；回复从收到消息的那个应用发回去')}
+            path={['channels', 'feishu']}
+          >
             <div className="jm-objects">
               {apps.map((app, index) => {
                 if (app.bot !== name) return null;
 
                 //M 只渲染绑定到当前机器人的飞书应用行，并在删除时从整列应用中过滤掉该下标。
-                return <FeishuRow key={index} index={index} app={app} onEdit={props.onEdit} onDelete={() => saveApps(apps.filter((_, at) => at !== index))} />;
+                return (
+                  <FeishuRow
+                    key={index}
+                    index={index}
+                    app={app}
+                    onEdit={props.onEdit}
+                    onDelete={() => saveApps(apps.filter((_, at) => at !== index))}
+                  />
+                );
               })}
               {
                 //M 在当前机器人卡片下追加一条预先绑定 bot 名的空白飞书应用记录。
               /**/}
-              <antd.Button className="jm-list-add" icon={<icons.PlusOutlined />} onClick={() => saveApps([...apps, { app_id: '', app_secret: '', bot: name }])}>
+              <antd.Button
+                className="jm-list-add"
+                icon={<icons.PlusOutlined />}
+                onClick={() => saveApps([...apps, { app_id: '', app_secret: '', bot: name }])}
+              >
                 {t('加一个飞书应用')}
               </antd.Button>
             </div>
@@ -814,14 +1018,28 @@ export function Bots(props: SectionProps): react.JSX.Element {
               //M 列出尚未关联到有效机器人的游离飞书应用，供用户补选机器人或清理删除。
             /**/}
             {loose.map(({ app, index }) => (
-              <FeishuRow key={index} index={index} app={app} onEdit={props.onEdit} onDelete={() => saveApps(apps.filter((_, at) => at !== index))} bots={[...all.keys()].map((name) => ({ value: name, label: name }))} />
+              <FeishuRow
+                key={index}
+                index={index}
+                app={app}
+                onEdit={props.onEdit}
+                onDelete={() => saveApps(apps.filter((_, at) => at !== index))}
+                bots={[...all.keys()].map((name) => ({ value: name, label: name }))}
+              />
             ))}
           </div>
         </antd.Card>
       )}
-      <fields.Row label={t('加一个机器人')} hint={t('名字可以是中文，就是运行时 bots/ 下的文件夹名；保存、重启后生效。直接往 bots/ 里放一个文件夹，重启后也会出现')}>
+      <fields.Row
+        label={t('加一个机器人')}
+        hint={t('名字可以是中文，就是运行时 bots/ 下的文件夹名；保存、重启后生效。直接往 bots/ 里放一个文件夹，重启后也会出现')}
+      >
         <antd.Space.Compact>
-          <antd.Input value={adding} placeholder={t('名字')} onChange={(event) => setAdding(event.target.value.trim())} />
+          <antd.Input
+            value={adding}
+            placeholder={t('名字')}
+            onChange={(event) => setAdding(event.target.value.trim())}
+          />
           <antd.Button
             icon={<icons.PlusOutlined />}
             disabled={!adding || all.has(adding)}
@@ -857,14 +1075,24 @@ export function Search(props: SectionProps): react.JSX.Element {
   }
   const providerOptions = Object.keys(providerMap).map((name) => ({ value: name, label: name }));
 
+  const searchHint = t(
+    '按顺序试，前一个出错或搜不到就用下一个；一个都不写就不能搜网页。'
+    + 'magpie：Magpie 网关的搜索接口，供应商选用“模型供应商”里哪一家的地址和密钥，'
+    + 'model 写网关里的模型 ID；zhipu_mcp：智谱 MCP 搜索，api_key 填智谱的密钥',
+  );
   //M 渲染网页搜索配置列表：允许按优先级增删排序各种搜索后端。
   return (
     <div className="jm-section">
       <ObjectListField
         label={t('网页搜索 search')}
-        hint={t('按顺序试，前一个出错或搜不到就用下一个；一个都不写就不能搜网页。magpie：Magpie 网关的搜索接口，供应商选用“模型供应商”里哪一家的地址和密钥，model 写网关里的模型 ID；zhipu_mcp：智谱 MCP 搜索，api_key 填智谱的密钥')}
+        hint={searchHint}
         columns={[
-          { key: 'kind', label: t('方式'), kind: 'select', options: [{ value: 'magpie', label: 'magpie' }, { value: 'zhipu_mcp', label: 'zhipu_mcp' }] },
+          {
+            key: 'kind',
+            label: t('方式'),
+            kind: 'select',
+            options: [{ value: 'magpie', label: 'magpie' }, { value: 'zhipu_mcp', label: 'zhipu_mcp' }],
+          },
           { key: 'provider', label: t('供应商'), kind: 'select', options: providerOptions },
           { key: 'model', label: 'model', kind: 'text', placeholder: t('model（magpie 用：网关里的模型 ID）') },
           { key: 'api_key', label: 'api_key', kind: 'text' },
@@ -907,8 +1135,22 @@ export function Engine(props: SectionProps): react.JSX.Element {
         path={editsModule.PLUGIN_PATHS.imageModel}
         onEdit={props.onEdit}
       />
-      <fields.TextField label={t('收尾模型 wrapup_model')} hint={t('限时到点时写收尾总结的模型，不带工具、最低思考档；不写就用会话自己的模型')} placeholder={t('供应商/模型 ID')} draft={props.draft} path={editsModule.PLUGIN_PATHS.wrapupModel} onEdit={props.onEdit} />
-      <fields.NumberField label={t('重试等待 models.retry.wait_ms')} hint={t('连接出错时同一个模型首次重试前等多久（毫秒，默认 3000）')} min={0} draft={props.draft} path={['models', 'retry', 'wait_ms']} onEdit={props.onEdit} />
+      <fields.TextField
+        label={t('收尾模型 wrapup_model')}
+        hint={t('限时到点时写收尾总结的模型，不带工具、最低思考档；不写就用会话自己的模型')}
+        placeholder={t('供应商/模型 ID')}
+        draft={props.draft}
+        path={editsModule.PLUGIN_PATHS.wrapupModel}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('重试等待 models.retry.wait_ms')}
+        hint={t('连接出错时同一个模型首次重试前等多久（毫秒，默认 3000）')}
+        min={0}
+        draft={props.draft}
+        path={['models', 'retry', 'wait_ms']}
+        onEdit={props.onEdit}
+      />
       <fields.BoolField
         label={t('试同家别的模型 fallback_include_siblings')}
         hint={t('备用链用完后，要不要接着试同一个供应商里不收费的其他模型（默认要）')}
@@ -932,26 +1174,62 @@ export function Concurrency(props: SectionProps): react.JSX.Element {
   //M 渲染并发上限配置表单：分别配置全局默认、单模型与单供应商总并发。
   return (
     <div className="jm-section">
-      <fields.NumberField label={t('每个模型 default')} hint={t('同一时间每个模型默认最多几个调用，超了排队（不报错，默认 3）')} min={1} draft={props.draft} path={['concurrency', 'default']} onEdit={props.onEdit} />
-      <fields.NumberMapField label={t('单独设的模型 models')} hint={t('“供应商/模型 ID” → 上限')} keyPlaceholder={t('供应商/模型 ID')} draft={props.draft} path={['concurrency', 'models']} onEdit={props.onEdit} />
-      <fields.NumberMapField label={t('供应商合计 providers')} hint={t('供应商名 → 它所有模型加起来最多几个；不写不限')} keyPlaceholder={t('供应商名')} draft={props.draft} path={['concurrency', 'providers']} onEdit={props.onEdit} />
+      <fields.NumberField
+        label={t('每个模型 default')}
+        hint={t('同一时间每个模型默认最多几个调用，超了排队（不报错，默认 3）')}
+        min={1}
+        draft={props.draft}
+        path={['concurrency', 'default']}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberMapField
+        label={t('单独设的模型 models')}
+        hint={t('“供应商/模型 ID” → 上限')}
+        keyPlaceholder={t('供应商/模型 ID')}
+        draft={props.draft}
+        path={['concurrency', 'models']}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberMapField
+        label={t('供应商合计 providers')}
+        hint={t('供应商名 → 它所有模型加起来最多几个；不写不限')}
+        keyPlaceholder={t('供应商名')}
+        draft={props.draft}
+        path={['concurrency', 'providers']}
+        onEdit={props.onEdit}
+      />
     </div>
   );
 }
 
 
 /**
- * 服务：后端端口、server.token 与多访问令牌管理。
+ * 服务：后端端口、server.token、外网反代鉴权（server.web_auth）与多访问令牌管理。
  * @param props 草稿、改动回调与全部模型清单。
  */
 export function Http(props: SectionProps): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于服务端口与 server.token 字段文案。
   const t = i18n.useT();
-  //M 渲染服务配置表单：绑定 server.port 与单令牌字段 server.token，并挂载动态访问令牌管理。
+  //M 渲染服务配置表单：绑定 server.port、server.token、server.web_auth 与动态访问令牌管理。
   return (
     <div className="jm-section">
-      <fields.NumberField label={t('端口 server.port')} hint={t('一律监听 0.0.0.0（换版本时的试运行也一样）')} min={1} max={65535} draft={props.draft} path={['server', 'port']} onEdit={props.onEdit} />
-      <fields.TextField label={t('token server.token')} hint={t('老的单个 token，照样认、当成永久的；以后用下面的“访问令牌”，可以建多个')} draft={props.draft} path={['server', 'token']} onEdit={props.onEdit} />
+      <fields.NumberField
+        label={t('端口 server.port')}
+        hint={t('一律监听 0.0.0.0（换版本时的试运行也一样）')}
+        min={1}
+        max={65535}
+        draft={props.draft}
+        path={['server', 'port']}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('token server.token')}
+        hint={t('老的单个 token，照样认、当成永久的；以后用下面的“访问令牌”，可以建多个')}
+        draft={props.draft}
+        path={['server', 'token']}
+        onEdit={props.onEdit}
+      />
+      <webAuthField.WebAuthField draft={props.draft} onEdit={props.onEdit} />
       <TokenManager />
     </div>
   );
@@ -1001,9 +1279,15 @@ function TokenManager(): react.JSX.Element {
   /** 接入说明的地址（别的 AI 要把前面换成这台电脑的局域网地址）。 */
   const guide = `${window.location.origin}/api/agents/guide`;
 
+  const tokenGuideHint = t(
+    '所有请求都要带令牌（网址后面 ?token=，或请求头 Authorization: Bearer）。'
+    + '接入说明：{url}?token=…（把前面换成这台电脑的局域网地址，token 换成有效令牌）',
+    { url: guide },
+  );
+
   //M 渲染访问令牌管理区：展示报错、已有令牌条目和底部新建令牌表单。
   return (
-    <fields.Row label={t('访问令牌')} hint={t('所有请求都要带令牌（网址后面 ?token=，或请求头 Authorization: Bearer）。接入说明：{url}?token=…（把前面换成这台电脑的局域网地址，token 换成有效令牌）', { url: guide })}>
+    <fields.Row label={t('访问令牌')} hint={tokenGuideHint}>
       <div className="jm-tokens">
         {error && <div className="jm-muted">{error}</div>}
         {list?.length === 0 && <div className="jm-muted">{t('还没有令牌')}</div>}
@@ -1018,7 +1302,10 @@ function TokenManager(): react.JSX.Element {
           }
           if (!expired && token.expiresAt !== undefined) {
             //M 未过期的临时令牌把到期时间戳转成可读时间展示。
-            kind = t('临时 {minutes} 分钟，{time} 到期', { minutes: token.minutes ?? 0, time: timeline.formatTime(token.expiresAt) });
+            kind = t('临时 {minutes} 分钟，{time} 到期', {
+              minutes: token.minutes ?? 0,
+              time: timeline.formatTime(token.expiresAt),
+            });
           }
 
           let tokenClass = 'jm-token';
@@ -1036,7 +1323,9 @@ function TokenManager(): react.JSX.Element {
           return (
             <div key={token.id} className={tokenClass}>
               <span className="jm-token-name">{token.name}</span>
-              <antd.Typography.Text className="jm-token-value" copyable={{ text: token.value }}>{token.value}</antd.Typography.Text>
+              <antd.Typography.Text className="jm-token-value" copyable={{ text: token.value }}>
+                {token.value}
+              </antd.Typography.Text>
               <span className="jm-muted">
                 {kind}
                 {' · '}
@@ -1045,13 +1334,23 @@ function TokenManager(): react.JSX.Element {
               {
                 //M 二次确认后通知后端换发新令牌值并重载列表，旧值立即失效。
               /**/}
-              <antd.Popconfirm title={t('换一个新值？旧的马上失效，用它的 AI 要换成新的')} okText={t('换')} cancelText={t('不换')} onConfirm={() => run(api.refreshToken(token.id))}>
+              <antd.Popconfirm
+                title={t('换一个新值？旧的马上失效，用它的 AI 要换成新的')}
+                okText={t('换')}
+                cancelText={t('不换')}
+                onConfirm={() => run(api.refreshToken(token.id))}
+              >
                 <antd.Button size="small">{t('刷新')}</antd.Button>
               </antd.Popconfirm>
               {
                 //M 二次确认后通知后端删掉该令牌并重载列表。
               /**/}
-              <antd.Popconfirm title={t('删掉 {name} 的令牌？用它的 AI 马上进不来', { name: token.name })} okText={t('删掉')} cancelText={t('不删')} onConfirm={() => run(api.deleteToken(token.id))}>
+              <antd.Popconfirm
+                title={t('删掉 {name} 的令牌？用它的 AI 马上进不来', { name: token.name })}
+                okText={t('删掉')}
+                cancelText={t('不删')}
+                onConfirm={() => run(api.deleteToken(token.id))}
+              >
                 <antd.Button size="small" danger>{t('删除')}</antd.Button>
               </antd.Popconfirm>
             </div>
@@ -1059,12 +1358,23 @@ function TokenManager(): react.JSX.Element {
         })}
         {list && (
           <antd.Space.Compact className="jm-token-new">
-            <antd.Input size="small" placeholder={t('给谁用的，比如 grokbots')} value={name} onChange={(event) => setName(event.target.value)} />
+            <antd.Input
+              size="small"
+              placeholder={t('给谁用的，比如 grokbots')}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
             <antd.Select
               size="small"
               value={minutes}
               onChange={setMinutes}
-              options={[{ value: 0, label: t('永久') }, ...TOKEN_MINUTES.map((value) => ({ value, label: t('临时 {minutes} 分钟', { minutes: value }) }))]}
+              options={[
+                { value: 0, label: t('永久') },
+                ...TOKEN_MINUTES.map((value) => ({
+                  value,
+                  label: t('临时 {minutes} 分钟', { minutes: value }),
+                })),
+              ]}
             />
             <antd.Button
               size="small"
@@ -1132,21 +1442,99 @@ function AutostartSwitch(): react.JSX.Element | null {
 }
 
 
+/** 判定值是否为非空普通对象。 */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+
 /**
- * 基地（Rust 写的本地程序 jmbots.exe）。
+ * 基地壳子（Rust 写的本地程序 jmbots.exe）：
+ * 读取优先 `shell.*` 回落旧 `local.*`，写入保持与当前已生效段一致，平滑兼容迁移期。
  * @param props 草稿、改动回调与全部模型清单。
  */
 export function Local(props: SectionProps): react.JSX.Element {
   //M 取当前界面语言的翻译函数，用于基地配置字段名称、说明和占位示例。
   const t = i18n.useT();
-  //M 渲染“基地”配置表单：包含开机自启开关与 local 下的端口、服务端地址、记忆库及 RAG 目录。
+  const hasShell = isPlainRecord(editsModule.getAt(props.draft, ['shell']));
+  const hasLocal = isPlainRecord(editsModule.getAt(props.draft, ['local']));
+
+  //M 若 config.yaml 已有 shell 段则写入 shell.*（读取回落 local.*）；否则写回 local.* 兼容当前后端白名单。
+  let writeRoot: 'shell' | 'local' = 'local';
+  let fallbackRoot: 'shell' | 'local' = 'shell';
+  let sourceTag = t('尚未显式配置（使用默认 30085）');
+  if (hasShell) {
+    writeRoot = 'shell';
+    fallbackRoot = 'local';
+    sourceTag = t('当前配置源：shell.*（推荐）');
+  }
+  if (!hasShell && hasLocal) {
+    sourceTag = t('当前配置源：旧版 local.*（平滑兼容）');
+  }
+
+  //M 渲染“基地”配置表单：包含开机自启开关与端口、监听地址、试跑端口、后端地址、记忆库及 RAG 目录。
   return (
     <div className="jm-section">
+      <div className="jm-sc-shell-source">
+        <antd.Tag>{sourceTag}</antd.Tag>
+      </div>
       <AutostartSwitch />
-      <fields.NumberField label={t('基地的端口 local.port')} hint={t('基地的 HTTP 接口（记忆搜索、RAG），一律监听 0.0.0.0；后端 base-bridge 插件的 index_url 指到这里（默认 30090）')} min={1} max={65535} draft={props.draft} path={['local', 'port']} onEdit={props.onEdit} />
-      <fields.TextField label={t('窗口打开哪个后端 local.server')} hint={t('不写就是本机的 http.port；后端在别的机器上时填它的地址')} placeholder={t('如 http://192.168.1.5:30086')} draft={props.draft} path={['local', 'server']} onEdit={props.onEdit} />
-      <fields.TextField label={t('记忆库目录 local.libs')} hint={t('相对运行时目录；下面每个子目录一个 index.db，子目录名是库名（默认 data/index/libs）')} draft={props.draft} path={['local', 'libs']} onEdit={props.onEdit} />
-      <fields.TextField label={t('RAG 目录 local.rag')} hint={t('RAG 索引放哪，相对运行时目录（默认 data/index/rag）')} draft={props.draft} path={['local', 'rag']} onEdit={props.onEdit} />
+      <fields.NumberField
+        label={t('基地的端口 shell.port')}
+        hint={t('壳子的 HTTP 接口，默认 30085；后端 base-bridge 插件的 index_url 指到这里')}
+        min={1}
+        max={65535}
+        placeholder="30085"
+        draft={props.draft}
+        path={[writeRoot, 'port']}
+        fallbackPath={[fallbackRoot, 'port']}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('壳子监听地址 shell.host')}
+        hint={t('默认 0.0.0.0；仅本机调试可写 127.0.0.1')}
+        placeholder="0.0.0.0"
+        draft={props.draft}
+        path={[writeRoot, 'host']}
+        fallbackPath={[fallbackRoot, 'host']}
+        onEdit={props.onEdit}
+      />
+      <fields.NumberField
+        label={t('更新试跑端口 shell.trial_port')}
+        hint={t('平滑换版试跑新后端时使用的端口；留空则从主端口 +1 往后自动寻找空闲端口')}
+        min={1}
+        max={65535}
+        placeholder={t('自动分配（如 30089）')}
+        draft={props.draft}
+        path={[writeRoot, 'trial_port']}
+        fallbackPath={[fallbackRoot, 'trial_port']}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('窗口打开哪个后端 shell.server')}
+        hint={t('不写就是本机的 server.port；后端在别的机器上时填它的地址')}
+        placeholder={t('如 http://192.168.1.5:30086')}
+        draft={props.draft}
+        path={[writeRoot, 'server']}
+        fallbackPath={[fallbackRoot, 'server']}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('记忆库目录 shell.libs')}
+        hint={t('相对运行时目录；下面每个子目录一个 index.db，子目录名是库名（默认 data/index/libs）')}
+        draft={props.draft}
+        path={[writeRoot, 'libs']}
+        fallbackPath={[fallbackRoot, 'libs']}
+        onEdit={props.onEdit}
+      />
+      <fields.TextField
+        label={t('RAG 目录 shell.rag')}
+        hint={t('RAG 索引放哪，相对运行时目录（默认 data/index/rag）')}
+        draft={props.draft}
+        path={[writeRoot, 'rag']}
+        fallbackPath={[fallbackRoot, 'rag']}
+        onEdit={props.onEdit}
+      />
     </div>
   );
 }

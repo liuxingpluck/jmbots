@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.7.105",
+    "date": "2026-11-23",
+    "changes": [
+      "全站统一设置中心 Phase 1 上线——顶部实时秒搜（支持 @modified）、6 大类二级分层树、连续长滚 Scroll-Spy、混合浮动保存栏、控制台运行态总览与 server.web_auth / 演示打码表单"
+    ]
+  },
+  {
     "version": "0.7.104",
     "date": "2026-11-23",
     "changes": [
