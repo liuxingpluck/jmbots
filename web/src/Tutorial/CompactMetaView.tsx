@@ -9,6 +9,8 @@ import * as react from 'react';
 import * as tokenModule from '../Token.ts';
 import * as meta from './CompactMetaData.ts';
 import * as onionView from './CompactOnionView.tsx';
+import * as quizBoxModule from './CompactQuizBox.tsx';
+import * as quizModule from './QuizSubmit.ts';
 import './TanghuluCanvas.css';
 import './CompactMetaView.css';
 
@@ -133,15 +135,54 @@ function BlockAccordionCard(props: {
 
 
 /**
- * 渲染「🧭 4段路线」页签内容：4 张排他大段卡 + 当前段 ≤4 张小块学习卡。
+ * 统计单个学习大段内已通过自测的小块数量。
+ * @param stage 学习大段元数据。
+ * @param quizStore 本地自测记录映射。
+ */
+function countStagePassed(stage: meta.Stage, quizStore: quizModule.QuizStore): number {
+  let count = 0;
+  for (const chunk of stage.chunks) {
+    if (quizStore[chunk.id]?.passed === true) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+
+/**
+ * 渲染「🧭 4段路线」页签内容：4 张排他大段卡 + 当前段 ≤4 张小块学习卡（动态选机器人页内直答批改）。
  */
 function LearningRoutePanel(props: {
   activeStageId: string;
   openQuizIds: ReadonlySet<string>;
+  quizStore: quizModule.QuizStore;
+  availableBots: readonly string[];
+  botsLoading: boolean;
+  botsError: string;
+  onRetryBots: () => void;
+  selectedBot: string;
+  onSelectBot: (bot: string) => void;
   onSelectStage: (stageId: string) => void;
   onToggleQuiz: (chunkId: string) => void;
+  onUpdateQuizRecord: (chunkId: string, next: quizModule.QuizRecord) => void;
+  onJumpNextChunk: (chunkId: string) => void;
 }): react.JSX.Element {
-  const { activeStageId, openQuizIds, onSelectStage, onToggleQuiz } = props;
+  const {
+    activeStageId,
+    openQuizIds,
+    quizStore,
+    availableBots,
+    botsLoading,
+    botsError,
+    onRetryBots,
+    selectedBot,
+    onSelectBot,
+    onSelectStage,
+    onToggleQuiz,
+    onUpdateQuizRecord,
+    onJumpNextChunk,
+  } = props;
   const activeStage = meta.STAGES.find((item) => item.id === activeStageId) ?? meta.STAGES[0];
   const fullRouteHref = tokenModule.withToken(
     `/tutorial/?page=doc&rtab=reading&reading=${encodeURIComponent('00_学习路线.md')}`,
@@ -152,7 +193,7 @@ function LearningRoutePanel(props: {
     <>
       <div className="tu-cm-stage-head">
         <span className="tu-cm-stage-title">
-          先分段、再分块（4 大段 × 每段 4 块 × 每块 3~5 概念 ≈ 66 核心概念；08~18 归第 4 段按需查阅不死背）
+          先分段、再分块（4 大段 × 每段 4 块 × 每块 3~5 概念 ≈ 66 核心概念；页内填答可选任意配置机器人批改并自动记进度）
         </span>
         <a className="tu-cm-doc-link" href={fullRouteHref}>
           阅读完整《00_学习路线》文档 →
@@ -167,6 +208,11 @@ function LearningRoutePanel(props: {
           if (isSelected) {
             cardCls = 'tu-cm-stage-card is-active';
           }
+          const passedCount = countStagePassed(stage, quizStore);
+          let stageBadge = `${String(stage.chunks.length)} 块`;
+          if (passedCount > 0) {
+            stageBadge = `✅ ${String(passedCount)}/${String(stage.chunks.length)} 过关`;
+          }
           return (
             <button
               key={stage.id}
@@ -179,7 +225,7 @@ function LearningRoutePanel(props: {
             >
               <div className="tu-cm-block-top">
                 <span className="tu-cm-block-name">{stage.title}</span>
-                <span className="tu-cm-count-pill">{String(stage.chunks.length)} 块</span>
+                <span className="tu-cm-count-pill">{stageBadge}</span>
               </div>
               <div className="tu-cm-stage-unlock">解锁：{stage.unlock}</div>
             </button>
@@ -190,17 +236,26 @@ function LearningRoutePanel(props: {
       {/* 当前选中段的 ≤4 张工作记忆小块卡 */}
       {activeStage !== undefined && (
         <div className="tu-cm-chunks-grid" data-cm-stage-chunks={activeStage.id}>
-          {activeStage.chunks.map((chunk) => {
+          {activeStage.chunks.map((chunk, chunkIndex) => {
             const quizOpen = openQuizIds.has(chunk.id);
+            const record = quizStore[chunk.id];
+            const isPassed = record?.passed === true;
+            const nextChunk = activeStage.chunks[chunkIndex + 1];
             let quizBtnText = '📝 10秒自测 ▸';
             if (quizOpen) {
               quizBtnText = '📝 收起自测 ▾';
+            }
+            if (!quizOpen && isPassed) {
+              quizBtnText = '✅ 看批改记录 ▸';
             }
             return (
               <article key={chunk.id} className="tu-cm-chunk-card" data-cm-chunk={chunk.id}>
                 <div className="tu-cm-block-top">
                   <span className="tu-cm-chunk-title">{chunk.title}</span>
-                  <span className="tu-cm-count-pill">{String(chunk.concepts.length)} 概念</span>
+                  <span className="tu-cm-block-badges">
+                    {isPassed && <span className="tu-cm-passed-pill">✅ 已过关</span>}
+                    <span className="tu-cm-count-pill">{String(chunk.concepts.length)} 概念</span>
+                  </span>
                 </div>
 
                 <div className="tu-cm-concept-list">
@@ -243,9 +298,19 @@ function LearningRoutePanel(props: {
                 </div>
 
                 {quizOpen && (
-                  <div className="tu-cm-quiz-box" data-cm-quiz-body={chunk.id}>
-                    ❓ {chunk.quiz}
-                  </div>
+                  <quizBoxModule.CompactQuizBox
+                    chunk={chunk}
+                    availableBots={availableBots}
+                    botsLoading={botsLoading}
+                    botsError={botsError}
+                    onRetryBots={onRetryBots}
+                    selectedBot={selectedBot}
+                    onSelectBot={onSelectBot}
+                    record={record}
+                    nextChunk={nextChunk}
+                    onUpdateRecord={onUpdateQuizRecord}
+                    onJumpNext={onJumpNextChunk}
+                  />
                 )}
               </article>
             );
@@ -257,6 +322,19 @@ function LearningRoutePanel(props: {
 }
 
 
+/** 从 URL 查询参数读取初始页签（?tab=route 或 ?tab=onion），缺省为 map。 */
+function readInitialTab(): CompactTab {
+  try {
+    const param = new URLSearchParams(window.location.search).get('tab');
+    if (param === 'route') return 'route';
+    if (param === 'onion') return 'onion';
+  } catch {
+    //G 测试或非浏览器环境下默认落回全景地图。
+  }
+  return 'map';
+}
+
+
 /**
  * 「极限压缩认知架构（全景地图 + 4段路线）」主组件。
  * @param props 切换详图与关闭回调。
@@ -264,8 +342,8 @@ function LearningRoutePanel(props: {
 export function CompactMetaView(props: CompactMetaViewProps): react.JSX.Element {
   const { onClose, onDetail } = props;
 
-  /** 当前激活的认知维度页签：默认全景地图。 */
-  const [activeTab, setActiveTab] = react.useState<CompactTab>('map');
+  /** 当前激活的认知维度页签：支持 ?tab=route / ?tab=onion 直达，默认全景地图。 */
+  const [activeTab, setActiveTab] = react.useState<CompactTab>(() => readInitialTab());
 
   /** 全景地图中当前排他展开的 L0 块 ID；空串表示全部折叠。 */
   const [openBlockId, setOpenBlockId] = react.useState<string>('front');
@@ -276,12 +354,82 @@ export function CompactMetaView(props: CompactMetaViewProps): react.JSX.Element 
   /** 4 段路线中当前排他选中的大段 ID。 */
   const [activeStageId, setActiveStageId] = react.useState<string>('stage-1');
 
-  /** 4 段路线中已展开 10 秒自测题的小块 ID 集合。 */
-  const [openQuizIds, setOpenQuizIds] = react.useState<Set<string>>(() => new Set());
+  /** 4 段路线中已展开 10 秒自测题的小块 ID 集合（默认展开 1.1 方便直接作答）。 */
+  const [openQuizIds, setOpenQuizIds] = react.useState<Set<string>>(() => new Set(['1.1']));
 
-  //M 按 Escape 键关闭全屏架构视图返回教程页。
+  /** 4 段路线各小块页内自测回答与批改本地持久化表。 */
+  const [quizStore, setQuizStore] = react.useState<quizModule.QuizStore>(() => quizModule.loadQuizStore());
+
+  /** 从 GET /api/bots 动态拉取的可用机器人列表（零硬编码）。 */
+  const [availableBots, setAvailableBots] = react.useState<string[]>([]);
+
+  /** 机器人列表是否正在加载中。 */
+  const [botsLoading, setBotsLoading] = react.useState<boolean>(true);
+
+  /** 拉取机器人列表失败时的中文报错；成功时为空串。 */
+  const [botsError, setBotsError] = react.useState<string>('');
+
+  /** 当前选中的批改机器人名（记住上次选择，回落到后端清单第一项）。 */
+  const [selectedBot, setSelectedBot] = react.useState<string>(() => quizModule.loadPreferredBot());
+
+  /** 机器人列表拉取序列号，防止重试并发返回覆盖最新结果。 */
+  const botsSeqRef = react.useRef<number>(0);
+
+  /** 组件挂载标记，避免卸载后异步写入状态。 */
+  const mountedRef = react.useRef<boolean>(true);
+
+  /** 从 /api/bots 动态拉取系统已配置的全部机器人（支持重试）。 */
+  const handleLoadBots = react.useCallback((): void => {
+    const seq = botsSeqRef.current + 1;
+    botsSeqRef.current = seq;
+    setBotsLoading(true);
+    setBotsError('');
+
+    const run = async (): Promise<void> => {
+      const result = await quizModule.fetchAvailableBots();
+      //G 卸载或已有更新一次重试请求时丢弃过时结果。
+      if (!mountedRef.current || botsSeqRef.current !== seq) return;
+
+      setBotsLoading(false);
+      setBotsError(result.error);
+      setAvailableBots(result.bots);
+      if (result.bots.length > 0) {
+        setSelectedBot((prev) => {
+          const resolved = quizModule.resolveSelectedBot(result.bots, prev);
+          if (resolved !== '') {
+            quizModule.savePreferredBot(resolved);
+          }
+          return resolved;
+        });
+      }
+    };
+    void run();
+  }, []);
+
+  //M 页面加载时从 /api/bots 动态拉取系统已配置的全部机器人，避免硬编码任何机器人名。
+  react.useEffect(() => {
+    mountedRef.current = true;
+    handleLoadBots();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [handleLoadBots]);
+
+  /** 切换并记住当前批改机器人。 */
+  const handleSelectBot = react.useCallback((bot: string): void => {
+    setSelectedBot(bot);
+    quizModule.savePreferredBot(bot);
+  }, []);
+
+  //M 按 Escape 键关闭全屏架构视图返回教程页；焦点在输入框或下拉选择框内时不误关闭。
   react.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      const isFormControl =
+        event.target instanceof HTMLTextAreaElement ||
+        event.target instanceof HTMLInputElement ||
+        event.target instanceof HTMLSelectElement;
+      if (isFormControl) return;
+
       if (event.key === 'Escape') {
         onClose();
       }
@@ -289,6 +437,30 @@ export function CompactMetaView(props: CompactMetaViewProps): react.JSX.Element 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
+
+  /** 更新单块自测记录并同步写入浏览器本地存储。 */
+  const handleUpdateQuizRecord = react.useCallback((chunkId: string, next: quizModule.QuizRecord): void => {
+    setQuizStore((prev) => {
+      const updated: quizModule.QuizStore = { ...prev, [chunkId]: next };
+      quizModule.saveQuizStore(updated);
+      return updated;
+    });
+  }, []);
+
+  /** 过关后一键展开下一块自测框并平滑滚到视野内。 */
+  const handleJumpNextChunk = react.useCallback((nextChunkId: string): void => {
+    setOpenQuizIds((prev) => {
+      const next = new Set(prev);
+      next.add(nextChunkId);
+      return next;
+    });
+    window.requestAnimationFrame(() => {
+      const target = document.querySelector(`[data-cm-chunk="${nextChunkId}"]`);
+      if (target !== null) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  }, []);
 
   /** 排他手风琴切换 L0 大块。 */
   const handleToggleBlock = (blockId: string): void => {
@@ -497,8 +669,17 @@ export function CompactMetaView(props: CompactMetaViewProps): react.JSX.Element 
             <LearningRoutePanel
               activeStageId={activeStageId}
               openQuizIds={openQuizIds}
+              quizStore={quizStore}
+              availableBots={availableBots}
+              botsLoading={botsLoading}
+              botsError={botsError}
+              onRetryBots={handleLoadBots}
+              selectedBot={selectedBot}
+              onSelectBot={handleSelectBot}
               onSelectStage={setActiveStageId}
               onToggleQuiz={handleToggleQuiz}
+              onUpdateQuizRecord={handleUpdateQuizRecord}
+              onJumpNextChunk={handleJumpNextChunk}
             />
           )}
 

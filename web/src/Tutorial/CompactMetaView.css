@@ -485,11 +485,207 @@
   background: var(--th-ev-amber-fill);
   border: 1px solid var(--th-col-bot-border);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font-size: 12.5px;
-  font-weight: 600;
   color: var(--th-text-primary);
   line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tu-cm-quiz-question {
+  font-weight: 700;
+  color: var(--th-text-primary);
+}
+
+.tu-cm-quiz-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 54px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--th-border-strong);
+  background: var(--th-bg-dock-card);
+  color: var(--th-text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.tu-cm-quiz-input:focus {
+  outline: none;
+  border-color: var(--th-col-ch-main);
+}
+
+.tu-cm-quiz-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tu-cm-quiz-controls {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tu-cm-quiz-bot-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--th-text-secondary);
+}
+
+.tu-cm-quiz-bot-select {
+  background: var(--th-bg-dock-card);
+  color: var(--th-text-primary);
+  border: 1px solid var(--th-border-strong);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tu-cm-quiz-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--th-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tu-cm-quiz-submit {
+  background: var(--th-col-ch-main);
+  color: #ffffff;
+  border: 1px solid var(--th-col-ch-main);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tu-cm-quiz-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tu-cm-quiz-pending {
+  font-size: 12px;
+  color: var(--th-col-bot-text);
+  background: var(--th-bg-dock-card);
+  border: 1px dashed var(--th-col-bot-border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.tu-cm-quiz-error {
+  font-size: 12px;
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.35);
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.tu-cm-quiz-error-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tu-cm-quiz-retry-btn {
+  background: var(--th-bg-chip);
+  color: var(--th-col-ch-text);
+  border: 1px solid var(--th-col-ch-border);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tu-cm-quiz-retry-btn:hover {
+  border-color: var(--th-col-ch-main);
+  color: var(--th-text-primary);
+}
+
+.tu-cm-quiz-reply {
+  background: var(--th-bg-dock-card);
+  border: 1px solid var(--th-col-bot-border);
+  border-radius: 7px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tu-cm-quiz-reply.is-passed {
+  border-color: #10b981;
+  background: rgba(6, 78, 59, 0.28);
+}
+
+.tu-cm-quiz-reply-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--th-text-secondary);
+}
+
+.tu-cm-quiz-verdict {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--th-text-primary);
+}
+
+.tu-cm-quiz-reply-body {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--th-text-primary);
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.tu-cm-quiz-next-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+.tu-cm-quiz-next-btn {
+  background: #10b981;
+  color: #052e16;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tu-cm-passed-pill {
+  font-size: 11px;
+  font-weight: 800;
+  color: #6ee7b7;
+  background: rgba(6, 78, 59, 0.45);
+  border: 1px solid rgba(16, 185, 129, 0.55);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
 }
 
 /* ==================== 洋葱圈：左图右详同心圆依赖视图 ==================== */
