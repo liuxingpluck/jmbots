@@ -827,7 +827,7 @@ export function FrpcPage(): react.JSX.Element {
 
         <div className="fr-top-right">
           <a className="fr-nav-link" href={withToken('/work-decision/', TOKEN)}>
-            工作决策
+            AI工作台
           </a>
           <a className="fr-nav-link" href={withToken('/knowledge/', TOKEN)}>
             知识库

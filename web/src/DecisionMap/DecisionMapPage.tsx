@@ -41,7 +41,7 @@ const LazyTickWorkspace = react.lazy(async () => {
 /** 新加的界面字过语言包；写成 t('原文')，提取脚本 scripts/I18n_Extract.ts 才认得出。 */
 const t = words.t;
 
-/** 顶栏主工作区页签：决策导图（默认）、多 AI 任务控制面（?tab=tasks）、滴答清单（?tab=tick）。 */
+/** 顶栏主工作区页签：决策导图（默认）、多 AI 任务控制面（?tab=tasks）、积木AI工作台（?tab=tick / ?tab=workbench）。 */
 type MainTab = 'map' | 'tasks' | 'tick';
 
 /** 七种看法：专题目录、四象限、思维导图、按日期、放射图、表格、清单。 */
@@ -82,26 +82,32 @@ function writeStored(key: string, value: string): void {
   }
 }
 
-/** 打开时进入哪个主页签：?tab=tasks 进控制面，?tab=tick 进滴答清单，其余进决策导图。 */
+/** 打开时进入哪个主页签：?tab=tasks 进控制面，?tab=tick 或 ?tab=workbench 进 AI 工作台，其余进决策导图。 */
 function getStartMainTab(): MainTab {
   const params = new URLSearchParams(window.location.search);
   const tab = params.get('tab');
   const look = params.get('look');
   if (tab === 'tasks' || look === 'tasks') return 'tasks';
-  if (tab === 'tick' || look === 'tick') return 'tick';
+  if (tab === 'tick' || tab === 'workbench' || look === 'tick' || look === 'workbench') return 'tick';
 
   return 'map';
 }
 
-/** 同步顶栏主页签到地址栏 ?tab=tasks / ?tab=tick，便于收藏或中控发直达链接。 */
+/** 同步顶栏主页签到地址栏 ?tab=tasks / ?tab=tick（兼容已传 ?tab=workbench 别名），便于收藏或直达链接。 */
 function syncMainTabUrl(nextTab: MainTab): void {
   try {
     const url = new URL(window.location.href);
     if (nextTab === 'map') {
       url.searchParams.delete('tab');
     }
-    if (nextTab !== 'map') {
-      url.searchParams.set('tab', nextTab);
+    if (nextTab === 'tasks') {
+      url.searchParams.set('tab', 'tasks');
+    }
+    if (nextTab === 'tick') {
+      const curTab = url.searchParams.get('tab');
+      if (curTab !== 'workbench') {
+        url.searchParams.set('tab', 'tick');
+      }
     }
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   } catch {
@@ -397,7 +403,11 @@ export function DecisionMapPage() {
 
       //G 空闲自动探针在本地已有快照且 dataRev 完全相同时直接返回，零 /graph 请求、零重绘。
       if (ver.tasksRev !== undefined) {
-        setTasksRev((prev) => (prev === ver.tasksRev ? prev : ver.tasksRev));
+        setTasksRev((prev) => {
+          if (prev === ver.tasksRev) return prev;
+
+          return ver.tasksRev;
+        });
       }
       const isUnchanged = dataRevRef.current !== undefined && ver.dataRev === dataRevRef.current;
       if (manual && tasksLoadedOnceRef.current) {
@@ -434,7 +444,11 @@ export function DecisionMapPage() {
         appStartedAtRef.current = ver.appStartedAt;
       }
       if (ver.tasksRev !== undefined) {
-        setTasksRev((prev) => (prev === ver.tasksRev ? prev : ver.tasksRev));
+        setTasksRev((prev) => {
+          if (prev === ver.tasksRev) return prev;
+
+          return ver.tasksRev;
+        });
       }
     }, () => undefined);
 
@@ -752,7 +766,7 @@ export function DecisionMapPage() {
   if (graph === undefined) empty = '正在读取决策图';
   if (loadingError !== undefined) empty = loadingError;
 
-  const canvasLabel = t('工作决策');
+  const canvasLabel = t('AI工作台');
 
   let tasksStyle: react.CSSProperties = { display: 'none' };
   if (mainTab === 'tasks') {
@@ -826,8 +840,8 @@ export function DecisionMapPage() {
     mobileSwitcherLabel = t('任务台');
   }
   if (mainTab === 'tick') {
-    mobileHeaderTitle = t('滴答清单');
-    mobileSwitcherLabel = t('滴答');
+    mobileHeaderTitle = t('AI工作台');
+    mobileSwitcherLabel = t('AI工作台');
   }
 
   return (
@@ -874,7 +888,7 @@ export function DecisionMapPage() {
                 aria-pressed={mainTab === 'tick'}
                 onClick={() => switchMainTab('tick')}
               >
-                ✅ {t('滴答清单')}
+                🧩 {t('AI工作台')}
               </button>
             </div>
           </div>
@@ -1163,7 +1177,7 @@ export function DecisionMapPage() {
                   aria-pressed={mainTab === 'tick'}
                   onClick={() => switchMainTab('tick')}
                 >
-                  ✅ {t('滴答清单')}
+                  🧩 {t('AI工作台')}
                 </button>
               </div>
             </div>
@@ -1228,7 +1242,7 @@ export function DecisionMapPage() {
                   switchMainTab('tick');
                 }}
               >
-                <span>✅ {t('滴答清单')}</span>
+                <span>🧩 {t('积木AI工作台')}</span>
                 <span className="decision-m-drawer__cp-tag">
                   {mainTab === 'tick' && t('切回决策图')}
                   {mainTab !== 'tick' && t('多视图工作台')}
@@ -1424,7 +1438,7 @@ export function DecisionMapPage() {
         {(mainTab === 'tick' || visitedTick) && (
           <div className="decision-cp-keepalive" style={tickStyle}>
             <react.Suspense
-              fallback={<div className="decision-empty" role="status">{t('正在加载滴答清单工作台…')}</div>}
+              fallback={<div className="decision-empty" role="status">{t('正在加载积木AI工作台…')}</div>}
             >
               <LazyTickWorkspace
                 board={tasksBoard}
@@ -1580,7 +1594,11 @@ export function DecisionMapPage() {
                 expand={(id) => open(id, true)}
               />
             )}
-            {mainTab === 'map' && look !== 'topic' && look !== 'quadrant' && selected === undefined && overviewRoot !== undefined && (
+            {mainTab === 'map'
+              && look !== 'topic'
+              && look !== 'quadrant'
+              && selected === undefined
+              && overviewRoot !== undefined && (
               <div className="decision-overview-dock">
                 <composer.CentralDock
                   targetNode={overviewRoot}

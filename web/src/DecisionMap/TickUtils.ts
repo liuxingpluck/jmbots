@@ -1,7 +1,7 @@
-/** 滴答清单多视图工作台共享工具函数与元数据定义（日期、象限、树构建、排序与解析）。 */
+/** 积木AI工作台多视图共享工具函数与元数据定义（日期、象限、树构建、排序与解析）。 */
 import type * as api from './DecisionMapApi.ts';
 
-/** 滴答左侧导航主模式：清单 / 日历 / 四象限 / 倒数纪念日 / 习惯。 */
+/** 左侧极窄导航主模式：列表 / 日历 / 四象限 / 倒数纪念日 / 习惯。 */
 export type TickNavMode = 'list' | 'calendar' | 'quadrant' | 'countdown' | 'habit';
 
 /** 清单视图排序方式。 */

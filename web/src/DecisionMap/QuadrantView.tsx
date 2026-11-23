@@ -106,7 +106,7 @@ function QuadrantViewInner({
   }, [visibleEntries]);
 
   if (root === undefined) {
-    return <div className="decision-empty">{t('还没有工作决策节点')}</div>;
+    return <div className="decision-empty">{t('还没有AI工作台节点')}</div>;
   }
 
   const { activeCount, pendingCount, totalCount } = counts;

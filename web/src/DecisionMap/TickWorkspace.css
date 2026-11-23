@@ -1,4 +1,4 @@
-/** 滴答清单多视图工作台暗色主题样式表（对齐 TickTick 深色层级与 8 张参考图视觉细节）。 */
+/** 积木AI工作台深色主题样式表（动态组合筛选条、固定底栏侧导、三栏可拖拽列表、四象限、日历、纪念日与习惯）。 */
 
 .tick-shell {
   position: relative;
@@ -118,6 +118,14 @@
 }
 
 .tick-stage {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.tick-stage__body {
   display: flex;
   flex: 1;
   min-width: 0;
@@ -377,17 +385,36 @@
   min-height: 0;
 }
 
-/* 左栏：智能箱 / 清单 / 标签 */
+/* 左栏：上部可滚动（智能视图 / 动态筛选器 / 分组视图 / 核心标签池） + 底部固定贴底（已完成 & 垃圾桶） */
 .tick-sidebar {
   display: flex;
-  flex: 0 0 var(--tick-sidebar-w, 226px);
-  width: var(--tick-sidebar-w, 226px);
+  flex: 0 0 var(--tick-sidebar-w, 236px);
+  width: var(--tick-sidebar-w, 236px);
   min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  padding: 0;
+  background: #1a1a1d;
+  overflow: hidden;
+}
+.tick-sidebar__scroll {
+  display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 10px 14px;
-  background: #1a1a1d;
+  padding: 10px 10px 14px;
   overflow-y: auto;
+}
+.tick-sidebar__footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px 9px;
+  border-top: 1px solid #26262c;
+  background: #161619;
 }
 
 /* 可拖拽竖向分割条（6px 透明命中热区 + 居中 1px 视觉线） */
@@ -547,6 +574,180 @@ body.tick-resizing {
   flex: 0 0 auto;
   color: #7c8191;
   font-size: 12px;
+}
+.tick-nav-item__count--amber {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+  font-size: 11px;
+  font-weight: 660;
+}
+.tick-nav-item__count--blue {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.42);
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 660;
+}
+.tick-nav-item--compact {
+  min-height: 31px;
+  padding: 5px 10px;
+}
+.tick-sidebar__fold-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #8b92a3;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 620;
+  cursor: pointer;
+}
+.tick-sidebar__fold-head:hover {
+  color: #e4e8f3;
+}
+.tick-sidebar__head-count {
+  color: #636978;
+  font-weight: 500;
+}
+.tick-nav-item__hover-ops {
+  position: absolute;
+  right: 5px;
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+.tick-nav-item-wrap:hover .tick-nav-item__hover-ops {
+  display: inline-flex;
+}
+.tick-nav-item__op-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: #2b2c35;
+  color: #b7bdcc;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tick-nav-item__op-btn:hover {
+  background: #353845;
+  color: #ffffff;
+}
+.tick-nav-item__op-btn--del:hover {
+  color: #ff9494;
+}
+
+/* 核心标签池控件 */
+.tick-tag-pool__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tick-tag-pool__mini-pill {
+  padding: 1px 6px;
+  border: 1px solid #30323d;
+  border-radius: 5px;
+  background: #22232b;
+  color: #939aab;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tick-tag-pool__mini-pill:hover {
+  border-color: #464a5c;
+  color: #edf0f7;
+}
+.tick-tag-pool__mini-pill[data-active="true"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.2);
+  color: #dce8ff;
+}
+.tick-tag-pool__search-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px 2px;
+}
+.tick-tag-pool__search {
+  flex: 1;
+  min-width: 0;
+  height: 27px;
+  padding: 0 8px;
+  border: 1px solid #2d2e37;
+  border-radius: 6px;
+  background: #151518;
+  color: #e6e9f2;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.tick-tag-pool__search:focus {
+  border-color: #4c7ef3;
+}
+.tick-tag-pool__clear {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid #383a47;
+  border-radius: 5px;
+  background: #23242c;
+  color: #b4bcd0;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tick-tag-pool__row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.tick-nav-item--tag {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12.8px;
+}
+.tick-tag-pool__stack-btn {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #2d2f3a;
+  border-radius: 5px;
+  background: #212229;
+  color: #8c93a5;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tick-tag-pool__stack-btn:hover {
+  border-color: #4c7ef3;
+  color: #ffffff;
+}
+.tick-tag-pool__stack-btn[data-selected="true"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.24);
+  color: #dbe8ff;
+}
+.tick-tag-pool__more-btn {
+  margin: 2px 4px 0;
+  padding: 4px 8px;
+  border: 1px dashed #2f313c;
+  border-radius: 6px;
+  background: transparent;
+  color: #8c94a7;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.tick-tag-pool__more-btn:hover {
+  border-color: #4c7ef3;
+  color: #e2e8f6;
 }
 .tick-nav-item__del {
   position: absolute;
@@ -782,10 +983,44 @@ body.tick-resizing {
 .tick-task-row__tag {
   flex: 0 0 auto;
   padding: 1px 6px;
+  border: 1px solid transparent;
   border-radius: 5px;
   background: #232836;
   color: #84a9f5;
+  font: inherit;
   font-size: 11.5px;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.tick-task-row__tag:hover {
+  border-color: #4c7ef3;
+  background: #28334b;
+  color: #d6e4ff;
+}
+.tick-task-row__tag[data-active="true"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.26);
+  color: #eef4ff;
+}
+.tick-task-row__tag--more {
+  background: #262730;
+  color: #9da4b5;
+  cursor: default;
+}
+.tick-task-row__tag--more:hover {
+  border-color: transparent;
+  background: #262730;
+  color: #9da4b5;
+}
+.tick-source-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid #303c4e;
+  background: #1e2632;
+  color: #93c5fd;
+  font-size: 11px;
 }
 .tick-task-row__tree {
   flex: 0 0 auto;
@@ -975,11 +1210,15 @@ body.tick-resizing {
 
 .tick-detail__body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 14px 16px 20px;
+  padding: 14px 16px 40px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+.tick-detail__body > * {
+  flex-shrink: 0;
 }
 .tick-parent-crumb {
   align-self: flex-start;
@@ -2813,4 +3052,505 @@ body.tick-resizing {
   .tick-reply-bar__send {
     align-self: flex-end;
   }
+}
+
+/*==========================================================
+ * 顶部「动态组合筛选条」与内置「存为视图 / 编辑视图」模态窗
+ *==========================================================*/
+.tick-fbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid #24252d;
+  background: #15161b;
+  z-index: 35;
+}
+.tick-fbar__left {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.tick-fbar__right {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+.tick-fbar__scope-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #3c548a;
+  border-radius: 999px;
+  background: rgba(76, 126, 243, 0.16);
+  color: #dbe8ff;
+  font-size: 12px;
+  font-weight: 560;
+}
+.tick-fbar__scope-pill button {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: #9bb8f5;
+  cursor: pointer;
+}
+.tick-fbar__scope-pill button:hover {
+  color: #ffffff;
+}
+
+.tick-fbar__drop-wrap {
+  position: relative;
+}
+.tick-fbar__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 27px;
+  padding: 0 9px;
+  border: 1px solid #2b2d38;
+  border-radius: 7px;
+  background: #1e2028;
+  color: #b7bdcc;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.tick-fbar__trigger:hover {
+  border-color: #42475a;
+  color: #f3f5fa;
+}
+.tick-fbar__trigger[data-active="true"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.18);
+  color: #eef4ff;
+}
+.tick-fbar__badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #4c7ef3;
+  color: #ffffff;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.tick-fbar__caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.tick-fbar__pop {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 186px;
+  max-width: 280px;
+  padding: 7px;
+  border-radius: 10px;
+  border: 1px solid #333645;
+  background: #1f2027;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65);
+}
+.tick-fbar__pop--tags {
+  min-width: 248px;
+}
+.tick-fbar__pop-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid #2b2d39;
+}
+.tick-fbar__pop-search {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #343746;
+  border-radius: 6px;
+  background: #15161c;
+  color: #eef1f8;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.tick-fbar__pop-search:focus {
+  border-color: #4c7ef3;
+}
+.tick-fbar__mode-switch {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: #15161b;
+  border: 1px solid #2b2e3b;
+}
+.tick-fbar__mode-switch button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #8f96a8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tick-fbar__mode-switch button[data-active="true"] {
+  background: #3558ac;
+  color: #ffffff;
+}
+.tick-fbar__tag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+.tick-fbar__pop-empty {
+  padding: 12px 8px;
+  text-align: center;
+  color: #777d8e;
+  font-size: 12px;
+}
+.tick-fbar__pop-group-label {
+  padding: 3px 6px 1px;
+  color: #7d8496;
+  font-size: 11px;
+  font-weight: 600;
+}
+.tick-fbar__pop-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: #2b2d38;
+}
+.tick-fbar__opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #d6dbe7;
+  text-align: left;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.tick-fbar__opt:hover {
+  background: #292b35;
+}
+.tick-fbar__opt[data-checked="true"] {
+  background: rgba(76, 126, 243, 0.16);
+  color: #ffffff;
+}
+.tick-fbar__opt-box {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  border: 1.4px solid #53596b;
+  border-radius: 3.5px;
+  font-size: 10px;
+  color: #ffffff;
+}
+.tick-fbar__opt[data-checked="true"] .tick-fbar__opt-box {
+  border-color: #4c7ef3;
+  background: #4c7ef3;
+}
+.tick-fbar__opt-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tick-fbar__opt-count {
+  color: #7c8396;
+  font-size: 11.5px;
+}
+.tick-fbar__pop-clear {
+  margin-top: 4px;
+  padding: 4px 8px;
+  border: 1px solid #393c4b;
+  border-radius: 6px;
+  background: #252731;
+  color: #f3a4a4;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.tick-fbar__kw-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tick-fbar__kw-input {
+  width: 132px;
+  height: 27px;
+  padding: 0 22px 0 8px;
+  border: 1px solid #2b2d38;
+  border-radius: 7px;
+  background: #1a1b22;
+  color: #eef1f8;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  transition: width 0.14s ease, border-color 0.14s ease;
+}
+.tick-fbar__kw-input:focus {
+  width: 176px;
+  border-color: #4c7ef3;
+}
+.tick-fbar__kw-clear {
+  position: absolute;
+  right: 4px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: #939ab0;
+  cursor: pointer;
+}
+
+.tick-fbar__mode-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #4462a6;
+  border-radius: 999px;
+  background: #212c46;
+  color: #bcd4ff;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tick-fbar__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #323a4f;
+  border-radius: 999px;
+  background: #202533;
+  color: #d3def7;
+  font-size: 11.5px;
+}
+.tick-fbar__chip--tag {
+  border-color: #3a5699;
+  background: rgba(76, 126, 243, 0.16);
+  color: #cfe0ff;
+}
+.tick-fbar__chip button {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: #8ea5d6;
+  cursor: pointer;
+}
+.tick-fbar__chip button:hover {
+  color: #ffffff;
+}
+
+.tick-fbar__hit-count {
+  color: #8b94a8;
+  font-size: 12px;
+}
+.tick-fbar__save-btn {
+  height: 27px;
+  padding: 0 11px;
+  border: 1px solid #4772db;
+  border-radius: 7px;
+  background: #355cc2;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tick-fbar__save-btn:hover {
+  background: #446ee0;
+}
+.tick-fbar__reset-btn {
+  height: 27px;
+  padding: 0 9px;
+  border: 1px solid #353744;
+  border-radius: 7px;
+  background: #22232b;
+  color: #c6ccd9;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tick-fbar__reset-btn:hover {
+  border-color: #52566b;
+  color: #ffffff;
+}
+
+/* 内置存为视图 / 编辑视图模态窗 */
+.tick-view-modal {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: 84vh;
+  border-radius: 14px;
+  border: 1px solid #333645;
+  background: #202128;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.74);
+  overflow: hidden;
+}
+.tick-view-modal__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 13px 18px;
+  border-bottom: 1px solid #2b2e3a;
+}
+.tick-view-modal__head h3 {
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 650;
+  color: #f3f5fa;
+}
+.tick-view-modal__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 13px;
+  padding: 14px 18px;
+  overflow-y: auto;
+}
+.tick-view-modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tick-view-modal__row-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.tick-view-modal__label {
+  color: #9ba3b6;
+  font-size: 12px;
+  font-weight: 600;
+}
+.tick-view-modal__input {
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid #353847;
+  border-radius: 8px;
+  background: #15161c;
+  color: #f2f4fa;
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+.tick-view-modal__input:focus {
+  border-color: #4c7ef3;
+}
+.tick-view-modal__appearance {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.tick-view-modal__colors {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tick-color-dot {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.tick-color-dot[data-active="true"] {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(76, 126, 243, 0.55);
+}
+.tick-view-modal__pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.tick-modal-pill {
+  padding: 4px 9px;
+  border: 1px solid #313443;
+  border-radius: 999px;
+  background: #181920;
+  color: #b8bfcf;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tick-modal-pill:hover {
+  border-color: #4a5168;
+  color: #f3f5fa;
+}
+.tick-modal-pill[data-active="true"] {
+  border-color: #4c7ef3;
+  background: rgba(76, 126, 243, 0.22);
+  color: #e6f0ff;
+}
+.tick-view-modal__tag-inline input {
+  width: 104px;
+  padding: 4px 8px;
+  border: 1px dashed #393d4e;
+  border-radius: 999px;
+  background: transparent;
+  color: #e4e8f3;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.tick-view-modal__tag-inline input:focus {
+  border-style: solid;
+  border-color: #4c7ef3;
+}
+.tick-view-modal__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid #2d354a;
+  background: #171b25;
+}
+.tick-view-modal__preview-count {
+  color: #cde0ff;
+  font-size: 12.5px;
+}
+.tick-view-modal__preview-desc {
+  color: #8592ad;
+  font-size: 11.5px;
+}
+.tick-view-modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 18px;
+  border-top: 1px solid #2b2e3a;
+  background: #1b1c22;
 }

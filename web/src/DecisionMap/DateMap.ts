@@ -9,8 +9,18 @@ const t = words.t;
 
 /** 按看页面的这台机器的本地时区划日期（不写死某个时区）。 */
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const DAY_KEY = new Intl.DateTimeFormat('en-CA', { timeZone: ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
-const DAY_TEXT = new Intl.DateTimeFormat('zh-CN', { timeZone: ZONE, month: '2-digit', day: '2-digit', weekday: 'short' });
+const DAY_KEY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const DAY_TEXT = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: ZONE,
+  month: '2-digit',
+  day: '2-digit',
+  weekday: 'short',
+});
 const DAY_MS = 86_400_000;
 /** 同一列相邻卡片的垂直间距，和相邻两列的水平间距。 */
 const BREADTH = 110;

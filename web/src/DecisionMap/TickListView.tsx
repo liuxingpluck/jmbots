@@ -1,31 +1,42 @@
-/** 滴答清单三栏经典视图：左侧智能箱/清单/标签 + 中栏多级父子任务树 + 右侧详情面板。 */
+/** AI工作台三栏经典视图：左侧智能视图/动态筛选器/分组视图/核心标签池（底部固定已完成与垃圾桶） + 中栏文档节点树 + 右侧详情面板。 */
 import * as react from 'react';
 import * as api from './DecisionMapApi.ts';
 import * as detail from './TickTaskDetail.tsx';
 import * as utils from './TickUtils.ts';
+import * as filterEngine from './WorkbenchFilter.ts';
 
-/** 清单视图左侧选中范围类型。 */
-export type TickListFilter =
-  | { kind: 'today' }
-  | { kind: 'next7' }
-  | { kind: 'inbox' }
-  | { kind: 'list'; name: string }
-  | { kind: 'tag'; name: string }
-  | { kind: 'completed' }
-  | { kind: 'trash' };
-
-/** 三栏清单视图入参。 */
+/** 三栏节点列表视图入参。 */
 export interface TickListViewProps {
-  /** 全部任务数组。 */
-  tasks: readonly api.ControlTask[];
-  /** 可见清单定义数组。 */
+  /** 全量原始任务数组（用于侧栏计数、垃圾桶、已完成箱及详情面板关联）。 */
+  allTasks: readonly api.ControlTask[];
+  /** 当前范围与顶部动态筛选条共同过滤后的未完成（或显式匹配状态）节点。 */
+  filteredActiveTasks: readonly api.ControlTask[];
+  /** 当前范围与顶部动态筛选条共同过滤后的含已完成节点集合。 */
+  filteredWithDoneTasks: readonly api.ControlTask[];
+  /** 可见分组（清单）定义数组。 */
   lists: readonly api.TaskListDef[];
+  /** 已保存的自定义动态筛选视图数组。 */
+  views: readonly api.TaskFilterViewDef[];
+  /** 全量活跃标签及其实时节点计数。 */
+  tagEntries: ReadonlyArray<readonly [string, number]>;
   /** 今日日期字符串 YYYY-MM-DD。 */
   todayStr: string;
-  /** 当前左侧选中的过滤范围。 */
-  filter: TickListFilter;
-  /** 切换左侧过滤范围回调。 */
-  onChangeFilter: (next: TickListFilter) => void;
+  /** 当前左侧选中的导航范围。 */
+  scope: filterEngine.WorkbenchScope;
+  /** 切换左侧导航范围回调。 */
+  onChangeScope: (next: filterEngine.WorkbenchScope) => void;
+  /** 顶部动态组合筛选条规则。 */
+  adhocRule: api.TaskFilterRule;
+  /** 更新顶部动态组合筛选条规则回调。 */
+  onChangeAdhocRule: (next: api.TaskFilterRule) => void;
+  /** 点击标签筛选或叠加标签回调（multi=true 多选叠加，multi=false 单选切换）。 */
+  onToggleTagFilter: (tagName: string, multi: boolean) => void;
+  /** 打开新建自定义动态视图弹窗回调。 */
+  onOpenCreateView: () => void;
+  /** 打开编辑自定义动态视图弹窗回调。 */
+  onOpenEditView: (view: api.TaskFilterViewDef) => void;
+  /** 删除自定义动态视图回调。 */
+  onDeleteView: (viewId: string, viewName: string) => Promise<void>;
   /** 当前选中的任务 ID。 */
   selectedTaskId: string | undefined;
   /** 选中任务回调。 */
@@ -50,9 +61,9 @@ export interface TickListViewProps {
     kind: api.ControlTaskEventKind,
     options?: { notifyHelper?: string; broadcast?: boolean },
   ) => Promise<boolean>;
-  /** 新建自定义清单回调。 */
+  /** 新建自定义分组回调。 */
   onCreateList: (name: string, icon: string) => Promise<void>;
-  /** 删除自定义清单回调。 */
+  /** 删除自定义分组回调。 */
   onDeleteList: (listId: string, listName: string) => Promise<void>;
 }
 
@@ -65,13 +76,14 @@ const SORT_LABELS: Readonly<Record<utils.TickSortMode, string>> = {
 
 const SIDEBAR_WIDTH_KEY = 'jmbots.tick.sidebarWidth';
 const DETAIL_WIDTH_KEY = 'jmbots.tick.detailWidth';
-const DEFAULT_SIDEBAR_WIDTH = 226;
-const MIN_SIDEBAR_WIDTH = 160;
+const DEFAULT_SIDEBAR_WIDTH = 236;
+const MIN_SIDEBAR_WIDTH = 168;
 const MAX_SIDEBAR_WIDTH = 380;
 const DEFAULT_DETAIL_WIDTH = 440;
 const MIN_DETAIL_WIDTH = 300;
 const MAX_DETAIL_WIDTH = 860;
 const WIDE_DETAIL_WIDTH = 720;
+const DEFAULT_TAG_VISIBLE_LIMIT = 12;
 
 /** 把列宽限制在允许区间内。 */
 function clampWidth(value: number, min: number, max: number): number {
@@ -102,30 +114,64 @@ function writeStoredWidth(key: string, value: number): void {
   }
 }
 
-/** 计算当前过滤视图的顶部标题与图标。 */
-function getFilterHeader(
-  filter: TickListFilter,
-  lists: readonly api.TaskListDef[],
-): { icon: string; title: string } {
-  if (filter.kind === 'today') return { icon: '📅', title: '今天' };
-  if (filter.kind === 'next7') return { icon: '🗓️', title: '最近7天' };
-  if (filter.kind === 'inbox') return { icon: '📥', title: '收集箱' };
-  if (filter.kind === 'completed') return { icon: '☑️', title: '已完成' };
-  if (filter.kind === 'trash') return { icon: '🗑️', title: '垃圾桶' };
-  if (filter.kind === 'tag') return { icon: '#', title: filter.name };
+/** 渲染单行任务的前 3 个可点击标签胶囊及 +N 溢出徽标。 */
+function renderRowTagPills(
+  tags: readonly string[] | undefined,
+  activeTags: readonly string[],
+  onClickTag: (tagName: string) => void,
+): react.JSX.Element | null {
+  const list = tags ?? [];
+  if (list.length === 0) return null;
 
-  const found = lists.find((item) => item.name === filter.name);
-  return { icon: found?.icon ?? '📋', title: filter.name };
+  const shown = list.slice(0, 3);
+  const rest = list.slice(3);
+  return (
+    <>
+      {shown.map((tag) => (
+        <button
+          key={tag}
+          type="button"
+          className="tick-task-row__tag"
+          data-active={activeTags.includes(tag)}
+          title={`点击加入/移除 #${tag} 动态筛选`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClickTag(tag);
+          }}
+        >
+          #{tag}
+        </button>
+      ))}
+      {rest.length > 0 && (
+        <span
+          className="tick-task-row__tag tick-task-row__tag--more"
+          title={`更多标签：${rest.map((t) => `#${t}`).join(' ')}`}
+        >
+          +{String(rest.length)}
+        </span>
+      )}
+    </>
+  );
 }
 
-/** 滴答清单三栏主组件。 */
+/** AI工作台三栏主组件。 */
 export function TickListView(props: TickListViewProps): react.JSX.Element {
   const {
-    tasks,
+    allTasks,
+    filteredActiveTasks,
+    filteredWithDoneTasks,
     lists,
+    views,
+    tagEntries,
     todayStr,
-    filter,
-    onChangeFilter,
+    scope,
+    onChangeScope,
+    adhocRule,
+    onChangeAdhocRule,
+    onToggleTagFilter,
+    onOpenCreateView,
+    onOpenEditView,
+    onDeleteView,
     selectedTaskId,
     onSelectTask,
     onCreateTask,
@@ -140,6 +186,13 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
   const [collapsedIds, setCollapsedIds] = react.useState<ReadonlySet<string>>(() => new Set());
   const [completedOpen, setCompletedOpen] = react.useState(true);
   const [sidebarOpen, setSidebarOpen] = react.useState(true);
+
+  //M 左侧分组视图与核心标签池折叠、迷你搜标签、展开低频标签及多选开关。
+  const [groupsFolded, setGroupsFolded] = react.useState(false);
+  const [tagsFolded, setTagsFolded] = react.useState(false);
+  const [tagSearch, setTagSearch] = react.useState('');
+  const [showAllTags, setShowAllTags] = react.useState(false);
+  const [multiTagPin, setMultiTagPin] = react.useState(false);
 
   //M 左右两条竖向分割条的可拖拽列宽与宽读模式状态。
   const [sidebarWidth, setSidebarWidth] = react.useState(() =>
@@ -174,21 +227,19 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
   const [quickQuadrant, setQuickQuadrant] = react.useState<api.TickQuadrant>('q2');
   const [quickDueOpen, setQuickDueOpen] = react.useState(false);
 
-  //M 左侧新建/删除清单内联状态。
+  //M 左侧新建/删除分组与动态视图内联确认状态（零原生弹窗）。
   const [addingList, setAddingList] = react.useState(false);
   const [newListName, setNewListName] = react.useState('');
   const [newListIcon, setNewListIcon] = react.useState('📋');
   const [confirmDeleteListId, setConfirmDeleteListId] = react.useState<string | undefined>(undefined);
+  const [confirmDeleteViewId, setConfirmDeleteViewId] = react.useState<string | undefined>(undefined);
   const [confirmTrashTaskId, setConfirmTrashTaskId] = react.useState<string | undefined>(undefined);
 
-  const next7Limit = utils.addDaysStr(todayStr, 6);
-
-  //M 过滤出所有普通任务（排除倒数纪念日与习惯）。
   const normalTasks = react.useMemo(() => {
-    return tasks.filter((item) => utils.getTaskKind(item) === 'task');
-  }, [tasks]);
+    return allTasks.filter((item) => utils.getTaskKind(item) === 'task');
+  }, [allTasks]);
 
-  const activeTasks = react.useMemo(() => {
+  const activeNormalTasks = react.useMemo(() => {
     return normalTasks.filter((item) => !utils.isTaskTrashed(item));
   }, [normalTasks]);
 
@@ -196,91 +247,85 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     return normalTasks.filter((item) => utils.isTaskTrashed(item));
   }, [normalTasks]);
 
-  //M 统计智能箱、自定义清单、标签、已完成与垃圾桶计数。
-  const counts = react.useMemo(() => {
-    let todayCount = 0;
-    let next7Count = 0;
-    let inboxCount = 0;
-    let completedCount = 0;
-    const byList = new Map<string, number>();
-    const byTag = new Map<string, number>();
+  //M 全部侧边栏徽标统一走同一套 matchesTaskFilterRule 规则引擎计算！
+  const sidebarCounts = react.useMemo(() => {
+    const smartCounts = new Map<filterEngine.SmartViewKey, number>();
+    for (const def of filterEngine.SMART_VIEW_DEFS) {
+      const cnt = activeNormalTasks.filter((item) => {
+        return filterEngine.matchesTaskFilterRule(item, def.rule, todayStr);
+      }).length;
+      smartCounts.set(def.key, cnt);
+    }
 
-    for (const item of activeTasks) {
+    const viewCounts = new Map<string, number>();
+    for (const view of views) {
+      const cnt = activeNormalTasks.filter((item) => {
+        return filterEngine.matchesTaskFilterRule(item, view.rule, todayStr);
+      }).length;
+      viewCounts.set(view.id, cnt);
+    }
+
+    const listCounts = new Map<string, number>();
+    for (const list of lists) {
+      const cnt = activeNormalTasks.filter((item) => {
+        return filterEngine.matchesTaskFilterRule(item, { lists: [list.name] }, todayStr);
+      }).length;
+      listCounts.set(list.name, cnt);
+    }
+
+    let completedCount = 0;
+    for (const item of activeNormalTasks) {
       if (utils.isTaskDone(item)) {
         completedCount += 1;
-        continue;
-      }
-      const listName = utils.getTaskListName(item);
-      if (listName === '收集箱') {
-        inboxCount += 1;
-      }
-      byList.set(listName, (byList.get(listName) ?? 0) + 1);
-
-      const due = item.dueDate ?? null;
-      if (due !== null && due !== '') {
-        if (due <= todayStr) {
-          todayCount += 1;
-        }
-        if (due <= next7Limit) {
-          next7Count += 1;
-        }
-      }
-      for (const tag of item.tags ?? []) {
-        byTag.set(tag, (byTag.get(tag) ?? 0) + 1);
       }
     }
 
-    const tagEntries = Array.from(byTag.entries()).sort((a, b) => b[1] - a[1]);
     return {
-      todayCount,
-      next7Count,
-      inboxCount,
+      smartCounts,
+      viewCounts,
+      listCounts,
       completedCount,
       trashCount: trashedTasks.length,
-      byList,
-      tagEntries,
     };
-  }, [activeTasks, trashedTasks.length, todayStr, next7Limit]);
+  }, [activeNormalTasks, views, lists, trashedTasks.length, todayStr]);
 
-  //M 按当前选中范围筛选出待办任务与已完成任务。
+  //M 计算中栏待办树节点与已完成节点列表。
   const { pendingTasks, doneTasks } = react.useMemo(() => {
-    if (filter.kind === 'trash') {
+    if (scope.kind === 'trash') {
       return { pendingTasks: trashedTasks, doneTasks: [] as api.ControlTask[] };
     }
-    if (filter.kind === 'completed') {
-      const finished = activeTasks.filter((item) => utils.isTaskDone(item));
+    if (scope.kind === 'completed') {
+      const finished = activeNormalTasks.filter((item) => {
+        if (!utils.isTaskDone(item)) return false;
+
+        return filterEngine.matchesTaskFilterRule(
+          item,
+          { ...adhocRule, includeDone: true },
+          todayStr,
+        );
+      });
       return { pendingTasks: [] as api.ControlTask[], doneTasks: finished };
     }
 
-    const matched = activeTasks.filter((item) => {
-      if (filter.kind === 'inbox') {
-        return utils.getTaskListName(item) === '收集箱';
-      }
-      if (filter.kind === 'list') {
-        return utils.getTaskListName(item) === filter.name;
-      }
-      if (filter.kind === 'tag') {
-        return (item.tags ?? []).includes(filter.name);
-      }
-      const due = item.dueDate ?? null;
-      if (due === null || due === '') return false;
-      if (filter.kind === 'today') return due <= todayStr;
-      if (filter.kind === 'next7') return due <= next7Limit;
-
-      return false;
-    });
-
+    const explicitDoneFilter = adhocRule.statuses?.includes('done') ?? false;
     const pending: api.ControlTask[] = [];
-    const done: api.ControlTask[] = [];
-    for (const item of matched) {
-      if (utils.isTaskDone(item)) {
-        done.push(item);
+    for (const item of filteredActiveTasks) {
+      if (!explicitDoneFilter && utils.isTaskDone(item)) {
         continue;
       }
       pending.push(item);
     }
+
+    const done: api.ControlTask[] = [];
+    if (!explicitDoneFilter) {
+      for (const item of filteredWithDoneTasks) {
+        if (utils.isTaskDone(item)) {
+          done.push(item);
+        }
+      }
+    }
     return { pendingTasks: pending, doneTasks: done };
-  }, [activeTasks, trashedTasks, filter, todayStr, next7Limit]);
+  }, [scope, trashedTasks, activeNormalTasks, adhocRule, todayStr, filteredActiveTasks, filteredWithDoneTasks]);
 
   const pendingRows = react.useMemo(() => {
     return utils.buildTaskTreeRows(pendingTasks, collapsedIds, sortMode);
@@ -290,8 +335,21 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     return utils.sortTaskList(doneTasks, 'default');
   }, [doneTasks]);
 
-  const selectedTask = tasks.find((item) => item.id === selectedTaskId);
-  const headerMeta = getFilterHeader(filter, lists);
+  //M 核心标签池：支持关键词即时搜全量标签 + 默认只展示高频前 N 个防滚条爆炸。
+  const displayedTagEntries = react.useMemo(() => {
+    const kw = tagSearch.trim().toLowerCase();
+    if (kw !== '') {
+      return tagEntries.filter(([name]) => name.toLowerCase().includes(kw));
+    }
+    if (showAllTags) return tagEntries;
+
+    return tagEntries.slice(0, DEFAULT_TAG_VISIBLE_LIMIT);
+  }, [tagEntries, tagSearch, showAllTags]);
+
+  const activeFilterTags = adhocRule.tags ?? [];
+  const activeTagMode: api.TaskTagMode = adhocRule.tagMode ?? 'and';
+  const selectedTask = allTasks.find((item) => item.id === selectedTaskId);
+  const headerMeta = filterEngine.getScopeHeaderMeta(scope, lists, views);
 
   /** 循环切换排序方式。 */
   const cycleSort = (): void => {
@@ -336,31 +394,39 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     setQuickQuadrant('q1');
   };
 
-  /** 回车提交快捷新建任务。 */
+  /** 回车提交快捷新建节点（自动继承当前视图的分组、日期与激活筛选标签）。 */
   const handleQuickCreate = async (event: react.FormEvent): Promise<void> => {
     event.preventDefault();
     const parsed = utils.parseQuickTaskInput(quickTitle);
     if (parsed.title === '') return;
 
+    const currentBase = filterEngine.getScopeBaseRule(scope, views);
     let targetList = '工作任务';
-    if (filter.kind === 'inbox') {
+    if (scope.kind === 'smart' && scope.key === 'inbox') {
       targetList = '收集箱';
     }
-    if (filter.kind === 'list') {
-      targetList = filter.name;
+    if (scope.kind === 'list') {
+      targetList = scope.name;
+    }
+    if (currentBase.lists !== undefined && currentBase.lists.length > 0) {
+      targetList = currentBase.lists[0]!;
     }
 
     let dueDate: string | null = null;
     if (quickDue !== '') {
       dueDate = quickDue;
     }
-    if (dueDate === null && (filter.kind === 'today' || filter.kind === 'next7')) {
+    const isTodayOrNext7 =
+      scope.kind === 'smart' && (scope.key === 'today' || scope.key === 'next7');
+    if (dueDate === null && isTodayOrNext7) {
       dueDate = todayStr;
     }
 
     const tags = [...parsed.tags];
-    if (filter.kind === 'tag' && !tags.includes(filter.name)) {
-      tags.push(filter.name);
+    for (const inheritedTag of [...(currentBase.tags ?? []), ...activeFilterTags]) {
+      if (!tags.includes(inheritedTag)) {
+        tags.push(inheritedTag);
+      }
     }
 
     setQuickTitle('');
@@ -390,7 +456,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     await onPatchTask(task.id, { status: nextStatus, by: 'boss' });
   };
 
-  /** 提交新建清单。 */
+  /** 提交新建分组。 */
   const handleSubmitNewList = async (event: react.FormEvent): Promise<void> => {
     event.preventDefault();
     const cleaned = newListName.trim();
@@ -399,18 +465,19 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     await onCreateList(cleaned, newListIcon);
     setNewListName('');
     setAddingList(false);
-    onChangeFilter({ kind: 'list', name: cleaned });
+    onChangeScope({ kind: 'list', name: cleaned });
   };
 
-  const canQuickAdd = filter.kind !== 'completed' && filter.kind !== 'trash';
-  const showCompletedSection = filter.kind !== 'completed' && filter.kind !== 'trash' && doneRows.length > 0;
+  const canQuickAdd = scope.kind !== 'completed' && scope.kind !== 'trash';
+  const showCompletedSection =
+    scope.kind !== 'completed' && scope.kind !== 'trash' && doneRows.length > 0;
   let quickDueText = '';
   if (quickDue !== '') {
     quickDueText = utils.formatShortDate(quickDue, todayStr);
   }
   const tomorrowStr = utils.addDaysStr(todayStr, 1);
 
-  /** 开始拖拽左侧清单栏或右侧详情栏分割条（拖动期间禁用全局选字）。 */
+  /** 开始拖拽左侧栏或右侧详情栏分割条。 */
   const startResize = (
     side: 'sidebar' | 'detail',
     event: react.PointerEvent<HTMLDivElement>,
@@ -472,221 +539,433 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
     '--tick-detail-w': `${String(detailWidth)}px`,
   } as react.CSSProperties;
 
+  let nextTagMode: api.TaskTagMode = 'or';
+  if (activeTagMode === 'or') {
+    nextTagMode = 'and';
+  }
+  let tagModeShort = '且';
+  if (activeTagMode === 'or') {
+    tagModeShort = '或';
+  }
+
   return (
     <div className="tick-three-col" style={columnVars}>
-      {/* 左栏：智能箱 + 清单 + 标签 + 已完成/垃圾桶 + 可拖拽分割条 */}
+      {/* 左栏：上部独立可滚动区（智能视图 / 动态筛选器 / 分组视图 / 核心标签池） + 底部固定贴底区（已完成 & 垃圾桶） */}
       {sidebarOpen && (
         <>
-          <aside className="tick-sidebar" aria-label="清单与智能箱">
-          <div className="tick-sidebar__group">
-            <button
-              type="button"
-              className="tick-nav-item"
-              data-active={filter.kind === 'today'}
-              onClick={() => onChangeFilter({ kind: 'today' })}
-            >
-              <span className="tick-nav-item__icon">📅</span>
-              <span className="tick-nav-item__label">今天</span>
-              {counts.todayCount > 0 && (
-                <span className="tick-nav-item__count">{String(counts.todayCount)}</span>
-              )}
-            </button>
-            <button
-              type="button"
-              className="tick-nav-item"
-              data-active={filter.kind === 'next7'}
-              onClick={() => onChangeFilter({ kind: 'next7' })}
-            >
-              <span className="tick-nav-item__icon">🗓️</span>
-              <span className="tick-nav-item__label">最近7天</span>
-              {counts.next7Count > 0 && (
-                <span className="tick-nav-item__count">{String(counts.next7Count)}</span>
-              )}
-            </button>
-            <button
-              type="button"
-              className="tick-nav-item"
-              data-active={filter.kind === 'inbox'}
-              onClick={() => onChangeFilter({ kind: 'inbox' })}
-            >
-              <span className="tick-nav-item__icon">📥</span>
-              <span className="tick-nav-item__label">收集箱</span>
-              {counts.inboxCount > 0 && (
-                <span className="tick-nav-item__count">{String(counts.inboxCount)}</span>
-              )}
-            </button>
-          </div>
-
-          <div className="tick-sidebar__divider" />
-
-          {/* 清单列表区 */}
-          <div className="tick-sidebar__section">
-            <div className="tick-sidebar__section-head">
-              <span>清单</span>
-              <button
-                type="button"
-                className="tick-sidebar__add-btn"
-                title="新建清单"
-                aria-label="新建清单"
-                onClick={() => setAddingList((prev) => !prev)}
-              >
-                +
-              </button>
-            </div>
-
-            {addingList && (
-              <form className="tick-inline-list-form" onSubmit={(e) => void handleSubmitNewList(e)}>
-                <div className="tick-emoji-strip">
-                  {utils.LIST_ICON_CHOICES.map((icon) => (
-                    <button
-                      key={icon}
-                      type="button"
-                      className="tick-emoji-btn"
-                      data-active={newListIcon === icon}
-                      onClick={() => setNewListIcon(icon)}
-                    >
-                      {icon}
-                    </button>
-                  ))}
+          <aside className="tick-sidebar" aria-label="视图与标签导航">
+            <div className="tick-sidebar__scroll">
+              {/* 1. 智能视图 */}
+              <div className="tick-sidebar__section">
+                <div className="tick-sidebar__section-head">
+                  <span>智能视图</span>
                 </div>
-                <div className="tick-inline-list-form__row">
-                  <input
-                    type="text"
-                    value={newListName}
-                    placeholder="输入清单名称…"
-                    autoFocus
-                    onChange={(e) => setNewListName(e.target.value)}
-                  />
-                  <button type="submit" className="tick-mini-btn tick-mini-btn--primary">
-                    添加
+                <div className="tick-sidebar__group">
+                  {filterEngine.SMART_VIEW_DEFS.map((meta) => {
+                    const active = scope.kind === 'smart' && scope.key === meta.key;
+                    const count = sidebarCounts.smartCounts.get(meta.key) ?? 0;
+                    let countClass = 'tick-nav-item__count';
+                    if (count > 0 && meta.accent === 'amber') {
+                      countClass = 'tick-nav-item__count tick-nav-item__count--amber';
+                    }
+                    if (count > 0 && meta.accent === 'blue') {
+                      countClass = 'tick-nav-item__count tick-nav-item__count--blue';
+                    }
+                    return (
+                      <button
+                        key={meta.key}
+                        type="button"
+                        className="tick-nav-item"
+                        data-active={active}
+                        onClick={() => onChangeScope({ kind: 'smart', key: meta.key })}
+                      >
+                        <span className="tick-nav-item__icon">{meta.icon}</span>
+                        <span className="tick-nav-item__label">{meta.label}</span>
+                        {count > 0 && <span className={countClass}>{String(count)}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="tick-sidebar__divider" />
+
+              {/* 2. 动态筛选器 / 自定义视图 */}
+              <div className="tick-sidebar__section">
+                <div className="tick-sidebar__section-head">
+                  <span>动态筛选器</span>
+                  <button
+                    type="button"
+                    className="tick-sidebar__add-btn"
+                    title="新建自定义动态筛选视图"
+                    aria-label="新建自定义动态筛选视图"
+                    onClick={onOpenCreateView}
+                  >
+                    +
                   </button>
                 </div>
-              </form>
-            )}
 
-            <div className="tick-sidebar__group">
-              {lists.map((item) => {
-                const active = filter.kind === 'list' && filter.name === item.name;
-                const count = counts.byList.get(item.name) ?? 0;
-                const deletable = !utils.SYSTEM_LIST_NAMES.has(item.name) && !item.id.startsWith('virtual-');
-                const confirming = confirmDeleteListId === item.id;
-                return (
-                  <div key={item.id} className="tick-nav-item-wrap">
-                    <button
-                      type="button"
-                      className="tick-nav-item"
-                      data-active={active}
-                      onClick={() => {
-                        setConfirmDeleteListId(undefined);
-                        onChangeFilter({ kind: 'list', name: item.name });
-                      }}
-                    >
-                      <span className="tick-nav-item__icon">{item.icon ?? '📋'}</span>
-                      <span className="tick-nav-item__label">{item.name}</span>
-                      {count > 0 && (
-                        <span className="tick-nav-item__count">{String(count)}</span>
-                      )}
-                    </button>
-                    {deletable && !confirming && (
-                      <button
-                        type="button"
-                        className="tick-nav-item__del"
-                        title={`删除清单「${item.name}」`}
-                        aria-label={`删除清单 ${item.name}`}
-                        onClick={() => setConfirmDeleteListId(item.id)}
-                      >
-                        ×
-                      </button>
-                    )}
-                    {deletable && confirming && (
-                      <button
-                        type="button"
-                        className="tick-nav-item__del-confirm"
-                        onClick={() => {
-                          setConfirmDeleteListId(undefined);
-                          void onDeleteList(item.id, item.name);
-                          if (active) {
-                            onChangeFilter({ kind: 'inbox' });
-                          }
-                        }}
-                      >
-                        确认删
-                      </button>
-                    )}
+                {views.length === 0 && (
+                  <div className="tick-sidebar__hint-box">
+                    在顶部组合标签/属性后点「存为视图」，或点右上 + 创建专属视图
                   </div>
-                );
-              })}
-            </div>
-          </div>
+                )}
 
-          <div className="tick-sidebar__divider" />
-
-          {/* 标签聚合区 */}
-          <div className="tick-sidebar__section">
-            <div className="tick-sidebar__section-head">
-              <span>标签</span>
-            </div>
-            {counts.tagEntries.length === 0 && (
-              <div className="tick-sidebar__hint-box">
-                在添加任务时输入 #标签 可自动归类并筛选不同清单的任务
+                {views.length > 0 && (
+                  <div className="tick-sidebar__group">
+                    {views.map((view) => {
+                      const active = scope.kind === 'view' && scope.viewId === view.id;
+                      const count = sidebarCounts.viewCounts.get(view.id) ?? 0;
+                      const confirming = confirmDeleteViewId === view.id;
+                      const ruleTip = filterEngine.describeFilterRule(view.rule).join(' · ');
+                      let viewDotStyle: react.CSSProperties | undefined;
+                      if (view.color !== undefined && view.color !== '') {
+                        viewDotStyle = { color: view.color };
+                      }
+                      return (
+                        <div key={view.id} className="tick-nav-item-wrap">
+                          <button
+                            type="button"
+                            className="tick-nav-item"
+                            data-active={active}
+                            title={ruleTip}
+                            onClick={() => {
+                              setConfirmDeleteViewId(undefined);
+                              onChangeScope({ kind: 'view', viewId: view.id });
+                            }}
+                          >
+                            <span className="tick-nav-item__icon" style={viewDotStyle}>
+                              {view.icon ?? '🔖'}
+                            </span>
+                            <span className="tick-nav-item__label">{view.name}</span>
+                            {count > 0 && (
+                              <span className="tick-nav-item__count">{String(count)}</span>
+                            )}
+                          </button>
+                          {!confirming && (
+                            <div className="tick-nav-item__hover-ops">
+                              <button
+                                type="button"
+                                className="tick-nav-item__op-btn"
+                                title={`编辑视图「${view.name}」`}
+                                aria-label={`编辑视图 ${view.name}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenEditView(view);
+                                }}
+                              >
+                                ✎
+                              </button>
+                              <button
+                                type="button"
+                                className="tick-nav-item__op-btn tick-nav-item__op-btn--del"
+                                title={`删除视图「${view.name}」`}
+                                aria-label={`删除视图 ${view.name}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDeleteViewId(view.id);
+                                }}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          )}
+                          {confirming && (
+                            <button
+                              type="button"
+                              className="tick-nav-item__del-confirm"
+                              onClick={() => {
+                                setConfirmDeleteViewId(undefined);
+                                void onDeleteView(view.id, view.name);
+                              }}
+                            >
+                              确认删
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-            {counts.tagEntries.length > 0 && (
-              <div className="tick-sidebar__group">
-                {counts.tagEntries.map(([tagName, tagCount]) => {
-                  const active = filter.kind === 'tag' && filter.name === tagName;
-                  return (
+
+              <div className="tick-sidebar__divider" />
+
+              {/* 3. 分组视图（原清单，可折叠） */}
+              <div className="tick-sidebar__section">
+                <div className="tick-sidebar__section-head">
+                  <button
+                    type="button"
+                    className="tick-sidebar__fold-head"
+                    aria-expanded={!groupsFolded}
+                    onClick={() => setGroupsFolded((prev) => !prev)}
+                  >
+                    <span>{groupsFolded && '▸'}{!groupsFolded && '▾'}</span>
+                    <span>分组视图</span>
+                    <span className="tick-sidebar__head-count">{String(lists.length)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="tick-sidebar__add-btn"
+                    title="新建分组"
+                    aria-label="新建分组"
+                    onClick={() => {
+                      setGroupsFolded(false);
+                      setAddingList((prev) => !prev);
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+
+                {!groupsFolded && addingList && (
+                  <form
+                    className="tick-inline-list-form"
+                    onSubmit={(e) => void handleSubmitNewList(e)}
+                  >
+                    <div className="tick-emoji-strip">
+                      {utils.LIST_ICON_CHOICES.map((icon) => (
+                        <button
+                          key={icon}
+                          type="button"
+                          className="tick-emoji-btn"
+                          data-active={newListIcon === icon}
+                          onClick={() => setNewListIcon(icon)}
+                        >
+                          {icon}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="tick-inline-list-form__row">
+                      <input
+                        type="text"
+                        value={newListName}
+                        placeholder="输入分组名称…"
+                        autoFocus
+                        onChange={(e) => setNewListName(e.target.value)}
+                      />
+                      <button type="submit" className="tick-mini-btn tick-mini-btn--primary">
+                        添加
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {!groupsFolded && (
+                  <div className="tick-sidebar__group">
+                    {lists.map((item) => {
+                      const active = scope.kind === 'list' && scope.name === item.name;
+                      const count = sidebarCounts.listCounts.get(item.name) ?? 0;
+                      const deletable =
+                        !utils.SYSTEM_LIST_NAMES.has(item.name)
+                        && !item.id.startsWith('virtual-');
+                      const confirming = confirmDeleteListId === item.id;
+                      return (
+                        <div key={item.id} className="tick-nav-item-wrap">
+                          <button
+                            type="button"
+                            className="tick-nav-item"
+                            data-active={active}
+                            onClick={() => {
+                              setConfirmDeleteListId(undefined);
+                              onChangeScope({ kind: 'list', name: item.name });
+                            }}
+                          >
+                            <span className="tick-nav-item__icon">{item.icon ?? '📋'}</span>
+                            <span className="tick-nav-item__label">{item.name}</span>
+                            {count > 0 && (
+                              <span className="tick-nav-item__count">{String(count)}</span>
+                            )}
+                          </button>
+                          {deletable && !confirming && (
+                            <button
+                              type="button"
+                              className="tick-nav-item__del"
+                              title={`删除分组「${item.name}」`}
+                              aria-label={`删除分组 ${item.name}`}
+                              onClick={() => setConfirmDeleteListId(item.id)}
+                            >
+                              ×
+                            </button>
+                          )}
+                          {deletable && confirming && (
+                            <button
+                              type="button"
+                              className="tick-nav-item__del-confirm"
+                              onClick={() => {
+                                setConfirmDeleteListId(undefined);
+                                void onDeleteList(item.id, item.name);
+                                if (active) {
+                                  onChangeScope({ kind: 'smart', key: 'all' });
+                                }
+                              }}
+                            >
+                              确认删
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="tick-sidebar__divider" />
+
+              {/* 4. 核心标签池（可折叠 + 顶部迷你搜标签框 + 单选/多选叠加 + AND/OR 切换） */}
+              <div className="tick-sidebar__section">
+                <div className="tick-sidebar__section-head">
+                  <button
+                    type="button"
+                    className="tick-sidebar__fold-head"
+                    aria-expanded={!tagsFolded}
+                    onClick={() => setTagsFolded((prev) => !prev)}
+                  >
+                    <span>{tagsFolded && '▸'}{!tagsFolded && '▾'}</span>
+                    <span>核心标签池</span>
+                    <span className="tick-sidebar__head-count">{String(tagEntries.length)}</span>
+                  </button>
+                  <div className="tick-tag-pool__tools">
                     <button
-                      key={tagName}
                       type="button"
-                      className="tick-nav-item"
-                      data-active={active}
-                      onClick={() => onChangeFilter({ kind: 'tag', name: tagName })}
+                      className="tick-tag-pool__mini-pill"
+                      data-active={multiTagPin}
+                      title="开启后直接点击即可连续多选叠加多个标签（或按住 Ctrl/Shift 点击）"
+                      onClick={() => setMultiTagPin((prev) => !prev)}
                     >
-                      <span className="tick-nav-item__icon tick-nav-item__icon--hash">#</span>
-                      <span className="tick-nav-item__label">{tagName}</span>
-                      <span className="tick-nav-item__count">{String(tagCount)}</span>
+                      多选
                     </button>
-                  );
-                })}
+                    <button
+                      type="button"
+                      className="tick-tag-pool__mini-pill"
+                      data-active={activeFilterTags.length > 1}
+                      title="切换多标签组合关系：且 (AND) / 或 (OR)"
+                      onClick={() => onChangeAdhocRule({ ...adhocRule, tagMode: nextTagMode })}
+                    >
+                      {tagModeShort}
+                    </button>
+                  </div>
+                </div>
+
+                {!tagsFolded && tagEntries.length === 0 && (
+                  <div className="tick-sidebar__hint-box">
+                    在新建节点时输入 #标签 即可自动归入标签池并跨视图筛选
+                  </div>
+                )}
+
+                {!tagsFolded && tagEntries.length > 0 && (
+                  <>
+                    <div className="tick-tag-pool__search-row">
+                      <input
+                        type="text"
+                        className="tick-tag-pool__search"
+                        value={tagSearch}
+                        placeholder="搜标签…"
+                        aria-label="搜索标签池"
+                        onChange={(e) => setTagSearch(e.target.value)}
+                      />
+                      {activeFilterTags.length > 0 && (
+                        <button
+                          type="button"
+                          className="tick-tag-pool__clear"
+                          title="清空已选标签筛选"
+                          onClick={() => onChangeAdhocRule({ ...adhocRule, tags: undefined })}
+                        >
+                          清空
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="tick-sidebar__group">
+                      {displayedTagEntries.map(([tagName, tagCount]) => {
+                        const selected = activeFilterTags.includes(tagName);
+                        return (
+                          <div key={tagName} className="tick-tag-pool__row">
+                            <button
+                              type="button"
+                              className="tick-nav-item tick-nav-item--tag"
+                              data-active={selected}
+                              title="点击按此标签筛选 · 按住 Ctrl/Shift 或点右侧 + 多选叠加"
+                              onClick={(e) => {
+                                const useMulti =
+                                  multiTagPin || e.ctrlKey || e.metaKey || e.shiftKey;
+                                onToggleTagFilter(tagName, useMulti);
+                              }}
+                            >
+                              <span className="tick-nav-item__icon tick-nav-item__icon--hash">
+                                #
+                              </span>
+                              <span className="tick-nav-item__label">{tagName}</span>
+                              <span className="tick-nav-item__count">{String(tagCount)}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="tick-tag-pool__stack-btn"
+                              data-selected={selected}
+                              title={`将 #${tagName} 叠加/移除多选筛选`}
+                              aria-label={`叠加筛选标签 ${tagName}`}
+                              onClick={() => onToggleTagFilter(tagName, true)}
+                            >
+                              {selected && '✓'}
+                              {!selected && '+'}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {tagSearch.trim() === '' && tagEntries.length > DEFAULT_TAG_VISIBLE_LIMIT && (
+                      <button
+                        type="button"
+                        className="tick-tag-pool__more-btn"
+                        onClick={() => setShowAllTags((prev) => !prev)}
+                      >
+                        {showAllTags && '收起低频标签 ▴'}
+                        {!showAllTags && `展开全部 (${String(tagEntries.length)}) ▾`}
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
-            )}
-          </div>
+            </div>
 
-          <div className="tick-sidebar__divider" />
+            {/* 底部固定吸底系统箱：永不被长标签或长分组挤出视口！ */}
+            <div className="tick-sidebar__footer">
+              <button
+                type="button"
+                className="tick-nav-item tick-nav-item--compact"
+                data-active={scope.kind === 'completed'}
+                onClick={() => onChangeScope({ kind: 'completed' })}
+              >
+                <span className="tick-nav-item__icon">☑️</span>
+                <span className="tick-nav-item__label">已完成</span>
+                {sidebarCounts.completedCount > 0 && (
+                  <span className="tick-nav-item__count">
+                    {String(sidebarCounts.completedCount)}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                className="tick-nav-item tick-nav-item--compact"
+                data-active={scope.kind === 'trash'}
+                onClick={() => onChangeScope({ kind: 'trash' })}
+              >
+                <span className="tick-nav-item__icon">🗑️</span>
+                <span className="tick-nav-item__label">垃圾桶</span>
+                {sidebarCounts.trashCount > 0 && (
+                  <span className="tick-nav-item__count">
+                    {String(sidebarCounts.trashCount)}
+                  </span>
+                )}
+              </button>
+            </div>
+          </aside>
 
-          {/* 底部系统箱：已完成 / 垃圾桶 */}
-          <div className="tick-sidebar__group">
-            <button
-              type="button"
-              className="tick-nav-item"
-              data-active={filter.kind === 'completed'}
-              onClick={() => onChangeFilter({ kind: 'completed' })}
-            >
-              <span className="tick-nav-item__icon">☑️</span>
-              <span className="tick-nav-item__label">已完成</span>
-              {counts.completedCount > 0 && (
-                <span className="tick-nav-item__count">{String(counts.completedCount)}</span>
-              )}
-            </button>
-            <button
-              type="button"
-              className="tick-nav-item"
-              data-active={filter.kind === 'trash'}
-              onClick={() => onChangeFilter({ kind: 'trash' })}
-            >
-              <span className="tick-nav-item__icon">🗑️</span>
-              <span className="tick-nav-item__label">垃圾桶</span>
-              {counts.trashCount > 0 && (
-                <span className="tick-nav-item__count">{String(counts.trashCount)}</span>
-              )}
-            </button>
-          </div>
-        </aside>
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label="调整清单侧栏宽度（双击恢复默认）"
+            aria-label="调整左侧导航栏宽度（双击恢复默认）"
             title="拖动调整侧栏宽度 · 双击恢复默认"
             className="tick-resizer"
             data-dragging={draggingSide === 'sidebar'}
@@ -696,15 +975,15 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
         </>
       )}
 
-      {/* 中栏：标题、快速添加与多级父子任务树 */}
-      <section className="tick-list-main" aria-label="任务列表">
+      {/* 中栏：标题、快速添加与多级父子文档节点树 */}
+      <section className="tick-list-main" aria-label="文档节点列表">
         <header className="tick-list-header">
           <div className="tick-list-header__left">
             <button
               type="button"
               className="tick-icon-btn"
-              title="切换左侧清单栏"
-              aria-label="切换左侧清单栏"
+              title="切换左侧导航栏"
+              aria-label="切换左侧导航栏"
               onClick={() => setSidebarOpen((prev) => !prev)}
             >
               ☰
@@ -736,7 +1015,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
               type="text"
               className="tick-quick-add__input"
               value={quickTitle}
-              placeholder={`添加任务至「${headerMeta.title}」，输入 #标签 自动归类，回车创建…`}
+              placeholder={`新建节点至「${headerMeta.title}」，输入 #标签 自动打标，回车创建…`}
               onChange={(e) => setQuickTitle(e.target.value)}
             />
             <div className="tick-quick-add__tools">
@@ -809,17 +1088,16 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
 
         {/* 列表滚动内容区 */}
         <div className="tick-list-scroll">
-          {filter.kind === 'trash' && (
+          {scope.kind === 'trash' && (
             <div className="tick-trash-tip">
-              垃圾桶中的任务不会出现在四象限、日历与 AI 控制面中；可随时还原或永久删除。
+              垃圾桶中的节点不会出现在四象限、日历与 AI 控制面中；可随时还原或永久删除。
             </div>
           )}
 
-          {/* 进行中/垃圾桶任务树 */}
           {pendingRows.length === 0 && doneRows.length === 0 && (
             <div className="tick-list-empty">
-              <p>当前列表暂无任务</p>
-              {canQuickAdd && <span>在上方输入框直接回车即可快速添加一条任务</span>}
+              <p>当前筛选条件下暂无节点</p>
+              {canQuickAdd && <span>在上方输入框直接回车即可快速新建一个节点</span>}
             </div>
           )}
 
@@ -829,7 +1107,8 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
             const selected = item.id === selectedTaskId;
             const done = utils.isTaskDone(item);
             const aiBadge = utils.getAiTaskBadge(item);
-            const isTrashView = filter.kind === 'trash';
+            const sourceBadge = filterEngine.getSourceChannelBadge(item);
+            const isTrashView = scope.kind === 'trash';
             const confirmingTrash = confirmTrashTaskId === item.id;
 
             let checkClass = `tick-checkbox tick-checkbox--${quadrant}`;
@@ -863,9 +1142,9 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
               paddingLeft: `${String(12 + row.depth * 22)}px`,
             };
 
-            let foldLabel = '折叠子任务';
+            let foldLabel = '折叠子节点';
             if (row.collapsed) {
-              foldLabel = '展开子任务';
+              foldLabel = '展开子节点';
             }
 
             return (
@@ -906,20 +1185,22 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
 
                 <span className="tick-task-row__title">{item.title}</span>
 
+                {sourceBadge !== undefined && (
+                  <span className="tick-source-badge">{sourceBadge}</span>
+                )}
+
                 {aiBadge !== undefined && (
                   <span className="tick-ai-badge" data-status={aiBadge.status}>
                     {aiBadge.text}
                   </span>
                 )}
 
-                {(item.tags ?? []).slice(0, 2).map((tag) => (
-                  <span key={tag} className="tick-task-row__tag">
-                    #{tag}
-                  </span>
-                ))}
+                {renderRowTagPills(item.tags, activeFilterTags, (tag) =>
+                  onToggleTagFilter(tag, true),
+                )}
 
                 {row.childCount > 0 && (
-                  <span className="tick-task-row__tree" title={`${String(row.childCount)} 个子任务`}>
+                  <span className="tick-task-row__tree" title={`${String(row.childCount)} 个子节点`}>
                     ↳{String(row.childCount)}
                   </span>
                 )}
@@ -935,7 +1216,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                       type="button"
                       className="tick-mini-btn"
                       onClick={() => {
-                        void onPatchTask(item.id, { trashedAt: null, by: 'boss' }, '已还原任务');
+                        void onPatchTask(item.id, { trashedAt: null, by: 'boss' }, '已还原节点');
                       }}
                     >
                       还原
@@ -968,7 +1249,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
           })}
 
           {/* 专属「已完成」视图直接渲染已完成项 */}
-          {filter.kind === 'completed' &&
+          {scope.kind === 'completed' &&
             doneRows.map((item) => {
               const selected = item.id === selectedTaskId;
               const listName = utils.getTaskListName(item);
@@ -992,6 +1273,9 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                     <span aria-hidden="true">✓</span>
                   </button>
                   <span className="tick-task-row__title">{item.title}</span>
+                  {renderRowTagPills(item.tags, activeFilterTags, (tag) =>
+                    onToggleTagFilter(tag, true),
+                  )}
                   <span className="tick-task-row__list-chip">{listName}</span>
                   {item.dueDate !== undefined && item.dueDate !== null && item.dueDate !== '' && (
                     <span className="tick-task-row__due">
@@ -1038,6 +1322,9 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
                         <span aria-hidden="true">✓</span>
                       </button>
                       <span className="tick-task-row__title">{item.title}</span>
+                      {renderRowTagPills(item.tags, activeFilterTags, (tag) =>
+                        onToggleTagFilter(tag, true),
+                      )}
                       {item.dueDate !== undefined && item.dueDate !== null && item.dueDate !== '' && (
                         <span className="tick-task-row__due">
                           {utils.formatShortDate(item.dueDate, todayStr)}
@@ -1079,7 +1366,7 @@ export function TickListView(props: TickListViewProps): react.JSX.Element {
       >
         <detail.TickTaskDetail
           task={selectedTask}
-          allTasks={tasks}
+          allTasks={allTasks}
           lists={lists}
           todayStr={todayStr}
           wideRead={detailWidth >= WIDE_DETAIL_WIDTH - 20}

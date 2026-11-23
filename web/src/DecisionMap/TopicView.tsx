@@ -279,7 +279,7 @@ export function TopicView({
   const byId = react.useMemo(() => new Map(nodes.map((entry) => [entry.id, entry])), [nodes]);
 
   if (root === undefined || topicItems.length === 0) {
-    return <div className="decision-empty">{t('还没有工作决策节点')}</div>;
+    return <div className="decision-empty">{t('还没有AI工作台节点')}</div>;
   }
 
   const topTopics = topicItems.filter((item) => !item.isOverview);

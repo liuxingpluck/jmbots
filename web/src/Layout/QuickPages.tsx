@@ -32,7 +32,7 @@ function getQuickPageItems(t: i18n.Translate): QuickPageItem[] {
     { href: '/tutorial/', label: t('教程'), plugin: 'tutorial' },
     { href: '/memory/', label: t('记忆'), plugin: 'memory' },
     { href: '/graph/', label: t('图谱'), plugin: 'memory' },
-    { href: '/work-decision/', label: t('工作决策'), plugin: 'work-decision' },
+    { href: '/work-decision/', label: t('AI工作台'), plugin: 'work-decision' },
     { href: '/knowledge/', label: t('知识库'), plugin: 'knowledge' },
     { href: '/frpc/', label: t('外网隧道'), plugin: 'frpc' },
     { href: '/model-notes/', label: t('模型'), plugin: 'model-catalog' },

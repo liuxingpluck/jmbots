@@ -1,4 +1,4 @@
-/** 滴答深色月视图日历：7 列网格、今日蓝圈高亮、彩色象限任务条与指定日期快捷添加。 */
+/** AI工作台深色月视图日历：与顶部动态组合筛选条共享同一份任务集合，支持按日查看与快捷添加。 */
 import * as react from 'react';
 import * as api from './DecisionMapApi.ts';
 import * as detail from './TickTaskDetail.tsx';
@@ -6,9 +6,11 @@ import * as utils from './TickUtils.ts';
 
 /** 月视图日历入参。 */
 export interface TickCalendarViewProps {
-  /** 全部任务数组。 */
+  /** 经动态筛选后的任务集合（供日历网格渲染）。 */
   tasks: readonly api.ControlTask[];
-  /** 可见清单定义列表。 */
+  /** 全量任务列表（供右侧详情面板关联父子任务）。 */
+  allTasks: readonly api.ControlTask[];
+  /** 可见分组清单定义列表。 */
   lists: readonly api.TaskListDef[];
   /** 今日日期字符串 YYYY-MM-DD。 */
   todayStr: string;
@@ -45,6 +47,7 @@ const CALENDAR_HEADERS: readonly string[] = ['周日', '周一', '周二', '周�
 export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Element {
   const {
     tasks,
+    allTasks,
     lists,
     todayStr,
     selectedTaskId,
@@ -95,7 +98,7 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
     return map;
   }, [tasks]);
 
-  const selectedTask = tasks.find((item) => item.id === selectedTaskId);
+  const selectedTask = allTasks.find((item) => item.id === selectedTaskId);
 
   /** 切换上一个月或下一个月。 */
   const shiftMonth = (delta: number): void => {
@@ -160,7 +163,7 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
             <button
               type="button"
               className="tick-cal-add-btn"
-              title="在今天快速添加日程任务"
+              title="在今天快速添加日程节点"
               onClick={() => {
                 setAddingDate(todayStr);
                 setDraftTitle('');
@@ -199,7 +202,7 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
             <input
               type="text"
               value={draftTitle}
-              placeholder="输入日程任务标题，回车创建…"
+              placeholder="输入日程节点标题，支持 #标签，回车创建…"
               autoFocus
               onChange={(e) => setDraftTitle(e.target.value)}
               onKeyDown={(e) => {
@@ -286,8 +289,8 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
                   <button
                     type="button"
                     className="tick-cal-cell__add"
-                    title={`在 ${cell.dateStr} 添加任务`}
-                    aria-label={`在 ${cell.dateStr} 添加任务`}
+                    title={`在 ${cell.dateStr} 添加节点`}
+                    aria-label={`在 ${cell.dateStr} 添加节点`}
                     onClick={() => {
                       setAddingDate(cell.dateStr);
                       setDraftTitle('');
@@ -360,7 +363,7 @@ export function TickCalendarView(props: TickCalendarViewProps): react.JSX.Elemen
         <div className="tick-drawer-panel">
           <detail.TickTaskDetail
             task={selectedTask}
-            allTasks={tasks}
+            allTasks={allTasks}
             lists={lists}
             todayStr={todayStr}
             onClose={() => onSelectTask(undefined)}

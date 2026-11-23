@@ -1,4 +1,4 @@
-/** 滴答四象限 2x2 深色矩阵视图：按红/黄/蓝/绿四象限与已过期/即将到期/无日期/已完成分组。 */
+/** AI工作台四象限 2x2 深色矩阵视图：与顶部动态组合筛选条共享同一份任务集合，按紧急/重要归类。 */
 import * as react from 'react';
 import * as api from './DecisionMapApi.ts';
 import * as detail from './TickTaskDetail.tsx';
@@ -6,12 +6,18 @@ import * as utils from './TickUtils.ts';
 
 /** 四象限视图入参。 */
 export interface TickQuadrantViewProps {
-  /** 全部任务数组。 */
+  /** 经动态筛选后的任务集合（供四象限渲染）。 */
   tasks: readonly api.ControlTask[];
-  /** 可见清单定义列表。 */
+  /** 全量任务列表（供右侧详情面板关联父任务与子任务）。 */
+  allTasks: readonly api.ControlTask[];
+  /** 可见分组清单定义列表。 */
   lists: readonly api.TaskListDef[];
   /** 今日日期字符串 YYYY-MM-DD。 */
   todayStr: string;
+  /** 当前已在顶部筛选条选中的标签集合。 */
+  activeFilterTags: readonly string[];
+  /** 点击任务上的标签胶囊一键叠加至顶部筛选条。 */
+  onToggleTagFilter: (tagName: string) => void;
   /** 当前选中的任务 ID（右侧滑板详情展示）。 */
   selectedTaskId: string | undefined;
   /** 选中或关闭任务详情回调。 */
@@ -79,12 +85,15 @@ function partitionQuadrantTasks(
   return { overdue, upcoming, noDate, done };
 }
 
-/** 滴答四象限主视图组件。 */
+/** 四象限主视图组件。 */
 export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Element {
   const {
     tasks,
+    allTasks,
     lists,
     todayStr,
+    activeFilterTags,
+    onToggleTagFilter,
     selectedTaskId,
     onSelectTask,
     onCreateTask,
@@ -95,7 +104,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
 
   //M 记录哪些分组被折叠（键格式：q1:done 等），默认折叠各象限的已完成分组。
   const [foldedGroups, setFoldedGroups] = react.useState<ReadonlySet<string>>(
-    () => new Set(['q1:done', 'q2:done', 'q3:done']),
+    () => new Set(['q1:done', 'q2:done', 'q3:done', 'q4:done']),
   );
   const [foldedTrees, setFoldedTrees] = react.useState<ReadonlySet<string>>(() => new Set());
   const [addingQuad, setAddingQuad] = react.useState<api.TickQuadrant | undefined>(undefined);
@@ -130,7 +139,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
     };
   }, [normalTasks, todayStr]);
 
-  const selectedTask = tasks.find((item) => item.id === selectedTaskId);
+  const selectedTask = allTasks.find((item) => item.id === selectedTaskId);
 
   /** 切换某个时间分组的折叠态。 */
   const toggleGroupFold = (key: string): void => {
@@ -167,7 +176,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
     await onPatchTask(task.id, { status: nextStatus, by: 'boss' });
   };
 
-  /** 在指定象限卡片内快速创建任务。 */
+  /** 在指定象限卡片内快速创建任务（自动继承当前激活筛选标签）。 */
   const handleQuickAdd = async (
     event: react.FormEvent,
     quadrant: api.TickQuadrant,
@@ -175,6 +184,13 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
     event.preventDefault();
     const parsed = utils.parseQuickTaskInput(draftTitle);
     if (parsed.title === '') return;
+
+    const mergedTags = [...parsed.tags];
+    for (const activeTag of activeFilterTags) {
+      if (!mergedTags.includes(activeTag)) {
+        mergedTags.push(activeTag);
+      }
+    }
 
     setDraftTitle('');
     setAddingQuad(undefined);
@@ -184,7 +200,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
       list: '工作任务',
       quadrant,
       priority: utils.getPriorityForQuadrant(quadrant),
-      tags: parsed.tags,
+      tags: mergedTags,
       status: 'ready',
       by: 'boss',
     });
@@ -228,6 +244,9 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
               const selected = item.id === selectedTaskId;
               const listName = utils.getTaskListName(item);
               const aiBadge = utils.getAiTaskBadge(item);
+              const itemTags = item.tags ?? [];
+              const shownTags = itemTags.slice(0, 2);
+              const extraTagCount = itemTags.length - shownTags.length;
 
               let checkClass = `tick-checkbox tick-checkbox--sm tick-checkbox--${quadKey}`;
               if (done) {
@@ -295,6 +314,29 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
                       {aiBadge.text}
                     </span>
                   )}
+                  {shownTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      className="tick-task-row__tag"
+                      data-active={activeFilterTags.includes(tag)}
+                      title={`点击按 #${tag} 筛选`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleTagFilter(tag);
+                      }}
+                    >
+                      #{tag}
+                    </button>
+                  ))}
+                  {extraTagCount > 0 && (
+                    <span
+                      className="tick-task-row__tag tick-task-row__tag--more"
+                      title={itemTags.slice(2).join(', ')}
+                    >
+                      +{String(extraTagCount)}
+                    </span>
+                  )}
                   <span className="tick-q-row__list">{listName}</span>
                   {dueText !== '' && <span className={dueClass}>{dueText}</span>}
                 </div>
@@ -312,7 +354,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
         <header className="tick-view-header">
           <h2 className="tick-view-header__title">四象限</h2>
           <span className="tick-view-header__hint">
-            按紧急与重要程度自动归类 · 点击任意任务可右侧调整象限与日期
+            按紧急与重要程度自动归类 · 与顶部动态筛选条实时联动
           </span>
         </header>
 
@@ -343,8 +385,8 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
                   <button
                     type="button"
                     className="tick-icon-btn"
-                    title={`向「${meta.label}」快速添加任务`}
-                    aria-label={`添加 ${meta.label} 任务`}
+                    title={`向「${meta.label}」快速添加节点`}
+                    aria-label={`添加 ${meta.label} 节点`}
                     onClick={() => {
                       if (isAdding) {
                         setAddingQuad(undefined);
@@ -383,7 +425,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
 
                 <div className="tick-q-card__body">
                   {totalCount === 0 && (
-                    <div className="tick-q-card__empty">暂无任务，点右上 + 快速添加</div>
+                    <div className="tick-q-card__empty">当前筛选下暂无节点，点右上 + 快速添加</div>
                   )}
                   {renderGroup(meta.key, 'overdue', '已过期', groups.overdue, false)}
                   {renderGroup(meta.key, 'upcoming', '即将到期', groups.upcoming, false)}
@@ -408,7 +450,7 @@ export function TickQuadrantView(props: TickQuadrantViewProps): react.JSX.Elemen
         <div className="tick-drawer-panel">
           <detail.TickTaskDetail
             task={selectedTask}
-            allTasks={tasks}
+            allTasks={allTasks}
             lists={lists}
             todayStr={todayStr}
             onClose={() => onSelectTask(undefined)}

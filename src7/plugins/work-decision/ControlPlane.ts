@@ -12,6 +12,9 @@
  * - POST   /api/work-decision/lists             新建自定义清单（同名幂等返回）
  * - PATCH  /api/work-decision/lists/:id         更新清单并同步改名后任务的 list 字段
  * - DELETE /api/work-decision/lists/:id         删除清单并将旗下任务归回收集箱（inbox 不可删）
+ * - POST   /api/work-decision/views             新建自定义动态筛选视图
+ * - PATCH  /api/work-decision/views/:id         更新自定义动态筛选视图
+ * - DELETE /api/work-decision/views/:id         删除自定义动态筛选视图
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -22,6 +25,7 @@ import * as checksModule from '../../utils/Checks.ts';
 import * as failureModule from '../../utils/Failure.ts';
 import * as filesModule from '../../utils/Files.ts';
 import * as textModule from '../../utils/Text.ts';
+import * as filterViewsModule from './FilterViews.ts';
 import * as notificationsModule from './Notify.ts';
 import * as sourceRefModule from './SourceRef.ts';
 import * as types from './Types.ts';
@@ -57,6 +61,9 @@ export class DuplicateSourceFailure extends failureModule.Failure {
 
 /** 来源引用的校验、去重键与筛选（无状态，全文件共用一个）。 */
 const SOURCE_REFS = new sourceRefModule.SourceRefHelper();
+
+/** 自定义动态筛选视图的校验、克隆排序与规则匹配（无状态，全文件共用一个）。 */
+const FILTER_VIEWS = new filterViewsModule.FilterViewHelper();
 
 /** 内置默认清单列表（旧文件缺失 lists 时兜底返回，首次写盘一并保存）。 */
 export const DEFAULT_TASK_LISTS: readonly types.TaskListDef[] = [
@@ -586,13 +593,15 @@ export class ControlPlaneStore {
   private tasks: types.ControlTask[] = [];
   /** 内存中的任务清单定义列表（按 sortOrder 升序）。 */
   private lists: types.TaskListDef[] = [];
+  /** 内存中的自定义动态筛选视图列表（按 sortOrder 升序，缺省为空数组）。 */
+  private views: types.TaskFilterViewDef[] = [];
 
   /**
    * @param runtimeRoot 运行时根目录（即 jmbotsData），账本存为 `<runtimeRoot>/control-plane-tasks.json`。
    */
   constructor(runtimeRoot: string) {
     this.filePath = path.join(runtimeRoot, 'control-plane-tasks.json');
-    //M 初始化默认清单后从磁盘恢复任务与清单，老格式保持向后兼容。
+    //M 初始化默认清单后从磁盘恢复任务、清单与动态视图，老格式保持向后兼容。
     this.lists = cloneDefaultLists();
     this.loadFromDisk();
   }
@@ -608,7 +617,13 @@ export class ControlPlaneStore {
     return sortLists(this.lists);
   }
 
-  /** 启动时读取已有 JSON；兼容老文件缺失 lists 或新字段，读取失败按空面板兜底。 */
+  /** 返回按 sortOrder 排好序的自定义动态视图深拷贝数组。 */
+  private getClonedViews(): types.TaskFilterViewDef[] {
+    //M 统一排序并返回独立副本。
+    return FILTER_VIEWS.sortViews(this.views);
+  }
+
+  /** 启动时读取已有 JSON；兼容老文件缺失 lists / views 或新字段，读取失败按空面板兜底。 */
   private loadFromDisk(): void {
     if (!fs.existsSync(this.filePath)) return;
 
@@ -634,6 +649,10 @@ export class ControlPlaneStore {
           this.lists = sortLists(validLists);
         }
       }
+      if (Array.isArray(parsed.views)) {
+        //M 恢复自定义动态筛选视图；老文件无 views 字段时保持空数组兜底。
+        this.views = FILTER_VIEWS.loadDiskViews(parsed.views);
+      }
     } catch (error) {
       //G 解析异常时打印错误并退回空面板与默认清单，不阻塞服务启动。
       const msg = textModule.getErrorMessage(error);
@@ -646,18 +665,21 @@ export class ControlPlaneStore {
     nextRevision: number,
     nextTasks: types.ControlTask[],
     nextLists: types.TaskListDef[] = this.lists,
+    nextViews: types.TaskFilterViewDef[] = this.views,
   ): void {
     const payload: types.ControlPlaneFile = {
       version: 1,
       revision: nextRevision,
       tasks: nextTasks,
       lists: nextLists,
+      views: nextViews,
     };
-    //M 原子写盘并同时持久化 tasks 与 lists（老文件首次写盘即补齐 lists）。
+    //M 原子写盘并同时持久化 tasks、lists 与 views（老文件首次写盘自动对齐）。
     filesModule.writeTextAtomic(this.filePath, `${JSON.stringify(payload, null, 2)}\n`, true);
     this.revision = nextRevision;
     this.tasks = nextTasks;
     this.lists = nextLists;
+    this.views = nextViews;
   }
 
   /** 计算全局各状态计数、活跃占坑锁与不撞锁的可立即派发 ready 任务 ID 列表（均跳过垃圾桶任务）。 */
@@ -856,8 +878,9 @@ export class ControlPlaneStore {
       ok: true,
       revision: this.revision,
       tasks: sorted,
-      //M 返回排好序的清单定义列表供前端直接渲染。
+      //M 返回排好序的清单与自定义动态视图列表供前端直接渲染。
       lists: this.getClonedLists(),
+      views: this.getClonedViews(),
       ...meta,
     };
   }
@@ -1512,6 +1535,65 @@ export class ControlPlaneStore {
     };
   }
 
+  /** 新建自定义动态筛选视图并持久化。 */
+  createView(rawBody: unknown): {
+    revision: number;
+    view: types.TaskFilterViewDef;
+    views: types.TaskFilterViewDef[];
+  } {
+    //G 入口校验视图名称、可选 ID 与动态筛选规则。
+    const created = FILTER_VIEWS.buildCreatedView(this.views, rawBody);
+    //M 按 sortOrder 排好序后原子写盘。
+    const nextViews = FILTER_VIEWS.sortViews([...this.views, created]);
+    this.saveToDisk(this.revision + 1, this.tasks, this.lists, nextViews);
+    return {
+      revision: this.revision,
+      view: FILTER_VIEWS.cloneView(created),
+      views: this.getClonedViews(),
+    };
+  }
+
+  /** 修改自定义动态筛选视图（名称、图标、颜色、排序权重或筛选规则）。 */
+  patchView(id: string, rawBody: unknown): {
+    revision: number;
+    view: types.TaskFilterViewDef;
+    views: types.TaskFilterViewDef[];
+  } {
+    //G 查找目标视图并校验局部更新参数。
+    const { index, updated } = FILTER_VIEWS.buildPatchedView(this.views, id, rawBody);
+    const rawNextViews = this.views.slice();
+    rawNextViews[index] = updated;
+    //M 重新排序并原子持久化。
+    const nextViews = FILTER_VIEWS.sortViews(rawNextViews);
+    this.saveToDisk(this.revision + 1, this.tasks, this.lists, nextViews);
+    return {
+      revision: this.revision,
+      view: FILTER_VIEWS.cloneView(updated),
+      views: this.getClonedViews(),
+    };
+  }
+
+  /** 删除自定义动态筛选视图（只删视图定义，不影响底层任务节点）。 */
+  removeView(id: string): {
+    revision: number;
+    deleted: string;
+    views: types.TaskFilterViewDef[];
+  } {
+    const exists = this.views.some((item) => item.id === id);
+    if (!exists) {
+      //G 视图不存在返回 404。
+      throw new failureModule.Failure(404, `动态视图不存在：${id}`);
+    }
+    //M 移除目标视图并原子写盘。
+    const nextViews = this.views.filter((item) => item.id !== id);
+    this.saveToDisk(this.revision + 1, this.tasks, this.lists, nextViews);
+    return {
+      revision: this.revision,
+      deleted: id,
+      views: this.getClonedViews(),
+    };
+  }
+
   /** 切换习惯任务某天（默认今天本地 YYYY-MM-DD）的打卡状态并按日期排序。 */
   toggleCheckIn(id: string, rawBody: unknown): {
     revision: number;
@@ -1890,6 +1972,35 @@ export function mountControlPlaneRoutes(
     const id = readIdParam(request.params, '缺少清单 ID');
     //M 移除清单并把归属任务回收到收集箱。
     const removed = controlStore.removeList(id);
+    return { ok: true, ...removed };
+  });
+
+  //M 10. 新建自定义动态筛选视图。
+  scope.post<{ Body: unknown }>(`${prefix}/views`, (request) => {
+    //M 校验规则并持久化新动态视图。
+    const created = controlStore.createView(request.body);
+    return { ok: true, ...created };
+  });
+
+  //M 11. 更新自定义动态筛选视图（兼容 PATCH 与 PUT）。
+  scope.route<{ Params: { id: string }; Body: unknown }>({
+    method: ['PATCH', 'PUT'],
+    url: `${prefix}/views/:id`,
+    handler(request) {
+      //G 读取视图 ID 并局部更新名称、图标、颜色或规则。
+      const id = readIdParam(request.params, '缺少视图 ID');
+      //M 写入更新后的动态视图。
+      const updated = controlStore.patchView(id, request.body);
+      return { ok: true, ...updated };
+    },
+  });
+
+  //M 12. 删除自定义动态筛选视图。
+  scope.delete<{ Params: { id: string } }>(`${prefix}/views/:id`, (request) => {
+    //G 读取视图 ID 并执行删除。
+    const id = readIdParam(request.params, '缺少视图 ID');
+    //M 从持久化账本中删除目标动态视图。
+    const removed = controlStore.removeView(id);
     return { ok: true, ...removed };
   });
 }

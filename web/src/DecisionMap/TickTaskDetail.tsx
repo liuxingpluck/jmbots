@@ -1,4 +1,4 @@
-/** 滴答工作台右侧任务详情面板：方案 Markdown 阅读/编辑、一键复制、交互时间线与底部 AI 批示条。 */
+/** AI工作台右侧节点详情面板：方案 Markdown 阅读/编辑、一键复制、交互时间线与底部 AI 批示条。 */
 import * as react from 'react';
 import * as markdownModule from '../Chat/Markdown.tsx';
 import * as api from './DecisionMapApi.ts';
@@ -132,7 +132,7 @@ function resizeReplyTextarea(el: HTMLTextAreaElement | null): void {
   el.style.height = `${String(nextHeight)}px`;
 }
 
-/** 滴答右侧任务详情面板组件。 */
+/** 右侧节点详情面板组件。 */
 export function TickTaskDetail(props: TickTaskDetailProps): react.JSX.Element {
   const {
     task,

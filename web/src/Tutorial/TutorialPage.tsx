@@ -1684,7 +1684,7 @@ export function TutorialPage(): JSX.Element {
                   href={withToken('/work-decision/', TOKEN)}
                   style={{ textDecoration: 'none' }}
                 >
-                  工作决策
+                  AI工作台
                 </a>
                 <a
                   className="tu-link"
@@ -1925,7 +1925,7 @@ export function TutorialPage(): JSX.Element {
                       className="tu-m-foot-link"
                       href={withToken('/work-decision/', TOKEN)}
                     >
-                      📋 工作决策
+                      📋 AI工作台
                     </a>
                     <a
                       className="tu-m-foot-link"

@@ -44,7 +44,7 @@ export interface ControlPlaneViewProps {
   externalTasksRev?: number;
   /** 是否窄屏手机模式。 */
   isMobile?: boolean;
-  /** 来自父级工作台的共享任务板数据（与滴答清单工作台零割裂同步）。 */
+  /** 来自父级工作台的共享任务板数据（与积木AI工作台零割裂同步）。 */
   sharedBoard?: api.ControlTaskListResponse;
   /** 父级共享加载态。 */
   sharedLoading?: boolean;

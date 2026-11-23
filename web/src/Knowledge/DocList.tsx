@@ -125,7 +125,7 @@ function DocRow(props: DocRowProps): react.JSX.Element {
         {props.dirName !== undefined && <span className="kb-doc-dir">{props.dirName}</span>}
         {doc.tags.map((tag) => <span key={tag} className="kb-doc-tag">#{tag}</span>)}
         {doc.topicId !== null && (
-          <a className="kb-topic" href={getTopicHref(doc.topicId)} title="在工作决策里打开这个节点">专题</a>
+          <a className="kb-topic" href={getTopicHref(doc.topicId)} title="在AI工作台里打开这个节点">专题</a>
         )}
         <span className="kb-doc-time">{getShortTime(doc.updatedAt)}</span>
       </div>

@@ -832,7 +832,7 @@ export function KnowledgePage(): react.JSX.Element {
           <button type="button" className="kb-primary-btn" onClick={() => void newDoc('')}>＋ 新建</button>
         )}
         {!isMobile && <a className="kb-nav" href={homeHref}>主页</a>}
-        {!isMobile && <a className="kb-nav" href={decisionHref}>工作决策</a>}
+        {!isMobile && <a className="kb-nav" href={decisionHref}>AI工作台</a>}
       </header>
 
       {notice !== undefined && <div className="kb-toast" role="status">{notice}</div>}

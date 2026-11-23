@@ -1,4 +1,4 @@
-/** 滴答扩展视图集合：倒数纪念日大数字卡片、习惯近 7 天周历打卡与居中全局搜索弹窗。 */
+/** AI工作台扩展视图集合：倒数纪念日大数字卡片、习惯近 7 天周历打卡与居中全局搜索弹窗。 */
 import * as react from 'react';
 import * as api from './DecisionMapApi.ts';
 import * as utils from './TickUtils.ts';

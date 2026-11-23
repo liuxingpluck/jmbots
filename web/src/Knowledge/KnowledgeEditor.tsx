@@ -764,7 +764,7 @@ export function KnowledgeEditor(props: EditorProps): react.JSX.Element {
         {form.topicId !== null && (
           <div className="kb-meta-wide kb-topic-line">
             <span>专题</span>
-            <a className="kb-topic" href={docList.getTopicHref(form.topicId)}>在工作决策里打开 {form.topicId}</a>
+            <a className="kb-topic" href={docList.getTopicHref(form.topicId)}>在AI工作台里打开 {form.topicId}</a>
             {!readOnly && (
               <button type="button" className="kb-link-btn" onClick={() => setField('topicId', null)}>解除</button>
             )}

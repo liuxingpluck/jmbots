@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.7.109",
+    "date": "2026-11-23",
+    "changes": [
+      "积木AI工作台架构改版——全站去滴答化并兼容 ?tab=tick / ?tab=workbench、后端新增自定义动态筛选视图（/api/work-decision/views*）与前后端同构筛选引擎、多标签动态组合筛选条、吸底左栏及 Markdown 安全白名单放行 vscode://file/ 一键直跳"
+    ]
+  },
+  {
     "version": "0.7.108",
     "date": "2026-11-23",
     "changes": [

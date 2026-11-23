@@ -242,7 +242,7 @@ export const COUNTDOWN_MODES = ['down', 'up'] as const;
 
 export type CountdownMode = (typeof COUNTDOWN_MODES)[number];
 
-/** 滴答清单视图的自定义清单定义。 */
+/** AI 工作台分组视图（原自定义清单）定义。 */
 export interface TaskListDef {
   /** 清单唯一标识（如 inbox、work）。 */
   id: string;
@@ -252,6 +252,60 @@ export interface TaskListDef {
   icon?: string;
   /** 可选主题色。 */
   color?: string;
+  /** 可选排序权重（越小越靠前）。 */
+  sortOrder?: number;
+}
+
+/** 多标签组合匹配模式：and 同时满足全部标签，or 满足任一标签。 */
+export const TAG_MODES = ['and', 'or'] as const;
+
+/** 多标签组合匹配模式取值。 */
+export type TaskTagMode = (typeof TAG_MODES)[number];
+
+/** 到期日期筛选范围枚举。 */
+export const DUE_SCOPES = ['all', 'today', 'next7', 'overdue', 'nodate'] as const;
+
+/** 到期日期筛选范围取值。 */
+export type TaskDueScope = (typeof DUE_SCOPES)[number];
+
+/** 原子节点动态筛选规则（内置智能视图、自定义视图与顶部组合筛选条统一共用）。 */
+export interface TaskFilterRule {
+  /** 需要匹配的标签名称列表。 */
+  tags?: string[];
+  /** 多标签匹配逻辑：and 且 / or 或（缺省视为 and）。 */
+  tagMode?: 'and' | 'or';
+  /** 限定所属分组（原清单名称）列表。 */
+  lists?: string[];
+  /** 限定控制面任务状态列表。 */
+  statuses?: ControlTaskStatus[];
+  /** 限定任务优先级列表（P0 / P1 / P2）。 */
+  priorities?: ControlTaskPriority[];
+  /** 限定有效四象限列表（q1~q4）。 */
+  quadrants?: Array<'q1' | 'q2' | 'q3' | 'q4'>;
+  /** 到期日范围：全部 / 今天 / 最近7天 / 已过期 / 无日期。 */
+  dueScope?: 'all' | 'today' | 'next7' | 'overdue' | 'nodate';
+  /** 限定来源渠道（如 feishu、wechat、workbench）。 */
+  sourceChannels?: string[];
+  /** true 仅匹配带来源引用的节点，false 仅匹配无来源引用的节点。 */
+  hasSource?: boolean;
+  /** 标题、摘要、标签或负责人关键词（大小写不敏感）。 */
+  keyword?: string;
+  /** 是否包含已完成（status === 'done'）节点；缺省不包含（显式筛 done 状态除外）。 */
+  includeDone?: boolean;
+}
+
+/** 可持久化的自定义动态筛选视图定义。 */
+export interface TaskFilterViewDef {
+  /** 视图唯一标识（如 view-xxx）。 */
+  id: string;
+  /** 视图显示名称。 */
+  name: string;
+  /** 可选 emoji 图标。 */
+  icon?: string;
+  /** 可选主题色。 */
+  color?: string;
+  /** 该视图绑定的动态筛选条件。 */
+  rule: TaskFilterRule;
   /** 可选排序权重（越小越靠前）。 */
   sortOrder?: number;
 }
@@ -546,6 +600,8 @@ export interface ControlPlaneFile {
   tasks: ControlTask[];
   /** 任务清单列表；老文件缺省时由服务端按默认清单兜底。 */
   lists?: TaskListDef[];
+  /** 可持久化的自定义动态筛选视图列表；老文件缺省时视为 []。 */
+  views?: TaskFilterViewDef[];
 }
 
 /** 当前正被 running 任务占用的资源坑位信息。 */
@@ -574,6 +630,8 @@ export interface ControlPlaneSnapshot {
   tasks: ControlTask[];
   /** 当前可用任务清单列表（按 sortOrder 升序）。 */
   lists: TaskListDef[];
+  /** 当前已保存的自定义动态筛选视图列表（按 sortOrder 升序，缺省为 []）。 */
+  views?: TaskFilterViewDef[];
   /** 全量各状态任务计数（不受筛选参数影响，供顶栏仪表带直接展示）。 */
   counts: Record<ControlTaskStatus, number>;
   /** 当前全局正在被 running 任务占用的坑位映射（lockTag -> 持有者）。 */

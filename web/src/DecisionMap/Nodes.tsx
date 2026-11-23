@@ -18,7 +18,9 @@ function getAppearance(entry: types.DecisionNode): { state: string; badge: strin
   if (entry.status === 'working') return { state: 'working', badge: '进行中' };
   if (entry.status === 'open' && entry.chosen !== undefined) return { state: 'open', badge: t('未开始') };
   if (entry.decidedBy === 'central') return { state: 'confirmed', badge: '中控已定 ✓' };
-  if (entry.chosen !== undefined && entry.acknowledgedAt !== undefined) return { state: 'chosen', badge: '用户已定 ✓ 中控已收' };
+  if (entry.chosen !== undefined && entry.acknowledgedAt !== undefined) {
+    return { state: 'chosen', badge: '用户已定 ✓ 中控已收' };
+  }
   if (entry.chosen !== undefined || entry.decidedBy === 'user') return { state: 'chosen', badge: '用户已定 ✓' };
   if (entry.kind === 'decided' || entry.status === 'decided') return { state: 'confirmed', badge: '已定 ✓' };
   if (entry.kind === 'fork') return { state: 'fork', badge: '分叉' };

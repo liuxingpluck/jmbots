@@ -10,6 +10,21 @@ import * as attachmentsModule from './Attachments.ts';
 import * as attachmentView from './AttachmentView.tsx';
 
 
+/** 白名单放行 VS Code（含 Insiders）打开本机源码文件的安全协议。 */
+export const VSCODE_FILE_SCHEME = /^vscode(?:-insiders)?:\/\/file\//i;
+
+
+/**
+ * 判断链接地址是否命中 vscode://file/ 白名单协议。
+ * @param href 原始链接地址。
+ */
+function isVscodeFileHref(href: string | undefined): boolean {
+  if (href === undefined) return false;
+
+  return VSCODE_FILE_SCHEME.test(href);
+}
+
+
 /** Markdown 的属性。 */
 interface MarkdownProps {
   /** 要渲染的文字。 */
@@ -94,14 +109,28 @@ export function Markdown(props: MarkdownProps): react.JSX.Element {
         const path = attachmentsModule.getPathFromLink(anchor.href);
         if (path) {
           //M 确认为内部附件时拆出文件名和类型，改用 AttachmentView 卡片渲染。
-          return <attachmentView.AttachmentView attachment={{ path, name: attachmentsModule.getBaseName(path), kind: attachmentsModule.getAttachmentKind(path) }} onOpen={onOpen} />;
+          const attachment = {
+            path,
+            name: attachmentsModule.getBaseName(path),
+            kind: attachmentsModule.getAttachmentKind(path),
+          };
+          return <attachmentView.AttachmentView attachment={attachment} onOpen={onOpen} />;
+        }
+        const handleAnchorClick = (event: react.MouseEvent<HTMLAnchorElement>): void => {
+          if (anchor.href && onLink?.(anchor.href)) {
+            event.preventDefault();
+          }
+        };
+        if (isVscodeFileHref(anchor.href)) {
+          //M 命中 vscode://file/ 时不加 target="_blank"，防止浏览器拉起编辑器后残留空白页。
+          return (
+            <a href={anchor.href} onClick={handleAnchorClick}>
+              {anchor.children}
+            </a>
+          );
         }
         return (
-          <a href={anchor.href} target="_blank" rel="noreferrer" onClick={(event) => {
-            if (anchor.href && onLink?.(anchor.href)) {
-              event.preventDefault();
-            }
-          }}>
+          <a href={anchor.href} target="_blank" rel="noreferrer" onClick={handleAnchorClick}>
             {anchor.children}
           </a>
         );
@@ -122,6 +151,7 @@ export function Markdown(props: MarkdownProps): react.JSX.Element {
         components={components}
         urlTransform={(url) => {
           if (url.startsWith(attachmentsModule.FILE_SCHEME)) return url;
+          if (VSCODE_FILE_SCHEME.test(url)) return url;
 
           return reactMarkdown.defaultUrlTransform(url);
         }}

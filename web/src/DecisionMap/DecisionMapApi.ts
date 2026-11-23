@@ -10,6 +10,11 @@ export type ControlTaskEventKind = types.ControlTaskEventKind;
 export type ControlTaskEvent = types.ControlTaskEvent;
 export type ControlTaskNotifications = types.ControlTaskNotifications;
 export type ActiveLockHolder = types.ActiveLockHolder;
+export type TaskFilterRule = types.TaskFilterRule;
+export type TaskFilterViewDef = types.TaskFilterViewDef;
+export type TaskTagMode = types.TaskTagMode;
+export type TaskDueScope = types.TaskDueScope;
+export type TaskSourceRef = types.TaskSourceRef;
 
 /** 滴答风格任务实体类别：普通任务 / 倒数纪念日 / 习惯。 */
 export type TickTaskKind = 'task' | 'countdown' | 'habit';
@@ -60,12 +65,14 @@ export type ControlTask = types.ControlTask & {
   sortOrder?: number;
 };
 
-/** GET /api/work-decision/tasks 响应结构（含滴答清单定义）。 */
+/** GET /api/work-decision/tasks 响应结构（含分组清单与自定义动态筛选视图定义）。 */
 export type ControlTaskListResponse = Omit<types.ControlTaskListResponse, 'tasks'> & {
   /** 全量任务数组。 */
   tasks: ControlTask[];
   /** 自定义清单列表，旧版后端未返回时前端兜底。 */
   lists?: TaskListDef[];
+  /** 自定义动态筛选视图列表，旧版后端未返回时前端按空数组兜底。 */
+  views?: TaskFilterViewDef[];
 };
 
 /** 轻量版本探针响应，仅包含进程启动时刻和数据修订号。 */
@@ -388,7 +395,48 @@ export function patchTaskList(
   });
 }
 
-/** 删除滴答自定义清单。 */
+/** 删除自定义分组清单。 */
 export function deleteTaskList(id: string): Promise<{ ok: true; deleted: string }> {
   return request(`/lists/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** 新建可持久化的自定义动态筛选视图。 */
+export function createFilterView(input: {
+  id?: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  rule: TaskFilterRule;
+  sortOrder?: number;
+}): Promise<{ ok: true; revision: number; view: TaskFilterViewDef; views: TaskFilterViewDef[] }> {
+  return request('/views', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/** 更新自定义动态筛选视图的名称、图标、主题色或筛选规则。 */
+export function patchFilterView(
+  id: string,
+  patch: {
+    name?: string;
+    icon?: string | null;
+    color?: string | null;
+    rule?: TaskFilterRule;
+    sortOrder?: number;
+  },
+): Promise<{ ok: true; revision: number; view: TaskFilterViewDef; views: TaskFilterViewDef[] }> {
+  return request(`/views/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 删除自定义动态筛选视图。 */
+export function deleteFilterView(
+  id: string,
+): Promise<{ ok: true; revision: number; deleted: string; views: TaskFilterViewDef[] }> {
+  return request(`/views/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

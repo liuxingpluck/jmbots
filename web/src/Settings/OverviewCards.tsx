@@ -216,7 +216,7 @@ function getWorkbenches(t: i18n.Translate): WorkbenchItem[] {
     {
       key: 'work-decision',
       href: '/work-decision/?tab=tick',
-      title: t('工作决策与任务看板'),
+      title: t('积木AI工作台'),
       desc: t('多视图任务队列、四象限与控制面锁状态'),
       plugin: 'work-decision',
       icon: <icons.ProjectOutlined />,
