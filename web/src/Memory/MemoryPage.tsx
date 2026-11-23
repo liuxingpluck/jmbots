@@ -508,8 +508,8 @@ export function MemoryPage() {
         <span className="mm-sub">jmbots 记忆服务 · 关键词 + 向量 + 关系图</span>
         <span className="mm-grow" />
         <button type="button" onClick={() => privacy.setMask(!mask)}>{maskLabel}</button>
-        <a className="mm-link" href="/graph/" target="_blank" rel="noreferrer">关系图谱</a>
-        <a className="mm-link" href="/" target="_blank" rel="noreferrer">聊天</a>
+        <a className="mm-link" href={withToken('/graph/', TOKEN)}>关系图谱</a>
+        <a className="mm-link" href={withToken('/', TOKEN)}>聊天</a>
         <Guide steps={MEMORY_STEPS} className="mm-guide" />
       </header>
 

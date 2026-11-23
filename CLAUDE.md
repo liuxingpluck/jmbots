@@ -88,15 +88,17 @@
 - **Claude 的额度花在规划、关键代码、审核和协调上**（用户 11-06、11-10、11-16）：杂活交给 jm开发，跑命令、跑测试交给 jmbots 或 DSH，查资料、读日志、翻译、整理交给 jmbots。5 小时用量到 95% 才停下、只接简单的活，并告诉用户（用户 11-06 先说 80，改成 90，再改成 95；11-09 一度改成 60，又改回 95）。额度监控 `Claude_Link.mjs usage --watch` 不再挂（用户 11-07 关了：“现在不做多 claude 协调了，我自己认为去判断分派的”），要看额度时手动跑 `usage`。
 - **分析类的活派便宜模型的子代理**（用户 11-06：“如果是分析文档，不必使用 opus max 模型，而是你分配个子agents 去调用sonnet或haiku……你作为opus max 仅仅只是代码层面去优化”）：读文档、读源码找逻辑、查资料、整理结论这类虚拟机里就能做的分析，用 Agent 工具派子代理，`model` 选 `sonnet`（要理解和推理的）或 `haiku`（简单查找、摘抄），让它只读、交回结论和文件:行号。Opus 只做代码层面的设计和审核。要跑命令、测试、发版、在 Windows 上查的，派 DSH。子代理交回的结论，关键点自己核一下。
 - **Claude 是临时的**（用户 11-06）：给 Claude 自己用的东西（看额度、等收件箱）放 `ztools/`，由 Claude 主动去读，不加钩子，不改 jmbots 的代码，也不往运行时写东西。用法见 `ztools/claude-link/README.md`。
-- 要用 DSH 时：建会话、发活时都显式传模型（用户 11-14：百炼 qwen4 额度不够，已停用）：
+- 要用 DSH 时：建会话、发活时都显式传模型（用户 11-14：百炼 qwen4 额度不够，已停用；用户 11-23 #578/#579 最新口径）：
   - **扫描项目目录这类活交给 DSH**（用户 11-16）：统计大小、文件数、进不进 git，都让它在 Windows 本机做。虚拟机上对共享盘跑 `du`、`find` 太慢；
-  - **测试交给 DSH 跑**（用户 11-16：测试不该花 Claude 的额度）。模型按这个顺序换，前一个不能用了才换下一个：
-    1. `magpie/workbuddy/deepseek-v4.1-flash`；
-    2. 混元 HY4（id 到 DSH 的模型列表里查）；
-    3. MiniMax（别名 `minimax`）；
-    4. Codex 的 `gpt-6-astra` 或 `gpt-6.1-sol`；
-  - 简单的活（tsc、起服务、查进程、校验）用 `--model magpie/workbuddy/deepseek-v4.1-flash`；
-  - 写代码用 `--model codex/gpt-6-astra --effort medium`；
+  - **测试与日常执行交给 DSH 跑**（用户 11-16：测试不该花 Claude 的额度）。模型按以下两梯队顺序调用，第一梯队均不通时才降级到第二梯队：
+    - **第一梯队（优先用 Magpie 聚合的 Flash / 高速模型）**：
+      1. Magpie MiniMax：`magpie/minimax-code/MiniMax-M3.1-Flash`（或 `magpie/workbuddy/minimax-m3.1-flash`）；
+      2. Magpie WorkBuddy：`DeepSeek`（`magpie/workbuddy/deepseek-v4.1-flash`）与 `混元 HY 4`（`magpie/workbuddy/hy4free` / `magpie/workbuddy/hy4std`）；
+    - **第二梯队（上述 Magpie 模型均不通时才降级用新版 GPT-6）**：
+      - GPT-6.1（Terra）：`codex/gpt-6.1-terra`（`GPT-6.1 Terra`）；
+      - GPT-6.2（Sol / Astra）：`codex/gpt-6.2-sol`（`GPT-6.2-Sol`）、`codex/gpt-6.2-astra`（`GPT-6.2-Astra`）；
+  - 简单的活（tsc、起服务、查进程、校验）优先用第一梯队 Flash 模型（如 `--model magpie/minimax-code/MiniMax-M3.1-Flash` 或 `--model magpie/workbuddy/deepseek-v4.1-flash`）；
+  - 降级到 GPT-6 写代码/复杂任务时用新版 `--model codex/gpt-6.2-sol --effort medium`、`--model codex/gpt-6.2-astra --effort medium` 或 `--model codex/gpt-6.1-terra --effort medium`；
   - 顺带改掉 DSH 的全局默认模型没关系，下次再指定就是，不要拿这个提醒用户（用户 11-09）。和记忆库卡片《DSH选模型和思考档》冲突时以这里为准。控制工具见 `ztools/dsh-control/README.md`。
 - **git 的拉取和提交由中控判断**（用户 11-18 #161：“什么时候你觉得该拉代码了，什么时候你觉得该提交代码了，你都去做好判断”）：云端顾问推了新报告就 `git fetch` 后 `git merge --ff-only origin/main`；阶段性验收、换版之后提交并推 main，让云端看到最新代码。不强推、不改写历史、不提交密钥和运行时数据；推不上去先拉再推。**提交、推送由 DSH 在 Windows 上执行，中控不自己跑 `git commit`/`git push`**（用户 11-18 #175）：中控定时机，给 DSH 的任务书写明要提交哪些路径、提交说明，要求先 `git status` 核对没有密钥和运行时数据。
 - 删数据、启停服务这类动作先说清楚要做什么。
