@@ -20,6 +20,7 @@ import type { Session, SessionMeta } from '../../Sessions.ts';
 import type { ReceiveEvent } from '../bots/index.ts';
 import * as textModule from '../../utils/Text.ts';
 import * as utils from '../../utils/index.ts';
+import * as peerApiModule from './PeerApi.ts';
 import * as timelineModule from './Timeline.ts';
 import * as viewsModule from './Views.ts';
 import * as failureModule from '../../utils/Failure.ts';
@@ -37,16 +38,13 @@ export const name = 'web-api';
 //M 1.1.4：网页入站地址带 owner: true（“同意 N”可批所有待确认）；replyDirect 支持跨渠道发往网页的回复落入时间线。
 //M 1.1.5：registerTextReply 接入 getTargetAddress 自行识别网页跨渠道发话目标；带 target 的跨渠道请求不串挂回原入站行。
 //M 1.1.6：模型目录、进度、流水和用量改用请求与回执事件；清理分支写法。
-//M 1.1.10：回话追溯挑行改由 journal（journal/request 的 reply-lines，journal/Trail.ts 的 pickReply）做，Trace.ts 只拼网页要的形状。
-//M 1.1.16：Timeline.insert 的跟踪点带 sourceId（标准消息号），journal 按它把渠道那几行串在收件行前面。
 //M 1.1.19：回话追溯不再 import journal/Trail.ts：reply-lines 回的已是网页事件外壳 events，流水行换壳那段并进 journal/Trace.ts。
 //M 1.1.21：网页发话改经 emitInbound 发 channel/direct；别的渠道的认领挂回改听 direct、mention、listen 三个；
 //M   语音入档改看 voice/record 的 waiting（不再看 routing.recordOnly）。
-//M 1.1.22：按地址发的网页回话由 replyByAddress 追加。
-//M 1.1.23：插件间请求直接用 reply 或 why，网页沿用各自的缺项和失败反馈。
 //M 1.1.24：会话、机器人接口和回话追溯入口搬进 Views.ts（云端20 第2+3条）；构造函数只做登记，事件处理挪成 onVoiceRecord、onReceive、bindClaims 方法。
 //M 1.1.25：GET /api/ui/status 附带内存 startedAt 与可选 ui.language（不问基地），供前端高频轮询轻量探测进程变化。
-export const version = '1.1.25';
+//M 1.1.26：新增 PeerApi（POST /api/peer/message 及 POST /api/message 的 peer 分支），支持外部客服网关按买家 ID 隔离 guest 会话与记忆。
+export const version = '1.1.26';
 
 /** 网页端跨渠道/跨聊天回复允许认出的本机聊天名称集合。 */
 const WEB_TARGET_CHATS = new Set(['', '本机', 'http:本机', '网页', 'local', 'web']);
@@ -131,10 +129,12 @@ class WebApi {
   readonly startedAt = Date.now();
 
   /** 收件表和时间线。 */
-  private readonly timeline: timelineModule.Timeline;
+  readonly timeline: timelineModule.Timeline;
 
   /** 会话和机器人接口（Views.ts）。 */
   private readonly views: viewsModule.Views;
+  /** 外部访客按买家 ID 隔离的 guest 客服接口（apply 时挂载）。 */
+  peerApi?: peerApiModule.PeerApi;
 
   /** 单调时间戳游标，防止同一毫秒连发多条 HTTP 消息时间戳撞车。 */
   private lastAt = 0;
@@ -385,7 +385,7 @@ class WebApi {
    * @throws Failure(400)：字段不对、没有机器人或会话、上传号失效、分派失败。Failure(503/500)：附件存不下。
    */
   private async accept(raw: unknown, verifiedOwner: boolean): Promise<{ id: number; file: string }> {
-    //M 外面进来的，这里校验一次。
+    if (this.peerApi !== undefined && peerApiModule.hasPeerField(raw)) return this.peerApi.accept(raw, 0);
     const body = checksModule.checkRecord(raw, '请求体') as MessageBody;
     const text = body.text ?? '';
     if (typeof text !== 'string') throw new failureModule.Failure(400, 'text 要是字符串');
@@ -802,8 +802,8 @@ class WebApi {
       this.timeline.reply(messageId, session, `（没回成：${reason}）`);
     }
 
-    //M 将已经收到收尾通知的消息标为回完，供轮询更新状态。
     this.timeline.markReplied(messageId);
+    this.peerApi?.notifySettled(messageId);
   }
 
   /**
@@ -1036,6 +1036,32 @@ class WebApi {
  * @param ctx Cordis 给这个插件的 ctx。
  */
 export function apply(ctx: cordis.Context): void {
-  //M 挂上网页渠道和核心 HTTP 接口。
-  new WebApi(ctx);
+  //M 挂上网页渠道和核心 HTTP 接口，同时挂载外部访客只读客服入口 POST /api/peer/message。
+  const webApi = new WebApi(ctx);
+  const peerApi = new peerApiModule.PeerApi(ctx, webApi.timeline, async (bot, rawImages) => {
+    return await saveInlineImagesForPeer(webApi, bot, rawImages);
+  });
+  webApi.peerApi = peerApi;
+  ctx.http.app.register(async (scope) => {
+    peerApi.routes(scope);
+  });
+}
+
+
+/**
+ * 复用 `WebApi` 的内联图片解析与工作区保存逻辑供外部访客接口使用。
+ */
+async function saveInlineImagesForPeer(
+  webApi: WebApi,
+  bot: string,
+  rawImages: unknown,
+): Promise<string[]> {
+  const internal = webApi as unknown as {
+    images: (val: unknown) => { name: string; data: Uint8Array; upload?: string }[];
+    saveAttachments: (b: string, files: { name: string; data: Uint8Array; upload?: string }[]) => Promise<string[]>;
+  };
+  const parsed = internal.images(rawImages);
+  if (parsed.length === 0) return [];
+
+  return await internal.saveAttachments(bot, parsed);
 }

@@ -241,6 +241,401 @@ describe('Control Plane Task Board：状态流转、占坑锁 409 防冲突与�
     expect(afterDel.tasks).toHaveLength(4);
   });
 
+  test('滴答原子扩展字段创建、入口校验、null 显式清空与默认 status=ready', async () => {
+    const h = await createHarness();
+
+    //M 1. 快速新建不传 status，默认 ready；传 status=done 按传入值保存
+    const quickRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { title: '买咖啡豆' },
+    });
+    expect(quickRes.statusCode).toBe(200);
+    const quickTask = quickRes.json<{ task: types.ControlTask }>().task;
+    expect(quickTask.status).toBe('ready');
+    expect(quickTask.priority).toBe('P1');
+
+    const doneRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { title: '已完成记录', status: 'done', list: '收集箱' },
+    });
+    expect(doneRes.statusCode).toBe(200);
+    const doneTask = doneRes.json<{ task: types.ControlTask }>().task;
+    expect(doneTask.status).toBe('done');
+    expect(doneTask.list).toBe('收集箱');
+
+    //M 2. 创建带全部原子扩展字段的任务，tags / checkIns 自动去重清洗
+    const fullRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: {
+        id: 'td-countdown-1',
+        title: '结婚纪念日',
+        kind: 'countdown',
+        list: '个人备忘',
+        parentId: quickTask.id,
+        quadrant: 'q2',
+        dueDate: '2026-12-31',
+        countdownMode: 'down',
+        icon: '🎂',
+        tags: [' 家庭 ', '重要', '家庭', ''],
+        checkIns: ['2026-11-21', '2026-11-21', ' 2026-11-22 '],
+        sortOrder: 3,
+      },
+    });
+    expect(fullRes.statusCode).toBe(200);
+    const fullTask = fullRes.json<{ task: types.ControlTask }>().task;
+    expect(fullTask.kind).toBe('countdown');
+    expect(fullTask.list).toBe('个人备忘');
+    expect(fullTask.parentId).toBe(quickTask.id);
+    expect(fullTask.quadrant).toBe('q2');
+    expect(fullTask.dueDate).toBe('2026-12-31');
+    expect(fullTask.countdownMode).toBe('down');
+    expect(fullTask.icon).toBe('🎂');
+    expect(fullTask.tags).toEqual(['家庭', '重要']);
+    expect(fullTask.checkIns).toEqual(['2026-11-21', '2026-11-22']);
+    expect(fullTask.sortOrder).toBe(3);
+
+    //G 3. 非法扩展字段必须在入口返回 400
+    const badInputs: Array<Record<string, unknown>> = [
+      { title: '坏日期', dueDate: '2026/12/31' },
+      { title: '坏象限', quadrant: 'q9' },
+      { title: '坏种类', kind: 'memo' },
+      { title: '坏倒数', countdownMode: 'side' },
+      { id: 'self-loop', title: '自指父任务', parentId: 'self-loop' },
+      { title: '坏删除时间', trashedAt: -1 },
+    ];
+    for (const payload of badInputs) {
+      const badRes = await h.app.inject({ method: 'POST', url: `${PREFIX}/tasks`, payload });
+      expect(badRes.statusCode).toBe(400);
+    }
+
+    const selfPatch = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/td-countdown-1`,
+      payload: { parentId: 'td-countdown-1' },
+    });
+    expect(selfPatch.statusCode).toBe(400);
+
+    //M 4. PATCH 传 null 显式清空 parentId / quadrant / dueDate / trashedAt 并跨重启持久化
+    const clearRes = await h.app.inject({
+      method: 'PUT',
+      url: `${PREFIX}/tasks/td-countdown-1`,
+      payload: {
+        parentId: null,
+        quadrant: null,
+        dueDate: null,
+        trashedAt: null,
+      },
+    });
+    expect(clearRes.statusCode).toBe(200);
+    const cleared = clearRes.json<{ task: types.ControlTask }>().task;
+    expect(cleared.parentId).toBeNull();
+    expect(cleared.quadrant).toBeNull();
+    expect(cleared.dueDate).toBeNull();
+    expect(cleared.trashedAt).toBeNull();
+
+    const h2 = await createHarness(h.root);
+    const snap = (await h2.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    const reloaded = snap.tasks.find((item) => item.id === 'td-countdown-1');
+    expect(reloaded?.parentId).toBeNull();
+    expect(reloaded?.quadrant).toBeNull();
+    expect(reloaded?.dueDate).toBeNull();
+    expect(reloaded?.trashedAt).toBeNull();
+  });
+
+  test('清单 CRUD（默认 7 清单、同名幂等、改名同步任务 list、删 inbox 报 400、删清单任务回收集箱）', async () => {
+    const h = await createHarness();
+
+    //M 1. 默认 7 个清单随 GET /tasks 返回
+    const initSnap = (await h.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(initSnap.lists.map((l) => l.id)).toEqual([
+      'inbox',
+      'work',
+      'memo',
+      'wish',
+      'shopping',
+      'study',
+      'fitness',
+    ]);
+    expect(initSnap.lists[0]?.name).toBe('收集箱');
+
+    //M 2. 创建自定义清单，再次同名创建幂等返回不重复
+    const createListRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/lists`,
+      payload: { id: 'travel', name: '旅行计划', icon: '✈️', color: '#38bdf8' },
+    });
+    expect(createListRes.statusCode).toBe(200);
+    const createdBody = createListRes.json<{
+      ok: true;
+      revision: number;
+      list: types.TaskListDef;
+      lists: types.TaskListDef[];
+    }>();
+    expect(createdBody.list).toEqual({
+      id: 'travel',
+      name: '旅行计划',
+      icon: '✈️',
+      color: '#38bdf8',
+      sortOrder: 7,
+    });
+    expect(createdBody.lists).toHaveLength(8);
+
+    const dupListRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/lists`,
+      payload: { name: '旅行计划' },
+    });
+    expect(dupListRes.statusCode).toBe(200);
+    expect(dupListRes.json<{ lists: types.TaskListDef[]; revision: number }>().lists).toHaveLength(8);
+    expect(dupListRes.json<{ revision: number }>().revision).toBe(createdBody.revision);
+
+    //M 3. 在旅行计划与购物清单各建一条任务，改名旅行计划时仅同步其下任务
+    const tTravelRes = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 't-travel-1', title: '订机票', list: '旅行计划' },
+    });
+    expect(tTravelRes.statusCode).toBe(200);
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 't-shop-1', title: '买牛奶', list: '购物清单' },
+    });
+
+    const renameRes = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/lists/travel`,
+      payload: { name: '2027 出行', icon: '🧳', sortOrder: 2 },
+    });
+    expect(renameRes.statusCode).toBe(200);
+    const renamedBody = renameRes.json<{ list: types.TaskListDef; lists: types.TaskListDef[] }>();
+    expect(renamedBody.list.name).toBe('2027 出行');
+    expect(renamedBody.list.icon).toBe('🧳');
+
+    const afterRename = (await h.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(afterRename.tasks.find((t) => t.id === 't-travel-1')?.list).toBe('2027 出行');
+    expect(afterRename.tasks.find((t) => t.id === 't-shop-1')?.list).toBe('购物清单');
+
+    //G 4. 禁止删除 inbox
+    const delInboxRes = await h.app.inject({ method: 'DELETE', url: `${PREFIX}/lists/inbox` });
+    expect(delInboxRes.statusCode).toBe(400);
+
+    //M 5. 删除自定义清单后，旗下任务归回收集箱并持久化
+    const delListRes = await h.app.inject({ method: 'DELETE', url: `${PREFIX}/lists/travel` });
+    expect(delListRes.statusCode).toBe(200);
+    expect(delListRes.json<{ lists: types.TaskListDef[] }>().lists).toHaveLength(7);
+
+    const h2 = await createHarness(h.root);
+    const afterDelSnap = (await h2.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(afterDelSnap.lists).toHaveLength(7);
+    expect(afterDelSnap.tasks.find((t) => t.id === 't-travel-1')?.list).toBe('收集箱');
+    expect(afterDelSnap.tasks.find((t) => t.id === 't-shop-1')?.list).toBe('购物清单');
+  });
+
+  test('习惯打卡 toggle（指定日期排序、重复移除、缺省默认当天本地日期、非法日期 400）', async () => {
+    const h = await createHarness();
+    const createHabit = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { id: 'habit-water', title: '每天喝水 2L', kind: 'habit', list: '锻炼计划' },
+    });
+    expect(createHabit.statusCode).toBe(200);
+
+    const c1 = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/habit-water/checkin`,
+      payload: { date: '2026-11-23' },
+    });
+    expect(c1.statusCode).toBe(200);
+    expect(c1.json<{ task: types.ControlTask }>().task.checkIns).toEqual(['2026-11-23']);
+
+    //M 加入更早日期时保持升序排序
+    const c2 = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/habit-water/checkin`,
+      payload: { date: '2026-11-20' },
+    });
+    expect(c2.statusCode).toBe(200);
+    expect(c2.json<{ task: types.ControlTask }>().task.checkIns).toEqual([
+      '2026-11-20',
+      '2026-11-23',
+    ]);
+
+    //M 再次打卡同一天会移除该日期
+    const c3 = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/habit-water/checkin`,
+      payload: { date: '2026-11-23' },
+    });
+    expect(c3.statusCode).toBe(200);
+    expect(c3.json<{ task: types.ControlTask }>().task.checkIns).toEqual(['2026-11-20']);
+
+    //M 不传 date 默认切换当天本地 YYYY-MM-DD
+    const todayLocal = textModule.formatLocalTime(Date.now(), 'date').slice(0, 10);
+    const cTodayAdd = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/habit-water/checkin`,
+      payload: {},
+    });
+    expect(cTodayAdd.statusCode).toBe(200);
+    expect(cTodayAdd.json<{ task: types.ControlTask }>().task.checkIns).toContain(todayLocal);
+
+    const cTodayRemove = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/habit-water/checkin`,
+    });
+    expect(cTodayRemove.statusCode).toBe(200);
+    expect(cTodayRemove.json<{ task: types.ControlTask }>().task.checkIns).not.toContain(todayLocal);
+
+    const badDate = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks/habit-water/checkin`,
+      payload: { date: '20261123' },
+    });
+    expect(badDate.statusCode).toBe(400);
+  });
+
+  test('垃圾桶软删除释放 409 占坑互斥锁，还原时若坑位已被占仍回 409', async () => {
+    const h = await createHarness();
+
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: {
+        id: 'trash-t1',
+        title: '占用任务 A',
+        status: 'running',
+        lockTags: ['repo:trash-lock'],
+        owner: 'coder-a',
+      },
+    });
+    await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: {
+        id: 'trash-t2',
+        title: '等待任务 B',
+        status: 'ready',
+        lockTags: ['repo:trash-lock'],
+      },
+    });
+
+    //M 1. 未进垃圾桶时任务 B 抢锁返回 409
+    const blockedRes = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/trash-t2`,
+      payload: { status: 'running', owner: 'coder-b' },
+    });
+    expect(blockedRes.statusCode).toBe(409);
+
+    //M 2. 软删除 running 中的任务 A 后，activeLocks 清空、counts.running 归零、任务 B 自动可派发
+    const trashRes = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/trash-t1`,
+      payload: { trashedAt: Date.now() },
+    });
+    expect(trashRes.statusCode).toBe(200);
+    const trashBody = trashRes.json<{
+      task: types.ControlTask;
+      activeLocks: Record<string, unknown>;
+      dispatchableIds: string[];
+    }>();
+    expect(typeof trashBody.task.trashedAt).toBe('number');
+    expect(trashBody.activeLocks['repo:trash-lock']).toBeUndefined();
+    expect(trashBody.dispatchableIds).toContain('trash-t2');
+
+    const snapWhileTrashed = (await h.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(snapWhileTrashed.counts.running).toBe(0);
+    expect(snapWhileTrashed.tasks.some((t) => t.id === 'trash-t1')).toBe(true);
+
+    //M 3. 任务 B 顺利占锁进入 running；此时还原任务 A 因仍为 running 且撞锁被 409 拦截
+    const claimB = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/trash-t2`,
+      payload: { status: 'running', owner: 'coder-b' },
+    });
+    expect(claimB.statusCode).toBe(200);
+
+    const restoreConflict = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/trash-t1`,
+      payload: { trashedAt: null },
+    });
+    expect(restoreConflict.statusCode).toBe(409);
+
+    //M 4. 任务 B 完成后，任务 A 传 trashedAt: null 顺利还原并重新持锁
+    await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/trash-t2`,
+      payload: { status: 'done' },
+    });
+    const restoreOk = await h.app.inject({
+      method: 'PATCH',
+      url: `${PREFIX}/tasks/trash-t1`,
+      payload: { trashedAt: null },
+    });
+    expect(restoreOk.statusCode).toBe(200);
+    const restoredBody = restoreOk.json<{
+      task: types.ControlTask;
+      activeLocks: Record<string, types.ActiveLockHolder>;
+    }>();
+    expect(restoredBody.task.trashedAt).toBeNull();
+    expect(restoredBody.activeLocks['repo:trash-lock']?.taskId).toBe('trash-t1');
+  });
+
+  test('老版本 control-plane-tasks.json（无 lists 与新字段）向后兼容并首次写盘补全 lists', async () => {
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'jm-ctrl-legacy-'));
+    cleanups.push(() => fs.rmSync(legacyRoot, { recursive: true, force: true }));
+
+    const legacyTask: types.ControlTask = {
+      id: 'legacy-ai-01',
+      title: '老控制面任务',
+      summary: '不带任何滴答新字段',
+      status: 'running',
+      priority: 'P0',
+      lockTags: ['repo:legacy'],
+      owner: 'central',
+      doneCriteria: '0 fail',
+      lastHeartbeatAt: 1760000000000,
+      events: [{ at: 1760000000000, by: 'central', kind: 'created', text: '旧记录' }],
+      createdAt: 1760000000000,
+      updatedAt: 1760000000000,
+    };
+    const diskPath = path.join(legacyRoot, 'control-plane-tasks.json');
+    fs.writeFileSync(
+      diskPath,
+      `${JSON.stringify({ version: 1, revision: 12, tasks: [legacyTask] }, null, 2)}\n`,
+      'utf8',
+    );
+
+    const h = await createHarness(legacyRoot);
+    const snap = (await h.app.inject({ method: 'GET', url: `${PREFIX}/tasks` }))
+      .json<types.ControlPlaneSnapshot>();
+    expect(snap.revision).toBe(12);
+    expect(snap.lists).toHaveLength(7);
+    expect(snap.tasks).toEqual([legacyTask]);
+    expect(snap.activeLocks['repo:legacy']?.taskId).toBe('legacy-ai-01');
+
+    //M 触发一次写盘后，磁盘文件应保留老任务且一并持久化 lists
+    const addNew = await h.app.inject({
+      method: 'POST',
+      url: `${PREFIX}/tasks`,
+      payload: { title: '新增伴随任务' },
+    });
+    expect(addNew.statusCode).toBe(200);
+    const savedRaw = JSON.parse(fs.readFileSync(diskPath, 'utf8')) as types.ControlPlaneFile;
+    expect(savedRaw.lists).toHaveLength(7);
+    expect(savedRaw.tasks.find((t) => t.id === 'legacy-ai-01')).toEqual(legacyTask);
+  });
+
   test('前端 DecisionMap 目录零原生 window.alert / prompt / confirm 守卫', () => {
     const files = fs.readdirSync(DECISION_WEB_DIR).filter((name) => /\.(ts|tsx)$/u.test(name));
     expect(files.length).toBeGreaterThan(10);

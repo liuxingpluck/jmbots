@@ -8,6 +8,7 @@
  */
 import * as react from 'react';
 import * as api from './DecisionMapApi.ts';
+import * as tickUtils from './TickUtils.ts';
 
 
 /** 心跳超时阈值：执行中任务超过 15 分钟无心跳标橙色告警。 */
@@ -18,6 +19,12 @@ export interface ControlPlaneViewProps {
   externalTasksRev?: number;
   /** 是否窄屏手机模式。 */
   isMobile?: boolean;
+  /** 来自父级工作台的共享任务板数据（与滴答清单工作台零割裂同步）。 */
+  sharedBoard?: api.ControlTaskListResponse;
+  /** 父级共享加载态。 */
+  sharedLoading?: boolean;
+  /** 通知父级刷新共享任务板回调。 */
+  onRefreshBoard?: (silent?: boolean) => Promise<void>;
 }
 
 const STATUS_META: ReadonlyArray<{
@@ -124,10 +131,17 @@ interface EventModalState {
 
 /** 多 AI 协同控制面任务面板主组件。 */
 export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Element {
-  const { externalTasksRev } = props;
+  const { externalTasksRev, sharedBoard, sharedLoading, onRefreshBoard } = props;
+  const isShared = onRefreshBoard !== undefined;
 
-  const [board, setBoard] = react.useState<api.ControlTaskListResponse | undefined>(undefined);
-  const [loading, setLoading] = react.useState(true);
+  const [localBoard, setLocalBoard] = react.useState<api.ControlTaskListResponse | undefined>(undefined);
+  const [localLoading, setLocalLoading] = react.useState(true);
+  let board = localBoard;
+  let loading = localLoading;
+  if (isShared) {
+    board = sharedBoard;
+    loading = sharedLoading ?? false;
+  }
   const [banner, setBanner] = react.useState<{ kind: 'ok' | 'err'; text: string } | undefined>(undefined);
 
   //M 过滤条件：状态、占坑标签、关键词
@@ -161,36 +175,45 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
 
   /** 拉取完整控制面任务账本。 */
   const loadBoard = react.useCallback(async (silent = false) => {
+    if (onRefreshBoard !== undefined) {
+      await onRefreshBoard(silent);
+      return;
+    }
     if (!silent) {
-      setLoading(true);
+      setLocalLoading(true);
     }
     try {
       const data = await api.getControlTasks();
       lastSeenRevRef.current = data.revision;
-      setBoard(data);
+      setLocalBoard(data);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
+      let msg = String(error);
+      if (error instanceof Error) {
+        msg = error.message;
+      }
       showToast('err', msg);
     } finally {
       if (!silent) {
-        setLoading(false);
+        setLocalLoading(false);
       }
     }
-  }, [showToast]);
+  }, [onRefreshBoard, showToast]);
 
   react.useEffect(() => {
+    if (isShared) return;
+
     void loadBoard(false);
-  }, [loadBoard]);
+  }, [isShared, loadBoard]);
 
   //M 外部 30 秒 /version 探针发现 tasksRev 递增时静默同步任务面板。
   react.useEffect(() => {
-    if (externalTasksRev === undefined) {
-      return;
-    }
+    if (isShared) return;
+    if (externalTasksRev === undefined) return;
+
     if (lastSeenRevRef.current !== undefined && externalTasksRev !== lastSeenRevRef.current) {
       void loadBoard(true);
     }
-  }, [externalTasksRev, loadBoard]);
+  }, [externalTasksRev, isShared, loadBoard]);
 
   //M Esc 关闭当前打开的应用内模态框。
   react.useEffect(() => {
@@ -381,18 +404,33 @@ export function ControlPlaneView(props: ControlPlaneViewProps): react.JSX.Elemen
     }
   };
 
-  const allTasks = board?.tasks ?? [];
-  const counts = board?.counts ?? {
-    pending_decision: 0,
-    ready: 0,
-    running: 0,
-    blocked: 0,
-    done: 0,
-    cancelled: 0,
-  };
+  //M 过滤掉倒数纪念日、习惯与垃圾桶任务，避免干扰多 AI 执行看板。
+  const allTasks = react.useMemo(() => {
+    const raw = board?.tasks ?? [];
+    return raw.filter((task) => tickUtils.isControlPlaneTask(task));
+  }, [board?.tasks]);
+
+  const counts = react.useMemo(() => {
+    const summary: Record<api.ControlTaskStatus, number> = {
+      pending_decision: 0,
+      ready: 0,
+      running: 0,
+      blocked: 0,
+      done: 0,
+      cancelled: 0,
+    };
+    for (const item of allTasks) {
+      summary[item.status] += 1;
+    }
+    return summary;
+  }, [allTasks]);
+
   const activeLocks = board?.activeLocks ?? {};
   const activeLockEntries = Object.entries(activeLocks);
-  const dispatchableSet = new Set(board?.dispatchableIds ?? []);
+  const visibleIdSet = new Set(allTasks.map((item) => item.id));
+  const dispatchableSet = new Set(
+    (board?.dispatchableIds ?? []).filter((id) => visibleIdSet.has(id)),
+  );
 
   //M 本地多维筛选（状态 + 占坑锁 + 搜索词）
   const visibleTasks = react.useMemo(() => {

@@ -76,8 +76,8 @@ export const name = 'bots';
 //M 1.6.9：Bots 构造函数只做登记（回调挪成 onReady/onChange/onSay/onRequestError）；认领记录与结果队列收尾分别合成共用函数（云端20 #2/#4）。
 //M 1.6.10：启动严格校验群配置 judge_helper；Bots.receive 统一收敛入 onChannelMessage 单入口并删 Bot.receive；
 //M   三处认领查重收拢为 isClaimed；清理三目、else 与超长行。
-//M 1.6.11：requestEvent 删了 timeout 结局，群攒批的 FALLBACK_TEXT 去掉“决策模型超时”（云端 31 第 2 条）。
-export const version = '1.6.11';
+//M 1.6.11–1.6.12：requestEvent 删 timeout 结局；Prompt.ts 补齐 language: en 机器人的英文内置 front/work 默认提示词。
+export const version = '1.6.12';
 
 /**
  * 用到的服务。tools：前台登记六个工具（history 三个在 FrontDesk.ts，派活三个在 DispatchTools.ts），开了 reply_tool 再加 reply。

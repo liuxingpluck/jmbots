@@ -4,13 +4,68 @@ import * as token from '../Token.ts';
 
 const BASE = '/api/work-decision';
 
-export type ControlTask = types.ControlTask;
 export type ControlTaskStatus = types.ControlTaskStatus;
 export type ControlTaskPriority = types.ControlTaskPriority;
 export type ControlTaskEventKind = types.ControlTaskEventKind;
 export type ControlTaskEvent = types.ControlTaskEvent;
 export type ActiveLockHolder = types.ActiveLockHolder;
-export type ControlTaskListResponse = types.ControlTaskListResponse;
+
+/** 滴答风格任务实体类别：普通任务 / 倒数纪念日 / 习惯。 */
+export type TickTaskKind = 'task' | 'countdown' | 'habit';
+
+/** 滴答风格四象限编码。 */
+export type TickQuadrant = 'q1' | 'q2' | 'q3' | 'q4';
+
+/** 倒数纪念日计数方向：down 倒数，up 正数已过天数。 */
+export type TickCountdownMode = 'down' | 'up';
+
+/** 滴答风格自定义清单定义。 */
+export interface TaskListDef {
+  /** 清单唯一标识。 */
+  id: string;
+  /** 清单名称。 */
+  name: string;
+  /** 清单图标（Emoji）。 */
+  icon?: string;
+  /** 清单强调色。 */
+  color?: string;
+  /** 排序权重。 */
+  sortOrder?: number;
+}
+
+/** 融合控制面与滴答工作台字段的原子任务结构。 */
+export type ControlTask = types.ControlTask & {
+  /** 实体类别，缺省视为普通任务 task。 */
+  kind?: TickTaskKind;
+  /** 所属清单名称，缺省为「工作任务」。 */
+  list?: string;
+  /** 父任务 ID，顶层为 null 或缺省。 */
+  parentId?: string | null;
+  /** 四象限归类，未设时按优先级映射。 */
+  quadrant?: TickQuadrant | null;
+  /** 截止日期或纪念日目标日期（YYYY-MM-DD）。 */
+  dueDate?: string | null;
+  /** 倒数日计算方向（down 倒数 / up 已过）。 */
+  countdownMode?: TickCountdownMode;
+  /** 任务、纪念日或习惯的图标。 */
+  icon?: string;
+  /** 任务标签数组。 */
+  tags?: string[];
+  /** 习惯打卡日期列表（YYYY-MM-DD[]）。 */
+  checkIns?: string[];
+  /** 移入垃圾桶时间戳，正常任务为 null 或缺省。 */
+  trashedAt?: number | null;
+  /** 列表内排序权重。 */
+  sortOrder?: number;
+};
+
+/** GET /api/work-decision/tasks 响应结构（含滴答清单定义）。 */
+export type ControlTaskListResponse = Omit<types.ControlTaskListResponse, 'tasks'> & {
+  /** 全量任务数组。 */
+  tasks: ControlTask[];
+  /** 自定义清单列表，旧版后端未返回时前端兜底。 */
+  lists?: TaskListDef[];
+};
 
 /** 轻量版本探针响应，仅包含进程启动时刻和数据修订号。 */
 export interface DecisionVersion {
@@ -125,7 +180,7 @@ export function setQuadrant(
 export function getControlTasks(
   filter?: { status?: string; lockTag?: string; owner?: string },
   signal?: AbortSignal,
-): Promise<types.ControlTaskListResponse> {
+): Promise<ControlTaskListResponse> {
   const qs = new URLSearchParams();
   if (filter?.status !== undefined && filter.status !== '') {
     qs.set('status', filter.status);
@@ -137,23 +192,111 @@ export function getControlTasks(
     qs.set('owner', filter.owner);
   }
   const suffix = qs.toString();
-  const route = suffix !== '' ? `/tasks?${suffix}` : '/tasks';
+  let route = '/tasks';
+  if (suffix !== '') {
+    route = `/tasks?${suffix}`;
+  }
   return request(route, { signal });
 }
 
-/** 创建控制面任务卡。 */
-export function createControlTask(input: {
+/** 创建任务/纪念日/习惯的入参。 */
+export interface CreateControlTaskInput {
+  /** 可选自定义 ID。 */
   id?: string;
+  /** 标题。 */
   title: string;
+  /** 详细备注或摘要。 */
   summary?: string;
+  /** 初始控制面状态。 */
   status?: types.ControlTaskStatus;
+  /** 优先级。 */
   priority?: types.ControlTaskPriority;
+  /** 占坑锁标签。 */
   lockTags?: string[];
+  /** 认领人。 */
   owner?: string;
+  /** 验收标准。 */
   doneCriteria?: string;
+  /** 创建者标识。 */
   by?: string;
+  /** 初始备注事件。 */
   initialNote?: string;
-}): Promise<{ ok: true; task: types.ControlTask }> {
+  /** 实体类型：task / countdown / habit。 */
+  kind?: TickTaskKind;
+  /** 所属清单名称。 */
+  list?: string;
+  /** 父任务 ID。 */
+  parentId?: string | null;
+  /** 四象限编码。 */
+  quadrant?: TickQuadrant | null;
+  /** 截止或目标日期（YYYY-MM-DD）。 */
+  dueDate?: string | null;
+  /** 倒数日模式。 */
+  countdownMode?: TickCountdownMode;
+  /** 图标。 */
+  icon?: string;
+  /** 标签数组。 */
+  tags?: string[];
+  /** 打卡日期列表。 */
+  checkIns?: string[];
+  /** 移入垃圾桶时间戳。 */
+  trashedAt?: number | null;
+  /** 排序权重。 */
+  sortOrder?: number;
+}
+
+/** 局部更新任务/纪念日/习惯的入参（传 null 可清空可选字段）。 */
+export interface PatchControlTaskInput {
+  /** 标题。 */
+  title?: string;
+  /** 备注或摘要。 */
+  summary?: string;
+  /** 状态。 */
+  status?: types.ControlTaskStatus;
+  /** 优先级。 */
+  priority?: types.ControlTaskPriority;
+  /** 占坑锁标签。 */
+  lockTags?: string[];
+  /** 认领人。 */
+  owner?: string;
+  /** 验收标准。 */
+  doneCriteria?: string;
+  /** 操作者。 */
+  by?: string;
+  /** 变更原因。 */
+  reason?: string;
+  /** 追加的事件类型。 */
+  eventKind?: types.ControlTaskEventKind;
+  /** 是否同时上报心跳。 */
+  heartbeat?: boolean;
+  /** 实体类型。 */
+  kind?: TickTaskKind;
+  /** 所属清单名称。 */
+  list?: string;
+  /** 父任务 ID（null 清空）。 */
+  parentId?: string | null;
+  /** 四象限编码（null 清空）。 */
+  quadrant?: TickQuadrant | null;
+  /** 截止或目标日期（null 清空）。 */
+  dueDate?: string | null;
+  /** 倒数日模式。 */
+  countdownMode?: TickCountdownMode;
+  /** 图标。 */
+  icon?: string;
+  /** 标签列表。 */
+  tags?: string[];
+  /** 习惯打卡日期列表。 */
+  checkIns?: string[];
+  /** 垃圾桶时间戳（null 还原）。 */
+  trashedAt?: number | null;
+  /** 排序权重。 */
+  sortOrder?: number;
+}
+
+/** 创建控制面或滴答任务卡。 */
+export function createControlTask(
+  input: CreateControlTaskInput,
+): Promise<{ ok: true; task: ControlTask }> {
   return request('/tasks', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -161,23 +304,11 @@ export function createControlTask(input: {
   });
 }
 
-/** 局部更新控制面任务卡（状态/优先级/负责人/验收标准/占坑锁，撞锁抛错含 409 详情）。 */
+/** 局部更新控制面或滴答任务卡（撞锁抛错含 409 详情）。 */
 export function patchControlTask(
   id: string,
-  patch: {
-    title?: string;
-    summary?: string;
-    status?: types.ControlTaskStatus;
-    priority?: types.ControlTaskPriority;
-    lockTags?: string[];
-    owner?: string;
-    doneCriteria?: string;
-    by?: string;
-    reason?: string;
-    eventKind?: types.ControlTaskEventKind;
-    heartbeat?: boolean;
-  },
-): Promise<{ ok: true; task: types.ControlTask }> {
+  patch: PatchControlTaskInput,
+): Promise<{ ok: true; task: ControlTask }> {
   return request(`/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
@@ -194,7 +325,7 @@ export function appendControlTaskEvent(
     text: string;
     status?: types.ControlTaskStatus;
   },
-): Promise<{ ok: true; task: types.ControlTask; event: types.ControlTaskEvent }> {
+): Promise<{ ok: true; task: ControlTask; event: types.ControlTaskEvent }> {
   return request(`/tasks/${encodeURIComponent(id)}/events`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -202,7 +333,53 @@ export function appendControlTaskEvent(
   });
 }
 
-/** 删除控制面任务卡。 */
+/** 彻底删除任务卡。 */
 export function deleteControlTask(id: string): Promise<{ ok: true; deleted: string }> {
   return request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** 切换习惯某天打卡状态，缺省 date 为今天。 */
+export function toggleHabitCheckIn(
+  id: string,
+  date?: string,
+): Promise<{ ok: true; task: ControlTask }> {
+  const payload: { date?: string } = {};
+  if (date !== undefined) {
+    payload.date = date;
+  }
+  return request(`/tasks/${encodeURIComponent(id)}/checkin`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 新建滴答自定义清单。 */
+export function createTaskList(input: {
+  name: string;
+  icon?: string;
+  color?: string;
+}): Promise<{ ok: true; list: TaskListDef }> {
+  return request('/lists', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/** 修改滴答清单名称、图标或颜色。 */
+export function patchTaskList(
+  id: string,
+  patch: { name?: string; icon?: string; color?: string; sortOrder?: number },
+): Promise<{ ok: true; list: TaskListDef }> {
+  return request(`/lists/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 删除滴答自定义清单。 */
+export function deleteTaskList(id: string): Promise<{ ok: true; deleted: string }> {
+  return request(`/lists/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

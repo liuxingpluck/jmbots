@@ -9,6 +9,7 @@ import * as util from 'node:util';
 import * as sqlite from 'bun:sqlite';
 import * as fastify from 'fastify';
 import * as sendModule from './ApprovedSend.ts';
+import * as cliMeta from './CliMeta.ts';
 import * as embeddedPage from './EmbeddedPage.ts';
 import * as exportModule from './ExportChat.ts';
 import * as kefu from './KefuRoutes.ts';
@@ -60,7 +61,10 @@ export type ParsedCliAction =
   | { mode: 'help' }
   | { mode: 'discover'; data: string; targetFolder: string }
   | { mode: 'connect'; data: string; targetFolder: string; pid?: number }
+  | { mode: 'scan-accounts'; scanOptions: cliMeta.ValidatedScanAccountsOptions }
+  | { mode: 'list-chats'; listOptions: cliMeta.ValidatedListChatsOptions }
   | { mode: 'export-chat'; exportOptions: exportModule.ValidatedExportOptions }
+  | { mode: 'export-batch'; batchOptions: exportModule.ValidatedBatchExportOptions }
   | {
     mode: 'serve';
     data: string;
@@ -92,7 +96,10 @@ export function buildHelpText(): string {
     '  jmbots-wechat --data <数据目录> [选项]',
     '  jmbots-wechat --data <数据目录> --discover <微信xwechat_files目录>',
     '  jmbots-wechat --data <数据目录> --connect <微信xwechat_files目录> [--pid <PID>]',
+    '  jmbots-wechat scan-accounts --data <数据目录> [--root <xwechat_files目录>] [--json]',
+    '  jmbots-wechat list-chats --data <数据目录> [--account <账号或昵称>] [筛选选项]',
     '  jmbots-wechat export-chat --data <数据目录> --chat <会话名或wxid> --out <目标目录> [导出选项]',
+    '  jmbots-wechat export-batch --data <数据目录> (--chats "会话1,会话2" | --all) --out <根目录> [导出选项]',
     '  jmbots-wechat --version | --help',
     '',
     '核心选项：',
@@ -106,66 +113,59 @@ export function buildHelpText(): string {
     '  --chat-limit <数量>      单账号最近会话读取上限（默认 5000）',
     '  --at-names <昵称列表>    额外群提及昵称，逗号分隔',
     '  --archive-all            后台自动归档未监听会话',
-    '',
-    '显式单会话导出选项（仅在显式子命令 export-chat 下生效，AI 不可静默触发）：',
-    '  --chat <会话名或wxid>    目标微信会话名称或原始 wxid（必填）',
-    '  --out <目标目录>         导出落盘目录，产出 messages.md 与 manifest.json（必填）',
-    '  --account <账号ID>       多账号连接时指定账号 ID（单账号自动识别）',
-    '  --limit <正整数>         最近 N 条消息上限（默认 1000，支持 2000 及更长历史）',
-    '  --chunk-by <模式>        分卷模式：none（默认单文件）| month（按月）| count（按条数）',
-    '  --chunk-size <正整数>    chunk-by=count 时每卷条数（默认 1000）',
-    '  --media-dir <相对目录>   媒体输出子目录名（默认 media，引用为 ./media/...）',
+    ...buildManualSubcommandHelpLines(),
   ].join('\n');
 }
 
 
 /**
- * 解析显式子命令 `export-chat` 的专用参数并执行安全边界校验。
- * @param subArgs `export-chat` 之后的参数数组。
+ * 分发显式本地手动子命令（`scan-accounts` / `list-chats` / `export-chat` / `export-batch`）。
+ * 托管后台环境（含 `KEY_ENV` 或 `CALLBACK_ENV`）一律立即拒绝执行。
+ * @param args 命令行参数数组。
+ * @param env 进程环境变量表。
+ * @returns 命中显式子命令时返回解析结果，否则返回 undefined 继续常规参数解析。
+ */
+function tryParseManualSubcommand(
+  args: string[],
+  env: Record<string, string | undefined>,
+): ParsedCliAction | undefined {
+  const head = args[0];
+  if (head === 'scan-accounts') {
+    //M 进入只读账号与昵称扫描子命令分支。
+    return parseScanAccountsAction(args.slice(1), env);
+  }
+  if (head === 'list-chats') {
+    //M 进入只读会话目录扫描子命令分支。
+    return parseListChatsAction(args.slice(1), env);
+  }
+  if (head === 'export-chat') {
+    //M 进入显式单会话历史导出子命令分支。
+    return parseExportChatAction(args.slice(1), env);
+  }
+  if (head === 'export-batch') {
+    //M 进入多会话批量归档导出子命令分支。
+    return parseExportBatchAction(args.slice(1), env);
+  }
+  return undefined;
+}
+
+
+/**
+ * 断言当前不在 `programs` 宿主托管后台进程内：
+ * 所有本地元数据扫描与历史导出子命令仅限本机手动显式运行，
+ * 防止 AI 或后台轮询经环境变量静默导出会话历史。
+ * @param subcommand 子命令名称。
  * @param env 进程环境变量表。
  */
-function parseExportChatAction(
-  subArgs: string[],
+function assertManualLocalCli(
+  subcommand: string,
   env: Record<string, string | undefined>,
-): ParsedCliAction {
-  //G 宿主托管环境禁止触发本地会话导出，确保仅限本机用户显式手动执行。
-  if (env[protocol.KEY_ENV] !== undefined || env[protocol.CALLBACK_ENV] !== undefined) {
-    throw new Error('export-chat 仅支持本机手动显式调用，禁止在托管后台环境中触发');
+): void {
+  const hasHostKey = env[protocol.KEY_ENV] !== undefined;
+  const hasCallback = env[protocol.CALLBACK_ENV] !== undefined;
+  if (hasHostKey || hasCallback) {
+    throw new Error(`${subcommand} 仅支持本机手动显式调用，禁止在托管后台环境中触发`);
   }
-
-  const { values } = util.parseArgs({
-    args: subArgs,
-    options: {
-      help: { type: 'boolean', short: 'h', default: false },
-      data: { type: 'string' },
-      engine: { type: 'string' },
-      account: { type: 'string' },
-      chat: { type: 'string' },
-      out: { type: 'string' },
-      limit: { type: 'string' },
-      'chunk-by': { type: 'string' },
-      'chunk-size': { type: 'string' },
-      'media-dir': { type: 'string' },
-      'at-names': { type: 'string' },
-    },
-  });
-
-  if (values.help) return { mode: 'help' };
-
-  //M 在入口完成一次性导出参数合法性与防目录穿越校验。
-  const exportOptions = exportModule.validateExportCliInput({
-    data: values.data,
-    engine: values.engine,
-    account: values.account,
-    chat: values.chat,
-    out: values.out,
-    limit: values.limit,
-    chunkBy: values['chunk-by'],
-    chunkSize: values['chunk-size'],
-    mediaDir: values['media-dir'],
-    atNames: values['at-names'],
-  });
-  return { mode: 'export-chat', exportOptions };
 }
 
 
@@ -180,9 +180,9 @@ export function parseCliOptions(
   env: Record<string, string | undefined> = process.env,
   release = false,
 ): ParsedCliAction {
-  if (args[0] === 'export-chat') {
-    //M 仅当首参显式为 `export-chat` 子命令时才进入单会话导出解析分支。
-    return parseExportChatAction(args.slice(1), env);
+  const manualAction = tryParseManualSubcommand(args, env);
+  if (manualAction !== undefined) {
+    return manualAction;
   }
   const { values } = util.parseArgs({
     args,
@@ -514,6 +514,218 @@ export async function startWechatServer(
 
 
 /**
+ * 生成本机手动子命令的附加帮助说明行。
+ */
+function buildManualSubcommandHelpLines(): string[] {
+  return [
+    '',
+    '本机手动扫描与导出子命令（宿主托管后台环境严格禁用，AI 不可静默触发）：',
+    '  scan-accounts            纯只读枚举已登记及 --root 下的微信号、昵称、安全目录名与密钥/库就绪态',
+    '  list-chats               仅只读 session.db + contact.db 列出置顶优先会话目录（零消息正文读取）',
+    '  export-chat              显式导出单个指定会话到 --out（默认最近 30 天、按天分卷、单卷 100K Token）',
+    '  export-batch             批量导出指定 --chats 或 --all 会话到 <out>/私聊|群聊/<显示名_唯一ID>/',
+    '',
+    '导出通用选项（export-chat / export-batch）：',
+    '  --account <ID或昵称>     多微信号场景下按账号 ID、微信昵称或 wxid 选择账号',
+    '  --since-days <非负整数>  导出最近 N 天（默认 30 天；传 0 表示导出全部历史）',
+    '  --chunk-by <模式>        分卷模式：day（默认按天 YYYY-MM-DD.md）| none | month | count',
+    '  --max-tokens <非负整数>  单篇 Markdown 最大估算 Token 上限（默认 100000，超限拆为 _part2.md；0 不限）',
+    '  --max-file-mb <非负整数> 单个媒体/附件最大复制体积上限 MB（默认 100，超限跳过复制并写明占位；0 不限）',
+    '  --limit <正整数>         单会话最近 N 条消息上限（默认 50000）',
+    '  --chunk-size <正整数>    chunk-by=count 时每卷条数（默认 1000）',
+    '  --media-dir <相对目录>   媒体输出子目录名（默认 media，引用为 ./media/...）',
+    '  --cache-dir <目录>       解密副本缓存目录（默认系统临时目录，保证对 --data 100% 纯只读零写入）',
+    '  --with-account-dir       export-batch 在 <out> 下额外嵌套一层 <昵称_accountId>/ 账号隔离目录',
+    '  --json                   输出纯结构化 JSON 结果',
+  ];
+}
+
+
+/**
+ * 解析显式子命令 `scan-accounts`。
+ */
+function parseScanAccountsAction(
+  subArgs: string[],
+  env: Record<string, string | undefined>,
+): ParsedCliAction {
+  assertManualLocalCli('scan-accounts', env);
+  const { values } = util.parseArgs({
+    args: subArgs,
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      data: { type: 'string' },
+      engine: { type: 'string' },
+      'cache-dir': { type: 'string' },
+      root: { type: 'string' },
+      json: { type: 'boolean', default: false },
+    },
+  });
+  if (values.help) return { mode: 'help' };
+
+  const scanOptions = cliMeta.validateScanAccountsInput({
+    data: values.data,
+    engine: values.engine,
+    cacheDir: values['cache-dir'],
+    root: values.root,
+    json: values.json,
+  });
+  return { mode: 'scan-accounts', scanOptions };
+}
+
+
+/**
+ * 解析显式子命令 `list-chats`。
+ */
+function parseListChatsAction(
+  subArgs: string[],
+  env: Record<string, string | undefined>,
+): ParsedCliAction {
+  assertManualLocalCli('list-chats', env);
+  const { values } = util.parseArgs({
+    args: subArgs,
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      data: { type: 'string' },
+      engine: { type: 'string' },
+      'cache-dir': { type: 'string' },
+      account: { type: 'string' },
+      type: { type: 'string' },
+      'pinned-only': { type: 'boolean', default: false },
+      filter: { type: 'string' },
+      limit: { type: 'string' },
+      json: { type: 'boolean', default: false },
+    },
+  });
+  if (values.help) return { mode: 'help' };
+
+  const listOptions = cliMeta.validateListChatsInput({
+    data: values.data,
+    engine: values.engine,
+    cacheDir: values['cache-dir'],
+    account: values.account,
+    type: values.type,
+    pinnedOnly: values['pinned-only'],
+    filter: values.filter,
+    limit: values.limit,
+    json: values.json,
+  });
+  return { mode: 'list-chats', listOptions };
+}
+
+
+/**
+ * 解析显式子命令 `export-chat` 的专用参数并执行安全边界校验。
+ */
+function parseExportChatAction(
+  subArgs: string[],
+  env: Record<string, string | undefined>,
+): ParsedCliAction {
+  assertManualLocalCli('export-chat', env);
+  const { values } = util.parseArgs({
+    args: subArgs,
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      data: { type: 'string' },
+      engine: { type: 'string' },
+      'cache-dir': { type: 'string' },
+      account: { type: 'string' },
+      chat: { type: 'string' },
+      out: { type: 'string' },
+      limit: { type: 'string' },
+      'since-days': { type: 'string' },
+      'chunk-by': { type: 'string' },
+      'chunk-size': { type: 'string' },
+      'max-tokens': { type: 'string' },
+      'max-file-mb': { type: 'string' },
+      'media-dir': { type: 'string' },
+      'at-names': { type: 'string' },
+      json: { type: 'boolean', default: false },
+    },
+  });
+  if (values.help) return { mode: 'help' };
+
+  const exportOptions = exportModule.validateExportCliInput({
+    data: values.data,
+    engine: values.engine,
+    cacheDir: values['cache-dir'],
+    account: values.account,
+    chat: values.chat,
+    out: values.out,
+    limit: values.limit,
+    sinceDays: values['since-days'],
+    chunkBy: values['chunk-by'],
+    chunkSize: values['chunk-size'],
+    maxTokens: values['max-tokens'],
+    maxFileMb: values['max-file-mb'],
+    mediaDir: values['media-dir'],
+    atNames: values['at-names'],
+    json: values.json,
+  });
+  return { mode: 'export-chat', exportOptions };
+}
+
+
+/**
+ * 解析显式子命令 `export-batch` 的专用参数并执行安全边界校验。
+ */
+function parseExportBatchAction(
+  subArgs: string[],
+  env: Record<string, string | undefined>,
+): ParsedCliAction {
+  assertManualLocalCli('export-batch', env);
+  const { values } = util.parseArgs({
+    args: subArgs,
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      data: { type: 'string' },
+      engine: { type: 'string' },
+      'cache-dir': { type: 'string' },
+      account: { type: 'string' },
+      chats: { type: 'string' },
+      all: { type: 'boolean', default: false },
+      type: { type: 'string' },
+      'pinned-only': { type: 'boolean', default: false },
+      out: { type: 'string' },
+      'with-account-dir': { type: 'boolean', default: false },
+      limit: { type: 'string' },
+      'since-days': { type: 'string' },
+      'chunk-by': { type: 'string' },
+      'chunk-size': { type: 'string' },
+      'max-tokens': { type: 'string' },
+      'max-file-mb': { type: 'string' },
+      'media-dir': { type: 'string' },
+      'at-names': { type: 'string' },
+      json: { type: 'boolean', default: false },
+    },
+  });
+  if (values.help) return { mode: 'help' };
+
+  const batchOptions = exportModule.validateBatchExportInput({
+    data: values.data,
+    engine: values.engine,
+    cacheDir: values['cache-dir'],
+    account: values.account,
+    chats: values.chats,
+    all: values.all,
+    type: values.type,
+    pinnedOnly: values['pinned-only'],
+    out: values.out,
+    withAccountDir: values['with-account-dir'],
+    limit: values.limit,
+    sinceDays: values['since-days'],
+    chunkBy: values['chunk-by'],
+    chunkSize: values['chunk-size'],
+    maxTokens: values['max-tokens'],
+    maxFileMb: values['max-file-mb'],
+    mediaDir: values['media-dir'],
+    atNames: values['at-names'],
+    json: values.json,
+  });
+  return { mode: 'export-batch', batchOptions };
+}
+
+
+/**
  * 执行完整 CLI 分发（供直接运行 `Main.ts` 及单文件编译入口 `Build.ts` 共用）。
  * @param args 命令行参数数组。
  * @param release 是不是发行版（`Build.ts` 生成的编译入口写死传入；直接跑 `Main.ts` 为 false）。
@@ -546,19 +758,63 @@ export async function runCli(args: string[], release = false): Promise<void> {
     }
     return;
   }
+  if (action.mode === 'scan-accounts') {
+    const report = cliMeta.runScanAccountsCli(action.scanOptions);
+    if (action.scanOptions.json) {
+      console.log(JSON.stringify(report));
+      return;
+    }
+    console.log(cliMeta.formatScanAccountsTable(report));
+    return;
+  }
+  if (action.mode === 'list-chats') {
+    const report = cliMeta.runListChatsCli(action.listOptions);
+    if (action.listOptions.json) {
+      console.log(JSON.stringify(report));
+      return;
+    }
+    console.log(cliMeta.formatListChatsTable(report));
+    return;
+  }
   if (action.mode === 'export-chat') {
     //M 执行显式单会话只读导出并输出不含任何本机绝对路径的脱敏回执。
     const manifest = await exportModule.runExportChatCli(action.exportOptions);
     console.log(JSON.stringify({
       ok: true,
       chat: manifest.chat.displayName,
+      safeFolderName: manifest.chat.safeFolderName,
       chatType: manifest.chat.chatType,
       totalMessages: manifest.totalMessages,
+      totalEstimatedTokens: manifest.totalEstimatedTokens,
       chunks: manifest.chunks.length,
       mediaCopied: manifest.media.copiedCount,
       mediaMissing: manifest.media.missingCount,
+      mediaOversize: manifest.media.oversizeCount,
       redactionPassed: manifest.redactionCheck.passed,
     }));
+    return;
+  }
+  if (action.mode === 'export-batch') {
+    const batchManifest = await exportModule.runExportBatchCli(action.batchOptions);
+    if (batchManifest.totals.failedChats > 0 && batchManifest.totals.exportedChats === 0) {
+      globalThis.process.exitCode = 1;
+    }
+    if (action.batchOptions.json) {
+      console.log(JSON.stringify({ ok: true, ...batchManifest }));
+      return;
+    }
+    const { totals } = batchManifest;
+    let checkText = '未通过';
+    if (batchManifest.redactionCheck.passed) {
+      checkText = '通过（0 绝对路径泄漏）';
+    }
+    const headMsg = `批量导出完成：导出 ${String(totals.exportedChats)} 个会话`
+      + `（跳过 ${String(totals.skippedChats)}，失败 ${String(totals.failedChats)}）`;
+    const statMsg = `- 消息：${String(totals.totalMessages)} 条 · 分卷：${String(totals.totalChunks)} 篇`
+      + ` · 估算 Token：${String(totals.totalEstimatedTokens)}`;
+    const mediaMsg = `- 媒体：已复制 ${String(totals.totalMediaCopied)} 个`
+      + ` · 超上限未复制 ${String(totals.totalMediaOversize)} 个`;
+    console.log([headMsg, statMsg, mediaMsg, `- 脱敏校验：${checkText} · 清单：./batch-manifest.json`].join('\n'));
     return;
   }
 

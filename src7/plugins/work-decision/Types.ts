@@ -7,6 +7,7 @@ export const QUADRANTS = ['q1', 'q2', 'q3', 'q4'] as const;
 export type DecisionKind = typeof KINDS[number];
 export type DecisionStatus = typeof STATUSES[number];
 export type DecisionQuadrant = typeof QUADRANTS[number];
+export type Quadrant = typeof QUADRANTS[number];
 
 /** 用户可以选择的一项。 */
 export interface DecisionOption {
@@ -228,6 +229,30 @@ export interface ControlTaskEvent {
   text: string;
 }
 
+/** 任务种类：普通任务 / 倒数纪念日 / 习惯打卡。 */
+export const TASK_KINDS = ['task', 'countdown', 'habit'] as const;
+
+export type TaskKind = (typeof TASK_KINDS)[number];
+
+/** 倒数纪念日模式：down 倒数还有 N 天 / up 正数已经 N 天。 */
+export const COUNTDOWN_MODES = ['down', 'up'] as const;
+
+export type CountdownMode = (typeof COUNTDOWN_MODES)[number];
+
+/** 滴答清单视图的自定义清单定义。 */
+export interface TaskListDef {
+  /** 清单唯一标识（如 inbox、work）。 */
+  id: string;
+  /** 清单显示名称（如 收集箱、工作任务）。 */
+  name: string;
+  /** 可选 emoji 图标。 */
+  icon?: string;
+  /** 可选主题色。 */
+  color?: string;
+  /** 可选排序权重（越小越靠前）。 */
+  sortOrder?: number;
+}
+
 /** 单张多 AI 协同控制面任务卡。 */
 export interface ControlTask {
   /** 唯一任务 ID。 */
@@ -254,6 +279,134 @@ export interface ControlTask {
   createdAt: number;
   /** 最近修改毫秒时间戳。 */
   updatedAt: number;
+  /** 任务种类（task 普通任务 / countdown 倒数纪念日 / habit 习惯打卡）；缺省视为 task。 */
+  kind?: TaskKind;
+  /** 所属清单名称（如 收集箱、工作任务）；老任务缺省视为 工作任务。 */
+  list?: string;
+  /** 父任务 ID（用于父子任务树）；显式清空时为 null。 */
+  parentId?: string | null;
+  /** 四象限手动归类（q1~q4 或 null）。 */
+  quadrant?: Quadrant | null;
+  /** 到期日或纪念日日期（YYYY-MM-DD）；显式清空时为 null。 */
+  dueDate?: string | null;
+  /** 倒数纪念日模式（down 倒数还有 N 天 / up 正数已经 N 天）。 */
+  countdownMode?: CountdownMode;
+  /** 可选 emoji 图标。 */
+  icon?: string;
+  /** 标签字符串数组。 */
+  tags?: string[];
+  /** 习惯打卡日期数组（YYYY-MM-DD）。 */
+  checkIns?: string[];
+  /** 软删除毫秒时间戳；未入垃圾桶或还原后为 null / 省略。 */
+  trashedAt?: number | null;
+  /** 排序权重（数值越小越靠前）。 */
+  sortOrder?: number;
+}
+
+/** 创建控制面任务卡（POST /api/work-decision/tasks）的请求输入。 */
+export interface ControlTaskCreateInput {
+  /** 可选自定义任务 ID；缺省由服务端生成。 */
+  id?: string;
+  /** 任务简短标题（必填）。 */
+  title: string;
+  /** 背景或需求摘要。 */
+  summary?: string;
+  /** 初始任务状态；缺省为 ready。 */
+  status?: ControlTaskStatus;
+  /** 优先级（P0 / P1 / P2）；缺省为 P1。 */
+  priority?: ControlTaskPriority;
+  /** 占坑/资源互斥锁标签数组。 */
+  lockTags?: string[];
+  /** 当前认领执行的 AI 或节点名。 */
+  owner?: string;
+  /** 可机器验证的验收标准。 */
+  doneCriteria?: string;
+  /** 发起人或 AI 节点标识。 */
+  by?: string;
+  /** 创建时的初始时间线备注。 */
+  initialNote?: string;
+  /** 任务种类（task 普通任务 / countdown 倒数纪念日 / habit 习惯打卡）；缺省视为 task。 */
+  kind?: TaskKind;
+  /** 所属清单名称（如 收集箱、工作任务）；缺省视为 工作任务。 */
+  list?: string;
+  /** 父任务 ID（不能等于自身 id）；传 null 可清空。 */
+  parentId?: string | null;
+  /** 四象限手动归类（q1~q4 或 null）。 */
+  quadrant?: Quadrant | null;
+  /** 到期日或纪念日日期（YYYY-MM-DD 或 null）。 */
+  dueDate?: string | null;
+  /** 倒数纪念日模式（down 倒数 / up 正数）。 */
+  countdownMode?: CountdownMode;
+  /** 可选 emoji 图标。 */
+  icon?: string;
+  /** 标签字符串数组。 */
+  tags?: string[];
+  /** 习惯打卡日期数组（YYYY-MM-DD）。 */
+  checkIns?: string[];
+  /** 软删除毫秒时间戳或 null。 */
+  trashedAt?: number | null;
+  /** 排序权重。 */
+  sortOrder?: number;
+}
+
+/** 局部更新控制面任务卡（PATCH / PUT /api/work-decision/tasks/:id）的请求输入。 */
+export interface ControlTaskPatchInput {
+  /** 任务简短标题。 */
+  title?: string;
+  /** 背景或需求摘要。 */
+  summary?: string;
+  /** 目标任务状态。 */
+  status?: ControlTaskStatus;
+  /** 优先级（P0 / P1 / P2）。 */
+  priority?: ControlTaskPriority;
+  /** 占坑/资源互斥锁标签数组。 */
+  lockTags?: string[];
+  /** 当前认领执行的 AI 或节点名。 */
+  owner?: string;
+  /** 可机器验证的验收标准。 */
+  doneCriteria?: string;
+  /** 发起人或 AI 节点标识。 */
+  by?: string;
+  /** 本次更新的原因备注。 */
+  reason?: string;
+  /** 显式指定写入时间线的事件类型。 */
+  eventKind?: ControlTaskEventKind;
+  /** 是否强制刷新一次心跳。 */
+  heartbeat?: boolean;
+  /** 任务种类（task 普通任务 / countdown 倒数纪念日 / habit 习惯打卡）。 */
+  kind?: TaskKind;
+  /** 所属清单名称。 */
+  list?: string;
+  /** 父任务 ID（不能等于自身 id）；传 null 清空。 */
+  parentId?: string | null;
+  /** 四象限手动归类（q1~q4）；传 null 清空。 */
+  quadrant?: Quadrant | null;
+  /** 到期日或纪念日日期（YYYY-MM-DD）；传 null 清空。 */
+  dueDate?: string | null;
+  /** 倒数纪念日模式（down / up）。 */
+  countdownMode?: CountdownMode;
+  /** 可选 emoji 图标。 */
+  icon?: string;
+  /** 标签字符串数组。 */
+  tags?: string[];
+  /** 习惯打卡日期数组（YYYY-MM-DD）。 */
+  checkIns?: string[];
+  /** 软删除毫秒时间戳；传 null 从垃圾桶还原。 */
+  trashedAt?: number | null;
+  /** 排序权重。 */
+  sortOrder?: number;
+}
+
+/** control-plane-tasks.json 磁盘持久化结构。 */
+export interface ControlPlaneFile {
+  /** 文件结构版本号（当前为 1）。 */
+  version: 1;
+  /** 控制面任务账本递增修订号。 */
+  revision: number;
+  /** 控制面与个人任务列表。 */
+  tasks: ControlTask[];
+  /** 任务清单列表；老文件缺省时由服务端按默认清单兜底。 */
+  lists?: TaskListDef[];
 }
 
 /** 当前正被 running 任务占用的资源坑位信息。 */
@@ -273,13 +426,15 @@ export interface ControlTaskLockConflict extends ActiveLockHolder {
 }
 
 /** GET /api/work-decision/tasks 响应契约。 */
-export interface ControlTaskListResponse {
+export interface ControlPlaneSnapshot {
   /** 请求成功。 */
   ok: true;
   /** 控制面任务账本递增修订号。 */
   revision: number;
   /** 满足筛选条件的任务列表。 */
   tasks: ControlTask[];
+  /** 当前可用任务清单列表（按 sortOrder 升序）。 */
+  lists: TaskListDef[];
   /** 全量各状态任务计数（不受筛选参数影响，供顶栏仪表带直接展示）。 */
   counts: Record<ControlTaskStatus, number>;
   /** 当前全局正在被 running 任务占用的坑位映射（lockTag -> 持有者）。 */
@@ -287,3 +442,6 @@ export interface ControlTaskListResponse {
   /** 当前处于 ready 状态且不与任何 running 任务撞坑、巡检环可立即派发的任务 ID 列表。 */
   dispatchableIds: string[];
 }
+
+/** GET /api/work-decision/tasks 响应契约的兼容别名。 */
+export type ControlTaskListResponse = ControlPlaneSnapshot;

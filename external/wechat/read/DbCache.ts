@@ -227,6 +227,9 @@ export class DbCache {
   /** 以正斜杠相对路径为键的副本状态表。 */
   private readonly entries = new Map<string, CachedMeta>();
 
+  /** 磁盘新分片经首页 HMAC 交叉验真命中的密钥缓存（兼容 --connect 之后新增的同密钥分库）。 */
+  private readonly probedKeys = new Map<string, Buffer | null>();
+
   /**
    * @param allKeys 账号 all_keys.json 解析后的密钥表。
    * @param dbDir 微信账号的 db_storage 目录绝对路径。
@@ -261,14 +264,15 @@ export class DbCache {
     const normalized = normalizeDbRelPath(relKey);
     if (normalized === undefined) return undefined;
 
-    //M 提取 32 字节密钥并定位源 .db 与伴生 -wal 文件。
-    const encKey = getDatabaseKey(this.allKeys, normalized);
-    if (encKey === undefined) return undefined;
-
+    //M 提取 32 字节密钥（若新分片未直接登记键名，尝试用已有密钥集合对首页做 HMAC 交叉验真）。
     const nativeRel = normalized.replaceAll('/', path.sep);
     const dbPath = path.join(this.dbDir, nativeRel);
     const dbStamp = getFileStamp(dbPath);
     if (!dbStamp.exists || dbStamp.size < cryptoModule.PAGE_SIZE) return undefined;
+
+    const encKey = this.resolveKeyForFile(normalized, dbPath);
+    if (encKey === undefined) return undefined;
+    if (encKey === 'plaintext') return dbPath;
 
     //M 计算目标副本与摘要文件路径，并读取内存里已知的旧状态。
     const walPath = `${dbPath}-wal`;
@@ -338,6 +342,64 @@ export class DbCache {
     //M 每次刷新完成后把最新 mtime 与 WAL 页清单原子写回磁盘。
     this.savePersistentState();
     return replicaPath;
+  }
+
+  /**
+   * 查找指定分片的解密密钥；若 `all_keys.json` 未按文件名直接登记，只读读取首页尝试用已知密钥交叉验真。
+   */
+  private resolveKeyForFile(normalizedRel: string, dbPath: string): Buffer | 'plaintext' | undefined {
+    const direct = getDatabaseKey(this.allKeys, normalizedRel);
+    if (direct !== undefined) return direct;
+
+    if (this.probedKeys.has(normalizedRel)) {
+      const cached = this.probedKeys.get(normalizedRel);
+      if (cached === null || cached === undefined) return undefined;
+      return cached;
+    }
+
+    const page1 = Buffer.allocUnsafe(cryptoModule.PAGE_SIZE);
+    let bytesRead = 0;
+    try {
+      const fd = fs.openSync(dbPath, 'r');
+      try {
+        bytesRead = fs.readSync(fd, page1, 0, cryptoModule.PAGE_SIZE, 0);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return undefined;
+    }
+    if (bytesRead < cryptoModule.PAGE_SIZE) return undefined;
+    if (page1.subarray(0, 15).toString('ascii') === 'SQLite format 3') {
+      return 'plaintext';
+    }
+
+    const triedHex = new Set<string>();
+    for (const rawKey of Object.keys(this.allKeys)) {
+      if (rawKey.startsWith('_')) {
+        continue;
+      }
+      const entry = this.allKeys[rawKey];
+      if (typeof entry !== 'object' || entry === null) {
+        continue;
+      }
+      const hex = (entry as Partial<KeyEntry>).enc_key;
+      if (typeof hex !== 'string' || !/^[0-9a-fA-F]{64}$/u.test(hex)) {
+        continue;
+      }
+      const lowerHex = hex.toLowerCase();
+      if (triedHex.has(lowerHex)) {
+        continue;
+      }
+      triedHex.add(lowerHex);
+      const candidate = Buffer.from(lowerHex, 'hex');
+      if (cryptoModule.verifyPage1Key(candidate, page1)) {
+        this.probedKeys.set(normalizedRel, candidate);
+        return candidate;
+      }
+    }
+    this.probedKeys.set(normalizedRel, null);
+    return undefined;
   }
 
   /**

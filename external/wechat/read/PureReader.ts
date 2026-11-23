@@ -3,7 +3,9 @@
  * 直接组合 P1（Crypto / DbCache / MsgView / WechatDb）与 P2（MediaDat / VoiceExtract / KeyScan），
  * 零 Python 解释器、零外部脚本、零临时请求文件；日常轮询零 FFI 调用，仅显式 `--connect` 时按需提密。
  */
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 import * as cacheModule from './DbCache.ts';
@@ -22,6 +24,24 @@ export interface Account {
   nickname: string;
   /** 账号原始 wxid（未知时为空串）。 */
   wxid: string;
+}
+
+/** 供 CLI `scan-accounts` 展示的脱敏账号状态信息（绝不含磁盘绝对路径或聊天正文）。 */
+export interface ScannedAccountInfo {
+  /** 稳定账号标识。 */
+  accountId: string;
+  /** 微信原始 wxid。 */
+  wxid: string;
+  /** 解析出的微信昵称（优先 accounts.yaml，缺失时若已提密则只读 contact.db 补齐）。 */
+  nickname: string;
+  /** 推荐的账号级唯一下游目录名（`<安全昵称>_<accountId>`，防重名与改名撞目录）。 */
+  safeFolderName: string;
+  /** 是否已提取并落盘有效的数据库解密密钥。 */
+  hasKey: boolean;
+  /** 是否处于当前已连接（`status === 'connected'` 且密钥就绪）状态。 */
+  active: boolean;
+  /** 底层加密数据库文件与对应解密密钥是否齐备可读。 */
+  dbReady: boolean;
 }
 
 /** 最近会话条目结构。 */
@@ -128,6 +148,7 @@ interface AccountRuntimeContext {
   accountId: string;
   dbDir: string;
   stateAccountDir: string;
+  mediaCacheDir: string;
   keysMtimeMs: number;
   allKeys: cacheModule.KeyTable;
   cache: cacheModule.DbCache;
@@ -135,6 +156,42 @@ interface AccountRuntimeContext {
   wxid: string;
   folder: string;
   nickname: string;
+}
+
+
+/**
+ * 计算与指定 `--data` 目录对应的系统临时缓存根目录（`os.tmpdir()/jmbots-wechat-cache/<hash12>`），
+ * 使外置 CLI 子命令对 `--data` 目录保持 100% 纯只读零写入。
+ * @param dataDir 外置微信数据目录路径。
+ */
+export function defaultTempCacheDir(dataDir: string): string {
+  const hash = crypto.createHash('sha256').update(path.resolve(dataDir), 'utf8').digest('hex').slice(0, 12);
+  return path.join(os.tmpdir(), 'jmbots-wechat-cache', hash);
+}
+
+
+/**
+ * 确保缓存目录可写；若首选目录（如被锁或只读的 `--data`）遇到 `EPERM`/`EACCES`/`EROFS` 则自动回退到系统临时目录。
+ */
+function ensureWritableCacheSubdir(preferredDir: string, dataDir: string, subPath: string): string {
+  try {
+    fs.mkdirSync(preferredDir, { recursive: true });
+    const probe = path.join(preferredDir, `.wprobe_${String(process.pid)}`);
+    fs.writeFileSync(probe, '');
+    fs.unlinkSync(probe);
+    return preferredDir;
+  } catch (error) {
+    let code = '';
+    if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
+      code = error.code;
+    }
+    if (code === 'EPERM' || code === 'EACCES' || code === 'EROFS') {
+      const fallback = path.join(defaultTempCacheDir(dataDir), subPath);
+      fs.mkdirSync(fallback, { recursive: true });
+      return fallback;
+    }
+    throw error;
+  }
 }
 
 
@@ -281,6 +338,7 @@ export class Reader {
   readonly root: string;
   private readonly legacyEngineRoot: string;
   private readonly extraAtNames: string[];
+  private readonly explicitCacheDir?: string;
 
   /**
    * 兼容两参数 `(dataDir, atNames)` 与旧三参数 `(engineRoot, _unusedPython, atNames)` 构造签名。
@@ -288,12 +346,14 @@ export class Reader {
    * @param secondArg 两参数模式下为逗号分隔 `atNames`，三参数模式下忽略旧 python 路径。
    * @param thirdArg 三参数模式下的 `atNames`；传入时 `fourthLegacy` 由 `root` 充当兼容目录。
    * @param legacyEngineDir 显式指定的兼容旧引擎目录（可选）。
+   * @param explicitCacheDir 可选独立解密与媒体缓存根目录（CLI 模式传入临时目录以保证 `--data` 100% 纯只读）。
    */
   constructor(
     root: string,
     secondArg = '',
     thirdArg?: string,
     legacyEngineDir?: string,
+    explicitCacheDir?: string,
   ) {
     this.root = root;
     let rawAtNames = secondArg;
@@ -301,6 +361,9 @@ export class Reader {
       rawAtNames = thirdArg;
     }
     this.legacyEngineRoot = legacyEngineDir ?? root;
+    if (explicitCacheDir !== undefined && explicitCacheDir.trim() !== '') {
+      this.explicitCacheDir = path.resolve(explicitCacheDir);
+    }
     this.extraAtNames = rawAtNames
       .split(',')
       .map((item) => item.trim())
@@ -357,25 +420,124 @@ export class Reader {
   }
 
   /**
-   * 返回当前所有状态为 `connected` 的微信账号列表。
+   * 返回当前所有状态为 `connected` 的微信账号列表（若配置中缺失昵称且 contact.db 可读则自动补齐）。
    */
   accounts(): Account[] {
-    const { list } = this.loadAccountRecords();
+    const { stateDir, list } = this.loadAccountRecords();
     return list
       .filter((item) => item.status === 'connected')
       .map((item) => {
+        const id = String(item.id);
         const folder = String(item.folder ?? '');
         let wxid = String(item.wxid ?? '');
         if (wxid === '' && folder !== '') {
           //M 未显式记录 wxid 时按账号文件夹名自动推断。
           wxid = inferWxidFromFolder(folder);
         }
+        let nickname = String(item.nickname ?? '');
+        if (nickname === '' && stateDir !== '') {
+          nickname = this.tryReadSelfNickname(id) ?? '';
+        }
         return {
-          id: String(item.id),
-          nickname: String(item.nickname ?? ''),
+          id,
+          nickname,
           wxid,
         };
       });
+  }
+
+  /**
+   * 仅只读访问 `contact.db` 尝试补齐当前账号自身的微信昵称（绝不读取任何消息分片）。
+   */
+  private tryReadSelfNickname(accountId: string): string | undefined {
+    try {
+      const ctx = this.getAccountContext(accountId);
+      if (ctx.wxid === '') return undefined;
+
+      const entry = ctx.wechatDb.loadContactEntries().get(ctx.wxid);
+      if (entry === undefined) return undefined;
+
+      return entry.nickName || entry.displayName;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 按 `--account <accountId或昵称或wxid>` 灵活解析唯一目标已连接账号；省略时若仅单账号自动选用。
+   * @param accountQuery 可选账号标识、微信昵称或 wxid。
+   */
+  resolveAccountFlexible(accountQuery?: string): Account {
+    const connected = this.accounts();
+    if (connected.length === 0) {
+      throw new Error('当前没有已连接的微信账号，请先完成账号连接');
+    }
+
+    const formatAccLabel = (acc: Account): string => {
+      if (acc.nickname !== '') {
+        return `${acc.id}(${acc.nickname})`;
+      }
+      return acc.id;
+    };
+
+    const trimmed = (accountQuery ?? '').trim();
+    if (trimmed === '') {
+      if (connected.length === 1) {
+        return connected[0]!;
+      }
+      const choices = connected.map(formatAccLabel).join('、');
+      throw new Error(`当前已连接多个微信账号，请通过 --account 指定账号ID或昵称（可选：${choices}）`);
+    }
+
+    const exactId = connected.find((acc) => acc.id === trimmed);
+    if (exactId !== undefined) return exactId;
+
+    const lower = trimmed.toLowerCase();
+    const exactMeta = connected.filter(
+      (acc) => acc.nickname.toLowerCase() === lower || acc.wxid.toLowerCase() === lower,
+    );
+    if (exactMeta.length === 1) return exactMeta[0]!;
+    if (exactMeta.length > 1) {
+      const ids = exactMeta.map((acc) => acc.id).join('、');
+      throw new Error(`多个已连接账号同名「${trimmed}」，请改传具体账号ID：${ids}`);
+    }
+
+    const fuzzy = connected.filter(
+      (acc) => acc.nickname.toLowerCase().includes(lower)
+        || acc.id.toLowerCase().includes(lower)
+        || acc.wxid.toLowerCase().includes(lower),
+    );
+    if (fuzzy.length === 1) return fuzzy[0]!;
+    if (fuzzy.length > 1) {
+      const ids = fuzzy.map(formatAccLabel).join('、');
+      throw new Error(`关键字「${trimmed}」命中多个账号，请更精确指定：${ids}`);
+    }
+
+    const available = connected.map(formatAccLabel).join('、');
+    throw new Error(`未找到匹配的已连接微信账号「${trimmed}」（可用：${available}）`);
+  }
+
+  /**
+   * 仅只读读取 `session.db` + `contact.db` 返回指定账号的全部会话元数据（绝不读取 `message_N.db` 正文）。
+   * @param accountId 已连接微信账号 ID。
+   */
+  listChatMetadata(accountId: string): wechatDbModule.SessionMetaItem[] {
+    const ctx = this.getAccountContext(accountId);
+    return ctx.wechatDb.listChatMetadata();
+  }
+
+  /**
+   * 返回指定账号底层 `db_storage` 绝对路径（仅用于落盘前绝对路径禁漏名单，绝不写入任何输出文本）。
+   */
+  getAccountDbDir(accountId: string): string {
+    return this.getAccountContext(accountId).dbDir;
+  }
+
+  /**
+   * 返回指定账号磁盘上存在但缺少最新密钥的消息分片相对名列表（如 `['message/message_4.db']`）。
+   */
+  getUnkeyedMessageShards(accountId: string): string[] {
+    return this.getAccountContext(accountId).wechatDb.findUnkeyedMessageShards();
   }
 
   /**
@@ -440,7 +602,14 @@ export class Reader {
       wxid = inferWxidFromFolder(folder);
     }
     const nickname = String(record.nickname ?? '');
-    const cacheRoot = path.join(this.root, 'db_cache', accountId);
+    let preferredDbCache = path.join(this.root, 'db_cache', accountId);
+    let preferredMediaCache = path.join(stateAccountDir, 'media');
+    if (this.explicitCacheDir !== undefined) {
+      preferredDbCache = path.join(this.explicitCacheDir, 'db_cache', accountId);
+      preferredMediaCache = path.join(this.explicitCacheDir, 'media', accountId);
+    }
+    const cacheRoot = ensureWritableCacheSubdir(preferredDbCache, this.root, path.join('db_cache', accountId));
+    const mediaCacheDir = ensureWritableCacheSubdir(preferredMediaCache, this.root, path.join('media', accountId));
     const mergedAtNames = [...this.extraAtNames];
     if (nickname !== '' && !mergedAtNames.includes(nickname)) {
       //M 将本账号昵称一并纳入群聊文本 @ 识别词表。
@@ -458,6 +627,7 @@ export class Reader {
       accountId,
       dbDir,
       stateAccountDir,
+      mediaCacheDir,
       keysMtimeMs: keysStat.mtimeMs,
       allKeys,
       cache: wechatDb.cache,
@@ -516,10 +686,16 @@ export class Reader {
     account: string,
     chatQuery: string,
     limit: number,
+    sinceTimestamp?: number,
   ): Promise<{ username: string; displayName: string; isGroup: boolean; messages: RawMessage[] } | undefined> {
     const ctx = this.getAccountContext(account);
     const pageCap = 5000;
     const firstBatchSize = Math.min(limit, pageCap);
+    let minTimestamp = 0;
+    if (sinceTimestamp !== undefined && sinceTimestamp > 0) {
+      minTimestamp = Math.trunc(sinceTimestamp);
+    }
+
     //M 先拉取最新一批消息并解析标准会话 username。
     const first = ctx.wechatDb.syncChat(chatQuery, null, firstBatchSize);
     if (first.missing) return undefined;
@@ -532,12 +708,19 @@ export class Reader {
     const displayName = first.chat_display ?? username;
     const isGroup = first.is_group === true;
     const initialRows = first.messages ?? [];
-    if (initialRows.length >= limit || initialRows.length < pageCap) {
+    const reachedTimeFloor = minTimestamp > 0
+      && initialRows.length > 0
+      && initialRows[0]!.create_time < minTimestamp;
+    if (initialRows.length >= limit || initialRows.length < pageCap || reachedTimeFloor) {
+      let filtered = initialRows;
+      if (minTimestamp > 0) {
+        filtered = initialRows.filter((msg) => msg.create_time >= minTimestamp);
+      }
       return {
         username,
         displayName,
         isGroup,
-        messages: initialRows.slice(-limit),
+        messages: filtered.slice(-limit),
       };
     }
 
@@ -550,7 +733,7 @@ export class Reader {
       oldestTime = Math.min(oldestTime, msg.create_time);
     }
 
-    while (byKey.size < limit && oldestTime > 0) {
+    while (byKey.size < limit && oldestTime > 0 && (minTimestamp === 0 || oldestTime >= minTimestamp)) {
       const untilTime = oldestTime + 1;
       //M 向前拉取更早一批记录。
       const older = ctx.wechatDb.backfill(username, untilTime, pageCap);
@@ -578,7 +761,8 @@ export class Reader {
       oldestTime = nextOldest;
     }
 
-    const merged = [...byKey.values()];
+    const merged = [...byKey.values()]
+      .filter((msg) => minTimestamp === 0 || msg.create_time >= minTimestamp);
     merged.sort((left, right) => {
       if (left.create_time !== right.create_time) return left.create_time - right.create_time;
       if (left.source !== right.source) return left.source.localeCompare(right.source);
@@ -593,12 +777,14 @@ export class Reader {
   }
 
   /**
-   * 在当前微信账号的 `msg/file` 附件目录内安全查找已下载的本地文件原件（严格拦截路径穿越与外部软链接）。
-   * @param account 微信账号标识。
-   * @param rawTitle 消息气泡中的文件标题。
-   * @param createTime 消息秒级时间戳。
+   * 在当前微信账号的 `msg/file` 附件目录内安全查找已下载的本地文件原件及其字节大小
+   * （严格拦截路径穿越与外部软链接，不限制大小上限以便导出端按 `--max-file-mb` 输出明确超限提示，且绝不读入内存）。
    */
-  findSafeFileAttachment(account: string, rawTitle: string, createTime: number): string | undefined {
+  locateFileAttachment(
+    account: string,
+    rawTitle: string,
+    createTime: number,
+  ): { absPath: string; sizeBytes: number } | undefined {
     const trimmed = rawTitle.trim();
     if (trimmed === '' || trimmed.includes('\0')) return undefined;
     //G 标题自身若含路径分隔符或 .. 穿越片段，直接拒绝定位磁盘文件。
@@ -638,7 +824,6 @@ export class Reader {
         if (entry.isDirectory() && /^\d{4}-\d{2}$/u.test(entry.name)) {
           const monthDir = path.join(realRoot, entry.name);
           if (!candidateDirs.includes(monthDir)) {
-            //M 纳入其它月份归档目录以兼容跨月延迟下载。
             candidateDirs.push(monthDir);
           }
         }
@@ -647,11 +832,10 @@ export class Reader {
       return undefined;
     }
 
-    const maxFileBytes = 100 * 1024 * 1024;
     for (const dir of candidateDirs) {
       const candidate = path.join(dir, trimmed);
       const stat = fs.statSync(candidate, { throwIfNoEntry: false });
-      if (!stat?.isFile() || stat.size <= 0 || stat.size > maxFileBytes) {
+      if (!stat?.isFile() || stat.size <= 0) {
         continue;
       }
       try {
@@ -659,12 +843,30 @@ export class Reader {
         const realTarget = fs.realpathSync(candidate);
         const rel = path.relative(realRoot, realTarget);
         const inside = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-        if (inside) return realTarget;
+        if (inside) {
+          return { absPath: realTarget, sizeBytes: stat.size };
+        }
       } catch {
         continue;
       }
     }
     return undefined;
+  }
+
+  /**
+   * 兼容保留的安全附件路径查找入口（默认 100 MB 上限）。
+   */
+  findSafeFileAttachment(
+    account: string,
+    rawTitle: string,
+    createTime: number,
+    maxBytes = 100 * 1024 * 1024,
+  ): string | undefined {
+    const located = this.locateFileAttachment(account, rawTitle, createTime);
+    if (located === undefined) return undefined;
+    if (maxBytes > 0 && located.sizeBytes > maxBytes) return undefined;
+
+    return located.absPath;
   }
 
   /**
@@ -696,7 +898,13 @@ export class Reader {
   ): Promise<ImageFile> {
     const ctx = this.getAccountContext(account);
     const safeSource = source.replace(/[^\w-]/gu, '_');
-    const cacheFile = path.join(ctx.stateAccountDir, 'media', 'jmbots', `${safeSource}_${String(localId)}.img`);
+    const existingStateImg = path.join(ctx.stateAccountDir, 'media', 'jmbots', `${safeSource}_${String(localId)}.img`);
+    const existingStateMeta = `${existingStateImg}.mime`;
+    if (fs.existsSync(existingStateImg) && fs.existsSync(existingStateMeta)) {
+      return { file: existingStateImg, mime: fs.readFileSync(existingStateMeta, 'utf8').trim() || 'image/jpeg' };
+    }
+
+    const cacheFile = path.join(ctx.mediaCacheDir, 'jmbots', `${safeSource}_${String(localId)}.img`);
     const metaFile = `${cacheFile}.mime`;
     if (fs.existsSync(cacheFile) && fs.existsSync(metaFile)) {
       return { file: cacheFile, mime: fs.readFileSync(metaFile, 'utf8').trim() || 'image/jpeg' };
@@ -730,7 +938,16 @@ export class Reader {
     if (path.basename(ctx.dbDir) === 'db_storage') {
       wechatAccountRoot = path.dirname(ctx.dbDir);
     }
-    const keyFilePath = path.join(ctx.stateAccountDir, 'media', 'image_key.json');
+    const stateKeyFile = path.join(ctx.stateAccountDir, 'media', 'image_key.json');
+    const keyFilePath = path.join(ctx.mediaCacheDir, 'image_key.json');
+    if (stateKeyFile !== keyFilePath && fs.existsSync(stateKeyFile) && !fs.existsSync(keyFilePath)) {
+      try {
+        fs.mkdirSync(ctx.mediaCacheDir, { recursive: true });
+        fs.copyFileSync(stateKeyFile, keyFilePath);
+      } catch {
+        // 缓存预热拷贝失败不阻断后续自动重扫密钥
+      }
+    }
     const accountName = ctx.wxid || ctx.folder;
 
     //M 纯 Bun 解密 3.x XOR 或 4.x V1/V2 .dat 图片并持久化已验真的图片密钥。
@@ -972,4 +1189,224 @@ export function connectAccountsToData(
 
   fs.writeFileSync(accountsFile, yaml.stringify(persisted), { encoding: 'utf8', mode: 0o600 });
   return report;
+}
+
+
+/**
+ * 纯只读扫描 `--data` 已登记账号与可选 `--root`（`xwechat_files`）下的全部微信账号元信息，
+ * 解析 `accountId`、`wxid`、`nickname`（优先配置，为空时仅在已有密钥下只读 `contact.db` 补齐）、`hasKey`、`active`、`dbReady`。
+ * 严禁修改磁盘配置，严禁读取任何聊天消息正文，且返回结构不含宿主机绝对路径。
+ */
+export function scanAccountsInData(
+  dataDir: string,
+  explicitRoot?: string,
+  engineDir?: string,
+  explicitCacheDir?: string,
+): ScannedAccountInfo[] {
+  const candidates = [
+    dataDir,
+    path.join(dataDir, 'runtime', 'data'),
+    path.join(engineDir ?? dataDir, 'runtime', 'data'),
+  ];
+  let stateDir = dataDir;
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'accounts.yaml'))) {
+      stateDir = candidate;
+      break;
+    }
+  }
+
+  const byId = new Map<string, {
+    id: string;
+    folder: string;
+    wxid: string;
+    nickname: string;
+    status: string;
+    dbDir: string;
+  }>();
+
+  const knownRoots = new Set<string>();
+  const accountsFile = path.join(stateDir, 'accounts.yaml');
+  if (fs.existsSync(accountsFile)) {
+    try {
+      const parsed = yaml.parse(fs.readFileSync(accountsFile, 'utf8')) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item !== 'object' || item === null) continue;
+
+          const rec = item as StoredAccountRecord;
+          if (typeof rec.id !== 'string' || rec.id.trim() === '') continue;
+
+          const id = rec.id.trim();
+          let dbDir = '';
+          if (typeof rec.db_dir === 'string') {
+            dbDir = rec.db_dir;
+          }
+          const cfgPath = path.join(stateDir, id, 'config.json');
+          if (dbDir === '' && fs.existsSync(cfgPath)) {
+            try {
+              const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { db_dir?: unknown };
+              if (typeof cfg.db_dir === 'string') {
+                dbDir = cfg.db_dir;
+              }
+            } catch {
+              dbDir = '';
+            }
+          }
+          if (dbDir !== '' && path.basename(dbDir) === 'db_storage') {
+            const parentXwechat = path.dirname(path.dirname(path.resolve(dbDir)));
+            if (fs.statSync(parentXwechat, { throwIfNoEntry: false })?.isDirectory()) {
+              knownRoots.add(parentXwechat);
+            }
+          }
+          let inferredFolder = '';
+          if (dbDir !== '') {
+            inferredFolder = path.basename(path.dirname(path.resolve(dbDir)));
+          }
+          const folder = String(rec.folder ?? inferredFolder);
+          const wxid = String(rec.wxid ?? '') || inferWxidFromFolder(folder);
+          byId.set(id, {
+            id,
+            folder,
+            wxid,
+            nickname: String(rec.nickname ?? ''),
+            status: String(rec.status ?? ''),
+            dbDir,
+          });
+        }
+      }
+    } catch {
+      // 配置文件损坏时安全回退为空表。
+    }
+  }
+
+  if (explicitRoot !== undefined && explicitRoot.trim() !== '') {
+    knownRoots.add(path.resolve(explicitRoot));
+  }
+
+  //M 合并显式 --root 或同源 xwechat_files 下的未连接兄弟账号目录（按 id、dbDir 与 folder 三重去重，不写盘）。
+  for (const rootFolder of knownRoots) {
+    for (const disc of keyScanModule.discoverAccountDbDirs(rootFolder)) {
+      const resolvedDiscDb = path.resolve(disc.dbDir);
+      let existing = byId.get(disc.id);
+      if (existing === undefined) {
+        for (const candidate of byId.values()) {
+          const sameDbDir = candidate.dbDir !== '' && path.resolve(candidate.dbDir) === resolvedDiscDb;
+          const sameFolder = candidate.folder !== '' && candidate.folder === disc.folder;
+          if (sameDbDir || sameFolder) {
+            existing = candidate;
+            break;
+          }
+        }
+      }
+      if (existing === undefined) {
+        byId.set(disc.id, {
+          id: disc.id,
+          folder: disc.folder,
+          wxid: inferWxidFromFolder(disc.folder),
+          nickname: '',
+          status: 'discovered',
+          dbDir: disc.dbDir,
+        });
+        continue;
+      }
+      if (existing.dbDir === '') {
+        existing.dbDir = disc.dbDir;
+      }
+    }
+  }
+
+  const results: ScannedAccountInfo[] = [];
+  for (const entry of byId.values()) {
+    const keysPath = path.join(stateDir, entry.id, 'all_keys.json');
+    let allKeys: cacheModule.KeyTable | undefined;
+    let hasKey = false;
+    if (fs.statSync(keysPath, { throwIfNoEntry: false })?.isFile()) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(keysPath, 'utf8')) as unknown;
+        if (typeof parsed === 'object' && parsed !== null) {
+          const table = parsed as cacheModule.KeyTable;
+          const validCount = Object.keys(table).filter((k) => !k.startsWith('_')).length;
+          if (validCount > 0) {
+            allKeys = table;
+            hasKey = true;
+          }
+        }
+      } catch {
+        hasKey = false;
+      }
+    }
+
+    let dbStat: fs.Stats | undefined;
+    if (entry.dbDir !== '') {
+      dbStat = fs.statSync(entry.dbDir, { throwIfNoEntry: false });
+    }
+    const dbDirExists = dbStat?.isDirectory() === true;
+    const coreDbPresent = dbDirExists && (
+      fs.existsSync(path.join(entry.dbDir, 'session', 'session.db'))
+      || fs.existsSync(path.join(entry.dbDir, 'contact', 'contact.db'))
+      || fs.existsSync(path.join(entry.dbDir, 'message', 'message_0.db'))
+    );
+    const dbReady = hasKey && coreDbPresent;
+    const active = entry.status === 'connected' && hasKey;
+
+    let nickname = entry.nickname;
+    if (nickname === '' && dbReady && allKeys !== undefined && entry.wxid !== '') {
+      try {
+        let baseCache = defaultTempCacheDir(dataDir);
+        if (explicitCacheDir !== undefined && explicitCacheDir.trim() !== '') {
+          baseCache = path.resolve(explicitCacheDir);
+        }
+        const scanCacheRoot = ensureWritableCacheSubdir(
+          path.join(baseCache, 'db_cache', entry.id),
+          dataDir,
+          path.join('db_cache', entry.id),
+        );
+        const tempDb = new wechatDbModule.WechatDb({
+          dbDir: entry.dbDir,
+          allKeys,
+          cacheRoot: scanCacheRoot,
+          selfWxid: entry.wxid,
+        });
+        const selfContact = tempDb.loadContactEntries().get(entry.wxid);
+        if (selfContact !== undefined) {
+          nickname = selfContact.nickName || selfContact.displayName;
+        }
+      } catch {
+        nickname = '';
+      }
+    }
+
+    const cleanNick = nickname
+      .replace(/[\x00-\x1f<>:"/\\|?*\s]+/gu, '_')
+      .replace(/^[._]+|[._]+$/gu, '')
+      .slice(0, 40);
+    let safeFolderName = entry.id;
+    if (cleanNick !== '') {
+      safeFolderName = `${cleanNick}_${entry.id}`;
+    }
+
+    results.push({
+      accountId: entry.id,
+      wxid: entry.wxid,
+      nickname,
+      safeFolderName,
+      hasKey,
+      active,
+      dbReady,
+    });
+  }
+
+  results.sort((left, right) => {
+    if (left.active !== right.active) {
+      if (left.active) return -1;
+      return 1;
+    }
+    if (left.hasKey !== right.hasKey) {
+      if (left.hasKey) return -1;
+      return 1;
+    }
+    return left.accountId.localeCompare(right.accountId);
+  });
+  return results;
 }

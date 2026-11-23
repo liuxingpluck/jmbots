@@ -17,8 +17,8 @@ export const WCDB_CT_ZSTD = 4;
 /** Zstandard 帧头 4 字节魔数（0x28 B5 2F FD），用于 SessionTable.summary 兜底识别压缩帧。 */
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
-/** 合法的微信消息分表名格式：Msg_ 加 32 位小写 MD5。 */
-const SAFE_MSG_TABLE_RE = /^Msg_[0-9a-f]{32}$/u;
+/** 合法的微信消息分表名格式：Msg_ 加 32 位十六进制 MD5。 */
+const SAFE_MSG_TABLE_RE = /^Msg_[0-9a-fA-F]{32}$/iu;
 
 /** 共享的宽松 UTF-8 解码器（遇到损坏字节用替换符，不抛异常中断整批同步）。 */
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: false });
@@ -38,6 +38,46 @@ export interface WechatDbOptions {
   selfWxid?: string;
   /** 群聊正文推断 @我 时额外匹配的群昵称或别名列表。 */
   atNames?: readonly string[];
+}
+
+/** 微信 4.x `contact.flag` 中表示「置顶聊天」（MM_CONTACTFLAG_TOPCONTACT = 1 << 11）的固定位掩码。 */
+const CONTACT_FLAG_TOP = 2048n;
+
+/** 仅当 `SessionTable.sort_timestamp` 携带高于 32 位时间戳的高位标志（>= 2^32）时才视作置顶，排除草稿/同步造成的普通秒差。 */
+const HIGH_PINNED_SORT_TS = 4_294_967_296;
+
+/** 联系人表完整元数据条目（不含任何聊天记录正文）。 */
+export interface ContactEntry {
+  /** 原始 username（如 wxid_xxx 或 xxx@chatroom）。 */
+  username: string;
+  /** 微信昵称或群名称。 */
+  nickName: string;
+  /** 备注名。 */
+  remark: string;
+  /** 最终展示名（备注 > 昵称 > username）。 */
+  displayName: string;
+  /** `contact.flag` 第 11 位（`0x800`）是否标记为置顶联系人/置顶群。 */
+  pinned: boolean;
+}
+
+/** 供 CLI `list-chats` 输出的纯会话元数据条目（仅读 session.db + contact.db，绝不读任何消息表正文或摘要）。 */
+export interface SessionMetaItem {
+  /** 会话原始 wxid 或群 @chatroom 标识。 */
+  id: string;
+  /** 展示名（备注优先，其次群名/昵称，兜底 id）。 */
+  displayName: string;
+  /** 昵称或群名。 */
+  nickName: string;
+  /** 联系人备注名。 */
+  remark: string;
+  /** 会话类型：私聊 p2p 或群聊 group。 */
+  chatType: 'p2p' | 'group';
+  /** 是否在微信中置顶（📌）。 */
+  pinned: boolean;
+  /** 最近活跃秒级时间戳。 */
+  lastTimestamp: number;
+  /** 最近活跃 ISO 8601 时间字符串。 */
+  lastTimeIso: string | null;
 }
 
 /** 最近会话条目（与现有 Reader.ChatItem 完全兼容）。 */
@@ -186,22 +226,43 @@ export function getMessageTableName(username: string): string {
 
 
 /**
- * 从 all_keys 映射中筛选全部消息分片库相对路径（`message/message_N.db`），按正斜杠路径升序返回。
+ * 从 all_keys 映射与可选磁盘 `message/` 目录中筛选全部消息分片库相对路径（`message_*.db` 与 `biz_message_*.db`），按正斜杠路径升序返回。
  * @param allKeys 账号密钥表。
+ * @param dbDir 可选微信 `db_storage` 目录，用于一并发现 `--connect` 之后新建的消息分库。
  */
-export function findMessageDbKeys(allKeys: cacheModule.KeyTable): string[] {
+export function findMessageDbKeys(allKeys: cacheModule.KeyTable, dbDir?: string): string[] {
   const matched = new Set<string>();
+  const msgRelRe = /^message\/(?:message|biz_message)(?:_\d+)?\.db$/iu;
   for (const rawKey of Object.keys(allKeys)) {
     if (rawKey.startsWith('_')) {
       continue;
     }
-    //M 归一化斜杠后匹配 message/message_数字.db。
+    //M 归一化斜杠后匹配 message/message_数字.db 或 biz_message_数字.db。
     const normalized = cacheModule.normalizeDbRelPath(rawKey);
     if (normalized === undefined) {
       continue;
     }
-    if (/^message\/message_\d+\.db$/u.test(normalized)) {
+    if (msgRelRe.test(normalized)) {
       matched.add(normalized);
+    }
+  }
+
+  if (dbDir !== undefined && dbDir !== '') {
+    const msgFolder = path.join(dbDir, 'message');
+    if (fs.statSync(msgFolder, { throwIfNoEntry: false })?.isDirectory()) {
+      try {
+        for (const entry of fs.readdirSync(msgFolder, { withFileTypes: true })) {
+          if (!entry.isFile()) {
+            continue;
+          }
+          const relCandidate = `message/${entry.name}`;
+          if (msgRelRe.test(relCandidate)) {
+            matched.add(relCandidate);
+          }
+        }
+      } catch {
+        // 目录只读遍历异常时不阻断已知密钥分片读取。
+      }
     }
   }
   return [...matched].sort();
@@ -371,12 +432,32 @@ export class WechatDb {
    * @param options 账号 db_storage 路径、密钥表、缓存根目录与身份附加项。
    */
   constructor(options: WechatDbOptions) {
-    //M 初始化增量解密缓存与消息分库清单。
+    //M 初始化增量解密缓存与消息分库清单（同时发现磁盘上新建的消息分库）。
     this.cache = new cacheModule.DbCache(options.allKeys, options.dbDir, options.cacheRoot);
-    this.msgDbKeys = findMessageDbKeys(options.allKeys);
+    this.msgDbKeys = findMessageDbKeys(options.allKeys, options.dbDir);
     this.decryptedDir = options.decryptedDir;
     this.configuredSelfWxid = (options.selfWxid ?? '').trim();
     this.extraAtNames = options.atNames ?? [];
+  }
+
+  /**
+   * 检查磁盘上存在但因缺少最新密钥而无法解密的消息分片相对路径（如 `--connect` 后新生成的 `message/message_4.db`）。
+   */
+  findUnkeyedMessageShards(): string[] {
+    const unkeyed: string[] = [];
+    for (const relKey of this.msgDbKeys) {
+      const nativeRel = relKey.replaceAll('/', path.sep);
+      const absDb = path.join(this.cache.dbDir, nativeRel);
+      const stat = fs.statSync(absDb, { throwIfNoEntry: false });
+      if (!stat?.isFile() || stat.size < 4096) {
+        continue;
+      }
+      const replica = this.cache.getDecryptedPath(relKey);
+      if (replica === undefined) {
+        unkeyed.push(relKey);
+      }
+    }
+    return unkeyed;
   }
 
   /**
@@ -454,6 +535,117 @@ export class WechatDb {
         time: timeLabel,
       });
     }
+    return items;
+  }
+
+  /**
+   * 仅只读扫描 `session.db` 与 `contact.db` 返回全部会话元数据（绝不读取 `SessionTable.summary` 或任何 `message_N.db` 正文）。
+   * 排序规则：置顶会话（`pinned === true`）排最前，同组内按 `lastTimestamp` 倒序，时间戳相同时按 `id` 升序。
+   */
+  listChatMetadata(): SessionMetaItem[] {
+    const sessionReplica = this.cache.getDecryptedPath('session/session.db');
+    if (sessionReplica === undefined) {
+      throw new Error('无法解密 session.db');
+    }
+
+    const contacts = this.loadContactEntries();
+    const PIN_COLUMNS = ['is_pinned', 'pinned', 'is_top', 'top_flag', 'placed_to_top'] as const;
+
+    const rawRows = withReadonlyDb(sessionReplica, (conn) => {
+      const tableCols = new Set(
+        conn.query<{ name: string }, []>('PRAGMA table_info(SessionTable)')
+          .all()
+          .map((col) => col.name.toLowerCase()),
+      );
+
+      const selectCols = ['username', 'last_timestamp'];
+      const presentPinCols: string[] = [];
+      for (const pinCol of PIN_COLUMNS) {
+        if (tableCols.has(pinCol)) {
+          selectCols.push(pinCol);
+          presentPinCols.push(pinCol);
+        }
+      }
+      const hasSortTimestamp = tableCols.has('sort_timestamp');
+      if (hasSortTimestamp) {
+        selectCols.push('sort_timestamp');
+      }
+
+      const sql = `SELECT ${selectCols.join(', ')} FROM SessionTable WHERE username != '' AND last_timestamp > 0`;
+      const rows = conn.query<Record<string, unknown>, []>(sql).all();
+      return { rows, presentPinCols, hasSortTimestamp };
+    });
+
+    const PSEUDO_SESSIONS = new Set([
+      'brandsessionholder',
+      'brandservicesessionholder',
+      'officialaccounts',
+      'notifymessage',
+      'notification_messages',
+      'chatroom_session_box',
+      '@placeholder_foldgroup',
+    ]);
+
+    const items: SessionMetaItem[] = [];
+    for (const row of rawRows.rows) {
+      let username = '';
+      if (typeof row['username'] === 'string') {
+        username = row['username'].trim();
+      }
+      if (username === '' || PSEUDO_SESSIONS.has(username.toLowerCase()) || username.startsWith('holder_')) {
+        continue;
+      }
+      const lastTimestamp = Math.max(0, Math.trunc(Number(row['last_timestamp'] ?? 0)));
+      const contact = contacts.get(username);
+      let pinned = contact?.pinned === true;
+      if (!pinned) {
+        for (const pinCol of rawRows.presentPinCols) {
+          if (Number(row[pinCol] ?? 0) > 0) {
+            pinned = true;
+            break;
+          }
+        }
+      }
+      if (!pinned && rawRows.hasSortTimestamp) {
+        const sortTs = Number(row['sort_timestamp'] ?? 0);
+        if (Number.isFinite(sortTs) && sortTs >= HIGH_PINNED_SORT_TS) {
+          pinned = true;
+        }
+      }
+      const nickName = contact?.nickName ?? '';
+      const remark = contact?.remark ?? '';
+      const displayName = contact?.displayName ?? username;
+      let chatType: 'p2p' | 'group' = 'p2p';
+      if (username.includes('@chatroom')) {
+        chatType = 'group';
+      }
+      let lastTimeIso: string | null = null;
+      if (lastTimestamp > 0) {
+        lastTimeIso = new Date(lastTimestamp * 1000).toISOString();
+      }
+
+      items.push({
+        id: username,
+        displayName,
+        nickName,
+        remark,
+        chatType,
+        pinned,
+        lastTimestamp,
+        lastTimeIso,
+      });
+    }
+
+    items.sort((left, right) => {
+      if (left.pinned !== right.pinned) {
+        if (left.pinned) return -1;
+        return 1;
+      }
+      if (left.lastTimestamp !== right.lastTimestamp) {
+        return right.lastTimestamp - left.lastTimestamp;
+      }
+      return left.id.localeCompare(right.id);
+    });
     return items;
   }
 
@@ -583,10 +775,10 @@ export class WechatDb {
   }
 
   /**
-   * 读取 contact.db 构建 `username -> 显示名（备注 > 昵称 > username）` 字典。
-   * contact.db 缺席时返回空 Map，不阻断只靠 wxid 的消息读取。
+   * 读取 contact.db 构建 `username -> 完整联系人信息（nickName / remark / displayName）` 字典。
+   * contact.db 缺席时返回空 Map，绝不访问任何消息分片。
    */
-  loadContactNames(): Map<string, string> {
+  loadContactEntries(): Map<string, ContactEntry> {
     let contactPath: string | undefined;
     if (this.decryptedDir !== undefined) {
       const preDecrypted = path.join(this.decryptedDir, 'contact', 'contact.db');
@@ -601,27 +793,62 @@ export class WechatDb {
     if (contactPath === undefined) return new Map();
 
     try {
-      //M 只读扫描联系人表，按备注优先于昵称拼装展示名。
       return withReadonlyDb(contactPath, (conn) => {
-        const map = new Map<string, string>();
-        const sql = 'SELECT username, nick_name, remark FROM contact';
+        const map = new Map<string, ContactEntry>();
+        const colNames = new Set(
+          conn.query<{ name: string }, []>('PRAGMA table_info(contact)')
+            .all()
+            .map((c) => c.name.toLowerCase()),
+        );
+        let selectCols = 'username, nick_name, remark';
+        const hasFlagCol = colNames.has('flag');
+        if (hasFlagCol) {
+          selectCols += ', flag';
+        }
         const rows = conn.query<{
           username: string | null;
           nick_name: string | null;
           remark: string | null;
-        }, []>(sql).all();
+          flag?: number | bigint | null;
+        }, []>(`SELECT ${selectCols} FROM contact`).all();
         for (const row of rows) {
           if (!row.username) {
             continue;
           }
-          const display = row.remark || row.nick_name || row.username;
-          map.set(row.username, display);
+          const nickName = row.nick_name ?? '';
+          const remark = row.remark ?? '';
+          const displayName = remark || nickName || row.username;
+          let isPinned = false;
+          if (hasFlagCol && row.flag !== null && row.flag !== undefined) {
+            const flagBig = BigInt(Math.trunc(Number(row.flag)));
+            isPinned = (flagBig & CONTACT_FLAG_TOP) !== 0n;
+          }
+          map.set(row.username, {
+            username: row.username,
+            nickName,
+            remark,
+            displayName,
+            pinned: isPinned,
+          });
         }
         return map;
       });
     } catch {
       return new Map();
     }
+  }
+
+  /**
+   * 读取 contact.db 构建 `username -> 显示名（备注 > 昵称 > username）` 字典。
+   * contact.db 缺席时返回空 Map，不阻断只靠 wxid 的消息读取。
+   */
+  loadContactNames(): Map<string, string> {
+    const entries = this.loadContactEntries();
+    const map = new Map<string, string>();
+    for (const [username, entry] of entries) {
+      map.set(username, entry.displayName);
+    }
+    return map;
   }
 
   /**
@@ -715,20 +942,23 @@ export class WechatDb {
       }
       const sourceName = path.posix.basename(relKey);
       try {
-        //M 检查分片内是否存在这张会话表，并顺带读取最大时间排序。
+        //M 检查分片内是否存在这张会话表（忽略 MD5 大小写差异），并顺带读取最大时间排序。
         const hit = withReadonlyDb(replicaPath, (conn): ShardTable | undefined => {
-          const exists = conn
-            .query<{ ok: number }, [string]>("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?")
+          const found = conn
+            .query<{ name: string }, [string]>(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = lower(?) LIMIT 1",
+            )
             .get(tableName);
-          if (exists === null) return undefined;
+          if (found === null || !SAFE_MSG_TABLE_RE.test(found.name)) return undefined;
 
+          const actualTable = found.name;
           const maxRow = conn
-            .query<{ max_ct: number | null }, []>(`SELECT MAX(create_time) AS max_ct FROM [${tableName}]`)
+            .query<{ max_ct: number | null }, []>(`SELECT MAX(create_time) AS max_ct FROM [${actualTable}]`)
             .get();
           return {
             replicaPath,
             sourceName,
-            tableName,
+            tableName: actualTable,
             maxCreateTime: maxRow?.max_ct ?? 0,
           };
         });

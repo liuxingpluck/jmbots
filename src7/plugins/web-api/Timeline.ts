@@ -444,7 +444,7 @@ export class Timeline {
 
   /** 渠道和对方的展示标签，地址仍由各渠道维护。 */
   peer(record: MessageRecord): string {
-    if (record.channel === 'http') return '网页';
+    if (record.channel === 'http') return formatHttpPeer(record);
 
     if (record.channel === 'voice') return '语音';
 
@@ -827,9 +827,9 @@ export class Timeline {
       owner.updatedAt = Math.max(owner.updatedAt, group.last_at);
     }
 
-    //M 网页总有“网页”这一项：自己还没说过话也能选中它发话。
+    //M 网页总有“网页”这一项：即使该机器人已收过外部访客 peer 聊天，本机网页入口也始终保留。
     const web = channels.find((item) => item.id === 'http');
-    if (web !== undefined && web.chats.length === 0) {
+    if (web !== undefined && !web.chats.some((item) => item.id === 'http:本机')) {
       web.chats.push({ id: 'http:本机', label: '网页', count: 0, updatedAt: 0 });
     }
     return channels;
@@ -863,4 +863,21 @@ export class Timeline {
       chat: raw.chat,
     };
   }
+}
+
+
+/**
+ * 生成 `http` 渠道收件记录的对端展示标签：携带外部访客 `address` 时显示 `访客·<名字>`，本机网页显示 `网页`。
+ */
+function formatHttpPeer(record: MessageRecord): string {
+  if (record.address !== null) {
+    try {
+      const parsed = JSON.parse(record.address) as unknown;
+      const guestName = utils.getStringField(parsed, 'name') || utils.getStringField(parsed, 'peerId');
+      if (guestName !== '') return `访客·${guestName}`;
+    } catch {
+      // 旧地址损坏时回退默认标签。
+    }
+  }
+  return '网页';
 }

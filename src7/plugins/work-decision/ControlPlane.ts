@@ -1,12 +1,16 @@
 /**
- * 多 AI 协同控制面任务存储与 HTTP 路由实现。
+ * 多 AI 协同控制面任务与滴答视图原子存储与 HTTP 路由实现。
  * 数据独立持久化在 `<runtime>/control-plane-tasks.json`（走防杀毒容错原子写入），
- * 提供标准多 AI HTTP REST 接口：
- * - GET    /api/work-decision/tasks             列出任务、各状态计数、活跃占坑锁（activeLocks）与可立即派发队列（dispatchableIds）
- * - POST   /api/work-decision/tasks             创建任务卡（running 时检查占坑锁冲突）
- * - PATCH  /api/work-decision/tasks/:id         更新任务状态/优先级/负责人/验收标准/占坑锁（撞锁回 409）
- * - POST   /api/work-decision/tasks/:id/events  追加原则更新/需求变更/心跳事件并自动刷新 lastHeartbeatAt
- * - DELETE /api/work-decision/tasks/:id         删除任务卡
+ * 提供控制面任务与滴答视图共用 REST 接口：
+ * - GET    /api/work-decision/tasks             列出任务、清单、各状态计数、活跃占坑锁与可派发队列
+ * - POST   /api/work-decision/tasks             创建任务卡（未传 status 默认 ready，running 检查撞锁）
+ * - PATCH  /api/work-decision/tasks/:id         局部更新任务卡（支持 PUT，撞锁回 409）
+ * - POST   /api/work-decision/tasks/:id/events  追加原则更新/需求变更/心跳事件并刷新 lastHeartbeatAt
+ * - DELETE /api/work-decision/tasks/:id         硬删除任务卡
+ * - POST   /api/work-decision/tasks/:id/checkin 切换习惯打卡日期并返回最新任务
+ * - POST   /api/work-decision/lists             新建自定义清单（同名幂等返回）
+ * - PATCH  /api/work-decision/lists/:id         更新清单并同步改名后任务的 list 字段
+ * - DELETE /api/work-decision/lists/:id         删除清单并将旗下任务归回收集箱（inbox 不可删）
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -19,15 +23,12 @@ import * as textModule from '../../utils/Text.ts';
 import * as types from './Types.ts';
 
 
-/** 磁盘持久化 JSON 结构。 */
-interface PersistedControlBoard {
-  version: 1;
-  revision: number;
-  tasks: types.ControlTask[];
-}
-
 /** 占坑互斥锁冲突错误（HTTP 409，附带结构化冲突列表）。 */
 export class LockConflictFailure extends failureModule.Failure {
+  /**
+   * @param message 给调用方看的占坑冲突说明。
+   * @param conflicts 逐个冲突标签的持有者明细。
+   */
   constructor(
     message: string,
     readonly conflicts: types.ControlTaskLockConflict[],
@@ -35,6 +36,17 @@ export class LockConflictFailure extends failureModule.Failure {
     super(409, message);
   }
 }
+
+/** 内置默认清单列表（旧文件缺失 lists 时兜底返回，首次写盘一并保存）。 */
+export const DEFAULT_TASK_LISTS: readonly types.TaskListDef[] = [
+  { id: 'inbox', name: '收集箱', icon: '📥', sortOrder: 0 },
+  { id: 'work', name: '工作任务', icon: '💼', sortOrder: 1 },
+  { id: 'memo', name: '个人备忘', icon: '🏡', sortOrder: 2 },
+  { id: 'wish', name: '心愿清单', icon: '🦄', sortOrder: 3 },
+  { id: 'shopping', name: '购物清单', icon: '📦', sortOrder: 4 },
+  { id: 'study', name: '学习安排', icon: '📖', sortOrder: 5 },
+  { id: 'fitness', name: '锻炼计划', icon: '🏃', sortOrder: 6 },
+];
 
 /** 状态展示排序权重（执行中与待拍板优先置顶）。 */
 const STATUS_ORDER: Record<types.ControlTaskStatus, number> = {
@@ -53,6 +65,7 @@ const PRIORITY_ORDER: Record<types.ControlTaskPriority, number> = {
   P2: 2,
 };
 
+/** 各状态对应的中文展示名。 */
 const STATUS_LABELS: Record<types.ControlTaskStatus, string> = {
   pending_decision: '待拍板',
   ready: '可直接干',
@@ -68,57 +81,133 @@ const MAX_EVENTS_PER_TASK = 500;
 const MAX_TEXT_CHARS = 4000;
 /** 占坑标签最大个数。 */
 const MAX_LOCK_TAGS = 24;
+/** 滴答标签最大个数。 */
+const MAX_TAGS = 50;
+/** 习惯打卡日期记录最大个数。 */
+const MAX_CHECKINS = 5000;
+/** YYYY-MM-DD 日期格式。 */
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+/** 自定义任务或清单 ID 格式。 */
+const ID_PATTERN = /^[\w.:-]+$/u;
+/** JS Date 可安全表示的最大毫秒时间戳。 */
+const MAX_TIMESTAMP_MS = 8.64e15;
 
 
-/** 生成可读且唯一的任务卡 ID。 */
-function generateTaskId(): string {
+/** 生成带前缀的唯一可读 ID。 */
+function generateId(prefix: string): string {
   const stamp = Date.now().toString(36);
   const rand = crypto.randomBytes(3).toString('hex');
-  return `ct-${stamp}-${rand}`;
+  return `${prefix}-${stamp}-${rand}`;
 }
 
 
-/** 校验并清洗占坑标签数组（去首尾空白、去空、保序去重）。 */
-function normalizeLockTags(raw: unknown): string[] {
-  if (raw === undefined) {
-    return [];
+/** 判断软删除时间戳是否有效（即任务处于垃圾桶中）。 */
+function isTrashedValue(value: number | null | undefined): boolean {
+  return value !== undefined && value !== null;
+}
+
+
+/** 判断任务当前是否处于垃圾桶软删除状态。 */
+function isTrashedTask(task: types.ControlTask): boolean {
+  //M 读取任务上的软删除时间戳。
+  return isTrashedValue(task.trashedAt);
+}
+
+
+/** 浅拷贝单个清单定义，防外部修改内存缓存。 */
+function cloneList(item: types.TaskListDef): types.TaskListDef {
+  return { ...item };
+}
+
+
+/** 复制一份默认清单数组。 */
+function cloneDefaultLists(): types.TaskListDef[] {
+  //M 按默认定义逐项浅拷贝，确保调用方拿不到共享常量引用。
+  return DEFAULT_TASK_LISTS.map(cloneList);
+}
+
+
+/** 按 sortOrder 升序复制一份清单数组。 */
+function sortLists(lists: readonly types.TaskListDef[]): types.TaskListDef[] {
+  //M 复制后按 sortOrder 排序，未写权重排在末尾。
+  return lists.map(cloneList).sort((a, b) => {
+    const orderA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    const orderB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+    return orderA - orderB;
+  });
+}
+
+
+/** 深拷贝任务对象，防外部意外篡改内存状态。 */
+function cloneTask(task: types.ControlTask): types.ControlTask {
+  const copy: types.ControlTask = {
+    ...task,
+    lockTags: [...task.lockTags],
+    events: task.events.map((ev) => ({ ...ev })),
+  };
+  if (task.tags !== undefined) {
+    copy.tags = [...task.tags];
   }
-  if (!Array.isArray(raw)) {
-    throw new failureModule.Failure(400, 'lockTags 要写成字符串数组');
+  if (task.checkIns !== undefined) {
+    copy.checkIns = [...task.checkIns];
   }
-  if (raw.length > MAX_LOCK_TAGS) {
-    throw new failureModule.Failure(400, `lockTags 最多 ${String(MAX_LOCK_TAGS)} 个`);
+  return copy;
+}
+
+
+/** 校验并清洗去重字符串数组（供 lockTags、tags、checkIns 共用）。 */
+function normalizeStringList(
+  raw: unknown,
+  field: string,
+  maxItems: number,
+  maxItemLen: number,
+): string[] {
+  //G 必须传入数组且条目数不超过上限。
+  const items = checksModule.checkArray(raw, field);
+  if (items.length > maxItems) {
+    //G 超出条目上限直接拒绝，防单条任务膨胀。
+    throw new failureModule.Failure(400, `${field} 最多 ${String(maxItems)} 个`);
   }
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const item of raw) {
+  for (const item of items) {
     if (typeof item !== 'string') {
-      throw new failureModule.Failure(400, 'lockTags 里的每一项都要是字符串');
+      //G 数组每一项都必须为字符串。
+      throw new failureModule.Failure(400, `${field} 里的每一项都要是字符串`);
     }
-    const tag = item.trim();
-    if (tag === '' || seen.has(tag)) {
+    //M 去掉首尾空白后跳过空串与重复项。
+    const val = item.trim();
+    if (val === '' || seen.has(val)) {
       continue;
     }
-    if (tag.length > 80) {
-      throw new failureModule.Failure(400, '单个 lockTag 最多 80 字');
+    if (val.length > maxItemLen) {
+      //G 单个条目超长报错，不静默截断。
+      throw new failureModule.Failure(400, `单个 ${field} 最多 ${String(maxItemLen)} 字`);
     }
-    seen.add(tag);
-    out.push(tag);
+    seen.add(val);
+    //M 按首次出现顺序收进清洗结果。
+    out.push(val);
   }
   return out;
 }
 
 
 /** 校验可选文本字段并限制长度。 */
-function checkOptionalString(raw: unknown, field: string, maxLen = MAX_TEXT_CHARS): string | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
+function checkOptionalString(
+  raw: unknown,
+  field: string,
+  maxLen = MAX_TEXT_CHARS,
+): string | undefined {
+  if (raw === undefined) return undefined;
+
   if (typeof raw !== 'string') {
+    //G 传入了非字符串类型立即返回 400。
     throw new failureModule.Failure(400, `${field} 要写成字符串`);
   }
+  //M 去掉首尾空白后核对长度上限。
   const trimmed = raw.trim();
   if (trimmed.length > maxLen) {
+    //G 超过字段最大允许长度直接拒收。
     throw new failureModule.Failure(400, `${field} 不能超过 ${String(maxLen)} 字`);
   }
   return trimmed;
@@ -127,40 +216,316 @@ function checkOptionalString(raw: unknown, field: string, maxLen = MAX_TEXT_CHAR
 
 /** 校验必填非空文本字段。 */
 function checkRequiredString(raw: unknown, field: string, maxLen = MAX_TEXT_CHARS): string {
+  //G 复用骨架非空检查并禁止纯空白文本。
   const val = checksModule.checkNonEmptyText(raw, field).trim();
   if (val === '') {
+    //G 仅含空白字符不视为有效内容。
     throw new failureModule.Failure(400, `${field} 不能为空白`);
   }
   if (val.length > maxLen) {
+    //G 超过字段最大允许长度直接拒收。
     throw new failureModule.Failure(400, `${field} 不能超过 ${String(maxLen)} 字`);
   }
   return val;
 }
 
 
-/** 深拷贝任务对象，防外部意外篡改内存状态。 */
-function cloneTask(task: types.ControlTask): types.ControlTask {
-  return {
-    ...task,
-    lockTags: [...task.lockTags],
-    events: task.events.map((ev) => ({ ...ev })),
-  };
+/** 校验允许传 null 清空的可选字符串字段（空串同样按 null 清空）。 */
+function checkNullableString(
+  raw: unknown,
+  field: string,
+  maxLen: number,
+): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+
+  if (typeof raw !== 'string') {
+    //G 非 null 时必须为字符串。
+    throw new failureModule.Failure(400, `${field} 要写成字符串或 null`);
+  }
+  //M 去首尾空白后，空串视为显式清空为 null。
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  if (trimmed.length > maxLen) {
+    //G 超过字段最大允许长度直接拒收。
+    throw new failureModule.Failure(400, `${field} 不能超过 ${String(maxLen)} 字`);
+  }
+  return trimmed;
+}
+
+
+/** 校验可选到期日或纪念日（YYYY-MM-DD 或 null 清空）。 */
+function checkDueDate(raw: unknown): string | null | undefined {
+  //G 先按可空字符串做类型和空串归一。
+  const value = checkNullableString(raw, 'dueDate', 32);
+  if (value === undefined || value === null) return value;
+
+  if (!DATE_PATTERN.test(value)) {
+    //G 非空日期必须严格满足 YYYY-MM-DD 格式。
+    throw new failureModule.Failure(400, 'dueDate 要写成 YYYY-MM-DD 格式');
+  }
+  return value;
+}
+
+
+/** 校验可选四象限字段（q1~q4 或 null 清空）。 */
+function checkQuadrant(raw: unknown): types.Quadrant | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === '') return null;
+
+  //G 非空值必须在 QUADRANTS 枚举内。
+  return checksModule.checkAllowedValue(raw, types.QUADRANTS, 'quadrant');
+}
+
+
+/** 校验父任务 ID（不能等于任务自身 id，传 null 可清空）。 */
+function checkParentId(raw: unknown, selfId: string): string | null | undefined {
+  //G 先按可空字符串解析并去空白。
+  const value = checkNullableString(raw, 'parentId', 120);
+  if (value === selfId) {
+    //G 禁止把任务设为自己的父节点形成自环。
+    throw new failureModule.Failure(400, 'parentId 不能等于任务自身 id');
+  }
+  return value;
+}
+
+
+/** 校验软删除毫秒时间戳（非负安全整数或 null 还原）。 */
+function checkTrashedAt(raw: unknown): number | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+
+  //G 统一用骨架 checkNumber 校验非负整型时间戳。
+  const rule = { integer: true, min: 0, max: MAX_TIMESTAMP_MS };
+  return checksModule.checkNumber(raw, 'trashedAt', rule);
+}
+
+
+/** 校验可选排序权重（任意有限数字）。 */
+function checkSortOrder(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+
+  //G 统一用骨架 checkNumber 校验有限数值。
+  return checksModule.checkNumber(raw, 'sortOrder');
+}
+
+
+/** 校验习惯打卡日期（缺省时取当天本地 YYYY-MM-DD）。 */
+function checkCheckinDate(raw: unknown): string {
+  if (raw === undefined) {
+    //M 未传 date 时按本地时钟格式化当天日期。
+    return textModule.formatLocalTime(Date.now(), 'date').slice(0, 10);
+  }
+  if (typeof raw !== 'string') {
+    //G 传入非字符串时拒绝打卡请求。
+    throw new failureModule.Failure(400, 'date 要写成 YYYY-MM-DD 格式');
+  }
+  //M 校验去掉首尾空白后满足 YYYY-MM-DD。
+  const trimmed = raw.trim();
+  if (!DATE_PATTERN.test(trimmed)) {
+    //G 拒绝不符合日期格式的输入。
+    throw new failureModule.Failure(400, 'date 要写成 YYYY-MM-DD 格式');
+  }
+  return trimmed;
+}
+
+
+/** 把请求体中存在的滴答原子扩展字段校验后写入目标任务对象。 */
+function applyExtendedFields(
+  body: Record<string, unknown>,
+  taskId: string,
+  target: types.ControlTask,
+): void {
+  if ('kind' in body && body['kind'] !== undefined) {
+    //G 校验任务种类是否合法。
+    target.kind = checksModule.checkAllowedValue(body['kind'], types.TASK_KINDS, 'kind');
+  }
+  if ('list' in body && body['list'] !== undefined) {
+    //M 空串表示清空自定义清单名，回退默认工作任务视角。
+    const listName = checkOptionalString(body['list'], 'list', 80);
+    if (listName === '') {
+      delete target.list;
+    }
+    if (listName !== undefined && listName !== '') {
+      target.list = listName;
+    }
+  }
+  if ('parentId' in body && body['parentId'] !== undefined) {
+    //G 校验父任务 ID（支持传 null 清空，禁止自指）。
+    target.parentId = checkParentId(body['parentId'], taskId);
+  }
+  if ('quadrant' in body && body['quadrant'] !== undefined) {
+    //G 校验四象限键值（支持传 null 清空）。
+    target.quadrant = checkQuadrant(body['quadrant']);
+  }
+  if ('dueDate' in body && body['dueDate'] !== undefined) {
+    //G 校验 YYYY-MM-DD 日期格式（支持传 null 清空）。
+    target.dueDate = checkDueDate(body['dueDate']);
+  }
+  if ('countdownMode' in body && body['countdownMode'] !== undefined) {
+    //G 校验倒数/正数纪念日方向枚举。
+    target.countdownMode = checksModule.checkAllowedValue(
+      body['countdownMode'],
+      types.COUNTDOWN_MODES,
+      'countdownMode',
+    );
+  }
+  if ('icon' in body && body['icon'] !== undefined) {
+    //M 空串清空图标，非空保留 emoji 文本。
+    const iconVal = checkOptionalString(body['icon'], 'icon', 32);
+    if (iconVal === '') {
+      delete target.icon;
+    }
+    if (iconVal !== undefined && iconVal !== '') {
+      target.icon = iconVal;
+    }
+  }
+  if ('tags' in body && body['tags'] !== undefined) {
+    //M 清洗并去重任务标签数组。
+    target.tags = normalizeStringList(body['tags'], 'tags', MAX_TAGS, 60);
+  }
+  if ('checkIns' in body && body['checkIns'] !== undefined) {
+    //M 清洗并去重习惯打卡日期数组。
+    target.checkIns = normalizeStringList(body['checkIns'], 'checkIns', MAX_CHECKINS, 32);
+  }
+  if ('trashedAt' in body && body['trashedAt'] !== undefined) {
+    //G 校验软删除时间戳或传 null 还原。
+    target.trashedAt = checkTrashedAt(body['trashedAt']);
+  }
+  if ('sortOrder' in body && body['sortOrder'] !== undefined) {
+    //G 校验排序权重数值。
+    target.sortOrder = checkSortOrder(body['sortOrder']);
+  }
+}
+
+
+/** 判定磁盘读出的条目是否为合法 ControlTask 基础对象。 */
+function isValidTaskRecord(item: unknown): item is types.ControlTask {
+  if (typeof item !== 'object' || item === null) return false;
+
+  const rec = item as Record<string, unknown>;
+  return typeof rec['id'] === 'string' && typeof rec['title'] === 'string';
+}
+
+
+/** 判定磁盘读出的条目是否为合法 TaskListDef 清单定义。 */
+function isValidListRecord(item: unknown): item is types.TaskListDef {
+  if (typeof item !== 'object' || item === null) return false;
+
+  const rec = item as Record<string, unknown>;
+  if (typeof rec['id'] !== 'string' || rec['id'].trim() === '') return false;
+
+  return typeof rec['name'] === 'string' && rec['name'].trim() !== '';
+}
+
+
+/** 根据修改内容推算写入时间线的事件类型。 */
+function resolvePatchEventKind(
+  customKind: types.ControlTaskEventKind | undefined,
+  currentStatus: types.ControlTaskStatus,
+  nextStatus: types.ControlTaskStatus,
+  heartbeat: boolean,
+  changeCount: number,
+): types.ControlTaskEventKind {
+  if (customKind !== undefined) return customKind;
+  if (nextStatus === 'cancelled' && currentStatus !== 'cancelled') return 'cancelled';
+  if (nextStatus !== currentStatus) return 'status';
+  if (heartbeat && changeCount === 0) return 'heartbeat';
+
+  return 'scope_change';
+}
+
+
+/** 拼接局部更新的时间线描述文本。 */
+function formatPatchEventText(changes: readonly string[], reason: string): string {
+  //M 先按分号汇总字段变更明细。
+  const summary = changes.join('；');
+  if (reason !== '' && summary !== '') return `${summary}（${reason}）`;
+  if (reason !== '') return reason;
+  if (summary !== '') return summary;
+
+  return '上报心跳';
+}
+
+
+/** 汇总局部更新前后的人类可读变更列表（用于追加时间线）。 */
+function collectPatchChanges(current: types.ControlTask, updated: types.ControlTask): string[] {
+  const changes: string[] = [];
+  if (updated.status !== current.status) {
+    //M 记录任务状态流转。
+    changes.push(`状态 ${STATUS_LABELS[current.status]} → ${STATUS_LABELS[updated.status]}`);
+  }
+  if (updated.priority !== current.priority) {
+    //M 记录优先级变化。
+    changes.push(`优先级 ${current.priority} → ${updated.priority}`);
+  }
+  if (updated.owner !== current.owner) {
+    let fromOwner = '未认领';
+    if (current.owner !== '') {
+      fromOwner = current.owner;
+    }
+    let toOwner = '未认领';
+    if (updated.owner !== '') {
+      toOwner = updated.owner;
+    }
+    //M 记录认领负责人交接。
+    changes.push(`负责人 ${fromOwner} → ${toOwner}`);
+  }
+  if (JSON.stringify(updated.lockTags) !== JSON.stringify(current.lockTags)) {
+    let joined = '无';
+    if (updated.lockTags.length > 0) {
+      joined = updated.lockTags.join(', ');
+    }
+    //M 记录占坑互斥锁调整。
+    changes.push(`占坑锁 [${joined}]`);
+  }
+  if (updated.doneCriteria !== current.doneCriteria) {
+    //M 记录验收标准变动。
+    changes.push('更新验收标准');
+  }
+  if (updated.title !== current.title) {
+    //M 记录标题修改。
+    changes.push(`标题改为「${updated.title}」`);
+  }
+  if (updated.summary !== current.summary) {
+    //M 记录任务摘要更新。
+    changes.push('更新任务摘要');
+  }
+  //M 检查软删除移入/还原状态转换。
+  const wasTrashed = isTrashedTask(current);
+  const nowTrashed = isTrashedTask(updated);
+  if (!wasTrashed && nowTrashed) {
+    //M 记下移入垃圾桶事件。
+    changes.push('移入垃圾桶');
+  }
+  if (wasTrashed && !nowTrashed) {
+    //M 记下从垃圾桶还原事件。
+    changes.push('从垃圾桶还原');
+  }
+  return changes;
 }
 
 
 /**
- * 多 AI 控制面任务存储与互斥锁仲裁器。
+ * 多 AI 控制面任务与滴答视图存储仲裁器。
  */
 export class ControlPlaneStore {
+  /** 磁盘 JSON 文件绝对路径。 */
   private readonly filePath: string;
+  /** 控制面任务账本递增修订号。 */
   private revision = 0;
+  /** 内存中的全部任务卡列表。 */
   private tasks: types.ControlTask[] = [];
+  /** 内存中的任务清单定义列表（按 sortOrder 升序）。 */
+  private lists: types.TaskListDef[] = [];
 
   /**
-   * @param runtimeRoot 运行时根目录（即 jmbotsData），任务文件存为 `<runtimeRoot>/control-plane-tasks.json`。
+   * @param runtimeRoot 运行时根目录（即 jmbotsData），账本存为 `<runtimeRoot>/control-plane-tasks.json`。
    */
   constructor(runtimeRoot: string) {
     this.filePath = path.join(runtimeRoot, 'control-plane-tasks.json');
+    //M 初始化默认清单后从磁盘恢复任务与清单，老格式保持向后兼容。
+    this.lists = cloneDefaultLists();
     this.loadFromDisk();
   }
 
@@ -169,40 +534,65 @@ export class ControlPlaneStore {
     return this.revision;
   }
 
-  /** 启动时读取已有 JSON；不存在时初始化为空账本。 */
+  /** 返回按 sortOrder 排好序的清单浅拷贝数组。 */
+  private getClonedLists(): types.TaskListDef[] {
+    //M 统一排序并返回独立副本。
+    return sortLists(this.lists);
+  }
+
+  /** 启动时读取已有 JSON；兼容老文件缺失 lists 或新字段，读取失败按空面板兜底。 */
   private loadFromDisk(): void {
-    if (!fs.existsSync(this.filePath)) {
-      return;
-    }
+    if (!fs.existsSync(this.filePath)) return;
+
     try {
       const text = fs.readFileSync(this.filePath, 'utf8');
-      const parsed = JSON.parse(text) as Partial<PersistedControlBoard>;
-      if (typeof parsed.revision === 'number' && Number.isSafeInteger(parsed.revision) && parsed.revision >= 0) {
+      const parsed = JSON.parse(text) as Partial<types.ControlPlaneFile>;
+      if (
+        typeof parsed.revision === 'number'
+        && Number.isSafeInteger(parsed.revision)
+        && parsed.revision >= 0
+      ) {
         this.revision = parsed.revision;
       }
       if (Array.isArray(parsed.tasks)) {
-        this.tasks = parsed.tasks.filter((item): item is types.ControlTask => {
-          return typeof item === 'object' && item !== null && typeof item.id === 'string' && typeof item.title === 'string';
-        });
+        //M 原样保留老任务全部字段，只过滤损坏的非对象条目。
+        this.tasks = parsed.tasks.filter(isValidTaskRecord);
+      }
+      if (Array.isArray(parsed.lists)) {
+        //M 文件含有效清单时沿用文件定义，空数组或全非法时保持默认清单兜底。
+        const validLists = parsed.lists.filter(isValidListRecord);
+        if (validLists.length > 0) {
+          //M 按 sortOrder 排好后存入内存清单。
+          this.lists = sortLists(validLists);
+        }
       }
     } catch (error) {
-      console.error(`work-decision：读取 control-plane-tasks.json 失败，已按空面板启动：${textModule.getErrorMessage(error)}`);
+      //G 解析异常时打印错误并退回空面板与默认清单，不阻塞服务启动。
+      const msg = textModule.getErrorMessage(error);
+      console.error(`work-decision：读取 control-plane-tasks.json 失败，已按空面板启动：${msg}`);
     }
   }
 
-  /** 原子写盘（开启 fallback 防安全软件拦截 rename），写盘失败时由调用方回滚内存。 */
-  private saveToDisk(nextRevision: number, nextTasks: types.ControlTask[]): void {
-    const payload: PersistedControlBoard = {
+  /** 原子写盘（开启 fallback 防安全软件拦截 rename），写成功后提交内存状态。 */
+  private saveToDisk(
+    nextRevision: number,
+    nextTasks: types.ControlTask[],
+    nextLists: types.TaskListDef[] = this.lists,
+  ): void {
+    const payload: types.ControlPlaneFile = {
       version: 1,
       revision: nextRevision,
       tasks: nextTasks,
+      lists: nextLists,
     };
+    //M 原子写盘并同时持久化 tasks 与 lists（老文件首次写盘即补齐 lists）。
     filesModule.writeTextAtomic(this.filePath, `${JSON.stringify(payload, null, 2)}\n`, true);
     this.revision = nextRevision;
     this.tasks = nextTasks;
+    this.lists = nextLists;
   }
 
-  /** 计算全局各状态计数、活跃占坑锁与不撞锁的可立即派发 ready 任务 ID 列表。 */
+  /** 计算全局各状态计数、活跃占坑锁与不撞锁的可立即派发 ready 任务 ID 列表（均跳过垃圾桶任务）。 */
   computeBoardMeta(sourceTasks: readonly types.ControlTask[] = this.tasks): {
     counts: Record<types.ControlTaskStatus, number>;
     activeLocks: Record<string, types.ActiveLockHolder>;
@@ -219,6 +609,10 @@ export class ControlPlaneStore {
     const activeLocks: Record<string, types.ActiveLockHolder> = {};
 
     for (const task of sourceTasks) {
+      //G 已软删除进垃圾桶的任务不计入活跃状态计数与占坑锁。
+      if (isTrashedTask(task)) {
+        continue;
+      }
       counts[task.status] = (counts[task.status] ?? 0) + 1;
       if (task.status !== 'running') {
         continue;
@@ -234,40 +628,43 @@ export class ControlPlaneStore {
       }
     }
 
+    //M 仅从非垃圾桶的 ready 任务中筛选完全不撞活跃占坑锁的可派发队列。
     const readyCandidates = sourceTasks.filter((task) => {
-      if (task.status !== 'ready') {
-        return false;
-      }
+      if (isTrashedTask(task) || task.status !== 'ready') return false;
+
+      //M 确认全部占坑标签当前未被任何 running 任务占用。
       return task.lockTags.every((tag) => activeLocks[tag] === undefined);
     });
 
+    //M 按优先级（P0→P2）与创建时间升序排列可派发队列。
     readyCandidates.sort((a, b) => {
       const prioDiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-      if (prioDiff !== 0) {
-        return prioDiff;
-      }
+      if (prioDiff !== 0) return prioDiff;
+
       return a.createdAt - b.createdAt;
     });
 
     return {
       counts,
       activeLocks,
+      //M 提取排好序的任务 ID 供巡检环直接取单。
       dispatchableIds: readyCandidates.map((task) => task.id),
     };
   }
 
-  /** 检查目标 lockTags 是否与除 excludeTaskId 以外的其他 running 任务撞坑；冲突时抛 409。 */
+  /** 检查 lockTags 是否与除 excludeTaskId 外其他未进垃圾桶的 running 任务撞坑；冲突时抛 409。 */
   private assertNoLockConflict(lockTags: readonly string[], excludeTaskId?: string): void {
-    if (lockTags.length === 0) {
-      return;
-    }
+    if (lockTags.length === 0) return;
+
     const conflicts: types.ControlTaskLockConflict[] = [];
     for (const other of this.tasks) {
-      if (other.status !== 'running' || other.id === excludeTaskId) {
+      //G 仅对非垃圾桶的 running 任务执行 409 互斥锁校验。
+      if (other.status !== 'running' || isTrashedTask(other) || other.id === excludeTaskId) {
         continue;
       }
       for (const tag of lockTags) {
         if (other.lockTags.includes(tag)) {
+          //M 记下冲突的占坑标签及当前持有任务信息。
           conflicts.push({
             lockTag: tag,
             taskId: other.id,
@@ -277,49 +674,56 @@ export class ControlPlaneStore {
         }
       }
     }
-    if (conflicts.length === 0) {
-      return;
-    }
+    if (conflicts.length === 0) return;
+
+    //M 拼装冲突明细供人类与多 AI 快速排查占用方。
     const detail = conflicts
       .map((c) => {
-        const holder = c.owner !== '' ? c.owner : '未署名节点';
+        let holder = '未署名节点';
+        if (c.owner !== '') {
+          holder = c.owner;
+        }
         return `${c.lockTag}（正由 ${holder} 执行「${c.title}」[${c.taskId}] 占用）`;
       })
       .join('；');
+    //G 存在占坑冲突时抛出 409 异常，阻止双 AI 撞车。
     throw new LockConflictFailure(`占坑锁冲突，无法同时进入 running：${detail}`, conflicts);
   }
 
-  /** 查询任务列表，支持按 status（可逗号分隔）与 lockTag、owner 筛选。 */
+  /** 查询任务与清单快照，支持按 status（逗号分隔）、lockTag、owner 筛选。 */
   list(filter?: {
     statuses?: readonly types.ControlTaskStatus[];
     lockTag?: string;
     owner?: string;
-  }): types.ControlTaskListResponse {
+  }): types.ControlPlaneSnapshot {
+    //M 先基于全量任务计算全局计数、活跃锁与可派发队列。
     const meta = this.computeBoardMeta();
     let matched = this.tasks;
 
     if (filter?.statuses !== undefined && filter.statuses.length > 0) {
       const set = new Set(filter.statuses);
+      //M 按查询参数过滤目标状态任务。
       matched = matched.filter((task) => set.has(task.status));
     }
     if (filter?.lockTag !== undefined && filter.lockTag !== '') {
       const tag = filter.lockTag;
+      //M 按占坑标签过滤任务。
       matched = matched.filter((task) => task.lockTags.includes(tag));
     }
     if (filter?.owner !== undefined && filter.owner !== '') {
       const who = filter.owner;
+      //M 按负责人过滤任务。
       matched = matched.filter((task) => task.owner === who);
     }
 
+    //M 复制并按状态、优先级、最近修改时间降序整理返回列表。
     const sorted = matched.map(cloneTask).sort((a, b) => {
       const stDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-      if (stDiff !== 0) {
-        return stDiff;
-      }
+      if (stDiff !== 0) return stDiff;
+
       const prioDiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-      if (prioDiff !== 0) {
-        return prioDiff;
-      }
+      if (prioDiff !== 0) return prioDiff;
+
       return b.updatedAt - a.updatedAt;
     });
 
@@ -327,49 +731,68 @@ export class ControlPlaneStore {
       ok: true,
       revision: this.revision,
       tasks: sorted,
+      //M 返回排好序的清单定义列表供前端直接渲染。
+      lists: this.getClonedLists(),
       ...meta,
     };
   }
 
-  /** 创建一张新的控制面任务卡。 */
+  /** 创建一张新的控制面或滴答任务卡（未传 status 默认为 ready）。 */
   create(rawBody: unknown): {
+    revision: number;
     task: types.ControlTask;
     activeLocks: Record<string, types.ActiveLockHolder>;
     dispatchableIds: string[];
   } {
+    //G 入口校验请求体结构及可选自定义 ID 合法性。
     const body = checksModule.checkRecord(rawBody, '请求体');
     const customId = checkOptionalString(body['id'], 'id', 120);
     if (customId !== undefined && customId !== '') {
-      if (!/^[\w.:-]+$/u.test(customId)) {
+      if (!ID_PATTERN.test(customId)) {
+        //G 拒绝含路径或非法符号的自定义 ID。
         throw new failureModule.Failure(400, 'id 只能包含字母、数字、下划线、点、冒号或短横线');
       }
       if (this.tasks.some((item) => item.id === customId)) {
+        //G 任务 ID 冲突返回 409。
         throw new failureModule.Failure(409, `任务 ID 已存在：${customId}`);
       }
     }
-    const id = customId !== undefined && customId !== '' ? customId : generateTaskId();
+    //M 补齐任务 ID 并校验标题、摘要、状态、优先级、占坑锁与负责人字段。
+    let id = generateId('ct');
+    if (customId !== undefined && customId !== '') {
+      id = customId;
+    }
+    //M 校验标题与可选摘要。
     const title = checkRequiredString(body['title'], 'title', 200);
     const summary = checkOptionalString(body['summary'], 'summary') ?? '';
 
-    let status: types.ControlTaskStatus = 'pending_decision';
+    let status: types.ControlTaskStatus = 'ready';
     if (body['status'] !== undefined) {
+      //G 显式传入 status 时必须在允许的 6 种状态内。
       status = checksModule.checkAllowedValue(body['status'], types.CONTROL_TASK_STATUSES, 'status');
     }
 
     let priority: types.ControlTaskPriority = 'P1';
     if (body['priority'] !== undefined) {
-      priority = checksModule.checkAllowedValue(body['priority'], types.CONTROL_TASK_PRIORITIES, 'priority');
+      //G 显式传入 priority 时必须在 P0~P2 内。
+      priority = checksModule.checkAllowedValue(
+        body['priority'],
+        types.CONTROL_TASK_PRIORITIES,
+        'priority',
+      );
     }
 
-    const lockTags = normalizeLockTags(body['lockTags']);
+    let lockTags: string[] = [];
+    if (body['lockTags'] !== undefined) {
+      //M 清洗并去重占坑标签列表。
+      lockTags = normalizeStringList(body['lockTags'], 'lockTags', MAX_LOCK_TAGS, 80);
+    }
+    //M 校验负责人、验收标准、操作者与初始时间线说明。
     const owner = checkOptionalString(body['owner'], 'owner', 120) ?? '';
     const doneCriteria = checkOptionalString(body['doneCriteria'], 'doneCriteria') ?? '';
     const by = checkOptionalString(body['by'], 'by', 120) || owner || 'central';
 
-    if (status === 'running') {
-      this.assertNoLockConflict(lockTags, id);
-    }
-
+    //M 生成创建时刻与初始时间线说明。
     const now = Date.now();
     const defaultEventText = `创建任务（状态：${STATUS_LABELS[status]}，优先级：${priority}）`;
     const initialNote = checkOptionalString(body['initialNote'], 'initialNote') || defaultEventText;
@@ -383,7 +806,7 @@ export class ControlPlaneStore {
       lockTags,
       owner,
       doneCriteria,
-      lastHeartbeatAt: status === 'running' ? now : null,
+      lastHeartbeatAt: null,
       events: [
         {
           at: now,
@@ -395,161 +818,138 @@ export class ControlPlaneStore {
       createdAt: now,
       updatedAt: now,
     };
+    //M 解析并写入所有可选滴答视图原子字段（含 parentId !== id 与格式校验）。
+    applyExtendedFields(body, id, task);
 
+    //G 非垃圾桶任务进入 running 前检查占坑锁互斥。
+    if (status === 'running' && !isTrashedTask(task)) {
+      this.assertNoLockConflict(lockTags, id);
+      task.lastHeartbeatAt = now;
+    }
+
+    //M 追加任务并原子写盘。
     const nextTasks = [...this.tasks, task];
     this.saveToDisk(this.revision + 1, nextTasks);
     const meta = this.computeBoardMeta();
     return {
+      revision: this.revision,
       task: cloneTask(task),
       activeLocks: meta.activeLocks,
       dispatchableIds: meta.dispatchableIds,
     };
   }
 
-  /** 局部修改任务字段、状态或占坑标签（切入 running 或改锁时强检 409 占坑冲突）。 */
+  /** 局部修改任务字段、扩展属性或占坑标签（非垃圾桶进入 running 时强检 409 占坑冲突）。 */
   patch(id: string, rawBody: unknown): {
+    revision: number;
     task: types.ControlTask;
     activeLocks: Record<string, types.ActiveLockHolder>;
     dispatchableIds: string[];
   } {
     const index = this.tasks.findIndex((item) => item.id === id);
     if (index < 0) {
+      //G 任务不存在返回 404。
       throw new failureModule.Failure(404, `任务不存在：${id}`);
     }
+    //G 入口校验请求体结构，并在独立拷贝上校验并合并所有补丁字段。
     const body = checksModule.checkRecord(rawBody, '请求体');
     const current = this.tasks[index]!;
+    const updatedTask = cloneTask(current);
 
-    let nextTitle = current.title;
     if ('title' in body && body['title'] !== undefined) {
-      nextTitle = checkRequiredString(body['title'], 'title', 200);
+      //G 校验更新后的非空标题。
+      updatedTask.title = checkRequiredString(body['title'], 'title', 200);
     }
-
-    let nextSummary = current.summary;
     if ('summary' in body && body['summary'] !== undefined) {
-      nextSummary = checkOptionalString(body['summary'], 'summary') ?? '';
+      //G 校验更新后的任务摘要。
+      updatedTask.summary = checkOptionalString(body['summary'], 'summary') ?? '';
     }
-
-    let nextStatus = current.status;
     if ('status' in body && body['status'] !== undefined) {
-      nextStatus = checksModule.checkAllowedValue(body['status'], types.CONTROL_TASK_STATUSES, 'status');
+      //G 校验更新后的任务状态枚举。
+      updatedTask.status = checksModule.checkAllowedValue(
+        body['status'],
+        types.CONTROL_TASK_STATUSES,
+        'status',
+      );
     }
-
-    let nextPriority = current.priority;
     if ('priority' in body && body['priority'] !== undefined) {
-      nextPriority = checksModule.checkAllowedValue(body['priority'], types.CONTROL_TASK_PRIORITIES, 'priority');
+      //G 校验更新后的优先级枚举。
+      updatedTask.priority = checksModule.checkAllowedValue(
+        body['priority'],
+        types.CONTROL_TASK_PRIORITIES,
+        'priority',
+      );
     }
-
-    let nextLockTags = current.lockTags;
     if ('lockTags' in body && body['lockTags'] !== undefined) {
-      nextLockTags = normalizeLockTags(body['lockTags']);
+      //M 清洗并去重占坑锁标签。
+      updatedTask.lockTags = normalizeStringList(body['lockTags'], 'lockTags', MAX_LOCK_TAGS, 80);
     }
-
-    let nextOwner = current.owner;
     if ('owner' in body && body['owner'] !== undefined) {
-      nextOwner = checkOptionalString(body['owner'], 'owner', 120) ?? '';
+      //G 校验负责人字符串。
+      updatedTask.owner = checkOptionalString(body['owner'], 'owner', 120) ?? '';
     }
-
-    let nextDoneCriteria = current.doneCriteria;
     if ('doneCriteria' in body && body['doneCriteria'] !== undefined) {
-      nextDoneCriteria = checkOptionalString(body['doneCriteria'], 'doneCriteria') ?? '';
+      //G 校验验收标准字符串。
+      updatedTask.doneCriteria = checkOptionalString(body['doneCriteria'], 'doneCriteria') ?? '';
     }
 
-    //G 只要更新后的状态是 running，必须确保不与任何其他 running 任务抢占同一 lockTag。
-    if (nextStatus === 'running') {
-      this.assertNoLockConflict(nextLockTags, id);
+    //M 合并并校验本次补丁中提供的滴答扩展字段（支持 null 清空）。
+    applyExtendedFields(body, id, updatedTask);
+
+    //G 只要更新后是未进垃圾桶的 running 状态，必须确保不与其他 running 任务撞锁。
+    if (updatedTask.status === 'running' && !isTrashedTask(updatedTask)) {
+      this.assertNoLockConflict(updatedTask.lockTags, id);
     }
 
+    //M 解析时间线操作人与变更说明。
     const now = Date.now();
-    const by = checkOptionalString(body['by'], 'by', 120) || nextOwner || 'central';
+    const by = checkOptionalString(body['by'], 'by', 120) || updatedTask.owner || 'central';
     const reason = checkOptionalString(body['reason'], 'reason') ?? '';
     let customEventKind: types.ControlTaskEventKind | undefined;
     if (body['eventKind'] !== undefined) {
-      customEventKind = checksModule.checkAllowedValue(body['eventKind'], types.CONTROL_TASK_EVENT_KINDS, 'eventKind');
+      //G 校验显式传入的时间线事件种类。
+      customEventKind = checksModule.checkAllowedValue(
+        body['eventKind'],
+        types.CONTROL_TASK_EVENT_KINDS,
+        'eventKind',
+      );
     }
 
-    const changes: string[] = [];
-    if (nextStatus !== current.status) {
-      changes.push(`状态 ${STATUS_LABELS[current.status]} → ${STATUS_LABELS[nextStatus]}`);
-    }
-    if (nextPriority !== current.priority) {
-      changes.push(`优先级 ${current.priority} → ${nextPriority}`);
-    }
-    if (nextOwner !== current.owner) {
-      const fromOwner = current.owner || '未认领';
-      const toOwner = nextOwner || '未认领';
-      changes.push(`负责人 ${fromOwner} → ${toOwner}`);
-    }
-    if (JSON.stringify(nextLockTags) !== JSON.stringify(current.lockTags)) {
-      const joined = nextLockTags.length > 0 ? nextLockTags.join(', ') : '无';
-      changes.push(`占坑锁 [${joined}]`);
-    }
-    if (nextDoneCriteria !== current.doneCriteria) {
-      changes.push('更新验收标准');
-    }
-    if (nextTitle !== current.title) {
-      changes.push(`标题改为「${nextTitle}」`);
-    }
-    if (nextSummary !== current.summary) {
-      changes.push('更新任务摘要');
+    //M 刷新心跳时间戳与汇总变更时间线。
+    const claimedOrOwnerChanged = updatedTask.status === 'running'
+      && !isTrashedTask(updatedTask)
+      && (current.status !== 'running' || updatedTask.owner !== current.owner);
+    if (body['heartbeat'] === true || claimedOrOwnerChanged) {
+      updatedTask.lastHeartbeatAt = now;
     }
 
-    let nextHeartbeat = current.lastHeartbeatAt;
-    const touchHeartbeat = body['heartbeat'] === true
-      || (nextStatus === 'running' && current.status !== 'running')
-      || (nextStatus === 'running' && nextOwner !== current.owner);
-    if (touchHeartbeat) {
-      nextHeartbeat = now;
-    }
-
-    const nextEvents = current.events.map((ev) => ({ ...ev }));
+    //M 收集前后字段差异并按需追加时间线事件。
+    const changes = collectPatchChanges(current, updatedTask);
     if (changes.length > 0 || reason !== '' || body['heartbeat'] === true) {
-      let kind: types.ControlTaskEventKind = customEventKind ?? 'scope_change';
-      if (customEventKind === undefined) {
-        if (nextStatus === 'cancelled' && current.status !== 'cancelled') {
-          kind = 'cancelled';
-        } else if (nextStatus !== current.status) {
-          kind = 'status';
-        } else if (body['heartbeat'] === true && changes.length === 0) {
-          kind = 'heartbeat';
-        }
-      }
-
-      let eventText = changes.join('；');
-      if (reason !== '') {
-        if (eventText !== '') {
-          eventText = `${eventText}（${reason}）`;
-        } else {
-          eventText = reason;
-        }
-      }
-      if (eventText === '') {
-        eventText = '上报心跳';
-      }
-      nextEvents.push({ at: now, by, kind, text: eventText });
-      if (nextEvents.length > MAX_EVENTS_PER_TASK) {
-        nextEvents.splice(0, nextEvents.length - MAX_EVENTS_PER_TASK);
+      //M 推算事件类型与人类可读描述文本。
+      const kind = resolvePatchEventKind(
+        customEventKind,
+        current.status,
+        updatedTask.status,
+        body['heartbeat'] === true,
+        changes.length,
+      );
+      const eventText = formatPatchEventText(changes, reason);
+      //M 追加最新一条变更或心跳记录，并限制单任务事件数上限。
+      updatedTask.events.push({ at: now, by, kind, text: eventText });
+      if (updatedTask.events.length > MAX_EVENTS_PER_TASK) {
+        updatedTask.events.splice(0, updatedTask.events.length - MAX_EVENTS_PER_TASK);
       }
     }
+    updatedTask.updatedAt = now;
 
-    const updatedTask: types.ControlTask = {
-      ...current,
-      title: nextTitle,
-      summary: nextSummary,
-      status: nextStatus,
-      priority: nextPriority,
-      lockTags: nextLockTags,
-      owner: nextOwner,
-      doneCriteria: nextDoneCriteria,
-      lastHeartbeatAt: nextHeartbeat,
-      events: nextEvents,
-      updatedAt: now,
-    };
-
+    //M 替换内存切片并原子写盘。
     const nextTasks = this.tasks.slice();
     nextTasks[index] = updatedTask;
     this.saveToDisk(this.revision + 1, nextTasks);
     const meta = this.computeBoardMeta();
     return {
+      revision: this.revision,
       task: cloneTask(updatedTask),
       activeLocks: meta.activeLocks,
       dispatchableIds: meta.dispatchableIds,
@@ -558,6 +958,7 @@ export class ControlPlaneStore {
 
   /** 追加一条原则更新 / 范围变更 / 心跳 / 备注事件，并自动刷新 lastHeartbeatAt。 */
   appendEvent(id: string, rawBody: unknown): {
+    revision: number;
     task: types.ControlTask;
     event: types.ControlTaskEvent;
     activeLocks: Record<string, types.ActiveLockHolder>;
@@ -565,36 +966,44 @@ export class ControlPlaneStore {
   } {
     const index = this.tasks.findIndex((item) => item.id === id);
     if (index < 0) {
+      //G 任务不存在返回 404。
       throw new failureModule.Failure(404, `任务不存在：${id}`);
     }
+    //G 校验请求体并解析事件种类。
     const body = checksModule.checkRecord(rawBody ?? {}, '请求体');
     const current = this.tasks[index]!;
 
     let kind: types.ControlTaskEventKind = 'note';
     if (body['kind'] !== undefined) {
+      //G 校验事件种类是否在允许枚举内。
       kind = checksModule.checkAllowedValue(body['kind'], types.CONTROL_TASK_EVENT_KINDS, 'kind');
     }
 
     let nextStatus = current.status;
     if (body['status'] !== undefined) {
+      //G 显式变更状态时校验合法性；非垃圾桶任务进入 running 需防撞锁。
       nextStatus = checksModule.checkAllowedValue(body['status'], types.CONTROL_TASK_STATUSES, 'status');
-      if (nextStatus === 'running') {
+      if (nextStatus === 'running' && !isTrashedTask(current)) {
+        //G 仅对非垃圾桶任务检查占坑锁冲突。
         this.assertNoLockConflict(current.lockTags, id);
       }
-    } else if (kind === 'cancelled') {
+    }
+    if (body['status'] === undefined && kind === 'cancelled') {
       nextStatus = 'cancelled';
     }
 
+    //M 校验追加事件的操作人与正文内容。
     const by = checkOptionalString(body['by'], 'by', 120) || current.owner || 'ai';
     let text = checkOptionalString(body['text'], 'text') ?? '';
-    if (text === '') {
-      if (kind === 'heartbeat') {
-        text = '进度心跳正常';
-      } else {
-        throw new failureModule.Failure(400, 'text 要写成非空字符串');
-      }
+    if (text === '' && kind !== 'heartbeat') {
+      //G 非心跳事件必须给出非空说明文字。
+      throw new failureModule.Failure(400, 'text 要写成非空字符串');
+    }
+    if (text === '' && kind === 'heartbeat') {
+      text = '进度心跳正常';
     }
 
+    //M 构造事件并裁剪超长历史。
     const now = Date.now();
     const event: types.ControlTaskEvent = { at: now, by, kind, text };
     const nextEvents = [...current.events.map((ev) => ({ ...ev })), event];
@@ -603,18 +1012,20 @@ export class ControlPlaneStore {
     }
 
     const updatedTask: types.ControlTask = {
-      ...current,
+      ...cloneTask(current),
       status: nextStatus,
       lastHeartbeatAt: now,
       events: nextEvents,
       updatedAt: now,
     };
 
+    //M 保存最新事件与心跳时间并原子落盘。
     const nextTasks = this.tasks.slice();
     nextTasks[index] = updatedTask;
     this.saveToDisk(this.revision + 1, nextTasks);
     const meta = this.computeBoardMeta();
     return {
+      revision: this.revision,
       task: cloneTask(updatedTask),
       event,
       activeLocks: meta.activeLocks,
@@ -622,33 +1033,256 @@ export class ControlPlaneStore {
     };
   }
 
-  /** 删除一张控制面任务卡。 */
+  /** 硬删除一张控制面或滴答任务卡。 */
   remove(id: string): {
+    revision: number;
     deleted: string;
     activeLocks: Record<string, types.ActiveLockHolder>;
     dispatchableIds: string[];
   } {
     const index = this.tasks.findIndex((item) => item.id === id);
     if (index < 0) {
+      //G 任务不存在返回 404。
       throw new failureModule.Failure(404, `任务不存在：${id}`);
     }
+    //M 从任务列表移除目标项并原子写盘。
     const nextTasks = this.tasks.filter((item) => item.id !== id);
     this.saveToDisk(this.revision + 1, nextTasks);
     const meta = this.computeBoardMeta();
     return {
+      revision: this.revision,
       deleted: id,
       activeLocks: meta.activeLocks,
       dispatchableIds: meta.dispatchableIds,
+    };
+  }
+
+  /** 新建自定义清单（同名清单幂等返回已存在条目，避免重复）。 */
+  createList(rawBody: unknown): {
+    revision: number;
+    list: types.TaskListDef;
+    lists: types.TaskListDef[];
+  } {
+    //G 校验请求体、必填名称及可选自定义 ID。
+    const body = checksModule.checkRecord(rawBody, '请求体');
+    const name = checkRequiredString(body['name'], 'name', 80);
+    const customId = checkOptionalString(body['id'], 'id', 80);
+    if (customId !== undefined && customId !== '' && !ID_PATTERN.test(customId)) {
+      //G 拒绝包含非法字符的清单 ID。
+      throw new failureModule.Failure(400, 'id 只能包含字母、数字、下划线、点、冒号或短横线');
+    }
+
+    //M 同名清单已存在时做幂等检查：ID 一致（或未指定 ID）直接返回原清单。
+    const sameName = this.lists.find((item) => item.name === name);
+    if (sameName !== undefined) {
+      if (customId !== undefined && customId !== '' && customId !== sameName.id) {
+        //G 同名清单却传入冲突 ID 时返回 400。
+        throw new failureModule.Failure(400, `清单「${name}」已存在`);
+      }
+      return {
+        revision: this.revision,
+        list: cloneList(sameName),
+        lists: this.getClonedLists(),
+      };
+    }
+
+    if (customId !== undefined && customId !== '' && this.lists.some((item) => item.id === customId)) {
+      //G 清单 ID 已被其他名称占用时返回 400。
+      throw new failureModule.Failure(400, `清单 ID 已存在：${customId}`);
+    }
+
+    //M 解析新建清单的 ID、图标、主题色与排序权重。
+    let id = generateId('list');
+    if (customId !== undefined && customId !== '') {
+      id = customId;
+    }
+    //M 校验可选图标、主题色与排序权重。
+    const icon = checkOptionalString(body['icon'], 'icon', 32);
+    const color = checkOptionalString(body['color'], 'color', 32);
+    let sortOrder = checkSortOrder(body['sortOrder']);
+    if (sortOrder === undefined) {
+      //M 未传 sortOrder 时默认排在已有清单末尾。
+      let maxOrder = -1;
+      for (const item of this.lists) {
+        if (item.sortOrder !== undefined && item.sortOrder > maxOrder) {
+          maxOrder = item.sortOrder;
+        }
+      }
+      sortOrder = maxOrder + 1;
+    }
+
+    const created: types.TaskListDef = { id, name, sortOrder };
+    if (icon !== undefined && icon !== '') {
+      created.icon = icon;
+    }
+    if (color !== undefined && color !== '') {
+      created.color = color;
+    }
+
+    //M 按 sortOrder 排好序后写盘。
+    const nextLists = sortLists([...this.lists, created]);
+    this.saveToDisk(this.revision + 1, this.tasks, nextLists);
+    return {
+      revision: this.revision,
+      list: cloneList(created),
+      lists: this.getClonedLists(),
+    };
+  }
+
+  /** 修改清单属性；若改名则同步更新归属旧清单名任务的 list 字段。 */
+  patchList(id: string, rawBody: unknown): {
+    revision: number;
+    list: types.TaskListDef;
+    lists: types.TaskListDef[];
+  } {
+    const index = this.lists.findIndex((item) => item.id === id);
+    if (index < 0) {
+      //G 清单不存在返回 404。
+      throw new failureModule.Failure(404, `清单不存在：${id}`);
+    }
+    //G 校验请求体并合并更新字段。
+    const body = checksModule.checkRecord(rawBody, '请求体');
+    const current = this.lists[index]!;
+    const updated = cloneList(current);
+
+    if ('name' in body && body['name'] !== undefined) {
+      //G 校验新清单名称并防止与其他清单重名。
+      const nextName = checkRequiredString(body['name'], 'name', 80);
+      if (this.lists.some((item) => item.id !== id && item.name === nextName)) {
+        //G 禁止改名后与其他清单重名。
+        throw new failureModule.Failure(400, `清单名称已存在：${nextName}`);
+      }
+      updated.name = nextName;
+    }
+    for (const key of ['icon', 'color'] as const) {
+      if (!(key in body) || body[key] === undefined) {
+        continue;
+      }
+      //M 空串或 null 清空对应显示属性，非空保留去空白文本。
+      let val = '';
+      if (body[key] !== null) {
+        val = checkOptionalString(body[key], key, 32) ?? '';
+      }
+      if (val === '') {
+        delete updated[key];
+      }
+      if (val !== '') {
+        updated[key] = val;
+      }
+    }
+    if ('sortOrder' in body && body['sortOrder'] !== undefined) {
+      //G 校验清单排序权重。
+      updated.sortOrder = checkSortOrder(body['sortOrder']);
+    }
+
+    //M 若清单名称发生变化，同步把归属旧名称的任务迁到新清单名。
+    let nextTasks = this.tasks;
+    if (updated.name !== current.name) {
+      const now = Date.now();
+      nextTasks = this.tasks.map((task) => {
+        const belonging = task.list ?? '工作任务';
+        if (belonging !== current.name) return task;
+
+        return { ...cloneTask(task), list: updated.name, updatedAt: now };
+      });
+    }
+
+    const rawNextLists = this.lists.slice();
+    rawNextLists[index] = updated;
+    //M 重新排序并原子持久化任务与清单。
+    const nextLists = sortLists(rawNextLists);
+    this.saveToDisk(this.revision + 1, nextTasks, nextLists);
+    return {
+      revision: this.revision,
+      list: cloneList(updated),
+      lists: this.getClonedLists(),
+    };
+  }
+
+  /** 删除自定义清单（禁止删 inbox），并将其下任务的 list 归回收集箱。 */
+  removeList(id: string): {
+    revision: number;
+    lists: types.TaskListDef[];
+  } {
+    if (id === 'inbox') {
+      //G 收集箱是兜底根清单，禁止删除。
+      throw new failureModule.Failure(400, '不能删除默认收集箱 inbox');
+    }
+    //G 查找待删清单是否存在。
+    const target = this.lists.find((item) => item.id === id);
+    if (target === undefined) {
+      //G 清单不存在返回 404。
+      throw new failureModule.Failure(404, `清单不存在：${id}`);
+    }
+
+    //M 找到收集箱当前名称并把待删清单下任务全部归回收集箱。
+    const inboxName = this.lists.find((item) => item.id === 'inbox')?.name ?? '收集箱';
+    const now = Date.now();
+    const nextTasks = this.tasks.map((task) => {
+      const belonging = task.list ?? '工作任务';
+      if (belonging !== target.name) return task;
+
+      return { ...cloneTask(task), list: inboxName, updatedAt: now };
+    });
+    //M 从清单数组中移除目标清单。
+    const nextLists = this.lists.filter((item) => item.id !== id);
+    //M 原子写盘提交删除与任务归位。
+    this.saveToDisk(this.revision + 1, nextTasks, nextLists);
+    return {
+      revision: this.revision,
+      lists: this.getClonedLists(),
+    };
+  }
+
+  /** 切换习惯任务某天（默认今天本地 YYYY-MM-DD）的打卡状态并按日期排序。 */
+  toggleCheckIn(id: string, rawBody: unknown): {
+    revision: number;
+    task: types.ControlTask;
+  } {
+    const index = this.tasks.findIndex((item) => item.id === id);
+    if (index < 0) {
+      //G 任务不存在返回 404。
+      throw new failureModule.Failure(404, `任务不存在：${id}`);
+    }
+    //G 校验请求体与可选日期（不传默认当天本地 YYYY-MM-DD）。
+    const body = checksModule.checkRecord(rawBody ?? {}, '请求体');
+    const date = checkCheckinDate(body['date']);
+
+    const current = this.tasks[index]!;
+    const dates = new Set<string>(current.checkIns ?? []);
+    const existed = dates.has(date);
+    if (existed) {
+      dates.delete(date);
+    }
+    if (!existed) {
+      dates.add(date);
+    }
+    //M 切换完成后按 YYYY-MM-DD 升序整理打卡日期列表。
+    const nextCheckIns = [...dates].sort();
+    const updatedTask: types.ControlTask = {
+      ...cloneTask(current),
+      checkIns: nextCheckIns,
+      updatedAt: Date.now(),
+    };
+
+    const nextTasks = this.tasks.slice();
+    nextTasks[index] = updatedTask;
+    //M 原子落盘并返回最新任务卡。
+    this.saveToDisk(this.revision + 1, nextTasks);
+    return {
+      revision: this.revision,
+      task: cloneTask(updatedTask),
     };
   }
 }
 
 
 /** 读取路由参数 :id。 */
-function readTaskIdParam(params: unknown): string {
+function readIdParam(params: unknown, missingMessage: string): string {
   const raw = (params as Record<string, unknown> | null)?.['id'];
   if (typeof raw !== 'string' || raw.trim() === '') {
-    throw new failureModule.Failure(400, '缺少任务 ID');
+    //G 缺少路径参数 ID 直接返回 400。
+    throw new failureModule.Failure(400, missingMessage);
   }
   return raw.trim();
 }
@@ -656,51 +1290,72 @@ function readTaskIdParam(params: unknown): string {
 
 /** 解析查询参数 ?status=（支持逗号分隔多状态）。 */
 function parseStatusQuery(raw: string | undefined): types.ControlTaskStatus[] | undefined {
-  if (raw === undefined || raw.trim() === '') {
-    return undefined;
-  }
+  if (raw === undefined || raw.trim() === '') return undefined;
+
   const parts = raw.split(',').map((item) => item.trim()).filter((item) => item !== '');
-  if (parts.length === 0) {
-    return undefined;
+  if (parts.length === 0) return undefined;
+
+  //G 逐个校验查询参数里的状态枚举值。
+  return parts.map((item) => {
+    return checksModule.checkAllowedValue(item, types.CONTROL_TASK_STATUSES, 'status');
+  });
+}
+
+
+/** 统一将占坑互斥锁冲突转为 HTTP 409 结构化响应。 */
+function runWithLockReply<T>(
+  reply: fastify.FastifyReply,
+  action: () => T,
+): T | fastify.FastifyReply {
+  try {
+    //M 执行写操作并返回正常载荷。
+    return action();
+  } catch (error) {
+    //G 捕获占坑互斥锁冲突并回传 409 与冲突持有者清单。
+    if (error instanceof LockConflictFailure) {
+      return reply.code(409).send({
+        ok: false,
+        error: error.message,
+        conflicts: error.conflicts,
+      });
+    }
+    throw error;
   }
-  return parts.map((item) => checksModule.checkAllowedValue(item, types.CONTROL_TASK_STATUSES, 'status'));
 }
 
 
 /**
- * 在 `/api/work-decision` 路由域下挂载多 AI 协同控制面任务 REST 接口。
+ * 在 `/api/work-decision` 路由域下挂载控制面任务与滴答视图 REST 接口。
+ * @param scope Fastify 路由作用域。
+ * @param prefix 路由前缀（`/api/work-decision`）。
+ * @param controlStore 控制面与滴答任务持久化存储实例。
  */
 export function mountControlPlaneRoutes(
   scope: fastify.FastifyInstance,
   prefix: string,
   controlStore: ControlPlaneStore,
 ): void {
-  //M 1. 查询任务面板、活跃占坑锁与可派发队列。
+  //M 1. 查询任务列表、清单定义、状态计数、活跃占坑锁与可派发队列。
   scope.get<{ Querystring: { status?: string; lockTag?: string; owner?: string } }>(
     `${prefix}/tasks`,
     (request) => {
+      //G 解析并校验可选 status 过滤串。
       const statuses = parseStatusQuery(request.query.status);
       const lockTag = request.query.lockTag?.trim() || undefined;
       const owner = request.query.owner?.trim() || undefined;
+      //M 读取控制面任务与清单完整快照。
       return controlStore.list({ statuses, lockTag, owner });
     },
   );
 
   //M 2. 创建新任务卡（撞锁时返回 409 及结构化 conflicts）。
   scope.post<{ Body: unknown }>(`${prefix}/tasks`, (request, reply) => {
-    try {
+    //M 委托存储层校验并创建任务，撞锁由统一包装转 409。
+    return runWithLockReply(reply, () => {
+      //M 写入新任务并返回最新锁信息。
       const created = controlStore.create(request.body);
       return { ok: true, ...created };
-    } catch (error) {
-      if (error instanceof LockConflictFailure) {
-        return reply.code(409).send({
-          ok: false,
-          error: error.message,
-          conflicts: error.conflicts,
-        });
-      }
-      throw error;
-    }
+    });
   });
 
   //M 3. 更新任务卡（支持 PATCH 与 PUT，撞锁回 409）。
@@ -708,20 +1363,14 @@ export function mountControlPlaneRoutes(
     method: ['PATCH', 'PUT'],
     url: `${prefix}/tasks/:id`,
     handler(request, reply) {
-      try {
-        const id = readTaskIdParam(request.params);
+      //M 委托存储层校验并更新任务，撞锁由统一包装转 409。
+      return runWithLockReply(reply, () => {
+        //G 读取任务 ID 并局部更新字段。
+        const id = readIdParam(request.params, '缺少任务 ID');
+        //M 执行局部更新并返回最新任务与占坑锁快照。
         const updated = controlStore.patch(id, request.body);
         return { ok: true, ...updated };
-      } catch (error) {
-        if (error instanceof LockConflictFailure) {
-          return reply.code(409).send({
-            ok: false,
-            error: error.message,
-            conflicts: error.conflicts,
-          });
-        }
-        throw error;
-      }
+      });
     },
   });
 
@@ -729,27 +1378,64 @@ export function mountControlPlaneRoutes(
   scope.post<{ Params: { id: string }; Body: unknown }>(
     `${prefix}/tasks/:id/events`,
     (request, reply) => {
-      try {
-        const id = readTaskIdParam(request.params);
+      //M 委托存储层追加事件，进入 running 撞锁由统一包装转 409。
+      return runWithLockReply(reply, () => {
+        //G 读取任务 ID 并追加时间线事件。
+        const id = readIdParam(request.params, '缺少任务 ID');
+        //M 写入事件并刷新心跳时间。
         const appended = controlStore.appendEvent(id, request.body);
         return { ok: true, ...appended };
-      } catch (error) {
-        if (error instanceof LockConflictFailure) {
-          return reply.code(409).send({
-            ok: false,
-            error: error.message,
-            conflicts: error.conflicts,
-          });
-        }
-        throw error;
-      }
+      });
     },
   );
 
-  //M 5. 删除任务卡。
+  //M 5. 硬删除任务卡。
   scope.delete<{ Params: { id: string } }>(`${prefix}/tasks/:id`, (request) => {
-    const id = readTaskIdParam(request.params);
+    //G 读取任务 ID 并执行删除。
+    const id = readIdParam(request.params, '缺少任务 ID');
+    //M 从账本中永久删除任务。
     const removed = controlStore.remove(id);
+    return { ok: true, ...removed };
+  });
+
+  //M 6. 切换习惯打卡日期（默认当天本地 YYYY-MM-DD）。
+  scope.post<{ Params: { id: string }; Body: unknown }>(
+    `${prefix}/tasks/:id/checkin`,
+    (request) => {
+      //G 读取任务 ID 并切换目标日期打卡记录。
+      const id = readIdParam(request.params, '缺少任务 ID');
+      //M 执行打卡切换并返回排序后的最新任务。
+      const checked = controlStore.toggleCheckIn(id, request.body);
+      return { ok: true, ...checked };
+    },
+  );
+
+  //M 7. 创建自定义清单（同名幂等返回）。
+  scope.post<{ Body: unknown }>(`${prefix}/lists`, (request) => {
+    //M 校验并写入新清单定义。
+    const created = controlStore.createList(request.body);
+    return { ok: true, ...created };
+  });
+
+  //M 8. 修改清单并同步更新归属旧名称任务的 list 字段（支持 PATCH 与 PUT）。
+  scope.route<{ Params: { id: string }; Body: unknown }>({
+    method: ['PATCH', 'PUT'],
+    url: `${prefix}/lists/:id`,
+    handler(request) {
+      //G 读取清单 ID 并修改名称、图标、颜色或排序权重。
+      const id = readIdParam(request.params, '缺少清单 ID');
+      //M 更新清单并同步迁出改名后归属的任务。
+      const updated = controlStore.patchList(id, request.body);
+      return { ok: true, ...updated };
+    },
+  });
+
+  //M 9. 删除清单并将旗下任务归回收集箱（inbox 不可删除）。
+  scope.delete<{ Params: { id: string } }>(`${prefix}/lists/:id`, (request) => {
+    //G 读取清单 ID 并校验非 inbox 后执行删除。
+    const id = readIdParam(request.params, '缺少清单 ID');
+    //M 移除清单并把归属任务回收到收集箱。
+    const removed = controlStore.removeList(id);
     return { ok: true, ...removed };
   });
 }

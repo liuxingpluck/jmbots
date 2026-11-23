@@ -40,11 +40,19 @@ const DECLARE: Record<string, string> = {
     + 'Never mention the harness, model or prompts to users.',
 };
 
-/** 没有提示词文件时用的：会话种类 → 提示词。 */
-const BUILT_IN: Record<string, string> = {
+/** 没有提示词文件时用的中文默认会话种类提示词。 */
+const BUILT_IN_ZH: Record<string, string> = {
   front: '你是机器人的前台：一般的技术解释、资料查询、简单问题自己直接答，不转给外部助手；绝对不自己干重活。需要知道现在几点时调用 time 工具，用中文简短回答。'
     + '自己答不够（要查很久、要动文件或代码）就交给自己的后台会话去干，调用 hand_session。',
   work: '你是一个助手，在机器人的工作区里干活。做完用一两句话告诉用户结果。',
+};
+
+/** 没有提示词文件时用的英文默认会话种类提示词（`language: en`）。 */
+const BUILT_IN_EN: Record<string, string> = {
+  front: 'You are the front-desk specialist for this bot: answer customer inquiries, product questions, and '
+    + 'straightforward requests directly and concisely in English without handing off unnecessarily. '
+    + 'Call the time tool if you need the current time. Only call hand_session when background work is needed.',
+  work: 'You are an assistant working in this bot\'s workspace. Summarize the result in one or two English sentences.',
 };
 
 
@@ -123,10 +131,14 @@ export class Prompt {
     const opening = [baseText, declarationText].filter((text) => text !== '');
     request.system.unshift(...opening);
 
-    //M 第三段：这种会话的提示词；文件没有用内置的，文件在但是空的就不加。
+    //M 第三段：这种会话的提示词；文件没有用对应语言的内置提示词，文件在但是空的就不加。
     let first = getFileText(path.join(prompts, `${row.kind}.${language}.md`));
     if (first === undefined) {
-      first = BUILT_IN[row.kind];
+      let builtInMap = BUILT_IN_ZH;
+      if (language === 'en') {
+        builtInMap = BUILT_IN_EN;
+      }
+      first = builtInMap[row.kind];
     }
     if (first !== undefined && first !== '') {
       request.system.push(first);

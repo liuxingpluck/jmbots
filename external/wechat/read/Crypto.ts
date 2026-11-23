@@ -145,6 +145,43 @@ export function decryptPage(encKey: Uint8Array, pageData: Uint8Array, pageNo: nu
 
 
 /**
+ * 修正独立明文 SQLite 副本首页头部：
+ * 1. 将 WAL 模式标志（偏移 18/19 的 2）归位为普通日志模式 1，避免只读打开副本时寻找伴生 -shm/-wal；
+ * 2. 当 WAL 追加了超出主库原总页数的新页（如新建群表）而未重写第 1 页时，同步放大偏移 28..31 的库总页数，
+ *    防止 SQLite 3.7+ 按旧页数截断而将新表根页判为 SQLITE_CORRUPT。
+ * @returns 若放大了偏移 28..31 的库页数则返回 true（提示增量缓存将第 1 页纳入下次还原集合）。
+ */
+function syncReplicaHeader(fd: number): boolean {
+  const fileSize = fs.fstatSync(fd).size;
+  const actualPages = Math.floor(fileSize / PAGE_SIZE);
+  if (actualPages < 1) return false;
+
+  const header = Buffer.allocUnsafe(32);
+  const readBytes = fs.readSync(fd, header, 0, 32, 0);
+  if (readBytes < 32) return false;
+  if (header.subarray(0, 15).toString('ascii') !== 'SQLite format 3') return false;
+
+  let dirty = false;
+  let grewHeaderPages = false;
+  if (header[18] === 2 || header[19] === 2) {
+    header[18] = 1;
+    header[19] = 1;
+    dirty = true;
+  }
+  const inHeaderPages = header.readUInt32BE(28);
+  if (inHeaderPages > 0 && actualPages > inHeaderPages) {
+    header.writeUInt32BE(actualPages, 28);
+    dirty = true;
+    grewHeaderPages = true;
+  }
+  if (dirty) {
+    fs.writeSync(fd, header, 0, 32, 0);
+  }
+  return grewHeaderPages;
+}
+
+
+/**
  * 将整个 SQLCipher 4 加密数据库逐页解密写出为明文 SQLite 文件。
  * @param dbPath 源加密 .db 文件路径（只读打开）。
  * @param outPath 目标明文 SQLite 副本路径（覆盖写出）。
@@ -160,7 +197,7 @@ export function decryptDatabaseFile(dbPath: string, outPath: string, encKey: Uin
 
   //M 用固定 4096 字节缓冲区顺序流式读出并解密写回，几百 MB 大库也不占峰值内存。
   const fin = fs.openSync(dbPath, 'r');
-  const fout = fs.openSync(outPath, 'w');
+  const fout = fs.openSync(outPath, 'w+');
   const pageBuffer = Buffer.allocUnsafe(PAGE_SIZE);
   let writtenPages = 0;
   try {
@@ -178,6 +215,7 @@ export function decryptDatabaseFile(dbPath: string, outPath: string, encKey: Uin
       fs.writeSync(fout, plainPage, 0, PAGE_SIZE, fileOffset);
       writtenPages += 1;
     }
+    syncReplicaHeader(fout);
   } finally {
     fs.closeSync(fin);
     fs.closeSync(fout);
@@ -188,7 +226,7 @@ export function decryptDatabaseFile(dbPath: string, outPath: string, encKey: Uin
 
 /**
  * 把加密 -wal 文件中属于当前检查点代次（salt1/salt2 一致）的完整帧解密覆盖进明文副本。
- * 末尾尚未刷完的半截帧自动忽略，供下次轮询增量还原使用。
+ * 末尾尚未提交或尚未刷完的半截帧自动忽略，并在扩页后同步修正首页页数头。
  * @param walPath 源 .db-wal 文件路径（不存在或为空时直接返回空数组）。
  * @param outPath 已存在的目标明文 SQLite 副本路径（按页原地覆写）。
  * @param encKey 32 字节数据库加密密钥。
@@ -216,8 +254,27 @@ export function applyWalFrames(walPath: string, outPath: string, encKey: Uint8Ar
     const walSalt2 = walHeader.readUInt32BE(20);
     const frameStride = WAL_FRAME_HEADER_SIZE + PAGE_SIZE;
 
-    //M 只遍历到最后一个完整帧边界，微信并发追加留下的末尾半帧自动跳过。
+    //M 先轻扫帧头定位最后一个已提交事务边界（commitDbSize > 0）；若全为 0 则兼容合成测试帧。
+    let lastCommitOffset = -1;
     for (let offset = WAL_HEADER_SIZE; offset + frameStride <= walSize; offset += frameStride) {
+      const fhRead = fs.readSync(wf, frameHeader, 0, WAL_FRAME_HEADER_SIZE, offset);
+      if (fhRead < WAL_FRAME_HEADER_SIZE) {
+        break;
+      }
+      const pageNo = frameHeader.readUInt32BE(0);
+      const commitPages = frameHeader.readUInt32BE(4);
+      const fSalt1 = frameHeader.readUInt32BE(8);
+      const fSalt2 = frameHeader.readUInt32BE(12);
+      if (pageNo > 0 && pageNo <= MAX_WAL_PAGE && fSalt1 === walSalt1 && fSalt2 === walSalt2 && commitPages > 0) {
+        lastCommitOffset = offset;
+      }
+    }
+
+    //M 只遍历到最后一个完整（且已提交）帧边界，微信并发追加留下的未提交尾帧自动跳过。
+    for (let offset = WAL_HEADER_SIZE; offset + frameStride <= walSize; offset += frameStride) {
+      if (lastCommitOffset >= 0 && offset > lastCommitOffset) {
+        break;
+      }
       const fhRead = fs.readSync(wf, frameHeader, 0, WAL_FRAME_HEADER_SIZE, offset);
       if (fhRead < WAL_FRAME_HEADER_SIZE) {
         break;
@@ -244,6 +301,13 @@ export function applyWalFrames(walPath: string, outPath: string, encKey: Uint8Ar
       const targetOffset = (pageNo - 1) * PAGE_SIZE;
       fs.writeSync(df, plainPage, 0, PAGE_SIZE, targetOffset);
       patchedPages.add(pageNo);
+    }
+
+    if (patchedPages.size > 0) {
+      const grewHeader = syncReplicaHeader(df);
+      if (grewHeader) {
+        patchedPages.add(1);
+      }
     }
   } finally {
     fs.closeSync(wf);

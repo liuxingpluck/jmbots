@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.7.103",
+    "date": "2026-11-23",
+    "changes": [
+      "工作决策（/work-decision/）融合滴答清单多视图（TickWorkspace）：新增收集箱/今天/最近7天/清单/四象限/日历/习惯打卡/倒数纪念日/垃圾桶全套视图与任务详情面板，后端 ControlPlane 扩展自定义清单、子任务树、标签、习惯打卡与软删除接口（work-decision 单测 24 项全绿）",
+      "web-api 新增外部访客客服独立接口 PeerApi（POST /api/peer/message），按 (bot, peer.account, peer.id) 强制隔离 guest 权限与独立前后台会话及记忆归属，支持同步等待与异步轮询",
+      "外置微信导出（external/wechat）修复置顶聊天过滤、消息分页与缓存读取问题"
+    ]
+  },
+  {
     "version": "0.7.102",
     "date": "2026-11-22",
     "changes": [

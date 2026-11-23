@@ -1,21 +1,34 @@
 /**
- * 微信单会话聊天记录显式本地导出模块（`export-chat`）：
- * 仅由命令行显式传参触发（AI 不可经 HTTP 或后台轮询静默调用），只读提取最近 N 条或全量分片历史，
- * 输出干净的 `messages.md` 与 `manifest.json`，将命中的图片/语音/文件安全复制至 `<out>/<mediaDir>/`，
- * 全程在 Markdown 与索引中使用相对路径并执行落盘前绝对路径零泄漏自检。
+ * 微信单会话与多会话授权批量本地导出模块（`export-chat` / `export-batch`）：
+ * 仅由命令行显式传参触发（AI 不可经 HTTP 或后台轮询静默调用），默认导出最近 30 天（`--since-days 30`）、
+ * 按天分卷（`--chunk-by day` → `YYYY-MM-DD.md`）并按单卷 100K Token 上限自动无损拆分为 `_part2.md`；
+ * 将命中的图片/语音/文件安全复制至相对目录 `./media/`，全程执行落盘前宿主机绝对路径零泄漏自检。
  */
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as readerModule from './read/PureReader.ts';
 import * as storeModule from './read/Store.ts';
 import * as voiceModule from './read/VoiceCache.ts';
 
 
-/** 默认导出的最近消息条数上限。 */
-export const DEFAULT_EXPORT_LIMIT = 1000;
+/** 默认导出的最近消息条数上限（配合默认 30 天时间窗，兼顾活跃大群完整覆盖与内存安全）。 */
+export const DEFAULT_EXPORT_LIMIT = 50_000;
 
 /** 允许导出的单次最大消息条数上限。 */
 export const MAX_EXPORT_LIMIT = 500_000;
+
+/** 默认导出的最近天数窗口（30 天 = 最近 1 个月；传 `0` 表示导出全部历史）。 */
+export const DEFAULT_SINCE_DAYS = 30;
+
+/** 默认分卷模式（按天生成 `YYYY-MM-DD.md`）。 */
+export const DEFAULT_CHUNK_BY = 'day' as const;
+
+/** 默认单篇 Markdown 最大估算 Token 上限（100K；传 `0` 表示不限制）。 */
+export const DEFAULT_MAX_TOKENS = 100_000;
+
+/** 默认单个媒体/附件最大允许复制体积上限（100 MB；传 `0` 表示不限制）。 */
+export const DEFAULT_MAX_FILE_MB = 100;
 
 /** 按条数拆分子目录（`--chunk-by count`）时的默认每卷条数。 */
 export const DEFAULT_CHUNK_SIZE = 1000;
@@ -24,25 +37,32 @@ export const DEFAULT_CHUNK_SIZE = 1000;
 export const DEFAULT_MEDIA_DIR = 'media';
 
 /** 支持的分卷拆分模式枚举。 */
-export type ChunkMode = 'none' | 'month' | 'count';
+export type ChunkMode = 'none' | 'day' | 'month' | 'count';
 
 /** Windows 保留设备名正则（不区分大小写）。 */
 const WIN_RESERVED_NAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
 
-/** 检测疑似宿主机绝对路径的脱敏自检正则（盘符路径、UNC 路径、常见系统用户根路径）。 */
+/**
+ * 检测结构化区域疑似宿主机绝对路径的脱敏自检正则：
+ * 盘符路径必须带非标识符前边界（防止把 `https://` / `http://` / `mailto:` 误判为 `s:/` 或 `p:/`），
+ * 同时拦截 UNC 路径与常见系统用户根路径。
+ */
 const LEAKED_ABS_PATH_RE = new RegExp(
-  '(?:[A-Za-z]:[\\\\/]|\\\\\\\\[A-Za-z0-9_.-]+[\\\\/]|(?:^|[\\s"\'`(])\\/(?:home|Users|root|tmp|var|etc|mnt|proc)\\/)',
+  '(?:(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\\\/]|\\\\\\\\[A-Za-z0-9_.-]+[\\\\/]'
+  + '|(?:^|[\\s"\'`(])\\/(?:home|Users|root|tmp|var|etc|mnt|proc)\\/)',
   'u',
 );
 
 
-/** 入口校验通过后的导出配置（内部直接使用，不再补默认值）。 */
+/** 入口校验通过后的单会话导出配置（内部直接使用，不再补默认值）。 */
 export interface ValidatedExportOptions {
-  /** 外置微信数据目录绝对路径。 */
+  /** 外置微信数据目录绝对路径（全程只读）。 */
   dataDir: string;
   /** 兼容旧引擎目录绝对路径。 */
   engineDir: string;
-  /** 可选显式指定的微信账号 ID。 */
+  /** 解密副本与语音转码缓存根目录绝对路径（默认指向系统临时目录，不往 `--data` 写文件）。 */
+  cacheDir: string;
+  /** 可选显式指定的微信账号 ID、昵称或 wxid。 */
   account?: string;
   /** 目标会话名称或原始 wxid。 */
   chat: string;
@@ -50,24 +70,80 @@ export interface ValidatedExportOptions {
   outDir: string;
   /** 最近 N 条消息上限。 */
   limit: number;
-  /** 分卷模式：`none` 单文件、`month` 按月子目录、`count` 按固定条数子目录。 */
+  /** 最近 N 天时间窗口（`0` 表示不限时间导出全部历史）。 */
+  sinceDays: number;
+  /** 分卷模式：`none` 单文件、`day` 按天 `YYYY-MM-DD.md`、`month` 按月子目录、`count` 按固定条数子目录。 */
   chunkBy: ChunkMode;
   /** `chunkBy === 'count'` 时每个分卷的条数上限。 */
   chunkSize: number;
+  /** 单篇 Markdown 最大估算 Token 上限（`0` 表示不限制）。 */
+  maxTokens: number;
+  /** 单个媒体/附件最大复制体积上限（MB，`0` 表示不限制）。 */
+  maxFileMb: number;
   /** 归一化后的相对媒体子目录路径（正斜杠，不含前导 `./`，如 `media`）。 */
   mediaDir: string;
   /** 额外群提及昵称字符串。 */
   atNames: string;
+  /** 是否仅输出纯 JSON。 */
+  json?: boolean;
+  /** 可选参考当前毫秒时间戳（供离线单测固定时间窗，生产默认 `Date.now()`）。 */
+  nowMs?: number;
+}
+
+/** 入口校验通过后的多会话批量导出配置（`export-batch`）。 */
+export interface ValidatedBatchExportOptions {
+  /** 外置微信数据目录绝对路径（全程只读）。 */
+  dataDir: string;
+  /** 兼容旧引擎目录绝对路径。 */
+  engineDir: string;
+  /** 解密副本与语音转码缓存根目录绝对路径（默认指向系统临时目录，不往 `--data` 写文件）。 */
+  cacheDir: string;
+  /** 可选显式指定的微信账号 ID、昵称或 wxid。 */
+  account?: string;
+  /** 显式指定的会话名称/wxid 列表（`all === false` 时非空）。 */
+  chats: string[];
+  /** 是否导出该账号下全部会话。 */
+  all: boolean;
+  /** `--all` 模式下可选会话类型过滤。 */
+  typeFilter: 'all' | 'p2p' | 'group';
+  /** `--all` 模式下是否仅导出置顶会话。 */
+  pinnedOnly: boolean;
+  /** 导出根目录绝对路径（内部自动按 `私聊/<安全显示名_唯一ID>/` 与 `群聊/<安全群名_唯一ID>/` 落盘）。 */
+  outDir: string;
+  /** 是否在 `<out>` 下额外嵌套一层 `<安全昵称>_<accountId>/` 账号目录（多微信号归档隔离）。 */
+  withAccountDir: boolean;
+  /** 每个会话导出的最大消息条数上限。 */
+  limit: number;
+  /** 最近 N 天时间窗口（默认 30，`0` 表示全部历史）。 */
+  sinceDays: number;
+  /** 分卷模式（默认 `day`）。 */
+  chunkBy: ChunkMode;
+  /** `chunkBy === 'count'` 时的每卷条数。 */
+  chunkSize: number;
+  /** 单篇 Markdown 最大估算 Token 上限（默认 `100000`，`0` 不限制）。 */
+  maxTokens: number;
+  /** 单个媒体/附件最大复制体积上限（默认 `100` MB，`0` 不限制）。 */
+  maxFileMb: number;
+  /** 相对媒体子目录名（默认 `media`）。 */
+  mediaDir: string;
+  /** 额外群提及昵称字符串。 */
+  atNames: string;
+  /** 是否仅输出纯 JSON。 */
+  json: boolean;
+  /** 可选参考当前毫秒时间戳（供离线单测固定时间窗）。 */
+  nowMs?: number;
 }
 
 /** 单个导出分卷在 `manifest.json` 中的索引条目。 */
 export interface ExportChunkEntry {
-  /** 分卷标识（如 `all`、`2026-11`、`part-001`）。 */
+  /** 分卷标识（如 `all`、`2026-11-21`、`2026-11-21_part2`、`2026-11`、`part-001`）。 */
   id: string;
-  /** 相对 `<out>` 根目录的正斜杠文件路径（如 `./messages.md` 或 `./2026-11/messages.md`）。 */
+  /** 相对 `<out>` 根目录的正斜杠文件路径（如 `./2026-11-21.md`、`./messages.md` 或 `./2026-11/messages.md`）。 */
   file: string;
   /** 本分卷包含的消息条数。 */
   count: number;
+  /** 本分卷全文的确定性估算 Token 数。 */
+  estimatedTokens: number;
   /** 本分卷首条消息时间（ISO 8601）。 */
   startIso: string | null;
   /** 本分卷末条消息时间（ISO 8601）。 */
@@ -84,7 +160,7 @@ export interface RedactionCheckReport {
   leakedAbsolutePaths: number;
 }
 
-/** 写入 `<out>/manifest.json` 的完整导出清单结构。 */
+/** 写入 `<out>/manifest.json` 的完整单会话导出清单结构。 */
 export interface ExportManifest {
   /** 清单结构版本号。 */
   schemaVersion: 1;
@@ -105,15 +181,23 @@ export interface ExportManifest {
   query: {
     /** 请求的最大消息条数。 */
     limit: number;
+    /** 最近 N 天过滤窗口（0 表示全部历史）。 */
+    sinceDays: number;
     /** 分卷拆分策略。 */
     chunkBy: ChunkMode;
     /** 按条数分卷时的单卷大小。 */
     chunkSize: number;
+    /** 单卷最大 Token 预算（0 表示不限）。 */
+    maxTokens: number;
+    /** 单个媒体/附件最大复制体积上限（MB，0 表示不限）。 */
+    maxFileMb: number;
     /** 相对媒体目录路径（如 `./media`）。 */
     mediaDir: string;
   };
   /** 实际导出的消息总条数。 */
   totalMessages: number;
+  /** 所有分卷累计估算 Token 总数。 */
+  totalEstimatedTokens: number;
   /** 导出消息覆盖的起止时间范围。 */
   timeRange: {
     /** 首条消息秒级时间戳；空消息时为 null。 */
@@ -129,14 +213,68 @@ export interface ExportManifest {
   media: {
     /** 成功提取复制到 `<out>/<mediaDir>/` 的媒体文件数。 */
     copiedCount: number;
-    /** 本地原件缺失或无法解密而优雅降级为纯文本占位的条数。 */
+    /** 本地原件缺失、无法解密或超过体积上限而优雅降级为纯文本占位的条数。 */
     missingCount: number;
+    /** 因超过 `--max-file-mb` 单文件大小上限而跳过复制并写明占位说明的条数。 */
+    oversizeCount: number;
     /** 已复制媒体的相对路径列表（如 `./media/20261121_001.png`）。 */
     files: string[];
   };
   /** 生成的 Markdown 分卷清单。 */
   chunks: ExportChunkEntry[];
+  /** 若磁盘上存在尚未提取密钥的新消息分片（如 `--connect` 后新生成的 `message_4.db`），列出其相对路径提示重刷密钥。 */
+  unkeyedShards?: string[];
   /** 落盘前执行的脱敏与绝对路径泄漏自检结果。 */
+  redactionCheck: RedactionCheckReport;
+}
+
+/** 写入 `<out>/batch-manifest.json` 的多会话批量导出总清单结构。 */
+export interface BatchExportManifest {
+  schemaVersion: 1;
+  exportedAt: string;
+  exportedAtMs: number;
+  account: {
+    accountId: string;
+    nickname: string;
+    wxid: string;
+    safeFolderName: string;
+  };
+  query: {
+    mode: 'chats' | 'all';
+    sinceDays: number;
+    chunkBy: ChunkMode;
+    maxTokens: number;
+    maxFileMb: number;
+    limit: number;
+    mediaDir: string;
+    withAccountDir: boolean;
+  };
+  totals: {
+    exportedChats: number;
+    skippedChats: number;
+    failedChats: number;
+    totalMessages: number;
+    totalChunks: number;
+    totalEstimatedTokens: number;
+    totalMediaCopied: number;
+    totalMediaOversize: number;
+  };
+  items: Array<{
+    chat: string;
+    chatType: 'p2p' | 'group';
+    safeFolderName: string;
+    folder: string;
+    totalMessages: number;
+    chunks: number;
+    estimatedTokens: number;
+    mediaCopied: number;
+    mediaMissing: number;
+    mediaOversize: number;
+    redactionPassed: boolean;
+  }>;
+  skipped: Array<{ chat: string; reason: string }>;
+  failed: Array<{ chat: string; error: string }>;
+  unkeyedShards?: string[];
   redactionCheck: RedactionCheckReport;
 }
 
@@ -162,6 +300,36 @@ interface PreparedExportItem {
 
 
 /**
+ * 确定性、无外部依赖的文本 Token 估算器：
+ * - 中文/CJK 汉字与全角标点按 ~1.5 字符/token（`ceil(cjkCount * 2 / 3)`）估算；
+ * - ASCII / 英文 / 数字 / 常规符号按 ~4 字符/token（`ceil(otherCount / 4)`）估算。
+ */
+export function estimateTokens(text: string): number {
+  if (text === '') return 0;
+
+  let cjkCount = 0;
+  let otherCount = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    const isCjk = (
+      (code >= 0x4e00 && code <= 0x9fff)
+      || (code >= 0x3400 && code <= 0x4dbf)
+      || (code >= 0x3000 && code <= 0x30ff)
+      || (code >= 0xac00 && code <= 0xd7af)
+      || (code >= 0xff00 && code <= 0xffef)
+      || (code >= 0x20000 && code <= 0x2ebef)
+    );
+    if (isCjk) {
+      cjkCount += 1;
+      continue;
+    }
+    otherCount += 1;
+  }
+  return Math.ceil((cjkCount * 2) / 3) + Math.ceil(otherCount / 4);
+}
+
+
+/**
  * 将任意会话名或附件文件名清洗为不含路径分隔符、不含 `..` 且兼容 Windows/Linux 的安全单段名称。
  * @param raw 原始名称字符串。
  * @param fallback 清洗后为空时的回退名。
@@ -177,6 +345,27 @@ export function sanitizeSafeSegment(raw: string, fallback = 'untitled'): string 
   if (WIN_RESERVED_NAME_RE.test(cleaned)) return `_${cleaned}`;
 
   return cleaned;
+}
+
+
+/**
+ * 构建兼顾可读性与全局防重名碰撞的安全目录名：`<安全显示名>_<安全唯一ID>`。
+ * 当显示名缺失或与唯一 ID 相同（如无名称群聊直接显示 chatroomId）时自动退化为单个 `<安全唯一ID>`。
+ * @param displayName 可读名称（备注、群名或昵称）。
+ * @param uniqueId 稳定唯一标识（如 `wxid_xxx`、`xxx@chatroom` 或 `accountId`）。
+ * @param fallback 二者皆空时的兜底目录名。
+ */
+export function buildUniqueSafeFolderName(
+  displayName: string,
+  uniqueId: string,
+  fallback = 'wechat_chat',
+): string {
+  const safeId = sanitizeSafeSegment(uniqueId, fallback);
+  const safeName = sanitizeSafeSegment(displayName, '').slice(0, 50).replace(/[._]+$/gu, '');
+  if (safeName === '' || safeName.toLowerCase() === safeId.toLowerCase()) {
+    return safeId;
+  }
+  return `${safeName}_${safeId}`;
 }
 
 
@@ -218,20 +407,64 @@ export function validateRelativeMediaDir(rawMediaDir: string, resolvedOutDir: st
 
 
 /**
- * 在外部入口一次性校验全部 `export-chat` 原始参数并补齐默认值。
+ * 校验非负整数参数（如 `--since-days`、`--max-tokens`）。
+ */
+function parseNonNegativeInt(raw: string, flagName: string, maxAllowed: number): number {
+  const trimmed = raw.trim();
+  const num = Number(trimmed);
+  if (!/^\d+$/u.test(trimmed) || !Number.isSafeInteger(num) || num < 0 || num > maxAllowed) {
+    throw new Error(`${flagName} 要是 0 至 ${String(maxAllowed)} 的非负整数`);
+  }
+  return num;
+}
+
+
+/**
+ * 校验 `--chunk-by` 模式枚举。
+ */
+function parseChunkMode(raw: string | undefined): ChunkMode {
+  const mode = (raw ?? DEFAULT_CHUNK_BY).trim();
+  if (mode !== 'none' && mode !== 'day' && mode !== 'month' && mode !== 'count') {
+    throw new Error('--chunk-by 只支持 none、day、month 或 count');
+  }
+  return mode;
+}
+
+
+function resolveExportCacheDir(rawCacheDir: string | undefined, dataDir: string): string {
+  if (rawCacheDir === undefined) {
+    return readerModule.defaultTempCacheDir(dataDir);
+  }
+  const trimmed = rawCacheDir.trim();
+  if (trimmed === '') {
+    throw new Error('--cache-dir 不能为空');
+  }
+  return path.resolve(trimmed);
+}
+
+
+/**
+ * 在外部入口一次性校验全部 `export-chat` 原始参数并补齐默认值：
+ * 默认 `--since-days 30`、`--chunk-by day`、`--max-tokens 100000`（传 `--since-days 0` 或 `--max-tokens 0` 可解除对应上限）。
  * @param raw 命令行解析出的原始键值。
  */
 export function validateExportCliInput(raw: {
   data?: string;
   engine?: string;
+  cacheDir?: string;
   account?: string;
   chat?: string;
   out?: string;
   limit?: string;
+  sinceDays?: string;
   chunkBy?: string;
   chunkSize?: string;
+  maxTokens?: string;
+  maxFileMb?: string;
   mediaDir?: string;
   atNames?: string;
+  json?: boolean;
+  nowMs?: number;
 }): ValidatedExportOptions {
   if (!raw.data || raw.data.trim() === '') {
     throw new Error('export-chat 需要 --data <外置微信数据目录>');
@@ -245,6 +478,7 @@ export function validateExportCliInput(raw: {
 
   const dataDir = path.resolve(raw.data);
   const engineDir = path.resolve(raw.engine ?? path.join(dataDir, 'engine'));
+  const cacheDir = resolveExportCacheDir(raw.cacheDir, dataDir);
   const outDir = path.resolve(raw.out);
 
   //G 禁止把导出目标目录直接设在数据目录根或系统盘根，防止误覆盖运行态配置。
@@ -261,11 +495,8 @@ export function validateExportCliInput(raw: {
     throw new Error(`--limit 要是 1 至 ${String(MAX_EXPORT_LIMIT)} 的正整数`);
   }
 
-  const rawChunkBy = (raw.chunkBy ?? 'none').trim();
-  if (rawChunkBy !== 'none' && rawChunkBy !== 'month' && rawChunkBy !== 'count') {
-    throw new Error('--chunk-by 只支持 none、month 或 count');
-  }
-  const chunkBy: ChunkMode = rawChunkBy;
+  const sinceDays = parseNonNegativeInt(raw.sinceDays ?? String(DEFAULT_SINCE_DAYS), '--since-days', 36_500);
+  const chunkBy = parseChunkMode(raw.chunkBy);
 
   const rawChunkSize = raw.chunkSize ?? String(DEFAULT_CHUNK_SIZE);
   const chunkSize = Number(rawChunkSize);
@@ -277,7 +508,8 @@ export function validateExportCliInput(raw: {
     throw new Error('--chunk-size 要是正整数');
   }
 
-  //M 严格校验相对媒体目录不含任何路径穿越。
+  const maxTokens = parseNonNegativeInt(raw.maxTokens ?? String(DEFAULT_MAX_TOKENS), '--max-tokens', 50_000_000);
+  const maxFileMb = parseNonNegativeInt(raw.maxFileMb ?? String(DEFAULT_MAX_FILE_MB), '--max-file-mb', 102_400);
   const mediaDir = validateRelativeMediaDir(raw.mediaDir ?? DEFAULT_MEDIA_DIR, outDir);
 
   let account: string | undefined;
@@ -288,14 +520,135 @@ export function validateExportCliInput(raw: {
   return {
     dataDir,
     engineDir,
+    cacheDir,
     account,
     chat: raw.chat.trim(),
     outDir,
     limit,
+    sinceDays,
     chunkBy,
     chunkSize,
+    maxTokens,
+    maxFileMb,
     mediaDir,
     atNames: raw.atNames ?? '',
+    json: raw.json === true,
+    nowMs: raw.nowMs,
+  };
+}
+
+
+/**
+ * 在外部入口校验 `export-batch` 参数：要求显式传 `--chats` 或 `--all` 二选一。
+ */
+export function validateBatchExportInput(raw: {
+  data?: string;
+  engine?: string;
+  cacheDir?: string;
+  account?: string;
+  chats?: string;
+  all?: boolean;
+  type?: string;
+  pinnedOnly?: boolean;
+  out?: string;
+  withAccountDir?: boolean;
+  limit?: string;
+  sinceDays?: string;
+  chunkBy?: string;
+  chunkSize?: string;
+  maxTokens?: string;
+  maxFileMb?: string;
+  mediaDir?: string;
+  atNames?: string;
+  json?: boolean;
+  nowMs?: number;
+}): ValidatedBatchExportOptions {
+  if (!raw.data || raw.data.trim() === '') {
+    throw new Error('export-batch 需要 --data <外置微信数据目录>');
+  }
+  if (!raw.out || raw.out.trim() === '') {
+    throw new Error('export-batch 需要显式指定 --out <导出根目录>');
+  }
+
+  const dataDir = path.resolve(raw.data);
+  const engineDir = path.resolve(raw.engine ?? path.join(dataDir, 'engine'));
+  const cacheDir = resolveExportCacheDir(raw.cacheDir, dataDir);
+  const outDir = path.resolve(raw.out);
+  if (path.dirname(outDir) === outDir) {
+    throw new Error('--out 不能直接指向磁盘根目录');
+  }
+  if (outDir === dataDir) {
+    throw new Error('--out 必须是独立的目标导出目录，不能与 --data 相同');
+  }
+
+  const allFlag = raw.all === true;
+  const parsedChats = (raw.chats ?? '')
+    .split(/[,，]/u)
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  const uniqueChats = [...new Set(parsedChats)];
+
+  if (allFlag && uniqueChats.length > 0) {
+    throw new Error('export-batch 的 --chats 与 --all 只能二选一');
+  }
+  if (!allFlag && uniqueChats.length === 0) {
+    throw new Error('export-batch 需要显式指定 --chats "会话1,会话2" 或 --all');
+  }
+
+  const rawType = (raw.type ?? 'all').trim();
+  if (rawType !== 'all' && rawType !== 'p2p' && rawType !== 'group') {
+    throw new Error('--type 只支持 all、p2p 或 group');
+  }
+
+  const rawLimit = raw.limit ?? String(DEFAULT_EXPORT_LIMIT);
+  const limit = Number(rawLimit);
+  if (!/^\d+$/u.test(rawLimit) || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_EXPORT_LIMIT) {
+    throw new Error(`--limit 要是 1 至 ${String(MAX_EXPORT_LIMIT)} 的正整数`);
+  }
+
+  const sinceDays = parseNonNegativeInt(raw.sinceDays ?? String(DEFAULT_SINCE_DAYS), '--since-days', 36_500);
+  const chunkBy = parseChunkMode(raw.chunkBy);
+
+  const rawChunkSize = raw.chunkSize ?? String(DEFAULT_CHUNK_SIZE);
+  const chunkSize = Number(rawChunkSize);
+  const validChunkSize = /^\d+$/u.test(rawChunkSize)
+    && Number.isSafeInteger(chunkSize)
+    && chunkSize >= 1
+    && chunkSize <= MAX_EXPORT_LIMIT;
+  if (!validChunkSize) {
+    throw new Error('--chunk-size 要是正整数');
+  }
+
+  const maxTokens = parseNonNegativeInt(raw.maxTokens ?? String(DEFAULT_MAX_TOKENS), '--max-tokens', 50_000_000);
+  const maxFileMb = parseNonNegativeInt(raw.maxFileMb ?? String(DEFAULT_MAX_FILE_MB), '--max-file-mb', 102_400);
+  const mediaDir = validateRelativeMediaDir(raw.mediaDir ?? DEFAULT_MEDIA_DIR, outDir);
+
+  let account: string | undefined;
+  if (raw.account !== undefined && raw.account.trim() !== '') {
+    account = raw.account.trim();
+  }
+
+  return {
+    dataDir,
+    engineDir,
+    cacheDir,
+    account,
+    chats: uniqueChats,
+    all: allFlag,
+    typeFilter: rawType,
+    pinnedOnly: raw.pinnedOnly === true,
+    outDir,
+    withAccountDir: raw.withAccountDir === true,
+    limit,
+    sinceDays,
+    chunkBy,
+    chunkSize,
+    maxTokens,
+    maxFileMb,
+    mediaDir,
+    atNames: raw.atNames ?? '',
+    json: raw.json === true,
+    nowMs: raw.nowMs,
   };
 }
 
@@ -351,35 +704,82 @@ function escapeMarkdownLabel(label: string): string {
 
 
 /**
- * 扫描所有待落盘的 Markdown 与 JSON 文本，确保零宿主机绝对路径泄漏。
- * @param contents 待检查的文件内容列表。
- * @param forbiddenPrefixes 已知敏感本机目录前缀（如 dataDir、outDir、engineDir）。
+ * 提取单篇导出 Markdown 中由工具自身生成的结构化区域（顶部元信息头或分卷总目录），剥离群友自由聊天正文。
+ */
+export function extractStructuredMarkdownHeader(markdown: string): string {
+  const lines = markdown.split(/\r?\n/u);
+  const headerLines: string[] = [];
+  for (const line of lines) {
+    if (/^## \d{4}-\d{2}-\d{2}$/u.test(line)) {
+      break;
+    }
+    headerLines.push(line);
+  }
+  return headerLines.join('\n');
+}
+
+
+function buildNormalizedPrefixes(rawPrefixes: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const prefix of rawPrefixes) {
+    const trimmed = prefix.trim();
+    if (trimmed.length >= 4) {
+      out.push(trimmed);
+      const slashForm = trimmed.replaceAll('\\', '/');
+      if (slashForm !== trimmed) {
+        out.push(slashForm);
+      }
+    }
+  }
+  return out;
+}
+
+
+/**
+ * 落盘前绝对路径零泄漏校验：
+ * 1. `forbiddenPrefixes`（宿主机真实敏感目录：`dataDir`、`outDir`、`engineDir`、`cacheDir`、账号 `dbDir` 等）在全文与结构化区域 100% 严防死守；
+ * 2. 通用绝对路径正则 `LEAKED_ABS_PATH_RE` 与可选 `structuredPrefixes`（如 `os.homedir()`）仅校验工具生成的结构化区域
+ *    （`manifest.json`、Markdown 元信息头、分卷总目录与 `./media/...` 链接），绝不误杀群友聊天正文中讨论代码的 `C:\...` / `/Users/...` / `https://...`。
+ * @param contents 待落盘的全部文件内容列表（含完整 Markdown 与 JSON）。
+ * @param forbiddenPrefixes 全文严禁出现的宿主机真实目录前缀。
+ * @param structuredContents 可选仅含结构化区域的文本片段列表；省略时默认等同于 `contents`。
+ * @param structuredPrefixes 可选仅在结构化区域附加拦截的目录前缀（如 `os.homedir()`）。
  */
 export function verifyNoAbsolutePathLeak(
   contents: readonly string[],
   forbiddenPrefixes: readonly string[],
+  structuredContents?: readonly string[],
+  structuredPrefixes: readonly string[] = [],
 ): RedactionCheckReport {
-  const normalizedPrefixes: string[] = [];
-  for (const prefix of forbiddenPrefixes) {
-    const trimmed = prefix.trim();
-    if (trimmed.length >= 4) {
-      //M 同时登记原始反斜杠与正斜杠形式的本机路径前缀。
-      normalizedPrefixes.push(trimmed);
-      normalizedPrefixes.push(trimmed.replaceAll('\\', '/'));
+  const fullPrefixes = buildNormalizedPrefixes(forbiddenPrefixes);
+  const extraStructPrefixes = buildNormalizedPrefixes(structuredPrefixes);
+
+  if (structuredContents === undefined) {
+    const mergedPrefixes = [...fullPrefixes, ...extraStructPrefixes];
+    let leakedSingle = 0;
+    for (const text of contents) {
+      if (LEAKED_ABS_PATH_RE.test(text) || mergedPrefixes.some((p) => text.includes(p))) {
+        leakedSingle += 1;
+      }
     }
+    return {
+      passed: leakedSingle === 0,
+      checkedFiles: contents.length,
+      leakedAbsolutePaths: leakedSingle,
+    };
   }
 
   let leaked = 0;
   for (const text of contents) {
-    if (LEAKED_ABS_PATH_RE.test(text)) {
+    if (fullPrefixes.some((p) => text.includes(p))) {
       leaked += 1;
-      continue;
     }
-    for (const forbidden of normalizedPrefixes) {
-      if (text.includes(forbidden)) {
-        leaked += 1;
-        break;
-      }
+  }
+  for (const structText of structuredContents) {
+    const hitPrefix = fullPrefixes.some((p) => structText.includes(p))
+      || extraStructPrefixes.some((p) => structText.includes(p));
+    if (LEAKED_ABS_PATH_RE.test(structText) || hitPrefix) {
+      leaked += 1;
     }
   }
 
@@ -428,7 +828,100 @@ function writeMediaFileSafe(mediaRootAbs: string, fileName: string, bytes: Uint8
 
 
 /**
- * 单会话显式导出执行器：协调只读会话查询、媒体解密复制、分卷 Markdown 生成与脱敏清单落盘。
+ * 使用内核级 `fs.copyFileSync` 流式原子拷贝本地磁盘媒体文件（不将大文件整块读入 V8/JSC 堆内存）。
+ * @param srcAbsPath 已核验安全的源磁盘文件绝对路径。
+ * @param mediaRootAbs 已解析的 `<out>/<mediaDir>` 绝对路径。
+ * @param fileName 安全单段输出文件名。
+ */
+function copyMediaFileSafe(srcAbsPath: string, mediaRootAbs: string, fileName: string): void {
+  if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) {
+    throw new Error('媒体输出文件名非法');
+  }
+  const targetPath = path.resolve(mediaRootAbs, fileName);
+  const rel = path.relative(mediaRootAbs, targetPath);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('媒体输出路径越出媒体目录');
+  }
+  fs.mkdirSync(mediaRootAbs, { recursive: true });
+  const tempPath = `${targetPath}.${String(process.pid)}.tmp`;
+  fs.copyFileSync(srcAbsPath, tempPath);
+  fs.renameSync(tempPath, targetPath);
+}
+
+
+/**
+ * 将字节数格式化为保留 1 位小数的 MB 文本（用于超大文件跳过复制提示）。
+ */
+function formatSizeMb(sizeBytes: number): string {
+  return (sizeBytes / (1024 * 1024)).toFixed(1);
+}
+
+
+/**
+ * 计算单条消息在 Markdown 渲染后的块文本（不含日期二级标题），用于精确估算单条 Token 开销。
+ */
+function renderSingleItemBlock(item: PreparedExportItem, mediaRelPrefix: string): string {
+  let renderedBody = item.bodyOrLabel;
+  if (item.mediaFileName !== undefined) {
+    const relUrl = `${mediaRelPrefix}/${item.mediaFileName}`;
+    if (item.mediaRenderKind === 'image') {
+      renderedBody = `![${item.bodyOrLabel}](${relUrl})`;
+    }
+    if (item.mediaRenderKind === 'link') {
+      renderedBody = `[${item.bodyOrLabel}](${relUrl})`;
+    }
+  }
+  return `**[${item.timeText}] ${item.speaker}**\n${renderedBody}\n`;
+}
+
+
+/**
+ * 将一组消息按 `maxTokens` 上限无损拆分为若干子片（`maxTokens <= 0` 时不拆分，单条超大消息独占一片不丢数据）。
+ */
+function splitGroupByTokenBudget(
+  items: readonly PreparedExportItem[],
+  mediaRelPrefix: string,
+  maxTokens: number,
+  headerOverheadTokens = 90,
+): PreparedExportItem[][] {
+  if (maxTokens <= 0 || items.length <= 1) {
+    return [[...items]];
+  }
+
+  const parts: PreparedExportItem[][] = [];
+  let current: PreparedExportItem[] = [];
+  let currentTokens = headerOverheadTokens;
+  let lastDate = '';
+
+  for (const item of items) {
+    let itemTokens = estimateTokens(renderSingleItemBlock(item, mediaRelPrefix));
+    if (item.dateText !== lastDate) {
+      itemTokens += estimateTokens(`## ${item.dateText}\n\n`);
+    }
+
+    if (current.length > 0 && currentTokens + itemTokens > maxTokens) {
+      parts.push(current);
+      current = [item];
+      lastDate = item.dateText;
+      currentTokens = headerOverheadTokens
+        + estimateTokens(`## ${item.dateText}\n\n`)
+        + estimateTokens(renderSingleItemBlock(item, mediaRelPrefix));
+      continue;
+    }
+    current.push(item);
+    lastDate = item.dateText;
+    currentTokens += itemTokens;
+  }
+
+  if (current.length > 0) {
+    parts.push(current);
+  }
+  return parts;
+}
+
+
+/**
+ * 单会话显式导出执行器：协调只读会话查询、时间窗过滤、媒体解密复制、按天/Token 分卷与脱敏清单落盘。
  */
 export class ChatExporter {
   /**
@@ -445,16 +938,32 @@ export class ChatExporter {
    * @param options 已通过入口校验的导出选项。
    */
   async exportChat(options: ValidatedExportOptions): Promise<ExportManifest> {
+    const nowMs = options.nowMs ?? Date.now();
+    let sinceTimestamp: number | undefined;
+    if (options.sinceDays > 0) {
+      sinceTimestamp = Math.floor((nowMs - options.sinceDays * 86_400_000) / 1000);
+    }
+
     //==========================================================
-    //M 第一步：确认已连接账号并读取目标会话最近 N 条消息
+    //M 第一步：确认已连接账号并读取目标会话在时间窗内的最近 N 条消息
     //==========================================================
-    const resolved = await this.resolveAccountAndHistory(options.account, options.chat, options.limit);
+    const resolved = await this.resolveAccountAndHistory(
+      options.account,
+      options.chat,
+      options.limit,
+      sinceTimestamp,
+    );
     const { accountId, username, displayName, isGroup, messages } = resolved;
 
     const mediaRootAbs = path.resolve(options.outDir, options.mediaDir);
+    let maxFileBytes = 0;
+    if (options.maxFileMb > 0) {
+      maxFileBytes = options.maxFileMb * 1024 * 1024;
+    }
     const copiedRelFiles: string[] = [];
     let copiedCount = 0;
     let missingCount = 0;
+    let oversizeCount = 0;
     let mediaSeq = 0;
 
     //==========================================================
@@ -463,7 +972,6 @@ export class ChatExporter {
     const preparedItems: PreparedExportItem[] = [];
     for (const msg of messages) {
       const timeParts = formatTimestampParts(msg.create_time);
-      //M 归一化气泡视图以识别图片、语音、文件及其余卡片类型。
       const view = storeModule.getMessageView(msg);
       const kind = view.kind ?? 'other';
 
@@ -477,16 +985,29 @@ export class ChatExporter {
 
       if (kind === 'image') {
         try {
-          //M 调用纯 Bun 图片解密器获取缩略图/原图字节并拷入导出 media 目录。
           const img = await this.reader.image(accountId, username, msg.source, msg.local_id);
-          const imgBytes = fs.readFileSync(img.file);
+          const imgStat = fs.statSync(img.file);
+          if (maxFileBytes > 0 && imgStat.size > maxFileBytes) {
+            oversizeCount += 1;
+            missingCount += 1;
+            const sizeText = `${formatSizeMb(imgStat.size)} MB`;
+            const capText = `超过单文件大小上限 ${String(options.maxFileMb)} MB 未复制`;
+            preparedItems.push({
+              timestamp: msg.create_time,
+              dateText: timeParts.dateText,
+              monthText: timeParts.monthText,
+              timeText: timeParts.timeText,
+              speaker,
+              bodyOrLabel: `[图片（${sizeText}，${capText}）]`,
+            });
+            continue;
+          }
           mediaSeq += 1;
           const seqStr = String(mediaSeq).padStart(3, '0');
           const ext = extensionForImageMime(img.mime);
           const fileName = `${timeParts.compactDate}_${seqStr}${ext}`;
-          writeMediaFileSafe(mediaRootAbs, fileName, imgBytes);
+          copyMediaFileSafe(img.file, mediaRootAbs, fileName);
           const relFromOut = `./${options.mediaDir}/${fileName}`;
-          //M 登记已复制媒体的相对路径。
           copiedRelFiles.push(relFromOut);
           copiedCount += 1;
           preparedItems.push({
@@ -502,7 +1023,6 @@ export class ChatExporter {
           continue;
         } catch {
           missingCount += 1;
-          //M 本地原图不存在或无法解密时降级为纯文本占位。
           preparedItems.push({
             timestamp: msg.create_time,
             dateText: timeParts.dateText,
@@ -519,7 +1039,6 @@ export class ChatExporter {
         const sec = view.seconds ?? 0;
         const label = `语音 ${String(sec)} 秒`;
         try {
-          //M 从加密媒体库直提 SILK 并在内存转为标准 WAV 后写入导出 media 目录。
           const wavBytes = await this.voiceCache.get(
             { account: accountId, chat: username, source: msg.source, localId: msg.local_id },
             view.seconds,
@@ -529,7 +1048,6 @@ export class ChatExporter {
           const fileName = `${timeParts.compactDate}_${seqStr}.wav`;
           writeMediaFileSafe(mediaRootAbs, fileName, wavBytes);
           const relFromOut = `./${options.mediaDir}/${fileName}`;
-          //M 登记已复制语音 WAV 的相对路径。
           copiedRelFiles.push(relFromOut);
           copiedCount += 1;
           preparedItems.push({
@@ -545,7 +1063,6 @@ export class ChatExporter {
           continue;
         } catch {
           missingCount += 1;
-          //M 本地原音频不存在或转码失败时降级为带时长纯文本占位。
           preparedItems.push({
             timestamp: msg.create_time,
             dateText: timeParts.dateText,
@@ -561,11 +1078,24 @@ export class ChatExporter {
       if (kind === 'file') {
         const rawTitle = (view.title ?? '').trim();
         const displayTitle = rawTitle || '未命名文件';
-        //M 在账号 msg/file 目录内安全定位原件（拦截越界标题与外部软链接）。
-        const foundFile = this.reader.findSafeFileAttachment(accountId, rawTitle, msg.create_time);
-        if (foundFile !== undefined) {
+        const locatedFile = this.reader.locateFileAttachment(accountId, rawTitle, msg.create_time);
+        if (locatedFile !== undefined) {
+          if (maxFileBytes > 0 && locatedFile.sizeBytes > maxFileBytes) {
+            oversizeCount += 1;
+            missingCount += 1;
+            const sizeText = `${formatSizeMb(locatedFile.sizeBytes)} MB`;
+            const capText = `超过单文件大小上限 ${String(options.maxFileMb)} MB 未复制`;
+            preparedItems.push({
+              timestamp: msg.create_time,
+              dateText: timeParts.dateText,
+              monthText: timeParts.monthText,
+              timeText: timeParts.timeText,
+              speaker,
+              bodyOrLabel: `[文件: ${displayTitle}（${sizeText}，${capText}）]`,
+            });
+            continue;
+          }
           try {
-            const fileBytes = fs.readFileSync(foundFile);
             mediaSeq += 1;
             const seqStr = String(mediaSeq).padStart(3, '0');
             const parsed = path.parse(rawTitle);
@@ -575,9 +1105,8 @@ export class ChatExporter {
             if (safeExt !== '') {
               fileName += `.${safeExt}`;
             }
-            writeMediaFileSafe(mediaRootAbs, fileName, fileBytes);
+            copyMediaFileSafe(locatedFile.absPath, mediaRootAbs, fileName);
             const relFromOut = `./${options.mediaDir}/${fileName}`;
-            //M 登记已复制附件的相对路径。
             copiedRelFiles.push(relFromOut);
             copiedCount += 1;
             preparedItems.push({
@@ -592,11 +1121,10 @@ export class ChatExporter {
             });
             continue;
           } catch {
-            // 读取异常时走下方未保存降级。
+            // 拷贝异常时走下方未保存降级。
           }
         }
         missingCount += 1;
-        //M 本地未保存原文件或路径越界被拦截时降级为纯文本占位。
         preparedItems.push({
           timestamp: msg.create_time,
           dateText: timeParts.dateText,
@@ -608,7 +1136,6 @@ export class ChatExporter {
         continue;
       }
 
-      //M 普通文本、引用、卡片、转账等直接转为可读正文。
       const described = storeModule.describe(view).trim() || '[微信消息]';
       preparedItems.push({
         timestamp: msg.create_time,
@@ -621,7 +1148,7 @@ export class ChatExporter {
     }
 
     //==========================================================
-    //M 第三步：按 chunkBy（none / month / count）组织分卷 Markdown 与顶层导航
+    //M 第三步：按 chunkBy（none / day / month / count）与 maxTokens 切分 Markdown 分卷
     //==========================================================
     let chatType: 'p2p' | 'group' = 'p2p';
     if (isGroup) {
@@ -632,23 +1159,67 @@ export class ChatExporter {
 
     if (options.chunkBy === 'none') {
       const mdRelPrefix = `./${options.mediaDir}`;
-      const mdText = this.renderChunkMarkdown(displayName, chatType, preparedItems, mdRelPrefix);
-      const mdAbs = path.join(options.outDir, 'messages.md');
-      //M 登记单卷模式下的根 Markdown 输出任务。
-      pendingWrites.push({ absPath: mdAbs, content: mdText });
-
-      const range = getItemsIsoRange(preparedItems);
-      //M 登记单卷索引元数据。
-      chunkEntries.push({
-        id: 'all',
-        file: './messages.md',
-        count: preparedItems.length,
-        startIso: range.startIso,
-        endIso: range.endIso,
-      });
+      const subParts = splitGroupByTokenBudget(preparedItems, mdRelPrefix, options.maxTokens);
+      for (let idx = 0; idx < subParts.length; idx += 1) {
+        const partItems = subParts[idx]!;
+        let chunkId = 'all';
+        let fileName = 'messages.md';
+        if (idx > 0) {
+          chunkId = `all_part${String(idx + 1)}`;
+          fileName = `messages_part${String(idx + 1)}.md`;
+        }
+        let title = displayName;
+        if (subParts.length > 1) {
+          title = `${displayName}（第 ${String(idx + 1)}/${String(subParts.length)} 卷）`;
+        }
+        const mdText = this.renderChunkMarkdown(title, chatType, partItems, mdRelPrefix);
+        pendingWrites.push({ absPath: path.join(options.outDir, fileName), content: mdText });
+        const range = getItemsIsoRange(partItems);
+        chunkEntries.push({
+          id: chunkId,
+          file: `./${fileName}`,
+          count: partItems.length,
+          estimatedTokens: estimateTokens(mdText),
+          startIso: range.startIso,
+          endIso: range.endIso,
+        });
+      }
     }
 
-    if (options.chunkBy !== 'none') {
+    if (options.chunkBy === 'day') {
+      const mdRelPrefix = `./${options.mediaDir}`;
+      const dayGroups = splitIntoDayGroups(preparedItems);
+      for (const dayGroup of dayGroups) {
+        const subParts = splitGroupByTokenBudget(dayGroup.items, mdRelPrefix, options.maxTokens);
+        for (let idx = 0; idx < subParts.length; idx += 1) {
+          const partItems = subParts[idx]!;
+          let chunkId = dayGroup.id;
+          if (idx > 0) {
+            chunkId = `${dayGroup.id}_part${String(idx + 1)}`;
+          }
+          const fileName = `${chunkId}.md`;
+          let chunkTitle = `${displayName}（${dayGroup.id}）`;
+          if (subParts.length > 1) {
+            chunkTitle = `${displayName}（${dayGroup.id} · 第 ${String(idx + 1)}/${String(subParts.length)} 卷）`;
+          }
+          const chunkMd = this.renderChunkMarkdown(chunkTitle, chatType, partItems, mdRelPrefix);
+          pendingWrites.push({ absPath: path.join(options.outDir, fileName), content: chunkMd });
+          const range = getItemsIsoRange(partItems);
+          chunkEntries.push({
+            id: chunkId,
+            file: `./${fileName}`,
+            count: partItems.length,
+            estimatedTokens: estimateTokens(chunkMd),
+            startIso: range.startIso,
+            endIso: range.endIso,
+          });
+        }
+      }
+      const indexMd = renderRootIndexMarkdown(displayName, chatType, preparedItems.length, chunkEntries);
+      pendingWrites.push({ absPath: path.join(options.outDir, 'messages.md'), content: indexMd });
+    }
+
+    if (options.chunkBy === 'month' || options.chunkBy === 'count') {
       const groups = splitIntoChunks(preparedItems, options.chunkBy, options.chunkSize);
       for (const group of groups) {
         const subDirRel = group.id;
@@ -657,24 +1228,35 @@ export class ChatExporter {
         if (!mdRelPrefix.startsWith('.')) {
           mdRelPrefix = `./${mdRelPrefix}`;
         }
-        const chunkTitle = `${displayName}（${group.id}）`;
-        const chunkMd = this.renderChunkMarkdown(chunkTitle, chatType, group.items, mdRelPrefix);
-        const chunkAbs = path.join(options.outDir, subDirRel, 'messages.md');
-        //M 登记当前分卷子目录的 Markdown 输出任务。
-        pendingWrites.push({ absPath: chunkAbs, content: chunkMd });
+        const subParts = splitGroupByTokenBudget(group.items, mdRelPrefix, options.maxTokens);
+        for (let idx = 0; idx < subParts.length; idx += 1) {
+          const partItems = subParts[idx]!;
+          let chunkId = group.id;
+          let mdFileName = 'messages.md';
+          if (idx > 0) {
+            chunkId = `${group.id}_part${String(idx + 1)}`;
+            mdFileName = `messages_part${String(idx + 1)}.md`;
+          }
+          let chunkTitle = `${displayName}（${group.id}）`;
+          if (subParts.length > 1) {
+            chunkTitle = `${displayName}（${group.id} · 第 ${String(idx + 1)}/${String(subParts.length)} 卷）`;
+          }
+          const chunkMd = this.renderChunkMarkdown(chunkTitle, chatType, partItems, mdRelPrefix);
+          const chunkAbs = path.join(options.outDir, subDirRel, mdFileName);
+          pendingWrites.push({ absPath: chunkAbs, content: chunkMd });
 
-        const range = getItemsIsoRange(group.items);
-        //M 登记当前分卷的索引元数据。
-        chunkEntries.push({
-          id: group.id,
-          file: `./${subDirRel}/messages.md`,
-          count: group.items.length,
-          startIso: range.startIso,
-          endIso: range.endIso,
-        });
+          const range = getItemsIsoRange(partItems);
+          chunkEntries.push({
+            id: chunkId,
+            file: `./${subDirRel}/${mdFileName}`,
+            count: partItems.length,
+            estimatedTokens: estimateTokens(chunkMd),
+            startIso: range.startIso,
+            endIso: range.endIso,
+          });
+        }
       }
 
-      //M 分卷模式下同时在顶层生成总目录 messages.md，方便从根入口直接索引各卷。
       const indexMd = renderRootIndexMarkdown(displayName, chatType, preparedItems.length, chunkEntries);
       pendingWrites.push({ absPath: path.join(options.outDir, 'messages.md'), content: indexMd });
     }
@@ -684,7 +1266,11 @@ export class ChatExporter {
     //==========================================================
     const exportedNowMs = Date.now();
     const totalRange = getItemsTimeRange(preparedItems);
-    const safeFolderName = sanitizeSafeSegment(displayName, sanitizeSafeSegment(username, 'wechat_chat'));
+    const safeFolderName = buildUniqueSafeFolderName(displayName, username, 'wechat_chat');
+    const totalEstimatedTokens = chunkEntries.reduce((sum, item) => sum + item.estimatedTokens, 0);
+
+    const accountDbDir = this.reader.getAccountDbDir(accountId);
+    const unkeyedShards = this.reader.getUnkeyedMessageShards(accountId);
 
     const draftManifest: ExportManifest = {
       schemaVersion: 1,
@@ -697,15 +1283,20 @@ export class ChatExporter {
       },
       query: {
         limit: options.limit,
+        sinceDays: options.sinceDays,
         chunkBy: options.chunkBy,
         chunkSize: options.chunkSize,
+        maxTokens: options.maxTokens,
+        maxFileMb: options.maxFileMb,
         mediaDir: `./${options.mediaDir}`,
       },
       totalMessages: preparedItems.length,
+      totalEstimatedTokens,
       timeRange: totalRange,
       media: {
         copiedCount,
         missingCount,
+        oversizeCount,
         files: copiedRelFiles,
       },
       chunks: chunkEntries,
@@ -715,17 +1306,38 @@ export class ChatExporter {
         leakedAbsolutePaths: 0,
       },
     };
+    if (unkeyedShards.length > 0) {
+      draftManifest.unkeyedShards = unkeyedShards;
+    }
 
+    const manifestDraftJson = JSON.stringify(draftManifest, null, 2);
     const textsToInspect = [
       ...pendingWrites.map((item) => item.content),
-      JSON.stringify(draftManifest, null, 2),
+      manifestDraftJson,
     ];
-    //M 对即将落盘的全部文本做宿主机绝对路径扫描。
-    const checkReport = verifyNoAbsolutePathLeak(textsToInspect, [
-      options.dataDir,
-      options.engineDir,
-      options.outDir,
-    ]);
+    const mediaLinkSnippets: string[] = [];
+    for (const item of preparedItems) {
+      if (item.mediaFileName !== undefined) {
+        mediaLinkSnippets.push(`./${options.mediaDir}/${item.mediaFileName}`);
+      }
+    }
+    const structuredToInspect = [
+      manifestDraftJson,
+      ...pendingWrites.map((item) => extractStructuredMarkdownHeader(item.content)),
+      ...mediaLinkSnippets,
+    ];
+    const checkReport = verifyNoAbsolutePathLeak(
+      textsToInspect,
+      [
+        options.dataDir,
+        options.engineDir,
+        options.cacheDir,
+        options.outDir,
+        accountDbDir,
+      ],
+      structuredToInspect,
+      [os.homedir()],
+    );
     draftManifest.redactionCheck = checkReport;
     if (!checkReport.passed) {
       throw new Error('导出脱敏校验未通过：检测到宿主机绝对路径残留，已中止落盘');
@@ -733,22 +1345,21 @@ export class ChatExporter {
 
     fs.mkdirSync(options.outDir, { recursive: true });
     for (const fileItem of pendingWrites) {
-      //M 原子落盘各份已通过脱敏校验的 Markdown 文件。
       writeTextAtomic(fileItem.absPath, fileItem.content);
     }
     const manifestPath = path.join(options.outDir, 'manifest.json');
-    //M 原子落盘导出清单 manifest.json。
     writeTextAtomic(manifestPath, `${JSON.stringify(draftManifest, null, 2)}\n`);
     return draftManifest;
   }
 
   /**
-   * 定位目标已连接账号并读取该会话的历史消息。
+   * 定位目标已连接账号（支持 `--account` 传账号ID、微信昵称或 wxid）并读取该会话的历史消息。
    */
   private async resolveAccountAndHistory(
     explicitAccount: string | undefined,
     chatQuery: string,
     limit: number,
+    sinceTimestamp?: number,
   ): Promise<{
     accountId: string;
     username: string;
@@ -756,23 +1367,18 @@ export class ChatExporter {
     isGroup: boolean;
     messages: readerModule.RawMessage[];
   }> {
-    //M 读取当前已连接的全部微信账号。
     const connected = this.reader.accounts();
     if (connected.length === 0) {
       throw new Error('当前没有已连接的微信账号，请先完成账号连接');
     }
 
     if (explicitAccount !== undefined) {
-      const exists = connected.some((acc) => acc.id === explicitAccount);
-      if (!exists) {
-        throw new Error('指定的 --account 微信账号尚未连接');
-      }
-      //M 在显式指定的账号下查询目标会话记录。
-      const hit = await this.reader.readChatHistory(explicitAccount, chatQuery, limit);
+      const targetAcc = this.reader.resolveAccountFlexible(explicitAccount);
+      const hit = await this.reader.readChatHistory(targetAcc.id, chatQuery, limit, sinceTimestamp);
       if (hit === undefined) {
         throw new Error('在指定微信账号中未找到该会话');
       }
-      return { accountId: explicitAccount, ...hit };
+      return { accountId: targetAcc.id, ...hit };
     }
 
     const matches: Array<{
@@ -783,10 +1389,8 @@ export class ChatExporter {
       messages: readerModule.RawMessage[];
     }> = [];
     for (const acc of connected) {
-      //M 逐个已连接账号尝试匹配目标会话。
-      const hit = await this.reader.readChatHistory(acc.id, chatQuery, limit);
+      const hit = await this.reader.readChatHistory(acc.id, chatQuery, limit, sinceTimestamp);
       if (hit !== undefined) {
-        //M 记录命中该会话的账号结果。
         matches.push({ accountId: acc.id, ...hit });
       }
     }
@@ -795,7 +1399,7 @@ export class ChatExporter {
       throw new Error('未找到匹配的微信会话，请核对会话名或 wxid');
     }
     if (matches.length > 1) {
-      throw new Error('多个已连接微信账号均包含同名会话，请通过 --account 明确指定账号');
+      throw new Error('多个已连接微信账号均包含同名会话，请通过 --account 明确指定账号ID或昵称');
     }
     return matches[0]!;
   }
@@ -823,14 +1427,11 @@ export class ChatExporter {
     if (items.length > 0) {
       const first = items[0]!;
       const last = items[items.length - 1]!;
-      //M 写入本卷消息覆盖的起止日期时间。
       lines.push(`- 时间范围：${first.dateText} ${first.timeText} 至 ${last.dateText} ${last.timeText}（UTC+8）`);
     }
-    //M 插入头部元信息与正文之间的分隔空行。
     lines.push('');
 
     if (items.length === 0) {
-      //M 空会话写入明确提示行。
       lines.push('_（暂无消息记录）_', '');
       return lines.join('\n');
     }
@@ -839,7 +1440,6 @@ export class ChatExporter {
     for (const item of items) {
       if (item.dateText !== currentDate) {
         currentDate = item.dateText;
-        //M 按日期变化插入二级标题。
         lines.push(`## ${currentDate}`, '');
       }
 
@@ -854,11 +1454,37 @@ export class ChatExporter {
         }
       }
 
-      //M 写入带时分秒的发言人标题与消息正文段落。
       lines.push(`**[${item.timeText}] ${item.speaker}**`, renderedBody, '');
     }
     return lines.join('\n');
   }
+}
+
+
+/**
+ * 按东八区日期 `YYYY-MM-DD` 切分消息列表（空会话生成单个 `empty` 占位卷以产出干净摘要）。
+ */
+function splitIntoDayGroups(
+  items: readonly PreparedExportItem[],
+): Array<{ id: string; items: PreparedExportItem[] }> {
+  if (items.length === 0) {
+    return [];
+  }
+  const byDay = new Map<string, PreparedExportItem[]>();
+  for (const item of items) {
+    const dayKey = sanitizeSafeSegment(item.dateText, 'unknown-day');
+    let bucket = byDay.get(dayKey);
+    if (bucket === undefined) {
+      bucket = [];
+      byDay.set(dayKey, bucket);
+    }
+    bucket.push(item);
+  }
+  const result: Array<{ id: string; items: PreparedExportItem[] }> = [];
+  for (const [id, groupItems] of byDay) {
+    result.push({ id, items: groupItems });
+  }
+  return result;
 }
 
 
@@ -883,7 +1509,6 @@ function splitIntoChunks(
         bucket = [];
         byMonth.set(monthKey, bucket);
       }
-      //M 将消息归入所属月份分卷。
       bucket.push(item);
     }
     const result: Array<{ id: string; items: PreparedExportItem[] }> = [];
@@ -899,7 +1524,6 @@ function splitIntoChunks(
   for (let offset = 0; offset < items.length; offset += chunkSize) {
     const partIndex = Math.floor(offset / chunkSize) + 1;
     const id = `part-${String(partIndex).padStart(padDigits, '0')}`;
-    //M 按顺序切出固定条数分卷。
     chunks.push({ id, items: items.slice(offset, offset + chunkSize) });
   }
   return chunks;
@@ -929,11 +1553,15 @@ function renderRootIndexMarkdown(
     '## 分卷列表',
     '',
   ];
-  for (const chunk of chunks) {
-    //M 追加指向各分卷相对路径的目录列表项。
-    lines.push(`- [${chunk.id}](${chunk.file})（${String(chunk.count)} 条）`);
+  if (chunks.length === 0) {
+    lines.push('_（所选时间窗口内暂无消息记录）_', '');
+    return lines.join('\n');
   }
-  //M 末尾保留标准换行。
+  for (const chunk of chunks) {
+    lines.push(
+      `- [${chunk.id}](${chunk.file})（${String(chunk.count)} 条，约 ${String(chunk.estimatedTokens)} tokens）`,
+    );
+  }
   lines.push('');
   return lines.join('\n');
 }
@@ -981,10 +1609,234 @@ function getItemsTimeRange(items: readonly PreparedExportItem[]): ExportManifest
  * @param options 已通过 `validateExportCliInput` 校验的导出配置。
  */
 export async function runExportChatCli(options: ValidatedExportOptions): Promise<ExportManifest> {
-  //M 初始化只读微信引擎与临时语音转码缓存目录，执行显式导出。
-  const reader = new readerModule.Reader(options.dataDir, options.atNames, undefined, options.engineDir);
-  const voiceCacheDir = path.join(options.dataDir, 'message');
+  const reader = new readerModule.Reader(
+    options.dataDir,
+    options.atNames,
+    undefined,
+    options.engineDir,
+    options.cacheDir,
+  );
+  const voiceCacheDir = path.join(options.cacheDir, 'voice_cache');
   const voiceCache = new voiceModule.VoiceAudio(reader, voiceCacheDir);
   const exporter = new ChatExporter(reader, voiceCache);
   return await exporter.exportChat(options);
+}
+
+
+/**
+ * 命令行显式 `export-batch` 一站式入口：
+ * 将多个指定会话或全账号会话按飞书渠道同构目录树（`<out>/私聊/<安全会话名>/` 与 `<out>/群聊/<安全会话名>/`）批量导出，
+ * 并在根目录产出经零绝对路径泄漏校验的 `batch-manifest.json`。
+ */
+export async function runExportBatchCli(options: ValidatedBatchExportOptions): Promise<BatchExportManifest> {
+  const nowMs = options.nowMs ?? Date.now();
+  let sinceTimestamp = 0;
+  if (options.sinceDays > 0) {
+    sinceTimestamp = Math.floor((nowMs - options.sinceDays * 86_400_000) / 1000);
+  }
+
+  const reader = new readerModule.Reader(
+    options.dataDir,
+    options.atNames,
+    undefined,
+    options.engineDir,
+    options.cacheDir,
+  );
+  const targetAccount = reader.resolveAccountFlexible(options.account);
+  const voiceCacheDir = path.join(options.cacheDir, 'voice_cache');
+  const voiceCache = new voiceModule.VoiceAudio(reader, voiceCacheDir);
+  const exporter = new ChatExporter(reader, voiceCache);
+
+  //M 组装待导出的会话标识队列（--all 模式先从 session.db 只读筛出目标会话并跳过超期不活跃会话）。
+  const targets: Array<{ query: string; knownId?: string; knownDisplay?: string; knownGroup?: boolean }> = [];
+  const skipped: Array<{ chat: string; reason: string }> = [];
+  const failed: Array<{ chat: string; error: string }> = [];
+
+  if (options.all) {
+    const metaList = reader.listChatMetadata(targetAccount.id);
+    for (const meta of metaList) {
+      if (options.typeFilter !== 'all' && meta.chatType !== options.typeFilter) {
+        continue;
+      }
+      if (options.pinnedOnly && !meta.pinned) {
+        continue;
+      }
+      if (sinceTimestamp > 0 && meta.lastTimestamp < sinceTimestamp) {
+        skipped.push({
+          chat: meta.displayName,
+          reason: `最近 ${String(options.sinceDays)} 天内无活跃消息`,
+        });
+        continue;
+      }
+      targets.push({
+        query: meta.id,
+        knownId: meta.id,
+        knownDisplay: meta.displayName,
+        knownGroup: meta.chatType === 'group',
+      });
+    }
+  }
+  if (!options.all) {
+    for (const chatQuery of options.chats) {
+      targets.push({ query: chatQuery });
+    }
+  }
+
+  const accountSafeFolder = buildUniqueSafeFolderName(targetAccount.nickname, targetAccount.id, 'wechat_account');
+  let accountRelPrefix = '';
+  if (options.withAccountDir) {
+    accountRelPrefix = `${accountSafeFolder}/`;
+  }
+  const usedRelFolders = new Set<string>();
+  const exportedItems: BatchExportManifest['items'] = [];
+
+  for (const target of targets) {
+    try {
+      let sinceArg: number | undefined;
+      if (sinceTimestamp > 0) {
+        sinceArg = sinceTimestamp;
+      }
+      const preview = await reader.readChatHistory(
+        targetAccount.id,
+        target.query,
+        1,
+        sinceArg,
+      );
+      if (preview === undefined) {
+        failed.push({ chat: target.query, error: '未找到匹配的微信会话' });
+        continue;
+      }
+      if (options.all && preview.messages.length === 0 && sinceTimestamp > 0) {
+        skipped.push({
+          chat: preview.displayName,
+          reason: `最近 ${String(options.sinceDays)} 天内无消息记录`,
+        });
+        continue;
+      }
+
+      let categoryDir = '私聊';
+      if (preview.isGroup) {
+        categoryDir = '群聊';
+      }
+      const uniqueSafeName = buildUniqueSafeFolderName(preview.displayName, preview.username, 'wechat_chat');
+      let relFolder = `${accountRelPrefix}${categoryDir}/${uniqueSafeName}`;
+      if (usedRelFolders.has(relFolder.toLowerCase())) {
+        relFolder = `${accountRelPrefix}${categoryDir}/${uniqueSafeName}_${String(usedRelFolders.size + 1)}`;
+      }
+      usedRelFolders.add(relFolder.toLowerCase());
+
+      const chatOutDir = path.join(options.outDir, ...relFolder.split('/'));
+      const manifest = await exporter.exportChat({
+        dataDir: options.dataDir,
+        engineDir: options.engineDir,
+        cacheDir: options.cacheDir,
+        account: targetAccount.id,
+        chat: preview.username,
+        outDir: chatOutDir,
+        limit: options.limit,
+        sinceDays: options.sinceDays,
+        chunkBy: options.chunkBy,
+        chunkSize: options.chunkSize,
+        maxTokens: options.maxTokens,
+        maxFileMb: options.maxFileMb,
+        mediaDir: options.mediaDir,
+        atNames: options.atNames,
+        nowMs,
+      });
+
+      exportedItems.push({
+        chat: manifest.chat.displayName,
+        chatType: manifest.chat.chatType,
+        safeFolderName: manifest.chat.safeFolderName,
+        folder: `./${relFolder}`,
+        totalMessages: manifest.totalMessages,
+        chunks: manifest.chunks.length,
+        estimatedTokens: manifest.totalEstimatedTokens,
+        mediaCopied: manifest.media.copiedCount,
+        mediaMissing: manifest.media.missingCount,
+        mediaOversize: manifest.media.oversizeCount,
+        redactionPassed: manifest.redactionCheck.passed,
+      });
+    } catch (error) {
+      let msg = String(error);
+      if (error instanceof Error) {
+        msg = error.message;
+      }
+      failed.push({ chat: target.knownDisplay ?? target.query, error: msg });
+    }
+  }
+
+  let queryMode: 'chats' | 'all' = 'chats';
+  if (options.all) {
+    queryMode = 'all';
+  }
+
+  const exportedAtMs = Date.now();
+  const batchManifest: BatchExportManifest = {
+    schemaVersion: 1,
+    exportedAt: new Date(exportedAtMs).toISOString(),
+    exportedAtMs,
+    account: {
+      accountId: targetAccount.id,
+      nickname: targetAccount.nickname,
+      wxid: targetAccount.wxid,
+      safeFolderName: accountSafeFolder,
+    },
+    query: {
+      mode: queryMode,
+      sinceDays: options.sinceDays,
+      chunkBy: options.chunkBy,
+      maxTokens: options.maxTokens,
+      maxFileMb: options.maxFileMb,
+      limit: options.limit,
+      mediaDir: `./${options.mediaDir}`,
+      withAccountDir: options.withAccountDir,
+    },
+    totals: {
+      exportedChats: exportedItems.length,
+      skippedChats: skipped.length,
+      failedChats: failed.length,
+      totalMessages: exportedItems.reduce((sum, item) => sum + item.totalMessages, 0),
+      totalChunks: exportedItems.reduce((sum, item) => sum + item.chunks, 0),
+      totalEstimatedTokens: exportedItems.reduce((sum, item) => sum + item.estimatedTokens, 0),
+      totalMediaCopied: exportedItems.reduce((sum, item) => sum + item.mediaCopied, 0),
+      totalMediaOversize: exportedItems.reduce((sum, item) => sum + item.mediaOversize, 0),
+    },
+    items: exportedItems,
+    skipped,
+    failed,
+    redactionCheck: {
+      passed: true,
+      checkedFiles: 1,
+      leakedAbsolutePaths: 0,
+    },
+  };
+
+  const accountDbDir = reader.getAccountDbDir(targetAccount.id);
+  const unkeyedShards = reader.getUnkeyedMessageShards(targetAccount.id);
+  if (unkeyedShards.length > 0) {
+    batchManifest.unkeyedShards = unkeyedShards;
+  }
+
+  const batchJsonText = JSON.stringify(batchManifest, null, 2);
+  const check = verifyNoAbsolutePathLeak(
+    [batchJsonText],
+    [
+      options.dataDir,
+      options.engineDir,
+      options.cacheDir,
+      options.outDir,
+      accountDbDir,
+    ],
+    [batchJsonText],
+    [os.homedir()],
+  );
+  batchManifest.redactionCheck = check;
+  if (!check.passed) {
+    throw new Error('批量导出脱敏校验未通过：batch-manifest.json 检测到宿主机绝对路径残留');
+  }
+
+  fs.mkdirSync(options.outDir, { recursive: true });
+  writeTextAtomic(path.join(options.outDir, 'batch-manifest.json'), `${JSON.stringify(batchManifest, null, 2)}\n`);
+  return batchManifest;
 }
