@@ -147,6 +147,20 @@ export default eslintConfig.defineConfig([
     extends: [eslintJs.configs.recommended],
     languageOptions: { globals: globals.node },
   },
+  {
+    files: ['ztools/aobb-shot/**/*.ts'],
+    extends: [
+      eslintJs.configs.recommended,
+      ...tseslint.configs.recommendedTypeChecked,
+    ],
+    languageOptions: {
+      globals: globals.node,
+      parserOptions: {
+        project: ['./ztools/aobb-shot/tsconfig.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
   // Prettier只负责排版，先关闭冲突样式规则，再明确保留项目的结构约束。
   prettier,
   {
@@ -154,6 +168,7 @@ export default eslintConfig.defineConfig([
       'src7/**/*.ts',
       'web/**/*.{ts,tsx}',
       'scripts/**/*.{ts,mjs}',
+      'ztools/aobb-shot/**/*.ts',
       'eslint.config.mjs',
     ],
     plugins: { jmbots: { rules: { 'require-blocks': requireBlocks } } },

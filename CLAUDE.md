@@ -155,16 +155,21 @@
   - 显存：卡 16G，最多占 15.9G；
   - jmbots 自己的后台任务要按这三条自查。派活时写进任务书。
 - **别再弹 Windows 防火墙授权窗**（用户 11-19 #289：“我没法在电脑面前给你去点了”）：测试、试跑、临时脚本一律只监听 `127.0.0.1`（不听 `0.0.0.0`），不用新路径、新名字的 exe 去开监听端口（cargo test 生成的测试程序、临时编的 exe、改了名的试跑件都算）；要测网络监听就用回环地址。正式服务照旧 `0.0.0.0`、exe 名字固定（防火墙只问一次）。派活时写进任务书。
-- **端口不再限制**（用户 11-14 09:47 EST 取消“15000 以上且不含 4”）。正在用的别去占：30085 壳子 `jmbots.exe`，30086 主服务，30087 记忆服务，30088 vgr（后两个由 memory 插件起，挂在 30086 的 `/memory/`、`/memory/vgr/` 下）。
+- **端口不再限制**（用户 11-14 09:47 EST 取消“15000 以上且不含 4”）。正在用的别去占：30085 壳子 `jmbots.exe`，30086 主服务，30087 记忆服务 `jmbots-memory`（旧 AOBB `:30087` 入口已彻底废止），30088 vgr（后两个由 memory 插件起，挂在 30086 的 `/memory/`、`/memory/vgr/` 下），30098 AOBB 多开舱回环 API。
 - `.cmd` 只写 ASCII（cmd.exe 按本地代码页读 UTF-8），逻辑和中文放进 `.ts`。
 - **网页一律默认深色主题**（用户 11-17：“项目默认以深色模式为主，然后可以去做别的主题颜色”）：
   - 新页面、插件页面（tutorial、model-notes 等）都默认深色；
   - 可以切换别的主题色，但默认值是深色；
   - antd 用 `theme.darkAlgorithm`，自己写的 CSS 用变量，不写死浅色。
-- **核心规矩：浏览器只能用 AOBB**（用户 11-18 #180：“他们就没有这个权限，他们这辈子就只能去打开我的 AOBB……任何的东西都通过 AOBB 去请求”）：任何 AI 都不准自己打开用户的 Chrome 或别的浏览器（Playwright/Puppeteer 拉 Chrome、`Start-Process <网址>`、`start chrome` 都算）。看网页、截图只经 AOBB；AOBB 用不了就报卡住。每份任务书都写这条。
+- **核心规矩：浏览器只能用 AOBB**（用户 11-18 #180：“他们就没有这个权限，他们这辈子就只能去打开我的 AOBB……任何的东西都通过 AOBB 去请求”；2026-11-24 统一多开舱口径）：
+  - 任何 AI 都不准自己打开用户的 Chrome 或别的浏览器（Playwright/Puppeteer 拉 Chrome、`Start-Process <网址>`、`start chrome` 都算）。看网页、截图只经 AOBB；AOBB 用不了就报卡住。每份任务书都写这条；
+  - **唯一现役成品与入口**：`F:\aidata\AITools\AOBB\`（`AOBB.exe` + `aobb-dock-server.exe` + `aobb-vision.exe` + `aobb-dock.yaml` + `SKILL.md`），HTTP API 严格监听 `http://127.0.0.1:30098/api/v1/*`，AI 调用规范唯一看 `F:\aidata\AITools\AOBB\SKILL.md`（与 `F:\aidata\source\AOBB\dock\SKILL.md` 同源）。源码仓 `F:\aidata\source\AOBB` 顶层仅留 `dock/`、`vision-rs/`、`AGENTS.md`、`README.md`（旧 v1 代码、旧脚本目录、旧批处理、`ztools/ui-check/` 及 `source/profile-dock/` 已全部废止并物理清除，历史留底见 Git tag `legacy-v1-archive`）。AOBB 现阶段直接开源，不做收费或授权拦截；
+  - **控制台 4 个现役环境分工**：146 节点组全绑独立代理（`cb146自己-RN2洛杉矶`/`changyong146` `:7892` CDP `:19220`、`cb146自己-RN1 纽约`/`pmwt4f3mv47bp` `:7893` CDP `:19302`、`cb146 ins -新加坡`/`pmwrwi37ujcm9` `:7891` CDP `:19301`）；155 常用自用组为老板日常主力（`cb155-直连-GHelper`/`changyong155` `direct` 直连 + `GHelper` + 600 条个人常用书签 + CDP `:19280`）；
+  - **jmbots 网页验收截图**：统一使用 `bun ztools/aobb-shot/Aobb_Shot.ts`（纯 Bun + `fetch` 直调 `:30098/api/v1/ai/*`，默认复用运行中实例与单标签）；
+  - **授权与隐私红线**：未经老板逐一明确授权，严禁调 `POST /api/v1/ai/ensure` 拉起任何外部账号或私自操作已登录私密/业务页面。
 - **用浏览器（AOBB）测网页，只开一个标签页**（用户 11-11：“dsh 在aobb中的测试 简直有毒啊，疯狂大概新标签，就是不关闭！”）：
-  - 在同一个标签里跳地址，不要新开；
-  - 测完关掉自己开的标签，用户原来的标签不动；
+  - 统一经 `/api/v1/ai/instances/:id/navigate`（默认 `reuseOwnTab: true`）复用 AI 专属单标签页，在同一个标签里跳地址，不要新开；
+  - 绝不覆盖、刷新或关闭用户手动打开的标签页；
   - 派 DSH 测网页时，把这条写进任务书；
   - **AOBB 对所有 AI 开放**（用户 11-17 #118）：中控、Antigravity、131、132、Grok 都能用它测；网页的活交给用户前，先自己当用户点一遍，追求最好的体验，不必死守用户或之前的说法，边改边优化。
 

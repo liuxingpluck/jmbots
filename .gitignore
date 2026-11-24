@@ -21,10 +21,11 @@
 # 第 7 版骨架。
 !/src7/
 
-# 行号检查进 git（决策图 q-doc-lines）：ztools 里有令牌文件，只放开 check-lines，别的一律不进。
+# 行号检查与 AOBB 多开舱截图工具进 git：ztools 里有令牌文件，只放开 check-lines 与 aobb-shot，别的一律不进。
 !/ztools/
 /ztools/*
 !/ztools/check-lines/
+!/ztools/aobb-shot/
 
 # 白名单目录里也不要的。
 node_modules/
